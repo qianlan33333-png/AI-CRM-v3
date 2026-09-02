@@ -2,23 +2,23 @@ version: 1
 states: [planned, contracted, implemented, shadow, cutover, retired-source]
 modules:
   - name: platform
-    status: contracted
+    status: implemented
     owner: crm-platform
     dependencies: []
   - name: customer
-    status: planned
+    status: implemented
     owner: crm-core
     dependencies: [platform]
   - name: identity
-    status: planned
+    status: implemented
     owner: crm-core
     dependencies: [platform, customer]
   - name: access
-    status: planned
+    status: implemented
     owner: crm-core
     dependencies: [platform]
   - name: wecom
-    status: planned
+    status: implemented
     owner: crm-connectors
     dependencies: [platform, access, identity]
   - name: order
@@ -29,6 +29,10 @@ modules:
     status: planned
     owner: crm-commerce
     dependencies: [platform, order, identity]
+  - name: webshell
+    status: implemented
+    owner: crm-product
+    dependencies: [access, identity, wecom]
   - name: crm-core-modules
     status: planned
     owner: crm-core

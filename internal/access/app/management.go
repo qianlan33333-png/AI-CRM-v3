@@ -41,7 +41,7 @@ type UserSummary struct {
 	DisplayName    string        `json:"display_name"`
 	WeComUserID    string        `json:"wecom_userid"`
 	Active         bool          `json:"active"`
-	SessionVersion int64         `json:"session_version"`
+	SessionVersion int64         `json:"-"`
 	Roles          []domain.Role `json:"roles"`
 	LastLoginAt    *time.Time    `json:"last_login_at,omitempty"`
 	CreatedAt      time.Time     `json:"created_at"`

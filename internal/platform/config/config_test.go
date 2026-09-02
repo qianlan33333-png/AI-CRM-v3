@@ -3,6 +3,7 @@ package config
 import "testing"
 
 func TestLoadDefaultsAndRejectsInvalidRole(t *testing.T) {
+	t.Setenv("AICRM_DATABASE_URL", "postgres://aicrm:test@localhost/aicrm")
 	t.Setenv("AICRM_LISTEN_ADDR", "")
 	t.Setenv("AICRM_RELEASE_SHA", "")
 	t.Setenv("AICRM_ROLE", "")
@@ -10,13 +11,56 @@ func TestLoadDefaultsAndRejectsInvalidRole(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.ListenAddress != "127.0.0.1:8080" || cfg.ReleaseSHA != "development" || cfg.Role != RoleAll {
+	if cfg.ListenAddress != "127.0.0.1:8080" || cfg.ReleaseSHA != "development" || cfg.Role != RoleAPI ||
+		cfg.DatabaseURL == "" || cfg.PublicOrigin != "https://id-dev.youcangogogo.com" || cfg.WorkerLimit != 25 {
 		t.Fatalf("defaults=%+v", cfg)
 	}
 
 	t.Setenv("AICRM_ROLE", "unknown")
 	if _, err = Load(); err == nil {
 		t.Fatal("expected invalid role error")
+	}
+}
+
+func TestLoadValidatesBootstrapAndWeComAsClosedConfigurationGroups(t *testing.T) {
+	t.Setenv("AICRM_DATABASE_URL", "postgres://aicrm:test@localhost/aicrm")
+	t.Setenv("AICRM_BOOTSTRAP_USERNAME", "admin")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected partial bootstrap configuration error")
+	}
+
+	t.Setenv("AICRM_BOOTSTRAP_PASSWORD", "this-is-a-strong-password")
+	t.Setenv("AICRM_BOOTSTRAP_DISPLAY_NAME", "CRM Admin")
+	t.Setenv("AICRM_WECOM_ENABLED", "true")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected partial WeCom configuration error")
+	}
+
+	t.Setenv("AICRM_WECOM_CORP_ID", "ww-corp")
+	t.Setenv("AICRM_WECOM_AGENT_ID", "1000002")
+	t.Setenv("AICRM_WECOM_SECRET", "provider-secret")
+	t.Setenv("AICRM_WECOM_CALLBACK_TOKEN", "callback-token")
+	t.Setenv("AICRM_WECOM_CALLBACK_AES_KEY", "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG")
+	t.Setenv("AICRM_WECOM_CONTEXT_SIGNING_KEY", "0123456789abcdef0123456789abcdef")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Bootstrap.Enabled || !cfg.WeCom.Enabled {
+		t.Fatalf("config=%+v", cfg)
+	}
+}
+
+func TestLoadRejectsInsecureOriginAndLooseBoolean(t *testing.T) {
+	t.Setenv("AICRM_DATABASE_URL", "postgres://aicrm:test@localhost/aicrm")
+	t.Setenv("AICRM_PUBLIC_ORIGIN", "http://id-dev.youcangogogo.com")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected insecure origin error")
+	}
+	t.Setenv("AICRM_PUBLIC_ORIGIN", "https://id-dev.youcangogogo.com")
+	t.Setenv("AICRM_WECOM_ENABLED", "1")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected strict boolean error")
 	}
 }
 

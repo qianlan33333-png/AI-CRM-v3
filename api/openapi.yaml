@@ -1,43 +1,329 @@
 openapi: 3.1.0
 info:
-  title: AI-CRM v3 Bootstrap API
-  version: 0.1.0
-  description: Initial health contract only. Business routes are added per contracted module.
+  title: AI-CRM v3 Foundation API
+  version: 0.3.0
+  description: OneID, employee access and WeCom foundation contract. Unimplemented CRM menus expose HTML placeholders and no business API.
+servers:
+  - url: https://id-dev.youcangogogo.com
 paths:
   /healthz:
     get:
       operationId: getHealth
       responses:
-        "200":
-          description: Process is alive.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/StatusResponse"
+        "200": {description: Process is alive, content: {application/json: {schema: {$ref: "#/components/schemas/StatusResponse"}}}}
   /readyz:
     get:
       operationId: getReadiness
       responses:
-        "200":
-          description: Bootstrap dependencies are ready.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/StatusResponse"
-        "503":
-          description: A required bootstrap dependency is unavailable.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/StatusResponse"
+        "200": {description: PostgreSQL and migrations are ready, content: {application/json: {schema: {$ref: "#/components/schemas/StatusResponse"}}}}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /login:
+    get:
+      operationId: loginPage
+      parameters: [{$ref: "#/components/parameters/SafeNext"}]
+      responses:
+        "200": {description: Login HTML, content: {text/html: {schema: {type: string}}}}
+    post:
+      operationId: passwordLogin
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded: {schema: {$ref: "#/components/schemas/LoginRequest"}}
+          application/json: {schema: {$ref: "#/components/schemas/LoginRequest"}}
+      responses:
+        "200": {description: JSON login result and Secure cookies, content: {application/json: {schema: {$ref: "#/components/schemas/LoginResponse"}}}}
+        "303": {description: Browser redirect after successful login}
+        "401": {$ref: "#/components/responses/Error"}
+        "429": {$ref: "#/components/responses/Error"}
+  /logout:
+    post:
+      operationId: logout
+      security: [{adminSession: [], csrfHeader: []}]
+      responses:
+        "200": {$ref: "#/components/responses/MutationOK"}
+        "303": {description: Browser redirect to login}
+        "403": {$ref: "#/components/responses/Error"}
+  /auth/wecom/start:
+    get:
+      operationId: startAdminWeComOAuth
+      parameters:
+        - {$ref: "#/components/parameters/SafeNext"}
+        - {name: mode, in: query, schema: {type: string, enum: [qr, oauth], default: qr}}
+      responses:
+        "302": {description: Redirect to WeCom authorization}
+        "400": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /auth/wecom/callback:
+    get:
+      operationId: completeAdminWeComOAuth
+      parameters:
+        - {name: state, in: query, required: true, schema: {type: string}}
+        - {name: code, in: query, required: true, schema: {type: string}}
+      responses:
+        "302": {description: Secure admin session issued}
+        "400": {$ref: "#/components/responses/Error"}
+  /admin/config/login-access:
+    get:
+      operationId: employeeAccessPage
+      security: [{adminSession: []}]
+      responses:
+        "200": {description: Employee access HTML, content: {text/html: {schema: {type: string}}}}
+        "303": {description: Redirect to login}
+  /admin/oneid:
+    get:
+      operationId: oneIDAdministrationPage
+      security: [{adminSession: []}]
+      responses:
+        "200": {description: OneID read-only administration HTML, content: {text/html: {schema: {type: string}}}}
+        "303": {description: Redirect to login}
+  /api/admin/access/users:
+    get:
+      operationId: listAdminUsers
+      security: [{adminSession: []}]
+      responses:
+        "200": {description: Employee list, content: {application/json: {schema: {type: object, required: [ok, users], properties: {ok: {const: true}, users: {type: array, items: {$ref: "#/components/schemas/AdminUser"}}}}}}}
+        "403": {$ref: "#/components/responses/Error"}
+    post:
+      operationId: createAdminUser
+      security: [{adminSession: [], csrfHeader: []}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/CreateAdminUser"}}}}
+      responses:
+        "201": {description: Employee created, content: {application/json: {schema: {$ref: "#/components/schemas/AdminUser"}}}}
+        "403": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
+  /api/admin/access/users/{id}/disable:
+    post:
+      operationId: disableAdminUser
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/ID"}]
+      responses: {"200": {$ref: "#/components/responses/MutationOK"}, "403": {$ref: "#/components/responses/Error"}}
+  /api/admin/access/users/{id}/wecom-userid:
+    post:
+      operationId: bindAdminUserWeComID
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/ID"}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false, required: [wecom_userid], properties: {wecom_userid: {type: string, maxLength: 128}}}}}}
+      responses: {"200": {$ref: "#/components/responses/MutationOK"}, "403": {$ref: "#/components/responses/Error"}}
+  /api/admin/access/users/{id}/roles:
+    post:
+      operationId: changeAdminUserRoles
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/ID"}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false, required: [roles], properties: {roles: {$ref: "#/components/schemas/Roles"}}}}}}
+      responses: {"200": {$ref: "#/components/responses/MutationOK"}, "403": {$ref: "#/components/responses/Error"}}
+  /api/admin/access/users/{id}/password:
+    post:
+      operationId: resetAdminUserPassword
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/ID"}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false, required: [password], properties: {password: {type: string, minLength: 12, maxLength: 1024, writeOnly: true}}}}}}
+      responses: {"200": {$ref: "#/components/responses/MutationOK"}, "403": {$ref: "#/components/responses/Error"}}
+  /api/admin/oneid/resolve:
+    post:
+      operationId: resolveOneID
+      description: Read-only lookup. Never provisions and does not accept assurance.
+      security: [{adminSession: []}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/IdentityReference"}}}}
+      responses:
+        "200": {description: Resolution result, content: {application/json: {schema: {$ref: "#/components/schemas/ResolveResult"}}}}
+        "400": {$ref: "#/components/responses/Error"}
+  /api/admin/oneid/customers/{customer_id}:
+    get:
+      operationId: getOneIDCustomer
+      security: [{adminSession: []}]
+      parameters: [{$ref: "#/components/parameters/CustomerID"}]
+      responses:
+        "200": {description: Customer identity summary without values or evidence, content: {application/json: {schema: {$ref: "#/components/schemas/CustomerDetail"}}}}
+        "404": {$ref: "#/components/responses/Error"}
+  /api/admin/oneid/conflicts:
+    get:
+      operationId: listOneIDConflicts
+      security: [{adminSession: []}]
+      parameters:
+        - {name: status, in: query, schema: {type: string, enum: [open, resolved, ignored], default: open}}
+        - {$ref: "#/components/parameters/Limit"}
+        - {$ref: "#/components/parameters/Offset"}
+      responses:
+        "200": {description: Conflict page, content: {application/json: {schema: {$ref: "#/components/schemas/ConflictPage"}}}}
+  /api/admin/oneid/merge-candidates:
+    get:
+      operationId: listOneIDMergeCandidates
+      security: [{adminSession: []}]
+      parameters:
+        - {name: status, in: query, schema: {type: string, enum: [open, confirmed, rejected], default: open}}
+        - {$ref: "#/components/parameters/Limit"}
+        - {$ref: "#/components/parameters/Offset"}
+      responses:
+        "200": {description: Candidate page, content: {application/json: {schema: {$ref: "#/components/schemas/MergeCandidatePage"}}}}
+  /api/admin/oneid/merge-candidates/{id}/confirm:
+    post:
+      operationId: confirmOneIDMerge
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/ID"}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false, required: [survivor_customer_id], properties: {survivor_customer_id: {$ref: "#/components/schemas/PositiveID"}}}}}}
+      responses: {"200": {description: Merge confirmed}, "409": {$ref: "#/components/responses/Error"}}
+  /api/admin/oneid/merges/{id}/reverse:
+    post:
+      operationId: reverseOneIDMerge
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/ID"}]
+      responses: {"200": {description: Merge reversed}, "409": {$ref: "#/components/responses/Error"}}
+  /wecom/external-contact/callback:
+    get:
+      operationId: verifyWeComCallback
+      parameters:
+        - {$ref: "#/components/parameters/MessageSignature"}
+        - {$ref: "#/components/parameters/Timestamp"}
+        - {$ref: "#/components/parameters/Nonce"}
+        - {name: echostr, in: query, required: true, schema: {type: string}}
+      responses: {"200": {description: Decrypted echo, content: {text/plain: {schema: {type: string}}}}, "403": {$ref: "#/components/responses/Error"}}
+    post:
+      operationId: ingestWeComExternalContactCallback
+      parameters:
+        - {$ref: "#/components/parameters/MessageSignature"}
+        - {$ref: "#/components/parameters/Timestamp"}
+        - {$ref: "#/components/parameters/Nonce"}
+      requestBody: {required: true, content: {application/xml: {schema: {type: string, maxLength: 1048576}}}}
+      responses:
+        "200": {description: Authenticated callback durably accepted, content: {text/plain: {schema: {type: string, const: success}}}}
+        "403": {$ref: "#/components/responses/Error"}
+  /sidebar/bind-mobile:
+    get:
+      operationId: sidebarPage
+      responses: {"200": {description: WeCom sidebar HTML shell, content: {text/html: {schema: {type: string}}}}}
+  /api/sidebar/oauth/start:
+    get:
+      operationId: startSidebarOAuth
+      parameters: [{$ref: "#/components/parameters/SafeNext"}]
+      responses: {"302": {description: Redirect to WeCom OAuth}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/sidebar/oauth/callback:
+    get:
+      operationId: completeSidebarOAuth
+      parameters:
+        - {name: state, in: query, required: true, schema: {type: string}}
+        - {name: code, in: query, required: true, schema: {type: string}}
+      responses: {"302": {description: Independent Secure sidebar session issued}, "400": {$ref: "#/components/responses/Error"}}
+  /api/sidebar/jssdk-config:
+    get:
+      operationId: getSidebarJSSDKConfig
+      security: [{sidebarSession: []}]
+      parameters: [{name: url, in: query, required: true, schema: {type: string, format: uri}}]
+      responses:
+        "200": {description: Regular and agent JSSDK signatures, content: {application/json: {schema: {$ref: "#/components/schemas/JSSDKConfig"}}}}
+        "401": {$ref: "#/components/responses/Error"}
+  /api/sidebar/context-token:
+    post:
+      operationId: issueSidebarContextToken
+      security: [{sidebarSession: []}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false, required: [external_userid], properties: {external_userid: {type: string, minLength: 1, maxLength: 1024}}}}}}
+      responses:
+        "200": {description: Short-lived employee/customer/corporation token, content: {application/json: {schema: {type: object, required: [context_token], properties: {context_token: {type: string, writeOnly: true}}}}}}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+  /api/sidebar/v2/workbench:
+    get:
+      operationId: getSidebarWorkbench
+      security: [{contextToken: []}]
+      responses:
+        "200": {description: Minimal OneID workbench, content: {application/json: {schema: {type: object, required: [customer_id, status], properties: {customer_id: {$ref: "#/components/schemas/PositiveID"}, status: {type: string, enum: [active, merged, closed]}}}}}}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
 components:
+  securitySchemes:
+    adminSession: {type: apiKey, in: cookie, name: aicrm_admin_session}
+    sidebarSession: {type: apiKey, in: cookie, name: aicrm_sidebar_session}
+    csrfHeader: {type: apiKey, in: header, name: X-CSRF-Token}
+    contextToken: {type: http, scheme: bearer}
+  parameters:
+    ID: {name: id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
+    CustomerID: {name: customer_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
+    SafeNext: {name: next, in: query, schema: {type: string, pattern: "^/"}}
+    Limit: {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 50}}
+    Offset: {name: offset, in: query, schema: {type: integer, minimum: 0, default: 0}}
+    MessageSignature: {name: msg_signature, in: query, required: true, schema: {type: string}}
+    Timestamp: {name: timestamp, in: query, required: true, schema: {type: string, pattern: "^[0-9]+$"}}
+    Nonce: {name: nonce, in: query, required: true, schema: {type: string}}
+  responses:
+    Error: {description: Stable error response, content: {application/json: {schema: {$ref: "#/components/schemas/ErrorResponse"}}}}
+    Unavailable: {description: Dependency or provider unavailable, content: {application/json: {schema: {$ref: "#/components/schemas/ErrorResponse"}}}}
+    MutationOK: {description: Mutation completed, content: {application/json: {schema: {type: object, required: [ok], properties: {ok: {const: true}}}}}}
   schemas:
+    PositiveID: {type: integer, format: int64, minimum: 1}
     StatusResponse:
       type: object
-      required: [status, release_sha]
       additionalProperties: false
+      required: [status, release_sha]
+      properties: {status: {type: string}, release_sha: {type: string}}
+    ErrorResponse:
+      type: object
+      properties: {ok: {type: boolean, const: false}, error: {type: string}, code: {type: string}}
+    LoginRequest:
+      type: object
+      additionalProperties: false
+      required: [username, password]
+      properties: {username: {type: string, minLength: 3, maxLength: 120}, password: {type: string, minLength: 12, maxLength: 1024, writeOnly: true}, next: {type: string}}
+    LoginResponse:
+      type: object
+      required: [ok, next, csrf_token]
+      properties: {ok: {const: true}, next: {type: string}, csrf_token: {type: string, writeOnly: true}}
+    Roles: {type: array, minItems: 1, uniqueItems: true, items: {type: string, enum: [super_admin, admin, viewer]}}
+    AdminUser:
+      type: object
+      required: [id, username, display_name, wecom_userid, active, roles]
       properties:
-        status:
-          type: string
-        release_sha:
-          type: string
+        id: {$ref: "#/components/schemas/PositiveID"}
+        username: {type: string}
+        display_name: {type: string}
+        wecom_userid: {type: string}
+        active: {type: boolean}
+        roles: {$ref: "#/components/schemas/Roles"}
+        last_login_at: {type: [string, "null"], format: date-time}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    CreateAdminUser:
+      type: object
+      additionalProperties: false
+      required: [username, password, display_name, roles]
+      properties: {username: {type: string, minLength: 3, maxLength: 120}, password: {type: string, minLength: 12, maxLength: 1024, writeOnly: true}, display_name: {type: string, minLength: 1, maxLength: 120}, roles: {$ref: "#/components/schemas/Roles"}}
+    IdentityReference:
+      type: object
+      additionalProperties: false
+      required: [kind, scope, value]
+      properties: {kind: {type: string}, scope: {type: string}, value: {type: string}}
+    ResolveResult:
+      type: object
+      required: [status]
+      properties: {status: {type: string, enum: [found, not_found, conflict]}, customer_id: {$ref: "#/components/schemas/PositiveID"}, identity_id: {$ref: "#/components/schemas/PositiveID"}}
+    IdentitySummary: {type: object, additionalProperties: false, required: [kind, scope], properties: {kind: {type: string}, scope: {type: string}}}
+    MergeLineage:
+      type: object
+      required: [id, from_customer_id, to_customer_id, reversible_status, merged_at]
+      properties: {id: {$ref: "#/components/schemas/PositiveID"}, from_customer_id: {$ref: "#/components/schemas/PositiveID"}, to_customer_id: {$ref: "#/components/schemas/PositiveID"}, reversible_status: {type: string}, merged_at: {type: string, format: date-time}, reversed_at: {type: [string, "null"], format: date-time}}
+    CustomerDetail:
+      type: object
+      required: [customer_id, status, canonical_customer_id, canonical_status, identities, merge_lineage]
+      properties: {customer_id: {$ref: "#/components/schemas/PositiveID"}, status: {type: string}, canonical_customer_id: {$ref: "#/components/schemas/PositiveID"}, canonical_status: {type: string}, identities: {type: array, items: {$ref: "#/components/schemas/IdentitySummary"}}, merge_lineage: {type: array, items: {$ref: "#/components/schemas/MergeLineage"}}}
+    ConflictPage:
+      type: object
+      required: [items, limit, offset]
+      properties: {items: {type: array, items: {$ref: "#/components/schemas/Conflict"}}, limit: {type: integer}, offset: {type: integer}}
+    Conflict:
+      type: object
+      required: [id, left_customer_id, right_customer_id, reason, status, created_at]
+      properties: {id: {$ref: "#/components/schemas/PositiveID"}, left_customer_id: {$ref: "#/components/schemas/PositiveID"}, right_customer_id: {$ref: "#/components/schemas/PositiveID"}, reason: {type: string}, status: {type: string}, created_at: {type: string, format: date-time}, resolved_at: {type: [string, "null"], format: date-time}}
+    MergeCandidatePage:
+      type: object
+      required: [items, limit, offset]
+      properties: {items: {type: array, items: {$ref: "#/components/schemas/MergeCandidate"}}, limit: {type: integer}, offset: {type: integer}}
+    MergeCandidate:
+      type: object
+      required: [id, left_customer_id, right_customer_id, evidence_strength, reason, status, created_at]
+      properties: {id: {$ref: "#/components/schemas/PositiveID"}, left_customer_id: {$ref: "#/components/schemas/PositiveID"}, right_customer_id: {$ref: "#/components/schemas/PositiveID"}, evidence_strength: {type: string, enum: [strong, medium, weak]}, reason: {type: string}, status: {type: string}, selected_survivor_customer_id: {$ref: "#/components/schemas/PositiveID"}, created_at: {type: string, format: date-time}, resolved_at: {type: [string, "null"], format: date-time}}
+    JSSDKSignature:
+      type: object
+      required: [timestamp, nonceStr, signature, jsApiList]
+      properties: {timestamp: {type: integer, format: int64}, nonceStr: {type: string}, signature: {type: string}, jsApiList: {type: array, items: {type: string}}}
+    JSSDKConfig:
+      type: object
+      required: [corp_id, agent_id, config, agent_config]
+      properties: {corp_id: {type: string}, agent_id: {type: string}, config: {$ref: "#/components/schemas/JSSDKSignature"}, agent_config: {$ref: "#/components/schemas/JSSDKSignature"}}
