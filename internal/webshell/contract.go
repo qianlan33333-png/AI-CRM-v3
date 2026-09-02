@@ -16,21 +16,14 @@ import (
 )
 
 const (
-	LoginPath             = "/login"
-	WeComAuthStartPath    = "/auth/wecom/start"
-	AdminRootPath         = "/admin"
-	LoginAccessPath       = "/admin/config/login-access"
-	SidebarPagePath       = "/sidebar/bind-mobile"
-	SidebarBindMobileAPI  = "/api/v3/sidebar/bind-mobile"
-	SidebarWorkbenchPath  = "/api/v3/sidebar/workbench"
-	SidebarProfilePath    = "/api/v3/sidebar/profile"
-	SidebarJSSDKPath      = "/api/v3/sidebar/jssdk-config"
-	SidebarContextPath    = "/api/v3/sidebar/context-token"
-	SidebarQuestionnaires = "/api/v3/sidebar/questionnaires"
-	SidebarProducts       = "/api/v3/sidebar/products"
-	SidebarOrders         = "/api/v3/sidebar/orders"
-	SidebarCoupons        = "/api/v3/sidebar/coupons"
-	SidebarMaterials      = "/api/v3/sidebar/materials"
+	LoginPath            = "/login"
+	WeComAuthStartPath   = "/auth/wecom/start"
+	AdminRootPath        = "/admin"
+	LoginAccessPath      = "/admin/config/login-access"
+	SidebarPagePath      = "/sidebar/bind-mobile"
+	SidebarWorkbenchPath = "/api/sidebar/v2/workbench"
+	SidebarJSSDKPath     = "/api/sidebar/jssdk-config"
+	SidebarContextPath   = "/api/sidebar/context-token"
 )
 
 // AdminRoute is the stable path portion of a shell route.  Endpoint names
@@ -106,7 +99,6 @@ var ADMIN_ROUTE_REGISTRY = map[string]AdminRoute{
 	"api.admin_logout":                                 {"api.admin_logout", "/logout"},
 	"api.sidebar_bind_mobile_page":                     {"api.sidebar_bind_mobile_page", SidebarPagePath},
 	"api.sidebar_workbench":                            {"api.sidebar_workbench", SidebarWorkbenchPath},
-	"api.sidebar_profile":                              {"api.sidebar_profile", SidebarProfilePath},
 	"api.sidebar_jssdk_config":                         {"api.sidebar_jssdk_config", SidebarJSSDKPath},
 	"api.sidebar_context_token":                        {"api.sidebar_context_token", SidebarContextPath},
 }
@@ -226,21 +218,15 @@ type LoginPageData struct {
 	AuthModeLabel string
 }
 
-// SidebarPageData supplies only data attributes and initial shell state.  The
+// SidebarPageData supplies only data attributes and initial shell state. The
 // sidebar JavaScript does not consume these URLs until a future domain-owned
-// implementation replaces the placeholder handlers.
+// implementation is mounted.
 type SidebarPageData struct {
-	DebugEnabled      bool
-	WorkbenchURL      string
-	ProfileURL        string
-	QuestionnairesURL string
-	ProductsURL       string
-	OrdersURL         string
-	CouponsURL        string
-	MaterialsURL      string
-	BindMobileURL     string
-	JSSDKConfigURL    string
-	ContextTokenURL   string
+	DebugEnabled    bool
+	WorkbenchURL    string
+	BindMobileURL   string
+	JSSDKConfigURL  string
+	ContextTokenURL string
 }
 
 // AdminPathFor resolves a known route without parameters.  Unknown routes
@@ -391,20 +377,15 @@ func DefaultLoginPage(nextPath string) LoginPageData {
 	}
 }
 
-// DefaultSidebarPage returns the future v3 data URL contract.  It is safe to
-// render in any environment because no URL is fetched by the shell script.
+// DefaultSidebarPage returns the frozen production data URL contract. It is
+// safe to render in any environment because no URL is fetched by the shell
+// script.
 func DefaultSidebarPage() SidebarPageData {
 	return SidebarPageData{
-		WorkbenchURL:      SidebarWorkbenchPath,
-		ProfileURL:        SidebarProfilePath,
-		QuestionnairesURL: SidebarQuestionnaires,
-		ProductsURL:       SidebarProducts,
-		OrdersURL:         SidebarOrders,
-		CouponsURL:        SidebarCoupons,
-		MaterialsURL:      SidebarMaterials,
-		BindMobileURL:     SidebarPagePath,
-		JSSDKConfigURL:    SidebarJSSDKPath,
-		ContextTokenURL:   SidebarContextPath,
+		WorkbenchURL:    SidebarWorkbenchPath,
+		BindMobileURL:   SidebarPagePath,
+		JSSDKConfigURL:  SidebarJSSDKPath,
+		ContextTokenURL: SidebarContextPath,
 	}
 }
 

@@ -3,7 +3,6 @@ package webshell
 import (
 	"bytes"
 	"embed"
-	"encoding/json"
 	"errors"
 	"html/template"
 	"io"
@@ -177,13 +176,6 @@ func writeHTML(writer http.ResponseWriter, status int, body []byte) error {
 	return err
 }
 
-func writeJSON(writer http.ResponseWriter, status int, value any) {
-	writer.Header().Set("Content-Type", "application/json; charset=utf-8")
-	writer.Header().Set("Cache-Control", "private, no-store")
-	writer.WriteHeader(status)
-	_ = json.NewEncoder(writer).Encode(value)
-}
-
 func normalizeAdminPage(data *AdminPageData) {
 	if data.PageTitle == "" {
 		data.PageTitle = "管理后台"
@@ -234,24 +226,6 @@ func normalizeSidebarPage(data *SidebarPageData) {
 	defaults := DefaultSidebarPage()
 	if data.WorkbenchURL == "" {
 		data.WorkbenchURL = defaults.WorkbenchURL
-	}
-	if data.ProfileURL == "" {
-		data.ProfileURL = defaults.ProfileURL
-	}
-	if data.QuestionnairesURL == "" {
-		data.QuestionnairesURL = defaults.QuestionnairesURL
-	}
-	if data.ProductsURL == "" {
-		data.ProductsURL = defaults.ProductsURL
-	}
-	if data.OrdersURL == "" {
-		data.OrdersURL = defaults.OrdersURL
-	}
-	if data.CouponsURL == "" {
-		data.CouponsURL = defaults.CouponsURL
-	}
-	if data.MaterialsURL == "" {
-		data.MaterialsURL = defaults.MaterialsURL
 	}
 	if data.BindMobileURL == "" {
 		data.BindMobileURL = defaults.BindMobileURL

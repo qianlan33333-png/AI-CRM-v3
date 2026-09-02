@@ -83,8 +83,6 @@ func (handler *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 		handler.serveAdmin(writer, request)
 	case requestPath == SidebarPagePath:
 		handler.serveSidebar(writer, request)
-	case strings.HasPrefix(requestPath, "/api/v3/sidebar/"):
-		handler.serveReservedSidebarAPI(writer, request)
 	default:
 		http.NotFound(writer, request)
 	}
@@ -140,25 +138,6 @@ func (handler *Handler) serveSidebar(writer http.ResponseWriter, request *http.R
 	if err := handler.renderer.RenderSidebar(writer, handler.sidebarData); err != nil {
 		http.Error(writer, "unable to render sidebar shell", http.StatusInternalServerError)
 	}
-}
-
-func (*Handler) serveReservedSidebarAPI(writer http.ResponseWriter, request *http.Request) {
-	if request.Method != http.MethodGet && request.Method != http.MethodHead && request.Method != http.MethodPost && request.Method != http.MethodOptions {
-		methodNotAllowed(writer, http.MethodGet+", "+http.MethodHead+", "+http.MethodPost+", "+http.MethodOptions)
-		return
-	}
-	if request.Method == http.MethodOptions {
-		writer.Header().Set("Allow", http.MethodGet+", "+http.MethodHead+", "+http.MethodPost+", "+http.MethodOptions)
-		writer.WriteHeader(http.StatusNoContent)
-		return
-	}
-	writeJSON(writer, http.StatusNotImplemented, map[string]string{
-		"status":        "not_implemented",
-		"capability":    "sidebar",
-		"route":         request.URL.Path,
-		"message":       "sidebar domain API is reserved for a future v3 implementation",
-		"external_call": "false",
-	})
 }
 
 func methodNotAllowed(writer http.ResponseWriter, allow string) {
