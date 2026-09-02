@@ -1,0 +1,99 @@
+{{define "admin_base"}}
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{.PageTitle}} · 客户管理后台</title>
+  <link rel="stylesheet" href="/static/admin_console/admin_console.css?v=v3-webshell">
+  <script defer src="/static/admin_console/admin_shell.js?v=v3-webshell"></script>
+  {{if eq .RequestPath "/admin/config/login-access"}}
+  <link rel="stylesheet" href="/static/admin_console/admin_access.css?v=v3-webshell">
+  {{end}}
+  {{if eq .RequestPath "/admin/oneid"}}
+  <link rel="stylesheet" href="/static/admin_console/admin_oneid.css?v=v3-webshell">
+  {{end}}
+</head>
+<body class="admin-shell" data-admin-shell-source="v3_webshell">
+  <div class="admin-layout">
+    <aside class="admin-sidebar">
+      <div class="admin-brand">
+        <div class="admin-brand-mark">CRM</div>
+        <div class="admin-brand-copy">
+          <div class="admin-brand-title">客户管理后台</div>
+          <div class="admin-brand-subtitle">ADMIN CONSOLE</div>
+        </div>
+      </div>
+
+      <nav class="admin-nav" aria-label="客户管理后台导航">
+        {{range .NavItems}}
+        <section class="admin-nav-section{{if .Active}} is-active{{end}}">
+          <div class="admin-nav-section-title">{{.Title}}</div>
+          <div class="admin-nav-section-list">
+            {{range .Items}}
+            <a class="admin-nav-link{{if .Active}} is-active{{end}}" href="{{.Href}}" title="{{.Label}}">
+              <img class="admin-nav-icon" src="/static/admin_console/nav-icons/{{.Key}}.svg" alt="">
+              <span class="admin-nav-label">{{.Label}}</span>
+            </a>
+            {{end}}
+          </div>
+        </section>
+        {{end}}
+      </nav>
+
+      {{if .CurrentAdminUser}}
+      <div class="admin-sidebar-user">
+        <div class="admin-sidebar-user__avatar" aria-hidden="true">管</div>
+        <div class="admin-sidebar-user__meta">
+          <div class="admin-sidebar-user__name">{{.CurrentAdminUser.DisplayName}}</div>
+          <form class="admin-sidebar-user__logout-form" data-admin-logout action="/logout" method="post">
+            <button class="admin-sidebar-user__logout" type="submit">退出登录</button>
+          </form>
+        </div>
+      </div>
+      {{end}}
+    </aside>
+
+    <div class="admin-main-wrap">
+      {{if .ShowPageHeader}}
+      <header class="admin-topbar">
+        <div class="admin-topbar-head">
+          <nav class="admin-breadcrumbs" aria-label="当前位置">
+            {{range .Breadcrumbs}}
+            {{if .Href}}<a href="{{.Href}}">{{.Label}}</a>{{else}}<span>{{.Label}}</span>{{end}}
+            {{end}}
+          </nav>
+          <div>
+            <h1 class="admin-page-title">{{.PageTitle}}</h1>
+            <p class="admin-page-summary">{{.PageSummary}}</p>
+          </div>
+        </div>
+
+        {{if or .PageActions .HeaderTabs}}
+        <div class="admin-topbar-meta">
+          {{if .HeaderTabs}}
+          <nav class="setup-topbar-tabs" aria-label="页面导航">
+            {{range .HeaderTabs}}
+            <a class="setup-topbar-tab{{if .Active}} is-active{{end}}" href="{{.Href}}">{{.Label}}</a>
+            {{end}}
+          </nav>
+          {{end}}
+          {{range .PageActions}}
+          <a class="admin-button{{if eq .Variant "primary"}} admin-button--primary{{else if eq .Variant "secondary"}} admin-button--secondary{{else}} admin-button--ghost{{end}}" href="{{.Href}}">{{.Label}}</a>
+          {{end}}
+        </div>
+        {{end}}
+      </header>
+      {{end}}
+
+      <main class="admin-page">
+        {{if .PageNotice}}<section class="admin-alert admin-alert--success">{{.PageNotice}}</section>{{end}}
+        {{if .PageError}}<section class="admin-alert admin-alert--error">{{.PageError}}</section>{{end}}
+        {{.Content}}
+      </main>
+    </div>
+  </div>
+  <script id="aicrmAdminActionGrants" type="application/json">{}</script>
+</body>
+</html>
+{{end}}

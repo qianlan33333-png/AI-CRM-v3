@@ -1,0 +1,141 @@
+.admin-access-card {
+  display: grid;
+  gap: 18px;
+}
+
+.admin-access-layout {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.72fr) minmax(0, 1.8fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.admin-access-section,
+.admin-access-editor {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--bg-soft);
+}
+
+.admin-access-section__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.admin-access-section__head h3 {
+  margin: 0;
+  font-size: 17px;
+}
+
+.admin-access-section__head p {
+  margin: 5px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.admin-access-roles {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.admin-access-roles legend {
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.admin-access-roles .admin-check-line {
+  min-height: 36px;
+  padding: 7px 10px;
+}
+
+.admin-access-table {
+  min-width: 880px;
+}
+
+.admin-access-table td {
+  vertical-align: middle;
+}
+
+.admin-access-table__name {
+  font-weight: 700;
+}
+
+.admin-access-table__muted {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.admin-access-status {
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  padding: 4px 9px;
+  border-radius: 999px;
+  color: #18563b;
+  background: var(--ok-bg);
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.admin-access-status.is-inactive {
+  color: #8a402c;
+  background: var(--danger-bg);
+}
+
+.admin-access-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 148px;
+}
+
+.admin-access-actions .admin-button {
+  min-height: 32px;
+  padding: 7px 10px;
+  font-size: 12px;
+}
+
+.admin-access-editor {
+  background: linear-gradient(135deg, var(--brand-soft), var(--panel));
+}
+
+.admin-access-editor-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.admin-access-editor-grid > form {
+  align-content: start;
+}
+
+@media (max-width: 1180px) {
+  .admin-access-layout,
+  .admin-access-editor-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 680px) {
+  .admin-access-section,
+  .admin-access-editor {
+    padding: 12px;
+  }
+
+  .admin-access-section__head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
