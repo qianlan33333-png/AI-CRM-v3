@@ -52,3 +52,18 @@ func valueOrDefault(key, fallback string) string {
 	}
 	return value
 }
+
+// DatabaseURL returns the PostgreSQL connection URL for database-aware
+// commands. AICRM_DATABASE_URL is the canonical runtime name; DATABASE_URL is
+// accepted for local tools and integration-test environments.
+func DatabaseURL() (string, error) {
+	for _, key := range []string{"AICRM_DATABASE_URL", "DATABASE_URL"} {
+		if value, ok := os.LookupEnv(key); ok && value != "" {
+			if strings.TrimSpace(value) != value {
+				return "", errors.New("invalid database URL")
+			}
+			return value, nil
+		}
+	}
+	return "", errors.New("database URL is not configured")
+}
