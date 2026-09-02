@@ -1,0 +1,185 @@
+package query_test
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
+	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
+	"github.com/qianlan33333-png/AI-CRM-v3/internal/identity/query"
+	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
+)
+
+func TestPostgreSQLOneIDQueries(t *testing.T) {
+	databaseURL := environmentValue("AICRM_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("AICRM_DATABASE_URL is not configured; skipping OneID query PostgreSQL integration test")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	random := make([]byte, 8)
+	if _, err := rand.Read(random); err != nil {
+		t.Fatal(err)
+	}
+	schema := "oneid_query_test_" + hex.EncodeToString(random)
+	config, err := pgxpool.ParseConfig(databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.AfterConnect = func(ctx context.Context, connection *pgx.Conn) error {
+		_, err := connection.Exec(ctx, `SET search_path TO `+pgx.Identifier{schema}.Sanitize())
+		return err
+	}
+	admin, err := pgx.Connect(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Close(context.Background())
+	if _, err = admin.Exec(ctx, `CREATE SCHEMA `+pgx.Identifier{schema}.Sanitize()); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		cleanup, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, _ = admin.Exec(cleanup, `DROP SCHEMA `+pgx.Identifier{schema}.Sanitize()+` CASCADE`)
+	}()
+
+	native, err := pgxpool.NewWithConfig(ctx, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer native.Close()
+	_, source, _, _ := runtime.Caller(0)
+	migration, err := os.ReadFile(filepath.Join(filepath.Dir(source), "..", "..", "..", "migrations", "0002_identity.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = native.Exec(ctx, string(migration)); err != nil {
+		t.Fatal(err)
+	}
+
+	var canonicalID, mergedID, otherID int64
+	if err = native.QueryRow(ctx, `INSERT INTO customers DEFAULT VALUES RETURNING id`).Scan(&canonicalID); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `
+		INSERT INTO customers(status, merged_into_customer_id, merged_at)
+		VALUES ('merged', $1, CURRENT_TIMESTAMP)
+		RETURNING id`, canonicalID).Scan(&mergedID); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `INSERT INTO customers DEFAULT VALUES RETURNING id`).Scan(&otherID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = native.Exec(ctx, `
+		INSERT INTO customer_identities(
+			customer_id, kind, scope_key, normalized_value, assurance, source, normalizer_version, status
+		) VALUES
+			($1, 'phone', 'phone:e164', '+13800138000', 'declared', 'integration', 1, 'active'),
+			($1, 'ext', 'ext:test', 'retired-secret', 'declared', 'integration', 1, 'retired')`, canonicalID); err != nil {
+		t.Fatal(err)
+	}
+	var evidenceID int64
+	if err = native.QueryRow(ctx, `
+		INSERT INTO identity_link_evidence(
+			left_customer_id, right_customer_id, evidence_type, strength, source, evidence_digest, policy_version
+		) VALUES ($1, $2, 'integration', 'strong', 'integration', 'digest-not-for-query', 'v1')
+		RETURNING id`, canonicalID, otherID).Scan(&evidenceID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = native.Exec(ctx, `
+		INSERT INTO customer_merge_candidates(
+			left_customer_id, right_customer_id, left_customer_version, right_customer_version,
+			evidence_id, evidence_strength, reason
+		) VALUES ($1, $2, 1, 1, $3, 'strong', 'cross_root_link_requires_confirmation')`, canonicalID, otherID, evidenceID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = native.Exec(ctx, `
+		INSERT INTO customer_identity_conflicts(left_customer_id, right_customer_id, evidence_id, reason)
+		VALUES ($1, $2, $3, 'two_wecom_roots')`, canonicalID, otherID, evidenceID); err != nil {
+		t.Fatal(err)
+	}
+
+	pool, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unit, err := platformpostgres.NewUnitOfWork(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := query.NewPostgreSQL()
+	if _, err = store.Customer(ctx, customerdomain.CustomerID(mergedID)); !errors.Is(err, platformpostgres.ErrTransactionNeeded) {
+		t.Fatalf("query without transaction error=%v", err)
+	}
+
+	if err = unit.Within(ctx, func(txContext context.Context) error {
+		detail, queryErr := store.Customer(txContext, customerdomain.CustomerID(mergedID))
+		if queryErr != nil {
+			return queryErr
+		}
+		if detail.CustomerID != customerdomain.CustomerID(mergedID) || detail.Status != customerdomain.StatusMerged ||
+			detail.CanonicalCustomerID != customerdomain.CustomerID(canonicalID) || detail.CanonicalStatus != customerdomain.StatusActive {
+			t.Errorf("customer detail=%#v", detail)
+		}
+		if len(detail.Identities) != 1 || detail.Identities[0].Kind != identitydomain.KindPhone || detail.Identities[0].Scope != "phone:e164" {
+			t.Errorf("safe active identities=%#v", detail.Identities)
+		}
+		if len(detail.MergeLineage) != 0 {
+			t.Errorf("unexpected merge lineage=%#v", detail.MergeLineage)
+		}
+
+		conflicts, queryErr := store.Conflicts(txContext, query.ListOptions{})
+		if queryErr != nil {
+			return queryErr
+		}
+		if conflicts.Limit != query.DefaultLimit || conflicts.Offset != 0 || len(conflicts.Items) != 1 ||
+			conflicts.Items[0].Reason != "two_wecom_roots" || conflicts.Items[0].Status != "open" {
+			t.Errorf("conflicts=%#v", conflicts)
+		}
+
+		candidates, queryErr := store.MergeCandidates(txContext, query.ListOptions{Limit: 1})
+		if queryErr != nil {
+			return queryErr
+		}
+		if candidates.Limit != 1 || len(candidates.Items) != 1 || candidates.Items[0].Reason != "cross_root_link_requires_confirmation" ||
+			candidates.Items[0].EvidenceStrength != identitydomain.EvidenceStrong || candidates.Items[0].Status != "open" {
+			t.Errorf("candidates=%#v", candidates)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err = unit.Within(ctx, func(txContext context.Context) error {
+		_, queryErr := store.Customer(txContext, customerdomain.CustomerID(otherID+10000))
+		return queryErr
+	}); !errors.Is(err, query.ErrNotFound) {
+		t.Fatalf("missing customer error=%v", err)
+	}
+	if _, err = store.Conflicts(ctx, query.ListOptions{Status: "deleted", Limit: 1}); !errors.Is(err, query.ErrInvalidQuery) {
+		t.Fatalf("invalid status error=%v", err)
+	}
+}
+
+func environmentValue(key string) string {
+	prefix := key + "="
+	for _, item := range os.Environ() {
+		if strings.HasPrefix(item, prefix) {
+			return strings.TrimPrefix(item, prefix)
+		}
+	}
+	return ""
+}
