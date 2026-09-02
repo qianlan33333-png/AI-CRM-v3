@@ -41,7 +41,7 @@ func TestPostgresStoreIntegration(t *testing.T) {
 	service := identityapp.OneIDService{Store: store}
 	within := func(fn func(context.Context) error) {
 		if err := unit.Within(context.Background(), fn); err != nil {
-			t.Fatal(err)
+			t.Fatalf("identity transaction: %s", safePostgresDiagnostic(err))
 		}
 	}
 

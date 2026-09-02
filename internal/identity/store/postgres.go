@@ -82,7 +82,7 @@ func (store *PostgresStore) Resolve(ctx context.Context, reference identitydomai
 		return identityapp.StoredIdentity{}, false, nil
 	}
 	if err != nil {
-		return identityapp.StoredIdentity{}, false, errors.New("identity store lookup")
+		return identityapp.StoredIdentity{}, false, persistenceFailure(err)
 	}
 	return identityapp.StoredIdentity{ID: id, CustomerID: customerdomain.CustomerID(customerID), Reference: identitydomain.NormalizedReference{Kind: identitydomain.Kind(kind), Scope: scope, NormalizedValue: value, Assurance: identitydomain.Assurance(assurance), Source: source, NormalizerVersion: normalizer}}, true, nil
 }
@@ -261,7 +261,7 @@ func (store *PostgresStore) ConfirmMerge(ctx context.Context, command identityap
 		}
 		_, err = tx.Exec(ctx, `UPDATE customer_merge_candidates SET status='rejected',resolved_by='system',resolved_at=CURRENT_TIMESTAMP,version=version+1 WHERE id=$1`, candidate.ID)
 		if err != nil {
-			return identityapp.LinkResult{}, errStore
+			return identityapp.LinkResult{}, persistenceFailure(err)
 		}
 		candidate.Status = "rejected"
 		return identityapp.LinkResult{Status: identityapp.LinkConflict, CustomerID: command.SurvivorCustomerID, Candidate: &candidate, Conflict: &conflict}, nil
@@ -309,66 +309,96 @@ func (store *PostgresStore) RevertMerge(ctx context.Context, mergeID int64) (ide
 		return identityapp.MergeRecord{}, identityapp.ErrMergeNotReversible
 	}
 	if err = lockCustomers(ctx, tx, []int64{from, to}); err != nil {
-		return identityapp.MergeRecord{}, errStore
+		if errors.Is(err, pgx.ErrNoRows) {
+			return identityapp.MergeRecord{}, identityapp.ErrMergeNotReversible
+		}
+		return identityapp.MergeRecord{}, persistenceFailure(err)
 	}
-	merge, err := lockMerge(ctx, tx, mergeID)
-	if err != nil || merge.Reversed {
+	merge, mergeStatus, err := lockMerge(ctx, tx, mergeID)
+	if err != nil || mergeStatus != "not_reversed" {
 		return identityapp.MergeRecord{}, identityapp.ErrMergeNotReversible
 	}
 	fromC, e1 := activeOrMergedCustomer(ctx, tx, from)
 	toC, e2 := activeCustomerLocked(ctx, tx, to)
-	if e1 != nil || e2 != nil || fromC.Status != "merged" || fromC.MergedTo != to || fromC.Lineage != merge.FromLineageAfter || toC.Lineage != merge.ToLineageAfter {
+	if e1 != nil || e2 != nil || fromC.Status != "merged" || fromC.MergedTo != to ||
+		fromC.Version < merge.FromVersionAfter || toC.Version < merge.ToVersionAfter ||
+		fromC.Lineage != merge.FromLineageAfter || toC.Lineage != merge.ToLineageAfter {
 		return identityapp.MergeRecord{}, identityapp.ErrMergeNotReversible
 	}
-	rows, err := tx.Query(ctx, `SELECT identity_id,identity_version_after FROM customer_merge_identity_members WHERE merge_id=$1 ORDER BY identity_id FOR UPDATE`, mergeID)
-	if err != nil {
-		return identityapp.MergeRecord{}, errStore
+	type member struct {
+		id, from, to, before, after int64
+		restoredAt                  *time.Time
+		afterRestore                *int64
+		owner, currentVersion       int64
+		status                      string
 	}
-	defer rows.Close()
-	type member struct{ id, version int64 }
+	rows, err := tx.Query(ctx, `SELECT m.identity_id,m.from_customer_id,m.to_customer_id,m.identity_version_before,m.identity_version_after,m.restored_at,m.identity_version_after_restore,i.customer_id,i.version,i.status FROM customer_merge_identity_members m JOIN customer_identities i ON i.id=m.identity_id WHERE m.merge_id=$1 ORDER BY m.identity_id FOR UPDATE OF m,i`, mergeID)
+	if err != nil {
+		return identityapp.MergeRecord{}, persistenceFailure(err)
+	}
 	members := []member{}
 	for rows.Next() {
 		var m member
-		if err = rows.Scan(&m.id, &m.version); err != nil {
-			return identityapp.MergeRecord{}, errStore
+		if err = rows.Scan(&m.id, &m.from, &m.to, &m.before, &m.after, &m.restoredAt, &m.afterRestore, &m.owner, &m.currentVersion, &m.status); err != nil {
+			rows.Close()
+			return identityapp.MergeRecord{}, persistenceFailure(err)
 		}
 		members = append(members, m)
 	}
-	if rows.Err() != nil {
-		return identityapp.MergeRecord{}, errStore
+	rows.Close()
+	if err = rows.Err(); err != nil {
+		return identityapp.MergeRecord{}, persistenceFailure(err)
 	}
 	for _, m := range members {
-		var owner, version int64
-		var status string
-		err = tx.QueryRow(ctx, `SELECT customer_id,version,status FROM customer_identities WHERE id=$1`, m.id).Scan(&owner, &version, &status)
-		if err != nil || owner != to || version != m.version || status != "active" {
+		if m.from != from || m.to != to || m.before < 1 || m.after != m.before+1 ||
+			m.restoredAt != nil || m.afterRestore != nil || m.owner != to || m.currentVersion != m.after || m.status != "active" {
 			return identityapp.MergeRecord{}, identityapp.ErrMergeNotReversible
 		}
 	}
 	var later bool
-	err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM customer_merges WHERE id>$1 AND reversible_status<>'reversed' AND (from_customer_id=$2 OR to_customer_id=$2 OR from_customer_id=$3 OR to_customer_id=$3))`, mergeID, from, to).Scan(&later)
+	err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM customer_merges WHERE id>$1 AND (from_customer_id=$2 OR to_customer_id=$2 OR from_customer_id=$3 OR to_customer_id=$3))`, mergeID, from, to).Scan(&later)
 	if err != nil {
-		return identityapp.MergeRecord{}, errStore
+		return identityapp.MergeRecord{}, persistenceFailure(err)
 	}
 	if later {
 		return identityapp.MergeRecord{}, identityapp.ErrMergeNotReversible
 	}
 	for _, m := range members {
-		if _, err = tx.Exec(ctx, `UPDATE customer_identities SET customer_id=$2,version=version+1,updated_at=CURRENT_TIMESTAMP WHERE id=$1 AND customer_id=$3 AND version=$4`, m.id, from, to, m.version); err != nil {
-			return identityapp.MergeRecord{}, errStore
+		tag, updateErr := tx.Exec(ctx, `UPDATE customer_identities SET customer_id=$2,version=version+1,updated_at=CURRENT_TIMESTAMP WHERE id=$1 AND customer_id=$3 AND version=$4 AND status='active'`, m.id, from, to, m.after)
+		if updateErr != nil {
+			return identityapp.MergeRecord{}, persistenceFailure(updateErr)
 		}
-		if _, err = tx.Exec(ctx, `UPDATE customer_merge_identity_members SET restored_at=CURRENT_TIMESTAMP,identity_version_after_restore=identity_version_after+1 WHERE merge_id=$1 AND identity_id=$2`, mergeID, m.id); err != nil {
-			return identityapp.MergeRecord{}, errStore
+		if tag.RowsAffected() != 1 {
+			return identityapp.MergeRecord{}, identityapp.ErrMergeNotReversible
+		}
+		tag, updateErr = tx.Exec(ctx, `UPDATE customer_merge_identity_members SET restored_at=CURRENT_TIMESTAMP,identity_version_after_restore=identity_version_after+1 WHERE merge_id=$1 AND identity_id=$2 AND restored_at IS NULL AND identity_version_after_restore IS NULL`, mergeID, m.id)
+		if updateErr != nil {
+			return identityapp.MergeRecord{}, persistenceFailure(updateErr)
+		}
+		if tag.RowsAffected() != 1 {
+			return identityapp.MergeRecord{}, identityapp.ErrMergeNotReversible
 		}
 	}
-	if _, err = tx.Exec(ctx, `UPDATE customers SET status='active',merged_into_customer_id=NULL,merged_at=NULL,version=version+1,lineage_version=lineage_version+1,updated_at=CURRENT_TIMESTAMP WHERE id=$1`, from); err != nil {
-		return identityapp.MergeRecord{}, errStore
+	tag, err := tx.Exec(ctx, `UPDATE customers SET status='active',merged_into_customer_id=NULL,merged_at=NULL,version=version+1,lineage_version=lineage_version+1,updated_at=CURRENT_TIMESTAMP WHERE id=$1 AND status='merged' AND merged_into_customer_id=$2 AND version=$3 AND lineage_version=$4`, from, to, fromC.Version, fromC.Lineage)
+	if err != nil {
+		return identityapp.MergeRecord{}, persistenceFailure(err)
 	}
-	if _, err = tx.Exec(ctx, `UPDATE customers SET version=version+1,lineage_version=lineage_version+1,updated_at=CURRENT_TIMESTAMP WHERE id=$1`, to); err != nil {
-		return identityapp.MergeRecord{}, errStore
+	if tag.RowsAffected() != 1 {
+		return identityapp.MergeRecord{}, identityapp.ErrMergeNotReversible
 	}
-	if _, err = tx.Exec(ctx, `UPDATE customer_merges SET reversible_status='reversed',reversed_at=CURRENT_TIMESTAMP,version=version+1 WHERE id=$1`, mergeID); err != nil {
-		return identityapp.MergeRecord{}, errStore
+	tag, err = tx.Exec(ctx, `UPDATE customers SET version=version+1,lineage_version=lineage_version+1,updated_at=CURRENT_TIMESTAMP WHERE id=$1 AND status='active' AND version=$2 AND lineage_version=$3`, to, toC.Version, toC.Lineage)
+	if err != nil {
+		return identityapp.MergeRecord{}, persistenceFailure(err)
+	}
+	if tag.RowsAffected() != 1 {
+		return identityapp.MergeRecord{}, identityapp.ErrMergeNotReversible
+	}
+	tag, err = tx.Exec(ctx, `UPDATE customer_merges SET reversible_status='reversed',reversed_at=CURRENT_TIMESTAMP,version=version+1 WHERE id=$1 AND reversible_status='not_reversed'`, mergeID)
+	if err != nil {
+		return identityapp.MergeRecord{}, persistenceFailure(err)
+	}
+	if tag.RowsAffected() != 1 {
+		return identityapp.MergeRecord{}, identityapp.ErrMergeNotReversible
 	}
 	merge.Reversed = true
 	return merge, nil
@@ -906,16 +936,16 @@ func readConflict(ctx context.Context, tx pgx.Tx, id int64) (identityapp.Conflic
 	c.Evidence.Strength = identitydomain.EvidenceStrength(strength)
 	return c, err
 }
-func lockMerge(ctx context.Context, tx pgx.Tx, id int64) (identityapp.MergeRecord, error) {
+func lockMerge(ctx context.Context, tx pgx.Tx, id int64) (identityapp.MergeRecord, string, error) {
 	var m identityapp.MergeRecord
 	var reversedAt *time.Time
 	var status string
 	err := tx.QueryRow(ctx, `SELECT id,candidate_id,from_customer_id,to_customer_id,from_customer_version_before,from_customer_version_after,to_customer_version_before,to_customer_version_after,from_lineage_version_before,from_lineage_version_after,to_lineage_version_before,to_lineage_version_after,rule,operator,reversible_status,reversed_at FROM customer_merges WHERE id=$1 FOR UPDATE`, id).Scan(&m.ID, &m.CandidateID, &m.FromCustomerID, &m.ToCustomerID, &m.FromVersionBefore, &m.FromVersionAfter, &m.ToVersionBefore, &m.ToVersionAfter, &m.FromLineageBefore, &m.FromLineageAfter, &m.ToLineageBefore, &m.ToLineageAfter, &m.Rule, &m.Operator, &status, &reversedAt)
 	if err != nil {
-		return identityapp.MergeRecord{}, err
+		return identityapp.MergeRecord{}, "", err
 	}
 	m.Reversed = status == "reversed"
-	return m, nil
+	return m, status, nil
 }
 func createConflict(ctx context.Context, tx pgx.Tx, left, right int64, reason string, e identitydomain.LinkEvidence) (identityapp.Conflict, error) {
 	// canonicalization is only for pair de-duplication, never a survivor choice.
@@ -975,8 +1005,11 @@ func performMerge(ctx context.Context, tx pgx.Tx, candidate identityapp.MergeCan
 	}
 	for _, m := range members {
 		tag, e := tx.Exec(ctx, `UPDATE customer_identities SET customer_id=$2,version=version+1,updated_at=CURRENT_TIMESTAMP WHERE id=$1 AND customer_id=$3 AND version=$4`, m.id, survivor, loser, m.version)
-		if e != nil || tag.RowsAffected() != 1 {
-			return identityapp.MergeRecord{}, errStore
+		if e != nil {
+			return identityapp.MergeRecord{}, persistenceFailure(e)
+		}
+		if tag.RowsAffected() != 1 {
+			return identityapp.MergeRecord{}, errCustomerRootChanged
 		}
 		if _, e = tx.Exec(ctx, `INSERT INTO customer_merge_identity_members(merge_id,identity_id,from_customer_id,to_customer_id,identity_version_before,identity_version_after) VALUES($1::bigint,$2::bigint,$3::bigint,$4::bigint,$5::bigint,$5::bigint+1)`, mergeID, m.id, loser, survivor, m.version); e != nil {
 			return identityapp.MergeRecord{}, e
