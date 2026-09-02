@@ -1,0 +1,277 @@
+schema_version: 1
+pr: PR07
+scope: automation_agent_and_fixed_content
+status: preparation_only
+v3_base: 19384b93fe362c7786edc81dd5595b79570f6bb1
+target_branch: codex/import-automation
+
+donor:
+  repository: /tmp/aicrm-v2-audit.yN3jmr
+  commit: 6bfbe5816bb89913c70adaca87d6a486260e016e
+  read_only: true
+  runtime_dependency: false
+
+rules:
+  backend: v2 Agent configuration behavior is adapted to v3 module paths and local seams only; no v2 runtime, database, migration, HTTP, composition, worker, provider, or customer-automation dependency is introduced
+  frontend: listed donor files are byte-exact snapshots under web/donors; no design, CSS, interaction, or request contract is rewritten
+  ownership: Automation owns Agent/fixed-script configuration and local prompt/version facts; Customer, Segment/Audience, Campaign, and outbound/EER retain their own contracts and effects
+
+boundary:
+  included:
+    - Agent and fixed-script definitions
+    - role and task prompt drafts with published-version snapshots
+    - local copy, publish, pause/archived lifecycle, and idempotent mutation receipts
+    - fixed text package references as fail-closed local configuration facts
+    - future external-effect intent contract carrying only Agent/version/digest facts
+  excluded:
+    - customer automation rules, triggers, scheduling, generation, execution, or approval workers
+    - Customer, OneID, Segment, Audience, Campaign, recipient selection, or audience binding
+    - direct outbound, WeCom, Provider, LLM, token, credential, send, retry, or delivery behavior
+    - activation of migrated configuration; active status is rejected in this preparation slice
+    - automation history/import, runtime/store SQL, HTTP/OpenAPI, composition, deployment, CI, and dependency manifests
+
+behavior_contract:
+  entities:
+    types:
+      - agent
+      - fixed_script
+    visible_statuses:
+      - paused
+      - archived
+    active_status: active is retained as a port value for compatibility but is rejected by this preparation slice
+    identity: agent_code is required at create, lowercase ASCII [a-z0-9_-], max 120 runes, and immutable on update
+    identifiers: agent IDs and actors are positive integers; idempotency keys are 16..128 bytes with no surrounding whitespace
+  prompts_and_versions:
+    limits: role/task draft and published prompts are each max 20000 runes and must not have surrounding whitespace
+    create: initializes draft_version and published_version to 1 and snapshots draft prompts as the published prompts
+    update: changes to either draft prompt increment draft_version; code cannot be changed
+    publish: copies both draft prompts and draft_version into the published snapshot; it does not execute the agent
+  fixed_content:
+    content_text: max 4000 runes; non-empty text is valid only for fixed_script
+    media_references: donor DTOs declare all image/miniprogram/attachment/group-invite arrays maxItems=0; non-empty references are rejected fail-closed in this preparation slice
+    dynamic_miniprogram_card: donor field is retained as an opaque contract but non-empty cards are rejected by the preparation validator
+    legacy_configuration: opaque JSON object, default {}, max 100000 bytes; no binding or provider interpretation
+  lifecycle:
+    create: local paused configuration only, execution_enabled must be false
+    update: local draft/configuration CAS mutation while the record is not archived; status may remain paused only
+    copy: local configuration copy using the Store's next-copy code and the name suffix `（副本）`; no execution, binding, or provider effect
+    publish: local version snapshot only
+    pause: local idempotent transition to paused
+    archive: local idempotent transition to archived; archived records are hidden from List/Get and cannot be edited or copied
+    precheck: read-only local diagnostics; it cannot activate or execute anything
+    activate: rejected with execution-disabled semantics and must not be wired as a successful route
+  transaction_and_effects:
+    mutation: local write, idempotency receipt, configuration event, and future audit/outbox record belong to one caller UoW
+    retry: a matching completed idempotency receipt replays the stored Agent snapshot; a changed payload conflicts; outcome-unknown external work is not retried here
+    external_effect: this slice has no customer/audience/recipient/provider/LLM call; the future intent contains only Agent ID, published version, and payload digest
+
+api_contract:
+  source: web/donors/automation-v2/src/api/generated/p4-automation-agents/p4-automation-agents.ts
+  page_handoff:
+    - method: GET
+      path: /admin/automation-agents
+      disposition: route evidence only; Terra must supply the v3 webshell adapter
+  local_configuration_routes:
+    - method: GET
+      path: /api/admin/automation-agents
+      operation: list local summaries; optional automation_type filter
+      response: LegacyAutomationAgentListResponse; visible items are paused only in this slice
+    - method: POST
+      path: /api/admin/automation-agents
+      operation: create local paused configuration; no run/send
+      request: LegacyAutomationAgentCreateRequest
+      response: LegacyAutomationAgentDetailResponse
+    - method: GET
+      path: /api/admin/automation-agents/{agentId}
+      operation: read one local configuration, prompts and opaque config
+      response: LegacyAutomationAgentDetailResponse
+    - method: PATCH
+      path: /api/admin/automation-agents/{agentId}
+      operation: update local draft/configuration; no run/send
+      request: LegacyAutomationAgentUpdateRequest
+      response: LegacyAutomationAgentDetailResponse
+    - method: DELETE
+      path: /api/admin/automation-agents/{agentId}
+      operation: archive local configuration
+      response: LegacyAutomationAgentArchiveResponse with status archived
+    - method: POST
+      path: /api/admin/automation-agents/{agentId}/copy
+      operation: copy local configuration without running it
+      response: LegacyAutomationAgentDetailResponse
+    - method: POST
+      path: /api/admin/automation-agents/{agentId}/pause
+      operation: pause local configuration
+      response: LegacyAutomationAgentDetailResponse with status paused
+    - method: POST
+      path: /api/admin/automation-agents/{agentId}/publish
+      operation: publish the local draft version without running or sending
+      response: LegacyAutomationAgentDetailResponse
+    - method: PUT
+      path: /api/admin/automation-agents/{agentId}/fixed-content
+      operation: save local fixed-content facts; media IDs remain fail-closed by this slice
+      request: LegacyAutomationAgentFixedContentRequest
+      response: LegacyAutomationAgentDetailResponse
+    - method: GET
+      path: /api/admin/automation-agents/{agentId}/precheck
+      operation: read-only configuration/material/execution diagnostics; real_external_call_executed must be false
+      response: LegacyAutomationAgentPrecheckResponse
+  rejected_or_excluded_routes:
+    - method: POST
+      path: /api/admin/automation-agents/{agentId}/activate
+      disposition: generated donor shape is retained for characterization only; no successful 2xx activation route is allowed
+
+characterization:
+  copied_v3_tests:
+    - internal/automation/app/agents_test.go
+    - internal/automation/app/agents_attachment_test.go
+    - internal/automation/app/agents_whitelist_test.go
+  covered_behaviors:
+    - paused create, prompt draft update/version bump, publish snapshot, archive visibility, and active rejection
+    - fixed-script content, local copy, and completed idempotency replay
+    - missing/valid attachment metadata reader behavior and fail-closed material configuration
+    - legacy material references and execution-enabled/active configurations rejected
+  donor_evidence_not_copied:
+    - acceptance/automation/agents_ab_integration_test.go
+    - reason: its Store/PostgreSQL/migration/Event runtime is v2-specific; Terra must port the behavior against v3-owned tables and UoW
+  required_verification:
+    - go test -count=1 ./internal/automation/...
+    - go vet ./internal/automation/...
+    - go test -race -count=1 ./internal/automation/...
+    - byte-compare every frontend exact_file against the frozen donor and verify pr07-donor-sha256.txt
+
+backend:
+  copied_exact:
+    - source: internal/automation/port/agents.go
+      target: internal/automation/port/agents.go
+      notes: Automation-owned configuration contract and fixed-content DTOs; no claim/customer/provider operation
+  copied_and_adapted:
+    - source: internal/automation/app/agents.go
+      target: internal/automation/app/agents.go
+      disposition: adapted
+      notes: local v3 Automation port, platform UoW, event seam, and Media existence seams; configuration mutations remain fail-closed
+    - source: internal/automation/app/agents_attachment_test.go
+      target: internal/automation/app/agents_attachment_test.go
+      disposition: adapted
+      notes: fixed-content attachment references fail closed without importing the v2 Media port
+    - source: internal/automation/app/agents_whitelist_test.go
+      target: internal/automation/app/agents_whitelist_test.go
+      disposition: adapted
+      notes: active/execution-enabled and legacy material configuration remain rejected
+  added_v3_adaptation:
+    - path: internal/automation/app/agents_test.go
+      reason: local lifecycle characterization for prompts, published versions, fixed scripts, archive, activation fail-closed, copy, and receipt replay
+    - path: internal/automation/port/events.go
+      reason: local transactional configuration-event seam; Terra adapts it to the v3 versioned event/outbox implementation
+    - path: internal/automation/port/media.go
+      reason: narrow Media existence seams for fail-closed fixed-content references; no Media store import
+    - path: internal/automation/port/effect_intent.go
+      reason: digest-only future external-effect intent contract for outbound/EER; no execution or Provider call
+  donor_test_evidence:
+    - source: acceptance/automation/agents_ab_integration_test.go
+      run: donor go test ./internal/automation/...
+      disposition: read-only donor evidence only; not copied because it requires v2 Store, PostgreSQL migrations, and Events runtime
+  excluded:
+    - internal/automation/app/rules.go
+    - internal/automation/port/rules.go
+    - internal/automation/app/history.go
+    - internal/automation/port/history.go
+    - internal/automation/store
+    - internal/automation/http
+    - internal/automation/worker
+    - direct Customer, OneID, Segment/Audience, Campaign, outbound, WeCom, Provider, and LLM code
+
+frontend:
+  byte_exact_staged_under: web/donors/automation-v2/src
+  exact_file_count: 20
+  source_root: frozen donor web/src
+  target_root: v3 donor snapshot web/donors/automation-v2/src
+  exact_files:
+    - web/src/admin/templates/agents.html
+    - web/src/admin/templates/agentEdit.html
+    - web/src/admin/sections/automationAgents.ts
+    - web/src/admin/sections/util.ts
+    - web/src/admin/controller.ts
+    - web/src/admin/main.ts
+    - web/src/admin/nav.json
+    - web/src/admin/registry.json
+    - web/src/shared/api/client.ts
+    - web/src/shared/api/types.ts
+    - web/src/shared/api/mockData.ts
+    - web/src/shared/ui/picker.ts
+    - web/src/shared/ui/feedback.ts
+    - web/src/shared/ui/download.ts
+    - web/src/shared/ui/runtime.ts
+    - web/src/shared/ui/tokens.css
+    - web/src/api/admin.ts
+    - web/src/api/transport.ts
+    - web/src/api/generated/p4-automation-agents/p4-automation-agents.ts
+    - web/src/api/generated/health.schemas.ts
+  immutable_excluded_domain_references:
+    - agentEdit.html and controller.ts retain raw bound-audience labels and state shaping
+    - generated p4-automation-agents retains precheck and activate operation shapes
+    - shared controller/API/schema files retain broader customer, audience, Campaign, and Provider-adjacent branches
+  page_allowlist:
+    - page: agents
+      donor_sources: admin/templates/agents.html and admin/sections/automationAgents.ts
+      allowed_behavior: local list, edit, create, copy, archive, pause, publish, and read-only precheck controls
+    - page: agentEdit
+      donor_sources: admin/templates/agentEdit.html and admin/sections/automationAgents.ts
+      allowed_behavior: local name/code/type/prompt draft editing, fixed-script text display, publish, and local status controls
+  page_exclusions:
+    - agentEdit bound-package/audience tab and every binding or recipient-selection control
+    - activation, execution, customer automation, audience, Campaign, OneID, and provider-send controls
+    - any donor page not named agents or agentEdit
+  mixed_file_allowlist:
+    - file: admin/controller.ts
+      retain: only automationAgentId, save/copy/pause/archive/precheck handlers and local agent page rendering needed by the allowlisted pages
+      exclude: audience binding, customer automation, Campaign, OneID, recipient selection, provider, and all unrelated admin handlers
+    - file: api/admin.ts
+      retain: generated local agent list/get/create/update/archive/copy/pause/publish/fixed-content/precheck calls and DTO validation
+      exclude: setAudienceBinding, customer automation, audience/Campaign/OneID, outbound, Provider, and unrelated admin API branches
+    - file: api/generated/p4-automation-agents/p4-automation-agents.ts
+      retain: local configuration routes and read-only precheck contract
+      exclude: activate route as a successful operation
+    - file: api/generated/health.schemas.ts
+      retain: LegacyAutomationAgent* DTO/schema definitions only
+      exclude: customer/audience/Campaign/OneID/provider schema branches
+    - file: admin/nav.json and admin/registry.json
+      retain: agents and agentEdit metadata only when mounted by a v3 adapter
+      exclude: unrelated nav/screen entries and any audience/Campaign binding
+    - file: shared/api/client.ts, shared/api/mockData.ts, shared/api/types.ts, shared/ui/*.ts, shared/ui/tokens.css, admin/main.ts, and sections/util.ts
+      retain: byte-exact primitives required to render the allowlisted pages
+      exclude: the mixed v2 bootstrap, mock data, and UI branches for excluded domains
+  byte_integrity: every exact_file is compared against the frozen donor; any integration adaptation must live outside this directory
+  route_requirement: generated donor routes remain evidence only; PR07 must not expose customer-automation, audience binding, activate/execution, outbound, Provider, or excluded identity routes
+  integration: PR10's v3-owned internal/webshell/admin_base and primary sidebar remain the only production shell. Terra/Web must mount a v3-owned adapter with the unchanged donor CSS/JS and never deploy a second .side navigation or edit donor files
+
+excluded_operations:
+  - POST /api/admin/automation-agents/{agentId}/activate
+  - any audience-package binding/unbinding or `bound_package_*` write
+  - customer automation rules, triggers, schedules, generation, execution, approval, history, or recipient selection
+  - Customer, OneID, Segment/Audience, Campaign, outbound, WeCom, Provider, LLM, token, credential, upload, send, retry, and delivery operations
+  - fixed-content media upload/generation; this donor only records local references and the preparation validator rejects non-empty reference arrays
+
+deferred_to_terra:
+  - define Automation-owned PostgreSQL tables, CAS/locking, UoW receipts, audit, outbox, and independent v3 migrations
+  - adapt internal/automation/port/events.go to v3 versioned event/outbox ports without adding execution consumers
+  - adapt internal/automation/port/media.go to canonical Media ports and validate fixed-content references under the caller UoW
+  - keep LegacyConfiguration opaque and prevent Customer/OneID/Segment/Audience/Campaign bindings from entering this domain
+  - translate any future EffectIntent through outbound/EER with accepted/attempted/outcome_unknown/reconciled evidence; no direct Provider or LLM path
+  - keep activation/execution disabled until a separately approved execution, approval, scheduler, and effect-reconciliation contract exists
+  - implement authenticated HTTP/OpenAPI routes and composition registration only after the v3 contracts are approved; excluded routes stay absent or feature-gated
+  - mount donor business hooks through a v3-owned adapter into PR10 internal/webshell/admin_base; do not deploy the raw v2 shell and do not modify web/donors/automation-v2
+
+forbidden_touched:
+  - cmd/aicrm
+  - api/openapi.yaml
+  - migrations
+  - go.mod
+  - go.sum
+  - package.json
+  - package-lock.json
+  - pnpm-lock.yaml
+  - deploy
+  - CI
+  - internal/platform
+  - internal/access
+  - internal/webshell central routing
