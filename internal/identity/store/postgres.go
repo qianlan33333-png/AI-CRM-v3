@@ -734,7 +734,7 @@ func performMerge(ctx context.Context, tx pgx.Tx, candidate identityapp.MergeCan
 		return identityapp.MergeRecord{}, err
 	}
 	var mergeID int64
-	err = tx.QueryRow(ctx, `INSERT INTO customer_merges(candidate_id,candidate_left_customer_id,candidate_right_customer_id,from_customer_id,to_customer_id,evidence_id,from_customer_version_before,from_customer_version_after,to_customer_version_before,to_customer_version_after,from_lineage_version_before,from_lineage_version_after,to_lineage_version_before,to_lineage_version_after,rule,operator,source) VALUES($1,$2,$3,$4,$5,$6,$7,$7+1,$8,$8+1,$9,$9+1,$10,$10+1,'confirmed_candidate',$11,'identity') RETURNING id`, candidate.ID, candidate.LeftCustomerID, candidate.RightCustomerID, loser, survivor, evidenceID, from.Version, to.Version, from.Lineage, to.Lineage, operator).Scan(&mergeID)
+	err = tx.QueryRow(ctx, `INSERT INTO customer_merges(candidate_id,candidate_left_customer_id,candidate_right_customer_id,from_customer_id,to_customer_id,evidence_id,from_customer_version_before,from_customer_version_after,to_customer_version_before,to_customer_version_after,from_lineage_version_before,from_lineage_version_after,to_lineage_version_before,to_lineage_version_after,rule,operator,source) VALUES($1::bigint,$2::bigint,$3::bigint,$4::bigint,$5::bigint,$6::bigint,$7::bigint,$7::bigint+1,$8::bigint,$8::bigint+1,$9::bigint,$9::bigint+1,$10::bigint,$10::bigint+1,'confirmed_candidate',$11,'identity') RETURNING id`, candidate.ID, candidate.LeftCustomerID, candidate.RightCustomerID, loser, survivor, evidenceID, from.Version, to.Version, from.Lineage, to.Lineage, operator).Scan(&mergeID)
 	if err != nil {
 		return identityapp.MergeRecord{}, err
 	}
