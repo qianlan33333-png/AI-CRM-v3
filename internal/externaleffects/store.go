@@ -21,6 +21,15 @@ type Repository struct {
 	pool  *pgxpool.Pool
 	river *river.Client[pgx.Tx]
 	now   func() time.Time
+	sink  port.CompletionSink
+}
+
+func (r *Repository) SetCompletionSink(sink port.CompletionSink) error {
+	if r == nil || sink == nil || r.sink != nil {
+		return ErrInvalid
+	}
+	r.sink = sink
+	return nil
 }
 
 var _ port.Accepter = (*Repository)(nil)
@@ -451,6 +460,9 @@ func (r *Repository) RunAttempt(ctx context.Context, id, generation, riverJobID 
 	var next State
 	var receipt Digest
 	var callAttempted, realExternalCallExecuted bool
+	var adapterResult AdapterResult
+	var callErr error
+	var envelope Envelope
 	if adapter == nil {
 		next = StateFinalFailed // Provider disabled: no call was attempted.
 		receipt = Hash("provider-disabled", strconv.FormatInt(id, 10), strconv.Itoa(int(attempts)))
@@ -459,7 +471,9 @@ func (r *Repository) RunAttempt(ctx context.Context, id, generation, riverJobID 
 		if err := r.pool.QueryRow(ctx, `SELECT owner,kind,source_ref_digest,target_ref_digest,payload_digest,policy_version_hash FROM external_effects WHERE id=$1 AND generation=$2`, id, generation).Scan(&owner, &kind, &source, &target, &payload, &policy); err != nil {
 			return err
 		}
-		result, callErr := adapter.Execute(ctx, Envelope{Owner: Owner(owner), Kind: Kind(kind), SourceRefDigest: Digest(source), TargetRefDigest: Digest(target), PayloadDigest: Digest(payload), PolicyVersionHash: Digest(policy)}, Attempt{Number: attempts, Generation: generation, Fence: fence})
+		envelope = Envelope{Owner: Owner(owner), Kind: Kind(kind), SourceRefDigest: Digest(source), TargetRefDigest: Digest(target), PayloadDigest: Digest(payload), PolicyVersionHash: Digest(policy)}
+		adapterResult, callErr = adapter.Execute(ctx, envelope, Attempt{Number: attempts, Generation: generation, Fence: fence})
+		result := adapterResult
 		callAttempted, realExternalCallExecuted = result.CallAttempted, result.RealExternalCallExecuted
 		if callErr != nil {
 			if result.CallAttempted {
@@ -496,6 +510,9 @@ func (r *Repository) RunAttempt(ctx context.Context, id, generation, riverJobID 
 			receipt = Hash("provider-invalid", strconv.FormatInt(id, 10), strconv.Itoa(int(attempts)))
 		}
 	}
+	if next == StateExecuted && envelope.Kind == KindWeComTagCatalog && (r.sink == nil || !adapterResult.Artifact.Valid()) {
+		next, receipt = StateUnknown, Hash("provider-artifact-invalid", strconv.FormatInt(id, 10), strconv.Itoa(int(attempts)))
+	}
 	tx, err = r.pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -512,6 +529,11 @@ func (r *Repository) RunAttempt(ctx context.Context, id, generation, riverJobID 
 			return updateErr
 		}
 		return ErrTransition
+	}
+	if next == StateExecuted && envelope.Kind == KindWeComTagCatalog {
+		if err = r.sink.CompleteEffect(platformpostgres.BindTransaction(ctx, tx), effectID(id), envelope, Attempt{Number: attempts, Generation: generation, Fence: fence}, adapterResult); err != nil {
+			return err
+		}
 	}
 	return tx.Commit(ctx)
 }

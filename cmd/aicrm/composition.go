@@ -127,6 +127,13 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
+	tagCompletionSink, err := outbound.NewTagCatalogCompletionSink(tagRepository)
+	if err != nil {
+		return fail(err)
+	}
+	if err = effectRepository.SetCompletionSink(tagCompletionSink); err != nil {
+		return fail(err)
+	}
 	tagCatalog := tagapp.NewCatalogService(uow, tagRepository, tagRepository, tagRepository, tagRepository)
 	tagOutbound, err := outbound.NewTagCatalogSyncAccepter(effectRepository)
 	if err != nil {
@@ -167,6 +174,19 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	})
 	if err != nil {
 		return fail(err)
+	}
+	if cfg.TagCatalog.Enabled {
+		catalogReader, readerErr := outbound.NewWeComTagCatalogReader(providerClient)
+		if readerErr != nil {
+			return fail(readerErr)
+		}
+		catalogProvider, providerErr := outbound.NewTagCatalogProvider(catalogReader)
+		if providerErr != nil {
+			return fail(providerErr)
+		}
+		if providerErr = effectsModule.SetProviderAdapter(outbound.NewProviderRouter(catalogProvider)); providerErr != nil {
+			return fail(providerErr)
+		}
 	}
 	var callbackCrypto *wecom.CallbackCrypto
 	var callbackStateDigester wecom.StateDigester

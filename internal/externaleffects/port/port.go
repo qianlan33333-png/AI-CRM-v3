@@ -134,4 +134,25 @@ type AdapterResult struct {
 	ReceiptDigest            Digest
 	CallAttempted            bool
 	RealExternalCallExecuted bool
+	Artifact                 ResultArtifact
+}
+
+// ResultArtifact is a validated, opaque result. EER persists no business
+// payload; a completion sink owned by composition routes it to its domain in
+// the same completion transaction.
+type ResultArtifact struct {
+	Kind    string
+	Digest  Digest
+	Payload []byte
+}
+
+func (a ResultArtifact) Valid() bool {
+	if a.Kind == "" || len(a.Kind) > 120 || len(a.Payload) == 0 || len(a.Payload) > 256<<10 || !ValidDigest(a.Digest) {
+		return false
+	}
+	return a.Digest == Hash("external-effect.artifact.v1", a.Kind, string(a.Payload))
+}
+
+type CompletionSink interface {
+	CompleteEffect(context.Context, string, Envelope, Attempt, AdapterResult) error
 }

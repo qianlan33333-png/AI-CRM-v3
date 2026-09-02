@@ -4,7 +4,8 @@ This package is the constrained PR03 transfer of the WeCom tag-management
 capability. It owns local tag groups, catalog rows, stable ordering, archive
 commands, the fail-closed execution gate, and sync acceptance facts. It
 deliberately does not own customer tag assignments, customer unmark
-operations, provider credentials, or Provider network calls.
+operations or provider credentials. The optional read-only catalog connector is
+owned by outbound/WeCom and cannot mark or unmark a customer.
 
 `app.Service` records catalog mutations, idempotency receipts, audit facts and
 outbox events in its PostgreSQL Unit of Work. `app.SyncService` records a
@@ -13,8 +14,13 @@ shared External Effects/River `TransactionalAccepter`, via the sole
 `outbound` WeCom-write adapter. It stores the real effect, queue and operation
 receipt identifiers; queued is not a WeCom execution receipt. The shared
 worker owns `accepted -> queued -> attempted -> executed/outcome_unknown ->
-reconciled` and reconciliation. Provider execution is disabled by default, and
-an unknown outcome is never retried under a new idempotency key.
+reconciled` and reconciliation. A validated completed catalog read appends the
+opaque snapshot receipt in the same completion transaction as the EER CAS;
+unknown/final-failed states never append one. The narrow catalog read adapter
+is default-disabled (including id-dev), requires an explicit
+`catalog-read-authorized` permission to enable, and an unknown outcome is never
+retried under a new idempotency key. Generic reconciliation may close an
+unknown effect but never fabricates an observed snapshot.
 
 Reorder commands require the complete current ID set but may change its order;
 partial, duplicate, unknown, or stale memberships fail closed before a store

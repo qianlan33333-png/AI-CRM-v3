@@ -20,8 +20,22 @@ type HTTPBindings struct {
 	PushCenter http.Handler
 }
 
-func NewModuleRegistration() *ModuleRegistration {
-	return &ModuleRegistration{worker: NewWorker(nil, nil)}
+func NewModuleRegistration(adapter ...ProviderAdapter) *ModuleRegistration {
+	var selected ProviderAdapter
+	if len(adapter) == 1 {
+		selected = adapter[0]
+	}
+	return &ModuleRegistration{worker: NewWorker(nil, selected)}
+}
+
+// SetProviderAdapter is composition-only wiring. It is intentionally narrow:
+// binding a later-enabled connector never changes module routing or HTTP.
+func (module *ModuleRegistration) SetProviderAdapter(adapter ProviderAdapter) error {
+	if module == nil || module.worker == nil || module.worker.adapter != nil || adapter == nil {
+		return ErrInvalid
+	}
+	module.worker.adapter = adapter
+	return nil
 }
 
 func (module *ModuleRegistration) RegisterWorkers(workers *river.Workers) error {

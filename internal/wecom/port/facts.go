@@ -1,7 +1,10 @@
 // Package port contains verified WeCom protocol facts that may cross domain boundaries.
 package port
 
-import "strings"
+import (
+	"context"
+	"strings"
+)
 
 // VerifiedExternalContact is produced only after a trusted WeCom/JSSDK or
 // callback adapter has verified the provider context. HTTP request bodies may
@@ -16,4 +19,31 @@ func (fact VerifiedExternalContact) Valid() bool {
 	return strings.TrimSpace(fact.CorpID) == fact.CorpID && fact.CorpID != "" &&
 		strings.TrimSpace(fact.ExternalUserID) == fact.ExternalUserID && fact.ExternalUserID != "" &&
 		strings.TrimSpace(fact.Source) == fact.Source && fact.Source != ""
+}
+
+// TagCatalogReader is a narrow, read-only connector contract. It contains no
+// customer target, mark/unmark, credential, or general Provider-write method.
+type TagCatalogReader interface {
+	ListTagCatalog(context.Context) ([]TagCatalogGroup, error)
+}
+
+type TagCatalogGroup struct {
+	ID    string
+	Name  string
+	Order int32
+	Tags  []TagCatalogTag
+}
+
+type TagCatalogTag struct {
+	ID      string
+	Name    string
+	Order   int32
+	Deleted bool
+}
+
+// ProviderCallFailure identifies only whether the catalog request itself may
+// have crossed a network boundary. It never carries Provider status/body data.
+type ProviderCallFailure interface {
+	error
+	ProviderCallAttempted() bool
 }

@@ -10,9 +10,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -364,6 +368,136 @@ func (r *Repository) referenceCount(ctx context.Context, kind string, id int64) 
 	var n int64
 	err = tx.QueryRow(ctx, `SELECT count(*) FROM tag_references WHERE resource_kind=$1 AND resource_id=$2`, kind, id).Scan(&n)
 	return n, err
+}
+func (r *Repository) StoreProviderObservation(ctx context.Context, observation tagport.ProviderObservation) error {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return err
+	}
+	if observation.EffectID < 1 || observation.Generation < 1 || !validProviderObservation(observation) {
+		return ErrInvalid
+	}
+	var existingDigest string
+	var existingSnapshot []byte
+	err = tx.QueryRow(ctx, `SELECT artifact_digest,snapshot::text FROM tag_provider_observations WHERE effect_id=$1 AND generation=$2 FOR UPDATE`, observation.EffectID, observation.Generation).Scan(&existingDigest, &existingSnapshot)
+	if err == nil {
+		if existingDigest == observation.ArtifactDigest && canonicalProviderBytes(existingSnapshot) == string(observation.Snapshot) {
+			return nil
+		}
+		return ErrConflict
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return err
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO tag_provider_observations(effect_id,generation,artifact_digest,snapshot) VALUES($1,$2,$3,$4::jsonb)`, observation.EffectID, observation.Generation, observation.ArtifactDigest, observation.Snapshot)
+	return err
+}
+
+type providerSnapshot struct {
+	Groups *[]providerGroup `json:"groups"`
+}
+type providerGroup struct {
+	ID    string        `json:"id"`
+	Name  string        `json:"name"`
+	Order int32         `json:"order"`
+	Tags  []providerTag `json:"tags"`
+}
+type providerTag struct {
+	ID    string `json:"id"`
+	Name  string `json:"name"`
+	Order int32  `json:"order"`
+}
+
+// validProviderObservation repeats the schema at the owned persistence
+// boundary. The sink is intentionally not trusted: both digest and canonical
+// snapshot bytes must be independently reproducible here.
+func validProviderObservation(observation tagport.ProviderObservation) bool {
+	if len(observation.Snapshot) == 0 || len(observation.Snapshot) > 256<<10 || len(observation.ArtifactDigest) != 71 || !strings.HasPrefix(observation.ArtifactDigest, "sha256:") {
+		return false
+	}
+	var snapshot providerSnapshot
+	decoder := json.NewDecoder(strings.NewReader(string(observation.Snapshot)))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&snapshot) != nil || decoder.Decode(&struct{}{}) != io.EOF || snapshot.Groups == nil || len(*snapshot.Groups) > 1000 {
+		return false
+	}
+	tags := map[string]struct{}{}
+	groups := map[string]struct{}{}
+	count := 0
+	for _, group := range *snapshot.Groups {
+		if !providerID(group.ID) || !providerName(group.Name) {
+			return false
+		}
+		if _, exists := groups[group.ID]; exists {
+			return false
+		}
+		groups[group.ID] = struct{}{}
+		for _, tag := range group.Tags {
+			count++
+			if count > 10000 || !providerID(tag.ID) || !providerName(tag.Name) {
+				return false
+			}
+			if _, exists := tags[tag.ID]; exists {
+				return false
+			}
+			tags[tag.ID] = struct{}{}
+		}
+	}
+	canonical, err := canonicalProviderSnapshot(snapshot)
+	if err != nil || string(canonical) != string(observation.Snapshot) {
+		return false
+	}
+	return observation.ArtifactDigest == providerArtifactDigest(canonical)
+}
+
+func canonicalProviderBytes(raw []byte) string {
+	var snapshot providerSnapshot
+	if json.Unmarshal(raw, &snapshot) != nil {
+		return ""
+	}
+	canonical, err := canonicalProviderSnapshot(snapshot)
+	if err != nil {
+		return ""
+	}
+	return string(canonical)
+}
+
+func canonicalProviderSnapshot(snapshot providerSnapshot) ([]byte, error) {
+	if snapshot.Groups == nil {
+		return nil, errors.New("provider snapshot groups must be explicit")
+	}
+	sort.SliceStable(*snapshot.Groups, func(i, j int) bool {
+		if (*snapshot.Groups)[i].Order == (*snapshot.Groups)[j].Order {
+			return (*snapshot.Groups)[i].ID < (*snapshot.Groups)[j].ID
+		}
+		return (*snapshot.Groups)[i].Order < (*snapshot.Groups)[j].Order
+	})
+	for i := range *snapshot.Groups {
+		if (*snapshot.Groups)[i].Tags == nil {
+			(*snapshot.Groups)[i].Tags = []providerTag{}
+		}
+		sort.SliceStable((*snapshot.Groups)[i].Tags, func(a, b int) bool {
+			if (*snapshot.Groups)[i].Tags[a].Order == (*snapshot.Groups)[i].Tags[b].Order {
+				return (*snapshot.Groups)[i].Tags[a].ID < (*snapshot.Groups)[i].Tags[b].ID
+			}
+			return (*snapshot.Groups)[i].Tags[a].Order < (*snapshot.Groups)[i].Tags[b].Order
+		})
+	}
+	return json.Marshal(snapshot)
+}
+
+func providerID(value string) bool {
+	return providerRequiredText(value, 128)
+}
+func providerName(value string) bool {
+	return providerRequiredText(value, 256)
+}
+func providerRequiredText(value string, limit int) bool {
+	return value != "" && value == strings.TrimSpace(value) && len(value) <= limit && utf8.ValidString(value) && !strings.ContainsFunc(value, unicode.IsControl)
+}
+func providerArtifactDigest(payload []byte) string {
+	sum := sha256.Sum256([]byte("external-effect.artifact.v1\x00wecom.tag_catalog.snapshot.v1\x00" + string(payload)))
+	return "sha256:" + hex.EncodeToString(sum[:])
 }
 func (r *Repository) ReserveSync(ctx context.Context, c tagport.SyncCommand) (tagport.SyncReceipt, error) {
 	tx, err := transaction(ctx)

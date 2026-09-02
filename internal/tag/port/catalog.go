@@ -9,6 +9,16 @@ import (
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/tag/domain"
 )
 
+type ProviderObservation struct {
+	EffectID       int64
+	Generation     int64
+	ArtifactDigest string
+	Snapshot       []byte
+}
+type SnapshotWriter interface {
+	StoreProviderObservation(context.Context, ProviderObservation) error
+}
+
 // ErrNotFound and ErrConflict classify owned-store results without exposing a
 // concrete adapter to the application or HTTP layers.
 var (

@@ -18,14 +18,13 @@ scope:
   excluded:
     - customer-facing tag mark operations
     - customer-facing tag unmark operations
-    - direct WeCom Provider client, credentials and network calls
     - customer tag assignment or removal, Customer/OneID ownership, and any customer table write
   completed_v3_adapters:
     - tag-owned PostgreSQL schema and additive migration 0008
     - v3 admin-session/CSRF HTTP compatibility routes and OpenAPI
     - frozen tags workspace mounted in the PR10 single-sidebar shell
     - transaction-bound External Effects/River acceptance through outbound TransactionalAccepter
-    - Provider-disabled worker/reconciliation boundary inherited from PR01
+    - opt-in read-only WeCom catalog adapter, opaque completion artifact, and tag-owned observed snapshot receipt
 source_files:
   - path: internal/contact/app/legacy_tag_catalog.go
     disposition: adapted
@@ -65,9 +64,9 @@ source_files:
     disposition: characterized
     target: internal/tag/http/handler_test.go
   - path: internal/wecom/client/tag_catalog.go
-    disposition: excluded
-    target: null
-    notes: Provider network reads remain disabled in this release
+    disposition: adapted
+    target: internal/wecom/adapter/client.go
+    notes: read-only catalog endpoint; explicit narrow configuration is default-off
   - path: internal/wecom/tag/catalog_provider.go
     disposition: adapted
     target: internal/outbound/tag_catalog.go
@@ -276,8 +275,8 @@ provider_effect_contract:
     outcome_unknown: Provider result cannot be proven; manual reconciliation required
     reconciled: original effect resolved with evidence; never replace the idempotency key
   receipt_fields: [effect_id, accept_receipt_id, queue_receipt_id, provider_call_attempted, provider_success_claimed, receipt_digest]
-  reconciliation: shared PR01 External Effects worker and manual reconciliation; Provider remains disabled until separately authorized
-  notes: v2 direct Provider/EER/runtime code is not copied; v3 outbound owns the opaque catalog intent and exposes no customer IDs or mark/unmark operations
+  reconciliation: generic reconciliation may only close an unknown effect with evidence and never writes an observation; a validated fresh snapshot artifact is required for observed/executed state
+  notes: v3 outbound owns the opaque catalog intent; the read-only adapter is implemented behind AICRM_WECOM_TAG_CATALOG_PROVIDER_ENABLED plus catalog-read-authorized permission, default false and disabled on id-dev
 characterization:
   tests:
     - internal/tag/domain/catalog_test.go
@@ -306,6 +305,6 @@ completion_evidence:
   - v3-owned 0008 migration and PostgreSQL repository own only tag tables
   - authenticated/CSRF HTTP compatibility and OpenAPI adapters preserve the frozen DTO routes
   - outbound TransactionalAccepter creates the real EER/River acceptance in the same PostgreSQL UoW
-  - Provider is disabled by default; shared PR01 effect states and manual reconciliation govern unknown outcomes
+  - completed catalog reads atomically transition EER and append the validated tag-owned observation; unknown/final_failed never write a snapshot
 remaining_limitation:
-  - enabling a real WeCom Provider adapter requires separate authorization and its own provider-read/reconciliation Journey; this PR does not make a network call
+  - id-dev configuration keeps the implemented catalog-read adapter disabled; enabling it requires the explicit catalog-read authorization and a separately approved live Provider Journey

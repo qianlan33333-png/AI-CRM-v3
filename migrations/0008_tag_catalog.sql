@@ -75,3 +75,19 @@ CREATE TABLE tag_sync_receipts (
     created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
     UNIQUE(actor_admin_user_id,idempotency_key_digest)
 );
+CREATE TABLE tag_provider_observations (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    effect_id BIGINT NOT NULL CHECK(effect_id>0), generation BIGINT NOT NULL CHECK(generation>0),
+    artifact_digest TEXT NOT NULL CHECK(artifact_digest ~ '^sha256:[0-9a-f]{64}$'),
+    snapshot JSONB NOT NULL, observed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    UNIQUE(effect_id,generation),
+    FOREIGN KEY(effect_id,generation) REFERENCES external_effect_generations(effect_id,generation) ON DELETE RESTRICT
+);
+CREATE FUNCTION tag_provider_observations_reject_mutation() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    RAISE EXCEPTION 'tag_provider_observations is append-only';
+END;
+$$;
+CREATE TRIGGER tag_provider_observations_append_only
+BEFORE UPDATE OR DELETE OR TRUNCATE ON tag_provider_observations
+FOR EACH STATEMENT EXECUTE FUNCTION tag_provider_observations_reject_mutation();

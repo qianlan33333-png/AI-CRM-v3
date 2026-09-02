@@ -17,13 +17,14 @@ import (
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 	tagapp "github.com/qianlan33333-png/AI-CRM-v3/internal/tag/app"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/tag/domain"
+	tagport "github.com/qianlan33333-png/AI-CRM-v3/internal/tag/port"
 )
 
 func TestPostgreSQLCatalogReorderArchiveReplayAndReferenceProtection(t *testing.T) {
 	native, cleanup := tagIntegrationPool(t)
 	defer cleanup()
 	ctx := context.Background()
-	for _, table := range []string{"tag_groups", "tag_catalog_tags", "tag_references", "tag_operation_receipts", "tag_audit_events", "tag_outbox", "tag_sync_receipts"} {
+	for _, table := range []string{"tag_groups", "tag_catalog_tags", "tag_references", "tag_operation_receipts", "tag_audit_events", "tag_outbox", "tag_sync_receipts", "tag_provider_observations"} {
 		var owned bool
 		if err := native.QueryRow(ctx, `SELECT tableowner=current_user FROM pg_tables WHERE schemaname=current_schema() AND tablename=$1`, table).Scan(&owned); err != nil || !owned {
 			t.Fatalf("table %s ownership = %t, %v", table, owned, err)
@@ -93,6 +94,33 @@ func TestPostgreSQLCatalogReorderArchiveReplayAndReferenceProtection(t *testing.
 	if _, err = service.ArchiveGroup(ctx, domain.Command{Actor: 7, GroupID: groupOne.ID, IdempotencyKey: "pg-group-reference-key"}); !errors.Is(err, tagapp.ErrReferenced) {
 		t.Fatalf("group archive with child tag ref = %v", err)
 	}
+	var effectID int64
+	if err = native.QueryRow(ctx, `INSERT INTO external_effects(owner,kind,source_ref_digest,target_ref_digest,payload_digest,policy_version_hash,envelope_fingerprint,state) VALUES('outbound','wecom_tag_catalog',$1,$2,$3,$4,$5,'executed') RETURNING id`, Digest("source"), Digest("target"), Digest("payload"), Digest("policy"), Digest("fingerprint")).Scan(&effectID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = native.Exec(ctx, `INSERT INTO external_effect_generations(effect_id,generation) VALUES($1,1)`, effectID); err != nil {
+		t.Fatal(err)
+	}
+	observation := tagport.ProviderObservation{EffectID: effectID, Generation: 1, Snapshot: []byte(`{"groups":[]}`)}
+	observation.ArtifactDigest = providerArtifactDigest(observation.Snapshot)
+	if err = uow.Within(ctx, func(txCtx context.Context) error { return repository.StoreProviderObservation(txCtx, observation) }); err != nil {
+		t.Fatal(err)
+	}
+	if err = uow.Within(ctx, func(txCtx context.Context) error { return repository.StoreProviderObservation(txCtx, observation) }); err != nil {
+		t.Fatalf("same observation replay=%v", err)
+	}
+	driftObservation := observation
+	driftObservation.ArtifactDigest = providerArtifactDigest([]byte(`{"groups":[{"id":"g","name":"g","order":0,"tags":[]}]}`))
+	driftObservation.Snapshot = []byte(`{"groups":[{"id":"g","name":"g","order":0,"tags":[]}]}`)
+	if err = uow.Within(ctx, func(txCtx context.Context) error { return repository.StoreProviderObservation(txCtx, driftObservation) }); !errors.Is(err, ErrConflict) {
+		t.Fatalf("observation drift=%v", err)
+	}
+	if _, err = native.Exec(ctx, `UPDATE tag_provider_observations SET artifact_digest=artifact_digest`); err == nil {
+		t.Fatal("observation update unexpectedly succeeded")
+	}
+	if _, err = native.Exec(ctx, `DELETE FROM tag_provider_observations`); err == nil {
+		t.Fatal("observation delete unexpectedly succeeded")
+	}
 }
 
 func tagIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
@@ -129,7 +157,15 @@ func tagIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 	if !ok {
 		t.Fatal("locate integration test")
 	}
-	sql, err := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "..", "migrations", "0008_tag_catalog.sql"))
+	base := filepath.Join(filepath.Dir(file), "..", "..", "..", "migrations")
+	effectsSQL, err := os.ReadFile(filepath.Join(base, "0005_external_effects.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pool.Exec(ctx, string(effectsSQL)); err != nil {
+		t.Fatal(err)
+	}
+	sql, err := os.ReadFile(filepath.Join(base, "0008_tag_catalog.sql"))
 	if err != nil {
 		t.Fatal(err)
 	}

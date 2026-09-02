@@ -16,6 +16,25 @@ import (
 type TagCatalogSyncAccepter struct {
 	effects effectport.TransactionalAccepter
 }
+type TagCatalogCompletionSink struct{ writer tagport.SnapshotWriter }
+
+func NewTagCatalogCompletionSink(writer tagport.SnapshotWriter) (*TagCatalogCompletionSink, error) {
+	if writer == nil {
+		return nil, errors.New("tag snapshot writer is required")
+	}
+	return &TagCatalogCompletionSink{writer}, nil
+}
+func (s *TagCatalogCompletionSink) CompleteEffect(ctx context.Context, effectRef string, envelope effectport.Envelope, attempt effectport.Attempt, result effectport.AdapterResult) error {
+	if s == nil || s.writer == nil || envelope.Kind != effectport.KindWeComTagCatalog || result.Completion != effectport.StateExecuted || !result.Artifact.Valid() || result.Artifact.Kind != "wecom.tag_catalog.snapshot.v1" {
+		return errors.New("invalid tag catalog completion")
+	}
+	// effect id is intentionally opaque to the adapter; source receipt is not a customer identifier.
+	effectID := parseEffectID(effectRef)
+	if effectID < 1 {
+		return errors.New("invalid tag effect reference")
+	}
+	return s.writer.StoreProviderObservation(ctx, tagport.ProviderObservation{EffectID: effectID, Generation: attempt.Generation, ArtifactDigest: string(result.Artifact.Digest), Snapshot: result.Artifact.Payload})
+}
 
 func NewTagCatalogSyncAccepter(effects effectport.TransactionalAccepter) (*TagCatalogSyncAccepter, error) {
 	if effects == nil {
