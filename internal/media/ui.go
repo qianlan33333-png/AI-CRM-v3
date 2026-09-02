@@ -91,17 +91,182 @@ func (h *mediaUI) template(page string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	const start = `<template id="tpl">`
-	from := strings.Index(string(raw), start)
-	if from < 0 {
+	return extractDonorTemplate(string(raw))
+}
+
+// extractDonorTemplate returns the inner HTML of the release page's outer
+// <template id="tpl">. Frozen donor pages contain nested templates produced by
+// sc-for/sc-if lowering, so stopping at the first closing tag silently removes
+// dialogs and later interactions from the mounted workspace.
+//
+// The input is a verified release asset, not request data. This deliberately
+// small tag scanner preserves the donor bytes between the outer tags while
+// matching nested <template> elements. It handles quoted '>' characters and
+// comments so the boundary cannot be confused by ordinary markup attributes.
+func extractDonorTemplate(raw string) (string, error) {
+	found := false
+	depth := 0
+	contentStart := 0
+	for cursor := 0; cursor < len(raw); {
+		tag, next, ok := nextHTMLTag(raw, cursor)
+		if !ok {
+			break
+		}
+		cursor = next
+		if tag.name != "template" {
+			continue
+		}
+		if !found {
+			if !tag.closing && templateHasID(tag.raw, "tpl") {
+				found = true
+				depth = 1
+				contentStart = tag.end
+			}
+			continue
+		}
+		if tag.closing {
+			depth--
+			if depth == 0 {
+				return raw[contentStart:tag.start], nil
+			}
+			continue
+		}
+		depth++
+	}
+	if !found {
 		return "", errors.New("donor template missing")
 	}
-	from += len(start)
-	to := strings.Index(string(raw)[from:], "</template>")
-	if to < 0 {
-		return "", errors.New("donor template incomplete")
+	return "", errors.New("donor template incomplete")
+}
+
+type htmlTag struct {
+	raw     string
+	name    string
+	closing bool
+	start   int
+	end     int
+}
+
+// nextHTMLTag finds one ordinary HTML tag without parsing or rewriting its
+// contents. Comments are skipped and quoted attribute values may contain >.
+func nextHTMLTag(raw string, cursor int) (htmlTag, int, bool) {
+	for cursor < len(raw) {
+		relative := strings.IndexByte(raw[cursor:], '<')
+		if relative < 0 {
+			return htmlTag{}, len(raw), false
+		}
+		start := cursor + relative
+		if strings.HasPrefix(raw[start:], "<!--") {
+			end := strings.Index(raw[start+4:], "-->")
+			if end < 0 {
+				return htmlTag{}, len(raw), false
+			}
+			cursor = start + 4 + end + 3
+			continue
+		}
+		cursor = start + 1
+		closing := false
+		for cursor < len(raw) && isHTMLSpace(raw[cursor]) {
+			cursor++
+		}
+		if cursor < len(raw) && raw[cursor] == '/' {
+			closing = true
+			cursor++
+			for cursor < len(raw) && isHTMLSpace(raw[cursor]) {
+				cursor++
+			}
+		}
+		nameStart := cursor
+		for cursor < len(raw) && isHTMLName(raw[cursor]) {
+			cursor++
+		}
+		if nameStart == cursor {
+			cursor = start + 1
+			continue
+		}
+		name := strings.ToLower(raw[nameStart:cursor])
+		quote := byte(0)
+		for cursor < len(raw) {
+			ch := raw[cursor]
+			if quote != 0 {
+				if ch == quote {
+					quote = 0
+				}
+				cursor++
+				continue
+			}
+			if ch == '\'' || ch == '"' {
+				quote = ch
+				cursor++
+				continue
+			}
+			if ch == '>' {
+				end := cursor + 1
+				return htmlTag{raw: raw[start:end], name: name, closing: closing, start: start, end: end}, end, true
+			}
+			cursor++
+		}
+		return htmlTag{}, len(raw), false
 	}
-	return string(raw)[from : from+to], nil
+	return htmlTag{}, len(raw), false
+}
+
+func isHTMLSpace(ch byte) bool {
+	return ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' || ch == '\f'
+}
+func isHTMLName(ch byte) bool {
+	return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '-' || ch == ':'
+}
+
+func templateHasID(tag, expected string) bool {
+	// The outer donor tag is generated as <template id="tpl">. Supporting
+	// ordinary quoted and unquoted IDs keeps the release adapter tolerant of
+	// formatting-only donor build changes without accepting a partial template.
+	lower := strings.ToLower(tag)
+	for offset := 0; ; {
+		index := strings.Index(lower[offset:], "id")
+		if index < 0 {
+			return false
+		}
+		index += offset
+		beforeOK := index == 0 || !isHTMLName(lower[index-1])
+		after := index + len("id")
+		afterOK := after >= len(lower) || !isHTMLName(lower[after])
+		if !beforeOK || !afterOK {
+			offset = after
+			continue
+		}
+		for after < len(lower) && isHTMLSpace(lower[after]) {
+			after++
+		}
+		if after >= len(lower) || lower[after] != '=' {
+			offset = after
+			continue
+		}
+		after++
+		for after < len(lower) && isHTMLSpace(lower[after]) {
+			after++
+		}
+		if after >= len(lower) {
+			return false
+		}
+		valueStart := after
+		valueEnd := after
+		if lower[after] == '\'' || lower[after] == '"' {
+			quote := lower[after]
+			valueStart++
+			valueEnd = strings.IndexByte(lower[valueStart:], quote)
+			if valueEnd < 0 {
+				return false
+			}
+			valueEnd += valueStart
+		} else {
+			for valueEnd < len(lower) && !isHTMLSpace(lower[valueEnd]) && lower[valueEnd] != '>' && lower[valueEnd] != '/' {
+				valueEnd++
+			}
+		}
+		return lower[valueStart:valueEnd] == strings.ToLower(expected)
+	}
 }
 
 type buildManifest struct {
