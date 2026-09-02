@@ -19,3 +19,29 @@ func TestLoadDefaultsAndRejectsInvalidRole(t *testing.T) {
 		t.Fatal("expected invalid role error")
 	}
 }
+
+func TestDatabaseURLPrecedenceAndValidation(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://fallback")
+	t.Setenv("AICRM_DATABASE_URL", "postgres://canonical")
+
+	url, err := DatabaseURL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if url != "postgres://canonical" {
+		t.Fatalf("DatabaseURL()=%q", url)
+	}
+
+	t.Setenv("AICRM_DATABASE_URL", " postgres://invalid")
+	if _, err = DatabaseURL(); err == nil {
+		t.Fatal("expected surrounding whitespace to be rejected")
+	}
+}
+
+func TestDatabaseURLRequiresConfiguration(t *testing.T) {
+	t.Setenv("AICRM_DATABASE_URL", "")
+	t.Setenv("DATABASE_URL", "")
+	if _, err := DatabaseURL(); err == nil {
+		t.Fatal("expected missing database URL error")
+	}
+}
