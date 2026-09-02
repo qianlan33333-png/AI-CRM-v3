@@ -175,7 +175,10 @@ func TestApplicationRouterRejectsCrossSiteUnsafeRequests(t *testing.T) {
 		want      int
 	}{
 		{name: "same origin", origin: "https://crm.example", fetchSite: "same-origin", want: http.StatusNoContent},
+		{name: "same origin overrides inconsistent fetch metadata", origin: "https://crm.example", fetchSite: "cross-site", want: http.StatusNoContent},
 		{name: "cross origin", origin: "https://evil.example", fetchSite: "cross-site", want: http.StatusForbidden},
+		{name: "cross origin overrides misleading fetch metadata", origin: "https://evil.example", fetchSite: "same-origin", want: http.StatusForbidden},
+		{name: "opaque origin", origin: "null", fetchSite: "same-origin", want: http.StatusForbidden},
 		{name: "cross-site without origin", fetchSite: "cross-site", want: http.StatusForbidden},
 		{name: "provider callback without browser headers", want: http.StatusNoContent},
 	} {

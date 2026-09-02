@@ -213,7 +213,16 @@ func rejectCrossSiteUnsafeRequests(next http.Handler, publicOrigin string) http.
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if isUnsafeMethod(request.Method) {
 			origin := request.Header.Get("Origin")
-			if (origin != "" && canonicalOrigin(origin) != publicOrigin) || strings.EqualFold(request.Header.Get("Sec-Fetch-Site"), "cross-site") {
+			blocked := false
+			if origin != "" {
+				// Origin is the authoritative browser signal. Fetch Metadata is
+				// only a fallback because extensions and restored tabs can report
+				// an inconsistent Sec-Fetch-Site for an otherwise same-origin form.
+				blocked = canonicalOrigin(origin) != publicOrigin
+			} else {
+				blocked = strings.EqualFold(request.Header.Get("Sec-Fetch-Site"), "cross-site")
+			}
+			if blocked {
 				writer.Header().Set("Content-Type", "application/json")
 				writer.WriteHeader(http.StatusForbidden)
 				_, _ = writer.Write([]byte(`{"ok":false,"error":"cross_site_request"}`))
