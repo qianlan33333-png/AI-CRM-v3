@@ -205,5 +205,21 @@ func routeApplication(health, access, identity, weCom, shell http.Handler, authe
 		}
 		http.Redirect(writer, request, "/admin", http.StatusSeeOther)
 	})
-	return mux, nil
+	return securityHeaders(mux), nil
+}
+
+func securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+		writer.Header().Set("X-Content-Type-Options", "nosniff")
+		writer.Header().Set("Referrer-Policy", "no-referrer")
+		writer.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+		contentPolicy := "default-src 'self'; script-src 'self' https://res.wx.qq.com; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'"
+		if request.URL.Path != webshell.SidebarPagePath && !strings.HasPrefix(request.URL.Path, "/api/sidebar/") {
+			writer.Header().Set("X-Frame-Options", "SAMEORIGIN")
+			contentPolicy += "; frame-ancestors 'self'"
+		}
+		writer.Header().Set("Content-Security-Policy", contentPolicy)
+		next.ServeHTTP(writer, request)
+	})
 }

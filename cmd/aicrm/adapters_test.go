@@ -136,6 +136,12 @@ func TestApplicationRouterKeepsOwnershipAndProtectsAdminShell(t *testing.T) {
 		if response.Code != http.StatusNoContent || response.Header().Get("X-Owner") != owner {
 			t.Fatalf("path=%s status=%d owner=%q", path, response.Code, response.Header().Get("X-Owner"))
 		}
+		if response.Header().Get("Content-Security-Policy") == "" || response.Header().Get("X-Content-Type-Options") != "nosniff" {
+			t.Fatalf("path=%s missing security headers", path)
+		}
+		if path == "/sidebar/bind-mobile" && response.Header().Get("X-Frame-Options") != "" {
+			t.Fatalf("sidebar must remain embeddable by the WeCom client")
+		}
 	}
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/admin/orders", nil))
