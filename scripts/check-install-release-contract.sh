@@ -17,3 +17,19 @@ test "$(sed -n "$((start_line + 1))p" "$installer")" = "  rollback" && test "$((
 test "$(sed -n "$((active_line + 1))p" "$installer")" = "  rollback" && test "$((active_line + 2))" -eq "$active_exit_line" || {
   echo "effects worker must be active after enable" >&2; exit 1;
 }
+
+for contract in \
+  "deploy/aicrm.service:api" \
+  "deploy/aicrm-wecom-worker.service:worker" \
+  "deploy/aicrm-effects-worker.service:effects-worker"; do
+  unit="${contract%%:*}"
+  role="${contract#*:}"
+  grep -qxF "ExecStart=/usr/bin/env AICRM_ROLE=${role} /opt/aicrm/current/bin/aicrm" "$unit" || {
+    echo "$unit must override the shared environment role at exec time" >&2
+    exit 1
+  }
+done
+if grep -qE '^AICRM_ROLE=' deploy/aicrm.env.example; then
+  echo "the shared environment example must not assign a runtime role" >&2
+  exit 1
+fi
