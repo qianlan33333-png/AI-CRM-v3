@@ -41,7 +41,7 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - uses: actions/setup-node@1e60f620b9541d4a5d0cfcecf1620d9c4093a2c3
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with: {node-version: '24.18.0', cache: npm}
       - name: Build and stage frozen External Effects workspace
         run: |
@@ -75,7 +75,7 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - uses: actions/setup-node@1e60f620b9541d4a5d0cfcecf1620d9c4093a2c3
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with: {node-version: '24.18.0', cache: npm}
       - name: Build release artifact
         env:
