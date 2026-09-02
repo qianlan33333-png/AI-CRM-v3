@@ -41,7 +41,7 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
         with: {node-version: '24.18.0', cache: npm}
       - name: Pin frozen donor npm
         run: npm install --global npm@11.12.1
@@ -78,7 +78,7 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
         with: {node-version: '24.18.0', cache: npm}
       - name: Pin frozen donor npm
         run: npm install --global npm@11.12.1
