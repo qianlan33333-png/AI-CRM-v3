@@ -111,6 +111,204 @@ func TestPostgreSQLEffectReplayUnknownAndStaleWorker(t *testing.T) {
 	}
 }
 
+type integrationAdapter struct {
+	calls  int
+	result AdapterResult
+	err    error
+}
+
+func (a *integrationAdapter) Execute(context.Context, Envelope, Attempt) (AdapterResult, error) {
+	a.calls++
+	return a.result, a.err
+}
+
+func TestPostgreSQLAttemptedLeaseRecoveryDoesNotRepeatProviderCall(t *testing.T) {
+	pool, cleanup := effectIntegrationPool(t)
+	defer cleanup()
+	workers := river.NewWorkers()
+	if err := river.AddWorkerSafely[EffectJobArgs](workers, NewWorker(nil, nil)); err != nil {
+		t.Fatal(err)
+	}
+	client, err := platformjobqueue.NewInsertClient(pool, workers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := NewRepository(pool, client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+
+	active, _, err := repository.AcceptAndQueue(ctx, AcceptCommand{ReceiptKey: digestForTest("active-lease"), Envelope: envelopeForTest()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	activeID, err := parseEffectID(active.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	activeJob := markAttemptedAfterCrash(t, pool, activeID, "5 minutes")
+	activeAdapter := &integrationAdapter{}
+	err = repository.RunAttempt(ctx, activeID, 1, activeJob, activeAdapter)
+	var snooze *river.JobSnoozeError
+	if !errors.As(err, &snooze) || snooze.Duration <= 0 {
+		t.Fatalf("active lease error=%v snooze=%+v", err, snooze)
+	}
+	if activeAdapter.calls != 0 {
+		t.Fatalf("active lease repeated provider call=%d", activeAdapter.calls)
+	}
+
+	expiredEnvelope := envelopeForTest()
+	expiredEnvelope.PayloadDigest = digestForTest("expired-lease-payload")
+	expired, _, err := repository.AcceptAndQueue(ctx, AcceptCommand{ReceiptKey: digestForTest("expired-lease"), Envelope: expiredEnvelope})
+	if err != nil {
+		t.Fatal(err)
+	}
+	expiredID, err := parseEffectID(expired.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expiredJob := markAttemptedAfterCrash(t, pool, expiredID, "-1 minute")
+	expiredAdapter := &integrationAdapter{}
+	if err = repository.RunAttempt(ctx, expiredID, 1, expiredJob, expiredAdapter); err != nil {
+		t.Fatalf("expired lease recovery=%v", err)
+	}
+	if expiredAdapter.calls != 0 {
+		t.Fatalf("expired lease repeated provider call=%d", expiredAdapter.calls)
+	}
+	current, err := repository.Get(ctx, expired.ID)
+	if err != nil || current.State != StateUnknown {
+		t.Fatalf("expired lease state=%+v err=%v", current, err)
+	}
+	var attemptState, receipt string
+	var callAttempted bool
+	if err = pool.QueryRow(ctx, `SELECT state,receipt_digest,call_attempted FROM external_effect_attempts WHERE effect_id=$1 AND number=1 AND generation=1 AND fence=1`, expiredID).Scan(&attemptState, &receipt, &callAttempted); err != nil {
+		t.Fatal(err)
+	}
+	wantRecovery := Hash("attempt-lease-expired", effectID(expiredID), "1", "1", "1")
+	if State(attemptState) != StateUnknown || Digest(receipt) != wantRecovery || callAttempted {
+		t.Fatalf("recovery fact state=%q receipt=%q call_attempted=%t", attemptState, receipt, callAttempted)
+	}
+	if _, _, err = repository.Retry(ctx, ControlCommand{EffectID: expired.ID, ReceiptKey: digestForTest("expired-retry")}); !errors.Is(err, ErrTransition) {
+		t.Fatalf("unknown recovery retried: %v", err)
+	}
+}
+
+func TestPostgreSQLProviderAttemptErrorBecomesUnknown(t *testing.T) {
+	pool, cleanup := effectIntegrationPool(t)
+	defer cleanup()
+	workers := river.NewWorkers()
+	if err := river.AddWorkerSafely[EffectJobArgs](workers, NewWorker(nil, nil)); err != nil {
+		t.Fatal(err)
+	}
+	client, err := platformjobqueue.NewInsertClient(pool, workers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := NewRepository(pool, client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope := envelopeForTest()
+	envelope.PayloadDigest = digestForTest("provider-error-payload")
+	projection, _, err := repository.AcceptAndQueue(context.Background(), AcceptCommand{ReceiptKey: digestForTest("provider-error"), Envelope: envelope})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := parseEffectID(projection.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var jobID int64
+	if err = pool.QueryRow(context.Background(), `SELECT river_job_id FROM external_effect_jobs WHERE effect_id=$1 AND generation=1`, id).Scan(&jobID); err != nil {
+		t.Fatal(err)
+	}
+	adapter := &integrationAdapter{result: AdapterResult{CallAttempted: true}, err: errors.New("provider connection dropped after request")}
+	if err = repository.RunAttempt(context.Background(), id, 1, jobID, adapter); err != nil {
+		t.Fatal(err)
+	}
+	if adapter.calls != 1 {
+		t.Fatalf("provider calls=%d", adapter.calls)
+	}
+	current, err := repository.Get(context.Background(), projection.ID)
+	if err != nil || current.State != StateUnknown {
+		t.Fatalf("provider attempt result=%+v err=%v", current, err)
+	}
+	var callAttempted bool
+	if err = pool.QueryRow(context.Background(), `SELECT call_attempted FROM external_effect_attempts WHERE effect_id=$1 AND number=1 AND generation=1`, id).Scan(&callAttempted); err != nil || !callAttempted {
+		t.Fatalf("provider call fact attempted=%t err=%v", callAttempted, err)
+	}
+	if _, _, err = repository.Retry(context.Background(), ControlCommand{EffectID: projection.ID, ReceiptKey: digestForTest("provider-error-retry")}); !errors.Is(err, ErrTransition) {
+		t.Fatalf("unknown provider error retried: %v", err)
+	}
+}
+
+func TestPostgreSQLQueuedEffectRunsWhenRuntimeStartsLater(t *testing.T) {
+	pool, cleanup := effectIntegrationPool(t)
+	defer cleanup()
+	workers := river.NewWorkers()
+	worker := NewWorker(nil, nil)
+	if err := river.AddWorkerSafely[EffectJobArgs](workers, worker); err != nil {
+		t.Fatal(err)
+	}
+	client, err := platformjobqueue.NewInsertClient(pool, workers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := NewRepository(pool, client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projection, _, err := repository.AcceptAndQueue(context.Background(), AcceptCommand{ReceiptKey: digestForTest("runtime-later"), Envelope: envelopeForTest()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = worker.BindRepository(repository); err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := platformjobqueue.NewRuntime(pool, workers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runContext, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- runtime.Run(runContext) }()
+
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		current, getErr := repository.Get(context.Background(), projection.ID)
+		if getErr == nil && current.State == StateFinalFailed {
+			break
+		}
+		if time.Now().After(deadline) {
+			cancel()
+			<-done
+			t.Fatalf("queued effect was not processed after runtime start: state=%+v err=%v", current, getErr)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	cancel()
+	if err = <-done; err != nil {
+		t.Fatalf("runtime stop=%v", err)
+	}
+}
+
+func markAttemptedAfterCrash(t *testing.T, pool *pgxpool.Pool, effectID int64, lease string) int64 {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx, `UPDATE external_effects SET state='attempted',attempt_count=1,lease_fence=1,lease_expires_at=clock_timestamp()+$2::interval,updated_at=clock_timestamp() WHERE id=$1 AND state='queued'`, effectID, lease); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO external_effect_attempts(effect_id,number,generation,fence,state) VALUES($1,1,1,1,'attempted')`, effectID); err != nil {
+		t.Fatal(err)
+	}
+	var jobID int64
+	if err := pool.QueryRow(ctx, `SELECT river_job_id FROM external_effect_jobs WHERE effect_id=$1 AND generation=1`, effectID).Scan(&jobID); err != nil {
+		t.Fatal(err)
+	}
+	return jobID
+}
+
 func effectIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 	t.Helper()
 	raw, configErr := platformconfig.DatabaseURL()

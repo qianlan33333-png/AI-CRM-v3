@@ -182,7 +182,9 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return fail(err)
 	}
 
-	effectsUI := externaleffects.NewUIHandler("web/dist")
+	effectsUI := externaleffects.NewUIHandler("web/dist", func(writer http.ResponseWriter, request *http.Request, tokens, labs, admin string) error {
+		return renderer.RenderExternalEffects(writer, webshell.AdminPageForRequest(request, "外部效果与 Push Center", "仅展示本地外部效果状态与对账事实。", "api.admin_cloud_orchestrator_workspace"), webshell.ExternalEffectsAssets{TokensCSS: tokens, LabsCSS: labs, AdminJS: admin})
+	})
 	handler, err := routeApplicationWithEffects(healthHandler, accessHandler.Routes(), oneIDHandler.Routes(), effectsHandler, pushCenterHandler, effectsUI, weComHandler, shellHandler, authentication, cfg.PublicOrigin)
 	if err != nil {
 		return fail(err)

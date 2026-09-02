@@ -1,18 +1,34 @@
 package externaleffects
 
 import (
+	"encoding/json"
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 )
 
+// PageRenderer is supplied by the composition root's v3 webshell adapter. It
+// receives only manifest-derived asset paths and never donor HTML.
+type PageRenderer func(http.ResponseWriter, *http.Request, string, string, string) error
+
 // UIHandler serves only the frozen V2 hidden External Effects workspace. The
 // donor bundle is not given a campaign URL: every request is normalized to
-// view=external-effects and only its HTML plus hashed assets are reachable.
-type UIHandler struct{ dist string }
+// view=external-effects and only its hashed assets are reachable. The page
+// itself remains the one v3 webshell, supplied through PageRenderer.
+type UIHandler struct {
+	dist     string
+	renderer PageRenderer
+}
 
-func NewUIHandler(dist string) *UIHandler { return &UIHandler{dist: dist} }
+func NewUIHandler(dist string, renderers ...PageRenderer) *UIHandler {
+	var renderer PageRenderer
+	if len(renderers) == 1 {
+		renderer = renderers[0]
+	}
+	return &UIHandler{dist: dist, renderer: renderer}
+}
 func (h *UIHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if h == nil || h.dist == "" {
 		http.NotFound(w, r)
@@ -23,7 +39,18 @@ func (h *UIHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, "/admin/external-effects?view=external-effects", http.StatusSeeOther)
 			return
 		}
-		h.serve(w, r, "admin/campaigns.html", "text/html; charset=utf-8")
+		if h.renderer == nil {
+			http.Error(w, "external effects UI unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		tokens, labs, admin, err := h.pageAssets()
+		if err != nil {
+			http.Error(w, "external effects UI unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		if err = h.renderer(w, r, tokens, labs, admin); err != nil {
+			http.Error(w, "external effects UI unavailable", http.StatusServiceUnavailable)
+		}
 		return
 	}
 	if !strings.HasPrefix(r.URL.Path, "/assets/") {
@@ -35,8 +62,58 @@ func (h *UIHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	h.serve(w, r, relative, "")
+	h.serve(w, r, relative, staticMIME(relative))
 }
+
+func (h *UIHandler) pageAssets() (string, string, string, error) {
+	data, err := os.ReadFile(filepath.Join(h.dist, "asset-manifest.json"))
+	if err != nil {
+		return "", "", "", err
+	}
+	var manifest struct {
+		Entries map[string]string `json:"entries"`
+	}
+	if err = json.Unmarshal(data, &manifest); err != nil {
+		return "", "", "", err
+	}
+	asset := func(name string) (string, error) {
+		value := manifest.Entries[name]
+		if value == "" || strings.Contains(value, "..") || !strings.HasPrefix(value, "assets/") {
+			return "", errors.New("external effects asset is unavailable")
+		}
+		if _, statErr := os.Stat(filepath.Join(h.dist, filepath.FromSlash(value))); statErr != nil {
+			return "", statErr
+		}
+		return "/" + value, nil
+	}
+	tokens, err := asset("tokens")
+	if err != nil {
+		return "", "", "", err
+	}
+	labs, err := asset("labs")
+	if err != nil {
+		return "", "", "", err
+	}
+	admin, err := asset("admin")
+	if err != nil {
+		return "", "", "", err
+	}
+	return tokens, labs, admin, nil
+}
+
+func staticMIME(relative string) string {
+	switch strings.ToLower(filepath.Ext(relative)) {
+	case ".css":
+		return "text/css; charset=utf-8"
+	case ".js", ".mjs":
+		return "text/javascript; charset=utf-8"
+	case ".json":
+		return "application/json; charset=utf-8"
+	default:
+		return ""
+	}
+}
+
 func (h *UIHandler) serve(w http.ResponseWriter, r *http.Request, relative, mime string) {
 	file := filepath.Join(h.dist, filepath.FromSlash(relative))
 	clean := filepath.Clean(file)

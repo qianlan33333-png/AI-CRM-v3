@@ -7,12 +7,14 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	accessapp "github.com/qianlan33333-png/AI-CRM-v3/internal/access/app"
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects"
+	"github.com/qianlan33333-png/AI-CRM-v3/internal/webshell"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/wecom"
 )
 
@@ -196,9 +198,28 @@ func TestExternalEffectsUIRequiresAdminAndExposesOnlyItsFrozenSurface(t *testing
 	if err := os.WriteFile(filepath.Join(dist, "assets", "campaign.js"), []byte("asset"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(dist, "assets", "campaign.css"), []byte("body{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dist, "assets", "labs.css"), []byte("#stage{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dist, "assets", "asset-manifest.json"), []byte(`{"version":1}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dist, "asset-manifest.json"), []byte(`{"entries":{"admin":"assets/campaign.js","tokens":"assets/campaign.css","labs":"assets/labs.css"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	authentication := &fakeAccessAuthentication{err: accessdomain.ErrAuthentication}
 	marker := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) { writer.WriteHeader(http.StatusNoContent) })
-	handler, err := routeApplicationWithEffects(marker, marker, marker, marker, marker, externaleffects.NewUIHandler(dist), marker, marker, authentication, "https://crm.example")
+	renderer, err := webshell.NewRenderer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ui := externaleffects.NewUIHandler(dist, func(writer http.ResponseWriter, request *http.Request, tokens, labs, admin string) error {
+		return renderer.RenderExternalEffects(writer, webshell.AdminPageForRequest(request, "外部效果与 Push Center", "", "api.admin_cloud_orchestrator_workspace"), webshell.ExternalEffectsAssets{TokensCSS: tokens, LabsCSS: labs, AdminJS: admin})
+	})
+	handler, err := routeApplicationWithEffects(marker, marker, marker, marker, marker, ui, marker, marker, authentication, "https://crm.example")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -217,21 +238,31 @@ func TestExternalEffectsUIRequiresAdminAndExposesOnlyItsFrozenSurface(t *testing
 	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/admin/external-effects?view=external-effects" {
 		t.Fatalf("query was not normalized status=%d location=%q", response.Code, response.Header().Get("Location"))
 	}
+	request = httptest.NewRequest(http.MethodGet, "/admin/external-effects?view=external-effects", nil)
+	request.AddCookie(&http.Cookie{Name: "aicrm_admin_session", Value: "valid"})
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || strings.Count(response.Body.String(), `class="admin-sidebar"`) != 1 || strings.Count(response.Body.String(), "<main") != 1 || !strings.Contains(response.Body.String(), `<main id="stage" class="stage rich"></main>`) || strings.Contains(response.Body.String(), `<aside class="side">`) || !strings.Contains(response.Body.String(), `src="/assets/campaign.js"`) {
+		t.Fatalf("external effects shell mismatch status=%d body=%q", response.Code, response.Body.String())
+	}
 
-	for path, want := range map[string]string{
-		"/admin/external-effects?view=external-effects": "external-effects",
-		"/assets/campaign.js":                           "asset",
+	for path, want := range map[string]struct {
+		body string
+		mime string
+	}{
+		"/assets/campaign.js":         {body: "asset", mime: "text/javascript; charset=utf-8"},
+		"/assets/campaign.css":        {body: "body{}", mime: "text/css; charset=utf-8"},
+		"/assets/asset-manifest.json": {body: `{"version":1}`, mime: "application/json; charset=utf-8"},
 	} {
 		request = httptest.NewRequest(http.MethodGet, path, nil)
 		request.AddCookie(&http.Cookie{Name: "aicrm_admin_session", Value: "valid"})
 		response = httptest.NewRecorder()
 		handler.ServeHTTP(response, request)
-		if response.Code != http.StatusOK || response.Body.String() != want {
-			t.Fatalf("readable path=%s status=%d body=%q", path, response.Code, response.Body.String())
+		if response.Code != http.StatusOK || response.Body.String() != want.body || response.Header().Get("Content-Type") != want.mime {
+			t.Fatalf("readable path=%s status=%d body=%q mime=%q", path, response.Code, response.Body.String(), response.Header().Get("Content-Type"))
 		}
 	}
 
-	ui := externaleffects.NewUIHandler(dist)
 	for _, path := range []string{"/admin/campaigns.html", "/admin/customers.html", "/customers"} {
 		response = httptest.NewRecorder()
 		ui.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))

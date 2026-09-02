@@ -24,8 +24,13 @@
   {{if eq .RequestPath "/admin/oneid"}}
   <link rel="stylesheet" href="/static/admin_console/admin_oneid.css?v=static-mime2">
   {{end}}
+  {{if .ExternalEffects}}
+  <link rel="stylesheet" href="{{.ExternalAssets.TokensCSS}}">
+  <link rel="stylesheet" href="{{.ExternalAssets.LabsCSS}}">
+  <script type="module" src="{{.ExternalAssets.AdminJS}}"></script>
+  {{end}}
 </head>
-<body class="admin-shell" data-admin-shell-source="v3_webshell">
+<body class="admin-shell" data-admin-shell-source="v3_webshell"{{if .ExternalEffects}} data-page="campaigns"{{end}}>
   <div class="admin-layout">
     <aside class="admin-sidebar">
       <div class="admin-brand">
@@ -97,11 +102,15 @@
       </header>
       {{end}}
 
+      {{if .ExternalEffects}}
+      {{.Content}}
+      {{else}}
       <main class="admin-page">
         {{if .PageNotice}}<section class="admin-alert admin-alert--success">{{.PageNotice}}</section>{{end}}
         {{if .PageError}}<section class="admin-alert admin-alert--error">{{.PageError}}</section>{{end}}
         {{.Content}}
       </main>
+      {{end}}
     </div>
   </div>
 </body>

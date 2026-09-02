@@ -48,9 +48,19 @@ func NewRenderer() (*Renderer, error) {
 // templates remain the package's stable presentation boundary.
 type AdminShellView struct {
 	AdminPageData
-	Content        template.HTML
-	AudienceList   bool
-	AudienceDetail bool
+	Content         template.HTML
+	AudienceList    bool
+	AudienceDetail  bool
+	ExternalEffects bool
+	ExternalAssets  ExternalEffectsAssets
+}
+
+// ExternalEffectsAssets are manifest-derived URLs for the frozen donor bundle.
+// They are data-only paths supplied by the composition adapter, never HTML.
+type ExternalEffectsAssets struct {
+	TokensCSS string
+	LabsCSS   string
+	AdminJS   string
 }
 
 // Render implements the small presentation contract consumed by the Access
@@ -119,6 +129,31 @@ func (renderer *Renderer) RenderAdminStatus(writer http.ResponseWriter, status i
 		return err
 	}
 	return writeHTML(writer, status, body)
+}
+
+// RenderExternalEffects mounts the immutable donor runtime inside the one v3
+// admin shell. It deliberately renders only the original stage mount point;
+// donor navigation and HTML are never embedded.
+func (renderer *Renderer) RenderExternalEffects(writer http.ResponseWriter, data AdminPageData, assets ExternalEffectsAssets) error {
+	if renderer == nil || renderer.templates == nil || assets.TokensCSS == "" || assets.LabsCSS == "" || assets.AdminJS == "" {
+		return errors.New("external effects shell assets are required")
+	}
+	normalizeAdminPage(&data)
+	data.ShowPageHeader = false
+	content, err := executeTemplate(renderer.templates, "admin_external_effects", data)
+	if err != nil {
+		return err
+	}
+	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{
+		AdminPageData:   data,
+		Content:         template.HTML(content),
+		ExternalEffects: true,
+		ExternalAssets:  assets,
+	})
+	if err != nil {
+		return err
+	}
+	return writeHTML(writer, http.StatusOK, body)
 }
 
 // RenderLogin renders the login shell.  It does not authenticate or issue a

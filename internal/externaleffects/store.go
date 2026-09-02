@@ -282,7 +282,8 @@ func (r *Repository) Reconcile(ctx context.Context, c ControlCommand) (Projectio
 // RunAttempt first atomically proves this exact River job owns the queued
 // generation, records attempted, commits, and only then calls the adapter.
 // A nil adapter is the default-disabled provider: it final-fails locally
-// without a provider call. A transport error is always outcome_unknown.
+// without a provider call. A provider error becomes outcome_unknown only when
+// the adapter confirms a call was attempted; a pre-call failure is retryable.
 func (r *Repository) RunAttempt(ctx context.Context, id, generation, riverJobID int64, adapter ProviderAdapter) error {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
@@ -292,12 +293,39 @@ func (r *Repository) RunAttempt(ctx context.Context, id, generation, riverJobID 
 	var state string
 	var attempts int32
 	var fence int64
-	err = tx.QueryRow(ctx, `SELECT effect.state,effect.attempt_count,effect.lease_fence FROM external_effects effect JOIN external_effect_jobs job ON job.effect_id=effect.id AND job.generation=effect.generation WHERE effect.id=$1 AND effect.generation=$2 AND job.river_job_id=$3 FOR UPDATE OF effect`, id, generation, riverJobID).Scan(&state, &attempts, &fence)
+	var leaseExpires *time.Time
+	err = tx.QueryRow(ctx, `SELECT effect.state,effect.attempt_count,effect.lease_fence,effect.lease_expires_at FROM external_effects effect JOIN external_effect_jobs job ON job.effect_id=effect.id AND job.generation=effect.generation WHERE effect.id=$1 AND effect.generation=$2 AND job.river_job_id=$3 FOR UPDATE OF effect`, id, generation, riverJobID).Scan(&state, &attempts, &fence, &leaseExpires)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil
 	}
 	if err != nil {
 		return err
+	}
+	if State(state) == StateAttempted {
+		// A process may have died after committing attempted and before it could
+		// record a provider outcome. Never turn that replay into another call:
+		// wait for the original lease, then fail closed to unknown.
+		if leaseExpires != nil && leaseExpires.After(r.now()) {
+			delay := time.Until(*leaseExpires)
+			if delay < time.Second {
+				delay = time.Second
+			}
+			return river.JobSnooze(delay)
+		}
+		recovery := Hash("attempt-lease-expired", effectID(id), strconv.FormatInt(generation, 10), strconv.Itoa(int(attempts)), strconv.FormatInt(fence, 10))
+		if result, updateErr := tx.Exec(ctx, `UPDATE external_effect_attempts SET state='outcome_unknown',receipt_digest=$5,completed_at=clock_timestamp() WHERE effect_id=$1 AND number=$2 AND generation=$3 AND fence=$4 AND state='attempted'`, id, attempts, generation, fence, recovery); updateErr != nil || result.RowsAffected() != 1 {
+			if updateErr != nil {
+				return updateErr
+			}
+			return ErrTransition
+		}
+		if result, updateErr := tx.Exec(ctx, `UPDATE external_effects SET state='outcome_unknown',updated_at=clock_timestamp() WHERE id=$1 AND generation=$2 AND lease_fence=$3 AND state='attempted' AND (lease_expires_at IS NULL OR lease_expires_at <= clock_timestamp())`, id, generation, fence); updateErr != nil || result.RowsAffected() != 1 {
+			if updateErr != nil {
+				return updateErr
+			}
+			return ErrTransition
+		}
+		return tx.Commit(ctx)
 	}
 	if State(state) != StateQueued {
 		return nil

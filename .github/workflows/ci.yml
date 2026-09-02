@@ -46,6 +46,7 @@ jobs:
       - name: Build and stage frozen External Effects workspace
         run: |
           npm ci
+          node scripts/validate-openapi.mjs
           scripts/check-pr01-donor-manifest.sh
           npm run typecheck
           npm run build
@@ -86,6 +87,7 @@ jobs:
           go build -trimpath -ldflags "-s -w" -o release/bin/migrate-platform ./cmd/migrate-platform
           go build -trimpath -ldflags "-s -w" -o release/bin/migrate-river ./cmd/migrate-river
           npm ci
+          node scripts/validate-openapi.mjs
           scripts/check-pr01-donor-manifest.sh
           npm run typecheck
           npm run build
