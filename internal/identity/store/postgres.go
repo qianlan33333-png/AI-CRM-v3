@@ -939,11 +939,12 @@ func readConflict(ctx context.Context, tx pgx.Tx, id int64) (identityapp.Conflic
 func lockMerge(ctx context.Context, tx pgx.Tx, id int64) (identityapp.MergeRecord, string, error) {
 	var m identityapp.MergeRecord
 	var reversedAt *time.Time
-	var status string
-	err := tx.QueryRow(ctx, `SELECT id,candidate_id,from_customer_id,to_customer_id,from_customer_version_before,from_customer_version_after,to_customer_version_before,to_customer_version_after,from_lineage_version_before,from_lineage_version_after,to_lineage_version_before,to_lineage_version_after,rule,operator,reversible_status,reversed_at FROM customer_merges WHERE id=$1 FOR UPDATE`, id).Scan(&m.ID, &m.CandidateID, &m.FromCustomerID, &m.ToCustomerID, &m.FromVersionBefore, &m.FromVersionAfter, &m.ToVersionBefore, &m.ToVersionAfter, &m.FromLineageBefore, &m.FromLineageAfter, &m.ToLineageBefore, &m.ToLineageAfter, &m.Rule, &m.Operator, &status, &reversedAt)
+	var status, strength string
+	err := tx.QueryRow(ctx, `SELECT m.id,m.candidate_id,m.from_customer_id,m.to_customer_id,m.from_customer_version_before,m.from_customer_version_after,m.to_customer_version_before,m.to_customer_version_after,m.from_lineage_version_before,m.from_lineage_version_after,m.to_lineage_version_before,m.to_lineage_version_after,m.rule,m.operator,m.reversible_status,m.reversed_at,e.evidence_type,e.strength,e.source,e.source_event_id,e.evidence_digest,e.policy_version FROM customer_merges m JOIN identity_link_evidence e ON e.id=m.evidence_id WHERE m.id=$1 FOR UPDATE OF m`, id).Scan(&m.ID, &m.CandidateID, &m.FromCustomerID, &m.ToCustomerID, &m.FromVersionBefore, &m.FromVersionAfter, &m.ToVersionBefore, &m.ToVersionAfter, &m.FromLineageBefore, &m.FromLineageAfter, &m.ToLineageBefore, &m.ToLineageAfter, &m.Rule, &m.Operator, &status, &reversedAt, &m.Evidence.Type, &strength, &m.Evidence.Source, &m.Evidence.EventID, &m.Evidence.Digest, &m.Evidence.PolicyVersion)
 	if err != nil {
 		return identityapp.MergeRecord{}, "", err
 	}
+	m.Evidence.Strength = identitydomain.EvidenceStrength(strength)
 	m.Reversed = status == "reversed"
 	return m, status, nil
 }
@@ -952,12 +953,20 @@ func createConflict(ctx context.Context, tx pgx.Tx, left, right int64, reason st
 	if right < left {
 		left, right = right, left
 	}
+	var existingID int64
+	err := tx.QueryRow(ctx, `SELECT id FROM customer_identity_conflicts WHERE status='open' AND LEAST(left_customer_id,right_customer_id)=LEAST($1::bigint,$2::bigint) AND GREATEST(left_customer_id,right_customer_id)=GREATEST($1::bigint,$2::bigint) AND reason=$3 FOR UPDATE`, left, right, reason).Scan(&existingID)
+	if err == nil {
+		return readConflict(ctx, tx, existingID)
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return identityapp.Conflict{}, err
+	}
 	evidenceID, err := writeEvidence(ctx, tx, left, right, 0, 0, e)
 	if err != nil {
 		return identityapp.Conflict{}, err
 	}
 	var id int64
-	err = tx.QueryRow(ctx, `INSERT INTO customer_identity_conflicts(left_customer_id,right_customer_id,evidence_id,reason) VALUES($1,$2,$3,$4) ON CONFLICT (LEAST(left_customer_id,right_customer_id),GREATEST(left_customer_id,right_customer_id),reason) WHERE status='open' DO UPDATE SET updated_at=CURRENT_TIMESTAMP RETURNING id`, left, right, evidenceID, reason).Scan(&id)
+	err = tx.QueryRow(ctx, `INSERT INTO customer_identity_conflicts(left_customer_id,right_customer_id,evidence_id,reason) VALUES($1,$2,$3,$4) RETURNING id`, left, right, evidenceID, reason).Scan(&id)
 	if err != nil {
 		return identityapp.Conflict{}, err
 	}

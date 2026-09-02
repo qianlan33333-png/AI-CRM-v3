@@ -187,7 +187,7 @@ func TestPostgresMergeLedgerAndReverseUseExactSnapshots(t *testing.T) {
 		reverted, err = h.service.RevertConfirmedMerge(ctx, merged.Merge.ID)
 		return err
 	})
-	if !reverted.Reversed {
+	if !reverted.Reversed || reverted.Evidence != merged.Merge.Evidence {
 		t.Fatalf("reverted=%+v", reverted)
 	}
 
@@ -409,6 +409,28 @@ func TestPostgresLinkIntentPersistsVersionFingerprintAndStableResultSnapshot(t *
 	})
 	if !errors.Is(err, identityapp.ErrLinkIntentPayloadMismatch) {
 		t.Fatalf("payload drift=%v", err)
+	}
+}
+
+func TestPostgresOpenConflictReplayKeepsPersistedEvidence(t *testing.T) {
+	h := newPostgresHarness(t)
+	source := h.provision(t, testFact(t, identitydomain.KindWeComExternalUserID, "wecom-corp:conflict-replay", "first"))
+	target := testFact(t, identitydomain.KindWeComExternalUserID, "wecom-corp:conflict-replay", "second")
+	firstEvidence := testEvidence(identitydomain.EvidenceStrong)
+	firstEvidence.Digest = "first-digest"
+	secondEvidence := firstEvidence
+	secondEvidence.Digest = "second-digest"
+	first := h.link(t, identityapp.LinkCommand{SourceCustomerID: source.CustomerID, Target: target, Evidence: firstEvidence})
+	second := h.link(t, identityapp.LinkCommand{SourceCustomerID: source.CustomerID, Target: target, Evidence: secondEvidence})
+	if first.Conflict == nil || second.Conflict == nil || first.Conflict.ID != second.Conflict.ID || second.Conflict.Evidence != firstEvidence {
+		t.Fatalf("first=%+v second=%+v", first, second)
+	}
+	var evidenceRows int
+	if err := h.pool.Native().QueryRow(context.Background(), `SELECT count(*) FROM identity_link_evidence`).Scan(&evidenceRows); err != nil {
+		t.Fatal(err)
+	}
+	if evidenceRows != 1 {
+		t.Fatalf("conflict replay evidence rows=%d", evidenceRows)
 	}
 }
 
