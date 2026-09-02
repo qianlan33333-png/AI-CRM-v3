@@ -80,9 +80,9 @@ func (*PostgreSQLOAuthStateStore) Consume(ctx context.Context, purpose OAuthPurp
 	var state OAuthState
 	err = tx.QueryRow(ctx, `
 		UPDATE wecom_oauth_states
-		SET used_at = $4
+		SET used_at = clock_timestamp()
 		WHERE purpose = $1 AND state_digest = $2 AND nonce_digest = $3 AND used_at IS NULL AND expires_at >= $4
-		RETURNING purpose, redirect_path, expires_at`, purpose, stateDigest[:], nonceDigest[:], now, now).Scan(&state.Purpose, &state.Redirect, &state.ExpiresAt)
+		RETURNING purpose, redirect_path, expires_at`, purpose, stateDigest[:], nonceDigest[:], now).Scan(&state.Purpose, &state.Redirect, &state.ExpiresAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return OAuthState{}, ErrInvalidOAuth
 	}
