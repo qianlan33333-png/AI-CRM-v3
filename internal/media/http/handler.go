@@ -288,7 +288,7 @@ func (h *Handler) referenceConflict(w http.ResponseWriter, err error, kind strin
 func invalidQuery(w http.ResponseWriter) {
 	var raw [12]byte
 	_, _ = rand.Read(raw[:])
-	writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"ok": false, "code": "VALIDATION_FAILED", "message": "validation failed", "request_id": "media_" + hex.EncodeToString(raw[:])})
+	writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"code": "VALIDATION_FAILED", "message": "Validation failed.", "request_id": "media_" + hex.EncodeToString(raw[:])})
 }
 
 func (h *Handler) images(w http.ResponseWriter, r *http.Request, tail string) {

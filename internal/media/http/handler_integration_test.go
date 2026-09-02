@@ -92,8 +92,11 @@ func TestMediaHTTPCompatibilitySecurityAndFrozenWriteContract(t *testing.T) {
 	for _, query := range []string{"?enabled_only=TRUE", "?limit=1&limit=2"} {
 		got := serve(httptest.NewRequest(http.MethodGet, "/api/admin/image-library"+query, nil))
 		payload := responseJSON(t, got, http.StatusUnprocessableEntity)
-		if payload["code"] != "VALIDATION_FAILED" {
+		if len(payload) != 3 || payload["code"] != "VALIDATION_FAILED" || payload["message"] != "Validation failed." {
 			t.Fatalf("image query %q payload=%#v", query, payload)
+		}
+		if requestID, ok := payload["request_id"].(string); !ok || !strings.HasPrefix(requestID, "media_") {
+			t.Fatalf("image query %q request id=%#v", query, payload["request_id"])
 		}
 	}
 	for query, want := range map[string]float64{"?limit=0": 100, "?limit=-1": 1, "?limit=999": 500, "?offset=-1": 100} {
