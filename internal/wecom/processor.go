@@ -61,7 +61,7 @@ func (processor InboxProcessor) ProcessOnce(ctx context.Context, owner string, l
 	var deliveries []webhook.Delivery
 	if err := processor.UOW.Within(ctx, func(txContext context.Context) error {
 		var err error
-		deliveries, err = processor.Inbox.Claim(txContext, webhook.Claim{Owner: owner, Limit: limit, LeaseDuration: time.Minute})
+		deliveries, err = processor.Inbox.Claim(txContext, webhook.Claim{Provider: "wecom.external_contact", Owner: owner, Limit: limit, LeaseDuration: time.Minute})
 		return err
 	}); err != nil {
 		return 0, err

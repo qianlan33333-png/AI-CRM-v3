@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 )
@@ -16,7 +18,15 @@ type JSSDKSigner interface {
 }
 
 type EmployeeSessionIssuer interface {
-	IssueWeComSession(context.Context, OAuthPurpose, OAuthIdentity) error
+	IssueWeComSession(context.Context, OAuthPurpose, OAuthIdentity) (BrowserCredentials, error)
+}
+
+// BrowserCredentials are write-only transport values. They must never be put
+// in logs or JSON responses; the HTTP adapter turns them into secure cookies.
+type BrowserCredentials struct {
+	SessionToken string
+	CSRFToken    string
+	ExpiresAt    time.Time
 }
 
 type HTTPHandlerOptions struct {
@@ -28,11 +38,16 @@ type HTTPHandlerOptions struct {
 	PrincipalResolver SidebarPrincipalResolver
 	CustomerViewer    SidebarCustomerViewer
 	SessionIssuer     EmployeeSessionIssuer
+	ExistingIdentity  ExistingWeComIdentityResolver
+	CookieSecure      bool
 }
 
 // NewHTTPHandler creates the frozen WeCom routes. The caller mounts this
 // handler in cmd/aicrm; this package never registers routes globally.
-func NewHTTPHandler(options HTTPHandlerOptions) http.Handler {
+func NewHTTPHandler(options HTTPHandlerOptions) (http.Handler, error) {
+	if options.OAuth.Enabled && (!options.CookieSecure || options.SessionIssuer == nil || options.OAuth.StateStore == nil || options.OAuth.UOW == nil || options.OAuth.Client == nil || options.OAuth.CorpID == "" || !options.ContextTokens.valid() || options.ContextTokens.CorpID != options.OAuth.CorpID || options.JSSDKSigner == nil || !validJSSDKOrigin(options.JSSDKOrigin) || options.PrincipalResolver == nil || options.CustomerViewer == nil || options.ExistingIdentity == nil) {
+		return nil, errors.New("enabled wecom oauth requires secure browser session dependencies")
+	}
 	mux := http.NewServeMux()
 	mux.Handle("GET /wecom/external-contact/callback", options.Callback)
 	mux.Handle("POST /wecom/external-contact/callback", options.Callback)
@@ -57,7 +72,7 @@ func NewHTTPHandler(options HTTPHandlerOptions) http.Handler {
 	mux.HandleFunc("GET /api/sidebar/v2/workbench", func(writer http.ResponseWriter, request *http.Request) {
 		handleWorkbench(writer, request, options)
 	})
-	return mux
+	return mux, nil
 }
 
 func handleOAuthStart(writer http.ResponseWriter, request *http.Request, service OAuthService, purpose OAuthPurpose) {
@@ -79,10 +94,12 @@ func handleOAuthCallback(writer http.ResponseWriter, request *http.Request, opti
 		writeOAuthError(writer, err)
 		return
 	}
-	if err = options.SessionIssuer.IssueWeComSession(request.Context(), purpose, identity); err != nil {
+	credentials, err := options.SessionIssuer.IssueWeComSession(request.Context(), purpose, identity)
+	if err != nil || !credentials.valid(time.Now().UTC()) {
 		writeWeComError(writer, http.StatusServiceUnavailable, "provider_unavailable")
 		return
 	}
+	writeBrowserCookies(writer, purpose, credentials, options.CookieSecure)
 	http.Redirect(writer, request, state.Redirect, http.StatusFound)
 }
 
@@ -105,16 +122,28 @@ func validJSSDKURL(value, origin string) bool {
 	return err == nil && baseErr == nil && base.IsAbs() && base.Host != "" && parsed.Scheme == base.Scheme && parsed.Host == base.Host && parsed.Fragment == "" && parsed.Path != ""
 }
 
+func validJSSDKOrigin(origin string) bool {
+	parsed, err := url.Parse(origin)
+	return err == nil && parsed.IsAbs() && parsed.Host != "" && parsed.Path == "" && parsed.RawQuery == "" && parsed.Fragment == ""
+}
+
 func handleContextIssue(writer http.ResponseWriter, request *http.Request, options HTTPHandlerOptions) {
-	if !options.OAuth.Enabled || options.PrincipalResolver == nil {
+	if !options.OAuth.Enabled || options.PrincipalResolver == nil || options.ExistingIdentity == nil {
 		writeWeComError(writer, http.StatusServiceUnavailable, "provider_unavailable")
 		return
 	}
 	request.Body = http.MaxBytesReader(writer, request.Body, 4096)
 	var input struct {
-		CustomerID int64 `json:"customer_id"`
+		ExternalUserID string `json:"external_userid"`
 	}
-	if json.NewDecoder(request.Body).Decode(&input) != nil || input.CustomerID < 1 {
+	decoder := json.NewDecoder(request.Body)
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&input) != nil || strings.TrimSpace(input.ExternalUserID) != input.ExternalUserID || input.ExternalUserID == "" {
+		writeWeComError(writer, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	var trailing any
+	if decoder.Decode(&trailing) != io.EOF {
 		writeWeComError(writer, http.StatusBadRequest, "invalid_request")
 		return
 	}
@@ -123,12 +152,45 @@ func handleContextIssue(writer http.ResponseWriter, request *http.Request, optio
 		writeWeComError(writer, http.StatusUnauthorized, "authentication_required")
 		return
 	}
-	token, err := options.ContextTokens.Issue(request.Context(), principal, customerdomain.CustomerID(input.CustomerID))
+	customerID, found, err := options.ExistingIdentity.ResolveExistingWeComIdentity(request.Context(), principal.CorpID, input.ExternalUserID)
+	if err != nil {
+		writeWeComError(writer, http.StatusServiceUnavailable, "provider_unavailable")
+		return
+	}
+	if !found {
+		writeWeComError(writer, http.StatusNotFound, "identity_not_found")
+		return
+	}
+	token, err := options.ContextTokens.Issue(request.Context(), principal, customerID)
 	if err != nil {
 		writeContextError(writer, err)
 		return
 	}
 	writeJSON(writer, http.StatusOK, map[string]string{"context_token": token})
+}
+
+// ExistingWeComIdentityResolver is deliberately read-only. It must resolve an
+// existing OneID mapping and must never provision a customer or mint a fact.
+type ExistingWeComIdentityResolver interface {
+	ResolveExistingWeComIdentity(ctx context.Context, corpID, externalUserID string) (customerdomain.CustomerID, bool, error)
+}
+
+func (credentials BrowserCredentials) valid(now time.Time) bool {
+	return credentials.SessionToken != "" && credentials.CSRFToken != "" && credentials.ExpiresAt.After(now)
+}
+
+func writeBrowserCookies(writer http.ResponseWriter, purpose OAuthPurpose, credentials BrowserCredentials, secure bool) {
+	sessionName, csrfName := "aicrm_admin_session", "aicrm_admin_csrf"
+	if purpose == OAuthSidebar {
+		sessionName, csrfName = "aicrm_sidebar_session", "aicrm_sidebar_csrf"
+	}
+	base := http.Cookie{Path: "/", Secure: secure, SameSite: http.SameSiteLaxMode, Expires: credentials.ExpiresAt}
+	session := base
+	session.Name, session.Value, session.HttpOnly = sessionName, credentials.SessionToken, true
+	csrf := base
+	csrf.Name, csrf.Value = csrfName, credentials.CSRFToken
+	http.SetCookie(writer, &session)
+	http.SetCookie(writer, &csrf)
 }
 
 func handleWorkbench(writer http.ResponseWriter, request *http.Request, options HTTPHandlerOptions) {

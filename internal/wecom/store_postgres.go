@@ -56,7 +56,7 @@ type OAuthState struct {
 
 type OAuthStateStore interface {
 	Create(context.Context, OAuthState, [32]byte, [32]byte) error
-	Consume(context.Context, OAuthPurpose, [32]byte, time.Time) (OAuthState, error)
+	Consume(context.Context, OAuthPurpose, [32]byte, [32]byte, time.Time) (OAuthState, error)
 }
 
 type PostgreSQLOAuthStateStore struct{}
@@ -72,7 +72,7 @@ func (*PostgreSQLOAuthStateStore) Create(ctx context.Context, state OAuthState, 
 	return err
 }
 
-func (*PostgreSQLOAuthStateStore) Consume(ctx context.Context, purpose OAuthPurpose, digest [32]byte, now time.Time) (OAuthState, error) {
+func (*PostgreSQLOAuthStateStore) Consume(ctx context.Context, purpose OAuthPurpose, stateDigest, nonceDigest [32]byte, now time.Time) (OAuthState, error) {
 	tx, err := platformpostgres.RequireTransaction(ctx)
 	if err != nil {
 		return OAuthState{}, err
@@ -81,8 +81,8 @@ func (*PostgreSQLOAuthStateStore) Consume(ctx context.Context, purpose OAuthPurp
 	err = tx.QueryRow(ctx, `
 		UPDATE wecom_oauth_states
 		SET used_at = $4
-		WHERE purpose = $1 AND state_digest = $2 AND used_at IS NULL AND expires_at >= $3
-		RETURNING purpose, redirect_path, expires_at`, purpose, digest[:], now, now).Scan(&state.Purpose, &state.Redirect, &state.ExpiresAt)
+		WHERE purpose = $1 AND state_digest = $2 AND nonce_digest = $3 AND used_at IS NULL AND expires_at >= $4
+		RETURNING purpose, redirect_path, expires_at`, purpose, stateDigest[:], nonceDigest[:], now, now).Scan(&state.Purpose, &state.Redirect, &state.ExpiresAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return OAuthState{}, ErrInvalidOAuth
 	}

@@ -88,6 +88,37 @@ func TestCallbackHandlerDurableBeforeACKAndRejectsBadInput(t *testing.T) {
 	}
 }
 
+func TestCallbackHandlerDeduplicatesEquivalentXMLAndRejectsToUserNameMismatch(t *testing.T) {
+	crypto, _ := NewCallbackCrypto("callback-token", "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG", "wx-corp")
+	crypto.now = func() time.Time { return fixedNow }
+	store := &memoryWebhookStore{}
+	inbox, _ := webhook.NewService(store)
+	handler := CallbackHandler{Enabled: true, Crypto: crypto, Inbox: inbox, UOW: directUOW{}}
+	first := []byte("<xml><ToUserName>wx-corp</ToUserName><Event>change_external_contact</Event><ChangeType>add_external_contact</ChangeType><ExternalUserID>external</ExternalUserID><UserID>employee</UserID></xml>")
+	second := []byte("<xml><UserID>employee</UserID><ExternalUserID>external</ExternalUserID><ChangeType>add_external_contact</ChangeType><Event>change_external_contact</Event><ToUserName>wx-corp</ToUserName></xml>")
+	for _, plain := range [][]byte{first, second} {
+		encrypted := encryptForTest(t, crypto, plain)
+		timestamp := "1788336000"
+		query := "?msg_signature=" + callbackSignature("callback-token", timestamp, "n", encrypted) + "&timestamp=" + timestamp + "&nonce=n"
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/wecom/external-contact/callback"+query, strings.NewReader("<xml><Encrypt><![CDATA["+encrypted+"]]></Encrypt></xml>")))
+		if response.Code != http.StatusOK {
+			t.Fatalf("equivalent callback status=%d", response.Code)
+		}
+	}
+	if len(store.deliveries) != 1 {
+		t.Fatalf("expected one durable event, got %d", len(store.deliveries))
+	}
+	mismatch := []byte("<xml><ToUserName>another-corp</ToUserName><Event>change_external_contact</Event><ChangeType>add_external_contact</ChangeType><ExternalUserID>external</ExternalUserID><UserID>employee</UserID></xml>")
+	encrypted := encryptForTest(t, crypto, mismatch)
+	timestamp := "1788336000"
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/wecom/external-contact/callback?msg_signature="+callbackSignature("callback-token", timestamp, "n", encrypted)+"&timestamp="+timestamp+"&nonce=n", strings.NewReader("<xml><Encrypt><![CDATA["+encrypted+"]]></Encrypt></xml>")))
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("corp mismatch status=%d", response.Code)
+	}
+}
+
 func TestProcessorProcessesDuplicateDeliveryOnce(t *testing.T) {
 	store := &memoryWebhookStore{}
 	inbox, _ := webhook.NewService(store)
@@ -98,6 +129,10 @@ func TestProcessorProcessesDuplicateDeliveryOnce(t *testing.T) {
 	}
 	if replay, err := inbox.Ingest(context.Background(), webhook.Ingest{Provider: "wecom.external_contact", IdempotencyKey: key, Payload: payload}); err != nil || !replay.Replay {
 		t.Fatalf("duplicate ingest replay=%v err=%v", replay.Replay, err)
+	}
+	otherKey, _ := idempotency.Parse("other-provider:delivery:000001")
+	if _, err := inbox.Ingest(context.Background(), webhook.Ingest{Provider: "other.provider", IdempotencyKey: otherKey, Payload: payload}); err != nil {
+		t.Fatal(err)
 	}
 	identity := &fakeIdentity{}
 	relationships := &memoryRelationships{}
@@ -130,7 +165,7 @@ func TestProcessorDoesNotProvisionFromDeleteEvent(t *testing.T) {
 }
 
 func TestOAuthStateSingleUseExpiryAndOpenRedirect(t *testing.T) {
-	states := &memoryOAuthStates{states: map[[32]byte]OAuthState{}}
+	states := &memoryOAuthStates{states: map[[32]byte]storedOAuthState{}}
 	client := &fakeOAuthClient{}
 	service := OAuthService{Enabled: true, CorpID: "wx-corp", StateStore: states, UOW: directUOW{}, Client: client, AllowedPaths: map[string]struct{}{"/sidebar": {}}, Now: func() time.Time { return fixedNow }, Random: func(value []byte) error {
 		for i := range value {
@@ -152,9 +187,16 @@ func TestOAuthStateSingleUseExpiryAndOpenRedirect(t *testing.T) {
 	if _, _, err = service.ConsumeAndExchange(context.Background(), OAuthSidebar, start.State, "code"); !errors.Is(err, ErrInvalidOAuth) {
 		t.Fatalf("replay err=%v", err)
 	}
-	states.states[oauthDigest("expired")] = OAuthState{Purpose: OAuthSidebar, Redirect: "/sidebar", ExpiresAt: fixedNow.Add(-time.Second)}
-	if _, _, err = service.ConsumeAndExchange(context.Background(), OAuthSidebar, "expired", "code"); !errors.Is(err, ErrInvalidOAuth) {
+	states.states[oauthDigest("expired")] = storedOAuthState{state: OAuthState{Purpose: OAuthSidebar, Redirect: "/sidebar", ExpiresAt: fixedNow.Add(-time.Second)}, nonce: oauthDigest("nonce")}
+	if _, _, err = service.ConsumeAndExchange(context.Background(), OAuthSidebar, "expired.nonce", "code"); !errors.Is(err, ErrInvalidOAuth) {
 		t.Fatalf("expired err=%v", err)
+	}
+	start, err = service.Start(context.Background(), OAuthSidebar, "/sidebar")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = service.ConsumeAndExchange(context.Background(), OAuthSidebar, start.State+"x", "code"); !errors.Is(err, ErrInvalidOAuth) {
+		t.Fatalf("nonce tamper err=%v", err)
 	}
 }
 
@@ -186,14 +228,21 @@ func TestContextTokenTamperingExpiryAndRelationshipTermination(t *testing.T) {
 func TestSidebarHTTPContractsAndDisabledProvider(t *testing.T) {
 	relationships := &memoryRelationships{active: map[string]bool{relationshipKey("wx-corp", "employee", 42): true}}
 	contextTokens := ContextTokenService{CorpID: "wx-corp", SigningKey: bytes32(), Relationships: relationships, UOW: directUOW{}, Now: func() time.Time { return fixedNow }}
-	handler := NewHTTPHandler(HTTPHandlerOptions{
-		OAuth:             OAuthService{Enabled: true},
+	oauthStates := &memoryOAuthStates{states: map[[32]byte]storedOAuthState{}}
+	handler, err := NewHTTPHandler(HTTPHandlerOptions{
+		OAuth:             OAuthService{Enabled: true, CorpID: "wx-corp", StateStore: oauthStates, UOW: directUOW{}, Client: fakeOAuthClient{}},
 		ContextTokens:     contextTokens,
 		JSSDKSigner:       fakeJSSDKSigner{},
 		JSSDKOrigin:       "https://crm.example",
 		PrincipalResolver: fakePrincipal{},
 		CustomerViewer:    fakeCustomerViewer{},
+		ExistingIdentity:  fakeExistingIdentity{},
+		SessionIssuer:     fakeSessionIssuer{},
+		CookieSecure:      true,
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	jssdk := httptest.NewRecorder()
 	handler.ServeHTTP(jssdk, httptest.NewRequest(http.MethodGet, "/api/sidebar/jssdk-config?url=https%3A%2F%2Fcrm.example%2Fsidebar%3Fx%3D1", nil))
 	if jssdk.Code != http.StatusOK || !strings.Contains(jssdk.Body.String(), "signature") {
@@ -205,7 +254,7 @@ func TestSidebarHTTPContractsAndDisabledProvider(t *testing.T) {
 		t.Fatalf("wrong origin status=%d", wrongOrigin.Code)
 	}
 	issue := httptest.NewRecorder()
-	handler.ServeHTTP(issue, httptest.NewRequest(http.MethodPost, "/api/sidebar/context-token", strings.NewReader(`{"customer_id":42}`)))
+	handler.ServeHTTP(issue, httptest.NewRequest(http.MethodPost, "/api/sidebar/context-token", strings.NewReader(`{"external_userid":"external-42"}`)))
 	if issue.Code != http.StatusOK {
 		t.Fatalf("issue status=%d body=%s", issue.Code, issue.Body.String())
 	}
@@ -221,9 +270,54 @@ func TestSidebarHTTPContractsAndDisabledProvider(t *testing.T) {
 		t.Fatalf("workbench status=%d body=%s", workbench.Code, workbench.Body.String())
 	}
 	disabled := httptest.NewRecorder()
-	NewHTTPHandler(HTTPHandlerOptions{}).ServeHTTP(disabled, httptest.NewRequest(http.MethodGet, "/api/sidebar/jssdk-config", nil))
+	disabledHandler, err := NewHTTPHandler(HTTPHandlerOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	disabledHandler.ServeHTTP(disabled, httptest.NewRequest(http.MethodGet, "/api/sidebar/jssdk-config", nil))
 	if disabled.Code != http.StatusServiceUnavailable {
 		t.Fatalf("disabled status=%d", disabled.Code)
+	}
+	unknown := httptest.NewRecorder()
+	handler.ServeHTTP(unknown, httptest.NewRequest(http.MethodPost, "/api/sidebar/context-token", strings.NewReader(`{"external_userid":"unknown"}`)))
+	if unknown.Code != http.StatusNotFound {
+		t.Fatalf("unknown identity status=%d", unknown.Code)
+	}
+	trailing := httptest.NewRecorder()
+	handler.ServeHTTP(trailing, httptest.NewRequest(http.MethodPost, "/api/sidebar/context-token", strings.NewReader(`{"external_userid":"external-42"} {}`)))
+	if trailing.Code != http.StatusBadRequest {
+		t.Fatalf("trailing body status=%d", trailing.Code)
+	}
+}
+
+func TestOAuthCallbackWritesSecureCookies(t *testing.T) {
+	states := &memoryOAuthStates{states: map[[32]byte]storedOAuthState{}}
+	service := OAuthService{Enabled: true, CorpID: "wx-corp", StateStore: states, UOW: directUOW{}, Client: fakeOAuthClient{}, AllowedPaths: map[string]struct{}{"/admin": {}}, Now: func() time.Time { return fixedNow }, Random: func(value []byte) error {
+		for i := range value {
+			value[i] = byte(i + 1)
+		}
+		return nil
+	}}
+	start, err := service.Start(context.Background(), OAuthAdmin, "/admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	relationships := &memoryRelationships{active: map[string]bool{relationshipKey("wx-corp", "employee", 42): true}}
+	handler, err := NewHTTPHandler(HTTPHandlerOptions{OAuth: service, ContextTokens: ContextTokenService{CorpID: "wx-corp", SigningKey: bytes32(), Relationships: relationships, UOW: directUOW{}}, JSSDKSigner: fakeJSSDKSigner{}, JSSDKOrigin: "https://crm.example", PrincipalResolver: fakePrincipal{}, CustomerViewer: fakeCustomerViewer{}, ExistingIdentity: fakeExistingIdentity{}, SessionIssuer: fakeSessionIssuer{}, CookieSecure: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/auth/wecom/callback?state="+start.State+"&code=provider-code", nil))
+	if response.Code != http.StatusFound || strings.Contains(response.Body.String(), "session-token") {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	cookies := response.Result().Cookies()
+	if len(cookies) != 2 || cookies[0].Name != "aicrm_admin_session" || !cookies[0].Secure || !cookies[0].HttpOnly || cookies[0].SameSite != http.SameSiteLaxMode || cookies[0].Path != "/" {
+		t.Fatalf("bad session cookie: %+v", cookies)
+	}
+	if cookies[1].Name != "aicrm_admin_csrf" || !cookies[1].Secure || cookies[1].HttpOnly {
+		t.Fatalf("bad csrf cookie: %+v", cookies[1])
 	}
 }
 
@@ -279,10 +373,10 @@ func (store *memoryWebhookStore) PutIfAbsent(_ context.Context, delivery webhook
 	store.deliveries = append(store.deliveries, delivery)
 	return delivery, true, nil
 }
-func (store *memoryWebhookStore) Claim(_ context.Context, _ webhook.Claim) ([]webhook.Delivery, error) {
+func (store *memoryWebhookStore) Claim(_ context.Context, claim webhook.Claim) ([]webhook.Delivery, error) {
 	var claimed []webhook.Delivery
 	for i := range store.deliveries {
-		if store.deliveries[i].Status == webhook.StatusReceived || store.deliveries[i].Status == webhook.StatusRetryable {
+		if store.deliveries[i].Provider == claim.Provider && (store.deliveries[i].Status == webhook.StatusReceived || store.deliveries[i].Status == webhook.StatusRetryable) {
 			store.deliveries[i].Status = webhook.StatusProcessing
 			store.deliveries[i].AttemptCount++
 			claimed = append(claimed, store.deliveries[i])
@@ -342,19 +436,23 @@ func (store *memoryAuditStore) Append(_ context.Context, event audit.Event) (aud
 	return event, nil
 }
 
-type memoryOAuthStates struct{ states map[[32]byte]OAuthState }
+type storedOAuthState struct {
+	state OAuthState
+	nonce [32]byte
+}
+type memoryOAuthStates struct{ states map[[32]byte]storedOAuthState }
 
-func (store *memoryOAuthStates) Create(_ context.Context, state OAuthState, digest, _ [32]byte) error {
-	store.states[digest] = state
+func (store *memoryOAuthStates) Create(_ context.Context, state OAuthState, digest, nonce [32]byte) error {
+	store.states[digest] = storedOAuthState{state: state, nonce: nonce}
 	return nil
 }
-func (store *memoryOAuthStates) Consume(_ context.Context, purpose OAuthPurpose, digest [32]byte, now time.Time) (OAuthState, error) {
-	state, found := store.states[digest]
-	if !found || state.Purpose != purpose || state.ExpiresAt.Before(now) {
+func (store *memoryOAuthStates) Consume(_ context.Context, purpose OAuthPurpose, stateDigest, nonce [32]byte, now time.Time) (OAuthState, error) {
+	stored, found := store.states[stateDigest]
+	if !found || stored.nonce != nonce || stored.state.Purpose != purpose || stored.state.ExpiresAt.Before(now) {
 		return OAuthState{}, ErrInvalidOAuth
 	}
-	delete(store.states, digest)
-	return state, nil
+	delete(store.states, stateDigest)
+	return stored.state, nil
 }
 
 type fakeOAuthClient struct{}
@@ -382,6 +480,18 @@ type fakeCustomerViewer struct{}
 
 func (fakeCustomerViewer) SidebarCustomer(_ context.Context, customerID customerdomain.CustomerID) (SidebarCustomerView, error) {
 	return SidebarCustomerView{CustomerID: customerID, Status: "active"}, nil
+}
+
+type fakeExistingIdentity struct{}
+
+func (fakeExistingIdentity) ResolveExistingWeComIdentity(_ context.Context, _, externalUserID string) (customerdomain.CustomerID, bool, error) {
+	return 42, externalUserID == "external-42", nil
+}
+
+type fakeSessionIssuer struct{}
+
+func (fakeSessionIssuer) IssueWeComSession(_ context.Context, _ OAuthPurpose, _ OAuthIdentity) (BrowserCredentials, error) {
+	return BrowserCredentials{SessionToken: "session-token", CSRFToken: "csrf-token", ExpiresAt: time.Now().UTC().Add(time.Hour)}, nil
 }
 
 var _ = sha256.Size

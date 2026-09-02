@@ -20,7 +20,7 @@ import (
 const maxCallbackBody = 1 << 20
 
 type CallbackEvent struct {
-	ToUserName     string `xml:"ToUserName" json:"-"`
+	ToUserName     string `xml:"ToUserName" json:"to_user_name"`
 	Event          string `xml:"Event" json:"event"`
 	ChangeType     string `xml:"ChangeType" json:"change_type"`
 	ExternalUserID string `xml:"ExternalUserID" json:"external_userid"`
@@ -117,13 +117,16 @@ func (handler CallbackHandler) ServeHTTP(writer http.ResponseWriter, request *ht
 			writeCallbackFailure(writer, err)
 			return
 		}
+		if event.ToUserName != handler.Crypto.corpID {
+			writeCallbackFailure(writer, ErrCorpMismatch)
+			return
+		}
 		payload, err := json.Marshal(event)
 		if err != nil {
 			writeWeComError(writer, http.StatusBadRequest, "invalid_request")
 			return
 		}
-		sum := sha256.Sum256(plain)
-		key, _ := idempotency.Parse("wecom:external-contact:" + hex.EncodeToString(sum[:]))
+		key, _ := idempotency.Parse("wecom:external-contact:" + stableEventKey(event))
 		err = handler.UOW.Within(request.Context(), func(txContext context.Context) error {
 			_, ingestErr := handler.Inbox.Ingest(txContext, webhook.Ingest{Provider: "wecom.external_contact", IdempotencyKey: key, Payload: payload})
 			return ingestErr

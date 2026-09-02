@@ -69,30 +69,31 @@ func (service OAuthService) Start(ctx context.Context, purpose OAuthPurpose, red
 	if err != nil {
 		return OAuthStart{}, err
 	}
-	state = state + "." + nonce
 	if err = service.UOW.Within(ctx, func(txContext context.Context) error {
 		return service.StateStore.Create(txContext, OAuthState{Purpose: purpose, Redirect: redirect, ExpiresAt: now.Add(ttl)}, oauthDigest(state), oauthDigest(nonce))
 	}); err != nil {
 		return OAuthStart{}, err
 	}
-	callbackURL, err := service.Client.AuthorizationURL(ctx, purpose, state, redirect)
+	combinedState := state + "." + nonce
+	callbackURL, err := service.Client.AuthorizationURL(ctx, purpose, combinedState, redirect)
 	if err != nil {
 		return OAuthStart{}, err
 	}
-	return OAuthStart{AuthorizationURL: callbackURL, State: state}, nil
+	return OAuthStart{AuthorizationURL: callbackURL, State: combinedState}, nil
 }
 
 func (service OAuthService) ConsumeAndExchange(ctx context.Context, purpose OAuthPurpose, state, code string) (OAuthIdentity, OAuthState, error) {
 	if !service.Enabled {
 		return OAuthIdentity{}, OAuthState{}, ErrProviderDisabled
 	}
-	if !validPurpose(purpose) || state == "" || code == "" || service.StateStore == nil || service.UOW == nil || service.Client == nil {
+	stateParts := strings.Split(state, ".")
+	if !validPurpose(purpose) || len(stateParts) != 2 || stateParts[0] == "" || stateParts[1] == "" || code == "" || service.StateStore == nil || service.UOW == nil || service.Client == nil {
 		return OAuthIdentity{}, OAuthState{}, ErrInvalidOAuth
 	}
 	var stored OAuthState
 	err := service.UOW.Within(ctx, func(txContext context.Context) error {
 		var consumeErr error
-		stored, consumeErr = service.StateStore.Consume(txContext, purpose, oauthDigest(state), service.clock()())
+		stored, consumeErr = service.StateStore.Consume(txContext, purpose, oauthDigest(stateParts[0]), oauthDigest(stateParts[1]), service.clock()())
 		return consumeErr
 	})
 	if err != nil {
