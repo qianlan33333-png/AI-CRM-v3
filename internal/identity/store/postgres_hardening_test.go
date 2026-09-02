@@ -115,6 +115,55 @@ func TestPersistenceErrorExposesOnlySafePostgresLabelsToTests(t *testing.T) {
 	}
 }
 
+func TestPostgresStaleCandidateRejectionCommitsWithoutMerge(t *testing.T) {
+	h := newPostgresHarness(t)
+	leftFact := testFact(t, identitydomain.KindAlipayOAuthUserID, "alipay-app:stale-candidate", "left")
+	rightFact := testFact(t, identitydomain.KindFirstPartyMemberID, "first-party:stale-candidate", "right")
+	left := h.provision(t, leftFact)
+	right := h.provision(t, rightFact)
+	candidate := h.link(t, identityapp.LinkCommand{
+		SourceCustomerID: left.CustomerID, Target: rightFact, Evidence: testEvidence(identitydomain.EvidenceStrong),
+	})
+	if candidate.Candidate == nil {
+		t.Fatalf("candidate=%+v", candidate)
+	}
+	attached := h.link(t, identityapp.LinkCommand{
+		SourceCustomerID: left.CustomerID,
+		Target:           testFact(t, identitydomain.KindExtension, "ext:stale-candidate", "later"),
+		Evidence:         testEvidence(identitydomain.EvidenceStrong),
+	})
+	if attached.Status != identityapp.LinkAttached {
+		t.Fatalf("attach=%+v", attached)
+	}
+
+	rejected := h.confirm(t, identityapp.ConfirmMergeCommand{
+		CandidateID: candidate.Candidate.ID, SurvivorCustomerID: left.CustomerID, Operator: "postgres-hardening-stale",
+	})
+	if rejected.Status != identityapp.LinkCandidateRejected || rejected.Candidate == nil ||
+		rejected.Candidate.ID != candidate.Candidate.ID || rejected.Candidate.Status != "rejected" || rejected.Merge != nil {
+		t.Fatalf("rejected=%+v", rejected)
+	}
+	var status, resolvedBy string
+	var resolved, survivorUnset bool
+	var candidateVersion, mergeCount int
+	if err := h.pool.Native().QueryRow(context.Background(), `SELECT status,resolved_by,resolved_at IS NOT NULL,selected_survivor_customer_id IS NULL,version,(SELECT count(*) FROM customer_merges WHERE candidate_id=$1) FROM customer_merge_candidates WHERE id=$1`, candidate.Candidate.ID).Scan(&status, &resolvedBy, &resolved, &survivorUnset, &candidateVersion, &mergeCount); err != nil {
+		t.Fatal(err)
+	}
+	if status != "rejected" || resolvedBy != "system" || !resolved || !survivorUnset || candidateVersion != 2 || mergeCount != 0 {
+		t.Fatalf("candidate status=%s resolved_by=%s resolved=%v survivor_unset=%v version=%d merges=%d", status, resolvedBy, resolved, survivorUnset, candidateVersion, mergeCount)
+	}
+	assertCustomerState(t, h, left.CustomerID, "active", 0, candidate.Candidate.LeftVersion+1, 1)
+	assertCustomerState(t, h, right.CustomerID, "active", 0, candidate.Candidate.RightVersion, 1)
+
+	replacement := h.link(t, identityapp.LinkCommand{
+		SourceCustomerID: left.CustomerID, Target: rightFact, Evidence: testEvidence(identitydomain.EvidenceStrong),
+	})
+	if replacement.Status != identityapp.LinkCandidate || replacement.Candidate == nil ||
+		replacement.Candidate.ID == candidate.Candidate.ID || replacement.Candidate.Status != "open" {
+		t.Fatalf("replacement=%+v", replacement)
+	}
+}
+
 func TestPostgresMergeLedgerAndReverseUseExactSnapshots(t *testing.T) {
 	h := newPostgresHarness(t)
 	wecomFact := testFact(t, identitydomain.KindWeComExternalUserID, "wecom-corp:roundtrip", "wecom-survivor")
@@ -870,17 +919,22 @@ func TestPostgresLaterConfirmationVersusReverseFailsClosed(t *testing.T) {
 	}()
 	close(start)
 	first, second := <-outcomes, <-outcomes
-	successes := 0
+	effects := 0
 	for _, outcome := range []raceOutcome{first, second} {
 		if outcome.err == nil {
-			successes++
+			if outcome.operation == "reverse" || outcome.result.Status == identityapp.LinkMerged {
+				effects++
+			} else if outcome.operation != "confirm" || outcome.result.Status != identityapp.LinkCandidateRejected ||
+				outcome.result.Candidate == nil || outcome.result.Candidate.Status != "rejected" {
+				t.Fatalf("unexpected successful %s result=%+v", outcome.operation, outcome.result)
+			}
 			continue
 		}
 		if !errors.Is(outcome.err, identityapp.ErrMergeNotReversible) && !errors.Is(outcome.err, identityapp.ErrConcurrentIdentityChange) && !errors.Is(outcome.err, identityapp.ErrInvalidLinkCommand) {
 			t.Fatalf("%s race error: %s", outcome.operation, safePostgresDiagnostic(outcome.err))
 		}
 	}
-	if successes != 1 {
+	if effects != 1 {
 		t.Fatalf("race outcomes first=%+v second=%+v", first, second)
 	}
 	var firstStatus string

@@ -249,8 +249,15 @@ func (store *PostgresStore) ConfirmMerge(ctx context.Context, command identityap
 	leftRoot, err1 := activeCustomerLocked(ctx, tx, int64(candidate.LeftCustomerID))
 	rightRoot, err2 := activeCustomerLocked(ctx, tx, int64(candidate.RightCustomerID))
 	if err1 != nil || err2 != nil || leftRoot.Version != candidate.LeftVersion || rightRoot.Version != candidate.RightVersion {
-		_, _ = tx.Exec(ctx, `UPDATE customer_merge_candidates SET status='rejected',resolved_by='system',resolved_at=CURRENT_TIMESTAMP,version=version+1 WHERE id=$1 AND status='open'`, candidate.ID)
-		return identityapp.LinkResult{}, identityapp.ErrConcurrentIdentityChange
+		tag, rejectErr := tx.Exec(ctx, `UPDATE customer_merge_candidates SET status='rejected',resolved_by='system',resolved_at=CURRENT_TIMESTAMP,version=version+1 WHERE id=$1 AND status='open'`, candidate.ID)
+		if rejectErr != nil {
+			return identityapp.LinkResult{}, persistenceFailure(rejectErr)
+		}
+		if tag.RowsAffected() != 1 {
+			return identityapp.LinkResult{}, identityapp.ErrConcurrentIdentityChange
+		}
+		candidate.Status = "rejected"
+		return identityapp.LinkResult{Status: identityapp.LinkCandidateRejected, CustomerID: command.SurvivorCustomerID, Candidate: &candidate}, nil
 	}
 	if reason, err := crossRootConflict(ctx, tx, int64(candidate.LeftCustomerID), int64(candidate.RightCustomerID)); err != nil {
 		return identityapp.LinkResult{}, persistenceFailure(err)

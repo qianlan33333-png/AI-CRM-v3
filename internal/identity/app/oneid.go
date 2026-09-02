@@ -21,9 +21,14 @@ var (
 type LinkStatus string
 
 const (
-	LinkAttached          LinkStatus = "attached"
-	LinkAlreadyLinked     LinkStatus = "already_linked"
-	LinkCandidate         LinkStatus = "merge_candidate"
+	LinkAttached      LinkStatus = "attached"
+	LinkAlreadyLinked LinkStatus = "already_linked"
+	LinkCandidate     LinkStatus = "merge_candidate"
+	// LinkCandidateRejected is a committed confirmation outcome: the open
+	// candidate was rejected because one of its endpoint roots changed after
+	// the candidate snapshot was created. It is deliberately not an error, so
+	// transactional adapters can persist the rejection atomically.
+	LinkCandidateRejected LinkStatus = "candidate_rejected"
 	LinkConflict          LinkStatus = "conflict"
 	LinkMerged            LinkStatus = "merged"
 	LinkIntentExpired     LinkStatus = "intent_expired"

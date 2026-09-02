@@ -303,14 +303,25 @@ func TestConfirmMergeRejectsCandidateWhoseEndpointChanged(t *testing.T) {
 	if err != nil || attached.Status != LinkAttached {
 		t.Fatalf("attach=%+v err=%v", attached, err)
 	}
-	_, err = service.ConfirmMerge(context.Background(), ConfirmMergeCommand{
+	rejected, err := service.ConfirmMerge(context.Background(), ConfirmMergeCommand{
 		CandidateID: candidate.Candidate.ID, SurvivorCustomerID: left.CustomerID, Operator: "admin-1",
 	})
-	if !errors.Is(err, ErrConcurrentIdentityChange) {
-		t.Fatalf("stale candidate confirmation error=%v", err)
+	if err != nil || rejected.Status != LinkCandidateRejected || rejected.Candidate == nil ||
+		rejected.Candidate.ID != candidate.Candidate.ID || rejected.Candidate.Status != "rejected" {
+		t.Fatalf("stale candidate rejection=%+v err=%v", rejected, err)
 	}
 	if store.Root(left.CustomerID) != left.CustomerID || store.Root(right.CustomerID) != right.CustomerID {
 		t.Fatal("stale candidate confirmation mutated customer roots")
+	}
+	if persisted := store.candidates[candidate.Candidate.ID]; persisted.Status != "rejected" {
+		t.Fatalf("candidate status=%q", persisted.Status)
+	}
+	replacement, err := service.LinkVerifiedIdentity(context.Background(), LinkCommand{
+		SourceCustomerID: left.CustomerID, Target: rightFact, Evidence: evidence(identitydomain.EvidenceStrong),
+	})
+	if err != nil || replacement.Status != LinkCandidate || replacement.Candidate == nil ||
+		replacement.Candidate.ID == candidate.Candidate.ID || replacement.Candidate.Status != "open" {
+		t.Fatalf("replacement candidate=%+v err=%v", replacement, err)
 	}
 }
 

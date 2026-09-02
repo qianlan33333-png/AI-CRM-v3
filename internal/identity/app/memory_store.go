@@ -240,17 +240,17 @@ func (store *MemoryStore) ConfirmMerge(_ context.Context, command ConfirmMergeCo
 	if !found || candidate.Status != "open" || candidate.Evidence.Strength != identitydomain.EvidenceStrong {
 		return LinkResult{}, ErrInvalidLinkCommand
 	}
+	left, right := candidate.LeftCustomerID, candidate.RightCustomerID
+	if left == right || (command.SurvivorCustomerID != left && command.SurvivorCustomerID != right) {
+		return LinkResult{}, ErrInvalidLinkCommand
+	}
 	leftCustomer, leftFound := store.customers[candidate.LeftCustomerID]
 	rightCustomer, rightFound := store.customers[candidate.RightCustomerID]
 	if !leftFound || !rightFound || leftCustomer.Status != customerdomain.StatusActive ||
 		rightCustomer.Status != customerdomain.StatusActive || leftCustomer.Version != candidate.LeftVersion ||
 		rightCustomer.Version != candidate.RightVersion {
-		store.rejectCandidateLocked(candidate)
-		return LinkResult{}, ErrConcurrentIdentityChange
-	}
-	left, right := candidate.LeftCustomerID, candidate.RightCustomerID
-	if left == right || (command.SurvivorCustomerID != left && command.SurvivorCustomerID != right) {
-		return LinkResult{}, ErrInvalidLinkCommand
+		candidate = store.rejectCandidateLocked(candidate)
+		return LinkResult{Status: LinkCandidateRejected, CustomerID: command.SurvivorCustomerID, Candidate: &candidate}, nil
 	}
 	if reason := store.strongConflictLocked(left, right); reason != "" {
 		conflict := store.createConflictLocked(left, right, reason, candidate.Evidence)
