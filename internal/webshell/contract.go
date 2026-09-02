@@ -215,14 +215,15 @@ type LoginLinks struct {
 // LoginPageData is deliberately capability-neutral. It renders the login form
 // but does not authenticate credentials or create a session.
 type LoginPageData struct {
-	PageTitle     string
-	PageSummary   string
-	PageNotice    string
-	PageError     string
-	NextPath      string
-	FormAction    string
-	LoginLinks    LoginLinks
-	AuthModeLabel string
+	PageTitle      string
+	PageSummary    string
+	PageNotice     string
+	PageError      string
+	NextPath       string
+	FormAction     string
+	LoginCSRFToken string
+	LoginLinks     LoginLinks
+	AuthModeLabel  string
 }
 
 // SidebarPageData supplies data attributes and initial shell state. The

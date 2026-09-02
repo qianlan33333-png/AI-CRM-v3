@@ -260,8 +260,8 @@ components:
     LoginRequest:
       type: object
       additionalProperties: false
-      required: [username, password]
-      properties: {username: {type: string, minLength: 3, maxLength: 120}, password: {type: string, minLength: 12, maxLength: 1024, writeOnly: true}, next: {type: string}}
+      required: [username, password, login_csrf_token]
+      properties: {username: {type: string, minLength: 3, maxLength: 120}, password: {type: string, minLength: 12, maxLength: 1024, writeOnly: true}, login_csrf_token: {type: string, minLength: 32, writeOnly: true}, next: {type: string}}
     LoginResponse:
       type: object
       required: [ok, next, csrf_token]

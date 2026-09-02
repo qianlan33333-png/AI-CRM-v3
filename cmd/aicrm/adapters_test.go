@@ -194,3 +194,21 @@ func TestApplicationRouterRejectsCrossSiteUnsafeRequests(t *testing.T) {
 		})
 	}
 }
+
+func TestApplicationRouterDefersLoginPostToIndependentCSRFProtection(t *testing.T) {
+	marker := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusNoContent)
+	})
+	handler, err := routeApplication(marker, marker, marker, marker, marker, &fakeAccessAuthentication{}, "https://crm.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/login", nil)
+	request.Header.Set("Origin", "null")
+	request.Header.Set("Sec-Fetch-Site", "cross-site")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}

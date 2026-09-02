@@ -3,6 +3,9 @@ package http
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/subtle"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,8 +21,10 @@ import (
 )
 
 const (
-	SessionCookieName = "aicrm_admin_session"
-	CSRFCookieName    = "aicrm_admin_csrf"
+	SessionCookieName   = "aicrm_admin_session"
+	CSRFCookieName      = "aicrm_admin_csrf"
+	LoginCSRFCookieName = "aicrm_login_csrf"
+	loginCSRFTTL        = 10 * time.Minute
 )
 
 type Renderer interface {
@@ -115,7 +120,14 @@ func (handler *Handler) loginPage(response nethttp.ResponseWriter, request *neth
 			return
 		}
 	}
-	if err := handler.renderer.Render(request.Context(), response, nethttp.StatusOK, "login", map[string]any{"next_path": next}); err != nil {
+	token, err := handler.issueLoginCSRF(response)
+	if err != nil {
+		nethttp.Error(response, "prepare login", nethttp.StatusInternalServerError)
+		return
+	}
+	if err := handler.renderer.Render(request.Context(), response, nethttp.StatusOK, "login", map[string]any{
+		"next_path": next, "login_csrf_token": token,
+	}); err != nil {
 		nethttp.Error(response, "render login", nethttp.StatusInternalServerError)
 	}
 }
@@ -126,6 +138,10 @@ func (handler *Handler) login(response nethttp.ResponseWriter, request *nethttp.
 		handler.writeError(response, request, err)
 		return
 	}
+	if !validLoginCSRF(request, payload) {
+		handler.writeError(response, request, domain.ErrCSRFRequired)
+		return
+	}
 	issued, err := handler.auth.Login(request.Context(), app.LoginCommand{
 		Username: text(payload["username"]), Password: text(payload["password"]), Remote: remoteAddress(request),
 	})
@@ -133,6 +149,7 @@ func (handler *Handler) login(response nethttp.ResponseWriter, request *nethttp.
 		handler.writeError(response, request, err)
 		return
 	}
+	handler.clearLoginCSRF(response)
 	handler.setCookies(response, issued)
 	next := SafeNextPath(text(payload["next"]), "/admin")
 	if wantsJSON(request) {
@@ -276,12 +293,48 @@ func (handler *Handler) writeError(response nethttp.ResponseWriter, request *net
 		status, code = nethttp.StatusConflict, "conflict"
 	}
 	if request.URL.Path == "/login" && !wantsJSON(request) {
+		token, tokenErr := handler.issueLoginCSRF(response)
+		if tokenErr != nil {
+			nethttp.Error(response, "prepare login", nethttp.StatusInternalServerError)
+			return
+		}
 		_ = handler.renderer.Render(request.Context(), response, status, "login", map[string]any{
-			"next_path": SafeNextPath(request.FormValue("next"), "/admin"), "error": code,
+			"next_path": SafeNextPath(request.FormValue("next"), "/admin"), "error": code, "login_csrf_token": token,
 		})
 		return
 	}
 	writeJSON(response, status, map[string]any{"ok": false, "error": code})
+}
+
+func (handler *Handler) issueLoginCSRF(response nethttp.ResponseWriter) (string, error) {
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	token := base64.RawURLEncoding.EncodeToString(raw)
+	expiresAt := time.Now().Add(loginCSRFTTL)
+	response.Header().Set("Cache-Control", "no-store")
+	nethttp.SetCookie(response, &nethttp.Cookie{
+		Name: LoginCSRFCookieName, Value: token, Path: "/login", Expires: expiresAt, MaxAge: int(loginCSRFTTL.Seconds()),
+		Secure: handler.cookieSecure, HttpOnly: true, SameSite: nethttp.SameSiteStrictMode,
+	})
+	return token, nil
+}
+
+func validLoginCSRF(request *nethttp.Request, payload map[string]any) bool {
+	cookie, err := request.Cookie(LoginCSRFCookieName)
+	submitted := text(payload["login_csrf_token"])
+	if err != nil || cookie.Value == "" || submitted == "" || len(cookie.Value) != len(submitted) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(submitted)) == 1
+}
+
+func (handler *Handler) clearLoginCSRF(response nethttp.ResponseWriter) {
+	nethttp.SetCookie(response, &nethttp.Cookie{
+		Name: LoginCSRFCookieName, Value: "", Path: "/login", MaxAge: -1, Expires: time.Unix(1, 0),
+		Secure: handler.cookieSecure, HttpOnly: true, SameSite: nethttp.SameSiteStrictMode,
+	})
 }
 
 func (handler *Handler) setCookies(response nethttp.ResponseWriter, issued app.IssuedSession) {

@@ -67,6 +67,7 @@ func (renderer *Renderer) Render(_ context.Context, writer http.ResponseWriter, 
 	data := DefaultLoginPage(stringValue(values, "next_path"))
 	data.PageNotice = stringValue(values, "notice")
 	data.PageError = friendlyLoginError(stringValue(values, "error"))
+	data.LoginCSRFToken = stringValue(values, "login_csrf_token")
 	if title := stringValue(values, "page_title"); title != "" {
 		data.PageTitle = title
 	}

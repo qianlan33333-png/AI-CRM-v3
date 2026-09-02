@@ -52,6 +52,7 @@
           </div>
           <form class="admin-form-grid admin-form-grid--stacked" method="post" action="{{.FormAction}}" autocomplete="on">
             <input type="hidden" name="next" value="{{.NextPath}}">
+            <input type="hidden" name="login_csrf_token" value="{{.LoginCSRFToken}}">
             <label>
               <span>账号</span>
               <input type="text" name="username" autocomplete="username" placeholder="请输入账号" required>

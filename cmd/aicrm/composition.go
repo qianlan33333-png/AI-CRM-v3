@@ -211,7 +211,7 @@ func routeApplication(health, access, identity, weCom, shell http.Handler, authe
 
 func rejectCrossSiteUnsafeRequests(next http.Handler, publicOrigin string) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if isUnsafeMethod(request.Method) {
+		if isUnsafeMethod(request.Method) && !usesIndependentLoginCSRF(request) {
 			origin := request.Header.Get("Origin")
 			blocked := false
 			if origin != "" {
@@ -231,6 +231,10 @@ func rejectCrossSiteUnsafeRequests(next http.Handler, publicOrigin string) http.
 		}
 		next.ServeHTTP(writer, request)
 	})
+}
+
+func usesIndependentLoginCSRF(request *http.Request) bool {
+	return request.Method == http.MethodPost && request.URL.Path == "/login"
 }
 
 func isUnsafeMethod(method string) bool {
