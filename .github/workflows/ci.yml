@@ -16,7 +16,23 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: aicrm_ci
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d aicrm_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      AICRM_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/aicrm_ci?sslmode=disable
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -27,3 +43,56 @@ jobs:
           cache: true
       - name: Check repository
         run: make check
+      - name: Race-check security and identity boundaries
+        run: go test -race ./cmd/aicrm ./internal/access/... ./internal/identity/... ./internal/wecom/...
+
+  deploy:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build release artifact
+        env:
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: amd64
+        run: |
+          set -euo pipefail
+          mkdir -p release/bin
+          go build -trimpath -ldflags "-s -w" -o release/bin/aicrm ./cmd/aicrm
+          go build -trimpath -ldflags "-s -w" -o release/bin/migrate-platform ./cmd/migrate-platform
+          cp -R migrations deploy release/
+          tar -C release -czf "aicrm-${GITHUB_SHA}.tar.gz" .
+      - name: Configure pinned SSH host
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          install -d -m 0700 "$HOME/.ssh"
+          umask 077
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$HOME/.ssh/deploy_key"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          ssh-keygen -y -f "$HOME/.ssh/deploy_key" >/dev/null
+          test -s "$HOME/.ssh/known_hosts"
+      - name: Install versioned release
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          ssh_flags=(-i "$HOME/.ssh/deploy_key" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes)
+          scp "${ssh_flags[@]}" "aicrm-${GITHUB_SHA}.tar.gz" deploy/install-release.sh "${DEPLOY_USER}@${DEPLOY_HOST}:/tmp/"
+          ssh "${ssh_flags[@]}" "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            "sudo /usr/bin/bash /tmp/install-release.sh /tmp/aicrm-${GITHUB_SHA}.tar.gz ${GITHUB_SHA}"
+          curl --fail --silent --show-error --retry 5 --retry-delay 2 https://id-dev.youcangogogo.com/readyz
