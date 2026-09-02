@@ -37,13 +37,35 @@ func TestPostgreSQLEffectReplayUnknownAndStaleWorker(t *testing.T) {
 	}
 	ctx := context.Background()
 	command := AcceptCommand{ReceiptKey: digestForTest("accept-key"), Envelope: envelopeForTest()}
-	first, _, err := repository.AcceptAndQueue(ctx, command)
+	first, firstReceipt, err := repository.AcceptAndQueue(ctx, command)
 	if err != nil || first.State != StateQueued {
 		t.Fatalf("accept+queue=%+v %v", first, err)
 	}
-	second, _, err := repository.AcceptAndQueue(ctx, command)
-	if err != nil || second.ID != first.ID {
-		t.Fatalf("exact replay=%+v %v", second, err)
+	second, secondReceipt, err := repository.AcceptAndQueue(ctx, command)
+	if err != nil || second.ID != first.ID || secondReceipt != firstReceipt {
+		t.Fatalf("exact replay projection=%+v receipt=%+v want=%+v err=%v", second, secondReceipt, firstReceipt, err)
+	}
+	concurrent := make(chan Receipt, 2)
+	failures := make(chan error, 2)
+	for range 2 {
+		go func() {
+			_, receipt, acceptErr := repository.AcceptAndQueue(ctx, command)
+			if acceptErr != nil {
+				failures <- acceptErr
+				return
+			}
+			concurrent <- receipt
+		}()
+	}
+	for range 2 {
+		select {
+		case acceptErr := <-failures:
+			t.Fatalf("concurrent replay=%v", acceptErr)
+		case receipt := <-concurrent:
+			if receipt != firstReceipt {
+				t.Fatalf("concurrent receipt=%+v want=%+v", receipt, firstReceipt)
+			}
+		}
 	}
 	drift := command
 	drift.Envelope.PayloadDigest = digestForTest("other")

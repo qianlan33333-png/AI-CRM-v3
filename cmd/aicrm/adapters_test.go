@@ -5,11 +5,14 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	accessapp "github.com/qianlan33333-png/AI-CRM-v3/internal/access/app"
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
+	"github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/wecom"
 )
 
@@ -175,6 +178,65 @@ func TestApplicationRouterOwnsEffectsAndPushCenterSeparately(t *testing.T) {
 		handler.ServeHTTP(response, request)
 		if response.Header().Get("X-Owner") != owner {
 			t.Fatalf("%s owner=%q", path, response.Header().Get("X-Owner"))
+		}
+	}
+}
+
+func TestExternalEffectsUIRequiresAdminAndExposesOnlyItsFrozenSurface(t *testing.T) {
+	dist := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dist, "admin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dist, "assets"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dist, "admin", "campaigns.html"), []byte("external-effects"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dist, "assets", "campaign.js"), []byte("asset"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	authentication := &fakeAccessAuthentication{err: accessdomain.ErrAuthentication}
+	marker := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) { writer.WriteHeader(http.StatusNoContent) })
+	handler, err := routeApplicationWithEffects(marker, marker, marker, marker, marker, externaleffects.NewUIHandler(dist), marker, marker, authentication, "https://crm.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/admin/external-effects?view=external-effects", nil))
+	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/login?next=%2Fadmin%2Fexternal-effects%3Fview%3Dexternal-effects" {
+		t.Fatalf("unauthenticated effects UI status=%d location=%q", response.Code, response.Header().Get("Location"))
+	}
+
+	authentication.err = nil
+	request := httptest.NewRequest(http.MethodGet, "/admin/external-effects?view=campaign&unexpected=1", nil)
+	request.AddCookie(&http.Cookie{Name: "aicrm_admin_session", Value: "valid"})
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/admin/external-effects?view=external-effects" {
+		t.Fatalf("query was not normalized status=%d location=%q", response.Code, response.Header().Get("Location"))
+	}
+
+	for path, want := range map[string]string{
+		"/admin/external-effects?view=external-effects": "external-effects",
+		"/assets/campaign.js":                           "asset",
+	} {
+		request = httptest.NewRequest(http.MethodGet, path, nil)
+		request.AddCookie(&http.Cookie{Name: "aicrm_admin_session", Value: "valid"})
+		response = httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusOK || response.Body.String() != want {
+			t.Fatalf("readable path=%s status=%d body=%q", path, response.Code, response.Body.String())
+		}
+	}
+
+	ui := externaleffects.NewUIHandler(dist)
+	for _, path := range []string{"/admin/campaigns.html", "/admin/customers.html", "/customers"} {
+		response = httptest.NewRecorder()
+		ui.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		if response.Code != http.StatusNotFound {
+			t.Fatalf("effects UI exposed %s with status=%d", path, response.Code)
 		}
 	}
 }

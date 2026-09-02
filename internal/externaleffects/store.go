@@ -90,7 +90,9 @@ func (r *Repository) AcceptAndQueue(ctx context.Context, command AcceptCommand) 
 	if err != nil {
 		return Projection{}, Receipt{}, err
 	}
-	if _, err = tx.Exec(ctx, `INSERT INTO external_effect_operation_receipts(operation,effect_id,receipt_key_digest,command_digest,state) VALUES ('accept',$1,$2,$3,'accepted')`, id, command.ReceiptKey, command.Digest()); err != nil {
+	var acceptReceiptID int64
+	var acceptCompleted time.Time
+	if err = tx.QueryRow(ctx, `INSERT INTO external_effect_operation_receipts(operation,effect_id,receipt_key_digest,command_digest,state) VALUES ('accept',$1,$2,$3,'accepted') RETURNING id,completed_at`, id, command.ReceiptKey, command.Digest()).Scan(&acceptReceiptID, &acceptCompleted); err != nil {
 		return Projection{}, Receipt{}, err
 	}
 	if _, err = tx.Exec(ctx, `INSERT INTO external_effect_generations(effect_id,generation) VALUES ($1,1)`, id); err != nil {
@@ -108,17 +110,17 @@ func (r *Repository) AcceptAndQueue(ctx context.Context, command AcceptCommand) 
 	if _, err = tx.Exec(ctx, `INSERT INTO external_effect_jobs(effect_id,generation,river_job_id,queue,args_digest,scheduled_at) VALUES ($1,1,$2,'outbound',$3,clock_timestamp())`, id, inserted.Job.ID, Hash("river-args", effectID(id), "1")); err != nil {
 		return Projection{}, Receipt{}, err
 	}
-	var receiptID int64
-	var completed time.Time
-	err = tx.QueryRow(ctx, `INSERT INTO external_effect_operation_receipts(operation,effect_id,receipt_key_digest,command_digest,state) VALUES ('queue',$1,$2,$3,'queued') RETURNING id,completed_at`, id, queueKey, queueDigest).Scan(&receiptID, &completed)
-	if err != nil {
+	// The queue receipt is a distinct audit fact. The caller always receives
+	// the accept receipt so first delivery and an Idempotency-Key replay are
+	// byte-for-byte the same response-level acknowledgement.
+	if _, err = tx.Exec(ctx, `INSERT INTO external_effect_operation_receipts(operation,effect_id,receipt_key_digest,command_digest,state) VALUES ('queue',$1,$2,$3,'queued')`, id, queueKey, queueDigest); err != nil {
 		return Projection{}, Receipt{}, err
 	}
 	var final time.Time
 	if err = tx.QueryRow(ctx, `SELECT updated_at FROM external_effects WHERE id=$1`, id).Scan(&final); err != nil {
 		return Projection{}, Receipt{}, err
 	}
-	return commitProjection(tx, projection(id, command.Envelope.Owner, command.Envelope.Kind, StateQueued, 0, 1, final), Receipt{ID: "eerop_" + strconv.FormatInt(receiptID, 10), EffectID: effectID(id), CommandDigest: queueDigest, State: StateQueued, CompletedAt: completed})
+	return commitProjection(tx, projection(id, command.Envelope.Owner, command.Envelope.Kind, StateQueued, 0, 1, final), Receipt{ID: "eerop_" + strconv.FormatInt(acceptReceiptID, 10), EffectID: effectID(id), CommandDigest: command.Digest(), State: StateAccepted, CompletedAt: acceptCompleted})
 }
 
 func commitProjection(tx pgx.Tx, p Projection, receipt Receipt) (Projection, Receipt, error) {

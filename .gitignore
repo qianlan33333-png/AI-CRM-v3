@@ -1,2 +1,28 @@
-node_modules/
-web/dist/
+# secrets and local environment
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Go
+/bin/
+/coverage.out
+*.test
+
+# editors / OS
+.idea/
+.vscode/
+.DS_Store
+
+# generated or local runtime data
+/dist/
+/tmp/
+/data/
+*.log
+
+# frozen V2 workspace dependencies and generated browser output
+/node_modules/
+/web/dist/
