@@ -10,14 +10,14 @@ import (
 	"io/fs"
 	"mime"
 	"net/http"
+	"path"
 	"strings"
 	"time"
 )
 
 // The shell ships its presentation assets so an httptest or a future
 // composition root can mount it without depending on the donor repository.
-// The source commit is recorded in the asset provenance note below.
-// Source: AI-CRM@69c5282fb38058f2cc9872b6feb3f0f54bfad64b.
+// Source commits and the verified production release are recorded in README.md.
 //
 //go:embed templates static
 var embeddedWebAssets embed.FS
@@ -48,7 +48,9 @@ func NewRenderer() (*Renderer, error) {
 // templates remain the package's stable presentation boundary.
 type AdminShellView struct {
 	AdminPageData
-	Content template.HTML
+	Content        template.HTML
+	AudienceList   bool
+	AudienceDetail bool
 }
 
 // Render implements the small presentation contract consumed by the Access
@@ -92,7 +94,13 @@ func (renderer *Renderer) RenderAdminStatus(writer http.ResponseWriter, status i
 	}
 	normalizeAdminPage(&data)
 	contentTemplate := "admin_placeholder"
-	if data.RequestPath == LoginAccessPath {
+	audienceList := data.RequestPath == "/admin/automation-conversion"
+	audienceDetail := strings.HasPrefix(data.RequestPath, "/admin/automation-conversion/packages/")
+	if audienceList {
+		contentTemplate = "admin_audience"
+	} else if audienceDetail {
+		contentTemplate = "admin_audience_detail"
+	} else if data.RequestPath == LoginAccessPath {
 		contentTemplate = "admin_access"
 	} else if data.RequestPath == OneIDPagePath {
 		contentTemplate = "admin_oneid"
@@ -102,8 +110,10 @@ func (renderer *Renderer) RenderAdminStatus(writer http.ResponseWriter, status i
 		return err
 	}
 	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{
-		AdminPageData: data,
-		Content:       template.HTML(content), // child template already escaped all data
+		AdminPageData:  data,
+		Content:        template.HTML(content), // child template already escaped all data
+		AudienceList:   audienceList,
+		AudienceDetail: audienceDetail,
 	})
 	if err != nil {
 		return err
@@ -185,7 +195,7 @@ func (renderer *Renderer) ServeStatic(writer http.ResponseWriter, request *http.
 		http.Error(writer, "unable to read webshell asset", http.StatusInternalServerError)
 		return
 	}
-	contentType := mime.TypeByExtension(strings.ToLower(info.Name()))
+	contentType := mime.TypeByExtension(path.Ext(strings.ToLower(info.Name())))
 	if contentType == "" {
 		contentType = http.DetectContentType(content)
 	}
