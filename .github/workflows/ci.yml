@@ -51,6 +51,7 @@ jobs:
           npm run version:check
           node scripts/validate-openapi.mjs
           scripts/check-pr01-donor-manifest.sh
+          scripts/check-pr02-donor-manifest.sh
           npm run typecheck
           npm test
           npm run build
@@ -100,6 +101,7 @@ jobs:
           npm run version:check
           node scripts/validate-openapi.mjs
           scripts/check-pr01-donor-manifest.sh
+          scripts/check-pr02-donor-manifest.sh
           npm run typecheck
           npm run build
           cp -R migrations deploy release/

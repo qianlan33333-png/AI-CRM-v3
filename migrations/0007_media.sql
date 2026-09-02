@@ -106,7 +106,7 @@ CREATE TABLE media_operation_receipts (
 
 CREATE TABLE media_audit_events (
     id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    event_type TEXT NOT NULL CHECK (event_type ~ '^media\\.[a-z0-9_.]+$'),
+    event_type TEXT NOT NULL CHECK (event_type ~ '^media[.][a-z0-9_.]+$'),
     resource_kind TEXT NOT NULL,
     resource_id BIGINT NOT NULL,
     actor_admin_user_id BIGINT NOT NULL CHECK (actor_admin_user_id > 0),
@@ -115,7 +115,7 @@ CREATE TABLE media_audit_events (
 );
 CREATE TABLE media_outbox (
     id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    event_type TEXT NOT NULL CHECK (event_type ~ '^media\\.[a-z0-9_.]+$'),
+    event_type TEXT NOT NULL CHECK (event_type ~ '^media[.][a-z0-9_.]+$'),
     aggregate_kind TEXT NOT NULL,
     aggregate_id BIGINT NOT NULL,
     payload JSONB NOT NULL DEFAULT '{}'::jsonb,
