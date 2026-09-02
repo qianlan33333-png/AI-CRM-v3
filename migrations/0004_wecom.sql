@@ -11,7 +11,9 @@ CREATE TABLE wecom_oauth_states (
     created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
     CONSTRAINT wecom_oauth_states_digest_sha256 CHECK (octet_length(state_digest) = 32),
     CONSTRAINT wecom_oauth_states_nonce_digest_sha256 CHECK (octet_length(nonce_digest) = 32),
-    CONSTRAINT wecom_oauth_states_redirect_nonempty CHECK (length(redirect_path) BETWEEN 1 AND 2048)
+    CONSTRAINT wecom_oauth_states_redirect_nonempty CHECK (length(redirect_path) BETWEEN 1 AND 2048),
+    CONSTRAINT wecom_oauth_states_expiry_after_creation CHECK (expires_at > created_at),
+    CONSTRAINT wecom_oauth_states_used_after_creation CHECK (used_at IS NULL OR used_at >= created_at)
 );
 CREATE INDEX wecom_oauth_states_expiry_idx ON wecom_oauth_states (expires_at) WHERE used_at IS NULL;
 

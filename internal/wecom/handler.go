@@ -104,8 +104,17 @@ func handleOAuthCallback(writer http.ResponseWriter, request *http.Request, opti
 }
 
 func handleJSSDK(writer http.ResponseWriter, request *http.Request, options HTTPHandlerOptions) {
-	if !options.OAuth.Enabled || options.JSSDKSigner == nil || !validJSSDKURL(request.URL.Query().Get("url"), options.JSSDKOrigin) {
+	if !options.OAuth.Enabled || options.JSSDKSigner == nil || options.PrincipalResolver == nil {
 		writeWeComError(writer, http.StatusServiceUnavailable, "provider_unavailable")
+		return
+	}
+	principal, err := options.PrincipalResolver.SidebarPrincipal(request.Context())
+	if err != nil || principal.CorpID != options.OAuth.CorpID || strings.TrimSpace(principal.EmployeeID) != principal.EmployeeID || principal.EmployeeID == "" {
+		writeWeComError(writer, http.StatusUnauthorized, "authentication_required")
+		return
+	}
+	if !validJSSDKURL(request.URL.Query().Get("url"), options.JSSDKOrigin) {
+		writeWeComError(writer, http.StatusBadRequest, "invalid_request")
 		return
 	}
 	config, err := options.JSSDKSigner.ConfigForURL(request.Context(), request.URL.Query().Get("url"))

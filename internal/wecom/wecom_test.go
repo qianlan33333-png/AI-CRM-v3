@@ -229,17 +229,19 @@ func TestSidebarHTTPContractsAndDisabledProvider(t *testing.T) {
 	relationships := &memoryRelationships{active: map[string]bool{relationshipKey("wx-corp", "employee", 42): true}}
 	contextTokens := ContextTokenService{CorpID: "wx-corp", SigningKey: bytes32(), Relationships: relationships, UOW: directUOW{}, Now: func() time.Time { return fixedNow }}
 	oauthStates := &memoryOAuthStates{states: map[[32]byte]storedOAuthState{}}
-	handler, err := NewHTTPHandler(HTTPHandlerOptions{
+	signer := &fakeJSSDKSigner{}
+	options := HTTPHandlerOptions{
 		OAuth:             OAuthService{Enabled: true, CorpID: "wx-corp", StateStore: oauthStates, UOW: directUOW{}, Client: fakeOAuthClient{}},
 		ContextTokens:     contextTokens,
-		JSSDKSigner:       fakeJSSDKSigner{},
+		JSSDKSigner:       signer,
 		JSSDKOrigin:       "https://crm.example",
 		PrincipalResolver: fakePrincipal{},
 		CustomerViewer:    fakeCustomerViewer{},
 		ExistingIdentity:  fakeExistingIdentity{},
 		SessionIssuer:     fakeSessionIssuer{},
 		CookieSecure:      true,
-	})
+	}
+	handler, err := NewHTTPHandler(options)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,10 +250,27 @@ func TestSidebarHTTPContractsAndDisabledProvider(t *testing.T) {
 	if jssdk.Code != http.StatusOK || !strings.Contains(jssdk.Body.String(), "signature") {
 		t.Fatalf("jssdk status=%d body=%s", jssdk.Code, jssdk.Body.String())
 	}
+	if signer.calls != 1 {
+		t.Fatalf("signer calls=%d", signer.calls)
+	}
 	wrongOrigin := httptest.NewRecorder()
 	handler.ServeHTTP(wrongOrigin, httptest.NewRequest(http.MethodGet, "/api/sidebar/jssdk-config?url=https%3A%2F%2Fevil.example%2Fsidebar", nil))
-	if wrongOrigin.Code != http.StatusServiceUnavailable {
+	if wrongOrigin.Code != http.StatusBadRequest {
 		t.Fatalf("wrong origin status=%d", wrongOrigin.Code)
+	}
+	unauthenticated := options
+	unauthenticated.PrincipalResolver = failingPrincipal{}
+	unauthenticatedResponse := httptest.NewRecorder()
+	handleJSSDK(unauthenticatedResponse, httptest.NewRequest(http.MethodGet, "/api/sidebar/jssdk-config?url=https%3A%2F%2Fcrm.example%2Fsidebar", nil), unauthenticated)
+	if unauthenticatedResponse.Code != http.StatusUnauthorized || signer.calls != 1 {
+		t.Fatalf("unauthenticated status=%d signer=%d", unauthenticatedResponse.Code, signer.calls)
+	}
+	wrongCorp := options
+	wrongCorp.PrincipalResolver = wrongCorpPrincipal{}
+	wrongCorpResponse := httptest.NewRecorder()
+	handleJSSDK(wrongCorpResponse, httptest.NewRequest(http.MethodGet, "/api/sidebar/jssdk-config?url=https%3A%2F%2Fcrm.example%2Fsidebar", nil), wrongCorp)
+	if wrongCorpResponse.Code != http.StatusUnauthorized || signer.calls != 1 {
+		t.Fatalf("wrong corp status=%d signer=%d", wrongCorpResponse.Code, signer.calls)
 	}
 	issue := httptest.NewRecorder()
 	handler.ServeHTTP(issue, httptest.NewRequest(http.MethodPost, "/api/sidebar/context-token", strings.NewReader(`{"external_userid":"external-42"}`)))
@@ -303,7 +322,7 @@ func TestOAuthCallbackWritesSecureCookies(t *testing.T) {
 		t.Fatal(err)
 	}
 	relationships := &memoryRelationships{active: map[string]bool{relationshipKey("wx-corp", "employee", 42): true}}
-	handler, err := NewHTTPHandler(HTTPHandlerOptions{OAuth: service, ContextTokens: ContextTokenService{CorpID: "wx-corp", SigningKey: bytes32(), Relationships: relationships, UOW: directUOW{}}, JSSDKSigner: fakeJSSDKSigner{}, JSSDKOrigin: "https://crm.example", PrincipalResolver: fakePrincipal{}, CustomerViewer: fakeCustomerViewer{}, ExistingIdentity: fakeExistingIdentity{}, SessionIssuer: fakeSessionIssuer{}, CookieSecure: true})
+	handler, err := NewHTTPHandler(HTTPHandlerOptions{OAuth: service, ContextTokens: ContextTokenService{CorpID: "wx-corp", SigningKey: bytes32(), Relationships: relationships, UOW: directUOW{}}, JSSDKSigner: &fakeJSSDKSigner{}, JSSDKOrigin: "https://crm.example", PrincipalResolver: fakePrincipal{}, CustomerViewer: fakeCustomerViewer{}, ExistingIdentity: fakeExistingIdentity{}, SessionIssuer: fakeSessionIssuer{}, CookieSecure: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -464,9 +483,10 @@ func (fakeOAuthClient) ExchangeCode(_ context.Context, _ OAuthPurpose, _ string)
 	return OAuthIdentity{CorpID: "wx-corp", EmployeeID: "employee"}, nil
 }
 
-type fakeJSSDKSigner struct{}
+type fakeJSSDKSigner struct{ calls int }
 
-func (fakeJSSDKSigner) ConfigForURL(_ context.Context, value string) (map[string]string, error) {
+func (signer *fakeJSSDKSigner) ConfigForURL(_ context.Context, value string) (map[string]string, error) {
+	signer.calls++
 	return map[string]string{"url": value, "signature": "signed"}, nil
 }
 
@@ -474,6 +494,18 @@ type fakePrincipal struct{}
 
 func (fakePrincipal) SidebarPrincipal(context.Context) (SidebarPrincipal, error) {
 	return SidebarPrincipal{CorpID: "wx-corp", EmployeeID: "employee"}, nil
+}
+
+type failingPrincipal struct{}
+
+func (failingPrincipal) SidebarPrincipal(context.Context) (SidebarPrincipal, error) {
+	return SidebarPrincipal{}, errors.New("no sidebar session")
+}
+
+type wrongCorpPrincipal struct{}
+
+func (wrongCorpPrincipal) SidebarPrincipal(context.Context) (SidebarPrincipal, error) {
+	return SidebarPrincipal{CorpID: "wrong-corp", EmployeeID: "employee"}, nil
 }
 
 type fakeCustomerViewer struct{}
