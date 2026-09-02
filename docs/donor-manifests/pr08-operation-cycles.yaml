@@ -24,6 +24,42 @@ scope:
     - Store, PostgreSQL schema, generated queries, migrations, and historical import/runtime adapters
     - HTTP/auth/composition wiring, OpenAPI, central webshell, deployment, CI, and dependency manifests
 
+behavior_contract:
+  entities:
+    strategy:
+      identity: local strategy key, title, current lifecycle status, monotonically increasing version, definition JSON, snapshot JSON, and update timestamp
+      statuses: draft, active, paused, archived; archived is terminal
+      transitions: draft may activate/pause/archive; active may pause/archive; paused may activate/archive; same-status retries are idempotent
+      validation: key max 120 bytes; title max 200 runes; version >= 1; definition/snapshot must be valid JSON and contain no excluded scope
+    run:
+      identity: local run key, strategy key, snapshot revision, snapshot JSON, and received timestamp
+      validation: run key max 160 bytes, strategy key max 120 bytes, revision >= 1, valid JSON, no excluded scope
+    runner:
+      identity: runner/principal IDs, connector/Codex versions, compatibility status, strategy binding keys, and last heartbeat
+      compatibility_statuses: ready, incompatible, unavailable
+      heartbeat: local compatibility/lease fact only; no customer, OneID, order, entitlement, or Provider identity
+    action_request:
+      stages: queued -> claimed -> thread_bound -> turn_started -> completed
+      failure: queued/claimed/thread_bound/turn_started may terminally fail; terminal stages cannot move to another stage
+      fields: local strategy/run/action keys, strategy version, runner lease/thread/turn IDs, result/failure facts, and timestamps
+    proposal:
+      statuses: pending, accepted, rejected
+      decision: pending has no decision actor/time; accepted/rejected requires both
+  local_commands:
+    - report accepts operation_cycle_snapshot.v1 with idempotency and records a local fact; replay does not append another event
+    - start queues a local action request and records a queued fact; it does not send or execute an external effect
+    - claim and heartbeat maintain runner compatibility and local action lease facts only
+    - action events accept thread_bound, turn_started, completed, and failed; completed outcome_unknown is terminal and is never auto-retried
+    - strategy context/index and run/action reads are local read contracts; filters must not contain excluded data-plane keys
+    - strategy-change proposals use operation_cycle_strategy_change_proposal.v1 and local pending/decision facts
+  limits_and_validation:
+    keys: UTF-8, non-empty, no tabs/newlines; page limit 1..100 and offset 0..10000
+    forbidden_scope: customer/external-user/mobile/tenant/segment/audience/campaign/recipient, OneID identifiers, order/product/entitlement/membership/subscription/service-period identifiers, credentials/secrets, file URLs, and non-empty external_effects
+    json_digest: canonical JSON digest treats equivalent numeric forms consistently and rejects trailing/invalid JSON
+  transaction_and_effects:
+    mutation: Store fact/idempotency result, operation-cycle event, delivery acceptance, audit, and outbox must share the caller UoW when Terra supplies persistence
+    provider_boundary: this donor has no WeCom/Provider/LLM call, customer selection, recipient execution, or retry; future external writes go through outbound only
+
 backend:
   copied_and_adapted:
     - source: internal/operationcycle/port/port.go
@@ -68,13 +104,20 @@ backend:
       reason: central auth/HTTP/composition wiring is forbidden; handler methods are retained as contract evidence only
 
 frontend:
+  byte_exact_staged_under: web/donors/operation-cycles-v2/src
+  exact_file_count: 2
   exact_files:
     - source: web/src/admin/templates/cycles.html
-      target: web/src/admin/templates/cycles.html
+      target: web/donors/operation-cycles-v2/src/admin/templates/cycles.html
       notes: byte-exact frozen v2 template; no wording, inline style, or interaction changes
     - source: web/src/admin/templates/cyclesDetail.html
-      target: web/src/admin/templates/cyclesDetail.html
+      target: web/donors/operation-cycles-v2/src/admin/templates/cyclesDetail.html
       notes: byte-exact frozen v2 run-dossier template; no wording, inline style, or interaction changes
+  donor_readme: web/donors/operation-cycles-v2/README.md
+  template_boundary:
+    cycles.html: frozen task-list presentation; raw action/detail hooks are evidence only and must be wired through a v3 adapter
+    cyclesDetail.html: frozen read-only run dossier; its audience, target-count, send-time, delivery, and recipient-oriented labels are retained for byte evidence but are excluded from PR08 integration
+  integration: donor templates are not a standalone v2 shell and must be mounted only by a v3-owned adapter through the existing PR10 webshell/primary sidebar; no second navigation shell or direct raw-route deployment
   css_ts_and_dependencies:
     disposition: deferred-to-terra
     notes: no standalone cycles-specific TS/CSS exists in the donor; the shared controller/API/types/mock runtime also owns customer, audience, campaign, and recipient branches and is not copied
@@ -85,10 +128,28 @@ frontend:
       - web/src/shared/api/types.ts
       - web/src/shared/api/mockData.ts
   historical_frontend_deferred:
+    paths:
+      - web/src/api/generated/p4-static-history/p4-static-history.ts
+      - web/src/api/staticHistory.ts
+      - web/src/admin/sections/staticHistory.ts
+    notes: CycleStrategy/CycleVersion/CycleDocument/CycleMetric/CycleReference history needs v3 history HTTP/OpenAPI and is not part of current lifecycle wiring
+
+exclusion_audit:
+  excluded_data_plane:
+    - customer and external-user identity, OneID, mobile, tenant, segment, audience, campaign, and recipient IDs
+    - order, product, membership, subscription, entitlement, and service-period IDs or entitlement state
+    - customer selection/marking/unmarking, enrollment, delivery recipient execution, and provider-send effects
+  raw_template_only:
+    - cyclesDetail.html contains donor labels for 人群, 发送, and delivery metrics; these must not be bound to customer/order/entitlement data in v3
+  mixed_dependencies_not_copied:
+    - web/src/admin/controller.ts
+    - web/src/api/capabilities.ts
+    - web/src/shared/api/client.ts
+    - web/src/shared/api/types.ts
+    - web/src/shared/api/mockData.ts
     - web/src/api/generated/p4-static-history/p4-static-history.ts
     - web/src/api/staticHistory.ts
     - web/src/admin/sections/staticHistory.ts
-    notes: CycleStrategy/CycleVersion/CycleDocument/CycleMetric/CycleReference history needs v3 history HTTP/OpenAPI and is not part of current lifecycle wiring
 
 request_contract:
   source: cmd/aicrm/legacy_operation_cycle_api.go
@@ -116,6 +177,16 @@ terra_followups:
     item: connect any real WeCom write only through outbound with attempted/executed/outcome_unknown/reconciled receipts; never direct from operationcycle
   - owner: Terra
     item: select the exact cycles frontend templates and build a narrowed TS/API adapter after removing shared excluded-domain branches
+
+verification:
+  go:
+    - go test -count=1 ./internal/operationcycle/...
+    - go vet ./internal/operationcycle/...
+    - go test -race -count=1 ./internal/operationcycle/...
+  frontend:
+    - compare both exact templates with the frozen donor using cmp
+    - verify source/target hashes in docs/donor-manifests/pr08-operation-cycles.sha256
+  manifest: parse docs/donor-manifests/pr08-operation-cycles.yaml before commit
 
 forbidden_touched:
   - cmd/aicrm

@@ -199,6 +199,13 @@ func ContainsForbidden(value any) bool {
 				return true
 			}
 		}
+	case map[string]string:
+		for key, value := range item {
+			normalized := strings.NewReplacer("_", "", "-", "", " ", "").Replace(strings.ToLower(key))
+			if forbiddenKey(normalized) || ContainsForbidden(value) {
+				return true
+			}
+		}
 	case []any:
 		for _, child := range item {
 			if ContainsForbidden(child) {
@@ -213,7 +220,7 @@ func ContainsForbidden(value any) bool {
 
 func forbiddenKey(key string) bool {
 	switch key {
-	case "tenant", "tenantid", "tenantids", "customerid", "customerids", "externaluserid", "externaluserids", "openid", "openids", "unionid", "unionids", "mobile", "phone", "phonenumber", "segmentid", "segmentids", "campaignid", "campaignids", "recipientid", "recipientids", "audienceid", "audienceids":
+	case "tenant", "tenantid", "tenantids", "customerid", "customerids", "externaluserid", "externaluserids", "externalidentityid", "externalidentityids", "identityid", "identityids", "identitykey", "identitykeys", "oneid", "oneidid", "oneidids", "openid", "openids", "unionid", "unionids", "mobile", "phone", "phonenumber", "segmentid", "segmentids", "campaignid", "campaignids", "recipientid", "recipientids", "audienceid", "audienceids", "orderid", "orderids", "orderstate", "orderstatus", "entitlementid", "entitlementids", "entitlementstate", "entitlementstatus", "membershipid", "membershipids", "membershipstate", "membershipstatus", "subscriptionid", "subscriptionids", "subscriptionstate", "subscriptionstatus", "serviceperiodid", "serviceperiodids", "serviceperiodstate", "serviceperiodstatus", "productid", "productids":
 		return true
 	default:
 		return strings.Contains(key, "credential") || strings.Contains(key, "secret")

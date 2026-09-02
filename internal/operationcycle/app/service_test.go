@@ -171,3 +171,13 @@ func TestDigestTreatsEquivalentJSONNumbersTheSameAndRejectsForbiddenScopeInput(t
 		t.Fatalf("forbidden scope report error=%v, want ErrInvalid", err)
 	}
 }
+
+func TestStrategyContextRejectsExcludedDataPlaneFilters(t *testing.T) {
+	service := NewService(&operationCycleTestUOW{}, &operationCycleStoreStub{}, &operationCycleTestEvents{}, &operationCycleTestDeliveries{})
+	for _, key := range []string{"order_id", "entitlement_id", "membership_id", "subscription_id"} {
+		_, err := service.StrategyContext(context.Background(), "weekly.review", "review", 10, 0, map[string]string{key: "opaque"})
+		if !errors.Is(err, ErrInvalid) {
+			t.Fatalf("filter %q error=%v, want ErrInvalid", key, err)
+		}
+	}
+}

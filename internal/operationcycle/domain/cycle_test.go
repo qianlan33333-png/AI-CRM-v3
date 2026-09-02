@@ -64,11 +64,21 @@ func TestContainsForbiddenScopeRejectsIDsButAllowsLabels(t *testing.T) {
 	if ContainsForbidden(map[string]any{"audience": "全量运营标签"}) {
 		t.Fatal("human-readable audience label was rejected")
 	}
+	if ContainsForbidden(map[string]any{"order": "阶段顺序", "entitlement": "权益说明"}) {
+		t.Fatal("human-readable labels were rejected")
+	}
 	for _, value := range []any{
 		map[string]any{"customer_id": 1},
 		map[string]any{"segment_ids": []any{1}},
 		map[string]any{"campaign_id": "campaign-1"},
 		map[string]any{"recipient_id": "recipient-1"},
+		map[string]any{"order_id": "order-1"},
+		map[string]any{"entitlement_id": "entitlement-1"},
+		map[string]any{"membership_id": "membership-1"},
+		map[string]any{"subscription_id": "subscription-1"},
+		map[string]any{"service_period_id": "service-period-1"},
+		map[string]string{"order_id": "order-1"},
+		map[string]string{"identity_id": "identity-1"},
 		json.RawMessage(`{"external_userid":"wx-user"}`),
 	} {
 		if !ContainsForbidden(value) {

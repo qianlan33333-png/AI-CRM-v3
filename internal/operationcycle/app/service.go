@@ -243,7 +243,7 @@ func (s *Service) ContextIndex(ctx context.Context, limit, offset int32) (map[st
 	return s.read(ctx, func(txCtx context.Context) (map[string]any, error) { return s.store.ContextIndex(txCtx, limit, offset) })
 }
 func (s *Service) StrategyContext(ctx context.Context, key, mode string, limit, offset int32, filters map[string]string) (map[string]any, error) {
-	if s == nil || s.uow == nil || s.store == nil || !validKey(key, 120) || (mode != "execution" && mode != "review") || !validPage(limit, offset) || len(filters) > 3 {
+	if s == nil || s.uow == nil || s.store == nil || !validKey(key, 120) || (mode != "execution" && mode != "review") || !validPage(limit, offset) || len(filters) > 3 || containsForbidden(filters) {
 		return nil, ErrInvalid
 	}
 	return s.read(ctx, func(txCtx context.Context) (map[string]any, error) {
