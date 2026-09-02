@@ -854,8 +854,8 @@ func (r *Repository) ResolveMiniProgramThumbnail(ctx context.Context, id, actor 
 	return resolution, err
 }
 
-func groupMap(id int64, name, title, description, joinURL string, cover *int64, enabled bool, version int64, created, updated time.Time, archived *time.Time) map[string]any {
-	out := map[string]any{"id": id, "name": name, "title": title, "description": description, "join_url": joinURL, "enabled": enabled, "version": version, "created_at": created.UTC().Format(time.RFC3339Nano), "updated_at": updated.UTC().Format(time.RFC3339Nano)}
+func groupMap(id int64, name, title, description, joinURL string, cover *int64, enabled bool, version, createdBy, updatedBy int64, created, updated time.Time, archived *time.Time) map[string]any {
+	out := map[string]any{"id": id, "name": name, "title": title, "description": description, "join_url": joinURL, "enabled": enabled, "version": version, "created_by": createdBy, "updated_by": updatedBy, "created_at": created.UTC().Format(time.RFC3339Nano), "updated_at": updated.UTC().Format(time.RFC3339Nano)}
 	if cover != nil {
 		out["cover_image_id"] = *cover
 	}
@@ -876,22 +876,22 @@ func (r *Repository) ListGroupInvites(ctx context.Context, limit, offset int, en
 		if err := tx.QueryRow(txctx, `SELECT count(*) FROM media_group_invites`+where, q, enabledOnly).Scan(&total); err != nil {
 			return err
 		}
-		rows, err := tx.Query(txctx, `SELECT id,name,title,description,join_url,cover_image_id,enabled,version,created_at,updated_at,archived_at FROM media_group_invites`+where+` ORDER BY updated_at DESC,id DESC LIMIT $3 OFFSET $4`, q, enabledOnly, limit, offset)
+		rows, err := tx.Query(txctx, `SELECT id,name,title,description,join_url,cover_image_id,enabled,version,created_by,updated_by,created_at,updated_at,archived_at FROM media_group_invites`+where+` ORDER BY updated_at DESC,id DESC LIMIT $3 OFFSET $4`, q, enabledOnly, limit, offset)
 		if err != nil {
 			return err
 		}
 		defer rows.Close()
 		for rows.Next() {
-			var id, v int64
+			var id, v, createdBy, updatedBy int64
 			var n, t, d, j string
 			var cover *int64
 			var enabled bool
 			var c, u time.Time
 			var archived *time.Time
-			if err = rows.Scan(&id, &n, &t, &d, &j, &cover, &enabled, &v, &c, &u, &archived); err != nil {
+			if err = rows.Scan(&id, &n, &t, &d, &j, &cover, &enabled, &v, &createdBy, &updatedBy, &c, &u, &archived); err != nil {
 				return err
 			}
-			out = append(out, groupMap(id, n, t, d, j, cover, enabled, v, c, u, archived))
+			out = append(out, groupMap(id, n, t, d, j, cover, enabled, v, createdBy, updatedBy, c, u, archived))
 		}
 		return rows.Err()
 	})
@@ -941,8 +941,7 @@ func (r *Repository) CreateGroupInvite(ctx context.Context, actor int64, key str
 		if err != nil {
 			return err
 		}
-		out = groupMap(id, n, t, d, j, cover, enabled, v, c, u, nil)
-		out["created_by"], out["updated_by"] = actor, actor
+		out = groupMap(id, n, t, d, j, cover, enabled, v, actor, actor, c, u, nil)
 		return r.complete(txctx, "group_invite.create", "group_invite", actor, key, id, out, "media.group_invite_created")
 	})
 	return out, err
@@ -958,17 +957,17 @@ func (r *Repository) GroupInvite(ctx context.Context, id int64) (map[string]any,
 		var name, title, description, joinURL string
 		var cover *int64
 		var enabled bool
-		var version int64
+		var version, createdBy, updatedBy int64
 		var created, updated time.Time
 		var archived *time.Time
-		err := tx.QueryRow(txctx, `SELECT name,title,description,join_url,cover_image_id,enabled,version,created_at,updated_at,archived_at FROM media_group_invites WHERE id=$1 AND archived_at IS NULL`, id).Scan(&name, &title, &description, &joinURL, &cover, &enabled, &version, &created, &updated, &archived)
+		err := tx.QueryRow(txctx, `SELECT name,title,description,join_url,cover_image_id,enabled,version,created_by,updated_by,created_at,updated_at,archived_at FROM media_group_invites WHERE id=$1 AND archived_at IS NULL`, id).Scan(&name, &title, &description, &joinURL, &cover, &enabled, &version, &createdBy, &updatedBy, &created, &updated, &archived)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrNotFound
 		}
 		if err != nil {
 			return err
 		}
-		out = groupMap(id, name, title, description, joinURL, cover, enabled, version, created, updated, archived)
+		out = groupMap(id, name, title, description, joinURL, cover, enabled, version, createdBy, updatedBy, created, updated, archived)
 		return nil
 	})
 	return out, err
@@ -1039,7 +1038,7 @@ func (r *Repository) UpdateGroupInvite(ctx context.Context, id, actor int64, key
 		if err != nil {
 			return err
 		}
-		out = groupMap(id, name, title, description, joinURL, cover, enabled, version, created, updated, nil)
+		out = groupMap(id, name, title, description, joinURL, cover, enabled, version, actor, actor, created, updated, nil)
 		return r.complete(txctx, "group_invite.update", "group_invite", actor, key, id, out, "media.group_invite_updated")
 	})
 	return out, err
@@ -1070,7 +1069,7 @@ func (r *Repository) ArchiveGroupInvite(ctx context.Context, id, actor int64, ke
 		if err != nil {
 			return err
 		}
-		out = groupMap(id, name, title, description, joinURL, cover, false, version, created, updated, &archived)
+		out = groupMap(id, name, title, description, joinURL, cover, false, version, actor, actor, created, updated, &archived)
 		return r.complete(txctx, "group_invite.archive", "group_invite", actor, key, id, out, "media.group_invite_archived")
 	})
 	return out, err
