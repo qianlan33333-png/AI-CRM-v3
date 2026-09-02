@@ -373,10 +373,17 @@ func securityHeaders(next http.Handler) http.Handler {
 		writer.Header().Set("Referrer-Policy", "no-referrer")
 		writer.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
 		styleSource := "'self'"
-		if request.URL.Path == "/admin/campaigns.html" && externaleffects.ValidUIQuery(request.URL.Query()) {
+		mediaPage := request.URL.Path == "/admin/image-library" || request.URL.Path == "/admin/miniprogram-library" || request.URL.Path == "/admin/attachment-library"
+		if (request.URL.Path == "/admin/campaigns.html" && externaleffects.ValidUIQuery(request.URL.Query())) || mediaPage {
 			styleSource = "'self' 'unsafe-inline'"
 		}
-		contentPolicy := "default-src 'self'; script-src 'self' https://res.wx.qq.com; style-src " + styleSource + "; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'"
+		imageSource := "'self' data:"
+		if mediaPage {
+			// The frozen Media controller creates private thumbnail object URLs;
+			// keep blob: limited to the three v3-owned Media shell routes.
+			imageSource += " blob:"
+		}
+		contentPolicy := "default-src 'self'; script-src 'self' https://res.wx.qq.com; style-src " + styleSource + "; img-src " + imageSource + "; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'"
 		if request.URL.Path != webshell.SidebarPagePath && !strings.HasPrefix(request.URL.Path, "/api/sidebar/") {
 			writer.Header().Set("X-Frame-Options", "SAMEORIGIN")
 			contentPolicy += "; frame-ancestors 'self'"

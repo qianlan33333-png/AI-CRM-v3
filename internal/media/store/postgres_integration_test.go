@@ -53,7 +53,7 @@ func TestPostgreSQLReceiptAuditOutboxAndPayloadDrift(t *testing.T) {
 	}
 	defer native.Close()
 	_, file, _, _ := runtime.Caller(0)
-	sql, err := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "..", "migrations", "0006_media.sql"))
+	sql, err := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "..", "migrations", "0007_media.sql"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +135,7 @@ func TestPostgreSQLReferenceLedgerProtectsDeleteAndArchive(t *testing.T) {
 	}
 	defer native.Close()
 	_, file, _, _ := runtime.Caller(0)
-	sql, err := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "..", "migrations", "0006_media.sql"))
+	sql, err := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "..", "migrations", "0007_media.sql"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -261,7 +261,7 @@ func TestPostgreSQLMultipartPartVsCompleteAndBlobChecksum(t *testing.T) {
 	}
 	defer native.Close()
 	_, file, _, _ := runtime.Caller(0)
-	sql, err := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "..", "migrations", "0006_media.sql"))
+	sql, err := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "..", "migrations", "0007_media.sql"))
 	if err != nil {
 		t.Fatal(err)
 	}
