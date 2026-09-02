@@ -163,7 +163,7 @@ func imageMap(id int64, file, name, description, tags, category, mime string, si
 	return map[string]any{"id": id, "resource_id": id, "file_name": file, "name": name, "description": description, "tags": splitTags(tags), "category": category, "mime_type": mime, "content_type": mime, "file_size": size, "width": width, "height": height, "enabled": enabled, "source": "local_repository", "source_url": "", "thumb_media_id": "", "thumb_media_id_expires_at": nil, "ai_metadata": map[string]any{}, "created_at": created.UTC().Format(time.RFC3339Nano), "updated_at": updated.UTC().Format(time.RFC3339Nano), "thumb_160_url": base + "thumb_160", "thumb_320_url": base + "thumb_320", "thumb_url": base + "thumb_320", "preview_url": base + "mobile_1080", "mobile_1080_url": base + "mobile_1080", "large_1440_url": base + "large_1440", "original_url": base + "original"}
 }
 func splitTags(value string) []string {
-	var out []string
+	out := make([]string, 0)
 	for _, v := range strings.Split(value, ",") {
 		if v = strings.TrimSpace(v); v != "" {
 			out = append(out, v)
@@ -188,7 +188,7 @@ func (r *Repository) ListImagesFiltered(ctx context.Context, query ImageQuery) (
 	if query.Limit < 1 || query.Limit > 500 || query.Offset < 0 {
 		return nil, 0, ErrInvalid
 	}
-	var rowsOut []map[string]any
+	rowsOut := make([]map[string]any, 0)
 	var total int
 	err := r.Within(ctx, func(txctx context.Context) error {
 		tx, _ := platformpostgres.RequireTransaction(txctx)
@@ -230,7 +230,7 @@ func (r *Repository) ListImagesFiltered(ctx context.Context, query ImageQuery) (
 }
 
 func (r *Repository) ImageFacets(ctx context.Context) ([]string, []string, error) {
-	var categories, tags []string
+	categories, tags := make([]string, 0), make([]string, 0)
 	err := r.Within(ctx, func(txctx context.Context) error {
 		tx, _ := platformpostgres.RequireTransaction(txctx)
 		rows, err := tx.Query(txctx, `SELECT DISTINCT category FROM media_images WHERE category<>'' ORDER BY category`)
@@ -483,7 +483,7 @@ func (r *Repository) ListAttachments(ctx context.Context, limit, offset int, ena
 	if limit < 1 || limit > 100 || offset < 0 {
 		return nil, 0, ErrInvalid
 	}
-	var out []map[string]any
+	out := make([]map[string]any, 0)
 	var total int
 	err := r.Within(ctx, func(txctx context.Context) error {
 		tx, _ := platformpostgres.RequireTransaction(txctx)
@@ -633,7 +633,7 @@ func (r *Repository) ListMiniPrograms(ctx context.Context, limit, offset int, en
 	if limit < 1 || limit > 100 || offset < 0 {
 		return nil, 0, ErrInvalid
 	}
-	var out []map[string]any
+	out := make([]map[string]any, 0)
 	var total int
 	err := r.Within(ctx, func(txctx context.Context) error {
 		tx, _ := platformpostgres.RequireTransaction(txctx)
@@ -873,7 +873,7 @@ func (r *Repository) ListGroupInvites(ctx context.Context, limit, offset int, en
 	if limit < 1 || limit > 100 || offset < 0 {
 		return nil, 0, ErrInvalid
 	}
-	var out []map[string]any
+	out := make([]map[string]any, 0)
 	var total int
 	err := r.Within(ctx, func(txctx context.Context) error {
 		tx, _ := platformpostgres.RequireTransaction(txctx)

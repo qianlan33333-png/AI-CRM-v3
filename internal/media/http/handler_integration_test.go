@@ -68,8 +68,19 @@ func TestMediaHTTPCompatibilitySecurityAndFrozenWriteContract(t *testing.T) {
 		return request
 	}
 
-	if got := serve(httptest.NewRequest(http.MethodGet, "/api/admin/image-library", nil).WithContext(context.Background())); got.Code != http.StatusOK {
-		t.Fatalf("admin read status=%d", got.Code)
+	for _, endpoint := range []struct {
+		path   string
+		fields []string
+	}{
+		{"/api/admin/image-library", []string{"items", "images"}},
+		{"/api/admin/attachment-library", []string{"items", "attachments"}},
+		{"/api/admin/miniprogram-library", []string{"items", "miniprograms", "mini_programs"}},
+		{"/api/admin/group-invite-library", []string{"items", "group_invites"}},
+	} {
+		empty := responseJSON(t, serve(httptest.NewRequest(http.MethodGet, endpoint.path, nil).WithContext(context.Background())), http.StatusOK)
+		for _, field := range endpoint.fields {
+			requireJSONArray(t, empty, field)
+		}
 	}
 	unauthenticated := httptest.NewRequest(http.MethodGet, "/api/admin/image-library", nil)
 	unauthenticated.Header.Set("X-Test-Auth", "none")
@@ -258,6 +269,17 @@ func requireJSONFields(t *testing.T, value map[string]any, fields ...string) {
 		if _, ok := value[field]; !ok {
 			t.Fatalf("missing %q in %#v", field, value)
 		}
+	}
+}
+
+func requireJSONArray(t *testing.T, value map[string]any, field string) {
+	t.Helper()
+	items, exists := value[field]
+	if !exists || items == nil {
+		t.Fatalf("%s is null or absent in %#v", field, value)
+	}
+	if _, ok := items.([]any); !ok {
+		t.Fatalf("%s is not a JSON array: %#v", field, items)
 	}
 }
 func jsonID(value int64) string { return strconv.FormatInt(value, 10) }
