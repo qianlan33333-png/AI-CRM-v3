@@ -173,10 +173,10 @@ func TestOAuthStateSingleUseExpiryAndOpenRedirect(t *testing.T) {
 		}
 		return nil
 	}}
-	if _, err := service.Start(context.Background(), OAuthSidebar, "https://evil.example"); !errors.Is(err, ErrOpenRedirect) {
+	if _, err := service.Start(context.Background(), OAuthSidebar, OAuthModeWeb, "https://evil.example"); !errors.Is(err, ErrOpenRedirect) {
 		t.Fatalf("redirect error=%v", err)
 	}
-	start, err := service.Start(context.Background(), OAuthSidebar, "/sidebar")
+	start, err := service.Start(context.Background(), OAuthSidebar, OAuthModeWeb, "/sidebar")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,11 +187,11 @@ func TestOAuthStateSingleUseExpiryAndOpenRedirect(t *testing.T) {
 	if _, _, err = service.ConsumeAndExchange(context.Background(), OAuthSidebar, start.State, "code"); !errors.Is(err, ErrInvalidOAuth) {
 		t.Fatalf("replay err=%v", err)
 	}
-	states.states[oauthDigest("expired")] = storedOAuthState{state: OAuthState{Purpose: OAuthSidebar, Redirect: "/sidebar", ExpiresAt: fixedNow.Add(-time.Second)}, nonce: oauthDigest("nonce")}
-	if _, _, err = service.ConsumeAndExchange(context.Background(), OAuthSidebar, "expired.nonce", "code"); !errors.Is(err, ErrInvalidOAuth) {
+	states.states[oauthDigest("expired")] = storedOAuthState{state: OAuthState{Purpose: OAuthSidebar, Redirect: "/sidebar", ExpiresAt: fixedNow.Add(-time.Second)}, nonce: oauthDigest("nonce.oauth")}
+	if _, _, err = service.ConsumeAndExchange(context.Background(), OAuthSidebar, "expired.nonce.oauth", "code"); !errors.Is(err, ErrInvalidOAuth) {
 		t.Fatalf("expired err=%v", err)
 	}
-	start, err = service.Start(context.Background(), OAuthSidebar, "/sidebar")
+	start, err = service.Start(context.Background(), OAuthSidebar, OAuthModeWeb, "/sidebar")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -246,7 +246,9 @@ func TestSidebarHTTPContractsAndDisabledProvider(t *testing.T) {
 		t.Fatal(err)
 	}
 	jssdk := httptest.NewRecorder()
-	handler.ServeHTTP(jssdk, httptest.NewRequest(http.MethodGet, "/api/sidebar/jssdk-config?url=https%3A%2F%2Fcrm.example%2Fsidebar%3Fx%3D1", nil))
+	jssdkRequest := httptest.NewRequest(http.MethodGet, "/api/sidebar/jssdk-config?url=https%3A%2F%2Fcrm.example%2Fsidebar%3Fx%3D1", nil)
+	jssdkRequest.AddCookie(&http.Cookie{Name: "aicrm_sidebar_session", Value: "sidebar-session"})
+	handler.ServeHTTP(jssdk, jssdkRequest)
 	if jssdk.Code != http.StatusOK || !strings.Contains(jssdk.Body.String(), "signature") {
 		t.Fatalf("jssdk status=%d body=%s", jssdk.Code, jssdk.Body.String())
 	}
@@ -254,26 +256,34 @@ func TestSidebarHTTPContractsAndDisabledProvider(t *testing.T) {
 		t.Fatalf("signer calls=%d", signer.calls)
 	}
 	wrongOrigin := httptest.NewRecorder()
-	handler.ServeHTTP(wrongOrigin, httptest.NewRequest(http.MethodGet, "/api/sidebar/jssdk-config?url=https%3A%2F%2Fevil.example%2Fsidebar", nil))
+	wrongOriginRequest := httptest.NewRequest(http.MethodGet, "/api/sidebar/jssdk-config?url=https%3A%2F%2Fevil.example%2Fsidebar", nil)
+	wrongOriginRequest.AddCookie(&http.Cookie{Name: "aicrm_sidebar_session", Value: "sidebar-session"})
+	handler.ServeHTTP(wrongOrigin, wrongOriginRequest)
 	if wrongOrigin.Code != http.StatusBadRequest {
 		t.Fatalf("wrong origin status=%d", wrongOrigin.Code)
 	}
 	unauthenticated := options
 	unauthenticated.PrincipalResolver = failingPrincipal{}
 	unauthenticatedResponse := httptest.NewRecorder()
-	handleJSSDK(unauthenticatedResponse, httptest.NewRequest(http.MethodGet, "/api/sidebar/jssdk-config?url=https%3A%2F%2Fcrm.example%2Fsidebar", nil), unauthenticated)
+	unauthenticatedRequest := httptest.NewRequest(http.MethodGet, "/api/sidebar/jssdk-config?url=https%3A%2F%2Fcrm.example%2Fsidebar", nil)
+	unauthenticatedRequest.AddCookie(&http.Cookie{Name: "aicrm_sidebar_session", Value: "sidebar-session"})
+	handleJSSDK(unauthenticatedResponse, unauthenticatedRequest, unauthenticated)
 	if unauthenticatedResponse.Code != http.StatusUnauthorized || signer.calls != 1 {
 		t.Fatalf("unauthenticated status=%d signer=%d", unauthenticatedResponse.Code, signer.calls)
 	}
 	wrongCorp := options
 	wrongCorp.PrincipalResolver = wrongCorpPrincipal{}
 	wrongCorpResponse := httptest.NewRecorder()
-	handleJSSDK(wrongCorpResponse, httptest.NewRequest(http.MethodGet, "/api/sidebar/jssdk-config?url=https%3A%2F%2Fcrm.example%2Fsidebar", nil), wrongCorp)
+	wrongCorpRequest := httptest.NewRequest(http.MethodGet, "/api/sidebar/jssdk-config?url=https%3A%2F%2Fcrm.example%2Fsidebar", nil)
+	wrongCorpRequest.AddCookie(&http.Cookie{Name: "aicrm_sidebar_session", Value: "sidebar-session"})
+	handleJSSDK(wrongCorpResponse, wrongCorpRequest, wrongCorp)
 	if wrongCorpResponse.Code != http.StatusUnauthorized || signer.calls != 1 {
 		t.Fatalf("wrong corp status=%d signer=%d", wrongCorpResponse.Code, signer.calls)
 	}
 	issue := httptest.NewRecorder()
-	handler.ServeHTTP(issue, httptest.NewRequest(http.MethodPost, "/api/sidebar/context-token", strings.NewReader(`{"external_userid":"external-42"}`)))
+	issueRequest := httptest.NewRequest(http.MethodPost, "/api/sidebar/context-token", strings.NewReader(`{"external_userid":"external-42"}`))
+	issueRequest.AddCookie(&http.Cookie{Name: "aicrm_sidebar_session", Value: "sidebar-session"})
+	handler.ServeHTTP(issue, issueRequest)
 	if issue.Code != http.StatusOK {
 		t.Fatalf("issue status=%d body=%s", issue.Code, issue.Body.String())
 	}
@@ -298,12 +308,16 @@ func TestSidebarHTTPContractsAndDisabledProvider(t *testing.T) {
 		t.Fatalf("disabled status=%d", disabled.Code)
 	}
 	unknown := httptest.NewRecorder()
-	handler.ServeHTTP(unknown, httptest.NewRequest(http.MethodPost, "/api/sidebar/context-token", strings.NewReader(`{"external_userid":"unknown"}`)))
+	unknownRequest := httptest.NewRequest(http.MethodPost, "/api/sidebar/context-token", strings.NewReader(`{"external_userid":"unknown"}`))
+	unknownRequest.AddCookie(&http.Cookie{Name: "aicrm_sidebar_session", Value: "sidebar-session"})
+	handler.ServeHTTP(unknown, unknownRequest)
 	if unknown.Code != http.StatusNotFound {
 		t.Fatalf("unknown identity status=%d", unknown.Code)
 	}
 	trailing := httptest.NewRecorder()
-	handler.ServeHTTP(trailing, httptest.NewRequest(http.MethodPost, "/api/sidebar/context-token", strings.NewReader(`{"external_userid":"external-42"} {}`)))
+	trailingRequest := httptest.NewRequest(http.MethodPost, "/api/sidebar/context-token", strings.NewReader(`{"external_userid":"external-42"} {}`))
+	trailingRequest.AddCookie(&http.Cookie{Name: "aicrm_sidebar_session", Value: "sidebar-session"})
+	handler.ServeHTTP(trailing, trailingRequest)
 	if trailing.Code != http.StatusBadRequest {
 		t.Fatalf("trailing body status=%d", trailing.Code)
 	}
@@ -317,7 +331,7 @@ func TestOAuthCallbackWritesSecureCookies(t *testing.T) {
 		}
 		return nil
 	}}
-	start, err := service.Start(context.Background(), OAuthAdmin, "/admin")
+	start, err := service.Start(context.Background(), OAuthAdmin, OAuthModeQR, "/admin")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -337,6 +351,47 @@ func TestOAuthCallbackWritesSecureCookies(t *testing.T) {
 	}
 	if cookies[1].Name != "aicrm_admin_csrf" || !cookies[1].Secure || cookies[1].HttpOnly {
 		t.Fatalf("bad csrf cookie: %+v", cookies[1])
+	}
+}
+
+func TestOAuthModesAndSidebarSessionCookieBoundary(t *testing.T) {
+	states := &memoryOAuthStates{states: map[[32]byte]storedOAuthState{}}
+	service := OAuthService{Enabled: true, CorpID: "wx-corp", StateStore: states, UOW: directUOW{}, Client: fakeOAuthClient{}, AllowedPaths: map[string]struct{}{"/admin": {}, "/sidebar": {}}, Now: func() time.Time { return fixedNow }}
+	relationships := &memoryRelationships{active: map[string]bool{relationshipKey("wx-corp", "employee", 42): true}}
+	principal := &capturingPrincipal{}
+	handler, err := NewHTTPHandler(HTTPHandlerOptions{OAuth: service, ContextTokens: ContextTokenService{CorpID: "wx-corp", SigningKey: bytes32(), Relationships: relationships, UOW: directUOW{}}, JSSDKSigner: &fakeJSSDKSigner{}, JSSDKOrigin: "https://crm.example", PrincipalResolver: principal, CustomerViewer: fakeCustomerViewer{}, ExistingIdentity: fakeExistingIdentity{}, SessionIssuer: fakeSessionIssuer{}, CookieSecure: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"/auth/wecom/start?mode=not-a-mode&next=/admin", "/api/sidebar/oauth/start?mode=qr&next=/sidebar"} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("%s status=%d", path, response.Code)
+		}
+	}
+	noCookie := httptest.NewRequest(http.MethodGet, "/api/sidebar/jssdk-config?url=https%3A%2F%2Fcrm.example%2Fsidebar", nil)
+	noCookie.Header.Set("X-Employee-ID", "forged")
+	noCookie.Header.Set("X-Corp-ID", "forged")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, noCookie)
+	if response.Code != http.StatusUnauthorized || principal.calls != 0 {
+		t.Fatalf("no-cookie status=%d calls=%d", response.Code, principal.calls)
+	}
+	withCookie := httptest.NewRequest(http.MethodGet, "/api/sidebar/jssdk-config?url=https%3A%2F%2Fcrm.example%2Fsidebar", nil)
+	withCookie.Header.Set("X-Employee-ID", "forged")
+	withCookie.AddCookie(&http.Cookie{Name: "aicrm_sidebar_session", Value: "cookie-session-token"})
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, withCookie)
+	if response.Code != http.StatusOK || principal.got != "cookie-session-token" {
+		t.Fatalf("cookie status=%d token=%q", response.Code, principal.got)
+	}
+	contextRequest := httptest.NewRequest(http.MethodPost, "/api/sidebar/context-token", strings.NewReader(`{"external_userid":"external-42"}`))
+	contextRequest.AddCookie(&http.Cookie{Name: "aicrm_sidebar_session", Value: "context-cookie-token"})
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, contextRequest)
+	if response.Code != http.StatusOK || principal.got != "context-cookie-token" {
+		t.Fatalf("context status=%d token=%q", response.Code, principal.got)
 	}
 }
 
@@ -476,36 +531,47 @@ func (store *memoryOAuthStates) Consume(_ context.Context, purpose OAuthPurpose,
 
 type fakeOAuthClient struct{}
 
-func (fakeOAuthClient) AuthorizationURL(_ context.Context, _ OAuthPurpose, state, _ string) (string, error) {
+func (fakeOAuthClient) AuthorizationURL(_ context.Context, _ OAuthPurpose, _ OAuthMode, state, _ string) (string, error) {
 	return "https://wecom.example/auth?state=" + state, nil
 }
-func (fakeOAuthClient) ExchangeCode(_ context.Context, _ OAuthPurpose, _ string) (OAuthIdentity, error) {
+func (fakeOAuthClient) ExchangeCode(_ context.Context, _ OAuthPurpose, _ OAuthMode, _ string) (OAuthIdentity, error) {
 	return OAuthIdentity{CorpID: "wx-corp", EmployeeID: "employee"}, nil
 }
 
 type fakeJSSDKSigner struct{ calls int }
 
-func (signer *fakeJSSDKSigner) ConfigForURL(_ context.Context, value string) (map[string]string, error) {
+func (signer *fakeJSSDKSigner) ConfigForURL(_ context.Context, value string) (JSSDKConfig, error) {
 	signer.calls++
-	return map[string]string{"url": value, "signature": "signed"}, nil
+	return JSSDKConfig{CorpID: "wx-corp", AgentID: "1", Config: JSSDKSignature{Timestamp: 1, NonceStr: value, Signature: "signed", JSAPIList: []string{"getCurExternalContact"}}, AgentConfig: JSSDKSignature{Timestamp: 1, NonceStr: value, Signature: "signed", JSAPIList: []string{"getCurExternalContact"}}}, nil
 }
 
 type fakePrincipal struct{}
 
-func (fakePrincipal) SidebarPrincipal(context.Context) (SidebarPrincipal, error) {
+func (fakePrincipal) SidebarPrincipal(context.Context, string) (SidebarPrincipal, error) {
 	return SidebarPrincipal{CorpID: "wx-corp", EmployeeID: "employee"}, nil
 }
 
 type failingPrincipal struct{}
 
-func (failingPrincipal) SidebarPrincipal(context.Context) (SidebarPrincipal, error) {
+func (failingPrincipal) SidebarPrincipal(context.Context, string) (SidebarPrincipal, error) {
 	return SidebarPrincipal{}, errors.New("no sidebar session")
 }
 
 type wrongCorpPrincipal struct{}
 
-func (wrongCorpPrincipal) SidebarPrincipal(context.Context) (SidebarPrincipal, error) {
+func (wrongCorpPrincipal) SidebarPrincipal(context.Context, string) (SidebarPrincipal, error) {
 	return SidebarPrincipal{CorpID: "wrong-corp", EmployeeID: "employee"}, nil
+}
+
+type capturingPrincipal struct {
+	calls int
+	got   string
+}
+
+func (principal *capturingPrincipal) SidebarPrincipal(_ context.Context, token string) (SidebarPrincipal, error) {
+	principal.calls++
+	principal.got = token
+	return SidebarPrincipal{CorpID: "wx-corp", EmployeeID: "employee"}, nil
 }
 
 type fakeCustomerViewer struct{}

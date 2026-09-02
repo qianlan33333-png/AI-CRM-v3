@@ -20,7 +20,10 @@ type SidebarPrincipal struct {
 }
 
 type SidebarPrincipalResolver interface {
-	SidebarPrincipal(context.Context) (SidebarPrincipal, error)
+	// sessionToken is read exclusively from the HttpOnly sidebar cookie by the
+	// HTTP adapter. Implementations must not derive this principal from request
+	// headers or caller-provided employee/corporation fields.
+	SidebarPrincipal(context.Context, string) (SidebarPrincipal, error)
 }
 
 type SidebarCustomerView struct {

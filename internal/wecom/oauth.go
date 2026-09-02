@@ -19,14 +19,24 @@ const (
 	OAuthSidebar OAuthPurpose = "sidebar"
 )
 
+// OAuthMode selects the WeCom authorization surface. QR is restricted to
+// administrator login; sidebar sessions are always established in the embedded
+// OAuth flow.
+type OAuthMode string
+
+const (
+	OAuthModeQR  OAuthMode = "qr"
+	OAuthModeWeb OAuthMode = "oauth"
+)
+
 type OAuthIdentity struct {
 	CorpID     string
 	EmployeeID string
 }
 
 type OAuthClient interface {
-	AuthorizationURL(context.Context, OAuthPurpose, string, string) (string, error)
-	ExchangeCode(context.Context, OAuthPurpose, string) (OAuthIdentity, error)
+	AuthorizationURL(context.Context, OAuthPurpose, OAuthMode, string, string) (string, error)
+	ExchangeCode(context.Context, OAuthPurpose, OAuthMode, string) (OAuthIdentity, error)
 }
 
 type OAuthService struct {
@@ -46,11 +56,11 @@ type OAuthStart struct {
 	State            string
 }
 
-func (service OAuthService) Start(ctx context.Context, purpose OAuthPurpose, redirect string) (OAuthStart, error) {
+func (service OAuthService) Start(ctx context.Context, purpose OAuthPurpose, mode OAuthMode, redirect string) (OAuthStart, error) {
 	if !service.Enabled {
 		return OAuthStart{}, ErrProviderDisabled
 	}
-	if !validPurpose(purpose) || service.StateStore == nil || service.UOW == nil || service.Client == nil || !service.allowedRedirect(redirect) {
+	if !validPurposeMode(purpose, mode) || service.StateStore == nil || service.UOW == nil || service.Client == nil || !service.allowedRedirect(redirect) {
 		if !service.allowedRedirect(redirect) {
 			return OAuthStart{}, ErrOpenRedirect
 		}
@@ -70,12 +80,12 @@ func (service OAuthService) Start(ctx context.Context, purpose OAuthPurpose, red
 		return OAuthStart{}, err
 	}
 	if err = service.UOW.Within(ctx, func(txContext context.Context) error {
-		return service.StateStore.Create(txContext, OAuthState{Purpose: purpose, Redirect: redirect, ExpiresAt: now.Add(ttl)}, oauthDigest(state), oauthDigest(nonce))
+		return service.StateStore.Create(txContext, OAuthState{Purpose: purpose, Redirect: redirect, ExpiresAt: now.Add(ttl)}, oauthDigest(state), oauthDigest(nonce+"."+string(mode)))
 	}); err != nil {
 		return OAuthStart{}, err
 	}
-	combinedState := state + "." + nonce
-	callbackURL, err := service.Client.AuthorizationURL(ctx, purpose, combinedState, redirect)
+	combinedState := state + "." + nonce + "." + string(mode)
+	callbackURL, err := service.Client.AuthorizationURL(ctx, purpose, mode, combinedState, redirect)
 	if err != nil {
 		return OAuthStart{}, err
 	}
@@ -87,19 +97,23 @@ func (service OAuthService) ConsumeAndExchange(ctx context.Context, purpose OAut
 		return OAuthIdentity{}, OAuthState{}, ErrProviderDisabled
 	}
 	stateParts := strings.Split(state, ".")
-	if !validPurpose(purpose) || len(stateParts) != 2 || stateParts[0] == "" || stateParts[1] == "" || code == "" || service.StateStore == nil || service.UOW == nil || service.Client == nil {
+	mode := OAuthMode("")
+	if len(stateParts) == 3 {
+		mode = OAuthMode(stateParts[2])
+	}
+	if !validPurposeMode(purpose, mode) || len(stateParts) != 3 || stateParts[0] == "" || stateParts[1] == "" || code == "" || service.StateStore == nil || service.UOW == nil || service.Client == nil {
 		return OAuthIdentity{}, OAuthState{}, ErrInvalidOAuth
 	}
 	var stored OAuthState
 	err := service.UOW.Within(ctx, func(txContext context.Context) error {
 		var consumeErr error
-		stored, consumeErr = service.StateStore.Consume(txContext, purpose, oauthDigest(stateParts[0]), oauthDigest(stateParts[1]), service.clock()())
+		stored, consumeErr = service.StateStore.Consume(txContext, purpose, oauthDigest(stateParts[0]), oauthDigest(stateParts[1]+"."+string(mode)), service.clock()())
 		return consumeErr
 	})
 	if err != nil {
 		return OAuthIdentity{}, OAuthState{}, ErrInvalidOAuth
 	}
-	identity, err := service.Client.ExchangeCode(ctx, purpose, code)
+	identity, err := service.Client.ExchangeCode(ctx, purpose, mode, code)
 	if err != nil || identity.CorpID != service.CorpID || strings.TrimSpace(identity.EmployeeID) != identity.EmployeeID || identity.EmployeeID == "" {
 		return OAuthIdentity{}, OAuthState{}, ErrInvalidOAuth
 	}
@@ -146,3 +160,10 @@ func (service OAuthService) random() func([]byte) error {
 }
 
 func validPurpose(value OAuthPurpose) bool { return value == OAuthAdmin || value == OAuthSidebar }
+
+func validPurposeMode(purpose OAuthPurpose, mode OAuthMode) bool {
+	if purpose == OAuthSidebar {
+		return mode == OAuthModeWeb
+	}
+	return purpose == OAuthAdmin && (mode == OAuthModeQR || mode == OAuthModeWeb)
+}

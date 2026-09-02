@@ -14,7 +14,23 @@ import (
 )
 
 type JSSDKSigner interface {
-	ConfigForURL(context.Context, string) (map[string]string, error)
+	ConfigForURL(context.Context, string) (JSSDKConfig, error)
+}
+
+type JSSDKSignature struct {
+	Timestamp int64    `json:"timestamp"`
+	NonceStr  string   `json:"nonceStr"`
+	Signature string   `json:"signature"`
+	JSAPIList []string `json:"jsApiList"`
+}
+
+// JSSDKConfig is deliberately typed: the sidebar needs distinct regular and
+// agent signatures and the WeCom JS SDK expects their native JSON types.
+type JSSDKConfig struct {
+	CorpID      string         `json:"corp_id"`
+	AgentID     string         `json:"agent_id"`
+	Config      JSSDKSignature `json:"config"`
+	AgentConfig JSSDKSignature `json:"agent_config"`
 }
 
 type EmployeeSessionIssuer interface {
@@ -45,20 +61,24 @@ type HTTPHandlerOptions struct {
 // NewHTTPHandler creates the frozen WeCom routes. The caller mounts this
 // handler in cmd/aicrm; this package never registers routes globally.
 func NewHTTPHandler(options HTTPHandlerOptions) (http.Handler, error) {
-	if options.OAuth.Enabled && (!options.CookieSecure || options.SessionIssuer == nil || options.OAuth.StateStore == nil || options.OAuth.UOW == nil || options.OAuth.Client == nil || options.OAuth.CorpID == "" || !options.ContextTokens.valid() || options.ContextTokens.CorpID != options.OAuth.CorpID || options.JSSDKSigner == nil || !validJSSDKOrigin(options.JSSDKOrigin) || options.PrincipalResolver == nil || options.CustomerViewer == nil || options.ExistingIdentity == nil) {
+	if options.OAuth.Enabled && (!options.CookieSecure || options.SessionIssuer == nil || options.OAuth.StateStore == nil || options.OAuth.UOW == nil || options.OAuth.Client == nil || !providerReady(options.OAuth.Client) || options.OAuth.CorpID == "" || !options.ContextTokens.valid() || options.ContextTokens.CorpID != options.OAuth.CorpID || options.JSSDKSigner == nil || !providerReady(options.JSSDKSigner) || !validJSSDKOrigin(options.JSSDKOrigin) || options.PrincipalResolver == nil || options.CustomerViewer == nil || options.ExistingIdentity == nil) {
 		return nil, errors.New("enabled wecom oauth requires secure browser session dependencies")
 	}
 	mux := http.NewServeMux()
 	mux.Handle("GET /wecom/external-contact/callback", options.Callback)
 	mux.Handle("POST /wecom/external-contact/callback", options.Callback)
 	mux.HandleFunc("GET /auth/wecom/start", func(writer http.ResponseWriter, request *http.Request) {
-		handleOAuthStart(writer, request, options.OAuth, OAuthAdmin)
+		handleOAuthStart(writer, request, options.OAuth, OAuthAdmin, OAuthMode(request.URL.Query().Get("mode")))
 	})
 	mux.HandleFunc("GET /auth/wecom/callback", func(writer http.ResponseWriter, request *http.Request) {
 		handleOAuthCallback(writer, request, options, OAuthAdmin)
 	})
 	mux.HandleFunc("GET /api/sidebar/oauth/start", func(writer http.ResponseWriter, request *http.Request) {
-		handleOAuthStart(writer, request, options.OAuth, OAuthSidebar)
+		mode := OAuthMode(request.URL.Query().Get("mode"))
+		if mode == "" {
+			mode = OAuthModeWeb
+		}
+		handleOAuthStart(writer, request, options.OAuth, OAuthSidebar, mode)
 	})
 	mux.HandleFunc("GET /api/sidebar/oauth/callback", func(writer http.ResponseWriter, request *http.Request) {
 		handleOAuthCallback(writer, request, options, OAuthSidebar)
@@ -75,8 +95,23 @@ func NewHTTPHandler(options HTTPHandlerOptions) (http.Handler, error) {
 	return mux, nil
 }
 
-func handleOAuthStart(writer http.ResponseWriter, request *http.Request, service OAuthService, purpose OAuthPurpose) {
-	start, err := service.Start(request.Context(), purpose, request.URL.Query().Get("next"))
+// Concrete live adapters may report readiness; fakes used by contract tests do
+// not need to. This keeps the composition root fail-closed for a disabled or
+// incomplete real adapter without coupling the domain to its child package.
+func providerReady(value any) bool {
+	ready, reports := value.(interface{ Ready() bool })
+	return !reports || ready.Ready()
+}
+
+func handleOAuthStart(writer http.ResponseWriter, request *http.Request, service OAuthService, purpose OAuthPurpose, mode OAuthMode) {
+	if purpose == OAuthAdmin && mode == "" {
+		mode = OAuthModeQR
+	}
+	if !validPurposeMode(purpose, mode) {
+		writeWeComError(writer, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	start, err := service.Start(request.Context(), purpose, mode, request.URL.Query().Get("next"))
 	if err != nil {
 		writeOAuthError(writer, err)
 		return
@@ -108,7 +143,12 @@ func handleJSSDK(writer http.ResponseWriter, request *http.Request, options HTTP
 		writeWeComError(writer, http.StatusServiceUnavailable, "provider_unavailable")
 		return
 	}
-	principal, err := options.PrincipalResolver.SidebarPrincipal(request.Context())
+	cookie, cookieErr := request.Cookie("aicrm_sidebar_session")
+	if cookieErr != nil || cookie.Value == "" {
+		writeWeComError(writer, http.StatusUnauthorized, "authentication_required")
+		return
+	}
+	principal, err := options.PrincipalResolver.SidebarPrincipal(request.Context(), cookie.Value)
 	if err != nil || principal.CorpID != options.OAuth.CorpID || strings.TrimSpace(principal.EmployeeID) != principal.EmployeeID || principal.EmployeeID == "" {
 		writeWeComError(writer, http.StatusUnauthorized, "authentication_required")
 		return
@@ -156,7 +196,12 @@ func handleContextIssue(writer http.ResponseWriter, request *http.Request, optio
 		writeWeComError(writer, http.StatusBadRequest, "invalid_request")
 		return
 	}
-	principal, err := options.PrincipalResolver.SidebarPrincipal(request.Context())
+	cookie, cookieErr := request.Cookie("aicrm_sidebar_session")
+	if cookieErr != nil || cookie.Value == "" {
+		writeWeComError(writer, http.StatusUnauthorized, "authentication_required")
+		return
+	}
+	principal, err := options.PrincipalResolver.SidebarPrincipal(request.Context(), cookie.Value)
 	if err != nil {
 		writeWeComError(writer, http.StatusUnauthorized, "authentication_required")
 		return
