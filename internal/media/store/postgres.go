@@ -286,6 +286,9 @@ func (r *Repository) Image(ctx context.Context, id int64) (map[string]any, []byt
 		if err != nil {
 			return err
 		}
+		if bytesDigest(content) != digestValue {
+			return ErrConflict
+		}
 		result = imageMap(id, file, name, description, tags, cat, mime, size, width, height, enabled, created, updated)
 		return nil
 	})
@@ -524,17 +527,20 @@ func (r *Repository) Attachment(ctx context.Context, id int64) (map[string]any, 
 	var content []byte
 	err := r.Within(ctx, func(txctx context.Context) error {
 		tx, _ := platformpostgres.RequireTransaction(txctx)
-		var f, n, d, m string
+		var f, n, d, m, digestValue string
 		var tagsBytes []byte
 		var size, version, createdBy, updatedBy int64
 		var enabled bool
 		var c, u time.Time
-		err := tx.QueryRow(txctx, `SELECT a.file_name,a.name,a.description,a.tags,a.mime_type,a.byte_size,a.enabled,a.version,a.created_by,a.updated_by,a.created_at,a.updated_at,b.content FROM media_attachments a JOIN media_blobs b ON b.digest=a.blob_digest WHERE a.id=$1`, id).Scan(&f, &n, &d, &tagsBytes, &m, &size, &enabled, &version, &createdBy, &updatedBy, &c, &u, &content)
+		err := tx.QueryRow(txctx, `SELECT a.file_name,a.name,a.description,a.tags,a.mime_type,a.byte_size,a.enabled,a.version,a.created_by,a.updated_by,a.created_at,a.updated_at,b.content,b.digest FROM media_attachments a JOIN media_blobs b ON b.digest=a.blob_digest WHERE a.id=$1`, id).Scan(&f, &n, &d, &tagsBytes, &m, &size, &enabled, &version, &createdBy, &updatedBy, &c, &u, &content, &digestValue)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrNotFound
 		}
 		if err != nil {
 			return err
+		}
+		if bytesDigest(content) != digestValue {
+			return ErrConflict
 		}
 		var tags []string
 		if json.Unmarshal(tagsBytes, &tags) != nil {
@@ -683,7 +689,7 @@ func (r *Repository) CreateMiniProgram(ctx context.Context, actor int64, key str
 		if e, ok := input["enabled"].(bool); ok {
 			enabled = e
 		}
-		if n = strings.TrimSpace(n); n == "" || len(n) > 200 || a == "" || len(a) > 128 || p == "" || len(p) > 2048 || t == "" || len(t) > 200 {
+		if n = strings.TrimSpace(n); n == "" || len(n) > 200 || a == "" || len(a) > 120 || p == "" || len(p) > 500 || t == "" || len(t) > 200 {
 			return ErrInvalid
 		}
 		var thumb *int64
@@ -798,7 +804,7 @@ func (r *Repository) UpdateMiniProgram(ctx context.Context, id, actor int64, key
 				thumb = &value
 			}
 		}
-		if n == "" || a == "" || p == "" || t == "" || len(n) > 200 || len(a) > 128 || len(p) > 2048 || len(t) > 200 {
+		if n == "" || a == "" || p == "" || t == "" || len(n) > 200 || len(a) > 120 || len(p) > 500 || len(t) > 200 {
 			return ErrInvalid
 		}
 		err = tx.QueryRow(txctx, `UPDATE media_miniprograms SET name=$2,app_id=$3,page_path=$4,title=$5,thumb_image_id=$6,enabled=$7,updated_by=$8,version=version+1,updated_at=clock_timestamp() WHERE id=$1 RETURNING version,updated_at`, id, n, a, p, t, thumb, enabled, actor).Scan(&version, &u)
@@ -910,11 +916,14 @@ func (r *Repository) CreateGroupInvite(ctx context.Context, actor int64, key str
 		n = strings.TrimSpace(n)
 		t = strings.TrimSpace(t)
 		j = strings.TrimSpace(j)
+		if n == "" {
+			n = t
+		}
 		enabled := true
 		if value, ok := input["enabled"].(bool); ok {
 			enabled = value
 		}
-		if n == "" || t == "" || j == "" || len(n) > 200 || len(t) > 200 || len(d) > 10000 || len(j) > 4096 {
+		if n == "" || t == "" || j == "" || len(n) > 200 || len(t) > 128 || len(d) > 512 || len(j) > 2048 || !strings.HasPrefix(j, "https://work.weixin.qq.com/gm/") || strings.ContainsAny(j, "?#") {
 			return ErrInvalid
 		}
 		var cover *int64
@@ -933,6 +942,7 @@ func (r *Repository) CreateGroupInvite(ctx context.Context, actor int64, key str
 			return err
 		}
 		out = groupMap(id, n, t, d, j, cover, enabled, v, c, u, nil)
+		out["created_by"], out["updated_by"] = actor, actor
 		return r.complete(txctx, "group_invite.create", "group_invite", actor, key, id, out, "media.group_invite_created")
 	})
 	return out, err
@@ -1118,12 +1128,24 @@ func (r *Repository) PutAttachmentUploadPart(ctx context.Context, uploadID int64
 			return nil
 		}
 		tx, _ := platformpostgres.RequireTransaction(txctx)
-		var valid bool
-		if err = tx.QueryRow(txctx, `SELECT EXISTS(SELECT 1 FROM media_attachment_uploads WHERE id=$1 AND actor_admin_user_id=$2 AND completed_attachment_id IS NULL AND expires_at>clock_timestamp())`, uploadID, actor).Scan(&valid); err != nil {
+		var expectedSize int64
+		var completed *int64
+		var expires time.Time
+		if err = tx.QueryRow(txctx, `SELECT expected_size,completed_attachment_id,expires_at FROM media_attachment_uploads WHERE id=$1 AND actor_admin_user_id=$2 FOR UPDATE`, uploadID, actor).Scan(&expectedSize, &completed, &expires); errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		} else if err != nil {
 			return err
 		}
-		if !valid {
-			return ErrNotFound
+		if completed != nil || !expires.After(time.Now().UTC()) {
+			return ErrConflict
+		}
+		var count int
+		var stored int64
+		if err = tx.QueryRow(txctx, `SELECT count(*),COALESCE(sum(octet_length(content)),0) FROM media_attachment_upload_parts WHERE upload_id=$1`, uploadID).Scan(&count, &stored); err != nil {
+			return err
+		}
+		if count >= 1024 || stored+int64(len(content)) > expectedSize {
+			return ErrInvalid
 		}
 		commandTag, err := tx.Exec(txctx, `INSERT INTO media_attachment_upload_parts(upload_id,part_number,digest,content) VALUES($1,$2,$3,$4) ON CONFLICT(upload_id,part_number) DO NOTHING`, uploadID, partNumber, expectedDigest, content)
 		if err != nil {
@@ -1175,8 +1197,7 @@ func (r *Repository) CompleteAttachmentUpload(ctx context.Context, uploadID, act
 			return err
 		}
 		if existing != nil {
-			attachmentID = *existing
-			return r.complete(txctx, "attachment.upload.complete", "attachment", actor, key, attachmentID, map[string]any{"attachment_id": attachmentID}, "media.attachment_upload_completed")
+			return ErrConflict
 		}
 		rows, err := tx.Query(txctx, `SELECT part_number,content FROM media_attachment_upload_parts WHERE upload_id=$1 ORDER BY part_number`, uploadID)
 		if err != nil {

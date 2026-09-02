@@ -63,7 +63,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 func (h *Handler) read(w http.ResponseWriter, r *http.Request) bool {
 	p, err := h.security.Authenticate(r.Context(), r)
-	if err != nil || !readRole(p) {
+	if err != nil {
+		writeError(w, 401, "unauthorized")
+		return false
+	}
+	if !readRole(p) {
 		writeError(w, 403, "permission_denied")
 		return false
 	}
@@ -173,7 +177,7 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 	_ = json.NewEncoder(w).Encode(value)
 }
 func writeError(w http.ResponseWriter, status int, code string) {
-	compat := map[string]string{"invalid_request": "MALFORMED_REQUEST", "not_found": "NOT_FOUND", "conflict": "CONFLICT", "has_references": "CONFLICT", "permission_denied": "FORBIDDEN", "csrf_required": "FORBIDDEN", "unavailable": "DEPENDENCY_UNAVAILABLE", "method_not_allowed": "METHOD_NOT_ALLOWED"}[code]
+	compat := map[string]string{"invalid_request": "MALFORMED_REQUEST", "not_found": "NOT_FOUND", "conflict": "CONFLICT", "has_references": "CONFLICT", "unauthorized": "UNAUTHORIZED", "permission_denied": "FORBIDDEN", "csrf_required": "FORBIDDEN", "unavailable": "DEPENDENCY_UNAVAILABLE", "method_not_allowed": "METHOD_NOT_ALLOWED"}[code]
 	if compat == "" {
 		compat = "DEPENDENCY_UNAVAILABLE"
 	}
@@ -290,10 +294,16 @@ func (h *Handler) images(w http.ResponseWriter, r *http.Request, tail string) {
 		if !h.read(w, r) {
 			return
 		}
-		item, _, _, e := h.repository.Image(r.Context(), imageID)
+		item, content, _, e := h.repository.Image(r.Context(), imageID)
 		if e != nil {
 			resultError(w, e)
 			return
+		}
+		if r.URL.Query().Get("include_data") == "true" {
+			item["data_url"] = "data:" + item["mime_type"].(string) + ";base64," + base64.StdEncoding.EncodeToString(content)
+		}
+		if variant := r.URL.Query().Get("variant"); variant != "" {
+			item["variant"] = variant
 		}
 		writeJSON(w, 200, imageEnvelope(item))
 		return
@@ -312,6 +322,7 @@ func (h *Handler) images(w http.ResponseWriter, r *http.Request, tail string) {
 			resultError(w, e)
 			return
 		}
+		out["ok"], out["item_id"], out["local_only"], out["provider_call_executed"], out["real_external_call_executed"], out["references_cleared"] = true, imageID, true, false, false, true
 		writeJSON(w, 200, out)
 		return
 	}
@@ -648,6 +659,7 @@ func (h *Handler) attachments(w http.ResponseWriter, r *http.Request, tail strin
 			return
 		}
 		out["ok"] = true
+		out["item_id"] = attachmentID
 		out["local_only"] = true
 		out["provider_call_executed"] = false
 		out["real_external_call_executed"] = false
