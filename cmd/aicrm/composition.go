@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -146,7 +147,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return fail(err)
 	}
 
-	handler, err := routeApplication(healthHandler, accessHandler.Routes(), oneIDHandler.Routes(), weComHandler, shellHandler, authentication)
+	handler, err := routeApplication(healthHandler, accessHandler.Routes(), oneIDHandler.Routes(), weComHandler, shellHandler, authentication, cfg.PublicOrigin)
 	if err != nil {
 		return fail(err)
 	}
@@ -179,8 +180,8 @@ func allowedOAuthRedirects() map[string]struct{} {
 	return paths
 }
 
-func routeApplication(health, access, identity, weCom, shell http.Handler, authentication accessAuthentication) (http.Handler, error) {
-	if health == nil || access == nil || identity == nil || weCom == nil || shell == nil || authentication == nil {
+func routeApplication(health, access, identity, weCom, shell http.Handler, authentication accessAuthentication, publicOrigin string) (http.Handler, error) {
+	if health == nil || access == nil || identity == nil || weCom == nil || shell == nil || authentication == nil || canonicalOrigin(publicOrigin) == "" {
 		return nil, errors.New("application HTTP dependencies are required")
 	}
 	mux := http.NewServeMux()
@@ -205,7 +206,42 @@ func routeApplication(health, access, identity, weCom, shell http.Handler, authe
 		}
 		http.Redirect(writer, request, "/admin", http.StatusSeeOther)
 	})
-	return securityHeaders(mux), nil
+	return securityHeaders(rejectCrossSiteUnsafeRequests(mux, canonicalOrigin(publicOrigin))), nil
+}
+
+func rejectCrossSiteUnsafeRequests(next http.Handler, publicOrigin string) http.Handler {
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if isUnsafeMethod(request.Method) {
+			origin := request.Header.Get("Origin")
+			if (origin != "" && canonicalOrigin(origin) != publicOrigin) || strings.EqualFold(request.Header.Get("Sec-Fetch-Site"), "cross-site") {
+				writer.Header().Set("Content-Type", "application/json")
+				writer.WriteHeader(http.StatusForbidden)
+				_, _ = writer.Write([]byte(`{"ok":false,"error":"cross_site_request"}`))
+				return
+			}
+		}
+		next.ServeHTTP(writer, request)
+	})
+}
+
+func isUnsafeMethod(method string) bool {
+	switch method {
+	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+		return true
+	default:
+		return false
+	}
+}
+
+func canonicalOrigin(raw string) string {
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.User != nil || parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return ""
+	}
+	if parsed.Scheme != "https" {
+		return ""
+	}
+	return parsed.Scheme + "://" + parsed.Host
 }
 
 func securityHeaders(next http.Handler) http.Handler {

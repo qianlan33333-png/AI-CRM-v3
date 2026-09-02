@@ -1,65 +1,56 @@
 # AI-CRM v3
 
-AI-CRM v3 是下一代 CRM 主运行仓库。它从干净 Git 历史开始，以白名单方式吸收两个供体仓的有效资产：
+AI-CRM v3 是单企业私有化 CRM 的 Go 主运行仓库。本期已完成可上线的基础能力：PostgreSQL 平台底座、OneID 身份内核、员工认证与权限、企微 OAuth/回调/JSSDK/侧边栏身份，以及从旧前端白名单复用的管理后台和侧边栏壳。
 
-- `AI-CRM-production`：提供 OneID、企微授权和支付关联的生产行为真值；
-- `AI-CRM-v2`：提供 Go 领域实现、基础设施、Provider Adapter 和测试素材。
+固定供体基线：
 
-旧仓不是 v3 的运行时依赖，也不会以 Git 子模块、远程服务或整目录复制方式接入。
+- `AI-CRM-production@4af15e64fb7ebb311b52b17eaf5fc5ea5e8154c8`：生产行为与 OneID 参考；
+- `AI-CRM@69c5282fb38058f2cc9872b6feb3f0f54bfad64b`：管理后台和企微侧边栏视觉壳。
 
-## 当前状态
+供体仓不是运行时依赖，也未复制其 Git 历史。
 
-这是仓库初始化基线，已包含：
+## 本期能力
 
-- 迁移范围 PRD；
-- 模块化开发与交付方案；
-- 最小 Go HTTP 服务；
-- `/healthz` 与 `/readyz`；
-- Customer、Identity、Access、WeCom、Order、Payment 的目录边界；
-- scoped Identity Ref 的最小实现与测试；
-- 模块注册和供体基线清单。
+- 渠道中立 `customers.id`、外部身份唯一约束、冲突、关联意图、合并候选、管理员确认归并和可审计撤销；
+- 本地 Argon2id 密码、数据库 Session、CSRF、登录限流、固定三角色和 `session_version` 即时失效；
+- 企微员工登录、侧边栏 OAuth、JSSDK 签名、客户上下文令牌、外部联系人加密回调和幂等 Inbox worker；
+- 后台完整 CRM 菜单、登录/首页/员工权限/OneID 查询页和侧边栏壳；尚未开发的业务统一显示“功能待接入”，不会调用旧 API；
+- 支付宝仅实现通用身份 Provider 契约和 Fake Adapter，不包含支付宝网络调用、订单或支付；
+- `main` 必过 `make check`，成功后通过固定 SSH 主机密钥自动发布版本化 release。
 
-当前没有任何业务模块被声明为生产就绪，也没有真实企微、支付、迁移或生产部署能力。
+公开 HTTP 契约见 [OpenAPI](api/openapi.yaml)，数据迁移见 [migrations](migrations)，部署约束见 [部署说明](deploy/README.md)。
 
-## 核心决策
+## 本地运行
 
-1. Go 模块化单体；
-2. PostgreSQL 是业务事实和持久异步任务的唯一有状态基础；
-3. `customers.id` 是渠道中立 OneID；
-4. 外部身份只进入 Identity 域；
-5. 一个领域只有一个写入者；
-6. 按用户 Journey 和路由逐项切流；
-7. 供体代码必须先归类为 Behavior、Port、Adapter 或 Discard。
-
-## 文档入口
-
-- [搬迁范围与新仓库基线 PRD](docs/01-PRD-迁移范围与新仓库基线.md)
-- [模块化开发与交付方案](docs/02-模块化开发与交付方案.md)
-- [供体基线](docs/source-baselines.yaml)
-- [模块注册表](modules/registry.yaml)
-
-## 本地启动
-
-目标工具链记录在 `.tool-versions`。安装对应 Go 版本后：
+需要 Go 1.26 和 PostgreSQL 16。先创建数据库并执行迁移：
 
 ```bash
-make check
+export AICRM_DATABASE_URL='postgres://aicrm:password@127.0.0.1:5432/aicrm?sslmode=disable'
+go run ./cmd/migrate
+```
+
+首次启动可用环境变量幂等创建超级管理员：
+
+```bash
+export AICRM_BOOTSTRAP_USERNAME='admin'
+export AICRM_BOOTSTRAP_PASSWORD='replace-with-a-strong-password'
+export AICRM_BOOTSTRAP_DISPLAY_NAME='系统管理员'
 make run
 ```
 
-默认监听 `127.0.0.1:8080`：
+默认只监听 `127.0.0.1:8080`。公网流量由 Caddy 在 80/443 终止 HTTPS 后反向代理：
 
 ```bash
 curl http://127.0.0.1:8080/healthz
 curl http://127.0.0.1:8080/readyz
 ```
 
-## 发布到 GitHub
+`AICRM_WECOM_ENABLED=false` 是安全默认值。启用企微必须一次性提供完整的企业、应用、回调和上下文签名配置；支付宝没有启用开关。
 
-当前目录已经初始化为本地 Git 仓库。具备 GitHub CLI 登录环境时运行：
+## 验证
 
 ```bash
-scripts/publish-github.sh qianlan33333-png/AI-CRM-v3 private
+make check
+go test -race ./cmd/aicrm ./internal/access/... ./internal/identity/... ./internal/wecom/...
+govulncheck ./...
 ```
-
-公开仓库需显式把最后一个参数改为 `public`。

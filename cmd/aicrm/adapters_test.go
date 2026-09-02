@@ -121,7 +121,7 @@ func TestApplicationRouterKeepsOwnershipAndProtectsAdminShell(t *testing.T) {
 			writer.WriteHeader(http.StatusNoContent)
 		})
 	}
-	handler, err := routeApplication(marker("health"), marker("access"), marker("identity"), marker("wecom"), marker("shell"), authentication)
+	handler, err := routeApplication(marker("health"), marker("access"), marker("identity"), marker("wecom"), marker("shell"), authentication, "https://crm.example")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,5 +155,39 @@ func TestApplicationRouterKeepsOwnershipAndProtectsAdminShell(t *testing.T) {
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusNoContent || response.Header().Get("X-Owner") != "shell" {
 		t.Fatalf("authenticated admin status=%d owner=%q", response.Code, response.Header().Get("X-Owner"))
+	}
+}
+
+func TestApplicationRouterRejectsCrossSiteUnsafeRequests(t *testing.T) {
+	authentication := &fakeAccessAuthentication{}
+	marker := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusNoContent)
+	})
+	handler, err := routeApplication(marker, marker, marker, marker, marker, authentication, "https://crm.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, test := range []struct {
+		name      string
+		origin    string
+		fetchSite string
+		want      int
+	}{
+		{name: "same origin", origin: "https://crm.example", fetchSite: "same-origin", want: http.StatusNoContent},
+		{name: "cross origin", origin: "https://evil.example", fetchSite: "cross-site", want: http.StatusForbidden},
+		{name: "cross-site without origin", fetchSite: "cross-site", want: http.StatusForbidden},
+		{name: "provider callback without browser headers", want: http.StatusNoContent},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodPost, "/wecom/external-contact/callback", nil)
+			request.Header.Set("Origin", test.origin)
+			request.Header.Set("Sec-Fetch-Site", test.fetchSite)
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if response.Code != test.want {
+				t.Fatalf("status=%d want=%d body=%s", response.Code, test.want, response.Body.String())
+			}
+		})
 	}
 }
