@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -35,8 +36,16 @@ func (h *UIHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.URL.Path == "/admin/external-effects" {
-		if r.URL.Query().Get("view") != "external-effects" || len(r.URL.Query()) != 1 {
-			http.Redirect(w, r, "/admin/external-effects?view=external-effects", http.StatusSeeOther)
+		if !validExternalEffectsQuery(r.URL.Query()) {
+			http.Redirect(w, r, "/admin/campaigns.html?view=external-effects", http.StatusSeeOther)
+			return
+		}
+		http.Redirect(w, r, "/admin/campaigns.html?"+r.URL.Query().Encode(), http.StatusSeeOther)
+		return
+	}
+	if r.URL.Path == "/admin/campaigns.html" {
+		if !validExternalEffectsQuery(r.URL.Query()) {
+			http.NotFound(w, r)
 			return
 		}
 		if h.renderer == nil {
@@ -63,6 +72,26 @@ func (h *UIHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.serve(w, r, relative, staticMIME(relative))
+}
+
+// ValidUIQuery freezes the only donor campaigns.html compatibility shape that
+// v3 exposes. It is exported for the outer security-header adapter, not as a
+// business API contract.
+func ValidUIQuery(query map[string][]string) bool { return validExternalEffectsQuery(query) }
+
+func validExternalEffectsQuery(query map[string][]string) bool {
+	if len(query) < 1 || len(query) > 2 || len(query["view"]) != 1 || query["view"][0] != "external-effects" {
+		return false
+	}
+	jobs, hasJob := query["job"]
+	if !hasJob {
+		return len(query) == 1
+	}
+	if len(query) != 2 || len(jobs) != 1 {
+		return false
+	}
+	value, err := strconv.ParseInt(jobs[0], 10, 64)
+	return err == nil && value > 0
 }
 
 func (h *UIHandler) pageAssets() (string, string, string, error) {

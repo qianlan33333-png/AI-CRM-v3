@@ -41,6 +41,7 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/api/admin/external-effects")
 	if path == "" || path == "/" {
 		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
 			writeEffectError(w, http.StatusMethodNotAllowed, "method_not_allowed")
 			return
 		}
@@ -65,7 +66,12 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if path == "/diagnostics" {
-		if r.Method != http.MethodGet || !h.read(w, r) {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
+			writeEffectError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+			return
+		}
+		if !h.read(w, r) {
 			return
 		}
 		value, err := h.repository.Diagnostics(r.Context())
@@ -77,7 +83,12 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if path == "/jobs" {
-		if r.Method != http.MethodGet || !h.read(w, r) {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
+			writeEffectError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+			return
+		}
+		if !h.read(w, r) {
 			return
 		}
 		h.jobs(w, r)
@@ -90,14 +101,33 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	id := parts[0]
 	if len(parts) == 1 {
-		if r.Method != http.MethodGet || !h.read(w, r) {
+		if _, err := parseEffectID(id); err != nil {
+			writeEffectError(w, http.StatusNotFound, "not_found")
+			return
+		}
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
+			writeEffectError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+			return
+		}
+		if !h.read(w, r) {
 			return
 		}
 		value, err := h.repository.Get(r.Context(), id)
 		h.writeResult(w, value, err)
 		return
 	}
-	if len(parts) != 2 || r.Method != http.MethodPost || !h.mutate(w, r) {
+	if len(parts) != 2 || (parts[1] != "cancel" && parts[1] != "retry" && parts[1] != "reconcile") || func() bool { _, err := parseEffectID(id); return err != nil }() {
+		writeEffectError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		writeEffectError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+		return
+	}
+	actor, ok := h.mutate(w, r)
+	if !ok {
 		return
 	}
 	key := digestHeader(r.Header.Get("Idempotency-Key"))
@@ -105,7 +135,7 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeEffectError(w, http.StatusBadRequest, "idempotency_key_required")
 		return
 	}
-	command := ControlCommand{EffectID: id, ReceiptKey: key}
+	command := ControlCommand{EffectID: id, ReceiptKey: key, ActorAdminUserID: actor.InternalID}
 	var value Projection
 	var err error
 	switch parts[1] {
@@ -159,18 +189,52 @@ func effectClassification(state string) string {
 }
 
 func (h *HTTPHandler) read(w http.ResponseWriter, r *http.Request) bool {
-	if _, err := h.security.Authenticate(r.Context(), r); err != nil {
+	principal, err := h.security.Authenticate(r.Context(), r)
+	if err != nil {
 		writeEffectError(w, http.StatusForbidden, "forbidden")
+		return false
+	}
+	if !mayReadEffects(principal) {
+		writeEffectError(w, http.StatusForbidden, "permission_denied")
 		return false
 	}
 	return true
 }
-func (h *HTTPHandler) mutate(w http.ResponseWriter, r *http.Request) bool {
-	if _, err := h.security.AuthorizeCSRF(r.Context(), r); err != nil {
+func (h *HTTPHandler) mutate(w http.ResponseWriter, r *http.Request) (accessdomain.Principal, bool) {
+	principal, err := h.security.AuthorizeCSRF(r.Context(), r)
+	if err != nil {
 		writeEffectError(w, http.StatusForbidden, "csrf_required")
+		return accessdomain.Principal{}, false
+	}
+	if !mayControlEffects(principal) {
+		writeEffectError(w, http.StatusForbidden, "permission_denied")
+		return accessdomain.Principal{}, false
+	}
+	return principal, true
+}
+
+func mayReadEffects(principal accessdomain.Principal) bool {
+	if principal.InternalID < 1 || (principal.Kind != accessdomain.KindAdmin && principal.Kind != accessdomain.KindStaff) {
 		return false
 	}
-	return true
+	for _, role := range principal.Roles {
+		if role == accessdomain.RoleViewer || role == accessdomain.RoleAdmin || role == accessdomain.RoleSuperAdmin {
+			return true
+		}
+	}
+	return false
+}
+
+func mayControlEffects(principal accessdomain.Principal) bool {
+	if !mayReadEffects(principal) {
+		return false
+	}
+	for _, role := range principal.Roles {
+		if role == accessdomain.RoleAdmin || role == accessdomain.RoleSuperAdmin {
+			return true
+		}
+	}
+	return false
 }
 func (h *HTTPHandler) writeResult(w http.ResponseWriter, v Projection, err error) {
 	switch {

@@ -2,6 +2,8 @@ package externaleffects
 
 import (
 	"context"
+
+	"github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	"github.com/riverqueue/river"
 )
 
@@ -20,20 +22,9 @@ type Worker struct {
 
 // ProviderAdapter is owned by outbound. A nil adapter means Provider disabled;
 // it cannot claim an external call occurred.
-type ProviderAdapter interface {
-	Execute(context.Context, Envelope, Attempt) (AdapterResult, error)
-}
-type Attempt struct {
-	Number            int32
-	Generation, Fence int64
-}
-type Completion State
-type AdapterResult struct {
-	Completion               State
-	ReceiptDigest            Digest
-	CallAttempted            bool
-	RealExternalCallExecuted bool
-}
+type ProviderAdapter = port.ProviderAdapter
+type Attempt = port.Attempt
+type AdapterResult = port.AdapterResult
 
 func NewWorker(repository *Repository, adapter ProviderAdapter) *Worker {
 	return &Worker{repository: repository, adapter: adapter}

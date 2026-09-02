@@ -33,10 +33,12 @@ CREATE TABLE external_effect_operation_receipts (
     effect_id BIGINT NOT NULL REFERENCES external_effects(id),
     receipt_key_digest TEXT NOT NULL CHECK (receipt_key_digest ~ '^sha256:[0-9a-f]{64}$'),
     command_digest TEXT NOT NULL CHECK (command_digest ~ '^sha256:[0-9a-f]{64}$'),
+    actor_admin_user_id BIGINT CHECK (actor_admin_user_id IS NULL OR actor_admin_user_id > 0),
     state TEXT NOT NULL,
     completed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
     UNIQUE(operation, effect_id, receipt_key_digest),
-    UNIQUE(operation, effect_id, command_digest)
+    UNIQUE(operation, effect_id, command_digest),
+    CONSTRAINT external_effect_manual_control_requires_actor CHECK (operation NOT IN ('retry','cancel','reconcile') OR actor_admin_user_id IS NOT NULL)
 );
 
 CREATE TABLE external_effect_attempts (

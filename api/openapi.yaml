@@ -76,6 +76,25 @@ paths:
       responses:
         "200": {description: OneID read-only administration HTML, content: {text/html: {schema: {type: string}}}}
         "303": {description: Redirect to login}
+  /admin/external-effects:
+    get:
+      operationId: openExternalEffectsWorkspace
+      description: Stable v3 entrypoint. It redirects to the frozen donor URL alias so unchanged donor navigation and job detail links continue to work.
+      security: [{adminSession: []}]
+      parameters: [{$ref: "#/components/parameters/ExternalEffectsView"}, {$ref: "#/components/parameters/PushJobQuery"}]
+      responses:
+        "303": {description: "Redirect to /admin/campaigns.html?view=external-effects, preserving a valid job query."}
+        "403": {$ref: "#/components/responses/Error"}
+  /admin/campaigns.html:
+    get:
+      operationId: externalEffectsDonorURLAlias
+      description: Compatibility alias for the frozen donor runtime. Only view=external-effects and an optional positive job are served; no Campaign capability is exposed.
+      security: [{adminSession: []}]
+      parameters: [{$ref: "#/components/parameters/ExternalEffectsView"}, {$ref: "#/components/parameters/PushJobQuery"}]
+      responses:
+        "200": {description: v3 admin shell with the frozen External Effects stage mount, content: {text/html: {schema: {type: string}}}}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
   /api/admin/access/users:
     get:
       operationId: listAdminUsers
@@ -345,6 +364,8 @@ components:
     ID: {name: id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
     ExternalEffectID: {name: id, in: path, required: true, schema: {$ref: "#/components/schemas/ExternalEffectID"}}
     PushJobID: {name: job_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
+    ExternalEffectsView: {name: view, in: query, required: true, schema: {type: string, const: external-effects}}
+    PushJobQuery: {name: job, in: query, schema: {$ref: "#/components/schemas/PositiveID"}}
     IdempotencyKey: {name: Idempotency-Key, in: header, required: true, schema: {type: string, minLength: 1, maxLength: 200}}
     CustomerID: {name: customer_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
     SafeNext: {name: next, in: query, schema: {type: string, pattern: "^/"}}
@@ -398,7 +419,7 @@ components:
       required: [job_id, status, attempt_count, failure_class, created_at, status_updated_at, local_fact_only, real_external_call_executed, delivery_proven, provider_execution_eligible]
       properties:
         job_id: {$ref: "#/components/schemas/PositiveID"}
-        status: {type: string, enum: [pending, running, sent, failed, outcome_unknown, retryable_failed, cancelled]}
+        status: {type: string, enum: [pending, running, sent, reconciled, failed, outcome_unknown, retryable_failed, cancelled]}
         attempt_count: {type: integer, minimum: 0}
         failure_class: {type: string, enum: [local, manual_review]}
         created_at: {type: string, format: date-time}
@@ -444,11 +465,13 @@ components:
         delivery_proven: {const: false}
     PushControlReceipt:
       type: object
-      required: [operation, task_status, completed_at, local_fact_only, real_external_call_executed, delivery_proven]
+      required: [task_id, operation, task_status, completed_at, actor_admin_user_id, local_fact_only, real_external_call_executed, delivery_proven]
       properties:
+        task_id: {$ref: "#/components/schemas/PositiveID"}
         operation: {type: string, enum: [accept, queue, retry, cancel, complete, reconcile, manual_retry]}
         task_status: {type: string}
         completed_at: {type: string, format: date-time}
+        actor_admin_user_id: {type: [integer, "null"], minimum: 1}
         local_fact_only: {const: true}
         real_external_call_executed: {const: false}
         delivery_proven: {const: false}
@@ -462,21 +485,15 @@ components:
             control_receipts: {type: array, items: {$ref: "#/components/schemas/PushControlReceipt"}}
     PushControlEnvelope:
       type: object
-      required: [ok, local_fact_only, real_external_call_executed, delivery_proven, provider_execution_eligible, control_receipt]
+      required: [ok, fallback_used, local_fact_only, real_external_call_executed, delivery_proven, provider_execution_eligible, control_receipt]
       properties:
         ok: {const: true}
+        fallback_used: {const: false}
         local_fact_only: {const: true}
         real_external_call_executed: {const: false}
         delivery_proven: {const: false}
         provider_execution_eligible: {const: false}
-        control_receipt:
-          type: object
-          required: [task_id, task_status, operation, completed_at]
-          properties:
-            task_id: {$ref: "#/components/schemas/PositiveID"}
-            task_status: {type: string}
-            operation: {type: string, enum: [cancel, manual_retry]}
-            completed_at: {type: string, format: date-time}
+        control_receipt: {$ref: "#/components/schemas/PushControlReceipt"}
     StatusResponse:
       type: object
       additionalProperties: false

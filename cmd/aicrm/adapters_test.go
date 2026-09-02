@@ -48,6 +48,12 @@ func (directUnitOfWork) Within(ctx context.Context, callback func(context.Contex
 	return callback(ctx)
 }
 
+func TestAllowedOAuthRedirectsIncludesHiddenExternalEffectsPage(t *testing.T) {
+	if _, ok := allowedOAuthRedirects()["/admin/external-effects"]; !ok {
+		t.Fatal("external effects page is not an allowed OAuth redirect")
+	}
+}
+
 type fakeUserReader struct{ user accessdomain.User }
 
 func (reader fakeUserReader) UserByID(context.Context, int64, bool) (accessdomain.User, error) {
@@ -186,13 +192,7 @@ func TestApplicationRouterOwnsEffectsAndPushCenterSeparately(t *testing.T) {
 
 func TestExternalEffectsUIRequiresAdminAndExposesOnlyItsFrozenSurface(t *testing.T) {
 	dist := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(dist, "admin"), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	if err := os.MkdirAll(filepath.Join(dist, "assets"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dist, "admin", "campaigns.html"), []byte("external-effects"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dist, "assets", "campaign.js"), []byte("asset"), 0o644); err != nil {
@@ -235,15 +235,36 @@ func TestExternalEffectsUIRequiresAdminAndExposesOnlyItsFrozenSurface(t *testing
 	request.AddCookie(&http.Cookie{Name: "aicrm_admin_session", Value: "valid"})
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/admin/external-effects?view=external-effects" {
+	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/admin/campaigns.html?view=external-effects" {
 		t.Fatalf("query was not normalized status=%d location=%q", response.Code, response.Header().Get("Location"))
 	}
-	request = httptest.NewRequest(http.MethodGet, "/admin/external-effects?view=external-effects", nil)
+	request = httptest.NewRequest(http.MethodGet, "/admin/external-effects?view=external-effects&job=42", nil)
 	request.AddCookie(&http.Cookie{Name: "aicrm_admin_session", Value: "valid"})
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK || strings.Count(response.Body.String(), `class="admin-sidebar"`) != 1 || strings.Count(response.Body.String(), "<main") != 1 || !strings.Contains(response.Body.String(), `<main id="stage" class="stage rich"></main>`) || strings.Contains(response.Body.String(), `<aside class="side">`) || !strings.Contains(response.Body.String(), `src="/assets/campaign.js"`) {
+	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/admin/campaigns.html?job=42&view=external-effects" {
+		t.Fatalf("frozen donor alias was not preserved status=%d location=%q", response.Code, response.Header().Get("Location"))
+	}
+	request = httptest.NewRequest(http.MethodGet, "/admin/campaigns.html?view=external-effects&job=42", nil)
+	request.AddCookie(&http.Cookie{Name: "aicrm_admin_session", Value: "valid"})
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || strings.Count(response.Body.String(), `class="admin-sidebar"`) != 1 || strings.Count(response.Body.String(), "<main") != 1 || !strings.Contains(response.Body.String(), `<main id="stage" class="stage rich"></main>`) || strings.Contains(response.Body.String(), `<aside class="side">`) || !strings.Contains(response.Body.String(), `src="/assets/campaign.js"`) || !strings.Contains(response.Header().Get("Content-Security-Policy"), "style-src 'self' 'unsafe-inline'") || strings.Contains(response.Header().Get("Content-Security-Policy"), "script-src 'self' 'unsafe-inline'") {
 		t.Fatalf("external effects shell mismatch status=%d body=%q", response.Code, response.Body.String())
+	}
+	request = httptest.NewRequest(http.MethodGet, "/admin/external-effects?view=external-effects&job=0", nil)
+	request.AddCookie(&http.Cookie{Name: "aicrm_admin_session", Value: "valid"})
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/admin/campaigns.html?view=external-effects" {
+		t.Fatalf("invalid job was not normalized status=%d location=%q", response.Code, response.Header().Get("Location"))
+	}
+	request = httptest.NewRequest(http.MethodGet, "/admin/campaigns.html?view=campaign", nil)
+	request.AddCookie(&http.Cookie{Name: "aicrm_admin_session", Value: "valid"})
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("non-effects campaign alias status=%d", response.Code)
 	}
 
 	for path, want := range map[string]struct {
@@ -260,6 +281,9 @@ func TestExternalEffectsUIRequiresAdminAndExposesOnlyItsFrozenSurface(t *testing
 		handler.ServeHTTP(response, request)
 		if response.Code != http.StatusOK || response.Body.String() != want.body || response.Header().Get("Content-Type") != want.mime {
 			t.Fatalf("readable path=%s status=%d body=%q mime=%q", path, response.Code, response.Body.String(), response.Header().Get("Content-Type"))
+		}
+		if strings.Contains(response.Header().Get("Content-Security-Policy"), "unsafe-inline") {
+			t.Fatalf("asset CSP unexpectedly relaxed for %s: %q", path, response.Header().Get("Content-Security-Policy"))
 		}
 	}
 

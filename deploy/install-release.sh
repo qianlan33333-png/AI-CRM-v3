@@ -86,4 +86,8 @@ if ! systemctl enable --now aicrm-effects-worker.service; then
   rollback
   exit 8
 fi
+if ! systemctl is-active --quiet aicrm-effects-worker.service; then
+  rollback
+  exit 9
+fi
 echo "release ${release_sha} active"

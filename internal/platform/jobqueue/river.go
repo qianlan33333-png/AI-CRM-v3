@@ -17,6 +17,27 @@ const OutboundQueue = "outbound"
 
 var ErrUnavailable = errors.New("River client unavailable")
 
+// CheckReady verifies the durable River schema without importing River's
+// migrator into application runtime code. The effects module consumes this
+// platform-level readiness boundary alongside its own schema requirement.
+func CheckReady(ctx context.Context, pool *pgxpool.Pool) error {
+	if pool == nil {
+		return ErrUnavailable
+	}
+	var complete bool
+	err := pool.QueryRow(ctx, `SELECT NOT EXISTS (
+        SELECT 1 FROM unnest(ARRAY['river_job','river_leader','river_migration']) AS required(name)
+        WHERE to_regclass(current_schema() || '.' || required.name) IS NULL
+    )`).Scan(&complete)
+	if err != nil {
+		return err
+	}
+	if !complete {
+		return errors.New("River schema is not ready")
+	}
+	return nil
+}
+
 // NewInsertClient is deliberately insert-only and permits only registered
 // worker kinds at runtime. Queue insertion may be called with an active pgx
 // transaction so the caller's business fact and River row commit atomically.

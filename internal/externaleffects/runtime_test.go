@@ -1,6 +1,9 @@
 package externaleffects
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 func digestForTest(label string) Digest { return Hash("test", label) }
 func envelopeForTest() Envelope {
@@ -32,10 +35,28 @@ func TestClosedDigestOnlyEnvelopeAndStates(t *testing.T) {
 }
 
 func TestControlDigestDetectsPayloadDrift(t *testing.T) {
-	first := ControlCommand{EffectID: "eer_7", ReceiptKey: digestForTest("key"), EvidenceDigest: digestForTest("evidence")}
+	first := ControlCommand{EffectID: "eer_7", ReceiptKey: digestForTest("key"), EvidenceDigest: digestForTest("evidence"), ActorAdminUserID: 7}
 	second := first
 	second.EvidenceDigest = digestForTest("other")
 	if first.Digest("reconcile") == second.Digest("reconcile") {
 		t.Fatal("reconcile evidence omitted from command digest")
+	}
+	second = first
+	second.ActorAdminUserID = 8
+	if first.Digest("reconcile") == second.Digest("reconcile") {
+		t.Fatal("control actor omitted from command digest")
+	}
+}
+
+func TestParseEffectIDMatchesThePublicContractExactly(t *testing.T) {
+	for _, value := range []string{"eer_1", "eer_42", "eer_9223372036854775807"} {
+		if _, err := parseEffectID(value); err != nil {
+			t.Fatalf("valid %q: %v", value, err)
+		}
+	}
+	for _, value := range []string{"", "eer_", "eer_0", "eer_01", "eer_1junk", "eer_+1", "eer_-1", "eer_1.0", "eer_9223372036854775808"} {
+		if _, err := parseEffectID(value); !errors.Is(err, ErrInvalid) {
+			t.Fatalf("invalid %q: %v", value, err)
+		}
 	}
 }

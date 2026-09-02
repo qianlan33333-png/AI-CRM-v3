@@ -44,12 +44,13 @@ const includeStatic = (relative) => {
 // V2's loader contains dormant dynamic imports for every legacy page. The
 // release keeps the loader, its static dependencies, and only the campaigns
 // chunk selected by the forced external-effects query; no other page chunk is
-// staged or therefore fetchable.
+// staged or therefore fetchable. HTML stays v3-owned: the Go webshell renders
+// the single admin shell and mounts the frozen stage, so no donor HTML is ever
+// packaged.
 for (const root of roots) includeStatic(root);
 includeStatic(legacyEntry);
 includeStatic(campaignsEntry);
 
-copy('admin/campaigns.html');
 for (const relative of [...selected].sort()) copy(relative);
 
 const stagedManifest = {
@@ -69,12 +70,12 @@ const walk = (directory) => {
 };
 walk(stage);
 for (const relative of stagedFiles) {
-  const allowed = relative === 'admin/campaigns.html' || relative === 'asset-manifest.json' || relative.startsWith('assets/');
+  const allowed = relative === 'asset-manifest.json' || relative.startsWith('assets/');
   if (!allowed) fail(`unapproved release file: ${relative}`);
-  if (relative.endsWith('.html') && relative !== 'admin/campaigns.html') fail(`unapproved HTML surface: ${relative}`);
+  if (relative.endsWith('.html')) fail(`unapproved HTML surface: ${relative}`);
   if (/(^|\/)(h5|sidebar|public)(\/|$)/.test(relative)) fail(`unapproved public surface: ${relative}`);
 }
 for (const relative of selected) {
   if (!stagedFiles.includes(relative)) fail(`missing staged dependency: ${relative}`);
 }
-console.log(`staged ${selected.size} campaign assets and admin/campaigns.html in ${stage}`);
+console.log(`staged ${selected.size} frozen External Effects assets in ${stage}`);

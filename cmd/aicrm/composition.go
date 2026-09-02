@@ -80,9 +80,9 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if cfg.Effects.ProviderEnabled {
 		return fail(errors.New("outbound provider enabled but no outbound adapter is registered"))
 	}
+	effectsModule := externaleffects.NewModuleRegistration()
 	effectWorkers := river.NewWorkers()
-	effectWorker := externaleffects.NewWorker(nil, nil)
-	if err = river.AddWorkerSafely[externaleffects.EffectJobArgs](effectWorkers, effectWorker); err != nil {
+	if err = effectsModule.RegisterWorkers(effectWorkers); err != nil {
 		return fail(err)
 	}
 	effectClient, err := platformjobqueue.NewInsertClient(pool.Native(), effectWorkers)
@@ -93,18 +93,11 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
-	if err = effectWorker.BindRepository(effectRepository); err != nil {
-		return fail(err)
-	}
 	effectsRuntime, err := platformjobqueue.NewRuntime(pool.Native(), effectWorkers)
 	if err != nil {
 		return fail(err)
 	}
-	effectsHandler, err := externaleffects.NewHTTPHandler(effectRepository, requestSecurity)
-	if err != nil {
-		return fail(err)
-	}
-	pushCenterHandler, err := externaleffects.NewPushCenterHandler(effectRepository, requestSecurity)
+	effectsBindings, err := effectsModule.Bind(effectRepository, requestSecurity)
 	if err != nil {
 		return fail(err)
 	}
@@ -175,6 +168,9 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		if checkErr != nil || !complete {
 			return errors.New("database schema is not ready")
 		}
+		if checkErr = effectsModule.Readiness(readinessContext, pool.Native()); checkErr != nil {
+			return checkErr
+		}
 		return nil
 	})
 	healthHandler, err := platformruntime.NewHandler(platformruntime.HandlerOptions{ReleaseSHA: cfg.ReleaseSHA, Readiness: readiness})
@@ -182,10 +178,10 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return fail(err)
 	}
 
-	effectsUI := externaleffects.NewUIHandler("web/dist", func(writer http.ResponseWriter, request *http.Request, tokens, labs, admin string) error {
+	effectsUI := effectsModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, tokens, labs, admin string) error {
 		return renderer.RenderExternalEffects(writer, webshell.AdminPageForRequest(request, "外部效果与 Push Center", "仅展示本地外部效果状态与对账事实。", "api.admin_cloud_orchestrator_workspace"), webshell.ExternalEffectsAssets{TokensCSS: tokens, LabsCSS: labs, AdminJS: admin})
 	})
-	handler, err := routeApplicationWithEffects(healthHandler, accessHandler.Routes(), oneIDHandler.Routes(), effectsHandler, pushCenterHandler, effectsUI, weComHandler, shellHandler, authentication, cfg.PublicOrigin)
+	handler, err := routeApplicationWithEffects(healthHandler, accessHandler.Routes(), oneIDHandler.Routes(), effectsBindings.Effects, effectsBindings.PushCenter, effectsUI, weComHandler, shellHandler, authentication, cfg.PublicOrigin)
 	if err != nil {
 		return fail(err)
 	}
@@ -238,6 +234,7 @@ func routeApplicationWithEffects(health, access, identity, effects, pushCenter, 
 	mux.Handle("/api/admin/push-center/", pushCenter)
 	mux.Handle("/assets/", requireAdminSession(authentication, effectsUI))
 	mux.Handle("/admin/external-effects", requireAdminSession(authentication, effectsUI))
+	mux.Handle("/admin/campaigns.html", requireAdminSession(authentication, effectsUI))
 	mux.Handle("/wecom/external-contact/callback", weCom)
 	mux.Handle("/auth/wecom/start", weCom)
 	mux.Handle("/auth/wecom/callback", weCom)
@@ -310,7 +307,11 @@ func securityHeaders(next http.Handler) http.Handler {
 		writer.Header().Set("X-Content-Type-Options", "nosniff")
 		writer.Header().Set("Referrer-Policy", "no-referrer")
 		writer.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
-		contentPolicy := "default-src 'self'; script-src 'self' https://res.wx.qq.com; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'"
+		styleSource := "'self'"
+		if request.URL.Path == "/admin/campaigns.html" && externaleffects.ValidUIQuery(request.URL.Query()) {
+			styleSource = "'self' 'unsafe-inline'"
+		}
+		contentPolicy := "default-src 'self'; script-src 'self' https://res.wx.qq.com; style-src " + styleSource + "; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'"
 		if request.URL.Path != webshell.SidebarPagePath && !strings.HasPrefix(request.URL.Path, "/api/sidebar/") {
 			writer.Header().Set("X-Frame-Options", "SAMEORIGIN")
 			contentPolicy += "; frame-ancestors 'self'"

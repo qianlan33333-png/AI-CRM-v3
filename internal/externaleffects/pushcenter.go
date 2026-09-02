@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+
+	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
 )
 
 // PushCenterHandler is a compatibility read/control projection built solely
@@ -15,18 +17,19 @@ type PushCenterHandler struct {
 }
 
 func (h *PushCenterHandler) read(w http.ResponseWriter, r *http.Request) bool {
-	if _, err := h.security.Authenticate(r.Context(), r); err != nil {
+	principal, err := h.security.Authenticate(r.Context(), r)
+	if err != nil {
 		writeEffectError(w, http.StatusForbidden, "forbidden")
+		return false
+	}
+	if !mayReadEffects(principal) {
+		writeEffectError(w, http.StatusForbidden, "permission_denied")
 		return false
 	}
 	return true
 }
-func (h *PushCenterHandler) mutate(w http.ResponseWriter, r *http.Request) bool {
-	if _, err := h.security.AuthorizeCSRF(r.Context(), r); err != nil {
-		writeEffectError(w, http.StatusForbidden, "csrf_required")
-		return false
-	}
-	return true
+func (h *PushCenterHandler) mutate(w http.ResponseWriter, r *http.Request) (accessdomain.Principal, bool) {
+	return (&HTTPHandler{security: h.security}).mutate(w, r)
 }
 func (h *PushCenterHandler) writeResult(w http.ResponseWriter, p Projection, err error) {
 	(&HTTPHandler{}).writeResult(w, p, err)
@@ -60,6 +63,11 @@ func (h *PushCenterHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		parts := strings.Split(path, "/")
+		if len(parts) == 3 && parts[0] == "jobs" && (parts[2] == "cancel" || parts[2] == "retry") {
+			w.Header().Set("Allow", http.MethodPost)
+			writeEffectError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+			return
+		}
 		if len(parts) == 2 && parts[0] == "jobs" {
 			h.job(w, r, parts[1], false)
 			return
@@ -72,11 +80,22 @@ func (h *PushCenterHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	parts := strings.Split(path, "/")
-	if r.Method != http.MethodPost || len(parts) != 3 || parts[0] != "jobs" || (parts[2] != "cancel" && parts[2] != "retry") {
+	if len(parts) == 2 && parts[0] == "jobs" {
+		w.Header().Set("Allow", http.MethodGet)
 		writeEffectError(w, http.StatusMethodNotAllowed, "method_not_allowed")
 		return
 	}
-	if !h.mutate(w, r) {
+	if len(parts) != 3 || parts[0] != "jobs" || (parts[2] != "cancel" && parts[2] != "retry") {
+		writeEffectError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		writeEffectError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+		return
+	}
+	actor, ok := h.mutate(w, r)
+	if !ok {
 		return
 	}
 	jobID, err := strconv.ParseInt(parts[1], 10, 64)
@@ -89,12 +108,7 @@ func (h *PushCenterHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeEffectError(w, http.StatusBadRequest, "idempotency_key_required")
 		return
 	}
-	var effectID int64
-	if err = h.repository.pool.QueryRow(r.Context(), `SELECT effect_id FROM external_effect_jobs WHERE river_job_id=$1`, jobID).Scan(&effectID); err != nil {
-		writeEffectError(w, http.StatusNotFound, "not_found")
-		return
-	}
-	command := ControlCommand{EffectID: effectIDString(effectID), ReceiptKey: key}
+	command := ControlCommand{EffectID: effectIDString(jobID), ReceiptKey: key, ActorAdminUserID: actor.InternalID}
 	var p Projection
 	if parts[2] == "cancel" {
 		p, _, err = h.repository.Cancel(r.Context(), command)
@@ -109,41 +123,34 @@ func (h *PushCenterHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if parts[2] == "retry" {
 		status = "pending"
 	}
-	writeEffectJSON(w, http.StatusOK, map[string]any{"ok": true, "local_fact_only": true, "real_external_call_executed": false, "delivery_proven": false, "provider_execution_eligible": false, "control_receipt": map[string]any{"task_id": jobID, "task_status": status, "operation": map[string]string{"cancel": "cancel", "retry": "manual_retry"}[parts[2]], "completed_at": p.UpdatedAt}})
+	writeEffectJSON(w, http.StatusOK, pushControlEnvelope(jobID, status, map[string]string{"cancel": "cancel", "retry": "manual_retry"}[parts[2]], p.UpdatedAt, actor.InternalID))
+}
+
+func pushControlEnvelope(jobID int64, status, operation string, completedAt any, actorAdminUserID int64) map[string]any {
+	return map[string]any{
+		"ok": true, "fallback_used": false, "local_fact_only": true, "real_external_call_executed": false, "delivery_proven": false, "provider_execution_eligible": false,
+		"control_receipt": map[string]any{
+			"task_id": jobID, "task_status": status, "operation": operation, "completed_at": completedAt, "actor_admin_user_id": actorAdminUserID,
+			"local_fact_only": true, "real_external_call_executed": false, "delivery_proven": false,
+		},
+	}
 }
 func effectIDString(id int64) string { return "eer_" + strconv.FormatInt(id, 10) }
-func (h *PushCenterHandler) counts(r *http.Request) (map[string]int64, error) {
-	return h.repository.Diagnostics(r.Context())
-}
 func (h *PushCenterHandler) sections(w http.ResponseWriter, r *http.Request) {
-	c, err := h.counts(r)
+	stats, err := h.repository.pushStats(r.Context())
 	if err != nil {
 		writeEffectError(w, 500, "unavailable")
 		return
 	}
-	writeEffectJSON(w, 200, map[string]any{"ok": true, "route_owner": "ai_crm_next", "filters": map[string]any{}, "sections": []map[string]any{{"key": "pending", "label": "待处理", "count": c["accepted"] + c["queued"]}, {"key": "running", "label": "执行中", "count": c["attempted"]}, {"key": "failed", "label": "待人工对账", "count": c["outcome_unknown"] + c["retryable_failed"]}}})
+	writeEffectJSON(w, 200, map[string]any{"ok": true, "route_owner": "ai_crm_next", "filters": map[string]any{}, "sections": []map[string]any{{"key": "pending", "label": "待处理", "count": stats.Accepted + stats.Queued}, {"key": "running", "label": "执行中", "count": stats.Attempted}, {"key": "failed", "label": "待人工对账", "count": stats.Unknown + stats.Retryable + stats.FinalFailed}, {"key": "reconciled", "label": "已对账", "count": stats.Reconciled}}})
 }
 func (h *PushCenterHandler) stats(w http.ResponseWriter, r *http.Request) {
-	c, err := h.counts(r)
+	stats, err := h.repository.pushStats(r.Context())
 	if err != nil {
 		writeEffectError(w, 500, "unavailable")
 		return
 	}
-	items, err := h.repository.List(r.Context(), 100)
-	if err != nil {
-		writeEffectError(w, 500, "unavailable")
-		return
-	}
-	var sent, failed int64
-	for _, item := range items {
-		if item.State == StateExecuted || item.State == StateReconciled {
-			sent++
-		}
-		if item.State == StateFinalFailed || item.State == StateUnknown || item.State == StateRetryable {
-			failed++
-		}
-	}
-	writeEffectJSON(w, 200, map[string]any{"ok": true, "route_owner": "ai_crm_next", "real_external_call_executed": false, "filters": map[string]any{}, "counts": map[string]any{"total": len(items), "pending": c["accepted"] + c["queued"], "running": c["attempted"], "sent": sent, "failed": failed}})
+	writeEffectJSON(w, 200, map[string]any{"ok": true, "route_owner": "ai_crm_next", "real_external_call_executed": false, "filters": map[string]any{}, "counts": map[string]any{"total": stats.Total, "pending": stats.Accepted + stats.Queued, "running": stats.Attempted, "sent": stats.Sent, "failed": stats.Unknown + stats.Retryable + stats.FinalFailed, "reconciled": stats.Reconciled}})
 }
 func pushStatus(state string) string {
 	switch State(state) {
@@ -151,8 +158,10 @@ func pushStatus(state string) string {
 		return "pending"
 	case StateAttempted:
 		return "running"
-	case StateExecuted, StateReconciled:
+	case StateExecuted:
 		return "sent"
+	case StateReconciled:
+		return "reconciled"
 	case StateFinalFailed:
 		return "failed"
 	default:
@@ -160,7 +169,7 @@ func pushStatus(state string) string {
 	}
 }
 func (h *PushCenterHandler) jobs(w http.ResponseWriter, r *http.Request) {
-	rows, err := h.repository.pool.Query(r.Context(), `SELECT job.river_job_id,effect.state,effect.attempt_count,effect.created_at,effect.updated_at FROM external_effect_jobs job JOIN external_effects effect ON effect.id=job.effect_id WHERE job.generation=effect.generation ORDER BY effect.updated_at DESC LIMIT 50`)
+	rows, err := h.repository.pool.Query(r.Context(), `SELECT effect.id,effect.state,effect.attempt_count,effect.created_at,effect.updated_at FROM external_effect_jobs job JOIN external_effects effect ON effect.id=job.effect_id WHERE job.generation=effect.generation ORDER BY effect.updated_at DESC LIMIT 50`)
 	if err != nil {
 		writeEffectError(w, 500, "unavailable")
 		return
@@ -193,18 +202,14 @@ func (h *PushCenterHandler) job(w http.ResponseWriter, r *http.Request, raw stri
 	var state string
 	var count int32
 	var created, updated any
-	err = h.repository.pool.QueryRow(r.Context(), `SELECT effect.state,effect.attempt_count,effect.created_at,effect.updated_at FROM external_effect_jobs job JOIN external_effects effect ON effect.id=job.effect_id WHERE job.river_job_id=$1`, id).Scan(&state, &count, &created, &updated)
+	err = h.repository.pool.QueryRow(r.Context(), `SELECT state,attempt_count,created_at,updated_at FROM external_effects WHERE id=$1`, id).Scan(&state, &count, &created, &updated)
 	if err != nil {
 		writeEffectError(w, 404, "not_found")
 		return
 	}
-	body := map[string]any{"ok": true, "fallback_used": false, "local_fact_only": true, "real_external_call_executed": false, "delivery_proven": false, "provider_execution_eligible": false, "job": map[string]any{"job_id": id, "status": pushStatus(state), "attempt_count": count, "failure_class": effectClassification(state), "created_at": created, "status_updated_at": updated}}
+	body := map[string]any{"ok": true, "fallback_used": false, "local_fact_only": true, "real_external_call_executed": false, "delivery_proven": false, "provider_execution_eligible": false, "job": map[string]any{"job_id": id, "status": pushStatus(state), "attempt_count": count, "failure_class": effectClassification(state), "created_at": created, "status_updated_at": updated, "local_fact_only": true, "real_external_call_executed": false, "delivery_proven": false, "provider_execution_eligible": false}}
 	if reconciliation {
-		effectID := int64(0)
-		if err = h.repository.pool.QueryRow(r.Context(), `SELECT effect_id FROM external_effect_jobs WHERE river_job_id=$1`, id).Scan(&effectID); err != nil {
-			writeEffectError(w, 404, "not_found")
-			return
-		}
+		effectID := id
 		attemptRows, queryErr := h.repository.pool.Query(r.Context(), `SELECT id,number,state,completed_at,started_at FROM external_effect_attempts WHERE effect_id=$1 ORDER BY number`, effectID)
 		if queryErr != nil {
 			writeEffectError(w, 500, "unavailable")
@@ -224,7 +229,7 @@ func (h *PushCenterHandler) job(w http.ResponseWriter, r *http.Request, raw stri
 			}
 			attempts = append(attempts, map[string]any{"attempt_id": attemptID, "attempt": number, "state": attemptState, "failure_class": effectClassification(attemptState), "completed_at": completed, "dispatch_started_at": started, "local_fact_only": true, "real_external_call_executed": false, "delivery_proven": false})
 		}
-		receiptRows, queryErr := h.repository.pool.Query(r.Context(), `SELECT operation,state,completed_at FROM external_effect_operation_receipts WHERE effect_id=$1 ORDER BY id`, effectID)
+		receiptRows, queryErr := h.repository.pool.Query(r.Context(), `SELECT operation,state,completed_at,actor_admin_user_id FROM external_effect_operation_receipts WHERE effect_id=$1 ORDER BY id`, effectID)
 		if queryErr != nil {
 			writeEffectError(w, 500, "unavailable")
 			return
@@ -234,11 +239,12 @@ func (h *PushCenterHandler) job(w http.ResponseWriter, r *http.Request, raw stri
 		for receiptRows.Next() {
 			var operation, status string
 			var completed any
-			if queryErr = receiptRows.Scan(&operation, &status, &completed); queryErr != nil {
+			var actor *int64
+			if queryErr = receiptRows.Scan(&operation, &status, &completed, &actor); queryErr != nil {
 				writeEffectError(w, 500, "unavailable")
 				return
 			}
-			receipts = append(receipts, map[string]any{"operation": operation, "task_status": pushStatus(status), "completed_at": completed, "local_fact_only": true, "real_external_call_executed": false, "delivery_proven": false})
+			receipts = append(receipts, map[string]any{"task_id": effectID, "operation": operation, "task_status": pushStatus(status), "completed_at": completed, "actor_admin_user_id": actor, "local_fact_only": true, "real_external_call_executed": false, "delivery_proven": false})
 		}
 		body["attempts"] = attempts
 		body["control_receipts"] = receipts
