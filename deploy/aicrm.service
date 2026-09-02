@@ -10,8 +10,9 @@ Group=aicrm
 WorkingDirectory=/opt/aicrm/current
 EnvironmentFile=/etc/aicrm/aicrm.env
 EnvironmentFile=-/opt/aicrm/current/release.env
-Environment=AICRM_ROLE=api
-ExecStart=/opt/aicrm/current/bin/aicrm
+# ExecStart owns the role so a legacy/shared EnvironmentFile cannot override
+# it and accidentally start a second API listener.
+ExecStart=/usr/bin/env AICRM_ROLE=api /opt/aicrm/current/bin/aicrm
 Restart=on-failure
 RestartSec=3
 TimeoutStopSec=15

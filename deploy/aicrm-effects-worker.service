@@ -10,8 +10,9 @@ Group=aicrm
 WorkingDirectory=/opt/aicrm/current
 EnvironmentFile=/etc/aicrm/aicrm.env
 EnvironmentFile=-/opt/aicrm/current/release.env
-Environment=AICRM_ROLE=effects-worker
-ExecStart=/opt/aicrm/current/bin/aicrm
+# ExecStart owns the role so a legacy/shared EnvironmentFile cannot override
+# it and accidentally make this worker bind the API port.
+ExecStart=/usr/bin/env AICRM_ROLE=effects-worker /opt/aicrm/current/bin/aicrm
 Restart=on-failure
 RestartSec=3
 TimeoutStopSec=20
