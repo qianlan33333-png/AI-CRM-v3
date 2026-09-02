@@ -15,15 +15,34 @@ import (
 	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
 	identityport "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/port"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/identity/query"
+	platformaudit "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/audit"
 )
 
 type transactionMarker struct{}
 
-type testUnitOfWork struct{ calls int }
+type testUnitOfWork struct {
+	calls   int
+	lastErr error
+}
 
 func (unit *testUnitOfWork) Within(ctx context.Context, callback func(context.Context) error) error {
 	unit.calls++
-	return callback(context.WithValue(ctx, transactionMarker{}, true))
+	unit.lastErr = callback(context.WithValue(ctx, transactionMarker{}, true))
+	return unit.lastErr
+}
+
+type testAuditor struct {
+	event            platformaudit.Event
+	err              error
+	calls            int
+	transactionBound bool
+}
+
+func (auditor *testAuditor) Append(ctx context.Context, event platformaudit.Event) (platformaudit.Event, error) {
+	auditor.calls++
+	auditor.event = event
+	auditor.transactionBound = ctx.Value(transactionMarker{}) == true
+	return event, auditor.err
 }
 
 type testSecurity struct {
@@ -190,7 +209,7 @@ func TestReadAuthenticationAndWriteAuthorization(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			security := &testSecurity{authPrincipal: test.auth, authErr: test.authErr, csrfPrincipal: test.csrf, csrfErr: test.csrfErr}
-			handler := configuredHandler(t, &testUnitOfWork{}, security, &testOneID{}, &testQueries{})
+			handler := configuredHandler(t, &testUnitOfWork{}, security, &testOneID{}, &testQueries{}, &testAuditor{})
 			response := perform(handler, test.method, test.target, test.body, test.body != "")
 			if response.Code != test.wantStatus || !strings.Contains(response.Body.String(), test.wantCode) {
 				t.Fatalf("status=%d body=%q", response.Code, response.Body.String())
@@ -204,11 +223,16 @@ func TestReadAuthenticationAndWriteAuthorization(t *testing.T) {
 
 func TestConfirmOperatorComesOnlyFromPrincipal(t *testing.T) {
 	service := &testOneID{confirmResult: identityapp.LinkResult{
-		Status: identityapp.LinkMerged, CustomerID: 20, Merge: &identityapp.MergeRecord{ID: 71},
+		Status: identityapp.LinkMerged, CustomerID: 20,
+		Merge: &identityapp.MergeRecord{ID: 71, CandidateID: 8, FromCustomerID: 10, ToCustomerID: 20},
 	}}
-	handler := newTestHandler(t, activeAdmin(), accessdomain.Principal{
+	principal := accessdomain.Principal{
 		Kind: accessdomain.KindAdmin, InternalID: 42, Roles: []accessdomain.Role{accessdomain.RoleSuperAdmin},
-	}, service, &testQueries{}, nil)
+	}
+	auditor := &testAuditor{}
+	unit := &testUnitOfWork{}
+	security := &testSecurity{authPrincipal: activeAdmin(), csrfPrincipal: principal}
+	handler := configuredHandler(t, unit, security, service, &testQueries{}, auditor)
 	response := perform(handler, nethttp.MethodPost, "/api/admin/oneid/merge-candidates/8/confirm",
 		`{"survivor_customer_id":20,"operator":"forged"}`, true)
 	if response.Code != nethttp.StatusBadRequest || service.confirmCalls != 0 {
@@ -222,6 +246,16 @@ func TestConfirmOperatorComesOnlyFromPrincipal(t *testing.T) {
 	if service.confirmInput.CandidateID != 8 || service.confirmInput.SurvivorCustomerID != 20 || service.confirmInput.Operator != "admin:42" {
 		t.Fatalf("command=%#v", service.confirmInput)
 	}
+	if auditor.calls != 1 || !auditor.transactionBound || auditor.event.Action != "identity.merge_confirmed" ||
+		auditor.event.ActorType != "admin" || auditor.event.ActorID != "42" ||
+		auditor.event.ResourceType != "customer_merge" || auditor.event.ResourceID != "71" ||
+		string(auditor.event.IdempotencyKey) != "identity:merge-confirmed:71" {
+		t.Fatalf("audit calls=%d transaction=%v event=%#v", auditor.calls, auditor.transactionBound, auditor.event)
+	}
+	if payload := string(auditor.event.Payload); strings.Contains(payload, "forged") || strings.Contains(payload, "operator") ||
+		!strings.Contains(payload, `"candidate_id":8`) || !strings.Contains(payload, `"survivor_customer_id":20`) {
+		t.Fatalf("audit payload=%s", payload)
+	}
 }
 
 func TestCustomerAndMutationResponsesCannotRepresentPIIOrEvidence(t *testing.T) {
@@ -232,10 +266,12 @@ func TestCustomerAndMutationResponsesCannotRepresentPIIOrEvidence(t *testing.T) 
 		MergeLineage: []query.MergeLineageSummary{{ID: 9, FromCustomerID: 1, ToCustomerID: 2, ReversibleStatus: "not_reversed", MergedAt: now}},
 	}}
 	service := &testOneID{reverseResult: identityapp.MergeRecord{
-		ID: 9, FromCustomerID: 1, ToCustomerID: 2, Operator: "secret-operator",
+		ID: 9, CandidateID: 5, FromCustomerID: 1, ToCustomerID: 2, Operator: "secret-operator",
 		Evidence: identitydomain.LinkEvidence{Digest: "raw-secret-digest", EventID: "external-user-secret"},
 	}}
-	handler := newTestHandler(t, activeAdmin(), activeSuperAdmin(), service, queries, nil)
+	auditor := &testAuditor{}
+	security := &testSecurity{authPrincipal: activeAdmin(), csrfPrincipal: activeSuperAdmin()}
+	handler := configuredHandler(t, &testUnitOfWork{}, security, service, queries, auditor)
 	responses := []*httptest.ResponseRecorder{
 		perform(handler, nethttp.MethodGet, "/api/admin/oneid/customers/1", "", false),
 		perform(handler, nethttp.MethodPost, "/api/admin/oneid/merges/9/reverse", "", false),
@@ -250,6 +286,45 @@ func TestCustomerAndMutationResponsesCannotRepresentPIIOrEvidence(t *testing.T) 
 				t.Fatalf("response exposed %q: %s", forbidden, body)
 			}
 		}
+	}
+	if auditor.calls != 1 || !auditor.transactionBound || auditor.event.Action != "identity.merge_reversed" ||
+		auditor.event.ActorType != "admin" || auditor.event.ActorID != "1" || auditor.event.ResourceID != "9" ||
+		string(auditor.event.IdempotencyKey) != "identity:merge-reversed:9" {
+		t.Fatalf("reverse audit calls=%d transaction=%v event=%#v", auditor.calls, auditor.transactionBound, auditor.event)
+	}
+	for _, forbidden := range []string{"external-user-secret", "raw-secret-digest", "secret-operator", "operator", "evidence"} {
+		if strings.Contains(string(auditor.event.Payload), forbidden) {
+			t.Fatalf("reverse audit exposed %q: %s", forbidden, auditor.event.Payload)
+		}
+	}
+}
+
+func TestAuditFailureReturnsUnitOfWorkError(t *testing.T) {
+	auditErr := errors.New("audit unavailable")
+	tests := []struct {
+		name, target, body string
+		service            *testOneID
+	}{
+		{name: "confirm", target: "/api/admin/oneid/merge-candidates/8/confirm", body: `{"survivor_customer_id":20}`,
+			service: &testOneID{confirmResult: identityapp.LinkResult{Status: identityapp.LinkMerged, CustomerID: 20,
+				Merge: &identityapp.MergeRecord{ID: 71, CandidateID: 8, FromCustomerID: 10, ToCustomerID: 20}}}},
+		{name: "reverse", target: "/api/admin/oneid/merges/71/reverse",
+			service: &testOneID{reverseResult: identityapp.MergeRecord{ID: 71, CandidateID: 8, FromCustomerID: 10, ToCustomerID: 20}}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			unit := &testUnitOfWork{}
+			auditor := &testAuditor{err: auditErr}
+			security := &testSecurity{authPrincipal: activeAdmin(), csrfPrincipal: activeSuperAdmin()}
+			handler := configuredHandler(t, unit, security, test.service, &testQueries{}, auditor)
+			response := perform(handler, nethttp.MethodPost, test.target, test.body, test.body != "")
+			if response.Code != nethttp.StatusInternalServerError || response.Body.String() != "{\"error\":\"internal_error\",\"ok\":false}\n" {
+				t.Fatalf("status=%d body=%q", response.Code, response.Body.String())
+			}
+			if !errors.Is(unit.lastErr, auditErr) || auditor.calls != 1 || !auditor.transactionBound {
+				t.Fatalf("uow error=%v audit calls=%d transaction=%v", unit.lastErr, auditor.calls, auditor.transactionBound)
+			}
+		})
 	}
 }
 
@@ -289,6 +364,13 @@ func TestBodyLimitAndInternalErrorsAreSafe(t *testing.T) {
 	if response.Code != nethttp.StatusInternalServerError || response.Body.String() != "{\"error\":\"internal_error\",\"ok\":false}\n" {
 		t.Fatalf("status=%d body=%q", response.Code, response.Body.String())
 	}
+	service = &testOneID{resolveErr: identityapp.ErrInsufficientLinkEvidence}
+	handler = newTestHandler(t, activeAdmin(), activeSuperAdmin(), service, &testQueries{}, nil)
+	response = perform(handler, nethttp.MethodPost, "/api/admin/oneid/resolve",
+		`{"kind":"ext","scope":"ext:test","value":"opaque"}`, true)
+	if response.Code != nethttp.StatusConflict || !strings.Contains(response.Body.String(), `"identity_conflict"`) {
+		t.Fatalf("insufficient evidence status=%d body=%q", response.Code, response.Body.String())
+	}
 }
 
 func newTestHandler(t *testing.T, read, write accessdomain.Principal, service OneIDService, queries *testQueries, unit *testUnitOfWork) nethttp.Handler {
@@ -297,12 +379,12 @@ func newTestHandler(t *testing.T, read, write accessdomain.Principal, service On
 		unit = &testUnitOfWork{}
 	}
 	security := &testSecurity{authPrincipal: read, csrfPrincipal: write}
-	return configuredHandler(t, unit, security, service, queries)
+	return configuredHandler(t, unit, security, service, queries, &testAuditor{})
 }
 
-func configuredHandler(t *testing.T, unit *testUnitOfWork, security *testSecurity, service OneIDService, queries *testQueries) nethttp.Handler {
+func configuredHandler(t *testing.T, unit *testUnitOfWork, security *testSecurity, service OneIDService, queries *testQueries, auditor Auditor) nethttp.Handler {
 	t.Helper()
-	handler, err := NewHandler(Config{UnitOfWork: unit, Authenticator: security, CSRF: security, OneID: service, Queries: queries})
+	handler, err := NewHandler(Config{UnitOfWork: unit, Authenticator: security, CSRF: security, OneID: service, Queries: queries, Audit: auditor})
 	if err != nil {
 		t.Fatal(err)
 	}

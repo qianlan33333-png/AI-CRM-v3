@@ -18,6 +18,8 @@ import (
 	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
 	identityport "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/port"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/identity/query"
+	platformaudit "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/audit"
+	"github.com/qianlan33333-png/AI-CRM-v3/internal/platform/idempotency"
 	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
 )
 
@@ -37,6 +39,11 @@ type CSRFAuthorizer interface {
 	AuthorizeCSRF(context.Context, *nethttp.Request) (accessdomain.Principal, error)
 }
 
+// Auditor is satisfied directly by platform/audit.Service.
+type Auditor interface {
+	Append(context.Context, platformaudit.Event) (platformaudit.Event, error)
+}
+
 type OneIDService interface {
 	identityport.Resolver
 	ConfirmMerge(context.Context, identityapp.ConfirmMergeCommand) (identityapp.LinkResult, error)
@@ -49,6 +56,7 @@ type Config struct {
 	CSRF          CSRFAuthorizer
 	OneID         OneIDService
 	Queries       query.Reader
+	Audit         Auditor
 }
 
 type Handler struct {
@@ -57,14 +65,15 @@ type Handler struct {
 	csrf    CSRFAuthorizer
 	oneID   OneIDService
 	queries query.Reader
+	audit   Auditor
 }
 
 func NewHandler(config Config) (*Handler, error) {
-	if config.UnitOfWork == nil || config.Authenticator == nil || config.CSRF == nil || config.OneID == nil || config.Queries == nil {
+	if config.UnitOfWork == nil || config.Authenticator == nil || config.CSRF == nil || config.OneID == nil || config.Queries == nil || config.Audit == nil {
 		return nil, errors.New("oneid HTTP dependencies are required")
 	}
 	return &Handler{uow: config.UnitOfWork, auth: config.Authenticator, csrf: config.CSRF,
-		oneID: config.OneID, queries: config.Queries}, nil
+		oneID: config.OneID, queries: config.Queries, audit: config.Audit}, nil
 }
 
 func (handler *Handler) Routes() nethttp.Handler {
@@ -221,7 +230,30 @@ func (handler *Handler) confirmMerge(response nethttp.ResponseWriter, request *n
 			CandidateID: candidateID, SurvivorCustomerID: input.SurvivorCustomerID,
 			Operator: principalOperator(principal),
 		})
-		return commandErr
+		if commandErr != nil || result.Status == identityapp.LinkConflict {
+			return commandErr
+		}
+		if result.Status != identityapp.LinkMerged || result.Merge == nil || result.Merge.ID < 1 || result.Merge.CandidateID != candidateID ||
+			result.Merge.FromCustomerID < 1 || result.Merge.ToCustomerID < 1 || result.CustomerID != result.Merge.ToCustomerID {
+			return errors.New("invalid OneID confirm result")
+		}
+		payload, marshalErr := json.Marshal(map[string]any{
+			"candidate_id": candidateID, "from_customer_id": result.Merge.FromCustomerID,
+			"survivor_customer_id": result.Merge.ToCustomerID,
+		})
+		if marshalErr != nil {
+			return marshalErr
+		}
+		_, auditErr := handler.audit.Append(txContext, platformaudit.Event{
+			IdempotencyKey: idempotency.Key("identity:merge-confirmed:" + strconv.FormatInt(result.Merge.ID, 10)),
+			Action:         "identity.merge_confirmed",
+			ActorType:      string(principal.Kind),
+			ActorID:        strconv.FormatInt(principal.InternalID, 10),
+			ResourceType:   "customer_merge",
+			ResourceID:     strconv.FormatInt(result.Merge.ID, 10),
+			Payload:        payload,
+		})
+		return auditErr
 	})
 	if err != nil {
 		handler.writeError(response, err)
@@ -238,10 +270,6 @@ func (handler *Handler) confirmMerge(response nethttp.ResponseWriter, request *n
 		writeJSON(response, nethttp.StatusConflict, payload)
 		return
 	}
-	if result.Status != identityapp.LinkMerged || result.Merge == nil {
-		handler.writeError(response, errors.New("invalid OneID confirm result"))
-		return
-	}
 	writeJSON(response, nethttp.StatusOK, map[string]any{
 		"ok": true, "status": result.Status, "merge_id": result.Merge.ID,
 		"survivor_customer_id": result.CustomerID,
@@ -249,7 +277,8 @@ func (handler *Handler) confirmMerge(response nethttp.ResponseWriter, request *n
 }
 
 func (handler *Handler) reverseMerge(response nethttp.ResponseWriter, request *nethttp.Request) {
-	if _, err := handler.writePrincipal(request); err != nil {
+	principal, err := handler.writePrincipal(request)
+	if err != nil {
 		handler.writeError(response, err)
 		return
 	}
@@ -266,7 +295,29 @@ func (handler *Handler) reverseMerge(response nethttp.ResponseWriter, request *n
 	err = handler.uow.Within(request.Context(), func(txContext context.Context) error {
 		var commandErr error
 		result, commandErr = handler.oneID.RevertConfirmedMerge(txContext, mergeID)
-		return commandErr
+		if commandErr != nil {
+			return commandErr
+		}
+		if result.ID != mergeID || result.CandidateID < 1 || result.FromCustomerID < 1 || result.ToCustomerID < 1 {
+			return errors.New("invalid OneID reverse result")
+		}
+		payload, marshalErr := json.Marshal(map[string]any{
+			"candidate_id": result.CandidateID, "restored_customer_id": result.FromCustomerID,
+			"canonical_customer_id": result.ToCustomerID,
+		})
+		if marshalErr != nil {
+			return marshalErr
+		}
+		_, auditErr := handler.audit.Append(txContext, platformaudit.Event{
+			IdempotencyKey: idempotency.Key("identity:merge-reversed:" + strconv.FormatInt(result.ID, 10)),
+			Action:         "identity.merge_reversed",
+			ActorType:      string(principal.Kind),
+			ActorID:        strconv.FormatInt(principal.InternalID, 10),
+			ResourceType:   "customer_merge",
+			ResourceID:     strconv.FormatInt(result.ID, 10),
+			Payload:        payload,
+		})
+		return auditErr
 	})
 	if err != nil {
 		handler.writeError(response, err)
@@ -322,6 +373,8 @@ func (handler *Handler) writeError(response nethttp.ResponseWriter, err error) {
 	case errors.Is(err, identityapp.ErrMergeNotReversible):
 		status, code = nethttp.StatusConflict, "merge_not_reversible"
 	case errors.Is(err, identityapp.ErrConcurrentIdentityChange):
+		status, code = nethttp.StatusConflict, "identity_conflict"
+	case errors.Is(err, identityapp.ErrInsufficientLinkEvidence):
 		status, code = nethttp.StatusConflict, "identity_conflict"
 	case errors.Is(err, query.ErrInvalidQuery), errors.Is(err, identitydomain.ErrInvalidReference),
 		errors.Is(err, identityapp.ErrInvalidLinkCommand), errors.Is(err, identityapp.ErrInvalidMergeID):
