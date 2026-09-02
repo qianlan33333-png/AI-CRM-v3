@@ -287,6 +287,9 @@ characterization:
     - internal/tag/http/handler_test.go
     - internal/tag/ui_test.go
     - internal/tag/store/postgres_integration_test.go
+    - internal/outbound/tag_catalog_provider_test.go
+    - internal/wecom/adapter/client_test.go
+    - cmd/aicrm/tag_catalog_integration_test.go
   behaviors:
     - CRUD mutation receipt is transaction-bound and idempotent
     - group-create creates the required first tag
@@ -294,6 +297,8 @@ characterization:
     - reorder accepts a complete permutation and rejects stale partial membership
     - gate projects only the fail-closed allowlist
     - manual and due sync return queued acceptance and never claim Provider execution
+    - completed catalog read atomically appends a tag-owned snapshot; sink failure rolls the effect completion back to attempted
+    - unknown, final-failed, stale-generation, and generic reconciled catalog effects never append a snapshot
 exclusion_audit:
   forbidden_terms_not_in_transferred_commands: [external_userid, mark, unmark, customer_id]
   excluded_frontend_behavior: [customer_detail_tagging, customer_tag_mark, customer_tag_unmark, channel_entry_tag_assignment, campaign_or_audience_targeting]
