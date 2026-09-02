@@ -6,12 +6,14 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"sort"
 	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	identityapp "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/app"
@@ -29,6 +31,34 @@ func NewPostgresStore() *PostgresStore { return &PostgresStore{} }
 var _ identityapp.Store = (*PostgresStore)(nil)
 
 var errStore = errors.New("identity persistence failed")
+
+// persistenceError retains only PostgreSQL's non-sensitive diagnostic labels.
+// Error deliberately remains stable: SQL text, detail, hints and values never
+// cross the store boundary. Package-local integration tests can still report a
+// SQLSTATE and constraint name when a migration or statement is incompatible.
+type persistenceError struct {
+	code       string
+	constraint string
+}
+
+func (*persistenceError) Error() string { return errStore.Error() }
+
+func (*persistenceError) Is(target error) bool { return target == errStore }
+
+func persistenceFailure(err error) error {
+	if err == nil {
+		return errStore
+	}
+	var safe *persistenceError
+	if errors.As(err, &safe) {
+		return safe
+	}
+	var postgres *pgconn.PgError
+	if errors.As(err, &postgres) {
+		return &persistenceError{code: postgres.Code, constraint: postgres.ConstraintName}
+	}
+	return errStore
+}
 
 func (store *PostgresStore) Resolve(ctx context.Context, reference identitydomain.NormalizedReference) (identityapp.StoredIdentity, bool, error) {
 	tx, err := platformpostgres.RequireTransaction(ctx)
@@ -64,24 +94,21 @@ func (store *PostgresStore) Provision(ctx context.Context, fact identitydomain.V
 	}
 	ref := fact.Reference()
 	if err = lockIdentityKey(ctx, tx, ref); err != nil {
-		return identityapp.ProvisionedIdentity{}, errStore
+		return identityapp.ProvisionedIdentity{}, persistenceFailure(err)
 	}
 	if existing, found, lookupErr := existingIdentity(ctx, tx, ref); lookupErr != nil {
-		return identityapp.ProvisionedIdentity{}, lookupErr
+		return identityapp.ProvisionedIdentity{}, persistenceFailure(lookupErr)
 	} else if found {
 		return identityapp.ProvisionedIdentity{CustomerID: existing.CustomerID, IdentityID: existing.ID}, nil
 	}
 	var customerID, identityID int64
 	if err = tx.QueryRow(ctx, `INSERT INTO customers DEFAULT VALUES RETURNING id`).Scan(&customerID); err != nil {
-		return identityapp.ProvisionedIdentity{}, errStore
+		return identityapp.ProvisionedIdentity{}, persistenceFailure(err)
 	}
 	if err = tx.QueryRow(ctx, `INSERT INTO customer_identities(customer_id,kind,scope_key,normalized_value,assurance,source,normalizer_version,verified_at) VALUES($1,$2,$3,$4,'verified',$5,$6,CURRENT_TIMESTAMP) RETURNING id`, customerID, string(ref.Kind), ref.Scope, ref.NormalizedValue, ref.Source, ref.NormalizerVersion).Scan(&identityID); err != nil {
-		// The key lock serializes cooperating callers; this re-read also makes a
-		// unique-index race replay stable without leaving a customer committed.
-		if existing, found, lookupErr := existingIdentity(ctx, tx, ref); lookupErr == nil && found {
-			return identityapp.ProvisionedIdentity{CustomerID: existing.CustomerID, IdentityID: existing.ID}, nil
-		}
-		return identityapp.ProvisionedIdentity{}, errStore
+		// The advisory key lock serializes every Store writer for this identity.
+		// Returning the error rolls the newly inserted customer back atomically.
+		return identityapp.ProvisionedIdentity{}, persistenceFailure(err)
 	}
 	return identityapp.ProvisionedIdentity{CustomerID: customerdomain.CustomerID(customerID), IdentityID: identityID, Created: true}, nil
 }
@@ -110,7 +137,7 @@ func (store *PostgresStore) CreateLinkIntent(ctx context.Context, command identi
 	var id int64
 	err = tx.QueryRow(ctx, `INSERT INTO identity_link_intents(token_hash,source_customer_id,source_customer_version,purpose,target_kind,expected_scope_key,expires_at,source,source_event_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`, tokenHash(raw), root.ID, root.Version, string(command.Purpose), string(command.TargetKind), command.ExpectedScope, command.ExpiresAt, command.Source, command.SourceEventID).Scan(&id)
 	if err != nil {
-		return identityapp.CreatedLinkIntent{}, errStore
+		return identityapp.CreatedLinkIntent{}, persistenceFailure(err)
 	}
 	return identityapp.CreatedLinkIntent{ID: id, Token: raw, ExpiresAt: command.ExpiresAt}, nil
 }
@@ -120,31 +147,13 @@ func (store *PostgresStore) ConsumeLinkIntent(ctx context.Context, command ident
 	if err != nil {
 		return identityapp.LinkResult{}, err
 	}
-	ref := command.Target.Reference()
-	if err = lockIdentityKey(ctx, tx, ref); err != nil {
-		return identityapp.LinkResult{}, errStore
-	}
-	var sourceID int64
-	err = tx.QueryRow(ctx, `SELECT source_customer_id FROM identity_link_intents WHERE token_hash=$1`, tokenHash(command.Token)).Scan(&sourceID)
+	hash := tokenHash(command.Token)
+	intent, err := lockIntent(ctx, tx, hash)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return identityapp.LinkResult{Status: identityapp.LinkIntentReplay}, nil
 	}
 	if err != nil {
-		return identityapp.LinkResult{}, errStore
-	}
-	root, rootErr := lockActiveRoot(ctx, tx, customerdomain.CustomerID(sourceID))
-	// A merged source must still lock its old customer row, then be cancelled.
-	if rootErr != nil {
-		if err = lockCustomers(ctx, tx, []int64{sourceID}); err != nil {
-			return identityapp.LinkResult{}, errStore
-		}
-	}
-	intent, err := lockIntent(ctx, tx, tokenHash(command.Token))
-	if errors.Is(err, pgx.ErrNoRows) {
-		return identityapp.LinkResult{Status: identityapp.LinkIntentReplay}, nil
-	}
-	if err != nil {
-		return identityapp.LinkResult{}, errStore
+		return identityapp.LinkResult{}, persistenceFailure(err)
 	}
 	fingerprint := consumptionFingerprint(command)
 	if intent.Status == "consumed" {
@@ -159,18 +168,37 @@ func (store *PostgresStore) ConsumeLinkIntent(ctx context.Context, command ident
 	if intent.Status == "cancelled" {
 		return identityapp.LinkResult{Status: identityapp.LinkIntentInvalidated}, nil
 	}
+	if intent.Status != "pending" {
+		return identityapp.LinkResult{Status: identityapp.LinkIntentReplay}, nil
+	}
 	if !intent.ExpiresAt.After(time.Now()) {
-		if _, err = tx.Exec(ctx, `UPDATE identity_link_intents SET status='expired',updated_at=CURRENT_TIMESTAMP WHERE id=$1`, intent.ID); err != nil {
-			return identityapp.LinkResult{}, errStore
+		tag, updateErr := tx.Exec(ctx, `UPDATE identity_link_intents SET status='expired',updated_at=CURRENT_TIMESTAMP WHERE id=$1 AND status='pending'`, intent.ID)
+		if updateErr != nil {
+			return identityapp.LinkResult{}, persistenceFailure(updateErr)
+		}
+		if tag.RowsAffected() != 1 {
+			return identityapp.LinkResult{}, identityapp.ErrConcurrentIdentityChange
 		}
 		return identityapp.LinkResult{Status: identityapp.LinkIntentExpired}, nil
 	}
+	ref := command.Target.Reference()
 	if ref.Kind != identitydomain.Kind(intent.TargetKind) || (intent.ExpectedScope != "" && ref.Scope != intent.ExpectedScope) {
 		return identityapp.LinkResult{Status: identityapp.LinkScopeMismatch}, nil
 	}
-	if rootErr != nil || root.ID != intent.SourceID || root.Version != intent.SourceVersion {
-		if _, err = tx.Exec(ctx, `UPDATE identity_link_intents SET status='cancelled',updated_at=CURRENT_TIMESTAMP WHERE id=$1`, intent.ID); err != nil {
-			return identityapp.LinkResult{}, errStore
+	if err = lockIdentityKey(ctx, tx, ref); err != nil {
+		return identityapp.LinkResult{}, persistenceFailure(err)
+	}
+	root, existing, found, participantErr := lockLinkParticipants(ctx, tx, intent.SourceID, ref)
+	if participantErr != nil || root.ID != intent.SourceID || root.Version != intent.SourceVersion {
+		if participantErr != nil && !errors.Is(participantErr, errCustomerRootChanged) && !errors.Is(participantErr, pgx.ErrNoRows) {
+			return identityapp.LinkResult{}, persistenceFailure(participantErr)
+		}
+		tag, updateErr := tx.Exec(ctx, `UPDATE identity_link_intents SET status='cancelled',updated_at=CURRENT_TIMESTAMP WHERE id=$1 AND status='pending'`, intent.ID)
+		if updateErr != nil {
+			return identityapp.LinkResult{}, persistenceFailure(updateErr)
+		}
+		if tag.RowsAffected() != 1 {
+			return identityapp.LinkResult{}, identityapp.ErrConcurrentIdentityChange
 		}
 		return identityapp.LinkResult{Status: identityapp.LinkIntentInvalidated}, nil
 	}
@@ -178,15 +206,22 @@ func (store *PostgresStore) ConsumeLinkIntent(ctx context.Context, command ident
 	// attach/already-linked outcome that has no candidate or conflict row.
 	evidenceID, err := writeEvidence(ctx, tx, int64(root.ID), 0, 0, 0, command.Evidence)
 	if err != nil {
-		return identityapp.LinkResult{}, errStore
+		return identityapp.LinkResult{}, persistenceFailure(err)
 	}
-	result, err := linkLocked(ctx, tx, root, command.Target, command.Evidence)
+	result, err := linkLocked(ctx, tx, root, existing, found, command.Target, command.Evidence)
 	if err != nil {
 		return identityapp.LinkResult{}, err
 	}
-	_, err = tx.Exec(ctx, `UPDATE identity_link_intents SET status='consumed',consumed_at=CURRENT_TIMESTAMP,consumption_fingerprint=$2,consumed_evidence_id=$3,consumed_identity_id=NULLIF($4,0),consumed_customer_id=$5,result_status=$6,result_candidate_id=$7,result_conflict_id=$8,updated_at=CURRENT_TIMESTAMP WHERE id=$1`, intent.ID, fingerprint, evidenceID, result.IdentityID, result.CustomerID, string(result.Status), nullableID(candidateID(result)), nullableID(conflictID(result)))
+	metadata, err := resultSnapshotMetadata(result)
 	if err != nil {
 		return identityapp.LinkResult{}, errStore
+	}
+	tag, err := tx.Exec(ctx, `UPDATE identity_link_intents SET status='consumed',consumed_at=CURRENT_TIMESTAMP,consumption_fingerprint=$2,consumed_evidence_id=$3,consumed_identity_id=NULLIF($4::bigint,0::bigint),consumed_customer_id=$5,result_status=$6,result_candidate_id=$7,result_conflict_id=$8,metadata_json=metadata_json || $9::jsonb,updated_at=CURRENT_TIMESTAMP WHERE id=$1 AND status='pending'`, intent.ID, fingerprint, evidenceID, result.IdentityID, result.CustomerID, string(result.Status), nullableID(candidateID(result)), nullableID(conflictID(result)), string(metadata))
+	if err != nil {
+		return identityapp.LinkResult{}, persistenceFailure(err)
+	}
+	if tag.RowsAffected() != 1 {
+		return identityapp.LinkResult{}, identityapp.ErrConcurrentIdentityChange
 	}
 	return result, nil
 }
@@ -202,7 +237,7 @@ func (store *PostgresStore) ConfirmMerge(ctx context.Context, command identityap
 		return identityapp.LinkResult{}, identityapp.ErrInvalidLinkCommand
 	}
 	if err = lockCustomers(ctx, tx, []int64{left, right}); err != nil {
-		return identityapp.LinkResult{}, errStore
+		return identityapp.LinkResult{}, persistenceFailure(err)
 	}
 	candidate, err := lockCandidate(ctx, tx, command.CandidateID)
 	if err != nil {
@@ -218,11 +253,11 @@ func (store *PostgresStore) ConfirmMerge(ctx context.Context, command identityap
 		return identityapp.LinkResult{}, identityapp.ErrConcurrentIdentityChange
 	}
 	if reason, err := crossRootConflict(ctx, tx, int64(candidate.LeftCustomerID), int64(candidate.RightCustomerID)); err != nil {
-		return identityapp.LinkResult{}, errStore
+		return identityapp.LinkResult{}, persistenceFailure(err)
 	} else if reason != "" {
 		conflict, err := createConflict(ctx, tx, int64(candidate.LeftCustomerID), int64(candidate.RightCustomerID), reason, candidate.Evidence)
 		if err != nil {
-			return identityapp.LinkResult{}, errStore
+			return identityapp.LinkResult{}, persistenceFailure(err)
 		}
 		_, err = tx.Exec(ctx, `UPDATE customer_merge_candidates SET status='rejected',resolved_by='system',resolved_at=CURRENT_TIMESTAMP,version=version+1 WHERE id=$1`, candidate.ID)
 		if err != nil {
@@ -231,8 +266,14 @@ func (store *PostgresStore) ConfirmMerge(ctx context.Context, command identityap
 		candidate.Status = "rejected"
 		return identityapp.LinkResult{Status: identityapp.LinkConflict, CustomerID: command.SurvivorCustomerID, Candidate: &candidate, Conflict: &conflict}, nil
 	}
-	leftWecom, _ := hasWeCom(ctx, tx, int64(candidate.LeftCustomerID))
-	rightWecom, _ := hasWeCom(ctx, tx, int64(candidate.RightCustomerID))
+	leftWecom, err := hasWeCom(ctx, tx, int64(candidate.LeftCustomerID))
+	if err != nil {
+		return identityapp.LinkResult{}, persistenceFailure(err)
+	}
+	rightWecom, err := hasWeCom(ctx, tx, int64(candidate.RightCustomerID))
+	if err != nil {
+		return identityapp.LinkResult{}, persistenceFailure(err)
+	}
 	if leftWecom != rightWecom && ((leftWecom && int64(command.SurvivorCustomerID) != int64(candidate.LeftCustomerID)) || (rightWecom && int64(command.SurvivorCustomerID) != int64(candidate.RightCustomerID))) {
 		return identityapp.LinkResult{}, identityapp.ErrInvalidLinkCommand
 	}
@@ -243,13 +284,16 @@ func (store *PostgresStore) ConfirmMerge(ctx context.Context, command identityap
 	// The migration's composite FK deliberately permits a merge ledger only
 	// after the candidate names its explicit survivor. Both writes share this
 	// transaction, so no externally visible intermediate confirmation exists.
-	_, err = tx.Exec(ctx, `UPDATE customer_merge_candidates SET status='confirmed',selected_survivor_customer_id=$2,resolved_by=$3,resolved_at=CURRENT_TIMESTAMP,version=version+1 WHERE id=$1 AND status='open'`, candidate.ID, command.SurvivorCustomerID, command.Operator)
+	tag, err := tx.Exec(ctx, `UPDATE customer_merge_candidates SET status='confirmed',selected_survivor_customer_id=$2,resolved_by=$3,resolved_at=CURRENT_TIMESTAMP,version=version+1 WHERE id=$1 AND status='open'`, candidate.ID, int64(command.SurvivorCustomerID), command.Operator)
 	if err != nil {
-		return identityapp.LinkResult{}, errStore
+		return identityapp.LinkResult{}, persistenceFailure(err)
+	}
+	if tag.RowsAffected() != 1 {
+		return identityapp.LinkResult{}, identityapp.ErrConcurrentIdentityChange
 	}
 	merge, err := performMerge(ctx, tx, candidate, loser, int64(command.SurvivorCustomerID), command.Operator)
 	if err != nil {
-		return identityapp.LinkResult{}, errStore
+		return identityapp.LinkResult{}, persistenceFailure(err)
 	}
 	candidate.Status = "confirmed"
 	return identityapp.LinkResult{Status: identityapp.LinkMerged, CustomerID: command.SurvivorCustomerID, Candidate: &candidate, Merge: &merge}, nil
@@ -339,6 +383,8 @@ type customer struct {
 	Version, Lineage int64
 }
 
+var errCustomerRootChanged = errors.New("customer root changed concurrently")
+
 func lockIdentityKey(ctx context.Context, tx pgx.Tx, ref identitydomain.NormalizedReference) error {
 	_, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, identityLockValue(ref))
 	return err
@@ -355,11 +401,21 @@ func identityLockValue(ref identitydomain.NormalizedReference) string {
 	return value
 }
 func lockCustomers(ctx context.Context, tx pgx.Tx, ids []int64) error {
-	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
-	for _, id := range ids {
-		if _, err := tx.Exec(ctx, `SELECT id FROM customers WHERE id=$1 FOR UPDATE`, id); err != nil {
+	ordered := append([]int64(nil), ids...)
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i] < ordered[j] })
+	var previous int64
+	for index, id := range ordered {
+		if id < 1 {
+			return errCustomerRootChanged
+		}
+		if index > 0 && id == previous {
+			continue
+		}
+		var lockedID int64
+		if err := tx.QueryRow(ctx, `SELECT id FROM customers WHERE id=$1 FOR UPDATE`, id).Scan(&lockedID); err != nil {
 			return err
 		}
+		previous = id
 	}
 	return nil
 }
@@ -376,84 +432,235 @@ func activeOrMergedCustomer(ctx context.Context, tx pgx.Tx, id int64) (customer,
 	err := tx.QueryRow(ctx, `SELECT id,status,COALESCE(merged_into_customer_id,0),version,lineage_version FROM customers WHERE id=$1`, id).Scan(&c.ID, &c.Status, &c.MergedTo, &c.Version, &c.Lineage)
 	return c, err
 }
+
+func customerPath(ctx context.Context, tx pgx.Tx, start int64) ([]customer, error) {
+	seen := make(map[int64]struct{})
+	path := make([]customer, 0, 2)
+	current := start
+	for current > 0 && len(path) < 64 {
+		if _, duplicate := seen[current]; duplicate {
+			return nil, errCustomerRootChanged
+		}
+		seen[current] = struct{}{}
+		item, err := activeOrMergedCustomer(ctx, tx, current)
+		if err != nil {
+			return nil, err
+		}
+		path = append(path, item)
+		if item.Status != "merged" {
+			return path, nil
+		}
+		if item.MergedTo < 1 {
+			return nil, errCustomerRootChanged
+		}
+		current = item.MergedTo
+	}
+	return nil, errCustomerRootChanged
+}
+
+type lockedCustomerRoots struct {
+	terminalByStart map[int64]customer
+	lockedIDs       map[int64]struct{}
+}
+
+// lockCustomerPaths first observes every lineage path, locks their union in
+// ascending customer-id order, then re-reads the paths. If a concurrent merge
+// introduced a root outside that locked set, the operation fails closed rather
+// than using a stale source/root association.
+func lockCustomerPaths(ctx context.Context, tx pgx.Tx, starts []int64) (lockedCustomerRoots, error) {
+	locked := lockedCustomerRoots{
+		terminalByStart: make(map[int64]customer, len(starts)),
+		lockedIDs:       make(map[int64]struct{}),
+	}
+	ids := make([]int64, 0, len(starts)*2)
+	for _, start := range starts {
+		path, err := customerPath(ctx, tx, start)
+		if err != nil {
+			return lockedCustomerRoots{}, err
+		}
+		for _, item := range path {
+			if _, exists := locked.lockedIDs[item.ID]; exists {
+				continue
+			}
+			locked.lockedIDs[item.ID] = struct{}{}
+			ids = append(ids, item.ID)
+		}
+	}
+	if err := lockCustomers(ctx, tx, ids); err != nil {
+		return lockedCustomerRoots{}, err
+	}
+	for _, start := range starts {
+		path, err := customerPath(ctx, tx, start)
+		if err != nil || len(path) == 0 {
+			return lockedCustomerRoots{}, errCustomerRootChanged
+		}
+		for _, item := range path {
+			if _, wasLocked := locked.lockedIDs[item.ID]; !wasLocked {
+				return lockedCustomerRoots{}, errCustomerRootChanged
+			}
+		}
+		locked.terminalByStart[start] = path[len(path)-1]
+	}
+	return locked, nil
+}
+
+func (locked lockedCustomerRoots) activeRootFor(ctx context.Context, tx pgx.Tx, owner int64) (customer, error) {
+	path, err := customerPath(ctx, tx, owner)
+	if err != nil || len(path) == 0 {
+		return customer{}, errCustomerRootChanged
+	}
+	for _, item := range path {
+		if _, wasLocked := locked.lockedIDs[item.ID]; !wasLocked {
+			return customer{}, errCustomerRootChanged
+		}
+	}
+	root := path[len(path)-1]
+	if root.Status != "active" {
+		return customer{}, errCustomerRootChanged
+	}
+	return root, nil
+}
+
 func lockActiveRoot(ctx context.Context, tx pgx.Tx, id customerdomain.CustomerID) (customer, error) {
-	var root int64
-	err := tx.QueryRow(ctx, `WITH RECURSIVE l AS (SELECT id,status,merged_into_customer_id FROM customers WHERE id=$1 UNION ALL SELECT c.id,c.status,c.merged_into_customer_id FROM customers c JOIN l ON c.id=l.merged_into_customer_id) SELECT id FROM l WHERE status<>'merged' LIMIT 1`, id).Scan(&root)
+	locked, err := lockCustomerPaths(ctx, tx, []int64{int64(id)})
 	if err != nil {
 		return customer{}, err
 	}
-	if err = lockCustomers(ctx, tx, []int64{root}); err != nil {
-		return customer{}, err
+	root := locked.terminalByStart[int64(id)]
+	if root.Status != "active" {
+		return customer{}, errCustomerRootChanged
 	}
-	return activeCustomerLocked(ctx, tx, root)
+	return root, nil
 }
-func existingIdentity(ctx context.Context, tx pgx.Tx, ref identitydomain.NormalizedReference) (identityapp.StoredIdentity, bool, error) {
-	var id, cid int64
+
+type storedIdentityRow struct {
+	identityapp.StoredIdentity
+	Version int64
+}
+
+func lookupIdentity(ctx context.Context, tx pgx.Tx, ref identitydomain.NormalizedReference, forUpdate bool) (storedIdentityRow, bool, error) {
+	var row storedIdentityRow
+	var cid int64
 	var kind, scope, value, assurance, source string
 	var nv int16
-	err := tx.QueryRow(ctx, `SELECT i.id,i.customer_id,i.kind,i.scope_key,i.normalized_value,i.assurance,i.source,i.normalizer_version FROM customer_identities i WHERE i.kind=$1 AND i.scope_key=$2 AND i.normalized_value=$3 AND i.status='active'`, string(ref.Kind), ref.Scope, ref.NormalizedValue).Scan(&id, &cid, &kind, &scope, &value, &assurance, &source, &nv)
+	query := `SELECT i.id,i.customer_id,i.kind,i.scope_key,i.normalized_value,i.assurance,i.source,i.normalizer_version,i.version FROM customer_identities i WHERE i.kind=$1 AND i.scope_key=$2 AND i.normalized_value=$3 AND i.status='active'`
+	if forUpdate {
+		query += ` FOR UPDATE`
+	}
+	err := tx.QueryRow(ctx, query, string(ref.Kind), ref.Scope, ref.NormalizedValue).Scan(&row.ID, &cid, &kind, &scope, &value, &assurance, &source, &nv, &row.Version)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return identityapp.StoredIdentity{}, false, nil
+		return storedIdentityRow{}, false, nil
 	}
 	if err != nil {
-		return identityapp.StoredIdentity{}, false, errStore
+		return storedIdentityRow{}, false, err
 	}
-	root, err := lockActiveRoot(ctx, tx, customerdomain.CustomerID(cid))
+	row.CustomerID = customerdomain.CustomerID(cid)
+	row.Reference = identitydomain.NormalizedReference{Kind: identitydomain.Kind(kind), Scope: scope, NormalizedValue: value, Assurance: identitydomain.Assurance(assurance), Source: source, NormalizerVersion: nv}
+	return row, true, nil
+}
+
+func existingIdentity(ctx context.Context, tx pgx.Tx, ref identitydomain.NormalizedReference) (identityapp.StoredIdentity, bool, error) {
+	observed, found, err := lookupIdentity(ctx, tx, ref, false)
+	if err != nil || !found {
+		return identityapp.StoredIdentity{}, found, err
+	}
+	locked, err := lockCustomerPaths(ctx, tx, []int64{int64(observed.CustomerID)})
 	if err != nil {
-		return identityapp.StoredIdentity{}, false, errors.New("identity store root lookup")
+		return identityapp.StoredIdentity{}, false, err
 	}
-	return identityapp.StoredIdentity{ID: id, CustomerID: customerdomain.CustomerID(root.ID), Reference: identitydomain.NormalizedReference{Kind: identitydomain.Kind(kind), Scope: scope, NormalizedValue: value, Assurance: identitydomain.Assurance(assurance), Source: source, NormalizerVersion: nv}}, true, nil
+	current, found, err := lookupIdentity(ctx, tx, ref, true)
+	if err != nil || !found || current.ID != observed.ID {
+		return identityapp.StoredIdentity{}, false, errCustomerRootChanged
+	}
+	root, err := locked.activeRootFor(ctx, tx, int64(current.CustomerID))
+	if err != nil {
+		return identityapp.StoredIdentity{}, false, err
+	}
+	current.CustomerID = customerdomain.CustomerID(root.ID)
+	return current.StoredIdentity, true, nil
 }
 
 func link(ctx context.Context, tx pgx.Tx, command identityapp.LinkCommand) (identityapp.LinkResult, error) {
 	ref := command.Target.Reference()
 	if err := lockIdentityKey(ctx, tx, ref); err != nil {
-		return identityapp.LinkResult{}, errStore
+		return identityapp.LinkResult{}, persistenceFailure(err)
 	}
-	// The key lock is always taken before roots; root lock order is ascending.
-	source, err := lockActiveRoot(ctx, tx, command.SourceCustomerID)
+	source, existing, found, err := lockLinkParticipants(ctx, tx, int64(command.SourceCustomerID), ref)
 	if err != nil {
-		return identityapp.LinkResult{}, identityapp.ErrInvalidLinkCommand
+		if errors.Is(err, errCustomerRootChanged) || errors.Is(err, pgx.ErrNoRows) {
+			return identityapp.LinkResult{}, identityapp.ErrInvalidLinkCommand
+		}
+		return identityapp.LinkResult{}, persistenceFailure(err)
 	}
-	return linkLocked(ctx, tx, source, command.Target, command.Evidence)
+	return linkLocked(ctx, tx, source, existing, found, command.Target, command.Evidence)
 }
 
-func linkLocked(ctx context.Context, tx pgx.Tx, source customer, fact identitydomain.VerifiedFact, evidence identitydomain.LinkEvidence) (identityapp.LinkResult, error) {
-	ref := fact.Reference()
-	existing, found, err := existingIdentity(ctx, tx, ref)
+func lockLinkParticipants(ctx context.Context, tx pgx.Tx, sourceID int64, ref identitydomain.NormalizedReference) (customer, identityapp.StoredIdentity, bool, error) {
+	observed, found, err := lookupIdentity(ctx, tx, ref, false)
 	if err != nil {
-		return identityapp.LinkResult{}, err
+		return customer{}, identityapp.StoredIdentity{}, false, err
 	}
+	starts := []int64{sourceID}
+	if found {
+		starts = append(starts, int64(observed.CustomerID))
+	}
+	locked, err := lockCustomerPaths(ctx, tx, starts)
+	if err != nil {
+		return customer{}, identityapp.StoredIdentity{}, false, err
+	}
+	source := locked.terminalByStart[sourceID]
+	if source.Status != "active" {
+		return customer{}, identityapp.StoredIdentity{}, false, errCustomerRootChanged
+	}
+	if !found {
+		return source, identityapp.StoredIdentity{}, false, nil
+	}
+	current, currentFound, err := lookupIdentity(ctx, tx, ref, true)
+	if err != nil {
+		return customer{}, identityapp.StoredIdentity{}, false, err
+	}
+	if !currentFound || current.ID != observed.ID {
+		return customer{}, identityapp.StoredIdentity{}, false, errCustomerRootChanged
+	}
+	targetRoot, err := locked.activeRootFor(ctx, tx, int64(current.CustomerID))
+	if err != nil {
+		return customer{}, identityapp.StoredIdentity{}, false, err
+	}
+	current.CustomerID = customerdomain.CustomerID(targetRoot.ID)
+	return source, current.StoredIdentity, true, nil
+}
+
+func linkLocked(ctx context.Context, tx pgx.Tx, source customer, existing identityapp.StoredIdentity, found bool, fact identitydomain.VerifiedFact, evidence identitydomain.LinkEvidence) (identityapp.LinkResult, error) {
+	ref := fact.Reference()
 	if !found {
 		if evidence.Strength != identitydomain.EvidenceStrong {
 			return identityapp.LinkResult{}, identityapp.ErrInsufficientLinkEvidence
 		}
 		if reason, err := sameRootConflict(ctx, tx, source.ID, ref); err != nil {
-			return identityapp.LinkResult{}, errStore
+			return identityapp.LinkResult{}, persistenceFailure(err)
 		} else if reason != "" {
 			conflict, err := createConflict(ctx, tx, source.ID, source.ID, reason, evidence)
 			if err != nil {
-				return identityapp.LinkResult{}, errStore
+				return identityapp.LinkResult{}, persistenceFailure(err)
 			}
 			return identityapp.LinkResult{Status: identityapp.LinkConflict, CustomerID: customerdomain.CustomerID(source.ID), Conflict: &conflict}, nil
 		}
 		var identityID int64
-		err = tx.QueryRow(ctx, `INSERT INTO customer_identities(customer_id,kind,scope_key,normalized_value,assurance,source,normalizer_version,verified_at) VALUES($1,$2,$3,$4,'verified',$5,$6,CURRENT_TIMESTAMP) RETURNING id`, source.ID, string(ref.Kind), ref.Scope, ref.NormalizedValue, ref.Source, ref.NormalizerVersion).Scan(&identityID)
+		err := tx.QueryRow(ctx, `INSERT INTO customer_identities(customer_id,kind,scope_key,normalized_value,assurance,source,normalizer_version,verified_at) VALUES($1,$2,$3,$4,'verified',$5,$6,CURRENT_TIMESTAMP) RETURNING id`, source.ID, string(ref.Kind), ref.Scope, ref.NormalizedValue, ref.Source, ref.NormalizerVersion).Scan(&identityID)
 		if err != nil {
-			return identityapp.LinkResult{}, errStore
+			return identityapp.LinkResult{}, persistenceFailure(err)
 		}
-		if _, err = tx.Exec(ctx, `UPDATE customers SET version=version+1,updated_at=CURRENT_TIMESTAMP WHERE id=$1`, source.ID); err != nil {
-			return identityapp.LinkResult{}, errStore
+		tag, err := tx.Exec(ctx, `UPDATE customers SET version=version+1,updated_at=CURRENT_TIMESTAMP WHERE id=$1 AND status='active' AND version=$2`, source.ID, source.Version)
+		if err != nil {
+			return identityapp.LinkResult{}, persistenceFailure(err)
+		}
+		if tag.RowsAffected() != 1 {
+			return identityapp.LinkResult{}, identityapp.ErrConcurrentIdentityChange
 		}
 		return identityapp.LinkResult{Status: identityapp.LinkAttached, CustomerID: customerdomain.CustomerID(source.ID), IdentityID: identityID}, nil
 	}
 	if existing.CustomerID == customerdomain.CustomerID(source.ID) {
 		return identityapp.LinkResult{Status: identityapp.LinkAlreadyLinked, CustomerID: existing.CustomerID, IdentityID: existing.ID}, nil
-	}
-	// existingIdentity locked target root after source; lock both roots again in
-	// canonical order before candidate materialization to avoid a lock inversion.
-	if err = lockCustomers(ctx, tx, []int64{source.ID, int64(existing.CustomerID)}); err != nil {
-		return identityapp.LinkResult{}, errStore
 	}
 	left, err := activeCustomerLocked(ctx, tx, source.ID)
 	if err != nil {
@@ -465,7 +672,7 @@ func linkLocked(ctx context.Context, tx pgx.Tx, source customer, fact identitydo
 	}
 	candidate, err := createCandidate(ctx, tx, left, right, evidence, existing.ID)
 	if err != nil {
-		return identityapp.LinkResult{}, errStore
+		return identityapp.LinkResult{}, persistenceFailure(err)
 	}
 	return identityapp.LinkResult{Status: identityapp.LinkCandidate, CustomerID: customerdomain.CustomerID(left.ID), IdentityID: existing.ID, Candidate: &candidate}, nil
 }
@@ -477,47 +684,65 @@ func writeEvidence(ctx context.Context, tx pgx.Tx, left, right, leftIdentity, ri
 }
 
 func createCandidate(ctx context.Context, tx pgx.Tx, left, right customer, evidence identitydomain.LinkEvidence, rightIdentity int64) (identityapp.MergeCandidate, error) {
-	// Candidate row is locked after roots. The partial unique index is the final
-	// cross-session arbiter; retries reread its committed candidate.
-	var id int64
-	var oldStrength string
-	var oldLeft, oldRight, oldLeftVersion, oldRightVersion int64
-	var status, reason string
-	err := tx.QueryRow(ctx, `SELECT id,left_customer_id,right_customer_id,left_customer_version,right_customer_version,evidence_strength,reason,status FROM customer_merge_candidates WHERE status='open' AND LEAST(left_customer_id,right_customer_id)=LEAST($1::bigint,$2::bigint) AND GREATEST(left_customer_id,right_customer_id)=GREATEST($1::bigint,$2::bigint) FOR UPDATE`, left.ID, right.ID).Scan(&id, &oldLeft, &oldRight, &oldLeftVersion, &oldRightVersion, &oldStrength, &reason, &status)
+	// Both endpoint lineages are already locked in canonical customer-id order,
+	// so opposite-direction requests serialize before consulting the partial
+	// unique index.
+	existing, err := lockCandidateByPair(ctx, tx, left.ID, right.ID)
 	if err == nil {
-		if oldLeftVersion == left.Version && oldRightVersion == right.Version {
-			if rank(evidence.Strength) > rank(identitydomain.EvidenceStrength(oldStrength)) {
-				evidenceID, e := writeEvidence(ctx, tx, left.ID, right.ID, 0, rightIdentity, evidence)
-				if e != nil {
-					return identityapp.MergeCandidate{}, e
-				}
-				_, e = tx.Exec(ctx, `UPDATE customer_merge_candidates SET evidence_id=$2,evidence_strength=$3,reason=$4,version=version+1 WHERE id=$1`, id, evidenceID, string(evidence.Strength), reasonFor(evidence))
-				if e != nil {
-					return identityapp.MergeCandidate{}, e
-				}
-				oldStrength = string(evidence.Strength)
-				reason = reasonFor(evidence)
+		if candidateVersionsMatch(existing, left, right) {
+			if rank(evidence.Strength) <= rank(existing.Evidence.Strength) {
+				return existing, nil
 			}
-			return identityapp.MergeCandidate{ID: id, LeftCustomerID: customerdomain.CustomerID(oldLeft), RightCustomerID: customerdomain.CustomerID(oldRight), Evidence: evidence, Reason: reason, Status: status, LeftVersion: oldLeftVersion, RightVersion: oldRightVersion}, nil
+			evidenceID, writeErr := writeCandidateEvidence(ctx, tx, int64(existing.LeftCustomerID), int64(existing.RightCustomerID), right.ID, rightIdentity, evidence)
+			if writeErr != nil {
+				return identityapp.MergeCandidate{}, writeErr
+			}
+			tag, updateErr := tx.Exec(ctx, `UPDATE customer_merge_candidates SET evidence_id=$2,evidence_strength=$3,reason=$4,version=version+1 WHERE id=$1 AND status='open'`, existing.ID, evidenceID, string(evidence.Strength), reasonFor(evidence))
+			if updateErr != nil {
+				return identityapp.MergeCandidate{}, updateErr
+			}
+			if tag.RowsAffected() != 1 {
+				return identityapp.MergeCandidate{}, errCustomerRootChanged
+			}
+			return lockCandidate(ctx, tx, existing.ID)
 		}
-		if _, e := tx.Exec(ctx, `UPDATE customer_merge_candidates SET status='rejected',resolved_by='system',resolved_at=CURRENT_TIMESTAMP,version=version+1 WHERE id=$1`, id); e != nil {
-			return identityapp.MergeCandidate{}, e
+		tag, rejectErr := tx.Exec(ctx, `UPDATE customer_merge_candidates SET status='rejected',resolved_by='system',resolved_at=CURRENT_TIMESTAMP,version=version+1 WHERE id=$1 AND status='open'`, existing.ID)
+		if rejectErr != nil {
+			return identityapp.MergeCandidate{}, rejectErr
+		}
+		if tag.RowsAffected() != 1 {
+			return identityapp.MergeCandidate{}, errCustomerRootChanged
 		}
 	} else if !errors.Is(err, pgx.ErrNoRows) {
-		return identityapp.MergeCandidate{}, errStore
+		return identityapp.MergeCandidate{}, err
 	}
-	evidenceID, err := writeEvidence(ctx, tx, left.ID, right.ID, 0, rightIdentity, evidence)
+	evidenceID, err := writeCandidateEvidence(ctx, tx, left.ID, right.ID, right.ID, rightIdentity, evidence)
 	if err != nil {
-		return identityapp.MergeCandidate{}, errors.New("identity store candidate evidence")
+		return identityapp.MergeCandidate{}, err
 	}
+	var id int64
 	err = tx.QueryRow(ctx, `INSERT INTO customer_merge_candidates(left_customer_id,right_customer_id,left_customer_version,right_customer_version,evidence_id,evidence_strength,reason) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id`, left.ID, right.ID, left.Version, right.Version, evidenceID, string(evidence.Strength), reasonFor(evidence)).Scan(&id)
 	if err != nil {
-		if existing, scanErr := lockCandidateByPair(ctx, tx, left.ID, right.ID); scanErr == nil {
-			return existing, nil
-		}
-		return identityapp.MergeCandidate{}, errors.New("identity store candidate insert")
+		return identityapp.MergeCandidate{}, err
 	}
 	return identityapp.MergeCandidate{ID: id, LeftCustomerID: customerdomain.CustomerID(left.ID), RightCustomerID: customerdomain.CustomerID(right.ID), Evidence: evidence, Reason: reasonFor(evidence), Status: "open", LeftVersion: left.Version, RightVersion: right.Version}, nil
+}
+
+func writeCandidateEvidence(ctx context.Context, tx pgx.Tx, left, right, targetCustomer, targetIdentity int64, evidence identitydomain.LinkEvidence) (int64, error) {
+	if targetCustomer == left {
+		return writeEvidence(ctx, tx, left, right, targetIdentity, 0, evidence)
+	}
+	if targetCustomer == right {
+		return writeEvidence(ctx, tx, left, right, 0, targetIdentity, evidence)
+	}
+	return 0, errCustomerRootChanged
+}
+
+func candidateVersionsMatch(candidate identityapp.MergeCandidate, left, right customer) bool {
+	versions := map[int64]int64{left.ID: left.Version, right.ID: right.Version}
+	leftVersion, leftFound := versions[int64(candidate.LeftCustomerID)]
+	rightVersion, rightFound := versions[int64(candidate.RightCustomerID)]
+	return leftFound && rightFound && candidate.LeftVersion == leftVersion && candidate.RightVersion == rightVersion
 }
 func reasonFor(e identitydomain.LinkEvidence) string {
 	if e.Strength == identitydomain.EvidenceStrong {
@@ -538,13 +763,12 @@ func rank(v identitydomain.EvidenceStrength) int {
 	return 0
 }
 func lockCandidateByPair(ctx context.Context, tx pgx.Tx, left, right int64) (identityapp.MergeCandidate, error) {
-	var id, l, r, lv, rv int64
-	var strength, reason, status string
-	err := tx.QueryRow(ctx, `SELECT id,left_customer_id,right_customer_id,left_customer_version,right_customer_version,evidence_strength,reason,status FROM customer_merge_candidates WHERE status='open' AND LEAST(left_customer_id,right_customer_id)=LEAST($1::bigint,$2::bigint) AND GREATEST(left_customer_id,right_customer_id)=GREATEST($1::bigint,$2::bigint) FOR UPDATE`, left, right).Scan(&id, &l, &r, &lv, &rv, &strength, &reason, &status)
+	var id int64
+	err := tx.QueryRow(ctx, `SELECT id FROM customer_merge_candidates WHERE status='open' AND LEAST(left_customer_id,right_customer_id)=LEAST($1::bigint,$2::bigint) AND GREATEST(left_customer_id,right_customer_id)=GREATEST($1::bigint,$2::bigint) FOR UPDATE`, left, right).Scan(&id)
 	if err != nil {
 		return identityapp.MergeCandidate{}, err
 	}
-	return identityapp.MergeCandidate{ID: id, LeftCustomerID: customerdomain.CustomerID(l), RightCustomerID: customerdomain.CustomerID(r), Evidence: identitydomain.LinkEvidence{Strength: identitydomain.EvidenceStrength(strength)}, Reason: reason, Status: status, LeftVersion: lv, RightVersion: rv}, nil
+	return lockCandidate(ctx, tx, id)
 }
 
 func sameRootConflict(ctx context.Context, tx pgx.Tx, customerID int64, ref identitydomain.NormalizedReference) (string, error) {
@@ -602,36 +826,47 @@ type intentRow struct {
 	Result                                         identityapp.LinkResult
 }
 
+type intentMetadata struct {
+	ResultSnapshot *identityapp.LinkResult `json:"result_snapshot,omitempty"`
+}
+
+func resultSnapshotMetadata(result identityapp.LinkResult) ([]byte, error) {
+	// LinkResult contains only internal ids, policy labels and digest-only
+	// evidence; the verified external identity and one-time token are excluded.
+	return json.Marshal(intentMetadata{ResultSnapshot: &result})
+}
+
 func lockIntent(ctx context.Context, tx pgx.Tx, hash string) (intentRow, error) {
 	var row intentRow
 	var resultStatus string
 	var customerID, identityID, candidateID, conflictID *int64
-	err := tx.QueryRow(ctx, `SELECT id,source_customer_id,source_customer_version,target_kind,expected_scope_key,status,expires_at,COALESCE(consumption_fingerprint,''),COALESCE(result_status,''),consumed_customer_id,consumed_identity_id,result_candidate_id,result_conflict_id FROM identity_link_intents WHERE token_hash=$1 FOR UPDATE`, hash).Scan(&row.ID, &row.SourceID, &row.SourceVersion, &row.TargetKind, &row.ExpectedScope, &row.Status, &row.ExpiresAt, &row.Fingerprint, &resultStatus, &customerID, &identityID, &candidateID, &conflictID)
+	var metadata []byte
+	err := tx.QueryRow(ctx, `SELECT id,source_customer_id,source_customer_version,target_kind,expected_scope_key,status,expires_at,COALESCE(consumption_fingerprint,''),COALESCE(result_status,''),consumed_customer_id,consumed_identity_id,result_candidate_id,result_conflict_id,metadata_json FROM identity_link_intents WHERE token_hash=$1 FOR UPDATE`, hash).Scan(&row.ID, &row.SourceID, &row.SourceVersion, &row.TargetKind, &row.ExpectedScope, &row.Status, &row.ExpiresAt, &row.Fingerprint, &resultStatus, &customerID, &identityID, &candidateID, &conflictID, &metadata)
 	if err != nil {
 		return intentRow{}, err
 	}
 	if resultStatus != "" {
-		row.Result = identityapp.LinkResult{Status: identityapp.LinkStatus(resultStatus)}
-		if customerID != nil {
-			row.Result.CustomerID = customerdomain.CustomerID(*customerID)
+		var decoded intentMetadata
+		if row.Status != "consumed" || json.Unmarshal(metadata, &decoded) != nil || decoded.ResultSnapshot == nil ||
+			!snapshotMatchesColumns(*decoded.ResultSnapshot, resultStatus, customerID, identityID, candidateID, conflictID) {
+			return intentRow{}, errStore
 		}
-		if identityID != nil {
-			row.Result.IdentityID = *identityID
-		}
-		if candidateID != nil {
-			c, e := lockCandidate(ctx, tx, *candidateID)
-			if e == nil {
-				row.Result.Candidate = &c
-			}
-		}
-		if conflictID != nil {
-			c, e := readConflict(ctx, tx, *conflictID)
-			if e == nil {
-				row.Result.Conflict = &c
-			}
-		}
+		row.Result = *decoded.ResultSnapshot
 	}
 	return row, nil
+}
+
+func snapshotMatchesColumns(result identityapp.LinkResult, status string, customerID, identityID, storedCandidateID, storedConflictID *int64) bool {
+	return string(result.Status) == status && optionalIDMatches(int64(result.CustomerID), customerID) &&
+		optionalIDMatches(result.IdentityID, identityID) && optionalIDMatches(candidateID(result), storedCandidateID) &&
+		optionalIDMatches(conflictID(result), storedConflictID) && result.Merge == nil && result.ReplayOf == ""
+}
+
+func optionalIDMatches(value int64, stored *int64) bool {
+	if stored == nil {
+		return value == 0
+	}
+	return value == *stored
 }
 func candidateID(result identityapp.LinkResult) int64 {
 	if result.Candidate != nil {
@@ -743,15 +978,23 @@ func performMerge(ctx context.Context, tx pgx.Tx, candidate identityapp.MergeCan
 		if e != nil || tag.RowsAffected() != 1 {
 			return identityapp.MergeRecord{}, errStore
 		}
-		if _, e = tx.Exec(ctx, `INSERT INTO customer_merge_identity_members(merge_id,identity_id,from_customer_id,to_customer_id,identity_version_before,identity_version_after) VALUES($1,$2,$3,$4,$5,$5+1)`, mergeID, m.id, loser, survivor, m.version); e != nil {
+		if _, e = tx.Exec(ctx, `INSERT INTO customer_merge_identity_members(merge_id,identity_id,from_customer_id,to_customer_id,identity_version_before,identity_version_after) VALUES($1::bigint,$2::bigint,$3::bigint,$4::bigint,$5::bigint,$5::bigint+1)`, mergeID, m.id, loser, survivor, m.version); e != nil {
 			return identityapp.MergeRecord{}, e
 		}
 	}
-	if _, err = tx.Exec(ctx, `UPDATE customers SET status='merged',merged_into_customer_id=$2,merged_at=CURRENT_TIMESTAMP,version=version+1,lineage_version=lineage_version+1,updated_at=CURRENT_TIMESTAMP WHERE id=$1 AND status='active' AND version=$3`, loser, survivor, from.Version); err != nil {
+	tag, err := tx.Exec(ctx, `UPDATE customers SET status='merged',merged_into_customer_id=$2,merged_at=CURRENT_TIMESTAMP,version=version+1,lineage_version=lineage_version+1,updated_at=CURRENT_TIMESTAMP WHERE id=$1 AND status='active' AND version=$3 AND lineage_version=$4`, loser, survivor, from.Version, from.Lineage)
+	if err != nil {
 		return identityapp.MergeRecord{}, err
 	}
-	if _, err = tx.Exec(ctx, `UPDATE customers SET version=version+1,lineage_version=lineage_version+1,updated_at=CURRENT_TIMESTAMP WHERE id=$1 AND status='active' AND version=$2`, survivor, to.Version); err != nil {
+	if tag.RowsAffected() != 1 {
+		return identityapp.MergeRecord{}, errCustomerRootChanged
+	}
+	tag, err = tx.Exec(ctx, `UPDATE customers SET version=version+1,lineage_version=lineage_version+1,updated_at=CURRENT_TIMESTAMP WHERE id=$1 AND status='active' AND version=$2 AND lineage_version=$3`, survivor, to.Version, to.Lineage)
+	if err != nil {
 		return identityapp.MergeRecord{}, err
+	}
+	if tag.RowsAffected() != 1 {
+		return identityapp.MergeRecord{}, errCustomerRootChanged
 	}
 	return identityapp.MergeRecord{ID: mergeID, CandidateID: candidate.ID, FromCustomerID: customerdomain.CustomerID(loser), ToCustomerID: customerdomain.CustomerID(survivor), FromVersionBefore: from.Version, FromVersionAfter: from.Version + 1, ToVersionBefore: to.Version, ToVersionAfter: to.Version + 1, FromLineageBefore: from.Lineage, FromLineageAfter: from.Lineage + 1, ToLineageBefore: to.Lineage, ToLineageAfter: to.Lineage + 1, Evidence: candidate.Evidence, Rule: "confirmed_candidate", Operator: operator}, nil
 }
