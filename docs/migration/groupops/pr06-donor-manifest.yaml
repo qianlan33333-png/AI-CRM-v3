@@ -103,6 +103,31 @@ frontend:
   byte_exact_staged_under: web/donors/groupops-v2/src
   archive_readme: web/donors/groupops-v2/README.md
   byte_exact_file_count: 35
+  dependency_closure:
+    source_of_truth: exact_files plus preserved_shared_dependencies below
+    archive_file_set: exactly 35 files; unlisted frontend files are forbidden
+    business_files: 21
+    shared_runtime_files: 14
+    shared_runtime_owner: PR01
+    shared_runtime_reuse: PR06 reuses the PR01 frozen bundle byte-for-byte
+    shared_runtime_mutation: forbidden; do not crop, rewrite, or create a second bundle
+    external_static_business_assets: []
+    standalone_groupops_stylesheets: []
+    inline_style_files:
+      - web/src/admin/templates/groupops.html
+      - web/src/admin/templates/groupopsDetail.html
+      - web/src/admin/sections/groupOpsDirectory.ts
+      - web/src/admin/sections/groupOpsHistory.ts
+      - web/src/admin/sections/broadcastJobHistory.ts
+    shared_stylesheet:
+      - web/src/shared/ui/tokens.css
+      - note: owned by the PR01 frozen runtime bundle; no PR06 variant is allowed
+    content_package_frontend:
+      owner: PR02 Media
+      donor_surface: Group Ops detail typed materialPlan and history read-only content_package JSON
+      standalone_editor_in_pr06_donor: false
+      required_for_complete_pr06: reuse the PR02 frozen content-package UI/adapter in the same Journey
+      fallback: if PR02 content-package UI is not openable, PR06 remains incomplete; do not invent a new page
   exact_files:
     - web/src/admin/templates/groupops.html
     - web/src/admin/templates/groupopsDetail.html
@@ -140,13 +165,42 @@ frontend:
     - web/src/shared/ui/picker.ts
     - web/src/shared/ui/runtime.ts
     - web/src/shared/ui/tokens.css
-  notes: These exact legacy dependencies contain broader customer/audience/Campaign branches. They are archive-only source evidence, not active v3 code; Terra/Web must narrow imports before wiring. The p4-ai-audience generated file is retained solely because the unchanged directory adapter references its operation-member endpoint.
+  notes: These exact legacy dependencies contain broader customer/audience/Campaign branches. They are archive-only source evidence plus the PR01 frozen shared runtime bundle; Terra/Web must reuse the shared bytes unchanged and route-gate active Group Ops mounts. The p4-ai-audience generated file is retained solely because the unchanged directory adapter references its operation-member endpoint.
   css: no standalone Group Ops stylesheet exists; page styles are inline in the exact templates
+  nested_runtime_assembly:
+    - path: web/src/admin/main.ts
+      owner: PR01
+      risk: dispatches non-customers pages to legacy.ts; it is not a PR06-only entrypoint
+    - path: web/src/admin/legacy.ts
+      owner: PR01
+      risk: static survey history import and broad dynamic section imports make whole-file
+        compilation expose unrelated customer/audience/Campaign branches
+    - path: web/src/admin/controller.ts
+      owner: PR01
+      risk: all-page controller contains legacy branches; reuse frozen bytes and route-gate
+        Group Ops rather than editing or pruning this file
+    - path: web/src/api/admin.ts
+      owner: PR01
+      risk: all-page DTO adapter contains legacy branches; Group Ops uses only its frozen
+        Group Ops DTO behavior and must not introduce Audience/Customer writes
+    - path: web/src/admin/templates/automation.html
+      owner: PR07
+      risk: outer donor page for broadcast_job_history=1; not a PR06 openable route and
+        must not be bundled as a second shell
+    - path: web/src/admin/sections/broadcastJobHistory.ts
+      owner: PR06 archive closure
+      risk: keep exact hash when statically bundled, but expose only through the owner PR07
+        route or a v3-owned read-only mount; never copy automation.html into PR06
+    - path: web/src/admin/nav.json
+      owner: PR01
+      risk: donor navigation contains broader pages; PR10 shell is the only production
+        sidebar and must gate un-migrated routes
   integration: PR10's v3-owned internal/webshell/admin_base and primary sidebar
     remain the only production shell. Terra/Web must mount these donor business
-    templates and their unchanged CSS/JS through a v3-owned adapter; this archive
-    must never be deployed as a second complete v2 shell or with a second `.side`
-    navigation. Donor files remain unmodified byte-exact snapshots.
+    templates and the PR01 frozen runtime bundle through a v3-owned adapter; the
+    shared runtime must not be cropped or rewritten. This archive must never be
+    deployed as a second complete v2 shell or with a second `.side` navigation.
+    Donor files remain unmodified byte-exact snapshots.
   request_contract:
     generated_sources:
       - web/src/api/generated/p4-group-ops/p4-group-ops.ts
@@ -166,7 +220,7 @@ frontend:
 
 terra_followups:
   - owner: Terra/Media
-    item: integrate PR02 content package creation/validation/version and material freezer ports; keep Campaign delivery bindings outside PR06
+    item: integrate PR02 content package creation/validation/version and material freezer ports plus its frozen UI/adapter; keep Campaign delivery bindings outside PR06
   - owner: Terra/GroupOps
     item: define Group Ops-owned PostgreSQL tables, migrations, SQLC queries, CAS/locking, audit, idempotency receipts, and same-transaction event/outbox facts
   - owner: Terra/GroupOps
@@ -176,7 +230,7 @@ terra_followups:
   - owner: Terra/GroupOps
     item: implement scheduler/River workers, group/member trusted read adapters, sender resolution, and material continuation without direct Provider access
   - owner: Terra/Web
-    item: select the exact Group Ops pages, remove archive-only shared excluded-domain imports, and wire only after v3 HTTP/OpenAPI contracts are approved
+    item: reuse the PR01 frozen shared runtime unchanged, route-gate the exact Group Ops pages, and wire only after v3 HTTP/OpenAPI contracts are approved; do not crop or rewrite shared bytes
   - owner: Terra/GroupOps
     item: decide whether legacy history is a separate read-only import after schema and retention review
 

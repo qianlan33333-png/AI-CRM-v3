@@ -2,6 +2,8 @@
 # Source hashes are from donor commit 6bfbe5816bb89913c70adaca87d6a486260e016e.
 # Every web/donors file below was verified with cmp against its source before
 # this manifest was committed. Target hashes are worktree bytes.
+# Re-run the complete donor commit, SHA-256, cmp, and archive-set check with:
+#   scripts/check-pr06-donor-manifest.sh
 
 312a9437ffb17fb41a5cb234091e6def84d9d4a933640abe591e934a1ec38ff0  source:internal/groupops/port/port.go
 4a629f7d963dc7d61622be405fc61da8a902c74232deb640a7b94f48e372b0ab  source:internal/groupops/port/dispatch.go
