@@ -1,0 +1,87 @@
+{{define "login_page"}}
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{.PageTitle}} · 客户管理后台</title>
+  <link rel="stylesheet" href="/static/admin_console/admin_console.css?v=v3-webshell">
+</head>
+<body class="admin-shell">
+  <main class="admin-page admin-auth-page">
+    {{if .PageNotice}}<section class="admin-alert admin-alert--success">{{.PageNotice}}</section>{{end}}
+    {{if .PageError}}<section class="admin-alert admin-alert--error">{{.PageError}}</section>{{end}}
+
+    <section class="admin-page-hero admin-page-hero--auth">
+      <div class="admin-page-hero__head">
+        <div>
+          <div class="admin-eyebrow">后台登录</div>
+          <h1>企业微信登录</h1>
+          <p>{{.PageSummary}}</p>
+        </div>
+        <div class="admin-page-hero__meta">
+          <span class="admin-chip admin-chip--neutral">{{.AuthModeLabel}}</span>
+          <span class="admin-chip admin-chip--neutral">角色权限</span>
+        </div>
+      </div>
+
+      <div class="admin-auth-grid">
+        <article class="admin-card admin-auth-panel">
+          <div class="admin-card-head admin-card-head--tight">
+            <div>
+              <h2>登录入口</h2>
+              <p>电脑浏览器可扫码，企业微信内打开时可走应用授权。</p>
+            </div>
+          </div>
+          <div class="admin-form-actions">
+            <a class="admin-button admin-button--primary" href="{{.LoginLinks.QR}}">企业微信扫码登录</a>
+            <a class="admin-button admin-button--secondary" href="{{.LoginLinks.OAuth}}">企业微信内打开</a>
+          </div>
+          <div class="admin-state admin-state--inline">
+            <strong>认证入口状态</strong>
+            <span>企微登录启动路径已预留，实际认证由 WeCom / Access 模块接入。</span>
+          </div>
+        </article>
+
+        <article class="admin-card admin-auth-panel">
+          <div class="admin-card-head admin-card-head--tight">
+            <div>
+              <h2>本地登录表单</h2>
+              <p>表单路径保留为 <code>GET/POST /login</code>，本地凭据暂不启用。</p>
+            </div>
+          </div>
+          <form class="admin-form-grid admin-form-grid--stacked" method="post" action="{{.FormAction}}">
+            <input type="hidden" name="next" value="{{.NextPath}}">
+            <label>
+              <span>账号</span>
+              <input type="text" name="account" autocomplete="username" placeholder="等待 Access 能力接入" disabled>
+            </label>
+            <label>
+              <span>密码</span>
+              <input type="password" name="password" autocomplete="current-password" placeholder="等待 Access 能力接入" disabled>
+            </label>
+            <div class="admin-form-actions">
+              <button class="admin-button admin-button--secondary" type="submit" disabled>本地登录待接入</button>
+            </div>
+          </form>
+        </article>
+      </div>
+    </section>
+
+    <section class="admin-card">
+      <div class="admin-card-head admin-card-head--tight">
+        <div>
+          <h2>登录说明</h2>
+          <p>员工身份与后台能力分开管理，页面不保存或回显凭据。</p>
+        </div>
+      </div>
+      <ul class="admin-list">
+        <li>扫码或应用授权成功后，由 WeCom 协议层验证员工身份。</li>
+        <li>员工权限入口预留在 <a href="/admin/config/login-access"><code>/admin/config/login-access</code></a>。</li>
+        <li>当前 shell 不签发 Session，也不执行任何外部认证请求。</li>
+      </ul>
+    </section>
+  </main>
+</body>
+</html>
+{{end}}
