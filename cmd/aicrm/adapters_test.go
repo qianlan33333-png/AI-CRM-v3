@@ -169,6 +169,28 @@ func TestApplicationRouterKeepsOwnershipAndProtectsAdminShell(t *testing.T) {
 	}
 }
 
+func TestSecurityHeadersAllowBlobImagesOnlyOnMediaPages(t *testing.T) {
+	handler := securityHeaders(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	for path, allowsBlob := range map[string]bool{
+		"/admin/image-library":                        true,
+		"/admin/miniprogram-library":                  true,
+		"/admin/attachment-library":                   true,
+		"/admin/campaigns.html?view=external-effects": false,
+		"/admin/orders":                               false,
+		"/api/admin/image-library":                    false,
+	} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		policy := response.Header().Get("Content-Security-Policy")
+		if allowsBlob && !strings.Contains(policy, "img-src 'self' data: blob:") {
+			t.Fatalf("Media page CSP lacks blob image source for %s: %q", path, policy)
+		}
+		if !allowsBlob && strings.Contains(policy, "blob:") {
+			t.Fatalf("non-Media page CSP unexpectedly permits blob images for %s: %q", path, policy)
+		}
+	}
+}
+
 func TestApplicationRouterOwnsEffectsAndPushCenterSeparately(t *testing.T) {
 	marker := func(name string) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

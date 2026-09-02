@@ -11,8 +11,10 @@ const stage = path.join(root, 'stage');
 try {
   fs.mkdirSync(path.join(source, 'admin'), { recursive: true });
   fs.mkdirSync(path.join(source, 'assets'), { recursive: true });
-  // A donor HTML file exists in the build input but must never reach release.
+  // Only the three Media templates are private Go-renderer inputs; Campaign
+  // HTML must never reach release as a second shell.
   fs.writeFileSync(path.join(source, 'admin', 'campaigns.html'), '<aside class="side"></aside>');
+  for (const page of ['images', 'attach', 'mpLib']) fs.writeFileSync(path.join(source, 'admin', `${page}.html`), `<template id="tpl">${page}</template>`);
   for (const file of ['admin.js', 'tokens.css', 'labs.css', 'legacy.js', 'campaigns.js']) {
     fs.writeFileSync(path.join(source, 'assets', file), file);
   }
@@ -29,9 +31,9 @@ try {
 
   execFileSync(process.execPath, ['scripts/stage-pr01-effects-ui.mjs', source, stage], { stdio: 'inherit' });
   const staged = fs.readdirSync(stage, { recursive: true }).map((entry) => String(entry).split(path.sep).join('/')).sort();
-  assert.deepEqual(staged, ['asset-manifest.json', 'assets', 'assets/admin.js', 'assets/campaigns.js', 'assets/labs.css', 'assets/legacy.js', 'assets/tokens.css']);
+  assert.deepEqual(staged, ['admin', 'admin/attach.html', 'admin/images.html', 'admin/mpLib.html', 'asset-manifest.json', 'assets', 'assets/admin.js', 'assets/campaigns.js', 'assets/labs.css', 'assets/legacy.js', 'assets/tokens.css']);
   assert.equal(fs.existsSync(path.join(stage, 'admin', 'campaigns.html')), false, 'donor campaign HTML must not be released');
-  assert.equal(staged.some((entry) => entry.endsWith('.html')), false, 'no HTML surface belongs in the effects asset stage');
+  assert.deepEqual(staged.filter((entry) => entry.endsWith('.html')), ['admin/attach.html', 'admin/images.html', 'admin/mpLib.html'], 'only private Media templates may be staged');
   console.log('PR01 effects UI staging contract passed');
 } finally {
   fs.rmSync(root, { recursive: true, force: true });

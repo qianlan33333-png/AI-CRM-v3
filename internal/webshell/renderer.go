@@ -53,6 +53,9 @@ type AdminShellView struct {
 	AudienceDetail  bool
 	ExternalEffects bool
 	ExternalAssets  ExternalEffectsAssets
+	Media           bool
+	MediaPage       string
+	MediaAssets     MediaAssets
 }
 
 // ExternalEffectsAssets are manifest-derived URLs for the frozen donor bundle.
@@ -62,6 +65,10 @@ type ExternalEffectsAssets struct {
 	LabsCSS   string
 	AdminJS   string
 }
+
+// MediaAssets are manifest-derived URLs for the immutable Media donor bundle.
+// They are supplied by the Media module's release-only UI adapter.
+type MediaAssets struct{ TokensCSS, LabsCSS, AdminJS string }
 
 // Render implements the small presentation contract consumed by the Access
 // HTTP handler. Keeping this adapter in webshell avoids a concrete import
@@ -150,6 +157,23 @@ func (renderer *Renderer) RenderExternalEffects(writer http.ResponseWriter, data
 		ExternalEffects: true,
 		ExternalAssets:  assets,
 	})
+	if err != nil {
+		return err
+	}
+	return writeHTML(writer, http.StatusOK, body)
+}
+
+// RenderMedia mounts one immutable Media template in the v3 shell. The
+// caller supplies only a verified template extracted from web/dist; it never
+// receives an arbitrary request-controlled HTML fragment.
+func (renderer *Renderer) RenderMedia(writer http.ResponseWriter, data AdminPageData, page, donorTemplate string, assets MediaAssets) error {
+	if renderer == nil || renderer.templates == nil || donorTemplate == "" || assets.TokensCSS == "" || assets.LabsCSS == "" || assets.AdminJS == "" || (page != "images" && page != "attach" && page != "mpLib") {
+		return errors.New("media shell assets are required")
+	}
+	normalizeAdminPage(&data)
+	data.ShowPageHeader = false
+	content := `<main id="stage" class="stage rich"></main><template id="tpl">` + donorTemplate + `</template>`
+	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: template.HTML(content), Media: true, MediaPage: page, MediaAssets: assets})
 	if err != nil {
 		return err
 	}

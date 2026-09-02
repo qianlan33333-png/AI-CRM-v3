@@ -95,6 +95,138 @@ paths:
         "200": {description: v3 admin shell with the frozen External Effects stage mount, content: {text/html: {schema: {type: string}}}}
         "403": {$ref: "#/components/responses/Error"}
         "404": {$ref: "#/components/responses/Error"}
+  /admin/image-library:
+    get:
+      operationId: openImageLibraryWorkspace
+      security: [{adminSession: []}]
+      responses: {"200": {description: v3 shell with frozen image-library donor template}, "403": {$ref: "#/components/responses/Error"}}
+  /admin/miniprogram-library:
+    get:
+      operationId: openMiniProgramLibraryWorkspace
+      security: [{adminSession: []}]
+      responses: {"200": {description: v3 shell with frozen mini-program donor template}, "403": {$ref: "#/components/responses/Error"}}
+  /admin/attachment-library:
+    get:
+      operationId: openAttachmentLibraryWorkspace
+      security: [{adminSession: []}]
+      responses: {"200": {description: v3 shell with frozen attachment donor template}, "403": {$ref: "#/components/responses/Error"}}
+  /api/admin/image-library:
+    get:
+      operationId: listMediaImages
+      tags: [Media]
+      security: [{adminSession: []}]
+      parameters: [{$ref: "#/components/parameters/MediaLimit"}, {$ref: "#/components/parameters/Offset"}, {$ref: "#/components/parameters/MediaQuery"}, {$ref: "#/components/parameters/MediaImageCategory"}, {$ref: "#/components/parameters/EnabledOnly"}, {$ref: "#/components/parameters/ImageTags"}, {$ref: "#/components/parameters/ImageTagGroup"}, {$ref: "#/components/parameters/OnlyUnlabeled"}]
+      responses: {"200": {description: Local image page, content: {application/json: {schema: {$ref: "#/components/schemas/MediaImageListEnvelope"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}}
+    post:
+      operationId: createMediaImage
+      tags: [Media]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/IdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/MediaImageCreateRequest"}}, multipart/form-data: {schema: {$ref: "#/components/schemas/MediaImageMultipartRequest"}}}}
+      responses: {"200": {description: Local image created, content: {application/json: {schema: {$ref: "#/components/schemas/MediaImageEnvelope"}}}}, "400": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+  /api/admin/image-library/{id}:
+    get:
+      operationId: getMediaImage
+      tags: [Media]
+      security: [{adminSession: []}]
+      parameters: [{$ref: "#/components/parameters/ID"}, {$ref: "#/components/parameters/IncludeData"}, {$ref: "#/components/parameters/MediaImageDetailVariant"}]
+      responses: {"200": {description: Local image metadata, content: {application/json: {schema: {$ref: "#/components/schemas/MediaImageEnvelope"}}}}, "401": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}}
+    put:
+      operationId: updateMediaImage
+      tags: [Media]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/ID"}, {$ref: "#/components/parameters/IdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/MediaImageUpdateRequest"}}}}
+      responses: {"200": {description: Local image updated, content: {application/json: {schema: {$ref: "#/components/schemas/MediaImageEnvelope"}}}}, "400": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+    delete:
+      operationId: deleteMediaImage
+      tags: [Media]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/ID"}, {$ref: "#/components/parameters/IdempotencyKey"}]
+      responses: {"200": {description: Image deleted when unreferenced, content: {application/json: {schema: {$ref: "#/components/schemas/MediaImageDeleteEnvelope"}}}}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+  /api/admin/image-library/{id}/variants/{variant}:
+    get:
+      operationId: getMediaImageVariant
+      tags: [Media]
+      security: [{adminSession: []}]
+      parameters: [{$ref: "#/components/parameters/ID"}, {name: variant, in: path, required: true, schema: {type: string, enum: [thumb_160, thumb_320, mobile_1080, large_1440, original]}}]
+      responses: {"200": {description: Authenticated image variant bytes, headers: {ETag: {required: true, schema: {type: string, pattern: '^"[0-9a-f]{64}"$'}}}, content: {image/png: {schema: {type: string, format: binary}}, image/jpeg: {schema: {type: string, format: binary}}, image/gif: {schema: {type: string, format: binary}}}}, "304": {description: ETag matched, headers: {ETag: {required: true, schema: {type: string}}}}, "401": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "422": {$ref: "#/components/responses/Error"}}
+  /api/admin/image-library/facets:
+    get:
+      operationId: listMediaImageFacets
+      tags: [Media]
+      security: [{adminSession: []}]
+      responses: {"200": {description: Local image categories and tags, content: {application/json: {schema: {$ref: "#/components/schemas/MediaImageFacetsEnvelope"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}}
+  /api/admin/image-library/upload:
+    post:
+      operationId: uploadLegacyMediaImage
+      tags: [Media]
+      description: Frozen Media multipart compatibility alias. Missing Idempotency-Key receives an audited server compatibility key.
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/IdempotencyKey"}]
+      requestBody: {required: true, content: {multipart/form-data: {schema: {$ref: "#/components/schemas/MediaImageMultipartRequest"}}}}
+      responses: {"200": {description: Local image created, content: {application/json: {schema: {$ref: "#/components/schemas/MediaImageUploadEnvelope"}}}}, "400": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+  /api/admin/attachment-library:
+    get:
+      operationId: listMediaAttachments
+      tags: [Media]
+      security: [{adminSession: []}]
+      parameters: [{$ref: "#/components/parameters/MediaLimit"}, {$ref: "#/components/parameters/Offset"}, {$ref: "#/components/parameters/EnabledOnly"}, {$ref: "#/components/parameters/MediaQuery"}]
+      responses: {"200": {description: Local private attachment page, content: {application/json: {schema: {$ref: "#/components/schemas/MediaAttachmentListEnvelope"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}}
+    post:
+      operationId: createMediaAttachment
+      tags: [Media]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/IdempotencyKey"}]
+      requestBody: {required: true, content: {multipart/form-data: {schema: {$ref: "#/components/schemas/MediaAttachmentMultipartRequest"}}}}
+      responses: {"200": {description: Local PDF attached, content: {application/json: {schema: {$ref: "#/components/schemas/MediaAttachmentEnvelope"}}}}, "400": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+  /api/admin/attachment-library/{id}:
+    get: {operationId: getMediaAttachment, tags: [Media], security: [{adminSession: []}], parameters: [{$ref: "#/components/parameters/ID"}], responses: {"200": {description: Attachment metadata, content: {application/json: {schema: {$ref: "#/components/schemas/MediaAttachmentEnvelope"}}}}, "401": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}}}
+    put: {operationId: updateMediaAttachment, tags: [Media], security: [{adminSession: [], csrfHeader: []}], parameters: [{$ref: "#/components/parameters/ID"}, {$ref: "#/components/parameters/IdempotencyKey"}], requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/MediaAttachmentUpdateRequest"}}}}, responses: {"200": {description: CAS metadata updated, content: {application/json: {schema: {$ref: "#/components/schemas/MediaAttachmentEnvelope"}}}}, "400": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}}
+    delete: {operationId: deleteMediaAttachment, tags: [Media], security: [{adminSession: [], csrfHeader: []}], parameters: [{$ref: "#/components/parameters/ID"}, {$ref: "#/components/parameters/IdempotencyKey"}], responses: {"200": {description: Attachment deleted when unreferenced, content: {application/json: {schema: {$ref: "#/components/schemas/MediaDeleteEnvelope"}}}}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}}
+  /api/admin/attachment-library/{id}/download:
+    get: {operationId: downloadMediaAttachment, tags: [Media], security: [{adminSession: []}], parameters: [{$ref: "#/components/parameters/ID"}], responses: {"200": {description: Authenticated PDF bytes, content: {application/pdf: {schema: {type: string, format: binary}}}}, "401": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}}}
+  /api/admin/attachment-library/upload:
+    post: {operationId: uploadLegacyMediaAttachment, tags: [Media], security: [{adminSession: [], csrfHeader: []}], parameters: [{$ref: "#/components/parameters/IdempotencyKey"}], requestBody: {required: true, content: {multipart/form-data: {schema: {$ref: "#/components/schemas/MediaAttachmentMultipartRequest"}}}}, responses: {"200": {description: Local PDF uploaded, content: {application/json: {schema: {$ref: "#/components/schemas/MediaAttachmentEnvelope"}}}}, "400": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}}
+  /api/admin/attachment-library/uploads:
+    post:
+      operationId: initiateMediaAttachmentMultipartUpload
+      tags: [Media]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/IdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/MediaAttachmentUploadInitiateRequest"}}}}
+      responses: {"201": {description: Private upload reserved, content: {application/json: {schema: {$ref: "#/components/schemas/MediaAttachmentUploadInitiated"}}}}, "400": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+  /api/admin/attachment-library/uploads/{upload_id}/parts/{part_number}:
+    put:
+      operationId: putMediaAttachmentMultipartPart
+      tags: [Media]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/IdempotencyKey"}, {name: upload_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}, {name: part_number, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/MediaAttachmentUploadPartRequest"}}}}
+      responses: {"204": {description: Digest-checked private part stored}, "400": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+  /api/admin/attachment-library/uploads/{upload_id}/complete:
+    post:
+      operationId: completeMediaAttachmentMultipartUpload
+      tags: [Media]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/IdempotencyKey"}, {name: upload_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
+      responses: {"200": {description: Private PDF promoted atomically to attachment, content: {application/json: {schema: {$ref: "#/components/schemas/MediaAttachmentUploadCompleted"}}}}, "400": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+  /api/admin/miniprogram-library:
+    get: {operationId: listMediaMiniPrograms, tags: [Media], security: [{adminSession: []}], parameters: [{$ref: "#/components/parameters/Limit"}, {$ref: "#/components/parameters/Offset"}, {$ref: "#/components/parameters/EnabledOnly"}, {$ref: "#/components/parameters/MediaQuery"}], responses: {"200": {description: Local mini-program card page, content: {application/json: {schema: {$ref: "#/components/schemas/MediaMiniProgramListEnvelope"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}}}
+    post: {operationId: createMediaMiniProgram, tags: [Media], security: [{adminSession: [], csrfHeader: []}], parameters: [{$ref: "#/components/parameters/IdempotencyKey"}], requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/MediaMiniProgramRequest"}}}}, responses: {"200": {description: Local mini-program card created, content: {application/json: {schema: {$ref: "#/components/schemas/MediaMiniProgramEnvelope"}}}}, "400": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}}
+  /api/admin/miniprogram-library/{id}:
+    get: {operationId: getMediaMiniProgram, tags: [Media], security: [{adminSession: []}], parameters: [{$ref: "#/components/parameters/ID"}], responses: {"200": {description: Local mini-program card, content: {application/json: {schema: {$ref: "#/components/schemas/MediaMiniProgramEnvelope"}}}}, "401": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}}}
+    put: {operationId: updateMediaMiniProgram, tags: [Media], security: [{adminSession: [], csrfHeader: []}], parameters: [{$ref: "#/components/parameters/ID"}, {$ref: "#/components/parameters/IdempotencyKey"}], requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/MediaMiniProgramUpdateRequest"}}}}, responses: {"200": {description: Local mini-program card updated, content: {application/json: {schema: {$ref: "#/components/schemas/MediaMiniProgramEnvelope"}}}}, "400": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}}
+    delete: {operationId: deleteMediaMiniProgram, tags: [Media], security: [{adminSession: [], csrfHeader: []}], parameters: [{$ref: "#/components/parameters/ID"}, {$ref: "#/components/parameters/IdempotencyKey"}], responses: {"200": {description: Local mini-program card deleted, content: {application/json: {schema: {$ref: "#/components/schemas/MediaDeleteEnvelope"}}}}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}}
+  /api/admin/miniprogram-library/{id}/test-resolve:
+    post: {operationId: resolveLocalMiniProgramThumbnail, tags: [Media], security: [{adminSession: [], csrfHeader: []}], parameters: [{$ref: "#/components/parameters/ID"}, {$ref: "#/components/parameters/IdempotencyKey"}], responses: {"200": {description: Local card projection refreshed without Provider call, content: {application/json: {schema: {$ref: "#/components/schemas/MediaMiniProgramResolutionEnvelope"}}}}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}}
+  /api/admin/group-invite-library:
+    get: {operationId: listMediaGroupInvites, tags: [Media], security: [{adminSession: []}], parameters: [{$ref: "#/components/parameters/Limit"}, {$ref: "#/components/parameters/Offset"}, {$ref: "#/components/parameters/EnabledOnly"}, {$ref: "#/components/parameters/MediaQuery"}], responses: {"200": {description: Local group invite cards, content: {application/json: {schema: {$ref: "#/components/schemas/MediaGroupInviteListEnvelope"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}}}
+    post: {operationId: createMediaGroupInvite, tags: [Media], security: [{adminSession: [], csrfHeader: []}], parameters: [{$ref: "#/components/parameters/IdempotencyKey"}], requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/MediaGroupInviteRequest"}}}}, responses: {"200": {description: Local group invite card created, content: {application/json: {schema: {$ref: "#/components/schemas/MediaGroupInviteEnvelope"}}}}, "400": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}}
+  /api/admin/group-invite-library/{id}:
+    get: {operationId: getMediaGroupInvite, tags: [Media], security: [{adminSession: []}], parameters: [{$ref: "#/components/parameters/ID"}], responses: {"200": {description: Active local group invite card, content: {application/json: {schema: {$ref: "#/components/schemas/MediaGroupInviteEnvelope"}}}}, "401": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}}}
+    put: {operationId: updateMediaGroupInvite, tags: [Media], security: [{adminSession: [], csrfHeader: []}], parameters: [{$ref: "#/components/parameters/ID"}, {$ref: "#/components/parameters/IdempotencyKey"}], requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/MediaGroupInviteUpdateRequest"}}}}, responses: {"200": {description: Local group invite updated, content: {application/json: {schema: {$ref: "#/components/schemas/MediaGroupInviteEnvelope"}}}}, "400": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}}
+    delete: {operationId: archiveMediaGroupInvite, tags: [Media], security: [{adminSession: [], csrfHeader: []}], parameters: [{$ref: "#/components/parameters/ID"}, {$ref: "#/components/parameters/IdempotencyKey"}], responses: {"200": {description: Local group invite archived without Provider call, content: {application/json: {schema: {$ref: "#/components/schemas/MediaGroupInviteArchiveEnvelope"}}}}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}}
   /api/admin/access/users:
     get:
       operationId: listAdminUsers
@@ -445,10 +577,19 @@ components:
     PushJobID: {name: job_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
     ExternalEffectsView: {name: view, in: query, required: true, schema: {type: string, const: external-effects}}
     PushJobQuery: {name: job, in: query, schema: {$ref: "#/components/schemas/PositiveID"}}
-    IdempotencyKey: {name: Idempotency-Key, in: header, required: true, schema: {type: string, minLength: 1, maxLength: 200}}
+    IdempotencyKey: {name: Idempotency-Key, in: header, required: false, description: Explicit keys replay or reject payload drift. Frozen v2 Media controls omit this header; the compatibility adapter mints and audits a fresh per-request key., schema: {type: string, minLength: 1, maxLength: 200}}
+    MediaImageCategory: {name: category, in: query, schema: {type: string, maxLength: 64}}
+    MediaQuery: {name: q, in: query, schema: {type: string, maxLength: 200}}
+    EnabledOnly: {name: enabled_only, in: query, schema: {type: boolean, default: true}}
+    ImageTags: {name: tags, in: query, schema: {type: string, maxLength: 4096, description: Comma-separated intersection tag filter.}}
+    ImageTagGroup: {name: tag_group, in: query, schema: {type: string, maxLength: 4096, description: Repeatable comma-separated tag group filter.}}
+    OnlyUnlabeled: {name: only_unlabeled, in: query, schema: {type: boolean, default: false}}
+    IncludeData: {name: include_data, in: query, schema: {type: boolean, default: false}}
+    MediaImageDetailVariant: {name: variant, in: query, schema: {type: string, enum: [thumb_160, thumb_320, mobile_1080, large_1440, original]}}
     CustomerID: {name: customer_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
     SafeNext: {name: next, in: query, schema: {type: string, pattern: "^/"}}
     Limit: {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 50}}
+    MediaLimit: {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 500, default: 50}}
     Offset: {name: offset, in: query, schema: {type: integer, minimum: 0, default: 0}}
     BeforeID: {name: before_id, in: query, schema: {type: integer, format: int64, minimum: 1}}
     ReceiptID: {name: receipt_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
@@ -461,6 +602,57 @@ components:
     MutationOK: {description: Mutation completed, content: {application/json: {schema: {type: object, required: [ok], properties: {ok: {const: true}}}}}}
   schemas:
     PositiveID: {type: integer, format: int64, minimum: 1}
+    MediaAttachmentUploadInitiateRequest:
+      type: object
+      additionalProperties: false
+      required: [file_name, name, size, sha256]
+      properties:
+        file_name: {type: string, minLength: 1, maxLength: 255}
+        name: {type: string, minLength: 1, maxLength: 200}
+        description: {type: string, maxLength: 10000}
+        size: {type: integer, minimum: 1, maximum: 10485760}
+        sha256: {type: string, pattern: '^sha256:[0-9a-f]{64}$'}
+        enabled: {type: boolean}
+    MediaAttachmentUploadPartRequest:
+      type: object
+      additionalProperties: false
+      required: [sha256, content]
+      properties:
+        sha256: {type: string, pattern: '^sha256:[0-9a-f]{64}$'}
+        content: {type: string, minLength: 1, contentEncoding: base64}
+    MediaImageCreateRequest: {type: object, additionalProperties: false, required: [data_url, file_name], properties: {data_url: {type: string, maxLength: 15000000, pattern: '^data:image/(png|jpeg|gif);base64,[A-Za-z0-9+/]+={0,2}$'}, file_name: {type: string, minLength: 1, maxLength: 255}, name: {type: string, maxLength: 200}, description: {type: string, maxLength: 10000}, tags: {type: array, maxItems: 50, items: {type: string, maxLength: 64}}, category: {type: string, maxLength: 200}, enabled: {type: boolean}}}
+    MediaImageMultipartRequest: {type: object, required: [image], properties: {image: {type: string, format: binary}, name: {type: string, maxLength: 200}, description: {type: string, maxLength: 10000}, tags: {type: string, maxLength: 10000}, category: {type: string, maxLength: 200}, enabled: {type: boolean}}}
+    MediaImageUpdateRequest: {type: object, additionalProperties: false, minProperties: 1, properties: {name: {type: string, maxLength: 200}, description: {type: string, maxLength: 10000}, tags: {oneOf: [{type: string, maxLength: 10000}, {type: array, maxItems: 50, items: {type: string, maxLength: 64}}]}, category: {type: string, maxLength: 200}, enabled: {type: boolean}}}
+    MediaImage:
+      type: object
+      required: [id, resource_id, file_name, name, mime_type, file_size, width, height, enabled, created_at, updated_at]
+      properties: {id: {$ref: "#/components/schemas/PositiveID"}, resource_id: {$ref: "#/components/schemas/PositiveID"}, file_name: {type: string}, name: {type: string}, description: {type: string}, tags: {type: array, items: {type: string}}, category: {type: string}, mime_type: {type: string}, content_type: {type: string}, file_size: {type: integer}, width: {type: integer}, height: {type: integer}, enabled: {type: boolean}, source: {const: upload}, source_url: {type: string}, thumb_media_id: {type: string}, thumb_media_id_expires_at: {type: string}, ai_metadata: {type: object}, thumb_160_url: {type: string}, thumb_320_url: {type: string}, thumb_url: {type: string}, preview_url: {type: string}, mobile_1080_url: {type: string}, large_1440_url: {type: string}, original_url: {type: string}, created_at: {type: string, format: date-time}, updated_at: {type: string, format: date-time}, data_url: {type: string}, variant: {type: string, enum: [thumb_160, thumb_320, mobile_1080, large_1440, original]}, variant_url: {type: string}}
+    MediaImageEnvelope: {type: object, required: [ok, item, image, item_id, local_only, provider_call_executed, real_external_call_executed], properties: {ok: {const: true}, item: {$ref: "#/components/schemas/MediaImage"}, image: {$ref: "#/components/schemas/MediaImage"}, item_id: {$ref: "#/components/schemas/PositiveID"}, local_only: {const: true}, provider_call_executed: {const: false}, real_external_call_executed: {const: false}}}
+    MediaImageUploadItem: {type: object, required: [id, file_name, name, description, tags, category, mime_type, file_size, width, height, created_at, updated_at], properties: {id: {$ref: "#/components/schemas/PositiveID"}, file_name: {type: string}, name: {type: string}, description: {type: string}, tags: {type: string}, category: {type: string}, mime_type: {type: string, enum: [image/png, image/jpeg, image/gif]}, file_size: {type: integer, minimum: 1, maximum: 10485760}, width: {type: integer, minimum: 1, maximum: 10000}, height: {type: integer, minimum: 1, maximum: 10000}, created_at: {type: string, format: date-time}, updated_at: {type: string, format: date-time}}}
+    MediaImageUploadEnvelope: {type: object, required: [ok, item, source_status, route_owner, fallback_used, real_external_call_executed, storage_adapter_mode, adapter_mode], properties: {ok: {const: true}, item: {$ref: "#/components/schemas/MediaImageUploadItem"}, source_status: {const: local_upload}, route_owner: {const: ai_crm_next}, fallback_used: {const: false}, real_external_call_executed: {const: false}, storage_adapter_mode: {const: postgresql}, adapter_mode: {const: postgresql}}}
+    MediaImageListEnvelope: {type: object, required: [ok, items, images, total, limit, offset, count, has_more, next_offset, source_status, route_owner, fallback_used, local_fact_only, storage_adapter_mode, adapter_mode], properties: {ok: {const: true}, items: {type: array, items: {$ref: "#/components/schemas/MediaImage"}}, images: {type: array, items: {$ref: "#/components/schemas/MediaImage"}}, total: {type: integer}, limit: {type: integer}, offset: {type: integer}, count: {type: integer}, has_more: {type: boolean}, next_offset: {type: [integer, "null"]}, source_status: {const: next_media_library}, route_owner: {const: ai_crm_next}, fallback_used: {const: false}, local_fact_only: {const: true}, storage_adapter_mode: {const: postgresql}, adapter_mode: {const: postgresql}}}
+    MediaImageFacetsEnvelope: {type: object, required: [ok, categories, tags, items], properties: {ok: {const: true}, categories: {type: array, items: {type: string}}, tags: {type: array, items: {type: string}}, items: {type: array, items: {type: string}}}}
+    MediaAttachment: {type: object, required: [id, resource_id, file_name, name, tags, mime_type, file_size, enabled, version, created_by, updated_by, created_at, updated_at, download_url], properties: {id: {$ref: "#/components/schemas/PositiveID"}, resource_id: {$ref: "#/components/schemas/PositiveID"}, file_name: {type: string}, name: {type: string}, description: {type: string}, tags: {type: array, items: {type: string}}, mime_type: {type: string}, file_size: {type: integer}, enabled: {type: boolean}, version: {type: integer}, created_by: {$ref: "#/components/schemas/PositiveID"}, updated_by: {$ref: "#/components/schemas/PositiveID"}, download_url: {type: string}, created_at: {type: string, format: date-time}, updated_at: {type: string, format: date-time}}}
+    MediaAttachmentMultipartRequest: {type: object, required: [attachment], properties: {attachment: {type: string, format: binary}, name: {type: string, maxLength: 200}, description: {type: string, maxLength: 10000}, tags: {type: string, maxLength: 4096}, enabled: {type: boolean}}}
+    MediaAttachmentUpdateRequest: {type: object, additionalProperties: false, required: [expected_version], properties: {name: {type: string, maxLength: 200}, description: {type: string, maxLength: 10000}, tags: {type: array, maxItems: 50, items: {type: string, maxLength: 64}}, enabled: {type: boolean}, expected_version: {type: integer, minimum: 1}}}
+    MediaAttachmentEnvelope: {type: object, required: [ok, item, attachment, id, version, download_url, local_only, provider_call_executed, real_external_call_executed], properties: {ok: {const: true}, item: {$ref: "#/components/schemas/MediaAttachment"}, attachment: {$ref: "#/components/schemas/MediaAttachment"}, id: {$ref: "#/components/schemas/PositiveID"}, version: {type: integer}, download_url: {type: string}, local_only: {const: true}, provider_call_executed: {const: false}, real_external_call_executed: {const: false}}}
+    MediaAttachmentListEnvelope: {type: object, required: [ok, items, attachments, total, limit, offset, count, has_more], properties: {ok: {const: true}, items: {type: array, items: {$ref: "#/components/schemas/MediaAttachment"}}, attachments: {type: array, items: {$ref: "#/components/schemas/MediaAttachment"}}, total: {type: integer}, limit: {type: integer}, offset: {type: integer}, count: {type: integer}, has_more: {type: boolean}}}
+    MediaDeleteEnvelope: {type: object, required: [ok, id, item_id, deleted, hard_deleted, local_only, provider_call_executed, real_external_call_executed], properties: {ok: {const: true}, id: {$ref: "#/components/schemas/PositiveID"}, item_id: {$ref: "#/components/schemas/PositiveID"}, deleted: {const: true}, hard_deleted: {const: true}, references_cleared: {type: object, additionalProperties: {type: array, items: {type: integer}}}, local_only: {const: true}, provider_call_executed: {const: false}, real_external_call_executed: {const: false}}}
+    MediaImageDeleteEnvelope: {type: object, required: [ok, id, deleted, hard_deleted, references_cleared, source_status, route_owner, fallback_used, real_external_call_executed, storage_adapter_mode, adapter_mode], properties: {ok: {const: true}, id: {$ref: "#/components/schemas/PositiveID"}, deleted: {const: true}, hard_deleted: {const: true}, references_cleared: {type: object, required: [miniprograms_cleared, campaign_steps_cleared], properties: {miniprograms_cleared: {const: 0}, campaign_steps_cleared: {const: 0}}}, source_status: {const: local_delete}, route_owner: {const: ai_crm_next}, fallback_used: {const: false}, real_external_call_executed: {const: false}, storage_adapter_mode: {const: postgresql}, adapter_mode: {const: postgresql}}}
+    MediaAttachmentUploadInitiated: {type: object, required: [upload_id, local_fact_only, provider_call_executed], properties: {upload_id: {$ref: "#/components/schemas/PositiveID"}, local_fact_only: {const: true}, provider_call_executed: {const: false}}}
+    MediaAttachmentUploadCompleted: {type: object, required: [attachment_id, local_fact_only, provider_call_executed], properties: {attachment_id: {$ref: "#/components/schemas/PositiveID"}, local_fact_only: {const: true}, provider_call_executed: {const: false}}}
+    MediaMiniProgramRequest: {type: object, additionalProperties: false, required: [name, title], anyOf: [{required: [appid, pagepath]}, {required: [app_id, page_path]}], properties: {name: {type: string, minLength: 1, maxLength: 200}, appid: {type: string, minLength: 1, maxLength: 120}, app_id: {type: string, minLength: 1, maxLength: 120}, pagepath: {type: string, minLength: 1, maxLength: 500}, page_path: {type: string, minLength: 1, maxLength: 500}, title: {type: string, minLength: 1, maxLength: 200}, thumb_image_id: {$ref: "#/components/schemas/PositiveID"}, enabled: {type: boolean}}}
+    MediaMiniProgramUpdateRequest: {type: object, additionalProperties: false, minProperties: 1, properties: {name: {type: string, maxLength: 200}, appid: {type: string, maxLength: 120}, app_id: {type: string, maxLength: 120}, pagepath: {type: string, maxLength: 500}, page_path: {type: string, maxLength: 500}, title: {type: string, maxLength: 200}, thumb_image_id: {type: [integer, "null"], minimum: 1}, enabled: {type: boolean}}}
+    MediaMiniProgram: {type: object, required: [id, resource_id, name, appid, app_id, pagepath, page_path, title, thumb_media_id, thumb_image_url, thumb_image_base64, thumbnail_status, enabled, version, created_by, updated_by, created_at, updated_at], properties: {id: {$ref: "#/components/schemas/PositiveID"}, resource_id: {$ref: "#/components/schemas/PositiveID"}, name: {type: string}, appid: {type: string}, app_id: {type: string}, pagepath: {type: string}, page_path: {type: string}, title: {type: string}, thumb_image_id: {type: [integer, "null"]}, thumb_media_id: {type: string}, thumb_image_url: {type: string}, thumb_image_base64: {type: string}, thumbnail_status: {type: string}, enabled: {type: boolean}, version: {type: integer}, created_by: {$ref: "#/components/schemas/PositiveID"}, updated_by: {$ref: "#/components/schemas/PositiveID"}, created_at: {type: string, format: date-time}, updated_at: {type: string, format: date-time}}}
+    MediaMiniProgramEnvelope: {type: object, required: [ok, item, miniprogram, item_id, changed, thumb_resolve, local_only, provider_call_executed, real_external_call_executed], properties: {ok: {const: true}, item: {$ref: "#/components/schemas/MediaMiniProgram"}, miniprogram: {$ref: "#/components/schemas/MediaMiniProgram"}, item_id: {$ref: "#/components/schemas/PositiveID"}, changed: {type: boolean}, thumb_resolve: {type: [object, "null"]}, local_only: {const: true}, provider_call_executed: {const: false}, real_external_call_executed: {const: false}}}
+    MediaMiniProgramListEnvelope: {type: object, required: [ok, items, miniprograms, mini_programs, total, limit, offset, count, has_more], properties: {ok: {const: true}, items: {type: array, items: {$ref: "#/components/schemas/MediaMiniProgram"}}, miniprograms: {type: array, items: {$ref: "#/components/schemas/MediaMiniProgram"}}, mini_programs: {type: array, items: {$ref: "#/components/schemas/MediaMiniProgram"}}, total: {type: integer}, limit: {type: integer}, offset: {type: integer}, count: {type: integer}, has_more: {type: boolean}}}
+    MediaMiniProgramResolutionEnvelope: {type: object, required: [ok, item, miniprogram, resolution, changed, thumb_media_id, local_only, provider_call_executed, real_external_call_executed], properties: {ok: {const: true}, item: {$ref: "#/components/schemas/MediaMiniProgram"}, miniprogram: {$ref: "#/components/schemas/MediaMiniProgram"}, resolution: {type: object}, changed: {const: false}, thumb_media_id: {const: ""}, local_only: {const: true}, provider_call_executed: {const: false}, real_external_call_executed: {const: false}}}
+    MediaGroupInviteRequest: {type: object, additionalProperties: false, required: [title, join_url], properties: {name: {type: string, maxLength: 200}, title: {type: string, minLength: 1, maxLength: 128}, description: {type: string, maxLength: 512}, join_url: {type: string, pattern: '^https://work\\.weixin\\.qq\\.com/gm/.+'}, cover_image_id: {$ref: "#/components/schemas/PositiveID"}, enabled: {type: boolean}}}
+    MediaGroupInviteUpdateRequest: {type: object, additionalProperties: false, minProperties: 1, properties: {name: {type: string, maxLength: 200}, title: {type: string, maxLength: 128}, description: {type: string, maxLength: 512}, join_url: {type: string, pattern: '^https://work\\.weixin\\.qq\\.com/gm/.+'}, cover_image_id: {type: [integer, "null"], minimum: 1}, enabled: {type: boolean}}}
+    MediaGroupInvite: {type: object, required: [id, name, title, description, join_url, enabled, version, created_by, updated_by, created_at, updated_at], properties: {id: {$ref: "#/components/schemas/PositiveID"}, name: {type: string}, title: {type: string}, description: {type: string}, join_url: {type: string}, cover_image_id: {type: [integer, "null"]}, enabled: {type: boolean}, version: {type: integer}, created_by: {$ref: "#/components/schemas/PositiveID"}, updated_by: {$ref: "#/components/schemas/PositiveID"}, created_at: {type: string, format: date-time}, updated_at: {type: string, format: date-time}, archived_at: {type: [string, "null"], format: date-time}}}
+    MediaGroupInviteEnvelope: {type: object, required: [ok, item, group_invite, item_id, local_only, provider_call_executed, real_external_call_executed], properties: {ok: {const: true}, item: {$ref: "#/components/schemas/MediaGroupInvite"}, group_invite: {$ref: "#/components/schemas/MediaGroupInvite"}, item_id: {$ref: "#/components/schemas/PositiveID"}, local_only: {const: true}, provider_call_executed: {const: false}, real_external_call_executed: {const: false}}}
+    MediaGroupInviteListEnvelope: {type: object, required: [ok, items, group_invites, total, limit, offset, count, has_more], properties: {ok: {const: true}, items: {type: array, items: {$ref: "#/components/schemas/MediaGroupInvite"}}, group_invites: {type: array, items: {$ref: "#/components/schemas/MediaGroupInvite"}}, total: {type: integer}, limit: {type: integer}, offset: {type: integer}, count: {type: integer}, has_more: {type: boolean}}}
+    MediaGroupInviteArchiveEnvelope: {type: object, required: [ok, item, group_invite, item_id, archived, local_only, provider_call_executed, real_external_call_executed], properties: {ok: {const: true}, item: {$ref: "#/components/schemas/MediaGroupInvite"}, group_invite: {$ref: "#/components/schemas/MediaGroupInvite"}, item_id: {$ref: "#/components/schemas/PositiveID"}, archived: {const: true}, local_only: {const: true}, provider_call_executed: {const: false}, real_external_call_executed: {const: false}}}
     ExternalEffectID: {type: string, pattern: '^eer_[1-9][0-9]*$', example: eer_1}
     Digest: {type: string, pattern: '^sha256:[0-9a-f]{64}$'}
     ExternalEffectState: {type: string, enum: [accepted, queued, attempted, executed, outcome_unknown, reconciled, retryable_failed, final_failed, cancelled]}
