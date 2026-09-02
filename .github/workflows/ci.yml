@@ -59,6 +59,8 @@ jobs:
           node scripts/stage-pr01-effects-ui.mjs web/dist release/web/dist
           node scripts/test-stage-pr01-effects-ui.mjs
           scripts/check-install-release-contract.sh
+      - name: Verify Media shell donor interactions
+        run: node scripts/media-shell-interactions-e2e.mjs
       - name: Check repository
         run: make check
       - name: Race-check security and identity boundaries
