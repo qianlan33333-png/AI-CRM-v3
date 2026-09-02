@@ -9,6 +9,10 @@ sources:
     commit: 4af15e64fb7ebb311b52b17eaf5fc5ea5e8154c8
     role: production_behavior_and_oneid_reference
     runtime_dependency_allowed: false
+  - repository: qianlan33333-png/AI-CRM
+    commit: 69c5282fb38058f2cc9872b6feb3f0f54bfad64b
+    role: admin_and_sidebar_shell_reference
+    runtime_dependency_allowed: false
   - repository: qianlan33333-png/AI-CRM-v2
     commit: 6bfbe5816bb89913c70adaca87d6a486260e016e
     role: go_domain_and_adapter_reference
