@@ -18,6 +18,8 @@ import (
 	identityhttp "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/http"
 	identityquery "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/query"
 	identitystore "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/store"
+	media "github.com/qianlan33333-png/AI-CRM-v3/internal/media"
+	mediastore "github.com/qianlan33333-png/AI-CRM-v3/internal/media/store"
 	platformaudit "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/audit"
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
 	platformjobqueue "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/jobqueue"
@@ -99,6 +101,15 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return fail(err)
 	}
 	effectsBindings, err := effectsModule.Bind(effectRepository, requestSecurity)
+	if err != nil {
+		return fail(err)
+	}
+	mediaModule := media.NewModuleRegistration()
+	mediaRepository, err := mediastore.NewPostgreSQL(pool.Native(), uow)
+	if err != nil {
+		return fail(err)
+	}
+	mediaBindings, err := mediaModule.Bind(mediaRepository, requestSecurity)
 	if err != nil {
 		return fail(err)
 	}
@@ -192,11 +203,14 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 			return checkErr
 		}
 		var complete bool
-		checkErr := pool.Native().QueryRow(readinessContext, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['0001','0002','0003','0004','0005','0006']) AS required(version) WHERE NOT EXISTS (SELECT 1 FROM platform_schema_migrations applied WHERE applied.version=required.version))`).Scan(&complete)
+		checkErr := pool.Native().QueryRow(readinessContext, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['0001','0002','0003','0004','0005','0006','0007']) AS required(version) WHERE NOT EXISTS (SELECT 1 FROM platform_schema_migrations applied WHERE applied.version=required.version))`).Scan(&complete)
 		if checkErr != nil || !complete {
 			return errors.New("database schema is not ready")
 		}
 		if checkErr = effectsModule.Readiness(readinessContext, pool.Native()); checkErr != nil {
+			return checkErr
+		}
+		if checkErr = mediaModule.Readiness(readinessContext, pool.Native()); checkErr != nil {
 			return checkErr
 		}
 		return nil
@@ -209,7 +223,11 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	effectsUI := effectsModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, tokens, labs, admin string) error {
 		return renderer.RenderExternalEffects(writer, webshell.AdminPageForRequest(request, "外部效果与 Push Center", "仅展示本地外部效果状态与对账事实。", "api.admin_cloud_orchestrator_workspace"), webshell.ExternalEffectsAssets{TokensCSS: tokens, LabsCSS: labs, AdminJS: admin})
 	})
-	handler, err := routeApplicationWithEffects(healthHandler, accessHandler.Routes(), adminAPIs, effectsBindings.Effects, effectsBindings.PushCenter, effectsUI, weComHandler, shellHandler, authentication, cfg.PublicOrigin)
+	mediaUI := mediaModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, page, donorTemplate string, assets media.MediaAssets) error {
+		endpoint := map[string]string{"images": "api.admin_image_library_workspace", "mpLib": "api.admin_miniprogram_library_workspace", "attach": "api.admin_attachment_library_workspace"}[page]
+		return renderer.RenderMedia(writer, webshell.AdminPageForRequest(request, map[string]string{"images": "图片素材库", "mpLib": "小程序素材库", "attach": "附件素材库"}[page], "仅管理本地素材、私有 blob 与审计事实。", endpoint), page, donorTemplate, webshell.MediaAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS})
+	})
+	handler, err := routeApplicationWithMedia(healthHandler, accessHandler.Routes(), adminAPIs, effectsBindings.Effects, effectsBindings.PushCenter, effectsUI, mediaBindings.Media, mediaUI, weComHandler, shellHandler, authentication, cfg.PublicOrigin)
 	if err != nil {
 		return fail(err)
 	}
@@ -247,7 +265,11 @@ func routeApplication(health, access, identity, weCom, shell http.Handler, authe
 }
 
 func routeApplicationWithEffects(health, access, identity, effects, pushCenter, effectsUI, weCom, shell http.Handler, authentication accessAuthentication, publicOrigin string) (http.Handler, error) {
-	if health == nil || access == nil || identity == nil || effects == nil || pushCenter == nil || effectsUI == nil || weCom == nil || shell == nil || authentication == nil || canonicalOrigin(publicOrigin) == "" {
+	return routeApplicationWithMedia(health, access, identity, effects, pushCenter, effectsUI, http.NotFoundHandler(), http.NotFoundHandler(), weCom, shell, authentication, publicOrigin)
+}
+
+func routeApplicationWithMedia(health, access, identity, effects, pushCenter, effectsUI, mediaHandler, mediaUI, weCom, shell http.Handler, authentication accessAuthentication, publicOrigin string) (http.Handler, error) {
+	if health == nil || access == nil || identity == nil || effects == nil || pushCenter == nil || effectsUI == nil || mediaHandler == nil || mediaUI == nil || weCom == nil || shell == nil || authentication == nil || canonicalOrigin(publicOrigin) == "" {
 		return nil, errors.New("application HTTP dependencies are required")
 	}
 	mux := http.NewServeMux()
@@ -262,9 +284,21 @@ func routeApplicationWithEffects(health, access, identity, effects, pushCenter, 
 	mux.Handle("/api/admin/external-effects", effects)
 	mux.Handle("/api/admin/external-effects/", effects)
 	mux.Handle("/api/admin/push-center/", pushCenter)
+	mux.Handle("/api/admin/image-library", mediaHandler)
+	mux.Handle("/api/admin/image-library/", mediaHandler)
+	mux.Handle("/api/admin/attachment-library", mediaHandler)
+	mux.Handle("/api/admin/attachment-library/", mediaHandler)
+	mux.Handle("/api/admin/miniprogram-library", mediaHandler)
+	mux.Handle("/api/admin/miniprogram-library/", mediaHandler)
+	mux.Handle("/api/admin/group-invite-library", mediaHandler)
+	mux.Handle("/api/admin/group-invite-library/", mediaHandler)
 	mux.Handle("/assets/", requireAdminSession(authentication, effectsUI))
+	mux.Handle("/media-assets/", requireAdminSession(authentication, mediaUI))
 	mux.Handle("/admin/external-effects", requireAdminSession(authentication, effectsUI))
 	mux.Handle("/admin/campaigns.html", requireAdminSession(authentication, effectsUI))
+	mux.Handle("/admin/image-library", requireAdminSession(authentication, mediaUI))
+	mux.Handle("/admin/miniprogram-library", requireAdminSession(authentication, mediaUI))
+	mux.Handle("/admin/attachment-library", requireAdminSession(authentication, mediaUI))
 	mux.Handle("/wecom/external-contact/callback", weCom)
 	mux.Handle("/api/wecom/events", weCom)
 	mux.Handle("/auth/wecom/start", weCom)

@@ -52,6 +52,10 @@ includeStatic(legacyEntry);
 includeStatic(campaignsEntry);
 
 for (const relative of [...selected].sort()) copy(relative);
+// Media uses the same immutable admin bundle, mounted by the v3 shell. These
+// templates are release-private inputs to the Go adapter, never HTTP-served
+// donor pages; keeping exactly these three preserves the PR01 asset closure.
+for (const page of ['images', 'attach', 'mpLib']) copy(`admin/${page}.html`);
 
 const stagedManifest = {
   ...manifest,
@@ -70,12 +74,12 @@ const walk = (directory) => {
 };
 walk(stage);
 for (const relative of stagedFiles) {
-  const allowed = relative === 'asset-manifest.json' || relative.startsWith('assets/');
+  const allowed = relative === 'asset-manifest.json' || relative.startsWith('assets/') || ['admin/images.html', 'admin/attach.html', 'admin/mpLib.html'].includes(relative);
   if (!allowed) fail(`unapproved release file: ${relative}`);
-  if (relative.endsWith('.html')) fail(`unapproved HTML surface: ${relative}`);
+  if (relative.endsWith('.html') && !['admin/images.html', 'admin/attach.html', 'admin/mpLib.html'].includes(relative)) fail(`unapproved HTML surface: ${relative}`);
   if (/(^|\/)(h5|sidebar|public)(\/|$)/.test(relative)) fail(`unapproved public surface: ${relative}`);
 }
 for (const relative of selected) {
   if (!stagedFiles.includes(relative)) fail(`missing staged dependency: ${relative}`);
 }
-console.log(`staged ${selected.size} frozen External Effects assets in ${stage}`);
+console.log(`staged ${selected.size} frozen External Effects assets and 3 private Media donor templates in ${stage}`);

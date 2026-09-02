@@ -95,6 +95,119 @@ paths:
         "200": {description: v3 admin shell with the frozen External Effects stage mount, content: {text/html: {schema: {type: string}}}}
         "403": {$ref: "#/components/responses/Error"}
         "404": {$ref: "#/components/responses/Error"}
+  /admin/image-library:
+    get:
+      operationId: openImageLibraryWorkspace
+      security: [{adminSession: []}]
+      responses: {"200": {description: v3 shell with frozen image-library donor template}, "403": {$ref: "#/components/responses/Error"}}
+  /admin/miniprogram-library:
+    get:
+      operationId: openMiniProgramLibraryWorkspace
+      security: [{adminSession: []}]
+      responses: {"200": {description: v3 shell with frozen mini-program donor template}, "403": {$ref: "#/components/responses/Error"}}
+  /admin/attachment-library:
+    get:
+      operationId: openAttachmentLibraryWorkspace
+      security: [{adminSession: []}]
+      responses: {"200": {description: v3 shell with frozen attachment donor template}, "403": {$ref: "#/components/responses/Error"}}
+  /api/admin/image-library:
+    get:
+      operationId: listMediaImages
+      security: [{adminSession: []}]
+      parameters: [{$ref: "#/components/parameters/Limit"}, {$ref: "#/components/parameters/Offset"}]
+      responses: {"200": {description: Local image page}, "403": {$ref: "#/components/responses/Error"}}
+    post:
+      operationId: createMediaImage
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/IdempotencyKey"}]
+      requestBody: {required: true, content: {multipart/form-data: {schema: {type: object, required: [image], properties: {image: {type: string, format: binary}, name: {type: string}, description: {type: string}, tags: {type: string}, category: {type: string}}}}}}
+      responses: {"200": {description: Local image created}, "400": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+  /api/admin/image-library/{id}:
+    get:
+      operationId: getMediaImage
+      security: [{adminSession: []}]
+      parameters: [{$ref: "#/components/parameters/ID"}]
+      responses: {"200": {description: Local image metadata}, "404": {$ref: "#/components/responses/Error"}}
+    put:
+      operationId: updateMediaImage
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/ID"}, {$ref: "#/components/parameters/IdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object}}}}
+      responses: {"200": {description: Local image updated}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+    delete:
+      operationId: deleteMediaImage
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/ID"}, {$ref: "#/components/parameters/IdempotencyKey"}]
+      responses: {"200": {description: Image deleted when unreferenced}, "409": {$ref: "#/components/responses/Error"}}
+  /api/admin/image-library/{id}/variants/{variant}:
+    get:
+      operationId: getMediaImageVariant
+      security: [{adminSession: []}]
+      parameters: [{$ref: "#/components/parameters/ID"}, {name: variant, in: path, required: true, schema: {type: string, enum: [thumb_160, thumb_320, mobile_1080, large_1440, original]}}]
+      responses: {"200": {description: Authenticated image bytes}, "304": {description: ETag matched}, "404": {$ref: "#/components/responses/Error"}}
+  /api/admin/image-library/upload:
+    post:
+      operationId: uploadLegacyMediaImage
+      description: Frozen Media multipart compatibility alias. Missing Idempotency-Key receives an audited server compatibility key.
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/IdempotencyKey"}]
+      requestBody: {required: true, content: {multipart/form-data: {schema: {type: object, required: [image], properties: {image: {type: string, format: binary}}}}}}
+      responses: {"200": {description: Local image created}, "400": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}}
+  /api/admin/attachment-library:
+    get:
+      operationId: listMediaAttachments
+      security: [{adminSession: []}]
+      responses: {"200": {description: Local private attachment page}}
+    post:
+      operationId: createMediaAttachment
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/IdempotencyKey"}]
+      requestBody: {required: true, content: {multipart/form-data: {schema: {type: object, required: [attachment], properties: {attachment: {type: string, format: binary}, name: {type: string}, tags: {type: string}}}}}}
+      responses: {"200": {description: Local PDF attached}, "400": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+  /api/admin/attachment-library/{id}:
+    get: {operationId: getMediaAttachment, security: [{adminSession: []}], parameters: [{$ref: "#/components/parameters/ID"}], responses: {"200": {description: Attachment metadata}, "404": {$ref: "#/components/responses/Error"}}}
+    put: {operationId: updateMediaAttachment, security: [{adminSession: [], csrfHeader: []}], parameters: [{$ref: "#/components/parameters/ID"}, {$ref: "#/components/parameters/IdempotencyKey"}], responses: {"200": {description: CAS metadata updated}, "409": {$ref: "#/components/responses/Error"}}}
+    delete: {operationId: deleteMediaAttachment, security: [{adminSession: [], csrfHeader: []}], parameters: [{$ref: "#/components/parameters/ID"}, {$ref: "#/components/parameters/IdempotencyKey"}], responses: {"200": {description: Attachment deleted when unreferenced}, "409": {$ref: "#/components/responses/Error"}}}
+  /api/admin/attachment-library/{id}/download:
+    get: {operationId: downloadMediaAttachment, security: [{adminSession: []}], parameters: [{$ref: "#/components/parameters/ID"}], responses: {"200": {description: Authenticated PDF bytes}, "404": {$ref: "#/components/responses/Error"}}}
+  /api/admin/attachment-library/upload:
+    post: {operationId: uploadLegacyMediaAttachment, security: [{adminSession: [], csrfHeader: []}], parameters: [{$ref: "#/components/parameters/IdempotencyKey"}], responses: {"200": {description: Local PDF uploaded}}}
+  /api/admin/attachment-library/uploads:
+    post:
+      operationId: initiateMediaAttachmentMultipartUpload
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/IdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/MediaAttachmentUploadInitiateRequest"}}}}
+      responses: {"201": {description: Private upload reserved}, "400": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+  /api/admin/attachment-library/uploads/{upload_id}/parts/{part_number}:
+    put:
+      operationId: putMediaAttachmentMultipartPart
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/IdempotencyKey"}, {name: upload_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}, {name: part_number, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/MediaAttachmentUploadPartRequest"}}}}
+      responses: {"204": {description: Digest-checked private part stored}, "400": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+  /api/admin/attachment-library/uploads/{upload_id}/complete:
+    post:
+      operationId: completeMediaAttachmentMultipartUpload
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/IdempotencyKey"}, {name: upload_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
+      responses: {"200": {description: Private PDF promoted atomically to attachment}, "400": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+  /api/admin/miniprogram-library:
+    get: {operationId: listMediaMiniPrograms, security: [{adminSession: []}], responses: {"200": {description: Local mini-program card page}}}
+    post: {operationId: createMediaMiniProgram, security: [{adminSession: [], csrfHeader: []}], parameters: [{$ref: "#/components/parameters/IdempotencyKey"}], requestBody: {required: true, content: {application/json: {schema: {type: object}}}}, responses: {"200": {description: Local mini-program card created}, "409": {$ref: "#/components/responses/Error"}}}
+  /api/admin/miniprogram-library/{id}:
+    get: {operationId: getMediaMiniProgram, security: [{adminSession: []}], parameters: [{$ref: "#/components/parameters/ID"}], responses: {"200": {description: Local mini-program card}}}
+    put: {operationId: updateMediaMiniProgram, security: [{adminSession: [], csrfHeader: []}], parameters: [{$ref: "#/components/parameters/ID"}, {$ref: "#/components/parameters/IdempotencyKey"}], responses: {"200": {description: Local mini-program card updated}}}
+    delete: {operationId: deleteMediaMiniProgram, security: [{adminSession: [], csrfHeader: []}], parameters: [{$ref: "#/components/parameters/ID"}, {$ref: "#/components/parameters/IdempotencyKey"}], responses: {"200": {description: Local mini-program card deleted}, "409": {$ref: "#/components/responses/Error"}}}
+  /api/admin/miniprogram-library/{id}/test-resolve:
+    post: {operationId: resolveLocalMiniProgramThumbnail, security: [{adminSession: [], csrfHeader: []}], parameters: [{$ref: "#/components/parameters/ID"}], responses: {"200": {description: Local card projection refreshed without Provider call}}}
+  /api/admin/group-invite-library:
+    get: {operationId: listMediaGroupInvites, security: [{adminSession: []}], responses: {"200": {description: Local group invite cards}}}
+    post: {operationId: createMediaGroupInvite, security: [{adminSession: [], csrfHeader: []}], parameters: [{$ref: "#/components/parameters/IdempotencyKey"}], requestBody: {required: true, content: {application/json: {schema: {type: object}}}}, responses: {"200": {description: Local group invite card created}, "409": {$ref: "#/components/responses/Error"}}}
+  /api/admin/group-invite-library/{id}:
+    get: {operationId: getMediaGroupInvite, security: [{adminSession: []}], parameters: [{$ref: "#/components/parameters/ID"}], responses: {"200": {description: Active local group invite card}, "404": {$ref: "#/components/responses/Error"}}}
+    put: {operationId: updateMediaGroupInvite, security: [{adminSession: [], csrfHeader: []}], parameters: [{$ref: "#/components/parameters/ID"}, {$ref: "#/components/parameters/IdempotencyKey"}], responses: {"200": {description: Local group invite updated}, "409": {$ref: "#/components/responses/Error"}}}
+    delete: {operationId: archiveMediaGroupInvite, security: [{adminSession: [], csrfHeader: []}], parameters: [{$ref: "#/components/parameters/ID"}, {$ref: "#/components/parameters/IdempotencyKey"}], responses: {"200": {description: Local group invite archived without Provider call}, "409": {$ref: "#/components/responses/Error"}}}
   /api/admin/access/users:
     get:
       operationId: listAdminUsers
@@ -445,7 +558,7 @@ components:
     PushJobID: {name: job_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
     ExternalEffectsView: {name: view, in: query, required: true, schema: {type: string, const: external-effects}}
     PushJobQuery: {name: job, in: query, schema: {$ref: "#/components/schemas/PositiveID"}}
-    IdempotencyKey: {name: Idempotency-Key, in: header, required: true, schema: {type: string, minLength: 1, maxLength: 200}}
+    IdempotencyKey: {name: Idempotency-Key, in: header, required: false, description: Explicit keys replay or reject payload drift. Frozen v2 Media controls omit this header; the compatibility adapter mints and audits a fresh per-request key., schema: {type: string, minLength: 1, maxLength: 200}}
     CustomerID: {name: customer_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
     SafeNext: {name: next, in: query, schema: {type: string, pattern: "^/"}}
     Limit: {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 50}}
@@ -461,6 +574,24 @@ components:
     MutationOK: {description: Mutation completed, content: {application/json: {schema: {type: object, required: [ok], properties: {ok: {const: true}}}}}}
   schemas:
     PositiveID: {type: integer, format: int64, minimum: 1}
+    MediaAttachmentUploadInitiateRequest:
+      type: object
+      additionalProperties: false
+      required: [file_name, name, size, sha256]
+      properties:
+        file_name: {type: string, minLength: 1, maxLength: 255}
+        name: {type: string, minLength: 1, maxLength: 200}
+        description: {type: string, maxLength: 10000}
+        size: {type: integer, minimum: 1, maximum: 10485760}
+        sha256: {type: string, pattern: '^sha256:[0-9a-f]{64}$'}
+        enabled: {type: boolean}
+    MediaAttachmentUploadPartRequest:
+      type: object
+      additionalProperties: false
+      required: [sha256, content]
+      properties:
+        sha256: {type: string, pattern: '^sha256:[0-9a-f]{64}$'}
+        content: {type: string, minLength: 1, contentEncoding: base64}
     ExternalEffectID: {type: string, pattern: '^eer_[1-9][0-9]*$', example: eer_1}
     Digest: {type: string, pattern: '^sha256:[0-9a-f]{64}$'}
     ExternalEffectState: {type: string, enum: [accepted, queued, attempted, executed, outcome_unknown, reconciled, retryable_failed, final_failed, cancelled]}

@@ -114,7 +114,7 @@ func TestUpdateImageMetadataNormalizesChangesAndWritesOneRedactedEvent(t *testin
 		t.Fatalf("immutable facts changed: %#v", result)
 	}
 	event := events.events[0]
-	if event.Type != "media.image_metadata_updated" || event.CustomerID != 0 || !event.OccurredAt.Equal(now) || len(event.IdempotencyKey) != len("media.image_metadata_updated:")+64 {
+	if event.Type != "media.image_metadata_updated" || !event.OccurredAt.Equal(now) || len(event.IdempotencyKey) != len("media.image_metadata_updated:")+64 {
 		t.Fatalf("event=%#v", event)
 	}
 	var payload struct {

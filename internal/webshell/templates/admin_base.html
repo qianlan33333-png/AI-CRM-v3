@@ -29,8 +29,13 @@
   <link rel="stylesheet" href="{{.ExternalAssets.LabsCSS}}">
   <script type="module" src="{{.ExternalAssets.AdminJS}}"></script>
   {{end}}
+  {{if .Media}}
+  <link rel="stylesheet" href="{{.MediaAssets.TokensCSS}}">
+  <link rel="stylesheet" href="{{.MediaAssets.LabsCSS}}">
+  <script type="module" src="{{.MediaAssets.AdminJS}}"></script>
+  {{end}}
 </head>
-<body class="admin-shell" data-admin-shell-source="v3_webshell"{{if .ExternalEffects}} data-page="campaigns"{{end}}>
+<body class="admin-shell" data-admin-shell-source="v3_webshell"{{if .ExternalEffects}} data-page="campaigns"{{end}}{{if .Media}} data-page="{{.MediaPage}}"{{end}}>
   <div class="admin-layout">
     <aside class="admin-sidebar">
       <div class="admin-brand">
@@ -102,7 +107,7 @@
       </header>
       {{end}}
 
-      {{if .ExternalEffects}}
+      {{if or .ExternalEffects .Media}}
       {{.Content}}
       {{else}}
       <main class="admin-page">

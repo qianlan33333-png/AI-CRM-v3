@@ -12,7 +12,6 @@ import (
 // the same UnitOfWork as the Media mutation.
 type Event struct {
 	Type           string
-	CustomerID     int64
 	Payload        json.RawMessage
 	OccurredAt     time.Time
 	IdempotencyKey string
