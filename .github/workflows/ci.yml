@@ -62,6 +62,8 @@ jobs:
           scripts/check-install-release-contract.sh
       - name: Verify Media shell donor interactions
         run: node scripts/media-shell-interactions-e2e.mjs
+      - name: Verify Tags shell donor interactions
+        run: node scripts/tags-shell-interactions-e2e.mjs
       - name: Check repository
         run: make check
       - name: Race-check security and identity boundaries
