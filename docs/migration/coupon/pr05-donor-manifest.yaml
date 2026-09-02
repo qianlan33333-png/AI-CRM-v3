@@ -10,6 +10,8 @@ donor:
   read_only: true
   runtime_dependency: false
 
+contract_audit: docs/migration/coupon/pr05-contract-audit.md
+
 boundary:
   included:
     - coupon rule definition create/edit
@@ -65,6 +67,7 @@ frontend:
   immutable_excluded_domain_references:
     - couponData.html and controller.ts retain raw claim/statistics view references from v2
     - generated coupon compatibility types retain claim/public/sidebar shapes as donor evidence
+    - v2 has no independent rule-statistics operation; couponData statistics are claim-row derived and excluded
   route_requirement: backend must not expose claim, redemption, customer-held, order, payment, entitlement, or OneID routes for this PR; do not modify the raw donor frontend to compensate
   pr10_shell_requirement: a v3-owned backend/template adapter must mount the donor business hooks into the PR10 internal/webshell admin_base while preserving donor CSS/JS bytes; never deploy the v2 full page with a second .side shell and never edit donor files for integration
 
@@ -72,6 +75,7 @@ deferred_to_terra:
   - Coupon-owned SQL/store, UoW receipts, audit, outbox, and independent v3 migrations
   - adapt internal/coupon/port/events.go to the v3 versioned event/outbox ports
   - adapt internal/coupon/port/target.go to the canonical Product port without importing Product stores
+  - expose only a rule-owned statistics projection if the admin needs statistics; do not reuse coupon claim rows
   - define any Product applicability read consistency and CAS/locking behavior at integration time
   - keep excluded claim/redemption/customer-held/order/payment/entitlement routes absent or explicitly feature-gated
   - mount the raw donor hooks through a v3-owned adapter into the PR10 internal/webshell admin_base; do not deploy a second .side shell
@@ -89,3 +93,14 @@ forbidden_touched:
   - internal/platform
   - internal/access
   - internal/webshell
+
+verification:
+  frontend_file_count: 19
+  frontend_cmp: PASS
+  frontend_cmp_command: cmp donor web/src/<relative-path> with web/donors/coupons-v2/src/<relative-path> for every file
+  donor_sha256_file: docs/migration/coupon/pr05-donor-sha256.txt
+  target_sha256_file: docs/migration/coupon/pr05-donor-sha256.txt
+  backend_tests:
+    - go test ./internal/coupon/...
+    - go vet ./internal/coupon/...
+    - go test -race ./internal/coupon/...
