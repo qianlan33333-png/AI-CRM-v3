@@ -19,6 +19,7 @@ import (
 	identityquery "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/query"
 	identitystore "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/store"
 	media "github.com/qianlan33333-png/AI-CRM-v3/internal/media"
+	mediaapp "github.com/qianlan33333-png/AI-CRM-v3/internal/media/app"
 	mediastore "github.com/qianlan33333-png/AI-CRM-v3/internal/media/store"
 	platformaudit "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/audit"
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
@@ -109,7 +110,11 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
-	mediaBindings, err := mediaModule.Bind(mediaRepository, requestSecurity)
+	mediaService, err := mediaapp.NewHTTPFacade(mediaRepository)
+	if err != nil {
+		return fail(err)
+	}
+	mediaBindings, err := mediaModule.Bind(mediaService, requestSecurity)
 	if err != nil {
 		return fail(err)
 	}

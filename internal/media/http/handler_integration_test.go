@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -19,11 +20,13 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
+	mediaapp "github.com/qianlan33333-png/AI-CRM-v3/internal/media/app"
 	mediastore "github.com/qianlan33333-png/AI-CRM-v3/internal/media/store"
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
@@ -54,7 +57,11 @@ func TestMediaHTTPCompatibilitySecurityAndFrozenWriteContract(t *testing.T) {
 	}
 	repository, closeRepository, native := newHTTPIntegrationRepository(t, url)
 	defer closeRepository()
-	handler, err := NewHandler(repository, handlerTestSecurity{})
+	service, err := mediaapp.NewHTTPFacade(repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := NewHandler(service, handlerTestSecurity{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,6 +140,26 @@ func TestMediaHTTPCompatibilitySecurityAndFrozenWriteContract(t *testing.T) {
 	image := responseJSON(t, serve(imageRequest), http.StatusOK)
 	requireJSONFields(t, image, "ok", "item", "image", "item_id", "source_status", "storage_adapter_mode")
 	imageID := int64(image["item_id"].(float64))
+	imageDetail := responseJSON(t, serve(httptest.NewRequest(http.MethodGet, "/api/admin/image-library/"+jsonID(imageID)+"?variant=thumb_160", nil)), http.StatusOK)
+	imageItem, ok := imageDetail["image"].(map[string]any)
+	if !ok || imageItem["source"] != "upload" || imageItem["thumb_media_id_expires_at"] != "" || imageItem["variant_url"] != "/api/admin/image-library/"+jsonID(imageID)+"/variants/thumb_160" {
+		t.Fatalf("image detail compatibility=%#v", imageDetail)
+	}
+	if got := serve(httptest.NewRequest(http.MethodGet, "/api/admin/image-library/"+jsonID(imageID)+"?variant=unknown", nil)); got.Code != http.StatusBadRequest {
+		t.Fatalf("unknown variant status=%d", got.Code)
+	}
+	missingFileName := admin(httptest.NewRequest(http.MethodPost, "/api/admin/image-library", strings.NewReader(`{"data_url":"data:image/png;base64,`+base64.StdEncoding.EncodeToString(httpPNG(t))+`"}`)))
+	if got := serve(missingFileName); got.Code != http.StatusBadRequest {
+		t.Fatalf("canonical image must require file_name: status=%d", got.Code)
+	}
+	overBody := admin(httptest.NewRequest(http.MethodPost, "/api/admin/image-library", strings.NewReader(`{"data_url":"data:image/png;base64,`+base64.StdEncoding.EncodeToString(httpPNG(t))+`","file_name":"cover.png","description":"`+strings.Repeat("x", (10<<20)*4/3+(1<<20)+1)+`"}`)))
+	if got := serve(overBody); got.Code != http.StatusBadRequest {
+		t.Fatalf("canonical image body cap status=%d", got.Code)
+	}
+	unknownMini := admin(httptest.NewRequest(http.MethodPost, "/api/admin/miniprogram-library", strings.NewReader(`{"name":"bad","appid":"wx","pagepath":"pages/a","title":"bad","thumb_media_id":"client"}`)))
+	if got := serve(unknownMini); got.Code != http.StatusBadRequest {
+		t.Fatalf("mini client thumb_media_id status=%d", got.Code)
+	}
 
 	attachmentRequest := multipartImageRequest(t, "/api/admin/attachment-library/upload", "attachment", "guide.pdf", []byte("%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n"))
 	attachmentRequest.Header.Set("X-CSRF-Token", "test-csrf")
@@ -149,6 +176,18 @@ func TestMediaHTTPCompatibilitySecurityAndFrozenWriteContract(t *testing.T) {
 	if got := serve(stale); got.Code != http.StatusConflict {
 		t.Fatalf("attachment stale cas status=%d", got.Code)
 	}
+	decimalVersion := admin(httptest.NewRequest(http.MethodPut, "/api/admin/attachment-library/"+jsonID(attachmentID), bytes.NewBufferString(`{"name":"guide3","expected_version":1.5}`)))
+	if got := serve(decimalVersion); got.Code != http.StatusBadRequest {
+		t.Fatalf("fractional attachment version status=%d", got.Code)
+	}
+	if _, err = native.Exec(context.Background(), `INSERT INTO media_references(material_kind,material_id,owner,reference_digest) VALUES('attachment',$1,'automation.attachment','sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')`, attachmentID); err != nil {
+		t.Fatal(err)
+	}
+	attachmentConflict := responseJSON(t, serve(admin(httptest.NewRequest(http.MethodDelete, "/api/admin/attachment-library/"+jsonID(attachmentID), nil))), http.StatusConflict)
+	if attachmentConflict["error"] != "attachment_has_references" {
+		t.Fatalf("attachment conflict=%#v", attachmentConflict)
+	}
+	requireJSONFields(t, attachmentConflict, "references")
 
 	miniDetail := responseJSON(t, serve(httptest.NewRequest(http.MethodGet, "/api/admin/miniprogram-library/"+jsonID(int64(compatJSON["item_id"].(float64))), nil)), http.StatusOK)
 	requireJSONFields(t, miniDetail, "ok", "item", "miniprogram", "local_only", "provider_call_executed", "real_external_call_executed")
@@ -156,6 +195,15 @@ func TestMediaHTTPCompatibilitySecurityAndFrozenWriteContract(t *testing.T) {
 	groupResponse := responseJSON(t, serve(group), http.StatusOK)
 	requireJSONFields(t, groupResponse, "ok", "item", "group_invite", "item_id", "local_only", "provider_call_executed", "real_external_call_executed")
 	groupID := int64(groupResponse["item_id"].(float64))
+	decimalCover := admin(httptest.NewRequest(http.MethodPost, "/api/admin/group-invite-library", strings.NewReader(`{"name":"fraction","title":"fraction","join_url":"https://work.weixin.qq.com/gm/a","cover_image_id":`+jsonID(imageID)+`.5}`)))
+	if got := serve(decimalCover); got.Code != http.StatusBadRequest {
+		t.Fatalf("fractional group cover status=%d", got.Code)
+	}
+	imageConflict := responseJSON(t, serve(admin(httptest.NewRequest(http.MethodDelete, "/api/admin/image-library/"+jsonID(imageID), nil))), http.StatusConflict)
+	if imageConflict["error"] != "image_has_references" {
+		t.Fatalf("image conflict=%#v", imageConflict)
+	}
+	requireJSONFields(t, imageConflict, "references")
 	groupDetail := responseJSON(t, serve(httptest.NewRequest(http.MethodGet, "/api/admin/group-invite-library/"+jsonID(groupID), nil)), http.StatusOK)
 	requireJSONFields(t, groupDetail, "ok", "item", "group_invite", "provider_call_executed")
 	archive := admin(httptest.NewRequest(http.MethodDelete, "/api/admin/group-invite-library/"+jsonID(groupID), nil))

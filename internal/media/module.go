@@ -6,8 +6,8 @@ import (
 	"net/http"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	mediaapp "github.com/qianlan33333-png/AI-CRM-v3/internal/media/app"
 	mediahttp "github.com/qianlan33333-png/AI-CRM-v3/internal/media/http"
-	mediastore "github.com/qianlan33333-png/AI-CRM-v3/internal/media/store"
 )
 
 // ModuleRegistration is Media's stable composition contract. The module owns
@@ -16,11 +16,11 @@ type ModuleRegistration struct{}
 type HTTPBindings struct{ Media http.Handler }
 
 func NewModuleRegistration() *ModuleRegistration { return &ModuleRegistration{} }
-func (m *ModuleRegistration) Bind(repository *mediastore.Repository, security mediahttp.RequestSecurity) (HTTPBindings, error) {
+func (m *ModuleRegistration) Bind(service mediaapp.HTTPFacade, security mediahttp.RequestSecurity) (HTTPBindings, error) {
 	if m == nil {
 		return HTTPBindings{}, errors.New("media module is required")
 	}
-	handler, err := mediahttp.NewHandler(repository, security)
+	handler, err := mediahttp.NewHandler(service, security)
 	if err != nil {
 		return HTTPBindings{}, err
 	}

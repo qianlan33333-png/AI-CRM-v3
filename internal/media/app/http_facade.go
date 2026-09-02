@@ -1,0 +1,127 @@
+package app
+
+import (
+	"context"
+	"errors"
+
+	mediastore "github.com/qianlan33333-png/AI-CRM-v3/internal/media/store"
+)
+
+// HTTPFacade is the Media application boundary used by the compatibility
+// adapter. The HTTP package depends on this interface, never on PostgreSQL.
+type HTTPFacade interface {
+	ListImagesFiltered(context.Context, ImageQuery) ([]map[string]any, int, error)
+	ImageFacets(context.Context) ([]string, []string, error)
+	Image(context.Context, int64) (map[string]any, []byte, string, error)
+	CreateImage(context.Context, int64, string, ImageInput) (map[string]any, error)
+	UpdateImage(context.Context, int64, int64, string, map[string]any) (map[string]any, error)
+	ListAttachments(context.Context, int, int, bool, string) ([]map[string]any, int, error)
+	Attachment(context.Context, int64) (map[string]any, []byte, error)
+	CreateAttachment(context.Context, int64, string, AttachmentInput) (map[string]any, error)
+	UpdateAttachment(context.Context, int64, int64, string, map[string]any) (map[string]any, error)
+	ListMiniPrograms(context.Context, int, int, bool, string) ([]map[string]any, int, error)
+	MiniProgram(context.Context, int64) (map[string]any, error)
+	CreateMiniProgram(context.Context, int64, string, map[string]any) (map[string]any, error)
+	UpdateMiniProgram(context.Context, int64, int64, string, map[string]any) (map[string]any, error)
+	ResolveMiniProgramThumbnail(context.Context, int64, int64, string) (map[string]any, error)
+	ListGroupInvites(context.Context, int, int, bool, string) ([]map[string]any, int, error)
+	GroupInvite(context.Context, int64) (map[string]any, error)
+	CreateGroupInvite(context.Context, int64, string, map[string]any) (map[string]any, error)
+	UpdateGroupInvite(context.Context, int64, int64, string, map[string]any) (map[string]any, error)
+	ArchiveGroupInvite(context.Context, int64, int64, string) (map[string]any, error)
+	Delete(context.Context, string, int64, int64, string) (map[string]any, error)
+	InitiateAttachmentUpload(context.Context, int64, string, AttachmentUploadInput) (int64, error)
+	PutAttachmentUploadPart(context.Context, int64, int, int64, string, string, []byte) error
+	CompleteAttachmentUpload(context.Context, int64, int64, string) (int64, error)
+}
+
+type httpFacade struct{ store HTTPFacade }
+
+func NewHTTPFacade(store HTTPFacade) (HTTPFacade, error) {
+	if store == nil {
+		return nil, errors.New("media HTTP facade store is required")
+	}
+	return &httpFacade{store: store}, nil
+}
+
+type ImageInput = mediastore.ImageInput
+type AttachmentInput = mediastore.AttachmentInput
+type AttachmentUploadInput = mediastore.AttachmentUploadInput
+type ImageQuery = mediastore.ImageQuery
+
+var (
+	ErrHTTPNotFound   = mediastore.ErrNotFound
+	ErrHTTPConflict   = mediastore.ErrConflict
+	ErrHTTPReferences = mediastore.ErrReferences
+	ErrHTTPInvalid    = mediastore.ErrInvalid
+)
+
+func (f *httpFacade) ListImagesFiltered(c context.Context, q ImageQuery) ([]map[string]any, int, error) {
+	return f.store.ListImagesFiltered(c, q)
+}
+func (f *httpFacade) ImageFacets(c context.Context) ([]string, []string, error) {
+	return f.store.ImageFacets(c)
+}
+func (f *httpFacade) Image(c context.Context, id int64) (map[string]any, []byte, string, error) {
+	return f.store.Image(c, id)
+}
+func (f *httpFacade) CreateImage(c context.Context, a int64, k string, v ImageInput) (map[string]any, error) {
+	return f.store.CreateImage(c, a, k, v)
+}
+func (f *httpFacade) UpdateImage(c context.Context, id, a int64, k string, v map[string]any) (map[string]any, error) {
+	return f.store.UpdateImage(c, id, a, k, v)
+}
+func (f *httpFacade) ListAttachments(c context.Context, l, o int, e bool, q string) ([]map[string]any, int, error) {
+	return f.store.ListAttachments(c, l, o, e, q)
+}
+func (f *httpFacade) Attachment(c context.Context, id int64) (map[string]any, []byte, error) {
+	return f.store.Attachment(c, id)
+}
+func (f *httpFacade) CreateAttachment(c context.Context, a int64, k string, v AttachmentInput) (map[string]any, error) {
+	return f.store.CreateAttachment(c, a, k, v)
+}
+func (f *httpFacade) UpdateAttachment(c context.Context, id, a int64, k string, v map[string]any) (map[string]any, error) {
+	return f.store.UpdateAttachment(c, id, a, k, v)
+}
+func (f *httpFacade) ListMiniPrograms(c context.Context, l, o int, e bool, q string) ([]map[string]any, int, error) {
+	return f.store.ListMiniPrograms(c, l, o, e, q)
+}
+func (f *httpFacade) MiniProgram(c context.Context, id int64) (map[string]any, error) {
+	return f.store.MiniProgram(c, id)
+}
+func (f *httpFacade) CreateMiniProgram(c context.Context, a int64, k string, v map[string]any) (map[string]any, error) {
+	return f.store.CreateMiniProgram(c, a, k, v)
+}
+func (f *httpFacade) UpdateMiniProgram(c context.Context, id, a int64, k string, v map[string]any) (map[string]any, error) {
+	return f.store.UpdateMiniProgram(c, id, a, k, v)
+}
+func (f *httpFacade) ResolveMiniProgramThumbnail(c context.Context, id, a int64, k string) (map[string]any, error) {
+	return f.store.ResolveMiniProgramThumbnail(c, id, a, k)
+}
+func (f *httpFacade) ListGroupInvites(c context.Context, l, o int, e bool, q string) ([]map[string]any, int, error) {
+	return f.store.ListGroupInvites(c, l, o, e, q)
+}
+func (f *httpFacade) GroupInvite(c context.Context, id int64) (map[string]any, error) {
+	return f.store.GroupInvite(c, id)
+}
+func (f *httpFacade) CreateGroupInvite(c context.Context, a int64, k string, v map[string]any) (map[string]any, error) {
+	return f.store.CreateGroupInvite(c, a, k, v)
+}
+func (f *httpFacade) UpdateGroupInvite(c context.Context, id, a int64, k string, v map[string]any) (map[string]any, error) {
+	return f.store.UpdateGroupInvite(c, id, a, k, v)
+}
+func (f *httpFacade) ArchiveGroupInvite(c context.Context, id, a int64, k string) (map[string]any, error) {
+	return f.store.ArchiveGroupInvite(c, id, a, k)
+}
+func (f *httpFacade) Delete(c context.Context, k string, id, a int64, key string) (map[string]any, error) {
+	return f.store.Delete(c, k, id, a, key)
+}
+func (f *httpFacade) InitiateAttachmentUpload(c context.Context, a int64, k string, v AttachmentUploadInput) (int64, error) {
+	return f.store.InitiateAttachmentUpload(c, a, k, v)
+}
+func (f *httpFacade) PutAttachmentUploadPart(c context.Context, u int64, p int, a int64, k, d string, b []byte) error {
+	return f.store.PutAttachmentUploadPart(c, u, p, a, k, d, b)
+}
+func (f *httpFacade) CompleteAttachmentUpload(c context.Context, u, a int64, k string) (int64, error) {
+	return f.store.CompleteAttachmentUpload(c, u, a, k)
+}

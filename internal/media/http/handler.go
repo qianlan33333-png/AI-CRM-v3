@@ -22,8 +22,8 @@ import (
 	"time"
 
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
+	mediaapp "github.com/qianlan33333-png/AI-CRM-v3/internal/media/app"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/media/domain"
-	mediastore "github.com/qianlan33333-png/AI-CRM-v3/internal/media/store"
 )
 
 type RequestSecurity interface {
@@ -31,19 +31,19 @@ type RequestSecurity interface {
 	AuthorizeCSRF(context.Context, *http.Request) (accessdomain.Principal, error)
 }
 type Handler struct {
-	repository *mediastore.Repository
-	security   RequestSecurity
+	service  mediaapp.HTTPFacade
+	security RequestSecurity
 }
 
-func NewHandler(repository *mediastore.Repository, security RequestSecurity) (*Handler, error) {
-	if repository == nil || security == nil {
+func NewHandler(service mediaapp.HTTPFacade, security RequestSecurity) (*Handler, error) {
+	if service == nil || security == nil {
 		return nil, errors.New("media HTTP dependencies are required")
 	}
-	return &Handler{repository, security}, nil
+	return &Handler{service, security}, nil
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if h == nil || h.repository == nil || h.security == nil {
+	if h == nil || h.service == nil || h.security == nil {
 		writeError(w, 503, "unavailable")
 		return
 	}
@@ -158,13 +158,13 @@ func resultError(w http.ResponseWriter, err error) {
 	switch {
 	case err == nil:
 		return
-	case errors.Is(err, mediastore.ErrNotFound):
+	case errors.Is(err, mediaapp.ErrHTTPNotFound):
 		writeError(w, 404, "not_found")
-	case errors.Is(err, mediastore.ErrConflict):
+	case errors.Is(err, mediaapp.ErrHTTPConflict):
 		writeError(w, 409, "conflict")
-	case errors.Is(err, mediastore.ErrReferences):
+	case errors.Is(err, mediaapp.ErrHTTPReferences):
 		writeError(w, 409, "has_references")
-	case errors.Is(err, mediastore.ErrInvalid), errors.Is(err, domain.ErrUnsafeImage), errors.Is(err, domain.ErrUnsafeAttachment):
+	case errors.Is(err, mediaapp.ErrHTTPInvalid), errors.Is(err, domain.ErrUnsafeImage), errors.Is(err, domain.ErrUnsafeAttachment):
 		writeError(w, 400, "invalid_request")
 	default:
 		writeError(w, 503, "unavailable")
@@ -191,6 +191,15 @@ func writeError(w http.ResponseWriter, status int, code string) {
 	writeJSON(w, status, payload)
 }
 
+func writeReferenceConflict(w http.ResponseWriter, kind string) {
+	references := map[string]any{"automation_agents": []int{}, "channels": []int{}, "radar_links": []int{}}
+	if kind == "image" {
+		references["miniprograms"] = []int{}
+		references["group_invites"] = []int{}
+	}
+	writeJSON(w, http.StatusConflict, map[string]any{"ok": false, "code": "CONFLICT", "error": kind + "_has_references", "references": references})
+}
+
 func (h *Handler) images(w http.ResponseWriter, r *http.Request, tail string) {
 	if tail == "" {
 		if r.Method == http.MethodGet {
@@ -207,7 +216,7 @@ func (h *Handler) images(w http.ResponseWriter, r *http.Request, tail string) {
 				writeError(w, 400, "invalid_request")
 				return
 			}
-			items, total, e := h.repository.ListImagesFiltered(r.Context(), query)
+			items, total, e := h.service.ListImagesFiltered(r.Context(), query)
 			if e != nil {
 				resultError(w, e)
 				return
@@ -239,7 +248,7 @@ func (h *Handler) images(w http.ResponseWriter, r *http.Request, tail string) {
 		if !method(w, r.Method, http.MethodGet) || !h.read(w, r) {
 			return
 		}
-		categories, tags, e := h.repository.ImageFacets(r.Context())
+		categories, tags, e := h.service.ImageFacets(r.Context())
 		if e != nil {
 			resultError(w, e)
 			return
@@ -257,7 +266,7 @@ func (h *Handler) images(w http.ResponseWriter, r *http.Request, tail string) {
 		if !method(w, r.Method, http.MethodGet) || !h.read(w, r) {
 			return
 		}
-		item, content, _, e := h.repository.Image(r.Context(), imageID)
+		item, content, _, e := h.service.Image(r.Context(), imageID)
 		_ = item
 		if e != nil {
 			resultError(w, e)
@@ -294,7 +303,7 @@ func (h *Handler) images(w http.ResponseWriter, r *http.Request, tail string) {
 		if !h.read(w, r) {
 			return
 		}
-		item, content, _, e := h.repository.Image(r.Context(), imageID)
+		item, content, _, e := h.service.Image(r.Context(), imageID)
 		if e != nil {
 			resultError(w, e)
 			return
@@ -303,7 +312,12 @@ func (h *Handler) images(w http.ResponseWriter, r *http.Request, tail string) {
 			item["data_url"] = "data:" + item["mime_type"].(string) + ";base64," + base64.StdEncoding.EncodeToString(content)
 		}
 		if variant := r.URL.Query().Get("variant"); variant != "" {
+			if !validVariant(variant) {
+				writeError(w, 400, "invalid_request")
+				return
+			}
 			item["variant"] = variant
+			item["variant_url"] = "/api/admin/image-library/" + strconv.FormatInt(imageID, 10) + "/variants/" + variant
 		}
 		writeJSON(w, 200, imageEnvelope(item))
 		return
@@ -317,30 +331,34 @@ func (h *Handler) images(w http.ResponseWriter, r *http.Request, tail string) {
 		if !ok {
 			return
 		}
-		out, e := h.repository.Delete(r.Context(), "image", imageID, actor.InternalID, mutationKey(r))
+		out, e := h.service.Delete(r.Context(), "image", imageID, actor.InternalID, mutationKey(r))
 		if e != nil {
+			if errors.Is(e, mediaapp.ErrHTTPReferences) {
+				writeReferenceConflict(w, "image")
+				return
+			}
 			resultError(w, e)
 			return
 		}
-		out["ok"], out["item_id"], out["local_only"], out["provider_call_executed"], out["real_external_call_executed"], out["references_cleared"] = true, imageID, true, false, false, true
+		out["ok"], out["item_id"], out["local_only"], out["provider_call_executed"], out["real_external_call_executed"], out["references_cleared"] = true, imageID, true, false, false, map[string]any{"miniprograms": []int{}, "group_invites": []int{}, "automation_agents": []int{}, "channels": []int{}, "radar_links": []int{}}
 		writeJSON(w, 200, out)
 		return
 	}
 	method(w, r.Method, http.MethodGet+", "+http.MethodPut+", "+http.MethodDelete)
 }
-func imageQuery(r *http.Request, limit, offset int, q string) (mediastore.ImageQuery, error) {
+func imageQuery(r *http.Request, limit, offset int, q string) (mediaapp.ImageQuery, error) {
 	values := r.URL.Query()
 	enabled := true
 	if raw, exists := values["enabled_only"]; exists {
 		if len(raw) != 1 || (raw[0] != "true" && raw[0] != "false") {
-			return mediastore.ImageQuery{}, ErrInvalidQuery
+			return mediaapp.ImageQuery{}, ErrInvalidQuery
 		}
 		enabled = raw[0] == "true"
 	}
 	onlyUnlabeled := false
 	if raw, exists := values["only_unlabeled"]; exists {
 		if len(raw) != 1 || (raw[0] != "true" && raw[0] != "false") {
-			return mediastore.ImageQuery{}, ErrInvalidQuery
+			return mediaapp.ImageQuery{}, ErrInvalidQuery
 		}
 		onlyUnlabeled = raw[0] == "true"
 	}
@@ -370,19 +388,19 @@ func imageQuery(r *http.Request, limit, offset int, q string) (mediastore.ImageQ
 	}
 	tags, err := normalize(values.Get("tags"))
 	if err != nil {
-		return mediastore.ImageQuery{}, err
+		return mediaapp.ImageQuery{}, err
 	}
 	groups := [][]string{}
 	for _, raw := range values["tag_group"] {
 		group, err := normalize(raw)
 		if err != nil {
-			return mediastore.ImageQuery{}, err
+			return mediaapp.ImageQuery{}, err
 		}
 		if len(group) > 0 {
 			groups = append(groups, group)
 		}
 	}
-	return mediastore.ImageQuery{Limit: limit, Offset: offset, EnabledOnly: enabled, Query: q, Category: strings.TrimSpace(values.Get("category")), Tags: tags, TagGroups: groups, OnlyUnlabeled: onlyUnlabeled}, nil
+	return mediaapp.ImageQuery{Limit: limit, Offset: offset, EnabledOnly: enabled, Query: q, Category: strings.TrimSpace(values.Get("category")), Tags: tags, TagGroups: groups, OnlyUnlabeled: onlyUnlabeled}, nil
 }
 
 var ErrInvalidQuery = errors.New("invalid media query")
@@ -396,6 +414,7 @@ func (h *Handler) imageCreate(w http.ResponseWriter, r *http.Request, source str
 		h.imageCreateJSON(w, r, actor, source)
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, domain.MaxImageBytes+(1<<20))
 	if err := r.ParseMultipartForm(11 << 20); err != nil {
 		writeError(w, 400, "invalid_request")
 		return
@@ -420,7 +439,7 @@ func (h *Handler) imageCreate(w http.ResponseWriter, r *http.Request, source str
 	if raw := r.FormValue("enabled"); raw != "" {
 		enabled = raw == "true"
 	}
-	out, err := h.repository.CreateImage(r.Context(), actor.InternalID, mutationKey(r), mediastore.ImageInput{FileName: header.Filename, MIME: inspection.MediaType, Name: nonempty(r.FormValue("name"), header.Filename), Description: r.FormValue("description"), Tags: r.FormValue("tags"), Category: r.FormValue("category"), Content: content, Width: inspection.Width, Height: inspection.Height, Enabled: enabled})
+	out, err := h.service.CreateImage(r.Context(), actor.InternalID, mutationKey(r), mediaapp.ImageInput{FileName: header.Filename, MIME: inspection.MediaType, Name: nonempty(r.FormValue("name"), header.Filename), Description: r.FormValue("description"), Tags: r.FormValue("tags"), Category: r.FormValue("category"), Content: content, Width: inspection.Width, Height: inspection.Height, Enabled: enabled})
 	if err != nil {
 		resultError(w, err)
 		return
@@ -441,7 +460,7 @@ func (h *Handler) imageCreateJSON(w http.ResponseWriter, r *http.Request, actor 
 		Category    string   `json:"category"`
 		Enabled     *bool    `json:"enabled"`
 	}
-	if decode(r, &body) != nil || !strings.HasPrefix(body.DataURL, "data:") {
+	if decodeLimit(r, &body, (domain.MaxImageBytes*4)/3+(1<<20)) != nil || !strings.HasPrefix(body.DataURL, "data:") || strings.TrimSpace(body.FileName) == "" {
 		writeError(w, 400, "invalid_request")
 		return
 	}
@@ -473,7 +492,7 @@ func (h *Handler) imageCreateJSON(w http.ResponseWriter, r *http.Request, actor 
 	if body.Enabled != nil {
 		enabled = *body.Enabled
 	}
-	out, err := h.repository.CreateImage(r.Context(), actor.InternalID, mutationKey(r), mediastore.ImageInput{FileName: body.FileName, MIME: inspection.MediaType, Name: nonempty(body.Name, body.FileName), Description: body.Description, Tags: strings.Join(body.Tags, ","), Category: body.Category, Content: content, Width: inspection.Width, Height: inspection.Height, Enabled: enabled})
+	out, err := h.service.CreateImage(r.Context(), actor.InternalID, mutationKey(r), mediaapp.ImageInput{FileName: body.FileName, MIME: inspection.MediaType, Name: nonempty(body.Name, body.FileName), Description: body.Description, Tags: strings.Join(body.Tags, ","), Category: body.Category, Content: content, Width: inspection.Width, Height: inspection.Height, Enabled: enabled})
 	if err != nil {
 		resultError(w, err)
 		return
@@ -490,7 +509,11 @@ func (h *Handler) imageUpdate(w http.ResponseWriter, r *http.Request, imageID in
 		writeError(w, 400, "invalid_request")
 		return
 	}
-	out, e := h.repository.UpdateImage(r.Context(), imageID, actor.InternalID, mutationKey(r), patch)
+	if !allowedFields(patch, "name", "description", "tags", "category", "enabled") {
+		writeError(w, 400, "invalid_request")
+		return
+	}
+	out, e := h.service.UpdateImage(r.Context(), imageID, actor.InternalID, mutationKey(r), patch)
 	if e != nil {
 		resultError(w, e)
 		return
@@ -518,7 +541,7 @@ func mediaVariant(content []byte, originalType, key string) ([]byte, string, err
 	}
 	limit := map[string]int{"thumb_160": 160, "thumb_320": 320, "mobile_1080": 1080, "large_1440": 1440}[key]
 	if limit == 0 {
-		return nil, "", mediastore.ErrNotFound
+		return nil, "", mediaapp.ErrHTTPNotFound
 	}
 	source, _, err := image.Decode(bytes.NewReader(content))
 	if err != nil {
@@ -553,6 +576,10 @@ func mediaVariant(content []byte, originalType, key string) ([]byte, string, err
 	return encoded.Bytes(), "image/png", nil
 }
 
+func validVariant(key string) bool {
+	return key == "original" || key == "thumb_160" || key == "thumb_320" || key == "mobile_1080" || key == "large_1440"
+}
+
 func (h *Handler) attachments(w http.ResponseWriter, r *http.Request, tail string) {
 	if strings.HasPrefix(tail, "uploads") {
 		h.attachmentUpload(w, r, strings.Trim(strings.TrimPrefix(tail, "uploads"), "/"))
@@ -568,12 +595,12 @@ func (h *Handler) attachments(w http.ResponseWriter, r *http.Request, tail strin
 				writeError(w, 400, "invalid_request")
 				return
 			}
-			items, total, e := h.repository.ListAttachments(r.Context(), limit, offset, enabled, q)
+			items, total, e := h.service.ListAttachments(r.Context(), limit, offset, enabled, q)
 			if e != nil {
 				resultError(w, e)
 				return
 			}
-			writeJSON(w, 200, map[string]any{"ok": true, "items": items, "attachments": items, "total": total, "limit": limit, "offset": offset, "local_only": true, "provider_call_executed": false, "real_external_call_executed": false})
+			writeJSON(w, 200, map[string]any{"ok": true, "items": items, "attachments": items, "total": total, "limit": limit, "offset": offset, "count": len(items), "has_more": offset+len(items) < total, "local_only": true, "provider_call_executed": false, "real_external_call_executed": false})
 			return
 		}
 		if r.Method == http.MethodPost {
@@ -593,7 +620,7 @@ func (h *Handler) attachments(w http.ResponseWriter, r *http.Request, tail strin
 		if !method(w, r.Method, http.MethodGet) || !h.read(w, r) {
 			return
 		}
-		item, content, e := h.repository.Attachment(r.Context(), attachmentID)
+		item, content, e := h.service.Attachment(r.Context(), attachmentID)
 		if e != nil {
 			resultError(w, e)
 			return
@@ -612,7 +639,7 @@ func (h *Handler) attachments(w http.ResponseWriter, r *http.Request, tail strin
 		if !h.read(w, r) {
 			return
 		}
-		item, _, e := h.repository.Attachment(r.Context(), attachmentID)
+		item, _, e := h.service.Attachment(r.Context(), attachmentID)
 		if e != nil {
 			resultError(w, e)
 			return
@@ -640,7 +667,11 @@ func (h *Handler) attachments(w http.ResponseWriter, r *http.Request, tail strin
 			writeError(w, 400, "invalid_request")
 			return
 		}
-		out, e := h.repository.UpdateAttachment(r.Context(), attachmentID, actor.InternalID, mutationKey(r), patch)
+		if !allowedFields(patch, "name", "description", "tags", "enabled", "expected_version") {
+			writeError(w, 400, "invalid_request")
+			return
+		}
+		out, e := h.service.UpdateAttachment(r.Context(), attachmentID, actor.InternalID, mutationKey(r), patch)
 		if e != nil {
 			resultError(w, e)
 			return
@@ -653,8 +684,12 @@ func (h *Handler) attachments(w http.ResponseWriter, r *http.Request, tail strin
 		if !ok {
 			return
 		}
-		out, e := h.repository.Delete(r.Context(), "attachment", attachmentID, actor.InternalID, mutationKey(r))
+		out, e := h.service.Delete(r.Context(), "attachment", attachmentID, actor.InternalID, mutationKey(r))
 		if e != nil {
+			if errors.Is(e, mediaapp.ErrHTTPReferences) {
+				writeReferenceConflict(w, "attachment")
+				return
+			}
 			resultError(w, e)
 			return
 		}
@@ -673,6 +708,7 @@ func (h *Handler) attachmentCreate(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, domain.MaxAttachmentBytes+(1<<20))
 	if r.ParseMultipartForm(11<<20) != nil {
 		writeError(w, 400, "invalid_request")
 		return
@@ -693,7 +729,7 @@ func (h *Handler) attachmentCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tags := splitCSV(r.FormValue("tags"))
-	out, e := h.repository.CreateAttachment(r.Context(), actor.InternalID, mutationKey(r), mediastore.AttachmentInput{FileName: header.Filename, Name: nonempty(r.FormValue("name"), header.Filename), Description: r.FormValue("description"), Tags: tags, Content: content, Enabled: r.FormValue("enabled") != "false"})
+	out, e := h.service.CreateAttachment(r.Context(), actor.InternalID, mutationKey(r), mediaapp.AttachmentInput{FileName: header.Filename, Name: nonempty(r.FormValue("name"), header.Filename), Description: r.FormValue("description"), Tags: tags, Content: content, Enabled: r.FormValue("enabled") != "false"})
 	if e != nil {
 		resultError(w, e)
 		return
@@ -729,7 +765,7 @@ func (h *Handler) attachmentUpload(w http.ResponseWriter, r *http.Request, tail 
 		if body.Enabled != nil {
 			enabled = *body.Enabled
 		}
-		uploadID, err := h.repository.InitiateAttachmentUpload(r.Context(), actor.InternalID, mutationKey(r), mediastore.AttachmentUploadInput{FileName: body.FileName, Name: body.Name, Description: body.Description, Size: body.Size, Digest: body.SHA256, Enabled: enabled})
+		uploadID, err := h.service.InitiateAttachmentUpload(r.Context(), actor.InternalID, mutationKey(r), mediaapp.AttachmentUploadInput{FileName: body.FileName, Name: body.Name, Description: body.Description, Size: body.Size, Digest: body.SHA256, Enabled: enabled})
 		if err != nil {
 			resultError(w, err)
 			return
@@ -769,7 +805,7 @@ func (h *Handler) attachmentUpload(w http.ResponseWriter, r *http.Request, tail 
 			writeError(w, 400, "invalid_request")
 			return
 		}
-		if err = h.repository.PutAttachmentUploadPart(r.Context(), uploadID, int(part), actor.InternalID, mutationKey(r), body.SHA256, content); err != nil {
+		if err = h.service.PutAttachmentUploadPart(r.Context(), uploadID, int(part), actor.InternalID, mutationKey(r), body.SHA256, content); err != nil {
 			resultError(w, err)
 			return
 		}
@@ -784,7 +820,7 @@ func (h *Handler) attachmentUpload(w http.ResponseWriter, r *http.Request, tail 
 		if !ok {
 			return
 		}
-		attachmentID, err := h.repository.CompleteAttachmentUpload(r.Context(), uploadID, actor.InternalID, mutationKey(r))
+		attachmentID, err := h.service.CompleteAttachmentUpload(r.Context(), uploadID, actor.InternalID, mutationKey(r))
 		if err != nil {
 			resultError(w, err)
 			return
@@ -812,12 +848,12 @@ func (h *Handler) miniprograms(w http.ResponseWriter, r *http.Request, tail stri
 				writeError(w, 400, "invalid_request")
 				return
 			}
-			items, total, e := h.repository.ListMiniPrograms(r.Context(), limit, offset, enabled, q)
+			items, total, e := h.service.ListMiniPrograms(r.Context(), limit, offset, enabled, q)
 			if e != nil {
 				resultError(w, e)
 				return
 			}
-			writeJSON(w, 200, map[string]any{"ok": true, "items": items, "miniprograms": items, "mini_programs": items, "total": total, "limit": limit, "offset": offset, "local_only": true, "provider_call_executed": false, "real_external_call_executed": false})
+			writeJSON(w, 200, map[string]any{"ok": true, "items": items, "miniprograms": items, "mini_programs": items, "total": total, "limit": limit, "offset": offset, "count": len(items), "has_more": offset+len(items) < total, "local_only": true, "provider_call_executed": false, "real_external_call_executed": false})
 			return
 		}
 		if r.Method == http.MethodPost {
@@ -830,7 +866,11 @@ func (h *Handler) miniprograms(w http.ResponseWriter, r *http.Request, tail stri
 				writeError(w, 400, "invalid_request")
 				return
 			}
-			out, e := h.repository.CreateMiniProgram(r.Context(), actor.InternalID, mutationKey(r), body)
+			if !allowedFields(body, "name", "appid", "app_id", "pagepath", "page_path", "title", "thumb_image_id", "enabled") {
+				writeError(w, 400, "invalid_request")
+				return
+			}
+			out, e := h.service.CreateMiniProgram(r.Context(), actor.InternalID, mutationKey(r), body)
 			if e != nil {
 				resultError(w, e)
 				return
@@ -855,12 +895,12 @@ func (h *Handler) miniprograms(w http.ResponseWriter, r *http.Request, tail stri
 		if !ok {
 			return
 		}
-		resolution, err := h.repository.ResolveMiniProgramThumbnail(r.Context(), resourceID, actor.InternalID, mutationKey(r))
+		resolution, err := h.service.ResolveMiniProgramThumbnail(r.Context(), resourceID, actor.InternalID, mutationKey(r))
 		if err != nil {
 			resultError(w, err)
 			return
 		}
-		item, err := h.repository.MiniProgram(r.Context(), resourceID)
+		item, err := h.service.MiniProgram(r.Context(), resourceID)
 		if err != nil {
 			resultError(w, err)
 			return
@@ -876,7 +916,7 @@ func (h *Handler) miniprograms(w http.ResponseWriter, r *http.Request, tail stri
 		if !h.read(w, r) {
 			return
 		}
-		out, e := h.repository.MiniProgram(r.Context(), resourceID)
+		out, e := h.service.MiniProgram(r.Context(), resourceID)
 		if e != nil {
 			resultError(w, e)
 			return
@@ -894,7 +934,11 @@ func (h *Handler) miniprograms(w http.ResponseWriter, r *http.Request, tail stri
 			writeError(w, 400, "invalid_request")
 			return
 		}
-		out, e := h.repository.UpdateMiniProgram(r.Context(), resourceID, actor.InternalID, mutationKey(r), body)
+		if !allowedFields(body, "name", "appid", "app_id", "pagepath", "page_path", "title", "thumb_image_id", "enabled") {
+			writeError(w, 400, "invalid_request")
+			return
+		}
+		out, e := h.service.UpdateMiniProgram(r.Context(), resourceID, actor.InternalID, mutationKey(r), body)
 		if e != nil {
 			resultError(w, e)
 			return
@@ -907,12 +951,13 @@ func (h *Handler) miniprograms(w http.ResponseWriter, r *http.Request, tail stri
 		if !ok {
 			return
 		}
-		out, e := h.repository.Delete(r.Context(), "miniprogram", resourceID, actor.InternalID, mutationKey(r))
+		out, e := h.service.Delete(r.Context(), "miniprogram", resourceID, actor.InternalID, mutationKey(r))
 		if e != nil {
 			resultError(w, e)
 			return
 		}
 		out["ok"] = true
+		out["item_id"] = resourceID
 		out["local_only"] = true
 		out["provider_call_executed"] = false
 		out["real_external_call_executed"] = false
@@ -933,12 +978,12 @@ func (h *Handler) groups(w http.ResponseWriter, r *http.Request, tail string) {
 			if !h.read(w, r) {
 				return
 			}
-			item, err := h.repository.GroupInvite(r.Context(), itemID)
+			item, err := h.service.GroupInvite(r.Context(), itemID)
 			if err != nil {
 				resultError(w, err)
 				return
 			}
-			writeJSON(w, 200, map[string]any{"ok": true, "item": item, "group_invite": item, "provider_call_executed": false})
+			writeJSON(w, 200, groupMutation(item))
 		case http.MethodPut:
 			actor, ok := h.write(w, r)
 			if !ok {
@@ -949,7 +994,11 @@ func (h *Handler) groups(w http.ResponseWriter, r *http.Request, tail string) {
 				writeError(w, 400, "invalid_request")
 				return
 			}
-			item, err := h.repository.UpdateGroupInvite(r.Context(), itemID, actor.InternalID, mutationKey(r), body)
+			if !allowedFields(body, "name", "title", "description", "join_url", "cover_image_id", "enabled") {
+				writeError(w, 400, "invalid_request")
+				return
+			}
+			item, err := h.service.UpdateGroupInvite(r.Context(), itemID, actor.InternalID, mutationKey(r), body)
 			if err != nil {
 				resultError(w, err)
 				return
@@ -960,12 +1009,14 @@ func (h *Handler) groups(w http.ResponseWriter, r *http.Request, tail string) {
 			if !ok {
 				return
 			}
-			item, err := h.repository.ArchiveGroupInvite(r.Context(), itemID, actor.InternalID, mutationKey(r))
+			item, err := h.service.ArchiveGroupInvite(r.Context(), itemID, actor.InternalID, mutationKey(r))
 			if err != nil {
 				resultError(w, err)
 				return
 			}
-			writeJSON(w, 200, map[string]any{"ok": true, "item": item, "archived": true, "local_only": true, "provider_call_executed": false, "real_external_call_executed": false})
+			response := groupMutation(item)
+			response["archived"] = true
+			writeJSON(w, 200, response)
 		default:
 			method(w, r.Method, http.MethodGet+", "+http.MethodPut+", "+http.MethodDelete)
 		}
@@ -980,12 +1031,12 @@ func (h *Handler) groups(w http.ResponseWriter, r *http.Request, tail string) {
 			writeError(w, 400, "invalid_request")
 			return
 		}
-		items, total, e := h.repository.ListGroupInvites(r.Context(), limit, offset, enabled, q)
+		items, total, e := h.service.ListGroupInvites(r.Context(), limit, offset, enabled, q)
 		if e != nil {
 			resultError(w, e)
 			return
 		}
-		writeJSON(w, 200, map[string]any{"ok": true, "items": items, "group_invites": items, "total": total, "limit": limit, "offset": offset, "provider_call_executed": false})
+		writeJSON(w, 200, map[string]any{"ok": true, "items": items, "group_invites": items, "total": total, "limit": limit, "offset": offset, "count": len(items), "has_more": offset+len(items) < total, "local_only": true, "provider_call_executed": false, "real_external_call_executed": false})
 		return
 	}
 	if r.Method == http.MethodPost {
@@ -998,7 +1049,11 @@ func (h *Handler) groups(w http.ResponseWriter, r *http.Request, tail string) {
 			writeError(w, 400, "invalid_request")
 			return
 		}
-		out, e := h.repository.CreateGroupInvite(r.Context(), actor.InternalID, mutationKey(r), body)
+		if !allowedFields(body, "name", "title", "description", "join_url", "cover_image_id", "enabled") {
+			writeError(w, 400, "invalid_request")
+			return
+		}
+		out, e := h.service.CreateGroupInvite(r.Context(), actor.InternalID, mutationKey(r), body)
 		if e != nil {
 			resultError(w, e)
 			return
@@ -1025,6 +1080,19 @@ func decodeLimit(r *http.Request, target any, limit int64) error {
 	return nil
 }
 
+func allowedFields(value map[string]any, allowed ...string) bool {
+	set := make(map[string]struct{}, len(allowed))
+	for _, field := range allowed {
+		set[field] = struct{}{}
+	}
+	for field := range value {
+		if _, ok := set[field]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
 func groupMutation(item map[string]any) map[string]any {
 	return map[string]any{"ok": true, "item": item, "group_invite": item, "item_id": item["id"], "local_only": true, "provider_call_executed": false, "real_external_call_executed": false}
 }
@@ -1032,7 +1100,7 @@ func miniMutation(item map[string]any) map[string]any {
 	return map[string]any{"ok": true, "item": item, "miniprogram": item, "item_id": item["id"], "changed": true, "thumb_resolve": nil, "local_only": true, "provider_call_executed": false, "real_external_call_executed": false}
 }
 func miniDetail(item map[string]any) map[string]any {
-	return map[string]any{"ok": true, "item": item, "miniprogram": item, "local_only": true, "provider_call_executed": false, "real_external_call_executed": false}
+	return map[string]any{"ok": true, "item": item, "miniprogram": item, "item_id": item["id"], "changed": false, "thumb_resolve": nil, "local_only": true, "provider_call_executed": false, "real_external_call_executed": false}
 }
 func attachmentEnvelope(item map[string]any) map[string]any {
 	response := map[string]any{}

@@ -160,7 +160,7 @@ VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$12) RETURNING id,created_at,updat
 
 func imageMap(id int64, file, name, description, tags, category, mime string, size int64, width, height int32, enabled bool, created, updated time.Time) map[string]any {
 	base := fmt.Sprintf("/api/admin/image-library/%d/variants/", id)
-	return map[string]any{"id": id, "resource_id": id, "file_name": file, "name": name, "description": description, "tags": splitTags(tags), "category": category, "mime_type": mime, "content_type": mime, "file_size": size, "width": width, "height": height, "enabled": enabled, "source": "local_repository", "source_url": "", "thumb_media_id": "", "thumb_media_id_expires_at": nil, "ai_metadata": map[string]any{}, "created_at": created.UTC().Format(time.RFC3339Nano), "updated_at": updated.UTC().Format(time.RFC3339Nano), "thumb_160_url": base + "thumb_160", "thumb_320_url": base + "thumb_320", "thumb_url": base + "thumb_320", "preview_url": base + "mobile_1080", "mobile_1080_url": base + "mobile_1080", "large_1440_url": base + "large_1440", "original_url": base + "original"}
+	return map[string]any{"id": id, "resource_id": id, "file_name": file, "name": name, "description": description, "tags": splitTags(tags), "category": category, "mime_type": mime, "content_type": mime, "file_size": size, "width": width, "height": height, "enabled": enabled, "source": "upload", "source_url": "", "thumb_media_id": "", "thumb_media_id_expires_at": "", "ai_metadata": map[string]any{}, "created_at": created.UTC().Format(time.RFC3339Nano), "updated_at": updated.UTC().Format(time.RFC3339Nano), "thumb_160_url": base + "thumb_160", "thumb_320_url": base + "thumb_320", "thumb_url": base + "thumb_320", "preview_url": base + "mobile_1080", "mobile_1080_url": base + "mobile_1080", "large_1440_url": base + "large_1440", "original_url": base + "original"}
 }
 func splitTags(value string) []string {
 	out := make([]string, 0)
@@ -382,6 +382,13 @@ func (r *Repository) Delete(ctx context.Context, kind string, id, actor int64, k
 			return json.Unmarshal(replay, &out)
 		}
 		tx, _ := platformpostgres.RequireTransaction(txctx)
+		exists, err := lockMaterial(txctx, kind, id)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			return ErrNotFound
+		}
 		references, err := r.ListMediaReferences(txctx, kind, id)
 		if err != nil {
 			return err
@@ -580,7 +587,10 @@ func (r *Repository) UpdateAttachment(ctx context.Context, id, actor int64, key 
 		var tags []string
 		_ = json.Unmarshal(tagsBytes, &tags)
 		expected, ok := patch["expected_version"].(float64)
-		if !ok || int64(expected) != version {
+		if !ok || expected < 1 || expected != float64(int64(expected)) {
+			return ErrInvalid
+		}
+		if int64(expected) != version {
 			return ErrConflict
 		}
 		if v, ok := patch["name"].(string); ok {
@@ -691,9 +701,16 @@ func (r *Repository) CreateMiniProgram(ctx context.Context, actor int64, key str
 			return ErrInvalid
 		}
 		var thumb *int64
-		if fv, ok := input["thumb_image_id"].(float64); ok {
+		if _, forbidden := input["thumb_media_id"]; forbidden {
+			return ErrInvalid
+		}
+		if rawThumb, exists := input["thumb_image_id"]; exists {
+			fv, ok := rawThumb.(float64)
+			if !ok {
+				return ErrInvalid
+			}
 			v := int64(fv)
-			if v < 1 {
+			if v < 1 || fv != float64(v) {
 				return ErrInvalid
 			}
 			var exists bool
@@ -795,7 +812,7 @@ func (r *Repository) UpdateMiniProgram(ctx context.Context, id, actor int64, key
 				thumb = nil
 			} else {
 				number, ok := fv.(float64)
-				if !ok || number < 1 {
+				if !ok || number < 1 || number != float64(int64(number)) {
 					return ErrInvalid
 				}
 				value := int64(number)
@@ -928,14 +945,18 @@ func (r *Repository) CreateGroupInvite(ctx context.Context, actor int64, key str
 		if value, ok := input["enabled"].(bool); ok {
 			enabled = value
 		}
-		if n == "" || t == "" || j == "" || len(n) > 200 || len(t) > 128 || len(d) > 512 || len(j) > 2048 || !strings.HasPrefix(j, "https://work.weixin.qq.com/gm/") || strings.ContainsAny(j, "?#") {
+		if n == "" || t == "" || j == "" || len(n) > 200 || len(t) > 128 || len(d) > 512 || len(j) > 2048 || !strings.HasPrefix(j, "https://work.weixin.qq.com/gm/") || strings.TrimPrefix(j, "https://work.weixin.qq.com/gm/") == "" || strings.ContainsAny(j, "?#") {
 			return ErrInvalid
 		}
 		var cover *int64
-		if value, ok := input["cover_image_id"].(float64); ok {
+		if rawCover, exists := input["cover_image_id"]; exists {
+			value, ok := rawCover.(float64)
+			if !ok {
+				return ErrInvalid
+			}
 			v := int64(value)
 			var exists bool
-			if v < 1 || tx.QueryRow(txctx, `SELECT EXISTS(SELECT 1 FROM media_images WHERE id=$1)`, v).Scan(&exists) != nil || !exists {
+			if value != float64(v) || v < 1 || tx.QueryRow(txctx, `SELECT EXISTS(SELECT 1 FROM media_images WHERE id=$1)`, v).Scan(&exists) != nil || !exists {
 				return ErrInvalid
 			}
 			cover = &v
@@ -999,9 +1020,9 @@ func (r *Repository) UpdateGroupInvite(ctx context.Context, id, actor int64, key
 		var name, title, description, joinURL string
 		var cover *int64
 		var enabled bool
-		var version int64
+		var version, createdBy int64
 		var created, updated time.Time
-		err = tx.QueryRow(txctx, `SELECT name,title,description,join_url,cover_image_id,enabled,version,created_at,updated_at FROM media_group_invites WHERE id=$1 AND archived_at IS NULL FOR UPDATE`, id).Scan(&name, &title, &description, &joinURL, &cover, &enabled, &version, &created, &updated)
+		err = tx.QueryRow(txctx, `SELECT name,title,description,join_url,cover_image_id,enabled,version,created_by,created_at,updated_at FROM media_group_invites WHERE id=$1 AND archived_at IS NULL FOR UPDATE`, id).Scan(&name, &title, &description, &joinURL, &cover, &enabled, &version, &createdBy, &created, &updated)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrNotFound
 		}
@@ -1040,7 +1061,7 @@ func (r *Repository) UpdateGroupInvite(ctx context.Context, id, actor int64, key
 				cover = &candidate
 			}
 		}
-		if name == "" || title == "" || joinURL == "" || len(name) > 200 || len(title) > 128 || len(description) > 512 || len(joinURL) > 2048 || !strings.HasPrefix(joinURL, "https://work.weixin.qq.com/gm/") || strings.ContainsAny(joinURL, "?#") {
+		if name == "" || title == "" || joinURL == "" || len(name) > 200 || len(title) > 128 || len(description) > 512 || len(joinURL) > 2048 || !strings.HasPrefix(joinURL, "https://work.weixin.qq.com/gm/") || strings.TrimPrefix(joinURL, "https://work.weixin.qq.com/gm/") == "" || strings.ContainsAny(joinURL, "?#") {
 			return ErrInvalid
 		}
 		err = tx.QueryRow(txctx, `UPDATE media_group_invites SET name=$2,title=$3,description=$4,join_url=$5,cover_image_id=$6,enabled=$7,updated_by=$8,version=version+1,updated_at=clock_timestamp() WHERE id=$1 RETURNING version,updated_at`, id, name, title, description, joinURL, cover, enabled, actor).Scan(&version, &updated)
@@ -1050,7 +1071,7 @@ func (r *Repository) UpdateGroupInvite(ctx context.Context, id, actor int64, key
 		if err = replaceLocalImageReference(txctx, "media.group_invite.cover", id, oldCover, cover); err != nil {
 			return err
 		}
-		out = groupMap(id, name, title, description, joinURL, cover, enabled, version, actor, actor, created, updated, nil)
+		out = groupMap(id, name, title, description, joinURL, cover, enabled, version, createdBy, actor, created, updated, nil)
 		return r.complete(txctx, "group_invite.update", "group_invite", actor, key, id, out, "media.group_invite_updated")
 	})
 	return out, err
@@ -1070,6 +1091,13 @@ func (r *Repository) ArchiveGroupInvite(ctx context.Context, id, actor int64, ke
 			return json.Unmarshal(replay, &out)
 		}
 		tx, _ := platformpostgres.RequireTransaction(txctx)
+		exists, err := lockMaterial(txctx, "group_invite", id)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			return ErrNotFound
+		}
 		references, err := r.ListMediaReferences(txctx, "group_invite", id)
 		if err != nil {
 			return err
@@ -1079,16 +1107,16 @@ func (r *Repository) ArchiveGroupInvite(ctx context.Context, id, actor int64, ke
 		}
 		var name, title, description, joinURL string
 		var cover *int64
-		var version int64
+		var version, createdBy, updatedBy int64
 		var created, updated, archived time.Time
-		err = tx.QueryRow(txctx, `UPDATE media_group_invites SET enabled=false,archived_at=clock_timestamp(),updated_by=$2,version=version+1,updated_at=clock_timestamp() WHERE id=$1 AND archived_at IS NULL RETURNING name,title,description,join_url,cover_image_id,version,created_at,updated_at,archived_at`, id, actor).Scan(&name, &title, &description, &joinURL, &cover, &version, &created, &updated, &archived)
+		err = tx.QueryRow(txctx, `UPDATE media_group_invites SET enabled=false,archived_at=clock_timestamp(),updated_by=$2,version=version+1,updated_at=clock_timestamp() WHERE id=$1 AND archived_at IS NULL RETURNING name,title,description,join_url,cover_image_id,version,created_by,updated_by,created_at,updated_at,archived_at`, id, actor).Scan(&name, &title, &description, &joinURL, &cover, &version, &createdBy, &updatedBy, &created, &updated, &archived)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrNotFound
 		}
 		if err != nil {
 			return err
 		}
-		out = groupMap(id, name, title, description, joinURL, cover, false, version, actor, actor, created, updated, &archived)
+		out = groupMap(id, name, title, description, joinURL, cover, false, version, createdBy, updatedBy, created, updated, &archived)
 		return r.complete(txctx, "group_invite.archive", "group_invite", actor, key, id, out, "media.group_invite_archived")
 	})
 	return out, err
@@ -1217,7 +1245,7 @@ func (r *Repository) CompleteAttachmentUpload(ctx context.Context, uploadID, act
 		if existing != nil {
 			return ErrConflict
 		}
-		rows, err := tx.Query(txctx, `SELECT part_number,content FROM media_attachment_upload_parts WHERE upload_id=$1 ORDER BY part_number`, uploadID)
+		rows, err := tx.Query(txctx, `SELECT part_number,digest,content FROM media_attachment_upload_parts WHERE upload_id=$1 ORDER BY part_number`, uploadID)
 		if err != nil {
 			return err
 		}
@@ -1226,11 +1254,15 @@ func (r *Repository) CompleteAttachmentUpload(ctx context.Context, uploadID, act
 		expectedPart := 1
 		for rows.Next() {
 			var part int
+			var storedDigest string
 			var content []byte
-			if err = rows.Scan(&part, &content); err != nil {
+			if err = rows.Scan(&part, &storedDigest, &content); err != nil {
 				return err
 			}
 			if part != expectedPart {
+				return ErrConflict
+			}
+			if bytesDigest(content) != storedDigest {
 				return ErrConflict
 			}
 			expectedPart++

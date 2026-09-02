@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	mediaport "github.com/qianlan33333-png/AI-CRM-v3/internal/media/port"
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 )
@@ -189,6 +190,10 @@ func TestPostgreSQLReferenceLedgerProtectsDeleteAndArchive(t *testing.T) {
 		t.Fatal(err)
 	}
 	groupID := group["id"].(int64)
+	updatedGroup, err := repo.UpdateGroupInvite(ctx, groupID, 8, "group-created-by-key-0001", map[string]any{"description": "updated"})
+	if err != nil || updatedGroup["created_by"] != int64(7) || updatedGroup["updated_by"] != int64(8) {
+		t.Fatalf("group update ownership=%v err=%v", updatedGroup, err)
+	}
 	if _, err = repo.Delete(ctx, "image", coverID, 7, "delete-group-cover-key-0001"); !errors.Is(err, ErrReferences) {
 		t.Fatalf("local group cover reference must block image delete: %v", err)
 	}
@@ -201,8 +206,9 @@ func TestPostgreSQLReferenceLedgerProtectsDeleteAndArchive(t *testing.T) {
 	if _, err = native.Exec(ctx, `DELETE FROM media_references WHERE material_kind='group_invite' AND material_id=$1`, groupID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = repo.ArchiveGroupInvite(ctx, groupID, 7, "archive-group-reference-0002"); err != nil {
-		t.Fatal(err)
+	archivedGroup, err := repo.ArchiveGroupInvite(ctx, groupID, 9, "archive-group-reference-0002")
+	if err != nil || archivedGroup["created_by"] != int64(7) || archivedGroup["updated_by"] != int64(9) {
+		t.Fatalf("group archive ownership=%v err=%v", archivedGroup, err)
 	}
 	if _, err = repo.Delete(ctx, "image", coverID, 7, "delete-group-cover-key-0002"); !errors.Is(err, ErrReferences) {
 		t.Fatalf("archived group must retain the local cover protection fact: %v", err)
@@ -217,6 +223,98 @@ func repoReferenceSnapshot(ctx context.Context, repo *Repository, kind string, i
 		return err
 	})
 	return references, err
+}
+
+func TestPostgreSQLReferenceRegistrationRacesImageDeleteWithoutDanglingLedger(t *testing.T) {
+	url, err := platformconfig.DatabaseURL()
+	if err != nil {
+		t.Skip("database URL not configured")
+	}
+	ctx := context.Background()
+	admin, err := pgxpool.New(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Close()
+	raw := make([]byte, 6)
+	if _, err = rand.Read(raw); err != nil {
+		t.Fatal(err)
+	}
+	schema := "media_reference_race_" + hex.EncodeToString(raw)
+	if _, err = admin.Exec(ctx, "CREATE SCHEMA "+schema); err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Exec(ctx, "DROP SCHEMA "+schema+" CASCADE")
+	cfg, err := pgxpool.ParseConfig(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.ConnConfig.RuntimeParams["search_path"] = schema
+	native, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer native.Close()
+	_, file, _, _ := runtime.Caller(0)
+	sql, err := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "..", "migrations", "0006_media.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = native.Exec(ctx, string(sql)); err != nil {
+		t.Fatal(err)
+	}
+	pool, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	uow, err := platformpostgres.NewUnitOfWork(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo, err := NewPostgreSQL(native, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := repo.CreateImage(ctx, 7, "image-registration-race-0001", ImageInput{FileName: "race.png", MIME: "image/png", Name: "race", Content: testPNG(t), Width: 2, Height: 2, Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	imageID := created["id"].(int64)
+	start := make(chan struct{})
+	results := make(chan error, 2)
+	var wait sync.WaitGroup
+	wait.Add(2)
+	go func() {
+		defer wait.Done()
+		<-start
+		results <- repo.RegisterMediaReference(ctx, mediaport.MaterialReference{MaterialKind: "image", MaterialID: imageID, Owner: "future.domain", ReferenceDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"})
+	}()
+	go func() {
+		defer wait.Done()
+		<-start
+		_, deleteErr := repo.Delete(ctx, "image", imageID, 7, "image-delete-race-0001")
+		results <- deleteErr
+	}()
+	close(start)
+	wait.Wait()
+	close(results)
+	for result := range results {
+		if result != nil && !errors.Is(result, ErrNotFound) && !errors.Is(result, ErrReferences) {
+			t.Fatalf("unexpected concurrent result: %v", result)
+		}
+	}
+	var imageExists bool
+	var references int
+	if err = native.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM media_images WHERE id=$1)`, imageID).Scan(&imageExists); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM media_references WHERE material_kind='image' AND material_id=$1`, imageID).Scan(&references); err != nil {
+		t.Fatal(err)
+	}
+	if !imageExists && references != 0 {
+		t.Fatalf("dangling ledger after concurrent delete/register: image=%v references=%d", imageExists, references)
+	}
 }
 
 func testPNG(t *testing.T) []byte {
