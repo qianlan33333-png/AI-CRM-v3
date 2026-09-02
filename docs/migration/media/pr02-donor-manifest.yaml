@@ -1,0 +1,99 @@
+schema_version: 1
+pr: PR02
+scope: media
+status: preparation_only
+v3_base: 8ec60b7e3027e7813cd928ed43d7c8bcc7633b0e
+donor:
+  repository: /tmp/aicrm-v2-audit.yN3jmr
+  commit: 6bfbe5816bb89913c70adaca87d6a486260e016e
+  read_only: true
+  runtime_dependency: false
+rules:
+  backend: v2 source is adapted only for the v3 module path; no v2 module,
+    runtime, database, migration, central composition, or provider dependency
+  frontend: exact bytes staged outside the v3 frontend build; no design or API
+    rewrite
+  ownership: Media
+backend:
+  copied:
+    - internal/media/domain/image.go
+    - internal/media/domain/image_test.go
+    - internal/media/domain/attachment.go
+    - internal/media/domain/attachment_test.go
+    - internal/media/domain/miniprogram.go
+    - internal/media/domain/miniprogram_test.go
+    - internal/media/domain/group_invite.go
+    - internal/media/domain/group_invite_test.go
+    - internal/media/port/port.go
+    - internal/media/port/attachment.go
+    - internal/media/port/miniprogram.go
+    - internal/media/port/content_delivery.go
+    - internal/media/port/groupops_material.go
+    - internal/media/port/groupops_material_test.go
+    - internal/media/groupopsmaterial/freezer.go
+    - internal/media/groupopsmaterial/freezer_test.go
+    - internal/media/app/list.go
+    - internal/media/app/facets.go
+    - internal/media/app/detail.go
+    - internal/media/app/variant.go
+    - internal/media/app/content_delivery.go
+  added_v3_adaptation:
+    - destination: internal/media/app/service.go
+      reason: read-side Service replaces the donor write Service, which depended on v2-only event and receipt ports
+    - destination: internal/media/app/read_test.go
+      reason: focused read-side characterization coverage without donor write-test fixtures
+frontend:
+  byte_exact_staged_under: web/donors/media-v2/src
+  copied:
+    - web/src/admin/templates/images.html
+    - web/src/admin/templates/attach.html
+    - web/src/admin/templates/mpLib.html
+    - web/src/admin/controller.ts
+    - web/src/admin/main.ts
+    - web/src/admin/nav.json
+    - web/src/admin/registry.json
+    - web/src/shared/api/client.ts
+    - web/src/shared/api/types.ts
+    - web/src/shared/api/mockData.ts
+    - web/src/shared/ui/picker.ts
+    - web/src/shared/ui/feedback.ts
+    - web/src/shared/ui/download.ts
+    - web/src/shared/ui/runtime.ts
+    - web/src/shared/ui/tokens.css
+    - web/src/api/admin.ts
+    - web/src/api/transport.ts
+    - web/src/api/generated/p4-media-compat/p4-media-compat.ts
+    - web/src/api/generated/p4-media-content-delivery/p4-media-content-delivery.ts
+    - web/src/api/generated/health.schemas.ts
+deferred_to_terra:
+  - owner: Terra/Media
+    item: register Media application/store/http wiring in the v3 composition root
+    reason: cmd/aicrm and central webshell are out of scope for this restricted donor commit
+  - owner: Terra/Media
+    item: design independent v3 PostgreSQL tables, receipts, audit, and outbox transaction boundaries
+    reason: donor migrations and v2 stores are prohibited; no v3 migration was added
+  - owner: Terra/Media
+    item: adapt image/attachment multipart writes, reference protection, mini-program and group-invite mutations
+    reason: donor implementations require v2-only events and cross-domain reference ports
+  - owner: Terra/Outbound
+    item: provider upload/lease/reconcile and WeCom send integration
+    reason: this slice freezes provider-ready facts only and must not call providers
+  - owner: Terra/Web
+    item: select and integrate staged frontend files into the v3 webshell/build
+    reason: frontend donor bytes are staged only; no design or API rewrite was authorized
+  - owner: Terra/Media
+    item: decide attachment part-size, upload-session expiry, and content-package publication contracts
+    reason: these contracts require v3 platform/runtime decisions not present in the base
+excluded:
+  - cmd/aicrm
+  - api/openapi.yaml
+  - migrations
+  - go.mod
+  - go.sum
+  - package*.json
+  - deploy
+  - CI
+  - internal/platform
+  - internal/access
+  - internal/webshell central routing
+  - v2 store, worker, historical migration, and runtime files
