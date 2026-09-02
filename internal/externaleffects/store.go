@@ -49,11 +49,29 @@ func (r *Repository) AcceptAndQueue(ctx context.Context, command AcceptCommand) 
 		return Projection{}, Receipt{}, err
 	}
 	defer tx.Rollback(ctx)
+	// Serialize only identical opaque acceptance keys. This makes the unique
+	// acceptance receipt a deterministic replay/drift decision under races.
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, command.ReceiptKey); err != nil {
+		return Projection{}, Receipt{}, err
+	}
 	var id int64
 	var owner, kind, state string
 	var attempts int32
 	var generation int64
 	var updated time.Time
+	var priorReceiptID int64
+	var priorDigest, priorState string
+	var priorCompleted time.Time
+	priorErr := tx.QueryRow(ctx, `SELECT receipt.id,receipt.command_digest,receipt.state,receipt.completed_at,effect.id,effect.owner,effect.kind,effect.state,effect.attempt_count,effect.generation,effect.updated_at FROM external_effect_operation_receipts receipt JOIN external_effects effect ON effect.id=receipt.effect_id WHERE receipt.operation='accept' AND receipt.receipt_key_digest=$1 FOR UPDATE OF receipt,effect`, command.ReceiptKey).Scan(&priorReceiptID, &priorDigest, &priorState, &priorCompleted, &id, &owner, &kind, &state, &attempts, &generation, &updated)
+	if priorErr == nil {
+		if Digest(priorDigest) != command.Digest() {
+			return Projection{}, Receipt{}, ErrPayloadMismatch
+		}
+		return commitProjection(tx, projection(id, Owner(owner), Kind(kind), State(state), attempts, generation, updated), Receipt{ID: "eerop_" + strconv.FormatInt(priorReceiptID, 10), EffectID: effectID(id), CommandDigest: Digest(priorDigest), State: State(priorState), CompletedAt: priorCompleted})
+	}
+	if !errors.Is(priorErr, pgx.ErrNoRows) {
+		return Projection{}, Receipt{}, priorErr
+	}
 	err = tx.QueryRow(ctx, `SELECT id,owner,kind,state,attempt_count,generation,updated_at FROM external_effects WHERE envelope_fingerprint=$1 FOR UPDATE`, command.Envelope.Fingerprint()).Scan(&id, &owner, &kind, &state, &attempts, &generation, &updated)
 	if err == nil {
 		var rid int64

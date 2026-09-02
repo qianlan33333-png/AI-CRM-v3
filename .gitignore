@@ -1,24 +1,2 @@
-# secrets and local environment
-.env
-.env.*
-!.env.example
-*.pem
-*.key
-*.p12
-*.pfx
-
-# Go
-/bin/
-/coverage.out
-*.test
-
-# editors / OS
-.idea/
-.vscode/
-.DS_Store
-
-# generated or local runtime data
-/dist/
-/tmp/
-/data/
-*.log
+node_modules/
+web/dist/

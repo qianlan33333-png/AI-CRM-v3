@@ -182,7 +182,8 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return fail(err)
 	}
 
-	handler, err := routeApplicationWithEffects(healthHandler, accessHandler.Routes(), oneIDHandler.Routes(), effectsHandler, pushCenterHandler, weComHandler, shellHandler, authentication, cfg.PublicOrigin)
+	effectsUI := externaleffects.NewUIHandler("web/dist")
+	handler, err := routeApplicationWithEffects(healthHandler, accessHandler.Routes(), oneIDHandler.Routes(), effectsHandler, pushCenterHandler, effectsUI, weComHandler, shellHandler, authentication, cfg.PublicOrigin)
 	if err != nil {
 		return fail(err)
 	}
@@ -216,11 +217,11 @@ func allowedOAuthRedirects() map[string]struct{} {
 }
 
 func routeApplication(health, access, identity, weCom, shell http.Handler, authentication accessAuthentication, publicOrigin string) (http.Handler, error) {
-	return routeApplicationWithEffects(health, access, identity, http.NotFoundHandler(), http.NotFoundHandler(), weCom, shell, authentication, publicOrigin)
+	return routeApplicationWithEffects(health, access, identity, http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(), weCom, shell, authentication, publicOrigin)
 }
 
-func routeApplicationWithEffects(health, access, identity, effects, pushCenter, weCom, shell http.Handler, authentication accessAuthentication, publicOrigin string) (http.Handler, error) {
-	if health == nil || access == nil || identity == nil || effects == nil || pushCenter == nil || weCom == nil || shell == nil || authentication == nil || canonicalOrigin(publicOrigin) == "" {
+func routeApplicationWithEffects(health, access, identity, effects, pushCenter, effectsUI, weCom, shell http.Handler, authentication accessAuthentication, publicOrigin string) (http.Handler, error) {
+	if health == nil || access == nil || identity == nil || effects == nil || pushCenter == nil || effectsUI == nil || weCom == nil || shell == nil || authentication == nil || canonicalOrigin(publicOrigin) == "" {
 		return nil, errors.New("application HTTP dependencies are required")
 	}
 	mux := http.NewServeMux()
@@ -233,6 +234,8 @@ func routeApplicationWithEffects(health, access, identity, effects, pushCenter, 
 	mux.Handle("/api/admin/external-effects", effects)
 	mux.Handle("/api/admin/external-effects/", effects)
 	mux.Handle("/api/admin/push-center/", pushCenter)
+	mux.Handle("/assets/", requireAdminSession(authentication, effectsUI))
+	mux.Handle("/admin/external-effects", requireAdminSession(authentication, effectsUI))
 	mux.Handle("/wecom/external-contact/callback", weCom)
 	mux.Handle("/auth/wecom/start", weCom)
 	mux.Handle("/auth/wecom/callback", weCom)

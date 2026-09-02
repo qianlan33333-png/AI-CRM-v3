@@ -41,6 +41,10 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - uses: actions/setup-node@1e60f620b9541d4a5d0cfcecf1620d9c4093a2c3
+        with: {node-version: '24.18.0', cache: npm}
+      - name: Build frozen External Effects workspace
+        run: npm ci && scripts/check-pr01-donor-manifest.sh && npm run typecheck && npm run build
       - name: Check repository
         run: make check
       - name: Race-check security and identity boundaries
@@ -61,6 +65,8 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - uses: actions/setup-node@1e60f620b9541d4a5d0cfcecf1620d9c4093a2c3
+        with: {node-version: '24.18.0', cache: npm}
       - name: Build release artifact
         env:
           CGO_ENABLED: "0"
@@ -72,7 +78,13 @@ jobs:
           go build -trimpath -ldflags "-s -w" -o release/bin/aicrm ./cmd/aicrm
           go build -trimpath -ldflags "-s -w" -o release/bin/migrate-platform ./cmd/migrate-platform
           go build -trimpath -ldflags "-s -w" -o release/bin/migrate-river ./cmd/migrate-river
+          npm ci
+          scripts/check-pr01-donor-manifest.sh
+          npm run typecheck
+          npm run build
           cp -R migrations deploy release/
+          mkdir -p release/web
+          cp -R web/dist release/web/
           tar -C release -czf "aicrm-${GITHUB_SHA}.tar.gz" .
       - name: Configure pinned SSH host
         env:

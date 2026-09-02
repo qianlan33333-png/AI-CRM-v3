@@ -10,6 +10,10 @@ assets:
     sha256: 8646e9534ca331a107fb2afe80cbb0ec9c50c999a1f8ca6dd57c6be926b6683e
     classification: BEHAVIOR
     reason: Push Center local-only DTO and request contract
+  - path: web/src/admin/sections/observability.ts
+    sha256: 333cc2e1e7309ec751c56db402ce1abed0f10bcb859d92dabe84da64065b1ef2
+    classification: BEHAVIOR
+    reason: bundled transitive import of the frozen hidden workspace
   - path: internal/externaleffects/runtime.go
     classification: BEHAVIOR
     reason: closed digest-only state machine and unknown-result rule

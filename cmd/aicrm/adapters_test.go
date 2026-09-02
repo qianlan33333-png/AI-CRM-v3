@@ -165,7 +165,7 @@ func TestApplicationRouterOwnsEffectsAndPushCenterSeparately(t *testing.T) {
 			w.WriteHeader(http.StatusNoContent)
 		})
 	}
-	handler, err := routeApplicationWithEffects(marker("health"), marker("access"), marker("identity"), marker("effects"), marker("push"), marker("wecom"), marker("shell"), &fakeAccessAuthentication{}, "https://crm.example")
+	handler, err := routeApplicationWithEffects(marker("health"), marker("access"), marker("identity"), marker("effects"), marker("push"), marker("ui"), marker("wecom"), marker("shell"), &fakeAccessAuthentication{}, "https://crm.example")
 	if err != nil {
 		t.Fatal(err)
 	}

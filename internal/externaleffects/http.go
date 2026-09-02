@@ -76,6 +76,13 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeEffectJSON(w, http.StatusOK, value)
 		return
 	}
+	if path == "/jobs" {
+		if r.Method != http.MethodGet || !h.read(w, r) {
+			return
+		}
+		h.jobs(w, r)
+		return
+	}
 	parts := strings.Split(strings.TrimPrefix(path, "/"), "/")
 	if len(parts) == 0 || parts[0] == "" {
 		writeEffectError(w, http.StatusNotFound, "not_found")
@@ -121,6 +128,34 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.writeResult(w, value, err)
+}
+
+func (h *HTTPHandler) jobs(w http.ResponseWriter, r *http.Request) {
+	rows, err := h.repository.pool.Query(r.Context(), `SELECT job.river_job_id,effect.state,effect.attempt_count,effect.created_at,effect.updated_at FROM external_effect_jobs job JOIN external_effects effect ON effect.id=job.effect_id WHERE job.generation=effect.generation ORDER BY effect.updated_at DESC LIMIT 50`)
+	if err != nil {
+		writeEffectError(w, 500, "unavailable")
+		return
+	}
+	defer rows.Close()
+	items := []map[string]any{}
+	for rows.Next() {
+		var id int64
+		var state string
+		var count int32
+		var created, updated any
+		if err = rows.Scan(&id, &state, &count, &created, &updated); err != nil {
+			writeEffectError(w, 500, "unavailable")
+			return
+		}
+		items = append(items, map[string]any{"id": "eerj_" + strconv.FormatInt(id, 10), "status": state, "classification": effectClassification(state), "attempt_count": count, "created_at": created, "status_updated_at": updated})
+	}
+	writeEffectJSON(w, 200, map[string]any{"ok": true, "local_fact_only": true, "real_external_call_executed": false, "delivery_proven": false, "provider_execution_eligible": false, "items": items})
+}
+func effectClassification(state string) string {
+	if state == string(StateUnknown) {
+		return "manual_review"
+	}
+	return "local"
 }
 
 func (h *HTTPHandler) read(w http.ResponseWriter, r *http.Request) bool {

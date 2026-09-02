@@ -145,6 +145,20 @@ func (h *PushCenterHandler) stats(w http.ResponseWriter, r *http.Request) {
 	}
 	writeEffectJSON(w, 200, map[string]any{"ok": true, "route_owner": "ai_crm_next", "real_external_call_executed": false, "filters": map[string]any{}, "counts": map[string]any{"total": len(items), "pending": c["accepted"] + c["queued"], "running": c["attempted"], "sent": sent, "failed": failed}})
 }
+func pushStatus(state string) string {
+	switch State(state) {
+	case StateAccepted, StateQueued:
+		return "pending"
+	case StateAttempted:
+		return "running"
+	case StateExecuted, StateReconciled:
+		return "sent"
+	case StateFinalFailed:
+		return "failed"
+	default:
+		return state
+	}
+}
 func (h *PushCenterHandler) jobs(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.repository.pool.Query(r.Context(), `SELECT job.river_job_id,effect.state,effect.attempt_count,effect.created_at,effect.updated_at FROM external_effect_jobs job JOIN external_effects effect ON effect.id=job.effect_id WHERE job.generation=effect.generation ORDER BY effect.updated_at DESC LIMIT 50`)
 	if err != nil {
@@ -166,7 +180,7 @@ func (h *PushCenterHandler) jobs(w http.ResponseWriter, r *http.Request) {
 		if state == string(StateUnknown) {
 			classification = "manual_review"
 		}
-		items = append(items, map[string]any{"job_id": id, "status": state, "attempt_count": count, "failure_class": classification, "created_at": created, "status_updated_at": updated, "local_fact_only": true, "real_external_call_executed": false, "delivery_proven": false, "provider_execution_eligible": false})
+		items = append(items, map[string]any{"job_id": id, "status": pushStatus(state), "attempt_count": count, "failure_class": classification, "created_at": created, "status_updated_at": updated, "local_fact_only": true, "real_external_call_executed": false, "delivery_proven": false, "provider_execution_eligible": false})
 	}
 	writeEffectJSON(w, 200, map[string]any{"ok": true, "fallback_used": false, "local_fact_only": true, "real_external_call_executed": false, "delivery_proven": false, "provider_execution_eligible": false, "items": items})
 }
@@ -184,10 +198,50 @@ func (h *PushCenterHandler) job(w http.ResponseWriter, r *http.Request, raw stri
 		writeEffectError(w, 404, "not_found")
 		return
 	}
-	body := map[string]any{"ok": true, "fallback_used": false, "local_fact_only": true, "real_external_call_executed": false, "delivery_proven": false, "provider_execution_eligible": false, "job": map[string]any{"job_id": id, "status": state, "attempt_count": count, "failure_class": "local", "created_at": created, "status_updated_at": updated}}
+	body := map[string]any{"ok": true, "fallback_used": false, "local_fact_only": true, "real_external_call_executed": false, "delivery_proven": false, "provider_execution_eligible": false, "job": map[string]any{"job_id": id, "status": pushStatus(state), "attempt_count": count, "failure_class": effectClassification(state), "created_at": created, "status_updated_at": updated}}
 	if reconciliation {
-		body["attempts"] = []any{}
-		body["control_receipts"] = []any{}
+		effectID := int64(0)
+		if err = h.repository.pool.QueryRow(r.Context(), `SELECT effect_id FROM external_effect_jobs WHERE river_job_id=$1`, id).Scan(&effectID); err != nil {
+			writeEffectError(w, 404, "not_found")
+			return
+		}
+		attemptRows, queryErr := h.repository.pool.Query(r.Context(), `SELECT id,number,state,completed_at,started_at FROM external_effect_attempts WHERE effect_id=$1 ORDER BY number`, effectID)
+		if queryErr != nil {
+			writeEffectError(w, 500, "unavailable")
+			return
+		}
+		defer attemptRows.Close()
+		attempts := []any{}
+		for attemptRows.Next() {
+			var attemptID int64
+			var number int32
+			var attemptState string
+			var completed any
+			var started any
+			if queryErr = attemptRows.Scan(&attemptID, &number, &attemptState, &completed, &started); queryErr != nil {
+				writeEffectError(w, 500, "unavailable")
+				return
+			}
+			attempts = append(attempts, map[string]any{"attempt_id": attemptID, "attempt": number, "state": attemptState, "failure_class": effectClassification(attemptState), "completed_at": completed, "dispatch_started_at": started, "local_fact_only": true, "real_external_call_executed": false, "delivery_proven": false})
+		}
+		receiptRows, queryErr := h.repository.pool.Query(r.Context(), `SELECT operation,state,completed_at FROM external_effect_operation_receipts WHERE effect_id=$1 ORDER BY id`, effectID)
+		if queryErr != nil {
+			writeEffectError(w, 500, "unavailable")
+			return
+		}
+		defer receiptRows.Close()
+		receipts := []any{}
+		for receiptRows.Next() {
+			var operation, status string
+			var completed any
+			if queryErr = receiptRows.Scan(&operation, &status, &completed); queryErr != nil {
+				writeEffectError(w, 500, "unavailable")
+				return
+			}
+			receipts = append(receipts, map[string]any{"operation": operation, "task_status": pushStatus(status), "completed_at": completed, "local_fact_only": true, "real_external_call_executed": false, "delivery_proven": false})
+		}
+		body["attempts"] = attempts
+		body["control_receipts"] = receipts
 	}
 	writeEffectJSON(w, 200, body)
 }

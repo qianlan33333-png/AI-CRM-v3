@@ -36,6 +36,7 @@ test -x "$release_dir/bin/aicrm"
 test -x "$release_dir/bin/migrate-platform"
 test -x "$release_dir/bin/migrate-river"
 test -f "$release_dir/migrations/0005_external_effects.sql"
+test -f "$release_dir/web/dist/asset-manifest.json"
 printf 'AICRM_RELEASE_SHA=%s\n' "$release_sha" > "$release_dir/release.env"
 chown -R aicrm:aicrm "$release_dir"
 

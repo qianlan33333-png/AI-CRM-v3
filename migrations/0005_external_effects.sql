@@ -55,6 +55,7 @@ CREATE TABLE external_effect_attempts (
     UNIQUE(effect_id, number, generation),
     CONSTRAINT external_effect_attempts_real_call_requires_attempt CHECK (NOT real_external_call_executed OR call_attempted)
 );
+CREATE UNIQUE INDEX external_effect_accept_receipt_key_unique ON external_effect_operation_receipts (receipt_key_digest) WHERE operation = 'accept';
 
 CREATE TABLE external_effect_jobs (
     effect_id BIGINT NOT NULL,
@@ -70,7 +71,7 @@ CREATE TABLE external_effect_jobs (
 
 -- Effects, attempts and receipts are audit facts. Operators create a new
 -- control receipt; they never delete or rewrite historical execution facts.
-CREATE FUNCTION public.external_effects_reject_delete() RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog AS $$
+CREATE OR REPLACE FUNCTION public.external_effects_reject_delete() RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog AS $$
 BEGIN
   RAISE EXCEPTION 'external effect facts are immutable';
 END;
