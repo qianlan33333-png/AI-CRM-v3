@@ -1,6 +1,8 @@
 # SHA-256 evidence for byte-exact PR09 frontend donor files.
 # Source hashes are from donor commit 6bfbe5816bb89913c70adaca87d6a486260e016e.
 # Target hashes are from web/donors/adminops-v2/src in this worktree.
+# This front-only view is retained for compatibility; the canonical combined source/target
+# manifest is docs/migration/adminops/pr09-donor-sha256.txt.
 
 1b6a6d05e3300e3a59fc00068daa987b4e586c57a122f726c1c9abbbc1f34eb3  source:web/src/admin/templates/config.html
 235dcf711ce9965a6862fa5f0b9cc0d967f2fc25c13cd5a19d17ec40e446df14  source:web/src/admin/templates/configDetail.html
@@ -17,6 +19,7 @@ d1827f386c993e929ac37ad5bcdda68aa8bb5fa948e634435418341b1869f182  source:web/src
 00ab5702d1f2d3aed9440010ac5642669634be822726036e95892a155f7b31cd  source:web/src/api/generated/p4-system-health/p4-system-health.ts
 362be88fb99d33a236ce9b288453e7d1eed8e640179c49a1cb9ddfeec6a186ca  source:web/src/api/generated/p4-execution-runtime-compat/p4-execution-runtime-compat.ts
 2685d45c3ab155bfba8f51250e601ab82bd52652758f9595c14e21824149e43c  source:web/src/api/generated/p4-release-plane/p4-release-plane.ts
+fc5e4b447d10487f571fdafd953cb51756274bc40b019bb51b6cdd61cfbad885  source:web/src/api/transport.ts
 
 1b6a6d05e3300e3a59fc00068daa987b4e586c57a122f726c1c9abbbc1f34eb3  target:web/donors/adminops-v2/src/admin/templates/config.html
 235dcf711ce9965a6862fa5f0b9cc0d967f2fc25c13cd5a19d17ec40e446df14  target:web/donors/adminops-v2/src/admin/templates/configDetail.html
@@ -33,3 +36,4 @@ d1827f386c993e929ac37ad5bcdda68aa8bb5fa948e634435418341b1869f182  target:web/don
 00ab5702d1f2d3aed9440010ac5642669634be822726036e95892a155f7b31cd  target:web/donors/adminops-v2/src/api/generated/p4-system-health/p4-system-health.ts
 362be88fb99d33a236ce9b288453e7d1eed8e640179c49a1cb9ddfeec6a186ca  target:web/donors/adminops-v2/src/api/generated/p4-execution-runtime-compat/p4-execution-runtime-compat.ts
 2685d45c3ab155bfba8f51250e601ab82bd52652758f9595c14e21824149e43c  target:web/donors/adminops-v2/src/api/generated/p4-release-plane/p4-release-plane.ts
+fc5e4b447d10487f571fdafd953cb51756274bc40b019bb51b6cdd61cfbad885  target:web/donors/adminops-v2/src/api/transport.ts
