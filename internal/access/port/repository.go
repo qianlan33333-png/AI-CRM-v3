@@ -13,6 +13,8 @@ type Repository interface {
 	CountUsers(context.Context) (int64, error)
 	UserByID(context.Context, int64, bool) (domain.User, error)
 	UserByUsername(context.Context, string, bool) (domain.User, error)
+	UserByWeComUserID(context.Context, string, bool) (domain.User, error)
+	ListUsers(context.Context) ([]domain.User, error)
 	CreateUser(context.Context, domain.User) (domain.User, error)
 	BootstrapUser(context.Context, domain.User) (domain.User, bool, error)
 	SetActive(context.Context, int64, bool, time.Time) error

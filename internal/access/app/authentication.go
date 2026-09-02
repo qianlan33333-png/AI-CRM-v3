@@ -39,11 +39,16 @@ type LoginCommand struct {
 	Remote   string
 }
 
+type WeComLoginCommand struct {
+	WeComUserID string
+	Remote      string
+}
+
 type IssuedSession struct {
 	SessionToken string
 	CSRFToken    string
 	ExpiresAt    time.Time
-	User         domain.User
+	User         UserSummary
 }
 
 func NewAuthentication(repository accessport.Repository, uow platformport.UnitOfWork, passwords Passwords, config AuthenticationConfig) (*Authentication, error) {
@@ -72,17 +77,15 @@ func NewAuthentication(repository accessport.Repository, uow platformport.UnitOf
 }
 
 func (service *Authentication) Login(ctx context.Context, command LoginCommand) (IssuedSession, error) {
-	username, err := domain.NormalizeUsername(command.Username)
-	if err != nil || command.Password == "" {
-		return IssuedSession{}, domain.ErrInvalidCredentials
-	}
+	candidateUsername := strings.ToLower(strings.TrimSpace(command.Username))
+	username, usernameErr := domain.NormalizeUsername(candidateUsername)
 	now := service.config.Now().UTC()
-	identifierDigest := credential.Digest(username)
+	identifierDigest := credential.Digest(candidateUsername)
 	remoteDigest := credential.Digest(strings.TrimSpace(command.Remote))
-	rateDigest := credential.Digest(username + "\x00" + strings.TrimSpace(command.Remote))
+	rateDigest := credential.Digest(candidateUsername + "\x00" + strings.TrimSpace(command.Remote))
 	var issued IssuedSession
 	var decisionErr error
-	err = service.uow.Within(ctx, func(txContext context.Context) error {
+	err := service.uow.Within(ctx, func(txContext context.Context) error {
 		limit, loadErr := service.repository.LoginRateLimit(txContext, rateDigest, true)
 		if loadErr != nil {
 			return loadErr
@@ -96,11 +99,21 @@ func (service *Authentication) Login(ctx context.Context, command LoginCommand) 
 			if err := service.auditLogin(txContext, nil, identifierDigest, remoteDigest, "rate_limited", "threshold_exceeded", now); err != nil {
 				return err
 			}
-			decisionErr = domain.ErrRateLimited
+			if usernameErr != nil {
+				decisionErr = domain.ErrInvalidCredentials
+			} else {
+				decisionErr = domain.ErrRateLimited
+			}
 			return nil
 		}
 
-		user, userErr := service.repository.UserByUsername(txContext, username, true)
+		lookupUsername := username
+		if usernameErr != nil {
+			// This value cannot satisfy the database username constraint, but still
+			// executes the same indexed lookup as a syntactically valid identifier.
+			lookupUsername = strings.Repeat("x", 121)
+		}
+		user, userErr := service.repository.UserByUsername(txContext, lookupUsername, true)
 		validPassword := false
 		if userErr == nil {
 			validPassword = service.passwords.Verify(command.Password, user.PasswordHash)
@@ -121,6 +134,9 @@ func (service *Authentication) Login(ctx context.Context, command LoginCommand) 
 			}
 			outcome := "invalid_credentials"
 			reason := "credentials_rejected"
+			if usernameErr != nil {
+				reason = "malformed_identifier"
+			}
 			var userID *int64
 			if userErr == nil {
 				userID = &user.ID
@@ -134,6 +150,13 @@ func (service *Authentication) Login(ctx context.Context, command LoginCommand) 
 			decisionErr = domain.ErrInvalidCredentials
 			return nil
 		}
+		if len(user.Roles) == 0 {
+			if err := service.auditLogin(txContext, &user.ID, identifierDigest, remoteDigest, "invalid_credentials", "no_roles", now); err != nil {
+				return err
+			}
+			decisionErr = domain.ErrPermissionDenied
+			return nil
+		}
 
 		limit.FailureCount = 0
 		limit.BlockedUntil = nil
@@ -142,32 +165,9 @@ func (service *Authentication) Login(ctx context.Context, command LoginCommand) 
 		if err := service.repository.SaveLoginRateLimit(txContext, limit); err != nil {
 			return err
 		}
-		sessionToken, sessionDigest, err := credential.IssueOpaque("as_")
-		if err != nil {
-			return err
-		}
-		csrfToken, csrfDigest, err := credential.IssueOpaque("ac_")
-		if err != nil {
-			return err
-		}
-		expires := now.Add(service.config.SessionTTL)
-		if _, err = service.repository.CreateSession(txContext, domain.Session{
-			TokenDigest: sessionDigest, CSRFTokenDigest: csrfDigest,
-			AdminUserID: user.ID, SessionVersion: user.SessionVersion, ExpiresAt: expires,
-		}); err != nil {
-			return err
-		}
-		if err = service.repository.SetLastLogin(txContext, user.ID, now); err != nil {
-			return err
-		}
-		if err = service.repository.AppendLoginAudit(txContext, domain.LoginAudit{
-			AdminUserID: &user.ID, IdentifierDigest: identifierDigest, RemoteDigest: remoteDigest,
-			Outcome: "succeeded", Reason: "local_password", CreatedAt: now,
-		}); err != nil {
-			return err
-		}
-		issued = IssuedSession{SessionToken: sessionToken, CSRFToken: csrfToken, ExpiresAt: expires, User: user}
-		return nil
+		var issueErr error
+		issued, issueErr = service.issueSession(txContext, user, identifierDigest, remoteDigest, "local_password", now)
+		return issueErr
 	})
 	if err != nil {
 		return IssuedSession{}, err
@@ -176,6 +176,91 @@ func (service *Authentication) Login(ctx context.Context, command LoginCommand) 
 		return IssuedSession{}, decisionErr
 	}
 	return issued, nil
+}
+
+// LoginWithWeComUserID is the sole access-owned bridge from a provider-verified
+// WeCom employee identity to the same database session used by local passwords.
+// Composition root adapters may expose it to wecom ports; wecom must not import app.
+func (service *Authentication) LoginWithWeComUserID(ctx context.Context, command WeComLoginCommand) (IssuedSession, error) {
+	candidate := strings.TrimSpace(command.WeComUserID)
+	wecomUserID, validationErr := domain.NormalizeWeComUserID(candidate)
+	now := service.config.Now().UTC()
+	identifierDigest := credential.Digest(candidate)
+	remoteDigest := credential.Digest(strings.TrimSpace(command.Remote))
+	var issued IssuedSession
+	var decisionErr error
+	err := service.uow.Within(ctx, func(txContext context.Context) error {
+		if validationErr != nil {
+			if err := service.auditLogin(txContext, nil, identifierDigest, remoteDigest, "invalid_credentials", "malformed_wecom_userid", now); err != nil {
+				return err
+			}
+			decisionErr = domain.ErrInvalidCredentials
+			return nil
+		}
+		user, err := service.repository.UserByWeComUserID(txContext, wecomUserID, true)
+		if errors.Is(err, domain.ErrNotFound) {
+			if auditErr := service.auditLogin(txContext, nil, identifierDigest, remoteDigest, "invalid_credentials", "wecom_user_not_authorized", now); auditErr != nil {
+				return auditErr
+			}
+			decisionErr = domain.ErrInvalidCredentials
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if !user.Active {
+			if auditErr := service.auditLogin(txContext, &user.ID, identifierDigest, remoteDigest, "disabled", "account_disabled", now); auditErr != nil {
+				return auditErr
+			}
+			decisionErr = domain.ErrInvalidCredentials
+			return nil
+		}
+		if len(user.Roles) == 0 {
+			if auditErr := service.auditLogin(txContext, &user.ID, identifierDigest, remoteDigest, "invalid_credentials", "no_roles", now); auditErr != nil {
+				return auditErr
+			}
+			decisionErr = domain.ErrPermissionDenied
+			return nil
+		}
+		issued, err = service.issueSession(txContext, user, identifierDigest, remoteDigest, "wecom_oauth", now)
+		return err
+	})
+	if err != nil {
+		return IssuedSession{}, err
+	}
+	if decisionErr != nil {
+		return IssuedSession{}, decisionErr
+	}
+	return issued, nil
+}
+
+func (service *Authentication) issueSession(ctx context.Context, user domain.User, identifierDigest, remoteDigest [32]byte, reason string, now time.Time) (IssuedSession, error) {
+	sessionToken, sessionDigest, err := credential.IssueOpaque("as_")
+	if err != nil {
+		return IssuedSession{}, err
+	}
+	csrfToken, csrfDigest, err := credential.IssueOpaque("ac_")
+	if err != nil {
+		return IssuedSession{}, err
+	}
+	expires := now.Add(service.config.SessionTTL)
+	if _, err = service.repository.CreateSession(ctx, domain.Session{
+		TokenDigest: sessionDigest, CSRFTokenDigest: csrfDigest,
+		AdminUserID: user.ID, SessionVersion: user.SessionVersion, ExpiresAt: expires,
+	}); err != nil {
+		return IssuedSession{}, err
+	}
+	if err = service.repository.SetLastLogin(ctx, user.ID, now); err != nil {
+		return IssuedSession{}, err
+	}
+	if err = service.repository.AppendLoginAudit(ctx, domain.LoginAudit{
+		AdminUserID: &user.ID, IdentifierDigest: identifierDigest, RemoteDigest: remoteDigest,
+		Outcome: "succeeded", Reason: reason, CreatedAt: now,
+	}); err != nil {
+		return IssuedSession{}, err
+	}
+	user.LastLoginAt = &now
+	return IssuedSession{SessionToken: sessionToken, CSRFToken: csrfToken, ExpiresAt: expires, User: summarizeUser(user)}, nil
 }
 
 func (service *Authentication) Authenticate(ctx context.Context, sessionToken string) (domain.Principal, error) {

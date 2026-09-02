@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/qianlan33333-png/AI-CRM-v3/internal/access/credential"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
 	accessport "github.com/qianlan33333-png/AI-CRM-v3/internal/access/port"
 	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
@@ -32,6 +33,21 @@ type AddUserInput struct {
 	Roles       []domain.Role
 }
 
+// UserSummary is deliberately safe for employee-management responses.
+// Password hashes and session or CSRF digests cannot be represented here.
+type UserSummary struct {
+	ID             int64         `json:"id"`
+	Username       string        `json:"username"`
+	DisplayName    string        `json:"display_name"`
+	WeComUserID    string        `json:"wecom_userid"`
+	Active         bool          `json:"active"`
+	SessionVersion int64         `json:"session_version"`
+	Roles          []domain.Role `json:"roles"`
+	LastLoginAt    *time.Time    `json:"last_login_at,omitempty"`
+	CreatedAt      time.Time     `json:"created_at"`
+	UpdatedAt      time.Time     `json:"updated_at"`
+}
+
 func NewManagement(repository accessport.Repository, uow platformport.UnitOfWork, passwords Passwords, now func() time.Time) (*Management, error) {
 	if repository == nil || uow == nil || passwords == nil {
 		return nil, errors.New("access management dependencies are required")
@@ -51,7 +67,7 @@ func (service *Management) Bootstrap(ctx context.Context, input BootstrapInput) 
 	}
 	passwordHash, err := service.passwords.Hash(input.Password)
 	if err != nil {
-		return domain.User{}, false, err
+		return domain.User{}, false, passwordInputError(err)
 	}
 	var user domain.User
 	var created bool
@@ -83,7 +99,7 @@ func (service *Management) AddUser(ctx context.Context, actor domain.Principal, 
 	}
 	passwordHash, err := service.passwords.Hash(input.Password)
 	if err != nil {
-		return domain.User{}, err
+		return domain.User{}, passwordInputError(err)
 	}
 	var result domain.User
 	err = service.uow.Within(ctx, func(txContext context.Context) error {
@@ -97,6 +113,34 @@ func (service *Management) AddUser(ctx context.Context, actor domain.Principal, 
 		return service.audit(txContext, actor.InternalID, result.ID, "create", map[string]any{"roles": roles})
 	})
 	return result, err
+}
+
+func (service *Management) ListUsers(ctx context.Context, actor domain.Principal) ([]UserSummary, error) {
+	if err := requireSuperAdmin(actor); err != nil {
+		return nil, err
+	}
+	var result []UserSummary
+	err := service.uow.Within(ctx, func(txContext context.Context) error {
+		users, err := service.repository.ListUsers(txContext)
+		if err != nil {
+			return err
+		}
+		result = make([]UserSummary, 0, len(users))
+		for _, user := range users {
+			result = append(result, summarizeUser(user))
+		}
+		return nil
+	})
+	return result, err
+}
+
+func summarizeUser(user domain.User) UserSummary {
+	return UserSummary{
+		ID: user.ID, Username: user.Username, DisplayName: user.DisplayName,
+		WeComUserID: user.WeComUserID, Active: user.Active, SessionVersion: user.SessionVersion,
+		Roles: append([]domain.Role(nil), user.Roles...), LastLoginAt: user.LastLoginAt,
+		CreatedAt: user.CreatedAt, UpdatedAt: user.UpdatedAt,
+	}
 }
 
 func (service *Management) DisableUser(ctx context.Context, actor domain.Principal, targetID int64) error {
@@ -119,8 +163,15 @@ func (service *Management) BindWeComUserID(ctx context.Context, actor domain.Pri
 		return err
 	}
 	value = strings.TrimSpace(value)
-	if targetID < 1 || len(value) > 128 || strings.ContainsAny(value, "\x00\r\n\t") {
+	if targetID < 1 {
 		return domain.ErrInvalidInput
+	}
+	if value != "" {
+		var err error
+		value, err = domain.NormalizeWeComUserID(value)
+		if err != nil {
+			return domain.ErrInvalidInput
+		}
 	}
 	return service.uow.Within(ctx, func(txContext context.Context) error {
 		if err := service.repository.SetWeComUserID(txContext, targetID, value, service.now().UTC()); err != nil {
@@ -154,8 +205,11 @@ func (service *Management) ResetPassword(ctx context.Context, actor domain.Princ
 		return err
 	}
 	passwordHash, err := service.passwords.Hash(password)
-	if err != nil || targetID < 1 {
+	if targetID < 1 {
 		return domain.ErrInvalidInput
+	}
+	if err != nil {
+		return passwordInputError(err)
 	}
 	return service.uow.Within(ctx, func(txContext context.Context) error {
 		if err := service.repository.SetPasswordHash(txContext, targetID, passwordHash, service.now().UTC()); err != nil {
@@ -163,6 +217,13 @@ func (service *Management) ResetPassword(ctx context.Context, actor domain.Princ
 		}
 		return service.audit(txContext, actor.InternalID, targetID, "reset_password", nil)
 	})
+}
+
+func passwordInputError(err error) error {
+	if errors.Is(err, credential.ErrInvalidPassword) || errors.Is(err, domain.ErrInvalidInput) {
+		return domain.ErrInvalidInput
+	}
+	return err
 }
 
 func requireSuperAdmin(actor domain.Principal) error {

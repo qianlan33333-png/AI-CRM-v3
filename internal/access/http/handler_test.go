@@ -20,14 +20,19 @@ func (testRenderer) Render(_ context.Context, response http.ResponseWriter, stat
 }
 
 type testAuth struct {
-	csrfErr error
+	csrfErr        error
+	authenticateAs domain.Principal
 }
 
 func (testAuth) Login(context.Context, app.LoginCommand) (app.IssuedSession, error) {
 	return app.IssuedSession{SessionToken: "session-secret", CSRFToken: "csrf-secret",
-		ExpiresAt: time.Now().Add(time.Hour), User: domain.User{ID: 1}}, nil
+		ExpiresAt: time.Now().Add(time.Hour), User: app.UserSummary{ID: 1}}, nil
 }
-func (testAuth) Authenticate(context.Context, string) (domain.Principal, error) {
+
+func (auth testAuth) Authenticate(context.Context, string) (domain.Principal, error) {
+	if auth.authenticateAs.InternalID > 0 {
+		return auth.authenticateAs, nil
+	}
 	return domain.Principal{}, domain.ErrAuthentication
 }
 func (auth testAuth) AuthorizeCSRF(context.Context, string, string, string) (domain.Principal, error) {
@@ -39,6 +44,11 @@ func (auth testAuth) AuthorizeCSRF(context.Context, string, string, string) (dom
 func (auth testAuth) Logout(context.Context, string, string, string) error { return auth.csrfErr }
 
 type testManagement struct{}
+
+func (testManagement) ListUsers(context.Context, domain.Principal) ([]app.UserSummary, error) {
+	return []app.UserSummary{{ID: 2, Username: "employee", DisplayName: "Employee", Active: true,
+		SessionVersion: 3, Roles: []domain.Role{domain.RoleViewer}}}, nil
+}
 
 func (testManagement) AddUser(context.Context, domain.Principal, app.AddUserInput) (domain.User, error) {
 	return domain.User{ID: 2, Username: "employee", Active: true}, nil
@@ -89,6 +99,25 @@ func TestManagementHandlerRejectsMissingCSRF(t *testing.T) {
 	handler.Routes().ServeHTTP(response, request)
 	if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), "csrf_required") {
 		t.Fatalf("status=%d body=%q", response.Code, response.Body.String())
+	}
+}
+
+func TestListUsersNeedsSessionButNotCSRFAndReturnsPublicFields(t *testing.T) {
+	principal := domain.Principal{Kind: domain.KindAdmin, InternalID: 1, Roles: []domain.Role{domain.RoleSuperAdmin}}
+	handler, err := NewHandler(Config{Renderer: testRenderer{}, Auth: testAuth{authenticateAs: principal}, Management: testManagement{}, CookieSecure: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/api/admin/access/users", nil)
+	request.AddCookie(&http.Cookie{Name: SessionCookieName, Value: "session-secret"})
+	response := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%q", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	if !strings.Contains(body, `"username":"employee"`) || strings.Contains(body, "password") || strings.Contains(body, "digest") {
+		t.Fatalf("public list body=%q", body)
 	}
 }
 

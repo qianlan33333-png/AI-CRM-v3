@@ -141,3 +141,18 @@ func NormalizeUsername(value string) (string, error) {
 	}
 	return value, nil
 }
+
+func NormalizeWeComUserID(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if len(value) < 1 || len(value) > 128 {
+		return "", ErrInvalidInput
+	}
+	for _, character := range value {
+		if (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') ||
+			(character >= '0' && character <= '9') || strings.ContainsRune("-_.@", character) {
+			continue
+		}
+		return "", ErrInvalidInput
+	}
+	return value, nil
+}

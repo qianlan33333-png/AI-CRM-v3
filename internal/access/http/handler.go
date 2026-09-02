@@ -34,6 +34,7 @@ type Authentication interface {
 }
 
 type Management interface {
+	ListUsers(context.Context, domain.Principal) ([]app.UserSummary, error)
 	AddUser(context.Context, domain.Principal, app.AddUserInput) (domain.User, error)
 	DisableUser(context.Context, domain.Principal, int64) error
 	BindWeComUserID(context.Context, domain.Principal, int64, string) error
@@ -79,12 +80,31 @@ func (handler *Handler) Routes() nethttp.Handler {
 	mux.HandleFunc("GET /login", handler.loginPage)
 	mux.HandleFunc("POST /login", handler.login)
 	mux.HandleFunc("POST /logout", handler.logout)
+	mux.HandleFunc("GET /api/admin/access/users", handler.listUsers)
 	mux.HandleFunc("POST /api/admin/access/users", handler.addUser)
 	mux.HandleFunc("POST /api/admin/access/users/{id}/disable", handler.disableUser)
 	mux.HandleFunc("POST /api/admin/access/users/{id}/wecom-userid", handler.bindWeCom)
 	mux.HandleFunc("POST /api/admin/access/users/{id}/roles", handler.changeRoles)
 	mux.HandleFunc("POST /api/admin/access/users/{id}/password", handler.resetPassword)
 	return mux
+}
+
+func (handler *Handler) listUsers(response nethttp.ResponseWriter, request *nethttp.Request) {
+	var session string
+	if cookie, err := request.Cookie(SessionCookieName); err == nil {
+		session = cookie.Value
+	}
+	actor, err := handler.auth.Authenticate(request.Context(), session)
+	if err != nil {
+		handler.writeError(response, request, err)
+		return
+	}
+	users, err := handler.management.ListUsers(request.Context(), actor)
+	if err != nil {
+		handler.writeError(response, request, err)
+		return
+	}
+	writeJSON(response, nethttp.StatusOK, map[string]any{"ok": true, "users": users})
 }
 
 func (handler *Handler) loginPage(response nethttp.ResponseWriter, request *nethttp.Request) {

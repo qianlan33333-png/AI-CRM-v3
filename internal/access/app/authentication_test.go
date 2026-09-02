@@ -2,11 +2,14 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/qianlan33333-png/AI-CRM-v3/internal/access/credential"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
 )
 
@@ -56,6 +59,21 @@ func (repo *memoryRepository) UserByUsername(_ context.Context, username string,
 		}
 	}
 	return domain.User{}, domain.ErrNotFound
+}
+func (repo *memoryRepository) UserByWeComUserID(_ context.Context, wecomUserID string, _ bool) (domain.User, error) {
+	for _, user := range repo.users {
+		if user.WeComUserID == wecomUserID {
+			return user, nil
+		}
+	}
+	return domain.User{}, domain.ErrNotFound
+}
+func (repo *memoryRepository) ListUsers(context.Context) ([]domain.User, error) {
+	result := make([]domain.User, 0, len(repo.users))
+	for _, user := range repo.users {
+		result = append(result, user)
+	}
+	return result, nil
 }
 func (repo *memoryRepository) CreateUser(_ context.Context, user domain.User) (domain.User, error) {
 	user.ID = repo.nextID
@@ -265,5 +283,106 @@ func TestBootstrapIsIdempotentAndDoesNotRotateExistingPassword(t *testing.T) {
 	})
 	if err != nil || created || again.ID != first.ID || again.PasswordHash != "hash:initial-password" {
 		t.Fatalf("second bootstrap=%#v created=%v err=%v", again, created, err)
+	}
+}
+
+type recordingPasswords struct{ verifies int }
+
+func (*recordingPasswords) Hash(value string) (string, error) { return "hash:" + value, nil }
+func (passwords *recordingPasswords) Verify(value, encoded string) bool {
+	passwords.verifies++
+	return encoded == "hash:"+value
+}
+
+func TestMalformedUsernameUsesDummyHashRateLimitAndRedactedAudit(t *testing.T) {
+	repository := newMemoryRepository()
+	passwords := &recordingPasswords{}
+	service, err := NewAuthentication(repository, testUOW{}, passwords, AuthenticationConfig{
+		SessionTTL: time.Hour, Window: time.Minute, MaxFailures: 5, BlockFor: time.Minute,
+		Now: func() time.Time { return testNow }, DummyPHCHash: "hash:dummy-password",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.Login(context.Background(), LoginCommand{
+		Username: "bad username", Password: "dummy-password", Remote: "203.0.113.9",
+	}); !errors.Is(err, domain.ErrInvalidCredentials) {
+		t.Fatalf("malformed login error = %v", err)
+	}
+	if passwords.verifies != 1 || len(repository.limits) != 1 || len(repository.audits) != 1 {
+		t.Fatalf("verifies=%d limits=%d audits=%d", passwords.verifies, len(repository.limits), len(repository.audits))
+	}
+	auditJSON, err := json.Marshal(repository.audits[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(auditJSON), "bad username") || strings.Contains(string(auditJSON), "203.0.113.9") {
+		t.Fatalf("audit contains raw identifier: %s", auditJSON)
+	}
+}
+
+func TestLoginWithWeComUserIDUnknownDisabledSuccessAndSessionVersion(t *testing.T) {
+	service, repository, _ := authenticationFixture(t, 5)
+	active := repository.users[1]
+	active.WeComUserID = "Alice_01"
+	active.SessionVersion = 7
+	repository.users[1] = active
+	repository.users[2] = domain.User{ID: 2, Username: "disabled", WeComUserID: "Disabled_02", Active: false,
+		SessionVersion: 4, Roles: []domain.Role{domain.RoleAdmin}}
+
+	if _, err := service.LoginWithWeComUserID(context.Background(), WeComLoginCommand{WeComUserID: "Unknown_03"}); !errors.Is(err, domain.ErrInvalidCredentials) {
+		t.Fatalf("unknown WeCom user error = %v", err)
+	}
+	if _, err := service.LoginWithWeComUserID(context.Background(), WeComLoginCommand{WeComUserID: "Disabled_02"}); !errors.Is(err, domain.ErrInvalidCredentials) {
+		t.Fatalf("disabled WeCom user error = %v", err)
+	}
+	issued, err := service.LoginWithWeComUserID(context.Background(), WeComLoginCommand{WeComUserID: " Alice_01 ", Remote: "127.0.0.1"})
+	if err != nil || issued.SessionToken == "" || issued.CSRFToken == "" {
+		t.Fatalf("issued=%#v err=%v", issued, err)
+	}
+	if len(repository.sessions) != 1 {
+		t.Fatalf("sessions = %#v", repository.sessions)
+	}
+	for _, session := range repository.sessions {
+		if session.SessionVersion != 7 {
+			t.Fatalf("session version = %d", session.SessionVersion)
+		}
+	}
+	if got := repository.audits[len(repository.audits)-1].Reason; got != "wecom_oauth" {
+		t.Fatalf("success audit reason = %q", got)
+	}
+}
+
+func TestListUsersRequiresSuperAdminAndReturnsOnlyPublicShape(t *testing.T) {
+	repository := newMemoryRepository()
+	repository.users[1] = domain.User{ID: 1, Username: "operator", PasswordHash: "never-return-this",
+		DisplayName: "Operator", Active: true, SessionVersion: 2, Roles: []domain.Role{domain.RoleSuperAdmin}}
+	service, err := NewManagement(repository, testUOW{}, testPasswords{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.ListUsers(context.Background(), domain.Principal{Kind: domain.KindAdmin, InternalID: 2, Roles: []domain.Role{domain.RoleAdmin}}); !errors.Is(err, domain.ErrPermissionDenied) {
+		t.Fatalf("admin list error = %v", err)
+	}
+	users, err := service.ListUsers(context.Background(), domain.Principal{Kind: domain.KindAdmin, InternalID: 1, Roles: []domain.Role{domain.RoleSuperAdmin}})
+	if err != nil || len(users) != 1 {
+		t.Fatalf("users=%#v err=%v", users, err)
+	}
+	payload, _ := json.Marshal(users)
+	if strings.Contains(string(payload), "never-return-this") || strings.Contains(string(payload), "password") || strings.Contains(string(payload), "digest") {
+		t.Fatalf("public users leaked secret fields: %s", payload)
+	}
+}
+
+func TestAddUserMapsPasswordPolicyFailureToInvalidInput(t *testing.T) {
+	service, err := NewManagement(newMemoryRepository(), testUOW{}, credential.PasswordHasher{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = service.AddUser(context.Background(), domain.Principal{
+		Kind: domain.KindAdmin, InternalID: 1, Roles: []domain.Role{domain.RoleSuperAdmin},
+	}, AddUserInput{Username: "employee", Password: "short", DisplayName: "Employee", Roles: []domain.Role{domain.RoleViewer}})
+	if !errors.Is(err, domain.ErrInvalidInput) {
+		t.Fatalf("password policy error = %v", err)
 	}
 }

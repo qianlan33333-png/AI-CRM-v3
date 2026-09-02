@@ -40,6 +40,46 @@ func (store *PostgreSQL) UserByUsername(ctx context.Context, username string, lo
 	return store.user(ctx, `WHERE u.username = $1`, username, lock)
 }
 
+func (store *PostgreSQL) UserByWeComUserID(ctx context.Context, wecomUserID string, lock bool) (domain.User, error) {
+	return store.user(ctx, `WHERE u.wecom_userid = $1`, wecomUserID, lock)
+}
+
+func (*PostgreSQL) ListUsers(ctx context.Context) ([]domain.User, error) {
+	database, err := tx(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := database.Query(ctx, `SELECT id, username, password_hash, display_name,
+		COALESCE(wecom_userid, ''), is_active, session_version, last_login_at,
+		created_at, updated_at FROM admin_users ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	users := make([]domain.User, 0)
+	for rows.Next() {
+		var user domain.User
+		if err = rows.Scan(&user.ID, &user.Username, &user.PasswordHash, &user.DisplayName,
+			&user.WeComUserID, &user.Active, &user.SessionVersion, &user.LastLoginAt,
+			&user.CreatedAt, &user.UpdatedAt); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		users = append(users, user)
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+	for index := range users {
+		users[index].Roles, err = rolesForUser(ctx, database, users[index].ID)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return users, nil
+}
+
 func (*PostgreSQL) user(ctx context.Context, predicate string, argument any, lock bool) (domain.User, error) {
 	database, err := tx(ctx)
 	if err != nil {

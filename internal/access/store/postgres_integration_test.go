@@ -108,6 +108,25 @@ func TestPostgreSQLAccessIntegration(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if err = unit.Within(ctx, func(txContext context.Context) error {
+		if bindErr := repository.SetWeComUserID(txContext, first.ID, "Bootstrap_01", time.Now().UTC()); bindErr != nil {
+			return bindErr
+		}
+		byWeCom, lookupErr := repository.UserByWeComUserID(txContext, "Bootstrap_01", true)
+		if lookupErr != nil {
+			return lookupErr
+		}
+		if byWeCom.ID != first.ID || byWeCom.SessionVersion != first.SessionVersion+1 {
+			t.Errorf("WeCom lookup=%#v first=%#v", byWeCom, first)
+		}
+		users, listErr := repository.ListUsers(txContext)
+		if listErr == nil && (len(users) != 1 || users[0].PasswordHash == "" || len(users[0].Roles) != 1) {
+			t.Errorf("listed users=%#v", users)
+		}
+		return listErr
+	}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func environmentValue(key string) string {
