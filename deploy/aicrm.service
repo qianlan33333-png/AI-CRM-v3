@@ -1,0 +1,23 @@
+[Unit]
+Description=AI-CRM v3
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=aicrm
+Group=aicrm
+WorkingDirectory=/opt/aicrm
+EnvironmentFile=/etc/aicrm/aicrm.env
+ExecStart=/opt/aicrm/bin/aicrm
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=15
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target
