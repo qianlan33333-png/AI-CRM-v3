@@ -43,9 +43,12 @@ jobs:
           cache: true
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with: {node-version: '24.18.0', cache: npm}
+      - name: Pin frozen donor npm
+        run: npm install --global npm@11.12.1
       - name: Build and stage frozen External Effects workspace
         run: |
           npm ci
+          npm run version:check
           node scripts/validate-openapi.mjs
           scripts/check-pr01-donor-manifest.sh
           npm run typecheck
@@ -77,6 +80,8 @@ jobs:
           cache: true
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with: {node-version: '24.18.0', cache: npm}
+      - name: Pin frozen donor npm
+        run: npm install --global npm@11.12.1
       - name: Build release artifact
         env:
           CGO_ENABLED: "0"
@@ -89,6 +94,7 @@ jobs:
           go build -trimpath -ldflags "-s -w" -o release/bin/migrate-platform ./cmd/migrate-platform
           go build -trimpath -ldflags "-s -w" -o release/bin/migrate-river ./cmd/migrate-river
           npm ci
+          npm run version:check
           node scripts/validate-openapi.mjs
           scripts/check-pr01-donor-manifest.sh
           npm run typecheck
