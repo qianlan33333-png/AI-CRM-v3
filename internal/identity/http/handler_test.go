@@ -258,6 +258,30 @@ func TestConfirmOperatorComesOnlyFromPrincipal(t *testing.T) {
 	}
 }
 
+func TestStaleCandidateRejectionCommitsAndReturnsConflictWithoutMergeAudit(t *testing.T) {
+	service := &testOneID{confirmResult: identityapp.LinkResult{
+		Status: identityapp.LinkCandidateRejected, CustomerID: 20,
+		Candidate: &identityapp.MergeCandidate{ID: 8, Status: "rejected"},
+	}}
+	auditor := &testAuditor{}
+	unit := &testUnitOfWork{}
+	security := &testSecurity{authPrincipal: activeAdmin(), csrfPrincipal: activeSuperAdmin()}
+	handler := configuredHandler(t, unit, security, service, &testQueries{}, auditor)
+
+	response := perform(handler, nethttp.MethodPost, "/api/admin/oneid/merge-candidates/8/confirm",
+		`{"survivor_customer_id":20}`, true)
+
+	if response.Code != nethttp.StatusConflict || response.Body.String() != "{\"candidate_id\":8,\"error\":\"identity_conflict\",\"ok\":false}\n" {
+		t.Fatalf("status=%d body=%q", response.Code, response.Body.String())
+	}
+	if unit.calls != 1 || unit.lastErr != nil {
+		t.Fatalf("uow calls=%d error=%v", unit.calls, unit.lastErr)
+	}
+	if service.confirmCalls != 1 || auditor.calls != 0 {
+		t.Fatalf("confirm calls=%d audit calls=%d", service.confirmCalls, auditor.calls)
+	}
+}
+
 func TestCustomerAndMutationResponsesCannotRepresentPIIOrEvidence(t *testing.T) {
 	now := time.Now().UTC()
 	queries := &testQueries{detail: query.CustomerDetail{

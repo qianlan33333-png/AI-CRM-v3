@@ -233,6 +233,12 @@ func (handler *Handler) confirmMerge(response nethttp.ResponseWriter, request *n
 		if commandErr != nil || result.Status == identityapp.LinkConflict {
 			return commandErr
 		}
+		if result.Status == identityapp.LinkCandidateRejected {
+			if result.Candidate == nil || result.Candidate.ID != candidateID || result.Candidate.Status != "rejected" || result.Merge != nil {
+				return errors.New("invalid OneID candidate rejection result")
+			}
+			return nil
+		}
 		if result.Status != identityapp.LinkMerged || result.Merge == nil || result.Merge.ID < 1 || result.Merge.CandidateID != candidateID ||
 			result.Merge.FromCustomerID < 1 || result.Merge.ToCustomerID < 1 || result.CustomerID != result.Merge.ToCustomerID {
 			return errors.New("invalid OneID confirm result")
@@ -259,7 +265,7 @@ func (handler *Handler) confirmMerge(response nethttp.ResponseWriter, request *n
 		handler.writeError(response, err)
 		return
 	}
-	if result.Status == identityapp.LinkConflict {
+	if result.Status == identityapp.LinkConflict || result.Status == identityapp.LinkCandidateRejected {
 		payload := map[string]any{"ok": false, "error": "identity_conflict"}
 		if result.Candidate != nil {
 			payload["candidate_id"] = result.Candidate.ID
