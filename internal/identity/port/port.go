@@ -27,7 +27,7 @@ type Resolver interface {
 }
 
 type ProvisionCommand struct {
-	Reference      identitydomain.Reference
+	Fact           identitydomain.VerifiedFact
 	IdempotencyKey string
 }
 

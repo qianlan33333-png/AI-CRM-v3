@@ -16,9 +16,17 @@ const (
 	KindUnionID             Kind = "unionid"
 	KindMPOpenID            Kind = "mp_openid"
 	KindOAOpenID            Kind = "oa_openid"
-	KindAlipayUserID        Kind = "alipay_user_id"
-	KindPhone               Kind = "phone"
-	KindExtension           Kind = "ext"
+	// Alipay identities deliberately preserve the provider field contract. An
+	// OAuth user id, OAuth open id, buyer id and buyer open id are not
+	// interchangeable and must never be inferred from one another.
+	KindAlipayUserID       Kind = "alipay_user_id" // legacy spelling; kept scoped.
+	KindAlipayOAuthUserID  Kind = "alipay_oauth_user_id"
+	KindAlipayOAuthOpenID  Kind = "alipay_oauth_open_id"
+	KindAlipayBuyerID      Kind = "alipay_buyer_id"
+	KindAlipayBuyerOpenID  Kind = "alipay_buyer_open_id"
+	KindFirstPartyMemberID Kind = "first_party_member_id"
+	KindPhone              Kind = "phone"
+	KindExtension          Kind = "ext"
 
 	AssuranceVerified Assurance = "verified"
 	AssuranceDeclared Assurance = "declared"
@@ -82,7 +90,9 @@ func Normalize(reference Reference) (NormalizedReference, error) {
 func validKind(kind Kind) bool {
 	switch kind {
 	case KindWeComExternalUserID, KindUnionID, KindMPOpenID, KindOAOpenID,
-		KindAlipayUserID, KindPhone, KindExtension:
+		KindAlipayUserID, KindAlipayOAuthUserID, KindAlipayOAuthOpenID,
+		KindAlipayBuyerID, KindAlipayBuyerOpenID, KindFirstPartyMemberID,
+		KindPhone, KindExtension:
 		return true
 	default:
 		return false
@@ -104,8 +114,11 @@ func validScope(kind Kind, scope string) bool {
 		return hasNamespace(scope, "wechat-open-platform:")
 	case KindMPOpenID, KindOAOpenID:
 		return hasNamespace(scope, "wechat-app:")
-	case KindAlipayUserID:
+	case KindAlipayUserID, KindAlipayOAuthUserID, KindAlipayOAuthOpenID,
+		KindAlipayBuyerID, KindAlipayBuyerOpenID:
 		return hasNamespace(scope, "alipay-app:")
+	case KindFirstPartyMemberID:
+		return hasNamespace(scope, "first-party:")
 	case KindPhone:
 		return scope == "phone:e164"
 	case KindExtension:

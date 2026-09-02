@@ -2,6 +2,7 @@ package domain
 
 import (
 	"errors"
+	"reflect"
 	"testing"
 )
 
@@ -23,6 +24,12 @@ func TestNormalizeFreezesScopedIdentityNamespaces(t *testing.T) {
 			reference: Reference{Kind: KindMPOpenID, Scope: "wechat-app:wx123", Value: "openid-1",
 				Assurance: AssuranceVerified, Source: "wechat.oauth"},
 			wantValue: "openid-1", valid: true,
+		},
+		{
+			name: "alipay OAuth and buyer fields remain distinct scoped kinds",
+			reference: Reference{Kind: KindAlipayOAuthUserID, Scope: "alipay-app:app-a:production", Value: "ali-user-1",
+				Assurance: AssuranceVerified, Source: "alipay.callback"},
+			wantValue: "ali-user-1", valid: true,
 		},
 		{
 			name: "phone is compacted to E164",
@@ -73,6 +80,13 @@ func TestNormalizeFreezesScopedIdentityNamespaces(t *testing.T) {
 				t.Fatalf("Normalize()=%+v", got)
 			}
 		})
+	}
+}
+
+func TestProviderVerifiedInputCannotCarryCallerSelectedAssurance(t *testing.T) {
+	inputType := reflect.TypeOf(ProviderVerifiedIdentityInput{})
+	if _, found := inputType.FieldByName("Assurance"); found {
+		t.Fatal("provider verified input must not expose a caller-selected assurance field")
 	}
 }
 
