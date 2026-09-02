@@ -6,6 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{.PageTitle}} · 客户管理后台</title>
   <link rel="stylesheet" href="/static/admin_console/admin_console.css?v=v3-webshell">
+  <script defer src="/static/admin_console/admin_shell.js?v=v3-webshell"></script>
   {{if eq .RequestPath "/admin/config/login-access"}}
   <link rel="stylesheet" href="/static/admin_console/admin_access.css?v=v3-webshell">
   {{end}}
@@ -45,7 +46,9 @@
         <div class="admin-sidebar-user__avatar" aria-hidden="true">管</div>
         <div class="admin-sidebar-user__meta">
           <div class="admin-sidebar-user__name">{{.CurrentAdminUser.DisplayName}}</div>
-          <a class="admin-sidebar-user__logout" href="/logout">退出登录</a>
+          <form class="admin-sidebar-user__logout-form" data-admin-logout action="/logout" method="post">
+            <button class="admin-sidebar-user__logout" type="submit">退出登录</button>
+          </form>
         </div>
       </div>
       {{end}}

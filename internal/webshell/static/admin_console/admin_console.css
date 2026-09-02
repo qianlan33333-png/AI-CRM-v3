@@ -220,9 +220,18 @@ code {
 }
 
 .admin-sidebar-user__logout {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
   font-size: 12px;
   color: var(--muted);
   transition: color 0.15s ease;
+}
+
+.admin-sidebar-user__logout-form {
+  margin: 0;
 }
 
 .admin-sidebar-user__logout:hover {

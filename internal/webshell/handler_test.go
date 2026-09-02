@@ -223,6 +223,18 @@ func TestStandaloneHandlerRendersAdminLoginSidebarAndAssets(t *testing.T) {
 			},
 		},
 		{
+			name:   "admin shell javascript",
+			method: http.MethodGet,
+			path:   "/static/admin_console/admin_shell.js",
+			status: http.StatusOK,
+			contains: []string{
+				"X-CSRF-Token",
+				"method: \"POST\"",
+				"credentials: \"same-origin\"",
+			},
+			notContain: []string{"localStorage", "sessionStorage", "console."},
+		},
+		{
 			name:   "oneid nav icon asset",
 			method: http.MethodGet,
 			path:   "/static/admin_console/nav-icons/oneid.svg",
