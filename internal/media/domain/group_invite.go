@@ -90,17 +90,21 @@ func ValidGroupInvite(item mediaport.GroupInvite, persisted bool) bool {
 	}
 	if item.Name == "" || item.Title == "" || item.CoverImageID < 0 || item.CreatedBy < 1 || item.UpdatedBy < 1 || item.UpdatedAt.IsZero() ||
 		!utf8.ValidString(item.Name) || !utf8.ValidString(item.Title) || !utf8.ValidString(item.Description) ||
-		len(item.Title) > MaxGroupInviteTitleBytes || len(item.Description) > MaxGroupInviteDescriptionBytes || !validGroupInviteURL(item.JoinURL) {
+		len(item.Title) > MaxGroupInviteTitleBytes || len(item.Description) > MaxGroupInviteDescriptionBytes || !ValidGroupInviteJoinURL(item.JoinURL) {
 		return false
 	}
 	return item.ArchivedAt == nil || !item.Enabled && !item.ArchivedAt.IsZero()
 }
 
-func validGroupInviteURL(raw string) bool {
+// ValidGroupInviteJoinURL is the single Media validator for a Group invite.
+// It rejects alternate hosts, credentials, queries, fragments, encoded path
+// ambiguity, and an empty /gm token before any persistence is attempted.
+func ValidGroupInviteJoinURL(raw string) bool {
 	if raw == "" || raw != strings.TrimSpace(raw) || len(raw) > MaxGroupInviteURLBytes || !utf8.ValidString(raw) {
 		return false
 	}
 	parsed, err := url.Parse(raw)
 	return err == nil && parsed.Scheme == "https" && parsed.Host == "work.weixin.qq.com" && parsed.User == nil &&
-		parsed.RawQuery == "" && parsed.Fragment == "" && strings.HasPrefix(parsed.EscapedPath(), "/gm/") && len(parsed.EscapedPath()) > len("/gm/")
+		parsed.RawQuery == "" && parsed.ForceQuery == false && parsed.Fragment == "" && parsed.RawPath == "" &&
+		strings.HasPrefix(parsed.Path, "/gm/") && len(parsed.Path) > len("/gm/") && !strings.Contains(parsed.Path[len("/gm/"):], "/")
 }

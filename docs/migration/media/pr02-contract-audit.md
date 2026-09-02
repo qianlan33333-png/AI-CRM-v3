@@ -49,7 +49,7 @@
 | `DELETE` | `/api/admin/attachment-library/{attachment_id}` | 无 | `LegacyAttachmentDeleteSuccess`；Automation/Channel/Radar 引用存在时 409，读失败 fail closed |
 | `GET` | `/api/admin/attachment-library/{attachment_id}/download` | 无 | 私有 PDF bytes；需认证，不在列表/详情泄露 blob |
 
-供体还冻结了底层分片契约；内容包属于 PR06，明确不属于 PR02，也不会由本 PR 的路由或页面开放：
+分片上传是 PR02 的已激活 Media 契约（不是 PR06 内容包）；它只承载私有附件 bytes，不会开放内容包 preview/create/update/bind 或任何 Provider 效果：
 
 | 方法 | URL | DTO/结果 |
 | --- | --- | --- |
@@ -66,7 +66,7 @@
 3. **附件直传/分片**：直传先 sniff `%PDF-`、MIME 和上限，再把 metadata/blob/receipt/event 同事务提交；分片 initiate 绑定 sha256/size，part 只接受匹配 digest，complete 由 Media store 验证 part 顺序、总大小和最终 digest。下载始终是认证后的私有 PDF。更新使用 `expected_version` CAS；删除 fail closed 检查 Automation/Channel/Radar 引用。
 4. **小程序卡片**：创建/更新先校验 AppID、pagepath、title 及本地 `thumb_image_id`。客户端提供 `thumb_media_id` 一律拒绝；只有 Media-owned `ThumbnailCacheResolver` 可写本地缓存 ID。`resolved`、`not_available`、`outcome_unknown` 都是本地完成事实，resolver 不得跟随 URL、调用 Provider 或盲目重试；停用/删除前检查 Channel 引用。
 5. **群邀请卡片**：创建/编辑只保存本地 name/title/description/join_url/cover image/enabled；cover image 必须存在。停用/归档前检查 Channel 引用，归档只改变本地状态并追加 archive fact，不创建/删除/刷新 WeCom 入群链接。
-6. **内容包（PR06）**：preview/create/update/bind 不在 PR02 实现、路由或发布范围内。后续也不得借此产生发送任务、拥有 Campaign/Outbound 表或证明外部投递。
+6. **内容包（PR06）**：仅 preview/create/update/bind 不在 PR02 实现、路由或发布范围内。PR02 的三条附件分片路由保持激活；后续也不得借此产生发送任务、拥有 Campaign/Outbound 表或证明外部投递。
 
 ## v3 缺口对照及本次补齐
 

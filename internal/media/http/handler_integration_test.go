@@ -89,6 +89,11 @@ func TestMediaHTTPCompatibilitySecurityAndFrozenWriteContract(t *testing.T) {
 			requireJSONArray(t, empty, field)
 		}
 	}
+	for _, query := range []string{"?limit=0", "?offset=-1", "?enabled_only=TRUE", "?limit=1&limit=2"} {
+		if got := serve(httptest.NewRequest(http.MethodGet, "/api/admin/image-library"+query, nil)); got.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("image query %q status=%d", query, got.Code)
+		}
+	}
 	unauthenticated := httptest.NewRequest(http.MethodGet, "/api/admin/image-library", nil)
 	unauthenticated.Header.Set("X-Test-Auth", "none")
 	if got := serve(unauthenticated); got.Code != http.StatusUnauthorized {
@@ -140,17 +145,25 @@ func TestMediaHTTPCompatibilitySecurityAndFrozenWriteContract(t *testing.T) {
 	image := responseJSON(t, serve(imageRequest), http.StatusOK)
 	requireJSONFields(t, image, "ok", "item", "image", "item_id", "source_status", "storage_adapter_mode")
 	imageID := int64(image["item_id"].(float64))
+	uploadItem := image["item"].(map[string]any)
+	if _, ok := uploadItem["tags"].(string); !ok || image["source_status"] != "local_upload" || image["route_owner"] != "ai_crm_next" || image["storage_adapter_mode"] != "postgresql" {
+		t.Fatalf("legacy image upload donor DTO=%#v", image)
+	}
 	imageDetail := responseJSON(t, serve(httptest.NewRequest(http.MethodGet, "/api/admin/image-library/"+jsonID(imageID)+"?variant=thumb_160", nil)), http.StatusOK)
 	imageItem, ok := imageDetail["image"].(map[string]any)
 	if !ok || imageItem["source"] != "upload" || imageItem["thumb_media_id_expires_at"] != "" || imageItem["variant_url"] != "/api/admin/image-library/"+jsonID(imageID)+"/variants/thumb_160" {
 		t.Fatalf("image detail compatibility=%#v", imageDetail)
 	}
-	if got := serve(httptest.NewRequest(http.MethodGet, "/api/admin/image-library/"+jsonID(imageID)+"?variant=unknown", nil)); got.Code != http.StatusBadRequest {
+	if got := serve(httptest.NewRequest(http.MethodGet, "/api/admin/image-library/"+jsonID(imageID)+"?variant=unknown", nil)); got.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("unknown variant status=%d", got.Code)
 	}
 	missingFileName := admin(httptest.NewRequest(http.MethodPost, "/api/admin/image-library", strings.NewReader(`{"data_url":"data:image/png;base64,`+base64.StdEncoding.EncodeToString(httpPNG(t))+`"}`)))
 	if got := serve(missingFileName); got.Code != http.StatusBadRequest {
 		t.Fatalf("canonical image must require file_name: status=%d", got.Code)
+	}
+	upperCaseDataURL := admin(httptest.NewRequest(http.MethodPost, "/api/admin/image-library", strings.NewReader(`{"data_url":"data:IMAGE/PNG;base64,`+base64.StdEncoding.EncodeToString(httpPNG(t))+`","file_name":"cover.png"}`)))
+	if got := serve(upperCaseDataURL); got.Code != http.StatusBadRequest {
+		t.Fatalf("upper-case canonical data URL status=%d", got.Code)
 	}
 	overBody := admin(httptest.NewRequest(http.MethodPost, "/api/admin/image-library", strings.NewReader(`{"data_url":"data:image/png;base64,`+base64.StdEncoding.EncodeToString(httpPNG(t))+`","file_name":"cover.png","description":"`+strings.Repeat("x", (10<<20)*4/3+(1<<20)+1)+`"}`)))
 	if got := serve(overBody); got.Code != http.StatusBadRequest {
@@ -183,11 +196,12 @@ func TestMediaHTTPCompatibilitySecurityAndFrozenWriteContract(t *testing.T) {
 	if _, err = native.Exec(context.Background(), `INSERT INTO media_references(material_kind,material_id,owner,reference_digest) VALUES('attachment',$1,'automation.attachment','sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')`, attachmentID); err != nil {
 		t.Fatal(err)
 	}
-	attachmentConflict := responseJSON(t, serve(admin(httptest.NewRequest(http.MethodDelete, "/api/admin/attachment-library/"+jsonID(attachmentID), nil))), http.StatusConflict)
-	if attachmentConflict["error"] != "attachment_has_references" {
-		t.Fatalf("attachment conflict=%#v", attachmentConflict)
+	// This is an opaque future-domain registry fact. No attachment owner reader
+	// is installed in PR02, so deletion must fail closed instead of inventing a
+	// consumer-specific conflict list.
+	if got := serve(admin(httptest.NewRequest(http.MethodDelete, "/api/admin/attachment-library/"+jsonID(attachmentID), nil))); got.Code != http.StatusServiceUnavailable {
+		t.Fatalf("opaque attachment reference must fail closed: status=%d", got.Code)
 	}
-	requireJSONFields(t, attachmentConflict, "references")
 
 	miniDetail := responseJSON(t, serve(httptest.NewRequest(http.MethodGet, "/api/admin/miniprogram-library/"+jsonID(int64(compatJSON["item_id"].(float64))), nil)), http.StatusOK)
 	requireJSONFields(t, miniDetail, "ok", "item", "miniprogram", "local_only", "provider_call_executed", "real_external_call_executed")
@@ -204,6 +218,17 @@ func TestMediaHTTPCompatibilitySecurityAndFrozenWriteContract(t *testing.T) {
 		t.Fatalf("image conflict=%#v", imageConflict)
 	}
 	requireJSONFields(t, imageConflict, "references")
+	refs := imageConflict["references"].(map[string]any)
+	groupRefs, ok := refs["group_invites"].([]any)
+	if !ok || len(groupRefs) == 0 || groupRefs[0].(map[string]any)["id"] == nil || refs["campaign_steps"] == nil || refs["import_preflights"] == nil {
+		t.Fatalf("image references must be actual registry results: %#v", refs)
+	}
+	for _, invalidURL := range []string{"https://user@work.weixin.qq.com/gm/a", "https://work.weixin.qq.com/gm/a?q=1", "https://work.weixin.qq.com/gm/a/b"} {
+		request := admin(httptest.NewRequest(http.MethodPost, "/api/admin/group-invite-library", strings.NewReader(`{"title":"bad","join_url":"`+invalidURL+`"}`)))
+		if got := serve(request); got.Code != http.StatusBadRequest {
+			t.Fatalf("invalid group URL %q status=%d", invalidURL, got.Code)
+		}
+	}
 	groupDetail := responseJSON(t, serve(httptest.NewRequest(http.MethodGet, "/api/admin/group-invite-library/"+jsonID(groupID), nil)), http.StatusOK)
 	requireJSONFields(t, groupDetail, "ok", "item", "group_invite", "provider_call_executed")
 	archive := admin(httptest.NewRequest(http.MethodDelete, "/api/admin/group-invite-library/"+jsonID(groupID), nil))

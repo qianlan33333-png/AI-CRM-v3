@@ -124,24 +124,50 @@ func method(w http.ResponseWriter, got, want string) bool {
 }
 func page(r *http.Request) (int, int, bool, string, error) {
 	q := r.URL.Query()
-	limit := 50
-	if raw := q.Get("limit"); raw != "" {
-		v, e := strconv.Atoi(raw)
-		if e != nil {
-			return 0, 0, false, "", e
+	one := func(name string) (string, error) {
+		values, exists := q[name]
+		if !exists {
+			return "", nil
 		}
-		limit = v
+		if len(values) != 1 {
+			return "", ErrInvalidQuery
+		}
+		return values[0], nil
+	}
+	limit := 50
+	if raw, e := one("limit"); e != nil {
+		return 0, 0, false, "", e
+	} else if raw != "" {
+		v, e := strconv.ParseInt(raw, 10, 32)
+		if e != nil || v < 1 || v > 500 {
+			return 0, 0, false, "", ErrInvalidQuery
+		}
+		limit = int(v)
 	}
 	offset := 0
-	if raw := q.Get("offset"); raw != "" {
-		v, e := strconv.Atoi(raw)
-		if e != nil {
-			return 0, 0, false, "", e
+	if raw, e := one("offset"); e != nil {
+		return 0, 0, false, "", e
+	} else if raw != "" {
+		v, e := strconv.ParseInt(raw, 10, 32)
+		if e != nil || v < 0 {
+			return 0, 0, false, "", ErrInvalidQuery
 		}
-		offset = v
+		offset = int(v)
 	}
-	enabled := q.Get("enabled_only") == "true"
-	return limit, offset, enabled, strings.TrimSpace(q.Get("q")), nil
+	enabled := false
+	if raw, e := one("enabled_only"); e != nil {
+		return 0, 0, false, "", e
+	} else if raw != "" {
+		if raw != "true" && raw != "false" {
+			return 0, 0, false, "", ErrInvalidQuery
+		}
+		enabled = raw == "true"
+	}
+	query, e := one("q")
+	if e != nil {
+		return 0, 0, false, "", e
+	}
+	return limit, offset, enabled, strings.TrimSpace(query), nil
 }
 func id(value string) (int64, error) {
 	if value == "" || strings.HasPrefix(value, "0") {
@@ -164,6 +190,8 @@ func resultError(w http.ResponseWriter, err error) {
 		writeError(w, 409, "conflict")
 	case errors.Is(err, mediaapp.ErrHTTPReferences):
 		writeError(w, 409, "has_references")
+	case errors.Is(err, mediaapp.ErrHTTPReferenceReaderUnavailable):
+		writeError(w, 503, "unavailable")
 	case errors.Is(err, mediaapp.ErrHTTPInvalid), errors.Is(err, domain.ErrUnsafeImage), errors.Is(err, domain.ErrUnsafeAttachment):
 		writeError(w, 400, "invalid_request")
 	default:
@@ -191,13 +219,32 @@ func writeError(w http.ResponseWriter, status int, code string) {
 	writeJSON(w, status, payload)
 }
 
-func writeReferenceConflict(w http.ResponseWriter, kind string) {
-	references := map[string]any{"automation_agents": []int{}, "channels": []int{}, "radar_links": []int{}}
-	if kind == "image" {
-		references["miniprograms"] = []int{}
-		references["group_invites"] = []int{}
+func writeReferenceConflict(w http.ResponseWriter, kind string, ids map[string][]int64) {
+	references := make(map[string]any, len(ids))
+	for classification, values := range ids {
+		items := make([]map[string]int64, 0, len(values))
+		for _, value := range values {
+			items = append(items, map[string]int64{"id": value})
+		}
+		references[classification] = items
 	}
-	writeJSON(w, http.StatusConflict, map[string]any{"ok": false, "code": "CONFLICT", "error": kind + "_has_references", "references": references})
+	writeJSON(w, http.StatusConflict, map[string]any{"ok": false, "code": "CONFLICT", "error": kind + "_has_references", "references": references, "source_status": "local_delete", "route_owner": "ai_crm_next", "fallback_used": false, "real_external_call_executed": false, "storage_adapter_mode": "postgresql", "adapter_mode": "postgresql"})
+}
+
+func (h *Handler) referenceConflict(w http.ResponseWriter, err error, kind string) bool {
+	if !errors.Is(err, mediaapp.ErrHTTPReferences) {
+		return false
+	}
+	if references, ok := h.service.ReferenceConflict(err); ok {
+		writeReferenceConflict(w, kind, references)
+		return true
+	}
+	resultError(w, mediaapp.ErrHTTPReferenceReaderUnavailable)
+	return true
+}
+
+func invalidQuery(w http.ResponseWriter) {
+	writeError(w, http.StatusUnprocessableEntity, "invalid_request")
 }
 
 func (h *Handler) images(w http.ResponseWriter, r *http.Request, tail string) {
@@ -208,12 +255,12 @@ func (h *Handler) images(w http.ResponseWriter, r *http.Request, tail string) {
 			}
 			limit, offset, _, q, e := page(r)
 			if e != nil {
-				writeError(w, 400, "invalid_request")
+				invalidQuery(w)
 				return
 			}
 			query, e := imageQuery(r, limit, offset, q)
 			if e != nil {
-				writeError(w, 400, "invalid_request")
+				invalidQuery(w)
 				return
 			}
 			items, total, e := h.service.ListImagesFiltered(r.Context(), query)
@@ -312,8 +359,8 @@ func (h *Handler) images(w http.ResponseWriter, r *http.Request, tail string) {
 			item["data_url"] = "data:" + item["mime_type"].(string) + ";base64," + base64.StdEncoding.EncodeToString(content)
 		}
 		if variant := r.URL.Query().Get("variant"); variant != "" {
-			if !validVariant(variant) {
-				writeError(w, 400, "invalid_request")
+			if !h.service.ValidImageVariant(variant) {
+				invalidQuery(w)
 				return
 			}
 			item["variant"] = variant
@@ -333,14 +380,14 @@ func (h *Handler) images(w http.ResponseWriter, r *http.Request, tail string) {
 		}
 		out, e := h.service.Delete(r.Context(), "image", imageID, actor.InternalID, mutationKey(r))
 		if e != nil {
-			if errors.Is(e, mediaapp.ErrHTTPReferences) {
-				writeReferenceConflict(w, "image")
+			if h.referenceConflict(w, e, "image") {
 				return
 			}
 			resultError(w, e)
 			return
 		}
-		out["ok"], out["item_id"], out["local_only"], out["provider_call_executed"], out["real_external_call_executed"], out["references_cleared"] = true, imageID, true, false, false, map[string]any{"miniprograms": []int{}, "group_invites": []int{}, "automation_agents": []int{}, "channels": []int{}, "radar_links": []int{}}
+		out["ok"], out["local_only"], out["provider_call_executed"], out["real_external_call_executed"], out["references_cleared"] = true, true, false, false, map[string]any{"miniprograms_cleared": 0, "campaign_steps_cleared": 0}
+		out["source_status"], out["route_owner"], out["fallback_used"], out["storage_adapter_mode"], out["adapter_mode"] = "local_delete", "ai_crm_next", false, "postgresql", "postgresql"
 		writeJSON(w, 200, out)
 		return
 	}
@@ -460,28 +507,14 @@ func (h *Handler) imageCreateJSON(w http.ResponseWriter, r *http.Request, actor 
 		Category    string   `json:"category"`
 		Enabled     *bool    `json:"enabled"`
 	}
-	if decodeLimit(r, &body, (domain.MaxImageBytes*4)/3+(1<<20)) != nil || !strings.HasPrefix(body.DataURL, "data:") || strings.TrimSpace(body.FileName) == "" {
+	if decodeLimit(r, &body, (domain.MaxImageBytes*4)/3+(1<<20)) != nil || strings.TrimSpace(body.FileName) == "" {
 		writeError(w, 400, "invalid_request")
 		return
 	}
-	comma := strings.IndexByte(body.DataURL, ',')
-	metadata := ""
-	if comma > 0 {
-		metadata = body.DataURL[:comma]
-	}
-	if comma < 1 || !strings.HasPrefix(metadata, "data:") || !strings.HasSuffix(strings.ToLower(metadata), ";base64") {
+	mediaType, content, valid := canonicalImageDataURL(body.DataURL)
+	if !valid {
 		writeError(w, 400, "invalid_request")
 		return
-	}
-	encoded := body.DataURL[comma+1:]
-	content, err := base64.StdEncoding.DecodeString(encoded)
-	if err != nil {
-		writeError(w, 400, "invalid_request")
-		return
-	}
-	mediaType := strings.TrimPrefix(strings.TrimSuffix(metadata, ";base64"), "data:")
-	if body.FileName == "" {
-		body.FileName = "image"
 	}
 	inspection, err := domain.Inspect(body.FileName, mediaType, content)
 	if err != nil {
@@ -498,6 +531,33 @@ func (h *Handler) imageCreateJSON(w http.ResponseWriter, r *http.Request, actor 
 		return
 	}
 	writeJSON(w, 200, imageMutationEnvelope(out, source))
+}
+
+func canonicalImageDataURL(value string) (string, []byte, bool) {
+	const prefixPNG = "data:image/png;base64,"
+	const prefixJPEG = "data:image/jpeg;base64,"
+	const prefixGIF = "data:image/gif;base64,"
+	prefix := ""
+	mediaType := ""
+	switch {
+	case strings.HasPrefix(value, prefixPNG):
+		prefix, mediaType = prefixPNG, "image/png"
+	case strings.HasPrefix(value, prefixJPEG):
+		prefix, mediaType = prefixJPEG, "image/jpeg"
+	case strings.HasPrefix(value, prefixGIF):
+		prefix, mediaType = prefixGIF, "image/gif"
+	default:
+		return "", nil, false
+	}
+	encoded := strings.TrimPrefix(value, prefix)
+	if encoded == "" || strings.ContainsAny(encoded, "\r\n") {
+		return "", nil, false
+	}
+	content, err := base64.StdEncoding.Strict().DecodeString(encoded)
+	if err != nil || base64.StdEncoding.EncodeToString(content) != encoded {
+		return "", nil, false
+	}
+	return mediaType, content, true
 }
 func (h *Handler) imageUpdate(w http.ResponseWriter, r *http.Request, imageID int64) {
 	actor, ok := h.write(w, r)
@@ -530,6 +590,16 @@ func imageEnvelope(item map[string]any) map[string]any {
 	return map[string]any{"ok": true, "item": item, "image": item, "item_id": item["id"], "source_status": "next_media_library", "route_owner": "ai_crm_next", "fallback_used": false, "local_only": true, "provider_call_executed": false, "real_external_call_executed": false, "storage_adapter_mode": "postgresql", "adapter_mode": "postgresql"}
 }
 func imageMutationEnvelope(item map[string]any, source string) map[string]any {
+	if source == "local_upload" {
+		copy := make(map[string]any, len(item))
+		for key, value := range item {
+			copy[key] = value
+		}
+		if tags, ok := item["tags"].([]string); ok {
+			copy["tags"] = strings.Join(tags, ",")
+		}
+		item = copy
+	}
 	response := imageEnvelope(item)
 	response["source_status"] = source
 	return response
@@ -576,10 +646,6 @@ func mediaVariant(content []byte, originalType, key string) ([]byte, string, err
 	return encoded.Bytes(), "image/png", nil
 }
 
-func validVariant(key string) bool {
-	return key == "original" || key == "thumb_160" || key == "thumb_320" || key == "mobile_1080" || key == "large_1440"
-}
-
 func (h *Handler) attachments(w http.ResponseWriter, r *http.Request, tail string) {
 	if strings.HasPrefix(tail, "uploads") {
 		h.attachmentUpload(w, r, strings.Trim(strings.TrimPrefix(tail, "uploads"), "/"))
@@ -592,7 +658,7 @@ func (h *Handler) attachments(w http.ResponseWriter, r *http.Request, tail strin
 			}
 			limit, offset, enabled, q, e := page(r)
 			if e != nil {
-				writeError(w, 400, "invalid_request")
+				invalidQuery(w)
 				return
 			}
 			items, total, e := h.service.ListAttachments(r.Context(), limit, offset, enabled, q)
@@ -686,8 +752,7 @@ func (h *Handler) attachments(w http.ResponseWriter, r *http.Request, tail strin
 		}
 		out, e := h.service.Delete(r.Context(), "attachment", attachmentID, actor.InternalID, mutationKey(r))
 		if e != nil {
-			if errors.Is(e, mediaapp.ErrHTTPReferences) {
-				writeReferenceConflict(w, "attachment")
+			if h.referenceConflict(w, e, "attachment") {
 				return
 			}
 			resultError(w, e)
@@ -844,8 +909,8 @@ func (h *Handler) miniprograms(w http.ResponseWriter, r *http.Request, tail stri
 				return
 			}
 			limit, offset, enabled, q, e := page(r)
-			if e != nil {
-				writeError(w, 400, "invalid_request")
+			if e != nil || limit > 100 {
+				invalidQuery(w)
 				return
 			}
 			items, total, e := h.service.ListMiniPrograms(r.Context(), limit, offset, enabled, q)
@@ -1027,8 +1092,8 @@ func (h *Handler) groups(w http.ResponseWriter, r *http.Request, tail string) {
 			return
 		}
 		limit, offset, enabled, q, e := page(r)
-		if e != nil {
-			writeError(w, 400, "invalid_request")
+		if e != nil || limit > 100 {
+			invalidQuery(w)
 			return
 		}
 		items, total, e := h.service.ListGroupInvites(r.Context(), limit, offset, enabled, q)

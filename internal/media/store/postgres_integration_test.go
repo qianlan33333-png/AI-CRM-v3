@@ -300,7 +300,7 @@ func TestPostgreSQLReferenceRegistrationRacesImageDeleteWithoutDanglingLedger(t 
 	wait.Wait()
 	close(results)
 	for result := range results {
-		if result != nil && !errors.Is(result, ErrNotFound) && !errors.Is(result, ErrReferences) {
+		if result != nil && !errors.Is(result, ErrNotFound) && !errors.Is(result, ErrReferences) && !errors.Is(result, ErrReferenceReaderUnavailable) {
 			t.Fatalf("unexpected concurrent result: %v", result)
 		}
 	}

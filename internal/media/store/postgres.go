@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -21,11 +22,23 @@ import (
 )
 
 var (
-	ErrNotFound   = errors.New("media resource not found")
-	ErrConflict   = errors.New("media command conflict")
-	ErrReferences = errors.New("media resource has references")
-	ErrInvalid    = errors.New("invalid media command")
+	ErrNotFound                   = errors.New("media resource not found")
+	ErrConflict                   = errors.New("media command conflict")
+	ErrReferences                 = errors.New("media resource has references")
+	ErrReferenceReaderUnavailable = errors.New("media reference reader unavailable")
+	ErrInvalid                    = errors.New("invalid media command")
 )
+
+// ReferenceConflict carries only Media-owned, actually resolved referents.
+// Opaque entries owned by an unmigrated domain never become fabricated empty
+// arrays: destructive operations fail closed with ErrReferenceReaderUnavailable.
+type ReferenceConflict struct {
+	Kind       string
+	References map[string][]int64
+}
+
+func (e *ReferenceConflict) Error() string { return "media " + e.Kind + " has references" }
+func (e *ReferenceConflict) Unwrap() error { return ErrReferences }
 
 type Repository struct {
 	pool *pgxpool.Pool
@@ -122,6 +135,13 @@ type ImageInput struct {
 }
 
 func (r *Repository) CreateImage(ctx context.Context, actor int64, key string, input ImageInput) (map[string]any, error) {
+	var ok bool
+	input.Name = strings.TrimSpace(input.Name)
+	input.Description = strings.TrimSpace(input.Description)
+	input.Category = strings.TrimSpace(input.Category)
+	if input.Tags, ok = normalizeImageTags(strings.Split(input.Tags, ",")); !ok || input.FileName == "" || strings.TrimSpace(input.FileName) != input.FileName || len(input.FileName) > 255 || input.Name == "" || len(input.Name) > 200 || len(input.Description) > 10000 || len(input.Category) > 200 || !utf8.ValidString(input.Name) || !utf8.ValidString(input.Description) || !utf8.ValidString(input.Category) {
+		return nil, ErrInvalid
+	}
 	command, err := json.Marshal(struct {
 		F, M, N, D, T, C, H string
 		S                   int
@@ -156,6 +176,29 @@ VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$12) RETURNING id,created_at,updat
 		return r.complete(txctx, "image.create", "image", actor, key, id, out, "media.image_created")
 	})
 	return out, err
+}
+
+func normalizeImageTags(values []string) (string, bool) {
+	result := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, raw := range values {
+		value := strings.TrimSpace(raw)
+		if value == "" {
+			continue
+		}
+		if !utf8.ValidString(value) || len(value) > 64 {
+			return "", false
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+		if len(result) > 50 {
+			return "", false
+		}
+	}
+	return strings.Join(result, ","), true
 }
 
 func imageMap(id int64, file, name, description, tags, category, mime string, size int64, width, height int32, enabled bool, created, updated time.Time) map[string]any {
@@ -328,23 +371,27 @@ func (r *Repository) UpdateImage(ctx context.Context, id, actor int64, key strin
 		if v, ok := patch["description"].(string); ok {
 			description = strings.TrimSpace(v)
 		}
-		if v, ok := patch["tags"].(string); ok {
-			tags = strings.TrimSpace(v)
-		} else if values, ok := patch["tags"].([]any); ok {
-			normalized := make([]string, 0, len(values))
-			seen := map[string]bool{}
-			for _, value := range values {
-				text, ok := value.(string)
-				if !ok {
-					return ErrInvalid
+		if value, exists := patch["tags"]; exists {
+			var raw []string
+			switch values := value.(type) {
+			case string:
+				raw = strings.Split(values, ",")
+			case []any:
+				raw = make([]string, 0, len(values))
+				for _, candidate := range values {
+					text, ok := candidate.(string)
+					if !ok {
+						return ErrInvalid
+					}
+					raw = append(raw, text)
 				}
-				text = strings.TrimSpace(text)
-				if text != "" && !seen[text] {
-					normalized = append(normalized, text)
-					seen[text] = true
-				}
+			default:
+				return ErrInvalid
 			}
-			tags = strings.Join(normalized, ",")
+			var valid bool
+			if tags, valid = normalizeImageTags(raw); !valid {
+				return ErrInvalid
+			}
 		}
 		if v, ok := patch["category"].(string); ok {
 			category = strings.TrimSpace(v)
@@ -352,7 +399,7 @@ func (r *Repository) UpdateImage(ctx context.Context, id, actor int64, key strin
 		if v, ok := patch["enabled"].(bool); ok {
 			enabled = v
 		}
-		if name == "" || len(name) > 200 || len(description) > 10000 || len(tags) > 10000 || len(category) > 200 {
+		if name == "" || len(name) > 200 || len(description) > 10000 || len(category) > 200 || !utf8.ValidString(name) || !utf8.ValidString(description) || !utf8.ValidString(category) {
 			return ErrInvalid
 		}
 		if err = tx.QueryRow(txctx, `UPDATE media_images SET name=$2,description=$3,tags=$4,category=$5,enabled=$6,updated_by=$7,version=version+1,updated_at=clock_timestamp() WHERE id=$1 RETURNING updated_at`, id, name, description, tags, category, enabled, actor).Scan(&updated); err != nil {
@@ -394,7 +441,14 @@ func (r *Repository) Delete(ctx context.Context, kind string, id, actor int64, k
 			return err
 		}
 		if len(references) != 0 {
-			return ErrReferences
+			conflict, resolved, err := r.resolveReferenceConflict(txctx, kind, id, references)
+			if err != nil {
+				return err
+			}
+			if !resolved {
+				return ErrReferenceReaderUnavailable
+			}
+			return conflict
 		}
 		if kind == "miniprogram" {
 			if err = removeLocalImageReference(txctx, "media.miniprogram.thumbnail", id); err != nil {
@@ -418,6 +472,61 @@ func (r *Repository) Delete(ctx context.Context, kind string, id, actor int64, k
 		return r.complete(txctx, kind+".delete", kind, actor, key, id, out, "media."+kind+"_deleted")
 	})
 	return out, err
+}
+
+func (r *Repository) resolveReferenceConflict(ctx context.Context, kind string, id int64, references []MediaReference) (*ReferenceConflict, bool, error) {
+	if kind != "image" {
+		return nil, false, nil
+	}
+	for _, reference := range references {
+		if reference.Owner != "media.miniprogram.thumbnail" && reference.Owner != "media.group_invite.cover" {
+			return nil, false, nil
+		}
+	}
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	minis := make([]int64, 0)
+	groups := make([]int64, 0)
+	rows, err := tx.Query(ctx, `SELECT id FROM media_miniprograms WHERE thumb_image_id=$1 ORDER BY id`, id)
+	if err != nil {
+		return nil, false, err
+	}
+	for rows.Next() {
+		var value int64
+		if err = rows.Scan(&value); err != nil {
+			rows.Close()
+			return nil, false, err
+		}
+		minis = append(minis, value)
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return nil, false, err
+	}
+	rows.Close()
+	rows, err = tx.Query(ctx, `SELECT id FROM media_group_invites WHERE cover_image_id=$1 ORDER BY id`, id)
+	if err != nil {
+		return nil, false, err
+	}
+	for rows.Next() {
+		var value int64
+		if err = rows.Scan(&value); err != nil {
+			rows.Close()
+			return nil, false, err
+		}
+		groups = append(groups, value)
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return nil, false, err
+	}
+	rows.Close()
+	if len(minis)+len(groups) == 0 {
+		return nil, false, nil
+	}
+	return &ReferenceConflict{Kind: kind, References: map[string][]int64{"miniprograms": minis, "campaign_steps": {}, "group_invites": groups, "automation_agents": {}, "channels": {}, "radar_links": {}, "import_preflights": {}}}, true, nil
 }
 
 type AttachmentInput struct {
@@ -487,7 +596,7 @@ func (r *Repository) CreateAttachment(ctx context.Context, actor int64, key stri
 	return out, err
 }
 func (r *Repository) ListAttachments(ctx context.Context, limit, offset int, enabledOnly bool, q string) ([]map[string]any, int, error) {
-	if limit < 1 || limit > 100 || offset < 0 {
+	if limit < 1 || limit > 500 || offset < 0 {
 		return nil, 0, ErrInvalid
 	}
 	out := make([]map[string]any, 0)
@@ -602,18 +711,26 @@ func (r *Repository) UpdateAttachment(ctx context.Context, id, actor int64, key 
 		if v, ok := patch["enabled"].(bool); ok {
 			enabled = v
 		}
-		if values, ok := patch["tags"].([]any); ok {
-			tags = []string{}
-			for _, v := range values {
+		if values, exists := patch["tags"]; exists {
+			raw, ok := values.([]any)
+			if !ok {
+				return ErrInvalid
+			}
+			parts := make([]string, 0, len(raw))
+			for _, v := range raw {
 				s, ok := v.(string)
 				if !ok {
 					return ErrInvalid
 				}
-				tags = append(tags, s)
+				parts = append(parts, s)
 			}
-			tags = normalizedTags(tags)
-			if tags == nil {
+			joined, valid := normalizeImageTags(parts)
+			if !valid {
 				return ErrInvalid
+			}
+			tags = strings.Split(joined, ",")
+			if joined == "" {
+				tags = []string{}
 			}
 		}
 		if n == "" || len(n) > 200 || len(d) > 10000 {
@@ -945,7 +1062,7 @@ func (r *Repository) CreateGroupInvite(ctx context.Context, actor int64, key str
 		if value, ok := input["enabled"].(bool); ok {
 			enabled = value
 		}
-		if n == "" || t == "" || j == "" || len(n) > 200 || len(t) > 128 || len(d) > 512 || len(j) > 2048 || !strings.HasPrefix(j, "https://work.weixin.qq.com/gm/") || strings.TrimPrefix(j, "https://work.weixin.qq.com/gm/") == "" || strings.ContainsAny(j, "?#") {
+		if n == "" || t == "" || j == "" || len(n) > 200 || len(t) > 128 || len(d) > 512 || !domain.ValidGroupInviteJoinURL(j) {
 			return ErrInvalid
 		}
 		var cover *int64
@@ -1061,7 +1178,7 @@ func (r *Repository) UpdateGroupInvite(ctx context.Context, id, actor int64, key
 				cover = &candidate
 			}
 		}
-		if name == "" || title == "" || joinURL == "" || len(name) > 200 || len(title) > 128 || len(description) > 512 || len(joinURL) > 2048 || !strings.HasPrefix(joinURL, "https://work.weixin.qq.com/gm/") || strings.TrimPrefix(joinURL, "https://work.weixin.qq.com/gm/") == "" || strings.ContainsAny(joinURL, "?#") {
+		if name == "" || title == "" || joinURL == "" || len(name) > 200 || len(title) > 128 || len(description) > 512 || !domain.ValidGroupInviteJoinURL(joinURL) {
 			return ErrInvalid
 		}
 		err = tx.QueryRow(txctx, `UPDATE media_group_invites SET name=$2,title=$3,description=$4,join_url=$5,cover_image_id=$6,enabled=$7,updated_by=$8,version=version+1,updated_at=clock_timestamp() WHERE id=$1 RETURNING version,updated_at`, id, name, title, description, joinURL, cover, enabled, actor).Scan(&version, &updated)

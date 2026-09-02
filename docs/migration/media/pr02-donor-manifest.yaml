@@ -1,7 +1,10 @@
 schema_version: 1
 pr: PR02
 scope: media
-status: preparation_only
+status: active
+http_contract:
+  status: active
+  expected_methods: 29
 v3_base: 8ec60b7e3027e7813cd928ed43d7c8bcc7633b0e
 donor:
   repository: /tmp/aicrm-v2-audit.yN3jmr
@@ -116,8 +119,8 @@ deferred_to_terra:
     item: select and integrate staged frontend files into the v3 webshell/build
     reason: frontend donor bytes are staged only; no design or API rewrite was authorized
   - owner: Terra/Media
-    item: decide attachment part-size, upload-session expiry, and content-package publication contracts
-    reason: these contracts require v3 platform/runtime decisions not present in the base
+    item: content-package publication contracts only (preview/create/update/bind)
+    reason: attachment multipart initiate/part/complete is active PR02 scope; content-package publication remains PR06
 excluded:
   - cmd/aicrm
   - api/openapi.yaml

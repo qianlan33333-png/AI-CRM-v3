@@ -10,6 +10,17 @@ import (
 // HTTPFacade is the Media application boundary used by the compatibility
 // adapter. The HTTP package depends on this interface, never on PostgreSQL.
 type HTTPFacade interface {
+	HTTPRepository
+	// ValidImageVariant is owned by the Media application layer; adapters must
+	// not maintain a second variant allow-list.
+	ValidImageVariant(string) bool
+	ReferenceConflict(error) (map[string][]int64, bool)
+}
+
+// HTTPRepository is the narrow persistence seam used by the compatibility
+// facade. It excludes app-owned validation and conflict projection methods so
+// a PostgreSQL repository cannot be used directly as the HTTP application API.
+type HTTPRepository interface {
 	ListImagesFiltered(context.Context, ImageQuery) ([]map[string]any, int, error)
 	ImageFacets(context.Context) ([]string, []string, error)
 	Image(context.Context, int64) (map[string]any, []byte, string, error)
@@ -35,9 +46,9 @@ type HTTPFacade interface {
 	CompleteAttachmentUpload(context.Context, int64, int64, string) (int64, error)
 }
 
-type httpFacade struct{ store HTTPFacade }
+type httpFacade struct{ store HTTPRepository }
 
-func NewHTTPFacade(store HTTPFacade) (HTTPFacade, error) {
+func NewHTTPFacade(store HTTPRepository) (HTTPFacade, error) {
 	if store == nil {
 		return nil, errors.New("media HTTP facade store is required")
 	}
@@ -50,14 +61,23 @@ type AttachmentUploadInput = mediastore.AttachmentUploadInput
 type ImageQuery = mediastore.ImageQuery
 
 var (
-	ErrHTTPNotFound   = mediastore.ErrNotFound
-	ErrHTTPConflict   = mediastore.ErrConflict
-	ErrHTTPReferences = mediastore.ErrReferences
-	ErrHTTPInvalid    = mediastore.ErrInvalid
+	ErrHTTPNotFound                   = mediastore.ErrNotFound
+	ErrHTTPConflict                   = mediastore.ErrConflict
+	ErrHTTPReferences                 = mediastore.ErrReferences
+	ErrHTTPReferenceReaderUnavailable = mediastore.ErrReferenceReaderUnavailable
+	ErrHTTPInvalid                    = mediastore.ErrInvalid
 )
 
 func (f *httpFacade) ListImagesFiltered(c context.Context, q ImageQuery) ([]map[string]any, int, error) {
 	return f.store.ListImagesFiltered(c, q)
+}
+func (f *httpFacade) ValidImageVariant(key string) bool { return ValidImageVariantKey(key) }
+func (f *httpFacade) ReferenceConflict(err error) (map[string][]int64, bool) {
+	var conflict *mediastore.ReferenceConflict
+	if !errors.As(err, &conflict) || conflict == nil {
+		return nil, false
+	}
+	return conflict.References, true
 }
 func (f *httpFacade) ImageFacets(c context.Context) ([]string, []string, error) {
 	return f.store.ImageFacets(c)
