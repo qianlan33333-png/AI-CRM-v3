@@ -1,0 +1,43 @@
+openapi: 3.1.0
+info:
+  title: AI-CRM v3 Bootstrap API
+  version: 0.1.0
+  description: Initial health contract only. Business routes are added per contracted module.
+paths:
+  /healthz:
+    get:
+      operationId: getHealth
+      responses:
+        "200":
+          description: Process is alive.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatusResponse"
+  /readyz:
+    get:
+      operationId: getReadiness
+      responses:
+        "200":
+          description: Bootstrap dependencies are ready.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatusResponse"
+        "503":
+          description: A required bootstrap dependency is unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatusResponse"
+components:
+  schemas:
+    StatusResponse:
+      type: object
+      required: [status, release_sha]
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+        release_sha:
+          type: string
