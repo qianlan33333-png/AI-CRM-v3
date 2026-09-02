@@ -15,6 +15,17 @@ type fakeStore struct {
 	created  bool
 }
 
+type fakeRetryStore struct {
+	fakeStore
+	retry Retry
+	err   error
+}
+
+func (store *fakeRetryStore) Retry(_ context.Context, retry Retry) (Delivery, error) {
+	store.retry = retry
+	return store.delivery, store.err
+}
+
 func (store *fakeStore) PutIfAbsent(_ context.Context, delivery Delivery) (Delivery, bool, error) {
 	if store.delivery.ID == 0 {
 		store.delivery = delivery
@@ -72,5 +83,28 @@ func TestClaimValidation(t *testing.T) {
 	_, err = service.Claim(context.Background(), Claim{Provider: " wecom", Owner: "worker", Limit: 1, LeaseDuration: time.Minute})
 	if !errors.Is(err, ErrInvalidClaim) {
 		t.Fatalf("expected invalid provider ErrInvalidClaim, got %v", err)
+	}
+}
+
+func TestRetryIsExplicitPrivilegedCAS(t *testing.T) {
+	now := time.Date(2026, 9, 3, 0, 0, 0, 0, time.UTC)
+	store := &fakeRetryStore{fakeStore: fakeStore{delivery: Delivery{ID: 42, Status: StatusRetryable}}}
+	service, err := NewService(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := service.Retry(context.Background(), Retry{
+		ID: 42, Provider: "wecom.external_contact", ExpectedAttempt: 8, ExpectedStatus: StatusFailed, Now: now,
+	})
+	if err != nil || got.ID != 42 || store.retry.ExpectedAttempt != 8 || !store.retry.Now.Equal(now) {
+		t.Fatalf("delivery=%+v retry=%+v err=%v", got, store.retry, err)
+	}
+
+	if _, err = service.Retry(context.Background(), Retry{ID: 42, Provider: "wecom.external_contact"}); !errors.Is(err, ErrInvalidRetry) {
+		t.Fatalf("expected invalid retry, got %v", err)
+	}
+	withoutRetry, _ := NewService(&fakeStore{})
+	if _, err = withoutRetry.Retry(context.Background(), Retry{ID: 42, Provider: "wecom.external_contact", ExpectedAttempt: 1, ExpectedStatus: StatusRetryable}); !errors.Is(err, ErrRetryUnavailable) {
+		t.Fatalf("expected unavailable retry, got %v", err)
 	}
 }

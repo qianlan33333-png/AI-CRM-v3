@@ -130,6 +130,32 @@ func (*PostgreSQLStore) Complete(ctx context.Context, completion Completion) (De
 	return delivery, err
 }
 
+func (*PostgreSQLStore) Retry(ctx context.Context, retry Retry) (Delivery, error) {
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return Delivery{}, err
+	}
+	delivery, err := scanDelivery(tx.QueryRow(ctx, `
+		UPDATE webhook_inbox
+		SET status = 'retryable',
+			max_attempts = GREATEST(max_attempts, attempt_count + 1),
+			next_attempt_at = $4,
+			lease_owner = NULL,
+			lease_expires_at = NULL,
+			processed_at = NULL,
+			updated_at = clock_timestamp()
+		WHERE id = $1 AND provider = $2 AND status = $5 AND attempt_count = $3
+		RETURNING id, provider, idempotency_key, payload_hash, payload, status,
+			attempt_count, max_attempts, next_attempt_at, lease_owner,
+			lease_expires_at, last_error_code, received_at, processed_at, updated_at`,
+		retry.ID, retry.Provider, retry.ExpectedAttempt, retry.Now, retry.ExpectedStatus,
+	))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Delivery{}, ErrConcurrentUpdate
+	}
+	return delivery, err
+}
+
 type deliveryScanner interface {
 	Scan(...any) error
 }

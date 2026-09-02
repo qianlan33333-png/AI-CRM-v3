@@ -12,6 +12,7 @@ import (
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/access/credential"
 	accesshttp "github.com/qianlan33333-png/AI-CRM-v3/internal/access/http"
 	accessstore "github.com/qianlan33333-png/AI-CRM-v3/internal/access/store"
+	channelstore "github.com/qianlan33333-png/AI-CRM-v3/internal/channel"
 	externaleffects "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects"
 	identityapp "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/app"
 	identityhttp "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/http"
@@ -132,21 +133,30 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return fail(err)
 	}
 	var callbackCrypto *wecom.CallbackCrypto
-	if cfg.WeCom.Enabled {
+	var callbackStateDigester wecom.StateDigester
+	if cfg.WeCom.CallbackEnabled {
 		callbackCrypto, err = wecom.NewCallbackCrypto(cfg.WeCom.CallbackToken, cfg.WeCom.CallbackAESKey, cfg.WeCom.CorpID)
+		if err != nil {
+			return fail(err)
+		}
+		callbackStateDigester, err = wecom.NewHMACStateDigester([]byte(cfg.WeCom.ChannelStateHMACKey))
 		if err != nil {
 			return fail(err)
 		}
 	}
 	relationships := wecom.NewPostgreSQLFollowRelationshipStore()
+	callbackReceipts := wecom.NewPostgreSQLCallbackReceiptStore()
+	channelAcquisition := channelstore.NewPostgreSQLStore()
 	oauthStates := wecom.NewPostgreSQLOAuthStateStore()
-	weComIdentity := oneIDBridge{service: oneID}
 	weComProcessor := wecom.InboxProcessor{
-		Enabled: cfg.WeCom.Enabled, CorpID: cfg.WeCom.CorpID, Inbox: inboxService, UOW: uow,
-		Identity: weComIdentity, Relationships: relationships, Audit: auditService,
+		Enabled: cfg.WeCom.CallbackEnabled, CorpID: cfg.WeCom.CorpID, Inbox: inboxService, UOW: uow,
+		Lifecycle: wecom.ExternalContactLifecycle{
+			Identity: oneID, Relationships: relationships, States: channelAcquisition, Entrants: channelAcquisition,
+		},
+		Receipts: callbackReceipts, Audit: auditService,
 	}
 	weComHandler, err := wecom.NewHTTPHandler(wecom.HTTPHandlerOptions{
-		Callback: wecom.CallbackHandler{Enabled: cfg.WeCom.Enabled, Crypto: callbackCrypto, Inbox: inboxService, UOW: uow},
+		Callback: wecom.CallbackHandler{Enabled: cfg.WeCom.CallbackEnabled, Crypto: callbackCrypto, StateDigester: callbackStateDigester, Inbox: inboxService, UOW: uow},
 		OAuth: wecom.OAuthService{Enabled: cfg.WeCom.Enabled, CorpID: cfg.WeCom.CorpID, StateStore: oauthStates, UOW: uow,
 			Client: providerClient, AllowedPaths: allowedOAuthRedirects(), StateTTL: 10 * time.Minute},
 		ContextTokens: wecom.ContextTokenService{CorpID: cfg.WeCom.CorpID, SigningKey: []byte(cfg.WeCom.ContextSigningKey),
@@ -159,12 +169,30 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
+	callbackAdminHandler, err := wecom.NewCallbackAdminHandler(wecom.CallbackAdminConfig{
+		UnitOfWork: uow, Authenticator: requestSecurity, CSRF: requestSecurity,
+		Receipts: callbackReceipts, Retrier: inboxService,
+	})
+	if err != nil {
+		return fail(err)
+	}
+	entrantAdminHandler, err := channelstore.NewEntrantAdminHandler(channelstore.EntrantAdminConfig{
+		UnitOfWork: uow, Authenticator: requestSecurity, CSRF: requestSecurity,
+		Receipts: channelAcquisition, Audit: auditService,
+	})
+	if err != nil {
+		return fail(err)
+	}
+	adminAPIs := http.NewServeMux()
+	adminAPIs.Handle("/api/admin/oneid/", oneIDHandler.Routes())
+	adminAPIs.Handle("/api/admin/wecom/", callbackAdminHandler.Routes())
+	adminAPIs.Handle("/api/admin/channel-acquisition-entrant-receipts/", entrantAdminHandler.Routes())
 	readiness := platformruntime.ReadinessFunc(func(readinessContext context.Context) error {
 		if checkErr := pool.Check(readinessContext); checkErr != nil {
 			return checkErr
 		}
 		var complete bool
-		checkErr := pool.Native().QueryRow(readinessContext, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['0001','0002','0003','0004','0005']) AS required(version) WHERE NOT EXISTS (SELECT 1 FROM platform_schema_migrations applied WHERE applied.version=required.version))`).Scan(&complete)
+		checkErr := pool.Native().QueryRow(readinessContext, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['0001','0002','0003','0004','0005','0006']) AS required(version) WHERE NOT EXISTS (SELECT 1 FROM platform_schema_migrations applied WHERE applied.version=required.version))`).Scan(&complete)
 		if checkErr != nil || !complete {
 			return errors.New("database schema is not ready")
 		}
@@ -181,7 +209,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	effectsUI := effectsModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, tokens, labs, admin string) error {
 		return renderer.RenderExternalEffects(writer, webshell.AdminPageForRequest(request, "外部效果与 Push Center", "仅展示本地外部效果状态与对账事实。", "api.admin_cloud_orchestrator_workspace"), webshell.ExternalEffectsAssets{TokensCSS: tokens, LabsCSS: labs, AdminJS: admin})
 	})
-	handler, err := routeApplicationWithEffects(healthHandler, accessHandler.Routes(), oneIDHandler.Routes(), effectsBindings.Effects, effectsBindings.PushCenter, effectsUI, weComHandler, shellHandler, authentication, cfg.PublicOrigin)
+	handler, err := routeApplicationWithEffects(healthHandler, accessHandler.Routes(), adminAPIs, effectsBindings.Effects, effectsBindings.PushCenter, effectsUI, weComHandler, shellHandler, authentication, cfg.PublicOrigin)
 	if err != nil {
 		return fail(err)
 	}
@@ -229,6 +257,8 @@ func routeApplicationWithEffects(health, access, identity, effects, pushCenter, 
 	mux.Handle("/logout", access)
 	mux.Handle("/api/admin/access/", access)
 	mux.Handle("/api/admin/oneid/", identity)
+	mux.Handle("/api/admin/wecom/", identity)
+	mux.Handle("/api/admin/channel-acquisition-entrant-receipts/", identity)
 	mux.Handle("/api/admin/external-effects", effects)
 	mux.Handle("/api/admin/external-effects/", effects)
 	mux.Handle("/api/admin/push-center/", pushCenter)
@@ -236,6 +266,7 @@ func routeApplicationWithEffects(health, access, identity, effects, pushCenter, 
 	mux.Handle("/admin/external-effects", requireAdminSession(authentication, effectsUI))
 	mux.Handle("/admin/campaigns.html", requireAdminSession(authentication, effectsUI))
 	mux.Handle("/wecom/external-contact/callback", weCom)
+	mux.Handle("/api/wecom/events", weCom)
 	mux.Handle("/auth/wecom/start", weCom)
 	mux.Handle("/auth/wecom/callback", weCom)
 	mux.Handle("/api/sidebar/", weCom)
