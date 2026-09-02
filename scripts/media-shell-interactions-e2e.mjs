@@ -11,11 +11,12 @@ import { JSDOM } from 'jsdom';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildTestBrowserBundle } from './test-browser-bundle.mjs';
+import { buildTestBrowserBundle } from '../web/scripts/test-browser-bundle.mjs';
 
-const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-const DIST = path.join(ROOT, 'dist');
-const ADMIN = await buildTestBrowserBundle(path.join(ROOT, 'src/admin/main.ts'));
+const REPOSITORY = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+const WEB = path.join(REPOSITORY, 'web');
+const DIST = path.join(WEB, 'dist');
+const ADMIN = await buildTestBrowserBundle(path.join(WEB, 'src/admin/main.ts'));
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
 function fail(message) {
