@@ -272,6 +272,11 @@ var adminSpecs = map[string]adminSpec{
 		summary:        "配置入口已预留。",
 		activeEndpoint: "api.admin_config",
 	},
+	OneIDPagePath: {
+		title:          "OneID 身份中心",
+		summary:        "按受控身份键查询客户归属、冲突与待确认归并候选。",
+		activeEndpoint: "api.admin_oneid_page",
+	},
 	LoginAccessPath: {
 		title:          "员工登录权限",
 		summary:        "管理后台员工账号、角色与企微绑定。",

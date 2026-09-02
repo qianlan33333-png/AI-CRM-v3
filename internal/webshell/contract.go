@@ -19,7 +19,12 @@ const (
 	LoginPath            = "/login"
 	WeComAuthStartPath   = "/auth/wecom/start"
 	AdminRootPath        = "/admin"
+	OneIDPagePath        = "/admin/oneid"
 	LoginAccessPath      = "/admin/config/login-access"
+	OneIDResolveAPIPath  = "/api/admin/oneid/resolve"
+	OneIDCustomerAPIPath = "/api/admin/oneid/customers/"
+	OneIDConflictsPath   = "/api/admin/oneid/conflicts"
+	OneIDCandidatesPath  = "/api/admin/oneid/merge-candidates"
 	SidebarPagePath      = "/sidebar/bind-mobile"
 	SidebarWorkbenchPath = "/api/sidebar/v2/workbench"
 	SidebarJSSDKPath     = "/api/sidebar/jssdk-config"
@@ -90,6 +95,7 @@ var ADMIN_ROUTE_REGISTRY = map[string]AdminRoute{
 	"api.admin_config":                                 {"api.admin_config", "/admin/config"},
 	"api.admin_config_app_settings":                    {"api.admin_config_app_settings", "/admin/config/app-settings"},
 	"api.admin_config_login_access":                    {"api.admin_config_login_access", LoginAccessPath},
+	"api.admin_oneid_page":                             {"api.admin_oneid_page", OneIDPagePath},
 	"api.admin_api_docs":                               {"api.admin_api_docs", "/admin/api-docs"},
 	"api.admin_console_api_docs":                       {"api.admin_console_api_docs", "/admin/api-docs"},
 	"api.admin_operation_cycles_page":                  {"api.admin_operation_cycles_page", "/admin/operation-cycles"},
@@ -145,6 +151,7 @@ var ADMIN_NAV_GROUPS = []AdminNavGroup{
 			{Key: "automation_agents", Label: "自动化话术", Endpoint: "api.admin_automation_agents_page"},
 			{Key: "owner_migration", Label: "负责人迁移", Endpoint: "api.admin_owner_migration_page"},
 			{Key: "config", Label: "配置", Endpoint: "api.admin_config"},
+			{Key: "oneid", Label: "OneID 身份中心", Endpoint: "api.admin_oneid_page"},
 			{Key: "api_docs", Label: "API 文档", Endpoint: "api.admin_api_docs"},
 		},
 	},

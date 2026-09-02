@@ -9,6 +9,9 @@
   {{if eq .RequestPath "/admin/config/login-access"}}
   <link rel="stylesheet" href="/static/admin_console/admin_access.css?v=v3-webshell">
   {{end}}
+  {{if eq .RequestPath "/admin/oneid"}}
+  <link rel="stylesheet" href="/static/admin_console/admin_oneid.css?v=v3-webshell">
+  {{end}}
 </head>
 <body class="admin-shell" data-admin-shell-source="v3_webshell">
   <div class="admin-layout">

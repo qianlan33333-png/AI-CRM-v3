@@ -93,6 +93,8 @@ func (renderer *Renderer) RenderAdminStatus(writer http.ResponseWriter, status i
 	contentTemplate := "admin_placeholder"
 	if data.RequestPath == LoginAccessPath {
 		contentTemplate = "admin_access"
+	} else if data.RequestPath == OneIDPagePath {
+		contentTemplate = "admin_oneid"
 	}
 	content, err := executeTemplate(renderer.templates, contentTemplate, data)
 	if err != nil {

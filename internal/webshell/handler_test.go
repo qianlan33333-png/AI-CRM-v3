@@ -12,7 +12,7 @@ func TestAdminNavGroupsMirrorSourceMenu(t *testing.T) {
 		t.Fatalf("group count=%d, want 4", len(ADMIN_NAV_GROUPS))
 	}
 	wantTitles := []string{"运营", "交易", "素材", "配置及后台"}
-	wantCounts := []int{10, 4, 3, 4}
+	wantCounts := []int{10, 4, 3, 5}
 	for index, group := range ADMIN_NAV_GROUPS {
 		if group.Title != wantTitles[index] || len(group.Items) != wantCounts[index] {
 			t.Fatalf("group %d=%+v, want title=%q count=%d", index, group, wantTitles[index], wantCounts[index])
@@ -167,6 +167,69 @@ func TestStandaloneHandlerRendersAdminLoginSidebarAndAssets(t *testing.T) {
 				"/api/admin/access/users/",
 			},
 			notContain: []string{"session_version", "password_hash", "digest"},
+		},
+		{
+			name:   "oneid page",
+			method: http.MethodGet,
+			path:   OneIDPagePath,
+			status: http.StatusOK,
+			contains: []string{
+				"OneID 身份中心",
+				"data-admin-oneid-root",
+				"/api/admin/oneid/resolve",
+				"/api/admin/oneid/customers/",
+				"/api/admin/oneid/conflicts",
+				"/api/admin/oneid/merge-candidates",
+				"name=\"kind\"",
+				"name=\"scope\"",
+				"name=\"value\"",
+				"admin_oneid.js",
+			},
+			notContain: []string{
+				"name=\"assurance\"",
+				"localStorage",
+				"sessionStorage",
+				"/api/v3/",
+				"fixture",
+			},
+		},
+		{
+			name:   "oneid javascript",
+			method: http.MethodGet,
+			path:   "/static/admin_console/admin_oneid.js",
+			status: http.StatusOK,
+			contains: []string{
+				"/api/admin/oneid/resolve",
+				"JSON.stringify({ kind: kind, scope: scope, value: value })",
+				"credentials: \"same-origin\"",
+				"textContent",
+			},
+			notContain: []string{
+				"assurance",
+				"localStorage",
+				"sessionStorage",
+				"innerHTML",
+				"console.",
+			},
+		},
+		{
+			name:   "oneid css asset",
+			method: http.MethodGet,
+			path:   "/static/admin_console/admin_oneid.css",
+			status: http.StatusOK,
+			contains: []string{
+				".admin-oneid-query-grid",
+				".admin-oneid-detail",
+			},
+		},
+		{
+			name:   "oneid nav icon asset",
+			method: http.MethodGet,
+			path:   "/static/admin_console/nav-icons/oneid.svg",
+			status: http.StatusOK,
+			contains: []string{
+				"<svg",
+			},
 		},
 		{
 			name:   "css asset",
