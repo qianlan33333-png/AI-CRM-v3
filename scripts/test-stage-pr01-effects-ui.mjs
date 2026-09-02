@@ -11,9 +11,10 @@ const stage = path.join(root, 'stage');
 try {
   fs.mkdirSync(path.join(source, 'admin'), { recursive: true });
   fs.mkdirSync(path.join(source, 'assets'), { recursive: true });
-  // Only the three Media templates are private Go-renderer inputs; Campaign
-  // HTML must never reach release as a second shell.
+  // Media templates and the generated Tags page are private Go-renderer
+  // inputs; Campaign HTML must never reach release as a second shell.
   fs.writeFileSync(path.join(source, 'admin', 'campaigns.html'), '<aside class="side"></aside>');
+  fs.writeFileSync(path.join(source, 'admin', 'wecom-tags.html'), '<aside class="side">donor shell</aside><template id="tpl"><section data-page="tags">tags</section></template>');
   for (const page of ['images', 'attach', 'mpLib']) fs.writeFileSync(path.join(source, 'admin', `${page}.html`), `<template id="tpl">${page}</template>`);
   for (const file of ['admin.js', 'tokens.css', 'labs.css', 'legacy.js', 'campaigns.js']) {
     fs.writeFileSync(path.join(source, 'assets', file), file);
@@ -31,9 +32,10 @@ try {
 
   execFileSync(process.execPath, ['scripts/stage-pr01-effects-ui.mjs', source, stage], { stdio: 'inherit' });
   const staged = fs.readdirSync(stage, { recursive: true }).map((entry) => String(entry).split(path.sep).join('/')).sort();
-  assert.deepEqual(staged, ['admin', 'admin/attach.html', 'admin/images.html', 'admin/mpLib.html', 'asset-manifest.json', 'assets', 'assets/admin.js', 'assets/campaigns.js', 'assets/labs.css', 'assets/legacy.js', 'assets/tokens.css']);
+  assert.deepEqual(staged, ['admin', 'admin/attach.html', 'admin/images.html', 'admin/mpLib.html', 'admin/tags.html', 'asset-manifest.json', 'assets', 'assets/admin.js', 'assets/campaigns.js', 'assets/labs.css', 'assets/legacy.js', 'assets/tokens.css']);
   assert.equal(fs.existsSync(path.join(stage, 'admin', 'campaigns.html')), false, 'donor campaign HTML must not be released');
-  assert.deepEqual(staged.filter((entry) => entry.endsWith('.html')), ['admin/attach.html', 'admin/images.html', 'admin/mpLib.html'], 'only private Media templates may be staged');
+  assert.equal(fs.readFileSync(path.join(stage, 'admin', 'tags.html'), 'utf8'), fs.readFileSync(path.join(source, 'admin', 'wecom-tags.html'), 'utf8'), 'generated donor Tags page must be copied byte-for-byte as the private template source');
+  assert.deepEqual(staged.filter((entry) => entry.endsWith('.html')), ['admin/attach.html', 'admin/images.html', 'admin/mpLib.html', 'admin/tags.html'], 'only private Media and Tags templates may be staged');
   console.log('PR01 effects UI staging contract passed');
 } finally {
   fs.rmSync(root, { recursive: true, force: true });
