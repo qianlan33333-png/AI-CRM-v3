@@ -22,6 +22,11 @@ is default-disabled (including id-dev), requires an explicit
 retried under a new idempotency key. Generic reconciliation may close an
 unknown effect but never fabricates an observed snapshot.
 
+The frozen `tag-execution-status` page gate remains deliberately
+`provider_execution_unavailable`: it is a local permission/compatibility gate
+for customer tag writes, which are outside PR03, not a diagnostic of the
+implemented catalog-read runtime switch.
+
 Reorder commands require the complete current ID set but may change its order;
 partial, duplicate, unknown, or stale memberships fail closed before a store
 mutation. `SameIDs` remains the ordered comparison used to verify replayed

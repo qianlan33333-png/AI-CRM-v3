@@ -20,12 +20,8 @@ type HTTPBindings struct {
 	PushCenter http.Handler
 }
 
-func NewModuleRegistration(adapter ...ProviderAdapter) *ModuleRegistration {
-	var selected ProviderAdapter
-	if len(adapter) == 1 {
-		selected = adapter[0]
-	}
-	return &ModuleRegistration{worker: NewWorker(nil, selected)}
+func NewModuleRegistration() *ModuleRegistration {
+	return &ModuleRegistration{worker: NewWorker(nil, nil)}
 }
 
 // SetProviderAdapter is composition-only wiring. It is intentionally narrow:
