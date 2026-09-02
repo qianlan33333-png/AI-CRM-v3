@@ -135,7 +135,7 @@ func acceptanceFromReceipt(receipt tagport.SyncReceipt) (tagport.SyncAcceptance,
 	// ReserveSync validates/reconciles the full caller command before this
 	// point.  Receipts retain only a digest of an idempotency key, so requiring
 	// the raw key here would make a legitimate committed receipt unreadable.
-	if receipt.ID <= 0 || receipt.State != tagport.SyncAccepted || receipt.EventID <= 0 || receipt.Effect.QueueJobID <= 0 || receipt.Effect.EffectRef == "" || receipt.Effect.AcceptReceiptID == "" {
+	if receipt.ID <= 0 || receipt.State != tagport.SyncAccepted || receipt.EventID <= 0 || receipt.Effect.QueueJobID <= 0 || receipt.Effect.EffectID <= 0 || receipt.Effect.EffectRef == "" || receipt.Effect.EffectState != "queued" || receipt.Effect.AcceptReceiptID == "" || receipt.Effect.QueueReceiptID == "" {
 		return tagport.SyncAcceptance{}, ErrSyncFailed
 	}
 	return tagport.SyncAcceptance{ReceiptID: receipt.ID, EventID: receipt.EventID, QueueJobID: receipt.Effect.QueueJobID, EffectID: receipt.Effect.EffectRef, EffectState: receipt.Effect.EffectState, AcceptReceiptID: receipt.Effect.AcceptReceiptID, QueueReceiptID: receipt.Effect.QueueReceiptID, State: tagport.SyncQueued}, nil

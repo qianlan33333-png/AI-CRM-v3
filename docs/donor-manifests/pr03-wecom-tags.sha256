@@ -1,6 +1,7 @@
 # SHA-256 evidence for PR03 constrained transfer.
 # Source hashes are from donor commit 6bfbe5816bb89913c70adaca87d6a486260e016e.
-# Target hashes are computed from the current transfer tree before commit.
+# Only frozen donor frontend target hashes are asserted here. V3 adapters and
+# tests evolve independently and are covered by their normal test suites.
 
 6a023211f90b893f3cccfaed6a4fec1f66d9470c6331ddb253a461d0612b21d7  source:internal/contact/app/legacy_tag_catalog.go
 d102d7b52404dfd1377aaca5e2eac199e252838302c866a89830625037591e9f  source:internal/contact/app/legacy_tag_catalog_test.go
@@ -27,17 +28,3 @@ ee681aa3460deccb41aad4daea555e3428301d30bafc804860ab6d83df1a930e  source:web/src
 50753645bc7bd5843727f88b60e95b12e7f48a229592d192e467272bb6275606  target:web/src/admin/templates/tags.html
 e4094bb5f7c6578c4f4bc580409c3e6b3a7588803d5266d744685d52a1249e71  target:web/src/admin/sections/wecomTagPicker.ts
 634e610ac25a1a5d31df65249ee2f44b534b784364c78cea1d6848cd429bf134  target:web/src/admin/sections/wecomTagPicker.css
-c3a632efd7521195fc908758c8013913e0600f8244a56f6673703817a6cfe717  target:internal/tag/port/catalog.go
-667965761815a0542fadd5ba66c59fdd5d16165839b189736baf1c27bd38225b  target:internal/tag/domain/catalog.go
-683f909b766709e02e1afb358dc205c1c2ec0b3b36aec09d2525ec6595da43c5  target:internal/tag/domain/gate.go
-ee273b70c0122ee6aeea875a63dab4ee3f0fabfe7317872a4289e7d59dee643a  target:internal/tag/domain/gate_test.go
-062717379efb06274fec2d23f7257acdb4b11acb4546b5c65ae169d09804b65d  target:internal/tag/port/gate.go
-541b079ce5b5d0c4fea7dd507654c223a1630aff6a445bdd3040a2d1fd391fa9  target:internal/tag/app/catalog.go
-87e41d349d51416fd577c30db90567498c92429e612aeb869556f21217542716  target:internal/tag/app/gate.go
-bc372d62d7e147f21abdb7785598d2f10bf291dea36322d9d8636586ce6551ad  target:internal/tag/app/gate_test.go
-6b554135ad4e69c83b3e29f3ca2555f217237a5152fe249395ac95e1171f448a  target:internal/tag/app/catalog_test.go
-89a795fdbda6ff799540a3b9e26794f344a78c94a0367735ff6778d0caacc29e  target:internal/tag/app/sync.go
-0a77997e47e0df6e0bedb420b838e31b35b880593becdbe36873158da846ced2  target:internal/tag/app/sync_test.go
-1c4fbc54f5b58c268c68986e7a04838b9a8bbb9cebccff6c5446423cb52b75d7  target:internal/tag/domain/catalog_test.go
-8e1cb95573ad328fd84980c0e95eefaf54d52e05ad599019c6e4940da49a5136  target:internal/tag/README.md
-85170c8f51e7b30222f0db05786f10d1fc82abb9e43dc0c4038b131d20477ba0  target:docs/donor-manifests/pr03-wecom-tags.yaml

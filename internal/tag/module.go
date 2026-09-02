@@ -26,7 +26,7 @@ func (m *ModuleRegistration) Readiness(ctx context.Context, pool *pgxpool.Pool) 
 		return errors.New("tag module dependencies are required")
 	}
 	var ready bool
-	e := pool.QueryRow(ctx, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['tag_groups','tag_catalog_tags','tag_operation_receipts','tag_audit_events','tag_outbox','tag_sync_receipts']) AS required(name) WHERE to_regclass(current_schema() || '.' || required.name) IS NULL)`).Scan(&ready)
+	e := pool.QueryRow(ctx, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['tag_groups','tag_catalog_tags','tag_references','tag_operation_receipts','tag_audit_events','tag_outbox','tag_sync_receipts']) AS required(name) WHERE to_regclass(current_schema() || '.' || required.name) IS NULL)`).Scan(&ready)
 	if e != nil {
 		return e
 	}

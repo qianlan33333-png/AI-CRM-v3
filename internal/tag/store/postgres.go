@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"time"
 
@@ -23,8 +24,8 @@ import (
 
 var (
 	ErrInvalid  = errors.New("invalid tag catalog persistence command")
-	ErrNotFound = errors.New("tag catalog persistence item not found")
-	ErrConflict = errors.New("tag catalog persistence conflict")
+	ErrNotFound = tagport.ErrNotFound
+	ErrConflict = tagport.ErrConflict
 )
 
 type Repository struct {
@@ -153,7 +154,7 @@ func (r *Repository) CreateTag(ctx context.Context, groupID int64, name string) 
 	if err != nil {
 		return domain.Tag{}, err
 	}
-	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('tag.catalog.group.order:' || $1::text))`, groupID); err != nil {
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, "tag.catalog.group.order:"+strconv.FormatInt(groupID, 10)); err != nil {
 		return domain.Tag{}, err
 	}
 	var v domain.Tag
@@ -196,7 +197,7 @@ func (r *Repository) UpdateTag(ctx context.Context, id int64, name string) (doma
 		return domain.Tag{}, err
 	}
 	var v domain.Tag
-	err = tx.QueryRow(ctx, `UPDATE tag_catalog_tags t SET tag_name=$2,version=version+1,updated_at=clock_timestamp() FROM tag_groups g WHERE t.group_id=g.id AND t.id=$1 AND t.archived_at IS NULL AND g.archived_at IS NULL RETURNING t.id,t.group_id,g.group_name,t.tag_name,t.sort_order`, id, name).Scan(&v.ID, &v.GroupID, &v.GroupName, &v.Name, &v.SortOrder)
+	err = tx.QueryRow(ctx, `UPDATE tag_catalog_tags t SET tag_name=$2,version=t.version+1,updated_at=clock_timestamp() FROM tag_groups g WHERE t.group_id=g.id AND t.id=$1 AND t.archived_at IS NULL AND g.archived_at IS NULL RETURNING t.id,t.group_id,g.group_name,t.tag_name,t.sort_order`, id, name).Scan(&v.ID, &v.GroupID, &v.GroupName, &v.Name, &v.SortOrder)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Tag{}, ErrNotFound
 	}
@@ -208,7 +209,7 @@ func (r *Repository) ArchiveTag(ctx context.Context, id int64) (domain.Tag, erro
 		return domain.Tag{}, err
 	}
 	var v domain.Tag
-	err = tx.QueryRow(ctx, `UPDATE tag_catalog_tags t SET archived_at=clock_timestamp(),version=version+1,updated_at=clock_timestamp() FROM tag_groups g WHERE t.group_id=g.id AND t.id=$1 AND t.archived_at IS NULL AND g.archived_at IS NULL RETURNING t.id,t.group_id,g.group_name,t.tag_name,t.sort_order`, id).Scan(&v.ID, &v.GroupID, &v.GroupName, &v.Name, &v.SortOrder)
+	err = tx.QueryRow(ctx, `UPDATE tag_catalog_tags t SET archived_at=clock_timestamp(),version=t.version+1,updated_at=clock_timestamp() FROM tag_groups g WHERE t.group_id=g.id AND t.id=$1 AND t.archived_at IS NULL AND g.archived_at IS NULL RETURNING t.id,t.group_id,g.group_name,t.tag_name,t.sort_order`, id).Scan(&v.ID, &v.GroupID, &v.GroupName, &v.Name, &v.SortOrder)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Tag{}, ErrNotFound
 	}
@@ -253,24 +254,34 @@ func (r *Repository) ReorderTags(ctx context.Context, ids []int64) ([]domain.Tag
 	if err != nil {
 		return nil, err
 	}
-	rows, err := tx.Query(ctx, `SELECT id FROM tag_catalog_tags WHERE archived_at IS NULL FOR UPDATE`)
+	rows, err := tx.Query(ctx, `SELECT t.id,t.group_id FROM tag_catalog_tags t JOIN tag_groups g ON g.id=t.group_id WHERE t.archived_at IS NULL AND g.archived_at IS NULL ORDER BY g.sort_order,g.id,t.sort_order,t.id FOR UPDATE`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	current := []int64{}
+	groupByID := map[int64]int64{}
 	for rows.Next() {
-		var id int64
-		if err = rows.Scan(&id); err != nil {
+		var id, groupID int64
+		if err = rows.Scan(&id, &groupID); err != nil {
 			return nil, err
 		}
 		current = append(current, id)
+		groupByID[id] = groupID
 	}
 	if err = rows.Err(); err != nil {
 		return nil, err
 	}
 	if !domain.SameIDSet(current, ids) {
 		return nil, ErrConflict
+	}
+	// The frozen catalog order is group-major. A reorder may permute tags only
+	// within their current group; accepting an arbitrary global permutation
+	// would silently claim an order ListTags can never project.
+	for index, id := range ids {
+		if groupByID[id] != groupByID[current[index]] {
+			return nil, ErrConflict
+		}
 	}
 	if _, err = tx.Exec(ctx, `UPDATE tag_catalog_tags SET sort_order=sort_order+(SELECT COALESCE(max(sort_order),0)+count(*)+1 FROM tag_catalog_tags WHERE archived_at IS NULL),version=version+1,updated_at=clock_timestamp() WHERE archived_at IS NULL`); err != nil {
 		return nil, err

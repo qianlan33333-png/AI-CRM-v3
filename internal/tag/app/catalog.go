@@ -18,9 +18,9 @@ import (
 
 var (
 	ErrInvalidCommand = errors.New("invalid tag catalog command")
-	ErrNotFound       = errors.New("tag catalog item not found")
+	ErrNotFound       = tagport.ErrNotFound
 	ErrReferenced     = errors.New("tag catalog item is still referenced by customers")
-	ErrConflict       = errors.New("tag catalog idempotency command conflict")
+	ErrConflict       = tagport.ErrConflict
 	ErrUnavailable    = errors.New("tag catalog unavailable")
 )
 
@@ -268,7 +268,7 @@ func (service *Service) UpdateTag(ctx context.Context, command domain.Command) (
 		if len(ids) != 1 || ids[0] != command.TagID {
 			return mutationResult{}, ErrConflict
 		}
-		tag, err := archivedTagForReplay(service.store, tx, command.TagID)
+		tag, err := service.store.GetTag(tx, command.TagID)
 		return mutationResult{value: tag, resultIDs: ids}, err
 	})
 	if err != nil {
@@ -305,7 +305,7 @@ func (service *Service) ArchiveTag(ctx context.Context, command domain.Command) 
 		if len(ids) != 1 || ids[0] != command.TagID {
 			return mutationResult{}, ErrConflict
 		}
-		tag, err := service.store.GetTag(tx, command.TagID)
+		tag, err := archivedTagForReplay(service.store, tx, command.TagID)
 		return mutationResult{value: tag, resultIDs: ids}, err
 	})
 	if err != nil {

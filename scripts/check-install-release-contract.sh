@@ -35,3 +35,4 @@ if grep -qE '^AICRM_ROLE=' deploy/aicrm.env.example; then
 fi
 grep -qx 'WantedBy=multi-user.target' deploy/aicrm-effects-worker.service || { echo "effects worker must be persistently enableable" >&2; exit 1; }
 grep -qx 'test -f "$release_dir/migrations/0007_media.sql"' "$installer" || { echo "release must require Media migration" >&2; exit 1; }
+grep -qx 'test -f "$release_dir/migrations/0008_tag_catalog.sql"' "$installer" || { echo "release must require Tag catalog migration" >&2; exit 1; }

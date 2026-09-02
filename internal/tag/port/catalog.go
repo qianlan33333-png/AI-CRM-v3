@@ -3,9 +3,17 @@ package port
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/tag/domain"
+)
+
+// ErrNotFound and ErrConflict classify owned-store results without exposing a
+// concrete adapter to the application or HTTP layers.
+var (
+	ErrNotFound = errors.New("tag catalog item not found")
+	ErrConflict = errors.New("tag catalog conflict")
 )
 
 // CatalogStore is the Tag-owned transactional store contract. Implementations

@@ -52,7 +52,7 @@ func (jobs *syncJobs) EnqueueSync(_ context.Context, job port.SyncJob) (port.Syn
 	}
 	jobs.calls++
 	jobs.job = job
-	return port.SyncEffectReceipt{QueueJobID: jobs.id, EffectID: 91, EffectRef: "eer_91", EffectState: "queued", AcceptReceiptID: "eerop_91", QueueReceiptID: "eerj_" + string(rune('0'+jobs.id))}, nil
+	return port.SyncEffectReceipt{QueueJobID: jobs.id, EffectID: 91, EffectRef: "eer_91", EffectState: "queued", AcceptReceiptID: "eerop_91", QueueReceiptID: "eerop_92"}, nil
 }
 
 func TestSyncServiceAcceptsManualAndDueInsideOneUOW(t *testing.T) {
@@ -60,13 +60,13 @@ func TestSyncServiceAcceptsManualAndDueInsideOneUOW(t *testing.T) {
 		t.Run(string(kind), func(t *testing.T) {
 			uow := &catalogUOW{}
 			command := port.SyncCommand{Actor: 7, IdempotencyKey: "sync-request-001", TraceID: "trace-sync-001", Kind: kind}
-			store := &syncStore{uow: uow, accepted: port.SyncReceipt{ID: 41, Command: command, State: port.SyncAccepted, EventID: 1, Effect: port.SyncEffectReceipt{QueueJobID: 43, EffectID: 91, EffectRef: "eer_91", EffectState: "queued", AcceptReceiptID: "eerop_91", QueueReceiptID: "eerj_43"}}}
+			store := &syncStore{uow: uow, accepted: port.SyncReceipt{ID: 41, Command: command, State: port.SyncAccepted, EventID: 1, Effect: port.SyncEffectReceipt{QueueJobID: 43, EffectID: 91, EffectRef: "eer_91", EffectState: "queued", AcceptReceiptID: "eerop_91", QueueReceiptID: "eerop_92"}}}
 			events := &catalogEvents{uow: uow}
 			jobs := &syncJobs{uow: uow, id: 43}
 			service := NewSyncService(uow, store, events, jobs)
 			service.now = func() time.Time { return time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC) }
 			got, err := service.Request(context.Background(), command)
-			want := port.SyncAcceptance{ReceiptID: 41, EventID: 1, QueueJobID: 43, EffectID: "eer_91", EffectState: "queued", AcceptReceiptID: "eerop_91", QueueReceiptID: "eerj_43", State: port.SyncQueued}
+			want := port.SyncAcceptance{ReceiptID: 41, EventID: 1, QueueJobID: 43, EffectID: "eer_91", EffectState: "queued", AcceptReceiptID: "eerop_91", QueueReceiptID: "eerop_92", State: port.SyncQueued}
 			if err != nil || got != want {
 				t.Fatalf("Request() = %#v, %v", got, err)
 			}
@@ -83,7 +83,7 @@ func TestSyncServiceAcceptsManualAndDueInsideOneUOW(t *testing.T) {
 func TestSyncServiceReplayDoesNotQueueAgain(t *testing.T) {
 	uow := &catalogUOW{}
 	command := port.SyncCommand{Actor: 7, IdempotencyKey: "sync-request-001", Kind: port.SyncManual}
-	store := &syncStore{uow: uow, receipt: port.SyncReceipt{ID: 41, Command: command, State: port.SyncAccepted, EventID: 42, Effect: port.SyncEffectReceipt{QueueJobID: 43, EffectID: 91, EffectRef: "eer_91", EffectState: "queued", AcceptReceiptID: "eerop_91", QueueReceiptID: "eerj_43"}}}
+	store := &syncStore{uow: uow, receipt: port.SyncReceipt{ID: 41, Command: command, State: port.SyncAccepted, EventID: 42, Effect: port.SyncEffectReceipt{QueueJobID: 43, EffectID: 91, EffectRef: "eer_91", EffectState: "queued", AcceptReceiptID: "eerop_91", QueueReceiptID: "eerop_92"}}}
 	events := &catalogEvents{uow: uow}
 	jobs := &syncJobs{uow: uow, id: 99}
 	got, err := NewSyncService(uow, store, events, jobs).Request(context.Background(), command)
@@ -98,7 +98,7 @@ func TestSyncServiceReplayDoesNotQueueAgain(t *testing.T) {
 func TestSyncServiceCommitHookFailureBubblesAndStaysInsideUOW(t *testing.T) {
 	uow := &catalogUOW{}
 	command := port.SyncCommand{Actor: 7, IdempotencyKey: "sync-request-001", Kind: port.SyncManual}
-	store := &syncStore{uow: uow, accepted: port.SyncReceipt{ID: 41, Command: command, State: port.SyncAccepted, EventID: 1, Effect: port.SyncEffectReceipt{QueueJobID: 43, EffectID: 91, EffectRef: "eer_91", EffectState: "queued", AcceptReceiptID: "eerop_91", QueueReceiptID: "eerj_43"}}}
+	store := &syncStore{uow: uow, accepted: port.SyncReceipt{ID: 41, Command: command, State: port.SyncAccepted, EventID: 1, Effect: port.SyncEffectReceipt{QueueJobID: 43, EffectID: 91, EffectRef: "eer_91", EffectState: "queued", AcceptReceiptID: "eerop_91", QueueReceiptID: "eerop_92"}}}
 	hookErr := errors.New("outbound acceptance failed")
 	_, err := NewSyncService(uow, store, &catalogEvents{uow: uow}, &syncJobs{uow: uow, id: 43}).RequestWithCommitHook(context.Background(), command, func(_ context.Context, acceptance port.SyncAcceptance, replay bool) error {
 		if !uow.in || replay || acceptance.ReceiptID != 41 {
@@ -114,7 +114,7 @@ func TestSyncServiceCommitHookFailureBubblesAndStaysInsideUOW(t *testing.T) {
 func TestSyncServiceRejectsInvalidCommandsAndUnknownRetry(t *testing.T) {
 	uow := &catalogUOW{}
 	command := port.SyncCommand{Actor: 7, IdempotencyKey: "sync-request-001", Kind: port.SyncManual}
-	store := &syncStore{uow: uow, receipt: port.SyncReceipt{ID: 41, Command: command, State: port.SyncAccepted, EventID: 42, Effect: port.SyncEffectReceipt{QueueJobID: 43, EffectID: 91, EffectRef: "eer_91", EffectState: "queued", AcceptReceiptID: "eerop_91", QueueReceiptID: "eerj_43"}}}
+	store := &syncStore{uow: uow, receipt: port.SyncReceipt{ID: 41, Command: command, State: port.SyncAccepted, EventID: 42, Effect: port.SyncEffectReceipt{QueueJobID: 43, EffectID: 91, EffectRef: "eer_91", EffectState: "queued", AcceptReceiptID: "eerop_91", QueueReceiptID: "eerop_92"}}}
 	service := NewSyncService(uow, store, &catalogEvents{uow: uow}, &syncJobs{uow: uow, id: 43})
 	for _, invalid := range []port.SyncCommand{{}, {Actor: 7, IdempotencyKey: " bad", Kind: port.SyncManual}, {Actor: 7, IdempotencyKey: "sync-request-001", Kind: "unknown"}} {
 		if _, err := service.Request(context.Background(), invalid); !errors.Is(err, ErrInvalidSync) {
@@ -128,5 +128,20 @@ func TestSyncServiceRejectsInvalidCommandsAndUnknownRetry(t *testing.T) {
 	}
 	if !SyncCanAutoRetry(port.SyncQueued) {
 		t.Fatal("queued state must remain eligible for first delivery")
+	}
+}
+
+func TestSyncAcceptanceRejectsIncompleteCommittedReceipt(t *testing.T) {
+	command := port.SyncCommand{Actor: 7, IdempotencyKey: "sync-incomplete-key", Kind: port.SyncManual}
+	for name, effect := range map[string]port.SyncEffectReceipt{
+		"missing queue receipt": {QueueJobID: 43, EffectID: 91, EffectRef: "eer_91", EffectState: "queued", AcceptReceiptID: "eerop_91"},
+		"wrong state":           {QueueJobID: 43, EffectID: 91, EffectRef: "eer_91", EffectState: "executed", AcceptReceiptID: "eerop_91", QueueReceiptID: "eerop_92"},
+		"missing effect id":     {QueueJobID: 43, EffectRef: "eer_91", EffectState: "queued", AcceptReceiptID: "eerop_91", QueueReceiptID: "eerop_92"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := acceptanceFromReceipt(port.SyncReceipt{ID: 41, Command: command, State: port.SyncAccepted, EventID: 43, Effect: effect}); !errors.Is(err, ErrSyncFailed) {
+				t.Fatalf("acceptanceFromReceipt() error = %v", err)
+			}
+		})
 	}
 }

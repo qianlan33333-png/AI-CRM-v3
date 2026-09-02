@@ -114,11 +114,84 @@ func decode(r *http.Request, v any) error {
 	}
 	return nil
 }
-func command(p accessdomain.Principal, key, trace string) domain.Command {
-	if key == "" {
-		key = compatKey()
+
+// decodeOptionalJSON permits the legacy DELETE empty-body form, but does not
+// turn an unknown-length/chunked malformed body into an implicit empty one.
+func decodeOptionalJSON(r *http.Request, v any) error {
+	d := json.NewDecoder(io.LimitReader(r.Body, 32<<10))
+	d.DisallowUnknownFields()
+	if err := d.Decode(v); err != nil {
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		return err
 	}
+	if d.Decode(&struct{}{}) != io.EOF {
+		return errors.New("trailing JSON")
+	}
+	return nil
+}
+
+type writeMetadata struct {
+	// Actor exists in the frozen DTO but is deliberately ignored: only the
+	// authenticated v3 principal can become the audit actor.
+	Actor          json.RawMessage `json:"actor"`
+	IdempotencyKey string          `json:"idempotency_key"`
+	TraceID        string          `json:"trace_id"`
+	DryRun         bool            `json:"dry_run"`
+}
+
+func command(p accessdomain.Principal, key, trace string) domain.Command {
 	return domain.Command{Actor: p.InternalID, IdempotencyKey: key, TraceID: trace}
+}
+
+func idempotencyKey(r *http.Request, body string) (string, error) {
+	if strings.TrimSpace(body) != body {
+		return "", errors.New("idempotency key has surrounding whitespace")
+	}
+	values := r.Header.Values("Idempotency-Key")
+	if len(values) > 1 {
+		return "", errors.New("duplicate idempotency key")
+	}
+	header := ""
+	if len(values) == 1 {
+		header = values[0]
+		if strings.TrimSpace(header) != header {
+			return "", errors.New("idempotency key has surrounding whitespace")
+		}
+	}
+	if body != "" && header != "" && body != header {
+		return "", errors.New("idempotency key mismatch")
+	}
+	if body != "" {
+		return body, nil
+	}
+	if header != "" {
+		return header, nil
+	}
+	return compatKey(), nil
+}
+
+func opaqueRequestID() string {
+	return "tagreq_" + strings.TrimPrefix(compatKey(), "server_compat_")
+}
+
+func mutationEnvelope(reason string, dryRun bool) map[string]any {
+	return map[string]any{
+		"ok":                          true,
+		"reason":                      reason,
+		"source_status":               "local_catalog",
+		"route_owner":                 "ai_crm_next",
+		"fallback_used":               false,
+		"real_external_call_executed": false,
+		"sync_executed":               false,
+		"fixture_used":                false,
+		"dry_run":                     dryRun,
+	}
+}
+
+func validatedMutationEnvelope(operation string) map[string]any {
+	return mutationEnvelope(operation+"_validated", true)
 }
 func compatKey() string {
 	var raw [20]byte
@@ -151,12 +224,17 @@ func (h *Handler) tags(w http.ResponseWriter, r *http.Request, tail string) {
 		if tail == "sync-due" {
 			kind = tagport.SyncDue
 		}
-		result, e := h.sync.Request(r.Context(), tagport.SyncCommand{Actor: p.InternalID, IdempotencyKey: nonempty(body.IdempotencyKey, compatKey()), TraceID: body.TraceID, Kind: kind})
+		key, e := idempotencyKey(r, body.IdempotencyKey)
+		if e != nil {
+			writeError(w, 400, "invalid_request")
+			return
+		}
+		result, e := h.sync.Request(r.Context(), tagport.SyncCommand{Actor: p.InternalID, IdempotencyKey: key, TraceID: body.TraceID, Kind: kind})
 		if e != nil {
 			resultError(w, e)
 			return
 		}
-		writeJSON(w, 202, map[string]any{"ok": true, "accepted": true, "state": "queued", "receipt_id": result.ReceiptID, "event_id": result.EventID, "river_job_id": result.QueueJobID, "effect_id": result.EffectID, "effect_state": result.EffectState, "accept_receipt_id": result.AcceptReceiptID, "queue_receipt_id": result.QueueReceiptID, "provider_call_attempted": false, "provider_success_claimed": false, "real_external_call_executed": false, "sync_executed": false})
+		writeJSON(w, 202, map[string]any{"ok": true, "accepted": true, "state": "queued", "receipt_id": result.ReceiptID, "event_id": result.EventID, "river_job_id": result.QueueJobID, "effect_river_job_id": result.QueueJobID, "effect_id": result.EffectID, "effect_state": result.EffectState, "accept_receipt_id": result.AcceptReceiptID, "queue_receipt_id": result.QueueReceiptID, "provider_call_attempted": false, "provider_success_claimed": false, "real_external_call_executed": false, "sync_executed": false})
 		return
 	}
 	if tail == "live/gate" {
@@ -192,24 +270,38 @@ func (h *Handler) tags(w http.ResponseWriter, r *http.Request, tail string) {
 			return
 		}
 		var body struct {
-			GroupID        int64  `json:"group_id"`
-			GroupName      string `json:"group_name"`
-			TagName        string `json:"tag_name"`
-			IdempotencyKey string `json:"idempotency_key"`
-			TraceID        string `json:"trace_id"`
+			GroupID   int64  `json:"group_id"`
+			GroupName string `json:"group_name"`
+			TagName   string `json:"tag_name"`
+			writeMetadata
 		}
 		if decode(r, &body) != nil {
 			writeError(w, 400, "invalid_request")
 			return
 		}
-		c := command(p, body.IdempotencyKey, body.TraceID)
+		key, e := idempotencyKey(r, body.IdempotencyKey)
+		if e != nil {
+			writeError(w, 400, "invalid_request")
+			return
+		}
+		c := command(p, key, body.TraceID)
 		c.GroupID, c.GroupName, c.TagName = body.GroupID, body.GroupName, body.TagName
+		if body.DryRun {
+			if c.GroupID < 1 || !domain.ValidCommand(c, c.GroupName, c.TagName) {
+				writeError(w, 400, "invalid_request")
+				return
+			}
+			writeJSON(w, 200, validatedMutationEnvelope("tag_create"))
+			return
+		}
 		v, e := h.catalog.CreateTag(r.Context(), c)
 		if e != nil {
 			resultError(w, e)
 			return
 		}
-		writeJSON(w, 200, map[string]any{"ok": true, "tag": v, "item": v, "reason": "tag_created", "source_status": "local_catalog", "route_owner": "ai_crm_next", "real_external_call_executed": false})
+		response := mutationEnvelope("tag_created", false)
+		response["tag"] = legacyTag(v)
+		writeJSON(w, 200, response)
 		return
 	}
 	id, ok := parseID(tail)
@@ -227,50 +319,86 @@ func (h *Handler) tags(w http.ResponseWriter, r *http.Request, tail string) {
 			resultError(w, e)
 			return
 		}
-		writeJSON(w, 200, map[string]any{"ok": true, "tag": v, "item": v, "source_status": "local_catalog", "route_owner": "ai_crm_next", "real_external_call_executed": false})
+		writeJSON(w, 200, map[string]any{"ok": true, "tag": legacyTag(v), "source_status": "local_catalog", "real_external_call_executed": false, "sync_executed": false})
 	case http.MethodPatch, http.MethodPut:
 		p, ok := h.mutate(w, r)
 		if !ok {
 			return
 		}
 		var body struct {
-			TagName        string `json:"tag_name"`
-			IdempotencyKey string `json:"idempotency_key"`
-			TraceID        string `json:"trace_id"`
+			TagName string `json:"tag_name"`
+			writeMetadata
 		}
 		if decode(r, &body) != nil {
 			writeError(w, 400, "invalid_request")
 			return
 		}
-		c := command(p, body.IdempotencyKey, body.TraceID)
+		key, e := idempotencyKey(r, body.IdempotencyKey)
+		if e != nil {
+			writeError(w, 400, "invalid_request")
+			return
+		}
+		c := command(p, key, body.TraceID)
 		c.TagID, c.TagName = id, body.TagName
+		if body.DryRun {
+			if !domain.ValidCommand(c, c.TagName) {
+				writeError(w, 400, "invalid_request")
+				return
+			}
+			if r.Method == http.MethodPut {
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+			writeJSON(w, 200, validatedMutationEnvelope("tag_update"))
+			return
+		}
 		v, e := h.catalog.UpdateTag(r.Context(), c)
 		if e != nil {
 			resultError(w, e)
 			return
 		}
-		writeJSON(w, 200, map[string]any{"ok": true, "tag": v, "item": v, "reason": "tag_updated", "source_status": "local_catalog", "route_owner": "ai_crm_next", "real_external_call_executed": false})
+		if r.Method == http.MethodPut {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		response := mutationEnvelope("tag_updated", false)
+		response["tag"] = legacyTag(v)
+		writeJSON(w, 200, response)
 	case http.MethodDelete:
 		p, ok := h.mutate(w, r)
 		if !ok {
 			return
 		}
 		var body struct {
-			IdempotencyKey string `json:"idempotency_key"`
-			TraceID        string `json:"trace_id"`
+			writeMetadata
 		}
-		if decode(r, &body) != nil && r.ContentLength > 0 {
+		if decodeOptionalJSON(r, &body) != nil {
 			writeError(w, 400, "invalid_request")
 			return
 		}
-		c := command(p, body.IdempotencyKey, body.TraceID)
+		key, e := idempotencyKey(r, body.IdempotencyKey)
+		if e != nil {
+			writeError(w, 400, "invalid_request")
+			return
+		}
+		c := command(p, key, body.TraceID)
 		c.TagID = id
+		if body.DryRun {
+			if !domain.ValidCommand(c) {
+				writeError(w, 400, "invalid_request")
+				return
+			}
+			writeJSON(w, 200, validatedMutationEnvelope("tag_archive"))
+			return
+		}
 		v, e := h.catalog.ArchiveTag(r.Context(), c)
 		if e != nil {
 			resultError(w, e)
 			return
 		}
-		writeJSON(w, 200, map[string]any{"ok": true, "tag": v, "item": v, "reason": "tag_archived", "source_status": "local_catalog", "route_owner": "ai_crm_next", "real_external_call_executed": false})
+		response := mutationEnvelope("tag_archived", false)
+		response["tag"] = legacyTag(v)
+		writeJSON(w, 200, response)
 	default:
 		method(w, http.MethodGet+", "+http.MethodPatch+", "+http.MethodPut+", "+http.MethodDelete)
 	}
@@ -290,7 +418,8 @@ func (h *Handler) groups(w http.ResponseWriter, r *http.Request, tail string) {
 				resultError(w, e)
 				return
 			}
-			writeJSON(w, 200, map[string]any{"ok": true, "groups": catalog.Groups, "items": catalog.Groups, "count": len(catalog.Groups), "source_status": "local_catalog", "route_owner": "ai_crm_next", "real_external_call_executed": false})
+			groups := legacyGroups(catalog.Groups, catalog.Tags)
+			writeJSON(w, 200, map[string]any{"ok": true, "groups": groups, "items": groups, "count": len(groups), "source_status": "local_catalog", "real_external_call_executed": false, "sync_executed": false})
 			return
 		}
 		p, ok := h.mutate(w, r)
@@ -298,23 +427,37 @@ func (h *Handler) groups(w http.ResponseWriter, r *http.Request, tail string) {
 			return
 		}
 		var body struct {
-			GroupName      string `json:"group_name"`
-			FirstTagName   string `json:"first_tag_name"`
-			IdempotencyKey string `json:"idempotency_key"`
-			TraceID        string `json:"trace_id"`
+			GroupName    string `json:"group_name"`
+			FirstTagName string `json:"first_tag_name"`
+			writeMetadata
 		}
 		if decode(r, &body) != nil {
 			writeError(w, 400, "invalid_request")
 			return
 		}
-		c := command(p, body.IdempotencyKey, body.TraceID)
+		key, e := idempotencyKey(r, body.IdempotencyKey)
+		if e != nil {
+			writeError(w, 400, "invalid_request")
+			return
+		}
+		c := command(p, key, body.TraceID)
 		c.GroupName, c.FirstTagName = body.GroupName, body.FirstTagName
+		if body.DryRun {
+			if !domain.ValidCommand(c, c.GroupName, c.FirstTagName) {
+				writeError(w, 400, "invalid_request")
+				return
+			}
+			writeJSON(w, 200, validatedMutationEnvelope("group_create"))
+			return
+		}
 		g, t, e := h.catalog.CreateGroup(r.Context(), c)
 		if e != nil {
 			resultError(w, e)
 			return
 		}
-		writeJSON(w, 200, map[string]any{"ok": true, "group": g, "tag": t, "reason": "group_created", "source_status": "local_catalog", "route_owner": "ai_crm_next", "real_external_call_executed": false})
+		response := mutationEnvelope("group_created", false)
+		response["group"], response["tag"] = legacyMutationGroup(g), legacyTag(t)
+		writeJSON(w, 200, response)
 		return
 	}
 	id, ok := parseID(tail)
@@ -327,55 +470,102 @@ func (h *Handler) groups(w http.ResponseWriter, r *http.Request, tail string) {
 		if !h.read(w, r) {
 			return
 		}
-		v, e := h.catalog.GetGroup(r.Context(), id)
+		catalog, e := h.catalog.List(r.Context())
 		if e != nil {
 			resultError(w, e)
 			return
 		}
-		writeJSON(w, 200, map[string]any{"ok": true, "group": v, "item": v, "source_status": "local_catalog", "route_owner": "ai_crm_next", "real_external_call_executed": false})
+		var group map[string]any
+		for _, item := range legacyGroups(catalog.Groups, catalog.Tags) {
+			if item["group_id"] == id {
+				group = item
+				break
+			}
+		}
+		if group == nil {
+			writeError(w, 404, "not_found")
+			return
+		}
+		writeJSON(w, 200, map[string]any{"ok": true, "group": group, "source_status": "local_catalog", "real_external_call_executed": false, "sync_executed": false})
 	case http.MethodPatch, http.MethodPut:
 		p, ok := h.mutate(w, r)
 		if !ok {
 			return
 		}
 		var body struct {
-			GroupName      string `json:"group_name"`
-			IdempotencyKey string `json:"idempotency_key"`
-			TraceID        string `json:"trace_id"`
+			GroupName string `json:"group_name"`
+			writeMetadata
 		}
 		if decode(r, &body) != nil {
 			writeError(w, 400, "invalid_request")
 			return
 		}
-		c := command(p, body.IdempotencyKey, body.TraceID)
+		key, e := idempotencyKey(r, body.IdempotencyKey)
+		if e != nil {
+			writeError(w, 400, "invalid_request")
+			return
+		}
+		c := command(p, key, body.TraceID)
 		c.GroupID, c.GroupName = id, body.GroupName
+		if body.DryRun {
+			if !domain.ValidCommand(c, c.GroupName) {
+				writeError(w, 400, "invalid_request")
+				return
+			}
+			if r.Method == http.MethodPut {
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+			writeJSON(w, 200, validatedMutationEnvelope("group_update"))
+			return
+		}
 		v, e := h.catalog.UpdateGroup(r.Context(), c)
 		if e != nil {
 			resultError(w, e)
 			return
 		}
-		writeJSON(w, 200, map[string]any{"ok": true, "group": v, "item": v, "reason": "group_updated", "source_status": "local_catalog", "route_owner": "ai_crm_next", "real_external_call_executed": false})
+		if r.Method == http.MethodPut {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		response := mutationEnvelope("group_updated", false)
+		response["group"] = legacyMutationGroup(v)
+		writeJSON(w, 200, response)
 	case http.MethodDelete:
 		p, ok := h.mutate(w, r)
 		if !ok {
 			return
 		}
 		var body struct {
-			IdempotencyKey string `json:"idempotency_key"`
-			TraceID        string `json:"trace_id"`
+			writeMetadata
 		}
-		if decode(r, &body) != nil && r.ContentLength > 0 {
+		if decodeOptionalJSON(r, &body) != nil {
 			writeError(w, 400, "invalid_request")
 			return
 		}
-		c := command(p, body.IdempotencyKey, body.TraceID)
+		key, e := idempotencyKey(r, body.IdempotencyKey)
+		if e != nil {
+			writeError(w, 400, "invalid_request")
+			return
+		}
+		c := command(p, key, body.TraceID)
 		c.GroupID = id
+		if body.DryRun {
+			if !domain.ValidCommand(c) {
+				writeError(w, 400, "invalid_request")
+				return
+			}
+			writeJSON(w, 200, validatedMutationEnvelope("group_archive"))
+			return
+		}
 		v, e := h.catalog.ArchiveGroup(r.Context(), c)
 		if e != nil {
 			resultError(w, e)
 			return
 		}
-		writeJSON(w, 200, map[string]any{"ok": true, "group": v, "item": v, "reason": "group_archived", "source_status": "local_catalog", "route_owner": "ai_crm_next", "real_external_call_executed": false})
+		response := mutationEnvelope("group_archived", false)
+		response["group"] = legacyMutationGroup(v)
+		writeJSON(w, 200, response)
 	default:
 		method(w, http.MethodGet+", "+http.MethodPatch+", "+http.MethodPut+", "+http.MethodDelete)
 	}
@@ -386,7 +576,45 @@ func (h *Handler) catalogList(w http.ResponseWriter, r *http.Request) {
 		resultError(w, e)
 		return
 	}
-	writeJSON(w, 200, map[string]any{"ok": true, "items": c.Tags, "tags": c.Tags, "groups": c.Groups, "count": len(c.Tags), "total_tags": len(c.Tags), "tag_limit": domain.TagLimit, "synced_at": c.SyncedAt, "source_status": "local_catalog", "read_model_status": "ready", "route_owner": "ai_crm_next", "fallback_used": false, "real_external_call_executed": false, "sync_executed": false, "fixture_used": false})
+	tags := legacyTags(c.Tags)
+	writeJSON(w, 200, map[string]any{"ok": true, "items": tags, "tags": tags, "groups": legacyGroups(c.Groups, c.Tags), "count": len(tags), "total_tags": len(tags), "tag_limit": domain.TagLimit, "synced_at": c.SyncedAt, "source_status": "local_catalog", "read_model_status": "ready", "route_owner": "ai_crm_next", "fallback_used": false, "real_external_call_executed": false, "sync_executed": false, "fixture_used": false})
+}
+
+func legacyTag(tag domain.Tag) map[string]any {
+	return map[string]any{"tag_id": tag.ID, "id": tag.ID, "group_id": tag.GroupID, "group_name": tag.GroupName, "tag_name": tag.Name, "name": tag.Name, "sort_order": tag.SortOrder}
+}
+
+func legacyTags(tags []domain.Tag) []map[string]any {
+	items := make([]map[string]any, 0, len(tags))
+	for _, tag := range tags {
+		items = append(items, legacyTag(tag))
+	}
+	return items
+}
+
+func legacyGroup(group domain.Group) map[string]any {
+	return map[string]any{"group_id": group.ID, "group_name": group.Name, "name": group.Name, "sort_order": group.SortOrder}
+}
+
+func legacyMutationGroup(group domain.Group) map[string]any {
+	return map[string]any{"group_id": group.ID, "group_name": group.Name, "sort_order": group.SortOrder}
+}
+
+func legacyGroups(groups []domain.Group, tags []domain.Tag) []map[string]any {
+	items := make([]map[string]any, 0, len(groups))
+	byID := make(map[int64]map[string]any, len(groups))
+	for _, group := range groups {
+		item := legacyGroup(group)
+		item["tags"] = []map[string]any{}
+		items = append(items, item)
+		byID[group.ID] = item
+	}
+	for _, tag := range tags {
+		if group := byID[tag.GroupID]; group != nil {
+			group["tags"] = append(group["tags"].([]map[string]any), legacyTag(tag))
+		}
+	}
+	return items
 }
 func nonempty(v, fallback string) string {
 	if strings.TrimSpace(v) != "" {
@@ -423,5 +651,26 @@ func writeError(w http.ResponseWriter, status int, code string) {
 	if compat == "" {
 		compat = "DEPENDENCY_UNAVAILABLE"
 	}
-	writeJSON(w, status, map[string]any{"ok": false, "code": compat, "error": code})
+	legacyCode := map[string]string{"invalid_request": "input_error", "not_found": "not_found", "unauthorized": "unauthorized", "forbidden": "unauthorized", "csrf_required": "unauthorized", "unavailable": "production_unavailable", "conflict": "input_error", "referenced": "input_error", "method_not_allowed": "input_error"}[code]
+	if legacyCode == "" {
+		legacyCode = "production_unavailable"
+	}
+	// Return the frozen legacy envelope as well as the v3 error triplet. The
+	// duplicated fields preserve existing browser detail semantics without
+	// weakening the current API's machine-readable error contract.
+	writeJSON(w, status, map[string]any{
+		"ok":                          false,
+		"error_code":                  legacyCode,
+		"detail":                      code,
+		"source_status":               "local_catalog_error",
+		"route_owner":                 "ai_crm_next",
+		"fallback_used":               false,
+		"real_external_call_executed": false,
+		"sync_executed":               false,
+		"fixture_used":                false,
+		"code":                        compat,
+		"message":                     code,
+		"request_id":                  opaqueRequestID(),
+		"error":                       code,
+	})
 }

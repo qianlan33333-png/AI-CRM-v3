@@ -6,15 +6,15 @@ commands, the fail-closed execution gate, and sync acceptance facts. It
 deliberately does not own customer tag assignments, customer unmark
 operations, provider credentials, or Provider network calls.
 
-`app.Service` records catalog mutations through a transaction-bound receipt
-and event port. `app.SyncService` records a manual or due refresh as
-`queued`; the queue receipt is not a WeCom execution receipt. A later
-composition change may adapt the sync queue to `outbound`, but must preserve
-the `accepted -> queued -> attempted -> executed/outcome_unknown ->
-reconciled` effect boundary and must never retry an unknown outcome with a new
-idempotency key. `app.ExecutionStatusService` only projects the local
-`provider_execution_unavailable` gate and discards opaque future/provider
-fields.
+`app.Service` records catalog mutations, idempotency receipts, audit facts and
+outbox events in its PostgreSQL Unit of Work. `app.SyncService` records a
+manual or due refresh and atomically accepts the immutable intent through the
+shared External Effects/River `TransactionalAccepter`, via the sole
+`outbound` WeCom-write adapter. It stores the real effect, queue and operation
+receipt identifiers; queued is not a WeCom execution receipt. The shared
+worker owns `accepted -> queued -> attempted -> executed/outcome_unknown ->
+reconciled` and reconciliation. Provider execution is disabled by default, and
+an unknown outcome is never retried under a new idempotency key.
 
 Reorder commands require the complete current ID set but may change its order;
 partial, duplicate, unknown, or stale memberships fail closed before a store
@@ -29,5 +29,6 @@ table is a runtime dependency.
 The page entry, route/method/DTO/error contract, provider receipt lifecycle,
 exclusions, source/UI inventory, and exact frozen hashes are recorded in
 `docs/donor-manifests/pr03-wecom-tags.yaml` and
-`docs/donor-manifests/pr03-wecom-tags.sha256`. HTTP adapters, tag-owned SQL,
-and outbound Provider receipt/reconciliation remain Terra follow-ups.
+`docs/donor-manifests/pr03-wecom-tags.sha256`. The completed v3 module mounts
+the frozen donor tags workspace inside the PR10 one-sidebar shell; all
+authentication, CSRF and DTO compatibility remains in the v3 HTTP adapter.

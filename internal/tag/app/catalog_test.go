@@ -259,6 +259,39 @@ var _ platformport.UnitOfWork = (*catalogUOW)(nil)
 var _ tagport.CatalogStore = (*catalogStore)(nil)
 var _ tagport.MutationReceiptStore = (*catalogStore)(nil)
 
+// archiveReplayStore models the PostgreSQL public-read behavior: once
+// archived, GetTag no longer exposes the row, while the narrow internal
+// replay reader can still return the original result.
+type archiveReplayStore struct {
+	*catalogStore
+	archived map[int64]domain.Tag
+}
+
+func (store *archiveReplayStore) ArchiveTag(ctx context.Context, id int64) (domain.Tag, error) {
+	tag, err := store.catalogStore.ArchiveTag(ctx, id)
+	if err == nil {
+		if store.archived == nil {
+			store.archived = map[int64]domain.Tag{}
+		}
+		store.archived[id] = tag
+	}
+	return tag, err
+}
+
+func (store *archiveReplayStore) GetTag(_ context.Context, id int64) (domain.Tag, error) {
+	if _, archived := store.archived[id]; archived {
+		return domain.Tag{}, ErrNotFound
+	}
+	return store.catalogStore.GetTag(context.Background(), id)
+}
+
+func (store *archiveReplayStore) GetTagIncludingArchived(_ context.Context, id int64) (domain.Tag, error) {
+	if tag, archived := store.archived[id]; archived {
+		return tag, nil
+	}
+	return store.catalogStore.GetTag(context.Background(), id)
+}
+
 func TestCatalogServiceListsStableCatalogAndEmptySlices(t *testing.T) {
 	uow := &catalogUOW{}
 	store := &catalogStore{uow: uow, groups: []domain.Group{{ID: 11, Name: "客户阶段", SortOrder: 0}}, tags: []domain.Tag{{ID: 21, GroupID: 11, GroupName: "客户阶段", Name: "新客", SortOrder: 0}}}
@@ -348,6 +381,25 @@ func TestCatalogServiceArchiveChecksReadOnlyReferenceGuard(t *testing.T) {
 	}
 	if store.writes != 0 {
 		t.Fatalf("archive wrote %d times", store.writes)
+	}
+}
+
+func TestCatalogServiceArchiveTagReplaysArchivedResultWithSameKey(t *testing.T) {
+	uow := &catalogUOW{}
+	base := &catalogStore{uow: uow, groups: []domain.Group{{ID: 11, Name: "阶段", SortOrder: 0}}, tags: []domain.Tag{{ID: 21, GroupID: 11, GroupName: "阶段", Name: "新客", SortOrder: 0}}, tagReferences: map[int64]int64{}}
+	store := &archiveReplayStore{catalogStore: base}
+	service := NewService(uow, store, base, &catalogEvents{uow: uow}, referenceGuard{base})
+	command := domain.Command{Actor: 1, TagID: 21, IdempotencyKey: "archive-tag-replay-key"}
+	first, err := service.ArchiveTag(context.Background(), command)
+	if err != nil {
+		t.Fatalf("first ArchiveTag() error = %v", err)
+	}
+	second, err := service.ArchiveTag(context.Background(), command)
+	if err != nil || !reflect.DeepEqual(second, first) {
+		t.Fatalf("replayed ArchiveTag() = %#v, %v; want %#v", second, err, first)
+	}
+	if base.writes != 0 { // the fake archive is a metadata mark, not a Create write.
+		t.Fatalf("unexpected create writes = %d", base.writes)
 	}
 }
 

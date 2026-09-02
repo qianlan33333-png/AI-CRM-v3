@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -33,7 +34,7 @@ func (h *tagsUI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	if len(r.URL.Query()) != 0 {
+	if !validTagsQuery(r) {
 		http.Redirect(w, r, "/admin/wecom-tags", http.StatusSeeOther)
 		return
 	}
@@ -75,7 +76,7 @@ func tagAssets(dist string) (TagsAssets, error) {
 		if _, e = os.Stat(filepath.Join(dist, v)); e != nil {
 			return "", e
 		}
-		return "/assets/" + v, nil
+		return "/" + v, nil
 	}
 	tokens, e := get("tokens")
 	if e != nil {
@@ -90,4 +91,20 @@ func tagAssets(dist string) (TagsAssets, error) {
 		return TagsAssets{}, e
 	}
 	return TagsAssets{tokens, labs, admin}, nil
+}
+
+// The frozen donor opens a tag detail through ?id=<positive>. Preserve that
+// query exactly so its controller can issue the original detail/gate reads;
+// all other query shapes are normalized away.
+func validTagsQuery(r *http.Request) bool {
+	values := r.URL.Query()
+	if len(values) == 0 {
+		return true
+	}
+	ids, ok := values["id"]
+	if !ok || len(ids) != 1 || len(values) != 1 {
+		return false
+	}
+	id, err := strconv.ParseInt(ids[0], 10, 64)
+	return err == nil && id > 0 && strconv.FormatInt(id, 10) == ids[0]
 }

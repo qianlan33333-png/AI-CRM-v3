@@ -414,7 +414,8 @@ func securityHeaders(next http.Handler) http.Handler {
 		writer.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
 		styleSource := "'self'"
 		mediaPage := request.URL.Path == "/admin/image-library" || request.URL.Path == "/admin/miniprogram-library" || request.URL.Path == "/admin/attachment-library"
-		if (request.URL.Path == "/admin/campaigns.html" && externaleffects.ValidUIQuery(request.URL.Query())) || mediaPage {
+		tagsPage := request.URL.Path == "/admin/wecom-tags"
+		if (request.URL.Path == "/admin/campaigns.html" && externaleffects.ValidUIQuery(request.URL.Query())) || mediaPage || tagsPage {
 			styleSource = "'self' 'unsafe-inline'"
 		}
 		imageSource := "'self' data:"

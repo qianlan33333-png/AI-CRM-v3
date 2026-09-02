@@ -1,11 +1,11 @@
 schema: 1
 capability: PR03-wecom-tag-catalog-management
 source_repository: qianlan33333-png/AI-CRM-v2
-source_path: /tmp/aicrm-v2-audit.yN3jmr
+source_path: github.com/qianlan33333-png/AI-CRM-v2
 source_commit: 6bfbe5816bb89913c70adaca87d6a486260e016e
-target_base_commit: 8ec60b7e3027e7813cd928ed43d7c8bcc7633b0e
-target_branch: codex/import-wecom-tags
-transfer_mode: constrained-domain-preparation
+target_base_commit: 0155871
+target_branch: codex/feature-wecom-tags
+transfer_mode: complete-v3-closure
 scope:
   included:
     - local tag groups and catalog reads
@@ -18,11 +18,14 @@ scope:
   excluded:
     - customer-facing tag mark operations
     - customer-facing tag unmark operations
-    - WeCom Provider client, token exchange, and network calls
-    - runtime worker and direct Provider adapters
-    - cmd/aicrm composition and central webshell routing
-    - api/openapi.yaml and migrations
-    - package manifests, deployment, CI, platform, and access changes
+    - direct WeCom Provider client, credentials and network calls
+    - customer tag assignment or removal, Customer/OneID ownership, and any customer table write
+  completed_v3_adapters:
+    - tag-owned PostgreSQL schema and additive migration 0008
+    - v3 admin-session/CSRF HTTP compatibility routes and OpenAPI
+    - frozen tags workspace mounted in the PR10 single-sidebar shell
+    - transaction-bound External Effects/River acceptance through outbound TransactionalAccepter
+    - Provider-disabled worker/reconciliation boundary inherited from PR01
 source_files:
   - path: internal/contact/app/legacy_tag_catalog.go
     disposition: adapted
@@ -47,28 +50,28 @@ source_files:
     disposition: characterized
     target: internal/tag/app/sync_test.go
   - path: internal/contact/store/tag_catalog_repository.go
-    disposition: deferred-to-terra
-    target: internal/tag/port/catalog.go
-    notes: SQL adapter is blocked until v3 tag-owned schema and migration are authorized
+    disposition: adapted
+    target: internal/tag/store/postgres.go
+    notes: implemented against v3-owned 0008 schema only
   - path: internal/contact/store/tag_catalog_repository_test.go
-    disposition: deferred-to-terra
-    target: null
-    notes: requires v3 PostgreSQL schema and generated queries
+    disposition: characterized
+    target: internal/tag/store/postgres_integration_test.go
+    notes: v3 PostgreSQL transaction and ordering coverage
   - path: internal/contact/http/local_tag_catalog_handler.go
-    disposition: deferred-to-terra
-    target: null
-    notes: HTTP wiring requires v3 access, OpenAPI, and composition decisions
+    disposition: adapted
+    target: internal/tag/http/handler.go
+    notes: v3 authenticated/CSRF compatibility adapter owns frozen DTO translation
   - path: internal/contact/http/local_tag_catalog_handler_test.go
-    disposition: deferred-to-terra
-    target: null
+    disposition: characterized
+    target: internal/tag/http/handler_test.go
   - path: internal/wecom/client/tag_catalog.go
-    disposition: deferred-to-terra
+    disposition: excluded
     target: null
-    notes: Provider read adapter must be implemented behind outbound/WeCom boundary
+    notes: Provider network reads remain disabled in this release
   - path: internal/wecom/tag/catalog_provider.go
-    disposition: deferred-to-terra
-    target: null
-    notes: direct v2 Provider/EER integration is not copied
+    disposition: adapted
+    target: internal/outbound/tag_catalog.go
+    notes: v3 outbound adapts opaque intent to shared EER/River transactional acceptance; no v2 client copied
   - path: internal/wecom/tag/runtime.go
     disposition: excluded
     target: null
@@ -76,18 +79,21 @@ source_files:
 frontend_exact_files:
   - source: web/src/admin/templates/tags.html
     target: web/src/admin/templates/tags.html
+    notes: one of 25 frozen business files verified by scripts/check-pr03-frontend-donor-manifest.sh
   - source: web/src/admin/sections/wecomTagPicker.ts
     target: web/src/admin/sections/wecomTagPicker.ts
+    notes: one of 25 frozen business files verified by scripts/check-pr03-frontend-donor-manifest.sh
   - source: web/src/admin/sections/wecomTagPicker.css
     target: web/src/admin/sections/wecomTagPicker.css
+    notes: one of 25 frozen business files verified by scripts/check-pr03-frontend-donor-manifest.sh
   - source: web/src/admin/controller.ts
-    target: null
-    disposition: deferred-to-terra
-    notes: shared controller contains tags UI plus customer/channel/Campaign behavior; no shared controller copy is allowed in this constrained donor tree
+    target: web/src/admin/controller.ts
+    disposition: reused-frozen
+    notes: reused from PR01 frozen donor closure; PR03 does not alter its bytes
   - source: web/src/api/admin.ts
-    target: null
-    disposition: deferred-to-terra
-    notes: shared API client contains tag DTO calls plus excluded customer/channel/Campaign calls; preserve the tag method bytes from the donor when a v3 adapter is built
+    target: web/src/api/admin.ts
+    disposition: reused-frozen
+    notes: reused from PR01 frozen donor closure; PR03 supplies server compatibility without altering its bytes
 request_contract:
   source: web/src/api/generated/p4-tag-compat/p4-tag-compat.ts
   source_sha256: ee681aa3460deccb41aad4daea555e3428301d30bafc804860ab6d83df1a930e
@@ -95,9 +101,8 @@ request_contract:
     operation: legacyWecomTagsAdminShell
     method: GET
     path: /admin/wecom-tags
-    success: 302
-    location: /?legacy_admin_path=%2Fadmin%2Fwecom-tags
-    notes: v3-owned webshell adapter must mount the exact tags fragment; do not deploy the donor's second sidebar
+    success: 200
+    notes: v3-owned webshell adapter mounts the exact tags fragment in the PR10 one-sidebar admin_base; the donor's second sidebar is never deployed
   operations:
     - operation: listLegacyWecomTags
       method: GET
@@ -239,7 +244,7 @@ request_contract:
     - POST /api/admin/wecom/tags/live/mark
     - POST /api/admin/wecom/tags/live/unmark
     - POST /api/admin/wecom/tag-effects/{effect_id}/reconcile
-  notes: exact endpoint and payload evidence is retained for Terra HTTP/OpenAPI integration; central API files are intentionally untouched
+  notes: exact endpoint and payload evidence is implemented by the v3 HTTP/OpenAPI adapter; frozen donor business files are reused without byte changes
   dto_fields:
     LegacyTagGroupCreateRequest: [group_name, first_tag_name, actor, idempotency_key, trace_id, dry_run]
     LegacyTagGroupUpdateRequest: [group_name, actor, idempotency_key, trace_id, dry_run]
@@ -271,8 +276,8 @@ provider_effect_contract:
     outcome_unknown: Provider result cannot be proven; manual reconciliation required
     reconciled: original effect resolved with evidence; never replace the idempotency key
   receipt_fields: [effect_id, accept_receipt_id, queue_receipt_id, provider_call_attempted, provider_success_claimed, receipt_digest]
-  reconciliation: deferred-to-terra
-  notes: v2 direct Provider/EER/runtime code is not copied; the catalog sync adapter must be owned by outbound and must not expose customer IDs or mark/unmark operations
+  reconciliation: shared PR01 External Effects worker and manual reconciliation; Provider remains disabled until separately authorized
+  notes: v2 direct Provider/EER/runtime code is not copied; v3 outbound owns the opaque catalog intent and exposes no customer IDs or mark/unmark operations
 characterization:
   tests:
     - internal/tag/domain/catalog_test.go
@@ -280,6 +285,9 @@ characterization:
     - internal/tag/app/catalog_test.go
     - internal/tag/app/gate_test.go
     - internal/tag/app/sync_test.go
+    - internal/tag/http/handler_test.go
+    - internal/tag/ui_test.go
+    - internal/tag/store/postgres_integration_test.go
   behaviors:
     - CRUD mutation receipt is transaction-bound and idempotent
     - group-create creates the required first tag
@@ -294,12 +302,10 @@ exclusion_audit:
     - POST /api/admin/wecom/tags/live/mark
     - POST /api/admin/wecom/tags/live/unmark
     - POST /api/admin/wecom/tag-effects/{effect_id}/reconcile
-terra_followups:
-  - owner: Terra
-    item: add v3 tag-owned migration and transactional PostgreSQL adapter
-  - owner: Terra
-    item: adapt authenticated HTTP handlers and generated request contract without live mark/unmark
-  - owner: Terra
-    item: connect catalog sync acceptance to outbound-owned WeCom read effect and receipt reconciliation
-  - owner: Terra
-    item: prove Provider read timeout/unknown behavior and no automatic retry
+completion_evidence:
+  - v3-owned 0008 migration and PostgreSQL repository own only tag tables
+  - authenticated/CSRF HTTP compatibility and OpenAPI adapters preserve the frozen DTO routes
+  - outbound TransactionalAccepter creates the real EER/River acceptance in the same PostgreSQL UoW
+  - Provider is disabled by default; shared PR01 effect states and manual reconciliation govern unknown outcomes
+remaining_limitation:
+  - enabling a real WeCom Provider adapter requires separate authorization and its own provider-read/reconciliation Journey; this PR does not make a network call
