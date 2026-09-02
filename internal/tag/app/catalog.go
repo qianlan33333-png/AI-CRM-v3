@@ -190,13 +190,31 @@ func (service *Service) ArchiveGroup(ctx context.Context, command domain.Command
 		if references > 0 {
 			return mutationResult{}, ErrReferenced
 		}
+		// Archiving a group archives its active tag rows as well. Check each
+		// opaque reference count first; a failed guard closes the operation.
+		tags, err := service.store.ListTags(tx)
+		if err != nil {
+			return mutationResult{}, err
+		}
+		for _, tag := range tags {
+			if tag.GroupID != command.GroupID {
+				continue
+			}
+			count, refErr := service.refs.TagReferences(tx, tag.ID)
+			if refErr != nil {
+				return mutationResult{}, refErr
+			}
+			if count > 0 {
+				return mutationResult{}, ErrReferenced
+			}
+		}
 		group, err := service.store.ArchiveGroup(tx, command.GroupID)
 		return mutationResult{value: group, resultIDs: []int64{group.ID}}, err
 	}, func(tx context.Context, ids []int64) (mutationResult, error) {
 		if len(ids) != 1 || ids[0] != command.GroupID {
 			return mutationResult{}, ErrConflict
 		}
-		group, err := service.store.GetGroup(tx, command.GroupID)
+		group, err := archivedGroupForReplay(service.store, tx, command.GroupID)
 		return mutationResult{value: group, resultIDs: ids}, err
 	})
 	if err != nil {
@@ -250,7 +268,7 @@ func (service *Service) UpdateTag(ctx context.Context, command domain.Command) (
 		if len(ids) != 1 || ids[0] != command.TagID {
 			return mutationResult{}, ErrConflict
 		}
-		tag, err := service.store.GetTag(tx, command.TagID)
+		tag, err := archivedTagForReplay(service.store, tx, command.TagID)
 		return mutationResult{value: tag, resultIDs: ids}, err
 	})
 	if err != nil {
@@ -364,6 +382,29 @@ type mutationResult struct {
 type groupCreateResult struct {
 	group domain.Group
 	tag   domain.Tag
+}
+
+// The public read API intentionally hides archived rows. An idempotency
+// replay must still return the original archive result, so stores may expose a
+// narrow replay-only reader without making archived rows visible to HTTP.
+type archivedGroupReader interface {
+	GetGroupIncludingArchived(context.Context, int64) (domain.Group, error)
+}
+type archivedTagReader interface {
+	GetTagIncludingArchived(context.Context, int64) (domain.Tag, error)
+}
+
+func archivedGroupForReplay(store tagport.CatalogStore, ctx context.Context, id int64) (domain.Group, error) {
+	if archived, ok := store.(archivedGroupReader); ok {
+		return archived.GetGroupIncludingArchived(ctx, id)
+	}
+	return store.GetGroup(ctx, id)
+}
+func archivedTagForReplay(store tagport.CatalogStore, ctx context.Context, id int64) (domain.Tag, error) {
+	if archived, ok := store.(archivedTagReader); ok {
+		return archived.GetTagIncludingArchived(ctx, id)
+	}
+	return store.GetTag(ctx, id)
 }
 
 func (service *Service) mutate(ctx context.Context, operation string, command domain.Command, apply func(context.Context) (mutationResult, error), replay func(context.Context, []int64) (mutationResult, error)) (mutationResult, error) {

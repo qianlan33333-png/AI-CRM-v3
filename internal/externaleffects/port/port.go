@@ -89,6 +89,7 @@ type Projection struct {
 	AttemptCount int32     `json:"attempt_count"`
 	Generation   int64     `json:"generation"`
 	UpdatedAt    time.Time `json:"updated_at"`
+	QueueJobID   int64     `json:"queue_job_id,omitempty"`
 }
 
 type Receipt struct {
@@ -98,12 +99,22 @@ type Receipt struct {
 	ActorAdminUserID *int64    `json:"actor_admin_user_id,omitempty"`
 	State            State     `json:"state"`
 	CompletedAt      time.Time `json:"completed_at"`
+	QueueReceiptID   string    `json:"queue_receipt_id,omitempty"`
 }
 
 // Accepter is implemented by the External Effects repository. Other domains
 // depend on this contract rather than the concrete module package.
 type Accepter interface {
 	AcceptAndQueue(context.Context, AcceptCommand) (Projection, Receipt, error)
+}
+
+// TransactionalAccepter is the atomic variant for a domain command that is
+// already inside a PostgreSQL Unit of Work. The context must carry that UoW's
+// transaction; implementations must not begin or commit another transaction.
+// Keeping pgx out of this port prevents business domains from importing the
+// effects store or queue implementation.
+type TransactionalAccepter interface {
+	AcceptAndQueueWithin(context.Context, AcceptCommand) (Projection, Receipt, error)
 }
 
 // ProviderAdapter is implemented by outbound. The effect kernel invokes it
