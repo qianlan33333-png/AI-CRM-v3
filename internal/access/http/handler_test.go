@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -102,6 +103,30 @@ func TestLoginCookieContractAndSafeNext(t *testing.T) {
 	}
 	if cookie := cookies[LoginCSRFCookieName]; cookie == nil || cookie.MaxAge != -1 || cookie.Path != "/login" {
 		t.Fatalf("cleared login csrf cookie = %#v", cookie)
+	}
+}
+
+func TestLoginPreservesExternalEffectsNextQuery(t *testing.T) {
+	renderer := &capturingRenderer{}
+	handler, err := NewHandler(Config{Renderer: renderer, Auth: testAuth{}, Management: testManagement{}, CookieSecure: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	loginCookie, loginToken := getLoginCSRF(t, handler, renderer)
+	next := "/admin/external-effects?view=external-effects&job=42"
+	values := url.Values{
+		"username":         {"operator"},
+		"password":         {"secret"},
+		"next":             {next},
+		"login_csrf_token": {loginToken},
+	}
+	request := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(values.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.AddCookie(loginCookie)
+	response := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != next {
+		t.Fatalf("status=%d location=%q", response.Code, response.Header().Get("Location"))
 	}
 }
 

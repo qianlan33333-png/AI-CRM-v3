@@ -1,0 +1,22 @@
+[Unit]
+Description=AI-CRM v3 durable external-effects River worker
+Wants=network-online.target
+After=network-online.target postgresql.service
+
+[Service]
+Type=simple
+User=aicrm
+Group=aicrm
+WorkingDirectory=/opt/aicrm/current
+EnvironmentFile=/etc/aicrm/aicrm.env
+EnvironmentFile=-/opt/aicrm/current/release.env
+Environment=AICRM_ROLE=effects-worker
+ExecStart=/opt/aicrm/current/bin/aicrm
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=20
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+UMask=0027

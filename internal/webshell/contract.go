@@ -68,6 +68,7 @@ var ADMIN_ROUTE_REGISTRY = map[string]AdminRoute{
 	"api.admin_hxc_dashboard_workspace":                {"api.admin_hxc_dashboard_workspace", "/admin/hxc-dashboard"},
 	"api.admin_hxc_send_config_page":                   {"api.admin_hxc_send_config_page", "/admin/hxc-send-config"},
 	"api.admin_cloud_orchestrator_workspace":           {"api.admin_cloud_orchestrator_workspace", "/admin/cloud-orchestrator/plans"},
+	"api.admin_external_effects_page":                  {"api.admin_external_effects_page", "/admin/external-effects"},
 	"api.admin_cloud_orchestrator_plans_workspace":     {"api.admin_cloud_orchestrator_plans_workspace", "/admin/cloud-orchestrator/plans"},
 	"api.admin_cloud_orchestrator_campaigns_workspace": {"api.admin_cloud_orchestrator_campaigns_workspace", "/admin/cloud-orchestrator/campaigns"},
 	"api.admin_cloud_orchestrator_observability":       {"api.admin_cloud_orchestrator_observability", "/admin/cloud-orchestrator/observability"},

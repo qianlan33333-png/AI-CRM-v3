@@ -76,6 +76,25 @@ paths:
       responses:
         "200": {description: OneID read-only administration HTML, content: {text/html: {schema: {type: string}}}}
         "303": {description: Redirect to login}
+  /admin/external-effects:
+    get:
+      operationId: openExternalEffectsWorkspace
+      description: Stable v3 entrypoint. It redirects to the frozen donor URL alias so unchanged donor navigation and job detail links continue to work.
+      security: [{adminSession: []}]
+      parameters: [{$ref: "#/components/parameters/ExternalEffectsView"}, {$ref: "#/components/parameters/PushJobQuery"}]
+      responses:
+        "303": {description: "Redirect to /admin/campaigns.html?view=external-effects, preserving a valid job query."}
+        "403": {$ref: "#/components/responses/Error"}
+  /admin/campaigns.html:
+    get:
+      operationId: externalEffectsDonorURLAlias
+      description: Compatibility alias for the frozen donor runtime. Only view=external-effects and an optional positive job are served; no Campaign capability is exposed.
+      security: [{adminSession: []}]
+      parameters: [{$ref: "#/components/parameters/ExternalEffectsView"}, {$ref: "#/components/parameters/PushJobQuery"}]
+      responses:
+        "200": {description: v3 admin shell with the frozen External Effects stage mount, content: {text/html: {schema: {type: string}}}}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
   /api/admin/access/users:
     get:
       operationId: listAdminUsers
@@ -168,6 +187,113 @@ paths:
       security: [{adminSession: [], csrfHeader: []}]
       parameters: [{$ref: "#/components/parameters/ID"}]
       responses: {"200": {description: Merge reversed}, "409": {$ref: "#/components/responses/Error"}}
+  /api/admin/external-effects:
+    get:
+      operationId: listExternalEffects
+      description: Digest-only local external-effect projection. It never proves provider delivery.
+      security: [{adminSession: []}]
+      parameters: [{$ref: "#/components/parameters/Limit"}]
+      responses: {"200": {description: Effect list}, "403": {$ref: "#/components/responses/Error"}}
+  /api/admin/external-effects/diagnostics:
+    get:
+      operationId: getExternalEffectDiagnostics
+      security: [{adminSession: []}]
+      responses: {"200": {description: Local state counts}, "403": {$ref: "#/components/responses/Error"}}
+  /api/admin/external-effects/jobs:
+    get:
+      operationId: listExternalEffectJobs
+      description: River-linked local job projection only; it never asserts provider delivery.
+      security: [{adminSession: []}]
+      responses:
+        "200": {description: Local external-effect jobs, content: {application/json: {schema: {$ref: "#/components/schemas/ExternalEffectJobsEnvelope"}}}}
+        "403": {$ref: "#/components/responses/Error"}
+  /api/admin/external-effects/{id}:
+    get:
+      operationId: getExternalEffect
+      security: [{adminSession: []}]
+      parameters: [{$ref: "#/components/parameters/ExternalEffectID"}]
+      responses:
+        "200": {description: Digest-only external-effect projection, content: {application/json: {schema: {$ref: "#/components/schemas/ExternalEffectProjection"}}}}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+  /api/admin/external-effects/{id}/cancel:
+    post:
+      operationId: cancelExternalEffect
+      description: Cancels only before a provider attempt begins.
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/ExternalEffectID"}, {$ref: "#/components/parameters/IdempotencyKey"}]
+      responses: {"200": {description: Local cancellation projection, content: {application/json: {schema: {$ref: "#/components/schemas/ExternalEffectProjection"}}}}, "400": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+  /api/admin/external-effects/{id}/retry:
+    post:
+      operationId: retryExternalEffect
+      description: Retries only retryable_failed. outcome_unknown requires reconciliation.
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/ExternalEffectID"}, {$ref: "#/components/parameters/IdempotencyKey"}]
+      responses: {"200": {description: Requeued local effect projection, content: {application/json: {schema: {$ref: "#/components/schemas/ExternalEffectProjection"}}}}, "400": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+  /api/admin/external-effects/{id}/reconcile:
+    post:
+      operationId: reconcileExternalEffect
+      description: Records digest-only manual evidence for outcome_unknown; it never replays a provider call.
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/ExternalEffectID"}, {$ref: "#/components/parameters/IdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false, required: [evidence_digest], properties: {evidence_digest: {$ref: "#/components/schemas/Digest"}}}}}}
+      responses: {"200": {description: Reconciled local effect projection, content: {application/json: {schema: {$ref: "#/components/schemas/ExternalEffectProjection"}}}}, "400": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+  /api/admin/push-center/sections:
+    get:
+      operationId: getPushCenterSections
+      security: [{adminSession: []}]
+      responses: {"200": {description: Local Push Center section counts}}
+  /api/admin/push-center/stats:
+    get:
+      operationId: getPushCenterStats
+      security: [{adminSession: []}]
+      responses: {"200": {description: Local Push Center state statistics}}
+  /api/admin/push-center/jobs:
+    get:
+      operationId: listPushCenterJobs
+      security: [{adminSession: []}]
+      responses: {"200": {description: River-linked local Push Center jobs, content: {application/json: {schema: {$ref: "#/components/schemas/PushJobsEnvelope"}}}}, "403": {$ref: "#/components/responses/Error"}}
+  /api/admin/push-center/jobs/{job_id}:
+    get:
+      operationId: getPushCenterJob
+      security: [{adminSession: []}]
+      parameters: [{$ref: "#/components/parameters/PushJobID"}]
+      responses:
+        "200": {description: Local Push Center job, content: {application/json: {schema: {$ref: "#/components/schemas/PushJobDetailEnvelope"}}}}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+  /api/admin/push-center/jobs/{job_id}/reconciliation:
+    get:
+      operationId: getPushCenterJobReconciliation
+      security: [{adminSession: []}]
+      parameters: [{$ref: "#/components/parameters/PushJobID"}]
+      responses:
+        "200": {description: Attempts and local control receipts for one job, content: {application/json: {schema: {$ref: "#/components/schemas/PushReconciliationEnvelope"}}}}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+  /api/admin/push-center/jobs/{job_id}/cancel:
+    post:
+      operationId: cancelPushCenterJob
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/PushJobID"}, {$ref: "#/components/parameters/IdempotencyKey"}]
+      responses:
+        "200": {description: Local push cancellation control receipt, content: {application/json: {schema: {$ref: "#/components/schemas/PushControlEnvelope"}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
+  /api/admin/push-center/jobs/{job_id}/retry:
+    post:
+      operationId: retryPushCenterJob
+      description: Only retryable_failed may be requeued. outcome_unknown must be reconciled first.
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/PushJobID"}, {$ref: "#/components/parameters/IdempotencyKey"}]
+      responses:
+        "200": {description: Local push retry control receipt, content: {application/json: {schema: {$ref: "#/components/schemas/PushControlEnvelope"}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
   /wecom/external-contact/callback:
     get:
       operationId: verifyWeComCallback
@@ -236,6 +362,11 @@ components:
     contextToken: {type: http, scheme: bearer}
   parameters:
     ID: {name: id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
+    ExternalEffectID: {name: id, in: path, required: true, schema: {$ref: "#/components/schemas/ExternalEffectID"}}
+    PushJobID: {name: job_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
+    ExternalEffectsView: {name: view, in: query, required: true, schema: {type: string, const: external-effects}}
+    PushJobQuery: {name: job, in: query, schema: {$ref: "#/components/schemas/PositiveID"}}
+    IdempotencyKey: {name: Idempotency-Key, in: header, required: true, schema: {type: string, minLength: 1, maxLength: 200}}
     CustomerID: {name: customer_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
     SafeNext: {name: next, in: query, schema: {type: string, pattern: "^/"}}
     Limit: {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 50}}
@@ -249,6 +380,120 @@ components:
     MutationOK: {description: Mutation completed, content: {application/json: {schema: {type: object, required: [ok], properties: {ok: {const: true}}}}}}
   schemas:
     PositiveID: {type: integer, format: int64, minimum: 1}
+    ExternalEffectID: {type: string, pattern: '^eer_[1-9][0-9]*$', example: eer_1}
+    Digest: {type: string, pattern: '^sha256:[0-9a-f]{64}$'}
+    ExternalEffectState: {type: string, enum: [accepted, queued, attempted, executed, outcome_unknown, reconciled, retryable_failed, final_failed, cancelled]}
+    ExternalEffectProjection:
+      type: object
+      required: [id, owner, kind, state, attempt_count, generation, updated_at]
+      properties:
+        id: {$ref: "#/components/schemas/ExternalEffectID"}
+        owner: {type: string, const: outbound}
+        kind: {type: string, enum: [outbound_message, outbound_media, wecom_tag_catalog, group_message]}
+        state: {$ref: "#/components/schemas/ExternalEffectState"}
+        attempt_count: {type: integer, minimum: 0}
+        generation: {type: integer, format: int64, minimum: 1}
+        updated_at: {type: string, format: date-time}
+    ExternalEffectJobsEnvelope:
+      type: object
+      required: [ok, local_fact_only, real_external_call_executed, delivery_proven, provider_execution_eligible, items]
+      properties:
+        ok: {const: true}
+        local_fact_only: {const: true}
+        real_external_call_executed: {const: false}
+        delivery_proven: {const: false}
+        provider_execution_eligible: {const: false}
+        items: {type: array, items: {$ref: "#/components/schemas/ExternalEffectJob"}}
+    ExternalEffectJob:
+      type: object
+      required: [id, status, classification, attempt_count, created_at, status_updated_at]
+      properties:
+        id: {type: string, pattern: '^eerj_[1-9][0-9]*$'}
+        status: {$ref: "#/components/schemas/ExternalEffectState"}
+        classification: {type: string, enum: [local, manual_review]}
+        attempt_count: {type: integer, minimum: 0}
+        created_at: {type: string, format: date-time}
+        status_updated_at: {type: string, format: date-time}
+    PushJob:
+      type: object
+      required: [job_id, status, attempt_count, failure_class, created_at, status_updated_at, local_fact_only, real_external_call_executed, delivery_proven, provider_execution_eligible]
+      properties:
+        job_id: {$ref: "#/components/schemas/PositiveID"}
+        status: {type: string, enum: [pending, running, sent, reconciled, failed, outcome_unknown, retryable_failed, cancelled]}
+        attempt_count: {type: integer, minimum: 0}
+        failure_class: {type: string, enum: [local, manual_review]}
+        created_at: {type: string, format: date-time}
+        status_updated_at: {type: string, format: date-time}
+        local_fact_only: {const: true}
+        real_external_call_executed: {const: false}
+        delivery_proven: {const: false}
+        provider_execution_eligible: {const: false}
+    PushJobsEnvelope:
+      type: object
+      required: [ok, fallback_used, local_fact_only, real_external_call_executed, delivery_proven, provider_execution_eligible, items]
+      properties:
+        ok: {const: true}
+        fallback_used: {const: false}
+        local_fact_only: {const: true}
+        real_external_call_executed: {const: false}
+        delivery_proven: {const: false}
+        provider_execution_eligible: {const: false}
+        items: {type: array, items: {$ref: "#/components/schemas/PushJob"}}
+    PushJobDetailEnvelope:
+      type: object
+      required: [ok, fallback_used, local_fact_only, real_external_call_executed, delivery_proven, provider_execution_eligible, job]
+      properties:
+        ok: {const: true}
+        fallback_used: {const: false}
+        local_fact_only: {const: true}
+        real_external_call_executed: {const: false}
+        delivery_proven: {const: false}
+        provider_execution_eligible: {const: false}
+        job: {$ref: "#/components/schemas/PushJob"}
+    PushAttempt:
+      type: object
+      required: [attempt_id, attempt, state, failure_class, local_fact_only, real_external_call_executed, delivery_proven]
+      properties:
+        attempt_id: {$ref: "#/components/schemas/PositiveID"}
+        attempt: {type: integer, minimum: 1}
+        state: {$ref: "#/components/schemas/ExternalEffectState"}
+        failure_class: {type: string, enum: [local, manual_review]}
+        completed_at: {type: [string, "null"], format: date-time}
+        dispatch_started_at: {type: string, format: date-time}
+        local_fact_only: {const: true}
+        real_external_call_executed: {const: false}
+        delivery_proven: {const: false}
+    PushControlReceipt:
+      type: object
+      required: [task_id, operation, task_status, completed_at, actor_admin_user_id, local_fact_only, real_external_call_executed, delivery_proven]
+      properties:
+        task_id: {$ref: "#/components/schemas/PositiveID"}
+        operation: {type: string, enum: [accept, queue, retry, cancel, complete, reconcile, manual_retry]}
+        task_status: {type: string}
+        completed_at: {type: string, format: date-time}
+        actor_admin_user_id: {type: [integer, "null"], minimum: 1}
+        local_fact_only: {const: true}
+        real_external_call_executed: {const: false}
+        delivery_proven: {const: false}
+    PushReconciliationEnvelope:
+      allOf:
+        - {$ref: "#/components/schemas/PushJobDetailEnvelope"}
+        - type: object
+          required: [attempts, control_receipts]
+          properties:
+            attempts: {type: array, items: {$ref: "#/components/schemas/PushAttempt"}}
+            control_receipts: {type: array, items: {$ref: "#/components/schemas/PushControlReceipt"}}
+    PushControlEnvelope:
+      type: object
+      required: [ok, fallback_used, local_fact_only, real_external_call_executed, delivery_proven, provider_execution_eligible, control_receipt]
+      properties:
+        ok: {const: true}
+        fallback_used: {const: false}
+        local_fact_only: {const: true}
+        real_external_call_executed: {const: false}
+        delivery_proven: {const: false}
+        provider_execution_eligible: {const: false}
+        control_receipt: {$ref: "#/components/schemas/PushControlReceipt"}
     StatusResponse:
       type: object
       additionalProperties: false

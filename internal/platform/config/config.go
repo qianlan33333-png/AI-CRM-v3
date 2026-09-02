@@ -13,8 +13,9 @@ import (
 type Role string
 
 const (
-	RoleAPI    Role = "api"
-	RoleWorker Role = "worker"
+	RoleAPI           Role = "api"
+	RoleWorker        Role = "worker"
+	RoleEffectsWorker Role = "effects-worker"
 )
 
 type Runtime struct {
@@ -25,6 +26,7 @@ type Runtime struct {
 	PublicOrigin  string
 	Bootstrap     Bootstrap
 	WeCom         WeCom
+	Effects       Effects
 	WorkerOwner   string
 	WorkerLimit   int
 }
@@ -45,6 +47,7 @@ type WeCom struct {
 	CallbackAESKey    string
 	ContextSigningKey string
 }
+type Effects struct{ ProviderEnabled bool }
 
 func Load() (Runtime, error) {
 	databaseURL, err := DatabaseURL()
@@ -69,6 +72,9 @@ func Load() (Runtime, error) {
 			CallbackAESKey: os.Getenv("AICRM_WECOM_CALLBACK_AES_KEY"), ContextSigningKey: os.Getenv("AICRM_WECOM_CONTEXT_SIGNING_KEY"),
 		},
 	}
+	if cfg.Effects.ProviderEnabled, err = strictBool("AICRM_OUTBOUND_PROVIDER_ENABLED", false); err != nil {
+		return Runtime{}, err
+	}
 	if cfg.WeCom.Enabled, err = strictBool("AICRM_WECOM_ENABLED", false); err != nil {
 		return Runtime{}, err
 	}
@@ -88,7 +94,7 @@ func Load() (Runtime, error) {
 		return Runtime{}, errors.New("invalid AICRM_RELEASE_SHA")
 	}
 	switch cfg.Role {
-	case RoleAPI, RoleWorker:
+	case RoleAPI, RoleWorker, RoleEffectsWorker:
 	default:
 		return Runtime{}, errors.New("invalid AICRM_ROLE")
 	}

@@ -41,10 +41,27 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with: {node-version: '24.18.0', cache: npm}
+      - name: Pin frozen donor npm
+        run: npm install --global npm@11.12.1
+      - name: Build and stage frozen External Effects workspace
+        run: |
+          npm ci
+          npm run version:check
+          node scripts/validate-openapi.mjs
+          scripts/check-pr01-donor-manifest.sh
+          npm run typecheck
+          npm test
+          npm run build
+          mkdir -p release
+          node scripts/stage-pr01-effects-ui.mjs web/dist release/web/dist
+          node scripts/test-stage-pr01-effects-ui.mjs
+          scripts/check-install-release-contract.sh
       - name: Check repository
         run: make check
       - name: Race-check security and identity boundaries
-        run: go test -race ./cmd/aicrm ./internal/access/... ./internal/identity/... ./internal/wecom/...
+        run: go test -race ./cmd/aicrm ./internal/access/... ./internal/identity/... ./internal/wecom/... ./internal/externaleffects/... ./internal/platform/jobqueue/...
 
   deploy:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -61,6 +78,10 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with: {node-version: '24.18.0', cache: npm}
+      - name: Pin frozen donor npm
+        run: npm install --global npm@11.12.1
       - name: Build release artifact
         env:
           CGO_ENABLED: "0"
@@ -71,7 +92,16 @@ jobs:
           mkdir -p release/bin
           go build -trimpath -ldflags "-s -w" -o release/bin/aicrm ./cmd/aicrm
           go build -trimpath -ldflags "-s -w" -o release/bin/migrate-platform ./cmd/migrate-platform
+          go build -trimpath -ldflags "-s -w" -o release/bin/migrate-river ./cmd/migrate-river
+          npm ci
+          npm run version:check
+          node scripts/validate-openapi.mjs
+          scripts/check-pr01-donor-manifest.sh
+          npm run typecheck
+          npm run build
           cp -R migrations deploy release/
+          node scripts/stage-pr01-effects-ui.mjs web/dist release/web/dist
+          node scripts/test-stage-pr01-effects-ui.mjs
           tar -C release -czf "aicrm-${GITHUB_SHA}.tar.gz" .
       - name: Configure pinned SSH host
         env:

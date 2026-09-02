@@ -34,7 +34,9 @@ install -d -m 0755 "$release_dir"
 tar -xzf "$archive" -C "$release_dir"
 test -x "$release_dir/bin/aicrm"
 test -x "$release_dir/bin/migrate-platform"
-test -f "$release_dir/migrations/0004_wecom.sql"
+test -x "$release_dir/bin/migrate-river"
+test -f "$release_dir/migrations/0005_external_effects.sql"
+test -f "$release_dir/web/dist/asset-manifest.json"
 printf 'AICRM_RELEASE_SHA=%s\n' "$release_sha" > "$release_dir/release.env"
 chown -R aicrm:aicrm "$release_dir"
 
@@ -44,6 +46,7 @@ install -m 0644 "$release_dir/deploy/aicrm.service" /etc/systemd/system/aicrm.se
 install -m 0644 "$release_dir/deploy/aicrm-migrate.service" /etc/systemd/system/aicrm-migrate.service
 install -m 0644 "$release_dir/deploy/aicrm-wecom-worker.service" /etc/systemd/system/aicrm-wecom-worker.service
 install -m 0644 "$release_dir/deploy/aicrm-wecom-worker.timer" /etc/systemd/system/aicrm-wecom-worker.timer
+install -m 0644 "$release_dir/deploy/aicrm-effects-worker.service" /etc/systemd/system/aicrm-effects-worker.service
 systemctl daemon-reload
 
 rollback() {
@@ -51,6 +54,8 @@ rollback() {
     ln -sfn "$previous" "${current_link}.rollback"
     mv -Tf "${current_link}.rollback" "$current_link"
     systemctl restart aicrm.service || true
+    systemctl restart aicrm-wecom-worker.timer || true
+    systemctl restart aicrm-effects-worker.service || true
   fi
 }
 
@@ -77,4 +82,12 @@ if [[ "$ready" != true ]]; then
 fi
 
 systemctl enable --now aicrm-wecom-worker.timer
+if ! systemctl enable --now aicrm-effects-worker.service; then
+  rollback
+  exit 8
+fi
+if ! systemctl is-active --quiet aicrm-effects-worker.service; then
+  rollback
+  exit 9
+fi
 echo "release ${release_sha} active"

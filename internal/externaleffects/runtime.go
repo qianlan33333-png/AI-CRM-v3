@@ -1,0 +1,79 @@
+// Package externaleffects is the closed, digest-only external-effect kernel.
+package externaleffects
+
+import (
+	"errors"
+	"strconv"
+	"strings"
+
+	"github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
+)
+
+var (
+	ErrInvalid           = errors.New("invalid external effect command")
+	ErrNotFound          = errors.New("external effect not found")
+	ErrPayloadMismatch   = errors.New("external effect payload mismatch")
+	ErrTransition        = errors.New("external effect transition forbidden")
+	ErrReconcileRequired = errors.New("external effect reconciliation required")
+)
+
+type Digest = port.Digest
+type Owner = port.Owner
+type Kind = port.Kind
+type State = port.State
+type Envelope = port.Envelope
+type AcceptCommand = port.AcceptCommand
+type Projection = port.Projection
+type Receipt = port.Receipt
+
+const (
+	OwnerOutbound       = port.OwnerOutbound
+	KindOutboundMessage = port.KindOutboundMessage
+	KindOutboundMedia   = port.KindOutboundMedia
+	KindWeComTagCatalog = port.KindWeComTagCatalog
+	KindGroupMessage    = port.KindGroupMessage
+	StateAccepted       = port.StateAccepted
+	StateQueued         = port.StateQueued
+	StateAttempted      = port.StateAttempted
+	StateExecuted       = port.StateExecuted
+	StateUnknown        = port.StateUnknown
+	StateReconciled     = port.StateReconciled
+	StateRetryable      = port.StateRetryable
+	StateFinalFailed    = port.StateFinalFailed
+	StateCancelled      = port.StateCancelled
+)
+
+func Hash(parts ...string) Digest   { return port.Hash(parts...) }
+func ValidDigest(value Digest) bool { return port.ValidDigest(value) }
+
+type ControlCommand struct {
+	EffectID         string
+	ReceiptKey       Digest
+	EvidenceDigest   Digest
+	ActorAdminUserID int64
+}
+
+func (c ControlCommand) Valid() bool {
+	return strings.HasPrefix(c.EffectID, "eer_") && ValidDigest(c.ReceiptKey) && c.ActorAdminUserID > 0
+}
+func (c ControlCommand) Digest(op string) Digest {
+	if !c.Valid() || (op == "reconcile" && !ValidDigest(c.EvidenceDigest)) {
+		return ""
+	}
+	return Hash(op, c.EffectID, string(c.ReceiptKey), string(c.EvidenceDigest), strconv.FormatInt(c.ActorAdminUserID, 10))
+}
+func CanTransition(from, to State) bool {
+	switch from {
+	case StateAccepted:
+		return to == StateQueued || to == StateCancelled
+	case StateQueued:
+		return to == StateAttempted || to == StateCancelled
+	case StateAttempted:
+		return to == StateExecuted || to == StateUnknown || to == StateRetryable || to == StateFinalFailed
+	case StateRetryable:
+		return to == StateQueued
+	case StateUnknown:
+		return to == StateReconciled
+	}
+	return false
+}

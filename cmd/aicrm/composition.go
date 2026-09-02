@@ -12,18 +12,21 @@ import (
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/access/credential"
 	accesshttp "github.com/qianlan33333-png/AI-CRM-v3/internal/access/http"
 	accessstore "github.com/qianlan33333-png/AI-CRM-v3/internal/access/store"
+	externaleffects "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects"
 	identityapp "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/app"
 	identityhttp "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/http"
 	identityquery "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/query"
 	identitystore "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/store"
 	platformaudit "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/audit"
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
+	platformjobqueue "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/jobqueue"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 	platformruntime "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/runtime"
 	platformwebhook "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/webhook"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/webshell"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/wecom"
 	wecomadapter "github.com/qianlan33333-png/AI-CRM-v3/internal/wecom/adapter"
+	"github.com/riverqueue/river"
 )
 
 type composedApplication struct {
@@ -31,6 +34,7 @@ type composedApplication struct {
 	handler        http.Handler
 	management     *accessapp.Management
 	weComProcessor wecom.InboxProcessor
+	effectsRuntime *platformjobqueue.Runtime
 }
 
 func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplication, error) {
@@ -73,6 +77,30 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	oneID := identityapp.OneIDService{Store: identitystore.NewPostgresStore()}
 	queries := identityquery.NewPostgreSQL()
 	requestSecurity := requestAccessSecurity{authentication: authentication}
+	if cfg.Effects.ProviderEnabled {
+		return fail(errors.New("outbound provider enabled but no outbound adapter is registered"))
+	}
+	effectsModule := externaleffects.NewModuleRegistration()
+	effectWorkers := river.NewWorkers()
+	if err = effectsModule.RegisterWorkers(effectWorkers); err != nil {
+		return fail(err)
+	}
+	effectClient, err := platformjobqueue.NewInsertClient(pool.Native(), effectWorkers)
+	if err != nil {
+		return fail(err)
+	}
+	effectRepository, err := externaleffects.NewRepository(pool.Native(), effectClient)
+	if err != nil {
+		return fail(err)
+	}
+	effectsRuntime, err := platformjobqueue.NewRuntime(pool.Native(), effectWorkers)
+	if err != nil {
+		return fail(err)
+	}
+	effectsBindings, err := effectsModule.Bind(effectRepository, requestSecurity)
+	if err != nil {
+		return fail(err)
+	}
 	oneIDHandler, err := identityhttp.NewHandler(identityhttp.Config{
 		UnitOfWork: uow, Authenticator: requestSecurity, CSRF: requestSecurity,
 		OneID: oneID, Queries: queries, Audit: auditService,
@@ -136,9 +164,12 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 			return checkErr
 		}
 		var complete bool
-		checkErr := pool.Native().QueryRow(readinessContext, `SELECT COUNT(*) = 4 FROM platform_schema_migrations WHERE version IN ('0001','0002','0003','0004')`).Scan(&complete)
+		checkErr := pool.Native().QueryRow(readinessContext, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['0001','0002','0003','0004','0005']) AS required(version) WHERE NOT EXISTS (SELECT 1 FROM platform_schema_migrations applied WHERE applied.version=required.version))`).Scan(&complete)
 		if checkErr != nil || !complete {
 			return errors.New("database schema is not ready")
+		}
+		if checkErr = effectsModule.Readiness(readinessContext, pool.Native()); checkErr != nil {
+			return checkErr
 		}
 		return nil
 	})
@@ -147,11 +178,14 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return fail(err)
 	}
 
-	handler, err := routeApplication(healthHandler, accessHandler.Routes(), oneIDHandler.Routes(), weComHandler, shellHandler, authentication, cfg.PublicOrigin)
+	effectsUI := effectsModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, tokens, labs, admin string) error {
+		return renderer.RenderExternalEffects(writer, webshell.AdminPageForRequest(request, "外部效果与 Push Center", "仅展示本地外部效果状态与对账事实。", "api.admin_cloud_orchestrator_workspace"), webshell.ExternalEffectsAssets{TokensCSS: tokens, LabsCSS: labs, AdminJS: admin})
+	})
+	handler, err := routeApplicationWithEffects(healthHandler, accessHandler.Routes(), oneIDHandler.Routes(), effectsBindings.Effects, effectsBindings.PushCenter, effectsUI, weComHandler, shellHandler, authentication, cfg.PublicOrigin)
 	if err != nil {
 		return fail(err)
 	}
-	return &composedApplication{pool: pool, handler: handler, management: management, weComProcessor: weComProcessor}, nil
+	return &composedApplication{pool: pool, handler: handler, management: management, weComProcessor: weComProcessor, effectsRuntime: effectsRuntime}, nil
 }
 
 func (application *composedApplication) Close() {
@@ -181,7 +215,11 @@ func allowedOAuthRedirects() map[string]struct{} {
 }
 
 func routeApplication(health, access, identity, weCom, shell http.Handler, authentication accessAuthentication, publicOrigin string) (http.Handler, error) {
-	if health == nil || access == nil || identity == nil || weCom == nil || shell == nil || authentication == nil || canonicalOrigin(publicOrigin) == "" {
+	return routeApplicationWithEffects(health, access, identity, http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(), weCom, shell, authentication, publicOrigin)
+}
+
+func routeApplicationWithEffects(health, access, identity, effects, pushCenter, effectsUI, weCom, shell http.Handler, authentication accessAuthentication, publicOrigin string) (http.Handler, error) {
+	if health == nil || access == nil || identity == nil || effects == nil || pushCenter == nil || effectsUI == nil || weCom == nil || shell == nil || authentication == nil || canonicalOrigin(publicOrigin) == "" {
 		return nil, errors.New("application HTTP dependencies are required")
 	}
 	mux := http.NewServeMux()
@@ -191,6 +229,12 @@ func routeApplication(health, access, identity, weCom, shell http.Handler, authe
 	mux.Handle("/logout", access)
 	mux.Handle("/api/admin/access/", access)
 	mux.Handle("/api/admin/oneid/", identity)
+	mux.Handle("/api/admin/external-effects", effects)
+	mux.Handle("/api/admin/external-effects/", effects)
+	mux.Handle("/api/admin/push-center/", pushCenter)
+	mux.Handle("/assets/", requireAdminSession(authentication, effectsUI))
+	mux.Handle("/admin/external-effects", requireAdminSession(authentication, effectsUI))
+	mux.Handle("/admin/campaigns.html", requireAdminSession(authentication, effectsUI))
 	mux.Handle("/wecom/external-contact/callback", weCom)
 	mux.Handle("/auth/wecom/start", weCom)
 	mux.Handle("/auth/wecom/callback", weCom)
@@ -263,7 +307,11 @@ func securityHeaders(next http.Handler) http.Handler {
 		writer.Header().Set("X-Content-Type-Options", "nosniff")
 		writer.Header().Set("Referrer-Policy", "no-referrer")
 		writer.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
-		contentPolicy := "default-src 'self'; script-src 'self' https://res.wx.qq.com; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'"
+		styleSource := "'self'"
+		if request.URL.Path == "/admin/campaigns.html" && externaleffects.ValidUIQuery(request.URL.Query()) {
+			styleSource = "'self' 'unsafe-inline'"
+		}
+		contentPolicy := "default-src 'self'; script-src 'self' https://res.wx.qq.com; style-src " + styleSource + "; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'"
 		if request.URL.Path != webshell.SidebarPagePath && !strings.HasPrefix(request.URL.Path, "/api/sidebar/") {
 			writer.Header().Set("X-Frame-Options", "SAMEORIGIN")
 			contentPolicy += "; frame-ancestors 'self'"

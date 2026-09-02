@@ -22,3 +22,7 @@
 /tmp/
 /data/
 *.log
+
+# frozen V2 workspace dependencies and generated browser output
+/node_modules/
+/web/dist/

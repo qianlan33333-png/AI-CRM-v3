@@ -200,6 +200,30 @@ func TestOAuthStateSingleUseExpiryAndOpenRedirect(t *testing.T) {
 	}
 }
 
+func TestOAuthPreservesExternalEffectsNextQuery(t *testing.T) {
+	states := &memoryOAuthStates{states: map[[32]byte]storedOAuthState{}}
+	service := OAuthService{
+		Enabled: true, CorpID: "wx-corp", StateStore: states, UOW: directUOW{}, Client: &fakeOAuthClient{},
+		AllowedPaths: map[string]struct{}{"/admin/external-effects": {}},
+		Now:          func() time.Time { return fixedNow },
+		Random: func(value []byte) error {
+			for i := range value {
+				value[i] = byte(i + 1)
+			}
+			return nil
+		},
+	}
+	redirect := "/admin/external-effects?view=external-effects&job=42"
+	start, err := service.Start(context.Background(), OAuthAdmin, OAuthModeQR, redirect)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, stored, err := service.ConsumeAndExchange(context.Background(), OAuthAdmin, start.State, "code")
+	if err != nil || stored.Redirect != redirect {
+		t.Fatalf("consume err=%v redirect=%q", err, stored.Redirect)
+	}
+}
+
 func TestContextTokenTamperingExpiryAndRelationshipTermination(t *testing.T) {
 	relationships := &memoryRelationships{active: map[string]bool{relationshipKey("wx-corp", "employee", 42): true}}
 	service := ContextTokenService{CorpID: "wx-corp", SigningKey: bytes32(), Relationships: relationships, UOW: directUOW{}, Now: func() time.Time { return fixedNow }, TTL: time.Minute}
