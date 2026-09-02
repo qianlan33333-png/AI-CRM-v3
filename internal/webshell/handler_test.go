@@ -346,9 +346,10 @@ func TestRendererAccessContractConsumesNextAndMapsLoginErrors(t *testing.T) {
 	}
 	response := httptest.NewRecorder()
 	err = renderer.Render(nil, response, http.StatusUnauthorized, "login", map[string]any{
-		"next_path": "/admin/config/login-access",
-		"error":     "invalid_credentials",
-		"password":  "must-not-render",
+		"next_path":        "/admin/config/login-access",
+		"error":            "invalid_credentials",
+		"login_csrf_token": "form-token",
+		"password":         "must-not-render",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -357,7 +358,7 @@ func TestRendererAccessContractConsumesNextAndMapsLoginErrors(t *testing.T) {
 		t.Fatalf("status=%d", response.Code)
 	}
 	body := response.Body.String()
-	for _, expected := range []string{"name=\"username\"", "value=\"/admin/config/login-access\"", "账号或密码不正确，请重试。"} {
+	for _, expected := range []string{"name=\"username\"", "value=\"/admin/config/login-access\"", "name=\"login_csrf_token\" value=\"form-token\"", "账号或密码不正确，请重试。"} {
 		if !strings.Contains(body, expected) {
 			t.Errorf("body missing %q", expected)
 		}
