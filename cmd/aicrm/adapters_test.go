@@ -158,6 +158,27 @@ func TestApplicationRouterKeepsOwnershipAndProtectsAdminShell(t *testing.T) {
 	}
 }
 
+func TestApplicationRouterOwnsEffectsAndPushCenterSeparately(t *testing.T) {
+	marker := func(name string) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("X-Owner", name)
+			w.WriteHeader(http.StatusNoContent)
+		})
+	}
+	handler, err := routeApplicationWithEffects(marker("health"), marker("access"), marker("identity"), marker("effects"), marker("push"), marker("wecom"), marker("shell"), &fakeAccessAuthentication{}, "https://crm.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for path, owner := range map[string]string{"/api/admin/external-effects": "effects", "/api/admin/external-effects/eer_1/cancel": "effects", "/api/admin/push-center/jobs": "push", "/api/admin/push-center/jobs/1/retry": "push"} {
+		response := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		handler.ServeHTTP(response, request)
+		if response.Header().Get("X-Owner") != owner {
+			t.Fatalf("%s owner=%q", path, response.Header().Get("X-Owner"))
+		}
+	}
+}
+
 func TestApplicationRouterRejectsCrossSiteUnsafeRequests(t *testing.T) {
 	authentication := &fakeAccessAuthentication{}
 	marker := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {

@@ -71,6 +71,7 @@ jobs:
           mkdir -p release/bin
           go build -trimpath -ldflags "-s -w" -o release/bin/aicrm ./cmd/aicrm
           go build -trimpath -ldflags "-s -w" -o release/bin/migrate-platform ./cmd/migrate-platform
+          go build -trimpath -ldflags "-s -w" -o release/bin/migrate-river ./cmd/migrate-river
           cp -R migrations deploy release/
           tar -C release -czf "aicrm-${GITHUB_SHA}.tar.gz" .
       - name: Configure pinned SSH host

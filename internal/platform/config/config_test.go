@@ -62,6 +62,23 @@ func TestLoadRejectsInsecureOriginAndLooseBoolean(t *testing.T) {
 	if _, err := Load(); err == nil {
 		t.Fatal("expected strict boolean error")
 	}
+	t.Setenv("AICRM_WECOM_ENABLED", "false")
+	t.Setenv("AICRM_OUTBOUND_PROVIDER_ENABLED", "1")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected outbound provider loose boolean error")
+	}
+}
+
+func TestLoadAcceptsEffectsWorkerRole(t *testing.T) {
+	t.Setenv("AICRM_DATABASE_URL", "postgres://aicrm:test@localhost/aicrm")
+	t.Setenv("AICRM_ROLE", "effects-worker")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Role != RoleEffectsWorker || cfg.Effects.ProviderEnabled {
+		t.Fatalf("config=%+v", cfg)
+	}
 }
 
 func TestDatabaseURLPrecedenceAndValidation(t *testing.T) {

@@ -168,6 +168,55 @@ paths:
       security: [{adminSession: [], csrfHeader: []}]
       parameters: [{$ref: "#/components/parameters/ID"}]
       responses: {"200": {description: Merge reversed}, "409": {$ref: "#/components/responses/Error"}}
+  /api/admin/external-effects:
+    get:
+      operationId: listExternalEffects
+      description: Digest-only local external-effect projection. It never proves provider delivery.
+      security: [{adminSession: []}]
+      parameters: [{$ref: "#/components/parameters/Limit"}]
+      responses: {"200": {description: Effect list}, "403": {$ref: "#/components/responses/Error"}}
+  /api/admin/external-effects/diagnostics:
+    get:
+      operationId: getExternalEffectDiagnostics
+      security: [{adminSession: []}]
+      responses: {"200": {description: Local state counts}, "403": {$ref: "#/components/responses/Error"}}
+  /api/admin/external-effects/{id}/cancel:
+    post:
+      operationId: cancelExternalEffect
+      description: Cancels only before a provider attempt begins.
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/ID"}]
+      responses: {"200": {description: Local cancellation receipt}, "409": {$ref: "#/components/responses/Error"}}
+  /api/admin/external-effects/{id}/retry:
+    post:
+      operationId: retryExternalEffect
+      description: Retries only retryable_failed. outcome_unknown requires reconciliation.
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/ID"}]
+      responses: {"200": {description: Requeued local effect}, "409": {$ref: "#/components/responses/Error"}}
+  /api/admin/external-effects/{id}/reconcile:
+    post:
+      operationId: reconcileExternalEffect
+      description: Records digest-only manual evidence for outcome_unknown; it never replays a provider call.
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/ID"}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [evidence_digest], properties: {evidence_digest: {type: string, pattern: '^sha256:[0-9a-f]{64}$'}}}}}}
+      responses: {"200": {description: Reconciled local receipt}, "409": {$ref: "#/components/responses/Error"}}
+  /api/admin/push-center/sections:
+    get:
+      operationId: getPushCenterSections
+      security: [{adminSession: []}]
+      responses: {"200": {description: Local Push Center section counts}}
+  /api/admin/push-center/stats:
+    get:
+      operationId: getPushCenterStats
+      security: [{adminSession: []}]
+      responses: {"200": {description: Local Push Center state statistics}}
+  /api/admin/push-center/jobs:
+    get:
+      operationId: listPushCenterJobs
+      security: [{adminSession: []}]
+      responses: {"200": {description: River-linked local Push Center jobs}}
   /wecom/external-contact/callback:
     get:
       operationId: verifyWeComCallback

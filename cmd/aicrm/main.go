@@ -44,6 +44,9 @@ func run() error {
 		}
 		return processErr
 	}
+	if cfg.Role == platformconfig.RoleEffectsWorker {
+		return application.effectsRuntime.Run(ctx)
+	}
 	if err = application.bootstrap(ctx, cfg.Bootstrap); err != nil {
 		return err
 	}
