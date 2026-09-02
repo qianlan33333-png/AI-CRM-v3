@@ -158,8 +158,8 @@ var adminSpecs = map[string]adminSpec{
 		activeEndpoint: "api.admin_automation_conversion",
 	},
 	"/admin/automation-conversion": {
-		title:          "自动化运营",
-		summary:        "自动化运营入口已预留。",
+		title:          "AI 自动化运营",
+		summary:        "",
 		activeEndpoint: "api.admin_automation_conversion",
 	},
 	"/admin/operation-cycles": {

@@ -1,0 +1,201 @@
+{{define "admin_audience_detail"}}
+<main class="ai-page">
+  <section class="ai-card ai-summary-card" aria-label="人群包基础摘要">
+    <div class="ai-summary-head">
+      <h2 id="packageTitle">人群包配置</h2>
+      <div class="ai-btns">
+        <a class="ai-btn soft" href="/admin/automation-conversion">返回列表</a>
+        <button class="ai-btn" id="manualRefreshBtn" type="button">手动刷新</button>
+        <button class="ai-btn primary" id="saveCurrentDimensionBtn" type="button">保存当前维度</button>
+      </div>
+    </div>
+    <div class="ai-summary-grid">
+      <div class="ai-mini"><div class="label">当前人数</div><div class="value" id="summaryCount">-</div></div>
+      <div class="ai-mini"><div class="label">最后一次刷新</div><div class="value" id="summaryRefresh">-</div></div>
+      <div class="ai-mini"><div class="label">刷新方式</div><div class="value" id="summaryMode">-</div></div>
+      <div class="ai-mini"><div class="label">状态</div><div class="value" id="summaryStatus">-</div></div>
+    </div>
+  </section>
+
+  <section class="ai-workspace">
+    <nav class="ai-card ai-side-nav" aria-label="人群包配置维度">
+      <button class="active" type="button" data-panel="basic"><span class="ai-index">1</span><span class="ai-nav-label">基础配置</span></button>
+      <button type="button" data-panel="automation"><span class="ai-index">2</span><span class="ai-nav-label">自动化话术能力</span></button>
+      <button type="button" data-panel="senders"><span class="ai-index">3</span><span class="ai-nav-label">发送人白名单</span></button>
+      <button type="button" data-panel="members"><span class="ai-index">4</span><span class="ai-nav-label">成员列表</span></button>
+      <button type="button" data-panel="records"><span class="ai-index">5</span><span class="ai-nav-label">发送记录</span></button>
+    </nav>
+
+    <div class="ai-card">
+      <section class="ai-panel active" id="panel-basic">
+        <div class="ai-panel-title-row">
+          <h3>基础配置</h3>
+          <span class="ai-pill">可保存</span>
+        </div>
+        <div class="ai-form-grid">
+          <div class="ai-field full">
+            <label class="ai-label" for="packageNameInput">人群包名称</label>
+            <input class="ai-input" id="packageNameInput" value="">
+          </div>
+          <div class="ai-field full">
+            <label class="ai-label" for="packageDefinitionInput">筛选逻辑简述</label>
+            <textarea class="ai-textarea" id="packageDefinitionInput"></textarea>
+          </div>
+          <div class="ai-field full">
+            <label class="ai-label" for="packageGroupSelect">所属分组</label>
+            <select class="ai-select" id="packageGroupSelect"><option value="ungrouped">未分组</option></select>
+          </div>
+          <div class="ai-field">
+            <label class="ai-label" for="incrementalSelect">增量刷新</label>
+            <select class="ai-select" id="incrementalSelect">
+              <option value="off">关闭</option>
+              <option value="incremental_3m">每 3 分钟</option>
+            </select>
+          </div>
+          <div class="ai-field">
+            <label class="ai-label" for="dailySelect">每日快照</label>
+            <select class="ai-select" id="dailySelect">
+              <option value="off">关闭</option>
+              <option value="daily_0200">每日 2:00</option>
+            </select>
+          </div>
+        </div>
+        <section class="template-config-card" aria-label="模板筛选条件">
+          <div class="template-config-head">
+            <h4>模板与筛选条件</h4>
+            <span class="ai-pill gray" id="templateVersionBadge">历史配置</span>
+          </div>
+          <div class="template-history-note" id="templateHistoryNote" hidden>这是由旧 SQL/Markdown 创建的历史人群包。停止后可选择模板保存为新版本；原版本仍可回看和运行。</div>
+          <div class="ai-field">
+            <label class="ai-label" for="templateSelect">人群模板</label>
+            <select class="ai-select" id="templateSelect"><option value="">请选择模板</option></select>
+          </div>
+          <div class="template-parameter-grid" id="templateParameterForm"></div>
+          <label class="template-switch"><input id="templateAllowEmpty" type="checkbox"> 允许创建 0 人结果（仅在确认业务需要时勾选）</label>
+          <div class="template-preview-box" id="templatePreviewBox" hidden></div>
+          <div class="ai-btns">
+            <button class="ai-btn soft" id="templatePreviewBtn" type="button">重新预览</button>
+            <button class="ai-btn primary" id="templateSaveBtn" type="button">保存新版本</button>
+          </div>
+          <div class="ai-status-line" id="templateStatusLine"></div>
+        </section>
+        <div class="ai-panel-actions">
+          <button class="ai-btn primary" id="savePackageBtn" type="button">保存基础配置</button>
+        </div>
+        <div class="ai-status-line" id="packageStatusLine"></div>
+      </section>
+
+      <section class="ai-panel" id="panel-automation">
+        <div class="ai-panel-title-row">
+          <h3>自动化话术能力</h3>
+          <span class="ai-pill">一对一绑定</span>
+        </div>
+        <p class="ai-label">从已有自动化列表中选择一个能力。已停止或被其他人群包占用的能力不可选。</p>
+        <div id="automationCapabilitySelector"></div>
+        <div class="ai-panel-actions">
+          <button class="ai-btn danger" id="unbindAutomationBtn" type="button">解除绑定</button>
+          <button class="ai-btn primary" id="saveAutomationBtn" type="button">保存绑定</button>
+        </div>
+        <div class="ai-status-line" id="automationStatusLine"></div>
+      </section>
+
+      <section class="ai-panel" id="panel-senders">
+        <div class="ai-panel-title-row">
+          <h3>发送人白名单</h3>
+          <button class="ai-btn soft" id="addSenderBtn" type="button">添加发送人</button>
+        </div>
+        <div class="ai-table-wrap">
+          <table class="ai-table">
+            <thead>
+              <tr>
+                <th>优先级</th>
+                <th>发送人</th>
+                <th>规则</th>
+                <th>状态</th>
+                <th style="text-align:right">操作</th>
+              </tr>
+            </thead>
+            <tbody id="senderRows">
+              <tr><td class="ai-empty" colspan="5">—</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="ai-panel-actions">
+          <button class="ai-btn primary" id="saveSendersBtn" type="button">保存发送人白名单</button>
+        </div>
+        <div class="ai-status-line" id="senderStatusLine"></div>
+      </section>
+
+      <section class="ai-panel" id="panel-members">
+        <div class="ai-panel-title-row">
+          <h3>成员列表</h3>
+          <div class="ai-btns">
+            <span class="ai-pill" id="memberTotal">—</span>
+            <button class="ai-btn soft" id="refreshMembersBtn" type="button">刷新列表</button>
+          </div>
+        </div>
+        <div class="ai-table-wrap">
+          <table class="ai-table">
+            <thead>
+              <tr>
+                <th>昵称</th>
+                <th>外部联系人 ID</th>
+                <th>进入时间</th>
+              </tr>
+            </thead>
+            <tbody id="memberRows">
+              <tr><td class="ai-empty" colspan="3">—</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="ai-panel" id="panel-records" data-send-records-api-url="">
+        <div class="ai-panel-title-row">
+          <h3>发送记录</h3>
+          <span class="ai-pill gray" id="sendRecordTotal">尚未加载</span>
+        </div>
+        <div class="ai-table-wrap">
+          <table class="ai-table" style="min-width:1080px">
+            <thead>
+              <tr>
+                <th>昵称</th>
+                <th>外部联系人 ID</th>
+                <th>发送来源</th>
+                <th>发送状态</th>
+                <th>发送时间</th>
+                <th>失败原因</th>
+                <th>发送明细</th>
+              </tr>
+            </thead>
+            <tbody id="sendRecordRows">
+              <tr><td class="ai-empty" colspan="7">进入本板块后加载发送记录</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="ai-pagination">
+          <span id="sendRecordPageLabel">第 0 / 0 页</span>
+          <div class="ai-btns">
+            <button class="ai-btn" id="sendRecordPrevBtn" type="button" disabled>上一页</button>
+            <button class="ai-btn" id="sendRecordNextBtn" type="button" disabled>下一页</button>
+          </div>
+        </div>
+        <div class="ai-status-line" id="sendRecordStatusLine"></div>
+      </section>
+    </div>
+  </section>
+</main>
+
+<div class="ai-drawer-mask" id="sendRecordDrawerMask"></div>
+<aside class="ai-record-drawer" id="sendRecordDrawer" role="dialog" aria-modal="true" aria-label="发送明细" aria-hidden="true" tabindex="-1">
+  <div class="ai-drawer-head">
+    <div>
+      <h3>发送明细</h3>
+      <p id="sendRecordDrawerSubtitle">—</p>
+    </div>
+    <button class="ai-btn" id="closeSendRecordDrawerBtn" type="button">关闭</button>
+  </div>
+  <div class="ai-detail-grid" id="sendRecordMeta"></div>
+  <div id="sendRecordContentDetail"><div class="ai-empty">—</div></div>
+</aside>
+{{end}}

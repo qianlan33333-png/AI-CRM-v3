@@ -5,13 +5,24 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{.PageTitle}} · 客户管理后台</title>
-  <link rel="stylesheet" href="/static/admin_console/admin_console.css?v=v3-webshell">
-  <script defer src="/static/admin_console/admin_shell.js?v=v3-webshell"></script>
+  <link rel="stylesheet" href="/static/admin_console/admin_console.css?v=production-shell-41f80a11-mime2">
+  <script defer src="/static/admin_console/admin_console.js?v=production-shell-41f80a11-mime2"></script>
+  <script defer src="/static/admin_console/admin_shell.js?v=static-mime2"></script>
+  {{if .AudienceList}}
+  <link rel="stylesheet" href="/static/admin_console/admin_audience.css?v=production-shell-41f80a11-mime2">
+  {{end}}
+  {{if .AudienceDetail}}
+  <link rel="stylesheet" href="/static/admin_console/automation_capability_selector.css?v=production-shell-41f80a11-mime2">
+  <link rel="stylesheet" href="/static/admin_console/send_content_readonly_detail.css?v=production-shell-41f80a11-mime2">
+  <link rel="stylesheet" href="/static/admin_console/ai_audience_send_records.css?v=production-shell-41f80a11-mime2">
+  <link rel="stylesheet" href="/static/admin_console/admin_audience_detail.css?v=production-shell-41f80a11-mime2">
+  <script defer src="/static/admin_console/admin_audience_detail.js?v=production-shell-41f80a11-shell2"></script>
+  {{end}}
   {{if eq .RequestPath "/admin/config/login-access"}}
-  <link rel="stylesheet" href="/static/admin_console/admin_access.css?v=v3-webshell">
+  <link rel="stylesheet" href="/static/admin_console/admin_access.css?v=static-mime2">
   {{end}}
   {{if eq .RequestPath "/admin/oneid"}}
-  <link rel="stylesheet" href="/static/admin_console/admin_oneid.css?v=v3-webshell">
+  <link rel="stylesheet" href="/static/admin_console/admin_oneid.css?v=static-mime2">
   {{end}}
 </head>
 <body class="admin-shell" data-admin-shell-source="v3_webshell">
@@ -32,7 +43,7 @@
           <div class="admin-nav-section-list">
             {{range .Items}}
             <a class="admin-nav-link{{if .Active}} is-active{{end}}" href="{{.Href}}" title="{{.Label}}">
-              <img class="admin-nav-icon" src="/static/admin_console/nav-icons/{{.Key}}.svg" alt="">
+              <img class="admin-nav-icon" src="/static/admin_console/nav-icons/{{.Key}}.svg?v=static-mime2" alt="">
               <span class="admin-nav-label">{{.Label}}</span>
             </a>
             {{end}}

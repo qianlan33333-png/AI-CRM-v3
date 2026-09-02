@@ -67,6 +67,77 @@ func TestStandaloneHandlerRendersAdminLoginSidebarAndAssets(t *testing.T) {
 		notContain []string
 	}{
 		{
+			name:   "automation audience shell",
+			method: http.MethodGet,
+			path:   "/admin/automation-conversion",
+			status: http.StatusOK,
+			contains: []string{
+				"AI 自动化运营",
+				"class=\"aud-layout\"",
+				"人群包分组",
+				"共 0 个自定义分组",
+				"当前分组暂无人群包",
+				"admin_console.js",
+				"admin_audience.css",
+			},
+			notContain: []string{
+				"功能待接入",
+				"/api/admin/ai-audience/",
+				"加载中",
+			},
+		},
+		{
+			name:   "automation audience secondary shell",
+			method: http.MethodGet,
+			path:   "/admin/automation-conversion/packages/42",
+			status: http.StatusOK,
+			contains: []string{
+				"AI 自动化运营",
+				"class=\"ai-page\"",
+				"人群包配置维度",
+				"基础配置",
+				"自动化话术能力",
+				"发送人白名单",
+				"成员列表",
+				"发送记录",
+				"admin_audience_detail.css",
+				"admin_audience_detail.js",
+			},
+			notContain: []string{
+				"功能待接入",
+				"/api/admin/ai-audience/",
+				"external_userid",
+				"加载中",
+			},
+		},
+		{
+			name:   "production admin console javascript",
+			method: http.MethodGet,
+			path:   "/static/admin_console/admin_console.js",
+			status: http.StatusOK,
+			contains: []string{
+				"function bootLegacyFrames()",
+				"function bootCopyButtons()",
+				"window.AdminFmt",
+			},
+		},
+		{
+			name:   "audience secondary local javascript",
+			method: http.MethodGet,
+			path:   "/static/admin_console/admin_audience_detail.js",
+			status: http.StatusOK,
+			contains: []string{
+				"data-panel",
+				"ai-panel",
+			},
+			notContain: []string{
+				"fetch(",
+				"requestJson",
+				"XMLHttpRequest",
+				"/api/",
+			},
+		},
+		{
 			name:   "admin placeholder",
 			method: http.MethodGet,
 			path:   "/admin/orders",
@@ -365,6 +436,32 @@ func TestRendererAccessContractConsumesNextAndMapsLoginErrors(t *testing.T) {
 	}
 	if strings.Contains(body, "invalid_credentials") || strings.Contains(body, "must-not-render") {
 		t.Fatal("renderer exposed raw error or ignored credential")
+	}
+}
+
+func TestStaticAssetsUseBrowserApplicableContentType(t *testing.T) {
+	handler := MustHandler()
+	for _, test := range []struct {
+		path        string
+		contentType string
+	}{
+		{"/static/admin_console/admin_console.css", "text/css"},
+		{"/static/admin_console/admin_audience.css", "text/css"},
+		{"/static/admin_console/admin_audience_detail.css", "text/css"},
+		{"/static/admin_console/automation_capability_selector.css", "text/css"},
+		{"/static/admin_console/send_content_readonly_detail.css", "text/css"},
+		{"/static/admin_console/ai_audience_send_records.css", "text/css"},
+		{"/static/admin_console/admin_console.js", "text/javascript"},
+		{"/static/admin_console/nav-icons/automation_conversion.svg", "image/svg+xml"},
+	} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, test.path, nil))
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s status=%d", test.path, response.Code)
+		}
+		if got := response.Header().Get("Content-Type"); !strings.HasPrefix(got, test.contentType) {
+			t.Errorf("%s content-type=%q, want %s", test.path, got, test.contentType)
+		}
 	}
 }
 
