@@ -354,6 +354,11 @@ func routeApplicationWithMediaTags(health, access, identity, effects, pushCenter
 	mux.Handle("/assets/", requireAdminSession(authentication, effectsUI))
 	mux.Handle("/media-assets/", requireAdminSession(authentication, mediaUI))
 	mux.Handle("/admin/wecom-tags", requireAdminSession(authentication, tagUI))
+	// The staged Tags donor document is a private template carrier. Only the
+	// canonical PR10-mounted route above is public; neither its private staging
+	// name nor the donor document name may fall through to a generic 200 shell.
+	mux.Handle("/admin/tags.html", http.NotFoundHandler())
+	mux.Handle("/admin/wecom-tags.html", http.NotFoundHandler())
 	mux.Handle("/admin/external-effects", requireAdminSession(authentication, effectsUI))
 	mux.Handle("/admin/campaigns.html", requireAdminSession(authentication, effectsUI))
 	mux.Handle("/admin/image-library", requireAdminSession(authentication, mediaUI))
