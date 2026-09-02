@@ -1,9 +1,9 @@
 # Group Ops frontend donor snapshot
 
 This directory is a byte-exact snapshot of the frozen v2 Group Ops pages,
-templates, generated request contracts, and the shared files required by the
-unchanged donor modules. It is archive-only and is not included in the v3 web
-build.
+templates, generated request contracts, Group Ops history, and the broadcast
+job-history observation page plus the shared files required by the unchanged
+donor modules. It is archive-only and is not included in the v3 web build.
 
 The shared files intentionally retain their original customer, audience,
 Campaign, and other legacy branches because changing or deleting donor bytes

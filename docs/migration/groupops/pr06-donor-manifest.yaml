@@ -2,6 +2,7 @@ schema_version: 1
 pr: PR06
 capability: content-package-and-group-ops
 status: preparation_only
+audit: docs/migration/groupops/pr06-contract-audit.md
 v3_base: 19384b93fe362c7786edc81dd5595b79570f6bb1
 target_branch: codex/import-content-groupops
 
@@ -101,12 +102,14 @@ backend:
 frontend:
   byte_exact_staged_under: web/donors/groupops-v2/src
   archive_readme: web/donors/groupops-v2/README.md
+  byte_exact_file_count: 35
   exact_files:
     - web/src/admin/templates/groupops.html
     - web/src/admin/templates/groupopsDetail.html
     - web/src/admin/legacy.ts
     - web/src/admin/sections/groupOpsDirectory.ts
     - web/src/admin/sections/groupOpsHistory.ts
+    - web/src/admin/sections/broadcastJobHistory.ts
     - web/src/admin/sections/util.ts
     - web/src/api/groupOpsDirectory.ts
     - web/src/api/groupOpsDirectory.test.ts
@@ -137,7 +140,7 @@ frontend:
     - web/src/shared/ui/picker.ts
     - web/src/shared/ui/runtime.ts
     - web/src/shared/ui/tokens.css
-    notes: These exact legacy dependencies contain broader customer/audience/Campaign branches. They are archive-only source evidence, not active v3 code; Terra/Web must narrow imports before wiring. The p4-ai-audience generated file is retained solely because the unchanged directory adapter references its operation-member endpoint.
+  notes: These exact legacy dependencies contain broader customer/audience/Campaign branches. They are archive-only source evidence, not active v3 code; Terra/Web must narrow imports before wiring. The p4-ai-audience generated file is retained solely because the unchanged directory adapter references its operation-member endpoint.
   css: no standalone Group Ops stylesheet exists; page styles are inline in the exact templates
   integration: PR10's v3-owned internal/webshell/admin_base and primary sidebar
     remain the only production shell. Terra/Web must mount these donor business
@@ -176,6 +179,28 @@ terra_followups:
     item: select the exact Group Ops pages, remove archive-only shared excluded-domain imports, and wire only after v3 HTTP/OpenAPI contracts are approved
   - owner: Terra/GroupOps
     item: decide whether legacy history is a separate read-only import after schema and retention review
+
+verification:
+  frontend_source_target_pairs: 35
+  frontend_cmp: PASS
+  frontend_cmp_scope: every exact_files and preserved_shared_dependencies entry,
+    including admin/sections/broadcastJobHistory.ts
+  frontend_sha256: docs/migration/groupops/pr06-donor-sha256.txt
+  backend_v3_commands:
+    - go test ./internal/groupops/...
+    - go vet ./internal/groupops/...
+    - go test -race ./internal/groupops/...
+  donor_backend_command: git -C /tmp/aicrm-v2-audit.yN3jmr worktree at frozen SHA;
+    go test ./internal/groupops/...
+  donor_frontend_tests:
+    - web/src/api/admin.test.ts::runAdminAdapterTests
+    - web/src/api/groupOpsDirectory.test.ts::runGroupOpsDirectoryAdapterTests
+    - web/src/api/groupOpsHistory.test.ts::runGroupOpsHistoryAdapterTests
+  donor_frontend_runner: frozen source tests bundled with esbuild 0.24.0 in a
+    temporary directory; all three runners passed, and the added broadcast
+    history section bundled successfully
+  note: Donor tests are characterization runners and are not copied into the v3
+    build; no npm/package/lock file is introduced by this preparation commit.
 
 forbidden_touched:
   - cmd/aicrm

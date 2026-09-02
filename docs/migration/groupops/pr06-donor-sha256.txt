@@ -33,6 +33,7 @@ ee7a9a6629dcdaae4d9792ffcd757cee850bad796edcfb7ff68b6028206f1ed1  source:web/src
 df5f131d9b322e435a09fccdc89c4f8269f3ef03f7856ece250d412af71bb145  source:web/src/admin/registry.json
 4ccc0d8a8e3d8503306397f46beb3675af31b9b1df20cbd188f88ce3fee6e69d  source:web/src/admin/sections/groupOpsDirectory.ts
 ab8660b56691b06e6a86b1cfedc23c6bc051bb32d7ec67cf53225894d67e40c9  source:web/src/admin/sections/groupOpsHistory.ts
+8fc0eaae99d1bc658f6b7e6d88ab8f4b633e399dcc9aef2fbb448e824c233281  source:web/src/admin/sections/broadcastJobHistory.ts
 75e3f2b24bc5e031382f7e5c58ddf64578eb7708b06d30467edaf80464362621  source:web/src/admin/sections/util.ts
 6dc8da3a44d259b8da57af3f9fe89fa50c0b22c35efe85121fe7818bcdbe16b8  source:web/src/admin/templates/groupops.html
 6704fda2582ff4d32ac976efae530937cc63b9dbacee6aeca331773be261ef9e  source:web/src/admin/templates/groupopsDetail.html
@@ -68,6 +69,7 @@ ee7a9a6629dcdaae4d9792ffcd757cee850bad796edcfb7ff68b6028206f1ed1  target:web/don
 df5f131d9b322e435a09fccdc89c4f8269f3ef03f7856ece250d412af71bb145  target:web/donors/groupops-v2/src/admin/registry.json
 4ccc0d8a8e3d8503306397f46beb3675af31b9b1df20cbd188f88ce3fee6e69d  target:web/donors/groupops-v2/src/admin/sections/groupOpsDirectory.ts
 ab8660b56691b06e6a86b1cfedc23c6bc051bb32d7ec67cf53225894d67e40c9  target:web/donors/groupops-v2/src/admin/sections/groupOpsHistory.ts
+8fc0eaae99d1bc658f6b7e6d88ab8f4b633e399dcc9aef2fbb448e824c233281  target:web/donors/groupops-v2/src/admin/sections/broadcastJobHistory.ts
 75e3f2b24bc5e031382f7e5c58ddf64578eb7708b06d30467edaf80464362621  target:web/donors/groupops-v2/src/admin/sections/util.ts
 6dc8da3a44d259b8da57af3f9fe89fa50c0b22c35efe85121fe7818bcdbe16b8  target:web/donors/groupops-v2/src/admin/templates/groupops.html
 6704fda2582ff4d32ac976efae530937cc63b9dbacee6aeca331773be261ef9e  target:web/donors/groupops-v2/src/admin/templates/groupopsDetail.html
@@ -96,4 +98,10 @@ dda7c727bbad4844749e59095dba4c450cf864efb2caaad3f96209f24348a7bb  target:web/don
 690639bde2fb605024a05fe3196f2ddf8fd5b4ae87c76ef3ff5868a7adf912c0  target:web/donors/groupops-v2/src/shared/ui/picker.ts
 1122c0be280b1f62c1784510459471bd3ffcc6989493f103daf811900411e66a  target:web/donors/groupops-v2/src/shared/ui/runtime.ts
 0f9b719686a8516727ad86fa9475b10cbb059fd10003b3eb6ef041900c7ee3b0  target:web/donors/groupops-v2/src/shared/ui/tokens.css
-6ee54b36df0021bd8bd64fc54be0843b710887a6e8de4ca3b54fe1f0cb01da2a  target:web/donors/groupops-v2/README.md
+f2a73f46688895307ee045773b92be794681921a5425fffe51e2762872f28441  target:web/donors/groupops-v2/README.md
+
+# Reconciliation command (source is read directly from the frozen Git object):
+# for each manifest frontend source/target pair:
+#   git -C /tmp/aicrm-v2-audit.yN3jmr show 6bfbe5816bb89913c70adaca87d6a486260e016e:<source> | cmp - <target>
+# Result: PASS for all 35 byte-exact frontend pairs, including
+# admin/sections/broadcastJobHistory.ts. No donor frontend file was edited.
