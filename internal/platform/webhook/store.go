@@ -58,7 +58,8 @@ func (*PostgreSQLStore) Claim(ctx context.Context, claim Claim) ([]Delivery, err
 		WITH candidates AS (
 			SELECT id
 			FROM webhook_inbox
-			WHERE (
+			WHERE provider = $5
+			  AND (
 				status IN ('received', 'retryable')
 				OR (status = 'processing' AND lease_expires_at <= $1)
 			)
@@ -81,7 +82,7 @@ func (*PostgreSQLStore) Claim(ctx context.Context, claim Claim) ([]Delivery, err
 			delivery.attempt_count, delivery.max_attempts, delivery.next_attempt_at,
 			delivery.lease_owner, delivery.lease_expires_at, delivery.last_error_code,
 			delivery.received_at, delivery.processed_at, delivery.updated_at`,
-		claim.Now, claim.Limit, claim.Owner, claim.Now.Add(claim.LeaseDuration),
+		claim.Now, claim.Limit, claim.Owner, claim.Now.Add(claim.LeaseDuration), claim.Provider,
 	)
 	if err != nil {
 		return nil, err

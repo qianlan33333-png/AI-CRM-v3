@@ -69,4 +69,8 @@ func TestClaimValidation(t *testing.T) {
 	if !errors.Is(err, ErrInvalidClaim) {
 		t.Fatalf("expected ErrInvalidClaim, got %v", err)
 	}
+	_, err = service.Claim(context.Background(), Claim{Provider: " wecom", Owner: "worker", Limit: 1, LeaseDuration: time.Minute})
+	if !errors.Is(err, ErrInvalidClaim) {
+		t.Fatalf("expected invalid provider ErrInvalidClaim, got %v", err)
+	}
 }

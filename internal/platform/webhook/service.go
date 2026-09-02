@@ -115,6 +115,7 @@ func (service *Service) Ingest(ctx context.Context, input Ingest) (IngestResult,
 }
 
 type Claim struct {
+	Provider      string
 	Owner         string
 	Limit         int
 	LeaseDuration time.Duration
@@ -122,7 +123,7 @@ type Claim struct {
 }
 
 func (service *Service) Claim(ctx context.Context, claim Claim) ([]Delivery, error) {
-	if strings.TrimSpace(claim.Owner) != claim.Owner || claim.Owner == "" ||
+	if !validProvider(claim.Provider) || strings.TrimSpace(claim.Owner) != claim.Owner || claim.Owner == "" ||
 		claim.Limit < 1 || claim.Limit > 100 || claim.LeaseDuration <= 0 {
 		return nil, ErrInvalidClaim
 	}

@@ -246,8 +246,18 @@ func TestPlatformPostgreSQLIntegration(t *testing.T) {
 			t.Fatalf("webhook payload drift error=%v", err)
 		}
 		if err := unit.Within(ctx, func(txContext context.Context) error {
+			otherKey, _ := idempotency.Parse("webhook:integration:other-provider")
+			_, ingestErr := service.Ingest(txContext, webhook.Ingest{
+				Provider: "other-provider", IdempotencyKey: otherKey,
+				Payload: json.RawMessage(`{"event":"other"}`),
+			})
+			return ingestErr
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := unit.Within(ctx, func(txContext context.Context) error {
 			claimed, claimErr := service.Claim(txContext, webhook.Claim{
-				Owner: "webhook-worker", Limit: 1, LeaseDuration: time.Minute,
+				Provider: "test-provider", Owner: "webhook-worker", Limit: 1, LeaseDuration: time.Minute,
 				Now: time.Now().UTC().Add(time.Second),
 			})
 			if claimErr != nil {
@@ -261,6 +271,21 @@ func TestPlatformPostgreSQLIntegration(t *testing.T) {
 				Status: webhook.StatusProcessed,
 			})
 			return completeErr
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := unit.Within(ctx, func(txContext context.Context) error {
+			claimed, claimErr := service.Claim(txContext, webhook.Claim{
+				Provider: "other-provider", Owner: "other-worker", Limit: 1, LeaseDuration: time.Minute,
+				Now: time.Now().UTC().Add(time.Second),
+			})
+			if claimErr != nil {
+				return claimErr
+			}
+			if len(claimed) != 1 || claimed[0].Provider != "other-provider" {
+				return errors.New("provider-specific webhook claim crossed provider boundary")
+			}
+			return nil
 		}); err != nil {
 			t.Fatal(err)
 		}
