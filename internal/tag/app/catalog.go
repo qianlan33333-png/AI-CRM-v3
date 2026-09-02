@@ -1,0 +1,486 @@
+// Package app implements the tag catalog use cases.
+package app
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"reflect"
+	"strings"
+	"time"
+
+	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
+	"github.com/qianlan33333-png/AI-CRM-v3/internal/tag/domain"
+	tagport "github.com/qianlan33333-png/AI-CRM-v3/internal/tag/port"
+)
+
+var (
+	ErrInvalidCommand = errors.New("invalid tag catalog command")
+	ErrNotFound       = errors.New("tag catalog item not found")
+	ErrReferenced     = errors.New("tag catalog item is still referenced by customers")
+	ErrConflict       = errors.New("tag catalog idempotency command conflict")
+	ErrUnavailable    = errors.New("tag catalog unavailable")
+)
+
+// Service owns catalog and group metadata only. It intentionally exposes no
+// customer target, mark or unmark method. A later outbound adapter may use a
+// separate effect contract for provider writes.
+type Service struct {
+	uow      platformport.UnitOfWork
+	store    tagport.CatalogStore
+	receipts tagport.MutationReceiptStore
+	refs     tagport.ReferenceGuard
+	events   tagport.EventAppender
+	now      func() time.Time
+}
+
+// NewService creates a catalog application service. Reads require only uow and
+// store; mutations additionally require receipt and event ports. refs is
+// required only by archive operations and is kept as a read-only port.
+func NewService(uow platformport.UnitOfWork, store tagport.CatalogStore, receipts tagport.MutationReceiptStore, events tagport.EventAppender, refs tagport.ReferenceGuard) *Service {
+	return &Service{uow: uow, store: store, receipts: receipts, events: events, refs: refs, now: time.Now}
+}
+
+// NewCatalogService is the descriptive constructor used by callers that do
+// not need the shorter NewService name.
+func NewCatalogService(uow platformport.UnitOfWork, store tagport.CatalogStore, receipts tagport.MutationReceiptStore, events tagport.EventAppender, refs tagport.ReferenceGuard) *Service {
+	return NewService(uow, store, receipts, events, refs)
+}
+
+func (service *Service) List(ctx context.Context) (domain.Catalog, error) {
+	if !service.readReady() || ctx == nil {
+		return domain.Catalog{}, ErrUnavailable
+	}
+	var result domain.Catalog
+	err := service.uow.Within(ctx, func(tx context.Context) error {
+		var err error
+		result.Groups, err = service.store.ListGroups(tx)
+		if err != nil {
+			return err
+		}
+		result.Tags, err = service.store.ListTags(tx)
+		return err
+	})
+	if err != nil {
+		return domain.Catalog{}, errors.Join(ErrUnavailable, err)
+	}
+	if err = domain.ValidateCatalog(result); err != nil {
+		return domain.Catalog{}, errors.Join(ErrUnavailable, err)
+	}
+	result.SyncedAt = service.clock().UTC()
+	result.Groups = append([]domain.Group{}, result.Groups...)
+	result.Tags = append([]domain.Tag{}, result.Tags...)
+	return result, nil
+}
+
+func (service *Service) GetGroup(ctx context.Context, id int64) (domain.Group, error) {
+	if id < 1 {
+		return domain.Group{}, ErrNotFound
+	}
+	catalog, err := service.List(ctx)
+	if err != nil {
+		return domain.Group{}, err
+	}
+	for _, group := range catalog.Groups {
+		if group.ID == id {
+			return group, nil
+		}
+	}
+	return domain.Group{}, ErrNotFound
+}
+
+func (service *Service) GetTag(ctx context.Context, id int64) (domain.Tag, error) {
+	if id < 1 {
+		return domain.Tag{}, ErrNotFound
+	}
+	catalog, err := service.List(ctx)
+	if err != nil {
+		return domain.Tag{}, err
+	}
+	for _, tag := range catalog.Tags {
+		if tag.ID == id {
+			return tag, nil
+		}
+	}
+	return domain.Tag{}, ErrNotFound
+}
+
+func (service *Service) CreateGroup(ctx context.Context, command domain.Command) (domain.Group, domain.Tag, error) {
+	if !domain.ValidCommand(command, command.GroupName, command.FirstTagName) {
+		return domain.Group{}, domain.Tag{}, ErrInvalidCommand
+	}
+	result, err := service.mutate(ctx, "group_create", command, func(tx context.Context) (mutationResult, error) {
+		group, err := service.store.CreateGroup(tx, strings.TrimSpace(command.GroupName))
+		if err != nil {
+			return mutationResult{}, err
+		}
+		tag, err := service.store.CreateTag(tx, group.ID, strings.TrimSpace(command.FirstTagName))
+		if err != nil {
+			return mutationResult{}, err
+		}
+		return mutationResult{value: groupCreateResult{group: group, tag: tag}, resultIDs: []int64{group.ID, tag.ID}}, nil
+	}, func(tx context.Context, ids []int64) (mutationResult, error) {
+		if len(ids) != 2 {
+			return mutationResult{}, ErrConflict
+		}
+		group, err := service.store.GetGroup(tx, ids[0])
+		if err != nil {
+			return mutationResult{}, err
+		}
+		tag, err := service.store.GetTag(tx, ids[1])
+		if err != nil || tag.GroupID != group.ID {
+			return mutationResult{}, errors.Join(ErrConflict, err)
+		}
+		return mutationResult{value: groupCreateResult{group: group, tag: tag}, resultIDs: ids}, nil
+	})
+	if err != nil {
+		return domain.Group{}, domain.Tag{}, err
+	}
+	pair, ok := result.value.(groupCreateResult)
+	if !ok {
+		return domain.Group{}, domain.Tag{}, ErrUnavailable
+	}
+	return pair.group, pair.tag, nil
+}
+
+func (service *Service) UpdateGroup(ctx context.Context, command domain.Command) (domain.Group, error) {
+	if command.GroupID < 1 {
+		return domain.Group{}, ErrNotFound
+	}
+	if !domain.ValidCommand(command, command.GroupName) {
+		return domain.Group{}, ErrInvalidCommand
+	}
+	result, err := service.mutate(ctx, "group_update", command, func(tx context.Context) (mutationResult, error) {
+		group, err := service.store.UpdateGroup(tx, command.GroupID, strings.TrimSpace(command.GroupName))
+		return mutationResult{value: group, resultIDs: []int64{group.ID}}, err
+	}, func(tx context.Context, ids []int64) (mutationResult, error) {
+		if len(ids) != 1 || ids[0] != command.GroupID {
+			return mutationResult{}, ErrConflict
+		}
+		group, err := service.store.GetGroup(tx, command.GroupID)
+		return mutationResult{value: group, resultIDs: ids}, err
+	})
+	if err != nil {
+		return domain.Group{}, err
+	}
+	group, ok := result.value.(domain.Group)
+	if !ok {
+		return domain.Group{}, ErrUnavailable
+	}
+	return group, nil
+}
+
+func (service *Service) ArchiveGroup(ctx context.Context, command domain.Command) (domain.Group, error) {
+	if command.GroupID < 1 {
+		return domain.Group{}, ErrNotFound
+	}
+	if !domain.ValidCommand(command) {
+		return domain.Group{}, ErrInvalidCommand
+	}
+	if service.refs == nil || nilDependency(service.refs) {
+		return domain.Group{}, ErrUnavailable
+	}
+	result, err := service.mutate(ctx, "group_archive", command, func(tx context.Context) (mutationResult, error) {
+		references, err := service.refs.GroupReferences(tx, command.GroupID)
+		if err != nil {
+			return mutationResult{}, err
+		}
+		if references > 0 {
+			return mutationResult{}, ErrReferenced
+		}
+		group, err := service.store.ArchiveGroup(tx, command.GroupID)
+		return mutationResult{value: group, resultIDs: []int64{group.ID}}, err
+	}, func(tx context.Context, ids []int64) (mutationResult, error) {
+		if len(ids) != 1 || ids[0] != command.GroupID {
+			return mutationResult{}, ErrConflict
+		}
+		group, err := service.store.GetGroup(tx, command.GroupID)
+		return mutationResult{value: group, resultIDs: ids}, err
+	})
+	if err != nil {
+		return domain.Group{}, err
+	}
+	group, ok := result.value.(domain.Group)
+	if !ok {
+		return domain.Group{}, ErrUnavailable
+	}
+	return group, nil
+}
+
+func (service *Service) CreateTag(ctx context.Context, command domain.Command) (domain.Tag, error) {
+	if command.GroupID < 1 {
+		return domain.Tag{}, ErrNotFound
+	}
+	if !domain.ValidCommand(command, command.GroupName, command.TagName) {
+		return domain.Tag{}, ErrInvalidCommand
+	}
+	result, err := service.mutate(ctx, "tag_create", command, func(tx context.Context) (mutationResult, error) {
+		tag, err := service.store.CreateTag(tx, command.GroupID, strings.TrimSpace(command.TagName))
+		return mutationResult{value: tag, resultIDs: []int64{tag.ID}}, err
+	}, func(tx context.Context, ids []int64) (mutationResult, error) {
+		if len(ids) != 1 {
+			return mutationResult{}, ErrConflict
+		}
+		tag, err := service.store.GetTag(tx, ids[0])
+		return mutationResult{value: tag, resultIDs: ids}, err
+	})
+	if err != nil {
+		return domain.Tag{}, err
+	}
+	tag, ok := result.value.(domain.Tag)
+	if !ok {
+		return domain.Tag{}, ErrUnavailable
+	}
+	return tag, nil
+}
+
+func (service *Service) UpdateTag(ctx context.Context, command domain.Command) (domain.Tag, error) {
+	if command.TagID < 1 {
+		return domain.Tag{}, ErrNotFound
+	}
+	if !domain.ValidCommand(command, command.TagName) {
+		return domain.Tag{}, ErrInvalidCommand
+	}
+	result, err := service.mutate(ctx, "tag_update", command, func(tx context.Context) (mutationResult, error) {
+		tag, err := service.store.UpdateTag(tx, command.TagID, strings.TrimSpace(command.TagName))
+		return mutationResult{value: tag, resultIDs: []int64{tag.ID}}, err
+	}, func(tx context.Context, ids []int64) (mutationResult, error) {
+		if len(ids) != 1 || ids[0] != command.TagID {
+			return mutationResult{}, ErrConflict
+		}
+		tag, err := service.store.GetTag(tx, command.TagID)
+		return mutationResult{value: tag, resultIDs: ids}, err
+	})
+	if err != nil {
+		return domain.Tag{}, err
+	}
+	tag, ok := result.value.(domain.Tag)
+	if !ok {
+		return domain.Tag{}, ErrUnavailable
+	}
+	return tag, nil
+}
+
+func (service *Service) ArchiveTag(ctx context.Context, command domain.Command) (domain.Tag, error) {
+	if command.TagID < 1 {
+		return domain.Tag{}, ErrNotFound
+	}
+	if !domain.ValidCommand(command) {
+		return domain.Tag{}, ErrInvalidCommand
+	}
+	if service.refs == nil || nilDependency(service.refs) {
+		return domain.Tag{}, ErrUnavailable
+	}
+	result, err := service.mutate(ctx, "tag_archive", command, func(tx context.Context) (mutationResult, error) {
+		references, err := service.refs.TagReferences(tx, command.TagID)
+		if err != nil {
+			return mutationResult{}, err
+		}
+		if references > 0 {
+			return mutationResult{}, ErrReferenced
+		}
+		tag, err := service.store.ArchiveTag(tx, command.TagID)
+		return mutationResult{value: tag, resultIDs: []int64{tag.ID}}, err
+	}, func(tx context.Context, ids []int64) (mutationResult, error) {
+		if len(ids) != 1 || ids[0] != command.TagID {
+			return mutationResult{}, ErrConflict
+		}
+		tag, err := service.store.GetTag(tx, command.TagID)
+		return mutationResult{value: tag, resultIDs: ids}, err
+	})
+	if err != nil {
+		return domain.Tag{}, err
+	}
+	tag, ok := result.value.(domain.Tag)
+	if !ok {
+		return domain.Tag{}, ErrUnavailable
+	}
+	return tag, nil
+}
+
+func (service *Service) ReorderGroups(ctx context.Context, command domain.Command) ([]domain.Group, error) {
+	if !domain.ValidCommand(command) || !domain.ValidIDs(command.IDs) {
+		return nil, ErrInvalidCommand
+	}
+	result, err := service.mutate(ctx, "group_reorder", command, func(tx context.Context) (mutationResult, error) {
+		current, err := service.store.ListGroups(tx)
+		if err != nil || !domain.SameIDSet(domain.GroupIDs(current), command.IDs) {
+			return mutationResult{}, errors.Join(ErrConflict, err)
+		}
+		groups, err := service.store.ReorderGroups(tx, append([]int64(nil), command.IDs...))
+		return mutationResult{value: groups, resultIDs: domain.GroupIDs(groups)}, err
+	}, func(tx context.Context, ids []int64) (mutationResult, error) {
+		groups, err := service.store.ListGroups(tx)
+		if err != nil || !domain.SameIDs(domain.GroupIDs(groups), ids) {
+			return mutationResult{}, errors.Join(ErrConflict, err)
+		}
+		return mutationResult{value: groups, resultIDs: ids}, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	groups, ok := result.value.([]domain.Group)
+	if !ok {
+		return nil, ErrUnavailable
+	}
+	return append([]domain.Group(nil), groups...), nil
+}
+
+func (service *Service) ReorderTags(ctx context.Context, command domain.Command) ([]domain.Tag, error) {
+	if !domain.ValidCommand(command) || !domain.ValidIDs(command.IDs) {
+		return nil, ErrInvalidCommand
+	}
+	result, err := service.mutate(ctx, "tag_reorder", command, func(tx context.Context) (mutationResult, error) {
+		current, err := service.store.ListTags(tx)
+		if err != nil || !domain.SameIDSet(domain.TagIDs(current), command.IDs) {
+			return mutationResult{}, errors.Join(ErrConflict, err)
+		}
+		tags, err := service.store.ReorderTags(tx, append([]int64(nil), command.IDs...))
+		return mutationResult{value: tags, resultIDs: domain.TagIDs(tags)}, err
+	}, func(tx context.Context, ids []int64) (mutationResult, error) {
+		tags, err := service.store.ListTags(tx)
+		if err != nil || !domain.SameIDs(domain.TagIDs(tags), ids) {
+			return mutationResult{}, errors.Join(ErrConflict, err)
+		}
+		return mutationResult{value: tags, resultIDs: ids}, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	tags, ok := result.value.([]domain.Tag)
+	if !ok {
+		return nil, ErrUnavailable
+	}
+	return append([]domain.Tag(nil), tags...), nil
+}
+
+type mutationResult struct {
+	value     any
+	resultIDs []int64
+}
+
+type groupCreateResult struct {
+	group domain.Group
+	tag   domain.Tag
+}
+
+func (service *Service) mutate(ctx context.Context, operation string, command domain.Command, apply func(context.Context) (mutationResult, error), replay func(context.Context, []int64) (mutationResult, error)) (mutationResult, error) {
+	if !service.mutationReady() || ctx == nil {
+		return mutationResult{}, ErrUnavailable
+	}
+	now := service.clock().UTC()
+	if now.IsZero() {
+		return mutationResult{}, ErrUnavailable
+	}
+	digest := commandDigest(operation, command)
+	var result mutationResult
+	err := service.uow.Within(ctx, func(tx context.Context) error {
+		receipt, owned, err := service.receipts.ReserveMutation(tx, tagport.MutationReceiptReservation{
+			Operation: operation, Actor: command.Actor, IdempotencyKey: command.IdempotencyKey, PayloadDigest: digest,
+		})
+		if err != nil {
+			return err
+		}
+		if receipt.ID <= 0 || receipt.Operation != operation || receipt.Actor != command.Actor || !equalDigest(receipt.PayloadDigest, digest) {
+			return ErrConflict
+		}
+		if !owned {
+			if receipt.State != tagport.MutationCompleted || len(receipt.ResultIDs) == 0 {
+				return ErrConflict
+			}
+			result, err = replay(tx, append([]int64(nil), receipt.ResultIDs...))
+			if err != nil || !domain.SameIDs(result.resultIDs, receipt.ResultIDs) {
+				return errors.Join(ErrConflict, err)
+			}
+			return nil
+		}
+		if receipt.State != tagport.MutationInProgress {
+			return ErrConflict
+		}
+		result, err = apply(tx)
+		if err != nil {
+			return err
+		}
+		if !domain.ValidResultIDs(result.resultIDs) {
+			return ErrUnavailable
+		}
+		payload, err := json.Marshal(map[string]any{
+			"actor": command.Actor, "operation": operation, "result": result.value, "trace_id": strings.TrimSpace(command.TraceID),
+		})
+		if err != nil {
+			return err
+		}
+		eventID, err := service.events.Append(tx, tagport.Event{
+			Type: "tag.catalog_" + operation, Payload: payload, OccurredAt: now,
+			IdempotencyKey: "tag-catalog:" + hex.EncodeToString(digest),
+		})
+		if err != nil || eventID <= 0 {
+			return errors.Join(ErrUnavailable, err)
+		}
+		completed, err := service.receipts.CompleteMutation(tx, receipt.ID, append([]int64(nil), result.resultIDs...), now)
+		if err != nil || completed.ID != receipt.ID || completed.State != tagport.MutationCompleted || !domain.SameIDs(completed.ResultIDs, result.resultIDs) {
+			return errors.Join(ErrUnavailable, err)
+		}
+		return nil
+	})
+	if err != nil {
+		return mutationResult{}, classifyError(err)
+	}
+	return result, nil
+}
+
+func commandDigest(operation string, command domain.Command) []byte {
+	payload, _ := json.Marshal(struct {
+		Operation string  `json:"operation"`
+		Actor     int64   `json:"actor"`
+		GroupID   int64   `json:"group_id"`
+		TagID     int64   `json:"tag_id"`
+		GroupName string  `json:"group_name"`
+		FirstTag  string  `json:"first_tag_name"`
+		TagName   string  `json:"tag_name"`
+		IDs       []int64 `json:"ids"`
+	}{operation, command.Actor, command.GroupID, command.TagID, strings.TrimSpace(command.GroupName), strings.TrimSpace(command.FirstTagName), strings.TrimSpace(command.TagName), command.IDs})
+	sum := sha256.Sum256(payload)
+	return sum[:]
+}
+
+func equalDigest(left, right []byte) bool {
+	return len(left) == sha256.Size && len(right) == sha256.Size && string(left) == string(right)
+}
+
+func classifyError(err error) error {
+	if errors.Is(err, ErrInvalidCommand) || errors.Is(err, ErrNotFound) || errors.Is(err, ErrReferenced) || errors.Is(err, ErrConflict) {
+		return err
+	}
+	return errors.Join(ErrUnavailable, err)
+}
+
+func (service *Service) readReady() bool {
+	return service != nil && !nilDependency(service.uow) && !nilDependency(service.store) && service.now != nil
+}
+
+func (service *Service) mutationReady() bool {
+	return service.readReady() && !nilDependency(service.receipts) && !nilDependency(service.events)
+}
+
+func (service *Service) clock() time.Time {
+	if service == nil || service.now == nil {
+		return time.Time{}
+	}
+	return service.now()
+}
+
+func nilDependency(value any) bool {
+	if value == nil {
+		return true
+	}
+	reflected := reflect.ValueOf(value)
+	switch reflected.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return reflected.IsNil()
+	default:
+		return false
+	}
+}
