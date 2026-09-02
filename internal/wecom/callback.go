@@ -1,6 +1,7 @@
 package wecom
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -9,69 +10,474 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/platform/idempotency"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/platform/webhook"
 )
 
-const maxCallbackBody = 1 << 20
+const (
+	maxCallbackBody           = 1 << 20
+	callbackProtocolVersion   = "v1"
+	callbackProvider          = "wecom.external_contact"
+	callbackIdempotencyPrefix = "wecom:external-contact:"
+)
 
+// CallbackProtocolVersion is included in callback idempotency material so a
+// future parser/normalization change cannot silently reuse old receipts.
+const CallbackProtocolVersion = callbackProtocolVersion
+
+// CallbackEvent is the privacy-safe durable representation of an
+// authenticated external-contact callback. It deliberately contains no raw
+// State, WelcomeCode, Source, or FailReason values.
 type CallbackEvent struct {
+	CorpID         string `json:"corp_id"`
 	ToUserName     string `xml:"ToUserName" json:"to_user_name"`
+	MsgType        string `xml:"MsgType" json:"msg_type"`
 	Event          string `xml:"Event" json:"event"`
 	ChangeType     string `xml:"ChangeType" json:"change_type"`
 	ExternalUserID string `xml:"ExternalUserID" json:"external_userid"`
 	UserID         string `xml:"UserID" json:"userid"`
-	WelcomeCode    string `xml:"WelcomeCode" json:"-"`
-	MsgID          string `xml:"MsgId" json:"msg_id"`
-	CreateTime     int64  `xml:"CreateTime" json:"create_time"`
+
+	StatePresent bool   `json:"state_present"`
+	StateDigest  string `json:"state_digest,omitempty"`
+
+	CreateTime   int64  `xml:"CreateTime" json:"create_time"`
+	MsgID        string `xml:"MsgId" json:"msg_id,omitempty"`
+	MsgIDPresent bool   `json:"msg_id_present"`
+
+	WelcomeCodePresent bool   `json:"welcome_code_present"`
+	WelcomeCodeDigest  string `json:"welcome_code_digest,omitempty"`
+	SourcePresent      bool   `json:"source_present"`
+	SourceDigest       string `json:"source_digest,omitempty"`
+	FailReasonPresent  bool   `json:"fail_reason_present"`
+	FailReasonDigest   string `json:"fail_reason_digest,omitempty"`
 }
 
 func (event CallbackEvent) supported() bool {
-	return event.Event == "change_external_contact" && (event.ChangeType == "add_external_contact" || event.ChangeType == "add_half_external_contact" || event.ChangeType == "edit_external_contact" || event.ChangeType == "del_follow_user")
+	if event.Event != "change_external_contact" {
+		return false
+	}
+	switch event.ChangeType {
+	case ChangeAddExternalContact, ChangeAddHalfExternalContact, ChangeEditExternalContact, ChangeDelFollowUser, ChangeDelExternalContact:
+		return true
+	default:
+		return false
+	}
 }
 
-func parseCallbackEvent(value []byte) (CallbackEvent, error) {
-	decoder := xml.NewDecoder(strings.NewReader(string(value)))
+// IsEntrant reports whether the callback can begin the new-customer flow.
+func (event CallbackEvent) IsEntrant() bool {
+	return event.ChangeType == "add_external_contact" || event.ChangeType == "add_half_external_contact"
+}
+
+// EventType is stable for local routing and does not contain a provider secret.
+func (event CallbackEvent) EventType() string {
+	return event.Event + ":" + event.ChangeType
+}
+
+type parsedXMLField struct {
+	value   string
+	present bool
+}
+
+// parseSimpleXML accepts one root element with strict known-field handling.
+// Unknown, well-formed provider extensions are skipped without retention so
+// a legal provider rollout does not cause endless retries. Duplicate known
+// fields and trailing XML remain rejected at the signed callback boundary.
+func parseSimpleXML(value []byte, root string, allowed map[string]string) (map[string]parsedXMLField, error) {
+	if len(value) == 0 || len(value) > maxCallbackBody || !utf8.Valid(value) {
+		return nil, ErrMalformedXML
+	}
+	decoder := xml.NewDecoder(bytes.NewReader(value))
 	decoder.Strict = true
-	var event CallbackEvent
-	if err := decoder.Decode(&event); err != nil {
+
+	var rootStart xml.StartElement
+	for {
+		token, err := decoder.Token()
+		if err != nil {
+			return nil, ErrMalformedXML
+		}
+		switch current := token.(type) {
+		case xml.StartElement:
+			rootStart = current
+			if rootStart.Name.Space != "" || rootStart.Name.Local != root || len(rootStart.Attr) != 0 {
+				return nil, ErrMalformedXML
+			}
+			goto rootFound
+		case xml.ProcInst:
+			// An XML declaration is allowed before the document element.
+		case xml.Comment:
+			// XML comments before the document element are harmless.
+		case xml.Directive:
+			return nil, ErrMalformedXML
+		case xml.CharData:
+			if strings.TrimSpace(string(current)) != "" {
+				return nil, ErrMalformedXML
+			}
+		default:
+			return nil, ErrMalformedXML
+		}
+	}
+
+rootFound:
+	fields := make(map[string]parsedXMLField, len(allowed))
+	for {
+		token, err := decoder.Token()
+		if err != nil {
+			return nil, ErrMalformedXML
+		}
+		switch current := token.(type) {
+		case xml.CharData:
+			if strings.TrimSpace(string(current)) != "" {
+				return nil, ErrMalformedXML
+			}
+		case xml.StartElement:
+			canonical, ok := allowed[current.Name.Local]
+			if !ok {
+				// WeCom has added scalar fields to callback payloads over time.
+				// Ignore an unknown, well-formed extension so a provider rollout
+				// does not cause endless retries. Known fields still use the strict
+				// duplicate/canonicalization checks below, and Skip validates the
+				// complete unknown subtree without retaining its contents.
+				if err := decoder.Skip(); err != nil {
+					return nil, ErrMalformedXML
+				}
+				continue
+			}
+			if current.Name.Space != "" || len(current.Attr) != 0 {
+				return nil, ErrMalformedXML
+			}
+			if canonical == "" || fields[canonical].present {
+				return nil, ErrMalformedXML
+			}
+			field, err := decodeScalarElement(decoder, current)
+			if err != nil {
+				return nil, ErrMalformedXML
+			}
+			fields[canonical] = parsedXMLField{value: field, present: true}
+		case xml.EndElement:
+			if current.Name.Space != rootStart.Name.Space || current.Name.Local != rootStart.Name.Local {
+				return nil, ErrMalformedXML
+			}
+			goto rootClosed
+		case xml.Comment, xml.ProcInst:
+			// Comments and processing instructions are valid inside the root.
+		case xml.Directive:
+			return nil, ErrMalformedXML
+		default:
+			return nil, ErrMalformedXML
+		}
+	}
+
+rootClosed:
+	for {
+		token, err := decoder.Token()
+		if errors.Is(err, io.EOF) {
+			return fields, nil
+		}
+		if err != nil {
+			return nil, ErrMalformedXML
+		}
+		// Whitespace after the root is the only permitted trailing content.
+		if text, ok := token.(xml.CharData); ok && strings.TrimSpace(string(text)) == "" {
+			continue
+		}
+		return nil, ErrMalformedXML
+	}
+}
+
+func decodeScalarElement(decoder *xml.Decoder, start xml.StartElement) (string, error) {
+	var value strings.Builder
+	for {
+		token, err := decoder.Token()
+		if err != nil {
+			return "", err
+		}
+		switch current := token.(type) {
+		case xml.CharData:
+			value.Write([]byte(current))
+		case xml.EndElement:
+			if current.Name.Space != start.Name.Space || current.Name.Local != start.Name.Local {
+				return "", ErrMalformedXML
+			}
+			return value.String(), nil
+		case xml.StartElement, xml.Comment, xml.Directive, xml.ProcInst:
+			return "", ErrMalformedXML
+		default:
+			return "", ErrMalformedXML
+		}
+	}
+}
+
+var encryptedEnvelopeFields = map[string]string{
+	"ToUserName": "ToUserName",
+	"AgentID":    "AgentID",
+	"Encrypt":    "Encrypt",
+}
+
+// parseEncryptedEnvelope parses the outer POST XML. The optional corpID
+// argument preserves the old one-argument helper for package-local callers;
+// the HTTP handler always supplies it so the outer receiveid is authenticated.
+func parseEncryptedEnvelope(value []byte, corpIDs ...string) (string, error) {
+	fields, err := parseSimpleXML(value, "xml", encryptedEnvelopeFields)
+	if err != nil {
+		return "", err
+	}
+	toUserName := fields["ToUserName"]
+	encrypted := fields["Encrypt"]
+	if !toUserName.present || toUserName.value == "" || !encrypted.present || encrypted.value == "" || strings.TrimSpace(encrypted.value) != encrypted.value {
+		return "", ErrMalformedXML
+	}
+	if len(corpIDs) > 0 && toUserName.value != corpIDs[0] {
+		return "", ErrCorpMismatch
+	}
+	return encrypted.value, nil
+}
+
+var callbackEventFields = map[string]string{
+	"ToUserName":     "ToUserName",
+	"FromUserName":   "FromUserName",
+	"CreateTime":     "CreateTime",
+	"MsgType":        "MsgType",
+	"Event":          "Event",
+	"ChangeType":     "ChangeType",
+	"ExternalUserID": "ExternalUserID",
+	"ExternalUserId": "ExternalUserID",
+	"UserID":         "UserID",
+	"State":          "State",
+	"WelcomeCode":    "WelcomeCode",
+	"Source":         "Source",
+	"FailReason":     "FailReason",
+	"MsgId":          "MsgID",
+	"MsgID":          "MsgID",
+}
+
+// callbackEventDraft is request-local. State is retained only until the
+// injected StateDigester has converted it into a fixed-size digest; this type
+// must never be marshalled or passed to a durable store.
+type callbackEventDraft struct {
+	event        CallbackEvent
+	state        string
+	statePresent bool
+}
+
+// parseCallbackEvent parses only authenticated/decrypted XML and never keeps
+// raw sensitive values in the returned durable event. A callback containing
+// State requires the request handler's injected digester; callers that need to
+// parse such an event should use parseCallbackEventWithStateDigester.
+func parseCallbackEvent(value []byte, corpIDs ...string) (CallbackEvent, error) {
+	draft, err := parseCallbackEventDraft(value, corpIDs...)
+	if err != nil {
+		return CallbackEvent{}, err
+	}
+	return materializeCallbackEvent(&draft, nil)
+}
+
+// parseCallbackEventWithStateDigester is the package-level typed parser used
+// by tests and adapters that already hold a trusted StateDigester.
+func parseCallbackEventWithStateDigester(value []byte, digester StateDigester, corpIDs ...string) (CallbackEvent, error) {
+	draft, err := parseCallbackEventDraft(value, corpIDs...)
+	if err != nil {
+		return CallbackEvent{}, err
+	}
+	return materializeCallbackEvent(&draft, digester)
+}
+
+func parseCallbackEventDraft(value []byte, corpIDs ...string) (callbackEventDraft, error) {
+	fields, err := parseSimpleXML(value, "xml", callbackEventFields)
+	if err != nil {
+		return callbackEventDraft{}, err
+	}
+	get := func(name string) string { return fields[name].value }
+	toUserName := fields["ToUserName"]
+	if !toUserName.present || !validText(toUserName.value, 256) {
+		return callbackEventDraft{}, ErrMalformedXML
+	}
+	if len(corpIDs) > 0 && toUserName.value != corpIDs[0] {
+		return callbackEventDraft{}, ErrCorpMismatch
+	}
+	if get("MsgType") != "event" || get("Event") != "change_external_contact" || !validCallbackLabel(get("ChangeType")) {
+		return callbackEventDraft{}, ErrMalformedXML
+	}
+	createTime := fields["CreateTime"]
+	if !createTime.present || !validText(createTime.value, 32) {
+		return callbackEventDraft{}, ErrMalformedXML
+	}
+	seconds, err := strconv.ParseInt(createTime.value, 10, 64)
+	if err != nil || seconds <= 0 {
+		return callbackEventDraft{}, ErrMalformedXML
+	}
+	externalUserID := fields["ExternalUserID"]
+	if !externalUserID.present || !validText(externalUserID.value, 1024) {
+		return callbackEventDraft{}, ErrMalformedXML
+	}
+	userID := fields["UserID"]
+	if userID.present && userID.value != "" && !validText(userID.value, 1024) {
+		return callbackEventDraft{}, ErrMalformedXML
+	}
+	if callbackChangeRequiresUserID(get("ChangeType")) && (!userID.present || !validText(userID.value, 1024)) {
+		return callbackEventDraft{}, ErrMalformedXML
+	}
+
+	event := CallbackEvent{
+		CorpID:         toUserName.value,
+		ToUserName:     toUserName.value,
+		MsgType:        get("MsgType"),
+		Event:          get("Event"),
+		ChangeType:     get("ChangeType"),
+		ExternalUserID: externalUserID.value,
+		UserID:         userID.value,
+		CreateTime:     seconds,
+	}
+	if msgID := fields["MsgID"]; msgID.present {
+		if msgID.value != "" && !validText(msgID.value, 256) {
+			return callbackEventDraft{}, ErrMalformedXML
+		}
+		event.MsgIDPresent = true
+		event.MsgID = msgID.value
+	}
+	draft := callbackEventDraft{event: event}
+	if state := fields["State"]; state.present {
+		if !validOptionalCallbackValue(state.value) {
+			return callbackEventDraft{}, ErrMalformedXML
+		}
+		draft.statePresent = true
+		draft.state = state.value
+	}
+	if welcome := fields["WelcomeCode"]; welcome.present {
+		if !validSecretCallbackValue(welcome.value) {
+			return callbackEventDraft{}, ErrMalformedXML
+		}
+		event.WelcomeCodePresent = true
+		event.WelcomeCodeDigest = callbackValueDigest(welcome.value)
+	}
+	if source := fields["Source"]; source.present {
+		if !validSecretCallbackValue(source.value) {
+			return callbackEventDraft{}, ErrMalformedXML
+		}
+		event.SourcePresent = true
+		event.SourceDigest = callbackValueDigest(source.value)
+	}
+	if reason := fields["FailReason"]; reason.present {
+		if !validSecretCallbackValue(reason.value) {
+			return callbackEventDraft{}, ErrMalformedXML
+		}
+		event.FailReasonPresent = true
+		event.FailReasonDigest = callbackValueDigest(reason.value)
+	}
+	draft.event = event
+	return draft, nil
+}
+
+func callbackChangeRequiresUserID(changeType string) bool {
+	switch changeType {
+	case ChangeAddExternalContact, ChangeAddHalfExternalContact, ChangeEditExternalContact, ChangeDelFollowUser, ChangeDelExternalContact:
+		return true
+	default:
+		return false
+	}
+}
+
+func materializeCallbackEvent(draft *callbackEventDraft, digester StateDigester) (CallbackEvent, error) {
+	if draft == nil {
 		return CallbackEvent{}, ErrMalformedXML
 	}
-	var extra any
-	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
-		return CallbackEvent{}, ErrMalformedXML
+	defer func() {
+		draft.state = ""
+		draft.statePresent = false
+	}()
+	event := draft.event
+	if !draft.statePresent {
+		return event, nil
 	}
-	if strings.TrimSpace(event.ToUserName) == "" || !event.supported() || strings.TrimSpace(event.ExternalUserID) == "" || strings.TrimSpace(event.UserID) == "" {
-		return CallbackEvent{}, ErrMalformedXML
+	if digester == nil {
+		return CallbackEvent{}, ErrStateDigestUnavailable
 	}
+	digest, err := digester.DigestState(event.ToUserName, draft.state)
+	// The raw State is request-local and should not survive this conversion,
+	// including on adapter failure. The decrypted XML itself remains owned by
+	// the request handler and is never marshalled into the Inbox payload.
+	if err != nil {
+		return CallbackEvent{}, err
+	}
+	if digest == ([32]byte{}) {
+		return CallbackEvent{}, ErrInvalidStateDigester
+	}
+	event.StatePresent = true
+	event.StateDigest = formatStateDigest(digest)
 	return event, nil
 }
 
-func parseEncryptedEnvelope(value []byte) (string, error) {
-	decoder := xml.NewDecoder(strings.NewReader(string(value)))
-	decoder.Strict = true
-	var envelope struct {
-		Encrypt string `xml:"Encrypt"`
+func validCorpID(value string) bool {
+	if len(value) == 0 || len(value) > 128 || strings.TrimSpace(value) != value {
+		return false
 	}
-	if err := decoder.Decode(&envelope); err != nil || strings.TrimSpace(envelope.Encrypt) == "" {
-		return "", ErrMalformedXML
+	for _, character := range value {
+		if !(character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9' || character == '_' || character == '-') {
+			return false
+		}
 	}
-	var extra any
-	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
-		return "", ErrMalformedXML
+	return true
+}
+
+func validToken(value string) bool {
+	return len(value) > 0 && len(value) <= 256 && strings.TrimSpace(value) == value
+}
+
+func validText(value string, maximum int) bool {
+	return value != "" && len(value) <= maximum && strings.TrimSpace(value) == value && utf8.ValidString(value)
+}
+
+func validCallbackLabel(value string) bool {
+	if !validText(value, 128) {
+		return false
 	}
-	return envelope.Encrypt, nil
+	for _, character := range value {
+		if !(character >= 'a' && character <= 'z' || character >= '0' && character <= '9' || character == '_') {
+			return false
+		}
+	}
+	return true
+}
+
+func validOptionalCallbackValue(value string) bool {
+	return value == "" || validText(value, 1024)
+}
+
+func validSecretCallbackValue(value string) bool {
+	return len(value) <= 4096 && utf8.ValidString(value) && strings.TrimSpace(value) == value
+}
+
+func callbackValueDigest(value string) string {
+	digest := sha256.Sum256([]byte(value))
+	return "sha256:" + hex.EncodeToString(digest[:])
+}
+
+// CallbackIdempotencyDigest binds the complete authenticated plaintext to the
+// configured enterprise and parser protocol version. Framing separators make
+// the three components unambiguous while retaining the exact plaintext bytes.
+func CallbackIdempotencyDigest(corpID string, plaintext []byte) string {
+	material := strings.Join([]string{callbackProtocolVersion, corpID, string(plaintext)}, "\x00")
+	digest := sha256.Sum256([]byte(material))
+	return "sha256:" + hex.EncodeToString(digest[:])
+}
+
+func stableCallbackKey(corpID string, plaintext []byte) string {
+	return CallbackIdempotencyDigest(corpID, plaintext)[len("sha256:"):]
 }
 
 type CallbackHandler struct {
-	Enabled bool
-	Crypto  *CallbackCrypto
-	Inbox   *webhook.Service
-	UOW     port.UnitOfWork
+	Enabled       bool
+	Crypto        *CallbackCrypto
+	StateDigester StateDigester
+	Inbox         *webhook.Service
+	UOW           port.UnitOfWork
 }
 
 func (handler CallbackHandler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
@@ -79,16 +485,22 @@ func (handler CallbackHandler) ServeHTTP(writer http.ResponseWriter, request *ht
 		writeWeComError(writer, http.StatusServiceUnavailable, "provider_unavailable")
 		return
 	}
-	if handler.Crypto == nil || handler.Inbox == nil || handler.UOW == nil {
+	if handler.Crypto == nil || handler.Inbox == nil || handler.UOW == nil || !validCorpID(handler.Crypto.corpID) {
 		writeWeComError(writer, http.StatusServiceUnavailable, "provider_unavailable")
 		return
 	}
-	signature := request.URL.Query().Get("msg_signature")
-	timestamp := request.URL.Query().Get("timestamp")
-	nonce := request.URL.Query().Get("nonce")
+	if request == nil {
+		writeCallbackFailure(writer, ErrMalformedXML)
+		return
+	}
 	switch request.Method {
 	case http.MethodGet:
-		plain, err := handler.Crypto.VerifyAndDecrypt(signature, timestamp, nonce, request.URL.Query().Get("echostr"))
+		signature, timestamp, nonce, encrypted, ok := callbackQuery(request)
+		if !ok {
+			writeCallbackFailure(writer, ErrMalformedXML)
+			return
+		}
+		plain, err := handler.Crypto.VerifyAndDecrypt(signature, timestamp, nonce, encrypted)
 		if err != nil {
 			writeCallbackFailure(writer, err)
 			return
@@ -96,13 +508,22 @@ func (handler CallbackHandler) ServeHTTP(writer http.ResponseWriter, request *ht
 		writer.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		_, _ = writer.Write(plain)
 	case http.MethodPost:
+		signature, timestamp, nonce, encrypted, ok := callbackQuery(request)
+		if !ok {
+			writeCallbackFailure(writer, ErrMalformedXML)
+			return
+		}
+		if request.Body == nil {
+			writeCallbackFailure(writer, ErrMalformedXML)
+			return
+		}
 		request.Body = http.MaxBytesReader(writer, request.Body, maxCallbackBody)
 		body, err := io.ReadAll(request.Body)
 		if err != nil {
 			writeWeComError(writer, http.StatusRequestEntityTooLarge, "invalid_request")
 			return
 		}
-		encrypted, err := parseEncryptedEnvelope(body)
+		encrypted, err = parseEncryptedEnvelope(body, handler.Crypto.corpID)
 		if err != nil {
 			writeCallbackFailure(writer, err)
 			return
@@ -112,13 +533,17 @@ func (handler CallbackHandler) ServeHTTP(writer http.ResponseWriter, request *ht
 			writeCallbackFailure(writer, err)
 			return
 		}
-		event, err := parseCallbackEvent(plain)
+		draft, err := parseCallbackEventDraft(plain, handler.Crypto.corpID)
 		if err != nil {
 			writeCallbackFailure(writer, err)
 			return
 		}
-		if event.ToUserName != handler.Crypto.corpID {
-			writeCallbackFailure(writer, ErrCorpMismatch)
+		event, err := materializeCallbackEvent(&draft, handler.StateDigester)
+		if err != nil {
+			// A missing/failing digester is a local dependency failure, not an
+			// invalid provider callback. Do not ingest a payload without State
+			// attribution and do not acknowledge it as successful.
+			writeWeComError(writer, http.StatusServiceUnavailable, "provider_unavailable")
 			return
 		}
 		payload, err := json.Marshal(event)
@@ -126,21 +551,68 @@ func (handler CallbackHandler) ServeHTTP(writer http.ResponseWriter, request *ht
 			writeWeComError(writer, http.StatusBadRequest, "invalid_request")
 			return
 		}
-		key, _ := idempotency.Parse("wecom:external-contact:" + stableEventKey(event))
+		key, err := idempotency.Parse(callbackIdempotencyPrefix + stableCallbackKey(handler.Crypto.corpID, plain))
+		if err != nil {
+			writeWeComError(writer, http.StatusBadRequest, "invalid_request")
+			return
+		}
 		err = handler.UOW.Within(request.Context(), func(txContext context.Context) error {
-			_, ingestErr := handler.Inbox.Ingest(txContext, webhook.Ingest{Provider: "wecom.external_contact", IdempotencyKey: key, Payload: payload})
+			_, ingestErr := handler.Inbox.Ingest(txContext, webhook.Ingest{Provider: callbackProvider, IdempotencyKey: key, Payload: payload})
 			return ingestErr
 		})
 		if err != nil {
 			writeWeComError(writer, http.StatusServiceUnavailable, "provider_unavailable")
 			return
 		}
-		writer.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		_, _ = writer.Write([]byte("success"))
+		reply, err := handler.Crypto.EncryptedSuccessReply()
+		if err != nil {
+			writeWeComError(writer, http.StatusServiceUnavailable, "provider_unavailable")
+			return
+		}
+		writer.Header().Set("Content-Type", "application/xml; charset=utf-8")
+		_, _ = writer.Write(reply)
 	default:
 		writer.Header().Set("Allow", "GET, POST")
 		writeWeComError(writer, http.StatusMethodNotAllowed, "invalid_request")
 	}
+}
+
+func callbackQuery(request *http.Request) (signature, timestamp, nonce, encrypted string, ok bool) {
+	if request == nil || request.URL == nil || len(request.URL.RawQuery) > maxCallbackBody+1024 {
+		return "", "", "", "", false
+	}
+	query, err := url.ParseQuery(request.URL.RawQuery)
+	if err != nil {
+		return "", "", "", "", false
+	}
+	allowed := map[string]bool{"msg_signature": true, "timestamp": true, "nonce": true}
+	if request.Method == http.MethodGet {
+		allowed["echostr"] = true
+	}
+	for key, values := range query {
+		if !allowed[key] || len(values) != 1 || values[0] == "" {
+			return "", "", "", "", false
+		}
+	}
+	signature, signatureOK := oneQuery(query, "msg_signature", 40)
+	timestamp, timestampOK := oneQuery(query, "timestamp", 128)
+	nonce, nonceOK := oneQuery(query, "nonce", 128)
+	if !signatureOK || !timestampOK || !nonceOK {
+		return "", "", "", "", false
+	}
+	if request.Method == http.MethodGet {
+		encrypted, ok = oneQuery(query, "echostr", maxCallbackBody)
+		return signature, timestamp, nonce, encrypted, ok
+	}
+	return signature, timestamp, nonce, "", true
+}
+
+func oneQuery(query url.Values, key string, maximum int) (string, bool) {
+	values, ok := query[key]
+	if !ok || len(values) != 1 || values[0] == "" || len(values[0]) > maximum {
+		return "", false
+	}
+	return values[0], true
 }
 
 func writeCallbackFailure(writer http.ResponseWriter, err error) {
@@ -163,9 +635,8 @@ func writeWeComError(writer http.ResponseWriter, status int, code string) {
 	_ = json.NewEncoder(writer).Encode(map[string]string{"code": code})
 }
 
-// stableEventKey is intentionally based on authenticated plaintext. WeCom
-// does not promise every callback event has a message id, so exact delivery
-// replays still converge without treating a provider id as universally present.
+// stableEventKey remains for the pre-existing processor's audit key. New
+// callback ingress uses stableCallbackKey, which includes the full plaintext.
 func stableEventKey(event CallbackEvent) string {
 	value := strings.Join([]string{event.ToUserName, event.Event, event.ChangeType, event.ExternalUserID, event.UserID, event.MsgID, time.Unix(event.CreateTime, 0).UTC().Format(time.RFC3339)}, "\x00")
 	sum := sha256.Sum256([]byte(value))

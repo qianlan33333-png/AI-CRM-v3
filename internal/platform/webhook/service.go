@@ -17,6 +17,8 @@ var (
 	ErrInvalidDelivery  = errors.New("invalid webhook delivery")
 	ErrPayloadMismatch  = errors.New("webhook payload mismatch")
 	ErrInvalidClaim     = errors.New("invalid webhook claim")
+	ErrInvalidRetry     = errors.New("invalid webhook retry")
+	ErrRetryUnavailable = errors.New("webhook retry unavailable")
 	ErrConcurrentUpdate = errors.New("webhook delivery changed concurrently")
 )
 
@@ -52,6 +54,13 @@ type Store interface {
 	PutIfAbsent(context.Context, Delivery) (stored Delivery, created bool, err error)
 	Claim(context.Context, Claim) ([]Delivery, error)
 	Complete(context.Context, Completion) (Delivery, error)
+}
+
+// RetryStore is intentionally separate from Store so existing provider and
+// in-memory stores remain ingest-only unless they explicitly support the
+// privileged operational retry transition.
+type RetryStore interface {
+	Retry(context.Context, Retry) (Delivery, error)
 }
 
 type Service struct {
@@ -139,6 +148,31 @@ type Completion struct {
 	Status          Status
 	LastErrorCode   string
 	NextAttemptAt   *time.Time
+}
+
+// Retry grants exactly one additional processing attempt without erasing the
+// delivery's attempt history. ExpectedAttempt makes the transition a CAS.
+type Retry struct {
+	ID              int64
+	Provider        string
+	ExpectedAttempt int
+	ExpectedStatus  Status
+	Now             time.Time
+}
+
+func (service *Service) Retry(ctx context.Context, retry Retry) (Delivery, error) {
+	if retry.ID < 1 || !validProvider(retry.Provider) || retry.ExpectedAttempt < 1 ||
+		(retry.ExpectedStatus != StatusFailed && retry.ExpectedStatus != StatusRetryable) {
+		return Delivery{}, ErrInvalidRetry
+	}
+	if retry.Now.IsZero() {
+		retry.Now = service.now().UTC()
+	}
+	store, ok := service.store.(RetryStore)
+	if !ok {
+		return Delivery{}, ErrRetryUnavailable
+	}
+	return store.Retry(ctx, retry)
 }
 
 func (service *Service) Complete(ctx context.Context, completion Completion) (Delivery, error) {

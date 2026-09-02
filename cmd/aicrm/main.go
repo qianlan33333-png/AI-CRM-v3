@@ -34,8 +34,8 @@ func run() error {
 	}
 	defer application.Close()
 	if cfg.Role == platformconfig.RoleWorker {
-		if !cfg.WeCom.Enabled {
-			slog.Info("wecom worker skipped because provider is disabled", "release_sha", cfg.ReleaseSHA)
+		if !cfg.WeCom.CallbackEnabled {
+			slog.Info("wecom worker skipped because callback processing is disabled", "release_sha", cfg.ReleaseSHA)
 			return nil
 		}
 		processed, processErr := application.weComProcessor.ProcessOnce(ctx, cfg.WorkerOwner, cfg.WorkerLimit)

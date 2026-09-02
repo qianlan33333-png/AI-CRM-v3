@@ -1,0 +1,541 @@
+package channel
+
+import (
+	"context"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"os"
+	"path/filepath"
+	"runtime"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	channeldomain "github.com/qianlan33333-png/AI-CRM-v3/internal/channel/domain"
+	channelport "github.com/qianlan33333-png/AI-CRM-v3/internal/channel/port"
+	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
+	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
+	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
+)
+
+func TestPostgreSQLChannelCallbackPersistenceIntegration(t *testing.T) {
+	pool, cleanup := channelIntegrationPool(t)
+	defer cleanup()
+	unit, err := platformpostgres.NewUnitOfWork(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	store := NewPostgreSQLStore()
+	now := time.Unix(1_788_336_000, 0).UTC()
+
+	t.Run("digest bindings return zero one or multiple without storing raw state", func(t *testing.T) {
+		digest := channelStateDigest("shared-callback-handle")
+		first := StateBinding{
+			CorpID: "wx-corp", DigestKeyVersion: 1, StateDigest: digest,
+			ChannelID: 11, AssetKind: AcquisitionAssetQRCode, AssetVersion: 1,
+			BindingDigest: sha256.Sum256([]byte("binding-one")), ActiveFrom: now.Add(-time.Hour),
+		}
+		if _, _, err := store.PutBinding(ctx, first); !errors.Is(err, platformpostgres.ErrTransactionNeeded) {
+			t.Fatalf("binding transaction boundary error=%v", err)
+		}
+		var storedFirst StateBinding
+		if err := unit.Within(ctx, func(txContext context.Context) error {
+			var created bool
+			var putErr error
+			storedFirst, created, putErr = store.PutBinding(txContext, first)
+			if putErr == nil && !created {
+				return errors.New("first binding was a replay")
+			}
+			return putErr
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := unit.Within(ctx, func(txContext context.Context) error {
+			_, created, putErr := store.PutBinding(txContext, first)
+			if putErr == nil && created {
+				return errors.New("exact binding replay inserted another row")
+			}
+			return putErr
+		}); err != nil {
+			t.Fatal(err)
+		}
+		conflictingAsset := first
+		conflictingAsset.StateDigest = channelStateDigest("different-handle-for-same-asset")
+		conflictingAsset.BindingDigest = sha256.Sum256([]byte("different-binding-for-same-asset"))
+		assetResults := make(chan error, 2)
+		var assetWait sync.WaitGroup
+		for _, candidate := range []StateBinding{first, conflictingAsset} {
+			assetWait.Add(1)
+			go func(candidate StateBinding) {
+				defer assetWait.Done()
+				assetResults <- unit.Within(ctx, func(txContext context.Context) error {
+					_, _, putErr := store.PutBinding(txContext, candidate)
+					return putErr
+				})
+			}(candidate)
+		}
+		assetWait.Wait()
+		close(assetResults)
+		assetConflicts := 0
+		for putErr := range assetResults {
+			if errors.Is(putErr, ErrStateBindingConflict) {
+				assetConflicts++
+			} else if putErr != nil {
+				t.Fatal(putErr)
+			}
+		}
+		if assetConflicts != 1 {
+			t.Fatalf("concurrent immutable asset conflicts=%d", assetConflicts)
+		}
+		if err := unit.Within(ctx, func(txContext context.Context) error {
+			resolution, resolveErr := store.ResolveStateDigestAt(txContext, "wx-corp", digest, 1, now)
+			if resolveErr == nil && (resolution.Cardinality != StateDigestOne || resolution.Match.ID != storedFirst.ID) {
+				return errors.New("single digest did not resolve exactly once")
+			}
+			return resolveErr
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		second := first
+		second.ChannelID = 12
+		second.BindingDigest = sha256.Sum256([]byte("binding-two"))
+		if err := unit.Within(ctx, func(txContext context.Context) error {
+			_, _, putErr := store.PutBinding(txContext, second)
+			return putErr
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := unit.Within(ctx, func(txContext context.Context) error {
+			resolution, resolveErr := store.ResolveStateDigest(txContext, "wx-corp", digest, now)
+			if resolveErr == nil && (resolution.Status != channeldomain.StateAmbiguous || resolution.Asset != (channeldomain.AcquisitionAsset{})) {
+				return errors.New("overlapping digest bindings did not fail closed as ambiguous")
+			}
+			return resolveErr
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		var storedSecond StateBinding
+		if err := unit.Within(ctx, func(txContext context.Context) error {
+			var getErr error
+			storedSecond, getErr = scanStateBinding(platformpostgresRow(txContext, stateBindingByAssetForUpdateSQL, second.ChannelID, second.AssetKind, second.AssetVersion))
+			return getErr
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := unit.Within(ctx, func(txContext context.Context) error {
+			_, applied, endErr := store.EndBinding(txContext, EndStateBinding{BindingID: storedSecond.ID, ExpectedVersion: storedSecond.Version, ActiveUntil: now.Add(time.Second)})
+			if endErr == nil && !applied {
+				return errors.New("binding end was not applied")
+			}
+			return endErr
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := unit.Within(ctx, func(txContext context.Context) error {
+			resolution, resolveErr := store.ResolveStateDigestAt(txContext, "wx-corp", digest, 1, now.Add(2*time.Second))
+			if resolveErr == nil && (resolution.Cardinality != StateDigestOne || resolution.Match.ID != storedFirst.ID) {
+				return errors.New("ended overlap did not restore one match")
+			}
+			return resolveErr
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := unit.Within(ctx, func(txContext context.Context) error {
+			resolution, resolveErr := store.ResolveStateDigestAt(txContext, "wx-corp", channelStateDigest("missing"), 1, now)
+			if resolveErr == nil && resolution.Cardinality != StateDigestZero {
+				return errors.New("unknown digest did not return zero")
+			}
+			return resolveErr
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		columns := channelTableColumns(t, ctx, pool, "channel_acquisition_state_bindings")
+		if !columns["state_digest"] || columns["state"] || columns["raw_state"] || columns["callback_state"] {
+			t.Fatalf("unsafe state binding columns=%v", columns)
+		}
+	})
+
+	t.Run("entrant receipts preserve customer on unmatched and reconcile append-only", func(t *testing.T) {
+		customerID := insertChannelCustomer(t, ctx, pool)
+		actorID := insertChannelAdmin(t, ctx, pool)
+		attributedDigest := channelStateDigest("attributed-handle")
+		binding := StateBinding{
+			CorpID: "wx-corp", DigestKeyVersion: 1, StateDigest: attributedDigest,
+			ChannelID: 21, AssetKind: AcquisitionAssetQRCode, AssetVersion: 3,
+			BindingDigest: sha256.Sum256([]byte("attributed-binding")), ActiveFrom: now.Add(-time.Hour),
+		}
+		if err := unit.Within(ctx, func(txContext context.Context) error {
+			_, _, putErr := store.PutBinding(txContext, binding)
+			return putErr
+		}); err != nil {
+			t.Fatal(err)
+		}
+		var attributed channeldomain.StateResolution
+		if err := unit.Within(ctx, func(txContext context.Context) error {
+			var resolveErr error
+			attributed, resolveErr = store.ResolveStateDigest(txContext, "wx-corp", attributedDigest, now)
+			return resolveErr
+		}); err != nil || attributed.Status != channeldomain.StateAttributed {
+			t.Fatalf("attributed resolution=%+v err=%v", attributed, err)
+		}
+		attributedCallbackID := "wecom:external-contact:receipt-attributed"
+		portReceipt := channelport.EntrantReceipt{
+			CallbackID: attributedCallbackID,
+			InboxID:    insertChannelInbox(t, ctx, pool, attributedCallbackID), CorpID: "wx-corp",
+			ChangeType: "add_external_contact", CustomerID: customerID,
+			Status: channelport.EntrantReceiptAttributed, OccurredAt: now, Resolution: attributed,
+		}
+		for iteration := range 2 {
+			if err := unit.Within(ctx, func(txContext context.Context) error {
+				return store.RecordEntrantReceipt(txContext, portReceipt)
+			}); err != nil {
+				t.Fatalf("record attributed iteration=%d err=%v", iteration, err)
+			}
+		}
+		if err := unit.Within(ctx, func(txContext context.Context) error {
+			_, _, endErr := store.EndBinding(txContext, EndStateBinding{
+				BindingID:       attributedBindingID(t, ctx, pool, 21, AcquisitionAssetQRCode, 3),
+				ExpectedVersion: 1, ActiveUntil: now,
+			})
+			return endErr
+		}); !errors.Is(err, ErrStateBindingConflict) {
+			t.Fatalf("retroactive binding end error=%v", err)
+		}
+		var attributedCount int
+		if err := pool.Native().QueryRow(ctx, `SELECT count(*) FROM channel_acquisition_entrant_receipts WHERE callback_id=$1`, portReceipt.CallbackID).Scan(&attributedCount); err != nil || attributedCount != 1 {
+			t.Fatalf("attributed receipt count=%d err=%v", attributedCount, err)
+		}
+
+		unmatchedCallbackID := "wecom:external-contact:receipt-unmatched"
+		unmatchedPort := channelport.EntrantReceipt{
+			CallbackID: unmatchedCallbackID,
+			InboxID:    insertChannelInbox(t, ctx, pool, unmatchedCallbackID), CorpID: "wx-corp",
+			ChangeType: "add_half_external_contact", CustomerID: customerID, OccurredAt: now,
+			Status:     channelport.EntrantReceiptUnmatched,
+			Resolution: channeldomain.StateResolution{Status: channeldomain.StateUnmatched},
+		}
+		if err := unit.Within(ctx, func(txContext context.Context) error {
+			return store.RecordEntrantReceipt(txContext, unmatchedPort)
+		}); err != nil {
+			t.Fatal(err)
+		}
+		conflictCallbackID := "wecom:external-contact:receipt-identity-conflict"
+		conflictPort := channelport.EntrantReceipt{
+			CallbackID: conflictCallbackID,
+			InboxID:    insertChannelInbox(t, ctx, pool, conflictCallbackID), CorpID: "wx-corp",
+			ChangeType: "add_external_contact", Status: channelport.EntrantReceiptIdentityConflict,
+			OccurredAt: now,
+		}
+		if err := unit.Within(ctx, func(txContext context.Context) error {
+			return store.RecordEntrantReceipt(txContext, conflictPort)
+		}); err != nil {
+			t.Fatal(err)
+		}
+		var conflictStatus string
+		var conflictCustomerID *int64
+		if err := pool.Native().QueryRow(ctx, `SELECT status, customer_id FROM channel_acquisition_entrant_receipts WHERE callback_id=$1`, conflictCallbackID).Scan(&conflictStatus, &conflictCustomerID); err != nil {
+			t.Fatal(err)
+		}
+		if conflictStatus != string(EntrantIdentityConflict) || conflictCustomerID != nil {
+			t.Fatalf("identity conflict status=%q customer=%v", conflictStatus, conflictCustomerID)
+		}
+		sharedInboxID := insertChannelInbox(t, ctx, pool, "wecom:external-contact:same-inbox-a")
+		inboxEntrant := AppendEntrantReceipt{
+			CallbackID: "wecom:external-contact:same-inbox-a", InboxID: sharedInboxID,
+			CorpID: "wx-corp", InputDigest: sha256.Sum256([]byte("same-inbox-input-a")),
+			CommandDigest: sha256.Sum256([]byte("same-inbox-command-a")),
+			Status:        EntrantChannelUnmatched, CustomerID: customerID, OccurredAt: now,
+		}
+		inboxDrift := inboxEntrant
+		inboxDrift.CallbackID = "wecom:external-contact:same-inbox-b"
+		inboxDrift.InputDigest = sha256.Sum256([]byte("same-inbox-input-b"))
+		inboxDrift.CommandDigest = sha256.Sum256([]byte("same-inbox-command-b"))
+		inboxResults := make(chan error, 2)
+		var inboxWait sync.WaitGroup
+		for _, candidate := range []AppendEntrantReceipt{inboxEntrant, inboxDrift} {
+			inboxWait.Add(1)
+			go func(candidate AppendEntrantReceipt) {
+				defer inboxWait.Done()
+				inboxResults <- unit.Within(ctx, func(txContext context.Context) error {
+					_, _, putErr := store.PutEntrant(txContext, candidate)
+					return putErr
+				})
+			}(candidate)
+		}
+		inboxWait.Wait()
+		close(inboxResults)
+		inboxCreated, inboxConflicts := 0, 0
+		for putErr := range inboxResults {
+			switch {
+			case putErr == nil:
+				inboxCreated++
+			case errors.Is(putErr, ErrEntrantReceiptConflict):
+				inboxConflicts++
+			default:
+				t.Fatal(putErr)
+			}
+		}
+		if inboxCreated != 1 || inboxConflicts != 1 {
+			t.Fatalf("same Inbox entrant created=%d conflicts=%d", inboxCreated, inboxConflicts)
+		}
+		var unmatched EntrantReceipt
+		if err := unit.Within(ctx, func(txContext context.Context) error {
+			items, listErr := store.ListUnassigned(txContext, EntrantReceiptPage{Limit: 20})
+			if listErr != nil {
+				return listErr
+			}
+			for _, item := range items {
+				if item.Status == EntrantChannelUnmatched {
+					unmatched = item
+				}
+			}
+			if unmatched.ID < 1 || unmatched.CustomerID != customerID {
+				return errors.New("unmatched receipt lost its trusted customer")
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		reconcile := ReconcileEntrantReceipt{
+			ReceiptID: unmatched.ID, ExpectedStatus: EntrantChannelUnmatched,
+			BindingID:  attributedBindingID(t, ctx, pool, 21, AcquisitionAssetQRCode, 3),
+			CustomerID: customerID, ActorAdminUserID: actorID,
+			Reason:             "verified local binding selected",
+			OperationKeyDigest: sha256.Sum256([]byte("entrant-reconcile-key")),
+			CommandDigest:      sha256.Sum256([]byte("entrant-reconcile-command")),
+			ReconciledAt:       now.Add(time.Minute),
+		}
+		var reconciled EntrantReceipt
+		for iteration := range 2 {
+			if err := unit.Within(ctx, func(txContext context.Context) error {
+				var created bool
+				var reconcileErr error
+				reconciled, created, reconcileErr = store.Reconcile(txContext, reconcile)
+				if reconcileErr == nil && created != (iteration == 0) {
+					return errors.New("reconciliation replay flag mismatch")
+				}
+				return reconcileErr
+			}); err != nil {
+				t.Fatalf("reconcile iteration=%d err=%v", iteration, err)
+			}
+		}
+		if reconciled.Status != EntrantReconciled || reconciled.PriorStatus != EntrantChannelUnmatched || reconciled.CustomerID != customerID {
+			t.Fatalf("reconciled=%+v", reconciled)
+		}
+		drift := reconcile
+		drift.CustomerID = insertChannelCustomer(t, ctx, pool)
+		if err := unit.Within(ctx, func(txContext context.Context) error {
+			_, _, reconcileErr := store.Reconcile(txContext, drift)
+			return reconcileErr
+		}); !errors.Is(err, ErrEntrantReceiptConflict) {
+			t.Fatalf("reconcile idempotency drift error=%v", err)
+		}
+		if _, err := pool.Native().Exec(ctx, `UPDATE channel_acquisition_entrant_receipts SET status='ignored' WHERE id=$1`, unmatched.ID); err == nil {
+			t.Fatal("append-only entrant receipt accepted UPDATE")
+		}
+		if _, err := pool.Native().Exec(ctx, `DELETE FROM channel_acquisition_entrant_reconciliation_receipts WHERE entrant_receipt_id=$1`, unmatched.ID); err == nil {
+			t.Fatal("append-only reconciliation receipt accepted DELETE")
+		}
+		if _, err := pool.Native().Exec(ctx, `TRUNCATE channel_acquisition_entrant_reconciliation_receipts`); err == nil {
+			t.Fatal("append-only reconciliation receipt accepted TRUNCATE")
+		}
+		columns := channelTableColumns(t, ctx, pool, "channel_acquisition_entrant_receipts")
+		for _, forbidden := range []string{"state", "state_digest", "external_userid", "employee_id", "raw_payload"} {
+			if columns[forbidden] {
+				t.Fatalf("entrant receipts contain forbidden column %q", forbidden)
+			}
+		}
+	})
+}
+
+func platformpostgresRow(ctx context.Context, query string, arguments ...any) pgx.Row {
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return errorRow{err: err}
+	}
+	return tx.QueryRow(ctx, query, arguments...)
+}
+
+type errorRow struct{ err error }
+
+func (row errorRow) Scan(...any) error { return row.err }
+
+func channelStateDigest(value string) [32]byte {
+	mac := hmac.New(sha256.New, []byte("integration-only-hmac-key"))
+	_, _ = mac.Write([]byte(value))
+	var digest [32]byte
+	copy(digest[:], mac.Sum(nil))
+	return digest
+}
+
+func insertChannelCustomer(t *testing.T, ctx context.Context, pool *platformpostgres.Pool) customerdomain.CustomerID {
+	t.Helper()
+	var id int64
+	if err := pool.Native().QueryRow(ctx, `INSERT INTO customers (status) VALUES ('active') RETURNING id`).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	return customerdomain.CustomerID(id)
+}
+
+func insertChannelAdmin(t *testing.T, ctx context.Context, pool *platformpostgres.Pool) int64 {
+	t.Helper()
+	var id int64
+	if err := pool.Native().QueryRow(ctx, `
+		INSERT INTO admin_users (username, password_hash, display_name)
+		VALUES ('channel_operator', '$argon2id$fixture', 'Channel Operator')
+		RETURNING id`).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Native().Exec(ctx, `INSERT INTO admin_user_roles (admin_user_id, role_code) VALUES ($1, 'super_admin')`, id); err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+func insertChannelInbox(t *testing.T, ctx context.Context, pool *platformpostgres.Pool, idempotencyKey string) int64 {
+	t.Helper()
+	digest := sha256.Sum256([]byte("channel-inbox-" + idempotencyKey))
+	var id int64
+	err := pool.Native().QueryRow(ctx, `
+		INSERT INTO webhook_inbox (
+			provider, idempotency_key, payload_hash, payload, status,
+			attempt_count, max_attempts, next_attempt_at
+		) VALUES ('wecom.external_contact', $1, $2, '{}'::jsonb, 'processing', 1, 8, clock_timestamp())
+		RETURNING id`, idempotencyKey, digest[:]).Scan(&id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+func attributedBindingID(t *testing.T, ctx context.Context, pool *platformpostgres.Pool, channelID int64, kind AcquisitionAssetKind, version int64) int64 {
+	t.Helper()
+	var id int64
+	if err := pool.Native().QueryRow(ctx, `
+		SELECT id FROM channel_acquisition_state_bindings
+		WHERE channel_id=$1 AND asset_kind=$2 AND asset_version=$3`, channelID, kind, version).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+func channelTableColumns(t *testing.T, ctx context.Context, pool *platformpostgres.Pool, table string) map[string]bool {
+	t.Helper()
+	rows, err := pool.Native().Query(ctx, `
+		SELECT column_name FROM information_schema.columns
+		WHERE table_schema=current_schema() AND table_name=$1`, table)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	columns := make(map[string]bool)
+	for rows.Next() {
+		var name string
+		if err = rows.Scan(&name); err != nil {
+			t.Fatal(err)
+		}
+		columns[name] = true
+	}
+	if err = rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return columns
+}
+
+func channelIntegrationPool(t *testing.T) (*platformpostgres.Pool, func()) {
+	t.Helper()
+	databaseURL, err := platformconfig.DatabaseURL()
+	if err != nil {
+		t.Skip("AICRM_DATABASE_URL is not configured; skipping PostgreSQL integration test")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	config, err := pgxpool.ParseConfig(databaseURL)
+	if err != nil {
+		t.Fatal("parse AICRM_DATABASE_URL")
+	}
+	admin, err := pgxpool.NewWithConfig(ctx, config.Copy())
+	if err != nil {
+		t.Fatal("open PostgreSQL integration database")
+	}
+	if err = admin.Ping(ctx); err != nil {
+		admin.Close()
+		t.Fatal("ping PostgreSQL integration database")
+	}
+	random := make([]byte, 8)
+	if _, err = rand.Read(random); err != nil {
+		admin.Close()
+		t.Fatal(err)
+	}
+	schema := "aicrm_channel_test_" + hex.EncodeToString(random)
+	identifier := pgx.Identifier{schema}.Sanitize()
+	if _, err = admin.Exec(ctx, "CREATE SCHEMA "+identifier); err != nil {
+		admin.Close()
+		t.Fatal("create PostgreSQL integration schema")
+	}
+	testConfig := config.Copy()
+	testConfig.ConnConfig.RuntimeParams["search_path"] = schema
+	native, err := pgxpool.NewWithConfig(ctx, testConfig)
+	if err != nil {
+		_, _ = admin.Exec(ctx, "DROP SCHEMA "+identifier+" CASCADE")
+		admin.Close()
+		t.Fatal("open isolated PostgreSQL integration schema")
+	}
+	for _, path := range channelMigrationPaths(t) {
+		sql, readErr := os.ReadFile(path)
+		if readErr != nil {
+			native.Close()
+			_, _ = admin.Exec(ctx, "DROP SCHEMA "+identifier+" CASCADE")
+			admin.Close()
+			t.Fatal(readErr)
+		}
+		if _, execErr := native.Exec(ctx, string(sql)); execErr != nil {
+			native.Close()
+			_, _ = admin.Exec(ctx, "DROP SCHEMA "+identifier+" CASCADE")
+			admin.Close()
+			t.Fatalf("apply channel integration migration %s: %v", filepath.Base(path), execErr)
+		}
+	}
+	pool, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		native.Close()
+		_, _ = admin.Exec(ctx, "DROP SCHEMA "+identifier+" CASCADE")
+		admin.Close()
+		t.Fatal(err)
+	}
+	return pool, func() {
+		pool.Close()
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, _ = admin.Exec(cleanupCtx, "DROP SCHEMA "+identifier+" CASCADE")
+		admin.Close()
+	}
+}
+
+func channelMigrationPaths(t *testing.T) []string {
+	t.Helper()
+	_, filename, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("locate channel integration test source")
+	}
+	root := filepath.Clean(filepath.Join(filepath.Dir(filename), "..", ".."))
+	return []string{
+		filepath.Join(root, "migrations", "0001_platform.sql"),
+		filepath.Join(root, "migrations", "0002_identity.sql"),
+		filepath.Join(root, "migrations", "0003_access.sql"),
+		filepath.Join(root, "migrations", "0004_wecom.sql"),
+		filepath.Join(root, "migrations", "0005_external_effects.sql"),
+		filepath.Join(root, "migrations", "0006_wecom_callback_channel_acquisition.sql"),
+	}
+}

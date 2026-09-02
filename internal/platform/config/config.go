@@ -39,13 +39,15 @@ type Bootstrap struct {
 }
 
 type WeCom struct {
-	Enabled           bool
-	CorpID            string
-	AgentID           string
-	Secret            string
-	CallbackToken     string
-	CallbackAESKey    string
-	ContextSigningKey string
+	Enabled             bool
+	CallbackEnabled     bool
+	CorpID              string
+	AgentID             string
+	Secret              string
+	CallbackToken       string
+	CallbackAESKey      string
+	ContextSigningKey   string
+	ChannelStateHMACKey string
 }
 type Effects struct{ ProviderEnabled bool }
 
@@ -70,12 +72,16 @@ func Load() (Runtime, error) {
 			CorpID: os.Getenv("AICRM_WECOM_CORP_ID"), AgentID: os.Getenv("AICRM_WECOM_AGENT_ID"),
 			Secret: os.Getenv("AICRM_WECOM_SECRET"), CallbackToken: os.Getenv("AICRM_WECOM_CALLBACK_TOKEN"),
 			CallbackAESKey: os.Getenv("AICRM_WECOM_CALLBACK_AES_KEY"), ContextSigningKey: os.Getenv("AICRM_WECOM_CONTEXT_SIGNING_KEY"),
+			ChannelStateHMACKey: os.Getenv("AICRM_CHANNEL_STATE_HMAC_KEY"),
 		},
 	}
 	if cfg.Effects.ProviderEnabled, err = strictBool("AICRM_OUTBOUND_PROVIDER_ENABLED", false); err != nil {
 		return Runtime{}, err
 	}
 	if cfg.WeCom.Enabled, err = strictBool("AICRM_WECOM_ENABLED", false); err != nil {
+		return Runtime{}, err
+	}
+	if cfg.WeCom.CallbackEnabled, err = strictBool("AICRM_WECOM_CALLBACK_ENABLED", false); err != nil {
 		return Runtime{}, err
 	}
 	if raw := os.Getenv("AICRM_WORKER_LIMIT"); raw != "" {
@@ -118,13 +124,24 @@ func Load() (Runtime, error) {
 		return Runtime{}, errors.New("invalid bootstrap administrator configuration")
 	}
 	if cfg.WeCom.Enabled {
-		values := []string{cfg.WeCom.CorpID, cfg.WeCom.AgentID, cfg.WeCom.Secret, cfg.WeCom.CallbackToken, cfg.WeCom.CallbackAESKey, cfg.WeCom.ContextSigningKey}
+		values := []string{cfg.WeCom.CorpID, cfg.WeCom.AgentID, cfg.WeCom.Secret, cfg.WeCom.ContextSigningKey}
 		if nonEmptyCount(values) != len(values) || len(cfg.WeCom.ContextSigningKey) < 32 {
 			return Runtime{}, errors.New("enabled WeCom configuration is incomplete")
 		}
 		for _, value := range values {
 			if strings.TrimSpace(value) != value {
 				return Runtime{}, errors.New("invalid enabled WeCom configuration")
+			}
+		}
+	}
+	if cfg.WeCom.CallbackEnabled {
+		values := []string{cfg.WeCom.CorpID, cfg.WeCom.CallbackToken, cfg.WeCom.CallbackAESKey, cfg.WeCom.ChannelStateHMACKey}
+		if nonEmptyCount(values) != len(values) || len(cfg.WeCom.ChannelStateHMACKey) < 32 {
+			return Runtime{}, errors.New("enabled WeCom callback configuration is incomplete")
+		}
+		for _, value := range values {
+			if strings.TrimSpace(value) != value {
+				return Runtime{}, errors.New("invalid enabled WeCom callback configuration")
 			}
 		}
 	}

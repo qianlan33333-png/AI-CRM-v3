@@ -59,16 +59,17 @@ func TestCallbackHandlerDurableBeforeACKAndRejectsBadInput(t *testing.T) {
 	inboxStore := &memoryWebhookStore{}
 	inbox, _ := webhook.NewService(inboxStore)
 	handler := CallbackHandler{Enabled: true, Crypto: crypto, Inbox: inbox, UOW: directUOW{}}
-	plain := []byte("<xml><ToUserName>wx-corp</ToUserName><Event>change_external_contact</Event><ChangeType>add_external_contact</ChangeType><ExternalUserID>x</ExternalUserID><UserID>u</UserID></xml>")
+	plain := []byte("<xml><ToUserName>wx-corp</ToUserName><CreateTime>1788336000</CreateTime><MsgType>event</MsgType><Event>change_external_contact</Event><ChangeType>add_external_contact</ChangeType><ExternalUserID>x</ExternalUserID><UserID>u</UserID></xml>")
 	encrypted := encryptForTest(t, crypto, plain)
 	timestamp := "1788336000"
 	query := "?msg_signature=" + callbackSignature("callback-token", timestamp, "n", encrypted) + "&timestamp=" + timestamp + "&nonce=n"
-	req := httptest.NewRequest(http.MethodPost, "/wecom/external-contact/callback"+query, strings.NewReader("<xml><Encrypt><![CDATA["+encrypted+"]]></Encrypt></xml>"))
+	req := httptest.NewRequest(http.MethodPost, "/wecom/external-contact/callback"+query, strings.NewReader("<xml><ToUserName>wx-corp</ToUserName><Encrypt><![CDATA["+encrypted+"]]></Encrypt></xml>"))
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, req)
-	if response.Code != http.StatusOK || response.Body.String() != "success" || len(inboxStore.deliveries) != 1 {
+	if response.Code != http.StatusOK || len(inboxStore.deliveries) != 1 {
 		t.Fatalf("status=%d body=%q deliveries=%d", response.Code, response.Body.String(), len(inboxStore.deliveries))
 	}
+	assertEncryptedSuccessReply(t, crypto, response.Body.Bytes())
 	bad := httptest.NewRequest(http.MethodPost, "/wecom/external-contact/callback"+query, strings.NewReader("<xml>"))
 	badResponse := httptest.NewRecorder()
 	handler.ServeHTTP(badResponse, bad)
@@ -94,14 +95,14 @@ func TestCallbackHandlerDeduplicatesEquivalentXMLAndRejectsToUserNameMismatch(t 
 	store := &memoryWebhookStore{}
 	inbox, _ := webhook.NewService(store)
 	handler := CallbackHandler{Enabled: true, Crypto: crypto, Inbox: inbox, UOW: directUOW{}}
-	first := []byte("<xml><ToUserName>wx-corp</ToUserName><Event>change_external_contact</Event><ChangeType>add_external_contact</ChangeType><ExternalUserID>external</ExternalUserID><UserID>employee</UserID></xml>")
-	second := []byte("<xml><UserID>employee</UserID><ExternalUserID>external</ExternalUserID><ChangeType>add_external_contact</ChangeType><Event>change_external_contact</Event><ToUserName>wx-corp</ToUserName></xml>")
+	first := []byte("<xml><ToUserName>wx-corp</ToUserName><CreateTime>1788336000</CreateTime><MsgType>event</MsgType><Event>change_external_contact</Event><ChangeType>add_external_contact</ChangeType><ExternalUserID>external</ExternalUserID><UserID>employee</UserID></xml>")
+	second := first
 	for _, plain := range [][]byte{first, second} {
 		encrypted := encryptForTest(t, crypto, plain)
 		timestamp := "1788336000"
 		query := "?msg_signature=" + callbackSignature("callback-token", timestamp, "n", encrypted) + "&timestamp=" + timestamp + "&nonce=n"
 		response := httptest.NewRecorder()
-		handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/wecom/external-contact/callback"+query, strings.NewReader("<xml><Encrypt><![CDATA["+encrypted+"]]></Encrypt></xml>")))
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/wecom/external-contact/callback"+query, strings.NewReader("<xml><ToUserName>wx-corp</ToUserName><Encrypt><![CDATA["+encrypted+"]]></Encrypt></xml>")))
 		if response.Code != http.StatusOK {
 			t.Fatalf("equivalent callback status=%d", response.Code)
 		}
@@ -109,11 +110,11 @@ func TestCallbackHandlerDeduplicatesEquivalentXMLAndRejectsToUserNameMismatch(t 
 	if len(store.deliveries) != 1 {
 		t.Fatalf("expected one durable event, got %d", len(store.deliveries))
 	}
-	mismatch := []byte("<xml><ToUserName>another-corp</ToUserName><Event>change_external_contact</Event><ChangeType>add_external_contact</ChangeType><ExternalUserID>external</ExternalUserID><UserID>employee</UserID></xml>")
+	mismatch := []byte("<xml><ToUserName>another-corp</ToUserName><CreateTime>1788336000</CreateTime><MsgType>event</MsgType><Event>change_external_contact</Event><ChangeType>add_external_contact</ChangeType><ExternalUserID>external</ExternalUserID><UserID>employee</UserID></xml>")
 	encrypted := encryptForTest(t, crypto, mismatch)
 	timestamp := "1788336000"
 	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/wecom/external-contact/callback?msg_signature="+callbackSignature("callback-token", timestamp, "n", encrypted)+"&timestamp="+timestamp+"&nonce=n", strings.NewReader("<xml><Encrypt><![CDATA["+encrypted+"]]></Encrypt></xml>")))
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/wecom/external-contact/callback?msg_signature="+callbackSignature("callback-token", timestamp, "n", encrypted)+"&timestamp="+timestamp+"&nonce=n", strings.NewReader("<xml><ToUserName>wx-corp</ToUserName><Encrypt><![CDATA["+encrypted+"]]></Encrypt></xml>")))
 	if response.Code != http.StatusForbidden {
 		t.Fatalf("corp mismatch status=%d", response.Code)
 	}
@@ -122,7 +123,7 @@ func TestCallbackHandlerDeduplicatesEquivalentXMLAndRejectsToUserNameMismatch(t 
 func TestProcessorProcessesDuplicateDeliveryOnce(t *testing.T) {
 	store := &memoryWebhookStore{}
 	inbox, _ := webhook.NewService(store)
-	payload := json.RawMessage(`{"event":"change_external_contact","change_type":"add_external_contact","external_userid":"external-1","userid":"employee-1"}`)
+	payload := json.RawMessage(`{"corp_id":"wx-corp","to_user_name":"wx-corp","msg_type":"event","event":"change_external_contact","change_type":"add_external_contact","external_userid":"external-1","userid":"employee-1","state_present":false,"create_time":1788336000,"msg_id_present":false,"welcome_code_present":false,"source_present":false,"fail_reason_present":false}`)
 	key, _ := idempotency.Parse("wecom:external-contact:duplicate-0001")
 	if _, err := inbox.Ingest(context.Background(), webhook.Ingest{Provider: "wecom.external_contact", IdempotencyKey: key, Payload: payload}); err != nil {
 		t.Fatal(err)
@@ -134,33 +135,47 @@ func TestProcessorProcessesDuplicateDeliveryOnce(t *testing.T) {
 	if _, err := inbox.Ingest(context.Background(), webhook.Ingest{Provider: "other.provider", IdempotencyKey: otherKey, Payload: payload}); err != nil {
 		t.Fatal(err)
 	}
-	identity := &fakeIdentity{}
-	relationships := &memoryRelationships{}
+	identity := newMemoryLifecycleIdentity()
+	relationships := &lifecycleRelationships{}
+	states := &lifecycleStates{}
+	entrants := &lifecycleReceipts{}
+	receipts := &memoryCallbackReceipts{}
 	auditStore := &memoryAuditStore{}
 	auditService, _ := audit.NewService(auditStore)
-	processor := InboxProcessor{Enabled: true, CorpID: "wx-corp", Inbox: inbox, UOW: directUOW{}, Identity: identity, Relationships: relationships, Audit: auditService}
+	processor := InboxProcessor{Enabled: true, CorpID: "wx-corp", Inbox: inbox, UOW: directUOW{},
+		Lifecycle: lifecycleFor(identity, relationships, states, entrants), Receipts: receipts, Audit: auditService}
 	if count, err := processor.ProcessOnce(context.Background(), "oneshot", 10); err != nil || count != 1 {
 		t.Fatalf("first count=%d err=%v", count, err)
 	}
 	if count, err := processor.ProcessOnce(context.Background(), "oneshot", 10); err != nil || count != 0 {
 		t.Fatalf("replay count=%d err=%v", count, err)
 	}
-	if identity.calls != 1 || !relationships.active[relationshipKey("wx-corp", "employee-1", 42)] {
-		t.Fatalf("identity calls=%d active=%v", identity.calls, relationships.active)
+	if identity.CustomerCount() != 1 || !relationships.active("wx-corp", "employee-1", 1) {
+		t.Fatalf("customers=%d relationship_active=%v", identity.CustomerCount(), relationships.active("wx-corp", "employee-1", 1))
+	}
+	if len(receipts.values) != 1 || receipts.values[0].ResultingInboxStatus != webhook.StatusProcessed ||
+		!sameCallbackResults(receipts.values[0].ResultCodes, []CallbackResultCode{CallbackChannelUnmatched, CallbackCustomerCreated, CallbackRelationshipActivated}) {
+		t.Fatalf("callback receipts=%+v", receipts.values)
 	}
 }
 
 func TestProcessorDoesNotProvisionFromDeleteEvent(t *testing.T) {
 	store := &memoryWebhookStore{}
 	inbox, _ := webhook.NewService(store)
-	payload := json.RawMessage(`{"event":"change_external_contact","change_type":"del_follow_user","external_userid":"external-1","userid":"employee-1"}`)
+	payload := json.RawMessage(`{"corp_id":"wx-corp","to_user_name":"wx-corp","msg_type":"event","event":"change_external_contact","change_type":"del_follow_user","external_userid":"external-1","userid":"employee-1","state_present":false,"create_time":1788336000,"msg_id_present":false,"welcome_code_present":false,"source_present":false,"fail_reason_present":false}`)
 	key, _ := idempotency.Parse("wecom:external-contact:delete-000001")
 	_, _ = inbox.Ingest(context.Background(), webhook.Ingest{Provider: "wecom.external_contact", IdempotencyKey: key, Payload: payload})
-	identity := &fakeIdentity{find: false}
+	identity := newMemoryLifecycleIdentity()
 	auditService, _ := audit.NewService(&memoryAuditStore{})
-	processor := InboxProcessor{Enabled: true, CorpID: "wx-corp", Inbox: inbox, UOW: directUOW{}, Identity: identity, Relationships: &memoryRelationships{}, Audit: auditService}
-	if count, err := processor.ProcessOnce(context.Background(), "oneshot", 1); err != nil || count != 1 || identity.calls != 0 {
-		t.Fatalf("count=%d calls=%d err=%v", count, identity.calls, err)
+	receipts := &memoryCallbackReceipts{}
+	processor := InboxProcessor{Enabled: true, CorpID: "wx-corp", Inbox: inbox, UOW: directUOW{},
+		Lifecycle: lifecycleFor(identity, &lifecycleRelationships{}, &lifecycleStates{}, &lifecycleReceipts{}),
+		Receipts:  receipts, Audit: auditService}
+	if count, err := processor.ProcessOnce(context.Background(), "oneshot", 1); err != nil || count != 1 || identity.CustomerCount() != 0 {
+		t.Fatalf("count=%d customers=%d err=%v", count, identity.CustomerCount(), err)
+	}
+	if len(receipts.values) != 1 || !sameCallbackResults(receipts.values[0].ResultCodes, []CallbackResultCode{CallbackIgnored}) {
+		t.Fatalf("callback receipts=%+v", receipts.values)
 	}
 }
 
@@ -532,6 +547,19 @@ type memoryAuditStore struct{ events int }
 func (store *memoryAuditStore) Append(_ context.Context, event audit.Event) (audit.Event, error) {
 	store.events++
 	return event, nil
+}
+
+type memoryCallbackReceipts struct {
+	values []AppendCallbackProcessingReceipt
+}
+
+func (store *memoryCallbackReceipts) AppendProcessing(_ context.Context, command AppendCallbackProcessingReceipt) (CallbackReceipt, bool, error) {
+	store.values = append(store.values, command)
+	return CallbackReceipt{
+		ID: int64(len(store.values)), InboxID: command.InboxID, Kind: CallbackReceiptProcessing,
+		AttemptNumber: command.AttemptNumber, EventType: command.EventType, ChangeType: command.ChangeType,
+		ResultingInboxStatus: command.ResultingInboxStatus, ResultCodes: command.ResultCodes, ErrorCode: command.ErrorCode,
+	}, true, nil
 }
 
 type storedOAuthState struct {

@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestLoadDefaultsAndRejectsInvalidRole(t *testing.T) {
 	t.Setenv("AICRM_DATABASE_URL", "postgres://aicrm:test@localhost/aicrm")
@@ -39,8 +42,6 @@ func TestLoadValidatesBootstrapAndWeComAsClosedConfigurationGroups(t *testing.T)
 	t.Setenv("AICRM_WECOM_CORP_ID", "ww-corp")
 	t.Setenv("AICRM_WECOM_AGENT_ID", "1000002")
 	t.Setenv("AICRM_WECOM_SECRET", "provider-secret")
-	t.Setenv("AICRM_WECOM_CALLBACK_TOKEN", "callback-token")
-	t.Setenv("AICRM_WECOM_CALLBACK_AES_KEY", "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG")
 	t.Setenv("AICRM_WECOM_CONTEXT_SIGNING_KEY", "0123456789abcdef0123456789abcdef")
 	cfg, err := Load()
 	if err != nil {
@@ -48,6 +49,26 @@ func TestLoadValidatesBootstrapAndWeComAsClosedConfigurationGroups(t *testing.T)
 	}
 	if !cfg.Bootstrap.Enabled || !cfg.WeCom.Enabled {
 		t.Fatalf("config=%+v", cfg)
+	}
+}
+
+func TestLoadValidatesCallbackConfigurationIndependently(t *testing.T) {
+	t.Setenv("AICRM_DATABASE_URL", "postgres://aicrm:test@localhost/aicrm")
+	t.Setenv("AICRM_WECOM_CALLBACK_ENABLED", "true")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected partial callback configuration error")
+	}
+
+	t.Setenv("AICRM_WECOM_CORP_ID", "ww-corp")
+	t.Setenv("AICRM_WECOM_CALLBACK_TOKEN", "callback-token")
+	t.Setenv("AICRM_WECOM_CALLBACK_AES_KEY", strings.Repeat("a", 43))
+	t.Setenv("AICRM_CHANNEL_STATE_HMAC_KEY", strings.Repeat("b", 32))
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.WeCom.CallbackEnabled || cfg.WeCom.Enabled {
+		t.Fatalf("config=%+v", cfg.WeCom)
 	}
 }
 
@@ -63,6 +84,11 @@ func TestLoadRejectsInsecureOriginAndLooseBoolean(t *testing.T) {
 		t.Fatal("expected strict boolean error")
 	}
 	t.Setenv("AICRM_WECOM_ENABLED", "false")
+	t.Setenv("AICRM_WECOM_CALLBACK_ENABLED", "1")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected callback strict boolean error")
+	}
+	t.Setenv("AICRM_WECOM_CALLBACK_ENABLED", "false")
 	t.Setenv("AICRM_OUTBOUND_PROVIDER_ENABLED", "1")
 	if _, err := Load(); err == nil {
 		t.Fatal("expected outbound provider loose boolean error")

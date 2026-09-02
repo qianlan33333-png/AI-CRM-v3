@@ -1,8 +1,8 @@
 openapi: 3.1.0
 info:
   title: AI-CRM v3 Foundation API
-  version: 0.3.0
-  description: OneID, employee access and WeCom foundation contract. Unimplemented CRM menus expose HTML placeholders and no business API.
+  version: 0.4.0
+  description: OneID, employee access, WeCom foundation and durable external-contact callback contract. Unimplemented CRM menus expose HTML placeholders and no business API.
 servers:
   - url: https://id-dev.youcangogogo.com
 paths:
@@ -294,6 +294,58 @@ paths:
         "403": {$ref: "#/components/responses/Error"}
         "404": {$ref: "#/components/responses/Error"}
         "409": {$ref: "#/components/responses/Error"}
+  /api/admin/wecom/callback-receipts:
+    get:
+      operationId: listWeComCallbackReceipts
+      description: Safe callback processing projection; excludes raw XML and external identifiers.
+      security: [{adminSession: []}]
+      parameters: [{$ref: "#/components/parameters/BeforeID"}, {$ref: "#/components/parameters/Limit"}]
+      responses:
+        "200": {description: Callback receipt page, content: {application/json: {schema: {$ref: "#/components/schemas/CallbackReceiptPage"}}}}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+  /api/admin/wecom/callback-receipts/{receipt_id}:
+    get:
+      operationId: getWeComCallbackReceipt
+      security: [{adminSession: []}]
+      parameters: [{$ref: "#/components/parameters/ReceiptID"}]
+      responses:
+        "200": {description: Safe callback receipt, content: {application/json: {schema: {$ref: "#/components/schemas/CallbackReceipt"}}}}
+        "404": {$ref: "#/components/responses/Error"}
+  /api/admin/wecom/callback-receipts/{receipt_id}/retry:
+    post:
+      operationId: retryWeComCallbackReceipt
+      description: SuperAdmin-only exact-CAS retry; appends an immutable retry receipt atomically.
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/ReceiptID"}, {$ref: "#/components/parameters/IdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/CallbackRetryRequest"}}}}
+      responses:
+        "200": {description: Retry receipt, content: {application/json: {schema: {$ref: "#/components/schemas/CallbackRetryResponse"}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
+  /api/admin/channel-acquisition-entrant-receipts/unassigned:
+    get:
+      operationId: listUnassignedChannelEntrantReceipts
+      description: Lists unmatched, ambiguous, and OneID-conflict entrant facts without external identifiers or raw State.
+      security: [{adminSession: []}]
+      parameters: [{$ref: "#/components/parameters/BeforeID"}, {$ref: "#/components/parameters/Limit"}]
+      responses:
+        "200": {description: Unassigned entrant page, content: {application/json: {schema: {$ref: "#/components/schemas/EntrantReceiptPage"}}}}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+  /api/admin/channel-acquisition-entrant-receipts/{receipt_id}/reconcile:
+    post:
+      operationId: reconcileChannelEntrantReceipt
+      description: Reconciles only unmatched or ambiguous channel attribution. Identity conflicts must use OneID conflict handling.
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/ReceiptID"}, {$ref: "#/components/parameters/IdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/EntrantReconcileRequest"}}}}
+      responses:
+        "200": {description: Reconciled entrant receipt, content: {application/json: {schema: {$ref: "#/components/schemas/EntrantReconcileResponse"}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
   /wecom/external-contact/callback:
     get:
       operationId: verifyWeComCallback
@@ -311,8 +363,35 @@ paths:
         - {$ref: "#/components/parameters/Nonce"}
       requestBody: {required: true, content: {application/xml: {schema: {type: string, maxLength: 1048576}}}}
       responses:
-        "200": {description: Authenticated callback durably accepted, content: {text/plain: {schema: {type: string, const: success}}}}
+        "200": {description: Authenticated callback durably accepted; body is a separately signed WeCom encrypted XML acknowledgement that decrypts to success, content: {application/xml: {schema: {type: string}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "413": {$ref: "#/components/responses/Error"}
         "403": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/wecom/events:
+    get:
+      operationId: verifyWeComCallbackCompatibilityAlias
+      description: Compatibility alias with identical cryptographic and persistence behavior.
+      parameters:
+        - {$ref: "#/components/parameters/MessageSignature"}
+        - {$ref: "#/components/parameters/Timestamp"}
+        - {$ref: "#/components/parameters/Nonce"}
+        - {name: echostr, in: query, required: true, schema: {type: string}}
+      responses: {"200": {description: Decrypted echo, content: {text/plain: {schema: {type: string}}}}, "403": {$ref: "#/components/responses/Error"}}
+    post:
+      operationId: ingestWeComExternalContactCallbackCompatibilityAlias
+      description: Compatibility alias with identical encrypted ACK and durable Inbox behavior.
+      parameters:
+        - {$ref: "#/components/parameters/MessageSignature"}
+        - {$ref: "#/components/parameters/Timestamp"}
+        - {$ref: "#/components/parameters/Nonce"}
+      requestBody: {required: true, content: {application/xml: {schema: {type: string, maxLength: 1048576}}}}
+      responses:
+        "200": {description: WeCom encrypted XML acknowledgement, content: {application/xml: {schema: {type: string}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "413": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Unavailable"}
   /sidebar/bind-mobile:
     get:
       operationId: sidebarPage
@@ -371,6 +450,8 @@ components:
     SafeNext: {name: next, in: query, schema: {type: string, pattern: "^/"}}
     Limit: {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 50}}
     Offset: {name: offset, in: query, schema: {type: integer, minimum: 0, default: 0}}
+    BeforeID: {name: before_id, in: query, schema: {type: integer, format: int64, minimum: 1}}
+    ReceiptID: {name: receipt_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
     MessageSignature: {name: msg_signature, in: query, required: true, schema: {type: string}}
     Timestamp: {name: timestamp, in: query, required: true, schema: {type: string, pattern: "^[0-9]+$"}}
     Nonce: {name: nonce, in: query, required: true, schema: {type: string}}
@@ -572,3 +653,75 @@ components:
       type: object
       required: [corp_id, agent_id, config, agent_config]
       properties: {corp_id: {type: string}, agent_id: {type: string}, config: {$ref: "#/components/schemas/JSSDKSignature"}, agent_config: {$ref: "#/components/schemas/JSSDKSignature"}}
+    CallbackReceipt:
+      type: object
+      additionalProperties: false
+      required: [id, inbox_id, kind, attempt_number, prior_inbox_status, resulting_inbox_status, result_codes, created_at]
+      properties:
+        id: {$ref: "#/components/schemas/PositiveID"}
+        inbox_id: {$ref: "#/components/schemas/PositiveID"}
+        kind: {type: string, enum: [processing, retry_requested]}
+        target_receipt_id: {$ref: "#/components/schemas/PositiveID"}
+        attempt_number: {type: integer, minimum: 1}
+        event_type: {type: string}
+        change_type: {type: string}
+        prior_inbox_status: {type: string, enum: [received, processing, processed, retryable, failed]}
+        resulting_inbox_status: {type: string, enum: [received, processing, processed, retryable, failed]}
+        result_codes: {type: array, maxItems: 4, items: {type: string, enum: [customer_created, customer_resolved, relationship_activated, relationship_deactivated, channel_attributed, channel_unmatched, channel_ambiguous, identity_conflict, ignored, failed_terminal]}}
+        error_code: {type: string}
+        created_at: {type: string, format: date-time}
+    CallbackReceiptPage:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties: {items: {type: array, items: {$ref: "#/components/schemas/CallbackReceipt"}}}
+    CallbackRetryRequest:
+      type: object
+      additionalProperties: false
+      required: [expected_status, expected_attempt, reason]
+      properties:
+        expected_status: {type: string, enum: [retryable, failed]}
+        expected_attempt: {type: integer, minimum: 1}
+        reason: {type: string, minLength: 1, maxLength: 500}
+    CallbackRetryResponse:
+      type: object
+      additionalProperties: false
+      required: [receipt, replayed]
+      properties: {receipt: {$ref: "#/components/schemas/CallbackReceipt"}, replayed: {type: boolean}}
+    EntrantReceipt:
+      type: object
+      additionalProperties: false
+      required: [id, inbox_id, change_type, status, prior_status, occurred_at, created_at]
+      properties:
+        id: {$ref: "#/components/schemas/PositiveID"}
+        inbox_id: {$ref: "#/components/schemas/PositiveID"}
+        change_type: {type: string, enum: [add_external_contact, add_half_external_contact]}
+        status: {type: string, enum: [channel_attributed, channel_unmatched, channel_ambiguous, identity_conflict, ignored, reconciled]}
+        prior_status: {type: string, enum: [channel_attributed, channel_unmatched, channel_ambiguous, identity_conflict, ignored]}
+        binding_id: {$ref: "#/components/schemas/PositiveID"}
+        channel_id: {$ref: "#/components/schemas/PositiveID"}
+        asset_kind: {type: string, enum: [contact_way_qrcode, customer_acquisition_link]}
+        asset_version: {$ref: "#/components/schemas/PositiveID"}
+        customer_id: {$ref: "#/components/schemas/PositiveID"}
+        occurred_at: {type: string, format: date-time}
+        reconciled_at: {type: string, format: date-time}
+        created_at: {type: string, format: date-time}
+    EntrantReceiptPage:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties: {items: {type: array, items: {$ref: "#/components/schemas/EntrantReceipt"}}}
+    EntrantReconcileRequest:
+      type: object
+      additionalProperties: false
+      required: [expected_status, binding_id, customer_id, reason]
+      properties:
+        expected_status: {type: string, enum: [channel_unmatched, channel_ambiguous]}
+        binding_id: {$ref: "#/components/schemas/PositiveID"}
+        customer_id: {$ref: "#/components/schemas/PositiveID"}
+        reason: {type: string, minLength: 1, maxLength: 500}
+    EntrantReconcileResponse:
+      type: object
+      additionalProperties: false
+      required: [receipt, replayed]
+      properties: {receipt: {$ref: "#/components/schemas/EntrantReceipt"}, replayed: {type: boolean}}

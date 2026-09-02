@@ -67,6 +67,11 @@ func NewHTTPHandler(options HTTPHandlerOptions) (http.Handler, error) {
 	mux := http.NewServeMux()
 	mux.Handle("GET /wecom/external-contact/callback", options.Callback)
 	mux.Handle("POST /wecom/external-contact/callback", options.Callback)
+	// v2 exposed the same verification and callback handler at this path;
+	// keep it as an exact compatibility alias without creating a second
+	// protocol implementation or idempotency namespace.
+	mux.Handle("GET /api/wecom/events", options.Callback)
+	mux.Handle("POST /api/wecom/events", options.Callback)
 	mux.HandleFunc("GET /auth/wecom/start", func(writer http.ResponseWriter, request *http.Request) {
 		handleOAuthStart(writer, request, options.OAuth, OAuthAdmin, OAuthMode(request.URL.Query().Get("mode")))
 	})
