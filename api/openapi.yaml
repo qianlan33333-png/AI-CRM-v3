@@ -69,6 +69,13 @@ paths:
       responses:
         "200": {description: Employee access HTML, content: {text/html: {schema: {type: string}}}}
         "303": {description: Redirect to login}
+  /admin/oneid:
+    get:
+      operationId: oneIDAdministrationPage
+      security: [{adminSession: []}]
+      responses:
+        "200": {description: OneID read-only administration HTML, content: {text/html: {schema: {type: string}}}}
+        "303": {description: Redirect to login}
   /api/admin/access/users:
     get:
       operationId: listAdminUsers

@@ -26,7 +26,7 @@ AI-CRM v3 是单企业私有化 CRM 的 Go 主运行仓库。本期已完成可�
 
 ```bash
 export AICRM_DATABASE_URL='postgres://aicrm:password@127.0.0.1:5432/aicrm?sslmode=disable'
-go run ./cmd/migrate
+go run ./cmd/migrate-platform
 ```
 
 首次启动可用环境变量幂等创建超级管理员：
