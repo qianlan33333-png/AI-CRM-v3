@@ -30,6 +30,7 @@ backend:
     - internal/media/port/content_delivery.go
     - internal/media/port/groupops_material.go
     - internal/media/port/groupops_material_test.go
+    - internal/media/port/mutations.go
     - internal/media/groupopsmaterial/freezer.go
     - internal/media/groupopsmaterial/freezer_test.go
     - internal/media/app/list.go
@@ -37,6 +38,39 @@ backend:
     - internal/media/app/detail.go
     - internal/media/app/variant.go
     - internal/media/app/content_delivery.go
+  adapted_from_donor:
+    - source: internal/media/app/upload.go
+      destination: internal/media/app/image_upload.go
+      reason: image multipart validation, receipt replay, local blob creation and event append are kept behind Media-owned v3 ports; the v2 write Service name conflicts with the v3 read Service
+    - source: internal/media/app/update.go
+      destination: internal/media/app/image_update.go
+      reason: image metadata/enabled update is exposed as a separate Media write service with a local event seam
+    - source: internal/media/app/delete.go
+      destination: internal/media/app/image_delete.go
+      reason: image hard-delete reference aggregation uses Media-owned Automation/Channel/Radar adapter ports and never imports their stores
+    - source: internal/media/app/attachment.go
+      destination: internal/media/app/attachment_library.go
+      reason: private PDF lifecycle, CAS metadata updates, multipart-safe blob read and fail-closed reference protection are kept in Media
+    - source: internal/media/app/group_invite.go
+      destination: internal/media/app/group_invite_library.go
+      reason: group-invite local card lifecycle and cover/reference checks are adapted to Media-owned ports with no WeCom effect
+    - source: internal/media/app/miniprogram.go
+      destination: internal/media/app/miniprogram_library.go
+      reason: Mini Program lifecycle and local thumbnail-cache outcomes are adapted to Media-owned ports; client thumb_media_id remains forbidden
+  characterization_tests:
+    - source: internal/media/app/upload_test.go
+      destination: internal/media/app/image_upload_test.go
+    - source: internal/media/app/update_test.go
+      destination: internal/media/app/image_update_test.go
+    - source: internal/media/app/delete_test.go
+      destination: internal/media/app/image_delete_test.go
+    - source: internal/media/app/attachment_test.go
+      destination: internal/media/app/attachment_library_test.go
+    - source: internal/media/app/group_invite_test.go
+      destination: internal/media/app/group_invite_library_test.go
+    - source: internal/media/app/miniprogram_test.go
+      destination: internal/media/app/miniprogram_library_test.go
+  contract_audit: docs/migration/media/pr02-contract-audit.md
   added_v3_adaptation:
     - destination: internal/media/app/service.go
       reason: read-side Service replaces the donor write Service, which depended on v2-only event and receipt ports
@@ -73,8 +107,8 @@ deferred_to_terra:
     item: design independent v3 PostgreSQL tables, receipts, audit, and outbox transaction boundaries
     reason: donor migrations and v2 stores are prohibited; no v3 migration was added
   - owner: Terra/Media
-    item: adapt image/attachment multipart writes, reference protection, mini-program and group-invite mutations
-    reason: donor implementations require v2-only events and cross-domain reference ports
+    item: implement Media-owned SQL/blob adapters for image, attachment, mini-program and group-invite write contracts
+    reason: this commit supplies application behavior and narrow ports but donor stores, migrations and v2 runtime are prohibited
   - owner: Terra/Outbound
     item: provider upload/lease/reconcile and WeCom send integration
     reason: this slice freezes provider-ready facts only and must not call providers
@@ -97,3 +131,11 @@ excluded:
   - internal/access
   - internal/webshell central routing
   - v2 store, worker, historical migration, and runtime files
+verification:
+  backend_tests:
+    - go test ./internal/media/...
+    - go vet ./internal/media/...
+    - go test -race ./internal/media/...
+  frontend_integrity:
+    - sha256 donor source list in docs/migration/media/pr02-donor-sha256.txt
+    - cmp donor files against web/donors/media-v2/src staged paths
