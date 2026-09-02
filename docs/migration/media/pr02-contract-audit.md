@@ -1,6 +1,6 @@
 # PR02 素材库 donor contract audit
 
-状态：只读供体准备；本文件是 v3 Media 的行为/接入审计，不是 HTTP 路由或数据库迁移。
+状态：PR02 已接入并验证；本文件是 v3 Media 的行为/接入审计。
 
 ## 冻结边界
 
@@ -18,11 +18,11 @@
 | `attach` / 附件素材库 | `web/src/admin/templates/attach.html`、同上 | 素材一级导航；读取 `/api/admin/attachment-library` | 搜索；上传 PDF；下载；编辑名称/标签；启停；删除。页面明确显示 PDF 不超过 10 MiB |
 | 群邀请素材 | 无独立一级页面，也没有 `groupInvites` nav key | 通过生成 API `/api/admin/group-invite-library` 管理；在渠道欢迎语/群运营和固定内容包的素材选择器中按 ID 引用 | 本地卡片创建、编辑、归档；封面图片 ID 必须是本地 Media 图片；归档/停用前检查 Channel 引用；不得创建或调用 WeCom 入群能力 |
 
-统一页面集成约束：后续由 v3-owned template/后端 adapter 将这些 donor 挂到 PR10 的 `internal/webshell/admin_base`。不得直接部署 donor 自带第二套 `.side` 页面，也不得为接壳改动 donor 文件。
+统一页面集成约束：已由 v3-owned adapter 挂到 PR10 的 `internal/webshell/admin_base`。不得直接部署 donor 自带第二套 `.side` 页面，也不得为接壳改动 donor 文件。
 
 ## 请求 URL、方法和 DTO
 
-以下是 donor 生成 API 的完整 Media 库请求面；生成文件仅作为原样前端供体保存，v3 `api/openapi.yaml` 未改动。
+以下是 donor 生成 API 的完整 Media 库请求面；生成文件仅作为原样前端供体保存，v3 `api/openapi.yaml` 逐项声明真实兼容路由、鉴权与 DTO。
 
 ### 图片
 
@@ -81,8 +81,16 @@
 - `internal/media/port/mutations.go`：Media-local event appender 与 Automation/Channel/Radar 的窄引用 port；没有跨领域 import。
 - 对应 `*_test.go` 是 donor characterization tests 的 v3 module-path 适配版，覆盖 replay/conflict/rollback、边界校验、引用保护、缓存 outcome 和并发收敛。
 
-仍需 Terra 处理：独立 v3 PostgreSQL 表/序列、blob 存储、receipt/audit/outbox 同事务 adapter；HTTP/OpenAPI/CSRF/idempotency header 映射；Composition Root 注册；part 顺序/过期/存储容量策略；PR10 webshell 的 donor 挂载。Terra 不应修改 donor 前端，也不应从 Media 直接 import Customer、OneID、Automation、Contact、Radar 的 store/app/http。
+## PR02 收口结论
+
+- OneID/外部身份：不涉及。素材、附件、小程序卡片和群邀请均为 Media-owned 本地资源；没有客户身份解析、隐式建客或跨领域身份写入。
+- 持久化/外部效果：涉及 PostgreSQL 内部持久化。blob、资源、receipt、audit 与 outbox 在同一 UoW；不存在 Provider 写入、外部效果 worker 或外部成功声明。
+- 删除/归档：活动删除和群邀请归档只经 `media_references` 窄读取适配器决定；本地小程序缩略图与群邀请封面同样写入该账本。读账本失败关闭，空账本才允许删除，引用一律返回稳定 409。
+- HTTP/OpenAPI：图片上传/filters/facets/detail variants/include_data、附件别名/分片/下载、小程序 detail/test-resolve、群邀请 detail/archive 均有真实 handler、鉴权/CSRF/兼容幂等与 OpenAPI 声明。
+- 验证：PostgreSQL fresh+upgrade migration、receipt/audit/outbox、payload drift、blob checksum、分片 part/complete 并发、HTTP 角色与 DTO，以及 `go test -race` 已覆盖。冻结 donor 20/20 字节校验通过；页面仍只使用 `admin_base` 壳。
+
+Media 不 import Customer、OneID、Automation、Contact 或 Radar 的 app/store/http；跨领域保护只能以稳定 Port 或 `media_references` 的不透明事实表达。
 
 ## 明确排除
 
-订单、支付、退款、权益、会员、成员网格、客户/OneID、人群/Audience、Campaign、Outbound、历史导入、Provider 上传/发送/重试、v2 store/worker/runtime、`cmd/aicrm`、`api/openapi.yaml`、migrations、依赖锁、deploy/CI、`internal/platform`、`internal/access`、`internal/webshell` 中央路由均不属于本 commit。
+订单、支付、退款、权益、会员、成员网格、客户/OneID、人群/Audience、Campaign、Outbound、历史导入、Provider 上传/发送/重试、v2 store/worker/runtime、内容包 preview/create/update/bind（PR06）、依赖锁与 deploy/CI 均不属于 PR02。

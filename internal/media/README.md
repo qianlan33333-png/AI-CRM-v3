@@ -1,19 +1,19 @@
 # Media migration preparation (PR02)
 
-This package is the bounded PR02 donor slice from the frozen legacy
-repository. It contains reusable Media-owned validation, value objects,
-cross-domain ports, Group Ops material freezing, and provider-independent
-image read/variant and content-package application logic.
+This package is the bounded PR02 Media capability, derived from a frozen
+legacy donor. It contains Media-owned validation, PostgreSQL persistence,
+opaque reference protection, compatibility HTTP routes, and
+provider-independent image/attachment/card operations.
 
-The package deliberately does not register itself in `cmd/aicrm`, add a
-migration, or import the v2 module/runtime/database. `app/service.go` is a
-v3-local read-side composition adapter; transactional stores, receipts,
-events, external effects, and HTTP wiring remain integration work for the
-Media owner/Terra.
+The package is registered only through the v3 composition root and uses the
+single PostgreSQL UoW for resources, receipts, audit events, and outbox rows.
+It imports neither the v2 module/runtime/database nor other domains' internal
+layers. Provider calls remain disabled; content packages are owned by PR06 and
+are not exposed by the PR02 routes.
 
 The exact v2 admin templates and their existing TypeScript/CSS/shared API
-dependencies are staged under `web/donors/media-v2/`. That directory is a
-byte-exact donor snapshot only and is not part of the v3 frontend build.
-Its source and SHA-256 reconciliation are recorded in
+dependencies are staged under `web/donors/media-v2/`. They remain byte-exact
+and are mounted only inside the v3 `admin_base` shell. Their source and
+SHA-256 reconciliation are recorded in
 `docs/migration/media/pr02-donor-manifest.yaml` and
 `docs/migration/media/pr02-donor-sha256.txt`.

@@ -368,7 +368,7 @@ func (r *Repository) Delete(ctx context.Context, kind string, id, actor int64, k
 	if id < 1 {
 		return nil, ErrNotFound
 	}
-	if kind != "image" && kind != "attachment" && kind != "miniprogram" && kind != "group_invite" {
+	if !mediaKind(kind) {
 		return nil, ErrInvalid
 	}
 	command := fmt.Sprintf("%s:%d", kind, id)
@@ -382,23 +382,21 @@ func (r *Repository) Delete(ctx context.Context, kind string, id, actor int64, k
 			return json.Unmarshal(replay, &out)
 		}
 		tx, _ := platformpostgres.RequireTransaction(txctx)
-		var count int
-		if err = tx.QueryRow(txctx, `SELECT count(*) FROM media_references WHERE material_kind=$1 AND material_id=$2`, kind, id).Scan(&count); err != nil {
+		references, err := r.ListMediaReferences(txctx, kind, id)
+		if err != nil {
 			return err
 		}
-		if count > 0 {
+		if len(references) != 0 {
 			return ErrReferences
 		}
-		// Media-owned direct links are also references. They are checked in the
-		// same transaction before delete; future domain owners must add an
-		// opaque media_references fact rather than granting Media table access.
-		if kind == "image" {
-			var linked int
-			if err = tx.QueryRow(txctx, `SELECT (SELECT count(*) FROM media_miniprograms WHERE thumb_image_id=$1) + (SELECT count(*) FROM media_group_invites WHERE cover_image_id=$1 AND archived_at IS NULL)`, id).Scan(&linked); err != nil {
+		if kind == "miniprogram" {
+			if err = removeLocalImageReference(txctx, "media.miniprogram.thumbnail", id); err != nil {
 				return err
 			}
-			if linked > 0 {
-				return ErrReferences
+		}
+		if kind == "group_invite" {
+			if err = removeLocalImageReference(txctx, "media.group_invite.cover", id); err != nil {
+				return err
 			}
 		}
 		table := map[string]string{"image": "media_images", "attachment": "media_attachments", "miniprogram": "media_miniprograms", "group_invite": "media_group_invites"}[kind]
@@ -409,7 +407,7 @@ func (r *Repository) Delete(ctx context.Context, kind string, id, actor int64, k
 		if tag.RowsAffected() != 1 {
 			return ErrNotFound
 		}
-		out = map[string]any{"id": id, "deleted": true, "hard_deleted": true, "references": map[string]any{"automation_agents": []int{}, "channels": []int{}, "radar_links": []int{}}}
+		out = map[string]any{"id": id, "deleted": true, "hard_deleted": true}
 		return r.complete(txctx, kind+".delete", kind, actor, key, id, out, "media."+kind+"_deleted")
 	})
 	return out, err
@@ -710,6 +708,9 @@ func (r *Repository) CreateMiniProgram(ctx context.Context, actor int64, key str
 		if err != nil {
 			return err
 		}
+		if err = replaceLocalImageReference(txctx, "media.miniprogram.thumbnail", id, nil, thumb); err != nil {
+			return err
+		}
 		out = miniMap(id, n, a, p, t, thumb, enabled, version, actor, actor, c, u)
 		return r.complete(txctx, "miniprogram.create", "miniprogram", actor, key, id, out, "media.miniprogram.created")
 	})
@@ -767,6 +768,7 @@ func (r *Repository) UpdateMiniProgram(ctx context.Context, id, actor int64, key
 		if err != nil {
 			return err
 		}
+		oldThumb := thumb
 		if v, ok := input["name"].(string); ok {
 			n = strings.TrimSpace(v)
 		}
@@ -809,6 +811,9 @@ func (r *Repository) UpdateMiniProgram(ctx context.Context, id, actor int64, key
 		}
 		err = tx.QueryRow(txctx, `UPDATE media_miniprograms SET name=$2,app_id=$3,page_path=$4,title=$5,thumb_image_id=$6,enabled=$7,updated_by=$8,version=version+1,updated_at=clock_timestamp() WHERE id=$1 RETURNING version,updated_at`, id, n, a, p, t, thumb, enabled, actor).Scan(&version, &u)
 		if err != nil {
+			return err
+		}
+		if err = replaceLocalImageReference(txctx, "media.miniprogram.thumbnail", id, oldThumb, thumb); err != nil {
 			return err
 		}
 		out = miniMap(id, n, a, p, t, thumb, enabled, version, createdBy, actor, c, u)
@@ -941,6 +946,9 @@ func (r *Repository) CreateGroupInvite(ctx context.Context, actor int64, key str
 		if err != nil {
 			return err
 		}
+		if err = replaceLocalImageReference(txctx, "media.group_invite.cover", id, nil, cover); err != nil {
+			return err
+		}
 		out = groupMap(id, n, t, d, j, cover, enabled, v, actor, actor, c, u, nil)
 		return r.complete(txctx, "group_invite.create", "group_invite", actor, key, id, out, "media.group_invite_created")
 	})
@@ -1000,6 +1008,7 @@ func (r *Repository) UpdateGroupInvite(ctx context.Context, id, actor int64, key
 		if err != nil {
 			return err
 		}
+		oldCover := cover
 		if value, ok := input["name"].(string); ok {
 			name = strings.TrimSpace(value)
 		}
@@ -1038,6 +1047,9 @@ func (r *Repository) UpdateGroupInvite(ctx context.Context, id, actor int64, key
 		if err != nil {
 			return err
 		}
+		if err = replaceLocalImageReference(txctx, "media.group_invite.cover", id, oldCover, cover); err != nil {
+			return err
+		}
 		out = groupMap(id, name, title, description, joinURL, cover, enabled, version, actor, actor, created, updated, nil)
 		return r.complete(txctx, "group_invite.update", "group_invite", actor, key, id, out, "media.group_invite_updated")
 	})
@@ -1058,6 +1070,13 @@ func (r *Repository) ArchiveGroupInvite(ctx context.Context, id, actor int64, ke
 			return json.Unmarshal(replay, &out)
 		}
 		tx, _ := platformpostgres.RequireTransaction(txctx)
+		references, err := r.ListMediaReferences(txctx, "group_invite", id)
+		if err != nil {
+			return err
+		}
+		if len(references) != 0 {
+			return ErrReferences
+		}
 		var name, title, description, joinURL string
 		var cover *int64
 		var version int64
