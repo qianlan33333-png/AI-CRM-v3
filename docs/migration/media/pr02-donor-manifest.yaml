@@ -108,7 +108,7 @@ integrated_v3:
     - internal/media/module.go
     - internal/media/http/handler.go
     - internal/media/store/postgres.go
-    - migrations/0006_media.sql
+    - migrations/0007_media.sql
     - api/openapi.yaml
     - scripts/stage-pr01-effects-ui.mjs
   transaction_boundary: PostgreSQL Unit of Work commits Media state, receipts, audit and outbox together

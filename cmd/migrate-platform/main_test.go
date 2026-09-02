@@ -74,7 +74,7 @@ func TestApplyMigrationsFreshAndUpgradePostgreSQL(t *testing.T) {
 		t.Fatalf("upgrade replay: %v", err)
 	}
 	var applied int
-	if err = pool.QueryRow(ctx, `SELECT count(*) FROM platform_schema_migrations`).Scan(&applied); err != nil || applied != 6 {
+	if err = pool.QueryRow(ctx, `SELECT count(*) FROM platform_schema_migrations`).Scan(&applied); err != nil || applied != 7 {
 		t.Fatalf("applied=%d err=%v", applied, err)
 	}
 	for _, table := range []string{"media_blobs", "media_references", "media_attachment_upload_parts"} {
