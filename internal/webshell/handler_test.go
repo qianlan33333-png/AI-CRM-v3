@@ -87,9 +87,13 @@ func TestStandaloneHandlerRendersAdminLoginSidebarAndAssets(t *testing.T) {
 			contains: []string{
 				"method=\"post\"",
 				"action=\"/login\"",
+				"name=\"username\"",
+				"name=\"password\"",
+				"type=\"submit\">登录",
 				"/auth/wecom/start?mode=qr&amp;next=%2Fadmin%2Forders",
 				"/admin/config/login-access",
 			},
+			notContain: []string{"disabled"},
 		},
 		{
 			name:   "wecom start blocked",
@@ -116,8 +120,9 @@ func TestStandaloneHandlerRendersAdminLoginSidebarAndAssets(t *testing.T) {
 				"data-jssdk-config-url=\"/api/sidebar/jssdk-config\"",
 				"data-context-token-url=\"/api/sidebar/context-token\"",
 				"data-workbench-url=\"/api/sidebar/v2/workbench\"",
+				"https://res.wx.qq.com/open/js/jweixin-1.6.0.js",
 			},
-			notContain: []string{"/api/v3/sidebar/", "fetch(", "XMLHttpRequest", "sendBeacon"},
+			notContain: []string{"/api/v3/sidebar/", "/api/sidebar/v2/questionnaires", "/api/sidebar/v2/products", "XMLHttpRequest", "sendBeacon"},
 		},
 		{
 			name:   "sidebar shell javascript",
@@ -127,8 +132,41 @@ func TestStandaloneHandlerRendersAdminLoginSidebarAndAssets(t *testing.T) {
 			contains: []string{
 				"data-tab",
 				"功能待接入",
+				"/api/sidebar/jssdk-config",
+				"/api/sidebar/context-token",
+				"/api/sidebar/v2/workbench",
+				"/api/sidebar/oauth/start?next=/sidebar/bind-mobile",
+				"Authorization: \"Bearer \"",
 			},
-			notContain: []string{"/api/v3/sidebar/", "fetch(", "XMLHttpRequest", "sendBeacon"},
+			notContain: []string{"/api/v3/sidebar/", "/api/sidebar/v2/questionnaires", "/api/sidebar/v2/products", "/api/sidebar/v2/orders", "/api/sidebar/v2/coupons", "/api/sidebar/v2/materials", "workbenchURL.searchParams.set(\"external_userid\"", "XMLHttpRequest", "sendBeacon"},
+		},
+		{
+			name:   "access page",
+			method: http.MethodGet,
+			path:   LoginAccessPath,
+			status: http.StatusOK,
+			contains: []string{
+				"data-admin-access-root",
+				"/api/admin/access/users",
+				"username",
+				"display_name",
+				"wecom_userid",
+				"admin_access.js",
+			},
+			notContain: []string{"session_version", "password_hash", "digest"},
+		},
+		{
+			name:   "access javascript",
+			method: http.MethodGet,
+			path:   "/static/admin_console/admin_access.js",
+			status: http.StatusOK,
+			contains: []string{
+				"last_login_at",
+				"aicrm_admin_csrf",
+				"X-CSRF-Token",
+				"/api/admin/access/users/",
+			},
+			notContain: []string{"session_version", "password_hash", "digest"},
 		},
 		{
 			name:   "css asset",
@@ -223,6 +261,34 @@ func TestStandaloneHandlerRendersAdminLoginSidebarAndAssets(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestRendererAccessContractConsumesNextAndMapsLoginErrors(t *testing.T) {
+	renderer, err := NewRenderer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	err = renderer.Render(nil, response, http.StatusUnauthorized, "login", map[string]any{
+		"next_path": "/admin/config/login-access",
+		"error":     "invalid_credentials",
+		"password":  "must-not-render",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("status=%d", response.Code)
+	}
+	body := response.Body.String()
+	for _, expected := range []string{"name=\"username\"", "value=\"/admin/config/login-access\"", "账号或密码不正确，请重试。"} {
+		if !strings.Contains(body, expected) {
+			t.Errorf("body missing %q", expected)
+		}
+	}
+	if strings.Contains(body, "invalid_credentials") || strings.Contains(body, "must-not-render") {
+		t.Fatal("renderer exposed raw error or ignored credential")
 	}
 }
 

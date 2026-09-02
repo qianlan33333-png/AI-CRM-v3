@@ -274,7 +274,7 @@ var adminSpecs = map[string]adminSpec{
 	},
 	LoginAccessPath: {
 		title:          "员工登录权限",
-		summary:        "员工权限管理入口已预留。",
+		summary:        "管理后台员工账号、角色与企微绑定。",
 		activeEndpoint: "api.admin_config",
 	},
 	"/admin/api-docs": {

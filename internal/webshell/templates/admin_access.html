@@ -1,0 +1,154 @@
+{{define "admin_access"}}
+<section class="admin-card admin-access-card" data-admin-access-root
+  data-users-url="/api/admin/access/users">
+  <div class="admin-card-head admin-card-head--tight">
+    <div>
+      <h2>员工权限</h2>
+      <p>管理可登录后台的员工账号、角色和企微绑定。敏感凭据只在提交时传输，不在页面展示。</p>
+    </div>
+    <span class="admin-chip admin-chip--neutral">Access</span>
+  </div>
+
+  <div id="admin-access-alert" class="admin-alert" role="status" aria-live="polite" hidden></div>
+
+  <div class="admin-access-layout">
+    <section class="admin-access-section admin-access-create" aria-labelledby="admin-access-create-title">
+      <div class="admin-access-section__head">
+        <div>
+          <h3 id="admin-access-create-title">新增员工</h3>
+          <p>创建后会立即刷新员工列表。</p>
+        </div>
+      </div>
+      <form id="admin-access-create-form" class="admin-form-grid admin-form-grid--stacked" autocomplete="off">
+        <label>
+          <span>账号</span>
+          <input name="username" type="text" autocomplete="username" minlength="3" maxlength="120" required>
+        </label>
+        <label>
+          <span>显示名称</span>
+          <input name="display_name" type="text" maxlength="120" required>
+        </label>
+        <label>
+          <span>初始密码</span>
+          <input name="password" type="password" autocomplete="new-password" minlength="12" required>
+        </label>
+        <fieldset class="admin-access-roles">
+          <legend>初始角色</legend>
+          <label class="admin-check-line">
+            <input type="checkbox" name="roles" value="viewer" checked>
+            <span>只读（viewer）</span>
+          </label>
+          <label class="admin-check-line">
+            <input type="checkbox" name="roles" value="admin">
+            <span>管理员（admin）</span>
+          </label>
+          <label class="admin-check-line">
+            <input type="checkbox" name="roles" value="super_admin">
+            <span>超级管理员（super_admin）</span>
+          </label>
+        </fieldset>
+        <div class="admin-form-actions">
+          <button class="admin-button admin-button--primary" type="submit">新增员工</button>
+        </div>
+      </form>
+    </section>
+
+    <section class="admin-access-section" aria-labelledby="admin-access-users-title">
+      <div class="admin-access-section__head">
+        <div>
+          <h3 id="admin-access-users-title">员工列表</h3>
+          <p id="admin-access-list-status" class="admin-muted" role="status" aria-live="polite">正在加载员工列表…</p>
+        </div>
+        <button class="admin-button admin-button--ghost" id="admin-access-refresh" type="button">刷新</button>
+      </div>
+
+      <div id="admin-access-loading" class="admin-state admin-state--loading" role="status">
+        <strong>正在加载</strong>
+        <span>正在读取 Access 用户列表。</span>
+      </div>
+      <div id="admin-access-empty" class="admin-state" hidden>
+        <strong>暂无员工</strong>
+        <span>使用左侧表单新增一个后台员工账号。</span>
+      </div>
+      <div id="admin-access-list-error" class="admin-state admin-state--error" role="alert" hidden>
+        <strong>员工列表不可用</strong>
+        <span id="admin-access-list-error-message">请稍后重试。</span>
+      </div>
+      <div id="admin-access-table-wrap" class="admin-table-wrap" hidden>
+        <table class="admin-table admin-access-table">
+          <thead>
+            <tr>
+              <th scope="col">账号</th>
+              <th scope="col">显示名称</th>
+              <th scope="col">企微 userid</th>
+              <th scope="col">状态</th>
+              <th scope="col">角色</th>
+              <th scope="col">最近登录</th>
+              <th scope="col"><span class="sr-only">操作</span></th>
+            </tr>
+          </thead>
+          <tbody id="admin-access-users-body"></tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+
+  <section id="admin-access-editor" class="admin-access-editor" aria-labelledby="admin-access-editor-title" hidden>
+    <div class="admin-access-section__head">
+      <div>
+        <h3 id="admin-access-editor-title">员工操作</h3>
+        <p id="admin-access-editor-user" class="admin-muted">先从员工列表选择一名员工。</p>
+      </div>
+      <button class="admin-button admin-button--ghost" id="admin-access-editor-close" type="button">收起</button>
+    </div>
+
+    <div class="admin-access-editor-grid">
+      <form id="admin-access-binding-form" class="admin-form-grid admin-form-grid--stacked" autocomplete="off">
+        <input type="hidden" id="admin-access-selected-id" name="id">
+        <label>
+          <span>企微 userid</span>
+          <input id="admin-access-wecom-userid" name="wecom_userid" type="text" maxlength="128" autocomplete="off">
+          <small>留空后选择“解除绑定”，不会猜测或创建身份。</small>
+        </label>
+        <div class="admin-form-actions">
+          <button class="admin-button admin-button--secondary" type="submit">保存绑定</button>
+          <button class="admin-button admin-button--ghost" id="admin-access-unbind" type="button">解除绑定</button>
+        </div>
+      </form>
+
+      <form id="admin-access-roles-form" class="admin-form-grid admin-form-grid--stacked" autocomplete="off">
+        <fieldset class="admin-access-roles">
+          <legend>角色</legend>
+          <label class="admin-check-line">
+            <input type="checkbox" name="roles" value="viewer">
+            <span>只读（viewer）</span>
+          </label>
+          <label class="admin-check-line">
+            <input type="checkbox" name="roles" value="admin">
+            <span>管理员（admin）</span>
+          </label>
+          <label class="admin-check-line">
+            <input type="checkbox" name="roles" value="super_admin">
+            <span>超级管理员（super_admin）</span>
+          </label>
+        </fieldset>
+        <div class="admin-form-actions">
+          <button class="admin-button admin-button--secondary" type="submit">保存角色</button>
+        </div>
+      </form>
+
+      <form id="admin-access-password-form" class="admin-form-grid admin-form-grid--stacked" autocomplete="off">
+        <label>
+          <span>重置密码</span>
+          <input id="admin-access-new-password" name="password" type="password" autocomplete="new-password" minlength="12" required>
+          <small>新密码只提交给 Access，不会回显或保存。</small>
+        </label>
+        <div class="admin-form-actions">
+          <button class="admin-button admin-button--secondary" type="submit">重置密码</button>
+        </div>
+      </form>
+    </div>
+  </section>
+</section>
+<script defer src="/static/admin_console/admin_access.js?v=v3-webshell"></script>
+{{end}}

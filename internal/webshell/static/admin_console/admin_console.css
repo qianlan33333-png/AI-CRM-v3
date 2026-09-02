@@ -65,6 +65,11 @@ button {
   font: inherit;
 }
 
+:where(a, button, input, select, textarea):focus-visible {
+  outline: 3px solid rgba(51, 112, 255, 0.42);
+  outline-offset: 2px;
+}
+
 code {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 12px;

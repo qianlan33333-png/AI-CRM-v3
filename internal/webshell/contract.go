@@ -205,8 +205,8 @@ type LoginLinks struct {
 	OAuth string
 }
 
-// LoginPageData is deliberately capability-neutral.  It can render a login
-// form without accepting credentials or creating a session.
+// LoginPageData is deliberately capability-neutral. It renders the login form
+// but does not authenticate credentials or create a session.
 type LoginPageData struct {
 	PageTitle     string
 	PageSummary   string
@@ -218,9 +218,10 @@ type LoginPageData struct {
 	AuthModeLabel string
 }
 
-// SidebarPageData supplies only data attributes and initial shell state. The
-// sidebar JavaScript does not consume these URLs until a future domain-owned
-// implementation is mounted.
+// SidebarPageData supplies data attributes and initial shell state. The
+// sidebar JavaScript consumes only the frozen bootstrap URLs; domain-owned
+// handlers remain responsible for authentication, context, and workbench
+// data.
 type SidebarPageData struct {
 	DebugEnabled    bool
 	WorkbenchURL    string
@@ -373,13 +374,13 @@ func DefaultLoginPage(nextPath string) LoginPageData {
 			QR:    PathFor("api.auth_wecom_start", map[string]string{"mode": "qr", "next": nextPath}),
 			OAuth: PathFor("api.auth_wecom_start", map[string]string{"mode": "oauth", "next": nextPath}),
 		},
-		AuthModeLabel: "企业微信登录（待接入）",
+		AuthModeLabel: "企业微信认证",
 	}
 }
 
-// DefaultSidebarPage returns the frozen production data URL contract. It is
-// safe to render in any environment because no URL is fetched by the shell
-// script.
+// DefaultSidebarPage returns the frozen bootstrap data URL contract. It is
+// safe to render in any environment; the shell only attempts these URLs and
+// leaves all unfinished business tabs as local empty states.
 func DefaultSidebarPage() SidebarPageData {
 	return SidebarPageData{
 		WorkbenchURL:    SidebarWorkbenchPath,

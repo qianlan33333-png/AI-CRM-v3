@@ -39,7 +39,7 @@
           </div>
           <div class="admin-state admin-state--inline">
             <strong>认证入口状态</strong>
-            <span>企微登录启动路径已预留，实际认证由 WeCom / Access 模块接入。</span>
+            <span>可使用企业微信扫码或后台账号登录；认证结果由 Access / WeCom 模块处理。</span>
           </div>
         </article>
 
@@ -47,21 +47,21 @@
           <div class="admin-card-head admin-card-head--tight">
             <div>
               <h2>本地登录表单</h2>
-              <p>表单路径保留为 <code>GET/POST /login</code>，本地凭据暂不启用。</p>
+              <p>使用已授权的后台账号登录，密码只提交给当前认证请求。</p>
             </div>
           </div>
-          <form class="admin-form-grid admin-form-grid--stacked" method="post" action="{{.FormAction}}">
+          <form class="admin-form-grid admin-form-grid--stacked" method="post" action="{{.FormAction}}" autocomplete="on">
             <input type="hidden" name="next" value="{{.NextPath}}">
             <label>
               <span>账号</span>
-              <input type="text" name="account" autocomplete="username" placeholder="等待 Access 能力接入" disabled>
+              <input type="text" name="username" autocomplete="username" placeholder="请输入账号" required>
             </label>
             <label>
               <span>密码</span>
-              <input type="password" name="password" autocomplete="current-password" placeholder="等待 Access 能力接入" disabled>
+              <input type="password" name="password" autocomplete="current-password" placeholder="请输入密码" required>
             </label>
             <div class="admin-form-actions">
-              <button class="admin-button admin-button--secondary" type="submit" disabled>本地登录待接入</button>
+              <button class="admin-button admin-button--primary" type="submit">登录</button>
             </div>
           </form>
         </article>
@@ -78,7 +78,7 @@
       <ul class="admin-list">
         <li>扫码或应用授权成功后，由 WeCom 协议层验证员工身份。</li>
         <li>员工权限入口预留在 <a href="/admin/config/login-access"><code>/admin/config/login-access</code></a>。</li>
-        <li>当前 shell 不签发 Session，也不执行任何外部认证请求。</li>
+        <li>认证成功后由 Access / WeCom 模块签发安全 Session；页面不保存或回显凭据。</li>
       </ul>
     </section>
   </main>

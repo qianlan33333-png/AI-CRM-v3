@@ -2,6 +2,7 @@ package webshell
 
 import (
 	"bytes"
+	"context"
 	"embed"
 	"errors"
 	"html/template"
@@ -50,6 +51,31 @@ type AdminShellView struct {
 	Content template.HTML
 }
 
+// Render implements the small presentation contract consumed by the Access
+// HTTP handler. Keeping this adapter in webshell avoids a concrete import
+// from Access into the UI package while still letting Access own login
+// authentication, cookies, redirects, and error status codes.
+//
+// Only the reserved "login" view is accepted here. In particular, this
+// method does not turn arbitrary names or request data into business pages.
+// Values unrelated to the login shell (including credentials) are ignored.
+func (renderer *Renderer) Render(_ context.Context, writer http.ResponseWriter, status int, name string, values map[string]any) error {
+	if name != "login" {
+		return errors.New("webshell renderer does not support view " + name)
+	}
+
+	data := DefaultLoginPage(stringValue(values, "next_path"))
+	data.PageNotice = stringValue(values, "notice")
+	data.PageError = friendlyLoginError(stringValue(values, "error"))
+	if title := stringValue(values, "page_title"); title != "" {
+		data.PageTitle = title
+	}
+	if summary := stringValue(values, "page_summary"); summary != "" {
+		data.PageSummary = summary
+	}
+	return renderer.RenderLoginStatus(writer, status, data)
+}
+
 // RenderAdmin renders the standard admin base shell around the neutral
 // placeholder body.  The body contains no business data.
 func (renderer *Renderer) RenderAdmin(writer http.ResponseWriter, data AdminPageData) error {
@@ -64,7 +90,11 @@ func (renderer *Renderer) RenderAdminStatus(writer http.ResponseWriter, status i
 		return errors.New("webshell renderer is not initialized")
 	}
 	normalizeAdminPage(&data)
-	content, err := executeTemplate(renderer.templates, "admin_placeholder", data)
+	contentTemplate := "admin_placeholder"
+	if data.RequestPath == LoginAccessPath {
+		contentTemplate = "admin_access"
+	}
+	content, err := executeTemplate(renderer.templates, contentTemplate, data)
 	if err != nil {
 		return err
 	}
@@ -98,8 +128,9 @@ func (renderer *Renderer) RenderLoginStatus(writer http.ResponseWriter, status i
 	return writeHTML(writer, status, body)
 }
 
-// RenderSidebar renders the WeCom sidebar shell with reserved data URLs.  It
-// never resolves a customer, contacts a provider, or sends a write request.
+// RenderSidebar renders the WeCom sidebar shell with reserved bootstrap URLs.
+// The renderer itself never resolves a customer or contacts a provider; its
+// browser asset may invoke only the explicitly reserved domain endpoints.
 func (renderer *Renderer) RenderSidebar(writer http.ResponseWriter, data SidebarPageData) error {
 	return renderer.RenderSidebarStatus(writer, http.StatusOK, data)
 }
@@ -235,5 +266,41 @@ func normalizeSidebarPage(data *SidebarPageData) {
 	}
 	if data.ContextTokenURL == "" {
 		data.ContextTokenURL = defaults.ContextTokenURL
+	}
+}
+
+func stringValue(values map[string]any, key string) string {
+	if values == nil {
+		return ""
+	}
+	value, ok := values[key]
+	if !ok {
+		return ""
+	}
+	text, ok := value.(string)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(text)
+}
+
+func friendlyLoginError(code string) string {
+	switch strings.TrimSpace(code) {
+	case "":
+		return ""
+	case "invalid_credentials", "authentication_required":
+		return "账号或密码不正确，请重试。"
+	case "csrf_required":
+		return "页面安全令牌已失效，请刷新后重试。"
+	case "invalid_request":
+		return "请输入有效的账号和密码。"
+	case "rate_limited":
+		return "尝试次数过多，请稍后再试。"
+	case "permission_denied":
+		return "当前账号没有登录权限，请联系管理员。"
+	case "not_found", "conflict", "internal_error":
+		return "登录服务暂时不可用，请稍后重试。"
+	default:
+		return "登录失败，请稍后重试。"
 	}
 }

@@ -31,6 +31,11 @@ textarea {
   font: inherit;
 }
 
+:where(button, input, textarea):focus-visible {
+  outline: 3px solid rgba(37, 99, 235, 0.38);
+  outline-offset: 2px;
+}
+
 button {
   cursor: pointer;
 }

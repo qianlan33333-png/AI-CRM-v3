@@ -11,7 +11,7 @@
   <div
     class="wrap"
     id="sidebar-workbench-root"
-    data-sidebar-shell-state="placeholder"
+    data-sidebar-shell-state="identifying_customer"
     data-debug-enabled="{{.DebugEnabled}}"
     data-workbench-url="{{.WorkbenchURL}}"
     data-bind-mobile-url="{{.BindMobileURL}}"
@@ -23,9 +23,10 @@
         <div class="profile-main">
           <div class="identity">
             <div class="name-row">
-              <div class="name" id="customer-name">识别中</div>
+              <div class="name" id="customer-name">正在识别</div>
               <span class="phone-state loading" id="binding-state">加载中...</span>
             </div>
+            <div class="meta" id="customer-id"></div>
             <div class="meta" id="customer-mobile"></div>
             <div class="meta" id="customer-external-userid"></div>
             <div class="workflow" id="workflow-title"></div>
@@ -46,7 +47,7 @@
 
     <main id="content" class="content">
       <section class="panel" data-panel="profile">
-        <div class="status">正在识别当前客户…</div>
+        <div class="status" id="sidebar-startup-status" role="status" aria-live="polite">正在识别当前客户…</div>
       </section>
     </main>
   </div>
@@ -71,6 +72,7 @@
 
   <div class="toast hidden" id="toast" role="status" aria-live="polite"></div>
   <div id="debug-wrap" class="hidden"></div>
+  <script src="https://res.wx.qq.com/open/js/jweixin-1.6.0.js"></script>
   <script src="/static/sidebar_workbench/sidebar_workbench.js?v=v3-webshell"></script>
 </body>
 </html>

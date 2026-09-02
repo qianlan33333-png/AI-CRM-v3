@@ -6,6 +6,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{.PageTitle}} · 客户管理后台</title>
   <link rel="stylesheet" href="/static/admin_console/admin_console.css?v=v3-webshell">
+  {{if eq .RequestPath "/admin/config/login-access"}}
+  <link rel="stylesheet" href="/static/admin_console/admin_access.css?v=v3-webshell">
+  {{end}}
 </head>
 <body class="admin-shell" data-admin-shell-source="v3_webshell">
   <div class="admin-layout">
