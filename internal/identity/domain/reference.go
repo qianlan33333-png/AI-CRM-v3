@@ -56,6 +56,20 @@ type NormalizedReference struct {
 
 const NormalizerVersion int16 = 1
 
+func ValidateKind(kind Kind) error {
+	if !validKind(kind) {
+		return ErrInvalidReference
+	}
+	return nil
+}
+
+func ValidateNamespace(kind Kind, scope string) error {
+	if !validKind(kind) || !validScope(kind, scope) {
+		return ErrInvalidReference
+	}
+	return nil
+}
+
 func Normalize(reference Reference) (NormalizedReference, error) {
 	// Reject control characters before trimming, otherwise a trailing newline
 	// could disappear and be accepted as a canonical identity.

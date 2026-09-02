@@ -11,21 +11,25 @@ import (
 )
 
 var (
-	ErrInvalidLinkCommand = errors.New("invalid identity link command")
-	ErrInvalidMergeID     = errors.New("invalid merge id")
+	ErrInvalidLinkCommand        = errors.New("invalid identity link command")
+	ErrInvalidMergeID            = errors.New("invalid merge id")
+	ErrInsufficientLinkEvidence  = errors.New("insufficient identity link evidence")
+	ErrConcurrentIdentityChange  = errors.New("concurrent identity change")
+	ErrLinkIntentPayloadMismatch = errors.New("link intent replay payload mismatch")
 )
 
 type LinkStatus string
 
 const (
-	LinkAttached      LinkStatus = "attached"
-	LinkAlreadyLinked LinkStatus = "already_linked"
-	LinkCandidate     LinkStatus = "merge_candidate"
-	LinkConflict      LinkStatus = "conflict"
-	LinkMerged        LinkStatus = "merged"
-	LinkIntentExpired LinkStatus = "intent_expired"
-	LinkIntentReplay  LinkStatus = "intent_replayed"
-	LinkScopeMismatch LinkStatus = "scope_mismatch"
+	LinkAttached          LinkStatus = "attached"
+	LinkAlreadyLinked     LinkStatus = "already_linked"
+	LinkCandidate         LinkStatus = "merge_candidate"
+	LinkConflict          LinkStatus = "conflict"
+	LinkMerged            LinkStatus = "merged"
+	LinkIntentExpired     LinkStatus = "intent_expired"
+	LinkIntentReplay      LinkStatus = "intent_replayed"
+	LinkIntentInvalidated LinkStatus = "intent_invalidated"
+	LinkScopeMismatch     LinkStatus = "scope_mismatch"
 )
 
 type MergeCandidate struct {
@@ -35,6 +39,8 @@ type MergeCandidate struct {
 	Evidence        identitydomain.LinkEvidence
 	Reason          string
 	Status          string
+	LeftVersion     int64
+	RightVersion    int64
 }
 
 type Conflict struct {
@@ -46,13 +52,22 @@ type Conflict struct {
 }
 
 type MergeRecord struct {
-	ID             int64
-	FromCustomerID customerdomain.CustomerID
-	ToCustomerID   customerdomain.CustomerID
-	Evidence       identitydomain.LinkEvidence
-	Rule           string
-	Operator       string
-	Reversed       bool
+	ID                int64
+	CandidateID       int64
+	FromCustomerID    customerdomain.CustomerID
+	ToCustomerID      customerdomain.CustomerID
+	FromVersionBefore int64
+	FromVersionAfter  int64
+	ToVersionBefore   int64
+	ToVersionAfter    int64
+	FromLineageBefore int64
+	FromLineageAfter  int64
+	ToLineageBefore   int64
+	ToLineageAfter    int64
+	Evidence          identitydomain.LinkEvidence
+	Rule              string
+	Operator          string
+	Reversed          bool
 }
 
 type LinkCommand struct {
@@ -63,6 +78,7 @@ type LinkCommand struct {
 
 type LinkResult struct {
 	Status     LinkStatus
+	ReplayOf   LinkStatus
 	CustomerID customerdomain.CustomerID
 	IdentityID int64
 	Candidate  *MergeCandidate
@@ -120,7 +136,10 @@ type ProvisionedIdentity struct {
 // Store is the Identity-owned transactional contract. A PostgreSQL adapter
 // must execute each mutating method in one database transaction, lock the
 // identity key before customer roots, and persist audit/outbox facts with the
-// mutation. MemoryStore is a deterministic test implementation only.
+// mutation. Candidate confirmation must compare endpoint versions, intent
+// consumption must persist its payload fingerprint and result, and reversal
+// must CAS every recorded merge member before moving any identity. MemoryStore
+// is a deterministic test implementation only.
 type Store interface {
 	Resolve(context.Context, identitydomain.NormalizedReference) (StoredIdentity, bool, error)
 	Provision(context.Context, identitydomain.VerifiedFact) (ProvisionedIdentity, error)
@@ -187,7 +206,9 @@ func (service OneIDService) LinkVerifiedIdentity(ctx context.Context, command Li
 }
 
 func (service OneIDService) CreateLinkIntent(ctx context.Context, command LinkIntentCommand) (CreatedLinkIntent, error) {
-	if command.SourceCustomerID < 1 || !validLinkIntentPurpose(command.Purpose) || command.TargetKind == "" ||
+	if command.SourceCustomerID < 1 || !validLinkIntentPurpose(command.Purpose) || identitydomain.ValidateKind(command.TargetKind) != nil ||
+		(command.ExpectedScope != "" && identitydomain.ValidateNamespace(command.TargetKind, command.ExpectedScope) != nil) ||
+		(command.Purpose == LinkIntentBindWeCom && command.TargetKind != identitydomain.KindWeComExternalUserID) ||
 		command.ExpiresAt.IsZero() || !command.ExpiresAt.After(time.Now()) || command.Source == "" {
 		return CreatedLinkIntent{}, ErrInvalidLinkCommand
 	}

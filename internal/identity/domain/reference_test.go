@@ -102,3 +102,15 @@ func TestNormalizeRejectsMissingSourceAndUntrustedAssurance(t *testing.T) {
 		t.Fatalf("invalid assurance error=%v", err)
 	}
 }
+
+func TestValidateIdentityNamespaceForDurableCommands(t *testing.T) {
+	if err := ValidateKind(Kind("invented")); !errors.Is(err, ErrInvalidReference) {
+		t.Fatalf("invalid kind error=%v", err)
+	}
+	if err := ValidateNamespace(KindMPOpenID, "wecom-corp:main"); !errors.Is(err, ErrInvalidReference) {
+		t.Fatalf("wrong namespace error=%v", err)
+	}
+	if err := ValidateNamespace(KindMPOpenID, "wechat-app:main"); err != nil {
+		t.Fatalf("valid namespace error=%v", err)
+	}
+}

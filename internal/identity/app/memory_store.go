@@ -21,19 +21,32 @@ type memoryCustomer struct {
 	ID       customerdomain.CustomerID
 	Status   customerdomain.Status
 	MergedTo customerdomain.CustomerID
+	Version  int64
+	Lineage  int64
 }
 
 type memoryIdentity struct {
 	StoredIdentity
-	Active bool
+	Active  bool
+	Version int64
 }
 
 type memoryLinkIntent struct {
-	ID        int64
-	Hash      string
-	Command   LinkIntentCommand
-	Status    string
-	ExpiresAt time.Time
+	ID                     int64
+	Hash                   string
+	Command                LinkIntentCommand
+	SourceVersion          int64
+	Status                 string
+	ExpiresAt              time.Time
+	ConsumptionFingerprint string
+	Result                 LinkResult
+}
+
+type mergeIdentityMember struct {
+	IdentityID   int64
+	From         customerdomain.CustomerID
+	To           customerdomain.CustomerID
+	VersionAfter int64
 }
 
 // MemoryStore serializes every operation with a mutex. It is a test double for
@@ -48,26 +61,28 @@ type MemoryStore struct {
 	nextMergeID     int64
 	nextIntentID    int64
 
-	customers     map[customerdomain.CustomerID]memoryCustomer
-	identities    map[int64]memoryIdentity
-	identityByKey map[string]int64
-	candidates    map[int64]MergeCandidate
-	conflicts     map[string]Conflict
-	merges        map[int64]MergeRecord
-	movedByMerge  map[int64][]int64
-	intentsByHash map[string]memoryLinkIntent
+	customers       map[customerdomain.CustomerID]memoryCustomer
+	identities      map[int64]memoryIdentity
+	identityByKey   map[string]int64
+	candidates      map[int64]MergeCandidate
+	candidateByPair map[string]int64
+	conflicts       map[string]Conflict
+	merges          map[int64]MergeRecord
+	movedByMerge    map[int64][]mergeIdentityMember
+	intentsByHash   map[string]memoryLinkIntent
 }
 
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
-		customers:     make(map[customerdomain.CustomerID]memoryCustomer),
-		identities:    make(map[int64]memoryIdentity),
-		identityByKey: make(map[string]int64),
-		candidates:    make(map[int64]MergeCandidate),
-		conflicts:     make(map[string]Conflict),
-		merges:        make(map[int64]MergeRecord),
-		movedByMerge:  make(map[int64][]int64),
-		intentsByHash: make(map[string]memoryLinkIntent),
+		customers:       make(map[customerdomain.CustomerID]memoryCustomer),
+		identities:      make(map[int64]memoryIdentity),
+		identityByKey:   make(map[string]int64),
+		candidates:      make(map[int64]MergeCandidate),
+		candidateByPair: make(map[string]int64),
+		conflicts:       make(map[string]Conflict),
+		merges:          make(map[int64]MergeRecord),
+		movedByMerge:    make(map[int64][]mergeIdentityMember),
+		intentsByHash:   make(map[string]memoryLinkIntent),
 	}
 }
 
@@ -108,16 +123,25 @@ func (store *MemoryStore) Link(_ context.Context, command LinkCommand) (LinkResu
 func (store *MemoryStore) CreateLinkIntent(_ context.Context, command LinkIntentCommand) (CreatedLinkIntent, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	if store.rootLocked(command.SourceCustomerID) < 1 {
+	sourceRoot := store.activeRootLocked(command.SourceCustomerID)
+	if sourceRoot < 1 {
 		return CreatedLinkIntent{}, ErrInvalidLinkCommand
 	}
+	// Bind the one-time authorization to the active root that existed when it
+	// was issued. A later merge must invalidate it rather than silently retarget
+	// the authorization to another customer.
+	command.SourceCustomerID = sourceRoot
 	rawToken, err := randomLinkToken()
 	if err != nil {
 		return CreatedLinkIntent{}, err
 	}
 	hash := linkTokenHash(rawToken)
 	store.nextIntentID++
-	intent := memoryLinkIntent{ID: store.nextIntentID, Hash: hash, Command: command, Status: "pending", ExpiresAt: command.ExpiresAt}
+	intent := memoryLinkIntent{
+		ID: store.nextIntentID, Hash: hash, Command: command,
+		SourceVersion: store.customers[sourceRoot].Version,
+		Status:        "pending", ExpiresAt: command.ExpiresAt,
+	}
 	store.intentsByHash[hash] = intent
 	return CreatedLinkIntent{ID: intent.ID, Token: rawToken, ExpiresAt: intent.ExpiresAt}, nil
 }
@@ -127,7 +151,23 @@ func (store *MemoryStore) ConsumeLinkIntent(_ context.Context, command ConsumeLi
 	defer store.mu.Unlock()
 	hash := linkTokenHash(command.Token)
 	intent, found := store.intentsByHash[hash]
-	if !found || intent.Status != "pending" {
+	if !found {
+		return LinkResult{Status: LinkIntentReplay}, nil
+	}
+	fingerprint := linkIntentConsumptionFingerprint(command)
+	if intent.Status == "consumed" {
+		if intent.ConsumptionFingerprint != fingerprint {
+			return LinkResult{}, ErrLinkIntentPayloadMismatch
+		}
+		return replayLinkResult(intent.Result), nil
+	}
+	if intent.Status == "expired" {
+		return LinkResult{Status: LinkIntentExpired}, nil
+	}
+	if intent.Status == "cancelled" {
+		return LinkResult{Status: LinkIntentInvalidated}, nil
+	}
+	if intent.Status != "pending" {
 		return LinkResult{Status: LinkIntentReplay}, nil
 	}
 	if !intent.ExpiresAt.After(time.Now()) {
@@ -139,6 +179,12 @@ func (store *MemoryStore) ConsumeLinkIntent(_ context.Context, command ConsumeLi
 	if reference.Kind != intent.Command.TargetKind || (intent.Command.ExpectedScope != "" && reference.Scope != intent.Command.ExpectedScope) {
 		return LinkResult{Status: LinkScopeMismatch}, nil
 	}
+	if store.activeRootLocked(intent.Command.SourceCustomerID) != intent.Command.SourceCustomerID ||
+		store.customers[intent.Command.SourceCustomerID].Version != intent.SourceVersion {
+		intent.Status = "cancelled"
+		store.intentsByHash[hash] = intent
+		return LinkResult{Status: LinkIntentInvalidated}, nil
+	}
 	result, err := store.linkLocked(LinkCommand{
 		SourceCustomerID: intent.Command.SourceCustomerID,
 		Target:           command.Target,
@@ -148,20 +194,29 @@ func (store *MemoryStore) ConsumeLinkIntent(_ context.Context, command ConsumeLi
 		return LinkResult{}, err
 	}
 	intent.Status = "consumed"
+	intent.ConsumptionFingerprint = fingerprint
+	intent.Result = cloneLinkResult(result)
 	store.intentsByHash[hash] = intent
 	return result, nil
 }
 
 func (store *MemoryStore) linkLocked(command LinkCommand) (LinkResult, error) {
-
-	sourceRoot := store.rootLocked(command.SourceCustomerID)
+	sourceRoot := store.activeRootLocked(command.SourceCustomerID)
 	if sourceRoot < 1 {
 		return LinkResult{}, ErrInvalidLinkCommand
 	}
 	reference := command.Target.Reference()
 	identityID, exists := store.identityByKey[identityKey(reference)]
 	if !exists {
+		if command.Evidence.Strength != identitydomain.EvidenceStrong {
+			return LinkResult{}, ErrInsufficientLinkEvidence
+		}
+		if reason := store.sameRootStrongConflictLocked(sourceRoot, reference); reason != "" {
+			conflict := store.createConflictLocked(sourceRoot, sourceRoot, reason, command.Evidence)
+			return LinkResult{Status: LinkConflict, CustomerID: sourceRoot, Conflict: &conflict}, nil
+		}
 		identityID = store.createIdentityLocked(sourceRoot, reference)
+		store.touchCustomerLocked(sourceRoot)
 		return LinkResult{Status: LinkAttached, CustomerID: sourceRoot, IdentityID: identityID}, nil
 	}
 	target := store.identities[identityID]
@@ -185,15 +240,21 @@ func (store *MemoryStore) ConfirmMerge(_ context.Context, command ConfirmMergeCo
 	if !found || candidate.Status != "open" || candidate.Evidence.Strength != identitydomain.EvidenceStrong {
 		return LinkResult{}, ErrInvalidLinkCommand
 	}
-	left, right := store.rootLocked(candidate.LeftCustomerID), store.rootLocked(candidate.RightCustomerID)
-	if left < 1 || right < 1 || left == right ||
-		(command.SurvivorCustomerID != left && command.SurvivorCustomerID != right) {
+	leftCustomer, leftFound := store.customers[candidate.LeftCustomerID]
+	rightCustomer, rightFound := store.customers[candidate.RightCustomerID]
+	if !leftFound || !rightFound || leftCustomer.Status != customerdomain.StatusActive ||
+		rightCustomer.Status != customerdomain.StatusActive || leftCustomer.Version != candidate.LeftVersion ||
+		rightCustomer.Version != candidate.RightVersion {
+		store.rejectCandidateLocked(candidate)
+		return LinkResult{}, ErrConcurrentIdentityChange
+	}
+	left, right := candidate.LeftCustomerID, candidate.RightCustomerID
+	if left == right || (command.SurvivorCustomerID != left && command.SurvivorCustomerID != right) {
 		return LinkResult{}, ErrInvalidLinkCommand
 	}
 	if reason := store.strongConflictLocked(left, right); reason != "" {
 		conflict := store.createConflictLocked(left, right, reason, candidate.Evidence)
-		candidate.Status = "rejected"
-		store.candidates[candidate.ID] = candidate
+		candidate = store.rejectCandidateLocked(candidate)
 		return LinkResult{Status: LinkConflict, CustomerID: command.SurvivorCustomerID, Candidate: &candidate, Conflict: &conflict}, nil
 	}
 	if store.hasWeComLocked(left) != store.hasWeComLocked(right) {
@@ -209,9 +270,10 @@ func (store *MemoryStore) ConfirmMerge(_ context.Context, command ConfirmMergeCo
 	if command.SurvivorCustomerID == left {
 		loser = right
 	}
-	merge := store.mergeLocked(loser, command.SurvivorCustomerID, candidate.Evidence, command.Operator)
+	merge := store.mergeLocked(candidate.ID, loser, command.SurvivorCustomerID, candidate.Evidence, command.Operator)
 	candidate.Status = "confirmed"
 	store.candidates[candidate.ID] = candidate
+	delete(store.candidateByPair, candidatePairKey(candidate.LeftCustomerID, candidate.RightCustomerID))
 	return LinkResult{Status: LinkMerged, CustomerID: command.SurvivorCustomerID, Candidate: &candidate, Merge: &merge}, nil
 }
 
@@ -226,16 +288,35 @@ func (store *MemoryStore) RevertMerge(_ context.Context, mergeID int64) (MergeRe
 	if from.Status != customerdomain.StatusMerged || from.MergedTo != merge.ToCustomerID {
 		return MergeRecord{}, ErrMergeNotReversible
 	}
-	for _, identityID := range store.movedByMerge[mergeID] {
-		identity := store.identities[identityID]
-		if identity.Active && store.rootLocked(identity.CustomerID) == merge.ToCustomerID {
-			identity.CustomerID = merge.FromCustomerID
-			store.identities[identityID] = identity
+	to, toFound := store.customers[merge.ToCustomerID]
+	if !toFound || to.Status != customerdomain.StatusActive ||
+		from.Lineage != merge.FromLineageAfter || to.Lineage != merge.ToLineageAfter {
+		return MergeRecord{}, ErrMergeNotReversible
+	}
+	members := store.movedByMerge[mergeID]
+	// Validate every compare-and-swap precondition before mutating any member.
+	// This prevents a partial reversal if an identity moved or was retired after
+	// the merge. Identities attached later are absent from this snapshot.
+	for _, member := range members {
+		identity, identityFound := store.identities[member.IdentityID]
+		if !identityFound || !identity.Active || identity.CustomerID != member.To || identity.Version != member.VersionAfter {
+			return MergeRecord{}, ErrMergeNotReversible
 		}
+	}
+	for _, member := range members {
+		identity := store.identities[member.IdentityID]
+		identity.CustomerID = member.From
+		identity.Version++
+		store.identities[member.IdentityID] = identity
 	}
 	from.Status = customerdomain.StatusActive
 	from.MergedTo = 0
+	from.Version++
+	from.Lineage++
 	store.customers[from.ID] = from
+	to.Version++
+	to.Lineage++
+	store.customers[to.ID] = to
 	merge.Reversed = true
 	store.merges[mergeID] = merge
 	return merge, nil
@@ -267,7 +348,7 @@ func (store *MemoryStore) Root(customerID customerdomain.CustomerID) customerdom
 
 func (store *MemoryStore) createCustomerLocked() customerdomain.CustomerID {
 	store.nextCustomerID++
-	customer := memoryCustomer{ID: store.nextCustomerID, Status: customerdomain.StatusActive}
+	customer := memoryCustomer{ID: store.nextCustomerID, Status: customerdomain.StatusActive, Version: 1, Lineage: 1}
 	store.customers[customer.ID] = customer
 	return customer.ID
 }
@@ -276,10 +357,24 @@ func (store *MemoryStore) createIdentityLocked(customerID customerdomain.Custome
 	store.nextIdentityID++
 	identity := memoryIdentity{StoredIdentity: StoredIdentity{
 		ID: store.nextIdentityID, CustomerID: customerID, Reference: reference,
-	}, Active: true}
+	}, Active: true, Version: 1}
 	store.identities[identity.ID] = identity
 	store.identityByKey[identityKey(reference)] = identity.ID
 	return identity.ID
+}
+
+func (store *MemoryStore) activeRootLocked(customerID customerdomain.CustomerID) customerdomain.CustomerID {
+	root := store.rootLocked(customerID)
+	if root < 1 || store.customers[root].Status != customerdomain.StatusActive {
+		return 0
+	}
+	return root
+}
+
+func (store *MemoryStore) touchCustomerLocked(customerID customerdomain.CustomerID) {
+	customer := store.customers[customerID]
+	customer.Version++
+	store.customers[customerID] = customer
 }
 
 func (store *MemoryStore) rootLocked(customerID customerdomain.CustomerID) customerdomain.CustomerID {
@@ -330,31 +425,102 @@ func (store *MemoryStore) strongConflictLocked(left, right customerdomain.Custom
 	return ""
 }
 
-func (store *MemoryStore) mergeLocked(loser, survivor customerdomain.CustomerID, evidence identitydomain.LinkEvidence, operator string) MergeRecord {
+func (store *MemoryStore) sameRootStrongConflictLocked(customerID customerdomain.CustomerID, reference identitydomain.NormalizedReference) string {
+	if !singleValueStrong(reference.Kind) {
+		return ""
+	}
+	for _, identity := range store.identities {
+		if !identity.Active || store.rootLocked(identity.CustomerID) != customerID ||
+			identity.Reference.Kind != reference.Kind || identity.Reference.Scope != reference.Scope ||
+			identity.Reference.NormalizedValue == reference.NormalizedValue {
+			continue
+		}
+		if reference.Kind == identitydomain.KindWeComExternalUserID {
+			return "two_wecom_identities_same_root"
+		}
+		return "single_value_strong_namespace"
+	}
+	return ""
+}
+
+func (store *MemoryStore) mergeLocked(candidateID int64, loser, survivor customerdomain.CustomerID, evidence identitydomain.LinkEvidence, operator string) MergeRecord {
 	store.nextMergeID++
-	moved := make([]int64, 0)
+	loserCustomer := store.customers[loser]
+	survivorCustomer := store.customers[survivor]
+	loserVersionBefore := loserCustomer.Version
+	survivorVersionBefore := survivorCustomer.Version
+	loserLineageBefore := loserCustomer.Lineage
+	survivorLineageBefore := survivorCustomer.Lineage
+	moved := make([]mergeIdentityMember, 0)
 	for identityID, identity := range store.identities {
 		if identity.Active && store.rootLocked(identity.CustomerID) == loser {
 			identity.CustomerID = survivor
+			identity.Version++
 			store.identities[identityID] = identity
-			moved = append(moved, identityID)
+			moved = append(moved, mergeIdentityMember{
+				IdentityID: identityID, From: loser, To: survivor, VersionAfter: identity.Version,
+			})
 		}
 	}
-	sort.Slice(moved, func(i, j int) bool { return moved[i] < moved[j] })
-	loserCustomer := store.customers[loser]
+	sort.Slice(moved, func(i, j int) bool { return moved[i].IdentityID < moved[j].IdentityID })
 	loserCustomer.Status = customerdomain.StatusMerged
 	loserCustomer.MergedTo = survivor
+	loserCustomer.Version++
+	loserCustomer.Lineage++
 	store.customers[loser] = loserCustomer
-	merge := MergeRecord{ID: store.nextMergeID, FromCustomerID: loser, ToCustomerID: survivor, Evidence: evidence, Rule: "confirmed_candidate", Operator: operator}
+	survivorCustomer.Version++
+	survivorCustomer.Lineage++
+	store.customers[survivor] = survivorCustomer
+	merge := MergeRecord{
+		ID: store.nextMergeID, CandidateID: candidateID,
+		FromCustomerID: loser, ToCustomerID: survivor,
+		FromVersionBefore: loserVersionBefore, FromVersionAfter: loserCustomer.Version,
+		ToVersionBefore: survivorVersionBefore, ToVersionAfter: survivorCustomer.Version,
+		FromLineageBefore: loserLineageBefore, FromLineageAfter: loserCustomer.Lineage,
+		ToLineageBefore: survivorLineageBefore, ToLineageAfter: survivorCustomer.Lineage,
+		Evidence: evidence, Rule: "confirmed_candidate", Operator: operator,
+	}
 	store.merges[merge.ID] = merge
 	store.movedByMerge[merge.ID] = moved
 	return merge
 }
 
 func (store *MemoryStore) createCandidateLocked(left, right customerdomain.CustomerID, evidence identitydomain.LinkEvidence, reason string) MergeCandidate {
+	key := candidatePairKey(left, right)
+	if existingID, found := store.candidateByPair[key]; found {
+		existing := store.candidates[existingID]
+		if existing.Status == "open" && store.candidateVersionsMatchLocked(existing) {
+			if evidenceRank(evidence.Strength) > evidenceRank(existing.Evidence.Strength) {
+				existing.Evidence = evidence
+				existing.Reason = reason
+				store.candidates[existing.ID] = existing
+			}
+			return existing
+		}
+		store.rejectCandidateLocked(existing)
+	}
 	store.nextCandidateID++
-	candidate := MergeCandidate{ID: store.nextCandidateID, LeftCustomerID: left, RightCustomerID: right, Evidence: evidence, Reason: reason, Status: "open"}
+	candidate := MergeCandidate{
+		ID: store.nextCandidateID, LeftCustomerID: left, RightCustomerID: right,
+		Evidence: evidence, Reason: reason, Status: "open",
+		LeftVersion: store.customers[left].Version, RightVersion: store.customers[right].Version,
+	}
 	store.candidates[candidate.ID] = candidate
+	store.candidateByPair[key] = candidate.ID
+	return candidate
+}
+
+func (store *MemoryStore) candidateVersionsMatchLocked(candidate MergeCandidate) bool {
+	left, leftFound := store.customers[candidate.LeftCustomerID]
+	right, rightFound := store.customers[candidate.RightCustomerID]
+	return leftFound && rightFound && left.Status == customerdomain.StatusActive && right.Status == customerdomain.StatusActive &&
+		left.Version == candidate.LeftVersion && right.Version == candidate.RightVersion
+}
+
+func (store *MemoryStore) rejectCandidateLocked(candidate MergeCandidate) MergeCandidate {
+	candidate.Status = "rejected"
+	store.candidates[candidate.ID] = candidate
+	delete(store.candidateByPair, candidatePairKey(candidate.LeftCustomerID, candidate.RightCustomerID))
 	return candidate
 }
 
@@ -374,6 +540,28 @@ func (store *MemoryStore) createConflictLocked(left, right customerdomain.Custom
 
 func identityKey(reference identitydomain.NormalizedReference) string {
 	return string(reference.Kind) + "\x00" + reference.Scope + "\x00" + reference.NormalizedValue
+}
+
+func candidatePairKey(left, right customerdomain.CustomerID) string {
+	// Canonicalization is only for open-pair uniqueness. It never selects a
+	// surviving customer; confirmation must name an endpoint explicitly.
+	if right < left {
+		left, right = right, left
+	}
+	return strconv.FormatInt(int64(left), 10) + ":" + strconv.FormatInt(int64(right), 10)
+}
+
+func evidenceRank(strength identitydomain.EvidenceStrength) int {
+	switch strength {
+	case identitydomain.EvidenceStrong:
+		return 3
+	case identitydomain.EvidenceMedium:
+		return 2
+	case identitydomain.EvidenceWeak:
+		return 1
+	default:
+		return 0
+	}
 }
 
 func singleValueStrong(kind identitydomain.Kind) bool {
@@ -400,4 +588,45 @@ func randomLinkToken() (string, error) {
 func linkTokenHash(token string) string {
 	digest := sha256.Sum256([]byte(token))
 	return base64.RawStdEncoding.EncodeToString(digest[:])
+}
+
+func linkIntentConsumptionFingerprint(command ConsumeLinkIntentCommand) string {
+	reference := command.Target.Reference()
+	fields := []string{
+		string(reference.Kind), reference.Scope, reference.NormalizedValue,
+		string(reference.Assurance), reference.Source, strconv.FormatInt(int64(reference.NormalizerVersion), 10),
+		command.Evidence.Type, string(command.Evidence.Strength), command.Evidence.Source,
+		command.Evidence.EventID, command.Evidence.Digest, command.Evidence.PolicyVersion,
+	}
+	hasher := sha256.New()
+	for _, field := range fields {
+		_, _ = hasher.Write([]byte(strconv.Itoa(len(field))))
+		_, _ = hasher.Write([]byte{':'})
+		_, _ = hasher.Write([]byte(field))
+	}
+	return base64.RawStdEncoding.EncodeToString(hasher.Sum(nil))
+}
+
+func replayLinkResult(original LinkResult) LinkResult {
+	replay := cloneLinkResult(original)
+	replay.ReplayOf = original.Status
+	replay.Status = LinkIntentReplay
+	return replay
+}
+
+func cloneLinkResult(result LinkResult) LinkResult {
+	cloned := result
+	if result.Candidate != nil {
+		candidate := *result.Candidate
+		cloned.Candidate = &candidate
+	}
+	if result.Conflict != nil {
+		conflict := *result.Conflict
+		cloned.Conflict = &conflict
+	}
+	if result.Merge != nil {
+		merge := *result.Merge
+		cloned.Merge = &merge
+	}
+	return cloned
 }
