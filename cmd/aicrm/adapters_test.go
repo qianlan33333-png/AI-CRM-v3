@@ -112,3 +112,42 @@ func TestWeComAdaptersIssueSharedSessionAndResolveBoundEmployee(t *testing.T) {
 		t.Fatalf("unbound user error=%v", err)
 	}
 }
+
+func TestApplicationRouterKeepsOwnershipAndProtectsAdminShell(t *testing.T) {
+	authentication := &fakeAccessAuthentication{err: accessdomain.ErrAuthentication}
+	marker := func(name string) http.Handler {
+		return http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+			writer.Header().Set("X-Owner", name)
+			writer.WriteHeader(http.StatusNoContent)
+		})
+	}
+	handler, err := routeApplication(marker("health"), marker("access"), marker("identity"), marker("wecom"), marker("shell"), authentication)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := map[string]string{
+		"/healthz": "health", "/readyz": "health", "/login": "access", "/api/admin/access/users": "access",
+		"/api/admin/oneid/conflicts": "identity", "/auth/wecom/start": "wecom", "/api/sidebar/jssdk-config": "wecom",
+		"/sidebar/bind-mobile": "shell", "/static/admin_console/admin_console.css": "shell",
+	}
+	for path, owner := range tests {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		if response.Code != http.StatusNoContent || response.Header().Get("X-Owner") != owner {
+			t.Fatalf("path=%s status=%d owner=%q", path, response.Code, response.Header().Get("X-Owner"))
+		}
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/admin/orders", nil))
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("unauthenticated admin status=%d", response.Code)
+	}
+	authentication.err = nil
+	request := httptest.NewRequest(http.MethodGet, "/admin/orders", nil)
+	request.AddCookie(&http.Cookie{Name: "aicrm_admin_session", Value: "valid"})
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent || response.Header().Get("X-Owner") != "shell" {
+		t.Fatalf("authenticated admin status=%d owner=%q", response.Code, response.Header().Get("X-Owner"))
+	}
+}
