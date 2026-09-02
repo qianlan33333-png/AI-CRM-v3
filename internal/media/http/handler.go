@@ -3,18 +3,14 @@
 package http
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"image"
 	_ "image/gif"
 	_ "image/jpeg"
-	"image/png"
 	"io"
 	"net/http"
 	"strconv"
@@ -74,13 +70,17 @@ func (h *Handler) read(w http.ResponseWriter, r *http.Request) bool {
 	return true
 }
 func (h *Handler) write(w http.ResponseWriter, r *http.Request) (accessdomain.Principal, bool) {
-	p, err := h.security.AuthorizeCSRF(r.Context(), r)
+	p, err := h.security.Authenticate(r.Context(), r)
 	if err != nil {
-		writeError(w, 403, "csrf_required")
+		writeError(w, 401, "unauthorized")
 		return accessdomain.Principal{}, false
 	}
 	if !writeRole(p) {
 		writeError(w, 403, "permission_denied")
+		return accessdomain.Principal{}, false
+	}
+	if _, err = h.security.AuthorizeCSRF(r.Context(), r); err != nil {
+		writeError(w, 403, "csrf_required")
 		return accessdomain.Principal{}, false
 	}
 	return p, true
@@ -122,50 +122,92 @@ func method(w http.ResponseWriter, got, want string) bool {
 	writeError(w, 405, "method_not_allowed")
 	return false
 }
-func page(r *http.Request) (int, int, bool, string, error) {
+func scalarQuery(r *http.Request, name string) (string, error) {
 	q := r.URL.Query()
-	one := func(name string) (string, error) {
-		values, exists := q[name]
-		if !exists {
-			return "", nil
-		}
-		if len(values) != 1 {
-			return "", ErrInvalidQuery
-		}
-		return values[0], nil
+	values, exists := q[name]
+	if !exists {
+		return "", nil
 	}
-	limit := 50
-	if raw, e := one("limit"); e != nil {
-		return 0, 0, false, "", e
+	if len(values) != 1 {
+		return "", ErrInvalidQuery
+	}
+	return values[0], nil
+}
+
+// imagePage follows the frozen image-library parser.  Its normalizing rules
+// intentionally differ from the other Media lists.
+func imagePage(r *http.Request) (int, int, string, error) {
+	limit := 100
+	if raw, err := scalarQuery(r, "limit"); err != nil {
+		return 0, 0, "", err
 	} else if raw != "" {
-		v, e := strconv.ParseInt(raw, 10, 32)
-		if e != nil || v < 1 || v > 500 {
-			return 0, 0, false, "", ErrInvalidQuery
+		value, err := strconv.ParseInt(raw, 10, 32)
+		if err != nil {
+			return 0, 0, "", ErrInvalidQuery
 		}
-		limit = int(v)
+		switch {
+		case value == 0:
+			limit = 100
+		case value < 0:
+			limit = 1
+		case value > 500:
+			limit = 500
+		default:
+			limit = int(value)
+		}
 	}
 	offset := 0
-	if raw, e := one("offset"); e != nil {
-		return 0, 0, false, "", e
+	if raw, err := scalarQuery(r, "offset"); err != nil {
+		return 0, 0, "", err
 	} else if raw != "" {
-		v, e := strconv.ParseInt(raw, 10, 32)
-		if e != nil || v < 0 {
+		value, err := strconv.ParseInt(raw, 10, 32)
+		if err != nil {
+			return 0, 0, "", ErrInvalidQuery
+		}
+		if value > 0 {
+			offset = int(value)
+		}
+	}
+	query, err := scalarQuery(r, "q")
+	if err != nil {
+		return 0, 0, "", err
+	}
+	return limit, offset, strings.TrimSpace(query), nil
+}
+
+func mediaPage(r *http.Request, defaultLimit, maxLimit int, defaultEnabled bool) (int, int, bool, string, error) {
+	limit := defaultLimit
+	if raw, err := scalarQuery(r, "limit"); err != nil {
+		return 0, 0, false, "", err
+	} else if raw != "" {
+		value, err := strconv.ParseInt(raw, 10, 32)
+		if err != nil || value < 1 || value > int64(maxLimit) {
 			return 0, 0, false, "", ErrInvalidQuery
 		}
-		offset = int(v)
+		limit = int(value)
 	}
-	enabled := false
-	if raw, e := one("enabled_only"); e != nil {
-		return 0, 0, false, "", e
+	offset := 0
+	if raw, err := scalarQuery(r, "offset"); err != nil {
+		return 0, 0, false, "", err
+	} else if raw != "" {
+		value, err := strconv.ParseInt(raw, 10, 32)
+		if err != nil || value < 0 {
+			return 0, 0, false, "", ErrInvalidQuery
+		}
+		offset = int(value)
+	}
+	enabled := defaultEnabled
+	if raw, err := scalarQuery(r, "enabled_only"); err != nil {
+		return 0, 0, false, "", err
 	} else if raw != "" {
 		if raw != "true" && raw != "false" {
 			return 0, 0, false, "", ErrInvalidQuery
 		}
 		enabled = raw == "true"
 	}
-	query, e := one("q")
-	if e != nil {
-		return 0, 0, false, "", e
+	query, err := scalarQuery(r, "q")
+	if err != nil {
+		return 0, 0, false, "", err
 	}
 	return limit, offset, enabled, strings.TrimSpace(query), nil
 }
@@ -244,7 +286,9 @@ func (h *Handler) referenceConflict(w http.ResponseWriter, err error, kind strin
 }
 
 func invalidQuery(w http.ResponseWriter) {
-	writeError(w, http.StatusUnprocessableEntity, "invalid_request")
+	var raw [12]byte
+	_, _ = rand.Read(raw[:])
+	writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"ok": false, "code": "VALIDATION_FAILED", "message": "validation failed", "request_id": "media_" + hex.EncodeToString(raw[:])})
 }
 
 func (h *Handler) images(w http.ResponseWriter, r *http.Request, tail string) {
@@ -253,7 +297,7 @@ func (h *Handler) images(w http.ResponseWriter, r *http.Request, tail string) {
 			if !h.read(w, r) {
 				return
 			}
-			limit, offset, _, q, e := page(r)
+			limit, offset, q, e := imagePage(r)
 			if e != nil {
 				invalidQuery(w)
 				return
@@ -313,33 +357,33 @@ func (h *Handler) images(w http.ResponseWriter, r *http.Request, tail string) {
 		if !method(w, r.Method, http.MethodGet) || !h.read(w, r) {
 			return
 		}
-		item, content, _, e := h.service.Image(r.Context(), imageID)
-		_ = item
-		if e != nil {
-			resultError(w, e)
+		key := parts[2]
+		if !h.service.ValidImageVariant(key) {
+			invalidQuery(w)
 			return
 		}
-		key := parts[2]
-		if key != "original" && key != "thumb_160" && key != "thumb_320" && key != "mobile_1080" && key != "large_1440" {
+		variant, err := h.service.GetImageVariant(r.Context(), imageID, key)
+		if errors.Is(err, mediaapp.ErrInvalidImageVariant) {
+			invalidQuery(w)
+			return
+		}
+		if errors.Is(err, mediaapp.ErrImageVariantNotFound) {
 			writeError(w, 404, "not_found")
 			return
 		}
-		variant, variantType, err := mediaVariant(content, item["mime_type"].(string), key)
 		if err != nil {
-			resultError(w, err)
+			writeError(w, 503, "unavailable")
 			return
 		}
-		sum := sha256.Sum256(variant)
-		etag := "\"" + hex.EncodeToString(sum[:]) + "\""
-		w.Header().Set("ETag", etag)
-		if r.Header.Get("If-None-Match") == etag {
+		w.Header().Set("ETag", variant.ETag)
+		if r.Header.Get("If-None-Match") == variant.ETag {
 			w.WriteHeader(http.StatusNotModified)
 			return
 		}
-		w.Header().Set("Content-Type", variantType)
+		w.Header().Set("Content-Type", variant.MediaType)
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Cache-Control", "private, max-age=3600")
-		_, _ = w.Write(variant)
+		_, _ = w.Write(variant.Content)
 		return
 	}
 	if len(parts) != 1 {
@@ -605,47 +649,6 @@ func imageMutationEnvelope(item map[string]any, source string) map[string]any {
 	return response
 }
 
-func mediaVariant(content []byte, originalType, key string) ([]byte, string, error) {
-	if key == "original" {
-		return content, originalType, nil
-	}
-	limit := map[string]int{"thumb_160": 160, "thumb_320": 320, "mobile_1080": 1080, "large_1440": 1440}[key]
-	if limit == 0 {
-		return nil, "", mediaapp.ErrHTTPNotFound
-	}
-	source, _, err := image.Decode(bytes.NewReader(content))
-	if err != nil {
-		return nil, "", domain.ErrUnsafeImage
-	}
-	bounds := source.Bounds()
-	width, height := bounds.Dx(), bounds.Dy()
-	if width < 1 || height < 1 {
-		return nil, "", domain.ErrUnsafeImage
-	}
-	if width > limit || height > limit {
-		if width >= height {
-			height = height * limit / width
-			width = limit
-		} else {
-			width = width * limit / height
-			height = limit
-		}
-	}
-	target := image.NewRGBA(image.Rect(0, 0, width, height))
-	for y := 0; y < height; y++ {
-		for x := 0; x < width; x++ {
-			sourceX := bounds.Min.X + x*bounds.Dx()/width
-			sourceY := bounds.Min.Y + y*bounds.Dy()/height
-			target.Set(x, y, source.At(sourceX, sourceY))
-		}
-	}
-	var encoded bytes.Buffer
-	if err = png.Encode(&encoded, target); err != nil {
-		return nil, "", err
-	}
-	return encoded.Bytes(), "image/png", nil
-}
-
 func (h *Handler) attachments(w http.ResponseWriter, r *http.Request, tail string) {
 	if strings.HasPrefix(tail, "uploads") {
 		h.attachmentUpload(w, r, strings.Trim(strings.TrimPrefix(tail, "uploads"), "/"))
@@ -656,7 +659,7 @@ func (h *Handler) attachments(w http.ResponseWriter, r *http.Request, tail strin
 			if !h.read(w, r) {
 				return
 			}
-			limit, offset, enabled, q, e := page(r)
+			limit, offset, enabled, q, e := mediaPage(r, 50, 500, false)
 			if e != nil {
 				invalidQuery(w)
 				return
@@ -908,8 +911,8 @@ func (h *Handler) miniprograms(w http.ResponseWriter, r *http.Request, tail stri
 			if !h.read(w, r) {
 				return
 			}
-			limit, offset, enabled, q, e := page(r)
-			if e != nil || limit > 100 {
+			limit, offset, enabled, q, e := mediaPage(r, 100, 100, false)
+			if e != nil {
 				invalidQuery(w)
 				return
 			}
@@ -1091,8 +1094,8 @@ func (h *Handler) groups(w http.ResponseWriter, r *http.Request, tail string) {
 		if !h.read(w, r) {
 			return
 		}
-		limit, offset, enabled, q, e := page(r)
-		if e != nil || limit > 100 {
+		limit, offset, enabled, q, e := mediaPage(r, 100, 100, false)
+		if e != nil {
 			invalidQuery(w)
 			return
 		}
@@ -1162,7 +1165,16 @@ func groupMutation(item map[string]any) map[string]any {
 	return map[string]any{"ok": true, "item": item, "group_invite": item, "item_id": item["id"], "local_only": true, "provider_call_executed": false, "real_external_call_executed": false}
 }
 func miniMutation(item map[string]any) map[string]any {
-	return map[string]any{"ok": true, "item": item, "miniprogram": item, "item_id": item["id"], "changed": true, "thumb_resolve": nil, "local_only": true, "provider_call_executed": false, "real_external_call_executed": false}
+	changed, _ := item["_changed"].(bool)
+	thumbResolve := item["_thumb_resolve"]
+	public := make(map[string]any, len(item))
+	for key, value := range item {
+		if strings.HasPrefix(key, "_") {
+			continue
+		}
+		public[key] = value
+	}
+	return map[string]any{"ok": true, "item": public, "miniprogram": public, "item_id": public["id"], "changed": changed, "thumb_resolve": thumbResolve, "local_only": true, "provider_call_executed": false, "real_external_call_executed": false}
 }
 func miniDetail(item map[string]any) map[string]any {
 	return map[string]any{"ok": true, "item": item, "miniprogram": item, "item_id": item["id"], "changed": false, "thumb_resolve": nil, "local_only": true, "provider_call_executed": false, "real_external_call_executed": false}

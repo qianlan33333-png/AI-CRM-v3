@@ -89,15 +89,32 @@ func TestMediaHTTPCompatibilitySecurityAndFrozenWriteContract(t *testing.T) {
 			requireJSONArray(t, empty, field)
 		}
 	}
-	for _, query := range []string{"?limit=0", "?offset=-1", "?enabled_only=TRUE", "?limit=1&limit=2"} {
-		if got := serve(httptest.NewRequest(http.MethodGet, "/api/admin/image-library"+query, nil)); got.Code != http.StatusUnprocessableEntity {
-			t.Fatalf("image query %q status=%d", query, got.Code)
+	for _, query := range []string{"?enabled_only=TRUE", "?limit=1&limit=2"} {
+		got := serve(httptest.NewRequest(http.MethodGet, "/api/admin/image-library"+query, nil))
+		payload := responseJSON(t, got, http.StatusUnprocessableEntity)
+		if payload["code"] != "VALIDATION_FAILED" {
+			t.Fatalf("image query %q payload=%#v", query, payload)
+		}
+	}
+	for query, want := range map[string]float64{"?limit=0": 100, "?limit=-1": 1, "?limit=999": 500, "?offset=-1": 100} {
+		payload := responseJSON(t, serve(httptest.NewRequest(http.MethodGet, "/api/admin/image-library"+query, nil)), http.StatusOK)
+		if payload["limit"] != want {
+			t.Fatalf("image query %q limit=%v want=%v", query, payload["limit"], want)
+		}
+		if query == "?offset=-1" && payload["offset"] != float64(0) {
+			t.Fatalf("negative image offset=%v", payload["offset"])
 		}
 	}
 	unauthenticated := httptest.NewRequest(http.MethodGet, "/api/admin/image-library", nil)
 	unauthenticated.Header.Set("X-Test-Auth", "none")
 	if got := serve(unauthenticated); got.Code != http.StatusUnauthorized {
 		t.Fatalf("unauthenticated status=%d", got.Code)
+	}
+	unauthenticatedWrite := httptest.NewRequest(http.MethodPost, "/api/admin/miniprogram-library", bytes.NewBufferString(`{"name":"unauth","appid":"wx","pagepath":"pages/a","title":"unauth"}`))
+	unauthenticatedWrite.Header.Set("X-Test-Auth", "none")
+	unauthenticatedWrite.Header.Set("X-CSRF-Token", "test-csrf")
+	if got := serve(unauthenticatedWrite); got.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated write must precede csrf/role checks: status=%d", got.Code)
 	}
 	viewer := httptest.NewRequest(http.MethodPost, "/api/admin/miniprogram-library", bytes.NewBufferString(`{"name":"viewer","appid":"wx1","pagepath":"pages/a","title":"viewer"}`))
 	viewer.Header.Set("X-Test-Role", "viewer")
@@ -157,6 +174,13 @@ func TestMediaHTTPCompatibilitySecurityAndFrozenWriteContract(t *testing.T) {
 	if got := serve(httptest.NewRequest(http.MethodGet, "/api/admin/image-library/"+jsonID(imageID)+"?variant=unknown", nil)); got.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("unknown variant status=%d", got.Code)
 	}
+	variantResponse := serve(httptest.NewRequest(http.MethodGet, "/api/admin/image-library/"+jsonID(imageID)+"/variants/thumb_160", nil))
+	if variantResponse.Code != http.StatusOK || variantResponse.Header().Get("ETag") == "" || variantResponse.Header().Get("Content-Type") != "image/png" {
+		t.Fatalf("app variant contract status=%d etag=%q type=%q", variantResponse.Code, variantResponse.Header().Get("ETag"), variantResponse.Header().Get("Content-Type"))
+	}
+	if got := serve(httptest.NewRequest(http.MethodGet, "/api/admin/image-library/"+jsonID(imageID)+"/variants/nope", nil)); got.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("unknown variant path status=%d", got.Code)
+	}
 	missingFileName := admin(httptest.NewRequest(http.MethodPost, "/api/admin/image-library", strings.NewReader(`{"data_url":"data:image/png;base64,`+base64.StdEncoding.EncodeToString(httpPNG(t))+`"}`)))
 	if got := serve(missingFileName); got.Code != http.StatusBadRequest {
 		t.Fatalf("canonical image must require file_name: status=%d", got.Code)
@@ -205,6 +229,19 @@ func TestMediaHTTPCompatibilitySecurityAndFrozenWriteContract(t *testing.T) {
 
 	miniDetail := responseJSON(t, serve(httptest.NewRequest(http.MethodGet, "/api/admin/miniprogram-library/"+jsonID(int64(compatJSON["item_id"].(float64))), nil)), http.StatusOK)
 	requireJSONFields(t, miniDetail, "ok", "item", "miniprogram", "local_only", "provider_call_executed", "real_external_call_executed")
+	miniNoopID := int64(compatJSON["item_id"].(float64))
+	miniNoop := admin(httptest.NewRequest(http.MethodPut, "/api/admin/miniprogram-library/"+jsonID(miniNoopID), strings.NewReader(`{"name":"compat","appid":"wx123","pagepath":"pages/a","title":"card"}`)))
+	miniNoop.Header.Set("Idempotency-Key", "mini-noop-replay-key-0001")
+	miniNoopResult := responseJSON(t, serve(miniNoop), http.StatusOK)
+	if miniNoopResult["changed"] != false || miniNoopResult["thumb_resolve"] != nil {
+		t.Fatalf("mini no-op response=%#v", miniNoopResult)
+	}
+	miniNoopReplay := admin(httptest.NewRequest(http.MethodPut, "/api/admin/miniprogram-library/"+jsonID(miniNoopID), strings.NewReader(`{"name":"compat","appid":"wx123","pagepath":"pages/a","title":"card"}`)))
+	miniNoopReplay.Header.Set("Idempotency-Key", "mini-noop-replay-key-0001")
+	miniNoopReplayResult := responseJSON(t, serve(miniNoopReplay), http.StatusOK)
+	if miniNoopReplayResult["changed"] != false || miniNoopReplayResult["item_id"] != miniNoopResult["item_id"] {
+		t.Fatalf("mini no-op replay=%#v", miniNoopReplayResult)
+	}
 	group := admin(httptest.NewRequest(http.MethodPost, "/api/admin/group-invite-library", bytes.NewBufferString(`{"name":"group","title":"group","join_url":"https://work.weixin.qq.com/gm/a","cover_image_id":`+jsonID(imageID)+`}`)))
 	groupResponse := responseJSON(t, serve(group), http.StatusOK)
 	requireJSONFields(t, groupResponse, "ok", "item", "group_invite", "item_id", "local_only", "provider_call_executed", "real_external_call_executed")

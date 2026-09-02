@@ -134,6 +134,58 @@ type ImageInput struct {
 	Enabled                                           bool
 }
 
+// StoredImageVariant is the Media persistence projection consumed by the
+// application variant service.  It deliberately includes both persisted
+// digests: the service refuses to emit bytes unless metadata, blob bytes and
+// dimensions agree.
+type StoredImageVariant struct {
+	ID                          int64
+	FileName, MimeType          string
+	FileSize, Width, Height     int32
+	ImageChecksum, BlobChecksum []byte
+	Content                     []byte
+}
+
+// ReadImageVariant performs the one local, transaction-bound read needed for
+// a rendered image.  HTTP must not reconstruct this projection itself.
+func (r *Repository) ReadImageVariant(ctx context.Context, id int64) (StoredImageVariant, error) {
+	if id < 1 {
+		return StoredImageVariant{}, ErrNotFound
+	}
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return StoredImageVariant{}, err
+	}
+	var row StoredImageVariant
+	var imageDigest, blobDigest string
+	err = tx.QueryRow(ctx, `SELECT i.id,i.file_name,i.mime_type,i.byte_size,i.width,i.height,i.blob_digest,b.digest,b.content
+FROM media_images i JOIN media_blobs b ON b.digest=i.blob_digest WHERE i.id=$1`, id).
+		Scan(&row.ID, &row.FileName, &row.MimeType, &row.FileSize, &row.Width, &row.Height, &imageDigest, &blobDigest, &row.Content)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return StoredImageVariant{}, ErrNotFound
+	}
+	if err != nil {
+		return StoredImageVariant{}, err
+	}
+	decode := func(value string) ([]byte, error) {
+		if !strings.HasPrefix(value, "sha256:") || len(value) != len("sha256:")+sha256.Size*2 {
+			return nil, ErrConflict
+		}
+		out, err := hex.DecodeString(strings.TrimPrefix(value, "sha256:"))
+		if err != nil || len(out) != sha256.Size {
+			return nil, ErrConflict
+		}
+		return out, nil
+	}
+	if row.ImageChecksum, err = decode(imageDigest); err != nil {
+		return StoredImageVariant{}, err
+	}
+	if row.BlobChecksum, err = decode(blobDigest); err != nil {
+		return StoredImageVariant{}, err
+	}
+	return row, nil
+}
+
 func (r *Repository) CreateImage(ctx context.Context, actor int64, key string, input ImageInput) (map[string]any, error) {
 	var ok bool
 	input.Name = strings.TrimSpace(input.Name)
@@ -756,6 +808,13 @@ func miniMap(id int64, name, appID, page, title string, thumb *int64, enabled bo
 	}
 	return out
 }
+
+func sameOptionalID(left, right *int64) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
+}
 func (r *Repository) ListMiniPrograms(ctx context.Context, limit, offset int, enabledOnly bool, q string) ([]map[string]any, int, error) {
 	if limit < 1 || limit > 100 || offset < 0 {
 		return nil, 0, ErrInvalid
@@ -846,6 +905,7 @@ func (r *Repository) CreateMiniProgram(ctx context.Context, actor int64, key str
 			return err
 		}
 		out = miniMap(id, n, a, p, t, thumb, enabled, version, actor, actor, c, u)
+		out["_changed"] = true
 		return r.complete(txctx, "miniprogram.create", "miniprogram", actor, key, id, out, "media.miniprogram.created")
 	})
 	return out, err
@@ -902,7 +962,7 @@ func (r *Repository) UpdateMiniProgram(ctx context.Context, id, actor int64, key
 		if err != nil {
 			return err
 		}
-		oldThumb := thumb
+		oldName, oldAppID, oldPage, oldTitle, oldEnabled, oldThumb := n, a, p, t, enabled, thumb
 		if v, ok := input["name"].(string); ok {
 			n = strings.TrimSpace(v)
 		}
@@ -943,6 +1003,11 @@ func (r *Repository) UpdateMiniProgram(ctx context.Context, id, actor int64, key
 		if n == "" || a == "" || p == "" || t == "" || len(n) > 200 || len(a) > 120 || len(p) > 500 || len(t) > 200 {
 			return ErrInvalid
 		}
+		if n == oldName && a == oldAppID && p == oldPage && t == oldTitle && enabled == oldEnabled && sameOptionalID(thumb, oldThumb) {
+			out = miniMap(id, n, a, p, t, thumb, enabled, version, createdBy, updatedBy, c, u)
+			out["_changed"] = false
+			return r.complete(txctx, "miniprogram.update", "miniprogram", actor, key, id, out, "media.miniprogram.update_noop")
+		}
 		err = tx.QueryRow(txctx, `UPDATE media_miniprograms SET name=$2,app_id=$3,page_path=$4,title=$5,thumb_image_id=$6,enabled=$7,updated_by=$8,version=version+1,updated_at=clock_timestamp() WHERE id=$1 RETURNING version,updated_at`, id, n, a, p, t, thumb, enabled, actor).Scan(&version, &u)
 		if err != nil {
 			return err
@@ -951,6 +1016,7 @@ func (r *Repository) UpdateMiniProgram(ctx context.Context, id, actor int64, key
 			return err
 		}
 		out = miniMap(id, n, a, p, t, thumb, enabled, version, createdBy, actor, c, u)
+		out["_changed"] = true
 		return r.complete(txctx, "miniprogram.update", "miniprogram", actor, key, id, out, "media.miniprogram.updated")
 	})
 	return out, err

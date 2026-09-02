@@ -1,11 +1,7 @@
 package http
 
 import (
-	"bytes"
 	"encoding/base64"
-	"image"
-	"image/color"
-	"image/png"
 	"net/http/httptest"
 	"testing"
 )
@@ -31,33 +27,6 @@ func TestImageQueryFrozenFilterShape(t *testing.T) {
 	}
 	if _, err := imageQuery(httptest.NewRequest("GET", "/?enabled_only=TRUE", nil), 50, 0, ""); err == nil {
 		t.Fatal("non-lowercase boolean accepted")
-	}
-}
-
-func TestMediaVariantIsDeterministicAndNotOriginalBytes(t *testing.T) {
-	source := image.NewRGBA(image.Rect(0, 0, 400, 200))
-	source.Set(0, 0, color.RGBA{R: 255, A: 255})
-	var original bytes.Buffer
-	if err := png.Encode(&original, source); err != nil {
-		t.Fatal(err)
-	}
-	first, mime, err := mediaVariant(original.Bytes(), "image/png", "thumb_160")
-	if err != nil {
-		t.Fatal(err)
-	}
-	second, _, err := mediaVariant(original.Bytes(), "image/png", "thumb_160")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if mime != "image/png" || !bytes.Equal(first, second) || bytes.Equal(first, original.Bytes()) {
-		t.Fatal("variant must be deterministic rendered bytes")
-	}
-	decoded, _, err := image.Decode(bytes.NewReader(first))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if decoded.Bounds().Dx() != 160 || decoded.Bounds().Dy() != 80 {
-		t.Fatalf("dimensions=%v", decoded.Bounds())
 	}
 }
 

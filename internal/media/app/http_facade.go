@@ -14,6 +14,7 @@ type HTTPFacade interface {
 	// ValidImageVariant is owned by the Media application layer; adapters must
 	// not maintain a second variant allow-list.
 	ValidImageVariant(string) bool
+	GetImageVariant(context.Context, int64, string) (ImageVariant, error)
 	ReferenceConflict(error) (map[string][]int64, bool)
 }
 
@@ -46,13 +47,44 @@ type HTTPRepository interface {
 	CompleteAttachmentUpload(context.Context, int64, int64, string) (int64, error)
 }
 
-type httpFacade struct{ store HTTPRepository }
+type variantRepository interface {
+	Within(context.Context, func(context.Context) error) error
+	ReadImageVariant(context.Context, int64) (mediastore.StoredImageVariant, error)
+}
+
+type variantUOW struct{ repository variantRepository }
+
+func (u variantUOW) Within(ctx context.Context, callback func(context.Context) error) error {
+	return u.repository.Within(ctx, callback)
+}
+
+type variantStore struct{ repository variantRepository }
+
+func (s variantStore) ReadImageVariant(ctx context.Context, id int64) (ImageVariantRow, error) {
+	row, err := s.repository.ReadImageVariant(ctx, id)
+	if errors.Is(err, mediastore.ErrNotFound) {
+		return ImageVariantRow{}, ErrImageVariantNotFound
+	}
+	if err != nil {
+		return ImageVariantRow{}, err
+	}
+	return ImageVariantRow{ID: row.ID, FileName: row.FileName, MimeType: row.MimeType, FileSize: row.FileSize, Width: row.Width, Height: row.Height, ImageChecksum: row.ImageChecksum, BlobChecksum: row.BlobChecksum, Content: row.Content}, nil
+}
+
+type httpFacade struct {
+	store    HTTPRepository
+	variants *Service
+}
 
 func NewHTTPFacade(store HTTPRepository) (HTTPFacade, error) {
 	if store == nil {
 		return nil, errors.New("media HTTP facade store is required")
 	}
-	return &httpFacade{store: store}, nil
+	variants, ok := store.(variantRepository)
+	if !ok {
+		return nil, errors.New("media HTTP facade variant reader is required")
+	}
+	return &httpFacade{store: store, variants: NewReadService(variantUOW{variants}, variantStore{variants})}, nil
 }
 
 type ImageInput = mediastore.ImageInput
@@ -72,6 +104,12 @@ func (f *httpFacade) ListImagesFiltered(c context.Context, q ImageQuery) ([]map[
 	return f.store.ListImagesFiltered(c, q)
 }
 func (f *httpFacade) ValidImageVariant(key string) bool { return ValidImageVariantKey(key) }
+func (f *httpFacade) GetImageVariant(ctx context.Context, imageID int64, key string) (ImageVariant, error) {
+	if f == nil || f.variants == nil {
+		return ImageVariant{}, ErrImageVariantUnavailable
+	}
+	return f.variants.GetImageVariant(ctx, imageID, key)
+}
 func (f *httpFacade) ReferenceConflict(err error) (map[string][]int64, bool) {
 	var conflict *mediastore.ReferenceConflict
 	if !errors.As(err, &conflict) || conflict == nil {

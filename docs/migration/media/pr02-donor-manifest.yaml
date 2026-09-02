@@ -102,29 +102,20 @@ frontend:
     - web/src/api/generated/p4-media-compat/p4-media-compat.ts
     - web/src/api/generated/p4-media-content-delivery/p4-media-content-delivery.ts
     - web/src/api/generated/health.schemas.ts
-deferred_to_terra:
-  - owner: Terra/Media
-    item: register Media application/store/http wiring in the v3 composition root
-    reason: cmd/aicrm and central webshell are out of scope for this restricted donor commit
-  - owner: Terra/Media
-    item: design independent v3 PostgreSQL tables, receipts, audit, and outbox transaction boundaries
-    reason: donor migrations and v2 stores are prohibited; no v3 migration was added
-  - owner: Terra/Media
-    item: implement Media-owned SQL/blob adapters for image, attachment, mini-program and group-invite write contracts
-    reason: this commit supplies application behavior and narrow ports but donor stores, migrations and v2 runtime are prohibited
-  - owner: Terra/Outbound
-    item: provider upload/lease/reconcile and WeCom send integration
-    reason: this slice freezes provider-ready facts only and must not call providers
-  - owner: Terra/Web
-    item: select and integrate staged frontend files into the v3 webshell/build
-    reason: frontend donor bytes are staged only; no design or API rewrite was authorized
-  - owner: Terra/Media
-    item: content-package publication contracts only (preview/create/update/bind)
-    reason: attachment multipart initiate/part/complete is active PR02 scope; content-package publication remains PR06
+integrated_v3:
+  central_files:
+    - cmd/aicrm/composition.go
+    - internal/media/module.go
+    - internal/media/http/handler.go
+    - internal/media/store/postgres.go
+    - migrations/0006_media.sql
+    - api/openapi.yaml
+    - scripts/stage-pr01-effects-ui.mjs
+  transaction_boundary: PostgreSQL Unit of Work commits Media state, receipts, audit and outbox together
+  release: PR02 exposes exactly the three frozen Media management HTML routes and their required byte-exact assets; attachment initiate/part/complete is active PR02 scope
+  external_effects: provider upload, lease and reconciliation remain disabled and out of scope
+  content_package: preview/create/update/bind remains PR06 and is not exposed by PR02
 excluded:
-  - cmd/aicrm
-  - api/openapi.yaml
-  - migrations
   - go.mod
   - go.sum
   - package*.json

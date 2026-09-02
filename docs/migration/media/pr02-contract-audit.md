@@ -28,7 +28,7 @@
 
 | 方法 | URL | 请求/查询 DTO | 结果/行为 |
 | --- | --- | --- | --- |
-| `GET` | `/api/admin/image-library` | `GetLegacyImageListParams`：`limit`、`offset`、`enabled_only`、`q`、`category`、`tags`、重复 `tag_group`、`only_unlabeled` | `LegacyImageListSuccess`；默认启用行、严格分页和 facet 过滤 |
+| `GET` | `/api/admin/image-library` | `GetLegacyImageListParams`：`limit`、`offset`、`enabled_only`、`q`、`category`、`tags`、重复 `tag_group`、`only_unlabeled` | `LegacyImageListSuccess`；默认 `enabled_only=true`，limit 缺省/0=100、负数=1、上限=500，offset<=0=0；重复标量或非法布尔返回 422 `VALIDATION_FAILED` |
 | `POST` | `/api/admin/image-library` | `LegacyImageCreateRequest`：规范 `data_url`、`file_name`，可选 name/description/tags/category/enabled | `LegacyImageCreateSuccess`；从规范 data URL 导入本地图片，不调用 Provider |
 | `GET` | `/api/admin/image-library/facets` | 无 | `LegacyImageFacetsSuccess`；本地 category/tag facets |
 | `GET` | `/api/admin/image-library/{image_id}` | `GetLegacyImageParams`：`include_data`、`variant` | `LegacyImageDetailSuccess`；禁用行可直接读取，variant 只返回相对地址/事实，不在读取时生成 |
@@ -57,7 +57,7 @@
 | `PUT` | `/api/admin/attachment-library/uploads/{upload_id}/parts/{part_number}` | `MediaAttachmentUploadPartRequest`（sha256、base64 content）→ 204；part digest 必须匹配 |
 | `POST` | `/api/admin/attachment-library/uploads/{upload_id}/complete` | upload ID → attachment ID；必须由 store 检查顺序、总大小、完整性 |
 
-所有写请求的 HTTP 鉴权、CSRF、`Idempotency-Key`、错误映射和路由注册属于 Terra adapter；本 donor app 不持有事务外 Provider 调用。
+HTTP adapter 先验证会话（缺失/过期为 401），再验证管理角色与 CSRF（403），并负责兼容 `Idempotency-Key`、错误映射和路由注册；本 donor app 不持有事务外 Provider 调用。
 
 ## 关键 Journey / 状态边界
 
