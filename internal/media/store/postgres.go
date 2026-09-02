@@ -617,8 +617,8 @@ func (r *Repository) UpdateAttachment(ctx context.Context, id, actor int64, key 
 	return out, err
 }
 
-func miniMap(id int64, name, appID, page, title string, thumb *int64, enabled bool, version int64, created, updated time.Time) map[string]any {
-	out := map[string]any{"id": id, "resource_id": id, "name": name, "appid": appID, "app_id": appID, "pagepath": page, "page_path": page, "title": title, "enabled": enabled, "version": version, "created_at": created.UTC().Format(time.RFC3339Nano), "updated_at": updated.UTC().Format(time.RFC3339Nano), "thumb_media_id": "", "thumb_image_url": "", "thumb_image_base64": "", "thumbnail_status": "not_available"}
+func miniMap(id int64, name, appID, page, title string, thumb *int64, enabled bool, version, createdBy, updatedBy int64, created, updated time.Time) map[string]any {
+	out := map[string]any{"id": id, "resource_id": id, "name": name, "appid": appID, "app_id": appID, "pagepath": page, "page_path": page, "title": title, "enabled": enabled, "version": version, "created_by": createdBy, "updated_by": updatedBy, "created_at": created.UTC().Format(time.RFC3339Nano), "updated_at": updated.UTC().Format(time.RFC3339Nano), "thumb_media_id": "", "thumb_image_url": "", "thumb_image_base64": "", "thumbnail_status": "not_available"}
 	if thumb != nil {
 		out["thumb_image_id"] = *thumb
 		out["thumb_image_url"] = fmt.Sprintf("/api/admin/image-library/%d/variants/thumb_320", *thumb)
@@ -637,21 +637,21 @@ func (r *Repository) ListMiniPrograms(ctx context.Context, limit, offset int, en
 		if err := tx.QueryRow(txctx, `SELECT count(*) FROM media_miniprograms`+where, q, enabledOnly).Scan(&total); err != nil {
 			return err
 		}
-		rows, err := tx.Query(txctx, `SELECT id,name,app_id,page_path,title,thumb_image_id,enabled,version,created_at,updated_at FROM media_miniprograms`+where+` ORDER BY updated_at DESC,id DESC LIMIT $3 OFFSET $4`, q, enabledOnly, limit, offset)
+		rows, err := tx.Query(txctx, `SELECT id,name,app_id,page_path,title,thumb_image_id,enabled,version,created_by,updated_by,created_at,updated_at FROM media_miniprograms`+where+` ORDER BY updated_at DESC,id DESC LIMIT $3 OFFSET $4`, q, enabledOnly, limit, offset)
 		if err != nil {
 			return err
 		}
 		defer rows.Close()
 		for rows.Next() {
-			var id, v int64
+			var id, v, createdBy, updatedBy int64
 			var n, a, p, t string
 			var thumb *int64
 			var enabled bool
 			var c, u time.Time
-			if err = rows.Scan(&id, &n, &a, &p, &t, &thumb, &enabled, &v, &c, &u); err != nil {
+			if err = rows.Scan(&id, &n, &a, &p, &t, &thumb, &enabled, &v, &createdBy, &updatedBy, &c, &u); err != nil {
 				return err
 			}
-			out = append(out, miniMap(id, n, a, p, t, thumb, enabled, v, c, u))
+			out = append(out, miniMap(id, n, a, p, t, thumb, enabled, v, createdBy, updatedBy, c, u))
 		}
 		return rows.Err()
 	})
@@ -704,7 +704,7 @@ func (r *Repository) CreateMiniProgram(ctx context.Context, actor int64, key str
 		if err != nil {
 			return err
 		}
-		out = miniMap(id, n, a, p, t, thumb, enabled, version, c, u)
+		out = miniMap(id, n, a, p, t, thumb, enabled, version, actor, actor, c, u)
 		return r.complete(txctx, "miniprogram.create", "miniprogram", actor, key, id, out, "media.miniprogram.created")
 	})
 	return out, err
@@ -720,16 +720,16 @@ func (r *Repository) MiniProgram(ctx context.Context, id int64) (map[string]any,
 		var n, a, p, t string
 		var thumb *int64
 		var enabled bool
-		var version int64
+		var version, createdBy, updatedBy int64
 		var c, u time.Time
-		err := tx.QueryRow(txctx, `SELECT id,name,app_id,page_path,title,thumb_image_id,enabled,version,created_at,updated_at FROM media_miniprograms WHERE id=$1`, id).Scan(&id, &n, &a, &p, &t, &thumb, &enabled, &version, &c, &u)
+		err := tx.QueryRow(txctx, `SELECT id,name,app_id,page_path,title,thumb_image_id,enabled,version,created_by,updated_by,created_at,updated_at FROM media_miniprograms WHERE id=$1`, id).Scan(&id, &n, &a, &p, &t, &thumb, &enabled, &version, &createdBy, &updatedBy, &c, &u)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrNotFound
 		}
 		if err != nil {
 			return err
 		}
-		out = miniMap(id, n, a, p, t, thumb, enabled, version, c, u)
+		out = miniMap(id, n, a, p, t, thumb, enabled, version, createdBy, updatedBy, c, u)
 		return nil
 	})
 	return out, err
@@ -752,9 +752,9 @@ func (r *Repository) UpdateMiniProgram(ctx context.Context, id, actor int64, key
 		var n, a, p, t string
 		var thumb *int64
 		var enabled bool
-		var version int64
+		var version, createdBy, updatedBy int64
 		var c, u time.Time
-		err = tx.QueryRow(txctx, `SELECT name,app_id,page_path,title,thumb_image_id,enabled,version,created_at,updated_at FROM media_miniprograms WHERE id=$1 FOR UPDATE`, id).Scan(&n, &a, &p, &t, &thumb, &enabled, &version, &c, &u)
+		err = tx.QueryRow(txctx, `SELECT name,app_id,page_path,title,thumb_image_id,enabled,version,created_by,updated_by,created_at,updated_at FROM media_miniprograms WHERE id=$1 FOR UPDATE`, id).Scan(&n, &a, &p, &t, &thumb, &enabled, &version, &createdBy, &updatedBy, &c, &u)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrNotFound
 		}
@@ -805,7 +805,7 @@ func (r *Repository) UpdateMiniProgram(ctx context.Context, id, actor int64, key
 		if err != nil {
 			return err
 		}
-		out = miniMap(id, n, a, p, t, thumb, enabled, version, c, u)
+		out = miniMap(id, n, a, p, t, thumb, enabled, version, createdBy, actor, c, u)
 		return r.complete(txctx, "miniprogram.update", "miniprogram", actor, key, id, out, "media.miniprogram.updated")
 	})
 	return out, err
