@@ -14,11 +14,6 @@ const (
 	KindService  Kind = "service"
 )
 
-type Principal struct {
-	Kind       Kind
-	InternalID int64
-}
-
 func (principal Principal) Validate() error {
 	if principal.InternalID < 1 {
 		return ErrInvalidPrincipal
