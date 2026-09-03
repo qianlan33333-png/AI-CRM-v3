@@ -114,7 +114,7 @@ func (r *Repository) AppendMutationFacts(ctx context.Context, fact MutationFact)
 }
 
 func validKind(kind string) bool {
-	return kind == "group" || kind == "package" || kind == "configuration" || kind == "refresh_run" || kind == "snapshot" || kind == "binding" || kind == "sender_set"
+	return kind == "group" || kind == "package" || kind == "configuration" || kind == "refresh_run" || kind == "snapshot" || kind == "binding" || kind == "sender_set" || kind == "member_event_batch"
 }
 func jsonObject(raw json.RawMessage) bool {
 	var object map[string]json.RawMessage

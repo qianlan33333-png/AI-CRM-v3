@@ -83,6 +83,17 @@ type MemberPage struct {
 	NextCursor string   `json:"next_cursor,omitempty"`
 }
 
+type MemberEventPage struct {
+	Items      []MemberEnteredV1
+	NextCursor string
+}
+
+// MemberEventReader exposes only immutable canonical events created by a
+// published snapshot. It never resolves or provisions an identity.
+type MemberEventReader interface {
+	MemberEvents(context.Context, SnapshotID, string, int) (MemberEventPage, error)
+}
+
 // SnapshotReader exposes only immutable, published audience facts.
 type SnapshotReader interface {
 	PublishedSnapshot(context.Context, PackageID) (Snapshot, bool, error)

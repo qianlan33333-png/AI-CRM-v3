@@ -122,7 +122,7 @@ func canonicalQuietHours(raw json.RawMessage) (json.RawMessage, error) {
 	var in QuietHours
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
-	if decoder.Decode(&in) != nil || in.Timezone == "" || len(in.Timezone) > 100 || !clock(in.Start) || !clock(in.End) {
+	if decoder.Decode(&in) != nil || in.Timezone == "" || len(in.Timezone) > 100 || !clock(in.Start) || !clock(in.End) || in.Start == in.End {
 		return nil, ErrInvalidPolicy
 	}
 	if _, zoneErr := time.LoadLocation(in.Timezone); zoneErr != nil {
@@ -172,6 +172,8 @@ type RunPreview struct {
 }
 type RuntimeRun struct {
 	ID                    int64                   `json:"id"`
+	PolicyID              int64                   `json:"policy_id,omitempty"`
+	PolicyVersion         int64                   `json:"policy_version,omitempty"`
 	PackageID             int64                   `json:"package_id"`
 	PackageVersion        int64                   `json:"package_version"`
 	SnapshotID            int64                   `json:"snapshot_id"`

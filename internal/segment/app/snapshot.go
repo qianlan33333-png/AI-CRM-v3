@@ -32,10 +32,16 @@ type RefreshStore interface {
 	PublishedSnapshot(context.Context, segmentport.PackageID) (segmentport.Snapshot, bool, error)
 	Snapshot(context.Context, segmentport.SnapshotID) (segmentport.Snapshot, bool, error)
 	Members(context.Context, segmentport.SnapshotID, string, int) (segmentport.MemberPage, error)
+	CreateMemberEnteredEvents(context.Context, segmentdomain.Snapshot, *int64, int64, time.Time) (int64, error)
+	MemberEvents(context.Context, segmentport.SnapshotID, string, int) (segmentport.MemberEventPage, error)
 }
 
 type RefreshEnqueuer interface {
 	EnqueueRefreshWithin(context.Context, int64) (int64, error)
+}
+
+type MemberEventEnqueuer interface {
+	EnqueueMemberEventsWithin(context.Context, segmentport.SnapshotID) (int64, error)
 }
 
 type SnapshotService struct {
@@ -43,6 +49,7 @@ type SnapshotService struct {
 	store     RefreshStore
 	evaluator *Evaluator
 	enqueuer  RefreshEnqueuer
+	events    MemberEventEnqueuer
 	now       func() time.Time
 }
 
@@ -69,11 +76,11 @@ type WatermarkSummary struct {
 	Fresh  bool      `json:"fresh"`
 }
 
-func NewSnapshotService(uow platformport.UnitOfWork, store RefreshStore, evaluator *Evaluator, enqueuer RefreshEnqueuer) (*SnapshotService, error) {
-	if uow == nil || store == nil || evaluator == nil || enqueuer == nil {
+func NewSnapshotService(uow platformport.UnitOfWork, store RefreshStore, evaluator *Evaluator, enqueuer RefreshEnqueuer, events MemberEventEnqueuer) (*SnapshotService, error) {
+	if uow == nil || store == nil || evaluator == nil || enqueuer == nil || events == nil {
 		return nil, ErrNotReady
 	}
-	return &SnapshotService{uow: uow, store: store, evaluator: evaluator, enqueuer: enqueuer, now: time.Now}, nil
+	return &SnapshotService{uow: uow, store: store, evaluator: evaluator, enqueuer: enqueuer, events: events, now: time.Now}, nil
 }
 
 func (s *SnapshotService) Preview(ctx context.Context, packageID int64, reference time.Time) (Preview, error) {
@@ -244,7 +251,24 @@ func (s *SnapshotService) ProcessRefresh(ctx context.Context, runID int64) error
 	memberDigest := segmentdomain.DigestMembers(evaluation.CustomerIDs)
 	watermarkDigest := digestWatermarks(evaluation.Watermarks)
 	err = s.uow.Within(ctx, func(tx context.Context) error {
-		_, e := s.store.PublishRefresh(tx, runID, int64(len(evaluation.CustomerIDs)), memberDigest, watermarkDigest, config.CreatedBy, s.now().UTC())
+		prior, priorFound, e := s.store.PublishedSnapshot(tx, segmentport.PackageID(run.PackageID))
+		if e != nil {
+			return e
+		}
+		var priorID *int64
+		if priorFound {
+			value := int64(prior.ID)
+			priorID = &value
+		}
+		snapshot, e := s.store.PublishRefresh(tx, runID, int64(len(evaluation.CustomerIDs)), memberDigest, watermarkDigest, config.CreatedBy, s.now().UTC())
+		if e != nil {
+			return e
+		}
+		created, e := s.store.CreateMemberEnteredEvents(tx, snapshot, priorID, config.CreatedBy, snapshot.ReferenceTime)
+		if e != nil || created == 0 {
+			return e
+		}
+		_, e = s.events.EnqueueMemberEventsWithin(tx, segmentport.SnapshotID(snapshot.ID))
 		return e
 	})
 	return classify(err)
@@ -331,3 +355,18 @@ func (s *SnapshotService) Members(ctx context.Context, snapshotID segmentport.Sn
 	})
 	return value, classify(err)
 }
+
+func (s *SnapshotService) MemberEvents(ctx context.Context, snapshotID segmentport.SnapshotID, cursor string, limit int) (segmentport.MemberEventPage, error) {
+	if s == nil || snapshotID < 1 {
+		return segmentport.MemberEventPage{}, ErrInvalid
+	}
+	var value segmentport.MemberEventPage
+	err := s.uow.Within(ctx, func(tx context.Context) error {
+		var e error
+		value, e = s.store.MemberEvents(tx, snapshotID, cursor, limit)
+		return e
+	})
+	return value, classify(err)
+}
+
+var _ segmentport.MemberEventReader = (*SnapshotService)(nil)

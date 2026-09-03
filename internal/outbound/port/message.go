@@ -3,6 +3,7 @@ package port
 
 import (
 	"context"
+	"time"
 
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 )
@@ -22,6 +23,7 @@ type MessageIntent struct {
 	PayloadDigest         [32]byte
 	PolicyDigest          [32]byte
 	ReceiptKey            string
+	ScheduledAt           time.Time
 }
 
 type MessageExecution struct {

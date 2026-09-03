@@ -342,4 +342,73 @@ func (r *Repository) Members(ctx context.Context, snapshotID segmentport.Snapsho
 	return page, nil
 }
 
+func (r *Repository) CreateMemberEnteredEvents(ctx context.Context, snapshot segmentdomain.Snapshot, previousSnapshotID *int64, actor int64, occurredAt time.Time) (int64, error) {
+	if snapshot.ID < 1 || snapshot.PackageID < 1 || snapshot.ConfigurationVersionID < 1 || snapshot.State != "published" || actor < 1 || occurredAt.IsZero() || (previousSnapshotID != nil && *previousSnapshotID < 1) {
+		return 0, ErrInvalid
+	}
+	t, err := tx(ctx)
+	if err != nil {
+		return 0, err
+	}
+	result, err := t.Exec(ctx, `INSERT INTO segment_audience_member_events(event_id,package_id,snapshot_id,configuration_version_id,customer_id,occurred_at)
+		SELECT 'audmem_' || $1::text || '_' || current.customer_id::text,$2,$1,$3,current.customer_id,$5
+		FROM segment_audience_snapshot_members current
+		WHERE current.snapshot_id=$1
+		  AND ($4::bigint IS NULL OR NOT EXISTS (SELECT 1 FROM segment_audience_snapshot_members previous WHERE previous.snapshot_id=$4 AND previous.customer_id=current.customer_id))
+		ON CONFLICT(snapshot_id,customer_id) DO NOTHING`, snapshot.ID, snapshot.PackageID, snapshot.ConfigurationVersionID, previousSnapshotID, occurredAt.UTC())
+	if err != nil {
+		return 0, err
+	}
+	created := result.RowsAffected()
+	if created == 0 {
+		return 0, nil
+	}
+	payload := []byte(`{"snapshot_id":` + strconv.FormatInt(snapshot.ID, 10) + `,"package_id":` + strconv.FormatInt(snapshot.PackageID, 10) + `,"event_count":` + strconv.FormatInt(created, 10) + `}`)
+	_, err = r.AppendMutationFacts(ctx, MutationFact{ResourceKind: "member_event_batch", ResourceID: snapshot.ID, Operation: "create", EventType: "audience.member_entered.batch.v1", ActorID: actor, Payload: payload, IdempotencyKey: "member-events:" + strconv.FormatInt(snapshot.ID, 10), OccurredAt: occurredAt.UTC()})
+	return created, err
+}
+
+func (r *Repository) MemberEvents(ctx context.Context, snapshotID segmentport.SnapshotID, cursor string, limit int) (segmentport.MemberEventPage, error) {
+	if snapshotID < 1 || limit < 1 || limit > 1000 {
+		return segmentport.MemberEventPage{}, ErrInvalid
+	}
+	after := int64(0)
+	var err error
+	if cursor != "" {
+		after, err = strconv.ParseInt(cursor, 10, 64)
+		if err != nil || after < 1 {
+			return segmentport.MemberEventPage{}, ErrInvalid
+		}
+	}
+	t, err := tx(ctx)
+	if err != nil {
+		return segmentport.MemberEventPage{}, err
+	}
+	rows, err := t.Query(ctx, `SELECT id,event_id,package_id,snapshot_id,configuration_version_id,customer_id,occurred_at FROM segment_audience_member_events WHERE snapshot_id=$1 AND id>$2 ORDER BY id LIMIT $3`, snapshotID, after, limit+1)
+	if err != nil {
+		return segmentport.MemberEventPage{}, err
+	}
+	defer rows.Close()
+	page := segmentport.MemberEventPage{Items: []segmentport.MemberEnteredV1{}}
+	ids := []int64{}
+	for rows.Next() {
+		var rowID int64
+		var item segmentport.MemberEnteredV1
+		if err = rows.Scan(&rowID, &item.EventID, &item.PackageID, &item.SnapshotID, &item.ConfigurationVersionID, &item.CustomerID, &item.OccurredAt); err != nil {
+			return page, err
+		}
+		ids = append(ids, rowID)
+		page.Items = append(page.Items, item)
+	}
+	if err = rows.Err(); err != nil {
+		return page, err
+	}
+	if len(page.Items) > limit {
+		page.NextCursor = strconv.FormatInt(ids[limit-1], 10)
+		page.Items = page.Items[:limit]
+	}
+	return page, nil
+}
+
 var _ segmentport.SnapshotReader = (*Repository)(nil)
+var _ segmentport.MemberEventReader = (*Repository)(nil)

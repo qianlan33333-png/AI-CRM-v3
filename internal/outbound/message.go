@@ -41,7 +41,11 @@ func validMessageIntent(in outboundport.MessageIntent) bool {
 	return (in.SourceKind == "automation_run" || in.SourceKind == "automation_enrollment") && in.SourceID > 0 && in.RunRecipientID > 0 && in.CustomerID > 0 && in.SenderStaffID > 0 && in.AgentID > 0 && in.AgentPublishedVersion > 0 && len(in.ContentReference) > 0 && len(in.ContentReference) <= 200 && len(in.ReceiptKey) >= 16 && len(in.ReceiptKey) <= 128 && strings.TrimSpace(in.ReceiptKey) == in.ReceiptKey && in.SourceDigest != ([32]byte{}) && in.TargetDigest != ([32]byte{}) && in.PayloadDigest != ([32]byte{}) && in.PolicyDigest != ([32]byte{})
 }
 func messageIntentDigest(in outboundport.MessageIntent) [32]byte {
-	raw, _ := json.Marshal([]any{in.SourceKind, in.SourceID, in.RunRecipientID, in.CustomerID, in.SenderStaffID, in.AgentID, in.AgentPublishedVersion, in.ContentReference, hex.EncodeToString(in.SourceDigest[:]), hex.EncodeToString(in.TargetDigest[:]), hex.EncodeToString(in.PayloadDigest[:]), hex.EncodeToString(in.PolicyDigest[:])})
+	scheduledAt := ""
+	if !in.ScheduledAt.IsZero() {
+		scheduledAt = in.ScheduledAt.UTC().Format(time.RFC3339Nano)
+	}
+	raw, _ := json.Marshal([]any{in.SourceKind, in.SourceID, in.RunRecipientID, in.CustomerID, in.SenderStaffID, in.AgentID, in.AgentPublishedVersion, in.ContentReference, hex.EncodeToString(in.SourceDigest[:]), hex.EncodeToString(in.TargetDigest[:]), hex.EncodeToString(in.PayloadDigest[:]), hex.EncodeToString(in.PolicyDigest[:]), scheduledAt})
 	return sha256.Sum256(raw)
 }
 func digestToEffect(namespace string, value [32]byte) effectport.Digest {
@@ -78,7 +82,7 @@ func (s *MessageService) AcceptMessageWithin(ctx context.Context, in outboundpor
 	if replayed && effectID != nil && queueID != nil {
 		return outboundport.MessageAcceptance{MessageIntentID: id, EffectID: *effectID, QueueReceiptID: *queueID, Replayed: true}, nil
 	}
-	projection, receipt, err := s.effects.AcceptAndQueueWithin(ctx, effectport.AcceptCommand{ReceiptKey: effectport.Hash("outbound.message.accept", in.ReceiptKey), Envelope: envelope})
+	projection, receipt, err := s.effects.AcceptAndQueueWithin(ctx, effectport.AcceptCommand{ReceiptKey: effectport.Hash("outbound.message.accept", in.ReceiptKey), Envelope: envelope, ScheduledAt: in.ScheduledAt})
 	if err != nil {
 		return outboundport.MessageAcceptance{}, err
 	}
