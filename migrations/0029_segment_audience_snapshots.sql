@@ -61,3 +61,10 @@ ALTER TABLE segment_audience_packages ADD CONSTRAINT segment_audience_packages_p
 
 CREATE TRIGGER segment_audience_snapshot_members_append_only BEFORE UPDATE OR DELETE OR TRUNCATE ON segment_audience_snapshot_members FOR EACH STATEMENT EXECUTE FUNCTION segment_audience_append_only();
 CREATE TRIGGER segment_audience_refresh_batches_append_only BEFORE UPDATE OR DELETE OR TRUNCATE ON segment_audience_refresh_batches FOR EACH STATEMENT EXECUTE FUNCTION segment_audience_append_only();
+
+ALTER TABLE segment_audience_audit_events DROP CONSTRAINT segment_audience_audit_events_resource_kind_check;
+ALTER TABLE segment_audience_audit_events ADD CONSTRAINT segment_audience_audit_events_resource_kind_check
+  CHECK (resource_kind IN ('group','package','configuration','refresh_run','snapshot'));
+ALTER TABLE segment_audience_outbox DROP CONSTRAINT segment_audience_outbox_aggregate_kind_check;
+ALTER TABLE segment_audience_outbox ADD CONSTRAINT segment_audience_outbox_aggregate_kind_check
+  CHECK (aggregate_kind IN ('group','package','configuration','refresh_run','snapshot'));
