@@ -16,16 +16,20 @@ import (
 type TagCatalogSyncAccepter struct {
 	effects effectport.TransactionalAccepter
 }
-type TagCatalogCompletionSink struct{ writer tagport.SnapshotWriter }
+type TagCatalogCompletionSink struct{ writer tagport.SyncCompletionWriter }
 
-func NewTagCatalogCompletionSink(writer tagport.SnapshotWriter) (*TagCatalogCompletionSink, error) {
+func NewTagCatalogCompletionSink(writer tagport.SyncCompletionWriter) (*TagCatalogCompletionSink, error) {
 	if writer == nil {
 		return nil, errors.New("tag snapshot writer is required")
 	}
 	return &TagCatalogCompletionSink{writer}, nil
 }
 func (s *TagCatalogCompletionSink) CompleteEffect(ctx context.Context, effectRef string, envelope effectport.Envelope, attempt effectport.Attempt, result effectport.AdapterResult) error {
-	if s == nil || s.writer == nil || envelope.Kind != effectport.KindWeComTagCatalog || result.Completion != effectport.StateExecuted || !result.Artifact.Valid() || result.Artifact.Kind != "wecom.tag_catalog.snapshot.v1" {
+	if s == nil || s.writer == nil || envelope.Kind != effectport.KindWeComTagCatalog {
+		return errors.New("invalid tag catalog completion")
+	}
+	state, ok := tagCompletionState(result.Completion)
+	if !ok || (state == tagport.SyncExecuted && (!result.Artifact.Valid() || result.Artifact.Kind != "wecom.tag_catalog.snapshot.v1")) {
 		return errors.New("invalid tag catalog completion")
 	}
 	// effect id is intentionally opaque to the adapter; source receipt is not a customer identifier.
@@ -33,7 +37,28 @@ func (s *TagCatalogCompletionSink) CompleteEffect(ctx context.Context, effectRef
 	if effectID < 1 {
 		return errors.New("invalid tag effect reference")
 	}
-	return s.writer.StoreProviderObservation(ctx, tagport.ProviderObservation{EffectID: effectID, Generation: attempt.Generation, ArtifactDigest: string(result.Artifact.Digest), Snapshot: result.Artifact.Payload})
+	return s.writer.CompleteProviderSync(ctx, tagport.SyncCompletion{EffectID: effectID, Generation: attempt.Generation, State: state, ArtifactDigest: string(result.Artifact.Digest), Snapshot: result.Artifact.Payload})
+}
+
+func tagCompletionState(state effectport.State) (tagport.SyncState, bool) {
+	switch state {
+	case effectport.StateQueued:
+		return tagport.SyncQueued, true
+	case effectport.StateExecuted:
+		return tagport.SyncExecuted, true
+	case effectport.StateUnknown:
+		return tagport.SyncOutcomeUnknown, true
+	case effectport.StateRetryable:
+		return tagport.SyncRetryableFailed, true
+	case effectport.StateFinalFailed:
+		return tagport.SyncFinalFailed, true
+	case effectport.StateCancelled:
+		return tagport.SyncCancelled, true
+	case effectport.StateReconciled:
+		return tagport.SyncReconciled, true
+	default:
+		return "", false
+	}
 }
 
 func NewTagCatalogSyncAccepter(effects effectport.TransactionalAccepter) (*TagCatalogSyncAccepter, error) {

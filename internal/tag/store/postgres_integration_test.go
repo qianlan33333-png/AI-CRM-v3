@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -24,13 +26,13 @@ func TestPostgreSQLCatalogReorderArchiveReplayAndReferenceProtection(t *testing.
 	native, cleanup := tagIntegrationPool(t)
 	defer cleanup()
 	ctx := context.Background()
-	for _, table := range []string{"tag_groups", "tag_catalog_tags", "tag_references", "tag_operation_receipts", "tag_audit_events", "tag_outbox", "tag_sync_receipts", "tag_provider_observations"} {
+	for _, table := range []string{"tag_groups", "tag_catalog_tags", "tag_references", "tag_operation_receipts", "tag_audit_events", "tag_outbox", "tag_sync_receipts", "tag_provider_observations", "tag_provider_group_bindings", "tag_provider_tag_bindings"} {
 		var owned bool
 		if err := native.QueryRow(ctx, `SELECT tableowner=current_user FROM pg_tables WHERE schemaname=current_schema() AND tablename=$1`, table).Scan(&owned); err != nil || !owned {
 			t.Fatalf("table %s ownership = %t, %v", table, owned, err)
 		}
 	}
-	for _, index := range []string{"tag_groups_active_sort_unique", "tag_catalog_tags_active_sort_unique"} {
+	for _, index := range []string{"tag_groups_active_sort_unique", "tag_catalog_tags_active_sort_unique", "tag_sync_receipts_single_active"} {
 		var exists bool
 		if err := native.QueryRow(ctx, `SELECT to_regclass(current_schema() || '.' || $1) IS NOT NULL`, index).Scan(&exists); err != nil || !exists {
 			t.Fatalf("required index %s exists=%t err=%v", index, exists, err)
@@ -101,18 +103,49 @@ func TestPostgreSQLCatalogReorderArchiveReplayAndReferenceProtection(t *testing.
 	if _, err = native.Exec(ctx, `INSERT INTO external_effect_generations(effect_id,generation) VALUES($1,1)`, effectID); err != nil {
 		t.Fatal(err)
 	}
-	observation := tagport.ProviderObservation{EffectID: effectID, Generation: 1, Snapshot: []byte(`{"groups":[]}`)}
-	observation.ArtifactDigest = providerArtifactDigest(observation.Snapshot)
-	if err = uow.Within(ctx, func(txCtx context.Context) error { return repository.StoreProviderObservation(txCtx, observation) }); err != nil {
+	if _, err = native.Exec(ctx, `INSERT INTO tag_sync_receipts(actor_admin_user_id,idempotency_key_digest,trace_id,sync_kind,state,event_id,queue_job_id,effect_id,effect_ref,effect_state,accept_receipt_id,queue_receipt_id,accepted_at) VALUES(7,$1,'','manual','queued',1,1,$2,$3,'queued','accept','queue',clock_timestamp())`, keyDigest("provider-observation-sync"), effectID, "eer_"+strconv.FormatInt(effectID, 10)); err != nil {
 		t.Fatal(err)
 	}
-	if err = uow.Within(ctx, func(txCtx context.Context) error { return repository.StoreProviderObservation(txCtx, observation) }); err != nil {
+	observation := tagport.SyncCompletion{EffectID: effectID, Generation: 1, State: tagport.SyncExecuted, Snapshot: []byte(`{"groups":[{"id":"provider-group","name":"Provider Group","order":0,"tags":[{"id":"provider-tag","name":"Provider Tag","order":0}]}]}`)}
+	observation.ArtifactDigest = providerArtifactDigest(observation.Snapshot)
+	if err = uow.Within(ctx, func(txCtx context.Context) error { return repository.CompleteProviderSync(txCtx, observation) }); err != nil {
+		t.Fatal(err)
+	}
+	status, err := func() (tagport.SyncStatus, error) {
+		var value tagport.SyncStatus
+		err := uow.Within(ctx, func(txCtx context.Context) error {
+			var readErr error
+			value, readErr = repository.LatestSync(txCtx)
+			return readErr
+		})
+		return value, err
+	}()
+	if err != nil || status.State != tagport.SyncExecuted || status.Active || status.GroupCount != 1 || status.TagCount != 1 {
+		t.Fatalf("completed sync status = %#v, %v", status, err)
+	}
+	groupsAfter, tagsAfter, err := func() ([]domain.Group, []domain.Tag, error) {
+		var groups []domain.Group
+		var tags []domain.Tag
+		err := uow.Within(ctx, func(txCtx context.Context) error {
+			var readErr error
+			groups, readErr = repository.ListGroups(txCtx)
+			if readErr == nil {
+				tags, readErr = repository.ListTags(txCtx)
+			}
+			return readErr
+		})
+		return groups, tags, err
+	}()
+	if err != nil || len(groupsAfter) != 3 || groupsAfter[0].Name != "Provider Group" || len(tagsAfter) != 3 || tagsAfter[0].Name != "Provider Tag" {
+		t.Fatalf("projected catalog groups=%#v tags=%#v err=%v", groupsAfter, tagsAfter, err)
+	}
+	if err = uow.Within(ctx, func(txCtx context.Context) error { return repository.CompleteProviderSync(txCtx, observation) }); err != nil {
 		t.Fatalf("same observation replay=%v", err)
 	}
 	driftObservation := observation
 	driftObservation.ArtifactDigest = providerArtifactDigest([]byte(`{"groups":[{"id":"g","name":"g","order":0,"tags":[]}]}`))
 	driftObservation.Snapshot = []byte(`{"groups":[{"id":"g","name":"g","order":0,"tags":[]}]}`)
-	if err = uow.Within(ctx, func(txCtx context.Context) error { return repository.StoreProviderObservation(txCtx, driftObservation) }); !errors.Is(err, ErrConflict) {
+	if err = uow.Within(ctx, func(txCtx context.Context) error { return repository.CompleteProviderSync(txCtx, driftObservation) }); !errors.Is(err, ErrConflict) {
 		t.Fatalf("observation drift=%v", err)
 	}
 	if _, err = native.Exec(ctx, `UPDATE tag_provider_observations SET artifact_digest=artifact_digest`); err == nil {
@@ -121,9 +154,78 @@ func TestPostgreSQLCatalogReorderArchiveReplayAndReferenceProtection(t *testing.
 	if _, err = native.Exec(ctx, `DELETE FROM tag_provider_observations`); err == nil {
 		t.Fatal("observation delete unexpectedly succeeded")
 	}
+	firstCommand := tagport.SyncCommand{Actor: 7, IdempotencyKey: "single-flight-one", Kind: tagport.SyncManual}
+	if err = uow.Within(ctx, func(txCtx context.Context) error {
+		_, reserveErr := repository.ReserveSync(txCtx, firstCommand)
+		return reserveErr
+	}); err != nil {
+		t.Fatal(err)
+	}
+	secondCommand := tagport.SyncCommand{Actor: 8, IdempotencyKey: "single-flight-two", Kind: tagport.SyncManual}
+	if err = uow.Within(ctx, func(txCtx context.Context) error {
+		_, reserveErr := repository.ReserveSync(txCtx, secondCommand)
+		return reserveErr
+	}); !errors.Is(err, tagport.ErrSyncInProgress) {
+		t.Fatalf("second active sync = %v, want ErrSyncInProgress", err)
+	}
+}
+
+func Test0019BackfillsLatestValidatedSnapshotIntoEmptyCatalog(t *testing.T) {
+	native, cleanup := tagIntegrationPoolWithProjection(t, false)
+	defer cleanup()
+	ctx := context.Background()
+	digest := "sha256:" + strings.Repeat("a", 64)
+	if _, err := native.Exec(ctx, `INSERT INTO external_effects(owner,kind,source_ref_digest,target_ref_digest,payload_digest,policy_version_hash,envelope_fingerprint,state) VALUES('outbound','wecom_tag_catalog',$1,$1,$1,$1,$1,'executed')`, digest); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := native.Exec(ctx, `INSERT INTO external_effect_generations(effect_id,generation) VALUES(1,1)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := native.Exec(ctx, `INSERT INTO tag_sync_receipts(actor_admin_user_id,idempotency_key_digest,sync_kind,state,effect_id,effect_ref,effect_state) VALUES(7,decode(repeat('aa',32),'hex'),'manual','queued',1,'eer_1','queued')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := native.Exec(ctx, `INSERT INTO tag_provider_observations(effect_id,generation,artifact_digest,snapshot) VALUES(1,1,$1,'{"groups":[{"id":"g1","name":"Group 1","order":0,"tags":[{"id":"t1","name":"Tag 1","order":0},{"id":"t2","name":"Tag 2","order":1}]}]}'::jsonb)`, digest); err != nil {
+		t.Fatal(err)
+	}
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("locate integration test")
+	}
+	projectionSQL, err := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "..", "migrations", "0019_tag_catalog_sync_projection.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = native.Exec(ctx, string(projectionSQL)); err != nil {
+		t.Fatal(err)
+	}
+	var state, eventType string
+	var groups, tags, groupBindings, tagBindings int
+	if err = native.QueryRow(ctx, `SELECT state FROM tag_sync_receipts WHERE id=1`).Scan(&state); err != nil {
+		t.Fatal(err)
+	}
+	for query, target := range map[string]*int{
+		`SELECT count(*) FROM tag_groups WHERE archived_at IS NULL`:       &groups,
+		`SELECT count(*) FROM tag_catalog_tags WHERE archived_at IS NULL`: &tags,
+		`SELECT count(*) FROM tag_provider_group_bindings`:                &groupBindings,
+		`SELECT count(*) FROM tag_provider_tag_bindings`:                  &tagBindings,
+	} {
+		if err = native.QueryRow(ctx, query).Scan(target); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err = native.QueryRow(ctx, `SELECT event_type FROM tag_audit_events ORDER BY id DESC LIMIT 1`).Scan(&eventType); err != nil {
+		t.Fatal(err)
+	}
+	if state != "executed" || groups != 1 || tags != 2 || groupBindings != 1 || tagBindings != 2 || eventType != "tag.catalog_sync_backfilled" {
+		t.Fatalf("backfill state=%s groups=%d tags=%d group_bindings=%d tag_bindings=%d event=%s", state, groups, tags, groupBindings, tagBindings, eventType)
+	}
 }
 
 func tagIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
+	return tagIntegrationPoolWithProjection(t, true)
+}
+
+func tagIntegrationPoolWithProjection(t *testing.T, includeProjection bool) (*pgxpool.Pool, func()) {
 	t.Helper()
 	raw, err := platformconfig.DatabaseURL()
 	if err != nil {
@@ -171,6 +273,15 @@ func tagIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 	}
 	if _, err = pool.Exec(ctx, string(sql)); err != nil {
 		t.Fatal(err)
+	}
+	if includeProjection {
+		projectionSQL, readErr := os.ReadFile(filepath.Join(base, "0019_tag_catalog_sync_projection.sql"))
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if _, err = pool.Exec(ctx, string(projectionSQL)); err != nil {
+			t.Fatal(err)
+		}
 	}
 	return pool, func() {
 		pool.Close()

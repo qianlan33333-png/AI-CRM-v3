@@ -468,6 +468,7 @@ func TestStaticAssetsUseBrowserApplicableContentType(t *testing.T) {
 		{"/static/admin_console/send_content_readonly_detail.css", "text/css"},
 		{"/static/admin_console/ai_audience_send_records.css", "text/css"},
 		{"/static/admin_console/admin_console.js", "text/javascript"},
+		{"/static/admin_console/tag_sync_bridge.js", "text/javascript"},
 		{"/static/admin_console/nav-icons/automation_conversion.svg", "image/svg+xml"},
 	} {
 		response := httptest.NewRecorder()
@@ -492,7 +493,7 @@ func TestRenderTagsKeepsPR10AsTheOnlyAdminShell(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := response.Body.String()
-	if response.Code != http.StatusOK || strings.Count(body, `class="admin-sidebar"`) != 1 || strings.Count(body, `<main`) != 1 || strings.Count(body, `<aside`) != 1 || strings.Contains(body, `class="side"`) || !strings.Contains(body, `<template id="tpl"><section data-page="tags">frozen donor fragment</section></template>`) || !strings.Contains(body, `data-admin-shell-source="v3_webshell"`) {
+	if response.Code != http.StatusOK || strings.Count(body, `class="admin-sidebar"`) != 1 || strings.Count(body, `<main`) != 1 || strings.Count(body, `<aside`) != 1 || strings.Contains(body, `class="side"`) || !strings.Contains(body, `<template id="tpl"><section data-page="tags">frozen donor fragment</section></template>`) || !strings.Contains(body, `data-admin-shell-source="v3_webshell"`) || !strings.Contains(body, `/static/admin_console/tag_sync_bridge.js`) {
 		t.Fatalf("tags shell mismatch status=%d body=%q", response.Code, body)
 	}
 }

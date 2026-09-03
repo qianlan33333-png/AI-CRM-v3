@@ -18,9 +18,10 @@ import (
 const syncAcceptedEvent = "tag.catalog_sync_accepted"
 
 var (
-	ErrInvalidSync  = errors.New("invalid tag catalog sync command")
-	ErrSyncConflict = errors.New("tag catalog sync idempotency command conflict")
-	ErrSyncFailed   = errors.New("accept tag catalog sync command")
+	ErrInvalidSync    = errors.New("invalid tag catalog sync command")
+	ErrSyncConflict   = errors.New("tag catalog sync idempotency command conflict")
+	ErrSyncInProgress = tagport.ErrSyncInProgress
+	ErrSyncFailed     = errors.New("accept tag catalog sync command")
 )
 
 // SyncService accepts a manual or due catalog refresh locally. It never calls
@@ -31,6 +32,22 @@ type SyncService struct {
 	events   tagport.EventAppender
 	enqueuer tagport.SyncEnqueuer
 	now      func() time.Time
+}
+
+func (service *SyncService) Status(ctx context.Context) (tagport.SyncStatus, error) {
+	if ctx == nil || !service.ready() {
+		return tagport.SyncStatus{}, ErrInvalidSync
+	}
+	var status tagport.SyncStatus
+	err := service.uow.Within(ctx, func(tx context.Context) error {
+		var err error
+		status, err = service.receipts.LatestSync(tx)
+		return err
+	})
+	if err != nil {
+		return tagport.SyncStatus{}, errors.Join(ErrSyncFailed, err)
+	}
+	return status, nil
 }
 
 func NewSyncService(uow platformport.UnitOfWork, receipts tagport.SyncReceiptStore, events tagport.EventAppender, enqueuer tagport.SyncEnqueuer) *SyncService {
@@ -57,7 +74,7 @@ func (service *SyncService) RequestWithCommitHook(ctx context.Context, command t
 			return ErrSyncConflict
 		}
 		switch receipt.State {
-		case tagport.SyncAccepted:
+		case tagport.SyncAccepted, tagport.SyncReceiptExecuted, tagport.SyncReceiptOutcomeUnknown, tagport.SyncReceiptRetryableFailed, tagport.SyncReceiptFinalFailed, tagport.SyncReceiptCancelled, tagport.SyncReceiptReconciled:
 			acceptance, err := acceptanceFromReceipt(receipt)
 			if err != nil {
 				return err
@@ -110,7 +127,7 @@ func (service *SyncService) RequestWithCommitHook(ctx context.Context, command t
 		return nil
 	})
 	if err != nil {
-		if errors.Is(err, ErrInvalidSync) || errors.Is(err, ErrSyncConflict) {
+		if errors.Is(err, ErrInvalidSync) || errors.Is(err, ErrSyncConflict) || errors.Is(err, ErrSyncInProgress) {
 			return tagport.SyncAcceptance{}, err
 		}
 		return tagport.SyncAcceptance{}, errors.Join(ErrSyncFailed, err)
@@ -135,7 +152,7 @@ func acceptanceFromReceipt(receipt tagport.SyncReceipt) (tagport.SyncAcceptance,
 	// ReserveSync validates/reconciles the full caller command before this
 	// point.  Receipts retain only a digest of an idempotency key, so requiring
 	// the raw key here would make a legitimate committed receipt unreadable.
-	if receipt.ID <= 0 || receipt.State != tagport.SyncAccepted || receipt.EventID <= 0 || receipt.Effect.QueueJobID <= 0 || receipt.Effect.EffectID <= 0 || receipt.Effect.EffectRef == "" || receipt.Effect.EffectState != "queued" || receipt.Effect.AcceptReceiptID == "" || receipt.Effect.QueueReceiptID == "" {
+	if receipt.ID <= 0 || receipt.State == tagport.SyncReserved || receipt.EventID <= 0 || receipt.Effect.QueueJobID <= 0 || receipt.Effect.EffectID <= 0 || receipt.Effect.EffectRef == "" || receipt.Effect.EffectState != "queued" || receipt.Effect.AcceptReceiptID == "" || receipt.Effect.QueueReceiptID == "" {
 		return tagport.SyncAcceptance{}, ErrSyncFailed
 	}
 	return tagport.SyncAcceptance{ReceiptID: receipt.ID, EventID: receipt.EventID, QueueJobID: receipt.Effect.QueueJobID, EffectID: receipt.Effect.EffectRef, EffectState: receipt.Effect.EffectState, AcceptReceiptID: receipt.Effect.AcceptReceiptID, QueueReceiptID: receipt.Effect.QueueReceiptID, State: tagport.SyncQueued}, nil

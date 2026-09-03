@@ -39,6 +39,10 @@ func (store *syncStore) AcceptSync(_ context.Context, receiptID, eventID int64, 
 	return store.accepted, nil
 }
 
+func (store *syncStore) LatestSync(context.Context) (port.SyncStatus, error) {
+	return port.SyncStatus{ReceiptID: store.receipt.ID, State: port.SyncState(store.receipt.State)}, nil
+}
+
 type syncJobs struct {
 	uow   *catalogUOW
 	job   port.SyncJob
@@ -81,17 +85,21 @@ func TestSyncServiceAcceptsManualAndDueInsideOneUOW(t *testing.T) {
 }
 
 func TestSyncServiceReplayDoesNotQueueAgain(t *testing.T) {
-	uow := &catalogUOW{}
-	command := port.SyncCommand{Actor: 7, IdempotencyKey: "sync-request-001", Kind: port.SyncManual}
-	store := &syncStore{uow: uow, receipt: port.SyncReceipt{ID: 41, Command: command, State: port.SyncAccepted, EventID: 42, Effect: port.SyncEffectReceipt{QueueJobID: 43, EffectID: 91, EffectRef: "eer_91", EffectState: "queued", AcceptReceiptID: "eerop_91", QueueReceiptID: "eerop_92"}}}
-	events := &catalogEvents{uow: uow}
-	jobs := &syncJobs{uow: uow, id: 99}
-	got, err := NewSyncService(uow, store, events, jobs).Request(context.Background(), command)
-	if err != nil || got.State != port.SyncQueued || got.EventID != 42 || got.QueueJobID != 43 {
-		t.Fatalf("replay Request() = %#v, %v", got, err)
-	}
-	if store.accept != 0 || jobs.calls != 0 || len(events.items) != 0 {
-		t.Fatalf("replay calls = accept:%d jobs:%d events:%d", store.accept, jobs.calls, len(events.items))
+	for _, state := range []port.SyncReceiptState{port.SyncAccepted, port.SyncReceiptExecuted, port.SyncReceiptOutcomeUnknown, port.SyncReceiptRetryableFailed, port.SyncReceiptFinalFailed, port.SyncReceiptCancelled, port.SyncReceiptReconciled} {
+		t.Run(string(state), func(t *testing.T) {
+			uow := &catalogUOW{}
+			command := port.SyncCommand{Actor: 7, IdempotencyKey: "sync-request-001", Kind: port.SyncManual}
+			store := &syncStore{uow: uow, receipt: port.SyncReceipt{ID: 41, Command: command, State: state, EventID: 42, Effect: port.SyncEffectReceipt{QueueJobID: 43, EffectID: 91, EffectRef: "eer_91", EffectState: "queued", AcceptReceiptID: "eerop_91", QueueReceiptID: "eerop_92"}}}
+			events := &catalogEvents{uow: uow}
+			jobs := &syncJobs{uow: uow, id: 99}
+			got, err := NewSyncService(uow, store, events, jobs).Request(context.Background(), command)
+			if err != nil || got.State != port.SyncQueued || got.EventID != 42 || got.QueueJobID != 43 {
+				t.Fatalf("replay Request() = %#v, %v", got, err)
+			}
+			if store.accept != 0 || jobs.calls != 0 || len(events.items) != 0 {
+				t.Fatalf("replay calls = accept:%d jobs:%d events:%d", store.accept, jobs.calls, len(events.items))
+			}
+		})
 	}
 }
 

@@ -25,8 +25,9 @@ func (handlerUOW) Within(ctx context.Context, callback func(context.Context) err
 }
 
 type handlerStore struct {
-	groups []domain.Group
-	tags   []domain.Tag
+	groups     []domain.Group
+	tags       []domain.Tag
+	syncStatus tagport.SyncStatus
 }
 
 func (store handlerStore) ListGroups(context.Context) ([]domain.Group, error) {
@@ -73,6 +74,15 @@ func (handlerStore) ReorderGroups(context.Context, []int64) ([]domain.Group, err
 func (handlerStore) ReorderTags(context.Context, []int64) ([]domain.Tag, error) {
 	return nil, errors.New("not called")
 }
+func (store handlerStore) LatestSync(context.Context) (tagport.SyncStatus, error) {
+	return store.syncStatus, nil
+}
+func (handlerStore) ReserveSync(context.Context, tagport.SyncCommand) (tagport.SyncReceipt, error) {
+	return tagport.SyncReceipt{}, errors.New("not called")
+}
+func (handlerStore) AcceptSync(context.Context, int64, int64, tagport.SyncEffectReceipt) (tagport.SyncReceipt, error) {
+	return tagport.SyncReceipt{}, errors.New("not called")
+}
 
 type handlerSecurity struct{}
 
@@ -87,6 +97,16 @@ type handlerGate struct{}
 
 func (handlerGate) Get(context.Context) (domain.ExecutionGate, error) {
 	return domain.ExecutionGate{LocalCommandAcceptanceAvailable: true, LocalQueueAvailable: true, ObservedAt: time.Now().UTC()}, nil
+}
+
+type handlerSyncEvents struct{}
+
+func (handlerSyncEvents) Append(context.Context, tagport.Event) (int64, error) { return 1, nil }
+
+type handlerSyncEnqueuer struct{}
+
+func (handlerSyncEnqueuer) EnqueueSync(context.Context, tagport.SyncJob) (tagport.SyncEffectReceipt, error) {
+	return tagport.SyncEffectReceipt{QueueJobID: 1, EffectID: 1, EffectRef: "eer_1", EffectState: "queued", AcceptReceiptID: "accept", QueueReceiptID: "queue"}, nil
 }
 
 var _ platformport.UnitOfWork = handlerUOW{}
@@ -163,6 +183,36 @@ func TestTagsCatalogUsesFrozenAliasesAndNestedGroups(t *testing.T) {
 	group := body["groups"].([]any)[0].(map[string]any)
 	if group["name"] != "Lifecycle" || len(group["tags"].([]any)) != 1 {
 		t.Fatalf("group nested tags = %#v", group)
+	}
+}
+
+func TestTagSyncStatusReturnsDurableProjection(t *testing.T) {
+	store := handlerStore{syncStatus: tagport.SyncStatus{ReceiptID: 41, EffectID: "eer_91", State: tagport.SyncExecuted, GroupCount: 36, TagCount: 125}}
+	handler, err := NewHandler(tagapp.NewService(handlerUOW{}, store, nil, nil, nil), tagapp.NewSyncService(handlerUOW{}, store, handlerSyncEvents{}, handlerSyncEnqueuer{}), handlerGate{}, handlerSecurity{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/admin/wecom/tags/sync-status", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var body struct {
+		Sync tagport.SyncStatus `json:"sync"`
+	}
+	if err = json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Sync.ReceiptID != 41 || body.Sync.State != tagport.SyncExecuted || body.Sync.GroupCount != 36 || body.Sync.TagCount != 125 || body.Sync.Active {
+		t.Fatalf("sync status = %#v", body.Sync)
+	}
+}
+
+func TestTagSyncInProgressHasStableConflictCode(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	resultError(recorder, tagport.ErrSyncInProgress)
+	if recorder.Code != http.StatusConflict || !strings.Contains(recorder.Body.String(), `"detail":"sync_in_progress"`) || !strings.Contains(recorder.Body.String(), `"error_code":"sync_in_progress"`) {
+		t.Fatalf("sync conflict = %d %s", recorder.Code, recorder.Body.String())
 	}
 }
 

@@ -234,7 +234,8 @@ func TestPostgreSQLTagCompletionSinkIsAtomic(t *testing.T) {
 	if err = pool.QueryRow(context.Background(), `SELECT count(*) FROM completion_sink_facts`).Scan(&facts); err != nil || facts != 1 {
 		t.Fatalf("sink rollback facts=%d err=%v", facts, err)
 	}
-	// A post-call unknown result never reaches the snapshot sink.
+	// A post-call unknown result reaches the completion sink without an artifact
+	// so the owning domain can keep its durable single-flight receipt blocked.
 	unknownEnvelope := envelope
 	unknownEnvelope.PayloadDigest = digestForTest("tag-unknown-payload")
 	unknown, _, err := repository.AcceptAndQueue(context.Background(), AcceptCommand{ReceiptKey: digestForTest("tag-unknown"), Envelope: unknownEnvelope})
@@ -253,7 +254,7 @@ func TestPostgreSQLTagCompletionSinkIsAtomic(t *testing.T) {
 	if err != nil || current.State != StateUnknown {
 		t.Fatalf("unknown=%+v err=%v", current, err)
 	}
-	if err = pool.QueryRow(context.Background(), `SELECT count(*) FROM completion_sink_facts`).Scan(&facts); err != nil || facts != 1 {
+	if err = pool.QueryRow(context.Background(), `SELECT count(*) FROM completion_sink_facts`).Scan(&facts); err != nil || facts != 2 {
 		t.Fatalf("unknown wrote sink facts=%d err=%v", facts, err)
 	}
 }

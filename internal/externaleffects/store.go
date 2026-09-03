@@ -325,12 +325,12 @@ func (r *Repository) controlWithin(ctx context.Context, tx pgx.Tx, command Contr
 	if err != nil {
 		return Projection{}, Receipt{}, err
 	}
-	var owner, kind, state string
+	var owner, kind, state, source, target, payload, policy string
 	var attempts int32
 	var generation, fence int64
 	var leaseExpires *time.Time
 	var updated time.Time
-	err = tx.QueryRow(ctx, `SELECT owner,kind,state,attempt_count,generation,lease_fence,lease_expires_at,updated_at FROM external_effects WHERE id=$1 FOR UPDATE`, id).Scan(&owner, &kind, &state, &attempts, &generation, &fence, &leaseExpires, &updated)
+	err = tx.QueryRow(ctx, `SELECT owner,kind,state,source_ref_digest,target_ref_digest,payload_digest,policy_version_hash,attempt_count,generation,lease_fence,lease_expires_at,updated_at FROM external_effects WHERE id=$1 FOR UPDATE`, id).Scan(&owner, &kind, &state, &source, &target, &payload, &policy, &attempts, &generation, &fence, &leaseExpires, &updated)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Projection{}, Receipt{}, ErrNotFound
 	}
@@ -416,6 +416,12 @@ func (r *Repository) controlWithin(ctx context.Context, tx pgx.Tx, command Contr
 	if err = tx.QueryRow(ctx, `SELECT updated_at FROM external_effects WHERE id=$1`, id).Scan(&updated); err != nil {
 		return Projection{}, Receipt{}, err
 	}
+	if Kind(kind) == KindWeComTagCatalog && r.sink != nil {
+		envelope := Envelope{Owner: Owner(owner), Kind: Kind(kind), SourceRefDigest: Digest(source), TargetRefDigest: Digest(target), PayloadDigest: Digest(payload), PolicyVersionHash: Digest(policy)}
+		if err = r.sink.CompleteEffect(platformpostgres.BindTransaction(ctx, tx), effectID(id), envelope, Attempt{Number: attempts, Generation: generation, Fence: fence}, AdapterResult{Completion: next, ReceiptDigest: digest}); err != nil {
+			return Projection{}, Receipt{}, err
+		}
+	}
 	actor := command.ActorAdminUserID
 	return projection(id, Owner(owner), Kind(kind), next, attempts, generation, updated), Receipt{ID: "eerop_" + strconv.FormatInt(rid, 10), EffectID: command.EffectID, CommandDigest: digest, ActorAdminUserID: &actor, State: next, CompletedAt: completed}, nil
 }
@@ -443,11 +449,11 @@ func (r *Repository) RunAttempt(ctx context.Context, id, generation, riverJobID 
 		return err
 	}
 	defer tx.Rollback(ctx)
-	var state string
+	var state, owner, kind, source, target, payload, policy string
 	var attempts int32
 	var fence int64
 	var leaseExpires *time.Time
-	err = tx.QueryRow(ctx, `SELECT effect.state,effect.attempt_count,effect.lease_fence,effect.lease_expires_at FROM external_effects effect JOIN external_effect_jobs job ON job.effect_id=effect.id AND job.generation=effect.generation WHERE effect.id=$1 AND effect.generation=$2 AND job.river_job_id=$3 FOR UPDATE OF effect`, id, generation, riverJobID).Scan(&state, &attempts, &fence, &leaseExpires)
+	err = tx.QueryRow(ctx, `SELECT effect.state,effect.owner,effect.kind,effect.source_ref_digest,effect.target_ref_digest,effect.payload_digest,effect.policy_version_hash,effect.attempt_count,effect.lease_fence,effect.lease_expires_at FROM external_effects effect JOIN external_effect_jobs job ON job.effect_id=effect.id AND job.generation=effect.generation WHERE effect.id=$1 AND effect.generation=$2 AND job.river_job_id=$3 FOR UPDATE OF effect`, id, generation, riverJobID).Scan(&state, &owner, &kind, &source, &target, &payload, &policy, &attempts, &fence, &leaseExpires)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil
 	}
@@ -478,6 +484,12 @@ func (r *Repository) RunAttempt(ctx context.Context, id, generation, riverJobID 
 			}
 			return ErrTransition
 		}
+		if Kind(kind) == KindWeComTagCatalog && r.sink != nil {
+			envelope := Envelope{Owner: Owner(owner), Kind: Kind(kind), SourceRefDigest: Digest(source), TargetRefDigest: Digest(target), PayloadDigest: Digest(payload), PolicyVersionHash: Digest(policy)}
+			if err = r.sink.CompleteEffect(platformpostgres.BindTransaction(ctx, tx), effectID(id), envelope, Attempt{Number: attempts, Generation: generation, Fence: fence}, AdapterResult{Completion: StateUnknown, ReceiptDigest: recovery, CallAttempted: true}); err != nil {
+				return err
+			}
+		}
 		return tx.Commit(ctx)
 	}
 	if State(state) != StateQueued {
@@ -502,7 +514,7 @@ func (r *Repository) RunAttempt(ctx context.Context, id, generation, riverJobID 
 	var callAttempted, realExternalCallExecuted bool
 	var adapterResult AdapterResult
 	var callErr error
-	var owner, kind, source, target, payload, policy string
+	owner, kind, source, target, payload, policy = "", "", "", "", "", ""
 	if err := r.pool.QueryRow(ctx, `SELECT owner,kind,source_ref_digest,target_ref_digest,payload_digest,policy_version_hash FROM external_effects WHERE id=$1 AND generation=$2`, id, generation).Scan(&owner, &kind, &source, &target, &payload, &policy); err != nil {
 		return err
 	}
@@ -569,9 +581,10 @@ func (r *Repository) RunAttempt(ctx context.Context, id, generation, riverJobID 
 		}
 		return ErrTransition
 	}
-	shouldComplete := r.sink != nil && (envelope.Kind == KindGroupMessage && (next == StateExecuted || next == StateUnknown || next == StateRetryable || next == StateFinalFailed) || envelope.Kind == KindWeComTagCatalog && next == StateExecuted)
+	shouldComplete := r.sink != nil && (envelope.Kind == KindGroupMessage && (next == StateExecuted || next == StateUnknown || next == StateRetryable || next == StateFinalFailed) || envelope.Kind == KindWeComTagCatalog && (next == StateExecuted || next == StateUnknown || next == StateRetryable || next == StateFinalFailed))
 	if shouldComplete {
 		completionResult := adapterResult
+		completionResult.Completion = next
 		if !ValidDigest(completionResult.ReceiptDigest) {
 			completionResult.ReceiptDigest = receipt
 		}

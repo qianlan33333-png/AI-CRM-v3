@@ -24,7 +24,8 @@ scope:
     - v3 admin-session/CSRF HTTP compatibility routes and OpenAPI
     - frozen tags workspace mounted in the PR10 single-sidebar shell
     - transaction-bound External Effects/River acceptance through outbound TransactionalAccepter
-    - opt-in read-only WeCom catalog adapter, opaque completion artifact, and tag-owned observed snapshot receipt
+    - opt-in read-only WeCom catalog adapter, opaque completion artifact, tag-owned catalog projection, and durable sync status
+    - v3 WebShell sync bridge that preserves frozen donor bytes while disabling duplicate clicks and polling terminal state
 source_files:
   - path: internal/contact/app/legacy_tag_catalog.go
     disposition: adapted
@@ -223,6 +224,14 @@ request_contract:
       success_status: 202
       error_statuses: [400, 401, 403, 409, 503]
       local_effect: due_sync_acceptance_only
+    - operation: getLegacyWecomTagSyncStatus
+      method: GET
+      path: /api/admin/wecom/tags/sync-status
+      request_dto: none
+      response_dto: LegacyTagSyncStatusResponse
+      success_status: 200
+      error_statuses: [401, 403, 503]
+      local_effect: read_only_durable_sync_projection
   included_operations:
     - GET /api/admin/wecom/tags
     - GET /api/admin/wecom/tag-groups
@@ -239,6 +248,7 @@ request_contract:
     - GET /api/admin/wecom/tags/live/gate
     - POST /api/admin/wecom/tags/sync
     - POST /api/admin/wecom/tags/sync-due
+    - GET /api/admin/wecom/tags/sync-status
   excluded_operations:
     - POST /api/admin/wecom/tags/live/mark
     - POST /api/admin/wecom/tags/live/unmark
@@ -251,6 +261,7 @@ request_contract:
     LegacyTagUpdateRequest: [tag_name, actor, idempotency_key, trace_id, dry_run]
     LegacyTagArchiveRequest: [actor, idempotency_key, trace_id, dry_run]
     LegacyTagSyncRequest: [idempotency_key, trace_id]
+    LegacyTagSyncStatusResponse: [ok, sync]
     LegacyTagCatalogResponse: [ok, items, tags, groups, count, total_tags, tag_limit, synced_at, source_status, read_model_status, route_owner, fallback_used, real_external_call_executed, sync_executed, fixture_used]
     LegacyTagExecutionGate: [provider_execution_eligible, local_command_acceptance_available, local_queue_available, sync_executed, observed_at, real_external_call_executed]
   ordering_contract:
@@ -265,6 +276,8 @@ request_contract:
     local_or_provider_dependency_unavailable: 503
     sync_success_copy: 标签同步已受理；尚未收到 Provider 同步结果
     sync_failure_copy: 标签同步受理失败
+    sync_active_copy: 同步中…
+    sync_completed_copy: 标签同步完成并刷新本地目录
     safety_fields: [real_external_call_executed, sync_executed]
 provider_effect_contract:
   catalog_sync_only:
@@ -297,8 +310,9 @@ characterization:
     - reorder accepts a complete permutation and rejects stale partial membership
     - gate projects only the fail-closed allowlist
     - manual and due sync return queued acceptance and never claim Provider execution
-    - completed catalog read atomically appends a tag-owned snapshot; sink failure rolls the effect completion back to attempted
-    - unknown, final-failed, stale-generation, and generic reconciled catalog effects never append a snapshot
+    - completed catalog read atomically appends a tag-owned snapshot, reconciles provider-bound catalog rows, writes audit/outbox, and closes the sync receipt
+    - unknown, retryable, final-failed, cancelled, and reconciled states update the tag-owned receipt without appending a snapshot
+    - one active receipt is enforced in PostgreSQL and the v3 WebShell bridge disables the frozen donor button while active
 exclusion_audit:
   forbidden_terms_not_in_transferred_commands: [external_userid, mark, unmark, customer_id]
   excluded_frontend_behavior: [customer_detail_tagging, customer_tag_mark, customer_tag_unmark, channel_entry_tag_assignment, campaign_or_audience_targeting]
