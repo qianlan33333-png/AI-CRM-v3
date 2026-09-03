@@ -64,6 +64,19 @@ func (testManagement) ListUsers(context.Context, domain.Principal) ([]app.UserSu
 	return []app.UserSummary{{ID: 2, Username: "employee", DisplayName: "Employee", Active: true,
 		SessionVersion: 3, Roles: []domain.Role{domain.RoleViewer}}}, nil
 }
+func (testManagement) SetLoginAccess(_ context.Context, _ domain.Principal, key string, changes []app.LoginAccessChange) ([]app.UserSummary, error) {
+	if key == "donor-admin-access-drift" {
+		return nil, domain.ErrConflict
+	}
+	if key != "donor-admin-access-key" {
+		return nil, domain.ErrInvalidInput
+	}
+	if len(changes) != 1 || changes[0].AdminUserID != 2 {
+		return nil, domain.ErrInvalidInput
+	}
+	return []app.UserSummary{{ID: 2, Username: "employee", DisplayName: "Employee", Active: changes[0].LoginEnabled,
+		SessionVersion: 4, Roles: []domain.Role{domain.RoleViewer}}}, nil
+}
 
 func (testManagement) AddUser(context.Context, domain.Principal, app.AddUserInput) (domain.User, error) {
 	return domain.User{ID: 2, Username: "employee", Active: true}, nil
@@ -225,6 +238,52 @@ func TestListUsersNeedsSessionButNotCSRFAndReturnsPublicFields(t *testing.T) {
 	body := response.Body.String()
 	if !strings.Contains(body, `"username":"employee"`) || strings.Contains(body, "password") || strings.Contains(body, "digest") {
 		t.Fatalf("public list body=%q", body)
+	}
+}
+
+func TestAdminAccessCompatibilityUsesFrozenDTOAndExistingAccessGuards(t *testing.T) {
+	principal := domain.Principal{Kind: domain.KindAdmin, InternalID: 1, Roles: []domain.Role{domain.RoleSuperAdmin}}
+	handler, err := NewHandler(Config{Renderer: testRenderer{}, Auth: testAuth{authenticateAs: principal}, Management: testManagement{}, CookieSecure: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	get := httptest.NewRequest(http.MethodGet, "/api/admin/admin-access", nil)
+	get.AddCookie(&http.Cookie{Name: SessionCookieName, Value: "session-secret"})
+	response := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(response, get)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"local_only":true`) || !strings.Contains(response.Body.String(), `"admin_user_id":2`) || strings.Contains(response.Body.String(), "password") {
+		t.Fatalf("get status=%d body=%q", response.Code, response.Body.String())
+	}
+
+	put := httptest.NewRequest(http.MethodPut, "/api/admin/admin-access", strings.NewReader(`{"members":[{"admin_user_id":2,"login_enabled":false}]}`))
+	put.Header.Set("Content-Type", "application/json")
+	put.Header.Set("Idempotency-Key", "donor-admin-access-key")
+	put.AddCookie(&http.Cookie{Name: SessionCookieName, Value: "session-secret"})
+	put.AddCookie(&http.Cookie{Name: CSRFCookieName, Value: "csrf-secret"})
+	response = httptest.NewRecorder()
+	handler.Routes().ServeHTTP(response, put)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"idempotency_key":"donor-admin-access-key"`) || !strings.Contains(response.Body.String(), `"login_enabled":false`) {
+		t.Fatalf("put status=%d body=%q", response.Code, response.Body.String())
+	}
+
+	missing := httptest.NewRequest(http.MethodPut, "/api/admin/admin-access", strings.NewReader(`{"members":[{"admin_user_id":2,"login_enabled":false}]}`))
+	missing.Header.Set("Content-Type", "application/json")
+	response = httptest.NewRecorder()
+	handler.Routes().ServeHTTP(response, missing)
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), `"error":"invalid_request"`) {
+		t.Fatalf("missing key status=%d body=%q", response.Code, response.Body.String())
+	}
+
+	drift := httptest.NewRequest(http.MethodPut, "/api/admin/admin-access", strings.NewReader(`{"members":[{"admin_user_id":2,"login_enabled":true}]}`))
+	drift.Header.Set("Content-Type", "application/json")
+	drift.Header.Set("Idempotency-Key", "donor-admin-access-drift")
+	drift.AddCookie(&http.Cookie{Name: SessionCookieName, Value: "session-secret"})
+	drift.AddCookie(&http.Cookie{Name: CSRFCookieName, Value: "csrf-secret"})
+	response = httptest.NewRecorder()
+	handler.Routes().ServeHTTP(response, drift)
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), `"error":"idempotency_conflict"`) {
+		t.Fatalf("payload drift status=%d body=%q", response.Code, response.Body.String())
 	}
 }
 

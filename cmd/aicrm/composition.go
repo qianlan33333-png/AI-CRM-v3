@@ -15,10 +15,16 @@ import (
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/access/credential"
 	accesshttp "github.com/qianlan33333-png/AI-CRM-v3/internal/access/http"
 	accessstore "github.com/qianlan33333-png/AI-CRM-v3/internal/access/store"
+	adminopsapp "github.com/qianlan33333-png/AI-CRM-v3/internal/adminops/app"
+	adminopsport "github.com/qianlan33333-png/AI-CRM-v3/internal/adminops/port"
+	adminopsstore "github.com/qianlan33333-png/AI-CRM-v3/internal/adminops/store"
 	automation "github.com/qianlan33333-png/AI-CRM-v3/internal/automation"
 	automationapp "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/app"
 	automationstore "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/store"
 	channelstore "github.com/qianlan33333-png/AI-CRM-v3/internal/channel"
+	configapp "github.com/qianlan33333-png/AI-CRM-v3/internal/config/app"
+	configmodule "github.com/qianlan33333-png/AI-CRM-v3/internal/config/module"
+	configstore "github.com/qianlan33333-png/AI-CRM-v3/internal/config/store"
 	coupon "github.com/qianlan33333-png/AI-CRM-v3/internal/coupon"
 	couponapp "github.com/qianlan33333-png/AI-CRM-v3/internal/coupon/app"
 	couponstore "github.com/qianlan33333-png/AI-CRM-v3/internal/coupon/store"
@@ -61,6 +67,8 @@ import (
 	productmodule "github.com/qianlan33333-png/AI-CRM-v3/internal/product"
 	productapp "github.com/qianlan33333-png/AI-CRM-v3/internal/product/app"
 	productstore "github.com/qianlan33333-png/AI-CRM-v3/internal/product/store"
+	releaseapp "github.com/qianlan33333-png/AI-CRM-v3/internal/release/app"
+	releaseport "github.com/qianlan33333-png/AI-CRM-v3/internal/release/port"
 	surveymodule "github.com/qianlan33333-png/AI-CRM-v3/internal/survey"
 	surveyapp "github.com/qianlan33333-png/AI-CRM-v3/internal/survey/app"
 	surveyprovider "github.com/qianlan33333-png/AI-CRM-v3/internal/survey/provider"
@@ -82,6 +90,9 @@ type composedApplication struct {
 	weComProcessor wecom.InboxProcessor
 	effectsRuntime *platformjobqueue.Runtime
 	customerSync   wecom.CustomerSyncService
+	adminOps       *adminopsapp.ProjectionService
+	release        *releaseapp.ObservationService
+	diagnostics    *adminopsapp.DiagnosticsService
 }
 
 func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplication, error) {
@@ -316,6 +327,44 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	}
 	couponService := couponapp.NewService(uow, couponRepository, productTargets, couponRepository)
 	couponBindings, err := couponModule.Bind(couponService, productCatalog, requestSecurity)
+	if err != nil {
+		return fail(err)
+	}
+	// PR09 config has no OneID, Provider-write, or worker dependency. Its
+	// local settings, audit rows, and idempotency receipts share this UOW.
+	configModule := configmodule.NewRegistration()
+	configRepository, err := configstore.NewPostgreSQL(pool.Native(), uow)
+	if err != nil {
+		return fail(err)
+	}
+	configManager := configapp.NewManager(uow, configRepository, configRepository)
+	settingsService := configapp.NewSettingsCompatibilityService(uow, configRepository, configManager, configapp.SecretConfiguredSnapshot{
+		DatabaseURL: cfg.DatabaseURL != "", WeComSecret: cfg.WeCom.Secret != "",
+		WeComCallbackToken: cfg.WeCom.CallbackToken != "", WeComCallbackAESKey: cfg.WeCom.CallbackAESKey != "",
+	})
+	setupWizard, err := configapp.NewSetupWizardService(configManager, configapp.SetupWizardSecretConfigured{
+		WeComSecret: cfg.WeCom.Secret != "", WeComCallbackToken: cfg.WeCom.CallbackToken != "", WeComCallbackAESKey: cfg.WeCom.CallbackAESKey != "",
+	})
+	if err != nil {
+		return fail(err)
+	}
+	adminOpsProjectionStore, err := adminopsstore.NewProjectionPostgreSQL(pool.Native(), uow)
+	if err != nil {
+		return fail(err)
+	}
+	adminOpsProjection, err := adminopsapp.NewProjectionService(uow, adminOpsProjectionStore)
+	if err != nil {
+		return fail(err)
+	}
+	diagnostics, err := adminopsapp.NewDiagnosticsService(adminOpsProjection)
+	if err != nil {
+		return fail(err)
+	}
+	releaseObservation, err := releaseapp.NewObservationService(adminOpsReleaseObservationWriter{projections: adminOpsProjection})
+	if err != nil {
+		return fail(err)
+	}
+	configBindings, err := configModule.Bind(settingsService, setupWizard, configManager, adminOpsProjection, requestSecurity)
 	if err != nil {
 		return fail(err)
 	}
@@ -583,6 +632,8 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	adminAPIs.Handle("/api/admin/service-period-products/", productBindings.Products)
 	adminAPIs.Handle("/api/admin/coupons", couponBindings.Coupons)
 	adminAPIs.Handle("/api/admin/coupons/", couponBindings.Coupons)
+	adminAPIs.Handle("/api/admin/config/", configBindings.Config)
+	adminAPIs.Handle("/api/admin/setup-wizard", configBindings.Config)
 	adminAPIs.Handle("/api/admin/automation-agents", automationBindings.Agents)
 	adminAPIs.Handle("/api/admin/automation-agents/", automationBindings.Agents)
 	adminAPIs.Handle("/api/admin/channels", channelCatalog)
@@ -602,7 +653,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 			return checkErr
 		}
 		var complete bool
-		checkErr := pool.Native().QueryRow(readinessContext, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['0001','0002','0003','0004','0005','0006','0007','0008','0009','0010','0011','0012','0013','0014','0016','0017','0018','0019','0020','0021','0022','0023','0024','0025','0026']) AS required(version) WHERE NOT EXISTS (SELECT 1 FROM platform_schema_migrations applied WHERE applied.version=required.version))`).Scan(&complete)
+		checkErr := pool.Native().QueryRow(readinessContext, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['0001','0002','0003','0004','0005','0006','0007','0008','0009','0010','0011','0012','0013','0014','0016','0017','0018','0019','0020','0021','0022','0023','0024','0025','0026','0027']) AS required(version) WHERE NOT EXISTS (SELECT 1 FROM platform_schema_migrations applied WHERE applied.version=required.version))`).Scan(&complete)
 		if checkErr != nil || !complete {
 			return errors.New("database schema is not ready")
 		}
@@ -621,6 +672,12 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		if checkErr = couponModule.Readiness(readinessContext, pool.Native()); checkErr != nil {
 			return checkErr
 		}
+		if checkErr = configModule.Readiness(readinessContext, pool.Native()); checkErr != nil {
+			return checkErr
+		}
+		if checkErr = configModule.Readiness(readinessContext, pool.Native()); checkErr != nil {
+			return checkErr
+		}
 		if checkErr = automationModule.Readiness(readinessContext, pool.Native()); checkErr != nil {
 			return checkErr
 		}
@@ -631,6 +688,9 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 			return checkErr
 		}
 		if checkErr = operationModule.Readiness(readinessContext, pool.Native()); checkErr != nil {
+			return checkErr
+		}
+		if checkErr = adminOpsProjectionStore.Readiness(readinessContext); checkErr != nil {
 			return checkErr
 		}
 		return nil
@@ -678,12 +738,26 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	operationUI := operationModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, page, donorTemplate string, assets operationcycle.UIAssets) error {
 		return renderer.RenderOperationCycles(writer, webshell.AdminPageForRequest(request, "运营闭环", "运营周期、执行事实与复盘记录。", "api.admin_operation_cycles_page"), page, donorTemplate, webshell.OperationCycleAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, HostJS: assets.HostJS})
 	})
-	handler, err := routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(healthHandler, accessHandler.Routes(), adminAPIs, effectsBindings.Effects, effectsBindings.PushCenter, effectsUI, mediaBindings.Media, mediaUI, tagBindings.Tags, tagUI, productBindings.Products, productUI, couponBindings.Coupons, couponUI, channelCatalog, groupOpsBindings.GroupOps, groupOpsUI, automationBindings.Agents, automationUI, operationUI, weComHandler, shellHandler, authentication, cfg.PublicOrigin)
+	configUI := configModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, page, donorTemplate string, assets configmodule.UIAssets) error {
+		title := map[string]string{"config": "配置", "configDetail": "配置", "apidocs": "API 文档"}[page]
+		endpoint := map[string]string{"config": "api.admin_config", "configDetail": "api.admin_config", "apidocs": "api.admin_api_docs"}[page]
+		return renderer.RenderConfig(writer, webshell.AdminPageForRequest(request, title, "", endpoint), page, donorTemplate, webshell.ConfigAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS})
+	})
+	handler, err := routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(healthHandler, accessHandler.Routes(), adminAPIs, effectsBindings.Effects, effectsBindings.PushCenter, effectsUI, mediaBindings.Media, mediaUI, tagBindings.Tags, tagUI, productBindings.Products, productUI, couponBindings.Coupons, couponUI, channelCatalog, groupOpsBindings.GroupOps, groupOpsUI, automationBindings.Agents, automationUI, operationUI, configBindings.Config, configUI, weComHandler, shellHandler, authentication, cfg.PublicOrigin)
 	if err != nil {
 		return fail(err)
 	}
 	handler = securityHeaders(mountSurveyUI(handler, surveyUI, surveyPublicUI, authentication))
-	return &composedApplication{pool: pool, handler: handler, management: management, weComProcessor: weComProcessor, effectsRuntime: effectsRuntime, customerSync: customerSync}, nil
+	// These are local observations only: they make the release and diagnostics
+	// projections truthful and readable after startup, without claiming deploy,
+	// cutover, provider execution, or runtime-secret application.
+	if err = releaseObservation.Record(ctx, releaseport.ReleaseObservation{ReleaseSHA: cfg.ReleaseSHA, Status: "observed"}); err != nil {
+		return fail(err)
+	}
+	if _, err = diagnostics.Record(ctx, adminopsport.DiagnosticSnapshot{Key: "aicrm.composition", Status: "ok"}); err != nil {
+		return fail(err)
+	}
+	return &composedApplication{pool: pool, handler: handler, management: management, weComProcessor: weComProcessor, effectsRuntime: effectsRuntime, customerSync: customerSync, adminOps: adminOpsProjection, release: releaseObservation, diagnostics: diagnostics}, nil
 }
 
 func mountSurveyUI(next, adminUI, publicUI http.Handler, authentication accessAuthentication) http.Handler {
@@ -757,23 +831,23 @@ func routeApplicationWithGroupOps(health, access, identity, effects, pushCenter,
 }
 
 func routeApplicationWithProductsCouponsGroupOps(health, access, identity, effects, pushCenter, effectsUI, mediaHandler, mediaUI, tagHandler, tagUI, productHandler, productUI, couponHandler, couponUI, channelHandler, groupOpsHandler, groupOpsUI, automationHandler, automationUI, weCom, shell http.Handler, authentication accessAuthentication, publicOrigin string) (http.Handler, error) {
-	return routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, access, identity, effects, pushCenter, effectsUI, mediaHandler, mediaUI, tagHandler, tagUI, productHandler, productUI, couponHandler, couponUI, channelHandler, groupOpsHandler, groupOpsUI, automationHandler, automationUI, http.NotFoundHandler(), weCom, shell, authentication, publicOrigin)
+	return routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, access, identity, effects, pushCenter, effectsUI, mediaHandler, mediaUI, tagHandler, tagUI, productHandler, productUI, couponHandler, couponUI, channelHandler, groupOpsHandler, groupOpsUI, automationHandler, automationUI, http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(), weCom, shell, authentication, publicOrigin)
 }
 
 func routeApplicationWithAll(health, access, identity, effects, pushCenter, effectsUI, mediaHandler, mediaUI, tagHandler, tagUI, operationUI, weCom, shell http.Handler, authentication accessAuthentication, publicOrigin string) (http.Handler, error) {
-	return routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, access, identity, effects, pushCenter, effectsUI, mediaHandler, mediaUI, tagHandler, tagUI, http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(), operationUI, weCom, shell, authentication, publicOrigin)
+	return routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, access, identity, effects, pushCenter, effectsUI, mediaHandler, mediaUI, tagHandler, tagUI, http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(), operationUI, http.NotFoundHandler(), http.NotFoundHandler(), weCom, shell, authentication, publicOrigin)
 }
 
 func routeApplicationWithProductsCouponsAndCycles(health, access, identity, effects, pushCenter, effectsUI, mediaHandler, mediaUI, tagHandler, tagUI, productHandler, productUI, couponHandler, couponUI, channelHandler, operationUI, weCom, shell http.Handler, authentication accessAuthentication, publicOrigin string) (http.Handler, error) {
-	return routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, access, identity, effects, pushCenter, effectsUI, mediaHandler, mediaUI, tagHandler, tagUI, productHandler, productUI, couponHandler, couponUI, channelHandler, http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(), operationUI, weCom, shell, authentication, publicOrigin)
+	return routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, access, identity, effects, pushCenter, effectsUI, mediaHandler, mediaUI, tagHandler, tagUI, productHandler, productUI, couponHandler, couponUI, channelHandler, http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(), operationUI, http.NotFoundHandler(), http.NotFoundHandler(), weCom, shell, authentication, publicOrigin)
 }
 
 func routeApplicationWithProductsCouponsGroupOpsAndCycles(health, access, identity, effects, pushCenter, effectsUI, mediaHandler, mediaUI, tagHandler, tagUI, productHandler, productUI, couponHandler, couponUI, channelHandler, groupOpsHandler, groupOpsUI, operationUI, weCom, shell http.Handler, authentication accessAuthentication, publicOrigin string) (http.Handler, error) {
-	return routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, access, identity, effects, pushCenter, effectsUI, mediaHandler, mediaUI, tagHandler, tagUI, productHandler, productUI, couponHandler, couponUI, channelHandler, groupOpsHandler, groupOpsUI, http.NotFoundHandler(), http.NotFoundHandler(), operationUI, weCom, shell, authentication, publicOrigin)
+	return routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, access, identity, effects, pushCenter, effectsUI, mediaHandler, mediaUI, tagHandler, tagUI, productHandler, productUI, couponHandler, couponUI, channelHandler, groupOpsHandler, groupOpsUI, http.NotFoundHandler(), http.NotFoundHandler(), operationUI, http.NotFoundHandler(), http.NotFoundHandler(), weCom, shell, authentication, publicOrigin)
 }
 
-func routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, access, identity, effects, pushCenter, effectsUI, mediaHandler, mediaUI, tagHandler, tagUI, productHandler, productUI, couponHandler, couponUI, channelHandler, groupOpsHandler, groupOpsUI, automationHandler, automationUI, operationUI, weCom, shell http.Handler, authentication accessAuthentication, publicOrigin string) (http.Handler, error) {
-	if health == nil || access == nil || identity == nil || effects == nil || pushCenter == nil || effectsUI == nil || mediaHandler == nil || mediaUI == nil || tagHandler == nil || tagUI == nil || productHandler == nil || productUI == nil || couponHandler == nil || couponUI == nil || channelHandler == nil || groupOpsHandler == nil || groupOpsUI == nil || automationHandler == nil || automationUI == nil || operationUI == nil || weCom == nil || shell == nil || authentication == nil || canonicalOrigin(publicOrigin) == "" {
+func routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, access, identity, effects, pushCenter, effectsUI, mediaHandler, mediaUI, tagHandler, tagUI, productHandler, productUI, couponHandler, couponUI, channelHandler, groupOpsHandler, groupOpsUI, automationHandler, automationUI, operationUI, configHandler, configUI, weCom, shell http.Handler, authentication accessAuthentication, publicOrigin string) (http.Handler, error) {
+	if health == nil || access == nil || identity == nil || effects == nil || pushCenter == nil || effectsUI == nil || mediaHandler == nil || mediaUI == nil || tagHandler == nil || tagUI == nil || productHandler == nil || productUI == nil || couponHandler == nil || couponUI == nil || channelHandler == nil || groupOpsHandler == nil || groupOpsUI == nil || automationHandler == nil || automationUI == nil || operationUI == nil || configHandler == nil || configUI == nil || weCom == nil || shell == nil || authentication == nil || canonicalOrigin(publicOrigin) == "" {
 		return nil, errors.New("application HTTP dependencies are required")
 	}
 	mux := http.NewServeMux()
@@ -782,6 +856,9 @@ func routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, acce
 	mux.Handle("/login", access)
 	mux.Handle("/logout", access)
 	mux.Handle("/api/admin/access/", access)
+	// Frozen PR09 AdminOps requests this exact compatibility URL. Access remains
+	// the route owner; Config never receives or reimplements admin credentials.
+	mux.Handle("/api/admin/admin-access", access)
 	mux.Handle("/api/admin/oneid/", identity)
 	mux.Handle("/api/admin/wecom/", identity)
 	mux.Handle("/api/admin/channel-acquisition-entrant-receipts/", identity)
@@ -840,6 +917,8 @@ func routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, acce
 	mux.Handle("/api/admin/service-period-products/", productHandler)
 	mux.Handle("/api/admin/coupons", couponHandler)
 	mux.Handle("/api/admin/coupons/", couponHandler)
+	mux.Handle("/api/admin/config/", configHandler)
+	mux.Handle("/api/admin/setup-wizard", configHandler)
 	mux.Handle("/api/admin/channels", channelHandler)
 	mux.Handle("/api/admin/channels/", channelHandler)
 	mux.Handle("/api/admin/automation-conversion/group-ops/", groupOpsHandler)
@@ -854,6 +933,7 @@ func routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, acce
 	mux.Handle("/coupon-assets/", requireAdminSession(authentication, couponUI))
 	mux.Handle("/groupops-assets/", requireAdminSession(authentication, groupOpsUI))
 	mux.Handle("/automation-assets/", requireAdminSession(authentication, automationUI))
+	mux.Handle("/config-assets/", requireAdminSession(authentication, configUI))
 	mux.Handle("/admin/wecom-tags", requireAdminSession(authentication, tagUI))
 	mux.Handle("/admin/operation-cycles", requireAdminSession(authentication, operationUI))
 	mux.Handle("/admin/operation-cycles/", requireAdminSession(authentication, operationUI))
@@ -903,6 +983,9 @@ func routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, acce
 	mux.Handle("/admin/groupopsDetail.html", requireAdminSession(authentication, groupOpsUI))
 	for _, path := range []string{"/admin/automation-agents", "/admin/automation-agents/", "/admin/agents.html", "/admin/agentEdit.html"} {
 		mux.Handle(path, requireAdminSession(authentication, automationUI))
+	}
+	for _, path := range []string{"/admin/config", "/admin/config/", "/admin/config.html", "/admin/configDetail.html", "/admin/api-docs", "/admin/apidocs.html"} {
+		mux.Handle(path, requireAdminSession(authentication, configUI))
 	}
 	mux.Handle("/wecom/external-contact/callback", weCom)
 	mux.Handle("/api/wecom/events", weCom)
@@ -986,7 +1069,8 @@ func securityHeaders(next http.Handler) http.Handler {
 		automationPage := request.URL.Path == "/admin/automation-agents" || strings.HasPrefix(request.URL.Path, "/admin/automation-agents/") || request.URL.Path == "/admin/agents.html" || request.URL.Path == "/admin/agentEdit.html"
 		surveyPage := request.URL.Path == "/admin/questionnaires" || request.URL.Path == "/admin/questionnaires.html" || request.URL.Path == "/admin/questionnaireDetail.html" || request.URL.Path == "/admin/questionnaireOps.html" || strings.HasPrefix(request.URL.Path, "/h5/")
 		operationCyclesPage := request.URL.Path == "/admin/operation-cycles" || strings.HasPrefix(request.URL.Path, "/admin/operation-cycles/")
-		if (request.URL.Path == "/admin/campaigns.html" && externaleffects.ValidUIQuery(request.URL.Query())) || mediaPage || tagsPage || productPage || couponPage || groupOpsPage || automationPage || surveyPage || operationCyclesPage {
+		configPage := request.URL.Path == "/admin/config" || request.URL.Path == "/admin/config.html" || request.URL.Path == "/admin/configDetail.html" || request.URL.Path == "/admin/api-docs" || request.URL.Path == "/admin/apidocs.html"
+		if (request.URL.Path == "/admin/campaigns.html" && externaleffects.ValidUIQuery(request.URL.Query())) || mediaPage || tagsPage || productPage || couponPage || groupOpsPage || automationPage || surveyPage || operationCyclesPage || configPage {
 			styleSource = "'self' 'unsafe-inline'"
 		}
 		imageSource := "'self' data:"

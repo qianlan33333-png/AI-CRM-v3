@@ -486,6 +486,7 @@ func TestStaticAssetsUseBrowserApplicableContentType(t *testing.T) {
 		{"/static/admin_console/admin_console.js", "text/javascript"},
 		{"/static/admin_console/tag_sync_bridge.js", "text/javascript"},
 		{"/static/admin_console/automation_create_code_adapter.js", "text/javascript"},
+		{"/static/admin_console/config_adminops_bridge.js", "text/javascript"},
 		{"/static/admin_console/nav-icons/automation_conversion.svg", "image/svg+xml"},
 	} {
 		response := httptest.NewRecorder()

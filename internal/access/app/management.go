@@ -2,8 +2,10 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"sort"
 	"strings"
 	"time"
 
@@ -31,6 +33,15 @@ type AddUserInput struct {
 	Password    string
 	DisplayName string
 	Roles       []domain.Role
+}
+
+// LoginAccessChange is the minimal compatibility command used by the frozen
+// AdminOps member panel. It intentionally addresses only already-provisioned
+// local admin accounts; it cannot create accounts, alter roles, or bind a
+// WeCom identity.
+type LoginAccessChange struct {
+	AdminUserID  int64
+	LoginEnabled bool
 }
 
 // UserSummary is deliberately safe for employee-management responses.
@@ -132,6 +143,100 @@ func (service *Management) ListUsers(ctx context.Context, actor domain.Principal
 		return nil
 	})
 	return result, err
+}
+
+// SetLoginAccess applies the donor panel's complete desired login state in one
+// Access-owned transaction. A false value deactivates the matching account and
+// rotates its session version; true re-enables a previously disabled account.
+// The acting super-admin may not turn off their own access.
+func (service *Management) SetLoginAccess(ctx context.Context, actor domain.Principal, idempotencyKey string, changes []LoginAccessChange) ([]UserSummary, error) {
+	if err := requireSuperAdmin(actor); err != nil {
+		return nil, err
+	}
+	if !validLoginAccessIdempotencyKey(idempotencyKey) || len(changes) == 0 || len(changes) > 200 {
+		return nil, domain.ErrInvalidInput
+	}
+	seen := make(map[int64]struct{}, len(changes))
+	for _, change := range changes {
+		if change.AdminUserID < 1 {
+			return nil, domain.ErrInvalidInput
+		}
+		if _, exists := seen[change.AdminUserID]; exists {
+			return nil, domain.ErrInvalidInput
+		}
+		if change.AdminUserID == actor.InternalID && !change.LoginEnabled {
+			return nil, domain.ErrPermissionDenied
+		}
+		seen[change.AdminUserID] = struct{}{}
+	}
+	canonicalChanges := append([]LoginAccessChange(nil), changes...)
+	sort.Slice(canonicalChanges, func(left, right int) bool {
+		return canonicalChanges[left].AdminUserID < canonicalChanges[right].AdminUserID
+	})
+	payloadDigest := loginAccessRequestDigest(canonicalChanges)
+
+	var result []UserSummary
+	err := service.uow.Within(ctx, func(txContext context.Context) error {
+		reserved, err := service.repository.ReserveLoginAccessRequest(txContext, actor.InternalID, idempotencyKey, payloadDigest, service.now().UTC())
+		if err != nil {
+			return err
+		}
+		if !reserved {
+			users, err := service.repository.ListUsers(txContext)
+			if err != nil {
+				return err
+			}
+			result = make([]UserSummary, 0, len(users))
+			for _, user := range users {
+				result = append(result, summarizeUser(user))
+			}
+			return nil
+		}
+		byID := make(map[int64]domain.User, len(changes))
+		for _, change := range changes {
+			user, err := service.repository.UserByID(txContext, change.AdminUserID, true)
+			if err != nil {
+				return err
+			}
+			byID[change.AdminUserID] = user
+		}
+		for _, change := range changes {
+			user := byID[change.AdminUserID]
+			if user.Active == change.LoginEnabled {
+				continue
+			}
+			if err := service.repository.SetActive(txContext, user.ID, change.LoginEnabled, service.now().UTC()); err != nil {
+				return err
+			}
+			if err := service.audit(txContext, actor.InternalID, user.ID, "set_login_enabled", map[string]any{"login_enabled": change.LoginEnabled}); err != nil {
+				return err
+			}
+		}
+		users, err := service.repository.ListUsers(txContext)
+		if err != nil {
+			return err
+		}
+		result = make([]UserSummary, 0, len(users))
+		for _, user := range users {
+			result = append(result, summarizeUser(user))
+		}
+		return nil
+	})
+	return result, err
+}
+
+func validLoginAccessIdempotencyKey(key string) bool {
+	key = strings.TrimSpace(key)
+	return key != "" && len(key) <= 200 && !strings.ContainsAny(key, "\x00\r\n")
+}
+
+func loginAccessRequestDigest(changes []LoginAccessChange) [32]byte {
+	// The visual member order is not semantically meaningful, but every
+	// requested login flag is bound to the browser's idempotency key.
+	payload, _ := json.Marshal(struct {
+		Members []LoginAccessChange `json:"members"`
+	}{Members: changes})
+	return sha256.Sum256(payload)
 }
 
 func summarizeUser(user domain.User) UserSummary {

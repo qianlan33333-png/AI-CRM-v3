@@ -34,11 +34,12 @@ jobs:
     env:
       AICRM_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/aicrm_ci?sslmode=disable
       PR07_DONOR_DIR: ${{ github.workspace }}/.ci-donor-v2
+      PR09_DONOR_ROOT: ${{ github.workspace }}/.ci-donor-v2
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - name: Checkout frozen PR07 donor
+      - name: Checkout frozen v2 donor
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: qianlan33333-png/AI-CRM-v2
@@ -76,6 +77,7 @@ jobs:
           node web/scripts/survey-unresolved-history-contract.mjs
           node --check internal/webshell/static/admin_console/survey_operations.js
           scripts/check-pr08-frontend-donor-manifest.sh
+          scripts/check-pr09-frontend-freeze.sh
           npm run typecheck
           npx tsc -p web/v3/tsconfig.json --noEmit
           npm test
@@ -98,7 +100,7 @@ jobs:
       - name: Check repository
         run: make check
       - name: Race-check security and identity boundaries
-        run: go test -race ./cmd/aicrm ./cmd/migrate-commerce-history ./internal/access/... ./internal/identity/... ./internal/wecom/... ./internal/externaleffects/... ./internal/platform/jobqueue/... ./internal/media/... ./internal/tag/... ./internal/product/... ./internal/coupon/... ./internal/groupops/... ./internal/automation/... ./internal/operationcycle/... ./internal/outbound ./internal/order/... ./internal/payment/...
+        run: go test -race ./cmd/aicrm ./cmd/migrate-commerce-history ./internal/access/... ./internal/identity/... ./internal/wecom/... ./internal/externaleffects/... ./internal/platform/jobqueue/... ./internal/media/... ./internal/tag/... ./internal/product/... ./internal/coupon/... ./internal/groupops/... ./internal/automation/... ./internal/operationcycle/... ./internal/outbound ./internal/order/... ./internal/payment/... ./internal/config/... ./internal/adminops/... ./internal/release/...
 
   deploy:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -112,11 +114,12 @@ jobs:
       contents: read
     env:
       PR07_DONOR_DIR: ${{ github.workspace }}/.ci-donor-v2
+      PR09_DONOR_ROOT: ${{ github.workspace }}/.ci-donor-v2
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - name: Checkout frozen PR07 donor
+      - name: Checkout frozen v2 donor
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: qianlan33333-png/AI-CRM-v2
@@ -159,6 +162,7 @@ jobs:
           node web/scripts/survey-unresolved-history-contract.mjs
           node --check internal/webshell/static/admin_console/survey_operations.js
           scripts/check-pr08-frontend-donor-manifest.sh
+          scripts/check-pr09-frontend-freeze.sh
           npm run typecheck
           npx tsc -p web/v3/tsconfig.json --noEmit
           npm run build

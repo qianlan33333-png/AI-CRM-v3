@@ -41,6 +41,7 @@ type Authentication interface {
 
 type Management interface {
 	ListUsers(context.Context, domain.Principal) ([]app.UserSummary, error)
+	SetLoginAccess(context.Context, domain.Principal, string, []app.LoginAccessChange) ([]app.UserSummary, error)
 	AddUser(context.Context, domain.Principal, app.AddUserInput) (domain.User, error)
 	DisableUser(context.Context, domain.Principal, int64) error
 	BindWeComUserID(context.Context, domain.Principal, int64, string) error
@@ -87,12 +88,137 @@ func (handler *Handler) Routes() nethttp.Handler {
 	mux.HandleFunc("POST /login", handler.login)
 	mux.HandleFunc("POST /logout", handler.logout)
 	mux.HandleFunc("GET /api/admin/access/users", handler.listUsers)
+	// The frozen PR09 AdminOps bundle calls this compatibility path. It stays
+	// access-owned so auth, CSRF, transactions, session fencing, and audits are
+	// identical to the canonical access API.
+	mux.HandleFunc("GET /api/admin/admin-access", handler.adminAccess)
+	mux.HandleFunc("PUT /api/admin/admin-access", handler.adminAccess)
 	mux.HandleFunc("POST /api/admin/access/users", handler.addUser)
 	mux.HandleFunc("POST /api/admin/access/users/{id}/disable", handler.disableUser)
 	mux.HandleFunc("POST /api/admin/access/users/{id}/wecom-userid", handler.bindWeCom)
 	mux.HandleFunc("POST /api/admin/access/users/{id}/roles", handler.changeRoles)
 	mux.HandleFunc("POST /api/admin/access/users/{id}/password", handler.resetPassword)
 	return mux
+}
+
+func (handler *Handler) adminAccess(response nethttp.ResponseWriter, request *nethttp.Request) {
+	switch request.Method {
+	case nethttp.MethodGet:
+		var session string
+		if cookie, err := request.Cookie(SessionCookieName); err == nil {
+			session = cookie.Value
+		}
+		actor, err := handler.auth.Authenticate(request.Context(), session)
+		if err != nil {
+			handler.writeError(response, request, err)
+			return
+		}
+		users, err := handler.management.ListUsers(request.Context(), actor)
+		if err != nil {
+			handler.writeAdminAccessError(response, request, err)
+			return
+		}
+		writeJSON(response, nethttp.StatusOK, adminAccessRead(users))
+	case nethttp.MethodPut:
+		actor, payload, ok := handler.authorizedPayload(response, request)
+		if !ok {
+			return
+		}
+		changes, err := parseAdminAccessChanges(payload)
+		if err != nil {
+			writeJSON(response, nethttp.StatusBadRequest, map[string]any{"ok": false, "error": "invalid_request"})
+			return
+		}
+		key, err := adminAccessIdempotencyKey(request)
+		if err != nil {
+			writeJSON(response, nethttp.StatusBadRequest, map[string]any{"ok": false, "error": "invalid_request"})
+			return
+		}
+		users, err := handler.management.SetLoginAccess(request.Context(), actor, key, changes)
+		if err != nil {
+			handler.writeAdminAccessError(response, request, err)
+			return
+		}
+		result := adminAccessRead(users)
+		result["idempotency_key"] = key
+		writeJSON(response, nethttp.StatusOK, result)
+	default:
+		response.Header().Set("Allow", nethttp.MethodGet+", "+nethttp.MethodPut)
+		writeJSON(response, nethttp.StatusMethodNotAllowed, map[string]any{"ok": false, "error": "invalid_request"})
+	}
+}
+
+func adminAccessRead(users []app.UserSummary) map[string]any {
+	members := make([]map[string]any, 0, len(users))
+	for _, user := range users {
+		members = append(members, map[string]any{
+			"admin_user_id": user.ID, "display_name": user.DisplayName,
+			"role": adminAccessRole(user.Roles), "staff_id": nil,
+			"staff_wecom_userid": user.WeComUserID, "staff_name": user.DisplayName,
+			"is_active": user.Active, "login_enabled": user.Active,
+		})
+	}
+	return map[string]any{"ok": true, "members": members, "local_only": true, "external": false}
+}
+
+func adminAccessRole(roles []domain.Role) string {
+	for _, expected := range []domain.Role{domain.RoleSuperAdmin, domain.RoleAdmin, domain.RoleViewer} {
+		for _, role := range roles {
+			if role == expected {
+				return string(role)
+			}
+		}
+	}
+	return ""
+}
+
+func parseAdminAccessChanges(payload map[string]any) ([]app.LoginAccessChange, error) {
+	if len(payload) != 1 {
+		return nil, domain.ErrInvalidInput
+	}
+	raw, ok := payload["members"].([]any)
+	if !ok || len(raw) == 0 || len(raw) > 200 {
+		return nil, domain.ErrInvalidInput
+	}
+	changes := make([]app.LoginAccessChange, 0, len(raw))
+	for _, value := range raw {
+		member, ok := value.(map[string]any)
+		if !ok || len(member) != 2 {
+			return nil, domain.ErrInvalidInput
+		}
+		id, validID := member["admin_user_id"].(float64)
+		enabled, validEnabled := member["login_enabled"].(bool)
+		if !validID || id < 1 || id != float64(int64(id)) || !validEnabled {
+			return nil, domain.ErrInvalidInput
+		}
+		changes = append(changes, app.LoginAccessChange{AdminUserID: int64(id), LoginEnabled: enabled})
+	}
+	return changes, nil
+}
+
+func adminAccessIdempotencyKey(request *nethttp.Request) (string, error) {
+	values := request.Header.Values("Idempotency-Key")
+	if len(values) != 1 {
+		return "", domain.ErrInvalidInput
+	}
+	key := strings.TrimSpace(values[0])
+	if key == "" || len(key) > 200 || strings.ContainsAny(key, "\x00\r\n") {
+		return "", domain.ErrInvalidInput
+	}
+	return key, nil
+}
+
+func (handler *Handler) writeAdminAccessError(response nethttp.ResponseWriter, request *nethttp.Request, err error) {
+	switch {
+	case errors.Is(err, domain.ErrAuthentication), errors.Is(err, domain.ErrCSRFRequired), errors.Is(err, domain.ErrPermissionDenied):
+		handler.writeError(response, request, err)
+	case errors.Is(err, domain.ErrConflict):
+		writeJSON(response, nethttp.StatusConflict, map[string]any{"ok": false, "error": "idempotency_conflict"})
+	case errors.Is(err, domain.ErrInvalidInput), errors.Is(err, domain.ErrNotFound):
+		writeJSON(response, nethttp.StatusBadRequest, map[string]any{"ok": false, "error": "invalid_member"})
+	default:
+		writeJSON(response, nethttp.StatusServiceUnavailable, map[string]any{"ok": false, "error": "admin_access_unavailable"})
+	}
 }
 
 func (handler *Handler) listUsers(response nethttp.ResponseWriter, request *nethttp.Request) {

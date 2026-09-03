@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -34,12 +35,13 @@ type memoryRepository struct {
 	users    map[int64]domain.User
 	sessions map[[32]byte]domain.Session
 	limits   map[[32]byte]domain.LoginRateLimit
+	receipts map[string][32]byte
 	audits   []domain.LoginAudit
 	nextID   int64
 }
 
 func newMemoryRepository() *memoryRepository {
-	return &memoryRepository{users: map[int64]domain.User{}, sessions: map[[32]byte]domain.Session{}, limits: map[[32]byte]domain.LoginRateLimit{}, nextID: 1}
+	return &memoryRepository{users: map[int64]domain.User{}, sessions: map[[32]byte]domain.Session{}, limits: map[[32]byte]domain.LoginRateLimit{}, receipts: map[string][32]byte{}, nextID: 1}
 }
 
 func (repo *memoryRepository) CountUsers(context.Context) (int64, error) {
@@ -95,9 +97,52 @@ func (repo *memoryRepository) SetActive(_ context.Context, id int64, active bool
 	if !ok {
 		return domain.ErrNotFound
 	}
+	if user.Active == active {
+		return nil
+	}
 	user.Active, user.SessionVersion = active, user.SessionVersion+1
 	repo.users[id] = user
 	return nil
+}
+
+func (repo *memoryRepository) ReserveLoginAccessRequest(_ context.Context, actorID int64, key string, digest [32]byte, _ time.Time) (bool, error) {
+	receiptKey := fmt.Sprintf("%d:%s", actorID, key)
+	if stored, exists := repo.receipts[receiptKey]; exists {
+		if stored != digest {
+			return false, domain.ErrConflict
+		}
+		return false, nil
+	}
+	repo.receipts[receiptKey] = digest
+	return true, nil
+}
+
+func TestSetLoginAccessIsAtomicAtTheAccessBoundaryAndFencesDisabledSessions(t *testing.T) {
+	repository := newMemoryRepository()
+	repository.users[1] = domain.User{ID: 1, Username: "owner", DisplayName: "Owner", Active: true, SessionVersion: 1, Roles: []domain.Role{domain.RoleSuperAdmin}}
+	repository.users[2] = domain.User{ID: 2, Username: "operator", DisplayName: "Operator", Active: true, SessionVersion: 7, Roles: []domain.Role{domain.RoleAdmin}}
+	service, err := NewManagement(repository, testUOW{}, testPasswords{}, func() time.Time { return testNow })
+	if err != nil {
+		t.Fatal(err)
+	}
+	actor := domain.Principal{Kind: domain.KindAdmin, InternalID: 1, Roles: []domain.Role{domain.RoleSuperAdmin}}
+	users, err := service.SetLoginAccess(context.Background(), actor, "access-1", []LoginAccessChange{{AdminUserID: 2, LoginEnabled: false}})
+	if err != nil || len(users) != 2 || repository.users[2].Active || repository.users[2].SessionVersion != 8 {
+		t.Fatalf("users=%+v stored=%+v err=%v", users, repository.users[2], err)
+	}
+	_, err = service.SetLoginAccess(context.Background(), actor, "access-1", []LoginAccessChange{{AdminUserID: 2, LoginEnabled: false}})
+	if err != nil || repository.users[2].SessionVersion != 8 {
+		t.Fatalf("idempotent desired state session=%d err=%v", repository.users[2].SessionVersion, err)
+	}
+	if _, err = service.SetLoginAccess(context.Background(), actor, "access-2", []LoginAccessChange{{AdminUserID: 1, LoginEnabled: false}}); !errors.Is(err, domain.ErrPermissionDenied) {
+		t.Fatalf("self disable error=%v", err)
+	}
+	if _, err = service.SetLoginAccess(context.Background(), actor, "access-1", []LoginAccessChange{{AdminUserID: 2, LoginEnabled: true}}); !errors.Is(err, domain.ErrConflict) {
+		t.Fatalf("payload drift error=%v", err)
+	}
+	if repository.users[2].Active || repository.users[2].SessionVersion != 8 {
+		t.Fatalf("payload drift mutated user=%+v", repository.users[2])
+	}
 }
 func (repo *memoryRepository) SetWeComUserID(_ context.Context, id int64, value string, _ time.Time) error {
 	user, ok := repo.users[id]
