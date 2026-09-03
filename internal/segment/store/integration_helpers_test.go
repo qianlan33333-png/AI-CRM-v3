@@ -44,12 +44,14 @@ func segmentDatabase(t *testing.T, ctx context.Context) (*pgxpool.Pool, func()) 
 		t.Fatal(err)
 	}
 	_, file, _, _ := runtime.Caller(0)
-	sql, err := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "..", "migrations", "0028_segment_audience_configuration.sql"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err = native.Exec(ctx, string(sql)); err != nil {
-		t.Fatalf("apply segment migration: %v", err)
+	for _, name := range []string{"0028_segment_audience_configuration.sql", "0029_segment_audience_snapshots.sql"} {
+		sql, readErr := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "..", "migrations", name))
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if _, err = native.Exec(ctx, string(sql)); err != nil {
+			t.Fatalf("apply segment migration %s: %v", name, err)
+		}
 	}
 	return native, func() {
 		native.Close()

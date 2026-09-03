@@ -252,6 +252,20 @@ func (s *Service) CopyPackage(ctx context.Context, command VersionCommand) (segm
 			if codeErr == nil {
 				copied, codeErr = s.store.CreatePackage(tx, copied)
 			}
+			if codeErr == nil {
+				sourceConfiguration, configErr := s.store.CurrentConfiguration(tx, source.ID)
+				if configErr == nil {
+					configuration, createErr := segmentdomain.NewConfigurationVersion(copied.ID, 1, sourceConfiguration.Definition, sourceConfiguration.RefreshCronUTC, command.Actor, now)
+					if createErr == nil {
+						configuration, createErr = s.store.CreateConfigurationVersion(tx, configuration)
+					}
+					if createErr == nil {
+						copied, createErr = s.store.SetCurrentConfiguration(tx, copied.ID, configuration.ID, copied.Version, command.Actor, now)
+					}
+					configErr = createErr
+				}
+				codeErr = configErr
+			}
 			copyErr = codeErr
 		}
 		return copied, fact("package", copied.ID, "copy", "audience.package.copied.v1", command.Actor, command.IdempotencyKey, now), copyErr

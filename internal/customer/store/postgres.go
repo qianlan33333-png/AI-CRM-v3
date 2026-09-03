@@ -22,6 +22,40 @@ func NewPostgreSQL() PostgreSQL { return PostgreSQL{} }
 var _ customerapp.Store = PostgreSQL{}
 var _ customerport.ProjectionWriter = PostgreSQL{}
 var _ customerport.CallbackProjectionWriter = PostgreSQL{}
+var _ customerport.AudienceReader = PostgreSQL{}
+
+func (PostgreSQL) ActiveWithin(ctx context.Context, reference time.Time, days int) ([]customerdomain.CustomerID, time.Time, error) {
+	if reference.IsZero() || days < 1 || days > 999 {
+		return nil, time.Time{}, customerapp.ErrInvalidQuery
+	}
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return nil, time.Time{}, err
+	}
+	rows, err := tx.Query(ctx, `SELECT customer_id FROM customer_directory_projection
+		WHERE customer_status='active' AND activation_status='active' AND updated_at <= $1 AND updated_at >= $1-($2::int * interval '1 day')
+		ORDER BY customer_id LIMIT 100001`, reference.UTC(), days)
+	if err != nil {
+		return nil, time.Time{}, err
+	}
+	defer rows.Close()
+	ids := []customerdomain.CustomerID{}
+	for rows.Next() {
+		var id customerdomain.CustomerID
+		if err = rows.Scan(&id); err != nil {
+			return nil, time.Time{}, err
+		}
+		ids = append(ids, id)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, time.Time{}, err
+	}
+	var watermark time.Time
+	if err = tx.QueryRow(ctx, `SELECT COALESCE(max(updated_at),to_timestamp(0)) FROM customer_directory_projection WHERE updated_at <= $1`, reference.UTC()).Scan(&watermark); err != nil {
+		return nil, time.Time{}, err
+	}
+	return ids, watermark, nil
+}
 
 func (PostgreSQL) List(ctx context.Context, query customerapp.Query) (customerapp.PageData, error) {
 	tx, err := platformpostgres.RequireTransaction(ctx)

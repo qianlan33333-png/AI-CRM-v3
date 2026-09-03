@@ -10,10 +10,12 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
 	segmentapp "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/app"
 	segmentdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/domain"
+	segmentport "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/port"
 )
 
 type RequestSecurity interface {
@@ -34,16 +36,35 @@ type ConfigurationApplication interface {
 	PutConfiguration(context.Context, segmentapp.ConfigurationCommand) (segmentdomain.ConfigurationVersion, error)
 	CurrentConfiguration(context.Context, int64) (segmentdomain.ConfigurationVersion, error)
 }
+type SnapshotApplication interface {
+	Preview(context.Context, int64, time.Time) (segmentapp.Preview, error)
+	AcceptRefresh(context.Context, segmentapp.RefreshCommand) (segmentdomain.RefreshRun, error)
+	GetRefresh(context.Context, int64) (segmentdomain.RefreshRun, error)
+	PublishedSnapshot(context.Context, segmentport.PackageID) (segmentport.Snapshot, bool, error)
+	Members(context.Context, segmentport.SnapshotID, string, int) (segmentport.MemberPage, error)
+}
 type Handler struct {
-	service  ConfigurationApplication
-	security RequestSecurity
+	service   ConfigurationApplication
+	snapshots SnapshotApplication
+	security  RequestSecurity
 }
 
 func NewHandler(service ConfigurationApplication, security RequestSecurity) (*Handler, error) {
 	if service == nil || security == nil {
 		return nil, errors.New("segment HTTP dependencies are required")
 	}
-	return &Handler{service, security}, nil
+	return &Handler{service: service, security: security}, nil
+}
+func NewRuntimeHandler(service ConfigurationApplication, snapshots SnapshotApplication, security RequestSecurity) (*Handler, error) {
+	h, err := NewHandler(service, security)
+	if err != nil {
+		return nil, err
+	}
+	if snapshots == nil {
+		return nil, errors.New("segment snapshot dependency is required")
+	}
+	h.snapshots = snapshots
+	return h, nil
 }
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !strings.HasPrefix(r.URL.Path, "/api/admin/ai-audience/") {
@@ -65,6 +86,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.packageItem(w, r, id(parts[1]))
 	case len(parts) == 3 && parts[0] == "packages":
 		h.packageAction(w, r, id(parts[1]), parts[2])
+	case len(parts) == 4 && parts[0] == "packages" && parts[2] == "refresh-runs":
+		h.refreshRun(w, r, id(parts[3]))
 	default:
 		fail(w, 404, "not_found")
 	}
@@ -245,8 +268,20 @@ func (h *Handler) packageItem(w http.ResponseWriter, r *http.Request, packageID 
 	}
 }
 func (h *Handler) packageAction(w http.ResponseWriter, r *http.Request, packageID int64, action string) {
+	if action == "members" {
+		h.members(w, r, packageID)
+		return
+	}
 	if action == "configuration" {
 		h.configuration(w, r, packageID)
+		return
+	}
+	if action == "preview" || action == "configuration-preview" {
+		h.preview(w, r, packageID)
+		return
+	}
+	if action == "refresh" || action == "configuration-materialize" || action == "refresh-runs" {
+		h.refresh(w, r, packageID)
 		return
 	}
 	if packageID < 1 || r.Method != http.MethodPost {
@@ -333,6 +368,114 @@ func (h *Handler) configuration(w http.ResponseWriter, r *http.Request, packageI
 		return
 	}
 	respond(w, 200, map[string]any{"configuration": configurationDTO(item)})
+}
+func (h *Handler) preview(w http.ResponseWriter, r *http.Request, packageID int64) {
+	if r.Method != http.MethodPost {
+		method(w, "POST")
+		return
+	}
+	if !h.read(w, r) {
+		return
+	}
+	if h.snapshots == nil {
+		resultError(w, segmentapp.ErrNotReady)
+		return
+	}
+	var in struct {
+		ReferenceTime time.Time `json:"reference_time"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	value, err := h.snapshots.Preview(r.Context(), packageID, in.ReferenceTime)
+	if err != nil {
+		resultError(w, err)
+		return
+	}
+	respond(w, http.StatusOK, map[string]any{"preview": value})
+}
+func (h *Handler) refresh(w http.ResponseWriter, r *http.Request, packageID int64) {
+	if r.Method != http.MethodPost {
+		method(w, "POST")
+		return
+	}
+	p, ok := h.write(w, r)
+	if !ok {
+		return
+	}
+	if h.snapshots == nil {
+		resultError(w, segmentapp.ErrNotReady)
+		return
+	}
+	key, ok := requestKey(w, r)
+	if !ok {
+		return
+	}
+	var in struct {
+		ReferenceTime time.Time `json:"reference_time"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	run, err := h.snapshots.AcceptRefresh(r.Context(), segmentapp.RefreshCommand{PackageID: packageID, Actor: p.InternalID, IdempotencyKey: key, ReferenceTime: in.ReferenceTime})
+	if err != nil {
+		resultError(w, err)
+		return
+	}
+	respond(w, http.StatusAccepted, map[string]any{"refresh_run": run})
+}
+func (h *Handler) refreshRun(w http.ResponseWriter, r *http.Request, runID int64) {
+	if r.Method != http.MethodGet {
+		method(w, "GET")
+		return
+	}
+	if !h.read(w, r) {
+		return
+	}
+	if h.snapshots == nil {
+		resultError(w, segmentapp.ErrNotReady)
+		return
+	}
+	run, err := h.snapshots.GetRefresh(r.Context(), runID)
+	if err != nil {
+		resultError(w, err)
+		return
+	}
+	respond(w, http.StatusOK, map[string]any{"refresh_run": run})
+}
+func (h *Handler) members(w http.ResponseWriter, r *http.Request, packageID int64) {
+	if r.Method != http.MethodGet {
+		method(w, "GET")
+		return
+	}
+	if !h.read(w, r) {
+		return
+	}
+	if h.snapshots == nil {
+		resultError(w, segmentapp.ErrNotReady)
+		return
+	}
+	snapshot, found, err := h.snapshots.PublishedSnapshot(r.Context(), segmentport.PackageID(packageID))
+	if err != nil {
+		resultError(w, err)
+		return
+	}
+	if !found {
+		fail(w, 404, "not_found")
+		return
+	}
+	requested := queryID(r, "snapshot_id")
+	if requested > 0 && requested != int64(snapshot.ID) {
+		fail(w, 409, "snapshot_conflict")
+		return
+	}
+	limit := queryInt(r, "limit", 100)
+	page, err := h.snapshots.Members(r.Context(), snapshot.ID, r.URL.Query().Get("cursor"), limit)
+	if err != nil {
+		resultError(w, err)
+		return
+	}
+	respond(w, http.StatusOK, map[string]any{"snapshot": snapshot, "items": page.Items, "next_cursor": page.NextCursor})
 }
 func (h *Handler) templates(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -441,6 +584,9 @@ func packageDTO(p segmentdomain.Package) map[string]any {
 	}
 	if p.CurrentConfigurationVersionID != nil {
 		v["configuration_version_id"] = *p.CurrentConfigurationVersionID
+	}
+	if p.PublishedSnapshotID != nil {
+		v["published_snapshot_id"] = *p.PublishedSnapshotID
 	}
 	return v
 }

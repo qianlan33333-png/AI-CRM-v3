@@ -81,6 +81,7 @@ func TestApplyMigrationsFreshAndUpgradePostgreSQL(t *testing.T) {
 	}
 	foundConfigMigration := false
 	foundSegmentMigration := false
+	foundSegmentSnapshotMigration := false
 	for _, item := range items {
 		if item.name == "0015_config_adminops.sql" {
 			foundConfigMigration = true
@@ -88,18 +89,21 @@ func TestApplyMigrationsFreshAndUpgradePostgreSQL(t *testing.T) {
 		if item.name == "0028_segment_audience_configuration.sql" {
 			foundSegmentMigration = true
 		}
+		if item.name == "0029_segment_audience_snapshots.sql" {
+			foundSegmentSnapshotMigration = true
+		}
 	}
 	if !foundConfigMigration {
 		t.Fatal("expected 0015_config_adminops.sql in the platform migration set")
 	}
-	if !foundSegmentMigration {
-		t.Fatal("expected 0028_segment_audience_configuration.sql in the platform migration set")
+	if !foundSegmentMigration || !foundSegmentSnapshotMigration {
+		t.Fatal("expected Segment configuration and snapshot migrations in the platform migration set")
 	}
 	var applied int
 	if err = pool.QueryRow(ctx, `SELECT count(*) FROM platform_schema_migrations`).Scan(&applied); err != nil || applied != len(items) {
 		t.Fatalf("applied=%d expected=%d err=%v", applied, len(items), err)
 	}
-	for _, table := range []string{"media_blobs", "media_references", "media_attachment_upload_parts", "media_content_packages", "media_content_package_versions", "media_content_package_version_refs", "media_content_delivery_receipts", "media_content_delivery_bindings", "media_group_ops_preparation_receipts", "media_group_ops_preparation_items", "tag_groups", "tag_catalog_tags", "tag_provider_observations", "products", "product_operation_receipts", "product_external_push_configurations", "product_external_push_tests", "coupon_rules", "coupon_rule_targets", "coupon_operation_receipts", "coupon_audit_events", "coupon_outbox", "automation_agents", "automation_operation_receipts", "automation_audit_events", "automation_outbox", "segment_audience_groups", "segment_audience_packages", "segment_audience_configuration_versions", "segment_audience_operation_receipts", "segment_audience_audit_events", "segment_audience_outbox", "group_ops_plans", "group_ops_plan_members", "group_ops_plan_group_assets", "group_ops_plan_nodes", "group_ops_plan_webhook_descriptors", "group_ops_operation_receipts", "group_ops_audit_events", "group_ops_outbox", "group_ops_runs", "group_ops_executions", "group_ops_directory_groups", "group_ops_directory_refresh_receipts", "group_ops_protocol_replays", "operation_cycle_strategies", "operation_cycle_runs", "operation_cycle_report_receipts", "operation_cycle_runners", "operation_cycle_action_requests", "operation_cycle_action_request_events", "operation_cycle_strategy_proposals", "operation_cycle_strategy_versions", "operation_cycle_run_versions", "operation_cycle_run_ordinals", "operation_cycle_admin_receipts", "config_settings", "config_audits", "config_outbox", "adminops_release_projections", "adminops_diagnostic_snapshots", "admin_access_login_compat_receipts"} {
+	for _, table := range []string{"media_blobs", "media_references", "media_attachment_upload_parts", "media_content_packages", "media_content_package_versions", "media_content_package_version_refs", "media_content_delivery_receipts", "media_content_delivery_bindings", "media_group_ops_preparation_receipts", "media_group_ops_preparation_items", "tag_groups", "tag_catalog_tags", "tag_provider_observations", "products", "product_operation_receipts", "product_external_push_configurations", "product_external_push_tests", "coupon_rules", "coupon_rule_targets", "coupon_operation_receipts", "coupon_audit_events", "coupon_outbox", "automation_agents", "automation_operation_receipts", "automation_audit_events", "automation_outbox", "segment_audience_groups", "segment_audience_packages", "segment_audience_configuration_versions", "segment_audience_operation_receipts", "segment_audience_audit_events", "segment_audience_outbox", "segment_audience_refresh_runs", "segment_audience_snapshots", "segment_audience_snapshot_members", "segment_audience_refresh_batches", "group_ops_plans", "group_ops_plan_members", "group_ops_plan_group_assets", "group_ops_plan_nodes", "group_ops_plan_webhook_descriptors", "group_ops_operation_receipts", "group_ops_audit_events", "group_ops_outbox", "group_ops_runs", "group_ops_executions", "group_ops_directory_groups", "group_ops_directory_refresh_receipts", "group_ops_protocol_replays", "operation_cycle_strategies", "operation_cycle_runs", "operation_cycle_report_receipts", "operation_cycle_runners", "operation_cycle_action_requests", "operation_cycle_action_request_events", "operation_cycle_strategy_proposals", "operation_cycle_strategy_versions", "operation_cycle_run_versions", "operation_cycle_run_ordinals", "operation_cycle_admin_receipts", "config_settings", "config_audits", "config_outbox", "adminops_release_projections", "adminops_diagnostic_snapshots", "admin_access_login_compat_receipts"} {
 		var present bool
 		if err = pool.QueryRow(ctx, `SELECT to_regclass(current_schema() || '.' || $1) IS NOT NULL`, table).Scan(&present); err != nil || !present {
 			t.Fatalf("owned table %s present=%v err=%v", table, present, err)

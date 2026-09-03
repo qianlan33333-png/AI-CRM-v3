@@ -73,6 +73,7 @@ import (
 	releaseport "github.com/qianlan33333-png/AI-CRM-v3/internal/release/port"
 	segment "github.com/qianlan33333-png/AI-CRM-v3/internal/segment"
 	segmentapp "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/app"
+	segmentcompiler "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/compiler"
 	segmentstore "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/store"
 	surveymodule "github.com/qianlan33333-png/AI-CRM-v3/internal/survey"
 	surveyapp "github.com/qianlan33333-png/AI-CRM-v3/internal/survey/app"
@@ -158,6 +159,10 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err = river.AddWorkerSafely[payment.ReconciliationJobArgs](effectWorkers, paymentReconciliationWorker); err != nil {
 		return fail(err)
 	}
+	audienceRefreshWorker := segment.NewAudienceRefreshWorker()
+	if err = river.AddWorkerSafely[segment.AudienceRefreshJobArgs](effectWorkers, audienceRefreshWorker); err != nil {
+		return fail(err)
+	}
 	effectClient, err := platformjobqueue.NewInsertClient(pool.Native(), effectWorkers)
 	if err != nil {
 		return fail(err)
@@ -174,7 +179,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
-	effectsRuntime, err := platformjobqueue.NewRuntime(pool.Native(), effectWorkers, platformjobqueue.OutboundQueue, wecom.CustomerSyncQueue, payment.ReconciliationQueue)
+	effectsRuntime, err := platformjobqueue.NewRuntime(pool.Native(), effectWorkers, platformjobqueue.OutboundQueue, wecom.CustomerSyncQueue, payment.ReconciliationQueue, segment.AudienceRefreshQueue)
 	if err != nil {
 		return fail(err)
 	}
@@ -216,7 +221,22 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return fail(err)
 	}
 	segmentService := segmentapp.NewService(uow, segmentRepository)
-	segmentBindings, err := segmentModule.Bind(segmentService, requestSecurity)
+	segmentEvaluator, err := segmentapp.NewEvaluator(segmentcompiler.Compiler{}, segmentSourceAdapter{uow: uow, customers: customerStore}, automationOpsCanonicalCustomers{resolver: canonicalCustomerAdapter{reader: queries}})
+	if err != nil {
+		return fail(err)
+	}
+	segmentEnqueuer, err := segment.NewRiverRefreshEnqueuer(effectClient)
+	if err != nil {
+		return fail(err)
+	}
+	segmentSnapshots, err := segmentapp.NewSnapshotService(uow, segmentRepository, segmentEvaluator, segmentEnqueuer)
+	if err != nil {
+		return fail(err)
+	}
+	if err = audienceRefreshWorker.BindService(segmentSnapshots); err != nil {
+		return fail(err)
+	}
+	segmentBindings, err := segmentModule.BindRuntime(segmentService, segmentSnapshots, requestSecurity)
 	if err != nil {
 		return fail(err)
 	}
@@ -667,7 +687,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 			return checkErr
 		}
 		var complete bool
-		checkErr := pool.Native().QueryRow(readinessContext, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['0001','0002','0003','0004','0005','0006','0007','0008','0009','0010','0011','0012','0013','0014','0016','0017','0018','0019','0020','0021','0022','0023','0024','0025','0026','0027','0028']) AS required(version) WHERE NOT EXISTS (SELECT 1 FROM platform_schema_migrations applied WHERE applied.version=required.version))`).Scan(&complete)
+		checkErr := pool.Native().QueryRow(readinessContext, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['0001','0002','0003','0004','0005','0006','0007','0008','0009','0010','0011','0012','0013','0014','0016','0017','0018','0019','0020','0021','0022','0023','0024','0025','0026','0027','0028','0029']) AS required(version) WHERE NOT EXISTS (SELECT 1 FROM platform_schema_migrations applied WHERE applied.version=required.version))`).Scan(&complete)
 		if checkErr != nil || !complete {
 			return errors.New("database schema is not ready")
 		}

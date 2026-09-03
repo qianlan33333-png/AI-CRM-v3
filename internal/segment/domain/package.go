@@ -44,6 +44,7 @@ type Package struct {
 	Lifecycle                     Lifecycle  `json:"lifecycle"`
 	Version                       int64      `json:"version"`
 	CurrentConfigurationVersionID *int64     `json:"current_configuration_version_id,omitempty"`
+	PublishedSnapshotID           *int64     `json:"published_snapshot_id,omitempty"`
 	CreatedBy                     int64      `json:"created_by"`
 	UpdatedBy                     int64      `json:"updated_by"`
 	CreatedAt                     time.Time  `json:"created_at"`

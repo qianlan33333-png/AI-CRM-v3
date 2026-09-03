@@ -79,6 +79,14 @@ func (r *Repository) CurrentConfiguration(ctx context.Context, packageID int64) 
 	return scanConfiguration(t.QueryRow(ctx, query, packageID))
 }
 
+func (r *Repository) Configuration(ctx context.Context, id int64) (segmentdomain.ConfigurationVersion, error) {
+	t, err := tx(ctx)
+	if err != nil {
+		return segmentdomain.ConfigurationVersion{}, err
+	}
+	return scanConfiguration(t.QueryRow(ctx, `SELECT `+configurationColumns+` FROM segment_audience_configuration_versions WHERE id=$1`, id))
+}
+
 func (r *Repository) NextConfigurationVersion(ctx context.Context, packageID int64) (int64, error) {
 	t, err := tx(ctx)
 	if err != nil {

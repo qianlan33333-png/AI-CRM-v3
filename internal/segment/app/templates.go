@@ -32,10 +32,10 @@ var templateParameters = map[string]string{
 func Templates() []Template {
 	return []Template{
 		{Key: "active_contacts", Available: true},
-		{Key: "stage_any", Available: true},
-		{Key: "tag_any", Available: true},
-		{Key: "owner_any", Available: true},
-		{Key: "channel_any", Available: true},
+		{Key: "stage_any", Available: false, UnavailableReason: "customer stage port is not available"},
+		{Key: "tag_any", Available: false, UnavailableReason: "canonical tag membership port is not available"},
+		{Key: "owner_any", Available: false, UnavailableReason: "internal staff ownership port is not available"},
+		{Key: "channel_any", Available: false, UnavailableReason: "channel attribution membership port is not available"},
 	}
 }
 

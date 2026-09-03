@@ -129,12 +129,12 @@ func (r *Repository) DeleteEmptyGroup(ctx context.Context, id, expectedVersion i
 	return nil
 }
 
-const packageColumns = `id,group_id,code,name,lifecycle,version,current_configuration_version_id,created_by,updated_by,created_at,updated_at,archived_at`
+const packageColumns = `id,group_id,code,name,lifecycle,version,current_configuration_version_id,published_snapshot_id,created_by,updated_by,created_at,updated_at,archived_at`
 
 func scanPackage(row pgx.Row) (segmentdomain.Package, error) {
 	var item segmentdomain.Package
 	var lifecycle string
-	err := row.Scan(&item.ID, &item.GroupID, &item.Code, &item.Name, &lifecycle, &item.Version, &item.CurrentConfigurationVersionID, &item.CreatedBy, &item.UpdatedBy, &item.CreatedAt, &item.UpdatedAt, &item.ArchivedAt)
+	err := row.Scan(&item.ID, &item.GroupID, &item.Code, &item.Name, &lifecycle, &item.Version, &item.CurrentConfigurationVersionID, &item.PublishedSnapshotID, &item.CreatedBy, &item.UpdatedBy, &item.CreatedAt, &item.UpdatedAt, &item.ArchivedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return segmentdomain.Package{}, ErrNotFound
 	}

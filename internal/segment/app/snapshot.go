@@ -1,0 +1,278 @@
+package app
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"sort"
+	"strings"
+	"time"
+
+	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
+	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
+	segmentdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/domain"
+	segmentport "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/port"
+	segmentstore "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/store"
+)
+
+type RefreshStore interface {
+	GetPackage(context.Context, int64) (segmentdomain.Package, error)
+	CurrentConfiguration(context.Context, int64) (segmentdomain.ConfigurationVersion, error)
+	Configuration(context.Context, int64) (segmentdomain.ConfigurationVersion, error)
+	ReserveRefresh(context.Context, segmentdomain.RefreshRun) (segmentdomain.RefreshRun, bool, error)
+	AttachRefreshJob(context.Context, int64, int64, time.Time) (segmentdomain.RefreshRun, error)
+	Refresh(context.Context, int64) (segmentdomain.RefreshRun, error)
+	BeginRefresh(context.Context, int64, time.Time) (segmentdomain.RefreshRun, segmentdomain.Snapshot, error)
+	StageRefreshBatch(context.Context, int64, int, []customerdomain.CustomerID, [32]byte, time.Time) error
+	PublishRefresh(context.Context, int64, int64, [32]byte, [32]byte, int64, time.Time) (segmentdomain.Snapshot, error)
+	FailRefresh(context.Context, int64, string, time.Time) error
+	AppendMutationFacts(context.Context, segmentstore.MutationFact) (int64, error)
+	PublishedSnapshot(context.Context, segmentport.PackageID) (segmentport.Snapshot, bool, error)
+	Snapshot(context.Context, segmentport.SnapshotID) (segmentport.Snapshot, bool, error)
+	Members(context.Context, segmentport.SnapshotID, string, int) (segmentport.MemberPage, error)
+}
+
+type RefreshEnqueuer interface {
+	EnqueueRefreshWithin(context.Context, int64) (int64, error)
+}
+
+type SnapshotService struct {
+	uow       platformport.UnitOfWork
+	store     RefreshStore
+	evaluator *Evaluator
+	enqueuer  RefreshEnqueuer
+	now       func() time.Time
+}
+
+type RefreshCommand struct {
+	PackageID      int64     `json:"package_id"`
+	Actor          int64     `json:"actor"`
+	IdempotencyKey string    `json:"-"`
+	ReferenceTime  time.Time `json:"reference_time"`
+}
+
+type Preview struct {
+	PackageID              int64              `json:"package_id"`
+	ConfigurationVersionID int64              `json:"configuration_version_id"`
+	ReferenceTime          time.Time          `json:"reference_time"`
+	MemberCount            int                `json:"member_count"`
+	MemberDigest           string             `json:"member_digest"`
+	Watermarks             []WatermarkSummary `json:"watermarks"`
+	WatermarkDigest        string             `json:"watermark_digest"`
+}
+
+type WatermarkSummary struct {
+	Source string    `json:"source"`
+	AsOf   time.Time `json:"as_of"`
+	Fresh  bool      `json:"fresh"`
+}
+
+func NewSnapshotService(uow platformport.UnitOfWork, store RefreshStore, evaluator *Evaluator, enqueuer RefreshEnqueuer) (*SnapshotService, error) {
+	if uow == nil || store == nil || evaluator == nil || enqueuer == nil {
+		return nil, ErrNotReady
+	}
+	return &SnapshotService{uow: uow, store: store, evaluator: evaluator, enqueuer: enqueuer, now: time.Now}, nil
+}
+
+func (s *SnapshotService) Preview(ctx context.Context, packageID int64, reference time.Time) (Preview, error) {
+	if s == nil || packageID < 1 {
+		return Preview{}, ErrInvalid
+	}
+	if reference.IsZero() {
+		reference = s.now().UTC()
+	} else {
+		reference = reference.UTC()
+	}
+	var config segmentdomain.ConfigurationVersion
+	err := s.uow.Within(ctx, func(tx context.Context) error {
+		var e error
+		config, e = s.store.CurrentConfiguration(tx, packageID)
+		return e
+	})
+	if err != nil {
+		return Preview{}, classify(err)
+	}
+	evaluation, err := s.evaluator.Evaluate(ctx, config.Definition, reference)
+	if err != nil {
+		return Preview{}, classify(err)
+	}
+	return makePreview(packageID, config.ID, evaluation), nil
+}
+
+func (s *SnapshotService) AcceptRefresh(ctx context.Context, command RefreshCommand) (segmentdomain.RefreshRun, error) {
+	if s == nil || command.PackageID < 1 || command.Actor < 1 || len(command.IdempotencyKey) < 16 || len(command.IdempotencyKey) > 128 || strings.TrimSpace(command.IdempotencyKey) != command.IdempotencyKey {
+		return segmentdomain.RefreshRun{}, ErrInvalid
+	}
+	if command.ReferenceTime.IsZero() {
+		command.ReferenceTime = s.now().UTC()
+	} else {
+		command.ReferenceTime = command.ReferenceTime.UTC()
+	}
+	now := s.now().UTC()
+	source := sha256.Sum256([]byte(command.IdempotencyKey))
+	var result segmentdomain.RefreshRun
+	err := s.uow.Within(ctx, func(tx context.Context) error {
+		pkg, e := s.store.GetPackage(tx, command.PackageID)
+		if e != nil {
+			return e
+		}
+		if pkg.Lifecycle == segmentdomain.Archived {
+			return ErrConflict
+		}
+		config, e := s.store.CurrentConfiguration(tx, command.PackageID)
+		if e != nil {
+			return e
+		}
+		run, owned, e := s.store.ReserveRefresh(tx, segmentdomain.RefreshRun{PackageID: command.PackageID, ConfigurationVersionID: config.ID, SourceKeyDigest: source, ReferenceTime: command.ReferenceTime, CreatedAt: now, UpdatedAt: now})
+		if e != nil {
+			return e
+		}
+		if !owned {
+			result = run
+			return nil
+		}
+		jobID, e := s.enqueuer.EnqueueRefreshWithin(tx, run.ID)
+		if e != nil {
+			return e
+		}
+		run, e = s.store.AttachRefreshJob(tx, run.ID, jobID, now)
+		if e != nil {
+			return e
+		}
+		_, e = s.store.AppendMutationFacts(tx, fact("refresh_run", run.ID, "accept", "audience.refresh.accepted.v1", command.Actor, command.IdempotencyKey, now))
+		result = run
+		return e
+	})
+	return result, classify(err)
+}
+
+func (s *SnapshotService) GetRefresh(ctx context.Context, runID int64) (segmentdomain.RefreshRun, error) {
+	if s == nil || runID < 1 {
+		return segmentdomain.RefreshRun{}, ErrInvalid
+	}
+	var run segmentdomain.RefreshRun
+	err := s.uow.Within(ctx, func(tx context.Context) error { var e error; run, e = s.store.Refresh(tx, runID); return e })
+	return run, classify(err)
+}
+
+func (s *SnapshotService) ProcessRefresh(ctx context.Context, runID int64) error {
+	if s == nil || runID < 1 {
+		return ErrInvalid
+	}
+	current, err := s.GetRefresh(ctx, runID)
+	if err != nil {
+		return err
+	}
+	if current.State == segmentdomain.RefreshPublished || current.State == segmentdomain.RefreshFailed {
+		return nil
+	}
+	var run segmentdomain.RefreshRun
+	var config segmentdomain.ConfigurationVersion
+	err = s.uow.Within(ctx, func(tx context.Context) error {
+		var e error
+		run, _, e = s.store.BeginRefresh(tx, runID, s.now().UTC())
+		if e == nil {
+			config, e = s.store.Configuration(tx, run.ConfigurationVersionID)
+		}
+		return e
+	})
+	if err != nil {
+		return classify(err)
+	}
+	evaluation, err := s.evaluator.Evaluate(ctx, config.Definition, run.ReferenceTime)
+	if err != nil {
+		return err
+	}
+	for start, ordinal := 0, 0; start < len(evaluation.CustomerIDs); start, ordinal = start+1000, ordinal+1 {
+		end := start + 1000
+		if end > len(evaluation.CustomerIDs) {
+			end = len(evaluation.CustomerIDs)
+		}
+		batch := evaluation.CustomerIDs[start:end]
+		digest := segmentdomain.DigestMembers(batch)
+		err = s.uow.Within(ctx, func(tx context.Context) error {
+			return s.store.StageRefreshBatch(tx, runID, ordinal, batch, digest, s.now().UTC())
+		})
+		if err != nil {
+			return classify(err)
+		}
+	}
+	memberDigest := segmentdomain.DigestMembers(evaluation.CustomerIDs)
+	watermarkDigest := digestWatermarks(evaluation.Watermarks)
+	err = s.uow.Within(ctx, func(tx context.Context) error {
+		_, e := s.store.PublishRefresh(tx, runID, int64(len(evaluation.CustomerIDs)), memberDigest, watermarkDigest, config.CreatedBy, s.now().UTC())
+		return e
+	})
+	return classify(err)
+}
+
+func (s *SnapshotService) FailRefresh(ctx context.Context, runID int64, code string) error {
+	if s == nil || runID < 1 {
+		return ErrInvalid
+	}
+	if code == "" {
+		code = "refresh_unavailable"
+	}
+	if len(code) > 100 {
+		code = code[:100]
+	}
+	return classify(s.uow.Within(ctx, func(tx context.Context) error { return s.store.FailRefresh(tx, runID, code, s.now().UTC()) }))
+}
+
+func makePreview(packageID, configurationID int64, e segmentport.Evaluation) Preview {
+	m := segmentdomain.DigestMembers(e.CustomerIDs)
+	w := digestWatermarks(e.Watermarks)
+	summary := make([]WatermarkSummary, len(e.Watermarks))
+	for i, item := range e.Watermarks {
+		summary[i] = WatermarkSummary{item.Source, item.AsOf, item.Fresh}
+	}
+	sort.Slice(summary, func(i, j int) bool { return summary[i].Source < summary[j].Source })
+	return Preview{packageID, configurationID, e.ReferenceAt, len(e.CustomerIDs), hex.EncodeToString(m[:]), summary, hex.EncodeToString(w[:])}
+}
+func digestWatermarks(values []segmentport.SourceWatermark) [32]byte {
+	copyValues := append([]segmentport.SourceWatermark(nil), values...)
+	sort.Slice(copyValues, func(i, j int) bool { return copyValues[i].Source < copyValues[j].Source })
+	raw, _ := json.Marshal(copyValues)
+	return sha256.Sum256(raw)
+}
+func RefreshErrorCode(err error) string {
+	if err == nil {
+		return ""
+	}
+	switch {
+	case errors.Is(err, ErrUnsupportedDefinition):
+		return "definition_unsupported"
+	case errors.Is(err, ErrConflict):
+		return "configuration_drift"
+	default:
+		return "refresh_unavailable"
+	}
+}
+
+func (s *SnapshotService) PublishedSnapshot(ctx context.Context, packageID segmentport.PackageID) (segmentport.Snapshot, bool, error) {
+	if s == nil || packageID < 1 {
+		return segmentport.Snapshot{}, false, ErrInvalid
+	}
+	var value segmentport.Snapshot
+	var found bool
+	err := s.uow.Within(ctx, func(tx context.Context) error {
+		var e error
+		value, found, e = s.store.PublishedSnapshot(tx, packageID)
+		return e
+	})
+	return value, found, classify(err)
+}
+func (s *SnapshotService) Members(ctx context.Context, snapshotID segmentport.SnapshotID, cursor string, limit int) (segmentport.MemberPage, error) {
+	if s == nil || snapshotID < 1 {
+		return segmentport.MemberPage{}, ErrInvalid
+	}
+	var value segmentport.MemberPage
+	err := s.uow.Within(ctx, func(tx context.Context) error {
+		var e error
+		value, e = s.store.Members(tx, snapshotID, cursor, limit)
+		return e
+	})
+	return value, classify(err)
+}

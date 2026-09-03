@@ -23,6 +23,14 @@ func (m *ModuleRegistration) Bind(service segmenthttp.ConfigurationApplication, 
 	return HTTPBindings{Audience: handler}, err
 }
 
+func (m *ModuleRegistration) BindRuntime(service segmenthttp.ConfigurationApplication, snapshots segmenthttp.SnapshotApplication, security segmenthttp.RequestSecurity) (HTTPBindings, error) {
+	if m == nil {
+		return HTTPBindings{}, errors.New("segment module is required")
+	}
+	handler, err := segmenthttp.NewRuntimeHandler(service, snapshots, security)
+	return HTTPBindings{Audience: handler}, err
+}
+
 func (m *ModuleRegistration) Readiness(ctx context.Context, pool *pgxpool.Pool) error {
 	if m == nil || pool == nil {
 		return errors.New("segment module dependencies are required")
@@ -35,7 +43,11 @@ func (m *ModuleRegistration) Readiness(ctx context.Context, pool *pgxpool.Pool) 
 			'segment_audience_configuration_versions',
 			'segment_audience_operation_receipts',
 			'segment_audience_audit_events',
-			'segment_audience_outbox'
+			'segment_audience_outbox',
+			'segment_audience_refresh_runs',
+			'segment_audience_snapshots',
+			'segment_audience_snapshot_members',
+			'segment_audience_refresh_batches'
 		]) AS required(name)
 		WHERE to_regclass(current_schema() || '.' || required.name) IS NULL
 	)`).Scan(&ready)
