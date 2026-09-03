@@ -221,6 +221,7 @@ func (processor InboxProcessor) lifecycleFact(delivery webhook.Delivery, event C
 		CallbackID: string(delivery.IdempotencyKey), InboxID: delivery.ID, CorpID: processor.CorpID,
 		ChangeType: event.ChangeType, ExternalUserID: event.ExternalUserID, EmployeeUserID: event.UserID,
 		HasState: event.StatePresent, StateDigest: stateDigest, OccurredAt: time.Unix(event.CreateTime, 0).UTC(),
+		WelcomeGrantRef:  event.WelcomeGrantRef,
 		VerifiedIdentity: verified,
 	}
 	if !fact.Valid() {

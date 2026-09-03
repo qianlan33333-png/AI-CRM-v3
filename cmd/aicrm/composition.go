@@ -257,7 +257,12 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	}
 	channelAssetStore := channelstore.NewPostgreSQLAssetStore(pool.Native())
 	channelAcquisition := channelstore.NewPostgreSQLStore()
+	channelEntrantActions := channelstore.NewEntrantActionStore(effectRepository)
 	channelAssetCompletionSink, err := outbound.NewChannelAssetCompletionSink(channelAssetCompletionAdapter{assets: channelAssetStore, bindings: channelAcquisition, digester: callbackStateDigester, corpID: cfg.WeCom.CorpID})
+	if err != nil {
+		return fail(err)
+	}
+	channelEntrantCompletionSink, err := outbound.NewChannelEntrantCompletionSink(channelEntrantActions)
 	if err != nil {
 		return fail(err)
 	}
@@ -290,7 +295,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
-	outboundCompletionSink, err := outbound.NewCompletionRouterWithChannels(tagCompletionSink, groupOpsCompletionSink, channelAssetCompletionSink)
+	outboundCompletionSink, err := outbound.NewCompletionRouterWithChannelEntrants(tagCompletionSink, groupOpsCompletionSink, channelAssetCompletionSink, channelEntrantCompletionSink)
 	if err != nil {
 		return fail(err)
 	}
@@ -424,7 +429,6 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
-	channelModule := channelstore.NewModuleRegistration()
 	operationModule := operationcycle.NewModuleRegistration()
 	operationRepository := operationstore.NewRepository()
 	operationJournal := operationstore.NewEventJournal()
@@ -597,9 +601,29 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return fail(err)
 	}
 	channelCenter := channelstore.CenterHTTPHandler{Catalog: channelCatalog, Acquisition: channelAcquisitionHandler, History: channelHistoryHandler, Assets: channelAssetHandler}
+	var callbackCrypto *wecom.CallbackCrypto
+	var welcomeGrantStore *wecom.PostgreSQLWelcomeGrantStore
+	if cfg.WeCom.CallbackEnabled {
+		callbackCrypto, err = wecom.NewCallbackCrypto(cfg.WeCom.CallbackToken, cfg.WeCom.CallbackAESKey, cfg.WeCom.CorpID)
+		if err != nil {
+			return fail(err)
+		}
+		welcomeGrantCipher, cipherErr := wecom.NewWelcomeGrantCipher(cfg.WeCom.CallbackAESKey)
+		if cipherErr != nil {
+			return fail(cipherErr)
+		}
+		welcomeGrantStore = wecom.NewPostgreSQLWelcomeGrantStore(welcomeGrantCipher)
+	}
+	relationships := wecom.NewPostgreSQLFollowRelationshipStore()
 	var channelAssetProvider effectport.ProviderAdapter
+	var channelEntrantProvider effectport.ProviderAdapter
 	if cfg.WeCom.Enabled && cfg.WeCom.CallbackEnabled {
 		channelAssetProvider = outbound.NewChannelAssetProvider(channelPublishedConfigAdapter{uow: uow, assets: channelAssetStore, users: accessRepository}, providerClient)
+		channelEntrantProvider = outbound.NewChannelEntrantProvider(
+			channelEntrantActionReaderAdapter{uow: uow, source: channelEntrantActions}, uow, welcomeGrantStore,
+			channelCurrentContactAdapter{uow: uow, corpID: cfg.WeCom.CorpID, staff: accessRepository, relationships: relationships, identities: queries},
+			channelProviderTagAdapter{uow: uow, tags: tagRepository}, providerClient,
+		)
 	}
 	var tagCatalogProvider externaleffects.ProviderAdapter
 	if cfg.TagCatalog.Enabled {
@@ -613,23 +637,15 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		}
 		tagCatalogProvider = catalogProvider
 	}
-	if err = effectsModule.SetProviderAdapter(composedProviderRouter{outbound: outbound.NewProviderRouterWithChannels(tagCatalogProvider, groupOpsProvider, channelAssetProvider), payment: paymentAdapter}); err != nil {
+	if err = effectsModule.SetProviderAdapter(composedProviderRouter{outbound: outbound.NewProviderRouterWithChannelEntrants(tagCatalogProvider, groupOpsProvider, channelAssetProvider, channelEntrantProvider), payment: paymentAdapter}); err != nil {
 		return fail(err)
 	}
-	var callbackCrypto *wecom.CallbackCrypto
-	if cfg.WeCom.CallbackEnabled {
-		callbackCrypto, err = wecom.NewCallbackCrypto(cfg.WeCom.CallbackToken, cfg.WeCom.CallbackAESKey, cfg.WeCom.CorpID)
-		if err != nil {
-			return fail(err)
-		}
-	}
-	relationships := wecom.NewPostgreSQLFollowRelationshipStore()
 	callbackReceipts := wecom.NewPostgreSQLCallbackReceiptStore()
 	oauthStates := wecom.NewPostgreSQLOAuthStateStore()
 	weComProcessor := wecom.InboxProcessor{
 		Enabled: cfg.WeCom.CallbackEnabled, CorpID: cfg.WeCom.CorpID, Inbox: inboxService, UOW: uow,
 		Lifecycle: wecom.ExternalContactLifecycle{
-			Identity: oneID, Relationships: relationships, States: channelAcquisition, Entrants: channelAcquisition,
+			Identity: oneID, Relationships: relationships, States: channelAcquisition, Entrants: channelAcquisition, Actions: channelEntrantActions,
 			Directory: customerStore, Outbox: platformoutbox.NewPostgreSQL(),
 		},
 		Receipts: callbackReceipts, Audit: auditService,
@@ -652,7 +668,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	hxcHandler := hxchttp.Handler{Service: hxcDashboard, Store: hxcRepository, Auth: requestSecurity, Key: []byte(cfg.HXCDashboard.SubjectHMACKey)}
 	syncHandler := wecom.CustomerSyncHTTPHandler{Service: customerSync, Auth: requestSecurity, CSRF: requestSecurity}
 	weComHandler, err := wecom.NewHTTPHandler(wecom.HTTPHandlerOptions{
-		Callback: wecom.CallbackHandler{Enabled: cfg.WeCom.CallbackEnabled, Crypto: callbackCrypto, StateDigester: callbackStateDigester, Inbox: inboxService, UOW: uow},
+		Callback: wecom.CallbackHandler{Enabled: cfg.WeCom.CallbackEnabled, Crypto: callbackCrypto, StateDigester: callbackStateDigester, Inbox: inboxService, UOW: uow, WelcomeGrants: welcomeGrantStore},
 		OAuth: wecom.OAuthService{Enabled: cfg.WeCom.Enabled, CorpID: cfg.WeCom.CorpID, StateStore: oauthStates, UOW: uow,
 			Client: providerClient, AllowedPaths: allowedOAuthRedirects(), StateTTL: 10 * time.Minute},
 		ContextTokens: wecom.ContextTokenService{CorpID: cfg.WeCom.CorpID, SigningKey: []byte(cfg.WeCom.ContextSigningKey),
@@ -725,7 +741,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 			return checkErr
 		}
 		var complete bool
-		checkErr := pool.Native().QueryRow(readinessContext, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['0001','0002','0003','0004','0005','0006','0007','0008','0009','0010','0011','0012','0013','0014','0016','0017','0018','0019','0020','0021','0022','0023','0024','0025','0026','0027','0028','0029','0030','0031','0032']) AS required(version) WHERE NOT EXISTS (SELECT 1 FROM platform_schema_migrations applied WHERE applied.version=required.version))`).Scan(&complete)
+		checkErr := pool.Native().QueryRow(readinessContext, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['0001','0002','0003','0004','0005','0006','0007','0008','0009','0010','0011','0012','0013','0014','0016','0017','0018','0019','0020','0021','0022','0023','0024','0025','0026','0027','0028','0029','0030','0031','0032','0033','0034']) AS required(version) WHERE NOT EXISTS (SELECT 1 FROM platform_schema_migrations applied WHERE applied.version=required.version))`).Scan(&complete)
 		if checkErr != nil || !complete {
 			return errors.New("database schema is not ready")
 		}

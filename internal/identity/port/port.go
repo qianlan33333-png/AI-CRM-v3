@@ -100,3 +100,11 @@ type DirectoryIdentityReader interface {
 	DirectoryIdentities(context.Context, customerdomain.CustomerID) ([]DirectoryIdentitySummary, []MaskedPhone, error)
 	RevealPhone(context.Context, customerdomain.CustomerID) (string, bool, error)
 }
+
+// ExternalIdentityValueReader is a narrowly scoped, transaction-bound read
+// used by composition to resolve a current Provider relationship. Callers may
+// use the returned value only transiently for an authorized Provider call and
+// must never persist or log it outside Identity/WeCom ownership.
+type ExternalIdentityValueReader interface {
+	VerifiedExternalIdentityValue(context.Context, customerdomain.CustomerID, identitydomain.Kind, string) (string, bool, error)
+}

@@ -117,6 +117,7 @@ type CompletionRouter struct {
 	tag     *TagCatalogCompletionSink
 	group   *GroupMessageCompletionSink
 	channel *ChannelAssetCompletionSink
+	entrant *ChannelEntrantCompletionSink
 }
 
 func NewCompletionRouterWithChannels(tag *TagCatalogCompletionSink, group *GroupMessageCompletionSink, channel *ChannelAssetCompletionSink) (*CompletionRouter, error) {
@@ -124,6 +125,13 @@ func NewCompletionRouterWithChannels(tag *TagCatalogCompletionSink, group *Group
 		return nil, errors.New("at least one completion sink is required")
 	}
 	return &CompletionRouter{tag: tag, group: group, channel: channel}, nil
+}
+
+func NewCompletionRouterWithChannelEntrants(tag *TagCatalogCompletionSink, group *GroupMessageCompletionSink, channel *ChannelAssetCompletionSink, entrant *ChannelEntrantCompletionSink) (*CompletionRouter, error) {
+	if tag == nil && group == nil && channel == nil && entrant == nil {
+		return nil, errors.New("at least one completion sink is required")
+	}
+	return &CompletionRouter{tag: tag, group: group, channel: channel, entrant: entrant}, nil
 }
 
 func NewCompletionRouter(tag *TagCatalogCompletionSink, group *GroupMessageCompletionSink) (*CompletionRouter, error) {
@@ -153,6 +161,11 @@ func (r *CompletionRouter) CompleteEffect(ctx context.Context, effectRef string,
 			return errors.New("channel asset completion sink is unavailable")
 		}
 		return r.channel.CompleteEffect(ctx, effectRef, envelope, attempt, result)
+	case effectport.KindChannelWelcome, effectport.KindChannelEntryTag:
+		if r.entrant == nil {
+			return errors.New("channel entrant completion sink is unavailable")
+		}
+		return r.entrant.CompleteEffect(ctx, effectRef, envelope, attempt, result)
 	default:
 		return errors.New("unsupported completion kind")
 	}

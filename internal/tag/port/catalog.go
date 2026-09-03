@@ -59,6 +59,10 @@ type ProviderTagNameReader interface {
 	ProviderTagNames(context.Context, []string) ([]ProviderTagName, error)
 }
 
+type ProviderTagBindingReader interface {
+	ProviderTagID(context.Context, int64) (string, bool, error)
+}
+
 // ReferenceGuard is an optional cross-domain read port used to keep archive
 // operations safe. It exposes counts only; it cannot mutate customer-tag
 // relationships and must never be implemented by a Tag store querying a

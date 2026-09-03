@@ -151,9 +151,10 @@ var _ effect.ProviderAdapter = (*TagCatalogProvider)(nil)
 // different outbound kind. Unsupported intents fail closed without a network
 // call; their own future adapters can be added explicitly by composition.
 type ProviderRouter struct {
-	tagCatalog   effect.ProviderAdapter
-	groupMessage effect.ProviderAdapter
-	channelAsset effect.ProviderAdapter
+	tagCatalog     effect.ProviderAdapter
+	groupMessage   effect.ProviderAdapter
+	channelAsset   effect.ProviderAdapter
+	channelEntrant effect.ProviderAdapter
 }
 
 func NewProviderRouter(tagCatalog effect.ProviderAdapter) *ProviderRouter {
@@ -166,6 +167,10 @@ func NewProviderRouterWithGroupMessage(tagCatalog, groupMessage effect.ProviderA
 
 func NewProviderRouterWithChannels(tagCatalog, groupMessage, channelAsset effect.ProviderAdapter) *ProviderRouter {
 	return &ProviderRouter{tagCatalog: tagCatalog, groupMessage: groupMessage, channelAsset: channelAsset}
+}
+
+func NewProviderRouterWithChannelEntrants(tagCatalog, groupMessage, channelAsset, channelEntrant effect.ProviderAdapter) *ProviderRouter {
+	return &ProviderRouter{tagCatalog: tagCatalog, groupMessage: groupMessage, channelAsset: channelAsset, channelEntrant: channelEntrant}
 }
 
 func (r *ProviderRouter) Execute(ctx context.Context, envelope effect.Envelope, attempt effect.Attempt) (effect.AdapterResult, error) {
@@ -182,6 +187,10 @@ func (r *ProviderRouter) Execute(ctx context.Context, envelope effect.Envelope, 
 		case effect.KindChannelAsset:
 			if r.channelAsset != nil {
 				return r.channelAsset.Execute(ctx, envelope, attempt)
+			}
+		case effect.KindChannelWelcome, effect.KindChannelEntryTag:
+			if r.channelEntrant != nil {
+				return r.channelEntrant.Execute(ctx, envelope, attempt)
 			}
 		}
 	}

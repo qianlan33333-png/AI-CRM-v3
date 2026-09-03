@@ -68,7 +68,9 @@ for migration_contract in \
   '0029_channel_center.sql:Channel center' \
   '0030_config_definition_import.sql:configuration definition import' \
   '0031_channel_history_import.sql:Channel history import' \
-  '0032_channel_acquisition_assets.sql:Channel acquisition assets'; do
+  '0032_channel_acquisition_assets.sql:Channel acquisition assets' \
+  '0033_wecom_welcome_grants.sql:WeCom welcome grants' \
+  '0034_channel_entrant_actions.sql:Channel entrant actions'; do
   migration="${migration_contract%%:*}"
   label="${migration_contract#*:}"
   test -f "migrations/${migration}" || {

@@ -392,6 +392,42 @@ func (client *Client) CreateCustomerAcquisitionLink(ctx context.Context, input w
 	return wecomport.AcquisitionAssetResult{ProviderAssetRef: payload.LinkID, URL: payload.URL}, nil
 }
 
+// SendWelcomeMessage consumes the callback-issued WelcomeCode exactly once.
+// The code is never logged or persisted by this adapter.
+func (client *Client) SendWelcomeMessage(ctx context.Context, welcomeCode, text string) error {
+	if !client.DirectoryReady() || invalid(welcomeCode) || invalid(text) || len([]rune(text)) > 4000 {
+		return ErrUnavailable
+	}
+	token, err := client.contactAccessToken(ctx)
+	if err != nil {
+		return err
+	}
+	body, err := json.Marshal(map[string]any{"welcome_code": welcomeCode, "text": map[string]string{"content": text}})
+	if err != nil {
+		return ErrResponse
+	}
+	_, err = client.requestJSON(ctx, http.MethodPost, "/cgi-bin/externalcontact/send_welcome_msg", url.Values{"access_token": {token}}, body)
+	return err
+}
+
+// AddContactTag is the only customer-tag mutation exposed by the WeCom
+// adapter. Every identifier is obtained from trusted local adapters.
+func (client *Client) AddContactTag(ctx context.Context, employeeID, externalUserID, providerTagID string) error {
+	if !client.DirectoryReady() || invalid(employeeID) || invalid(externalUserID) || invalid(providerTagID) {
+		return ErrUnavailable
+	}
+	token, err := client.contactAccessToken(ctx)
+	if err != nil {
+		return err
+	}
+	body, err := json.Marshal(map[string]any{"userid": employeeID, "external_userid": externalUserID, "add_tag": []string{providerTagID}, "remove_tag": []string{}})
+	if err != nil {
+		return ErrResponse
+	}
+	_, err = client.requestJSON(ctx, http.MethodPost, "/cgi-bin/externalcontact/mark_tag", url.Values{"access_token": {token}}, body)
+	return err
+}
+
 func validAcquisitionRequest(input wecomport.AcquisitionAssetRequest) bool {
 	if invalid(input.Name) || invalid(input.State) || len(input.StaffUserIDs) < 1 || len(input.StaffUserIDs) > 5 {
 		return false

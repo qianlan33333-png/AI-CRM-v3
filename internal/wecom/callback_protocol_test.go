@@ -2,6 +2,7 @@ package wecom
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"encoding/xml"
 	"errors"
@@ -265,6 +266,7 @@ func TestCallbackHandlerRequiresStateDigesterBeforeDurablePayload(t *testing.T) 
 		t.Fatal(err)
 	}
 	handler.StateDigester = digester
+	handler.WelcomeGrants = callbackWelcomeGrantStub{}
 	withDigester := httptest.NewRecorder()
 	handler.ServeHTTP(withDigester, httptest.NewRequest(http.MethodPost, "/wecom/external-contact/callback?"+query.Encode(), strings.NewReader(body)))
 	if withDigester.Code != http.StatusOK || len(store.deliveries) != 1 {
@@ -284,6 +286,15 @@ func TestCallbackHandlerRequiresStateDigesterBeforeDurablePayload(t *testing.T) 
 			t.Fatalf("durable callback payload leaked %q: %s", secret, store.deliveries[0].Payload)
 		}
 	}
+}
+
+type callbackWelcomeGrantStub struct{}
+
+func (callbackWelcomeGrantStub) Seal(_ context.Context, _ string, value string, _ time.Time) (string, error) {
+	if value == "" {
+		return "", ErrWelcomeGrantUnavailable
+	}
+	return "wgrant_1", nil
 }
 
 func TestCallbackHandlerRejectsDuplicateQueryAndTrailingOuterXML(t *testing.T) {
