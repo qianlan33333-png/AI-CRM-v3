@@ -56,12 +56,12 @@ func mapError(err error) error {
 	return err
 }
 
-const baseColumns = `q.id,q.name,q.title,q.description,q.mode,q.answer_display_mode,q.slug,q.status,q.created_by,q.version,q.created_at,q.updated_at,q.active_definition_version_id`
+const baseColumns = `q.id,q.name,q.title,q.description,q.mode,q.answer_display_mode,q.slug,q.status,q.created_by,q.version,q.created_at,q.updated_at,q.active_definition_version_id,(SELECT count(*) FROM survey_submissions s WHERE s.questionnaire_id=q.id)`
 
 func scanBase(row scanner) (surveyport.Questionnaire, *int64, error) {
 	var q surveyport.Questionnaire
 	var active *int64
-	err := row.Scan(&q.ID, &q.Name, &q.Title, &q.Description, &q.Mode, &q.AnswerDisplayMode, &q.Slug, &q.Status, &q.CreatedBy, &q.Version, &q.CreatedAt, &q.UpdatedAt, &active)
+	err := row.Scan(&q.ID, &q.Name, &q.Title, &q.Description, &q.Mode, &q.AnswerDisplayMode, &q.Slug, &q.Status, &q.CreatedBy, &q.Version, &q.CreatedAt, &q.UpdatedAt, &active, &q.SubmissionCount)
 	return q, active, mapError(err)
 }
 
@@ -419,15 +419,14 @@ func (r *Repository) Reserve(ctx context.Context, res surveyapp.Reservation) (su
 	if err != nil {
 		return surveyapp.Receipt{}, false, err
 	}
-	var out surveyapp.Receipt
-	err = t.QueryRow(ctx, `INSERT INTO survey_operation_receipts(operation,actor_scope,key_digest,payload_digest,state,created_at) VALUES($1,$2,$3,$4,'in_progress',$5) ON CONFLICT(operation,actor_scope,key_digest) DO NOTHING RETURNING id,operation,actor_scope,key_digest,payload_digest,state,COALESCE(result_snapshot,'null'::jsonb)`, res.Operation, res.ActorScope, res.KeyDigest[:], res.PayloadDigest[:], res.CreatedAt).Scan(&out.ID, &out.Operation, &out.ActorScope, &out.KeyDigest, &out.PayloadDigest, &out.State, &out.Result)
+	out, err := scanOperationReceipt(t.QueryRow(ctx, `INSERT INTO survey_operation_receipts(operation,actor_scope,key_digest,payload_digest,state,created_at) VALUES($1,$2,$3,$4,'in_progress',$5) ON CONFLICT(operation,actor_scope,key_digest) DO NOTHING RETURNING id,operation,actor_scope,key_digest,payload_digest,state,COALESCE(result_snapshot,'null'::jsonb)`, res.Operation, res.ActorScope, res.KeyDigest[:], res.PayloadDigest[:], res.CreatedAt))
 	if err == nil {
 		return out, true, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return out, false, mapError(err)
 	}
-	err = t.QueryRow(ctx, `SELECT id,operation,actor_scope,key_digest,payload_digest,state,COALESCE(result_snapshot,'null'::jsonb) FROM survey_operation_receipts WHERE operation=$1 AND actor_scope=$2 AND key_digest=$3 FOR UPDATE`, res.Operation, res.ActorScope, res.KeyDigest[:]).Scan(&out.ID, &out.Operation, &out.ActorScope, &out.KeyDigest, &out.PayloadDigest, &out.State, &out.Result)
+	out, err = scanOperationReceipt(t.QueryRow(ctx, `SELECT id,operation,actor_scope,key_digest,payload_digest,state,COALESCE(result_snapshot,'null'::jsonb) FROM survey_operation_receipts WHERE operation=$1 AND actor_scope=$2 AND key_digest=$3 FOR UPDATE`, res.Operation, res.ActorScope, res.KeyDigest[:]))
 	return out, false, mapError(err)
 }
 func (r *Repository) Complete(ctx context.Context, id int64, result json.RawMessage, now time.Time) (surveyapp.Receipt, error) {
@@ -435,9 +434,22 @@ func (r *Repository) Complete(ctx context.Context, id int64, result json.RawMess
 	if err != nil {
 		return surveyapp.Receipt{}, err
 	}
-	var out surveyapp.Receipt
-	err = t.QueryRow(ctx, `UPDATE survey_operation_receipts SET state='completed',result_snapshot=$2,completed_at=$3 WHERE id=$1 AND state='in_progress' RETURNING id,operation,actor_scope,key_digest,payload_digest,state,result_snapshot`, id, result, now).Scan(&out.ID, &out.Operation, &out.ActorScope, &out.KeyDigest, &out.PayloadDigest, &out.State, &out.Result)
+	out, err := scanOperationReceipt(t.QueryRow(ctx, `UPDATE survey_operation_receipts SET state='completed',result_snapshot=$2,completed_at=$3 WHERE id=$1 AND state='in_progress' RETURNING id,operation,actor_scope,key_digest,payload_digest,state,result_snapshot`, id, result, now))
 	return out, mapError(err)
+}
+
+func scanOperationReceipt(row scanner) (surveyapp.Receipt, error) {
+	var out surveyapp.Receipt
+	var keyDigest, payloadDigest []byte
+	if err := row.Scan(&out.ID, &out.Operation, &out.ActorScope, &keyDigest, &payloadDigest, &out.State, &out.Result); err != nil {
+		return out, err
+	}
+	if len(keyDigest) != sha256.Size || len(payloadDigest) != sha256.Size {
+		return surveyapp.Receipt{}, surveyport.ErrUnavailable
+	}
+	copy(out.KeyDigest[:], keyDigest)
+	copy(out.PayloadDigest[:], payloadDigest)
+	return out, nil
 }
 func (r *Repository) AppendAuditAndOutbox(ctx context.Context, event string, id surveyport.ID, actor string, payload json.RawMessage, key string, now time.Time) error {
 	t, err := tx(ctx)

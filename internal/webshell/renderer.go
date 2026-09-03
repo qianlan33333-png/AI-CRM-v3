@@ -328,7 +328,7 @@ func (renderer *Renderer) RenderSurvey(writer http.ResponseWriter, data AdminPag
 	data.ShowPageHeader = false
 	content := `<main id="stage" class="stage rich"></main><template id="tpl">` + donorTemplate + `</template>`
 	if page == "questionnaireDetail" {
-		content += `<div id="questionnaire-editor-config" hidden>{"mode":"new","heading":"问卷编辑","backHref":"questionnaires.html","defaultAssessment":false,"initialQuestionnaire":null,"initialQuestionnaireId":null}</div>`
+		content = donorTemplate
 	}
 	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: template.HTML(content), Survey: true, SurveyPage: page, SurveyAssets: assets})
 	if err != nil {

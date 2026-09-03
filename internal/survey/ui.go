@@ -47,10 +47,19 @@ func (h *adminUI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "survey UI unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	body, err := donortemplate.Extract(string(raw))
-	if err != nil {
-		http.Error(w, "survey UI unavailable", http.StatusServiceUnavailable)
-		return
+	body := string(raw)
+	if page == "questionnaireDetail" {
+		body, err = extractQuestionnaireEditor(body)
+		if err != nil {
+			http.Error(w, "survey UI unavailable", http.StatusServiceUnavailable)
+			return
+		}
+	} else {
+		body, err = donortemplate.Extract(body)
+		if err != nil {
+			http.Error(w, "survey UI unavailable", http.StatusServiceUnavailable)
+			return
+		}
 	}
 	assets, err := surveyAssets(h.dist)
 	if err != nil {
@@ -60,6 +69,29 @@ func (h *adminUI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err = h.render(w, r, page, body, assets); err != nil {
 		http.Error(w, "survey UI unavailable", http.StatusInternalServerError)
 	}
+}
+
+func extractQuestionnaireEditor(raw string) (string, error) {
+	const bodyOpen = `<body data-page="questionnaireDetail">`
+	start := strings.Index(raw, bodyOpen)
+	end := strings.LastIndex(raw, `</body>`)
+	if start < 0 || end <= start+len(bodyOpen) {
+		return "", errors.New("survey editor body missing")
+	}
+	body := strings.TrimSpace(raw[start+len(bodyOpen) : end])
+	scriptStart := strings.LastIndex(body, `<script type="module" src="../assets/questionnaireEditor-`)
+	if scriptStart < 1 {
+		return "", errors.New("survey editor entry missing")
+	}
+	script := body[scriptStart:]
+	if !strings.HasSuffix(script, `.js"></script>`) || strings.Contains(script, "\n") {
+		return "", errors.New("survey editor entry invalid")
+	}
+	body = strings.TrimSpace(body[:scriptStart])
+	if body == "" || !strings.Contains(body, `id="questionnaire-editor-config"`) {
+		return "", errors.New("survey editor configuration missing")
+	}
+	return body, nil
 }
 
 func surveyPage(r *http.Request) (string, bool) {
