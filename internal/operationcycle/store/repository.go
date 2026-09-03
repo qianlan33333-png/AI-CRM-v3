@@ -174,9 +174,12 @@ func (repository *Repository) Start(ctx context.Context, command operationapp.St
 	if err != nil {
 		return nil, false, storeError(err)
 	}
-	keyDigest := sha256.Sum256([]byte(command.IdempotencyKey))
+	keyDigest := operationActionKeyDigest(command.ActorID, command.IdempotencyKey)
 	existing, err := queries.FindOperationCycleActionByKey(ctx, keyDigest[:])
 	if err == nil {
+		if !sameActionCommand(existing.StrategyKey, existing.RunKey, existing.ActionKey, pgTextValue(existing.ParentRequestID), existing.CreatedBy, command) {
+			return nil, false, operationapp.ErrConflict
+		}
 		return actionResult(existing), true, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
@@ -184,6 +187,9 @@ func (repository *Repository) Start(ctx context.Context, command operationapp.St
 	}
 	if active, activeErr := queries.FindActiveOperationCycleAction(ctx, command.StrategyKey); activeErr == nil {
 		if sameKey, keyErr := queries.FindOperationCycleActionByKey(ctx, keyDigest[:]); keyErr == nil {
+			if !sameActionCommand(sameKey.StrategyKey, sameKey.RunKey, sameKey.ActionKey, pgTextValue(sameKey.ParentRequestID), sameKey.CreatedBy, command) {
+				return nil, false, operationapp.ErrConflict
+			}
 			return actionResult(sameKey), true, nil
 		} else if !errors.Is(keyErr, pgx.ErrNoRows) {
 			return nil, false, storeError(keyErr)
@@ -231,7 +237,18 @@ func (repository *Repository) Start(ctx context.Context, command operationapp.St
 	if err != nil {
 		return nil, false, storeError(err)
 	}
+	if !reserved.Inserted && !sameActionCommand(reserved.StrategyKey, reserved.RunKey, reserved.ActionKey, pgTextValue(reserved.ParentRequestID), reserved.CreatedBy, command) {
+		return nil, false, operationapp.ErrConflict
+	}
 	return actionResult(reserved), !reserved.Inserted, nil
+}
+
+func operationActionKeyDigest(actorID, key string) [sha256.Size]byte {
+	return sha256.Sum256([]byte(actorID + "\x00" + key))
+}
+
+func sameActionCommand(strategyKey, runKey, actionKey, parentRequest, actorID string, command operationapp.StartCommand) bool {
+	return strategyKey == command.StrategyKey && runKey == command.RunKey && actionKey == command.ActionKey && parentRequest == command.ParentRequest && actorID == command.ActorID
 }
 
 func (repository *Repository) CurrentAction(ctx context.Context, strategyKey string) (map[string]any, error) {
@@ -707,6 +724,13 @@ func nullableTimeValue(value pgtype.Timestamptz) any {
 func optionalString(value pgtype.Text) any {
 	if !value.Valid {
 		return nil
+	}
+	return value.String
+}
+
+func pgTextValue(value pgtype.Text) string {
+	if !value.Valid {
+		return ""
 	}
 	return value.String
 }
