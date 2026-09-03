@@ -30,11 +30,11 @@ require_file() {
 require_text() {
   local needle="$1"
   local file="$2"
-  rg -F -- "$needle" "$file" >/dev/null || fail "missing marker '$needle' in $file"
+  grep -Fq -- "$needle" "$file" || fail "missing marker '$needle' in $file"
 }
 
 command -v git >/dev/null 2>&1 || fail "git is required"
-command -v rg >/dev/null 2>&1 || fail "rg is required"
+command -v grep >/dev/null 2>&1 || fail "grep is required"
 command -v cmp >/dev/null 2>&1 || fail "cmp is required"
 command -v bash >/dev/null 2>&1 || fail "bash is required"
 require_file "$ADMIN_BASE"
@@ -83,10 +83,10 @@ pass "actual browser chain is build.mjs -> main.ts -> legacy.ts -> AdminControll
 template_count="$(find "$TARGET_ROOT/admin/templates" -maxdepth 1 -type f -print | wc -l | tr -d ' ')"
 [[ "$template_count" == "2" ]] \
   || fail "expected exactly two archived Group Ops templates, found $template_count"
-if find "$TARGET_ROOT" -type f \( -iname '*content*package*' -o -iname '*package*editor*' \) -print -quit | rg . >/dev/null; then
+if find "$TARGET_ROOT" -type f \( -iname '*content*package*' -o -iname '*package*editor*' \) -print -quit | grep -q .; then
   fail "archive contains an unapproved independent content-package editor file"
 fi
-if rg -n -i \
+if grep -REni \
     '/api/admin/content-packages|previewMediaContentPackage|createMediaContentPackage|updateMediaContentPackage|contentPackageEditor|content-package-editor' \
     "$TARGET_ROOT/admin/templates" \
     "$TARGET_ROOT/admin/sections" \
@@ -96,10 +96,10 @@ fi
 require_text 'content_package' "$TARGET_ROOT/admin/sections/groupOpsHistory.ts"
 pass "no independent Group Ops content-package editor; historical content_package remains read-only"
 
-sidebar_count="$( (rg -o 'class="admin-sidebar"' "$ADMIN_BASE" || true) | wc -l | tr -d ' ')"
+sidebar_count="$( (grep -o 'class="admin-sidebar"' "$ADMIN_BASE" || true) | wc -l | tr -d ' ')"
 [[ "$sidebar_count" == "1" ]] \
   || fail "v3 admin_base must contain exactly one admin-sidebar, found $sidebar_count"
-if rg -n '<aside|class="side"|\.side\b' "$GROUPOPS_TEMPLATE" "$GROUPOPS_DETAIL_TEMPLATE" >/dev/null; then
+if grep -En '<aside|class="side"|\.side([^[:alnum:]_]|$)' "$GROUPOPS_TEMPLATE" "$GROUPOPS_DETAIL_TEMPLATE" >/dev/null; then
   fail "Group Ops business templates contain a second donor sidebar"
 fi
 pass "PR10 admin_base is the sole sidebar and Group Ops templates are business-only"
@@ -109,7 +109,7 @@ pass "PR10 admin_base is the sole sidebar and Group Ops templates are business-o
 # as a duplicate.  The hard gate is that this branch did not modify that tree;
 # the archive/active manifest above proves every required donor file remains
 # byte exact.  Any new Group Ops runtime must live in v3-owned Go adapters.
-if git -C "$REPO_ROOT" status --short -- web/src | rg . >/dev/null; then
+if git -C "$REPO_ROOT" status --short -- web/src | grep -q .; then
   fail "branch modified active donor web/src; Group Ops frontend must remain byte-exact"
 fi
 pass "no second active frontend shell/runtime was introduced; web/src is unmodified donor"
@@ -148,16 +148,16 @@ require_text '/api/admin/automation-conversion/group-ops/plans' "$REPO_ROOT/api/
 require_text '/api/automation/group-ops/webhooks/{webhook_key}' "$REPO_ROOT/api/openapi.yaml"
 pass "v3 Group Ops owner implementation, OpenAPI, composition adapter, and disabled Provider gate are present"
 
-if rg -n '"github.com/[^\"]+/AI-CRM-v3/internal/(customer|identity|audience|segment|campaign)' \
-    "$REPO_ROOT/internal/groupops" --glob '*.go' >/dev/null; then
+if grep -REn --include='*.go' '"github.com/[^\"]+/AI-CRM-v3/internal/(customer|identity|audience|segment|campaign)' \
+    "$REPO_ROOT/internal/groupops" >/dev/null; then
   fail "Group Ops imports a forbidden Customer/Identity/Audience/Segment/Campaign package"
 fi
-if rg -n '"github.com/[^\"]+/AI-CRM-v3/internal/(externaleffects/(store|http|worker|provider)|media/(store|app|http)|customer|identity|audience)' \
-    "$REPO_ROOT/internal/groupops" --glob '*.go' >/dev/null; then
+if grep -REn --include='*.go' '"github.com/[^\"]+/AI-CRM-v3/internal/(externaleffects/(store|http|worker|provider)|media/(store|app|http)|customer|identity|audience)' \
+    "$REPO_ROOT/internal/groupops" >/dev/null; then
   fail "Group Ops bypasses a stable Port with cross-domain store/app/http/provider import"
 fi
-if rg -n 'FROM[[:space:]]+admin_users|JOIN[[:space:]]+admin_users' \
-    "$REPO_ROOT/internal/groupops/store" --glob '*.go' >/dev/null; then
+if grep -REn --include='*.go' 'FROM[[:space:]]+admin_users|JOIN[[:space:]]+admin_users' \
+    "$REPO_ROOT/internal/groupops/store" >/dev/null; then
   fail "Group Ops store reads Access-owned admin_users instead of the Composition Access port"
 fi
 pass "Group Ops has no forbidden cross-domain imports or owner-table bypass"

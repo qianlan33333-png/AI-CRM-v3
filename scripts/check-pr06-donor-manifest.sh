@@ -47,7 +47,7 @@ sha256_stdin() {
 
 command -v git >/dev/null 2>&1 || fail "git is required"
 command -v cmp >/dev/null 2>&1 || fail "cmp is required"
-command -v rg >/dev/null 2>&1 || fail "rg is required"
+command -v grep >/dev/null 2>&1 || fail "grep is required"
 test -f "$SHA_FILE" || fail "missing SHA evidence: $SHA_FILE"
 test -d "$TARGET_ROOT" || fail "missing donor archive root: $TARGET_ROOT"
 test -d "$DONOR_DIR" || fail "missing donor checkout: $DONOR_DIR (set AICRM_PR06_DONOR_DIR)"
@@ -119,7 +119,7 @@ cmp -s "$expected_targets" "$actual_targets" \
 
 # The v3 PR10 shell is the only sidebar.  These business templates are
 # verified here so a donor snapshot cannot silently grow a second shell.
-if rg -n '<aside|class="side"|\.side\b' \
+if grep -En '<aside|class="side"|\.side([^[:alnum:]_]|$)' \
     "$TARGET_ROOT/admin/templates/groupops.html" \
     "$TARGET_ROOT/admin/templates/groupopsDetail.html" >/dev/null; then
   fail "Group Ops business templates contain a donor sidebar"
