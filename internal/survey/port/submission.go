@@ -35,6 +35,7 @@ type AnswerSnapshot struct {
 	TextValueMasked         string                   `json:"text_value_masked,omitempty"`
 	Score                   float64                  `json:"score"`
 	LegacyDefinitionMissing bool                     `json:"legacy_definition_missing"`
+	PhoneBindingStatus      string                   `json:"phone_binding_status,omitempty"`
 }
 
 type SelectedOptionSnapshot struct {

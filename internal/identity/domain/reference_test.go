@@ -38,6 +38,18 @@ func TestNormalizeFreezesScopedIdentityNamespaces(t *testing.T) {
 			wantValue: "+8613800138000", valid: true,
 		},
 		{
+			name: "mainland phone is already strict canonical form",
+			reference: Reference{Kind: KindPhone, Scope: "phone:cn11", Value: "13800138000",
+				Assurance: AssuranceDeclared, Source: "survey"},
+			wantValue: "13800138000", valid: true,
+		},
+		{
+			name: "mainland phone rejects surrounding whitespace",
+			reference: Reference{Kind: KindPhone, Scope: "phone:cn11", Value: " 13800138000 ",
+				Assurance: AssuranceDeclared, Source: "survey"},
+			valid: false,
+		},
+		{
 			name: "openid cannot use corp scope",
 			reference: Reference{Kind: KindMPOpenID, Scope: "wecom-corp:corp-1", Value: "openid-1",
 				Assurance: AssuranceVerified, Source: "wechat.oauth"},

@@ -105,7 +105,7 @@ Browser / WeCom / WeChat / Payment Provider
 
 1. `customers.id` 是渠道中立、稳定、本地生成的 OneID。
 2. 外部身份统一保存为：`kind + scope + normalized_value + assurance + source`。
-3. `wecom_external_userid` 的 scope 为企业；OpenID 的 scope 为 AppID；UnionID 的 scope 为开放平台；手机号为 E.164 scope。
+3. `wecom_external_userid` 的 scope 为企业；OpenID 的 scope 为 AppID；UnionID 的 scope 为开放平台；中国大陆手机号统一使用 `phone:cn11`，只保存 HMAC 检索摘要与独立密文。
 4. 前端 query/body 中自报的外部 ID 只能是 `declared`，不能直接建客或提升为 `verified`。
 5. 只有完成 Provider 验签或凭据交换的 Adapter 才能构造 `verified` 身份。
 6. `Resolve` 只解析，不隐式创建；建客使用显式的 `ProvisionCustomerFromVerifiedIdentity`。

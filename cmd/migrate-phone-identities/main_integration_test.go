@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"os"
@@ -18,6 +19,7 @@ import (
 	customerstore "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/store"
 	identityapp "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/app"
 	identityport "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/port"
+	identitysecure "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/secure"
 	identitystore "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/store"
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
@@ -65,6 +67,16 @@ func TestPhoneImportApplyAndRowReplayPostgreSQL(t *testing.T) {
 			t.Fatalf("migration %s: %v", name, err)
 		}
 	}
+	if _, err = native.Exec(ctx, `CREATE TABLE survey_submissions(id BIGINT PRIMARY KEY); CREATE TABLE survey_submission_answers(id BIGINT PRIMARY KEY)`); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(root, "migrations", "0038_survey_oauth_phone_vault.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = native.Exec(ctx, string(raw)); err != nil {
+		t.Fatalf("migration 0030: %v", err)
+	}
 	pool, err := platformpostgres.Wrap(native, time.Second)
 	if err != nil {
 		t.Fatal(err)
@@ -74,7 +86,15 @@ func TestPhoneImportApplyAndRowReplayPostgreSQL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	oneID := identityapp.OneIDService{Store: identitystore.NewPostgresStore()}
+	key := make([]byte, 32)
+	if _, err = rand.Read(key); err != nil {
+		t.Fatal(err)
+	}
+	vault, err := identitysecure.NewPhoneVault(base64.RawStdEncoding.EncodeToString(key))
+	if err != nil {
+		t.Fatal(err)
+	}
+	oneID := identityapp.OneIDService{Store: identitystore.NewPostgresStore(vault)}
 	projection := customerstore.NewPostgreSQL()
 	fact, err := wecomprovider.VerifiedExternalContact("corp", "external-integration", "wecom.directory_sync")
 	if err != nil {
@@ -97,7 +117,7 @@ func TestPhoneImportApplyAndRowReplayPostgreSQL(t *testing.T) {
 		t.Fatalf("run=%d applied=%t err=%v", runID, applied, err)
 	}
 	rowDigest := sha256.Sum256([]byte("source-row"))
-	item := &classifiedRow{receiptRowID: "source-row-1", digest: rowDigest, phone: "+8613812345678", customerID: customerdomain.CustomerID(customerID), outcome: "attached"}
+	item := &classifiedRow{receiptRowID: "source-row-1", digest: rowDigest, phone: "13812345678", customerID: customerdomain.CustomerID(customerID), outcome: "attached"}
 	if err = applyRows(ctx, uow, oneID, projection, runID, []*classifiedRow{item}); err != nil {
 		t.Fatal(err)
 	}
@@ -114,15 +134,17 @@ func TestPhoneImportApplyAndRowReplayPostgreSQL(t *testing.T) {
 	if err = reconcile(ctx, uow, "phone-import:integration"); err != nil {
 		t.Fatal(err)
 	}
-	var receipts, identities, masked int
+	var receipts, identities, secrets, plaintext, masked int
 	if err = pool.Native().QueryRow(ctx, `SELECT
 		(SELECT count(*) FROM identity_phone_import_receipts WHERE run_id=$1),
 		(SELECT count(*) FROM customer_identities WHERE customer_id=$2 AND kind='phone' AND assurance='declared' AND status='active'),
-		(SELECT count(*) FROM customer_directory_projection WHERE customer_id=$2 AND phone_masked='+86138****5678' AND phone_assurance='declared')`, runID, customerID).Scan(&receipts, &identities, &masked); err != nil {
+		(SELECT count(*) FROM identity_phone_secrets secrets JOIN customer_identities identities ON identities.id=secrets.identity_id WHERE identities.customer_id=$2),
+		(SELECT count(*) FROM customer_identities WHERE customer_id=$2 AND kind='phone' AND normalized_value<>''),
+		(SELECT count(*) FROM customer_directory_projection WHERE customer_id=$2 AND phone_masked='138****5678' AND phone_assurance='declared')`, runID, customerID).Scan(&receipts, &identities, &secrets, &plaintext, &masked); err != nil {
 		t.Fatal(err)
 	}
-	if receipts != 1 || identities != 1 || masked != 1 {
-		t.Fatalf("receipts=%d identities=%d masked=%d", receipts, identities, masked)
+	if receipts != 1 || identities != 1 || secrets != 1 || plaintext != 0 || masked != 1 {
+		t.Fatalf("receipts=%d identities=%d secrets=%d plaintext=%d masked=%d", receipts, identities, secrets, plaintext, masked)
 	}
 
 	invalidRun, _, err := createRun(ctx, uow, "phone-import:invalid-replay", sha256.Sum256([]byte("invalid-manifest")), 1)

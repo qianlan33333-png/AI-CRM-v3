@@ -12,6 +12,34 @@
     row.appendChild(cell);
   }
 
+  function installQrFallback() {
+    const page = document.body.dataset.page || '';
+    if (!['questionnaires', 'questionnaireDetail', 'questionnaireOps'].includes(page)) return;
+    const pending = new WeakSet();
+
+    function watchQrBox(box) {
+      if (!box || pending.has(box)) return;
+      pending.add(box);
+      setTimeout(function () {
+        if (!box.isConnected || box.childElementCount > 0 || text(box.textContent).trim() !== '') return;
+        const alert = document.createElement('div');
+        alert.setAttribute('role', 'alert');
+        alert.dataset.surveyQrFallback = 'true';
+        alert.style.cssText = 'padding:16px;color:#d93026;text-align:center;line-height:1.6';
+        alert.textContent = '二维码加载失败，请使用上方“复制”按钮复制链接。';
+        box.replaceChildren(alert);
+      }, 1200);
+    }
+
+    function scan() {
+      if (!document || !document.body) return;
+      watchQrBox(document.getElementById('shareQrBox'));
+    }
+
+    scan();
+    new MutationObserver(scan).observe(document.body, { childList: true, subtree: true });
+  }
+
   async function mount() {
     if (document.body.dataset.page !== 'questionnaireOps') return;
     const questionnaireID = new URLSearchParams(location.search).get('id') || '';
@@ -79,6 +107,11 @@
     }
   }
 
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', function () { setTimeout(mount, 0); }, { once: true });
-  else setTimeout(mount, 0);
+  function start() {
+    installQrFallback();
+    setTimeout(mount, 0);
+  }
+
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, { once: true });
+  else start();
 })();

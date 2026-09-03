@@ -35,6 +35,16 @@ if ! grep -Eq '^AICRM_SURVEY_DATA_KEY=.{43}$' /etc/aicrm/aicrm.env; then
   unset survey_data_key
   chmod 0600 /etc/aicrm/aicrm.env
 fi
+if ! grep -Eq '^AICRM_IDENTITY_PHONE_DATA_KEY=.{43}$' /etc/aicrm/aicrm.env; then
+  identity_phone_data_key="$(openssl rand -base64 32 | tr -d '\n=')"
+  if grep -q '^AICRM_IDENTITY_PHONE_DATA_KEY=' /etc/aicrm/aicrm.env; then
+    sed -i "s|^AICRM_IDENTITY_PHONE_DATA_KEY=.*$|AICRM_IDENTITY_PHONE_DATA_KEY=${identity_phone_data_key}|" /etc/aicrm/aicrm.env
+  else
+    printf '\nAICRM_IDENTITY_PHONE_DATA_KEY=%s\n' "$identity_phone_data_key" >> /etc/aicrm/aicrm.env
+  fi
+  unset identity_phone_data_key
+  chmod 0600 /etc/aicrm/aicrm.env
+fi
 if ! grep -Eq '^AICRM_HXC_SUBJECT_HMAC_KEY=.{32,}$' /etc/aicrm/aicrm.env; then
   hxc_subject_hmac_key="$(openssl rand -base64 48 | tr -d '\n=')"
   if grep -q '^AICRM_HXC_SUBJECT_HMAC_KEY=' /etc/aicrm/aicrm.env; then
@@ -74,6 +84,7 @@ test -x "$release_dir/bin/aicrm"
 test -x "$release_dir/bin/migrate-platform"
 test -x "$release_dir/bin/migrate-river"
 test -x "$release_dir/bin/migrate-phone-identities"
+test -x "$release_dir/bin/migrate-identity-phone-vault"
 test -x "$release_dir/bin/migrate-survey-v2"
 test -x "$release_dir/bin/migrate-v2-config-definitions"
 test -x "$release_dir/bin/migrate-channel-history"
@@ -108,6 +119,7 @@ test -f "$release_dir/migrations/0034_channel_entrant_actions.sql"
 test -f "$release_dir/migrations/0035_channel_acquisition_links.sql"
 test -f "$release_dir/migrations/0036_ai_assistant_review.sql"
 test -f "$release_dir/migrations/0037_outbound_private_messages.sql"
+test -f "$release_dir/migrations/0038_survey_oauth_phone_vault.sql"
 test -f "$release_dir/migrations/0015_config_adminops.sql"
 test -f "$release_dir/web/dist/asset-manifest.json"
 test -f "$release_dir/release-files.sha256"

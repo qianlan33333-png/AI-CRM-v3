@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
+	"strconv"
+	"strings"
 	"time"
 
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
@@ -31,7 +33,7 @@ func (service OneIDService) ProvisionHistoricalSubject(ctx context.Context, comm
 		return identityport.HistoricalSubjectResult{}, ErrHistoricalSubjectConflict
 	}
 	for _, fact := range command.Facts {
-		if !fact.Valid() {
+		if !fact.Valid() || fact.Reference().Kind == identitydomain.KindPhone {
 			return identityport.HistoricalSubjectResult{}, ErrHistoricalSubjectConflict
 		}
 	}
@@ -199,14 +201,25 @@ type Store interface {
 	ConsumeLinkIntent(context.Context, ConsumeLinkIntentCommand) (LinkResult, error)
 	ConfirmMerge(context.Context, ConfirmMergeCommand) (LinkResult, error)
 	RevertMerge(context.Context, int64) (MergeRecord, error)
-	AttachDeclared(context.Context, identityport.DeclaredAttachCommand, identitydomain.NormalizedReference) (identityport.DeclaredAttachResult, error)
+	AttachDeclaredPhone(context.Context, identityport.DeclaredPhoneCommand, identitydomain.NormalizedReference) (identityport.DeclaredAttachResult, error)
+}
+
+func (service OneIDService) AttachDeclaredPhoneToCustomer(ctx context.Context, command identityport.DeclaredPhoneCommand) (identityport.DeclaredAttachResult, error) {
+	if service.Store == nil || command.CustomerID < 1 || command.Source != "survey" && command.Source != "phone_import" || command.SourceEventID == "" || len(command.SourceEventID) > 200 || command.IdempotencyKey == "" || len(command.IdempotencyKey) > 200 {
+		return identityport.DeclaredAttachResult{Status: identityport.DeclaredInvalid}, nil
+	}
+	normalized, err := identitydomain.Normalize(identitydomain.Reference{Kind: identitydomain.KindPhone, Scope: "phone:cn11", Value: command.Phone, Assurance: identitydomain.AssuranceDeclared, Source: command.Source})
+	if err != nil {
+		return identityport.DeclaredAttachResult{Status: identityport.DeclaredInvalid}, nil
+	}
+	return service.Store.AttachDeclaredPhone(ctx, command, normalized)
 }
 
 // AttachDeclaredIdentity adds a low-assurance reference to an existing active
 // Customer root. The command cannot create a customer, create a merge
 // candidate, or promote the reference to verified.
 func (service OneIDService) AttachDeclaredIdentity(ctx context.Context, command identityport.DeclaredAttachCommand) (identityport.DeclaredAttachResult, error) {
-	if command.CustomerID < 1 || command.ImportRunID < 1 || command.SourceRowID == "" || command.IdempotencyKey == "" ||
+	if service.Store == nil || command.CustomerID < 1 || command.ImportRunID < 1 || command.SourceRowID == "" || command.IdempotencyKey == "" ||
 		command.Reference.Assurance != identitydomain.AssuranceDeclared || command.Reference.Kind != identitydomain.KindPhone ||
 		command.Reference.Scope != "phone:e164" || command.Reference.Source != "phone_import" {
 		return identityport.DeclaredAttachResult{Status: identityport.DeclaredInvalid}, nil
@@ -215,7 +228,12 @@ func (service OneIDService) AttachDeclaredIdentity(ctx context.Context, command 
 	if err != nil {
 		return identityport.DeclaredAttachResult{Status: identityport.DeclaredInvalid}, nil
 	}
-	return service.Store.AttachDeclared(ctx, command, normalized)
+	phone := strings.TrimPrefix(normalized.NormalizedValue, "+86")
+	return service.AttachDeclaredPhoneToCustomer(ctx, identityport.DeclaredPhoneCommand{
+		CustomerID: command.CustomerID, Phone: phone, Source: "phone_import",
+		SourceEventID:  "phone-import:" + strconv.FormatInt(command.ImportRunID, 10) + ":" + hex.EncodeToString(command.SourceRowDigest[:]),
+		IdempotencyKey: command.IdempotencyKey,
+	})
 }
 
 // OneIDService owns identity resolution, verified provisioning and explicit
@@ -246,7 +264,7 @@ func (service OneIDService) Resolve(ctx context.Context, reference identitydomai
 // ProvisionCustomerFromVerifiedIdentity is intentionally separate from
 // Resolve. Only a provider adapter can supply the opaque VerifiedFact input.
 func (service OneIDService) ProvisionCustomerFromVerifiedIdentity(ctx context.Context, fact identitydomain.VerifiedFact) (identityport.ProvisionResult, error) {
-	if !fact.Valid() {
+	if !fact.Valid() || fact.Reference().Kind == identitydomain.KindPhone {
 		return identityport.ProvisionResult{}, identitydomain.ErrInvalidReference
 	}
 	provisioned, err := service.Store.Provision(ctx, fact)
@@ -267,14 +285,14 @@ func (service OneIDService) ProvisionVerifiedIdentity(ctx context.Context, comma
 }
 
 func (service OneIDService) LinkVerifiedIdentity(ctx context.Context, command LinkCommand) (LinkResult, error) {
-	if command.SourceCustomerID < 1 || !command.Target.Valid() || !command.Evidence.Valid() {
+	if command.SourceCustomerID < 1 || !command.Target.Valid() || command.Target.Reference().Kind == identitydomain.KindPhone || !command.Evidence.Valid() {
 		return LinkResult{}, ErrInvalidLinkCommand
 	}
 	return service.Store.Link(ctx, command)
 }
 
 func (service OneIDService) CreateLinkIntent(ctx context.Context, command LinkIntentCommand) (CreatedLinkIntent, error) {
-	if command.SourceCustomerID < 1 || !validLinkIntentPurpose(command.Purpose) || identitydomain.ValidateKind(command.TargetKind) != nil ||
+	if command.SourceCustomerID < 1 || !validLinkIntentPurpose(command.Purpose) || identitydomain.ValidateKind(command.TargetKind) != nil || command.TargetKind == identitydomain.KindPhone ||
 		(command.ExpectedScope != "" && identitydomain.ValidateNamespace(command.TargetKind, command.ExpectedScope) != nil) ||
 		(command.Purpose == LinkIntentBindWeCom && command.TargetKind != identitydomain.KindWeComExternalUserID) ||
 		command.ExpiresAt.IsZero() || !command.ExpiresAt.After(time.Now()) || command.Source == "" {
@@ -286,7 +304,7 @@ func (service OneIDService) CreateLinkIntent(ctx context.Context, command LinkIn
 // A consumed one-time intent can attach a missing identity, but any existing
 // cross-root association remains a merge candidate for separate confirmation.
 func (service OneIDService) ConsumeLinkIntent(ctx context.Context, command ConsumeLinkIntentCommand) (LinkResult, error) {
-	if command.Token == "" || !command.Target.Valid() || !command.Evidence.Valid() || command.Evidence.Strength != identitydomain.EvidenceStrong {
+	if command.Token == "" || !command.Target.Valid() || command.Target.Reference().Kind == identitydomain.KindPhone || !command.Evidence.Valid() || command.Evidence.Strength != identitydomain.EvidenceStrong {
 		return LinkResult{}, ErrInvalidLinkCommand
 	}
 	return service.Store.ConsumeLinkIntent(ctx, command)

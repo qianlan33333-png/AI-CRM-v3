@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -21,6 +22,14 @@ type oauthStore struct {
 	stateDigest, sessionDigest [32]byte
 	identity                   surveyport.SubmissionIdentity
 	consumed                   bool
+	getErr                     error
+}
+
+func (s *oauthStore) GetPublishedBySlug(_ context.Context, slug string) (surveyport.Questionnaire, error) {
+	if s.getErr != nil {
+		return surveyport.Questionnaire{}, s.getErr
+	}
+	return surveyport.Questionnaire{Slug: slug, AnswerDisplayMode: surveyport.DisplayAllInOne}, nil
 }
 
 func (s *oauthStore) CreateOAuthState(_ context.Context, digest [32]byte, state OAuthState, _ time.Time) error {
@@ -73,7 +82,7 @@ func TestOAuthConsumesStateAndProvisionsOnlyProviderVerifiedFact(t *testing.T) {
 	service := NewOAuthService(oauthUOW{}, store, oauthProvider{fact: fact}, oauthIdentity{})
 	fixed := time.Date(2026, 9, 3, 8, 0, 0, 0, time.UTC)
 	service.now = func() time.Time { return fixed }
-	location, err := service.Start(context.Background(), "growth-test", "all")
+	location, err := service.Start(context.Background(), "growth-test")
 	if err != nil || !strings.HasPrefix(location, "https://provider.example/") {
 		t.Fatalf("start=%q err=%v", location, err)
 	}
@@ -87,5 +96,16 @@ func TestOAuthConsumesStateAndProvisionsOnlyProviderVerifiedFact(t *testing.T) {
 	}
 	if _, _, err = service.Complete(context.Background(), state, "provider-code"); err == nil {
 		t.Fatal("OAuth state replay accepted")
+	}
+}
+
+func TestOAuthStartPreservesMissingQuestionnaireWithoutCreatingState(t *testing.T) {
+	store := &oauthStore{getErr: surveyport.ErrNotFound}
+	service := NewOAuthService(oauthUOW{}, store, oauthProvider{}, oauthIdentity{})
+	if _, err := service.Start(context.Background(), "missing"); !errors.Is(err, surveyport.ErrNotFound) {
+		t.Fatalf("start error=%v", err)
+	}
+	if store.stateDigest != ([32]byte{}) {
+		t.Fatal("OAuth state was persisted for missing questionnaire")
 	}
 }
