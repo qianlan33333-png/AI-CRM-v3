@@ -2,7 +2,7 @@ openapi: 3.1.0
 info:
   title: AI-CRM v3 Foundation API
   version: 0.4.0
-  description: OneID, employee access, WeCom foundation and durable external-contact callback contract. Unimplemented CRM menus expose HTML placeholders and no business API.
+  description: OneID, employee access, durable WeCom callback and customer directory, External Effects, and Media contracts.
 servers:
   - url: https://id-dev.youcangogogo.com
 paths:
@@ -227,6 +227,13 @@ paths:
     get: {operationId: getMediaGroupInvite, tags: [Media], security: [{adminSession: []}], parameters: [{$ref: "#/components/parameters/ID"}], responses: {"200": {description: Active local group invite card, content: {application/json: {schema: {$ref: "#/components/schemas/MediaGroupInviteEnvelope"}}}}, "401": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}}}
     put: {operationId: updateMediaGroupInvite, tags: [Media], security: [{adminSession: [], csrfHeader: []}], parameters: [{$ref: "#/components/parameters/ID"}, {$ref: "#/components/parameters/IdempotencyKey"}], requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/MediaGroupInviteUpdateRequest"}}}}, responses: {"200": {description: Local group invite updated, content: {application/json: {schema: {$ref: "#/components/schemas/MediaGroupInviteEnvelope"}}}}, "400": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}}
     delete: {operationId: archiveMediaGroupInvite, tags: [Media], security: [{adminSession: [], csrfHeader: []}], parameters: [{$ref: "#/components/parameters/ID"}, {$ref: "#/components/parameters/IdempotencyKey"}], responses: {"200": {description: Local group invite archived without Provider call, content: {application/json: {schema: {$ref: "#/components/schemas/MediaGroupInviteArchiveEnvelope"}}}}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}}
+  /admin/customers:
+    get:
+      operationId: customerDirectoryPage
+      security: [{adminSession: []}]
+      responses:
+        "200": {description: Customer activation and directory HTML, content: {text/html: {schema: {type: string}}}}
+        "303": {description: Redirect to login}
   /api/admin/access/users:
     get:
       operationId: listAdminUsers
@@ -478,6 +485,67 @@ paths:
         "400": {$ref: "#/components/responses/Error"}
         "403": {$ref: "#/components/responses/Error"}
         "409": {$ref: "#/components/responses/Error"}
+  /api/admin/customers:
+    get:
+      operationId: listCustomers
+      description: Fixed-watermark keyset page. Full phone is an exact filter and is never echoed.
+      security: [{adminSession: []}]
+      parameters:
+        - {name: keyword, in: query, schema: {type: string, maxLength: 200}}
+        - {name: phone, in: query, schema: {type: string, maxLength: 32, writeOnly: true}}
+        - {name: status, in: query, schema: {type: string, enum: [active, merged, closed]}}
+        - {name: activation_status, in: query, schema: {type: string, enum: [active, conflict, stale]}}
+        - {name: cursor, in: query, schema: {type: string, maxLength: 2048}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 200, default: 50}}
+      responses:
+        "200": {description: Customer directory page, content: {application/json: {schema: {$ref: "#/components/schemas/CustomerDirectoryPage"}}}}
+        "400": {$ref: "#/components/responses/Error"}
+  /api/admin/customers/{customer_id}:
+    get:
+      operationId: getCustomerDirectoryDetail
+      security: [{adminSession: []}]
+      parameters: [{$ref: "#/components/parameters/CustomerID"}]
+      responses:
+        "200": {description: Customer slice detail without raw external IDs or full phones, content: {application/json: {schema: {$ref: "#/components/schemas/CustomerDirectoryDetailResponse"}}}}
+        "404": {$ref: "#/components/responses/Error"}
+  /api/admin/customers/{customer_id}/phone-reveal:
+    post:
+      operationId: revealCustomerPhone
+      description: Admin and SuperAdmin only. Response is no-store and the reason is audited atomically.
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/CustomerID"}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {type: object, additionalProperties: false, required: [reason], properties: {reason: {type: string, minLength: 1, maxLength: 200}}}}}
+      responses:
+        "200": {description: Ephemeral clear-text phone, headers: {Cache-Control: {schema: {type: string, const: no-store}}}, content: {application/json: {schema: {type: object, additionalProperties: false, required: [phone], properties: {phone: {type: string, writeOnly: true}}}}}}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+  /api/admin/customer-sync-runs:
+    get:
+      operationId: listCustomerSyncRuns
+      security: [{adminSession: []}]
+      parameters: [{name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 20}}]
+      responses:
+        "200": {description: Non-PII sync run summaries, content: {application/json: {schema: {type: object, required: [items], properties: {items: {type: array, items: {$ref: "#/components/schemas/CustomerSyncRun"}}}}}}}
+    post:
+      operationId: createCustomerSyncRun
+      description: SuperAdmin only. The customer-contact provider is disabled by default.
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      responses:
+        "202": {description: New durable full-sync run, content: {application/json: {schema: {type: object, required: [run, replayed], properties: {run: {$ref: "#/components/schemas/CustomerSyncRun"}, replayed: {type: boolean}}}}}}
+        "403": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/admin/customer-sync-runs/{run_id}:
+    get:
+      operationId: getCustomerSyncRun
+      security: [{adminSession: []}]
+      parameters: [{name: run_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
+      responses:
+        "200": {description: Non-PII durable stage and reconciled counts, content: {application/json: {schema: {$ref: "#/components/schemas/CustomerSyncRun"}}}}
+        "404": {$ref: "#/components/responses/Error"}
   /wecom/external-contact/callback:
     get:
       operationId: verifyWeComCallback
@@ -708,6 +776,7 @@ components:
     MessageSignature: {name: msg_signature, in: query, required: true, schema: {type: string}}
     Timestamp: {name: timestamp, in: query, required: true, schema: {type: string, pattern: "^[0-9]+$"}}
     Nonce: {name: nonce, in: query, required: true, schema: {type: string}}
+    RequiredIdempotencyKey: {name: Idempotency-Key, in: header, required: true, schema: {type: string, minLength: 8, maxLength: 200}}
   responses:
     Error: {description: Stable error response, content: {application/json: {schema: {$ref: "#/components/schemas/ErrorResponse"}}}}
     Unavailable: {description: Dependency or provider unavailable, content: {application/json: {schema: {$ref: "#/components/schemas/ErrorResponse"}}}}
@@ -966,6 +1035,90 @@ components:
       type: object
       required: [id, left_customer_id, right_customer_id, evidence_strength, reason, status, created_at]
       properties: {id: {$ref: "#/components/schemas/PositiveID"}, left_customer_id: {$ref: "#/components/schemas/PositiveID"}, right_customer_id: {$ref: "#/components/schemas/PositiveID"}, evidence_strength: {type: string, enum: [strong, medium, weak]}, reason: {type: string}, status: {type: string}, selected_survivor_customer_id: {$ref: "#/components/schemas/PositiveID"}, created_at: {type: string, format: date-time}, resolved_at: {type: [string, "null"], format: date-time}}
+    CustomerDirectoryItem:
+      type: object
+      additionalProperties: false
+      required: [customer_id, status, display_name, avatar_url, oneid, phone_masked, activation_status, updated_at]
+      properties:
+        customer_id: {$ref: "#/components/schemas/PositiveID"}
+        status: {type: string, enum: [active, merged, closed]}
+        display_name: {type: string}
+        avatar_url: {type: string}
+        oneid: {type: string}
+        phone_masked: {type: string}
+        phone_assurance: {type: string, enum: [verified, declared]}
+        activation_status: {type: string, enum: [active, conflict, stale]}
+        last_synced_at: {type: [string, "null"], format: date-time}
+        updated_at: {type: string, format: date-time}
+    CustomerDirectoryPage:
+      type: object
+      additionalProperties: false
+      required: [items, total, total_is_estimate, watermark]
+      properties:
+        items: {type: array, items: {$ref: "#/components/schemas/CustomerDirectoryItem"}}
+        next_cursor: {type: string}
+        total: {type: integer, minimum: 0, maximum: 10000}
+        total_is_estimate: {type: boolean}
+        watermark: {type: string, format: date-time}
+    DirectoryIdentitySummary:
+      type: object
+      additionalProperties: false
+      required: [kind, scope, assurance, status, source, created_at]
+      properties: {kind: {type: string}, scope: {type: string}, assurance: {type: string, enum: [verified, declared]}, status: {type: string}, source: {type: string}, created_at: {type: string, format: date-time}}
+    MaskedPhone:
+      type: object
+      additionalProperties: false
+      required: [masked, assurance]
+      properties: {masked: {type: string}, assurance: {type: string, enum: [verified, declared]}}
+    CustomerDirectoryDetailResponse:
+      type: object
+      additionalProperties: false
+      required: [customer, identities, phones]
+      properties:
+        customer: {$ref: "#/components/schemas/CustomerDirectoryDetail"}
+        identities: {type: array, items: {$ref: "#/components/schemas/DirectoryIdentitySummary"}}
+        phones: {type: array, items: {$ref: "#/components/schemas/MaskedPhone"}}
+    CustomerDirectoryDetail:
+      type: object
+      additionalProperties: false
+      required: [customer_id, status, display_name, avatar_url, oneid, phone_masked, activation_status, updated_at, gender, contact_type, corp_name, source]
+      properties:
+        customer_id: {$ref: "#/components/schemas/PositiveID"}
+        status: {type: string, enum: [active, merged, closed]}
+        display_name: {type: string}
+        avatar_url: {type: string}
+        oneid: {type: string}
+        phone_masked: {type: string}
+        phone_assurance: {type: string, enum: [verified, declared]}
+        activation_status: {type: string, enum: [active, conflict, stale]}
+        last_synced_at: {type: [string, "null"], format: date-time}
+        updated_at: {type: string, format: date-time}
+        gender: {type: integer, minimum: 0, maximum: 2}
+        contact_type: {type: integer, minimum: 0, maximum: 3}
+        corp_name: {type: string}
+        source: {type: string}
+    CustomerSyncRun:
+      type: object
+      additionalProperties: false
+      required: [run_id, trigger, status, staff_index, discovered, activated, already_linked, conflict, terminal_failed, projected, stale, created_at, updated_at]
+      properties:
+        run_id: {$ref: "#/components/schemas/PositiveID"}
+        trigger: {type: string, enum: [initial, daily, manual]}
+        status: {type: string, enum: [queued, listing_staff, fetching_profiles, ingesting, reconciling, succeeded, failed_retryable, failed_terminal]}
+        staff_index: {type: integer, minimum: 0}
+        discovered: {type: integer, minimum: 0}
+        activated: {type: integer, minimum: 0}
+        already_linked: {type: integer, minimum: 0}
+        conflict: {type: integer, minimum: 0}
+        terminal_failed: {type: integer, minimum: 0}
+        projected: {type: integer, minimum: 0}
+        stale: {type: integer, minimum: 0}
+        last_error_code: {type: string}
+        requested_by: {$ref: "#/components/schemas/PositiveID"}
+        started_at: {type: [string, "null"], format: date-time}
+        completed_at: {type: [string, "null"], format: date-time}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
     JSSDKSignature:
       type: object
       required: [timestamp, nonceStr, signature, jsApiList]

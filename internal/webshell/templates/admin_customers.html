@@ -1,0 +1,50 @@
+{{define "admin_customers"}}
+<section class="admin-card customer-sync-card" data-customer-directory-root
+  data-customers-url="/api/admin/customers"
+  data-sync-url="/api/admin/customer-sync-runs">
+  <div class="admin-card-head admin-card-head--tight">
+    <div>
+      <h2>企微客户同步</h2>
+      <p id="customer-sync-summary">正在读取最近一次同步状态…</p>
+    </div>
+    <button class="admin-button admin-button--primary" id="customer-sync-start" type="button">重新拉取企微客户</button>
+  </div>
+  <div class="customer-sync-metrics" id="customer-sync-metrics" aria-live="polite"></div>
+  <div id="customer-page-alert" class="admin-alert" role="status" aria-live="polite" hidden></div>
+</section>
+
+<section class="admin-card customer-list-card">
+  <div class="admin-card-head admin-card-head--tight">
+    <div><h2>客户列表</h2><p id="customer-list-summary">正在读取 v3 客户目录…</p></div>
+    <button class="admin-button admin-button--ghost" id="customer-list-refresh" type="button">刷新</button>
+  </div>
+  <form id="customer-list-filters" class="customer-filter-grid" autocomplete="off">
+    <label><span>客户名称 / OneID</span><input name="keyword" type="search" maxlength="200" placeholder="输入名称或 CID"></label>
+    <label><span>完整手机号（精确）</span><input name="phone" type="password" inputmode="tel" maxlength="32" autocomplete="off" placeholder="+8613812345678"></label>
+    <label><span>Customer 状态</span><select name="status"><option value="">全部</option><option value="active">正常</option><option value="merged">已归并</option><option value="closed">已关闭</option></select></label>
+    <label><span>激活状态</span><select name="activation_status"><option value="">全部</option><option value="active">已激活</option><option value="conflict">冲突</option><option value="stale">待对账</option></select></label>
+    <button class="admin-button admin-button--secondary" type="submit">查询</button>
+  </form>
+  <div id="customer-list-state" class="admin-state admin-state--loading"><strong>正在加载</strong><span>读取客户目录投影。</span></div>
+  <div id="customer-list-table-wrap" class="admin-table-wrap" hidden>
+    <table class="admin-table customer-table"><thead><tr><th>客户</th><th>OneID</th><th>手机号</th><th>激活状态</th><th>最后同步</th><th>操作</th></tr></thead><tbody id="customer-list-body"></tbody></table>
+  </div>
+  <div class="customer-pagination"><button class="admin-button admin-button--ghost" id="customer-next-page" type="button" hidden>下一页</button></div>
+</section>
+
+<section class="admin-card customer-detail-card" id="customer-detail-card" hidden>
+  <div class="admin-card-head admin-card-head--tight"><div><h2>客户详情</h2><p>仅展示本板块的企微资料、OneID 摘要与脱敏手机号。</p></div><a class="admin-button admin-button--ghost" href="/admin/customers">返回列表</a></div>
+  <div id="customer-detail-state" class="admin-state admin-state--loading"><strong>正在加载</strong><span>读取客户详情。</span></div>
+  <div id="customer-detail-content" hidden>
+    <div class="customer-detail-grid" id="customer-detail-fields"></div>
+    <h3>OneID 摘要</h3><div class="customer-identity-list" id="customer-identity-list"></div>
+    <h3>手机号</h3><div class="customer-phone-list" id="customer-phone-list"></div>
+    <form id="customer-phone-reveal" class="customer-reveal-form" autocomplete="off">
+      <label><span>揭示理由（1–200 字）</span><input name="reason" maxlength="200" required></label>
+      <button class="admin-button admin-button--secondary" type="submit">临时揭示</button>
+    </form>
+    <div id="customer-phone-ephemeral" class="customer-phone-ephemeral" role="status" aria-live="polite" hidden></div>
+  </div>
+</section>
+{{end}}
+

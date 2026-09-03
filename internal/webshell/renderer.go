@@ -51,6 +51,7 @@ type AdminShellView struct {
 	Content         template.HTML
 	AudienceList    bool
 	AudienceDetail  bool
+	Customers       bool
 	ExternalEffects bool
 	ExternalAssets  ExternalEffectsAssets
 	Media           bool
@@ -119,6 +120,7 @@ func (renderer *Renderer) RenderAdminStatus(writer http.ResponseWriter, status i
 	contentTemplate := "admin_placeholder"
 	audienceList := data.RequestPath == "/admin/automation-conversion"
 	audienceDetail := strings.HasPrefix(data.RequestPath, "/admin/automation-conversion/packages/")
+	customers := data.RequestPath == "/admin/customers" || strings.HasPrefix(data.RequestPath, "/admin/customers/")
 	if audienceList {
 		contentTemplate = "admin_audience"
 	} else if audienceDetail {
@@ -127,6 +129,8 @@ func (renderer *Renderer) RenderAdminStatus(writer http.ResponseWriter, status i
 		contentTemplate = "admin_access"
 	} else if data.RequestPath == OneIDPagePath {
 		contentTemplate = "admin_oneid"
+	} else if customers {
+		contentTemplate = "admin_customers"
 	}
 	content, err := executeTemplate(renderer.templates, contentTemplate, data)
 	if err != nil {
@@ -137,6 +141,7 @@ func (renderer *Renderer) RenderAdminStatus(writer http.ResponseWriter, status i
 		Content:        template.HTML(content), // child template already escaped all data
 		AudienceList:   audienceList,
 		AudienceDetail: audienceDetail,
+		Customers:      customers,
 	})
 	if err != nil {
 		return err

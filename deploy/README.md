@@ -12,9 +12,13 @@ PostgreSQL 16 is the only runtime data dependency.
 - API: `aicrm.service`
 - migrations: `aicrm-migrate.service` (oneshot before a release restart)
 - WeCom inbox: `aicrm-wecom-worker.service` plus external systemd timer
+- durable River jobs: `aicrm-effects-worker.service` (External Effects and customer directory queues)
+- Daily customer reconciliation creation: `aicrm-customer-sync-daily.service` plus the 02:30 Asia/Shanghai systemd timer
 
-The app has only `api` and `worker` roles. The worker runs one bounded inbox
-claim and exits; there is no ticker or scheduler inside the Go process.
+The app has `api`, `worker`, and `effects-worker` roles. The oneshot worker runs
+one bounded callback-inbox claim or creates a scheduled customer-sync run. The
+long-running effects worker is the single River runtime for both durable queues;
+there is no ticker or scheduler inside a domain package.
 
 ## Automated release
 
@@ -35,10 +39,17 @@ Required GitHub Actions secrets:
 
 ## Provider boundary
 
-`AICRM_WECOM_ENABLED=false` is the safe default. Enabling WeCom requires the
+`AICRM_WECOM_ENABLED=false` and `AICRM_WECOM_CUSTOMER_SYNC_ENABLED=false` are safe defaults. Enabling WeCom requires the
 Corp ID, Agent ID, application Secret, callback Token, callback EncodingAESKey
-and a separate context signing key to be present together. Alipay has no live
+and a separate context signing key to be present together. Customer directory
+sync additionally requires its own customer-contact Secret. Alipay has no live
 runtime configuration in this release.
+
+The phone migration command never connects to the source host. Export a minimal
+snapshot through a separately authorized read-only channel, compute its SHA-256,
+then run `inspect`, `dry-run`, `apply --confirm-apply`, and `reconcile` in order.
+Do not place snapshots, source credentials, raw phones, external user IDs, or
+command output containing them in Git or structured logs.
 
 ## Acceptance
 

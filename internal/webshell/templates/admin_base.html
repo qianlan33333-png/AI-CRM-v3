@@ -34,6 +34,10 @@
   <link rel="stylesheet" href="{{.MediaAssets.LabsCSS}}">
   <script type="module" src="{{.MediaAssets.AdminJS}}"></script>
   {{end}}
+  {{if .Customers}}
+  <link rel="stylesheet" href="/static/admin_console/admin_customers.css?v=customer-directory-v1">
+  <script defer src="/static/admin_console/admin_customers.js?v=customer-directory-v1"></script>
+  {{end}}
   {{if .Tags}}
   <link rel="stylesheet" href="{{.TagsAssets.TokensCSS}}">
   <link rel="stylesheet" href="{{.TagsAssets.LabsCSS}}">

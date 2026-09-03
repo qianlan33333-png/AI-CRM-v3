@@ -41,6 +41,41 @@ func TestProvisionRequiresOpaqueVerifiedFact(t *testing.T) {
 	}
 }
 
+func TestDeclaredPhoneAttachesOnlyToExistingCustomerAndReplays(t *testing.T) {
+	store := NewMemoryStore()
+	service := OneIDService{Store: store}
+	first, err := service.ProvisionCustomerFromVerifiedIdentity(context.Background(), verifiedFact(t, identitydomain.KindWeComExternalUserID, "wecom-corp:main", "external-declared-1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := service.ProvisionCustomerFromVerifiedIdentity(context.Background(), verifiedFact(t, identitydomain.KindWeComExternalUserID, "wecom-corp:main", "external-declared-2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := [32]byte{1, 2, 3}
+	command := identityport.DeclaredAttachCommand{CustomerID: first.CustomerID, Reference: identitydomain.Reference{Kind: identitydomain.KindPhone, Scope: "phone:e164", Value: "+8613812345678", Assurance: identitydomain.AssuranceDeclared, Source: "phone_import"}, ImportRunID: 1, SourceRowID: "row-1", SourceRowDigest: digest, IdempotencyKey: "phone-import:row-1"}
+	result, err := service.AttachDeclaredIdentity(context.Background(), command)
+	if err != nil || result.Status != identityport.DeclaredAttached {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	replay, err := service.AttachDeclaredIdentity(context.Background(), command)
+	if err != nil || replay.Status != identityport.DeclaredReplayed || replay.ReplayOf != identityport.DeclaredAttached {
+		t.Fatalf("replay=%+v err=%v", replay, err)
+	}
+	command.CustomerID = second.CustomerID
+	command.SourceRowID = "row-2"
+	command.SourceRowDigest = [32]byte{4, 5, 6}
+	conflict, err := service.AttachDeclaredIdentity(context.Background(), command)
+	if err != nil || conflict.Status != identityport.DeclaredConflict {
+		t.Fatalf("conflict=%+v err=%v", conflict, err)
+	}
+	invalid := command
+	invalid.Reference.Assurance = identitydomain.AssuranceVerified
+	if got, err := service.AttachDeclaredIdentity(context.Background(), invalid); err != nil || got.Status != identityport.DeclaredInvalid {
+		t.Fatalf("invalid=%+v err=%v", got, err)
+	}
+}
+
 func TestProvisionConcurrentScopedIdentityCreatesOneCustomer(t *testing.T) {
 	store := NewMemoryStore()
 	service := OneIDService{Store: store}

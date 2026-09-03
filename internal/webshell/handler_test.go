@@ -284,6 +284,22 @@ func TestStandaloneHandlerRendersAdminLoginSidebarAndAssets(t *testing.T) {
 			},
 		},
 		{
+			name:       "customer directory page",
+			method:     http.MethodGet,
+			path:       "/admin/customers",
+			status:     http.StatusOK,
+			contains:   []string{"data-customer-directory-root", "/api/admin/customers", "/api/admin/customer-sync-runs", "完整手机号（精确）", "临时揭示", "admin_customers.js"},
+			notContain: []string{"raw_external_userid", "unionid_value", "/api/v2/", "fixture"},
+		},
+		{
+			name:       "customer directory javascript",
+			method:     http.MethodGet,
+			path:       "/static/admin_console/admin_customers.js",
+			status:     http.StatusOK,
+			contains:   []string{"credentials:\"same-origin\"", "cache:\"no-store\"", "X-CSRF-Token", "customer_id", "phone-reveal"},
+			notContain: []string{"localStorage", "sessionStorage", "console.log", "/api/v2/"},
+		},
+		{
 			name:   "oneid css asset",
 			method: http.MethodGet,
 			path:   "/static/admin_console/admin_oneid.css",

@@ -3,7 +3,10 @@ package wecom
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -11,8 +14,10 @@ import (
 	channeldomain "github.com/qianlan33333-png/AI-CRM-v3/internal/channel/domain"
 	channelport "github.com/qianlan33333-png/AI-CRM-v3/internal/channel/port"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
+	customerport "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/port"
 	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
 	identityport "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/port"
+	platformoutbox "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/outbox"
 )
 
 var (
@@ -112,6 +117,8 @@ type ExternalContactLifecycle struct {
 	Relationships CallbackFollowRelationshipStore
 	States        channelport.StateResolver
 	Entrants      channelport.EntrantReceiptRecorder
+	Directory     customerport.CallbackProjectionWriter
+	Outbox        platformoutbox.Appender
 }
 
 type ExternalContactLifecycleResult struct {
@@ -192,12 +199,37 @@ func (service ExternalContactLifecycle) ProcessWithin(ctx context.Context, fact 
 			result.Outcomes = append(result.Outcomes, OutcomeRelationshipDeactivated)
 		}
 	}
+	if !fact.deletesRelationship() && (service.Directory != nil || service.Outbox != nil) {
+		if service.Directory == nil || service.Outbox == nil {
+			return ExternalContactLifecycleResult{}, ErrInvalidExternalContactLifecycle
+		}
+		if err := service.Directory.ActivateDirectoryCustomer(ctx, customerID, "wecom_callback", fact.OccurredAt); err != nil {
+			return ExternalContactLifecycleResult{}, err
+		}
+		payload, err := json.Marshal(map[string]any{"customer_id": customerID, "source": "wecom_callback"})
+		if err != nil {
+			return ExternalContactLifecycleResult{}, err
+		}
+		if _, err = service.Outbox.Append(ctx, platformoutbox.Event{
+			AggregateType: "customer", AggregateID: strconv.FormatInt(int64(customerID), 10),
+			Type: "customer.directory_callback_activated", Version: 1,
+			IdempotencyKey: callbackProjectionKey(fact.CallbackID),
+			Payload:        payload, OccurredAt: fact.OccurredAt, Processed: true,
+		}); err != nil {
+			return ExternalContactLifecycleResult{}, err
+		}
+	}
 	if fact.entrant() {
 		if err := service.correlateEntrant(ctx, fact, customerID, &result); err != nil {
 			return ExternalContactLifecycleResult{}, err
 		}
 	}
 	return result, nil
+}
+
+func callbackProjectionKey(callbackID string) string {
+	digest := sha256.Sum256([]byte(callbackID))
+	return "wecom-callback-projection:" + base64.RawURLEncoding.EncodeToString(digest[:])
 }
 
 func externalContactIdentityDigest(fact ExternalContactLifecycleFact) [32]byte {

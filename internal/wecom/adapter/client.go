@@ -3,6 +3,7 @@
 package adapter
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha1"
@@ -38,6 +39,7 @@ type Config struct {
 	CorpID             string
 	AgentID            string
 	Secret             string
+	ContactSecret      string
 	AdminCallbackURI   string
 	SidebarCallbackURI string
 	APIBase            string
@@ -89,6 +91,71 @@ func New(config Config) (*Client, error) {
 
 func (client *Client) Ready() bool {
 	return client != nil && client.config.Enabled && client.apiBase != nil && client.http != nil
+}
+
+func (client *Client) DirectoryReady() bool {
+	return client.Ready() && !invalid(client.config.ContactSecret)
+}
+
+func (client *Client) ListContactStaff(ctx context.Context) ([]string, error) {
+	if !client.DirectoryReady() {
+		return nil, wecomport.ErrDirectoryDisabled
+	}
+	token, err := client.contactAccessToken(ctx)
+	if err != nil {
+		return nil, err
+	}
+	payload, err := client.request(ctx, "/cgi-bin/externalcontact/get_follow_user_list", url.Values{"access_token": {token}})
+	if err != nil || payload.FollowUser == nil {
+		return nil, ErrResponse
+	}
+	seen := map[string]struct{}{}
+	staff := make([]string, 0, len(payload.FollowUser))
+	for _, value := range payload.FollowUser {
+		value = strings.TrimSpace(value)
+		if value == "" || invalid(value) {
+			return nil, ErrResponse
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		staff = append(staff, value)
+	}
+	return staff, nil
+}
+
+func (client *Client) BatchExternalContacts(ctx context.Context, staffID, cursor string, limit int) (wecomport.ExternalContactPage, error) {
+	if !client.DirectoryReady() {
+		return wecomport.ExternalContactPage{}, wecomport.ErrDirectoryDisabled
+	}
+	if invalid(staffID) || strings.TrimSpace(cursor) != cursor || limit < 1 || limit > 100 {
+		return wecomport.ExternalContactPage{}, ErrResponse
+	}
+	token, err := client.contactAccessToken(ctx)
+	if err != nil {
+		return wecomport.ExternalContactPage{}, err
+	}
+	body, err := json.Marshal(map[string]any{"userid_list": []string{staffID}, "cursor": cursor, "limit": limit})
+	if err != nil {
+		return wecomport.ExternalContactPage{}, ErrResponse
+	}
+	payload, err := client.requestJSON(ctx, http.MethodPost, "/cgi-bin/externalcontact/batch/get_by_user", url.Values{"access_token": {token}}, body)
+	if err != nil {
+		return wecomport.ExternalContactPage{}, err
+	}
+	page := wecomport.ExternalContactPage{Contacts: make([]wecomport.ExternalContact, 0, len(payload.ExternalContactList)), NextCursor: strings.TrimSpace(payload.NextCursor)}
+	for _, item := range payload.ExternalContactList {
+		contact := item.ExternalContact
+		contact.ExternalUserID = strings.TrimSpace(contact.ExternalUserID)
+		if contact.ExternalUserID == "" || contact.Gender < 0 || contact.Gender > 2 || contact.Type < 0 || contact.Type > 3 {
+			return wecomport.ExternalContactPage{}, ErrResponse
+		}
+		page.Contacts = append(page.Contacts, wecomport.ExternalContact{ExternalUserID: contact.ExternalUserID,
+			Name: strings.TrimSpace(contact.Name), AvatarURL: strings.TrimSpace(contact.Avatar), Gender: contact.Gender,
+			Type: contact.Type, CorpName: strings.TrimSpace(contact.CorpName), UnionID: strings.TrimSpace(contact.UnionID)})
+	}
+	return page, nil
 }
 
 func (client *Client) AuthorizationURL(_ context.Context, purpose wecom.OAuthPurpose, mode wecom.OAuthMode, state, _ string) (string, error) {
@@ -175,6 +242,18 @@ func (client *Client) accessToken(ctx context.Context) (string, error) {
 	return payload.AccessToken, nil
 }
 
+func (client *Client) contactAccessToken(ctx context.Context) (string, error) {
+	if value, ok := client.cached("contact_access_token"); ok {
+		return value, nil
+	}
+	payload, err := client.request(ctx, "/cgi-bin/gettoken", url.Values{"corpid": {client.config.CorpID}, "corpsecret": {client.config.ContactSecret}})
+	if err != nil || payload.AccessToken == "" || payload.ExpiresIn <= 0 {
+		return "", ErrResponse
+	}
+	client.store("contact_access_token", payload.AccessToken, payload.ExpiresIn)
+	return payload.AccessToken, nil
+}
+
 func (client *Client) ticket(ctx context.Context, token, kind string) (string, error) {
 	key, path := "jsapi_ticket", "/cgi-bin/get_jsapi_ticket"
 	query := url.Values{"access_token": {token}}
@@ -210,13 +289,26 @@ func (client *Client) sign(signedURL, ticket string) (wecom.JSSDKSignature, erro
 }
 
 type response struct {
-	ErrCode     json.RawMessage `json:"errcode"`
-	AccessToken string          `json:"access_token"`
-	UserID      string          `json:"UserId"`
-	UserIDLower string          `json:"userid"`
-	Ticket      string          `json:"ticket"`
-	ExpiresIn   int64           `json:"expires_in"`
-	TagGroups   *[]tagGroupWire `json:"tag_group"`
+	ErrCode             json.RawMessage `json:"errcode"`
+	AccessToken         string          `json:"access_token"`
+	UserID              string          `json:"UserId"`
+	UserIDLower         string          `json:"userid"`
+	Ticket              string          `json:"ticket"`
+	ExpiresIn           int64           `json:"expires_in"`
+	TagGroups           *[]tagGroupWire `json:"tag_group"`
+	FollowUser          []string        `json:"follow_user"`
+	NextCursor          string          `json:"next_cursor"`
+	ExternalContactList []struct {
+		ExternalContact struct {
+			ExternalUserID string `json:"external_userid"`
+			Name           string `json:"name"`
+			Avatar         string `json:"avatar"`
+			Type           int16  `json:"type"`
+			Gender         int16  `json:"gender"`
+			UnionID        string `json:"unionid"`
+			CorpName       string `json:"corp_name"`
+		} `json:"external_contact"`
+	} `json:"external_contact_list"`
 }
 
 type TagCatalogGroup = wecomport.TagCatalogGroup
@@ -292,7 +384,7 @@ func (client *Client) requestJSON(ctx context.Context, method, path string, quer
 	defer cancel()
 	var input io.Reader
 	if body != nil {
-		input = strings.NewReader(string(body))
+		input = bytes.NewReader(body)
 	}
 	req, err := http.NewRequestWithContext(requestCtx, method, endpoint.String(), input)
 	if err != nil {
@@ -402,3 +494,4 @@ func itoa(value int64) string { return strconv.FormatInt(value, 10) }
 
 var _ wecom.OAuthClient = (*Client)(nil)
 var _ wecom.JSSDKSigner = (*Client)(nil)
+var _ wecomport.DirectoryProvider = (*Client)(nil)

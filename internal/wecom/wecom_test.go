@@ -16,7 +16,6 @@ import (
 	"time"
 
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
-	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/platform/audit"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/platform/idempotency"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/platform/webhook"
@@ -508,22 +507,6 @@ func (store *memoryWebhookStore) Complete(_ context.Context, completion webhook.
 		}
 	}
 	return webhook.Delivery{}, errors.New("missing delivery")
-}
-
-type fakeIdentity struct {
-	calls int
-	find  bool
-}
-
-func (fake *fakeIdentity) ProvisionVerifiedWeComIdentity(_ context.Context, fact identitydomain.VerifiedFact) (customerdomain.CustomerID, error) {
-	if !fact.Valid() {
-		return 0, errors.New("invalid fact")
-	}
-	fake.calls++
-	return 42, nil
-}
-func (fake *fakeIdentity) FindVerifiedWeComIdentity(_ context.Context, fact identitydomain.VerifiedFact) (customerdomain.CustomerID, bool, error) {
-	return 42, fake.find && fact.Valid(), nil
 }
 
 type memoryRelationships struct{ active map[string]bool }

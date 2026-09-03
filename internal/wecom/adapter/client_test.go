@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/wecom"
+	wecomport "github.com/qianlan33333-png/AI-CRM-v3/internal/wecom/port"
 )
 
 func TestClientOAuthURLsAndExchange(t *testing.T) {
@@ -144,6 +145,60 @@ func TestClientRejectsProviderErrorsOversizeAndDoesNotExposeSecrets(t *testing.T
 	_, err = client.ExchangeCode(context.Background(), wecom.OAuthAdmin, wecom.OAuthModeQR, "code-secret")
 	if !errors.Is(err, ErrResponse) || strings.Contains(err.Error(), "code-secret") {
 		t.Fatalf("provider error=%v", err)
+	}
+}
+
+func TestCustomerDirectoryProviderDisabledMakesZeroCalls(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { calls++ }))
+	defer server.Close()
+	client, err := New(Config{Enabled: false, HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if client.DirectoryReady() {
+		t.Fatal("disabled directory must not be ready")
+	}
+	if _, err = client.ListContactStaff(context.Background()); !errors.Is(err, wecomport.ErrDirectoryDisabled) {
+		t.Fatalf("err=%v", err)
+	}
+	if _, err = client.BatchExternalContacts(context.Background(), "staff", "", 100); !errors.Is(err, wecomport.ErrDirectoryDisabled) {
+		t.Fatalf("err=%v", err)
+	}
+	if calls != 0 {
+		t.Fatalf("network calls=%d", calls)
+	}
+}
+
+func TestCustomerDirectoryProviderListsStaffAndBatchPage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/cgi-bin/gettoken":
+			if request.URL.Query().Get("corpsecret") != "contact secret" {
+				t.Fatalf("secret route=%q", request.URL.Query().Get("corpsecret"))
+			}
+			_, _ = writer.Write([]byte(`{"errcode":0,"access_token":"contact-token","expires_in":120}`))
+		case "/cgi-bin/externalcontact/get_follow_user_list":
+			_, _ = writer.Write([]byte(`{"errcode":0,"follow_user":["staff-1","staff-1","staff-2"]}`))
+		case "/cgi-bin/externalcontact/batch/get_by_user":
+			if request.Method != http.MethodPost || request.URL.Query().Get("access_token") != "contact-token" {
+				t.Fatalf("request=%s %s", request.Method, request.URL.String())
+			}
+			_, _ = writer.Write([]byte(`{"errcode":0,"next_cursor":"next-1","external_contact_list":[{"external_contact":{"external_userid":"ext-1","name":"Alice","avatar":"https://example/avatar","type":1,"gender":2,"corp_name":"Example","unionid":"union-ignored-here"}}]}`))
+		default:
+			t.Fatalf("unexpected path=%s", request.URL.Path)
+		}
+	}))
+	defer server.Close()
+	client := newTestClient(t, server, func() time.Time { return testNow })
+	client.config.ContactSecret = "contact secret"
+	staff, err := client.ListContactStaff(context.Background())
+	if err != nil || len(staff) != 2 {
+		t.Fatalf("staff=%v err=%v", staff, err)
+	}
+	page, err := client.BatchExternalContacts(context.Background(), "staff-1", "cursor-1", 100)
+	if err != nil || page.NextCursor != "next-1" || len(page.Contacts) != 1 || page.Contacts[0].ExternalUserID != "ext-1" {
+		t.Fatalf("page=%+v err=%v", page, err)
 	}
 }
 

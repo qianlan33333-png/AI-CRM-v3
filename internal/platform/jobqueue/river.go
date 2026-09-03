@@ -60,11 +60,21 @@ func InsertTx(ctx context.Context, client *river.Client[pgx.Tx], tx pgx.Tx, args
 
 type Runtime struct{ client *river.Client[pgx.Tx] }
 
-func NewRuntime(pool *pgxpool.Pool, workers *river.Workers) (*Runtime, error) {
+func NewRuntime(pool *pgxpool.Pool, workers *river.Workers, queueNames ...string) (*Runtime, error) {
 	if pool == nil || workers == nil {
 		return nil, ErrUnavailable
 	}
-	client, err := river.NewClient(riverpgxv5.New(pool), &river.Config{Queues: map[string]river.QueueConfig{OutboundQueue: {MaxWorkers: 4}}, Workers: workers})
+	if len(queueNames) == 0 {
+		queueNames = []string{OutboundQueue}
+	}
+	queues := make(map[string]river.QueueConfig, len(queueNames))
+	for _, name := range queueNames {
+		if name == "" {
+			return nil, ErrUnavailable
+		}
+		queues[name] = river.QueueConfig{MaxWorkers: 4}
+	}
+	client, err := river.NewClient(riverpgxv5.New(pool), &river.Config{Queues: queues, Workers: workers})
 	if err != nil {
 		return nil, err
 	}
