@@ -101,6 +101,9 @@ func TestLoginCookieContractAndSafeNext(t *testing.T) {
 	if cookie := cookies[CSRFCookieName]; cookie == nil || !cookie.Secure || cookie.HttpOnly || cookie.SameSite != http.SameSiteLaxMode {
 		t.Fatalf("csrf cookie = %#v", cookie)
 	}
+	if cookie := cookies[CompatCSRFCookieName]; cookie == nil || !cookie.Secure || cookie.HttpOnly || cookie.SameSite != http.SameSiteLaxMode || cookie.Value != cookies[CSRFCookieName].Value {
+		t.Fatalf("compat csrf cookie = %#v", cookie)
+	}
 	if cookie := cookies[LoginCSRFCookieName]; cookie == nil || cookie.MaxAge != -1 || cookie.Path != "/login" {
 		t.Fatalf("cleared login csrf cookie = %#v", cookie)
 	}
