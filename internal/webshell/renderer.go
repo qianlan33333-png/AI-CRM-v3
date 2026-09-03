@@ -71,6 +71,9 @@ type AdminShellView struct {
 	Automation       bool
 	AutomationPage   string
 	AutomationAssets AutomationAssets
+	Survey           bool
+	SurveyPage       string
+	SurveyAssets     SurveyAssets
 }
 
 // ExternalEffectsAssets are manifest-derived URLs for the frozen donor bundle.
@@ -104,6 +107,8 @@ type GroupOpsAssets struct{ TokensCSS, LabsCSS, AdminJS string }
 // AutomationAssets are manifest-derived frozen Agent bundle paths. The v3
 // shell supplies only URLs; donor markup remains the extracted template.
 type AutomationAssets struct{ TokensCSS, LabsCSS, AdminJS string }
+
+type SurveyAssets struct{ TokensCSS, LabsCSS, AdminJS, EditorJS, EditorCSS string }
 
 // Render implements the small presentation contract consumed by the Access
 // HTTP handler. Keeping this adapter in webshell avoids a concrete import
@@ -296,6 +301,26 @@ func (renderer *Renderer) RenderAutomation(writer http.ResponseWriter, data Admi
 	data.ShowPageHeader = false
 	content := `<main id="stage" class="stage rich"></main><template id="tpl">` + donorTemplate + `</template>`
 	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: template.HTML(content), Automation: true, AutomationPage: page, AutomationAssets: assets})
+	if err != nil {
+		return err
+	}
+	return writeHTML(writer, http.StatusOK, body)
+}
+
+// RenderSurvey mounts only the frozen question workspace fragment into the
+// v3 admin shell. The editor bootstrap contains no record data; it directs the
+// frozen controller to the v3 API adapter.
+func (renderer *Renderer) RenderSurvey(writer http.ResponseWriter, data AdminPageData, page, donorTemplate string, assets SurveyAssets) error {
+	if renderer == nil || renderer.templates == nil || donorTemplate == "" || assets.TokensCSS == "" || assets.LabsCSS == "" || assets.AdminJS == "" || assets.EditorJS == "" || assets.EditorCSS == "" || (page != "questionnaires" && page != "questionnaireDetail" && page != "questionnaireOps") {
+		return errors.New("survey shell assets are required")
+	}
+	normalizeAdminPage(&data)
+	data.ShowPageHeader = false
+	content := `<main id="stage" class="stage rich"></main><template id="tpl">` + donorTemplate + `</template>`
+	if page == "questionnaireDetail" {
+		content += `<div id="questionnaire-editor-config" hidden>{"mode":"new","heading":"问卷编辑","backHref":"questionnaires.html","defaultAssessment":false,"initialQuestionnaire":null,"initialQuestionnaireId":null}</div>`
+	}
+	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: template.HTML(content), Survey: true, SurveyPage: page, SurveyAssets: assets})
 	if err != nil {
 		return err
 	}

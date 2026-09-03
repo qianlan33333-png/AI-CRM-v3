@@ -9,7 +9,7 @@ import {
   listEditorTags,
   saveEditorQuestionnaire,
   setEditorQuestionnaireDisabled,
-} from '../../api/questionnaireEditor';
+} from '../../api/questionnaireEditorV3';
 import './wecomTagPicker';
 
 const editorConfigElement = document.getElementById('questionnaire-editor-config');
@@ -3884,9 +3884,6 @@ function validateOtherOptionsBeforeSave() {
 async function saveQuestionnaire() {
   validateAssessmentConfigBeforeSave();
   validateOtherOptionsBeforeSave();
-  if (state.questionnaire.assessment_enabled || state.questionnaire.score_rules.length) {
-    throw new Error('V2 当前后端仅支持普通问卷；多维测评和分数规则未开放写入，未发送请求');
-  }
   const wasEditing = Boolean(state.currentId);
   const payload = serializePayload();
   const data = await saveEditorQuestionnaire(state.currentId, payload);

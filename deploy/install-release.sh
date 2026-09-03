@@ -18,6 +18,16 @@ if ! id aicrm >/dev/null 2>&1 || [[ ! -f /etc/aicrm/aicrm.env ]]; then
   echo "aicrm runtime is not provisioned" >&2
   exit 3
 fi
+if ! grep -Eq '^AICRM_SURVEY_DATA_KEY=.{43}$' /etc/aicrm/aicrm.env; then
+  survey_data_key="$(openssl rand -base64 32 | tr -d '\n=')"
+  if grep -q '^AICRM_SURVEY_DATA_KEY=' /etc/aicrm/aicrm.env; then
+    sed -i "s|^AICRM_SURVEY_DATA_KEY=.*$|AICRM_SURVEY_DATA_KEY=${survey_data_key}|" /etc/aicrm/aicrm.env
+  else
+    printf '\nAICRM_SURVEY_DATA_KEY=%s\n' "$survey_data_key" >> /etc/aicrm/aicrm.env
+  fi
+  unset survey_data_key
+  chmod 0600 /etc/aicrm/aicrm.env
+fi
 
 release_dir="${release_root}/${release_sha}"
 previous=""
@@ -51,6 +61,7 @@ test -x "$release_dir/bin/aicrm"
 test -x "$release_dir/bin/migrate-platform"
 test -x "$release_dir/bin/migrate-river"
 test -x "$release_dir/bin/migrate-phone-identities"
+test -x "$release_dir/bin/migrate-survey-v2"
 test -f "$release_dir/migrations/0005_external_effects.sql"
 test -f "$release_dir/migrations/0006_wecom_callback_channel_acquisition.sql"
 test -f "$release_dir/migrations/0007_media.sql"
@@ -62,6 +73,7 @@ test -f "$release_dir/migrations/0012_group_ops.sql"
 test -f "$release_dir/migrations/0013_automation_agents.sql"
 test -f "$release_dir/migrations/0016_media_content_packages.sql"
 test -f "$release_dir/migrations/0017_group_ops_history.sql"
+test -f "$release_dir/migrations/0018_survey.sql"
 test -f "$release_dir/migrations/0019_tag_catalog_sync_projection.sql"
 test -f "$release_dir/web/dist/asset-manifest.json"
 test -f "$release_dir/release-files.sha256"

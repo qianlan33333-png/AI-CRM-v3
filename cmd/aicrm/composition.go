@@ -46,6 +46,11 @@ import (
 	productmodule "github.com/qianlan33333-png/AI-CRM-v3/internal/product"
 	productapp "github.com/qianlan33333-png/AI-CRM-v3/internal/product/app"
 	productstore "github.com/qianlan33333-png/AI-CRM-v3/internal/product/store"
+	surveymodule "github.com/qianlan33333-png/AI-CRM-v3/internal/survey"
+	surveyapp "github.com/qianlan33333-png/AI-CRM-v3/internal/survey/app"
+	surveyprovider "github.com/qianlan33333-png/AI-CRM-v3/internal/survey/provider"
+	"github.com/qianlan33333-png/AI-CRM-v3/internal/survey/secure"
+	surveystore "github.com/qianlan33333-png/AI-CRM-v3/internal/survey/store"
 	tag "github.com/qianlan33333-png/AI-CRM-v3/internal/tag"
 	tagapp "github.com/qianlan33333-png/AI-CRM-v3/internal/tag/app"
 	tagstore "github.com/qianlan33333-png/AI-CRM-v3/internal/tag/store"
@@ -220,6 +225,29 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return fail(err)
 	}
 	if err = effectRepository.SetCompletionSink(completionSink); err != nil {
+		return fail(err)
+	}
+	if cfg.Survey.DataKey == "" {
+		return fail(errors.New("survey data encryption key is not configured"))
+	}
+	surveyCipher, err := secure.NewCipher(cfg.Survey.DataKey)
+	if err != nil {
+		return fail(err)
+	}
+	surveyRepository, err := surveystore.NewPostgreSQL(pool.Native(), uow, surveyCipher)
+	if err != nil {
+		return fail(err)
+	}
+	surveyDefinitions := surveyapp.NewService(uow, surveyRepository)
+	surveySubmissions := surveyapp.NewSubmissionService(uow, surveyRepository, surveyCipher)
+	surveyOAuthProvider, err := surveyprovider.NewWeChatOAuth(cfg.Survey.OAuthEnabled, cfg.Survey.OAuthAppID, cfg.Survey.OAuthSecret, cfg.Survey.OAuthOpenPlatformID, cfg.PublicOrigin+"/api/h5/surveys/oauth/callback")
+	if err != nil {
+		return fail(err)
+	}
+	surveyOAuth := surveyapp.NewOAuthService(uow, surveyRepository, surveyOAuthProvider, oneID)
+	surveyModule := surveymodule.NewModuleRegistration()
+	surveyBindings, err := surveyModule.Bind(surveyDefinitions, surveySubmissions, requestSecurity, surveyOAuth)
+	if err != nil {
 		return fail(err)
 	}
 	tagCatalog := tagapp.NewCatalogService(uow, tagRepository, tagRepository, tagRepository, tagRepository)
@@ -404,12 +432,20 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	adminAPIs.Handle("/api/admin/automation-agents/", automationBindings.Agents)
 	adminAPIs.Handle("/api/admin/channels", channelCatalog)
 	adminAPIs.Handle("/api/admin/channels/", channelCatalog)
+	adminAPIs.Handle("/api/admin/questionnaires", surveyBindings.Survey)
+	adminAPIs.Handle("/api/admin/questionnaires/", surveyBindings.Survey)
+	adminAPIs.Handle("/api/admin/survey-history/", surveyBindings.Survey)
+	adminAPIs.Handle("/api/public/questionnaires/", surveyBindings.Survey)
+	adminAPIs.Handle("/api/public/survey-submission-results/query", surveyBindings.Survey)
+	adminAPIs.Handle("/api/h5/surveys/oauth/", surveyBindings.Survey)
+	adminAPIs.Handle("/api/sidebar/v2/questionnaires", surveyBindings.Survey)
+	adminAPIs.Handle("/api/v1/customers/", surveyBindings.Survey)
 	readiness := platformruntime.ReadinessFunc(func(readinessContext context.Context) error {
 		if checkErr := pool.Check(readinessContext); checkErr != nil {
 			return checkErr
 		}
 		var complete bool
-		checkErr := pool.Native().QueryRow(readinessContext, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['0001','0002','0003','0004','0005','0006','0007','0008','0009','0010','0011','0012','0013','0016','0017','0019']) AS required(version) WHERE NOT EXISTS (SELECT 1 FROM platform_schema_migrations applied WHERE applied.version=required.version))`).Scan(&complete)
+		checkErr := pool.Native().QueryRow(readinessContext, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['0001','0002','0003','0004','0005','0006','0007','0008','0009','0010','0011','0012','0013','0016','0017','0018','0019']) AS required(version) WHERE NOT EXISTS (SELECT 1 FROM platform_schema_migrations applied WHERE applied.version=required.version))`).Scan(&complete)
 		if checkErr != nil || !complete {
 			return errors.New("database schema is not ready")
 		}
@@ -432,6 +468,9 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 			return checkErr
 		}
 		if checkErr = groupOpsModule.Readiness(readinessContext, pool.Native()); checkErr != nil {
+			return checkErr
+		}
+		if checkErr = surveyModule.Readiness(readinessContext, pool.Native()); checkErr != nil {
 			return checkErr
 		}
 		return nil
@@ -471,11 +510,30 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	automationUI := automationModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, page, donorTemplate string, assets automation.AgentAssets) error {
 		return renderer.RenderAutomation(writer, webshell.AdminPageForRequest(request, "自动化话术", "管理本地 Agent 与固定话术配置。", "api.admin_automation_agents"), page, donorTemplate, webshell.AutomationAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS})
 	})
+	surveyUI := surveyModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, page, donorTemplate string, assets surveymodule.UIAssets) error {
+		titles := map[string]string{"questionnaires": "问卷管理", "questionnaireDetail": "问卷编辑", "questionnaireOps": "问卷运营"}
+		return renderer.RenderSurvey(writer, webshell.AdminPageForRequest(request, titles[page], "管理问卷定义、版本、答卷及只读外部效果回执。", "api.admin_questionnaires"), page, donorTemplate, webshell.SurveyAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS, EditorJS: assets.EditorJS, EditorCSS: assets.EditorCSS})
+	})
+	surveyPublicUI := surveyModule.PublicUIBinding("web/dist")
 	handler, err := routeApplicationWithProductsCouponsGroupOps(healthHandler, accessHandler.Routes(), adminAPIs, effectsBindings.Effects, effectsBindings.PushCenter, effectsUI, mediaBindings.Media, mediaUI, tagBindings.Tags, tagUI, productBindings.Products, productUI, couponBindings.Coupons, couponUI, channelCatalog, groupOpsBindings.GroupOps, groupOpsUI, automationBindings.Agents, automationUI, weComHandler, shellHandler, authentication, cfg.PublicOrigin)
 	if err != nil {
 		return fail(err)
 	}
+	handler = securityHeaders(mountSurveyUI(handler, surveyUI, surveyPublicUI, authentication))
 	return &composedApplication{pool: pool, handler: handler, management: management, weComProcessor: weComProcessor, effectsRuntime: effectsRuntime, customerSync: customerSync}, nil
+}
+
+func mountSurveyUI(next, adminUI, publicUI http.Handler, authentication accessAuthentication) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/admin/questionnaires" || r.URL.Path == "/admin/questionnaires.html" || r.URL.Path == "/admin/questionnaireDetail.html" || r.URL.Path == "/admin/questionnaireOps.html":
+			requireAdminSession(authentication, adminUI).ServeHTTP(w, r)
+		case strings.HasPrefix(r.URL.Path, "/h5/") || strings.HasPrefix(r.URL.Path, "/survey-assets/"):
+			publicUI.ServeHTTP(w, r)
+		default:
+			next.ServeHTTP(w, r)
+		}
+	})
 }
 
 func (application *composedApplication) Close() {
@@ -552,6 +610,15 @@ func routeApplicationWithProductsCouponsGroupOps(health, access, identity, effec
 	mux.Handle("/api/admin/customers/", identity)
 	mux.Handle("/api/admin/customer-sync-runs", identity)
 	mux.Handle("/api/admin/customer-sync-runs/", identity)
+	mux.Handle("/api/admin/questionnaires", identity)
+	mux.Handle("/api/admin/questionnaires/", identity)
+	mux.Handle("/api/admin/survey-history/", identity)
+	mux.Handle("/api/public/questionnaires/", identity)
+	mux.Handle("/api/public/survey-submission-results/query", identity)
+	mux.Handle("/api/h5/surveys/oauth/", identity)
+	mux.Handle("/api/sidebar/v2/questionnaires", identity)
+	mux.Handle("/api/v1/customers/", identity)
+	mux.Handle("/admin/questionnaires/", identity)
 	mux.Handle("/api/admin/external-effects", effects)
 	mux.Handle("/api/admin/external-effects/", effects)
 	mux.Handle("/api/admin/push-center/", pushCenter)
@@ -718,7 +785,8 @@ func securityHeaders(next http.Handler) http.Handler {
 		couponPage := request.URL.Path == "/admin/coupons" || request.URL.Path == "/admin/coupons.html" || request.URL.Path == "/admin/couponForm.html"
 		groupOpsPage := request.URL.Path == "/admin/automation-conversion/group-ops/ui" || request.URL.Path == "/admin/automation-conversion/group-ops/groups/ui" || request.URL.Path == "/admin/groupops.html" || request.URL.Path == "/admin/groupopsDetail.html" || strings.HasPrefix(request.URL.Path, "/admin/automation-conversion/group-ops/plans/")
 		automationPage := request.URL.Path == "/admin/automation-agents" || strings.HasPrefix(request.URL.Path, "/admin/automation-agents/") || request.URL.Path == "/admin/agents.html" || request.URL.Path == "/admin/agentEdit.html"
-		if (request.URL.Path == "/admin/campaigns.html" && externaleffects.ValidUIQuery(request.URL.Query())) || mediaPage || tagsPage || productPage || couponPage || groupOpsPage || automationPage {
+		surveyPage := request.URL.Path == "/admin/questionnaires" || request.URL.Path == "/admin/questionnaires.html" || request.URL.Path == "/admin/questionnaireDetail.html" || request.URL.Path == "/admin/questionnaireOps.html" || strings.HasPrefix(request.URL.Path, "/h5/")
+		if (request.URL.Path == "/admin/campaigns.html" && externaleffects.ValidUIQuery(request.URL.Query())) || mediaPage || tagsPage || productPage || couponPage || groupOpsPage || automationPage || surveyPage {
 			styleSource = "'self' 'unsafe-inline'"
 		}
 		imageSource := "'self' data:"

@@ -17,9 +17,10 @@
         <div data-question-id="{{ question.id }}" style="background:#fff;border-radius:14px;padding:16px 16px 18px;margin-bottom:12px">
           <div style="font-size:15px;font-weight:600;line-height:22px;margin-bottom:4px">{{ question.title }} <span style="color:#F54A45">{{ question.required }}</span></div>
           <div style="font-size:13px;color:#A6AAB0;margin-bottom:12px">{{ question.hint }}</div>
-          <sc-for list="{{ question.options }}" as="option">
+          <sc-if value="{{ question.isChoice }}"><sc-for list="{{ question.options }}" as="option">
             <label data-option-id="{{ option.id }}" aria-pressed="{{ option.selected }}" onClick="{{ option.pick }}" style="display:flex;align-items:flex-start;gap:10px;padding:13px 14px;margin-bottom:10px;border-radius:12px;cursor:pointer;{{ option.style }}"><span>{{ option.mark }}</span><span style="font-size:15px;line-height:22px">{{ option.text }}</span></label>
-          </sc-for>
+          </sc-for></sc-if>
+          <sc-if value="{{ question.isText }}"><textarea data-text-question-id="{{ question.id }}" placeholder="{{ question.placeholder }}" onInput="{{ question.input }}" style="box-sizing:border-box;width:100%;min-height:96px;border:1px solid #DEE0E3;border-radius:10px;padding:12px;font-size:15px;resize:vertical">{{ question.inputValue }}</textarea></sc-if>
         </div>
       </sc-if>
       <sc-if value="{{ question.unsupported }}">

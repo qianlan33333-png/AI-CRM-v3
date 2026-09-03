@@ -1,0 +1,82 @@
+package survey
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func surveyTestDist(t *testing.T) string {
+	t.Helper()
+	dist := t.TempDir()
+	for _, dir := range []string{"admin", "h5", "assets"} {
+		if err := os.MkdirAll(filepath.Join(dist, dir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{"tokens.css", "labs.css", "admin.js", "editor.js", "editor.css", "h5.js"} {
+		if err := os.WriteFile(filepath.Join(dist, "assets", name), []byte(name), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	manifest := `{"entries":{"tokens":"assets/tokens.css","labs":"assets/labs.css","admin":"assets/admin.js","questionnaireEditor":"assets/editor.js","questionnaireEditorStyles":"assets/editor.css","h5":"assets/h5.js"}}`
+	if err := os.WriteFile(filepath.Join(dist, "asset-manifest.json"), []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, page := range []string{"questionnaires", "questionnaireDetail", "questionnaireOps"} {
+		if err := os.WriteFile(filepath.Join(dist, "admin", page+".html"), []byte(`<html><template id="tpl"><section>`+page+`</section></template></html>`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dist, "h5", "all.html"), []byte(`<link href="../assets/tokens.css"><script src="../assets/h5.js"></script>`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return dist
+}
+
+func TestSurveyUIUsesFrozenFragmentAndV3Assets(t *testing.T) {
+	dist := surveyTestDist(t)
+	var gotPage, gotBody string
+	h := NewModuleRegistration().UIBinding(dist, func(w http.ResponseWriter, _ *http.Request, page, body string, assets UIAssets) error {
+		gotPage, gotBody = page, body
+		if assets.EditorJS != "/survey-assets/editor.js" {
+			t.Fatalf("editor=%q", assets.EditorJS)
+		}
+		w.WriteHeader(200)
+		return nil
+	})
+	response := httptest.NewRecorder()
+	h.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/admin/questionnaireDetail.html?id=12", nil))
+	if response.Code != 200 || gotPage != "questionnaireDetail" || gotBody != `<section>questionnaireDetail</section>` {
+		t.Fatalf("code=%d page=%q body=%q", response.Code, gotPage, gotBody)
+	}
+	for _, path := range []string{"/admin/questionnaireDetail.html?id=01", "/admin/questionnaireOps.html", "/admin/questionnaires.html?x=1"} {
+		response = httptest.NewRecorder()
+		h.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		if response.Code != 404 {
+			t.Fatalf("%s=%d", path, response.Code)
+		}
+	}
+}
+
+func TestSurveyPublicUIServesOnlyH5AndImmutableAssets(t *testing.T) {
+	h := NewModuleRegistration().PublicUIBinding(surveyTestDist(t))
+	response := httptest.NewRecorder()
+	h.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/h5/all.html", nil))
+	if response.Code != 200 || !strings.Contains(response.Body.String(), "../survey-assets/h5.js") || response.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("html response=%d %q", response.Code, response.Body.String())
+	}
+	response = httptest.NewRecorder()
+	h.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/survey-assets/h5.js", nil))
+	if response.Code != 200 || !strings.Contains(response.Header().Get("Cache-Control"), "immutable") {
+		t.Fatalf("asset response=%d", response.Code)
+	}
+	response = httptest.NewRecorder()
+	h.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/survey-assets/../asset-manifest.json", nil))
+	if response.Code != 404 {
+		t.Fatalf("traversal=%d", response.Code)
+	}
+}

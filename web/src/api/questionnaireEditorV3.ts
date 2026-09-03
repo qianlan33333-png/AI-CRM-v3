@@ -1,0 +1,12 @@
+import { apiRequestOptions } from './transport';
+import type { LegacyQuestionnaireCreateRequest } from './generated/health.schemas';
+const json=async(response:Response)=>{const body=await response.json();if(!response.ok)throw new Error(body.message||body.code||`请求失败 ${response.status}`);return body};
+const request=(url:string,init:RequestInit={})=>fetch(url,apiRequestOptions(init)).then(json);
+export const listEditorQuestionnaires=()=>request('/api/admin/questionnaires?limit=200&offset=0');
+export const getEditorQuestionnaire=(id:number)=>request(`/api/admin/questionnaires/${id}`);
+export const listEditorTags=()=>request('/api/admin/wecom/tags?limit=100&offset=0');
+export const saveEditorQuestionnaire=(id:number|null,payload:LegacyQuestionnaireCreateRequest)=>request(id?`/api/admin/questionnaires/${id}`:'/api/admin/questionnaires',{method:id?'PUT':'POST',headers:{'Content-Type':'application/json','Idempotency-Key':crypto.randomUUID()},body:JSON.stringify(payload)});
+export const setEditorQuestionnaireDisabled=(id:number,disabled:boolean)=>request(`/api/admin/questionnaires/${id}/${disabled?'disable':'enable'}`,{method:'POST',headers:{'Content-Type':'application/json','Idempotency-Key':crypto.randomUUID()},body:'{}'});
+export const deleteEditorQuestionnaire=(id:number)=>request(`/api/admin/questionnaires/${id}`,{method:'DELETE',headers:{'Content-Type':'application/json','Idempotency-Key':crypto.randomUUID()},body:'{}'});
+export const duplicateEditorQuestionnaire=(id:number)=>request(`/api/admin/questionnaires/${id}/duplicate`,{method:'POST',headers:{'Content-Type':'application/json','Idempotency-Key':crypto.randomUUID()},body:'{}'});
+export const editorQuestionnaireExportUrl=(id:number)=>`/api/admin/questionnaires/${id}/export`;

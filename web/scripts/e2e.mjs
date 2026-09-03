@@ -1362,8 +1362,9 @@ console.log('admin/questionnaireDetail.html（新建/编辑路由）');
 
   const assessment = await loadQuestionnaireEditor({ q: 'mode=assessment' });
   click(assessment.dom, assessment.dom.window.document.querySelector('#save-btn'));
-  await sleep(30);
-  ok('V2 未开放测评写契约时明确阻断且不伪造保存', !assessment.trace.some((entry) => ['POST', 'PUT'].includes(entry.method)) && assessment.dom.window.document.querySelector('#toast').textContent.includes('未开放写入'));
+  await sleep(250);
+  const assessmentCreate = assessment.trace.find((entry) => entry.path === '/api/admin/questionnaires' && entry.method === 'POST');
+  ok('V3 测评问卷使用同一可视化编辑器并提交完整测评定义', assessmentCreate?.body?.assessment_enabled === true && typeof assessmentCreate?.body?.assessment_config === 'object' && Array.isArray(assessmentCreate?.body?.questions));
   assessment.dom.window.close();
 }
 
