@@ -10,6 +10,9 @@ const bundle = await buildTestBrowserBundle(path.join(repository, 'web', 'v3', '
 const donor = fs.readFileSync(path.join(repository, 'web', 'donors', 'operation-cycles-v2', 'src', 'admin', 'templates', 'cycles.html'), 'utf8')
   .replace(/<sc-for\s+([^>]*?)list="([^"]*)"([^>]*?)as="([^"]*)"([^>]*)>/g, (_match, _a, list, _b, as) => `<template data-sc-for="${list}" data-as="${as}">`)
   .replace(/<\/sc-for>/g, '</template>');
+const detailDonor = fs.readFileSync(path.join(repository, 'web', 'donors', 'operation-cycles-v2', 'src', 'admin', 'templates', 'cyclesDetail.html'), 'utf8')
+  .replace(/<sc-for\s+([^>]*?)list="([^"]*)"([^>]*?)as="([^"]*)"([^>]*)>/g, (_match, _a, list, _b, as) => `<template data-sc-for="${list}" data-as="${as}">`)
+  .replace(/<\/sc-for>/g, '</template>');
 const requests = [];
 const alerts = [];
 const jsdomErrors = [];
@@ -33,7 +36,7 @@ const dom = new JSDOM(`<!doctype html><html><body class="admin-shell" data-page=
       const url = new URL(String(input), window.location.origin);
       requests.push({ path: url.pathname + url.search, method: init.method || 'GET', headers: Object.fromEntries(new Headers(init.headers).entries()), body: init.body ? JSON.parse(String(init.body)) : undefined });
       if (url.pathname === '/api/admin/operation-cycles/strategies' && (init.method || 'GET') === 'GET') return json({ items: [
-        { strategy_key: 'weekly.review', title: '每周复盘', status: 'active', version: 4, snapshot },
+        { strategy_key: 'weekly.review', title: '每周复盘', status: 'active', version: 4, run_ordinal: 73, snapshot },
         { strategy_key: 'paused.review', title: '暂停复盘', status: 'paused', version: 2, snapshot: { ...snapshot, name: '暂停复盘', run_key: '' } },
       ] });
       if (url.pathname.endsWith('/actions/start_review/start') && init.method === 'POST') return json({ request_id: 'ocact_0123456789012345678901234567', status: 'queued' }, 202);
@@ -64,4 +67,42 @@ try {
   console.log('operation-cycle frozen primary action browser Journey: PASS');
 } finally {
   dom.window.close();
+}
+
+// A numeric donor URL is resolved by the immutable backend mapping, never by
+// fetching the currently sorted strategy list again. The mock list below is
+// deliberately reordered as if a concurrent report arrived before detail load.
+const detailRequests = [];
+const dossierSnapshot = {
+  ...snapshot,
+  dossier: {
+    label: '稳定档案 A', objective: '验证稳定编号', strategy: '每周复盘', audience: '本地运营对象',
+    intended_send_at: '2026-09-01 09:00', plan_scheduled_for: '2026-09-01 09:00', first_sent_at: '2026-09-01 09:01', last_sent_at: '2026-09-01 09:02',
+    attempts: [], funnel: [], audience_note: '无', review_status: '已完成', review_tone: 'ok', plan_version: 'v1', plan_status: '已发布', plan_source: '本地', target_count: '1',
+    delivery: { sent: '1', failed: '0', retryable: '0', rate: '100', status_label: '完成', source: '本地事实', failure_summary: '无' },
+    windows: [], retro: { summary: '完成', detail: '稳定档案 A', findings: [], limitations: [] },
+    next: { status_label: '完成', tone: 'ok', summary: '保持', rationale: '稳定', confirmed_at: '2026-09-01 10:00', applied_version: 'v1', note: '无', changes: [] }, references: [],
+  },
+};
+const detailDom = new JSDOM(`<!doctype html><html><body class="admin-shell" data-page="cyclesDetail"><main id="stage"></main><template id="tpl">${detailDonor}</template><script>${bundle}</script></body></html>`, {
+  url: 'https://test.invalid/admin/operation-cycles/cyclesDetail.html?id=73', runScripts: 'dangerously', pretendToBeVisual: true, virtualConsole,
+  beforeParse(window) {
+    window.__AICRM_TEST_MOCK__ = false;
+    window.fetch = async (input, init = {}) => {
+      const url = new URL(String(input), window.location.origin);
+      detailRequests.push(url.pathname + url.search);
+      if (url.pathname === '/api/admin/operation-cycles/run-ordinals/73') return json({ run_ordinal: 73, run_key: 'weekly.review.001', snapshot: dossierSnapshot });
+      if (url.pathname === '/api/admin/operation-cycles/strategies') return json({ items: [{ strategy_key: 'concurrent.new', run_ordinal: 99, snapshot: { ...snapshot, run_key: 'concurrent.new.001' } }] });
+      return json({ ok: false, code: 'unexpected_request', method: init.method || 'GET' }, 500);
+    };
+  },
+});
+try {
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  const rendered = detailDom.window.document.getElementById('stage')?.textContent || '';
+  if (!rendered.includes('稳定档案 A') || !rendered.includes('weekly.review.001')) throw new Error(`stable run dossier did not render: ${rendered}`);
+  if (detailRequests.length !== 1 || detailRequests[0] !== '/api/admin/operation-cycles/run-ordinals/73') throw new Error(`detail re-resolved a mutable list: ${JSON.stringify(detailRequests)}`);
+  console.log('operation-cycle stable ordinal detail Journey: PASS');
+} finally {
+  detailDom.window.close();
 }

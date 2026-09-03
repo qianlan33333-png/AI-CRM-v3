@@ -17,6 +17,8 @@ proposal, or context filter.
 The Store, HTTP adapter, runner wiring, PostgreSQL migrations, and generated
 queries are implemented in this module. Strategy versions and run revisions are
 immutable owner-table history; the current tables are latest projections only.
+The donor's numeric detail id resolves through an immutable owner-table mapping
+to one run key and is never reconstructed from mutable list ordering.
 Historical observation/static-history readers remain outside PR08. Any future
 outbound integration must preserve the local `accepted` fact boundary and use
 the versioned outbound contract.

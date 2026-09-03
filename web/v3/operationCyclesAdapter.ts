@@ -7,7 +7,7 @@ import { api } from '../src/shared/api/client';
 import type { AdminDb, CycleRun, Tone } from '../src/shared/api/types';
 
 type RecordValue = Record<string, unknown>;
-type Strategy = { strategyKey: string; title: string; status: string; version: number; runKey: string; actionKey: string; snapshot: RecordValue };
+type Strategy = { strategyKey: string; title: string; status: string; version: number; runKey: string; runOrdinal: number; actionKey: string; snapshot: RecordValue };
 export type OperationCycleStageInput = { key: string; label: string; color: string; state: 'completed' | 'current' | 'pending' };
 export type OperationCycleStrategyDefinitionInput = { schedule: string; indicator_color: string; primary_action: 'start_review' | 'view_progress'; stages: OperationCycleStageInput[] };
 export type OperationCycleStrategyCreateInput = { strategy_key: string; title: string; definition: OperationCycleStrategyDefinitionInput };
@@ -40,12 +40,16 @@ async function listStrategies(): Promise<Strategy[]> {
     if (!snapshot.schema_version || snapshot.schema_version !== 'operation_cycle_snapshot.v1') throw new Error(`运营周期读取响应第 ${index + 1} 项不是已投影快照`);
     const version = Number(item.version);
     if (!Number.isSafeInteger(version) || version < 1) throw new Error(`运营周期读取响应第 ${index + 1} 项缺少有效版本`);
+    const runKey = string(snapshot.run_key);
+    const runOrdinal = Number(item.run_ordinal ?? 0);
+    if (runKey && (!Number.isSafeInteger(runOrdinal) || runOrdinal < 1 || runOrdinal > 999999999)) throw new Error(`运营周期读取响应第 ${index + 1} 项缺少稳定运行档案编号`);
     return {
       strategyKey: requiredString(item.strategy_key, 'strategy_key'),
       title: requiredString(item.title, 'title'),
       status: requiredString(item.status, 'status'),
       version,
-      runKey: string(snapshot.run_key),
+      runKey,
+      runOrdinal,
       actionKey: string(snapshot.action_key) || (string(snapshot.action) === '查看进度' ? 'view_progress' : 'start_review'),
       snapshot,
     };
@@ -83,7 +87,7 @@ function stableActionKey(strategy: Strategy, operation: string): string {
   return `cycle-${operation}-${strategy.strategyKey}-${strategy.version}-${strategy.runKey || 'no-run'}`;
 }
 
-async function runPrimaryAction(strategy: Strategy, ordinal: number): Promise<void> {
+async function runPrimaryAction(strategy: Strategy): Promise<void> {
   if (strategy.status === 'draft' || strategy.status === 'paused') {
     await setOperationCycleStatus(strategy.strategyKey, strategy.version, 'active', stableActionKey(strategy, 'activate'));
     globalThis.alert?.('运营周期已启用');
@@ -92,7 +96,7 @@ async function runPrimaryAction(strategy: Strategy, ordinal: number): Promise<vo
   }
   if (strategy.actionKey === 'view_progress') {
     if (!strategy.runKey) throw new Error('该策略暂无运行档案');
-    globalThis.location.assign(`/admin/operation-cycles/cyclesDetail.html?id=${ordinal + 1}`);
+    globalThis.location.assign(`/admin/operation-cycles/cyclesDetail.html?id=${strategy.runOrdinal}`);
     return;
   }
   if (!strategy.runKey) throw new Error('该策略暂无可复盘的运行档案');
@@ -114,7 +118,7 @@ document.addEventListener('click', (event) => {
   if (buttons[0] === button) {
     event.preventDefault();
     event.stopImmediatePropagation();
-    void runPrimaryAction(strategy, rowIndex).catch((error) => globalThis.alert?.(error instanceof Error ? error.message : '运营周期操作失败'));
+    void runPrimaryAction(strategy).catch((error) => globalThis.alert?.(error instanceof Error ? error.message : '运营周期操作失败'));
   } else if (buttons[1] === button && !strategy.runKey) {
     event.preventDefault();
     event.stopImmediatePropagation();
@@ -165,27 +169,28 @@ function displayRun(id: number, value: RecordValue): CycleRun {
 }
 
 async function operationCyclesDb(context: AdminReadContext): Promise<AdminDb> {
+  const db = emptyAdminDb();
+  if (context.page === 'cyclesDetail') {
+    const ordinal = Number(context.id || '');
+    if (!Number.isSafeInteger(ordinal) || ordinal < 1 || ordinal > 999999999) throw new Error('运行档案编号无效或已失效');
+    const result = await get(`/api/admin/operation-cycles/run-ordinals/${ordinal}`);
+    if (Number(result.run_ordinal) !== ordinal) throw new Error('运行档案稳定编号校验失败');
+    const snapshot = object(result.snapshot);
+    if (snapshot.schema_version !== 'operation_cycle_snapshot.v1' || requiredString(result.run_key, 'run_key') !== requiredString(snapshot.run_key, 'snapshot.run_key')) throw new Error('运行档案响应未通过安全投影校验');
+    db.cycleRuns[ordinal] = displayRun(ordinal, snapshot);
+    return db;
+  }
   const strategies = await listStrategies();
   loadedStrategies = strategies;
-  const db = emptyAdminDb();
   db.cycleTasks = strategies.map((strategy, index) => ({
     id: index + 1,
     name: string(strategy.snapshot.name) || strategy.title,
     cron: string(strategy.snapshot.cron),
     dot: string(strategy.snapshot.dot),
     action: string(strategy.snapshot.action),
-    runId: index + 1,
+    runId: strategy.runOrdinal || index + 1,
     steps: array(strategy.snapshot.steps).map((entry) => { const step = object(entry); return { label: requiredString(step.label, 'step.label'), color: requiredString(step.color, 'step.color'), dim: step.dim === true }; }),
   }));
-  if (context.page !== 'cyclesDetail') return db;
-  const ordinal = Number(context.id || '');
-  if (!Number.isSafeInteger(ordinal) || ordinal < 1 || ordinal > strategies.length) throw new Error('运行档案编号无效或已失效');
-  const strategy = strategies[ordinal - 1];
-  const runKey = requiredString(strategy.snapshot.run_key, 'run_key');
-  const result = await get(`/api/admin/operation-cycles/runs/${encodeURIComponent(runKey)}`);
-  const snapshot = object(result.snapshot);
-  if (snapshot.schema_version !== 'operation_cycle_snapshot.v1' || requiredString(result.run_key, 'run_key') !== runKey) throw new Error('运行档案响应未通过安全投影校验');
-  db.cycleRuns[ordinal] = displayRun(ordinal, snapshot);
   return db;
 }
 

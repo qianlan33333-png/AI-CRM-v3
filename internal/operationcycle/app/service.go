@@ -90,6 +90,7 @@ type Store interface {
 	GetStrategy(context.Context, string) (map[string]any, error)
 	ListRuns(context.Context, string, int32, int32) (map[string]any, error)
 	GetRun(context.Context, string) (map[string]any, error)
+	GetRunByOrdinal(context.Context, int32) (map[string]any, error)
 	Start(context.Context, StartCommand, time.Time) (map[string]any, bool, error)
 	CurrentAction(context.Context, string) (map[string]any, error)
 	GetActionResult(context.Context, string) (map[string]any, error)
@@ -169,6 +170,14 @@ func (s *Service) GetRun(ctx context.Context, key string) (map[string]any, error
 		return nil, ErrInvalid
 	}
 	return s.read(ctx, func(txCtx context.Context) (map[string]any, error) { return s.store.GetRun(txCtx, key) })
+}
+func (s *Service) GetRunByOrdinal(ctx context.Context, ordinal int32) (map[string]any, error) {
+	if s == nil || s.uow == nil || s.store == nil || ordinal < 1 || ordinal > 999999999 {
+		return nil, ErrInvalid
+	}
+	return s.read(ctx, func(txCtx context.Context) (map[string]any, error) {
+		return s.store.GetRunByOrdinal(txCtx, ordinal)
+	})
 }
 
 func (s *Service) Start(ctx context.Context, command StartCommand) (map[string]any, error) {

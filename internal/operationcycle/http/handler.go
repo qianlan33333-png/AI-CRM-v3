@@ -100,6 +100,14 @@ func (h *Handler) serveAdmin(w http.ResponseWriter, r *http.Request, p []string)
 	case r.Method == http.MethodGet && len(p) == 2 && p[0] == "runs" && noQuery(r):
 		value, err := h.service.GetRun(r.Context(), p[1])
 		writeResult(w, http.StatusOK, value, err)
+	case r.Method == http.MethodGet && len(p) == 2 && p[0] == "run-ordinals" && noQuery(r):
+		ordinal, err := strconv.ParseInt(p[1], 10, 32)
+		if err != nil || ordinal < 1 || ordinal > 999999999 {
+			writeError(w, http.StatusBadRequest, "malformed_request")
+			return
+		}
+		value, err := h.service.GetRunByOrdinal(r.Context(), int32(ordinal))
+		writeResult(w, http.StatusOK, value, err)
 	case r.Method == http.MethodGet && len(p) == 3 && p[0] == "runs" && p[2] == "versions" && pageOK:
 		value, err := h.service.ListRunVersions(r.Context(), p[1], limit, offset)
 		writeResult(w, http.StatusOK, value, err)
@@ -287,7 +295,7 @@ func (h *Handler) admin(w http.ResponseWriter, r *http.Request, write bool) (acc
 			allowed = true
 		}
 	}
-	if p.InternalID < 1 || !allowed {
+	if p.InternalID < 1 || (p.Kind != accessdomain.KindAdmin && p.Kind != accessdomain.KindStaff) || !allowed {
 		writeError(w, http.StatusForbidden, "unauthorized")
 		return p, false
 	}

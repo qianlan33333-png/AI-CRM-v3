@@ -31,6 +31,13 @@ func TestAdminRouteRequiresSessionBeforeApplicationCall(t *testing.T) {
 	if response.Code != http.StatusUnauthorized {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
+	write := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/admin/operation-cycles/strategies/weekly.review/status", bytes.NewBufferString(`{"expected_version":1,"status":"active"}`))
+	request.Header.Set("Idempotency-Key", "activate-weekly-review")
+	handler.ServeHTTP(write, request)
+	if write.Code != http.StatusUnauthorized {
+		t.Fatalf("write status=%d body=%s", write.Code, write.Body.String())
+	}
 }
 
 func TestRunnerRouteIsDisabledWithoutServiceToken(t *testing.T) {
@@ -53,6 +60,7 @@ func TestServiceTokenMustBeStrong(t *testing.T) {
 
 type countingSecurity struct {
 	authenticated, csrf int
+	kind                accessdomain.Kind
 	role                accessdomain.Role
 }
 
@@ -61,7 +69,47 @@ func (security *countingSecurity) principal() accessdomain.Principal {
 	if role == "" {
 		role = accessdomain.RoleAdmin
 	}
-	return accessdomain.Principal{InternalID: 7, Roles: []accessdomain.Role{role}}
+	kind := security.kind
+	if kind == "" {
+		kind = accessdomain.KindAdmin
+	}
+	return accessdomain.Principal{Kind: kind, InternalID: 7, Roles: []accessdomain.Role{role}}
+}
+
+func TestAdminPrincipalKindAndRoleMatrix(t *testing.T) {
+	tests := []struct {
+		name      string
+		kind      accessdomain.Kind
+		role      accessdomain.Role
+		readCode  int
+		writeCode int
+	}{
+		{name: "wrong customer kind with admin role", kind: accessdomain.KindCustomer, role: accessdomain.RoleAdmin, readCode: http.StatusForbidden, writeCode: http.StatusForbidden},
+		{name: "viewer can read only", kind: accessdomain.KindAdmin, role: accessdomain.RoleViewer, readCode: http.StatusBadRequest, writeCode: http.StatusForbidden},
+		{name: "admin", kind: accessdomain.KindAdmin, role: accessdomain.RoleAdmin, readCode: http.StatusBadRequest, writeCode: http.StatusBadRequest},
+		{name: "superadmin staff", kind: accessdomain.KindStaff, role: accessdomain.RoleSuperAdmin, readCode: http.StatusBadRequest, writeCode: http.StatusBadRequest},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			security := &countingSecurity{kind: test.kind, role: test.role}
+			handler, err := NewHandler(&operationapp.Service{}, security, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			read := httptest.NewRecorder()
+			handler.ServeHTTP(read, httptest.NewRequest(http.MethodGet, "/api/admin/operation-cycles/strategies", nil))
+			if read.Code != test.readCode || security.authenticated != 1 || security.csrf != 0 {
+				t.Fatalf("read status/auth/csrf=%d/%d/%d", read.Code, security.authenticated, security.csrf)
+			}
+			writeRequest := httptest.NewRequest(http.MethodPost, "/api/admin/operation-cycles/strategies/weekly.review/status", bytes.NewBufferString(`{"expected_version":1,"status":"active"}`))
+			writeRequest.Header.Set("Idempotency-Key", "activate-weekly-review")
+			write := httptest.NewRecorder()
+			handler.ServeHTTP(write, writeRequest)
+			if write.Code != test.writeCode || security.authenticated != 1 || security.csrf != 1 {
+				t.Fatalf("write status/auth/csrf=%d/%d/%d", write.Code, security.authenticated, security.csrf)
+			}
+		})
+	}
 }
 
 func (security *countingSecurity) Authenticate(context.Context, *http.Request) (accessdomain.Principal, error) {
@@ -125,5 +173,29 @@ func TestAdminWritesRequireCSRFAndReadsUseSessionAuthentication(t *testing.T) {
 	handler.ServeHTTP(read, httptest.NewRequest(http.MethodGet, "/api/admin/operation-cycles/strategies", nil))
 	if security.csrf != 1 || security.authenticated != 1 || read.Code != http.StatusBadRequest {
 		t.Fatalf("read security/session/status=%d/%d/%d", security.csrf, security.authenticated, read.Code)
+	}
+}
+
+func TestStableRunOrdinalRouteRejectsInvalidIDsAndAcceptsDonorRange(t *testing.T) {
+	security := &countingSecurity{}
+	handler, err := NewHandler(&operationapp.Service{}, security, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{
+		"/api/admin/operation-cycles/run-ordinals/0",
+		"/api/admin/operation-cycles/run-ordinals/not-a-number",
+		"/api/admin/operation-cycles/run-ordinals/1000000000",
+	} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("path=%s status=%d body=%s", path, response.Code, response.Body.String())
+		}
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/admin/operation-cycles/run-ordinals/73", nil))
+	if response.Code != http.StatusBadRequest || security.authenticated != 4 {
+		t.Fatalf("valid donor ordinal route status/auth=%d/%d body=%s", response.Code, security.authenticated, response.Body.String())
 	}
 }

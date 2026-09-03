@@ -287,6 +287,77 @@ func TestPostgreSQLOperationCycleRunHistoryRejectsDestructiveOverwrite(t *testin
 	}
 }
 
+func TestPostgreSQLOperationCycleRunOrdinalSurvivesConcurrentInsertAndResort(t *testing.T) {
+	native, cleanup := operationCycleIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	wrapped, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wrapped.Close()
+	uow, err := platformpostgres.NewUnitOfWork(wrapped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := operationapp.NewService(uow, NewRepository(), NewEventJournal(), NewEventJournal())
+	report := func(strategyKey, runKey, idempotencyKey string) error {
+		_, reportErr := service.Report(ctx, operationapp.ReportCommand{
+			IdempotencyKey: idempotencyKey, ReporterID: "cycle-runner", ClientID: "v3-runner",
+			Snapshot: map[string]any{
+				"schema_version": "operation_cycle_snapshot.v1", "strategy_key": strategyKey, "run_key": runKey,
+				"revision": 1, "strategy_version": 1, "status": "active", "title": strategyKey, "name": strategyKey,
+				"cron": "每周一", "dot": "#2EA121", "action": "查看进度", "steps": []any{},
+			},
+		})
+		return reportErr
+	}
+	if err = report("stable.review", "stable.review.001", "stable-report"); err != nil {
+		t.Fatal(err)
+	}
+	listed, err := service.ListStrategies(ctx, 100, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	items, ok := listed["items"].([]map[string]any)
+	if !ok || len(items) != 1 {
+		t.Fatalf("initial strategies=%#v", listed)
+	}
+	ordinal, ok := items[0]["run_ordinal"].(int32)
+	if !ok || ordinal < 1 {
+		t.Fatalf("stable run ordinal=%#v", items[0]["run_ordinal"])
+	}
+
+	errorsByInsert := make(chan error, 2)
+	for _, incoming := range []struct{ strategy, run, key string }{
+		{strategy: "concurrent.alpha", run: "concurrent.alpha.001", key: "concurrent-alpha-report"},
+		{strategy: "concurrent.beta", run: "concurrent.beta.001", key: "concurrent-beta-report"},
+	} {
+		incoming := incoming
+		go func() { errorsByInsert <- report(incoming.strategy, incoming.run, incoming.key) }()
+	}
+	for range 2 {
+		if insertErr := <-errorsByInsert; insertErr != nil {
+			t.Fatal(insertErr)
+		}
+	}
+	listed, err = service.ListStrategies(ctx, 100, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	items, ok = listed["items"].([]map[string]any)
+	if !ok || len(items) != 3 || items[0]["strategy_key"] == "stable.review" {
+		t.Fatalf("strategy ordering did not change after concurrent inserts: %#v", listed)
+	}
+	resolved, err := service.GetRunByOrdinal(ctx, ordinal)
+	if err != nil || resolved["run_key"] != "stable.review.001" || resolved["run_ordinal"] != ordinal {
+		t.Fatalf("stable ordinal resolved=%#v err=%v", resolved, err)
+	}
+	if _, err = native.Exec(ctx, `UPDATE operation_cycle_run_ordinals SET run_key='concurrent.alpha.001' WHERE ordinal=$1`, ordinal); err == nil {
+		t.Fatal("immutable run ordinal accepted direct mutation")
+	}
+}
+
 func operationCycleIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 	t.Helper()
 	url, err := platformconfig.DatabaseURL()

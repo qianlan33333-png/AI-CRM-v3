@@ -135,17 +135,41 @@ func refreshCurrentStrategySnapshot(ctx context.Context, strategyKey string, ver
 }
 
 func (repository *Repository) ListStrategies(ctx context.Context, limit, offset int32) (map[string]any, error) {
-	queries, err := operationCycleQueries(ctx)
+	tx, err := platformpostgres.RequireTransaction(ctx)
 	if err != nil {
 		return nil, storeError(err)
 	}
-	rows, err := queries.ListOperationCycleStrategies(ctx, operationcycledb.ListOperationCycleStrategiesParams{Limit: limit, Offset: offset})
+	rows, err := tx.Query(ctx, `SELECT strategy.strategy_key,strategy.title,strategy.status,strategy.version,
+		strategy.definition,strategy.snapshot,strategy.updated_at,ordinal.ordinal
+		FROM operation_cycle_strategies AS strategy
+		LEFT JOIN operation_cycle_run_ordinals AS ordinal
+		  ON ordinal.run_key=NULLIF(strategy.snapshot->>'run_key','')
+		ORDER BY strategy.updated_at DESC,strategy.strategy_key DESC LIMIT $1 OFFSET $2`, limit, offset)
 	if err != nil {
 		return nil, storeError(err)
 	}
-	items := make([]map[string]any, 0, len(rows))
-	for _, row := range rows {
-		items = append(items, strategyResult(row))
+	defer rows.Close()
+	items := make([]map[string]any, 0, limit)
+	for rows.Next() {
+		var row operationcycledb.OperationCycleStrategy
+		var ordinal pgtype.Int4
+		if err = rows.Scan(&row.StrategyKey, &row.Title, &row.Status, &row.Version, &row.Definition, &row.Snapshot, &row.UpdatedAt, &ordinal); err != nil {
+			return nil, storeError(err)
+		}
+		var snapshot struct {
+			RunKey string `json:"run_key"`
+		}
+		if json.Unmarshal(row.Snapshot, &snapshot) != nil || (snapshot.RunKey != "" && !ordinal.Valid) {
+			return nil, operationapp.ErrUnavailable
+		}
+		item := strategyResult(row)
+		if ordinal.Valid {
+			item["run_ordinal"] = ordinal.Int32
+		}
+		items = append(items, item)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, storeError(err)
 	}
 	return map[string]any{"items": items, "limit": limit, "offset": offset}, nil
 }
@@ -188,6 +212,24 @@ func (repository *Repository) GetRun(ctx context.Context, key string) (map[strin
 		return nil, storeError(err)
 	}
 	return runResult(row), nil
+}
+
+func (repository *Repository) GetRunByOrdinal(ctx context.Context, ordinal int32) (map[string]any, error) {
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return nil, storeError(err)
+	}
+	var row operationcycledb.OperationCycleRun
+	err = tx.QueryRow(ctx, `SELECT run.run_key,run.strategy_key,run.snapshot_revision,run.snapshot,run.received_at
+		FROM operation_cycle_run_ordinals AS ordinal
+		JOIN operation_cycle_runs AS run ON run.run_key=ordinal.run_key
+		WHERE ordinal.ordinal=$1`, ordinal).Scan(&row.RunKey, &row.StrategyKey, &row.SnapshotRevision, &row.Snapshot, &row.ReceivedAt)
+	if err != nil {
+		return nil, storeError(err)
+	}
+	result := runResult(row)
+	result["run_ordinal"] = ordinal
+	return result, nil
 }
 
 func (repository *Repository) Start(ctx context.Context, command operationapp.StartCommand, now time.Time) (map[string]any, bool, error) {

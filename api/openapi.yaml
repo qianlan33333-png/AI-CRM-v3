@@ -1269,6 +1269,14 @@ paths:
       security: [{adminSession: []}]
       parameters: [{name: run_key, in: path, required: true, schema: {type: string, maxLength: 160}}]
       responses: {"200": {description: Persisted run dossier}, "404": {$ref: "#/components/responses/Error"}}
+  /api/admin/operation-cycles/run-ordinals/{run_ordinal}:
+    get:
+      operationId: getOperationCycleRunByStableOrdinal
+      tags: [OperationCycles]
+      description: Resolves the frozen donor numeric detail id through an immutable local run-key mapping; list order is never used for resolution.
+      security: [{adminSession: []}]
+      parameters: [{name: run_ordinal, in: path, required: true, schema: {type: integer, format: int32, minimum: 1, maximum: 999999999}}]
+      responses: {"200": {description: Persisted run dossier with its stable run_ordinal}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}}
   /api/admin/operation-cycles/runs/{run_key}/versions:
     get:
       operationId: listOperationCycleRunVersions

@@ -64,6 +64,8 @@ Admin API 提供以下 typed 操作，写请求均要求 v3 session、管理员�
   覆盖 current projection，相同 revision 的语义漂移导致整事务 conflict。
 - migration `0023_operation_cycle_admin_history.sql` 是 additive，并从现有 current 表回填一份
   基线历史，兼容上一 binary/static release。
+- donor 数字详情 id 通过 `operation_cycle_run_ordinals` 一次性映射到不可变 run key；并发
+  新增或 `updated_at` 排序变化不会让既有链接打开另一条档案。
 - 所有 Store 方法只访问 operationcycle owner 表；网络调用不在事务内，且本轮没有网络调用。
 
 ## 验证门槛
@@ -71,9 +73,11 @@ Admin API 提供以下 typed 操作，写请求均要求 v3 session、管理员�
 - PostgreSQL Journey：创建、原键重放、payload drift、编辑、陈旧 CAS、启用、暂停、重建
   Service 后刷新、四个不可变版本，以及 receipt/audit/outbox 同数同事务。
 - run Journey：revision 1/2 均保留，相同 revision 漂移被拒，current 只保留 revision 2。
-- HTTP：未登录、viewer 只读、管理员写、CSRF、unknown-field DTO 拒绝。
+- HTTP：未登录、错误 principal kind、viewer 只读、admin/superadmin 写、CSRF、
+  unknown-field DTO 拒绝。
 - Browser Journey：加载 byte-frozen 列表，点击 donor 原主按钮两次，验证真实 action URL、
-  DTO、CSRF、稳定幂等键和受理反馈；不出现原 blocked 提示。
+  DTO、CSRF、稳定幂等键和受理反馈；详情页只查稳定 ordinal，在并发新增/重排后仍打开
+  原 run；不出现原 blocked 提示。
 - CSP contract：列表页和详情页允许冻结 inline style，近似前缀/API/assets 不允许。
 - donor freeze：2/2 exact，活动集合没有新增 donor 文件。
 

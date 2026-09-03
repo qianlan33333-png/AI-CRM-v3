@@ -45,6 +45,7 @@ type operationCycleStoreStub struct {
 	createStrategy   func(context.Context, CreateStrategyCommand, time.Time) (map[string]any, bool, error)
 	updateStrategy   func(context.Context, UpdateStrategyCommand, time.Time) (map[string]any, bool, error)
 	transitionStatus func(context.Context, TransitionStrategyCommand, time.Time) (map[string]any, bool, error)
+	getRunByOrdinal  func(context.Context, int32) (map[string]any, error)
 }
 
 func (stub *operationCycleStoreStub) Report(ctx context.Context, command ReportCommand, now time.Time) (map[string]any, bool, error) {
@@ -63,6 +64,13 @@ func (*operationCycleStoreStub) ListRuns(context.Context, string, int32, int32) 
 	return nil, ErrUnavailable
 }
 func (*operationCycleStoreStub) GetRun(context.Context, string) (map[string]any, error) {
+	return nil, ErrUnavailable
+}
+
+func (stub *operationCycleStoreStub) GetRunByOrdinal(ctx context.Context, ordinal int32) (map[string]any, error) {
+	if stub.getRunByOrdinal != nil {
+		return stub.getRunByOrdinal(ctx, ordinal)
+	}
 	return nil, ErrUnavailable
 }
 func (*operationCycleStoreStub) Start(context.Context, StartCommand, time.Time) (map[string]any, bool, error) {
@@ -124,6 +132,24 @@ func (*operationCycleStoreStub) ListStrategyVersions(context.Context, string, in
 }
 func (*operationCycleStoreStub) ListRunVersions(context.Context, string, int32, int32) (map[string]any, error) {
 	return nil, ErrUnavailable
+}
+
+func TestGetRunByOrdinalUsesStableStoreLookup(t *testing.T) {
+	uow := &operationCycleTestUOW{}
+	seen := int32(0)
+	service := NewService(uow, &operationCycleStoreStub{getRunByOrdinal: func(_ context.Context, ordinal int32) (map[string]any, error) {
+		seen = ordinal
+		return map[string]any{"run_ordinal": ordinal, "run_key": "stable.review.001"}, nil
+	}}, &operationCycleTestEvents{}, &operationCycleTestDeliveries{})
+	result, err := service.GetRunByOrdinal(context.Background(), 73)
+	if err != nil || seen != 73 || result["run_key"] != "stable.review.001" || uow.calls != 1 {
+		t.Fatalf("stable ordinal result=%#v seen=%d uow=%d err=%v", result, seen, uow.calls, err)
+	}
+	for _, invalid := range []int32{0, -1, 1000000000} {
+		if _, err = service.GetRunByOrdinal(context.Background(), invalid); !errors.Is(err, ErrInvalid) {
+			t.Fatalf("ordinal=%d err=%v, want invalid", invalid, err)
+		}
+	}
 }
 
 func TestReportIdempotentReplayDoesNotAppendAnotherEvent(t *testing.T) {

@@ -18,7 +18,7 @@ CREATE TABLE operation_cycle_strategy_versions (
 
 INSERT INTO operation_cycle_strategy_versions
   (strategy_key, version, title, status, definition, snapshot, created_by, created_at)
-SELECT strategy_key, version, title, status, definition, snapshot, 'migration:0022', updated_at
+SELECT strategy_key, version, title, status, definition, snapshot, 'migration:0023', updated_at
 FROM operation_cycle_strategies
 ON CONFLICT DO NOTHING;
 
@@ -40,6 +40,29 @@ SELECT run_key, snapshot_revision, strategy_key, snapshot, received_at
 FROM operation_cycle_runs
 ON CONFLICT DO NOTHING;
 
+-- The frozen donor accepts a numeric run id in its detail URL. This mapping
+-- is assigned once per immutable run key, so inserting or re-sorting list
+-- rows can never make an existing URL resolve to another dossier.
+CREATE TABLE operation_cycle_run_ordinals (
+  ordinal INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  run_key TEXT NOT NULL UNIQUE REFERENCES operation_cycle_runs(run_key) ON DELETE RESTRICT,
+  CONSTRAINT operation_cycle_run_ordinals_donor_range CHECK (ordinal BETWEEN 1 AND 999999999)
+);
+
+INSERT INTO operation_cycle_run_ordinals(run_key)
+SELECT run_key FROM operation_cycle_runs ORDER BY run_key
+ON CONFLICT DO NOTHING;
+
+CREATE FUNCTION operation_cycle_assign_run_ordinal() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  INSERT INTO operation_cycle_run_ordinals(run_key) VALUES (NEW.run_key)
+  ON CONFLICT DO NOTHING;
+  RETURN NEW;
+END; $$;
+CREATE TRIGGER operation_cycle_runs_assign_ordinal
+  AFTER INSERT ON operation_cycle_runs
+  FOR EACH ROW EXECUTE FUNCTION operation_cycle_assign_run_ordinal();
+
 CREATE TABLE operation_cycle_admin_receipts (
   actor_id TEXT NOT NULL,
   key_digest BYTEA NOT NULL,
@@ -60,6 +83,9 @@ CREATE TRIGGER operation_cycle_strategy_versions_append_only
   FOR EACH STATEMENT EXECUTE FUNCTION operation_cycle_history_reject_mutation();
 CREATE TRIGGER operation_cycle_run_versions_append_only
   BEFORE UPDATE OR DELETE OR TRUNCATE ON operation_cycle_run_versions
+  FOR EACH STATEMENT EXECUTE FUNCTION operation_cycle_history_reject_mutation();
+CREATE TRIGGER operation_cycle_run_ordinals_append_only
+  BEFORE UPDATE OR DELETE OR TRUNCATE ON operation_cycle_run_ordinals
   FOR EACH STATEMENT EXECUTE FUNCTION operation_cycle_history_reject_mutation();
 CREATE TRIGGER operation_cycle_admin_receipts_append_only
   BEFORE UPDATE OR DELETE OR TRUNCATE ON operation_cycle_admin_receipts
