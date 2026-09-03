@@ -2381,6 +2381,42 @@ paths:
         - {name: nonce, in: query, required: true, schema: {type: string}}
       requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: true}}}}
       responses: {"200": {description: Verified callback followed by exact Provider query}, "401": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/config/app-settings:
+    get:
+      operationId: getLegacyAppSettings
+      tags: [Config]
+      security: [{adminSession: []}]
+      responses: {"200": {description: Safe local configuration projection, content: {application/json: {schema: {$ref: "#/components/schemas/ConfigSettingsRead"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+    put:
+      operationId: saveLegacyAppSettings
+      tags: [Config]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/IdempotencyKey"}, {name: X-Admin-Action-Token, in: header, schema: {type: string, minLength: 43, maxLength: 43}}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/ConfigSettingsWrite"}}}}
+      responses: {"200": {description: Local settings saved; no runtime or Provider application, content: {application/json: {schema: {$ref: "#/components/schemas/ConfigSettingsWriteResponse"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/setup-wizard:
+    get:
+      operationId: getSetupWizard
+      tags: [Config]
+      security: [{adminSession: []}]
+      responses: {"200": {description: Local-only setup snapshot, content: {application/json: {schema: {$ref: "#/components/schemas/SetupWizardRead"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+    post:
+      operationId: saveSetupWizard
+      tags: [Config]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/IdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/SetupWizardWrite"}}}}
+      responses: {"200": {description: Atomically stored local Corp/Agent IDs, content: {application/json: {schema: {$ref: "#/components/schemas/SetupWizardSave"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/config/categories:
+    get: {operationId: listConfigCategories, tags: [Config], security: [{adminSession: []}], responses: {"200": {description: Closed safe category projection, content: {application/json: {schema: {$ref: "#/components/schemas/LocalProjection"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}}}
+  /api/admin/config/categories/{category_key}:
+    get: {operationId: getConfigCategory, tags: [Config], security: [{adminSession: []}], parameters: [{name: category_key, in: path, required: true, schema: {type: string, enum: [app-settings]}}], responses: {"200": {description: Safe category projection, content: {application/json: {schema: {$ref: "#/components/schemas/LocalProjection"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}}}
+  /api/admin/config/push-capabilities:
+    get: {operationId: listPushCapabilities, tags: [Config], security: [{adminSession: []}], responses: {"200": {description: Read-only local safe projection, content: {application/json: {schema: {$ref: "#/components/schemas/LocalProjection"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}}}
+  /api/admin/config/releases:
+    get: {operationId: listReleaseProjections, tags: [Config], security: [{adminSession: []}], responses: {"200": {description: Read-only local release projection, content: {application/json: {schema: {$ref: "#/components/schemas/LocalProjection"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}}}
+  /api/admin/config/diagnostics:
+    get: {operationId: listAdminDiagnostics, tags: [Config], security: [{adminSession: []}], responses: {"200": {description: Bounded persisted local diagnostic observations, content: {application/json: {schema: {$ref: "#/components/schemas/LocalProjection"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}}
 components:
   securitySchemes:
     adminSession: {type: apiKey, in: cookie, name: aicrm_admin_session}
@@ -2441,6 +2477,36 @@ components:
     Unavailable: {description: Dependency or provider unavailable, content: {application/json: {schema: {$ref: "#/components/schemas/ErrorResponse"}}}}
     MutationOK: {description: Mutation completed, content: {application/json: {schema: {type: object, required: [ok], properties: {ok: {const: true}}}}}}
   schemas:
+    LocalProjection:
+      type: object
+      required: [ok, items, source_status, local_only]
+      properties: {ok: {const: true}, items: {type: array, items: {}}, source_status: {type: string}, local_only: {const: true}}
+    ConfigSettingsRead:
+      type: object
+      required: [ok, config, source_status, fallback_used, admin_action_token]
+      properties: {ok: {const: true}, config: {type: object}, source_status: {const: next_read_model}, fallback_used: {const: false}, admin_action_token: {type: string, minLength: 43, maxLength: 43, pattern: '^[A-Za-z0-9_-]{43}$'}}
+    ConfigSettingsWrite:
+      type: object
+      additionalProperties: false
+      required: [settings, confirm]
+      properties: {settings: {type: object, additionalProperties: {oneOf: [{type: string}, {type: integer}]}}, confirm: {const: true}, admin_action_token: {type: string, minLength: 43, maxLength: 43}}
+    ConfigSettingsWriteResponse:
+      type: object
+      required: [ok, changed, changed_count, config, source_status, fallback_used, real_external_call_executed]
+      properties: {ok: {const: true}, changed: {type: array, maxItems: 12, items: {type: object}}, changed_count: {type: integer, minimum: 0, maximum: 12}, config: {type: object}, source_status: {const: next_command}, fallback_used: {const: false}, real_external_call_executed: {const: false}}
+    SetupWizardRead:
+      type: object
+      required: [ok, expected_digest, editable, editable_configured, masked, admin_action_token, external, local_only, runtime_applied]
+      properties: {ok: {const: true}, expected_digest: {type: string, pattern: '^[a-f0-9]{64}$'}, editable: {type: object}, editable_configured: {type: object}, masked: {type: object}, admin_action_token: {type: string, minLength: 43, maxLength: 43}, external: {const: false}, local_only: {const: true}, runtime_applied: {const: false}}
+    SetupWizardWrite:
+      type: object
+      additionalProperties: false
+      required: [wecom.corp_id, wecom.agent_id, wecom.secret, wecom.callback_token, wecom.callback_aes_key, ai.api_key, expected_digest, admin_action_token]
+      properties: {wecom.corp_id: {type: string, minLength: 1, maxLength: 256}, wecom.agent_id: {type: integer, minimum: 1}, wecom.secret: {type: string, maxLength: 0}, wecom.callback_token: {type: string, maxLength: 0}, wecom.callback_aes_key: {type: string, maxLength: 0}, ai.api_key: {type: string, maxLength: 0}, expected_digest: {type: string, pattern: '^[a-f0-9]{64}$'}, admin_action_token: {type: string, minLength: 43, maxLength: 43}}
+    SetupWizardSave:
+      type: object
+      required: [ok, config, receipt, external, local_only, runtime_applied]
+      properties: {ok: {const: true}, config: {type: object}, receipt: {type: object}, external: {const: false}, local_only: {const: true}, runtime_applied: {const: false}}
     TransactionOrderItem:
       type: object
       additionalProperties: false

@@ -81,8 +81,13 @@
   <link rel="stylesheet" href="{{.OperationAssets.LabsCSS}}">
   <script type="module" src="{{.OperationAssets.HostJS}}"></script>
   {{end}}
+  {{if .Config}}
+  <link rel="stylesheet" href="{{.ConfigAssets.TokensCSS}}">
+  <link rel="stylesheet" href="{{.ConfigAssets.LabsCSS}}">
+  <script type="module" src="{{.ConfigAssets.AdminJS}}"></script>
+  {{end}}
 </head>
-<body class="admin-shell" data-admin-shell-source="v3_webshell"{{if .ExternalEffects}} data-page="campaigns"{{end}}{{if .Media}} data-page="{{.MediaPage}}"{{end}}{{if .Tags}} data-page="tags"{{end}}{{if .Product}} data-page="{{.ProductPage}}"{{end}}{{if .Coupons}} data-page="{{.CouponPage}}"{{end}}{{if .GroupOps}} data-page="{{.GroupOpsPage}}"{{end}}{{if .Automation}} data-page="{{.AutomationPage}}"{{end}}{{if .AutomationCreateCode}} data-automation-create-code="{{.AutomationCreateCode}}"{{end}}{{if .Survey}} data-page="{{.SurveyPage}}"{{end}}{{if .OperationCycles}} data-page="{{.OperationPage}}"{{end}}>
+<body class="admin-shell" data-admin-shell-source="v3_webshell"{{if .ExternalEffects}} data-page="campaigns"{{end}}{{if .Media}} data-page="{{.MediaPage}}"{{end}}{{if .Tags}} data-page="tags"{{end}}{{if .Product}} data-page="{{.ProductPage}}"{{end}}{{if .Coupons}} data-page="{{.CouponPage}}"{{end}}{{if .GroupOps}} data-page="{{.GroupOpsPage}}"{{end}}{{if .Automation}} data-page="{{.AutomationPage}}"{{end}}{{if .AutomationCreateCode}} data-automation-create-code="{{.AutomationCreateCode}}"{{end}}{{if .Survey}} data-page="{{.SurveyPage}}"{{end}}{{if .OperationCycles}} data-page="{{.OperationPage}}"{{end}}{{if .Config}} data-page="{{.ConfigPage}}"{{end}}>
   <div class="admin-layout">
     <aside class="admin-sidebar">
       <div class="admin-brand">
@@ -154,7 +159,7 @@
       </header>
       {{end}}
 
-      {{if or .ExternalEffects .Media .Tags .Product .Coupons .GroupOps .Automation .OperationCycles}}
+      {{if or .ExternalEffects .Media .Tags .Product .Coupons .GroupOps .Automation .OperationCycles .Config}}
       {{.Content}}
       {{else}}
       <main class="admin-page">

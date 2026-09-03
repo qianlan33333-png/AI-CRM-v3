@@ -80,6 +80,9 @@ type AdminShellView struct {
 	OperationCycles      bool
 	OperationPage        string
 	OperationAssets      OperationCycleAssets
+	Config               bool
+	ConfigPage           string
+	ConfigAssets         ConfigAssets
 }
 
 // ExternalEffectsAssets are manifest-derived URLs for the frozen donor bundle.
@@ -119,6 +122,10 @@ type SurveyAssets struct{ TokensCSS, LabsCSS, AdminJS, EditorJS, EditorCSS strin
 // OperationCycleAssets keep the immutable donor presentation separate from
 // the minimal v3 host binding that supplies real data and commands.
 type OperationCycleAssets struct{ TokensCSS, LabsCSS, HostJS string }
+
+// ConfigAssets are immutable donor runtime URLs supplied by the v3 config UI
+// adapter. The v3 shell owns authentication and only mounts template#tpl.
+type ConfigAssets struct{ TokensCSS, LabsCSS, AdminJS string }
 
 // Render implements the small presentation contract consumed by the Access
 // HTTP handler. Keeping this adapter in webshell avoids a concrete import
@@ -348,6 +355,23 @@ func (renderer *Renderer) RenderOperationCycles(writer http.ResponseWriter, data
 	data.ShowPageHeader = false
 	content := `<base href="/admin/operation-cycles/"><main id="stage" class="stage rich"></main><template id="tpl">` + donorTemplate + `</template>`
 	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: template.HTML(content), OperationCycles: true, OperationPage: page, OperationAssets: assets})
+	if err != nil {
+		return err
+	}
+	return writeHTML(writer, http.StatusOK, body)
+}
+
+// RenderConfig mounts the frozen Config/AdminOps template in the authenticated
+// v3 sidebar shell. All runtime compatibility belongs to the config module;
+// donor document files are never independently exposed.
+func (renderer *Renderer) RenderConfig(writer http.ResponseWriter, data AdminPageData, page, donorTemplate string, assets ConfigAssets) error {
+	if renderer == nil || renderer.templates == nil || donorTemplate == "" || assets.TokensCSS == "" || assets.LabsCSS == "" || assets.AdminJS == "" || (page != "config" && page != "configDetail" && page != "apidocs") {
+		return errors.New("config shell assets are required")
+	}
+	normalizeAdminPage(&data)
+	data.ShowPageHeader = false
+	content := `<main id="stage" class="stage rich"></main><template id="tpl">` + donorTemplate + `</template>`
+	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: template.HTML(content), Config: true, ConfigPage: page, ConfigAssets: assets})
 	if err != nil {
 		return err
 	}
