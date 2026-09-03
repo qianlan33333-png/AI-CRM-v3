@@ -122,8 +122,27 @@ func TestPostgreSQLAdminAccessCompatibilityJourney(t *testing.T) {
 		t.Fatalf("replay/drift audits=%d err=%v", audits, err)
 	}
 
-	rollback := adminAccessMutation(t, application.handler, `{"members":[{"admin_user_id":`+itoa(target.ID)+`,"login_enabled":true},{"admin_user_id":999999,"login_enabled":false}]}`, session, csrf, "admin-access-journey-rollback")
-	if rollback.Code != http.StatusBadRequest {
+	// A PostgreSQL trigger fails the audit INSERT after this request has already
+	// reserved its receipt and changed admin_users via SetActive. This is a real
+	// store/transaction failpoint, not a repository mock: the HTTP response must
+	// leave all three Access-owned tables exactly as they were before the call.
+	if _, err = application.pool.Native().Exec(ctx, `
+		CREATE FUNCTION admin_access_journey_fail_audit() RETURNS trigger LANGUAGE plpgsql AS $$
+		BEGIN
+			RAISE EXCEPTION 'admin access journey audit failpoint';
+		END;
+		$$;
+		CREATE TRIGGER admin_access_journey_fail_audit
+		BEFORE INSERT ON admin_access_audit
+		FOR EACH ROW WHEN (NEW.action = 'set_login_enabled')
+		EXECUTE FUNCTION admin_access_journey_fail_audit();`); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_, _ = application.pool.Native().Exec(context.Background(), `DROP TRIGGER IF EXISTS admin_access_journey_fail_audit ON admin_access_audit; DROP FUNCTION IF EXISTS admin_access_journey_fail_audit();`)
+	}()
+	rollback := adminAccessMutation(t, application.handler, `{"members":[{"admin_user_id":`+itoa(target.ID)+`,"login_enabled":true}]}`, session, csrf, "admin-access-journey-rollback")
+	if rollback.Code != http.StatusServiceUnavailable {
 		t.Fatalf("rollback request=%d body=%s", rollback.Code, rollback.Body.String())
 	}
 	if err = application.pool.Native().QueryRow(ctx, `SELECT count(*) FROM admin_access_login_compat_receipts WHERE actor_admin_user_id=1 AND idempotency_key='admin-access-journey-rollback'`).Scan(&receipts); err != nil || receipts != 0 {
