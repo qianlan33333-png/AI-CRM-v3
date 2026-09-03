@@ -634,7 +634,7 @@ func TestSurveyEditorUsesFullWidthDonorWorkspaceInsideAdminShell(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := response.Body.String()
-	if response.Code != http.StatusOK || strings.Count(body, `class="admin-sidebar"`) != 1 || strings.Contains(body, `<main class="admin-page">`) || strings.Contains(body, `<template id="tpl">`) || !strings.Contains(body, `<div class="admin-main-wrap">`) || !strings.Contains(body, `<div class="shell"><header class="topbar">问卷工具栏</header><div class="workspace">编辑区</div></div>`) || !strings.Contains(body, `data-page="questionnaireDetail"`) || !strings.Contains(body, `src="/assets/editor.js"`) {
+	if response.Code != http.StatusOK || strings.Count(body, `class="admin-sidebar"`) != 1 || strings.Contains(body, `<main class="admin-page">`) || strings.Contains(body, `<template id="tpl">`) || strings.Contains(body, `href="/assets/tokens.css"`) || strings.Contains(body, `href="/assets/labs.css"`) || strings.Contains(body, `src="/assets/admin.js"`) || !strings.Contains(body, `<div class="admin-main-wrap">`) || !strings.Contains(body, `<div class="shell"><header class="topbar">问卷工具栏</header><div class="workspace">编辑区</div></div>`) || !strings.Contains(body, `data-page="questionnaireDetail"`) || !strings.Contains(body, `href="/assets/editor.css"`) || !strings.Contains(body, `src="/assets/editor.js"`) {
 		t.Fatalf("survey editor host layout mismatch status=%d body=%q", response.Code, body)
 	}
 }

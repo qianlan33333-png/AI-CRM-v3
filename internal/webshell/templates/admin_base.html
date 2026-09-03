@@ -66,12 +66,12 @@
   <script type="module" src="{{.AutomationAssets.AdminJS}}"></script>
   {{end}}
   {{if .Survey}}
-  <link rel="stylesheet" href="{{.SurveyAssets.TokensCSS}}">
-  <link rel="stylesheet" href="{{.SurveyAssets.LabsCSS}}">
   {{if eq .SurveyPage "questionnaireDetail"}}
   <link rel="stylesheet" href="{{.SurveyAssets.EditorCSS}}">
   <script type="module" src="{{.SurveyAssets.EditorJS}}"></script>
   {{else}}
+  <link rel="stylesheet" href="{{.SurveyAssets.TokensCSS}}">
+  <link rel="stylesheet" href="{{.SurveyAssets.LabsCSS}}">
   <script type="module" src="{{.SurveyAssets.AdminJS}}"></script>
   {{end}}
   <script defer src="/static/admin_console/survey_operations.js?v=survey-receipts-v1"></script>
