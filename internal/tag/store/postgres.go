@@ -94,6 +94,34 @@ func (r *Repository) ListTags(ctx context.Context) ([]domain.Tag, error) {
 	}
 	return out, rows.Err()
 }
+
+func (r *Repository) ProviderTagNames(ctx context.Context, providerIDs []string) ([]tagport.ProviderTagName, error) {
+	if len(providerIDs) == 0 {
+		return []tagport.ProviderTagName{}, nil
+	}
+	t, err := transaction(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := t.Query(ctx, `SELECT binding.provider_tag_id,tag.tag_name,group_item.group_name
+		FROM tag_provider_tag_bindings binding
+		JOIN tag_catalog_tags tag ON tag.id=binding.tag_id AND tag.archived_at IS NULL
+		JOIN tag_groups group_item ON group_item.id=tag.group_id AND group_item.archived_at IS NULL
+		WHERE binding.provider_tag_id=ANY($1::text[]) ORDER BY binding.provider_tag_id`, providerIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []tagport.ProviderTagName{}
+	for rows.Next() {
+		var item tagport.ProviderTagName
+		if err = rows.Scan(&item.ProviderTagID, &item.Name, &item.GroupName); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
 func (r *Repository) GetGroup(ctx context.Context, id int64) (domain.Group, error) {
 	tx, err := transaction(ctx)
 	if err != nil {

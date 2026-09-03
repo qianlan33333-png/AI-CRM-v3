@@ -154,9 +154,25 @@ func (client *Client) BatchExternalContacts(ctx context.Context, staffID, cursor
 		if contact.ExternalUserID == "" || contact.Gender < 0 || contact.Gender > 2 || contact.Type < 0 || contact.Type > 3 {
 			return wecomport.ExternalContactPage{}, ErrResponse
 		}
+		followInfo := make([]wecomport.ExternalContactFollowInfo, 0, len(item.FollowInfo))
+		for _, follow := range item.FollowInfo {
+			follow.UserID = strings.TrimSpace(follow.UserID)
+			if follow.UserID == "" || invalid(follow.UserID) {
+				return wecomport.ExternalContactPage{}, ErrResponse
+			}
+			value := wecomport.ExternalContactFollowInfo{EmployeeID: follow.UserID, Tags: make([]wecomport.ExternalContactTag, 0, len(follow.Tags))}
+			for _, tag := range follow.Tags {
+				tag.ID, tag.Name = strings.TrimSpace(tag.ID), strings.TrimSpace(tag.Name)
+				if tag.ID == "" || invalid(tag.ID) || invalidOptional(tag.Name) || tag.Type < 1 || tag.Type > 2 {
+					return wecomport.ExternalContactPage{}, ErrResponse
+				}
+				value.Tags = append(value.Tags, wecomport.ExternalContactTag{ProviderTagID: tag.ID, Name: tag.Name, Type: tag.Type})
+			}
+			followInfo = append(followInfo, value)
+		}
 		page.Contacts = append(page.Contacts, wecomport.ExternalContact{ExternalUserID: contact.ExternalUserID,
 			Name: strings.TrimSpace(contact.Name), AvatarURL: strings.TrimSpace(contact.Avatar), Gender: contact.Gender,
-			Type: contact.Type, CorpName: strings.TrimSpace(contact.CorpName), UnionID: strings.TrimSpace(contact.UnionID)})
+			Type: contact.Type, CorpName: strings.TrimSpace(contact.CorpName), UnionID: strings.TrimSpace(contact.UnionID), FollowInfo: followInfo})
 	}
 	return page, nil
 }
@@ -311,6 +327,14 @@ type response struct {
 			UnionID        string `json:"unionid"`
 			CorpName       string `json:"corp_name"`
 		} `json:"external_contact"`
+		FollowInfo []struct {
+			UserID string `json:"userid"`
+			Tags   []struct {
+				ID   string `json:"tag_id"`
+				Name string `json:"tag_name"`
+				Type int16  `json:"type"`
+			} `json:"tags"`
+		} `json:"follow_info"`
 	} `json:"external_contact_list"`
 }
 
@@ -449,6 +473,9 @@ func (client *Client) random() func([]byte) error {
 }
 
 func invalid(value string) bool { return value == "" || strings.TrimSpace(value) != value }
+func invalidOptional(value string) bool {
+	return strings.TrimSpace(value) != value || strings.ContainsAny(value, "\r\n\x00") || len([]rune(value)) > 200
+}
 
 func validCallback(raw string) bool {
 	parsed, err := url.Parse(raw)

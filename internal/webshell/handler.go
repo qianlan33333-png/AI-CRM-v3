@@ -293,6 +293,9 @@ func adminSpecForPath(requestPath string) adminSpec {
 	if spec, ok := adminSpecs[requestPath]; ok {
 		return spec
 	}
+	if strings.HasPrefix(requestPath, "/admin/customers/") {
+		return adminSpec{title: "客户档案", summary: "按 Customer ID 查看分区式安全客户档案。", activeEndpoint: "api.admin_console_customers"}
+	}
 	for route, spec := range adminSpecs {
 		if route != AdminRootPath && strings.HasPrefix(requestPath, route+"/") {
 			return spec

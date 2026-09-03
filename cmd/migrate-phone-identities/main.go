@@ -22,6 +22,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
+	customerport "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/port"
 	customerstore "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/store"
 	identityapp "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/app"
 	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
@@ -336,7 +337,15 @@ func applyRows(ctx context.Context, uow platformport.UnitOfWork, oneID identitya
 				return errors.New("unexpected attach result")
 			}
 			if item.outcome == "attached" || item.outcome == "already_linked" {
-				return projection.UpdateDirectoryPhone(txContext, item.customerID, maskPhone(item.phone), identitydomain.AssuranceDeclared, runID, time.Now().UTC())
+				now := time.Now().UTC()
+				if updateErr := projection.UpdateDirectoryPhone(txContext, item.customerID, maskPhone(item.phone), identitydomain.AssuranceDeclared, runID, now); updateErr != nil {
+					return updateErr
+				}
+				if item.outcome == "attached" {
+					return projection.AppendTimeline(txContext, customerport.TimelineEvent{CustomerID: item.customerID, SourceDomain: "identity",
+						SourceEventID: fmt.Sprintf("phone-import:%d:%x", runID, item.digest[:8]), EventType: "customer.phone_attached",
+						Title: "手机号已绑定", OccurredAt: now})
+				}
 			}
 			return nil
 		})

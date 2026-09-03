@@ -517,6 +517,70 @@ paths:
         "200": {description: Ephemeral clear-text phone. Mainland China numbers omit +86., headers: {Cache-Control: {schema: {type: string, const: no-store}}}, content: {application/json: {schema: {type: object, additionalProperties: false, required: [phone], properties: {phone: {type: string, writeOnly: true, example: "13812345678"}}}}}}
         "403": {$ref: "#/components/responses/Error"}
         "404": {$ref: "#/components/responses/Error"}
+  /api/admin/customers/{customer_id}/owners:
+    get:
+      operationId: getCustomerOwners
+      description: Reads local WeCom observations and mapped staff display names. Never calls the Provider or returns raw userid.
+      security: [{adminSession: []}]
+      parameters: [{$ref: "#/components/parameters/CustomerID"}]
+      responses:
+        "200": {description: Safe owner observations, content: {application/json: {schema: {$ref: "#/components/schemas/CustomerOwnerPage"}}}}
+        "404": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/admin/customers/{customer_id}/tags:
+    get:
+      operationId: getCustomerTags
+      description: Reads the latest local customer-tag observation and local tag-name mapping. Never calls WeCom.
+      security: [{adminSession: []}]
+      parameters: [{$ref: "#/components/parameters/CustomerID"}]
+      responses:
+        "200": {description: Safe tag observations without Provider tag IDs, content: {application/json: {schema: {$ref: "#/components/schemas/CustomerTagPage"}}}}
+        "404": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/admin/customers/{customer_id}/survey-answers:
+    get:
+      operationId: getCustomerSurveyAnswers
+      description: Customer-ID-only Survey history. Text and mobile answers are already masked by Survey.
+      security: [{adminSession: []}]
+      parameters:
+        - {$ref: "#/components/parameters/CustomerID"}
+        - {name: cursor, in: query, schema: {type: string, maxLength: 2048}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 20}}
+      responses:
+        "200": {description: Safe survey history page, content: {application/json: {schema: {$ref: "#/components/schemas/CustomerSurveyPage"}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/admin/customers/{customer_id}/timeline:
+    get:
+      operationId: getCustomerTimeline
+      description: Safe local event summaries without bodies or Provider identifiers.
+      security: [{adminSession: []}]
+      parameters:
+        - {$ref: "#/components/parameters/CustomerID"}
+        - {name: cursor, in: query, schema: {type: string, maxLength: 2048}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 20}}
+        - {name: event_type, in: query, schema: {type: string, pattern: '^[a-z][a-z0-9_.]{0,95}$'}}
+      responses:
+        "200": {description: Safe timeline page, content: {application/json: {schema: {$ref: "#/components/schemas/CustomerTimelinePage"}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/admin/customers/{customer_id}/chat-activity:
+    get:
+      operationId: getCustomerChatActivity
+      description: Metadata-only contract. Returns capability_not_ready until a chat archive domain publishes the safe port.
+      security: [{adminSession: []}]
+      parameters:
+        - {$ref: "#/components/parameters/CustomerID"}
+        - {name: cursor, in: query, schema: {type: string, maxLength: 2048}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 20}}
+        - {name: chat_type, in: query, schema: {type: string, enum: [private, group]}}
+      responses:
+        "200": {description: Metadata-only chat activity page, content: {application/json: {schema: {$ref: "#/components/schemas/CustomerChatActivityPage"}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Unavailable"}
   /api/admin/customer-sync-runs:
     get:
       operationId: listCustomerSyncRuns
@@ -3317,40 +3381,127 @@ components:
     DirectoryIdentitySummary:
       type: object
       additionalProperties: false
-      required: [kind, scope, assurance, status, source, created_at]
-      properties: {kind: {type: string}, scope: {type: string}, assurance: {type: string, enum: [verified, declared]}, status: {type: string}, source: {type: string}, created_at: {type: string, format: date-time}}
+      required: [type, summary]
+      properties: {type: {type: string, enum: [wecom, wechat_open_platform, wechat_miniprogram, wechat_official_account, alipay, member, other]}, summary: {type: string}}
     MaskedPhone:
       type: object
       additionalProperties: false
-      required: [masked, assurance]
-      properties: {masked: {type: string}, assurance: {type: string, enum: [verified, declared]}}
+      required: [masked]
+      properties: {masked: {type: string, description: Mainland China display omits +86.}}
+    CustomerSectionStatus:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status: {type: string, enum: [ready, degraded, not_ready]}
+        as_of: {type: [string, "null"], format: date-time}
+        error_code: {type: string, pattern: '^[a-z0-9_.:-]+$'}
     CustomerDirectoryDetailResponse:
       type: object
       additionalProperties: false
-      required: [customer, identities, phones]
+      required: [requested_customer_id, canonical_customer_id, merged_from_customer_id, customer, identities, phones, sections]
       properties:
+        requested_customer_id: {$ref: "#/components/schemas/PositiveID"}
+        canonical_customer_id: {$ref: "#/components/schemas/PositiveID"}
+        merged_from_customer_id: {type: [integer, "null"], minimum: 1}
         customer: {$ref: "#/components/schemas/CustomerDirectoryDetail"}
         identities: {type: array, items: {$ref: "#/components/schemas/DirectoryIdentitySummary"}}
         phones: {type: array, items: {$ref: "#/components/schemas/MaskedPhone"}}
+        sections:
+          type: object
+          additionalProperties: false
+          required: [owners, tags, surveys, timeline, chat_activity]
+          properties:
+            owners: {$ref: "#/components/schemas/CustomerSectionStatus"}
+            tags: {$ref: "#/components/schemas/CustomerSectionStatus"}
+            surveys: {$ref: "#/components/schemas/CustomerSectionStatus"}
+            timeline: {$ref: "#/components/schemas/CustomerSectionStatus"}
+            chat_activity: {$ref: "#/components/schemas/CustomerSectionStatus"}
     CustomerDirectoryDetail:
       type: object
       additionalProperties: false
-      required: [customer_id, status, display_name, avatar_url, oneid, phone_masked, activation_status, updated_at, gender, contact_type, corp_name, source]
+      required: [customer_id, status, display_name, oneid, updated_at, gender, contact_type, corp_name, source]
       properties:
         customer_id: {$ref: "#/components/schemas/PositiveID"}
         status: {type: string, enum: [active, merged, closed]}
         display_name: {type: string}
-        avatar_url: {type: string}
         oneid: {type: string}
-        phone_masked: {type: string}
-        phone_assurance: {type: string, enum: [verified, declared]}
-        activation_status: {type: string, enum: [active, conflict, stale]}
         last_synced_at: {type: [string, "null"], format: date-time}
         updated_at: {type: string, format: date-time}
         gender: {type: integer, minimum: 0, maximum: 2}
         contact_type: {type: integer, minimum: 0, maximum: 3}
         corp_name: {type: string}
         source: {type: string}
+    CustomerOwnerItem:
+      type: object
+      additionalProperties: false
+      required: [display_name, status, observed_at]
+      properties: {display_name: {type: string}, status: {type: string, enum: [active, stale]}, observed_at: {type: string, format: date-time}}
+    CustomerOwnerPage:
+      type: object
+      additionalProperties: false
+      required: [customer_id, items, next_cursor, source_status, as_of, truncated, unmatched_count]
+      properties:
+        customer_id: {$ref: "#/components/schemas/PositiveID"}
+        items: {type: array, items: {$ref: "#/components/schemas/CustomerOwnerItem"}}
+        next_cursor: {type: string, const: ""}
+        source_status: {type: string, enum: [ready, degraded]}
+        source_error_code: {type: string}
+        as_of: {type: [string, "null"], format: date-time}
+        truncated: {type: boolean, const: false}
+        unmatched_count: {type: integer, minimum: 0}
+    CustomerTagItem:
+      type: object
+      additionalProperties: false
+      required: [name, status, observed_at]
+      properties: {name: {type: string}, group_name: {type: string}, status: {type: string, enum: [active, stale]}, observed_at: {type: string, format: date-time}}
+    CustomerTagPage:
+      type: object
+      additionalProperties: false
+      required: [customer_id, items, next_cursor, source_status, as_of, truncated]
+      properties:
+        customer_id: {$ref: "#/components/schemas/PositiveID"}
+        items: {type: array, items: {$ref: "#/components/schemas/CustomerTagItem"}}
+        next_cursor: {type: string, const: ""}
+        source_status: {type: string, enum: [ready, degraded]}
+        source_error_code: {type: string}
+        as_of: {type: [string, "null"], format: date-time}
+        truncated: {type: boolean, const: false}
+    CustomerSurveyAnswer:
+      type: object
+      additionalProperties: false
+      required: [question, answers]
+      properties: {question: {type: string}, answers: {type: array, items: {type: string}}}
+    CustomerSurveyItem:
+      type: object
+      additionalProperties: false
+      required: [id, title, submitted_at, score, answers]
+      properties: {id: {$ref: "#/components/schemas/PositiveID"}, title: {type: string}, submitted_at: {type: string, format: date-time}, score: {type: number}, assessment_label: {type: string}, answers: {type: array, items: {$ref: "#/components/schemas/CustomerSurveyAnswer"}}}
+    CustomerSurveyPage:
+      type: object
+      additionalProperties: false
+      required: [customer_id, items, next_cursor, source_status, as_of, truncated]
+      properties: {customer_id: {$ref: "#/components/schemas/PositiveID"}, items: {type: array, items: {$ref: "#/components/schemas/CustomerSurveyItem"}}, next_cursor: {type: string}, source_status: {type: string, enum: [ready, degraded]}, source_error_code: {type: string}, as_of: {type: [string, "null"], format: date-time}, truncated: {type: boolean}}
+    CustomerTimelineItem:
+      type: object
+      additionalProperties: false
+      required: [id, event_type, title, source_domain, occurred_at]
+      properties: {id: {$ref: "#/components/schemas/PositiveID"}, event_type: {type: string}, title: {type: string}, source_domain: {type: string}, occurred_at: {type: string, format: date-time}}
+    CustomerTimelinePage:
+      type: object
+      additionalProperties: false
+      required: [customer_id, items, next_cursor, source_status, as_of, truncated]
+      properties: {customer_id: {$ref: "#/components/schemas/PositiveID"}, items: {type: array, items: {$ref: "#/components/schemas/CustomerTimelineItem"}}, next_cursor: {type: string}, source_status: {type: string, enum: [ready, degraded]}, source_error_code: {type: string}, as_of: {type: [string, "null"], format: date-time}, truncated: {type: boolean}}
+    CustomerChatActivityItem:
+      type: object
+      additionalProperties: false
+      required: [id, chat_type, message_type, occurred_at]
+      properties: {id: {$ref: "#/components/schemas/PositiveID"}, chat_type: {type: string, enum: [private, group]}, message_type: {type: string}, occurred_at: {type: string, format: date-time}}
+    CustomerChatActivityPage:
+      type: object
+      additionalProperties: false
+      required: [customer_id, items, next_cursor, source_status, as_of, truncated]
+      properties: {customer_id: {$ref: "#/components/schemas/PositiveID"}, items: {type: array, items: {$ref: "#/components/schemas/CustomerChatActivityItem"}}, next_cursor: {type: string}, source_status: {type: string, enum: [ready, degraded]}, source_error_code: {type: string}, as_of: {type: [string, "null"], format: date-time}, truncated: {type: boolean}}
     CustomerSyncRun:
       type: object
       additionalProperties: false

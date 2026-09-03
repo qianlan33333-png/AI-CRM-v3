@@ -16,6 +16,18 @@ type ExternalContact struct {
 	Type           int16
 	CorpName       string
 	UnionID        string
+	FollowInfo     []ExternalContactFollowInfo
+}
+
+type ExternalContactFollowInfo struct {
+	EmployeeID string
+	Tags       []ExternalContactTag
+}
+
+type ExternalContactTag struct {
+	ProviderTagID string
+	Name          string
+	Type          int16
 }
 
 type ExternalContactPage struct {

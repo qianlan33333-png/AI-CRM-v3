@@ -1,47 +1,111 @@
 {{define "admin_customers"}}
-<section class="admin-card customer-sync-card" data-customer-directory-root
+<div data-customer-directory-root
   data-customers-url="/api/admin/customers"
   data-sync-url="/api/admin/customer-sync-runs">
+{{if eq .RequestPath "/admin/customers"}}
+<section class="admin-card">
   <div class="admin-card-head admin-card-head--tight">
-    <div>
-      <h2>企微客户同步</h2>
-      <p id="customer-sync-summary">正在读取最近一次同步状态…</p>
-    </div>
-    <button class="admin-button admin-button--primary" id="customer-sync-start" type="button">重新拉取企微客户</button>
+    <div><h2>客户查找</h2></div>
   </div>
-  <div class="customer-sync-metrics" id="customer-sync-metrics" aria-live="polite"></div>
+  <form id="customer-list-filters" class="admin-filter-bar admin-form-grid admin-form-grid--wide-filters customer-search-form" autocomplete="off">
+    <label><span>关键词</span><input type="text" name="keyword" maxlength="200" placeholder="姓名、客户编号等"></label>
+    <label><span>手机号</span><input type="tel" name="phone" inputmode="numeric" maxlength="11" autocomplete="off" placeholder="客户手机号"></label>
+    <label><span>客户状态</span><select name="status"><option value="">全部</option><option value="active">正常</option><option value="merged">已归并</option><option value="closed">已关闭</option></select></label>
+    <div class="admin-toolbar">
+      <button type="submit" class="admin-button admin-button--primary">查询</button>
+      <button type="button" class="admin-button admin-button--ghost" id="customer-list-clear">清空</button>
+    </div>
+  </form>
   <div id="customer-page-alert" class="admin-alert" role="status" aria-live="polite" hidden></div>
 </section>
 
-<section class="admin-card customer-list-card">
+<section class="admin-card">
   <div class="admin-card-head admin-card-head--tight">
-    <div><h2>客户列表</h2><p id="customer-list-summary">正在读取 v3 客户目录…</p></div>
-    <button class="admin-button admin-button--ghost" id="customer-list-refresh" type="button">刷新</button>
+    <div><h2>客户列表</h2><p id="customer-sync-summary">正在读取企微客户同步状态…</p></div>
+    <div class="admin-toolbar customer-list-heading-actions">
+      <div class="admin-chip admin-chip--neutral" id="customer-list-summary">正在读取客户数量</div>
+      <button class="admin-button admin-button--ghost" id="customer-sync-start" type="button">重新拉取企微客户</button>
+      <button class="admin-button admin-button--ghost" id="customer-list-refresh" type="button">刷新</button>
+    </div>
   </div>
-  <form id="customer-list-filters" class="customer-filter-grid" autocomplete="off">
-    <label><span>客户名称 / OneID</span><input name="keyword" type="search" maxlength="200" placeholder="输入名称或 CID"></label>
-    <label><span>手机号（精确）</span><input name="phone" type="tel" inputmode="numeric" maxlength="11" autocomplete="off" placeholder="请输入11位手机号"></label>
-    <label><span>Customer 状态</span><select name="status"><option value="">全部</option><option value="active">正常</option><option value="merged">已归并</option><option value="closed">已关闭</option></select></label>
-    <button class="admin-button admin-button--secondary" type="submit">查询</button>
-  </form>
-  <div id="customer-list-state" class="admin-state admin-state--loading"><strong>正在加载</strong><span>读取客户目录投影。</span></div>
+  <div class="customer-sync-strip" id="customer-sync-metrics" aria-live="polite"></div>
+  <div id="customer-list-state" class="admin-state admin-state--inline admin-state--loading"><strong>正在加载客户</strong><span>读取 v3 客户目录。</span></div>
   <div id="customer-list-table-wrap" class="admin-table-wrap" hidden>
-    <table class="admin-table customer-table"><thead><tr><th>客户</th><th>OneID</th><th>手机号</th><th>最后同步</th><th>操作</th></tr></thead><tbody id="customer-list-body"></tbody></table>
+    <table class="admin-table">
+      <thead><tr><th>客户</th><th>OneID</th><th>手机号</th><th>最后同步</th><th>查看档案</th></tr></thead>
+      <tbody id="customer-list-body"></tbody>
+    </table>
   </div>
-  <div class="customer-pagination"><button class="admin-button admin-button--ghost" id="customer-next-page" type="button" hidden>下一页</button></div>
+  <div class="admin-toolbar admin-toolbar--pager customer-list-pager">
+    <button class="admin-button admin-button--ghost" id="customer-prev-page" type="button" hidden>上一页</button>
+    <button class="admin-button admin-button--ghost" id="customer-next-page" type="button" hidden>下一页</button>
+  </div>
 </section>
 
-<section class="admin-card customer-detail-card" id="customer-detail-card" hidden>
-  <div class="admin-card-head admin-card-head--tight"><div><h2>客户详情</h2><p>仅展示本板块的企微资料、OneID 摘要与脱敏手机号。</p></div><a class="admin-button admin-button--ghost" href="/admin/customers">返回列表</a></div>
-  <div id="customer-detail-state" class="admin-state admin-state--loading"><strong>正在加载</strong><span>读取客户详情。</span></div>
+{{else}}
+<section class="admin-card admin-module-banner" data-customer-profile-root>
+  <div class="admin-card-head">
+    <div><h2>客户档案</h2><p id="customer-profile-name">正在读取客户资料…</p></div>
+    <a class="admin-button admin-button--ghost" href="/admin/customers">返回客户列表</a>
+  </div>
+  <div id="customer-detail-state" class="admin-state admin-state--inline admin-state--loading"><strong>正在加载客户档案</strong><span>读取本地客户根和安全身份摘要。</span></div>
   <div id="customer-detail-content" hidden>
-    <div class="customer-detail-grid" id="customer-detail-fields"></div>
-    <h3>OneID 摘要</h3><div class="customer-identity-list" id="customer-identity-list"></div>
-    <h3>手机号</h3><div class="customer-phone-list" id="customer-phone-list"></div>
-    <form id="customer-phone-reveal" class="customer-reveal-form" autocomplete="off">
-      <button class="admin-button admin-button--secondary" type="submit">查询</button>
-    </form>
-    <div id="customer-phone-ephemeral" class="customer-phone-ephemeral" role="status" aria-live="polite" hidden></div>
+    <div class="admin-profile-grid" id="customer-detail-fields"></div>
+    <div class="customer-profile-meta" id="customer-profile-meta"></div>
+    <div id="customer-phone-ephemeral" class="admin-alert admin-alert--success customer-phone-ephemeral" role="status" aria-live="polite" hidden></div>
   </div>
 </section>
+
+<section class="admin-split-grid admin-customer-detail-layout">
+  <div class="admin-customer-detail-main">
+    <section class="admin-card" data-profile-section="owners" hidden>
+      <div class="admin-card-head admin-card-head--tight">
+        <div><h2>跟进成员</h2><p data-section-asof>读取最近一次企微客户关系观察。</p></div>
+        <button class="admin-button admin-button--ghost" data-section-retry type="button" hidden>重试</button>
+      </div>
+      <div class="admin-state admin-state--inline admin-state--loading" data-section-state><strong>正在加载跟进成员</strong><span>仅展示已匹配的企业成员姓名。</span></div>
+      <div class="admin-table-wrap" data-section-wrap hidden><table class="admin-table"><thead><tr><th>成员</th><th>关系状态</th><th>最近观察</th></tr></thead><tbody data-section-items></tbody></table></div>
+    </section>
+
+    <section class="admin-card" data-profile-section="tags" hidden>
+      <div class="admin-card-head admin-card-head--tight">
+        <div><h2>企微标签（最近同步）</h2><p data-section-asof>不在页面打开时访问企微。</p></div>
+        <button class="admin-button admin-button--ghost" data-section-retry type="button" hidden>重试</button>
+      </div>
+      <div class="admin-state admin-state--inline admin-state--loading" data-section-state><strong>正在加载企微标签</strong><span>读取本地最近同步快照。</span></div>
+      <div class="admin-profile-tag-list" data-section-items hidden></div>
+    </section>
+
+    <section class="admin-card" data-profile-section="surveys" hidden>
+      <div class="admin-card-head admin-card-head--tight">
+        <div><h2>已填写问卷及答案</h2><p data-section-asof>只展示题目、选项和 Survey 提供的脱敏答案。</p></div>
+        <div class="admin-toolbar"><button class="admin-button admin-button--ghost" data-section-retry type="button" hidden>重试</button><button class="admin-button admin-button--ghost" data-section-more type="button" hidden>加载更多</button></div>
+      </div>
+      <div class="admin-state admin-state--inline admin-state--loading" data-section-state><strong>正在加载问卷记录</strong><span>这里只展示题目和安全答案。</span></div>
+      <div class="admin-table-wrap" data-section-wrap hidden><table class="admin-table"><thead><tr><th>问题</th><th>答案</th></tr></thead><tbody data-section-items></tbody></table></div>
+    </section>
+  </div>
+
+  <div class="admin-customer-detail-sidebar">
+    <section class="admin-card" data-profile-section="chat_activity" hidden>
+      <div class="admin-card-head">
+        <div><h2>聊天记录</h2><p data-section-asof>只展示最近聊天活动，不展示正文和参与者标识。</p></div>
+        <div class="admin-toolbar"><button class="admin-button admin-button--ghost" data-section-retry type="button" hidden>重试</button><button class="admin-button admin-button--ghost" data-section-more type="button" hidden>加载更多</button></div>
+      </div>
+      <div class="admin-state admin-state--inline admin-state--loading" data-section-state><strong>正在加载聊天记录</strong><span>来源能力未接入时会明确提示。</span></div>
+      <div class="admin-profile-message-list" data-section-items hidden></div>
+    </section>
+
+    <section class="admin-card" data-profile-section="timeline" hidden>
+      <div class="admin-card-head">
+        <div><h2>客户时间线</h2><p data-section-asof>展示客户同步、手机号和问卷等安全事件。</p></div>
+        <div class="admin-toolbar"><button class="admin-button admin-button--ghost" data-section-retry type="button" hidden>重试</button><button class="admin-button admin-button--ghost" data-section-more type="button" hidden>加载更多</button></div>
+      </div>
+      <div class="admin-state admin-state--inline admin-state--loading" data-section-state><strong>正在加载客户时间线</strong><span>仅展示安全事件摘要。</span></div>
+      <div class="admin-profile-message-list" data-section-items hidden></div>
+    </section>
+  </div>
+</section>
+{{end}}
+</div>
 {{end}}

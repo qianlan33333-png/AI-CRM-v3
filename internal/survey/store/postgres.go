@@ -595,6 +595,44 @@ func (r *Repository) ListSubmissions(ctx context.Context, id surveyport.ID, limi
 func (r *Repository) CustomerHistory(ctx context.Context, customer int64, limit, offset int32) ([]surveyport.Submission, int64, error) {
 	return r.listSubmissionQuery(ctx, `customer_id=$1`, []any{customer}, limit, offset)
 }
+func (r *Repository) CustomerHistoryWindow(ctx context.Context, query surveyport.CustomerHistoryQuery) ([]surveyport.Submission, error) {
+	t, err := tx(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var afterAt any
+	if !query.AfterAt.IsZero() {
+		afterAt = query.AfterAt.UTC()
+	}
+	rows, err := t.Query(ctx, `SELECT id FROM survey_submissions
+		WHERE customer_id=$1 AND submitted_at <= $2
+		AND ($3::timestamptz IS NULL OR (submitted_at,id) < ($3,$4))
+		ORDER BY submitted_at DESC,id DESC LIMIT $5`, query.CustomerID, query.Watermark.UTC(), afterAt, query.AfterID, query.Limit)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	defer rows.Close()
+	ids := []surveyport.ID{}
+	for rows.Next() {
+		var id surveyport.ID
+		if err = rows.Scan(&id); err != nil {
+			return nil, mapError(err)
+		}
+		ids = append(ids, id)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, mapError(err)
+	}
+	items := make([]surveyport.Submission, 0, len(ids))
+	for _, id := range ids {
+		item, loadErr := r.loadSubmission(ctx, t, id)
+		if loadErr != nil {
+			return nil, loadErr
+		}
+		items = append(items, item)
+	}
+	return items, nil
+}
 func (r *Repository) listSubmissionQuery(ctx context.Context, where string, args []any, limit, offset int32) ([]surveyport.Submission, int64, error) {
 	t, err := tx(ctx)
 	if err != nil {

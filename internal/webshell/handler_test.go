@@ -43,9 +43,12 @@ func TestAdminNavGroupsMirrorSourceMenu(t *testing.T) {
 }
 
 func TestPathForEscapesDynamicSegmentsAndNextPath(t *testing.T) {
-	got := PathFor("api.admin_console_customer_detail", map[string]string{"external_userid": "contact/a"})
-	if got != "/admin/customers/contact%2Fa" {
+	got := PathFor("api.admin_console_customer_detail", map[string]string{"customer_id": "42"})
+	if got != "/admin/customers/42" {
 		t.Fatalf("customer detail path=%q", got)
+	}
+	if PathFor("api.admin_console_customer_detail", map[string]string{"customer_id": "contact/a"}) != "#" {
+		t.Fatal("non-numeric customer detail id accepted")
 	}
 	if SafeNextPath("https://attacker.example") != AdminRootPath {
 		t.Fatal("absolute next path accepted")
@@ -293,16 +296,24 @@ func TestStandaloneHandlerRendersAdminLoginSidebarAndAssets(t *testing.T) {
 			method:     http.MethodGet,
 			path:       "/admin/customers",
 			status:     http.StatusOK,
-			contains:   []string{"data-customer-directory-root", "/api/admin/customers", "/api/admin/customer-sync-runs", "手机号（精确）", "请输入11位手机号", "admin_customers.js"},
-			notContain: []string{"type=\"password\"", "name=\"activation_status\"", "揭示理由", "临时揭示", "+8613812345678", "raw_external_userid", "unionid_value", "/api/v2/", "fixture"},
+			contains:   []string{"data-customer-directory-root", "/api/admin/customers", "/api/admin/customer-sync-runs", "客户查找", "admin-filter-bar admin-form-grid admin-form-grid--wide-filters", "手机号", "客户列表", "admin-table", "admin_customers.js"},
+			notContain: []string{"type=\"password\"", "name=\"activation_status\"", "揭示理由", "临时揭示", "+8613812345678", "raw_external_userid", "unionid_value", "/api/v2/", "fixture", "data-profile-section"},
 		},
 		{
 			name:       "customer directory javascript",
 			method:     http.MethodGet,
 			path:       "/static/admin_console/admin_customers.js",
 			status:     http.StatusOK,
-			contains:   []string{"credentials:\"same-origin\"", "cache:\"no-store\"", "X-CSRF-Token", "customer_id", "phone-reveal", "phone.startsWith(\"+86\") ? phone.slice(3)", "identity.kind === \"phone\""},
+			contains:   []string{"credentials: \"same-origin\"", "cache: \"no-store\"", "X-CSRF-Token", "customer_id", "phone-reveal", "phone.startsWith(\"+86\") ? phone.slice(3)", "survey-answers", "chat-activity", "能力待接入"},
 			notContain: []string{"customer-avatar", "phone_assurance", "item.activation_status", "declared", "localStorage", "sessionStorage", "console.log", "/api/v2/"},
+		},
+		{
+			name:       "customer profile page",
+			method:     http.MethodGet,
+			path:       "/admin/customers/42",
+			status:     http.StatusOK,
+			contains:   []string{"客户档案", "admin-module-banner", "admin-profile-grid", "admin-split-grid admin-customer-detail-layout", "admin-customer-detail-main", "admin-customer-detail-sidebar", "跟进成员", "企微标签（最近同步）", "已填写问卷及答案", "客户时间线", "聊天记录", "data-profile-section"},
+			notContain: []string{"external_userid", "UnionID", "unionid", "declared", "verified", "+8613812345678", "揭示理由", "customer-list-filters", "customer-sync-start"},
 		},
 		{
 			name:   "oneid css asset",

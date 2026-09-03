@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	customerport "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/port"
 	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
 	surveydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/survey/domain"
 	surveyport "github.com/qianlan33333-png/AI-CRM-v3/internal/survey/port"
@@ -44,15 +45,30 @@ type SubmissionStore interface {
 	AppendAuditAndOutbox(context.Context, string, surveyport.ID, string, json.RawMessage, string, time.Time) error
 }
 
+type customerHistoryWindowStore interface {
+	CustomerHistoryWindow(context.Context, surveyport.CustomerHistoryQuery) ([]surveyport.Submission, error)
+}
+
 type SubmissionService struct {
-	uow    platformport.UnitOfWork
-	store  SubmissionStore
-	cipher *secure.Cipher
-	now    func() time.Time
+	uow      platformport.UnitOfWork
+	store    SubmissionStore
+	cipher   *secure.Cipher
+	timeline customerport.TimelineWriter
+	now      func() time.Time
 }
 
 func NewSubmissionService(uow platformport.UnitOfWork, store SubmissionStore, cipher *secure.Cipher) *SubmissionService {
 	return &SubmissionService{uow: uow, store: store, cipher: cipher, now: time.Now}
+}
+
+// BindCustomerTimeline installs the stable Customer projection port before the
+// service is exposed. It grants no Customer identity or mutation capability.
+func (s *SubmissionService) BindCustomerTimeline(writer customerport.TimelineWriter) error {
+	if s == nil || writer == nil {
+		return surveyport.ErrInvalid
+	}
+	s.timeline = writer
+	return nil
 }
 
 func (s *SubmissionService) ReadPublic(ctx context.Context, slug string) (surveyport.Questionnaire, error) {
@@ -120,7 +136,15 @@ func (s *SubmissionService) Submit(ctx context.Context, command surveyport.Submi
 		}
 		payload, _ := json.Marshal(map[string]any{"questionnaire_id": questionnaire.ID, "submission_id": stored.ID, "identity_state": command.Identity.State})
 		outboxKey := "survey.submission:" + hex.EncodeToString(submissionKeyDigest[:])
-		return s.store.AppendAuditAndOutbox(tx, "submission_created", questionnaire.ID, "public", payload, outboxKey, now)
+		if e = s.store.AppendAuditAndOutbox(tx, "submission_created", questionnaire.ID, "public", payload, outboxKey, now); e != nil {
+			return e
+		}
+		if command.Identity.CustomerID != nil && s.timeline != nil {
+			return s.timeline.AppendTimeline(tx, customerport.TimelineEvent{CustomerID: *command.Identity.CustomerID,
+				SourceDomain: "survey", SourceEventID: "submission:" + fmt.Sprint(stored.ID), EventType: "customer.survey_submitted",
+				Title: "问卷已提交", OccurredAt: now})
+		}
+		return nil
 	})
 	if err != nil {
 		return surveyport.SubmissionReceipt{}, classify(err)
@@ -215,6 +239,23 @@ func (s *SubmissionService) CustomerHistory(ctx context.Context, customer int64,
 		return e
 	})
 	return page, classify(err)
+}
+
+func (s *SubmissionService) CustomerHistoryWindow(ctx context.Context, query surveyport.CustomerHistoryQuery) (surveyport.CustomerHistoryWindow, error) {
+	if s == nil || s.uow == nil || s.store == nil || query.CustomerID < 1 || query.Limit < 1 || query.Limit > 101 || query.Watermark.IsZero() || query.AfterID < 0 {
+		return surveyport.CustomerHistoryWindow{}, surveyport.ErrInvalid
+	}
+	store, ok := s.store.(customerHistoryWindowStore)
+	if !ok {
+		return surveyport.CustomerHistoryWindow{}, surveyport.ErrUnavailable
+	}
+	window := surveyport.CustomerHistoryWindow{Items: []surveyport.Submission{}}
+	err := s.uow.Within(ctx, func(tx context.Context) error {
+		var e error
+		window.Items, e = store.CustomerHistoryWindow(tx, query)
+		return e
+	})
+	return window, classify(err)
 }
 func (s *SubmissionService) Analytics(ctx context.Context, id surveyport.ID) (surveyport.Analytics, error) {
 	if s == nil || s.uow == nil || s.store == nil || id < 1 {

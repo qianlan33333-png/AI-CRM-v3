@@ -256,6 +256,9 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	}
 	surveyDefinitions := surveyapp.NewService(uow, surveyRepository)
 	surveySubmissions := surveyapp.NewSubmissionService(uow, surveyRepository, surveyCipher)
+	if err = surveySubmissions.BindCustomerTimeline(customerStore); err != nil {
+		return fail(err)
+	}
 	surveyOAuthProvider, err := surveyprovider.NewWeChatOAuth(cfg.Survey.OAuthEnabled, cfg.Survey.OAuthAppID, cfg.Survey.OAuthSecret, cfg.Survey.OAuthOpenPlatformID, cfg.PublicOrigin+"/api/h5/surveys/oauth/callback")
 	if err != nil {
 		return fail(err)
@@ -326,8 +329,14 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if _, err = rand.Read(cursorSigningKey); err != nil {
 		return fail(err)
 	}
+	customerProfileStore := wecom.NewPostgreSQLCustomerSyncStore()
 	customerHandler, err := customerhttp.NewHandler(customerhttp.Config{UnitOfWork: uow, Auth: requestSecurity, CSRF: requestSecurity,
-		Directory: customerapp.Directory{Store: customerStore, SigningKey: cursorSigningKey}, Store: customerStore, Identities: queries, Audit: auditService})
+		Directory: customerapp.Directory{Store: customerStore, SigningKey: cursorSigningKey}, Store: customerStore, Identities: queries, Audit: auditService,
+		Canonical: canonicalCustomerAdapter{reader: queries},
+		Owners:    customerOwnerAdapter{uow: uow, observations: customerProfileStore, users: accessRepository},
+		Tags:      customerTagAdapter{uow: uow, observations: customerProfileStore, names: tagRepository},
+		Surveys:   customerSurveyAdapter{reader: surveySubmissions},
+		Timeline:  customerTimelineAdapter{uow: uow, reader: customerStore}, Chat: disabledCustomerChatActivity{}, ProfileSigningKey: cursorSigningKey})
 	if err != nil {
 		return fail(err)
 	}
@@ -447,7 +456,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		Receipts: callbackReceipts, Audit: auditService,
 	}
 	customerSync := wecom.CustomerSyncService{Enabled: cfg.WeCom.CustomerSyncEnabled, CorpID: cfg.WeCom.CorpID, Provider: providerClient,
-		Identity: oneID, Projection: customerStore, Store: wecom.NewPostgreSQLCustomerSyncStore(), Outbox: platformoutbox.NewPostgreSQL(),
+		Identity: oneID, Projection: customerStore, Timeline: customerStore, Store: customerProfileStore, Outbox: platformoutbox.NewPostgreSQL(),
 		Enqueuer: customerSyncEnqueuer, Audit: auditService, UOW: uow}
 	if err = customerSyncWorker.BindService(customerSync); err != nil && cfg.WeCom.CustomerSyncEnabled {
 		return fail(err)
@@ -526,7 +535,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 			return checkErr
 		}
 		var complete bool
-		checkErr := pool.Native().QueryRow(readinessContext, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['0001','0002','0003','0004','0005','0006','0007','0008','0009','0010','0011','0012','0013','0016','0017','0018','0019','0020','0021']) AS required(version) WHERE NOT EXISTS (SELECT 1 FROM platform_schema_migrations applied WHERE applied.version=required.version))`).Scan(&complete)
+		checkErr := pool.Native().QueryRow(readinessContext, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['0001','0002','0003','0004','0005','0006','0007','0008','0009','0010','0011','0012','0013','0016','0017','0018','0019','0020','0021','0022']) AS required(version) WHERE NOT EXISTS (SELECT 1 FROM platform_schema_migrations applied WHERE applied.version=required.version))`).Scan(&complete)
 		if checkErr != nil || !complete {
 			return errors.New("database schema is not ready")
 		}

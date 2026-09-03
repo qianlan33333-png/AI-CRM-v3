@@ -4,9 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const REPOSITORY = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-const template = fs.readFileSync(path.join(REPOSITORY, 'internal/webshell/templates/admin_customers.html'), 'utf8')
-  .replace('{{define "admin_customers"}}', '')
-  .replace('{{end}}', '');
+const templateSource = fs.readFileSync(path.join(REPOSITORY, 'internal/webshell/templates/admin_customers.html'), 'utf8');
 const javascript = fs.readFileSync(path.join(REPOSITORY, 'internal/webshell/static/admin_console/admin_customers.js'), 'utf8');
 const sleep = (milliseconds = 0) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 const fail = (message) => { throw new Error(`customer directory shell regression: ${message}`); };
@@ -42,6 +40,10 @@ function syncPage() {
 }
 
 async function load(url, requests) {
+  const detail = new URL(url).pathname !== '/admin/customers';
+  const template = templateSource
+    .replace('{{define "admin_customers"}}', '')
+    .replace(/{{if eq \.RequestPath "\/admin\/customers"}}([\s\S]*?){{else}}([\s\S]*?){{end}}\s*<\/div>\s*{{end}}\s*$/, `${detail ? '$2' : '$1'}\n</div>`);
   const dom = new JSDOM(`<!doctype html><html lang="zh-CN"><body>${template}<script>${javascript}</script></body></html>`, {
     url,
     runScripts: 'dangerously',
@@ -81,7 +83,8 @@ try {
   if (!phoneInput || phoneInput.type !== 'tel' || phoneInput.maxLength !== 11) fail('phone search is not a visible 11-digit telephone input');
   if (document.querySelector('[name="activation_status"]')) fail('activation filter is still rendered');
   if (document.querySelector('.customer-avatar') || document.querySelector('#customer-list-body img')) fail('avatar is still rendered');
-  if (document.querySelectorAll('.customer-table thead th').length !== 5) fail('customer table did not remove the activation column');
+  if (!document.querySelector('.admin-filter-bar.admin-form-grid--wide-filters')) fail('donor search bar structure is missing');
+  if (document.querySelectorAll('#customer-list-table-wrap thead th').length !== 5) fail('customer table did not remove the activation column');
   const rowText = document.querySelector('#customer-list-body')?.textContent || '';
   if (!rowText.includes('138****5678') || rowText.includes('+86') || rowText.includes('declared') || rowText.includes('已激活')) fail('customer row did not use the simplified phone/status presentation');
 
@@ -100,18 +103,23 @@ const detail = await load('https://test.invalid/admin/customers/42', detailReque
 try {
   const { document } = detail.window;
   const fields = document.querySelector('#customer-detail-fields')?.textContent || '';
-  const identities = document.querySelector('#customer-identity-list')?.textContent || '';
-  const phones = document.querySelector('#customer-phone-list')?.textContent || '';
+  const profileFields = [...document.querySelectorAll('#customer-detail-fields .admin-profile-field')];
+  const fieldValue = (label) => profileFields.find((field) => field.querySelector('span')?.textContent?.trim() === label)?.querySelector('strong')?.textContent?.trim() || '';
+  const identities = fieldValue('OneID');
+  const phones = fieldValue('手机号').replace('查询', '').trim();
   if (fields.includes('激活状态')) fail('activation status is still rendered in detail');
   if (identities.includes('phone') || identities.includes('declared')) fail('phone assurance leaked into the OneID summary');
   if (phones !== '138****5678') fail('detail masked phone is not in local display format');
-  if (document.querySelector('#customer-phone-reveal input') || document.querySelector('#customer-phone-reveal button')?.textContent?.trim() !== '查询') fail('detail phone query still requires a reason');
+  if (!document.querySelector('.admin-module-banner .admin-profile-grid')) fail('donor profile banner structure is missing');
+  if (!document.querySelector('.admin-split-grid.admin-customer-detail-layout')) fail('donor two-column detail structure is missing');
+  const revealButton = profileFields.find((field) => field.querySelector('span')?.textContent?.trim() === '手机号')?.querySelector('button');
+  if (!revealButton || revealButton.textContent?.trim() !== '查询') fail('detail phone query still requires a reason');
 
-  document.querySelector('#customer-phone-reveal')?.dispatchEvent(new detail.window.Event('submit', { bubbles: true, cancelable: true }));
+  revealButton.click();
   await sleep(30);
   const revealed = document.querySelector('#customer-phone-ephemeral')?.textContent || '';
   const revealRequest = detailRequests.find((item) => item.url.pathname.endsWith('/phone-reveal'));
-  if (revealed !== '手机号：13812345678' || revealed.includes('+86')) fail('revealed phone is not displayed as a local number');
+  if (revealed !== '手机号：13812345678（30 秒后自动隐藏）' || revealed.includes('+86')) fail('revealed phone is not displayed as a local number');
   if (revealRequest?.options.body !== undefined) fail('phone query still sends an operator-entered reason body');
   if (revealRequest?.options.headers?.get('X-CSRF-Token') !== 'test-csrf') fail('phone query lost CSRF protection');
   console.log('  ✓ customer detail queries a local phone directly while preserving CSRF');
