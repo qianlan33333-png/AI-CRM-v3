@@ -167,6 +167,9 @@ func execute(args []string, output io.Writer) error {
 		if err := flags.Parse(args[1:]); err != nil {
 			return err
 		}
+		if strings.TrimSpace(*batchKey) == "" || !*confirm {
+			return errors.New("batch-key and confirm-rollback are required")
+		}
 		return withPool(*targetEnv, *timeout, func(ctx context.Context, pool *pgxpool.Pool) error {
 			if err := Rollback(ctx, pool, *batchKey, *confirm); err != nil {
 				return err

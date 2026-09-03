@@ -323,7 +323,11 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
-	automationRuntime, err := automationapp.NewRuntimeService(uow, automationRepository, segmentExecution, segmentSnapshots, cfg.AutomationOperations.MaxRecipientsPerRun)
+	automationRecipientLimit := cfg.AutomationOperations.MaxRecipientsPerRun
+	if automationRecipientLimit == 0 {
+		automationRecipientLimit = 1
+	}
+	automationRuntime, err := automationapp.NewRuntimeService(uow, automationRepository, segmentExecution, segmentSnapshots, automationRecipientLimit)
 	if err != nil {
 		return fail(err)
 	}

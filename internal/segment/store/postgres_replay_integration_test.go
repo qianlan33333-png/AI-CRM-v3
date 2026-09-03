@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -12,7 +13,8 @@ import (
 )
 
 func TestPostgreSQLAudienceReceiptReplayAndPayloadDrift(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 	native, cleanup := segmentDatabase(t, ctx)
 	defer cleanup()
 	wrapped, err := platformpostgres.Wrap(native, time.Second)
@@ -41,15 +43,18 @@ func TestPostgreSQLAudienceReceiptReplayAndPayloadDrift(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var replayed Receipt
+	var replayOwned bool
 	err = uow.Within(ctx, func(tx context.Context) error {
-		replayed, owned, replayErr := repo.Reserve(tx, reservation)
-		if replayErr == nil && (owned || replayed.State != "completed" || string(replayed.ResultSnapshot) != string(result)) {
-			t.Fatalf("replay=%+v owned=%v", replayed, owned)
-		}
+		var replayErr error
+		replayed, replayOwned, replayErr = repo.Reserve(tx, reservation)
 		return replayErr
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if replayOwned || replayed.State != "completed" || !sameJSON(replayed.ResultSnapshot, result) {
+		t.Fatalf("replay=%+v owned=%v", replayed, replayOwned)
 	}
 	drift := reservation
 	drift.PayloadDigest = sha256.Sum256([]byte(`{"code":"different"}`))
@@ -60,4 +65,11 @@ func TestPostgreSQLAudienceReceiptReplayAndPayloadDrift(t *testing.T) {
 	if !errors.Is(err, ErrConflict) {
 		t.Fatalf("payload drift=%v", err)
 	}
+}
+
+func sameJSON(left, right []byte) bool {
+	var leftValue, rightValue any
+	return json.Unmarshal(left, &leftValue) == nil &&
+		json.Unmarshal(right, &rightValue) == nil &&
+		reflect.DeepEqual(leftValue, rightValue)
 }

@@ -80,7 +80,7 @@ func TestCommandValidationDoesNotNeedDatabase(t *testing.T) {
 	if err := execute([]string{"apply"}, &output); err == nil || !strings.Contains(err.Error(), "confirm-import") {
 		t.Fatalf("unexpected apply error %v", err)
 	}
-	if err := execute([]string{"rollback"}, &output); err == nil || !strings.Contains(err.Error(), "database URL environment") {
+	if err := execute([]string{"rollback"}, &output); err == nil || !strings.Contains(err.Error(), "confirm-rollback") {
 		t.Fatalf("unexpected rollback error %v", err)
 	}
 	if err := execute([]string{"unknown"}, &output); err == nil {

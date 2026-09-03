@@ -425,7 +425,7 @@ func (i *importer) packagesAndConfigurations() error {
 		disposition := "imported"
 		if errors.Is(e, pgx.ErrNoRows) {
 			archived := row.Lifecycle == "archived"
-			e = i.tx.QueryRow(i.ctx, `INSERT INTO segment_audience_packages(group_id,code,name,lifecycle,version,created_by,updated_by,created_at,updated_at,archived_at) VALUES($1,$2,$3,$4,1,$5,$5,$6,$7,CASE WHEN $4='archived' THEN $7 ELSE NULL END) RETURNING id`, groupID, code, row.Name, map[bool]string{true: "archived", false: "paused"}[archived], i.actor, row.CreatedAt, row.UpdatedAt).Scan(&targetID)
+			e = i.tx.QueryRow(i.ctx, `INSERT INTO segment_audience_packages(group_id,code,name,lifecycle,version,created_by,updated_by,created_at,updated_at,archived_at) VALUES($1,$2,$3,$4,1,$5,$5,$6::timestamptz,$7::timestamptz,CASE WHEN $4='archived' THEN $7::timestamptz ELSE NULL::timestamptz END) RETURNING id`, groupID, code, row.Name, map[bool]string{true: "archived", false: "paused"}[archived], i.actor, row.CreatedAt, row.UpdatedAt).Scan(&targetID)
 		} else if e == nil {
 			disposition = "mapped"
 		}
@@ -466,7 +466,7 @@ func (i *importer) packagesAndConfigurations() error {
 			if errors.Is(e, pgx.ErrNoRows) {
 				var next int64
 				if e = i.tx.QueryRow(i.ctx, `SELECT COALESCE(max(version),0)+1 FROM segment_audience_configuration_versions WHERE package_id=$1`, targetID).Scan(&next); e == nil {
-					e = i.tx.QueryRow(i.ctx, `INSERT INTO segment_audience_configuration_versions(package_id,version,schema_version,definition,refresh_cron_utc,digest,created_by,created_at) VALUES($1,$2,1,$3::jsonb,NULLIF($4,''),$5,$6,$7) RETURNING id`, targetID, next, definition, cron, definitionDigest[:], i.actor, c.CreatedAt).Scan(&existingID)
+					e = i.tx.QueryRow(i.ctx, `INSERT INTO segment_audience_configuration_versions(package_id,version,schema_version,definition,refresh_cron_utc,digest,created_by,created_at) VALUES($1,$2,1,$3::jsonb,NULLIF($4,''),$5,$6,$7::timestamptz) RETURNING id`, targetID, next, definition, cron, definitionDigest[:], i.actor, c.CreatedAt).Scan(&existingID)
 				}
 			} else if e == nil {
 				cdisp = "duplicate"
