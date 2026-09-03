@@ -178,6 +178,7 @@ func (h *Handler) historyRoutes(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		methodNotAllowed(w, stdhttp.MethodGet)
 		return
 	}
+	w.Header().Set("Cache-Control", "no-store")
 	if !h.read(w, r) {
 		return
 	}

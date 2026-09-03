@@ -116,5 +116,16 @@ func classifyHistory(err error) error {
 }
 
 func validHistoricalPage[T any](items []T, total int64, limit, offset int32) bool {
-	return total >= 0 && len(items) <= int(limit) && !(int64(offset) > total && len(items) != 0)
+	if total < 0 || limit < 1 || offset < 0 {
+		return false
+	}
+	available := total - int64(offset)
+	if available < 0 {
+		available = 0
+	}
+	expected := int64(limit)
+	if available < expected {
+		expected = available
+	}
+	return int64(len(items)) == expected
 }

@@ -1330,7 +1330,7 @@ paths:
       description: Read sealed v3-owned historical plan-group facts without runtime execution.
       security: [{adminSession: []}]
       parameters: [{$ref: "#/components/parameters/Limit"}, {$ref: "#/components/parameters/Offset"}]
-      responses: {"200": {description: Read-only history page, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsHistoryGroupPage"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+      responses: {"200": {description: Read-only history page, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsHistoryGroupPage"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
   /api/admin/automation-conversion/group-ops/history/plans/{plan_id}/nodes:
     parameters: [{$ref: "#/components/parameters/GroupOpsPlanID"}]
     get:
@@ -1339,7 +1339,7 @@ paths:
       description: Read sealed v3-owned historical schedule and content-package facts without runtime execution.
       security: [{adminSession: []}]
       parameters: [{$ref: "#/components/parameters/Limit"}, {$ref: "#/components/parameters/Offset"}]
-      responses: {"200": {description: Read-only history page, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsHistoryNodePage"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+      responses: {"200": {description: Read-only history page, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsHistoryNodePage"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
   /api/admin/automation-conversion/group-ops/plans:
     get:
       operationId: listGroupOpsPlans
