@@ -148,10 +148,16 @@ CREATE TRIGGER channels_no_truncate
     BEFORE TRUNCATE ON channels
     FOR EACH STATEMENT EXECUTE FUNCTION channel_catalog_guard();
 CREATE TRIGGER channel_config_versions_immutable
-    BEFORE UPDATE OR DELETE OR TRUNCATE ON channel_config_versions
+    BEFORE UPDATE OR DELETE ON channel_config_versions
+    FOR EACH STATEMENT EXECUTE FUNCTION channel_catalog_guard();
+CREATE TRIGGER channel_config_versions_no_truncate
+    BEFORE TRUNCATE ON channel_config_versions
     FOR EACH STATEMENT EXECUTE FUNCTION channel_catalog_guard();
 CREATE TRIGGER channel_assignees_immutable
-    BEFORE UPDATE OR DELETE OR TRUNCATE ON channel_assignees
+    BEFORE UPDATE OR DELETE ON channel_assignees
+    FOR EACH STATEMENT EXECUTE FUNCTION channel_catalog_guard();
+CREATE TRIGGER channel_assignees_no_truncate
+    BEFORE TRUNCATE ON channel_assignees
     FOR EACH STATEMENT EXECUTE FUNCTION channel_catalog_guard();
 
 CREATE FUNCTION channel_receipt_guard() RETURNS trigger

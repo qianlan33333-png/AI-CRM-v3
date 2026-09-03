@@ -48,6 +48,10 @@ func TestCatalogArchivedIsTerminalAndCannotPublish(t *testing.T) {
 	if !errors.Is(err, ErrInvalidTransition) {
 		t.Fatalf("expected terminal archived status, got %v", err)
 	}
+	_, err = channel.Update(UpdateChannel{ExpectedVersion: 1, Code: channel.Code, Status: StatusArchived, Config: validCatalogConfig()}, now.Add(time.Second))
+	if !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("expected archived configuration to be immutable, got %v", err)
+	}
 }
 
 func TestCatalogValidation(t *testing.T) {

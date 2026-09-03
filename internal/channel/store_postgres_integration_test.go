@@ -9,6 +9,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"sync"
 	"testing"
@@ -20,9 +21,90 @@ import (
 	channeldomain "github.com/qianlan33333-png/AI-CRM-v3/internal/channel/domain"
 	channelport "github.com/qianlan33333-png/AI-CRM-v3/internal/channel/port"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
+	platformaudit "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/audit"
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
+	platformoutbox "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/outbox"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 )
+
+func TestPostgreSQLChannelCatalogAtomicReplayAndImmutableVersionsIntegration(t *testing.T) {
+	pool, cleanup := channelIntegrationPool(t)
+	defer cleanup()
+	unit, err := platformpostgres.NewUnitOfWork(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	actorID := insertChannelAdmin(t, ctx, pool)
+	store := NewPostgreSQLCatalogStore()
+	staff := fixedCatalogStaffReader{actorID: actorID}
+	failed := NewCatalogService(unit, store, store, failingCatalogEventAppender{}, nil, nil, staff)
+	create := validCatalogCreate()
+	create.Config.Assignment.Assignees[0].StaffID = actorID
+	command := CatalogMutation{ActorID: actorID, IdempotencyKey: "pg-channel-create-0001", Create: create}
+	if _, err = failed.Create(ctx, command); err == nil {
+		t.Fatal("event append failure did not roll back")
+	}
+	var rolledBack int
+	if err = pool.Native().QueryRow(ctx, `SELECT (SELECT count(*) FROM channels)+(SELECT count(*) FROM channel_operation_receipts)`).Scan(&rolledBack); err != nil || rolledBack != 0 {
+		t.Fatalf("rolled back rows=%d err=%v", rolledBack, err)
+	}
+
+	auditService, err := platformaudit.NewService(platformaudit.NewPostgreSQLStore())
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := NewChannelCatalogEventAppender(auditService, platformoutbox.NewPostgreSQL())
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewCatalogService(unit, store, store, events, nil, nil, staff)
+	created, err := service.Create(ctx, command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayed, err := service.Create(ctx, command)
+	if err != nil || !reflect.DeepEqual(replayed, created) {
+		t.Fatalf("replay=%#v want=%#v err=%v", replayed, created, err)
+	}
+	update := CatalogMutation{ActorID: actorID, IdempotencyKey: "pg-channel-update-0001", Update: channeldomain.UpdateChannel{ExpectedVersion: created.Version, Code: created.Code, Status: channeldomain.StatusInactive, Config: created.Config}}
+	updated, err := service.Update(ctx, created.ID, update)
+	if err != nil || updated.Version != 2 || updated.ConfigVersion != 2 {
+		t.Fatalf("update=%#v err=%v", updated, err)
+	}
+	var channels, versions, receipts, audits, outbox int
+	if err = pool.Native().QueryRow(ctx, `SELECT (SELECT count(*) FROM channels),(SELECT count(*) FROM channel_config_versions),(SELECT count(*) FROM channel_operation_receipts),(SELECT count(*) FROM audit_events WHERE resource_type='channel'),(SELECT count(*) FROM outbox_events WHERE aggregate_type='channel')`).Scan(&channels, &versions, &receipts, &audits, &outbox); err != nil {
+		t.Fatal(err)
+	}
+	if channels != 1 || versions != 2 || receipts != 2 || audits != 2 || outbox != 2 {
+		t.Fatalf("rows channels=%d versions=%d receipts=%d audits=%d outbox=%d", channels, versions, receipts, audits, outbox)
+	}
+	if _, err = pool.Native().Exec(ctx, `UPDATE channel_config_versions SET name=name`); err == nil {
+		t.Fatal("immutable channel configuration accepted update")
+	}
+	if _, err = pool.Native().Exec(ctx, `DELETE FROM channels WHERE id=$1`, created.ID); err == nil {
+		t.Fatal("archive-only channel accepted delete")
+	}
+	if _, err = store.Create(ctx, created, actorID); !errors.Is(err, platformpostgres.ErrTransactionNeeded) {
+		t.Fatalf("write outside transaction error=%v", err)
+	}
+}
+
+type failingCatalogEventAppender struct{}
+
+func (failingCatalogEventAppender) Append(context.Context, channelport.CatalogEvent) error {
+	return errors.New("injected event failure")
+}
+
+type fixedCatalogStaffReader struct{ actorID int64 }
+
+func (reader fixedCatalogStaffReader) ReadChannelStaff(_ context.Context, ids []int64) ([]channelport.StaffSnapshot, error) {
+	if len(ids) != 1 || ids[0] != reader.actorID {
+		return nil, errors.New("unknown staff")
+	}
+	return []channelport.StaffSnapshot{{ID: reader.actorID, Name: "Channel Owner", Active: true}}, nil
+}
 
 func TestPostgreSQLChannelCallbackPersistenceIntegration(t *testing.T) {
 	pool, cleanup := channelIntegrationPool(t)
@@ -537,5 +619,7 @@ func channelMigrationPaths(t *testing.T) []string {
 		filepath.Join(root, "migrations", "0004_wecom.sql"),
 		filepath.Join(root, "migrations", "0005_external_effects.sql"),
 		filepath.Join(root, "migrations", "0006_wecom_callback_channel_acquisition.sql"),
+		filepath.Join(root, "migrations", "0009_customer_activation.sql"),
+		filepath.Join(root, "migrations", "0028_channel_center.sql"),
 	}
 }

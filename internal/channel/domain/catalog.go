@@ -129,7 +129,7 @@ func (channel Channel) Update(command UpdateChannel, now time.Time) (Channel, er
 	if command.Code != channel.Code {
 		return Channel{}, ErrImmutableCode
 	}
-	if channel.Status == StatusArchived && command.Status != StatusArchived {
+	if channel.Status == StatusArchived {
 		return Channel{}, ErrInvalidTransition
 	}
 	updated := channel
