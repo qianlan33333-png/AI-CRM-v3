@@ -72,6 +72,7 @@ func TestPostgreSQLAdminAccessCompatibilityJourney(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	targetSession, _ := adminAccessLogin(t, application.handler, "operator", "admin-access-operator-password")
 
 	session, csrf := adminAccessLogin(t, application.handler, "owner", "admin-access-owner-password")
 	before := adminAccessRequest(t, application.handler, http.MethodGet, nil, session, "")
@@ -84,9 +85,9 @@ func TestPostgreSQLAdminAccessCompatibilityJourney(t *testing.T) {
 	if saved.Code != http.StatusOK || !strings.Contains(saved.Body.String(), `"login_enabled":false`) {
 		t.Fatalf("save=%d body=%s", saved.Code, saved.Body.String())
 	}
-	refreshed := adminAccessRequest(t, application.handler, http.MethodGet, nil, session, "")
+	refreshed := adminAccessRequest(t, application.handler, http.MethodGet, nil, targetSession, "")
 	if refreshed.Code != http.StatusUnauthorized || !strings.Contains(refreshed.Body.String(), "authentication_required") {
-		t.Fatalf("disabled session must be fenced: status=%d body=%s", refreshed.Code, refreshed.Body.String())
+		t.Fatalf("disabled target session must be fenced: status=%d body=%s", refreshed.Code, refreshed.Body.String())
 	}
 
 	var active bool
@@ -104,9 +105,8 @@ func TestPostgreSQLAdminAccessCompatibilityJourney(t *testing.T) {
 		t.Fatalf("commit state active=%v audits=%d receipts=%d", active, audits, receipts)
 	}
 
-	// The original disabled session is deliberately fenced, so log in again to
-	// prove exact replay does not create another audit/session mutation.
-	session, csrf = adminAccessLogin(t, application.handler, "owner", "admin-access-owner-password")
+	// The owner remains active; an exact replay must not create another
+	// audit/session mutation after the target's existing session was fenced.
 	replay := adminAccessMutation(t, application.handler, payload, session, csrf, "admin-access-journey-save")
 	if replay.Code != http.StatusOK {
 		t.Fatalf("exact replay=%d body=%s", replay.Code, replay.Body.String())
@@ -128,6 +128,12 @@ func TestPostgreSQLAdminAccessCompatibilityJourney(t *testing.T) {
 	}
 	if err = application.pool.Native().QueryRow(ctx, `SELECT count(*) FROM admin_access_login_compat_receipts WHERE actor_admin_user_id=1 AND idempotency_key='admin-access-journey-rollback'`).Scan(&receipts); err != nil || receipts != 0 {
 		t.Fatalf("failed request left receipt count=%d err=%v", receipts, err)
+	}
+	if err = application.pool.Native().QueryRow(ctx, `SELECT is_active FROM admin_users WHERE id=$1`, target.ID).Scan(&active); err != nil || active {
+		t.Fatalf("failed request changed target active=%v err=%v", active, err)
+	}
+	if err = application.pool.Native().QueryRow(ctx, `SELECT count(*) FROM admin_access_audit WHERE target_admin_user_id=$1 AND action='set_login_enabled'`, target.ID).Scan(&audits); err != nil || audits != 1 {
+		t.Fatalf("failed request changed audit count=%d err=%v", audits, err)
 	}
 }
 
