@@ -1,4 +1,4 @@
-package app_test
+package main
 
 import (
 	"context"
@@ -341,7 +341,7 @@ func groupOpsIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 		t.Fatal("locate Group Ops Journey test")
 	}
 	for _, migration := range []string{"0003_access.sql", "0005_external_effects.sql", "0012_group_ops.sql"} {
-		sql, readErr := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "..", "migrations", migration))
+		sql, readErr := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "migrations", migration))
 		if readErr != nil {
 			native.Close()
 			admin.Close()
