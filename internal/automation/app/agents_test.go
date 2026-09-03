@@ -217,3 +217,53 @@ func TestFixedScriptContentAndCopyReplay(t *testing.T) {
 		t.Fatalf("copy replay=%+v err=%v events=%+v", replayed, err, events.rows)
 	}
 }
+
+func TestActiveFixedContentRequiresPausePublishAndReactivate(t *testing.T) {
+	now := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
+	store, events := newAgentTestStore(), &agentTestEvents{}
+	service := agentTestService(now, store, events)
+	created, err := service.Create(context.Background(), automationport.CreateCommand{
+		Actor:          9,
+		IdempotencyKey: "fixed-active-create-01",
+		Agent: automationport.Agent{
+			AgentName:           "激活中的固定话术",
+			AgentCode:           "active_fixed_script",
+			AutomationType:      automationport.AutomationTypeFixedScript,
+			Status:              automationport.AgentStatusPaused,
+			DraftRolePrompt:     "保持准确。",
+			DraftTaskPrompt:     "回复欢迎语。",
+			FixedContentPackage: automationport.FixedContentPackage{ContentText: "欢迎加入。"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	active, err := service.SetStatus(context.Background(), automationport.MutationCommand{ID: created.ID, Actor: 9, IdempotencyKey: "fixed-active-enable-01"}, automationport.AgentStatusActive)
+	if err != nil || active.Status != automationport.AgentStatusActive || !active.ExecutionEnabled {
+		t.Fatalf("active=%+v err=%v", active, err)
+	}
+	changed := automationport.FixedContentPackage{ContentText: "欢迎加入，稍后回复。"}
+	if _, err = service.SaveFixedContent(context.Background(), automationport.FixedContentCommand{ID: created.ID, ContentPackage: changed, Actor: 9, IdempotencyKey: "fixed-active-save-0001"}); !errors.Is(err, ErrAgentConflict) {
+		t.Fatalf("active save err=%v, want conflict", err)
+	}
+	current, err := service.Get(context.Background(), created.ID)
+	if err != nil || current.FixedContentPackage.ContentText != "欢迎加入。" || current.DraftVersion != 1 || current.PublishedVersion != 1 || len(events.rows) != 2 {
+		t.Fatalf("active record mutated=%+v err=%v events=%+v", current, err, events.rows)
+	}
+	paused, err := service.SetStatus(context.Background(), automationport.MutationCommand{ID: created.ID, Actor: 9, IdempotencyKey: "fixed-active-pause-0001"}, automationport.AgentStatusPaused)
+	if err != nil || paused.ExecutionEnabled {
+		t.Fatalf("paused=%+v err=%v", paused, err)
+	}
+	saved, err := service.SaveFixedContent(context.Background(), automationport.FixedContentCommand{ID: created.ID, ContentPackage: changed, Actor: 9, IdempotencyKey: "fixed-paused-save-0001"})
+	if err != nil || saved.DraftVersion != 2 || saved.PublishedVersion != 1 || saved.FixedContentPackage.ContentText != changed.ContentText {
+		t.Fatalf("saved=%+v err=%v", saved, err)
+	}
+	published, err := service.Publish(context.Background(), automationport.MutationCommand{ID: created.ID, Actor: 9, IdempotencyKey: "fixed-active-publish-01"})
+	if err != nil || published.DraftVersion != published.PublishedVersion {
+		t.Fatalf("published=%+v err=%v", published, err)
+	}
+	reactivated, err := service.SetStatus(context.Background(), automationport.MutationCommand{ID: created.ID, Actor: 9, IdempotencyKey: "fixed-active-enable-02"}, automationport.AgentStatusActive)
+	if err != nil || reactivated.Status != automationport.AgentStatusActive || !reactivated.ExecutionEnabled {
+		t.Fatalf("reactivated=%+v err=%v", reactivated, err)
+	}
+}

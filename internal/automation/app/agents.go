@@ -221,6 +221,9 @@ func (s *Service) SaveFixedContent(ctx context.Context, input automationport.Fix
 		if item.Status == automationport.AgentStatusArchived {
 			return automationport.Agent{}, false, ErrAgentNotFound
 		}
+		if item.Status == automationport.AgentStatusActive {
+			return automationport.Agent{}, false, ErrAgentConflict
+		}
 		content, err := normalizeContent(input.ContentPackage, item.AutomationType)
 		if err != nil {
 			return automationport.Agent{}, false, err

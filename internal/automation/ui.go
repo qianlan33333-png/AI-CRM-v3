@@ -82,7 +82,7 @@ func validAgentQuery(page string, r *http.Request) bool {
 		return true
 	}
 	if types, ok := q["type"]; ok {
-		return len(q) == 1 && len(types) == 1 && types[0] == "fixed_script"
+		return len(q) == 1 && len(types) == 1 && (types[0] == "agent" || types[0] == "fixed_script")
 	}
 	v, ok := q["id"]
 	if !ok || len(v) != 1 || len(q) > 2 {
