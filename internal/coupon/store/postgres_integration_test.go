@@ -70,6 +70,23 @@ func TestPostgreSQLCouponRulesAtomicReceiptAuditAndOutbox(t *testing.T) {
 	if _, err = service.Publish(ctx, created.ID, 7, "coupon-pg-publish-key-01"); err != nil {
 		t.Fatal(err)
 	}
+	var repositoryItems []couponport.Coupon
+	if err = uow.Within(ctx, func(txCtx context.Context) error {
+		repositoryItems, err = repository.List(txCtx, 50, 0, "", "")
+		return err
+	}); err != nil {
+		t.Fatalf("repository list persisted coupons: %v", err)
+	}
+	if len(repositoryItems) != 1 || repositoryItems[0].ID != created.ID {
+		t.Fatalf("repository list=%#v", repositoryItems)
+	}
+	page, err := service.List(ctx, 50, 0, "", "")
+	if err != nil {
+		t.Fatalf("list persisted coupons: %v", err)
+	}
+	if page.Total != 1 || len(page.Items) != 1 || page.Items[0].ID != created.ID || len(page.Items[0].TargetRefs) != 1 || page.Items[0].TargetRefs[0] != "standard_product:9" {
+		t.Fatalf("persisted list=%#v", page)
+	}
 	var rules, targets, receipts, audits, outbox int
 	if err = native.QueryRow(ctx, `SELECT (SELECT count(*) FROM coupon_rules),(SELECT count(*) FROM coupon_rule_targets),(SELECT count(*) FROM coupon_operation_receipts),(SELECT count(*) FROM coupon_audit_events),(SELECT count(*) FROM coupon_outbox)`).Scan(&rules, &targets, &receipts, &audits, &outbox); err != nil {
 		t.Fatal(err)
