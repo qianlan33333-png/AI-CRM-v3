@@ -51,6 +51,7 @@ for migration_contract in \
   '0011_coupon_rules.sql:Coupon rules' \
   '0012_group_ops.sql:Group Ops' \
   '0013_automation_agents.sql:Automation agents' \
+  '0014_operation_cycles.sql:Operation Cycle' \
   '0016_media_content_packages.sql:Media content packages' \
   '0017_group_ops_history.sql:Group Ops history' \
   '0019_tag_catalog_sync_projection.sql:Tag catalog sync projection'; do

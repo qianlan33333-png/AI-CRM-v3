@@ -24,13 +24,18 @@ if (fs.existsSync(stage)) fail(`refusing to overwrite an existing stage: ${stage
 if (!fs.statSync(manifestPath).isFile()) fail('missing asset-manifest.json');
 
 const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-const roots = ['admin', 'tokens', 'labs'].map((name) => manifest.entries?.[name]);
+const roots = ['admin', 'tokens', 'labs', 'operationCyclesHost'].map((name) => manifest.entries?.[name]);
 if (roots.some((entry) => typeof entry !== 'string')) fail('campaigns entry assets are absent from manifest');
-const outputForInput = (input) => Object.entries(manifest.files || {}).find(([, file]) => file.inputs?.includes(input))?.[0];
-const legacyEntry = outputForInput('web/src/admin/legacy.ts');
-const campaignsEntry = outputForInput('web/src/admin/sections/campaigns.ts');
-const groupOpsHistoryEntry = outputForInput('web/src/admin/sections/groupOpsHistory.ts');
-if (!legacyEntry || !campaignsEntry || !groupOpsHistoryEntry) fail('required frozen admin runtime chunks are absent from manifest');
+const dynamicOutputForInput = (from, input) => (manifest.files[from]?.imports || []).find((item) =>
+  item.kind === 'dynamic-import' && manifest.files[item.path]?.inputs?.includes(input)
+)?.path;
+const legacyEntry = dynamicOutputForInput(manifest.entries.admin, 'web/src/admin/legacy.ts');
+const campaignsEntry = legacyEntry && dynamicOutputForInput(legacyEntry, 'web/src/admin/sections/campaigns.ts');
+const groupOpsHistoryEntry = legacyEntry && dynamicOutputForInput(legacyEntry, 'web/src/admin/sections/groupOpsHistory.ts');
+const operationHost = manifest.entries.operationCyclesHost;
+const operationMainEntry = dynamicOutputForInput(operationHost, 'web/src/admin/main.ts');
+const operationLegacyEntry = operationMainEntry && dynamicOutputForInput(operationMainEntry, 'web/src/admin/legacy.ts');
+if (!legacyEntry || !campaignsEntry || !groupOpsHistoryEntry || !operationMainEntry || !operationLegacyEntry) fail('required frozen admin runtime chunks are absent from manifest');
 
 const selected = new Set();
 const includeStatic = (relative) => {
@@ -53,6 +58,8 @@ for (const root of roots) includeStatic(root);
 includeStatic(legacyEntry);
 includeStatic(campaignsEntry);
 includeStatic(groupOpsHistoryEntry);
+includeStatic(operationMainEntry);
+includeStatic(operationLegacyEntry);
 
 for (const relative of [...selected].sort()) copy(relative);
 // Media uses the same immutable admin bundle, mounted by the v3 shell. These
@@ -71,6 +78,8 @@ for (const page of ['groupops', 'groupopsDetail']) copy(`admin/${page}.html`);
 // PR07 Agent pages are byte-frozen private template carriers. They are mounted
 // by the existing v3 shell and must never become a second public donor shell.
 for (const page of ['agents', 'agentEdit']) copy(`admin/${page}.html`);
+// PR08 Operation Cycle pages are byte-frozen private template carriers.
+for (const page of ['cycles', 'cyclesDetail']) copy(`admin/${page}.html`);
 // Tags also runs through the frozen donor admin entry. Keep the generated
 // donor page only as a release-private template source under a non-routable
 // filename; the Go adapter extracts template#tpl and mounts it in PR10's sole
@@ -83,7 +92,7 @@ fs.copyFileSync(tagsSource, tagsTarget);
 
 const stagedManifest = {
   ...manifest,
-  entries: Object.fromEntries(['admin', 'tokens', 'labs'].map((name) => [name, manifest.entries[name]])),
+  entries: Object.fromEntries(['admin', 'tokens', 'labs', 'operationCyclesHost'].map((name) => [name, manifest.entries[name]])),
   files: Object.fromEntries([...selected].sort().map((relative) => [relative, manifest.files[relative]])),
 };
 fs.writeFileSync(path.join(stage, 'asset-manifest.json'), `${JSON.stringify(stagedManifest, null, 2)}\n`);
@@ -98,12 +107,13 @@ const walk = (directory) => {
 };
 walk(stage);
 for (const relative of stagedFiles) {
-  const allowed = relative === 'asset-manifest.json' || relative.startsWith('assets/') || ['admin/images.html', 'admin/attach.html', 'admin/mpLib.html', 'admin/tags.html', 'admin/products.html', 'admin/productForm.html', 'admin/spProducts.html', 'admin/spProductForm.html', 'admin/coupons.html', 'admin/couponForm.html', 'admin/groupops.html', 'admin/groupopsDetail.html', 'admin/agents.html', 'admin/agentEdit.html'].includes(relative);
+  const allowedHTML = ['admin/images.html', 'admin/attach.html', 'admin/mpLib.html', 'admin/tags.html', 'admin/products.html', 'admin/productForm.html', 'admin/spProducts.html', 'admin/spProductForm.html', 'admin/coupons.html', 'admin/couponForm.html', 'admin/groupops.html', 'admin/groupopsDetail.html', 'admin/agents.html', 'admin/agentEdit.html', 'admin/cycles.html', 'admin/cyclesDetail.html'];
+  const allowed = relative === 'asset-manifest.json' || relative.startsWith('assets/') || allowedHTML.includes(relative);
   if (!allowed) fail(`unapproved release file: ${relative}`);
-  if (relative.endsWith('.html') && !['admin/images.html', 'admin/attach.html', 'admin/mpLib.html', 'admin/tags.html', 'admin/products.html', 'admin/productForm.html', 'admin/spProducts.html', 'admin/spProductForm.html', 'admin/coupons.html', 'admin/couponForm.html', 'admin/groupops.html', 'admin/groupopsDetail.html', 'admin/agents.html', 'admin/agentEdit.html'].includes(relative)) fail(`unapproved HTML surface: ${relative}`);
+  if (relative.endsWith('.html') && !allowedHTML.includes(relative)) fail(`unapproved HTML surface: ${relative}`);
   if (/(^|\/)(h5|sidebar|public)(\/|$)/.test(relative)) fail(`unapproved public surface: ${relative}`);
 }
 for (const relative of selected) {
   if (!stagedFiles.includes(relative)) fail(`missing staged dependency: ${relative}`);
 }
-console.log(`staged ${selected.size} frozen admin assets and private Media, Tags, Product, Coupon, Group Ops, and Automation templates in ${stage}`);
+console.log(`staged ${selected.size} frozen admin assets and private Media, Tags, Product, Coupon, Group Ops, Automation, and Operation Cycle templates in ${stage}`);

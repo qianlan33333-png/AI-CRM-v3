@@ -77,6 +77,9 @@ type AdminShellView struct {
 	Survey               bool
 	SurveyPage           string
 	SurveyAssets         SurveyAssets
+	OperationCycles      bool
+	OperationPage        string
+	OperationAssets      OperationCycleAssets
 }
 
 // ExternalEffectsAssets are manifest-derived URLs for the frozen donor bundle.
@@ -112,6 +115,10 @@ type GroupOpsAssets struct{ TokensCSS, LabsCSS, AdminJS string }
 type AutomationAssets struct{ TokensCSS, LabsCSS, AdminJS string }
 
 type SurveyAssets struct{ TokensCSS, LabsCSS, AdminJS, EditorJS, EditorCSS string }
+
+// OperationCycleAssets keep the immutable donor presentation separate from
+// the minimal v3 host binding that supplies real data and commands.
+type OperationCycleAssets struct{ TokensCSS, LabsCSS, HostJS string }
 
 // Render implements the small presentation contract consumed by the Access
 // HTTP handler. Keeping this adapter in webshell avoids a concrete import
@@ -324,6 +331,23 @@ func (renderer *Renderer) RenderSurvey(writer http.ResponseWriter, data AdminPag
 		content += `<div id="questionnaire-editor-config" hidden>{"mode":"new","heading":"问卷编辑","backHref":"questionnaires.html","defaultAssessment":false,"initialQuestionnaire":null,"initialQuestionnaireId":null}</div>`
 	}
 	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: template.HTML(content), Survey: true, SurveyPage: page, SurveyAssets: assets})
+	if err != nil {
+		return err
+	}
+	return writeHTML(writer, http.StatusOK, body)
+}
+
+// RenderOperationCycles mounts one byte-frozen donor template inside the one
+// v3 sidebar. Its host binding starts the frozen donor main -> legacy ->
+// AdminController runtime after supplying only the operation-cycle read DTO.
+func (renderer *Renderer) RenderOperationCycles(writer http.ResponseWriter, data AdminPageData, page, donorTemplate string, assets OperationCycleAssets) error {
+	if renderer == nil || renderer.templates == nil || donorTemplate == "" || assets.TokensCSS == "" || assets.LabsCSS == "" || assets.HostJS == "" || (page != "cycles" && page != "cyclesDetail") {
+		return errors.New("operation-cycle shell assets are required")
+	}
+	normalizeAdminPage(&data)
+	data.ShowPageHeader = false
+	content := `<base href="/admin/operation-cycles/"><main id="stage" class="stage rich"></main><template id="tpl">` + donorTemplate + `</template>`
+	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: template.HTML(content), OperationCycles: true, OperationPage: page, OperationAssets: assets})
 	if err != nil {
 		return err
 	}

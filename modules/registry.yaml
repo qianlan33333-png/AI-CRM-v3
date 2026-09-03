@@ -45,6 +45,10 @@ modules:
     status: planned
     owner: crm-operations
     dependencies: [crm-core-modules, content-commerce-modules]
+  - name: operationcycle
+    status: implemented
+    owner: crm-operations
+    dependencies: [platform, access]
   - name: intelligence-platform-tail
     status: planned
     owner: crm-platform

@@ -597,6 +597,25 @@ func TestAutomationCreateCodeAdapterBrowserTiming(t *testing.T) {
 	}
 }
 
+// TestOperationCyclesHostShellJourney is the release-facing host Journey:
+// an authenticated v3 route mounts one frozen fragment in the sole sidebar
+// shell and exposes only the v3 binding that starts the donor runtime.
+func TestOperationCyclesHostShellJourney(t *testing.T) {
+	renderer, err := NewRenderer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	err = renderer.RenderOperationCycles(response, AdminPageForRequest(httptest.NewRequest(http.MethodGet, "/admin/operation-cycles/cyclesDetail.html?id=1", nil), "运营闭环", "", "api.admin_operation_cycles_page"), "cyclesDetail", `<section data-proof="frozen">原版页面</section>`, OperationCycleAssets{TokensCSS: "/assets/tokens.css", LabsCSS: "/assets/labs.css", HostJS: "/assets/operationCyclesHost.js"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := response.Body.String()
+	if response.Code != http.StatusOK || strings.Count(body, `class="admin-sidebar"`) != 1 || strings.Count(body, `<aside`) != 1 || strings.Contains(body, `class="side"`) || strings.Contains(body, `class="shell"`) || !strings.Contains(body, `<base href="/admin/operation-cycles/">`) || !strings.Contains(body, `data-page="cyclesDetail"`) || !strings.Contains(body, `src="/assets/operationCyclesHost.js"`) || !strings.Contains(body, `<template id="tpl"><section data-proof="frozen">原版页面</section></template>`) {
+		t.Fatalf("operation-cycle host shell mismatch status=%d body=%q", response.Code, body)
+	}
+}
+
 func TestLoginPostNeverIssuesSession(t *testing.T) {
 	handler := MustHandler()
 	response := httptest.NewRecorder()

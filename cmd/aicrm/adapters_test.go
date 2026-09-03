@@ -224,6 +224,29 @@ func TestSecurityHeadersAllowBlobImagesOnlyOnMediaPages(t *testing.T) {
 	}
 }
 
+func TestSecurityHeadersAllowFrozenOperationCycleInlineStylesOnBothPagesOnly(t *testing.T) {
+	handler := securityHeaders(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	for path, allowed := range map[string]bool{
+		"/admin/operation-cycles":                        true,
+		"/admin/operation-cycles/cyclesDetail.html?id=1": true,
+		"/admin/operation-cycles/cycles.html":            true,
+		"/admin/operation-cycles-unsafe":                 false,
+		"/api/admin/operation-cycles/strategies":         false,
+		"/assets/operationCyclesHost.js":                 false,
+	} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		policy := response.Header().Get("Content-Security-Policy")
+		hasInlineStyle := strings.Contains(policy, "style-src 'self' 'unsafe-inline'")
+		if hasInlineStyle != allowed {
+			t.Fatalf("path=%s inline-style=%t policy=%q", path, hasInlineStyle, policy)
+		}
+		if strings.Contains(policy, "script-src 'self' 'unsafe-inline'") {
+			t.Fatalf("operation-cycle CSP relaxed scripts for %s: %q", path, policy)
+		}
+	}
+}
+
 func TestApplicationRouterOwnsEffectsAndPushCenterSeparately(t *testing.T) {
 	marker := func(name string) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

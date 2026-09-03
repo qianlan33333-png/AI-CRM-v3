@@ -37,6 +37,9 @@ import (
 	mediaapp "github.com/qianlan33333-png/AI-CRM-v3/internal/media/app"
 	groupopsmaterial "github.com/qianlan33333-png/AI-CRM-v3/internal/media/groupopsmaterial"
 	mediastore "github.com/qianlan33333-png/AI-CRM-v3/internal/media/store"
+	operationcycle "github.com/qianlan33333-png/AI-CRM-v3/internal/operationcycle"
+	operationapp "github.com/qianlan33333-png/AI-CRM-v3/internal/operationcycle/app"
+	operationstore "github.com/qianlan33333-png/AI-CRM-v3/internal/operationcycle/store"
 	orderapp "github.com/qianlan33333-png/AI-CRM-v3/internal/order/app"
 	orderhttp "github.com/qianlan33333-png/AI-CRM-v3/internal/order/http"
 	orderstore "github.com/qianlan33333-png/AI-CRM-v3/internal/order/store"
@@ -318,6 +321,14 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
+	operationModule := operationcycle.NewModuleRegistration()
+	operationRepository := operationstore.NewRepository()
+	operationJournal := operationstore.NewEventJournal()
+	operationService := operationapp.NewService(uow, operationRepository, operationJournal, operationJournal)
+	operationBindings, err := operationModule.Bind(operationService, requestSecurity, cfg.OperationCycleServiceToken)
+	if err != nil {
+		return fail(err)
+	}
 	oneIDHandler, err := identityhttp.NewHandler(identityhttp.Config{
 		UnitOfWork: uow, Authenticator: requestSecurity, CSRF: requestSecurity,
 		OneID: oneID, Queries: queries, Audit: auditService,
@@ -530,12 +541,14 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	adminAPIs.Handle("/api/h5/surveys/oauth/", surveyBindings.Survey)
 	adminAPIs.Handle("/api/sidebar/v2/questionnaires", surveyBindings.Survey)
 	adminAPIs.Handle("/api/v1/customers/", surveyBindings.Survey)
+	adminAPIs.Handle("/api/admin/operation-cycles/", operationBindings.API)
+	adminAPIs.Handle("/api/operation-cycles/", operationBindings.API)
 	readiness := platformruntime.ReadinessFunc(func(readinessContext context.Context) error {
 		if checkErr := pool.Check(readinessContext); checkErr != nil {
 			return checkErr
 		}
 		var complete bool
-		checkErr := pool.Native().QueryRow(readinessContext, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['0001','0002','0003','0004','0005','0006','0007','0008','0009','0010','0011','0012','0013','0016','0017','0018','0019','0020','0021','0022']) AS required(version) WHERE NOT EXISTS (SELECT 1 FROM platform_schema_migrations applied WHERE applied.version=required.version))`).Scan(&complete)
+		checkErr := pool.Native().QueryRow(readinessContext, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['0001','0002','0003','0004','0005','0006','0007','0008','0009','0010','0011','0012','0013','0014','0016','0017','0018','0019','0020','0021','0022','0023']) AS required(version) WHERE NOT EXISTS (SELECT 1 FROM platform_schema_migrations applied WHERE applied.version=required.version))`).Scan(&complete)
 		if checkErr != nil || !complete {
 			return errors.New("database schema is not ready")
 		}
@@ -561,6 +574,9 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 			return checkErr
 		}
 		if checkErr = surveyModule.Readiness(readinessContext, pool.Native()); checkErr != nil {
+			return checkErr
+		}
+		if checkErr = operationModule.Readiness(readinessContext, pool.Native()); checkErr != nil {
 			return checkErr
 		}
 		return nil
@@ -605,7 +621,10 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return renderer.RenderSurvey(writer, webshell.AdminPageForRequest(request, titles[page], "管理问卷定义、版本、答卷及只读外部效果回执。", "api.admin_questionnaires"), page, donorTemplate, webshell.SurveyAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS, EditorJS: assets.EditorJS, EditorCSS: assets.EditorCSS})
 	})
 	surveyPublicUI := surveyModule.PublicUIBinding("web/dist")
-	handler, err := routeApplicationWithProductsCouponsGroupOps(healthHandler, accessHandler.Routes(), adminAPIs, effectsBindings.Effects, effectsBindings.PushCenter, effectsUI, mediaBindings.Media, mediaUI, tagBindings.Tags, tagUI, productBindings.Products, productUI, couponBindings.Coupons, couponUI, channelCatalog, groupOpsBindings.GroupOps, groupOpsUI, automationBindings.Agents, automationUI, weComHandler, shellHandler, authentication, cfg.PublicOrigin)
+	operationUI := operationModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, page, donorTemplate string, assets operationcycle.UIAssets) error {
+		return renderer.RenderOperationCycles(writer, webshell.AdminPageForRequest(request, "运营闭环", "运营周期、执行事实与复盘记录。", "api.admin_operation_cycles_page"), page, donorTemplate, webshell.OperationCycleAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, HostJS: assets.HostJS})
+	})
+	handler, err := routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(healthHandler, accessHandler.Routes(), adminAPIs, effectsBindings.Effects, effectsBindings.PushCenter, effectsUI, mediaBindings.Media, mediaUI, tagBindings.Tags, tagUI, productBindings.Products, productUI, couponBindings.Coupons, couponUI, channelCatalog, groupOpsBindings.GroupOps, groupOpsUI, automationBindings.Agents, automationUI, operationUI, weComHandler, shellHandler, authentication, cfg.PublicOrigin)
 	if err != nil {
 		return fail(err)
 	}
@@ -684,7 +703,23 @@ func routeApplicationWithGroupOps(health, access, identity, effects, pushCenter,
 }
 
 func routeApplicationWithProductsCouponsGroupOps(health, access, identity, effects, pushCenter, effectsUI, mediaHandler, mediaUI, tagHandler, tagUI, productHandler, productUI, couponHandler, couponUI, channelHandler, groupOpsHandler, groupOpsUI, automationHandler, automationUI, weCom, shell http.Handler, authentication accessAuthentication, publicOrigin string) (http.Handler, error) {
-	if health == nil || access == nil || identity == nil || effects == nil || pushCenter == nil || effectsUI == nil || mediaHandler == nil || mediaUI == nil || tagHandler == nil || tagUI == nil || productHandler == nil || productUI == nil || couponHandler == nil || couponUI == nil || channelHandler == nil || groupOpsHandler == nil || groupOpsUI == nil || automationHandler == nil || automationUI == nil || weCom == nil || shell == nil || authentication == nil || canonicalOrigin(publicOrigin) == "" {
+	return routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, access, identity, effects, pushCenter, effectsUI, mediaHandler, mediaUI, tagHandler, tagUI, productHandler, productUI, couponHandler, couponUI, channelHandler, groupOpsHandler, groupOpsUI, automationHandler, automationUI, http.NotFoundHandler(), weCom, shell, authentication, publicOrigin)
+}
+
+func routeApplicationWithAll(health, access, identity, effects, pushCenter, effectsUI, mediaHandler, mediaUI, tagHandler, tagUI, operationUI, weCom, shell http.Handler, authentication accessAuthentication, publicOrigin string) (http.Handler, error) {
+	return routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, access, identity, effects, pushCenter, effectsUI, mediaHandler, mediaUI, tagHandler, tagUI, http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(), operationUI, weCom, shell, authentication, publicOrigin)
+}
+
+func routeApplicationWithProductsCouponsAndCycles(health, access, identity, effects, pushCenter, effectsUI, mediaHandler, mediaUI, tagHandler, tagUI, productHandler, productUI, couponHandler, couponUI, channelHandler, operationUI, weCom, shell http.Handler, authentication accessAuthentication, publicOrigin string) (http.Handler, error) {
+	return routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, access, identity, effects, pushCenter, effectsUI, mediaHandler, mediaUI, tagHandler, tagUI, productHandler, productUI, couponHandler, couponUI, channelHandler, http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(), operationUI, weCom, shell, authentication, publicOrigin)
+}
+
+func routeApplicationWithProductsCouponsGroupOpsAndCycles(health, access, identity, effects, pushCenter, effectsUI, mediaHandler, mediaUI, tagHandler, tagUI, productHandler, productUI, couponHandler, couponUI, channelHandler, groupOpsHandler, groupOpsUI, operationUI, weCom, shell http.Handler, authentication accessAuthentication, publicOrigin string) (http.Handler, error) {
+	return routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, access, identity, effects, pushCenter, effectsUI, mediaHandler, mediaUI, tagHandler, tagUI, productHandler, productUI, couponHandler, couponUI, channelHandler, groupOpsHandler, groupOpsUI, http.NotFoundHandler(), http.NotFoundHandler(), operationUI, weCom, shell, authentication, publicOrigin)
+}
+
+func routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, access, identity, effects, pushCenter, effectsUI, mediaHandler, mediaUI, tagHandler, tagUI, productHandler, productUI, couponHandler, couponUI, channelHandler, groupOpsHandler, groupOpsUI, automationHandler, automationUI, operationUI, weCom, shell http.Handler, authentication accessAuthentication, publicOrigin string) (http.Handler, error) {
+	if health == nil || access == nil || identity == nil || effects == nil || pushCenter == nil || effectsUI == nil || mediaHandler == nil || mediaUI == nil || tagHandler == nil || tagUI == nil || productHandler == nil || productUI == nil || couponHandler == nil || couponUI == nil || channelHandler == nil || groupOpsHandler == nil || groupOpsUI == nil || automationHandler == nil || automationUI == nil || operationUI == nil || weCom == nil || shell == nil || authentication == nil || canonicalOrigin(publicOrigin) == "" {
 		return nil, errors.New("application HTTP dependencies are required")
 	}
 	mux := http.NewServeMux()
@@ -721,6 +756,8 @@ func routeApplicationWithProductsCouponsGroupOps(health, access, identity, effec
 	mux.Handle("/api/public/wechat-pay/", identity)
 	mux.Handle("/api/admin/wechat-pay/orders/", identity)
 	mux.Handle("/api/admin/wechat-pay/order-exports", identity)
+	mux.Handle("/api/admin/operation-cycles/", identity)
+	mux.Handle("/api/operation-cycles/", identity)
 	mux.Handle("/api/admin/external-effects", effects)
 	mux.Handle("/api/admin/external-effects/", effects)
 	mux.Handle("/api/admin/push-center/", pushCenter)
@@ -762,11 +799,15 @@ func routeApplicationWithProductsCouponsGroupOps(health, access, identity, effec
 	mux.Handle("/groupops-assets/", requireAdminSession(authentication, groupOpsUI))
 	mux.Handle("/automation-assets/", requireAdminSession(authentication, automationUI))
 	mux.Handle("/admin/wecom-tags", requireAdminSession(authentication, tagUI))
+	mux.Handle("/admin/operation-cycles", requireAdminSession(authentication, operationUI))
+	mux.Handle("/admin/operation-cycles/", requireAdminSession(authentication, operationUI))
 	// The staged Tags donor document is a private template carrier. Only the
 	// canonical PR10-mounted route above is public; neither its private staging
 	// name nor the donor document name may fall through to a generic 200 shell.
 	mux.Handle("/admin/tags.html", http.NotFoundHandler())
 	mux.Handle("/admin/wecom-tags.html", http.NotFoundHandler())
+	mux.Handle("/admin/cycles.html", http.NotFoundHandler())
+	mux.Handle("/admin/cyclesDetail.html", http.NotFoundHandler())
 	mux.Handle("/admin/external-effects", requireAdminSession(authentication, effectsUI))
 	mux.Handle("/admin/campaigns.html", requireAdminSession(authentication, effectsUI))
 	mux.Handle("/admin/image-library", requireAdminSession(authentication, mediaUI))
@@ -888,7 +929,8 @@ func securityHeaders(next http.Handler) http.Handler {
 		groupOpsPage := request.URL.Path == "/admin/automation-conversion/group-ops/ui" || request.URL.Path == "/admin/automation-conversion/group-ops/groups/ui" || request.URL.Path == "/admin/groupops.html" || request.URL.Path == "/admin/groupopsDetail.html" || strings.HasPrefix(request.URL.Path, "/admin/automation-conversion/group-ops/plans/")
 		automationPage := request.URL.Path == "/admin/automation-agents" || strings.HasPrefix(request.URL.Path, "/admin/automation-agents/") || request.URL.Path == "/admin/agents.html" || request.URL.Path == "/admin/agentEdit.html"
 		surveyPage := request.URL.Path == "/admin/questionnaires" || request.URL.Path == "/admin/questionnaires.html" || request.URL.Path == "/admin/questionnaireDetail.html" || request.URL.Path == "/admin/questionnaireOps.html" || strings.HasPrefix(request.URL.Path, "/h5/")
-		if (request.URL.Path == "/admin/campaigns.html" && externaleffects.ValidUIQuery(request.URL.Query())) || mediaPage || tagsPage || productPage || couponPage || groupOpsPage || automationPage || surveyPage {
+		operationCyclesPage := request.URL.Path == "/admin/operation-cycles" || strings.HasPrefix(request.URL.Path, "/admin/operation-cycles/")
+		if (request.URL.Path == "/admin/campaigns.html" && externaleffects.ValidUIQuery(request.URL.Query())) || mediaPage || tagsPage || productPage || couponPage || groupOpsPage || automationPage || surveyPage || operationCyclesPage {
 			styleSource = "'self' 'unsafe-inline'"
 		}
 		imageSource := "'self' data:"
