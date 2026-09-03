@@ -34,10 +34,11 @@ const campaignsEntry = legacyEntry && dynamicOutputForInput(legacyEntry, 'web/sr
 const adminAccessEntry = legacyEntry && dynamicOutputForInput(legacyEntry, 'web/src/admin/sections/adminAccess.ts');
 const setupWizardEntry = legacyEntry && dynamicOutputForInput(legacyEntry, 'web/src/admin/sections/setupWizard.ts');
 const groupOpsHistoryEntry = legacyEntry && dynamicOutputForInput(legacyEntry, 'web/src/admin/sections/groupOpsHistory.ts');
+const funnelEntry = legacyEntry && dynamicOutputForInput(legacyEntry, 'web/src/admin/sections/funnelGrid.ts');
 const operationHost = manifest.entries.operationCyclesHost;
 const operationMainEntry = dynamicOutputForInput(operationHost, 'web/src/admin/main.ts');
 const operationLegacyEntry = operationMainEntry && dynamicOutputForInput(operationMainEntry, 'web/src/admin/legacy.ts');
-if (!legacyEntry || !campaignsEntry || !adminAccessEntry || !setupWizardEntry || !groupOpsHistoryEntry || !operationMainEntry || !operationLegacyEntry) fail('required frozen admin runtime chunks are absent from manifest');
+if (!legacyEntry || !campaignsEntry || !adminAccessEntry || !setupWizardEntry || !groupOpsHistoryEntry || !funnelEntry || !operationMainEntry || !operationLegacyEntry) fail('required admin runtime chunks are absent from manifest');
 
 const selected = new Set();
 const includeStatic = (relative) => {
@@ -52,9 +53,10 @@ const includeStatic = (relative) => {
 // V2's loader contains dormant dynamic imports for every legacy page. The
 // release keeps the loader, its static dependencies, the campaigns chunk
 // selected by the External Effects workspace, the Admin Access and Setup
-// Wizard chunks selected by the Config host, and the Group Ops history chunk
-// selected by the byte-frozen groupops.html?history=1 route. No other legacy
-// page chunk is staged or fetchable. HTML stays v3-owned: the Go webshell
+// Wizard chunks selected by the Config host, the Group Ops history chunk
+// selected by the byte-frozen groupops.html?history=1 route, and the v3-owned
+// HXC dashboard chunk. No other legacy page chunk is staged or fetchable.
+// HTML stays v3-owned: the Go webshell
 // renders the single admin shell and mounts the frozen stage, so no donor HTML
 // is ever packaged.
 for (const root of roots) includeStatic(root);
@@ -63,6 +65,7 @@ includeStatic(campaignsEntry);
 includeStatic(adminAccessEntry);
 includeStatic(setupWizardEntry);
 includeStatic(groupOpsHistoryEntry);
+includeStatic(funnelEntry);
 includeStatic(operationMainEntry);
 includeStatic(operationLegacyEntry);
 
@@ -144,4 +147,4 @@ for (const relative of selected) {
 for (const relative of releaseRoot) {
   if (!stagedFiles.includes(relative)) fail(`missing staged release file: ${relative}`);
 }
-console.log(`staged ${selected.size} frozen admin assets and private Media, Tags, Product, Coupon, Group Ops, Automation, Operation Cycle, and Config templates in ${stage}`);
+console.log(`staged ${selected.size} approved admin assets, including the v3 HXC dashboard chunk, and private donor templates in ${stage}`);

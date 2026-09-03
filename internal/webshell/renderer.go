@@ -54,6 +54,8 @@ type AdminShellView struct {
 	Customers        bool
 	ExternalEffects  bool
 	ExternalAssets   ExternalEffectsAssets
+	HXC              bool
+	HXCAssets        HXCAssets
 	Media            bool
 	MediaPage        string
 	MediaAssets      MediaAssets
@@ -95,6 +97,10 @@ type ExternalEffectsAssets struct {
 	LabsCSS   string
 	AdminJS   string
 }
+
+// HXCAssets are release-manifest URLs owned by the HXC dashboard UI adapter.
+// The shared shell receives URLs only and does not read dashboard data.
+type HXCAssets struct{ TokensCSS, LabsCSS, AdminJS string }
 
 // MediaAssets are manifest-derived URLs for the immutable Media donor bundle.
 // They are supplied by the Media module's release-only UI adapter.
@@ -223,6 +229,30 @@ func (renderer *Renderer) RenderExternalEffects(writer http.ResponseWriter, data
 		Content:         template.HTML(content),
 		ExternalEffects: true,
 		ExternalAssets:  assets,
+	})
+	if err != nil {
+		return err
+	}
+	return writeHTML(writer, http.StatusOK, body)
+}
+
+// RenderHXC mounts the live HXC dashboard controller inside the one v3 admin
+// shell. The controller reads only the authenticated HXC dashboard API.
+func (renderer *Renderer) RenderHXC(writer http.ResponseWriter, data AdminPageData, assets HXCAssets) error {
+	if renderer == nil || renderer.templates == nil || assets.TokensCSS == "" || assets.LabsCSS == "" || assets.AdminJS == "" {
+		return errors.New("HXC dashboard shell assets are required")
+	}
+	normalizeAdminPage(&data)
+	data.ShowPageHeader = false
+	content, err := executeTemplate(renderer.templates, "admin_external_effects", data)
+	if err != nil {
+		return err
+	}
+	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{
+		AdminPageData: data,
+		Content:       template.HTML(content),
+		HXC:           true,
+		HXCAssets:     assets,
 	})
 	if err != nil {
 		return err
