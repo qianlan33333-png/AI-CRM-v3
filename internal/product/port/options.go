@@ -57,3 +57,11 @@ type ProductOptionPage struct {
 type ProductOptionReader interface {
 	ListProductOptions(context.Context, ProductOptionQuery) (ProductOptionPage, error)
 }
+
+// ProductTargetReader validates one already-selected local Product target for
+// a rule in another domain.  It intentionally returns the same bounded
+// projection as the chooser: consumers cannot read Product tables or infer
+// lifecycle, order, entitlement, or provider state.
+type ProductTargetReader interface {
+	ReadProductTarget(context.Context, ProductOptionType, ID) (ProductOption, error)
+}

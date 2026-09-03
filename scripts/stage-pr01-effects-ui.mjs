@@ -59,6 +59,8 @@ for (const page of ['images', 'attach', 'mpLib']) copy(`admin/${page}.html`);
 // Product pages are byte-frozen private template carriers mounted by the v3
 // admin shell; their donor documents are never independently routed.
 for (const page of ['products', 'productForm', 'spProducts', 'spProductForm']) copy(`admin/${page}.html`);
+// Coupon pages remain byte-frozen private template carriers in the v3 shell.
+for (const page of ['coupons', 'couponForm']) copy(`admin/${page}.html`);
 // Tags also runs through the frozen donor admin entry. Keep the generated
 // donor page only as a release-private template source under a non-routable
 // filename; the Go adapter extracts template#tpl and mounts it in PR10's sole
@@ -86,12 +88,12 @@ const walk = (directory) => {
 };
 walk(stage);
 for (const relative of stagedFiles) {
-  const allowed = relative === 'asset-manifest.json' || relative.startsWith('assets/') || ['admin/images.html', 'admin/attach.html', 'admin/mpLib.html', 'admin/tags.html', 'admin/products.html', 'admin/productForm.html', 'admin/spProducts.html', 'admin/spProductForm.html'].includes(relative);
+  const allowed = relative === 'asset-manifest.json' || relative.startsWith('assets/') || ['admin/images.html', 'admin/attach.html', 'admin/mpLib.html', 'admin/tags.html', 'admin/products.html', 'admin/productForm.html', 'admin/spProducts.html', 'admin/spProductForm.html', 'admin/coupons.html', 'admin/couponForm.html'].includes(relative);
   if (!allowed) fail(`unapproved release file: ${relative}`);
-  if (relative.endsWith('.html') && !['admin/images.html', 'admin/attach.html', 'admin/mpLib.html', 'admin/tags.html', 'admin/products.html', 'admin/productForm.html', 'admin/spProducts.html', 'admin/spProductForm.html'].includes(relative)) fail(`unapproved HTML surface: ${relative}`);
+  if (relative.endsWith('.html') && !['admin/images.html', 'admin/attach.html', 'admin/mpLib.html', 'admin/tags.html', 'admin/products.html', 'admin/productForm.html', 'admin/spProducts.html', 'admin/spProductForm.html', 'admin/coupons.html', 'admin/couponForm.html'].includes(relative)) fail(`unapproved HTML surface: ${relative}`);
   if (/(^|\/)(h5|sidebar|public)(\/|$)/.test(relative)) fail(`unapproved public surface: ${relative}`);
 }
 for (const relative of selected) {
   if (!stagedFiles.includes(relative)) fail(`missing staged dependency: ${relative}`);
 }
-console.log(`staged ${selected.size} frozen admin assets and private Media, Tags, and Product templates in ${stage}`);
+console.log(`staged ${selected.size} frozen admin assets and private Media, Tags, Product, and Coupon templates in ${stage}`);
