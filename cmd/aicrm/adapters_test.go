@@ -364,6 +364,34 @@ func TestStagedTagsReleaseMountsFrozenWorkspaceInOnlyPR10Shell(t *testing.T) {
 	}
 }
 
+func TestCouponRoutesAreExplicitAndClaimPageFailsClosed(t *testing.T) {
+	marker := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-Coupon", "yes")
+		w.WriteHeader(http.StatusNoContent)
+	})
+	authentication := &fakeAccessAuthentication{principal: accessdomain.Principal{Kind: accessdomain.KindAdmin, InternalID: 7, Roles: []accessdomain.Role{accessdomain.RoleAdmin}}}
+	handler, err := routeApplicationWithProductsCoupons(marker, marker, marker, marker, marker, marker, marker, marker, marker, marker, marker, marker, marker, marker, marker, marker, webshell.MustHandler(), authentication, "https://crm.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"/api/admin/coupons", "/api/admin/coupons/7", "/admin/coupons", "/admin/coupons.html", "/admin/couponForm.html?id=7"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.AddCookie(&http.Cookie{Name: "aicrm_admin_session", Value: "valid"})
+		res := httptest.NewRecorder()
+		handler.ServeHTTP(res, req)
+		if res.Code != http.StatusNoContent || res.Header().Get("X-Coupon") != "yes" {
+			t.Fatalf("coupon route %s status=%d owner=%q", path, res.Code, res.Header().Get("X-Coupon"))
+		}
+	}
+	req := httptest.NewRequest(http.MethodGet, "/admin/couponData.html", nil)
+	req.AddCookie(&http.Cookie{Name: "aicrm_admin_session", Value: "valid"})
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusNotFound {
+		t.Fatalf("couponData=%d", res.Code)
+	}
+}
+
 func TestApplicationRouterRejectsCrossSiteUnsafeRequests(t *testing.T) {
 	authentication := &fakeAccessAuthentication{}
 	marker := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {

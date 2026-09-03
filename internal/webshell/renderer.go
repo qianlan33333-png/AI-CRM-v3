@@ -62,6 +62,9 @@ type AdminShellView struct {
 	Product         bool
 	ProductPage     string
 	ProductAssets   ProductAssets
+	Coupons         bool
+	CouponPage      string
+	CouponAssets    CouponAssets
 }
 
 // ExternalEffectsAssets are manifest-derived URLs for the frozen donor bundle.
@@ -83,6 +86,9 @@ type TagsAssets struct{ TokensCSS, LabsCSS, AdminJS string }
 // ProductAssets are manifest-derived URLs for the frozen donor Product
 // bundle. They are passed by the Product UI adapter and contain no markup.
 type ProductAssets struct{ TokensCSS, LabsCSS, AdminJS string }
+
+// CouponAssets are verified manifest paths for the frozen coupon workspaces.
+type CouponAssets struct{ TokensCSS, LabsCSS, AdminJS string }
 
 // Render implements the small presentation contract consumed by the Access
 // HTTP handler. Keeping this adapter in webshell avoids a concrete import
@@ -226,6 +232,22 @@ func (renderer *Renderer) RenderProducts(writer http.ResponseWriter, data AdminP
 	data.ShowPageHeader = false
 	content := `<main id="stage" class="stage rich"></main><template id="tpl">` + donorTemplate + `</template>`
 	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: template.HTML(content), Product: true, ProductPage: page, ProductAssets: assets})
+	if err != nil {
+		return err
+	}
+	return writeHTML(writer, http.StatusOK, body)
+}
+
+// RenderCoupons mounts a verified coupons/couponForm donor template inside
+// the only v3 admin shell; it never serves the donor's outer HTML document.
+func (renderer *Renderer) RenderCoupons(writer http.ResponseWriter, data AdminPageData, page, donorTemplate string, assets CouponAssets) error {
+	if renderer == nil || renderer.templates == nil || donorTemplate == "" || assets.TokensCSS == "" || assets.LabsCSS == "" || assets.AdminJS == "" || (page != "coupons" && page != "couponForm") {
+		return errors.New("coupon shell assets are required")
+	}
+	normalizeAdminPage(&data)
+	data.ShowPageHeader = false
+	content := `<main id="stage" class="stage rich"></main><template id="tpl">` + donorTemplate + `</template>`
+	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: template.HTML(content), Coupons: true, CouponPage: page, CouponAssets: assets})
 	if err != nil {
 		return err
 	}

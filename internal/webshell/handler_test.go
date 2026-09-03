@@ -513,6 +513,22 @@ func TestRenderProductsKeepsPR10AsTheOnlyAdminShell(t *testing.T) {
 	}
 }
 
+func TestRenderCouponsKeepsPR10AsTheOnlyAdminShell(t *testing.T) {
+	renderer, err := NewRenderer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	err = renderer.RenderCoupons(response, AdminPageForRequest(httptest.NewRequest(http.MethodGet, "/admin/coupons", nil), "优惠券", "", "api.admin_coupons_page"), "coupons", `<section data-page="coupons">frozen donor coupon fragment</section>`, CouponAssets{TokensCSS: "/assets/tokens.css", LabsCSS: "/assets/labs.css", AdminJS: "/assets/admin.js"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := response.Body.String()
+	if response.Code != http.StatusOK || strings.Count(body, `class="admin-sidebar"`) != 1 || strings.Count(body, `<main`) != 1 || strings.Count(body, `<aside`) != 1 || strings.Contains(body, `class="side"`) || strings.Contains(body, `class="shell"`) || !strings.Contains(body, `<template id="tpl"><section data-page="coupons">frozen donor coupon fragment</section></template>`) || !strings.Contains(body, `data-page="coupons"`) {
+		t.Fatalf("coupon shell mismatch status=%d body=%q", response.Code, body)
+	}
+}
+
 func TestLoginPostNeverIssuesSession(t *testing.T) {
 	handler := MustHandler()
 	response := httptest.NewRecorder()

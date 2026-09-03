@@ -10,6 +10,7 @@ import (
 	"time"
 
 	couponport "github.com/qianlan33333-png/AI-CRM-v3/internal/coupon/port"
+	productport "github.com/qianlan33333-png/AI-CRM-v3/internal/product/port"
 )
 
 type couponTestUOW struct{}
@@ -32,8 +33,8 @@ func (e *couponTestEvents) Append(ctx context.Context, event couponport.Event) (
 
 type couponTestProducts struct{}
 
-func (couponTestProducts) Get(_ context.Context, id int64) (couponport.ProductRuleTarget, error) {
-	return couponport.ProductRuleTarget{ID: id, Currency: "CNY", PriceMinor: 99999}, nil
+func (couponTestProducts) ReadProductTarget(_ context.Context, kind productport.ProductOptionType, id productport.ID) (productport.ProductOption, error) {
+	return productport.ProductOption{ID: id, ProductType: kind, Currency: "CNY", PriceMinor: 99999}, nil
 }
 
 type couponTestStore struct {
@@ -199,18 +200,22 @@ func TestCouponRuleLifecycleAndStats(t *testing.T) {
 	}
 }
 
-func TestCouponRuleRejectsNonStandardTarget(t *testing.T) {
+func TestCouponRuleAcceptsProductPortServicePeriodTarget(t *testing.T) {
 	now := time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC)
 	store, events := newCouponTestStore(), &couponTestEvents{}
 	service := couponTestService(now, store, events)
 	days := int32(7)
-	_, err := service.Create(context.Background(), couponport.UpsertCommand{Coupon: couponport.Coupon{
+	created, err := service.Create(context.Background(), couponport.UpsertCommand{Coupon: couponport.Coupon{
 		Name: "仅规则", DiscountAmountTotal: 100, TotalIssueLimit: 2, PerUserIssueLimit: 1,
 		ClaimStartsAt: now, ClaimEndsAt: now.Add(time.Hour), ValidityMode: couponport.ValidityRelativeDays,
 		RelativeValidityDays: &days, TargetRefs: []string{"service_period:7"},
-	}, Actor: 7, IdempotencyKey: "reject-target-key-01"})
-	if !errors.Is(err, ErrInvalidTarget) || len(store.coupons) != 0 || len(events.rows) != 0 {
-		t.Fatalf("non-standard target accepted: err=%v coupons=%d events=%d", err, len(store.coupons), len(events.rows))
+	}, Actor: 7, IdempotencyKey: "service-period-key-001"})
+	if err != nil || created.ID < 1 || len(store.coupons) != 1 || len(events.rows) != 1 {
+		t.Fatalf("service-period target: created=%#v err=%v coupons=%d events=%d", created, err, len(store.coupons), len(events.rows))
+	}
+	published, err := service.Publish(context.Background(), created.ID, 7, "service-period-publish-01")
+	if err != nil || published.Status != "published" || len(events.rows) != 2 {
+		t.Fatalf("service-period target publish=%#v err=%v events=%d", published, err, len(events.rows))
 	}
 }
 

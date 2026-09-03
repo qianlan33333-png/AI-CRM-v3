@@ -14,6 +14,9 @@ import (
 	accesshttp "github.com/qianlan33333-png/AI-CRM-v3/internal/access/http"
 	accessstore "github.com/qianlan33333-png/AI-CRM-v3/internal/access/store"
 	channelstore "github.com/qianlan33333-png/AI-CRM-v3/internal/channel"
+	coupon "github.com/qianlan33333-png/AI-CRM-v3/internal/coupon"
+	couponapp "github.com/qianlan33333-png/AI-CRM-v3/internal/coupon/app"
+	couponstore "github.com/qianlan33333-png/AI-CRM-v3/internal/coupon/store"
 	customerapp "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/app"
 	customerhttp "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/http"
 	customerstore "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/store"
@@ -180,6 +183,20 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
+	productTargets, err := productapp.NewTargetReader(productCatalog, productServicePeriod)
+	if err != nil {
+		return fail(err)
+	}
+	couponModule := coupon.NewModuleRegistration()
+	couponRepository, err := couponstore.NewPostgreSQL(pool.Native(), uow)
+	if err != nil {
+		return fail(err)
+	}
+	couponService := couponapp.NewService(uow, couponRepository, productTargets, couponRepository)
+	couponBindings, err := couponModule.Bind(couponService, productCatalog, requestSecurity)
+	if err != nil {
+		return fail(err)
+	}
 	channelCatalog, err := channelstore.NewLegacyChannelHTTPHandler(channelstore.NewLegacyChannelCatalogAdapter(), requestSecurity)
 	if err != nil {
 		return fail(err)
@@ -309,6 +326,8 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	adminAPIs.Handle("/api/admin/wechat-pay/products/", productBindings.Products)
 	adminAPIs.Handle("/api/admin/service-period-products", productBindings.Products)
 	adminAPIs.Handle("/api/admin/service-period-products/", productBindings.Products)
+	adminAPIs.Handle("/api/admin/coupons", couponBindings.Coupons)
+	adminAPIs.Handle("/api/admin/coupons/", couponBindings.Coupons)
 	adminAPIs.Handle("/api/admin/channels", channelCatalog)
 	adminAPIs.Handle("/api/admin/channels/", channelCatalog)
 	readiness := platformruntime.ReadinessFunc(func(readinessContext context.Context) error {
@@ -316,7 +335,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 			return checkErr
 		}
 		var complete bool
-		checkErr := pool.Native().QueryRow(readinessContext, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['0001','0002','0003','0004','0005','0006','0007','0008','0009','0010']) AS required(version) WHERE NOT EXISTS (SELECT 1 FROM platform_schema_migrations applied WHERE applied.version=required.version))`).Scan(&complete)
+		checkErr := pool.Native().QueryRow(readinessContext, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['0001','0002','0003','0004','0005','0006','0007','0008','0009','0010','0011']) AS required(version) WHERE NOT EXISTS (SELECT 1 FROM platform_schema_migrations applied WHERE applied.version=required.version))`).Scan(&complete)
 		if checkErr != nil || !complete {
 			return errors.New("database schema is not ready")
 		}
@@ -330,6 +349,9 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 			return checkErr
 		}
 		if checkErr = productModule.Readiness(readinessContext, pool.Native()); checkErr != nil {
+			return checkErr
+		}
+		if checkErr = couponModule.Readiness(readinessContext, pool.Native()); checkErr != nil {
 			return checkErr
 		}
 		return nil
@@ -354,7 +376,12 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		endpoints := map[string]string{"products": "api.admin_products_page", "productForm": "api.admin_product_form_page", "spProducts": "api.admin_service_period_products_page", "spProductForm": "api.admin_service_period_product_form_page"}
 		return renderer.RenderProducts(writer, webshell.AdminPageForRequest(request, titles[page], "仅管理本地商品定义、生命周期与受控配置。", endpoints[page]), page, donorTemplate, webshell.ProductAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS})
 	})
-	handler, err := routeApplicationWithProducts(healthHandler, accessHandler.Routes(), adminAPIs, effectsBindings.Effects, effectsBindings.PushCenter, effectsUI, mediaBindings.Media, mediaUI, tagBindings.Tags, tagUI, productBindings.Products, productUI, channelCatalog, weComHandler, shellHandler, authentication, cfg.PublicOrigin)
+	couponUI := couponModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, page, donorTemplate string, assets coupon.Assets) error {
+		titles := map[string]string{"coupons": "优惠券", "couponForm": "优惠券"}
+		endpoints := map[string]string{"coupons": "api.admin_coupons_page", "couponForm": "api.admin_coupon_form_page"}
+		return renderer.RenderCoupons(writer, webshell.AdminPageForRequest(request, titles[page], "仅管理本地优惠券规则，不含领取、核销、客户持券或订单。", endpoints[page]), page, donorTemplate, webshell.CouponAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS})
+	})
+	handler, err := routeApplicationWithProductsCoupons(healthHandler, accessHandler.Routes(), adminAPIs, effectsBindings.Effects, effectsBindings.PushCenter, effectsUI, mediaBindings.Media, mediaUI, tagBindings.Tags, tagUI, productBindings.Products, productUI, couponBindings.Coupons, couponUI, channelCatalog, weComHandler, shellHandler, authentication, cfg.PublicOrigin)
 	if err != nil {
 		return fail(err)
 	}
@@ -404,7 +431,11 @@ func routeApplicationWithMediaTags(health, access, identity, effects, pushCenter
 }
 
 func routeApplicationWithProducts(health, access, identity, effects, pushCenter, effectsUI, mediaHandler, mediaUI, tagHandler, tagUI, productHandler, productUI, channelHandler, weCom, shell http.Handler, authentication accessAuthentication, publicOrigin string) (http.Handler, error) {
-	if health == nil || access == nil || identity == nil || effects == nil || pushCenter == nil || effectsUI == nil || mediaHandler == nil || mediaUI == nil || tagHandler == nil || tagUI == nil || productHandler == nil || productUI == nil || channelHandler == nil || weCom == nil || shell == nil || authentication == nil || canonicalOrigin(publicOrigin) == "" {
+	return routeApplicationWithProductsCoupons(health, access, identity, effects, pushCenter, effectsUI, mediaHandler, mediaUI, tagHandler, tagUI, productHandler, productUI, http.NotFoundHandler(), http.NotFoundHandler(), channelHandler, weCom, shell, authentication, publicOrigin)
+}
+
+func routeApplicationWithProductsCoupons(health, access, identity, effects, pushCenter, effectsUI, mediaHandler, mediaUI, tagHandler, tagUI, productHandler, productUI, couponHandler, couponUI, channelHandler, weCom, shell http.Handler, authentication accessAuthentication, publicOrigin string) (http.Handler, error) {
+	if health == nil || access == nil || identity == nil || effects == nil || pushCenter == nil || effectsUI == nil || mediaHandler == nil || mediaUI == nil || tagHandler == nil || tagUI == nil || productHandler == nil || productUI == nil || couponHandler == nil || couponUI == nil || channelHandler == nil || weCom == nil || shell == nil || authentication == nil || canonicalOrigin(publicOrigin) == "" {
 		return nil, errors.New("application HTTP dependencies are required")
 	}
 	mux := http.NewServeMux()
@@ -444,11 +475,14 @@ func routeApplicationWithProducts(health, access, identity, effects, pushCenter,
 	mux.Handle("/api/admin/wechat-pay/products/", productHandler)
 	mux.Handle("/api/admin/service-period-products", productHandler)
 	mux.Handle("/api/admin/service-period-products/", productHandler)
+	mux.Handle("/api/admin/coupons", couponHandler)
+	mux.Handle("/api/admin/coupons/", couponHandler)
 	mux.Handle("/api/admin/channels", channelHandler)
 	mux.Handle("/api/admin/channels/", channelHandler)
 	mux.Handle("/assets/", requireAdminSession(authentication, effectsUI))
 	mux.Handle("/media-assets/", requireAdminSession(authentication, mediaUI))
 	mux.Handle("/product-assets/", requireAdminSession(authentication, productUI))
+	mux.Handle("/coupon-assets/", requireAdminSession(authentication, couponUI))
 	mux.Handle("/admin/wecom-tags", requireAdminSession(authentication, tagUI))
 	// The staged Tags donor document is a private template carrier. Only the
 	// canonical PR10-mounted route above is public; neither its private staging
@@ -474,6 +508,13 @@ func routeApplicationWithProducts(health, access, identity, effects, pushCenter,
 	} {
 		mux.Handle(path, requireAdminSession(authentication, productUI))
 	}
+	// The coupon donor documents are private template carriers. The two exact
+	// v2 routes below are the only public mounts; claim/redeem and public-link
+	// routes remain absent rather than receiving a shell placeholder.
+	for _, path := range []string{"/admin/coupons", "/admin/coupons.html", "/admin/couponForm.html"} {
+		mux.Handle(path, requireAdminSession(authentication, couponUI))
+	}
+	mux.Handle("/admin/couponData.html", requireAdminSession(authentication, http.NotFoundHandler()))
 	for _, path := range []string{
 		"/admin/spProductData.html", "/admin/wechat-pay/spProductData.html",
 		"/admin/wechat-pay/products/spProductData.html", "/admin/service-period-products/spProductData.html",
@@ -557,7 +598,8 @@ func securityHeaders(next http.Handler) http.Handler {
 		mediaPage := request.URL.Path == "/admin/image-library" || request.URL.Path == "/admin/miniprogram-library" || request.URL.Path == "/admin/attachment-library"
 		tagsPage := request.URL.Path == "/admin/wecom-tags"
 		productPage := isProductShellPath(request.URL.Path)
-		if (request.URL.Path == "/admin/campaigns.html" && externaleffects.ValidUIQuery(request.URL.Query())) || mediaPage || tagsPage || productPage {
+		couponPage := request.URL.Path == "/admin/coupons" || request.URL.Path == "/admin/coupons.html" || request.URL.Path == "/admin/couponForm.html"
+		if (request.URL.Path == "/admin/campaigns.html" && externaleffects.ValidUIQuery(request.URL.Query())) || mediaPage || tagsPage || productPage || couponPage {
 			styleSource = "'self' 'unsafe-inline'"
 		}
 		imageSource := "'self' data:"

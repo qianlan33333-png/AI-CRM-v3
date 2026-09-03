@@ -1,18 +1,19 @@
 # PR05 优惠券规则 donor 契约审计
 
 本文件冻结 PR05 的优惠券规则管理边界和 v2 donor 的可观察行为。它是
-preparation-only 证据，不是 HTTP/OpenAPI、页面壳或数据库实现。所有 donor
+冻结 donor 行为证据；对应 HTTP/OpenAPI、页面壳和数据库实现位于 PR05 集成分支。所有 donor
 路径均来自只读树 `/tmp/aicrm-v2-audit.yN3jmr` 的冻结提交
 `6bfbe5816bb89913c70adaca87d6a486260e016e`；v3 目标基线为
-`19384b93fe362c7786edc81dd5595b79570f6bb1`。
+`68dc62b22d1fd7a609b6d00e5fe683cbb4a152ef`（含 Product canonical port）。
 
 ## 领域边界
 
 本切片只冻结优惠券规则定义及其管理生命周期：
 
 - 创建、编辑草稿、复制、发布、停用、归档和无领取草稿删除；
-- 标准商品 `standard_product:<positive integer>` 适用范围；发布前由
-  Product 适配器校验商品 ID、CNY 货币和商品价格大于减免金额；
+- Product Port 的 `standard_product:<positive integer>` 或
+  `service_period:<positive integer>` 适用范围；发布前由 Product 适配器校验商品
+  ID、CNY 货币和商品价格大于减免金额；
 - 固定日期区间或领取后相对天数的有效期配置；
 - 规则行自有的发行总量、已发行数、剩余数、状态、可用状态和更新时间统计。
 
@@ -28,7 +29,7 @@ PR10 `internal/webshell/admin_base`，不得直接部署 donor 的第二套 `.si
 | 页面键 | donor 入口 | 原始模板 | PR05 处理 | 关键交互 |
 | --- | --- | --- | --- | --- |
 | `coupons` | `/admin/coupons` | `admin/templates/coupons.html` | 规则管理页面证据，可由 adapter 挂载 | 列表搜索/状态筛选；新建；编辑；复制；发布/停用；归档；删除草稿；分享按钮保留原样但其公开领取路径需单独 gate |
-| `couponForm` | `/admin/coupons/new`、`/admin/coupons/{id}/edit` | `admin/templates/couponForm.html` | 规则定义表单证据，可由 adapter 挂载 | 名称、减免金额、发行/单用户上限、领取窗口、固定/相对有效期、说明、target refs；商品选项查询/分页和加入/移除引用；保存草稿或保存并发布 |
+| `couponForm` | `/admin/couponForm.html`、`/admin/couponForm.html?id={positive}` | `admin/templates/couponForm.html` | 规则定义表单证据，可由 adapter 挂载 | 名称、减免金额、发行/单用户上限、领取窗口、固定/相对有效期、说明、target refs；商品选项查询/分页和加入/移除引用；保存草稿或保存并发布 |
 | `couponData` | `/admin/coupons/{id}/data` | `admin/templates/couponData.html` | 整页只读 donor 证据；不得在 PR05 暴露 | donor 页面统计卡从领取记录派生，明细包含客户、商品、订单和核销字段；这些全部是排除域，不能通过 adapter 暴露 |
 
 表单的原始 Journey 是：
@@ -48,8 +49,8 @@ PR10 `internal/webshell/admin_base`，不得直接部署 donor 的第二套 `.si
 ## 管理 API/DTO 证据
 
 以下 URL 与方法来自原样生成文件
-`web/src/api/generated/p4-coupon-compat/p4-coupon-compat.ts`。v3 本分支不注册
-这些路由，也不修改 `api/openapi.yaml`；表格用于后续 adapter 对照。
+`web/src/api/generated/p4-coupon-compat/p4-coupon-compat.ts`，并已由 v3 后端 adapter
+在不改 donor 前端请求的前提下实现、登记到 `api/openapi.yaml`。
 
 ### 规则管理（候选 PR05 adapter 合同）
 
@@ -60,11 +61,11 @@ PR10 `internal/webshell/admin_base`，不得直接部署 donor 的第二套 `.si
 | `GET /api/admin/coupons/{coupon_id}` | 无 | `LegacyCouponDetailResponse`：`ok`、`coupon`、`data.coupon` | 读取规则详情；响应 ID 必须与请求 ID 一致 |
 | `PUT /api/admin/coupons/{coupon_id}` | `CouponUpsertRequest` | `LegacyCouponUpdateResponse`：`ok`、`coupon`、`fallback_used`、`real_external_call_executed` | 更新规则；PR05 浏览器边界只允许未发行草稿编辑 |
 | `DELETE /api/admin/coupons/{coupon_id}` | 无 | `LegacyCouponBoardMutationResponse`：`ok`、`coupon` | 仅删除未领取草稿；不是 claim 删除 |
-| `POST /api/admin/coupons/{coupon_id}/publish` | 无 | `LegacyCouponMutationResponse`：`ok`、`coupon`、`fallback_used`、`real_external_call_executed`、可选 replay 字段 | 草稿发布；发布前校验标准商品 |
+| `POST /api/admin/coupons/{coupon_id}/publish` | 无 | `LegacyCouponMutationResponse`：`ok`、`coupon`、`fallback_used`、`real_external_call_executed`、可选 replay 字段 | 草稿发布；发布前校验 Product Port 的 CNY 价格 |
 | `POST /api/admin/coupons/{coupon_id}/stop` | 无 | `LegacyCouponMutationResponse` | 已发布规则停用 |
 | `POST /api/admin/coupons/{coupon_id}/archive` | 无 | `LegacyCouponBoardMutationResponse` | 规则归档；donor 文案提到“保留领取/核销记录”，记录本身不在 PR05 |
 | `POST /api/admin/coupons/{coupon_id}/copy` | 无 | `LegacyCouponBoardMutationResponse` | 复制为新的草稿，规则字段复制，计数/生命周期重新开始 |
-| `GET /api/admin/coupons/product-options?q&product_type&limit&offset` | `ListLegacyCouponProductOptionsParams`：`product_type=all|standard_product|service_period` | `LegacyCouponProductOptionsResponse`：`ok`、`items[]`、`total`、`limit`、`offset` | donor 允许筛选周期商品，但 PR05 规则目标只接受标准商品引用；adapter 必须拒绝 service-period ref |
+| `GET /api/admin/coupons/product-options?q&product_type&limit&offset` | `ListLegacyCouponProductOptionsParams`：`product_type=all|standard_product|service_period` | `LegacyCouponProductOptionsResponse`：`ok`、`items[]`、`total`、`limit`、`offset` | 三种筛选均直接委托 Product canonical Port；不构造 Coupon 本地目录。 |
 
 `CouponUpsertRequest` 的字段为：`name`（1..45）、`discount_amount_total`（正整
 数，分）、`total_issue_limit`（正整数）、可选
@@ -72,7 +73,7 @@ PR10 `internal/webshell/admin_base`，不得直接部署 donor 的第二套 `.si
 `validity_mode=fixed_range|relative_days`、可空固定使用时间、可空
 `relative_validity_days`（正整数）、`instructions`（最多 200）和
 `target_refs`（1..100）。v3 service 规范化货币为 CNY，并要求 target ref 去重且
-严格匹配 `standard_product:<id>`。
+严格匹配 `standard_product:<id>` 或 `service_period:<id>`。
 
 `Coupon` 响应在上述规则字段外包含 `id`、`currency`、`status`、
 `availability_status`、`issued_count`、`created_by`、`updated_by`、`version`、
@@ -111,7 +112,7 @@ statistics。因此 v3 `RuleStats` 故意只含总量、已发行、剩余量、
 - `internal/coupon/app/service.go`：创建、更新草稿、发布、停用、归档、删除、复制、
   列表、详情和规则 counters 统计；所有 mutation 通过 UoW receipt 与本地 event seam
   闭合，产品校验只在发布时发生。
-- `internal/coupon/app/board_test.go`：生命周期、规则统计、标准商品边界、发布后
+- `internal/coupon/app/board_test.go`：生命周期、规则统计、Product Port 边界、发布后
   草稿锁定、receipt replay/冲突测试；没有客户 ID、claim、订单或支付 fixture。
 
 Terra 在集成 lane 负责：Coupon-owned SQL/store/UoW receipt、audit/outbox、独立

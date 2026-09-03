@@ -73,11 +73,15 @@ func TestApplyMigrationsFreshAndUpgradePostgreSQL(t *testing.T) {
 	if err = applyMigrations(ctx, pool, filesystem); err != nil {
 		t.Fatalf("upgrade replay: %v", err)
 	}
-	var applied int
-	if err = pool.QueryRow(ctx, `SELECT count(*) FROM platform_schema_migrations`).Scan(&applied); err != nil || applied != 10 {
-		t.Fatalf("applied=%d err=%v", applied, err)
+	items, err := loadMigrations(filesystem)
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, table := range []string{"media_blobs", "media_references", "media_attachment_upload_parts", "tag_groups", "tag_catalog_tags", "tag_provider_observations", "products", "product_operation_receipts", "product_external_push_configurations", "product_external_push_tests"} {
+	var applied int
+	if err = pool.QueryRow(ctx, `SELECT count(*) FROM platform_schema_migrations`).Scan(&applied); err != nil || applied != len(items) {
+		t.Fatalf("applied=%d expected=%d err=%v", applied, len(items), err)
+	}
+	for _, table := range []string{"media_blobs", "media_references", "media_attachment_upload_parts", "tag_groups", "tag_catalog_tags", "tag_provider_observations", "products", "product_operation_receipts", "product_external_push_configurations", "product_external_push_tests", "coupon_rules", "coupon_rule_targets", "coupon_operation_receipts", "coupon_audit_events", "coupon_outbox"} {
 		var present bool
 		if err = pool.QueryRow(ctx, `SELECT to_regclass(current_schema() || '.' || $1) IS NOT NULL`, table).Scan(&present); err != nil || !present {
 			t.Fatalf("owned table %s present=%v err=%v", table, present, err)

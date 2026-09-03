@@ -26,16 +26,16 @@
   `.shell/.side/side-nav` 不能被挂载；只允许 v3-owned mount/route adapter 把原样业务
   fragment 放进 stage/template 槽位。当前 v3 没有第二 admin 壳，但如果直接部署 donor
   full `dist` 或使用 Go minimal page，就会重新引入第二实现/第二壳风险。
-- **donor 规则服务闭包可作为行为参考，v3 PR05 尚未可交付。** donor 的状态机、
-  row lock/version、同 UoW receipt/event、标准商品发布校验和安全草稿删除已复核；但
+- **donor 规则服务闭包作为行为参考；v3 PR05 已在本分支实现本地规则管理闭环，待集成验收。** donor 的状态机、
+  row lock/version、同 UoW receipt/event、Product Port 发布校验和安全草稿删除已复核；但
   v3 基线 `0155871` 尚无 `internal/coupon` 或 `internal/product` 领域实现，也没有
   coupon API adapter、规则 migration、audit/outbox 接线或 real browser Journey。
   因此本提交是 closure review，不把静态证据或 donor 通过的 Go 测试冒充 v3 完成。
 
 ## 先行边界分类
 
-- **OneID/外部身份：不涉及。** PR05 只管理规则和标准商品引用；不读取 Customer、
-  `external_userid`、手机号、领取人或客户归属，`standard_product:<id>` 不是身份键。
+- **OneID/外部身份：不涉及。** PR05 只管理规则和 Product Port 引用；不读取 Customer、
+  `external_userid`、手机号、领取人或客户归属，商品 target ref 不是身份键。
   donor 的 claim、payment identity session、sidebar grant 和 Customer 代码均在排除域。
 - **持久化：涉及。** 规则、状态、版本、发行计数、receipt、事件/审计需要由 v3
   Coupon Store 和 PostgreSQL Unit of Work 原子提交。
@@ -87,8 +87,8 @@ v3 正确边界是 v3-owned mount/route adapter：按 donor 原样 release bundl
 | 页面 | donor browser artifact | PR05 判定 |
 | --- | --- | --- |
 | `/admin/coupons` | `dist/admin/coupons.html`，模板 `coupons.html` | 活动规则列表 fragment |
-| `/admin/coupons/new` | `dist/admin/couponForm.html`，模板 `couponForm.html` | 活动规则表单 fragment |
-| `/admin/coupons/{id}/edit` | 同 `couponForm.html`，由 query/DTO 填充 | 活动规则表单 fragment |
+| `/admin/couponForm.html` | `dist/admin/couponForm.html`，模板 `couponForm.html` | 新建规则活动 fragment |
+| `/admin/couponForm.html?id={positive}` | 同 `couponForm.html`，由 query/DTO 填充 | 编辑规则活动 fragment |
 | `/admin/coupons/{id}/data` | `couponData.html` | 排除；只留 byte-exact evidence |
 
 固定 donor 的 `cmd/aicrm/legacy_coupon_page.go:11-23` 把 `/admin/coupons` 定义为
@@ -150,11 +150,11 @@ adapter 必须只取规则 DTO，生产不得注入 `MockApi`/sessionStorage 伪
 | 交互 | donor 可观察行为 | v3 适配硬约束/缺口 |
 | --- | --- | --- |
 | 列表、搜索、筛选 | `GET /api/admin/coupons?limit&offset&q&status`；controller 对当前已加载集合按名称和 `availability_status/status` 本地筛选。UI 有全部、草稿、未开始、进行中、已领完、已结束、已停止、已归档。 | 保留 donor 本地筛选语义，不发明第二套筛选接口。generated query 类型只有 `draft|published|stopped`，donor service 另验证 `archived`；adapter 要明确这个边界并返回规则-owned availability。 |
-| 新建/编辑 | `/admin/coupons/new` 或 `/{id}/edit`；详情 ID 必须和 URL 一致。表单字段和默认值保持原样。 | 仅管理员 capability + CSRF；无效 ID 404；禁止隐式建客。当前 v3 无 Coupon adapter/API。 |
-| 商品适用范围 | `GET /api/admin/coupons/product-options`，查询、分页、重试、加入/移除 target ref；视觉上有 `all|standard_product|service_period`。donor 对 `service_period` 返回空。 | 写入只接受 server-confirmed `standard_product:<positive integer>`；Product adapter 必须返回 CNY 和价格，不能把 service-period visual option 变成可写目标。 |
+| 新建/编辑 | `/admin/couponForm.html` 或 `?id={positive}`；详情 ID 必须和 URL 一致。表单字段和默认值保持原样。 | 仅管理员 capability + CSRF；无效 ID 404；禁止隐式建客。 |
+| 商品适用范围 | `GET /api/admin/coupons/product-options`，查询、分页、重试、加入/移除 target ref；视觉上有 `all|standard_product|service_period`。 | 三种查询都只委托 Product 的 canonical Port；规则保存 `standard_product:<id>` 或 `service_period:<id>`，发布时确认当前 Product 为 CNY 且价格高于优惠。 |
 | 保存草稿 | 创建 `POST /api/admin/coupons`，编辑 `PUT /api/admin/coupons/{id}`；donor 在 controller 中先 snapshot DOM，再做名称/金额/上限/时间/target 校验，成功 toast 后回列表。 | 同一 UoW 写规则、receipt、audit/event；保留 donor DTO/错误顺序。donor create response 明确 `create_replay_safe:false`，不得照搬。 |
 | 保存并发布 | donor 先保存，再对返回 ID 调 publish；这是两个命令和两个潜在 receipt。 | 必须定义保存+发布的重试边界：每一步 actor-scoped idempotency、payload conflict、同 UoW receipt，不能把第二次 publish 当成 create 的隐式副作用。 |
-| 复制 | `POST /api/admin/coupons/{id}/copy`，复制字段、生成新 ID/草稿、发行计数重置，随后跳编辑页。 | 新规则只引用同一标准商品 refs；操作 receipt/audit 同事务；不能复制 claim/customer/order。 |
+| 复制 | `POST /api/admin/coupons/{id}/copy`，复制字段、生成新 ID/草稿、发行计数重置，随后跳编辑页。 | 新规则保留同一 Product refs；操作 receipt/audit 同事务；不能复制 claim/customer/order。 |
 | 发布 | `POST /api/admin/coupons/{id}/publish`；donor service 只允许 draft -> published，并在发布时验证 Product。 | Product ID 精确匹配、CNY、`PriceMinor > discount`；重放不得重复状态/事件。 |
 | 停用 | `POST /api/admin/coupons/{id}/stop`；published -> stopped，相同状态返回幂等事实。 | 只允许已发布规则；状态和 receipt/audit 原子提交。donor handler 使用按 ID 生成的 deterministic key，不能当作完整 caller idempotency。 |
 | 归档 | `POST /api/admin/coupons/{id}/archive`；draft/published/stopped -> archived，保留历史语义。 | 只写规则生命周期；不得触碰 claim/redemption；header key 需做 actor/payload 冲突检查。 |
@@ -187,7 +187,7 @@ GET    /api/admin/coupons/product-options?q&product_type&limit&offset
 `total_issue_limit`、`per_user_issue_limit`、claim start/end、
 `validity_mode=fixed_range|relative_days`、fixed use start/end 或 relative days、
 `instructions`、`target_refs`。v3 规范化为 CNY，target refs 只允许去重的
-`standard_product:<positive integer>`。响应必须有规则 ID、状态、availability、计数、
+`standard_product:<positive integer>` 或 `service_period:<positive integer>`。响应必须有规则 ID、状态、availability、计数、
 version、actors 和时间；不得加 customer/claim/order/payment 字段。
 
 以下路径、DTO 和任何数据库读取全部排除：
@@ -313,31 +313,24 @@ PR05_DONOR_ROOT=/private/tmp/pr05-donor-audit.<tmp>/donor \
 完成，且不应以构建产物替代逐字节门禁。正式集成仍需在受控 release workspace 运行
 固定 Node/npm/esbuild 版本并检查 manifest 输入闭包。
 
-### PR05 仍未闭合的必须项
+### 本分支交付事实与剩余验收
 
-1. 在 v3 独立 migration 中落 Coupon-owned rule/target/counter/receipt/audit 表和
-   rollback/constraint；不得复制 donor claim/public/customer 表。
-2. 建立窄 `internal/coupon/port`、Coupon app/store、UoW receipt/audit/event contract，
-   明确 CAS/row lock、版本、状态机、replay/conflict 和失败映射。
-3. 接入稳定 Product port adapter；选项读取和 publish 校验只能确认标准商品、CNY、
-   `price > discount`，不得 import Product store 或 Customer/OneID。
-4. 提供规则专用 HTTP adapter/DTO/CSRF/capability 和真实 HttpApi transport；create/update/
-   publish/stop/archive/copy/delete 每一个写入都要 caller idempotency + 同 UoW receipt，
-   save+publish 两步要有可重放 Journey。
-5. 只在 v3 `admin_base` stage/template 挂原样 donor release bundle，接入唯一 sidebar；
-   必须保留 `main.ts -> legacy.ts -> AdminController` 执行链，不改 donor 前端、不挂
-   Go minimal page、不另写 coupon frontend runtime、不开放其它页面/API、不改变
-   `Composition Root` 的本复核红线。
-6. 运行 browser Journey/网络断言：list/search/status、new/edit/options、保存草稿、
-   保存并发布、copy/publish/stop/archive/delete、刷新后数据保持；确认这些规则 Journey
-   不依赖 claims/redemption/customer-held/H5/public/sidebar/share 响应。若原样 donor
-   binding 对 data/share 触发可选请求，响应必须由后端 fail closed，且不得隐藏按钮、不得
-   阻断完整规则管理闭环。
-7. 将本复核 commit 与 `4727238`、`e8263f` 作为依赖在集成分支串起，重新执行 19 文件
-   hash gate、shell 单侧栏断言、OpenAPI/migration/diff/secret checks；本复核自身不改
-   OpenAPI、migration、deploy、lock、shared port 或 Composition Root。
+1. `0011_coupon_rules.sql` 只建 Coupon-owned rule、target、receipt、append-only audit 和
+   outbox 表；无 claim/public/customer/order/payment/identity 表。
+2. `internal/coupon` 的 Store、receipt、audit 和 outbox 写入由同一 PostgreSQL UoW 提交；
+   draft/create/update、publish/stop/archive/copy/delete 均有严格状态和重放/payload-drift
+   边界。
+3. 商品下拉读取和发布校验均通过 Product-owned port：`ListProductOptions` 覆盖 standard/
+   service_period/all，`ReadProductTarget` 再核对类型、CNY 与 `price > discount`。Coupon
+   不读 Product 表，也不建立本地商品目录。
+4. v3 HTTP adapter 完成鉴权、CSRF、显式幂等键、DTO 和失败映射；`couponData`、claims、
+   redemption、holder、public-link 等排除路径均不注册。
+5. `coupons` 与 `couponForm` 作为 release-private donor templates，经 `donortemplate.Extract`
+   挂入 PR10 的单一 `admin_base`；19 个冻结 donor 文件不修改，未新增 donor runtime。
+6. 尚待主分支环境验收：固定 donor Node/npm 版本的实际 build、浏览器 DOM/Journey 截图，
+   以及有 PostgreSQL 16 URL 时的 fresh/upgrade 迁移运行。它们不是以 mock 或 HTTP 200
+   代替的完成声明。
 
 ## 复核提交
 
-本分支只新增本文件和只读 closure gate 脚本；提交后将报告 commit SHA、窄测结果和以上
-缺口交给父任务。未 push、未 merge、未 deploy。
+本分支实现了上述闭环，仍未 push、未 merge、未 deploy。

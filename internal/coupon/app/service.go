@@ -15,6 +15,7 @@ import (
 
 	couponport "github.com/qianlan33333-png/AI-CRM-v3/internal/coupon/port"
 	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
+	productport "github.com/qianlan33333-png/AI-CRM-v3/internal/product/port"
 )
 
 const (
@@ -487,7 +488,7 @@ func normalize(input couponport.UpsertCommand) (couponport.UpsertCommand, []int6
 		}
 		seen[ref] = true
 		parts := strings.Split(ref, ":")
-		if len(parts) != 2 || parts[0] != "standard_product" {
+		if len(parts) != 2 || (parts[0] != "standard_product" && parts[0] != "service_period") {
 			return couponport.UpsertCommand{}, nil, ErrInvalidTarget
 		}
 		id, e := strconv.ParseInt(parts[1], 10, 64)
@@ -504,19 +505,23 @@ func canonicalTime(value time.Time) time.Time {
 }
 
 func (s *Service) validateProducts(ctx context.Context, c couponport.Coupon) error {
-	seen := map[int64]bool{}
+	seen := map[string]bool{}
 	for _, ref := range c.TargetRefs {
 		parts := strings.Split(ref, ":")
-		if len(parts) != 2 || parts[0] != "standard_product" {
+		if len(parts) != 2 || (parts[0] != "standard_product" && parts[0] != "service_period") {
 			return ErrInvalidTarget
 		}
 		id, e := strconv.ParseInt(parts[1], 10, 64)
-		if e != nil || id < 1 || seen[id] {
+		if e != nil || id < 1 || seen[ref] {
 			return ErrInvalidTarget
 		}
-		seen[id] = true
-		p, e := s.products.Get(ctx, id)
-		if e != nil || p.ID != id || p.Currency != "CNY" || p.PriceMinor <= c.DiscountAmountTotal {
+		seen[ref] = true
+		kind := productport.ProductOptionStandard
+		if parts[0] == "service_period" {
+			kind = productport.ProductOptionServicePeriod
+		}
+		p, e := s.products.ReadProductTarget(ctx, kind, productport.ID(id))
+		if e != nil || p.ID != productport.ID(id) || p.ProductType != kind || p.Currency != "CNY" || p.PriceMinor <= c.DiscountAmountTotal {
 			return ErrInvalidTarget
 		}
 	}
