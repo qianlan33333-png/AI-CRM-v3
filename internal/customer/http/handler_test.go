@@ -63,7 +63,7 @@ func (identities *testIdentities) DirectoryIdentities(context.Context, customerd
 }
 func (identities *testIdentities) RevealPhone(context.Context, customerdomain.CustomerID) (string, bool, error) {
 	identities.reveals++
-	return "+8613812345678", true, nil
+	return "13812345678", true, nil
 }
 
 type testAudit struct{ events []platformaudit.Event }
@@ -167,28 +167,28 @@ func TestPhoneRevealEnforcesRoleAndNoStoreAudit(t *testing.T) {
 	}
 }
 
-func TestPhoneSearchAcceptsLocalCNFormatAndRejectsInvalidInput(t *testing.T) {
+func TestPhoneSearchAcceptsOnlyStrictLocalCNFormat(t *testing.T) {
 	identities := &testIdentities{}
 	audit := &testAudit{}
 	security := testSecurity{principal: accessdomain.Principal{Kind: accessdomain.KindAdmin, InternalID: 7, Roles: []accessdomain.Role{accessdomain.RoleAdmin}}}
 	store := &testCustomerStore{}
 	handler, _ := NewHandler(testConfig(security, store, identities, audit))
 
-	for _, value := range []string{"13812345678", "%2B8613812345678"} {
-		response := httptest.NewRecorder()
-		handler.Routes().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/admin/customers?phone="+value, nil))
-		if response.Code != http.StatusOK {
-			t.Fatalf("phone=%s status=%d body=%s", value, response.Code, response.Body.String())
-		}
+	response := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/admin/customers?phone=13812345678", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
-	if len(identities.phoneQueries) != 2 || identities.phoneQueries[0] != "+8613812345678" || identities.phoneQueries[1] != "+8613812345678" || store.lastQuery.Filters.PhoneCustomerID != 42 {
+	if len(identities.phoneQueries) != 1 || identities.phoneQueries[0] != "13812345678" || store.lastQuery.Filters.PhoneCustomerID != 42 {
 		t.Fatalf("queries=%v filter=%+v", identities.phoneQueries, store.lastQuery.Filters)
 	}
 
-	response := httptest.NewRecorder()
-	handler.Routes().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/admin/customers?phone=123", nil))
-	if response.Code != http.StatusBadRequest || len(identities.phoneQueries) != 2 {
-		t.Fatalf("invalid status=%d queries=%v", response.Code, identities.phoneQueries)
+	for _, value := range []string{"123", "%2B8613812345678", "138%201234%205678", "12812345678"} {
+		response = httptest.NewRecorder()
+		handler.Routes().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/admin/customers?phone="+value, nil))
+		if response.Code != http.StatusBadRequest || len(identities.phoneQueries) != 1 {
+			t.Fatalf("invalid=%s status=%d queries=%v", value, response.Code, identities.phoneQueries)
+		}
 	}
 
 	response = httptest.NewRecorder()
@@ -201,11 +201,11 @@ func TestPhoneSearchAcceptsLocalCNFormatAndRejectsInvalidInput(t *testing.T) {
 func TestCustomerDetailReturnsOnlySafeIdentityAndPhoneSummaries(t *testing.T) {
 	security := testSecurity{principal: accessdomain.Principal{Kind: accessdomain.KindAdmin, InternalID: 7, Roles: []accessdomain.Role{accessdomain.RoleAdmin}}}
 	store := &testCustomerStore{detail: customerapp.Detail{Item: customerapp.Item{CustomerID: 42, CustomerStatus: customerdomain.StatusActive,
-		DisplayName: "Alice", AvatarURL: "https://provider/avatar", OneIDLabel: "CID-42", PhoneMasked: "+86138****5678",
+		DisplayName: "Alice", AvatarURL: "https://provider/avatar", OneIDLabel: "CID-42", PhoneMasked: "138****5678",
 		PhoneAssurance: string(identitydomain.AssuranceDeclared), ActivationState: "active"}, CorpName: "Example", Source: "wecom_directory_sync"}}
 	identities := &testIdentities{summaries: []identityport.DirectoryIdentitySummary{{Kind: identitydomain.KindWeComExternalUserID,
 		Scope: "wecom-corp:raw-corp", Assurance: identitydomain.AssuranceVerified, Status: "active", Source: "secret-source"}},
-		phones: []identityport.MaskedPhone{{Masked: "+86138****5678", Assurance: identitydomain.AssuranceDeclared}}}
+		phones: []identityport.MaskedPhone{{Masked: "138****5678", Assurance: identitydomain.AssuranceDeclared}}}
 	handler, err := NewHandler(testConfig(security, store, identities, &testAudit{}))
 	if err != nil {
 		t.Fatal(err)

@@ -149,8 +149,10 @@ func (PostgreSQL) UpdateDirectoryPhone(ctx context.Context, customerID customerd
 	if err != nil {
 		return err
 	}
-	tag, err := tx.Exec(ctx, `UPDATE customer_directory_projection SET phone_masked=$2,phone_assurance=$3,
-		source_version=GREATEST(source_version+1,$4),updated_at=$5 WHERE customer_id=$1`, customerID, masked, assurance, sourceVersion, at)
+	tag, err := tx.Exec(ctx, `INSERT INTO customer_directory_projection(customer_id,customer_status,oneid_label,phone_masked,phone_assurance,activation_status,source,source_version,last_synced_at,updated_at)
+		VALUES($1,'active',$6,$2,$3,'active','survey',$4,$5,$5)
+		ON CONFLICT(customer_id) DO UPDATE SET phone_masked=EXCLUDED.phone_masked,phone_assurance=EXCLUDED.phone_assurance,
+		source_version=GREATEST(customer_directory_projection.source_version+1,$4),updated_at=$5`, customerID, masked, assurance, sourceVersion, at, "CID-"+strconv.FormatInt(int64(customerID), 10))
 	if err != nil {
 		return err
 	}

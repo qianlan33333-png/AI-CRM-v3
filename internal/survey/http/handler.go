@@ -25,7 +25,7 @@ type RequestSecurity interface {
 }
 type OAuthApplication interface {
 	Enabled() bool
-	Start(context.Context, string, string) (string, error)
+	Start(context.Context, string) (string, error)
 	Complete(context.Context, string, string) (string, string, error)
 	ResolveSession(context.Context, string) (surveyport.SubmissionIdentity, error)
 }
@@ -75,6 +75,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.oauthStart(w, r)
 	case path == "/api/h5/surveys/oauth/callback":
 		h.oauthCallback(w, r)
+	case path == "/api/h5/surveys/session":
+		h.oauthSession(w, r)
+	case strings.HasPrefix(path, "/q/"):
+		h.publicEntry(w, r, strings.TrimPrefix(path, "/q/"))
 	case strings.HasPrefix(path, "/api/v1/customers/") && strings.HasSuffix(path, "/survey-answers"):
 		h.customerHistory(w, r)
 	case path == "/api/admin/survey-history/submissions":
@@ -338,6 +342,9 @@ func (h *Handler) publicQuestionnaire(w http.ResponseWriter, r *http.Request, ta
 	parts := strings.Split(tail, "/")
 	slug := parts[0]
 	if len(parts) == 1 && r.Method == http.MethodGet {
+		if _, ok := h.requireResolvedSurveySession(w, r); !ok {
+			return
+		}
 		q, err := h.submissions.ReadPublic(r.Context(), slug)
 		if err != nil {
 			resultError(w, err)
@@ -347,6 +354,10 @@ func (h *Handler) publicQuestionnaire(w http.ResponseWriter, r *http.Request, ta
 		return
 	}
 	if len(parts) == 2 && parts[1] == "submissions" && r.Method == http.MethodPost {
+		identity, ok := h.requireResolvedSurveySession(w, r)
+		if !ok {
+			return
+		}
 		var body struct {
 			Version       int64                         `json:"version"`
 			SubmissionKey string                        `json:"submission_key"`
@@ -358,12 +369,6 @@ func (h *Handler) publicQuestionnaire(w http.ResponseWriter, r *http.Request, ta
 		if decode(r, &body) != nil {
 			writeError(w, 400, "invalid_public_input")
 			return
-		}
-		identity := surveyport.SubmissionIdentity{State: surveyport.IdentityAnonymous}
-		if h.oauth != nil {
-			if cookie, cookieErr := r.Cookie("aicrm_survey_identity"); cookieErr == nil {
-				identity, _ = h.oauth.ResolveSession(r.Context(), cookie.Value)
-			}
 		}
 		receipt, err := h.submissions.Submit(r.Context(), surveyport.SubmitCommand{Slug: slug, DefinitionVersion: body.Version, SubmissionKey: body.SubmissionKey, Answers: body.Answers, Identity: identity, SourceChannel: body.SourceChannel, CampaignID: body.CampaignID, StaffID: body.StaffID})
 		if err != nil {
@@ -392,6 +397,16 @@ func (h *Handler) publicResult(w http.ResponseWriter, r *http.Request) {
 		resultError(w, err)
 		return
 	}
+	if s.Identity.State == surveyport.IdentityResolved {
+		identity, ok := h.requireResolvedSurveySession(w, r)
+		if !ok {
+			return
+		}
+		if identity.CustomerID == nil || s.Identity.CustomerID == nil || *identity.CustomerID != *s.Identity.CustomerID {
+			writeError(w, http.StatusForbidden, "survey_result_forbidden")
+			return
+		}
+	}
 	writeJSON(w, 200, map[string]any{"submission_id": s.ID, "definition_version": s.DefinitionVersion, "submitted_at": s.SubmittedAt, "local_only": true, "external_executed": false, "questionnaire_title": s.QuestionnaireTitle, "mode": s.Mode, "total_score": s.TotalScore, "assessment_result": s.Result})
 }
 
@@ -401,10 +416,14 @@ func (h *Handler) oauthStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if h.oauth == nil || !h.oauth.Enabled() {
-		writeError(w, http.StatusServiceUnavailable, "survey_oauth_disabled")
+		writeError(w, http.StatusServiceUnavailable, "survey_oauth_unavailable")
 		return
 	}
-	location, err := h.oauth.Start(r.Context(), r.URL.Query().Get("slug"), r.URL.Query().Get("display"))
+	if !isWeChatRequest(r) {
+		writeError(w, http.StatusBadRequest, "survey_wechat_required")
+		return
+	}
+	location, err := h.oauth.Start(r.Context(), r.URL.Query().Get("slug"))
 	if err != nil {
 		resultError(w, err)
 		return
@@ -419,7 +438,7 @@ func (h *Handler) oauthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if h.oauth == nil || !h.oauth.Enabled() {
-		http.Redirect(w, r, "/h5/error.html?code=survey_oauth_disabled", http.StatusSeeOther)
+		http.Redirect(w, r, "/h5/error.html?code=survey_oauth_unavailable", http.StatusSeeOther)
 		return
 	}
 	session, redirect, err := h.oauth.Complete(r.Context(), r.URL.Query().Get("state"), r.URL.Query().Get("code"))
@@ -427,9 +446,123 @@ func (h *Handler) oauthCallback(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/h5/error.html?code=survey_oauth_failed", http.StatusSeeOther)
 		return
 	}
-	http.SetCookie(w, &http.Cookie{Name: "aicrm_survey_identity", Value: session, Path: "/api/public/questionnaires/", MaxAge: 1800, HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode})
+	http.SetCookie(w, &http.Cookie{Name: "__Host-aicrm_survey_identity", Value: session, Path: "/", MaxAge: 1800, HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode})
 	w.Header().Set("Cache-Control", "no-store")
 	http.Redirect(w, r, redirect, http.StatusSeeOther)
+}
+
+func (h *Handler) publicEntry(w http.ResponseWriter, r *http.Request, slug string) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		method(w, "GET, HEAD")
+		return
+	}
+	if !validPublicSlug(slug) {
+		writeError(w, http.StatusNotFound, "questionnaire_not_found")
+		return
+	}
+	if h.oauth == nil || !h.oauth.Enabled() {
+		http.Redirect(w, r, "/h5/error.html?code=survey_oauth_unavailable", http.StatusSeeOther)
+		return
+	}
+	questionnaire, err := h.submissions.ReadPublic(r.Context(), slug)
+	if err != nil {
+		resultError(w, err)
+		return
+	}
+	identity, resolved := h.surveySession(r)
+	if resolved && identity.State == surveyport.IdentityResolved {
+		display := "all"
+		if questionnaire.AnswerDisplayMode == surveyport.DisplayOneByOne {
+			display = "one"
+		}
+		http.Redirect(w, r, "/h5/"+display+".html?slug="+slug, http.StatusSeeOther)
+		return
+	}
+	if resolved && identity.State == surveyport.IdentityConflict {
+		http.Redirect(w, r, "/h5/error.html?code=survey_identity_conflict", http.StatusSeeOther)
+		return
+	}
+	http.Redirect(w, r, "/h5/auth.html?slug="+slug, http.StatusSeeOther)
+}
+
+func (h *Handler) oauthSession(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		method(w, "GET")
+		return
+	}
+	if h.oauth == nil || !h.oauth.Enabled() {
+		writeError(w, http.StatusServiceUnavailable, "survey_oauth_unavailable")
+		return
+	}
+	slug := r.URL.Query().Get("slug")
+	questionnaire, err := h.submissions.ReadPublic(r.Context(), slug)
+	if err != nil {
+		resultError(w, err)
+		return
+	}
+	identity, ok := h.surveySession(r)
+	if !ok || identity.State == surveyport.IdentityAnonymous {
+		writeError(w, http.StatusUnauthorized, "survey_oauth_required")
+		return
+	}
+	if identity.State == surveyport.IdentityConflict {
+		writeError(w, http.StatusConflict, "survey_identity_conflict")
+		return
+	}
+	display := "all"
+	if questionnaire.AnswerDisplayMode == surveyport.DisplayOneByOne {
+		display = "one"
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, map[string]any{"authorized": true, "identity_state": identity.State, "display": display})
+}
+
+func (h *Handler) surveySession(r *http.Request) (surveyport.SubmissionIdentity, bool) {
+	if h.oauth == nil || !h.oauth.Enabled() {
+		return surveyport.SubmissionIdentity{}, false
+	}
+	cookie, err := r.Cookie("__Host-aicrm_survey_identity")
+	if err != nil {
+		return surveyport.SubmissionIdentity{}, false
+	}
+	identity, err := h.oauth.ResolveSession(r.Context(), cookie.Value)
+	return identity, err == nil && identity.State != surveyport.IdentityAnonymous
+}
+
+func (h *Handler) requireResolvedSurveySession(w http.ResponseWriter, r *http.Request) (surveyport.SubmissionIdentity, bool) {
+	if h.oauth == nil || !h.oauth.Enabled() {
+		writeError(w, http.StatusServiceUnavailable, "survey_oauth_unavailable")
+		return surveyport.SubmissionIdentity{}, false
+	}
+	identity, ok := h.surveySession(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "survey_oauth_required")
+		return surveyport.SubmissionIdentity{}, false
+	}
+	if identity.State == surveyport.IdentityConflict {
+		writeError(w, http.StatusConflict, "survey_identity_conflict")
+		return surveyport.SubmissionIdentity{}, false
+	}
+	if identity.State != surveyport.IdentityResolved || identity.CustomerID == nil {
+		writeError(w, http.StatusUnauthorized, "survey_oauth_required")
+		return surveyport.SubmissionIdentity{}, false
+	}
+	return identity, true
+}
+
+func isWeChatRequest(r *http.Request) bool {
+	return strings.Contains(strings.ToLower(r.UserAgent()), "micromessenger")
+}
+func validPublicSlug(value string) bool {
+	if len(value) < 1 || len(value) > 128 || value[0] == '-' || value[len(value)-1] == '-' {
+		return false
+	}
+	for _, character := range value {
+		if character != '-' && (character < 'a' || character > 'z') && (character < '0' || character > '9') {
+			return false
+		}
+	}
+	return true
 }
 
 func (h *Handler) submissionList(w http.ResponseWriter, r *http.Request, id int64, _ bool) {
@@ -776,7 +909,7 @@ func (h *Handler) legacyOperationLogs(w http.ResponseWriter, r *http.Request, id
 }
 
 func definitionResponse(q surveyport.Questionnaire) map[string]any {
-	return map[string]any{"id": q.ID, "name": q.Name, "title": q.Title, "description": q.Description, "answer_display_mode": q.AnswerDisplayMode, "assessment_enabled": q.Mode == surveyport.ModeAssessment, "assessment_config": json.RawMessage(q.AssessmentConfig), "slug": q.Slug, "is_disabled": q.Status == surveyport.StatusDisabled, "enabled": q.Status == surveyport.StatusPublished, "status": map[surveyport.QuestionnaireStatus]string{surveyport.StatusPublished: "active", surveyport.StatusDisabled: "disabled", surveyport.StatusDraft: "disabled"}[q.Status], "version": q.Version, "definition_version": q.DefinitionVersion, "question_count": len(q.Questions), "submission_count": q.SubmissionCount, "created_at": q.CreatedAt, "updated_at": q.UpdatedAt, "public_path": "/h5/all.html?slug=" + q.Slug, "submitted_path": "/h5/result.html", "questions": q.Questions, "score_rules": q.ScoreRules}
+	return map[string]any{"id": q.ID, "name": q.Name, "title": q.Title, "description": q.Description, "answer_display_mode": q.AnswerDisplayMode, "assessment_enabled": q.Mode == surveyport.ModeAssessment, "assessment_config": json.RawMessage(q.AssessmentConfig), "slug": q.Slug, "is_disabled": q.Status == surveyport.StatusDisabled, "enabled": q.Status == surveyport.StatusPublished, "status": map[surveyport.QuestionnaireStatus]string{surveyport.StatusPublished: "active", surveyport.StatusDisabled: "disabled", surveyport.StatusDraft: "disabled"}[q.Status], "version": q.Version, "definition_version": q.DefinitionVersion, "question_count": len(q.Questions), "submission_count": q.SubmissionCount, "created_at": q.CreatedAt, "updated_at": q.UpdatedAt, "public_path": "/q/" + q.Slug, "submitted_path": "/h5/result.html", "questions": q.Questions, "score_rules": q.ScoreRules}
 }
 func definitionEnvelope(q surveyport.Questionnaire, status string, source int64) map[string]any {
 	value := definitionResponse(q)

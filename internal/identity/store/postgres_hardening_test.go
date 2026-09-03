@@ -172,7 +172,7 @@ func TestPostgresMergeLedgerAndReverseUseExactSnapshots(t *testing.T) {
 	loser := h.provision(t, loserFact)
 	extraLoser := h.link(t, identityapp.LinkCommand{
 		SourceCustomerID: loser.CustomerID,
-		Target:           testFact(t, identitydomain.KindPhone, "phone:e164", "+8613800138000"),
+		Target:           testFact(t, identitydomain.KindExtension, "ext:merge-roundtrip", "extra-identity"),
 		Evidence:         testEvidence(identitydomain.EvidenceStrong),
 	})
 	if extraLoser.Status != identityapp.LinkAttached {
@@ -287,7 +287,7 @@ func createReversibleMerge(t *testing.T, h *postgresHarness, suffix string) (ide
 	loser := h.provision(t, loserFact)
 	extra := h.link(t, identityapp.LinkCommand{
 		SourceCustomerID: loser.CustomerID,
-		Target:           testFact(t, identitydomain.KindPhone, "phone:e164", "+86139"+fmt.Sprintf("%08d", loser.CustomerID)),
+		Target:           testFact(t, identitydomain.KindExtension, "ext:"+suffix, "extra-"+fmt.Sprintf("%08d", loser.CustomerID)),
 		Evidence:         testEvidence(identitydomain.EvidenceStrong),
 	})
 	if extra.Status != identityapp.LinkAttached {
@@ -501,7 +501,7 @@ func TestPostgresLinkIntentStaleSourceFailsClosed(t *testing.T) {
 	})
 	attached := h.link(t, identityapp.LinkCommand{
 		SourceCustomerID: source.CustomerID,
-		Target:           testFact(t, identitydomain.KindPhone, "phone:e164", "+8613712345678"),
+		Target:           testFact(t, identitydomain.KindExtension, "ext:stale-intent", "source-mutation"),
 		Evidence:         testEvidence(identitydomain.EvidenceStrong),
 	})
 	if attached.Status != identityapp.LinkAttached {

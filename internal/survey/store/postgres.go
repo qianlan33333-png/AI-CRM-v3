@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
+	identityport "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/port"
 	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 	surveyapp "github.com/qianlan33333-png/AI-CRM-v3/internal/survey/app"
@@ -537,6 +538,19 @@ func (r *Repository) CreateSubmission(ctx context.Context, input surveyapp.Persi
 	return stored, created, err
 }
 
+func (r *Repository) RecordPhoneBinding(ctx context.Context, submissionID, answerID surveyport.ID, customerID, identityID int64, status identityport.DeclaredAttachStatus, evidence [32]byte, now time.Time) error {
+	t, err := tx(ctx)
+	if err != nil {
+		return err
+	}
+	var identity any
+	if identityID > 0 {
+		identity = identityID
+	}
+	_, err = t.Exec(ctx, `INSERT INTO survey_phone_binding_receipts(submission_id,answer_id,customer_id,identity_id,status,evidence_digest,created_at) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(answer_id) DO NOTHING`, submissionID, answerID, customerID, identity, status, evidence[:], now)
+	return mapError(err)
+}
+
 func decodeEvidence(value string) []byte {
 	if value == "" {
 		return nil
@@ -587,7 +601,7 @@ func (r *Repository) loadSubmission(ctx context.Context, t pgx.Tx, id surveyport
 		return s, surveyport.ErrUnavailable
 	}
 	s.Answers = []surveyport.AnswerSnapshot{}
-	rows, err := t.Query(ctx, `SELECT id,definition_question_id,legacy_source_question_id,question_type,question_title_snapshot,question_sort_order,selected_options_snapshot,text_value_ciphertext,text_value_masked,score_snapshot,legacy_definition_missing FROM survey_submission_answers WHERE submission_id=$1 ORDER BY question_sort_order,id`, id)
+	rows, err := t.Query(ctx, `SELECT a.id,a.definition_question_id,a.legacy_source_question_id,a.question_type,a.question_title_snapshot,a.question_sort_order,a.selected_options_snapshot,a.text_value_ciphertext,a.text_value_masked,a.score_snapshot,a.legacy_definition_missing,COALESCE(b.status,'') FROM survey_submission_answers a LEFT JOIN survey_phone_binding_receipts b ON b.answer_id=a.id WHERE a.submission_id=$1 ORDER BY a.question_sort_order,a.id`, id)
 	if err != nil {
 		return s, mapError(err)
 	}
@@ -596,7 +610,7 @@ func (r *Repository) loadSubmission(ctx context.Context, t pgx.Tx, id surveyport
 		var a surveyport.AnswerSnapshot
 		var qid *int64
 		var options, encrypted []byte
-		if err = rows.Scan(&a.ID, &qid, &a.LegacySourceQuestionID, &a.QuestionType, &a.QuestionTitle, &a.SortOrder, &options, &encrypted, &a.TextValueMasked, &a.Score, &a.LegacyDefinitionMissing); err != nil {
+		if err = rows.Scan(&a.ID, &qid, &a.LegacySourceQuestionID, &a.QuestionType, &a.QuestionTitle, &a.SortOrder, &options, &encrypted, &a.TextValueMasked, &a.Score, &a.LegacyDefinitionMissing, &a.PhoneBindingStatus); err != nil {
 			return s, mapError(err)
 		}
 		if qid != nil {

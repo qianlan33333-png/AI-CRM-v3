@@ -79,7 +79,7 @@ v3 必须用自身 PostgreSQL 和 OneID 交付可对账的企微客户激活与�
 1. 在源环境使用受限只读账号检查 schema、数量、唯一性和空值。
 2. 产生最小 JSONL/CSV 快照：`schema_version, source_row_id, corp_id, external_userid, phone, source_updated_at`，同时生成 SHA-256 manifest。
 3. `inspect` 只验证格式；`dry-run` 在不写数据的前提下分类所有行。
-4. `apply` 仅对已存在的同 corp verified external identity 附着 declared E.164 手机号。
+4. `apply` 仅对已存在的同 corp verified external identity 附着 encrypted declared `phone:cn11` 手机号。
 5. `reconcile` 校验输入数与所有结果桶之和；不等时失败。
 6. 对账与受控抽验通过后，安全删除明文快照和临时访问凭据，仅留摘要、run ID、计数和非 PII 错误码。
 
@@ -88,8 +88,8 @@ v3 必须用自身 PostgreSQL 和 OneID 交付可对账的企微客户激活与�
 - `customers.id` 是唯一渠道中立业务主键。
 - 企微 Adapter 验证数据来自已鉴权 Provider 后才构造 verified fact。
 - external_userid scope 固定为 `wecom-corp:<corp_id>`。UnionID 只有在显式配置开放平台 scope 时才可提交 OneID；未配置时丢弃该字段。
-- 导入手机号使用 `kind=phone, scope=phone:e164, assurance=declared, source=phone_import`。
-- CN 默认只将合法 11 位大陆手机号转换为 `+86...`；非大陆号码必须已是合法 E.164。
+- 导入手机号使用 `kind=phone, scope=phone:cn11, assurance=declared, source=phone_import`，Identity 保存 HMAC 检索摘要和独立 AES-GCM 密文。
+- 只接受严格 11 位大陆手机号；`+86`、分隔符、全角数字和非大陆号码均拒绝。
 - 已属于其他 Customer、输入内一号多客、非法号码、跨 corp 和未解析 external identity 都只写冲突/失败收据，不覆盖、不建客、不合并。
 
 ## 7. 同步状态机与失败策略

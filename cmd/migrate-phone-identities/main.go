@@ -28,6 +28,7 @@ import (
 	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
 	identityport "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/port"
 	identityquery "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/query"
+	identitysecure "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/secure"
 	identitystore "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/store"
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
 	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
@@ -116,7 +117,15 @@ func run() error {
 		return printResult(*mode, 0, summarize(classified))
 	}
 	return withDatabase(func(ctx context.Context, pool *platformpostgres.Pool, uow platformport.UnitOfWork) error {
-		queries := identityquery.NewPostgreSQL()
+		phoneDataKey, keyErr := platformconfig.IdentityPhoneDataKey()
+		if keyErr != nil {
+			return keyErr
+		}
+		vault, vaultErr := identitysecure.NewPhoneVault(phoneDataKey)
+		if vaultErr != nil {
+			return errors.New("identity phone data key is required")
+		}
+		queries := identityquery.NewPostgreSQL(vault)
 		if err = classifyAgainstTarget(ctx, uow, queries, classified, *corpID); err != nil {
 			return err
 		}
@@ -133,7 +142,7 @@ func run() error {
 		if applied {
 			return reconcile(ctx, uow, *runKey)
 		}
-		oneID := identityapp.OneIDService{Store: identitystore.NewPostgresStore()}
+		oneID := identityapp.OneIDService{Store: identitystore.NewPostgresStore(vault)}
 		projection := customerstore.NewPostgreSQL()
 		if err = applyRows(ctx, uow, oneID, projection, runID, classified); err != nil {
 			return err
@@ -316,7 +325,7 @@ func applyRows(ctx context.Context, uow platformport.UnitOfWork, oneID identitya
 			if item.outcome != "attached" && item.outcome != "already_linked" {
 				return insertReceipt(txContext, runID, item)
 			}
-			result, attachErr := oneID.AttachDeclaredIdentity(txContext, identityport.DeclaredAttachCommand{CustomerID: item.customerID, Reference: identitydomain.Reference{Kind: identitydomain.KindPhone, Scope: "phone:e164", Value: item.phone, Assurance: identitydomain.AssuranceDeclared, Source: "phone_import"}, ImportRunID: runID, SourceRowID: item.receiptRowID, SourceRowDigest: item.digest, IdempotencyKey: fmt.Sprintf("phone-import:%d:%x", runID, item.digest[:8])})
+			result, attachErr := oneID.AttachDeclaredPhoneToCustomer(txContext, identityport.DeclaredPhoneCommand{CustomerID: item.customerID, Phone: item.phone, Source: "phone_import", SourceEventID: fmt.Sprintf("phone-import:%d:%x", runID, item.digest[:8]), IdempotencyKey: fmt.Sprintf("phone-import:%d:%x", runID, item.digest[:8])})
 			if attachErr != nil {
 				return attachErr
 			}
@@ -332,7 +341,7 @@ func applyRows(ctx context.Context, uow platformport.UnitOfWork, oneID identitya
 			case identityport.DeclaredReplayed:
 				item.outcome = string(result.ReplayOf)
 				item.customerID = result.CustomerID
-				return nil
+				return insertReceipt(txContext, runID, item)
 			default:
 				return errors.New("unexpected attach result")
 			}
@@ -342,12 +351,14 @@ func applyRows(ctx context.Context, uow platformport.UnitOfWork, oneID identitya
 					return updateErr
 				}
 				if item.outcome == "attached" {
-					return projection.AppendTimeline(txContext, customerport.TimelineEvent{CustomerID: item.customerID, SourceDomain: "identity",
+					if timelineErr := projection.AppendTimeline(txContext, customerport.TimelineEvent{CustomerID: item.customerID, SourceDomain: "identity",
 						SourceEventID: fmt.Sprintf("phone-import:%d:%x", runID, item.digest[:8]), EventType: "customer.phone_attached",
-						Title: "手机号已绑定", OccurredAt: now})
+						Title: "手机号已绑定", OccurredAt: now}); timelineErr != nil {
+						return timelineErr
+					}
 				}
 			}
-			return nil
+			return insertReceipt(txContext, runID, item)
 		})
 		if err != nil {
 			return err
@@ -470,9 +481,9 @@ func rollback(ctx context.Context, uow platformport.UnitOfWork, runKey string) e
 		projection := customerstore.NewPostgreSQL()
 		now := time.Now().UTC()
 		for customerID := range customerSet {
-			var phone string
+			var phone, protectedMask string
 			var assurance identitydomain.Assurance
-			queryErr := tx.QueryRow(txContext, `SELECT normalized_value,assurance FROM customer_identities WHERE customer_id=$1 AND kind='phone' AND status='active' ORDER BY (assurance='verified') DESC,id DESC LIMIT 1`, customerID).Scan(&phone, &assurance)
+			queryErr := tx.QueryRow(txContext, `SELECT i.normalized_value,COALESCE(s.masked_value,''),i.assurance FROM customer_identities i LEFT JOIN identity_phone_secrets s ON s.identity_id=i.id WHERE i.customer_id=$1 AND i.kind='phone' AND i.status='active' ORDER BY (i.assurance='verified') DESC,i.id DESC LIMIT 1`, customerID).Scan(&phone, &protectedMask, &assurance)
 			if errors.Is(queryErr, pgx.ErrNoRows) {
 				if err = projection.ClearDirectoryPhone(txContext, customerID, now); err != nil {
 					return err
@@ -482,7 +493,10 @@ func rollback(ctx context.Context, uow platformport.UnitOfWork, runKey string) e
 			if queryErr != nil {
 				return queryErr
 			}
-			if err = projection.UpdateDirectoryPhone(txContext, customerID, maskPhone(phone), assurance, runID, now); err != nil {
+			if protectedMask == "" {
+				protectedMask = maskPhone(phone)
+			}
+			if err = projection.UpdateDirectoryPhone(txContext, customerID, protectedMask, assurance, runID, now); err != nil {
 				return err
 			}
 		}
@@ -523,17 +537,17 @@ func insertReceipt(ctx context.Context, runID int64, item *classifiedRow) error 
 
 func normalizePhone(raw string) (string, error) {
 	value := strings.NewReplacer(" ", "", "-", "", "(", "", ")", "").Replace(strings.TrimSpace(raw))
-	if mainlandPhone.MatchString(value) {
-		value = "+86" + value
+	if strings.HasPrefix(value, "+86") {
+		value = strings.TrimPrefix(value, "+86")
 	}
-	ref, err := identitydomain.Normalize(identitydomain.Reference{Kind: identitydomain.KindPhone, Scope: "phone:e164", Value: value, Assurance: identitydomain.AssuranceDeclared, Source: "phone_import"})
+	ref, err := identitydomain.Normalize(identitydomain.Reference{Kind: identitydomain.KindPhone, Scope: "phone:cn11", Value: value, Assurance: identitydomain.AssuranceDeclared, Source: "phone_import"})
 	return ref.NormalizedValue, err
 }
 func maskPhone(value string) string {
-	if len(value) <= 7 {
+	if len(value) != 11 {
 		return "***"
 	}
-	return value[:len(value)-8] + "****" + value[len(value)-4:]
+	return value[:3] + "****" + value[7:]
 }
 func summarize(rows []*classifiedRow) counts {
 	result := counts{Input: int64(len(rows))}

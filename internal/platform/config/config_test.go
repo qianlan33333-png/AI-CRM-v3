@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/base64"
 	"strings"
 	"testing"
 )
@@ -33,6 +34,45 @@ func TestSourceDatabaseURLIsExplicitAndTrimmed(t *testing.T) {
 	t.Setenv("AICRM_SOURCE_DATABASE_URL", " postgres:///legacy")
 	if _, err := SourceDatabaseURL(); err == nil {
 		t.Fatal("accepted source database URL with surrounding whitespace")
+	}
+}
+
+func TestSurveyOAuthAndPhoneVaultConfigurationFailClosed(t *testing.T) {
+	t.Setenv("AICRM_DATABASE_URL", "postgres://aicrm:test@localhost/aicrm")
+	t.Setenv("AICRM_IDENTITY_PHONE_DATA_KEY", base64.RawStdEncoding.EncodeToString(make([]byte, 32)))
+	t.Setenv("AICRM_SURVEY_OAUTH_ENABLED", "true")
+	t.Setenv("AICRM_SURVEY_OAUTH_APP_ID", "wx-app")
+	t.Setenv("AICRM_SURVEY_OAUTH_SECRET", "secret")
+	t.Setenv("AICRM_SURVEY_OAUTH_OPEN_PLATFORM_ID", "platform")
+	t.Setenv("AICRM_SURVEY_OAUTH_SCOPE", "snsapi_base")
+	if _, err := Load(); err == nil {
+		t.Fatal("non-interactive OAuth scope accepted")
+	}
+	t.Setenv("AICRM_SURVEY_OAUTH_SCOPE", "snsapi_userinfo")
+	cfg, err := Load()
+	if err != nil || !cfg.Survey.OAuthEnabled || cfg.Survey.OAuthScope != "snsapi_userinfo" {
+		t.Fatalf("config=%+v err=%v", cfg.Survey, err)
+	}
+	t.Setenv("AICRM_SURVEY_OAUTH_OPEN_PLATFORM_ID", " platform")
+	if _, err = Load(); err == nil {
+		t.Fatal("unsafe OAuth scope identifier accepted")
+	}
+	t.Setenv("AICRM_SURVEY_OAUTH_OPEN_PLATFORM_ID", "platform")
+	t.Setenv("AICRM_IDENTITY_PHONE_DATA_KEY", "not-base64")
+	if _, err = Load(); err == nil {
+		t.Fatal("invalid phone key accepted")
+	}
+}
+
+func TestIdentityPhoneDataKeyLoadsOnlyValidDedicatedKey(t *testing.T) {
+	valid := base64.RawStdEncoding.EncodeToString(make([]byte, 32))
+	t.Setenv("AICRM_IDENTITY_PHONE_DATA_KEY", valid)
+	if got, err := IdentityPhoneDataKey(); err != nil || got != valid {
+		t.Fatalf("key=%q err=%v", got, err)
+	}
+	t.Setenv("AICRM_IDENTITY_PHONE_DATA_KEY", "invalid")
+	if _, err := IdentityPhoneDataKey(); err == nil {
+		t.Fatal("invalid phone key accepted")
 	}
 }
 

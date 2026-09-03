@@ -76,7 +76,7 @@ flowchart LR
 
 - 问卷定义 CRUD、复制、启停、删除、排序和四种题型；
 - 管理端结果、提交列表、分析、导出预览和 CSV；
-- 版本化公开定义、匿名提交、结果 token 查询和 H5 OAuth 窄接口；
+- 版本化公开定义、强制 H5 OAuth、Customer-bound 提交和结果 token 查询；
 - 本地运营配置、外推测试记录、效果详情和人工 reconcile；
 - 客户问卷答案只读 Port、侧边栏问卷投影；
 - 历史导入、隔离区、unresolved history 和真实 PostgreSQL 测试。
@@ -126,7 +126,7 @@ flowchart LR
 
 1. 管理员能在 v3 完成问卷创建、编辑、复制、启停、预览、发布和运营配置。
 2. 普通问卷与测评问卷均有真实后端，前端可见操作不得再命中 placeholder 或 F02 unavailable。
-3. 用户可通过公开 H5、公众号 OAuth 或可信企微上下文填写问卷；身份不确定时允许匿名/待解析提交，不猜客户。
+3. 用户只可从 `/q/{slug}` 在微信内发起 `snsapi_userinfo` 授权；新提交必须解析为 Customer，身份不确定或冲突时禁止提交且不猜客户。
 4. 提交结果、答案快照、评分、标签建议、后续动作和效果状态可审计、可重放、可对账。
 5. 客户详情和企微侧边栏只通过 Survey 读 Port 查看已关联到 canonical `customers.id` 的问卷记录。
 6. 生产一致性快照内全部问卷事实都有 `imported` 或 `unresolved` 二者之一的明确收据，数量和 digest 可对账。
@@ -138,7 +138,7 @@ flowchart LR
 
 - 真实 PostgreSQL 上所有正常、边界、重放、并发和失败测试通过；
 - v2 冻结前端的所有可见动作均有真实 v3 API 和数据库事实；
-- 公开 H5 真机完成一次身份成功、一次匿名/待解析和一次重复提交验证；
+- 公开 H5 真机完成一次身份成功、一次身份冲突失败关闭和一次重复提交验证；
 - Provider disabled 时明确显示未执行；启用后至少完成一次测试接收器和一次受控真实效果的 accepted/executed/reconciled 证据；
 - 历史迁移对账为零未解释差异，53 个或最终快照中的实际 unresolved 数量逐条有收据；
 - source 写入口关闭后验证无新增 source 行；
@@ -175,9 +175,9 @@ flowchart LR
 - 企微 external_userid 必须保留 corp scope；
 - Provider 验证成功后的 Adapter 才能构造 verified fact；HTTP body/query 不得自报 verified；
 - verified identity 先 `Resolve`，未找到时才允许显式 `ProvisionVerifiedIdentity`；
-- 手机号答案只能作为 declared evidence。若提交已绑定 Customer，可通过 Identity Port 附着为 declared；若未绑定，不得靠手机号隐式建客或自动合并；
+- 手机号答案只能是严格 11 位大陆号码并作为 declared evidence；Survey 加密保存答案，Identity 通过 `phone:cn11` HMAC 与独立密文附着到 OAuth Customer，不得靠手机号隐式建客或自动合并；
 - 多个 verified identity 指向不同 Customer 时生成 conflict/merge candidate，提交进入 `identity_conflict`，不得任选一个客户；
-- 匿名提交合法存在，后续只有在获得新的可信证据后才可通过显式 reconciliation 关联 Customer。
+- 既有匿名/未解析历史提交继续只读保留；新公开定义、提交和新结果查询均不得匿名绕过 OAuth。
 
 #### D. 提交、结果、分析与导出
 
@@ -228,7 +228,7 @@ flowchart LR
 - Admin：管理定义、发布、删除草稿、查看敏感导出、执行 reconcile。
 - Ops：编辑和发布、查看去标识化分析、查看效果状态；默认不能导出敏感字段。
 - Staff：在企微侧边栏查看当前 Customer 已确认关联的问卷记录。
-- Respondent：匿名或通过可信 OAuth/企微上下文填写问卷并查看结果。
+- Respondent：通过可信公众号 OAuth 填写问卷并查看自己的结果。
 
 ### 5.2 黄金 Journey
 
@@ -242,18 +242,18 @@ Admin 登录 → 新建问卷 → 配置题目/校验/测评 → 保存草稿
 #### GJ-S02：有 OneID 的 H5 提交
 
 ```text
-用户打开 H5 → Provider OAuth/JSSDK 验证 → Identity Resolve/Provision
-→ 签发短时 survey session（只含 customer_id 与 purpose）
+用户打开 `/q/{slug}` → 点击发起 `snsapi_userinfo` → Provider 换码验证 → Identity Resolve/显式 Provision
+→ 签发 HttpOnly/Secure/SameSite=Lax 短时 survey session
 → 读取公开版本 → 提交 → 同事务冻结答案/结果/receipt/audit/outbox
 → 提交后动作由 Outbound + External Effects 异步执行
 ```
 
-#### GJ-S03：匿名或身份不确定的提交
+#### GJ-S03：身份不确定时失败关闭
 
 ```text
-用户直接打开公开链接或身份解析冲突 → 正常提交问卷
-→ customer_id 为空 → 记录 anonymous/unresolved 状态
-→ 后续获得 verified evidence 后显式 reconcile，不回写或猜测历史身份字段
+用户直接访问 H5/API、OAuth 会话过期或身份解析冲突
+→ 返回 `survey_oauth_required` 或 `survey_identity_conflict`，不创建新提交
+→ 既有 anonymous/unresolved 历史仍可由旧结果 token 只读查看
 ```
 
 #### GJ-S04：侧边栏查看
@@ -348,7 +348,7 @@ UI 必须同时展示业务提交状态和外部效果状态，不能把排队�
 | 公众号 OAuth 的 `appid + openid` | verified | 以 `wechat-app:<appid>` scope Resolve/Provision | 无 App scope 匹配 |
 | 开放平台返回的 `unionid` | verified | 以 `wechat-open-platform:<platform>` scope Resolve/关联 | 无开放平台 scope 跨渠道关联 |
 | 手机号题答案 | declared | 已有 Customer 时通过 Identity Port 附着 declared evidence | 隐式建客、自动合并、升级 verified |
-| 匿名浏览器 | none | 创建匿名提交和匿名摘要 | 创建 Customer |
+| 匿名浏览器 | none | 引导至 `/q/{slug}` 的微信授权页 | 读取定义、创建提交或创建 Customer |
 | production 历史 unionid | migrated evidence | 只通过签名的 source OneID→v3 Customer map 关联 | 直接写 `customer_id` 或复用 unionid 为主键 |
 | 多条证据指向不同根 | conflict | 记录 conflict/merge candidate，提交待处理 | 任选 Customer 或自动合并 |
 
@@ -367,7 +367,7 @@ UI 必须同时展示业务提交状态和外部效果状态，不能把排队�
 - `/admin/questionnaires/new`、`/admin/questionnaires/{id}`：完整编辑器；
 - `/admin/questionnaires/{id}/operations`：完成动作和外推配置；
 - `/admin/questionnaires/external-push-logs`：效果与旧历史；
-- `/h5/surveys/{slug}`：公开填写；
+- `/q/{slug}`：二维码与分享唯一入口；授权后由服务端定义跳转 `/h5/all.html` 或 `/h5/one.html`；
 - 企微侧边栏问卷 tab：当前 Customer 的安全只读记录。
 
 ### 9.3 错误合同
@@ -377,7 +377,7 @@ UI 必须同时展示业务提交状态和外部效果状态，不能把排队�
 - `authentication_required`、`permission_denied`、`csrf_invalid`；
 - `questionnaire_not_found`、`definition_version_conflict`、`questionnaire_disabled`；
 - `invalid_schema`、`invalid_answer`、`submission_payload_conflict`、`rate_limited`；
-- `identity_required`、`identity_pending`、`identity_conflict`、`identity_unavailable`；
+- `survey_oauth_required`、`survey_identity_conflict`、`survey_oauth_unavailable`；
 - `external_push_not_configured`、`provider_disabled`、`outcome_unknown`；
 - `migration_source_drift`、`migration_unresolved`、`migration_reconciliation_failed`。
 

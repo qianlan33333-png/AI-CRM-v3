@@ -2479,16 +2479,18 @@ paths:
     post: {operationId: reconcileSurveySubmissionExternalPush, security: [{adminSession: [], csrfHeader: []}], responses: {"503": {description: Provider disabled by default}}}
   /api/public/questionnaires/{slug}:
     parameters: [{name: slug, in: path, required: true, schema: {type: string, pattern: '^[a-z0-9][a-z0-9-]{0,127}$'}}]
-    get: {operationId: getPublicSurvey, responses: {"200": {description: Published immutable survey}}}
+    get: {operationId: getPublicSurvey, description: Requires a valid HttpOnly Survey OAuth session., responses: {"200": {description: Published immutable survey}, "401": {description: survey_oauth_required}, "409": {description: survey_identity_conflict}, "503": {description: survey_oauth_unavailable}}}
   /api/public/questionnaires/{slug}/submissions:
     parameters: [{name: slug, in: path, required: true, schema: {type: string, pattern: '^[a-z0-9][a-z0-9-]{0,127}$'}}]
-    post: {operationId: submitPublicSurvey, requestBody: {required: true, content: {application/json: {schema: {type: object}}}}, responses: {"201": {description: Idempotent local submission receipt}}}
+    post: {operationId: submitPublicSurvey, description: Requires a resolved Customer from a valid HttpOnly Survey OAuth session. Mobile answers accept only 11-digit mainland numbers and remain declared evidence., requestBody: {required: true, content: {application/json: {schema: {type: object}}}}, responses: {"201": {description: Idempotent local submission receipt}, "400": {description: invalid_public_input}, "401": {description: survey_oauth_required}, "409": {description: survey_identity_conflict}, "503": {description: survey_oauth_unavailable}}}
   /api/public/survey-submission-results/query:
-    post: {operationId: queryPublicSurveyResult, requestBody: {required: true, content: {application/json: {schema: {type: object}}}}, responses: {"200": {description: Result token projection}}}
+    post: {operationId: queryPublicSurveyResult, description: New resolved submissions require the same Customer OAuth session; historical anonymous result tokens remain read-only compatible., requestBody: {required: true, content: {application/json: {schema: {type: object}}}}, responses: {"200": {description: Result token projection}, "401": {description: survey_oauth_required}, "403": {description: survey_result_forbidden}, "409": {description: survey_identity_conflict}, "503": {description: survey_oauth_unavailable}}}
   /api/h5/surveys/oauth/start:
-    get: {operationId: startSurveyOAuth, responses: {"303": {description: Redirect to WeChat OAuth}, "503": {description: OAuth disabled}}}
+    get: {operationId: startSurveyOAuth, description: User-click initiated snsapi_userinfo authorization. Display mode is derived from the published server-side definition., parameters: [{name: slug, in: query, required: true, schema: {type: string, pattern: '^[a-z0-9][a-z0-9-]{0,127}$'}}], responses: {"303": {description: Redirect to WeChat OAuth}, "400": {description: survey_wechat_required}, "404": {description: questionnaire_not_found}, "503": {description: survey_oauth_unavailable}}}
   /api/h5/surveys/oauth/callback:
-    get: {operationId: completeSurveyOAuth, responses: {"303": {description: Verified identity session and safe H5 redirect}}}
+    get: {operationId: completeSurveyOAuth, parameters: [{name: code, in: query, required: true, schema: {type: string, minLength: 1, maxLength: 512}}, {name: state, in: query, required: true, schema: {type: string, pattern: '^[A-Za-z0-9_-]{43}$'}}], responses: {"303": {description: Verified identity session and safe H5 redirect; the session cookie is HttpOnly Secure SameSite Lax}}}
+  /api/h5/surveys/session:
+    get: {operationId: getSurveyOAuthSession, description: Returns only authorization state and display mode; never returns Customer ID OpenID or UnionID., parameters: [{name: slug, in: query, required: true, schema: {type: string, pattern: '^[a-z0-9][a-z0-9-]{0,127}$'}}], responses: {"200": {description: Safe OAuth session state}, "401": {description: survey_oauth_required}, "409": {description: survey_identity_conflict}, "503": {description: survey_oauth_unavailable}}}
   /api/admin/survey-history/submissions:
     get: {operationId: listSurveyUnresolvedHistory, security: [{adminSession: []}], responses: {"200": {description: Read-only unresolved migrated submissions}}}
   /api/admin/survey-history/submissions/{submission_id}:

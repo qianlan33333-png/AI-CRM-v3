@@ -100,11 +100,13 @@ type AIAssistant struct {
 	ProviderPermission                        string
 }
 type Survey struct {
-	DataKey             string
-	OAuthEnabled        bool
-	OAuthAppID          string
-	OAuthSecret         string
-	OAuthOpenPlatformID string
+	DataKey              string
+	IdentityPhoneDataKey string
+	OAuthEnabled         bool
+	OAuthAppID           string
+	OAuthSecret          string
+	OAuthOpenPlatformID  string
+	OAuthScope           string
 }
 
 // TagCatalogProvider is intentionally separate from outbound message/write
@@ -157,7 +159,7 @@ func Load() (Runtime, error) {
 			ChannelStateHMACKey: os.Getenv("AICRM_CHANNEL_STATE_HMAC_KEY"),
 		},
 		GroupOps: GroupOps{WebhookSecret: os.Getenv("AICRM_GROUP_OPS_WEBHOOK_SECRET")},
-		Survey:   Survey{DataKey: os.Getenv("AICRM_SURVEY_DATA_KEY"), OAuthAppID: os.Getenv("AICRM_SURVEY_OAUTH_APP_ID"), OAuthSecret: os.Getenv("AICRM_SURVEY_OAUTH_SECRET"), OAuthOpenPlatformID: os.Getenv("AICRM_SURVEY_OAUTH_OPEN_PLATFORM_ID")},
+		Survey:   Survey{DataKey: os.Getenv("AICRM_SURVEY_DATA_KEY"), IdentityPhoneDataKey: os.Getenv("AICRM_IDENTITY_PHONE_DATA_KEY"), OAuthAppID: os.Getenv("AICRM_SURVEY_OAUTH_APP_ID"), OAuthSecret: os.Getenv("AICRM_SURVEY_OAUTH_SECRET"), OAuthOpenPlatformID: os.Getenv("AICRM_SURVEY_OAUTH_OPEN_PLATFORM_ID"), OAuthScope: valueOrDefault("AICRM_SURVEY_OAUTH_SCOPE", "snsapi_userinfo")},
 	}
 	if cfg.Survey.OAuthEnabled, err = strictBool("AICRM_SURVEY_OAUTH_ENABLED", false); err != nil {
 		return Runtime{}, err
@@ -333,13 +335,37 @@ func Load() (Runtime, error) {
 			return Runtime{}, errors.New("invalid AICRM_SURVEY_DATA_KEY")
 		}
 	}
+	if cfg.Survey.IdentityPhoneDataKey != "" {
+		if decoded, decodeErr := base64.RawStdEncoding.DecodeString(cfg.Survey.IdentityPhoneDataKey); decodeErr != nil || len(decoded) != 32 {
+			return Runtime{}, errors.New("invalid AICRM_IDENTITY_PHONE_DATA_KEY")
+		}
+	}
 	if cfg.Survey.OAuthEnabled {
 		values := []string{cfg.Survey.OAuthAppID, cfg.Survey.OAuthSecret, cfg.Survey.OAuthOpenPlatformID}
 		if nonEmptyCount(values) != len(values) {
 			return Runtime{}, errors.New("enabled survey OAuth configuration is incomplete")
 		}
+		for _, value := range values {
+			if strings.TrimSpace(value) != value || strings.ContainsAny(value, "\r\n\x00") {
+				return Runtime{}, errors.New("invalid enabled survey OAuth configuration")
+			}
+		}
+		if cfg.Survey.OAuthScope != "snsapi_userinfo" {
+			return Runtime{}, errors.New("survey OAuth scope must be snsapi_userinfo")
+		}
 	}
 	return cfg, nil
+}
+
+// IdentityPhoneDataKey returns the dedicated phone-vault master key without
+// forcing maintenance commands to load unrelated runtime/provider settings.
+func IdentityPhoneDataKey() (string, error) {
+	key := os.Getenv("AICRM_IDENTITY_PHONE_DATA_KEY")
+	decoded, err := base64.RawStdEncoding.DecodeString(key)
+	if err != nil || len(decoded) != 32 {
+		return "", errors.New("invalid AICRM_IDENTITY_PHONE_DATA_KEY")
+	}
+	return key, nil
 }
 
 func strictBool(key string, fallback bool) (bool, error) {

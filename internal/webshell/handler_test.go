@@ -486,6 +486,7 @@ func TestStaticAssetsUseBrowserApplicableContentType(t *testing.T) {
 		{"/static/admin_console/admin_console.js", "text/javascript"},
 		{"/static/admin_console/tag_sync_bridge.js", "text/javascript"},
 		{"/static/admin_console/automation_create_code_adapter.js", "text/javascript"},
+		{"/static/admin_console/survey_operations.js", "text/javascript"},
 		{"/static/admin_console/config_adminops_bridge.js", "text/javascript"},
 		{"/static/admin_console/nav-icons/automation_conversion.svg", "image/svg+xml"},
 	} {
@@ -670,8 +671,29 @@ func TestSurveyEditorUsesFullWidthDonorWorkspaceInsideAdminShell(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := response.Body.String()
-	if response.Code != http.StatusOK || strings.Count(body, `class="admin-sidebar"`) != 1 || strings.Contains(body, `<main class="admin-page">`) || strings.Contains(body, `<template id="tpl">`) || strings.Contains(body, `href="/assets/tokens.css"`) || strings.Contains(body, `href="/assets/labs.css"`) || strings.Contains(body, `src="/assets/admin.js"`) || !strings.Contains(body, `<div class="admin-main-wrap">`) || !strings.Contains(body, `<div class="shell"><header class="topbar">问卷工具栏</header><div class="workspace">编辑区</div></div>`) || !strings.Contains(body, `data-page="questionnaireDetail"`) || !strings.Contains(body, `href="/assets/editor.css"`) || !strings.Contains(body, `src="/assets/editor.js"`) {
+	if response.Code != http.StatusOK || strings.Count(body, `class="admin-sidebar"`) != 1 || strings.Contains(body, `<main class="admin-page">`) || strings.Contains(body, `<template id="tpl">`) || strings.Contains(body, `href="/assets/tokens.css"`) || strings.Contains(body, `href="/assets/labs.css"`) || strings.Contains(body, `src="/assets/admin.js"`) || !strings.Contains(body, `<div class="admin-main-wrap">`) || !strings.Contains(body, `<div class="shell"><header class="topbar">问卷工具栏</header><div class="workspace">编辑区</div></div>`) || !strings.Contains(body, `data-page="questionnaireDetail"`) || !strings.Contains(body, `href="/assets/editor.css"`) || !strings.Contains(body, `src="/assets/editor.js"`) || !strings.Contains(body, `survey_operations.js?v=survey-bridge-v2`) {
 		t.Fatalf("survey editor host layout mismatch status=%d body=%q", response.Code, body)
+	}
+}
+
+func TestSurveyQRBridgeBrowserFallback(t *testing.T) {
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node is unavailable")
+	}
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("cannot locate repository")
+	}
+	repo := filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
+	command := exec.Command("node", "internal/webshell/static/admin_console/survey_qr_bridge.test.mjs")
+	command.Dir = repo
+	var output bytes.Buffer
+	command.Stdout, command.Stderr = &output, &output
+	if err := command.Run(); err != nil {
+		t.Fatalf("survey QR bridge browser contract failed: %v\n%s", err, output.String())
+	}
+	if !strings.Contains(output.String(), "survey-qr-bridge-browser: PASS") {
+		t.Fatalf("survey QR bridge browser contract did not report success: %q", output.String())
 	}
 }
 

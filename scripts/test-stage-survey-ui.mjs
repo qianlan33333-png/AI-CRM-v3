@@ -24,10 +24,16 @@ const includeStatic = (relative) => {
   }
 };
 for (const key of requiredEntries) includeStatic(sourceManifest.entries[key]);
+const qrChunks = Object.entries(sourceManifest.files || {})
+  .filter(([, metadata]) => (metadata.inputs || []).includes('web/src/admin/sections/qr.ts'))
+  .map(([relative]) => relative);
+assert.equal(qrChunks.length, 1, 'build must contain exactly one Survey QR dynamic chunk');
+includeStatic(qrChunks[0]);
 for (const relative of required) {
   assert.deepEqual(stagedManifest.files?.[relative], sourceManifest.files?.[relative], `staged manifest metadata drifted for ${relative}`);
   assert.ok(fs.readFileSync(path.join(stage, relative)).equals(fs.readFileSync(path.join(source, relative))), `staged asset drifted for ${relative}`);
 }
+assert.ok(stagedManifest.files?.[qrChunks[0]], 'staged manifest omits Survey QR dynamic chunk');
 
 const adminPages = ['questionnaires.html', 'questionnaireDetail.html', 'questionnaireOps.html'];
 for (const page of adminPages) {

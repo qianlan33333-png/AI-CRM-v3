@@ -84,6 +84,21 @@ type DeclaredIdentityAttacher interface {
 	AttachDeclaredIdentity(context.Context, DeclaredAttachCommand) (DeclaredAttachResult, error)
 }
 
+// DeclaredPhoneCommand binds an unverified CN11 phone to an already-resolved
+// Customer. It cannot provision or merge roots. IdempotencyKey is stored only
+// as a digest; SourceEventID must not contain the phone value.
+type DeclaredPhoneCommand struct {
+	CustomerID     customerdomain.CustomerID
+	Phone          string
+	Source         string
+	SourceEventID  string
+	IdempotencyKey string
+}
+
+type DeclaredPhoneAttacher interface {
+	AttachDeclaredPhoneToCustomer(context.Context, DeclaredPhoneCommand) (DeclaredAttachResult, error)
+}
+
 type DirectoryIdentitySummary struct {
 	Kind      identitydomain.Kind      `json:"kind"`
 	Scope     string                   `json:"scope"`

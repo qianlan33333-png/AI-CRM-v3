@@ -60,7 +60,7 @@ async function load(url, requests) {
             customer: customer(),
             identities: [
               { kind: 'wecom_external_userid', scope: 'wecom-corp:test', assurance: 'verified', status: 'active', source: 'wecom.directory_sync', created_at: '2026-09-03T02:52:14Z' },
-              { kind: 'phone', scope: 'phone:e164', assurance: 'declared', status: 'active', source: 'phone_import', created_at: '2026-09-03T02:52:14Z' },
+              { kind: 'phone', scope: 'phone:cn11', assurance: 'declared', status: 'active', source: 'phone_import', created_at: '2026-09-03T02:52:14Z' },
             ],
             phones: [{ masked: '+86138****5678', assurance: 'declared' }],
           });

@@ -33,7 +33,7 @@ func TestQuestionnaireSupportsFourQuestionTypes(t *testing.T) {
 		{QuestionID: 1, OptionIDs: []surveyport.ID{11}},
 		{QuestionID: 2, OptionIDs: []surveyport.ID{21, 23}, TextValue: "私域运营"},
 		{QuestionID: 3, TextValue: "希望了解完整方案"},
-		{QuestionID: 4, TextValue: "+8613812345678"},
+		{QuestionID: 4, TextValue: "13812345678"},
 	}
 	if err := ValidateAnswers(questionnaire.Questions, answers); err != nil {
 		t.Fatalf("valid answers: %v", err)
@@ -46,12 +46,12 @@ func TestAnswerValidationFailsClosed(t *testing.T) {
 		name    string
 		answers []surveyport.SubmissionAnswer
 	}{
-		{"unknown option", []surveyport.SubmissionAnswer{{QuestionID: 1, OptionIDs: []surveyport.ID{999}}, {QuestionID: 2, OptionIDs: []surveyport.ID{21}}, {QuestionID: 4, TextValue: "+8613812345678"}}},
-		{"duplicate option", []surveyport.SubmissionAnswer{{QuestionID: 1, OptionIDs: []surveyport.ID{11, 11}}, {QuestionID: 2, OptionIDs: []surveyport.ID{21}}, {QuestionID: 4, TextValue: "+8613812345678"}}},
-		{"other without text", []surveyport.SubmissionAnswer{{QuestionID: 1, OptionIDs: []surveyport.ID{11}}, {QuestionID: 2, OptionIDs: []surveyport.ID{23}}, {QuestionID: 4, TextValue: "+8613812345678"}}},
+		{"unknown option", []surveyport.SubmissionAnswer{{QuestionID: 1, OptionIDs: []surveyport.ID{999}}, {QuestionID: 2, OptionIDs: []surveyport.ID{21}}, {QuestionID: 4, TextValue: "13812345678"}}},
+		{"duplicate option", []surveyport.SubmissionAnswer{{QuestionID: 1, OptionIDs: []surveyport.ID{11, 11}}, {QuestionID: 2, OptionIDs: []surveyport.ID{21}}, {QuestionID: 4, TextValue: "13812345678"}}},
+		{"other without text", []surveyport.SubmissionAnswer{{QuestionID: 1, OptionIDs: []surveyport.ID{11}}, {QuestionID: 2, OptionIDs: []surveyport.ID{23}}, {QuestionID: 4, TextValue: "13812345678"}}},
 		{"invalid mobile", []surveyport.SubmissionAnswer{{QuestionID: 1, OptionIDs: []surveyport.ID{11}}, {QuestionID: 2, OptionIDs: []surveyport.ID{21}}, {QuestionID: 4, TextValue: "138 1234 5678"}}},
-		{"missing required", []surveyport.SubmissionAnswer{{QuestionID: 1, OptionIDs: []surveyport.ID{11}}, {QuestionID: 4, TextValue: "+8613812345678"}}},
-		{"extra question", []surveyport.SubmissionAnswer{{QuestionID: 1, OptionIDs: []surveyport.ID{11}}, {QuestionID: 2, OptionIDs: []surveyport.ID{21}}, {QuestionID: 4, TextValue: "+8613812345678"}, {QuestionID: 99, TextValue: "x"}}},
+		{"missing required", []surveyport.SubmissionAnswer{{QuestionID: 1, OptionIDs: []surveyport.ID{11}}, {QuestionID: 4, TextValue: "13812345678"}}},
+		{"extra question", []surveyport.SubmissionAnswer{{QuestionID: 1, OptionIDs: []surveyport.ID{11}}, {QuestionID: 2, OptionIDs: []surveyport.ID{21}}, {QuestionID: 4, TextValue: "13812345678"}, {QuestionID: 99, TextValue: "x"}}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -65,6 +65,7 @@ func TestAnswerValidationFailsClosed(t *testing.T) {
 func TestQuestionnaireRejectsDefinitionDrift(t *testing.T) {
 	for _, mutate := range []func(*surveyport.Questionnaire){
 		func(value *surveyport.Questionnaire) { value.Slug = "Bad Slug" },
+		func(value *surveyport.Questionnaire) { value.Slug = "trailing-" },
 		func(value *surveyport.Questionnaire) { value.Questions[1].SortOrder = 9 },
 		func(value *surveyport.Questionnaire) { value.Questions[0].Options[1].SortOrder = 0 },
 		func(value *surveyport.Questionnaire) {

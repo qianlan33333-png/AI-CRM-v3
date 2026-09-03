@@ -50,6 +50,7 @@ import (
 	identityhttp "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/http"
 	identityprovider "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/provider"
 	identityquery "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/query"
+	identitysecure "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/secure"
 	identitystore "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/store"
 	media "github.com/qianlan33333-png/AI-CRM-v3/internal/media"
 	mediaapp "github.com/qianlan33333-png/AI-CRM-v3/internal/media/app"
@@ -151,8 +152,15 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return fail(err)
 	}
 
-	oneID := identityapp.OneIDService{Store: identitystore.NewPostgresStore()}
-	queries := identityquery.NewPostgreSQL()
+	if cfg.Survey.IdentityPhoneDataKey == "" {
+		return fail(errors.New("identity phone data encryption key is not configured"))
+	}
+	phoneVault, err := identitysecure.NewPhoneVault(cfg.Survey.IdentityPhoneDataKey)
+	if err != nil {
+		return fail(err)
+	}
+	oneID := identityapp.OneIDService{Store: identitystore.NewPostgresStore(phoneVault)}
+	queries := identityquery.NewPostgreSQL(phoneVault)
 	paymentRepository := paymentstore.NewPostgreSQL()
 	customerStore := customerstore.NewPostgreSQL()
 	requestSecurity := requestAccessSecurity{authentication: authentication}
@@ -354,7 +362,10 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err = surveySubmissions.BindCustomerTimeline(customerStore); err != nil {
 		return fail(err)
 	}
-	surveyOAuthProvider, err := surveyprovider.NewWeChatOAuth(cfg.Survey.OAuthEnabled, cfg.Survey.OAuthAppID, cfg.Survey.OAuthSecret, cfg.Survey.OAuthOpenPlatformID, cfg.PublicOrigin+"/api/h5/surveys/oauth/callback")
+	if err = surveySubmissions.BindDeclaredPhone(oneID, customerStore); err != nil {
+		return fail(err)
+	}
+	surveyOAuthProvider, err := surveyprovider.NewWeChatOAuth(cfg.Survey.OAuthEnabled, cfg.Survey.OAuthAppID, cfg.Survey.OAuthSecret, cfg.Survey.OAuthOpenPlatformID, cfg.PublicOrigin+"/api/h5/surveys/oauth/callback", cfg.Survey.OAuthScope)
 	if err != nil {
 		return fail(err)
 	}
@@ -808,7 +819,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 			return checkErr
 		}
 		var complete bool
-		checkErr := pool.Native().QueryRow(readinessContext, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['0001','0002','0003','0004','0005','0006','0007','0008','0009','0010','0011','0012','0013','0014','0016','0017','0018','0019','0020','0021','0022','0023','0024','0025','0026','0027','0028','0029','0030','0031','0032','0033','0034','0035','0036','0037']) AS required(version) WHERE NOT EXISTS (SELECT 1 FROM platform_schema_migrations applied WHERE applied.version=required.version))`).Scan(&complete)
+		checkErr := pool.Native().QueryRow(readinessContext, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['0001','0002','0003','0004','0005','0006','0007','0008','0009','0010','0011','0012','0013','0014','0016','0017','0018','0019','0020','0021','0022','0023','0024','0025','0026','0027','0028','0029','0030','0031','0032','0033','0034','0035','0036','0037','0038']) AS required(version) WHERE NOT EXISTS (SELECT 1 FROM platform_schema_migrations applied WHERE applied.version=required.version))`).Scan(&complete)
 		if checkErr != nil || !complete {
 			return errors.New("database schema is not ready")
 		}
@@ -944,6 +955,8 @@ func mountSurveyAPIs(mux *http.ServeMux, survey http.Handler) {
 	mux.Handle("/api/public/questionnaires/", survey)
 	mux.Handle("/api/public/survey-submission-results/query", survey)
 	mux.Handle("/api/h5/surveys/oauth/", survey)
+	mux.Handle("/api/h5/surveys/session", survey)
+	mux.Handle("/q/", survey)
 	mux.Handle("/api/sidebar/v2/questionnaires", survey)
 	mux.Handle("/api/v1/customers/", survey)
 	// The frozen operations workspace reads its history projection from this
@@ -1125,6 +1138,8 @@ func routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, acce
 	mux.Handle("/api/public/questionnaires/", identity)
 	mux.Handle("/api/public/survey-submission-results/query", identity)
 	mux.Handle("/api/h5/surveys/oauth/", identity)
+	mux.Handle("/api/h5/surveys/session", identity)
+	mux.Handle("/q/", identity)
 	mux.Handle("/api/sidebar/v2/questionnaires", identity)
 	mux.Handle("/api/v1/customers/", identity)
 	mux.Handle("/admin/questionnaires/", identity)
