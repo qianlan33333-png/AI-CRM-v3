@@ -31,6 +31,7 @@ type Record struct {
 type Store interface {
 	Insert(context.Context, Record) (Record, error)
 	Consume(context.Context, [32]byte, time.Time) (Record, error)
+	Lookup(context.Context, [32]byte, time.Time) (Record, error)
 }
 type IssueCommand struct {
 	Fact                  identitydomain.VerifiedFact
@@ -110,6 +111,18 @@ func (s *Service) ConsumeWithin(ctx context.Context, token string, now time.Time
 	}
 	digest := sha256.Sum256([]byte(token))
 	record, err := s.store.Consume(ctx, digest, now.UTC())
+	if err != nil {
+		return paymentport.SessionActor{}, err
+	}
+	return paymentport.SessionActor{PayerIdentityID: record.PayerIdentityID, PayerCustomerID: int64(record.PayerCustomerID), BeneficiaryCustomerID: int64(record.BeneficiaryCustomerID)}, nil
+}
+
+func (s *Service) LookupWithin(ctx context.Context, token string, now time.Time) (paymentport.SessionActor, error) {
+	if s == nil || s.store == nil || len(token) < 20 || len(token) > 100 || now.IsZero() {
+		return paymentport.SessionActor{}, ErrInvalid
+	}
+	digest := sha256.Sum256([]byte(token))
+	record, err := s.store.Lookup(ctx, digest, now.UTC())
 	if err != nil {
 		return paymentport.SessionActor{}, err
 	}

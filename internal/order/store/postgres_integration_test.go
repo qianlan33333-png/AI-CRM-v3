@@ -202,12 +202,14 @@ func orderIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 	if !ok {
 		t.Fatal("locate integration test")
 	}
-	migration, err := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "..", "migrations", "0020_order.sql"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err = pool.Exec(ctx, string(migration)); err != nil {
-		t.Fatalf("apply order migration: %v", err)
+	for _, name := range []string{"0020_order.sql", "0024_order_product_version.sql"} {
+		migration, readErr := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "..", "migrations", name))
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if _, err = pool.Exec(ctx, string(migration)); err != nil {
+			t.Fatalf("apply %s: %v", name, err)
+		}
 	}
 	for _, table := range []string{"orders", "order_items", "order_status_history", "order_operation_receipts", "order_export_receipts", "order_audit_events", "order_outbox", "order_import_runs", "order_import_receipts", "order_import_quarantine"} {
 		var owned bool

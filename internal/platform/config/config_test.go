@@ -107,6 +107,42 @@ func TestLoadAcceptsEffectsWorkerRole(t *testing.T) {
 	}
 }
 
+func TestWeChatShopProviderIsIndependentAndClosedConfiguration(t *testing.T) {
+	t.Setenv("AICRM_DATABASE_URL", "postgres://aicrm:test@localhost/aicrm")
+	t.Setenv("AICRM_WECHAT_SHOP_PROVIDER_ENABLED", "true")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected partial WeChat Shop configuration error")
+	}
+	t.Setenv("AICRM_WECHAT_SHOP_APP_ID", "shop-app")
+	t.Setenv("AICRM_WECHAT_SHOP_APP_SECRET", "shop-secret")
+	t.Setenv("AICRM_WECHAT_SHOP_CALLBACK_TOKEN", "callback-token")
+	t.Setenv("AICRM_WECHAT_SHOP_CALLBACK_AES_KEY", strings.Repeat("a", 43))
+	cfg, err := Load()
+	if err != nil || !cfg.WeChatShop.Enabled || cfg.WeChatPay.Enabled {
+		t.Fatalf("config=%+v err=%v", cfg.WeChatShop, err)
+	}
+}
+
+func TestWeChatPayProviderRequiresMiniProgramIdentityCredential(t *testing.T) {
+	t.Setenv("AICRM_DATABASE_URL", "postgres://aicrm:test@localhost/aicrm")
+	t.Setenv("AICRM_WECHAT_PAY_PROVIDER_ENABLED", "true")
+	t.Setenv("AICRM_WECHAT_PAY_APP_ID", "wx-app")
+	t.Setenv("AICRM_WECHAT_PAY_APP_SCOPE", "wechat-app:wx-app")
+	t.Setenv("AICRM_WECHAT_PAY_MERCHANT_ID", "merchant")
+	t.Setenv("AICRM_WECHAT_PAY_MERCHANT_SERIAL", "serial")
+	t.Setenv("AICRM_WECHAT_PAY_PRIVATE_KEY_PATH", "/keys/merchant.pem")
+	t.Setenv("AICRM_WECHAT_PAY_PLATFORM_CERT_PATH", "/keys/platform.pem")
+	t.Setenv("AICRM_WECHAT_PAY_API_V3_KEY", strings.Repeat("k", 32))
+	if _, err := Load(); err == nil {
+		t.Fatal("expected missing mini program AppSecret to fail closed")
+	}
+	t.Setenv("AICRM_WECHAT_PAY_APP_SECRET", "app-secret")
+	cfg, err := Load()
+	if err != nil || !cfg.WeChatPay.Enabled || cfg.WeChatPay.AppSecret != "app-secret" {
+		t.Fatalf("config=%+v err=%v", cfg.WeChatPay, err)
+	}
+}
+
 func TestTagCatalogProviderRequiresNarrowExplicitPermission(t *testing.T) {
 	t.Setenv("AICRM_DATABASE_URL", "postgres://aicrm:test@localhost/aicrm")
 	t.Setenv("AICRM_WECOM_TAG_CATALOG_PROVIDER_ENABLED", "true")

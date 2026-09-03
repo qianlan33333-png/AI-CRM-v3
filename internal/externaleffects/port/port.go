@@ -130,6 +130,13 @@ type TransactionalAccepter interface {
 	AcceptAndQueueWithin(context.Context, AcceptCommand) (Projection, Receipt, error)
 }
 
+// Reader exposes only the digest-safe effect projection required by owning
+// domains when rendering an operator timeline. It intentionally exposes no
+// payload, Provider response, or control operation.
+type Reader interface {
+	Get(context.Context, string) (Projection, error)
+}
+
 // ProviderAdapter is implemented by outbound. The effect kernel invokes it
 // only after the attempted fact is committed, so it can never hold a database
 // transaction across a provider network call.

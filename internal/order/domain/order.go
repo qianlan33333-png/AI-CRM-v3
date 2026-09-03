@@ -58,6 +58,7 @@ func NewMoney(amountMinor int64, currency string) (Money, error) {
 type ItemSnapshot struct {
 	LineNo          int32  `json:"line_no"`
 	ProductID       *int64 `json:"product_id,omitempty"`
+	ProductVersion  *int64 `json:"product_version,omitempty"`
 	ProductCode     string `json:"product_code"`
 	ProductName     string `json:"product_name"`
 	UnitAmountMinor int64  `json:"unit_amount_minor"`
@@ -226,7 +227,7 @@ func validate(o Order) error {
 	var total int64
 	seen := make(map[int32]struct{}, len(o.items))
 	for _, item := range o.items {
-		if item.LineNo < 1 || item.ProductID != nil && *item.ProductID < 1 || !validText(item.ProductCode, 200) || !validText(item.ProductName, 500) ||
+		if item.LineNo < 1 || item.ProductID != nil && *item.ProductID < 1 || item.ProductVersion != nil && *item.ProductVersion < 1 || !validText(item.ProductCode, 200) || !validText(item.ProductName, 500) ||
 			item.UnitAmountMinor < 1 || item.Quantity < 1 || item.UnitAmountMinor > math.MaxInt64/int64(item.Quantity) ||
 			item.LineAmountMinor != item.UnitAmountMinor*int64(item.Quantity) || total > math.MaxInt64-item.LineAmountMinor {
 			return ErrInvalidOrder

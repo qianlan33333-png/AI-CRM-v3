@@ -32,6 +32,7 @@ type Runtime struct {
 	TagCatalog                 TagCatalogProvider
 	Survey                     Survey
 	WeChatPay                  WeChatPay
+	WeChatShop                 WeChatShop
 	WorkerOwner                string
 	WorkerLimit                int
 	CustomerSyncTrigger        string
@@ -84,10 +85,17 @@ type TagCatalogProvider struct {
 }
 
 type WeChatPay struct {
-	Enabled                                     bool
-	AppID, AppScope, MerchantID, MerchantSerial string
-	PrivateKeyPath, PlatformCertPath            string
-	APIV3Key                                    string
+	Enabled                          bool
+	AppID, AppSecret, AppScope       string
+	MerchantID, MerchantSerial       string
+	PrivateKeyPath, PlatformCertPath string
+	APIV3Key                         string
+}
+
+type WeChatShop struct {
+	Enabled                               bool
+	AppID, AppSecret                      string
+	CallbackToken, CallbackEncodingAESKey string
 }
 
 func Load() (Runtime, error) {
@@ -131,12 +139,20 @@ func Load() (Runtime, error) {
 		return Runtime{}, err
 	}
 	cfg.WeChatPay.AppID = os.Getenv("AICRM_WECHAT_PAY_APP_ID")
+	cfg.WeChatPay.AppSecret = os.Getenv("AICRM_WECHAT_PAY_APP_SECRET")
 	cfg.WeChatPay.AppScope = os.Getenv("AICRM_WECHAT_PAY_APP_SCOPE")
 	cfg.WeChatPay.MerchantID = os.Getenv("AICRM_WECHAT_PAY_MERCHANT_ID")
 	cfg.WeChatPay.MerchantSerial = os.Getenv("AICRM_WECHAT_PAY_MERCHANT_SERIAL")
 	cfg.WeChatPay.PrivateKeyPath = os.Getenv("AICRM_WECHAT_PAY_PRIVATE_KEY_PATH")
 	cfg.WeChatPay.PlatformCertPath = os.Getenv("AICRM_WECHAT_PAY_PLATFORM_CERT_PATH")
 	cfg.WeChatPay.APIV3Key = os.Getenv("AICRM_WECHAT_PAY_API_V3_KEY")
+	if cfg.WeChatShop.Enabled, err = strictBool("AICRM_WECHAT_SHOP_PROVIDER_ENABLED", false); err != nil {
+		return Runtime{}, err
+	}
+	cfg.WeChatShop.AppID = os.Getenv("AICRM_WECHAT_SHOP_APP_ID")
+	cfg.WeChatShop.AppSecret = os.Getenv("AICRM_WECHAT_SHOP_APP_SECRET")
+	cfg.WeChatShop.CallbackToken = os.Getenv("AICRM_WECHAT_SHOP_CALLBACK_TOKEN")
+	cfg.WeChatShop.CallbackEncodingAESKey = os.Getenv("AICRM_WECHAT_SHOP_CALLBACK_AES_KEY")
 	cfg.TagCatalog.Permission = os.Getenv("AICRM_WECOM_TAG_CATALOG_PROVIDER_PERMISSION")
 	if cfg.WeCom.Enabled, err = strictBool("AICRM_WECOM_ENABLED", false); err != nil {
 		return Runtime{}, err
@@ -223,13 +239,24 @@ func Load() (Runtime, error) {
 		}
 	}
 	if cfg.WeChatPay.Enabled {
-		values := []string{cfg.WeChatPay.AppID, cfg.WeChatPay.AppScope, cfg.WeChatPay.MerchantID, cfg.WeChatPay.MerchantSerial, cfg.WeChatPay.PrivateKeyPath, cfg.WeChatPay.PlatformCertPath, cfg.WeChatPay.APIV3Key}
+		values := []string{cfg.WeChatPay.AppID, cfg.WeChatPay.AppSecret, cfg.WeChatPay.AppScope, cfg.WeChatPay.MerchantID, cfg.WeChatPay.MerchantSerial, cfg.WeChatPay.PrivateKeyPath, cfg.WeChatPay.PlatformCertPath, cfg.WeChatPay.APIV3Key}
 		if nonEmptyCount(values) != len(values) || len(cfg.WeChatPay.APIV3Key) != 32 || !strings.HasPrefix(cfg.WeChatPay.AppScope, "wechat-app:") {
 			return Runtime{}, errors.New("enabled WeChat Pay configuration is incomplete")
 		}
 		for _, value := range values {
 			if strings.TrimSpace(value) != value {
 				return Runtime{}, errors.New("invalid enabled WeChat Pay configuration")
+			}
+		}
+	}
+	if cfg.WeChatShop.Enabled {
+		values := []string{cfg.WeChatShop.AppID, cfg.WeChatShop.AppSecret, cfg.WeChatShop.CallbackToken, cfg.WeChatShop.CallbackEncodingAESKey}
+		if nonEmptyCount(values) != len(values) || len(cfg.WeChatShop.CallbackEncodingAESKey) != 43 {
+			return Runtime{}, errors.New("enabled WeChat Shop configuration is incomplete")
+		}
+		for _, value := range values {
+			if strings.TrimSpace(value) != value {
+				return Runtime{}, errors.New("invalid enabled WeChat Shop configuration")
 			}
 		}
 	}

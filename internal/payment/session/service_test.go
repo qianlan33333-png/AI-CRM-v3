@@ -48,6 +48,14 @@ func (store *memoryStore) Consume(_ context.Context, digest [32]byte, now time.T
 	return record, nil
 }
 
+func (store *memoryStore) Lookup(_ context.Context, digest [32]byte, now time.Time) (Record, error) {
+	record, ok := store.records[digest]
+	if !ok || !record.ExpiresAt.After(now) {
+		return Record{}, ErrExpired
+	}
+	return record, nil
+}
+
 func verifiedFact(t *testing.T) identitydomain.VerifiedFact {
 	t.Helper()
 	fact, err := identitydomain.NewVerifiedFact(identitydomain.ProviderVerifiedIdentityInput{
@@ -78,6 +86,10 @@ func TestTrustedSessionUsesOneIDAndIsSingleUse(t *testing.T) {
 	}
 	if _, err = service.Consume(context.Background(), issued.Token); !errors.Is(err, ErrExpired) {
 		t.Fatalf("replay err=%v", err)
+	}
+	actor, err := service.LookupWithin(context.Background(), issued.Token, now)
+	if err != nil || actor.PayerIdentityID != 8 || actor.PayerCustomerID != 21 {
+		t.Fatalf("lookup actor=%+v err=%v", actor, err)
 	}
 }
 

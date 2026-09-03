@@ -41,6 +41,57 @@ func TestProvisionRequiresOpaqueVerifiedFact(t *testing.T) {
 	}
 }
 
+func TestProvisionHistoricalSubjectBindsMultipleVerifiedIdentitiesToOneRoot(t *testing.T) {
+	store := NewMemoryStore()
+	service := OneIDService{Store: store}
+	result, err := service.ProvisionHistoricalSubject(context.Background(), identityport.HistoricalSubjectCommand{
+		SubjectKey: "person-1",
+		Facts: []identitydomain.VerifiedFact{
+			verifiedFact(t, identitydomain.KindWeComExternalUserID, "wecom-corp:main", "history-wecom-1"),
+			verifiedFact(t, identitydomain.KindMPOpenID, "wechat-app:main", "history-openid-1"),
+		},
+		SourceDigest: [32]byte{1},
+	})
+	if err != nil || result.CustomerID < 1 || len(result.IdentityIDs) != 2 || result.IdentityIDs[0] == result.IdentityIDs[1] {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	if store.CustomerCount() != 1 || store.ActiveIdentityCount() != 2 {
+		t.Fatalf("customers=%d identities=%d", store.CustomerCount(), store.ActiveIdentityCount())
+	}
+	replay, err := service.ProvisionHistoricalSubject(context.Background(), identityport.HistoricalSubjectCommand{
+		SubjectKey: "person-1",
+		Facts: []identitydomain.VerifiedFact{
+			verifiedFact(t, identitydomain.KindWeComExternalUserID, "wecom-corp:main", "history-wecom-1"),
+			verifiedFact(t, identitydomain.KindMPOpenID, "wechat-app:main", "history-openid-1"),
+		},
+		SourceDigest: [32]byte{1},
+	})
+	if err != nil || replay.CustomerID != result.CustomerID || store.CustomerCount() != 1 || store.ActiveIdentityCount() != 2 {
+		t.Fatalf("replay=%+v err=%v", replay, err)
+	}
+}
+
+func TestProvisionHistoricalSubjectFailsClosedAcrossExistingRoots(t *testing.T) {
+	store := NewMemoryStore()
+	service := OneIDService{Store: store}
+	leftFact := verifiedFact(t, identitydomain.KindWeComExternalUserID, "wecom-corp:main", "history-left")
+	rightFact := verifiedFact(t, identitydomain.KindMPOpenID, "wechat-app:main", "history-right")
+	left, err := service.ProvisionCustomerFromVerifiedIdentity(context.Background(), leftFact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	right, err := service.ProvisionCustomerFromVerifiedIdentity(context.Background(), rightFact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.ProvisionHistoricalSubject(context.Background(), identityport.HistoricalSubjectCommand{SubjectKey: "ambiguous", Facts: []identitydomain.VerifiedFact{leftFact, rightFact}, SourceDigest: [32]byte{2}}); !errors.Is(err, ErrHistoricalSubjectConflict) {
+		t.Fatalf("err=%v", err)
+	}
+	if store.Root(left.CustomerID) != left.CustomerID || store.Root(right.CustomerID) != right.CustomerID {
+		t.Fatal("historical subject conflict merged roots")
+	}
+}
+
 func TestDeclaredPhoneAttachesOnlyToExistingCustomerAndReplays(t *testing.T) {
 	store := NewMemoryStore()
 	service := OneIDService{Store: store}

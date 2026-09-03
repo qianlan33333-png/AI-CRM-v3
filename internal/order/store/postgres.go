@@ -136,6 +136,13 @@ func (r *Repository) Insert(ctx context.Context, order domain.Order, actor int64
 	return r.insert(ctx, order, "admin:"+strconv.FormatInt(actor, 10), now, nil, "order.created")
 }
 
+func (r *Repository) InsertScoped(ctx context.Context, order domain.Order, actorScope string, now time.Time) (domain.Order, error) {
+	if actorScope == "" || len(actorScope) > 200 || strings.TrimSpace(actorScope) != actorScope {
+		return domain.Order{}, ErrInvalid
+	}
+	return r.insert(ctx, order, actorScope, now, nil, "order.created")
+}
+
 func (r *Repository) insert(ctx context.Context, order domain.Order, actorScope string, now time.Time, sourceDigest []byte, eventType string) (domain.Order, error) {
 	tx, err := transaction(ctx)
 	if err != nil {
@@ -151,7 +158,7 @@ VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING id`
 		return domain.Order{}, mapError(err)
 	}
 	for _, item := range snapshot.Items {
-		if _, err = tx.Exec(ctx, `INSERT INTO order_items(order_id,line_no,product_id,product_code,product_name,unit_amount_minor,quantity,line_amount_minor) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, snapshot.ID, item.LineNo, item.ProductID, item.ProductCode, item.ProductName, item.UnitAmountMinor, item.Quantity, item.LineAmountMinor); err != nil {
+		if _, err = tx.Exec(ctx, `INSERT INTO order_items(order_id,line_no,product_id,product_version,product_code,product_name,unit_amount_minor,quantity,line_amount_minor) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`, snapshot.ID, item.LineNo, item.ProductID, item.ProductVersion, item.ProductCode, item.ProductName, item.UnitAmountMinor, item.Quantity, item.LineAmountMinor); err != nil {
 			return domain.Order{}, mapError(err)
 		}
 	}
@@ -479,7 +486,7 @@ func (r *Repository) appendFacts(ctx context.Context, tx pgx.Tx, snapshot domain
 }
 
 func loadItems(ctx context.Context, tx pgx.Tx, orderID int64) ([]domain.ItemSnapshot, error) {
-	rows, err := tx.Query(ctx, `SELECT line_no,product_id,product_code,product_name,unit_amount_minor,quantity,line_amount_minor FROM order_items WHERE order_id=$1 ORDER BY line_no`, orderID)
+	rows, err := tx.Query(ctx, `SELECT line_no,product_id,product_version,product_code,product_name,unit_amount_minor,quantity,line_amount_minor FROM order_items WHERE order_id=$1 ORDER BY line_no`, orderID)
 	if err != nil {
 		return nil, mapError(err)
 	}
@@ -487,7 +494,7 @@ func loadItems(ctx context.Context, tx pgx.Tx, orderID int64) ([]domain.ItemSnap
 	items := make([]domain.ItemSnapshot, 0)
 	for rows.Next() {
 		var item domain.ItemSnapshot
-		if err = rows.Scan(&item.LineNo, &item.ProductID, &item.ProductCode, &item.ProductName, &item.UnitAmountMinor, &item.Quantity, &item.LineAmountMinor); err != nil {
+		if err = rows.Scan(&item.LineNo, &item.ProductID, &item.ProductVersion, &item.ProductCode, &item.ProductName, &item.UnitAmountMinor, &item.Quantity, &item.LineAmountMinor); err != nil {
 			return nil, mapError(err)
 		}
 		items = append(items, item)

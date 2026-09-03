@@ -79,6 +79,7 @@ type Store interface {
 	Reserve(context.Context, Reservation) (Receipt, bool, error)
 	Complete(context.Context, int64, json.RawMessage, time.Time) (Receipt, error)
 	Insert(context.Context, domain.Order, int64, time.Time) (domain.Order, error)
+	InsertScoped(context.Context, domain.Order, string, time.Time) (domain.Order, error)
 	Get(context.Context, int64, bool) (domain.Order, error)
 	List(context.Context, *Cursor, int32, ListFilter) ([]domain.Order, error)
 	Count(context.Context, ListFilter) (int64, error)
@@ -97,6 +98,122 @@ type Service struct {
 
 func NewService(uow platformport.UnitOfWork, store Store) *Service {
 	return &Service{uow: uow, store: store, now: time.Now}
+}
+
+func (s *Service) ReservePaymentWithin(ctx context.Context, id int64) (domain.Snapshot, error) {
+	if !ready(s) || id < 1 {
+		return domain.Snapshot{}, orderport.ErrConflict
+	}
+	order, err := s.store.Get(ctx, id, true)
+	if err != nil {
+		return domain.Snapshot{}, classify(err)
+	}
+	snapshot := order.Snapshot()
+	if snapshot.RecordOrigin != domain.RecordOriginNative || !snapshot.EffectEligible || snapshot.Status != domain.StatusPendingPayment {
+		return domain.Snapshot{}, orderport.ErrConflict
+	}
+	return snapshot, nil
+}
+
+func (s *Service) CreatePaymentOrderWithin(ctx context.Context, command orderport.PaymentOrderCommand) (domain.Snapshot, error) {
+	if !ready(s) || command.Provider != domain.ProviderWeChatPay || command.PayerCustomerID < 1 || command.BeneficiaryCustomerID < 1 || command.ProductID < 1 || command.ProductVersion < 1 || command.UnitAmountMinor < 1 || command.Currency != "CNY" || !validKey(command.IdempotencyKey) || !validKey(command.ActorScope) {
+		return domain.Snapshot{}, orderport.ErrConflict
+	}
+	productID := command.ProductID
+	productVersion := command.ProductVersion
+	input := domain.NewOrderInput{
+		Provider: command.Provider, SourceSystem: "v3-checkout", SourceKey: command.MerchantOrderNo,
+		MerchantOrderNo: command.MerchantOrderNo, PayerCustomerID: &command.PayerCustomerID,
+		BeneficiaryCustomerID: &command.BeneficiaryCustomerID,
+		Amount:                domain.Money{AmountMinor: command.UnitAmountMinor, Currency: command.Currency},
+		Items:                 []domain.ItemSnapshot{{LineNo: 1, ProductID: &productID, ProductVersion: &productVersion, ProductCode: command.ProductCode, ProductName: command.ProductName, UnitAmountMinor: command.UnitAmountMinor, Quantity: 1, LineAmountMinor: command.UnitAmountMinor}},
+		RecordOrigin:          domain.RecordOriginNative, EffectEligible: true, CreatedAt: s.now().UTC(),
+	}
+	order, err := domain.NewOrder(input)
+	if err != nil {
+		return domain.Snapshot{}, orderport.ErrConflict
+	}
+	digestInput := struct {
+		Input          domain.NewOrderInput
+		ProductVersion int64
+	}{Input: input, ProductVersion: command.ProductVersion}
+	digestInput.Input.CreatedAt = time.Time{}
+	payload, err := json.Marshal(digestInput)
+	if err != nil {
+		return domain.Snapshot{}, orderport.ErrUnavailable
+	}
+	reservation := Reservation{Operation: "create", ActorScope: command.ActorScope, KeyDigest: sha256.Sum256([]byte(command.IdempotencyKey)), PayloadDigest: sha256.Sum256(payload), CreatedAt: input.CreatedAt}
+	receipt, owned, err := s.store.Reserve(ctx, reservation)
+	if err != nil || !validReceipt(receipt, reservation) || subtle.ConstantTimeCompare(receipt.PayloadDigest[:], reservation.PayloadDigest[:]) != 1 {
+		if err != nil {
+			return domain.Snapshot{}, classify(err)
+		}
+		return domain.Snapshot{}, orderport.ErrConflict
+	}
+	if !owned {
+		var result domain.Snapshot
+		if receipt.State != "completed" || json.Unmarshal(receipt.ResultSnapshot, &result) != nil {
+			return domain.Snapshot{}, orderport.ErrUnavailable
+		}
+		if _, err = domain.Restore(result); err != nil {
+			return domain.Snapshot{}, orderport.ErrConflict
+		}
+		return result, nil
+	}
+	persisted, err := s.store.InsertScoped(ctx, order, command.ActorScope, input.CreatedAt)
+	if err != nil {
+		return domain.Snapshot{}, classify(err)
+	}
+	result := persisted.Snapshot()
+	snapshot, err := json.Marshal(result)
+	if err != nil {
+		return domain.Snapshot{}, orderport.ErrUnavailable
+	}
+	completed, err := s.store.Complete(ctx, receipt.ID, snapshot, input.CreatedAt)
+	if err != nil || completed.State != "completed" {
+		return domain.Snapshot{}, orderport.ErrUnavailable
+	}
+	return result, nil
+}
+
+func (s *Service) SettlePaymentWithin(ctx context.Context, command orderport.PaymentSettlementCommand) (domain.Snapshot, error) {
+	if !ready(s) || command.OrderID < 1 || command.RefundedDelta < 0 || (command.Failed && command.RefundedDelta != 0) || !validKey(command.ReceiptKey) || command.OccurredAt.IsZero() {
+		return domain.Snapshot{}, orderport.ErrConflict
+	}
+	current, err := s.store.Get(ctx, command.OrderID, true)
+	if err != nil {
+		return domain.Snapshot{}, classify(err)
+	}
+	next, refunded := domain.StatusPaid, int64(0)
+	if command.Failed {
+		if current.Status != domain.StatusPendingPayment {
+			return domain.Snapshot{}, orderport.ErrConflict
+		}
+		next = domain.StatusPaymentFailed
+	} else if command.RefundedDelta > 0 {
+		if current.Status != domain.StatusPaid && current.Status != domain.StatusPartiallyRefunded {
+			return domain.Snapshot{}, orderport.ErrConflict
+		}
+		refunded = current.RefundedMinor + command.RefundedDelta
+		if refunded < current.RefundedMinor || refunded > current.Amount.AmountMinor {
+			return domain.Snapshot{}, orderport.ErrConflict
+		}
+		next = domain.StatusPartiallyRefunded
+		if refunded == current.Amount.AmountMinor {
+			next = domain.StatusRefunded
+		}
+	} else if current.Status != domain.StatusPendingPayment {
+		return domain.Snapshot{}, orderport.ErrConflict
+	}
+	updated, event, err := current.ApplySettlement(current.Version, next, refunded, command.OccurredAt.UTC())
+	if err != nil {
+		return domain.Snapshot{}, orderport.ErrConflict
+	}
+	updated, err = s.store.UpdateSettlement(ctx, updated, event, "payment:"+command.ReceiptKey)
+	if err != nil {
+		return domain.Snapshot{}, classify(err)
+	}
+	return updated.Snapshot(), nil
 }
 
 func (s *Service) Create(ctx context.Context, command orderport.CreateCommand) (domain.Snapshot, error) {

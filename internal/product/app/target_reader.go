@@ -44,3 +44,34 @@ func (reader *TargetReader) ReadProductTarget(ctx context.Context, kind productp
 		return productport.ProductOption{}, ErrInvalidProduct
 	}
 }
+
+func (reader *TargetReader) ReadCheckoutProductWithin(ctx context.Context, kind productport.ProductOptionType, id productport.ID) (productport.CheckoutProduct, error) {
+	if reader == nil || reader.ordinary == nil || reader.period == nil || id < 1 {
+		return productport.CheckoutProduct{}, ErrNotFound
+	}
+	switch kind {
+	case productport.ProductOptionStandard:
+		item, err := reader.ordinary.store.GetForUpdate(ctx, id)
+		if err != nil {
+			return productport.CheckoutProduct{}, classify(err)
+		}
+		if !validOrdinaryProduct(item) || item.LocalLifecycle != productport.LocalProductEnabled {
+			return productport.CheckoutProduct{}, ErrNotFound
+		}
+		return productport.CheckoutProduct{ID: item.ID, ProductType: kind, Code: item.ProductCode, Name: item.Name, PriceMinor: item.PriceMinor, Currency: item.Currency, Version: item.Version}, nil
+	case productport.ProductOptionServicePeriod:
+		item, err := reader.period.store.GetServicePeriodProductForUpdate(ctx, id)
+		if err != nil {
+			return productport.CheckoutProduct{}, classify(err)
+		}
+		projected, err := projectServicePeriodProduct(item)
+		if err != nil || !projected.Enabled || projected.Lifecycle != productport.ServicePeriodEnabled {
+			return productport.CheckoutProduct{}, ErrNotFound
+		}
+		return productport.CheckoutProduct{ID: projected.ServiceProductID, ProductType: kind, Code: projected.ProductCode, Name: projected.Name, PriceMinor: projected.PriceMinor, Currency: projected.Currency, Version: projected.Version}, nil
+	default:
+		return productport.CheckoutProduct{}, ErrInvalidProduct
+	}
+}
+
+var _ productport.CheckoutProductReader = (*TargetReader)(nil)

@@ -33,15 +33,16 @@ type Payment struct {
 	CreatedAt, UpdatedAt                                    time.Time
 }
 type Refund struct {
-	ID, PaymentID        int64
-	Provider             Provider
-	RefundNo, Reason     string
-	AmountMinor          int64
-	Status               RefundStatus
-	EffectID             string
-	ProviderRefundDigest string
-	Version              int64
-	CreatedAt, UpdatedAt time.Time
+	ID, PaymentID           int64
+	Provider                Provider
+	RefundNo, Reason        string
+	AmountMinor             int64
+	Status                  RefundStatus
+	EffectID                string
+	ProviderRefundReference string
+	ProviderRefundDigest    string
+	Version                 int64
+	CreatedAt, UpdatedAt    time.Time
 }
 
 func NewPayment(order orderdomain.Snapshot, payerIdentityID int64, now time.Time) (Payment, error) {

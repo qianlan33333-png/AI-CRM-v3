@@ -63,6 +63,9 @@ func (s *memoryStore) Insert(_ context.Context, order domain.Order, _ int64, _ t
 	}
 	return persisted, err
 }
+func (s *memoryStore) InsertScoped(ctx context.Context, order domain.Order, _ string, now time.Time) (domain.Order, error) {
+	return s.Insert(ctx, order, 1, now)
+}
 
 func (s *memoryStore) Get(_ context.Context, id int64, _ bool) (domain.Order, error) {
 	snapshot, ok := s.orders[id]
@@ -156,6 +159,25 @@ func TestCreateReplayAndPayloadDrift(t *testing.T) {
 	command.Input.MerchantOrderNo = "M-drift"
 	if _, err = service.Create(context.Background(), command); !errors.Is(err, orderport.ErrConflict) {
 		t.Fatalf("payload drift err=%v", err)
+	}
+}
+
+func TestCreatePaymentOrderWithinFreezesProductVersionAndReplays(t *testing.T) {
+	store := newMemoryStore()
+	service := NewService(directUOW{}, store)
+	command := orderport.PaymentOrderCommand{
+		Provider: domain.ProviderWeChatPay, MerchantOrderNo: "v3pay_1234567890abcdef",
+		PayerCustomerID: 11, BeneficiaryCustomerID: 22,
+		ProductID: 5, ProductCode: "course-5", ProductName: "Course 5", ProductVersion: 3,
+		UnitAmountMinor: 8800, Currency: "CNY", ActorScope: "payment-session:1234567890abcdef", IdempotencyKey: "checkout-product-key-0005",
+	}
+	first, err := service.CreatePaymentOrderWithin(context.Background(), command)
+	if err != nil || first.ID < 1 || len(first.Items) != 1 || first.Items[0].ProductVersion == nil || *first.Items[0].ProductVersion != 3 || first.BeneficiaryCustomerID == nil || *first.BeneficiaryCustomerID != 22 {
+		t.Fatalf("order=%+v err=%v", first, err)
+	}
+	replay, err := service.CreatePaymentOrderWithin(context.Background(), command)
+	if err != nil || replay.ID != first.ID || len(store.orders) != 1 {
+		t.Fatalf("replay=%+v orders=%d err=%v", replay, len(store.orders), err)
 	}
 }
 
