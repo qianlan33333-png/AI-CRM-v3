@@ -184,7 +184,11 @@ func TestCustomerDirectoryProviderListsStaffAndBatchPage(t *testing.T) {
 			if request.Method != http.MethodPost || request.URL.Query().Get("access_token") != "contact-token" {
 				t.Fatalf("request=%s %s", request.Method, request.URL.String())
 			}
-			_, _ = writer.Write([]byte(`{"errcode":0,"next_cursor":"next-1","external_contact_list":[{"external_contact":{"external_userid":"ext-1","name":"Alice","avatar":"https://example/avatar","type":1,"gender":2,"corp_name":"Example","unionid":"union-ignored-here"}}]}`))
+			// Production pages with 100 contacts can legitimately exceed the old
+			// 64 KiB OAuth-oriented limit. Unknown Provider fields must remain
+			// safely ignored without making the response unbounded.
+			payload := `{"errcode":0,"next_cursor":"next-1","external_contact_list":[{"external_contact":{"external_userid":"ext-1","name":"Alice","avatar":"https://example/avatar","type":1,"gender":2,"corp_name":"Example","unionid":"union-ignored-here"}}],"provider_padding":"` + strings.Repeat("x", 70<<10) + `"}`
+			_, _ = writer.Write([]byte(payload))
 		default:
 			t.Fatalf("unexpected path=%s", request.URL.Path)
 		}
