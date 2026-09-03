@@ -35,9 +35,11 @@ tar -xzf "$archive" -C "$release_dir"
 test -x "$release_dir/bin/aicrm"
 test -x "$release_dir/bin/migrate-platform"
 test -x "$release_dir/bin/migrate-river"
+test -x "$release_dir/bin/migrate-phone-identities"
 test -f "$release_dir/migrations/0005_external_effects.sql"
 test -f "$release_dir/migrations/0006_wecom_callback_channel_acquisition.sql"
 test -f "$release_dir/migrations/0007_media.sql"
+test -f "$release_dir/migrations/0008_customer_activation.sql"
 test -f "$release_dir/web/dist/asset-manifest.json"
 printf 'AICRM_RELEASE_SHA=%s\n' "$release_sha" > "$release_dir/release.env"
 chown -R aicrm:aicrm "$release_dir"
@@ -49,6 +51,8 @@ install -m 0644 "$release_dir/deploy/aicrm-migrate.service" /etc/systemd/system/
 install -m 0644 "$release_dir/deploy/aicrm-wecom-worker.service" /etc/systemd/system/aicrm-wecom-worker.service
 install -m 0644 "$release_dir/deploy/aicrm-wecom-worker.timer" /etc/systemd/system/aicrm-wecom-worker.timer
 install -m 0644 "$release_dir/deploy/aicrm-effects-worker.service" /etc/systemd/system/aicrm-effects-worker.service
+install -m 0644 "$release_dir/deploy/aicrm-customer-sync-daily.service" /etc/systemd/system/aicrm-customer-sync-daily.service
+install -m 0644 "$release_dir/deploy/aicrm-customer-sync-daily.timer" /etc/systemd/system/aicrm-customer-sync-daily.timer
 systemctl daemon-reload
 
 rollback() {
@@ -58,6 +62,7 @@ rollback() {
     systemctl restart aicrm.service || true
     systemctl restart aicrm-wecom-worker.timer || true
     systemctl restart aicrm-effects-worker.service || true
+    systemctl restart aicrm-customer-sync-daily.timer || true
   fi
 }
 
@@ -91,5 +96,9 @@ fi
 if ! systemctl is-active --quiet aicrm-effects-worker.service; then
   rollback
   exit 9
+fi
+if ! systemctl enable --now aicrm-customer-sync-daily.timer; then
+  rollback
+  exit 10
 fi
 echo "release ${release_sha} active"

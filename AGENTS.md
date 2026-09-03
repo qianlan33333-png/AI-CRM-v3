@@ -7,9 +7,19 @@
 - v3 是唯一新能力主线。
 - `AI-CRM-production` 与 `AI-CRM-v2` 只能作为只读行为、测试和叶子协议供体，禁止成为 Go module、submodule、远程运行依赖或正常数据源。
 - 新功能不得在 v3 和旧仓重复实现。
-- 用户最新明确指令 > `docs/01-PRD-迁移范围与新仓库基线.md` > `docs/02-模块化开发与交付方案.md` > 本文件。
+- 优先级：用户最新明确指令 > 本文件第 2 节“开发前最高优先级判断”与第 8 节“红线” > `docs/01-PRD-迁移范围与新仓库基线.md` > `docs/02-模块化开发与交付方案.md` > 本文件其他内容。
 
-## 2. 固定架构
+## 2. 开发前最高优先级判断
+
+- 除用户最新明确指令与安全红线外，任何设计、实现、迁移或代码审查在开始编码前，都必须优先判断两件事：是否涉及 OneID/外部身份，以及是否涉及持久化、内部持久任务或外部效果。
+- 开发者必须先阅读并应用项目核心 Skill：`skills/aicrm-v3-development/SKILL.md`，在计划或 PR 中留下简短分类结论。
+- 这是一项优先设计检查，不是要求所有功能都接入 OneID 或 External Effects。确实不涉及时，应明确记录“不涉及”及理由，随后按本领域正常边界开发，禁止为了过门禁而制造虚假依赖。
+- 涉及客户、渠道身份、外部用户标识或客户归属时，必须优先复用 OneID/Identity Port；不得自建第二套客户主键、身份匹配、隐式建客或自动合并机制。
+- 涉及可恢复异步执行时，必须先区分内部持久任务、Provider 读取和 Provider 写入。内部持久任务复用 `internal/platform/jobqueue`；企微业务写统一经 `outbound` 并协调 `internal/externaleffects/port`，不得在业务模块自建队列、Worker、lease/fence、重试或对账状态机。
+- 业务状态、幂等收据、审计、Outbox 与外部效果接受需要原子提交时，必须验证它们参与同一个 PostgreSQL Unit of Work；不得假设两个独立事务等价于原子提交。
+- 任何新模块只允许通过稳定 Port 或版本化事件协调 OneID 与 External Effects，禁止跨领域访问它们的表，或 import 其 `app`、`store`、`http`、`worker`、`provider`。
+
+## 3. 固定架构
 
 - Go 模块化单体、PostgreSQL 16、单企业、单数据库。
 - `cmd/aicrm` 是唯一 Composition Root；只负责加载配置、创建平台设施、注册模块和启动角色。
@@ -19,7 +29,7 @@
 - 每张业务表只有一个 Owner；Store 只访问本领域拥有的表。
 - 不自行引入微服务、多租户、Redis、Kafka、进程内 cron/ticker 或 Kubernetes 前置。
 
-## 3. OneID
+## 4. OneID
 
 - `customers.id` 是唯一渠道中立业务主键。
 - 外部身份归 `identity`，必须包含 kind、scope、value、assurance、source。
@@ -29,7 +39,7 @@
 - `Resolve` 只解析，不隐式建客；建客必须走显式 `ProvisionCustomerFromVerifiedIdentity`。
 - Identity 首版不做破坏性自动合并；跨 Customer 根连接形成可审计 merge candidate。
 
-## 4. 数据与事务
+## 5. 数据与事务
 
 - 业务状态、幂等收据、审计和 Outbox 必须在同一 PostgreSQL 事务提交或回滚。
 - Provider 网络调用不得持有数据库事务。
@@ -37,7 +47,7 @@
 - v3 迁移从独立序列开始，不复制旧仓 migration 历史。
 - 迁移工具放在 `cmd/migrate-*`，运行时包不得 import 迁移器。
 
-## 5. 外部效果
+## 6. 外部效果
 
 - Provider 默认 disabled。
 - 外部调用必须区分 accepted、queued、attempted、executed、outcome_unknown、reconciled。
@@ -46,13 +56,13 @@
 - Token、Cookie、OAuth code、Secret、私钥、openid、external_userid、手机号不得进入结构化日志。
 - 只有 `outbound` 可以拥有企微业务写调用；其他模块只提交意图。
 
-## 6. 开发单位
+## 7. 开发单位
 
 - 一个 PR 交付一个用户可观察能力或一个明确缺陷。
 - 不以目录存在、接口骨架、HTTP 200、Mock 或排队成功作为完成。
 - 旧能力迁入前先冻结 Behavior Contract 和 Characterization/Journey 测试；禁止整目录复制后再清理。
 - 临时兼容 Adapter 必须登记 Owner、替代路径和删除条件。
 
-## 7. 红线
+## 8. 红线
 
 遇到以下情况立即停止该实现并报告：双主写、身份错误归属、支付/退款/Provider 效果可能重复、鉴权绕过、Secret/PII 泄漏、跨领域表写入、不可逆数据损坏、迁移静默丢数据。

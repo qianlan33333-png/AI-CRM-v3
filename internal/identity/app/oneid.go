@@ -16,6 +16,7 @@ var (
 	ErrInsufficientLinkEvidence  = errors.New("insufficient identity link evidence")
 	ErrConcurrentIdentityChange  = errors.New("concurrent identity change")
 	ErrLinkIntentPayloadMismatch = errors.New("link intent replay payload mismatch")
+	ErrDeclaredPayloadMismatch   = errors.New("declared identity replay payload mismatch")
 )
 
 type LinkStatus string
@@ -153,6 +154,23 @@ type Store interface {
 	ConsumeLinkIntent(context.Context, ConsumeLinkIntentCommand) (LinkResult, error)
 	ConfirmMerge(context.Context, ConfirmMergeCommand) (LinkResult, error)
 	RevertMerge(context.Context, int64) (MergeRecord, error)
+	AttachDeclared(context.Context, identityport.DeclaredAttachCommand, identitydomain.NormalizedReference) (identityport.DeclaredAttachResult, error)
+}
+
+// AttachDeclaredIdentity adds a low-assurance reference to an existing active
+// Customer root. The command cannot create a customer, create a merge
+// candidate, or promote the reference to verified.
+func (service OneIDService) AttachDeclaredIdentity(ctx context.Context, command identityport.DeclaredAttachCommand) (identityport.DeclaredAttachResult, error) {
+	if command.CustomerID < 1 || command.ImportRunID < 1 || command.SourceRowID == "" || command.IdempotencyKey == "" ||
+		command.Reference.Assurance != identitydomain.AssuranceDeclared || command.Reference.Kind != identitydomain.KindPhone ||
+		command.Reference.Scope != "phone:e164" || command.Reference.Source != "phone_import" {
+		return identityport.DeclaredAttachResult{Status: identityport.DeclaredInvalid}, nil
+	}
+	normalized, err := identitydomain.Normalize(command.Reference)
+	if err != nil {
+		return identityport.DeclaredAttachResult{Status: identityport.DeclaredInvalid}, nil
+	}
+	return service.Store.AttachDeclared(ctx, command, normalized)
 }
 
 // OneIDService owns identity resolution, verified provisioning and explicit

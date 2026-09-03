@@ -13,6 +13,7 @@ import (
 
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
+	identityport "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/port"
 )
 
 var ErrMergeNotReversible = errors.New("merge is not reversible")
@@ -61,29 +62,71 @@ type MemoryStore struct {
 	nextMergeID     int64
 	nextIntentID    int64
 
-	customers       map[customerdomain.CustomerID]memoryCustomer
-	identities      map[int64]memoryIdentity
-	identityByKey   map[string]int64
-	candidates      map[int64]MergeCandidate
-	candidateByPair map[string]int64
-	conflicts       map[string]Conflict
-	merges          map[int64]MergeRecord
-	movedByMerge    map[int64][]mergeIdentityMember
-	intentsByHash   map[string]memoryLinkIntent
+	customers        map[customerdomain.CustomerID]memoryCustomer
+	identities       map[int64]memoryIdentity
+	identityByKey    map[string]int64
+	candidates       map[int64]MergeCandidate
+	candidateByPair  map[string]int64
+	conflicts        map[string]Conflict
+	merges           map[int64]MergeRecord
+	movedByMerge     map[int64][]mergeIdentityMember
+	intentsByHash    map[string]memoryLinkIntent
+	declaredReceipts map[string]memoryDeclaredReceipt
+}
+
+type memoryDeclaredReceipt struct {
+	Digest [32]byte
+	Result identityport.DeclaredAttachResult
 }
 
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
-		customers:       make(map[customerdomain.CustomerID]memoryCustomer),
-		identities:      make(map[int64]memoryIdentity),
-		identityByKey:   make(map[string]int64),
-		candidates:      make(map[int64]MergeCandidate),
-		candidateByPair: make(map[string]int64),
-		conflicts:       make(map[string]Conflict),
-		merges:          make(map[int64]MergeRecord),
-		movedByMerge:    make(map[int64][]mergeIdentityMember),
-		intentsByHash:   make(map[string]memoryLinkIntent),
+		customers:        make(map[customerdomain.CustomerID]memoryCustomer),
+		identities:       make(map[int64]memoryIdentity),
+		identityByKey:    make(map[string]int64),
+		candidates:       make(map[int64]MergeCandidate),
+		candidateByPair:  make(map[string]int64),
+		conflicts:        make(map[string]Conflict),
+		merges:           make(map[int64]MergeRecord),
+		movedByMerge:     make(map[int64][]mergeIdentityMember),
+		intentsByHash:    make(map[string]memoryLinkIntent),
+		declaredReceipts: make(map[string]memoryDeclaredReceipt),
 	}
+}
+
+func (store *MemoryStore) AttachDeclared(_ context.Context, command identityport.DeclaredAttachCommand, reference identitydomain.NormalizedReference) (identityport.DeclaredAttachResult, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	receiptKey := strconv.FormatInt(command.ImportRunID, 10) + ":" + command.SourceRowID
+	if receipt, found := store.declaredReceipts[receiptKey]; found {
+		if receipt.Digest != command.SourceRowDigest {
+			return identityport.DeclaredAttachResult{}, ErrDeclaredPayloadMismatch
+		}
+		replayed := receipt.Result
+		replayed.ReplayOf = replayed.Status
+		replayed.Status = identityport.DeclaredReplayed
+		return replayed, nil
+	}
+	root := store.activeRootLocked(command.CustomerID)
+	if root < 1 {
+		return identityport.DeclaredAttachResult{Status: identityport.DeclaredInvalid}, nil
+	}
+	result := identityport.DeclaredAttachResult{CustomerID: root}
+	if identityID, found := store.identityByKey[identityKey(reference)]; found {
+		identity := store.identities[identityID]
+		result.IdentityID = identityID
+		if store.rootLocked(identity.CustomerID) == root {
+			result.Status = identityport.DeclaredAlreadyLinked
+		} else {
+			result.Status = identityport.DeclaredConflict
+		}
+	} else {
+		result.IdentityID = store.createIdentityLocked(root, reference)
+		result.Status = identityport.DeclaredAttached
+		store.touchCustomerLocked(root)
+	}
+	store.declaredReceipts[receiptKey] = memoryDeclaredReceipt{Digest: command.SourceRowDigest, Result: result}
+	return result, nil
 }
 
 func (store *MemoryStore) Resolve(_ context.Context, reference identitydomain.NormalizedReference) (StoredIdentity, bool, error) {

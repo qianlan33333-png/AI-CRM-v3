@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"net/http"
 	"net/url"
@@ -13,6 +14,9 @@ import (
 	accesshttp "github.com/qianlan33333-png/AI-CRM-v3/internal/access/http"
 	accessstore "github.com/qianlan33333-png/AI-CRM-v3/internal/access/store"
 	channelstore "github.com/qianlan33333-png/AI-CRM-v3/internal/channel"
+	customerapp "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/app"
+	customerhttp "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/http"
+	customerstore "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/store"
 	externaleffects "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects"
 	identityapp "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/app"
 	identityhttp "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/http"
@@ -24,6 +28,7 @@ import (
 	platformaudit "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/audit"
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
 	platformjobqueue "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/jobqueue"
+	platformoutbox "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/outbox"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 	platformruntime "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/runtime"
 	platformwebhook "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/webhook"
@@ -39,6 +44,7 @@ type composedApplication struct {
 	management     *accessapp.Management
 	weComProcessor wecom.InboxProcessor
 	effectsRuntime *platformjobqueue.Runtime
+	customerSync   wecom.CustomerSyncService
 }
 
 func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplication, error) {
@@ -80,6 +86,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 
 	oneID := identityapp.OneIDService{Store: identitystore.NewPostgresStore()}
 	queries := identityquery.NewPostgreSQL()
+	customerStore := customerstore.NewPostgreSQL()
 	requestSecurity := requestAccessSecurity{authentication: authentication}
 	if cfg.Effects.ProviderEnabled {
 		return fail(errors.New("outbound provider enabled but no outbound adapter is registered"))
@@ -89,7 +96,15 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err = effectsModule.RegisterWorkers(effectWorkers); err != nil {
 		return fail(err)
 	}
+	customerSyncWorker := wecom.NewCustomerSyncWorker()
+	if err = river.AddWorkerSafely[wecom.CustomerSyncJobArgs](effectWorkers, customerSyncWorker); err != nil {
+		return fail(err)
+	}
 	effectClient, err := platformjobqueue.NewInsertClient(pool.Native(), effectWorkers)
+	if err != nil {
+		return fail(err)
+	}
+	customerSyncEnqueuer, err := wecom.NewRiverCustomerSyncEnqueuer(effectClient)
 	if err != nil {
 		return fail(err)
 	}
@@ -97,7 +112,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
-	effectsRuntime, err := platformjobqueue.NewRuntime(pool.Native(), effectWorkers)
+	effectsRuntime, err := platformjobqueue.NewRuntime(pool.Native(), effectWorkers, platformjobqueue.OutboundQueue, wecom.CustomerSyncQueue)
 	if err != nil {
 		return fail(err)
 	}
@@ -125,6 +140,15 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
+	cursorSigningKey := make([]byte, 32)
+	if _, err = rand.Read(cursorSigningKey); err != nil {
+		return fail(err)
+	}
+	customerHandler, err := customerhttp.NewHandler(customerhttp.Config{UnitOfWork: uow, Auth: requestSecurity, CSRF: requestSecurity,
+		Directory: customerapp.Directory{Store: customerStore, SigningKey: cursorSigningKey}, Store: customerStore, Identities: queries, Audit: auditService})
+	if err != nil {
+		return fail(err)
+	}
 
 	renderer, err := webshell.NewRenderer()
 	if err != nil {
@@ -142,7 +166,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	}
 
 	providerClient, err := wecomadapter.New(wecomadapter.Config{
-		Enabled: cfg.WeCom.Enabled, CorpID: cfg.WeCom.CorpID, AgentID: cfg.WeCom.AgentID, Secret: cfg.WeCom.Secret,
+		Enabled: cfg.WeCom.Enabled, CorpID: cfg.WeCom.CorpID, AgentID: cfg.WeCom.AgentID, Secret: cfg.WeCom.Secret, ContactSecret: cfg.WeCom.ContactSecret,
 		AdminCallbackURI: cfg.PublicOrigin + "/auth/wecom/callback", SidebarCallbackURI: cfg.PublicOrigin + "/api/sidebar/oauth/callback",
 	})
 	if err != nil {
@@ -168,9 +192,17 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		Enabled: cfg.WeCom.CallbackEnabled, CorpID: cfg.WeCom.CorpID, Inbox: inboxService, UOW: uow,
 		Lifecycle: wecom.ExternalContactLifecycle{
 			Identity: oneID, Relationships: relationships, States: channelAcquisition, Entrants: channelAcquisition,
+			Directory: customerStore, Outbox: platformoutbox.NewPostgreSQL(),
 		},
 		Receipts: callbackReceipts, Audit: auditService,
 	}
+	customerSync := wecom.CustomerSyncService{Enabled: cfg.WeCom.CustomerSyncEnabled, CorpID: cfg.WeCom.CorpID, Provider: providerClient,
+		Identity: oneID, Projection: customerStore, Store: wecom.NewPostgreSQLCustomerSyncStore(), Outbox: platformoutbox.NewPostgreSQL(),
+		Enqueuer: customerSyncEnqueuer, Audit: auditService, UOW: uow}
+	if err = customerSyncWorker.BindService(customerSync); err != nil && cfg.WeCom.CustomerSyncEnabled {
+		return fail(err)
+	}
+	syncHandler := wecom.CustomerSyncHTTPHandler{Service: customerSync, Auth: requestSecurity, CSRF: requestSecurity}
 	weComHandler, err := wecom.NewHTTPHandler(wecom.HTTPHandlerOptions{
 		Callback: wecom.CallbackHandler{Enabled: cfg.WeCom.CallbackEnabled, Crypto: callbackCrypto, StateDigester: callbackStateDigester, Inbox: inboxService, UOW: uow},
 		OAuth: wecom.OAuthService{Enabled: cfg.WeCom.Enabled, CorpID: cfg.WeCom.CorpID, StateStore: oauthStates, UOW: uow,
@@ -203,12 +235,16 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	adminAPIs.Handle("/api/admin/oneid/", oneIDHandler.Routes())
 	adminAPIs.Handle("/api/admin/wecom/", callbackAdminHandler.Routes())
 	adminAPIs.Handle("/api/admin/channel-acquisition-entrant-receipts/", entrantAdminHandler.Routes())
+	adminAPIs.Handle("/api/admin/customers", customerHandler.Routes())
+	adminAPIs.Handle("/api/admin/customers/", customerHandler.Routes())
+	adminAPIs.Handle("/api/admin/customer-sync-runs", syncHandler.Routes())
+	adminAPIs.Handle("/api/admin/customer-sync-runs/", syncHandler.Routes())
 	readiness := platformruntime.ReadinessFunc(func(readinessContext context.Context) error {
 		if checkErr := pool.Check(readinessContext); checkErr != nil {
 			return checkErr
 		}
 		var complete bool
-		checkErr := pool.Native().QueryRow(readinessContext, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['0001','0002','0003','0004','0005','0006','0007']) AS required(version) WHERE NOT EXISTS (SELECT 1 FROM platform_schema_migrations applied WHERE applied.version=required.version))`).Scan(&complete)
+		checkErr := pool.Native().QueryRow(readinessContext, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['0001','0002','0003','0004','0005','0006','0007','0008']) AS required(version) WHERE NOT EXISTS (SELECT 1 FROM platform_schema_migrations applied WHERE applied.version=required.version))`).Scan(&complete)
 		if checkErr != nil || !complete {
 			return errors.New("database schema is not ready")
 		}
@@ -236,7 +272,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
-	return &composedApplication{pool: pool, handler: handler, management: management, weComProcessor: weComProcessor, effectsRuntime: effectsRuntime}, nil
+	return &composedApplication{pool: pool, handler: handler, management: management, weComProcessor: weComProcessor, effectsRuntime: effectsRuntime, customerSync: customerSync}, nil
 }
 
 func (application *composedApplication) Close() {
@@ -286,6 +322,10 @@ func routeApplicationWithMedia(health, access, identity, effects, pushCenter, ef
 	mux.Handle("/api/admin/oneid/", identity)
 	mux.Handle("/api/admin/wecom/", identity)
 	mux.Handle("/api/admin/channel-acquisition-entrant-receipts/", identity)
+	mux.Handle("/api/admin/customers", identity)
+	mux.Handle("/api/admin/customers/", identity)
+	mux.Handle("/api/admin/customer-sync-runs", identity)
+	mux.Handle("/api/admin/customer-sync-runs/", identity)
 	mux.Handle("/api/admin/external-effects", effects)
 	mux.Handle("/api/admin/external-effects/", effects)
 	mux.Handle("/api/admin/push-center/", pushCenter)

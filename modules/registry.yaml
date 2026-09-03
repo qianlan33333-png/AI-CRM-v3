@@ -32,7 +32,7 @@ modules:
   - name: webshell
     status: implemented
     owner: crm-product
-    dependencies: [access, identity, wecom]
+    dependencies: [access, customer, identity, wecom]
   - name: crm-core-modules
     status: planned
     owner: crm-core

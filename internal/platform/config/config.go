@@ -19,16 +19,17 @@ const (
 )
 
 type Runtime struct {
-	ListenAddress string
-	ReleaseSHA    string
-	Role          Role
-	DatabaseURL   string
-	PublicOrigin  string
-	Bootstrap     Bootstrap
-	WeCom         WeCom
-	Effects       Effects
-	WorkerOwner   string
-	WorkerLimit   int
+	ListenAddress       string
+	ReleaseSHA          string
+	Role                Role
+	DatabaseURL         string
+	PublicOrigin        string
+	Bootstrap           Bootstrap
+	WeCom               WeCom
+	Effects             Effects
+	WorkerOwner         string
+	WorkerLimit         int
+	CustomerSyncTrigger string
 }
 
 type Bootstrap struct {
@@ -41,9 +42,11 @@ type Bootstrap struct {
 type WeCom struct {
 	Enabled             bool
 	CallbackEnabled     bool
+	CustomerSyncEnabled bool
 	CorpID              string
 	AgentID             string
 	Secret              string
+	ContactSecret       string
 	CallbackToken       string
 	CallbackAESKey      string
 	ContextSigningKey   string
@@ -57,20 +60,21 @@ func Load() (Runtime, error) {
 		return Runtime{}, err
 	}
 	cfg := Runtime{
-		ListenAddress: valueOrDefault("AICRM_LISTEN_ADDR", "127.0.0.1:8080"),
-		ReleaseSHA:    valueOrDefault("AICRM_RELEASE_SHA", "development"),
-		Role:          Role(valueOrDefault("AICRM_ROLE", string(RoleAPI))),
-		DatabaseURL:   databaseURL,
-		PublicOrigin:  valueOrDefault("AICRM_PUBLIC_ORIGIN", "https://id-dev.youcangogogo.com"),
-		WorkerOwner:   valueOrDefault("AICRM_WORKER_OWNER", "aicrm-wecom-worker"),
-		WorkerLimit:   25,
+		ListenAddress:       valueOrDefault("AICRM_LISTEN_ADDR", "127.0.0.1:8080"),
+		ReleaseSHA:          valueOrDefault("AICRM_RELEASE_SHA", "development"),
+		Role:                Role(valueOrDefault("AICRM_ROLE", string(RoleAPI))),
+		DatabaseURL:         databaseURL,
+		PublicOrigin:        valueOrDefault("AICRM_PUBLIC_ORIGIN", "https://id-dev.youcangogogo.com"),
+		WorkerOwner:         valueOrDefault("AICRM_WORKER_OWNER", "aicrm-wecom-worker"),
+		WorkerLimit:         25,
+		CustomerSyncTrigger: os.Getenv("AICRM_CUSTOMER_SYNC_TRIGGER"),
 		Bootstrap: Bootstrap{
 			Username: os.Getenv("AICRM_BOOTSTRAP_USERNAME"), Password: os.Getenv("AICRM_BOOTSTRAP_PASSWORD"),
 			DisplayName: os.Getenv("AICRM_BOOTSTRAP_DISPLAY_NAME"),
 		},
 		WeCom: WeCom{
 			CorpID: os.Getenv("AICRM_WECOM_CORP_ID"), AgentID: os.Getenv("AICRM_WECOM_AGENT_ID"),
-			Secret: os.Getenv("AICRM_WECOM_SECRET"), CallbackToken: os.Getenv("AICRM_WECOM_CALLBACK_TOKEN"),
+			Secret: os.Getenv("AICRM_WECOM_SECRET"), ContactSecret: os.Getenv("AICRM_WECOM_CONTACT_SECRET"), CallbackToken: os.Getenv("AICRM_WECOM_CALLBACK_TOKEN"),
 			CallbackAESKey: os.Getenv("AICRM_WECOM_CALLBACK_AES_KEY"), ContextSigningKey: os.Getenv("AICRM_WECOM_CONTEXT_SIGNING_KEY"),
 			ChannelStateHMACKey: os.Getenv("AICRM_CHANNEL_STATE_HMAC_KEY"),
 		},
@@ -82,6 +86,9 @@ func Load() (Runtime, error) {
 		return Runtime{}, err
 	}
 	if cfg.WeCom.CallbackEnabled, err = strictBool("AICRM_WECOM_CALLBACK_ENABLED", false); err != nil {
+		return Runtime{}, err
+	}
+	if cfg.WeCom.CustomerSyncEnabled, err = strictBool("AICRM_WECOM_CUSTOMER_SYNC_ENABLED", false); err != nil {
 		return Runtime{}, err
 	}
 	if raw := os.Getenv("AICRM_WORKER_LIMIT"); raw != "" {
@@ -112,6 +119,9 @@ func Load() (Runtime, error) {
 	}
 	if strings.TrimSpace(cfg.WorkerOwner) != cfg.WorkerOwner || cfg.WorkerOwner == "" || len(cfg.WorkerOwner) > 120 {
 		return Runtime{}, errors.New("invalid AICRM_WORKER_OWNER")
+	}
+	if cfg.CustomerSyncTrigger != "" && cfg.CustomerSyncTrigger != "daily" && cfg.CustomerSyncTrigger != "initial" {
+		return Runtime{}, errors.New("invalid AICRM_CUSTOMER_SYNC_TRIGGER")
 	}
 	bootstrapValues := []string{cfg.Bootstrap.Username, cfg.Bootstrap.Password, cfg.Bootstrap.DisplayName}
 	bootstrapCount := nonEmptyCount(bootstrapValues)
@@ -144,6 +154,9 @@ func Load() (Runtime, error) {
 				return Runtime{}, errors.New("invalid enabled WeCom callback configuration")
 			}
 		}
+	}
+	if cfg.WeCom.CustomerSyncEnabled && (!cfg.WeCom.Enabled || strings.TrimSpace(cfg.WeCom.ContactSecret) != cfg.WeCom.ContactSecret || cfg.WeCom.ContactSecret == "") {
+		return Runtime{}, errors.New("enabled WeCom customer sync configuration is incomplete")
 	}
 	return cfg, nil
 }

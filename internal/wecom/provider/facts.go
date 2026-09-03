@@ -14,7 +14,8 @@ import (
 // signature, time-window, decryption and CorpID checks and has been durably
 // stored in the platform inbox.
 func VerifiedExternalContact(corpID, externalUserID, source string) (identitydomain.VerifiedFact, error) {
-	if strings.TrimSpace(corpID) != corpID || corpID == "" || strings.TrimSpace(externalUserID) != externalUserID || externalUserID == "" || source != "wecom.callback" {
+	if strings.TrimSpace(corpID) != corpID || corpID == "" || strings.TrimSpace(externalUserID) != externalUserID || externalUserID == "" ||
+		(source != "wecom.callback" && source != "wecom.directory_sync") {
 		return identitydomain.VerifiedFact{}, errors.New("invalid verified wecom external contact")
 	}
 	return identitydomain.NewVerifiedFact(identitydomain.ProviderVerifiedIdentityInput{

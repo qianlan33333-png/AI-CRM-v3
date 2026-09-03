@@ -4,10 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
+	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
+	identityport "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/port"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 )
 
@@ -16,8 +19,116 @@ import (
 type PostgreSQL struct{}
 
 var _ Reader = PostgreSQL{}
+var _ identityport.DirectoryIdentityReader = PostgreSQL{}
 
 func NewPostgreSQL() PostgreSQL { return PostgreSQL{} }
+
+func (PostgreSQL) VerifiedWeComCustomer(ctx context.Context, corpID, externalUserID string) (customerdomain.CustomerID, bool, error) {
+	if strings.TrimSpace(corpID) != corpID || corpID == "" || strings.TrimSpace(externalUserID) != externalUserID || externalUserID == "" {
+		return 0, false, identitydomain.ErrInvalidReference
+	}
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return 0, false, err
+	}
+	var customerID customerdomain.CustomerID
+	err = tx.QueryRow(ctx, `WITH RECURSIVE lineage(id,status,merged_into_customer_id) AS (
+		SELECT c.id,c.status,c.merged_into_customer_id FROM customers c JOIN customer_identities i ON i.customer_id=c.id
+		WHERE i.kind='wecom_external_userid' AND i.scope_key=$1 AND i.normalized_value=$2 AND i.assurance='verified' AND i.status='active'
+		UNION ALL SELECT c.id,c.status,c.merged_into_customer_id FROM customers c JOIN lineage l ON c.id=l.merged_into_customer_id
+	) SELECT id FROM lineage WHERE status<>'merged' LIMIT 1`, "wecom-corp:"+corpID, externalUserID).Scan(&customerID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("query verified wecom owner: %w", err)
+	}
+	return customerID, true, nil
+}
+
+func (PostgreSQL) CustomerForPhone(ctx context.Context, phone string) (customerdomain.CustomerID, bool, error) {
+	ref, err := identitydomain.Normalize(identitydomain.Reference{Kind: identitydomain.KindPhone, Scope: "phone:e164", Value: phone, Assurance: identitydomain.AssuranceDeclared, Source: "customer_directory"})
+	if err != nil {
+		return 0, false, identitydomain.ErrInvalidReference
+	}
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return 0, false, err
+	}
+	var customerID customerdomain.CustomerID
+	err = tx.QueryRow(ctx, `
+		WITH RECURSIVE lineage(id,status,merged_into_customer_id) AS (
+			SELECT c.id,c.status,c.merged_into_customer_id FROM customers c
+			JOIN customer_identities i ON i.customer_id=c.id
+			WHERE i.kind='phone' AND i.scope_key='phone:e164' AND i.normalized_value=$1 AND i.status='active'
+			UNION ALL SELECT c.id,c.status,c.merged_into_customer_id FROM customers c JOIN lineage l ON c.id=l.merged_into_customer_id
+		) SELECT id FROM lineage WHERE status <> 'merged' LIMIT 1`, ref.NormalizedValue).Scan(&customerID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("query phone owner: %w", err)
+	}
+	return customerID, true, nil
+}
+
+func (PostgreSQL) DirectoryIdentities(ctx context.Context, customerID customerdomain.CustomerID) ([]identityport.DirectoryIdentitySummary, []identityport.MaskedPhone, error) {
+	if customerID < 1 {
+		return nil, nil, ErrInvalidQuery
+	}
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	rows, err := tx.Query(ctx, `SELECT kind,scope_key,assurance,status,source,normalized_value,created_at FROM customer_identities WHERE customer_id=$1 AND status='active' ORDER BY id`, customerID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("query directory identities: %w", err)
+	}
+	defer rows.Close()
+	identities := []identityport.DirectoryIdentitySummary{}
+	phones := []identityport.MaskedPhone{}
+	for rows.Next() {
+		var summary identityport.DirectoryIdentitySummary
+		var value string
+		if err = rows.Scan(&summary.Kind, &summary.Scope, &summary.Assurance, &summary.Status, &summary.Source, &value, &summary.CreatedAt); err != nil {
+			return nil, nil, fmt.Errorf("scan directory identity: %w", err)
+		}
+		if summary.Kind == identitydomain.KindPhone {
+			phones = append(phones, identityport.MaskedPhone{Masked: maskPhone(value), Assurance: summary.Assurance})
+		}
+		identities = append(identities, summary)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, nil, fmt.Errorf("iterate directory identities: %w", err)
+	}
+	return identities, phones, nil
+}
+
+func (PostgreSQL) RevealPhone(ctx context.Context, customerID customerdomain.CustomerID) (string, bool, error) {
+	if customerID < 1 {
+		return "", false, ErrInvalidQuery
+	}
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return "", false, err
+	}
+	var phone string
+	err = tx.QueryRow(ctx, `SELECT normalized_value FROM customer_identities WHERE customer_id=$1 AND kind='phone' AND scope_key='phone:e164' AND status='active' ORDER BY (assurance='verified') DESC, id DESC LIMIT 1`, customerID).Scan(&phone)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("query active phone: %w", err)
+	}
+	return phone, true, nil
+}
+
+func maskPhone(value string) string {
+	if len(value) <= 7 {
+		return "***"
+	}
+	return value[:len(value)-8] + "****" + value[len(value)-4:]
+}
 
 func (PostgreSQL) Customer(ctx context.Context, customerID customerdomain.CustomerID) (CustomerDetail, error) {
 	if customerID < 1 {

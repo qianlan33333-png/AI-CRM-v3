@@ -29,9 +29,15 @@ for contract in \
     exit 1
   }
 done
+grep -qxF 'ExecStart=/usr/bin/env AICRM_ROLE=worker AICRM_CUSTOMER_SYNC_TRIGGER=daily /opt/aicrm/current/bin/aicrm' deploy/aicrm-customer-sync-daily.service || {
+  echo "daily customer sync must pin its role and trigger at exec time" >&2
+  exit 1
+}
 if grep -qE '^AICRM_ROLE=' deploy/aicrm.env.example; then
   echo "the shared environment example must not assign a runtime role" >&2
   exit 1
 fi
 grep -qx 'WantedBy=multi-user.target' deploy/aicrm-effects-worker.service || { echo "effects worker must be persistently enableable" >&2; exit 1; }
 grep -qx 'test -f "$release_dir/migrations/0007_media.sql"' "$installer" || { echo "release must require Media migration" >&2; exit 1; }
+grep -qx 'test -f "$release_dir/migrations/0008_customer_activation.sql"' "$installer" || { echo "release must require customer migration" >&2; exit 1; }
+grep -qx 'test -x "$release_dir/bin/migrate-phone-identities"' "$installer" || { echo "release must include phone migration tool" >&2; exit 1; }

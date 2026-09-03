@@ -34,13 +34,23 @@ func run() error {
 	}
 	defer application.Close()
 	if cfg.Role == platformconfig.RoleWorker {
-		if !cfg.WeCom.CallbackEnabled {
-			slog.Info("wecom worker skipped because callback processing is disabled", "release_sha", cfg.ReleaseSHA)
-			return nil
+		processed := 0
+		var processErr error
+		if cfg.WeCom.CallbackEnabled {
+			processed, processErr = application.weComProcessor.ProcessOnce(ctx, cfg.WorkerOwner, cfg.WorkerLimit)
 		}
-		processed, processErr := application.weComProcessor.ProcessOnce(ctx, cfg.WorkerOwner, cfg.WorkerLimit)
+		if processErr == nil && application.customerSync.Ready() {
+			if cfg.CustomerSyncTrigger != "" {
+				location, _ := time.LoadLocation("Asia/Shanghai")
+				key := "initial:customer-directory-v1"
+				if cfg.CustomerSyncTrigger == "daily" {
+					key = "daily:" + time.Now().In(location).Format("2006-01-02")
+				}
+				_, _, processErr = application.customerSync.CreateScheduled(ctx, cfg.CustomerSyncTrigger, key)
+			}
+		}
 		if processErr == nil {
-			slog.Info("wecom worker complete", "processed", processed, "release_sha", cfg.ReleaseSHA)
+			slog.Info("wecom oneshot complete", "callback_processed", processed, "customer_sync_trigger", cfg.CustomerSyncTrigger != "", "release_sha", cfg.ReleaseSHA)
 		}
 		return processErr
 	}

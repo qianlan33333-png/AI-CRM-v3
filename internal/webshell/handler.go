@@ -194,7 +194,7 @@ var adminSpecs = map[string]adminSpec{
 	},
 	"/admin/customers": {
 		title:          "客户激活 / 客户列表",
-		summary:        "客户列表入口已预留。",
+		summary:        "从 v3 OneID 与企微同步投影查看客户，手机号默认脱敏。",
 		activeEndpoint: "api.admin_console_customers",
 	},
 	"/admin/hxc-dashboard": {
