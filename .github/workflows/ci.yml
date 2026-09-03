@@ -206,5 +206,5 @@ jobs:
           ssh_flags=(-i "$HOME/.ssh/deploy_key" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes)
           scp "${ssh_flags[@]}" "aicrm-${GITHUB_SHA}.tar.gz" deploy/install-release.sh "${DEPLOY_USER}@${DEPLOY_HOST}:/tmp/"
           ssh "${ssh_flags[@]}" "${DEPLOY_USER}@${DEPLOY_HOST}" \
-            "sudo /usr/bin/bash /tmp/install-release.sh /tmp/aicrm-${GITHUB_SHA}.tar.gz ${GITHUB_SHA}"
+            "sudo /usr/bin/bash /tmp/install-release.sh /tmp/aicrm-${GITHUB_SHA}.tar.gz ${GITHUB_SHA} ${GITHUB_RUN_NUMBER}"
           curl --fail --silent --show-error --retry 5 --retry-delay 2 https://id-dev.youcangogogo.com/readyz

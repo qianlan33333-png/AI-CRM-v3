@@ -85,3 +85,9 @@ grep -qx 'test -f "$release_dir/release-files.sha256"' "$installer" || { echo "r
 grep -qx '(cd "$release_dir" && sha256sum --strict --check release-files.sha256)' "$installer" || { echo "existing releases must pass their complete file manifest before resume" >&2; exit 1; }
 grep -qF 'mv -T "$staging_dir" "$release_dir"' "$installer" || { echo "new releases must become visible only after staged verification" >&2; exit 1; }
 grep -qF 'sha256sum --strict --check release-files.sha256' .github/workflows/ci.yml || { echo "CI must generate and verify the immutable release manifest" >&2; exit 1; }
+grep -qx 'exec 9>"$release_lock"' "$installer" || { echo "installer must hold a host-side release lock" >&2; exit 1; }
+grep -qx 'flock 9' "$installer" || { echo "installer must serialize the release critical section with flock" >&2; exit 1; }
+grep -qx 'release_run_number="${3:-}"' "$installer" || { echo "installer must accept the CI run number" >&2; exit 1; }
+grep -qF 'last_successful_run_file=/opt/aicrm/last-successful-run-number' "$installer" || { echo "installer must retain the successful CI run marker" >&2; exit 1; }
+grep -qF '${GITHUB_RUN_NUMBER}' .github/workflows/ci.yml || { echo "CI must pass the GitHub run number to the installer" >&2; exit 1; }
+scripts/test-install-release-ordering.sh

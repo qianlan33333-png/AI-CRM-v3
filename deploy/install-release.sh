@@ -3,8 +3,11 @@ set -euo pipefail
 
 archive="${1:-}"
 release_sha="${2:-}"
+release_run_number="${3:-}"
 release_root=/opt/aicrm/releases
 current_link=/opt/aicrm/current
+release_lock=/opt/aicrm/install-release.lock
+last_successful_run_file=/opt/aicrm/last-successful-run-number
 
 if [[ ! "$release_sha" =~ ^[0-9a-f]{40}$ ]]; then
   echo "invalid release sha" >&2
@@ -12,6 +15,10 @@ if [[ ! "$release_sha" =~ ^[0-9a-f]{40}$ ]]; then
 fi
 if [[ "$archive" != "/tmp/aicrm-${release_sha}.tar.gz" || ! -f "$archive" ]]; then
   echo "invalid release archive" >&2
+  exit 2
+fi
+if [[ -n "$release_run_number" && ! "$release_run_number" =~ ^[1-9][0-9]*$ ]]; then
+  echo "invalid release run number" >&2
   exit 2
 fi
 if ! id aicrm >/dev/null 2>&1 || [[ ! -f /etc/aicrm/aicrm.env ]]; then
@@ -30,10 +37,6 @@ if ! grep -Eq '^AICRM_SURVEY_DATA_KEY=.{43}$' /etc/aicrm/aicrm.env; then
 fi
 
 release_dir="${release_root}/${release_sha}"
-previous=""
-if [[ -L "$current_link" ]]; then
-	previous="$(readlink -f "$current_link")"
-fi
 
 install -d -m 0755 "$release_root"
 if [[ -e "$release_dir" ]]; then
@@ -89,6 +92,38 @@ test -f "$release_dir/release-files.sha256"
 (cd "$release_dir" && sha256sum --strict --check release-files.sha256)
 printf 'AICRM_RELEASE_SHA=%s\n' "$release_sha" > "$release_dir/release.env"
 chown -R aicrm:aicrm "$release_dir"
+
+# A workflow-level concurrency group cannot serialize every main deployment:
+# GitHub retains only one pending run per group, and SHA-unique groups allow
+# builds to overlap. The host therefore owns the release critical section.
+exec 9>"$release_lock"
+flock 9
+
+run_is_not_newer() {
+  local candidate="$1"
+  local deployed="$2"
+  [[ ${#candidate} -lt ${#deployed} ]] || \
+    ([[ ${#candidate} -eq ${#deployed} ]] && [[ "$candidate" < "$deployed" || "$candidate" == "$deployed" ]])
+}
+
+if [[ -n "$release_run_number" && -e "$last_successful_run_file" ]]; then
+  last_successful_run_number="$(<"$last_successful_run_file")"
+  if [[ ! "$last_successful_run_number" =~ ^[1-9][0-9]*$ ]]; then
+    echo "invalid last successful release run number" >&2
+    exit 11
+  fi
+  if run_is_not_newer "$release_run_number" "$last_successful_run_number"; then
+    echo "skipping stale release ${release_sha}: run ${release_run_number} is not newer than deployed run ${last_successful_run_number}"
+    exit 0
+  fi
+elif [[ -z "$release_run_number" ]]; then
+  echo "installing release ${release_sha} without a CI run number; serialized but not stale-run guarded" >&2
+fi
+
+previous=""
+if [[ -L "$current_link" ]]; then
+	previous="$(readlink -f "$current_link")"
+fi
 
 ln -sfn "$release_dir" "${current_link}.new"
 mv -Tf "${current_link}.new" "$current_link"
@@ -148,5 +183,11 @@ fi
 if ! systemctl enable --now aicrm-customer-sync-daily.timer; then
   rollback
   exit 10
+fi
+if [[ -n "$release_run_number" ]]; then
+  next_run_file="$(mktemp "${last_successful_run_file}.XXXXXX")"
+  printf '%s\n' "$release_run_number" > "$next_run_file"
+  chmod 0644 "$next_run_file"
+  mv -f "$next_run_file" "$last_successful_run_file"
 fi
 echo "release ${release_sha} active"
