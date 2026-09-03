@@ -71,13 +71,22 @@ func (h Handler) summary(w http.ResponseWriter, r *http.Request) {
 }
 
 type queryRequest struct {
-	ProjectionID   int64                                                                                                 `json:"projection_id,omitempty"`
-	Filters        struct{ Stage, SubscriptionTier, LastCapability, BusinessStage, UserSegment, IdentityState []string } `json:"filters"`
-	ExactHXCUserID string                                                                                                `json:"exact_hxc_user_id,omitempty"`
-	Sort           string                                                                                                `json:"sort,omitempty"`
-	GroupBy        string                                                                                                `json:"group_by,omitempty"`
-	Cursor         string                                                                                                `json:"cursor,omitempty"`
-	Limit          int                                                                                                   `json:"limit,omitempty"`
+	ProjectionID   int64        `json:"projection_id,omitempty"`
+	Filters        queryFilters `json:"filters"`
+	ExactHXCUserID string       `json:"exact_hxc_user_id,omitempty"`
+	Sort           string       `json:"sort,omitempty"`
+	GroupBy        string       `json:"group_by,omitempty"`
+	Cursor         string       `json:"cursor,omitempty"`
+	Limit          int          `json:"limit,omitempty"`
+}
+
+type queryFilters struct {
+	Stage            []string `json:"stage,omitempty"`
+	SubscriptionTier []string `json:"subscription_tier,omitempty"`
+	LastCapability   []string `json:"last_capability,omitempty"`
+	BusinessStage    []string `json:"business_stage,omitempty"`
+	UserSegment      []string `json:"user_segment,omitempty"`
+	IdentityState    []string `json:"identity_state,omitempty"`
 }
 type cursor struct {
 	ProjectionID int64 `json:"p"`
