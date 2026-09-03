@@ -225,6 +225,21 @@ func (s *SubmissionService) Analytics(ctx context.Context, id surveyport.ID) (su
 	return result, classify(err)
 }
 
+// RecordExport persists a non-PII audit/outbox receipt before the HTTP layer
+// starts streaming a CSV response. The export itself is a read, so browsers do
+// not need to turn a download link into a state-changing CSRF request.
+func (s *SubmissionService) RecordExport(ctx context.Context, id surveyport.ID, actor int64, key string) error {
+	if s == nil || s.uow == nil || s.store == nil || id < 1 || actor < 1 || len(key) < 16 || len(key) > 200 {
+		return surveyport.ErrInvalid
+	}
+	now := s.now().UTC()
+	payload, _ := json.Marshal(map[string]any{"questionnaire_id": id, "format": "csv"})
+	err := s.uow.Within(ctx, func(tx context.Context) error {
+		return s.store.AppendAuditAndOutbox(tx, "survey_export_requested", id, fmt.Sprint(actor), payload, "survey-export:"+key, now)
+	})
+	return classify(err)
+}
+
 func (s *SubmissionService) ListOperationReceipts(ctx context.Context, id surveyport.ID, limit, offset int32) ([]surveyport.OperationReceipt, int64, error) {
 	if s == nil || s.uow == nil || s.store == nil || id < 0 || limit < 1 || limit > 100 || offset < 0 || offset > MaximumOffset {
 		return nil, 0, surveyport.ErrInvalid

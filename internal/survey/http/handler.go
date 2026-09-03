@@ -474,7 +474,12 @@ func (h *Handler) export(w http.ResponseWriter, r *http.Request, id int64) {
 		method(w, "GET")
 		return
 	}
-	if _, ok := h.write(w, r); !ok {
+	principal, ok := h.readPrincipal(w, r)
+	if !ok {
+		return
+	}
+	if err := h.submissions.RecordExport(r.Context(), surveyport.ID(id), principal.InternalID, idempotency(r)); err != nil {
+		resultError(w, err)
 		return
 	}
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
@@ -802,12 +807,16 @@ func publicDefinition(q surveyport.Questionnaire) map[string]any {
 }
 
 func (h *Handler) read(w http.ResponseWriter, r *http.Request) bool {
+	_, ok := h.readPrincipal(w, r)
+	return ok
+}
+func (h *Handler) readPrincipal(w http.ResponseWriter, r *http.Request) (accessdomain.Principal, bool) {
 	p, err := h.security.Authenticate(r.Context(), r)
 	if err != nil {
 		writeError(w, 401, "authentication_required")
-		return false
+		return p, false
 	}
-	return authorize(w, p, false)
+	return p, authorize(w, p, false)
 }
 func (h *Handler) write(w http.ResponseWriter, r *http.Request) (accessdomain.Principal, bool) {
 	p, err := h.security.Authenticate(r.Context(), r)

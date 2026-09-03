@@ -126,6 +126,7 @@ type SubmissionApplication interface {
 	GetSubmission(context.Context, ID) (Submission, error)
 	CustomerHistory(context.Context, int64, int32, int32) (SubmissionPage, error)
 	Analytics(context.Context, ID) (Analytics, error)
+	RecordExport(context.Context, ID, int64, string) error
 	ListOperationReceipts(context.Context, ID, int32, int32) ([]OperationReceipt, int64, error)
 	ListLegacyUnresolved(context.Context, ID, int32, int32) ([]LegacySubmission, int64, error)
 	GetLegacyUnresolved(context.Context, ID) (LegacySubmission, error)

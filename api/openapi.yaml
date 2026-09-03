@@ -1866,7 +1866,7 @@ paths:
     get: {operationId: getSurveySubmission, security: [{adminSession: []}], responses: {"200": {description: Protected answer snapshot}}}
   /api/admin/questionnaires/{questionnaire_id}/export:
     parameters: [{name: questionnaire_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
-    get: {operationId: exportSurveySubmissions, security: [{adminSession: [], csrfHeader: []}], responses: {"200": {description: Streamed CSV export}}}
+    get: {operationId: exportSurveySubmissions, security: [{adminSession: []}], responses: {"200": {description: Audited streamed CSV export}}}
   /api/admin/questionnaires/{questionnaire_id}/export/preview:
     parameters: [{name: questionnaire_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
     get: {operationId: previewSurveyExport, security: [{adminSession: []}], responses: {"200": {description: Safe export preview}}}
