@@ -24,7 +24,10 @@ import (
 
 const (
 	productionAPIBase = "https://qyapi.weixin.qq.com"
-	maxResponseBody   = 64 << 10
+	// A legal batch/get_by_user page can exceed 64 KiB when 100 customer
+	// profiles contain follow-user metadata. Keep the read bounded while
+	// leaving enough headroom for the Provider's maximum page size.
+	maxResponseBody = 2 << 20
 )
 
 var (
