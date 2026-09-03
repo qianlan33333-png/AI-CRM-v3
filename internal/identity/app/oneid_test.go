@@ -39,6 +39,13 @@ func TestProvisionRequiresOpaqueVerifiedFact(t *testing.T) {
 	}); err == nil {
 		t.Fatal("invalid provider input must not construct a verified fact")
 	}
+	phoneFact := verifiedFact(t, identitydomain.KindPhone, "phone:cn11", "13800138000")
+	if _, err := service.ProvisionCustomerFromVerifiedIdentity(context.Background(), phoneFact); !errors.Is(err, identitydomain.ErrInvalidReference) {
+		t.Fatalf("verified phone provision error=%v", err)
+	}
+	if store.CustomerCount() != 0 {
+		t.Fatal("phone identity provisioned a Customer")
+	}
 }
 
 func TestProvisionHistoricalSubjectBindsMultipleVerifiedIdentitiesToOneRoot(t *testing.T) {
@@ -68,6 +75,24 @@ func TestProvisionHistoricalSubjectBindsMultipleVerifiedIdentitiesToOneRoot(t *t
 	})
 	if err != nil || replay.CustomerID != result.CustomerID || store.CustomerCount() != 1 || store.ActiveIdentityCount() != 2 {
 		t.Fatalf("replay=%+v err=%v", replay, err)
+	}
+}
+
+func TestProvisionHistoricalSubjectRejectsPhoneIdentity(t *testing.T) {
+	store := NewMemoryStore()
+	service := OneIDService{Store: store}
+	_, err := service.ProvisionHistoricalSubject(context.Background(), identityport.HistoricalSubjectCommand{
+		SubjectKey: "phone-only",
+		Facts: []identitydomain.VerifiedFact{
+			verifiedFact(t, identitydomain.KindPhone, "phone:cn11", "13800138000"),
+		},
+		SourceDigest: [32]byte{1},
+	})
+	if !errors.Is(err, ErrHistoricalSubjectConflict) {
+		t.Fatalf("err=%v", err)
+	}
+	if store.CustomerCount() != 0 || store.ActiveIdentityCount() != 0 {
+		t.Fatalf("customers=%d identities=%d", store.CustomerCount(), store.ActiveIdentityCount())
 	}
 }
 
@@ -116,6 +141,7 @@ func TestDeclaredPhoneAttachesOnlyToExistingCustomerAndReplays(t *testing.T) {
 	command.CustomerID = second.CustomerID
 	command.SourceRowID = "row-2"
 	command.SourceRowDigest = [32]byte{4, 5, 6}
+	command.IdempotencyKey = "phone-import:row-2"
 	conflict, err := service.AttachDeclaredIdentity(context.Background(), command)
 	if err != nil || conflict.Status != identityport.DeclaredConflict {
 		t.Fatalf("conflict=%+v err=%v", conflict, err)

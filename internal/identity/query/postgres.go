@@ -11,12 +11,13 @@ import (
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
 	identityport "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/port"
+	identitysecure "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/secure"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 )
 
 // PostgreSQL reads only Identity-owned tables and requires a transaction-bound
 // context for every operation, including administration reads.
-type PostgreSQL struct{}
+type PostgreSQL struct{ phoneVault *identitysecure.PhoneVault }
 
 var _ Reader = PostgreSQL{}
 var _ identityport.DirectoryIdentityReader = PostgreSQL{}
@@ -57,7 +58,13 @@ func (PostgreSQL) VerifiedWeComIdentityForCustomer(ctx context.Context, customer
 	return values[0], true, nil
 }
 
-func NewPostgreSQL() PostgreSQL { return PostgreSQL{} }
+func NewPostgreSQL(phoneVault ...*identitysecure.PhoneVault) PostgreSQL {
+	store := PostgreSQL{}
+	if len(phoneVault) == 1 {
+		store.phoneVault = phoneVault[0]
+	}
+	return store
+}
 
 func (PostgreSQL) ResolveHXCUnionIDs(ctx context.Context, references []identityport.ScopedUnionID) ([]identityport.ScopedUnionIDResult, error) {
 	if len(references) == 0 {
@@ -258,11 +265,15 @@ func (PostgreSQL) VerifiedWeComCustomer(ctx context.Context, corpID, externalUse
 	return customerID, true, nil
 }
 
-func (PostgreSQL) CustomerForPhone(ctx context.Context, phone string) (customerdomain.CustomerID, bool, error) {
-	ref, err := identitydomain.Normalize(identitydomain.Reference{Kind: identitydomain.KindPhone, Scope: "phone:e164", Value: phone, Assurance: identitydomain.AssuranceDeclared, Source: "customer_directory"})
+func (store PostgreSQL) CustomerForPhone(ctx context.Context, phone string) (customerdomain.CustomerID, bool, error) {
+	ref, err := identitydomain.Normalize(identitydomain.Reference{Kind: identitydomain.KindPhone, Scope: "phone:cn11", Value: phone, Assurance: identitydomain.AssuranceDeclared, Source: "customer_directory"})
 	if err != nil {
 		return 0, false, identitydomain.ErrInvalidReference
 	}
+	if store.phoneVault == nil {
+		return 0, false, errors.New("identity phone vault unavailable")
+	}
+	digest := store.phoneVault.LookupDigest(ref.NormalizedValue)
 	tx, err := platformpostgres.RequireTransaction(ctx)
 	if err != nil {
 		return 0, false, err
@@ -272,9 +283,9 @@ func (PostgreSQL) CustomerForPhone(ctx context.Context, phone string) (customerd
 		WITH RECURSIVE lineage(id,status,merged_into_customer_id) AS (
 			SELECT c.id,c.status,c.merged_into_customer_id FROM customers c
 			JOIN customer_identities i ON i.customer_id=c.id
-			WHERE i.kind='phone' AND i.scope_key='phone:e164' AND i.normalized_value=$1 AND i.status='active'
+			WHERE i.kind='phone' AND i.status='active' AND ((i.scope_key='phone:cn11' AND i.normalized_value_digest=$1) OR (i.scope_key='phone:e164' AND i.normalized_value=$2))
 			UNION ALL SELECT c.id,c.status,c.merged_into_customer_id FROM customers c JOIN lineage l ON c.id=l.merged_into_customer_id
-		) SELECT id FROM lineage WHERE status <> 'merged' LIMIT 1`, ref.NormalizedValue).Scan(&customerID)
+		) SELECT id FROM lineage WHERE status <> 'merged' LIMIT 1`, digest[:], "+86"+ref.NormalizedValue).Scan(&customerID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, false, nil
 	}
@@ -292,7 +303,7 @@ func (PostgreSQL) DirectoryIdentities(ctx context.Context, customerID customerdo
 	if err != nil {
 		return nil, nil, err
 	}
-	rows, err := tx.Query(ctx, `SELECT kind,scope_key,assurance,status,source,normalized_value,created_at FROM customer_identities WHERE customer_id=$1 AND status='active' ORDER BY id`, customerID)
+	rows, err := tx.Query(ctx, `SELECT i.kind,i.scope_key,i.assurance,i.status,i.source,i.normalized_value,COALESCE(p.masked_value,''),i.created_at FROM customer_identities i LEFT JOIN identity_phone_secrets p ON p.identity_id=i.id WHERE i.customer_id=$1 AND i.status='active' ORDER BY i.id`, customerID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("query directory identities: %w", err)
 	}
@@ -301,12 +312,15 @@ func (PostgreSQL) DirectoryIdentities(ctx context.Context, customerID customerdo
 	phones := []identityport.MaskedPhone{}
 	for rows.Next() {
 		var summary identityport.DirectoryIdentitySummary
-		var value string
-		if err = rows.Scan(&summary.Kind, &summary.Scope, &summary.Assurance, &summary.Status, &summary.Source, &value, &summary.CreatedAt); err != nil {
+		var value, protectedMask string
+		if err = rows.Scan(&summary.Kind, &summary.Scope, &summary.Assurance, &summary.Status, &summary.Source, &value, &protectedMask, &summary.CreatedAt); err != nil {
 			return nil, nil, fmt.Errorf("scan directory identity: %w", err)
 		}
 		if summary.Kind == identitydomain.KindPhone {
-			phones = append(phones, identityport.MaskedPhone{Masked: maskPhone(value), Assurance: summary.Assurance})
+			if protectedMask == "" {
+				protectedMask = maskPhone(value)
+			}
+			phones = append(phones, identityport.MaskedPhone{Masked: protectedMask, Assurance: summary.Assurance})
 		}
 		identities = append(identities, summary)
 	}
@@ -316,7 +330,7 @@ func (PostgreSQL) DirectoryIdentities(ctx context.Context, customerID customerdo
 	return identities, phones, nil
 }
 
-func (PostgreSQL) RevealPhone(ctx context.Context, customerID customerdomain.CustomerID) (string, bool, error) {
+func (store PostgreSQL) RevealPhone(ctx context.Context, customerID customerdomain.CustomerID) (string, bool, error) {
 	if customerID < 1 {
 		return "", false, ErrInvalidQuery
 	}
@@ -324,15 +338,26 @@ func (PostgreSQL) RevealPhone(ctx context.Context, customerID customerdomain.Cus
 	if err != nil {
 		return "", false, err
 	}
-	var phone string
-	err = tx.QueryRow(ctx, `SELECT normalized_value FROM customer_identities WHERE customer_id=$1 AND kind='phone' AND scope_key='phone:e164' AND status='active' ORDER BY (assurance='verified') DESC, id DESC LIMIT 1`, customerID).Scan(&phone)
+	var legacy string
+	var ciphertext []byte
+	err = tx.QueryRow(ctx, `SELECT i.normalized_value,p.ciphertext FROM customer_identities i LEFT JOIN identity_phone_secrets p ON p.identity_id=i.id WHERE i.customer_id=$1 AND i.kind='phone' AND i.status='active' ORDER BY (i.assurance='verified') DESC,i.id DESC LIMIT 1`, customerID).Scan(&legacy, &ciphertext)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", false, nil
 	}
 	if err != nil {
 		return "", false, fmt.Errorf("query active phone: %w", err)
 	}
-	return phone, true, nil
+	if len(ciphertext) > 0 {
+		if store.phoneVault == nil {
+			return "", false, errors.New("identity phone vault unavailable")
+		}
+		phone, decryptErr := store.phoneVault.Decrypt(ciphertext)
+		if decryptErr != nil {
+			return "", false, errors.New("identity phone decrypt failed")
+		}
+		return phone, true, nil
+	}
+	return strings.TrimPrefix(legacy, "+86"), true, nil
 }
 
 func (PostgreSQL) VerifiedExternalIdentityValue(ctx context.Context, customerID customerdomain.CustomerID, kind identitydomain.Kind, scope string) (string, bool, error) {
@@ -373,6 +398,7 @@ func (PostgreSQL) VerifiedExternalIdentityValue(ctx context.Context, customerID 
 }
 
 func maskPhone(value string) string {
+	value = strings.TrimPrefix(value, "+86")
 	if len(value) <= 7 {
 		return "***"
 	}

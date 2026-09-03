@@ -6,11 +6,13 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
+	"time"
+
 	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
 	identityport "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/port"
 	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
 	surveyport "github.com/qianlan33333-png/AI-CRM-v3/internal/survey/port"
-	"time"
 )
 
 type OAuthProvider interface {
@@ -23,6 +25,7 @@ type OAuthState struct {
 	ExpiresAt      time.Time
 }
 type OAuthStore interface {
+	GetPublishedBySlug(context.Context, string) (surveyport.Questionnaire, error)
 	CreateOAuthState(context.Context, [32]byte, OAuthState, time.Time) error
 	ConsumeOAuthState(context.Context, [32]byte, time.Time) (OAuthState, error)
 	CreateIdentitySession(context.Context, [32]byte, surveyport.SubmissionIdentity, time.Time, time.Time) error
@@ -40,8 +43,8 @@ func NewOAuthService(uow platformport.UnitOfWork, store OAuthStore, provider OAu
 	return &OAuthService{uow: uow, store: store, provider: provider, identity: identity, now: time.Now}
 }
 func (s *OAuthService) Enabled() bool { return s != nil && s.provider != nil && s.provider.Enabled() }
-func (s *OAuthService) Start(ctx context.Context, slug, display string) (string, error) {
-	if !s.Enabled() || !validSlug(slug) || (display != "all" && display != "one") {
+func (s *OAuthService) Start(ctx context.Context, slug string) (string, error) {
+	if !s.Enabled() || !validSlug(slug) {
 		return "", surveyport.ErrUnavailable
 	}
 	token, err := randomToken()
@@ -50,8 +53,22 @@ func (s *OAuthService) Start(ctx context.Context, slug, display string) (string,
 	}
 	digest := sha256.Sum256([]byte(token))
 	now := s.now().UTC()
-	state := OAuthState{Slug: slug, Redirect: "/h5/" + display + ".html?slug=" + slug, ExpiresAt: now.Add(10 * time.Minute)}
-	if err = s.uow.Within(ctx, func(tx context.Context) error { return s.store.CreateOAuthState(tx, digest, state, now) }); err != nil {
+	state := OAuthState{Slug: slug, ExpiresAt: now.Add(10 * time.Minute)}
+	if err = s.uow.Within(ctx, func(tx context.Context) error {
+		questionnaire, readErr := s.store.GetPublishedBySlug(tx, slug)
+		if readErr != nil {
+			return readErr
+		}
+		display := "all"
+		if questionnaire.AnswerDisplayMode == surveyport.DisplayOneByOne {
+			display = "one"
+		}
+		state.Redirect = "/h5/" + display + ".html?slug=" + slug
+		return s.store.CreateOAuthState(tx, digest, state, now)
+	}); err != nil {
+		if errors.Is(err, surveyport.ErrNotFound) {
+			return "", surveyport.ErrNotFound
+		}
 		return "", surveyport.ErrUnavailable
 	}
 	return s.provider.AuthorizationURL(token), nil

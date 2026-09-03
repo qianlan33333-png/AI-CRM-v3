@@ -5,11 +5,14 @@ import (
 )
 
 func TestNormalizePhoneUsesExplicitCNDefault(t *testing.T) {
-	for input, want := range map[string]string{"13812345678": "+8613812345678", "+12025550123": "+12025550123", "+86 138-1234-5678": "+8613812345678"} {
+	for input, want := range map[string]string{"13812345678": "13812345678", "+86 138-1234-5678": "13812345678"} {
 		got, err := normalizePhone(input)
 		if err != nil || got != want {
 			t.Fatalf("normalizePhone(%q)=%q err=%v want=%q", input, got, err, want)
 		}
+	}
+	if _, err := normalizePhone("+12025550123"); err == nil {
+		t.Fatal("non-mainland phone accepted")
 	}
 	for _, input := range []string{"12345678", "8613812345678", "+0123", "not-a-phone"} {
 		if got, err := normalizePhone(input); err == nil {

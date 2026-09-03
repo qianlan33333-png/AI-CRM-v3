@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"sort"
@@ -19,92 +20,112 @@ import (
 	identityapp "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/app"
 	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
 	identityport "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/port"
+	identitysecure "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/secure"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 )
 
 // PostgresStore has no pool deliberately: every operation obtains the
 // UnitOfWork-bound transaction from its context, so an accidental autocommit
 // call is rejected by platformpostgres.RequireTransaction.
-type PostgresStore struct{}
+type PostgresStore struct{ phoneVault *identitysecure.PhoneVault }
 
-func NewPostgresStore() *PostgresStore { return &PostgresStore{} }
+func NewPostgresStore(phoneVault ...*identitysecure.PhoneVault) *PostgresStore {
+	store := &PostgresStore{}
+	if len(phoneVault) == 1 {
+		store.phoneVault = phoneVault[0]
+	}
+	return store
+}
 
 var _ identityapp.Store = (*PostgresStore)(nil)
 
-func (store *PostgresStore) AttachDeclared(ctx context.Context, command identityport.DeclaredAttachCommand, ref identitydomain.NormalizedReference) (identityport.DeclaredAttachResult, error) {
+func (store *PostgresStore) AttachDeclaredPhone(ctx context.Context, command identityport.DeclaredPhoneCommand, ref identitydomain.NormalizedReference) (identityport.DeclaredAttachResult, error) {
 	tx, err := platformpostgres.RequireTransaction(ctx)
 	if err != nil {
 		return identityport.DeclaredAttachResult{}, err
 	}
+	if store.phoneVault == nil {
+		return identityport.DeclaredAttachResult{}, errStore
+	}
+	keyDigest := sha256.Sum256([]byte(command.IdempotencyKey))
+	payloadDigest := sha256.Sum256([]byte(strconv.FormatInt(int64(command.CustomerID), 10) + "\x00" + ref.NormalizedValue + "\x00" + command.Source + "\x00" + command.SourceEventID))
 	var priorOutcome string
-	var priorCustomerID, priorIdentityID *int64
-	var priorDigest []byte
-	err = tx.QueryRow(ctx, `SELECT outcome,customer_id,identity_id,source_row_digest FROM identity_phone_import_receipts WHERE run_id=$1 AND source_row_id=$2`, command.ImportRunID, command.SourceRowID).Scan(&priorOutcome, &priorCustomerID, &priorIdentityID, &priorDigest)
+	var priorPayload []byte
+	var priorCustomer, priorIdentity *int64
+	err = tx.QueryRow(ctx, `SELECT outcome,payload_digest,customer_id,identity_id FROM identity_declared_phone_receipts WHERE key_digest=$1`, keyDigest[:]).Scan(&priorOutcome, &priorPayload, &priorCustomer, &priorIdentity)
 	if err == nil {
-		if len(priorDigest) != len(command.SourceRowDigest) || string(priorDigest) != string(command.SourceRowDigest[:]) {
+		if string(priorPayload) != string(payloadDigest[:]) {
 			return identityport.DeclaredAttachResult{}, identityapp.ErrDeclaredPayloadMismatch
 		}
 		result := identityport.DeclaredAttachResult{Status: identityport.DeclaredReplayed, ReplayOf: identityport.DeclaredAttachStatus(priorOutcome)}
-		if priorCustomerID != nil {
-			result.CustomerID = customerdomain.CustomerID(*priorCustomerID)
+		if priorCustomer != nil {
+			result.CustomerID = customerdomain.CustomerID(*priorCustomer)
 		}
-		if priorIdentityID != nil {
-			result.IdentityID = *priorIdentityID
+		if priorIdentity != nil {
+			result.IdentityID = *priorIdentity
 		}
 		return result, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return identityport.DeclaredAttachResult{}, persistenceFailure(err)
 	}
-	var runStatus string
-	if err = tx.QueryRow(ctx, `SELECT status FROM identity_phone_import_runs WHERE id=$1 FOR UPDATE`, command.ImportRunID).Scan(&runStatus); err != nil || runStatus != "applying" {
-		return identityport.DeclaredAttachResult{}, identityapp.ErrInvalidLinkCommand
-	}
-	if err = lockIdentityKey(ctx, tx, ref); err != nil {
-		return identityport.DeclaredAttachResult{}, persistenceFailure(err)
-	}
-	root, existing, found, err := lockLinkParticipants(ctx, tx, int64(command.CustomerID), ref)
-	if err != nil && !errors.Is(err, errCustomerRootChanged) && !errors.Is(err, pgx.ErrNoRows) {
-		return identityport.DeclaredAttachResult{}, persistenceFailure(err)
-	}
-	if err != nil || root.ID != int64(command.CustomerID) {
+	var active bool
+	err = tx.QueryRow(ctx, `SELECT status='active' FROM customers WHERE id=$1 FOR UPDATE`, command.CustomerID).Scan(&active)
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && !active) {
 		result := identityport.DeclaredAttachResult{Status: identityport.DeclaredInvalid}
-		return result, storeDeclaredReceipt(ctx, tx, command, result, "inactive_customer")
+		return result, storePhoneReceipt(ctx, tx, keyDigest, payloadDigest, command, result)
+	}
+	if err != nil {
+		return identityport.DeclaredAttachResult{}, persistenceFailure(err)
+	}
+	lookup := store.phoneVault.LookupDigest(ref.NormalizedValue)
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, "phone:cn11:"+hex.EncodeToString(lookup[:])); err != nil {
+		return identityport.DeclaredAttachResult{}, persistenceFailure(err)
 	}
 	result := identityport.DeclaredAttachResult{CustomerID: command.CustomerID}
-	if found {
-		result.IdentityID = existing.ID
-		if existing.CustomerID == command.CustomerID {
+	var owner int64
+	err = tx.QueryRow(ctx, `SELECT id,customer_id FROM customer_identities WHERE kind='phone' AND status='active' AND ((scope_key='phone:cn11' AND normalized_value_digest=$1) OR (scope_key='phone:e164' AND normalized_value=$2)) FOR UPDATE`, lookup[:], "+86"+ref.NormalizedValue).Scan(&result.IdentityID, &owner)
+	if err == nil {
+		if customerdomain.CustomerID(owner) == command.CustomerID {
 			result.Status = identityport.DeclaredAlreadyLinked
 		} else {
 			result.Status = identityport.DeclaredConflict
 		}
-		return result, storeDeclaredReceipt(ctx, tx, command, result, "")
+		return result, storePhoneReceipt(ctx, tx, keyDigest, payloadDigest, command, result)
 	}
-	if err = tx.QueryRow(ctx, `INSERT INTO customer_identities(customer_id,kind,scope_key,normalized_value,assurance,source,source_event_id,normalizer_version,verified_at) VALUES($1,$2,$3,$4,'declared','phone_import',$5,$6,NULL) RETURNING id`, command.CustomerID, string(ref.Kind), ref.Scope, ref.NormalizedValue, command.IdempotencyKey, ref.NormalizerVersion).Scan(&result.IdentityID); err != nil {
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return identityport.DeclaredAttachResult{}, persistenceFailure(err)
+	}
+	if err = tx.QueryRow(ctx, `INSERT INTO customer_identities(customer_id,kind,scope_key,normalized_value,normalized_value_digest,assurance,source,source_event_id,normalizer_version,verified_at) VALUES($1,'phone','phone:cn11','',$2,'declared',$3,$4,$5,NULL) RETURNING id`, command.CustomerID, lookup[:], command.Source, command.SourceEventID, ref.NormalizerVersion).Scan(&result.IdentityID); err != nil {
+		return identityport.DeclaredAttachResult{}, persistenceFailure(err)
+	}
+	ciphertext, err := store.phoneVault.Encrypt(ref.NormalizedValue)
+	if err != nil {
+		return identityport.DeclaredAttachResult{}, errStore
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO identity_phone_secrets(identity_id,ciphertext,masked_value,key_version) VALUES($1,$2,$3,$4)`, result.IdentityID, ciphertext, identitysecure.MaskPhone(ref.NormalizedValue), identitysecure.PhoneKeyVersion); err != nil {
 		return identityport.DeclaredAttachResult{}, persistenceFailure(err)
 	}
 	result.Status = identityport.DeclaredAttached
-	if _, err = tx.Exec(ctx, `UPDATE customers SET version=version+1,updated_at=CURRENT_TIMESTAMP WHERE id=$1 AND status='active'`, command.CustomerID); err != nil {
+	if _, err = tx.Exec(ctx, `UPDATE customers SET version=version+1,updated_at=CURRENT_TIMESTAMP WHERE id=$1`, command.CustomerID); err != nil {
 		return identityport.DeclaredAttachResult{}, persistenceFailure(err)
 	}
-	return result, storeDeclaredReceipt(ctx, tx, command, result, "")
+	return result, storePhoneReceipt(ctx, tx, keyDigest, payloadDigest, command, result)
 }
 
-func storeDeclaredReceipt(ctx context.Context, tx pgx.Tx, command identityport.DeclaredAttachCommand, result identityport.DeclaredAttachResult, errorCode string) error {
-	var identityID any
-	if result.IdentityID > 0 {
-		identityID = result.IdentityID
-	}
-	var customerID any
+func storePhoneReceipt(ctx context.Context, tx pgx.Tx, keyDigest, payloadDigest [32]byte, command identityport.DeclaredPhoneCommand, result identityport.DeclaredAttachResult) error {
+	var customer, identity any
 	if result.CustomerID > 0 {
-		customerID = result.CustomerID
+		customer = result.CustomerID
 	}
-	_, err := tx.Exec(ctx, `INSERT INTO identity_phone_import_receipts(run_id,source_row_id,source_row_digest,outcome,customer_id,identity_id,error_code) VALUES($1,$2,$3,$4,$5,$6,NULLIF($7,''))`, command.ImportRunID, command.SourceRowID, command.SourceRowDigest[:], string(result.Status), customerID, identityID, errorCode)
-	if err == nil {
-		return nil
+	if result.IdentityID > 0 {
+		identity = result.IdentityID
 	}
-	return persistenceFailure(err)
+	_, err := tx.Exec(ctx, `INSERT INTO identity_declared_phone_receipts(key_digest,payload_digest,customer_id,identity_id,outcome,source,source_event_id) VALUES($1,$2,$3,$4,$5,$6,$7)`, keyDigest[:], payloadDigest[:], customer, identity, result.Status, command.Source, command.SourceEventID)
+	if err != nil {
+		return persistenceFailure(err)
+	}
+	return nil
 }
 
 var errStore = errors.New("identity persistence failed")

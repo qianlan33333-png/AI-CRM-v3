@@ -129,7 +129,7 @@ async function loadQuestionnaireEditor({ q = '', questionnaire } = {}) {
   return { dom, trace };
 }
 
-async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHistoryHttp, campaignHttp = false, memberGridHistoryHttp, contactHistoryHttp, hxcHistoryHttp, messageHistoryHttp = false, customerListHttp = false, groupDirectoryHttp = false, channelHttp = false, channelHttpFailure = false, channelHistoryHttpFailure = false, channelHistoryEmpty = false, channelQrUrl = false, opsGuardHttp = false, couponHistoryHttp, couponHttp = false, couponHttpFailure = false, audienceHttp = false, audienceEmpty = false, audienceActive = false, audienceHistoryHttp = false, radarHttp = false, serviceProductHttp = false, orderHistoryHttp = false, h5Http, serviceHistoryHttp = false, serviceHistoryEmpty = false, serviceHistoryFailure = '', groupOpsHistoryHttp, miniProgramHttp = false } = {}) {
+async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHistoryHttp, campaignHttp = false, memberGridHistoryHttp, contactHistoryHttp, hxcHistoryHttp, messageHistoryHttp = false, customerListHttp = false, groupDirectoryHttp = false, channelHttp = false, channelHttpFailure = false, channelHistoryHttpFailure = false, channelHistoryEmpty = false, channelQrUrl = false, opsGuardHttp = false, couponHistoryHttp, couponHttp = false, couponHttpFailure = false, audienceHttp = false, audienceEmpty = false, audienceActive = false, audienceHistoryHttp = false, radarHttp = false, serviceProductHttp = false, orderHistoryHttp = false, h5Http, h5WeChat = false, serviceHistoryHttp = false, serviceHistoryEmpty = false, serviceHistoryFailure = '', groupOpsHistoryHttp, miniProgramHttp = false } = {}) {
   const file = path.join(DIST, rel);
   let html = fs.readFileSync(file, 'utf8');
   // 用 jsdom 执行内联脚本：把 bundle 内联进去，避免资源加载配置
@@ -140,6 +140,7 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
     runScripts: 'dangerously',
     pretendToBeVisual: true,
     beforeParse(window) {
+      if (h5WeChat) Object.defineProperty(window.navigator, 'userAgent', { value: 'MicroMessenger/8.0', configurable: true });
       // Mock 仅由 DOM 回归测试显式注入；浏览器默认运行态不会走此路径。
       window.__AICRM_TEST_MOCK__ = !(automationHistoryHttp || campaignHistoryHttp || campaignHttp || memberGridHistoryHttp || contactHistoryHttp || hxcHistoryHttp || messageHistoryHttp || customerListHttp || groupDirectoryHttp || channelHttp || couponHistoryHttp || couponHttp || audienceHttp || audienceHistoryHttp || radarHttp || serviceProductHttp || orderHistoryHttp || h5Http || serviceHistoryHttp || groupOpsHistoryHttp || miniProgramHttp);
       if (hxcHistoryHttp) {
@@ -438,6 +439,7 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
           const url = new URL(String(input), window.location.origin);
           calls.push({ path: url.pathname, query: url.search, method: init.method || 'GET', body: init.body ? JSON.parse(String(init.body)) : null });
           if (url.pathname === '/api/public/questionnaires/uat-survey') return json(h5Http.definition, h5Http.definitionStatus || 200);
+          if (url.pathname === '/api/h5/surveys/session') return json(h5Http.session || { code: 'survey_oauth_required' }, h5Http.sessionStatus || 401);
           if (url.pathname === '/api/public/questionnaires/uat-survey/submissions') {
             const status = h5Http.submissionStatuses?.[submissionAttempt++] ?? 202;
             if (status === 'network') throw new Error('network outcome unknown');
@@ -1447,7 +1449,7 @@ console.log('admin/customers.html（筛选、opaque cursor 翻页与详情导航
   input(dom, d.querySelector('#fCustomerMobile'), '138000000000');
   click(dom, [...d.querySelectorAll('button')].find((b) => b.textContent.trim() === '查询'));
   await sleep(30);
-  ok('非法手机号在请求前显示 E.164 错误', d.querySelector('[data-customer-error]')?.textContent.includes('E.164'));
+  ok('非法手机号在请求前显示 11 位大陆号码错误', d.querySelector('[data-customer-error]')?.textContent.includes('11位'));
 
   click(dom, [...d.querySelectorAll('button')].find((b) => b.textContent.trim() === '清空'));
   await sleep(300);
@@ -2542,6 +2544,28 @@ console.log('h5/one.html（真实逐题模式）');
   dom.window.close();
 }
 
+console.log('h5/all.html（严格 11 位大陆手机号）');
+{
+  const mobileDefinition = {
+    ...h5Definition,
+    questions: [{ id: 105, type: 'mobile', title: '请输入手机号', required: true, sort_order: 0, options: [] }],
+  };
+  const dom = await loadPage('h5/all.html', { q: 'slug=uat-survey', h5Http: { definition: mobileDefinition } });
+  const d = dom.window.document;
+  const field = d.querySelector('[data-text-question-id="105"]');
+  ok('手机号题使用单行 tel、数字键盘与 11 位上限', field?.tagName === 'INPUT' && field.getAttribute('type') === 'tel' && field.getAttribute('inputmode') === 'numeric' && field.getAttribute('maxlength') === '11');
+  input(dom, field, '+8613800138000');
+  click(dom, d.querySelector('[data-h5-submit]'));
+  await sleep(20);
+  ok('手机号题拒绝 +86 且请求前失败', dom.window.__h5HttpTest.calls.every((call) => !call.path.endsWith('/submissions')) && d.querySelector('[data-h5-error]')?.textContent.includes('11位中国大陆手机号'));
+  input(dom, field, '13800138000');
+  click(dom, d.querySelector('[data-h5-submit]'));
+  await sleep(30);
+  const call = dom.window.__h5HttpTest.calls.find((entry) => entry.path.endsWith('/submissions'));
+  ok('合法手机号按 11 位原值提交且不触发短信字段', call?.body.answers[0]?.text_value === '13800138000' && !('verification_code' in call.body));
+  dom.window.close();
+}
+
 console.log('h5/result.html（真实结果与失败关闭）');
 {
   const dom = await loadPage('h5/result.html', { q: '#result_token=' + 'r'.repeat(43), h5Http: { result: h5Result } });
@@ -2572,7 +2596,18 @@ for (const scenario of [
   ok('契约外题型降级为禁用题卡，不再整卷失败', d.querySelectorAll('[data-question-id]').length === 4 && !!d.querySelector('[data-h5-unsupported]') && d.querySelector('[data-h5-unsupported]')?.textContent.includes('当前端不支持该题型') && d.querySelector('[data-h5-error]')?.textContent.includes('暂不支持'));
   dom.window.close();
 }
-for (const page of ['auth', 'error', 'done', 'signup', 'active', 'expired', 'pay', 'qr']) {
+{
+  const outside = await loadPage('h5/auth.html', { q: 'slug=uat-survey', h5Http: {} });
+  const d = outside.window.document;
+  ok('H5 auth 微信外禁止继续且提示在微信中打开', d.body.textContent.includes('请在微信中打开') && [...d.querySelectorAll('#screen button')].every((button) => button.disabled) && outside.window.__h5HttpTest.calls.length === 0);
+  outside.window.close();
+
+  const inside = await loadPage('h5/auth.html', { q: 'slug=uat-survey', h5Http: {}, h5WeChat: true });
+  const insideDocument = inside.window.document;
+  ok('H5 auth 微信内展示真实授权入口并读取安全会话', [...insideDocument.querySelectorAll('#screen button')].some((button) => button.textContent.includes('微信授权后继续') && !button.disabled) && inside.window.__h5HttpTest.calls.length === 1 && inside.window.__h5HttpTest.calls[0].path === '/api/h5/surveys/session');
+  inside.window.close();
+}
+for (const page of ['error', 'done', 'signup', 'active', 'expired', 'pay', 'qr']) {
   const dom = await loadPage(`h5/${page}.html`, { h5Http: {} });
   const d = dom.window.document;
   ok(`H5 ${page} 保留原壳但明确blocked，不调用Provider`, !!d.querySelector('[data-h5-blocked]') && d.body.textContent.includes('后端能力未就绪') && [...d.querySelectorAll('#screen button')].every((button) => button.disabled) && dom.window.__h5HttpTest.calls.length === 0 && !d.body.textContent.includes('诊断报告已生成'));

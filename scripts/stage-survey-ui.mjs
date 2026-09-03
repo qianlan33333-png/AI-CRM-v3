@@ -43,6 +43,16 @@ for (const key of entryKeys) {
   if (typeof entry !== 'string') fail(`missing manifest entry: ${key}`);
   includeStatic(entry);
 }
+
+// Survey sharing is loaded with import('./sections/qr') from the shared admin
+// controller.  esbuild therefore emits it outside the static entry closure.
+// Locate that one source-owned dynamic chunk explicitly instead of copying all
+// donor dynamic imports into this release slice.
+const qrChunks = Object.entries(sourceManifest.files || {})
+  .filter(([, metadata]) => (metadata.inputs || []).includes('web/src/admin/sections/qr.ts'))
+  .map(([relative]) => relative);
+if (qrChunks.length !== 1) fail(`expected exactly one Survey QR chunk, found ${qrChunks.length}`);
+includeStatic(qrChunks[0]);
 for (const relative of [...selected].sort()) copy(relative);
 
 const adminPages = ['questionnaires.html', 'questionnaireDetail.html', 'questionnaireOps.html'];

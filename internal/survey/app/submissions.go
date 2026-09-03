@@ -10,6 +10,8 @@ import (
 	"time"
 
 	customerport "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/port"
+	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
+	identityport "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/port"
 	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
 	surveydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/survey/domain"
 	surveyport "github.com/qianlan33333-png/AI-CRM-v3/internal/survey/port"
@@ -43,6 +45,7 @@ type SubmissionStore interface {
 	SaveOperationConfiguration(context.Context, surveyport.OperationConfiguration, int64, time.Time) (surveyport.OperationConfiguration, error)
 	RecordDisabledOperation(context.Context, surveyport.ID, *surveyport.ID, string, [32]byte, time.Time) (surveyport.OperationReceipt, error)
 	AppendAuditAndOutbox(context.Context, string, surveyport.ID, string, json.RawMessage, string, time.Time) error
+	RecordPhoneBinding(context.Context, surveyport.ID, surveyport.ID, int64, int64, identityport.DeclaredAttachStatus, [32]byte, time.Time) error
 }
 
 type customerHistoryWindowStore interface {
@@ -50,11 +53,21 @@ type customerHistoryWindowStore interface {
 }
 
 type SubmissionService struct {
-	uow      platformport.UnitOfWork
-	store    SubmissionStore
-	cipher   *secure.Cipher
-	timeline customerport.TimelineWriter
-	now      func() time.Time
+	uow             platformport.UnitOfWork
+	store           SubmissionStore
+	cipher          *secure.Cipher
+	timeline        customerport.TimelineWriter
+	phoneAttacher   identityport.DeclaredPhoneAttacher
+	phoneProjection customerport.ProjectionWriter
+	now             func() time.Time
+}
+
+func (s *SubmissionService) BindDeclaredPhone(attacher identityport.DeclaredPhoneAttacher, projection customerport.ProjectionWriter) error {
+	if s == nil || attacher == nil || projection == nil {
+		return surveyport.ErrInvalid
+	}
+	s.phoneAttacher, s.phoneProjection = attacher, projection
+	return nil
 }
 
 func NewSubmissionService(uow platformport.UnitOfWork, store SubmissionStore, cipher *secure.Cipher) *SubmissionService {
@@ -85,7 +98,7 @@ func (s *SubmissionService) ReadPublic(ctx context.Context, slug string) (survey
 }
 
 func (s *SubmissionService) Submit(ctx context.Context, command surveyport.SubmitCommand) (surveyport.SubmissionReceipt, error) {
-	if s == nil || s.uow == nil || s.store == nil || s.cipher == nil || !validSlug(command.Slug) || command.DefinitionVersion < 1 || !validPublicKey(command.SubmissionKey) || !validIdentity(command.Identity) || len(command.SourceChannel) > 100 || len(command.CampaignID) > 200 || len(command.StaffID) > 200 {
+	if s == nil || s.uow == nil || s.store == nil || s.cipher == nil || s.phoneAttacher == nil || s.phoneProjection == nil || !validSlug(command.Slug) || command.DefinitionVersion < 1 || !validPublicKey(command.SubmissionKey) || command.Identity.State != surveyport.IdentityResolved || command.Identity.CustomerID == nil || !validIdentity(command.Identity) || len(command.SourceChannel) > 100 || len(command.CampaignID) > 200 || len(command.StaffID) > 200 {
 		return surveyport.SubmissionReceipt{}, surveyport.ErrInvalid
 	}
 	canonical, _ := json.Marshal(struct {
@@ -133,6 +146,35 @@ func (s *SubmissionService) Submit(ctx context.Context, command surveyport.Submi
 		}
 		if !created {
 			return nil
+		}
+		for _, answer := range stored.Answers {
+			if answer.QuestionType != surveyport.QuestionMobile {
+				continue
+			}
+			var phone string
+			for _, original := range command.Answers {
+				if answer.QuestionID != nil && original.QuestionID == *answer.QuestionID {
+					phone = original.TextValue
+					break
+				}
+			}
+			if phone == "" {
+				continue
+			}
+			bindingKey := fmt.Sprintf("survey-phone:%d:%d", stored.ID, answer.ID)
+			binding, attachErr := s.phoneAttacher.AttachDeclaredPhoneToCustomer(tx, identityport.DeclaredPhoneCommand{CustomerID: *command.Identity.CustomerID, Phone: phone, Source: "survey", SourceEventID: fmt.Sprintf("submission:%d:answer:%d", stored.ID, answer.ID), IdempotencyKey: bindingKey})
+			if attachErr != nil {
+				return attachErr
+			}
+			evidence := sha256.Sum256([]byte(command.Identity.EvidenceDigest + "\x00" + bindingKey + "\x00" + string(binding.Status)))
+			if e = s.store.RecordPhoneBinding(tx, stored.ID, answer.ID, int64(*command.Identity.CustomerID), binding.IdentityID, binding.Status, evidence, now); e != nil {
+				return e
+			}
+			if binding.Status == identityport.DeclaredAttached || binding.Status == identityport.DeclaredAlreadyLinked || binding.Status == identityport.DeclaredReplayed {
+				if e = s.phoneProjection.UpdateDirectoryPhone(tx, *command.Identity.CustomerID, answer.TextValueMasked, identitydomain.AssuranceDeclared, 1, now); e != nil {
+					return e
+				}
+			}
 		}
 		payload, _ := json.Marshal(map[string]any{"questionnaire_id": questionnaire.ID, "submission_id": stored.ID, "identity_state": command.Identity.State})
 		outboxKey := "survey.submission:" + hex.EncodeToString(submissionKeyDigest[:])

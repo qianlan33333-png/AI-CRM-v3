@@ -8,7 +8,6 @@ import (
 	"errors"
 	nethttp "net/http"
 	"strconv"
-	"strings"
 
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
 	customerapp "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/app"
@@ -468,10 +467,7 @@ func (handler *Handler) revealPhone(response nethttp.ResponseWriter, request *ne
 }
 
 func normalizeCNPhoneSearch(raw string) (string, error) {
-	value := strings.TrimSpace(raw)
-	if strings.HasPrefix(value, "+86") {
-		value = strings.TrimPrefix(value, "+86")
-	}
+	value := raw
 	if len(value) != 11 || value[0] != '1' || value[1] < '3' || value[1] > '9' {
 		return "", identitydomain.ErrInvalidReference
 	}
@@ -480,13 +476,10 @@ func normalizeCNPhoneSearch(raw string) (string, error) {
 			return "", identitydomain.ErrInvalidReference
 		}
 	}
-	return "+86" + value, nil
+	return value, nil
 }
 
 func localCNPhone(value string) string {
-	if strings.HasPrefix(value, "+86") {
-		return strings.TrimPrefix(value, "+86")
-	}
 	return value
 }
 
