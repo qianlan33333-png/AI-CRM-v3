@@ -2,7 +2,7 @@
 -- the frozen AdminOps compatibility route; it does not touch OneID, customers,
 -- Provider credentials, or external effects.
 ALTER TABLE admin_access_audit
-    DROP CONSTRAINT ck_admin_access_audit_action;
+    DROP CONSTRAINT admin_access_audit_action_check;
 
 ALTER TABLE admin_access_audit
     ADD CONSTRAINT ck_admin_access_audit_action CHECK (
