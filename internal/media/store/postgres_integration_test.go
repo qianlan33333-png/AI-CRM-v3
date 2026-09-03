@@ -399,6 +399,24 @@ func TestPostgreSQLReferenceLedgerProtectsDeleteAndArchive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	attachment, err := repo.CreateAttachment(ctx, 7, "attachment-reference-key-0001", AttachmentInput{FileName: "guide.pdf", Name: "guide", Content: []byte("%PDF-1.4"), Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = repo.Within(ctx, func(tx context.Context) error {
+		for _, check := range []struct {
+			id int64
+			fn func(context.Context, int64) (bool, error)
+		}{{imageID, repo.ImageExists}, {mini["id"].(int64), repo.MiniProgramExists}, {attachment["id"].(int64), repo.AttachmentExists}} {
+			exists, checkErr := check.fn(tx, check.id)
+			if checkErr != nil || !exists {
+				t.Fatalf("media stable reader id=%d exists=%v err=%v", check.id, exists, checkErr)
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if _, err = repo.Delete(ctx, "image", imageID, 7, "delete-image-reference-0001"); !errors.Is(err, ErrReferences) {
 		t.Fatalf("local mini reference must block image delete: %v", err)
 	}
@@ -423,6 +441,15 @@ func TestPostgreSQLReferenceLedgerProtectsDeleteAndArchive(t *testing.T) {
 		t.Fatal(err)
 	}
 	groupID := group["id"].(int64)
+	if err = repo.Within(ctx, func(tx context.Context) error {
+		exists, checkErr := repo.GroupInviteExists(tx, groupID)
+		if checkErr != nil || !exists {
+			t.Fatalf("group invite stable reader exists=%v err=%v", exists, checkErr)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 	updatedGroup, err := repo.UpdateGroupInvite(ctx, groupID, 8, "group-created-by-key-0001", map[string]any{"description": "updated"})
 	if err != nil || updatedGroup["created_by"] != int64(7) || updatedGroup["updated_by"] != int64(8) {
 		t.Fatalf("group update ownership=%v err=%v", updatedGroup, err)

@@ -29,6 +29,10 @@ type ReferenceReader interface {
 }
 
 var _ mediaport.MaterialReferenceRegistrar = (*Repository)(nil)
+var _ mediaport.ImageMetadataReader = (*Repository)(nil)
+var _ mediaport.AttachmentMetadataReader = (*Repository)(nil)
+var _ mediaport.MiniProgramMetadataReader = (*Repository)(nil)
+var _ mediaport.GroupInviteMetadataReader = (*Repository)(nil)
 
 const maxMaterialReferences = 100
 
@@ -141,6 +145,46 @@ func lockMaterial(ctx context.Context, kind string, id int64) (bool, error) {
 		return false, err
 	}
 	return true, nil
+}
+
+// ImageExists and AttachmentExists are Media-owned, transaction-bound facts
+// for consumers persisting references. Disabled material is intentionally not
+// eligible, and KEY SHARE prevents a concurrent destructive change through
+// the committing caller UoW.
+func (r *Repository) ImageExists(ctx context.Context, id int64) (bool, error) {
+	return r.enabledMaterialExists(ctx, "media_images", id)
+}
+
+func (r *Repository) AttachmentExists(ctx context.Context, id int64) (bool, error) {
+	return r.enabledMaterialExists(ctx, "media_attachments", id)
+}
+
+func (r *Repository) MiniProgramExists(ctx context.Context, id int64) (bool, error) {
+	return r.enabledMaterialExists(ctx, "media_miniprograms", id)
+}
+
+func (r *Repository) GroupInviteExists(ctx context.Context, id int64) (bool, error) {
+	return r.enabledMaterialExists(ctx, "media_group_invites", id)
+}
+
+func (r *Repository) enabledMaterialExists(ctx context.Context, table string, id int64) (bool, error) {
+	if r == nil || id < 1 {
+		return false, ErrInvalid
+	}
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return false, err
+	}
+	var found int
+	where := "id=$1 AND enabled=true"
+	if table == "media_group_invites" {
+		where += " AND archived_at IS NULL"
+	}
+	err = tx.QueryRow(ctx, "SELECT 1 FROM "+table+" WHERE "+where+" FOR KEY SHARE", id).Scan(&found)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil, err
 }
 
 func replaceLocalImageReference(ctx context.Context, owner string, localID int64, oldImage, newImage *int64) error {
