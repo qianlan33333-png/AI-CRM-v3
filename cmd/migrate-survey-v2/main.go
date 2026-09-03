@@ -354,13 +354,15 @@ func importSnapshot(args []string) error {
 			if q.Assessment {
 				mode = "assessment"
 			}
-			status := "published"
-			if q.Disabled {
-				status = "disabled"
-			}
+			// Historical definitions become admin-visible only. Import must not
+			// create a new public H5 entry point or act as a traffic cutover.
+			status := "disabled"
 			err = tx.QueryRow(ctx, `INSERT INTO survey_questionnaires(name,title,description,mode,answer_display_mode,slug,status,created_by,updated_by,version,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$8,1,$9,$10) RETURNING id`, trimNonEmpty(q.Name, 200), trimNonEmpty(q.Title, 500), trim(q.Description, 10000), mode, display(q.Display), safeSlug(q.Slug, q.ID), status, actor, q.CreatedAt, q.UpdatedAt).Scan(&targetID)
 			if err != nil {
 				return fmt.Errorf("import questionnaire %d: %w", q.ID, err)
+			}
+			if _, err = tx.Exec(ctx, `INSERT INTO survey_audit_events(event_type,aggregate_type,aggregate_id,actor_scope,metadata,occurred_at) VALUES('survey_history_imported','questionnaire',$1,'migration',jsonb_build_object('source_enabled',$2,'target_status','disabled','snapshot_at',$3),clock_timestamp())`, targetID, !q.Disabled, snap.Manifest.SnapshotAt); err != nil {
+				return err
 			}
 			definitionDigest := recordDigest(struct {
 				Q         questionnaire

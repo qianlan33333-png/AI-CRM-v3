@@ -31,7 +31,8 @@
 3. 将加密快照与快照密钥通过受控主机通道分别放入临时 `0600` 文件；不解密落盘。
 4. 从 `/etc/aicrm/aicrm.env` 将 `AICRM_SURVEY_DATA_KEY` 安全写入另一个临时 `0600` 文件（不得回显），再执行 `validate`、`import --data-key-file ... --confirm-import`、`reconcile`。
 5. 只有 reconcile 输出 `duplicates=0 silent_loss=0 wrong_oneid_bindings=0 provider_effects_created=0` 才能验收。
-6. 删除目标主机临时快照和快照密钥；保留不含 Secret/PII 的对账报告。
+6. 确认导入定义全部为 `disabled`；来源启用状态仅保存在 `survey_history_imported` 审计元数据中，不因导入开放任何新 H5 入口。
+7. 删除目标主机临时快照和快照密钥；保留不含 Secret/PII 的对账报告。
 
 ## 门禁与回滚
 
