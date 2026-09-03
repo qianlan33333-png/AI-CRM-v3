@@ -58,6 +58,6 @@ modules:
     owner: crm-platform
     dependencies: [operations-modules]
   - name: hxc-dashboard
-    status: implemented
+    status: cutover
     owner: crm-operations
     dependencies: [platform, access, identity]
