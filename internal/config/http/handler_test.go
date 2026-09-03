@@ -5,12 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
 	configapp "github.com/qianlan33333-png/AI-CRM-v3/internal/config/app"
@@ -64,6 +66,12 @@ func newTestConfig() *testConfig {
 	return &testConfig{settings: map[configport.Key]configport.Setting{}}
 }
 
+func adminSessionRequest(method, target string, body io.Reader) *http.Request {
+	request := httptest.NewRequest(method, target, body)
+	request.AddCookie(&http.Cookie{Name: adminSessionCookie, Value: "test-admin-session"})
+	return request
+}
+
 type testWizard struct {
 	save configapp.SetupWizardSaveInput
 }
@@ -95,7 +103,7 @@ func TestSetupWizardRequiresSessionCSRFActionTokenAndIdempotency(t *testing.T) {
 		t.Fatal(err)
 	}
 	get := httptest.NewRecorder()
-	h.ServeHTTP(get, httptest.NewRequest(http.MethodGet, "/api/admin/setup-wizard", nil))
+	h.ServeHTTP(get, adminSessionRequest(http.MethodGet, "/api/admin/setup-wizard", nil))
 	if get.Code != 200 {
 		t.Fatalf("get=%d", get.Code)
 	}
@@ -104,11 +112,11 @@ func TestSetupWizardRequiresSessionCSRFActionTokenAndIdempotency(t *testing.T) {
 		t.Fatal(err)
 	}
 	token, _ := read["admin_action_token"].(string)
-	if len(token) != 43 {
+	if len(token) < 50 {
 		t.Fatalf("token=%q", token)
 	}
 	body := `{"wecom.corp_id":"corp","wecom.agent_id":7,"wecom.secret":"","wecom.callback_token":"","wecom.callback_aes_key":"","ai.api_key":"","expected_digest":"` + strings.Repeat("a", 64) + `","admin_action_token":"` + token + `"}`
-	request := httptest.NewRequest(http.MethodPost, "/api/admin/setup-wizard", strings.NewReader(body))
+	request := adminSessionRequest(http.MethodPost, "/api/admin/setup-wizard", strings.NewReader(body))
 	request.Header.Set("Idempotency-Key", "wizard-1")
 	response := httptest.NewRecorder()
 	h.ServeHTTP(response, request)
@@ -118,7 +126,7 @@ func TestSetupWizardRequiresSessionCSRFActionTokenAndIdempotency(t *testing.T) {
 	if wizard.save.Actor != "7" || wizard.save.IdempotencyKey != "wizard-1" || wizard.save.WeComCorpID != "corp" {
 		t.Fatalf("save=%#v", wizard.save)
 	}
-	bad := httptest.NewRequest(http.MethodPost, "/api/admin/setup-wizard", strings.NewReader(body))
+	bad := adminSessionRequest(http.MethodPost, "/api/admin/setup-wizard", strings.NewReader(body))
 	bad.Header.Set("Idempotency-Key", " ")
 	response = httptest.NewRecorder()
 	h.ServeHTTP(response, bad)
@@ -194,7 +202,7 @@ func TestHistoricalProjectionsExposeOnlyTypedSafeFields(t *testing.T) {
 
 func TestPushCapabilitiesExposeDonorReadOnlyProjectionShape(t *testing.T) {
 	principal := accessdomain.Principal{InternalID: 7, Kind: accessdomain.KindAdmin, Roles: []accessdomain.Role{accessdomain.RoleViewer}}
-	h, err := NewHandler(&testSettings{}, &testWizard{}, newTestConfig(), testProjections{}, testSecurity{principal: principal})
+	h, err := NewHandler(&testSettings{}, &testWizard{}, newTestConfig(), testProjections{diagnostics: []configport.DiagnosticProjection{{ID: 3, Key: "runtime", Status: "ok"}}}, testSecurity{principal: principal})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -209,7 +217,7 @@ func TestPushCapabilitiesExposeDonorReadOnlyProjectionShape(t *testing.T) {
 	if err = json.Unmarshal(response.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if len(body.Capabilities) != 2 || body.Capabilities["local_projection"]["enabled"] != true || body.Capabilities["provider_write"]["enabled"] != false {
+	if len(body.Capabilities) != 3 || body.Capabilities["local_projection"]["enabled"] != true || body.Capabilities["runtime_diagnostics"]["enabled"] != true || body.Capabilities["provider_write"]["enabled"] != false {
 		t.Fatalf("capabilities=%#v", body.Capabilities)
 	}
 }
@@ -220,7 +228,7 @@ func TestHistoricalProjectionStoreFailureIsNotAnEmptySuccess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{"/api/admin/config/releases", "/api/admin/config/diagnostics"} {
+	for _, path := range []string{"/api/admin/config/push-capabilities", "/api/admin/config/releases", "/api/admin/config/diagnostics"} {
 		response := httptest.NewRecorder()
 		h.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
 		if response.Code != http.StatusServiceUnavailable || strings.Contains(response.Body.String(), `"releases":[]`) || strings.Contains(response.Body.String(), `"diagnostics":[]`) {
@@ -235,7 +243,7 @@ func TestEmptyHistoricalProjectionIsFailClosed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{"/api/admin/config/releases", "/api/admin/config/diagnostics"} {
+	for _, path := range []string{"/api/admin/config/push-capabilities", "/api/admin/config/releases", "/api/admin/config/diagnostics"} {
 		response := httptest.NewRecorder()
 		h.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
 		if response.Code != http.StatusServiceUnavailable {
@@ -253,24 +261,24 @@ func TestCategoryToggleAndCheckUseAuthenticatedCSRFActionAndLocalConfigReceipt(t
 		t.Fatal(err)
 	}
 	detail := httptest.NewRecorder()
-	h.ServeHTTP(detail, httptest.NewRequest(http.MethodGet, "/api/admin/config/categories/runtime-diagnostics", nil))
+	h.ServeHTTP(detail, adminSessionRequest(http.MethodGet, "/api/admin/config/categories/runtime-diagnostics", nil))
 	if detail.Code != http.StatusOK {
 		t.Fatalf("detail=%d %s", detail.Code, detail.Body.String())
 	}
 	var read struct {
-		Token string `json:"admin_action_token"`
+		Tokens map[string]string `json:"admin_action_tokens"`
 	}
-	if err = json.Unmarshal(detail.Body.Bytes(), &read); err != nil || len(read.Token) != 43 {
-		t.Fatalf("detail token=%q err=%v", read.Token, err)
+	if err = json.Unmarshal(detail.Body.Bytes(), &read); err != nil || len(read.Tokens["enabled"]) < 50 || len(read.Tokens["check"]) < 50 {
+		t.Fatalf("detail tokens=%q err=%v", read.Tokens, err)
 	}
-	write := httptest.NewRequest(http.MethodPut, "/api/admin/config/categories/runtime-diagnostics/enabled", strings.NewReader(`{"enabled":false,"admin_action_token":"`+read.Token+`"}`))
+	write := adminSessionRequest(http.MethodPut, "/api/admin/config/categories/runtime-diagnostics/enabled", strings.NewReader(`{"enabled":false,"admin_action_token":"`+read.Tokens["enabled"]+`"}`))
 	write.Header.Set("Idempotency-Key", "toggle-1")
 	response := httptest.NewRecorder()
 	h.ServeHTTP(response, write)
 	if response.Code != http.StatusOK || len(config.commands) != 1 || config.commands[0].Key != configport.AdminDiagnosticsEnabled || string(config.commands[0].Value) != "false" || config.commands[0].RequestID == "toggle-1" {
 		t.Fatalf("toggle status/command=%d/%#v", response.Code, config.commands)
 	}
-	check := httptest.NewRequest(http.MethodPost, "/api/admin/config/categories/runtime-diagnostics/check", strings.NewReader(`{"admin_action_token":"`+read.Token+`"}`))
+	check := adminSessionRequest(http.MethodPost, "/api/admin/config/categories/runtime-diagnostics/check", strings.NewReader(`{"admin_action_token":"`+read.Tokens["check"]+`"}`))
 	response = httptest.NewRecorder()
 	h.ServeHTTP(response, check)
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "已停用") {
@@ -287,6 +295,69 @@ func TestCategoryToggleAndCheckUseAuthenticatedCSRFActionAndLocalConfigReceipt(t
 	}
 }
 
+func TestCategorySavePersistsReadonlyFrozenDetailInsteadOfChecking(t *testing.T) {
+	p := accessdomain.Principal{InternalID: 7, Kind: accessdomain.KindAdmin, Roles: []accessdomain.Role{accessdomain.RoleAdmin}}
+	config := newTestConfig()
+	projections := testProjections{diagnostics: []configport.DiagnosticProjection{{ID: 3, Key: "runtime", Status: "ok"}}}
+	h, err := NewHandler(&testSettings{}, &testWizard{}, config, projections, testSecurity{principal: p})
+	if err != nil {
+		t.Fatal(err)
+	}
+	detail := httptest.NewRecorder()
+	h.ServeHTTP(detail, adminSessionRequest(http.MethodGet, "/api/admin/config/categories/runtime-diagnostics", nil))
+	var read struct {
+		Tokens map[string]string `json:"admin_action_tokens"`
+	}
+	if err := json.Unmarshal(detail.Body.Bytes(), &read); err != nil || len(read.Tokens["settings"]) < 50 {
+		t.Fatalf("detail=%s token=%q err=%v", detail.Body.String(), read.Tokens["settings"], err)
+	}
+	save := adminSessionRequest(http.MethodPut, "/api/admin/config/categories/runtime-diagnostics/settings", strings.NewReader(`{"values":{},"switches":{},"admin_action_token":"`+read.Tokens["settings"]+`"}`))
+	save.Header.Set("Idempotency-Key", "category-save-1")
+	response := httptest.NewRecorder()
+	h.ServeHTTP(response, save)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"saved":true`) || len(config.commands) != 1 || config.commands[0].Key != configport.AdminDiagnosticsEnabled || string(config.commands[0].Value) != "true" {
+		t.Fatalf("save=%d %s commands=%#v", response.Code, response.Body.String(), config.commands)
+	}
+}
+
+func TestActionTokenIsSessionPathExpiryAndOneTimeBound(t *testing.T) {
+	p := accessdomain.Principal{InternalID: 7, Kind: accessdomain.KindAdmin, Roles: []accessdomain.Role{accessdomain.RoleAdmin}}
+	h, err := NewHandler(&testSettings{}, &testWizard{}, newTestConfig(), testProjections{}, testSecurity{principal: p})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 3, 10, 0, 0, 0, time.UTC)
+	h.now = func() time.Time { return now }
+	read := adminSessionRequest(http.MethodGet, "/api/admin/config/app-settings", nil)
+	token := h.actionToken(read, p, "app-settings", read.URL.Path)
+	if len(token) < 50 {
+		t.Fatalf("token=%q", token)
+	}
+	write := adminSessionRequest(http.MethodPut, "/api/admin/config/app-settings", nil)
+	if !h.validActionToken(write, p, "app-settings", write.URL.Path, token) {
+		t.Fatal("same session/path token rejected")
+	}
+	if h.validActionToken(write, p, "app-settings", write.URL.Path, token) {
+		t.Fatal("one-time token was accepted twice")
+	}
+	token = h.actionToken(read, p, "app-settings", read.URL.Path)
+	otherSession := httptest.NewRequest(http.MethodPut, "/api/admin/config/app-settings", nil)
+	otherSession.AddCookie(&http.Cookie{Name: adminSessionCookie, Value: "different-session"})
+	if h.validActionToken(otherSession, p, "app-settings", otherSession.URL.Path, token) {
+		t.Fatal("token crossed sessions")
+	}
+	token = h.actionToken(read, p, "app-settings", read.URL.Path)
+	otherPath := adminSessionRequest(http.MethodPut, "/api/admin/setup-wizard", nil)
+	if h.validActionToken(otherPath, p, "app-settings", otherPath.URL.Path, token) {
+		t.Fatal("token crossed paths")
+	}
+	token = h.actionToken(read, p, "app-settings", read.URL.Path)
+	now = now.Add(6 * time.Minute)
+	if h.validActionToken(write, p, "app-settings", write.URL.Path, token) {
+		t.Fatal("expired token accepted")
+	}
+}
+
 func TestDisabledApplicationSettingsRejectsTheUnchangedDonorSaveBeforeMutation(t *testing.T) {
 	p := accessdomain.Principal{InternalID: 7, Kind: accessdomain.KindAdmin, Roles: []accessdomain.Role{accessdomain.RoleAdmin}}
 	config := newTestConfig()
@@ -297,13 +368,13 @@ func TestDisabledApplicationSettingsRejectsTheUnchangedDonorSaveBeforeMutation(t
 		t.Fatal(err)
 	}
 	get := httptest.NewRecorder()
-	h.ServeHTTP(get, httptest.NewRequest(http.MethodGet, "/api/admin/config/app-settings", nil))
+	h.ServeHTTP(get, adminSessionRequest(http.MethodGet, "/api/admin/config/app-settings", nil))
 	var projection map[string]any
 	if err = json.Unmarshal(get.Body.Bytes(), &projection); err != nil {
 		t.Fatal(err)
 	}
 	token, _ := projection["admin_action_token"].(string)
-	request := httptest.NewRequest(http.MethodPut, "/api/admin/config/app-settings", strings.NewReader(`{"settings":{"wecom.corp_id":"corp"},"confirm":true,"admin_action_token":"`+token+`"}`))
+	request := adminSessionRequest(http.MethodPut, "/api/admin/config/app-settings", strings.NewReader(`{"settings":{"wecom.corp_id":"corp"},"confirm":true,"admin_action_token":"`+token+`"}`))
 	request.Header.Set("Idempotency-Key", "disabled-save")
 	response := httptest.NewRecorder()
 	h.ServeHTTP(response, request)

@@ -12,8 +12,11 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
 	configapp "github.com/qianlan33333-png/AI-CRM-v3/internal/config/app"
@@ -26,12 +29,25 @@ type RequestSecurity interface {
 }
 
 type Handler struct {
-	settings    settingsService
-	wizard      wizardService
-	config      configport.Service
-	projections projectionReader
-	security    RequestSecurity
-	tokenKey    []byte
+	settings     settingsService
+	wizard       wizardService
+	config       configport.Service
+	projections  projectionReader
+	security     RequestSecurity
+	tokenKey     []byte
+	actionMu     sync.Mutex
+	actionGrants map[string]actionGrant
+	now          func() time.Time
+}
+
+// actionGrant is deliberately memory-only.  It holds hashes instead of raw
+// session material and makes an otherwise self-contained HMAC proof one-time.
+type actionGrant struct {
+	principal [32]byte
+	session   [32]byte
+	action    string
+	path      string
+	expiresAt int64
 }
 
 type settingsService interface {
@@ -52,7 +68,7 @@ func NewHandler(settings settingsService, wizard wizardService, configService co
 	if _, err := rand.Read(key); err != nil {
 		return nil, err
 	}
-	return &Handler{settings: settings, wizard: wizard, config: configService, projections: projections, security: security, tokenKey: key}, nil
+	return &Handler{settings: settings, wizard: wizard, config: configService, projections: projections, security: security, tokenKey: key, actionGrants: map[string]actionGrant{}, now: time.Now}, nil
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -129,13 +145,99 @@ func (h *Handler) mutate(w http.ResponseWriter, r *http.Request) (accessdomain.P
 	return p, true
 }
 
-func (h *Handler) actionToken(p accessdomain.Principal, action string) string {
-	mac := hmac.New(sha256.New, h.tokenKey)
-	_, _ = mac.Write([]byte(strconv.FormatInt(p.InternalID, 10) + ":" + action))
-	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+const adminSessionCookie = "aicrm_admin_session"
+
+func principalProof(p accessdomain.Principal) [32]byte {
+	roles := append([]accessdomain.Role(nil), p.Roles...)
+	sort.Slice(roles, func(i, j int) bool { return roles[i] < roles[j] })
+	parts := []string{strconv.FormatInt(p.InternalID, 10), string(p.Kind)}
+	for _, role := range roles {
+		parts = append(parts, string(role))
+	}
+	return sha256.Sum256([]byte(strings.Join(parts, "\x00")))
 }
-func (h *Handler) validActionToken(p accessdomain.Principal, action, value string) bool {
-	return len(value) == 43 && hmac.Equal([]byte(value), []byte(h.actionToken(p, action)))
+
+func sessionProof(r *http.Request) ([32]byte, bool) {
+	cookie, err := r.Cookie(adminSessionCookie)
+	if err != nil || cookie.Value == "" {
+		return [32]byte{}, false
+	}
+	return sha256.Sum256([]byte(cookie.Value)), true
+}
+
+func (h *Handler) actionToken(r *http.Request, p accessdomain.Principal, action, path string) string {
+	session, ok := sessionProof(r)
+	if !ok || h.now == nil {
+		return ""
+	}
+	now := h.now().UTC()
+	if now.IsZero() {
+		return ""
+	}
+	payload := make([]byte, 1+8+16)
+	payload[0] = 1
+	expiresAt := now.Add(5 * time.Minute).Unix()
+	for index := 0; index < 8; index++ {
+		payload[1+index] = byte(uint64(expiresAt) >> (56 - 8*index))
+	}
+	if _, err := rand.Read(payload[9:]); err != nil {
+		return ""
+	}
+	principal := principalProof(p)
+	mac := hmac.New(sha256.New, h.tokenKey)
+	_, _ = mac.Write(payload)
+	_, _ = mac.Write(principal[:])
+	_, _ = mac.Write(session[:])
+	_, _ = mac.Write([]byte(action))
+	_, _ = mac.Write([]byte(path))
+	token := base64.RawURLEncoding.EncodeToString(append(payload, mac.Sum(nil)...))
+	h.actionMu.Lock()
+	for candidate, grant := range h.actionGrants {
+		if grant.expiresAt < now.Unix() {
+			delete(h.actionGrants, candidate)
+		}
+	}
+	h.actionGrants[token] = actionGrant{principal: principal, session: session, action: action, path: path, expiresAt: expiresAt}
+	h.actionMu.Unlock()
+	return token
+}
+func (h *Handler) validActionToken(r *http.Request, p accessdomain.Principal, action, path, value string) bool {
+	if h.now == nil || value == "" {
+		return false
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(value)
+	if err != nil || len(raw) != 1+8+16+sha256.Size || raw[0] != 1 {
+		return false
+	}
+	var expiry uint64
+	for _, value := range raw[1:9] {
+		expiry = expiry<<8 | uint64(value)
+	}
+	if int64(expiry) < h.now().UTC().Unix() {
+		return false
+	}
+	session, ok := sessionProof(r)
+	if !ok {
+		return false
+	}
+	principal := principalProof(p)
+	mac := hmac.New(sha256.New, h.tokenKey)
+	_, _ = mac.Write(raw[:25])
+	_, _ = mac.Write(principal[:])
+	_, _ = mac.Write(session[:])
+	_, _ = mac.Write([]byte(action))
+	_, _ = mac.Write([]byte(path))
+	if !hmac.Equal(raw[25:], mac.Sum(nil)) {
+		return false
+	}
+	h.actionMu.Lock()
+	defer h.actionMu.Unlock()
+	grant, found := h.actionGrants[value]
+	if !found || grant.expiresAt != int64(expiry) || grant.expiresAt < h.now().UTC().Unix() || grant.action != action || grant.path != path || !hmac.Equal(grant.principal[:], principal[:]) || !hmac.Equal(grant.session[:], session[:]) {
+		return false
+	}
+	delete(h.actionGrants, value)
+	return true
 }
 func actionFrom(r *http.Request, body string) string {
 	if body != "" {
@@ -156,7 +258,7 @@ func (h *Handler) appSettings(w http.ResponseWriter, r *http.Request) {
 			writeError(w, 503, "settings_unavailable")
 			return
 		}
-		writeJSON(w, 200, map[string]any{"ok": true, "config": projection, "source_status": "next_read_model", "fallback_used": false, "admin_action_token": h.actionToken(p, "app-settings")})
+		writeJSON(w, 200, map[string]any{"ok": true, "config": projection, "source_status": "next_read_model", "fallback_used": false, "admin_action_token": h.actionToken(r, p, "app-settings", r.URL.Path)})
 	case http.MethodPut:
 		p, ok := h.mutate(w, r)
 		if !ok {
@@ -185,7 +287,7 @@ func (h *Handler) appSettings(w http.ResponseWriter, r *http.Request) {
 			writeError(w, 400, "confirmation_required")
 			return
 		}
-		if !h.validActionToken(p, "app-settings", actionFrom(r, body.Action)) {
+		if !h.validActionToken(r, p, "app-settings", r.URL.Path, actionFrom(r, body.Action)) {
 			writeError(w, 400, "invalid_action_token")
 			return
 		}
@@ -240,7 +342,7 @@ func (h *Handler) setupWizard(w http.ResponseWriter, r *http.Request) {
 			writeError(w, 503, "setup_wizard_unavailable")
 			return
 		}
-		writeJSON(w, 200, wizardRead(snapshot, h.actionToken(p, "setup-wizard")))
+		writeJSON(w, 200, wizardRead(snapshot, h.actionToken(r, p, "setup-wizard", r.URL.Path)))
 	case http.MethodPost:
 		p, ok := h.mutate(w, r)
 		if !ok {
@@ -260,7 +362,7 @@ func (h *Handler) setupWizard(w http.ResponseWriter, r *http.Request) {
 			writeError(w, 400, "invalid_request")
 			return
 		}
-		if !h.validActionToken(p, "setup-wizard", actionFrom(r, body.Action)) {
+		if !h.validActionToken(r, p, "setup-wizard", r.URL.Path, actionFrom(r, body.Action)) {
 			writeError(w, 400, "invalid_action_token")
 			return
 		}
@@ -308,6 +410,10 @@ func (h *Handler) category(w http.ResponseWriter, r *http.Request, tail string) 
 		h.categoryCheck(w, r, parts[0])
 		return
 	}
+	if len(parts) == 2 && parts[1] == "settings" {
+		h.categorySettingsSave(w, r, parts[0])
+		return
+	}
 	if len(parts) != 1 || r.Method != http.MethodGet {
 		method(w, "GET")
 		return
@@ -325,7 +431,15 @@ func (h *Handler) category(w http.ResponseWriter, r *http.Request, tail string) 
 		writeError(w, 503, "settings_unavailable")
 		return
 	}
-	writeJSON(w, 200, map[string]any{"ok": true, "key": parts[0], "enabled": enabled, "local_only": true, "runtime_applied": false, "admin_action_token": h.actionToken(p, "category:"+parts[0])})
+	basePath := r.URL.Path
+	writeJSON(w, 200, map[string]any{
+		"ok": true, "key": parts[0], "enabled": enabled, "local_only": true, "runtime_applied": false,
+		"admin_action_tokens": map[string]string{
+			"enabled":  h.actionToken(r, p, "category:"+parts[0]+":enabled", basePath+"/enabled"),
+			"check":    h.actionToken(r, p, "category:"+parts[0]+":check", basePath+"/check"),
+			"settings": h.actionToken(r, p, "category:"+parts[0]+":settings", basePath+"/settings"),
+		},
+	})
 }
 func (h *Handler) pushCapabilities(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -335,12 +449,20 @@ func (h *Handler) pushCapabilities(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.read(w, r); !ok {
 		return
 	}
-	// These are runtime facts of this v3 composition, not a claim that a
-	// Provider is available.  The local projection is mounted; provider writes
-	// are deliberately disabled because no outbound adapter is composed.
+	diagnostics, err := h.projections.ListDiagnosticSnapshots(r.Context())
+	if err != nil || len(diagnostics) == 0 {
+		writeError(w, 503, "unavailable")
+		return
+	}
+	runtime := make([]map[string]any, 0, len(diagnostics))
+	for _, item := range diagnostics {
+		runtime = append(runtime, map[string]any{"id": item.ID, "key": item.Key, "status": item.Status, "observed_at": item.ObservedAt.UTC()})
+	}
+	// This existing donor read graph feeds the frozen Push-capabilities detail.
+	// It reports persisted safe diagnostic projections, never raw details.
 	writeJSON(w, 200, map[string]any{
 		"ok":                          true,
-		"capabilities":                map[string]any{"local_projection": map[string]any{"enabled": true, "state": "available", "local_only": true}, "provider_write": map[string]any{"enabled": false, "state": "disabled", "local_only": true}},
+		"capabilities":                map[string]any{"local_projection": map[string]any{"enabled": true, "state": "available", "local_only": true}, "runtime_diagnostics": map[string]any{"enabled": true, "state": "available", "local_only": true, "records": runtime}, "provider_write": map[string]any{"enabled": false, "state": "disabled", "local_only": true}},
 		"source_status":               "local_runtime_policy",
 		"local_only":                  true,
 		"real_external_call_executed": false,
@@ -438,7 +560,7 @@ func (h *Handler) categoryEnabledWrite(w http.ResponseWriter, r *http.Request, c
 		writeError(w, 400, "invalid_request")
 		return
 	}
-	if !h.validActionToken(p, "category:"+category, actionFrom(r, body.Action)) {
+	if !h.validActionToken(r, p, "category:"+category+":enabled", r.URL.Path, actionFrom(r, body.Action)) {
 		writeError(w, 400, "invalid_action_token")
 		return
 	}
@@ -458,6 +580,66 @@ func (h *Handler) categoryEnabledWrite(w http.ResponseWriter, r *http.Request, c
 		return
 	}
 	writeJSON(w, 200, map[string]any{"ok": true, "key": category, "enabled": body.Enabled, "local_only": true, "runtime_applied": false, "real_external_call_executed": false})
+}
+
+// categorySettingsSave is a deliberately narrow compatibility endpoint for
+// frozen category detail pages.  Those v2 pages show a Save button even for
+// the three v3-owned readonly categories.  There are no editable values to
+// reinterpret, so Save durably records the currently selected category state
+// through the normal Config owner instead of silently turning it into Check.
+func (h *Handler) categorySettingsSave(w http.ResponseWriter, r *http.Request, category string) {
+	if r.Method != http.MethodPut {
+		method(w, "PUT")
+		return
+	}
+	p, ok := h.mutate(w, r)
+	if !ok {
+		return
+	}
+	key, known := categorySettings[category]
+	if !known || category == "app-settings" {
+		writeError(w, 404, "not_found")
+		return
+	}
+	var body struct {
+		Values   map[string]string `json:"values"`
+		Switches map[string]bool   `json:"switches"`
+		Action   string            `json:"admin_action_token"`
+	}
+	if err := decode(r, &body); err != nil {
+		writeError(w, 400, "invalid_request")
+		return
+	}
+	if len(body.Values) != 0 || len(body.Switches) != 0 {
+		writeError(w, 400, "readonly_category")
+		return
+	}
+	if !h.validActionToken(r, p, "category:"+category+":settings", r.URL.Path, actionFrom(r, body.Action)) {
+		writeError(w, 400, "invalid_action_token")
+		return
+	}
+	requestID := idempotency(r)
+	if requestID == "" {
+		writeError(w, 400, "invalid_idempotency_key")
+		return
+	}
+	enabled, err := h.categoryEnabled(r.Context(), category)
+	if err != nil {
+		writeError(w, 503, "settings_unavailable")
+		return
+	}
+	if !enabled {
+		writeError(w, 409, "config_category_disabled")
+		return
+	}
+	digest := sha256.Sum256([]byte("category-settings:" + category + ":" + requestID))
+	commandID := "category-settings:" + category + ":" + base64.RawURLEncoding.EncodeToString(digest[:18])
+	value, _ := json.Marshal(enabled)
+	if _, err = h.config.Set(r.Context(), configport.SetCommand{Key: key, Value: value, Actor: strconv.FormatInt(p.InternalID, 10), RequestID: commandID}); err != nil {
+		writeSettingsError(w, err)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true, "key": category, "enabled": enabled, "saved": true, "local_only": true, "runtime_applied": false, "real_external_call_executed": false})
 }
 
 func (h *Handler) categoryCheck(w http.ResponseWriter, r *http.Request, category string) {
@@ -480,7 +662,7 @@ func (h *Handler) categoryCheck(w http.ResponseWriter, r *http.Request, category
 		writeError(w, 400, "invalid_request")
 		return
 	}
-	if !h.validActionToken(p, "category:"+category, actionFrom(r, body.Action)) {
+	if !h.validActionToken(r, p, "category:"+category+":check", r.URL.Path, actionFrom(r, body.Action)) {
 		writeError(w, 400, "invalid_action_token")
 		return
 	}
@@ -500,7 +682,11 @@ func (h *Handler) categoryCheck(w http.ResponseWriter, r *http.Request, category
 			message = "检查通过，应用设置读取正常"
 		}
 	case "push-capabilities":
-		_, err = h.projections.ListDiagnosticSnapshots(r.Context())
+		var items []configport.DiagnosticProjection
+		items, err = h.projections.ListDiagnosticSnapshots(r.Context())
+		if err == nil && len(items) == 0 {
+			err = errors.New("diagnostic projection missing")
+		}
 		message = "检查通过，Push 能力安全投影可读取；Provider 写入保持禁用"
 	case "releases":
 		var items []configport.ReleaseProjection

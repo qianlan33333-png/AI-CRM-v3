@@ -224,9 +224,24 @@ func (manager *Manager) saveSetupWizard(ctx context.Context, input SetupWizardSa
 	if updatedAt.IsZero() {
 		return setupWizardBatchResult{}, fmt.Errorf("config manager clock is invalid")
 	}
+	requestDigest, err := setupWizardRequestDigest(input)
+	if err != nil {
+		return setupWizardBatchResult{}, err
+	}
+	receipts, ok := manager.repo.(requestReceiptRepository)
+	if !ok {
+		return setupWizardBatchResult{}, errors.New("config request receipt repository is required")
+	}
 	err = manager.uow.Within(ctx, func(txCtx context.Context) error {
 		if lockErr := manager.lockSetupWizardKeys(txCtx); lockErr != nil {
 			return lockErr
+		}
+		receipt, owned, reserveErr := receipts.ReserveCommandRequest(txCtx, "setup_wizard.save", input.Actor, input.IdempotencyKey, requestDigest, updatedAt)
+		if reserveErr != nil {
+			return reserveErr
+		}
+		if !owned && (!bytes.Equal(receipt.PayloadDigest, requestDigest) || receipt.State != "completed") {
+			return ErrSetupWizardConflict
 		}
 		current, readErr := manager.readSetupWizardSnapshot(txCtx)
 		if readErr != nil {
@@ -247,6 +262,9 @@ func (manager *Manager) saveSetupWizard(ctx context.Context, input SetupWizardSa
 
 		switch {
 		case allSetupWizardInserted(inserted):
+			if !owned {
+				return ErrSetupWizardConflict
+			}
 			// A new command must match the state observed while holding both
 			// advisory locks. A rejected CAS rolls the provisional audit rows
 			// back with the enclosing transaction.
@@ -282,9 +300,15 @@ func (manager *Manager) saveSetupWizard(ctx context.Context, input SetupWizardSa
 			if !readback.matches(commands) {
 				return ErrSetupWizardReadback
 			}
+			if completeErr := receipts.CompleteCommandRequest(txCtx, receipt.ID, updatedAt); completeErr != nil {
+				return completeErr
+			}
 			result = setupWizardBatchResult{snapshot: readback, receipt: setupWizardReceipt(input.IdempotencyKey, false, audits)}
 			return nil
 		case noSetupWizardInserted(inserted):
+			if owned {
+				return ErrSetupWizardConflict
+			}
 			for index, item := range audits {
 				audit, auditErr := manager.repo.GetAuditByRequestID(txCtx, item.command.RequestID)
 				if auditErr != nil || !matchesSetupWizardAudit(audit, item.command) {
@@ -308,6 +332,23 @@ func (manager *Manager) saveSetupWizard(ctx context.Context, input SetupWizardSa
 		}
 	})
 	return result, err
+}
+
+// setupWizardRequestDigest binds a browser idempotency key to its full
+// non-secret command and CAS precondition. It is persisted only as a digest.
+func setupWizardRequestDigest(input SetupWizardSaveInput) ([]byte, error) {
+	payload, err := json.Marshal(struct {
+		Actor          string `json:"actor"`
+		IdempotencyKey string `json:"idempotency_key"`
+		ExpectedDigest string `json:"expected_digest"`
+		WeComCorpID    string `json:"wecom.corp_id"`
+		WeComAgentID   int64  `json:"wecom.agent_id"`
+	}{input.Actor, input.IdempotencyKey, input.ExpectedDigest, input.WeComCorpID, input.WeComAgentID})
+	if err != nil {
+		return nil, err
+	}
+	digest := sha256.Sum256(payload)
+	return digest[:], nil
 }
 
 type configAuditReceipt struct {

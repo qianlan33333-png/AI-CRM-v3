@@ -1748,7 +1748,7 @@ paths:
       operationId: saveLegacyAppSettings
       tags: [Config]
       security: [{adminSession: [], csrfHeader: []}]
-      parameters: [{$ref: "#/components/parameters/IdempotencyKey"}, {name: X-Admin-Action-Token, in: header, schema: {type: string, minLength: 43, maxLength: 43}}]
+      parameters: [{$ref: "#/components/parameters/IdempotencyKey"}, {name: X-Admin-Action-Token, in: header, schema: {type: string, minLength: 50, maxLength: 200}}]
       requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/ConfigSettingsWrite"}}}}
       responses: {"200": {description: Local settings saved; no runtime or Provider application, content: {application/json: {schema: {$ref: "#/components/schemas/ConfigSettingsWriteResponse"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
   /api/admin/setup-wizard:
@@ -1783,7 +1783,7 @@ paths:
       tags: [Config]
       security: [{adminSession: [], csrfHeader: []}]
       parameters: [{name: category_key, in: path, required: true, schema: {type: string, enum: [app-settings, push-capabilities, releases, runtime-diagnostics]}}, {$ref: "#/components/parameters/IdempotencyKey"}]
-      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [enabled, admin_action_token], additionalProperties: false, properties: {enabled: {type: boolean}, admin_action_token: {type: string, minLength: 43, maxLength: 43}}}}}}
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [enabled, admin_action_token], additionalProperties: false, properties: {enabled: {type: boolean}, admin_action_token: {type: string, minLength: 50, maxLength: 200}}}}}}
       responses: {"200": {description: Atomically persisted local category enablement; no Provider call, content: {application/json: {schema: {$ref: "#/components/schemas/LocalProjection"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
   /api/admin/config/categories/{category_key}/check:
     post:
@@ -1791,8 +1791,17 @@ paths:
       tags: [Config]
       security: [{adminSession: [], csrfHeader: []}]
       parameters: [{name: category_key, in: path, required: true, schema: {type: string, enum: [app-settings, push-capabilities, releases, runtime-diagnostics]}}]
-      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [admin_action_token], additionalProperties: false, properties: {admin_action_token: {type: string, minLength: 43, maxLength: 43}}}}}}
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [admin_action_token], additionalProperties: false, properties: {admin_action_token: {type: string, minLength: 50, maxLength: 200}}}}}}
       responses: {"200": {description: Current local safe-projection check; no Provider call, content: {application/json: {schema: {$ref: "#/components/schemas/LocalProjection"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/config/categories/{category_key}/settings:
+    put:
+      operationId: saveConfigCategorySettings
+      tags: [Config]
+      description: Persists the selected readonly v3 category state for the frozen detail-page Save action; no Provider call.
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{name: category_key, in: path, required: true, schema: {type: string, enum: [push-capabilities, releases, runtime-diagnostics]}}, {$ref: "#/components/parameters/IdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [values, switches, admin_action_token], additionalProperties: false, properties: {values: {type: object, additionalProperties: {type: string}, maxProperties: 0}, switches: {type: object, additionalProperties: {type: boolean}, maxProperties: 0}, admin_action_token: {type: string, minLength: 50, maxLength: 200}}}}}}
+      responses: {"200": {description: Atomically persisted local category save receipt, content: {application/json: {schema: {$ref: "#/components/schemas/LocalProjection"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
   /api/admin/config/push-capabilities:
     get:
       operationId: listPushCapabilities
@@ -1906,12 +1915,12 @@ components:
     ConfigSettingsRead:
       type: object
       required: [ok, config, source_status, fallback_used, admin_action_token]
-      properties: {ok: {const: true}, config: {type: object}, source_status: {const: next_read_model}, fallback_used: {const: false}, admin_action_token: {type: string, minLength: 43, maxLength: 43, pattern: '^[A-Za-z0-9_-]{43}$'}}
+      properties: {ok: {const: true}, config: {type: object}, source_status: {const: next_read_model}, fallback_used: {const: false}, admin_action_token: {type: string, minLength: 50, maxLength: 200, pattern: '^[A-Za-z0-9_-]+$'}}
     ConfigSettingsWrite:
       type: object
       additionalProperties: false
       required: [settings, confirm]
-      properties: {settings: {type: object, additionalProperties: {oneOf: [{type: string}, {type: integer}]}}, confirm: {const: true}, admin_action_token: {type: string, minLength: 43, maxLength: 43}}
+      properties: {settings: {type: object, additionalProperties: {oneOf: [{type: string}, {type: integer}]}}, confirm: {const: true}, admin_action_token: {type: string, minLength: 50, maxLength: 200}}
     ConfigSettingsWriteResponse:
       type: object
       required: [ok, changed, changed_count, config, source_status, fallback_used, real_external_call_executed]
@@ -1919,12 +1928,12 @@ components:
     SetupWizardRead:
       type: object
       required: [ok, expected_digest, editable, editable_configured, masked, admin_action_token, external, local_only, runtime_applied]
-      properties: {ok: {const: true}, expected_digest: {type: string, pattern: '^[a-f0-9]{64}$'}, editable: {type: object}, editable_configured: {type: object}, masked: {type: object}, admin_action_token: {type: string, minLength: 43, maxLength: 43}, external: {const: false}, local_only: {const: true}, runtime_applied: {const: false}}
+      properties: {ok: {const: true}, expected_digest: {type: string, pattern: '^[a-f0-9]{64}$'}, editable: {type: object}, editable_configured: {type: object}, masked: {type: object}, admin_action_token: {type: string, minLength: 50, maxLength: 200}, external: {const: false}, local_only: {const: true}, runtime_applied: {const: false}}
     SetupWizardWrite:
       type: object
       additionalProperties: false
       required: [wecom.corp_id, wecom.agent_id, wecom.secret, wecom.callback_token, wecom.callback_aes_key, ai.api_key, expected_digest, admin_action_token]
-      properties: {wecom.corp_id: {type: string, minLength: 1, maxLength: 256}, wecom.agent_id: {type: integer, minimum: 1}, wecom.secret: {type: string, maxLength: 0}, wecom.callback_token: {type: string, maxLength: 0}, wecom.callback_aes_key: {type: string, maxLength: 0}, ai.api_key: {type: string, maxLength: 0}, expected_digest: {type: string, pattern: '^[a-f0-9]{64}$'}, admin_action_token: {type: string, minLength: 43, maxLength: 43}}
+      properties: {wecom.corp_id: {type: string, minLength: 1, maxLength: 256}, wecom.agent_id: {type: integer, minimum: 1}, wecom.secret: {type: string, maxLength: 0}, wecom.callback_token: {type: string, maxLength: 0}, wecom.callback_aes_key: {type: string, maxLength: 0}, ai.api_key: {type: string, maxLength: 0}, expected_digest: {type: string, pattern: '^[a-f0-9]{64}$'}, admin_action_token: {type: string, minLength: 50, maxLength: 200}}
     SetupWizardSave:
       type: object
       required: [ok, config, receipt, external, local_only, runtime_applied]

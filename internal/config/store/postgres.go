@@ -132,16 +132,16 @@ ON CONFLICT(idempotency_key) DO NOTHING RETURNING id`, event.Type, event.Idempot
 	return configport.EventID(id), nil
 }
 
-func (r *Repository) ReserveSettingsBatch(ctx context.Context, actor, requestID string, payloadDigest []byte, now time.Time) (configport.RequestReceipt, bool, error) {
+func (r *Repository) ReserveCommandRequest(ctx context.Context, action, actor, requestID string, payloadDigest []byte, now time.Time) (configport.RequestReceipt, bool, error) {
 	tx, err := platformpostgres.RequireTransaction(ctx)
 	if err != nil {
 		return configport.RequestReceipt{}, false, err
 	}
 	var out configport.RequestReceipt
 	err = tx.QueryRow(ctx, `INSERT INTO config_command_receipts(action,actor,request_id,payload_digest,state,created_at)
-VALUES('app_settings.save',$1,$2,$3,'reserved',$4)
+VALUES($1,$2,$3,$4,'reserved',$5)
 ON CONFLICT(action,actor,request_id) DO NOTHING
-RETURNING id,payload_digest,state`, actor, requestID, payloadDigest, now).Scan(&out.ID, &out.PayloadDigest, &out.State)
+RETURNING id,payload_digest,state`, action, actor, requestID, payloadDigest, now).Scan(&out.ID, &out.PayloadDigest, &out.State)
 	if err == nil {
 		return out, true, nil
 	}
@@ -149,11 +149,11 @@ RETURNING id,payload_digest,state`, actor, requestID, payloadDigest, now).Scan(&
 		return configport.RequestReceipt{}, false, err
 	}
 	err = tx.QueryRow(ctx, `SELECT id,payload_digest,state FROM config_command_receipts
-WHERE action='app_settings.save' AND actor=$1 AND request_id=$2`, actor, requestID).Scan(&out.ID, &out.PayloadDigest, &out.State)
+WHERE action=$1 AND actor=$2 AND request_id=$3`, action, actor, requestID).Scan(&out.ID, &out.PayloadDigest, &out.State)
 	return out, false, err
 }
 
-func (r *Repository) CompleteSettingsBatch(ctx context.Context, id int64, now time.Time) error {
+func (r *Repository) CompleteCommandRequest(ctx context.Context, id int64, now time.Time) error {
 	tx, err := platformpostgres.RequireTransaction(ctx)
 	if err != nil {
 		return err

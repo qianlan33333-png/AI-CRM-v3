@@ -27,9 +27,9 @@ type repository interface {
 // settingsBatchRepository is intentionally optional for older unit doubles,
 // but the composed PostgreSQL repository must implement it. The receipt joins
 // all fields in one HTTP form submission under a single idempotency scope.
-type settingsBatchRepository interface {
-	ReserveSettingsBatch(context.Context, string, string, []byte, time.Time) (configport.RequestReceipt, bool, error)
-	CompleteSettingsBatch(context.Context, int64, time.Time) error
+type requestReceiptRepository interface {
+	ReserveCommandRequest(context.Context, string, string, string, []byte, time.Time) (configport.RequestReceipt, bool, error)
+	CompleteCommandRequest(context.Context, int64, time.Time) error
 }
 
 type Manager struct {
@@ -229,7 +229,7 @@ func (manager *Manager) SetManyWithRequest(ctx context.Context, actor, requestID
 	if err != nil {
 		return err
 	}
-	receipts, ok := manager.repo.(settingsBatchRepository)
+	receipts, ok := manager.repo.(requestReceiptRepository)
 	if !ok {
 		return errors.New("config request receipt repository is required")
 	}
@@ -239,7 +239,7 @@ func (manager *Manager) SetManyWithRequest(ctx context.Context, actor, requestID
 		return fmt.Errorf("config manager clock is invalid")
 	}
 	return manager.uow.Within(ctx, func(txCtx context.Context) error {
-		receipt, owned, reserveErr := receipts.ReserveSettingsBatch(txCtx, actor, requestID, digest[:], now)
+		receipt, owned, reserveErr := receipts.ReserveCommandRequest(txCtx, "app_settings.save", actor, requestID, digest[:], now)
 		if reserveErr != nil {
 			return reserveErr
 		}
@@ -287,7 +287,7 @@ func (manager *Manager) SetManyWithRequest(ctx context.Context, actor, requestID
 				return appendErr
 			}
 		}
-		return receipts.CompleteSettingsBatch(txCtx, receipt.ID, now)
+		return receipts.CompleteCommandRequest(txCtx, receipt.ID, now)
 	})
 }
 

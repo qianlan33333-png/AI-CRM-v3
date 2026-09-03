@@ -40,7 +40,7 @@ CREATE TABLE config_outbox (
 -- replay with a different set of setting keys from silently adding rows.
 CREATE TABLE config_command_receipts (
     id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    action TEXT NOT NULL CHECK (action = 'app_settings.save'),
+    action TEXT NOT NULL CHECK (action IN ('app_settings.save','setup_wizard.save','category_settings.save')),
     actor TEXT NOT NULL CHECK (length(actor) BETWEEN 1 AND 200),
     request_id TEXT NOT NULL CHECK (length(request_id) BETWEEN 1 AND 200),
     payload_digest BYTEA NOT NULL CHECK (octet_length(payload_digest) = 32),

@@ -28,13 +28,13 @@ type fakeRepository struct {
 	completedReceipt                             int64
 }
 
-func (repository *fakeRepository) ReserveSettingsBatch(_ context.Context, _ string, _ string, digest []byte, _ time.Time) (configport.RequestReceipt, bool, error) {
+func (repository *fakeRepository) ReserveCommandRequest(_ context.Context, _ string, _ string, _ string, digest []byte, _ time.Time) (configport.RequestReceipt, bool, error) {
 	if repository.receipt.ID == 0 && repository.receiptOwned {
 		repository.receipt = configport.RequestReceipt{ID: 1, PayloadDigest: append([]byte(nil), digest...), State: "reserved"}
 	}
 	return repository.receipt, repository.receiptOwned, nil
 }
-func (repository *fakeRepository) CompleteSettingsBatch(_ context.Context, id int64, _ time.Time) error {
+func (repository *fakeRepository) CompleteCommandRequest(_ context.Context, id int64, _ time.Time) error {
 	repository.completedReceipt = id
 	return nil
 }

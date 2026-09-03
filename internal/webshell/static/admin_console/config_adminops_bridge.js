@@ -39,24 +39,43 @@
   };
   const detail = (category) => json(base + encodeURIComponent(category));
   const writeHeaders = () => ({ "Content-Type": "application/json", "X-CSRF-Token": csrf(), "Idempotency-Key": requestID() });
+  const tokenFor = (current, operation) => typeof current?.admin_action_tokens?.[operation] === "string" ? current.admin_action_tokens[operation] : "";
   const toggle = async (category) => {
     const current = await detail(category);
+    const token = tokenFor(current, "enabled");
+    if (!token) throw new Error("后端未返回本次状态操作凭证");
     const result = await json(base + encodeURIComponent(category) + "/enabled", {
       method: "PUT",
       headers: writeHeaders(),
-      body: JSON.stringify({ enabled: current.enabled !== true, admin_action_token: current.admin_action_token }),
+      body: JSON.stringify({ enabled: current.enabled !== true, admin_action_token: token }),
     });
     paintCategory(category, result.enabled === true);
     return result;
   };
   const check = async (category) => {
     const current = await detail(category);
+    const token = tokenFor(current, "check");
+    if (!token) throw new Error("后端未返回本次检查凭证");
     const result = await json(base + encodeURIComponent(category) + "/check", {
       method: "POST",
       headers: writeHeaders(),
-      body: JSON.stringify({ admin_action_token: current.admin_action_token }),
+      body: JSON.stringify({ admin_action_token: token }),
     });
     globalThis.alert?.(safeMessage(result, "检查完成"));
+  };
+  const save = async (category) => {
+    const current = await detail(category);
+    const token = tokenFor(current, "settings");
+    if (!token) throw new Error("后端未返回本次保存凭证");
+    await json(base + encodeURIComponent(category) + "/settings", {
+      method: "PUT",
+      headers: writeHeaders(),
+      // The frozen v2 detail pages for these v3-owned categories expose no
+      // editable fields. Preserve that payload exactly as an empty form rather
+      // than treating a visible Save as a non-persistent health check.
+      body: JSON.stringify({ values: {}, switches: {}, admin_action_token: token }),
+    });
+    location.reload();
   };
   const report = (error) => globalThis.alert?.(error instanceof Error ? error.message : "配置操作失败");
 
@@ -129,7 +148,7 @@
     if (button?.textContent?.trim() === "保存" && category !== "app-settings") {
       event.preventDefault();
       event.stopImmediatePropagation();
-      void check(category).catch(report);
+      void save(category).catch(report);
       return;
     }
     if (!button && target.closest("span[style*='cursor:pointer']")) {

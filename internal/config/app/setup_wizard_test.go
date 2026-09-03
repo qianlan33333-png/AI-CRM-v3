@@ -103,6 +103,14 @@ func TestSetupWizardSaveReplaysOnlyWholeMatchingRequest(t *testing.T) {
 	if _, err := service.Save(context.Background(), valueMismatch); !errors.Is(err, ErrSetupWizardConflict) {
 		t.Fatalf("value mismatch error=%v", err)
 	}
+	// ExpectedDigest is part of the HTTP command, not merely a first-attempt
+	// precondition. A same-key replay with a changed precondition must not be
+	// mistaken for the original completed request.
+	preconditionMismatch := input
+	preconditionMismatch.ExpectedDigest = second.Snapshot.ExpectedDigest
+	if _, err := service.Save(context.Background(), preconditionMismatch); !errors.Is(err, ErrSetupWizardConflict) {
+		t.Fatalf("precondition mismatch error=%v", err)
+	}
 	if len(repo.audits) != 2 || repo.upsertCalls != 2 || len(events.records) != 2 {
 		t.Fatalf("mismatch mutated state audits=%d upserts=%d events=%d", len(repo.audits), repo.upsertCalls, len(events.records))
 	}
@@ -200,7 +208,7 @@ func TestSetupWizardSaveFailsClosedWhenStrictReadbackDiffers(t *testing.T) {
 }
 
 func TestSetupWizardBatchAndManagerSetSerializeOnSharedAdvisoryLock(t *testing.T) {
-	base := &wizardRepository{settings: map[configport.Key]configport.Setting{}, audits: map[string]configport.Audit{}}
+	base := &wizardRepository{settings: map[configport.Key]configport.Setting{}, audits: map[string]configport.Audit{}, receipts: map[string]configport.RequestReceipt{}}
 	repo := newSerializingWizardRepository(base)
 	events := &wizardAppender{}
 	uow := &serializingWizardUoW{repo: repo}
@@ -258,7 +266,7 @@ func setupWizardInput(digest, idempotencyKey string) SetupWizardSaveInput {
 
 func newSetupWizardServiceForTest(t *testing.T, configured SetupWizardSecretConfigured) (*SetupWizardService, *wizardUoW, *wizardRepository, *wizardAppender) {
 	t.Helper()
-	repo := &wizardRepository{settings: map[configport.Key]configport.Setting{}, audits: map[string]configport.Audit{}}
+	repo := &wizardRepository{settings: map[configport.Key]configport.Setting{}, audits: map[string]configport.Audit{}, receipts: map[string]configport.RequestReceipt{}}
 	events := &wizardAppender{}
 	uow := &wizardUoW{repo: repo, events: events}
 	manager := NewManager(uow, repo, events)
@@ -278,11 +286,11 @@ type wizardUoW struct {
 
 func (uow *wizardUoW) Within(ctx context.Context, callback func(context.Context) error) error {
 	uow.calls++
-	settings, audits, nextAuditID, upsertCalls := cloneWizardSettings(uow.repo.settings), cloneWizardAudits(uow.repo.audits), uow.repo.nextAuditID, uow.repo.upsertCalls
+	settings, audits, receipts, nextAuditID, upsertCalls := cloneWizardSettings(uow.repo.settings), cloneWizardAudits(uow.repo.audits), cloneWizardReceipts(uow.repo.receipts), uow.repo.nextAuditID, uow.repo.upsertCalls
 	events := append([]configport.Event(nil), uow.events.records...)
 	err := callback(ctx)
 	if err != nil {
-		uow.repo.settings, uow.repo.audits, uow.repo.nextAuditID, uow.repo.upsertCalls = settings, audits, nextAuditID, upsertCalls
+		uow.repo.settings, uow.repo.audits, uow.repo.receipts, uow.repo.nextAuditID, uow.repo.upsertCalls = settings, audits, receipts, nextAuditID, upsertCalls
 		uow.events.records = events
 	}
 	return err
@@ -295,6 +303,29 @@ type wizardRepository struct {
 	nextAuditID     int64
 	upsertCalls     int
 	corruptReadback bool
+	receipts        map[string]configport.RequestReceipt
+}
+
+func (repository *wizardRepository) ReserveCommandRequest(_ context.Context, action, actor, requestID string, digest []byte, _ time.Time) (configport.RequestReceipt, bool, error) {
+	key := action + ":" + actor + ":" + requestID
+	if existing, ok := repository.receipts[key]; ok {
+		existing.PayloadDigest = append([]byte(nil), existing.PayloadDigest...)
+		return existing, false, nil
+	}
+	receipt := configport.RequestReceipt{ID: int64(len(repository.receipts) + 1), PayloadDigest: append([]byte(nil), digest...), State: "reserved"}
+	repository.receipts[key] = receipt
+	return receipt, true, nil
+}
+
+func (repository *wizardRepository) CompleteCommandRequest(_ context.Context, id int64, _ time.Time) error {
+	for key, receipt := range repository.receipts {
+		if receipt.ID == id && receipt.State == "reserved" {
+			receipt.State = "completed"
+			repository.receipts[key] = receipt
+			return nil
+		}
+	}
+	return errors.New("receipt not reserved")
 }
 
 func (repository *wizardRepository) LockKey(_ context.Context, key configport.Key) error {
@@ -436,6 +467,15 @@ func cloneWizardAudits(source map[string]configport.Audit) map[string]configport
 	for key, audit := range source {
 		audit.OldValue, audit.NewValue = append([]byte(nil), audit.OldValue...), append([]byte(nil), audit.NewValue...)
 		clone[key] = audit
+	}
+	return clone
+}
+
+func cloneWizardReceipts(source map[string]configport.RequestReceipt) map[string]configport.RequestReceipt {
+	clone := make(map[string]configport.RequestReceipt, len(source))
+	for key, receipt := range source {
+		receipt.PayloadDigest = append([]byte(nil), receipt.PayloadDigest...)
+		clone[key] = receipt
 	}
 	return clone
 }
