@@ -9,6 +9,8 @@ type ExecutionConfiguration struct {
 	Snapshot               Snapshot
 	AgentID                int64
 	AgentPublishedVersion  int64
+	ContentDigest          [32]byte
+	MaterialsDigest        [32]byte
 	BindingVersion         int64
 	SenderSetVersion       int64
 	SenderStaffIDs         []int64

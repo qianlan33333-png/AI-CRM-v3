@@ -65,6 +65,17 @@ type PublishedAgent struct {
 	MaterialsDigest  [32]byte
 }
 
+type OutboundPublishedContent struct {
+	AgentID          AgentID
+	PublishedVersion int64
+	Content          FixedContentPackage
+	ContentDigest    [32]byte
+	MaterialsDigest  [32]byte
+}
+type OutboundPublishedContentReader interface {
+	OutboundPublishedContent(context.Context, AgentID, int64) (OutboundPublishedContent, bool, error)
+}
+
 type PublishedAgentReader interface {
 	PublishedAgent(context.Context, AgentID) (PublishedAgent, bool, error)
 }

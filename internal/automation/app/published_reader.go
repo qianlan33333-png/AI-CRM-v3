@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 
 	automationport "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/port"
 )
@@ -28,3 +29,24 @@ func (s *Service) PublishedAgent(ctx context.Context, id automationport.AgentID)
 }
 
 var _ automationport.PublishedAgentReader = (*Service)(nil)
+
+func (s *Service) OutboundPublishedContent(ctx context.Context, id automationport.AgentID, version int64) (automationport.OutboundPublishedContent, bool, error) {
+	agent, err := s.Get(ctx, id)
+	if errors.Is(err, ErrAgentNotFound) {
+		return automationport.OutboundPublishedContent{}, false, nil
+	}
+	if err != nil {
+		return automationport.OutboundPublishedContent{}, false, err
+	}
+	if agent.AutomationType != automationport.AutomationTypeFixedScript || agent.Status != automationport.AgentStatusActive || agent.PublishedVersion != version {
+		return automationport.OutboundPublishedContent{}, false, nil
+	}
+	contentInput := map[string]any{"automation_type": agent.AutomationType, "published_role_prompt": agent.PublishedRolePrompt, "published_task_prompt": agent.PublishedTaskPrompt, "content_text": agent.FixedContentPackage.ContentText}
+	contentRaw, _ := json.Marshal(contentInput)
+	materialsInput := map[string]any{"images": agent.FixedContentPackage.ImageLibraryIDs, "mini_programs": agent.FixedContentPackage.MiniprogramLibraryIDs, "attachments": agent.FixedContentPackage.AttachmentLibraryIDs, "group_invites": agent.FixedContentPackage.GroupInviteLibraryIDs, "dynamic_card": agent.FixedContentPackage.DynamicMiniprogramCard}
+	materialsRaw, _ := json.Marshal(materialsInput)
+	content, materials := sha256.Sum256(contentRaw), sha256.Sum256(materialsRaw)
+	return automationport.OutboundPublishedContent{AgentID: id, PublishedVersion: version, Content: agent.FixedContentPackage, ContentDigest: content, MaterialsDigest: materials}, true, nil
+}
+
+var _ automationport.OutboundPublishedContentReader = (*Service)(nil)

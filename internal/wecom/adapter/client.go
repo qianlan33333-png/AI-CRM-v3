@@ -177,6 +177,41 @@ func (client *Client) BatchExternalContacts(ctx context.Context, staffID, cursor
 	return page, nil
 }
 
+type MessageWriteError struct {
+	Err           error
+	CallAttempted bool
+}
+
+func (e *MessageWriteError) Error() string               { return e.Err.Error() }
+func (e *MessageWriteError) Unwrap() error               { return e.Err }
+func (e *MessageWriteError) ProviderCallAttempted() bool { return e.CallAttempted }
+
+// SendExternalContactText performs the sole Automation Operations WeCom write.
+// The caller keeps sender/customer provider identifiers ephemeral and EER
+// records only the returned receipt digest.
+func (client *Client) SendExternalContactText(ctx context.Context, senderUserID, externalUserID, content string) (string, error) {
+	if !client.DirectoryReady() || invalid(senderUserID) || invalid(externalUserID) || strings.TrimSpace(content) == "" || len([]rune(content)) > 4000 || strings.ContainsRune(content, '\x00') {
+		return "", &MessageWriteError{Err: ErrUnavailable}
+	}
+	token, err := client.contactAccessToken(ctx)
+	if err != nil {
+		return "", &MessageWriteError{Err: err}
+	}
+	body, err := json.Marshal(map[string]any{"chat_type": "single", "external_userid": []string{externalUserID}, "sender": senderUserID, "text": map[string]string{"content": content}})
+	if err != nil {
+		return "", &MessageWriteError{Err: ErrResponse}
+	}
+	payload, err := client.requestJSON(ctx, http.MethodPost, "/cgi-bin/externalcontact/add_msg_template", url.Values{"access_token": {token}}, body)
+	if err != nil {
+		return "", &MessageWriteError{Err: err, CallAttempted: true}
+	}
+	payload.MsgID = strings.TrimSpace(payload.MsgID)
+	if payload.MsgID == "" || invalid(payload.MsgID) {
+		return "", &MessageWriteError{Err: ErrResponse, CallAttempted: true}
+	}
+	return payload.MsgID, nil
+}
+
 func (client *Client) AuthorizationURL(_ context.Context, purpose wecom.OAuthPurpose, mode wecom.OAuthMode, state, _ string) (string, error) {
 	if !client.Ready() || state == "" {
 		return "", ErrUnavailable
@@ -313,6 +348,7 @@ type response struct {
 	UserID              string          `json:"UserId"`
 	UserIDLower         string          `json:"userid"`
 	Ticket              string          `json:"ticket"`
+	MsgID               string          `json:"msgid"`
 	ExpiresIn           int64           `json:"expires_in"`
 	TagGroups           *[]tagGroupWire `json:"tag_group"`
 	FollowUser          []string        `json:"follow_user"`

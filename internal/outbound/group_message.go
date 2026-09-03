@@ -114,8 +114,9 @@ func (s *GroupMessageCompletionSink) CompleteEffect(ctx context.Context, effectR
 // CompletionRouter keeps EER's single completion-sink slot while routing
 // owner-specific projections by opaque envelope kind.
 type CompletionRouter struct {
-	tag   *TagCatalogCompletionSink
-	group *GroupMessageCompletionSink
+	tag     *TagCatalogCompletionSink
+	group   *GroupMessageCompletionSink
+	message effectport.CompletionSink
 }
 
 func NewCompletionRouter(tag *TagCatalogCompletionSink, group *GroupMessageCompletionSink) (*CompletionRouter, error) {
@@ -125,11 +126,23 @@ func NewCompletionRouter(tag *TagCatalogCompletionSink, group *GroupMessageCompl
 	return &CompletionRouter{tag: tag, group: group}, nil
 }
 
+func NewCompletionRouterWithMessage(tag *TagCatalogCompletionSink, group *GroupMessageCompletionSink, message effectport.CompletionSink) (*CompletionRouter, error) {
+	if tag == nil && group == nil && message == nil {
+		return nil, errors.New("at least one completion sink is required")
+	}
+	return &CompletionRouter{tag: tag, group: group, message: message}, nil
+}
+
 func (r *CompletionRouter) CompleteEffect(ctx context.Context, effectRef string, envelope effectport.Envelope, attempt effectport.Attempt, result effectport.AdapterResult) error {
 	if r == nil {
 		return errors.New("completion router is unavailable")
 	}
 	switch envelope.Kind {
+	case effectport.KindOutboundMessage:
+		if r.message == nil {
+			return errors.New("message completion sink is unavailable")
+		}
+		return r.message.CompleteEffect(ctx, effectRef, envelope, attempt, result)
 	case effectport.KindWeComTagCatalog:
 		if r.tag == nil {
 			return errors.New("tag completion sink is unavailable")

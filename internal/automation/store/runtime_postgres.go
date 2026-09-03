@@ -12,6 +12,7 @@ import (
 	automationapp "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/app"
 	automationdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/domain"
 	automationport "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/port"
+	outboundport "github.com/qianlan33333-png/AI-CRM-v3/internal/outbound/port"
 )
 
 const policyColumns = `id,code,name,lifecycle,version,current_version_id,created_by,updated_by,created_at,updated_at,archived_at`
@@ -273,14 +274,14 @@ func (r *Repository) PreviewByDigest(ctx context.Context, digest [32]byte) (auto
 	copy(p.PreviewDigest[:], d)
 	return p, e
 }
-func (r *Repository) CreateRun(ctx context.Context, run automationdomain.RuntimeRun, recipients []automationdomain.RuntimeRecipient) (automationdomain.RuntimeRun, error) {
+func (r *Repository) CreateRun(ctx context.Context, run automationdomain.RuntimeRun, recipients []automationdomain.RuntimeRecipient) (automationdomain.RuntimeRun, []automationdomain.RuntimeRecipient, error) {
 	t, e := tx(ctx)
 	if e != nil {
-		return run, e
+		return run, nil, e
 	}
 	e = t.QueryRow(ctx, `INSERT INTO automation_runs(package_id,package_version,snapshot_id,agent_id,agent_published_version,binding_version,sender_set_version,preview_digest,state,target_count,skipped_count,created_by,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$13) RETURNING id`, run.PackageID, run.PackageVersion, run.SnapshotID, run.AgentID, run.AgentPublishedVersion, run.BindingVersion, run.SenderSetVersion, run.PreviewDigest[:], run.State, run.TargetCount, run.SkippedCount, run.CreatedBy, run.CreatedAt).Scan(&run.ID)
 	if e != nil {
-		return run, e
+		return run, nil, e
 	}
 	for i := range recipients {
 		recipients[i].RunID = run.ID
@@ -288,10 +289,57 @@ func (r *Repository) CreateRun(ctx context.Context, run automationdomain.Runtime
 		recipients[i].UpdatedAt = run.CreatedAt
 		e = t.QueryRow(ctx, `INSERT INTO automation_run_recipients(run_id,customer_id,sender_staff_id,state,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$5) RETURNING id`, run.ID, recipients[i].CustomerID, recipients[i].SenderStaffID, recipients[i].State, run.CreatedAt).Scan(&recipients[i].ID)
 		if e != nil {
-			return run, e
+			return run, nil, e
 		}
 	}
-	return run, nil
+	return run, recipients, nil
+}
+func (r *Repository) BindRecipientEffect(ctx context.Context, recipientID int64, effectID string, now time.Time) error {
+	t, e := tx(ctx)
+	if e != nil {
+		return e
+	}
+	tag, e := t.Exec(ctx, `UPDATE automation_run_recipients SET effect_id=$2,updated_at=$3 WHERE id=$1 AND state='accepted' AND effect_id IS NULL`, recipientID, effectID, now)
+	if e != nil {
+		return e
+	}
+	if tag.RowsAffected() != 1 {
+		return automationapp.ErrRuntimeConflict
+	}
+	return nil
+}
+func (r *Repository) ProjectMessageCompletion(ctx context.Context, completion outboundport.MessageCompletion) error {
+	t, e := tx(ctx)
+	if e != nil {
+		return e
+	}
+	state := automationport.RecipientFinalFailed
+	switch completion.State {
+	case outboundport.CompletionProviderAccepted:
+		state = automationport.RecipientProviderAccepted
+	case outboundport.CompletionDeliveryProven:
+		state = automationport.RecipientDeliveryProven
+	case outboundport.CompletionRetryableFailed:
+		state = automationport.RecipientRetryableFailed
+	case outboundport.CompletionFinalFailed:
+		state = automationport.RecipientFinalFailed
+	case outboundport.CompletionOutcomeUnknown:
+		state = automationport.RecipientOutcomeUnknown
+	case outboundport.CompletionReconciled:
+		state = automationport.RecipientReconciled
+	default:
+		return automationapp.ErrRuntimeInvalid
+	}
+	var runID int64
+	e = t.QueryRow(ctx, `UPDATE automation_run_recipients SET state=$2,updated_at=clock_timestamp() WHERE effect_id=$1 AND state NOT IN ('delivery_proven','final_failed','cancelled') RETURNING run_id`, completion.EffectID, state).Scan(&runID)
+	if errors.Is(e, pgx.ErrNoRows) {
+		return automationapp.ErrRuntimeConflict
+	}
+	if e != nil {
+		return e
+	}
+	_, e = t.Exec(ctx, `UPDATE automation_runs SET state=CASE WHEN EXISTS(SELECT 1 FROM automation_run_recipients WHERE run_id=$1 AND state='outcome_unknown') THEN 'outcome_unknown' WHEN EXISTS(SELECT 1 FROM automation_run_recipients WHERE run_id=$1 AND state IN ('accepted','attempted','retryable_failed','provider_accepted')) THEN 'executing' WHEN EXISTS(SELECT 1 FROM automation_run_recipients WHERE run_id=$1 AND state IN ('final_failed','skipped')) THEN 'partial_failed' ELSE 'completed' END,updated_at=clock_timestamp(),completed_at=CASE WHEN NOT EXISTS(SELECT 1 FROM automation_run_recipients WHERE run_id=$1 AND state IN ('accepted','attempted','retryable_failed','provider_accepted','outcome_unknown')) THEN clock_timestamp() ELSE NULL END WHERE id=$1`, runID)
+	return e
 }
 
 const runColumns = `id,package_id,package_version,snapshot_id,agent_id,agent_published_version,binding_version,sender_set_version,preview_digest,state,target_count,skipped_count,created_by,created_at,updated_at,completed_at`

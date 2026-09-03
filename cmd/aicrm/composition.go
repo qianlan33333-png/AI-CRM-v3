@@ -211,6 +211,10 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
+	outboundMessages, err := outbound.NewMessageService(pool.Native(), uow, effectRepository, automationRepository)
+	if err != nil {
+		return fail(err)
+	}
 	automationService := automationapp.NewAgentServiceWithMediaReferences(uow, automationRepository, mediaRepository, mediaRepository, mediaRepository, mediaRepository, automationRepository)
 	automationBindings, err := automationModule.Bind(automationService, requestSecurity)
 	if err != nil {
@@ -238,12 +242,15 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return fail(err)
 	}
 	segmentStaff := automationOpsStaffAdapter{uow: uow, users: accessRepository}
-	segmentExecution, err := segmentapp.NewExecutionService(uow, segmentRepository, automationService, segmentStaff, cfg.Effects.ProviderEnabled)
+	segmentExecution, err := segmentapp.NewExecutionService(uow, segmentRepository, automationService, segmentStaff, cfg.Effects.ProviderEnabled && cfg.WeCom.Enabled)
 	if err != nil {
 		return fail(err)
 	}
 	automationRuntime, err := automationapp.NewRuntimeService(uow, automationRepository, segmentExecution, segmentSnapshots)
 	if err != nil {
+		return fail(err)
+	}
+	if err = automationRuntime.SetMessageAccepter(outboundMessages); err != nil {
 		return fail(err)
 	}
 	automationBindings.Runtime, err = automationModule.BindRuntime(automationRuntime, requestSecurity)
@@ -313,7 +320,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
-	outboundCompletionSink, err := outbound.NewCompletionRouter(tagCompletionSink, groupOpsCompletionSink)
+	outboundCompletionSink, err := outbound.NewCompletionRouterWithMessage(tagCompletionSink, groupOpsCompletionSink, outboundMessages)
 	if err != nil {
 		return fail(err)
 	}
@@ -603,7 +610,11 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		}
 		tagCatalogProvider = catalogProvider
 	}
-	if err = effectsModule.SetProviderAdapter(composedProviderRouter{outbound: outbound.NewProviderRouterWithGroupMessage(tagCatalogProvider, groupOpsProvider), payment: paymentAdapter}); err != nil {
+	messageProvider, providerErr := outbound.NewMessageProvider(outbound.MessageProviderConfig{Enabled: cfg.Effects.ProviderEnabled && cfg.WeCom.Enabled, CorpScope: "wecom-corp:" + cfg.WeCom.CorpID, Executions: outboundMessages, Identities: outboundIdentityAdapter{uow: uow, reader: queries}, Staff: segmentStaff, Content: automationService, Writer: providerClient})
+	if providerErr != nil {
+		return fail(providerErr)
+	}
+	if err = effectsModule.SetProviderAdapter(composedProviderRouter{outbound: outbound.NewProviderRouterWithMessages(tagCatalogProvider, groupOpsProvider, messageProvider), payment: paymentAdapter}); err != nil {
 		return fail(err)
 	}
 	var callbackCrypto *wecom.CallbackCrypto

@@ -416,7 +416,7 @@ func (r *Repository) controlWithin(ctx context.Context, tx pgx.Tx, command Contr
 	if err = tx.QueryRow(ctx, `SELECT updated_at FROM external_effects WHERE id=$1`, id).Scan(&updated); err != nil {
 		return Projection{}, Receipt{}, err
 	}
-	if Kind(kind) == KindWeComTagCatalog && r.sink != nil {
+	if r.sink != nil && (Kind(kind) == KindWeComTagCatalog || Kind(kind) == KindGroupMessage || Kind(kind) == KindOutboundMessage) {
 		envelope := Envelope{Owner: Owner(owner), Kind: Kind(kind), SourceRefDigest: Digest(source), TargetRefDigest: Digest(target), PayloadDigest: Digest(payload), PolicyVersionHash: Digest(policy)}
 		if err = r.sink.CompleteEffect(platformpostgres.BindTransaction(ctx, tx), effectID(id), envelope, Attempt{Number: attempts, Generation: generation, Fence: fence}, AdapterResult{Completion: next, ReceiptDigest: digest}); err != nil {
 			return Projection{}, Receipt{}, err
@@ -582,7 +582,7 @@ func (r *Repository) RunAttempt(ctx context.Context, id, generation, riverJobID 
 		return ErrTransition
 	}
 	terminal := next == StateExecuted || next == StateUnknown || next == StateRetryable || next == StateFinalFailed
-	shouldComplete := r.sink != nil && terminal && (envelope.Kind == KindGroupMessage || envelope.Kind == KindWeComTagCatalog || envelope.Owner == OwnerPayment)
+	shouldComplete := r.sink != nil && terminal && (envelope.Kind == KindGroupMessage || envelope.Kind == KindWeComTagCatalog || envelope.Kind == KindOutboundMessage || envelope.Owner == OwnerPayment)
 	if shouldComplete {
 		completionResult := adapterResult
 		completionResult.Completion = next

@@ -153,6 +153,7 @@ var _ effect.ProviderAdapter = (*TagCatalogProvider)(nil)
 type ProviderRouter struct {
 	tagCatalog   effect.ProviderAdapter
 	groupMessage effect.ProviderAdapter
+	message      effect.ProviderAdapter
 }
 
 func NewProviderRouter(tagCatalog effect.ProviderAdapter) *ProviderRouter {
@@ -163,9 +164,17 @@ func NewProviderRouterWithGroupMessage(tagCatalog, groupMessage effect.ProviderA
 	return &ProviderRouter{tagCatalog: tagCatalog, groupMessage: groupMessage}
 }
 
+func NewProviderRouterWithMessages(tagCatalog, groupMessage, message effect.ProviderAdapter) *ProviderRouter {
+	return &ProviderRouter{tagCatalog: tagCatalog, groupMessage: groupMessage, message: message}
+}
+
 func (r *ProviderRouter) Execute(ctx context.Context, envelope effect.Envelope, attempt effect.Attempt) (effect.AdapterResult, error) {
 	if r != nil {
 		switch envelope.Kind {
+		case effect.KindOutboundMessage:
+			if r.message != nil {
+				return r.message.Execute(ctx, envelope, attempt)
+			}
 		case effect.KindWeComTagCatalog:
 			if r.tagCatalog != nil {
 				return r.tagCatalog.Execute(ctx, envelope, attempt)

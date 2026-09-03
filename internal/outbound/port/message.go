@@ -24,6 +24,21 @@ type MessageIntent struct {
 	ReceiptKey            string
 }
 
+type MessageExecution struct {
+	MessageIntentID       int64
+	RunRecipientID        int64
+	CustomerID            customerdomain.CustomerID
+	SenderStaffID         int64
+	AgentID               int64
+	AgentPublishedVersion int64
+	ContentReference      string
+	PayloadDigest         [32]byte
+}
+
+type MessageExecutionReader interface {
+	MessageExecution(context.Context, string) (MessageExecution, bool, error)
+}
+
 type MessageAcceptance struct {
 	MessageIntentID int64
 	EffectID        string

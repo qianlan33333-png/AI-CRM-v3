@@ -10,6 +10,8 @@ import (
 
 	automationdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/domain"
 	automationport "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/port"
+	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
+	outboundport "github.com/qianlan33333-png/AI-CRM-v3/internal/outbound/port"
 	segmentport "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/port"
 )
 
@@ -50,7 +52,7 @@ func (s *RuntimeService) CreateBroadcastPreview(ctx context.Context, packageID, 
 	return preview, runtimeClassify(err)
 }
 func (s *RuntimeService) ConfirmRun(ctx context.Context, c RunConfirmCommand) (automationdomain.RuntimeRun, error) {
-	if s == nil || c.PackageID < 1 || c.PackageVersion < 1 || c.SnapshotID < 1 || c.AgentID < 1 || c.AgentPublishedVersion < 1 || !validRuntimeMutation(c.Actor, c.IdempotencyKey) {
+	if s == nil || s.messages == nil || c.PackageID < 1 || c.PackageVersion < 1 || c.SnapshotID < 1 || c.AgentID < 1 || c.AgentPublishedVersion < 1 || !validRuntimeMutation(c.Actor, c.IdempotencyKey) {
 		return automationdomain.RuntimeRun{}, ErrRuntimeInvalid
 	}
 	rawDigest, err := hex.DecodeString(c.PreviewDigest)
@@ -102,9 +104,24 @@ func (s *RuntimeService) ConfirmRun(ctx context.Context, c RunConfirmCommand) (a
 	payload, _ := json.Marshal(c)
 	var run automationdomain.RuntimeRun
 	err = s.runtimeMutation(ctx, "confirm_run", c.Actor, c.IdempotencyKey, payload, func(tx context.Context) (any, RuntimeFact, error) {
-		run = automationdomain.RuntimeRun{PackageID: c.PackageID, PackageVersion: c.PackageVersion, SnapshotID: c.SnapshotID, AgentID: c.AgentID, AgentPublishedVersion: c.AgentPublishedVersion, BindingVersion: preview.BindingVersion, SenderSetVersion: preview.SenderSetVersion, PreviewDigest: digest, State: automationport.RunReady, TargetCount: int64(len(recipients)), CreatedBy: c.Actor, CreatedAt: now, UpdatedAt: now}
-		created, e := s.store.CreateRun(tx, run, recipients)
-		return created, runtimeFact("run", created.ID, "confirm", "automation.run.ready.v1", c.Actor, c.IdempotencyKey, now), e
+		run = automationdomain.RuntimeRun{PackageID: c.PackageID, PackageVersion: c.PackageVersion, SnapshotID: c.SnapshotID, AgentID: c.AgentID, AgentPublishedVersion: c.AgentPublishedVersion, BindingVersion: preview.BindingVersion, SenderSetVersion: preview.SenderSetVersion, PreviewDigest: digest, State: automationport.RunExecuting, TargetCount: int64(len(recipients)), CreatedBy: c.Actor, CreatedAt: now, UpdatedAt: now}
+		created, createdRecipients, e := s.store.CreateRun(tx, run, recipients)
+		if e != nil {
+			return created, RuntimeFact{}, e
+		}
+		policyDigest := sha256.Sum256([]byte("automation.manual-run.policy.v1"))
+		for _, recipient := range createdRecipients {
+			sourceDigest := sha256.Sum256([]byte(fmt.Sprintf("automation-run:%d:recipient:%d", created.ID, recipient.ID)))
+			targetDigest := sha256.Sum256([]byte(fmt.Sprintf("customer:%d", recipient.CustomerID)))
+			acceptance, acceptErr := s.messages.AcceptMessageWithin(tx, outboundport.MessageIntent{SourceKind: "automation_run", SourceID: created.ID, RunRecipientID: recipient.ID, CustomerID: customerdomain.CustomerID(recipient.CustomerID), SenderStaffID: recipient.SenderStaffID, AgentID: created.AgentID, AgentPublishedVersion: created.AgentPublishedVersion, ContentReference: fmt.Sprintf("automation-agent:%d:published:%d", created.AgentID, created.AgentPublishedVersion), SourceDigest: sourceDigest, TargetDigest: targetDigest, PayloadDigest: configuration.ContentDigest, PolicyDigest: policyDigest, ReceiptKey: fmt.Sprintf("automation-run-%d-recipient-%d", created.ID, recipient.ID)})
+			if acceptErr != nil {
+				return created, RuntimeFact{}, acceptErr
+			}
+			if bindErr := s.store.BindRecipientEffect(tx, recipient.ID, acceptance.EffectID, now); bindErr != nil {
+				return created, RuntimeFact{}, bindErr
+			}
+		}
+		return created, runtimeFact("run", created.ID, "confirm", "automation.run.queued.v1", c.Actor, c.IdempotencyKey, now), nil
 	}, &run)
 	return run, runtimeClassify(err)
 }

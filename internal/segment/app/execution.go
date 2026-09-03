@@ -343,7 +343,7 @@ func (s *ExecutionService) AudienceExecutionConfiguration(ctx context.Context, p
 	for i, item := range senders.Members {
 		staffIDs[i] = int64(item.StaffID)
 	}
-	return segmentport.ExecutionConfiguration{PackageID: packageID, PackageVersion: pkg.Version, ConfigurationVersionID: segmentport.ConfigurationVersionID(check.ConfigurationVersionID), Snapshot: snapshot, AgentID: int64(binding.AgentID), AgentPublishedVersion: binding.AgentPublishedVersion, BindingVersion: binding.Version, SenderSetVersion: senders.Version, SenderStaffIDs: staffIDs, Ready: check.Ready, Reasons: append([]string(nil), check.Reasons...)}, nil
+	return segmentport.ExecutionConfiguration{PackageID: packageID, PackageVersion: pkg.Version, ConfigurationVersionID: segmentport.ConfigurationVersionID(check.ConfigurationVersionID), Snapshot: snapshot, AgentID: int64(binding.AgentID), AgentPublishedVersion: binding.AgentPublishedVersion, ContentDigest: binding.ContentDigest, MaterialsDigest: binding.MaterialsDigest, BindingVersion: binding.Version, SenderSetVersion: senders.Version, SenderStaffIDs: staffIDs, Ready: check.Ready, Reasons: append([]string(nil), check.Reasons...)}, nil
 }
 
 var _ segmentport.ExecutionConfigurationReader = (*ExecutionService)(nil)

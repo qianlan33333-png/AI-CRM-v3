@@ -12,6 +12,7 @@ import (
 
 	automationdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/domain"
 	automationport "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/port"
+	outboundport "github.com/qianlan33333-png/AI-CRM-v3/internal/outbound/port"
 	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
 	segmentport "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/port"
 )
@@ -41,7 +42,8 @@ type RuntimeStore interface {
 	AppendRuntimeFact(context.Context, RuntimeFact) error
 	CreatePreview(context.Context, automationdomain.RunPreview) (automationdomain.RunPreview, error)
 	PreviewByDigest(context.Context, [32]byte) (automationdomain.RunPreview, error)
-	CreateRun(context.Context, automationdomain.RuntimeRun, []automationdomain.RuntimeRecipient) (automationdomain.RuntimeRun, error)
+	CreateRun(context.Context, automationdomain.RuntimeRun, []automationdomain.RuntimeRecipient) (automationdomain.RuntimeRun, []automationdomain.RuntimeRecipient, error)
+	BindRecipientEffect(context.Context, int64, string, time.Time) error
 	ListRuns(context.Context, int64, int) ([]automationdomain.RuntimeRun, string, error)
 	Run(context.Context, int64) (automationdomain.RuntimeRun, error)
 	RunRecipients(context.Context, int64, int64, int) ([]automationdomain.RuntimeRecipient, string, error)
@@ -52,6 +54,7 @@ type RuntimeService struct {
 	store     RuntimeStore
 	audiences segmentport.ExecutionConfigurationReader
 	snapshots segmentport.SnapshotReader
+	messages  outboundport.TransactionalMessageAccepter
 	now       func() time.Time
 }
 type PolicyCommand struct {
@@ -76,8 +79,16 @@ func NewRuntimeService(uow platformport.UnitOfWork, store RuntimeStore, audience
 	if uow == nil || store == nil || audiences == nil || snapshots == nil {
 		return nil, ErrRuntimeNotReady
 	}
-	return &RuntimeService{uow, store, audiences, snapshots, time.Now}, nil
+	return &RuntimeService{uow: uow, store: store, audiences: audiences, snapshots: snapshots, now: time.Now}, nil
 }
+func (s *RuntimeService) SetMessageAccepter(messages outboundport.TransactionalMessageAccepter) error {
+	if s == nil || messages == nil {
+		return ErrRuntimeNotReady
+	}
+	s.messages = messages
+	return nil
+}
+
 func (s *RuntimeService) ListPolicies(ctx context.Context) ([]automationdomain.Policy, error) {
 	var out []automationdomain.Policy
 	err := s.uow.Within(ctx, func(tx context.Context) error { var e error; out, e = s.store.ListPolicies(tx); return e })
