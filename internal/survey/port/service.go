@@ -103,6 +103,7 @@ type Questionnaire struct {
 	CreatedBy         int64               `json:"created_by"`
 	Version           int64               `json:"version"`
 	DefinitionVersion int64               `json:"definition_version"`
+	SubmissionCount   int64               `json:"submission_count"`
 	CreatedAt         time.Time           `json:"created_at"`
 	UpdatedAt         time.Time           `json:"updated_at"`
 }

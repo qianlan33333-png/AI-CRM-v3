@@ -31,6 +31,9 @@ func surveyTestDist(t *testing.T) string {
 			t.Fatal(err)
 		}
 	}
+	if err := os.WriteFile(filepath.Join(dist, "admin", "questionnaireDetail.fragment.html"), []byte(`<section id="editor">questionnaireDetail</section><div id="questionnaire-editor-config" hidden>{}</div>`), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(dist, "h5", "all.html"), []byte(`<link href="../assets/tokens.css"><script src="../assets/h5.js"></script>`), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +53,7 @@ func TestSurveyUIUsesFrozenFragmentAndV3Assets(t *testing.T) {
 	})
 	response := httptest.NewRecorder()
 	h.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/admin/questionnaireDetail.html?id=12", nil))
-	if response.Code != 200 || gotPage != "questionnaireDetail" || gotBody != `<section>questionnaireDetail</section>` {
+	if response.Code != 200 || gotPage != "questionnaireDetail" || gotBody != `<section id="editor">questionnaireDetail</section><div id="questionnaire-editor-config" hidden>{}</div>` {
 		t.Fatalf("code=%d page=%q body=%q", response.Code, gotPage, gotBody)
 	}
 	for _, path := range []string{"/admin/questionnaireDetail.html?id=01", "/admin/questionnaireOps.html", "/admin/questionnaires.html?x=1"} {

@@ -609,8 +609,9 @@ export async function runAdminAdapterTests(): Promise<void> {
     assert(saved.resourceId === 41 && saved.questions?.length === 1 && saved.version === 2, 'questionnaire response mapping keeps full definition');
     assert(questionnaireCalls[0].input === '/api/admin/questionnaires' && questionnaireCalls[0].init?.method === 'POST', 'questionnaire create URL/method');
     assert(JSON.parse(String(questionnaireCalls[0].init?.body)).questions[0].type === 'textarea', 'questionnaire request DTO mapping');
-    assert(questionnaireCalls[1].input.endsWith('/41/enable') && questionnaireCalls[2].input.endsWith('/41/public-publish'), 'questionnaire enable/public publish sequence');
-    assert(JSON.parse(String(questionnaireCalls[2].init?.body)).expected_questionnaire_version === 2, 'questionnaire publish CAS version');
+    assert(questionnaireCalls[1].input.endsWith('/41/public-publish') && questionnaireCalls[2].input === '/api/admin/questionnaires/41', 'questionnaire publishes the mutable definition before the final detail read');
+    assert(JSON.parse(String(questionnaireCalls[1].init?.body)).expected_questionnaire_version === 2, 'questionnaire publish CAS version');
+    assert(new Headers(questionnaireCalls[0].init?.headers).has('Idempotency-Key') && new Headers(questionnaireCalls[1].init?.headers).has('Idempotency-Key'), 'questionnaire writes send explicit idempotency keys');
   } finally { globalThis.fetch = savedFetch; }
 
   let serviceShareCall: { input: string; init?: RequestInit } | undefined;

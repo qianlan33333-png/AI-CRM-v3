@@ -42,13 +42,23 @@ func (h *adminUI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	raw, err := os.ReadFile(filepath.Join(h.dist, "admin", page+".html"))
+	filename := page + ".html"
+	if page == "questionnaireDetail" {
+		filename = "questionnaireDetail.fragment.html"
+	}
+	raw, err := os.ReadFile(filepath.Join(h.dist, "admin", filename))
 	if err != nil {
 		http.Error(w, "survey UI unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	body, err := donortemplate.Extract(string(raw))
-	if err != nil {
+	body := string(raw)
+	if page != "questionnaireDetail" {
+		body, err = donortemplate.Extract(body)
+		if err != nil {
+			http.Error(w, "survey UI unavailable", http.StatusServiceUnavailable)
+			return
+		}
+	} else if strings.TrimSpace(body) == "" {
 		http.Error(w, "survey UI unavailable", http.StatusServiceUnavailable)
 		return
 	}
