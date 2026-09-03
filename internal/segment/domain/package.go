@@ -58,7 +58,7 @@ type ConfigurationVersion struct {
 	SchemaVersion  int             `json:"schema_version"`
 	Definition     json.RawMessage `json:"definition"`
 	RefreshCronUTC string          `json:"refresh_cron_utc,omitempty"`
-	Digest         [32]byte        `json:"-"`
+	Digest         [32]byte        `json:"digest"`
 	CreatedBy      int64           `json:"created_by"`
 	CreatedAt      time.Time       `json:"created_at"`
 }

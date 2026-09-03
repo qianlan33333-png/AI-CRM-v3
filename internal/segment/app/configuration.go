@@ -202,6 +202,9 @@ func (s *Service) CreatePackage(ctx context.Context, command PackageCreateComman
 			if configErr == nil {
 				item, configErr = s.store.SetCurrentConfiguration(tx, item.ID, configuration.ID, item.Version, command.Actor, now)
 			}
+			if configErr == nil {
+				_, configErr = s.store.AppendMutationFacts(tx, fact("configuration", configuration.ID, "create", "audience.configuration.created.v1", command.Actor, "configuration:"+command.IdempotencyKey, now))
+			}
 			createErr = configErr
 		}
 		return item, fact("package", item.ID, "create", "audience.package.created.v1", command.Actor, command.IdempotencyKey, now), createErr
