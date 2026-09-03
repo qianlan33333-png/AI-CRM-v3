@@ -1,0 +1,27 @@
+package port
+
+import (
+	"context"
+	"encoding/json"
+	"time"
+)
+
+const (
+	EventPlanCreated       = "aiassistant.plan_created.v1"
+	EventRecipientReviewed = "aiassistant.recipient_reviewed.v1"
+	EventPlanApproved      = "aiassistant.plan_approved.v1"
+	EventPlanRejected      = "aiassistant.plan_rejected.v1"
+	EventEffectProjection  = "aiassistant.effect_projected.v1"
+)
+
+type Event struct {
+	Type           string
+	AggregateID    PlanID
+	IdempotencyKey string
+	Payload        json.RawMessage
+	OccurredAt     time.Time
+}
+
+type EventAppender interface {
+	AppendEvent(context.Context, Event) error
+}

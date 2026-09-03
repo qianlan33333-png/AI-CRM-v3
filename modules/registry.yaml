@@ -49,6 +49,10 @@ modules:
     status: implemented
     owner: crm-operations
     dependencies: [platform, access]
+  - name: aiassistant
+    status: contracted
+    owner: crm-operations
+    dependencies: [platform, customer, identity, access]
   - name: intelligence-platform-tail
     status: planned
     owner: crm-platform
