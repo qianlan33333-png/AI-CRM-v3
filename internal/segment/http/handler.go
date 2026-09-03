@@ -13,6 +13,7 @@ import (
 	"time"
 
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
+	automationport "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/port"
 	segmentapp "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/app"
 	segmentdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/domain"
 	segmentport "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/port"
@@ -43,9 +44,17 @@ type SnapshotApplication interface {
 	PublishedSnapshot(context.Context, segmentport.PackageID) (segmentport.Snapshot, bool, error)
 	Members(context.Context, segmentport.SnapshotID, string, int) (segmentport.MemberPage, error)
 }
+type ExecutionApplication interface {
+	PutBinding(context.Context, segmentapp.BindingCommand) (segmentdomain.AutomationBinding, error)
+	CurrentBinding(context.Context, int64) (segmentdomain.AutomationBinding, error)
+	ReplaceSenders(context.Context, segmentapp.SendersCommand) (segmentdomain.SenderSet, error)
+	CurrentSenderSet(context.Context, int64) (segmentdomain.SenderSet, error)
+	Precheck(context.Context, int64) (segmentapp.Precheck, error)
+}
 type Handler struct {
 	service   ConfigurationApplication
 	snapshots SnapshotApplication
+	execution ExecutionApplication
 	security  RequestSecurity
 }
 
@@ -64,6 +73,7 @@ func NewRuntimeHandler(service ConfigurationApplication, snapshots SnapshotAppli
 		return nil, errors.New("segment snapshot dependency is required")
 	}
 	h.snapshots = snapshots
+	h.execution, _ = snapshots.(ExecutionApplication)
 	return h, nil
 }
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -268,6 +278,18 @@ func (h *Handler) packageItem(w http.ResponseWriter, r *http.Request, packageID 
 	}
 }
 func (h *Handler) packageAction(w http.ResponseWriter, r *http.Request, packageID int64, action string) {
+	if action == "automation-binding" {
+		h.binding(w, r, packageID)
+		return
+	}
+	if action == "senders" {
+		h.senders(w, r, packageID)
+		return
+	}
+	if action == "precheck" {
+		h.precheck(w, r, packageID)
+		return
+	}
 	if action == "members" {
 		h.members(w, r, packageID)
 		return
@@ -368,6 +390,114 @@ func (h *Handler) configuration(w http.ResponseWriter, r *http.Request, packageI
 		return
 	}
 	respond(w, 200, map[string]any{"configuration": configurationDTO(item)})
+}
+
+func (h *Handler) binding(w http.ResponseWriter, r *http.Request, packageID int64) {
+	if h.execution == nil {
+		resultError(w, segmentapp.ErrNotReady)
+		return
+	}
+	if r.Method == http.MethodGet {
+		if !h.read(w, r) {
+			return
+		}
+		item, err := h.execution.CurrentBinding(r.Context(), packageID)
+		if err != nil {
+			resultError(w, err)
+			return
+		}
+		respond(w, 200, map[string]any{"binding": item})
+		return
+	}
+	if r.Method != http.MethodPut {
+		method(w, "GET, PUT")
+		return
+	}
+	principal, ok := h.write(w, r)
+	if !ok {
+		return
+	}
+	key, ok := requestKey(w, r)
+	if !ok {
+		return
+	}
+	var in struct {
+		ExpectedVersion  int64  `json:"expected_version"`
+		AgentID          int64  `json:"agent_id"`
+		PublishedVersion int64  `json:"published_version"`
+		AgentDigest      string `json:"agent_digest"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	item, err := h.execution.PutBinding(r.Context(), segmentapp.BindingCommand{PackageID: packageID, ExpectedPackageVersion: in.ExpectedVersion, AgentID: automationport.AgentID(in.AgentID), ExpectedPublishedVersion: in.PublishedVersion, ExpectedAgentDigest: in.AgentDigest, Actor: principal.InternalID, IdempotencyKey: key})
+	if err != nil {
+		resultError(w, err)
+		return
+	}
+	respond(w, 200, map[string]any{"binding": item})
+}
+func (h *Handler) senders(w http.ResponseWriter, r *http.Request, packageID int64) {
+	if h.execution == nil {
+		resultError(w, segmentapp.ErrNotReady)
+		return
+	}
+	if r.Method == http.MethodGet {
+		if !h.read(w, r) {
+			return
+		}
+		item, err := h.execution.CurrentSenderSet(r.Context(), packageID)
+		if err != nil {
+			resultError(w, err)
+			return
+		}
+		respond(w, 200, map[string]any{"sender_set": item})
+		return
+	}
+	if r.Method != http.MethodPut {
+		method(w, "GET, PUT")
+		return
+	}
+	principal, ok := h.write(w, r)
+	if !ok {
+		return
+	}
+	key, ok := requestKey(w, r)
+	if !ok {
+		return
+	}
+	var in struct {
+		ExpectedVersion          int64    `json:"expected_version"`
+		ProviderMemberReferences []string `json:"provider_member_references"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	item, err := h.execution.ReplaceSenders(r.Context(), segmentapp.SendersCommand{PackageID: packageID, ExpectedPackageVersion: in.ExpectedVersion, ProviderMemberIDs: in.ProviderMemberReferences, Actor: principal.InternalID, IdempotencyKey: key})
+	if err != nil {
+		resultError(w, err)
+		return
+	}
+	respond(w, 200, map[string]any{"sender_set": item})
+}
+func (h *Handler) precheck(w http.ResponseWriter, r *http.Request, packageID int64) {
+	if r.Method != http.MethodPost {
+		method(w, "POST")
+		return
+	}
+	if !h.read(w, r) {
+		return
+	}
+	if h.execution == nil {
+		resultError(w, segmentapp.ErrNotReady)
+		return
+	}
+	result, err := h.execution.Precheck(r.Context(), packageID)
+	if err != nil {
+		resultError(w, err)
+		return
+	}
+	respond(w, 200, map[string]any{"precheck": result})
 }
 func (h *Handler) preview(w http.ResponseWriter, r *http.Request, packageID int64) {
 	if r.Method != http.MethodPost {
@@ -587,6 +717,12 @@ func packageDTO(p segmentdomain.Package) map[string]any {
 	}
 	if p.PublishedSnapshotID != nil {
 		v["published_snapshot_id"] = *p.PublishedSnapshotID
+	}
+	if p.CurrentAutomationBindingID != nil {
+		v["automation_binding_id"] = *p.CurrentAutomationBindingID
+	}
+	if p.CurrentSenderSetID != nil {
+		v["sender_set_id"] = *p.CurrentSenderSetID
 	}
 	return v
 }

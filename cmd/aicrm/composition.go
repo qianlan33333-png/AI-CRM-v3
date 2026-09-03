@@ -237,7 +237,13 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err = audienceRefreshWorker.BindService(segmentSnapshots); err != nil {
 		return fail(err)
 	}
-	segmentBindings, err := segmentModule.BindRuntime(segmentService, segmentSnapshots, requestSecurity)
+	segmentStaff := automationOpsStaffAdapter{uow: uow, users: accessRepository}
+	segmentExecution, err := segmentapp.NewExecutionService(uow, segmentRepository, automationService, segmentStaff, cfg.Effects.ProviderEnabled)
+	if err != nil {
+		return fail(err)
+	}
+	segmentRuntime := segmentapp.NewRuntimeFacade(segmentService, segmentSnapshots, segmentExecution)
+	segmentBindings, err := segmentModule.BindRuntime(segmentRuntime, segmentRuntime, requestSecurity)
 	if err != nil {
 		return fail(err)
 	}
@@ -696,7 +702,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 			return checkErr
 		}
 		var complete bool
-		checkErr := pool.Native().QueryRow(readinessContext, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['0001','0002','0003','0004','0005','0006','0007','0008','0009','0010','0011','0012','0013','0014','0016','0017','0018','0019','0020','0021','0022','0023','0024','0025','0026','0027','0028','0029','0030']) AS required(version) WHERE NOT EXISTS (SELECT 1 FROM platform_schema_migrations applied WHERE applied.version=required.version))`).Scan(&complete)
+		checkErr := pool.Native().QueryRow(readinessContext, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['0001','0002','0003','0004','0005','0006','0007','0008','0009','0010','0011','0012','0013','0014','0016','0017','0018','0019','0020','0021','0022','0023','0024','0025','0026','0027','0028','0029','0030','0031']) AS required(version) WHERE NOT EXISTS (SELECT 1 FROM platform_schema_migrations applied WHERE applied.version=required.version))`).Scan(&complete)
 		if checkErr != nil || !complete {
 			return errors.New("database schema is not ready")
 		}

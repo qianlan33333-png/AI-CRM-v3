@@ -45,6 +45,8 @@ type Package struct {
 	Version                       int64      `json:"version"`
 	CurrentConfigurationVersionID *int64     `json:"current_configuration_version_id,omitempty"`
 	PublishedSnapshotID           *int64     `json:"published_snapshot_id,omitempty"`
+	CurrentAutomationBindingID    *int64     `json:"current_automation_binding_id,omitempty"`
+	CurrentSenderSetID            *int64     `json:"current_sender_set_id,omitempty"`
 	CreatedBy                     int64      `json:"created_by"`
 	UpdatedBy                     int64      `json:"updated_by"`
 	CreatedAt                     time.Time  `json:"created_at"`

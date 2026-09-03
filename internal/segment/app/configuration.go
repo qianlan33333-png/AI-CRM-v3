@@ -46,9 +46,10 @@ type Store interface {
 }
 
 type Service struct {
-	uow   platformport.UnitOfWork
-	store Store
-	now   func() time.Time
+	uow             platformport.UnitOfWork
+	store           Store
+	now             func() time.Time
+	allowActivation bool
 }
 
 type GroupCommand struct {
@@ -278,7 +279,7 @@ func (s *Service) CopyPackage(ctx context.Context, command VersionCommand) (segm
 }
 
 func (s *Service) TransitionPackage(ctx context.Context, command VersionCommand, target segmentdomain.Lifecycle) (segmentdomain.Package, error) {
-	if target == segmentdomain.Active {
+	if target == segmentdomain.Active && !s.allowActivation {
 		return segmentdomain.Package{}, ErrNotReady
 	}
 	now := s.now().UTC()
