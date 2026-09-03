@@ -69,6 +69,8 @@ jobs:
         run: node scripts/media-shell-interactions-e2e.mjs
       - name: Verify Tags shell donor interactions
         run: node scripts/tags-shell-interactions-e2e.mjs
+      - name: Verify customer directory shell interactions
+        run: node scripts/customer-directory-shell-e2e.mjs
       - name: Check repository
         run: make check
       - name: Race-check security and identity boundaries
