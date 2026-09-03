@@ -1,4 +1,4 @@
-package target
+package main
 
 import (
 	"context"
@@ -18,6 +18,7 @@ import (
 	automationport "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/port"
 	automationstore "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/store"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/configmigration/source"
+	configtarget "github.com/qianlan33333-png/AI-CRM-v3/internal/configmigration/target"
 	couponstore "github.com/qianlan33333-png/AI-CRM-v3/internal/coupon/store"
 	groupopsstore "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/store"
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
@@ -96,10 +97,10 @@ func TestRunnerPostgresIntegrationApplyVerifyAndReplay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = runner.Preflight(ctx, drift, driftDigest, actor); !errors.Is(err, ErrDrift) {
+	if err = runner.Preflight(ctx, drift, driftDigest, actor); !errors.Is(err, configtarget.ErrDrift) {
 		t.Fatalf("preflight drift error=%v", err)
 	}
-	if _, err = runner.Apply(ctx, drift, driftDigest, actor); !errors.Is(err, ErrDrift) {
+	if _, err = runner.Apply(ctx, drift, driftDigest, actor); !errors.Is(err, configtarget.ErrDrift) {
 		t.Fatalf("apply drift error=%v", err)
 	}
 
@@ -108,7 +109,7 @@ func TestRunnerPostgresIntegrationApplyVerifyAndReplay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = runner.Preflight(ctx, collision, collisionDigest, actor); !errors.Is(err, ErrInvalid) {
+	if err = runner.Preflight(ctx, collision, collisionDigest, actor); !errors.Is(err, configtarget.ErrInvalid) {
 		t.Fatalf("preflight collision error=%v", err)
 	}
 	if _, err = runner.Apply(ctx, collision, collisionDigest, actor); err == nil {
@@ -154,7 +155,7 @@ func (rejectingAutomationImporter) ImportDefinition(context.Context, automationp
 	return automationport.Agent{}, errors.New("test: reject automation import after prior domains wrote")
 }
 
-func configMigrationRunner(t *testing.T, pool *platformpostgres.Pool) Runner {
+func configMigrationRunner(t *testing.T, pool *platformpostgres.Pool) configtarget.Runner {
 	t.Helper()
 	uow, err := platformpostgres.NewUnitOfWork(pool)
 	if err != nil {
@@ -176,7 +177,7 @@ func configMigrationRunner(t *testing.T, pool *platformpostgres.Pool) Runner {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return Runner{UOW: uow, Products: products, Coupons: coupons, GroupOps: groupOps, Automation: automation}
+	return configtarget.Runner{UOW: uow, Products: products, Coupons: coupons, GroupOps: groupOps, Automation: automation}
 }
 
 func configMigrationActor(t *testing.T, ctx context.Context, pool *platformpostgres.Pool) int64 {
@@ -384,7 +385,7 @@ func configMigrationPaths(t *testing.T) []string {
 	if !ok {
 		t.Fatal("locate configuration migration integration test source")
 	}
-	root := filepath.Clean(filepath.Join(filepath.Dir(filename), "..", "..", ".."))
+	root := filepath.Clean(filepath.Join(filepath.Dir(filename), "..", ".."))
 	files := []string{"0001_platform.sql", "0003_access.sql", "0005_external_effects.sql", "0010_product.sql", "0011_coupon_rules.sql", "0012_group_ops.sql", "0013_automation_agents.sql", "0030_config_definition_import.sql"}
 	paths := make([]string, 0, len(files))
 	for _, file := range files {

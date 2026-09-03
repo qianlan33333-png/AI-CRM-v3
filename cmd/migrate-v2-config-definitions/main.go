@@ -38,10 +38,14 @@ func run(ctx context.Context, args []string) error {
 		return err
 	}
 	if *mode == "extract" {
-		if os.Getenv("AICRM_SOURCE_DATABASE_URL") == "" || *snapshot == "" || *key == "" || *revision == "" {
+		if *snapshot == "" || *key == "" || *revision == "" {
 			return errors.New("extract requires AICRM_SOURCE_DATABASE_URL, snapshot, snapshot-key-file, source-revision")
 		}
-		p, e := pgxpool.New(ctx, os.Getenv("AICRM_SOURCE_DATABASE_URL"))
+		sourceDatabaseURL, e := platformconfig.SourceDatabaseURL()
+		if e != nil {
+			return e
+		}
+		p, e := pgxpool.New(ctx, sourceDatabaseURL)
 		if e != nil {
 			return e
 		}
