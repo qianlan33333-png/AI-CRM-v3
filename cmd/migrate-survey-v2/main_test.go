@@ -6,8 +6,17 @@ import (
 	"encoding/base64"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+func TestHistoricalQuestionnaireAuditParametersHaveConcretePostgreSQLTypes(t *testing.T) {
+	for _, want := range []string{"$2::boolean", "$3::timestamptz"} {
+		if !strings.Contains(historicalQuestionnaireAuditSQL, want) {
+			t.Fatalf("audit SQL is missing explicit parameter cast %s", want)
+		}
+	}
+}
 
 func TestEncryptedSnapshotAuthenticatesAndRejectsTampering(t *testing.T) {
 	key := make([]byte, 32)

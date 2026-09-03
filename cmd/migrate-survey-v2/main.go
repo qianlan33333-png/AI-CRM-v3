@@ -26,6 +26,8 @@ import (
 
 const magic = "AICRM-SURVEY-V2-SNAPSHOT-1\n"
 
+const historicalQuestionnaireAuditSQL = `INSERT INTO survey_audit_events(event_type,aggregate_type,aggregate_id,actor_scope,metadata,occurred_at) VALUES('survey_history_imported','questionnaire',$1,'migration',jsonb_build_object('source_enabled',$2::boolean,'target_status','disabled','snapshot_at',$3::timestamptz),clock_timestamp())`
+
 var tables = []string{"questionnaires", "questionnaire_questions", "questionnaire_options", "questionnaire_score_rules", "questionnaire_submissions", "questionnaire_submission_answers", "questionnaire_external_push_logs", "questionnaire_scrm_apply_logs"}
 
 type Manifest struct {
@@ -361,7 +363,7 @@ func importSnapshot(args []string) error {
 			if err != nil {
 				return fmt.Errorf("import questionnaire %d: %w", q.ID, err)
 			}
-			if _, err = tx.Exec(ctx, `INSERT INTO survey_audit_events(event_type,aggregate_type,aggregate_id,actor_scope,metadata,occurred_at) VALUES('survey_history_imported','questionnaire',$1,'migration',jsonb_build_object('source_enabled',$2,'target_status','disabled','snapshot_at',$3),clock_timestamp())`, targetID, !q.Disabled, snap.Manifest.SnapshotAt); err != nil {
+			if _, err = tx.Exec(ctx, historicalQuestionnaireAuditSQL, targetID, !q.Disabled, snap.Manifest.SnapshotAt); err != nil {
 				return err
 			}
 			definitionDigest := recordDigest(struct {
