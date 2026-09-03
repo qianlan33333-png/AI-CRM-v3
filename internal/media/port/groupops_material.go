@@ -12,6 +12,11 @@ import (
 
 var ErrInvalidGroupOpsMaterialSnapshot = errors.New("invalid group ops material snapshot")
 
+var (
+	ErrInvalidGroupOpsMaterialPreparation  = errors.New("invalid group ops material preparation")
+	ErrGroupOpsMaterialPreparationConflict = errors.New("group ops material preparation conflict")
+)
+
 // GroupOpsMaterialSnapshot is the immutable, provider-ready part of one
 // accepted Group Ops execution. Provider media IDs and link/card fields must
 // be resolved before the execution is accepted; workers may only submit this
@@ -81,6 +86,116 @@ type GroupOpsMaterialSourceCapturer interface {
 	CaptureGroupOpsMaterialSources(context.Context, GroupOpsMaterialPlan) (GroupOpsMaterialSourceSnapshot, error)
 }
 
+// GroupOpsMaterialPreparation is the Media-owned proof that a mutable local
+// media record has been prepared for a Provider.  The receipt digest is an
+// opaque digest of the Provider receipt; the payload contains only the
+// provider-shaped attachment that the outbound worker may submit later.
+// Group Ops never writes or interprets this record.
+type GroupOpsMaterialPreparation struct {
+	Reference     GroupOpsMaterialReference       `json:"reference"`
+	SourceDigest  string                          `json:"source_digest"`
+	ReceiptDigest string                          `json:"receipt_digest"`
+	ReadyUntil    time.Time                       `json:"ready_until"`
+	Attachment    GroupOpsProviderReadyAttachment `json:"attachment"`
+}
+
+// GroupOpsMaterialPreparationCommand is written only after an approved
+// Provider preparation adapter has obtained a receipt outside the database
+// transaction.  The writer records the receipt and its lease atomically in
+// Media-owned tables.  Group invite links deliberately carry no preparation
+// receipt: their real title/url/description are already captured by Media.
+type GroupOpsMaterialPreparationCommand struct {
+	SourceSnapshot  GroupOpsMaterialSourceSnapshot `json:"source_snapshot"`
+	Items           []GroupOpsMaterialPreparation  `json:"items"`
+	RequiredThrough time.Time                      `json:"required_through"`
+	Actor           int64                          `json:"actor"`
+	IdempotencyKey  string                         `json:"idempotency_key"`
+}
+
+// GroupOpsMaterialPreparationReceipt identifies an idempotent Media write.
+// It intentionally exposes digests and counts, never raw Provider response,
+// tokens, URLs, or credentials.
+type GroupOpsMaterialPreparationReceipt struct {
+	ID            int64     `json:"id"`
+	Actor         int64     `json:"actor"`
+	KeyDigest     string    `json:"key_digest"`
+	CommandDigest string    `json:"command_digest"`
+	ItemCount     int       `json:"item_count"`
+	CreatedAt     time.Time `json:"created_at"`
+}
+
+// GroupOpsMaterialPreparationReader is a transaction-bound Media port.  The
+// caller must already have captured/locked the source facts in the same UoW;
+// the reader returns one ordered item per source or fails closed when a
+// non-invite receipt/lease is absent, expired, or tied to a different digest.
+type GroupOpsMaterialPreparationReader interface {
+	ReadPreparedGroupOpsMaterials(context.Context, GroupOpsMaterialSourceSnapshot, time.Time) ([]GroupOpsMaterialPreparation, error)
+}
+
+// GroupOpsMaterialPreparationWriter is a transaction-neutral Media port for
+// approved Provider adapters.  Implementations open their own UoW and must
+// persist the preparation receipt, audit event, and outbox row atomically.
+// Provider-disabled adapters must never call this method.
+type GroupOpsMaterialPreparationWriter interface {
+	RecordPreparedGroupOpsMaterials(context.Context, GroupOpsMaterialPreparationCommand) (GroupOpsMaterialPreparationReceipt, error)
+}
+
+func ValidateGroupOpsMaterialPreparationCommand(value GroupOpsMaterialPreparationCommand) error {
+	if value.RequiredThrough.IsZero() || value.Actor < 1 || !validPreparationIdempotencyKey(value.IdempotencyKey) {
+		return ErrInvalidGroupOpsMaterialPreparation
+	}
+	if err := ValidateGroupOpsMaterialPreparations(value.SourceSnapshot, value.Items, value.RequiredThrough); err != nil {
+		return err
+	}
+	for _, source := range value.SourceSnapshot.References {
+		if source.Reference.Kind != "group_invite" {
+			return nil
+		}
+	}
+	return ErrInvalidGroupOpsMaterialPreparation
+}
+
+// ValidateGroupOpsMaterialPreparations validates the ordered rows returned
+// by, or written to, the Media preparation boundary without requiring an
+// actor/idempotency key. It is shared by the transaction-bound reader and the
+// transaction-neutral writer so they cannot disagree about a provider-ready
+// payload.
+func ValidateGroupOpsMaterialPreparations(sourceSnapshot GroupOpsMaterialSourceSnapshot, items []GroupOpsMaterialPreparation, requiredThrough time.Time) error {
+	if ValidateGroupOpsMaterialSourceSnapshot(sourceSnapshot) != nil || requiredThrough.IsZero() || len(items) != len(sourceSnapshot.References) {
+		return ErrInvalidGroupOpsMaterialPreparation
+	}
+	for index, source := range sourceSnapshot.References {
+		item := items[index]
+		if item.Reference != source.Reference || item.SourceDigest != source.SourceDigest || item.Attachment.MsgType == "" {
+			return ErrInvalidGroupOpsMaterialPreparation
+		}
+		if source.Reference.Kind == "group_invite" {
+			if item.ReceiptDigest != "" || !item.ReadyUntil.IsZero() || item.Attachment != source.ProviderFields {
+				return ErrInvalidGroupOpsMaterialPreparation
+			}
+			continue
+		}
+		if !validDigest(item.ReceiptDigest) || !item.ReadyUntil.After(requiredThrough) {
+			return ErrInvalidGroupOpsMaterialPreparation
+		}
+		want := source.Reference.Kind
+		if want == "attachment" {
+			want = "file"
+		}
+		if item.Attachment.MsgType != want || ValidateGroupOpsProviderReadyAttachments([]GroupOpsProviderReadyAttachment{item.Attachment}) != nil {
+			return ErrInvalidGroupOpsMaterialPreparation
+		}
+		if source.Reference.Kind == "miniprogram" && (item.Attachment.AppID != source.ProviderFields.AppID || item.Attachment.PagePath != source.ProviderFields.PagePath || item.Attachment.Title != source.ProviderFields.Title) {
+			return ErrInvalidGroupOpsMaterialPreparation
+		}
+	}
+	return nil
+}
+
+func validPreparationIdempotencyKey(value string) bool {
+	return len(value) >= 16 && len(value) <= 128 && strings.TrimSpace(value) == value
+}
+
 func ValidateGroupOpsMaterialSnapshot(value GroupOpsMaterialSnapshot) error {
 	if value.SchemaVersion != 2 || value.NodeKind != "message" || len(value.Attachments) > 9 {
 		return ErrInvalidGroupOpsMaterialSnapshot
@@ -144,7 +259,7 @@ func ValidateGroupOpsMaterialSourceSnapshot(value GroupOpsMaterialSourceSnapshot
 				return ErrInvalidGroupOpsMaterialSnapshot
 			}
 		case "group_invite":
-			if source.ThumbnailImageID != 0 || source.ProviderFields.MsgType != "link" || ValidateGroupOpsProviderReadyAttachments([]GroupOpsProviderReadyAttachment{source.ProviderFields}) != nil {
+			if (source.ThumbnailImageID == 0) != (source.ThumbnailSourceDigest == "") || (source.ThumbnailImageID != 0 && !validDigest(source.ThumbnailSourceDigest)) || source.ProviderFields.MsgType != "link" || ValidateGroupOpsProviderReadyAttachments([]GroupOpsProviderReadyAttachment{source.ProviderFields}) != nil {
 				return ErrInvalidGroupOpsMaterialSnapshot
 			}
 		}

@@ -78,11 +78,11 @@ MANIFEST
 
 # The fragment must remain fragment-only. A donor generated page would add a
 # second v2 sidebar and belongs to the v3 webshell adapter, never to this file.
-if rg -n '<aside class="side"|<div class="shell"|<html|<body' "$target_root/web/src/admin/templates/tags.html"; then
+if grep -En '<aside class="side"|<div class="shell"|<html|<body' "$target_root/web/src/admin/templates/tags.html"; then
   echo "tags.html contains a nested donor shell" >&2
   exit 1
 fi
-if rg -n 'external_userid|customer_id|OneID|oneid' \
+if grep -En 'external_userid|customer_id|OneID|oneid' \
   "$target_root/web/src/admin/templates/tags.html" \
   "$target_root/web/src/admin/sections/wecomTagPicker.ts" \
   "$target_root/web/src/admin/sections/wecomTagPicker.css"; then

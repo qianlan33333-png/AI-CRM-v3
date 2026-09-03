@@ -11,6 +11,7 @@ import (
 	mediaport "github.com/qianlan33333-png/AI-CRM-v3/internal/media/port"
 	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
 	"reflect"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -22,8 +23,8 @@ var (
 )
 
 type ContentDeliveryStore interface {
-	ReserveMutation(context.Context, ContentDeliveryMutationReservation) (ContentDeliveryMutationReceipt, bool, error)
-	CompleteMutation(context.Context, int64, json.RawMessage) (ContentDeliveryMutationReceipt, error)
+	ReserveMutation(context.Context, mediaport.ContentDeliveryMutationReservation) (mediaport.ContentDeliveryMutationReceipt, bool, error)
+	CompleteMutation(context.Context, int64, json.RawMessage) (mediaport.ContentDeliveryMutationReceipt, error)
 	Eligible(context.Context, string, int64) (bool, error)
 	Create(context.Context, mediaport.ContentPackageCommand, time.Time) (mediaport.ContentPackage, error)
 	Update(context.Context, mediaport.ContentPackageUpdateCommand, time.Time) (mediaport.ContentPackage, error)
@@ -33,26 +34,15 @@ type ContentDeliveryStore interface {
 	PutPart(context.Context, mediaport.AttachmentUploadPartCommand, [32]byte, time.Time) (bool, error)
 	Complete(context.Context, mediaport.AttachmentUploadCompleteCommand, time.Time) (int64, error)
 }
-type ContentDeliveryMutationReceipt struct {
-	ID             int64
-	Operation      string
-	Actor          int64
-	KeyDigest      [32]byte
-	PayloadDigest  [32]byte
-	ResultSnapshot json.RawMessage
-}
-type ContentDeliveryMutationReservation struct {
-	Operation     string
-	Actor         int64
-	KeyDigest     [32]byte
-	PayloadDigest [32]byte
-	CreatedAt     time.Time
-}
+type ContentDeliveryMutationReceipt = mediaport.ContentDeliveryMutationReceipt
+type ContentDeliveryMutationReservation = mediaport.ContentDeliveryMutationReservation
 type ContentDelivery struct {
 	uow   platformport.UnitOfWork
 	store ContentDeliveryStore
 	now   func() time.Time
 }
+
+var _ mediaport.ContentDeliveryService = (*ContentDelivery)(nil)
 
 func NewContentDeliveryService(uow platformport.UnitOfWork, store ContentDeliveryStore) *ContentDelivery {
 	return &ContentDelivery{uow: uow, store: store, now: time.Now}
@@ -67,7 +57,16 @@ func (s *ContentDelivery) Preview(ctx context.Context, c mediaport.ContentPackag
 	return contentDeliveryPreview(c), nil
 }
 func (s *ContentDelivery) validateRefs(ctx context.Context, refs []mediaport.ContentRef) error {
+	seen := make(map[string]struct{}, len(refs))
 	for _, r := range refs {
+		if r.ID < 1 || (r.Kind != "image" && r.Kind != "attachment" && r.Kind != "miniprogram" && r.Kind != "group_invite") {
+			return ErrContentDeliveryInvalid
+		}
+		key := r.Kind + ":" + strconv.FormatInt(r.ID, 10)
+		if _, exists := seen[key]; exists {
+			return ErrContentDeliveryInvalid
+		}
+		seen[key] = struct{}{}
 		ok, e := s.store.Eligible(ctx, r.Kind, r.ID)
 		if e != nil || !ok {
 			return ErrContentDeliveryInvalid
@@ -130,7 +129,7 @@ func (s *ContentDelivery) Update(ctx context.Context, c mediaport.ContentPackage
 	return out, nil
 }
 func (s *ContentDelivery) Bind(ctx context.Context, c mediaport.DeliveryBindingCommand) (out mediaport.DeliveryBinding, err error) {
-	if s == nil || s.store == nil || c.Actor < 1 || c.PackageID < 1 || c.GroupInviteID < 1 || c.CampaignCode == "" || c.PlanID == "" || !validContentDeliveryIdempotencyKey(c.IdempotencyKey) {
+	if s == nil || s.uow == nil || s.store == nil || c.Actor < 1 || c.PackageID < 1 || c.GroupInviteID < 1 || strings.TrimSpace(c.CampaignCode) != c.CampaignCode || strings.TrimSpace(c.PlanID) != c.PlanID || c.CampaignCode == "" || c.PlanID == "" || !validContentDeliveryIdempotencyKey(c.IdempotencyKey) {
 		return out, ErrContentDeliveryInvalid
 	}
 	payload := c
@@ -148,7 +147,7 @@ func (s *ContentDelivery) Bind(ctx context.Context, c mediaport.DeliveryBindingC
 	return out, nil
 }
 func (s *ContentDelivery) GetBinding(ctx context.Context, campaignCode, planID string) (out mediaport.DeliveryBinding, err error) {
-	if s == nil || s.store == nil || campaignCode == "" || planID == "" {
+	if s == nil || s.uow == nil || s.store == nil || campaignCode == "" || planID == "" {
 		return out, ErrContentDeliveryInvalid
 	}
 	err = s.uow.Within(ctx, func(tx context.Context) error { out, err = s.store.GetBinding(tx, campaignCode, planID); return err })
@@ -194,12 +193,12 @@ func (s *ContentDelivery) PutPDFPart(ctx context.Context, c mediaport.Attachment
 	if e != nil {
 		return ErrContentDeliveryInvalid
 	}
-	_, e = runContentDeliveryMutation(ctx, s, reservation, func(tx context.Context) (bool, error) {
+	_, e = runContentDeliveryMutation(ctx, s, reservation, func(tx context.Context) (int64, error) {
 		ok, e := s.store.PutPart(tx, c, d, reservation.CreatedAt)
 		if e != nil || !ok {
-			return false, ErrContentDeliveryConflict
+			return 0, ErrContentDeliveryConflict
 		}
-		return true, nil
+		return c.UploadID, nil
 	})
 	return e
 }
@@ -275,7 +274,7 @@ func contentDeliveryJSONEqual(left, right []byte) bool {
 }
 
 func validContentDeliveryIdempotencyKey(value string) bool {
-	return len(value) >= 16 && len(value) <= 128
+	return len(value) >= 16 && len(value) <= 128 && strings.TrimSpace(value) == value
 }
 func validContent(c mediaport.ContentPackageCommand) bool {
 	return c.Actor > 0 && strings.TrimSpace(c.Name) != "" && strings.TrimSpace(c.Name) == c.Name && len(c.ContentText) <= 10000 && len(c.Refs) <= 100 && (strings.TrimSpace(c.ContentText) != "" || len(c.Refs) > 0)

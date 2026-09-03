@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 )
@@ -52,6 +53,12 @@ type ControlCommand struct {
 	ReceiptKey       Digest
 	EvidenceDigest   Digest
 	ActorAdminUserID int64
+	// Generation/Fence/LeaseExpiresAt are optional for the legacy EER HTTP
+	// control surface. The Group Ops owner supplies them on its transactional
+	// reconcile seam so a stale worker cannot close a newer attempt.
+	Generation     int64
+	Fence          int64
+	LeaseExpiresAt time.Time
 }
 
 func (c ControlCommand) Valid() bool {

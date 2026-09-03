@@ -52,10 +52,17 @@ func NewInsertClient(pool *pgxpool.Pool, workers *river.Workers) (*river.Client[
 }
 
 func InsertTx(ctx context.Context, client *river.Client[pgx.Tx], tx pgx.Tx, args river.JobArgs) (*rivertype.JobInsertResult, error) {
+	return InsertTxAt(ctx, client, tx, args, time.Time{})
+}
+
+// InsertTxAt is the shared durable-job insertion seam. A non-zero scheduled
+// time is guaranteed not to run before that instant; zero preserves the
+// immediate queue behavior used by existing effects.
+func InsertTxAt(ctx context.Context, client *river.Client[pgx.Tx], tx pgx.Tx, args river.JobArgs, scheduledAt time.Time) (*rivertype.JobInsertResult, error) {
 	if client == nil || tx == nil || args == nil {
 		return nil, ErrUnavailable
 	}
-	return client.InsertTx(ctx, tx, args, &river.InsertOpts{Queue: OutboundQueue})
+	return client.InsertTx(ctx, tx, args, &river.InsertOpts{Queue: OutboundQueue, ScheduledAt: scheduledAt.UTC()})
 }
 
 type Runtime struct{ client *river.Client[pgx.Tx] }

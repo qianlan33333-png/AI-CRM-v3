@@ -21,12 +21,16 @@ import (
 	customerhttp "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/http"
 	customerstore "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/store"
 	externaleffects "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects"
+	groupops "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops"
+	groupopsapp "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/app"
+	groupopsstore "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/store"
 	identityapp "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/app"
 	identityhttp "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/http"
 	identityquery "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/query"
 	identitystore "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/store"
 	media "github.com/qianlan33333-png/AI-CRM-v3/internal/media"
 	mediaapp "github.com/qianlan33333-png/AI-CRM-v3/internal/media/app"
+	groupopsmaterial "github.com/qianlan33333-png/AI-CRM-v3/internal/media/groupopsmaterial"
 	mediastore "github.com/qianlan33333-png/AI-CRM-v3/internal/media/store"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/outbound"
 	platformaudit "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/audit"
@@ -135,11 +139,36 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
+	contentDelivery := mediaapp.NewContentDeliveryService(uow, mediaRepository)
 	mediaService, err := mediaapp.NewHTTPFacade(mediaRepository)
 	if err != nil {
 		return fail(err)
 	}
 	mediaBindings, err := mediaModule.Bind(mediaService, requestSecurity)
+	if err != nil {
+		return fail(err)
+	}
+	mediaContentBindings, err := mediaModule.BindContentDelivery(contentDelivery, mediaRepository)
+	if err != nil {
+		return fail(err)
+	}
+	mediaPreparationWriter := mediaapp.NewGroupOpsMaterialPreparationWriter(uow, mediaRepository)
+	mediaPreparationBindings, err := mediaModule.BindMaterialPreparation(mediaRepository, mediaPreparationWriter)
+	if err != nil {
+		return fail(err)
+	}
+	groupOpsProvider, err := outbound.NewGroupMessageProvider(outbound.GroupMessageProviderConfig{
+		Enabled:           cfg.Effects.ProviderEnabled,
+		PreparationWriter: mediaPreparationBindings.Writer,
+	})
+	if err != nil {
+		return fail(err)
+	}
+	materialFreezer, err := groupopsmaterial.NewFreezer(mediaPreparedPlanReader{reader: mediaPreparationBindings.Reader})
+	if err != nil {
+		return fail(err)
+	}
+	groupOpsMaterials, err := newGroupOpsMaterialAdapter(mediaContentBindings.SourceCapturer, materialFreezer)
 	if err != nil {
 		return fail(err)
 	}
@@ -152,7 +181,31 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
-	if err = effectRepository.SetCompletionSink(tagCompletionSink); err != nil {
+	groupOpsRepository, err := groupopsstore.NewPostgreSQL(pool.Native(), uow)
+	if err != nil {
+		return fail(err)
+	}
+	groupOpsStaff := groupOpsStaffAdapter{access: accessRepository, owners: groupOpsRepository}
+	groupOpsDirectory := providerDisabledGroupOpsDirectory{}
+	groupOpsEvidence := providerDisabledGroupOpsEvidence{}
+	groupOpsService := groupopsapp.NewService(uow, groupOpsRepository, groupOpsStaff, groupOpsRepository)
+	groupOpsRuntime := groupopsapp.NewRuntimeService(uow, groupOpsRepository, groupOpsRepository, effectRepository, groupOpsStaff, groupOpsDirectory, groupOpsStaff, groupOpsEvidence, groupOpsExternalReconciler{repository: effectRepository}, groupOpsMaterials)
+	groupOpsRuntime.SetDispatchEnabled(true)
+	groupOpsProtocols := &groupOpsProtocolAuthenticator{key: []byte(cfg.GroupOps.WebhookSecret), replay: groupOpsRepository, now: time.Now}
+	groupOpsModule := groupops.NewModuleRegistration()
+	groupOpsBindings, err := groupOpsModule.Bind(groupOpsService, groupOpsRuntime, requestSecurity, groupOpsProtocols, mediaContentBindings.ContentDelivery)
+	if err != nil {
+		return fail(err)
+	}
+	groupOpsCompletionSink, err := outbound.NewGroupMessageCompletionSink(groupOpsRepository)
+	if err != nil {
+		return fail(err)
+	}
+	completionSink, err := outbound.NewCompletionRouter(tagCompletionSink, groupOpsCompletionSink)
+	if err != nil {
+		return fail(err)
+	}
+	if err = effectRepository.SetCompletionSink(completionSink); err != nil {
 		return fail(err)
 	}
 	tagCatalog := tagapp.NewCatalogService(uow, tagRepository, tagRepository, tagRepository, tagRepository)
@@ -243,6 +296,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
+	var tagCatalogProvider externaleffects.ProviderAdapter
 	if cfg.TagCatalog.Enabled {
 		catalogReader, readerErr := outbound.NewWeComTagCatalogReader(providerClient)
 		if readerErr != nil {
@@ -252,9 +306,10 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		if providerErr != nil {
 			return fail(providerErr)
 		}
-		if providerErr = effectsModule.SetProviderAdapter(outbound.NewProviderRouter(catalogProvider)); providerErr != nil {
-			return fail(providerErr)
-		}
+		tagCatalogProvider = catalogProvider
+	}
+	if err = effectsModule.SetProviderAdapter(outbound.NewProviderRouterWithGroupMessage(tagCatalogProvider, groupOpsProvider)); err != nil {
+		return fail(err)
 	}
 	var callbackCrypto *wecom.CallbackCrypto
 	var callbackStateDigester wecom.StateDigester
@@ -338,7 +393,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 			return checkErr
 		}
 		var complete bool
-		checkErr := pool.Native().QueryRow(readinessContext, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['0001','0002','0003','0004','0005','0006','0007','0008','0009','0010','0011']) AS required(version) WHERE NOT EXISTS (SELECT 1 FROM platform_schema_migrations applied WHERE applied.version=required.version))`).Scan(&complete)
+		checkErr := pool.Native().QueryRow(readinessContext, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['0001','0002','0003','0004','0005','0006','0007','0008','0009','0010','0011','0012','0016']) AS required(version) WHERE NOT EXISTS (SELECT 1 FROM platform_schema_migrations applied WHERE applied.version=required.version))`).Scan(&complete)
 		if checkErr != nil || !complete {
 			return errors.New("database schema is not ready")
 		}
@@ -355,6 +410,9 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 			return checkErr
 		}
 		if checkErr = couponModule.Readiness(readinessContext, pool.Native()); checkErr != nil {
+			return checkErr
+		}
+		if checkErr = groupOpsModule.Readiness(readinessContext, pool.Native()); checkErr != nil {
 			return checkErr
 		}
 		return nil
@@ -384,7 +442,14 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		endpoints := map[string]string{"coupons": "api.admin_coupons_page", "couponForm": "api.admin_coupon_form_page"}
 		return renderer.RenderCoupons(writer, webshell.AdminPageForRequest(request, titles[page], "仅管理本地优惠券规则，不含领取、核销、客户持券或订单。", endpoints[page]), page, donorTemplate, webshell.CouponAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS})
 	})
-	handler, err := routeApplicationWithProductsCoupons(healthHandler, accessHandler.Routes(), adminAPIs, effectsBindings.Effects, effectsBindings.PushCenter, effectsUI, mediaBindings.Media, mediaUI, tagBindings.Tags, tagUI, productBindings.Products, productUI, couponBindings.Coupons, couponUI, channelCatalog, weComHandler, shellHandler, authentication, cfg.PublicOrigin)
+	groupOpsUI := groupOpsModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, page, donorTemplate string, assets groupops.GroupOpsAssets) error {
+		endpoint := "api.admin_group_ops_ui"
+		if page == "groupopsDetail" {
+			endpoint = "api.admin_group_ops_plan_detail"
+		}
+		return renderer.RenderGroupOps(writer, webshell.AdminPageForRequest(request, "群运营计划", "管理本地群计划、节点、素材快照与执行回执。", endpoint), page, donorTemplate, webshell.GroupOpsAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS})
+	})
+	handler, err := routeApplicationWithProductsCouponsGroupOps(healthHandler, accessHandler.Routes(), adminAPIs, effectsBindings.Effects, effectsBindings.PushCenter, effectsUI, mediaBindings.Media, mediaUI, tagBindings.Tags, tagUI, productBindings.Products, productUI, couponBindings.Coupons, couponUI, channelCatalog, groupOpsBindings.GroupOps, groupOpsUI, weComHandler, shellHandler, authentication, cfg.PublicOrigin)
 	if err != nil {
 		return fail(err)
 	}
@@ -438,7 +503,18 @@ func routeApplicationWithProducts(health, access, identity, effects, pushCenter,
 }
 
 func routeApplicationWithProductsCoupons(health, access, identity, effects, pushCenter, effectsUI, mediaHandler, mediaUI, tagHandler, tagUI, productHandler, productUI, couponHandler, couponUI, channelHandler, weCom, shell http.Handler, authentication accessAuthentication, publicOrigin string) (http.Handler, error) {
-	if health == nil || access == nil || identity == nil || effects == nil || pushCenter == nil || effectsUI == nil || mediaHandler == nil || mediaUI == nil || tagHandler == nil || tagUI == nil || productHandler == nil || productUI == nil || couponHandler == nil || couponUI == nil || channelHandler == nil || weCom == nil || shell == nil || authentication == nil || canonicalOrigin(publicOrigin) == "" {
+	return routeApplicationWithProductsCouponsGroupOps(health, access, identity, effects, pushCenter, effectsUI, mediaHandler, mediaUI, tagHandler, tagUI, productHandler, productUI, couponHandler, couponUI, channelHandler, http.NotFoundHandler(), http.NotFoundHandler(), weCom, shell, authentication, publicOrigin)
+}
+
+// routeApplicationWithGroupOps keeps the pre-Product/Coupon composition helper
+// available to tests while the real Composition Root mounts every owned module
+// through the combined route below.
+func routeApplicationWithGroupOps(health, access, identity, effects, pushCenter, effectsUI, mediaHandler, mediaUI, tagHandler, tagUI, groupOpsHandler, groupOpsUI, weCom, shell http.Handler, authentication accessAuthentication, publicOrigin string) (http.Handler, error) {
+	return routeApplicationWithProductsCouponsGroupOps(health, access, identity, effects, pushCenter, effectsUI, mediaHandler, mediaUI, tagHandler, tagUI, http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(), groupOpsHandler, groupOpsUI, weCom, shell, authentication, publicOrigin)
+}
+
+func routeApplicationWithProductsCouponsGroupOps(health, access, identity, effects, pushCenter, effectsUI, mediaHandler, mediaUI, tagHandler, tagUI, productHandler, productUI, couponHandler, couponUI, channelHandler, groupOpsHandler, groupOpsUI, weCom, shell http.Handler, authentication accessAuthentication, publicOrigin string) (http.Handler, error) {
+	if health == nil || access == nil || identity == nil || effects == nil || pushCenter == nil || effectsUI == nil || mediaHandler == nil || mediaUI == nil || tagHandler == nil || tagUI == nil || productHandler == nil || productUI == nil || couponHandler == nil || couponUI == nil || channelHandler == nil || groupOpsHandler == nil || groupOpsUI == nil || weCom == nil || shell == nil || authentication == nil || canonicalOrigin(publicOrigin) == "" {
 		return nil, errors.New("application HTTP dependencies are required")
 	}
 	mux := http.NewServeMux()
@@ -482,10 +558,15 @@ func routeApplicationWithProductsCoupons(health, access, identity, effects, push
 	mux.Handle("/api/admin/coupons/", couponHandler)
 	mux.Handle("/api/admin/channels", channelHandler)
 	mux.Handle("/api/admin/channels/", channelHandler)
+	mux.Handle("/api/admin/automation-conversion/group-ops/", groupOpsHandler)
+	mux.Handle("/api/admin/common/operation-members", groupOpsHandler)
+	mux.Handle("/api/admin/common/operation-members/", groupOpsHandler)
+	mux.Handle("/api/automation/group-ops/", groupOpsHandler)
 	mux.Handle("/assets/", requireAdminSession(authentication, effectsUI))
 	mux.Handle("/media-assets/", requireAdminSession(authentication, mediaUI))
 	mux.Handle("/product-assets/", requireAdminSession(authentication, productUI))
 	mux.Handle("/coupon-assets/", requireAdminSession(authentication, couponUI))
+	mux.Handle("/groupops-assets/", requireAdminSession(authentication, groupOpsUI))
 	mux.Handle("/admin/wecom-tags", requireAdminSession(authentication, tagUI))
 	// The staged Tags donor document is a private template carrier. Only the
 	// canonical PR10-mounted route above is public; neither its private staging
@@ -524,6 +605,11 @@ func routeApplicationWithProductsCoupons(health, access, identity, effects, push
 	} {
 		mux.Handle(path, requireAdminSession(authentication, http.NotFoundHandler()))
 	}
+	mux.Handle("/admin/automation-conversion/group-ops/ui", requireAdminSession(authentication, groupOpsUI))
+	mux.Handle("/admin/automation-conversion/group-ops/groups/ui", requireAdminSession(authentication, groupOpsUI))
+	mux.Handle("/admin/automation-conversion/group-ops/plans/", requireAdminSession(authentication, groupOpsUI))
+	mux.Handle("/admin/groupops.html", requireAdminSession(authentication, groupOpsUI))
+	mux.Handle("/admin/groupopsDetail.html", requireAdminSession(authentication, groupOpsUI))
 	mux.Handle("/wecom/external-contact/callback", weCom)
 	mux.Handle("/api/wecom/events", weCom)
 	mux.Handle("/auth/wecom/start", weCom)
@@ -602,7 +688,8 @@ func securityHeaders(next http.Handler) http.Handler {
 		tagsPage := request.URL.Path == "/admin/wecom-tags"
 		productPage := isProductShellPath(request.URL.Path)
 		couponPage := request.URL.Path == "/admin/coupons" || request.URL.Path == "/admin/coupons.html" || request.URL.Path == "/admin/couponForm.html"
-		if (request.URL.Path == "/admin/campaigns.html" && externaleffects.ValidUIQuery(request.URL.Query())) || mediaPage || tagsPage || productPage || couponPage {
+		groupOpsPage := request.URL.Path == "/admin/automation-conversion/group-ops/ui" || request.URL.Path == "/admin/automation-conversion/group-ops/groups/ui" || request.URL.Path == "/admin/groupops.html" || request.URL.Path == "/admin/groupopsDetail.html" || strings.HasPrefix(request.URL.Path, "/admin/automation-conversion/group-ops/plans/")
+		if (request.URL.Path == "/admin/campaigns.html" && externaleffects.ValidUIQuery(request.URL.Query())) || mediaPage || tagsPage || productPage || couponPage || groupOpsPage {
 			styleSource = "'self' 'unsafe-inline'"
 		}
 		imageSource := "'self' data:"

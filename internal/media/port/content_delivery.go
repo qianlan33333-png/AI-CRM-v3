@@ -1,6 +1,10 @@
 package port
 
-import "context"
+import (
+	"context"
+	"encoding/json"
+	"time"
+)
 
 type ContentRef struct {
 	Kind string `json:"kind"`
@@ -24,6 +28,25 @@ type ContentPackageCommand struct {
 type ContentPackageUpdateCommand struct {
 	ID, ExpectedVersion int64
 	ContentPackageCommand
+}
+
+// ContentDeliveryMutationReceipt and Reservation are the transaction-neutral
+// persistence contract for Media content delivery. Keeping them in port lets
+// the Media Store implement the application contract without importing app.
+type ContentDeliveryMutationReceipt struct {
+	ID             int64
+	Operation      string
+	Actor          int64
+	KeyDigest      [32]byte
+	PayloadDigest  [32]byte
+	ResultSnapshot json.RawMessage
+}
+type ContentDeliveryMutationReservation struct {
+	Operation     string
+	Actor         int64
+	KeyDigest     [32]byte
+	PayloadDigest [32]byte
+	CreatedAt     time.Time
 }
 type DeliveryBinding struct {
 	ID            int64  `json:"id"`
