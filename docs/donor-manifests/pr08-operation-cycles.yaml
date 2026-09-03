@@ -117,10 +117,10 @@ frontend:
   template_boundary:
     cycles.html: frozen task-list presentation; raw action/detail hooks are evidence only and must be wired through a v3 adapter
     cyclesDetail.html: frozen read-only run dossier; its audience, target-count, send-time, delivery, and recipient-oriented labels are retained for byte evidence but are excluded from PR08 integration
-  integration: donor templates are not a standalone v2 shell and must be mounted only by a v3-owned adapter through the existing PR10 webshell/primary sidebar; no second navigation shell or direct raw-route deployment
+  integration: donor templates are mounted only by the v3-owned operationCyclesAdapter through the existing PR10 webshell/primary sidebar; the adapter first binds typed read-only v3 operationcycle DTOs, then dynamically starts the unchanged donor main -> legacy -> AdminController chain; no second navigation shell, direct raw-route deployment, replacement renderer, mock fallback, or browser write binding
   css_ts_and_dependencies:
     disposition: deferred-to-terra
-    notes: no standalone cycles-specific TS/CSS exists in the donor; the shared controller/API/types/mock runtime also owns customer, audience, campaign, and recipient branches and is not copied
+    notes: no standalone cycles-specific TS/CSS exists in the donor; the already frozen PR01 shared main/legacy/AdminController runtime is reused byte-for-byte. The v3 host adapter only installs a typed read-only loadDb binding before importing donor main; it does not copy or modify donor runtime files.
     contract_evidence:
       - web/src/admin/controller.ts
       - web/src/api/capabilities.ts

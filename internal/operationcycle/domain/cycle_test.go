@@ -2,6 +2,7 @@ package domain
 
 import (
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 )
@@ -83,6 +84,40 @@ func TestContainsForbiddenScopeRejectsIDsButAllowsLabels(t *testing.T) {
 	} {
 		if !ContainsForbidden(value) {
 			t.Fatalf("excluded scope was accepted: %#v", value)
+		}
+	}
+}
+
+func TestProjectReportSnapshotUsesTypedAllowlistAndRejectsPII(t *testing.T) {
+	base := map[string]any{
+		"schema_version": "operation_cycle_snapshot.v1",
+		"strategy_key":   "weekly.review",
+		"run_key":        "weekly.review.001",
+		"title":          "每周复盘",
+		"steps":          []any{map[string]any{"label": "复盘", "color": "#2EA121", "dim": false}},
+	}
+	projection, err := ProjectReportSnapshot(base)
+	if err != nil {
+		t.Fatalf("ProjectReportSnapshot() error = %v", err)
+	}
+	if projection["revision"] != float64(1) || projection["strategy_version"] != float64(1) || projection["status"] != StatusActive {
+		t.Fatalf("projection defaults = %#v", projection)
+	}
+	for name, value := range map[string]any{
+		"unknown":     "must not pass",
+		"token":       "must not pass",
+		"private_key": "must not pass",
+		"contact":     "13800138000",
+		"email":       "person@example.test",
+		"steps":       []any{map[string]any{"label": "safe", "color": "#2EA121", "dim": false, "password": "no"}},
+	} {
+		candidate := make(map[string]any, len(base)+1)
+		for key, baseValue := range base {
+			candidate[key] = baseValue
+		}
+		candidate[name] = value
+		if _, err := ProjectReportSnapshot(candidate); !errors.Is(err, ErrInvalidScope) {
+			t.Fatalf("ProjectReportSnapshot(%s) error = %v, want ErrInvalidScope", name, err)
 		}
 	}
 }

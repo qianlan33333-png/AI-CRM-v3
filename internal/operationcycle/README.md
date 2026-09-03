@@ -22,4 +22,15 @@ outbound integration only through the versioned outbound contract.
 The frozen donor inventory and exact UI hashes are recorded in
 `docs/donor-manifests/pr08-operation-cycles.yaml` and
 `docs/donor-manifests/pr08-operation-cycles.sha256`; raw templates are under
-`web/donors/operation-cycles-v2` and are not wired by this commit.
+`web/donors/operation-cycles-v2`. The only browser seam is
+`web/v3/operationCyclesAdapter.ts`: it installs a typed, read-only v3
+`loadDb` binding and then dynamically starts the byte-frozen donor
+`main.ts -> legacy.ts -> AdminController` chain inside PR10's one admin
+shell. It has no replacement renderer, styles, navigation, toast, mock, or
+write action. The donor's original blocked-action wording remains authoritative.
+
+Report snapshots are decoded through a typed allowlist before persistence. The
+original JSON object is never retained: the rebuilt projection is the only
+value that can reach operationcycle tables, audit facts, or outbox events.
+Secrets, credentials, tokens, cookies, private keys, external/customer
+identifiers, phone numbers, and email addresses are rejected.

@@ -30,7 +30,10 @@ const outputForInput = (input) => Object.entries(manifest.files || {}).find(([, 
 const legacyEntry = outputForInput('web/src/admin/legacy.ts');
 const campaignsEntry = outputForInput('web/src/admin/sections/campaigns.ts');
 const groupOpsHistoryEntry = outputForInput('web/src/admin/sections/groupOpsHistory.ts');
-if (!legacyEntry || !campaignsEntry || !groupOpsHistoryEntry) fail('required frozen admin runtime chunks are absent from manifest');
+const operationHost = manifest.entries.operationCyclesHost;
+const operationMainEntry = (manifest.files[operationHost]?.imports || []).find((item) => item.kind === 'dynamic-import' && manifest.files[item.path]?.inputs?.includes('web/src/admin/main.ts'))?.path;
+const operationLegacyEntry = operationMainEntry && (manifest.files[operationMainEntry]?.imports || []).find((item) => item.kind === 'dynamic-import' && manifest.files[item.path]?.inputs?.includes('web/src/admin/legacy.ts'))?.path;
+if (!legacyEntry || !campaignsEntry || !groupOpsHistoryEntry || !operationMainEntry || !operationLegacyEntry) fail('required frozen admin runtime chunks are absent from manifest');
 
 const selected = new Set();
 const includeStatic = (relative) => {
@@ -53,6 +56,8 @@ for (const root of roots) includeStatic(root);
 includeStatic(legacyEntry);
 includeStatic(campaignsEntry);
 includeStatic(groupOpsHistoryEntry);
+includeStatic(operationMainEntry);
+includeStatic(operationLegacyEntry);
 
 for (const relative of [...selected].sort()) copy(relative);
 // Media uses the same immutable admin bundle, mounted by the v3 shell. These

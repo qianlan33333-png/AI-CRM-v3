@@ -1,9 +1,11 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -169,6 +171,37 @@ func TestDigestTreatsEquivalentJSONNumbersTheSameAndRejectsForbiddenScopeInput(t
 	}})
 	if !errors.Is(err, ErrInvalid) {
 		t.Fatalf("forbidden scope report error=%v, want ErrInvalid", err)
+	}
+}
+
+func TestReportProjectsBeforeStoreAuditAndOutbox(t *testing.T) {
+	uow := &operationCycleTestUOW{}
+	events := &operationCycleTestEvents{}
+	deliveries := &operationCycleTestDeliveries{}
+	store := &operationCycleStoreStub{report: func(_ context.Context, command ReportCommand, _ time.Time) (map[string]any, bool, error) {
+		if _, exists := command.Snapshot["unknown"]; exists {
+			t.Fatal("unprojected report field reached store")
+		}
+		if command.Snapshot["status"] != "active" || command.Snapshot["revision"] != float64(1) {
+			t.Fatalf("typed defaults did not reach store: %#v", command.Snapshot)
+		}
+		return map[string]any{"accepted": true}, false, nil
+	}}
+	service := NewService(uow, store, events, deliveries)
+	command := ReportCommand{IdempotencyKey: "report-projection", ReporterID: "runner-a", ClientID: "client-a", Snapshot: map[string]any{
+		"schema_version": "operation_cycle_snapshot.v1", "strategy_key": "growth", "run_key": "run-1",
+	}}
+	if _, err := service.Report(context.Background(), command); err != nil {
+		t.Fatal(err)
+	}
+	if len(events.events) != 1 || bytes.Contains(events.events[0].Payload, []byte("unknown")) || bytes.Contains(events.events[0].Payload, []byte("run-1")) {
+		t.Fatalf("event payload leaked report input: %#v", events.events)
+	}
+	for _, unsafe := range []string{"token", "password", "cookie", "private_key", "13800138000", "person@example.test"} {
+		candidate := ReportCommand{IdempotencyKey: "report-" + strings.ReplaceAll(unsafe, "@", "-"), ReporterID: "runner-a", ClientID: "client-a", Snapshot: map[string]any{"schema_version": "operation_cycle_snapshot.v1", "strategy_key": "growth", "run_key": "run-1", unsafe: unsafe}}
+		if _, err := service.Report(context.Background(), candidate); !errors.Is(err, ErrInvalid) {
+			t.Fatalf("unsafe report %q error = %v, want ErrInvalid", unsafe, err)
+		}
 	}
 }
 

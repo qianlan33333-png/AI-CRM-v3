@@ -116,11 +116,16 @@ func NewService(uow platformport.UnitOfWork, store Store, events operationport.E
 }
 
 func (s *Service) Report(ctx context.Context, command ReportCommand) (map[string]any, error) {
-	if s == nil || s.uow == nil || s.store == nil || s.events == nil || s.deliveries == nil || !validReport(command) {
+	if s == nil || s.uow == nil || s.store == nil || s.events == nil || s.deliveries == nil {
 		return nil, ErrInvalid
 	}
+	projection, err := projectReport(command)
+	if err != nil {
+		return nil, ErrInvalid
+	}
+	command.Snapshot = projection
 	var result map[string]any
-	err := s.uow.Within(ctx, func(txCtx context.Context) error {
+	err = s.uow.Within(ctx, func(txCtx context.Context) error {
 		var reused bool
 		var err error
 		result, reused, err = s.store.Report(txCtx, command, s.now().UTC())
@@ -315,14 +320,15 @@ func (s *Service) read(ctx context.Context, read func(context.Context) (map[stri
 	return result, err
 }
 
-func validReport(command ReportCommand) bool {
-	if !validKey(command.IdempotencyKey, 200) || !validKey(command.ReporterID, 240) || !validKey(command.ClientID, 240) || command.Snapshot == nil {
-		return false
+func projectReport(command ReportCommand) (map[string]any, error) {
+	if !validKey(command.IdempotencyKey, 200) || !validKey(command.ReporterID, 240) || !validKey(command.ClientID, 240) {
+		return nil, ErrInvalid
 	}
-	if resultString(command.Snapshot, "schema_version") != "operation_cycle_snapshot.v1" || !validKey(resultString(command.Snapshot, "strategy_key"), 120) || !validKey(resultString(command.Snapshot, "run_key"), 160) {
-		return false
+	projection, err := operationdomain.ProjectReportSnapshot(command.Snapshot)
+	if err != nil {
+		return nil, ErrInvalid
 	}
-	return !containsForbidden(command.Snapshot)
+	return projection, nil
 }
 func validStart(command StartCommand) bool {
 	return validKey(command.StrategyKey, 120) && validKey(command.ActionKey, 120) && validKey(command.RunKey, 160) && validKey(command.IdempotencyKey, 200) && validKey(command.ActorID, 240) && (command.ParentRequest == "" || validKey(command.ParentRequest, 64))

@@ -31,18 +31,30 @@ func (h *uiHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if r.URL.Path != "/admin/operation-cycles" {
+	page, canonical := operationCyclePage(r.URL.Path)
+	if page == "" {
 		http.NotFound(w, r)
 		return
 	}
-	page := "cycles"
 	query := r.URL.Query()
-	if len(query) != 0 {
-		if len(query) != 2 || len(query["view"]) != 1 || query.Get("view") != "detail" || len(query["id"]) != 1 || !validUIKey(query.Get("id")) {
+	if page == "cycles" && len(query) != 0 {
+		http.Redirect(w, r, "/admin/operation-cycles", http.StatusSeeOther)
+		return
+	}
+	if page == "cyclesDetail" && (len(query) != 1 || len(query["id"]) != 1 || !validUIOrdinal(query.Get("id"))) {
+		http.Redirect(w, r, "/admin/operation-cycles", http.StatusSeeOther)
+		return
+	}
+	if canonical {
+		// The donor controller produces relative cycles.html URLs. They are
+		// mounted below the one v3 route, never as an independently served v2
+		// document, and the numeric value remains a display ordinal only.
+		if page == "cycles" {
 			http.Redirect(w, r, "/admin/operation-cycles", http.StatusSeeOther)
-			return
+		} else {
+			http.Redirect(w, r, "/admin/operation-cycles/cyclesDetail.html?id="+query.Get("id"), http.StatusSeeOther)
 		}
-		page = "cyclesDetail"
+		return
 	}
 	raw, err := os.ReadFile(filepath.Join(h.dist, "admin", page+".html"))
 	if err != nil {
@@ -64,16 +76,29 @@ func (h *uiHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func validUIKey(value string) bool {
-	if value == "" || len(value) > 160 || strings.TrimSpace(value) != value {
+func operationCyclePage(path string) (page string, canonical bool) {
+	switch path {
+	case "/admin/operation-cycles":
+		return "cycles", false
+	case "/admin/operation-cycles/cycles.html":
+		return "cycles", true
+	case "/admin/operation-cycles/cyclesDetail.html":
+		return "cyclesDetail", false
+	default:
+		return "", false
+	}
+}
+
+func validUIOrdinal(value string) bool {
+	if value == "" || len(value) > 9 || strings.TrimSpace(value) != value {
 		return false
 	}
 	for _, r := range value {
-		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_' || r == '-' || r == '.' || r == ':') {
+		if r < '0' || r > '9' {
 			return false
 		}
 	}
-	return true
+	return value != "0"
 }
 
 func operationCycleAssets(dist string) (UIAssets, error) {

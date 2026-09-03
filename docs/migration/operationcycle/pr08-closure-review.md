@@ -2,9 +2,9 @@
 
 ## 结论
 
-PR08 当前可以复用 PR01 已冻结的完整 donor 前端链来原样渲染页面，但不能宣称已经
-形成可写的运营周期闭环，不能把 `/admin/operation-cycles` 的 PR10 占位壳替换成
-半成品页面。
+PR08 现在在 PR10 的唯一 admin shell 中装配冻结 donor 前端链，并以最小 v3 只读绑定
+提供 operationcycle-owned 的安全投影。它仍不是 Provider/recipient 写闭环：donor 主
+action 保持原样 blocked，页面不会启动 execution runtime 或发起写请求。
 
 冻结供体的活动前端严格只有两个 fragment：`cycles.html` 和
 `cyclesDetail.html`。两者在 donor `6bfbe5816bb89913c70adaca87d6a486260e016e`
@@ -21,9 +21,9 @@ AdminController`。PR01 已将这条完整链作为冻结 donor runtime 引入 v
   registry、`build.mjs` 和任何第二 v2 shell 仍不得装配。
 - 不得为了让页面动起来新增 cycles TS/CSS、浏览器 mock、sessionStorage fallback、
   HTML 插值/循环 loader 或自定义 action UI。
-- PR10 可以将原 fragment 与已冻结 runtime 挂入唯一 v3 单侧栏；但 donor HTTP mode
-  根本没有 cycles read request，单独增加后端 DTO 也不会让冻结浏览器去读取它。故当前
-  原样挂载只能展示空态或明确 blocked，不能冒充完整运营周期能力。
+- PR10 将原 fragment 与已冻结 runtime 挂入唯一 v3 单侧栏。v3 host binding 在加载
+  donor `main.ts` 前仅覆盖 `AdminApi.loadDb` 的 `cycles/cyclesDetail` 读取，映射
+  operationcycle API 的 typed snapshot projection；不修改 donor runtime，也不回退 Mock。
 
 精确阻断是：**无法在不发明新的前端请求或交互的情况下完成浏览器写闭环**。不是
 “不能挂载”或“不能复用 runtime”。
@@ -36,8 +36,8 @@ AdminController`。PR01 已将这条完整链作为冻结 donor runtime 引入 v
 | 资源 | 无 cycle 专属 TS/CSS/assets；PR01 已冻结 shared runtime | 必须复用原链，不可自建专属页面脚本或样式表 |
 | 列表渲染 | `sc-for`、Mustache 插值、`cycles.rows` | 原始 fragment 单独作为静态 HTML 不可读真实数据 |
 | 列表 action | donor controller 明确 `blocked('...DTO 不等价')` | 不存在可迁移的浏览器 start 行为；不得把按钮改成新 API |
-| 详情跳转 | donor controller 将 `runId` 数字映射 `?id=` | 不可把数字值当 v3 strategy/run 身份；无原 controller 时也无 hook |
-| HTTP mode | `readAdminRows/readAdminPage` 没有 cycles 分支 | 列表原链可渲染空 rows/空态；没有真实 strategy/run 请求，详情无可靠 run DTO，不能完成真实详情 Journey |
+| 详情跳转 | donor controller 将 `runId` 数字映射 `?id=` | v3 仅把数字视为当前稳定排序的 display ordinal，重新读取后解析本地 run key；不作为业务身份或写入参数 |
+| HTTP mode | donor `readAdminRows/readAdminPage` 没有 cycles 分支 | v3 host binding 先安装只读 `loadDb` 再启动原链；读取失败或缺少安全 dossier 会 fail closed，不回退 mock |
 | mock mode | `SEED_DB` + sessionStorage 仅演示 | 禁止作为 v3 数据源或 fallback |
 
 `scripts/check-pr08-frontend-donor-manifest.sh` 已实际通过：两个 source blob、目标

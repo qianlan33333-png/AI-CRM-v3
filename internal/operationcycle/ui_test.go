@@ -40,7 +40,7 @@ func TestUIBindingMountsFrozenTemplateWithHostAdapter(t *testing.T) {
 		_, _ = w.Write([]byte(page + "|" + donor + "|" + assets.HostJS))
 		return nil
 	})
-	for _, target := range []string{"/admin/operation-cycles", "/admin/operation-cycles?view=detail&id=run_1"} {
+	for _, target := range []string{"/admin/operation-cycles", "/admin/operation-cycles/cyclesDetail.html?id=1"} {
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, target, nil))
 		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `data-proof="frozen"`) || !strings.Contains(response.Body.String(), "/assets/host.js") {
@@ -49,11 +49,13 @@ func TestUIBindingMountsFrozenTemplateWithHostAdapter(t *testing.T) {
 	}
 }
 
-func TestUIBindingRejectsUnfrozenQueryShape(t *testing.T) {
+func TestUIBindingRejectsNonDonorRouteAndQueryShapes(t *testing.T) {
 	handler := NewModuleRegistration().UIBinding(t.TempDir(), func(http.ResponseWriter, *http.Request, string, string, UIAssets) error { return nil })
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/admin/operation-cycles?view=detail&id=../secret", nil))
-	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/admin/operation-cycles" {
-		t.Fatalf("unexpected response: %d %s", response.Code, response.Header().Get("Location"))
+	for _, target := range []string{"/admin/operation-cycles?view=detail&id=run_1", "/admin/operation-cycles/cyclesDetail.html?id=../secret"} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, target, nil))
+		if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/admin/operation-cycles" {
+			t.Fatalf("unexpected response for %s: %d %s", target, response.Code, response.Header().Get("Location"))
+		}
 	}
 }

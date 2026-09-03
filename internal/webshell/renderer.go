@@ -337,16 +337,16 @@ func (renderer *Renderer) RenderSurvey(writer http.ResponseWriter, data AdminPag
 	return writeHTML(writer, http.StatusOK, body)
 }
 
-// RenderOperationCycles mounts one byte-frozen donor template. Only the new
-// host adapter is executable; the donor controller and its mock database are
-// intentionally not loaded on this route.
+// RenderOperationCycles mounts one byte-frozen donor template inside the one
+// v3 sidebar. Its host binding starts the frozen donor main -> legacy ->
+// AdminController runtime after supplying only the operation-cycle read DTO.
 func (renderer *Renderer) RenderOperationCycles(writer http.ResponseWriter, data AdminPageData, page, donorTemplate string, assets OperationCycleAssets) error {
 	if renderer == nil || renderer.templates == nil || donorTemplate == "" || assets.TokensCSS == "" || assets.LabsCSS == "" || assets.HostJS == "" || (page != "cycles" && page != "cyclesDetail") {
 		return errors.New("operation-cycle shell assets are required")
 	}
 	normalizeAdminPage(&data)
 	data.ShowPageHeader = false
-	content := `<main id="stage" class="stage rich"></main><template id="tpl">` + donorTemplate + `</template>`
+	content := `<base href="/admin/operation-cycles/"><main id="stage" class="stage rich"></main><template id="tpl">` + donorTemplate + `</template>`
 	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: template.HTML(content), OperationCycles: true, OperationPage: page, OperationAssets: assets})
 	if err != nil {
 		return err

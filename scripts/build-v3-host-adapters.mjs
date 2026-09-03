@@ -38,7 +38,11 @@ for (const [output, metadata] of Object.entries(result.metafile.outputs)) {
   const relative = normalizeOutput(output);
   const contents = fs.readFileSync(path.join(dist, relative));
   const imports = metadata.imports.map((item) => {
-    const absolute = path.resolve(path.dirname(path.resolve(repository, output)), item.path);
+    const absolute = path.isAbsolute(item.path)
+      ? item.path
+      : item.path.startsWith('web/dist/')
+        ? path.resolve(repository, item.path)
+        : path.resolve(path.dirname(path.resolve(repository, output)), item.path);
     return { path: path.relative(dist, absolute).split(path.sep).join('/'), kind: item.kind };
   });
   manifest.files[relative] = {
@@ -48,10 +52,13 @@ for (const [output, metadata] of Object.entries(result.metafile.outputs)) {
     inputs: Object.keys(metadata.inputs).map((input) => path.relative(repository, path.resolve(repository, input)).split(path.sep).join('/')).sort(),
   };
   manifest.release_files[relative] = metadataFor(contents);
-  if (metadata.entryPoint) entry = relative;
+  if (metadata.entryPoint && path.resolve(repository, metadata.entryPoint) === path.join(repository, 'web', 'v3', 'operationCyclesAdapter.ts')) entry = relative;
 }
 if (!entry) throw new Error('operation-cycle host adapter entry was not emitted');
 manifest.entries.operationCyclesHost = entry;
+const donorMain = manifest.files[entry].imports.find((item) => item.kind === 'dynamic-import' && manifest.files[item.path]?.inputs?.includes('web/src/admin/main.ts'))?.path;
+const donorLegacy = donorMain && manifest.files[donorMain].imports.find((item) => item.kind === 'dynamic-import' && manifest.files[item.path]?.inputs?.includes('web/src/admin/legacy.ts'))?.path;
+if (!donorMain || !donorLegacy) throw new Error('operation-cycle host must start the frozen donor main -> legacy runtime');
 manifest.entries = Object.fromEntries(Object.entries(manifest.entries).sort(([left], [right]) => left.localeCompare(right)));
 manifest.files = Object.fromEntries(Object.entries(manifest.files).sort(([left], [right]) => left.localeCompare(right)));
 manifest.release_files = Object.fromEntries(Object.entries(manifest.release_files).sort(([left], [right]) => left.localeCompare(right)));

@@ -800,6 +800,7 @@ func routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, acce
 	mux.Handle("/automation-assets/", requireAdminSession(authentication, automationUI))
 	mux.Handle("/admin/wecom-tags", requireAdminSession(authentication, tagUI))
 	mux.Handle("/admin/operation-cycles", requireAdminSession(authentication, operationUI))
+	mux.Handle("/admin/operation-cycles/", requireAdminSession(authentication, operationUI))
 	// The staged Tags donor document is a private template carrier. Only the
 	// canonical PR10-mounted route above is public; neither its private staging
 	// name nor the donor document name may fall through to a generic 200 shell.
