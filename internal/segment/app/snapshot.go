@@ -306,6 +306,19 @@ func (s *SnapshotService) PublishedSnapshot(ctx context.Context, packageID segme
 	})
 	return value, found, classify(err)
 }
+func (s *SnapshotService) Snapshot(ctx context.Context, snapshotID segmentport.SnapshotID) (segmentport.Snapshot, bool, error) {
+	if s == nil || snapshotID < 1 {
+		return segmentport.Snapshot{}, false, ErrInvalid
+	}
+	var value segmentport.Snapshot
+	var found bool
+	err := s.uow.Within(ctx, func(tx context.Context) error {
+		var e error
+		value, found, e = s.store.Snapshot(tx, snapshotID)
+		return e
+	})
+	return value, found, classify(err)
+}
 func (s *SnapshotService) Members(ctx context.Context, snapshotID segmentport.SnapshotID, cursor string, limit int) (segmentport.MemberPage, error) {
 	if s == nil || snapshotID < 1 {
 		return segmentport.MemberPage{}, ErrInvalid

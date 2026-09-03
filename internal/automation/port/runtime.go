@@ -53,6 +53,7 @@ const (
 	RecipientFinalFailed      RecipientState = "final_failed"
 	RecipientOutcomeUnknown   RecipientState = "outcome_unknown"
 	RecipientReconciled       RecipientState = "reconciled"
+	RecipientCancelled        RecipientState = "cancelled"
 )
 
 type PublishedAgent struct {

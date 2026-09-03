@@ -309,3 +309,41 @@ func (f *RuntimeFacade) TransitionPackage(ctx context.Context, c VersionCommand,
 	}
 	return f.Service.TransitionPackage(ctx, c, target)
 }
+
+func (s *ExecutionService) AudienceExecutionConfiguration(ctx context.Context, packageID segmentport.PackageID) (segmentport.ExecutionConfiguration, error) {
+	check, err := s.Precheck(ctx, int64(packageID))
+	if err != nil {
+		return segmentport.ExecutionConfiguration{}, err
+	}
+	var pkg segmentdomain.Package
+	var binding segmentdomain.AutomationBinding
+	var senders segmentdomain.SenderSet
+	var snapshot segmentport.Snapshot
+	err = s.uow.Within(ctx, func(tx context.Context) error {
+		var e error
+		pkg, e = s.store.LockPackage(tx, int64(packageID))
+		if e != nil {
+			return e
+		}
+		binding, e = s.store.CurrentBinding(tx, int64(packageID))
+		if e != nil {
+			return e
+		}
+		senders, e = s.store.CurrentSenderSet(tx, int64(packageID))
+		if e != nil {
+			return e
+		}
+		snapshot, _, e = s.store.PublishedSnapshot(tx, packageID)
+		return e
+	})
+	if err != nil {
+		return segmentport.ExecutionConfiguration{}, classify(err)
+	}
+	staffIDs := make([]int64, len(senders.Members))
+	for i, item := range senders.Members {
+		staffIDs[i] = int64(item.StaffID)
+	}
+	return segmentport.ExecutionConfiguration{PackageID: packageID, PackageVersion: pkg.Version, ConfigurationVersionID: segmentport.ConfigurationVersionID(check.ConfigurationVersionID), Snapshot: snapshot, AgentID: int64(binding.AgentID), AgentPublishedVersion: binding.AgentPublishedVersion, BindingVersion: binding.Version, SenderSetVersion: senders.Version, SenderStaffIDs: staffIDs, Ready: check.Ready, Reasons: append([]string(nil), check.Reasons...)}, nil
+}
+
+var _ segmentport.ExecutionConfigurationReader = (*ExecutionService)(nil)

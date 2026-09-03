@@ -242,6 +242,14 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
+	automationRuntime, err := automationapp.NewRuntimeService(uow, automationRepository, segmentExecution, segmentSnapshots)
+	if err != nil {
+		return fail(err)
+	}
+	automationBindings.Runtime, err = automationModule.BindRuntime(automationRuntime, requestSecurity)
+	if err != nil {
+		return fail(err)
+	}
 	segmentRuntime := segmentapp.NewRuntimeFacade(segmentService, segmentSnapshots, segmentExecution)
 	segmentBindings, err := segmentModule.BindRuntime(segmentRuntime, segmentRuntime, requestSecurity)
 	if err != nil {
@@ -692,6 +700,10 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	adminAPIs.Handle("/api/admin/setup-wizard", configBindings.Config)
 	adminAPIs.Handle("/api/admin/automation-agents", automationBindings.Agents)
 	adminAPIs.Handle("/api/admin/automation-agents/", automationBindings.Agents)
+	adminAPIs.Handle("/api/admin/automations", automationBindings.Runtime)
+	adminAPIs.Handle("/api/admin/automations/", automationBindings.Runtime)
+	adminAPIs.Handle("/api/admin/automation-runs", automationBindings.Runtime)
+	adminAPIs.Handle("/api/admin/automation-runs/", automationBindings.Runtime)
 	adminAPIs.Handle("/api/admin/channels", channelCatalog)
 	adminAPIs.Handle("/api/admin/channels/", channelCatalog)
 	mountSurveyAPIs(adminAPIs, surveyBindings.Survey)
@@ -804,6 +816,10 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return fail(err)
 	}
 	handler, err = mountSegmentAPI(handler, segmentBindings.Audience)
+	if err != nil {
+		return fail(err)
+	}
+	handler, err = mountAutomationRuntimeAPI(handler, automationBindings.Runtime)
 	if err != nil {
 		return fail(err)
 	}

@@ -6,13 +6,14 @@ import (
 	"net/http"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	automationapp "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/app"
 	automationhttp "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/http"
 	automationport "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/port"
 )
 
 // ModuleRegistration is the stable local-configuration composition seam.
 type ModuleRegistration struct{}
-type HTTPBindings struct{ Agents http.Handler }
+type HTTPBindings struct{ Agents, Runtime http.Handler }
 
 func NewModuleRegistration() *ModuleRegistration { return &ModuleRegistration{} }
 func (m *ModuleRegistration) Bind(service automationport.AgentService, security automationhttp.RequestSecurity) (HTTPBindings, error) {
@@ -21,6 +22,12 @@ func (m *ModuleRegistration) Bind(service automationport.AgentService, security 
 	}
 	h, e := automationhttp.NewHandler(service, security)
 	return HTTPBindings{Agents: h}, e
+}
+func (m *ModuleRegistration) BindRuntime(service *automationapp.RuntimeService, security automationhttp.RequestSecurity) (http.Handler, error) {
+	if m == nil {
+		return nil, errors.New("automation module is required")
+	}
+	return automationhttp.NewRuntimeHandler(service, security)
 }
 func (m *ModuleRegistration) Readiness(ctx context.Context, pool *pgxpool.Pool) error {
 	if m == nil || pool == nil {
