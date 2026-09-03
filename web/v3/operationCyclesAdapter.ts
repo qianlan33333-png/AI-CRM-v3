@@ -112,4 +112,5 @@ api.loadDb = (context?: AdminReadContext): Promise<AdminDb> => {
 
 // Dynamic import is deliberate: the binding must be installed before the
 // unmodified donor entry reads document.body.dataset.page.
+// @ts-expect-error The byte-frozen donor entry is a side-effect-only script.
 void import('../src/admin/main');
