@@ -62,7 +62,7 @@ Admin API 提供以下 typed 操作，写请求均要求 v3 session、管理员�
 - runner report 向
   `operation_cycle_run_versions(run_key, snapshot_revision)` 写入不可变快照；旧 revision 不得
   覆盖 current projection，相同 revision 的语义漂移导致整事务 conflict。
-- migration `0022_operation_cycle_admin_history.sql` 是 additive，并从现有 current 表回填一份
+- migration `0023_operation_cycle_admin_history.sql` 是 additive，并从现有 current 表回填一份
   基线历史，兼容上一 binary/static release。
 - 所有 Store 方法只访问 operationcycle owner 表；网络调用不在事务内，且本轮没有网络调用。
 

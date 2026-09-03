@@ -318,7 +318,7 @@ func operationCycleIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 	}
 	files := make([]string, 0, len(entries))
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") || entry.Name() > "0022_operation_cycle_admin_history.sql" {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") || entry.Name() > "0023_operation_cycle_admin_history.sql" {
 			continue
 		}
 		files = append(files, entry.Name())

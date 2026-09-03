@@ -139,7 +139,7 @@ func TestOperationCycleHistoryMigrationUpgradesExistingProjection(t *testing.T) 
 	}
 	prior := fstest.MapFS{}
 	for _, entry := range entries {
-		if entry.IsDir() || entry.Name() >= "0022_operation_cycle_admin_history.sql" {
+		if entry.IsDir() || entry.Name() >= "0023_operation_cycle_admin_history.sql" {
 			continue
 		}
 		contents, readErr := fs.ReadFile(filesystem, entry.Name())
