@@ -27,6 +27,7 @@ var (
 )
 
 var _ productport.ProductOptionReader = (*Repository)(nil)
+var _ productport.DefinitionImporter = (*Repository)(nil)
 
 // Repository is deliberately transaction-bound.  Every method that touches
 // PostgreSQL requires the UnitOfWork context supplied by the caller; there is
@@ -292,6 +293,78 @@ func (r *Repository) Create(ctx context.Context, command productport.CreateComma
 	return scanProduct(tx.QueryRow(ctx, `INSERT INTO products (`+productColumns+`) VALUES (DEFAULT,$1,$2,$3,$4,$5,$6,$7,$8,$9,$9,1,$10) RETURNING `+productColumns,
 		command.ProductCode, command.Name, command.Description, command.PriceMinor, command.Currency,
 		command.StockQuantity, images, command.Actor, now.UTC(), command.LegacyAdminProjection))
+}
+
+// ImportDefinition writes a migration-approved local product definition using
+// the caller's existing Unit of Work. It intentionally bypasses normal command
+// receipts/events because batch provenance is recorded by the migration owner.
+func (r *Repository) ImportDefinition(ctx context.Context, input productport.DefinitionImport) (productport.Product, error) {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return productport.Product{}, err
+	}
+	if input.Actor < 1 || input.ProductCode == "" || len(input.ProductCode) > 200 || input.Name == "" || len(input.Name) > 200 ||
+		len(input.Description) > 10000 || input.PriceMinor < 0 || input.StockQuantity < 0 || len(input.Currency) != 3 ||
+		input.ServicePeriodDurationDays < 0 ||
+		len(input.Images) != 0 || input.CreatedAt.IsZero() || input.UpdatedAt.IsZero() || input.UpdatedAt.Before(input.CreatedAt) ||
+		!json.Valid(input.LegacyAdminProjection) {
+		return productport.Product{}, ErrInvalid
+	}
+	canonical, err := productapp.CanonicalLegacyAdminProjection(input.LegacyAdminProjection)
+	if err != nil {
+		return productport.Product{}, ErrInvalid
+	}
+	var projection map[string]json.RawMessage
+	if json.Unmarshal(canonical, &projection) != nil || projection == nil {
+		return productport.Product{}, ErrInvalid
+	}
+	for _, key := range []string{"slices", "wecom_tagging"} {
+		var value any
+		if json.Unmarshal(projection[key], &value) != nil || !emptyProjectionValue(value) {
+			return productport.Product{}, ErrInvalid
+		}
+	}
+	for _, key := range []string{"lead_program_id", "lead_channel_id", "completion_target"} {
+		if string(projection[key]) != "null" {
+			return productport.Product{}, ErrInvalid
+		}
+	}
+	var lifecycle struct {
+		Status string `json:"status"`
+	}
+	if json.Unmarshal(canonical, &lifecycle) != nil || strings.HasPrefix(lifecycle.Status, "service_period_") != (input.ServicePeriodDurationDays > 0) {
+		return productport.Product{}, ErrInvalid
+	}
+	images, err := json.Marshal([]string{})
+	if err != nil {
+		return productport.Product{}, ErrInvalid
+	}
+	product, err := scanProduct(tx.QueryRow(ctx, `INSERT INTO products (product_code,name,description,price_minor,currency,stock_quantity,images,created_by,created_at,updated_at,version,legacy_admin_projection)
+		VALUES($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10,1,$11::jsonb) RETURNING `+productColumns,
+		input.ProductCode, input.Name, input.Description, input.PriceMinor, input.Currency, input.StockQuantity, images,
+		input.Actor, input.CreatedAt.UTC(), input.UpdatedAt.UTC(), canonical))
+	if err != nil {
+		return productport.Product{}, err
+	}
+	if input.ServicePeriodDurationDays > 0 {
+		if _, err = tx.Exec(ctx, `INSERT INTO product_imported_service_period_definitions(product_id,duration_days) VALUES($1,$2)`, product.ID, input.ServicePeriodDurationDays); err != nil {
+			return productport.Product{}, err
+		}
+	}
+	return product, nil
+}
+
+func emptyProjectionValue(value any) bool {
+	switch typed := value.(type) {
+	case nil:
+		return true
+	case []any:
+		return len(typed) == 0
+	case map[string]any:
+		return len(typed) == 0
+	default:
+		return false
+	}
 }
 
 func (r *Repository) Update(ctx context.Context, command productport.UpdateCommand, now time.Time) (productport.Product, error) {

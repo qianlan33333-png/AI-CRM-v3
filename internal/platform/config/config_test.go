@@ -25,6 +25,17 @@ func TestLoadDefaultsAndRejectsInvalidRole(t *testing.T) {
 	}
 }
 
+func TestSourceDatabaseURLIsExplicitAndTrimmed(t *testing.T) {
+	t.Setenv("AICRM_SOURCE_DATABASE_URL", "postgres:///legacy")
+	if value, err := SourceDatabaseURL(); err != nil || value != "postgres:///legacy" {
+		t.Fatalf("source database URL=%q err=%v", value, err)
+	}
+	t.Setenv("AICRM_SOURCE_DATABASE_URL", " postgres:///legacy")
+	if _, err := SourceDatabaseURL(); err == nil {
+		t.Fatal("accepted source database URL with surrounding whitespace")
+	}
+}
+
 func TestLoadValidatesBootstrapAndWeComAsClosedConfigurationGroups(t *testing.T) {
 	t.Setenv("AICRM_DATABASE_URL", "postgres://aicrm:test@localhost/aicrm")
 	t.Setenv("AICRM_BOOTSTRAP_USERNAME", "admin")

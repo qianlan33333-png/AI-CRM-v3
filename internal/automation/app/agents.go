@@ -713,6 +713,12 @@ func validPersisted(item automationport.Agent) bool {
 	return item.ID > 0 && item.CreatedBy > 0 && item.UpdatedBy > 0 && !item.CreatedAt.IsZero() && !item.UpdatedAt.IsZero() && item.DraftVersion >= 1 && item.PublishedVersion >= 1 && item.PublishedVersion <= item.DraftVersion && validCode(item.AgentCode) && validType(item.AutomationType) && validStatus(item.Status) && item.ExecutionEnabled == (item.Status == automationport.AgentStatusActive) && legacyErr == nil && contentErr == nil
 }
 
+// ValidPersistedForImport exposes the existing read-model invariant to the
+// one-time configuration importer without granting it mutation behavior.
+func ValidPersistedForImport(item automationport.Agent) bool {
+	return validPersisted(item)
+}
+
 func activationReady(item automationport.Agent) bool {
 	if item.Status != automationport.AgentStatusPaused || item.DraftVersion != item.PublishedVersion || strings.TrimSpace(item.PublishedRolePrompt) == "" || strings.TrimSpace(item.PublishedTaskPrompt) == "" {
 		return false

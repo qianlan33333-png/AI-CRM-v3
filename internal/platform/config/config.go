@@ -348,3 +348,13 @@ func DatabaseURL() (string, error) {
 	}
 	return "", errors.New("database URL is not configured")
 }
+
+// SourceDatabaseURL is available only to explicit offline migration commands.
+// It is deliberately separate from the authoritative v3 runtime database.
+func SourceDatabaseURL() (string, error) {
+	value, ok := os.LookupEnv("AICRM_SOURCE_DATABASE_URL")
+	if !ok || value == "" || strings.TrimSpace(value) != value {
+		return "", errors.New("source database URL is not configured")
+	}
+	return value, nil
+}
