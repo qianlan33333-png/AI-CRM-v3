@@ -1306,6 +1306,40 @@ paths:
       tags: [GroupOps]
       security: [{adminSession: []}]
       responses: {"200": {description: Media-owned content package delivery binding, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsContentBinding"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/automation-conversion/group-ops/history/plans:
+    get:
+      operationId: listGroupOpsHistoryPlans
+      tags: [GroupOps]
+      description: Read sealed v3-owned historical Group Ops facts. This endpoint cannot activate, send, retry, reconcile, or call a Provider.
+      security: [{adminSession: []}]
+      parameters: [{$ref: "#/components/parameters/Limit"}, {$ref: "#/components/parameters/Offset"}]
+      responses: {"200": {description: Read-only history page, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsHistoryPlanPage"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/automation-conversion/group-ops/history/directory:
+    get:
+      operationId: listGroupOpsHistoryDirectory
+      tags: [GroupOps]
+      description: Read sealed v3-owned historical group directory facts without a Provider read.
+      security: [{adminSession: []}]
+      parameters: [{$ref: "#/components/parameters/Limit"}, {$ref: "#/components/parameters/Offset"}]
+      responses: {"200": {description: Read-only history page, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsHistoryDirectoryPage"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/automation-conversion/group-ops/history/plans/{plan_id}/groups:
+    parameters: [{$ref: "#/components/parameters/GroupOpsPlanID"}]
+    get:
+      operationId: listGroupOpsHistoryGroups
+      tags: [GroupOps]
+      description: Read sealed v3-owned historical plan-group facts without runtime execution.
+      security: [{adminSession: []}]
+      parameters: [{$ref: "#/components/parameters/Limit"}, {$ref: "#/components/parameters/Offset"}]
+      responses: {"200": {description: Read-only history page, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsHistoryGroupPage"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/automation-conversion/group-ops/history/plans/{plan_id}/nodes:
+    parameters: [{$ref: "#/components/parameters/GroupOpsPlanID"}]
+    get:
+      operationId: listGroupOpsHistoryNodes
+      tags: [GroupOps]
+      description: Read sealed v3-owned historical schedule and content-package facts without runtime execution.
+      security: [{adminSession: []}]
+      parameters: [{$ref: "#/components/parameters/Limit"}, {$ref: "#/components/parameters/Offset"}]
+      responses: {"200": {description: Read-only history page, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsHistoryNodePage"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
   /api/admin/automation-conversion/group-ops/plans:
     get:
       operationId: listGroupOpsPlans
@@ -2103,6 +2137,125 @@ components:
         provider_accepted: {type: boolean}
         delivery_proven: {type: boolean}
     GroupOpsPlanStatus: {type: string, enum: [draft, active, paused, archived]}
+    GroupOpsHistoryPlan:
+      type: object
+      additionalProperties: false
+      required: [plan_id, name, status, revision, created_by, updated_by, created_at, updated_at, source_plan_id, source_code, plan_type, original_status, owner_staff_id, archived_at]
+      properties:
+        plan_id: {type: string, pattern: "^[1-9][0-9]{0,18}$", maxLength: 19}
+        name: {type: string}
+        status: {const: archived}
+        revision: {const: 1}
+        created_by: {$ref: "#/components/schemas/PositiveID"}
+        updated_by: {$ref: "#/components/schemas/PositiveID"}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+        source_plan_id: {$ref: "#/components/schemas/PositiveID"}
+        source_code: {type: string}
+        plan_type: {type: string}
+        original_status: {type: string}
+        owner_staff_id: {type: [integer, "null"], format: int64, minimum: 1}
+        archived_at: {type: [string, "null"], format: date-time}
+    GroupOpsHistoryDirectory:
+      type: object
+      additionalProperties: false
+      required: [id, source_kind, source_id, chat_reference, display_name, owner_staff_id, owner_name, member_count, internal_member_count, external_member_count, original_status, recorded_at]
+      properties:
+        id: {$ref: "#/components/schemas/PositiveID"}
+        source_kind: {type: string, enum: [group_chats, wecom_group_chat_snapshots]}
+        source_id: {type: [integer, "null"], format: int64, minimum: 1}
+        chat_reference: {type: string}
+        display_name: {type: [string, "null"]}
+        owner_staff_id: {type: [integer, "null"], format: int64, minimum: 1}
+        owner_name: {type: [string, "null"]}
+        member_count: {type: [integer, "null"], format: int32, minimum: 0}
+        internal_member_count: {type: [integer, "null"], format: int32, minimum: 0}
+        external_member_count: {type: [integer, "null"], format: int32, minimum: 0}
+        original_status: {type: string}
+        recorded_at: {type: string, format: date-time}
+    GroupOpsHistoryGroup:
+      type: object
+      additionalProperties: false
+      required: [id, source_group_id, source_plan_id, plan_id, chat_reference, display_name, owner_staff_id, internal_member_count, external_member_count, original_status, created_at, removed_at]
+      properties:
+        id: {$ref: "#/components/schemas/PositiveID"}
+        source_group_id: {$ref: "#/components/schemas/PositiveID"}
+        source_plan_id: {$ref: "#/components/schemas/PositiveID"}
+        plan_id: {type: string, pattern: "^[1-9][0-9]{0,18}$", maxLength: 19}
+        chat_reference: {type: string}
+        display_name: {type: string}
+        owner_staff_id: {type: [integer, "null"], format: int64, minimum: 1}
+        internal_member_count: {type: integer, format: int32, minimum: 0}
+        external_member_count: {type: integer, format: int32, minimum: 0}
+        original_status: {type: string}
+        created_at: {type: string, format: date-time}
+        removed_at: {type: [string, "null"], format: date-time}
+    GroupOpsHistoryNode:
+      type: object
+      additionalProperties: false
+      required: [id, source_node_id, source_plan_id, plan_id, day_index, trigger_time, sort_order, original_status, content_package, created_at, updated_at]
+      properties:
+        id: {$ref: "#/components/schemas/PositiveID"}
+        source_node_id: {$ref: "#/components/schemas/PositiveID"}
+        source_plan_id: {$ref: "#/components/schemas/PositiveID"}
+        plan_id: {type: string, pattern: "^[1-9][0-9]{0,18}$", maxLength: 19}
+        day_index: {type: integer, format: int32, minimum: 0}
+        trigger_time: {type: string}
+        sort_order: {type: integer, format: int32, minimum: 0}
+        original_status: {type: string}
+        content_package: {type: object, additionalProperties: true}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    GroupOpsHistoryPlanPage:
+      type: object
+      additionalProperties: false
+      required: [source, read_only, real_external_call_executed, items, total, limit, offset]
+      properties:
+        source: {const: v1_history}
+        read_only: {const: true}
+        real_external_call_executed: {const: false}
+        items: {type: array, items: {$ref: "#/components/schemas/GroupOpsHistoryPlan"}}
+        total: {type: integer, minimum: 0}
+        limit: {type: integer, minimum: 1, maximum: 100}
+        offset: {type: integer, minimum: 0}
+    GroupOpsHistoryDirectoryPage:
+      type: object
+      additionalProperties: false
+      required: [source, read_only, real_external_call_executed, items, total, limit, offset]
+      properties:
+        source: {const: v1_history}
+        read_only: {const: true}
+        real_external_call_executed: {const: false}
+        items: {type: array, items: {$ref: "#/components/schemas/GroupOpsHistoryDirectory"}}
+        total: {type: integer, minimum: 0}
+        limit: {type: integer, minimum: 1, maximum: 100}
+        offset: {type: integer, minimum: 0}
+    GroupOpsHistoryGroupPage:
+      type: object
+      additionalProperties: false
+      required: [source, read_only, real_external_call_executed, items, total, limit, offset, plan_id]
+      properties:
+        source: {const: v1_history}
+        read_only: {const: true}
+        real_external_call_executed: {const: false}
+        items: {type: array, items: {$ref: "#/components/schemas/GroupOpsHistoryGroup"}}
+        total: {type: integer, minimum: 0}
+        limit: {type: integer, minimum: 1, maximum: 100}
+        offset: {type: integer, minimum: 0}
+        plan_id: {type: string, pattern: "^[1-9][0-9]{0,18}$", maxLength: 19}
+    GroupOpsHistoryNodePage:
+      type: object
+      additionalProperties: false
+      required: [source, read_only, real_external_call_executed, items, total, limit, offset, plan_id]
+      properties:
+        source: {const: v1_history}
+        read_only: {const: true}
+        real_external_call_executed: {const: false}
+        items: {type: array, items: {$ref: "#/components/schemas/GroupOpsHistoryNode"}}
+        total: {type: integer, minimum: 0}
+        limit: {type: integer, minimum: 1, maximum: 100}
+        offset: {type: integer, minimum: 0}
+        plan_id: {type: string, pattern: "^[1-9][0-9]{0,18}$", maxLength: 19}
     GroupOpsPlan:
       type: object
       additionalProperties: false

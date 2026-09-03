@@ -50,7 +50,8 @@ for migration_contract in \
   '0010_product.sql:Product' \
   '0011_coupon_rules.sql:Coupon rules' \
   '0012_group_ops.sql:Group Ops' \
-  '0016_media_content_packages.sql:Media content packages'; do
+  '0016_media_content_packages.sql:Media content packages' \
+  '0017_group_ops_history.sql:Group Ops history'; do
   migration="${migration_contract%%:*}"
   label="${migration_contract#*:}"
   test -f "migrations/${migration}" || {

@@ -60,6 +60,7 @@ test -f "$release_dir/migrations/0010_product.sql"
 test -f "$release_dir/migrations/0011_coupon_rules.sql"
 test -f "$release_dir/migrations/0012_group_ops.sql"
 test -f "$release_dir/migrations/0016_media_content_packages.sql"
+test -f "$release_dir/migrations/0017_group_ops_history.sql"
 test -f "$release_dir/web/dist/asset-manifest.json"
 test -f "$release_dir/release-files.sha256"
 (cd "$release_dir" && sha256sum --strict --check release-files.sha256)

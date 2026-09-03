@@ -98,3 +98,49 @@ type HistoricalReader interface {
 	ListHistoricalGroups(context.Context, int64, int32, int32) ([]HistoricalGroup, int64, error)
 	ListHistoricalNodes(context.Context, int64, int32, int32) ([]HistoricalNode, int64, error)
 }
+
+// Historical pages deliberately do not embed Safety. These are sealed source
+// records: the donor contract distinguishes them from current Group Ops plans
+// and only permits read-only observation. They can never enter runtime or
+// Provider execution paths.
+type HistoricalPlanPage struct {
+	Source                   string           `json:"source"`
+	ReadOnly                 bool             `json:"read_only"`
+	RealExternalCallExecuted bool             `json:"real_external_call_executed"`
+	Items                    []HistoricalPlan `json:"items"`
+	Total                    int64            `json:"total"`
+	Limit                    int32            `json:"limit"`
+	Offset                   int32            `json:"offset"`
+}
+
+type HistoricalDirectoryPage struct {
+	Source                   string                `json:"source"`
+	ReadOnly                 bool                  `json:"read_only"`
+	RealExternalCallExecuted bool                  `json:"real_external_call_executed"`
+	Items                    []HistoricalDirectory `json:"items"`
+	Total                    int64                 `json:"total"`
+	Limit                    int32                 `json:"limit"`
+	Offset                   int32                 `json:"offset"`
+}
+
+type HistoricalGroupPage struct {
+	Source                   string            `json:"source"`
+	ReadOnly                 bool              `json:"read_only"`
+	RealExternalCallExecuted bool              `json:"real_external_call_executed"`
+	Items                    []HistoricalGroup `json:"items"`
+	Total                    int64             `json:"total"`
+	Limit                    int32             `json:"limit"`
+	Offset                   int32             `json:"offset"`
+	PlanID                   int64             `json:"plan_id,string"`
+}
+
+type HistoricalNodePage struct {
+	Source                   string           `json:"source"`
+	ReadOnly                 bool             `json:"read_only"`
+	RealExternalCallExecuted bool             `json:"real_external_call_executed"`
+	Items                    []HistoricalNode `json:"items"`
+	Total                    int64            `json:"total"`
+	Limit                    int32            `json:"limit"`
+	Offset                   int32            `json:"offset"`
+	PlanID                   int64            `json:"plan_id,string"`
+}

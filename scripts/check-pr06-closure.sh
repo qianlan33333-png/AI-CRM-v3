@@ -116,6 +116,7 @@ pass "no second active frontend shell/runtime was introduced; web/src is unmodif
 
 for path in \
   internal/groupops/app/runtime.go \
+  internal/groupops/app/history.go \
   internal/groupops/http/handler.go \
   internal/groupops/module.go \
   internal/groupops/store/postgres.go \
@@ -126,7 +127,8 @@ for path in \
   internal/media/app/groupops_preparation.go \
   internal/media/store/groupops_preparation.go \
   migrations/0012_group_ops.sql \
-  migrations/0016_media_content_packages.sql; do
+  migrations/0016_media_content_packages.sql \
+  migrations/0017_group_ops_history.sql; do
   require_file "$REPO_ROOT/$path"
 done
 require_text 'routeApplicationWithGroupOps' "$REPO_ROOT/cmd/aicrm/composition.go"
@@ -145,6 +147,7 @@ require_text 'media_group_ops_preparation_items' "$REPO_ROOT/migrations/0016_med
 require_text 'group-ops-provider-disabled' "$REPO_ROOT/internal/outbound/group_message.go"
 require_text 'AICRM_GROUP_OPS_WEBHOOK_SECRET' "$REPO_ROOT/internal/platform/config/config.go"
 require_text '/api/admin/automation-conversion/group-ops/plans' "$REPO_ROOT/api/openapi.yaml"
+require_text '/api/admin/automation-conversion/group-ops/history/plans' "$REPO_ROOT/api/openapi.yaml"
 require_text '/api/automation/group-ops/webhooks/{webhook_key}' "$REPO_ROOT/api/openapi.yaml"
 pass "v3 Group Ops owner implementation, OpenAPI, composition adapter, and disabled Provider gate are present"
 

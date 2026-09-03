@@ -189,11 +189,12 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	groupOpsDirectory := providerDisabledGroupOpsDirectory{}
 	groupOpsEvidence := providerDisabledGroupOpsEvidence{}
 	groupOpsService := groupopsapp.NewService(uow, groupOpsRepository, groupOpsStaff, groupOpsRepository)
+	groupOpsHistory := groupopsapp.NewHistoryService(uow, groupOpsRepository)
 	groupOpsRuntime := groupopsapp.NewRuntimeService(uow, groupOpsRepository, groupOpsRepository, effectRepository, groupOpsStaff, groupOpsDirectory, groupOpsStaff, groupOpsEvidence, groupOpsExternalReconciler{repository: effectRepository}, groupOpsMaterials)
 	groupOpsRuntime.SetDispatchEnabled(true)
 	groupOpsProtocols := &groupOpsProtocolAuthenticator{key: []byte(cfg.GroupOps.WebhookSecret), replay: groupOpsRepository, now: time.Now}
 	groupOpsModule := groupops.NewModuleRegistration()
-	groupOpsBindings, err := groupOpsModule.Bind(groupOpsService, groupOpsRuntime, requestSecurity, groupOpsProtocols, mediaContentBindings.ContentDelivery)
+	groupOpsBindings, err := groupOpsModule.BindWithHistory(groupOpsService, groupOpsRuntime, groupOpsHistory, requestSecurity, groupOpsProtocols, mediaContentBindings.ContentDelivery)
 	if err != nil {
 		return fail(err)
 	}
