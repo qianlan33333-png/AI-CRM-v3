@@ -173,7 +173,7 @@ func NewProviderRouterWithChannels(tagCatalog, groupMessage, channelAsset effect
 func NewProviderRouterWithChannelEntrants(tagCatalog, groupMessage, channelAsset, channelEntrant effect.ProviderAdapter) *ProviderRouter {
 	return &ProviderRouter{tagCatalog: tagCatalog, groupMessage: groupMessage, channelAsset: channelAsset, channelEntrant: channelEntrant}
 }
-func NewProviderRouterWithAllChannels(tagCatalog, groupMessage, channelAsset, channelEntrant, channelLink effect.ProviderAdapter) *ProviderRouter {
+func NewProviderRouterWithGroupMessageAndChannels(tagCatalog, groupMessage, channelAsset, channelEntrant, channelLink effect.ProviderAdapter) *ProviderRouter {
 	return &ProviderRouter{tagCatalog: tagCatalog, groupMessage: groupMessage, channelAsset: channelAsset, channelEntrant: channelEntrant, channelLink: channelLink}
 }
 
