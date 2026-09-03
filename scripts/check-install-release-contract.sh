@@ -64,7 +64,8 @@ for migration_contract in \
   '0025_payment_reconciliation.sql:payment reconciliation' \
   '0026_identity_history_receipts.sql:identity history receipts' \
   '0027_admin_access_login_compat.sql:Admin access login compatibility' \
-  '0028_hxc_dashboard.sql:HXC dashboard'; do
+  '0028_hxc_dashboard.sql:HXC dashboard' \
+  '0029_channel_center.sql:Channel center'; do
   migration="${migration_contract%%:*}"
   label="${migration_contract#*:}"
   test -f "migrations/${migration}" || {
