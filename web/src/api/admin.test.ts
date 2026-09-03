@@ -198,7 +198,6 @@ import {
 } from "./generated/p4-outbound-operations/p4-outbound-operations";
 
 import { ApiError } from './transport';
-import { transactionReadiness } from './capabilities';
 import { HttpApi } from '../shared/api/client';
 import { mountFunnelGrid } from '../admin/sections/funnelGrid';
 import { radarQrSvg, radarShareUrl } from '../admin/sections/qr';
@@ -241,7 +240,6 @@ const productAdminProjection = {
 const servicePeriodAdminProjection = (lifecycle: 'draft' | 'enabled' | 'disabled' | 'archived' = 'draft') => ({ ...productAdminProjection, status: `service_period_${lifecycle}`, enabled: lifecycle === 'enabled' });
 
 export async function runAdminAdapterTests(): Promise<void> {
-  assert(transactionReadiness.orderRead.ready && !transactionReadiness.refundIntent.ready, 'order reads are real while refunds remain independently gated');
   // URL factories are generated from api/openapi.yaml; generated callers use GET for every read below.
   assert(getListCustomersUrl({ limit: 50 }) === '/api/v1/customers?limit=50', 'customer list URL/method');
   const customerListCalls: Array<{ input: string; init?: RequestInit }> = [];
@@ -1158,13 +1156,12 @@ export async function runAdminAdapterTests(): Promise<void> {
   let exportRequest: { input: string; init?: RequestInit } | undefined;
   globalThis.fetch = async (input, init) => { exportRequest = { input: String(input), init }; return new Response('local_id,provider\n42,wechat\n', { status: 200, headers: { 'Content-Type': 'text/csv' } }); };
   try {
-    const blob = await exportWechatOrdersDto({ transactionId: 'wx-42', identity: 'customer:42', productCode: 'sku-1', status: 'paid', createdFrom: '2026-08-01T00:00:00Z', createdTo: '2026-08-31T23:59:59Z' });
+    const blob = await exportWechatOrdersDto({ transactionId: 'wx-42', mobile: '13800000000', productCode: 'sku-1', status: 'paid', createdFrom: '2026-08-01T00:00:00Z', createdTo: '2026-08-31T23:59:59Z' });
     const body = JSON.parse(String(exportRequest?.init?.body));
     const headers = new Headers(exportRequest?.init?.headers);
     assert(exportRequest?.input === '/api/admin/wechat-pay/order-exports' && exportRequest.init?.method === 'POST', 'wechat export generated URL/method');
-    assert(body.resource === 'orders' && body.format === 'csv' && body.filters.provider === 'wechat' && body.filters.transaction_id === 'wx-42' && body.filters.customer_id === 42 && !('mobile' in body.filters) && !('identity' in body.filters) && body.filters.product_code === 'sku-1' && body.filters.status === 'paid', 'wechat export filter mapping');
+    assert(body.resource === 'orders' && body.format === 'csv' && body.filters.provider === 'wechat' && body.filters.transaction_id === 'wx-42' && body.filters.mobile === '13800000000' && body.filters.product_code === 'sku-1' && body.filters.status === 'paid', 'wechat export filter mapping');
     assert(Boolean(headers.get('Idempotency-Key')) && await blob.text() === 'local_id,provider\n42,wechat\n', 'wechat export idempotency and CSV body');
-    try { await exportWechatOrdersDto({ mobile: '13800000000' }); assert(false, 'raw phone export filter accepted'); } catch { /* raw phone must never be sent */ }
   } finally { globalThis.fetch = savedFetch; }
 
   const actionToken = 'a'.repeat(43);

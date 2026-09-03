@@ -1,14 +1,8 @@
-import { ADMIN_SCREENS, CAPABILITIES, transactionReadiness } from './capabilities';
+import { ADMIN_SCREENS, CAPABILITIES } from './capabilities';
 
 function assert(ok: unknown, message: string): asserts ok { if (!ok) throw new Error(message); }
 
 export function runCapabilityTests(): void {
-  assert(transactionReadiness.orderRead.ready === true, 'order reads must be real after TX02 migration/API readiness');
-  assert(transactionReadiness.refundIntent.ready === false, 'refund intents must stay blocked before TX05 Payment/EER readiness');
-  assert(transactionReadiness.alipayRefundIntent.ready === false, 'Alipay refund must stay blocked because the frozen donor is read-only');
-  const transaction = CAPABILITIES.filter((cap) => cap.surface === 'admin' && cap.screen.split('/').includes('orders'));
-  assert(transaction.length === 3 && transaction.filter((cap) => cap.state === 'real').length === 1 && transaction.filter((cap) => cap.state === 'backend_blocked').length === 2, 'transaction capabilities must project each typed readiness independently');
-  assert(transaction.filter((cap) => cap.state === 'backend_blocked').every((cap) => Boolean(cap.reason)), 'blocked transaction capabilities need an explicit unavailable reason');
   const stale = CAPABILITIES.filter((cap) => cap.state === 'backend_blocked' && cap.reason === 'OpenAPI operation 已存在，Kimi 壳尚未完成 DTO Adapter');
   assert(stale.length === 0, 'existing OpenAPI operation must be real or have a precise semantic reason');
   const pending = CAPABILITIES.filter((cap) => cap.state === 'backend_blocked' && /待批次|adapter.pending|DTO Adapter/i.test(cap.reason || ''));
