@@ -74,6 +74,7 @@ import (
 	segment "github.com/qianlan33333-png/AI-CRM-v3/internal/segment"
 	segmentapp "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/app"
 	segmentcompiler "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/compiler"
+	segmenthttp "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/http"
 	segmentstore "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/store"
 	surveymodule "github.com/qianlan33333-png/AI-CRM-v3/internal/survey"
 	surveyapp "github.com/qianlan33333-png/AI-CRM-v3/internal/survey/app"
@@ -237,6 +238,14 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return fail(err)
 	}
 	segmentBindings, err := segmentModule.BindRuntime(segmentService, segmentSnapshots, requestSecurity)
+	if err != nil {
+		return fail(err)
+	}
+	segmentWebhookService, err := segmentapp.NewWebhookService(uow, segmentRepository, oneID, segmentSnapshots)
+	if err != nil {
+		return fail(err)
+	}
+	segmentWebhookHandler, err := segmenthttp.NewWebhookHandler(segmentWebhookService, cfg.AutomationOperations.WebhookSecret)
 	if err != nil {
 		return fail(err)
 	}
@@ -687,7 +696,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 			return checkErr
 		}
 		var complete bool
-		checkErr := pool.Native().QueryRow(readinessContext, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['0001','0002','0003','0004','0005','0006','0007','0008','0009','0010','0011','0012','0013','0014','0016','0017','0018','0019','0020','0021','0022','0023','0024','0025','0026','0027','0028','0029']) AS required(version) WHERE NOT EXISTS (SELECT 1 FROM platform_schema_migrations applied WHERE applied.version=required.version))`).Scan(&complete)
+		checkErr := pool.Native().QueryRow(readinessContext, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['0001','0002','0003','0004','0005','0006','0007','0008','0009','0010','0011','0012','0013','0014','0016','0017','0018','0019','0020','0021','0022','0023','0024','0025','0026','0027','0028','0029','0030']) AS required(version) WHERE NOT EXISTS (SELECT 1 FROM platform_schema_migrations applied WHERE applied.version=required.version))`).Scan(&complete)
 		if checkErr != nil || !complete {
 			return errors.New("database schema is not ready")
 		}
@@ -789,6 +798,10 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return fail(err)
 	}
 	handler, err = mountSegmentAPI(handler, segmentBindings.Audience)
+	if err != nil {
+		return fail(err)
+	}
+	handler, err = mountSegmentWebhook(handler, segmentWebhookHandler)
 	if err != nil {
 		return fail(err)
 	}

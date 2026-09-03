@@ -47,7 +47,8 @@ func (m *ModuleRegistration) Readiness(ctx context.Context, pool *pgxpool.Pool) 
 			'segment_audience_refresh_runs',
 			'segment_audience_snapshots',
 			'segment_audience_snapshot_members',
-			'segment_audience_refresh_batches'
+			'segment_audience_refresh_batches',
+			'segment_audience_webhook_receipts'
 		]) AS required(name)
 		WHERE to_regclass(current_schema() || '.' || required.name) IS NULL
 	)`).Scan(&ready)

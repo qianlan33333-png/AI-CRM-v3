@@ -28,6 +28,7 @@ type Runtime struct {
 	Bootstrap                  Bootstrap
 	WeCom                      WeCom
 	GroupOps                   GroupOps
+	AutomationOperations       AutomationOperations
 	Effects                    Effects
 	TagCatalog                 TagCatalogProvider
 	Survey                     Survey
@@ -67,6 +68,7 @@ type GroupOps struct {
 	WebhookSecret string
 }
 
+type AutomationOperations struct{ WebhookSecret string }
 type Effects struct{ ProviderEnabled bool }
 type Survey struct {
 	DataKey             string
@@ -123,8 +125,9 @@ func Load() (Runtime, error) {
 			CallbackAESKey: os.Getenv("AICRM_WECOM_CALLBACK_AES_KEY"), ContextSigningKey: os.Getenv("AICRM_WECOM_CONTEXT_SIGNING_KEY"),
 			ChannelStateHMACKey: os.Getenv("AICRM_CHANNEL_STATE_HMAC_KEY"),
 		},
-		GroupOps: GroupOps{WebhookSecret: os.Getenv("AICRM_GROUP_OPS_WEBHOOK_SECRET")},
-		Survey:   Survey{DataKey: os.Getenv("AICRM_SURVEY_DATA_KEY"), OAuthAppID: os.Getenv("AICRM_SURVEY_OAUTH_APP_ID"), OAuthSecret: os.Getenv("AICRM_SURVEY_OAUTH_SECRET"), OAuthOpenPlatformID: os.Getenv("AICRM_SURVEY_OAUTH_OPEN_PLATFORM_ID")},
+		GroupOps:             GroupOps{WebhookSecret: os.Getenv("AICRM_GROUP_OPS_WEBHOOK_SECRET")},
+		AutomationOperations: AutomationOperations{WebhookSecret: os.Getenv("AICRM_AUTOMATION_OPS_WEBHOOK_SECRET")},
+		Survey:               Survey{DataKey: os.Getenv("AICRM_SURVEY_DATA_KEY"), OAuthAppID: os.Getenv("AICRM_SURVEY_OAUTH_APP_ID"), OAuthSecret: os.Getenv("AICRM_SURVEY_OAUTH_SECRET"), OAuthOpenPlatformID: os.Getenv("AICRM_SURVEY_OAUTH_OPEN_PLATFORM_ID")},
 	}
 	if cfg.Survey.OAuthEnabled, err = strictBool("AICRM_SURVEY_OAUTH_ENABLED", false); err != nil {
 		return Runtime{}, err
@@ -262,6 +265,9 @@ func Load() (Runtime, error) {
 	}
 	if cfg.GroupOps.WebhookSecret != "" && (strings.TrimSpace(cfg.GroupOps.WebhookSecret) != cfg.GroupOps.WebhookSecret || len(cfg.GroupOps.WebhookSecret) < 32 || len(cfg.GroupOps.WebhookSecret) > 4096) {
 		return Runtime{}, errors.New("invalid Group Ops webhook secret")
+	}
+	if cfg.AutomationOperations.WebhookSecret != "" && (strings.TrimSpace(cfg.AutomationOperations.WebhookSecret) != cfg.AutomationOperations.WebhookSecret || len(cfg.AutomationOperations.WebhookSecret) < 32 || len(cfg.AutomationOperations.WebhookSecret) > 4096) {
+		return Runtime{}, errors.New("invalid Automation Operations webhook secret")
 	}
 	if cfg.Survey.DataKey != "" {
 		if decoded, decodeErr := base64.RawStdEncoding.DecodeString(cfg.Survey.DataKey); decodeErr != nil || len(decoded) != 32 {

@@ -21,3 +21,16 @@ func mountSegmentAPI(next, audience http.Handler) (http.Handler, error) {
 		next.ServeHTTP(writer, request)
 	}), nil
 }
+
+func mountSegmentWebhook(next, webhook http.Handler) (http.Handler, error) {
+	if next == nil || webhook == nil {
+		return nil, errors.New("segment webhook route dependencies are required")
+	}
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if strings.HasPrefix(request.URL.Path, "/api/integrations/ai-audience/") {
+			webhook.ServeHTTP(writer, request)
+			return
+		}
+		next.ServeHTTP(writer, request)
+	}), nil
+}

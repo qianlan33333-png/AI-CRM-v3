@@ -148,6 +148,48 @@ func (s *SnapshotService) AcceptRefresh(ctx context.Context, command RefreshComm
 	return result, classify(err)
 }
 
+// AcceptRefreshWithin is the same-domain atomic seam used by a verified
+// inbound fact while its receipt, outbox fact and River job share one UoW.
+func (s *SnapshotService) AcceptRefreshWithin(ctx context.Context, command RefreshCommand) (segmentdomain.RefreshRun, error) {
+	if s == nil || command.PackageID < 1 || command.Actor < 1 || len(command.IdempotencyKey) < 16 || len(command.IdempotencyKey) > 128 || strings.TrimSpace(command.IdempotencyKey) != command.IdempotencyKey {
+		return segmentdomain.RefreshRun{}, ErrInvalid
+	}
+	if command.ReferenceTime.IsZero() {
+		command.ReferenceTime = s.now().UTC()
+	} else {
+		command.ReferenceTime = command.ReferenceTime.UTC()
+	}
+	now := s.now().UTC()
+	source := sha256.Sum256([]byte(command.IdempotencyKey))
+	pkg, err := s.store.GetPackage(ctx, command.PackageID)
+	if err != nil {
+		return segmentdomain.RefreshRun{}, classify(err)
+	}
+	if pkg.Lifecycle == segmentdomain.Archived {
+		return segmentdomain.RefreshRun{}, ErrConflict
+	}
+	config, err := s.store.CurrentConfiguration(ctx, command.PackageID)
+	if err != nil {
+		return segmentdomain.RefreshRun{}, classify(err)
+	}
+	run, owned, err := s.store.ReserveRefresh(ctx, segmentdomain.RefreshRun{PackageID: command.PackageID, ConfigurationVersionID: config.ID, SourceKeyDigest: source, ReferenceTime: command.ReferenceTime, CreatedAt: now, UpdatedAt: now})
+	if err != nil {
+		return segmentdomain.RefreshRun{}, classify(err)
+	}
+	if !owned {
+		return run, nil
+	}
+	jobID, err := s.enqueuer.EnqueueRefreshWithin(ctx, run.ID)
+	if err != nil {
+		return segmentdomain.RefreshRun{}, err
+	}
+	run, err = s.store.AttachRefreshJob(ctx, run.ID, jobID, now)
+	if err != nil {
+		return segmentdomain.RefreshRun{}, classify(err)
+	}
+	_, err = s.store.AppendMutationFacts(ctx, fact("refresh_run", run.ID, "accept", "audience.refresh.accepted.v1", command.Actor, command.IdempotencyKey, now))
+	return run, classify(err)
+}
 func (s *SnapshotService) GetRefresh(ctx context.Context, runID int64) (segmentdomain.RefreshRun, error) {
 	if s == nil || runID < 1 {
 		return segmentdomain.RefreshRun{}, ErrInvalid
