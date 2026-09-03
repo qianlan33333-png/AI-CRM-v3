@@ -163,6 +163,8 @@ func NewProviderRouterWithPrivate(tagCatalog, groupMessage, privateMessage effec
 	return &ProviderRouter{tagCatalog: tagCatalog, groupMessage: groupMessage, privateMessage: privateMessage}
 }
 
+// WithPrivateMessage extends the established tag/group router without
+// bypassing the frozen Group Ops composition marker and behavior contract.
 func (r *ProviderRouter) WithPrivateMessage(privateMessage effect.ProviderAdapter) *ProviderRouter {
 	if r != nil {
 		r.privateMessage = privateMessage
