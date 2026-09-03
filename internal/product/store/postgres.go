@@ -1,0 +1,596 @@
+// Package store owns Product persistence.  Both ordinary and service-period
+// products live in the products table; the service-period application is only
+// a status/projection view over that row.  The store never reads orders,
+// payments, entitlements, members, customers, OneID, Media, or Tag tables.
+package store
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
+	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
+	productapp "github.com/qianlan33333-png/AI-CRM-v3/internal/product/app"
+	productport "github.com/qianlan33333-png/AI-CRM-v3/internal/product/port"
+)
+
+var (
+	ErrInvalid = errors.New("invalid product persistence command")
+)
+
+var _ productport.ProductOptionReader = (*Repository)(nil)
+
+// Repository is deliberately transaction-bound.  Every method that touches
+// PostgreSQL requires the UnitOfWork context supplied by the caller; there is
+// no autocommit fallback.
+type Repository struct {
+	pool *pgxpool.Pool
+	uow  platformport.UnitOfWork
+}
+
+func NewPostgreSQL(pool *pgxpool.Pool, uow platformport.UnitOfWork) (*Repository, error) {
+	if pool == nil || uow == nil {
+		return nil, ErrInvalid
+	}
+	return &Repository{pool: pool, uow: uow}, nil
+}
+
+func (r *Repository) Within(ctx context.Context, fn func(context.Context) error) error {
+	if r == nil || r.uow == nil || fn == nil {
+		return ErrInvalid
+	}
+	return r.uow.Within(ctx, fn)
+}
+
+type rowScanner interface {
+	Scan(...any) error
+}
+
+const productColumns = `id,product_code,name,description,price_minor,currency,stock_quantity,images,created_by,created_at,updated_at,version,legacy_admin_projection`
+
+func scanProduct(row rowScanner) (productport.Product, error) {
+	var (
+		product    productport.Product
+		imagesRaw  []byte
+		projection []byte
+	)
+	err := row.Scan(
+		&product.ID, &product.ProductCode, &product.Name, &product.Description,
+		&product.PriceMinor, &product.Currency, &product.StockQuantity,
+		&imagesRaw, &product.CreatedBy, &product.CreatedAt, &product.UpdatedAt,
+		&product.Version, &projection,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return productport.Product{}, productport.ErrProductReadNotFound
+	}
+	if err != nil {
+		return productport.Product{}, mapDatabaseError(err)
+	}
+	if json.Unmarshal(imagesRaw, &product.Images) != nil || !json.Valid(projection) {
+		return productport.Product{}, productport.ErrProductReadUnavailable
+	}
+	product.LegacyAdminProjection = append(json.RawMessage(nil), projection...)
+	if product.Images == nil {
+		product.Images = []string{}
+	}
+	return product, nil
+}
+
+func transaction(ctx context.Context) (pgx.Tx, error) {
+	return platformpostgres.RequireTransaction(ctx)
+}
+
+func mapDatabaseError(err error) error {
+	if errors.Is(err, pgx.ErrNoRows) {
+		return productport.ErrProductReadNotFound
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		switch pgErr.Code {
+		case "23505", "23514":
+			return productport.ErrProductConflict
+		}
+	}
+	return err
+}
+
+func ordinaryStatusSQL() string {
+	return `legacy_admin_projection->>'status' NOT IN ('service_period_draft','service_period_enabled','service_period_disabled','service_period_archived')`
+}
+
+func servicePeriodStatusSQL() string {
+	return `legacy_admin_projection->>'status' IN ('service_period_draft','service_period_enabled','service_period_disabled','service_period_archived')`
+}
+
+func (r *Repository) List(ctx context.Context, after *productport.ID, limit int32) ([]productport.Product, error) {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if limit < 1 || limit > productapp.MaximumLimit+1 {
+		return nil, ErrInvalid
+	}
+	query := `SELECT ` + productColumns + ` FROM products WHERE ` + ordinaryStatusSQL()
+	args := []any{}
+	if after != nil {
+		query += ` AND id > $1`
+		args = append(args, int64(*after))
+	}
+	// Product limits are small (at most 101), so format the placeholder without
+	// accepting arbitrary SQL input.
+	query += ` ORDER BY id LIMIT $` + itoa(len(args)+1)
+	args = append(args, limit)
+	rows, err := tx.Query(ctx, query, args...)
+	if err != nil {
+		return nil, mapDatabaseError(err)
+	}
+	defer rows.Close()
+	items := make([]productport.Product, 0)
+	for rows.Next() {
+		item, scanErr := scanProduct(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		items = append(items, item)
+	}
+	return items, mapDatabaseError(rows.Err())
+}
+
+func (r *Repository) ListOffset(ctx context.Context, limit, offset int32) ([]productport.Product, error) {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if limit < 1 || limit > productapp.MaximumLimit || offset < 0 || offset > productapp.MaximumLegacyOffset {
+		return nil, ErrInvalid
+	}
+	rows, err := tx.Query(ctx, `SELECT `+productColumns+` FROM products WHERE `+ordinaryStatusSQL()+` ORDER BY id LIMIT $1 OFFSET $2`, limit, offset)
+	if err != nil {
+		return nil, mapDatabaseError(err)
+	}
+	defer rows.Close()
+	items := make([]productport.Product, 0)
+	for rows.Next() {
+		item, scanErr := scanProduct(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		items = append(items, item)
+	}
+	return items, mapDatabaseError(rows.Err())
+}
+
+func (r *Repository) Count(ctx context.Context) (int64, error) {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return 0, err
+	}
+	var count int64
+	err = tx.QueryRow(ctx, `SELECT count(*) FROM products WHERE `+ordinaryStatusSQL()).Scan(&count)
+	return count, mapDatabaseError(err)
+}
+
+// ListProductOptions is the Product-owned, read-only selection projection for
+// other domains. It returns only CNY id/name/price facts and classifies each
+// row without exposing the Product table or its legacy projection. Callers
+// outside Product should use app.Service.ListProductOptions, which supplies
+// the UnitOfWork boundary; this repository method remains transaction-bound.
+func (r *Repository) ListProductOptions(ctx context.Context, query productport.ProductOptionQuery) (productport.ProductOptionPage, error) {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return productport.ProductOptionPage{}, err
+	}
+	query.Q = strings.TrimSpace(query.Q)
+	if len(query.Q) > 80 {
+		return productport.ProductOptionPage{}, ErrInvalid
+	}
+	if query.ProductType == "" {
+		query.ProductType = productport.ProductOptionAll
+	}
+	if query.ProductType != productport.ProductOptionAll && query.ProductType != productport.ProductOptionStandard && query.ProductType != productport.ProductOptionServicePeriod {
+		return productport.ProductOptionPage{}, ErrInvalid
+	}
+	if query.Limit == 0 {
+		query.Limit = productport.ProductOptionDefaultLimit
+	}
+	if query.Limit < 1 || query.Limit > productport.ProductOptionMaximumLimit || query.Offset < 0 || query.Offset > productport.ProductOptionMaximumOffset {
+		return productport.ProductOptionPage{}, ErrInvalid
+	}
+
+	statusSQL := "TRUE"
+	switch query.ProductType {
+	case productport.ProductOptionStandard:
+		statusSQL = ordinaryStatusSQL()
+	case productport.ProductOptionServicePeriod:
+		statusSQL = servicePeriodStatusSQL()
+	}
+	whereSQL := "currency='CNY' AND (" + statusSQL + ")"
+	args := make([]any, 0, 3)
+	if query.Q != "" {
+		args = append(args, "%"+escapeProductOptionSearch(query.Q)+"%")
+		whereSQL += " AND (name ILIKE $1 ESCAPE '\\' OR product_code ILIKE $1 ESCAPE '\\')"
+	}
+	var total int64
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM products WHERE `+whereSQL, args...).Scan(&total); err != nil {
+		return productport.ProductOptionPage{}, mapDatabaseError(err)
+	}
+
+	limitPlaceholder := len(args) + 1
+	offsetPlaceholder := len(args) + 2
+	args = append(args, query.Limit, query.Offset)
+	rows, err := tx.Query(ctx, `SELECT id,name,price_minor,currency,CASE WHEN `+servicePeriodStatusSQL()+` THEN 'service_period' ELSE 'standard' END FROM products WHERE `+whereSQL+` ORDER BY id LIMIT $`+itoa(limitPlaceholder)+` OFFSET $`+itoa(offsetPlaceholder), args...)
+	if err != nil {
+		return productport.ProductOptionPage{}, mapDatabaseError(err)
+	}
+	defer rows.Close()
+	items := make([]productport.ProductOption, 0)
+	for rows.Next() {
+		var item productport.ProductOption
+		if err := rows.Scan(&item.ID, &item.Name, &item.PriceMinor, &item.Currency, &item.ProductType); err != nil {
+			return productport.ProductOptionPage{}, mapDatabaseError(err)
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return productport.ProductOptionPage{}, mapDatabaseError(err)
+	}
+	return productport.ProductOptionPage{Items: items, Total: total, Limit: query.Limit, Offset: query.Offset}, nil
+}
+
+func escapeProductOptionSearch(value string) string {
+	value = strings.ReplaceAll(value, `\`, `\\`)
+	value = strings.ReplaceAll(value, `%`, `\%`)
+	return strings.ReplaceAll(value, `_`, `\_`)
+}
+
+func (r *Repository) Get(ctx context.Context, id productport.ID) (productport.Product, error) {
+	return r.get(ctx, id, false, "")
+}
+
+func (r *Repository) GetForUpdate(ctx context.Context, id productport.ID) (productport.Product, error) {
+	return r.get(ctx, id, true, "")
+}
+
+func (r *Repository) get(ctx context.Context, id productport.ID, forUpdate bool, statusSQL string) (productport.Product, error) {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return productport.Product{}, err
+	}
+	if id < 1 {
+		return productport.Product{}, productport.ErrProductReadNotFound
+	}
+	query := `SELECT ` + productColumns + ` FROM products WHERE id=$1`
+	if statusSQL != "" {
+		query += ` AND ` + statusSQL
+	}
+	if forUpdate {
+		query += ` FOR UPDATE`
+	}
+	return scanProduct(tx.QueryRow(ctx, query, int64(id)))
+}
+
+func (r *Repository) Create(ctx context.Context, command productport.CreateCommand, now time.Time) (productport.Product, error) {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return productport.Product{}, err
+	}
+	if command.Actor < 1 || command.ProductCode == "" || command.Name == "" || len(command.LegacyAdminProjection) == 0 || now.IsZero() {
+		return productport.Product{}, ErrInvalid
+	}
+	images, err := json.Marshal(command.Images)
+	if err != nil {
+		return productport.Product{}, ErrInvalid
+	}
+	return scanProduct(tx.QueryRow(ctx, `INSERT INTO products (`+productColumns+`) VALUES (DEFAULT,$1,$2,$3,$4,$5,$6,$7,$8,$9,$9,1,$10) RETURNING `+productColumns,
+		command.ProductCode, command.Name, command.Description, command.PriceMinor, command.Currency,
+		command.StockQuantity, images, command.Actor, now.UTC(), command.LegacyAdminProjection))
+}
+
+func (r *Repository) Update(ctx context.Context, command productport.UpdateCommand, now time.Time) (productport.Product, error) {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return productport.Product{}, err
+	}
+	if command.ID < 1 || command.ExpectedVersion < 1 || command.Actor < 1 || command.Name == "" || len(command.LegacyAdminProjection) == 0 || now.IsZero() {
+		return productport.Product{}, ErrInvalid
+	}
+	images, err := json.Marshal(command.Images)
+	if err != nil {
+		return productport.Product{}, ErrInvalid
+	}
+	return scanProduct(tx.QueryRow(ctx, `UPDATE products SET name=$2,description=$3,price_minor=$4,currency=$5,stock_quantity=$6,images=$7,legacy_admin_projection=$8,updated_at=$9,version=version+1 WHERE id=$1 AND version=$10 RETURNING `+productColumns,
+		int64(command.ID), command.Name, command.Description, command.PriceMinor, command.Currency,
+		command.StockQuantity, images, command.LegacyAdminProjection, now.UTC(), command.ExpectedVersion))
+}
+
+func (r *Repository) UpdateLocalProductLifecycle(ctx context.Context, update productapp.LocalProductLifecycleStoreUpdate, now time.Time) (productport.Product, error) {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return productport.Product{}, err
+	}
+	if update.ID < 1 || update.ExpectedVersion < 1 || len(update.LegacyAdminProjection) == 0 || now.IsZero() {
+		return productport.Product{}, ErrInvalid
+	}
+	return scanProduct(tx.QueryRow(ctx, `UPDATE products SET legacy_admin_projection=$3,updated_at=$4,version=version+1 WHERE id=$1 AND version=$2 RETURNING `+productColumns,
+		int64(update.ID), update.ExpectedVersion, update.LegacyAdminProjection, now.UTC()))
+}
+
+func (r *Repository) DeleteLocalProductIfSafe(ctx context.Context, id productport.ID, expectedVersion int64) (bool, error) {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return false, err
+	}
+	if id < 1 || expectedVersion < 1 {
+		return false, ErrInvalid
+	}
+	var deletedID int64
+	err = tx.QueryRow(ctx, `DELETE FROM products AS p
+WHERE p.id=$1 AND p.version=$2
+  AND p.legacy_admin_projection->>'status'='draft'
+  AND p.legacy_admin_projection->>'enabled'='false'
+  AND NOT EXISTS (SELECT 1 FROM product_external_push_configurations c WHERE c.product_id=p.id)
+  AND NOT EXISTS (SELECT 1 FROM product_external_push_tests t WHERE t.product_id=p.id)
+RETURNING p.id`, int64(id), expectedVersion).Scan(&deletedID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	return deletedID == int64(id), mapDatabaseError(err)
+}
+
+func (r *Repository) ListServicePeriodProducts(ctx context.Context, limit, offset int32) ([]productport.Product, int64, error) {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return nil, 0, err
+	}
+	if limit < 1 || limit > productapp.MaximumLimit || offset < 0 || offset > productapp.MaximumLegacyOffset {
+		return nil, 0, ErrInvalid
+	}
+	var total int64
+	if err = tx.QueryRow(ctx, `SELECT count(*) FROM products WHERE `+servicePeriodStatusSQL()).Scan(&total); err != nil {
+		return nil, 0, mapDatabaseError(err)
+	}
+	rows, err := tx.Query(ctx, `SELECT `+productColumns+` FROM products WHERE `+servicePeriodStatusSQL()+` ORDER BY id LIMIT $1 OFFSET $2`, limit, offset)
+	if err != nil {
+		return nil, 0, mapDatabaseError(err)
+	}
+	defer rows.Close()
+	items := make([]productport.Product, 0)
+	for rows.Next() {
+		item, scanErr := scanProduct(rows)
+		if scanErr != nil {
+			return nil, 0, scanErr
+		}
+		items = append(items, item)
+	}
+	return items, total, mapDatabaseError(rows.Err())
+}
+
+func (r *Repository) GetServicePeriodProduct(ctx context.Context, id productport.ID) (productport.Product, error) {
+	return r.get(ctx, id, false, servicePeriodStatusSQL())
+}
+
+func (r *Repository) GetServicePeriodProductForUpdate(ctx context.Context, id productport.ID) (productport.Product, error) {
+	return r.get(ctx, id, true, servicePeriodStatusSQL())
+}
+
+func (r *Repository) UpdateServicePeriodProduct(ctx context.Context, update productapp.ServicePeriodStoreUpdate, now time.Time) (productport.Product, error) {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return productport.Product{}, err
+	}
+	if update.ID < 1 || update.ExpectedVersion < 1 || update.Name == "" || len(update.LegacyAdminProjection) == 0 || now.IsZero() {
+		return productport.Product{}, ErrInvalid
+	}
+	images, err := json.Marshal(update.Images)
+	if err != nil {
+		return productport.Product{}, ErrInvalid
+	}
+	return scanProduct(tx.QueryRow(ctx, `UPDATE products SET name=$2,description=$3,price_minor=$4,currency=$5,stock_quantity=$6,images=$7,legacy_admin_projection=$8,updated_at=$9,version=version+1 WHERE id=$1 AND version=$10 AND `+servicePeriodStatusSQL()+` RETURNING `+productColumns,
+		int64(update.ID), update.Name, update.Description, update.PriceMinor, update.Currency,
+		update.StockQuantity, images, update.LegacyAdminProjection, now.UTC(), update.ExpectedVersion))
+}
+
+func (r *Repository) Reserve(ctx context.Context, reservation productapp.Reservation) (productapp.Receipt, bool, error) {
+	return r.reserve(ctx, reservation)
+}
+
+func (r *Repository) ReserveCommerceExternalPush(ctx context.Context, reservation productapp.Reservation) (productapp.Receipt, bool, error) {
+	return r.reserve(ctx, reservation)
+}
+
+func (r *Repository) reserve(ctx context.Context, reservation productapp.Reservation) (productapp.Receipt, bool, error) {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return productapp.Receipt{}, false, err
+	}
+	if reservation.Operation == "" || reservation.ActorScope == "" || reservation.CreatedAt.IsZero() {
+		return productapp.Receipt{}, false, ErrInvalid
+	}
+	var id int64
+	err = tx.QueryRow(ctx, `INSERT INTO product_operation_receipts(operation,actor_scope,idempotency_key_digest,payload_digest,created_at) VALUES($1,$2,$3,$4,$5) ON CONFLICT(operation,actor_scope,idempotency_key_digest) DO NOTHING RETURNING id`,
+		reservation.Operation, reservation.ActorScope, reservation.KeyDigest[:], reservation.PayloadDigest[:], reservation.CreatedAt.UTC()).Scan(&id)
+	if err == nil {
+		return productapp.Receipt{ID: id, Operation: reservation.Operation, ActorScope: reservation.ActorScope, KeyDigest: reservation.KeyDigest, PayloadDigest: reservation.PayloadDigest, State: "in_progress"}, true, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return productapp.Receipt{}, false, mapDatabaseError(err)
+	}
+	return r.readReceipt(ctx, reservation.Operation, reservation.ActorScope, reservation.KeyDigest)
+}
+
+func (r *Repository) readReceipt(ctx context.Context, operation, actorScope string, keyDigest [32]byte) (productapp.Receipt, bool, error) {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return productapp.Receipt{}, false, err
+	}
+	var (
+		receipt        productapp.Receipt
+		keyRaw, payRaw []byte
+		result         []byte
+	)
+	err = tx.QueryRow(ctx, `SELECT id,operation,actor_scope,idempotency_key_digest,payload_digest,state,COALESCE(result_snapshot,'null'::jsonb) FROM product_operation_receipts WHERE operation=$1 AND actor_scope=$2 AND idempotency_key_digest=$3 FOR UPDATE`, operation, actorScope, keyDigest[:]).Scan(&receipt.ID, &receipt.Operation, &receipt.ActorScope, &keyRaw, &payRaw, &receipt.State, &result)
+	if err != nil {
+		return productapp.Receipt{}, false, mapDatabaseError(err)
+	}
+	if len(keyRaw) != len(keyDigest) || len(payRaw) != len(keyDigest) {
+		return productapp.Receipt{}, false, productport.ErrProductReadUnavailable
+	}
+	copy(receipt.KeyDigest[:], keyRaw)
+	copy(receipt.PayloadDigest[:], payRaw)
+	if string(result) != "null" {
+		receipt.ResultSnapshot = append(json.RawMessage(nil), result...)
+	}
+	return receipt, false, nil
+}
+
+func (r *Repository) Complete(ctx context.Context, receiptID int64, snapshot json.RawMessage, now time.Time) (productapp.Receipt, error) {
+	return r.complete(ctx, receiptID, snapshot, now)
+}
+
+func (r *Repository) CompleteCommerceExternalPush(ctx context.Context, receiptID int64, snapshot json.RawMessage, now time.Time) (productapp.Receipt, error) {
+	return r.complete(ctx, receiptID, snapshot, now)
+}
+
+func (r *Repository) complete(ctx context.Context, receiptID int64, snapshot json.RawMessage, now time.Time) (productapp.Receipt, error) {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return productapp.Receipt{}, err
+	}
+	if receiptID < 1 || !json.Valid(snapshot) || now.IsZero() {
+		return productapp.Receipt{}, ErrInvalid
+	}
+	var receipt productapp.Receipt
+	var keyRaw, payRaw, result []byte
+	err = tx.QueryRow(ctx, `UPDATE product_operation_receipts SET state='completed',result_snapshot=$2::jsonb,completed_at=$3 WHERE id=$1 AND state='in_progress' RETURNING id,operation,actor_scope,idempotency_key_digest,payload_digest,state,result_snapshot`, receiptID, snapshot, now.UTC()).Scan(&receipt.ID, &receipt.Operation, &receipt.ActorScope, &keyRaw, &payRaw, &receipt.State, &result)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return productapp.Receipt{}, productport.ErrProductConflict
+	}
+	if err != nil {
+		return productapp.Receipt{}, mapDatabaseError(err)
+	}
+	if len(keyRaw) != 32 || len(payRaw) != 32 {
+		return productapp.Receipt{}, productport.ErrProductReadUnavailable
+	}
+	copy(receipt.KeyDigest[:], keyRaw)
+	copy(receipt.PayloadDigest[:], payRaw)
+	receipt.ResultSnapshot = append(json.RawMessage(nil), result...)
+	return receipt, nil
+}
+
+func validExternalKind(kind productport.ExternalPushProductKind) bool {
+	return kind == productport.ExternalPushWeChatPay || kind == productport.ExternalPushServicePeriod
+}
+
+func serviceKindStatus(kind productport.ExternalPushProductKind) string {
+	if kind == productport.ExternalPushServicePeriod {
+		return servicePeriodStatusSQL()
+	}
+	return ordinaryStatusSQL()
+}
+
+func (r *Repository) ReadCommerceExternalPushConfiguration(ctx context.Context, id productport.ID, kind productport.ExternalPushProductKind) (productport.ExternalPushConfiguration, error) {
+	return r.readExternalPushConfiguration(ctx, id, kind, false)
+}
+
+func (r *Repository) LockCommerceExternalPushConfiguration(ctx context.Context, id productport.ID, kind productport.ExternalPushProductKind) (productport.ExternalPushConfiguration, error) {
+	return r.readExternalPushConfiguration(ctx, id, kind, true)
+}
+
+func (r *Repository) readExternalPushConfiguration(ctx context.Context, id productport.ID, kind productport.ExternalPushProductKind, forUpdate bool) (productport.ExternalPushConfiguration, error) {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return productport.ExternalPushConfiguration{}, err
+	}
+	if id < 1 || !validExternalKind(kind) {
+		return productport.ExternalPushConfiguration{}, ErrInvalid
+	}
+	query := `SELECT p.id,COALESCE(c.enabled,FALSE),COALESCE(c.configuration_reference,''),COALESCE(c.updated_at,p.updated_at)
+FROM products p LEFT JOIN product_external_push_configurations c ON c.product_id=p.id AND c.product_kind=$2
+WHERE p.id=$1 AND ` + serviceKindStatus(kind)
+	if forUpdate {
+		query += ` FOR UPDATE OF p`
+	}
+	var result productport.ExternalPushConfiguration
+	var enabled bool
+	err = tx.QueryRow(ctx, query, int64(id), string(kind)).Scan(&result.ProductID, &enabled, &result.ConfigurationReference, &result.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return productport.ExternalPushConfiguration{}, productport.ErrProductReadNotFound
+	}
+	if err != nil {
+		return productport.ExternalPushConfiguration{}, mapDatabaseError(err)
+	}
+	result.ProductKind, result.Enabled = kind, enabled
+	return result, nil
+}
+
+func (r *Repository) SaveCommerceExternalPushConfiguration(ctx context.Context, value productport.ExternalPushConfiguration, now time.Time) (productport.ExternalPushConfiguration, error) {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return productport.ExternalPushConfiguration{}, err
+	}
+	if value.ProductID < 1 || !validExternalKind(value.ProductKind) || now.IsZero() {
+		return productport.ExternalPushConfiguration{}, ErrInvalid
+	}
+	var productID int64
+	err = tx.QueryRow(ctx, `SELECT id FROM products WHERE id=$1 AND `+serviceKindStatus(value.ProductKind)+` FOR UPDATE`, int64(value.ProductID)).Scan(&productID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return productport.ExternalPushConfiguration{}, productport.ErrProductReadNotFound
+	}
+	if err != nil {
+		return productport.ExternalPushConfiguration{}, mapDatabaseError(err)
+	}
+	var result productport.ExternalPushConfiguration
+	err = tx.QueryRow(ctx, `INSERT INTO product_external_push_configurations(product_id,product_kind,enabled,configuration_reference,updated_at)
+VALUES($1,$2,$3,$4,$5)
+ON CONFLICT(product_id,product_kind) DO UPDATE SET enabled=EXCLUDED.enabled,configuration_reference=EXCLUDED.configuration_reference,updated_at=EXCLUDED.updated_at
+RETURNING product_id,product_kind,enabled,configuration_reference,updated_at`, productID, string(value.ProductKind), value.Enabled, value.ConfigurationReference, now.UTC()).Scan(&result.ProductID, &result.ProductKind, &result.Enabled, &result.ConfigurationReference, &result.UpdatedAt)
+	if err != nil {
+		return productport.ExternalPushConfiguration{}, mapDatabaseError(err)
+	}
+	return result, nil
+}
+
+func (r *Repository) CommerceExternalPushTestExists(ctx context.Context, id productport.ID, kind productport.ExternalPushProductKind, configurationDigest [32]byte) (bool, error) {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return false, err
+	}
+	if id < 1 || !validExternalKind(kind) {
+		return false, ErrInvalid
+	}
+	var exists bool
+	err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM product_external_push_tests WHERE product_id=$1 AND product_kind=$2 AND configuration_digest=$3)`, int64(id), string(kind), configurationDigest[:]).Scan(&exists)
+	return exists, mapDatabaseError(err)
+}
+
+func (r *Repository) CreateCommerceExternalPushTest(ctx context.Context, value productport.ExternalPushTest, configurationDigest [32]byte, receiptID int64) (productport.ExternalPushTest, error) {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return productport.ExternalPushTest{}, err
+	}
+	if value.ProductID < 1 || !validExternalKind(value.ProductKind) || receiptID < 1 || value.EffectID == "" || len(configurationDigest) != 32 {
+		return productport.ExternalPushTest{}, ErrInvalid
+	}
+	var result productport.ExternalPushTest
+	err = tx.QueryRow(ctx, `INSERT INTO product_external_push_tests(product_id,product_kind,configuration_digest,receipt_id,effect_id,state,provider_accepted,delivery_proven,real_external_call_executed,auto_retry_allowed,created_at)
+VALUES($1,$2,$3,$4,$5,$6,FALSE,FALSE,FALSE,FALSE,$7)
+RETURNING product_id,product_kind,effect_id,state,provider_accepted,delivery_proven,real_external_call_executed,auto_retry_allowed,created_at`, int64(value.ProductID), string(value.ProductKind), configurationDigest[:], receiptID, value.EffectID, value.State, value.CreatedAt.UTC()).Scan(&result.ProductID, &result.ProductKind, &result.EffectID, &result.State, &result.ProviderAccepted, &result.DeliveryProven, &result.RealExternalCallExecuted, &result.AutoRetryAllowed, &result.CreatedAt)
+	if err != nil {
+		return productport.ExternalPushTest{}, mapDatabaseError(err)
+	}
+	return result, nil
+}
+
+// itoa is intentionally local to avoid accepting format strings or SQL from
+// callers.  Product list statements need only one or two placeholders.
+func itoa(value int) string {
+	return strconv.Itoa(value)
+}

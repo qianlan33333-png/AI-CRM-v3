@@ -718,6 +718,429 @@ paths:
       parameters: [{$ref: "#/components/parameters/IdempotencyKey"}]
       requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/LegacyTagSyncRequest"}}}}
       responses: {"202": {description: Actual EER/River due-sync acceptance, content: {application/json: {schema: {$ref: "#/components/schemas/LegacyTagQueuedAcceptance"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/v1/products:
+    get:
+      operationId: listProducts
+      tags: [Products]
+      description: Local ordinary Product catalog. The cursor is opaque and the effective limit is 1..100.
+      security: [{adminSession: []}]
+      parameters:
+        - {name: cursor, in: query, schema: {type: string, minLength: 1, maxLength: 512}}
+        - {$ref: "#/components/parameters/Limit"}
+      responses:
+        "200": {description: Ordinary Product page, content: {application/json: {schema: {$ref: "#/components/schemas/ProductPage"}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+    post:
+      operationId: createProduct
+      tags: [Products]
+      description: Create one local ordinary Product. No order, payment, entitlement, customer, OneID, or Provider effect is created.
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/IdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/CreateProductRequest"}}}}
+      responses:
+        "201": {description: Local Product created, content: {application/json: {schema: {$ref: "#/components/schemas/Product"}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/v1/products/{product_id}:
+    parameters: [{$ref: "#/components/parameters/ProductID"}]
+    get:
+      operationId: getProduct
+      tags: [Products]
+      security: [{adminSession: []}]
+      responses:
+        "200": {description: Local ordinary Product, content: {application/json: {schema: {$ref: "#/components/schemas/Product"}}}}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+    put:
+      operationId: updateProduct
+      tags: [Products]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/IdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/UpdateProductRequest"}}}}
+      responses:
+        "200": {description: CAS-updated local Product, content: {application/json: {schema: {$ref: "#/components/schemas/Product"}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/v1/products/{product_id}/local-entitlements:
+    parameters: [{$ref: "#/components/parameters/ProductID"}]
+    get:
+      operationId: listProductLocalEntitlements
+      tags: [Products]
+      description: Truthful empty compatibility projection. PR04 does not own entitlements and never reads customer/order tables.
+      security: [{adminSession: []}]
+      parameters: [{$ref: "#/components/parameters/ProductLimit"}]
+      responses:
+        "200": {description: Empty Product-local entitlement projection, content: {application/json: {schema: {$ref: "#/components/schemas/ProductLocalEntitlementPage"}}}}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/admin/wechat-pay/products/{product_id}/enable:
+    parameters: [{$ref: "#/components/parameters/ProductID"}]
+    post:
+      operationId: enableLocalWechatPayProduct
+      tags: [Products]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/IdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/VersionRequest"}}}}
+      responses:
+        "200": {description: Local lifecycle projection, content: {application/json: {schema: {$ref: "#/components/schemas/LocalProduct"}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
+  /api/admin/wechat-pay/products/{product_id}/disable:
+    parameters: [{$ref: "#/components/parameters/ProductID"}]
+    post:
+      operationId: disableLocalWechatPayProduct
+      tags: [Products]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/IdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/VersionRequest"}}}}
+      responses:
+        "200": {description: Local lifecycle projection, content: {application/json: {schema: {$ref: "#/components/schemas/LocalProduct"}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
+  /api/admin/wechat-pay/products/{product_id}/copy:
+    parameters: [{$ref: "#/components/parameters/ProductID"}]
+    post:
+      operationId: copyLocalWechatPayProduct
+      tags: [Products]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/IdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/VersionRequest"}}}}
+      responses:
+        "201": {description: New local draft, content: {application/json: {schema: {$ref: "#/components/schemas/LocalProduct"}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
+  /api/admin/wechat-pay/products/{product_id}:
+    parameters: [{$ref: "#/components/parameters/ProductID"}]
+    delete:
+      operationId: deleteLocalWechatPayProduct
+      tags: [Products]
+      description: Physical deletion is allowed only for an unreferenced local draft; enabled/used facts fail closed.
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/IdempotencyKey"}]
+      requestBody: {required: false, content: {application/json: {schema: {$ref: "#/components/schemas/VersionRequest"}}}}
+      responses:
+        "200": {description: Local delete result, content: {application/json: {schema: {$ref: "#/components/schemas/LocalProductDelete"}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
+  /api/admin/wechat-pay/products/{product_id}/share:
+    parameters: [{$ref: "#/components/parameters/ProductID"}]
+    get:
+      operationId: shareLocalWechatPayProduct
+      tags: [Products]
+      description: Ordinary Product sharing remains blocked until an authoritative public purchase route exists.
+      security: [{adminSession: []}]
+      responses:
+        "200": {description: Local sharing projection, content: {application/json: {schema: {$ref: "#/components/schemas/LocalProductShare"}}}}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+  /api/admin/service-period-products:
+    get:
+      operationId: listServicePeriodProducts
+      tags: [Products]
+      description: Local service-period Product projection. The effective limit is 1..100 and offset is 0..1000000.
+      security: [{adminSession: []}]
+      parameters: [{$ref: "#/components/parameters/ProductLimit"}, {$ref: "#/components/parameters/ProductOffset"}]
+      responses:
+        "200": {description: Local service-period Product page, content: {application/json: {schema: {$ref: "#/components/schemas/ServicePeriodProductPage"}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+    post:
+      operationId: createServicePeriodProduct
+      tags: [Products]
+      description: Create one local service-period Product projection without membership, entitlement, payment, or Provider effects.
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/IdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/ServicePeriodProductCreateRequest"}}}}
+      responses:
+        "201": {description: Local service-period Product created, content: {application/json: {schema: {$ref: "#/components/schemas/ServicePeriodProductResponse"}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/admin/service-period-products/{service_product_id}:
+    parameters: [{$ref: "#/components/parameters/ServiceProductID"}]
+    get:
+      operationId: getServicePeriodProduct
+      tags: [Products]
+      security: [{adminSession: []}]
+      responses:
+        "200": {description: Local service-period Product, content: {application/json: {schema: {$ref: "#/components/schemas/ServicePeriodProductResponse"}}}}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+    put:
+      operationId: updateServicePeriodProduct
+      tags: [Products]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/IdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/ServicePeriodProductUpdateRequest"}}}}
+      responses:
+        "200": {description: CAS-updated local service-period Product, content: {application/json: {schema: {$ref: "#/components/schemas/ServicePeriodProductResponse"}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
+    delete:
+      operationId: archiveServicePeriodProduct
+      tags: [Products]
+      description: Archive preserves the local service-period history; it is not a physical delete.
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/IdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/VersionRequest"}}}}
+      responses:
+        "200": {description: Archived local service-period Product, content: {application/json: {schema: {$ref: "#/components/schemas/ServicePeriodProductResponse"}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
+  /api/admin/service-period-products/{service_product_id}/enable:
+    parameters: [{$ref: "#/components/parameters/ServiceProductID"}]
+    post:
+      operationId: enableServicePeriodProduct
+      tags: [Products]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/IdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/VersionRequest"}}}}
+      responses:
+        "200": {description: Local service-period Product, content: {application/json: {schema: {$ref: "#/components/schemas/ServicePeriodProductResponse"}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
+  /api/admin/service-period-products/{service_product_id}/disable:
+    parameters: [{$ref: "#/components/parameters/ServiceProductID"}]
+    post:
+      operationId: disableServicePeriodProduct
+      tags: [Products]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/IdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/VersionRequest"}}}}
+      responses:
+        "200": {description: Local service-period Product, content: {application/json: {schema: {$ref: "#/components/schemas/ServicePeriodProductResponse"}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
+  /api/admin/service-period-products/{service_product_id}/copy:
+    parameters: [{$ref: "#/components/parameters/ServiceProductID"}]
+    post:
+      operationId: copyServicePeriodProduct
+      tags: [Products]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/IdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/VersionRequest"}}}}
+      responses:
+        "201": {description: New local service-period draft, content: {application/json: {schema: {$ref: "#/components/schemas/ServicePeriodProductResponse"}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
+  /api/admin/service-period-products/{service_product_id}/share:
+    parameters: [{$ref: "#/components/parameters/ServiceProductID"}]
+    get:
+      operationId: shareServicePeriodProduct
+      tags: [Products]
+      description: Local-only share projection; it does not imply payment, membership, entitlement, or Provider execution.
+      security: [{adminSession: []}]
+      responses:
+        "200": {description: Local service-period share path, content: {application/json: {schema: {$ref: "#/components/schemas/ServicePeriodProductShare"}}}}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+  /api/admin/wechat-pay/products/{product_id}/external-push:
+    parameters: [{$ref: "#/components/parameters/ProductID"}]
+    get:
+      operationId: getWechatPayProductExternalPush
+      tags: [Products]
+      description: Read local configuration only; no Provider call is made.
+      security: [{adminSession: []}]
+      responses:
+        "200": {description: Local configuration, content: {application/json: {schema: {$ref: "#/components/schemas/CommerceExternalPushConfiguration"}}}}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+    put:
+      operationId: saveWechatPayProductExternalPush
+      tags: [Products]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/IdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/CommerceExternalPushConfigurationRequest"}}}}
+      responses:
+        "200": {description: Local configuration saved, content: {application/json: {schema: {$ref: "#/components/schemas/CommerceExternalPushConfiguration"}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
+  /api/admin/wechat-pay/products/{product_id}/external-push/test:
+    parameters: [{$ref: "#/components/parameters/ProductID"}]
+    post:
+      operationId: queueWechatPayProductExternalPushTest
+      tags: [Products]
+      description: Local acceptance fact only. The response is never Provider acceptance or delivery proof.
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/IdempotencyKey"}]
+      responses:
+        "202": {description: Local test acceptance, content: {application/json: {schema: {$ref: "#/components/schemas/CommerceExternalPushTest"}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
+  /api/admin/service-period-products/{service_product_id}/external-push:
+    parameters: [{$ref: "#/components/parameters/ServiceProductID"}]
+    get:
+      operationId: getServicePeriodProductExternalPush
+      tags: [Products]
+      security: [{adminSession: []}]
+      responses:
+        "200": {description: Local configuration, content: {application/json: {schema: {$ref: "#/components/schemas/CommerceExternalPushConfiguration"}}}}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+    put:
+      operationId: saveServicePeriodProductExternalPush
+      tags: [Products]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/IdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/CommerceExternalPushConfigurationRequest"}}}}
+      responses:
+        "200": {description: Local configuration saved, content: {application/json: {schema: {$ref: "#/components/schemas/CommerceExternalPushConfiguration"}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
+  /api/admin/service-period-products/{service_product_id}/external-push/test:
+    parameters: [{$ref: "#/components/parameters/ServiceProductID"}]
+    post:
+      operationId: queueServicePeriodProductExternalPushTest
+      tags: [Products]
+      description: Local acceptance fact only. The response is never Provider acceptance or delivery proof.
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/IdempotencyKey"}]
+      responses:
+        "202": {description: Local test acceptance, content: {application/json: {schema: {$ref: "#/components/schemas/CommerceExternalPushTest"}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
+  /api/admin/service-period-products/{service_product_id}/members:
+    parameters: [{$ref: "#/components/parameters/ServiceProductID"}]
+    get:
+      operationId: listServicePeriodMembersCompatibility
+      tags: [Products]
+      description: Truthful empty compatibility projection. Member, customer, and entitlement data are outside PR04.
+      security: [{adminSession: []}]
+      parameters:
+        - {name: state, in: query, schema: {type: string, enum: [active, expired, removed, all]}}
+        - {name: source, in: query, schema: {type: string, enum: [manual, paid_order]}}
+        - {$ref: "#/components/parameters/ProductLimit"}
+        - {name: cursor, in: query, schema: {type: string, maxLength: 1024}}
+      responses:
+        "200": {description: Empty member compatibility projection, content: {application/json: {schema: {$ref: "#/components/schemas/ServicePeriodMemberPage"}}}}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+  /api/admin/service-period-products/{service_product_id}/member-grid/access:
+    parameters: [{$ref: "#/components/parameters/ServiceProductID"}]
+    get:
+      operationId: getServicePeriodMemberGridAccessCompatibility
+      tags: [Products]
+      description: Closed capability projection; no member-grid data access is granted.
+      security: [{adminSession: []}]
+      responses:
+        "200": {description: Denied member-grid capability projection, content: {application/json: {schema: {$ref: "#/components/schemas/ServicePeriodMemberGridAccess"}}}}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+  /api/admin/service-period-products/{service_product_id}/member-grid/schema:
+    parameters: [{$ref: "#/components/parameters/ServiceProductID"}]
+    get:
+      operationId: getServicePeriodMemberGridSchemaCompatibility
+      tags: [Products]
+      description: Field metadata only; no member rows or customer data are exposed.
+      security: [{adminSession: []}]
+      responses:
+        "200": {description: Static member-grid field metadata, content: {application/json: {schema: {$ref: "#/components/schemas/ServicePeriodMemberGridSchema"}}}}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+  /api/admin/service-period-products/{service_product_id}/member-views:
+    parameters: [{$ref: "#/components/parameters/ServiceProductID"}]
+    get:
+      operationId: listServicePeriodMemberViewsCompatibility
+      tags: [Products]
+      description: Built-in read-only view metadata only; mutation and member-grid pages remain excluded.
+      security: [{adminSession: []}]
+      responses:
+        "200": {description: Local view metadata, content: {application/json: {schema: {$ref: "#/components/schemas/ServicePeriodMemberViews"}}}}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+  /api/admin/service-period-products/{service_product_id}/member-grid/share-settings:
+    parameters: [{$ref: "#/components/parameters/ServiceProductID"}]
+    get:
+      operationId: getServicePeriodMemberGridShareSettingsCompatibility
+      tags: [Products]
+      description: Closed local projection; external member-grid sharing is unsupported in PR04.
+      security: [{adminSession: []}]
+      responses:
+        "200": {description: Closed share-settings projection, content: {application/json: {schema: {$ref: "#/components/schemas/ServicePeriodMemberGridShareSettings"}}}}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+  /api/admin/channels:
+    get:
+      operationId: listProductFormChannels
+      tags: [Products]
+      description: Read-only channel compatibility projection used by the frozen Product forms. Empty means the Channel catalog owner has no available rows; Product does not infer or create channels.
+      security: [{adminSession: []}]
+      parameters:
+        - {$ref: "#/components/parameters/ProductLimit"}
+        - {name: include_archived, in: query, schema: {type: boolean, default: false}}
+      responses:
+        "200": {description: Channel compatibility page, content: {application/json: {schema: {$ref: "#/components/schemas/LegacyProductChannelPage"}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Unavailable"}
   /api/sidebar/jssdk-config:
     get:
       operationId: getSidebarJSSDKConfig
@@ -751,6 +1174,8 @@ components:
     contextToken: {type: http, scheme: bearer}
   parameters:
     ID: {name: id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
+    ProductID: {name: product_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
+    ServiceProductID: {name: service_product_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
     TagID: {name: tag_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
     TagGroupID: {name: group_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
     ExternalEffectID: {name: id, in: path, required: true, schema: {$ref: "#/components/schemas/ExternalEffectID"}}
@@ -769,6 +1194,8 @@ components:
     CustomerID: {name: customer_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
     SafeNext: {name: next, in: query, schema: {type: string, pattern: "^/"}}
     Limit: {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 50}}
+    ProductLimit: {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 50}}
+    ProductOffset: {name: offset, in: query, schema: {type: integer, minimum: 0, maximum: 1000000, default: 0}}
     MediaLimit: {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 500, default: 50}}
     Offset: {name: offset, in: query, schema: {type: integer, minimum: 0, default: 0}}
     BeforeID: {name: before_id, in: query, schema: {type: integer, format: int64, minimum: 1}}
@@ -783,6 +1210,287 @@ components:
     MutationOK: {description: Mutation completed, content: {application/json: {schema: {type: object, required: [ok], properties: {ok: {const: true}}}}}}
   schemas:
     PositiveID: {type: integer, format: int64, minimum: 1}
+    ProductAdminProjection:
+      type: object
+      additionalProperties: false
+      required: [schema_version, status, enabled, buy_button_text, require_mobile, lead_qr_title, lead_qr_subtitle, completion_redirect_enabled, completion_redirect_url, wecom_tagging, slices]
+      properties:
+        schema_version: {type: integer, const: 1}
+        status: {type: string, minLength: 1, maxLength: 64}
+        enabled: {type: boolean}
+        buy_button_text: {type: string, maxLength: 2048}
+        require_mobile: {type: boolean}
+        lead_program_id: {type: [integer, "null"], format: int64, minimum: 1}
+        lead_channel_id: {type: [integer, "null"], format: int64, minimum: 1}
+        lead_qr_title: {type: string, maxLength: 2048}
+        lead_qr_subtitle: {type: string, maxLength: 2048}
+        completion_redirect_enabled: {type: boolean}
+        completion_redirect_url: {type: string, maxLength: 2048}
+        completion_target: {type: [object, "null"], additionalProperties: true}
+        wecom_tagging: {type: object, additionalProperties: true}
+        slices: {type: array, maxItems: 20, items: {type: object, additionalProperties: true}}
+    Product:
+      type: object
+      additionalProperties: false
+      required: [id, product_code, name, description, price_minor, currency, stock_quantity, images, admin_projection, created_by, created_at, updated_at, version]
+      properties:
+        id: {$ref: "#/components/schemas/PositiveID"}
+        product_code: {type: string, minLength: 1, maxLength: 200}
+        name: {type: string, minLength: 1, maxLength: 200}
+        description: {type: string, maxLength: 10000}
+        price_minor: {type: integer, format: int64, minimum: 0}
+        currency: {type: string, pattern: "^[A-Z]{3}$"}
+        stock_quantity: {type: integer, format: int32, minimum: 0}
+        images: {type: array, maxItems: 20, items: {type: string, minLength: 1, maxLength: 2048}}
+        admin_projection: {$ref: "#/components/schemas/ProductAdminProjection"}
+        created_by: {$ref: "#/components/schemas/PositiveID"}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+        version: {$ref: "#/components/schemas/PositiveID"}
+    ProductPage:
+      type: object
+      additionalProperties: false
+      required: [items, next_cursor]
+      properties:
+        items: {type: array, items: {$ref: "#/components/schemas/Product"}}
+        next_cursor: {type: string, maxLength: 512}
+    CreateProductRequest:
+      type: object
+      additionalProperties: false
+      required: [product_code, name, description, price_minor, currency, stock_quantity, images]
+      properties:
+        product_code: {type: string, minLength: 1, maxLength: 200}
+        name: {type: string, minLength: 1, maxLength: 200}
+        description: {type: string, maxLength: 10000}
+        price_minor: {type: integer, format: int64, minimum: 0}
+        currency: {type: string, pattern: "^[A-Z]{3}$"}
+        stock_quantity: {type: integer, format: int32, minimum: 0}
+        images: {type: array, maxItems: 20, items: {type: string, minLength: 1, maxLength: 2048}}
+        admin_projection: {$ref: "#/components/schemas/ProductAdminProjection"}
+    UpdateProductRequest:
+      type: object
+      additionalProperties: false
+      required: [expected_version, name, description, price_minor, currency, stock_quantity, images, admin_projection]
+      properties:
+        expected_version: {$ref: "#/components/schemas/PositiveID"}
+        name: {type: string, minLength: 1, maxLength: 200}
+        description: {type: string, maxLength: 10000}
+        price_minor: {type: integer, format: int64, minimum: 0}
+        currency: {type: string, pattern: "^[A-Z]{3}$"}
+        stock_quantity: {type: integer, format: int32, minimum: 0}
+        images: {type: array, maxItems: 20, items: {type: string, minLength: 1, maxLength: 2048}}
+        admin_projection: {$ref: "#/components/schemas/ProductAdminProjection"}
+    VersionRequest:
+      type: object
+      additionalProperties: false
+      required: [expected_version]
+      properties:
+        expected_version: {$ref: "#/components/schemas/PositiveID"}
+    LocalProduct:
+      type: object
+      additionalProperties: false
+      required: [id, product_code, name, description, price_minor, currency, stock_quantity, images, created_by, created_at, updated_at, lifecycle, enabled, version]
+      properties:
+        id: {$ref: "#/components/schemas/PositiveID"}
+        product_code: {type: string, minLength: 1, maxLength: 200}
+        name: {type: string, minLength: 1, maxLength: 200}
+        description: {type: string, maxLength: 10000}
+        price_minor: {type: integer, format: int64, minimum: 0}
+        currency: {type: string, pattern: "^[A-Z]{3}$"}
+        stock_quantity: {type: integer, format: int32, minimum: 0}
+        images: {type: array, maxItems: 20, items: {type: string, minLength: 1, maxLength: 2048}}
+        created_by: {$ref: "#/components/schemas/PositiveID"}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+        lifecycle: {type: string, enum: [draft, disabled, enabled]}
+        enabled: {type: boolean}
+        version: {$ref: "#/components/schemas/PositiveID"}
+    LocalProductDelete:
+      type: object
+      additionalProperties: false
+      required: [product_id, deleted]
+      properties:
+        product_id: {$ref: "#/components/schemas/PositiveID"}
+        deleted: {type: boolean}
+    LocalProductShare:
+      type: object
+      additionalProperties: false
+      required: [product_id, product_code, lifecycle, available, reason]
+      properties:
+        product_id: {$ref: "#/components/schemas/PositiveID"}
+        product_code: {type: string, minLength: 1, maxLength: 200}
+        lifecycle: {type: string, enum: [draft, disabled, enabled]}
+        available: {const: false}
+        reason: {type: string, const: no_authoritative_public_purchase_route}
+        purchase_url: {type: string}
+        qr_code_url: {type: string}
+    ServicePeriodProduct:
+      type: object
+      additionalProperties: false
+      required: [service_product_id, product_code, name, description, price_minor, currency, stock_quantity, images, admin_projection, lifecycle, enabled, archived, version, created_at, updated_at]
+      properties:
+        service_product_id: {$ref: "#/components/schemas/PositiveID"}
+        product_code: {type: string, minLength: 1, maxLength: 200}
+        name: {type: string, minLength: 1, maxLength: 200}
+        description: {type: string, maxLength: 10000}
+        price_minor: {type: integer, format: int64, minimum: 0}
+        currency: {type: string, pattern: "^[A-Z]{3}$"}
+        stock_quantity: {type: integer, format: int32, minimum: 0}
+        images: {type: array, maxItems: 20, items: {type: string, minLength: 1, maxLength: 2048}}
+        admin_projection: {$ref: "#/components/schemas/ProductAdminProjection"}
+        lifecycle: {type: string, enum: [draft, enabled, disabled, archived]}
+        enabled: {type: boolean}
+        archived: {type: boolean}
+        version: {$ref: "#/components/schemas/PositiveID"}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    ServicePeriodProductPage:
+      type: object
+      additionalProperties: false
+      required: [ok, items, total, limit, offset]
+      properties:
+        ok: {const: true}
+        items: {type: array, items: {$ref: "#/components/schemas/ServicePeriodProduct"}}
+        total: {type: integer, minimum: 0}
+        limit: {type: integer, minimum: 1, maximum: 100}
+        offset: {type: integer, minimum: 0, maximum: 1000000}
+    ServicePeriodProductResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, product]
+      properties:
+        ok: {const: true}
+        product: {$ref: "#/components/schemas/ServicePeriodProduct"}
+    ServicePeriodProductCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [product_code, name, description, price_minor, currency, stock_quantity, images]
+      properties:
+        product_code: {type: string, minLength: 1, maxLength: 200}
+        name: {type: string, minLength: 1, maxLength: 200}
+        description: {type: string, maxLength: 10000}
+        price_minor: {type: integer, format: int64, minimum: 0}
+        currency: {type: string, pattern: "^[A-Z]{3}$"}
+        stock_quantity: {type: integer, format: int32, minimum: 0}
+        images: {type: array, maxItems: 20, items: {type: string, minLength: 1, maxLength: 2048}}
+        admin_projection: {$ref: "#/components/schemas/ProductAdminProjection"}
+    ServicePeriodProductUpdateRequest:
+      type: object
+      additionalProperties: false
+      required: [expected_version, name, description, price_minor, currency, stock_quantity, images]
+      properties:
+        expected_version: {$ref: "#/components/schemas/PositiveID"}
+        name: {type: string, minLength: 1, maxLength: 200}
+        description: {type: string, maxLength: 10000}
+        price_minor: {type: integer, format: int64, minimum: 0}
+        currency: {type: string, pattern: "^[A-Z]{3}$"}
+        stock_quantity: {type: integer, format: int32, minimum: 0}
+        images: {type: array, maxItems: 20, items: {type: string, minLength: 1, maxLength: 2048}}
+        admin_projection: {$ref: "#/components/schemas/ProductAdminProjection"}
+    ServicePeriodProductShare:
+      type: object
+      additionalProperties: false
+      required: [ok, service_product_id, public_path, local_only, real_external_call_executed]
+      properties:
+        ok: {const: true}
+        service_product_id: {$ref: "#/components/schemas/PositiveID"}
+        public_path: {type: string, pattern: "^/p/service_period/[1-9][0-9]*$"}
+        local_only: {const: true}
+        real_external_call_executed: {const: false}
+    CommerceExternalPushConfigurationRequest:
+      type: object
+      additionalProperties: false
+      required: [enabled]
+      properties:
+        enabled: {type: boolean}
+        configuration_reference: {type: string, minLength: 1, maxLength: 128, pattern: "^[A-Za-z0-9._:-]+$"}
+    CommerceExternalPushConfiguration:
+      type: object
+      additionalProperties: false
+      required: [product_id, product_kind, enabled, updated_at]
+      properties:
+        product_id: {$ref: "#/components/schemas/PositiveID"}
+        product_kind: {type: string, enum: [wechat_pay, service_period]}
+        enabled: {type: boolean}
+        configuration_reference: {type: string, maxLength: 128}
+        updated_at: {type: string, format: date-time}
+    CommerceExternalPushTest:
+      type: object
+      additionalProperties: false
+      required: [product_id, product_kind, effect_id, state, provider_accepted, delivery_proven, real_external_call_executed, auto_retry_allowed, created_at]
+      properties:
+        product_id: {$ref: "#/components/schemas/PositiveID"}
+        product_kind: {type: string, enum: [wechat_pay, service_period]}
+        effect_id: {type: string, pattern: "^eer_[1-9][0-9]*$"}
+        state: {type: string, enum: [accepted, queued]}
+        provider_accepted: {const: false}
+        delivery_proven: {const: false}
+        real_external_call_executed: {const: false}
+        auto_retry_allowed: {const: false}
+        created_at: {type: string, format: date-time}
+    ProductLocalEntitlementPage:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items: {type: array, maxItems: 100, items: {type: object, additionalProperties: false}}
+    ServicePeriodMemberPage:
+      type: object
+      additionalProperties: false
+      required: [items, limit, next_cursor, has_more]
+      properties:
+        items: {type: array, maxItems: 100, items: {type: object, additionalProperties: false}}
+        limit: {type: integer, minimum: 1, maximum: 100}
+        next_cursor: {type: string}
+        has_more: {const: false}
+    ServicePeriodMemberGridAccess:
+      type: object
+      additionalProperties: false
+      required: [product_id, can_view, can_query, can_edit, can_manage_views, can_share]
+      properties:
+        product_id: {$ref: "#/components/schemas/PositiveID"}
+        can_view: {const: false}
+        can_query: {const: false}
+        can_edit: {const: false}
+        can_manage_views: {const: false}
+        can_share: {const: false}
+    ServicePeriodMemberGridSchema:
+      type: object
+      additionalProperties: false
+      required: [service_product_id, columns]
+      properties:
+        service_product_id: {$ref: "#/components/schemas/PositiveID"}
+        columns: {type: array, items: {type: object, additionalProperties: false, required: [key, label, type, nullable], properties: {key: {type: string}, label: {type: string}, type: {type: string}, nullable: {type: boolean}}}}
+    ServicePeriodMemberViews:
+      type: object
+      additionalProperties: false
+      required: [product_id, views]
+      properties:
+        product_id: {$ref: "#/components/schemas/PositiveID"}
+        views: {type: array, items: {type: object, additionalProperties: false, required: [id, name, source, read_only], properties: {id: {type: string}, name: {type: string}, source: {type: string}, read_only: {type: boolean}}}}
+    ServicePeriodMemberGridShareSettings:
+      type: object
+      additionalProperties: false
+      required: [service_product_id, saved_views, collaborators, external_share_supported, external_share_enabled, external_share_version, real_external_call_executed, collaborator_edit_is_local_metadata_only, collaborator_edit_grants_central_permission]
+      properties:
+        service_product_id: {$ref: "#/components/schemas/PositiveID"}
+        saved_views: {type: array, items: {type: object}}
+        collaborators: {type: array, items: {type: object}}
+        external_share_supported: {const: false}
+        external_share_enabled: {const: false}
+        external_share_version: {const: 0}
+        real_external_call_executed: {const: false}
+        collaborator_edit_is_local_metadata_only: {const: true}
+        collaborator_edit_grants_central_permission: {const: false}
+    LegacyProductChannelPage:
+      type: object
+      additionalProperties: false
+      required: [ok, channels, reason, source]
+      properties:
+        ok: {const: true}
+        channels: {type: array, items: {type: object, additionalProperties: false, required: [id, channel_name, channel_code, status, assignee_count, channel_contact_count, created_at, updated_at], properties: {id: {$ref: "#/components/schemas/PositiveID"}, channel_name: {type: string}, channel_code: {type: string}, status: {type: string}, assignee_count: {type: integer, minimum: 0}, channel_contact_count: {type: integer, minimum: 0}, created_at: {type: string}, updated_at: {type: string}}}}
+        reason: {const: channels_listed}
+        source: {const: ai_crm_next}
     MediaAttachmentUploadInitiateRequest:
       type: object
       additionalProperties: false

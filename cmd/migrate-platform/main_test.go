@@ -74,10 +74,10 @@ func TestApplyMigrationsFreshAndUpgradePostgreSQL(t *testing.T) {
 		t.Fatalf("upgrade replay: %v", err)
 	}
 	var applied int
-	if err = pool.QueryRow(ctx, `SELECT count(*) FROM platform_schema_migrations`).Scan(&applied); err != nil || applied != 9 {
+	if err = pool.QueryRow(ctx, `SELECT count(*) FROM platform_schema_migrations`).Scan(&applied); err != nil || applied != 10 {
 		t.Fatalf("applied=%d err=%v", applied, err)
 	}
-	for _, table := range []string{"media_blobs", "media_references", "media_attachment_upload_parts", "tag_groups", "tag_catalog_tags", "tag_provider_observations"} {
+	for _, table := range []string{"media_blobs", "media_references", "media_attachment_upload_parts", "tag_groups", "tag_catalog_tags", "tag_provider_observations", "products", "product_operation_receipts", "product_external_push_configurations", "product_external_push_tests"} {
 		var present bool
 		if err = pool.QueryRow(ctx, `SELECT to_regclass(current_schema() || '.' || $1) IS NOT NULL`, table).Scan(&present); err != nil || !present {
 			t.Fatalf("owned table %s present=%v err=%v", table, present, err)

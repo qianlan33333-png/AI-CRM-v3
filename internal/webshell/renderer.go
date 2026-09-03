@@ -59,6 +59,9 @@ type AdminShellView struct {
 	MediaAssets     MediaAssets
 	Tags            bool
 	TagsAssets      TagsAssets
+	Product         bool
+	ProductPage     string
+	ProductAssets   ProductAssets
 }
 
 // ExternalEffectsAssets are manifest-derived URLs for the frozen donor bundle.
@@ -76,6 +79,10 @@ type MediaAssets struct{ TokensCSS, LabsCSS, AdminJS string }
 // TagsAssets are manifest-derived frozen donor bundle paths. The tag page is
 // mounted in admin_base and never publishes the donor's own shell/sidebar.
 type TagsAssets struct{ TokensCSS, LabsCSS, AdminJS string }
+
+// ProductAssets are manifest-derived URLs for the frozen donor Product
+// bundle. They are passed by the Product UI adapter and contain no markup.
+type ProductAssets struct{ TokensCSS, LabsCSS, AdminJS string }
 
 // Render implements the small presentation contract consumed by the Access
 // HTTP handler. Keeping this adapter in webshell avoids a concrete import
@@ -202,6 +209,23 @@ func (renderer *Renderer) RenderTags(writer http.ResponseWriter, data AdminPageD
 	data.ShowPageHeader = false
 	content := `<main id="stage" class="stage rich"></main><template id="tpl">` + donorTemplate + `</template>`
 	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: template.HTML(content), Tags: true, TagsAssets: assets})
+	if err != nil {
+		return err
+	}
+	return writeHTML(writer, http.StatusOK, body)
+}
+
+// RenderProducts mounts one allowlisted Product template into the existing
+// PR10 shell. The donor template is the release-built template#tpl fragment;
+// this method never renders the donor document or a second sidebar.
+func (renderer *Renderer) RenderProducts(writer http.ResponseWriter, data AdminPageData, page, donorTemplate string, assets ProductAssets) error {
+	if renderer == nil || renderer.templates == nil || donorTemplate == "" || assets.TokensCSS == "" || assets.LabsCSS == "" || assets.AdminJS == "" || (page != "products" && page != "productForm" && page != "spProducts" && page != "spProductForm") {
+		return errors.New("product shell assets are required")
+	}
+	normalizeAdminPage(&data)
+	data.ShowPageHeader = false
+	content := `<main id="stage" class="stage rich"></main><template id="tpl">` + donorTemplate + `</template>`
+	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: template.HTML(content), Product: true, ProductPage: page, ProductAssets: assets})
 	if err != nil {
 		return err
 	}
