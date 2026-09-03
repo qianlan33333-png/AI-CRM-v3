@@ -80,6 +80,8 @@ jobs:
           node scripts/stage-pr01-effects-ui.mjs web/dist release/web/dist
           node scripts/test-stage-pr01-effects-ui.mjs
           node scripts/test-groupops-history-release.mjs web/dist release/web/dist
+          node scripts/stage-survey-ui.mjs web/dist release/web/dist
+          node scripts/test-stage-survey-ui.mjs web/dist release/web/dist
           scripts/check-install-release-contract.sh
       - name: Verify Media shell donor interactions
         run: node scripts/media-shell-interactions-e2e.mjs
@@ -155,6 +157,8 @@ jobs:
           node scripts/stage-pr01-effects-ui.mjs web/dist release/web/dist
           node scripts/test-stage-pr01-effects-ui.mjs
           node scripts/test-groupops-history-release.mjs web/dist release/web/dist
+          node scripts/stage-survey-ui.mjs web/dist release/web/dist
+          node scripts/test-stage-survey-ui.mjs web/dist release/web/dist
           (
             cd release
             LC_ALL=C find . -type f ! -name release-files.sha256 -print0 \
