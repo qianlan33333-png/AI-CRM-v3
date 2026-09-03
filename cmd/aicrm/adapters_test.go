@@ -196,6 +196,30 @@ func TestApplicationRouterKeepsOwnershipAndProtectsAdminShell(t *testing.T) {
 	}
 }
 
+func TestFullApplicationRouterExposesOrderImportAPI(t *testing.T) {
+	marker := func(name string) http.Handler {
+		return http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+			writer.Header().Set("X-Owner", name)
+			writer.WriteHeader(http.StatusNoContent)
+		})
+	}
+	other := marker("other")
+	handler, err := routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(
+		other, other, marker("identity"), other, other, other,
+		other, other, other, other, other, other, other, other,
+		other, other, other, other, other, other, other, other,
+		other, other, &fakeAccessAuthentication{}, "https://crm.example",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/admin/order-imports/inspect", nil))
+	if response.Code != http.StatusNoContent || response.Header().Get("X-Owner") != "identity" {
+		t.Fatalf("status=%d owner=%q", response.Code, response.Header().Get("X-Owner"))
+	}
+}
+
 func TestTransactionRouteKeepsShellButReportsBackendUnavailable(t *testing.T) {
 	authentication := &fakeAccessAuthentication{principal: accessdomain.Principal{Kind: accessdomain.KindAdmin, InternalID: 7, Roles: []accessdomain.Role{accessdomain.RoleAdmin}}}
 	marker := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) { writer.WriteHeader(http.StatusNotFound) })
