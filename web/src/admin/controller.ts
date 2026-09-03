@@ -370,7 +370,7 @@ export class AdminController extends PageBase {
 
   /** 页面入口调用：加载数据仓库 → 重渲染 */
   async init(): Promise<void> {
-    const resourceId = this.qs().get(this.page === 'configDetail' ? 'cat' : 'id') || (this.page === 'channelForm' ? globalThis.document?.body?.dataset.channelResourceId : undefined) || undefined;
+    const resourceId = this.qs().get(this.page === 'configDetail' ? 'cat' : 'id') || undefined;
     const context: AdminReadContext = { page: this.page, id: resourceId };
     if (this.page === 'customers') {
       const parsed = this.parseCustomerListQuery(this.state.customerFilters);

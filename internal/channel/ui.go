@@ -117,7 +117,7 @@ func channelAssets(dist string) (UIAssets, error) {
 	if err != nil {
 		return UIAssets{}, err
 	}
-	admin, err := get("admin")
+	admin, err := get("channelCenterHost")
 	if err != nil {
 		return UIAssets{}, err
 	}

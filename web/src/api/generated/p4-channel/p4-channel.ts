@@ -183,34 +183,10 @@ export const updateChannelAcquisitionAssignees = async (
   channelAcquisitionAssignmentRequest: ChannelAcquisitionAssignmentRequest,
   options?: RequestInit,
 ): Promise<updateChannelAcquisitionAssigneesResponse> => {
-  // v3 host compatibility: assignment replacement participates in the same
-  // optimistic concurrency contract as the canonical channel resource.
-  const current = await fetch(`/api/admin/channels/${channelId}`, {
-    ...options,
-    method: "GET",
-  });
-  const etag = current.headers.get("ETag");
-  if (!current.ok) {
-    const body = [204, 205, 304].includes(current.status)
-      ? null
-      : await current.text();
-    return {
-      data: body ? JSON.parse(body) : {},
-      status: current.status,
-      headers: current.headers,
-    } as updateChannelAcquisitionAssigneesResponse;
-  }
   const res = await fetch(getUpdateChannelAcquisitionAssigneesUrl(channelId), {
     ...options,
     method: "PUT",
-    headers: {
-      "Content-Type": "application/json",
-      // The fallback is used only by the byte-frozen donor characterization
-      // harness, whose synthetic detail response predates ETag. Real v3
-      // detail responses always supply ETag; either value remains a CAS.
-      "If-Match": etag || '"1"',
-      ...options?.headers,
-    },
+    headers: { "Content-Type": "application/json", ...options?.headers },
     body: JSON.stringify(channelAcquisitionAssignmentRequest),
   });
 
