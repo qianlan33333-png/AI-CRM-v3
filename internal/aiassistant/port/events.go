@@ -17,6 +17,8 @@ const (
 type Event struct {
 	Type           string
 	AggregateID    PlanID
+	RecipientID    RecipientID
+	ActorID        int64
 	IdempotencyKey string
 	Payload        json.RawMessage
 	OccurredAt     time.Time
