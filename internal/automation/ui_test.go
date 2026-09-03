@@ -44,6 +44,13 @@ func TestAgentUIExtractsPrivateTemplateAndPreservesAliases(t *testing.T) {
 	if w.Code != 200 || gotPage != "agentEdit" {
 		t.Fatalf("detail alias code=%d page=%q", w.Code, gotPage)
 	}
+	for _, target := range []string{"/admin/agentEdit.html", "/admin/agentEdit.html?type=fixed_script", "/admin/agentEdit.html?id=7&saved=1"} {
+		w = httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, target, nil))
+		if w.Code != http.StatusOK || gotPage != "agentEdit" {
+			t.Fatalf("editor target %s code=%d page=%q", target, w.Code, gotPage)
+		}
+	}
 	w = httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/admin/agentEdit.html?type=agent", nil))
 	if w.Code != http.StatusSeeOther {

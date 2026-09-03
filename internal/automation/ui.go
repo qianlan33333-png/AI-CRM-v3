@@ -78,15 +78,25 @@ func validAgentQuery(page string, r *http.Request) bool {
 		v, ok := q["type"]
 		return ok && len(q) == 1 && len(v) == 1 && (v[0] == "agent" || v[0] == "fixed_script")
 	}
-	if len(q) != 1 {
-		return false
+	if len(q) == 0 {
+		return true
+	}
+	if types, ok := q["type"]; ok {
+		return len(q) == 1 && len(types) == 1 && types[0] == "fixed_script"
 	}
 	v, ok := q["id"]
-	if !ok || len(v) != 1 {
+	if !ok || len(v) != 1 || len(q) > 2 {
 		return false
 	}
 	id, e := strconv.ParseInt(v[0], 10, 64)
-	return e == nil && id > 0 && strconv.FormatInt(id, 10) == v[0]
+	if e != nil || id < 1 || strconv.FormatInt(id, 10) != v[0] {
+		return false
+	}
+	if len(q) == 1 {
+		return true
+	}
+	saved, ok := q["saved"]
+	return ok && len(saved) == 1 && saved[0] == "1"
 }
 func agentAssets(dist string) (AgentAssets, error) {
 	raw, e := os.ReadFile(filepath.Join(dist, "asset-manifest.json"))
