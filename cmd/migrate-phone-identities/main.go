@@ -326,6 +326,12 @@ func applyRows(ctx context.Context, uow platformport.UnitOfWork, oneID identitya
 				item.outcome = "already_linked"
 			case identityport.DeclaredConflict:
 				item.outcome, item.errorCode = "conflict", "concurrent_phone_conflict"
+			case identityport.DeclaredInvalid:
+				item.outcome, item.errorCode = "invalid", "inactive_customer"
+			case identityport.DeclaredReplayed:
+				item.outcome = string(result.ReplayOf)
+				item.customerID = result.CustomerID
+				return nil
 			default:
 				return errors.New("unexpected attach result")
 			}
@@ -488,8 +494,22 @@ func insertReceipt(ctx context.Context, runID int64, item *classifiedRow) error 
 	if item.customerID > 0 {
 		cid = item.customerID
 	}
-	_, err = tx.Exec(ctx, `INSERT INTO identity_phone_import_receipts(run_id,source_row_id,source_row_digest,outcome,customer_id,error_code) VALUES($1,$2,$3,$4,$5,$6)`, runID, item.receiptRowID, item.digest[:], item.outcome, cid, item.errorCode)
-	return err
+	tag, err := tx.Exec(ctx, `INSERT INTO identity_phone_import_receipts(run_id,source_row_id,source_row_digest,outcome,customer_id,error_code)
+		VALUES($1,$2,$3,$4,$5,NULLIF($6,'')) ON CONFLICT(run_id,source_row_id) DO NOTHING`, runID, item.receiptRowID, item.digest[:], item.outcome, cid, item.errorCode)
+	if err != nil || tag.RowsAffected() == 1 {
+		return err
+	}
+	var storedDigest []byte
+	var storedOutcome, storedError string
+	var storedCustomerID *int64
+	if err = tx.QueryRow(ctx, `SELECT source_row_digest,outcome,customer_id,COALESCE(error_code,'') FROM identity_phone_import_receipts WHERE run_id=$1 AND source_row_id=$2`, runID, item.receiptRowID).Scan(&storedDigest, &storedOutcome, &storedCustomerID, &storedError); err != nil {
+		return err
+	}
+	customerMatches := (storedCustomerID == nil && item.customerID == 0) || (storedCustomerID != nil && *storedCustomerID == int64(item.customerID))
+	if string(storedDigest) != string(item.digest[:]) || storedOutcome != item.outcome || storedError != item.errorCode || !customerMatches {
+		return identityapp.ErrDeclaredPayloadMismatch
+	}
+	return nil
 }
 
 func normalizePhone(raw string) (string, error) {

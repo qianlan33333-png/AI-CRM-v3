@@ -150,7 +150,7 @@ func (PostgreSQL) UpdateDirectoryPhone(ctx context.Context, customerID customerd
 		return err
 	}
 	tag, err := tx.Exec(ctx, `UPDATE customer_directory_projection SET phone_masked=$2,phone_assurance=$3,
-		source_version=source_version+1,updated_at=$5 WHERE customer_id=$1`, customerID, masked, assurance, sourceVersion, at)
+		source_version=GREATEST(source_version+1,$4),updated_at=$5 WHERE customer_id=$1`, customerID, masked, assurance, sourceVersion, at)
 	if err != nil {
 		return err
 	}
