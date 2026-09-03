@@ -706,6 +706,12 @@ paths:
       parameters: [{$ref: "#/components/parameters/IdempotencyKey"}]
       requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/LegacyTagSyncRequest"}}}}
       responses: {"202": {description: Actual EER/River acceptance; this is not provider success, content: {application/json: {schema: {$ref: "#/components/schemas/LegacyTagQueuedAcceptance"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/wecom/tags/sync-status:
+    get:
+      operationId: getLegacyWecomTagSyncStatus
+      tags: [WeComTags]
+      security: [{adminSession: []}]
+      responses: {"200": {description: Durable Tag-owned sync projection; active remains true while a retry or reconciliation decision is outstanding, content: {application/json: {schema: {$ref: "#/components/schemas/LegacyTagSyncStatusResponse"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
   /api/admin/wecom/tags/sync-due:
     post:
       operationId: requestLegacyWecomTagSyncDue
@@ -2837,6 +2843,8 @@ components:
     LegacyTagMutationResponse: {type: object, required: [ok, reason, source_status, route_owner, fallback_used, real_external_call_executed, sync_executed, fixture_used, dry_run], properties: {ok: {const: true}, reason: {type: string}, source_status: {const: local_catalog}, route_owner: {const: ai_crm_next}, fallback_used: {const: false}, real_external_call_executed: {const: false}, sync_executed: {const: false}, fixture_used: {const: false}, dry_run: {type: boolean}, tag: {$ref: "#/components/schemas/LegacyTag"}, group: {$ref: "#/components/schemas/LegacyTagMutationGroup"}}}
     LegacyTagExecutionGate: {type: object, required: [provider_execution_eligible, local_command_acceptance_available, local_queue_available, observed_at, real_external_call_executed, sync_executed], properties: {provider_execution_eligible: {const: false}, local_command_acceptance_available: {type: boolean}, local_queue_available: {type: boolean}, observed_at: {type: string, format: date-time}, real_external_call_executed: {const: false}, sync_executed: {const: false}}}
     LegacyTagQueuedAcceptance: {type: object, required: [ok, accepted, state, receipt_id, event_id, river_job_id, effect_river_job_id, effect_id, effect_state, accept_receipt_id, queue_receipt_id, provider_call_attempted, provider_success_claimed, real_external_call_executed, sync_executed], properties: {ok: {const: true}, accepted: {const: true}, state: {const: queued}, receipt_id: {$ref: "#/components/schemas/PositiveID"}, event_id: {$ref: "#/components/schemas/PositiveID"}, river_job_id: {$ref: "#/components/schemas/PositiveID"}, effect_river_job_id: {$ref: "#/components/schemas/PositiveID"}, effect_id: {type: string, pattern: '^eer_[1-9][0-9]*$'}, effect_state: {const: queued}, accept_receipt_id: {type: string, minLength: 1}, queue_receipt_id: {type: string, minLength: 1}, provider_call_attempted: {const: false}, provider_success_claimed: {const: false}, real_external_call_executed: {const: false}, sync_executed: {const: false}}}
+    LegacyTagSyncStatus: {type: object, required: [receipt_id, effect_id, state, active, group_count, tag_count], properties: {receipt_id: {type: integer, minimum: 0}, effect_id: {type: string}, state: {type: string, enum: [idle, queued, executed, outcome_unknown, retryable_failed, final_failed, cancelled, reconciled]}, active: {type: boolean}, group_count: {type: integer, minimum: 0}, tag_count: {type: integer, minimum: 0}, accepted_at: {type: string, format: date-time}, completed_at: {type: string, format: date-time}}}
+    LegacyTagSyncStatusResponse: {type: object, required: [ok, sync], properties: {ok: {const: true}, sync: {$ref: "#/components/schemas/LegacyTagSyncStatus"}}}
     ErrorResponse:
       type: object
       properties: {ok: {type: boolean, const: false}, error: {type: string}, code: {type: string}, message: {type: string}, request_id: {type: string, minLength: 1}}

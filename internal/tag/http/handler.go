@@ -203,6 +203,22 @@ func parseID(raw string) (int64, bool) {
 	return n, e == nil && n > 0 && strconv.FormatInt(n, 10) == raw
 }
 func (h *Handler) tags(w http.ResponseWriter, r *http.Request, tail string) {
+	if tail == "sync-status" {
+		if r.Method != http.MethodGet {
+			method(w, http.MethodGet)
+			return
+		}
+		if !h.read(w, r) {
+			return
+		}
+		status, err := h.sync.Status(r.Context())
+		if err != nil {
+			resultError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "sync": status})
+		return
+	}
 	if tail == "sync" || tail == "sync-due" {
 		if r.Method != http.MethodPost {
 			method(w, http.MethodPost)
@@ -634,6 +650,8 @@ func resultError(w http.ResponseWriter, e error) {
 		writeError(w, 404, "not_found")
 	case errors.Is(e, tagapp.ErrConflict), errors.Is(e, tagapp.ErrSyncConflict), errors.Is(e, tagstore.ErrConflict):
 		writeError(w, 409, "conflict")
+	case errors.Is(e, tagapp.ErrSyncInProgress), errors.Is(e, tagport.ErrSyncInProgress):
+		writeError(w, 409, "sync_in_progress")
 	case errors.Is(e, tagapp.ErrReferenced):
 		writeError(w, 409, "referenced")
 	default:
@@ -647,11 +665,11 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 func writeError(w http.ResponseWriter, status int, code string) {
-	compat := map[string]string{"invalid_request": "MALFORMED_REQUEST", "not_found": "NOT_FOUND", "conflict": "CONFLICT", "referenced": "CONFLICT", "unauthorized": "UNAUTHORIZED", "forbidden": "FORBIDDEN", "csrf_required": "FORBIDDEN", "unavailable": "DEPENDENCY_UNAVAILABLE", "method_not_allowed": "METHOD_NOT_ALLOWED"}[code]
+	compat := map[string]string{"invalid_request": "MALFORMED_REQUEST", "not_found": "NOT_FOUND", "conflict": "CONFLICT", "sync_in_progress": "CONFLICT", "referenced": "CONFLICT", "unauthorized": "UNAUTHORIZED", "forbidden": "FORBIDDEN", "csrf_required": "FORBIDDEN", "unavailable": "DEPENDENCY_UNAVAILABLE", "method_not_allowed": "METHOD_NOT_ALLOWED"}[code]
 	if compat == "" {
 		compat = "DEPENDENCY_UNAVAILABLE"
 	}
-	legacyCode := map[string]string{"invalid_request": "input_error", "not_found": "not_found", "unauthorized": "unauthorized", "forbidden": "unauthorized", "csrf_required": "unauthorized", "unavailable": "production_unavailable", "conflict": "input_error", "referenced": "input_error", "method_not_allowed": "input_error"}[code]
+	legacyCode := map[string]string{"invalid_request": "input_error", "not_found": "not_found", "unauthorized": "unauthorized", "forbidden": "unauthorized", "csrf_required": "unauthorized", "unavailable": "production_unavailable", "conflict": "input_error", "sync_in_progress": "sync_in_progress", "referenced": "input_error", "method_not_allowed": "input_error"}[code]
 	if legacyCode == "" {
 		legacyCode = "production_unavailable"
 	}

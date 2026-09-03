@@ -19,6 +19,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
@@ -369,28 +370,275 @@ func (r *Repository) referenceCount(ctx context.Context, kind string, id int64) 
 	err = tx.QueryRow(ctx, `SELECT count(*) FROM tag_references WHERE resource_kind=$1 AND resource_id=$2`, kind, id).Scan(&n)
 	return n, err
 }
-func (r *Repository) StoreProviderObservation(ctx context.Context, observation tagport.ProviderObservation) error {
+func (r *Repository) CompleteProviderSync(ctx context.Context, observation tagport.SyncCompletion) error {
 	tx, err := transaction(ctx)
 	if err != nil {
 		return err
 	}
-	if observation.EffectID < 1 || observation.Generation < 1 || !validProviderObservation(observation) {
+	if observation.State == "" {
+		observation.State = tagport.SyncExecuted
+	}
+	if observation.EffectID < 1 || observation.Generation < 1 || !validSyncCompletionState(observation.State) {
 		return ErrInvalid
+	}
+	if observation.State != tagport.SyncExecuted {
+		var receiptID, actor int64
+		updateErr := tx.QueryRow(ctx, `UPDATE tag_sync_receipts SET state=$2,completed_at=CASE WHEN $2 IN ('final_failed','cancelled','reconciled') THEN clock_timestamp() ELSE NULL END WHERE effect_id=$1 AND state IN ('reserved','queued','outcome_unknown','retryable_failed') RETURNING id,actor_admin_user_id`, observation.EffectID, observation.State).Scan(&receiptID, &actor)
+		if errors.Is(updateErr, pgx.ErrNoRows) {
+			return ErrConflict
+		}
+		if updateErr != nil {
+			return updateErr
+		}
+		payload, marshalErr := json.Marshal(map[string]any{"actor": actor, "receipt_id": receiptID, "effect_id": observation.EffectID, "generation": observation.Generation, "state": observation.State})
+		if marshalErr != nil {
+			return marshalErr
+		}
+		_, updateErr = r.Append(ctx, tagport.Event{Type: "tag.catalog_sync_state_changed", Payload: payload, OccurredAt: time.Now().UTC(), IdempotencyKey: "tag-catalog-sync-state:" + strconv.FormatInt(observation.EffectID, 10) + ":" + strconv.FormatInt(observation.Generation, 10) + ":" + string(observation.State)})
+		return updateErr
+	}
+	if !validProviderObservation(observation) {
+		return ErrInvalid
+	}
+	var receiptID, actor int64
+	err = tx.QueryRow(ctx, `SELECT id,actor_admin_user_id FROM tag_sync_receipts WHERE effect_id=$1 FOR UPDATE`, observation.EffectID).Scan(&receiptID, &actor)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
 	}
 	var existingDigest string
 	var existingSnapshot []byte
 	err = tx.QueryRow(ctx, `SELECT artifact_digest,snapshot::text FROM tag_provider_observations WHERE effect_id=$1 AND generation=$2 FOR UPDATE`, observation.EffectID, observation.Generation).Scan(&existingDigest, &existingSnapshot)
 	if err == nil {
 		if existingDigest == observation.ArtifactDigest && canonicalProviderBytes(existingSnapshot) == string(observation.Snapshot) {
-			return nil
+			var state string
+			if scanErr := tx.QueryRow(ctx, `SELECT state FROM tag_sync_receipts WHERE id=$1`, receiptID).Scan(&state); scanErr != nil {
+				return scanErr
+			}
+			if state == string(tagport.SyncReceiptExecuted) {
+				return nil
+			}
+			return ErrConflict
 		}
 		return ErrConflict
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return err
 	}
-	_, err = tx.Exec(ctx, `INSERT INTO tag_provider_observations(effect_id,generation,artifact_digest,snapshot) VALUES($1,$2,$3,$4::jsonb)`, observation.EffectID, observation.Generation, observation.ArtifactDigest, observation.Snapshot)
+	if _, err = tx.Exec(ctx, `INSERT INTO tag_provider_observations(effect_id,generation,artifact_digest,snapshot) VALUES($1,$2,$3,$4::jsonb)`, observation.EffectID, observation.Generation, observation.ArtifactDigest, observation.Snapshot); err != nil {
+		return err
+	}
+	var snapshot providerSnapshot
+	if err = json.Unmarshal(observation.Snapshot, &snapshot); err != nil || snapshot.Groups == nil {
+		return ErrInvalid
+	}
+	groupCount, tagCount, err := r.projectProviderSnapshot(ctx, tx, *snapshot.Groups)
+	if err != nil {
+		return err
+	}
+	result, err := tx.Exec(ctx, `UPDATE tag_sync_receipts SET state='executed',group_count=$2,tag_count=$3,completed_at=clock_timestamp() WHERE id=$1 AND state IN ('reserved','queued','outcome_unknown','retryable_failed')`, receiptID, groupCount, tagCount)
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() != 1 {
+		return ErrConflict
+	}
+	payload, err := json.Marshal(map[string]any{"actor": actor, "receipt_id": receiptID, "effect_id": observation.EffectID, "generation": observation.Generation, "artifact_digest": observation.ArtifactDigest, "group_count": groupCount, "tag_count": tagCount, "state": tagport.SyncExecuted})
+	if err != nil {
+		return err
+	}
+	_, err = r.Append(ctx, tagport.Event{Type: "tag.catalog_sync_completed", Payload: payload, OccurredAt: time.Now().UTC(), IdempotencyKey: "tag-catalog-sync-completed:" + strconv.FormatInt(observation.EffectID, 10) + ":" + strconv.FormatInt(observation.Generation, 10)})
 	return err
+}
+
+func validSyncCompletionState(state tagport.SyncState) bool {
+	switch state {
+	case tagport.SyncQueued, tagport.SyncExecuted, tagport.SyncOutcomeUnknown, tagport.SyncRetryableFailed, tagport.SyncFinalFailed, tagport.SyncCancelled, tagport.SyncReconciled:
+		return true
+	default:
+		return false
+	}
+}
+
+func (r *Repository) projectProviderSnapshot(ctx context.Context, tx pgx.Tx, groups []providerGroup) (int, int, error) {
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('tag.catalog.provider.projection'))`); err != nil {
+		return 0, 0, err
+	}
+	if _, err := tx.Exec(ctx, `LOCK TABLE tag_groups,tag_catalog_tags,tag_references,tag_provider_group_bindings,tag_provider_tag_bindings IN SHARE ROW EXCLUSIVE MODE`); err != nil {
+		return 0, 0, err
+	}
+	if _, err := tx.Exec(ctx, `WITH boundary AS (SELECT COALESCE(max(sort_order),-1)+1 AS base FROM tag_groups WHERE archived_at IS NULL), ranked AS (SELECT id,(SELECT base FROM boundary)+row_number() OVER (ORDER BY sort_order,id)-1 AS next_order FROM tag_groups WHERE archived_at IS NULL) UPDATE tag_groups item SET sort_order=ranked.next_order::integer FROM ranked WHERE item.id=ranked.id`); err != nil {
+		return 0, 0, err
+	}
+	groupBindings := map[string]int64{}
+	rows, err := tx.Query(ctx, `SELECT provider_group_id,group_id FROM tag_provider_group_bindings`)
+	if err != nil {
+		return 0, 0, err
+	}
+	for rows.Next() {
+		var providerID string
+		var id int64
+		if err = rows.Scan(&providerID, &id); err != nil {
+			rows.Close()
+			return 0, 0, err
+		}
+		groupBindings[providerID] = id
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return 0, 0, err
+	}
+	rows.Close()
+	seenGroups := map[string]struct{}{}
+	for order, group := range groups {
+		seenGroups[group.ID] = struct{}{}
+		id := groupBindings[group.ID]
+		if id == 0 {
+			if err = tx.QueryRow(ctx, `INSERT INTO tag_groups(group_name,sort_order) VALUES($1,$2) RETURNING id`, group.Name, order).Scan(&id); err != nil {
+				return 0, 0, err
+			}
+			if _, err = tx.Exec(ctx, `INSERT INTO tag_provider_group_bindings(provider_group_id,group_id) VALUES($1,$2)`, group.ID, id); err != nil {
+				return 0, 0, err
+			}
+			groupBindings[group.ID] = id
+		} else if _, err = tx.Exec(ctx, `UPDATE tag_groups SET group_name=$2,sort_order=$3,archived_at=NULL,version=version+1,updated_at=clock_timestamp() WHERE id=$1`, id, group.Name, order); err != nil {
+			return 0, 0, err
+		}
+	}
+	rows, err = tx.Query(ctx, `SELECT item.id FROM tag_groups item LEFT JOIN tag_provider_group_bindings binding ON binding.group_id=item.id WHERE item.archived_at IS NULL AND binding.group_id IS NULL ORDER BY item.sort_order,item.id`)
+	if err != nil {
+		return 0, 0, err
+	}
+	localGroups := []int64{}
+	for rows.Next() {
+		var id int64
+		if err = rows.Scan(&id); err != nil {
+			rows.Close()
+			return 0, 0, err
+		}
+		localGroups = append(localGroups, id)
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return 0, 0, err
+	}
+	rows.Close()
+	for index, id := range localGroups {
+		if _, err = tx.Exec(ctx, `UPDATE tag_groups SET sort_order=$2,updated_at=clock_timestamp() WHERE id=$1`, id, len(groups)+index); err != nil {
+			return 0, 0, err
+		}
+	}
+	if _, err = tx.Exec(ctx, `WITH boundary AS (SELECT group_id,COALESCE(max(sort_order),-1)+1 AS base FROM tag_catalog_tags WHERE archived_at IS NULL GROUP BY group_id), ranked AS (SELECT item.id,boundary.base+row_number() OVER (PARTITION BY item.group_id ORDER BY item.sort_order,item.id)-1 AS next_order FROM tag_catalog_tags item JOIN boundary USING(group_id) WHERE item.archived_at IS NULL) UPDATE tag_catalog_tags item SET sort_order=ranked.next_order::integer FROM ranked WHERE item.id=ranked.id`); err != nil {
+		return 0, 0, err
+	}
+	tagBindings := map[string]int64{}
+	rows, err = tx.Query(ctx, `SELECT provider_tag_id,tag_id FROM tag_provider_tag_bindings`)
+	if err != nil {
+		return 0, 0, err
+	}
+	for rows.Next() {
+		var providerID string
+		var id int64
+		if err = rows.Scan(&providerID, &id); err != nil {
+			rows.Close()
+			return 0, 0, err
+		}
+		tagBindings[providerID] = id
+	}
+	rows.Close()
+	seenTags := map[string]struct{}{}
+	providerCountByGroup := map[int64]int{}
+	tagCount := 0
+	for _, group := range groups {
+		groupID := groupBindings[group.ID]
+		for order, tag := range group.Tags {
+			tagCount++
+			seenTags[tag.ID] = struct{}{}
+			id := tagBindings[tag.ID]
+			if id == 0 {
+				if err = tx.QueryRow(ctx, `INSERT INTO tag_catalog_tags(group_id,tag_name,sort_order) VALUES($1,$2,$3) RETURNING id`, groupID, tag.Name, order).Scan(&id); err != nil {
+					return 0, 0, err
+				}
+				if _, err = tx.Exec(ctx, `INSERT INTO tag_provider_tag_bindings(provider_tag_id,tag_id) VALUES($1,$2)`, tag.ID, id); err != nil {
+					return 0, 0, err
+				}
+				tagBindings[tag.ID] = id
+			} else if _, err = tx.Exec(ctx, `UPDATE tag_catalog_tags SET group_id=$2,tag_name=$3,sort_order=$4,archived_at=NULL,version=version+1,updated_at=clock_timestamp() WHERE id=$1`, id, groupID, tag.Name, order); err != nil {
+				return 0, 0, err
+			}
+		}
+		providerCountByGroup[groupID] = len(group.Tags)
+	}
+	for providerID, id := range tagBindings {
+		if _, ok := seenTags[providerID]; ok {
+			continue
+		}
+		var references int64
+		if err = tx.QueryRow(ctx, `SELECT count(*) FROM tag_references WHERE resource_kind='tag' AND resource_id=$1`, id).Scan(&references); err != nil {
+			return 0, 0, err
+		}
+		if references != 0 {
+			return 0, 0, ErrConflict
+		}
+		if _, err = tx.Exec(ctx, `UPDATE tag_catalog_tags SET archived_at=COALESCE(archived_at,clock_timestamp()),version=version+1,updated_at=clock_timestamp() WHERE id=$1`, id); err != nil {
+			return 0, 0, err
+		}
+	}
+	rows, err = tx.Query(ctx, `SELECT item.id,item.group_id FROM tag_catalog_tags item LEFT JOIN tag_provider_tag_bindings binding ON binding.tag_id=item.id WHERE item.archived_at IS NULL AND binding.tag_id IS NULL ORDER BY item.group_id,item.sort_order,item.id`)
+	if err != nil {
+		return 0, 0, err
+	}
+	type localTag struct{ id, groupID int64 }
+	localTags := []localTag{}
+	for rows.Next() {
+		var id, groupID int64
+		if err = rows.Scan(&id, &groupID); err != nil {
+			rows.Close()
+			return 0, 0, err
+		}
+		localTags = append(localTags, localTag{id: id, groupID: groupID})
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return 0, 0, err
+	}
+	rows.Close()
+	localTagOffset := map[int64]int{}
+	for _, tag := range localTags {
+		order := providerCountByGroup[tag.groupID] + localTagOffset[tag.groupID]
+		localTagOffset[tag.groupID]++
+		if _, err = tx.Exec(ctx, `UPDATE tag_catalog_tags SET sort_order=$2,updated_at=clock_timestamp() WHERE id=$1`, tag.id, order); err != nil {
+			return 0, 0, err
+		}
+	}
+	for providerID, id := range groupBindings {
+		if _, ok := seenGroups[providerID]; ok {
+			continue
+		}
+		var references, localChildren int64
+		if err = tx.QueryRow(ctx, `SELECT (SELECT count(*) FROM tag_references WHERE resource_kind='group' AND resource_id=$1)+(SELECT count(*) FROM tag_references reference JOIN tag_catalog_tags child ON child.id=reference.resource_id WHERE reference.resource_kind='tag' AND child.group_id=$1), (SELECT count(*) FROM tag_catalog_tags child LEFT JOIN tag_provider_tag_bindings binding ON binding.tag_id=child.id WHERE child.group_id=$1 AND child.archived_at IS NULL AND binding.tag_id IS NULL)`, id).Scan(&references, &localChildren); err != nil {
+			return 0, 0, err
+		}
+		if references != 0 || localChildren != 0 {
+			return 0, 0, ErrConflict
+		}
+		if _, err = tx.Exec(ctx, `UPDATE tag_catalog_tags SET archived_at=COALESCE(archived_at,clock_timestamp()),version=version+1,updated_at=clock_timestamp() WHERE group_id=$1`, id); err != nil {
+			return 0, 0, err
+		}
+		if _, err = tx.Exec(ctx, `UPDATE tag_groups SET archived_at=COALESCE(archived_at,clock_timestamp()),version=version+1,updated_at=clock_timestamp() WHERE id=$1`, id); err != nil {
+			return 0, 0, err
+		}
+	}
+	var activeTags int
+	if err = tx.QueryRow(ctx, `SELECT count(*) FROM tag_catalog_tags item JOIN tag_groups parent ON parent.id=item.group_id WHERE item.archived_at IS NULL AND parent.archived_at IS NULL`).Scan(&activeTags); err != nil {
+		return 0, 0, err
+	}
+	if activeTags > 1000 {
+		return 0, 0, ErrConflict
+	}
+	return len(groups), tagCount, nil
 }
 
 type providerSnapshot struct {
@@ -408,10 +656,10 @@ type providerTag struct {
 	Order int32  `json:"order"`
 }
 
-// validProviderObservation repeats the schema at the owned persistence
-// boundary. The sink is intentionally not trusted: both digest and canonical
-// snapshot bytes must be independently reproducible here.
-func validProviderObservation(observation tagport.ProviderObservation) bool {
+// validProviderObservation repeats the successful snapshot schema at the
+// owned persistence boundary. The sink is intentionally not trusted: both
+// digest and canonical snapshot bytes must be independently reproducible here.
+func validProviderObservation(observation tagport.SyncCompletion) bool {
 	if len(observation.Snapshot) == 0 || len(observation.Snapshot) > 256<<10 || len(observation.ArtifactDigest) != 71 || !strings.HasPrefix(observation.ArtifactDigest, "sha256:") {
 		return false
 	}
@@ -490,7 +738,7 @@ func providerID(value string) bool {
 	return providerRequiredText(value, 128)
 }
 func providerName(value string) bool {
-	return providerRequiredText(value, 256)
+	return providerRequiredText(value, 200)
 }
 func providerRequiredText(value string, limit int) bool {
 	return value != "" && value == strings.TrimSpace(value) && len(value) <= limit && utf8.ValidString(value) && !strings.ContainsFunc(value, unicode.IsControl)
@@ -510,6 +758,10 @@ func (r *Repository) ReserveSync(ctx context.Context, c tagport.SyncCommand) (ta
 		return tagport.SyncReceipt{ID: id, Command: c, State: tagport.SyncReserved}, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.ConstraintName == "tag_sync_receipts_single_active" {
+			return tagport.SyncReceipt{}, tagport.ErrSyncInProgress
+		}
 		return tagport.SyncReceipt{}, err
 	}
 	var trace, kind, state, effectRef, effectState, acceptReceipt, queueReceipt string
@@ -522,6 +774,28 @@ func (r *Repository) ReserveSync(ctx context.Context, c tagport.SyncCommand) (ta
 		return tagport.SyncReceipt{}, ErrConflict
 	}
 	return tagport.SyncReceipt{ID: id, Command: c, State: tagport.SyncReceiptState(state), EventID: eventID, Effect: tagport.SyncEffectReceipt{QueueJobID: jobID, EffectID: effectID, EffectRef: effectRef, EffectState: effectState, AcceptReceiptID: acceptReceipt, QueueReceiptID: queueReceipt}}, nil
+}
+
+func (r *Repository) LatestSync(ctx context.Context) (tagport.SyncStatus, error) {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return tagport.SyncStatus{}, err
+	}
+	var status tagport.SyncStatus
+	var state string
+	err = tx.QueryRow(ctx, `SELECT id,effect_ref,state,group_count,tag_count,accepted_at,completed_at FROM tag_sync_receipts ORDER BY id DESC LIMIT 1`).Scan(&status.ReceiptID, &status.EffectID, &state, &status.GroupCount, &status.TagCount, &status.AcceptedAt, &status.CompletedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return tagport.SyncStatus{State: tagport.SyncIdle}, nil
+	}
+	if err != nil {
+		return tagport.SyncStatus{}, err
+	}
+	status.State = tagport.SyncState(state)
+	switch status.State {
+	case tagport.SyncQueued, tagport.SyncOutcomeUnknown, tagport.SyncRetryableFailed:
+		status.Active = true
+	}
+	return status, nil
 }
 func (r *Repository) AcceptSync(ctx context.Context, id, eventID int64, effect tagport.SyncEffectReceipt) (tagport.SyncReceipt, error) {
 	tx, err := transaction(ctx)

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -90,6 +91,11 @@ func TestPostgreSQLCatalogCompletionEndToEnd(t *testing.T) {
 	if err = pool.QueryRow(ctx, `SELECT snapshot::text FROM tag_provider_observations WHERE effect_id=$1 AND generation=1`, id).Scan(&snapshot); err != nil || snapshot == "" {
 		t.Fatalf("observation=%q err=%v", snapshot, err)
 	}
+	var groupCount, tagCount int
+	var receiptState string
+	if err = pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM tag_groups WHERE archived_at IS NULL),(SELECT count(*) FROM tag_catalog_tags WHERE archived_at IS NULL),state FROM tag_sync_receipts WHERE effect_id=$1`, id).Scan(&groupCount, &tagCount, &receiptState); err != nil || groupCount != 1 || tagCount != 1 || receiptState != "executed" {
+		t.Fatalf("catalog projection groups=%d tags=%d receipt=%q err=%v", groupCount, tagCount, receiptState, err)
+	}
 
 	// Schema-invalid but digest-valid artifacts fail inside the real tag sink;
 	// the EER completion CAS rolls back and no observation appears.
@@ -110,6 +116,9 @@ func TestPostgreSQLCatalogCompletionEndToEnd(t *testing.T) {
 	if err = pool.QueryRow(ctx, `SELECT count(*) FROM tag_provider_observations WHERE effect_id=$1`, badID).Scan(&count); err != nil || count != 0 {
 		t.Fatalf("sink rollback snapshot count=%d err=%v", count, err)
 	}
+	if _, err = pool.Exec(ctx, `UPDATE tag_sync_receipts SET state='final_failed',effect_state='final_failed',completed_at=clock_timestamp() WHERE effect_id=$1`, badID); err != nil {
+		t.Fatal(err)
+	}
 
 	_, unknownID, unknownJob := acceptCatalogEffect(t, ctx, pool, repository, "unknown")
 	unknown := integrationAdapter(func(context.Context, effectport.Envelope, effectport.Attempt) (effectport.AdapterResult, error) {
@@ -122,8 +131,14 @@ func TestPostgreSQLCatalogCompletionEndToEnd(t *testing.T) {
 	if err != nil || current.State != effects.StateUnknown {
 		t.Fatalf("unknown=%+v err=%v", current, err)
 	}
+	if err = pool.QueryRow(ctx, `SELECT state FROM tag_sync_receipts WHERE effect_id=$1`, unknownID).Scan(&receiptState); err != nil || receiptState != "outcome_unknown" {
+		t.Fatalf("unknown tag receipt=%q err=%v", receiptState, err)
+	}
 	if _, _, err = repository.Reconcile(ctx, effects.ControlCommand{EffectID: "eer_" + itoa(unknownID), ReceiptKey: effectport.Hash("reconcile", "unknown"), EvidenceDigest: effectport.Hash("evidence", "not-applied"), ActorAdminUserID: 7}); err != nil {
 		t.Fatal(err)
+	}
+	if err = pool.QueryRow(ctx, `SELECT state FROM tag_sync_receipts WHERE effect_id=$1`, unknownID).Scan(&receiptState); err != nil || receiptState != "reconciled" {
+		t.Fatalf("reconciled tag receipt=%q err=%v", receiptState, err)
 	}
 	if err = pool.QueryRow(ctx, `SELECT count(*) FROM tag_provider_observations WHERE effect_id=$1`, unknownID).Scan(&count); err != nil || count != 0 {
 		t.Fatalf("reconciled wrote snapshot count=%d err=%v", count, err)
@@ -139,6 +154,9 @@ func TestPostgreSQLCatalogCompletionEndToEnd(t *testing.T) {
 	current, err = repository.Get(ctx, "eer_"+itoa(finalID))
 	if err != nil || current.State != effects.StateFinalFailed {
 		t.Fatalf("final=%+v err=%v", current, err)
+	}
+	if err = pool.QueryRow(ctx, `SELECT state FROM tag_sync_receipts WHERE effect_id=$1`, finalID).Scan(&receiptState); err != nil || receiptState != "final_failed" {
+		t.Fatalf("final tag receipt=%q err=%v", receiptState, err)
 	}
 	if err = pool.QueryRow(ctx, `SELECT count(*) FROM tag_provider_observations WHERE effect_id=$1`, finalID).Scan(&count); err != nil || count != 0 {
 		t.Fatalf("final wrote snapshot count=%d err=%v", count, err)
@@ -172,6 +190,10 @@ func acceptCatalogEffect(t *testing.T, ctx context.Context, pool *pgxpool.Pool, 
 		t.Fatal(err)
 	}
 	if err = pool.QueryRow(ctx, `SELECT river_job_id FROM external_effect_jobs WHERE effect_id=$1`, id).Scan(&job); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256([]byte("tag-sync-" + unique))
+	if _, err = pool.Exec(ctx, `INSERT INTO tag_sync_receipts(actor_admin_user_id,idempotency_key_digest,trace_id,sync_kind,state,event_id,queue_job_id,effect_id,effect_ref,effect_state,accept_receipt_id,queue_receipt_id,accepted_at) VALUES(7,$1,'','manual','queued',1,$2,$3,$4,'queued','accept','queue',clock_timestamp())`, digest[:], job, id, p.ID); err != nil {
 		t.Fatal(err)
 	}
 	return p, id, job
@@ -219,7 +241,7 @@ func catalogIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 		t.Fatal("locate")
 	}
 	base := filepath.Join(filepath.Dir(file), "..", "..", "migrations")
-	for _, name := range []string{"0005_external_effects.sql", "0008_tag_catalog.sql"} {
+	for _, name := range []string{"0005_external_effects.sql", "0008_tag_catalog.sql", "0019_tag_catalog_sync_projection.sql"} {
 		sql, readErr := os.ReadFile(filepath.Join(base, name))
 		if readErr != nil {
 			t.Fatal(readErr)
@@ -237,4 +259,4 @@ func catalogIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 
 func itoa(value int64) string { return strconv.FormatInt(value, 10) }
 
-var _ tagport.SnapshotWriter = (*tagstore.Repository)(nil)
+var _ tagport.SyncCompletionWriter = (*tagstore.Repository)(nil)

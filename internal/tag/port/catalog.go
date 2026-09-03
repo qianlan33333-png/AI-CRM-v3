@@ -9,21 +9,23 @@ import (
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/tag/domain"
 )
 
-type ProviderObservation struct {
+type SyncCompletion struct {
 	EffectID       int64
 	Generation     int64
+	State          SyncState
 	ArtifactDigest string
 	Snapshot       []byte
 }
-type SnapshotWriter interface {
-	StoreProviderObservation(context.Context, ProviderObservation) error
+type SyncCompletionWriter interface {
+	CompleteProviderSync(context.Context, SyncCompletion) error
 }
 
 // ErrNotFound and ErrConflict classify owned-store results without exposing a
 // concrete adapter to the application or HTTP layers.
 var (
-	ErrNotFound = errors.New("tag catalog item not found")
-	ErrConflict = errors.New("tag catalog conflict")
+	ErrNotFound       = errors.New("tag catalog item not found")
+	ErrConflict       = errors.New("tag catalog conflict")
+	ErrSyncInProgress = errors.New("tag catalog sync already in progress")
 )
 
 // CatalogStore is the Tag-owned transactional store contract. Implementations
@@ -104,6 +106,7 @@ type EventAppender interface {
 type SyncReceiptStore interface {
 	ReserveSync(context.Context, SyncCommand) (SyncReceipt, error)
 	AcceptSync(context.Context, int64, int64, SyncEffectReceipt) (SyncReceipt, error)
+	LatestSync(context.Context) (SyncStatus, error)
 }
 
 type SyncEnqueuer interface {
@@ -120,18 +123,28 @@ const (
 type SyncState string
 
 const (
-	SyncQueued         SyncState = "queued"
-	SyncAttempted      SyncState = "attempted"
-	SyncExecuted       SyncState = "executed"
-	SyncOutcomeUnknown SyncState = "outcome_unknown"
-	SyncReconciled     SyncState = "reconciled"
+	SyncIdle            SyncState = "idle"
+	SyncQueued          SyncState = "queued"
+	SyncAttempted       SyncState = "attempted"
+	SyncExecuted        SyncState = "executed"
+	SyncOutcomeUnknown  SyncState = "outcome_unknown"
+	SyncReconciled      SyncState = "reconciled"
+	SyncRetryableFailed SyncState = "retryable_failed"
+	SyncFinalFailed     SyncState = "final_failed"
+	SyncCancelled       SyncState = "cancelled"
 )
 
 type SyncReceiptState string
 
 const (
-	SyncReserved SyncReceiptState = "reserved"
-	SyncAccepted SyncReceiptState = "queued"
+	SyncReserved               SyncReceiptState = "reserved"
+	SyncAccepted               SyncReceiptState = "queued"
+	SyncReceiptExecuted        SyncReceiptState = "executed"
+	SyncReceiptOutcomeUnknown  SyncReceiptState = "outcome_unknown"
+	SyncReceiptRetryableFailed SyncReceiptState = "retryable_failed"
+	SyncReceiptFinalFailed     SyncReceiptState = "final_failed"
+	SyncReceiptCancelled       SyncReceiptState = "cancelled"
+	SyncReceiptReconciled      SyncReceiptState = "reconciled"
 )
 
 type SyncCommand struct {
@@ -174,4 +187,15 @@ type SyncAcceptance struct {
 	AcceptReceiptID string    `json:"accept_receipt_id"`
 	QueueReceiptID  string    `json:"queue_receipt_id"`
 	State           SyncState `json:"state"`
+}
+
+type SyncStatus struct {
+	ReceiptID   int64      `json:"receipt_id"`
+	EffectID    string     `json:"effect_id"`
+	State       SyncState  `json:"state"`
+	Active      bool       `json:"active"`
+	GroupCount  int        `json:"group_count"`
+	TagCount    int        `json:"tag_count"`
+	AcceptedAt  *time.Time `json:"accepted_at,omitempty"`
+	CompletedAt *time.Time `json:"completed_at,omitempty"`
 }

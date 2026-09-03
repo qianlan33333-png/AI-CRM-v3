@@ -51,7 +51,8 @@ for migration_contract in \
   '0011_coupon_rules.sql:Coupon rules' \
   '0012_group_ops.sql:Group Ops' \
   '0016_media_content_packages.sql:Media content packages' \
-  '0017_group_ops_history.sql:Group Ops history'; do
+  '0017_group_ops_history.sql:Group Ops history' \
+  '0019_tag_catalog_sync_projection.sql:Tag catalog sync projection'; do
   migration="${migration_contract%%:*}"
   label="${migration_contract#*:}"
   test -f "migrations/${migration}" || {
