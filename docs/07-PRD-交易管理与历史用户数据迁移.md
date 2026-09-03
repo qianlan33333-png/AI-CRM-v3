@@ -265,7 +265,7 @@ Payment-owned：
 - 已验证 `150.158.82.186` host key、受限只读账号和允许命令。
 - 数据 Owner 批准表清单、字段白名单、快照保留期和停写窗口。
 - `crm-prod` 受限入口已验证，只允许只读 `SELECT`。当前可见 `audience_read.identity_universe_v1` 与 `audience_read.orders_v1`；底层退款、微信小店和支付宝表存在，但只读账号无权访问，不能据部分视图执行全量导入。
-- 当前可见聚合基线：身份宇宙 25,649 行、24,255 个唯一身份、1,369 个 person；微信支付订单 769 行，订单金额合计 95,518,218 分。以上是部分源覆盖，不是全量迁移完成证明。
+- 2026-09-03 订单快照验证基线：单语句一致性读取 `audience_read.orders_v1` 得到 771 行、金额合计 95,628,118 分（paid 608、closed 163），无重复订单键、无缺失商品、无非正金额；其中一行源时间异常已仅将规范化 `updated_at` 提升到 `created_at`，原始快照保持不变。该证据只证明当前微信支付订单视图覆盖，不代表身份、退款、微信小店或支付宝全量迁移完成。
 - UnionID 记录没有可从生产配置确认的微信开放平台 scope。必须由数据 Owner 提供 `wechat-open-platform:<scope>`，否则不得以 UnionID 建客或跨渠道归属。
 - 源备份已完成并做可恢复性验证；目标 v3 在导入前也生成备份。
 - Provider 开关全部保持 disabled；迁移进程不得注册 Payment/Refund Worker。
@@ -294,6 +294,15 @@ events.jsonl.enc
 Manifest 记录 schema version、源表/列、source SHA、T0/T1 watermark、行数、明文 canonical digest、密文 digest、加密 key version 和导出工具版本。快照位于受控目录，权限 `0600`，不得提交 Git；密钥不与快照同机长期保存。
 
 规范化 apply manifest 使用 `aicrm-commerce-history-v3`：`subjects[]` 固化权威 source person 与 identity keys 的一对多归组；`identities[]` 只含 namespace 完整的 verified facts；`identity_quarantines[]` 只含 reason code 与 digest 等安全证据；`orders[].items[]` 保留全部不可变商品行，不再把多商品订单压成单行。
+
+### 12.3.1 订单能力验证快照的受控例外
+
+为了先验证交易读取能力，生产管理页可接受一个严格的 `wechat_pay_orders-only` manifest：仅 `coverage.wechat_pay_orders=true`，其他 coverage 全为 false，且 subjects、identities、identity_quarantines、refunds 必须为空，所有订单必须是无身份引用的 floating 历史订单。该路径不升级为“全量迁移完成”，也不放宽完整 commerce CLI 的覆盖门禁。
+
+- 仅 `super_admin` 可执行，POST 同时要求同源保护、CSRF、原文件 SHA-256、`Idempotency-Key=run_key` 和显式 apply 确认。
+- 文件上限 2 MiB；原文不入库、不入日志，只持久化 digest、计数、订单事实和 append-only receipt。
+- 导入强制 `record_origin=history`、`effect_eligible=false`、payer/beneficiary 为空；不调用 OneID provision、Payment、Refund 或 Provider。
+- 对账必须证明本 run 的 receipt 数、订单数、金额均与 manifest 一致，全部为 floating 且 effect eligible 为零，才将 run 标为 reconciled。
 
 ### 12.4 结果桶与恒等式
 

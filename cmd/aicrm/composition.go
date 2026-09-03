@@ -47,8 +47,10 @@ import (
 	operationcycle "github.com/qianlan33333-png/AI-CRM-v3/internal/operationcycle"
 	operationapp "github.com/qianlan33333-png/AI-CRM-v3/internal/operationcycle/app"
 	operationstore "github.com/qianlan33333-png/AI-CRM-v3/internal/operationcycle/store"
+	orderui "github.com/qianlan33333-png/AI-CRM-v3/internal/order"
 	orderapp "github.com/qianlan33333-png/AI-CRM-v3/internal/order/app"
 	orderhttp "github.com/qianlan33333-png/AI-CRM-v3/internal/order/http"
+	ordermigration "github.com/qianlan33333-png/AI-CRM-v3/internal/order/migration"
 	orderstore "github.com/qianlan33333-png/AI-CRM-v3/internal/order/store"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/outbound"
 	payment "github.com/qianlan33333-png/AI-CRM-v3/internal/payment"
@@ -411,6 +413,11 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
+	orderRuns := ordermigration.PostgreSQLRuns{Pool: pool.Native()}
+	orderImportHandler, err := orderhttp.NewImportHandler(ordermigration.OrderOnlyRunner{Orders: orderService, Runs: orderRuns}, orderRuns, requestSecurity)
+	if err != nil {
+		return fail(err)
+	}
 	paymentSession, err := paymentsession.NewService(uow, oneID, paymentsession.NewPostgreSQL(), 10*time.Minute)
 	if err != nil {
 		return fail(err)
@@ -612,6 +619,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	adminAPIs.Handle("/api/admin/customer-sync-runs/", syncHandler.Routes())
 	adminAPIs.Handle("/api/admin/orders", orderHandler)
 	adminAPIs.Handle("/api/admin/orders/", orderHandler)
+	adminAPIs.Handle("/api/admin/order-imports/", orderImportHandler)
 	adminAPIs.Handle("/api/admin/refunds", paymentHandler)
 	adminAPIs.Handle("/api/admin/exports", orderHandler)
 	adminAPIs.Handle("/api/admin/exports/", orderHandler)
@@ -708,6 +716,10 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		endpoints := map[string]string{"products": "api.admin_products_page", "productForm": "api.admin_product_form_page", "spProducts": "api.admin_service_period_products_page", "spProductForm": "api.admin_service_period_product_form_page"}
 		return renderer.RenderProducts(writer, webshell.AdminPageForRequest(request, titles[page], "仅管理本地商品定义、生命周期与受控配置。", endpoints[page]), page, donorTemplate, webshell.ProductAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS})
 	})
+	orderUI := orderui.NewUIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, page, donorTemplate string, assets orderui.PageAssets) error {
+		title := map[string]string{"orders": "交易管理", "orderDetail": "订单详情"}[page]
+		return renderer.RenderOrders(writer, webshell.AdminPageForRequest(request, title, "历史订单默认只读；未验证身份不归属 OneID。", "api.admin_orders_page"), page, donorTemplate, webshell.OrderAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS})
+	})
 	couponUI := couponModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, page, donorTemplate string, assets coupon.Assets) error {
 		titles := map[string]string{"coupons": "优惠券", "couponForm": "优惠券"}
 		endpoints := map[string]string{"coupons": "api.admin_coupons_page", "couponForm": "api.admin_coupon_form_page"}
@@ -740,7 +752,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
-	handler = securityHeaders(mountSurveyUI(handler, surveyUI, surveyPublicUI, authentication))
+	handler = securityHeaders(mountOrderUI(mountSurveyUI(handler, surveyUI, surveyPublicUI, authentication), orderUI, authentication))
 	// These are local observations only: they make the release and diagnostics
 	// projections truthful and readable after startup, without claiming deploy,
 	// cutover, provider execution, or runtime-secret application.
@@ -766,6 +778,21 @@ func mountSurveyAPIs(mux *http.ServeMux, survey http.Handler) {
 	// legacy page-shaped path. Keep it inside the authenticated admin mux so the
 	// response is JSON from Survey instead of the outer mux's plain-text 404.
 	mux.Handle("/admin/questionnaires/", survey)
+}
+
+func mountOrderUI(next, adminUI http.Handler, authentication accessAuthentication) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/admin/orders", "/admin/orders.html", "/admin/orderDetail.html":
+			requireAdminSession(authentication, adminUI).ServeHTTP(w, r)
+		default:
+			if strings.HasPrefix(r.URL.Path, "/order-assets/") {
+				requireAdminSession(authentication, adminUI).ServeHTTP(w, r)
+				return
+			}
+			next.ServeHTTP(w, r)
+		}
+	})
 }
 
 func mountSurveyUI(next, adminUI, publicUI http.Handler, authentication accessAuthentication) http.Handler {
@@ -1072,13 +1099,14 @@ func securityHeaders(next http.Handler) http.Handler {
 		mediaPage := request.URL.Path == "/admin/image-library" || request.URL.Path == "/admin/miniprogram-library" || request.URL.Path == "/admin/attachment-library"
 		tagsPage := request.URL.Path == "/admin/wecom-tags"
 		productPage := isProductShellPath(request.URL.Path)
+		orderPage := request.URL.Path == "/admin/orders" || request.URL.Path == "/admin/orders.html" || request.URL.Path == "/admin/orderDetail.html"
 		couponPage := request.URL.Path == "/admin/coupons" || request.URL.Path == "/admin/coupons.html" || request.URL.Path == "/admin/couponForm.html"
 		groupOpsPage := request.URL.Path == "/admin/automation-conversion/group-ops/ui" || request.URL.Path == "/admin/automation-conversion/group-ops/groups/ui" || request.URL.Path == "/admin/groupops.html" || request.URL.Path == "/admin/groupopsDetail.html" || strings.HasPrefix(request.URL.Path, "/admin/automation-conversion/group-ops/plans/")
 		automationPage := request.URL.Path == "/admin/automation-agents" || strings.HasPrefix(request.URL.Path, "/admin/automation-agents/") || request.URL.Path == "/admin/agents.html" || request.URL.Path == "/admin/agentEdit.html"
 		surveyPage := request.URL.Path == "/admin/questionnaires" || request.URL.Path == "/admin/questionnaires.html" || request.URL.Path == "/admin/questionnaireDetail.html" || request.URL.Path == "/admin/questionnaireOps.html" || strings.HasPrefix(request.URL.Path, "/h5/")
 		operationCyclesPage := request.URL.Path == "/admin/operation-cycles" || strings.HasPrefix(request.URL.Path, "/admin/operation-cycles/")
 		configPage := request.URL.Path == "/admin/config" || request.URL.Path == "/admin/config.html" || request.URL.Path == "/admin/configDetail.html" || request.URL.Path == "/admin/api-docs" || request.URL.Path == "/admin/apidocs.html"
-		if (request.URL.Path == "/admin/campaigns.html" && externaleffects.ValidUIQuery(request.URL.Query())) || mediaPage || tagsPage || productPage || couponPage || groupOpsPage || automationPage || surveyPage || operationCyclesPage || configPage {
+		if (request.URL.Path == "/admin/campaigns.html" && externaleffects.ValidUIQuery(request.URL.Query())) || mediaPage || tagsPage || productPage || orderPage || couponPage || groupOpsPage || automationPage || surveyPage || operationCyclesPage || configPage {
 			styleSource = "'self' 'unsafe-inline'"
 		}
 		imageSource := "'self' data:"

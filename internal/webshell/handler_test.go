@@ -532,6 +532,22 @@ func TestRenderProductsKeepsPR10AsTheOnlyAdminShell(t *testing.T) {
 	}
 }
 
+func TestRenderOrdersMountsFrozenTransactionPageAndHostImportControl(t *testing.T) {
+	renderer, err := NewRenderer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	err = renderer.RenderOrders(response, AdminPageForRequest(httptest.NewRequest(http.MethodGet, "/admin/orders", nil), "交易管理", "", "api.admin_orders_page"), "orders", `<section data-page="orders">frozen donor orders</section>`, OrderAssets{TokensCSS: "/order-assets/tokens.css", LabsCSS: "/order-assets/labs.css", AdminJS: "/order-assets/admin.js"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := response.Body.String()
+	if response.Code != http.StatusOK || strings.Count(body, `class="admin-sidebar"`) != 1 || strings.Count(body, `<aside`) != 1 || strings.Contains(body, `class="side"`) || !strings.Contains(body, `<template id="tpl"><section data-page="orders">frozen donor orders</section></template>`) || !strings.Contains(body, `data-order-import`) || !strings.Contains(body, `/static/admin_console/order_import.js`) {
+		t.Fatalf("order shell mismatch status=%d body=%q", response.Code, body)
+	}
+}
+
 func TestRenderCouponsKeepsPR10AsTheOnlyAdminShell(t *testing.T) {
 	renderer, err := NewRenderer()
 	if err != nil {
