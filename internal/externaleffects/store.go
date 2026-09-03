@@ -391,7 +391,14 @@ func (r *Repository) controlWithin(ctx context.Context, tx pgx.Tx, command Contr
 		}
 	}
 	if operation == "reconcile" {
-		result, updateErr := tx.Exec(ctx, `UPDATE external_effect_attempts SET state='reconciled',evidence_digest=$2,completed_at=clock_timestamp() WHERE effect_id=$1 AND generation=$3 AND fence=$4 AND state='outcome_unknown' AND ($5::timestamptz IS NULL OR $5 <= clock_timestamp())`, id, command.EvidenceDigest, generation, fence, leaseExpires)
+		// The lease-expiry guard belongs only to the fenced Group Ops
+		// reconciliation contract. Existing admin reconciliation commands omit
+		// generation/fence/lease and must retain their original semantics.
+		var requiredExpiredLease any
+		if command.Generation != 0 || command.Fence != 0 || !command.LeaseExpiresAt.IsZero() {
+			requiredExpiredLease = leaseExpires
+		}
+		result, updateErr := tx.Exec(ctx, `UPDATE external_effect_attempts SET state='reconciled',evidence_digest=$2,completed_at=clock_timestamp() WHERE effect_id=$1 AND generation=$3 AND fence=$4 AND state='outcome_unknown' AND ($5::timestamptz IS NULL OR $5 <= clock_timestamp())`, id, command.EvidenceDigest, generation, fence, requiredExpiredLease)
 		if updateErr != nil {
 			return Projection{}, Receipt{}, updateErr
 		}

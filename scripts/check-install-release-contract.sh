@@ -44,4 +44,8 @@ grep -qx 'WantedBy=multi-user.target' deploy/aicrm-effects-worker.service || { e
 grep -qx 'test -f "$release_dir/migrations/0007_media.sql"' "$installer" || { echo "release must require Media migration" >&2; exit 1; }
 grep -qx 'test -f "$release_dir/migrations/0008_tag_catalog.sql"' "$installer" || { echo "release must require Tag catalog migration" >&2; exit 1; }
 grep -qx 'test -f "$release_dir/migrations/0009_customer_activation.sql"' "$installer" || { echo "release must require customer migration" >&2; exit 1; }
+grep -qx 'test -f "$release_dir/migrations/0010_product.sql"' "$installer" || { echo "release must require Product migration" >&2; exit 1; }
+grep -qx 'test -f "$release_dir/migrations/0011_coupon.sql"' "$installer" || { echo "release must require Coupon migration" >&2; exit 1; }
+grep -qx 'test -f "$release_dir/migrations/0012_group_ops.sql"' "$installer" || { echo "release must require Group Ops migration" >&2; exit 1; }
+grep -qx 'test -f "$release_dir/migrations/0016_media_content_packages.sql"' "$installer" || { echo "release must require Media content-package migration" >&2; exit 1; }
 grep -qx 'test -x "$release_dir/bin/migrate-phone-identities"' "$installer" || { echo "release must include phone migration tool" >&2; exit 1; }

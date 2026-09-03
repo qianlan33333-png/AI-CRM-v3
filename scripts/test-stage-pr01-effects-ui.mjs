@@ -18,6 +18,7 @@ try {
   for (const page of ['images', 'attach', 'mpLib']) fs.writeFileSync(path.join(source, 'admin', `${page}.html`), `<template id="tpl">${page}</template>`);
   for (const page of ['products', 'productForm', 'spProducts', 'spProductForm']) fs.writeFileSync(path.join(source, 'admin', `${page}.html`), `<template id="tpl">${page}</template>`);
   for (const page of ['coupons', 'couponForm']) fs.writeFileSync(path.join(source, 'admin', `${page}.html`), `<template id="tpl">${page}</template>`);
+  for (const page of ['groupops', 'groupopsDetail']) fs.writeFileSync(path.join(source, 'admin', `${page}.html`), `<template id="tpl">${page}</template>`);
   for (const file of ['admin.js', 'tokens.css', 'labs.css', 'legacy.js', 'campaigns.js']) {
     fs.writeFileSync(path.join(source, 'assets', file), file);
   }
@@ -34,10 +35,10 @@ try {
 
   execFileSync(process.execPath, ['scripts/stage-pr01-effects-ui.mjs', source, stage], { stdio: 'inherit' });
   const staged = fs.readdirSync(stage, { recursive: true }).map((entry) => String(entry).split(path.sep).join('/')).sort();
-  assert.deepEqual(staged, ['admin', 'admin/attach.html', 'admin/couponForm.html', 'admin/coupons.html', 'admin/images.html', 'admin/mpLib.html', 'admin/productForm.html', 'admin/products.html', 'admin/spProductForm.html', 'admin/spProducts.html', 'admin/tags.html', 'asset-manifest.json', 'assets', 'assets/admin.js', 'assets/campaigns.js', 'assets/labs.css', 'assets/legacy.js', 'assets/tokens.css']);
+  assert.deepEqual(staged, ['admin', 'admin/attach.html', 'admin/couponForm.html', 'admin/coupons.html', 'admin/groupops.html', 'admin/groupopsDetail.html', 'admin/images.html', 'admin/mpLib.html', 'admin/productForm.html', 'admin/products.html', 'admin/spProductForm.html', 'admin/spProducts.html', 'admin/tags.html', 'asset-manifest.json', 'assets', 'assets/admin.js', 'assets/campaigns.js', 'assets/labs.css', 'assets/legacy.js', 'assets/tokens.css']);
   assert.equal(fs.existsSync(path.join(stage, 'admin', 'campaigns.html')), false, 'donor campaign HTML must not be released');
   assert.equal(fs.readFileSync(path.join(stage, 'admin', 'tags.html'), 'utf8'), fs.readFileSync(path.join(source, 'admin', 'wecom-tags.html'), 'utf8'), 'generated donor Tags page must be copied byte-for-byte as the private template source');
-  assert.deepEqual(staged.filter((entry) => entry.endsWith('.html')), ['admin/attach.html', 'admin/couponForm.html', 'admin/coupons.html', 'admin/images.html', 'admin/mpLib.html', 'admin/productForm.html', 'admin/products.html', 'admin/spProductForm.html', 'admin/spProducts.html', 'admin/tags.html'], 'only private Media, Tags, Product, and Coupon templates may be staged');
+  assert.deepEqual(staged.filter((entry) => entry.endsWith('.html')), ['admin/attach.html', 'admin/couponForm.html', 'admin/coupons.html', 'admin/groupops.html', 'admin/groupopsDetail.html', 'admin/images.html', 'admin/mpLib.html', 'admin/productForm.html', 'admin/products.html', 'admin/spProductForm.html', 'admin/spProducts.html', 'admin/tags.html'], 'only approved private business templates may be staged');
   console.log('PR01 effects UI staging contract passed');
 } finally {
   fs.rmSync(root, { recursive: true, force: true });
