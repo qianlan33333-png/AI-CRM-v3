@@ -106,11 +106,30 @@ func (effects *commerceExternalPushTestEffects) AcceptProductExternalPushTest(_ 
 	return effects.result, nil
 }
 
+type commerceExternalPushTestEvents struct {
+	events []productport.Event
+}
+
+func (events *commerceExternalPushTestEvents) Append(_ context.Context, event productport.Event) (productport.EventID, error) {
+	events.events = append(events.events, event)
+	return productport.EventID(len(events.events)), nil
+}
+
 func newCommerceExternalPushTestService(store *commerceExternalPushTestStore, effects *commerceExternalPushTestEffects) (*CommerceExternalPushService, *commerceExternalPushTestUoW) {
 	uow := &commerceExternalPushTestUoW{}
-	service := NewCommerceExternalPushService(uow, store, effects)
+	service, err := NewCommerceExternalPushService(uow, store, effects, &commerceExternalPushTestEvents{})
+	if err != nil {
+		panic(err)
+	}
 	service.now = func() time.Time { return time.Date(2026, 8, 25, 12, 0, 0, 0, time.UTC) }
 	return service, uow
+}
+
+func TestCommerceExternalPushRequiresEventAppender(t *testing.T) {
+	_, err := NewCommerceExternalPushService(&commerceExternalPushTestUoW{}, &commerceExternalPushTestStore{}, &commerceExternalPushTestEffects{}, nil)
+	if err == nil {
+		t.Fatal("constructor must reject a missing event appender")
+	}
 }
 
 func TestCommerceExternalPushSavesReadsAndReplaysLocally(t *testing.T) {

@@ -63,13 +63,12 @@ func NewCommerceExternalPushService(
 	uow platformport.UnitOfWork,
 	store CommerceExternalPushStore,
 	effects ProductExternalPushEffectAccepter,
-	eventAppenders ...productport.EventAppender,
-) *CommerceExternalPushService {
-	var events productport.EventAppender
-	if len(eventAppenders) > 0 {
-		events = eventAppenders[0]
+	events productport.EventAppender,
+) (*CommerceExternalPushService, error) {
+	if events == nil {
+		return nil, errors.New("product external push event appender is required")
 	}
-	return &CommerceExternalPushService{uow: uow, store: store, effects: effects, events: events, now: time.Now}
+	return &CommerceExternalPushService{uow: uow, store: store, effects: effects, events: events, now: time.Now}, nil
 }
 
 func (service *CommerceExternalPushService) GetExternalPushConfiguration(
@@ -250,12 +249,8 @@ func (service *CommerceExternalPushService) completeCommerceExternalPush(ctx con
 }
 
 func (service *CommerceExternalPushService) appendEvent(ctx context.Context, eventType string, productID productport.ID, kind productport.ExternalPushProductKind, actor int64, keyDigest [32]byte, fields map[string]any) error {
-	if service.events == nil {
-		// The isolated application tests intentionally construct the service
-		// without platform event ports. Production composition always supplies
-		// the transactional adapter; preserving the optional constructor keeps
-		// the bounded application contract reusable in those tests.
-		return nil
+	if service == nil || service.events == nil {
+		return ErrUnavailable
 	}
 	if fields == nil {
 		fields = map[string]any{}
@@ -388,7 +383,7 @@ func decodeCommerceExternalPushTestSnapshot(raw json.RawMessage, target *product
 }
 
 func commerceExternalPushReady(service *CommerceExternalPushService) bool {
-	return service != nil && service.uow != nil && service.store != nil && service.now != nil
+	return service != nil && service.uow != nil && service.store != nil && service.events != nil && service.now != nil
 }
 
 func classifyCommerceExternalPush(err error) error {
