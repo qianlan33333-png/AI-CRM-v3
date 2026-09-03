@@ -14,6 +14,13 @@ type ChannelMiniProgramReferenceReader interface {
 	ChannelMiniProgramEligible(context.Context, int64) (bool, error)
 }
 
+// MiniProgramMetadataReader is the generic, transaction-bound existence fact
+// for a local enabled Mini Program material. It does not expose provider-ready
+// fields, thumbnail bytes, or a concrete store.
+type MiniProgramMetadataReader interface {
+	MiniProgramExists(context.Context, int64) (bool, error)
+}
+
 // MiniProgram is the local material-card fact. The fields mirror the immutable
 // legacy material record; neither the card nor its thumbnail cache is proof
 // that a WeCom provider accepted a send.

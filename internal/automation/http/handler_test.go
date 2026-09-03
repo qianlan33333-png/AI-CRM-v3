@@ -15,20 +15,25 @@ import (
 )
 
 type testSecurity struct {
-	p   accessdomain.Principal
-	err error
+	p       accessdomain.Principal
+	err     error
+	csrfErr error
 }
 
 func (s testSecurity) Authenticate(context.Context, *http.Request) (accessdomain.Principal, error) {
 	return s.p, s.err
 }
 func (s testSecurity) AuthorizeCSRF(context.Context, *http.Request) (accessdomain.Principal, error) {
+	if s.csrfErr != nil {
+		return s.p, s.csrfErr
+	}
 	return s.p, s.err
 }
 
 type testAgents struct {
 	item   automationport.Agent
 	create automationport.CreateCommand
+	status automationport.AgentStatus
 	err    error
 }
 
@@ -51,7 +56,10 @@ func (s *testAgents) Copy(context.Context, automationport.MutationCommand) (auto
 func (s *testAgents) Publish(context.Context, automationport.MutationCommand) (automationport.Agent, error) {
 	return s.item, s.err
 }
-func (s *testAgents) SetStatus(context.Context, automationport.MutationCommand, automationport.AgentStatus) (automationport.Agent, error) {
+func (s *testAgents) SetStatus(_ context.Context, _ automationport.MutationCommand, status automationport.AgentStatus) (automationport.Agent, error) {
+	s.status = status
+	s.item.Status = status
+	s.item.ExecutionEnabled = status == automationport.AgentStatusActive
 	return s.item, s.err
 }
 func (s *testAgents) SaveFixedContent(context.Context, automationport.FixedContentCommand) (automationport.Agent, error) {
@@ -77,13 +85,39 @@ func TestCreateUsesPrincipalAndIdempotencyHeader(t *testing.T) {
 		t.Fatalf("status=%d command=%+v", w.Code, s.create)
 	}
 }
-func TestActivateFailsClosed(t *testing.T) {
-	h, _ := NewHandler(&testAgents{item: agent()}, testSecurity{p: principal()})
+func TestActivatePersistsLocalStatusAfterCSRF(t *testing.T) {
+	s := &testAgents{item: agent()}
+	h, _ := NewHandler(s, testSecurity{p: principal()})
 	r := httptest.NewRequest(http.MethodPost, "/api/admin/automation-agents/1/activate", nil)
+	r.Header.Set("Idempotency-Key", "1234567890123456")
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, r)
-	if w.Code != 410 {
+	if w.Code != 200 || s.status != automationport.AgentStatusActive || !s.item.ExecutionEnabled {
 		t.Fatalf("got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestActivateRequiresCSRF(t *testing.T) {
+	s := &testAgents{item: agent()}
+	h, _ := NewHandler(s, testSecurity{p: principal(), csrfErr: errors.New("csrf")})
+	r := httptest.NewRequest(http.MethodPost, "/api/admin/automation-agents/1/activate", nil)
+	r.Header.Set("Idempotency-Key", "1234567890123456")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusForbidden || s.status != "" {
+		t.Fatalf("status=%d transition=%q body=%s", w.Code, s.status, w.Body.String())
+	}
+}
+
+func TestSummaryUsesPersistedMaterialCounts(t *testing.T) {
+	a := agent()
+	a.Status, a.ExecutionEnabled = automationport.AgentStatusActive, true
+	a.FixedContentPackage.ImageLibraryIDs = []int64{1, 2}
+	a.FixedContentPackage.AttachmentLibraryIDs = []int64{3}
+	got := summary(a)
+	counts := got["fixed_material_summary"].(map[string]int)
+	if got["status"] != automationport.AgentStatusActive || got["execution_enabled"] != true || counts["image_count"] != 2 || counts["attachment_count"] != 1 {
+		t.Fatalf("summary=%#v", got)
 	}
 }
 func TestErrorMapsNotFound(t *testing.T) {

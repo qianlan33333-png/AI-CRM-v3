@@ -63,12 +63,14 @@ type Store interface {
 }
 
 type Service struct {
-	uow         platformport.UnitOfWork
-	store       Store
-	images      automationport.ImageMetadataReader
-	attachments automationport.AttachmentMetadataReader
-	events      automationport.EventAppender
-	now         func() time.Time
+	uow          platformport.UnitOfWork
+	store        Store
+	images       automationport.ImageMetadataReader
+	attachments  automationport.AttachmentMetadataReader
+	miniPrograms automationport.MiniProgramMetadataReader
+	groupInvites automationport.GroupInviteMetadataReader
+	events       automationport.EventAppender
+	now          func() time.Time
 }
 
 var _ automationport.AgentService = (*Service)(nil)
@@ -80,14 +82,14 @@ func NewAgentService(uow platformport.UnitOfWork, store Store, events automation
 // NewAgentServiceWithImageReferences wires Media's transaction-bound image
 // reader for the only Automation image-reference field.
 func NewAgentServiceWithImageReferences(uow platformport.UnitOfWork, store Store, images automationport.ImageMetadataReader, events automationport.EventAppender) *Service {
-	return NewAgentServiceWithMediaReferences(uow, store, images, nil, events)
+	return NewAgentServiceWithMediaReferences(uow, store, images, nil, nil, nil, events)
 }
 
-// NewAgentServiceWithMediaReferences validates both local Media reference
-// sets under the caller's UoW. Metadata readers acquire FOR KEY SHARE before
-// JSON references are persisted, closing the delete/write race.
-func NewAgentServiceWithMediaReferences(uow platformport.UnitOfWork, store Store, images automationport.ImageMetadataReader, attachments automationport.AttachmentMetadataReader, events automationport.EventAppender) *Service {
-	return &Service{uow: uow, store: store, images: images, attachments: attachments, events: events, now: time.Now}
+// NewAgentServiceWithMediaReferences validates every local Media reference
+// under the caller's UoW. Metadata readers acquire FOR KEY SHARE before JSON
+// references are persisted, closing the delete/write race.
+func NewAgentServiceWithMediaReferences(uow platformport.UnitOfWork, store Store, images automationport.ImageMetadataReader, attachments automationport.AttachmentMetadataReader, miniPrograms automationport.MiniProgramMetadataReader, groupInvites automationport.GroupInviteMetadataReader, events automationport.EventAppender) *Service {
+	return &Service{uow: uow, store: store, images: images, attachments: attachments, miniPrograms: miniPrograms, groupInvites: groupInvites, events: events, now: time.Now}
 }
 
 func (s *Service) List(ctx context.Context, kind automationport.AutomationType) (automationport.Page, error) {
@@ -195,13 +197,16 @@ func (s *Service) Publish(ctx context.Context, input automationport.MutationComm
 }
 
 func (s *Service) SetStatus(ctx context.Context, input automationport.MutationCommand, status automationport.AgentStatus) (automationport.Agent, error) {
-	if status == automationport.AgentStatusActive {
-		return automationport.Agent{}, ErrAgentExecutionDisabled
-	}
 	if !validStatus(status) {
 		return automationport.Agent{}, ErrInvalidAgent
 	}
-	return s.transition(ctx, "set_status", input, string(status), func(item *automationport.Agent) { item.Status = status })
+	return s.transition(ctx, "set_status", input, string(status), func(item *automationport.Agent) {
+		if status == automationport.AgentStatusActive && !activationReady(*item) {
+			return
+		}
+		item.Status = status
+		item.ExecutionEnabled = status == automationport.AgentStatusActive
+	})
 }
 
 func (s *Service) SaveFixedContent(ctx context.Context, input automationport.FixedContentCommand) (automationport.Agent, error) {
@@ -227,6 +232,9 @@ func (s *Service) SaveFixedContent(ctx context.Context, input automationport.Fix
 			return automationport.Agent{}, false, err
 		}
 		item.FixedContentPackage, item.UpdatedBy = content, input.Actor
+		// Fixed content participates in the same local draft/publish contract as
+		// prompts. A changed package cannot be enabled until it is republished.
+		item.DraftVersion++
 		updated, err := s.store.Update(tx, item, now)
 		return updated, err == nil, err
 	})
@@ -253,6 +261,12 @@ func (s *Service) transition(ctx context.Context, operation string, input automa
 		}
 		before := item
 		update(&item)
+		if operation == "set_status" && desired == string(automationport.AgentStatusActive) && sameConfig(before, item) {
+			if before.Status == automationport.AgentStatusActive {
+				return before, false, nil
+			}
+			return automationport.Agent{}, false, ErrAgentConflict
+		}
 		if sameConfig(before, item) {
 			return before, false, nil
 		}
@@ -389,13 +403,13 @@ func applyUpdate(item automationport.Agent, input automationport.UpdateCommand) 
 	if input.TaskPrompt != nil {
 		item.DraftTaskPrompt = *input.TaskPrompt
 	}
-	if input.Status != nil {
-		if *input.Status != automationport.AgentStatusPaused {
-			return automationport.Agent{}, ErrAgentExecutionDisabled
-		}
-		item.Status = *input.Status
+	if input.Status != nil && *input.Status != automationport.AgentStatusPaused {
+		return automationport.Agent{}, ErrInvalidAgent
 	}
-	if !validText(item.AgentName, maxAgentName) || item.AgentName == "" || !validType(item.AutomationType) || !validStatus(item.Status) || item.Status == automationport.AgentStatusActive || item.ExecutionEnabled || !validText(item.DraftRolePrompt, maxPrompt) || !validText(item.DraftTaskPrompt, maxPrompt) {
+	if input.Status != nil {
+		item.Status, item.ExecutionEnabled = *input.Status, false
+	}
+	if !validText(item.AgentName, maxAgentName) || item.AgentName == "" || !validType(item.AutomationType) || !validStatus(item.Status) || item.Status == automationport.AgentStatusArchived || item.ExecutionEnabled || !validText(item.DraftRolePrompt, maxPrompt) || !validText(item.DraftTaskPrompt, maxPrompt) {
 		return automationport.Agent{}, ErrInvalidAgent
 	}
 	if input.FixedContentPackage != nil {
@@ -429,7 +443,7 @@ func normalizeContent(content automationport.FixedContentPackage, kind automatio
 	if !validText(content.ContentText, maxContentText) || (kind != automationport.AutomationTypeFixedScript && content.ContentText != "") {
 		return automationport.FixedContentPackage{}, ErrInvalidAgent
 	}
-	if len(content.ImageLibraryIDs) != 0 || len(content.MiniprogramLibraryIDs) != 0 || len(content.AttachmentLibraryIDs) != 0 || len(content.GroupInviteLibraryIDs) != 0 || len(content.DynamicMiniprogramCard) != 0 {
+	if len(content.DynamicMiniprogramCard) != 0 {
 		return automationport.FixedContentPackage{}, ErrInvalidAgent
 	}
 	var err error
@@ -604,11 +618,55 @@ func (s *Service) validateAttachmentReferences(ctx context.Context, content auto
 	return nil
 }
 
+func (s *Service) validateMiniProgramReferences(ctx context.Context, content automationport.FixedContentPackage) error {
+	if len(content.MiniprogramLibraryIDs) == 0 {
+		return nil
+	}
+	if s == nil || s.miniPrograms == nil {
+		return ErrAgentUnavailable
+	}
+	for _, id := range content.MiniprogramLibraryIDs {
+		exists, err := s.miniPrograms.MiniProgramExists(ctx, id)
+		if err != nil {
+			return ErrAgentUnavailable
+		}
+		if !exists {
+			return ErrInvalidAgent
+		}
+	}
+	return nil
+}
+
+func (s *Service) validateGroupInviteReferences(ctx context.Context, content automationport.FixedContentPackage) error {
+	if len(content.GroupInviteLibraryIDs) == 0 {
+		return nil
+	}
+	if s == nil || s.groupInvites == nil {
+		return ErrAgentUnavailable
+	}
+	for _, id := range content.GroupInviteLibraryIDs {
+		exists, err := s.groupInvites.GroupInviteExists(ctx, id)
+		if err != nil {
+			return ErrAgentUnavailable
+		}
+		if !exists {
+			return ErrInvalidAgent
+		}
+	}
+	return nil
+}
+
 func (s *Service) validateMediaReferences(ctx context.Context, content automationport.FixedContentPackage) error {
 	if err := s.validateImageReferences(ctx, content); err != nil {
 		return err
 	}
-	return s.validateAttachmentReferences(ctx, content)
+	if err := s.validateAttachmentReferences(ctx, content); err != nil {
+		return err
+	}
+	if err := s.validateMiniProgramReferences(ctx, content); err != nil {
+		return err
+	}
+	return s.validateGroupInviteReferences(ctx, content)
 }
 func copiedName(name string) string {
 	candidate := strings.TrimSpace(name) + "（副本）"
@@ -648,7 +706,15 @@ func validStatus(value automationport.AgentStatus) bool {
 }
 func validPersisted(item automationport.Agent) bool {
 	_, legacyErr := normalizeLegacyConfiguration(item.LegacyConfiguration)
-	return item.ID > 0 && item.CreatedBy > 0 && item.UpdatedBy > 0 && !item.CreatedAt.IsZero() && !item.UpdatedAt.IsZero() && item.DraftVersion >= 1 && item.PublishedVersion >= 1 && item.PublishedVersion <= item.DraftVersion && validCode(item.AgentCode) && validType(item.AutomationType) && validStatus(item.Status) && item.Status != automationport.AgentStatusActive && !item.ExecutionEnabled && legacyErr == nil
+	_, contentErr := normalizeContent(item.FixedContentPackage, item.AutomationType)
+	return item.ID > 0 && item.CreatedBy > 0 && item.UpdatedBy > 0 && !item.CreatedAt.IsZero() && !item.UpdatedAt.IsZero() && item.DraftVersion >= 1 && item.PublishedVersion >= 1 && item.PublishedVersion <= item.DraftVersion && validCode(item.AgentCode) && validType(item.AutomationType) && validStatus(item.Status) && item.ExecutionEnabled == (item.Status == automationport.AgentStatusActive) && legacyErr == nil && contentErr == nil
+}
+
+func activationReady(item automationport.Agent) bool {
+	if item.Status != automationport.AgentStatusPaused || item.DraftVersion != item.PublishedVersion || strings.TrimSpace(item.PublishedRolePrompt) == "" || strings.TrimSpace(item.PublishedTaskPrompt) == "" {
+		return false
+	}
+	return item.AutomationType != automationport.AutomationTypeFixedScript || item.FixedContentPackage.ContentText != "" || len(item.FixedContentPackage.ImageLibraryIDs) != 0 || len(item.FixedContentPackage.AttachmentLibraryIDs) != 0
 }
 func validVisible(item automationport.Agent) bool {
 	return validPersisted(item) && item.Status != automationport.AgentStatusArchived

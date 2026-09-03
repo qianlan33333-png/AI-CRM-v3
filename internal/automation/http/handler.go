@@ -107,9 +107,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	case "activate":
 		if r.Method == http.MethodPost {
-			if _, ok := h.write(w, r); ok {
-				errorJSON(w, 410, "automation_execution_disabled")
-			}
+			h.status(w, r, id, automationport.AgentStatusActive)
 		} else {
 			method(w, "POST")
 		}
@@ -331,16 +329,23 @@ func (h *Handler) precheck(w http.ResponseWriter, r *http.Request, id automation
 		resultError(w, e)
 		return
 	}
-	configured := a.DraftRolePrompt != "" && a.DraftTaskPrompt != ""
-	materials := a.AutomationType != automationport.AutomationTypeFixedScript || a.FixedContentPackage.ContentText != ""
-	reasons := []string{"execution_disabled"}
+	configured := strings.TrimSpace(a.DraftRolePrompt) != "" && strings.TrimSpace(a.DraftTaskPrompt) != ""
+	materials := materialsConfigured(a)
+	published := a.DraftVersion == a.PublishedVersion
+	reasons := []string{}
 	if !configured {
-		reasons = append([]string{"prompt_unconfigured"}, reasons...)
+		reasons = append(reasons, "prompt_unconfigured")
 	}
 	if !materials {
-		reasons = append([]string{"material_unconfigured"}, reasons...)
+		reasons = append(reasons, "material_unconfigured")
 	}
-	writeJSON(w, 200, map[string]any{"ok": true, "agent_id": id, "configuration_ready": configured, "materials_configured": materials, "execution_enabled": false, "can_activate": false, "reasons": reasons, "real_external_call_executed": false})
+	if !published {
+		reasons = append(reasons, "unpublished_changes")
+	}
+	if a.Status == automationport.AgentStatusActive {
+		reasons = append(reasons, "already_active")
+	}
+	writeJSON(w, 200, map[string]any{"ok": true, "agent_id": id, "configuration_ready": configured, "materials_configured": materials, "execution_enabled": a.ExecutionEnabled, "can_activate": configured && materials && published && a.Status == automationport.AgentStatusPaused, "reasons": reasons, "real_external_call_executed": false})
 }
 func summaries(items []automationport.Agent) []any {
 	out := make([]any, 0, len(items))
@@ -350,7 +355,15 @@ func summaries(items []automationport.Agent) []any {
 	return out
 }
 func summary(a automationport.Agent) map[string]any {
-	return map[string]any{"id": a.ID, "automation_type": a.AutomationType, "agent_code": a.AgentCode, "agent_name": a.AgentName, "bound_package_key": "", "bound_package_id": nil, "bound_package_name": "", "fixed_material_summary": map[string]int{"image_count": 0, "miniprogram_count": 0, "attachment_count": 0, "group_invite_count": 0}, "status": "paused", "execution_enabled": false, "materials_configured": a.AutomationType != automationport.AutomationTypeFixedScript || a.FixedContentPackage.ContentText != "", "updated_at": a.UpdatedAt.UTC().Format(time.RFC3339)}
+	return map[string]any{"id": a.ID, "automation_type": a.AutomationType, "agent_code": a.AgentCode, "agent_name": a.AgentName, "bound_package_key": "", "bound_package_id": nil, "bound_package_name": "", "fixed_material_summary": materialSummary(a.FixedContentPackage), "status": a.Status, "execution_enabled": a.ExecutionEnabled, "materials_configured": materialsConfigured(a), "updated_at": a.UpdatedAt.UTC().Format(time.RFC3339)}
+}
+
+func materialSummary(content automationport.FixedContentPackage) map[string]int {
+	return map[string]int{"image_count": len(content.ImageLibraryIDs), "miniprogram_count": len(content.MiniprogramLibraryIDs), "attachment_count": len(content.AttachmentLibraryIDs), "group_invite_count": len(content.GroupInviteLibraryIDs)}
+}
+
+func materialsConfigured(a automationport.Agent) bool {
+	return a.AutomationType != automationport.AutomationTypeFixedScript || a.FixedContentPackage.ContentText != "" || len(a.FixedContentPackage.ImageLibraryIDs) != 0 || len(a.FixedContentPackage.AttachmentLibraryIDs) != 0
 }
 func detailDTO(a automationport.Agent) map[string]any {
 	x := summary(a)

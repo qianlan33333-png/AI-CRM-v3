@@ -127,6 +127,12 @@ type ChannelGroupInviteReferenceReader interface {
 	ChannelGroupInviteEligible(context.Context, int64) (bool, error)
 }
 
+// GroupInviteMetadataReader is the generic, transaction-bound existence fact
+// for a locally enabled, non-archived group-invite material.
+type GroupInviteMetadataReader interface {
+	GroupInviteExists(context.Context, int64) (bool, error)
+}
+
 type GroupInviteCreateCommand struct {
 	Name, Title, Description, JoinURL string
 	CoverImageID                      int64

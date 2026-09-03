@@ -146,8 +146,8 @@ func (r *Repository) Update(ctx context.Context, a automationport.Agent, now tim
 	if e != nil {
 		return automationport.Agent{}, ErrInvalid
 	}
-	q := `UPDATE automation_agents SET agent_name=$2,automation_type=$3,status=$4,draft_role_prompt=$5,draft_task_prompt=$6,published_role_prompt=$7,published_task_prompt=$8,draft_version=$9,published_version=$10,fixed_content_package=$11::jsonb,legacy_configuration=$12::jsonb,updated_by=$13,updated_at=$14,archived_at=CASE WHEN $4='archived' THEN COALESCE(archived_at,$14) ELSE NULL END WHERE id=$1 AND (archived_at IS NULL OR $4='archived') RETURNING ` + agentColumns
-	out, e := scanAgent(t.QueryRow(ctx, q, a.ID, a.AgentName, string(a.AutomationType), string(a.Status), a.DraftRolePrompt, a.DraftTaskPrompt, a.PublishedRolePrompt, a.PublishedTaskPrompt, a.DraftVersion, a.PublishedVersion, fixed, legacy, a.UpdatedBy, now))
+	q := `UPDATE automation_agents SET agent_name=$2,automation_type=$3,status=$4,execution_enabled=$5,draft_role_prompt=$6,draft_task_prompt=$7,published_role_prompt=$8,published_task_prompt=$9,draft_version=$10,published_version=$11,fixed_content_package=$12::jsonb,legacy_configuration=$13::jsonb,updated_by=$14,updated_at=$15,archived_at=CASE WHEN $4='archived' THEN COALESCE(archived_at,$15) ELSE NULL END WHERE id=$1 AND (archived_at IS NULL OR $4='archived') RETURNING ` + agentColumns
+	out, e := scanAgent(t.QueryRow(ctx, q, a.ID, a.AgentName, string(a.AutomationType), string(a.Status), a.ExecutionEnabled, a.DraftRolePrompt, a.DraftTaskPrompt, a.PublishedRolePrompt, a.PublishedTaskPrompt, a.DraftVersion, a.PublishedVersion, fixed, legacy, a.UpdatedBy, now))
 	if errors.Is(e, pgx.ErrNoRows) {
 		return automationport.Agent{}, ErrNotFound
 	}

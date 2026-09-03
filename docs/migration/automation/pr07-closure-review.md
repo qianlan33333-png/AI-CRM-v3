@@ -6,7 +6,7 @@
 >
 > 固定 donor：AI-CRM-v2 `6bfbe5816bb89913c70adaca87d6a486260e016e`。既有 prep：`2f8849a39eb25e0a63c94bf80d70d78f4d01cd22`；既有 frontend audit：`596150b48283beca9139ef9d5272404bda2113f7`。
 
-> 实施更新：本闭包复核的“NOT CLOSED”结论仅描述当时的只读基线，已被 `codex/feature-automation-final` 的 PR07 集成取代。该集成新增 Automation-owned PostgreSQL `0013`、Store/UoW receipt/audit/outbox、认证/CSRF HTTP adapter、OpenAPI、readiness、PR10 单壳挂载与 donor 20/20 SHA 门禁；不引入 OneID、客户/受众、Worker、Provider 或执行能力。
+> 实施更新：本闭包复核的“NOT CLOSED”结论仅描述当时的只读基线，已被 `codex/feature-automation-final` 的 PR07 集成取代。该集成新增 Automation-owned PostgreSQL `0013`、Store/UoW receipt/audit/outbox、认证/CSRF HTTP adapter、OpenAPI、readiness、PR10 单壳挂载与 donor 20/20 SHA 门禁；不引入 OneID、客户/受众、Worker、Provider 或执行能力。后续收口还使 `active ↔ paused` 成为真实的本地持久状态，并在固定内容保存时通过 Media stable reader 验证图片、附件、小程序和群邀请素材；该状态绝不宣称 Provider 已执行。
 
 ## 结论
 
@@ -135,7 +135,7 @@ donor 的相对导航事实必须保留：`AdminController.goto` 生成 `agents.
 
 ### 4.1 12 个 donor operation 的处理
 
-PR07 donor route contract 是页面 handoff 加生成文件 `p4-automation-agents.ts` 中的 11 个 API operation，共 12 个 operation；A 的实际页面只使用其中 8 个 API，页面 handoff 另计。`publish` 与 `fixed-content` 可以作为后端兼容能力存在，但不是 A 的可见动作；`activate` 只能保留生成形状 characterization，不能返回成功 2xx。
+PR07 donor route contract 是页面 handoff 加生成文件 `p4-automation-agents.ts` 中的 11 个 API operation，共 12 个 operation；A 的实际页面只使用其中 8 个 API，页面 handoff 另计。`publish`、`fixed-content` 与 `activate` 均由 v3 后端兼容 Adapter 提供真实本地闭环，但不因此改动或扩展 A 的可见控件。
 
 | operation | 方法与 URL | A 页面 | PR07 处理 |
 | --- | --- | ---: | --- |
@@ -145,9 +145,9 @@ PR07 donor route contract 是页面 handoff 加生成文件 `p4-automation-agent
 | detail | `GET /api/admin/automation-agents/{agentId}` | ✓ | 详情、Prompt、版本和固定内容读取；校验 ID 范围。 |
 | update | `PATCH /api/admin/automation-agents/{agentId}` | ✓ | 本地草稿更新；编码不可变；无执行。 |
 | archive | `DELETE /api/admin/automation-agents/{agentId}` | ✓ | 归档并隐藏；重复请求幂等。 |
-| fixed content | `PUT /api/admin/automation-agents/{agentId}/fixed-content` | ✗ | 后端合同/兼容测试仅保留；A 不发送，不新增按钮；非空媒体引用准备阶段拒绝。 |
-| precheck | `GET /api/admin/automation-agents/{agentId}/precheck` | ✓ | 只读、明确 execution disabled，`real_external_call_executed=false`。 |
-| activate | `POST /api/admin/automation-agents/{agentId}/activate` | ✗ | 必须 fail closed（execution disabled），不得有成功 2xx。 |
+| fixed content | `PUT /api/admin/automation-agents/{agentId}/fixed-content` | ✗ | 保存本地正文及已启用的 Media 图片、附件、小程序和群邀请引用；A 不发送，不新增按钮。 |
+| precheck | `GET /api/admin/automation-agents/{agentId}/precheck` | ✓ | 只读本地发布/物料/状态诊断，始终 `real_external_call_executed=false`。 |
+| activate | `POST /api/admin/automation-agents/{agentId}/activate` | ✗ | 已发布且物料完整时持久化为 active；不启动 Worker 或 Provider。 |
 | copy | `POST /api/admin/automation-agents/{agentId}/copy` | ✓ | 本地复制；不复制外部绑定或执行计划。 |
 | pause | `POST /api/admin/automation-agents/{agentId}/pause` | ✓ | 本地暂停；不得执行任务。 |
 | publish | `POST /api/admin/automation-agents/{agentId}/publish` | ✗ | 后端可保留本地快照合同；A 无发布按钮、无调用，不能借此补 UI。 |
@@ -158,9 +158,9 @@ PR07 donor route contract 是页面 handoff 加生成文件 `p4-automation-agent
 
 - 列表项至少保留 `id`、`automation_type`、`code`、`name`、`fixed_material_summary`、`status`、`execution_enabled`、`materials_configured`、`updated_at` 和 donor 的绑定包显示字段。详情再保留 draft/published Prompt、版本、`has_unpublished_changes`、fixed content package/preview、opaque `legacy_configuration`。
 - ID、版本和引用 ID 必须是正的 safe integer；拒绝 NaN、浮点、溢出、负数和响应对象错位。donor JS `Number(...)` 的宽松转换不构成 v3 的安全校验。
-- `automation_type` 只允许 `agent`/`fixed_script`；创建默认且强制 `paused`，`active` 不得写入；`execution_enabled` 必须为 `false`。
+- `automation_type` 只允许 `agent`/`fixed_script`；创建默认且强制 `paused`；仅专用 activate/pause Adapter 能变更 active，并与 `execution_enabled` 一致。
 - name/code 最多 120 rune；code 只能是小写 ASCII `[a-z0-9_-]`，创建必填且更新不可变。role/task Prompt 各最多 20,000 rune，且不能带首尾空白；空 Prompt 代表未配置，由 precheck 返回相应原因，不得被误判为可执行。
-- fixed content `content_text` 最多 4,000 rune，非空正文只允许 `fixed_script`；`image_library_ids`、`miniprogram_library_ids`、`attachment_library_ids`、`group_invite_library_ids` 的准备阶段 schema 为 `maxItems: 0`，动态小程序卡片作为 opaque 字段但非空 fail closed；不得擅自拉取 blob、URL、Provider 或 tag 数据。
+- fixed content `content_text` 最多 4,000 rune，非空正文只允许 `fixed_script`；图片最多 3 个、附件最多 9 个、小程序与群邀请各最多 1 个，均通过 Media stable reader 锁定校验；动态小程序卡片仍因无对应稳定 reader 而 fail closed；不得擅自拉取 blob、URL、Provider 或 tag 数据。
 - `legacy_configuration` 只允许 object，默认 `{}`，最多 100,000 bytes；不得解释为客户、人群、Provider 或凭据配置。
 - precheck 必须返回配置/物料/执行状态、`can_activate`、原因数组和 `real_external_call_executed=false`。没有可信证据时显示不可用/拒绝，不猜测已配置或已发送。
 - 错误必须保留生成 DTO 的结构和状态边界（400 invalid payload、401 authentication、403 permission、404 not found、409 conflict、410 retired/unsupported、503 unavailable 等）；不能把错误映射成成功 toast 或空列表。
@@ -170,17 +170,17 @@ PR07 donor route contract 是页面 handoff 加生成文件 `p4-automation-agent
 
 ### Included
 
-- Agent 与 `fixed_script` 的本地定义、name/code/type、paused/archived 生命周期。
+- Agent 与 `fixed_script` 的本地定义、name/code/type、active/paused/archived 本地生命周期。
 - role/task Prompt 草稿、draft/published version 和本地发布快照字段；发布若由后端保留，只是本地快照，不执行 Agent。
 - 列表、详情、创建、编辑、复制、暂停、归档、precheck 的 donor A 行为及其真实 v3 HTTP/数据库适配。
-- fixed content 正文和引用的本地读取/校验事实；当前页面只读，媒体/卡片非空在准备阶段 fail closed。
+- fixed content 正文、Media 图片/附件/小程序/群邀请引用的本地读取/校验事实；当前页面不新增写控件，动态卡片仍 fail closed。
 - 20 个 donor 文件的字节 evidence、A 的两个 templates、必要共享 runtime/feedback/token，以及 `nav/registry` 中 Agent 元数据的证据性使用。
 - 本地幂等收据、审计、配置事件；未来仅携带 Agent ID、published version 和 payload digest 的 effect intent 合同，不执行 effect。
 
 ### Excluded
 
 - 路径 B `automationAgents.ts` 的任何 runtime import、UI、发布按钮、结果栏、三页签或独立 loader。
-- 发布/激活/运行/生成/审批/触发/调度、内部执行 worker、history/import 和任何自动化运行时。
+- 运行/生成/审批/触发/调度、内部执行 worker、history/import 和任何自动化运行时；active 仅为本地生命周期事实。
 - Customer、OneID、Segment/Audience、人群包绑定、recipient selection、Campaign、客户归属或隐式建客。
 - fixed material 上传、生成、外呼、企微/Provider/LLM/token/credential/send/retry/delivery/outbound 写入。
 - donor `build.mjs` 生成的完整 HTML shell、`.side`、完整 nav、无关页面、完整 legacy 页面暴露、MockApi/sessionStorage 生产数据源。
@@ -190,9 +190,9 @@ PR07 donor route contract 是页面 handoff 加生成文件 `p4-automation-agent
 
 ### 6.1 已有 prep 能力（不是已部署闭环）
 
-既有 prep 在 `internal/automation/port` 与 `internal/automation/app` 形成了本地 Agent service 语义：创建、读取、更新、copy、publish、状态变更、fixed content 保存、precheck，以及 media metadata reader 接口。服务层约束了 name/code/Prompt/content/config 长度，创建为 paused，active/execution-enabled 被拒绝，归档从可见查询排除。
+既有 prep 在 `internal/automation/port` 与 `internal/automation/app` 形成了本地 Agent service 语义：创建、读取、更新、copy、publish、状态变更、fixed content 保存、precheck，以及 Media metadata reader 接口。服务层约束了 name/code/Prompt/content/config 长度，创建为 paused，active/execution-enabled 只经已发布的专用状态变更进入，归档从可见查询排除。
 
-media port 只有窄的 `Exists(ctx, id)` 事实读取；不暴露 blob、URL、上传、Provider 或跨领域表。fixed content 四类引用当前均按非空拒绝，因而不会偷偷形成媒体或客户群依赖；没有 tag/受众 port。
+Media port 只有窄的 transaction-bound `Exists(ctx, id)` 事实读取；不暴露 blob、URL、上传、Provider 或跨领域表。fixed content 的图片、附件、小程序和群邀请可保存并被真实验证；动态卡片没有稳定 port 而按非空拒绝，且没有 tag/受众 port。
 
 mutation 语义包含 reservation、payload digest、完成收据和 changed-payload conflict；同一成功 key/payload 可以重放保存快照，未知外部工作不在本 PR 盲目重试。事件 appender 是调用方 UoW 内的本地 seam；未来 effect intent 只包含 Agent/version/digest facts。
 

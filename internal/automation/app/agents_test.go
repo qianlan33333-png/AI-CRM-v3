@@ -165,11 +165,16 @@ func TestAgentConfigurationLifecycleAndIntentBoundary(t *testing.T) {
 		t.Fatalf("published=%+v err=%v events=%+v", published, err, events.rows)
 	}
 
-	if _, err = service.SetStatus(context.Background(), automationport.MutationCommand{ID: created.ID, Actor: 7, IdempotencyKey: "agent-activate-key-01"}, automationport.AgentStatusActive); !errors.Is(err, ErrAgentExecutionDisabled) {
-		t.Fatalf("activation error=%v", err)
+	active, err := service.SetStatus(context.Background(), automationport.MutationCommand{ID: created.ID, Actor: 7, IdempotencyKey: "agent-activate-key-01"}, automationport.AgentStatusActive)
+	if err != nil || active.Status != automationport.AgentStatusActive || !active.ExecutionEnabled || len(events.rows) != 4 || events.rows[3].Type != automationport.EventAgentStatusChanged {
+		t.Fatalf("active=%+v err=%v events=%+v", active, err, events.rows)
+	}
+	paused, err := service.SetStatus(context.Background(), automationport.MutationCommand{ID: created.ID, Actor: 7, IdempotencyKey: "agent-pause-key-000001"}, automationport.AgentStatusPaused)
+	if err != nil || paused.Status != automationport.AgentStatusPaused || paused.ExecutionEnabled || len(events.rows) != 5 || events.rows[4].Type != automationport.EventAgentStatusChanged {
+		t.Fatalf("paused=%+v err=%v events=%+v", paused, err, events.rows)
 	}
 	archived, err := service.SetStatus(context.Background(), automationport.MutationCommand{ID: created.ID, Actor: 7, IdempotencyKey: "agent-archive-key-01"}, automationport.AgentStatusArchived)
-	if err != nil || archived.Status != automationport.AgentStatusArchived || len(events.rows) != 4 || events.rows[3].Type != automationport.EventAgentStatusChanged {
+	if err != nil || archived.Status != automationport.AgentStatusArchived || archived.ExecutionEnabled || len(events.rows) != 6 || events.rows[5].Type != automationport.EventAgentStatusChanged {
 		t.Fatalf("archived=%+v err=%v events=%+v", archived, err, events.rows)
 	}
 	if _, err = service.Get(context.Background(), created.ID); !errors.Is(err, ErrAgentNotFound) {
@@ -198,7 +203,7 @@ func TestFixedScriptContentAndCopyReplay(t *testing.T) {
 
 	content := automationport.FixedContentPackage{ContentText: "欢迎加入，稍后会有专人回复。"}
 	updated, err := service.SaveFixedContent(context.Background(), automationport.FixedContentCommand{ID: created.ID, ContentPackage: content, Actor: 9, IdempotencyKey: "fixed-content-key-01"})
-	if err != nil || updated.FixedContentPackage.ContentText != content.ContentText || len(events.rows) != 2 || events.rows[1].Type != automationport.EventFixedContentUpdated {
+	if err != nil || updated.FixedContentPackage.ContentText != content.ContentText || updated.DraftVersion != 2 || updated.PublishedVersion != 1 || len(events.rows) != 2 || events.rows[1].Type != automationport.EventFixedContentUpdated {
 		t.Fatalf("content update=%+v err=%v events=%+v", updated, err, events.rows)
 	}
 

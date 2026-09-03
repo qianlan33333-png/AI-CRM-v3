@@ -19,8 +19,11 @@ func TestWhitelistAgentConfigurationFailsClosed(t *testing.T) {
 	if _, err := normalizeCreate(paused, 1); !errors.Is(err, ErrInvalidAgent) {
 		t.Fatalf("execution-enabled create err=%v", err)
 	}
-	if _, err := normalizeContent(automationport.FixedContentPackage{ImageLibraryIDs: []int64{7}}, automationport.AutomationTypeAgent); !errors.Is(err, ErrInvalidAgent) {
-		t.Fatalf("legacy material reference err=%v", err)
+	if content, err := normalizeContent(automationport.FixedContentPackage{ImageLibraryIDs: []int64{7}, AttachmentLibraryIDs: []int64{8}, MiniprogramLibraryIDs: []int64{9}, GroupInviteLibraryIDs: []int64{10}}, automationport.AutomationTypeFixedScript); err != nil || len(content.ImageLibraryIDs) != 1 || len(content.AttachmentLibraryIDs) != 1 || len(content.MiniprogramLibraryIDs) != 1 || len(content.GroupInviteLibraryIDs) != 1 {
+		t.Fatalf("media content=%+v err=%v", content, err)
+	}
+	if _, err := normalizeContent(automationport.FixedContentPackage{DynamicMiniprogramCard: []byte(`{"appid":"wx"}`)}, automationport.AutomationTypeFixedScript); !errors.Is(err, ErrInvalidAgent) {
+		t.Fatalf("dynamic card without a stable reader err=%v", err)
 	}
 }
 
