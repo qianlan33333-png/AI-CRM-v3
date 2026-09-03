@@ -9,7 +9,7 @@ paths:
   /healthz:
     get:
       operationId: getHealth
-  responses:
+      responses:
         "200": {description: Process is alive, content: {application/json: {schema: {$ref: "#/components/schemas/StatusResponse"}}}}
   /readyz:
     get:

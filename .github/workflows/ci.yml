@@ -81,15 +81,14 @@ jobs:
           node web/scripts/survey-public-characterization.mjs
           node web/scripts/survey-unresolved-history-contract.mjs
           node --check internal/webshell/static/admin_console/survey_operations.js
-          node --check internal/webshell/static/admin_console/admin_audience.js
           node --check internal/webshell/static/admin_console/admin_audience_detail.js
-          node --test internal/webshell/static/admin_console/automation_create_code_adapter.test.mjs
           scripts/check-pr08-frontend-donor-manifest.sh
           scripts/check-pr09-frontend-freeze.sh
           npm run typecheck
           npx tsc -p web/v3/tsconfig.json --noEmit
           npm test
           npm run build
+          node --test internal/webshell/static/admin_console/automation_create_code_adapter.test.mjs
           node scripts/build-v3-host-adapters.mjs
           node scripts/operation-cycles-shell-e2e.mjs
           mkdir -p release
@@ -172,14 +171,13 @@ jobs:
           node web/scripts/survey-public-characterization.mjs
           node web/scripts/survey-unresolved-history-contract.mjs
           node --check internal/webshell/static/admin_console/survey_operations.js
-          node --check internal/webshell/static/admin_console/admin_audience.js
           node --check internal/webshell/static/admin_console/admin_audience_detail.js
-          node --test internal/webshell/static/admin_console/automation_create_code_adapter.test.mjs
           scripts/check-pr08-frontend-donor-manifest.sh
           scripts/check-pr09-frontend-freeze.sh
           npm run typecheck
           npx tsc -p web/v3/tsconfig.json --noEmit
           npm run build
+          node --test internal/webshell/static/admin_console/automation_create_code_adapter.test.mjs
           node scripts/build-v3-host-adapters.mjs
           node scripts/operation-cycles-shell-e2e.mjs
           cp -R migrations deploy release/
