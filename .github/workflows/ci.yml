@@ -38,6 +38,7 @@ jobs:
       AICRM_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/aicrm_ci?sslmode=disable
       PR07_DONOR_DIR: ${{ github.workspace }}/.ci-donor-v2
       PR09_DONOR_ROOT: ${{ github.workspace }}/.ci-donor-v2
+      AICRM_AUTOMATIONOPS_DONOR_DIR: ${{ github.workspace }}/.ci-donor-v2
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -68,6 +69,7 @@ jobs:
           scripts/check-pr01-donor-manifest.sh
           scripts/check-pr02-donor-manifest.sh
           scripts/check-pr03-frontend-donor-manifest.sh
+          scripts/check-automationops-donor-manifest.sh
           donor_dir="$(mktemp -d)"
           git clone --quiet https://github.com/qianlan33333-png/AI-CRM-v2.git "$donor_dir"
           git -C "$donor_dir" checkout --quiet 6bfbe5816bb89913c70adaca87d6a486260e016e
@@ -79,6 +81,9 @@ jobs:
           node web/scripts/survey-public-characterization.mjs
           node web/scripts/survey-unresolved-history-contract.mjs
           node --check internal/webshell/static/admin_console/survey_operations.js
+          node --check internal/webshell/static/admin_console/admin_audience.js
+          node --check internal/webshell/static/admin_console/admin_audience_detail.js
+          node --test internal/webshell/static/admin_console/automation_create_code_adapter.test.mjs
           scripts/check-pr08-frontend-donor-manifest.sh
           scripts/check-pr09-frontend-freeze.sh
           npm run typecheck
@@ -118,6 +123,7 @@ jobs:
     env:
       PR07_DONOR_DIR: ${{ github.workspace }}/.ci-donor-v2
       PR09_DONOR_ROOT: ${{ github.workspace }}/.ci-donor-v2
+      AICRM_AUTOMATIONOPS_DONOR_DIR: ${{ github.workspace }}/.ci-donor-v2
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -160,11 +166,15 @@ jobs:
           scripts/check-pr01-donor-manifest.sh
           scripts/check-pr02-donor-manifest.sh
           scripts/check-pr03-frontend-donor-manifest.sh
+          scripts/check-automationops-donor-manifest.sh
           scripts/check-survey-donor-manifest.sh
           node web/scripts/survey-editor-characterization.mjs
           node web/scripts/survey-public-characterization.mjs
           node web/scripts/survey-unresolved-history-contract.mjs
           node --check internal/webshell/static/admin_console/survey_operations.js
+          node --check internal/webshell/static/admin_console/admin_audience.js
+          node --check internal/webshell/static/admin_console/admin_audience_detail.js
+          node --test internal/webshell/static/admin_console/automation_create_code_adapter.test.mjs
           scripts/check-pr08-frontend-donor-manifest.sh
           scripts/check-pr09-frontend-freeze.sh
           npm run typecheck
