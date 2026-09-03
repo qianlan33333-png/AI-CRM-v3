@@ -2186,6 +2186,19 @@ paths:
       security: [{adminSession: []}]
       parameters: [{$ref: "#/components/parameters/OrderReference"}]
       responses: {"200": {description: Immutable item snapshots, content: {application/json: {schema: {type: object, required: [items], properties: {items: {type: array, items: {$ref: "#/components/schemas/TransactionOrderItem"}}}}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+  /api/admin/order-imports/{mode}:
+    post:
+      operationId: executeOrderOnlyHistoryImport
+      tags: [Transactions]
+      description: Super-admin-only inspection, idempotent apply, or reconciliation of an exact WeChat Pay floating historical-order snapshot. This route never provisions OneID, Payment, Refund, or Provider effects.
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters:
+        - {name: mode, in: path, required: true, schema: {type: string, enum: [inspect, apply, reconcile]}}
+        - {name: X-Manifest-SHA256, in: header, required: true, schema: {type: string, pattern: "^[0-9a-f]{64}$"}}
+        - {name: Idempotency-Key, in: header, required: true, schema: {type: string, minLength: 1, maxLength: 200}}
+        - {name: X-Confirm-Apply, in: header, required: false, description: Required for apply and must equal the manifest run_key., schema: {type: string, minLength: 1, maxLength: 200}}
+      requestBody: {required: true, content: {application/json: {schema: {type: object, description: Strict aicrm-commerce-history-v3 order-only manifest, maxProperties: 8}}}}
+      responses: {"200": {description: Safe aggregate result without raw transaction identifiers}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "413": {$ref: "#/components/responses/Error"}, "415": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
   /api/admin/refunds:
     get:
       operationId: listLegacyRefunds

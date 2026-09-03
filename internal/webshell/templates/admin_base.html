@@ -49,6 +49,13 @@
   <link rel="stylesheet" href="{{.ProductAssets.LabsCSS}}">
   <script type="module" src="{{.ProductAssets.AdminJS}}"></script>
   {{end}}
+	{{if .Order}}
+	<link rel="stylesheet" href="{{.OrderAssets.TokensCSS}}">
+	<link rel="stylesheet" href="{{.OrderAssets.LabsCSS}}">
+	<link rel="stylesheet" href="/static/admin_console/order_import.css?v=order-import-v1">
+	<script defer src="/static/admin_console/order_import.js?v=order-import-v1"></script>
+	<script type="module" src="{{.OrderAssets.AdminJS}}"></script>
+	{{end}}
   {{if .Coupons}}
   <link rel="stylesheet" href="{{.CouponAssets.TokensCSS}}">
   <link rel="stylesheet" href="{{.CouponAssets.LabsCSS}}">
@@ -88,7 +95,7 @@
   <script type="module" src="{{.ConfigAssets.AdminJS}}"></script>
   {{end}}
 </head>
-<body class="admin-shell" data-admin-shell-source="v3_webshell"{{if .ExternalEffects}} data-page="campaigns"{{end}}{{if .Media}} data-page="{{.MediaPage}}"{{end}}{{if .Tags}} data-page="tags"{{end}}{{if .Product}} data-page="{{.ProductPage}}"{{end}}{{if .Coupons}} data-page="{{.CouponPage}}"{{end}}{{if .GroupOps}} data-page="{{.GroupOpsPage}}"{{end}}{{if .Automation}} data-page="{{.AutomationPage}}"{{end}}{{if .AutomationCreateCode}} data-automation-create-code="{{.AutomationCreateCode}}"{{end}}{{if .Survey}} data-page="{{.SurveyPage}}"{{end}}{{if .OperationCycles}} data-page="{{.OperationPage}}"{{end}}{{if .Config}} data-page="{{.ConfigPage}}"{{end}}>
+<body class="admin-shell" data-admin-shell-source="v3_webshell"{{if .ExternalEffects}} data-page="campaigns"{{end}}{{if .Media}} data-page="{{.MediaPage}}"{{end}}{{if .Tags}} data-page="tags"{{end}}{{if .Product}} data-page="{{.ProductPage}}"{{end}}{{if .Order}} data-page="{{.OrderPage}}"{{end}}{{if .Coupons}} data-page="{{.CouponPage}}"{{end}}{{if .GroupOps}} data-page="{{.GroupOpsPage}}"{{end}}{{if .Automation}} data-page="{{.AutomationPage}}"{{end}}{{if .AutomationCreateCode}} data-automation-create-code="{{.AutomationCreateCode}}"{{end}}{{if .Survey}} data-page="{{.SurveyPage}}"{{end}}{{if .OperationCycles}} data-page="{{.OperationPage}}"{{end}}{{if .Config}} data-page="{{.ConfigPage}}"{{end}}>
   <div class="admin-layout">
     <aside class="admin-sidebar">
       <div class="admin-brand">
@@ -160,7 +167,7 @@
       </header>
       {{end}}
 
-      {{if or .ExternalEffects .Media .Tags .Product .Coupons .GroupOps .Automation .Survey .OperationCycles .Config}}
+      {{if or .ExternalEffects .Media .Tags .Product .Order .Coupons .GroupOps .Automation .Survey .OperationCycles .Config}}
       {{.Content}}
       {{else}}
       <main class="admin-page">

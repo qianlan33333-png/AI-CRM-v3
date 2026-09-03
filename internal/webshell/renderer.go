@@ -62,6 +62,9 @@ type AdminShellView struct {
 	Product          bool
 	ProductPage      string
 	ProductAssets    ProductAssets
+	Order            bool
+	OrderPage        string
+	OrderAssets      OrderAssets
 	Coupons          bool
 	CouponPage       string
 	CouponAssets     CouponAssets
@@ -104,6 +107,9 @@ type TagsAssets struct{ TokensCSS, LabsCSS, AdminJS string }
 // ProductAssets are manifest-derived URLs for the frozen donor Product
 // bundle. They are passed by the Product UI adapter and contain no markup.
 type ProductAssets struct{ TokensCSS, LabsCSS, AdminJS string }
+
+// OrderAssets are release-manifest URLs for the frozen transaction UI.
+type OrderAssets struct{ TokensCSS, LabsCSS, AdminJS string }
 
 // CouponAssets are verified manifest paths for the frozen coupon workspaces.
 type CouponAssets struct{ TokensCSS, LabsCSS, AdminJS string }
@@ -269,6 +275,27 @@ func (renderer *Renderer) RenderProducts(writer http.ResponseWriter, data AdminP
 	data.ShowPageHeader = false
 	content := `<main id="stage" class="stage rich"></main><template id="tpl">` + donorTemplate + `</template>`
 	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: template.HTML(content), Product: true, ProductPage: page, ProductAssets: assets})
+	if err != nil {
+		return err
+	}
+	return writeHTML(writer, http.StatusOK, body)
+}
+
+// RenderOrders mounts the frozen list/detail transaction templates into the
+// v3 shell. The host-owned import panel is deliberately separate from donor
+// markup and can only call the narrow order-only migration API.
+func (renderer *Renderer) RenderOrders(writer http.ResponseWriter, data AdminPageData, page, donorTemplate string, assets OrderAssets) error {
+	if renderer == nil || renderer.templates == nil || donorTemplate == "" || assets.TokensCSS == "" || assets.LabsCSS == "" || assets.AdminJS == "" || (page != "orders" && page != "orderDetail") {
+		return errors.New("order shell assets are required")
+	}
+	normalizeAdminPage(&data)
+	data.ShowPageHeader = false
+	panel := ""
+	if page == "orders" {
+		panel = `<details class="order-import-panel" data-order-import><summary>生产订单快照迁移（超级管理员）</summary><div class="order-import-panel__body"><input type="file" accept="application/json,.json" data-order-import-file><label><input type="checkbox" data-order-import-confirm> 已核对快照摘要与 SHA-256，确认仅导入历史订单</label><div class="order-import-panel__actions"><button type="button" data-order-import-action="inspect">检查快照</button><button type="button" data-order-import-action="apply" disabled>导入生产</button><button type="button" data-order-import-action="reconcile" disabled>对账</button></div><pre data-order-import-status>请选择订单快照文件。</pre></div></details>`
+	}
+	content := `<div class="order-host-layout">` + panel + `<main id="stage" class="stage rich"></main></div><template id="tpl">` + donorTemplate + `</template>`
+	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: template.HTML(content), Order: true, OrderPage: page, OrderAssets: assets})
 	if err != nil {
 		return err
 	}

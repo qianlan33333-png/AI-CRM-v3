@@ -1,9 +1,11 @@
 package migration
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"io"
 	"math"
 	"os"
 	"regexp"
@@ -111,12 +113,21 @@ func Load(path string) (Manifest, error) {
 	if err != nil {
 		return Manifest{}, err
 	}
+	return Parse(raw)
+}
+
+// Parse decodes one exact snapshot payload and binds its digest to the raw
+// bytes. Unknown fields and trailing JSON are rejected so the confirmation
+// digest always describes the contract that is actually applied.
+func Parse(raw []byte) (Manifest, error) {
 	var manifest Manifest
-	if json.Unmarshal(raw, &manifest) != nil || manifest.SchemaVersion != SchemaVersion || strings.TrimSpace(manifest.RunKey) != manifest.RunKey || manifest.RunKey == "" {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&manifest) != nil || !errors.Is(decoder.Decode(&struct{}{}), io.EOF) || manifest.SchemaVersion != SchemaVersion || strings.TrimSpace(manifest.RunKey) != manifest.RunKey || manifest.RunKey == "" {
 		return Manifest{}, ErrInvalidManifest
 	}
 	manifest.Digest = sha256.Sum256(raw)
-	if err = manifest.Validate(false); err != nil {
+	if err := manifest.Validate(false); err != nil {
 		return Manifest{}, err
 	}
 	return manifest, nil
