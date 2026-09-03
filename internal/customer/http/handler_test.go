@@ -27,23 +27,28 @@ func (security testSecurity) AuthorizeCSRF(context.Context, *http.Request) (acce
 	return security.principal, nil
 }
 
-type testCustomerStore struct{}
+type testCustomerStore struct{ lastQuery customerapp.Query }
 
-func (testCustomerStore) List(context.Context, customerapp.Query) (customerapp.PageData, error) {
+func (store *testCustomerStore) List(_ context.Context, query customerapp.Query) (customerapp.PageData, error) {
+	store.lastQuery = query
 	return customerapp.PageData{Items: []customerapp.Item{}}, nil
 }
-func (testCustomerStore) Detail(context.Context, customerdomain.CustomerID) (customerapp.Detail, error) {
+func (*testCustomerStore) Detail(context.Context, customerdomain.CustomerID) (customerapp.Detail, error) {
 	return customerapp.Detail{}, customerapp.ErrNotFound
 }
 
-type testIdentities struct{ reveals int }
+type testIdentities struct {
+	reveals      int
+	phoneQueries []string
+}
 
 func (*testIdentities) VerifiedWeComCustomer(context.Context, string, string) (customerdomain.CustomerID, bool, error) {
 	return 0, false, nil
 }
 
-func (*testIdentities) CustomerForPhone(context.Context, string) (customerdomain.CustomerID, bool, error) {
-	return 0, false, nil
+func (identities *testIdentities) CustomerForPhone(_ context.Context, phone string) (customerdomain.CustomerID, bool, error) {
+	identities.phoneQueries = append(identities.phoneQueries, phone)
+	return 42, true, nil
 }
 func (*testIdentities) DirectoryIdentities(context.Context, customerdomain.CustomerID) ([]identityport.DirectoryIdentitySummary, []identityport.MaskedPhone, error) {
 	return nil, nil, nil
@@ -72,13 +77,12 @@ func TestPhoneRevealEnforcesRoleAndNoStoreAudit(t *testing.T) {
 			identities := &testIdentities{}
 			audit := &testAudit{}
 			security := testSecurity{principal: accessdomain.Principal{Kind: accessdomain.KindAdmin, InternalID: 7, Roles: []accessdomain.Role{test.role}}}
-			store := testCustomerStore{}
+			store := &testCustomerStore{}
 			handler, err := NewHandler(Config{UnitOfWork: testUOW{}, Auth: security, CSRF: security, Directory: customerapp.Directory{Store: store, SigningKey: []byte("0123456789abcdef0123456789abcdef")}, Store: store, Identities: identities, Audit: audit})
 			if err != nil {
 				t.Fatal(err)
 			}
-			request := httptest.NewRequest(http.MethodPost, "/api/admin/customers/1/phone-reveal", strings.NewReader(`{"reason":"support verification"}`))
-			request.Header.Set("Content-Type", "application/json")
+			request := httptest.NewRequest(http.MethodPost, "/api/admin/customers/1/phone-reveal", nil)
 			response := httptest.NewRecorder()
 			handler.Routes().ServeHTTP(response, request)
 			if response.Code != test.wantStatus || identities.reveals != test.wantReveal || len(audit.events) != test.wantAudit {
@@ -87,21 +91,43 @@ func TestPhoneRevealEnforcesRoleAndNoStoreAudit(t *testing.T) {
 			if test.wantStatus == 200 && response.Header().Get("Cache-Control") != "no-store" {
 				t.Fatalf("cache-control=%q", response.Header().Get("Cache-Control"))
 			}
+			if test.wantStatus == 200 && (strings.Contains(response.Body.String(), "+86") || !strings.Contains(response.Body.String(), "13812345678")) {
+				t.Fatalf("phone response=%s", response.Body.String())
+			}
+			if test.wantAudit == 1 && !strings.Contains(string(audit.events[0].Payload), `"purpose":"customer_detail_query"`) {
+				t.Fatalf("audit payload=%s", audit.events[0].Payload)
+			}
 		})
 	}
 }
 
-func TestPhoneRevealRejectsReasonBoundsBeforeRead(t *testing.T) {
+func TestPhoneSearchAcceptsLocalCNFormatAndRejectsInvalidInput(t *testing.T) {
 	identities := &testIdentities{}
 	audit := &testAudit{}
 	security := testSecurity{principal: accessdomain.Principal{Kind: accessdomain.KindAdmin, InternalID: 7, Roles: []accessdomain.Role{accessdomain.RoleAdmin}}}
-	store := testCustomerStore{}
+	store := &testCustomerStore{}
 	handler, _ := NewHandler(Config{UnitOfWork: testUOW{}, Auth: security, CSRF: security, Directory: customerapp.Directory{Store: store, SigningKey: []byte("0123456789abcdef0123456789abcdef")}, Store: store, Identities: identities, Audit: audit})
-	request := httptest.NewRequest(http.MethodPost, "/api/admin/customers/1/phone-reveal", strings.NewReader(`{"reason":"   "}`))
-	request.Header.Set("Content-Type", "application/json")
+
+	for _, value := range []string{"13812345678", "%2B8613812345678"} {
+		response := httptest.NewRecorder()
+		handler.Routes().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/admin/customers?phone="+value, nil))
+		if response.Code != http.StatusOK {
+			t.Fatalf("phone=%s status=%d body=%s", value, response.Code, response.Body.String())
+		}
+	}
+	if len(identities.phoneQueries) != 2 || identities.phoneQueries[0] != "+8613812345678" || identities.phoneQueries[1] != "+8613812345678" || store.lastQuery.Filters.PhoneCustomerID != 42 {
+		t.Fatalf("queries=%v filter=%+v", identities.phoneQueries, store.lastQuery.Filters)
+	}
+
 	response := httptest.NewRecorder()
-	handler.Routes().ServeHTTP(response, request)
-	if response.Code != 400 || identities.reveals != 0 || len(audit.events) != 0 {
-		t.Fatalf("status=%d reveals=%d audits=%d", response.Code, identities.reveals, len(audit.events))
+	handler.Routes().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/admin/customers?phone=123", nil))
+	if response.Code != http.StatusBadRequest || len(identities.phoneQueries) != 2 {
+		t.Fatalf("invalid status=%d queries=%v", response.Code, identities.phoneQueries)
+	}
+
+	response = httptest.NewRecorder()
+	handler.Routes().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/admin/customers?activation_status=active", nil))
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("removed activation filter status=%d", response.Code)
 	}
 }
