@@ -74,12 +74,12 @@ type AdminShellView struct {
 	// AutomationCreateCode is a v3 host binding for the frozen create form.
 	// It is absent for existing records, whose immutable code stays donor-owned.
 	AutomationCreateCode string
-	Survey              bool
-	SurveyPage          string
-	SurveyAssets        SurveyAssets
-	OperationCycles     bool
-	OperationPage       string
-	OperationAssets     OperationCycleAssets
+	Survey               bool
+	SurveyPage           string
+	SurveyAssets         SurveyAssets
+	OperationCycles      bool
+	OperationPage        string
+	OperationAssets      OperationCycleAssets
 }
 
 // ExternalEffectsAssets are manifest-derived URLs for the frozen donor bundle.
