@@ -1,0 +1,712 @@
+// Package store persists operation-cycle facts through generated SQLC queries.
+package store
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"math"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
+	operationapp "github.com/qianlan33333-png/AI-CRM-v3/internal/operationcycle/app"
+	operationcycledb "github.com/qianlan33333-png/AI-CRM-v3/internal/operationcycle/store/generated"
+	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
+)
+
+// Repository is transaction-bound. Its methods never start transactions and
+// never perform an external call.
+type Repository struct{}
+
+var _ operationapp.Store = (*Repository)(nil)
+
+func NewRepository() *Repository { return &Repository{} }
+
+func (repository *Repository) Report(ctx context.Context, command operationapp.ReportCommand, now time.Time) (map[string]any, bool, error) {
+	queries, err := operationCycleQueries(ctx)
+	if err != nil {
+		return nil, false, storeError(err)
+	}
+	payloadDigest, err := operationapp.Digest(command.Snapshot)
+	if err != nil {
+		return nil, false, operationapp.ErrInvalid
+	}
+	keyDigest := sha256.Sum256([]byte(command.IdempotencyKey))
+	actorScope := command.ReporterID + ":" + command.ClientID
+	existing, err := queries.GetOperationCycleReportReceipt(ctx, operationcycledb.GetOperationCycleReportReceiptParams{
+		ActorScope: actorScope, KeyDigest: keyDigest[:],
+	})
+	if err == nil {
+		if !bytes.Equal(existing.PayloadDigest, payloadDigest[:]) {
+			return nil, false, operationapp.ErrConflict
+		}
+		return receiptResult(existing.StrategyKey, existing.RunKey, existing.AcceptedRevision, existing.ProjectionMade), true, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, false, storeError(err)
+	}
+
+	strategyKey := stringValue(command.Snapshot, "strategy_key")
+	runKey := stringValue(command.Snapshot, "run_key")
+	revision, ok := int32Value(command.Snapshot["revision"])
+	if !ok || revision < 1 {
+		revision = 1
+	}
+	version, ok := int32Value(command.Snapshot["strategy_version"])
+	if !ok || version < 1 {
+		version = revision
+	}
+	status := stringValue(command.Snapshot, "status")
+	if status == "" {
+		status = "active"
+	}
+	if status != "active" && status != "paused" && status != "archived" {
+		return nil, false, operationapp.ErrInvalid
+	}
+	title := stringValue(command.Snapshot, "title")
+	if title == "" {
+		title = strategyKey
+	}
+	snapshot, err := json.Marshal(command.Snapshot)
+	if err != nil {
+		return nil, false, operationapp.ErrInvalid
+	}
+	definition, err := json.Marshal(map[string]any{"external_effects": "none"})
+	if err != nil {
+		return nil, false, operationapp.ErrUnavailable
+	}
+	pgNow := pgTime(now)
+	if err = queries.UpsertOperationCycleStrategy(ctx, operationcycledb.UpsertOperationCycleStrategyParams{
+		StrategyKey: strategyKey, Title: title, Status: status, Version: version,
+		Definition: definition, Snapshot: snapshot, UpdatedAt: pgNow,
+	}); err != nil {
+		return nil, false, storeError(err)
+	}
+	if err = queries.UpsertOperationCycleRun(ctx, operationcycledb.UpsertOperationCycleRunParams{
+		RunKey: runKey, StrategyKey: strategyKey, SnapshotRevision: revision, Snapshot: snapshot, ReceivedAt: pgNow,
+	}); err != nil {
+		return nil, false, storeError(err)
+	}
+	receiptID, err := operationapp.NewID("ocrep_")
+	if err != nil {
+		return nil, false, operationapp.ErrUnavailable
+	}
+	reserved, err := queries.ReserveOperationCycleReportReceipt(ctx, operationcycledb.ReserveOperationCycleReportReceiptParams{
+		ID: receiptID, ActorScope: actorScope, KeyDigest: keyDigest[:], PayloadDigest: payloadDigest[:],
+		StrategyKey: strategyKey, RunKey: runKey, AcceptedRevision: revision, ProjectionMade: true,
+	})
+	if err != nil {
+		return nil, false, storeError(err)
+	}
+	if !bytes.Equal(reserved.PayloadDigest, payloadDigest[:]) {
+		return nil, false, operationapp.ErrConflict
+	}
+	if !reserved.Inserted {
+		return receiptResult(reserved.StrategyKey, reserved.RunKey, reserved.AcceptedRevision, reserved.ProjectionMade), true, nil
+	}
+	return receiptResult(strategyKey, runKey, revision, true), false, nil
+}
+
+func (repository *Repository) ListStrategies(ctx context.Context, limit, offset int32) (map[string]any, error) {
+	queries, err := operationCycleQueries(ctx)
+	if err != nil {
+		return nil, storeError(err)
+	}
+	rows, err := queries.ListOperationCycleStrategies(ctx, operationcycledb.ListOperationCycleStrategiesParams{Limit: limit, Offset: offset})
+	if err != nil {
+		return nil, storeError(err)
+	}
+	items := make([]map[string]any, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, strategyResult(row))
+	}
+	return map[string]any{"items": items, "limit": limit, "offset": offset}, nil
+}
+
+func (repository *Repository) GetStrategy(ctx context.Context, key string) (map[string]any, error) {
+	queries, err := operationCycleQueries(ctx)
+	if err != nil {
+		return nil, storeError(err)
+	}
+	row, err := queries.GetOperationCycleStrategy(ctx, key)
+	if err != nil {
+		return nil, storeError(err)
+	}
+	return strategyResult(row), nil
+}
+
+func (repository *Repository) ListRuns(ctx context.Context, key string, limit, offset int32) (map[string]any, error) {
+	queries, err := operationCycleQueries(ctx)
+	if err != nil {
+		return nil, storeError(err)
+	}
+	rows, err := queries.ListOperationCycleRuns(ctx, operationcycledb.ListOperationCycleRunsParams{StrategyKey: key, Limit: limit, Offset: offset})
+	if err != nil {
+		return nil, storeError(err)
+	}
+	items := make([]map[string]any, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, runResult(row))
+	}
+	return map[string]any{"items": items, "limit": limit, "offset": offset}, nil
+}
+
+func (repository *Repository) GetRun(ctx context.Context, key string) (map[string]any, error) {
+	queries, err := operationCycleQueries(ctx)
+	if err != nil {
+		return nil, storeError(err)
+	}
+	row, err := queries.GetOperationCycleRun(ctx, key)
+	if err != nil {
+		return nil, storeError(err)
+	}
+	return runResult(row), nil
+}
+
+func (repository *Repository) Start(ctx context.Context, command operationapp.StartCommand, now time.Time) (map[string]any, bool, error) {
+	queries, err := operationCycleQueries(ctx)
+	if err != nil {
+		return nil, false, storeError(err)
+	}
+	keyDigest := sha256.Sum256([]byte(command.IdempotencyKey))
+	existing, err := queries.FindOperationCycleActionByKey(ctx, keyDigest[:])
+	if err == nil {
+		return actionResult(existing), true, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, false, storeError(err)
+	}
+	if active, activeErr := queries.FindActiveOperationCycleAction(ctx, command.StrategyKey); activeErr == nil {
+		if sameKey, keyErr := queries.FindOperationCycleActionByKey(ctx, keyDigest[:]); keyErr == nil {
+			return actionResult(sameKey), true, nil
+		} else if !errors.Is(keyErr, pgx.ErrNoRows) {
+			return nil, false, storeError(keyErr)
+		}
+		return actionResult(active), false, operationapp.ErrConflict
+	} else if !errors.Is(activeErr, pgx.ErrNoRows) {
+		return nil, false, storeError(activeErr)
+	}
+	strategy, err := queries.GetOperationCycleStrategy(ctx, command.StrategyKey)
+	if err != nil {
+		return nil, false, storeError(err)
+	}
+	if strategy.Status != "active" {
+		return nil, false, operationapp.ErrActionUnavailable
+	}
+	run, err := queries.GetOperationCycleRun(ctx, command.RunKey)
+	if err != nil {
+		return nil, false, storeError(err)
+	}
+	if run.StrategyKey != command.StrategyKey {
+		return nil, false, operationapp.ErrConflict
+	}
+	runners, err := queries.ListFreshOperationCycleRunners(ctx, pgTime(now.Add(-operationapp.RunnerOfflineAfter)))
+	if err != nil {
+		return nil, false, storeError(err)
+	}
+	matchedRunners := make([]operationcycledb.OperationCycleRunner, 0, len(runners))
+	for _, runner := range runners {
+		if runnerMatchesStrategy(runner.BindingKeys, command.StrategyKey) {
+			matchedRunners = append(matchedRunners, runner)
+		}
+	}
+	if len(matchedRunners) != 1 {
+		return nil, false, operationapp.ErrActionUnavailable
+	}
+	requestID, err := operationapp.NewID("ocact_")
+	if err != nil {
+		return nil, false, operationapp.ErrUnavailable
+	}
+	reserved, err := queries.ReserveOperationCycleAction(ctx, operationcycledb.ReserveOperationCycleActionParams{
+		RequestID: requestID, StrategyKey: command.StrategyKey, RunKey: command.RunKey, ActionKey: command.ActionKey,
+		ActionTitle: command.ActionKey, StrategyVersion: strategy.Version, RunnerID: matchedRunners[0].RunnerID,
+		Column8: command.ParentRequest, CreatedBy: command.ActorID, CreatedAt: pgTime(now), IdempotencyKeyDigest: keyDigest[:],
+	})
+	if err != nil {
+		return nil, false, storeError(err)
+	}
+	return actionResult(reserved), !reserved.Inserted, nil
+}
+
+func (repository *Repository) CurrentAction(ctx context.Context, strategyKey string) (map[string]any, error) {
+	queries, err := operationCycleQueries(ctx)
+	if err != nil {
+		return nil, storeError(err)
+	}
+	row, err := queries.FindActiveOperationCycleAction(ctx, strategyKey)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return map[string]any{"current_action": nil}, nil
+	}
+	if err != nil {
+		return nil, storeError(err)
+	}
+	return map[string]any{"current_action": actionResult(row)}, nil
+}
+
+func (repository *Repository) GetActionResult(ctx context.Context, requestID string) (map[string]any, error) {
+	queries, err := operationCycleQueries(ctx)
+	if err != nil {
+		return nil, storeError(err)
+	}
+	row, err := queries.GetOperationCycleAction(ctx, requestID)
+	if err != nil {
+		return nil, storeError(err)
+	}
+	result := actionResult(row)
+	return map[string]any{"request_id": row.RequestID, "status": row.Status, "result": result["final_result"], "failure_code": optionalString(row.FailureCode)}, nil
+}
+
+func (repository *Repository) Claim(ctx context.Context, runnerID, principalID string, now time.Time, lease time.Duration) (map[string]any, bool, error) {
+	queries, err := operationCycleQueries(ctx)
+	if err != nil {
+		return nil, false, storeError(err)
+	}
+	runner, err := queries.GetOperationCycleRunner(ctx, runnerID)
+	if err != nil {
+		return nil, false, storeError(err)
+	}
+	if runner.PrincipalID != principalID || runner.CompatibilityStatus != "ready" || !runner.LastHeartbeatAt.Valid || runner.LastHeartbeatAt.Time.Before(now.Add(-operationapp.RunnerOfflineAfter)) {
+		return nil, false, operationapp.ErrActionUnavailable
+	}
+	action, err := queries.GetQueuedOperationCycleActionForRunner(ctx, runnerID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return map[string]any{"claimed": false}, false, nil
+	}
+	if err != nil {
+		return nil, false, storeError(err)
+	}
+	leaseToken, err := operationapp.NewID("lease_")
+	if err != nil {
+		return nil, false, operationapp.ErrUnavailable
+	}
+	leaseDigest := sha256.Sum256([]byte(leaseToken))
+	updated, err := queries.ClaimOperationCycleAction(ctx, operationcycledb.ClaimOperationCycleActionParams{
+		RequestID: action.RequestID, LeaseTokenHash: leaseDigest[:], LeaseExpiresAt: pgTime(now.Add(lease)), UpdatedAt: pgTime(now),
+	})
+	if err != nil {
+		return nil, false, storeError(err)
+	}
+	if updated != 1 {
+		return map[string]any{"claimed": false}, false, nil
+	}
+	result := actionResult(action)
+	result["status"] = "claimed"
+	result["lease_token"] = leaseToken
+	result["lease_expires_at"] = now.Add(lease).UTC().Format(time.RFC3339Nano)
+	result["claimed"] = true
+	return result, true, nil
+}
+
+func (repository *Repository) RecordActionEvent(ctx context.Context, command operationapp.ActionEventCommand, now time.Time) (map[string]any, bool, error) {
+	queries, err := operationCycleQueries(ctx)
+	if err != nil {
+		return nil, false, storeError(err)
+	}
+	payload := map[string]any{
+		"event_type": command.EventType, "thread_id": command.ThreadID, "turn_id": command.TurnID,
+		"result": command.Result, "failure_code": command.FailureCode,
+	}
+	payloadDigest, err := operationapp.Digest(payload)
+	if err != nil {
+		return nil, false, operationapp.ErrInvalid
+	}
+	existingDigest, err := queries.GetOperationCycleActionEvent(ctx, operationcycledb.GetOperationCycleActionEventParams{RequestID: command.RequestID, EventID: command.EventID})
+	if err == nil {
+		if !bytes.Equal(existingDigest, payloadDigest[:]) {
+			return nil, false, operationapp.ErrConflict
+		}
+		action, getErr := queries.GetOperationCycleAction(ctx, command.RequestID)
+		if getErr != nil {
+			return nil, false, storeError(getErr)
+		}
+		return actionResult(action), true, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, false, storeError(err)
+	}
+	action, err := queries.GetOperationCycleActionForUpdate(ctx, command.RequestID)
+	if err != nil {
+		return nil, false, storeError(err)
+	}
+	if !validLease(action.LeaseTokenHash, action.LeaseExpiresAt, command.LeaseToken, now) {
+		return nil, false, operationapp.ErrLeaseInvalid
+	}
+	if !validActionTransition(action.Status, command.EventType) {
+		return nil, false, operationapp.ErrConflict
+	}
+	finalResult := action.FinalResult
+	if command.EventType == "completed" || command.EventType == "failed" {
+		finalResult, err = json.Marshal(command.Result)
+		if err != nil {
+			return nil, false, operationapp.ErrInvalid
+		}
+	}
+	threadID, turnID := action.ThreadID.String, action.TurnID.String
+	if command.EventType == "thread_bound" || command.EventType == "turn_started" {
+		threadID = command.ThreadID
+	}
+	if command.EventType == "turn_started" {
+		turnID = command.TurnID
+	}
+	completedAt := pgtype.Timestamptz{}
+	if command.EventType == "completed" || command.EventType == "failed" {
+		completedAt = pgTime(now)
+	}
+	if _, err = queries.UpdateOperationCycleAction(ctx, operationcycledb.UpdateOperationCycleActionParams{
+		RequestID: action.RequestID, Status: command.EventType, Column3: threadID, Column4: turnID,
+		FinalResult: finalResult, Column6: command.FailureCode, CompletedAt: completedAt, UpdatedAt: pgTime(now),
+	}); err != nil {
+		return nil, false, storeError(err)
+	}
+	if err = queries.InsertOperationCycleActionEvent(ctx, operationcycledb.InsertOperationCycleActionEventParams{
+		RequestID: action.RequestID, EventID: command.EventID, EventType: command.EventType, PayloadDigest: payloadDigest[:], OccurredAt: pgTime(now),
+	}); err != nil {
+		return nil, false, storeError(err)
+	}
+	updated, err := queries.GetOperationCycleAction(ctx, action.RequestID)
+	if err != nil {
+		return nil, false, storeError(err)
+	}
+	return actionResult(updated), false, nil
+}
+
+func (repository *Repository) Heartbeat(ctx context.Context, command operationapp.RunnerHeartbeatCommand, now time.Time) (map[string]any, error) {
+	queries, err := operationCycleQueries(ctx)
+	if err != nil {
+		return nil, storeError(err)
+	}
+	bindingKeys, err := json.Marshal(command.BindingKeys)
+	if err != nil {
+		return nil, operationapp.ErrInvalid
+	}
+	if err = queries.UpsertOperationCycleRunner(ctx, operationcycledb.UpsertOperationCycleRunnerParams{
+		RunnerID: command.RunnerID, PrincipalID: command.PrincipalID, ConnectorVersion: command.ConnectorVersion,
+		CodexVersion: command.CodexVersion, CompatibilityStatus: command.CompatibilityStatus,
+		BindingKeys: bindingKeys, LastHeartbeatAt: pgTime(now),
+	}); err != nil {
+		return nil, storeError(err)
+	}
+	return map[string]any{"runner_id": command.RunnerID, "compatibility_status": command.CompatibilityStatus, "heartbeat_at": now.UTC().Format(time.RFC3339Nano)}, nil
+}
+
+func (repository *Repository) ContextIndex(ctx context.Context, limit, offset int32) (map[string]any, error) {
+	strategies, err := repository.ListStrategies(ctx, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	strategies["schema_version"] = "operation_cycle_context_index.v1"
+	return strategies, nil
+}
+
+func (repository *Repository) StrategyContext(ctx context.Context, key, mode string, limit, offset int32, filters map[string]string) (map[string]any, error) {
+	if len(filters) != 0 {
+		return nil, operationapp.ErrInvalid
+	}
+	strategy, err := repository.GetStrategy(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	queries, err := operationCycleQueries(ctx)
+	if err != nil {
+		return nil, storeError(err)
+	}
+	actions, err := queries.ListOperationCycleActions(ctx, operationcycledb.ListOperationCycleActionsParams{StrategyKey: key, Limit: limit, Offset: offset})
+	if err != nil {
+		return nil, storeError(err)
+	}
+	items := make([]map[string]any, 0, len(actions))
+	for _, action := range actions {
+		items = append(items, actionResult(action))
+	}
+	return map[string]any{"strategy": strategy, "mode": mode, "actions": items, "limit": limit, "offset": offset}, nil
+}
+
+func (repository *Repository) CreateProposal(ctx context.Context, command operationapp.ProposalCommand, now time.Time) (map[string]any, bool, error) {
+	queries, err := operationCycleQueries(ctx)
+	if err != nil {
+		return nil, false, storeError(err)
+	}
+	payloadDigest, err := operationapp.Digest(command.Payload)
+	if err != nil {
+		return nil, false, operationapp.ErrInvalid
+	}
+	keyDigest := sha256.Sum256([]byte(command.IdempotencyKey))
+	existing, err := queries.GetOperationCycleProposalByActorKey(ctx, operationcycledb.GetOperationCycleProposalByActorKeyParams{CreatedBy: command.ActorID, IdempotencyKeyDigest: keyDigest[:]})
+	if err == nil {
+		existingDigest, digestErr := operationapp.Digest(decodedValue(existing.Proposal))
+		if digestErr != nil || !bytes.Equal(existingDigest[:], payloadDigest[:]) {
+			return nil, false, operationapp.ErrConflict
+		}
+		return proposalResult(existing), true, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, false, storeError(err)
+	}
+	strategyKey := stringValue(command.Payload, "strategy_key")
+	strategy, err := queries.GetOperationCycleStrategy(ctx, strategyKey)
+	if err != nil {
+		return nil, false, storeError(err)
+	}
+	baseVersion, ok := int32Value(command.Payload["base_strategy_version"])
+	if !ok || baseVersion != strategy.Version {
+		return nil, false, operationapp.ErrConflict
+	}
+	payload, err := json.Marshal(command.Payload)
+	if err != nil {
+		return nil, false, operationapp.ErrInvalid
+	}
+	proposalID, err := operationapp.NewID("ocprop_")
+	if err != nil {
+		return nil, false, operationapp.ErrUnavailable
+	}
+	reserved, err := queries.ReserveOperationCycleProposal(ctx, operationcycledb.ReserveOperationCycleProposalParams{
+		ProposalID: proposalID, StrategyKey: strategyKey, BaseStrategyVersion: baseVersion, Proposal: payload,
+		CreatedBy: command.ActorID, CreatedAt: pgTime(now), IdempotencyKeyDigest: keyDigest[:],
+	})
+	if err != nil {
+		return nil, false, storeError(err)
+	}
+	reservedDigest, digestErr := operationapp.Digest(decodedValue(reserved.Proposal))
+	if digestErr != nil || !bytes.Equal(reservedDigest[:], payloadDigest[:]) {
+		return nil, false, operationapp.ErrConflict
+	}
+	return proposalResult(reserved), !reserved.Inserted, nil
+}
+
+func (repository *Repository) ListProposals(ctx context.Context, key string, limit, offset int32) (map[string]any, error) {
+	queries, err := operationCycleQueries(ctx)
+	if err != nil {
+		return nil, storeError(err)
+	}
+	rows, err := queries.ListOperationCycleProposals(ctx, operationcycledb.ListOperationCycleProposalsParams{StrategyKey: key, Limit: limit, Offset: offset})
+	if err != nil {
+		return nil, storeError(err)
+	}
+	items := make([]map[string]any, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, proposalResult(row))
+	}
+	return map[string]any{"items": items, "limit": limit, "offset": offset}, nil
+}
+
+func (repository *Repository) DecideProposal(ctx context.Context, proposalID, decision, actorID string, now time.Time) (map[string]any, error) {
+	queries, err := operationCycleQueries(ctx)
+	if err != nil {
+		return nil, storeError(err)
+	}
+	proposal, err := queries.GetOperationCycleProposalForUpdate(ctx, proposalID)
+	if err != nil {
+		return nil, storeError(err)
+	}
+	if proposal.Status != "pending" {
+		return nil, operationapp.ErrConflict
+	}
+	status := "accepted"
+	if decision == "reject" {
+		status = "rejected"
+	}
+	updated, err := queries.DecideOperationCycleProposal(ctx, operationcycledb.DecideOperationCycleProposalParams{
+		ProposalID: proposalID, Status: status, DecidedBy: pgtype.Text{String: actorID, Valid: true}, DecidedAt: pgTime(now),
+	})
+	if err != nil {
+		return nil, storeError(err)
+	}
+	if updated != 1 {
+		return nil, operationapp.ErrConflict
+	}
+	result, err := queries.GetOperationCycleProposal(ctx, proposalID)
+	if err != nil {
+		return nil, storeError(err)
+	}
+	return proposalResult(result), nil
+}
+
+func operationCycleQueries(ctx context.Context) (*operationcycledb.Queries, error) {
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return operationcycledb.New(tx), nil
+}
+
+func storeError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		return operationapp.ErrNotFound
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		return operationapp.ErrConflict
+	}
+	return fmt.Errorf("%w: %v", operationapp.ErrUnavailable, err)
+}
+
+func validLease(stored []byte, expires pgtype.Timestamptz, provided string, now time.Time) bool {
+	if len(stored) != sha256.Size || !expires.Valid || !now.Before(expires.Time) {
+		return false
+	}
+	digest := sha256.Sum256([]byte(provided))
+	return subtle.ConstantTimeCompare(stored, digest[:]) == 1
+}
+
+func validActionTransition(current, next string) bool {
+	switch current {
+	case "claimed":
+		return next == "thread_bound"
+	case "thread_bound":
+		return next == "turn_started" || next == "completed" || next == "failed"
+	case "turn_started":
+		return next == "completed" || next == "failed"
+	default:
+		return false
+	}
+}
+
+func runnerMatchesStrategy(bindingKeys []byte, strategyKey string) bool {
+	var bindings []string
+	if json.Unmarshal(bindingKeys, &bindings) != nil {
+		return false
+	}
+	for _, binding := range bindings {
+		if binding == strategyKey {
+			return true
+		}
+	}
+	return false
+}
+
+func receiptResult(strategyKey, runKey string, revision int32, projectionMade bool) map[string]any {
+	return map[string]any{"accepted": true, "strategy_key": strategyKey, "run_key": runKey, "accepted_revision": revision, "projection_updated": projectionMade}
+}
+
+func strategyResult(row operationcycledb.OperationCycleStrategy) map[string]any {
+	return map[string]any{
+		"strategy_key": row.StrategyKey, "title": row.Title, "status": row.Status, "version": row.Version,
+		"definition": decodedValue(row.Definition), "snapshot": decodedValue(row.Snapshot), "updated_at": timeValue(row.UpdatedAt),
+	}
+}
+
+func runResult(row operationcycledb.OperationCycleRun) map[string]any {
+	return map[string]any{"run_key": row.RunKey, "strategy_key": row.StrategyKey, "snapshot_revision": row.SnapshotRevision, "snapshot": decodedValue(row.Snapshot), "received_at": timeValue(row.ReceivedAt)}
+}
+
+func actionResult(row interface {
+	// The generated action query result structs deliberately share no named
+	// interface. This marker prevents accidental cross-domain exposure.
+}) map[string]any {
+	switch value := row.(type) {
+	case operationcycledb.FindActiveOperationCycleActionRow:
+		return actionValues(value.RequestID, value.StrategyKey, value.RunKey, value.ActionKey, value.ActionTitle, value.StrategyVersion, value.RunnerID, value.Status, value.ParentRequestID, value.ThreadID, value.TurnID, value.FinalResult, value.FailureCode, value.CreatedBy, value.CreatedAt, value.UpdatedAt, value.CompletedAt)
+	case operationcycledb.FindOperationCycleActionByKeyRow:
+		return actionValues(value.RequestID, value.StrategyKey, value.RunKey, value.ActionKey, value.ActionTitle, value.StrategyVersion, value.RunnerID, value.Status, value.ParentRequestID, value.ThreadID, value.TurnID, value.FinalResult, value.FailureCode, value.CreatedBy, value.CreatedAt, value.UpdatedAt, value.CompletedAt)
+	case operationcycledb.GetOperationCycleActionRow:
+		return actionValues(value.RequestID, value.StrategyKey, value.RunKey, value.ActionKey, value.ActionTitle, value.StrategyVersion, value.RunnerID, value.Status, value.ParentRequestID, value.ThreadID, value.TurnID, value.FinalResult, value.FailureCode, value.CreatedBy, value.CreatedAt, value.UpdatedAt, value.CompletedAt)
+	case operationcycledb.GetQueuedOperationCycleActionForRunnerRow:
+		return actionValues(value.RequestID, value.StrategyKey, value.RunKey, value.ActionKey, value.ActionTitle, value.StrategyVersion, value.RunnerID, value.Status, value.ParentRequestID, value.ThreadID, value.TurnID, value.FinalResult, value.FailureCode, value.CreatedBy, value.CreatedAt, value.UpdatedAt, value.CompletedAt)
+	case operationcycledb.GetOperationCycleActionForUpdateRow:
+		return actionValues(value.RequestID, value.StrategyKey, value.RunKey, value.ActionKey, value.ActionTitle, value.StrategyVersion, value.RunnerID, value.Status, value.ParentRequestID, value.ThreadID, value.TurnID, value.FinalResult, value.FailureCode, value.CreatedBy, value.CreatedAt, value.UpdatedAt, value.CompletedAt)
+	case operationcycledb.ListOperationCycleActionsRow:
+		return actionValues(value.RequestID, value.StrategyKey, value.RunKey, value.ActionKey, value.ActionTitle, value.StrategyVersion, value.RunnerID, value.Status, value.ParentRequestID, value.ThreadID, value.TurnID, value.FinalResult, value.FailureCode, value.CreatedBy, value.CreatedAt, value.UpdatedAt, value.CompletedAt)
+	case operationcycledb.ReserveOperationCycleActionRow:
+		return actionValues(value.RequestID, value.StrategyKey, value.RunKey, value.ActionKey, value.ActionTitle, value.StrategyVersion, value.RunnerID, value.Status, value.ParentRequestID, value.ThreadID, value.TurnID, value.FinalResult, value.FailureCode, value.CreatedBy, value.CreatedAt, value.UpdatedAt, value.CompletedAt)
+	default:
+		return nil
+	}
+}
+
+func actionValues(requestID, strategyKey, runKey, actionKey, actionTitle string, version int32, runnerID, status string, parent, thread, turn pgtype.Text, finalResult []byte, failureCode pgtype.Text, createdBy string, createdAt, updatedAt, completedAt pgtype.Timestamptz) map[string]any {
+	return map[string]any{
+		"request_id": requestID, "strategy_key": strategyKey, "run_key": runKey, "action_key": actionKey, "action_title": actionTitle,
+		"strategy_version": version, "runner_id": runnerID, "status": status, "parent_request_id": optionalString(parent),
+		"thread_id": optionalString(thread), "turn_id": optionalString(turn), "final_result": decodedValue(finalResult),
+		"failure_code": optionalString(failureCode), "created_by": createdBy, "created_at": timeValue(createdAt),
+		"updated_at": timeValue(updatedAt), "completed_at": nullableTimeValue(completedAt),
+	}
+}
+
+func proposalResult(row interface{}) map[string]any {
+	switch value := row.(type) {
+	case operationcycledb.GetOperationCycleProposalRow:
+		return proposalValues(value.ProposalID, value.StrategyKey, value.BaseStrategyVersion, value.Status, value.Proposal, value.CreatedBy, value.DecidedBy, value.CreatedAt, value.DecidedAt)
+	case operationcycledb.GetOperationCycleProposalByActorKeyRow:
+		return proposalValues(value.ProposalID, value.StrategyKey, value.BaseStrategyVersion, value.Status, value.Proposal, value.CreatedBy, value.DecidedBy, value.CreatedAt, value.DecidedAt)
+	case operationcycledb.GetOperationCycleProposalForUpdateRow:
+		return proposalValues(value.ProposalID, value.StrategyKey, value.BaseStrategyVersion, value.Status, value.Proposal, value.CreatedBy, value.DecidedBy, value.CreatedAt, value.DecidedAt)
+	case operationcycledb.ListOperationCycleProposalsRow:
+		return proposalValues(value.ProposalID, value.StrategyKey, value.BaseStrategyVersion, value.Status, value.Proposal, value.CreatedBy, value.DecidedBy, value.CreatedAt, value.DecidedAt)
+	case operationcycledb.ReserveOperationCycleProposalRow:
+		return proposalValues(value.ProposalID, value.StrategyKey, value.BaseStrategyVersion, value.Status, value.Proposal, value.CreatedBy, value.DecidedBy, value.CreatedAt, value.DecidedAt)
+	default:
+		return nil
+	}
+}
+
+func proposalValues(id, strategyKey string, baseVersion int32, status string, payload []byte, createdBy string, decidedBy pgtype.Text, createdAt, decidedAt pgtype.Timestamptz) map[string]any {
+	return map[string]any{"proposal_id": id, "strategy_key": strategyKey, "base_strategy_version": baseVersion, "status": status, "proposal": decodedValue(payload), "created_by": createdBy, "decided_by": optionalString(decidedBy), "created_at": timeValue(createdAt), "decided_at": nullableTimeValue(decidedAt)}
+}
+
+func decodedValue(raw []byte) any {
+	if len(raw) == 0 {
+		return nil
+	}
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return nil
+	}
+	return value
+}
+
+func stringValue(value map[string]any, key string) string {
+	result, _ := value[key].(string)
+	return result
+}
+
+func int32Value(value any) (int32, bool) {
+	switch number := value.(type) {
+	case int:
+		if number >= math.MinInt32 && number <= math.MaxInt32 {
+			return int32(number), true
+		}
+	case int32:
+		return number, true
+	case int64:
+		if number >= math.MinInt32 && number <= math.MaxInt32 {
+			return int32(number), true
+		}
+	case float64:
+		if number >= math.MinInt32 && number <= math.MaxInt32 && math.Trunc(number) == number {
+			return int32(number), true
+		}
+	}
+	return 0, false
+}
+
+func pgTime(value time.Time) pgtype.Timestamptz {
+	return pgtype.Timestamptz{Time: value.UTC(), Valid: true}
+}
+func timeValue(value pgtype.Timestamptz) string {
+	if !value.Valid {
+		return ""
+	}
+	return value.Time.UTC().Format(time.RFC3339Nano)
+}
+func nullableTimeValue(value pgtype.Timestamptz) any {
+	if !value.Valid {
+		return nil
+	}
+	return value.Time.UTC().Format(time.RFC3339Nano)
+}
+func optionalString(value pgtype.Text) any {
+	if !value.Valid {
+		return nil
+	}
+	return value.String
+}

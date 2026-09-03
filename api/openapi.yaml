@@ -1207,6 +1207,127 @@ paths:
         "401": {$ref: "#/components/responses/Error"}
         "403": {$ref: "#/components/responses/Error"}
         "503": {$ref: "#/components/responses/Unavailable"}
+  /admin/operation-cycles:
+    get:
+      operationId: openOperationCyclesWorkspace
+      tags: [OperationCycles]
+      security: [{adminSession: []}]
+      responses: {"200": {description: v3 shell with a byte-frozen cycles or cyclesDetail donor template}, "303": {description: Canonical query redirect}, "403": {$ref: "#/components/responses/Error"}}
+  /api/admin/operation-cycles/strategies:
+    get:
+      operationId: listOperationCycleStrategies
+      tags: [OperationCycles]
+      security: [{adminSession: []}]
+      responses: {"200": {description: Persisted strategies, content: {application/json: {schema: {$ref: "#/components/schemas/OperationCycleObject"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}}
+  /api/admin/operation-cycles/strategies/{strategy_key}:
+    get:
+      operationId: getOperationCycleStrategy
+      tags: [OperationCycles]
+      security: [{adminSession: []}]
+      parameters: [{name: strategy_key, in: path, required: true, schema: {type: string, maxLength: 120}}]
+      responses: {"200": {description: Persisted strategy}, "404": {$ref: "#/components/responses/Error"}}
+  /api/admin/operation-cycles/strategies/{strategy_key}/runs:
+    get:
+      operationId: listOperationCycleRuns
+      tags: [OperationCycles]
+      security: [{adminSession: []}]
+      parameters: [{name: strategy_key, in: path, required: true, schema: {type: string, maxLength: 120}}]
+      responses: {"200": {description: Persisted runs}}
+  /api/admin/operation-cycles/runs/{run_key}:
+    get:
+      operationId: getOperationCycleRun
+      tags: [OperationCycles]
+      security: [{adminSession: []}]
+      parameters: [{name: run_key, in: path, required: true, schema: {type: string, maxLength: 160}}]
+      responses: {"200": {description: Persisted run dossier}, "404": {$ref: "#/components/responses/Error"}}
+  /api/admin/operation-cycles/strategies/{strategy_key}/current-action:
+    get:
+      operationId: getOperationCycleCurrentAction
+      tags: [OperationCycles]
+      security: [{adminSession: []}]
+      parameters: [{name: strategy_key, in: path, required: true, schema: {type: string}}]
+      responses: {"200": {description: Current local action fact}}
+  /api/admin/operation-cycles/strategies/{strategy_key}/actions/{action_key}/start:
+    post:
+      operationId: startOperationCycleAction
+      tags: [OperationCycles]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{name: strategy_key, in: path, required: true, schema: {type: string}}, {name: action_key, in: path, required: true, schema: {type: string}}, {$ref: "#/components/parameters/IdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/OperationCycleObject"}}}}
+      responses: {"202": {description: Durable action accepted}, "409": {$ref: "#/components/responses/Error"}}
+  /api/admin/operation-cycles/action-requests/{request_id}/result:
+    get:
+      operationId: getOperationCycleActionResult
+      tags: [OperationCycles]
+      security: [{adminSession: []}]
+      parameters: [{name: request_id, in: path, required: true, schema: {type: string}}]
+      responses: {"200": {description: Local action result}}
+  /api/admin/operation-cycles/strategies/{strategy_key}/strategy-change-proposals:
+    get:
+      operationId: listOperationCycleStrategyChangeProposals
+      tags: [OperationCycles]
+      security: [{adminSession: []}]
+      parameters: [{name: strategy_key, in: path, required: true, schema: {type: string}}]
+      responses: {"200": {description: Strategy proposals}}
+  /api/admin/operation-cycles/strategy-change-proposals/{proposal_id}/decision:
+    post:
+      operationId: decideOperationCycleStrategyChangeProposal
+      tags: [OperationCycles]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{name: proposal_id, in: path, required: true, schema: {type: string}}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/OperationCycleObject"}}}}
+      responses: {"200": {description: Proposal decision persisted}, "409": {$ref: "#/components/responses/Error"}}
+  /api/operation-cycles/reports:
+    post:
+      operationId: reportOperationCycle
+      tags: [OperationCycles]
+      security: [{operationCycleService: []}]
+      parameters: [{$ref: "#/components/parameters/IdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/OperationCycleObject"}}}}
+      responses: {"202": {description: Snapshot transactionally persisted}, "401": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/operation-cycles/runner/heartbeat:
+    post:
+      operationId: heartbeatOperationCycleRunner
+      tags: [OperationCycles]
+      security: [{operationCycleService: []}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/OperationCycleObject"}}}}
+      responses: {"200": {description: Runner lease fact persisted}}
+  /api/operation-cycles/action-requests/claim:
+    post:
+      operationId: claimOperationCycleAction
+      tags: [OperationCycles]
+      security: [{operationCycleService: []}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/OperationCycleObject"}}}}
+      responses: {"202": {description: Action claimed with fenced lease}}
+  /api/operation-cycles/action-requests/{request_id}/events:
+    post:
+      operationId: recordOperationCycleActionEvent
+      tags: [OperationCycles]
+      security: [{operationCycleService: []}]
+      parameters: [{name: request_id, in: path, required: true, schema: {type: string}}, {$ref: "#/components/parameters/IdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/OperationCycleObject"}}}}
+      responses: {"200": {description: Fenced action event persisted}, "409": {$ref: "#/components/responses/Error"}}
+  /api/operation-cycles/context-index:
+    get:
+      operationId: getOperationCycleContextIndex
+      tags: [OperationCycles]
+      security: [{operationCycleService: []}]
+      responses: {"200": {description: Local context index}}
+  /api/operation-cycles/strategies/{strategy_key}/context:
+    get:
+      operationId: getOperationCycleStrategyContext
+      tags: [OperationCycles]
+      security: [{operationCycleService: []}]
+      parameters: [{name: strategy_key, in: path, required: true, schema: {type: string}}]
+      responses: {"200": {description: Local execution or review context}}
+  /api/operation-cycles/strategy-change-proposals:
+    post:
+      operationId: createOperationCycleStrategyChangeProposal
+      tags: [OperationCycles]
+      security: [{operationCycleService: []}]
+      parameters: [{$ref: "#/components/parameters/IdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/OperationCycleObject"}}}}
+      responses: {"202": {description: Proposal persisted}}
   /api/sidebar/jssdk-config:
     get:
       operationId: getSidebarJSSDKConfig
@@ -2123,6 +2244,7 @@ components:
     groupOpsWebhook: {type: apiKey, in: header, name: X-AICRM-Signature}
     paymentSession: {type: apiKey, in: cookie, name: aicrm_payment_session}
     wechatPaySignature: {type: apiKey, in: header, name: Wechatpay-Signature}
+    operationCycleService: {type: http, scheme: bearer}
   parameters:
     ID: {name: id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
     AutomationAgentID: {name: agent_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
@@ -2228,6 +2350,7 @@ components:
         format: {type: string, const: csv}
         filter: {type: object, additionalProperties: true}
         filters: {type: object, additionalProperties: true}
+    OperationCycleObject: {type: object, additionalProperties: true}
     PositiveID: {type: integer, format: int64, minimum: 1}
     AutomationAgentFixedContent: {type: object, additionalProperties: false, required: [content_text, image_library_ids, miniprogram_library_ids, attachment_library_ids, group_invite_library_ids], properties: {content_text: {type: string, maxLength: 4000}, image_library_ids: {type: array, maxItems: 3, items: {$ref: "#/components/schemas/PositiveID"}}, miniprogram_library_ids: {type: array, maxItems: 1, items: {$ref: "#/components/schemas/PositiveID"}}, attachment_library_ids: {type: array, maxItems: 9, items: {$ref: "#/components/schemas/PositiveID"}}, group_invite_library_ids: {type: array, maxItems: 1, items: {$ref: "#/components/schemas/PositiveID"}}}}
     AutomationAgentCreateRequest: {type: object, additionalProperties: false, required: [agent_name, agent_code, automation_type], properties: {agent_name: {type: string, minLength: 1, maxLength: 120}, agent_code: {type: string, pattern: '^[a-z0-9_-]+$', maxLength: 120}, automation_type: {type: string, enum: [agent, fixed_script]}, status: {type: string, enum: [paused]}, role_prompt: {type: string, maxLength: 20000}, task_prompt: {type: string, maxLength: 20000}, fixed_content_package: {$ref: "#/components/schemas/AutomationAgentFixedContent"}, legacy_configuration: {type: object, maxProperties: 200}}}
