@@ -112,7 +112,7 @@ func TestSetupWizardRequiresSessionCSRFActionTokenAndIdempotency(t *testing.T) {
 		t.Fatal(err)
 	}
 	token, _ := read["admin_action_token"].(string)
-	if len(token) < 50 {
+	if len(token) != 43 {
 		t.Fatalf("token=%q", token)
 	}
 	body := `{"wecom.corp_id":"corp","wecom.agent_id":7,"wecom.secret":"","wecom.callback_token":"","wecom.callback_aes_key":"","ai.api_key":"","expected_digest":"` + strings.Repeat("a", 64) + `","admin_action_token":"` + token + `"}`
@@ -268,7 +268,7 @@ func TestCategoryToggleAndCheckUseAuthenticatedCSRFActionAndLocalConfigReceipt(t
 	var read struct {
 		Tokens map[string]string `json:"admin_action_tokens"`
 	}
-	if err = json.Unmarshal(detail.Body.Bytes(), &read); err != nil || len(read.Tokens["enabled"]) < 50 || len(read.Tokens["check"]) < 50 {
+	if err = json.Unmarshal(detail.Body.Bytes(), &read); err != nil || len(read.Tokens["enabled"]) != 43 || len(read.Tokens["check"]) != 43 {
 		t.Fatalf("detail tokens=%q err=%v", read.Tokens, err)
 	}
 	write := adminSessionRequest(http.MethodPut, "/api/admin/config/categories/runtime-diagnostics/enabled", strings.NewReader(`{"enabled":false,"admin_action_token":"`+read.Tokens["enabled"]+`"}`))
@@ -308,10 +308,10 @@ func TestCategorySavePersistsReadonlyFrozenDetailInsteadOfChecking(t *testing.T)
 	var read struct {
 		Tokens map[string]string `json:"admin_action_tokens"`
 	}
-	if err := json.Unmarshal(detail.Body.Bytes(), &read); err != nil || len(read.Tokens["settings"]) < 50 {
+	if err := json.Unmarshal(detail.Body.Bytes(), &read); err != nil || len(read.Tokens["settings"]) != 43 {
 		t.Fatalf("detail=%s token=%q err=%v", detail.Body.String(), read.Tokens["settings"], err)
 	}
-	save := adminSessionRequest(http.MethodPut, "/api/admin/config/categories/runtime-diagnostics/settings", strings.NewReader(`{"values":{},"switches":{},"admin_action_token":"`+read.Tokens["settings"]+`"}`))
+	save := adminSessionRequest(http.MethodPut, "/api/admin/config/categories/runtime-diagnostics/settings", strings.NewReader(`{"settings":{},"admin_action_token":"`+read.Tokens["settings"]+`"}`))
 	save.Header.Set("Idempotency-Key", "category-save-1")
 	response := httptest.NewRecorder()
 	h.ServeHTTP(response, save)
@@ -330,7 +330,7 @@ func TestActionTokenIsSessionPathExpiryAndOneTimeBound(t *testing.T) {
 	h.now = func() time.Time { return now }
 	read := adminSessionRequest(http.MethodGet, "/api/admin/config/app-settings", nil)
 	token := h.actionToken(read, p, "app-settings", read.URL.Path)
-	if len(token) < 50 {
+	if len(token) != 43 {
 		t.Fatalf("token=%q", token)
 	}
 	write := adminSessionRequest(http.MethodPut, "/api/admin/config/app-settings", nil)

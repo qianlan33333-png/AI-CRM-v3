@@ -4,9 +4,9 @@ package http
 
 import (
 	"context"
-	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -34,7 +34,6 @@ type Handler struct {
 	config       configport.Service
 	projections  projectionReader
 	security     RequestSecurity
-	tokenKey     []byte
 	actionMu     sync.Mutex
 	actionGrants map[string]actionGrant
 	now          func() time.Time
@@ -64,11 +63,7 @@ func NewHandler(settings settingsService, wizard wizardService, configService co
 	if settings == nil || wizard == nil || configService == nil || projections == nil || security == nil {
 		return nil, errors.New("config HTTP dependencies are required")
 	}
-	key := make([]byte, 32)
-	if _, err := rand.Read(key); err != nil {
-		return nil, err
-	}
-	return &Handler{settings: settings, wizard: wizard, config: configService, projections: projections, security: security, tokenKey: key, actionGrants: map[string]actionGrant{}, now: time.Now}, nil
+	return &Handler{settings: settings, wizard: wizard, config: configService, projections: projections, security: security, actionGrants: map[string]actionGrant{}, now: time.Now}, nil
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -174,26 +169,18 @@ func (h *Handler) actionToken(r *http.Request, p accessdomain.Principal, action,
 	if now.IsZero() {
 		return ""
 	}
-	payload := make([]byte, 1+8+16)
-	payload[0] = 1
+	nonce := make([]byte, 32)
 	expiresAt := now.Add(5 * time.Minute).Unix()
-	for index := 0; index < 8; index++ {
-		payload[1+index] = byte(uint64(expiresAt) >> (56 - 8*index))
-	}
-	if _, err := rand.Read(payload[9:]); err != nil {
+	if _, err := rand.Read(nonce); err != nil {
 		return ""
 	}
 	principal := principalProof(p)
-	mac := hmac.New(sha256.New, h.tokenKey)
-	_, _ = mac.Write(payload)
-	_, _ = mac.Write(principal[:])
-	_, _ = mac.Write(session[:])
-	_, _ = mac.Write([]byte(action))
-	_, _ = mac.Write([]byte(path))
-	token := base64.RawURLEncoding.EncodeToString(append(payload, mac.Sum(nil)...))
+	// This must stay 43 URL-safe characters: it is the frozen donor's action
+	// token shape. All authorization context remains server-side in the grant.
+	token := base64.RawURLEncoding.EncodeToString(nonce)
 	h.actionMu.Lock()
 	for candidate, grant := range h.actionGrants {
-		if grant.expiresAt < now.Unix() {
+		if grant.expiresAt <= now.Unix() {
 			delete(h.actionGrants, candidate)
 		}
 	}
@@ -206,14 +193,7 @@ func (h *Handler) validActionToken(r *http.Request, p accessdomain.Principal, ac
 		return false
 	}
 	raw, err := base64.RawURLEncoding.DecodeString(value)
-	if err != nil || len(raw) != 1+8+16+sha256.Size || raw[0] != 1 {
-		return false
-	}
-	var expiry uint64
-	for _, value := range raw[1:9] {
-		expiry = expiry<<8 | uint64(value)
-	}
-	if int64(expiry) < h.now().UTC().Unix() {
+	if err != nil || len(value) != 43 || len(raw) != 32 {
 		return false
 	}
 	session, ok := sessionProof(r)
@@ -221,19 +201,10 @@ func (h *Handler) validActionToken(r *http.Request, p accessdomain.Principal, ac
 		return false
 	}
 	principal := principalProof(p)
-	mac := hmac.New(sha256.New, h.tokenKey)
-	_, _ = mac.Write(raw[:25])
-	_, _ = mac.Write(principal[:])
-	_, _ = mac.Write(session[:])
-	_, _ = mac.Write([]byte(action))
-	_, _ = mac.Write([]byte(path))
-	if !hmac.Equal(raw[25:], mac.Sum(nil)) {
-		return false
-	}
 	h.actionMu.Lock()
 	defer h.actionMu.Unlock()
 	grant, found := h.actionGrants[value]
-	if !found || grant.expiresAt != int64(expiry) || grant.expiresAt < h.now().UTC().Unix() || grant.action != action || grant.path != path || !hmac.Equal(grant.principal[:], principal[:]) || !hmac.Equal(grant.session[:], session[:]) {
+	if !found || grant.expiresAt <= h.now().UTC().Unix() || grant.action != action || grant.path != path || subtle.ConstantTimeCompare(grant.principal[:], principal[:]) != 1 || subtle.ConstantTimeCompare(grant.session[:], session[:]) != 1 {
 		return false
 	}
 	delete(h.actionGrants, value)
@@ -602,15 +573,18 @@ func (h *Handler) categorySettingsSave(w http.ResponseWriter, r *http.Request, c
 		return
 	}
 	var body struct {
-		Values   map[string]string `json:"values"`
-		Switches map[string]bool   `json:"switches"`
-		Action   string            `json:"admin_action_token"`
+		Settings map[string]bool `json:"settings"`
+		Action   string          `json:"admin_action_token"`
 	}
 	if err := decode(r, &body); err != nil {
 		writeError(w, 400, "invalid_request")
 		return
 	}
-	if len(body.Values) != 0 || len(body.Switches) != 0 {
+	if body.Settings == nil || len(body.Settings) > 1 {
+		writeError(w, 400, "readonly_category")
+		return
+	}
+	if _, found := body.Settings["enabled"]; !found && len(body.Settings) != 0 {
 		writeError(w, 400, "readonly_category")
 		return
 	}
@@ -628,9 +602,8 @@ func (h *Handler) categorySettingsSave(w http.ResponseWriter, r *http.Request, c
 		writeError(w, 503, "settings_unavailable")
 		return
 	}
-	if !enabled {
-		writeError(w, 409, "config_category_disabled")
-		return
+	if requested, found := body.Settings["enabled"]; found {
+		enabled = requested
 	}
 	digest := sha256.Sum256([]byte("category-settings:" + category + ":" + requestID))
 	commandID := "category-settings:" + category + ":" + base64.RawURLEncoding.EncodeToString(digest[:18])

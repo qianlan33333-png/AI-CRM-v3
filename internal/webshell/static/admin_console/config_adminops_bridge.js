@@ -70,10 +70,10 @@
     await json(base + encodeURIComponent(category) + "/settings", {
       method: "PUT",
       headers: writeHeaders(),
-      // The frozen v2 detail pages for these v3-owned categories expose no
-      // editable fields. Preserve that payload exactly as an empty form rather
-      // than treating a visible Save as a non-persistent health check.
-      body: JSON.stringify({ values: {}, switches: {}, admin_action_token: token }),
+      // The frozen donor DTO is settings + action token. These three v3-owned
+      // detail pages expose no editable inputs, so the compatible settings
+      // object is empty rather than a host-invented values/switches shape.
+      body: JSON.stringify({ settings: {}, admin_action_token: token }),
     });
     location.reload();
   };

@@ -59,7 +59,7 @@ saveAdapterDom.window.document.querySelector('button').click();
 await wait();
 await wait();
 if (frozenSaveControllerCalls !== 0) throw new Error('host bridge did not prevent the unchanged donor readonly Save controller');
-if (saveCalls.length !== 2 || saveCalls[1].path !== '/api/admin/config/categories/runtime-diagnostics/settings' || saveCalls[1].method !== 'PUT' || JSON.stringify(saveCalls[1].body) !== JSON.stringify({ values: {}, switches: {}, admin_action_token: token }) || saveCalls[1].headers.get('X-CSRF-Token') !== 'd'.repeat(43) || !saveCalls[1].headers.get('Idempotency-Key')) throw new Error(`save adapter persistence request mismatch: ${JSON.stringify(saveCalls)}`);
+if (saveCalls.length !== 2 || saveCalls[1].path !== '/api/admin/config/categories/runtime-diagnostics/settings' || saveCalls[1].method !== 'PUT' || JSON.stringify(saveCalls[1].body) !== JSON.stringify({ settings: {}, admin_action_token: token }) || saveCalls[1].headers.get('X-CSRF-Token') !== 'd'.repeat(43) || !saveCalls[1].headers.get('Idempotency-Key')) throw new Error(`save adapter persistence request mismatch: ${JSON.stringify(saveCalls)}`);
 
 const saveDom = new JSDOM('<button>保存</button>', { url: 'https://test.invalid/admin/configDetail.html?cat=app-settings', runScripts: 'outside-only' });
 saveDom.window.eval(bridge);
