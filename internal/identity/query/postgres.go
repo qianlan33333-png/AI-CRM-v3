@@ -23,8 +23,105 @@ var _ identityport.DirectoryIdentityReader = PostgreSQL{}
 var _ identityport.CommerceResolver = PostgreSQL{}
 var _ identityport.PaymentIdentityReader = PostgreSQL{}
 var _ identityport.OutboundIdentityReader = PostgreSQL{}
+var _ identityport.HXCUnionIDBatchResolver = PostgreSQL{}
+var _ identityport.ExternalIdentityValueReader = PostgreSQL{}
+var _ identityport.OutboundWeComIdentityReader = PostgreSQL{}
+
+func (PostgreSQL) VerifiedWeComIdentityForCustomer(ctx context.Context, customerID customerdomain.CustomerID, corpID string) (string, bool, error) {
+	if customerID < 1 || strings.TrimSpace(corpID) != corpID || corpID == "" {
+		return "", false, identitydomain.ErrInvalidReference
+	}
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return "", false, err
+	}
+	rows, err := tx.Query(ctx, `SELECT normalized_value FROM customer_identities WHERE customer_id=$1 AND kind='wecom_external_userid' AND scope_key=$2 AND assurance='verified' AND status='active' ORDER BY id LIMIT 2`, customerID, "wecom-corp:"+corpID)
+	if err != nil {
+		return "", false, err
+	}
+	defer rows.Close()
+	values := make([]string, 0, 2)
+	for rows.Next() {
+		var value string
+		if err = rows.Scan(&value); err != nil {
+			return "", false, err
+		}
+		values = append(values, value)
+	}
+	if err = rows.Err(); err != nil {
+		return "", false, err
+	}
+	if len(values) != 1 {
+		return "", false, nil
+	}
+	return values[0], true, nil
+}
 
 func NewPostgreSQL() PostgreSQL { return PostgreSQL{} }
+
+func (PostgreSQL) ResolveHXCUnionIDs(ctx context.Context, references []identityport.ScopedUnionID) ([]identityport.ScopedUnionIDResult, error) {
+	if len(references) == 0 {
+		return []identityport.ScopedUnionIDResult{}, nil
+	}
+	if len(references) > 1000 {
+		return nil, identitydomain.ErrInvalidReference
+	}
+	positions := make([]int32, 0, len(references))
+	scopes := make([]string, 0, len(references))
+	values := make([]string, 0, len(references))
+	for _, reference := range references {
+		if reference.Position < 0 || !strings.HasPrefix(reference.Scope, "wechat-open-platform:") || len(reference.Scope) <= len("wechat-open-platform:") || strings.TrimSpace(reference.UnionID) != reference.UnionID || reference.UnionID == "" {
+			return nil, identitydomain.ErrInvalidReference
+		}
+		positions = append(positions, int32(reference.Position))
+		scopes = append(scopes, reference.Scope)
+		values = append(values, reference.UnionID)
+	}
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := tx.Query(ctx, `WITH RECURSIVE input AS (
+		SELECT * FROM unnest($1::integer[], $2::text[], $3::text[]) AS i(position, scope_key, value)
+	), lineage AS (
+		SELECT i.position, c.id AS customer_id, c.status, c.merged_into_customer_id, ARRAY[c.id] visited
+		FROM input i JOIN customer_identities ci ON ci.kind='unionid' AND ci.scope_key=i.scope_key AND ci.normalized_value=i.value AND ci.status='active'
+		JOIN customers c ON c.id=ci.customer_id
+		UNION ALL
+		SELECT l.position,c.id,c.status,c.merged_into_customer_id,l.visited||c.id FROM lineage l JOIN customers c ON c.id=l.merged_into_customer_id WHERE NOT c.id=ANY(l.visited)
+	), roots AS (
+		SELECT position,customer_id FROM lineage WHERE status<>'merged'
+	), aggregate_roots AS (
+		SELECT position, count(DISTINCT customer_id) AS root_count, min(customer_id) AS customer_id FROM roots GROUP BY position
+	)
+	SELECT i.position, COALESCE(a.root_count,0), a.customer_id FROM input i LEFT JOIN aggregate_roots a USING(position) ORDER BY i.position`, positions, scopes, values)
+	if err != nil {
+		return nil, fmt.Errorf("resolve HXC unionids: %w", err)
+	}
+	defer rows.Close()
+	results := make([]identityport.ScopedUnionIDResult, 0, len(references))
+	for rows.Next() {
+		var position int
+		var count int64
+		var customerID *int64
+		if err = rows.Scan(&position, &count, &customerID); err != nil {
+			return nil, fmt.Errorf("scan HXC unionid: %w", err)
+		}
+		result := identityport.ScopedUnionIDResult{Position: position, Status: identityport.ResolveNotFound}
+		if count == 1 && customerID != nil {
+			result.Status = identityport.ResolveFound
+			result.CustomerID = customerdomain.CustomerID(*customerID)
+		}
+		if count > 1 {
+			result.Status = identityport.ResolveConflict
+		}
+		results = append(results, result)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate HXC unionids: %w", err)
+	}
+	return results, nil
+}
 
 func (PostgreSQL) VerifiedOutboundIdentity(ctx context.Context, customerID customerdomain.CustomerID, kind identitydomain.Kind, scope string) (identityport.OutboundIdentity, bool, error) {
 	if customerID < 1 || identitydomain.ValidateNamespace(kind, scope) != nil {
@@ -35,9 +132,9 @@ func (PostgreSQL) VerifiedOutboundIdentity(ctx context.Context, customerID custo
 		return identityport.OutboundIdentity{}, false, err
 	}
 	rows, err := tx.Query(ctx, `WITH RECURSIVE lineage(id,status,merged_into_customer_id,visited) AS (
-        SELECT id,status,merged_into_customer_id,ARRAY[id] FROM customers WHERE id=$1
-        UNION ALL SELECT c.id,c.status,c.merged_into_customer_id,l.visited||c.id FROM customers c JOIN lineage l ON c.id=l.merged_into_customer_id WHERE NOT c.id=ANY(l.visited)
-    ) SELECT i.id,l.id,i.kind,i.scope_key,i.normalized_value FROM lineage l JOIN customer_identities i ON i.customer_id=l.id WHERE l.status<>'merged' AND i.kind=$2 AND i.scope_key=$3 AND i.assurance='verified' AND i.status='active' ORDER BY i.id LIMIT 2`, customerID, kind, scope)
+	        SELECT id,status,merged_into_customer_id,ARRAY[id] FROM customers WHERE id=$1
+	        UNION ALL SELECT c.id,c.status,c.merged_into_customer_id,l.visited||c.id FROM customers c JOIN lineage l ON c.id=l.merged_into_customer_id WHERE NOT c.id=ANY(l.visited)
+	    ) SELECT i.id,l.id,i.kind,i.scope_key,i.normalized_value FROM lineage l JOIN customer_identities i ON i.customer_id=l.id WHERE l.status<>'merged' AND i.kind=$2 AND i.scope_key=$3 AND i.assurance='verified' AND i.status='active' ORDER BY i.id LIMIT 2`, customerID, kind, scope)
 	if err != nil {
 		return identityport.OutboundIdentity{}, false, fmt.Errorf("query verified outbound identity: %w", err)
 	}
@@ -236,6 +333,43 @@ func (PostgreSQL) RevealPhone(ctx context.Context, customerID customerdomain.Cus
 		return "", false, fmt.Errorf("query active phone: %w", err)
 	}
 	return phone, true, nil
+}
+
+func (PostgreSQL) VerifiedExternalIdentityValue(ctx context.Context, customerID customerdomain.CustomerID, kind identitydomain.Kind, scope string) (string, bool, error) {
+	if customerID < 1 || kind == identitydomain.KindPhone || scope == "" {
+		return "", false, ErrInvalidQuery
+	}
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return "", false, err
+	}
+	rows, err := tx.Query(ctx, `WITH RECURSIVE chain(id,status,merged_into_customer_id,visited) AS (
+		SELECT id,status,merged_into_customer_id,ARRAY[id] FROM customers WHERE id=$1
+		UNION ALL SELECT c.id,c.status,c.merged_into_customer_id,chain.visited||c.id FROM chain JOIN customers c ON c.id=chain.merged_into_customer_id WHERE NOT c.id=ANY(chain.visited)
+	), root AS (SELECT id FROM chain WHERE status<>'merged' ORDER BY cardinality(visited) DESC LIMIT 1)
+	SELECT normalized_value FROM customer_identities WHERE customer_id=(SELECT id FROM root) AND kind=$2 AND scope_key=$3 AND assurance='verified' AND status='active' ORDER BY id LIMIT 2`, customerID, kind, scope)
+	if err != nil {
+		return "", false, fmt.Errorf("query external identity: %w", err)
+	}
+	defer rows.Close()
+	values := []string{}
+	for rows.Next() {
+		var value string
+		if err = rows.Scan(&value); err != nil {
+			return "", false, fmt.Errorf("scan external identity: %w", err)
+		}
+		values = append(values, value)
+	}
+	if err = rows.Err(); err != nil {
+		return "", false, fmt.Errorf("iterate external identity: %w", err)
+	}
+	if len(values) == 0 {
+		return "", false, nil
+	}
+	if len(values) != 1 {
+		return "", false, ErrInvalidQuery
+	}
+	return values[0], true, nil
 }
 
 func maskPhone(value string) string {

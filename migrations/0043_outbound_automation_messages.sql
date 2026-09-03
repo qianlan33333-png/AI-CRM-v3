@@ -1,4 +1,15 @@
 -- Owner: Outbound. External provider identifiers and message bodies are never persisted here.
+ALTER TABLE external_effects DROP CONSTRAINT IF EXISTS external_effects_owner_kind_shape;
+ALTER TABLE external_effects DROP CONSTRAINT IF EXISTS external_effects_kind_check;
+ALTER TABLE external_effects ADD CONSTRAINT external_effects_kind_check CHECK (kind IN (
+  'outbound_message','automation_message','outbound_media','wecom_tag_catalog','group_message','channel_acquisition_asset','channel_welcome_message','channel_entry_tag','channel_acquisition_link_mutation',
+  'wechat_pay_prepay_v1','wechat_pay_refund_v1','wechat_shop_refund_v1'
+));
+ALTER TABLE external_effects ADD CONSTRAINT external_effects_owner_kind_shape CHECK (
+  (owner='outbound' AND kind IN ('outbound_message','automation_message','outbound_media','wecom_tag_catalog','group_message','channel_acquisition_asset','channel_welcome_message','channel_entry_tag','channel_acquisition_link_mutation')) OR
+  (owner='payment' AND kind IN ('wechat_pay_prepay_v1','wechat_pay_refund_v1','wechat_shop_refund_v1'))
+);
+
 CREATE TABLE outbound_message_intents (
   id BIGSERIAL PRIMARY KEY,
   source_kind TEXT NOT NULL CHECK(source_kind IN ('automation_run','automation_enrollment')),

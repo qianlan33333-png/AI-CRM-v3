@@ -25,6 +25,17 @@ func TestLoadDefaultsAndRejectsInvalidRole(t *testing.T) {
 	}
 }
 
+func TestSourceDatabaseURLIsExplicitAndTrimmed(t *testing.T) {
+	t.Setenv("AICRM_SOURCE_DATABASE_URL", "postgres:///legacy")
+	if value, err := SourceDatabaseURL(); err != nil || value != "postgres:///legacy" {
+		t.Fatalf("source database URL=%q err=%v", value, err)
+	}
+	t.Setenv("AICRM_SOURCE_DATABASE_URL", " postgres:///legacy")
+	if _, err := SourceDatabaseURL(); err == nil {
+		t.Fatal("accepted source database URL with surrounding whitespace")
+	}
+}
+
 func TestLoadValidatesBootstrapAndWeComAsClosedConfigurationGroups(t *testing.T) {
 	t.Setenv("AICRM_DATABASE_URL", "postgres://aicrm:test@localhost/aicrm")
 	t.Setenv("AICRM_BOOTSTRAP_USERNAME", "admin")
@@ -196,6 +207,38 @@ func TestAutomationOperationsProviderIsIndependentAndFailClosed(t *testing.T) {
 	t.Setenv("AICRM_AUTOMATION_OPS_PROVIDER_MODE", "enabled")
 	if _, err = Load(); err == nil {
 		t.Fatal("unknown provider mode must fail closed")
+	}
+}
+
+func TestAIAssistantIntakeAndDispatchFailClosed(t *testing.T) {
+	t.Setenv("AICRM_DATABASE_URL", "postgres://aicrm:test@localhost/aicrm")
+	t.Setenv("AICRM_AI_ASSISTANT_INTAKE_ENABLED", "true")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected incomplete integration configuration rejection")
+	}
+	t.Setenv("AICRM_AI_ASSISTANT_INTEGRATION_KEY", "automation")
+	t.Setenv("AICRM_AI_ASSISTANT_INTEGRATION_SECRET", strings.Repeat("s", 32))
+	t.Setenv("AICRM_AI_ASSISTANT_INTEGRATION_ACTOR_ID", "7")
+	cfg, err := Load()
+	if err != nil || !cfg.AIAssistant.IntakeEnabled || cfg.AIAssistant.DispatchEnabled {
+		t.Fatalf("config=%+v err=%v", cfg.AIAssistant, err)
+	}
+
+	t.Setenv("AICRM_AI_ASSISTANT_DISPATCH_ENABLED", "true")
+	if _, err = Load(); err == nil {
+		t.Fatal("expected dispatch without provider permission to fail closed")
+	}
+	t.Setenv("AICRM_OUTBOUND_PROVIDER_ENABLED", "true")
+	t.Setenv("AICRM_WECOM_ENABLED", "true")
+	t.Setenv("AICRM_WECOM_CORP_ID", "ww-corp")
+	t.Setenv("AICRM_WECOM_AGENT_ID", "1000002")
+	t.Setenv("AICRM_WECOM_SECRET", "provider-secret")
+	t.Setenv("AICRM_WECOM_CONTEXT_SIGNING_KEY", strings.Repeat("k", 32))
+	t.Setenv("AICRM_WECOM_CONTACT_SECRET", "contact-secret")
+	t.Setenv("AICRM_AI_ASSISTANT_PROVIDER_PERMISSION", "private-message-authorized")
+	cfg, err = Load()
+	if err != nil || !cfg.AIAssistant.DispatchEnabled || !cfg.Effects.ProviderEnabled || !cfg.WeCom.Enabled {
+		t.Fatalf("config=%+v err=%v", cfg, err)
 	}
 }
 

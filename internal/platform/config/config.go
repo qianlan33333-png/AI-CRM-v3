@@ -38,7 +38,9 @@ type Runtime struct {
 	WorkerOwner                string
 	WorkerLimit                int
 	CustomerSyncTrigger        string
+	HXCDashboard               HXCDashboard
 	OperationCycleServiceToken string
+	AIAssistant                AIAssistant
 }
 
 type Bootstrap struct {
@@ -92,6 +94,35 @@ func (c AutomationOperations) ProviderEnabled() bool {
 }
 
 type Effects struct{ ProviderEnabled bool }
+type HXCDashboard struct {
+	Enabled        bool
+	SourceDSN      string
+	UnionIDScope   string
+	SubjectHMACKey string
+	SyncTrigger    string
+}
+type ChannelHistoryMigration struct {
+	SourceDatabaseURL string
+	SnapshotKey       string
+}
+
+// LoadChannelHistoryMigration keeps migration credentials inside the sole
+// environment-owning package without adding them to the long-lived API
+// runtime configuration.
+func LoadChannelHistoryMigration() (ChannelHistoryMigration, error) {
+	value := ChannelHistoryMigration{SourceDatabaseURL: os.Getenv("AICRM_CHANNEL_SOURCE_DATABASE_URL"), SnapshotKey: os.Getenv("AICRM_CHANNEL_SNAPSHOT_KEY")}
+	if strings.TrimSpace(value.SourceDatabaseURL) != value.SourceDatabaseURL || strings.TrimSpace(value.SnapshotKey) != value.SnapshotKey {
+		return ChannelHistoryMigration{}, errors.New("invalid channel history migration configuration")
+	}
+	return value, nil
+}
+
+type AIAssistant struct {
+	UIEnabled, IntakeEnabled, DispatchEnabled bool
+	IntegrationKey, IntegrationSecret         string
+	IntegrationActorID                        int64
+	ProviderPermission                        string
+}
 type Survey struct {
 	DataKey             string
 	OAuthEnabled        bool
@@ -136,7 +167,9 @@ func Load() (Runtime, error) {
 		WorkerOwner:                valueOrDefault("AICRM_WORKER_OWNER", "aicrm-wecom-worker"),
 		WorkerLimit:                25,
 		CustomerSyncTrigger:        os.Getenv("AICRM_CUSTOMER_SYNC_TRIGGER"),
+		HXCDashboard:               HXCDashboard{SourceDSN: os.Getenv("AICRM_HXC_SOURCE_DSN"), UnionIDScope: os.Getenv("AICRM_HXC_UNIONID_SCOPE"), SubjectHMACKey: os.Getenv("AICRM_HXC_SUBJECT_HMAC_KEY"), SyncTrigger: os.Getenv("AICRM_HXC_SYNC_TRIGGER")},
 		OperationCycleServiceToken: os.Getenv("AICRM_OPERATION_CYCLE_SERVICE_TOKEN"),
+		AIAssistant:                AIAssistant{UIEnabled: true, IntegrationKey: os.Getenv("AICRM_AI_ASSISTANT_INTEGRATION_KEY"), IntegrationSecret: os.Getenv("AICRM_AI_ASSISTANT_INTEGRATION_SECRET"), ProviderPermission: os.Getenv("AICRM_AI_ASSISTANT_PROVIDER_PERMISSION")},
 		Bootstrap: Bootstrap{
 			Username: os.Getenv("AICRM_BOOTSTRAP_USERNAME"), Password: os.Getenv("AICRM_BOOTSTRAP_PASSWORD"),
 			DisplayName: os.Getenv("AICRM_BOOTSTRAP_DISPLAY_NAME"),
@@ -161,6 +194,24 @@ func Load() (Runtime, error) {
 	}
 	if cfg.Effects.ProviderEnabled, err = strictBool("AICRM_OUTBOUND_PROVIDER_ENABLED", false); err != nil {
 		return Runtime{}, err
+	}
+	if cfg.HXCDashboard.Enabled, err = strictBool("AICRM_HXC_SYNC_ENABLED", false); err != nil {
+		return Runtime{}, err
+	}
+	if cfg.AIAssistant.UIEnabled, err = strictBool("AICRM_AI_ASSISTANT_UI_ENABLED", true); err != nil {
+		return Runtime{}, err
+	}
+	if cfg.AIAssistant.IntakeEnabled, err = strictBool("AICRM_AI_ASSISTANT_INTAKE_ENABLED", false); err != nil {
+		return Runtime{}, err
+	}
+	if cfg.AIAssistant.DispatchEnabled, err = strictBool("AICRM_AI_ASSISTANT_DISPATCH_ENABLED", false); err != nil {
+		return Runtime{}, err
+	}
+	if raw := os.Getenv("AICRM_AI_ASSISTANT_INTEGRATION_ACTOR_ID"); raw != "" {
+		cfg.AIAssistant.IntegrationActorID, err = strconv.ParseInt(raw, 10, 64)
+		if err != nil || cfg.AIAssistant.IntegrationActorID < 1 {
+			return Runtime{}, errors.New("invalid AICRM_AI_ASSISTANT_INTEGRATION_ACTOR_ID")
+		}
 	}
 	if cfg.TagCatalog.Enabled, err = strictBool("AICRM_WECOM_TAG_CATALOG_PROVIDER_ENABLED", false); err != nil {
 		return Runtime{}, err
@@ -231,6 +282,14 @@ func Load() (Runtime, error) {
 	if cfg.CustomerSyncTrigger != "" && cfg.CustomerSyncTrigger != "daily" && cfg.CustomerSyncTrigger != "initial" {
 		return Runtime{}, errors.New("invalid AICRM_CUSTOMER_SYNC_TRIGGER")
 	}
+	if cfg.HXCDashboard.SyncTrigger != "" && cfg.HXCDashboard.SyncTrigger != "scheduled" && cfg.HXCDashboard.SyncTrigger != "initial" {
+		return Runtime{}, errors.New("invalid AICRM_HXC_SYNC_TRIGGER")
+	}
+	if cfg.HXCDashboard.Enabled {
+		if strings.TrimSpace(cfg.HXCDashboard.SourceDSN) != cfg.HXCDashboard.SourceDSN || cfg.HXCDashboard.SourceDSN == "" || !strings.HasPrefix(cfg.HXCDashboard.UnionIDScope, "wechat-open-platform:") || len(cfg.HXCDashboard.UnionIDScope) <= len("wechat-open-platform:") || strings.TrimSpace(cfg.HXCDashboard.UnionIDScope) != cfg.HXCDashboard.UnionIDScope || len(cfg.HXCDashboard.SubjectHMACKey) < 32 {
+			return Runtime{}, errors.New("enabled HXC dashboard configuration is incomplete")
+		}
+	}
 	if cfg.OperationCycleServiceToken != "" && (strings.TrimSpace(cfg.OperationCycleServiceToken) != cfg.OperationCycleServiceToken || len(cfg.OperationCycleServiceToken) < 32) {
 		return Runtime{}, errors.New("invalid AICRM_OPERATION_CYCLE_SERVICE_TOKEN")
 	}
@@ -273,6 +332,12 @@ func Load() (Runtime, error) {
 		if !cfg.WeCom.Enabled || cfg.TagCatalog.Permission != "catalog-read-authorized" {
 			return Runtime{}, errors.New("enabled tag catalog provider requires WeCom and explicit permission")
 		}
+	}
+	if cfg.AIAssistant.IntakeEnabled && (strings.TrimSpace(cfg.AIAssistant.IntegrationKey) != cfg.AIAssistant.IntegrationKey || cfg.AIAssistant.IntegrationKey == "" || len(cfg.AIAssistant.IntegrationSecret) < 32 || cfg.AIAssistant.IntegrationActorID < 1) {
+		return Runtime{}, errors.New("enabled AI Assistant intake configuration is incomplete")
+	}
+	if cfg.AIAssistant.DispatchEnabled && (!cfg.Effects.ProviderEnabled || !cfg.WeCom.Enabled || cfg.WeCom.ContactSecret == "" || cfg.AIAssistant.ProviderPermission != "private-message-authorized") {
+		return Runtime{}, errors.New("enabled AI Assistant dispatch requires External Effects, WeCom contact credentials, and explicit permission")
 	}
 	if cfg.WeChatPay.Enabled {
 		values := []string{cfg.WeChatPay.AppID, cfg.WeChatPay.AppSecret, cfg.WeChatPay.AppScope, cfg.WeChatPay.MerchantID, cfg.WeChatPay.MerchantSerial, cfg.WeChatPay.PrivateKeyPath, cfg.WeChatPay.PlatformCertPath, cfg.WeChatPay.APIV3Key}
@@ -399,6 +464,16 @@ func NamedDatabaseURL(name string) (string, error) {
 	}
 	if strings.TrimSpace(value) != value {
 		return "", errors.New("invalid database URL")
+	}
+	return value, nil
+}
+
+// SourceDatabaseURL is available only to explicit offline migration commands.
+// It is deliberately separate from the authoritative v3 runtime database.
+func SourceDatabaseURL() (string, error) {
+	value, ok := os.LookupEnv("AICRM_SOURCE_DATABASE_URL")
+	if !ok || value == "" || strings.TrimSpace(value) != value {
+		return "", errors.New("source database URL is not configured")
 	}
 	return value, nil
 }

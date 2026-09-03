@@ -11,6 +11,7 @@ import (
 	"mime"
 	"net/http"
 	"path"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -54,6 +55,8 @@ type AdminShellView struct {
 	Customers        bool
 	ExternalEffects  bool
 	ExternalAssets   ExternalEffectsAssets
+	HXC              bool
+	HXCAssets        HXCAssets
 	Media            bool
 	MediaPage        string
 	MediaAssets      MediaAssets
@@ -86,6 +89,12 @@ type AdminShellView struct {
 	Config               bool
 	ConfigPage           string
 	ConfigAssets         ConfigAssets
+	Channel              bool
+	ChannelPage          string
+	ChannelResourceID    string
+	ChannelAssets        ChannelAssets
+	AIAssistant          bool
+	AIAssistantAssets    AIAssistantAssets
 }
 
 // ExternalEffectsAssets are manifest-derived URLs for the frozen donor bundle.
@@ -95,6 +104,10 @@ type ExternalEffectsAssets struct {
 	LabsCSS   string
 	AdminJS   string
 }
+
+// HXCAssets are release-manifest URLs owned by the HXC dashboard UI adapter.
+// The shared shell receives URLs only and does not read dashboard data.
+type HXCAssets struct{ TokensCSS, LabsCSS, AdminJS string }
 
 // MediaAssets are manifest-derived URLs for the immutable Media donor bundle.
 // They are supplied by the Media module's release-only UI adapter.
@@ -132,6 +145,9 @@ type OperationCycleAssets struct{ TokensCSS, LabsCSS, HostJS string }
 // ConfigAssets are immutable donor runtime URLs supplied by the v3 config UI
 // adapter. The v3 shell owns authentication and only mounts template#tpl.
 type ConfigAssets struct{ TokensCSS, LabsCSS, AdminJS string }
+
+type ChannelAssets struct{ TokensCSS, LabsCSS, AdminJS string }
+type AIAssistantAssets struct{ TokensCSS, LabsCSS, GroupCSS, MaterialCSS, ComposerCSS, ReadonlyCSS, HostJS string }
 
 // Render implements the small presentation contract consumed by the Access
 // HTTP handler. Keeping this adapter in webshell avoids a concrete import
@@ -230,6 +246,30 @@ func (renderer *Renderer) RenderExternalEffects(writer http.ResponseWriter, data
 	return writeHTML(writer, http.StatusOK, body)
 }
 
+// RenderHXC mounts the live HXC dashboard controller inside the one v3 admin
+// shell. The controller reads only the authenticated HXC dashboard API.
+func (renderer *Renderer) RenderHXC(writer http.ResponseWriter, data AdminPageData, assets HXCAssets) error {
+	if renderer == nil || renderer.templates == nil || assets.TokensCSS == "" || assets.LabsCSS == "" || assets.AdminJS == "" {
+		return errors.New("HXC dashboard shell assets are required")
+	}
+	normalizeAdminPage(&data)
+	data.ShowPageHeader = false
+	content, err := executeTemplate(renderer.templates, "admin_external_effects", data)
+	if err != nil {
+		return err
+	}
+	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{
+		AdminPageData: data,
+		Content:       template.HTML(content),
+		HXC:           true,
+		HXCAssets:     assets,
+	})
+	if err != nil {
+		return err
+	}
+	return writeHTML(writer, http.StatusOK, body)
+}
+
 // RenderMedia mounts one immutable Media template in the v3 shell. The
 // caller supplies only a verified template extracted from web/dist; it never
 // receives an arbitrary request-controlled HTML fragment.
@@ -318,6 +358,28 @@ func (renderer *Renderer) RenderCoupons(writer http.ResponseWriter, data AdminPa
 	return writeHTML(writer, http.StatusOK, body)
 }
 
+// RenderChannels mounts the two byte-frozen channel templates. Resource IDs
+// are supplied as inert body data for the v3 host adapter; they are never
+// interpolated into donor markup.
+func (renderer *Renderer) RenderChannels(writer http.ResponseWriter, data AdminPageData, page, resourceID, donorTemplate string, assets ChannelAssets) error {
+	if renderer == nil || renderer.templates == nil || donorTemplate == "" || assets.TokensCSS == "" || assets.LabsCSS == "" || assets.AdminJS == "" || (page != "channels" && page != "channelForm") {
+		return errors.New("channel shell assets are required")
+	}
+	if resourceID != "" {
+		if id, err := strconv.ParseInt(resourceID, 10, 64); err != nil || id < 1 || strconv.FormatInt(id, 10) != resourceID {
+			return errors.New("channel resource ID is invalid")
+		}
+	}
+	normalizeAdminPage(&data)
+	data.ShowPageHeader = false
+	content := `<main id="stage" class="stage rich"></main><template id="tpl">` + donorTemplate + `</template>`
+	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: template.HTML(content), Channel: true, ChannelPage: page, ChannelResourceID: resourceID, ChannelAssets: assets})
+	if err != nil {
+		return err
+	}
+	return writeHTML(writer, http.StatusOK, body)
+}
+
 // RenderGroupOps mounts the active donor plan list/detail templates into the
 // single v3 admin_base sidebar. It accepts only the page names selected by
 // the Group Ops UI adapter and never receives request-controlled HTML.
@@ -329,6 +391,19 @@ func (renderer *Renderer) RenderGroupOps(writer http.ResponseWriter, data AdminP
 	data.ShowPageHeader = false
 	content := `<main id="stage" class="stage rich"></main><template id="tpl">` + donorTemplate + `</template>`
 	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: template.HTML(content), GroupOps: true, GroupOpsPage: page, GroupOpsAssets: assets})
+	if err != nil {
+		return err
+	}
+	return writeHTML(writer, http.StatusOK, body)
+}
+
+func (renderer *Renderer) RenderAIAssistant(writer http.ResponseWriter, data AdminPageData, page, donorTemplate string, assets AIAssistantAssets) error {
+	if renderer == nil || renderer.templates == nil || donorTemplate == "" || assets.TokensCSS == "" || assets.LabsCSS == "" || assets.HostJS == "" || (page != "list" && page != "detail") {
+		return errors.New("AI Assistant shell assets are required")
+	}
+	normalizeAdminPage(&data)
+	data.ShowPageHeader = false
+	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: template.HTML(`<main id="stage" class="stage rich">` + donorTemplate + `</main>`), AIAssistant: true, AIAssistantAssets: assets})
 	if err != nil {
 		return err
 	}

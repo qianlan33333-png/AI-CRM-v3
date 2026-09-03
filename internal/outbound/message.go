@@ -62,7 +62,7 @@ func (s *MessageService) AcceptMessageWithin(ctx context.Context, in outboundpor
 	intentDigest := messageIntentDigest(in)
 	keyDigest := sha256.Sum256([]byte(in.ReceiptKey))
 	now := s.now().UTC()
-	envelope := effectport.Envelope{Owner: effectport.OwnerOutbound, Kind: effectport.KindOutboundMessage, SourceRefDigest: digestToEffect("automation.message.source", in.SourceDigest), TargetRefDigest: digestToEffect("automation.message.target", in.TargetDigest), PayloadDigest: digestToEffect("automation.message.payload", in.PayloadDigest), PolicyVersionHash: digestToEffect("automation.message.policy", in.PolicyDigest)}
+	envelope := effectport.Envelope{Owner: effectport.OwnerOutbound, Kind: effectport.KindAutomationMessage, SourceRefDigest: digestToEffect("automation.message.source", in.SourceDigest), TargetRefDigest: digestToEffect("automation.message.target", in.TargetDigest), PayloadDigest: digestToEffect("automation.message.payload", in.PayloadDigest), PolicyVersionHash: digestToEffect("automation.message.policy", in.PolicyDigest)}
 	fingerprint := string(envelope.Fingerprint())
 	var id int64
 	var existingDigest []byte
@@ -125,7 +125,7 @@ func (s *MessageService) MessageExecution(ctx context.Context, fingerprint strin
 	return out, err == nil, err
 }
 func (s *MessageService) CompleteEffect(ctx context.Context, effectRef string, envelope effectport.Envelope, attempt effectport.Attempt, result effectport.AdapterResult) error {
-	if s == nil || envelope.Kind != effectport.KindOutboundMessage || !effectport.ValidDigest(result.ReceiptDigest) {
+	if s == nil || envelope.Kind != effectport.KindAutomationMessage || !effectport.ValidDigest(result.ReceiptDigest) {
 		return ErrInvalidMessageIntent
 	}
 	tx, err := platformpostgres.RequireTransaction(ctx)

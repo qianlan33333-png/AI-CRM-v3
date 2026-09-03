@@ -196,6 +196,57 @@ func TestApplicationRouterKeepsOwnershipAndProtectsAdminShell(t *testing.T) {
 	}
 }
 
+func TestFullApplicationRouterExposesOrderImportAPI(t *testing.T) {
+	marker := func(name string) http.Handler {
+		return http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+			writer.Header().Set("X-Owner", name)
+			writer.WriteHeader(http.StatusNoContent)
+		})
+	}
+	other := marker("other")
+	handler, err := routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(
+		other, other, marker("identity"), other, other, other,
+		other, other, other, other, other, other, other, other,
+		other, other, other, other, other, other, other, other,
+		other, other, &fakeAccessAuthentication{}, "https://crm.example",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/admin/order-imports/inspect", nil))
+	if response.Code != http.StatusNoContent || response.Header().Get("X-Owner") != "identity" {
+		t.Fatalf("status=%d owner=%q", response.Code, response.Header().Get("X-Owner"))
+	}
+}
+
+func TestMountHXCUIReplacesPlaceholderAndProtectsAssets(t *testing.T) {
+	dashboard := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("X-Owner", "hxc-ui")
+		writer.WriteHeader(http.StatusNoContent)
+	})
+	next := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("X-Owner", "next")
+		writer.WriteHeader(http.StatusNoContent)
+	})
+	authentication := &fakeAccessAuthentication{principal: accessdomain.Principal{Kind: accessdomain.KindAdmin, InternalID: 7, Roles: []accessdomain.Role{accessdomain.RoleAdmin}}}
+	handler := mountHXCUI(next, dashboard, authentication)
+	for _, target := range []string{"/admin/hxc-dashboard", "/hxc-dashboard-assets/admin-HASH.js"} {
+		request := httptest.NewRequest(http.MethodGet, target, nil)
+		request.AddCookie(&http.Cookie{Name: "aicrm_admin_session", Value: "valid"})
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusNoContent || response.Header().Get("X-Owner") != "hxc-ui" {
+			t.Fatalf("target=%q status=%d owner=%q", target, response.Code, response.Header().Get("X-Owner"))
+		}
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/admin/customers", nil))
+	if response.Header().Get("X-Owner") != "next" {
+		t.Fatalf("unrelated owner=%q", response.Header().Get("X-Owner"))
+	}
+}
+
 func TestTransactionRouteKeepsShellButReportsBackendUnavailable(t *testing.T) {
 	authentication := &fakeAccessAuthentication{principal: accessdomain.Principal{Kind: accessdomain.KindAdmin, InternalID: 7, Roles: []accessdomain.Role{accessdomain.RoleAdmin}}}
 	marker := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) { writer.WriteHeader(http.StatusNotFound) })
@@ -235,6 +286,16 @@ func TestSecurityHeadersAllowBlobImagesOnlyOnMediaPages(t *testing.T) {
 		if !allowsBlob && strings.Contains(policy, "blob:") {
 			t.Fatalf("non-Media page CSP unexpectedly permits blob images for %s: %q", path, policy)
 		}
+	}
+}
+
+func TestSecurityHeadersAllowDashboardRuntimeStyles(t *testing.T) {
+	handler := securityHeaders(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/admin/hxc-dashboard", nil))
+	policy := response.Header().Get("Content-Security-Policy")
+	if !strings.Contains(policy, "style-src 'self' 'unsafe-inline'") {
+		t.Fatalf("policy=%q", policy)
 	}
 }
 
@@ -533,5 +594,28 @@ func TestApplicationRouterDefersLoginPostToIndependentCSRFProtection(t *testing.
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusNoContent {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestAIAssistantMountRejectsCrossSiteUnsafeRequests(t *testing.T) {
+	marker := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusNoContent)
+	})
+	handler := mountAIAssistant(marker, marker, marker, &fakeAccessAuthentication{}, true, "https://crm.example")
+
+	request := httptest.NewRequest(http.MethodPost, "/api/admin/ai-assistant/plans/7/approve", nil)
+	request.Header.Set("Origin", "https://evil.example")
+	request.Header.Set("Sec-Fetch-Site", "cross-site")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("cross-site status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "/api/integrations/ai-assistant/review-plans", nil)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("machine request status=%d body=%s", response.Code, response.Body.String())
 	}
 }

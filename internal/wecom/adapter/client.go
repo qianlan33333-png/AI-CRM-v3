@@ -11,13 +11,17 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"mime"
+	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"net/url"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	outboundport "github.com/qianlan33333-png/AI-CRM-v3/internal/outbound/port"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/wecom"
 	wecomport "github.com/qianlan33333-png/AI-CRM-v3/internal/wecom/port"
 )
@@ -205,11 +209,11 @@ func (client *Client) SendExternalContactText(ctx context.Context, senderUserID,
 	if err != nil {
 		return "", &MessageWriteError{Err: err, CallAttempted: true}
 	}
-	payload.MsgID = strings.TrimSpace(payload.MsgID)
-	if payload.MsgID == "" || invalid(payload.MsgID) {
+	payload.MessageID = strings.TrimSpace(payload.MessageID)
+	if payload.MessageID == "" || invalid(payload.MessageID) {
 		return "", &MessageWriteError{Err: ErrResponse, CallAttempted: true}
 	}
-	return payload.MsgID, nil
+	return payload.MessageID, nil
 }
 
 func (client *Client) AuthorizationURL(_ context.Context, purpose wecom.OAuthPurpose, mode wecom.OAuthMode, state, _ string) (string, error) {
@@ -343,16 +347,36 @@ func (client *Client) sign(signedURL, ticket string) (wecom.JSSDKSignature, erro
 }
 
 type response struct {
-	ErrCode             json.RawMessage `json:"errcode"`
-	AccessToken         string          `json:"access_token"`
-	UserID              string          `json:"UserId"`
-	UserIDLower         string          `json:"userid"`
-	Ticket              string          `json:"ticket"`
-	MsgID               string          `json:"msgid"`
-	ExpiresIn           int64           `json:"expires_in"`
-	TagGroups           *[]tagGroupWire `json:"tag_group"`
-	FollowUser          []string        `json:"follow_user"`
-	NextCursor          string          `json:"next_cursor"`
+	ErrCode     json.RawMessage `json:"errcode"`
+	AccessToken string          `json:"access_token"`
+	UserID      string          `json:"UserId"`
+	UserIDLower string          `json:"userid"`
+	Ticket      string          `json:"ticket"`
+	ExpiresIn   int64           `json:"expires_in"`
+	TagGroups   *[]tagGroupWire `json:"tag_group"`
+	FollowUser  []string        `json:"follow_user"`
+	NextCursor  string          `json:"next_cursor"`
+	ConfigID    string          `json:"config_id"`
+	QRCode      string          `json:"qr_code"`
+	ContactWay  struct {
+		ConfigID string `json:"config_id"`
+	} `json:"contact_way"`
+	LinkID     string   `json:"link_id"`
+	URL        string   `json:"url"`
+	LinkIDList []string `json:"link_id_list"`
+	Link       struct {
+		LinkID     string `json:"link_id"`
+		LinkName   string `json:"link_name"`
+		URL        string `json:"url"`
+		SkipVerify bool   `json:"skip_verify"`
+	} `json:"link"`
+	Range struct {
+		UserIDs       []string `json:"user_list"`
+		DepartmentIDs []int64  `json:"department_list"`
+	} `json:"range"`
+	MediaID             string   `json:"media_id"`
+	MessageID           string   `json:"msgid"`
+	FailList            []string `json:"fail_list"`
 	ExternalContactList []struct {
 		ExternalContact struct {
 			ExternalUserID string `json:"external_userid"`
@@ -372,6 +396,322 @@ type response struct {
 			} `json:"tags"`
 		} `json:"follow_info"`
 	} `json:"external_contact_list"`
+}
+
+// CreateContactWay is the bounded customer-contact QR write used only by the
+// Outbound adapter after EER has durably recorded an attempted state.
+func (client *Client) CreateContactWay(ctx context.Context, input wecomport.AcquisitionAssetRequest) (wecomport.AcquisitionAssetResult, error) {
+	if !client.DirectoryReady() || !validAcquisitionRequest(input) {
+		return wecomport.AcquisitionAssetResult{}, ErrUnavailable
+	}
+	token, err := client.contactAccessToken(ctx)
+	if err != nil {
+		return wecomport.AcquisitionAssetResult{}, wecomport.WrapProviderWriteError(err, false)
+	}
+	body, err := json.Marshal(map[string]any{"type": 2, "scene": 2, "style": 1, "remark": input.Name, "skip_verify": input.SkipVerify, "state": input.State, "user": input.StaffUserIDs})
+	if err != nil {
+		return wecomport.AcquisitionAssetResult{}, ErrResponse
+	}
+	payload, err := client.requestJSON(ctx, http.MethodPost, "/cgi-bin/externalcontact/add_contact_way", url.Values{"access_token": {token}}, body)
+	if err != nil {
+		return wecomport.AcquisitionAssetResult{}, wecomport.WrapProviderWriteError(err, true)
+	}
+	payload.ConfigID = strings.TrimSpace(payload.ConfigID)
+	payload.QRCode = strings.TrimSpace(payload.QRCode)
+	if invalid(payload.ConfigID) || !validProviderHTTPS(payload.QRCode) {
+		return wecomport.AcquisitionAssetResult{}, wecomport.WrapProviderWriteError(ErrResponse, true)
+	}
+	return wecomport.AcquisitionAssetResult{ProviderAssetRef: payload.ConfigID, URL: payload.QRCode}, nil
+}
+
+func (client *Client) GetContactWay(ctx context.Context, configID string) (wecomport.AcquisitionAssetResult, error) {
+	if !client.DirectoryReady() || invalid(configID) {
+		return wecomport.AcquisitionAssetResult{}, ErrUnavailable
+	}
+	token, err := client.contactAccessToken(ctx)
+	if err != nil {
+		return wecomport.AcquisitionAssetResult{}, err
+	}
+	body, _ := json.Marshal(map[string]string{"config_id": configID})
+	payload, err := client.requestJSON(ctx, http.MethodPost, "/cgi-bin/externalcontact/get_contact_way", url.Values{"access_token": {token}}, body)
+	if err != nil {
+		return wecomport.AcquisitionAssetResult{}, err
+	}
+	returnedID := strings.TrimSpace(payload.ContactWay.ConfigID)
+	if returnedID == "" {
+		returnedID = strings.TrimSpace(payload.ConfigID)
+	}
+	qrCode := strings.TrimSpace(payload.QRCode)
+	if returnedID != configID || !validProviderHTTPS(qrCode) {
+		return wecomport.AcquisitionAssetResult{}, ErrResponse
+	}
+	return wecomport.AcquisitionAssetResult{ProviderAssetRef: returnedID, URL: qrCode}, nil
+}
+
+func (client *Client) UpdateContactWay(ctx context.Context, configID string, input wecomport.AcquisitionAssetRequest) (wecomport.AcquisitionAssetResult, error) {
+	if !client.DirectoryReady() || invalid(configID) || !validAcquisitionRequest(input) {
+		return wecomport.AcquisitionAssetResult{}, ErrUnavailable
+	}
+	token, err := client.contactAccessToken(ctx)
+	if err != nil {
+		return wecomport.AcquisitionAssetResult{}, wecomport.WrapProviderWriteError(err, false)
+	}
+	body, _ := json.Marshal(map[string]any{"config_id": configID, "type": 2, "scene": 2, "style": 1, "remark": input.Name, "skip_verify": input.SkipVerify, "state": input.State, "user": input.StaffUserIDs})
+	if _, err = client.requestJSON(ctx, http.MethodPost, "/cgi-bin/externalcontact/update_contact_way", url.Values{"access_token": {token}}, body); err != nil {
+		return wecomport.AcquisitionAssetResult{}, wecomport.WrapProviderWriteError(err, true)
+	}
+	result, err := client.GetContactWay(ctx, configID)
+	return result, wecomport.WrapProviderWriteError(err, true)
+}
+
+func (client *Client) DeleteContactWay(ctx context.Context, configID string) error {
+	if !client.DirectoryReady() || invalid(configID) {
+		return ErrUnavailable
+	}
+	token, err := client.contactAccessToken(ctx)
+	if err != nil {
+		return wecomport.WrapProviderWriteError(err, false)
+	}
+	body, _ := json.Marshal(map[string]string{"config_id": configID})
+	_, err = client.requestJSON(ctx, http.MethodPost, "/cgi-bin/externalcontact/del_contact_way", url.Values{"access_token": {token}}, body)
+	return wecomport.WrapProviderWriteError(err, true)
+}
+
+func (client *Client) CreateCustomerAcquisitionLink(ctx context.Context, input wecomport.AcquisitionAssetRequest) (wecomport.AcquisitionAssetResult, error) {
+	if !client.DirectoryReady() || !validAcquisitionRequest(input) {
+		return wecomport.AcquisitionAssetResult{}, ErrUnavailable
+	}
+	token, err := client.contactAccessToken(ctx)
+	if err != nil {
+		return wecomport.AcquisitionAssetResult{}, wecomport.WrapProviderWriteError(err, false)
+	}
+	body, err := json.Marshal(map[string]any{"link_name": input.Name, "range": map[string]any{"user_list": input.StaffUserIDs}})
+	if err != nil {
+		return wecomport.AcquisitionAssetResult{}, ErrResponse
+	}
+	payload, err := client.requestJSON(ctx, http.MethodPost, "/cgi-bin/externalcontact/customer_acquisition/create_link", url.Values{"access_token": {token}}, body)
+	if err != nil {
+		return wecomport.AcquisitionAssetResult{}, wecomport.WrapProviderWriteError(err, true)
+	}
+	payload.LinkID = strings.TrimSpace(payload.LinkID)
+	payload.URL = strings.TrimSpace(payload.URL)
+	if invalid(payload.LinkID) || !validProviderHTTPS(payload.URL) {
+		return wecomport.AcquisitionAssetResult{}, wecomport.WrapProviderWriteError(ErrResponse, true)
+	}
+	return wecomport.AcquisitionAssetResult{ProviderAssetRef: payload.LinkID, URL: payload.URL}, nil
+}
+
+// SendWelcomeMessage consumes the callback-issued WelcomeCode exactly once.
+// The code is never logged or persisted by this adapter.
+func (client *Client) SendWelcomeMessage(ctx context.Context, welcomeCode, text string, attachments []wecomport.WelcomeAttachment) error {
+	if !client.DirectoryReady() || invalid(welcomeCode) || len([]rune(text)) > 4000 || len(attachments) > 9 || (text == "" && len(attachments) == 0) {
+		return ErrUnavailable
+	}
+	token, err := client.contactAccessToken(ctx)
+	if err != nil {
+		return wecomport.WrapProviderWriteError(err, false)
+	}
+	request := map[string]any{"welcome_code": welcomeCode}
+	if text != "" {
+		request["text"] = map[string]string{"content": text}
+	}
+	if len(attachments) > 0 {
+		providerAttachments := make([]map[string]any, len(attachments))
+		for index, item := range attachments {
+			var payload any
+			switch item.MsgType {
+			case "image":
+				if invalid(item.MediaID) {
+					return ErrUnavailable
+				}
+				payload = map[string]string{"media_id": item.MediaID}
+			case "file":
+				if invalid(item.MediaID) {
+					return ErrUnavailable
+				}
+				payload = map[string]string{"media_id": item.MediaID}
+			case "miniprogram":
+				if invalid(item.MediaID) || invalid(item.AppID) || invalid(item.PagePath) || invalid(item.Title) {
+					return ErrUnavailable
+				}
+				payload = map[string]string{"pic_media_id": item.MediaID, "appid": item.AppID, "page": item.PagePath, "title": item.Title}
+			case "link":
+				if invalid(item.URL) || invalid(item.Title) {
+					return ErrUnavailable
+				}
+				payload = map[string]string{"title": item.Title, "url": item.URL, "desc": item.Description, "picurl": item.PicURL}
+			default:
+				return ErrUnavailable
+			}
+			providerAttachments[index] = map[string]any{"msgtype": item.MsgType, item.MsgType: payload}
+		}
+		request["attachments"] = providerAttachments
+	}
+	body, err := json.Marshal(request)
+	if err != nil {
+		return ErrResponse
+	}
+	_, err = client.requestJSON(ctx, http.MethodPost, "/cgi-bin/externalcontact/send_welcome_msg", url.Values{"access_token": {token}}, body)
+	return wecomport.WrapProviderWriteError(err, true)
+}
+
+// AddContactTag is the only customer-tag mutation exposed by the WeCom
+// adapter. Every identifier is obtained from trusted local adapters.
+func (client *Client) AddContactTag(ctx context.Context, employeeID, externalUserID, providerTagID string) error {
+	if !client.DirectoryReady() || invalid(employeeID) || invalid(externalUserID) || invalid(providerTagID) {
+		return ErrUnavailable
+	}
+	token, err := client.contactAccessToken(ctx)
+	if err != nil {
+		return wecomport.WrapProviderWriteError(err, false)
+	}
+	body, err := json.Marshal(map[string]any{"userid": employeeID, "external_userid": externalUserID, "add_tag": []string{providerTagID}, "remove_tag": []string{}})
+	if err != nil {
+		return ErrResponse
+	}
+	_, err = client.requestJSON(ctx, http.MethodPost, "/cgi-bin/externalcontact/mark_tag", url.Values{"access_token": {token}}, body)
+	return wecomport.WrapProviderWriteError(err, true)
+}
+
+func (client *Client) ListManagedAcquisitionLinks(ctx context.Context, cursor string, limit int) (wecomport.CustomerAcquisitionLinkPage, error) {
+	if !client.DirectoryReady() || strings.TrimSpace(cursor) != cursor || limit < 1 || limit > 100 {
+		return wecomport.CustomerAcquisitionLinkPage{}, ErrUnavailable
+	}
+	token, err := client.contactAccessToken(ctx)
+	if err != nil {
+		return wecomport.CustomerAcquisitionLinkPage{}, err
+	}
+	body, _ := json.Marshal(map[string]any{"cursor": cursor, "limit": limit})
+	payload, err := client.requestJSON(ctx, http.MethodPost, "/cgi-bin/externalcontact/customer_acquisition/list_link", url.Values{"access_token": {token}}, body)
+	if err != nil {
+		return wecomport.CustomerAcquisitionLinkPage{}, err
+	}
+	if payload.LinkIDList == nil || len(payload.LinkIDList) > limit {
+		return wecomport.CustomerAcquisitionLinkPage{}, ErrResponse
+	}
+	result := wecomport.CustomerAcquisitionLinkPage{Links: make([]wecomport.CustomerAcquisitionLink, 0, len(payload.LinkIDList)), NextCursor: payload.NextCursor}
+	seen := map[string]struct{}{}
+	for _, id := range payload.LinkIDList {
+		if invalid(id) {
+			return wecomport.CustomerAcquisitionLinkPage{}, ErrResponse
+		}
+		if _, ok := seen[id]; ok {
+			return wecomport.CustomerAcquisitionLinkPage{}, ErrResponse
+		}
+		seen[id] = struct{}{}
+		result.Links = append(result.Links, wecomport.CustomerAcquisitionLink{LinkID: id})
+	}
+	return result, nil
+}
+func (client *Client) GetManagedAcquisitionLink(ctx context.Context, linkID string) (wecomport.CustomerAcquisitionLink, error) {
+	if !client.DirectoryReady() || invalid(linkID) {
+		return wecomport.CustomerAcquisitionLink{}, ErrUnavailable
+	}
+	token, err := client.contactAccessToken(ctx)
+	if err != nil {
+		return wecomport.CustomerAcquisitionLink{}, err
+	}
+	body, _ := json.Marshal(map[string]string{"link_id": linkID})
+	payload, err := client.requestJSON(ctx, http.MethodPost, "/cgi-bin/externalcontact/customer_acquisition/get", url.Values{"access_token": {token}}, body)
+	if err != nil {
+		return wecomport.CustomerAcquisitionLink{}, err
+	}
+	result := wecomport.CustomerAcquisitionLink{LinkID: linkID, LinkName: strings.TrimSpace(payload.Link.LinkName), URL: strings.TrimSpace(payload.Link.URL), UserIDs: payload.Range.UserIDs, DepartmentIDs: payload.Range.DepartmentIDs, SkipVerify: payload.Link.SkipVerify}
+	if !validManagedLink(result) {
+		return wecomport.CustomerAcquisitionLink{}, ErrResponse
+	}
+	return result, nil
+}
+func (client *Client) CreateManagedAcquisitionLink(ctx context.Context, input wecomport.CustomerAcquisitionLinkInput) (wecomport.CustomerAcquisitionLink, error) {
+	if !client.DirectoryReady() || !validManagedLinkInput(input) {
+		return wecomport.CustomerAcquisitionLink{}, ErrUnavailable
+	}
+	token, err := client.contactAccessToken(ctx)
+	if err != nil {
+		return wecomport.CustomerAcquisitionLink{}, wecomport.WrapProviderWriteError(err, false)
+	}
+	body, _ := json.Marshal(map[string]any{"link_name": input.LinkName, "range": map[string]any{"user_list": input.UserIDs, "department_list": input.DepartmentIDs}, "skip_verify": input.SkipVerify})
+	payload, err := client.requestJSON(ctx, http.MethodPost, "/cgi-bin/externalcontact/customer_acquisition/create_link", url.Values{"access_token": {token}}, body)
+	if err != nil {
+		return wecomport.CustomerAcquisitionLink{}, wecomport.WrapProviderWriteError(err, true)
+	}
+	result := wecomport.CustomerAcquisitionLink{LinkID: strings.TrimSpace(payload.Link.LinkID), LinkName: input.LinkName, URL: strings.TrimSpace(payload.Link.URL), UserIDs: append([]string(nil), input.UserIDs...), DepartmentIDs: append([]int64(nil), input.DepartmentIDs...), SkipVerify: input.SkipVerify}
+	if !validManagedLink(result) {
+		return wecomport.CustomerAcquisitionLink{}, wecomport.WrapProviderWriteError(ErrResponse, true)
+	}
+	return result, nil
+}
+func (client *Client) UpdateManagedAcquisitionLink(ctx context.Context, linkID string, input wecomport.CustomerAcquisitionLinkInput) (wecomport.CustomerAcquisitionLink, error) {
+	if !client.DirectoryReady() || invalid(linkID) || !validManagedLinkInput(input) {
+		return wecomport.CustomerAcquisitionLink{}, ErrUnavailable
+	}
+	token, err := client.contactAccessToken(ctx)
+	if err != nil {
+		return wecomport.CustomerAcquisitionLink{}, wecomport.WrapProviderWriteError(err, false)
+	}
+	body, _ := json.Marshal(map[string]any{"link_id": linkID, "link_name": input.LinkName, "range": map[string]any{"user_list": input.UserIDs, "department_list": input.DepartmentIDs}, "skip_verify": input.SkipVerify})
+	if _, err = client.requestJSON(ctx, http.MethodPost, "/cgi-bin/externalcontact/customer_acquisition/update_link", url.Values{"access_token": {token}}, body); err != nil {
+		return wecomport.CustomerAcquisitionLink{}, wecomport.WrapProviderWriteError(err, true)
+	}
+	link, err := client.GetManagedAcquisitionLink(ctx, linkID)
+	return link, wecomport.WrapProviderWriteError(err, true)
+}
+func (client *Client) DeleteManagedAcquisitionLink(ctx context.Context, linkID string) error {
+	if !client.DirectoryReady() || invalid(linkID) {
+		return ErrUnavailable
+	}
+	token, err := client.contactAccessToken(ctx)
+	if err != nil {
+		return wecomport.WrapProviderWriteError(err, false)
+	}
+	body, _ := json.Marshal(map[string]string{"link_id": linkID})
+	_, err = client.requestJSON(ctx, http.MethodPost, "/cgi-bin/externalcontact/customer_acquisition/delete_link", url.Values{"access_token": {token}}, body)
+	return wecomport.WrapProviderWriteError(err, true)
+}
+func validManagedLinkInput(input wecomport.CustomerAcquisitionLinkInput) bool {
+	if invalid(input.LinkName) || len([]rune(input.LinkName)) > 30 || len(input.UserIDs) > 500 || len(input.DepartmentIDs) > 500 || len(input.UserIDs)+len(input.DepartmentIDs) == 0 {
+		return false
+	}
+	seen := map[string]struct{}{}
+	for _, id := range input.UserIDs {
+		if invalid(id) {
+			return false
+		}
+		if _, ok := seen[id]; ok {
+			return false
+		}
+		seen[id] = struct{}{}
+	}
+	for _, id := range input.DepartmentIDs {
+		if id < 1 {
+			return false
+		}
+	}
+	return true
+}
+func validManagedLink(link wecomport.CustomerAcquisitionLink) bool {
+	return !invalid(link.LinkID) && !invalid(link.LinkName) && len([]rune(link.LinkName)) <= 30 && validProviderHTTPS(link.URL) && validManagedLinkInput(wecomport.CustomerAcquisitionLinkInput{LinkName: link.LinkName, UserIDs: link.UserIDs, DepartmentIDs: link.DepartmentIDs, SkipVerify: link.SkipVerify})
+}
+
+func validAcquisitionRequest(input wecomport.AcquisitionAssetRequest) bool {
+	if invalid(input.Name) || invalid(input.State) || len(input.StaffUserIDs) < 1 || len(input.StaffUserIDs) > 5 {
+		return false
+	}
+	seen := map[string]struct{}{}
+	for _, id := range input.StaffUserIDs {
+		if invalid(id) {
+			return false
+		}
+		if _, ok := seen[id]; ok {
+			return false
+		}
+		seen[id] = struct{}{}
+	}
+	return true
+}
+func validProviderHTTPS(raw string) bool {
+	parsed, err := url.Parse(raw)
+	return err == nil && parsed.Scheme == "https" && parsed.Host != "" && parsed.User == nil && parsed.Fragment == ""
 }
 
 type TagCatalogGroup = wecomport.TagCatalogGroup
@@ -434,6 +774,129 @@ func (client *Client) ListTagCatalog(ctx context.Context) ([]TagCatalogGroup, er
 	}
 	return groups, nil
 }
+
+type privateSendError struct{ uncertain bool }
+
+func (e privateSendError) Error() string {
+	if e.uncertain {
+		return "wecom private message outcome unknown"
+	}
+	return "wecom private message rejected"
+}
+func (e privateSendError) OutcomeUnknown() bool { return e.uncertain }
+
+func (client *Client) SendPrivateMessage(ctx context.Context, target outboundport.PrivateMessageTarget, payload outboundport.PrivateMessagePayload) (outboundport.PrivateMessageProviderReceipt, bool, error) {
+	if !client.DirectoryReady() || invalid(target.ExternalUserID) || invalid(target.StaffUserID) || len(payload.Attachments) > 9 || (strings.TrimSpace(payload.Text) == "" && len(payload.Attachments) == 0) {
+		return outboundport.PrivateMessageProviderReceipt{}, false, privateSendError{}
+	}
+	token, err := client.contactAccessToken(ctx)
+	if err != nil {
+		return outboundport.PrivateMessageProviderReceipt{}, false, err
+	}
+	attachments := make([]map[string]any, 0, len(payload.Attachments))
+	for _, item := range payload.Attachments {
+		switch item.Kind {
+		case "image":
+			mediaID, uploadErr := client.uploadPrivateImage(ctx, token, item.FileName, item.MediaType, item.Content)
+			if uploadErr != nil {
+				return outboundport.PrivateMessageProviderReceipt{}, false, uploadErr
+			}
+			attachments = append(attachments, map[string]any{"msgtype": "image", "image": map[string]string{"media_id": mediaID}})
+		case "mini_program":
+			mediaID, uploadErr := client.uploadPrivateImage(ctx, token, item.FileName, item.MediaType, item.Content)
+			if uploadErr != nil {
+				return outboundport.PrivateMessageProviderReceipt{}, false, uploadErr
+			}
+			attachments = append(attachments, map[string]any{"msgtype": "miniprogram", "miniprogram": map[string]string{"title": item.Title, "pic_media_id": mediaID, "appid": item.AppID, "page": item.PagePath}})
+		case "link":
+			attachments = append(attachments, map[string]any{"msgtype": "link", "link": map[string]string{"title": item.Title, "picurl": item.PicURL, "desc": item.Description, "url": item.URL}})
+		default:
+			return outboundport.PrivateMessageProviderReceipt{}, false, privateSendError{}
+		}
+	}
+	body := map[string]any{"chat_type": "single", "external_userid": []string{target.ExternalUserID}, "sender": target.StaffUserID, "allow_select": false, "attachments": attachments}
+	if text := strings.TrimSpace(payload.Text); text != "" {
+		body["text"] = map[string]string{"content": text}
+	}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return outboundport.PrivateMessageProviderReceipt{}, false, err
+	}
+	result, uncertain, err := client.privateJSON(ctx, "/cgi-bin/externalcontact/add_msg_template", url.Values{"access_token": {token}}, raw, "application/json")
+	if err != nil {
+		return outboundport.PrivateMessageProviderReceipt{}, true, privateSendError{uncertain: uncertain}
+	}
+	result.MessageID = strings.TrimSpace(result.MessageID)
+	if result.MessageID == "" || len(result.FailList) != 0 {
+		return outboundport.PrivateMessageProviderReceipt{}, true, privateSendError{}
+	}
+	return outboundport.PrivateMessageProviderReceipt{MessageID: result.MessageID}, true, nil
+}
+
+func (client *Client) uploadPrivateImage(ctx context.Context, token, name, mediaType string, content []byte) (string, error) {
+	if len(content) <= 5 || len(content) > 2<<20 || (mediaType != "image/jpeg" && mediaType != "image/png") || strings.TrimSpace(name) == "" || strings.ContainsAny(name, "\r\n\x00") {
+		return "", privateSendError{}
+	}
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	header := make(textproto.MIMEHeader)
+	header.Set("Content-Disposition", mime.FormatMediaType("form-data", map[string]string{"name": "media", "filename": name}))
+	header.Set("Content-Type", mediaType)
+	part, err := writer.CreatePart(header)
+	if err != nil {
+		return "", err
+	}
+	if _, err = part.Write(content); err != nil {
+		return "", err
+	}
+	if err = writer.Close(); err != nil {
+		return "", err
+	}
+	result, _, err := client.privateJSON(ctx, "/cgi-bin/media/upload", url.Values{"access_token": {token}, "type": {"image"}}, body.Bytes(), writer.FormDataContentType())
+	if err != nil {
+		return "", err
+	}
+	result.MediaID = strings.TrimSpace(result.MediaID)
+	if result.MediaID == "" {
+		return "", privateSendError{}
+	}
+	return result.MediaID, nil
+}
+
+func (client *Client) privateJSON(ctx context.Context, path string, query url.Values, body []byte, contentType string) (response, bool, error) {
+	endpoint := *client.apiBase
+	endpoint.Path = strings.TrimRight(endpoint.Path, "/") + path
+	endpoint.RawQuery = query.Encode()
+	requestCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(requestCtx, http.MethodPost, endpoint.String(), bytes.NewReader(body))
+	if err != nil {
+		return response{}, false, err
+	}
+	req.Header.Set("Content-Type", contentType)
+	resp, err := client.http.Do(req)
+	if err != nil {
+		return response{}, true, err
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBody+1))
+	if err != nil || len(raw) > maxResponseBody {
+		return response{}, true, ErrResponse
+	}
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return response{}, resp.StatusCode >= 500, ErrResponse
+	}
+	var result response
+	if json.Unmarshal(raw, &result) != nil {
+		return response{}, true, ErrResponse
+	}
+	if !successErrCode(result.ErrCode) {
+		return response{}, false, ErrResponse
+	}
+	return result, false, nil
+}
+
+var _ outboundport.PrivateMessageSender = (*Client)(nil)
 
 func (client *Client) request(ctx context.Context, path string, query url.Values) (response, error) {
 	return client.requestJSON(ctx, http.MethodGet, path, query, nil)
@@ -561,3 +1024,4 @@ func itoa(value int64) string { return strconv.FormatInt(value, 10) }
 var _ wecom.OAuthClient = (*Client)(nil)
 var _ wecom.JSSDKSigner = (*Client)(nil)
 var _ wecomport.DirectoryProvider = (*Client)(nil)
+var _ wecomport.AcquisitionAssetWriter = (*Client)(nil)

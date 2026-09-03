@@ -195,7 +195,7 @@ func (s *RuntimeService) EffectReconciliationCandidate(ctx context.Context, runI
 	if err != nil {
 		return effectport.ReconciliationCandidate{}, runtimeClassify(err)
 	}
-	if candidate.Owner != effectport.OwnerOutbound || candidate.Kind != effectport.KindOutboundMessage || candidate.State != effectport.StateUnknown {
+	if candidate.Owner != effectport.OwnerOutbound || candidate.Kind != effectport.KindAutomationMessage || candidate.State != effectport.StateUnknown {
 		return effectport.ReconciliationCandidate{}, ErrRuntimeConflict
 	}
 	return candidate, nil

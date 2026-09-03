@@ -70,6 +70,7 @@ jobs:
           scripts/check-pr02-donor-manifest.sh
           scripts/check-pr03-frontend-donor-manifest.sh
           scripts/check-automationops-donor-manifest.sh
+          scripts/check-channel-donor-manifest.sh
           donor_dir="$(mktemp -d)"
           git clone --quiet https://github.com/qianlan33333-png/AI-CRM-v2.git "$donor_dir"
           git -C "$donor_dir" checkout --quiet 6bfbe5816bb89913c70adaca87d6a486260e016e
@@ -77,6 +78,7 @@ jobs:
           AICRM_PR06_DONOR_DIR="$donor_dir" scripts/check-pr06-closure.sh
           rm -rf "$donor_dir"
           scripts/check-pr07-frontend-freeze.sh
+          node web/scripts/channel-center-characterization.mjs
           node web/scripts/survey-editor-characterization.mjs
           node web/scripts/survey-public-characterization.mjs
           node web/scripts/survey-unresolved-history-contract.mjs
@@ -84,6 +86,9 @@ jobs:
           node --check internal/webshell/static/admin_console/admin_audience_detail.js
           scripts/check-pr08-frontend-donor-manifest.sh
           scripts/check-pr09-frontend-freeze.sh
+          scripts/check-config-definition-import-boundary.sh
+          scripts/check-ai-assistant-donor-manifest.sh
+          node scripts/generate-ai-assistant-client.mjs
           npm run typecheck
           npx tsc -p web/v3/tsconfig.json --noEmit
           npm test
@@ -91,6 +96,7 @@ jobs:
           node --test internal/webshell/static/admin_console/automation_create_code_adapter.test.mjs
           node scripts/build-v3-host-adapters.mjs
           node scripts/operation-cycles-shell-e2e.mjs
+          node scripts/ai-assistant-shell-e2e.mjs
           mkdir -p release
           node scripts/stage-pr01-effects-ui.mjs web/dist release/web/dist
           node scripts/test-stage-pr01-effects-ui.mjs
@@ -107,7 +113,7 @@ jobs:
       - name: Check repository
         run: make check
       - name: Race-check security and identity boundaries
-        run: go test -race ./cmd/aicrm ./cmd/migrate-commerce-history ./internal/access/... ./internal/identity/... ./internal/wecom/... ./internal/externaleffects/... ./internal/platform/jobqueue/... ./internal/media/... ./internal/tag/... ./internal/product/... ./internal/coupon/... ./internal/groupops/... ./internal/automation/... ./internal/operationcycle/... ./internal/outbound ./internal/order/... ./internal/payment/... ./internal/config/... ./internal/adminops/... ./internal/release/...
+        run: go test -race ./cmd/aicrm ./cmd/migrate-commerce-history ./cmd/migrate-v2-config-definitions ./cmd/migrate-channel-history ./internal/access/... ./internal/identity/... ./internal/wecom/... ./internal/externaleffects/... ./internal/platform/jobqueue/... ./internal/media/... ./internal/tag/... ./internal/product/... ./internal/coupon/... ./internal/groupops/... ./internal/automation/... ./internal/operationcycle/... ./internal/outbound ./internal/order/... ./internal/payment/... ./internal/config/... ./internal/adminops/... ./internal/release/... ./internal/configmigration/...
 
   deploy:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -159,6 +165,8 @@ jobs:
           go build -trimpath -ldflags "-s -w" -o release/bin/migrate-survey-v2 ./cmd/migrate-survey-v2
           go build -trimpath -ldflags "-s -w" -o release/bin/migrate-commerce-history ./cmd/migrate-commerce-history
           go build -trimpath -ldflags "-s -w" -o release/bin/migrate-automation-operations ./cmd/migrate-automation-operations
+          go build -trimpath -ldflags "-s -w" -o release/bin/migrate-v2-config-definitions ./cmd/migrate-v2-config-definitions
+          go build -trimpath -ldflags "-s -w" -o release/bin/migrate-channel-history ./cmd/migrate-channel-history
           npm ci
           npm run version:check
           node scripts/validate-openapi.mjs
@@ -166,7 +174,9 @@ jobs:
           scripts/check-pr02-donor-manifest.sh
           scripts/check-pr03-frontend-donor-manifest.sh
           scripts/check-automationops-donor-manifest.sh
+          scripts/check-channel-donor-manifest.sh
           scripts/check-survey-donor-manifest.sh
+          node web/scripts/channel-center-characterization.mjs
           node web/scripts/survey-editor-characterization.mjs
           node web/scripts/survey-public-characterization.mjs
           node web/scripts/survey-unresolved-history-contract.mjs
@@ -174,12 +184,16 @@ jobs:
           node --check internal/webshell/static/admin_console/admin_audience_detail.js
           scripts/check-pr08-frontend-donor-manifest.sh
           scripts/check-pr09-frontend-freeze.sh
+          scripts/check-config-definition-import-boundary.sh
+          scripts/check-ai-assistant-donor-manifest.sh
+          node scripts/generate-ai-assistant-client.mjs
           npm run typecheck
           npx tsc -p web/v3/tsconfig.json --noEmit
           npm run build
           node --test internal/webshell/static/admin_console/automation_create_code_adapter.test.mjs
           node scripts/build-v3-host-adapters.mjs
           node scripts/operation-cycles-shell-e2e.mjs
+          node scripts/ai-assistant-shell-e2e.mjs
           cp -R migrations deploy release/
           node scripts/stage-pr01-effects-ui.mjs web/dist release/web/dist
           node scripts/test-stage-pr01-effects-ui.mjs
@@ -218,4 +232,32 @@ jobs:
           scp "${ssh_flags[@]}" deploy/install-release.sh "${DEPLOY_USER}@${DEPLOY_HOST}:${remote_installer}"
           ssh "${ssh_flags[@]}" "${DEPLOY_USER}@${DEPLOY_HOST}" \
             "sudo /usr/bin/bash ${remote_installer} /tmp/aicrm-${GITHUB_SHA}.tar.gz ${GITHUB_SHA} ${GITHUB_RUN_NUMBER}"
+          curl --fail --silent --show-error --retry 5 --retry-delay 2 https://id-dev.youcangogogo.com/readyz
+      - name: Configure HXC production source
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          AICRM_HXC_SOURCE_DSN: ${{ secrets.AICRM_HXC_SOURCE_DSN }}
+          AICRM_HXC_UNIONID_SCOPE: ${{ secrets.AICRM_HXC_UNIONID_SCOPE }}
+        run: |
+          set -euo pipefail
+          [[ -n "$AICRM_HXC_SOURCE_DSN" && "$AICRM_HXC_SOURCE_DSN" != *[$'\r\n']* ]]
+          [[ "$AICRM_HXC_UNIONID_SCOPE" == wechat-open-platform:* && "$AICRM_HXC_UNIONID_SCOPE" != *[$'\r\n']* ]]
+          local_config="$RUNNER_TEMP/aicrm-hxc-${GITHUB_SHA}.env"
+          remote_config="/tmp/aicrm-hxc-${GITHUB_SHA}.env"
+          remote_configurer="/tmp/configure-hxc-runtime-${GITHUB_SHA}.sh"
+          ssh_flags=(-i "$HOME/.ssh/deploy_key" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes)
+          cleanup() {
+            rm -f -- "$local_config"
+            ssh "${ssh_flags[@]}" "${DEPLOY_USER}@${DEPLOY_HOST}" \
+              "rm -f -- ${remote_config} ${remote_configurer}" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          umask 077
+          printf 'AICRM_HXC_SYNC_ENABLED=true\nAICRM_HXC_SOURCE_DSN=%s\nAICRM_HXC_UNIONID_SCOPE=%s\n' \
+            "$AICRM_HXC_SOURCE_DSN" "$AICRM_HXC_UNIONID_SCOPE" > "$local_config"
+          scp "${ssh_flags[@]}" "$local_config" "${DEPLOY_USER}@${DEPLOY_HOST}:${remote_config}"
+          scp "${ssh_flags[@]}" deploy/configure-hxc-runtime.sh "${DEPLOY_USER}@${DEPLOY_HOST}:${remote_configurer}"
+          ssh "${ssh_flags[@]}" "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            "trap 'sudo rm -f -- ${remote_config} ${remote_configurer}' EXIT; sudo /usr/bin/bash ${remote_configurer} ${remote_config} ${GITHUB_SHA}"
           curl --fail --silent --show-error --retry 5 --retry-delay 2 https://id-dev.youcangogogo.com/readyz

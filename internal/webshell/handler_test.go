@@ -521,6 +521,26 @@ func TestRenderTagsKeepsPR10AsTheOnlyAdminShell(t *testing.T) {
 	}
 }
 
+func TestRenderHXCMountsLiveDashboardInTheV3Shell(t *testing.T) {
+	renderer, err := NewRenderer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	err = renderer.RenderHXC(
+		response,
+		AdminPageForRequest(httptest.NewRequest(http.MethodGet, "/admin/hxc-dashboard", nil), "漏斗 / 数据看板", "HXC 当前全量投影", "api.admin_hxc_dashboard_workspace"),
+		HXCAssets{TokensCSS: "/hxc-dashboard-assets/tokens.css", LabsCSS: "/hxc-dashboard-assets/labs.css", AdminJS: "/hxc-dashboard-assets/admin.js"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := response.Body.String()
+	if response.Code != http.StatusOK || strings.Count(body, `class="admin-sidebar"`) != 1 || strings.Count(body, `<main`) != 1 || strings.Count(body, `<aside`) != 1 || !strings.Contains(body, `data-admin-shell-source="v3_webshell" data-page="funnel"`) || !strings.Contains(body, `<main id="stage" class="stage rich"></main>`) || !strings.Contains(body, `/hxc-dashboard-assets/admin.js`) || strings.Contains(body, "功能待接入") {
+		t.Fatalf("HXC shell mismatch status=%d body=%q", response.Code, body)
+	}
+}
+
 func TestRenderProductsKeepsPR10AsTheOnlyAdminShell(t *testing.T) {
 	renderer, err := NewRenderer()
 	if err != nil {

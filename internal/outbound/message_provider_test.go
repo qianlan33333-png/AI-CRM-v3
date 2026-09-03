@@ -58,7 +58,7 @@ type crossedError struct{}
 func (crossedError) Error() string               { return "uncertain" }
 func (crossedError) ProviderCallAttempted() bool { return true }
 func messageEnvelope() effectport.Envelope {
-	return effectport.Envelope{Owner: effectport.OwnerOutbound, Kind: effectport.KindOutboundMessage, SourceRefDigest: effectport.Hash("s"), TargetRefDigest: effectport.Hash("t"), PayloadDigest: effectport.Hash("p"), PolicyVersionHash: effectport.Hash("v")}
+	return effectport.Envelope{Owner: effectport.OwnerOutbound, Kind: effectport.KindAutomationMessage, SourceRefDigest: effectport.Hash("s"), TargetRefDigest: effectport.Hash("t"), PayloadDigest: effectport.Hash("p"), PolicyVersionHash: effectport.Hash("v")}
 }
 func messageProviderFixture(t *testing.T, enabled bool, identityFound bool, writer *writerStub) *MessageProvider {
 	t.Helper()

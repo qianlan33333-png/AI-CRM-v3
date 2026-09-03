@@ -99,7 +99,7 @@ make_release() {
   local release="$test_root/package-${sha}"
   local archive="/tmp/aicrm-${sha}.tar.gz"
   mkdir -p "$release/bin" "$release/migrations" "$release/web/dist" "$release/deploy"
-  for binary in aicrm migrate-platform migrate-river migrate-phone-identities migrate-survey-v2 migrate-automation-operations; do
+  for binary in aicrm migrate-platform migrate-river migrate-phone-identities migrate-survey-v2 migrate-automation-operations migrate-v2-config-definitions migrate-channel-history; do
     printf '#!/usr/bin/env bash\nexit 0\n' > "$release/bin/$binary"
     chmod 0755 "$release/bin/$binary"
   done
@@ -111,14 +111,20 @@ make_release() {
     0018_survey.sql 0019_tag_catalog_sync_projection.sql 0020_order.sql 0021_payment.sql \
     0022_customer_profile_sections.sql 0024_order_product_version.sql \
     0025_payment_reconciliation.sql 0026_identity_history_receipts.sql \
-    0027_admin_access_login_compat.sql 0046_automation_operations_migration.sql \
+    0027_admin_access_login_compat.sql 0028_hxc_dashboard.sql \
+    0029_channel_center.sql 0030_config_definition_import.sql \
+    0031_channel_history_import.sql 0032_channel_acquisition_assets.sql \
+    0033_wecom_welcome_grants.sql 0034_channel_entrant_actions.sql \
+    0035_channel_acquisition_links.sql 0036_ai_assistant_review.sql \
+    0037_outbound_private_messages.sql 0046_automation_operations_migration.sql \
     0047_segment_audience_schedule_state.sql; do
     : > "$release/migrations/$migration"
   done
   : > "$release/web/dist/asset-manifest.json"
   for unit in \
     aicrm.service aicrm-migrate.service aicrm-wecom-worker.service aicrm-wecom-worker.timer \
-    aicrm-effects-worker.service aicrm-customer-sync-daily.service aicrm-customer-sync-daily.timer; do
+    aicrm-effects-worker.service aicrm-customer-sync-daily.service aicrm-customer-sync-daily.timer \
+    aicrm-hxc-dashboard-refresh.service aicrm-hxc-dashboard-refresh.timer; do
     : > "$release/deploy/$unit"
   done
   (

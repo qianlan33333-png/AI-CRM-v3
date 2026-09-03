@@ -24,7 +24,7 @@ if (fs.existsSync(stage)) fail(`refusing to overwrite an existing stage: ${stage
 if (!fs.statSync(manifestPath).isFile()) fail('missing asset-manifest.json');
 
 const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-const roots = ['admin', 'tokens', 'labs', 'operationCyclesHost'].map((name) => manifest.entries?.[name]);
+const roots = ['admin', 'tokens', 'labs', 'operationCyclesHost', 'channelCenterHost'].map((name) => manifest.entries?.[name]);
 if (roots.some((entry) => typeof entry !== 'string')) fail('campaigns entry assets are absent from manifest');
 const dynamicOutputForInput = (from, input) => (manifest.files[from]?.imports || []).find((item) =>
   item.kind === 'dynamic-import' && manifest.files[item.path]?.inputs?.includes(input)
@@ -34,10 +34,14 @@ const campaignsEntry = legacyEntry && dynamicOutputForInput(legacyEntry, 'web/sr
 const adminAccessEntry = legacyEntry && dynamicOutputForInput(legacyEntry, 'web/src/admin/sections/adminAccess.ts');
 const setupWizardEntry = legacyEntry && dynamicOutputForInput(legacyEntry, 'web/src/admin/sections/setupWizard.ts');
 const groupOpsHistoryEntry = legacyEntry && dynamicOutputForInput(legacyEntry, 'web/src/admin/sections/groupOpsHistory.ts');
+const funnelEntry = legacyEntry && dynamicOutputForInput(legacyEntry, 'web/src/admin/sections/funnelGrid.ts');
 const operationHost = manifest.entries.operationCyclesHost;
 const operationMainEntry = dynamicOutputForInput(operationHost, 'web/src/admin/main.ts');
 const operationLegacyEntry = operationMainEntry && dynamicOutputForInput(operationMainEntry, 'web/src/admin/legacy.ts');
-if (!legacyEntry || !campaignsEntry || !adminAccessEntry || !setupWizardEntry || !groupOpsHistoryEntry || !operationMainEntry || !operationLegacyEntry) fail('required frozen admin runtime chunks are absent from manifest');
+const channelHost = manifest.entries.channelCenterHost;
+const channelMainEntry = dynamicOutputForInput(channelHost, 'web/src/admin/main.ts');
+const channelLegacyEntry = channelMainEntry && dynamicOutputForInput(channelMainEntry, 'web/src/admin/legacy.ts');
+if (!legacyEntry || !campaignsEntry || !adminAccessEntry || !setupWizardEntry || !groupOpsHistoryEntry || !funnelEntry || !operationMainEntry || !operationLegacyEntry || !channelMainEntry || !channelLegacyEntry) fail('required admin runtime chunks are absent from manifest');
 
 const selected = new Set();
 const includeStatic = (relative) => {
@@ -52,9 +56,10 @@ const includeStatic = (relative) => {
 // V2's loader contains dormant dynamic imports for every legacy page. The
 // release keeps the loader, its static dependencies, the campaigns chunk
 // selected by the External Effects workspace, the Admin Access and Setup
-// Wizard chunks selected by the Config host, and the Group Ops history chunk
-// selected by the byte-frozen groupops.html?history=1 route. No other legacy
-// page chunk is staged or fetchable. HTML stays v3-owned: the Go webshell
+// Wizard chunks selected by the Config host, the Group Ops history chunk
+// selected by the byte-frozen groupops.html?history=1 route, and the v3-owned
+// HXC dashboard chunk. No other legacy page chunk is staged or fetchable.
+// HTML stays v3-owned: the Go webshell
 // renders the single admin shell and mounts the frozen stage, so no donor HTML
 // is ever packaged.
 for (const root of roots) includeStatic(root);
@@ -63,17 +68,22 @@ includeStatic(campaignsEntry);
 includeStatic(adminAccessEntry);
 includeStatic(setupWizardEntry);
 includeStatic(groupOpsHistoryEntry);
+includeStatic(funnelEntry);
 includeStatic(operationMainEntry);
 includeStatic(operationLegacyEntry);
+includeStatic(channelMainEntry);
+includeStatic(channelLegacyEntry);
 
 const privateTemplatePages = [
   'images', 'attach', 'mpLib',
   'products', 'productForm', 'spProducts', 'spProductForm',
   'coupons', 'couponForm',
+  'orders', 'orderDetail',
   'groupops', 'groupopsDetail',
   'agents', 'agentEdit',
   'cycles', 'cyclesDetail',
   'config', 'configDetail', 'apidocs',
+  'channels', 'channelForm',
 ];
 const releaseRoot = new Set([...selected, ...privateTemplatePages.map((page) => `admin/${page}.html`), 'admin/tags.html']);
 const releaseMetadataFor = (relative) => {
@@ -93,6 +103,10 @@ for (const page of ['images', 'attach', 'mpLib']) copy(`admin/${page}.html`);
 for (const page of ['products', 'productForm', 'spProducts', 'spProductForm']) copy(`admin/${page}.html`);
 // Coupon pages remain byte-frozen private template carriers in the v3 shell.
 for (const page of ['coupons', 'couponForm']) copy(`admin/${page}.html`);
+// Transaction pages remain byte-frozen private template carriers in the v3
+// shell. The order UI binding reads these files at request time, so both must
+// be present in the versioned release artifact.
+for (const page of ['orders', 'orderDetail']) copy(`admin/${page}.html`);
 // Group Ops pages remain byte-frozen private template carriers in the v3
 // shell. They are never routed as donor documents; the Go binding extracts
 // only template#tpl into PR10's authenticated shell.
@@ -104,6 +118,9 @@ for (const page of ['agents', 'agentEdit']) copy(`admin/${page}.html`);
 for (const page of ['cycles', 'cyclesDetail']) copy(`admin/${page}.html`);
 // Config pages are release-private template carriers for the v3 host adapter.
 for (const page of ['config', 'configDetail', 'apidocs']) copy(`admin/${page}.html`);
+// Channel pages are byte-frozen private template carriers mounted through the
+// Channel-specific v3 host adapter; they are never routed as donor documents.
+for (const page of ['channels', 'channelForm']) copy(`admin/${page}.html`);
 // Tags also runs through the frozen donor admin entry. Keep the generated
 // donor page only as a release-private template source under a non-routable
 // filename; the Go adapter extracts template#tpl and mounts it in PR10's sole
@@ -116,7 +133,7 @@ fs.copyFileSync(tagsSource, tagsTarget);
 
 const stagedManifest = {
   ...manifest,
-  entries: Object.fromEntries(['admin', 'tokens', 'labs', 'operationCyclesHost'].map((name) => [name, manifest.entries[name]])),
+  entries: Object.fromEntries(['admin', 'tokens', 'labs', 'operationCyclesHost', 'channelCenterHost'].map((name) => [name, manifest.entries[name]])),
   files: Object.fromEntries([...selected].sort().map((relative) => [relative, manifest.files[relative]])),
   release_files: Object.fromEntries([...releaseRoot].sort().map((relative) => [relative, releaseMetadataFor(relative)])),
 };
@@ -132,7 +149,7 @@ const walk = (directory) => {
 };
 walk(stage);
 for (const relative of stagedFiles) {
-  const allowedHTML = ['admin/images.html', 'admin/attach.html', 'admin/mpLib.html', 'admin/tags.html', 'admin/products.html', 'admin/productForm.html', 'admin/spProducts.html', 'admin/spProductForm.html', 'admin/coupons.html', 'admin/couponForm.html', 'admin/groupops.html', 'admin/groupopsDetail.html', 'admin/agents.html', 'admin/agentEdit.html', 'admin/cycles.html', 'admin/cyclesDetail.html', 'admin/config.html', 'admin/configDetail.html', 'admin/apidocs.html'];
+  const allowedHTML = ['admin/images.html', 'admin/attach.html', 'admin/mpLib.html', 'admin/tags.html', 'admin/products.html', 'admin/productForm.html', 'admin/spProducts.html', 'admin/spProductForm.html', 'admin/coupons.html', 'admin/couponForm.html', 'admin/orders.html', 'admin/orderDetail.html', 'admin/groupops.html', 'admin/groupopsDetail.html', 'admin/agents.html', 'admin/agentEdit.html', 'admin/cycles.html', 'admin/cyclesDetail.html', 'admin/config.html', 'admin/configDetail.html', 'admin/apidocs.html', 'admin/channels.html', 'admin/channelForm.html'];
   const allowed = relative === 'asset-manifest.json' || relative.startsWith('assets/') || allowedHTML.includes(relative);
   if (!allowed) fail(`unapproved release file: ${relative}`);
   if (relative.endsWith('.html') && !allowedHTML.includes(relative)) fail(`unapproved HTML surface: ${relative}`);
@@ -144,4 +161,4 @@ for (const relative of selected) {
 for (const relative of releaseRoot) {
   if (!stagedFiles.includes(relative)) fail(`missing staged release file: ${relative}`);
 }
-console.log(`staged ${selected.size} frozen admin assets and private Media, Tags, Product, Coupon, Group Ops, Automation, Operation Cycle, and Config templates in ${stage}`);
+console.log(`staged ${selected.size} approved admin assets, including the v3 HXC dashboard chunk, and private donor templates including Transaction in ${stage}`);

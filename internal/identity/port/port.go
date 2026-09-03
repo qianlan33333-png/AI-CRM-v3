@@ -27,6 +27,13 @@ type Resolver interface {
 	Resolve(context.Context, identitydomain.Reference) (ResolveResult, error)
 }
 
+// OutboundWeComIdentityReader is consumed only by the composition-owned
+// private-message target resolver. It may reveal a verified channel identity
+// to Outbound in memory, never to an HTTP response or structured log.
+type OutboundWeComIdentityReader interface {
+	VerifiedWeComIdentityForCustomer(context.Context, customerdomain.CustomerID, string) (string, bool, error)
+}
+
 type ProvisionCommand struct {
 	Fact           identitydomain.VerifiedFact
 	IdempotencyKey string
@@ -99,4 +106,12 @@ type DirectoryIdentityReader interface {
 	CustomerForPhone(context.Context, string) (customerdomain.CustomerID, bool, error)
 	DirectoryIdentities(context.Context, customerdomain.CustomerID) ([]DirectoryIdentitySummary, []MaskedPhone, error)
 	RevealPhone(context.Context, customerdomain.CustomerID) (string, bool, error)
+}
+
+// ExternalIdentityValueReader is a narrowly scoped, transaction-bound read
+// used by composition to resolve a current Provider relationship. Callers may
+// use the returned value only transiently for an authorized Provider call and
+// must never persist or log it outside Identity/WeCom ownership.
+type ExternalIdentityValueReader interface {
+	VerifiedExternalIdentityValue(context.Context, customerdomain.CustomerID, identitydomain.Kind, string) (string, bool, error)
 }

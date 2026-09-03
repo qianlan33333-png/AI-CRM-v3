@@ -18,6 +18,10 @@ import (
 	adminopsapp "github.com/qianlan33333-png/AI-CRM-v3/internal/adminops/app"
 	adminopsport "github.com/qianlan33333-png/AI-CRM-v3/internal/adminops/port"
 	adminopsstore "github.com/qianlan33333-png/AI-CRM-v3/internal/adminops/store"
+	aiassistant "github.com/qianlan33333-png/AI-CRM-v3/internal/aiassistant"
+	aiassistantapp "github.com/qianlan33333-png/AI-CRM-v3/internal/aiassistant/app"
+	aiassistanthttp "github.com/qianlan33333-png/AI-CRM-v3/internal/aiassistant/http"
+	aiassistantstore "github.com/qianlan33333-png/AI-CRM-v3/internal/aiassistant/store"
 	automation "github.com/qianlan33333-png/AI-CRM-v3/internal/automation"
 	automationapp "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/app"
 	automationstore "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/store"
@@ -29,12 +33,19 @@ import (
 	couponapp "github.com/qianlan33333-png/AI-CRM-v3/internal/coupon/app"
 	couponstore "github.com/qianlan33333-png/AI-CRM-v3/internal/coupon/store"
 	customerapp "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/app"
+	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	customerhttp "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/http"
 	customerstore "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/store"
 	externaleffects "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects"
+	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	groupops "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops"
 	groupopsapp "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/app"
 	groupopsstore "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/store"
+	hxcapp "github.com/qianlan33333-png/AI-CRM-v3/internal/hxcdashboard/app"
+	hxchttp "github.com/qianlan33333-png/AI-CRM-v3/internal/hxcdashboard/http"
+	hxcprovider "github.com/qianlan33333-png/AI-CRM-v3/internal/hxcdashboard/provider"
+	hxcstore "github.com/qianlan33333-png/AI-CRM-v3/internal/hxcdashboard/store"
+	hxcworker "github.com/qianlan33333-png/AI-CRM-v3/internal/hxcdashboard/worker"
 	identityapp "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/app"
 	identityhttp "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/http"
 	identityprovider "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/provider"
@@ -100,14 +111,20 @@ type composedApplication struct {
 	adminOps       *adminopsapp.ProjectionService
 	release        *releaseapp.ObservationService
 	diagnostics    *adminopsapp.DiagnosticsService
+	hxcDashboard   hxcapp.Service
+	hxcSource      *hxcprovider.MySQL
 }
 
 func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplication, error) {
+	var hxcSource *hxcprovider.MySQL
 	pool, err := platformpostgres.Open(ctx, platformpostgres.Config{URL: cfg.DatabaseURL, MaxConnections: 20, MinConnections: 1})
 	if err != nil {
 		return nil, err
 	}
 	fail := func(err error) (*composedApplication, error) {
+		if hxcSource != nil {
+			_ = hxcSource.Close()
+		}
 		pool.Close()
 		return nil, err
 	}
@@ -153,6 +170,10 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err = river.AddWorkerSafely[wecom.CustomerSyncJobArgs](effectWorkers, customerSyncWorker); err != nil {
 		return fail(err)
 	}
+	hxcDashboardWorker := &hxcworker.Worker{}
+	if err = river.AddWorkerSafely[hxcworker.Args](effectWorkers, hxcDashboardWorker); err != nil {
+		return fail(err)
+	}
 	paymentReconciliationWorker := payment.NewReconciliationWorker()
 	if err = river.AddWorkerSafely[payment.ReconciliationJobArgs](effectWorkers, paymentReconciliationWorker); err != nil {
 		return fail(err)
@@ -181,11 +202,15 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
+	hxcEnqueuer, err := hxcworker.NewEnqueuer(effectClient)
+	if err != nil {
+		return fail(err)
+	}
 	effectRepository, err := externaleffects.NewRepository(pool.Native(), effectClient)
 	if err != nil {
 		return fail(err)
 	}
-	effectsRuntime, err := platformjobqueue.NewRuntimeWithPeriodic(pool.Native(), effectWorkers, []*river.PeriodicJob{segment.AudienceSchedulePeriodicJob()}, platformjobqueue.OutboundQueue, wecom.CustomerSyncQueue, payment.ReconciliationQueue, segment.AudienceRefreshQueue)
+	effectsRuntime, err := platformjobqueue.NewRuntimeWithPeriodic(pool.Native(), effectWorkers, []*river.PeriodicJob{segment.AudienceSchedulePeriodicJob()}, platformjobqueue.OutboundQueue, wecom.CustomerSyncQueue, payment.ReconciliationQueue, hxcworker.Queue, segment.AudienceRefreshQueue)
 	if err != nil {
 		return fail(err)
 	}
@@ -195,6 +220,33 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	}
 	mediaModule := media.NewModuleRegistration()
 	mediaRepository, err := mediastore.NewPostgreSQL(pool.Native(), uow)
+	if err != nil {
+		return fail(err)
+	}
+	aiModule := aiassistant.NewModuleRegistration()
+	aiRepository, err := aiassistantstore.NewPostgreSQL(pool.Native(), uow)
+	if err != nil {
+		return fail(err)
+	}
+	aiCustomers := aiCustomerSnapshotAdapter{read: func(ctx context.Context, id customerdomain.CustomerID) (customerdomain.CustomerID, customerdomain.Status, string, string, error) {
+		detail, readErr := customerStore.Detail(ctx, id)
+		return detail.CustomerID, detail.CustomerStatus, detail.DisplayName, detail.OneIDLabel, readErr
+	}}
+	aiService, err := aiassistantapp.NewService(uow, aiRepository, aiCustomers, aiStaffSnapshotAdapter{repository: accessRepository}, aiMaterialAdapter{capturer: mediaRepository, references: mediaRepository}, oneID)
+	if err != nil {
+		return fail(err)
+	}
+	privateWriter, err := outbound.NewPrivateMessageRepository(pool.Native(), effectRepository)
+	if err != nil {
+		return fail(err)
+	}
+	if err = aiService.BindOutbound(privateWriter, cfg.AIAssistant.DispatchEnabled); err != nil {
+		return fail(err)
+	}
+	if err = aiService.BindReconciler(effectRepository); err != nil {
+		return fail(err)
+	}
+	aiHandler, err := aiassistanthttp.NewHandler(aiassistanthttp.Config{Application: aiService, Security: requestSecurity, Authorizer: accessapp.AIAssistantAuthorizer{}, Integration: aiassistanthttp.IntegrationConfig{Enabled: cfg.AIAssistant.IntakeEnabled, Key: cfg.AIAssistant.IntegrationKey, Secret: cfg.AIAssistant.IntegrationSecret, ActorID: cfg.AIAssistant.IntegrationActorID}, DispatchReady: cfg.AIAssistant.DispatchEnabled})
 	if err != nil {
 		return fail(err)
 	}
@@ -314,6 +366,29 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return fail(err)
 	}
 	tagModule := tag.NewModuleRegistration()
+	var callbackStateDigester wecom.StateDigester
+	if cfg.WeCom.CallbackEnabled {
+		callbackStateDigester, err = wecom.NewHMACStateDigester([]byte(cfg.WeCom.ChannelStateHMACKey))
+		if err != nil {
+			return fail(err)
+		}
+	}
+	channelAssetStore := channelstore.NewPostgreSQLAssetStore(pool.Native())
+	channelAcquisition := channelstore.NewPostgreSQLStore()
+	channelEntrantActions := channelstore.NewEntrantActionStore(effectRepository, channelWelcomeMaterialAdapter{resolver: groupOpsMaterials})
+	channelLinkStore := channelstore.NewAcquisitionLinkStore()
+	channelAssetCompletionSink, err := outbound.NewChannelAssetCompletionSink(channelAssetCompletionAdapter{assets: channelAssetStore, bindings: channelAcquisition, digester: callbackStateDigester, corpID: cfg.WeCom.CorpID})
+	if err != nil {
+		return fail(err)
+	}
+	channelEntrantCompletionSink, err := outbound.NewChannelEntrantCompletionSink(channelEntrantActions)
+	if err != nil {
+		return fail(err)
+	}
+	channelLinkCompletionSink, err := outbound.NewChannelLinkCompletionSink(channelLinkStore)
+	if err != nil {
+		return fail(err)
+	}
 	tagRepository, err := tagstore.NewPostgreSQL(pool.Native(), uow)
 	if err != nil {
 		return fail(err)
@@ -343,10 +418,16 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
-	outboundCompletionSink, err := outbound.NewCompletionRouterWithMessage(tagCompletionSink, groupOpsCompletionSink, outboundMessages)
+	privateCompletionSink, err := outbound.NewPrivateMessageCompletionSink(privateWriter, aiRepository)
 	if err != nil {
 		return fail(err)
 	}
+	outboundCompletionSink, err := outbound.NewCompletionRouterWithAllChannels(tagCompletionSink, groupOpsCompletionSink, channelAssetCompletionSink, channelEntrantCompletionSink, channelLinkCompletionSink)
+	if err != nil {
+		return fail(err)
+	}
+	outboundCompletionSink.WithPrivateMessage(privateCompletionSink)
+	outboundCompletionSink.WithAutomationMessage(outboundMessages)
 	if cfg.Survey.DataKey == "" {
 		return fail(errors.New("survey data encryption key is not configured"))
 	}
@@ -456,7 +537,27 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
-	channelCatalog, err := channelstore.NewLegacyChannelHTTPHandler(channelstore.NewLegacyChannelCatalogAdapter(), requestSecurity)
+	channelCursorKey := make([]byte, 32)
+	if _, err = rand.Read(channelCursorKey); err != nil {
+		return fail(err)
+	}
+	channelCatalogStore := channelstore.NewPostgreSQLCatalogStore()
+	channelModule := channelstore.NewModuleRegistration()
+	channelEvents, err := channelstore.NewChannelCatalogEventAppender(auditService, platformoutbox.NewPostgreSQL())
+	if err != nil {
+		return fail(err)
+	}
+	channelCatalogService := channelstore.NewCatalogService(uow, channelCatalogStore, channelCatalogStore, channelEvents,
+		channelMaterialReferenceAdapter{media: mediaRepository}, channelTagReferenceAdapter{tags: tagRepository}, channelStaffReferenceAdapter{users: accessRepository})
+	channelCatalog, err := channelstore.NewCatalogHTTPHandler(channelstore.CatalogHTTPConfig{Application: channelCatalogService, Security: requestSecurity, CursorSigningKey: channelCursorKey})
+	if err != nil {
+		return fail(err)
+	}
+	channelAssetService := channelstore.NewAssetService(uow, channelCatalogStore, channelAssetStore, effectRepository, channelEvents)
+	if err = channelAssetService.SetReconciler(channelAssetReconciler{uow: uow, assets: channelAssetStore, effects: effectRepository, bindings: channelAcquisition, digester: callbackStateDigester, corpID: cfg.WeCom.CorpID}); err != nil {
+		return fail(err)
+	}
+	channelAssetHandler, err := channelstore.NewAssetHTTPHandler(channelAssetService, requestSecurity)
 	if err != nil {
 		return fail(err)
 	}
@@ -621,6 +722,63 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
+	if err = channelAssetService.SetProvider(providerClient); err != nil {
+		return fail(err)
+	}
+	channelAcquisitionService := channelstore.NewAcquisitionService(uow, channelCatalogService, channelStaffReferenceAdapter{users: accessRepository}, providerClient)
+	channelAcquisitionHandler, err := channelstore.NewAcquisitionHTTPHandler(channelAcquisitionService, requestSecurity)
+	if err != nil {
+		return fail(err)
+	}
+	channelHistoryService := channelstore.NewHistoryService(uow, channelCatalogService, channelstore.NewPostgreSQLStore())
+	channelHistoryHandler, err := channelstore.NewHistoryHTTPHandler(channelHistoryService, requestSecurity, channelCursorKey)
+	if err != nil {
+		return fail(err)
+	}
+	channelLinkService := channelstore.NewAcquisitionLinkService(uow, channelLinkStore, effectRepository)
+	if err = channelLinkService.SetProvider(providerClient); err != nil {
+		return fail(err)
+	}
+	if err = channelLinkService.SetReconciler(channelLinkReconciler{uow: uow, store: channelLinkStore, effects: effectRepository, provider: providerClient}); err != nil {
+		return fail(err)
+	}
+	channelLinkHandler, err := channelstore.NewAcquisitionLinkHTTPHandler(channelLinkService, requestSecurity)
+	if err != nil {
+		return fail(err)
+	}
+	channelCenter := channelstore.CenterHTTPHandler{Catalog: channelCatalog, Acquisition: channelAcquisitionHandler, History: channelHistoryHandler, Assets: channelAssetHandler}
+	var callbackCrypto *wecom.CallbackCrypto
+	var welcomeGrantStore *wecom.PostgreSQLWelcomeGrantStore
+	if cfg.WeCom.CallbackEnabled {
+		callbackCrypto, err = wecom.NewCallbackCrypto(cfg.WeCom.CallbackToken, cfg.WeCom.CallbackAESKey, cfg.WeCom.CorpID)
+		if err != nil {
+			return fail(err)
+		}
+		welcomeGrantCipher, cipherErr := wecom.NewWelcomeGrantCipher(cfg.WeCom.CallbackAESKey)
+		if cipherErr != nil {
+			return fail(cipherErr)
+		}
+		welcomeGrantStore = wecom.NewPostgreSQLWelcomeGrantStore(welcomeGrantCipher)
+	}
+	relationships := wecom.NewPostgreSQLFollowRelationshipStore()
+	var channelAssetProvider effectport.ProviderAdapter
+	var channelEntrantProvider effectport.ProviderAdapter
+	var channelLinkProvider effectport.ProviderAdapter
+	if cfg.WeCom.Enabled && cfg.WeCom.CallbackEnabled {
+		channelAssetProvider = outbound.NewChannelAssetProvider(channelPublishedConfigAdapter{uow: uow, assets: channelAssetStore, users: accessRepository}, providerClient)
+		channelEntrantProvider = outbound.NewChannelEntrantProvider(
+			channelEntrantActionReaderAdapter{uow: uow, source: channelEntrantActions}, uow, welcomeGrantStore,
+			channelCurrentContactAdapter{uow: uow, corpID: cfg.WeCom.CorpID, staff: accessRepository, relationships: relationships, identities: queries},
+			channelProviderTagAdapter{uow: uow, tags: tagRepository}, providerClient,
+		)
+	}
+	if cfg.WeCom.Enabled {
+		channelLinkProvider = outbound.NewChannelLinkProvider(channelLinkMutationReaderAdapter{uow: uow, source: channelLinkStore}, providerClient)
+	}
+	privateProvider, err := outbound.NewPrivateMessageProvider(cfg.AIAssistant.DispatchEnabled, privateWriter, aiPrivateTargetResolver{uow: uow, identities: queries, access: accessRepository, relationships: relationships, corpID: cfg.WeCom.CorpID}, aiPrivatePayloadReader{content: aiRepository, images: mediaService, materials: mediaRepository}, providerClient)
+	if err != nil {
+		return fail(err)
+	}
 	var tagCatalogProvider externaleffects.ProviderAdapter
 	if cfg.TagCatalog.Enabled {
 		catalogReader, readerErr := outbound.NewWeComTagCatalogReader(providerClient)
@@ -637,29 +795,16 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if providerErr != nil {
 		return fail(providerErr)
 	}
-	if err = effectsModule.SetProviderAdapter(composedProviderRouter{outbound: outbound.NewProviderRouterWithMessages(tagCatalogProvider, groupOpsProvider, messageProvider), payment: paymentAdapter}); err != nil {
+	providerRouter := outbound.NewProviderRouterWithGroupMessageAndChannels(tagCatalogProvider, groupOpsProvider, channelAssetProvider, channelEntrantProvider, channelLinkProvider).WithPrivateMessage(privateProvider).WithAutomationMessage(messageProvider)
+	if err = effectsModule.SetProviderAdapter(composedProviderRouter{outbound: providerRouter, payment: paymentAdapter}); err != nil {
 		return fail(err)
 	}
-	var callbackCrypto *wecom.CallbackCrypto
-	var callbackStateDigester wecom.StateDigester
-	if cfg.WeCom.CallbackEnabled {
-		callbackCrypto, err = wecom.NewCallbackCrypto(cfg.WeCom.CallbackToken, cfg.WeCom.CallbackAESKey, cfg.WeCom.CorpID)
-		if err != nil {
-			return fail(err)
-		}
-		callbackStateDigester, err = wecom.NewHMACStateDigester([]byte(cfg.WeCom.ChannelStateHMACKey))
-		if err != nil {
-			return fail(err)
-		}
-	}
-	relationships := wecom.NewPostgreSQLFollowRelationshipStore()
 	callbackReceipts := wecom.NewPostgreSQLCallbackReceiptStore()
-	channelAcquisition := channelstore.NewPostgreSQLStore()
 	oauthStates := wecom.NewPostgreSQLOAuthStateStore()
 	weComProcessor := wecom.InboxProcessor{
 		Enabled: cfg.WeCom.CallbackEnabled, CorpID: cfg.WeCom.CorpID, Inbox: inboxService, UOW: uow,
 		Lifecycle: wecom.ExternalContactLifecycle{
-			Identity: oneID, Relationships: relationships, States: channelAcquisition, Entrants: channelAcquisition,
+			Identity: oneID, Relationships: relationships, States: channelAcquisition, Entrants: channelAcquisition, Actions: channelEntrantActions,
 			Directory: customerStore, Outbox: platformoutbox.NewPostgreSQL(),
 		},
 		Receipts: callbackReceipts, Audit: auditService,
@@ -670,9 +815,19 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err = customerSyncWorker.BindService(customerSync); err != nil && cfg.WeCom.CustomerSyncEnabled {
 		return fail(err)
 	}
+	if cfg.HXCDashboard.Enabled {
+		hxcSource, err = hxcprovider.Open(cfg.HXCDashboard.SourceDSN)
+		if err != nil {
+			return fail(err)
+		}
+	}
+	hxcRepository := hxcstore.NewPostgreSQL(pool.Native())
+	hxcDashboard := hxcapp.Service{Enabled: cfg.HXCDashboard.Enabled, Scope: cfg.HXCDashboard.UnionIDScope, SubjectKey: []byte(cfg.HXCDashboard.SubjectHMACKey), Source: hxcSource, Identity: queries, Store: hxcRepository, Enqueuer: hxcEnqueuer, Audit: auditService, UOW: uow}
+	hxcDashboardWorker.Service = &hxcDashboard
+	hxcHandler := hxchttp.Handler{Service: hxcDashboard, Store: hxcRepository, Auth: requestSecurity, Key: []byte(cfg.HXCDashboard.SubjectHMACKey)}
 	syncHandler := wecom.CustomerSyncHTTPHandler{Service: customerSync, Auth: requestSecurity, CSRF: requestSecurity}
 	weComHandler, err := wecom.NewHTTPHandler(wecom.HTTPHandlerOptions{
-		Callback: wecom.CallbackHandler{Enabled: cfg.WeCom.CallbackEnabled, Crypto: callbackCrypto, StateDigester: callbackStateDigester, Inbox: inboxService, UOW: uow},
+		Callback: wecom.CallbackHandler{Enabled: cfg.WeCom.CallbackEnabled, Crypto: callbackCrypto, StateDigester: callbackStateDigester, Inbox: inboxService, UOW: uow, WelcomeGrants: welcomeGrantStore},
 		OAuth: wecom.OAuthService{Enabled: cfg.WeCom.Enabled, CorpID: cfg.WeCom.CorpID, StateStore: oauthStates, UOW: uow,
 			Client: providerClient, AllowedPaths: allowedOAuthRedirects(), StateTTL: 10 * time.Minute},
 		ContextTokens: wecom.ContextTokenService{CorpID: cfg.WeCom.CorpID, SigningKey: []byte(cfg.WeCom.ContextSigningKey),
@@ -707,6 +862,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	adminAPIs.Handle("/api/admin/customers/", customerHandler.Routes())
 	adminAPIs.Handle("/api/admin/customer-sync-runs", syncHandler.Routes())
 	adminAPIs.Handle("/api/admin/customer-sync-runs/", syncHandler.Routes())
+	adminAPIs.Handle("/api/admin/hxc-dashboard/", hxcHandler.Routes())
 	adminAPIs.Handle("/api/admin/orders", orderHandler)
 	adminAPIs.Handle("/api/admin/orders/", orderHandler)
 	adminAPIs.Handle("/api/admin/order-imports/", orderImportHandler)
@@ -738,8 +894,11 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	adminAPIs.Handle("/api/admin/automations/", automationBindings.Runtime)
 	adminAPIs.Handle("/api/admin/automation-runs", automationBindings.Runtime)
 	adminAPIs.Handle("/api/admin/automation-runs/", automationBindings.Runtime)
-	adminAPIs.Handle("/api/admin/channels", channelCatalog)
-	adminAPIs.Handle("/api/admin/channels/", channelCatalog)
+	adminAPIs.Handle("/api/admin/channels", channelCenter)
+	adminAPIs.Handle("/api/admin/channels/", channelCenter)
+	adminAPIs.Handle("/api/admin/wecom-customer-acquisition-links", channelLinkHandler)
+	adminAPIs.Handle("/api/admin/wecom-customer-acquisition-links/", channelLinkHandler)
+	adminAPIs.Handle("/api/admin/ai-assistant/", aiHandler.Routes())
 	mountSurveyAPIs(adminAPIs, surveyBindings.Survey)
 	adminAPIs.Handle("/api/admin/operation-cycles/", operationBindings.API)
 	adminAPIs.Handle("/api/operation-cycles/", operationBindings.API)
@@ -748,7 +907,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 			return checkErr
 		}
 		var complete bool
-		checkErr := pool.Native().QueryRow(readinessContext, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['0001','0002','0003','0004','0005','0006','0007','0008','0009','0010','0011','0012','0013','0014','0015','0016','0017','0018','0019','0020','0021','0022','0023','0024','0025','0026','0027','0028','0029','0030','0031','0032','0033','0034']) AS required(version) WHERE NOT EXISTS (SELECT 1 FROM platform_schema_migrations applied WHERE applied.version=required.version))`).Scan(&complete)
+		checkErr := pool.Native().QueryRow(readinessContext, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['0001','0002','0003','0004','0005','0006','0007','0008','0009','0010','0011','0012','0013','0014','0015','0016','0017','0018','0019','0020','0021','0022','0023','0024','0025','0026','0027','0028','0029','0030','0031','0032','0033','0034','0035','0036','0037','0038','0039','0040','0041','0042','0043','0044','0045','0046','0047']) AS required(version) WHERE NOT EXISTS (SELECT 1 FROM platform_schema_migrations applied WHERE applied.version=required.version))`).Scan(&complete)
 		if checkErr != nil || !complete {
 			return errors.New("database schema is not ready")
 		}
@@ -758,7 +917,13 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		if checkErr = mediaModule.Readiness(readinessContext, pool.Native()); checkErr != nil {
 			return checkErr
 		}
+		if checkErr = aiModule.Readiness(readinessContext, pool.Native()); checkErr != nil {
+			return checkErr
+		}
 		if checkErr = tagModule.Readiness(readinessContext, pool.Native()); checkErr != nil {
+			return checkErr
+		}
+		if checkErr = channelModule.Readiness(readinessContext, pool.Native()); checkErr != nil {
 			return checkErr
 		}
 		if checkErr = productModule.Readiness(readinessContext, pool.Native()); checkErr != nil {
@@ -800,6 +965,9 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 
 	effectsUI := effectsModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, tokens, labs, admin string) error {
 		return renderer.RenderExternalEffects(writer, webshell.AdminPageForRequest(request, "外部效果与 Push Center", "仅展示本地外部效果状态与对账事实。", "api.admin_cloud_orchestrator_workspace"), webshell.ExternalEffectsAssets{TokensCSS: tokens, LabsCSS: labs, AdminJS: admin})
+	})
+	hxcUI := hxchttp.NewUIHandler("web/dist", func(writer http.ResponseWriter, request *http.Request, assets hxchttp.PageAssets) error {
+		return renderer.RenderHXC(writer, webshell.AdminPageForRequest(request, "漏斗 / 数据看板", "HXC 当前全量投影；OneID 仅作为次级质量指标。", "api.admin_hxc_dashboard_workspace"), webshell.HXCAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS})
 	})
 	mediaUI := mediaModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, page, donorTemplate string, assets media.MediaAssets) error {
 		endpoint := map[string]string{"images": "api.admin_image_library_workspace", "mpLib": "api.admin_miniprogram_library_workspace", "attach": "api.admin_attachment_library_workspace"}[page]
@@ -845,7 +1013,15 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		endpoint := map[string]string{"config": "api.admin_config", "configDetail": "api.admin_config", "apidocs": "api.admin_api_docs"}[page]
 		return renderer.RenderConfig(writer, webshell.AdminPageForRequest(request, title, "", endpoint), page, donorTemplate, webshell.ConfigAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS})
 	})
-	handler, err := routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(healthHandler, accessHandler.Routes(), adminAPIs, effectsBindings.Effects, effectsBindings.PushCenter, effectsUI, mediaBindings.Media, mediaUI, tagBindings.Tags, tagUI, productBindings.Products, productUI, couponBindings.Coupons, couponUI, channelCatalog, groupOpsBindings.GroupOps, groupOpsUI, automationBindings.Agents, automationUI, operationUI, configBindings.Config, configUI, weComHandler, shellHandler, authentication, cfg.PublicOrigin)
+	channelUI := channelModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, page, resourceID, donorTemplate string, assets channelstore.UIAssets) error {
+		title := map[string]string{"channels": "渠道码中心", "channelForm": "渠道配置"}[page]
+		endpoint := map[string]string{"channels": "api.admin_channels_page", "channelForm": "api.admin_channel_new_page"}[page]
+		return renderer.RenderChannels(writer, webshell.AdminPageForRequest(request, title, "管理渠道定义、客服分配、资产状态与安全历史归因。", endpoint), page, resourceID, donorTemplate, webshell.ChannelAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS})
+	})
+	aiUI := aiModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, page, donorTemplate string, assets aiassistant.Assets) error {
+		return renderer.RenderAIAssistant(writer, webshell.AdminPageForRequest(request, "AI 助手", "AI 计划审阅与可对账执行结果。", "api.admin_ai_assistant"), page, donorTemplate, webshell.AIAssistantAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, GroupCSS: assets.GroupCSS, MaterialCSS: assets.MaterialCSS, ComposerCSS: assets.ComposerCSS, ReadonlyCSS: assets.ReadonlyCSS, HostJS: assets.HostJS})
+	})
+	handler, err := routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(healthHandler, accessHandler.Routes(), adminAPIs, effectsBindings.Effects, effectsBindings.PushCenter, effectsUI, mediaBindings.Media, mediaUI, tagBindings.Tags, tagUI, productBindings.Products, productUI, couponBindings.Coupons, couponUI, channelCenter, groupOpsBindings.GroupOps, groupOpsUI, automationBindings.Agents, automationUI, operationUI, configBindings.Config, configUI, weComHandler, shellHandler, authentication, cfg.PublicOrigin)
 	if err != nil {
 		return fail(err)
 	}
@@ -861,7 +1037,8 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
-	handler = securityHeaders(mountOrderUI(mountSurveyUI(handler, surveyUI, surveyPublicUI, authentication), orderUI, authentication))
+	handler = mountAIAssistant(handler, aiHandler.Routes(), aiUI, authentication, cfg.AIAssistant.UIEnabled, cfg.PublicOrigin)
+	handler = securityHeaders(mountChannelUI(mountHXCUI(mountOrderUI(mountSurveyUI(handler, surveyUI, surveyPublicUI, authentication), orderUI, authentication), hxcUI, authentication), channelUI, authentication))
 	// These are local observations only: they make the release and diagnostics
 	// projections truthful and readable after startup, without claiming deploy,
 	// cutover, provider execution, or runtime-secret application.
@@ -871,7 +1048,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if _, err = diagnostics.Record(ctx, adminopsport.DiagnosticSnapshot{Key: "aicrm.composition", Status: "ok"}); err != nil {
 		return fail(err)
 	}
-	return &composedApplication{pool: pool, handler: handler, management: management, weComProcessor: weComProcessor, effectsRuntime: effectsRuntime, customerSync: customerSync, adminOps: adminOpsProjection, release: releaseObservation, diagnostics: diagnostics}, nil
+	return &composedApplication{pool: pool, handler: handler, management: management, weComProcessor: weComProcessor, effectsRuntime: effectsRuntime, customerSync: customerSync, hxcDashboard: hxcDashboard, hxcSource: hxcSource, adminOps: adminOpsProjection, release: releaseObservation, diagnostics: diagnostics}, nil
 }
 
 func mountSurveyAPIs(mux *http.ServeMux, survey http.Handler) {
@@ -887,6 +1064,35 @@ func mountSurveyAPIs(mux *http.ServeMux, survey http.Handler) {
 	// legacy page-shaped path. Keep it inside the authenticated admin mux so the
 	// response is JSON from Survey instead of the outer mux's plain-text 404.
 	mux.Handle("/admin/questionnaires/", survey)
+}
+
+func mountHXCUI(next, dashboardUI http.Handler, authentication accessAuthentication) http.Handler {
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/admin/hxc-dashboard" || strings.HasPrefix(request.URL.Path, "/hxc-dashboard-assets/") {
+			requireAdminSession(authentication, dashboardUI).ServeHTTP(writer, request)
+			return
+		}
+		next.ServeHTTP(writer, request)
+	})
+}
+
+func mountAIAssistant(next, api, ui http.Handler, authentication accessAuthentication, uiEnabled bool, publicOrigin string) http.Handler {
+	api = rejectCrossSiteUnsafeRequests(api, canonicalOrigin(publicOrigin))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/admin/ai-assistant/") || r.URL.Path == "/api/integrations/ai-assistant/review-plans" {
+			api.ServeHTTP(w, r)
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/ai-assistant-assets/") || r.URL.Path == "/admin/ai.html" || r.URL.Path == "/admin/aiDetail.html" || r.URL.Path == "/admin/cloud-orchestrator/plans" || strings.HasPrefix(r.URL.Path, "/admin/cloud-orchestrator/plans/") {
+			if !uiEnabled {
+				http.NotFound(w, r)
+				return
+			}
+			requireAdminSession(authentication, ui).ServeHTTP(w, r)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func mountOrderUI(next, adminUI http.Handler, authentication accessAuthentication) http.Handler {
@@ -917,7 +1123,23 @@ func mountSurveyUI(next, adminUI, publicUI http.Handler, authentication accessAu
 	})
 }
 
+func mountChannelUI(next, adminUI http.Handler, authentication accessAuthentication) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimSuffix(r.URL.Path, "/")
+		isCanonicalEdit := strings.HasPrefix(path, "/admin/channels/") && strings.HasSuffix(path, "/edit")
+		switch {
+		case path == "/admin/channels", path == "/admin/channels.html", path == "/admin/channels/new", path == "/admin/channelForm.html", isCanonicalEdit:
+			requireAdminSession(authentication, adminUI).ServeHTTP(w, r)
+		default:
+			next.ServeHTTP(w, r)
+		}
+	})
+}
+
 func (application *composedApplication) Close() {
+	if application != nil && application.hxcSource != nil {
+		_ = application.hxcSource.Close()
+	}
 	if application != nil && application.pool != nil {
 		application.pool.Close()
 	}
@@ -1010,6 +1232,7 @@ func routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, acce
 	mux.Handle("/api/admin/customers/", identity)
 	mux.Handle("/api/admin/customer-sync-runs", identity)
 	mux.Handle("/api/admin/customer-sync-runs/", identity)
+	mux.Handle("/api/admin/hxc-dashboard/", identity)
 	mux.Handle("/api/admin/questionnaires", identity)
 	mux.Handle("/api/admin/questionnaires/", identity)
 	mux.Handle("/api/admin/survey-history/", identity)
@@ -1021,6 +1244,7 @@ func routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, acce
 	mux.Handle("/admin/questionnaires/", identity)
 	mux.Handle("/api/admin/orders", identity)
 	mux.Handle("/api/admin/orders/", identity)
+	mux.Handle("/api/admin/order-imports/", identity)
 	mux.Handle("/api/admin/refunds", identity)
 	mux.Handle("/api/admin/exports", identity)
 	mux.Handle("/api/admin/exports/", identity)
@@ -1065,6 +1289,8 @@ func routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, acce
 	mux.Handle("/api/admin/setup-wizard", configHandler)
 	mux.Handle("/api/admin/channels", channelHandler)
 	mux.Handle("/api/admin/channels/", channelHandler)
+	mux.Handle("/api/admin/wecom-customer-acquisition-links", identity)
+	mux.Handle("/api/admin/wecom-customer-acquisition-links/", identity)
 	mux.Handle("/api/admin/automation-conversion/group-ops/", groupOpsHandler)
 	mux.Handle("/api/admin/automation-agents", automationHandler)
 	mux.Handle("/api/admin/automation-agents/", automationHandler)
@@ -1215,7 +1441,9 @@ func securityHeaders(next http.Handler) http.Handler {
 		surveyPage := request.URL.Path == "/admin/questionnaires" || request.URL.Path == "/admin/questionnaires.html" || request.URL.Path == "/admin/questionnaireDetail.html" || request.URL.Path == "/admin/questionnaireOps.html" || strings.HasPrefix(request.URL.Path, "/h5/")
 		operationCyclesPage := request.URL.Path == "/admin/operation-cycles" || strings.HasPrefix(request.URL.Path, "/admin/operation-cycles/")
 		configPage := request.URL.Path == "/admin/config" || request.URL.Path == "/admin/config.html" || request.URL.Path == "/admin/configDetail.html" || request.URL.Path == "/admin/api-docs" || request.URL.Path == "/admin/apidocs.html"
-		if (request.URL.Path == "/admin/campaigns.html" && externaleffects.ValidUIQuery(request.URL.Query())) || mediaPage || tagsPage || productPage || orderPage || couponPage || groupOpsPage || automationPage || surveyPage || operationCyclesPage || configPage {
+		hxcPage := request.URL.Path == "/admin/hxc-dashboard"
+		aiAssistantPage := request.URL.Path == "/admin/ai.html" || request.URL.Path == "/admin/aiDetail.html" || request.URL.Path == "/admin/cloud-orchestrator/plans" || strings.HasPrefix(request.URL.Path, "/admin/cloud-orchestrator/plans/")
+		if (request.URL.Path == "/admin/campaigns.html" && externaleffects.ValidUIQuery(request.URL.Query())) || hxcPage || mediaPage || tagsPage || productPage || orderPage || couponPage || groupOpsPage || automationPage || surveyPage || operationCyclesPage || configPage || aiAssistantPage {
 			styleSource = "'self' 'unsafe-inline'"
 		}
 		imageSource := "'self' data:"

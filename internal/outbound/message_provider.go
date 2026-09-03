@@ -41,7 +41,7 @@ func NewMessageProvider(c MessageProviderConfig) (*MessageProvider, error) {
 	return &MessageProvider{c.Enabled, c.CorpScope, c.Executions, c.Identities, c.Staff, c.Content, c.Writer}, nil
 }
 func (p *MessageProvider) Execute(ctx context.Context, envelope effectport.Envelope, attempt effectport.Attempt) (effectport.AdapterResult, error) {
-	if p == nil || envelope.Kind != effectport.KindOutboundMessage || !envelope.Valid() {
+	if p == nil || envelope.Kind != effectport.KindAutomationMessage || !envelope.Valid() {
 		return effectport.AdapterResult{Completion: effectport.StateFinalFailed, ReceiptDigest: effectport.Hash("outbound.message.invalid")}, nil
 	}
 	if !p.enabled {

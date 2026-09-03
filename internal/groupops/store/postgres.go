@@ -129,7 +129,10 @@ func (r *Repository) get(ctx context.Context, id int64, lock bool) (groupopsport
 	}
 	memberRows.Close()
 
-	assetRows, err := tx.Query(ctx, `SELECT id,asset_reference FROM group_ops_plan_group_assets WHERE plan_id=$1 ORDER BY asset_reference,id`, id)
+	// Application validation compares opaque references using Go's bytewise
+	// string order. Database locale collation can place lower-case references
+	// before upper-case ones, so force the same deterministic order here.
+	assetRows, err := tx.Query(ctx, `SELECT id,asset_reference FROM group_ops_plan_group_assets WHERE plan_id=$1 ORDER BY asset_reference COLLATE "C",id`, id)
 	if err != nil {
 		return groupopsport.Detail{}, err
 	}

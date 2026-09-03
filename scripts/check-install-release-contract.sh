@@ -36,6 +36,8 @@ grep -qxF 'ExecStart=/usr/bin/env AICRM_ROLE=worker AICRM_CUSTOMER_SYNC_TRIGGER=
   echo "daily customer sync must pin its role and trigger at exec time" >&2
   exit 1
 }
+grep -qxF 'ExecStart=/usr/bin/env AICRM_ROLE=worker AICRM_HXC_SYNC_TRIGGER=scheduled /opt/aicrm/current/bin/aicrm' deploy/aicrm-hxc-dashboard-refresh.service || { echo "HXC refresh must use the durable worker trigger" >&2; exit 1; }
+grep -qxF 'OnCalendar=*-*-* 03,09,15,21:15:00 Asia/Shanghai' deploy/aicrm-hxc-dashboard-refresh.timer || { echo "HXC refresh timer must run at the four approved Beijing times" >&2; exit 1; }
 if grep -qE '^AICRM_ROLE=' deploy/aicrm.env.example; then
   echo "the shared environment example must not assign a runtime role" >&2
   exit 1
@@ -61,7 +63,17 @@ for migration_contract in \
   '0024_order_product_version.sql:order product version' \
   '0025_payment_reconciliation.sql:payment reconciliation' \
   '0026_identity_history_receipts.sql:identity history receipts' \
-  '0027_admin_access_login_compat.sql:Admin access login compatibility'; do
+  '0027_admin_access_login_compat.sql:Admin access login compatibility' \
+  '0028_hxc_dashboard.sql:HXC dashboard' \
+  '0029_channel_center.sql:Channel center' \
+  '0030_config_definition_import.sql:configuration definition import' \
+  '0031_channel_history_import.sql:Channel history import' \
+  '0032_channel_acquisition_assets.sql:Channel acquisition assets' \
+  '0033_wecom_welcome_grants.sql:WeCom welcome grants' \
+  '0034_channel_entrant_actions.sql:Channel entrant actions' \
+  '0035_channel_acquisition_links.sql:Channel acquisition links' \
+  '0036_ai_assistant_review.sql:AI Assistant review' \
+  '0037_outbound_private_messages.sql:Outbound private messages'; do
   migration="${migration_contract%%:*}"
   label="${migration_contract#*:}"
   test -f "migrations/${migration}" || {
@@ -84,6 +96,9 @@ for table in config_settings config_audits config_outbox adminops_release_projec
   }
 done
 grep -qx 'test -x "$release_dir/bin/migrate-phone-identities"' "$installer" || { echo "release must include phone migration tool" >&2; exit 1; }
+grep -qx 'test -x "$release_dir/bin/migrate-v2-config-definitions"' "$installer" || { echo "release must include configuration definition migration tool" >&2; exit 1; }
+grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/migrate-v2-config-definitions ./cmd/migrate-v2-config-definitions' .github/workflows/ci.yml || { echo "CI must build the configuration definition migration tool" >&2; exit 1; }
+grep -qx 'test -x "$release_dir/bin/migrate-channel-history"' "$installer" || { echo "release must include channel history migration tool" >&2; exit 1; }
 grep -qx 'test -f "$release_dir/release-files.sha256"' "$installer" || { echo "release must require its immutable file manifest" >&2; exit 1; }
 grep -qx '(cd "$release_dir" && sha256sum --strict --check release-files.sha256)' "$installer" || { echo "existing releases must pass their complete file manifest before resume" >&2; exit 1; }
 grep -qF 'mv -T "$staging_dir" "$release_dir"' "$installer" || { echo "new releases must become visible only after staged verification" >&2; exit 1; }
@@ -96,4 +111,8 @@ grep -qF '${GITHUB_RUN_NUMBER}' .github/workflows/ci.yml || { echo "CI must pass
 grep -qF 'remote_installer="/tmp/install-release-${GITHUB_SHA}.sh"' .github/workflows/ci.yml || { echo "CI must upload each installer to a SHA-versioned remote path" >&2; exit 1; }
 grep -qF 'sudo /usr/bin/bash ${remote_installer}' .github/workflows/ci.yml || { echo "CI must execute the uploaded SHA-versioned installer" >&2; exit 1; }
 grep -qF 'if [[ "$0" == "/tmp/install-release-${release_sha}.sh" ]]; then' "$installer" || { echo "installer cleanup must be limited to its SHA-versioned path" >&2; exit 1; }
+grep -qF 'AICRM_HXC_SOURCE_DSN: ${{ secrets.AICRM_HXC_SOURCE_DSN }}' .github/workflows/ci.yml || { echo "CI must read the HXC DSN from Actions secrets" >&2; exit 1; }
+grep -qF 'AICRM_HXC_UNIONID_SCOPE: ${{ secrets.AICRM_HXC_UNIONID_SCOPE }}' .github/workflows/ci.yml || { echo "CI must read the HXC scope from Actions secrets" >&2; exit 1; }
+grep -qF 'sudo /usr/bin/bash ${remote_configurer} ${remote_config} ${GITHUB_SHA}' .github/workflows/ci.yml || { echo "CI must apply HXC configuration through the audited runtime configurer" >&2; exit 1; }
+scripts/test-configure-hxc-runtime.sh
 scripts/test-install-release-ordering.sh

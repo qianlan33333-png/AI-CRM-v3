@@ -151,9 +151,33 @@ var _ effect.ProviderAdapter = (*TagCatalogProvider)(nil)
 // different outbound kind. Unsupported intents fail closed without a network
 // call; their own future adapters can be added explicitly by composition.
 type ProviderRouter struct {
-	tagCatalog   effect.ProviderAdapter
-	groupMessage effect.ProviderAdapter
-	message      effect.ProviderAdapter
+	tagCatalog        effect.ProviderAdapter
+	groupMessage      effect.ProviderAdapter
+	channelAsset      effect.ProviderAdapter
+	channelEntrant    effect.ProviderAdapter
+	channelLink       effect.ProviderAdapter
+	privateMessage    effect.ProviderAdapter
+	automationMessage effect.ProviderAdapter
+}
+
+func NewProviderRouterWithPrivate(tagCatalog, groupMessage, privateMessage effect.ProviderAdapter) *ProviderRouter {
+	return &ProviderRouter{tagCatalog: tagCatalog, groupMessage: groupMessage, privateMessage: privateMessage}
+}
+
+// WithPrivateMessage extends the established tag/group router without
+// bypassing the frozen Group Ops composition marker and behavior contract.
+func (r *ProviderRouter) WithPrivateMessage(privateMessage effect.ProviderAdapter) *ProviderRouter {
+	if r != nil {
+		r.privateMessage = privateMessage
+	}
+	return r
+}
+
+func (r *ProviderRouter) WithAutomationMessage(message effect.ProviderAdapter) *ProviderRouter {
+	if r != nil {
+		r.automationMessage = message
+	}
+	return r
 }
 
 func NewProviderRouter(tagCatalog effect.ProviderAdapter) *ProviderRouter {
@@ -165,15 +189,26 @@ func NewProviderRouterWithGroupMessage(tagCatalog, groupMessage effect.ProviderA
 }
 
 func NewProviderRouterWithMessages(tagCatalog, groupMessage, message effect.ProviderAdapter) *ProviderRouter {
-	return &ProviderRouter{tagCatalog: tagCatalog, groupMessage: groupMessage, message: message}
+	return &ProviderRouter{tagCatalog: tagCatalog, groupMessage: groupMessage, automationMessage: message}
+}
+
+func NewProviderRouterWithChannels(tagCatalog, groupMessage, channelAsset effect.ProviderAdapter) *ProviderRouter {
+	return &ProviderRouter{tagCatalog: tagCatalog, groupMessage: groupMessage, channelAsset: channelAsset}
+}
+
+func NewProviderRouterWithChannelEntrants(tagCatalog, groupMessage, channelAsset, channelEntrant effect.ProviderAdapter) *ProviderRouter {
+	return &ProviderRouter{tagCatalog: tagCatalog, groupMessage: groupMessage, channelAsset: channelAsset, channelEntrant: channelEntrant}
+}
+func NewProviderRouterWithGroupMessageAndChannels(tagCatalog, groupMessage, channelAsset, channelEntrant, channelLink effect.ProviderAdapter) *ProviderRouter {
+	return &ProviderRouter{tagCatalog: tagCatalog, groupMessage: groupMessage, channelAsset: channelAsset, channelEntrant: channelEntrant, channelLink: channelLink}
 }
 
 func (r *ProviderRouter) Execute(ctx context.Context, envelope effect.Envelope, attempt effect.Attempt) (effect.AdapterResult, error) {
 	if r != nil {
 		switch envelope.Kind {
-		case effect.KindOutboundMessage:
-			if r.message != nil {
-				return r.message.Execute(ctx, envelope, attempt)
+		case effect.KindAutomationMessage:
+			if r.automationMessage != nil {
+				return r.automationMessage.Execute(ctx, envelope, attempt)
 			}
 		case effect.KindWeComTagCatalog:
 			if r.tagCatalog != nil {
@@ -182,6 +217,22 @@ func (r *ProviderRouter) Execute(ctx context.Context, envelope effect.Envelope, 
 		case effect.KindGroupMessage:
 			if r.groupMessage != nil {
 				return r.groupMessage.Execute(ctx, envelope, attempt)
+			}
+		case effect.KindChannelAsset:
+			if r.channelAsset != nil {
+				return r.channelAsset.Execute(ctx, envelope, attempt)
+			}
+		case effect.KindChannelWelcome, effect.KindChannelEntryTag:
+			if r.channelEntrant != nil {
+				return r.channelEntrant.Execute(ctx, envelope, attempt)
+			}
+		case effect.KindChannelLink:
+			if r.channelLink != nil {
+				return r.channelLink.Execute(ctx, envelope, attempt)
+			}
+		case effect.KindOutboundMessage:
+			if r.privateMessage != nil {
+				return r.privateMessage.Execute(ctx, envelope, attempt)
 			}
 		}
 	}

@@ -35,6 +35,16 @@ if ! grep -Eq '^AICRM_SURVEY_DATA_KEY=.{43}$' /etc/aicrm/aicrm.env; then
   unset survey_data_key
   chmod 0600 /etc/aicrm/aicrm.env
 fi
+if ! grep -Eq '^AICRM_HXC_SUBJECT_HMAC_KEY=.{32,}$' /etc/aicrm/aicrm.env; then
+  hxc_subject_hmac_key="$(openssl rand -base64 48 | tr -d '\n=')"
+  if grep -q '^AICRM_HXC_SUBJECT_HMAC_KEY=' /etc/aicrm/aicrm.env; then
+    sed -i "s|^AICRM_HXC_SUBJECT_HMAC_KEY=.*$|AICRM_HXC_SUBJECT_HMAC_KEY=${hxc_subject_hmac_key}|" /etc/aicrm/aicrm.env
+  else
+    printf '\nAICRM_HXC_SUBJECT_HMAC_KEY=%s\n' "$hxc_subject_hmac_key" >> /etc/aicrm/aicrm.env
+  fi
+  unset hxc_subject_hmac_key
+  chmod 0600 /etc/aicrm/aicrm.env
+fi
 
 release_dir="${release_root}/${release_sha}"
 
@@ -66,6 +76,8 @@ test -x "$release_dir/bin/migrate-river"
 test -x "$release_dir/bin/migrate-phone-identities"
 test -x "$release_dir/bin/migrate-survey-v2"
 test -x "$release_dir/bin/migrate-automation-operations"
+test -x "$release_dir/bin/migrate-v2-config-definitions"
+test -x "$release_dir/bin/migrate-channel-history"
 test -f "$release_dir/migrations/0005_external_effects.sql"
 test -f "$release_dir/migrations/0006_wecom_callback_channel_acquisition.sql"
 test -f "$release_dir/migrations/0007_media.sql"
@@ -87,6 +99,16 @@ test -f "$release_dir/migrations/0024_order_product_version.sql"
 test -f "$release_dir/migrations/0025_payment_reconciliation.sql"
 test -f "$release_dir/migrations/0026_identity_history_receipts.sql"
 test -f "$release_dir/migrations/0027_admin_access_login_compat.sql"
+test -f "$release_dir/migrations/0028_hxc_dashboard.sql"
+test -f "$release_dir/migrations/0029_channel_center.sql"
+test -f "$release_dir/migrations/0030_config_definition_import.sql"
+test -f "$release_dir/migrations/0031_channel_history_import.sql"
+test -f "$release_dir/migrations/0032_channel_acquisition_assets.sql"
+test -f "$release_dir/migrations/0033_wecom_welcome_grants.sql"
+test -f "$release_dir/migrations/0034_channel_entrant_actions.sql"
+test -f "$release_dir/migrations/0035_channel_acquisition_links.sql"
+test -f "$release_dir/migrations/0036_ai_assistant_review.sql"
+test -f "$release_dir/migrations/0037_outbound_private_messages.sql"
 test -f "$release_dir/migrations/0046_automation_operations_migration.sql"
 test -f "$release_dir/migrations/0047_segment_audience_schedule_state.sql"
 test -f "$release_dir/migrations/0015_config_adminops.sql"
@@ -145,6 +167,8 @@ install -m 0644 "$release_dir/deploy/aicrm-wecom-worker.timer" /etc/systemd/syst
 install -m 0644 "$release_dir/deploy/aicrm-effects-worker.service" /etc/systemd/system/aicrm-effects-worker.service
 install -m 0644 "$release_dir/deploy/aicrm-customer-sync-daily.service" /etc/systemd/system/aicrm-customer-sync-daily.service
 install -m 0644 "$release_dir/deploy/aicrm-customer-sync-daily.timer" /etc/systemd/system/aicrm-customer-sync-daily.timer
+install -m 0644 "$release_dir/deploy/aicrm-hxc-dashboard-refresh.service" /etc/systemd/system/aicrm-hxc-dashboard-refresh.service
+install -m 0644 "$release_dir/deploy/aicrm-hxc-dashboard-refresh.timer" /etc/systemd/system/aicrm-hxc-dashboard-refresh.timer
 systemctl daemon-reload
 
 rollback() {
@@ -155,6 +179,7 @@ rollback() {
     systemctl restart aicrm-wecom-worker.timer || true
     systemctl restart aicrm-effects-worker.service || true
     systemctl restart aicrm-customer-sync-daily.timer || true
+    systemctl restart aicrm-hxc-dashboard-refresh.timer || true
   fi
 }
 
@@ -194,6 +219,10 @@ fi
 if ! systemctl enable --now aicrm-customer-sync-daily.timer; then
   rollback
   exit 10
+fi
+if ! systemctl enable --now aicrm-hxc-dashboard-refresh.timer; then
+  rollback
+  exit 12
 fi
 if [[ -n "$release_run_number" ]]; then
   next_run_file="$(mktemp "${last_successful_run_file}.XXXXXX")"

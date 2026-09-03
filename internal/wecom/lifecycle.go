@@ -62,6 +62,7 @@ type ExternalContactLifecycleFact struct {
 	EmployeeUserID   string
 	HasState         bool
 	StateDigest      [32]byte
+	WelcomeGrantRef  string
 	OccurredAt       time.Time
 	VerifiedIdentity identitydomain.VerifiedFact
 }
@@ -73,6 +74,9 @@ func (fact ExternalContactLifecycleFact) Valid() bool {
 		(fact.supported() && fact.EmployeeUserID == "") ||
 		(!fact.HasState && fact.StateDigest != ([32]byte{})) ||
 		(fact.HasState && fact.StateDigest == ([32]byte{})) || !fact.VerifiedIdentity.Valid() {
+		return false
+	}
+	if fact.WelcomeGrantRef != "" && !strings.HasPrefix(fact.WelcomeGrantRef, "wgrant_") {
 		return false
 	}
 	reference := fact.VerifiedIdentity.Reference()
@@ -117,6 +121,7 @@ type ExternalContactLifecycle struct {
 	Relationships CallbackFollowRelationshipStore
 	States        channelport.StateResolver
 	Entrants      channelport.EntrantReceiptRecorder
+	Actions       channelport.EntrantActionAccepter
 	Directory     customerport.CallbackProjectionWriter
 	Outbox        platformoutbox.Appender
 }
@@ -301,6 +306,11 @@ func (service ExternalContactLifecycle) correlateEntrant(ctx context.Context, fa
 	}
 	switch resolution.Status {
 	case channeldomain.StateAttributed:
+		if service.Actions != nil {
+			if err := service.Actions.AcceptEntrantActions(ctx, channelport.EntrantActionCommand{CallbackID: fact.CallbackID, CustomerID: customerID, Resolution: resolution, WelcomeGrantRef: fact.WelcomeGrantRef, OccurredAt: fact.OccurredAt}); err != nil {
+				return err
+			}
+		}
 		result.Outcomes = append(result.Outcomes, OutcomeChannelAttributed)
 	case channeldomain.StateUnmatched:
 		result.Outcomes = append(result.Outcomes, OutcomeChannelUnmatched)

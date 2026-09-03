@@ -619,6 +619,47 @@ paths:
       responses:
         "200": {description: Non-PII durable stage and reconciled counts, content: {application/json: {schema: {$ref: "#/components/schemas/CustomerSyncRun"}}}}
         "404": {$ref: "#/components/responses/Error"}
+  /api/admin/hxc-dashboard/summary:
+    get:
+      operationId: getHXCDashboardSummary
+      tags: [HXCDashboard]
+      security: [{adminSession: []}]
+      responses:
+        "200": {description: Published HXC current-state projection summary, content: {application/json: {schema: {$ref: "#/components/schemas/HXCDashboardSummary"}}}}
+        "401": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/admin/hxc-dashboard/query:
+    post:
+      operationId: queryHXCDashboard
+      tags: [HXCDashboard]
+      security: [{adminSession: []}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/HXCDashboardQuery"}}}}
+      responses:
+        "200": {description: Version-fixed page and optional grouping, content: {application/json: {schema: {$ref: "#/components/schemas/HXCDashboardQueryResponse"}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+  /api/admin/hxc-dashboard/refreshes:
+    post:
+      operationId: createHXCDashboardRefresh
+      tags: [HXCDashboard]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      responses:
+        "200": {description: Existing refresh replay, content: {application/json: {schema: {$ref: "#/components/schemas/HXCDashboardRefreshEnvelope"}}}}
+        "202": {description: Durable refresh accepted, content: {application/json: {schema: {$ref: "#/components/schemas/HXCDashboardRefreshEnvelope"}}}}
+        "403": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/admin/hxc-dashboard/refreshes/{run_id}:
+    get:
+      operationId: getHXCDashboardRefresh
+      tags: [HXCDashboard]
+      security: [{adminSession: []}]
+      parameters: [{name: run_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
+      responses:
+        "200": {description: Durable HXC refresh receipt, content: {application/json: {schema: {$ref: "#/components/schemas/HXCDashboardRefresh"}}}}
+        "401": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
   /wecom/external-contact/callback:
     get:
       operationId: verifyWeComCallback
@@ -1207,19 +1248,324 @@ paths:
         "404": {$ref: "#/components/responses/Error"}
   /api/admin/channels:
     get:
-      operationId: listProductFormChannels
-      tags: [Products]
-      description: Read-only channel compatibility projection used by the frozen Product forms. Empty means the Channel catalog owner has no available rows; Product does not infer or create channels.
+      operationId: listChannels
+      tags: [Channels]
+      description: List canonical local channel definitions. This read never invokes WeCom.
       security: [{adminSession: []}]
       parameters:
         - {$ref: "#/components/parameters/ProductLimit"}
         - {name: include_archived, in: query, schema: {type: boolean, default: false}}
+        - {name: cursor, in: query, schema: {type: string, maxLength: 512}}
+        - {name: status, in: query, schema: {type: string, enum: [active, inactive, archived]}}
+        - {name: q, in: query, schema: {type: string, maxLength: 200}}
       responses:
         "200": {description: Channel compatibility page, content: {application/json: {schema: {$ref: "#/components/schemas/LegacyProductChannelPage"}}}}
         "400": {$ref: "#/components/responses/Error"}
         "401": {$ref: "#/components/responses/Error"}
         "403": {$ref: "#/components/responses/Error"}
         "503": {$ref: "#/components/responses/Unavailable"}
+    post:
+      operationId: createChannel
+      tags: [Channels]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/ChannelCatalogWrite"}}}}
+      responses:
+        "201": {description: Persisted local channel, content: {application/json: {schema: {$ref: "#/components/schemas/ChannelCatalogMutation"}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
+        "413": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/admin/channels/{channel_id}:
+    parameters:
+      - {name: channel_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
+    get:
+      operationId: getChannel
+      tags: [Channels]
+      security: [{adminSession: []}]
+      responses:
+        "200": {description: Canonical local channel, headers: {ETag: {schema: {type: string}}}, content: {application/json: {schema: {$ref: "#/components/schemas/ChannelCatalogDetail"}}}}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+    patch:
+      operationId: updateChannel
+      tags: [Channels]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters:
+        - {$ref: "#/components/parameters/RequiredIdempotencyKey"}
+        - {name: If-Match, in: header, required: true, schema: {type: string, pattern: '^"?[1-9][0-9]*"?$'}}
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/ChannelCatalogWrite"}}}}
+      responses:
+        "200": {description: Updated immutable channel version, headers: {ETag: {schema: {type: string}}}, content: {application/json: {schema: {$ref: "#/components/schemas/ChannelCatalogMutation"}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
+        "413": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/admin/channels/{channel_id}/acquisition-preview:
+    get:
+      operationId: previewChannelAcquisition
+      tags: [Channels]
+      security: [{adminSession: []}]
+      parameters: [{name: channel_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
+      responses:
+        "200": {description: Provider readiness and frozen local assignment preview, content: {application/json: {schema: {type: object}}}}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/admin/channels/{channel_id}/acquisition-staff:
+    get:
+      operationId: listChannelAcquisitionStaff
+      tags: [Channels]
+      description: Returns only the intersection of active local staff and current WeCom follow users; Provider read failure is fail closed.
+      security: [{adminSession: []}]
+      parameters: [{name: channel_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
+      responses:
+        "200": {description: Eligible staff, content: {application/json: {schema: {type: object}}}}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/admin/channels/{channel_id}/assignees:
+    get:
+      operationId: listChannelAssignees
+      tags: [Channels]
+      security: [{adminSession: []}]
+      parameters: [{name: channel_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
+      responses:
+        "200": {description: Immutable current assignment projection, content: {application/json: {schema: {type: object}}}}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+  /api/admin/channels/{channel_id}/history:
+    get:
+      operationId: listChannelHistory
+      tags: [Channels]
+      description: Safe canonical history without raw UnionID, external_userid, phone or State.
+      security: [{adminSession: []}]
+      parameters:
+        - {name: channel_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
+        - {$ref: "#/components/parameters/Limit"}
+        - {name: cursor, in: query, schema: {type: string, maxLength: 512}}
+      responses:
+        "200": {description: Imported and runtime channel history, content: {application/json: {schema: {type: object}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+  /api/admin/channels/{channel_id}/contacts:
+    get:
+      operationId: listChannelContacts
+      tags: [Channels]
+      description: Recent canonical customers and safe aggregate facts only.
+      security: [{adminSession: []}]
+      parameters:
+        - {name: channel_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
+        - {$ref: "#/components/parameters/Limit"}
+        - {name: cursor, in: query, schema: {type: string, maxLength: 512}}
+      responses:
+        "200": {description: Safe recent contacts, content: {application/json: {schema: {type: object}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+  /api/admin/channels/{channel_id}/acquisition-assets:
+    get:
+      operationId: listChannelAcquisitionAssets
+      tags: [Channels]
+      security: [{adminSession: []}]
+      parameters:
+        - {name: channel_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
+        - {$ref: "#/components/parameters/Limit"}
+        - {$ref: "#/components/parameters/BeforeID"}
+      responses:
+        "200": {description: Durable Channel asset projections, content: {application/json: {schema: {type: object}}}}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+    post:
+      operationId: publishChannelAcquisitionAsset
+      tags: [Channels]
+      description: Accepts and queues one frozen asset intent in the caller transaction. Acceptance is not delivery.
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters:
+        - {name: channel_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
+        - {$ref: "#/components/parameters/RequiredIdempotencyKey"}
+      requestBody:
+        required: true
+        content: {application/json: {schema: {type: object, additionalProperties: false, required: [kind], properties: {kind: {type: string, enum: [contact_way_qrcode, customer_acquisition_link]}}}}}
+      responses:
+        "202": {description: Durable accepted asset receipt, content: {application/json: {schema: {type: object}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
+  /api/admin/channels/{channel_id}/acquisition-assets/{effect_id}:
+    get:
+      operationId: getChannelAcquisitionAsset
+      tags: [Channels]
+      security: [{adminSession: []}]
+      parameters:
+        - {name: channel_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
+        - {name: effect_id, in: path, required: true, schema: {$ref: "#/components/schemas/ExternalEffectID"}}
+      responses:
+        "200": {description: Durable asset projection and controlled result, content: {application/json: {schema: {type: object}}}}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+    patch:
+      operationId: updateChannelContactWay
+      tags: [Channels]
+      description: Accepts a full Provider update using the channel current immutable config; the referenced executed QR asset is superseded only after execution or reconciliation.
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters:
+        - {name: channel_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
+        - {name: effect_id, in: path, required: true, schema: {$ref: "#/components/schemas/ExternalEffectID"}}
+        - {$ref: "#/components/parameters/RequiredIdempotencyKey"}
+      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false}}}}
+      responses:
+        "202": {description: Durable accepted contact-way update, content: {application/json: {schema: {type: object}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+    delete:
+      operationId: deleteChannelContactWay
+      tags: [Channels]
+      description: Accepts a Provider delete and retires the referenced QR asset and its active State binding only after execution or reconciliation.
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters:
+        - {name: channel_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
+        - {name: effect_id, in: path, required: true, schema: {$ref: "#/components/schemas/ExternalEffectID"}}
+        - {$ref: "#/components/parameters/RequiredIdempotencyKey"}
+      responses:
+        "202": {description: Durable accepted contact-way deletion, content: {application/json: {schema: {type: object}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/admin/channels/{channel_id}/acquisition-assets/{effect_id}/reconcile:
+    post:
+      operationId: reconcileChannelAcquisitionAsset
+      tags: [Channels]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters:
+        - {name: channel_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
+        - {name: effect_id, in: path, required: true, schema: {$ref: "#/components/schemas/ExternalEffectID"}}
+        - {$ref: "#/components/parameters/RequiredIdempotencyKey"}
+      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false, required: [resolution, evidence_digest], properties: {resolution: {type: string, enum: [provider_applied, provider_not_applied]}, evidence_digest: {type: string, pattern: '^sha256:[0-9a-f]{64}$'}, provider_asset_ref: {type: string}, asset_url: {type: string, format: uri}}}}}}
+      responses:
+        "200": {description: Atomically reconciled EER and Channel asset, content: {application/json: {schema: {type: object}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
+  /api/admin/channels/{channel_id}/qrcode/generate:
+    post:
+      operationId: generateChannelQRCode
+      tags: [Channels]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters:
+        - {name: channel_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
+        - {$ref: "#/components/parameters/RequiredIdempotencyKey"}
+      responses:
+        "202": {description: Durable accepted QR asset receipt, content: {application/json: {schema: {type: object}}}}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+  /api/admin/channels/{channel_id}/qrcode/download:
+    get:
+      operationId: downloadChannelQRCode
+      tags: [Channels]
+      description: Same-origin constrained image download; only executed or reconciled assets are eligible.
+      security: [{adminSession: []}]
+      parameters: [{name: channel_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
+      responses:
+        "200": {description: QR image, content: {image/png: {schema: {type: string, format: binary}}, image/jpeg: {schema: {type: string, format: binary}}}}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/admin/wecom-customer-acquisition-links:
+    get:
+      operationId: listWeComCustomerAcquisitionLinks
+      tags: [Channels]
+      security: [{adminSession: []}]
+      parameters:
+        - {name: cursor, in: query, schema: {type: string, maxLength: 1024}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 100}}
+      responses:
+        "200": {description: Provider link identifiers, content: {application/json: {schema: {type: object, additionalProperties: false, required: [items, next_cursor], properties: {items: {type: array, items: {type: object, additionalProperties: false, required: [link_id], properties: {link_id: {type: string}}}}, next_cursor: {type: string}}}}}}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+    post:
+      operationId: createWeComCustomerAcquisitionLink
+      tags: [Channels]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/CustomerAcquisitionLinkInput"}}}}
+      responses:
+        "202": {description: Durable accepted mutation receipt, content: {application/json: {schema: {$ref: "#/components/schemas/CustomerAcquisitionLinkReceipt"}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
+  /api/admin/wecom-customer-acquisition-links/{link_id}:
+    parameters: [{name: link_id, in: path, required: true, schema: {type: string, minLength: 1, maxLength: 1024}}]
+    get:
+      operationId: getWeComCustomerAcquisitionLink
+      tags: [Channels]
+      security: [{adminSession: []}]
+      responses:
+        "200": {description: Provider link, content: {application/json: {schema: {$ref: "#/components/schemas/CustomerAcquisitionLink"}}}}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+    patch:
+      operationId: updateWeComCustomerAcquisitionLink
+      tags: [Channels]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/CustomerAcquisitionLinkInput"}}}}
+      responses:
+        "202": {description: Durable accepted mutation receipt, content: {application/json: {schema: {$ref: "#/components/schemas/CustomerAcquisitionLinkReceipt"}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
+    delete:
+      operationId: deleteWeComCustomerAcquisitionLink
+      tags: [Channels]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      responses:
+        "202": {description: Durable accepted mutation receipt, content: {application/json: {schema: {$ref: "#/components/schemas/CustomerAcquisitionLinkReceipt"}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
+  /api/admin/wecom-customer-acquisition-links/{link_id}/reconcile:
+    post:
+      operationId: reconcileWeComCustomerAcquisitionLink
+      tags: [Channels]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters:
+        - {name: link_id, in: path, required: true, schema: {type: string, minLength: 1, maxLength: 1024}}
+        - {$ref: "#/components/parameters/RequiredIdempotencyKey"}
+      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false, required: [receipt_id, resolution, evidence_digest], properties: {receipt_id: {$ref: "#/components/schemas/PositiveID"}, resolution: {type: string, enum: [provider_applied, provider_not_applied]}, evidence_digest: {type: string, pattern: '^[0-9a-f]{64}$'}}}}}}
+      responses:
+        "200": {description: Atomically reconciled EER and Channel receipt, content: {application/json: {schema: {$ref: "#/components/schemas/CustomerAcquisitionLinkReceipt"}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
   /admin/operation-cycles:
     get:
       operationId: openOperationCyclesWorkspace
@@ -2560,6 +2906,116 @@ paths:
     get: {operationId: getAutomationRunEffectReconciliationCandidate, tags: [AutomationOperations], security: [{adminSession: []}], parameters: [{$ref: "#/components/parameters/AutomationOpsRunID"}, {$ref: "#/components/parameters/AutomationOpsEffectID"}], responses: {"200": {description: Exact expired generation and fence for an outcome-unknown effect, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationOpsObjectEnvelope"}}}}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}}
   /api/admin/automation-runs/{run_id}/effects/{effect_id}/reconcile:
     post: {operationId: reconcileAutomationRunEffect, tags: [AutomationOperations], security: [{adminSession: [], csrfHeader: []}], parameters: [{$ref: "#/components/parameters/AutomationOpsRunID"}, {$ref: "#/components/parameters/AutomationOpsEffectID"}, {$ref: "#/components/parameters/RequiredIdempotencyKey"}], requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationOpsReconcileRequest"}}}}, responses: {"200": {description: Evidence-based reconciliation, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationOpsObjectEnvelope"}}}}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "422": {$ref: "#/components/responses/Error"}}}
+  /api/admin/ai-assistant/plans:
+    get:
+      operationId: listAIAssistantPlans
+      tags: [AIAssistant]
+      security: [{adminSession: []}]
+      parameters:
+        - {name: keyword, in: query, schema: {type: string, maxLength: 200}}
+        - {name: status, in: query, schema: {$ref: "#/components/schemas/AIAssistantPlanState"}}
+        - {$ref: "#/components/parameters/AIAssistantCursor"}
+        - {$ref: "#/components/parameters/AIAssistantLimit"}
+      responses: {"200": {description: OneID-safe plan page, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantPlanPage"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+    post:
+      operationId: createAIAssistantPlan
+      tags: [AIAssistant]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantPlanCreateRequest"}}}}
+      responses: {"200": {description: Exact idempotent replay, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantPlanEnvelope"}}}}, "201": {description: Pending review plan; no external effect exists, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantPlanEnvelope"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "413": {$ref: "#/components/responses/Error"}, "422": {$ref: "#/components/responses/Error"}}
+  /api/admin/ai-assistant/plans/{plan_id}:
+    get:
+      operationId: getAIAssistantPlan
+      tags: [AIAssistant]
+      security: [{adminSession: []}]
+      parameters: [{$ref: "#/components/parameters/AIAssistantPlanID"}]
+      responses: {"200": {description: Plan detail, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantPlanEnvelope"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}}
+  /api/admin/ai-assistant/plans/{plan_id}/recipients:
+    get:
+      operationId: listAIAssistantRecipients
+      tags: [AIAssistant]
+      security: [{adminSession: []}]
+      parameters:
+        - {$ref: "#/components/parameters/AIAssistantPlanID"}
+        - {name: status, in: query, schema: {$ref: "#/components/schemas/AIAssistantReviewState"}}
+        - {$ref: "#/components/parameters/AIAssistantCursor"}
+        - {$ref: "#/components/parameters/AIAssistantLimit"}
+      responses: {"200": {description: OneID-safe recipient page, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantRecipientPage"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}}
+  /api/admin/ai-assistant/plans/{plan_id}/recipients/{recipient_id}:
+    get:
+      operationId: getAIAssistantRecipient
+      tags: [AIAssistant]
+      security: [{adminSession: []}]
+      parameters: [{$ref: "#/components/parameters/AIAssistantPlanID"}, {$ref: "#/components/parameters/AIAssistantRecipientID"}]
+      responses: {"200": {description: Recipient drawer detail, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantRecipientEnvelope"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}}
+  /api/admin/ai-assistant/plans/{plan_id}/recipients/{recipient_id}/content:
+    patch:
+      operationId: updateAIAssistantRecipientContent
+      tags: [AIAssistant]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/AIAssistantPlanID"}, {$ref: "#/components/parameters/AIAssistantRecipientID"}, {$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantContentUpdateRequest"}}}}
+      responses: {"200": {description: Immutable content version created, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantContentVersion"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "422": {$ref: "#/components/responses/Error"}}
+  /api/admin/ai-assistant/plans/{plan_id}/recipients/{recipient_id}/review:
+    post:
+      operationId: reviewAIAssistantRecipient
+      tags: [AIAssistant]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/AIAssistantPlanID"}, {$ref: "#/components/parameters/AIAssistantRecipientID"}, {$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantRecipientReviewRequest"}}}}
+      responses: {"200": {description: Review-only decision; no effect is accepted, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantRecipientEnvelope"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+  /api/admin/ai-assistant/plans/{plan_id}/preview-approval:
+    post:
+      operationId: previewAIAssistantPlanApproval
+      tags: [AIAssistant]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/AIAssistantPlanID"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantExpectedVersionRequest"}}}}
+      responses: {"200": {description: Immutable approval preview, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantApprovalPreview"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+  /api/admin/ai-assistant/plans/{plan_id}/approve:
+    post:
+      operationId: approveAIAssistantPlan
+      tags: [AIAssistant]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/AIAssistantPlanID"}, {$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantApproveRequest"}}}}
+      responses: {"200": {description: Approval and all Outbound effects accepted atomically, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantPlanEnvelope"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/ai-assistant/plans/{plan_id}/reject:
+    post:
+      operationId: rejectAIAssistantPlan
+      tags: [AIAssistant]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/AIAssistantPlanID"}, {$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantRejectRequest"}}}}
+      responses: {"200": {description: Plan rejected without accepting effects, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantPlanEnvelope"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+  /api/admin/ai-assistant/plans/{plan_id}/effects:
+    get:
+      operationId: listAIAssistantEffects
+      tags: [AIAssistant]
+      security: [{adminSession: []}]
+      parameters: [{$ref: "#/components/parameters/AIAssistantPlanID"}]
+      responses: {"200": {description: Digest-safe effect projections, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantEffectPage"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}}
+  /api/admin/ai-assistant/effects/{effect_id}/reconcile:
+    post:
+      operationId: reconcileAIAssistantEffect
+      tags: [AIAssistant]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/AIAssistantEffectID"}, {$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantReconcileRequest"}}}}
+      responses: {"200": {description: Original-key reconciliation result, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantReconcileResponse"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+  /api/integrations/ai-assistant/review-plans:
+    post:
+      operationId: createAIAssistantIntegrationPlan
+      tags: [AIAssistant]
+      security: [{aiAssistantIntegration: []}]
+      parameters:
+        - {$ref: "#/components/parameters/RequiredIdempotencyKey"}
+        - {$ref: "#/components/parameters/AIAssistantIntegrationTimestamp"}
+        - {$ref: "#/components/parameters/AIAssistantIntegrationNonce"}
+        - {$ref: "#/components/parameters/AIAssistantIntegrationSignature"}
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantIntegrationPlanRequest"}}}}
+      responses: {"202": {description: Scoped identities resolved into a pending review plan; unresolved targets are reported but never persisted as recipients, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantIntegrationPlanResponse"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "413": {$ref: "#/components/responses/Error"}, "422": {$ref: "#/components/responses/Error"}}
 components:
   securitySchemes:
     adminSession: {type: apiKey, in: cookie, name: aicrm_admin_session}
@@ -2571,6 +3027,7 @@ components:
     wechatPaySignature: {type: apiKey, in: header, name: Wechatpay-Signature}
     operationCycleService: {type: http, scheme: bearer}
     automationOpsWebhook: {type: apiKey, in: header, name: X-AICRM-Signature, description: HMAC-SHA256 over the exact body and versioned timestamp/event context.}
+    aiAssistantIntegration: {type: apiKey, in: header, name: X-AICRM-Integration-Key}
   parameters:
     ID: {name: id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
     AutomationAgentID: {name: agent_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
@@ -2631,6 +3088,14 @@ components:
     Cursor: {name: cursor, in: query, schema: {type: string, maxLength: 512}}
     AutomationOpsWebhookTimestamp: {name: X-AICRM-Timestamp, in: header, required: true, schema: {type: string, pattern: "^[0-9]{1,20}$"}}
     AutomationOpsWebhookEventID: {name: X-AICRM-Event-Id, in: header, required: true, schema: {type: string, minLength: 1, maxLength: 200}}
+    AIAssistantPlanID: {name: plan_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
+    AIAssistantRecipientID: {name: recipient_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
+    AIAssistantEffectID: {name: effect_id, in: path, required: true, schema: {type: string, pattern: "^eer_[1-9][0-9]*$"}}
+    AIAssistantCursor: {name: cursor, in: query, schema: {type: string, maxLength: 512}}
+    AIAssistantLimit: {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 50, default: 50}}
+    AIAssistantIntegrationTimestamp: {name: X-AICRM-Timestamp, in: header, required: true, schema: {type: string, pattern: "^[0-9]{1,20}$"}}
+    AIAssistantIntegrationNonce: {name: X-AICRM-Nonce, in: header, required: true, schema: {type: string, minLength: 16, maxLength: 128}}
+    AIAssistantIntegrationSignature: {name: X-AICRM-Signature, in: header, required: true, schema: {type: string, pattern: "^[0-9a-f]{64}$"}}
   responses:
     Error: {description: Stable error response, content: {application/json: {schema: {$ref: "#/components/schemas/ErrorResponse"}}}}
     Unavailable: {description: Dependency or provider unavailable, content: {application/json: {schema: {$ref: "#/components/schemas/ErrorResponse"}}}}
@@ -2670,6 +3135,353 @@ components:
     AutomationOpsReconcileRequest: {type: object, additionalProperties: false, required: [generation, fence, lease_expires_at, evidence_digest, resolution], properties: {generation: {type: integer, format: int64, minimum: 1}, fence: {type: integer, format: int64, minimum: 1}, lease_expires_at: {type: string, format: date-time}, evidence_digest: {$ref: "#/components/schemas/AutomationOpsDigest"}, resolution: {type: string, enum: [provider_accepted, delivery_proven, final_failed]}}}
     AutomationOpsObjectEnvelope: {type: object, additionalProperties: false, required: [data], properties: {data: {type: object, additionalProperties: true}}}
     AutomationOpsObjectPage: {type: object, additionalProperties: false, required: [items], properties: {items: {type: array, maxItems: 100, items: {type: object, additionalProperties: true}}, next_cursor: {type: string, maxLength: 512}}}
+    HXCDashboardCounts:
+      type: object
+      additionalProperties: false
+      required: [total, active_used, active_unused, registered_no_active_membership, matched, unmatched, conflict]
+      properties:
+        total: {type: integer, format: int64, minimum: 0}
+        active_used: {type: integer, format: int64, minimum: 0}
+        active_unused: {type: integer, format: int64, minimum: 0}
+        registered_no_active_membership: {type: integer, format: int64, minimum: 0}
+        matched: {type: integer, format: int64, minimum: 0}
+        unmatched: {type: integer, format: int64, minimum: 0}
+        conflict: {type: integer, format: int64, minimum: 0}
+    HXCDashboardSummary:
+      type: object
+      additionalProperties: false
+      required: [projection_id, rule_version, projection_as_of, published_at, freshness, age_seconds, source_digest, projection_digest, counts]
+      properties:
+        projection_id: {$ref: "#/components/schemas/PositiveID"}
+        rule_version: {type: string, const: hxc-current-v1}
+        projection_as_of: {type: string, format: date-time}
+        source_watermark: {type: [string, "null"], format: date-time}
+        published_at: {type: string, format: date-time}
+        freshness: {type: string, enum: [fresh, stale]}
+        age_seconds: {type: integer, format: int64}
+        source_digest: {type: string, pattern: '^[0-9a-f]{64}$'}
+        projection_digest: {type: string, pattern: '^[0-9a-f]{64}$'}
+        counts: {$ref: "#/components/schemas/HXCDashboardCounts"}
+    HXCDashboardFilters:
+      type: object
+      additionalProperties: false
+      properties:
+        stage: {type: array, maxItems: 3, uniqueItems: true, items: {type: string, enum: [active_used, active_unused, registered_no_active_membership]}}
+        subscription_tier: {type: array, maxItems: 20, uniqueItems: true, items: {type: string, minLength: 1, maxLength: 100}}
+        last_capability: {type: array, maxItems: 20, uniqueItems: true, items: {type: string, minLength: 1, maxLength: 100}}
+        business_stage: {type: array, maxItems: 20, uniqueItems: true, items: {type: string, minLength: 1, maxLength: 100}}
+        user_segment: {type: array, maxItems: 20, uniqueItems: true, items: {type: string, minLength: 1, maxLength: 100}}
+        identity_state: {type: array, maxItems: 3, uniqueItems: true, items: {type: string, enum: [matched, unmatched, conflict]}}
+    HXCDashboardQuery:
+      type: object
+      additionalProperties: false
+      properties:
+        projection_id: {$ref: "#/components/schemas/PositiveID"}
+        filters: {$ref: "#/components/schemas/HXCDashboardFilters"}
+        exact_hxc_user_id: {type: string, minLength: 1, maxLength: 255, writeOnly: true}
+        sort: {type: string, enum: [last_used_at_desc, source_updated_at_desc, subscription_expires_at_asc, subscription_expires_at_desc, messages_7d_desc]}
+        group_by: {type: string, enum: [stage, subscription_tier, last_capability, business_stage, user_segment, identity_state]}
+        cursor: {type: string, maxLength: 2048}
+        limit: {type: integer, minimum: 1, maximum: 100, default: 50}
+    HXCDashboardRow:
+      type: object
+      additionalProperties: false
+      required: [user_ref, stage, subscription_tier, monthly_chat_quota, current_period_used, consultation_limit, consultation_used, membership_attribution, sessions_7d, sessions_30d, sessions_total, user_messages_7d, user_messages_30d, user_messages_total, capability_usage, identity_state, source_updated_at]
+      properties:
+        user_ref: {type: string, pattern: '^HXC-[0-9a-f]{12}$'}
+        stage: {type: string, enum: [active_used, active_unused, registered_no_active_membership]}
+        subscription_tier: {type: string}
+        subscription_expires_at: {type: [string, "null"], format: date-time}
+        monthly_chat_quota: {type: integer, format: int64, minimum: 0}
+        current_period_used: {type: integer, format: int64, minimum: 0}
+        consultation_limit: {type: integer, format: int64, minimum: 0}
+        consultation_used: {type: integer, format: int64, minimum: 0}
+        membership_attribution: {type: string, enum: [user_id, unique_phone, none]}
+        sessions_7d: {type: integer, format: int64, minimum: 0}
+        sessions_30d: {type: integer, format: int64, minimum: 0}
+        sessions_total: {type: integer, format: int64, minimum: 0}
+        user_messages_7d: {type: integer, format: int64, minimum: 0}
+        user_messages_30d: {type: integer, format: int64, minimum: 0}
+        user_messages_total: {type: integer, format: int64, minimum: 0}
+        capability_usage: {type: object, additionalProperties: true}
+        last_used_at: {type: [string, "null"], format: date-time}
+        last_capability: {type: [string, "null"]}
+        business_stage: {type: [string, "null"]}
+        main_line_type: {type: [string, "null"]}
+        user_segment: {type: [string, "null"]}
+        focus_topics: {type: array, items: {type: string}}
+        pain_tag: {type: [string, "null"]}
+        identity_state: {type: string, enum: [matched, unmatched, conflict]}
+        source_updated_at: {type: string, format: date-time}
+    HXCDashboardGroup:
+      type: object
+      additionalProperties: false
+      required: [key, count]
+      properties: {key: {type: string}, count: {type: integer, format: int64, minimum: 0}}
+    HXCDashboardQueryResponse:
+      type: object
+      additionalProperties: false
+      required: [projection_id, items, groups, next_cursor]
+      properties:
+        projection_id: {$ref: "#/components/schemas/PositiveID"}
+        items: {type: array, maxItems: 100, items: {$ref: "#/components/schemas/HXCDashboardRow"}}
+        groups: {type: array, items: {$ref: "#/components/schemas/HXCDashboardGroup"}}
+        next_cursor: {type: string}
+    HXCDashboardRefresh:
+      type: object
+      additionalProperties: false
+      required: [run_id, trigger, status, source_count, processed_count, created_at, updated_at]
+      properties:
+        run_id: {$ref: "#/components/schemas/PositiveID"}
+        trigger: {type: string, enum: [manual, scheduled, initial]}
+        status: {type: string, enum: [queued, running, publishing, succeeded, failed]}
+        projection_id: {$ref: "#/components/schemas/PositiveID"}
+        source_count: {type: integer, format: int64, minimum: 0}
+        processed_count: {type: integer, format: int64, minimum: 0}
+        error_code: {type: string}
+        started_at: {type: [string, "null"], format: date-time}
+        completed_at: {type: [string, "null"], format: date-time}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    HXCDashboardRefreshEnvelope:
+      type: object
+      additionalProperties: false
+      required: [run, replayed]
+      properties: {run: {$ref: "#/components/schemas/HXCDashboardRefresh"}, replayed: {type: boolean}}
+    AIAssistantDigest: {type: string, pattern: "^sha256:[0-9a-f]{64}$"}
+    AIAssistantPlanState: {type: string, enum: [pending_review, partially_approved, approved, rejected, dispatching, needs_attention, completed_with_failures, completed]}
+    AIAssistantReviewState: {type: string, enum: [pending_review, approved, rejected, ineligible]}
+    AIAssistantExecutionState: {type: string, enum: [not_accepted, accepted, queued, attempted, provider_accepted, retryable_failed, outcome_unknown, reconciled, final_failed, delivery_proven]}
+    AIAssistantContentKind: {type: string, enum: [text, image, mini_program, link]}
+    AIAssistantContentBlock:
+      type: object
+      additionalProperties: false
+      required: [kind]
+      properties:
+        kind: {$ref: "#/components/schemas/AIAssistantContentKind"}
+        text: {type: string, maxLength: 8000}
+        material_kind: {type: string, maxLength: 64}
+        material_id: {$ref: "#/components/schemas/PositiveID"}
+        material_digest: {$ref: "#/components/schemas/AIAssistantDigest"}
+    AIAssistantPlanTarget:
+      type: object
+      additionalProperties: false
+      required: [customer_id, staff_id, content]
+      properties:
+        customer_id: {$ref: "#/components/schemas/PositiveID"}
+        staff_id: {$ref: "#/components/schemas/PositiveID"}
+        content: {type: array, minItems: 1, maxItems: 20, items: {$ref: "#/components/schemas/AIAssistantContentBlock"}}
+    AIAssistantPlanCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [name, source_kind, source_digest, recipients]
+      properties:
+        name: {type: string, minLength: 1, maxLength: 200}
+        source_kind: {type: string, minLength: 1, maxLength: 80}
+        source_digest: {$ref: "#/components/schemas/AIAssistantDigest"}
+        recipients: {type: array, minItems: 1, maxItems: 5000, items: {$ref: "#/components/schemas/AIAssistantPlanTarget"}}
+    AIAssistantPlan:
+      type: object
+      additionalProperties: false
+      required: [id, name, source_kind, source_digest, state, version, target_count, pending_count, approved_count, rejected_count, ineligible_count, needs_attention_count, created_by, created_at, updated_at]
+      properties:
+        id: {$ref: "#/components/schemas/PositiveID"}
+        name: {type: string}
+        source_kind: {type: string}
+        source_digest: {$ref: "#/components/schemas/AIAssistantDigest"}
+        state: {$ref: "#/components/schemas/AIAssistantPlanState"}
+        version: {type: integer, format: int64, minimum: 1}
+        target_count: {type: integer, minimum: 0, maximum: 5000}
+        pending_count: {type: integer, minimum: 0, maximum: 5000}
+        approved_count: {type: integer, minimum: 0, maximum: 5000}
+        rejected_count: {type: integer, minimum: 0, maximum: 5000}
+        ineligible_count: {type: integer, minimum: 0, maximum: 5000}
+        needs_attention_count: {type: integer, minimum: 0, maximum: 5000}
+        created_by: {$ref: "#/components/schemas/PositiveID"}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    AIAssistantPlanEnvelope:
+      type: object
+      additionalProperties: false
+      required: [ok, plan, replayed, dispatch_ready]
+      properties:
+        ok: {const: true}
+        plan: {$ref: "#/components/schemas/AIAssistantPlan"}
+        replayed: {type: boolean}
+        dispatch_ready: {type: boolean}
+    AIAssistantPlanPage:
+      type: object
+      additionalProperties: false
+      required: [ok, items, next_cursor]
+      properties:
+        ok: {const: true}
+        items: {type: array, maxItems: 50, items: {$ref: "#/components/schemas/AIAssistantPlan"}}
+        next_cursor: {type: string, maxLength: 512}
+    AIAssistantRecipient:
+      type: object
+      additionalProperties: false
+      required: [id, plan_id, customer_id, customer_name, oneid_label, staff_id, staff_display_name, review_state, execution_state, version, content_version_id, updated_at]
+      properties:
+        id: {$ref: "#/components/schemas/PositiveID"}
+        plan_id: {$ref: "#/components/schemas/PositiveID"}
+        customer_id: {$ref: "#/components/schemas/PositiveID"}
+        customer_name: {type: string, maxLength: 200}
+        oneid_label: {type: string, maxLength: 200}
+        staff_id: {$ref: "#/components/schemas/PositiveID"}
+        staff_display_name: {type: string, maxLength: 200}
+        review_state: {$ref: "#/components/schemas/AIAssistantReviewState"}
+        execution_state: {$ref: "#/components/schemas/AIAssistantExecutionState"}
+        version: {type: integer, format: int64, minimum: 1}
+        content_version_id: {$ref: "#/components/schemas/PositiveID"}
+        effect_id: {type: string, pattern: "^eer_[1-9][0-9]*$"}
+        updated_at: {type: string, format: date-time}
+    AIAssistantContentVersion:
+      type: object
+      additionalProperties: false
+      required: [id, recipient_id, version, digest, blocks, created_at]
+      properties:
+        id: {$ref: "#/components/schemas/PositiveID"}
+        recipient_id: {$ref: "#/components/schemas/PositiveID"}
+        version: {type: integer, format: int64, minimum: 1}
+        digest: {$ref: "#/components/schemas/AIAssistantDigest"}
+        blocks: {type: array, minItems: 1, maxItems: 20, items: {$ref: "#/components/schemas/AIAssistantContentBlock"}}
+        created_at: {type: string, format: date-time}
+    AIAssistantRecipientEnvelope:
+      type: object
+      additionalProperties: false
+      required: [ok, recipient, content]
+      properties:
+        ok: {const: true}
+        recipient: {$ref: "#/components/schemas/AIAssistantRecipient"}
+        content: {$ref: "#/components/schemas/AIAssistantContentVersion"}
+    AIAssistantRecipientPage:
+      type: object
+      additionalProperties: false
+      required: [ok, items, next_cursor]
+      properties:
+        ok: {const: true}
+        items: {type: array, maxItems: 50, items: {$ref: "#/components/schemas/AIAssistantRecipient"}}
+        next_cursor: {type: string, maxLength: 512}
+    AIAssistantExpectedVersionRequest:
+      type: object
+      additionalProperties: false
+      required: [expected_version]
+      properties: {expected_version: {type: integer, format: int64, minimum: 1}}
+    AIAssistantContentUpdateRequest:
+      type: object
+      additionalProperties: false
+      required: [expected_version, blocks]
+      properties:
+        expected_version: {type: integer, format: int64, minimum: 1}
+        blocks: {type: array, minItems: 1, maxItems: 20, items: {$ref: "#/components/schemas/AIAssistantContentBlock"}}
+    AIAssistantRecipientReviewRequest:
+      type: object
+      additionalProperties: false
+      required: [expected_version, decision]
+      properties:
+        expected_version: {type: integer, format: int64, minimum: 1}
+        decision: {type: string, enum: [approved, rejected]}
+        reason: {type: string, maxLength: 500}
+    AIAssistantApprovalPreview:
+      type: object
+      additionalProperties: false
+      required: [ok, plan_id, plan_version, eligible_count, preview_digest]
+      properties:
+        ok: {const: true}
+        plan_id: {$ref: "#/components/schemas/PositiveID"}
+        plan_version: {type: integer, format: int64, minimum: 1}
+        eligible_count: {type: integer, minimum: 1, maximum: 5000}
+        preview_digest: {$ref: "#/components/schemas/AIAssistantDigest"}
+    AIAssistantApproveRequest:
+      type: object
+      additionalProperties: false
+      required: [expected_version, preview_digest]
+      properties:
+        expected_version: {type: integer, format: int64, minimum: 1}
+        preview_digest: {$ref: "#/components/schemas/AIAssistantDigest"}
+    AIAssistantRejectRequest:
+      type: object
+      additionalProperties: false
+      required: [expected_version, reason]
+      properties:
+        expected_version: {type: integer, format: int64, minimum: 1}
+        reason: {type: string, minLength: 1, maxLength: 500}
+    AIAssistantEffect:
+      type: object
+      additionalProperties: false
+      required: [effect_id, recipient_id, state, generation, fence, attempt_count, provider_accepted, delivery_proven, updated_at]
+      properties:
+        effect_id: {type: string, pattern: "^eer_[1-9][0-9]*$"}
+        recipient_id: {$ref: "#/components/schemas/PositiveID"}
+        state: {$ref: "#/components/schemas/AIAssistantExecutionState"}
+        generation: {type: integer, format: int64, minimum: 0}
+        fence: {type: integer, format: int64, minimum: 0}
+        attempt_count: {type: integer, minimum: 0}
+        provider_accepted: {type: boolean}
+        delivery_proven: {type: boolean}
+        updated_at: {type: string, format: date-time}
+    AIAssistantEffectPage:
+      type: object
+      additionalProperties: false
+      required: [ok, items, next_cursor]
+      properties:
+        ok: {const: true}
+        items: {type: array, maxItems: 5000, items: {$ref: "#/components/schemas/AIAssistantEffect"}}
+        next_cursor: {type: string, maxLength: 512}
+    AIAssistantReconcileRequest:
+      type: object
+      additionalProperties: false
+      required: [generation, fence, evidence_digest, reason]
+      properties:
+        generation: {type: integer, format: int64, minimum: 1}
+        fence: {type: integer, format: int64, minimum: 1}
+        evidence_digest: {$ref: "#/components/schemas/AIAssistantDigest"}
+        reason: {type: string, minLength: 1, maxLength: 500}
+    AIAssistantReconcileResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, recipient]
+      properties:
+        ok: {const: true}
+        recipient: {$ref: "#/components/schemas/AIAssistantRecipient"}
+    AIAssistantIntegrationIdentity:
+      type: object
+      additionalProperties: false
+      required: [kind, scope, value, staff_id, content]
+      properties:
+        kind: {type: string, enum: [wecom_external_userid, unionid, mp_openid, oa_openid]}
+        scope: {type: string, minLength: 1, maxLength: 200}
+        value: {type: string, minLength: 1, maxLength: 512, writeOnly: true}
+        staff_id: {$ref: "#/components/schemas/PositiveID"}
+        content: {type: array, minItems: 1, maxItems: 20, items: {$ref: "#/components/schemas/AIAssistantContentBlock"}}
+    AIAssistantIntegrationPlanRequest:
+      type: object
+      additionalProperties: false
+      required: [name, source_kind, source_digest, identities]
+      properties:
+        name: {type: string, minLength: 1, maxLength: 200}
+        source_kind: {type: string, minLength: 1, maxLength: 80}
+        source_digest: {$ref: "#/components/schemas/AIAssistantDigest"}
+        identities: {type: array, minItems: 1, maxItems: 5000, items: {$ref: "#/components/schemas/AIAssistantIntegrationIdentity"}}
+    AIAssistantIntegrationResolution:
+      type: object
+      additionalProperties: false
+      required: [found, not_found, conflict, invalid]
+      properties:
+        found: {type: integer, minimum: 0, maximum: 5000}
+        not_found: {type: integer, minimum: 0, maximum: 5000}
+        conflict: {type: integer, minimum: 0, maximum: 5000}
+        invalid: {type: integer, minimum: 0, maximum: 5000}
+    AIAssistantIntegrationPlanResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, plan, replayed, dispatch_ready, resolution]
+      properties:
+        ok: {const: true}
+        plan: {$ref: "#/components/schemas/AIAssistantPlan"}
+        replayed: {type: boolean}
+        dispatch_ready: {type: boolean}
+        resolution: {$ref: "#/components/schemas/AIAssistantIntegrationResolution"}
     LocalProjection:
       type: object
       required: [ok, items, source_status, local_only]
@@ -3161,12 +3973,131 @@ components:
     LegacyProductChannelPage:
       type: object
       additionalProperties: false
-      required: [ok, channels, reason, source]
+      required: [ok, channels, items, total, next_cursor, reason, source]
       properties:
         ok: {const: true}
         channels: {type: array, items: {type: object, additionalProperties: false, required: [id, channel_name, channel_code, status, assignee_count, channel_contact_count, created_at, updated_at], properties: {id: {$ref: "#/components/schemas/PositiveID"}, channel_name: {type: string}, channel_code: {type: string}, status: {type: string}, assignee_count: {type: integer, minimum: 0}, channel_contact_count: {type: integer, minimum: 0}, created_at: {type: string}, updated_at: {type: string}}}}
+        items: {type: array, items: {type: object}}
+        total: {type: integer, minimum: 0}
+        next_cursor: {type: string, maxLength: 512}
         reason: {const: channels_listed}
         source: {const: ai_crm_next}
+    ChannelCatalogWrite:
+      type: object
+      additionalProperties: false
+      required: [channel_type, carrier_type, channel_name, channel_code, status, assignment_mode, assignment_strategy]
+      properties:
+        channel_type: {type: string, enum: [qrcode, wecom_customer_acquisition]}
+        carrier_type: {type: string, enum: [qrcode, link]}
+        channel_name: {type: string, minLength: 1, maxLength: 200}
+        channel_code: {type: string, pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$'}
+        scene_value: {type: string, maxLength: 10000}
+        qr_url: {type: string, maxLength: 10000}
+        status: {type: string, enum: [active, inactive, archived]}
+        owner_staff_id: {type: string, pattern: '^(|[1-9][0-9]{0,18})$'}
+        customer_channel: {type: string, maxLength: 10000}
+        link_url: {type: string, maxLength: 10000}
+        final_url: {type: string, maxLength: 10000}
+        welcome_message: {type: string, maxLength: 10000}
+        welcome_image_library_ids: {type: array, maxItems: 12, uniqueItems: true, items: {$ref: "#/components/schemas/PositiveID"}}
+        welcome_miniprogram_library_ids: {type: array, maxItems: 12, uniqueItems: true, items: {$ref: "#/components/schemas/PositiveID"}}
+        welcome_attachment_library_ids: {type: array, maxItems: 12, uniqueItems: true, items: {$ref: "#/components/schemas/PositiveID"}}
+        welcome_group_invite_library_ids: {type: array, maxItems: 12, uniqueItems: true, items: {$ref: "#/components/schemas/PositiveID"}}
+        auto_accept_friend: {type: boolean}
+        entry_tag_id: {type: string, pattern: '^(|[1-9][0-9]{0,18})$'}
+        entry_tag_name: {type: string, maxLength: 200}
+        entry_tag_group_name: {type: string, maxLength: 200}
+        assignment_mode: {type: string, enum: [single_owner, multi_staff]}
+        assignment_strategy: {type: string, enum: [ratio, cap_switch]}
+        overflow_policy: {type: string, maxLength: 128}
+        assignment_config_json:
+          type: object
+          additionalProperties: false
+          properties:
+            assignees:
+              type: array
+              minItems: 1
+              maxItems: 5
+              items:
+                type: object
+                additionalProperties: false
+                required: [staff_id]
+                properties:
+                  staff_id: {$ref: "#/components/schemas/PositiveID"}
+                  priority: {type: integer, minimum: 1, maximum: 5}
+                  ratio_percent: {type: integer, minimum: 1, maximum: 100}
+                  max_scans_24h: {type: integer, minimum: 1}
+    ChannelCatalogResource:
+      allOf:
+        - {$ref: "#/components/schemas/ChannelCatalogWrite"}
+        - type: object
+          required: [id, version, config_version, created_at, updated_at, assignee_count, channel_contact_count]
+          properties:
+            id: {$ref: "#/components/schemas/PositiveID"}
+            version: {type: integer, minimum: 1}
+            config_version: {type: integer, minimum: 1}
+            created_at: {type: string, format: date-time}
+            updated_at: {type: string, format: date-time}
+            assignees: {type: array, maxItems: 5, items: {type: object}}
+            assignment_stats_24h: {type: array, maxItems: 5, items: {type: object}}
+            assignee_count: {type: integer, minimum: 1, maximum: 5}
+            channel_contact_count: {type: integer, minimum: 0}
+            latest_channel_entered_at: {type: string}
+            qrcode_asset_id: {type: integer, minimum: 0}
+            qrcode_status: {type: string}
+            qr_download_url: {type: string}
+            share_url: {type: string}
+            copy_text: {type: string}
+    ChannelCatalogDetail:
+      type: object
+      additionalProperties: false
+      required: [ok, channel, reason, source]
+      properties:
+        ok: {const: true}
+        channel: {$ref: "#/components/schemas/ChannelCatalogResource"}
+        reason: {const: channel_loaded}
+        source: {const: ai_crm_next}
+    ChannelCatalogMutation:
+      type: object
+      additionalProperties: false
+      required: [ok, channel, reason, source, fallback_used, provider_execution_eligible, real_external_call_executed]
+      properties:
+        ok: {const: true}
+        channel: {$ref: "#/components/schemas/ChannelCatalogResource"}
+        reason: {type: string, enum: [channel_created, channel_updated]}
+        source: {const: ai_crm_next}
+        fallback_used: {const: false}
+        provider_execution_eligible: {const: false}
+        real_external_call_executed: {const: false}
+    CustomerAcquisitionLinkInput:
+      type: object
+      additionalProperties: false
+      required: [link_name, user_ids, department_ids, skip_verify]
+      properties:
+        link_name: {type: string, minLength: 1, maxLength: 120}
+        user_ids: {type: array, maxItems: 500, uniqueItems: true, items: {type: string, minLength: 1, maxLength: 1024}}
+        department_ids: {type: array, maxItems: 500, uniqueItems: true, items: {type: integer, format: int64, minimum: 1}}
+        skip_verify: {type: boolean}
+    CustomerAcquisitionLink:
+      allOf:
+        - {$ref: "#/components/schemas/CustomerAcquisitionLinkInput"}
+        - type: object
+          required: [link_id, url]
+          properties:
+            link_id: {type: string, minLength: 1, maxLength: 1024}
+            url: {type: string, format: uri, pattern: '^https://'}
+    CustomerAcquisitionLinkReceipt:
+      type: object
+      additionalProperties: false
+      required: [receipt_id, state, business_endpoint_dispatched, real_external_call_executed]
+      properties:
+        receipt_id: {$ref: "#/components/schemas/PositiveID"}
+        state: {type: string, enum: [accepted, attempted, executed, final_failed, outcome_unknown, reconciled]}
+        business_endpoint_dispatched: {type: boolean}
+        real_external_call_executed: {type: boolean}
+        outcome_digest: {type: string, pattern: '^[0-9a-f]{64}$'}
+        resolution: {type: string, enum: [provider_applied, provider_not_applied]}
+        link: {$ref: "#/components/schemas/CustomerAcquisitionLink"}
     GroupOpsSafety:
       type: object
       required: [provider_execution_eligible, real_external_call_executed]
