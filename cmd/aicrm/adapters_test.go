@@ -56,6 +56,20 @@ func TestAllowedOAuthRedirectsIncludesHiddenExternalEffectsPage(t *testing.T) {
 	}
 }
 
+func TestMountSurveyAPIsIncludesLegacyOperationsLogRead(t *testing.T) {
+	mux := http.NewServeMux()
+	mountSurveyAPIs(mux, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"items":[],"total":0}`))
+	}))
+
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/admin/questionnaires/11/external-push-logs?limit=50&offset=0", nil))
+	if response.Code != http.StatusOK || response.Header().Get("Content-Type") != "application/json" || response.Body.String() != `{"items":[],"total":0}` {
+		t.Fatalf("legacy survey operations log route status=%d content_type=%q body=%q", response.Code, response.Header().Get("Content-Type"), response.Body.String())
+	}
+}
+
 type fakeUserReader struct{ user accessdomain.User }
 
 func (reader fakeUserReader) UserByID(context.Context, int64, bool) (accessdomain.User, error) {

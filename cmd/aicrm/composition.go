@@ -638,14 +638,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	adminAPIs.Handle("/api/admin/automation-agents/", automationBindings.Agents)
 	adminAPIs.Handle("/api/admin/channels", channelCatalog)
 	adminAPIs.Handle("/api/admin/channels/", channelCatalog)
-	adminAPIs.Handle("/api/admin/questionnaires", surveyBindings.Survey)
-	adminAPIs.Handle("/api/admin/questionnaires/", surveyBindings.Survey)
-	adminAPIs.Handle("/api/admin/survey-history/", surveyBindings.Survey)
-	adminAPIs.Handle("/api/public/questionnaires/", surveyBindings.Survey)
-	adminAPIs.Handle("/api/public/survey-submission-results/query", surveyBindings.Survey)
-	adminAPIs.Handle("/api/h5/surveys/oauth/", surveyBindings.Survey)
-	adminAPIs.Handle("/api/sidebar/v2/questionnaires", surveyBindings.Survey)
-	adminAPIs.Handle("/api/v1/customers/", surveyBindings.Survey)
+	mountSurveyAPIs(adminAPIs, surveyBindings.Survey)
 	adminAPIs.Handle("/api/admin/operation-cycles/", operationBindings.API)
 	adminAPIs.Handle("/api/operation-cycles/", operationBindings.API)
 	readiness := platformruntime.ReadinessFunc(func(readinessContext context.Context) error {
@@ -758,6 +751,21 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return fail(err)
 	}
 	return &composedApplication{pool: pool, handler: handler, management: management, weComProcessor: weComProcessor, effectsRuntime: effectsRuntime, customerSync: customerSync, adminOps: adminOpsProjection, release: releaseObservation, diagnostics: diagnostics}, nil
+}
+
+func mountSurveyAPIs(mux *http.ServeMux, survey http.Handler) {
+	mux.Handle("/api/admin/questionnaires", survey)
+	mux.Handle("/api/admin/questionnaires/", survey)
+	mux.Handle("/api/admin/survey-history/", survey)
+	mux.Handle("/api/public/questionnaires/", survey)
+	mux.Handle("/api/public/survey-submission-results/query", survey)
+	mux.Handle("/api/h5/surveys/oauth/", survey)
+	mux.Handle("/api/sidebar/v2/questionnaires", survey)
+	mux.Handle("/api/v1/customers/", survey)
+	// The frozen operations workspace reads its history projection from this
+	// legacy page-shaped path. Keep it inside the authenticated admin mux so the
+	// response is JSON from Survey instead of the outer mux's plain-text 404.
+	mux.Handle("/admin/questionnaires/", survey)
 }
 
 func mountSurveyUI(next, adminUI, publicUI http.Handler, authentication accessAuthentication) http.Handler {
