@@ -29,7 +29,8 @@ if (roots.some((entry) => typeof entry !== 'string')) fail('campaigns entry asse
 const outputForInput = (input) => Object.entries(manifest.files || {}).find(([, file]) => file.inputs?.includes(input))?.[0];
 const legacyEntry = outputForInput('web/src/admin/legacy.ts');
 const campaignsEntry = outputForInput('web/src/admin/sections/campaigns.ts');
-if (!legacyEntry || !campaignsEntry) fail('campaign runtime chunks are absent from manifest');
+const groupOpsHistoryEntry = outputForInput('web/src/admin/sections/groupOpsHistory.ts');
+if (!legacyEntry || !campaignsEntry || !groupOpsHistoryEntry) fail('required frozen admin runtime chunks are absent from manifest');
 
 const selected = new Set();
 const includeStatic = (relative) => {
@@ -42,14 +43,16 @@ const includeStatic = (relative) => {
 	}
 };
 // V2's loader contains dormant dynamic imports for every legacy page. The
-// release keeps the loader, its static dependencies, and only the campaigns
-// chunk selected by the forced external-effects query; no other page chunk is
-// staged or therefore fetchable. HTML stays v3-owned: the Go webshell renders
-// the single admin shell and mounts the frozen stage, so no donor HTML is ever
-// packaged.
+// release keeps the loader, its static dependencies, the campaigns chunk
+// selected by the External Effects workspace, and the Group Ops history chunk
+// selected by the byte-frozen groupops.html?history=1 route. No other legacy
+// page chunk is staged or fetchable. HTML stays v3-owned: the Go webshell
+// renders the single admin shell and mounts the frozen stage, so no donor HTML
+// is ever packaged.
 for (const root of roots) includeStatic(root);
 includeStatic(legacyEntry);
 includeStatic(campaignsEntry);
+includeStatic(groupOpsHistoryEntry);
 
 for (const relative of [...selected].sort()) copy(relative);
 // Media uses the same immutable admin bundle, mounted by the v3 shell. These
