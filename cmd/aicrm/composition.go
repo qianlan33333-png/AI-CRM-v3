@@ -364,8 +364,8 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
-	paymentService := paymentapp.NewService(uow, paymentRepository, orderRepository, paymentSession, effectRepository)
-	var paymentAdapter externaleffects.ProviderAdapter
+	paymentService := paymentapp.NewService(uow, paymentRepository, orderService, paymentSession, effectRepository, effectRepository)
+	var wechatPayAdapter *paymentprovider.WeChatPay
 	var paymentCallbackVerifier *paymentprovider.CallbackVerifier
 	if cfg.WeChatPay.Enabled {
 		privateKey, readErr := os.ReadFile(cfg.WeChatPay.PrivateKeyPath)
@@ -386,7 +386,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		}
 		credential := paymentprovider.Credential{MerchantID: cfg.WeChatPay.MerchantID, Serial: cfg.WeChatPay.MerchantSerial, Signer: signer, PlatformKeys: map[string]*rsa.PublicKey{platformSerial: platformKey}}
 		loader := paymentprovider.DBMaterialLoader{UOW: uow, Intents: paymentRepository, Identities: queries, AppScope: cfg.WeChatPay.AppScope}
-		paymentAdapter, err = paymentprovider.NewWeChatPay(paymentprovider.Config{Enabled: true, AppID: cfg.WeChatPay.AppID, AppScope: cfg.WeChatPay.AppScope, APIBaseURL: "https://api.mch.weixin.qq.com", PaymentNotifyURL: cfg.PublicOrigin + "/api/public/wechat-pay/callbacks/payment", RefundNotifyURL: cfg.PublicOrigin + "/api/public/wechat-pay/callbacks/refund", Credential: credential}, loader, &http.Client{Timeout: 10 * time.Second})
+		wechatPayAdapter, err = paymentprovider.NewWeChatPay(paymentprovider.Config{Enabled: true, AppID: cfg.WeChatPay.AppID, AppScope: cfg.WeChatPay.AppScope, APIBaseURL: "https://api.mch.weixin.qq.com", PaymentNotifyURL: cfg.PublicOrigin + "/api/public/wechat-pay/callbacks/payment", RefundNotifyURL: cfg.PublicOrigin + "/api/public/wechat-pay/callbacks/refund", Credential: credential}, loader, &http.Client{Timeout: 10 * time.Second})
 		if err != nil {
 			return fail(err)
 		}
@@ -395,14 +395,39 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 			return fail(err)
 		}
 	} else {
-		paymentAdapter, err = paymentprovider.NewWeChatPay(paymentprovider.Config{}, nil, nil)
+		wechatPayAdapter, err = paymentprovider.NewWeChatPay(paymentprovider.Config{}, nil, nil)
 		if err != nil {
 			return fail(err)
 		}
 	}
-	paymentHandler, err := paymenthttp.NewHandler(paymentService, paymentCallbackVerifier, requestSecurity, cfg.WeChatPay.Enabled)
+	shopLoader := paymentprovider.DBMaterialLoader{UOW: uow, Intents: paymentRepository}
+	wechatShopAdapter, err := paymentprovider.NewWeChatShop(paymentprovider.ShopConfig{Enabled: cfg.WeChatShop.Enabled, AppID: cfg.WeChatShop.AppID, AppSecret: cfg.WeChatShop.AppSecret, APIBaseURL: "https://api.weixin.qq.com"}, shopLoader, &http.Client{Timeout: 10 * time.Second})
 	if err != nil {
 		return fail(err)
+	}
+	if err = paymentService.SetShopReconciler(wechatShopAdapter); err != nil {
+		return fail(err)
+	}
+	if err = paymentService.SetWeChatPayReconciler(wechatPayAdapter); err != nil {
+		return fail(err)
+	}
+	paymentAdapter := paymentProviderRouter{wechatPay: wechatPayAdapter, wechatShop: wechatShopAdapter}
+	paymentHandler, err := paymenthttp.NewHandler(paymentService, paymentCallbackVerifier, requestSecurity, cfg.WeChatPay.Enabled, cfg.WeChatShop.Enabled)
+	if err != nil {
+		return fail(err)
+	}
+	if cfg.WeChatShop.Enabled {
+		shopCredential, credentialErr := paymentprovider.NewShopCallbackCredential(cfg.WeChatShop.AppID, cfg.WeChatShop.CallbackToken, cfg.WeChatShop.CallbackEncodingAESKey)
+		if credentialErr != nil {
+			return fail(credentialErr)
+		}
+		shopVerifier, verifierErr := paymentprovider.NewShopCallbackVerifier(shopCredential)
+		if verifierErr != nil {
+			return fail(verifierErr)
+		}
+		if err = paymentHandler.SetShopCallbackVerifier(shopVerifier); err != nil {
+			return fail(err)
+		}
 	}
 
 	renderer, err := webshell.NewRenderer()

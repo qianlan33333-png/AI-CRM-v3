@@ -2179,6 +2179,32 @@ paths:
       tags: [Transactions]
       security: [{adminSession: []}]
       responses: {"200": {description: Refund page, content: {application/json: {schema: {type: object, additionalProperties: true}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}}
+    post:
+      operationId: createWechatShopRefundIntent
+      tags: [Transactions]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [provider, order_no, product_id, sku_id, refund_count, refund_amount_total, reason_code, reason, transaction_id_confirmation, checked]
+              properties:
+                provider: {type: string, enum: [wechat_shop]}
+                order_no: {type: string, minLength: 1, maxLength: 200}
+                product_id: {type: string, minLength: 1, maxLength: 200}
+                sku_id: {type: string, minLength: 1, maxLength: 200}
+                refund_count: {type: integer, minimum: 1, maximum: 1000000}
+                refund_amount_total: {type: integer, minimum: 1}
+                reason_code: {type: string, enum: ["10000000", "10000001", "10000002", "10000006", "10000007", "10000008", "10000014", "10000015", "10000017", "10000021"]}
+                reason: {type: string, minLength: 1, maxLength: 500}
+                transaction_id_confirmation: {type: string, minLength: 1, maxLength: 200}
+                checked: {type: boolean}
+                operator: {type: string, maxLength: 200}
+      responses: {"202": {description: WeChat Shop refund effect accepted atomically}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
   /api/admin/exports/preview:
     post:
       operationId: previewLegacyOrderExport
@@ -2231,6 +2257,36 @@ paths:
       parameters: [{$ref: "#/components/parameters/OrderReference"}, {$ref: "#/components/parameters/RequiredIdempotencyKey"}]
       requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false, required: [refund_amount_total, reason, transaction_id_confirmation, checked], properties: {provider: {type: string, enum: [wechat]}, order_no: {type: string, minLength: 1, maxLength: 200}, refund_amount_total: {type: integer, minimum: 1}, reason: {type: string, minLength: 1, maxLength: 500}, transaction_id_confirmation: {type: string, minLength: 1, maxLength: 200}, checked: {type: boolean}, operator: {type: string, maxLength: 200}}}}}}
       responses: {"202": {description: WeChat Pay refund effect accepted atomically}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/wechat-shop/refunds/{refund_id}/reconcile:
+    post:
+      operationId: reconcileWechatShopRefund
+      tags: [Transactions]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters:
+        - {name: refund_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
+        - {$ref: "#/components/parameters/RequiredIdempotencyKey"}
+      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false}}}}
+      responses: {"200": {description: Exact after-sale key queried and locally reconciled}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/wechat-pay/payments/{payment_id}/reconcile:
+    post:
+      operationId: reconcileWechatPayPayment
+      tags: [Transactions]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters:
+        - {name: payment_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
+        - {$ref: "#/components/parameters/RequiredIdempotencyKey"}
+      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false}}}}
+      responses: {"200": {description: Exact merchant order queried and locally reconciled}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/wechat-pay/refunds/{refund_id}/reconcile:
+    post:
+      operationId: reconcileWechatPayRefund
+      tags: [Transactions]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters:
+        - {name: refund_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
+        - {$ref: "#/components/parameters/RequiredIdempotencyKey"}
+      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false}}}}
+      responses: {"200": {description: Exact out-refund number queried and locally reconciled}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
   /api/v1/wechat-pay/checkouts:
     post:
       operationId: createWechatPayCheckout
@@ -2247,6 +2303,14 @@ paths:
               required: [order_id]
               properties: {order_id: {$ref: "#/components/schemas/PositiveID"}}
       responses: {"202": {description: Payment effect accepted atomically, content: {application/json: {schema: {type: object, required: [payment_id, status, effect_id], properties: {payment_id: {$ref: "#/components/schemas/PositiveID"}, status: {type: string}, effect_id: {$ref: "#/components/schemas/ExternalEffectID"}}}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/v1/wechat-pay/checkouts/{merchant_order_no}:
+    get:
+      operationId: getWechatPayCheckout
+      tags: [Transactions]
+      security: [{paymentSession: []}]
+      parameters:
+        - {name: merchant_order_no, in: path, required: true, schema: {type: string, minLength: 1, maxLength: 200}}
+      responses: {"200": {description: Actor-bound short-lived JSAPI handoff}, "202": {description: Provider execution is still pending}, "401": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
   /api/admin/payments/{payment_id}/refunds:
     post:
       operationId: requestWechatPaymentRefund
@@ -2279,6 +2343,27 @@ paths:
       security: [{wechatPaySignature: []}]
       requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: true}}}}
       responses: {"200": {description: Verified and idempotently settled}, "401": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/public/wechat-shop/callbacks/refund:
+    get:
+      operationId: verifyWechatShopRefundCallbackURL
+      tags: [Transactions]
+      security: []
+      parameters:
+        - {name: signature, in: query, required: true, schema: {type: string}}
+        - {name: timestamp, in: query, required: true, schema: {type: string}}
+        - {name: nonce, in: query, required: true, schema: {type: string}}
+        - {name: echostr, in: query, required: true, schema: {type: string}}
+      responses: {"200": {description: Exact verified echo}, "401": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+    post:
+      operationId: receiveWechatShopRefundCallback
+      tags: [Transactions]
+      security: []
+      parameters:
+        - {name: msg_signature, in: query, required: true, schema: {type: string}}
+        - {name: timestamp, in: query, required: true, schema: {type: string}}
+        - {name: nonce, in: query, required: true, schema: {type: string}}
+      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: true}}}}
+      responses: {"200": {description: Verified callback followed by exact Provider query}, "401": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
 components:
   securitySchemes:
     adminSession: {type: apiKey, in: cookie, name: aicrm_admin_session}

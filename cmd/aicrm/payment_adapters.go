@@ -12,6 +12,28 @@ type composedProviderRouter struct {
 	payment  effectport.ProviderAdapter
 }
 
+type paymentProviderRouter struct {
+	wechatPay  effectport.ProviderAdapter
+	wechatShop effectport.ProviderAdapter
+}
+
+func (router paymentProviderRouter) Execute(ctx context.Context, envelope effectport.Envelope, attempt effectport.Attempt) (effectport.AdapterResult, error) {
+	switch envelope.Kind {
+	case effectport.KindWeChatPayPrepay, effectport.KindWeChatPayRefund:
+		if router.wechatPay == nil {
+			return effectport.AdapterResult{}, errors.New("wechat pay provider unavailable")
+		}
+		return router.wechatPay.Execute(ctx, envelope, attempt)
+	case effectport.KindWeChatShopRefund:
+		if router.wechatShop == nil {
+			return effectport.AdapterResult{}, errors.New("wechat shop provider unavailable")
+		}
+		return router.wechatShop.Execute(ctx, envelope, attempt)
+	default:
+		return effectport.AdapterResult{}, errors.New("payment effect kind unavailable")
+	}
+}
+
 func (router composedProviderRouter) Execute(ctx context.Context, envelope effectport.Envelope, attempt effectport.Attempt) (effectport.AdapterResult, error) {
 	if envelope.Owner == effectport.OwnerPayment {
 		if router.payment == nil {
@@ -44,4 +66,5 @@ func (router composedCompletionRouter) CompleteEffect(ctx context.Context, effec
 }
 
 var _ effectport.ProviderAdapter = composedProviderRouter{}
+var _ effectport.ProviderAdapter = paymentProviderRouter{}
 var _ effectport.CompletionSink = composedCompletionRouter{}

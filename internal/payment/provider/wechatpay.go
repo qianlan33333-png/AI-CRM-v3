@@ -109,7 +109,10 @@ type DBMaterialLoader struct {
 }
 
 func (loader DBMaterialLoader) Load(ctx context.Context, kind effectport.Kind, source effectport.Digest) (Material, error) {
-	if loader.UOW == nil || loader.Intents == nil || strings.TrimSpace(loader.AppScope) != loader.AppScope || loader.AppScope == "" {
+	if loader.UOW == nil || loader.Intents == nil {
+		return Material{}, ErrInvalidMaterial
+	}
+	if kind == effectport.KindWeChatPayPrepay && (strings.TrimSpace(loader.AppScope) != loader.AppScope || loader.AppScope == "") {
 		return Material{}, ErrInvalidMaterial
 	}
 	var material Material
@@ -227,6 +230,96 @@ func (provider *WeChatPay) Execute(ctx context.Context, envelope effectport.Enve
 	return effectport.AdapterResult{Completion: effectport.StateExecuted, ReceiptDigest: effectport.Hash("wechatpay.refund.executed", string(envelope.Fingerprint()), hashBytes(response.Body)), CallAttempted: true, RealExternalCallExecuted: true}, nil
 }
 
+func (provider *WeChatPay) QueryPayment(ctx context.Context, merchantOrderNo string) (paymentport.WeChatPayPaymentQuery, error) {
+	if provider == nil || !provider.config.Enabled || merchantOrderNo == "" || len(merchantOrderNo) > 200 || strings.TrimSpace(merchantOrderNo) != merchantOrderNo {
+		return paymentport.WeChatPayPaymentQuery{}, ErrInvalidMaterial
+	}
+	path := "/v3/pay/transactions/out-trade-no/" + url.PathEscape(merchantOrderNo) + "?mchid=" + url.QueryEscape(provider.config.Credential.MerchantID)
+	response, _, err := provider.signedJSON(ctx, http.MethodGet, path, nil)
+	if err != nil || response.StatusCode < 200 || response.StatusCode >= 300 {
+		if err != nil {
+			return paymentport.WeChatPayPaymentQuery{}, err
+		}
+		return paymentport.WeChatPayPaymentQuery{}, ErrInvalidResponse
+	}
+	var decoded struct {
+		MerchantOrderNo string `json:"out_trade_no"`
+		TransactionID   string `json:"transaction_id"`
+		TradeState      string `json:"trade_state"`
+		SuccessTime     string `json:"success_time"`
+		Amount          struct {
+			Total    int64  `json:"total"`
+			Currency string `json:"currency"`
+		} `json:"amount"`
+	}
+	if json.Unmarshal(response.Body, &decoded) != nil || decoded.MerchantOrderNo != merchantOrderNo || decoded.Amount.Total < 1 || decoded.Amount.Currency != "CNY" || !validPayQueryStatus(decoded.TradeState) {
+		return paymentport.WeChatPayPaymentQuery{}, ErrInvalidResponse
+	}
+	occurred := provider.now().UTC()
+	transactionDigest := effectport.Digest("")
+	if decoded.TradeState == "SUCCESS" {
+		var parseErr error
+		occurred, parseErr = time.Parse(time.RFC3339, decoded.SuccessTime)
+		if parseErr != nil || decoded.TransactionID == "" {
+			return paymentport.WeChatPayPaymentQuery{}, ErrInvalidResponse
+		}
+		transactionDigest = effectport.Hash("wechatpay.transaction", decoded.TransactionID)
+	}
+	return paymentport.WeChatPayPaymentQuery{MerchantOrderNo: merchantOrderNo, Currency: decoded.Amount.Currency, Status: decoded.TradeState, AmountMinor: decoded.Amount.Total, OccurredAt: occurred.UTC(), EvidenceDigest: effectport.Hash("wechatpay.payment.query", merchantOrderNo, hashBytes(response.Body)), TransactionDigest: transactionDigest}, nil
+}
+
+func (provider *WeChatPay) QueryRefund(ctx context.Context, refundNo string) (paymentport.WeChatPayRefundQuery, error) {
+	if provider == nil || !provider.config.Enabled || refundNo == "" || len(refundNo) > 200 || strings.TrimSpace(refundNo) != refundNo {
+		return paymentport.WeChatPayRefundQuery{}, ErrInvalidMaterial
+	}
+	path := "/v3/refund/domestic/refunds/" + url.PathEscape(refundNo)
+	response, _, err := provider.signedJSON(ctx, http.MethodGet, path, nil)
+	if err != nil || response.StatusCode < 200 || response.StatusCode >= 300 {
+		if err != nil {
+			return paymentport.WeChatPayRefundQuery{}, err
+		}
+		return paymentport.WeChatPayRefundQuery{}, ErrInvalidResponse
+	}
+	var decoded struct {
+		RefundID    string `json:"refund_id"`
+		RefundNo    string `json:"out_refund_no"`
+		Status      string `json:"status"`
+		SuccessTime string `json:"success_time"`
+		Amount      struct {
+			Refund   int64  `json:"refund"`
+			Total    int64  `json:"total"`
+			Currency string `json:"currency"`
+		} `json:"amount"`
+	}
+	if json.Unmarshal(response.Body, &decoded) != nil || decoded.RefundNo != refundNo || decoded.Amount.Refund < 1 || decoded.Amount.Total < decoded.Amount.Refund || decoded.Amount.Currency != "CNY" || !validRefundQueryStatus(decoded.Status) {
+		return paymentport.WeChatPayRefundQuery{}, ErrInvalidResponse
+	}
+	occurred := provider.now().UTC()
+	refundDigest := effectport.Digest("")
+	if decoded.Status == "SUCCESS" {
+		var parseErr error
+		occurred, parseErr = time.Parse(time.RFC3339, decoded.SuccessTime)
+		if parseErr != nil || decoded.RefundID == "" {
+			return paymentport.WeChatPayRefundQuery{}, ErrInvalidResponse
+		}
+		refundDigest = effectport.Hash("wechatpay.refund", decoded.RefundID)
+	}
+	return paymentport.WeChatPayRefundQuery{RefundNo: refundNo, Currency: decoded.Amount.Currency, Status: decoded.Status, AmountMinor: decoded.Amount.Refund, TotalMinor: decoded.Amount.Total, OccurredAt: occurred.UTC(), EvidenceDigest: effectport.Hash("wechatpay.refund.query", refundNo, hashBytes(response.Body)), RefundDigest: refundDigest}, nil
+}
+
+func validPayQueryStatus(value string) bool {
+	switch value {
+	case "SUCCESS", "REFUND", "NOTPAY", "CLOSED", "REVOKED", "USERPAYING", "PAYERROR":
+		return true
+	default:
+		return false
+	}
+}
+
+func validRefundQueryStatus(value string) bool {
+	return value == "SUCCESS" || value == "CLOSED" || value == "PROCESSING" || value == "ABNORMAL"
+}
+
 type signedResponse struct {
 	StatusCode int
 	Body       []byte
@@ -319,3 +412,4 @@ func final(stage string, envelope effectport.Envelope, attempt effectport.Attemp
 }
 
 var _ effectport.ProviderAdapter = (*WeChatPay)(nil)
+var _ paymentport.WeChatPayReconciler = (*WeChatPay)(nil)

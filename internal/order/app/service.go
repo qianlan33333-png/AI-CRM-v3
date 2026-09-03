@@ -99,6 +99,56 @@ func NewService(uow platformport.UnitOfWork, store Store) *Service {
 	return &Service{uow: uow, store: store, now: time.Now}
 }
 
+func (s *Service) ReservePaymentWithin(ctx context.Context, id int64) (domain.Snapshot, error) {
+	if !ready(s) || id < 1 {
+		return domain.Snapshot{}, orderport.ErrConflict
+	}
+	order, err := s.store.Get(ctx, id, true)
+	if err != nil {
+		return domain.Snapshot{}, classify(err)
+	}
+	snapshot := order.Snapshot()
+	if snapshot.RecordOrigin != domain.RecordOriginNative || !snapshot.EffectEligible || snapshot.Status != domain.StatusPendingPayment {
+		return domain.Snapshot{}, orderport.ErrConflict
+	}
+	return snapshot, nil
+}
+
+func (s *Service) SettlePaymentWithin(ctx context.Context, command orderport.PaymentSettlementCommand) (domain.Snapshot, error) {
+	if !ready(s) || command.OrderID < 1 || command.RefundedDelta < 0 || !validKey(command.ReceiptKey) || command.OccurredAt.IsZero() {
+		return domain.Snapshot{}, orderport.ErrConflict
+	}
+	current, err := s.store.Get(ctx, command.OrderID, true)
+	if err != nil {
+		return domain.Snapshot{}, classify(err)
+	}
+	next, refunded := domain.StatusPaid, int64(0)
+	if command.RefundedDelta > 0 {
+		if current.Status != domain.StatusPaid && current.Status != domain.StatusPartiallyRefunded {
+			return domain.Snapshot{}, orderport.ErrConflict
+		}
+		refunded = current.RefundedMinor + command.RefundedDelta
+		if refunded < current.RefundedMinor || refunded > current.Amount.AmountMinor {
+			return domain.Snapshot{}, orderport.ErrConflict
+		}
+		next = domain.StatusPartiallyRefunded
+		if refunded == current.Amount.AmountMinor {
+			next = domain.StatusRefunded
+		}
+	} else if current.Status != domain.StatusPendingPayment {
+		return domain.Snapshot{}, orderport.ErrConflict
+	}
+	updated, event, err := current.ApplySettlement(current.Version, next, refunded, command.OccurredAt.UTC())
+	if err != nil {
+		return domain.Snapshot{}, orderport.ErrConflict
+	}
+	updated, err = s.store.UpdateSettlement(ctx, updated, event, "payment:"+command.ReceiptKey)
+	if err != nil {
+		return domain.Snapshot{}, classify(err)
+	}
+	return updated.Snapshot(), nil
+}
+
 func (s *Service) Create(ctx context.Context, command orderport.CreateCommand) (domain.Snapshot, error) {
 	if !ready(s) || command.Actor < 1 || !validKey(command.IdempotencyKey) || command.Input.RecordOrigin == domain.RecordOriginHistory {
 		return domain.Snapshot{}, orderport.ErrConflict

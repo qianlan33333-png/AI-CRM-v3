@@ -66,3 +66,34 @@ func (PostgreSQL) Consume(ctx context.Context, digest [32]byte, now time.Time) (
 	record.BeneficiaryCustomerID = customerdomain.CustomerID(beneficiary)
 	return record, nil
 }
+
+func (PostgreSQL) Lookup(ctx context.Context, digest [32]byte, now time.Time) (Record, error) {
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return Record{}, err
+	}
+	var record Record
+	var tokenDigest, scopeDigest []byte
+	var payer, beneficiary int64
+	err = tx.QueryRow(ctx, `
+		SELECT id,token_digest,payer_identity_id,payer_customer_id,
+			beneficiary_customer_id,app_scope_digest,expires_at,consumed_at,created_at
+		FROM payment_sessions WHERE token_digest=$1 AND expires_at>$2`, digest[:], now).Scan(
+		&record.ID, &tokenDigest, &record.PayerIdentityID, &payer, &beneficiary,
+		&scopeDigest, &record.ExpiresAt, &record.ConsumedAt, &record.CreatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Record{}, ErrExpired
+	}
+	if err != nil {
+		return Record{}, err
+	}
+	if len(tokenDigest) != 32 || len(scopeDigest) != 32 {
+		return Record{}, ErrInvalid
+	}
+	copy(record.TokenDigest[:], tokenDigest)
+	copy(record.AppScopeDigest[:], scopeDigest)
+	record.PayerCustomerID = customerdomain.CustomerID(payer)
+	record.BeneficiaryCustomerID = customerdomain.CustomerID(beneficiary)
+	return record, nil
+}

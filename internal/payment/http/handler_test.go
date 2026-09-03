@@ -25,17 +25,35 @@ func (stub *appStub) Create(_ context.Context, command paymentport.CreateCommand
 	stub.create = command
 	return domain.Payment{ID: 7, Status: domain.StatusAwaitingPrepay, EffectID: "eer_8"}, nil
 }
+func (*appStub) GetCheckout(context.Context, string, string) (paymentport.Handoff, error) {
+	return paymentport.Handoff{PaymentID: 7, MerchantOrder: "M-7", Status: domain.StatusAwaitingPayment, Payload: []byte(`{"appId":"wx-test","package":"prepay_id=safe"}`), ExpiresAt: time.Now().Add(time.Minute)}, nil
+}
 func (*appStub) RequestRefund(context.Context, paymentport.RefundCommand) (domain.Refund, error) {
 	return domain.Refund{}, nil
 }
 func (*appStub) ApplyVerifiedCallback(context.Context, paymentprovider.CallbackResult) error {
 	return nil
 }
+func (*appStub) ApplyVerifiedShopCallback(context.Context, paymentport.ShopRefundCallback) error {
+	return nil
+}
+func (*appStub) ReconcileShopRefund(context.Context, int64) (domain.Refund, error) {
+	return domain.Refund{}, nil
+}
+func (*appStub) ReconcileWeChatPayPayment(context.Context, int64) (domain.Payment, error) {
+	return domain.Payment{}, nil
+}
+func (*appStub) ReconcileWeChatPayRefund(context.Context, int64) (domain.Refund, error) {
+	return domain.Refund{}, nil
+}
 func (*appStub) FindPayment(context.Context, domain.Provider, string) (domain.Payment, error) {
 	return domain.Payment{ID: 9, Provider: domain.ProviderWeChatPay, MerchantOrderNo: "M-9", Status: domain.StatusPaid}, nil
 }
 func (*appStub) ListRefunds(context.Context, int32, int32) ([]paymentport.RefundProjection, int64, error) {
 	return nil, 0, nil
+}
+func (*appStub) ListOrderEffects(context.Context, domain.Provider, string) ([]paymentport.EffectProjection, error) {
+	return nil, nil
 }
 
 type securityStub struct{}
@@ -77,5 +95,21 @@ func TestTrustedCookieSecurityAttributes(t *testing.T) {
 	cookies := response.Result().Cookies()
 	if err != nil || len(cookies) != 1 || !cookies[0].Secure || !cookies[0].HttpOnly || cookies[0].SameSite != http.SameSiteStrictMode || cookies[0].Path != "/api/v1/wechat-pay/" {
 		t.Fatalf("cookies=%+v err=%v", cookies, err)
+	}
+}
+
+func TestCheckoutHandoffPollingKeepsIdentityOpaqueAndClearsCookieOnDelivery(t *testing.T) {
+	application := &appStub{}
+	handler, _ := NewHandler(application, nil, securityStub{}, true)
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/wechat-pay/checkouts/M-7", nil)
+	request.AddCookie(&http.Cookie{Name: SessionCookieName, Value: "pays_session_token_0000000001"})
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"ready":true`) {
+		t.Fatalf("code=%d body=%s", response.Code, response.Body.String())
+	}
+	cookies := response.Result().Cookies()
+	if len(cookies) != 1 || cookies[0].Name != SessionCookieName || cookies[0].MaxAge != -1 {
+		t.Fatalf("cookies=%+v", cookies)
 	}
 }

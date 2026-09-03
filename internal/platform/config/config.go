@@ -32,6 +32,7 @@ type Runtime struct {
 	TagCatalog                 TagCatalogProvider
 	Survey                     Survey
 	WeChatPay                  WeChatPay
+	WeChatShop                 WeChatShop
 	WorkerOwner                string
 	WorkerLimit                int
 	CustomerSyncTrigger        string
@@ -90,6 +91,12 @@ type WeChatPay struct {
 	APIV3Key                                    string
 }
 
+type WeChatShop struct {
+	Enabled                               bool
+	AppID, AppSecret                      string
+	CallbackToken, CallbackEncodingAESKey string
+}
+
 func Load() (Runtime, error) {
 	databaseURL, err := DatabaseURL()
 	if err != nil {
@@ -137,6 +144,13 @@ func Load() (Runtime, error) {
 	cfg.WeChatPay.PrivateKeyPath = os.Getenv("AICRM_WECHAT_PAY_PRIVATE_KEY_PATH")
 	cfg.WeChatPay.PlatformCertPath = os.Getenv("AICRM_WECHAT_PAY_PLATFORM_CERT_PATH")
 	cfg.WeChatPay.APIV3Key = os.Getenv("AICRM_WECHAT_PAY_API_V3_KEY")
+	if cfg.WeChatShop.Enabled, err = strictBool("AICRM_WECHAT_SHOP_PROVIDER_ENABLED", false); err != nil {
+		return Runtime{}, err
+	}
+	cfg.WeChatShop.AppID = os.Getenv("AICRM_WECHAT_SHOP_APP_ID")
+	cfg.WeChatShop.AppSecret = os.Getenv("AICRM_WECHAT_SHOP_APP_SECRET")
+	cfg.WeChatShop.CallbackToken = os.Getenv("AICRM_WECHAT_SHOP_CALLBACK_TOKEN")
+	cfg.WeChatShop.CallbackEncodingAESKey = os.Getenv("AICRM_WECHAT_SHOP_CALLBACK_AES_KEY")
 	cfg.TagCatalog.Permission = os.Getenv("AICRM_WECOM_TAG_CATALOG_PROVIDER_PERMISSION")
 	if cfg.WeCom.Enabled, err = strictBool("AICRM_WECOM_ENABLED", false); err != nil {
 		return Runtime{}, err
@@ -230,6 +244,17 @@ func Load() (Runtime, error) {
 		for _, value := range values {
 			if strings.TrimSpace(value) != value {
 				return Runtime{}, errors.New("invalid enabled WeChat Pay configuration")
+			}
+		}
+	}
+	if cfg.WeChatShop.Enabled {
+		values := []string{cfg.WeChatShop.AppID, cfg.WeChatShop.AppSecret, cfg.WeChatShop.CallbackToken, cfg.WeChatShop.CallbackEncodingAESKey}
+		if nonEmptyCount(values) != len(values) || len(cfg.WeChatShop.CallbackEncodingAESKey) != 43 {
+			return Runtime{}, errors.New("enabled WeChat Shop configuration is incomplete")
+		}
+		for _, value := range values {
+			if strings.TrimSpace(value) != value {
+				return Runtime{}, errors.New("invalid enabled WeChat Shop configuration")
 			}
 		}
 	}

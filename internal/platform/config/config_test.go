@@ -107,6 +107,22 @@ func TestLoadAcceptsEffectsWorkerRole(t *testing.T) {
 	}
 }
 
+func TestWeChatShopProviderIsIndependentAndClosedConfiguration(t *testing.T) {
+	t.Setenv("AICRM_DATABASE_URL", "postgres://aicrm:test@localhost/aicrm")
+	t.Setenv("AICRM_WECHAT_SHOP_PROVIDER_ENABLED", "true")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected partial WeChat Shop configuration error")
+	}
+	t.Setenv("AICRM_WECHAT_SHOP_APP_ID", "shop-app")
+	t.Setenv("AICRM_WECHAT_SHOP_APP_SECRET", "shop-secret")
+	t.Setenv("AICRM_WECHAT_SHOP_CALLBACK_TOKEN", "callback-token")
+	t.Setenv("AICRM_WECHAT_SHOP_CALLBACK_AES_KEY", strings.Repeat("a", 43))
+	cfg, err := Load()
+	if err != nil || !cfg.WeChatShop.Enabled || cfg.WeChatPay.Enabled {
+		t.Fatalf("config=%+v err=%v", cfg.WeChatShop, err)
+	}
+}
+
 func TestTagCatalogProviderRequiresNarrowExplicitPermission(t *testing.T) {
 	t.Setenv("AICRM_DATABASE_URL", "postgres://aicrm:test@localhost/aicrm")
 	t.Setenv("AICRM_WECOM_TAG_CATALOG_PROVIDER_ENABLED", "true")

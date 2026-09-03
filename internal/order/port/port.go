@@ -97,3 +97,17 @@ type HistoricalImporter interface {
 type PaymentReservationReader interface {
 	ReservePaymentWithin(context.Context, int64) (domain.Snapshot, error)
 }
+
+type PaymentSettlementCommand struct {
+	OrderID       int64
+	RefundedDelta int64
+	OccurredAt    time.Time
+	ReceiptKey    string
+}
+
+// PaymentCoordinator is the only cross-domain write seam from Payment to
+// Order. Both methods require the caller's existing PostgreSQL transaction.
+type PaymentCoordinator interface {
+	PaymentReservationReader
+	SettlePaymentWithin(context.Context, PaymentSettlementCommand) (domain.Snapshot, error)
+}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	orderdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/order/domain"
+	orderport "github.com/qianlan33333-png/AI-CRM-v3/internal/order/port"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/payment/domain"
 	paymentport "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/port"
 	"testing"
@@ -26,6 +27,12 @@ func (o orderStub) ReservePaymentWithin(ctx context.Context, _ int64) (orderdoma
 	}
 	return o.snapshot, nil
 }
+func (o orderStub) SettlePaymentWithin(ctx context.Context, command orderport.PaymentSettlementCommand) (orderdomain.Snapshot, error) {
+	if ctx.Value(txKey{}) != true || command.OrderID < 1 {
+		return orderdomain.Snapshot{}, errors.New("not in tx")
+	}
+	return o.snapshot, nil
+}
 
 type sessionStub struct{ actor paymentport.SessionActor }
 
@@ -35,10 +42,20 @@ func (stub sessionStub) ConsumeWithin(ctx context.Context, token string, _ time.
 	}
 	return stub.actor, nil
 }
+func (stub sessionStub) LookupWithin(ctx context.Context, token string, _ time.Time) (paymentport.SessionActor, error) {
+	if ctx.Value(txKey{}) != true || token == "" {
+		return paymentport.SessionActor{}, errors.New("not in tx")
+	}
+	return stub.actor, nil
+}
 
 type effectStub struct {
 	fail   bool
 	within bool
+}
+
+func (e *effectStub) Get(_ context.Context, id string) (effectport.Projection, error) {
+	return effectport.Projection{ID: id, Owner: effectport.OwnerPayment, Kind: effectport.KindWeChatPayRefund, State: effectport.StateQueued, AttemptCount: 1, UpdatedAt: time.Date(2026, 9, 3, 2, 0, 0, 0, time.UTC)}, nil
 }
 
 func (e *effectStub) AcceptAndQueueWithin(ctx context.Context, c effectport.AcceptCommand) (effectport.Projection, effectport.Receipt, error) {
@@ -53,9 +70,10 @@ func (e *effectStub) AcceptAndQueueWithin(ctx context.Context, c effectport.Acce
 }
 
 type storeStub struct {
-	payment domain.Payment
-	refund  domain.Refund
-	bound   bool
+	payment  domain.Payment
+	refund   domain.Refund
+	bound    bool
+	reserved int64
 }
 
 func (s *storeStub) CreatePayment(_ context.Context, p domain.Payment, _, _ [32]byte, _ string) (domain.Payment, bool, error) {
@@ -77,6 +95,12 @@ func (s *storeStub) GetPayment(context.Context, int64, bool) (domain.Payment, er
 	}
 	return s.payment, nil
 }
+func (s *storeStub) GetHandoff(context.Context, int64) (paymentport.Handoff, error) {
+	return paymentport.Handoff{PaymentID: s.payment.ID, Payload: []byte(`{"appId":"app"}`), ExpiresAt: time.Now().Add(time.Hour)}, nil
+}
+func (s *storeStub) ReservedRefundMinor(context.Context, int64) (int64, error) {
+	return s.reserved, nil
+}
 func (s *storeStub) CreateRefund(_ context.Context, r domain.Refund, _, _ [32]byte, _ string) (domain.Refund, bool, error) {
 	r.ID = 9
 	s.refund = r
@@ -88,6 +112,18 @@ func (s *storeStub) BindRefundEffect(_ context.Context, r domain.Refund, _ effec
 }
 func (s *storeStub) GetRefund(context.Context, int64, bool) (domain.Refund, error) {
 	return s.refund, nil
+}
+func (s *storeStub) GetRefundByProviderReference(context.Context, domain.Provider, string, bool) (domain.Refund, error) {
+	return s.refund, nil
+}
+func (s *storeStub) GetShopRefundMaterial(context.Context, int64) (paymentport.ShopRefundMaterial, error) {
+	return paymentport.ShopRefundMaterial{}, nil
+}
+func (s *storeStub) RecordReconciliation(context.Context, int64, effectport.Digest, string, time.Time) (bool, error) {
+	return true, nil
+}
+func (s *storeStub) RecordPaymentReconciliation(context.Context, int64, effectport.Digest, string, time.Time) (bool, error) {
+	return true, nil
 }
 func (s *storeStub) UpdatePaymentSettlement(_ context.Context, p domain.Payment, _, _ string) (domain.Payment, error) {
 	s.payment = p
@@ -105,6 +141,9 @@ func (s *storeStub) GetPaymentByMerchantProvider(context.Context, domain.Provide
 }
 func (s *storeStub) ListRefunds(context.Context, int32, int32) ([]paymentport.RefundProjection, int64, error) {
 	return nil, 0, nil
+}
+func (s *storeStub) ListEffectBindings(context.Context, domain.Provider, string) ([]paymentport.EffectProjection, error) {
+	return []paymentport.EffectProjection{{EffectID: "eer_8", Kind: effectport.KindWeChatPayRefund}}, nil
 }
 func (s *storeStub) GetRefundByNumber(context.Context, string, bool) (domain.Refund, error) {
 	return s.refund, nil
@@ -146,5 +185,25 @@ func TestCreateFailsClosedWhenAtomicEffectAcceptanceFails(t *testing.T) {
 	_, err := service.Create(context.Background(), paymentport.CreateCommand{OrderID: 3, SessionToken: "pays_session_token_0000000002", ActorScope: "customer:11", IdempotencyKey: "payment-create-key-0002"})
 	if !errors.Is(err, paymentport.ErrUnavailable) || store.bound {
 		t.Fatalf("bound=%v err=%v", store.bound, err)
+	}
+}
+
+func TestRefundReservesOutstandingAmountsAndRejectsOverRefund(t *testing.T) {
+	store := &storeStub{payment: domain.Payment{ID: 7, Provider: domain.ProviderWeChatPay, MerchantOrderNo: "M-7", AmountMinor: 1000, Currency: "CNY", Status: domain.StatusPaid, Version: 2, CreatedAt: time.Now().Add(-time.Hour), UpdatedAt: time.Now().Add(-time.Minute)}, reserved: 800}
+	effects := &effectStub{}
+	service := NewService(uowStub{}, store, orderStub{}, sessionStub{}, effects, effects)
+	_, err := service.RequestRefund(context.Background(), paymentport.RefundCommand{PaymentID: 7, AmountMinor: 201, RefundNo: "R-7", Reason: "customer request", ActorScope: "admin:1", IdempotencyKey: "refund-key-000000001"})
+	if !errors.Is(err, paymentport.ErrConflict) || store.refund.ID != 0 {
+		t.Fatalf("refund=%+v err=%v", store.refund, err)
+	}
+}
+
+func TestListOrderEffectsJoinsOnlyPaymentOwnedProjection(t *testing.T) {
+	store := &storeStub{}
+	effects := &effectStub{}
+	service := NewService(uowStub{}, store, orderStub{}, sessionStub{}, effects, effects)
+	items, err := service.ListOrderEffects(context.Background(), domain.ProviderWeChatPay, "M-7")
+	if err != nil || len(items) != 1 || items[0].State != effectport.StateQueued || items[0].AttemptCount != 1 {
+		t.Fatalf("items=%+v err=%v", items, err)
 	}
 }

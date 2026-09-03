@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -97,6 +98,36 @@ func (r *Repository) GetPayment(ctx context.Context, id int64, lock bool) (domai
 	return p, mapError(e)
 }
 
+func (r *Repository) ReservedRefundMinor(ctx context.Context, paymentID int64) (int64, error) {
+	t, err := tx(ctx)
+	if err != nil {
+		return 0, err
+	}
+	var total int64
+	err = t.QueryRow(ctx, `SELECT COALESCE(sum(amount_minor),0)::bigint FROM payment_refunds WHERE payment_id=$1 AND status<>'final_failed'`, paymentID).Scan(&total)
+	return total, mapError(err)
+}
+
+func (r *Repository) GetHandoff(ctx context.Context, paymentID int64) (paymentport.Handoff, error) {
+	t, err := tx(ctx)
+	if err != nil {
+		return paymentport.Handoff{}, err
+	}
+	var out paymentport.Handoff
+	out.PaymentID = paymentID
+	err = t.QueryRow(ctx, `SELECT payload,expires_at FROM payment_handoffs WHERE payment_id=$1`, paymentID).Scan(&out.Payload, &out.ExpiresAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return paymentport.Handoff{}, paymentport.ErrNotFound
+	}
+	if err != nil {
+		return paymentport.Handoff{}, mapError(err)
+	}
+	if !json.Valid(out.Payload) {
+		return paymentport.Handoff{}, paymentport.ErrConflict
+	}
+	return out, nil
+}
+
 func (r *Repository) GetPaymentByMerchant(ctx context.Context, merchantOrderNo string, lock bool) (domain.Payment, error) {
 	return r.GetPaymentByMerchantProvider(ctx, domain.ProviderWeChatPay, merchantOrderNo, lock)
 }
@@ -181,12 +212,12 @@ func (r *Repository) GetRefund(ctx context.Context, id int64, lock bool) (domain
 	if e != nil {
 		return domain.Refund{}, e
 	}
-	q := `SELECT id,payment_id,provider,refund_no,reason,amount_minor,status,COALESCE('eer_'||external_effect_id::text,''),COALESCE(provider_refund_digest,''),version,created_at,updated_at FROM payment_refunds WHERE id=$1`
+	q := `SELECT id,payment_id,provider,refund_no,reason,amount_minor,status,COALESCE('eer_'||external_effect_id::text,''),COALESCE(provider_refund_reference,''),COALESCE(provider_refund_digest,''),version,created_at,updated_at FROM payment_refunds WHERE id=$1`
 	if lock {
 		q += ` FOR UPDATE`
 	}
 	var v domain.Refund
-	e = t.QueryRow(ctx, q, id).Scan(&v.ID, &v.PaymentID, &v.Provider, &v.RefundNo, &v.Reason, &v.AmountMinor, &v.Status, &v.EffectID, &v.ProviderRefundDigest, &v.Version, &v.CreatedAt, &v.UpdatedAt)
+	e = t.QueryRow(ctx, q, id).Scan(&v.ID, &v.PaymentID, &v.Provider, &v.RefundNo, &v.Reason, &v.AmountMinor, &v.Status, &v.EffectID, &v.ProviderRefundReference, &v.ProviderRefundDigest, &v.Version, &v.CreatedAt, &v.UpdatedAt)
 	if errors.Is(e, pgx.ErrNoRows) {
 		return domain.Refund{}, paymentport.ErrNotFound
 	}
@@ -213,6 +244,96 @@ func (r *Repository) GetRefundByNumber(ctx context.Context, refundNo string, loc
 	return r.GetRefund(ctx, id, false)
 }
 
+func (r *Repository) GetRefundByProviderReference(ctx context.Context, provider domain.Provider, reference string, lock bool) (domain.Refund, error) {
+	t, err := tx(ctx)
+	if err != nil {
+		return domain.Refund{}, err
+	}
+	query := `SELECT id FROM payment_refunds WHERE provider=$1 AND provider_refund_reference=$2`
+	if lock {
+		query += ` FOR UPDATE`
+	}
+	var id int64
+	err = t.QueryRow(ctx, query, provider, reference).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Refund{}, paymentport.ErrNotFound
+	}
+	if err != nil {
+		return domain.Refund{}, mapError(err)
+	}
+	return r.GetRefund(ctx, id, false)
+}
+
+func (r *Repository) GetShopRefundMaterial(ctx context.Context, refundID int64) (paymentport.ShopRefundMaterial, error) {
+	t, err := tx(ctx)
+	if err != nil {
+		return paymentport.ShopRefundMaterial{}, err
+	}
+	var out paymentport.ShopRefundMaterial
+	var snapshot []byte
+	err = t.QueryRow(ctx, `
+		SELECT r.id,r.payment_id,r.refund_no,r.amount_minor,p.currency,i.request_snapshot
+		FROM payment_refunds r JOIN payments p ON p.id=r.payment_id
+		JOIN payment_provider_intents i ON i.refund_id=r.id AND i.effect_kind='wechat_shop_refund_v1'
+		WHERE r.id=$1 AND r.provider='wechat_shop'`, refundID).Scan(&out.RefundID, &out.PaymentID, &out.RefundNo, &out.AmountMinor, &out.Currency, &snapshot)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return paymentport.ShopRefundMaterial{}, paymentport.ErrNotFound
+	}
+	if err != nil {
+		return paymentport.ShopRefundMaterial{}, mapError(err)
+	}
+	var material struct {
+		ProviderOrderID string `json:"provider_order_id"`
+		ProductID       string `json:"product_id"`
+		SKUID           string `json:"sku_id"`
+		RefundCount     int64  `json:"refund_count"`
+		ReasonCode      string `json:"reason_code"`
+	}
+	if json.Unmarshal(snapshot, &material) != nil {
+		return paymentport.ShopRefundMaterial{}, paymentport.ErrConflict
+	}
+	out.ProviderOrderID, out.ProductID, out.SKUID, out.RefundCount, out.ReasonCode = material.ProviderOrderID, material.ProductID, material.SKUID, material.RefundCount, material.ReasonCode
+	return out, nil
+}
+
+func (r *Repository) RecordReconciliation(ctx context.Context, refundID int64, evidence effectport.Digest, outcome string, now time.Time) (bool, error) {
+	t, err := tx(ctx)
+	if err != nil {
+		return false, err
+	}
+	if !effectport.ValidDigest(evidence) || (outcome != "refunded" && outcome != "pending" && outcome != "not_found" && outcome != "final_failed") {
+		return false, paymentport.ErrConflict
+	}
+	digest, err := strconvDigest(evidence)
+	if err != nil {
+		return false, paymentport.ErrConflict
+	}
+	result, err := t.Exec(ctx, `INSERT INTO payment_reconciliations(refund_id,evidence_digest,outcome,created_at) VALUES($1,$2,$3,$4) ON CONFLICT(evidence_digest) DO NOTHING`, refundID, digest, outcome, now)
+	if err != nil {
+		return false, mapError(err)
+	}
+	return result.RowsAffected() == 1, nil
+}
+
+func (r *Repository) RecordPaymentReconciliation(ctx context.Context, paymentID int64, evidence effectport.Digest, outcome string, now time.Time) (bool, error) {
+	t, err := tx(ctx)
+	if err != nil {
+		return false, err
+	}
+	if !effectport.ValidDigest(evidence) || (outcome != "paid" && outcome != "pending" && outcome != "not_found" && outcome != "final_failed") {
+		return false, paymentport.ErrConflict
+	}
+	digest, err := strconvDigest(evidence)
+	if err != nil {
+		return false, paymentport.ErrConflict
+	}
+	result, err := t.Exec(ctx, `INSERT INTO payment_reconciliations(payment_id,evidence_digest,outcome,created_at) VALUES($1,$2,$3,$4) ON CONFLICT(evidence_digest) DO NOTHING`, paymentID, digest, outcome, now)
+	if err != nil {
+		return false, mapError(err)
+	}
+	return result.RowsAffected() == 1, nil
+}
+
 func (r *Repository) ListRefunds(ctx context.Context, limit, offset int32) ([]paymentport.RefundProjection, int64, error) {
 	t, err := tx(ctx)
 	if err != nil {
@@ -224,7 +345,7 @@ func (r *Repository) ListRefunds(ctx context.Context, limit, offset int32) ([]pa
 	}
 	rows, err := t.Query(ctx, `
 		SELECT r.id,r.payment_id,r.provider,r.refund_no,r.reason,r.amount_minor,r.status,
-			COALESCE('eer_'||r.external_effect_id::text,''),COALESCE(r.provider_refund_digest,''),r.version,r.created_at,r.updated_at,
+			COALESCE('eer_'||r.external_effect_id::text,''),COALESCE(r.provider_refund_reference,''),COALESCE(r.provider_refund_digest,''),r.version,r.created_at,r.updated_at,
 			p.order_id,p.merchant_order_no,COALESCE(p.provider_transaction_digest,''),p.amount_minor,p.currency
 		FROM payment_refunds r JOIN payments p ON p.id=r.payment_id
 		ORDER BY r.created_at DESC,r.id DESC LIMIT $1 OFFSET $2`, limit, offset)
@@ -235,12 +356,42 @@ func (r *Repository) ListRefunds(ctx context.Context, limit, offset int32) ([]pa
 	result := make([]paymentport.RefundProjection, 0, limit)
 	for rows.Next() {
 		var item paymentport.RefundProjection
-		if err = rows.Scan(&item.Refund.ID, &item.Refund.PaymentID, &item.Refund.Provider, &item.Refund.RefundNo, &item.Refund.Reason, &item.Refund.AmountMinor, &item.Refund.Status, &item.Refund.EffectID, &item.Refund.ProviderRefundDigest, &item.Refund.Version, &item.Refund.CreatedAt, &item.Refund.UpdatedAt, &item.OrderID, &item.MerchantOrder, &item.TransactionRef, &item.OrderAmount, &item.Currency); err != nil {
+		if err = rows.Scan(&item.Refund.ID, &item.Refund.PaymentID, &item.Refund.Provider, &item.Refund.RefundNo, &item.Refund.Reason, &item.Refund.AmountMinor, &item.Refund.Status, &item.Refund.EffectID, &item.Refund.ProviderRefundReference, &item.Refund.ProviderRefundDigest, &item.Refund.Version, &item.Refund.CreatedAt, &item.Refund.UpdatedAt, &item.OrderID, &item.MerchantOrder, &item.TransactionRef, &item.OrderAmount, &item.Currency); err != nil {
 			return nil, 0, mapError(err)
 		}
 		result = append(result, item)
 	}
 	return result, total, mapError(rows.Err())
+}
+
+func (r *Repository) ListEffectBindings(ctx context.Context, provider domain.Provider, merchantOrderNo string) ([]paymentport.EffectProjection, error) {
+	t, err := tx(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := t.Query(ctx, `
+		SELECT 'eer_'||p.external_effect_id::text, i.effect_kind
+		FROM payments p JOIN payment_provider_intents i ON i.payment_id=p.id
+		WHERE p.provider=$1 AND p.merchant_order_no=$2 AND p.external_effect_id IS NOT NULL
+		UNION ALL
+		SELECT 'eer_'||r.external_effect_id::text, i.effect_kind
+		FROM payments p JOIN payment_refunds r ON r.payment_id=p.id
+		JOIN payment_provider_intents i ON i.refund_id=r.id
+		WHERE p.provider=$1 AND p.merchant_order_no=$2 AND r.external_effect_id IS NOT NULL
+		ORDER BY 1`, provider, merchantOrderNo)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	defer rows.Close()
+	result := make([]paymentport.EffectProjection, 0, 4)
+	for rows.Next() {
+		var item paymentport.EffectProjection
+		if err = rows.Scan(&item.EffectID, &item.Kind); err != nil {
+			return nil, mapError(err)
+		}
+		result = append(result, item)
+	}
+	return result, mapError(rows.Err())
 }
 
 func (r *Repository) ClaimCallback(ctx context.Context, provider string, eventDigest, bodyDigest [32]byte, kind string, id int64) (bool, error) {
@@ -344,8 +495,9 @@ func (r *Repository) ProviderIntent(ctx context.Context, kind effectport.Kind, s
 	}
 	var out paymentport.ProviderIntent
 	var storedKind, storedSource, payload string
+	var requestSnapshot []byte
 	err = t.QueryRow(ctx, `
-		SELECT i.effect_kind,i.source_ref_digest,i.payload_digest,
+		SELECT i.effect_kind,i.source_ref_digest,i.payload_digest,i.request_snapshot,
 			COALESCE(p.id, rp.id),COALESCE(i.refund_id,0),
 			p.payer_identity_id,p.merchant_order_no,
 			COALESCE(r.refund_no,''),COALESCE(r.reason,''),
@@ -355,7 +507,7 @@ func (r *Repository) ProviderIntent(ctx context.Context, kind effectport.Kind, s
 		LEFT JOIN payment_refunds r ON r.id=i.refund_id
 		LEFT JOIN payments rp ON rp.id=r.payment_id
 		WHERE i.effect_kind=$1 AND i.source_ref_digest=$2`, kind, source,
-	).Scan(&storedKind, &storedSource, &payload, &out.PaymentID, &out.RefundID,
+	).Scan(&storedKind, &storedSource, &payload, &requestSnapshot, &out.PaymentID, &out.RefundID,
 		&out.PayerIdentityID, &out.MerchantOrderNo, &out.RefundNo, &out.RefundReason,
 		&out.AmountMinor, &out.TotalMinor, &out.Currency)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -367,6 +519,20 @@ func (r *Repository) ProviderIntent(ctx context.Context, kind effectport.Kind, s
 	out.Kind = effectport.Kind(storedKind)
 	out.SourceRefDigest = effectport.Digest(storedSource)
 	out.PayloadDigest = effectport.Digest(payload)
+	if out.Kind == effectport.KindWeChatShopRefund {
+		var material struct {
+			ProviderOrderID string `json:"provider_order_id"`
+			ProductID       string `json:"product_id"`
+			SKUID           string `json:"sku_id"`
+			RefundCount     int64  `json:"refund_count"`
+			ReasonCode      string `json:"reason_code"`
+		}
+		if json.Unmarshal(requestSnapshot, &material) != nil {
+			return paymentport.ProviderIntent{}, paymentport.ErrConflict
+		}
+		out.ProviderOrderID, out.ProductID, out.SKUID = material.ProviderOrderID, material.ProductID, material.SKUID
+		out.RefundCount, out.ReasonCode = material.RefundCount, material.ReasonCode
+	}
 	if out.Kind != kind || out.SourceRefDigest != source || !effectport.ValidDigest(out.PayloadDigest) {
 		return paymentport.ProviderIntent{}, paymentport.ErrConflict
 	}
@@ -422,6 +588,26 @@ func (r *Repository) CompleteEffectWithin(ctx context.Context, effectRef string,
 			}
 		}
 	case effectport.KindWeChatPayRefund, effectport.KindWeChatShopRefund:
+		if envelope.Kind == effectport.KindWeChatShopRefund && result.Completion == effectport.StateExecuted {
+			if !result.Artifact.Valid() || result.Artifact.Kind != "wechat_shop_refund_acceptance_v1" || !json.Valid(result.Artifact.Payload) {
+				return paymentport.ErrConflict
+			}
+			var artifact struct {
+				AfterSaleID string `json:"afterSaleId"`
+			}
+			if json.Unmarshal(result.Artifact.Payload, &artifact) != nil || strings.TrimSpace(artifact.AfterSaleID) != artifact.AfterSaleID || artifact.AfterSaleID == "" || len(artifact.AfterSaleID) > 200 {
+				return paymentport.ErrConflict
+			}
+			digest := effectport.Hash("wechat-shop/aftersale-id/v1", artifact.AfterSaleID)
+			updated, updateErr := t.Exec(ctx, `UPDATE payment_refunds SET provider_refund_reference=$2,provider_refund_digest=$3,updated_at=$4 WHERE id=$1 AND external_effect_id=$5 AND status='effect_accepted' AND provider_refund_reference IS NULL`, refundID, artifact.AfterSaleID, digest, now, effectID)
+			if updateErr != nil || updated.RowsAffected() != 1 {
+				if updateErr != nil {
+					return mapError(updateErr)
+				}
+				return paymentport.ErrConflict
+			}
+			return nil
+		}
 		if result.Completion == effectport.StateUnknown {
 			_, err = t.Exec(ctx, `UPDATE payment_refunds SET status='outcome_unknown',version=version+1,updated_at=$2 WHERE id=$1 AND external_effect_id=$3 AND status='effect_accepted'`, refundID, now, effectID)
 			return mapError(err)
@@ -518,6 +704,12 @@ func effectNumeric(v string) (int64, error) {
 		return 0, paymentport.ErrConflict
 	}
 	return id, nil
+}
+func strconvDigest(value effectport.Digest) ([]byte, error) {
+	if !effectport.ValidDigest(value) {
+		return nil, paymentport.ErrConflict
+	}
+	return hex.DecodeString(strings.TrimPrefix(string(value), "sha256:"))
 }
 func mapError(e error) error {
 	if e == nil {
