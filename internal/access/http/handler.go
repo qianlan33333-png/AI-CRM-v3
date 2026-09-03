@@ -21,10 +21,11 @@ import (
 )
 
 const (
-	SessionCookieName   = "aicrm_admin_session"
-	CSRFCookieName      = "aicrm_admin_csrf"
-	LoginCSRFCookieName = "aicrm_login_csrf"
-	loginCSRFTTL        = 10 * time.Minute
+	SessionCookieName    = "aicrm_admin_session"
+	CSRFCookieName       = "aicrm_admin_csrf"
+	CompatCSRFCookieName = "aicrm_csrf"
+	LoginCSRFCookieName  = "aicrm_login_csrf"
+	loginCSRFTTL         = 10 * time.Minute
 )
 
 type Renderer interface {
@@ -346,10 +347,12 @@ func (handler *Handler) setCookies(response nethttp.ResponseWriter, issued app.I
 		Expires: issued.ExpiresAt, MaxAge: maxAge, Secure: handler.cookieSecure, HttpOnly: true, SameSite: nethttp.SameSiteLaxMode})
 	nethttp.SetCookie(response, &nethttp.Cookie{Name: CSRFCookieName, Value: issued.CSRFToken, Path: handler.cookiePath,
 		Expires: issued.ExpiresAt, MaxAge: maxAge, Secure: handler.cookieSecure, HttpOnly: false, SameSite: nethttp.SameSiteLaxMode})
+	nethttp.SetCookie(response, &nethttp.Cookie{Name: CompatCSRFCookieName, Value: issued.CSRFToken, Path: handler.cookiePath,
+		Expires: issued.ExpiresAt, MaxAge: maxAge, Secure: handler.cookieSecure, HttpOnly: false, SameSite: nethttp.SameSiteLaxMode})
 }
 
 func (handler *Handler) clearCookies(response nethttp.ResponseWriter) {
-	for _, name := range []string{SessionCookieName, CSRFCookieName} {
+	for _, name := range []string{SessionCookieName, CSRFCookieName, CompatCSRFCookieName} {
 		nethttp.SetCookie(response, &nethttp.Cookie{Name: name, Value: "", Path: handler.cookiePath,
 			MaxAge: -1, Expires: time.Unix(1, 0), Secure: handler.cookieSecure,
 			HttpOnly: name == SessionCookieName, SameSite: nethttp.SameSiteLaxMode})

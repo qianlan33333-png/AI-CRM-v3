@@ -13,6 +13,7 @@ import (
 
 	accessapp "github.com/qianlan33333-png/AI-CRM-v3/internal/access/app"
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
+	accesshttp "github.com/qianlan33333-png/AI-CRM-v3/internal/access/http"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/tag"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/webshell"
@@ -92,10 +93,21 @@ func TestAdminShellRedirectsWithoutSessionAndServesWithSession(t *testing.T) {
 	authentication.err = nil
 	request := httptest.NewRequest(http.MethodGet, "/admin", nil)
 	request.AddCookie(&http.Cookie{Name: "aicrm_admin_session", Value: "valid"})
+	request.AddCookie(&http.Cookie{Name: accesshttp.CSRFCookieName, Value: "csrf-current"})
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusNoContent || authentication.session != "valid" {
 		t.Fatalf("status=%d session=%q", response.Code, authentication.session)
+	}
+	var compat *http.Cookie
+	for _, cookie := range response.Result().Cookies() {
+		if cookie.Name == accesshttp.CompatCSRFCookieName {
+			compat = cookie
+			break
+		}
+	}
+	if compat == nil || compat.Value != "csrf-current" || !compat.Secure || compat.HttpOnly || compat.SameSite != http.SameSiteLaxMode {
+		t.Fatalf("compat csrf cookie=%#v", compat)
 	}
 }
 

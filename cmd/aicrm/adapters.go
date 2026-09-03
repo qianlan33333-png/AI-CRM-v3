@@ -148,6 +148,12 @@ func requireAdminSession(authentication accessAuthentication, next http.Handler)
 			http.Redirect(writer, request, target, http.StatusSeeOther)
 			return
 		}
+		if csrfToken := cookieValue(request, accesshttp.CSRFCookieName); csrfToken != "" {
+			http.SetCookie(writer, &http.Cookie{
+				Name: accesshttp.CompatCSRFCookieName, Value: csrfToken, Path: "/",
+				Secure: true, HttpOnly: false, SameSite: http.SameSiteLaxMode,
+			})
+		}
 		next.ServeHTTP(writer, request)
 	})
 }
