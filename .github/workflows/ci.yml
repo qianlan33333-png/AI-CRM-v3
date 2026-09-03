@@ -10,9 +10,10 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  # Superseded PR runs may be cancelled, but main releases must finish so a
-  # later main push waits instead of interrupting a cross-region deployment.
+  # GitHub keeps only one pending run per group. Give each main SHA its own
+  # group so a later main push cannot replace a pending or running release;
+  # non-main refs continue to share a group and supersede obsolete PR runs.
+  group: ci-${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.sha || github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
