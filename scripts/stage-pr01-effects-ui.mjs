@@ -31,11 +31,13 @@ const dynamicOutputForInput = (from, input) => (manifest.files[from]?.imports ||
 )?.path;
 const legacyEntry = dynamicOutputForInput(manifest.entries.admin, 'web/src/admin/legacy.ts');
 const campaignsEntry = legacyEntry && dynamicOutputForInput(legacyEntry, 'web/src/admin/sections/campaigns.ts');
+const adminAccessEntry = legacyEntry && dynamicOutputForInput(legacyEntry, 'web/src/admin/sections/adminAccess.ts');
+const setupWizardEntry = legacyEntry && dynamicOutputForInput(legacyEntry, 'web/src/admin/sections/setupWizard.ts');
 const groupOpsHistoryEntry = legacyEntry && dynamicOutputForInput(legacyEntry, 'web/src/admin/sections/groupOpsHistory.ts');
 const operationHost = manifest.entries.operationCyclesHost;
 const operationMainEntry = dynamicOutputForInput(operationHost, 'web/src/admin/main.ts');
 const operationLegacyEntry = operationMainEntry && dynamicOutputForInput(operationMainEntry, 'web/src/admin/legacy.ts');
-if (!legacyEntry || !campaignsEntry || !groupOpsHistoryEntry || !operationMainEntry || !operationLegacyEntry) fail('required frozen admin runtime chunks are absent from manifest');
+if (!legacyEntry || !campaignsEntry || !adminAccessEntry || !setupWizardEntry || !groupOpsHistoryEntry || !operationMainEntry || !operationLegacyEntry) fail('required frozen admin runtime chunks are absent from manifest');
 
 const selected = new Set();
 const includeStatic = (relative) => {
@@ -49,7 +51,8 @@ const includeStatic = (relative) => {
 };
 // V2's loader contains dormant dynamic imports for every legacy page. The
 // release keeps the loader, its static dependencies, the campaigns chunk
-// selected by the External Effects workspace, and the Group Ops history chunk
+// selected by the External Effects workspace, the Admin Access and Setup
+// Wizard chunks selected by the Config host, and the Group Ops history chunk
 // selected by the byte-frozen groupops.html?history=1 route. No other legacy
 // page chunk is staged or fetchable. HTML stays v3-owned: the Go webshell
 // renders the single admin shell and mounts the frozen stage, so no donor HTML
@@ -57,9 +60,28 @@ const includeStatic = (relative) => {
 for (const root of roots) includeStatic(root);
 includeStatic(legacyEntry);
 includeStatic(campaignsEntry);
+includeStatic(adminAccessEntry);
+includeStatic(setupWizardEntry);
 includeStatic(groupOpsHistoryEntry);
 includeStatic(operationMainEntry);
 includeStatic(operationLegacyEntry);
+
+const privateTemplatePages = [
+  'images', 'attach', 'mpLib',
+  'products', 'productForm', 'spProducts', 'spProductForm',
+  'coupons', 'couponForm',
+  'groupops', 'groupopsDetail',
+  'agents', 'agentEdit',
+  'cycles', 'cyclesDetail',
+  'config', 'configDetail', 'apidocs',
+];
+const releaseRoot = new Set([...selected, ...privateTemplatePages.map((page) => `admin/${page}.html`), 'admin/tags.html']);
+const releaseMetadataFor = (relative) => {
+  const sourceRelative = relative === 'admin/tags.html' ? 'admin/wecom-tags.html' : relative;
+  const metadata = manifest.release_files?.[sourceRelative];
+  if (!metadata) fail(`release manifest lacks metadata for ${sourceRelative}`);
+  return metadata;
+};
 
 for (const relative of [...selected].sort()) copy(relative);
 // Media uses the same immutable admin bundle, mounted by the v3 shell. These
@@ -96,6 +118,7 @@ const stagedManifest = {
   ...manifest,
   entries: Object.fromEntries(['admin', 'tokens', 'labs', 'operationCyclesHost'].map((name) => [name, manifest.entries[name]])),
   files: Object.fromEntries([...selected].sort().map((relative) => [relative, manifest.files[relative]])),
+  release_files: Object.fromEntries([...releaseRoot].sort().map((relative) => [relative, releaseMetadataFor(relative)])),
 };
 fs.writeFileSync(path.join(stage, 'asset-manifest.json'), `${JSON.stringify(stagedManifest, null, 2)}\n`);
 
@@ -117,5 +140,8 @@ for (const relative of stagedFiles) {
 }
 for (const relative of selected) {
   if (!stagedFiles.includes(relative)) fail(`missing staged dependency: ${relative}`);
+}
+for (const relative of releaseRoot) {
+  if (!stagedFiles.includes(relative)) fail(`missing staged release file: ${relative}`);
 }
 console.log(`staged ${selected.size} frozen admin assets and private Media, Tags, Product, Coupon, Group Ops, Automation, Operation Cycle, and Config templates in ${stage}`);

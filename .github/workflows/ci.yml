@@ -10,8 +10,11 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # GitHub keeps only one pending run per group. Give each main SHA its own
+  # group so a later main push cannot replace a pending or running release;
+  # non-main refs continue to share a group and supersede obsolete PR runs.
+  group: ci-${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.sha || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   check:
@@ -106,10 +109,10 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: check
     runs-on: ubuntu-latest
-    # The GitHub-hosted runner can need 10-15 minutes to upload the release to
-    # the mainland deployment host. Keep a bounded margin so a slow transfer
-    # is not reported as a failed install after all server-side checks pass.
-    timeout-minutes: 30
+    # Cross-region upload to the mainland deployment host can exceed 30 minutes.
+    # Keep a bounded 60-minute margin so a slow transfer is not cancelled after
+    # all server-side checks pass.
+    timeout-minutes: 60
     permissions:
       contents: read
     env:
@@ -201,7 +204,9 @@ jobs:
         run: |
           set -euo pipefail
           ssh_flags=(-i "$HOME/.ssh/deploy_key" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes)
-          scp "${ssh_flags[@]}" "aicrm-${GITHUB_SHA}.tar.gz" deploy/install-release.sh "${DEPLOY_USER}@${DEPLOY_HOST}:/tmp/"
+          remote_installer="/tmp/install-release-${GITHUB_SHA}.sh"
+          scp "${ssh_flags[@]}" "aicrm-${GITHUB_SHA}.tar.gz" "${DEPLOY_USER}@${DEPLOY_HOST}:/tmp/"
+          scp "${ssh_flags[@]}" deploy/install-release.sh "${DEPLOY_USER}@${DEPLOY_HOST}:${remote_installer}"
           ssh "${ssh_flags[@]}" "${DEPLOY_USER}@${DEPLOY_HOST}" \
-            "sudo /usr/bin/bash /tmp/install-release.sh /tmp/aicrm-${GITHUB_SHA}.tar.gz ${GITHUB_SHA}"
+            "sudo /usr/bin/bash ${remote_installer} /tmp/aicrm-${GITHUB_SHA}.tar.gz ${GITHUB_SHA} ${GITHUB_RUN_NUMBER}"
           curl --fail --silent --show-error --retry 5 --retry-delay 2 https://id-dev.youcangogogo.com/readyz
