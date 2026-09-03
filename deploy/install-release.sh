@@ -20,18 +20,33 @@ if ! id aicrm >/dev/null 2>&1 || [[ ! -f /etc/aicrm/aicrm.env ]]; then
 fi
 
 release_dir="${release_root}/${release_sha}"
-if [[ -e "$release_dir" ]]; then
-  echo "release already exists" >&2
-  exit 4
-fi
 previous=""
 if [[ -L "$current_link" ]]; then
 	previous="$(readlink -f "$current_link")"
 fi
 
 install -d -m 0755 "$release_root"
-install -d -m 0755 "$release_dir"
-tar -xzf "$archive" -C "$release_dir"
+if [[ -e "$release_dir" ]]; then
+  if [[ ! -d "$release_dir" || -L "$release_dir" ]]; then
+    echo "existing release path is not a directory" >&2
+    exit 4
+  fi
+  echo "resuming validated release ${release_sha}"
+else
+  staging_dir="$(mktemp -d "${release_root}/.${release_sha}.staging.XXXXXX")"
+  cleanup_staging() {
+    if [[ -n "${staging_dir:-}" && -d "$staging_dir" ]]; then
+      rm -rf -- "$staging_dir"
+    fi
+  }
+  trap cleanup_staging EXIT
+  tar -xzf "$archive" -C "$staging_dir"
+  test -f "$staging_dir/release-files.sha256"
+  (cd "$staging_dir" && sha256sum --strict --check release-files.sha256)
+  mv -T "$staging_dir" "$release_dir"
+  staging_dir=""
+  trap - EXIT
+fi
 test -x "$release_dir/bin/aicrm"
 test -x "$release_dir/bin/migrate-platform"
 test -x "$release_dir/bin/migrate-river"
@@ -46,6 +61,8 @@ test -f "$release_dir/migrations/0011_coupon.sql"
 test -f "$release_dir/migrations/0012_group_ops.sql"
 test -f "$release_dir/migrations/0016_media_content_packages.sql"
 test -f "$release_dir/web/dist/asset-manifest.json"
+test -f "$release_dir/release-files.sha256"
+(cd "$release_dir" && sha256sum --strict --check release-files.sha256)
 printf 'AICRM_RELEASE_SHA=%s\n' "$release_sha" > "$release_dir/release.env"
 chown -R aicrm:aicrm "$release_dir"
 

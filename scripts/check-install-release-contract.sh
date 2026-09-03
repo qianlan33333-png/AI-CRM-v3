@@ -49,3 +49,7 @@ grep -qx 'test -f "$release_dir/migrations/0011_coupon.sql"' "$installer" || { e
 grep -qx 'test -f "$release_dir/migrations/0012_group_ops.sql"' "$installer" || { echo "release must require Group Ops migration" >&2; exit 1; }
 grep -qx 'test -f "$release_dir/migrations/0016_media_content_packages.sql"' "$installer" || { echo "release must require Media content-package migration" >&2; exit 1; }
 grep -qx 'test -x "$release_dir/bin/migrate-phone-identities"' "$installer" || { echo "release must include phone migration tool" >&2; exit 1; }
+grep -qx 'test -f "$release_dir/release-files.sha256"' "$installer" || { echo "release must require its immutable file manifest" >&2; exit 1; }
+grep -qx '(cd "$release_dir" && sha256sum --strict --check release-files.sha256)' "$installer" || { echo "existing releases must pass their complete file manifest before resume" >&2; exit 1; }
+grep -qF 'mv -T "$staging_dir" "$release_dir"' "$installer" || { echo "new releases must become visible only after staged verification" >&2; exit 1; }
+grep -qF 'sha256sum --strict --check release-files.sha256' .github/workflows/ci.yml || { echo "CI must generate and verify the immutable release manifest" >&2; exit 1; }
