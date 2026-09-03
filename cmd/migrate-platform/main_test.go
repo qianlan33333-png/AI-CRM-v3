@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -185,5 +186,77 @@ func TestOperationCycleHistoryMigrationUpgradesExistingProjection(t *testing.T) 
 	}
 	if _, err = pool.Exec(ctx, `UPDATE operation_cycle_run_ordinals SET run_key='changed' WHERE ordinal=$1`, runOrdinal); err == nil {
 		t.Fatal("backfilled run ordinal accepted mutation")
+	}
+}
+
+// TestAdminAccessCompatibilityMigrationUpgradesPreviousRelease proves that
+// 0027 executes against a database whose migration ledger already contains the
+// complete previous release (0001 through 0026). Re-applying a full filesystem
+// after 0027 is present would only test checksum skipping, not this upgrade.
+func TestAdminAccessCompatibilityMigrationUpgradesPreviousRelease(t *testing.T) {
+	url, urlErr := platformconfig.DatabaseURL()
+	if urlErr != nil {
+		t.Skip("database URL not configured")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	admin, err := pgxpool.New(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Close()
+	raw := make([]byte, 6)
+	if _, err = rand.Read(raw); err != nil {
+		t.Fatal(err)
+	}
+	schema := "migrate_access_upgrade_" + hex.EncodeToString(raw)
+	if _, err = admin.Exec(ctx, "CREATE SCHEMA "+schema); err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Exec(context.Background(), "DROP SCHEMA "+schema+" CASCADE")
+	cfg, err := pgxpool.ParseConfig(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.ConnConfig.RuntimeParams["search_path"] = schema
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	_, file, _, _ := runtime.Caller(0)
+	filesystem := os.DirFS(filepath.Join(filepath.Dir(file), "..", "..", "migrations"))
+	entries, err := fs.ReadDir(filesystem, ".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := fstest.MapFS{}
+	for _, entry := range entries {
+		if entry.IsDir() || entry.Name() >= "0027_admin_access_login_compat.sql" {
+			continue
+		}
+		contents, readErr := fs.ReadFile(filesystem, entry.Name())
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		previous[entry.Name()] = &fstest.MapFile{Data: contents}
+	}
+	if err = applyMigrations(ctx, pool, previous); err != nil {
+		t.Fatalf("apply previous release through 0026: %v", err)
+	}
+	if err = applyMigrations(ctx, pool, filesystem); err != nil {
+		t.Fatalf("upgrade previous release through 0027: %v", err)
+	}
+	var name string
+	if err = pool.QueryRow(ctx, `SELECT name FROM platform_schema_migrations WHERE version='0027'`).Scan(&name); err != nil || name != "0027_admin_access_login_compat.sql" {
+		t.Fatalf("0027 ledger name=%q err=%v", name, err)
+	}
+	var definition string
+	if err = pool.QueryRow(ctx, `SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid='admin_access_audit'::regclass AND conname='ck_admin_access_audit_action'`).Scan(&definition); err != nil || !strings.Contains(definition, "set_login_enabled") {
+		t.Fatalf("upgraded action constraint=%q err=%v", definition, err)
+	}
+	var receiptTable bool
+	if err = pool.QueryRow(ctx, `SELECT to_regclass(current_schema() || '.admin_access_login_compat_receipts') IS NOT NULL`).Scan(&receiptTable); err != nil || !receiptTable {
+		t.Fatalf("upgraded receipt table=%v err=%v", receiptTable, err)
 	}
 }
