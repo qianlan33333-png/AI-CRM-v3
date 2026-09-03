@@ -35,6 +35,9 @@ const (
 	KindOutboundMedia    = port.KindOutboundMedia
 	KindWeComTagCatalog  = port.KindWeComTagCatalog
 	KindGroupMessage     = port.KindGroupMessage
+	KindChannelAsset     = port.KindChannelAsset
+	KindChannelWelcome   = port.KindChannelWelcome
+	KindChannelEntryTag  = port.KindChannelEntryTag
 	KindWeChatPayPrepay  = port.KindWeChatPayPrepay
 	KindWeChatPayRefund  = port.KindWeChatPayRefund
 	KindWeChatShopRefund = port.KindWeChatShopRefund

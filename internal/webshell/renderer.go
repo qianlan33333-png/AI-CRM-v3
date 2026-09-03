@@ -11,6 +11,7 @@ import (
 	"mime"
 	"net/http"
 	"path"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -88,6 +89,10 @@ type AdminShellView struct {
 	Config               bool
 	ConfigPage           string
 	ConfigAssets         ConfigAssets
+	Channel              bool
+	ChannelPage          string
+	ChannelResourceID    string
+	ChannelAssets        ChannelAssets
 }
 
 // ExternalEffectsAssets are manifest-derived URLs for the frozen donor bundle.
@@ -138,6 +143,8 @@ type OperationCycleAssets struct{ TokensCSS, LabsCSS, HostJS string }
 // ConfigAssets are immutable donor runtime URLs supplied by the v3 config UI
 // adapter. The v3 shell owns authentication and only mounts template#tpl.
 type ConfigAssets struct{ TokensCSS, LabsCSS, AdminJS string }
+
+type ChannelAssets struct{ TokensCSS, LabsCSS, AdminJS string }
 
 // Render implements the small presentation contract consumed by the Access
 // HTTP handler. Keeping this adapter in webshell avoids a concrete import
@@ -342,6 +349,28 @@ func (renderer *Renderer) RenderCoupons(writer http.ResponseWriter, data AdminPa
 	data.ShowPageHeader = false
 	content := `<main id="stage" class="stage rich"></main><template id="tpl">` + donorTemplate + `</template>`
 	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: template.HTML(content), Coupons: true, CouponPage: page, CouponAssets: assets})
+	if err != nil {
+		return err
+	}
+	return writeHTML(writer, http.StatusOK, body)
+}
+
+// RenderChannels mounts the two byte-frozen channel templates. Resource IDs
+// are supplied as inert body data for the v3 host adapter; they are never
+// interpolated into donor markup.
+func (renderer *Renderer) RenderChannels(writer http.ResponseWriter, data AdminPageData, page, resourceID, donorTemplate string, assets ChannelAssets) error {
+	if renderer == nil || renderer.templates == nil || donorTemplate == "" || assets.TokensCSS == "" || assets.LabsCSS == "" || assets.AdminJS == "" || (page != "channels" && page != "channelForm") {
+		return errors.New("channel shell assets are required")
+	}
+	if resourceID != "" {
+		if id, err := strconv.ParseInt(resourceID, 10, 64); err != nil || id < 1 || strconv.FormatInt(id, 10) != resourceID {
+			return errors.New("channel resource ID is invalid")
+		}
+	}
+	normalizeAdminPage(&data)
+	data.ShowPageHeader = false
+	content := `<main id="stage" class="stage rich"></main><template id="tpl">` + donorTemplate + `</template>`
+	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: template.HTML(content), Channel: true, ChannelPage: page, ChannelResourceID: resourceID, ChannelAssets: assets})
 	if err != nil {
 		return err
 	}

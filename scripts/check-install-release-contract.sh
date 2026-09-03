@@ -66,7 +66,9 @@ for migration_contract in \
   '0027_admin_access_login_compat.sql:Admin access login compatibility' \
   '0028_hxc_dashboard.sql:HXC dashboard' \
   '0029_channel_center.sql:Channel center' \
-  '0030_config_definition_import.sql:configuration definition import'; do
+  '0030_config_definition_import.sql:configuration definition import' \
+  '0031_channel_history_import.sql:Channel history import' \
+  '0032_channel_acquisition_assets.sql:Channel acquisition assets'; do
   migration="${migration_contract%%:*}"
   label="${migration_contract#*:}"
   test -f "migrations/${migration}" || {

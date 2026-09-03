@@ -317,6 +317,10 @@ type response struct {
 	TagGroups           *[]tagGroupWire `json:"tag_group"`
 	FollowUser          []string        `json:"follow_user"`
 	NextCursor          string          `json:"next_cursor"`
+	ConfigID            string          `json:"config_id"`
+	QRCode              string          `json:"qr_code"`
+	LinkID              string          `json:"link_id"`
+	URL                 string          `json:"url"`
 	ExternalContactList []struct {
 		ExternalContact struct {
 			ExternalUserID string `json:"external_userid"`
@@ -336,6 +340,77 @@ type response struct {
 			} `json:"tags"`
 		} `json:"follow_info"`
 	} `json:"external_contact_list"`
+}
+
+// CreateContactWay is the bounded customer-contact QR write used only by the
+// Outbound adapter after EER has durably recorded an attempted state.
+func (client *Client) CreateContactWay(ctx context.Context, input wecomport.AcquisitionAssetRequest) (wecomport.AcquisitionAssetResult, error) {
+	if !client.DirectoryReady() || !validAcquisitionRequest(input) {
+		return wecomport.AcquisitionAssetResult{}, ErrUnavailable
+	}
+	token, err := client.contactAccessToken(ctx)
+	if err != nil {
+		return wecomport.AcquisitionAssetResult{}, err
+	}
+	body, err := json.Marshal(map[string]any{"type": 2, "scene": 2, "style": 1, "remark": input.Name, "skip_verify": input.SkipVerify, "state": input.State, "user": input.StaffUserIDs})
+	if err != nil {
+		return wecomport.AcquisitionAssetResult{}, ErrResponse
+	}
+	payload, err := client.requestJSON(ctx, http.MethodPost, "/cgi-bin/externalcontact/add_contact_way", url.Values{"access_token": {token}}, body)
+	if err != nil {
+		return wecomport.AcquisitionAssetResult{}, err
+	}
+	payload.ConfigID = strings.TrimSpace(payload.ConfigID)
+	payload.QRCode = strings.TrimSpace(payload.QRCode)
+	if invalid(payload.ConfigID) || !validProviderHTTPS(payload.QRCode) {
+		return wecomport.AcquisitionAssetResult{}, ErrResponse
+	}
+	return wecomport.AcquisitionAssetResult{ProviderAssetRef: payload.ConfigID, URL: payload.QRCode}, nil
+}
+
+func (client *Client) CreateCustomerAcquisitionLink(ctx context.Context, input wecomport.AcquisitionAssetRequest) (wecomport.AcquisitionAssetResult, error) {
+	if !client.DirectoryReady() || !validAcquisitionRequest(input) {
+		return wecomport.AcquisitionAssetResult{}, ErrUnavailable
+	}
+	token, err := client.contactAccessToken(ctx)
+	if err != nil {
+		return wecomport.AcquisitionAssetResult{}, err
+	}
+	body, err := json.Marshal(map[string]any{"link_name": input.Name, "range": map[string]any{"user_list": input.StaffUserIDs}})
+	if err != nil {
+		return wecomport.AcquisitionAssetResult{}, ErrResponse
+	}
+	payload, err := client.requestJSON(ctx, http.MethodPost, "/cgi-bin/externalcontact/customer_acquisition/create_link", url.Values{"access_token": {token}}, body)
+	if err != nil {
+		return wecomport.AcquisitionAssetResult{}, err
+	}
+	payload.LinkID = strings.TrimSpace(payload.LinkID)
+	payload.URL = strings.TrimSpace(payload.URL)
+	if invalid(payload.LinkID) || !validProviderHTTPS(payload.URL) {
+		return wecomport.AcquisitionAssetResult{}, ErrResponse
+	}
+	return wecomport.AcquisitionAssetResult{ProviderAssetRef: payload.LinkID, URL: payload.URL}, nil
+}
+
+func validAcquisitionRequest(input wecomport.AcquisitionAssetRequest) bool {
+	if invalid(input.Name) || invalid(input.State) || len(input.StaffUserIDs) < 1 || len(input.StaffUserIDs) > 5 {
+		return false
+	}
+	seen := map[string]struct{}{}
+	for _, id := range input.StaffUserIDs {
+		if invalid(id) {
+			return false
+		}
+		if _, ok := seen[id]; ok {
+			return false
+		}
+		seen[id] = struct{}{}
+	}
+	return true
+}
+func validProviderHTTPS(raw string) bool {
+	parsed, err := url.Parse(raw)
+	return err == nil && parsed.Scheme == "https" && parsed.Host != "" && parsed.User == nil && parsed.Fragment == ""
 }
 
 type TagCatalogGroup = wecomport.TagCatalogGroup
@@ -525,3 +600,4 @@ func itoa(value int64) string { return strconv.FormatInt(value, 10) }
 var _ wecom.OAuthClient = (*Client)(nil)
 var _ wecom.JSSDKSigner = (*Client)(nil)
 var _ wecomport.DirectoryProvider = (*Client)(nil)
+var _ wecomport.AcquisitionAssetWriter = (*Client)(nil)

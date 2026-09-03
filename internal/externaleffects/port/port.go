@@ -35,6 +35,9 @@ const (
 	KindOutboundMedia    Kind  = "outbound_media"
 	KindWeComTagCatalog  Kind  = "wecom_tag_catalog"
 	KindGroupMessage     Kind  = "group_message"
+	KindChannelAsset     Kind  = "channel_acquisition_asset"
+	KindChannelWelcome   Kind  = "channel_welcome_message"
+	KindChannelEntryTag  Kind  = "channel_entry_tag"
 	KindWeChatPayPrepay  Kind  = "wechat_pay_prepay_v1"
 	KindWeChatPayRefund  Kind  = "wechat_pay_refund_v1"
 	KindWeChatShopRefund Kind  = "wechat_shop_refund_v1"
@@ -61,7 +64,7 @@ type Envelope struct {
 }
 
 func (value Envelope) Valid() bool {
-	kindValid := value.Owner == OwnerOutbound && (value.Kind == KindOutboundMessage || value.Kind == KindOutboundMedia || value.Kind == KindWeComTagCatalog || value.Kind == KindGroupMessage) ||
+	kindValid := value.Owner == OwnerOutbound && (value.Kind == KindOutboundMessage || value.Kind == KindOutboundMedia || value.Kind == KindWeComTagCatalog || value.Kind == KindGroupMessage || value.Kind == KindChannelAsset || value.Kind == KindChannelWelcome || value.Kind == KindChannelEntryTag) ||
 		value.Owner == OwnerPayment && (value.Kind == KindWeChatPayPrepay || value.Kind == KindWeChatPayRefund || value.Kind == KindWeChatShopRefund)
 	return kindValid && ValidDigest(value.SourceRefDigest) && ValidDigest(value.TargetRefDigest) && ValidDigest(value.PayloadDigest) && ValidDigest(value.PolicyVersionHash)
 }

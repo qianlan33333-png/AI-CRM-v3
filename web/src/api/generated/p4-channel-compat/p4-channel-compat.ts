@@ -370,10 +370,32 @@ export const updateLegacyChannel = async (
   legacyChannelWriteRequest: LegacyChannelWriteRequest,
   options?: RequestInit,
 ): Promise<updateLegacyChannelResponse> => {
+  // v3 host compatibility: obtain the owner-issued opaque CAS token immediately
+  // before the frozen form submits its complete replacement payload.
+  const current = await fetch(getUpdateLegacyChannelUrl(channelId), {
+    ...options,
+    method: "GET",
+  });
+  if (!current.ok) {
+    const currentBody = [204, 205, 304].includes(current.status)
+      ? null
+      : await current.text();
+    return {
+      data: currentBody ? JSON.parse(currentBody) : {},
+      status: current.status,
+      headers: current.headers,
+    } as updateLegacyChannelResponse;
+  }
+  const version = current.headers.get("ETag");
+  if (!version) throw new Error("channel CAS token is unavailable");
   const res = await fetch(getUpdateLegacyChannelUrl(channelId), {
     ...options,
     method: "PATCH",
-    headers: { "Content-Type": "application/json", ...options?.headers },
+    headers: {
+      "Content-Type": "application/json",
+      ...options?.headers,
+      "If-Match": version,
+    },
     body: JSON.stringify(legacyChannelWriteRequest),
   });
 

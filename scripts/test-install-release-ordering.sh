@@ -112,7 +112,8 @@ make_release() {
     0022_customer_profile_sections.sql 0024_order_product_version.sql \
     0025_payment_reconciliation.sql 0026_identity_history_receipts.sql \
     0027_admin_access_login_compat.sql 0028_hxc_dashboard.sql \
-    0029_channel_center.sql 0030_config_definition_import.sql; do
+    0029_channel_center.sql 0030_config_definition_import.sql \
+    0031_channel_history_import.sql 0032_channel_acquisition_assets.sql; do
     : > "$release/migrations/$migration"
   done
   : > "$release/web/dist/asset-manifest.json"
