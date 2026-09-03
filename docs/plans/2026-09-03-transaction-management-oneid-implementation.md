@@ -67,7 +67,7 @@
 
 **Files:**
 
-- Create: `migrations/0017_order.sql`
+- Create: `migrations/0020_order.sql`
 - Replace: `internal/order/domain/order.go`
 - Create: `internal/order/domain/order_test.go`
 - Create: `internal/order/port/port.go`
@@ -150,7 +150,7 @@
 
 **Files:**
 
-- Create: `migrations/0018_payment.sql`
+- Create: `migrations/0021_payment.sql`
 - Replace: `internal/payment/domain/status.go`
 - Create: `internal/payment/domain/payment.go`
 - Create: `internal/payment/domain/payment_test.go`

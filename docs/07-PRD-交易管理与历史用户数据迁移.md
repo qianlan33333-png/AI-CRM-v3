@@ -33,7 +33,7 @@ External Effects: WeChat Pay prepay/refund and WeChat Shop refund are involved; 
 ### 3.1 v3 当前状态（2026-09-03 第一批开发后）
 
 - `modules/registry.yaml` 中 `order`、`payment` 已为 `contracted`，只表示供体契约冻结，不代表能力上线。
-- Order 聚合、Port、事务型 PostgreSQL Store 与 `0017_order.sql` 已在开发分支完成；Payment 仍为占位。
+- Order 聚合、Port、事务型 PostgreSQL Store 与 `0020_order.sql` 已完成；Payment 原子接纳、微信支付 Adapter 和 `0021_payment.sql` 已完成，Provider 生产开关仍需独立配置。
 - `/admin/orders` 仍只有明确不可用的 v3 壳，没有挂载订单 API 或 donor 业务动作。
 - v3 的 `orders.html`、`orderDetail.html` 与冻结 v2 commit 字节一致；页面资产可复用，不需要重新设计。
 - `web/src/api/capabilities.ts` 已改为类型化 `transactionReadiness`，订单读取和全部退款在真实 API/Journey 完成前保持 `backend_blocked`。

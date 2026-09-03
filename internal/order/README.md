@@ -6,7 +6,7 @@ Order 是交易事实的唯一 Owner，当前主干包含：
 - `port`：创建、查询、结算写入和历史导入四个窄接口；跨领域不得 import `app` 或 `store`。
 - `app`：幂等创建/结算、稳定 `(created_at,id)` 游标和历史导入门禁。
 - `store`：只接受共享 PostgreSQL Unit of Work 的事务上下文；原子写订单、条目、状态历史、收据、审计与 Outbox。
-- `migrations/0017_order.sql`：Order 独占表、约束、索引和 append-only 财务事实。
+- `migrations/0020_order.sql`：Order 独占表、约束、索引和 append-only 财务事实。
 
 ## OneID 与持久化分类
 
