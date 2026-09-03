@@ -111,13 +111,14 @@ make_release() {
     0018_survey.sql 0019_tag_catalog_sync_projection.sql 0020_order.sql 0021_payment.sql \
     0022_customer_profile_sections.sql 0024_order_product_version.sql \
     0025_payment_reconciliation.sql 0026_identity_history_receipts.sql \
-    0027_admin_access_login_compat.sql; do
+    0027_admin_access_login_compat.sql 0028_hxc_dashboard.sql; do
     : > "$release/migrations/$migration"
   done
   : > "$release/web/dist/asset-manifest.json"
   for unit in \
     aicrm.service aicrm-migrate.service aicrm-wecom-worker.service aicrm-wecom-worker.timer \
-    aicrm-effects-worker.service aicrm-customer-sync-daily.service aicrm-customer-sync-daily.timer; do
+    aicrm-effects-worker.service aicrm-customer-sync-daily.service aicrm-customer-sync-daily.timer \
+    aicrm-hxc-dashboard-refresh.service aicrm-hxc-dashboard-refresh.timer; do
     : > "$release/deploy/$unit"
   done
   (

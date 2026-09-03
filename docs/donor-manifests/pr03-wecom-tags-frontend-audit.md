@@ -62,13 +62,13 @@ HTML、只返回 HTTP 200、只排队或只保留本地 catalog 都不构成完�
 这些文件不能只抽取“标签几行”：`admin.ts` 和 `controller.ts` 是 v2 共享单体，
 admin bundle 的静态依赖必须整体保持 donor。PR01 的
 `docs/donor-manifests/pr01-web.sha256` 是更高层的完整 `web/src`/build
-文件集合门禁，本表是 PR03 的命名闭包索引。
+文件集合门禁，本表是 PR03 的命名闭包索引。`web/src/api/admin.test.ts`
+现由 v3 测试边界拥有并继续在完整前端测试中执行，因此不再作为标签模块的 donor 字节冻结文件。
 
 | donor / target path | 角色 | SHA-256 |
 | --- | --- | --- |
 | `web/src/api/admin.ts` | tags list/read/write DTO adapter | `574293ff7ab6fb0c6d1227ff879649dbc05cf454caaaec6a0fbc1d23727df9ee` |
 | `web/src/api/transport.ts` | same-origin credentials、CSRF、非 2xx 解包 | `fc5e4b447d10487f571fdafd953cb51756274bc40b019bb51b6cdd61cfbad885` |
-| `web/src/api/admin.test.ts` | donor API URL/映射 characterization tests | `4a30e68aa2bf1dc224aada891bd298fef6795957470b27517fae3608cdea3914` |
 | `web/src/api/generated/p4-tag-compat/p4-tag-compat.ts` | frozen path/method/status/DTO 生成物 | `ee681aa3460deccb41aad4daea555e3428301d30bafc804860ab6d83df1a930e` |
 | `web/src/api/generated/health.schemas.ts` | frozen tag DTO/schema types | `7f1bc1d05b3e012de46b1d53ef7b56319c0bc032a1c0389fa3fd138c7218b40d` |
 | `web/src/shared/api/client.ts` | `AdminApi` tags interface + HTTP implementation | `2e1bfde0d36f6ab6637da66fddf6b7ee94984364a7175ad787b1da80f98695d5` |

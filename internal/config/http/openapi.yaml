@@ -619,6 +619,47 @@ paths:
       responses:
         "200": {description: Non-PII durable stage and reconciled counts, content: {application/json: {schema: {$ref: "#/components/schemas/CustomerSyncRun"}}}}
         "404": {$ref: "#/components/responses/Error"}
+  /api/admin/hxc-dashboard/summary:
+    get:
+      operationId: getHXCDashboardSummary
+      tags: [HXCDashboard]
+      security: [{adminSession: []}]
+      responses:
+        "200": {description: Published HXC current-state projection summary, content: {application/json: {schema: {$ref: "#/components/schemas/HXCDashboardSummary"}}}}
+        "401": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/admin/hxc-dashboard/query:
+    post:
+      operationId: queryHXCDashboard
+      tags: [HXCDashboard]
+      security: [{adminSession: []}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/HXCDashboardQuery"}}}}
+      responses:
+        "200": {description: Version-fixed page and optional grouping, content: {application/json: {schema: {$ref: "#/components/schemas/HXCDashboardQueryResponse"}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+  /api/admin/hxc-dashboard/refreshes:
+    post:
+      operationId: createHXCDashboardRefresh
+      tags: [HXCDashboard]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      responses:
+        "200": {description: Existing refresh replay, content: {application/json: {schema: {$ref: "#/components/schemas/HXCDashboardRefreshEnvelope"}}}}
+        "202": {description: Durable refresh accepted, content: {application/json: {schema: {$ref: "#/components/schemas/HXCDashboardRefreshEnvelope"}}}}
+        "403": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/admin/hxc-dashboard/refreshes/{run_id}:
+    get:
+      operationId: getHXCDashboardRefresh
+      tags: [HXCDashboard]
+      security: [{adminSession: []}]
+      parameters: [{name: run_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
+      responses:
+        "200": {description: Durable HXC refresh receipt, content: {application/json: {schema: {$ref: "#/components/schemas/HXCDashboardRefresh"}}}}
+        "401": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
   /wecom/external-contact/callback:
     get:
       operationId: verifyWeComCallback
@@ -2552,6 +2593,119 @@ components:
     Unavailable: {description: Dependency or provider unavailable, content: {application/json: {schema: {$ref: "#/components/schemas/ErrorResponse"}}}}
     MutationOK: {description: Mutation completed, content: {application/json: {schema: {type: object, required: [ok], properties: {ok: {const: true}}}}}}
   schemas:
+    HXCDashboardCounts:
+      type: object
+      additionalProperties: false
+      required: [total, active_used, active_unused, registered_no_active_membership, matched, unmatched, conflict]
+      properties:
+        total: {type: integer, format: int64, minimum: 0}
+        active_used: {type: integer, format: int64, minimum: 0}
+        active_unused: {type: integer, format: int64, minimum: 0}
+        registered_no_active_membership: {type: integer, format: int64, minimum: 0}
+        matched: {type: integer, format: int64, minimum: 0}
+        unmatched: {type: integer, format: int64, minimum: 0}
+        conflict: {type: integer, format: int64, minimum: 0}
+    HXCDashboardSummary:
+      type: object
+      additionalProperties: false
+      required: [projection_id, rule_version, projection_as_of, published_at, freshness, age_seconds, source_digest, projection_digest, counts]
+      properties:
+        projection_id: {$ref: "#/components/schemas/PositiveID"}
+        rule_version: {type: string, const: hxc-current-v1}
+        projection_as_of: {type: string, format: date-time}
+        source_watermark: {type: [string, "null"], format: date-time}
+        published_at: {type: string, format: date-time}
+        freshness: {type: string, enum: [fresh, stale]}
+        age_seconds: {type: integer, format: int64}
+        source_digest: {type: string, pattern: '^[0-9a-f]{64}$'}
+        projection_digest: {type: string, pattern: '^[0-9a-f]{64}$'}
+        counts: {$ref: "#/components/schemas/HXCDashboardCounts"}
+    HXCDashboardFilters:
+      type: object
+      additionalProperties: false
+      properties:
+        stage: {type: array, maxItems: 3, uniqueItems: true, items: {type: string, enum: [active_used, active_unused, registered_no_active_membership]}}
+        subscription_tier: {type: array, maxItems: 20, uniqueItems: true, items: {type: string, minLength: 1, maxLength: 100}}
+        last_capability: {type: array, maxItems: 20, uniqueItems: true, items: {type: string, minLength: 1, maxLength: 100}}
+        business_stage: {type: array, maxItems: 20, uniqueItems: true, items: {type: string, minLength: 1, maxLength: 100}}
+        user_segment: {type: array, maxItems: 20, uniqueItems: true, items: {type: string, minLength: 1, maxLength: 100}}
+        identity_state: {type: array, maxItems: 3, uniqueItems: true, items: {type: string, enum: [matched, unmatched, conflict]}}
+    HXCDashboardQuery:
+      type: object
+      additionalProperties: false
+      properties:
+        projection_id: {$ref: "#/components/schemas/PositiveID"}
+        filters: {$ref: "#/components/schemas/HXCDashboardFilters"}
+        exact_hxc_user_id: {type: string, minLength: 1, maxLength: 255, writeOnly: true}
+        sort: {type: string, enum: [last_used_at_desc, source_updated_at_desc, subscription_expires_at_asc, subscription_expires_at_desc, messages_7d_desc]}
+        group_by: {type: string, enum: [stage, subscription_tier, last_capability, business_stage, user_segment, identity_state]}
+        cursor: {type: string, maxLength: 2048}
+        limit: {type: integer, minimum: 1, maximum: 100, default: 50}
+    HXCDashboardRow:
+      type: object
+      additionalProperties: false
+      required: [user_ref, stage, subscription_tier, monthly_chat_quota, current_period_used, consultation_limit, consultation_used, membership_attribution, sessions_7d, sessions_30d, sessions_total, user_messages_7d, user_messages_30d, user_messages_total, capability_usage, identity_state, source_updated_at]
+      properties:
+        user_ref: {type: string, pattern: '^HXC-[0-9a-f]{12}$'}
+        stage: {type: string, enum: [active_used, active_unused, registered_no_active_membership]}
+        subscription_tier: {type: string}
+        subscription_expires_at: {type: [string, "null"], format: date-time}
+        monthly_chat_quota: {type: integer, format: int64, minimum: 0}
+        current_period_used: {type: integer, format: int64, minimum: 0}
+        consultation_limit: {type: integer, format: int64, minimum: 0}
+        consultation_used: {type: integer, format: int64, minimum: 0}
+        membership_attribution: {type: string, enum: [user_id, unique_phone, none]}
+        sessions_7d: {type: integer, format: int64, minimum: 0}
+        sessions_30d: {type: integer, format: int64, minimum: 0}
+        sessions_total: {type: integer, format: int64, minimum: 0}
+        user_messages_7d: {type: integer, format: int64, minimum: 0}
+        user_messages_30d: {type: integer, format: int64, minimum: 0}
+        user_messages_total: {type: integer, format: int64, minimum: 0}
+        capability_usage: {type: object, additionalProperties: true}
+        last_used_at: {type: [string, "null"], format: date-time}
+        last_capability: {type: [string, "null"]}
+        business_stage: {type: [string, "null"]}
+        main_line_type: {type: [string, "null"]}
+        user_segment: {type: [string, "null"]}
+        focus_topics: {type: array, items: {type: string}}
+        pain_tag: {type: [string, "null"]}
+        identity_state: {type: string, enum: [matched, unmatched, conflict]}
+        source_updated_at: {type: string, format: date-time}
+    HXCDashboardGroup:
+      type: object
+      additionalProperties: false
+      required: [key, count]
+      properties: {key: {type: string}, count: {type: integer, format: int64, minimum: 0}}
+    HXCDashboardQueryResponse:
+      type: object
+      additionalProperties: false
+      required: [projection_id, items, groups, next_cursor]
+      properties:
+        projection_id: {$ref: "#/components/schemas/PositiveID"}
+        items: {type: array, maxItems: 100, items: {$ref: "#/components/schemas/HXCDashboardRow"}}
+        groups: {type: array, items: {$ref: "#/components/schemas/HXCDashboardGroup"}}
+        next_cursor: {type: string}
+    HXCDashboardRefresh:
+      type: object
+      additionalProperties: false
+      required: [run_id, trigger, status, source_count, processed_count, created_at, updated_at]
+      properties:
+        run_id: {$ref: "#/components/schemas/PositiveID"}
+        trigger: {type: string, enum: [manual, scheduled, initial]}
+        status: {type: string, enum: [queued, running, publishing, succeeded, failed]}
+        projection_id: {$ref: "#/components/schemas/PositiveID"}
+        source_count: {type: integer, format: int64, minimum: 0}
+        processed_count: {type: integer, format: int64, minimum: 0}
+        error_code: {type: string}
+        started_at: {type: [string, "null"], format: date-time}
+        completed_at: {type: [string, "null"], format: date-time}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    HXCDashboardRefreshEnvelope:
+      type: object
+      additionalProperties: false
+      required: [run, replayed]
+      properties: {run: {$ref: "#/components/schemas/HXCDashboardRefresh"}, replayed: {type: boolean}}
     LocalProjection:
       type: object
       required: [ok, items, source_status, local_only]

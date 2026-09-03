@@ -35,6 +35,11 @@ import (
 	groupops "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops"
 	groupopsapp "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/app"
 	groupopsstore "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/store"
+	hxcapp "github.com/qianlan33333-png/AI-CRM-v3/internal/hxcdashboard/app"
+	hxchttp "github.com/qianlan33333-png/AI-CRM-v3/internal/hxcdashboard/http"
+	hxcprovider "github.com/qianlan33333-png/AI-CRM-v3/internal/hxcdashboard/provider"
+	hxcstore "github.com/qianlan33333-png/AI-CRM-v3/internal/hxcdashboard/store"
+	hxcworker "github.com/qianlan33333-png/AI-CRM-v3/internal/hxcdashboard/worker"
 	identityapp "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/app"
 	identityhttp "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/http"
 	identityprovider "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/provider"
@@ -95,14 +100,20 @@ type composedApplication struct {
 	adminOps       *adminopsapp.ProjectionService
 	release        *releaseapp.ObservationService
 	diagnostics    *adminopsapp.DiagnosticsService
+	hxcDashboard   hxcapp.Service
+	hxcSource      *hxcprovider.MySQL
 }
 
 func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplication, error) {
+	var hxcSource *hxcprovider.MySQL
 	pool, err := platformpostgres.Open(ctx, platformpostgres.Config{URL: cfg.DatabaseURL, MaxConnections: 20, MinConnections: 1})
 	if err != nil {
 		return nil, err
 	}
 	fail := func(err error) (*composedApplication, error) {
+		if hxcSource != nil {
+			_ = hxcSource.Close()
+		}
 		pool.Close()
 		return nil, err
 	}
@@ -151,6 +162,10 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err = river.AddWorkerSafely[wecom.CustomerSyncJobArgs](effectWorkers, customerSyncWorker); err != nil {
 		return fail(err)
 	}
+	hxcDashboardWorker := &hxcworker.Worker{}
+	if err = river.AddWorkerSafely[hxcworker.Args](effectWorkers, hxcDashboardWorker); err != nil {
+		return fail(err)
+	}
 	paymentReconciliationWorker := payment.NewReconciliationWorker()
 	if err = river.AddWorkerSafely[payment.ReconciliationJobArgs](effectWorkers, paymentReconciliationWorker); err != nil {
 		return fail(err)
@@ -167,11 +182,15 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
+	hxcEnqueuer, err := hxcworker.NewEnqueuer(effectClient)
+	if err != nil {
+		return fail(err)
+	}
 	effectRepository, err := externaleffects.NewRepository(pool.Native(), effectClient)
 	if err != nil {
 		return fail(err)
 	}
-	effectsRuntime, err := platformjobqueue.NewRuntime(pool.Native(), effectWorkers, platformjobqueue.OutboundQueue, wecom.CustomerSyncQueue, payment.ReconciliationQueue)
+	effectsRuntime, err := platformjobqueue.NewRuntime(pool.Native(), effectWorkers, platformjobqueue.OutboundQueue, wecom.CustomerSyncQueue, payment.ReconciliationQueue, hxcworker.Queue)
 	if err != nil {
 		return fail(err)
 	}
@@ -580,6 +599,16 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err = customerSyncWorker.BindService(customerSync); err != nil && cfg.WeCom.CustomerSyncEnabled {
 		return fail(err)
 	}
+	if cfg.HXCDashboard.Enabled {
+		hxcSource, err = hxcprovider.Open(cfg.HXCDashboard.SourceDSN)
+		if err != nil {
+			return fail(err)
+		}
+	}
+	hxcRepository := hxcstore.NewPostgreSQL(pool.Native())
+	hxcDashboard := hxcapp.Service{Enabled: cfg.HXCDashboard.Enabled, Scope: cfg.HXCDashboard.UnionIDScope, SubjectKey: []byte(cfg.HXCDashboard.SubjectHMACKey), Source: hxcSource, Identity: queries, Store: hxcRepository, Enqueuer: hxcEnqueuer, Audit: auditService, UOW: uow}
+	hxcDashboardWorker.Service = &hxcDashboard
+	hxcHandler := hxchttp.Handler{Service: hxcDashboard, Store: hxcRepository, Auth: requestSecurity, Key: []byte(cfg.HXCDashboard.SubjectHMACKey)}
 	syncHandler := wecom.CustomerSyncHTTPHandler{Service: customerSync, Auth: requestSecurity, CSRF: requestSecurity}
 	weComHandler, err := wecom.NewHTTPHandler(wecom.HTTPHandlerOptions{
 		Callback: wecom.CallbackHandler{Enabled: cfg.WeCom.CallbackEnabled, Crypto: callbackCrypto, StateDigester: callbackStateDigester, Inbox: inboxService, UOW: uow},
@@ -617,6 +646,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	adminAPIs.Handle("/api/admin/customers/", customerHandler.Routes())
 	adminAPIs.Handle("/api/admin/customer-sync-runs", syncHandler.Routes())
 	adminAPIs.Handle("/api/admin/customer-sync-runs/", syncHandler.Routes())
+	adminAPIs.Handle("/api/admin/hxc-dashboard/", hxcHandler.Routes())
 	adminAPIs.Handle("/api/admin/orders", orderHandler)
 	adminAPIs.Handle("/api/admin/orders/", orderHandler)
 	adminAPIs.Handle("/api/admin/order-imports/", orderImportHandler)
@@ -654,7 +684,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 			return checkErr
 		}
 		var complete bool
-		checkErr := pool.Native().QueryRow(readinessContext, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['0001','0002','0003','0004','0005','0006','0007','0008','0009','0010','0011','0012','0013','0014','0016','0017','0018','0019','0020','0021','0022','0023','0024','0025','0026','0027']) AS required(version) WHERE NOT EXISTS (SELECT 1 FROM platform_schema_migrations applied WHERE applied.version=required.version))`).Scan(&complete)
+		checkErr := pool.Native().QueryRow(readinessContext, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['0001','0002','0003','0004','0005','0006','0007','0008','0009','0010','0011','0012','0013','0014','0016','0017','0018','0019','0020','0021','0022','0023','0024','0025','0026','0027','0028']) AS required(version) WHERE NOT EXISTS (SELECT 1 FROM platform_schema_migrations applied WHERE applied.version=required.version))`).Scan(&complete)
 		if checkErr != nil || !complete {
 			return errors.New("database schema is not ready")
 		}
@@ -762,7 +792,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if _, err = diagnostics.Record(ctx, adminopsport.DiagnosticSnapshot{Key: "aicrm.composition", Status: "ok"}); err != nil {
 		return fail(err)
 	}
-	return &composedApplication{pool: pool, handler: handler, management: management, weComProcessor: weComProcessor, effectsRuntime: effectsRuntime, customerSync: customerSync, adminOps: adminOpsProjection, release: releaseObservation, diagnostics: diagnostics}, nil
+	return &composedApplication{pool: pool, handler: handler, management: management, weComProcessor: weComProcessor, effectsRuntime: effectsRuntime, customerSync: customerSync, hxcDashboard: hxcDashboard, hxcSource: hxcSource, adminOps: adminOpsProjection, release: releaseObservation, diagnostics: diagnostics}, nil
 }
 
 func mountSurveyAPIs(mux *http.ServeMux, survey http.Handler) {
@@ -809,6 +839,9 @@ func mountSurveyUI(next, adminUI, publicUI http.Handler, authentication accessAu
 }
 
 func (application *composedApplication) Close() {
+	if application != nil && application.hxcSource != nil {
+		_ = application.hxcSource.Close()
+	}
 	if application != nil && application.pool != nil {
 		application.pool.Close()
 	}
@@ -901,6 +934,7 @@ func routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, acce
 	mux.Handle("/api/admin/customers/", identity)
 	mux.Handle("/api/admin/customer-sync-runs", identity)
 	mux.Handle("/api/admin/customer-sync-runs/", identity)
+	mux.Handle("/api/admin/hxc-dashboard/", identity)
 	mux.Handle("/api/admin/questionnaires", identity)
 	mux.Handle("/api/admin/questionnaires/", identity)
 	mux.Handle("/api/admin/survey-history/", identity)

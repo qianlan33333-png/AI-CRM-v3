@@ -22,8 +22,73 @@ var _ Reader = PostgreSQL{}
 var _ identityport.DirectoryIdentityReader = PostgreSQL{}
 var _ identityport.CommerceResolver = PostgreSQL{}
 var _ identityport.PaymentIdentityReader = PostgreSQL{}
+var _ identityport.HXCUnionIDBatchResolver = PostgreSQL{}
 
 func NewPostgreSQL() PostgreSQL { return PostgreSQL{} }
+
+func (PostgreSQL) ResolveHXCUnionIDs(ctx context.Context, references []identityport.ScopedUnionID) ([]identityport.ScopedUnionIDResult, error) {
+	if len(references) == 0 {
+		return []identityport.ScopedUnionIDResult{}, nil
+	}
+	if len(references) > 1000 {
+		return nil, identitydomain.ErrInvalidReference
+	}
+	positions := make([]int32, 0, len(references))
+	scopes := make([]string, 0, len(references))
+	values := make([]string, 0, len(references))
+	for _, reference := range references {
+		if reference.Position < 0 || !strings.HasPrefix(reference.Scope, "wechat-open-platform:") || len(reference.Scope) <= len("wechat-open-platform:") || strings.TrimSpace(reference.UnionID) != reference.UnionID || reference.UnionID == "" {
+			return nil, identitydomain.ErrInvalidReference
+		}
+		positions = append(positions, int32(reference.Position))
+		scopes = append(scopes, reference.Scope)
+		values = append(values, reference.UnionID)
+	}
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := tx.Query(ctx, `WITH RECURSIVE input AS (
+		SELECT * FROM unnest($1::integer[], $2::text[], $3::text[]) AS i(position, scope_key, value)
+	), lineage AS (
+		SELECT i.position, c.id AS customer_id, c.status, c.merged_into_customer_id, ARRAY[c.id] visited
+		FROM input i JOIN customer_identities ci ON ci.kind='unionid' AND ci.scope_key=i.scope_key AND ci.normalized_value=i.value AND ci.status='active'
+		JOIN customers c ON c.id=ci.customer_id
+		UNION ALL
+		SELECT l.position,c.id,c.status,c.merged_into_customer_id,l.visited||c.id FROM lineage l JOIN customers c ON c.id=l.merged_into_customer_id WHERE NOT c.id=ANY(l.visited)
+	), roots AS (
+		SELECT position,customer_id FROM lineage WHERE status<>'merged'
+	), aggregate_roots AS (
+		SELECT position, count(DISTINCT customer_id) AS root_count, min(customer_id) AS customer_id FROM roots GROUP BY position
+	)
+	SELECT i.position, COALESCE(a.root_count,0), a.customer_id FROM input i LEFT JOIN aggregate_roots a USING(position) ORDER BY i.position`, positions, scopes, values)
+	if err != nil {
+		return nil, fmt.Errorf("resolve HXC unionids: %w", err)
+	}
+	defer rows.Close()
+	results := make([]identityport.ScopedUnionIDResult, 0, len(references))
+	for rows.Next() {
+		var position int
+		var count int64
+		var customerID *int64
+		if err = rows.Scan(&position, &count, &customerID); err != nil {
+			return nil, fmt.Errorf("scan HXC unionid: %w", err)
+		}
+		result := identityport.ScopedUnionIDResult{Position: position, Status: identityport.ResolveNotFound}
+		if count == 1 && customerID != nil {
+			result.Status = identityport.ResolveFound
+			result.CustomerID = customerdomain.CustomerID(*customerID)
+		}
+		if count > 1 {
+			result.Status = identityport.ResolveConflict
+		}
+		results = append(results, result)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate HXC unionids: %w", err)
+	}
+	return results, nil
+}
 
 func (PostgreSQL) VerifiedPaymentIdentity(ctx context.Context, identityID int64, kind identitydomain.Kind, scope string) (identityport.VerifiedCommerceIdentity, bool, error) {
 	if identityID < 1 || identitydomain.ValidateNamespace(kind, scope) != nil {

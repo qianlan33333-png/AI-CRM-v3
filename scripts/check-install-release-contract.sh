@@ -36,6 +36,8 @@ grep -qxF 'ExecStart=/usr/bin/env AICRM_ROLE=worker AICRM_CUSTOMER_SYNC_TRIGGER=
   echo "daily customer sync must pin its role and trigger at exec time" >&2
   exit 1
 }
+grep -qxF 'ExecStart=/usr/bin/env AICRM_ROLE=worker AICRM_HXC_SYNC_TRIGGER=scheduled /opt/aicrm/current/bin/aicrm' deploy/aicrm-hxc-dashboard-refresh.service || { echo "HXC refresh must use the durable worker trigger" >&2; exit 1; }
+grep -qxF 'OnCalendar=*-*-* 03,09,15,21:15:00 Asia/Shanghai' deploy/aicrm-hxc-dashboard-refresh.timer || { echo "HXC refresh timer must run at the four approved Beijing times" >&2; exit 1; }
 if grep -qE '^AICRM_ROLE=' deploy/aicrm.env.example; then
   echo "the shared environment example must not assign a runtime role" >&2
   exit 1
@@ -61,7 +63,8 @@ for migration_contract in \
   '0024_order_product_version.sql:order product version' \
   '0025_payment_reconciliation.sql:payment reconciliation' \
   '0026_identity_history_receipts.sql:identity history receipts' \
-  '0027_admin_access_login_compat.sql:Admin access login compatibility'; do
+  '0027_admin_access_login_compat.sql:Admin access login compatibility' \
+  '0028_hxc_dashboard.sql:HXC dashboard'; do
   migration="${migration_contract%%:*}"
   label="${migration_contract#*:}"
   test -f "migrations/${migration}" || {

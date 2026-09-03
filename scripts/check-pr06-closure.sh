@@ -51,7 +51,7 @@ AICRM_PR06_ROOT="$REPO_ROOT" \
 AICRM_PR06_DONOR_DIR="$DONOR_DIR" \
 AICRM_PR06_DONOR_SHA="$DONOR_SHA" \
   bash "$REPO_ROOT/scripts/check-pr06-donor-manifest.sh"
-pass "35/35 donor frontend files are SHA-256 and cmp byte-exact in archive and active build source"
+pass "35/35 donor frontend files are byte-exact in the archive; 34 active sources remain frozen and the shared executable test is v3-owned"
 
 BUILD="$REPO_ROOT/web/scripts/build.mjs"
 MAIN="$REPO_ROOT/web/src/admin/main.ts"
