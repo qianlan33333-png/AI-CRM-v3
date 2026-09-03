@@ -69,6 +69,13 @@ func TestPostgreSQLAccessIntegration(t *testing.T) {
 	if _, err = native.Exec(ctx, string(migration)); err != nil {
 		t.Fatal(err)
 	}
+	compatibilityMigration, err := os.ReadFile(filepath.Join(filepath.Dir(source), "..", "..", "..", "migrations", "0027_admin_access_login_compat.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = native.Exec(ctx, string(compatibilityMigration)); err != nil {
+		t.Fatal(err)
+	}
 	pool, err := platformpostgres.Wrap(native, time.Second)
 	if err != nil {
 		t.Fatal(err)
@@ -124,6 +131,49 @@ func TestPostgreSQLAccessIntegration(t *testing.T) {
 			t.Errorf("listed users=%#v", users)
 		}
 		return listErr
+	}); err != nil {
+		t.Fatal(err)
+	}
+	digest := [32]byte{1}
+	if err = unit.Within(ctx, func(txContext context.Context) error {
+		owned, reserveErr := repository.ReserveLoginAccessRequest(txContext, first.ID, "receipt-1", digest, time.Now().UTC())
+		if reserveErr != nil || !owned {
+			t.Errorf("first receipt owned=%v err=%v", owned, reserveErr)
+		}
+		return reserveErr
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err = unit.Within(ctx, func(txContext context.Context) error {
+		owned, reserveErr := repository.ReserveLoginAccessRequest(txContext, first.ID, "receipt-1", digest, time.Now().UTC())
+		if reserveErr != nil || owned {
+			t.Errorf("exact replay owned=%v err=%v", owned, reserveErr)
+		}
+		_, reserveErr = repository.ReserveLoginAccessRequest(txContext, first.ID, "receipt-1", [32]byte{2}, time.Now().UTC())
+		if !errors.Is(reserveErr, domain.ErrConflict) {
+			t.Errorf("payload drift error=%v", reserveErr)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rollback := errors.New("rollback compatibility receipt")
+	err = unit.Within(ctx, func(txContext context.Context) error {
+		owned, reserveErr := repository.ReserveLoginAccessRequest(txContext, first.ID, "receipt-rollback", digest, time.Now().UTC())
+		if reserveErr != nil || !owned {
+			return errors.New("failed to reserve rollback receipt")
+		}
+		return rollback
+	})
+	if !errors.Is(err, rollback) {
+		t.Fatalf("rollback err=%v", err)
+	}
+	if err = unit.Within(ctx, func(txContext context.Context) error {
+		owned, reserveErr := repository.ReserveLoginAccessRequest(txContext, first.ID, "receipt-rollback", digest, time.Now().UTC())
+		if reserveErr != nil || !owned {
+			t.Errorf("rolled back receipt owned=%v err=%v", owned, reserveErr)
+		}
+		return reserveErr
 	}); err != nil {
 		t.Fatal(err)
 	}

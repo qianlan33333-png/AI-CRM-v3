@@ -177,6 +177,36 @@ func (*PostgreSQL) SetActive(ctx context.Context, id int64, active bool, now tim
 	return nil
 }
 
+func (*PostgreSQL) ReserveLoginAccessRequest(ctx context.Context, actorID int64, key string, payloadDigest [32]byte, now time.Time) (bool, error) {
+	database, err := tx(ctx)
+	if err != nil {
+		return false, err
+	}
+	var storedDigest []byte
+	err = database.QueryRow(ctx, `
+		INSERT INTO admin_access_login_compat_receipts
+			(actor_admin_user_id, idempotency_key, payload_digest, created_at)
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (actor_admin_user_id, idempotency_key) DO NOTHING
+		RETURNING payload_digest`, actorID, key, payloadDigest[:], now).Scan(&storedDigest)
+	if err == nil {
+		return true, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return false, err
+	}
+	if err = database.QueryRow(ctx, `
+		SELECT payload_digest FROM admin_access_login_compat_receipts
+		WHERE actor_admin_user_id=$1 AND idempotency_key=$2
+		FOR UPDATE`, actorID, key).Scan(&storedDigest); err != nil {
+		return false, err
+	}
+	if len(storedDigest) != len(payloadDigest) || string(storedDigest) != string(payloadDigest[:]) {
+		return false, domain.ErrConflict
+	}
+	return false, nil
+}
+
 func (*PostgreSQL) SetWeComUserID(ctx context.Context, id int64, wecomUserID string, now time.Time) error {
 	database, err := tx(ctx)
 	if err != nil {

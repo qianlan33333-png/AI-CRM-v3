@@ -276,6 +276,19 @@ paths:
       parameters: [{$ref: "#/components/parameters/ID"}]
       requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false, required: [password], properties: {password: {type: string, minLength: 12, maxLength: 1024, writeOnly: true}}}}}}
       responses: {"200": {$ref: "#/components/responses/MutationOK"}, "403": {$ref: "#/components/responses/Error"}}
+  /api/admin/admin-access:
+    get:
+      operationId: listAdminAccessMembers
+      description: Frozen AdminOps compatibility projection for existing local admin accounts only. It does not create accounts, roles, WeCom identities, customers, or Provider effects.
+      security: [{adminSession: []}]
+      responses: {"200": {description: Existing local admin login flags, content: {application/json: {schema: {$ref: "#/components/schemas/AdminAccessReadResponse"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+    put:
+      operationId: saveAdminAccessMembers
+      description: Atomically applies local login access for existing accounts with access-owned CSRF, session fencing, and audit records. No Provider call is made.
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/AdminAccessIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/AdminAccessSaveRequest"}}}}
+      responses: {"200": {description: Local login flags saved or exact replay, content: {application/json: {schema: {$ref: "#/components/schemas/AdminAccessSaveResponse"}}}}, "400": {description: Invalid member or request, content: {application/json: {schema: {$ref: "#/components/schemas/AdminAccessError"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {description: Same Idempotency-Key with a different full desired login-state payload, content: {application/json: {schema: {$ref: "#/components/schemas/AdminAccessError"}}}}, "503": {description: Access store unavailable, content: {application/json: {schema: {$ref: "#/components/schemas/AdminAccessError"}}}}}
   /api/admin/oneid/resolve:
     post:
       operationId: resolveOneID
@@ -2179,6 +2192,31 @@ paths:
       tags: [Transactions]
       security: [{adminSession: []}]
       responses: {"200": {description: Refund page, content: {application/json: {schema: {type: object, additionalProperties: true}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}}
+    post:
+      operationId: createWechatShopRefundIntent
+      tags: [Transactions]
+      security: [{adminSession: [], csrfHeader: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [provider, order_no, product_id, sku_id, refund_count, refund_amount_total, reason_code, reason, transaction_id_confirmation, checked]
+              properties:
+                provider: {type: string, enum: [wechat_shop]}
+                order_no: {type: string, minLength: 1, maxLength: 200}
+                product_id: {type: string, minLength: 1, maxLength: 200}
+                sku_id: {type: string, minLength: 1, maxLength: 200}
+                refund_count: {type: integer, minimum: 1, maximum: 1000000}
+                refund_amount_total: {type: integer, minimum: 1}
+                reason_code: {type: string, enum: ["10000000", "10000001", "10000002", "10000006", "10000007", "10000008", "10000014", "10000015", "10000017", "10000021"]}
+                reason: {type: string, minLength: 1, maxLength: 500}
+                transaction_id_confirmation: {type: string, minLength: 1, maxLength: 200}
+                checked: {type: boolean}
+                operator: {type: string, maxLength: 200}
+      responses: {"202": {description: WeChat Shop refund effect accepted atomically}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
   /api/admin/exports/preview:
     post:
       operationId: previewLegacyOrderExport
@@ -2231,6 +2269,52 @@ paths:
       parameters: [{$ref: "#/components/parameters/OrderReference"}, {$ref: "#/components/parameters/RequiredIdempotencyKey"}]
       requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false, required: [refund_amount_total, reason, transaction_id_confirmation, checked], properties: {provider: {type: string, enum: [wechat]}, order_no: {type: string, minLength: 1, maxLength: 200}, refund_amount_total: {type: integer, minimum: 1}, reason: {type: string, minLength: 1, maxLength: 500}, transaction_id_confirmation: {type: string, minLength: 1, maxLength: 200}, checked: {type: boolean}, operator: {type: string, maxLength: 200}}}}}}
       responses: {"202": {description: WeChat Pay refund effect accepted atomically}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/wechat-shop/refunds/{refund_id}/reconcile:
+    post:
+      operationId: reconcileWechatShopRefund
+      tags: [Transactions]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters:
+        - {name: refund_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
+        - {$ref: "#/components/parameters/RequiredIdempotencyKey"}
+      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false}}}}
+      responses: {"200": {description: Exact after-sale key queried and locally reconciled}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/wechat-pay/payments/{payment_id}/reconcile:
+    post:
+      operationId: reconcileWechatPayPayment
+      tags: [Transactions]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters:
+        - {name: payment_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
+        - {$ref: "#/components/parameters/RequiredIdempotencyKey"}
+      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false}}}}
+      responses: {"200": {description: Exact merchant order queried and locally reconciled}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/wechat-pay/refunds/{refund_id}/reconcile:
+    post:
+      operationId: reconcileWechatPayRefund
+      tags: [Transactions]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters:
+        - {name: refund_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
+        - {$ref: "#/components/parameters/RequiredIdempotencyKey"}
+      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false}}}}
+      responses: {"200": {description: Exact out-refund number queried and locally reconciled}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/v1/wechat-pay/sessions:
+    post:
+      operationId: issueWechatPaySession
+      tags: [Transactions]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [code]
+              properties:
+                code: {type: string, minLength: 1, maxLength: 256}
+      responses: {"201": {description: Provider-verified scoped OneID payment session issued; opaque cookie only}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
   /api/v1/wechat-pay/checkouts:
     post:
       operationId: createWechatPayCheckout
@@ -2244,9 +2328,19 @@ paths:
             schema:
               type: object
               additionalProperties: false
-              required: [order_id]
-              properties: {order_id: {$ref: "#/components/schemas/PositiveID"}}
-      responses: {"202": {description: Payment effect accepted atomically, content: {application/json: {schema: {type: object, required: [payment_id, status, effect_id], properties: {payment_id: {$ref: "#/components/schemas/PositiveID"}, status: {type: string}, effect_id: {$ref: "#/components/schemas/ExternalEffectID"}}}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+              required: [product_id, product_kind]
+              properties:
+                product_id: {$ref: "#/components/schemas/PositiveID"}
+                product_kind: {type: string, enum: [standard, service_period]}
+      responses: {"202": {description: "Order, Payment and effect accepted atomically", content: {application/json: {schema: {type: object, required: [order_id, merchant_order_no, payment_id, status, effect_id], properties: {order_id: {$ref: "#/components/schemas/PositiveID"}, merchant_order_no: {type: string, minLength: 1, maxLength: 200}, payment_id: {$ref: "#/components/schemas/PositiveID"}, status: {type: string}, effect_id: {$ref: "#/components/schemas/ExternalEffectID"}}}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/v1/wechat-pay/checkouts/{merchant_order_no}:
+    get:
+      operationId: getWechatPayCheckout
+      tags: [Transactions]
+      security: [{paymentSession: []}]
+      parameters:
+        - {name: merchant_order_no, in: path, required: true, schema: {type: string, minLength: 1, maxLength: 200}}
+      responses: {"200": {description: Actor-bound short-lived JSAPI handoff}, "202": {description: Provider execution is still pending}, "401": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
   /api/admin/payments/{payment_id}/refunds:
     post:
       operationId: requestWechatPaymentRefund
@@ -2279,6 +2373,27 @@ paths:
       security: [{wechatPaySignature: []}]
       requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: true}}}}
       responses: {"200": {description: Verified and idempotently settled}, "401": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/public/wechat-shop/callbacks/refund:
+    get:
+      operationId: verifyWechatShopRefundCallbackURL
+      tags: [Transactions]
+      security: []
+      parameters:
+        - {name: signature, in: query, required: true, schema: {type: string}}
+        - {name: timestamp, in: query, required: true, schema: {type: string}}
+        - {name: nonce, in: query, required: true, schema: {type: string}}
+        - {name: echostr, in: query, required: true, schema: {type: string}}
+      responses: {"200": {description: Exact verified echo}, "401": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+    post:
+      operationId: receiveWechatShopRefundCallback
+      tags: [Transactions]
+      security: []
+      parameters:
+        - {name: msg_signature, in: query, required: true, schema: {type: string}}
+        - {name: timestamp, in: query, required: true, schema: {type: string}}
+        - {name: nonce, in: query, required: true, schema: {type: string}}
+      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: true}}}}
+      responses: {"200": {description: Verified callback followed by exact Provider query}, "401": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
   /api/admin/config/app-settings:
     get:
       operationId: getLegacyAppSettings
@@ -2406,6 +2521,7 @@ components:
     Timestamp: {name: timestamp, in: query, required: true, schema: {type: string, pattern: "^[0-9]+$"}}
     Nonce: {name: nonce, in: query, required: true, schema: {type: string}}
     RequiredIdempotencyKey: {name: Idempotency-Key, in: header, required: true, schema: {type: string, minLength: 8, maxLength: 200}}
+    AdminAccessIdempotencyKey: {name: Idempotency-Key, in: header, required: true, description: Stable local admin-access request key. Repeating the same desired flags does not create another session-version change., schema: {type: string, minLength: 1, maxLength: 200}}
     GroupOpsPlanID: {name: plan_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
     GroupOpsStaffID: {name: staff_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
     GroupOpsAssetReference: {name: asset_reference, in: path, required: true, schema: {type: string, minLength: 1, maxLength: 128, pattern: "^[A-Za-z0-9._:-]{1,128}$"}}
@@ -2486,6 +2602,7 @@ components:
       properties:
         line_no: {type: integer, minimum: 1}
         product_id: {type: [integer, "null"], format: int64, minimum: 1}
+        product_version: {type: [integer, "null"], format: int64, minimum: 1}
         product_code: {type: string, minLength: 1, maxLength: 200}
         name: {type: string, minLength: 1, maxLength: 500}
         unit_amount_minor: {type: integer, format: int64, minimum: 1}
@@ -3649,6 +3766,44 @@ components:
       required: [ok, next, csrf_token]
       properties: {ok: {const: true}, next: {type: string}, csrf_token: {type: string, writeOnly: true}}
     Roles: {type: array, minItems: 1, uniqueItems: true, items: {type: string, enum: [super_admin, admin, viewer]}}
+    AdminAccessMember:
+      type: object
+      additionalProperties: false
+      required: [admin_user_id, display_name, role, staff_id, staff_wecom_userid, staff_name, is_active, login_enabled]
+      properties:
+        admin_user_id: {$ref: "#/components/schemas/PositiveID"}
+        display_name: {type: string, minLength: 1, maxLength: 200}
+        role: {type: string}
+        staff_id: {type: [integer, "null"], format: int64, minimum: 1}
+        staff_wecom_userid: {type: string, maxLength: 128}
+        staff_name: {type: string, maxLength: 200}
+        is_active: {type: boolean}
+        login_enabled: {type: boolean}
+    AdminAccessSaveMember:
+      type: object
+      additionalProperties: false
+      required: [admin_user_id, login_enabled]
+      properties: {admin_user_id: {$ref: "#/components/schemas/PositiveID"}, login_enabled: {type: boolean}}
+    AdminAccessSaveRequest:
+      type: object
+      additionalProperties: false
+      required: [members]
+      properties: {members: {type: array, minItems: 1, maxItems: 200, items: {$ref: "#/components/schemas/AdminAccessSaveMember"}}}
+    AdminAccessReadResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, members, local_only, external]
+      properties: {ok: {const: true}, members: {type: array, maxItems: 200, items: {$ref: "#/components/schemas/AdminAccessMember"}}, local_only: {const: true}, external: {const: false}}
+    AdminAccessSaveResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, members, idempotency_key, local_only, external]
+      properties: {ok: {const: true}, members: {type: array, minItems: 1, maxItems: 200, items: {$ref: "#/components/schemas/AdminAccessMember"}}, idempotency_key: {type: string, minLength: 1, maxLength: 200}, local_only: {const: true}, external: {const: false}}
+    AdminAccessError:
+      type: object
+      additionalProperties: false
+      required: [ok, error]
+      properties: {ok: {const: false}, error: {type: string, enum: [invalid_request, invalid_member, idempotency_conflict, admin_access_unavailable]}}
     AdminUser:
       type: object
       required: [id, username, display_name, wecom_userid, active, roles]

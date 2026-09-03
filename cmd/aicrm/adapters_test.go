@@ -150,7 +150,7 @@ func TestApplicationRouterKeepsOwnershipAndProtectsAdminShell(t *testing.T) {
 		t.Fatal(err)
 	}
 	tests := map[string]string{
-		"/healthz": "health", "/readyz": "health", "/login": "access", "/api/admin/access/users": "access",
+		"/healthz": "health", "/readyz": "health", "/login": "access", "/api/admin/access/users": "access", "/api/admin/admin-access": "access",
 		"/api/admin/oneid/conflicts": "identity", "/auth/wecom/start": "wecom", "/api/sidebar/jssdk-config": "wecom",
 		"/sidebar/bind-mobile": "shell", "/static/admin_console/admin_console.css": "shell",
 	}

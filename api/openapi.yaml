@@ -276,6 +276,19 @@ paths:
       parameters: [{$ref: "#/components/parameters/ID"}]
       requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false, required: [password], properties: {password: {type: string, minLength: 12, maxLength: 1024, writeOnly: true}}}}}}
       responses: {"200": {$ref: "#/components/responses/MutationOK"}, "403": {$ref: "#/components/responses/Error"}}
+  /api/admin/admin-access:
+    get:
+      operationId: listAdminAccessMembers
+      description: Frozen AdminOps compatibility projection for existing local admin accounts only. It does not create accounts, roles, WeCom identities, customers, or Provider effects.
+      security: [{adminSession: []}]
+      responses: {"200": {description: Existing local admin login flags, content: {application/json: {schema: {$ref: "#/components/schemas/AdminAccessReadResponse"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+    put:
+      operationId: saveAdminAccessMembers
+      description: Atomically applies local login access for existing accounts with access-owned CSRF, session fencing, and audit records. No Provider call is made.
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/AdminAccessIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/AdminAccessSaveRequest"}}}}
+      responses: {"200": {description: Local login flags saved or exact replay, content: {application/json: {schema: {$ref: "#/components/schemas/AdminAccessSaveResponse"}}}}, "400": {description: Invalid member or request, content: {application/json: {schema: {$ref: "#/components/schemas/AdminAccessError"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {description: Same Idempotency-Key with a different full desired login-state payload, content: {application/json: {schema: {$ref: "#/components/schemas/AdminAccessError"}}}}, "503": {description: Access store unavailable, content: {application/json: {schema: {$ref: "#/components/schemas/AdminAccessError"}}}}}
   /api/admin/oneid/resolve:
     post:
       operationId: resolveOneID
@@ -2508,6 +2521,7 @@ components:
     Timestamp: {name: timestamp, in: query, required: true, schema: {type: string, pattern: "^[0-9]+$"}}
     Nonce: {name: nonce, in: query, required: true, schema: {type: string}}
     RequiredIdempotencyKey: {name: Idempotency-Key, in: header, required: true, schema: {type: string, minLength: 8, maxLength: 200}}
+    AdminAccessIdempotencyKey: {name: Idempotency-Key, in: header, required: true, description: Stable local admin-access request key. Repeating the same desired flags does not create another session-version change., schema: {type: string, minLength: 1, maxLength: 200}}
     GroupOpsPlanID: {name: plan_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
     GroupOpsStaffID: {name: staff_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
     GroupOpsAssetReference: {name: asset_reference, in: path, required: true, schema: {type: string, minLength: 1, maxLength: 128, pattern: "^[A-Za-z0-9._:-]{1,128}$"}}
@@ -3752,6 +3766,44 @@ components:
       required: [ok, next, csrf_token]
       properties: {ok: {const: true}, next: {type: string}, csrf_token: {type: string, writeOnly: true}}
     Roles: {type: array, minItems: 1, uniqueItems: true, items: {type: string, enum: [super_admin, admin, viewer]}}
+    AdminAccessMember:
+      type: object
+      additionalProperties: false
+      required: [admin_user_id, display_name, role, staff_id, staff_wecom_userid, staff_name, is_active, login_enabled]
+      properties:
+        admin_user_id: {$ref: "#/components/schemas/PositiveID"}
+        display_name: {type: string, minLength: 1, maxLength: 200}
+        role: {type: string}
+        staff_id: {type: [integer, "null"], format: int64, minimum: 1}
+        staff_wecom_userid: {type: string, maxLength: 128}
+        staff_name: {type: string, maxLength: 200}
+        is_active: {type: boolean}
+        login_enabled: {type: boolean}
+    AdminAccessSaveMember:
+      type: object
+      additionalProperties: false
+      required: [admin_user_id, login_enabled]
+      properties: {admin_user_id: {$ref: "#/components/schemas/PositiveID"}, login_enabled: {type: boolean}}
+    AdminAccessSaveRequest:
+      type: object
+      additionalProperties: false
+      required: [members]
+      properties: {members: {type: array, minItems: 1, maxItems: 200, items: {$ref: "#/components/schemas/AdminAccessSaveMember"}}}
+    AdminAccessReadResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, members, local_only, external]
+      properties: {ok: {const: true}, members: {type: array, maxItems: 200, items: {$ref: "#/components/schemas/AdminAccessMember"}}, local_only: {const: true}, external: {const: false}}
+    AdminAccessSaveResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, members, idempotency_key, local_only, external]
+      properties: {ok: {const: true}, members: {type: array, minItems: 1, maxItems: 200, items: {$ref: "#/components/schemas/AdminAccessMember"}}, idempotency_key: {type: string, minLength: 1, maxLength: 200}, local_only: {const: true}, external: {const: false}}
+    AdminAccessError:
+      type: object
+      additionalProperties: false
+      required: [ok, error]
+      properties: {ok: {const: false}, error: {type: string, enum: [invalid_request, invalid_member, idempotency_conflict, admin_access_unavailable]}}
     AdminUser:
       type: object
       required: [id, username, display_name, wecom_userid, active, roles]
