@@ -51,7 +51,10 @@ func TestPostgreSQLAdminAccessCompatibilityJourney(t *testing.T) {
 		WorkerOwner:  "admin-access-integration",
 		WorkerLimit:  1,
 		GroupOps:     platformconfig.GroupOps{WebhookSecret: "admin-access-integration-webhook-secret"},
-		Survey:       platformconfig.Survey{DataKey: base64.RawStdEncoding.EncodeToString(dataKey)},
+		Survey: platformconfig.Survey{
+			DataKey:              base64.RawStdEncoding.EncodeToString(dataKey),
+			IdentityPhoneDataKey: base64.RawStdEncoding.EncodeToString(dataKey),
+		},
 		Bootstrap: platformconfig.Bootstrap{
 			Enabled: true, Username: "owner", Password: "admin-access-owner-password", DisplayName: "Owner",
 		},
