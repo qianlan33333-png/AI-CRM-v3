@@ -1942,11 +1942,17 @@ export async function saveQuestionnaireOpsDto(questionnaireId: number, ops: Ques
 export async function queueQuestionnairePushTestDto(questionnaireId: number): Promise<{ id: number; status: string; attemptCount: number }> { const result = obj(await call(queueSurveyExternalPushTest(questionnaireId, apiRequestOptions()))); return { id: Number(result.test_run_id), status: text(result.status), attemptCount: Number(result.attempt_count || 0) }; }
 function surveyExternalPushLogDto(value: unknown): AdminDb['rows']['qApply'][number] {
   const source = obj(value);
-  const testRunID = Number(source.test_run_id);
+  const testRunID = Number(source.test_run_id || source.id);
   const questionnaireID = Number(source.questionnaire_id);
-  if (!Number.isSafeInteger(testRunID) || testRunID < 1 || !Number.isSafeInteger(questionnaireID) || questionnaireID < 1 || typeof source.created_at !== 'string' || !source.created_at) throw new Error('问卷外推日志缺少有效本地测试记录字段');
+  const occurredAt = text(source.created_at, text(source.occurred_at));
+  if (!Number.isSafeInteger(testRunID) || testRunID < 1 || !Number.isSafeInteger(questionnaireID) || questionnaireID < 1 || !occurredAt) throw new Error('问卷外推日志缺少有效本地回执字段');
+  if (source.read_only_legacy === true) {
+    if (source.replayable !== false || !['legacy_success', 'legacy_failed', 'skipped'].includes(String(source.status))) throw new Error('历史问卷外推回执不可重放约束缺失');
+    return { time: occurredAt, sid: `#${testRunID}`, uid: `#${questionnaireID}`, status: String(source.status), tone: source.status === 'legacy_success' ? 'ok' : source.status === 'skipped' ? 'warn' : 'red', err: text(source.failure_category, '历史结果；不可重放') };
+  }
+  if (source.status === 'disabled' && source.real_external_call_executed === false) return { time: occurredAt, sid: `#${testRunID}`, uid: `#${questionnaireID}`, status: 'disabled', tone: 'gray', err: text(source.failure_category, 'Provider disabled；未执行外部派发') };
   if (source.status !== 'queued' || source.attempt_count !== 0 || source.side_effect_executed !== false || source.provider_result_received !== false || source.unknown_after_dispatch !== false || source.auto_retry_allowed !== false) throw new Error('问卷外推日志不符合仅本地 queued 契约');
-  return { time: source.created_at, sid: `#${testRunID}`, uid: `#${questionnaireID}`, status: 'queued', tone: 'warn', err: '仅本地队列；未执行外部派发' };
+  return { time: occurredAt, sid: `#${testRunID}`, uid: `#${questionnaireID}`, status: 'queued', tone: 'warn', err: '仅本地队列；未执行外部派发' };
 }
 export async function listGlobalQuestionnairePushLogsDto(): Promise<AdminDb['rows']['qApply']> { const page = obj(await call(listSurveyExternalPushLogs({ limit: 100, offset: 0 }, apiRequestOptions()))); if (page.local_only !== true) throw new Error('问卷全局外推日志缺少本地边界'); return list(page, 'items').map(surveyExternalPushLogDto); }
 export type HxcSenderWriteInput = { id: string; senderUserid: string; displayName: string; priority: number; active: boolean };

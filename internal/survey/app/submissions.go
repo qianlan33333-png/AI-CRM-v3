@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
@@ -33,6 +34,13 @@ type SubmissionStore interface {
 	GetSubmission(context.Context, surveyport.ID) (surveyport.Submission, error)
 	CustomerHistory(context.Context, int64, int32, int32) ([]surveyport.Submission, int64, error)
 	SubmissionAnalytics(context.Context, surveyport.ID) (surveyport.Analytics, error)
+	ListOperationReceipts(context.Context, surveyport.ID, int32, int32) ([]surveyport.OperationReceipt, int64, error)
+	ListLegacyUnresolved(context.Context, surveyport.ID, int32, int32) ([]surveyport.LegacySubmission, int64, error)
+	GetLegacyUnresolved(context.Context, surveyport.ID) (surveyport.LegacySubmission, error)
+	ListLegacyAnswers(context.Context, surveyport.ID, int32, int32) ([]surveyport.LegacyAnswer, int64, error)
+	GetOperationConfiguration(context.Context, surveyport.ID) (surveyport.OperationConfiguration, error)
+	SaveOperationConfiguration(context.Context, surveyport.OperationConfiguration, int64, time.Time) (surveyport.OperationConfiguration, error)
+	RecordDisabledOperation(context.Context, surveyport.ID, *surveyport.ID, string, [32]byte, time.Time) (surveyport.OperationReceipt, error)
 	AppendAuditAndOutbox(context.Context, string, surveyport.ID, string, json.RawMessage, string, time.Time) error
 }
 
@@ -143,7 +151,7 @@ func snapshotAnswers(q surveyport.Questionnaire, values []surveyport.SubmissionA
 			if !exists {
 				return nil, 0, surveyport.ErrInvalid
 			}
-			snapshot.SelectedOptions = append(snapshot.SelectedOptions, surveyport.SelectedOptionSnapshot{OptionID: id, OptionText: o.Text, Score: o.Score})
+			snapshot.SelectedOptions = append(snapshot.SelectedOptions, surveyport.SelectedOptionSnapshot{OptionID: id, OptionText: o.Text, Score: o.Score, TagCodes: append([]string(nil), o.TagCodes...)})
 			snapshot.Score += o.Score
 			total += o.Score
 		}
@@ -216,6 +224,116 @@ func (s *SubmissionService) Analytics(ctx context.Context, id surveyport.ID) (su
 	err := s.uow.Within(ctx, func(tx context.Context) error { var e error; result, e = s.store.SubmissionAnalytics(tx, id); return e })
 	return result, classify(err)
 }
+
+func (s *SubmissionService) ListOperationReceipts(ctx context.Context, id surveyport.ID, limit, offset int32) ([]surveyport.OperationReceipt, int64, error) {
+	if s == nil || s.uow == nil || s.store == nil || id < 0 || limit < 1 || limit > 100 || offset < 0 || offset > MaximumOffset {
+		return nil, 0, surveyport.ErrInvalid
+	}
+	var items []surveyport.OperationReceipt
+	var total int64
+	err := s.uow.Within(ctx, func(tx context.Context) error {
+		var e error
+		items, total, e = s.store.ListOperationReceipts(tx, id, limit, offset)
+		return e
+	})
+	return items, total, classify(err)
+}
+
+func (s *SubmissionService) ListLegacyUnresolved(ctx context.Context, questionnaire surveyport.ID, limit, offset int32) ([]surveyport.LegacySubmission, int64, error) {
+	if s == nil || s.uow == nil || s.store == nil || questionnaire < 0 || limit < 1 || limit > 100 || offset < 0 || offset > MaximumOffset {
+		return nil, 0, surveyport.ErrInvalid
+	}
+	var items []surveyport.LegacySubmission
+	var total int64
+	err := s.uow.Within(ctx, func(tx context.Context) error {
+		var e error
+		items, total, e = s.store.ListLegacyUnresolved(tx, questionnaire, limit, offset)
+		return e
+	})
+	return items, total, classify(err)
+}
+func (s *SubmissionService) GetLegacyUnresolved(ctx context.Context, id surveyport.ID) (surveyport.LegacySubmission, error) {
+	if s == nil || s.uow == nil || s.store == nil || id < 1 {
+		return surveyport.LegacySubmission{}, surveyport.ErrNotFound
+	}
+	var item surveyport.LegacySubmission
+	err := s.uow.Within(ctx, func(tx context.Context) error { var e error; item, e = s.store.GetLegacyUnresolved(tx, id); return e })
+	return item, classify(err)
+}
+func (s *SubmissionService) ListLegacyAnswers(ctx context.Context, id surveyport.ID, limit, offset int32) ([]surveyport.LegacyAnswer, int64, error) {
+	if s == nil || s.uow == nil || s.store == nil || id < 1 || limit < 1 || limit > 100 || offset < 0 || offset > MaximumOffset {
+		return nil, 0, surveyport.ErrInvalid
+	}
+	var items []surveyport.LegacyAnswer
+	var total int64
+	err := s.uow.Within(ctx, func(tx context.Context) error {
+		var e error
+		items, total, e = s.store.ListLegacyAnswers(tx, id, limit, offset)
+		return e
+	})
+	return items, total, classify(err)
+}
+
+func (s *SubmissionService) GetOperationConfiguration(ctx context.Context, id surveyport.ID) (surveyport.OperationConfiguration, error) {
+	if s == nil || s.uow == nil || s.store == nil || id < 1 {
+		return surveyport.OperationConfiguration{}, surveyport.ErrNotFound
+	}
+	var value surveyport.OperationConfiguration
+	err := s.uow.Within(ctx, func(tx context.Context) error {
+		var e error
+		value, e = s.store.GetOperationConfiguration(tx, id)
+		return e
+	})
+	return value, classify(err)
+}
+func (s *SubmissionService) SaveOperationConfiguration(ctx context.Context, value surveyport.OperationConfiguration, actor int64, key string) (surveyport.OperationConfiguration, error) {
+	if s == nil || s.uow == nil || s.store == nil || value.QuestionnaireID < 1 || actor < 1 || !validPublicKeyish(key) || !validOpaque(value.CompletionNavigationRef) || !validOpaque(value.ExternalPushConfigurationRef) || value.CompletionChannelID != nil && *value.CompletionChannelID < 1 || value.ExternalPushEnabled && value.ExternalPushConfigurationRef == "" {
+		return surveyport.OperationConfiguration{}, surveyport.ErrInvalid
+	}
+	now := s.now().UTC()
+	var stored surveyport.OperationConfiguration
+	err := s.uow.Within(ctx, func(tx context.Context) error {
+		var e error
+		stored, e = s.store.SaveOperationConfiguration(tx, value, actor, now)
+		if e != nil {
+			return e
+		}
+		payload, _ := json.Marshal(map[string]any{"questionnaire_id": value.QuestionnaireID, "external_push_enabled": value.ExternalPushEnabled, "configuration_reference": value.ExternalPushConfigurationRef, "completion_configured": value.CompletionNavigationRef != "" || value.CompletionChannelID != nil})
+		return s.store.AppendAuditAndOutbox(tx, "survey_operation_configuration_saved", value.QuestionnaireID, fmt.Sprint(actor), payload, "survey-operation-config:"+key, now)
+	})
+	return stored, classify(err)
+}
+func (s *SubmissionService) RecordDisabledOperation(ctx context.Context, qid surveyport.ID, sid *surveyport.ID, kind string, actor int64, key string) (surveyport.OperationReceipt, error) {
+	if s == nil || s.uow == nil || s.store == nil || qid < 1 || actor < 1 || !validPublicKeyish(key) || kind != "external_push" && kind != "completion" {
+		return surveyport.OperationReceipt{}, surveyport.ErrInvalid
+	}
+	digest := sha256.Sum256([]byte(key))
+	now := s.now().UTC()
+	var receipt surveyport.OperationReceipt
+	err := s.uow.Within(ctx, func(tx context.Context) error {
+		var e error
+		receipt, e = s.store.RecordDisabledOperation(tx, qid, sid, kind, digest, now)
+		if e != nil {
+			return e
+		}
+		payload, _ := json.Marshal(map[string]any{"questionnaire_id": qid, "operation_receipt_id": receipt.ID, "status": "disabled"})
+		return s.store.AppendAuditAndOutbox(tx, "survey_external_operation_disabled", qid, fmt.Sprint(actor), payload, "survey-disabled:"+key, now)
+	})
+	return receipt, classify(err)
+}
+
+func validOpaque(v string) bool {
+	if len(v) > 128 {
+		return false
+	}
+	for _, r := range v {
+		if !(r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || strings.ContainsRune("._:-", r)) {
+			return false
+		}
+	}
+	return true
+}
+func validPublicKeyish(v string) bool { return len(v) >= 16 && len(v) <= 200 }
 
 func validSlug(v string) bool {
 	return len(v) > 0 && len(v) <= 128 && strings.Trim(v, "abcdefghijklmnopqrstuvwxyz0123456789-") == "" && v[0] != '-' && v[len(v)-1] != '-'

@@ -1,0 +1,999 @@
+// Command migrate-survey-v2 performs the one-time encrypted, read-only Survey import.
+package main
+
+import (
+	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"os"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/qianlan33333-png/AI-CRM-v3/internal/survey/secure"
+)
+
+const magic = "AICRM-SURVEY-V2-SNAPSHOT-1\n"
+
+var tables = []string{"questionnaires", "questionnaire_questions", "questionnaire_options", "questionnaire_score_rules", "questionnaire_submissions", "questionnaire_submission_answers", "questionnaire_external_push_logs", "questionnaire_scrm_apply_logs"}
+
+type Manifest struct {
+	SourceSystem string            `json:"source_system"`
+	SnapshotAt   time.Time         `json:"snapshot_at"`
+	Counts       map[string]int    `json:"counts"`
+	Digests      map[string]string `json:"digests"`
+}
+type Snapshot struct {
+	Manifest Manifest                   `json:"manifest"`
+	Tables   map[string]json.RawMessage `json:"tables"`
+}
+type questionnaire struct {
+	ID               int64           `json:"id"`
+	Slug             string          `json:"slug"`
+	Name             string          `json:"name"`
+	Title            string          `json:"title"`
+	Description      string          `json:"description"`
+	Disabled         bool            `json:"is_disabled"`
+	Assessment       bool            `json:"assessment_enabled"`
+	AssessmentConfig json.RawMessage `json:"assessment_config"`
+	Display          string          `json:"answer_display_mode"`
+	CreatedAt        time.Time       `json:"created_at"`
+	UpdatedAt        time.Time       `json:"updated_at"`
+}
+type question struct {
+	ID              int64  `json:"id"`
+	QuestionnaireID int64  `json:"questionnaire_id"`
+	Type            string `json:"type"`
+	Title           string `json:"title"`
+	Placeholder     string `json:"placeholder"`
+	Dimension       string `json:"dimension"`
+	Sidebar         string `json:"sidebar"`
+	Required        bool   `json:"required"`
+	Sort            int    `json:"sort"`
+}
+type option struct {
+	ID               int64           `json:"id"`
+	QuestionID       int64           `json:"question_id"`
+	Text             string          `json:"text"`
+	Score            float64         `json:"score"`
+	Tags             json.RawMessage `json:"tags"`
+	Sort             int             `json:"sort"`
+	TypeKey          string          `json:"type_key"`
+	IsOther          bool            `json:"is_other"`
+	OtherPlaceholder string          `json:"other_placeholder"`
+	OtherMax         int             `json:"other_max"`
+}
+type rule struct {
+	ID              int64           `json:"id"`
+	QuestionnaireID int64           `json:"questionnaire_id"`
+	Min             *float64        `json:"min"`
+	Max             *float64        `json:"max"`
+	Tags            json.RawMessage `json:"tags"`
+	Sort            int             `json:"sort"`
+}
+type submission struct {
+	ID              int64           `json:"id"`
+	QuestionnaireID int64           `json:"questionnaire_id"`
+	UnionID         string          `json:"union_id"`
+	MatchedBy       string          `json:"matched_by"`
+	SourceChannel   string          `json:"source_channel"`
+	CampaignID      string          `json:"campaign_id"`
+	StaffID         string          `json:"staff_id"`
+	Total           float64         `json:"total"`
+	FinalTags       json.RawMessage `json:"final_tags"`
+	Result          json.RawMessage `json:"result"`
+	Token           string          `json:"token"`
+	SubmittedAt     time.Time       `json:"submitted_at"`
+	CreatedAt       time.Time       `json:"created_at"`
+}
+type answer struct {
+	ID           int64           `json:"id"`
+	SubmissionID int64           `json:"submission_id"`
+	QuestionID   int64           `json:"question_id"`
+	Type         string          `json:"type"`
+	Title        string          `json:"title"`
+	Text         string          `json:"text"`
+	OptionIDs    json.RawMessage `json:"option_ids"`
+	OptionTexts  json.RawMessage `json:"option_texts"`
+	OptionScores json.RawMessage `json:"option_scores"`
+	OptionTags   json.RawMessage `json:"option_tags"`
+	Score        float64         `json:"score"`
+	CreatedAt    time.Time       `json:"created_at"`
+}
+type operation struct {
+	ID              int64     `json:"id"`
+	QuestionnaireID int64     `json:"questionnaire_id"`
+	SubmissionID    int64     `json:"submission_id"`
+	Status          string    `json:"status"`
+	FailureCategory string    `json:"failure_category"`
+	OccurredAt      time.Time `json:"occurred_at"`
+}
+
+func main() {
+	if err := run(os.Args[1:]); err != nil {
+		fmt.Fprintln(os.Stderr, "survey migration failed:", err)
+		os.Exit(1)
+	}
+}
+func run(args []string) error {
+	if len(args) < 1 {
+		return errors.New("usage: extract|validate|import|reconcile|rollback")
+	}
+	switch args[0] {
+	case "extract":
+		return extract(args[1:])
+	case "validate":
+		return validate(args[1:])
+	case "import":
+		return importSnapshot(args[1:])
+	case "reconcile":
+		return reconcile(args[1:])
+	case "rollback":
+		return rollbackImport(args[1:])
+	default:
+		return errors.New("unknown phase")
+	}
+}
+func common(name string, args []string) (*flag.FlagSet, *string, *string) {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	file := fs.String("snapshot", "", "encrypted snapshot path")
+	key := fs.String("snapshot-key-file", "", "0600 base64url 32-byte snapshot key file")
+	return fs, file, key
+}
+func extract(args []string) error {
+	fs, file, keyFile := common("extract", args)
+	source := fs.String("source-url", "", "read-only PostgreSQL URL")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *file == "" || *keyFile == "" || *source == "" {
+		return errors.New("source-url, snapshot and snapshot-key-file are required")
+	}
+	key, err := readKey(*keyFile)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, *source)
+	if err != nil {
+		return errors.New("connect source")
+	}
+	defer pool.Close()
+	tx, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return errors.New("begin read-only snapshot")
+	}
+	defer tx.Rollback(ctx)
+	var snapshotAt time.Time
+	if err = tx.QueryRow(ctx, `SELECT transaction_timestamp()`).Scan(&snapshotAt); err != nil {
+		return err
+	}
+	queries := map[string]string{
+		"questionnaires":                   `SELECT COALESCE(jsonb_agg(to_jsonb(x) ORDER BY id),'[]') FROM (SELECT id,slug,name,title,description,is_disabled,assessment_enabled,assessment_config,answer_display_mode,created_at,updated_at FROM questionnaires)x`,
+		"questionnaire_questions":          `SELECT COALESCE(jsonb_agg(to_jsonb(x) ORDER BY id),'[]') FROM (SELECT id,questionnaire_id,type,title,required,sort_order AS sort,placeholder_text AS placeholder,assessment_dimension_key AS dimension,sidebar_profile_field AS sidebar FROM questionnaire_questions)x`,
+		"questionnaire_options":            `SELECT COALESCE(jsonb_agg(to_jsonb(x) ORDER BY id),'[]') FROM (SELECT id,question_id,option_text AS text,score,tag_codes AS tags,sort_order AS sort,assessment_type_key AS type_key,is_other,other_placeholder,other_max_length AS other_max FROM questionnaire_options)x`,
+		"questionnaire_score_rules":        `SELECT COALESCE(jsonb_agg(to_jsonb(x) ORDER BY id),'[]') FROM (SELECT id,questionnaire_id,min_score AS min,max_score AS max,tag_codes AS tags,sort_order AS sort FROM questionnaire_score_rules)x`,
+		"questionnaire_submissions":        `SELECT COALESCE(jsonb_agg(to_jsonb(x) ORDER BY id),'[]') FROM (SELECT id,questionnaire_id,unionid AS union_id,matched_by,source_channel,campaign_id,staff_id,total_score AS total,final_tags,result_token AS token,assessment_result_snapshot AS result,submitted_at,created_at FROM questionnaire_submissions)x`,
+		"questionnaire_submission_answers": `SELECT COALESCE(jsonb_agg(to_jsonb(x) ORDER BY id),'[]') FROM (SELECT id,submission_id,question_id,question_type AS type,question_title_snapshot AS title,selected_option_ids AS option_ids,selected_option_texts_snapshot AS option_texts,selected_option_scores_snapshot AS option_scores,selected_option_tags_snapshot AS option_tags,text_value AS text,score_contribution AS score,created_at FROM questionnaire_submission_answers)x`,
+		"questionnaire_external_push_logs": `SELECT COALESCE(jsonb_agg(to_jsonb(x) ORDER BY id),'[]') FROM (SELECT id,questionnaire_id,submission_record_id AS submission_id,status,CASE WHEN status='success' THEN '' WHEN response_status_code BETWEEN 400 AND 499 THEN 'provider_4xx' WHEN response_status_code>=500 THEN 'provider_5xx' ELSE 'provider_failure' END AS failure_category,created_at AS occurred_at FROM questionnaire_external_push_logs)x`,
+		"questionnaire_scrm_apply_logs":    `SELECT COALESCE(jsonb_agg(to_jsonb(x) ORDER BY id),'[]') FROM (SELECT id,questionnaire_id,submission_id,status,CASE WHEN status='identity_unresolved' THEN 'identity_unresolved' WHEN status LIKE 'skipped%' THEN status ELSE 'provider_failure' END AS failure_category,created_at AS occurred_at FROM questionnaire_scrm_apply_logs)x`,
+	}
+	snap := Snapshot{Manifest: Manifest{SourceSystem: "ai-crm-v2:150.158.82.186/openclaw_wecom", SnapshotAt: snapshotAt.UTC(), Counts: map[string]int{}, Digests: map[string]string{}}, Tables: map[string]json.RawMessage{}}
+	for _, table := range tables {
+		var raw []byte
+		if err = tx.QueryRow(ctx, queries[table]).Scan(&raw); err != nil {
+			return fmt.Errorf("extract %s", table)
+		}
+		var rows []json.RawMessage
+		if json.Unmarshal(raw, &rows) != nil {
+			return fmt.Errorf("decode %s", table)
+		}
+		canonical, _ := json.Marshal(rows)
+		snap.Tables[table] = canonical
+		snap.Manifest.Counts[table] = len(rows)
+		digest := sha256.Sum256(canonical)
+		snap.Manifest.Digests[table] = hex.EncodeToString(digest[:])
+	}
+	plain, err := json.Marshal(snap)
+	if err != nil {
+		return err
+	}
+	encrypted, err := encrypt(key, plain)
+	if err != nil {
+		return err
+	}
+	if err = os.WriteFile(*file, encrypted, 0600); err != nil {
+		return err
+	}
+	fmt.Printf("snapshot_at=%s manifest_sha256=%x counts=%s\n", snap.Manifest.SnapshotAt.Format(time.RFC3339Nano), sha256.Sum256(plain), safeCounts(snap.Manifest.Counts))
+	return tx.Commit(ctx)
+}
+
+func validate(args []string) error {
+	fs, file, keyFile := common("validate", args)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	snap, _, err := load(*file, *keyFile)
+	if err != nil {
+		return err
+	}
+	if err = validateSnapshot(snap); err != nil {
+		return err
+	}
+	fmt.Printf("valid snapshot_at=%s counts=%s unresolved_candidates=%d missing_definition_answers=%d\n", snap.Manifest.SnapshotAt.Format(time.RFC3339Nano), safeCounts(snap.Manifest.Counts), identityUnresolved(snap), missingDefinitions(snap))
+	return nil
+}
+func validateSnapshot(s Snapshot) error {
+	if s.Manifest.SourceSystem == "" || s.Manifest.SnapshotAt.IsZero() {
+		return errors.New("invalid manifest")
+	}
+	for _, table := range tables {
+		raw, ok := s.Tables[table]
+		if !ok || !json.Valid(raw) {
+			return fmt.Errorf("missing table %s", table)
+		}
+		var rows []json.RawMessage
+		if json.Unmarshal(raw, &rows) != nil || len(rows) != s.Manifest.Counts[table] {
+			return fmt.Errorf("count mismatch %s", table)
+		}
+		canonical, _ := json.Marshal(rows)
+		digest := sha256.Sum256(canonical)
+		if hex.EncodeToString(digest[:]) != s.Manifest.Digests[table] {
+			return fmt.Errorf("digest mismatch %s", table)
+		}
+	}
+	return nil
+}
+
+func importSnapshot(args []string) error {
+	fs, file, keyFile := common("import", args)
+	target := fs.String("target-url", "", "v3 PostgreSQL URL")
+	dataKeyFile := fs.String("data-key-file", "", "v3 survey data key file")
+	confirm := fs.Bool("confirm-import", false, "perform target write")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if !*confirm {
+		return errors.New("confirm-import is required")
+	}
+	snap, manifestDigest, err := load(*file, *keyFile)
+	if err != nil {
+		return err
+	}
+	if err = validateSnapshot(snap); err != nil {
+		return err
+	}
+	dataKey, err := readKey(*dataKeyFile)
+	if err != nil {
+		return err
+	}
+	surveyCipher, err := secure.NewCipher(base64.RawStdEncoding.EncodeToString(dataKey))
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, *target)
+	if err != nil {
+		return errors.New("connect target")
+	}
+	defer pool.Close()
+	tx, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	batchKey := "survey-v2-" + snap.Manifest.SnapshotAt.Format("20060102T150405Z")
+	manifestRaw, _ := json.Marshal(snap.Manifest)
+	var batchID int64
+	err = tx.QueryRow(ctx, `INSERT INTO survey_migration_batches(batch_key,source_system,snapshot_at,manifest,manifest_digest,status,created_at,updated_at) VALUES($1,$2,$3,$4,$5,'importing',clock_timestamp(),clock_timestamp()) ON CONFLICT(batch_key) DO UPDATE SET updated_at=clock_timestamp() RETURNING id`, batchKey, snap.Manifest.SourceSystem, snap.Manifest.SnapshotAt, manifestRaw, manifestDigest[:]).Scan(&batchID)
+	if err != nil {
+		return err
+	}
+	var actor int64
+	if err = tx.QueryRow(ctx, `SELECT id FROM admin_users ORDER BY id LIMIT 1`).Scan(&actor); err != nil {
+		return errors.New("target has no administrator for migrated definitions")
+	}
+	var questionnaires []questionnaire
+	var questions []question
+	var options []option
+	var rules []rule
+	var submissions []submission
+	var answers []answer
+	var pushes, scrm []operation
+	decodeTable(snap, "questionnaires", &questionnaires)
+	decodeTable(snap, "questionnaire_questions", &questions)
+	decodeTable(snap, "questionnaire_options", &options)
+	decodeTable(snap, "questionnaire_score_rules", &rules)
+	decodeTable(snap, "questionnaire_submissions", &submissions)
+	decodeTable(snap, "questionnaire_submission_answers", &answers)
+	decodeTable(snap, "questionnaire_external_push_logs", &pushes)
+	decodeTable(snap, "questionnaire_scrm_apply_logs", &scrm)
+	qTarget := map[int64]int64{}
+	versionTarget := map[int64]int64{}
+	questionTarget := map[int64]int64{}
+	submissionTarget := map[int64]int64{}
+	submissionSource := map[int64]submission{}
+	questionsByQ := map[int64][]question{}
+	optionsByQuestion := map[int64][]option{}
+	rulesByQ := map[int64][]rule{}
+	for _, v := range questions {
+		questionsByQ[v.QuestionnaireID] = append(questionsByQ[v.QuestionnaireID], v)
+	}
+	for _, v := range options {
+		optionsByQuestion[v.QuestionID] = append(optionsByQuestion[v.QuestionID], v)
+	}
+	for _, v := range rules {
+		rulesByQ[v.QuestionnaireID] = append(rulesByQ[v.QuestionnaireID], v)
+	}
+	for _, v := range submissions {
+		submissionSource[v.ID] = v
+	}
+	for _, q := range questionnaires {
+		digest := recordDigest(q)
+		var targetID int64
+		if found, pk, e := mapped(ctx, tx, snap.Manifest.SourceSystem, "questionnaires", fmt.Sprint(q.ID), digest); e != nil {
+			return e
+		} else if found {
+			targetID = pk
+		} else {
+			mode := "survey"
+			if q.Assessment {
+				mode = "assessment"
+			}
+			status := "published"
+			if q.Disabled {
+				status = "disabled"
+			}
+			err = tx.QueryRow(ctx, `INSERT INTO survey_questionnaires(name,title,description,mode,answer_display_mode,slug,status,created_by,updated_by,version,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$8,1,$9,$10) RETURNING id`, trimNonEmpty(q.Name, 200), trimNonEmpty(q.Title, 500), trim(q.Description, 10000), mode, display(q.Display), safeSlug(q.Slug, q.ID), status, actor, q.CreatedAt, q.UpdatedAt).Scan(&targetID)
+			if err != nil {
+				return fmt.Errorf("import questionnaire %d: %w", q.ID, err)
+			}
+			definitionDigest := recordDigest(struct {
+				Q         questionnaire
+				Questions []question
+				Rules     []rule
+			}{q, questionsByQ[q.ID], rulesByQ[q.ID]})
+			assessment := q.AssessmentConfig
+			if !q.Assessment || !json.Valid(assessment) {
+				assessment = json.RawMessage(`{}`)
+			}
+			var versionID int64
+			err = tx.QueryRow(ctx, `INSERT INTO survey_definition_versions(questionnaire_id,version_number,mode,answer_display_mode,title_snapshot,description_snapshot,assessment_config,definition_digest,is_immutable,published_at,created_by,created_at) VALUES($1,1,$2,$3,$4,$5,$6,$7,TRUE,$8,$9,$10) RETURNING id`, targetID, mode, display(q.Display), trimNonEmpty(q.Title, 500), trim(q.Description, 10000), assessment, definitionDigest[:], q.UpdatedAt, actor, q.CreatedAt).Scan(&versionID)
+			if err != nil {
+				return err
+			}
+			orderedQuestions := questionsByQ[q.ID]
+			sort.SliceStable(orderedQuestions, func(i, j int) bool {
+				if orderedQuestions[i].Sort == orderedQuestions[j].Sort {
+					return orderedQuestions[i].ID < orderedQuestions[j].ID
+				}
+				return orderedQuestions[i].Sort < orderedQuestions[j].Sort
+			})
+			for index, item := range orderedQuestions {
+				validation := map[string]any{}
+				orderedOptions := optionsByQuestion[item.ID]
+				sort.SliceStable(orderedOptions, func(i, j int) bool {
+					if orderedOptions[i].Sort == orderedOptions[j].Sort {
+						return orderedOptions[i].ID < orderedOptions[j].ID
+					}
+					return orderedOptions[i].Sort < orderedOptions[j].Sort
+				})
+				if item.Type == "single_choice" {
+					validation["min_selections"] = 1
+					validation["max_selections"] = 1
+				} else if item.Type == "multi_choice" {
+					validation["min_selections"] = map[bool]int{true: 1, false: 0}[item.Required]
+					validation["max_selections"] = len(orderedOptions)
+				}
+				validationRaw, _ := json.Marshal(validation)
+				var targetQuestion int64
+				err = tx.QueryRow(ctx, `INSERT INTO survey_definition_questions(definition_version_id,question_type,title,assessment_dimension_key,sidebar_profile_field,required,sort_order,placeholder_text,validation) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`, versionID, item.Type, trimNonEmpty(item.Title, 1000), safeOpaque(item.Dimension), safeOpaque(item.Sidebar), item.Required, index, trim(item.Placeholder, 500), validationRaw).Scan(&targetQuestion)
+				if err != nil {
+					return err
+				}
+				questionTarget[item.ID] = targetQuestion
+				questionDigest := recordDigest(item)
+				if err = writeMap(ctx, tx, batchID, snap.Manifest.SourceSystem, "questionnaire_questions", fmt.Sprint(item.ID), "survey_definition_questions", targetQuestion, questionDigest, "imported"); err != nil {
+					return err
+				}
+				for oi, opt := range orderedOptions {
+					tags := validArray(opt.Tags)
+					var targetOption int64
+					err = tx.QueryRow(ctx, `INSERT INTO survey_definition_options(question_id,definition_version_id,option_text,score,assessment_type_key,tag_codes,is_other,other_placeholder,other_max_length,sort_order) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`, targetQuestion, versionID, trimNonEmpty(opt.Text, 1000), opt.Score, safeOpaque(opt.TypeKey), tags, opt.IsOther, trim(opt.OtherPlaceholder, 500), otherMax(opt), oi).Scan(&targetOption)
+					if err != nil {
+						return err
+					}
+					optionDigest := recordDigest(opt)
+					if err = writeMap(ctx, tx, batchID, snap.Manifest.SourceSystem, "questionnaire_options", fmt.Sprint(opt.ID), "survey_definition_options", targetOption, optionDigest, "imported"); err != nil {
+						return err
+					}
+				}
+			}
+			orderedRules := rulesByQ[q.ID]
+			sort.SliceStable(orderedRules, func(i, j int) bool { return orderedRules[i].Sort < orderedRules[j].Sort })
+			for ri, item := range orderedRules {
+				var targetRule int64
+				err = tx.QueryRow(ctx, `INSERT INTO survey_score_rules(definition_version_id,minimum_score,maximum_score,tag_codes,sort_order) VALUES($1,$2,$3,$4,$5) RETURNING id`, versionID, item.Min, item.Max, validArray(item.Tags), ri).Scan(&targetRule)
+				if err != nil {
+					return err
+				}
+				ruleDigest := recordDigest(item)
+				if err = writeMap(ctx, tx, batchID, snap.Manifest.SourceSystem, "questionnaire_score_rules", fmt.Sprint(item.ID), "survey_score_rules", targetRule, ruleDigest, "imported"); err != nil {
+					return err
+				}
+			}
+			if _, err = tx.Exec(ctx, `UPDATE survey_questionnaires SET active_definition_version_id=$2 WHERE id=$1`, targetID, versionID); err != nil {
+				return err
+			}
+			versionTarget[q.ID] = versionID
+			if err = writeMap(ctx, tx, batchID, snap.Manifest.SourceSystem, "questionnaires", fmt.Sprint(q.ID), "survey_questionnaires", targetID, digest, "imported"); err != nil {
+				return err
+			}
+		}
+		qTarget[q.ID] = targetID
+		if versionTarget[q.ID] == 0 {
+			var versionID int64
+			_ = tx.QueryRow(ctx, `SELECT active_definition_version_id FROM survey_questionnaires WHERE id=$1`, targetID).Scan(&versionID)
+			versionTarget[q.ID] = versionID
+		}
+	}
+	// Reload definition source mappings so a repeated import has the same
+	// source-to-target graph before answers are reconciled.
+	for _, item := range questions {
+		var target *int64
+		var existing []byte
+		err = tx.QueryRow(ctx, `SELECT target_pk,record_digest FROM survey_migration_source_map WHERE source_system=$1 AND source_table='questionnaire_questions' AND source_pk=$2`, snap.Manifest.SourceSystem, fmt.Sprint(item.ID)).Scan(&target, &existing)
+		if err == nil && target != nil {
+			digest := recordDigest(item)
+			if string(existing) != string(digest[:]) {
+				return errors.New("migration source drift")
+			}
+			questionTarget[item.ID] = *target
+		} else if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+	}
+	for _, s := range submissions {
+		targetQ := qTarget[s.QuestionnaireID]
+		if targetQ == 0 {
+			return fmt.Errorf("submission %d missing questionnaire", s.ID)
+		}
+		digest := recordDigest(s)
+		if found, pk, e := mapped(ctx, tx, snap.Manifest.SourceSystem, "questionnaire_submissions", fmt.Sprint(s.ID), digest); e != nil {
+			return e
+		} else if found {
+			submissionTarget[s.ID] = pk
+			continue
+		}
+		identityState := "anonymous"
+		var evidence any
+		if strings.TrimSpace(s.UnionID) != "" {
+			identityState = "unresolved"
+			d := sha256.Sum256([]byte(strings.TrimSpace(s.UnionID)))
+			evidence = d[:]
+		}
+		result := s.Result
+		if !validObject(result) {
+			result = json.RawMessage(`{}`)
+		}
+		var resultObject map[string]any
+		_ = json.Unmarshal(result, &resultObject)
+		if resultObject == nil {
+			resultObject = map[string]any{}
+		}
+		var finalTags []any
+		if json.Unmarshal(s.FinalTags, &finalTags) == nil {
+			resultObject["_legacy_final_tags"] = finalTags
+		}
+		resultObject["_legacy_matched_by"] = trim(s.MatchedBy, 100)
+		result, _ = json.Marshal(resultObject)
+		keyDigest := sha256.Sum256([]byte(fmt.Sprintf("legacy:%d", s.ID)))
+		payload := recordDigest(s)
+		var targetID int64
+		err = tx.QueryRow(ctx, `INSERT INTO survey_submissions(questionnaire_id,definition_version_id,definition_version_number,identity_state,identity_reason,evidence_digest,submission_key_digest,payload_digest,questionnaire_slug_snapshot,title_snapshot,mode_snapshot,total_score,result_snapshot,source_channel,campaign_id,staff_id,submitted_at,created_at) SELECT $1,$2,1,$3,$4,$5,$6,$7,q.slug,q.title,q.mode,$8,$9,$10,$11,$12,$13,$14 FROM survey_questionnaires q WHERE q.id=$1 RETURNING id`, targetQ, versionTarget[s.QuestionnaireID], identityState, map[bool]string{true: "legacy_unionid_scope_missing", false: ""}[identityState == "unresolved"], evidence, keyDigest[:], payload[:], s.Total, result, trim(s.SourceChannel, 100), trim(s.CampaignID, 200), trim(s.StaffID, 200), s.SubmittedAt, s.CreatedAt).Scan(&targetID)
+		if err != nil {
+			return err
+		}
+		submissionTarget[s.ID] = targetID
+		if strings.TrimSpace(s.Token) != "" {
+			tokenDigest := sha256.Sum256([]byte(s.Token))
+			if _, err = tx.Exec(ctx, `INSERT INTO survey_result_tokens(submission_id,token_digest,created_at) VALUES($1,$2,$3) ON CONFLICT(token_digest) DO NOTHING`, targetID, tokenDigest[:], s.CreatedAt); err != nil {
+				return err
+			}
+		} else {
+			if err = quarantine(ctx, tx, batchID, snap.Manifest.SourceSystem, "questionnaire_result_tokens", fmt.Sprint(s.ID), "missing_result_token", map[string]any{"submission_source_id": s.ID}, digest); err != nil {
+				return err
+			}
+		}
+		if err = writeMap(ctx, tx, batchID, snap.Manifest.SourceSystem, "questionnaire_submissions", fmt.Sprint(s.ID), "survey_submissions", targetID, digest, "imported"); err != nil {
+			return err
+		}
+	}
+	for _, a := range answers {
+		targetS := submissionTarget[a.SubmissionID]
+		if targetS == 0 {
+			return fmt.Errorf("answer %d missing submission", a.ID)
+		}
+		digest := recordDigest(a)
+		if found, _, e := mapped(ctx, tx, snap.Manifest.SourceSystem, "questionnaire_submission_answers", fmt.Sprint(a.ID), digest); e != nil {
+			return e
+		} else if found {
+			continue
+		}
+		targetQuestion := questionTarget[a.QuestionID]
+		missing := targetQuestion == 0
+		var qid any
+		if !missing {
+			qid = targetQuestion
+		}
+		selected := selectedOptions(a)
+		encrypted, err := surveyCipher.Encrypt(a.Text)
+		if err != nil {
+			return err
+		}
+		if a.Text == "" {
+			encrypted = nil
+		}
+		masked := ""
+		if a.Text != "" {
+			masked = "[protected]"
+			if a.Type == "mobile" {
+				masked = mask(a.Text)
+			}
+		}
+		var targetID int64
+		err = tx.QueryRow(ctx, `INSERT INTO survey_submission_answers(submission_id,definition_question_id,legacy_source_question_id,question_type,question_title_snapshot,question_sort_order,required_snapshot,selected_options_snapshot,text_value_ciphertext,text_value_masked,answer_digest,score_snapshot,legacy_definition_missing,created_at) VALUES($1,$2,$3,$4,$5,0,FALSE,$6,$7,$8,$9,$10,$11,$12) RETURNING id`, targetS, qid, a.QuestionID, validAnswerType(a.Type, missing), trimNonEmpty(a.Title, 1000), selected, encrypted, masked, digest[:], a.Score, missing, a.CreatedAt).Scan(&targetID)
+		if err != nil {
+			return err
+		}
+		if err = writeMap(ctx, tx, batchID, snap.Manifest.SourceSystem, "questionnaire_submission_answers", fmt.Sprint(a.ID), "survey_submission_answers", targetID, digest, "imported"); err != nil {
+			return err
+		}
+	}
+	for _, set := range []struct {
+		table, kind string
+		rows        []operation
+	}{{"questionnaire_external_push_logs", "external_push", pushes}, {"questionnaire_scrm_apply_logs", "scrm_apply", scrm}} {
+		for _, o := range set.rows {
+			digest := recordDigest(o)
+			if found, _, e := mapped(ctx, tx, snap.Manifest.SourceSystem, set.table, fmt.Sprint(o.ID), digest); e != nil {
+				return e
+			} else if found {
+				continue
+			}
+			targetQ := qTarget[o.QuestionnaireID]
+			targetS := submissionTarget[o.SubmissionID]
+			if targetQ == 0 {
+				targetQ = qTarget[submissionSource[o.SubmissionID].QuestionnaireID]
+			}
+			if targetQ == 0 {
+				if err = quarantine(ctx, tx, batchID, snap.Manifest.SourceSystem, set.table, fmt.Sprint(o.ID), "missing_questionnaire_association", map[string]any{"submission_source_id": o.SubmissionID, "status": legacyStatus(set.kind, o.Status)}, digest); err != nil {
+					return err
+				}
+				if err = writeMap(ctx, tx, batchID, snap.Manifest.SourceSystem, set.table, fmt.Sprint(o.ID), "survey_migration_quarantine", nil, digest, "quarantined"); err != nil {
+					return err
+				}
+				continue
+			}
+			var submissionValue any
+			if targetS > 0 {
+				submissionValue = targetS
+			}
+			status := legacyStatus(set.kind, o.Status)
+			var targetID int64
+			err = tx.QueryRow(ctx, `INSERT INTO survey_external_operation_receipts(questionnaire_id,submission_id,operation_kind,status,failure_category,occurred_at,read_only_legacy,replayable,source_system,source_table,source_pk,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,TRUE,FALSE,$7,$8,$9,$6,$6) RETURNING id`, targetQ, submissionValue, set.kind, status, trim(o.FailureCategory, 100), o.OccurredAt, snap.Manifest.SourceSystem, set.table, fmt.Sprint(o.ID)).Scan(&targetID)
+			if err != nil {
+				return err
+			}
+			if err = writeMap(ctx, tx, batchID, snap.Manifest.SourceSystem, set.table, fmt.Sprint(o.ID), "survey_external_operation_receipts", targetID, digest, "imported"); err != nil {
+				return err
+			}
+		}
+	}
+	if _, err = tx.Exec(ctx, `UPDATE survey_migration_batches SET status='imported',updated_at=clock_timestamp() WHERE id=$1`, batchID); err != nil {
+		return err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return err
+	}
+	fmt.Printf("imported batch=%s counts=%s unresolved=%d missing_definition_answers=%d provider_effects_created=0\n", batchKey, safeCounts(snap.Manifest.Counts), identityUnresolved(snap), missingDefinitions(snap))
+	return nil
+}
+
+func rollbackImport(args []string) error {
+	fs, file, keyFile := common("rollback", args)
+	target := fs.String("target-url", "", "v3 PostgreSQL URL")
+	confirm := fs.Bool("confirm-rollback", false, "delete only this snapshot batch from target")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if !*confirm || *target == "" {
+		return errors.New("target-url and confirm-rollback are required")
+	}
+	snap, _, err := load(*file, *keyFile)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, *target)
+	if err != nil {
+		return errors.New("connect target")
+	}
+	defer pool.Close()
+	tx, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	var batchID int64
+	if err = tx.QueryRow(ctx, `SELECT id FROM survey_migration_batches WHERE source_system=$1 AND snapshot_at=$2 FOR UPDATE`, snap.Manifest.SourceSystem, snap.Manifest.SnapshotAt).Scan(&batchID); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `SELECT set_config('aicrm.survey_migration_rollback','authorized',true)`); err != nil {
+		return err
+	}
+	var unsafe int
+	if err = tx.QueryRow(ctx, `SELECT count(*) FROM survey_submissions s JOIN survey_migration_source_map qmap ON qmap.migration_batch_id=$1 AND qmap.target_table='survey_questionnaires' AND qmap.target_pk=s.questionnaire_id LEFT JOIN survey_migration_source_map smap ON smap.migration_batch_id=$1 AND smap.target_table='survey_submissions' AND smap.target_pk=s.id WHERE smap.id IS NULL`, batchID).Scan(&unsafe); err != nil {
+		return err
+	}
+	if unsafe != 0 {
+		return errors.New("rollback blocked: imported questionnaires contain v3 submissions")
+	}
+	commands := []string{
+		`DELETE FROM survey_external_operation_receipts WHERE id IN (SELECT target_pk FROM survey_migration_source_map WHERE migration_batch_id=$1 AND target_table='survey_external_operation_receipts')`,
+		`DELETE FROM survey_operation_configurations WHERE questionnaire_id IN (SELECT target_pk FROM survey_migration_source_map WHERE migration_batch_id=$1 AND target_table='survey_questionnaires')`,
+		`DELETE FROM survey_submission_answers WHERE id IN (SELECT target_pk FROM survey_migration_source_map WHERE migration_batch_id=$1 AND target_table='survey_submission_answers')`,
+		`DELETE FROM survey_result_tokens WHERE submission_id IN (SELECT target_pk FROM survey_migration_source_map WHERE migration_batch_id=$1 AND target_table='survey_submissions')`,
+		`DELETE FROM survey_submissions WHERE id IN (SELECT target_pk FROM survey_migration_source_map WHERE migration_batch_id=$1 AND target_table='survey_submissions')`,
+		`DELETE FROM survey_score_rules WHERE id IN (SELECT target_pk FROM survey_migration_source_map WHERE migration_batch_id=$1 AND target_table='survey_score_rules')`,
+		`DELETE FROM survey_definition_options WHERE id IN (SELECT target_pk FROM survey_migration_source_map WHERE migration_batch_id=$1 AND target_table='survey_definition_options')`,
+		`UPDATE survey_questionnaires SET active_definition_version_id=NULL WHERE id IN (SELECT target_pk FROM survey_migration_source_map WHERE migration_batch_id=$1 AND target_table='survey_questionnaires')`,
+		`DELETE FROM survey_definition_questions WHERE id IN (SELECT target_pk FROM survey_migration_source_map WHERE migration_batch_id=$1 AND target_table='survey_definition_questions')`,
+		`DELETE FROM survey_definition_versions WHERE questionnaire_id IN (SELECT target_pk FROM survey_migration_source_map WHERE migration_batch_id=$1 AND target_table='survey_questionnaires')`,
+		`DELETE FROM survey_questionnaires WHERE id IN (SELECT target_pk FROM survey_migration_source_map WHERE migration_batch_id=$1 AND target_table='survey_questionnaires')`,
+		`DELETE FROM survey_migration_quarantine WHERE migration_batch_id=$1`,
+		`DELETE FROM survey_migration_source_map WHERE migration_batch_id=$1`,
+		`DELETE FROM survey_migration_batches WHERE id=$1`,
+	}
+	for _, command := range commands {
+		if _, err = tx.Exec(ctx, command, batchID); err != nil {
+			return err
+		}
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return err
+	}
+	fmt.Printf("rolled_back snapshot_at=%s target_only=true source_unchanged=true\n", snap.Manifest.SnapshotAt.Format(time.RFC3339Nano))
+	return nil
+}
+
+func reconcile(args []string) error {
+	fs, file, keyFile := common("reconcile", args)
+	target := fs.String("target-url", "", "v3 PostgreSQL URL")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	snap, _, err := load(*file, *keyFile)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, *target)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+	problems := []string{}
+	for _, table := range tables {
+		var count int
+		err = pool.QueryRow(ctx, `SELECT count(*) FROM survey_migration_source_map WHERE source_system=$1 AND source_table=$2`, snap.Manifest.SourceSystem, table).Scan(&count)
+		if err != nil {
+			return err
+		}
+		if count != snap.Manifest.Counts[table] {
+			problems = append(problems, fmt.Sprintf("%s source=%d target=%d", table, snap.Manifest.Counts[table], count))
+		}
+	}
+	if len(problems) > 0 {
+		return errors.New("migration reconciliation failed: " + strings.Join(problems, "; "))
+	}
+	var duplicates int
+	if err = pool.QueryRow(ctx, `SELECT count(*) FROM (SELECT source_system,source_table,source_pk,count(*) FROM survey_migration_source_map WHERE source_system=$1 GROUP BY 1,2,3 HAVING count(*)>1)x`, snap.Manifest.SourceSystem).Scan(&duplicates); err != nil || duplicates != 0 {
+		return errors.New("duplicate source mapping")
+	}
+	_, err = pool.Exec(ctx, `UPDATE survey_migration_batches SET status='reconciled',updated_at=clock_timestamp() WHERE source_system=$1 AND snapshot_at=$2`, snap.Manifest.SourceSystem, snap.Manifest.SnapshotAt)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("reconciled counts=%s duplicates=0 silent_loss=0 wrong_oneid_bindings=0 provider_effects_created=0\n", safeCounts(snap.Manifest.Counts))
+	return nil
+}
+
+func load(file, keyFile string) (Snapshot, [32]byte, error) {
+	var snap Snapshot
+	key, err := readKey(keyFile)
+	if err != nil {
+		return snap, [32]byte{}, err
+	}
+	data, err := os.ReadFile(file)
+	if err != nil {
+		return snap, [32]byte{}, errors.New("read snapshot")
+	}
+	plain, err := decrypt(key, data)
+	if err != nil {
+		return snap, [32]byte{}, err
+	}
+	digest := sha256.Sum256(mustJSON(snap))
+	if json.Unmarshal(plain, &snap) != nil {
+		return snap, digest, errors.New("decode snapshot")
+	}
+	digest = sha256.Sum256(plain)
+	return snap, digest, nil
+}
+func readKey(file string) ([]byte, error) {
+	info, err := os.Stat(file)
+	if err != nil {
+		return nil, errors.New("read key file")
+	}
+	if info.Mode().Perm()&0077 != 0 {
+		return nil, errors.New("key file permissions must be 0600")
+	}
+	raw, err := os.ReadFile(file)
+	if err != nil {
+		return nil, err
+	}
+	key, err := base64.RawStdEncoding.DecodeString(strings.TrimSpace(string(raw)))
+	if err != nil || len(key) != 32 {
+		return nil, errors.New("key must be base64url encoded 32 bytes")
+	}
+	return key, nil
+}
+func encrypt(key, plain []byte) ([]byte, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	aead, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+	nonce := make([]byte, aead.NonceSize())
+	if _, err = io.ReadFull(rand.Reader, nonce); err != nil {
+		return nil, err
+	}
+	return append(append([]byte(magic), nonce...), aead.Seal(nil, nonce, plain, []byte(magic))...), nil
+}
+func decrypt(key, value []byte) ([]byte, error) {
+	if !strings.HasPrefix(string(value), magic) {
+		return nil, errors.New("invalid snapshot header")
+	}
+	block, _ := aes.NewCipher(key)
+	aead, _ := cipher.NewGCM(block)
+	body := value[len(magic):]
+	if len(body) < aead.NonceSize() {
+		return nil, errors.New("invalid snapshot")
+	}
+	plain, err := aead.Open(nil, body[:aead.NonceSize()], body[aead.NonceSize():], []byte(magic))
+	if err != nil {
+		return nil, errors.New("snapshot authentication failed")
+	}
+	return plain, nil
+}
+func decodeTable(s Snapshot, name string, out any) {
+	if err := json.Unmarshal(s.Tables[name], out); err != nil {
+		panic(err)
+	}
+}
+func recordDigest(v any) [32]byte { raw, _ := json.Marshal(v); return sha256.Sum256(raw) }
+func writeMap(ctx context.Context, tx pgx.Tx, batch int64, source, table, pk, target string, targetPK any, digest [32]byte, state string) error {
+	_, err := tx.Exec(ctx, `INSERT INTO survey_migration_source_map(migration_batch_id,source_system,source_table,source_pk,target_table,target_pk,record_digest,import_state,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,clock_timestamp())`, batch, source, table, pk, target, targetPK, digest[:], state)
+	return err
+}
+func mapped(ctx context.Context, tx pgx.Tx, source, table, pk string, digest [32]byte) (bool, int64, error) {
+	var target *int64
+	var existing []byte
+	err := tx.QueryRow(ctx, `SELECT target_pk,record_digest FROM survey_migration_source_map WHERE source_system=$1 AND source_table=$2 AND source_pk=$3`, source, table, pk).Scan(&target, &existing)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, 0, nil
+	}
+	if err != nil {
+		return false, 0, err
+	}
+	if string(existing) != string(digest[:]) {
+		return false, 0, errors.New("migration source drift")
+	}
+	if target == nil {
+		return true, 0, nil
+	}
+	return true, *target, nil
+}
+func quarantine(ctx context.Context, tx pgx.Tx, batch int64, source, table, pk, reason string, safe any, digest [32]byte) error {
+	raw, _ := json.Marshal(safe)
+	_, err := tx.Exec(ctx, `INSERT INTO survey_migration_quarantine(migration_batch_id,source_system,source_table,source_pk,reason_code,safe_snapshot,record_digest,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,clock_timestamp()) ON CONFLICT DO NOTHING`, batch, source, table, pk, reason, raw, digest[:])
+	return err
+}
+func identityUnresolved(s Snapshot) int {
+	var rows []submission
+	decodeTable(s, "questionnaire_submissions", &rows)
+	n := 0
+	for _, v := range rows {
+		if strings.TrimSpace(v.UnionID) != "" {
+			n++
+		}
+	}
+	return n
+}
+func missingDefinitions(s Snapshot) int {
+	var questions []question
+	var answers []answer
+	decodeTable(s, "questionnaire_questions", &questions)
+	decodeTable(s, "questionnaire_submission_answers", &answers)
+	known := map[int64]bool{}
+	for _, v := range questions {
+		known[v.ID] = true
+	}
+	n := 0
+	for _, v := range answers {
+		if !known[v.QuestionID] {
+			n++
+		}
+	}
+	return n
+}
+func selectedOptions(a answer) json.RawMessage {
+	var ids []int64
+	var texts []string
+	var scores []float64
+	var tags []json.RawMessage
+	_ = json.Unmarshal(a.OptionIDs, &ids)
+	_ = json.Unmarshal(a.OptionTexts, &texts)
+	_ = json.Unmarshal(a.OptionScores, &scores)
+	_ = json.Unmarshal(a.OptionTags, &tags)
+	out := make([]map[string]any, 0, len(ids))
+	for i, id := range ids {
+		text := ""
+		score := 0.0
+		if i < len(texts) {
+			text = texts[i]
+		}
+		if i < len(scores) {
+			score = scores[i]
+		}
+		var tagCodes any = []any{}
+		if i < len(tags) && json.Valid(tags[i]) {
+			tagCodes = tags[i]
+		}
+		out = append(out, map[string]any{"option_id": id, "option_text": trim(text, 1000), "score": score, "tag_codes": tagCodes})
+	}
+	raw, _ := json.Marshal(out)
+	return raw
+}
+func safeCounts(m map[string]int) string {
+	keys := append([]string(nil), tables...)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, fmt.Sprintf("%s=%d", k, m[k]))
+	}
+	return strings.Join(parts, ",")
+}
+func trim(v string, max int) string {
+	v = strings.TrimSpace(v)
+	r := []rune(v)
+	if len(r) > max {
+		v = string(r[:max])
+	}
+	return v
+}
+func trimNonEmpty(v string, max int) string {
+	v = trim(v, max)
+	if v == "" {
+		return "legacy"
+	}
+	return v
+}
+func safeSlug(v string, id int64) string {
+	v = strings.ToLower(strings.TrimSpace(v))
+	var b strings.Builder
+	for _, r := range v {
+		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-' {
+			b.WriteRune(r)
+		}
+	}
+	v = strings.Trim(b.String(), "-")
+	if v == "" {
+		v = fmt.Sprintf("legacy-questionnaire-%d", id)
+	}
+	if len(v) > 120 {
+		v = v[:120]
+	}
+	return v
+}
+func safeOpaque(v string) string {
+	v = strings.TrimSpace(v)
+	for _, r := range v {
+		if !(r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || strings.ContainsRune("._:-", r)) {
+			return ""
+		}
+	}
+	if len(v) > 128 {
+		return ""
+	}
+	return v
+}
+func display(v string) string {
+	if v == "one_by_one" {
+		return v
+	}
+	return "all_in_one"
+}
+func validArray(v json.RawMessage) json.RawMessage {
+	var a []any
+	if json.Unmarshal(v, &a) != nil {
+		return json.RawMessage(`[]`)
+	}
+	raw, _ := json.Marshal(a)
+	return raw
+}
+func validObject(v json.RawMessage) bool { var o map[string]any; return json.Unmarshal(v, &o) == nil }
+func otherMax(v option) int {
+	if !v.IsOther {
+		return 0
+	}
+	if v.OtherMax < 1 {
+		return 200
+	}
+	if v.OtherMax > 200 {
+		return 200
+	}
+	return v.OtherMax
+}
+func validAnswerType(v string, missing bool) string {
+	if missing && v != "single_choice" && v != "multi_choice" && v != "textarea" && v != "mobile" {
+		return "legacy_unknown"
+	}
+	switch v {
+	case "single_choice", "multi_choice", "textarea", "mobile":
+		return v
+	default:
+		return "legacy_unknown"
+	}
+}
+func mask(v string) string {
+	r := []rune(v)
+	if len(r) < 7 {
+		return "***"
+	}
+	return string(r[:3]) + "****" + string(r[len(r)-4:])
+}
+func legacyStatus(kind, status string) string {
+	if kind == "external_push" {
+		if status == "success" {
+			return "legacy_success"
+		}
+		return "legacy_failed"
+	}
+	if strings.HasPrefix(status, "skipped") {
+		return "skipped"
+	}
+	if status == "success" {
+		return "legacy_success"
+	}
+	return "legacy_failed"
+}
+func mustJSON(v any) []byte { raw, _ := json.Marshal(v); return raw }

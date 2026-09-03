@@ -38,9 +38,10 @@ type AnswerSnapshot struct {
 }
 
 type SelectedOptionSnapshot struct {
-	OptionID   ID      `json:"option_id"`
-	OptionText string  `json:"option_text"`
-	Score      float64 `json:"score"`
+	OptionID   ID       `json:"option_id"`
+	OptionText string   `json:"option_text"`
+	Score      float64  `json:"score"`
+	TagCodes   []string `json:"tag_codes,omitempty"`
 }
 
 type Submission struct {
@@ -73,6 +74,47 @@ type Analytics struct {
 	AverageScore      float64             `json:"average_score"`
 }
 
+type OperationReceipt struct {
+	ID                 ID        `json:"id"`
+	QuestionnaireID    ID        `json:"questionnaire_id"`
+	SubmissionID       *ID       `json:"submission_id,omitempty"`
+	OperationKind      string    `json:"operation_kind"`
+	Status             string    `json:"status"`
+	FailureCategory    string    `json:"failure_category,omitempty"`
+	OccurrenceCount    int64     `json:"occurrence_count"`
+	OccurredAt         time.Time `json:"occurred_at"`
+	ReadOnlyLegacy     bool      `json:"read_only_legacy"`
+	Replayable         bool      `json:"replayable"`
+	RealEffectExecuted bool      `json:"real_external_call_executed"`
+}
+
+type OperationConfiguration struct {
+	QuestionnaireID              ID        `json:"-"`
+	CompletionNavigationRef      string    `json:"navigation_target_id,omitempty"`
+	CompletionChannelID          *int64    `json:"channel_id,omitempty"`
+	ExternalPushEnabled          bool      `json:"external_push_enabled"`
+	ExternalPushConfigurationRef string    `json:"configuration_reference,omitempty"`
+	Version                      int64     `json:"version"`
+	UpdatedAt                    time.Time `json:"updated_at,omitempty"`
+}
+
+type LegacySubmission struct {
+	ID, SourceID, QuestionnaireSourceID int64
+	QuestionnaireID, CustomerID         *int64
+	MatchedBy, SourceChannel            string
+	TotalScore                          float64
+	FinalTags                           json.RawMessage
+	SubmittedAt, CreatedAt              time.Time
+}
+
+type LegacyAnswer struct {
+	ID, SourceID, SubmissionID, SubmissionSourceID, QuestionSourceID                 int64
+	QuestionType, QuestionTitle, TextValue                                           string
+	SelectedOptionIDs, SelectedOptionTexts, SelectedOptionScores, SelectedOptionTags json.RawMessage
+	ScoreContribution                                                                float64
+	CreatedAt                                                                        time.Time
+}
+
 type PublicApplication interface {
 	ReadPublic(context.Context, string) (Questionnaire, error)
 	Submit(context.Context, SubmitCommand) (SubmissionReceipt, error)
@@ -84,6 +126,13 @@ type SubmissionApplication interface {
 	GetSubmission(context.Context, ID) (Submission, error)
 	CustomerHistory(context.Context, int64, int32, int32) (SubmissionPage, error)
 	Analytics(context.Context, ID) (Analytics, error)
+	ListOperationReceipts(context.Context, ID, int32, int32) ([]OperationReceipt, int64, error)
+	ListLegacyUnresolved(context.Context, ID, int32, int32) ([]LegacySubmission, int64, error)
+	GetLegacyUnresolved(context.Context, ID) (LegacySubmission, error)
+	ListLegacyAnswers(context.Context, ID, int32, int32) ([]LegacyAnswer, int64, error)
+	GetOperationConfiguration(context.Context, ID) (OperationConfiguration, error)
+	SaveOperationConfiguration(context.Context, OperationConfiguration, int64, string) (OperationConfiguration, error)
+	RecordDisabledOperation(context.Context, ID, *ID, string, int64, string) (OperationReceipt, error)
 }
 
 type MigrationRecord struct {

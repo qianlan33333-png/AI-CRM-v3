@@ -23,6 +23,12 @@ type RequestSecurity interface {
 	Authenticate(context.Context, *http.Request) (accessdomain.Principal, error)
 	AuthorizeCSRF(context.Context, *http.Request) (accessdomain.Principal, error)
 }
+type OAuthApplication interface {
+	Enabled() bool
+	Start(context.Context, string, string) (string, error)
+	Complete(context.Context, string, string) (string, string, error)
+	ResolveSession(context.Context, string) (surveyport.SubmissionIdentity, error)
+}
 type Handler struct {
 	definitions surveyport.DefinitionApplication
 	submissions interface {
@@ -30,16 +36,24 @@ type Handler struct {
 		surveyport.SubmissionApplication
 	}
 	security RequestSecurity
+	oauth    OAuthApplication
 }
 
 func NewHandler(definitions surveyport.DefinitionApplication, submissions interface {
 	surveyport.PublicApplication
 	surveyport.SubmissionApplication
-}, security RequestSecurity) (*Handler, error) {
+}, security RequestSecurity, oauth ...OAuthApplication) (*Handler, error) {
 	if definitions == nil || submissions == nil || security == nil {
 		return nil, errors.New("survey HTTP dependencies are required")
 	}
-	return &Handler{definitions: definitions, submissions: submissions, security: security}, nil
+	if len(oauth) > 1 {
+		return nil, errors.New("at most one survey OAuth application")
+	}
+	var oauthApp OAuthApplication
+	if len(oauth) == 1 {
+		oauthApp = oauth[0]
+	}
+	return &Handler{definitions: definitions, submissions: submissions, security: security, oauth: oauthApp}, nil
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -57,10 +71,18 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.publicResult(w, r)
 	case path == "/api/sidebar/v2/questionnaires":
 		h.sidebar(w, r)
+	case path == "/api/h5/surveys/oauth/start":
+		h.oauthStart(w, r)
+	case path == "/api/h5/surveys/oauth/callback":
+		h.oauthCallback(w, r)
 	case strings.HasPrefix(path, "/api/v1/customers/") && strings.HasSuffix(path, "/survey-answers"):
 		h.customerHistory(w, r)
 	case path == "/api/admin/survey-history/submissions":
 		h.unresolved(w, r)
+	case strings.HasPrefix(path, "/api/admin/survey-history/submissions/"):
+		h.unresolvedTail(w, r, strings.TrimPrefix(path, "/api/admin/survey-history/submissions/"))
+	case strings.HasPrefix(path, "/admin/questionnaires/"):
+		h.legacyAdminTail(w, r, strings.TrimPrefix(path, "/admin/questionnaires/"))
 	default:
 		writeError(w, http.StatusNotFound, "not_found")
 	}
@@ -206,6 +228,16 @@ func (h *Handler) adminTail(w http.ResponseWriter, r *http.Request, tail string)
 		}
 		return
 	}
+	if len(parts) >= 4 && parts[1] == "submissions" && parts[3] == "external-push" {
+		if _, e := parseID(parts[2]); e != nil {
+			writeError(w, 404, "not_found")
+			return
+		}
+		if len(parts) == 4 || len(parts) == 5 && parts[4] == "reconcile" {
+			h.operationsDisabled(w, r, id)
+			return
+		}
+	}
 	action := strings.Join(parts[1:], "/")
 	switch action {
 	case "duplicate":
@@ -327,7 +359,13 @@ func (h *Handler) publicQuestionnaire(w http.ResponseWriter, r *http.Request, ta
 			writeError(w, 400, "invalid_public_input")
 			return
 		}
-		receipt, err := h.submissions.Submit(r.Context(), surveyport.SubmitCommand{Slug: slug, DefinitionVersion: body.Version, SubmissionKey: body.SubmissionKey, Answers: body.Answers, Identity: surveyport.SubmissionIdentity{State: surveyport.IdentityAnonymous}, SourceChannel: body.SourceChannel, CampaignID: body.CampaignID, StaffID: body.StaffID})
+		identity := surveyport.SubmissionIdentity{State: surveyport.IdentityAnonymous}
+		if h.oauth != nil {
+			if cookie, cookieErr := r.Cookie("aicrm_survey_identity"); cookieErr == nil {
+				identity, _ = h.oauth.ResolveSession(r.Context(), cookie.Value)
+			}
+		}
+		receipt, err := h.submissions.Submit(r.Context(), surveyport.SubmitCommand{Slug: slug, DefinitionVersion: body.Version, SubmissionKey: body.SubmissionKey, Answers: body.Answers, Identity: identity, SourceChannel: body.SourceChannel, CampaignID: body.CampaignID, StaffID: body.StaffID})
 		if err != nil {
 			resultError(w, err)
 			return
@@ -355,6 +393,43 @@ func (h *Handler) publicResult(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, map[string]any{"submission_id": s.ID, "definition_version": s.DefinitionVersion, "submitted_at": s.SubmittedAt, "local_only": true, "external_executed": false, "questionnaire_title": s.QuestionnaireTitle, "mode": s.Mode, "total_score": s.TotalScore, "assessment_result": s.Result})
+}
+
+func (h *Handler) oauthStart(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		method(w, "GET")
+		return
+	}
+	if h.oauth == nil || !h.oauth.Enabled() {
+		writeError(w, http.StatusServiceUnavailable, "survey_oauth_disabled")
+		return
+	}
+	location, err := h.oauth.Start(r.Context(), r.URL.Query().Get("slug"), r.URL.Query().Get("display"))
+	if err != nil {
+		resultError(w, err)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	http.Redirect(w, r, location, http.StatusSeeOther)
+}
+
+func (h *Handler) oauthCallback(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		method(w, "GET")
+		return
+	}
+	if h.oauth == nil || !h.oauth.Enabled() {
+		http.Redirect(w, r, "/h5/error.html?code=survey_oauth_disabled", http.StatusSeeOther)
+		return
+	}
+	session, redirect, err := h.oauth.Complete(r.Context(), r.URL.Query().Get("state"), r.URL.Query().Get("code"))
+	if err != nil {
+		http.Redirect(w, r, "/h5/error.html?code=survey_oauth_failed", http.StatusSeeOther)
+		return
+	}
+	http.SetCookie(w, &http.Cookie{Name: "aicrm_survey_identity", Value: session, Path: "/api/public/questionnaires/", MaxAge: 1800, HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode})
+	w.Header().Set("Cache-Control", "no-store")
+	http.Redirect(w, r, redirect, http.StatusSeeOther)
 }
 
 func (h *Handler) submissionList(w http.ResponseWriter, r *http.Request, id int64, _ bool) {
@@ -402,24 +477,29 @@ func (h *Handler) export(w http.ResponseWriter, r *http.Request, id int64) {
 	if _, ok := h.write(w, r); !ok {
 		return
 	}
-	page, err := h.submissions.ListSubmissions(r.Context(), surveyport.ID(id), 100, 0, "")
-	if err != nil {
-		resultError(w, err)
-		return
-	}
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=questionnaire-%d.csv", id))
 	w.Header().Set("Cache-Control", "no-store")
 	writer := csv.NewWriter(w)
 	_ = writer.Write([]string{"submission_id", "submitted_at", "identity_state", "customer_id", "total_score"})
-	for _, s := range page.Items {
-		customer := ""
-		if s.Identity.CustomerID != nil {
-			customer = fmt.Sprint(*s.Identity.CustomerID)
+	for offset := int32(0); ; {
+		page, err := h.submissions.ListSubmissions(r.Context(), surveyport.ID(id), 100, offset, "")
+		if err != nil {
+			return
 		}
-		_ = writer.Write([]string{fmt.Sprint(s.ID), s.SubmittedAt.Format("2006-01-02T15:04:05Z07:00"), string(s.Identity.State), customer, fmt.Sprint(s.TotalScore)})
+		for _, s := range page.Items {
+			customer := ""
+			if s.Identity.CustomerID != nil {
+				customer = fmt.Sprint(*s.Identity.CustomerID)
+			}
+			_ = writer.Write([]string{fmt.Sprint(s.ID), s.SubmittedAt.Format("2006-01-02T15:04:05Z07:00"), string(s.Identity.State), customer, fmt.Sprint(s.TotalScore)})
+		}
+		writer.Flush()
+		if writer.Error() != nil || len(page.Items) == 0 || int64(offset)+int64(len(page.Items)) >= page.Total {
+			break
+		}
+		offset += int32(len(page.Items))
 	}
-	writer.Flush()
 }
 func (h *Handler) customerHistory(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -460,21 +540,80 @@ func (h *Handler) unresolved(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "invalid_request")
 		return
 	}
-	all := []surveyport.Submission{}
-	total := int64(0)
-	definitions, err := h.definitions.List(r.Context(), 200, 0, "", "")
+	var questionnaire surveyport.ID
+	if raw := r.URL.Query().Get("questionnaire_id"); raw != "" {
+		id, e := parseID(raw)
+		if e != nil {
+			writeError(w, 400, "invalid_request")
+			return
+		}
+		questionnaire = surveyport.ID(id)
+	}
+	items, total, err := h.submissions.ListLegacyUnresolved(r.Context(), questionnaire, limit, offset)
 	if err != nil {
 		resultError(w, err)
 		return
 	}
-	for _, q := range definitions.Items {
-		page, e := h.submissions.ListSubmissions(r.Context(), q.ID, limit, offset, surveyport.IdentityUnresolved)
-		if e == nil {
-			all = append(all, page.Items...)
-			total += page.Total
-		}
+	rows := make([]any, 0, len(items))
+	for _, item := range items {
+		rows = append(rows, legacySubmissionResponse(item))
 	}
-	writeJSON(w, 200, map[string]any{"source": "v3", "read_only": true, "items": all, "total": total, "limit": limit, "offset": offset})
+	writeJSON(w, 200, legacyHistoryEnvelope(map[string]any{"items": rows, "total": total, "limit": limit, "offset": offset}))
+}
+
+func (h *Handler) unresolvedTail(w http.ResponseWriter, r *http.Request, tail string) {
+	parts := strings.Split(strings.Trim(tail, "/"), "/")
+	id, err := parseID(parts[0])
+	if err != nil {
+		writeError(w, 404, "not_found")
+		return
+	}
+	if r.Method != http.MethodGet {
+		method(w, "GET")
+		return
+	}
+	if !h.read(w, r) {
+		return
+	}
+	if len(parts) == 1 {
+		item, e := h.submissions.GetLegacyUnresolved(r.Context(), surveyport.ID(id))
+		if e != nil {
+			resultError(w, e)
+			return
+		}
+		writeJSON(w, 200, legacyHistoryEnvelope(map[string]any{"item": legacySubmissionResponse(item)}))
+		return
+	}
+	if len(parts) == 2 && parts[1] == "answers" {
+		limit, offset, ok := pageParams(r, 100)
+		if !ok {
+			writeError(w, 400, "invalid_request")
+			return
+		}
+		items, total, e := h.submissions.ListLegacyAnswers(r.Context(), surveyport.ID(id), limit, offset)
+		if e != nil {
+			resultError(w, e)
+			return
+		}
+		rows := make([]any, 0, len(items))
+		for _, item := range items {
+			rows = append(rows, map[string]any{"id": item.ID, "source_id": item.SourceID, "submission_id": item.SubmissionID, "submission_source_id": item.SubmissionSourceID, "question_source_id": item.QuestionSourceID, "question_type": item.QuestionType, "question_title_snapshot": item.QuestionTitle, "selected_option_ids": item.SelectedOptionIDs, "selected_option_texts": item.SelectedOptionTexts, "selected_option_scores": item.SelectedOptionScores, "selected_option_tags": item.SelectedOptionTags, "text_value": item.TextValue, "score_contribution": item.ScoreContribution, "created_at": item.CreatedAt})
+		}
+		writeJSON(w, 200, legacyHistoryEnvelope(map[string]any{"items": rows, "total": total, "limit": limit, "offset": offset}))
+		return
+	}
+	writeError(w, 404, "not_found")
+}
+
+func legacySubmissionResponse(item surveyport.LegacySubmission) map[string]any {
+	return map[string]any{"id": item.ID, "source_id": item.SourceID, "questionnaire_source_id": item.QuestionnaireSourceID, "questionnaire_id": item.QuestionnaireID, "customer_id": item.CustomerID, "matched_by": item.MatchedBy, "source_channel": item.SourceChannel, "total_score": item.TotalScore, "final_tags": item.FinalTags, "submitted_at": item.SubmittedAt, "created_at": item.CreatedAt}
+}
+func legacyHistoryEnvelope(values map[string]any) map[string]any {
+	out := map[string]any{"source": "v1_history", "read_only": true, "real_external_call_executed": false, "definition_mapping": "historical_source_only"}
+	for key, value := range values {
+		out[key] = value
+	}
+	return out
 }
 func (h *Handler) sidebar(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -499,20 +638,125 @@ func (h *Handler) preflight(w http.ResponseWriter, r *http.Request) {
 	if !h.read(w, r) {
 		return
 	}
-	writeJSON(w, 200, map[string]any{"ok": true, "status": "ok", "checks": map[string]bool{"wechat_oauth_configured": false, "wecom_contact_configured": false, "debug_session_api_enabled": false, "wecom_tags_api_available": true, "questionnaire_admin_ui_enabled": true, "identity_map_available": true}})
+	oauthEnabled := h.oauth != nil && h.oauth.Enabled()
+	writeJSON(w, 200, map[string]any{"ok": true, "status": "ok", "checks": map[string]bool{"wechat_oauth_configured": oauthEnabled, "wecom_contact_configured": false, "debug_session_api_enabled": false, "wecom_tags_api_available": true, "questionnaire_admin_ui_enabled": true, "identity_map_available": true}})
 }
 func (h *Handler) operationsDisabled(w http.ResponseWriter, r *http.Request, id int64) {
 	if r.Method == http.MethodGet {
 		if !h.read(w, r) {
 			return
 		}
-		writeJSON(w, 200, map[string]any{"questionnaire_id": id, "provider_enabled": false, "items": []any{}, "real_external_call_executed": false})
+		config, err := h.submissions.GetOperationConfiguration(r.Context(), surveyport.ID(id))
+		if err != nil {
+			resultError(w, err)
+			return
+		}
+		items, total, err := h.submissions.ListOperationReceipts(r.Context(), surveyport.ID(id), 100, 0)
+		if err != nil {
+			resultError(w, err)
+			return
+		}
+		writeJSON(w, 200, map[string]any{"questionnaire_id": id, "completion": map[string]any{"navigation_target_id": config.CompletionNavigationRef, "channel_id": config.CompletionChannelID}, "external_push": map[string]any{"enabled": config.ExternalPushEnabled, "configuration_reference": config.ExternalPushConfigurationRef}, "configuration_version": config.Version, "provider_enabled": false, "local_only": true, "items": items, "total": total, "real_external_call_executed": false})
 		return
 	}
-	if _, ok := h.write(w, r); !ok {
+	principal, ok := h.write(w, r)
+	if !ok {
+		return
+	}
+	if r.Method == http.MethodPut && (strings.HasSuffix(r.URL.Path, "/operations/completion") || strings.HasSuffix(r.URL.Path, "/operations/external-push")) {
+		config, err := h.submissions.GetOperationConfiguration(r.Context(), surveyport.ID(id))
+		if err != nil {
+			resultError(w, err)
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/completion") {
+			var body struct {
+				NavigationTargetID string `json:"navigation_target_id"`
+				ChannelID          *int64 `json:"channel_id"`
+			}
+			if decode(r, &body) != nil {
+				writeError(w, 400, "invalid_request")
+				return
+			}
+			config.CompletionNavigationRef, config.CompletionChannelID = body.NavigationTargetID, body.ChannelID
+		} else {
+			var body struct {
+				Enabled                bool   `json:"enabled"`
+				ConfigurationReference string `json:"configuration_reference"`
+			}
+			if decode(r, &body) != nil {
+				writeError(w, 400, "invalid_request")
+				return
+			}
+			config.ExternalPushEnabled, config.ExternalPushConfigurationRef = body.Enabled, body.ConfigurationReference
+		}
+		stored, err := h.submissions.SaveOperationConfiguration(r.Context(), config, principal.InternalID, idempotency(r))
+		if err != nil {
+			resultError(w, err)
+			return
+		}
+		writeJSON(w, 200, map[string]any{"questionnaire_id": id, "completion": map[string]any{"navigation_target_id": stored.CompletionNavigationRef, "channel_id": stored.CompletionChannelID}, "external_push": map[string]any{"enabled": stored.ExternalPushEnabled, "configuration_reference": stored.ExternalPushConfigurationRef}, "configuration_version": stored.Version, "local_only": true, "provider_enabled": false, "real_external_call_executed": false})
+		return
+	}
+	if r.Method == http.MethodPost && !strings.HasSuffix(r.URL.Path, "/reconcile") {
+		var sid *surveyport.ID
+		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+		for index, part := range parts {
+			if part == "submissions" && index+1 < len(parts) {
+				if parsed, err := parseID(parts[index+1]); err == nil {
+					value := surveyport.ID(parsed)
+					sid = &value
+				}
+			}
+		}
+		receipt, err := h.submissions.RecordDisabledOperation(r.Context(), surveyport.ID(id), sid, "external_push", principal.InternalID, idempotency(r))
+		if err != nil {
+			resultError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusAccepted, map[string]any{"test_run_id": receipt.ID, "questionnaire_id": id, "submission_id": sid, "status": receipt.Status, "attempt_count": 0, "side_effect_executed": false, "real_external_call_executed": false, "provider_result_received": false, "unknown_after_dispatch": false, "auto_retry_allowed": false, "created_at": receipt.OccurredAt, "updated_at": receipt.OccurredAt})
 		return
 	}
 	writeError(w, http.StatusServiceUnavailable, "provider_disabled")
+}
+
+func (h *Handler) legacyAdminTail(w http.ResponseWriter, r *http.Request, tail string) {
+	parts := strings.Split(strings.Trim(tail, "/"), "/")
+	if len(parts) == 1 && parts[0] == "external-push-logs" {
+		h.legacyOperationLogs(w, r, 0)
+		return
+	}
+	if len(parts) != 2 || parts[1] != "external-push-logs" {
+		writeError(w, 404, "not_found")
+		return
+	}
+	id, err := parseID(parts[0])
+	if err != nil {
+		writeError(w, 404, "not_found")
+		return
+	}
+	h.legacyOperationLogs(w, r, surveyport.ID(id))
+}
+
+func (h *Handler) legacyOperationLogs(w http.ResponseWriter, r *http.Request, id surveyport.ID) {
+	if r.Method != http.MethodGet {
+		method(w, "GET")
+		return
+	}
+	if !h.read(w, r) {
+		return
+	}
+	limit, offset, ok := pageParams(r, 100)
+	if !ok {
+		writeError(w, 400, "invalid_request")
+		return
+	}
+	items, total, err := h.submissions.ListOperationReceipts(r.Context(), id, limit, offset)
+	if err != nil {
+		resultError(w, err)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"items": items, "total": total, "limit": limit, "offset": offset, "has_more": int64(offset)+int64(len(items)) < total, "local_only": true, "real_external_call_executed": false})
 }
 
 func definitionResponse(q surveyport.Questionnaire) map[string]any {

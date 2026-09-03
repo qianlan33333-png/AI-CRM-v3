@@ -182,6 +182,46 @@ CREATE TABLE survey_result_tokens (
     CONSTRAINT survey_result_tokens_expiry CHECK (expires_at IS NULL OR expires_at > created_at)
 );
 
+CREATE TABLE survey_oauth_states (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    state_digest BYTEA NOT NULL UNIQUE CHECK (octet_length(state_digest)=32),
+    questionnaire_slug TEXT NOT NULL,
+    redirect_path TEXT NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL,
+    consumed_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL,
+    CONSTRAINT survey_oauth_states_redirect CHECK (redirect_path ~ '^/h5/(all|one)\\.html\\?slug=[a-z0-9][a-z0-9-]{0,127}$')
+);
+CREATE INDEX survey_oauth_states_expiry_idx ON survey_oauth_states(expires_at) WHERE consumed_at IS NULL;
+
+CREATE TABLE survey_identity_sessions (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    session_digest BYTEA NOT NULL UNIQUE CHECK (octet_length(session_digest)=32),
+    customer_id BIGINT REFERENCES customers(id) ON DELETE RESTRICT,
+    identity_state TEXT NOT NULL CHECK (identity_state IN ('resolved','unresolved','conflict')),
+    evidence_digest BYTEA NOT NULL CHECK (octet_length(evidence_digest)=32),
+    expires_at TIMESTAMPTZ NOT NULL,
+    revoked_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL,
+    CONSTRAINT survey_identity_sessions_customer CHECK ((identity_state='resolved' AND customer_id IS NOT NULL) OR (identity_state<>'resolved' AND customer_id IS NULL))
+);
+CREATE INDEX survey_identity_sessions_expiry_idx ON survey_identity_sessions(expires_at) WHERE revoked_at IS NULL;
+
+CREATE TABLE survey_operation_configurations (
+    questionnaire_id BIGINT PRIMARY KEY REFERENCES survey_questionnaires(id) ON DELETE RESTRICT,
+    completion_navigation_ref TEXT NOT NULL DEFAULT '',
+    completion_channel_id BIGINT,
+    external_push_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+    external_push_configuration_ref TEXT NOT NULL DEFAULT '',
+    version BIGINT NOT NULL DEFAULT 1 CHECK (version > 0),
+    updated_by BIGINT NOT NULL REFERENCES admin_users(id) ON DELETE RESTRICT,
+    updated_at TIMESTAMPTZ NOT NULL,
+    CONSTRAINT survey_operation_completion_ref CHECK (completion_navigation_ref = '' OR completion_navigation_ref ~ '^[A-Za-z0-9._:-]{1,128}$'),
+    CONSTRAINT survey_operation_channel CHECK (completion_channel_id IS NULL OR completion_channel_id > 0),
+    CONSTRAINT survey_operation_external_ref CHECK (external_push_configuration_ref = '' OR external_push_configuration_ref ~ '^[A-Za-z0-9._:-]{1,128}$'),
+    CONSTRAINT survey_operation_external_enabled CHECK (external_push_enabled = FALSE OR external_push_configuration_ref <> '')
+);
+
 CREATE TABLE survey_external_operation_receipts (
     id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     questionnaire_id BIGINT NOT NULL REFERENCES survey_questionnaires(id) ON DELETE RESTRICT,
@@ -195,6 +235,7 @@ CREATE TABLE survey_external_operation_receipts (
     occurred_at TIMESTAMPTZ NOT NULL,
     read_only_legacy BOOLEAN NOT NULL DEFAULT FALSE,
     replayable BOOLEAN NOT NULL DEFAULT TRUE,
+    idempotency_key_digest BYTEA UNIQUE CHECK (idempotency_key_digest IS NULL OR octet_length(idempotency_key_digest)=32),
     source_system TEXT,
     source_table TEXT,
     source_pk TEXT,
@@ -272,6 +313,10 @@ CREATE TABLE survey_migration_quarantine (
 CREATE FUNCTION survey_reject_immutable_version_change() RETURNS trigger
 LANGUAGE plpgsql AS $$
 BEGIN
+    IF current_setting('aicrm.survey_migration_rollback', TRUE) = 'authorized' THEN
+        IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
+        RETURN NEW;
+    END IF;
     IF OLD.is_immutable THEN
         RAISE EXCEPTION 'published survey definition version is immutable' USING ERRCODE = 'check_violation';
     END IF;
@@ -292,6 +337,10 @@ DECLARE
     candidate_version_id BIGINT;
     immutable BOOLEAN;
 BEGIN
+    IF current_setting('aicrm.survey_migration_rollback', TRUE) = 'authorized' THEN
+        IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
+        RETURN NEW;
+    END IF;
     candidate_version_id := COALESCE(OLD.definition_version_id, NEW.definition_version_id);
     SELECT is_immutable INTO immutable FROM survey_definition_versions WHERE id = candidate_version_id;
     IF immutable THEN

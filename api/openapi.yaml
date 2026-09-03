@@ -1824,6 +1824,96 @@ paths:
       security: [{adminSession: [], csrfHeader: []}]
       parameters: [{$ref: "#/components/parameters/AutomationAgentID"}, {$ref: "#/components/parameters/IdempotencyKey"}]
       responses: {"200": {description: Persisted local activation, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationAgentEnvelope"}}}}, "400": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+  /api/admin/questionnaires:
+    get: {operationId: listSurveyQuestionnaires, security: [{adminSession: []}], responses: {"200": {description: Survey definitions}}}
+    post: {operationId: createSurveyQuestionnaire, security: [{adminSession: [], csrfHeader: []}], parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}], requestBody: {required: true, content: {application/json: {schema: {type: object}}}}, responses: {"200": {description: Survey definition created}}}
+  /api/admin/questionnaires/preflight:
+    get: {operationId: getSurveyPreflight, security: [{adminSession: []}], responses: {"200": {description: Real capability status}}}
+  /api/admin/questionnaires/{questionnaire_id}:
+    parameters: [{name: questionnaire_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
+    get: {operationId: getSurveyQuestionnaire, security: [{adminSession: []}], responses: {"200": {description: Survey definition}}}
+    put: {operationId: replaceSurveyQuestionnaire, security: [{adminSession: [], csrfHeader: []}], parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}], requestBody: {required: true, content: {application/json: {schema: {type: object}}}}, responses: {"200": {description: New mutable definition version}}}
+    delete: {operationId: deleteSurveyQuestionnaireDraft, security: [{adminSession: [], csrfHeader: []}], parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}], responses: {"200": {description: Unreferenced draft removed}}}
+  /api/admin/questionnaires/{questionnaire_id}/duplicate:
+    parameters: [{name: questionnaire_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
+    post: {operationId: duplicateSurveyQuestionnaire, security: [{adminSession: [], csrfHeader: []}], parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}], responses: {"200": {description: Independent draft copy}}}
+  /api/admin/questionnaires/{questionnaire_id}/enable:
+    parameters: [{name: questionnaire_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
+    post: {operationId: enableSurveyQuestionnaire, security: [{adminSession: [], csrfHeader: []}], responses: {"200": {description: Published definition enabled}}}
+  /api/admin/questionnaires/{questionnaire_id}/disable:
+    parameters: [{name: questionnaire_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
+    post: {operationId: disableSurveyQuestionnaire, security: [{adminSession: [], csrfHeader: []}], responses: {"200": {description: Survey disabled}}}
+  /api/admin/questionnaires/{questionnaire_id}/public-publish:
+    parameters: [{name: questionnaire_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
+    post: {operationId: publishSurveyDefinition, security: [{adminSession: [], csrfHeader: []}], responses: {"200": {description: Immutable definition published}}}
+  /api/admin/questionnaires/{questionnaire_id}/public-disable:
+    parameters: [{name: questionnaire_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
+    post: {operationId: disablePublicSurveyDefinition, security: [{adminSession: [], csrfHeader: []}], responses: {"200": {description: Public access disabled}}}
+  /api/admin/questionnaires/{questionnaire_id}/results:
+    parameters: [{name: questionnaire_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
+    get: {operationId: getSurveyResults, security: [{adminSession: []}], responses: {"200": {description: Aggregate result projection}}}
+  /api/admin/questionnaires/{questionnaire_id}/analysis:
+    parameters: [{name: questionnaire_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
+    get: {operationId: getSurveyAnalysis, security: [{adminSession: []}], responses: {"200": {description: Safe local analysis}}}
+  /api/admin/questionnaires/{questionnaire_id}/public-analytics:
+    parameters: [{name: questionnaire_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
+    get: {operationId: getSurveyPublicAnalytics, security: [{adminSession: []}], responses: {"200": {description: Public submission analytics}}}
+  /api/admin/questionnaires/{questionnaire_id}/submissions:
+    parameters: [{name: questionnaire_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
+    get: {operationId: listSurveySubmissions, security: [{adminSession: []}], responses: {"200": {description: Paginated submission snapshots}}}
+  /api/admin/questionnaires/{questionnaire_id}/submissions/{submission_id}:
+    parameters: [{name: questionnaire_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}, {name: submission_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
+    get: {operationId: getSurveySubmission, security: [{adminSession: []}], responses: {"200": {description: Protected answer snapshot}}}
+  /api/admin/questionnaires/{questionnaire_id}/export:
+    parameters: [{name: questionnaire_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
+    get: {operationId: exportSurveySubmissions, security: [{adminSession: [], csrfHeader: []}], responses: {"200": {description: Streamed CSV export}}}
+  /api/admin/questionnaires/{questionnaire_id}/export/preview:
+    parameters: [{name: questionnaire_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
+    get: {operationId: previewSurveyExport, security: [{adminSession: []}], responses: {"200": {description: Safe export preview}}}
+  /api/admin/questionnaires/{questionnaire_id}/operations:
+    parameters: [{name: questionnaire_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
+    get: {operationId: getSurveyOperations, security: [{adminSession: []}], responses: {"200": {description: External Effect intent and receipt state}}}
+  /api/admin/questionnaires/{questionnaire_id}/operations/completion:
+    parameters: [{name: questionnaire_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
+    put: {operationId: saveSurveyCompletionOperation, security: [{adminSession: [], csrfHeader: []}], responses: {"503": {description: Provider disabled by default}}}
+  /api/admin/questionnaires/{questionnaire_id}/operations/external-push:
+    parameters: [{name: questionnaire_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
+    put: {operationId: saveSurveyExternalPushOperation, security: [{adminSession: [], csrfHeader: []}], responses: {"503": {description: Provider disabled by default}}}
+  /api/admin/questionnaires/{questionnaire_id}/operations/external-push/test:
+    parameters: [{name: questionnaire_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
+    post: {operationId: createSurveyExternalPushTest, security: [{adminSession: [], csrfHeader: []}], responses: {"503": {description: Provider disabled by default}}}
+  /api/admin/questionnaires/{questionnaire_id}/submissions/{submission_id}/external-push:
+    parameters: [{name: questionnaire_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}, {name: submission_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
+    get: {operationId: getSurveySubmissionExternalPush, security: [{adminSession: []}], responses: {"200": {description: Receipt state}}}
+    post: {operationId: createSurveySubmissionExternalPush, security: [{adminSession: [], csrfHeader: []}], responses: {"503": {description: Provider disabled by default}}}
+  /api/admin/questionnaires/{questionnaire_id}/submissions/{submission_id}/external-push/reconcile:
+    parameters: [{name: questionnaire_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}, {name: submission_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
+    post: {operationId: reconcileSurveySubmissionExternalPush, security: [{adminSession: [], csrfHeader: []}], responses: {"503": {description: Provider disabled by default}}}
+  /api/public/questionnaires/{slug}:
+    parameters: [{name: slug, in: path, required: true, schema: {type: string, pattern: '^[a-z0-9][a-z0-9-]{0,127}$'}}]
+    get: {operationId: getPublicSurvey, responses: {"200": {description: Published immutable survey}}}
+  /api/public/questionnaires/{slug}/submissions:
+    parameters: [{name: slug, in: path, required: true, schema: {type: string, pattern: '^[a-z0-9][a-z0-9-]{0,127}$'}}]
+    post: {operationId: submitPublicSurvey, requestBody: {required: true, content: {application/json: {schema: {type: object}}}}, responses: {"201": {description: Idempotent local submission receipt}}}
+  /api/public/survey-submission-results/query:
+    post: {operationId: queryPublicSurveyResult, requestBody: {required: true, content: {application/json: {schema: {type: object}}}}, responses: {"200": {description: Result token projection}}}
+  /api/h5/surveys/oauth/start:
+    get: {operationId: startSurveyOAuth, responses: {"303": {description: Redirect to WeChat OAuth}, "503": {description: OAuth disabled}}}
+  /api/h5/surveys/oauth/callback:
+    get: {operationId: completeSurveyOAuth, responses: {"303": {description: Verified identity session and safe H5 redirect}}}
+  /api/admin/survey-history/submissions:
+    get: {operationId: listSurveyUnresolvedHistory, security: [{adminSession: []}], responses: {"200": {description: Read-only unresolved migrated submissions}}}
+  /api/admin/survey-history/submissions/{submission_id}:
+    parameters: [{name: submission_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
+    get: {operationId: getSurveyUnresolvedHistory, security: [{adminSession: []}], responses: {"200": {description: Read-only migrated submission}}}
+  /api/admin/survey-history/submissions/{submission_id}/answers:
+    parameters: [{name: submission_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
+    get: {operationId: listSurveyUnresolvedAnswers, security: [{adminSession: []}], responses: {"200": {description: Read-only protected answer snapshots}}}
+  /api/sidebar/v2/questionnaires:
+    get: {operationId: listSidebarSurveyHistory, security: [{adminSession: []}], responses: {"200": {description: Bounded customer-safe survey projection}}}
+  /api/v1/customers/{customer_id}/survey-answers:
+    parameters: [{name: customer_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
+    get: {operationId: listCustomerSurveyAnswers, security: [{adminSession: []}], responses: {"200": {description: OneID customer survey history}}}
 components:
   securitySchemes:
     adminSession: {type: apiKey, in: cookie, name: aicrm_admin_session}

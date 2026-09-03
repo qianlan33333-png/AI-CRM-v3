@@ -580,12 +580,10 @@ func (r *Repository) loadSubmission(ctx context.Context, t pgx.Tx, id surveyport
 		if json.Unmarshal(options, &a.SelectedOptions) != nil {
 			return s, surveyport.ErrUnavailable
 		}
-		if len(encrypted) > 0 {
-			a.TextValue, err = r.cipher.Decrypt(encrypted)
-			if err != nil {
-				return s, surveyport.ErrUnavailable
-			}
-		}
+		// Text and mobile values remain encrypted at rest. This default reader is
+		// used by list, detail, result and export projections, none of which is a
+		// separately authorized PII reveal operation.
+		_ = encrypted
 		s.Answers = append(s.Answers, a)
 	}
 	return s, mapError(rows.Err())
@@ -645,7 +643,206 @@ func (r *Repository) SubmissionAnalytics(ctx context.Context, id surveyport.ID) 
 	return a, mapError(err)
 }
 
+func (r *Repository) ListOperationReceipts(ctx context.Context, id surveyport.ID, limit, offset int32) ([]surveyport.OperationReceipt, int64, error) {
+	t, err := tx(ctx)
+	if err != nil {
+		return nil, 0, err
+	}
+	where := `($1=0 OR questionnaire_id=$1)`
+	var total int64
+	if err = t.QueryRow(ctx, `SELECT count(*) FROM survey_external_operation_receipts WHERE `+where, id).Scan(&total); err != nil {
+		return nil, 0, mapError(err)
+	}
+	rows, err := t.Query(ctx, `SELECT id,questionnaire_id,submission_id,operation_kind,status,failure_category,occurrence_count,occurred_at,read_only_legacy,replayable FROM survey_external_operation_receipts WHERE `+where+` ORDER BY occurred_at DESC,id DESC LIMIT $2 OFFSET $3`, id, limit, offset)
+	if err != nil {
+		return nil, 0, mapError(err)
+	}
+	defer rows.Close()
+	items := make([]surveyport.OperationReceipt, 0)
+	for rows.Next() {
+		var item surveyport.OperationReceipt
+		var submission *int64
+		if err = rows.Scan(&item.ID, &item.QuestionnaireID, &submission, &item.OperationKind, &item.Status, &item.FailureCategory, &item.OccurrenceCount, &item.OccurredAt, &item.ReadOnlyLegacy, &item.Replayable); err != nil {
+			return nil, 0, mapError(err)
+		}
+		if submission != nil {
+			value := surveyport.ID(*submission)
+			item.SubmissionID = &value
+		}
+		item.RealEffectExecuted = item.Status == "executed" || item.Status == "reconciled" || item.Status == "legacy_success"
+		items = append(items, item)
+	}
+	return items, total, mapError(rows.Err())
+}
+
+const legacySubmissionSelect = `SELECT s.id,sm.source_pk::bigint,qm.source_pk::bigint,s.questionnaire_id,s.customer_id,COALESCE(s.result_snapshot->>'_legacy_matched_by',s.identity_reason),s.source_channel,s.total_score,COALESCE(s.result_snapshot->'_legacy_final_tags','[]'::jsonb),s.submitted_at,s.created_at FROM survey_submissions s JOIN survey_migration_source_map sm ON sm.target_table='survey_submissions' AND sm.target_pk=s.id AND sm.source_table='questionnaire_submissions' JOIN survey_migration_source_map qm ON qm.target_table='survey_questionnaires' AND qm.target_pk=s.questionnaire_id AND qm.source_table='questionnaires'`
+
+func scanLegacySubmission(row scanner) (surveyport.LegacySubmission, error) {
+	var item surveyport.LegacySubmission
+	err := row.Scan(&item.ID, &item.SourceID, &item.QuestionnaireSourceID, &item.QuestionnaireID, &item.CustomerID, &item.MatchedBy, &item.SourceChannel, &item.TotalScore, &item.FinalTags, &item.SubmittedAt, &item.CreatedAt)
+	return item, mapError(err)
+}
+
+func (r *Repository) ListLegacyUnresolved(ctx context.Context, questionnaire surveyport.ID, limit, offset int32) ([]surveyport.LegacySubmission, int64, error) {
+	t, err := tx(ctx)
+	if err != nil {
+		return nil, 0, err
+	}
+	where := `s.identity_state IN ('unresolved','conflict') AND ($1=0 OR s.questionnaire_id=$1)`
+	var total int64
+	if err = t.QueryRow(ctx, `SELECT count(*) FROM (`+legacySubmissionSelect+` WHERE `+where+`) x`, questionnaire).Scan(&total); err != nil {
+		return nil, 0, mapError(err)
+	}
+	rows, err := t.Query(ctx, legacySubmissionSelect+` WHERE `+where+` ORDER BY s.submitted_at DESC,s.id DESC LIMIT $2 OFFSET $3`, questionnaire, limit, offset)
+	if err != nil {
+		return nil, 0, mapError(err)
+	}
+	defer rows.Close()
+	items := make([]surveyport.LegacySubmission, 0)
+	for rows.Next() {
+		item, e := scanLegacySubmission(rows)
+		if e != nil {
+			return nil, 0, e
+		}
+		items = append(items, item)
+	}
+	return items, total, mapError(rows.Err())
+}
+
+func (r *Repository) GetLegacyUnresolved(ctx context.Context, id surveyport.ID) (surveyport.LegacySubmission, error) {
+	t, err := tx(ctx)
+	if err != nil {
+		return surveyport.LegacySubmission{}, err
+	}
+	return scanLegacySubmission(t.QueryRow(ctx, legacySubmissionSelect+` WHERE s.id=$1 AND s.identity_state IN ('unresolved','conflict')`, id))
+}
+
+func (r *Repository) ListLegacyAnswers(ctx context.Context, submission surveyport.ID, limit, offset int32) ([]surveyport.LegacyAnswer, int64, error) {
+	t, err := tx(ctx)
+	if err != nil {
+		return nil, 0, err
+	}
+	var total int64
+	if err = t.QueryRow(ctx, `SELECT count(*) FROM survey_submission_answers WHERE submission_id=$1`, submission).Scan(&total); err != nil {
+		return nil, 0, mapError(err)
+	}
+	rows, err := t.Query(ctx, `SELECT a.id,am.source_pk::bigint,a.submission_id,sm.source_pk::bigint,COALESCE(a.legacy_source_question_id,0),a.question_type,a.question_title_snapshot,a.text_value_masked,a.selected_options_snapshot,a.score_snapshot,a.created_at FROM survey_submission_answers a JOIN survey_migration_source_map am ON am.target_table='survey_submission_answers' AND am.target_pk=a.id AND am.source_table='questionnaire_submission_answers' JOIN survey_migration_source_map sm ON sm.target_table='survey_submissions' AND sm.target_pk=a.submission_id AND sm.source_table='questionnaire_submissions' WHERE a.submission_id=$1 ORDER BY a.id LIMIT $2 OFFSET $3`, submission, limit, offset)
+	if err != nil {
+		return nil, 0, mapError(err)
+	}
+	defer rows.Close()
+	items := make([]surveyport.LegacyAnswer, 0)
+	for rows.Next() {
+		var item surveyport.LegacyAnswer
+		var raw []byte
+		if err = rows.Scan(&item.ID, &item.SourceID, &item.SubmissionID, &item.SubmissionSourceID, &item.QuestionSourceID, &item.QuestionType, &item.QuestionTitle, &item.TextValue, &raw, &item.ScoreContribution, &item.CreatedAt); err != nil {
+			return nil, 0, mapError(err)
+		}
+		var options []surveyport.SelectedOptionSnapshot
+		if json.Unmarshal(raw, &options) != nil {
+			return nil, 0, surveyport.ErrUnavailable
+		}
+		ids := make([]surveyport.ID, 0, len(options))
+		texts := make([]string, 0, len(options))
+		scores := make([]float64, 0, len(options))
+		tags := make([][]string, 0, len(options))
+		for _, option := range options {
+			ids = append(ids, option.OptionID)
+			texts = append(texts, option.OptionText)
+			scores = append(scores, option.Score)
+			tags = append(tags, option.TagCodes)
+		}
+		item.SelectedOptionIDs, _ = json.Marshal(ids)
+		item.SelectedOptionTexts, _ = json.Marshal(texts)
+		item.SelectedOptionScores, _ = json.Marshal(scores)
+		item.SelectedOptionTags, _ = json.Marshal(tags)
+		items = append(items, item)
+	}
+	return items, total, mapError(rows.Err())
+}
+
+func (r *Repository) GetOperationConfiguration(ctx context.Context, id surveyport.ID) (surveyport.OperationConfiguration, error) {
+	t, err := tx(ctx)
+	if err != nil {
+		return surveyport.OperationConfiguration{}, err
+	}
+	var value surveyport.OperationConfiguration
+	err = t.QueryRow(ctx, `SELECT q.id,COALESCE(c.completion_navigation_ref,''),c.completion_channel_id,COALESCE(c.external_push_enabled,FALSE),COALESCE(c.external_push_configuration_ref,''),COALESCE(c.version,0),COALESCE(c.updated_at,q.updated_at) FROM survey_questionnaires q LEFT JOIN survey_operation_configurations c ON c.questionnaire_id=q.id WHERE q.id=$1`, id).Scan(&value.QuestionnaireID, &value.CompletionNavigationRef, &value.CompletionChannelID, &value.ExternalPushEnabled, &value.ExternalPushConfigurationRef, &value.Version, &value.UpdatedAt)
+	return value, mapError(err)
+}
+
+func (r *Repository) SaveOperationConfiguration(ctx context.Context, value surveyport.OperationConfiguration, actor int64, now time.Time) (surveyport.OperationConfiguration, error) {
+	t, err := tx(ctx)
+	if err != nil {
+		return surveyport.OperationConfiguration{}, err
+	}
+	var stored surveyport.OperationConfiguration
+	err = t.QueryRow(ctx, `INSERT INTO survey_operation_configurations(questionnaire_id,completion_navigation_ref,completion_channel_id,external_push_enabled,external_push_configuration_ref,updated_by,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(questionnaire_id) DO UPDATE SET completion_navigation_ref=EXCLUDED.completion_navigation_ref,completion_channel_id=EXCLUDED.completion_channel_id,external_push_enabled=EXCLUDED.external_push_enabled,external_push_configuration_ref=EXCLUDED.external_push_configuration_ref,updated_by=EXCLUDED.updated_by,updated_at=EXCLUDED.updated_at,version=survey_operation_configurations.version+1 RETURNING questionnaire_id,completion_navigation_ref,completion_channel_id,external_push_enabled,external_push_configuration_ref,version,updated_at`, value.QuestionnaireID, value.CompletionNavigationRef, value.CompletionChannelID, value.ExternalPushEnabled, value.ExternalPushConfigurationRef, actor, now).Scan(&stored.QuestionnaireID, &stored.CompletionNavigationRef, &stored.CompletionChannelID, &stored.ExternalPushEnabled, &stored.ExternalPushConfigurationRef, &stored.Version, &stored.UpdatedAt)
+	return stored, mapError(err)
+}
+
+func (r *Repository) RecordDisabledOperation(ctx context.Context, qid surveyport.ID, sid *surveyport.ID, kind string, digest [32]byte, now time.Time) (surveyport.OperationReceipt, error) {
+	t, err := tx(ctx)
+	if err != nil {
+		return surveyport.OperationReceipt{}, err
+	}
+	var item surveyport.OperationReceipt
+	var submission *int64
+	err = t.QueryRow(ctx, `INSERT INTO survey_external_operation_receipts(questionnaire_id,submission_id,operation_kind,status,failure_category,occurred_at,read_only_legacy,replayable,idempotency_key_digest,created_at,updated_at) VALUES($1,$2,$3,'disabled','provider_disabled',$4,FALSE,TRUE,$5,$4,$4) ON CONFLICT(idempotency_key_digest) DO UPDATE SET updated_at=survey_external_operation_receipts.updated_at RETURNING id,questionnaire_id,submission_id,operation_kind,status,failure_category,occurrence_count,occurred_at,read_only_legacy,replayable`, qid, sid, kind, now, digest[:]).Scan(&item.ID, &item.QuestionnaireID, &submission, &item.OperationKind, &item.Status, &item.FailureCategory, &item.OccurrenceCount, &item.OccurredAt, &item.ReadOnlyLegacy, &item.Replayable)
+	if submission != nil {
+		value := surveyport.ID(*submission)
+		item.SubmissionID = &value
+	}
+	return item, mapError(err)
+}
+
+func (r *Repository) CreateOAuthState(ctx context.Context, digest [32]byte, state surveyapp.OAuthState, now time.Time) error {
+	t, err := tx(ctx)
+	if err != nil {
+		return err
+	}
+	_, err = t.Exec(ctx, `INSERT INTO survey_oauth_states(state_digest,questionnaire_slug,redirect_path,expires_at,created_at) VALUES($1,$2,$3,$4,$5)`, digest[:], state.Slug, state.Redirect, state.ExpiresAt, now)
+	return mapError(err)
+}
+func (r *Repository) ConsumeOAuthState(ctx context.Context, digest [32]byte, now time.Time) (surveyapp.OAuthState, error) {
+	t, err := tx(ctx)
+	if err != nil {
+		return surveyapp.OAuthState{}, err
+	}
+	var state surveyapp.OAuthState
+	err = t.QueryRow(ctx, `UPDATE survey_oauth_states SET consumed_at=$2 WHERE state_digest=$1 AND consumed_at IS NULL AND expires_at>$2 RETURNING questionnaire_slug,redirect_path,expires_at`, digest[:], now).Scan(&state.Slug, &state.Redirect, &state.ExpiresAt)
+	return state, mapError(err)
+}
+func (r *Repository) CreateIdentitySession(ctx context.Context, digest [32]byte, identity surveyport.SubmissionIdentity, expires, now time.Time) error {
+	t, err := tx(ctx)
+	if err != nil {
+		return err
+	}
+	_, err = t.Exec(ctx, `INSERT INTO survey_identity_sessions(session_digest,customer_id,identity_state,evidence_digest,expires_at,created_at) VALUES($1,$2,$3,$4,$5,$6)`, digest[:], identity.CustomerID, identity.State, decodeEvidence(identity.EvidenceDigest), expires, now)
+	return mapError(err)
+}
+func (r *Repository) ReadIdentitySession(ctx context.Context, digest [32]byte, now time.Time) (surveyport.SubmissionIdentity, error) {
+	t, err := tx(ctx)
+	if err != nil {
+		return surveyport.SubmissionIdentity{}, err
+	}
+	var result surveyport.SubmissionIdentity
+	var customer *int64
+	var evidence []byte
+	err = t.QueryRow(ctx, `SELECT customer_id,identity_state,evidence_digest FROM survey_identity_sessions WHERE session_digest=$1 AND revoked_at IS NULL AND expires_at>$2`, digest[:], now).Scan(&customer, &result.State, &evidence)
+	if err != nil {
+		return result, mapError(err)
+	}
+	if customer != nil {
+		id := customerdomain.CustomerID(*customer)
+		result.CustomerID = &id
+	}
+	result.EvidenceDigest = hex.EncodeToString(evidence)
+	return result, nil
+}
+
 func (r *Repository) String() string { return fmt.Sprintf("survey.Repository(%p)", r) }
 
 var _ surveyapp.Store = (*Repository)(nil)
 var _ surveyapp.SubmissionStore = (*Repository)(nil)
+var _ surveyapp.OAuthStore = (*Repository)(nil)
