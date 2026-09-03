@@ -2,13 +2,13 @@
 set -euo pipefail
 
 # PR07 donor freeze gate. This script is intentionally read-only with respect
-# to both the donor checkout and the v3 worktree. Override PR07_DONOR_ROOT
-# when the frozen donor is checked out elsewhere.
+# to both the donor checkout and the v3 worktree. PR07_DONOR_DIR must point
+# at a clean checkout of the frozen donor commit.
 
 readonly DONOR_SHA="6bfbe5816bb89913c70adaca87d6a486260e016e"
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
-readonly DONOR_ROOT="${PR07_DONOR_ROOT:-/tmp/aicrm-v2-audit.yN3jmr}"
+readonly DONOR_ROOT="${PR07_DONOR_DIR:-}"
 readonly MANIFEST="${REPO_ROOT}/docs/migration/automation/pr07-donor-manifest.yaml"
 readonly LEDGER="${REPO_ROOT}/docs/migration/automation/pr07-donor-sha256.txt"
 readonly TARGET_ROOT="${REPO_ROOT}/web/donors/automation-v2/src"
@@ -18,6 +18,7 @@ fail() {
   exit 1
 }
 
+[[ -n "${DONOR_ROOT}" ]] || fail "PR07_DONOR_DIR is required"
 [[ -e "${DONOR_ROOT}/.git" ]] || fail "donor checkout not found: ${DONOR_ROOT}"
 [[ -f "${MANIFEST}" ]] || fail "manifest not found: ${MANIFEST}"
 [[ -f "${LEDGER}" ]] || fail "SHA ledger not found: ${LEDGER}"
@@ -91,11 +92,11 @@ done < <(sed -n '/^  exact_files:/,/^  immutable_excluded_domain_references:/p' 
 
 [[ "${checked}" -eq 20 ]] || fail "checked ${checked} files, expected 20"
 
-if rg -n '<aside|class="side"|class="side-nav"' "${TARGET_ROOT}" >/dev/null 2>&1; then
+if grep -REn '<aside|class="side"|class="side-nav"' "${TARGET_ROOT}" >/dev/null 2>&1; then
   fail "snapshot contains donor shell/sidebar markup"
 fi
 
-asset_candidates="$(git -C "${DONOR_ROOT}" ls-tree -r --name-only "${DONOR_SHA}" -- web/src | rg -i '(automation|agent|fixed|script|prompt|话术).*(css|scss|sass|less|svg|png|jpg|jpeg|webp|gif|ico|woff2?|ttf|otf)$' || true)"
+asset_candidates="$(git -C "${DONOR_ROOT}" ls-tree -r --name-only "${DONOR_SHA}" -- web/src | grep -Ei '(automation|agent|fixed|script|prompt|话术).*(css|scss|sass|less|svg|png|jpg|jpeg|webp|gif|ico|woff2?|ttf|otf)$' || true)"
 [[ -z "${asset_candidates}" ]] || fail "unexpected automation-specific external assets:\n${asset_candidates}"
 
 echo "PR07 frontend freeze PASS: donor ${DONOR_SHA}; ${checked}/20 files cmp+SHA verified; no shell or automation-specific external assets"

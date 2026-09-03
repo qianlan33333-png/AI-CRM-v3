@@ -233,7 +233,7 @@ precheck、页面读取和所有失败都必须 fail closed。尤其不能将 HT
 本次只读执行的关键结果：
 
 ```text
-PR07_DONOR_ROOT=/private/tmp/aicrm-v2-audit.yN3jmr \
+PR07_DONOR_DIR=/path/to/frozen/aicrm-v2 \
   bash scripts/check-pr07-frontend-freeze.sh
 # PASS: donor 6bfbe5816bb89913c70adaca87d6a486260e016e; 20/20 files cmp+SHA verified
 

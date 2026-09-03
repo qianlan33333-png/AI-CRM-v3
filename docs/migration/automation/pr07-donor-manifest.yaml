@@ -6,7 +6,7 @@ v3_base: 153aebb8f0399aa1d37e6ec0654f82dae68a76df
 target_branch: codex/feature-automation-final
 
 donor:
-  repository: /tmp/aicrm-v2-audit.yN3jmr
+  repository: https://github.com/qianlan33333-png/AI-CRM-v2.git
   commit: 6bfbe5816bb89913c70adaca87d6a486260e016e
   read_only: true
   runtime_dependency: false

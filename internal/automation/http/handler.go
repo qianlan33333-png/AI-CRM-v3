@@ -205,7 +205,11 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		errorJSON(w, 400, "invalid_agent_payload")
 		return
 	}
-	a, e := h.service.Create(r.Context(), automationport.CreateCommand{Actor: p.InternalID, IdempotencyKey: key(r), Agent: automationport.Agent{AgentName: *b.AgentName, AgentCode: b.AgentCode, AutomationType: *b.AutomationType, Status: automationport.AgentStatusPaused, DraftRolePrompt: value(b.RolePrompt), DraftTaskPrompt: value(b.TaskPrompt), FixedContentPackage: fixed(b.Fixed), LegacyConfiguration: raw(b.Legacy)}})
+	idempotencyKey, keyOK := requestKey(w, r)
+	if !keyOK {
+		return
+	}
+	a, e := h.service.Create(r.Context(), automationport.CreateCommand{Actor: p.InternalID, IdempotencyKey: idempotencyKey, Agent: automationport.Agent{AgentName: *b.AgentName, AgentCode: b.AgentCode, AutomationType: *b.AutomationType, Status: automationport.AgentStatusPaused, DraftRolePrompt: value(b.RolePrompt), DraftTaskPrompt: value(b.TaskPrompt), FixedContentPackage: fixed(b.Fixed), LegacyConfiguration: raw(b.Legacy)}})
 	if e != nil {
 		resultError(w, e)
 		return
@@ -222,7 +226,11 @@ func (h *Handler) update(w http.ResponseWriter, r *http.Request, id automationpo
 		errorJSON(w, 400, "invalid_agent_payload")
 		return
 	}
-	a, e := h.service.Update(r.Context(), automationport.UpdateCommand{ID: id, AgentName: b.AgentName, AutomationType: b.AutomationType, Status: b.Status, RolePrompt: b.RolePrompt, TaskPrompt: b.TaskPrompt, FixedContentPackage: b.Fixed, LegacyConfiguration: b.Legacy, Actor: p.InternalID, IdempotencyKey: key(r)})
+	idempotencyKey, keyOK := requestKey(w, r)
+	if !keyOK {
+		return
+	}
+	a, e := h.service.Update(r.Context(), automationport.UpdateCommand{ID: id, AgentName: b.AgentName, AutomationType: b.AutomationType, Status: b.Status, RolePrompt: b.RolePrompt, TaskPrompt: b.TaskPrompt, FixedContentPackage: b.Fixed, LegacyConfiguration: b.Legacy, Actor: p.InternalID, IdempotencyKey: idempotencyKey})
 	if e != nil {
 		resultError(w, e)
 		return
@@ -234,7 +242,11 @@ func (h *Handler) copy(w http.ResponseWriter, r *http.Request, id automationport
 	if !ok {
 		return
 	}
-	a, e := h.service.Copy(r.Context(), automationport.MutationCommand{ID: id, Actor: p.InternalID, IdempotencyKey: key(r)})
+	idempotencyKey, keyOK := requestKey(w, r)
+	if !keyOK {
+		return
+	}
+	a, e := h.service.Copy(r.Context(), automationport.MutationCommand{ID: id, Actor: p.InternalID, IdempotencyKey: idempotencyKey})
 	if e != nil {
 		resultError(w, e)
 		return
@@ -246,7 +258,11 @@ func (h *Handler) status(w http.ResponseWriter, r *http.Request, id automationpo
 	if !ok {
 		return
 	}
-	a, e := h.service.SetStatus(r.Context(), automationport.MutationCommand{ID: id, Actor: p.InternalID, IdempotencyKey: key(r)}, status)
+	idempotencyKey, keyOK := requestKey(w, r)
+	if !keyOK {
+		return
+	}
+	a, e := h.service.SetStatus(r.Context(), automationport.MutationCommand{ID: id, Actor: p.InternalID, IdempotencyKey: idempotencyKey}, status)
 	if e != nil {
 		resultError(w, e)
 		return
@@ -258,7 +274,11 @@ func (h *Handler) archive(w http.ResponseWriter, r *http.Request, id automationp
 	if !ok {
 		return
 	}
-	a, e := h.service.SetStatus(r.Context(), automationport.MutationCommand{ID: id, Actor: p.InternalID, IdempotencyKey: key(r)}, automationport.AgentStatusArchived)
+	idempotencyKey, keyOK := requestKey(w, r)
+	if !keyOK {
+		return
+	}
+	a, e := h.service.SetStatus(r.Context(), automationport.MutationCommand{ID: id, Actor: p.InternalID, IdempotencyKey: idempotencyKey}, automationport.AgentStatusArchived)
 	if e != nil {
 		resultError(w, e)
 		return
@@ -270,7 +290,11 @@ func (h *Handler) publish(w http.ResponseWriter, r *http.Request, id automationp
 	if !ok {
 		return
 	}
-	a, e := h.service.Publish(r.Context(), automationport.MutationCommand{ID: id, Actor: p.InternalID, IdempotencyKey: key(r)})
+	idempotencyKey, keyOK := requestKey(w, r)
+	if !keyOK {
+		return
+	}
+	a, e := h.service.Publish(r.Context(), automationport.MutationCommand{ID: id, Actor: p.InternalID, IdempotencyKey: idempotencyKey})
 	if e != nil {
 		resultError(w, e)
 		return
@@ -287,7 +311,11 @@ func (h *Handler) fixed(w http.ResponseWriter, r *http.Request, id automationpor
 		errorJSON(w, 400, "invalid_agent_payload")
 		return
 	}
-	a, e := h.service.SaveFixedContent(r.Context(), automationport.FixedContentCommand{ID: id, ContentPackage: *b.Content, Actor: p.InternalID, IdempotencyKey: key(r)})
+	idempotencyKey, keyOK := requestKey(w, r)
+	if !keyOK {
+		return
+	}
+	a, e := h.service.SaveFixedContent(r.Context(), automationport.FixedContentCommand{ID: id, ContentPackage: *b.Content, Actor: p.InternalID, IdempotencyKey: idempotencyKey})
 	if e != nil {
 		resultError(w, e)
 		return
@@ -374,14 +402,29 @@ func decode(r *http.Request, v any) error {
 	}
 	return nil
 }
-func key(r *http.Request) string {
+func requestKey(w http.ResponseWriter, r *http.Request) (string, bool) {
+	value, err := key(r)
+	if err != nil {
+		errorJSON(w, http.StatusServiceUnavailable, "idempotency_unavailable")
+		return "", false
+	}
+	return value, true
+}
+
+func key(r *http.Request) (string, error) {
 	v := r.Header.Get("Idempotency-Key")
 	if len(v) >= 16 && len(v) <= 128 && strings.TrimSpace(v) == v {
-		return v
+		return v, nil
 	}
+	return compatibilityIdempotencyKey(rand.Read)
+}
+
+func compatibilityIdempotencyKey(read func([]byte) (int, error)) (string, error) {
 	var b [20]byte
-	_, _ = rand.Read(b[:])
-	return "server_compat_" + hex.EncodeToString(b[:])
+	if _, err := read(b[:]); err != nil {
+		return "", err
+	}
+	return "server_compat_" + hex.EncodeToString(b[:]), nil
 }
 func method(w http.ResponseWriter, allow string) {
 	w.Header().Set("Allow", allow)

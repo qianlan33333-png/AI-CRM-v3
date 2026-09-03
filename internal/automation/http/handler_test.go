@@ -95,4 +95,14 @@ func TestErrorMapsNotFound(t *testing.T) {
 	}
 }
 
+func TestCompatibilityIdempotencyKeyFailsClosedWhenRandomReadFails(t *testing.T) {
+	wantErr := errors.New("entropy unavailable")
+	key, err := compatibilityIdempotencyKey(func([]byte) (int, error) {
+		return 0, wantErr
+	})
+	if !errors.Is(err, wantErr) || key != "" {
+		t.Fatalf("key=%q err=%v, want empty key and entropy error", key, err)
+	}
+}
+
 var _ = errors.New

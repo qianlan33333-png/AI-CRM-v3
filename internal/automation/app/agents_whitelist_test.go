@@ -1,6 +1,7 @@
 package app
 
 import (
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -20,5 +21,26 @@ func TestWhitelistAgentConfigurationFailsClosed(t *testing.T) {
 	}
 	if _, err := normalizeContent(automationport.FixedContentPackage{ImageLibraryIDs: []int64{7}}, automationport.AutomationTypeAgent); !errors.Is(err, ErrInvalidAgent) {
 		t.Fatalf("legacy material reference err=%v", err)
+	}
+}
+
+func TestLegacyConfigurationRejectsSensitiveKeysRecursively(t *testing.T) {
+	for _, raw := range []string{
+		`{"provider":{"api_key":"value"}}`,
+		`{"nested":[{"private_key":"value"}]}`,
+		`{"Cookie-Jar":{"value":"value"}}`,
+		`{"safe":{"authorization_token":"value"}}`,
+	} {
+		if _, err := normalizeLegacyConfiguration(json.RawMessage(raw)); !errors.Is(err, ErrInvalidAgent) {
+			t.Fatalf("raw=%s err=%v, want sensitive-key rejection", raw, err)
+		}
+	}
+}
+
+func TestLegacyConfigurationAllowsNonSensitiveNestedKeys(t *testing.T) {
+	raw := json.RawMessage(`{"features":[{"name":"draft"}],"provider":{"region":"cn","timeout_ms":5000}}`)
+	canonical, err := normalizeLegacyConfiguration(raw)
+	if err != nil || string(canonical) != string(raw) {
+		t.Fatalf("canonical=%s err=%v", canonical, err)
 	}
 }

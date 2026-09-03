@@ -30,7 +30,7 @@ External Effects: not involved
 
 | 项目 | 值 |
 | --- | --- |
-| donor repository | `/tmp/aicrm-v2-audit.yN3jmr` |
+| donor repository | `https://github.com/qianlan33333-png/AI-CRM-v2.git` |
 | donor SHA | `6bfbe5816bb89913c70adaca87d6a486260e016e` |
 | v3 prep commit | `2f8849a39eb25e0a63c94bf80d70d78f4d01cd22` |
 | v3 branch | `codex/import-agents-audit`（审计 worktree） |
@@ -41,7 +41,7 @@ External Effects: not involved
 审计时 donor `HEAD` 与上述 SHA 一致，工作树和 index 无差异。可重复执行：
 
 ```sh
-PR07_DONOR_ROOT=/tmp/aicrm-v2-audit.yN3jmr \
+PR07_DONOR_DIR=/path/to/frozen/aicrm-v2 \
   bash scripts/check-pr07-frontend-freeze.sh
 ```
 

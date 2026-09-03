@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"strings"
 	"time"
+	"unicode"
 
 	automationport "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/port"
 	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
@@ -478,11 +479,73 @@ func normalizeLegacyConfiguration(raw json.RawMessage) (json.RawMessage, error) 
 	if json.Unmarshal(raw, &value) != nil || value == nil {
 		return nil, ErrInvalidAgent
 	}
+	if containsForbiddenLegacyConfigurationKey(value) {
+		return nil, ErrInvalidAgent
+	}
 	canonical, err := json.Marshal(value)
 	if err != nil {
 		return nil, ErrInvalidAgent
 	}
 	return canonical, nil
+}
+
+var forbiddenLegacyConfigurationKeyFragments = []string{
+	"secret", "token", "password", "privatekey", "cookie", "apikey", "accesstoken", "refreshtoken",
+	"authorization", "credential", "clientsecret", "webhookurl", "oauthcode", "openid", "unionid",
+	"externaluserid", "phone", "mobile", "email",
+}
+
+func containsForbiddenLegacyConfigurationKey(value any) bool {
+	switch item := value.(type) {
+	case map[string]json.RawMessage:
+		for key, raw := range item {
+			if forbiddenLegacyConfigurationKey(key) || containsForbiddenLegacyConfigurationRaw(raw) {
+				return true
+			}
+		}
+	case map[string]any:
+		for key, nested := range item {
+			if forbiddenLegacyConfigurationKey(key) || containsForbiddenLegacyConfigurationKey(nested) {
+				return true
+			}
+		}
+	case []json.RawMessage:
+		for _, raw := range item {
+			if containsForbiddenLegacyConfigurationRaw(raw) {
+				return true
+			}
+		}
+	case []any:
+		for _, nested := range item {
+			if containsForbiddenLegacyConfigurationKey(nested) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func containsForbiddenLegacyConfigurationRaw(raw json.RawMessage) bool {
+	var value any
+	if json.Unmarshal(raw, &value) != nil {
+		return true
+	}
+	return containsForbiddenLegacyConfigurationKey(value)
+}
+
+func forbiddenLegacyConfigurationKey(value string) bool {
+	normalized := strings.Map(func(character rune) rune {
+		if unicode.IsLetter(character) || unicode.IsDigit(character) {
+			return unicode.ToLower(character)
+		}
+		return -1
+	}, value)
+	for _, fragment := range forbiddenLegacyConfigurationKeyFragments {
+		if strings.Contains(normalized, fragment) {
+			return true
+		}
+	}
+	return false
 }
 
 func normalIDs(values []int64, limit int) ([]int64, error) {
