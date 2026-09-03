@@ -121,6 +121,8 @@
     "Coupon claim start and end timestamps are rule-definition fields and are allowed; claim rows and redemptions are excluded.",
     "The migration coordinator owns one PostgreSQL transaction for the import ledger and all definition writes.",
     "Service-period duration days are retained in the Product-owned import definition table; no customer entitlement or membership state is imported.",
+    "Safe legacy group plan and text-node scheduling fields are retained only as inert GroupOps-owned metadata while every imported plan remains paused.",
+    "Legacy coupon and group-plan creator/updater labels are provenance only; target ownership is the explicit v3 administrator.",
     "This manifest is a contract, not evidence that a production snapshot has been imported."
   ]
 }

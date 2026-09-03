@@ -55,7 +55,7 @@ func (r *Repository) ImportDefinition(ctx context.Context, input automationport.
 		return automationport.Agent{}, err
 	}
 	row := t.QueryRow(ctx, `INSERT INTO automation_agents(agent_name,agent_code,automation_type,status,execution_enabled,draft_role_prompt,draft_task_prompt,published_role_prompt,published_task_prompt,draft_version,published_version,fixed_content_package,legacy_configuration,created_by,updated_by,created_at,updated_at,archived_at)
-		VALUES($1,$2,$3,$4,FALSE,$5,$6,$7,$8,$9,$10,$11::jsonb,$12::jsonb,$13,$13,$14,$15,CASE WHEN $4='archived' THEN $15 ELSE NULL END) RETURNING `+agentColumns,
+		VALUES($1,$2,$3,$4,FALSE,$5,$6,$7,$8,$9,$10,$11::jsonb,$12::jsonb,$13,$13,$14::timestamptz,$15::timestamptz,CASE WHEN $4='archived' THEN $15::timestamptz ELSE NULL::timestamptz END) RETURNING `+agentColumns,
 		a.AgentName, a.AgentCode, a.AutomationType, a.Status, a.DraftRolePrompt, a.DraftTaskPrompt, a.PublishedRolePrompt, a.PublishedTaskPrompt,
 		a.DraftVersion, a.PublishedVersion, fixed, legacyRaw, input.Actor, input.CreatedAt.UTC(), input.UpdatedAt.UTC())
 	return scanAgent(row)

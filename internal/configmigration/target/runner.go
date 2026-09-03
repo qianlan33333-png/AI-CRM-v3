@@ -93,7 +93,7 @@ func (r Runner) Apply(ctx context.Context, snap source.Snapshot, digest [32]byte
 			projection, _ := json.Marshal(map[string]any{"schema_version": 1, "status": status, "enabled": x.Enabled, "buy_button_text": x.BuyButtonText, "require_mobile": x.RequireMobile, "lead_qr_title": x.LeadQRTitle, "lead_qr_subtitle": x.LeadQRSubtitle})
 			p, e := r.Products.ImportDefinition(tx, productport.DefinitionImport{ProductCode: x.ProductCode, Name: x.Name, Description: x.Description, PriceMinor: x.PriceMinor, Currency: x.Currency, LegacyAdminProjection: projection, ServicePeriodDurationDays: servicePeriodDurationDays, Actor: actor, CreatedAt: x.CreatedAt, UpdatedAt: x.UpdatedAt})
 			if e != nil {
-				return e
+				return fmt.Errorf("import product source %d: %w", x.ID, e)
 			}
 			productIDs[x.ID] = p.ID
 			if e = mapRow(tx, out.BatchID, snap.Manifest.SourceSystem, "product", "wechat_pay_products", x.ID, x, int64(p.ID), "products", nil); e != nil {
@@ -122,7 +122,7 @@ func (r Runner) Apply(ctx context.Context, snap source.Snapshot, digest [32]byte
 			sort.Strings(refs)
 			c, e := r.Coupons.ImportDefinition(tx, couponport.DefinitionImport{Coupon: couponport.Coupon{Name: x.Name, DiscountAmountTotal: x.DiscountAmountTotal, Currency: x.Currency, Status: x.Status, TotalIssueLimit: x.TotalIssueLimit, PerUserIssueLimit: x.PerUserIssueLimit, ClaimStartsAt: x.ClaimStartsAt, ClaimEndsAt: x.ClaimEndsAt, ValidityMode: couponport.ValidityMode(x.ValidityMode), UseStartsAt: x.UseStartsAt, UseEndsAt: x.UseEndsAt, RelativeValidityDays: x.RelativeValidityDays, Instructions: x.Instructions, TargetRefs: refs}, Actor: actor, CreatedAt: x.CreatedAt, UpdatedAt: x.UpdatedAt})
 			if e != nil {
-				return e
+				return fmt.Errorf("import coupon source %d: %w", x.ID, e)
 			}
 			if e = mapRow(tx, out.BatchID, snap.Manifest.SourceSystem, "coupon", "commerce_coupons", x.ID, x, int64(c.ID), "coupon_rules", sourceActors(x.SourceCreatedBy, x.SourceUpdatedBy)); e != nil {
 				return e
@@ -158,7 +158,7 @@ func (r Runner) Apply(ctx context.Context, snap source.Snapshot, digest [32]byte
 			}
 			p, e := r.GroupOps.ImportDefinition(tx, def)
 			if e != nil {
-				return e
+				return fmt.Errorf("import group plan source %d: %w", x.ID, e)
 			}
 			if e = mapRow(tx, out.BatchID, snap.Manifest.SourceSystem, "groupops", "automation_group_ops_plans", x.ID, x, p.ID, "group_ops_plans", sourceActors(x.SourceCreatedBy, x.SourceUpdatedBy)); e != nil {
 				return e
@@ -182,7 +182,7 @@ func (r Runner) Apply(ctx context.Context, snap source.Snapshot, digest [32]byte
 			}
 			a, e := r.Automation.ImportDefinition(tx, automationport.DefinitionImport{Agent: automationport.Agent{AgentCode: x.AgentCode, AgentName: x.AgentName, AutomationType: automationport.AutomationType(x.AutomationType), Status: st, DraftRolePrompt: x.DraftRolePrompt, DraftTaskPrompt: x.DraftTaskPrompt, PublishedRolePrompt: x.PublishedRolePrompt, PublishedTaskPrompt: x.PublishedTaskPrompt, DraftVersion: x.DraftVersion, PublishedVersion: x.PublishedVersion, FixedContentPackage: automationport.FixedContentPackage{ContentText: x.FixedContentText}, LegacyConfiguration: json.RawMessage(`{"source":"v2_config_definition"}`)}, Actor: actor, CreatedAt: x.CreatedAt, UpdatedAt: x.UpdatedAt})
 			if e != nil {
-				return e
+				return fmt.Errorf("import automation source %d: %w", x.ID, e)
 			}
 			if e = mapRow(tx, out.BatchID, snap.Manifest.SourceSystem, "automation", "automation_agent_runtime_config", x.ID, x, int64(a.ID), "automation_agents", nil); e != nil {
 				return e

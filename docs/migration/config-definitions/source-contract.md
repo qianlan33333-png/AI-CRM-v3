@@ -17,7 +17,7 @@ production-import receipt.
 
 | Definition | Source shape | Expected count | Target owner |
 | --- | --- | ---: | --- |
-| Products | 29 ordinary + 2 service-period definitions | 31 | `products` |
+| Products | 29 ordinary + 2 service-period definitions; duration retained | 31 | `products`, `product_imported_service_period_definitions` |
 | Coupon definitions | Rule definitions only | 15 | `coupon_rules` |
 | Coupon bindings | Product-to-coupon bindings only | 15 | `coupon_rule_targets` |
 | Group plans | Local plan definitions | 12 | `group_ops_plans` |
@@ -57,6 +57,15 @@ Group text nodes carry text configuration only. `message_text`/`text_content`
 does not authorize importing message records, message history, message IDs, or
 delivery state. Group references are opaque local configuration references, not
 Media or material references.
+
+Only service-period `duration_days` is retained from the legacy membership
+configuration; link slugs and membership configuration identifiers/names are
+not extracted. The source plan code/type/description and node day/time/action
+labels are retained as inert GroupOps-owned JSON metadata so they are not
+silently lost, but they cannot trigger execution while every imported plan is
+paused. Coupon and GroupOps source creator/updater labels are stored only in
+the non-executing import source-map record; all target ownership fields use the
+explicit existing v3 administrator selected for the batch.
 
 ## Explicit exclusions
 

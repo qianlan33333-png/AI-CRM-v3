@@ -83,6 +83,8 @@ After commit, verify in the target database:
 2. The imported counters are exactly 31/15/15/12/14/3/10, with the product
    partition 29/2 and exactly two positive service-period duration definitions.
 3. Source-map rows are unique and map only to the target definition owners.
+   Source actor labels, when present, are provenance only and never become a
+   target administrator identity.
 4. No tag, material, customer, history, message, execution, effect, webhook
    URL/secret, claim, or redemption row was created by this import.
 5. Provider/network effect counters remain unchanged.

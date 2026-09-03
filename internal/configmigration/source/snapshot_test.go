@@ -43,6 +43,15 @@ func TestEncryptedSnapshotRoundTripAndTamperRejection(t *testing.T) {
 	if err != nil || loaded.Manifest.SourceRevision != strings.Repeat("a", 40) || digest != loadedDigest {
 		t.Fatalf("round trip failed: %v", err)
 	}
+	if err = os.Chmod(snapshotPath, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = LoadFile(snapshotPath, keyPath); err == nil {
+		t.Fatal("world-readable encrypted snapshot accepted")
+	}
+	if err = os.Chmod(snapshotPath, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	sealed, err := os.ReadFile(snapshotPath)
 	if err != nil {
 		t.Fatal(err)
