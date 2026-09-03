@@ -217,3 +217,31 @@ jobs:
           ssh "${ssh_flags[@]}" "${DEPLOY_USER}@${DEPLOY_HOST}" \
             "sudo /usr/bin/bash ${remote_installer} /tmp/aicrm-${GITHUB_SHA}.tar.gz ${GITHUB_SHA} ${GITHUB_RUN_NUMBER}"
           curl --fail --silent --show-error --retry 5 --retry-delay 2 https://id-dev.youcangogogo.com/readyz
+      - name: Configure HXC production source
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          AICRM_HXC_SOURCE_DSN: ${{ secrets.AICRM_HXC_SOURCE_DSN }}
+          AICRM_HXC_UNIONID_SCOPE: ${{ secrets.AICRM_HXC_UNIONID_SCOPE }}
+        run: |
+          set -euo pipefail
+          [[ -n "$AICRM_HXC_SOURCE_DSN" && "$AICRM_HXC_SOURCE_DSN" != *[$'\r\n']* ]]
+          [[ "$AICRM_HXC_UNIONID_SCOPE" == wechat-open-platform:* && "$AICRM_HXC_UNIONID_SCOPE" != *[$'\r\n']* ]]
+          local_config="$RUNNER_TEMP/aicrm-hxc-${GITHUB_SHA}.env"
+          remote_config="/tmp/aicrm-hxc-${GITHUB_SHA}.env"
+          remote_configurer="/tmp/configure-hxc-runtime-${GITHUB_SHA}.sh"
+          ssh_flags=(-i "$HOME/.ssh/deploy_key" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes)
+          cleanup() {
+            rm -f -- "$local_config"
+            ssh "${ssh_flags[@]}" "${DEPLOY_USER}@${DEPLOY_HOST}" \
+              "rm -f -- ${remote_config} ${remote_configurer}" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          umask 077
+          printf 'AICRM_HXC_SYNC_ENABLED=true\nAICRM_HXC_SOURCE_DSN=%s\nAICRM_HXC_UNIONID_SCOPE=%s\n' \
+            "$AICRM_HXC_SOURCE_DSN" "$AICRM_HXC_UNIONID_SCOPE" > "$local_config"
+          scp "${ssh_flags[@]}" "$local_config" "${DEPLOY_USER}@${DEPLOY_HOST}:${remote_config}"
+          scp "${ssh_flags[@]}" deploy/configure-hxc-runtime.sh "${DEPLOY_USER}@${DEPLOY_HOST}:${remote_configurer}"
+          ssh "${ssh_flags[@]}" "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            "trap 'sudo rm -f -- ${remote_config} ${remote_configurer}' EXIT; sudo /usr/bin/bash ${remote_configurer} ${remote_config} ${GITHUB_SHA}"
+          curl --fail --silent --show-error --retry 5 --retry-delay 2 https://id-dev.youcangogogo.com/readyz

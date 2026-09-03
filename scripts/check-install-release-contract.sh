@@ -100,4 +100,8 @@ grep -qF '${GITHUB_RUN_NUMBER}' .github/workflows/ci.yml || { echo "CI must pass
 grep -qF 'remote_installer="/tmp/install-release-${GITHUB_SHA}.sh"' .github/workflows/ci.yml || { echo "CI must upload each installer to a SHA-versioned remote path" >&2; exit 1; }
 grep -qF 'sudo /usr/bin/bash ${remote_installer}' .github/workflows/ci.yml || { echo "CI must execute the uploaded SHA-versioned installer" >&2; exit 1; }
 grep -qF 'if [[ "$0" == "/tmp/install-release-${release_sha}.sh" ]]; then' "$installer" || { echo "installer cleanup must be limited to its SHA-versioned path" >&2; exit 1; }
+grep -qF 'AICRM_HXC_SOURCE_DSN: ${{ secrets.AICRM_HXC_SOURCE_DSN }}' .github/workflows/ci.yml || { echo "CI must read the HXC DSN from Actions secrets" >&2; exit 1; }
+grep -qF 'AICRM_HXC_UNIONID_SCOPE: ${{ secrets.AICRM_HXC_UNIONID_SCOPE }}' .github/workflows/ci.yml || { echo "CI must read the HXC scope from Actions secrets" >&2; exit 1; }
+grep -qF 'sudo /usr/bin/bash ${remote_configurer} ${remote_config} ${GITHUB_SHA}' .github/workflows/ci.yml || { echo "CI must apply HXC configuration through the audited runtime configurer" >&2; exit 1; }
+scripts/test-configure-hxc-runtime.sh
 scripts/test-install-release-ordering.sh
