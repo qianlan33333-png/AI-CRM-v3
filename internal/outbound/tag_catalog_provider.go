@@ -156,6 +156,18 @@ type ProviderRouter struct {
 	channelAsset   effect.ProviderAdapter
 	channelEntrant effect.ProviderAdapter
 	channelLink    effect.ProviderAdapter
+	privateMessage effect.ProviderAdapter
+}
+
+func NewProviderRouterWithPrivate(tagCatalog, groupMessage, privateMessage effect.ProviderAdapter) *ProviderRouter {
+	return &ProviderRouter{tagCatalog: tagCatalog, groupMessage: groupMessage, privateMessage: privateMessage}
+}
+
+func (r *ProviderRouter) WithPrivateMessage(privateMessage effect.ProviderAdapter) *ProviderRouter {
+	if r != nil {
+		r.privateMessage = privateMessage
+	}
+	return r
 }
 
 func NewProviderRouter(tagCatalog effect.ProviderAdapter) *ProviderRouter {
@@ -199,6 +211,10 @@ func (r *ProviderRouter) Execute(ctx context.Context, envelope effect.Envelope, 
 		case effect.KindChannelLink:
 			if r.channelLink != nil {
 				return r.channelLink.Execute(ctx, envelope, attempt)
+			}
+		case effect.KindOutboundMessage:
+			if r.privateMessage != nil {
+				return r.privateMessage.Execute(ctx, envelope, attempt)
 			}
 		}
 	}

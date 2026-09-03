@@ -40,4 +40,3 @@ Outbound intent ── transactional accept ── External Effects + River
 - 并入 Automation：Agent 配置与客户审批/发送结果生命周期不同。
 - 审批后独立创建 effect：无法证明原子性，可能漏发或重复。
 - 逐人通过立即发送：破坏最终整单闸门并制造部分发送撤回问题。
-

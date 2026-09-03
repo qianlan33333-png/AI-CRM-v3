@@ -11,13 +11,17 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"mime"
+	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"net/url"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	outboundport "github.com/qianlan33333-png/AI-CRM-v3/internal/outbound/port"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/wecom"
 	wecomport "github.com/qianlan33333-png/AI-CRM-v3/internal/wecom/port"
 )
@@ -335,6 +339,9 @@ type response struct {
 		UserIDs       []string `json:"user_list"`
 		DepartmentIDs []int64  `json:"department_list"`
 	} `json:"range"`
+	MediaID             string   `json:"media_id"`
+	MessageID           string   `json:"msgid"`
+	FailList            []string `json:"fail_list"`
 	ExternalContactList []struct {
 		ExternalContact struct {
 			ExternalUserID string `json:"external_userid"`
@@ -732,6 +739,129 @@ func (client *Client) ListTagCatalog(ctx context.Context) ([]TagCatalogGroup, er
 	}
 	return groups, nil
 }
+
+type privateSendError struct{ uncertain bool }
+
+func (e privateSendError) Error() string {
+	if e.uncertain {
+		return "wecom private message outcome unknown"
+	}
+	return "wecom private message rejected"
+}
+func (e privateSendError) OutcomeUnknown() bool { return e.uncertain }
+
+func (client *Client) SendPrivateMessage(ctx context.Context, target outboundport.PrivateMessageTarget, payload outboundport.PrivateMessagePayload) (outboundport.PrivateMessageProviderReceipt, bool, error) {
+	if !client.DirectoryReady() || invalid(target.ExternalUserID) || invalid(target.StaffUserID) || len(payload.Attachments) > 9 || (strings.TrimSpace(payload.Text) == "" && len(payload.Attachments) == 0) {
+		return outboundport.PrivateMessageProviderReceipt{}, false, privateSendError{}
+	}
+	token, err := client.contactAccessToken(ctx)
+	if err != nil {
+		return outboundport.PrivateMessageProviderReceipt{}, false, err
+	}
+	attachments := make([]map[string]any, 0, len(payload.Attachments))
+	for _, item := range payload.Attachments {
+		switch item.Kind {
+		case "image":
+			mediaID, uploadErr := client.uploadPrivateImage(ctx, token, item.FileName, item.MediaType, item.Content)
+			if uploadErr != nil {
+				return outboundport.PrivateMessageProviderReceipt{}, false, uploadErr
+			}
+			attachments = append(attachments, map[string]any{"msgtype": "image", "image": map[string]string{"media_id": mediaID}})
+		case "mini_program":
+			mediaID, uploadErr := client.uploadPrivateImage(ctx, token, item.FileName, item.MediaType, item.Content)
+			if uploadErr != nil {
+				return outboundport.PrivateMessageProviderReceipt{}, false, uploadErr
+			}
+			attachments = append(attachments, map[string]any{"msgtype": "miniprogram", "miniprogram": map[string]string{"title": item.Title, "pic_media_id": mediaID, "appid": item.AppID, "page": item.PagePath}})
+		case "link":
+			attachments = append(attachments, map[string]any{"msgtype": "link", "link": map[string]string{"title": item.Title, "picurl": item.PicURL, "desc": item.Description, "url": item.URL}})
+		default:
+			return outboundport.PrivateMessageProviderReceipt{}, false, privateSendError{}
+		}
+	}
+	body := map[string]any{"chat_type": "single", "external_userid": []string{target.ExternalUserID}, "sender": target.StaffUserID, "allow_select": false, "attachments": attachments}
+	if text := strings.TrimSpace(payload.Text); text != "" {
+		body["text"] = map[string]string{"content": text}
+	}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return outboundport.PrivateMessageProviderReceipt{}, false, err
+	}
+	result, uncertain, err := client.privateJSON(ctx, "/cgi-bin/externalcontact/add_msg_template", url.Values{"access_token": {token}}, raw, "application/json")
+	if err != nil {
+		return outboundport.PrivateMessageProviderReceipt{}, true, privateSendError{uncertain: uncertain}
+	}
+	result.MessageID = strings.TrimSpace(result.MessageID)
+	if result.MessageID == "" || len(result.FailList) != 0 {
+		return outboundport.PrivateMessageProviderReceipt{}, true, privateSendError{}
+	}
+	return outboundport.PrivateMessageProviderReceipt{MessageID: result.MessageID}, true, nil
+}
+
+func (client *Client) uploadPrivateImage(ctx context.Context, token, name, mediaType string, content []byte) (string, error) {
+	if len(content) <= 5 || len(content) > 2<<20 || (mediaType != "image/jpeg" && mediaType != "image/png") || strings.TrimSpace(name) == "" || strings.ContainsAny(name, "\r\n\x00") {
+		return "", privateSendError{}
+	}
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	header := make(textproto.MIMEHeader)
+	header.Set("Content-Disposition", mime.FormatMediaType("form-data", map[string]string{"name": "media", "filename": name}))
+	header.Set("Content-Type", mediaType)
+	part, err := writer.CreatePart(header)
+	if err != nil {
+		return "", err
+	}
+	if _, err = part.Write(content); err != nil {
+		return "", err
+	}
+	if err = writer.Close(); err != nil {
+		return "", err
+	}
+	result, _, err := client.privateJSON(ctx, "/cgi-bin/media/upload", url.Values{"access_token": {token}, "type": {"image"}}, body.Bytes(), writer.FormDataContentType())
+	if err != nil {
+		return "", err
+	}
+	result.MediaID = strings.TrimSpace(result.MediaID)
+	if result.MediaID == "" {
+		return "", privateSendError{}
+	}
+	return result.MediaID, nil
+}
+
+func (client *Client) privateJSON(ctx context.Context, path string, query url.Values, body []byte, contentType string) (response, bool, error) {
+	endpoint := *client.apiBase
+	endpoint.Path = strings.TrimRight(endpoint.Path, "/") + path
+	endpoint.RawQuery = query.Encode()
+	requestCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(requestCtx, http.MethodPost, endpoint.String(), bytes.NewReader(body))
+	if err != nil {
+		return response{}, false, err
+	}
+	req.Header.Set("Content-Type", contentType)
+	resp, err := client.http.Do(req)
+	if err != nil {
+		return response{}, true, err
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBody+1))
+	if err != nil || len(raw) > maxResponseBody {
+		return response{}, true, ErrResponse
+	}
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return response{}, resp.StatusCode >= 500, ErrResponse
+	}
+	var result response
+	if json.Unmarshal(raw, &result) != nil {
+		return response{}, true, ErrResponse
+	}
+	if !successErrCode(result.ErrCode) {
+		return response{}, false, ErrResponse
+	}
+	return result, false, nil
+}
+
+var _ outboundport.PrivateMessageSender = (*Client)(nil)
 
 func (client *Client) request(ctx context.Context, path string, query url.Values) (response, error) {
 	return client.requestJSON(ctx, http.MethodGet, path, query, nil)

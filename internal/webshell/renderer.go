@@ -93,6 +93,8 @@ type AdminShellView struct {
 	ChannelPage          string
 	ChannelResourceID    string
 	ChannelAssets        ChannelAssets
+	AIAssistant          bool
+	AIAssistantAssets    AIAssistantAssets
 }
 
 // ExternalEffectsAssets are manifest-derived URLs for the frozen donor bundle.
@@ -145,6 +147,7 @@ type OperationCycleAssets struct{ TokensCSS, LabsCSS, HostJS string }
 type ConfigAssets struct{ TokensCSS, LabsCSS, AdminJS string }
 
 type ChannelAssets struct{ TokensCSS, LabsCSS, AdminJS string }
+type AIAssistantAssets struct{ TokensCSS, LabsCSS, GroupCSS, MaterialCSS, ComposerCSS, ReadonlyCSS, HostJS string }
 
 // Render implements the small presentation contract consumed by the Access
 // HTTP handler. Keeping this adapter in webshell avoids a concrete import
@@ -388,6 +391,19 @@ func (renderer *Renderer) RenderGroupOps(writer http.ResponseWriter, data AdminP
 	data.ShowPageHeader = false
 	content := `<main id="stage" class="stage rich"></main><template id="tpl">` + donorTemplate + `</template>`
 	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: template.HTML(content), GroupOps: true, GroupOpsPage: page, GroupOpsAssets: assets})
+	if err != nil {
+		return err
+	}
+	return writeHTML(writer, http.StatusOK, body)
+}
+
+func (renderer *Renderer) RenderAIAssistant(writer http.ResponseWriter, data AdminPageData, page, donorTemplate string, assets AIAssistantAssets) error {
+	if renderer == nil || renderer.templates == nil || donorTemplate == "" || assets.TokensCSS == "" || assets.LabsCSS == "" || assets.HostJS == "" || (page != "list" && page != "detail") {
+		return errors.New("AI Assistant shell assets are required")
+	}
+	normalizeAdminPage(&data)
+	data.ShowPageHeader = false
+	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: template.HTML(`<main id="stage" class="stage rich">` + donorTemplate + `</main>`), AIAssistant: true, AIAssistantAssets: assets})
 	if err != nil {
 		return err
 	}

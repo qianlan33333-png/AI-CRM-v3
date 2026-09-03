@@ -9,19 +9,58 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	aiassistantapp "github.com/qianlan33333-png/AI-CRM-v3/internal/aiassistant/app"
 	aiassistantdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/aiassistant/domain"
 	aiassistantport "github.com/qianlan33333-png/AI-CRM-v3/internal/aiassistant/port"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
+	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
+	identityport "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/port"
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 )
+
+type integrationCustomers struct{}
+
+func (integrationCustomers) CustomerSnapshot(_ context.Context, id customerdomain.CustomerID) (aiassistantapp.CustomerSnapshot, error) {
+	return aiassistantapp.CustomerSnapshot{CanonicalID: id, Status: customerdomain.StatusActive, DisplayName: "customer", OneIDLabel: "OneID"}, nil
+}
+
+type integrationStaff struct{}
+
+func (integrationStaff) StaffSnapshot(_ context.Context, id int64) (aiassistantapp.StaffSnapshot, error) {
+	return aiassistantapp.StaffSnapshot{ID: id, DisplayName: "staff", Active: true}, nil
+}
+
+type integrationMaterials struct{}
+
+func (integrationMaterials) ResolveMaterial(_ context.Context, block aiassistantport.ContentBlock) (aiassistantport.ContentBlock, error) {
+	return block, nil
+}
+func (integrationMaterials) RegisterMaterialReference(context.Context, aiassistantport.ContentBlock, effectport.Digest) error {
+	return nil
+}
+
+type integrationIdentities struct{}
+
+func (integrationIdentities) Resolve(context.Context, identitydomain.Reference) (identityport.ResolveResult, error) {
+	return identityport.ResolveResult{Status: identityport.ResolveNotFound}, nil
+}
+
+type mutableIntegrationIdentities struct {
+	result identityport.ResolveResult
+}
+
+func (r *mutableIntegrationIdentities) Resolve(context.Context, identitydomain.Reference) (identityport.ResolveResult, error) {
+	return r.result, nil
+}
 
 func TestPostgreSQLPlanReceiptAuditOutboxAtomicJourney(t *testing.T) {
 	native, cleanup := integrationPool(t)
@@ -109,6 +148,141 @@ func TestPostgreSQLPlanReceiptAuditOutboxAtomicJourney(t *testing.T) {
 	}
 }
 
+func TestPostgreSQLPlanSizesAndFiftyRecipientPagination(t *testing.T) {
+	native, cleanup := integrationPool(t)
+	defer cleanup()
+	wrapped, err := platformpostgres.Wrap(native, 60*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wrapped.Close()
+	uow, err := platformpostgres.NewUnitOfWork(wrapped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := NewPostgreSQL(native, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := aiassistantapp.NewService(uow, repository, integrationCustomers{}, integrationStaff{}, integrationMaterials{}, integrationIdentities{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, size := range []int{1, 50, 51, 5000} {
+		recipients := make([]aiassistantport.RecipientCandidate, size)
+		for index := range recipients {
+			recipients[index] = aiassistantport.RecipientCandidate{CustomerID: customerdomain.CustomerID(index + 1), StaffID: 21, Content: []aiassistantport.ContentBlock{{Kind: aiassistantport.ContentText, Text: "hello"}}}
+		}
+		created, createErr := service.CreatePlan(context.Background(), aiassistantport.CreatePlanCommand{Actor: aiassistantport.Actor{Kind: aiassistantport.ActorAdmin, ID: 7}, IdempotencyKey: "size-plan-" + strconv.Itoa(size), Name: "size plan", SourceKind: "test", SourceDigest: effectport.Hash("source", strconv.Itoa(size)), Recipients: recipients, OccurredAt: time.Date(2026, 9, 4, 1, 2, 3, 0, time.UTC)})
+		if createErr != nil {
+			t.Fatalf("size=%d create: %v", size, createErr)
+		}
+		seen, cursor := 0, ""
+		for {
+			page, pageErr := service.ListRecipients(context.Background(), aiassistantport.RecipientPageQuery{PlanID: created.Plan.ID, Limit: 50, Cursor: cursor})
+			if pageErr != nil {
+				t.Fatalf("size=%d page: %v", size, pageErr)
+			}
+			if len(page.Items) == 0 || len(page.Items) > 50 {
+				t.Fatalf("size=%d invalid page length=%d", size, len(page.Items))
+			}
+			seen += len(page.Items)
+			if page.NextCursor == "" {
+				break
+			}
+			cursor = page.NextCursor
+		}
+		if seen != size || created.Plan.TargetCount != size || created.Plan.PendingCount != size {
+			t.Fatalf("size=%d seen=%d plan=%+v", size, seen, created.Plan)
+		}
+	}
+}
+
+func TestPostgreSQLIntegrationNonceAllowsOnlyExactReplay(t *testing.T) {
+	native, cleanup := integrationPool(t)
+	defer cleanup()
+	wrapped, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wrapped.Close()
+	uow, err := platformpostgres.NewUnitOfWork(wrapped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := NewPostgreSQL(native, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 9, 4, 1, 2, 3, 0, time.UTC)
+	payload := sha256.Sum256([]byte("same payload"))
+	for iteration := 0; iteration < 2; iteration++ {
+		if err = uow.Within(context.Background(), func(tx context.Context) error {
+			return repository.ReserveIntegrationNonce(tx, "integration-key", "1234567890abcdef", "idem-key-1", payload, at, at.Add(5*time.Minute))
+		}); err != nil {
+			t.Fatalf("exact replay %d: %v", iteration, err)
+		}
+	}
+	drift := sha256.Sum256([]byte("changed payload"))
+	err = uow.Within(context.Background(), func(tx context.Context) error {
+		return repository.ReserveIntegrationNonce(tx, "integration-key", "1234567890abcdef", "idem-key-1", drift, at, at.Add(5*time.Minute))
+	})
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("drift err=%v", err)
+	}
+}
+
+func TestPostgreSQLIntegrationReplayDoesNotResolveIdentityAgain(t *testing.T) {
+	native, cleanup := integrationPool(t)
+	defer cleanup()
+	wrapped, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wrapped.Close()
+	uow, err := platformpostgres.NewUnitOfWork(wrapped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := NewPostgreSQL(native, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identities := &mutableIntegrationIdentities{result: identityport.ResolveResult{Status: identityport.ResolveFound, CustomerID: customerdomain.CustomerID(91)}}
+	service, err := aiassistantapp.NewService(uow, repository, integrationCustomers{}, integrationStaff{}, integrationMaterials{}, identities)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 9, 4, 1, 2, 3, 0, time.UTC)
+	command := aiassistantapp.IdentityPlanCommand{
+		Actor:          aiassistantport.Actor{Kind: aiassistantport.ActorService, ID: 7},
+		IdempotencyKey: "integration-replay-1",
+		Name:           "identity plan",
+		SourceKind:     "automation",
+		SourceDigest:   effectport.Hash("identity-plan"),
+		Targets: []aiassistantapp.IdentityTarget{{
+			Reference: identitydomain.Reference{Kind: identitydomain.KindWeComExternalUserID, Scope: "corp-1", Value: "external-1", Assurance: identitydomain.AssuranceVerified, Source: "test"},
+			StaffID:   21,
+			Content:   []aiassistantport.ContentBlock{{Kind: aiassistantport.ContentText, Text: "hello"}},
+		}},
+		OccurredAt: at, IntegrationKey: "integration-key", Nonce: "1234567890abcdef", ExpiresAt: at.Add(5 * time.Minute),
+	}
+	first, err := service.CreatePlanFromIdentities(context.Background(), command)
+	if err != nil || first.Replayed || first.Found != 1 {
+		t.Fatalf("first=%+v err=%v", first, err)
+	}
+	identities.result = identityport.ResolveResult{Status: identityport.ResolveConflict}
+	replayed, err := service.CreatePlanFromIdentities(context.Background(), command)
+	if err != nil || !replayed.Replayed || replayed.Plan.ID != first.Plan.ID || replayed.Found != 1 || replayed.Conflicted != 0 {
+		t.Fatalf("replayed=%+v err=%v", replayed, err)
+	}
+	changed := command
+	changed.Name = "changed identity plan"
+	if _, err = service.CreatePlanFromIdentities(context.Background(), changed); !errors.Is(err, aiassistantapp.ErrConflict) {
+		t.Fatalf("changed payload err=%v", err)
+	}
+}
+
 func integrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 	t.Helper()
 	url, err := platformconfig.DatabaseURL()
@@ -143,7 +317,7 @@ func integrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 	if !ok {
 		t.Fatal("locate test")
 	}
-	migration, err := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "..", "migrations", "0028_ai_assistant_review.sql"))
+	migration, err := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "..", "migrations", "0036_ai_assistant_review.sql"))
 	if err != nil {
 		t.Fatal(err)
 	}

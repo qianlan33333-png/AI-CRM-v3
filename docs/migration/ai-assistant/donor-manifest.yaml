@@ -26,4 +26,3 @@ backend_evidence:
     - {path: aicrm_next/extensions/growth/cloud_orchestrator/application.py, sha256: 2ea54a7cbd346fae257104c58f8aea4f8ea2713086a8f6487a60faab5fe0ba65}
     - {path: aicrm_next/extensions/growth/cloud_orchestrator/repository.py, sha256: e5025815831a863785bd0ebdcae5231d4361051b2b5ae489648af09b9bfd071f}
     - {path: aicrm_next/extensions/growth/cloud_orchestrator/review_plans.py, sha256: fe357d95893555cdeaad8030a19bc19dd447ecffd2be957f61af7f361d2a8923}
-

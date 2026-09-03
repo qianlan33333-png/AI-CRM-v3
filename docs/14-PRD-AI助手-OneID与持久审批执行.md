@@ -1,8 +1,8 @@
 # AI-CRM v3 AI 助手 PRD：OneID 审阅计划与持久执行闭环
 
-> 状态：Approved for implementation  
-> 日期：2026-09-04  
-> donor：`qianlan33333-png/AI-CRM@dd8d60dd8ddb983aca2ec88cc9e65a9f7563f79f`  
+> 状态：Approved for implementation
+> 日期：2026-09-04
+> donor：`qianlan33333-png/AI-CRM@dd8d60dd8ddb983aca2ec88cc9e65a9f7563f79f`
 > 范围：AI 助手计划列表、计划详情及其真实后端；不含 Campaign、Observability、自动化运营和旧历史迁移
 
 ## 1. 开发分类
@@ -27,8 +27,8 @@ External Effects: involved — whole-plan approval atomically accepts Outbound p
 ### 一级页 `/admin/cloud-orchestrator/plans`
 
 - 保持 donor 页头、面包屑、统计卡、搜索框、筛选器、列表、空态、加载态和错误态。
-- 搜索计划名称和内部发送人展示名，不搜索或回显原始 external userid。
-- 列表展示计划名称、来源、创建者、发送人、更新时间、目标数、审阅状态和执行摘要。
+- 搜索计划名称，不搜索或回显原始 external userid。逐人发送人只在详情安全投影中展示。
+- 列表保持 donor 的计划名称、创建者、更新时间、目标数、审阅状态和执行摘要。
 - 后端采用 cursor pagination，最大 50；刷新只读投影，不创建任务或效果。
 
 ### 二级页 `/admin/cloud-orchestrator/plans/{plan_id}`
@@ -86,4 +86,3 @@ provider_accepted → delivery_proven (only with trusted evidence)
 - donor SHA、DOM、视觉、抽屉、分页、加载/空态/错误态合同通过。
 - Provider 默认 disabled；未配置时失败关闭。
 - 本期不读取或导入 donor 历史数据，不建立旧库运行依赖，不双写。
-

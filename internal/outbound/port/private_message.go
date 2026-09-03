@@ -44,3 +44,41 @@ type PrivateMessageIntentResult struct {
 type PrivateMessageIntentWriter interface {
 	WritePrivateMessageIntentWithin(context.Context, PrivateMessageIntentCommand) (PrivateMessageIntentResult, error)
 }
+
+// Provider-side contracts keep the WeCom adapter behind the stable Outbound
+// boundary. Raw channel identifiers exist only in memory after effect
+// acceptance and are never part of an AI Assistant DTO or table.
+type PrivateMessageIntent struct {
+	CustomerID       customerdomain.CustomerID
+	StaffID          int64
+	PayloadReference string
+	PayloadDigest    effectport.Digest
+}
+type PrivateMessageTarget struct{ ExternalUserID, StaffUserID string }
+type PrivateMessageAttachment struct {
+	Kind                                                                  string
+	Content                                                               []byte
+	FileName, MediaType, AppID, PagePath, Title, URL, Description, PicURL string
+}
+type PrivateMessagePayload struct {
+	Text        string
+	Attachments []PrivateMessageAttachment
+}
+type PrivateMessageProviderReceipt struct{ MessageID string }
+
+type PrivateMessageIntentReader interface {
+	PrivateMessageIntentForEnvelope(context.Context, effectport.Envelope) (PrivateMessageIntent, error)
+}
+type PrivateMessageTargetResolver interface {
+	ResolvePrivateMessageTarget(context.Context, customerdomain.CustomerID, int64) (PrivateMessageTarget, error)
+}
+type PrivateMessagePayloadReader interface {
+	LoadPrivateMessagePayload(context.Context, string, effectport.Digest) (PrivateMessagePayload, error)
+}
+type PrivateMessageSender interface {
+	SendPrivateMessage(context.Context, PrivateMessageTarget, PrivateMessagePayload) (PrivateMessageProviderReceipt, bool, error)
+}
+type PrivateMessageSendError interface {
+	error
+	OutcomeUnknown() bool
+}

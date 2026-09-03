@@ -100,6 +100,7 @@ CREATE TABLE ai_assistant_effect_bindings (
     payload_digest BYTEA NOT NULL,
     state TEXT NOT NULL DEFAULT 'accepted',
     generation BIGINT NOT NULL DEFAULT 0,
+    fence BIGINT NOT NULL DEFAULT 0,
     attempt_count INTEGER NOT NULL DEFAULT 0,
     provider_accepted BOOLEAN NOT NULL DEFAULT false,
     delivery_proven BOOLEAN NOT NULL DEFAULT false,
@@ -109,7 +110,7 @@ CREATE TABLE ai_assistant_effect_bindings (
     CONSTRAINT ck_ai_assistant_effect_id CHECK (external_effect_id ~ '^eer_[1-9][0-9]*$'),
     CONSTRAINT ck_ai_assistant_effect_payload_digest CHECK (octet_length(payload_digest) = 32),
     CONSTRAINT ck_ai_assistant_effect_state CHECK (state IN ('accepted','queued','attempted','provider_accepted','retryable_failed','outcome_unknown','reconciled','final_failed','delivery_proven')),
-    CONSTRAINT ck_ai_assistant_effect_generation CHECK (generation >= 0 AND attempt_count >= 0),
+    CONSTRAINT ck_ai_assistant_effect_generation CHECK (generation >= 0 AND fence >= 0 AND attempt_count >= 0),
     CONSTRAINT ck_ai_assistant_provider_receipt CHECK (provider_receipt_digest IS NULL OR octet_length(provider_receipt_digest) = 32),
     CONSTRAINT ck_ai_assistant_delivery_proof CHECK (NOT delivery_proven OR provider_accepted)
 );
@@ -127,6 +128,20 @@ CREATE TABLE ai_assistant_operation_receipts (
     CONSTRAINT uq_ai_assistant_operation_receipt UNIQUE (operation, actor_scope, key_digest),
     CONSTRAINT ck_ai_assistant_receipt_digests CHECK (octet_length(key_digest) = 32 AND octet_length(payload_digest) = 32)
 );
+
+CREATE TABLE ai_assistant_integration_nonces (
+    key_digest BYTEA NOT NULL,
+    nonce_digest BYTEA NOT NULL,
+    idempotency_digest BYTEA NOT NULL,
+    payload_digest BYTEA NOT NULL,
+    request_timestamp TIMESTAMPTZ NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY (key_digest, nonce_digest),
+    CONSTRAINT ck_ai_assistant_integration_nonce_digests CHECK (octet_length(key_digest) = 32 AND octet_length(nonce_digest) = 32 AND octet_length(idempotency_digest) = 32 AND octet_length(payload_digest) = 32),
+    CONSTRAINT ck_ai_assistant_integration_nonce_window CHECK (expires_at > request_timestamp)
+);
+CREATE INDEX ai_assistant_integration_nonces_expiry_idx ON ai_assistant_integration_nonces(expires_at);
 
 CREATE TABLE ai_assistant_audit_events (
     id BIGSERIAL PRIMARY KEY,

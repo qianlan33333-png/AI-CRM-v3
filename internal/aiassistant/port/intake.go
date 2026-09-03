@@ -48,11 +48,11 @@ const (
 )
 
 type ContentBlock struct {
-	Kind           ContentKind
-	Text           string
-	MaterialKind   string
-	MaterialID     int64
-	MaterialDigest effectport.Digest
+	Kind           ContentKind       `json:"kind"`
+	Text           string            `json:"text,omitempty"`
+	MaterialKind   string            `json:"material_kind,omitempty"`
+	MaterialID     int64             `json:"material_id,omitempty"`
+	MaterialDigest effectport.Digest `json:"material_digest,omitempty"`
 }
 
 func (b ContentBlock) Valid() bool {
@@ -66,10 +66,21 @@ func (b ContentBlock) Valid() bool {
 	}
 }
 
+// ValidInput accepts a missing material digest at the HTTP edge. The Media
+// owner resolves and freezes the authoritative digest inside the plan UoW.
+func (b ContentBlock) ValidInput() bool {
+	if b.Kind == ContentText {
+		return b.Valid()
+	}
+	provided := b.MaterialDigest
+	b.MaterialDigest = effectport.Hash("aiassistant.input-placeholder")
+	return (provided == "" || effectport.ValidDigest(provided)) && b.Valid()
+}
+
 type RecipientCandidate struct {
-	CustomerID customerdomain.CustomerID
-	StaffID    int64
-	Content    []ContentBlock
+	CustomerID customerdomain.CustomerID `json:"customer_id"`
+	StaffID    int64                     `json:"staff_id"`
+	Content    []ContentBlock            `json:"content"`
 }
 
 func (r RecipientCandidate) Valid() bool {
@@ -77,7 +88,7 @@ func (r RecipientCandidate) Valid() bool {
 		return false
 	}
 	for _, block := range r.Content {
-		if !block.Valid() {
+		if !block.ValidInput() {
 			return false
 		}
 	}

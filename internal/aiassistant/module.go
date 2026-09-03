@@ -20,7 +20,7 @@ func (m *ModuleRegistration) Readiness(ctx context.Context, pool *pgxpool.Pool) 
 		SELECT 1 FROM unnest(ARRAY[
 			'ai_assistant_plans','ai_assistant_plan_recipients','ai_assistant_content_versions',
 			'ai_assistant_review_decisions','ai_assistant_effect_bindings','ai_assistant_operation_receipts',
-			'ai_assistant_audit_events','ai_assistant_outbox'
+			'ai_assistant_integration_nonces','ai_assistant_audit_events','ai_assistant_outbox'
 		]) AS required(name)
 		WHERE to_regclass(current_schema() || '.' || required.name) IS NULL
 	)`).Scan(&ready)

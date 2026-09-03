@@ -84,12 +84,15 @@ jobs:
           scripts/check-pr08-frontend-donor-manifest.sh
           scripts/check-pr09-frontend-freeze.sh
           scripts/check-config-definition-import-boundary.sh
+          scripts/check-ai-assistant-donor-manifest.sh
+          node scripts/generate-ai-assistant-client.mjs
           npm run typecheck
           npx tsc -p web/v3/tsconfig.json --noEmit
           npm test
           npm run build
           node scripts/build-v3-host-adapters.mjs
           node scripts/operation-cycles-shell-e2e.mjs
+          node scripts/ai-assistant-shell-e2e.mjs
           mkdir -p release
           node scripts/stage-pr01-effects-ui.mjs web/dist release/web/dist
           node scripts/test-stage-pr01-effects-ui.mjs
@@ -174,11 +177,14 @@ jobs:
           scripts/check-pr08-frontend-donor-manifest.sh
           scripts/check-pr09-frontend-freeze.sh
           scripts/check-config-definition-import-boundary.sh
+          scripts/check-ai-assistant-donor-manifest.sh
+          node scripts/generate-ai-assistant-client.mjs
           npm run typecheck
           npx tsc -p web/v3/tsconfig.json --noEmit
           npm run build
           node scripts/build-v3-host-adapters.mjs
           node scripts/operation-cycles-shell-e2e.mjs
+          node scripts/ai-assistant-shell-e2e.mjs
           cp -R migrations deploy release/
           node scripts/stage-pr01-effects-ui.mjs web/dist release/web/dist
           node scripts/test-stage-pr01-effects-ui.mjs

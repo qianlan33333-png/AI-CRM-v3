@@ -2837,6 +2837,116 @@ paths:
       tags: [Config]
       security: [{adminSession: []}]
       responses: {"200": {description: Current v3 OpenAPI document, content: {application/yaml: {schema: {type: string}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}}
+  /api/admin/ai-assistant/plans:
+    get:
+      operationId: listAIAssistantPlans
+      tags: [AIAssistant]
+      security: [{adminSession: []}]
+      parameters:
+        - {name: keyword, in: query, schema: {type: string, maxLength: 200}}
+        - {name: status, in: query, schema: {$ref: "#/components/schemas/AIAssistantPlanState"}}
+        - {$ref: "#/components/parameters/AIAssistantCursor"}
+        - {$ref: "#/components/parameters/AIAssistantLimit"}
+      responses: {"200": {description: OneID-safe plan page, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantPlanPage"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+    post:
+      operationId: createAIAssistantPlan
+      tags: [AIAssistant]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantPlanCreateRequest"}}}}
+      responses: {"200": {description: Exact idempotent replay, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantPlanEnvelope"}}}}, "201": {description: Pending review plan; no external effect exists, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantPlanEnvelope"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "413": {$ref: "#/components/responses/Error"}, "422": {$ref: "#/components/responses/Error"}}
+  /api/admin/ai-assistant/plans/{plan_id}:
+    get:
+      operationId: getAIAssistantPlan
+      tags: [AIAssistant]
+      security: [{adminSession: []}]
+      parameters: [{$ref: "#/components/parameters/AIAssistantPlanID"}]
+      responses: {"200": {description: Plan detail, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantPlanEnvelope"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}}
+  /api/admin/ai-assistant/plans/{plan_id}/recipients:
+    get:
+      operationId: listAIAssistantRecipients
+      tags: [AIAssistant]
+      security: [{adminSession: []}]
+      parameters:
+        - {$ref: "#/components/parameters/AIAssistantPlanID"}
+        - {name: status, in: query, schema: {$ref: "#/components/schemas/AIAssistantReviewState"}}
+        - {$ref: "#/components/parameters/AIAssistantCursor"}
+        - {$ref: "#/components/parameters/AIAssistantLimit"}
+      responses: {"200": {description: OneID-safe recipient page, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantRecipientPage"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}}
+  /api/admin/ai-assistant/plans/{plan_id}/recipients/{recipient_id}:
+    get:
+      operationId: getAIAssistantRecipient
+      tags: [AIAssistant]
+      security: [{adminSession: []}]
+      parameters: [{$ref: "#/components/parameters/AIAssistantPlanID"}, {$ref: "#/components/parameters/AIAssistantRecipientID"}]
+      responses: {"200": {description: Recipient drawer detail, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantRecipientEnvelope"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}}
+  /api/admin/ai-assistant/plans/{plan_id}/recipients/{recipient_id}/content:
+    patch:
+      operationId: updateAIAssistantRecipientContent
+      tags: [AIAssistant]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/AIAssistantPlanID"}, {$ref: "#/components/parameters/AIAssistantRecipientID"}, {$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantContentUpdateRequest"}}}}
+      responses: {"200": {description: Immutable content version created, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantContentVersion"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "422": {$ref: "#/components/responses/Error"}}
+  /api/admin/ai-assistant/plans/{plan_id}/recipients/{recipient_id}/review:
+    post:
+      operationId: reviewAIAssistantRecipient
+      tags: [AIAssistant]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/AIAssistantPlanID"}, {$ref: "#/components/parameters/AIAssistantRecipientID"}, {$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantRecipientReviewRequest"}}}}
+      responses: {"200": {description: Review-only decision; no effect is accepted, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantRecipientEnvelope"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+  /api/admin/ai-assistant/plans/{plan_id}/preview-approval:
+    post:
+      operationId: previewAIAssistantPlanApproval
+      tags: [AIAssistant]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/AIAssistantPlanID"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantExpectedVersionRequest"}}}}
+      responses: {"200": {description: Immutable approval preview, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantApprovalPreview"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+  /api/admin/ai-assistant/plans/{plan_id}/approve:
+    post:
+      operationId: approveAIAssistantPlan
+      tags: [AIAssistant]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/AIAssistantPlanID"}, {$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantApproveRequest"}}}}
+      responses: {"200": {description: Approval and all Outbound effects accepted atomically, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantPlanEnvelope"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/ai-assistant/plans/{plan_id}/reject:
+    post:
+      operationId: rejectAIAssistantPlan
+      tags: [AIAssistant]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/AIAssistantPlanID"}, {$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantRejectRequest"}}}}
+      responses: {"200": {description: Plan rejected without accepting effects, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantPlanEnvelope"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+  /api/admin/ai-assistant/plans/{plan_id}/effects:
+    get:
+      operationId: listAIAssistantEffects
+      tags: [AIAssistant]
+      security: [{adminSession: []}]
+      parameters: [{$ref: "#/components/parameters/AIAssistantPlanID"}]
+      responses: {"200": {description: Digest-safe effect projections, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantEffectPage"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}}
+  /api/admin/ai-assistant/effects/{effect_id}/reconcile:
+    post:
+      operationId: reconcileAIAssistantEffect
+      tags: [AIAssistant]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/AIAssistantEffectID"}, {$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantReconcileRequest"}}}}
+      responses: {"200": {description: Original-key reconciliation result, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantReconcileResponse"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+  /api/integrations/ai-assistant/review-plans:
+    post:
+      operationId: createAIAssistantIntegrationPlan
+      tags: [AIAssistant]
+      security: [{aiAssistantIntegration: []}]
+      parameters:
+        - {$ref: "#/components/parameters/RequiredIdempotencyKey"}
+        - {$ref: "#/components/parameters/AIAssistantIntegrationTimestamp"}
+        - {$ref: "#/components/parameters/AIAssistantIntegrationNonce"}
+        - {$ref: "#/components/parameters/AIAssistantIntegrationSignature"}
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantIntegrationPlanRequest"}}}}
+      responses: {"202": {description: Scoped identities resolved into a pending review plan; unresolved targets are reported but never persisted as recipients, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantIntegrationPlanResponse"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "413": {$ref: "#/components/responses/Error"}, "422": {$ref: "#/components/responses/Error"}}
 components:
   securitySchemes:
     adminSession: {type: apiKey, in: cookie, name: aicrm_admin_session}
@@ -2847,6 +2957,7 @@ components:
     paymentSession: {type: apiKey, in: cookie, name: aicrm_payment_session}
     wechatPaySignature: {type: apiKey, in: header, name: Wechatpay-Signature}
     operationCycleService: {type: http, scheme: bearer}
+    aiAssistantIntegration: {type: apiKey, in: header, name: X-AICRM-Integration-Key}
   parameters:
     ID: {name: id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
     AutomationAgentID: {name: agent_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
@@ -2893,6 +3004,14 @@ components:
     GroupOpsWebhookEventID: {name: X-AICRM-Event-Id, in: header, required: true, schema: {type: string, minLength: 1, maxLength: 256}}
     GroupOpsWebhookSignature: {name: X-AICRM-Signature, in: header, required: true, schema: {type: string, pattern: "^[0-9a-fA-F]{64}$"}}
     OrderReference: {name: order_ref, in: path, required: true, schema: {type: string, minLength: 1, maxLength: 200}}
+    AIAssistantPlanID: {name: plan_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
+    AIAssistantRecipientID: {name: recipient_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
+    AIAssistantEffectID: {name: effect_id, in: path, required: true, schema: {type: string, pattern: "^eer_[1-9][0-9]*$"}}
+    AIAssistantCursor: {name: cursor, in: query, schema: {type: string, maxLength: 512}}
+    AIAssistantLimit: {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 50, default: 50}}
+    AIAssistantIntegrationTimestamp: {name: X-AICRM-Timestamp, in: header, required: true, schema: {type: string, pattern: "^[0-9]{1,20}$"}}
+    AIAssistantIntegrationNonce: {name: X-AICRM-Nonce, in: header, required: true, schema: {type: string, minLength: 16, maxLength: 128}}
+    AIAssistantIntegrationSignature: {name: X-AICRM-Signature, in: header, required: true, schema: {type: string, pattern: "^[0-9a-f]{64}$"}}
   responses:
     Error: {description: Stable error response, content: {application/json: {schema: {$ref: "#/components/schemas/ErrorResponse"}}}}
     Unavailable: {description: Dependency or provider unavailable, content: {application/json: {schema: {$ref: "#/components/schemas/ErrorResponse"}}}}
@@ -3011,6 +3130,240 @@ components:
       additionalProperties: false
       required: [run, replayed]
       properties: {run: {$ref: "#/components/schemas/HXCDashboardRefresh"}, replayed: {type: boolean}}
+    AIAssistantDigest: {type: string, pattern: "^sha256:[0-9a-f]{64}$"}
+    AIAssistantPlanState: {type: string, enum: [pending_review, partially_approved, approved, rejected, dispatching, needs_attention, completed_with_failures, completed]}
+    AIAssistantReviewState: {type: string, enum: [pending_review, approved, rejected, ineligible]}
+    AIAssistantExecutionState: {type: string, enum: [not_accepted, accepted, queued, attempted, provider_accepted, retryable_failed, outcome_unknown, reconciled, final_failed, delivery_proven]}
+    AIAssistantContentKind: {type: string, enum: [text, image, mini_program, link]}
+    AIAssistantContentBlock:
+      type: object
+      additionalProperties: false
+      required: [kind]
+      properties:
+        kind: {$ref: "#/components/schemas/AIAssistantContentKind"}
+        text: {type: string, maxLength: 8000}
+        material_kind: {type: string, maxLength: 64}
+        material_id: {$ref: "#/components/schemas/PositiveID"}
+        material_digest: {$ref: "#/components/schemas/AIAssistantDigest"}
+    AIAssistantPlanTarget:
+      type: object
+      additionalProperties: false
+      required: [customer_id, staff_id, content]
+      properties:
+        customer_id: {$ref: "#/components/schemas/PositiveID"}
+        staff_id: {$ref: "#/components/schemas/PositiveID"}
+        content: {type: array, minItems: 1, maxItems: 20, items: {$ref: "#/components/schemas/AIAssistantContentBlock"}}
+    AIAssistantPlanCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [name, source_kind, source_digest, recipients]
+      properties:
+        name: {type: string, minLength: 1, maxLength: 200}
+        source_kind: {type: string, minLength: 1, maxLength: 80}
+        source_digest: {$ref: "#/components/schemas/AIAssistantDigest"}
+        recipients: {type: array, minItems: 1, maxItems: 5000, items: {$ref: "#/components/schemas/AIAssistantPlanTarget"}}
+    AIAssistantPlan:
+      type: object
+      additionalProperties: false
+      required: [id, name, source_kind, source_digest, state, version, target_count, pending_count, approved_count, rejected_count, ineligible_count, needs_attention_count, created_by, created_at, updated_at]
+      properties:
+        id: {$ref: "#/components/schemas/PositiveID"}
+        name: {type: string}
+        source_kind: {type: string}
+        source_digest: {$ref: "#/components/schemas/AIAssistantDigest"}
+        state: {$ref: "#/components/schemas/AIAssistantPlanState"}
+        version: {type: integer, format: int64, minimum: 1}
+        target_count: {type: integer, minimum: 0, maximum: 5000}
+        pending_count: {type: integer, minimum: 0, maximum: 5000}
+        approved_count: {type: integer, minimum: 0, maximum: 5000}
+        rejected_count: {type: integer, minimum: 0, maximum: 5000}
+        ineligible_count: {type: integer, minimum: 0, maximum: 5000}
+        needs_attention_count: {type: integer, minimum: 0, maximum: 5000}
+        created_by: {$ref: "#/components/schemas/PositiveID"}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    AIAssistantPlanEnvelope:
+      type: object
+      additionalProperties: false
+      required: [ok, plan, replayed, dispatch_ready]
+      properties:
+        ok: {const: true}
+        plan: {$ref: "#/components/schemas/AIAssistantPlan"}
+        replayed: {type: boolean}
+        dispatch_ready: {type: boolean}
+    AIAssistantPlanPage:
+      type: object
+      additionalProperties: false
+      required: [ok, items, next_cursor]
+      properties:
+        ok: {const: true}
+        items: {type: array, maxItems: 50, items: {$ref: "#/components/schemas/AIAssistantPlan"}}
+        next_cursor: {type: string, maxLength: 512}
+    AIAssistantRecipient:
+      type: object
+      additionalProperties: false
+      required: [id, plan_id, customer_id, customer_name, oneid_label, staff_id, staff_display_name, review_state, execution_state, version, content_version_id, updated_at]
+      properties:
+        id: {$ref: "#/components/schemas/PositiveID"}
+        plan_id: {$ref: "#/components/schemas/PositiveID"}
+        customer_id: {$ref: "#/components/schemas/PositiveID"}
+        customer_name: {type: string, maxLength: 200}
+        oneid_label: {type: string, maxLength: 200}
+        staff_id: {$ref: "#/components/schemas/PositiveID"}
+        staff_display_name: {type: string, maxLength: 200}
+        review_state: {$ref: "#/components/schemas/AIAssistantReviewState"}
+        execution_state: {$ref: "#/components/schemas/AIAssistantExecutionState"}
+        version: {type: integer, format: int64, minimum: 1}
+        content_version_id: {$ref: "#/components/schemas/PositiveID"}
+        effect_id: {type: string, pattern: "^eer_[1-9][0-9]*$"}
+        updated_at: {type: string, format: date-time}
+    AIAssistantContentVersion:
+      type: object
+      additionalProperties: false
+      required: [id, recipient_id, version, digest, blocks, created_at]
+      properties:
+        id: {$ref: "#/components/schemas/PositiveID"}
+        recipient_id: {$ref: "#/components/schemas/PositiveID"}
+        version: {type: integer, format: int64, minimum: 1}
+        digest: {$ref: "#/components/schemas/AIAssistantDigest"}
+        blocks: {type: array, minItems: 1, maxItems: 20, items: {$ref: "#/components/schemas/AIAssistantContentBlock"}}
+        created_at: {type: string, format: date-time}
+    AIAssistantRecipientEnvelope:
+      type: object
+      additionalProperties: false
+      required: [ok, recipient, content]
+      properties:
+        ok: {const: true}
+        recipient: {$ref: "#/components/schemas/AIAssistantRecipient"}
+        content: {$ref: "#/components/schemas/AIAssistantContentVersion"}
+    AIAssistantRecipientPage:
+      type: object
+      additionalProperties: false
+      required: [ok, items, next_cursor]
+      properties:
+        ok: {const: true}
+        items: {type: array, maxItems: 50, items: {$ref: "#/components/schemas/AIAssistantRecipient"}}
+        next_cursor: {type: string, maxLength: 512}
+    AIAssistantExpectedVersionRequest:
+      type: object
+      additionalProperties: false
+      required: [expected_version]
+      properties: {expected_version: {type: integer, format: int64, minimum: 1}}
+    AIAssistantContentUpdateRequest:
+      type: object
+      additionalProperties: false
+      required: [expected_version, blocks]
+      properties:
+        expected_version: {type: integer, format: int64, minimum: 1}
+        blocks: {type: array, minItems: 1, maxItems: 20, items: {$ref: "#/components/schemas/AIAssistantContentBlock"}}
+    AIAssistantRecipientReviewRequest:
+      type: object
+      additionalProperties: false
+      required: [expected_version, decision]
+      properties:
+        expected_version: {type: integer, format: int64, minimum: 1}
+        decision: {type: string, enum: [approved, rejected]}
+        reason: {type: string, maxLength: 500}
+    AIAssistantApprovalPreview:
+      type: object
+      additionalProperties: false
+      required: [ok, plan_id, plan_version, eligible_count, preview_digest]
+      properties:
+        ok: {const: true}
+        plan_id: {$ref: "#/components/schemas/PositiveID"}
+        plan_version: {type: integer, format: int64, minimum: 1}
+        eligible_count: {type: integer, minimum: 1, maximum: 5000}
+        preview_digest: {$ref: "#/components/schemas/AIAssistantDigest"}
+    AIAssistantApproveRequest:
+      type: object
+      additionalProperties: false
+      required: [expected_version, preview_digest]
+      properties:
+        expected_version: {type: integer, format: int64, minimum: 1}
+        preview_digest: {$ref: "#/components/schemas/AIAssistantDigest"}
+    AIAssistantRejectRequest:
+      type: object
+      additionalProperties: false
+      required: [expected_version, reason]
+      properties:
+        expected_version: {type: integer, format: int64, minimum: 1}
+        reason: {type: string, minLength: 1, maxLength: 500}
+    AIAssistantEffect:
+      type: object
+      additionalProperties: false
+      required: [effect_id, recipient_id, state, generation, fence, attempt_count, provider_accepted, delivery_proven, updated_at]
+      properties:
+        effect_id: {type: string, pattern: "^eer_[1-9][0-9]*$"}
+        recipient_id: {$ref: "#/components/schemas/PositiveID"}
+        state: {$ref: "#/components/schemas/AIAssistantExecutionState"}
+        generation: {type: integer, format: int64, minimum: 0}
+        fence: {type: integer, format: int64, minimum: 0}
+        attempt_count: {type: integer, minimum: 0}
+        provider_accepted: {type: boolean}
+        delivery_proven: {type: boolean}
+        updated_at: {type: string, format: date-time}
+    AIAssistantEffectPage:
+      type: object
+      additionalProperties: false
+      required: [ok, items, next_cursor]
+      properties:
+        ok: {const: true}
+        items: {type: array, maxItems: 5000, items: {$ref: "#/components/schemas/AIAssistantEffect"}}
+        next_cursor: {type: string, maxLength: 512}
+    AIAssistantReconcileRequest:
+      type: object
+      additionalProperties: false
+      required: [generation, fence, evidence_digest, reason]
+      properties:
+        generation: {type: integer, format: int64, minimum: 1}
+        fence: {type: integer, format: int64, minimum: 1}
+        evidence_digest: {$ref: "#/components/schemas/AIAssistantDigest"}
+        reason: {type: string, minLength: 1, maxLength: 500}
+    AIAssistantReconcileResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, recipient]
+      properties:
+        ok: {const: true}
+        recipient: {$ref: "#/components/schemas/AIAssistantRecipient"}
+    AIAssistantIntegrationIdentity:
+      type: object
+      additionalProperties: false
+      required: [kind, scope, value, staff_id, content]
+      properties:
+        kind: {type: string, enum: [wecom_external_userid, unionid, mp_openid, oa_openid]}
+        scope: {type: string, minLength: 1, maxLength: 200}
+        value: {type: string, minLength: 1, maxLength: 512, writeOnly: true}
+        staff_id: {$ref: "#/components/schemas/PositiveID"}
+        content: {type: array, minItems: 1, maxItems: 20, items: {$ref: "#/components/schemas/AIAssistantContentBlock"}}
+    AIAssistantIntegrationPlanRequest:
+      type: object
+      additionalProperties: false
+      required: [name, source_kind, source_digest, identities]
+      properties:
+        name: {type: string, minLength: 1, maxLength: 200}
+        source_kind: {type: string, minLength: 1, maxLength: 80}
+        source_digest: {$ref: "#/components/schemas/AIAssistantDigest"}
+        identities: {type: array, minItems: 1, maxItems: 5000, items: {$ref: "#/components/schemas/AIAssistantIntegrationIdentity"}}
+    AIAssistantIntegrationResolution:
+      type: object
+      additionalProperties: false
+      required: [found, not_found, conflict, invalid]
+      properties:
+        found: {type: integer, minimum: 0, maximum: 5000}
+        not_found: {type: integer, minimum: 0, maximum: 5000}
+        conflict: {type: integer, minimum: 0, maximum: 5000}
+        invalid: {type: integer, minimum: 0, maximum: 5000}
+    AIAssistantIntegrationPlanResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, plan, replayed, dispatch_ready, resolution]
+      properties:
+        ok: {const: true}
+        plan: {$ref: "#/components/schemas/AIAssistantPlan"}
+        replayed: {type: boolean}
+        dispatch_ready: {type: boolean}
+        resolution: {$ref: "#/components/schemas/AIAssistantIntegrationResolution"}
     LocalProjection:
       type: object
       required: [ok, items, source_status, local_only]

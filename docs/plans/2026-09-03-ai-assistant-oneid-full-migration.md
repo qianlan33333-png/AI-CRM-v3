@@ -20,7 +20,7 @@ External Effects: involved — approval and effect acceptance share one UoW
 
 ## Delivery batches
 
-- **AA00:** Freeze donor hashes/behavior, add stable Ports, OpenAPI, journey skeleton, domain and migration `0028` (`0029` reserved for Outbound private messages).
+- **AA00:** Freeze donor hashes/behavior, add stable Ports, OpenAPI, journey skeleton, domain and migrations `0036`/`0037` after rebasing onto the v3 migration sequence through `0035`.
 - **AA01:** Implement intake, Identity Resolve, canonical roots, list/detail/recipient queries and local receipts/audit/outbox. No pre-approval effects.
 - **AA02:** Build deterministic donor Adapter and real list/detail/pagination/drawer API integration without Mock/sessionStorage.
 - **AA03:** Add immutable content/material versions, individual review, whole-plan preview/reject. Individual approval never sends.
@@ -33,4 +33,3 @@ External Effects: involved — approval and effect acceptance share one UoW
 - No donor history migration.
 - Whole-plan dispatch gate.
 - Provider disabled by default.
-

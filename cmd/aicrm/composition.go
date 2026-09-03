@@ -18,6 +18,10 @@ import (
 	adminopsapp "github.com/qianlan33333-png/AI-CRM-v3/internal/adminops/app"
 	adminopsport "github.com/qianlan33333-png/AI-CRM-v3/internal/adminops/port"
 	adminopsstore "github.com/qianlan33333-png/AI-CRM-v3/internal/adminops/store"
+	aiassistant "github.com/qianlan33333-png/AI-CRM-v3/internal/aiassistant"
+	aiassistantapp "github.com/qianlan33333-png/AI-CRM-v3/internal/aiassistant/app"
+	aiassistanthttp "github.com/qianlan33333-png/AI-CRM-v3/internal/aiassistant/http"
+	aiassistantstore "github.com/qianlan33333-png/AI-CRM-v3/internal/aiassistant/store"
 	automation "github.com/qianlan33333-png/AI-CRM-v3/internal/automation"
 	automationapp "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/app"
 	automationstore "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/store"
@@ -29,6 +33,7 @@ import (
 	couponapp "github.com/qianlan33333-png/AI-CRM-v3/internal/coupon/app"
 	couponstore "github.com/qianlan33333-png/AI-CRM-v3/internal/coupon/store"
 	customerapp "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/app"
+	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	customerhttp "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/http"
 	customerstore "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/store"
 	externaleffects "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects"
@@ -151,9 +156,6 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	paymentRepository := paymentstore.NewPostgreSQL()
 	customerStore := customerstore.NewPostgreSQL()
 	requestSecurity := requestAccessSecurity{authentication: authentication}
-	if cfg.Effects.ProviderEnabled {
-		return fail(errors.New("outbound provider enabled but no outbound adapter is registered"))
-	}
 	effectsModule := externaleffects.NewModuleRegistration()
 	effectWorkers := river.NewWorkers()
 	if err = effectsModule.RegisterWorkers(effectWorkers); err != nil {
@@ -201,6 +203,33 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	}
 	mediaModule := media.NewModuleRegistration()
 	mediaRepository, err := mediastore.NewPostgreSQL(pool.Native(), uow)
+	if err != nil {
+		return fail(err)
+	}
+	aiModule := aiassistant.NewModuleRegistration()
+	aiRepository, err := aiassistantstore.NewPostgreSQL(pool.Native(), uow)
+	if err != nil {
+		return fail(err)
+	}
+	aiCustomers := aiCustomerSnapshotAdapter{read: func(ctx context.Context, id customerdomain.CustomerID) (customerdomain.CustomerID, customerdomain.Status, string, string, error) {
+		detail, readErr := customerStore.Detail(ctx, id)
+		return detail.CustomerID, detail.CustomerStatus, detail.DisplayName, detail.OneIDLabel, readErr
+	}}
+	aiService, err := aiassistantapp.NewService(uow, aiRepository, aiCustomers, aiStaffSnapshotAdapter{repository: accessRepository}, aiMaterialAdapter{capturer: mediaRepository, references: mediaRepository}, oneID)
+	if err != nil {
+		return fail(err)
+	}
+	privateWriter, err := outbound.NewPrivateMessageRepository(pool.Native(), effectRepository)
+	if err != nil {
+		return fail(err)
+	}
+	if err = aiService.BindOutbound(privateWriter, cfg.AIAssistant.DispatchEnabled); err != nil {
+		return fail(err)
+	}
+	if err = aiService.BindReconciler(effectRepository); err != nil {
+		return fail(err)
+	}
+	aiHandler, err := aiassistanthttp.NewHandler(aiassistanthttp.Config{Application: aiService, Security: requestSecurity, Authorizer: accessapp.AIAssistantAuthorizer{}, Integration: aiassistanthttp.IntegrationConfig{Enabled: cfg.AIAssistant.IntakeEnabled, Key: cfg.AIAssistant.IntegrationKey, Secret: cfg.AIAssistant.IntegrationSecret, ActorID: cfg.AIAssistant.IntegrationActorID}, DispatchReady: cfg.AIAssistant.DispatchEnabled})
 	if err != nil {
 		return fail(err)
 	}
@@ -300,10 +329,15 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
+	privateCompletionSink, err := outbound.NewPrivateMessageCompletionSink(privateWriter, aiRepository)
+	if err != nil {
+		return fail(err)
+	}
 	outboundCompletionSink, err := outbound.NewCompletionRouterWithAllChannels(tagCompletionSink, groupOpsCompletionSink, channelAssetCompletionSink, channelEntrantCompletionSink, channelLinkCompletionSink)
 	if err != nil {
 		return fail(err)
 	}
+	outboundCompletionSink.WithPrivateMessage(privateCompletionSink)
 	if cfg.Survey.DataKey == "" {
 		return fail(errors.New("survey data encryption key is not configured"))
 	}
@@ -651,6 +685,10 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if cfg.WeCom.Enabled {
 		channelLinkProvider = outbound.NewChannelLinkProvider(channelLinkMutationReaderAdapter{uow: uow, source: channelLinkStore}, providerClient)
 	}
+	privateProvider, err := outbound.NewPrivateMessageProvider(cfg.AIAssistant.DispatchEnabled, privateWriter, aiPrivateTargetResolver{uow: uow, identities: queries, access: accessRepository, relationships: relationships, corpID: cfg.WeCom.CorpID}, aiPrivatePayloadReader{content: aiRepository, images: mediaService, materials: mediaRepository}, providerClient)
+	if err != nil {
+		return fail(err)
+	}
 	var tagCatalogProvider externaleffects.ProviderAdapter
 	if cfg.TagCatalog.Enabled {
 		catalogReader, readerErr := outbound.NewWeComTagCatalogReader(providerClient)
@@ -663,7 +701,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		}
 		tagCatalogProvider = catalogProvider
 	}
-	if err = effectsModule.SetProviderAdapter(composedProviderRouter{outbound: outbound.NewProviderRouterWithGroupMessageAndChannels(tagCatalogProvider, groupOpsProvider, channelAssetProvider, channelEntrantProvider, channelLinkProvider), payment: paymentAdapter}); err != nil {
+	if err = effectsModule.SetProviderAdapter(composedProviderRouter{outbound: outbound.NewProviderRouterWithGroupMessageAndChannels(tagCatalogProvider, groupOpsProvider, channelAssetProvider, channelEntrantProvider, channelLinkProvider).WithPrivateMessage(privateProvider), payment: paymentAdapter}); err != nil {
 		return fail(err)
 	}
 	callbackReceipts := wecom.NewPostgreSQLCallbackReceiptStore()
@@ -761,6 +799,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	adminAPIs.Handle("/api/admin/channels/", channelCenter)
 	adminAPIs.Handle("/api/admin/wecom-customer-acquisition-links", channelLinkHandler)
 	adminAPIs.Handle("/api/admin/wecom-customer-acquisition-links/", channelLinkHandler)
+	adminAPIs.Handle("/api/admin/ai-assistant/", aiHandler.Routes())
 	mountSurveyAPIs(adminAPIs, surveyBindings.Survey)
 	adminAPIs.Handle("/api/admin/operation-cycles/", operationBindings.API)
 	adminAPIs.Handle("/api/operation-cycles/", operationBindings.API)
@@ -769,7 +808,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 			return checkErr
 		}
 		var complete bool
-		checkErr := pool.Native().QueryRow(readinessContext, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['0001','0002','0003','0004','0005','0006','0007','0008','0009','0010','0011','0012','0013','0014','0016','0017','0018','0019','0020','0021','0022','0023','0024','0025','0026','0027','0028','0029','0030','0031','0032','0033','0034','0035']) AS required(version) WHERE NOT EXISTS (SELECT 1 FROM platform_schema_migrations applied WHERE applied.version=required.version))`).Scan(&complete)
+		checkErr := pool.Native().QueryRow(readinessContext, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['0001','0002','0003','0004','0005','0006','0007','0008','0009','0010','0011','0012','0013','0014','0016','0017','0018','0019','0020','0021','0022','0023','0024','0025','0026','0027','0028','0029','0030','0031','0032','0033','0034','0035','0036','0037']) AS required(version) WHERE NOT EXISTS (SELECT 1 FROM platform_schema_migrations applied WHERE applied.version=required.version))`).Scan(&complete)
 		if checkErr != nil || !complete {
 			return errors.New("database schema is not ready")
 		}
@@ -777,6 +816,9 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 			return checkErr
 		}
 		if checkErr = mediaModule.Readiness(readinessContext, pool.Native()); checkErr != nil {
+			return checkErr
+		}
+		if checkErr = aiModule.Readiness(readinessContext, pool.Native()); checkErr != nil {
 			return checkErr
 		}
 		if checkErr = tagModule.Readiness(readinessContext, pool.Native()); checkErr != nil {
@@ -874,10 +916,14 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		endpoint := map[string]string{"channels": "api.admin_channels_page", "channelForm": "api.admin_channel_new_page"}[page]
 		return renderer.RenderChannels(writer, webshell.AdminPageForRequest(request, title, "管理渠道定义、客服分配、资产状态与安全历史归因。", endpoint), page, resourceID, donorTemplate, webshell.ChannelAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS})
 	})
+	aiUI := aiModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, page, donorTemplate string, assets aiassistant.Assets) error {
+		return renderer.RenderAIAssistant(writer, webshell.AdminPageForRequest(request, "AI 助手", "AI 计划审阅与可对账执行结果。", "api.admin_ai_assistant"), page, donorTemplate, webshell.AIAssistantAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, GroupCSS: assets.GroupCSS, MaterialCSS: assets.MaterialCSS, ComposerCSS: assets.ComposerCSS, ReadonlyCSS: assets.ReadonlyCSS, HostJS: assets.HostJS})
+	})
 	handler, err := routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(healthHandler, accessHandler.Routes(), adminAPIs, effectsBindings.Effects, effectsBindings.PushCenter, effectsUI, mediaBindings.Media, mediaUI, tagBindings.Tags, tagUI, productBindings.Products, productUI, couponBindings.Coupons, couponUI, channelCenter, groupOpsBindings.GroupOps, groupOpsUI, automationBindings.Agents, automationUI, operationUI, configBindings.Config, configUI, weComHandler, shellHandler, authentication, cfg.PublicOrigin)
 	if err != nil {
 		return fail(err)
 	}
+	handler = mountAIAssistant(handler, aiHandler.Routes(), aiUI, authentication, cfg.AIAssistant.UIEnabled, cfg.PublicOrigin)
 	handler = securityHeaders(mountChannelUI(mountHXCUI(mountOrderUI(mountSurveyUI(handler, surveyUI, surveyPublicUI, authentication), orderUI, authentication), hxcUI, authentication), channelUI, authentication))
 	// These are local observations only: they make the release and diagnostics
 	// projections truthful and readable after startup, without claiming deploy,
@@ -913,6 +959,25 @@ func mountHXCUI(next, dashboardUI http.Handler, authentication accessAuthenticat
 			return
 		}
 		next.ServeHTTP(writer, request)
+	})
+}
+
+func mountAIAssistant(next, api, ui http.Handler, authentication accessAuthentication, uiEnabled bool, publicOrigin string) http.Handler {
+	api = rejectCrossSiteUnsafeRequests(api, canonicalOrigin(publicOrigin))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/admin/ai-assistant/") || r.URL.Path == "/api/integrations/ai-assistant/review-plans" {
+			api.ServeHTTP(w, r)
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/ai-assistant-assets/") || r.URL.Path == "/admin/ai.html" || r.URL.Path == "/admin/aiDetail.html" || r.URL.Path == "/admin/cloud-orchestrator/plans" || strings.HasPrefix(r.URL.Path, "/admin/cloud-orchestrator/plans/") {
+			if !uiEnabled {
+				http.NotFound(w, r)
+				return
+			}
+			requireAdminSession(authentication, ui).ServeHTTP(w, r)
+			return
+		}
+		next.ServeHTTP(w, r)
 	})
 }
 
@@ -1263,7 +1328,8 @@ func securityHeaders(next http.Handler) http.Handler {
 		operationCyclesPage := request.URL.Path == "/admin/operation-cycles" || strings.HasPrefix(request.URL.Path, "/admin/operation-cycles/")
 		configPage := request.URL.Path == "/admin/config" || request.URL.Path == "/admin/config.html" || request.URL.Path == "/admin/configDetail.html" || request.URL.Path == "/admin/api-docs" || request.URL.Path == "/admin/apidocs.html"
 		hxcPage := request.URL.Path == "/admin/hxc-dashboard"
-		if (request.URL.Path == "/admin/campaigns.html" && externaleffects.ValidUIQuery(request.URL.Query())) || hxcPage || mediaPage || tagsPage || productPage || orderPage || couponPage || groupOpsPage || automationPage || surveyPage || operationCyclesPage || configPage {
+		aiAssistantPage := request.URL.Path == "/admin/ai.html" || request.URL.Path == "/admin/aiDetail.html" || request.URL.Path == "/admin/cloud-orchestrator/plans" || strings.HasPrefix(request.URL.Path, "/admin/cloud-orchestrator/plans/")
+		if (request.URL.Path == "/admin/campaigns.html" && externaleffects.ValidUIQuery(request.URL.Query())) || hxcPage || mediaPage || tagsPage || productPage || orderPage || couponPage || groupOpsPage || automationPage || surveyPage || operationCyclesPage || configPage || aiAssistantPage {
 			styleSource = "'self' 'unsafe-inline'"
 		}
 		imageSource := "'self' data:"

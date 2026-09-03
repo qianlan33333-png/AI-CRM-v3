@@ -2854,7 +2854,7 @@ paths:
       security: [{adminSession: [], csrfHeader: []}]
       parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}]
       requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantPlanCreateRequest"}}}}
-      responses: {"201": {description: Pending review plan; no external effect exists, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantPlanEnvelope"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "413": {$ref: "#/components/responses/Error"}, "422": {$ref: "#/components/responses/Error"}}
+      responses: {"200": {description: Exact idempotent replay, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantPlanEnvelope"}}}}, "201": {description: Pending review plan; no external effect exists, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantPlanEnvelope"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "413": {$ref: "#/components/responses/Error"}, "422": {$ref: "#/components/responses/Error"}}
   /api/admin/ai-assistant/plans/{plan_id}:
     get:
       operationId: getAIAssistantPlan
@@ -2925,7 +2925,7 @@ paths:
       operationId: listAIAssistantEffects
       tags: [AIAssistant]
       security: [{adminSession: []}]
-      parameters: [{$ref: "#/components/parameters/AIAssistantPlanID"}, {$ref: "#/components/parameters/AIAssistantCursor"}, {$ref: "#/components/parameters/AIAssistantLimit"}]
+      parameters: [{$ref: "#/components/parameters/AIAssistantPlanID"}]
       responses: {"200": {description: Digest-safe effect projections, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantEffectPage"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}}
   /api/admin/ai-assistant/effects/{effect_id}/reconcile:
     post:
@@ -2934,7 +2934,7 @@ paths:
       security: [{adminSession: [], csrfHeader: []}]
       parameters: [{$ref: "#/components/parameters/AIAssistantEffectID"}, {$ref: "#/components/parameters/RequiredIdempotencyKey"}]
       requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantReconcileRequest"}}}}
-      responses: {"200": {description: Original-key reconciliation result, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantEffect"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+      responses: {"200": {description: Original-key reconciliation result, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantReconcileResponse"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
   /api/integrations/ai-assistant/review-plans:
     post:
       operationId: createAIAssistantIntegrationPlan
@@ -2946,7 +2946,7 @@ paths:
         - {$ref: "#/components/parameters/AIAssistantIntegrationNonce"}
         - {$ref: "#/components/parameters/AIAssistantIntegrationSignature"}
       requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantIntegrationPlanRequest"}}}}
-      responses: {"202": {description: Scoped identities resolved into a new pending review plan; unresolved targets are not recipients, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantPlanEnvelope"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "413": {$ref: "#/components/responses/Error"}, "422": {$ref: "#/components/responses/Error"}}
+      responses: {"202": {description: Scoped identities resolved into a pending review plan; unresolved targets are reported but never persisted as recipients, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantIntegrationPlanResponse"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "413": {$ref: "#/components/responses/Error"}, "422": {$ref: "#/components/responses/Error"}}
 components:
   securitySchemes:
     adminSession: {type: apiKey, in: cookie, name: aicrm_admin_session}
@@ -3291,12 +3291,13 @@ components:
     AIAssistantEffect:
       type: object
       additionalProperties: false
-      required: [effect_id, recipient_id, state, generation, attempt_count, provider_accepted, delivery_proven, updated_at]
+      required: [effect_id, recipient_id, state, generation, fence, attempt_count, provider_accepted, delivery_proven, updated_at]
       properties:
         effect_id: {type: string, pattern: "^eer_[1-9][0-9]*$"}
         recipient_id: {$ref: "#/components/schemas/PositiveID"}
         state: {$ref: "#/components/schemas/AIAssistantExecutionState"}
         generation: {type: integer, format: int64, minimum: 0}
+        fence: {type: integer, format: int64, minimum: 0}
         attempt_count: {type: integer, minimum: 0}
         provider_accepted: {type: boolean}
         delivery_proven: {type: boolean}
@@ -3307,7 +3308,7 @@ components:
       required: [ok, items, next_cursor]
       properties:
         ok: {const: true}
-        items: {type: array, maxItems: 50, items: {$ref: "#/components/schemas/AIAssistantEffect"}}
+        items: {type: array, maxItems: 5000, items: {$ref: "#/components/schemas/AIAssistantEffect"}}
         next_cursor: {type: string, maxLength: 512}
     AIAssistantReconcileRequest:
       type: object
@@ -3318,12 +3319,19 @@ components:
         fence: {type: integer, format: int64, minimum: 1}
         evidence_digest: {$ref: "#/components/schemas/AIAssistantDigest"}
         reason: {type: string, minLength: 1, maxLength: 500}
+    AIAssistantReconcileResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, recipient]
+      properties:
+        ok: {const: true}
+        recipient: {$ref: "#/components/schemas/AIAssistantRecipient"}
     AIAssistantIntegrationIdentity:
       type: object
       additionalProperties: false
       required: [kind, scope, value, staff_id, content]
       properties:
-        kind: {type: string, enum: [wecom_external_userid, wechat_openid, wechat_unionid]}
+        kind: {type: string, enum: [wecom_external_userid, unionid, mp_openid, oa_openid]}
         scope: {type: string, minLength: 1, maxLength: 200}
         value: {type: string, minLength: 1, maxLength: 512, writeOnly: true}
         staff_id: {$ref: "#/components/schemas/PositiveID"}
@@ -3337,6 +3345,25 @@ components:
         source_kind: {type: string, minLength: 1, maxLength: 80}
         source_digest: {$ref: "#/components/schemas/AIAssistantDigest"}
         identities: {type: array, minItems: 1, maxItems: 5000, items: {$ref: "#/components/schemas/AIAssistantIntegrationIdentity"}}
+    AIAssistantIntegrationResolution:
+      type: object
+      additionalProperties: false
+      required: [found, not_found, conflict, invalid]
+      properties:
+        found: {type: integer, minimum: 0, maximum: 5000}
+        not_found: {type: integer, minimum: 0, maximum: 5000}
+        conflict: {type: integer, minimum: 0, maximum: 5000}
+        invalid: {type: integer, minimum: 0, maximum: 5000}
+    AIAssistantIntegrationPlanResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, plan, replayed, dispatch_ready, resolution]
+      properties:
+        ok: {const: true}
+        plan: {$ref: "#/components/schemas/AIAssistantPlan"}
+        replayed: {type: boolean}
+        dispatch_ready: {type: boolean}
+        resolution: {$ref: "#/components/schemas/AIAssistantIntegrationResolution"}
     LocalProjection:
       type: object
       required: [ok, items, source_status, local_only]

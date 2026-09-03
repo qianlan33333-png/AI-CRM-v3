@@ -175,6 +175,38 @@ func TestTagCatalogProviderRequiresNarrowExplicitPermission(t *testing.T) {
 	}
 }
 
+func TestAIAssistantIntakeAndDispatchFailClosed(t *testing.T) {
+	t.Setenv("AICRM_DATABASE_URL", "postgres://aicrm:test@localhost/aicrm")
+	t.Setenv("AICRM_AI_ASSISTANT_INTAKE_ENABLED", "true")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected incomplete integration configuration rejection")
+	}
+	t.Setenv("AICRM_AI_ASSISTANT_INTEGRATION_KEY", "automation")
+	t.Setenv("AICRM_AI_ASSISTANT_INTEGRATION_SECRET", strings.Repeat("s", 32))
+	t.Setenv("AICRM_AI_ASSISTANT_INTEGRATION_ACTOR_ID", "7")
+	cfg, err := Load()
+	if err != nil || !cfg.AIAssistant.IntakeEnabled || cfg.AIAssistant.DispatchEnabled {
+		t.Fatalf("config=%+v err=%v", cfg.AIAssistant, err)
+	}
+
+	t.Setenv("AICRM_AI_ASSISTANT_DISPATCH_ENABLED", "true")
+	if _, err = Load(); err == nil {
+		t.Fatal("expected dispatch without provider permission to fail closed")
+	}
+	t.Setenv("AICRM_OUTBOUND_PROVIDER_ENABLED", "true")
+	t.Setenv("AICRM_WECOM_ENABLED", "true")
+	t.Setenv("AICRM_WECOM_CORP_ID", "ww-corp")
+	t.Setenv("AICRM_WECOM_AGENT_ID", "1000002")
+	t.Setenv("AICRM_WECOM_SECRET", "provider-secret")
+	t.Setenv("AICRM_WECOM_CONTEXT_SIGNING_KEY", strings.Repeat("k", 32))
+	t.Setenv("AICRM_WECOM_CONTACT_SECRET", "contact-secret")
+	t.Setenv("AICRM_AI_ASSISTANT_PROVIDER_PERMISSION", "private-message-authorized")
+	cfg, err = Load()
+	if err != nil || !cfg.AIAssistant.DispatchEnabled || !cfg.Effects.ProviderEnabled || !cfg.WeCom.Enabled {
+		t.Fatalf("config=%+v err=%v", cfg, err)
+	}
+}
+
 func TestDatabaseURLPrecedenceAndValidation(t *testing.T) {
 	t.Setenv("DATABASE_URL", "postgres://fallback")
 	t.Setenv("AICRM_DATABASE_URL", "postgres://canonical")

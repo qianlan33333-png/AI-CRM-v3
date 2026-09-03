@@ -7,12 +7,14 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	aiassistantapp "github.com/qianlan33333-png/AI-CRM-v3/internal/aiassistant/app"
 	aiassistantdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/aiassistant/domain"
 	aiassistantport "github.com/qianlan33333-png/AI-CRM-v3/internal/aiassistant/port"
 	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
@@ -21,9 +23,9 @@ import (
 )
 
 var (
-	ErrInvalid  = errors.New("invalid AI Assistant persistence command")
-	ErrNotFound = errors.New("AI Assistant record not found")
-	ErrConflict = errors.New("AI Assistant persistence conflict")
+	ErrInvalid  = aiassistantapp.ErrInvalid
+	ErrNotFound = aiassistantapp.ErrNotFound
+	ErrConflict = aiassistantapp.ErrConflict
 )
 
 type Repository struct {
@@ -38,25 +40,50 @@ func NewPostgreSQL(pool *pgxpool.Pool, uow platformport.UnitOfWork) (*Repository
 	return &Repository{pool: pool, uow: uow}, nil
 }
 
-type Reservation struct {
-	Operation     string
-	ActorScope    string
-	KeyDigest     [32]byte
-	PayloadDigest [32]byte
-	CreatedAt     time.Time
-}
-
-type Receipt struct {
-	ID             int64
-	Operation      string
-	ActorScope     string
-	KeyDigest      [32]byte
-	PayloadDigest  [32]byte
-	State          string
-	ResultSnapshot json.RawMessage
-}
+type Reservation = aiassistantapp.Reservation
+type Receipt = aiassistantapp.Receipt
 
 func (r *Repository) UnitOfWork() platformport.UnitOfWork { return r.uow }
+
+func (r *Repository) LoadOutboundContent(ctx context.Context, reference string, expected effectport.Digest) (aiassistantport.ContentVersion, error) {
+	parts := strings.Split(reference, ":")
+	if len(parts) != 4 || parts[0] != "aiassistant" {
+		return aiassistantport.ContentVersion{}, ErrInvalid
+	}
+	planID, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil {
+		return aiassistantport.ContentVersion{}, ErrInvalid
+	}
+	recipientID, err := strconv.ParseInt(parts[2], 10, 64)
+	if err != nil {
+		return aiassistantport.ContentVersion{}, ErrInvalid
+	}
+	contentID, err := strconv.ParseInt(parts[3], 10, 64)
+	if err != nil {
+		return aiassistantport.ContentVersion{}, ErrInvalid
+	}
+	var content aiassistantport.ContentVersion
+	err = r.uow.Within(ctx, func(txctx context.Context) error {
+		recipient, value, readErr := r.GetRecipient(txctx, aiassistantport.PlanID(planID), aiassistantport.RecipientID(recipientID), false)
+		if readErr != nil {
+			return readErr
+		}
+		if int64(recipient.ContentVersionID) != contentID {
+			return ErrConflict
+		}
+		content = value
+		return nil
+	})
+	if err != nil {
+		return aiassistantport.ContentVersion{}, err
+	}
+	if content.Digest != expected {
+		return aiassistantport.ContentVersion{}, ErrConflict
+	}
+	return content, nil
+}
+
+var _ aiassistantport.OutboundPayloadReader = (*Repository)(nil)
 
 func (r *Repository) CreatePlan(ctx context.Context, aggregate aiassistantdomain.Plan, recipients []aiassistantport.RecipientCandidate, actor int64, now time.Time) (aiassistantport.Plan, []aiassistantport.Recipient, error) {
 	tx, err := platformpostgres.RequireTransaction(ctx)

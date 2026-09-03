@@ -15,8 +15,7 @@ Baseline: `AI-CRM@dd8d60dd8ddb983aca2ec88cc9e65a9f7563f79f`.
 - Replace raw external identities with OneID-safe display fields.
 - Derive actor from authenticated v3 context; ignore donor operator/action-token fields.
 - Individual approval is review-only. Whole-plan confirmation creates Outbound/EER effects.
-- Map donor `sent` to `provider_accepted` unless trusted delivery evidence exists.
+- Never map `provider_accepted` to donor `sent`; only trusted `delivery_proven` evidence may render the donor sent state.
 - Do not expose Campaign or Observability routes from this module.
 
 Donor SQL, identity matching, `broadcast_jobs`, `external_effect_job`, workers and Provider adapters are evidence only and are not migrated.
-

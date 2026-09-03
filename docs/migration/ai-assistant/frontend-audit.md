@@ -11,4 +11,3 @@
 | Campaign and Observability links | excluded | No capability added |
 
 Allowed adapter differences are limited to Jinja/shell bootstrap, generated API DTOs, OneID-safe fields, Session/CSRF/idempotency/version headers and honest effect status labels. Any other difference requires a manifest update and visual review.
-

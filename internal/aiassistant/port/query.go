@@ -46,46 +46,46 @@ const (
 )
 
 type Plan struct {
-	ID                  PlanID
-	Name                string
-	SourceKind          string
-	SourceDigest        effectport.Digest
-	State               PlanState
-	Version             int64
-	TargetCount         int
-	PendingCount        int
-	ApprovedCount       int
-	RejectedCount       int
-	IneligibleCount     int
-	NeedsAttentionCount int
-	CreatedBy           int64
-	CreatedAt           time.Time
-	UpdatedAt           time.Time
+	ID                  PlanID            `json:"id"`
+	Name                string            `json:"name"`
+	SourceKind          string            `json:"source_kind"`
+	SourceDigest        effectport.Digest `json:"source_digest"`
+	State               PlanState         `json:"state"`
+	Version             int64             `json:"version"`
+	TargetCount         int               `json:"target_count"`
+	PendingCount        int               `json:"pending_count"`
+	ApprovedCount       int               `json:"approved_count"`
+	RejectedCount       int               `json:"rejected_count"`
+	IneligibleCount     int               `json:"ineligible_count"`
+	NeedsAttentionCount int               `json:"needs_attention_count"`
+	CreatedBy           int64             `json:"created_by"`
+	CreatedAt           time.Time         `json:"created_at"`
+	UpdatedAt           time.Time         `json:"updated_at"`
 }
 
 type Recipient struct {
-	ID               RecipientID
-	PlanID           PlanID
-	CustomerID       customerdomain.CustomerID
-	CustomerName     string
-	OneIDLabel       string
-	StaffID          int64
-	StaffDisplayName string
-	ReviewState      ReviewState
-	ExecutionState   ExecutionState
-	Version          int64
-	ContentVersionID ContentVersionID
-	EffectID         string
-	UpdatedAt        time.Time
+	ID               RecipientID               `json:"id"`
+	PlanID           PlanID                    `json:"plan_id"`
+	CustomerID       customerdomain.CustomerID `json:"customer_id"`
+	CustomerName     string                    `json:"customer_name"`
+	OneIDLabel       string                    `json:"oneid_label"`
+	StaffID          int64                     `json:"staff_id"`
+	StaffDisplayName string                    `json:"staff_display_name"`
+	ReviewState      ReviewState               `json:"review_state"`
+	ExecutionState   ExecutionState            `json:"execution_state"`
+	Version          int64                     `json:"version"`
+	ContentVersionID ContentVersionID          `json:"content_version_id"`
+	EffectID         string                    `json:"effect_id,omitempty"`
+	UpdatedAt        time.Time                 `json:"updated_at"`
 }
 
 type ContentVersion struct {
-	ID          ContentVersionID
-	RecipientID RecipientID
-	Version     int64
-	Digest      effectport.Digest
-	Blocks      []ContentBlock
-	CreatedAt   time.Time
+	ID          ContentVersionID  `json:"id"`
+	RecipientID RecipientID       `json:"recipient_id"`
+	Version     int64             `json:"version"`
+	Digest      effectport.Digest `json:"digest"`
+	Blocks      []ContentBlock    `json:"blocks"`
+	CreatedAt   time.Time         `json:"created_at"`
 }
 
 type PlanListQuery struct {
@@ -96,8 +96,8 @@ type PlanListQuery struct {
 }
 
 type PlanPage struct {
-	Items      []Plan
-	NextCursor string
+	Items      []Plan `json:"items"`
+	NextCursor string `json:"next_cursor"`
 }
 
 type RecipientPageQuery struct {
@@ -108,8 +108,8 @@ type RecipientPageQuery struct {
 }
 
 type RecipientPage struct {
-	Items      []Recipient
-	NextCursor string
+	Items      []Recipient `json:"items"`
+	NextCursor string      `json:"next_cursor"`
 }
 
 type Reader interface {
@@ -145,10 +145,22 @@ type PreviewApprovalCommand struct {
 }
 
 type ApprovalPreview struct {
-	PlanID        PlanID
-	PlanVersion   int64
-	EligibleCount int
-	PreviewDigest effectport.Digest
+	PlanID        PlanID            `json:"plan_id"`
+	PlanVersion   int64             `json:"plan_version"`
+	EligibleCount int               `json:"eligible_count"`
+	PreviewDigest effectport.Digest `json:"preview_digest"`
+}
+
+type EffectBinding struct {
+	RecipientID      RecipientID    `json:"recipient_id"`
+	EffectID         string         `json:"effect_id"`
+	State            ExecutionState `json:"state"`
+	Generation       int64          `json:"generation"`
+	Fence            int64          `json:"fence"`
+	AttemptCount     int32          `json:"attempt_count"`
+	ProviderAccepted bool           `json:"provider_accepted"`
+	DeliveryProven   bool           `json:"delivery_proven"`
+	UpdatedAt        time.Time      `json:"updated_at"`
 }
 
 type ApprovePlanCommand struct {
@@ -184,4 +196,12 @@ type Reviewer interface {
 	ApprovePlan(context.Context, ApprovePlanCommand) (Plan, error)
 	RejectPlan(context.Context, RejectPlanCommand) (Plan, error)
 	ReconcileEffect(context.Context, ReconcileEffectCommand) (Recipient, error)
+}
+
+type EffectCompletionProjector interface {
+	CompleteExternalEffect(context.Context, string, ExecutionState, bool, bool, effectport.Digest, int32, int64, int64, time.Time) error
+}
+
+type OutboundPayloadReader interface {
+	LoadOutboundContent(context.Context, string, effectport.Digest) (ContentVersion, error)
 }

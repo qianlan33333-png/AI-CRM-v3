@@ -5,4 +5,3 @@
 - Classification: byte-frozen frontend evidence
 
 Do not edit files below this directory. Integrate through a deterministic v3 Host Adapter and verify with `scripts/check-ai-assistant-donor-manifest.sh`.
-
