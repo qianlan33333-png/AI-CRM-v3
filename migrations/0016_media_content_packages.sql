@@ -63,5 +63,37 @@ CREATE TABLE media_content_delivery_bindings (
     UNIQUE (campaign_code, plan_id)
 );
 
+-- Provider preparation is a Media-owned receipt/lease fact.  It is written
+-- only after an approved preparation adapter has received a Provider proof;
+-- Group Ops never writes this table and workers never resolve local media IDs
+-- against it.  Invite links intentionally have no row here because their
+-- captured title/url/description are already provider-ready local facts.
+CREATE TABLE media_group_ops_preparation_receipts (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    actor_admin_user_id BIGINT NOT NULL CHECK (actor_admin_user_id > 0),
+    idempotency_key_digest BYTEA NOT NULL CHECK (octet_length(idempotency_key_digest) = 32),
+    command_digest BYTEA NOT NULL CHECK (octet_length(command_digest) = 32),
+    item_count INTEGER NOT NULL CHECK (item_count >= 0 AND item_count <= 9),
+    required_through TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL,
+    completed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    UNIQUE (actor_admin_user_id, idempotency_key_digest)
+);
+
+CREATE TABLE media_group_ops_preparation_items (
+    preparation_receipt_id BIGINT NOT NULL REFERENCES media_group_ops_preparation_receipts(id) ON DELETE CASCADE,
+    position INTEGER NOT NULL CHECK (position >= 0 AND position <= 8),
+    material_kind TEXT NOT NULL CHECK (material_kind IN ('image','attachment','miniprogram')),
+    material_id BIGINT NOT NULL CHECK (material_id > 0),
+    source_digest TEXT NOT NULL CHECK (source_digest ~ '^sha256:[0-9a-f]{64}$'),
+    receipt_digest TEXT NOT NULL CHECK (receipt_digest ~ '^sha256:[0-9a-f]{64}$'),
+    ready_until TIMESTAMPTZ NOT NULL,
+    attachment JSONB NOT NULL CHECK (jsonb_typeof(attachment) = 'object'),
+    PRIMARY KEY (preparation_receipt_id, position)
+);
+
+CREATE INDEX media_group_ops_preparation_lookup_idx
+    ON media_group_ops_preparation_items(material_kind, material_id, source_digest, ready_until DESC, preparation_receipt_id DESC);
+
 CREATE INDEX media_content_package_versions_list_idx ON media_content_package_versions(package_id, version DESC);
 CREATE INDEX media_content_delivery_bindings_package_idx ON media_content_delivery_bindings(package_id);

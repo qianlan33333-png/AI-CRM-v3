@@ -1253,12 +1253,462 @@ paths:
       security: [{adminSession: []}]
       parameters: [{name: q, in: query, schema: {type: string}}, {name: product_type, in: query, schema: {type: string, enum: [all, standard_product, service_period]}}, {$ref: "#/components/parameters/Limit"}, {$ref: "#/components/parameters/Offset"}]
       responses: {"200": {description: Product-owned options, content: {application/json: {schema: {$ref: "#/components/schemas/CouponProductOptionPage"}}}}, "400": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}}
+  /api/admin/automation-conversion/group-ops/content-packages:
+    post:
+      operationId: createGroupOpsContentPackage
+      tags: [GroupOps]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsContentPackageRequest"}}}}
+      responses: {"201": {description: Media-owned content package version 1, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsContentPackage"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/automation-conversion/group-ops/content-packages/preview:
+    post:
+      operationId: previewGroupOpsContentPackage
+      tags: [GroupOps]
+      security: [{adminSession: []}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsContentPackageRequest"}}}}
+      responses: {"200": {description: Media-owned content package validation preview, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsContentPackage"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/automation-conversion/group-ops/content-packages/{package_id}:
+    parameters: [{name: package_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
+    put:
+      operationId: updateGroupOpsContentPackage
+      tags: [GroupOps]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsContentPackageUpdateRequest"}}}}
+      responses: {"200": {description: Media-owned content package with a new immutable version, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsContentPackage"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+    patch:
+      operationId: patchGroupOpsContentPackage
+      tags: [GroupOps]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsContentPackageUpdateRequest"}}}}
+      responses: {"200": {description: Media-owned content package with a new immutable version, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsContentPackage"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/automation-conversion/group-ops/content-packages/{package_id}/versions:
+    parameters: [{name: package_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
+    post:
+      operationId: createGroupOpsContentPackageVersion
+      tags: [GroupOps]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsContentPackageUpdateRequest"}}}}
+      responses: {"200": {description: Media-owned content package with a new immutable version, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsContentPackage"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/automation-conversion/group-ops/content-packages/bind:
+    post:
+      operationId: bindGroupOpsContentPackage
+      tags: [GroupOps]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsContentBindingRequest"}}}}
+      responses: {"200": {description: Media-owned content package delivery binding, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsContentBinding"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/automation-conversion/group-ops/content-packages/bindings/{campaign_code}/{content_plan_id}:
+    parameters:
+      - {name: campaign_code, in: path, required: true, schema: {type: string, maxLength: 200, pattern: "^[A-Za-z0-9._:-]{1,200}$"}}
+      - {name: content_plan_id, in: path, required: true, schema: {type: string, maxLength: 200, pattern: "^[A-Za-z0-9._:-]{1,200}$"}}
+    get:
+      operationId: getGroupOpsContentPackageBinding
+      tags: [GroupOps]
+      security: [{adminSession: []}]
+      responses: {"200": {description: Media-owned content package delivery binding, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsContentBinding"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/automation-conversion/group-ops/plans:
+    get:
+      operationId: listGroupOpsPlans
+      tags: [GroupOps]
+      security: [{adminSession: []}]
+      parameters:
+        - {$ref: "#/components/parameters/Limit"}
+        - {$ref: "#/components/parameters/Offset"}
+      responses:
+        "200": {description: Local Group Ops plan page, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsPlanPage"}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+    post:
+      operationId: createGroupOpsPlan
+      tags: [GroupOps]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/IdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsPlanCreateRequest"}}}}
+      responses:
+        "201": {description: Created local draft, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsPlanDetail"}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/admin/automation-conversion/group-ops/plans/{plan_id}:
+    parameters: [{$ref: "#/components/parameters/GroupOpsPlanID"}]
+    get:
+      operationId: getGroupOpsPlan
+      tags: [GroupOps]
+      security: [{adminSession: []}]
+      responses:
+        "200": {description: Local Group Ops plan detail, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsPlanDetail"}}}}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+    patch:
+      operationId: updateGroupOpsPlan
+      tags: [GroupOps]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/IdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsPlanUpdateRequest"}}}}
+      responses:
+        "200": {description: Updated local draft, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsPlanDetail"}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+    put:
+      operationId: putGroupOpsPlan
+      tags: [GroupOps]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/IdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsPlanUpdateRequest"}}}}
+      responses:
+        "200": {description: Updated local draft, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsPlanDetail"}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+    delete:
+      operationId: deleteGroupOpsPlan
+      tags: [GroupOps]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsRevisionRequest"}}}}
+      responses:
+        "200": {description: Archived local plan, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsPlanDetail"}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/admin/automation-conversion/group-ops/plans/{plan_id}/activate:
+    parameters: [{$ref: "#/components/parameters/GroupOpsPlanID"}]
+    post:
+      operationId: activateGroupOpsPlan
+      tags: [GroupOps]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsRevisionRequest"}}}}
+      responses:
+        "200": {description: Activated local plan, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsPlanDetail"}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/admin/automation-conversion/group-ops/plans/{plan_id}/enable:
+    parameters: [{$ref: "#/components/parameters/GroupOpsPlanID"}]
+    post:
+      operationId: enableGroupOpsPlan
+      tags: [GroupOps]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsRevisionRequest"}}}}
+      responses: {"200": {description: Activated local plan, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsPlanDetail"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/automation-conversion/group-ops/plans/{plan_id}/pause:
+    parameters: [{$ref: "#/components/parameters/GroupOpsPlanID"}]
+    post:
+      operationId: pauseGroupOpsPlan
+      tags: [GroupOps]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsRevisionRequest"}}}}
+      responses: {"200": {description: Paused local plan, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsPlanDetail"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/automation-conversion/group-ops/plans/{plan_id}/disable:
+    parameters: [{$ref: "#/components/parameters/GroupOpsPlanID"}]
+    post:
+      operationId: disableGroupOpsPlan
+      tags: [GroupOps]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsRevisionRequest"}}}}
+      responses: {"200": {description: Paused local plan, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsPlanDetail"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/automation-conversion/group-ops/plans/{plan_id}/archive:
+    parameters: [{$ref: "#/components/parameters/GroupOpsPlanID"}]
+    post:
+      operationId: archiveGroupOpsPlan
+      tags: [GroupOps]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsRevisionRequest"}}}}
+      responses: {"200": {description: Archived local plan, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsPlanDetail"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/automation-conversion/group-ops/plans/{plan_id}/members:
+    parameters: [{$ref: "#/components/parameters/GroupOpsPlanID"}]
+    get:
+      operationId: listGroupOpsPlanMembers
+      tags: [GroupOps]
+      security: [{adminSession: []}]
+      parameters: [{$ref: "#/components/parameters/Limit"}, {$ref: "#/components/parameters/Offset"}]
+      responses: {"200": {description: Local staff scope, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsMemberPage"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+    post:
+      operationId: addGroupOpsPlanMember
+      tags: [GroupOps]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsMemberRequest"}}}}
+      responses: {"200": {description: Updated local plan, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsPlanDetail"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/automation-conversion/group-ops/plans/{plan_id}/members/{staff_id}:
+    parameters: [{$ref: "#/components/parameters/GroupOpsPlanID"}, {$ref: "#/components/parameters/GroupOpsStaffID"}]
+    delete:
+      operationId: removeGroupOpsPlanMember
+      tags: [GroupOps]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsRevisionRequest"}}}}
+      responses: {"200": {description: Updated local plan, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsPlanDetail"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/automation-conversion/group-ops/plans/{plan_id}/group-assets:
+    parameters: [{$ref: "#/components/parameters/GroupOpsPlanID"}]
+    get:
+      operationId: listGroupOpsPlanGroupAssets
+      tags: [GroupOps]
+      security: [{adminSession: []}]
+      parameters: [{$ref: "#/components/parameters/Limit"}, {$ref: "#/components/parameters/Offset"}]
+      responses: {"200": {description: Local opaque group references, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsGroupAssetPage"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+    post:
+      operationId: addGroupOpsPlanGroupAsset
+      tags: [GroupOps]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsGroupAssetRequest"}}}}
+      responses: {"200": {description: Updated local plan, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsPlanDetail"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/automation-conversion/group-ops/plans/{plan_id}/group-assets/{asset_reference}:
+    parameters: [{$ref: "#/components/parameters/GroupOpsPlanID"}, {$ref: "#/components/parameters/GroupOpsAssetReference"}]
+    delete:
+      operationId: removeGroupOpsPlanGroupAsset
+      tags: [GroupOps]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsRevisionRequest"}}}}
+      responses: {"200": {description: Updated local plan, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsPlanDetail"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/automation-conversion/group-ops/plans/{plan_id}/groups:
+    parameters: [{$ref: "#/components/parameters/GroupOpsPlanID"}]
+    get:
+      operationId: listGroupOpsPlanGroups
+      tags: [GroupOps]
+      security: [{adminSession: []}]
+      parameters: [{$ref: "#/components/parameters/Limit"}, {$ref: "#/components/parameters/Offset"}]
+      responses: {"200": {description: Local opaque group references, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsGroupAssetPage"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+    post:
+      operationId: addGroupOpsPlanGroup
+      tags: [GroupOps]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsGroupAssetRequest"}}}}
+      responses: {"200": {description: Updated local plan, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsPlanDetail"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/automation-conversion/group-ops/plans/{plan_id}/groups/{chat_id}:
+    parameters: [{$ref: "#/components/parameters/GroupOpsPlanID"}, {$ref: "#/components/parameters/GroupOpsChatID"}]
+    delete:
+      operationId: removeGroupOpsPlanGroup
+      tags: [GroupOps]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsRevisionRequest"}}}}
+      responses: {"200": {description: Updated local plan, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsPlanDetail"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/automation-conversion/group-ops/plans/{plan_id}/nodes:
+    parameters: [{$ref: "#/components/parameters/GroupOpsPlanID"}]
+    get:
+      operationId: listGroupOpsPlanNodes
+      tags: [GroupOps]
+      security: [{adminSession: []}]
+      parameters: [{$ref: "#/components/parameters/Limit"}, {$ref: "#/components/parameters/Offset"}]
+      responses: {"200": {description: Ordered local message/delay nodes, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsNodePage"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+    post:
+      operationId: addGroupOpsPlanNode
+      tags: [GroupOps]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsNodeRequest"}}}}
+      responses: {"200": {description: Updated local plan, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsPlanDetail"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/automation-conversion/group-ops/plans/{plan_id}/nodes/{node_id}:
+    parameters: [{$ref: "#/components/parameters/GroupOpsPlanID"}, {$ref: "#/components/parameters/GroupOpsNodeID"}]
+    patch:
+      operationId: updateGroupOpsPlanNode
+      tags: [GroupOps]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsNodeRequest"}}}}
+      responses: {"200": {description: Updated local plan, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsPlanDetail"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+    put:
+      operationId: putGroupOpsPlanNode
+      tags: [GroupOps]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsNodeRequest"}}}}
+      responses: {"200": {description: Updated local plan, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsPlanDetail"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+    delete:
+      operationId: removeGroupOpsPlanNode
+      tags: [GroupOps]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsRevisionRequest"}}}}
+      responses: {"200": {description: Updated local plan, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsPlanDetail"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/automation-conversion/group-ops/plans/{plan_id}/webhook-descriptor:
+    parameters: [{$ref: "#/components/parameters/GroupOpsPlanID"}]
+    get:
+      operationId: getGroupOpsWebhookDescriptor
+      tags: [GroupOps]
+      security: [{adminSession: []}]
+      responses: {"200": {description: Local HMAC descriptor without secret material, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsWebhookDescriptor"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+    put:
+      operationId: putGroupOpsWebhookDescriptor
+      tags: [GroupOps]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsWebhookDescriptorRequest"}}}}
+      responses: {"200": {description: Updated local plan, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsPlanDetail"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/automation-conversion/group-ops/plans/{plan_id}/webhook:
+    parameters: [{$ref: "#/components/parameters/GroupOpsPlanID"}]
+    get:
+      operationId: getGroupOpsWebhook
+      tags: [GroupOps]
+      security: [{adminSession: []}]
+      responses: {"200": {description: Local HMAC descriptor without secret material, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsWebhookDescriptor"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/automation-conversion/group-ops/plans/{plan_id}/content/preview:
+    parameters: [{$ref: "#/components/parameters/GroupOpsPlanID"}]
+    post:
+      operationId: previewGroupOpsPlanContent
+      tags: [GroupOps]
+      security: [{adminSession: []}]
+      responses: {"200": {description: Persisted content and material validation, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsContentValidation"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/automation-conversion/group-ops/plans/{plan_id}/run-due/preview:
+    parameters: [{$ref: "#/components/parameters/GroupOpsPlanID"}]
+    post:
+      operationId: previewGroupOpsRunDue
+      tags: [GroupOps]
+      security: [{adminSession: []}]
+      responses: {"200": {description: Local run candidate preview, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsRunDuePreview"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/automation-conversion/group-ops/plans/{plan_id}/run-due:
+    parameters: [{$ref: "#/components/parameters/GroupOpsPlanID"}]
+    post:
+      operationId: acceptGroupOpsRunDue
+      tags: [GroupOps]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      responses: {"202": {description: Durable local run and EER intents accepted; Provider remains disabled, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsRunSummary"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/automation-conversion/group-ops/plans/{plan_id}/executions:
+    parameters: [{$ref: "#/components/parameters/GroupOpsPlanID"}]
+    get:
+      operationId: listGroupOpsExecutions
+      tags: [GroupOps]
+      security: [{adminSession: []}]
+      parameters: [{$ref: "#/components/parameters/Limit"}, {$ref: "#/components/parameters/Offset"}]
+      responses: {"200": {description: Local execution projection, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsExecutionPage"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/automation-conversion/group-ops/plans/{plan_id}/executions/{execution_id}/reconcile:
+    parameters: [{$ref: "#/components/parameters/GroupOpsPlanID"}, {$ref: "#/components/parameters/GroupOpsExecutionID"}]
+    post:
+      operationId: reconcileGroupOpsPlanExecution
+      tags: [GroupOps]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsReconcileRequest"}}}}
+      responses: {"200": {description: Reconciled local execution only after verified evidence, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsExecution"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/automation-conversion/group-ops/plans/executions/{execution_id}/reconcile:
+    parameters: [{$ref: "#/components/parameters/GroupOpsExecutionID"}]
+    post:
+      operationId: reconcileGroupOpsExecution
+      tags: [GroupOps]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsReconcileRequest"}}}}
+      responses: {"200": {description: Reconciled local execution only after verified evidence, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsExecution"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/automation-conversion/group-ops/groups:
+    get:
+      operationId: listGroupOpsDirectoryGroups
+      tags: [GroupOps]
+      security: [{adminSession: []}]
+      parameters:
+        - {name: owner_userid, in: query, schema: {$ref: "#/components/schemas/PositiveID"}}
+        - {$ref: "#/components/parameters/Limit"}
+        - {$ref: "#/components/parameters/Offset"}
+      responses: {"200": {description: Local group directory projection, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsDirectoryPage"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+    post:
+      operationId: syncGroupOpsDirectoryGroups
+      tags: [GroupOps]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsDirectorySyncRequest"}}}}
+      responses: {"200": {description: Refreshed local group directory projection, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsDirectoryPage"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/automation-conversion/group-ops/groups/sync:
+    post:
+      operationId: syncGroupOpsDirectoryGroupsAlias
+      tags: [GroupOps]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsDirectorySyncRequest"}}}}
+      responses: {"200": {description: Refreshed local group directory projection, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsDirectoryPage"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/automation-conversion/group-ops/group-picker:
+    get:
+      operationId: listGroupOpsGroupPicker
+      tags: [GroupOps]
+      security: [{adminSession: []}]
+      parameters:
+        - {name: owner_userid, in: query, schema: {$ref: "#/components/schemas/PositiveID"}}
+        - {$ref: "#/components/parameters/Limit"}
+        - {$ref: "#/components/parameters/Offset"}
+      responses: {"200": {description: Local group picker projection, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsDirectoryPage"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/automation-conversion/group-ops/group-picker/sync:
+    post:
+      operationId: syncGroupOpsGroupPicker
+      tags: [GroupOps]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsDirectorySyncRequest"}}}}
+      responses: {"200": {description: Refreshed local group picker projection, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsDirectoryPage"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/common/operation-members:
+    get:
+      operationId: listGroupOpsOperationMembers
+      tags: [GroupOps]
+      security: [{adminSession: []}]
+      parameters:
+        - {name: scope, in: query, required: true, schema: {type: string, const: group_ops}}
+        - {name: page_size, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 100}}
+      responses: {"200": {description: Local eligible staff only, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsOperationMemberPage"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+    post:
+      operationId: syncGroupOpsOperationMembers
+      tags: [GroupOps]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsOperationMemberSyncRequest"}}}}
+      responses: {"200": {description: Refreshed local eligible staff only, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsOperationMemberPage"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/automation/group-ops/broadcast:
+    post:
+      operationId: acceptGroupOpsBroadcast
+      tags: [GroupOps]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsBroadcastRequest"}}}}
+      responses: {"202": {description: Durable local run/EER intent accepted; Provider remains disabled, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsRunSummary"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/automation/group-ops/webhooks/{webhook_key}:
+    parameters:
+      - {$ref: "#/components/parameters/GroupOpsWebhookKey"}
+      - {$ref: "#/components/parameters/GroupOpsWebhookClientID"}
+      - {$ref: "#/components/parameters/GroupOpsWebhookTimestamp"}
+      - {$ref: "#/components/parameters/GroupOpsWebhookEventID"}
+      - {$ref: "#/components/parameters/GroupOpsWebhookSignature"}
+    post:
+      operationId: acceptGroupOpsWebhook
+      tags: [GroupOps]
+      security: [{groupOpsWebhook: []}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: true}}}}
+      responses: {"202": {description: Durable local run/EER intent accepted after HMAC and digest-only replay claim; Provider remains disabled, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsRunSummary"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
 components:
   securitySchemes:
     adminSession: {type: apiKey, in: cookie, name: aicrm_admin_session}
     sidebarSession: {type: apiKey, in: cookie, name: aicrm_sidebar_session}
     csrfHeader: {type: apiKey, in: header, name: X-CSRF-Token}
     contextToken: {type: http, scheme: bearer}
+    groupOpsWebhook: {type: apiKey, in: header, name: X-AICRM-Signature}
   parameters:
     ID: {name: id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
     ProductID: {name: product_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
@@ -1291,6 +1741,17 @@ components:
     Timestamp: {name: timestamp, in: query, required: true, schema: {type: string, pattern: "^[0-9]+$"}}
     Nonce: {name: nonce, in: query, required: true, schema: {type: string}}
     RequiredIdempotencyKey: {name: Idempotency-Key, in: header, required: true, schema: {type: string, minLength: 8, maxLength: 200}}
+    GroupOpsPlanID: {name: plan_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
+    GroupOpsStaffID: {name: staff_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
+    GroupOpsAssetReference: {name: asset_reference, in: path, required: true, schema: {type: string, minLength: 1, maxLength: 128, pattern: "^[A-Za-z0-9._:-]{1,128}$"}}
+    GroupOpsChatID: {name: chat_id, in: path, required: true, schema: {type: string, minLength: 1, maxLength: 128, pattern: "^[A-Za-z0-9._:-]{1,128}$"}}
+    GroupOpsNodeID: {name: node_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
+    GroupOpsExecutionID: {name: execution_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
+    GroupOpsWebhookKey: {name: webhook_key, in: path, required: true, schema: {type: string, minLength: 1, maxLength: 128, pattern: "^[A-Za-z0-9._:-]{1,128}$"}}
+    GroupOpsWebhookClientID: {name: X-AICRM-Client-Id, in: header, required: true, schema: {type: string, const: aicrm-webhook-group-ops}}
+    GroupOpsWebhookTimestamp: {name: X-AICRM-Timestamp, in: header, required: true, schema: {type: string, pattern: "^[0-9]{1,20}$"}}
+    GroupOpsWebhookEventID: {name: X-AICRM-Event-Id, in: header, required: true, schema: {type: string, minLength: 1, maxLength: 256}}
+    GroupOpsWebhookSignature: {name: X-AICRM-Signature, in: header, required: true, schema: {type: string, pattern: "^[0-9a-fA-F]{64}$"}}
   responses:
     Error: {description: Stable error response, content: {application/json: {schema: {$ref: "#/components/schemas/ErrorResponse"}}}}
     Unavailable: {description: Dependency or provider unavailable, content: {application/json: {schema: {$ref: "#/components/schemas/ErrorResponse"}}}}
@@ -1631,6 +2092,415 @@ components:
         channels: {type: array, items: {type: object, additionalProperties: false, required: [id, channel_name, channel_code, status, assignee_count, channel_contact_count, created_at, updated_at], properties: {id: {$ref: "#/components/schemas/PositiveID"}, channel_name: {type: string}, channel_code: {type: string}, status: {type: string}, assignee_count: {type: integer, minimum: 0}, channel_contact_count: {type: integer, minimum: 0}, created_at: {type: string}, updated_at: {type: string}}}}
         reason: {const: channels_listed}
         source: {const: ai_crm_next}
+    GroupOpsSafety:
+      type: object
+      required: [provider_execution_eligible, real_external_call_executed]
+      properties:
+        provider_execution_eligible: {const: false}
+        real_external_call_executed: {const: false}
+    GroupOpsRuntimeSafety:
+      type: object
+      required: [provider_execution_eligible, real_external_call_executed, provider_accepted, delivery_proven]
+      properties:
+        provider_execution_eligible: {type: boolean}
+        real_external_call_executed: {const: false}
+        provider_accepted: {type: boolean}
+        delivery_proven: {type: boolean}
+    GroupOpsPlanStatus: {type: string, enum: [draft, active, paused, archived]}
+    GroupOpsPlan:
+      type: object
+      additionalProperties: false
+      required: [plan_id, name, status, revision, created_by, updated_by, created_at, updated_at]
+      properties:
+        plan_id: {type: string, pattern: "^[1-9][0-9]{0,18}$"}
+        name: {type: string, minLength: 1, maxLength: 128}
+        status: {$ref: "#/components/schemas/GroupOpsPlanStatus"}
+        revision: {type: integer, format: int64, minimum: 1}
+        created_by: {$ref: "#/components/schemas/PositiveID"}
+        updated_by: {$ref: "#/components/schemas/PositiveID"}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    GroupOpsPlanListItem:
+      allOf:
+        - {$ref: "#/components/schemas/GroupOpsPlan"}
+        - type: object
+          required: [queue_count]
+          properties: {queue_count: {type: integer, minimum: 0}}
+    GroupOpsMember:
+      type: object
+      additionalProperties: false
+      required: [staff_id]
+      properties: {staff_id: {$ref: "#/components/schemas/PositiveID"}}
+    GroupOpsGroupAsset:
+      type: object
+      additionalProperties: false
+      required: [group_asset_id, asset_reference]
+      properties:
+        group_asset_id: {type: string, pattern: "^[1-9][0-9]{0,18}$"}
+        asset_reference: {type: string, minLength: 1, maxLength: 128, pattern: "^[A-Za-z0-9._:-]{1,128}$"}
+    GroupOpsNodeKind: {type: string, enum: [message, delay]}
+    GroupOpsMaterialReference:
+      type: object
+      additionalProperties: false
+      required: [kind, id]
+      properties:
+        kind: {type: string, enum: [image, miniprogram, attachment, group_invite]}
+        id: {$ref: "#/components/schemas/PositiveID"}
+    GroupOpsMaterialPlan:
+      type: object
+      additionalProperties: false
+      required: [references]
+      properties: {references: {type: array, maxItems: 9, items: {$ref: "#/components/schemas/GroupOpsMaterialReference"}}}
+    GroupOpsContentPackageReference:
+      type: object
+      additionalProperties: false
+      required: [kind, id]
+      properties:
+        kind: {type: string, enum: [image, attachment, miniprogram, group_invite]}
+        id: {$ref: "#/components/schemas/PositiveID"}
+    GroupOpsContentPackage:
+      type: object
+      additionalProperties: false
+      required: [id, name, content_text, enabled, version, refs]
+      properties:
+        id: {$ref: "#/components/schemas/PositiveID"}
+        name: {type: string, minLength: 1, maxLength: 200}
+        content_text: {type: string, maxLength: 10000}
+        enabled: {type: boolean}
+        version: {type: integer, minimum: 1}
+        refs: {type: array, maxItems: 100, items: {$ref: "#/components/schemas/GroupOpsContentPackageReference"}}
+    GroupOpsContentPackageRequest:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name: {type: string, minLength: 1, maxLength: 200}
+        content_text: {type: string, maxLength: 10000}
+        enabled: {type: boolean, default: true}
+        refs: {type: array, maxItems: 100, items: {$ref: "#/components/schemas/GroupOpsContentPackageReference"}}
+    GroupOpsContentPackageUpdateRequest:
+      type: object
+      additionalProperties: false
+      required: [name, expected_version]
+      properties:
+        name: {type: string, minLength: 1, maxLength: 200}
+        content_text: {type: string, maxLength: 10000}
+        enabled: {type: boolean, default: true}
+        refs: {type: array, maxItems: 100, items: {$ref: "#/components/schemas/GroupOpsContentPackageReference"}}
+        expected_version: {type: integer, minimum: 1}
+    GroupOpsContentBindingRequest:
+      type: object
+      additionalProperties: false
+      required: [campaign_code, plan_id, package_id, group_invite_id]
+      properties:
+        campaign_code: {type: string, minLength: 1, maxLength: 200, pattern: "^[A-Za-z0-9._:-]{1,200}$"}
+        plan_id: {type: string, minLength: 1, maxLength: 200, pattern: "^[A-Za-z0-9._:-]{1,200}$"}
+        package_id: {$ref: "#/components/schemas/PositiveID"}
+        group_invite_id: {$ref: "#/components/schemas/PositiveID"}
+        expected_version: {type: integer, minimum: 0, default: 0}
+    GroupOpsContentBinding:
+      type: object
+      additionalProperties: false
+      required: [id, campaign_code, plan_id, package_id, group_invite_id, version]
+      properties:
+        id: {$ref: "#/components/schemas/PositiveID"}
+        campaign_code: {type: string, minLength: 1, maxLength: 200}
+        plan_id: {type: string, minLength: 1, maxLength: 200}
+        package_id: {$ref: "#/components/schemas/PositiveID"}
+        group_invite_id: {$ref: "#/components/schemas/PositiveID"}
+        version: {type: integer, minimum: 1}
+    GroupOpsNode:
+      type: object
+      additionalProperties: false
+      required: [node_id, position, kind, material_plan]
+      properties:
+        node_id: {type: string, pattern: "^[1-9][0-9]{0,18}$"}
+        position: {type: integer, minimum: 1, maximum: 1000}
+        kind: {$ref: "#/components/schemas/GroupOpsNodeKind"}
+        message_text: {type: string, maxLength: 1000}
+        delay_minutes: {type: integer, minimum: 1, maximum: 10080}
+        material_reference: {type: string, maxLength: 128, pattern: "^[A-Za-z0-9._:-]{1,128}$", deprecated: true}
+        material_plan: {$ref: "#/components/schemas/GroupOpsMaterialPlan"}
+    GroupOpsWebhookDescriptor:
+      allOf:
+        - {$ref: "#/components/schemas/GroupOpsSafety"}
+        - type: object
+          additionalProperties: false
+          required: [configured, description]
+          properties:
+            configured: {type: boolean}
+            reference: {type: string, maxLength: 128, pattern: "^[A-Za-z0-9._:-]{1,128}$"}
+            path: {type: string, maxLength: 256, pattern: "^/api/automation/group-ops/webhooks/[A-Za-z0-9._:-]{1,128}$"}
+            url: {type: string, maxLength: 256, pattern: "^/api/automation/group-ops/webhooks/[A-Za-z0-9._:-]{1,128}$"}
+            signature_algorithm: {type: string, const: HMAC-SHA256}
+            signature_header: {type: string, const: X-AICRM-Signature}
+            timestamp_header: {type: string, const: X-AICRM-Timestamp}
+            nonce_header: {type: string, const: X-AICRM-Event-Id}
+            client_id_header: {type: string, const: X-AICRM-Client-Id}
+            client_id: {type: string, const: aicrm-webhook-group-ops}
+            description: {type: string, enum: [not configured, "same-origin webhook endpoint; signing credentials are withheld"]}
+    GroupOpsPlanDetail:
+      allOf:
+        - {$ref: "#/components/schemas/GroupOpsSafety"}
+        - type: object
+          additionalProperties: false
+          required: [plan, members, group_assets, nodes, webhook_descriptor]
+          properties:
+            plan: {$ref: "#/components/schemas/GroupOpsPlan"}
+            members: {type: array, items: {$ref: "#/components/schemas/GroupOpsMember"}}
+            group_assets: {type: array, items: {$ref: "#/components/schemas/GroupOpsGroupAsset"}}
+            nodes: {type: array, items: {$ref: "#/components/schemas/GroupOpsNode"}}
+            webhook_descriptor: {$ref: "#/components/schemas/GroupOpsWebhookDescriptor"}
+    GroupOpsPlanPage:
+      allOf:
+        - {$ref: "#/components/schemas/GroupOpsSafety"}
+        - type: object
+          required: [items, total, limit, offset, has_more]
+          properties:
+            items: {type: array, items: {$ref: "#/components/schemas/GroupOpsPlanListItem"}}
+            total: {type: integer, minimum: 0}
+            limit: {type: integer, minimum: 1, maximum: 100}
+            offset: {type: integer, minimum: 0}
+            has_more: {type: boolean}
+    GroupOpsMemberPage:
+      allOf:
+        - {$ref: "#/components/schemas/GroupOpsSafety"}
+        - type: object
+          required: [items, total, limit, offset, has_more]
+          properties:
+            items: {type: array, items: {$ref: "#/components/schemas/GroupOpsMember"}}
+            total: {type: integer, minimum: 0}
+            limit: {type: integer, minimum: 1, maximum: 100}
+            offset: {type: integer, minimum: 0}
+            has_more: {type: boolean}
+    GroupOpsGroupAssetPage:
+      allOf:
+        - {$ref: "#/components/schemas/GroupOpsSafety"}
+        - type: object
+          required: [items, total, limit, offset, has_more]
+          properties:
+            items: {type: array, items: {$ref: "#/components/schemas/GroupOpsGroupAsset"}}
+            total: {type: integer, minimum: 0}
+            limit: {type: integer, minimum: 1, maximum: 100}
+            offset: {type: integer, minimum: 0}
+            has_more: {type: boolean}
+    GroupOpsNodePage:
+      allOf:
+        - {$ref: "#/components/schemas/GroupOpsSafety"}
+        - type: object
+          required: [items, total, limit, offset, has_more]
+          properties:
+            items: {type: array, items: {$ref: "#/components/schemas/GroupOpsNode"}}
+            total: {type: integer, minimum: 0}
+            limit: {type: integer, minimum: 1, maximum: 100}
+            offset: {type: integer, minimum: 0}
+            has_more: {type: boolean}
+    GroupOpsContentValidation:
+      allOf:
+        - {$ref: "#/components/schemas/GroupOpsSafety"}
+        - type: object
+          required: [valid, issue_codes, preview_lines, node_count, group_asset_count]
+          properties:
+            valid: {type: boolean}
+            issue_codes: {type: array, items: {type: string}}
+            preview_lines: {type: array, items: {type: string}}
+            node_count: {type: integer, minimum: 0}
+            group_asset_count: {type: integer, minimum: 0}
+    GroupOpsRunDuePreview:
+      allOf:
+        - {$ref: "#/components/schemas/GroupOpsRuntimeSafety"}
+        - type: object
+          required: [plan_id, plan_status, snapshot_revision, evaluated_at, due_execution_count, blockers]
+          properties:
+            plan_id: {type: string, pattern: "^[1-9][0-9]{0,18}$"}
+            plan_status: {$ref: "#/components/schemas/GroupOpsPlanStatus"}
+            snapshot_revision: {type: integer, minimum: 1}
+            evaluated_at: {type: string, format: date-time}
+            due_execution_count: {type: integer, minimum: 0}
+            next_due_at: {type: string, format: date-time}
+            blockers: {type: array, items: {type: string}}
+    GroupOpsRunTrigger: {type: string, enum: [run_due, broadcast, webhook]}
+    GroupOpsRun:
+      type: object
+      additionalProperties: false
+      required: [run_id, plan_id, trigger, plan_revision, scheduled_for, accepted_at, accepted_by]
+      properties:
+        run_id: {type: string, pattern: "^[1-9][0-9]{0,18}$"}
+        plan_id: {type: string, pattern: "^[1-9][0-9]{0,18}$"}
+        trigger: {$ref: "#/components/schemas/GroupOpsRunTrigger"}
+        plan_revision: {type: integer, minimum: 1}
+        scheduled_for: {type: string, format: date-time}
+        accepted_at: {type: string, format: date-time}
+        accepted_by: {type: string, minLength: 3, maxLength: 140}
+    GroupOpsExecutionState: {type: string, enum: [accepted, provider_accepted, delivery_proven, outcome_unknown, reconciled, final_failed]}
+    GroupOpsExecution:
+      type: object
+      additionalProperties: false
+      required: [execution_id, run_id, plan_id, plan_revision, node_id, node_position, target_reference, target_digest, content_digest, material_digest, external_effect_id, state, provider_accepted, delivery_proven, attempt_count, provider_receipt_present, reconciliation_evidence_present, scheduled_for, created_at, updated_at]
+      properties:
+        execution_id: {type: string, pattern: "^[1-9][0-9]{0,18}$"}
+        run_id: {type: string, pattern: "^[1-9][0-9]{0,18}$"}
+        plan_id: {type: string, pattern: "^[1-9][0-9]{0,18}$"}
+        plan_revision: {type: integer, minimum: 1}
+        node_id: {type: string, pattern: "^[1-9][0-9]{0,18}$"}
+        node_position: {type: integer, minimum: 1}
+        target_reference: {type: string, minLength: 1, maxLength: 128, pattern: "^[A-Za-z0-9._:-]{1,128}$"}
+        target_digest: {type: string, pattern: "^sha256:[0-9a-f]{64}$"}
+        content_digest: {type: string, pattern: "^sha256:[0-9a-f]{64}$"}
+        material_digest: {type: string, pattern: "^sha256:[0-9a-f]{64}$"}
+        external_effect_id: {type: string, pattern: "^eer_[1-9][0-9]*$"}
+        state: {$ref: "#/components/schemas/GroupOpsExecutionState"}
+        provider_accepted: {type: boolean}
+        delivery_proven: {type: boolean}
+        attempt_count: {type: integer, minimum: 0}
+        provider_receipt_present: {type: boolean}
+        reconciliation_evidence_present: {type: boolean}
+        scheduled_for: {type: string, format: date-time}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    GroupOpsExecutionIntent:
+      type: object
+      required: [intent_id, node_id, node_position, target_reference, scheduled_for, state, manual_blocker]
+      properties:
+        intent_id: {type: string, pattern: "^[1-9][0-9]{0,18}$"}
+        node_id: {type: string, pattern: "^[1-9][0-9]{0,18}$"}
+        node_position: {type: integer, minimum: 1}
+        target_reference: {type: string, minLength: 1, maxLength: 128, pattern: "^[A-Za-z0-9._:-]{1,128}$"}
+        scheduled_for: {type: string, format: date-time}
+        state: {type: string, enum: [material_pending, ready_to_accept, accepted, final_failed]}
+        manual_blocker: {type: boolean}
+    GroupOpsRunSummary:
+      allOf:
+        - {$ref: "#/components/schemas/GroupOpsRuntimeSafety"}
+        - type: object
+          required: [run, executions, accepted, provider_accepted_count, delivery_proven_count, outcome_unknown, reconciled, final_failed, material_pending_count, pending_intents]
+          properties:
+            run: {$ref: "#/components/schemas/GroupOpsRun"}
+            executions: {type: array, items: {$ref: "#/components/schemas/GroupOpsExecution"}}
+            accepted: {type: integer, minimum: 0}
+            provider_accepted_count: {type: integer, minimum: 0}
+            delivery_proven_count: {type: integer, minimum: 0}
+            outcome_unknown: {type: integer, minimum: 0}
+            reconciled: {type: integer, minimum: 0}
+            final_failed: {type: integer, minimum: 0}
+            material_pending_count: {type: integer, minimum: 0}
+            pending_intents: {type: array, items: {$ref: "#/components/schemas/GroupOpsExecutionIntent"}}
+    GroupOpsExecutionPage:
+      allOf:
+        - {$ref: "#/components/schemas/GroupOpsRuntimeSafety"}
+        - type: object
+          required: [items, total, limit, offset, has_more]
+          properties:
+            items: {type: array, items: {$ref: "#/components/schemas/GroupOpsExecution"}}
+            total: {type: integer, minimum: 0}
+            limit: {type: integer, minimum: 1, maximum: 100}
+            offset: {type: integer, minimum: 0}
+            has_more: {type: boolean}
+    GroupOpsDirectoryItem:
+      type: object
+      additionalProperties: false
+      required: [chat_reference, owner_staff_id, display_name, member_count, refreshed_at]
+      properties:
+        chat_reference: {type: string, minLength: 1, maxLength: 128, pattern: "^[A-Za-z0-9._:-]{1,128}$"}
+        owner_staff_id: {$ref: "#/components/schemas/PositiveID"}
+        display_name: {type: string, minLength: 1, maxLength: 128}
+        member_count: {type: integer, minimum: 0}
+        refreshed_at: {type: string, format: date-time}
+    GroupOpsDirectoryPage:
+      allOf:
+        - {$ref: "#/components/schemas/GroupOpsRuntimeSafety"}
+        - type: object
+          required: [items, total, limit, offset, has_more]
+          properties:
+            items: {type: array, maxItems: 200, items: {$ref: "#/components/schemas/GroupOpsDirectoryItem"}}
+            total: {type: integer, minimum: 0}
+            limit: {type: integer, minimum: 1, maximum: 200}
+            offset: {type: integer, minimum: 0}
+            has_more: {type: boolean}
+    GroupOpsOperationMember:
+      type: object
+      additionalProperties: false
+      required: [sender_userid, display_name]
+      properties:
+        staff_id: {$ref: "#/components/schemas/PositiveID"}
+        sender_userid: {type: string, minLength: 1, maxLength: 128, pattern: "^[A-Za-z0-9._:-]{1,128}$"}
+        display_name: {type: string, minLength: 1, maxLength: 128}
+    GroupOpsOperationMemberPage:
+      allOf:
+        - {$ref: "#/components/schemas/GroupOpsRuntimeSafety"}
+        - type: object
+          required: [scope, items, page_size]
+          properties:
+            scope: {type: string, const: group_ops}
+            items: {type: array, maxItems: 100, items: {$ref: "#/components/schemas/GroupOpsOperationMember"}}
+            page_size: {type: integer, minimum: 1, maximum: 100}
+    GroupOpsPlanCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties: {name: {type: string, minLength: 1, maxLength: 128}}
+    GroupOpsPlanUpdateRequest:
+      type: object
+      additionalProperties: false
+      required: [expected_revision, name]
+      properties: {expected_revision: {type: integer, minimum: 1}, name: {type: string, minLength: 1, maxLength: 128}}
+    GroupOpsRevisionRequest:
+      type: object
+      additionalProperties: false
+      required: [expected_revision]
+      properties: {expected_revision: {type: integer, minimum: 1}}
+    GroupOpsMemberRequest:
+      type: object
+      additionalProperties: false
+      required: [expected_revision, staff_id]
+      properties: {expected_revision: {type: integer, minimum: 1}, staff_id: {$ref: "#/components/schemas/PositiveID"}}
+    GroupOpsGroupAssetRequest:
+      type: object
+      additionalProperties: false
+      required: [expected_revision, asset_reference]
+      properties: {expected_revision: {type: integer, minimum: 1}, asset_reference: {type: string, minLength: 1, maxLength: 128, pattern: "^[A-Za-z0-9._:-]{1,128}$"}}
+    GroupOpsNodeRequest:
+      type: object
+      additionalProperties: false
+      required: [expected_revision, position, kind]
+      properties:
+        expected_revision: {type: integer, minimum: 1}
+        position: {type: integer, minimum: 1, maximum: 1000}
+        kind: {$ref: "#/components/schemas/GroupOpsNodeKind"}
+        message_text: {type: string, maxLength: 1000}
+        delay_minutes: {type: integer, minimum: 1, maximum: 10080}
+        material_reference: {type: string, maxLength: 128, pattern: "^[A-Za-z0-9._:-]{1,128}$", deprecated: true}
+        material_plan: {$ref: "#/components/schemas/GroupOpsMaterialPlan"}
+    GroupOpsWebhookDescriptorRequest:
+      type: object
+      additionalProperties: false
+      required: [expected_revision]
+      properties: {expected_revision: {type: integer, minimum: 1}, reference: {type: string, maxLength: 128, pattern: "^[A-Za-z0-9._:-]{1,128}$"}}
+    GroupOpsDirectorySyncRequest:
+      type: object
+      additionalProperties: false
+      required: [owner_staff_id, limit]
+      properties: {owner_staff_id: {$ref: "#/components/schemas/PositiveID"}, limit: {type: integer, minimum: 1, maximum: 200}}
+    GroupOpsOperationMemberSyncRequest:
+      type: object
+      additionalProperties: false
+      required: [scope]
+      properties: {scope: {type: string, const: group_ops}, page_size: {type: integer, minimum: 1, maximum: 100}}
+    GroupOpsBroadcastRequest:
+      type: object
+      additionalProperties: false
+      required: [plan_id]
+      properties: {plan_id: {$ref: "#/components/schemas/PositiveID"}}
+    GroupOpsReconcileRequest:
+      type: object
+      additionalProperties: false
+      required: [generation, fence, lease_expires_at, evidence_digest]
+      properties:
+        generation: {type: integer, minimum: 1}
+        fence: {type: integer, minimum: 1}
+        lease_expires_at: {type: string, format: date-time}
+        evidence_digest: {type: string, pattern: "^sha256:[0-9a-f]{64}$"}
+        delivery_proven: {type: boolean, default: false}
     MediaAttachmentUploadInitiateRequest:
       type: object
       additionalProperties: false

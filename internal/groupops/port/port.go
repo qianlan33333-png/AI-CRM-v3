@@ -116,6 +116,7 @@ type WebhookDescriptor struct {
 	ClientIDHeader     string `json:"client_id_header,omitempty"`
 	ClientID           string `json:"client_id,omitempty"`
 	Description        string `json:"description"`
+	Safety
 }
 
 type Detail struct {

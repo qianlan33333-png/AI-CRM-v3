@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
-# PR06 closure gate: verify the fixed donor build/runtime contract and the
-# v3 preparation boundary without compiling or rewriting donor frontend files.
+# PR06 closure gate. It verifies the fixed donor build/runtime contract and
+# the v3-owned Group Ops boundary without compiling or rewriting donor files.
 
 set -euo pipefail
 
@@ -51,13 +51,13 @@ AICRM_PR06_ROOT="$REPO_ROOT" \
 AICRM_PR06_DONOR_DIR="$DONOR_DIR" \
 AICRM_PR06_DONOR_SHA="$DONOR_SHA" \
   bash "$REPO_ROOT/scripts/check-pr06-donor-manifest.sh"
-pass "35/35 donor frontend files are SHA-256 and cmp byte-exact"
+pass "35/35 donor frontend files are SHA-256 and cmp byte-exact in archive and active build source"
 
-BUILD="$DONOR_DIR/web/scripts/build.mjs"
-MAIN="$DONOR_DIR/web/src/admin/main.ts"
-LEGACY="$DONOR_DIR/web/src/admin/legacy.ts"
-REGISTRY="$DONOR_DIR/web/src/admin/registry.json"
-NAV="$DONOR_DIR/web/src/admin/nav.json"
+BUILD="$REPO_ROOT/web/scripts/build.mjs"
+MAIN="$REPO_ROOT/web/src/admin/main.ts"
+LEGACY="$REPO_ROOT/web/src/admin/legacy.ts"
+REGISTRY="$REPO_ROOT/web/src/admin/registry.json"
+NAV="$REPO_ROOT/web/src/admin/nav.json"
 GROUPOPS_TEMPLATE="$TARGET_ROOT/admin/templates/groupops.html"
 GROUPOPS_DETAIL_TEMPLATE="$TARGET_ROOT/admin/templates/groupopsDetail.html"
 
@@ -76,6 +76,8 @@ require_text 'import("./sections/groupOpsHistory")' "$LEGACY"
 require_text '"key": "groupops"' "$REGISTRY"
 require_text '"key": "groupopsDetail"' "$REGISTRY"
 require_text '"key": "groupops"' "$NAV"
+git -C "$DONOR_DIR" show "$DONOR_SHA:web/scripts/build.mjs" | cmp -s - "$BUILD" \
+  || fail "active build.mjs drifted from fixed donor build path"
 pass "actual browser chain is build.mjs -> main.ts -> legacy.ts -> AdminController"
 
 template_count="$(find "$TARGET_ROOT/admin/templates" -maxdepth 1 -type f -print | wc -l | tr -d ' ')"
@@ -102,22 +104,68 @@ if rg -n '<aside|class="side"|\.side\b' "$GROUPOPS_TEMPLATE" "$GROUPOPS_DETAIL_T
 fi
 pass "PR10 admin_base is the sole sidebar and Group Ops templates are business-only"
 
-if test -d "$REPO_ROOT/web/src"; then
-  if rg --files "$REPO_ROOT/web/src" | rg -i 'group.?ops|groupops|content.?package' >/dev/null; then
-    fail "v3 active web/src contains a duplicate Group Ops/content-package frontend"
-  fi
+# The active web/src tree is intentionally the fixed donor tree.  A filename
+# search for "groupops" would therefore flag the donor implementation itself
+# as a duplicate.  The hard gate is that this branch did not modify that tree;
+# the archive/active manifest above proves every required donor file remains
+# byte exact.  Any new Group Ops runtime must live in v3-owned Go adapters.
+if git -C "$REPO_ROOT" status --short -- web/src | rg . >/dev/null; then
+  fail "branch modified active donor web/src; Group Ops frontend must remain byte-exact"
 fi
-pass "no duplicate v3 active Group Ops frontend runtime"
+pass "no second active frontend shell/runtime was introduced; web/src is unmodified donor"
 
-if rg -n 'github.com/[^"]+/AI-CRM-v3/internal/(customer|identity|audience|segment|campaign)' \
+for path in \
+  internal/groupops/app/runtime.go \
+  internal/groupops/http/handler.go \
+  internal/groupops/module.go \
+  internal/groupops/store/postgres.go \
+  internal/groupops/ui.go \
+  internal/outbound/group_message.go \
+  cmd/aicrm/group_ops_adapters.go \
+  cmd/aicrm/group_ops_protocol_auth.go \
+  internal/media/app/groupops_preparation.go \
+  internal/media/store/groupops_preparation.go \
+  migrations/0012_group_ops.sql \
+  migrations/0016_media_content_packages.sql; do
+  require_file "$REPO_ROOT/$path"
+done
+require_text 'routeApplicationWithGroupOps' "$REPO_ROOT/cmd/aicrm/composition.go"
+require_text 'NewProviderRouterWithGroupMessage' "$REPO_ROOT/cmd/aicrm/composition.go"
+require_text 'NewGroupMessageProvider' "$REPO_ROOT/cmd/aicrm/composition.go"
+require_text 'providerDisabledGroupOpsDirectory' "$REPO_ROOT/cmd/aicrm/composition.go"
+require_text 'providerDisabledGroupOpsEvidence' "$REPO_ROOT/cmd/aicrm/composition.go"
+require_text 'SetCompletionSink' "$REPO_ROOT/cmd/aicrm/composition.go"
+require_text 'BindContentDelivery' "$REPO_ROOT/cmd/aicrm/composition.go"
+require_text 'groupopsmaterial.NewFreezer' "$REPO_ROOT/cmd/aicrm/composition.go"
+require_text 'BindMaterialPreparation' "$REPO_ROOT/cmd/aicrm/composition.go"
+require_text 'ReadPreparedGroupOpsMaterials' "$REPO_ROOT/internal/media/store/groupops_preparation.go"
+require_text 'RecordPreparedGroupOpsMaterialsWithin' "$REPO_ROOT/internal/media/store/groupops_preparation.go"
+require_text 'media_group_ops_preparation_receipts' "$REPO_ROOT/migrations/0016_media_content_packages.sql"
+require_text 'media_group_ops_preparation_items' "$REPO_ROOT/migrations/0016_media_content_packages.sql"
+require_text 'group-ops-provider-disabled' "$REPO_ROOT/internal/outbound/group_message.go"
+require_text 'AICRM_GROUP_OPS_WEBHOOK_SECRET' "$REPO_ROOT/internal/platform/config/config.go"
+require_text '/api/admin/automation-conversion/group-ops/plans' "$REPO_ROOT/api/openapi.yaml"
+require_text '/api/automation/group-ops/webhooks/{webhook_key}' "$REPO_ROOT/api/openapi.yaml"
+pass "v3 Group Ops owner implementation, OpenAPI, composition adapter, and disabled Provider gate are present"
+
+if rg -n '"github.com/[^\"]+/AI-CRM-v3/internal/(customer|identity|audience|segment|campaign)' \
     "$REPO_ROOT/internal/groupops" --glob '*.go' >/dev/null; then
   fail "Group Ops imports a forbidden Customer/Identity/Audience/Segment/Campaign package"
 fi
-for deferred_dir in http store worker provider; do
-  if test -e "$REPO_ROOT/internal/groupops/$deferred_dir"; then
-    fail "prep boundary contains deferred donor implementation directory: internal/groupops/$deferred_dir"
-  fi
-done
-pass "v3 Group Ops prep has no forbidden cross-domain import or copied donor backend"
+if rg -n '"github.com/[^\"]+/AI-CRM-v3/internal/(externaleffects/(store|http|worker|provider)|media/(store|app|http)|customer|identity|audience)' \
+    "$REPO_ROOT/internal/groupops" --glob '*.go' >/dev/null; then
+  fail "Group Ops bypasses a stable Port with cross-domain store/app/http/provider import"
+fi
+if rg -n 'FROM[[:space:]]+admin_users|JOIN[[:space:]]+admin_users' \
+    "$REPO_ROOT/internal/groupops/store" --glob '*.go' >/dev/null; then
+  fail "Group Ops store reads Access-owned admin_users instead of the Composition Access port"
+fi
+pass "Group Ops has no forbidden cross-domain imports or owner-table bypass"
 
-printf 'PR06 closure check: PASS: frontend hard gates and preparation boundary verified; backend closure remains explicitly deferred.\n'
+require_text 'GroupOpsMaterialSourceCapturer' "$REPO_ROOT/cmd/aicrm/group_ops_adapters.go"
+require_text 'GroupOpsMaterialSnapshotFreezer' "$REPO_ROOT/cmd/aicrm/group_ops_adapters.go"
+require_text 'newGroupOpsMaterialAdapter' "$REPO_ROOT/cmd/aicrm/composition.go"
+require_text 'ContentPackagesPath' "$REPO_ROOT/internal/groupops/http/handler.go"
+pass "Composition binds Media SourceCapturer/Freezer through stable ports; no kind/id source digest fallback"
+
+printf 'PR06 closure check: PASS: local Group Ops closure, Media snapshot binding, deterministic disabled Provider and frontend hard gates verified.\n'

@@ -65,6 +65,7 @@ actual_targets="$tmp_dir/actual-targets"
 
 source_count=0
 target_evidence_count=0
+active_source_count=0
 
 while IFS=' ' read -r expected_hash reference; do
   [[ -n "${reference:-}" ]] || continue
@@ -87,6 +88,16 @@ while IFS=' ' read -r expected_hash reference; do
       git -C "$DONOR_DIR" show "$DONOR_SHA:$source_path" \
         | cmp -s - "$target_path" \
         || fail "byte mismatch: $source_path -> $target_path"
+      active_path="$PR06_ROOT/$source_path"
+      test -f "$active_path" \
+        || fail "missing active build source for $source_path: $active_path"
+      active_hash="$(sha256_file "$active_path")"
+      [[ "$active_hash" == "$expected_hash" ]] \
+        || fail "active source SHA drift for $active_path: $active_hash != $expected_hash"
+      git -C "$DONOR_DIR" show "$DONOR_SHA:$source_path" \
+        | cmp -s - "$active_path" \
+        || fail "byte mismatch: $source_path -> $active_path"
+      active_source_count=$((active_source_count + 1))
       ;;
     target:web/donors/groupops-v2/src/*)
       target_evidence_count=$((target_evidence_count + 1))
@@ -98,6 +109,8 @@ done < "$SHA_FILE"
   || fail "expected 35 frontend source entries, found $source_count"
 [[ "$target_evidence_count" -eq "$source_count" ]] \
   || fail "target evidence count $target_evidence_count != source count $source_count"
+[[ "$active_source_count" -eq "$source_count" ]] \
+  || fail "active source count $active_source_count != source count $source_count"
 
 find "$TARGET_ROOT" -type f -print | LC_ALL=C sort > "$actual_targets"
 LC_ALL=C sort "$expected_targets" -o "$expected_targets"
@@ -112,6 +125,6 @@ if rg -n '<aside|class="side"|\.side\b' \
   fail "Group Ops business templates contain a donor sidebar"
 fi
 
-printf 'PR06 donor manifest check: PASS (donor %s; %d frontend files; SHA-256 + cmp)\n' \
-  "$DONOR_SHA" "$source_count"
+printf 'PR06 donor manifest check: PASS (donor %s; %d archive files; %d active build files; SHA-256 + cmp)\n' \
+  "$DONOR_SHA" "$source_count" "$active_source_count"
 printf 'PR06 archive remains byte-exact and archive-only; mount through the v3 PR10 shell.\n'

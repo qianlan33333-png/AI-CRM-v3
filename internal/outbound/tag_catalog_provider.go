@@ -150,15 +150,31 @@ var _ effect.ProviderAdapter = (*TagCatalogProvider)(nil)
 // ProviderRouter prevents a tag-catalog reader from accidentally handling a
 // different outbound kind. Unsupported intents fail closed without a network
 // call; their own future adapters can be added explicitly by composition.
-type ProviderRouter struct{ tagCatalog effect.ProviderAdapter }
+type ProviderRouter struct {
+	tagCatalog   effect.ProviderAdapter
+	groupMessage effect.ProviderAdapter
+}
 
 func NewProviderRouter(tagCatalog effect.ProviderAdapter) *ProviderRouter {
 	return &ProviderRouter{tagCatalog: tagCatalog}
 }
 
+func NewProviderRouterWithGroupMessage(tagCatalog, groupMessage effect.ProviderAdapter) *ProviderRouter {
+	return &ProviderRouter{tagCatalog: tagCatalog, groupMessage: groupMessage}
+}
+
 func (r *ProviderRouter) Execute(ctx context.Context, envelope effect.Envelope, attempt effect.Attempt) (effect.AdapterResult, error) {
-	if r != nil && envelope.Kind == effect.KindWeComTagCatalog && r.tagCatalog != nil {
-		return r.tagCatalog.Execute(ctx, envelope, attempt)
+	if r != nil {
+		switch envelope.Kind {
+		case effect.KindWeComTagCatalog:
+			if r.tagCatalog != nil {
+				return r.tagCatalog.Execute(ctx, envelope, attempt)
+			}
+		case effect.KindGroupMessage:
+			if r.groupMessage != nil {
+				return r.groupMessage.Execute(ctx, envelope, attempt)
+			}
+		}
 	}
 	return effect.AdapterResult{Completion: effect.StateFinalFailed, ReceiptDigest: effect.Hash("outbound.provider.not-configured", string(envelope.Kind))}, nil
 }

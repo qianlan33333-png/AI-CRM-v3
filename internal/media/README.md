@@ -22,11 +22,16 @@ tables. Package state, idempotency receipt, Media audit and Media outbox are
 committed in the same UoW. Each version reference records the actual source
 digest observed while the enabled Media record is locked.
 
-Group Ops receives only the stable `GroupOpsMaterialSourceCapturer` port. It
-locks and captures enabled Media facts in the caller UoW; the existing freezer
-still requires an actual Media preparation reader with provider-ready media
-receipts before it can emit a send snapshot. This package does not manufacture
-Provider media IDs, add a worker, call a Provider, or write Group Ops tables.
+Group Ops receives only the stable `GroupOpsMaterialSourceCapturer` port and a
+transaction-bound preparation reader. It locks and captures enabled Media
+facts in the caller UoW; the reader returns Media-owned provider preparation
+receipts/leases for image, attachment, and miniprogram references. A captured
+group invite is already a complete link attachment and needs no receipt. An
+approved Provider preparation adapter can use the separate transaction-neutral
+writer after its network call to persist the receipt, audit, and outbox row in
+one Media UoW. The provider-disabled adapter has no writer and cannot fabricate
+readiness. This package does not manufacture Provider media IDs, add a worker,
+call a Provider, or write Group Ops tables.
 
 The exact v2 admin templates and their existing TypeScript/CSS/shared API
 dependencies are staged under `web/donors/media-v2/`. They remain byte-exact

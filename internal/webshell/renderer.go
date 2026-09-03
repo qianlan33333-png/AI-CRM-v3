@@ -65,6 +65,9 @@ type AdminShellView struct {
 	Coupons         bool
 	CouponPage      string
 	CouponAssets    CouponAssets
+	GroupOps        bool
+	GroupOpsPage    string
+	GroupOpsAssets  GroupOpsAssets
 }
 
 // ExternalEffectsAssets are manifest-derived URLs for the frozen donor bundle.
@@ -89,6 +92,11 @@ type ProductAssets struct{ TokensCSS, LabsCSS, AdminJS string }
 
 // CouponAssets are verified manifest paths for the frozen coupon workspaces.
 type CouponAssets struct{ TokensCSS, LabsCSS, AdminJS string }
+
+// GroupOpsAssets are manifest-derived URLs for the immutable donor Group Ops
+// bundle. The v3 shell owns the sidebar; the donor supplies only its stage
+// template and runtime assets.
+type GroupOpsAssets struct{ TokensCSS, LabsCSS, AdminJS string }
 
 // Render implements the small presentation contract consumed by the Access
 // HTTP handler. Keeping this adapter in webshell avoids a concrete import
@@ -248,6 +256,23 @@ func (renderer *Renderer) RenderCoupons(writer http.ResponseWriter, data AdminPa
 	data.ShowPageHeader = false
 	content := `<main id="stage" class="stage rich"></main><template id="tpl">` + donorTemplate + `</template>`
 	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: template.HTML(content), Coupons: true, CouponPage: page, CouponAssets: assets})
+	if err != nil {
+		return err
+	}
+	return writeHTML(writer, http.StatusOK, body)
+}
+
+// RenderGroupOps mounts the active donor plan list/detail templates into the
+// single v3 admin_base sidebar. It accepts only the page names selected by
+// the Group Ops UI adapter and never receives request-controlled HTML.
+func (renderer *Renderer) RenderGroupOps(writer http.ResponseWriter, data AdminPageData, page, donorTemplate string, assets GroupOpsAssets) error {
+	if renderer == nil || renderer.templates == nil || donorTemplate == "" || assets.TokensCSS == "" || assets.LabsCSS == "" || assets.AdminJS == "" || (page != "groupops" && page != "groupopsDetail") {
+		return errors.New("Group Ops shell assets are required")
+	}
+	normalizeAdminPage(&data)
+	data.ShowPageHeader = false
+	content := `<main id="stage" class="stage rich"></main><template id="tpl">` + donorTemplate + `</template>`
+	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: template.HTML(content), GroupOps: true, GroupOpsPage: page, GroupOpsAssets: assets})
 	if err != nil {
 		return err
 	}

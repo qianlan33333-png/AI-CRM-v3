@@ -26,6 +26,7 @@ type Runtime struct {
 	PublicOrigin        string
 	Bootstrap           Bootstrap
 	WeCom               WeCom
+	GroupOps            GroupOps
 	Effects             Effects
 	TagCatalog          TagCatalogProvider
 	WorkerOwner         string
@@ -53,6 +54,14 @@ type WeCom struct {
 	ContextSigningKey   string
 	ChannelStateHMACKey string
 }
+
+// GroupOps contains only the inbound protocol secret for the local Group Ops
+// webhook. It is independent from WeCom/customer credentials and is never
+// exposed through a descriptor or structured log.
+type GroupOps struct {
+	WebhookSecret string
+}
+
 type Effects struct{ ProviderEnabled bool }
 
 // TagCatalogProvider is intentionally separate from outbound message/write
@@ -87,6 +96,7 @@ func Load() (Runtime, error) {
 			CallbackAESKey: os.Getenv("AICRM_WECOM_CALLBACK_AES_KEY"), ContextSigningKey: os.Getenv("AICRM_WECOM_CONTEXT_SIGNING_KEY"),
 			ChannelStateHMACKey: os.Getenv("AICRM_CHANNEL_STATE_HMAC_KEY"),
 		},
+		GroupOps: GroupOps{WebhookSecret: os.Getenv("AICRM_GROUP_OPS_WEBHOOK_SECRET")},
 	}
 	if cfg.Effects.ProviderEnabled, err = strictBool("AICRM_OUTBOUND_PROVIDER_ENABLED", false); err != nil {
 		return Runtime{}, err
@@ -175,6 +185,9 @@ func Load() (Runtime, error) {
 		if !cfg.WeCom.Enabled || cfg.TagCatalog.Permission != "catalog-read-authorized" {
 			return Runtime{}, errors.New("enabled tag catalog provider requires WeCom and explicit permission")
 		}
+	}
+	if cfg.GroupOps.WebhookSecret != "" && (strings.TrimSpace(cfg.GroupOps.WebhookSecret) != cfg.GroupOps.WebhookSecret || len(cfg.GroupOps.WebhookSecret) < 32 || len(cfg.GroupOps.WebhookSecret) > 4096) {
+		return Runtime{}, errors.New("invalid Group Ops webhook secret")
 	}
 	return cfg, nil
 }

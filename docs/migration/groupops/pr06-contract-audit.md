@@ -1,10 +1,14 @@
-# PR06 内容包与群运营 donor 契约审计
+# PR06 内容包与群运营 donor 契约审计（历史 preparation 记录）
+
+> 本文件记录完整实现前的 donor/preparation 证据。当前闭包结论以
+> `pr06-closure-review.md` 为准；其中的 Media receipt/lease、Group Ops
+> runtime、HTTP 和 Composition 实现已取代本文的 preparation-only 状态。
 
 ## 冻结边界
 
 - v3 基线：`origin/main@19384b93fe362c7786edc81dd5595b79570f6bb1`。
 - donor：`/tmp/aicrm-v2-audit.yN3jmr@6bfbe5816bb89913c70adaca87d6a486260e016e`，只读。
-- 目标：在 `codex/import-content-groupops` 上保留可复用的内容包引用、群运营计划定义和运行/效果观察契约；当前提交仍是 preparation-only，不注册 HTTP、不接 Composition Root、不调用 Provider。
+- 目标：冻结 donor 的内容包引用、群运营计划定义和运行/效果观察契约，供后续完整实现复核；本文件对应的历史提交本身是 preparation-only，不代表当前 `pr06-closure-review.md` 的实现状态。
 - 证据：原样前端 35 对 source/target 的 SHA-256 与 `cmp` 说明在
   `docs/migration/groupops/pr06-donor-sha256.txt`，完整文件映射和排除项在
   `docs/migration/groupops/pr06-donor-manifest.yaml`。

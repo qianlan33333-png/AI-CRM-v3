@@ -2,6 +2,8 @@ package port
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"time"
 )
 
@@ -36,7 +38,10 @@ func DisabledRuntimeSafety() RuntimeSafety { return RuntimeSafety{} }
 // DispatchEnabledRuntimeSafety describes only whether this runtime can accept
 // a new dispatch intent. It never asserts that a Provider call occurred.
 func DispatchEnabledRuntimeSafety() RuntimeSafety {
-	return RuntimeSafety{ProviderExecutionEligible: true}
+	// Local EER acceptance is not Provider eligibility. The current
+	// composition deliberately installs the provider-disabled adapter, so this
+	// projection must remain false even when the runtime can persist an intent.
+	return RuntimeSafety{}
 }
 
 type RunDuePreview struct {
@@ -78,6 +83,7 @@ type Execution struct {
 	AttemptCount                  int32          `json:"attempt_count"`
 	ProviderReceiptPresent        bool           `json:"provider_receipt_present"`
 	ReconciliationEvidencePresent bool           `json:"reconciliation_evidence_present"`
+	ScheduledFor                  time.Time      `json:"scheduled_for"`
 	CreatedAt                     time.Time      `json:"created_at"`
 	UpdatedAt                     time.Time      `json:"updated_at"`
 }
@@ -178,6 +184,22 @@ type ManualReconcileCommand struct {
 	DeliveryProven bool
 }
 
+type ExternalReconcileCommand struct {
+	EffectID       string
+	ReceiptKey     string
+	EvidenceDigest string
+	ActorID        int64
+	Generation     int64
+	Fence          int64
+	LeaseExpiresAt time.Time
+}
+
+// ExternalReconciler is a composition adapter around the EER control port.
+// Group Ops never imports the EER store or its HTTP/worker packages.
+type ExternalReconciler interface {
+	ReconcileExternalEffect(context.Context, ExternalReconcileCommand) error
+}
+
 type ExecutionOutcomeCommand struct {
 	ExecutionID           int64
 	State                 ExecutionState
@@ -205,6 +227,12 @@ type GroupDirectorySource interface {
 	RefreshOperationMembers(context.Context, int32) ([]OperationMember, error)
 }
 
+// WebhookReplayStore is an owner-local replay claim. Implementations store
+// only opaque event/payload digests and must not persist signatures or bodies.
+type WebhookReplayStore interface {
+	ClaimWebhookReplay(context.Context, string, string, [sha256.Size]byte, [sha256.Size]byte, time.Time) (bool, error)
+}
+
 // GroupDirectorySnapshot may replace a local owner projection only when
 // Complete is true. A partial provider page is never a deletion authority.
 type GroupDirectorySnapshot struct {
@@ -216,4 +244,78 @@ type GroupDirectorySnapshot struct {
 // group target. It never chooses a plan member or process-wide default.
 type ExecutionSenderResolver interface {
 	ResolveExecutionSender(context.Context, string) (string, bool, error)
+}
+
+// MaterialSnapshotResolver is the Group Ops side of the Media boundary. It
+// accepts the persisted ordered material plan and returns the immutable
+// provider-shaped snapshot plus its content digest. The implementation is
+// supplied by Composition through Media's SourceCapturer/Freezer ports; the
+// Group Ops store never reads Media tables or resolves mutable references.
+type MaterialSnapshotResolver interface {
+	ResolveMaterialSnapshot(context.Context, MaterialPlan, time.Time) (json.RawMessage, string, error)
+}
+
+// ExecutionTargetOwnerResolver is the Group Ops side of sender resolution.
+// It returns only the local staff owner of an opaque group target; the
+// Composition Root combines it with the Access staff port to obtain an
+// active sender ID. This keeps the Group Ops store from reading admin_users.
+type ExecutionTargetOwnerResolver interface {
+	ResolveExecutionOwner(context.Context, string) (int64, bool, error)
+}
+
+// Runtime persistence records are owned by Group Ops.  They live in the
+// stable port so the application can coordinate plan snapshots and EER
+// acceptance without importing the PostgreSQL store package.
+type ExecutionKey struct {
+	NodeID          int64
+	TargetReference string
+}
+
+type RunReservation struct {
+	PlanID          int64
+	Trigger         RunTrigger
+	SourceKeyDigest [sha256.Size]byte
+	PlanRevision    int64
+	ScheduledFor    time.Time
+	AcceptedAt      time.Time
+	AcceptedBy      string
+}
+
+type ExecutionDraft struct {
+	RunID, PlanID, PlanRevision, NodeID int64
+	NodePosition                        int32
+	TargetReference, SenderUserID       string
+	TargetDigest                        string
+	ContentSnapshot                     json.RawMessage
+	ContentDigest                       string
+	MaterialSnapshot                    json.RawMessage
+	MaterialDigest                      string
+	ExecutionKeyDigest                  [sha256.Size]byte
+	ExternalEffectID                    string
+	ScheduledFor, CreatedAt             time.Time
+}
+
+// RuntimeStore is the minimum local persistence surface needed by the
+// runtime. Implementations must join the caller's PostgreSQL transaction for
+// ReserveRun/InsertExecution and outcome projection.
+type RuntimeStore interface {
+	ListExecutionKeys(context.Context, int64, int64) ([]ExecutionKey, error)
+	ReserveRun(context.Context, RunReservation) (Run, error)
+	InsertExecution(context.Context, ExecutionDraft) (Execution, error)
+	GetExecution(context.Context, int64) (Execution, error)
+	ListExecutions(context.Context, int64, int32, int32) ([]Execution, int64, error)
+	ReadRunSummary(context.Context, int64) (RunSummary, error)
+	RecordExecutionOutcome(context.Context, int64, ExecutionState, bool, bool, string, int32, time.Time) (Execution, error)
+	ReconcileExecution(context.Context, int64, string, bool, time.Time) (Execution, error)
+	FindPlanByWebhookReference(context.Context, string) (int64, error)
+	ListDirectoryGroups(context.Context, int64, int32, int32) ([]GroupDirectoryItem, int64, error)
+	ReplaceDirectoryGroups(context.Context, int64, []GroupDirectoryItem, time.Time) error
+	RecordDirectoryRefresh(context.Context, string, int64, int64, [sha256.Size]byte, string, int32, bool, time.Time) error
+	CompleteEffect(context.Context, string, ExecutionState, bool, bool, string, int32, time.Time) error
+}
+
+// EligibleStaffReader is a local employee projection used by the operation
+// members picker. It has no customer or external-recipient semantics.
+type EligibleStaffReader interface {
+	ListEligibleStaff(context.Context) ([]OperationMember, error)
 }

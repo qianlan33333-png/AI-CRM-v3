@@ -69,6 +69,10 @@ func (value Envelope) Fingerprint() Digest {
 type AcceptCommand struct {
 	ReceiptKey Digest
 	Envelope   Envelope
+	// ScheduledAt is optional. A zero value keeps the existing immediate
+	// acceptance semantics; a future value is persisted in the River job so
+	// durable Group Ops delay nodes cannot run early.
+	ScheduledAt time.Time
 }
 
 func (command AcceptCommand) Valid() bool {
@@ -78,7 +82,10 @@ func (command AcceptCommand) Digest() Digest {
 	if !command.Valid() {
 		return ""
 	}
-	return Hash("accept", string(command.ReceiptKey), string(command.Envelope.Fingerprint()))
+	if command.ScheduledAt.IsZero() {
+		return Hash("accept", string(command.ReceiptKey), string(command.Envelope.Fingerprint()))
+	}
+	return Hash("accept", string(command.ReceiptKey), string(command.Envelope.Fingerprint()), command.ScheduledAt.UTC().Format(time.RFC3339Nano))
 }
 
 type Projection struct {

@@ -139,6 +139,42 @@ func TestPostgreSQLContentPackageVersionsSnapshotsBindingsAndCapture(t *testing.
 	if len(captured.References) != 3 || captured.References[0].SourceDigest != imageDigest || captured.References[1].ThumbnailSourceDigest != imageDigest || captured.References[1].ProviderFields.AppID != "wx-course" || captured.References[2].ProviderFields.URL == "" {
 		t.Fatalf("captured=%+v", captured)
 	}
+	prepRequiredThrough := now.Add(time.Hour)
+	prepCommand := mediaport.GroupOpsMaterialPreparationCommand{
+		SourceSnapshot:  captured,
+		RequiredThrough: prepRequiredThrough,
+		Actor:           7,
+		IdempotencyKey:  "content-preparation-key-0001",
+		Items: []mediaport.GroupOpsMaterialPreparation{
+			{Reference: captured.References[0].Reference, SourceDigest: captured.References[0].SourceDigest, ReceiptDigest: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", ReadyUntil: prepRequiredThrough.Add(time.Hour), Attachment: mediaport.GroupOpsProviderReadyAttachment{MsgType: "image", MediaID: "provider-image-1"}},
+			{Reference: captured.References[1].Reference, SourceDigest: captured.References[1].SourceDigest, ReceiptDigest: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", ReadyUntil: prepRequiredThrough.Add(time.Hour), Attachment: mediaport.GroupOpsProviderReadyAttachment{MsgType: "miniprogram", MediaID: "provider-mini-1", AppID: "wx-course", PagePath: "pages/today", Title: "今日课程"}},
+			{Reference: captured.References[2].Reference, SourceDigest: captured.References[2].SourceDigest, Attachment: captured.References[2].ProviderFields},
+		},
+	}
+	var prepReceipt mediaport.GroupOpsMaterialPreparationReceipt
+	if err = uow.Within(ctx, func(tx context.Context) error {
+		var prepErr error
+		prepReceipt, prepErr = repo.RecordPreparedGroupOpsMaterialsWithin(tx, prepCommand, now)
+		return prepErr
+	}); err != nil || prepReceipt.ID < 1 {
+		t.Fatalf("preparation receipt=%+v err=%v", prepReceipt, err)
+	}
+	var prepared []mediaport.GroupOpsMaterialPreparation
+	if err = uow.Within(ctx, func(tx context.Context) error {
+		var readErr error
+		prepared, readErr = repo.ReadPreparedGroupOpsMaterials(tx, captured, prepRequiredThrough)
+		return readErr
+	}); err != nil || len(prepared) != 3 || prepared[0].Attachment.MediaID != "provider-image-1" || prepared[1].Attachment.MediaID != "provider-mini-1" || prepared[2].Attachment.URL != captured.References[2].ProviderFields.URL || prepared[2].ReceiptDigest != "" {
+		t.Fatalf("prepared=%+v err=%v", prepared, err)
+	}
+	var replay mediaport.GroupOpsMaterialPreparationReceipt
+	if err = uow.Within(ctx, func(tx context.Context) error {
+		var replayErr error
+		replay, replayErr = repo.RecordPreparedGroupOpsMaterialsWithin(tx, prepCommand, now.Add(time.Minute))
+		return replayErr
+	}); err != nil || replay.ID != prepReceipt.ID {
+		t.Fatalf("preparation replay=%+v first=%+v err=%v", replay, prepReceipt, err)
+	}
 	bindingCommand := mediaport.DeliveryBindingCommand{CampaignCode: "campaign-local", PlanID: "plan-local", PackageID: updated.ID, GroupInviteID: invite["id"].(int64), Actor: 7, IdempotencyKey: "content-binding-key-0001"}
 	binding := contentBindingMutation(t, ctx, uow, repo, bindingCommand, now)
 	if binding.ID < 1 || binding.Version != 1 {

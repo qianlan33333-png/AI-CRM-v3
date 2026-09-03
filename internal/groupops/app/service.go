@@ -338,9 +338,9 @@ func (s *Service) Preview(ctx context.Context, planID int64) (groupopsport.Conte
 	if err != nil {
 		return groupopsport.ContentValidation{}, err
 	}
-	if detail.Plan.Status != groupopsport.PlanDraft {
-		return groupopsport.ContentValidation{}, ErrStateConflict
-	}
+	// The donor detail page always reads content preview, including for active,
+	// paused, and archived plans. This is read-only; lifecycle transitions still
+	// enforce their own state and CAS rules.
 	return contentValidation(detail), nil
 }
 

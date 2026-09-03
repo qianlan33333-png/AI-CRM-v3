@@ -24,6 +24,15 @@ type ContentDeliveryBindings struct {
 	SourceCapturer  mediaport.GroupOpsMaterialSourceCapturer
 }
 
+// MaterialPreparationBindings are the only composition seam through which a
+// Provider preparation adapter can write Media receipts.  Group Ops receives
+// Reader only; the Writer remains available to the approved provider adapter
+// and is never used by the provider-disabled implementation.
+type MaterialPreparationBindings struct {
+	Reader mediaport.GroupOpsMaterialPreparationReader
+	Writer mediaport.GroupOpsMaterialPreparationWriter
+}
+
 func NewModuleRegistration() *ModuleRegistration { return &ModuleRegistration{} }
 func (m *ModuleRegistration) Bind(service mediaapp.HTTPFacade, security mediahttp.RequestSecurity) (HTTPBindings, error) {
 	if m == nil {
@@ -41,12 +50,18 @@ func (m *ModuleRegistration) BindContentDelivery(service mediaport.ContentDelive
 	}
 	return ContentDeliveryBindings{ContentDelivery: service, SourceCapturer: capturer}, nil
 }
+func (m *ModuleRegistration) BindMaterialPreparation(reader mediaport.GroupOpsMaterialPreparationReader, writer mediaport.GroupOpsMaterialPreparationWriter) (MaterialPreparationBindings, error) {
+	if m == nil || reader == nil || writer == nil {
+		return MaterialPreparationBindings{}, errors.New("media material preparation dependencies are required")
+	}
+	return MaterialPreparationBindings{Reader: reader, Writer: writer}, nil
+}
 func (m *ModuleRegistration) Readiness(ctx context.Context, pool *pgxpool.Pool) error {
 	if m == nil || pool == nil {
 		return errors.New("media module dependencies are required")
 	}
 	var ready bool
-	err := pool.QueryRow(ctx, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['media_blobs','media_images','media_attachments','media_miniprograms','media_group_invites','media_operation_receipts','media_audit_events','media_outbox','media_attachment_uploads','media_attachment_upload_parts','media_content_packages','media_content_package_versions','media_content_package_version_refs','media_content_delivery_receipts','media_content_delivery_bindings']) AS required(name) WHERE to_regclass(current_schema() || '.' || required.name) IS NULL)`).Scan(&ready)
+	err := pool.QueryRow(ctx, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['media_blobs','media_images','media_attachments','media_miniprograms','media_group_invites','media_operation_receipts','media_audit_events','media_outbox','media_attachment_uploads','media_attachment_upload_parts','media_content_packages','media_content_package_versions','media_content_package_version_refs','media_content_delivery_receipts','media_content_delivery_bindings','media_group_ops_preparation_receipts','media_group_ops_preparation_items']) AS required(name) WHERE to_regclass(current_schema() || '.' || required.name) IS NULL)`).Scan(&ready)
 	if err != nil {
 		return err
 	}

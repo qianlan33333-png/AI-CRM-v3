@@ -53,8 +53,13 @@
   <link rel="stylesheet" href="{{.CouponAssets.LabsCSS}}">
   <script type="module" src="{{.CouponAssets.AdminJS}}"></script>
   {{end}}
+  {{if .GroupOps}}
+  <link rel="stylesheet" href="{{.GroupOpsAssets.TokensCSS}}">
+  <link rel="stylesheet" href="{{.GroupOpsAssets.LabsCSS}}">
+  <script type="module" src="{{.GroupOpsAssets.AdminJS}}"></script>
+  {{end}}
 </head>
-<body class="admin-shell" data-admin-shell-source="v3_webshell"{{if .ExternalEffects}} data-page="campaigns"{{end}}{{if .Media}} data-page="{{.MediaPage}}"{{end}}{{if .Tags}} data-page="tags"{{end}}{{if .Product}} data-page="{{.ProductPage}}"{{end}}{{if .Coupons}} data-page="{{.CouponPage}}"{{end}}>
+<body class="admin-shell" data-admin-shell-source="v3_webshell"{{if .ExternalEffects}} data-page="campaigns"{{end}}{{if .Media}} data-page="{{.MediaPage}}"{{end}}{{if .Tags}} data-page="tags"{{end}}{{if .Product}} data-page="{{.ProductPage}}"{{end}}{{if .Coupons}} data-page="{{.CouponPage}}"{{end}}{{if .GroupOps}} data-page="{{.GroupOpsPage}}"{{end}}>
   <div class="admin-layout">
     <aside class="admin-sidebar">
       <div class="admin-brand">
@@ -126,7 +131,7 @@
       </header>
       {{end}}
 
-      {{if or .ExternalEffects .Media .Tags .Product .Coupons}}
+      {{if or .ExternalEffects .Media .Tags .Product .Coupons .GroupOps}}
       {{.Content}}
       {{else}}
       <main class="admin-page">

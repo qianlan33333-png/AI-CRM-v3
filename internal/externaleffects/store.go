@@ -164,7 +164,7 @@ func (r *Repository) acceptAndQueueTx(ctx context.Context, tx pgx.Tx, command Ac
 	if _, err = tx.Exec(ctx, `INSERT INTO external_effect_generations(effect_id,generation) VALUES ($1,1)`, id); err != nil {
 		return Projection{}, Receipt{}, err
 	}
-	inserted, err := platformjobqueue.InsertTx(ctx, r.river, tx, EffectJobArgs{EffectID: id, Generation: 1})
+	inserted, err := platformjobqueue.InsertTxAt(ctx, r.river, tx, EffectJobArgs{EffectID: id, Generation: 1}, command.ScheduledAt)
 	if err != nil {
 		return Projection{}, Receipt{}, err
 	}
@@ -173,7 +173,7 @@ func (r *Repository) acceptAndQueueTx(ctx context.Context, tx pgx.Tx, command Ac
 	if _, err = tx.Exec(ctx, `UPDATE external_effects SET state='queued',updated_at=clock_timestamp() WHERE id=$1`, id); err != nil {
 		return Projection{}, Receipt{}, err
 	}
-	if _, err = tx.Exec(ctx, `INSERT INTO external_effect_jobs(effect_id,generation,river_job_id,queue,args_digest,scheduled_at) VALUES ($1,1,$2,'outbound',$3,clock_timestamp())`, id, inserted.Job.ID, Hash("river-args", effectID(id), "1")); err != nil {
+	if _, err = tx.Exec(ctx, `INSERT INTO external_effect_jobs(effect_id,generation,river_job_id,queue,args_digest,scheduled_at) VALUES ($1,1,$2,'outbound',$3,$4)`, id, inserted.Job.ID, Hash("river-args", effectID(id), "1"), inserted.Job.ScheduledAt); err != nil {
 		return Projection{}, Receipt{}, err
 	}
 	// The queue receipt is a distinct audit fact. The caller always receives
@@ -286,28 +286,61 @@ func (r *Repository) pushStats(ctx context.Context) (PushStats, error) {
 }
 
 func (r *Repository) control(ctx context.Context, command ControlCommand, operation string) (Projection, Receipt, error) {
-	if !command.Valid() || (operation == "reconcile" && !ValidDigest(command.EvidenceDigest)) {
+	if r == nil || r.pool == nil {
 		return Projection{}, Receipt{}, ErrInvalid
-	}
-	id, err := parseEffectID(command.EffectID)
-	if err != nil {
-		return Projection{}, Receipt{}, err
 	}
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return Projection{}, Receipt{}, err
 	}
 	defer tx.Rollback(ctx)
+	projection, receipt, err := r.controlWithin(ctx, tx, command, operation)
+	if err != nil {
+		return Projection{}, Receipt{}, err
+	}
+	return commitProjection(tx, projection, receipt)
+}
+
+// ReconcileWithin joins the Group Ops Unit of Work. It is deliberately the
+// only EER control operation exposed through this composition seam: Group Ops
+// must commit its execution projection and the EER reconciled receipt in one
+// PostgreSQL transaction, without importing the EER store package.
+func (r *Repository) ReconcileWithin(ctx context.Context, command ControlCommand) error {
+	if r == nil {
+		return ErrInvalid
+	}
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return err
+	}
+	_, _, err = r.controlWithin(ctx, tx, command, "reconcile")
+	return err
+}
+
+func (r *Repository) controlWithin(ctx context.Context, tx pgx.Tx, command ControlCommand, operation string) (Projection, Receipt, error) {
+	if r == nil || tx == nil || !command.Valid() || (operation == "reconcile" && !ValidDigest(command.EvidenceDigest)) {
+		return Projection{}, Receipt{}, ErrInvalid
+	}
+	id, err := parseEffectID(command.EffectID)
+	if err != nil {
+		return Projection{}, Receipt{}, err
+	}
 	var owner, kind, state string
 	var attempts int32
 	var generation, fence int64
+	var leaseExpires *time.Time
 	var updated time.Time
-	err = tx.QueryRow(ctx, `SELECT owner,kind,state,attempt_count,generation,lease_fence,updated_at FROM external_effects WHERE id=$1 FOR UPDATE`, id).Scan(&owner, &kind, &state, &attempts, &generation, &fence, &updated)
+	err = tx.QueryRow(ctx, `SELECT owner,kind,state,attempt_count,generation,lease_fence,lease_expires_at,updated_at FROM external_effects WHERE id=$1 FOR UPDATE`, id).Scan(&owner, &kind, &state, &attempts, &generation, &fence, &leaseExpires, &updated)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Projection{}, Receipt{}, ErrNotFound
 	}
 	if err != nil {
 		return Projection{}, Receipt{}, err
+	}
+	if operation == "reconcile" && (command.Generation != 0 || command.Fence != 0 || !command.LeaseExpiresAt.IsZero()) {
+		if command.Generation < 1 || command.Fence < 1 || command.LeaseExpiresAt.IsZero() || generation != command.Generation || fence != command.Fence || leaseExpires == nil || !leaseExpires.Equal(command.LeaseExpiresAt.UTC()) || leaseExpires.After(time.Now().UTC()) {
+			return Projection{}, Receipt{}, ErrReconcileRequired
+		}
 	}
 	digest := command.Digest(operation)
 	var rid int64
@@ -319,7 +352,7 @@ func (r *Repository) control(ctx context.Context, command ControlCommand, operat
 		if Digest(oldDigest) != digest {
 			return Projection{}, Receipt{}, ErrPayloadMismatch
 		}
-		return commitProjection(tx, projection(id, Owner(owner), Kind(kind), State(state), attempts, generation, updated), Receipt{ID: "eerop_" + strconv.FormatInt(rid, 10), EffectID: command.EffectID, CommandDigest: Digest(oldDigest), ActorAdminUserID: oldActor, State: State(oldState), CompletedAt: completed})
+		return projection(id, Owner(owner), Kind(kind), State(state), attempts, generation, updated), Receipt{ID: "eerop_" + strconv.FormatInt(rid, 10), EffectID: command.EffectID, CommandDigest: Digest(oldDigest), ActorAdminUserID: oldActor, State: State(oldState), CompletedAt: completed}, nil
 	}
 	if !errors.Is(receiptErr, pgx.ErrNoRows) {
 		return Projection{}, Receipt{}, receiptErr
@@ -358,7 +391,7 @@ func (r *Repository) control(ctx context.Context, command ControlCommand, operat
 		}
 	}
 	if operation == "reconcile" {
-		result, updateErr := tx.Exec(ctx, `UPDATE external_effect_attempts SET state='reconciled',evidence_digest=$2,completed_at=clock_timestamp() WHERE effect_id=$1 AND generation=$3 AND fence=$4 AND state='outcome_unknown'`, id, command.EvidenceDigest, generation, fence)
+		result, updateErr := tx.Exec(ctx, `UPDATE external_effect_attempts SET state='reconciled',evidence_digest=$2,completed_at=clock_timestamp() WHERE effect_id=$1 AND generation=$3 AND fence=$4 AND state='outcome_unknown' AND ($5::timestamptz IS NULL OR $5 <= clock_timestamp())`, id, command.EvidenceDigest, generation, fence, leaseExpires)
 		if updateErr != nil {
 			return Projection{}, Receipt{}, updateErr
 		}
@@ -377,7 +410,7 @@ func (r *Repository) control(ctx context.Context, command ControlCommand, operat
 		return Projection{}, Receipt{}, err
 	}
 	actor := command.ActorAdminUserID
-	return commitProjection(tx, projection(id, Owner(owner), Kind(kind), next, attempts, generation, updated), Receipt{ID: "eerop_" + strconv.FormatInt(rid, 10), EffectID: command.EffectID, CommandDigest: digest, ActorAdminUserID: &actor, State: next, CompletedAt: completed})
+	return projection(id, Owner(owner), Kind(kind), next, attempts, generation, updated), Receipt{ID: "eerop_" + strconv.FormatInt(rid, 10), EffectID: command.EffectID, CommandDigest: digest, ActorAdminUserID: &actor, State: next, CompletedAt: completed}, nil
 }
 func (r *Repository) Cancel(ctx context.Context, c ControlCommand) (Projection, Receipt, error) {
 	return r.control(ctx, c, "cancel")
@@ -462,16 +495,15 @@ func (r *Repository) RunAttempt(ctx context.Context, id, generation, riverJobID 
 	var callAttempted, realExternalCallExecuted bool
 	var adapterResult AdapterResult
 	var callErr error
-	var envelope Envelope
+	var owner, kind, source, target, payload, policy string
+	if err := r.pool.QueryRow(ctx, `SELECT owner,kind,source_ref_digest,target_ref_digest,payload_digest,policy_version_hash FROM external_effects WHERE id=$1 AND generation=$2`, id, generation).Scan(&owner, &kind, &source, &target, &payload, &policy); err != nil {
+		return err
+	}
+	envelope := Envelope{Owner: Owner(owner), Kind: Kind(kind), SourceRefDigest: Digest(source), TargetRefDigest: Digest(target), PayloadDigest: Digest(payload), PolicyVersionHash: Digest(policy)}
 	if adapter == nil {
 		next = StateFinalFailed // Provider disabled: no call was attempted.
 		receipt = Hash("provider-disabled", strconv.FormatInt(id, 10), strconv.Itoa(int(attempts)))
 	} else {
-		var owner, kind, source, target, payload, policy string
-		if err := r.pool.QueryRow(ctx, `SELECT owner,kind,source_ref_digest,target_ref_digest,payload_digest,policy_version_hash FROM external_effects WHERE id=$1 AND generation=$2`, id, generation).Scan(&owner, &kind, &source, &target, &payload, &policy); err != nil {
-			return err
-		}
-		envelope = Envelope{Owner: Owner(owner), Kind: Kind(kind), SourceRefDigest: Digest(source), TargetRefDigest: Digest(target), PayloadDigest: Digest(payload), PolicyVersionHash: Digest(policy)}
 		adapterResult, callErr = adapter.Execute(ctx, envelope, Attempt{Number: attempts, Generation: generation, Fence: fence})
 		result := adapterResult
 		callAttempted, realExternalCallExecuted = result.CallAttempted, result.RealExternalCallExecuted
@@ -530,8 +562,13 @@ func (r *Repository) RunAttempt(ctx context.Context, id, generation, riverJobID 
 		}
 		return ErrTransition
 	}
-	if next == StateExecuted && envelope.Kind == KindWeComTagCatalog {
-		if err = r.sink.CompleteEffect(platformpostgres.BindTransaction(ctx, tx), effectID(id), envelope, Attempt{Number: attempts, Generation: generation, Fence: fence}, adapterResult); err != nil {
+	shouldComplete := r.sink != nil && (envelope.Kind == KindGroupMessage && (next == StateExecuted || next == StateUnknown || next == StateRetryable || next == StateFinalFailed) || envelope.Kind == KindWeComTagCatalog && next == StateExecuted)
+	if shouldComplete {
+		completionResult := adapterResult
+		if !ValidDigest(completionResult.ReceiptDigest) {
+			completionResult.ReceiptDigest = receipt
+		}
+		if err = r.sink.CompleteEffect(platformpostgres.BindTransaction(ctx, tx), effectID(id), envelope, Attempt{Number: attempts, Generation: generation, Fence: fence}, completionResult); err != nil {
 			return err
 		}
 	}

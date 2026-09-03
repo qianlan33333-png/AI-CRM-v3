@@ -316,14 +316,37 @@ func (r *Repository) captureOne(ctx context.Context, reference mediaport.GroupOp
 		var coverDigest *string
 		var enabled bool
 		var archived *time.Time
-		err = tx.QueryRow(ctx, `SELECT g.title,g.description,g.join_url,g.cover_image_id,i.blob_digest,g.enabled,g.archived_at FROM media_group_invites g LEFT JOIN media_images i ON i.id=g.cover_image_id WHERE g.id=$1 AND (g.cover_image_id IS NULL OR i.enabled)`+suffix, reference.ID).Scan(&title, &description, &url, &coverID, &coverDigest, &enabled, &archived)
-		if errors.Is(err, pgx.ErrNoRows) || !enabled || archived != nil {
+		// Lock the invite row first. A generic FOR UPDATE on the previous
+		// LEFT JOIN is rejected by PostgreSQL because the nullable side cannot
+		// be locked; the cover image is locked explicitly below.
+		err = tx.QueryRow(ctx, `SELECT title,description,join_url,cover_image_id,enabled,archived_at FROM media_group_invites WHERE id=$1`+suffix, reference.ID).Scan(&title, &description, &url, &coverID, &enabled, &archived)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return mediaport.GroupOpsMaterialSourceReference{}, ErrNotFound
+		}
+		if err != nil {
+			return mediaport.GroupOpsMaterialSourceReference{}, err
+		}
+		if !enabled || archived != nil {
 			return mediaport.GroupOpsMaterialSourceReference{}, ErrNotFound
 		}
 		if coverID != nil {
-			if coverDigest == nil {
+			var imageEnabled bool
+			var imageDigest string
+			imageSuffix := ""
+			if lock {
+				imageSuffix = " FOR UPDATE"
+			}
+			err = tx.QueryRow(ctx, `SELECT blob_digest,enabled FROM media_images WHERE id=$1`+imageSuffix, *coverID).Scan(&imageDigest, &imageEnabled)
+			if errors.Is(err, pgx.ErrNoRows) || !imageEnabled {
+				return mediaport.GroupOpsMaterialSourceReference{}, ErrNotFound
+			}
+			if err != nil {
+				return mediaport.GroupOpsMaterialSourceReference{}, err
+			}
+			if imageDigest == "" {
 				return mediaport.GroupOpsMaterialSourceReference{}, ErrConflict
 			}
+			coverDigest = &imageDigest
 			out.ThumbnailImageID = *coverID
 			out.ThumbnailSourceDigest = *coverDigest
 		}
