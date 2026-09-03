@@ -62,7 +62,7 @@ modules:
     owner: crm-connectors
     dependencies: [platform, externaleffects]
   - name: segment
-    status: contracted
+    status: implemented
     owner: crm-operations
     dependencies: [platform, customer, identity, access, automation, outbound]
   - name: intelligence-platform-tail

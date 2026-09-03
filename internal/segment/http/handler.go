@@ -1,0 +1,475 @@
+// Package http exposes only Segment-owned local configuration routes.
+package http
+
+import (
+	"context"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"io"
+	"net/http"
+	"strconv"
+	"strings"
+
+	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
+	segmentapp "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/app"
+	segmentdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/domain"
+)
+
+type RequestSecurity interface {
+	Authenticate(context.Context, *http.Request) (accessdomain.Principal, error)
+	AuthorizeCSRF(context.Context, *http.Request) (accessdomain.Principal, error)
+}
+type ConfigurationApplication interface {
+	ListGroups(context.Context) ([]segmentdomain.Group, error)
+	CreateGroup(context.Context, segmentapp.GroupCommand) (segmentdomain.Group, error)
+	UpdateGroup(context.Context, segmentapp.GroupCommand) (segmentdomain.Group, error)
+	DeleteGroup(context.Context, segmentapp.VersionCommand) error
+	ListPackages(context.Context, int, int, bool) (segmentapp.PackagePage, error)
+	GetPackage(context.Context, int64) (segmentdomain.Package, error)
+	CreatePackage(context.Context, segmentapp.PackageCreateCommand) (segmentdomain.Package, error)
+	UpdatePackage(context.Context, segmentapp.PackageUpdateCommand) (segmentdomain.Package, error)
+	CopyPackage(context.Context, segmentapp.VersionCommand) (segmentdomain.Package, error)
+	TransitionPackage(context.Context, segmentapp.VersionCommand, segmentdomain.Lifecycle) (segmentdomain.Package, error)
+	PutConfiguration(context.Context, segmentapp.ConfigurationCommand) (segmentdomain.ConfigurationVersion, error)
+	CurrentConfiguration(context.Context, int64) (segmentdomain.ConfigurationVersion, error)
+}
+type Handler struct {
+	service  ConfigurationApplication
+	security RequestSecurity
+}
+
+func NewHandler(service ConfigurationApplication, security RequestSecurity) (*Handler, error) {
+	if service == nil || security == nil {
+		return nil, errors.New("segment HTTP dependencies are required")
+	}
+	return &Handler{service, security}, nil
+}
+func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if !strings.HasPrefix(r.URL.Path, "/api/admin/ai-audience/") {
+		fail(w, 404, "not_found")
+		return
+	}
+	tail := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/admin/ai-audience/"), "/")
+	parts := strings.Split(tail, "/")
+	switch {
+	case tail == "package-groups":
+		h.groups(w, r)
+	case len(parts) == 2 && parts[0] == "package-groups":
+		h.group(w, r, id(parts[1]))
+	case tail == "packages":
+		h.packages(w, r)
+	case tail == "templates":
+		h.templates(w, r)
+	case len(parts) == 2 && parts[0] == "packages":
+		h.packageItem(w, r, id(parts[1]))
+	case len(parts) == 3 && parts[0] == "packages":
+		h.packageAction(w, r, id(parts[1]), parts[2])
+	default:
+		fail(w, 404, "not_found")
+	}
+}
+func (h *Handler) groups(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		if !h.read(w, r) {
+			return
+		}
+		items, e := h.service.ListGroups(r.Context())
+		if e != nil {
+			resultError(w, e)
+			return
+		}
+		respond(w, 200, map[string]any{"items": items})
+		return
+	}
+	if r.Method != http.MethodPost {
+		method(w, "GET, POST")
+		return
+	}
+	p, ok := h.write(w, r)
+	if !ok {
+		return
+	}
+	var in struct {
+		Name      string `json:"name"`
+		SortOrder int    `json:"sort_order"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	key, ok := requestKey(w, r)
+	if !ok {
+		return
+	}
+	item, e := h.service.CreateGroup(r.Context(), segmentapp.GroupCommand{Name: in.Name, SortOrder: in.SortOrder, Actor: p.InternalID, IdempotencyKey: key})
+	if e != nil {
+		resultError(w, e)
+		return
+	}
+	respond(w, 201, map[string]any{"group": item})
+}
+func (h *Handler) group(w http.ResponseWriter, r *http.Request, groupID int64) {
+	if groupID < 1 {
+		fail(w, 404, "not_found")
+		return
+	}
+	p, ok := h.write(w, r)
+	if !ok {
+		return
+	}
+	key, ok := requestKey(w, r)
+	if !ok {
+		return
+	}
+	switch r.Method {
+	case http.MethodPatch:
+		var in struct {
+			Name            string `json:"name"`
+			SortOrder       int    `json:"sort_order"`
+			ExpectedVersion int64  `json:"expected_version"`
+		}
+		if !decode(w, r, &in) {
+			return
+		}
+		item, e := h.service.UpdateGroup(r.Context(), segmentapp.GroupCommand{ID: groupID, Name: in.Name, SortOrder: in.SortOrder, ExpectedVersion: in.ExpectedVersion, Actor: p.InternalID, IdempotencyKey: key})
+		if e != nil {
+			resultError(w, e)
+			return
+		}
+		respond(w, 200, map[string]any{"group": item})
+	case http.MethodDelete:
+		e := h.service.DeleteGroup(r.Context(), segmentapp.VersionCommand{ID: groupID, ExpectedVersion: queryID(r, "expected_version"), Actor: p.InternalID, IdempotencyKey: key})
+		if e != nil {
+			resultError(w, e)
+			return
+		}
+		respond(w, 200, map[string]any{"ok": true})
+	default:
+		method(w, "PATCH, DELETE")
+	}
+}
+func (h *Handler) packages(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		if !h.read(w, r) {
+			return
+		}
+		page, e := h.service.ListPackages(r.Context(), queryInt(r, "limit", 50), queryInt(r, "offset", 0), false)
+		if e != nil {
+			resultError(w, e)
+			return
+		}
+		items := make([]map[string]any, 0, len(page.Items))
+		for _, item := range page.Items {
+			items = append(items, packageDTO(item))
+		}
+		respond(w, 200, map[string]any{"items": items, "total": page.Total, "limit": page.Limit, "offset": page.Offset})
+		return
+	}
+	if r.Method != http.MethodPost {
+		method(w, "GET, POST")
+		return
+	}
+	p, ok := h.write(w, r)
+	if !ok {
+		return
+	}
+	var in struct {
+		Name        string `json:"name"`
+		GroupID     *int64 `json:"group_id"`
+		TemplateKey string `json:"template_key"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	key, ok := requestKey(w, r)
+	if !ok {
+		return
+	}
+	item, e := h.service.CreatePackage(r.Context(), segmentapp.PackageCreateCommand{Name: in.Name, GroupID: in.GroupID, TemplateKey: in.TemplateKey, Actor: p.InternalID, IdempotencyKey: key})
+	if e != nil {
+		resultError(w, e)
+		return
+	}
+	respond(w, 201, map[string]any{"package": packageDTO(item)})
+}
+func (h *Handler) packageItem(w http.ResponseWriter, r *http.Request, packageID int64) {
+	if packageID < 1 {
+		fail(w, 404, "not_found")
+		return
+	}
+	if r.Method == http.MethodGet {
+		if !h.read(w, r) {
+			return
+		}
+		item, e := h.service.GetPackage(r.Context(), packageID)
+		if e != nil {
+			resultError(w, e)
+			return
+		}
+		respond(w, 200, map[string]any{"package": packageDTO(item)})
+		return
+	}
+	p, ok := h.write(w, r)
+	if !ok {
+		return
+	}
+	key, ok := requestKey(w, r)
+	if !ok {
+		return
+	}
+	switch r.Method {
+	case http.MethodPatch:
+		var in struct {
+			Name            string `json:"name"`
+			GroupID         *int64 `json:"group_id"`
+			ExpectedVersion int64  `json:"expected_version"`
+		}
+		if !decode(w, r, &in) {
+			return
+		}
+		item, e := h.service.UpdatePackage(r.Context(), segmentapp.PackageUpdateCommand{ID: packageID, Name: in.Name, GroupID: in.GroupID, ExpectedVersion: in.ExpectedVersion, Actor: p.InternalID, IdempotencyKey: key})
+		if e != nil {
+			resultError(w, e)
+			return
+		}
+		respond(w, 200, map[string]any{"package": packageDTO(item)})
+	case http.MethodDelete:
+		item, e := h.service.TransitionPackage(r.Context(), segmentapp.VersionCommand{ID: packageID, ExpectedVersion: queryID(r, "expected_version"), Actor: p.InternalID, IdempotencyKey: key}, segmentdomain.Archived)
+		if e != nil {
+			resultError(w, e)
+			return
+		}
+		respond(w, 200, map[string]any{"package": packageDTO(item)})
+	default:
+		method(w, "GET, PATCH, DELETE")
+	}
+}
+func (h *Handler) packageAction(w http.ResponseWriter, r *http.Request, packageID int64, action string) {
+	if action == "configuration" {
+		h.configuration(w, r, packageID)
+		return
+	}
+	if packageID < 1 || r.Method != http.MethodPost {
+		method(w, "POST")
+		return
+	}
+	p, ok := h.write(w, r)
+	if !ok {
+		return
+	}
+	key, ok := requestKey(w, r)
+	if !ok {
+		return
+	}
+	command := segmentapp.VersionCommand{ID: packageID, Actor: p.InternalID, IdempotencyKey: key}
+	var item segmentdomain.Package
+	var e error
+	if action == "copy" {
+		item, e = h.service.CopyPackage(r.Context(), command)
+	} else {
+		var in struct {
+			ExpectedVersion int64 `json:"expected_version"`
+		}
+		if !decode(w, r, &in) {
+			return
+		}
+		command.ExpectedVersion = in.ExpectedVersion
+		switch action {
+		case "pause":
+			item, e = h.service.TransitionPackage(r.Context(), command, segmentdomain.Paused)
+		case "activate":
+			item, e = h.service.TransitionPackage(r.Context(), command, segmentdomain.Active)
+		default:
+			fail(w, 404, "not_found")
+			return
+		}
+	}
+	if e != nil {
+		resultError(w, e)
+		return
+	}
+	status := 200
+	if action == "copy" {
+		status = 201
+	}
+	respond(w, status, map[string]any{"package": packageDTO(item)})
+}
+func (h *Handler) configuration(w http.ResponseWriter, r *http.Request, packageID int64) {
+	if r.Method == http.MethodGet {
+		if !h.read(w, r) {
+			return
+		}
+		item, e := h.service.CurrentConfiguration(r.Context(), packageID)
+		if e != nil {
+			resultError(w, e)
+			return
+		}
+		respond(w, 200, map[string]any{"configuration": configurationDTO(item)})
+		return
+	}
+	if r.Method != http.MethodPut {
+		method(w, "GET, PUT")
+		return
+	}
+	p, ok := h.write(w, r)
+	if !ok {
+		return
+	}
+	key, ok := requestKey(w, r)
+	if !ok {
+		return
+	}
+	var in struct {
+		ExpectedPackageVersion int64           `json:"expected_package_version"`
+		RefreshCronUTC         string          `json:"refresh_cron_utc"`
+		Definition             json.RawMessage `json:"definition"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	item, e := h.service.PutConfiguration(r.Context(), segmentapp.ConfigurationCommand{PackageID: packageID, ExpectedPackageVersion: in.ExpectedPackageVersion, Definition: in.Definition, RefreshCronUTC: in.RefreshCronUTC, Actor: p.InternalID, IdempotencyKey: key})
+	if e != nil {
+		resultError(w, e)
+		return
+	}
+	respond(w, 200, map[string]any{"configuration": configurationDTO(item)})
+}
+func (h *Handler) templates(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		method(w, "GET")
+		return
+	}
+	if !h.read(w, r) {
+		return
+	}
+	respond(w, 200, map[string]any{"items": segmentapp.Templates()})
+}
+func (h *Handler) read(w http.ResponseWriter, r *http.Request) bool {
+	p, e := h.security.Authenticate(r.Context(), r)
+	if e != nil {
+		fail(w, 401, "unauthorized")
+		return false
+	}
+	if !role(p, false) {
+		fail(w, 403, "forbidden")
+		return false
+	}
+	return true
+}
+func (h *Handler) write(w http.ResponseWriter, r *http.Request) (accessdomain.Principal, bool) {
+	p, e := h.security.Authenticate(r.Context(), r)
+	if e != nil {
+		fail(w, 401, "unauthorized")
+		return p, false
+	}
+	if !role(p, true) {
+		fail(w, 403, "forbidden")
+		return p, false
+	}
+	if _, e = h.security.AuthorizeCSRF(r.Context(), r); e != nil {
+		fail(w, 403, "csrf_required")
+		return p, false
+	}
+	return p, true
+}
+func role(p accessdomain.Principal, write bool) bool {
+	if p.InternalID < 1 || (p.Kind != accessdomain.KindAdmin && p.Kind != accessdomain.KindStaff) {
+		return false
+	}
+	for _, r := range p.Roles {
+		if write && (r == accessdomain.RoleAdmin || r == accessdomain.RoleSuperAdmin) {
+			return true
+		}
+		if !write && (r == accessdomain.RoleViewer || r == accessdomain.RoleAdmin || r == accessdomain.RoleSuperAdmin) {
+			return true
+		}
+	}
+	return false
+}
+func decode(w http.ResponseWriter, r *http.Request, target any) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+	d := json.NewDecoder(r.Body)
+	d.DisallowUnknownFields()
+	e := d.Decode(target)
+	if e == nil {
+		var extra any
+		e = d.Decode(&extra)
+		if errors.Is(e, io.EOF) {
+			e = nil
+		}
+	}
+	if e == nil {
+		return true
+	}
+	var max *http.MaxBytesError
+	if errors.As(e, &max) {
+		fail(w, 413, "request_too_large")
+	} else {
+		fail(w, 400, "invalid_request")
+	}
+	return false
+}
+func requestKey(w http.ResponseWriter, r *http.Request) (string, bool) {
+	values := r.Header.Values("Idempotency-Key")
+	if len(values) != 1 {
+		fail(w, 400, "invalid_idempotency_key")
+		return "", false
+	}
+	key := strings.TrimSpace(values[0])
+	if len(key) < 16 || len(key) > 128 || key != values[0] || strings.ContainsAny(key, "\x00\r\n") {
+		fail(w, 400, "invalid_idempotency_key")
+		return "", false
+	}
+	return key, true
+}
+func id(v string) int64                       { n, _ := strconv.ParseInt(v, 10, 64); return n }
+func queryID(r *http.Request, n string) int64 { return id(r.URL.Query().Get(n)) }
+func queryInt(r *http.Request, n string, f int) int {
+	if r.URL.Query().Get(n) == "" {
+		return f
+	}
+	v, e := strconv.Atoi(r.URL.Query().Get(n))
+	if e != nil {
+		return -1
+	}
+	return v
+}
+func packageDTO(p segmentdomain.Package) map[string]any {
+	v := map[string]any{"id": p.ID, "code": p.Code, "name": p.Name, "lifecycle": p.Lifecycle, "version": p.Version, "readiness": "not_ready"}
+	if p.GroupID != nil {
+		v["group_id"] = *p.GroupID
+	}
+	if p.CurrentConfigurationVersionID != nil {
+		v["configuration_version_id"] = *p.CurrentConfigurationVersionID
+	}
+	return v
+}
+func configurationDTO(v segmentdomain.ConfigurationVersion) map[string]any {
+	return map[string]any{"id": v.ID, "package_id": v.PackageID, "version": v.Version, "digest": hex.EncodeToString(v.Digest[:]), "definition": json.RawMessage(v.Definition)}
+}
+func resultError(w http.ResponseWriter, e error) {
+	switch {
+	case errors.Is(e, segmentapp.ErrInvalid):
+		fail(w, 400, "invalid_request")
+	case errors.Is(e, segmentapp.ErrUnsupportedDefinition):
+		fail(w, 422, "definition_not_supported")
+	case errors.Is(e, segmentapp.ErrNotFound):
+		fail(w, 404, "not_found")
+	case errors.Is(e, segmentapp.ErrConflict):
+		fail(w, 409, "conflict")
+	case errors.Is(e, segmentapp.ErrNotReady):
+		fail(w, 503, "capability_not_ready")
+	default:
+		fail(w, 503, "temporarily_unavailable")
+	}
+}
+func method(w http.ResponseWriter, a string) {
+	w.Header().Set("Allow", a)
+	fail(w, 405, "method_not_allowed")
+}
+func fail(w http.ResponseWriter, s int, c string) { respond(w, s, map[string]any{"error": c}) }
+func respond(w http.ResponseWriter, s int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(s)
+	_ = json.NewEncoder(w).Encode(v)
+}

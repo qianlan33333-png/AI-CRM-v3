@@ -4,13 +4,24 @@ package segment
 import (
 	"context"
 	"errors"
+	"net/http"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	segmenthttp "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/http"
 )
 
 type ModuleRegistration struct{}
+type HTTPBindings struct{ Audience http.Handler }
 
 func NewModuleRegistration() *ModuleRegistration { return &ModuleRegistration{} }
+
+func (m *ModuleRegistration) Bind(service segmenthttp.ConfigurationApplication, security segmenthttp.RequestSecurity) (HTTPBindings, error) {
+	if m == nil {
+		return HTTPBindings{}, errors.New("segment module is required")
+	}
+	handler, err := segmenthttp.NewHandler(service, security)
+	return HTTPBindings{Audience: handler}, err
+}
 
 func (m *ModuleRegistration) Readiness(ctx context.Context, pool *pgxpool.Pool) error {
 	if m == nil || pool == nil {

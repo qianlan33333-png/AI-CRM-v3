@@ -71,6 +71,9 @@ import (
 	productstore "github.com/qianlan33333-png/AI-CRM-v3/internal/product/store"
 	releaseapp "github.com/qianlan33333-png/AI-CRM-v3/internal/release/app"
 	releaseport "github.com/qianlan33333-png/AI-CRM-v3/internal/release/port"
+	segment "github.com/qianlan33333-png/AI-CRM-v3/internal/segment"
+	segmentapp "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/app"
+	segmentstore "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/store"
 	surveymodule "github.com/qianlan33333-png/AI-CRM-v3/internal/survey"
 	surveyapp "github.com/qianlan33333-png/AI-CRM-v3/internal/survey/app"
 	surveyprovider "github.com/qianlan33333-png/AI-CRM-v3/internal/survey/provider"
@@ -204,6 +207,16 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	}
 	automationService := automationapp.NewAgentServiceWithMediaReferences(uow, automationRepository, mediaRepository, mediaRepository, mediaRepository, mediaRepository, automationRepository)
 	automationBindings, err := automationModule.Bind(automationService, requestSecurity)
+	if err != nil {
+		return fail(err)
+	}
+	segmentModule := segment.NewModuleRegistration()
+	segmentRepository, err := segmentstore.NewPostgreSQL(pool.Native(), uow)
+	if err != nil {
+		return fail(err)
+	}
+	segmentService := segmentapp.NewService(uow, segmentRepository)
+	segmentBindings, err := segmentModule.Bind(segmentService, requestSecurity)
 	if err != nil {
 		return fail(err)
 	}
@@ -654,7 +667,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 			return checkErr
 		}
 		var complete bool
-		checkErr := pool.Native().QueryRow(readinessContext, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['0001','0002','0003','0004','0005','0006','0007','0008','0009','0010','0011','0012','0013','0014','0016','0017','0018','0019','0020','0021','0022','0023','0024','0025','0026','0027']) AS required(version) WHERE NOT EXISTS (SELECT 1 FROM platform_schema_migrations applied WHERE applied.version=required.version))`).Scan(&complete)
+		checkErr := pool.Native().QueryRow(readinessContext, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['0001','0002','0003','0004','0005','0006','0007','0008','0009','0010','0011','0012','0013','0014','0016','0017','0018','0019','0020','0021','0022','0023','0024','0025','0026','0027','0028']) AS required(version) WHERE NOT EXISTS (SELECT 1 FROM platform_schema_migrations applied WHERE applied.version=required.version))`).Scan(&complete)
 		if checkErr != nil || !complete {
 			return errors.New("database schema is not ready")
 		}
@@ -680,6 +693,9 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 			return checkErr
 		}
 		if checkErr = automationModule.Readiness(readinessContext, pool.Native()); checkErr != nil {
+			return checkErr
+		}
+		if checkErr = segmentModule.Readiness(readinessContext, pool.Native()); checkErr != nil {
 			return checkErr
 		}
 		if checkErr = groupOpsModule.Readiness(readinessContext, pool.Native()); checkErr != nil {
@@ -749,6 +765,10 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return renderer.RenderConfig(writer, webshell.AdminPageForRequest(request, title, "", endpoint), page, donorTemplate, webshell.ConfigAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS})
 	})
 	handler, err := routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(healthHandler, accessHandler.Routes(), adminAPIs, effectsBindings.Effects, effectsBindings.PushCenter, effectsUI, mediaBindings.Media, mediaUI, tagBindings.Tags, tagUI, productBindings.Products, productUI, couponBindings.Coupons, couponUI, channelCatalog, groupOpsBindings.GroupOps, groupOpsUI, automationBindings.Agents, automationUI, operationUI, configBindings.Config, configUI, weComHandler, shellHandler, authentication, cfg.PublicOrigin)
+	if err != nil {
+		return fail(err)
+	}
+	handler, err = mountSegmentAPI(handler, segmentBindings.Audience)
 	if err != nil {
 		return fail(err)
 	}
