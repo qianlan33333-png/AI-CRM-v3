@@ -1033,9 +1033,13 @@ func requestIdempotencyKey(r *http.Request) (string, error) {
 	if len(values) == 1 {
 		return values[0], nil
 	}
+	return compatibilityIdempotencyKey(rand.Read)
+}
+
+func compatibilityIdempotencyKey(read func([]byte) (int, error)) (string, error) {
 	var raw [20]byte
-	if _, err := rand.Read(raw[:]); err != nil {
-		return "product_compat_" + strconv.FormatInt(int64(len(raw)), 10) + hex.EncodeToString(raw[:]), nil
+	if _, err := read(raw[:]); err != nil {
+		return "", err
 	}
 	return "product_compat_" + hex.EncodeToString(raw[:]), nil
 }

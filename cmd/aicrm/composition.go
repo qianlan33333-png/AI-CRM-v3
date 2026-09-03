@@ -178,7 +178,10 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	productCatalog := productapp.NewService(uow, productRepository, productEvents)
 	productLifecycle := productapp.NewLocalProductLifecycleService(uow, productRepository, productEvents)
 	productServicePeriod := productapp.NewServicePeriodService(uow, productRepository, productEvents)
-	productExternalPush := productapp.NewCommerceExternalPushService(uow, productRepository, productstore.NewLocalExternalPushEffectAccepter(), productEvents)
+	productExternalPush, err := productapp.NewCommerceExternalPushService(uow, productRepository, productstore.NewLocalExternalPushEffectAccepter(), productEvents)
+	if err != nil {
+		return fail(err)
+	}
 	productBindings, err := productModule.Bind(productCatalog, productLifecycle, productServicePeriod, productExternalPush, requestSecurity)
 	if err != nil {
 		return fail(err)
