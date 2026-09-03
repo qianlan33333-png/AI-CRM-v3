@@ -25,6 +25,8 @@ type EventAppender interface {
 }
 
 const (
-	EventProductCreated = "product.created"
-	EventProductUpdated = "product.updated"
+	EventProductCreated                 = "product.created"
+	EventProductUpdated                 = "product.updated"
+	EventExternalPushConfigurationSaved = "product.external_push.configuration_saved"
+	EventExternalPushTestAccepted       = "product.external_push.test_accepted"
 )

@@ -33,6 +33,9 @@ import (
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 	platformruntime "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/runtime"
 	platformwebhook "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/webhook"
+	productmodule "github.com/qianlan33333-png/AI-CRM-v3/internal/product"
+	productapp "github.com/qianlan33333-png/AI-CRM-v3/internal/product/app"
+	productstore "github.com/qianlan33333-png/AI-CRM-v3/internal/product/store"
 	tag "github.com/qianlan33333-png/AI-CRM-v3/internal/tag"
 	tagapp "github.com/qianlan33333-png/AI-CRM-v3/internal/tag/app"
 	tagstore "github.com/qianlan33333-png/AI-CRM-v3/internal/tag/store"
@@ -160,6 +163,27 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
+	productModule := productmodule.NewModuleRegistration()
+	productRepository, err := productstore.NewPostgreSQL(pool.Native(), uow)
+	if err != nil {
+		return fail(err)
+	}
+	productEvents, err := productstore.NewTransactionalEventAppender(auditService, platformoutbox.NewPostgreSQL())
+	if err != nil {
+		return fail(err)
+	}
+	productCatalog := productapp.NewService(uow, productRepository, productEvents)
+	productLifecycle := productapp.NewLocalProductLifecycleService(uow, productRepository, productEvents)
+	productServicePeriod := productapp.NewServicePeriodService(uow, productRepository, productEvents)
+	productExternalPush := productapp.NewCommerceExternalPushService(uow, productRepository, productstore.NewLocalExternalPushEffectAccepter(), productEvents)
+	productBindings, err := productModule.Bind(productCatalog, productLifecycle, productServicePeriod, productExternalPush, requestSecurity)
+	if err != nil {
+		return fail(err)
+	}
+	channelCatalog, err := channelstore.NewLegacyChannelHTTPHandler(channelstore.NewLegacyChannelCatalogAdapter(), requestSecurity)
+	if err != nil {
+		return fail(err)
+	}
 	oneIDHandler, err := identityhttp.NewHandler(identityhttp.Config{
 		UnitOfWork: uow, Authenticator: requestSecurity, CSRF: requestSecurity,
 		OneID: oneID, Queries: queries, Audit: auditService,
@@ -279,12 +303,20 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	adminAPIs.Handle("/api/admin/customers/", customerHandler.Routes())
 	adminAPIs.Handle("/api/admin/customer-sync-runs", syncHandler.Routes())
 	adminAPIs.Handle("/api/admin/customer-sync-runs/", syncHandler.Routes())
+	adminAPIs.Handle("/api/v1/products", productBindings.Products)
+	adminAPIs.Handle("/api/v1/products/", productBindings.Products)
+	adminAPIs.Handle("/api/admin/wechat-pay/products", productBindings.Products)
+	adminAPIs.Handle("/api/admin/wechat-pay/products/", productBindings.Products)
+	adminAPIs.Handle("/api/admin/service-period-products", productBindings.Products)
+	adminAPIs.Handle("/api/admin/service-period-products/", productBindings.Products)
+	adminAPIs.Handle("/api/admin/channels", channelCatalog)
+	adminAPIs.Handle("/api/admin/channels/", channelCatalog)
 	readiness := platformruntime.ReadinessFunc(func(readinessContext context.Context) error {
 		if checkErr := pool.Check(readinessContext); checkErr != nil {
 			return checkErr
 		}
 		var complete bool
-		checkErr := pool.Native().QueryRow(readinessContext, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['0001','0002','0003','0004','0005','0006','0007','0008','0009']) AS required(version) WHERE NOT EXISTS (SELECT 1 FROM platform_schema_migrations applied WHERE applied.version=required.version))`).Scan(&complete)
+		checkErr := pool.Native().QueryRow(readinessContext, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['0001','0002','0003','0004','0005','0006','0007','0008','0009','0010']) AS required(version) WHERE NOT EXISTS (SELECT 1 FROM platform_schema_migrations applied WHERE applied.version=required.version))`).Scan(&complete)
 		if checkErr != nil || !complete {
 			return errors.New("database schema is not ready")
 		}
@@ -295,6 +327,9 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 			return checkErr
 		}
 		if checkErr = tagModule.Readiness(readinessContext, pool.Native()); checkErr != nil {
+			return checkErr
+		}
+		if checkErr = productModule.Readiness(readinessContext, pool.Native()); checkErr != nil {
 			return checkErr
 		}
 		return nil
@@ -314,7 +349,12 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	tagUI := tagModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, donorTemplate string, assets tag.TagsAssets) error {
 		return renderer.RenderTags(writer, webshell.AdminPageForRequest(request, "企微标签管理", "管理标签目录与本地同步意图。", "api.admin_wecom_tags_page"), donorTemplate, webshell.TagsAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS})
 	})
-	handler, err := routeApplicationWithMediaTags(healthHandler, accessHandler.Routes(), adminAPIs, effectsBindings.Effects, effectsBindings.PushCenter, effectsUI, mediaBindings.Media, mediaUI, tagBindings.Tags, tagUI, weComHandler, shellHandler, authentication, cfg.PublicOrigin)
+	productUI := productModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, page, donorTemplate string, assets productmodule.ProductAssets) error {
+		titles := map[string]string{"products": "普通商品", "productForm": "普通商品", "spProducts": "周期商品", "spProductForm": "周期商品"}
+		endpoints := map[string]string{"products": "api.admin_products_page", "productForm": "api.admin_product_form_page", "spProducts": "api.admin_service_period_products_page", "spProductForm": "api.admin_service_period_product_form_page"}
+		return renderer.RenderProducts(writer, webshell.AdminPageForRequest(request, titles[page], "仅管理本地商品定义、生命周期与受控配置。", endpoints[page]), page, donorTemplate, webshell.ProductAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS})
+	})
+	handler, err := routeApplicationWithProducts(healthHandler, accessHandler.Routes(), adminAPIs, effectsBindings.Effects, effectsBindings.PushCenter, effectsUI, mediaBindings.Media, mediaUI, tagBindings.Tags, tagUI, productBindings.Products, productUI, channelCatalog, weComHandler, shellHandler, authentication, cfg.PublicOrigin)
 	if err != nil {
 		return fail(err)
 	}
@@ -360,7 +400,11 @@ func routeApplicationWithMedia(health, access, identity, effects, pushCenter, ef
 }
 
 func routeApplicationWithMediaTags(health, access, identity, effects, pushCenter, effectsUI, mediaHandler, mediaUI, tagHandler, tagUI, weCom, shell http.Handler, authentication accessAuthentication, publicOrigin string) (http.Handler, error) {
-	if health == nil || access == nil || identity == nil || effects == nil || pushCenter == nil || effectsUI == nil || mediaHandler == nil || mediaUI == nil || tagHandler == nil || tagUI == nil || weCom == nil || shell == nil || authentication == nil || canonicalOrigin(publicOrigin) == "" {
+	return routeApplicationWithProducts(health, access, identity, effects, pushCenter, effectsUI, mediaHandler, mediaUI, tagHandler, tagUI, http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(), weCom, shell, authentication, publicOrigin)
+}
+
+func routeApplicationWithProducts(health, access, identity, effects, pushCenter, effectsUI, mediaHandler, mediaUI, tagHandler, tagUI, productHandler, productUI, channelHandler, weCom, shell http.Handler, authentication accessAuthentication, publicOrigin string) (http.Handler, error) {
+	if health == nil || access == nil || identity == nil || effects == nil || pushCenter == nil || effectsUI == nil || mediaHandler == nil || mediaUI == nil || tagHandler == nil || tagUI == nil || productHandler == nil || productUI == nil || channelHandler == nil || weCom == nil || shell == nil || authentication == nil || canonicalOrigin(publicOrigin) == "" {
 		return nil, errors.New("application HTTP dependencies are required")
 	}
 	mux := http.NewServeMux()
@@ -391,8 +435,20 @@ func routeApplicationWithMediaTags(health, access, identity, effects, pushCenter
 	mux.Handle("/api/admin/wecom/tags/", tagHandler)
 	mux.Handle("/api/admin/wecom/tag-groups", tagHandler)
 	mux.Handle("/api/admin/wecom/tag-groups/", tagHandler)
+	// Product API paths are registered before the generic admin compatibility
+	// handler. Product owns only local definitions/lifecycle/configuration;
+	// member-grid and provider paths remain absent/fail-closed.
+	mux.Handle("/api/v1/products", productHandler)
+	mux.Handle("/api/v1/products/", productHandler)
+	mux.Handle("/api/admin/wechat-pay/products", productHandler)
+	mux.Handle("/api/admin/wechat-pay/products/", productHandler)
+	mux.Handle("/api/admin/service-period-products", productHandler)
+	mux.Handle("/api/admin/service-period-products/", productHandler)
+	mux.Handle("/api/admin/channels", channelHandler)
+	mux.Handle("/api/admin/channels/", channelHandler)
 	mux.Handle("/assets/", requireAdminSession(authentication, effectsUI))
 	mux.Handle("/media-assets/", requireAdminSession(authentication, mediaUI))
+	mux.Handle("/product-assets/", requireAdminSession(authentication, productUI))
 	mux.Handle("/admin/wecom-tags", requireAdminSession(authentication, tagUI))
 	// The staged Tags donor document is a private template carrier. Only the
 	// canonical PR10-mounted route above is public; neither its private staging
@@ -404,6 +460,26 @@ func routeApplicationWithMediaTags(health, access, identity, effects, pushCenter
 	mux.Handle("/admin/image-library", requireAdminSession(authentication, mediaUI))
 	mux.Handle("/admin/miniprogram-library", requireAdminSession(authentication, mediaUI))
 	mux.Handle("/admin/attachment-library", requireAdminSession(authentication, mediaUI))
+	// PR04 canonical/nested Product aliases all mount the donor template#tpl
+	// fragment in admin_base. Exact spProductData paths are denied before the
+	// generic admin shell so the excluded member-grid page cannot boot.
+	for _, path := range []string{
+		"/admin/wechat-pay/products", "/admin/wechat-pay/products/",
+		"/admin/wechat-pay/products.html", "/admin/products.html",
+		"/admin/wechat-pay/productForm.html", "/admin/productForm.html",
+		"/admin/wechat-pay/spProducts.html", "/admin/spProducts.html",
+		"/admin/wechat-pay/spProductForm.html", "/admin/spProductForm.html",
+		"/admin/service-period-products", "/admin/service-period-products/",
+		"/admin/wechat-pay/products/new", "/admin/service-period-products/new",
+	} {
+		mux.Handle(path, requireAdminSession(authentication, productUI))
+	}
+	for _, path := range []string{
+		"/admin/spProductData.html", "/admin/wechat-pay/spProductData.html",
+		"/admin/wechat-pay/products/spProductData.html", "/admin/service-period-products/spProductData.html",
+	} {
+		mux.Handle(path, requireAdminSession(authentication, http.NotFoundHandler()))
+	}
 	mux.Handle("/wecom/external-contact/callback", weCom)
 	mux.Handle("/api/wecom/events", weCom)
 	mux.Handle("/auth/wecom/start", weCom)
@@ -480,7 +556,8 @@ func securityHeaders(next http.Handler) http.Handler {
 		styleSource := "'self'"
 		mediaPage := request.URL.Path == "/admin/image-library" || request.URL.Path == "/admin/miniprogram-library" || request.URL.Path == "/admin/attachment-library"
 		tagsPage := request.URL.Path == "/admin/wecom-tags"
-		if (request.URL.Path == "/admin/campaigns.html" && externaleffects.ValidUIQuery(request.URL.Query())) || mediaPage || tagsPage {
+		productPage := isProductShellPath(request.URL.Path)
+		if (request.URL.Path == "/admin/campaigns.html" && externaleffects.ValidUIQuery(request.URL.Query())) || mediaPage || tagsPage || productPage {
 			styleSource = "'self' 'unsafe-inline'"
 		}
 		imageSource := "'self' data:"
@@ -497,4 +574,19 @@ func securityHeaders(next http.Handler) http.Handler {
 		writer.Header().Set("Content-Security-Policy", contentPolicy)
 		next.ServeHTTP(writer, request)
 	})
+}
+
+func isProductShellPath(path string) bool {
+	if strings.HasSuffix(path, "/spProductData.html") {
+		return false
+	}
+	if strings.HasPrefix(path, "/admin/wechat-pay/products") || strings.HasPrefix(path, "/admin/service-period-products") {
+		return true
+	}
+	switch path {
+	case "/admin/products.html", "/admin/productForm.html", "/admin/spProducts.html", "/admin/spProductForm.html", "/admin/wechat-pay/spProducts.html", "/admin/wechat-pay/spProductForm.html":
+		return true
+	default:
+		return false
+	}
 }

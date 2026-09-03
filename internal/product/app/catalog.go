@@ -557,5 +557,11 @@ func classify(e error) error {
 	if errors.Is(e, ErrNotFound) || errors.Is(e, ErrConflict) || errors.Is(e, ErrInvalidProduct) {
 		return e
 	}
+	if errors.Is(e, productport.ErrProductReadNotFound) {
+		return ErrNotFound
+	}
+	if errors.Is(e, productport.ErrProductConflict) {
+		return ErrConflict
+	}
 	return ErrUnavailable
 }

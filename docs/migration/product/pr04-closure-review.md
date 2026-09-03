@@ -1,23 +1,26 @@
-# PR04 商品管理 donor 闭包复核（只读）
+# PR04 商品管理 donor 闭包复核与实现
 
 本复核以用户批准的 PR04 商品管理迁移计划为准，复核固定 donor AI-CRM-v2
 `6bfbe5816bb89913c70adaca87d6a486260e016e`、v3 已合并基线
 `015587164bd52ee5d24978aa07970b7c782fbb1e`，并核对 prep `b0bd173` 与前端
-audit `ffc2bab`。复核在独立 `codex/pr04-closure-review` worktree 完成；没有修改 donor
-前端字节、Composition Root、OpenAPI、migration、deploy、lock 或共享端口。
+audit `ffc2bab`。实现位于独立 `codex/feature-products` worktree；仅修改 v3 Product
+Store/HTTP/UI adapter、Composition Root、OpenAPI、migration、测试和文档，未修改 donor 前端
+字节、deploy、lock 或共享端口；实现分支从本次 fetch 后的 `origin/main` `29ae604` 起始。
 
 ## 结论
 
-**NOT CLOSED（不能作为 PR04 完成验收）。**
+**CODE CLOSED（PR04 v3 代码闭包已交付；环境级验收见“剩余门禁”）。**
 
-冻结前端的 24 个 PR04 文件与 donor 逐字节一致，donor 的实际构建和 TypeScript 检查也能通过；
-但 v3 基线目前只有两个商品入口的 generic placeholder，没有 Product HTTP/store/UoW/migration/root
-journey，也没有将 donor body 接入 PR10。直接提供 donor 静态页面还会带入第二套 `.shell/.side`。
-另外，24 个冻结文件不是浏览器 runtime 的完整依赖闭包：固定的 `main → legacy → AdminController`
-会在实际商品表单上发出若干共享读取请求。活动页面已经发出的请求不能靠前端改写、裁剪或“抑制”来
-避开；必须由现有稳定 Port 或受控兼容 adapter 返回 donor mapper 接受的 exact DTO，或者返回
-truthful、页面仍可用的 fail-closed 投影。只有未进入的排除页面/分支才可以在 bundle/template/API
-之前拒绝。不能以“文件已复制”“构建成功”或 HTTP 200 代替闭环。
+冻结前端的 24 个 PR04 文件与 donor 逐字节一致，实际构建链保持
+`build.mjs → main.ts → legacy.ts → AdminController`。v3 已补齐 Product-owned PostgreSQL
+Store/UoW/migration、HTTP DTO、管理员权限/CSRF、CAS/幂等/审计/Outbox、本地 external-push
+配置与 acceptance、四页 PR10 单壳挂载、canonical/nested aliases，以及实际 form 请求所需的
+Channel/Media/Tag/成员元数据兼容边界。
+
+24 个冻结文件不是 runtime 权限边界：固定链路仍会加载混合 donor bundle。allowlisted 页面已发出的
+请求由对应 owner 的稳定 Port/受控兼容 adapter 接住，返回 donor mapper 可消费的 DTO；只有未进入的
+排除页面/分支（尤其 `spProductData` 和 member-grid query）在 bundle/template/API 前拒绝。前端请求、
+模板、交互和文案不因适配而改写。
 
 硬门禁如下：
 
@@ -146,7 +149,7 @@ legacy init 或发起 API 之前拒绝；只隐藏列表按钮不构成边界。
 
 `web/src/api/admin.ts` 是混合总控制器，不是可以整体注册的 Product handler。对固定 donor build
 以真实 `main → legacy → AdminController` 启动并用浏览器 CDP 采集到的实际请求图如下；这些是
-allowlisted 页面已经发出的网络请求，不能靠修改、裁剪或“抑制”前端来消失：
+allowlisted 页面已经发出的网络请求必须保持原样，并由 v3 兼容层逐项接住：
 
 - `products`：只发出 ordinary Product 列表 GET。
 - `productForm` 新建：实际读取 channels、ordinary products、image-library、tag-groups 和 tags。
@@ -160,10 +163,9 @@ allowlisted 页面已经发出的网络请求，不能靠修改、裁剪或“�
 因此 route/API gate 必须区分“活动页面真实请求”和“仅存在于 bundle 的未进入分支”。Product、
 Media、Channel、Tag 和本地 external-push 的活动读取分别通过各 owner 的稳定 Port/兼容 Adapter
 返回 donor mapper 接受的 exact DTO；不得跨域读表。`local-entitlements`、members 和 member-grid
-读取虽然属于本轮排除域，却是冻结编辑页确实发出的请求：若既有 owner 能提供不含客户身份、
-不含成员明细的 truthful unavailable/empty-capability projection，且 donor 页面能继续工作，可由
-后端兼容 Adapter 返回；否则该编辑页和 PR04 必须保持未闭环。禁止返回 Seed/Mock、伪造“可用”、
-读取排除表，或把 HTTP 200 本身当成能力完成。
+读取虽然属于本轮排除域，却是冻结编辑页确实发出的请求；本实现由兼容 adapter 返回不含客户身份、
+不含成员明细的 truthful empty/capability projection，让 unchanged donor 页面继续工作。禁止返回
+Seed/Mock、伪造“可用”、读取排除表，或把 HTTP 200 本身当成能力完成。
 
 Tag 目录结果即使当前模板只保存原始 `wecom_tagging` JSON，也不能否认浏览器已发出的请求；PR04
 只能消费 PR03 的稳定 Tag read Port。`spProductData`、member-grid query/history、客户/权益写入和
@@ -208,30 +210,32 @@ entitlement、customer 关联和 external-push handler。PR04 只能取商品定
 external-push 配置的叶子协议；不能把 donor 的 member-grid、history、entitlement、订单、支付、
 客户或 OneID 表/handler/store 接进 v3。
 
-### 当前 v3 缺口（阻断闭包）
+### 当前 v3 实现闭包
 
-在 `0155871` 基线中，`internal/product` 不存在；`cmd/aicrm/composition.go` 未注册 Product
-module/HTTP handler，商品 canonical route 仍是 webshell placeholder。因此 prep/audit 仍是准备
-和审计材料，不是可运行迁移。尚缺：
+基于 `origin/main` 的实现分支已注册 Product module/HTTP handler，并将四个 allowlisted donor
+fragment 挂入 PR10 唯一 `admin_base` 壳。已交付：
 
-1. Product-owned PostgreSQL Store、独立 v3 migration、HTTP route/DTO、管理员 auth/CSRF、
-   UoW/CAS/receipt/audit/outbox 和 composition wiring；本复核不实施这些变更。
-2. prep 的 `internal/product/port/events.go` 只是 local EventAppender seam，尚未接 v3 版本化
-   event/outbox；应由后续适配 lane 负责，不能直接 dispatch Provider。
-3. external-push save 在 donor 前端是“先保存 Product、再用另一随机 Idempotency-Key 保存
-   external config”的两个请求；不能通过改前端把它伪装成一个原子请求。每个请求内部仍须把
-   自身状态、receipt、audit/event 同一 UoW 提交，并按原请求 key 重放；第二步失败时必须返回
-   truthful partial state 供重试/对账，不能回滚已经提交的第一步、静默宣称整页保存成功或另造 key
-   盲重试。
-4. `CommerceExternalPushService.SaveExternalPushConfiguration` 的 prep seam 预留 receipt，
-   但没有明确 Product domain audit event；后续必须补齐“谁、何时、哪一对象、旧/新配置、结果”的
-   不可变审计事实并与状态/receipt 同事务。
-5. Media 只能经现有 `internal/media/port` 的 image list/metadata/reference 能力；Product
-   不能读 Media 表。Channel 目录需要稳定 read Port；Tag 目录消费 PR03 稳定 read Port。冻结
-   编辑页实际发出的 local-entitlements/members/member-grid 元数据请求必须按上节提供 truthful
-   兼容投影或把页面标成未闭环，不能跨域直读表，也不能修改前端去掉请求。
-6. 前端 route adapter 必须先做 canonical/nested alias 归一和 `spProductData` deny，再选择
-   page/template/legacy 分支；否则宽 bundle 会暴露未使用 API 或第二壳。
+1. Product-owned `0010_product.sql` 与 PostgreSQL Store：ordinary/service projection 共用
+   `products`，另有 Product operation receipts、local external-push config/tests；无客户、OneID、
+   订单、支付、entitlement、member 表。
+2. Product HTTP DTO、管理员 session/role/CSRF、ordinary cursor 与 service offset、1..100 limit、
+   safe positive IDs、CAS、幂等 replay、审计和 Outbox 绑定到同一 UnitOfWork。
+3. 普通商品启停/复制/安全删除与周期商品启停/复制/归档；普通分享保持
+   `no_authoritative_public_purchase_route`，周期分享仅返回 local-only `/p/service_period/<id>`。
+4. external-push 配置保存与本地 test acceptance；不调用 Provider、不创建 Product worker、不宣称
+   accepted/delivered，所有 provider/delivery/real-call/retry 字段固定为 false。
+5. Media/Tag 继续走各自已有 owner handler/port；Channel 通过只读兼容 adapter；普通表单的
+   local-entitlements、周期表单的 members/member-grid access/schema/views/share-settings 真实请求
+   均获得 truthful 空/能力投影；`spProductData` 与 member-grid query 前置拒绝。
+6. canonical/nested aliases、模板/asset allowlist 和 `spProductData` denylist 在 bundle、template、
+   API 选择前执行；产品页面只挂载 donor `template#tpl`，不复制 donor document、`.shell` 或 `.side`。
+7. `internal/product/port.ProductOptionReader` 暴露受限只读分页投影（`q`、`limit`、`offset`、
+   `standard|service_period|all`），只返回 Product ID、名称和 CNY minor price；Product application
+   在自己的 UnitOfWork 内调用 Product-owned Store。Coupon 等消费者不得读取 Product 表或导入
+   Product Store/app/http。
+
+实现仍不包含 donor 的 member-grid 数据、history、客户/权益、订单/支付、OneID 或 Provider 写入；
+这些是 PR04 的明确 excluded domain，而不是待通过前端改动补齐的功能。
 
 ## prep/audit 错误与遗漏复核
 
@@ -248,7 +252,7 @@ module/HTTP handler，商品 canonical route 仍是 webshell placeholder。因�
   AdminController` 导入混合域，必须同时纳入 PR01 transitive closure 和 server-side route/API
   allowlist。不能为规避宽 bundle 编写 product-only loader。
 - audit 没有用真实 browser request graph 区分活动请求和 dormant bundle 分支，并曾暗示可以
-  抑制 Tag/local-entitlements/member-grid 元数据读取；实测证明这些请求会在相应 form 上发生，
+  省略或不接入 Tag/local-entitlements/member-grid 元数据读取；实测证明这些请求会在相应 form 上发生，
   必须由稳定 Port/兼容投影处理，不能改前端或跨域读表。
 - audit 将生成的 external-push POST test wrapper 与活跃商品页面操作并列；当前 UI 未导入/调用
   该 wrapper，必须把它标为后端本地 acceptance 能力，不得开放为未使用 UI/API。
@@ -287,4 +291,6 @@ document；allowlist 外页面/API（尤其 `spProductData`、member-grid、enti
 在模板和网络请求前拒绝；冻结的 24 个文件和 PR01 transitive runtime 均能从固定 donor hash
 重建。真实 Provider 必须保持 disabled，不能用 queued/accepted/HTTP 202 冒充已执行或已对账。
 
-本分支只记录复核，不改变上述实现边界。
+本分支已经把上述 v3 Product 闭包落入实现；剩余门禁仅是受控环境中的 fresh PostgreSQL
+升级迁移、管理员浏览器 Journey 和精确 Node/npm 工具链复核，不得通过改 donor 前端或扩大
+Product/Coupon/Customer 等领域边界来绕过。

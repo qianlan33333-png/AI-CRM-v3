@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -52,6 +53,7 @@ type CommerceExternalPushService struct {
 	uow     platformport.UnitOfWork
 	store   CommerceExternalPushStore
 	effects ProductExternalPushEffectAccepter
+	events  productport.EventAppender
 	now     func() time.Time
 }
 
@@ -61,8 +63,13 @@ func NewCommerceExternalPushService(
 	uow platformport.UnitOfWork,
 	store CommerceExternalPushStore,
 	effects ProductExternalPushEffectAccepter,
+	eventAppenders ...productport.EventAppender,
 ) *CommerceExternalPushService {
-	return &CommerceExternalPushService{uow: uow, store: store, effects: effects, now: time.Now}
+	var events productport.EventAppender
+	if len(eventAppenders) > 0 {
+		events = eventAppenders[0]
+	}
+	return &CommerceExternalPushService{uow: uow, store: store, effects: effects, events: events, now: time.Now}
 }
 
 func (service *CommerceExternalPushService) GetExternalPushConfiguration(
@@ -133,6 +140,11 @@ func (service *CommerceExternalPushService) SaveExternalPushConfiguration(
 		if !validExternalPushConfiguration(result, command.ProductID, command.ProductKind) ||
 			result.Enabled != command.Enabled || result.ConfigurationReference != command.ConfigurationReference {
 			return ErrUnavailable
+		}
+		if eventErr := service.appendEvent(tx, productport.EventExternalPushConfigurationSaved, command.ProductID, command.ProductKind, command.Actor, reservation.KeyDigest, map[string]any{
+			"enabled": result.Enabled,
+		}); eventErr != nil {
+			return eventErr
 		}
 		return service.completeCommerceExternalPush(tx, receipt.ID, result, now)
 	})
@@ -208,6 +220,15 @@ func (service *CommerceExternalPushService) QueueExternalPushTest(
 		if !validExternalPushTest(result, command.ProductID, command.ProductKind) || result.EffectID != effect.EffectID || result.State != effect.State {
 			return ErrUnavailable
 		}
+		if eventErr := service.appendEvent(tx, productport.EventExternalPushTestAccepted, command.ProductID, command.ProductKind, command.Actor, reservation.KeyDigest, map[string]any{
+			"effect_id":                   result.EffectID,
+			"state":                       result.State,
+			"provider_accepted":           result.ProviderAccepted,
+			"delivery_proven":             result.DeliveryProven,
+			"real_external_call_executed": result.RealExternalCallExecuted,
+		}); eventErr != nil {
+			return eventErr
+		}
 		return service.completeCommerceExternalPush(tx, receipt.ID, result, now)
 	})
 	if err != nil {
@@ -226,6 +247,31 @@ func (service *CommerceExternalPushService) completeCommerceExternalPush(ctx con
 		return ErrUnavailable
 	}
 	return nil
+}
+
+func (service *CommerceExternalPushService) appendEvent(ctx context.Context, eventType string, productID productport.ID, kind productport.ExternalPushProductKind, actor int64, keyDigest [32]byte, fields map[string]any) error {
+	if service.events == nil {
+		// The isolated application tests intentionally construct the service
+		// without platform event ports. Production composition always supplies
+		// the transactional adapter; preserving the optional constructor keeps
+		// the bounded application contract reusable in those tests.
+		return nil
+	}
+	if fields == nil {
+		fields = map[string]any{}
+	}
+	fields["product_id"] = productID
+	fields["product_kind"] = kind
+	fields["actor"] = actor
+	payload, err := json.Marshal(fields)
+	if err != nil {
+		return ErrUnavailable
+	}
+	_, err = service.events.Append(ctx, productport.Event{
+		Type: eventType, Payload: payload, OccurredAt: service.now().UTC(),
+		IdempotencyKey: eventType + ":" + hex.EncodeToString(keyDigest[:]),
+	})
+	return err
 }
 
 func commerceExternalPushReservation(operation string, actor int64, key string, payload [32]byte, now time.Time) Reservation {
@@ -349,6 +395,10 @@ func classifyCommerceExternalPush(err error) error {
 	switch {
 	case errors.Is(err, ErrInvalidProduct), errors.Is(err, ErrNotFound), errors.Is(err, ErrConflict), errors.Is(err, ErrExternalPushNotConfigured):
 		return err
+	case errors.Is(err, productport.ErrProductReadNotFound):
+		return ErrNotFound
+	case errors.Is(err, productport.ErrProductConflict):
+		return ErrConflict
 	default:
 		return ErrUnavailable
 	}

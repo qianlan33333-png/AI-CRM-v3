@@ -19,7 +19,7 @@ behavior_contract:
   product_definitions:
     ordinary:
       identity: Product.id
-      list: keyset cursor with an opaque cursor and a maximum page size of 200
+      list: keyset cursor with an opaque cursor and a maximum page size of 100
       mutable_fields: [name, description, price_minor, currency, stock_quantity, images, admin_projection]
       create_fields: [product_code, name, description, price_minor, currency, stock_quantity, images, admin_projection]
     service_period:

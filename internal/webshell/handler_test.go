@@ -497,6 +497,22 @@ func TestRenderTagsKeepsPR10AsTheOnlyAdminShell(t *testing.T) {
 	}
 }
 
+func TestRenderProductsKeepsPR10AsTheOnlyAdminShell(t *testing.T) {
+	renderer, err := NewRenderer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	err = renderer.RenderProducts(response, AdminPageForRequest(httptest.NewRequest(http.MethodGet, "/admin/wechat-pay/products", nil), "普通商品", "", "api.admin_products_page"), "products", `<section data-page="products">frozen donor product fragment</section>`, ProductAssets{TokensCSS: "/product-assets/tokens.css", LabsCSS: "/product-assets/labs.css", AdminJS: "/product-assets/admin.js"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := response.Body.String()
+	if response.Code != http.StatusOK || strings.Count(body, `class="admin-sidebar"`) != 1 || strings.Count(body, `<main`) != 1 || strings.Count(body, `<aside`) != 1 || strings.Contains(body, `class="side"`) || strings.Contains(body, `class="shell"`) || !strings.Contains(body, `<template id="tpl"><section data-page="products">frozen donor product fragment</section></template>`) || !strings.Contains(body, `data-admin-shell-source="v3_webshell"`) {
+		t.Fatalf("product shell mismatch status=%d body=%q", response.Code, body)
+	}
+}
+
 func TestLoginPostNeverIssuesSession(t *testing.T) {
 	handler := MustHandler()
 	response := httptest.NewRecorder()

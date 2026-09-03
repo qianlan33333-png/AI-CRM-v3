@@ -10,6 +10,11 @@ import (
 var (
 	ErrProductReadNotFound    = errors.New("product read projection not found")
 	ErrProductReadUnavailable = errors.New("product read projection unavailable")
+	// ErrProductConflict is returned by a Product repository when a unique
+	// local fact or compare-and-swap precondition cannot be satisfied.  The
+	// application layer maps it to its stable conflict contract without making
+	// the store import the application package.
+	ErrProductConflict = errors.New("product persistence conflict")
 )
 
 type ID int64

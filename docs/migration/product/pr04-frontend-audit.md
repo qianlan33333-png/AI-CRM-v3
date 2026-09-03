@@ -1,8 +1,8 @@
 # PR04 商品管理 donor 前端冻结审计
 
-审计对象是 AI-CRM-v2 `main` 的冻结 donor `6bfbe5816bb89913c70adaca87d6a486260e016e`，不是
-当前 v3 工作树的可运行代码。`b0bd173` 将 donor 文件放在
-`web/donors/products-v2/src`，本审计只增加清单、边界和校验证据，不修改任何 donor 前端字节。
+审计对象是 AI-CRM-v2 `main` 的冻结 donor `6bfbe5816bb89913c70adaca87d6a486260e016e`；
+`b0bd173` 将 donor 文件放在 `web/donors/products-v2/src`。本审计记录 donor 证据与 v3
+适配边界；实现可修改 v3 宿主/adapter，但不得修改任何 donor 前端字节。
 
 ## 分类结论
 
@@ -183,7 +183,7 @@ web/src/shared/ui/tokens.css
 
 | 方法 | donor URL | 请求/响应要点 |
 | --- | --- | --- |
-| GET | `/api/v1/products` | `cursor` 是不透明 1..512 字符，`limit` 1..200；响应 `ProductPage{items,next_cursor?}` |
+| GET | `/api/v1/products` | `cursor` 是不透明 1..512 字符，实际 `limit` 为 1..100；响应 `ProductPage{items,next_cursor?}` |
 | POST | `/api/v1/products` | `CreateProductRequest`；201 `Product` |
 | GET | `/api/v1/products/{productId}` | 详情 `Product`，ID 为正整数 |
 | PUT | `/api/v1/products/{productId}` | `UpdateProductRequest` 含 `expected_version`；200 `Product` |
@@ -239,7 +239,8 @@ HTTP 202 冒充执行成功。所有写请求必须保留 v2 transport 的 CSRF 
 
 - `spProductData` 页面及其 member grid、会员数据、成员视图、员工范围、分享设置、客户/权益查询；
 - `/api/admin/service-period-history*` 历史定义、entitlements、events；
-- `listProductLocalEntitlements`（普通商品表单 donor 的额外读取）；
+- `listProductLocalEntitlements` 的数据所有权（普通商品表单的真实读取仍由兼容 adapter 返回
+  truthful empty projection，不得改前端或伪造 entitlement）；
 - 订单、支付、退款、权益发放、会员、客户、OneID、客户标签绑定/打标；
 - 真实企微/微信 Provider 写入和任何声称已交付的外部效果。
 
@@ -249,10 +250,11 @@ HTTP 202 冒充执行成功。所有写请求必须保留 v2 transport 的 CSRF 
    读取 channels、images、企微 tag directory；v3 adapter 应仅通过 Media/Channel/Tag 的稳定 read
    Port 装配这些数据。
 2. donor `readAdminPage()`（约 2106 行）在普通商品表单并行调用 `getProduct`、
-   `listProductLocalEntitlements` 和 external-push；v3 必须抑制 entitlement 读取，只返回商品详情与
-   本地 external-push。
-3. donor 周期商品 form/data 分支会触碰成员/历史/member-grid API；PR04 adapter 只能返回商品详情
-   和本地 external-push，`spProductData` 必须 blocked。
+   `listProductLocalEntitlements` 和 external-push；v3 不改动这些真实请求，而是由 Product
+   兼容 adapter 返回商品详情、本地 external-push 和 truthful empty entitlement projection。
+3. donor 周期商品 form/data 分支会触碰成员/历史/member-grid API；周期商品 form 的真实成员元数据
+   请求必须由兼容 adapter 返回不含成员明细的 truthful empty/capability projection，商品详情和本地
+   external-push 仍按 Product owner 提供；`spProductData` 数据页及其 query/write 分支必须 blocked。
 4. donor 商品分享行为不应构造 URL；普通商品沿用 blocked reason，周期商品只返回 local-only
    `/p/service_period/<id>`。
 5. image picker/upload 依赖 PR02 Media API；channel picker 需要渠道目录的只读 adapter。任何
