@@ -73,6 +73,7 @@ const privateTemplatePages = [
   'images', 'attach', 'mpLib',
   'products', 'productForm', 'spProducts', 'spProductForm',
   'coupons', 'couponForm',
+  'orders', 'orderDetail',
   'groupops', 'groupopsDetail',
   'agents', 'agentEdit',
   'cycles', 'cyclesDetail',
@@ -96,6 +97,10 @@ for (const page of ['images', 'attach', 'mpLib']) copy(`admin/${page}.html`);
 for (const page of ['products', 'productForm', 'spProducts', 'spProductForm']) copy(`admin/${page}.html`);
 // Coupon pages remain byte-frozen private template carriers in the v3 shell.
 for (const page of ['coupons', 'couponForm']) copy(`admin/${page}.html`);
+// Transaction pages remain byte-frozen private template carriers in the v3
+// shell. The order UI binding reads these files at request time, so both must
+// be present in the versioned release artifact.
+for (const page of ['orders', 'orderDetail']) copy(`admin/${page}.html`);
 // Group Ops pages remain byte-frozen private template carriers in the v3
 // shell. They are never routed as donor documents; the Go binding extracts
 // only template#tpl into PR10's authenticated shell.
@@ -135,7 +140,7 @@ const walk = (directory) => {
 };
 walk(stage);
 for (const relative of stagedFiles) {
-  const allowedHTML = ['admin/images.html', 'admin/attach.html', 'admin/mpLib.html', 'admin/tags.html', 'admin/products.html', 'admin/productForm.html', 'admin/spProducts.html', 'admin/spProductForm.html', 'admin/coupons.html', 'admin/couponForm.html', 'admin/groupops.html', 'admin/groupopsDetail.html', 'admin/agents.html', 'admin/agentEdit.html', 'admin/cycles.html', 'admin/cyclesDetail.html', 'admin/config.html', 'admin/configDetail.html', 'admin/apidocs.html'];
+  const allowedHTML = ['admin/images.html', 'admin/attach.html', 'admin/mpLib.html', 'admin/tags.html', 'admin/products.html', 'admin/productForm.html', 'admin/spProducts.html', 'admin/spProductForm.html', 'admin/coupons.html', 'admin/couponForm.html', 'admin/orders.html', 'admin/orderDetail.html', 'admin/groupops.html', 'admin/groupopsDetail.html', 'admin/agents.html', 'admin/agentEdit.html', 'admin/cycles.html', 'admin/cyclesDetail.html', 'admin/config.html', 'admin/configDetail.html', 'admin/apidocs.html'];
   const allowed = relative === 'asset-manifest.json' || relative.startsWith('assets/') || allowedHTML.includes(relative);
   if (!allowed) fail(`unapproved release file: ${relative}`);
   if (relative.endsWith('.html') && !allowedHTML.includes(relative)) fail(`unapproved HTML surface: ${relative}`);
@@ -147,4 +152,4 @@ for (const relative of selected) {
 for (const relative of releaseRoot) {
   if (!stagedFiles.includes(relative)) fail(`missing staged release file: ${relative}`);
 }
-console.log(`staged ${selected.size} approved admin assets, including the v3 HXC dashboard chunk, and private donor templates in ${stage}`);
+console.log(`staged ${selected.size} approved admin assets, including the v3 HXC dashboard chunk, and private donor templates including Transaction in ${stage}`);

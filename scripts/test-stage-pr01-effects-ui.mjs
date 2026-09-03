@@ -18,6 +18,7 @@ try {
   for (const page of ['images', 'attach', 'mpLib']) fs.writeFileSync(path.join(source, 'admin', `${page}.html`), `<template id="tpl">${page}</template>`);
   for (const page of ['products', 'productForm', 'spProducts', 'spProductForm']) fs.writeFileSync(path.join(source, 'admin', `${page}.html`), `<template id="tpl">${page}</template>`);
   for (const page of ['coupons', 'couponForm']) fs.writeFileSync(path.join(source, 'admin', `${page}.html`), `<template id="tpl">${page}</template>`);
+  for (const page of ['orders', 'orderDetail']) fs.writeFileSync(path.join(source, 'admin', `${page}.html`), `<template id="tpl">${page}</template>`);
   for (const page of ['groupops', 'groupopsDetail']) fs.writeFileSync(path.join(source, 'admin', `${page}.html`), `<template id="tpl">${page}</template>`);
   for (const page of ['agents', 'agentEdit']) fs.writeFileSync(path.join(source, 'admin', `${page}.html`), `<aside class="side">donor shell</aside><template id="tpl"><section data-page="${page}">${page}</section></template>`);
   for (const page of ['cycles', 'cyclesDetail']) fs.writeFileSync(path.join(source, 'admin', `${page}.html`), `<template id="tpl">${page}</template>`);
@@ -53,7 +54,7 @@ try {
   const releaseFiles = Object.fromEntries([
     ...Object.keys(files),
     'admin/campaigns.html', 'admin/wecom-tags.html',
-    ...['images', 'attach', 'mpLib', 'products', 'productForm', 'spProducts', 'spProductForm', 'coupons', 'couponForm', 'groupops', 'groupopsDetail', 'agents', 'agentEdit', 'cycles', 'cyclesDetail', 'config', 'configDetail', 'apidocs'].map((page) => `admin/${page}.html`),
+    ...['images', 'attach', 'mpLib', 'products', 'productForm', 'spProducts', 'spProductForm', 'coupons', 'couponForm', 'orders', 'orderDetail', 'groupops', 'groupopsDetail', 'agents', 'agentEdit', 'cycles', 'cyclesDetail', 'config', 'configDetail', 'apidocs'].map((page) => `admin/${page}.html`),
   ].map((relative) => [relative, { sha256: relative }]));
   fs.writeFileSync(path.join(source, 'asset-manifest.json'), JSON.stringify({
     entries: { admin: 'assets/admin.js', tokens: 'assets/tokens.css', labs: 'assets/labs.css', operationCyclesHost: 'assets/cycles-host.js' }, files, release_files: releaseFiles,
@@ -61,11 +62,15 @@ try {
 
   execFileSync(process.execPath, ['scripts/stage-pr01-effects-ui.mjs', source, stage], { stdio: 'inherit' });
   const staged = fs.readdirSync(stage, { recursive: true }).map((entry) => String(entry).split(path.sep).join('/')).sort();
-  assert.deepEqual(staged, ['admin', 'admin/agentEdit.html', 'admin/agents.html', 'admin/apidocs.html', 'admin/attach.html', 'admin/config.html', 'admin/configDetail.html', 'admin/couponForm.html', 'admin/coupons.html', 'admin/cycles.html', 'admin/cyclesDetail.html', 'admin/groupops.html', 'admin/groupopsDetail.html', 'admin/images.html', 'admin/mpLib.html', 'admin/productForm.html', 'admin/products.html', 'admin/spProductForm.html', 'admin/spProducts.html', 'admin/tags.html', 'asset-manifest.json', 'assets', 'assets/admin.js', 'assets/adminAccess-runtime.js', 'assets/adminAccess.js', 'assets/campaigns.js', 'assets/cycles-host.js', 'assets/cycles-legacy.js', 'assets/cycles-main.js', 'assets/funnel-runtime.js', 'assets/funnel.js', 'assets/groupOpsHistory.js', 'assets/labs.css', 'assets/legacy.js', 'assets/setupWizard-runtime.js', 'assets/setupWizard.js', 'assets/tokens.css']);
+  assert.deepEqual(staged, ['admin', 'admin/agentEdit.html', 'admin/agents.html', 'admin/apidocs.html', 'admin/attach.html', 'admin/config.html', 'admin/configDetail.html', 'admin/couponForm.html', 'admin/coupons.html', 'admin/cycles.html', 'admin/cyclesDetail.html', 'admin/groupops.html', 'admin/groupopsDetail.html', 'admin/images.html', 'admin/mpLib.html', 'admin/orderDetail.html', 'admin/orders.html', 'admin/productForm.html', 'admin/products.html', 'admin/spProductForm.html', 'admin/spProducts.html', 'admin/tags.html', 'asset-manifest.json', 'assets', 'assets/admin.js', 'assets/adminAccess-runtime.js', 'assets/adminAccess.js', 'assets/campaigns.js', 'assets/cycles-host.js', 'assets/cycles-legacy.js', 'assets/cycles-main.js', 'assets/funnel-runtime.js', 'assets/funnel.js', 'assets/groupOpsHistory.js', 'assets/labs.css', 'assets/legacy.js', 'assets/setupWizard-runtime.js', 'assets/setupWizard.js', 'assets/tokens.css']);
   assert.equal(fs.existsSync(path.join(stage, 'admin', 'campaigns.html')), false, 'donor campaign HTML must not be released');
   assert.equal(fs.readFileSync(path.join(stage, 'admin', 'tags.html'), 'utf8'), fs.readFileSync(path.join(source, 'admin', 'wecom-tags.html'), 'utf8'), 'generated donor Tags page must be copied byte-for-byte as the private template source');
-  assert.deepEqual(staged.filter((entry) => entry.endsWith('.html')), ['admin/agentEdit.html', 'admin/agents.html', 'admin/apidocs.html', 'admin/attach.html', 'admin/config.html', 'admin/configDetail.html', 'admin/couponForm.html', 'admin/coupons.html', 'admin/cycles.html', 'admin/cyclesDetail.html', 'admin/groupops.html', 'admin/groupopsDetail.html', 'admin/images.html', 'admin/mpLib.html', 'admin/productForm.html', 'admin/products.html', 'admin/spProductForm.html', 'admin/spProducts.html', 'admin/tags.html'], 'only approved private business templates may be staged');
+  assert.deepEqual(staged.filter((entry) => entry.endsWith('.html')), ['admin/agentEdit.html', 'admin/agents.html', 'admin/apidocs.html', 'admin/attach.html', 'admin/config.html', 'admin/configDetail.html', 'admin/couponForm.html', 'admin/coupons.html', 'admin/cycles.html', 'admin/cyclesDetail.html', 'admin/groupops.html', 'admin/groupopsDetail.html', 'admin/images.html', 'admin/mpLib.html', 'admin/orderDetail.html', 'admin/orders.html', 'admin/productForm.html', 'admin/products.html', 'admin/spProductForm.html', 'admin/spProducts.html', 'admin/tags.html'], 'only approved private business templates may be staged');
   const stagedManifest = JSON.parse(fs.readFileSync(path.join(stage, 'asset-manifest.json'), 'utf8'));
+  for (const page of ['orders', 'orderDetail']) {
+    assert.equal(fs.readFileSync(path.join(stage, 'admin', `${page}.html`), 'utf8'), `<template id="tpl">${page}</template>`, `transaction template ${page} must be staged byte-for-byte`);
+    assert.ok(stagedManifest.release_files[`admin/${page}.html`], `release manifest must include transaction template ${page}`);
+  }
   const expectedReleaseFiles = staged.filter((entry) => entry !== 'asset-manifest.json' && fs.statSync(path.join(stage, entry)).isFile());
   assert.deepEqual(Object.keys(stagedManifest.release_files).sort(), expectedReleaseFiles, 'release manifest must describe exactly the staged release root');
   for (const relative of Object.keys(stagedManifest.release_files)) {
