@@ -2,11 +2,24 @@ package port
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	channeldomain "github.com/qianlan33333-png/AI-CRM-v3/internal/channel/domain"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 )
+
+type WelcomeMaterialPlan struct {
+	ImageIDs, MiniProgramIDs, AttachmentIDs, GroupInviteIDs []int64
+}
+
+// WelcomeMaterialSnapshotResolver is implemented by the Composition Root
+// over Media's stable capture/freezer ports. It must be called in the same
+// Unit of Work that accepts the entrant actions, so mutable library records
+// can never be reopened by an Outbound worker.
+type WelcomeMaterialSnapshotResolver interface {
+	ResolveWelcomeMaterialSnapshot(context.Context, WelcomeMaterialPlan, time.Time) (json.RawMessage, string, error)
+}
 
 type EntrantActionCommand struct {
 	CallbackID      string
@@ -23,6 +36,7 @@ type EntrantActionAccepter interface {
 type PublishedEntrantAction struct {
 	ActionID, ChannelID, ConfigVersion, CustomerID, StaffID int64
 	Kind, EffectRef, WelcomeGrantRef, WelcomeMessage        string
+	WelcomeMaterialSnapshot                                 json.RawMessage
 	LocalTagID                                              int64
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"strconv"
 	"time"
@@ -18,16 +19,18 @@ import (
 var ErrEntrantActionUnavailable = errors.New("channel entrant action unavailable")
 
 type EntrantActionStore struct {
-	effects effectport.TransactionalAccepter
+	effects   effectport.TransactionalAccepter
+	materials channelport.WelcomeMaterialSnapshotResolver
 }
 
-func NewEntrantActionStore(effects effectport.TransactionalAccepter) *EntrantActionStore {
-	return &EntrantActionStore{effects: effects}
+func NewEntrantActionStore(effects effectport.TransactionalAccepter, materials channelport.WelcomeMaterialSnapshotResolver) *EntrantActionStore {
+	return &EntrantActionStore{effects: effects, materials: materials}
 }
 
 type entrantActionConfig struct {
 	ChannelID, ConfigVersion, EntryTagID int64
 	WelcomeMessage, Strategy             string
+	WelcomeMaterials                     channelport.WelcomeMaterialPlan
 	Assignees                            []channeldomain.Assignee
 }
 
@@ -59,13 +62,25 @@ func (store *EntrantActionStore) AcceptEntrantActions(ctx context.Context, comma
 	} else if err != nil {
 		return err
 	}
-	if config.WelcomeMessage != "" && command.WelcomeGrantRef != "" {
-		if err = store.acceptAction(ctx, tx, assignmentID, command, config, staffID, "welcome", command.WelcomeGrantRef, 0); err != nil {
+	materialConfigured := len(config.WelcomeMaterials.ImageIDs)+len(config.WelcomeMaterials.MiniProgramIDs)+len(config.WelcomeMaterials.AttachmentIDs)+len(config.WelcomeMaterials.GroupInviteIDs) > 0
+	if (config.WelcomeMessage != "" || materialConfigured) && command.WelcomeGrantRef != "" {
+		var materialSnapshot json.RawMessage
+		materialDigest := ""
+		if materialConfigured {
+			if store.materials == nil {
+				return ErrEntrantActionUnavailable
+			}
+			materialSnapshot, materialDigest, err = store.materials.ResolveWelcomeMaterialSnapshot(ctx, config.WelcomeMaterials, command.OccurredAt.UTC().Add(10*time.Minute))
+			if err != nil || len(materialSnapshot) == 0 || !effectport.ValidDigest(effectport.Digest(materialDigest)) {
+				return ErrEntrantActionUnavailable
+			}
+		}
+		if err = store.acceptAction(ctx, tx, assignmentID, command, config, staffID, "welcome", command.WelcomeGrantRef, 0, materialSnapshot, materialDigest); err != nil {
 			return err
 		}
 	}
 	if config.EntryTagID > 0 {
-		if err = store.acceptAction(ctx, tx, assignmentID, command, config, staffID, "entry_tag", "", config.EntryTagID); err != nil {
+		if err = store.acceptAction(ctx, tx, assignmentID, command, config, staffID, "entry_tag", "", config.EntryTagID, nil, ""); err != nil {
 			return err
 		}
 	}
@@ -79,7 +94,7 @@ func readEntrantActionConfig(ctx context.Context, tx pgx.Tx, resolution channeld
 	}
 	var config entrantActionConfig
 	var entryTagID *int64
-	err := tx.QueryRow(ctx, `SELECT a.channel_id,a.config_version,v.welcome_message,v.entry_tag_id,v.assignment_strategy FROM channel_acquisition_assets a JOIN channel_config_versions v ON v.channel_id=a.channel_id AND v.config_version=a.config_version WHERE a.channel_id=$1 AND a.kind=$2 AND a.asset_version=$3 AND a.state IN ('executed','reconciled')`, resolution.Asset.ChannelID, providerKind, resolution.Asset.AssetVersion).Scan(&config.ChannelID, &config.ConfigVersion, &config.WelcomeMessage, &entryTagID, &config.Strategy)
+	err := tx.QueryRow(ctx, `SELECT a.channel_id,a.config_version,v.welcome_message,v.entry_tag_id,v.assignment_strategy,v.welcome_image_ids,v.welcome_miniprogram_ids,v.welcome_attachment_ids,v.welcome_group_invite_ids FROM channel_acquisition_assets a JOIN channel_config_versions v ON v.channel_id=a.channel_id AND v.config_version=a.config_version WHERE a.channel_id=$1 AND a.kind=$2 AND a.asset_version=$3 AND a.state IN ('executed','reconciled')`, resolution.Asset.ChannelID, providerKind, resolution.Asset.AssetVersion).Scan(&config.ChannelID, &config.ConfigVersion, &config.WelcomeMessage, &entryTagID, &config.Strategy, &config.WelcomeMaterials.ImageIDs, &config.WelcomeMaterials.MiniProgramIDs, &config.WelcomeMaterials.AttachmentIDs, &config.WelcomeMaterials.GroupInviteIDs)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return entrantActionConfig{}, ErrEntrantActionUnavailable
 	}
@@ -132,10 +147,10 @@ func chooseEntrantStaff(ctx context.Context, tx pgx.Tx, config entrantActionConf
 	return 0, ErrEntrantActionUnavailable
 }
 
-func (store *EntrantActionStore) acceptAction(ctx context.Context, tx pgx.Tx, assignmentID int64, command channelport.EntrantActionCommand, config entrantActionConfig, staffID int64, kind, grant string, tagID int64) error {
+func (store *EntrantActionStore) acceptAction(ctx context.Context, tx pgx.Tx, assignmentID int64, command channelport.EntrantActionCommand, config entrantActionConfig, staffID int64, kind, grant string, tagID int64, materialSnapshot json.RawMessage, materialDigest string) error {
 	source := effectport.Hash("channel.entrant.action.source.v1", command.CallbackID, kind)
 	target := effectport.Hash("channel.entrant.action.target.v1", strconv.FormatInt(int64(command.CustomerID), 10), strconv.FormatInt(staffID, 10))
-	payload := effectport.Hash("channel.entrant.action.payload.v1", strconv.FormatInt(config.ChannelID, 10), strconv.FormatInt(config.ConfigVersion, 10), kind, config.WelcomeMessage, strconv.FormatInt(tagID, 10))
+	payload := effectport.Hash("channel.entrant.action.payload.v2", strconv.FormatInt(config.ChannelID, 10), strconv.FormatInt(config.ConfigVersion, 10), kind, config.WelcomeMessage, strconv.FormatInt(tagID, 10), materialDigest)
 	effectKind := effectport.KindChannelWelcome
 	if kind == "entry_tag" {
 		effectKind = effectport.KindChannelEntryTag
@@ -144,7 +159,10 @@ func (store *EntrantActionStore) acceptAction(ctx context.Context, tx pgx.Tx, as
 	if err != nil {
 		return err
 	}
-	_, err = tx.Exec(ctx, `INSERT INTO channel_entrant_actions(callback_id,assignment_id,channel_id,config_version,customer_id,staff_id,action_kind,welcome_grant_ref,local_tag_id,source_ref_digest,effect_ref,accept_receipt_ref,queue_receipt_ref,state) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) ON CONFLICT(callback_id,action_kind) DO NOTHING`, command.CallbackID, assignmentID, config.ChannelID, config.ConfigVersion, command.CustomerID, staffID, kind, nullableString(grant), nullableInt64(tagID), source, projection.ID, receipt.ID, receipt.QueueReceiptID, projection.State)
+	if len(materialSnapshot) == 0 {
+		materialSnapshot = json.RawMessage(`{"schema_version":2,"node_kind":"message","attachments":[]}`)
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO channel_entrant_actions(callback_id,assignment_id,channel_id,config_version,customer_id,staff_id,action_kind,welcome_grant_ref,local_tag_id,welcome_material_snapshot,source_ref_digest,effect_ref,accept_receipt_ref,queue_receipt_ref,state) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12,$13,$14,$15) ON CONFLICT(callback_id,action_kind) DO NOTHING`, command.CallbackID, assignmentID, config.ChannelID, config.ConfigVersion, command.CustomerID, staffID, kind, nullableString(grant), nullableInt64(tagID), materialSnapshot, source, projection.ID, receipt.ID, receipt.QueueReceiptID, projection.State)
 	return err
 }
 
@@ -156,7 +174,7 @@ func (*EntrantActionStore) ReadPublishedEntrantAction(ctx context.Context, sourc
 	var result channelport.PublishedEntrantAction
 	var grant *string
 	var tag *int64
-	err = tx.QueryRow(ctx, `SELECT a.id,a.channel_id,a.config_version,a.customer_id,a.staff_id,a.action_kind,a.effect_ref,a.welcome_grant_ref,a.local_tag_id,v.welcome_message FROM channel_entrant_actions a JOIN channel_config_versions v ON v.channel_id=a.channel_id AND v.config_version=a.config_version WHERE a.source_ref_digest=$1`, source).Scan(&result.ActionID, &result.ChannelID, &result.ConfigVersion, &result.CustomerID, &result.StaffID, &result.Kind, &result.EffectRef, &grant, &tag, &result.WelcomeMessage)
+	err = tx.QueryRow(ctx, `SELECT a.id,a.channel_id,a.config_version,a.customer_id,a.staff_id,a.action_kind,a.effect_ref,a.welcome_grant_ref,a.local_tag_id,a.welcome_material_snapshot,v.welcome_message FROM channel_entrant_actions a JOIN channel_config_versions v ON v.channel_id=a.channel_id AND v.config_version=a.config_version WHERE a.source_ref_digest=$1`, source).Scan(&result.ActionID, &result.ChannelID, &result.ConfigVersion, &result.CustomerID, &result.StaffID, &result.Kind, &result.EffectRef, &grant, &tag, &result.WelcomeMaterialSnapshot, &result.WelcomeMessage)
 	if grant != nil {
 		result.WelcomeGrantRef = *grant
 	}

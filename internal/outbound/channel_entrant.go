@@ -2,6 +2,7 @@ package outbound
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strconv"
 	"time"
@@ -9,22 +10,22 @@ import (
 	channelport "github.com/qianlan33333-png/AI-CRM-v3/internal/channel/port"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
+	mediaport "github.com/qianlan33333-png/AI-CRM-v3/internal/media/port"
 	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
 	tagport "github.com/qianlan33333-png/AI-CRM-v3/internal/tag/port"
-	"github.com/qianlan33333-png/AI-CRM-v3/internal/wecom"
 	wecomport "github.com/qianlan33333-png/AI-CRM-v3/internal/wecom/port"
 )
 
 type ChannelEntrantProvider struct {
 	reader        channelport.PublishedEntrantActionReader
 	uow           platformport.UnitOfWork
-	grants        wecom.WelcomeGrantRedeemer
+	grants        wecomport.WelcomeGrantRedeemer
 	relationships wecomport.CurrentExternalContactReader
 	tags          tagport.ProviderTagBindingReader
 	writer        wecomport.EntrantActionWriter
 }
 
-func NewChannelEntrantProvider(reader channelport.PublishedEntrantActionReader, uow platformport.UnitOfWork, grants wecom.WelcomeGrantRedeemer, relationships wecomport.CurrentExternalContactReader, tags tagport.ProviderTagBindingReader, writer wecomport.EntrantActionWriter) *ChannelEntrantProvider {
+func NewChannelEntrantProvider(reader channelport.PublishedEntrantActionReader, uow platformport.UnitOfWork, grants wecomport.WelcomeGrantRedeemer, relationships wecomport.CurrentExternalContactReader, tags tagport.ProviderTagBindingReader, writer wecomport.EntrantActionWriter) *ChannelEntrantProvider {
 	return &ChannelEntrantProvider{reader: reader, uow: uow, grants: grants, relationships: relationships, tags: tags, writer: writer}
 }
 
@@ -49,7 +50,12 @@ func (provider *ChannelEntrantProvider) Execute(ctx context.Context, envelope ef
 		if err != nil {
 			return effectport.AdapterResult{Completion: effectport.StateUnknown, ReceiptDigest: effectport.Hash("channel.welcome.grant-unavailable", action.EffectRef, strconv.Itoa(int(attempt.Number)))}, nil
 		}
-		err = provider.writer.SendWelcomeMessage(ctx, welcomeCode, action.WelcomeMessage)
+		attachments, materialErr := welcomeAttachments(action.WelcomeMaterialSnapshot)
+		if materialErr != nil {
+			welcomeCode = ""
+			return effectport.AdapterResult{Completion: effectport.StateFinalFailed, ReceiptDigest: effectport.Hash("channel.welcome.material-invalid", action.EffectRef)}, nil
+		}
+		err = provider.writer.SendWelcomeMessage(ctx, welcomeCode, action.WelcomeMessage, attachments)
 		welcomeCode = ""
 	} else {
 		if action.Kind != "entry_tag" || provider.relationships == nil || provider.tags == nil {
@@ -66,9 +72,29 @@ func (provider *ChannelEntrantProvider) Execute(ctx context.Context, envelope ef
 		err = provider.writer.AddContactTag(ctx, contact.EmployeeUserID, contact.ExternalUserID, providerTagID)
 	}
 	if err != nil {
-		return effectport.AdapterResult{Completion: effectport.StateUnknown, ReceiptDigest: effectport.Hash("channel.entrant.provider-unknown", action.EffectRef, strconv.Itoa(int(attempt.Number))), CallAttempted: true, RealExternalCallExecuted: true}, err
+		attempted := wecomport.ProviderCallAttempted(err)
+		state := effectport.StateRetryable
+		if attempted {
+			state = effectport.StateUnknown
+		}
+		return effectport.AdapterResult{Completion: state, ReceiptDigest: effectport.Hash("channel.entrant.provider-error", action.EffectRef, strconv.Itoa(int(attempt.Number))), CallAttempted: attempted, RealExternalCallExecuted: attempted}, err
 	}
 	return effectport.AdapterResult{Completion: effectport.StateExecuted, ReceiptDigest: effectport.Hash("channel.entrant.executed", action.EffectRef, strconv.Itoa(int(attempt.Number))), CallAttempted: true, RealExternalCallExecuted: true}, nil
+}
+
+func welcomeAttachments(raw json.RawMessage) ([]wecomport.WelcomeAttachment, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	var snapshot mediaport.GroupOpsMaterialSnapshot
+	if json.Unmarshal(raw, &snapshot) != nil || mediaport.ValidateGroupOpsMaterialSnapshot(snapshot) != nil {
+		return nil, errors.New("invalid channel welcome material snapshot")
+	}
+	result := make([]wecomport.WelcomeAttachment, len(snapshot.Attachments))
+	for index, item := range snapshot.Attachments {
+		result[index] = wecomport.WelcomeAttachment{MsgType: item.MsgType, MediaID: item.MediaID, AppID: item.AppID, PagePath: item.PagePath, Title: item.Title, URL: item.URL, Description: item.Description, PicURL: item.PicURL}
+	}
+	return result, nil
 }
 
 type ChannelEntrantCompletionSink struct {

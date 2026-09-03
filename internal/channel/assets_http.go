@@ -17,6 +17,7 @@ import (
 
 type AssetApplication interface {
 	Publish(context.Context, int64, int64, AcquisitionAssetKind, string) (AcquisitionAsset, error)
+	Mutate(context.Context, int64, int64, string, string, string) (AcquisitionAsset, error)
 	List(context.Context, int64, int, int64) ([]AcquisitionAsset, error)
 	Get(context.Context, int64, string) (AcquisitionAsset, error)
 }
@@ -69,8 +70,22 @@ func (handler *AssetHTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Reques
 			}
 			return
 		}
-		if len(parts) == 3 && r.Method == http.MethodGet {
-			handler.get(w, r, channelID, parts[2])
+		if len(parts) == 3 {
+			switch r.Method {
+			case http.MethodGet:
+				handler.get(w, r, channelID, parts[2])
+			case http.MethodPatch:
+				handler.mutate(w, r, channelID, parts[2], "update")
+			case http.MethodDelete:
+				handler.mutate(w, r, channelID, parts[2], "delete")
+			default:
+				w.Header().Set("Allow", "GET, PATCH, DELETE")
+				writeCatalogError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED")
+			}
+			return
+		}
+		if len(parts) == 4 && parts[3] == "reconcile" && r.Method == http.MethodPost {
+			handler.reconcile(w, r, channelID, parts[2])
 			return
 		}
 	}
@@ -83,6 +98,79 @@ func (handler *AssetHTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	writeCatalogError(w, http.StatusNotFound, "NOT_FOUND")
+}
+
+func (handler *AssetHTTPHandler) mutate(w http.ResponseWriter, r *http.Request, channelID int64, effectRef, operation string) {
+	principal, ok := handler.write(w, r)
+	if !ok {
+		return
+	}
+	key, err := singleCatalogIdempotencyKey(r)
+	if err != nil || r.URL.RawQuery != "" {
+		writeCatalogError(w, http.StatusBadRequest, "MALFORMED_REQUEST")
+		return
+	}
+	if operation == "update" {
+		if r.Header.Get("Content-Type") != "application/json" {
+			writeCatalogError(w, http.StatusBadRequest, "MALFORMED_REQUEST")
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, catalogHTTPMaxBody)
+		decoder := json.NewDecoder(r.Body)
+		decoder.DisallowUnknownFields()
+		var body map[string]json.RawMessage
+		if decoder.Decode(&body) != nil || len(body) != 0 || func() bool { e := decoder.Decode(&struct{}{}); return !errors.Is(e, io.EOF) }() {
+			writeCatalogError(w, http.StatusBadRequest, "MALFORMED_REQUEST")
+			return
+		}
+	} else if r.ContentLength > 0 {
+		writeCatalogError(w, http.StatusBadRequest, "MALFORMED_REQUEST")
+		return
+	}
+	asset, err := handler.app.Mutate(r.Context(), channelID, principal.InternalID, effectRef, operation, key)
+	if err != nil {
+		writeAssetError(w, err)
+		return
+	}
+	writeChannelJSON(w, http.StatusAccepted, assetAcceptanceJSON(asset))
+}
+
+func (handler *AssetHTTPHandler) reconcile(w http.ResponseWriter, r *http.Request, channelID int64, effectRef string) {
+	principal, ok := handler.write(w, r)
+	if !ok {
+		return
+	}
+	key, err := singleCatalogIdempotencyKey(r)
+	if err != nil || r.URL.RawQuery != "" || r.Header.Get("Content-Type") != "application/json" {
+		writeCatalogError(w, http.StatusBadRequest, "MALFORMED_REQUEST")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, catalogHTTPMaxBody)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	var body struct {
+		Resolution       string `json:"resolution"`
+		EvidenceDigest   string `json:"evidence_digest"`
+		ProviderAssetRef string `json:"provider_asset_ref"`
+		AssetURL         string `json:"asset_url"`
+	}
+	if decoder.Decode(&body) != nil || func() bool { e := decoder.Decode(&struct{}{}); return !errors.Is(e, io.EOF) }() {
+		writeCatalogError(w, http.StatusBadRequest, "MALFORMED_REQUEST")
+		return
+	}
+	application, supported := handler.app.(interface {
+		Reconcile(context.Context, AssetReconcileCommand) (AcquisitionAsset, error)
+	})
+	if !supported {
+		writeCatalogError(w, http.StatusServiceUnavailable, "DEPENDENCY_UNAVAILABLE")
+		return
+	}
+	asset, err := application.Reconcile(r.Context(), AssetReconcileCommand{ChannelID: channelID, ActorID: principal.InternalID, EffectRef: effectRef, Resolution: body.Resolution, EvidenceDigest: body.EvidenceDigest, ProviderAssetRef: body.ProviderAssetRef, ResultURL: body.AssetURL, IdempotencyKey: key})
+	if err != nil {
+		writeAssetError(w, err)
+		return
+	}
+	writeChannelJSON(w, http.StatusOK, assetJSON(asset))
 }
 func (handler *AssetHTTPHandler) read(w http.ResponseWriter, r *http.Request) bool {
 	principal, err := handler.security.Authenticate(r.Context(), r)
@@ -235,7 +323,7 @@ func (handler *AssetHTTPHandler) downloadQR(w http.ResponseWriter, r *http.Reque
 	}
 	var asset *AcquisitionAsset
 	for index := range items {
-		if items[index].Kind == AcquisitionAssetQRCode && items[index].State == "executed" && items[index].ResultURL != "" {
+		if items[index].Kind == AcquisitionAssetQRCode && items[index].Operation != "delete" && items[index].RetiredAt == nil && (items[index].State == "executed" || items[index].State == "reconciled") && items[index].ResultURL != "" {
 			asset = &items[index]
 			break
 		}
@@ -290,11 +378,12 @@ func allowedQRHost(host string) bool {
 	}
 }
 func assetAcceptanceJSON(a AcquisitionAsset) map[string]any {
-	return map[string]any{"effect_id": a.EffectRef, "channel_id": a.ChannelID, "kind": a.Kind, "asset_version": a.AssetVersion, "supersedes_version": max64(a.AssetVersion-1, 0), "state": "queued", "accept_receipt_id": a.AcceptReceiptRef, "queue_receipt_id": a.QueueReceiptRef, "entrant_ready": false}
+	return map[string]any{"effect_id": a.EffectRef, "channel_id": a.ChannelID, "kind": a.Kind, "operation": a.Operation, "asset_version": a.AssetVersion, "supersedes_version": max64(a.AssetVersion-1, 0), "state": "queued", "accept_receipt_id": a.AcceptReceiptRef, "queue_receipt_id": a.QueueReceiptRef, "entrant_ready": false}
 }
 func assetJSON(a AcquisitionAsset) map[string]any {
-	value := map[string]any{"effect_id": a.EffectRef, "channel_id": a.ChannelID, "kind": a.Kind, "asset_version": a.AssetVersion, "supersedes_version": max64(a.AssetVersion-1, 0), "state": a.State, "accept_receipt_id": a.AcceptReceiptRef, "queue_receipt_id": a.QueueReceiptRef, "entrant_ready": a.State == "executed" || a.State == "reconciled", "created_at": a.CreatedAt.UTC().Format(time.RFC3339Nano), "updated_at": a.UpdatedAt.UTC().Format(time.RFC3339Nano)}
-	if a.State == "executed" || a.State == "reconciled" {
+	ready := (a.State == "executed" || a.State == "reconciled") && a.Operation != "delete" && a.RetiredAt == nil
+	value := map[string]any{"effect_id": a.EffectRef, "channel_id": a.ChannelID, "kind": a.Kind, "operation": a.Operation, "asset_version": a.AssetVersion, "supersedes_version": max64(a.AssetVersion-1, 0), "state": a.State, "retired": a.RetiredAt != nil, "accept_receipt_id": a.AcceptReceiptRef, "queue_receipt_id": a.QueueReceiptRef, "entrant_ready": ready, "created_at": a.CreatedAt.UTC().Format(time.RFC3339Nano), "updated_at": a.UpdatedAt.UTC().Format(time.RFC3339Nano)}
+	if ready {
 		if a.Kind == AcquisitionAssetLink {
 			value["asset_url"] = a.ResultURL
 		} else {

@@ -2,11 +2,14 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"time"
 
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
 	channelport "github.com/qianlan33333-png/AI-CRM-v3/internal/channel/port"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
+	groupopsport "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/port"
 	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
 	identityport "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/port"
 	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
@@ -14,6 +17,30 @@ import (
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/wecom"
 	wecomport "github.com/qianlan33333-png/AI-CRM-v3/internal/wecom/port"
 )
+
+type channelWelcomeMaterialAdapter struct {
+	resolver groupopsport.MaterialSnapshotResolver
+}
+
+func (adapter channelWelcomeMaterialAdapter) ResolveWelcomeMaterialSnapshot(ctx context.Context, plan channelport.WelcomeMaterialPlan, requiredThrough time.Time) (json.RawMessage, string, error) {
+	if adapter.resolver == nil {
+		return nil, "", errors.New("channel welcome material resolver unavailable")
+	}
+	references := make([]groupopsport.MaterialReference, 0, len(plan.ImageIDs)+len(plan.MiniProgramIDs)+len(plan.AttachmentIDs)+len(plan.GroupInviteIDs))
+	for _, id := range plan.ImageIDs {
+		references = append(references, groupopsport.MaterialReference{Kind: "image", ID: id})
+	}
+	for _, id := range plan.MiniProgramIDs {
+		references = append(references, groupopsport.MaterialReference{Kind: "miniprogram", ID: id})
+	}
+	for _, id := range plan.AttachmentIDs {
+		references = append(references, groupopsport.MaterialReference{Kind: "attachment", ID: id})
+	}
+	for _, id := range plan.GroupInviteIDs {
+		references = append(references, groupopsport.MaterialReference{Kind: "group_invite", ID: id})
+	}
+	return adapter.resolver.ResolveMaterialSnapshot(ctx, groupopsport.MaterialPlan{References: references}, requiredThrough)
+}
 
 type entrantActionSource interface {
 	ReadPublishedEntrantAction(context.Context, string) (channelport.PublishedEntrantAction, error)
@@ -85,6 +112,8 @@ func (adapter channelProviderTagAdapter) ProviderTagID(ctx context.Context, tagI
 }
 
 var _ channelport.PublishedEntrantActionReader = channelEntrantActionReaderAdapter{}
+var _ channelport.WelcomeMaterialSnapshotResolver = channelWelcomeMaterialAdapter{}
 var _ wecomport.CurrentExternalContactReader = channelCurrentContactAdapter{}
 var _ tagport.ProviderTagBindingReader = channelProviderTagAdapter{}
 var _ wecom.WelcomeGrantRedeemer = (*wecom.PostgreSQLWelcomeGrantStore)(nil)
+var _ wecomport.WelcomeGrantRedeemer = (*wecom.PostgreSQLWelcomeGrantStore)(nil)

@@ -257,12 +257,17 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	}
 	channelAssetStore := channelstore.NewPostgreSQLAssetStore(pool.Native())
 	channelAcquisition := channelstore.NewPostgreSQLStore()
-	channelEntrantActions := channelstore.NewEntrantActionStore(effectRepository)
+	channelEntrantActions := channelstore.NewEntrantActionStore(effectRepository, channelWelcomeMaterialAdapter{resolver: groupOpsMaterials})
+	channelLinkStore := channelstore.NewAcquisitionLinkStore()
 	channelAssetCompletionSink, err := outbound.NewChannelAssetCompletionSink(channelAssetCompletionAdapter{assets: channelAssetStore, bindings: channelAcquisition, digester: callbackStateDigester, corpID: cfg.WeCom.CorpID})
 	if err != nil {
 		return fail(err)
 	}
 	channelEntrantCompletionSink, err := outbound.NewChannelEntrantCompletionSink(channelEntrantActions)
+	if err != nil {
+		return fail(err)
+	}
+	channelLinkCompletionSink, err := outbound.NewChannelLinkCompletionSink(channelLinkStore)
 	if err != nil {
 		return fail(err)
 	}
@@ -295,7 +300,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
-	outboundCompletionSink, err := outbound.NewCompletionRouterWithChannelEntrants(tagCompletionSink, groupOpsCompletionSink, channelAssetCompletionSink, channelEntrantCompletionSink)
+	outboundCompletionSink, err := outbound.NewCompletionRouterWithAllChannels(tagCompletionSink, groupOpsCompletionSink, channelAssetCompletionSink, channelEntrantCompletionSink, channelLinkCompletionSink)
 	if err != nil {
 		return fail(err)
 	}
@@ -425,6 +430,9 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return fail(err)
 	}
 	channelAssetService := channelstore.NewAssetService(uow, channelCatalogStore, channelAssetStore, effectRepository, channelEvents)
+	if err = channelAssetService.SetReconciler(channelAssetReconciler{uow: uow, assets: channelAssetStore, effects: effectRepository, bindings: channelAcquisition, digester: callbackStateDigester, corpID: cfg.WeCom.CorpID}); err != nil {
+		return fail(err)
+	}
 	channelAssetHandler, err := channelstore.NewAssetHTTPHandler(channelAssetService, requestSecurity)
 	if err != nil {
 		return fail(err)
@@ -590,6 +598,9 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
+	if err = channelAssetService.SetProvider(providerClient); err != nil {
+		return fail(err)
+	}
 	channelAcquisitionService := channelstore.NewAcquisitionService(uow, channelCatalogService, channelStaffReferenceAdapter{users: accessRepository}, providerClient)
 	channelAcquisitionHandler, err := channelstore.NewAcquisitionHTTPHandler(channelAcquisitionService, requestSecurity)
 	if err != nil {
@@ -597,6 +608,17 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	}
 	channelHistoryService := channelstore.NewHistoryService(uow, channelCatalogService, channelstore.NewPostgreSQLStore())
 	channelHistoryHandler, err := channelstore.NewHistoryHTTPHandler(channelHistoryService, requestSecurity, channelCursorKey)
+	if err != nil {
+		return fail(err)
+	}
+	channelLinkService := channelstore.NewAcquisitionLinkService(uow, channelLinkStore, effectRepository)
+	if err = channelLinkService.SetProvider(providerClient); err != nil {
+		return fail(err)
+	}
+	if err = channelLinkService.SetReconciler(channelLinkReconciler{uow: uow, store: channelLinkStore, effects: effectRepository, provider: providerClient}); err != nil {
+		return fail(err)
+	}
+	channelLinkHandler, err := channelstore.NewAcquisitionLinkHTTPHandler(channelLinkService, requestSecurity)
 	if err != nil {
 		return fail(err)
 	}
@@ -617,6 +639,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	relationships := wecom.NewPostgreSQLFollowRelationshipStore()
 	var channelAssetProvider effectport.ProviderAdapter
 	var channelEntrantProvider effectport.ProviderAdapter
+	var channelLinkProvider effectport.ProviderAdapter
 	if cfg.WeCom.Enabled && cfg.WeCom.CallbackEnabled {
 		channelAssetProvider = outbound.NewChannelAssetProvider(channelPublishedConfigAdapter{uow: uow, assets: channelAssetStore, users: accessRepository}, providerClient)
 		channelEntrantProvider = outbound.NewChannelEntrantProvider(
@@ -624,6 +647,9 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 			channelCurrentContactAdapter{uow: uow, corpID: cfg.WeCom.CorpID, staff: accessRepository, relationships: relationships, identities: queries},
 			channelProviderTagAdapter{uow: uow, tags: tagRepository}, providerClient,
 		)
+	}
+	if cfg.WeCom.Enabled {
+		channelLinkProvider = outbound.NewChannelLinkProvider(channelLinkMutationReaderAdapter{uow: uow, source: channelLinkStore}, providerClient)
 	}
 	var tagCatalogProvider externaleffects.ProviderAdapter
 	if cfg.TagCatalog.Enabled {
@@ -637,7 +663,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		}
 		tagCatalogProvider = catalogProvider
 	}
-	if err = effectsModule.SetProviderAdapter(composedProviderRouter{outbound: outbound.NewProviderRouterWithChannelEntrants(tagCatalogProvider, groupOpsProvider, channelAssetProvider, channelEntrantProvider), payment: paymentAdapter}); err != nil {
+	if err = effectsModule.SetProviderAdapter(composedProviderRouter{outbound: outbound.NewProviderRouterWithAllChannels(tagCatalogProvider, groupOpsProvider, channelAssetProvider, channelEntrantProvider, channelLinkProvider), payment: paymentAdapter}); err != nil {
 		return fail(err)
 	}
 	callbackReceipts := wecom.NewPostgreSQLCallbackReceiptStore()
@@ -733,6 +759,8 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	adminAPIs.Handle("/api/admin/automation-agents/", automationBindings.Agents)
 	adminAPIs.Handle("/api/admin/channels", channelCenter)
 	adminAPIs.Handle("/api/admin/channels/", channelCenter)
+	adminAPIs.Handle("/api/admin/wecom-customer-acquisition-links", channelLinkHandler)
+	adminAPIs.Handle("/api/admin/wecom-customer-acquisition-links/", channelLinkHandler)
 	mountSurveyAPIs(adminAPIs, surveyBindings.Survey)
 	adminAPIs.Handle("/api/admin/operation-cycles/", operationBindings.API)
 	adminAPIs.Handle("/api/operation-cycles/", operationBindings.API)
@@ -741,7 +769,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 			return checkErr
 		}
 		var complete bool
-		checkErr := pool.Native().QueryRow(readinessContext, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['0001','0002','0003','0004','0005','0006','0007','0008','0009','0010','0011','0012','0013','0014','0016','0017','0018','0019','0020','0021','0022','0023','0024','0025','0026','0027','0028','0029','0030','0031','0032','0033','0034']) AS required(version) WHERE NOT EXISTS (SELECT 1 FROM platform_schema_migrations applied WHERE applied.version=required.version))`).Scan(&complete)
+		checkErr := pool.Native().QueryRow(readinessContext, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['0001','0002','0003','0004','0005','0006','0007','0008','0009','0010','0011','0012','0013','0014','0016','0017','0018','0019','0020','0021','0022','0023','0024','0025','0026','0027','0028','0029','0030','0031','0032','0033','0034','0035']) AS required(version) WHERE NOT EXISTS (SELECT 1 FROM platform_schema_migrations applied WHERE applied.version=required.version))`).Scan(&complete)
 		if checkErr != nil || !complete {
 			return errors.New("database schema is not ready")
 		}
@@ -1082,6 +1110,8 @@ func routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, acce
 	mux.Handle("/api/admin/setup-wizard", configHandler)
 	mux.Handle("/api/admin/channels", channelHandler)
 	mux.Handle("/api/admin/channels/", channelHandler)
+	mux.Handle("/api/admin/wecom-customer-acquisition-links", identity)
+	mux.Handle("/api/admin/wecom-customer-acquisition-links/", identity)
 	mux.Handle("/api/admin/automation-conversion/group-ops/", groupOpsHandler)
 	mux.Handle("/api/admin/automation-agents", automationHandler)
 	mux.Handle("/api/admin/automation-agents/", automationHandler)

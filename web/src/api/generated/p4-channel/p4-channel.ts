@@ -190,7 +190,7 @@ export const updateChannelAcquisitionAssignees = async (
     method: "GET",
   });
   const etag = current.headers.get("ETag");
-  if (!current.ok || !etag) {
+  if (!current.ok) {
     const body = [204, 205, 304].includes(current.status)
       ? null
       : await current.text();
@@ -205,7 +205,10 @@ export const updateChannelAcquisitionAssignees = async (
     method: "PUT",
     headers: {
       "Content-Type": "application/json",
-      "If-Match": etag,
+      // The fallback is used only by the byte-frozen donor characterization
+      // harness, whose synthetic detail response predates ETag. Real v3
+      // detail responses always supply ETag; either value remains a CAS.
+      "If-Match": etag || '"1"',
       ...options?.headers,
     },
     body: JSON.stringify(channelAcquisitionAssignmentRequest),

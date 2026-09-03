@@ -28,3 +28,36 @@ func TestChannelCenterMigrationContract(t *testing.T) {
 		}
 	}
 }
+
+func TestChannelRuntimeAndHistoryMigrationContracts(t *testing.T) {
+	files := []string{
+		"../../migrations/0031_channel_history_import.sql",
+		"../../migrations/0032_channel_acquisition_assets.sql",
+		"../../migrations/0033_wecom_welcome_grants.sql",
+		"../../migrations/0034_channel_entrant_actions.sql",
+		"../../migrations/0035_channel_acquisition_links.sql",
+	}
+	combined := ""
+	for _, path := range files {
+		contents, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		combined += "\n" + string(contents)
+	}
+	for _, required := range []string{
+		"channel_history_source_maps", "channel_history_contacts", "channel_acquisition_assets",
+		"channel_asset_reconciliation_receipts", "wecom_welcome_grants", "channel_entrant_assignments",
+		"channel_entrant_actions", "channel_acquisition_link_receipts", "channel_acquisition_link_reconciliations",
+		"channel_acquisition_asset", "channel_welcome_message", "channel_entry_tag", "channel_acquisition_link_mutation",
+	} {
+		if !strings.Contains(combined, required) {
+			t.Fatalf("channel migrations missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{" external_userid text", " raw_state text", " welcome_code text", " phone text"} {
+		if strings.Contains(strings.ToLower(combined), forbidden) {
+			t.Fatalf("channel migrations persist forbidden boundary field %q", forbidden)
+		}
+	}
+}

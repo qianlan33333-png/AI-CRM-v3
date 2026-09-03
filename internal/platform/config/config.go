@@ -76,6 +76,23 @@ type HXCDashboard struct {
 	SubjectHMACKey string
 	SyncTrigger    string
 }
+
+type ChannelHistoryMigration struct {
+	SourceDatabaseURL string
+	SnapshotKey       string
+}
+
+// LoadChannelHistoryMigration keeps migration credentials inside the sole
+// environment-owning package without adding them to the long-lived API
+// runtime configuration.
+func LoadChannelHistoryMigration() (ChannelHistoryMigration, error) {
+	value := ChannelHistoryMigration{SourceDatabaseURL: os.Getenv("AICRM_CHANNEL_SOURCE_DATABASE_URL"), SnapshotKey: os.Getenv("AICRM_CHANNEL_SNAPSHOT_KEY")}
+	if strings.TrimSpace(value.SourceDatabaseURL) != value.SourceDatabaseURL || strings.TrimSpace(value.SnapshotKey) != value.SnapshotKey {
+		return ChannelHistoryMigration{}, errors.New("invalid channel history migration configuration")
+	}
+	return value, nil
+}
+
 type Survey struct {
 	DataKey             string
 	OAuthEnabled        bool

@@ -16,7 +16,7 @@ func (module *ModuleRegistration) Readiness(ctx context.Context, pool *pgxpool.P
 		return errors.New("channel module dependencies are required")
 	}
 	var ready bool
-	err := pool.QueryRow(ctx, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['channels','channel_config_versions','channel_assignees','channel_operation_receipts','channel_acquisition_state_bindings','channel_acquisition_entrant_receipts','channel_history_import_runs','channel_history_source_maps','channel_history_contacts','channel_history_assignees','channel_history_effects','channel_acquisition_assets','channel_asset_reconciliation_receipts','channel_entrant_assignments','channel_entrant_actions']) AS required(name) WHERE to_regclass(current_schema() || '.' || required.name) IS NULL)`).Scan(&ready)
+	err := pool.QueryRow(ctx, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['channels','channel_config_versions','channel_assignees','channel_operation_receipts','channel_acquisition_state_bindings','channel_acquisition_entrant_receipts','channel_history_import_runs','channel_history_source_maps','channel_history_contacts','channel_history_assignees','channel_history_effects','channel_acquisition_assets','channel_asset_reconciliation_receipts','channel_entrant_assignments','channel_entrant_actions','channel_acquisition_link_receipts','channel_acquisition_link_reconciliations']) AS required(name) WHERE to_regclass(current_schema() || '.' || required.name) IS NULL)`).Scan(&ready)
 	if err != nil {
 		return err
 	}

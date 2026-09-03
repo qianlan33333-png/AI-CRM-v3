@@ -36,14 +36,34 @@ func (provider *ChannelAssetProvider) Execute(ctx context.Context, envelope effe
 	request := wecomport.AcquisitionAssetRequest{Name: config.ChannelName, State: state, SkipVerify: config.SkipVerify, StaffUserIDs: config.StaffProviderRefs}
 	var result wecomport.AcquisitionAssetResult
 	if config.Kind == "contact_way_qrcode" {
-		result, err = provider.writer.CreateContactWay(ctx, request)
+		switch config.Operation {
+		case "", "create":
+			result, err = provider.writer.CreateContactWay(ctx, request)
+		case "update":
+			result, err = provider.writer.UpdateContactWay(ctx, config.TargetProviderAssetRef, request)
+		case "delete":
+			err = provider.writer.DeleteContactWay(ctx, config.TargetProviderAssetRef)
+		default:
+			return effectport.AdapterResult{Completion: effectport.StateFinalFailed, ReceiptDigest: effectport.Hash("channel.asset.operation-unsupported", config.Operation)}, nil
+		}
 	} else if config.Kind == "customer_acquisition_link" {
 		result, err = provider.writer.CreateCustomerAcquisitionLink(ctx, request)
 	} else {
 		return effectport.AdapterResult{Completion: effectport.StateFinalFailed, ReceiptDigest: effectport.Hash("channel.asset.unsupported", config.Kind)}, nil
 	}
 	if err != nil {
-		return effectport.AdapterResult{Completion: effectport.StateUnknown, ReceiptDigest: effectport.Hash("channel.asset.provider-unknown", string(envelope.Fingerprint()), strconv.Itoa(int(attempt.Number))), CallAttempted: true, RealExternalCallExecuted: true}, err
+		attempted := wecomport.ProviderCallAttempted(err)
+		state := effectport.StateRetryable
+		if attempted {
+			state = effectport.StateUnknown
+		}
+		return effectport.AdapterResult{Completion: state, ReceiptDigest: effectport.Hash("channel.asset.provider-error", string(envelope.Fingerprint()), strconv.Itoa(int(attempt.Number))), CallAttempted: attempted, RealExternalCallExecuted: attempted}, err
+	}
+	if config.Operation == "delete" {
+		payload, _ := json.Marshal(map[string]string{"provider_asset_ref": config.TargetProviderAssetRef})
+		artifact := effectport.ResultArtifact{Kind: "channel.acquisition_asset.deleted.v1", Payload: payload}
+		artifact.Digest = effectport.Hash("external-effect.artifact.v1", artifact.Kind, string(payload))
+		return effectport.AdapterResult{Completion: effectport.StateExecuted, ReceiptDigest: effectport.Hash("channel.asset.deleted", string(envelope.Fingerprint()), string(artifact.Digest)), CallAttempted: true, RealExternalCallExecuted: true, Artifact: artifact}, nil
 	}
 	payload, err := json.Marshal(struct {
 		ProviderAssetRef string `json:"provider_asset_ref"`
@@ -71,10 +91,20 @@ func (sink *ChannelAssetCompletionSink) CompleteEffect(ctx context.Context, effe
 	if sink == nil || sink.writer == nil || envelope.Kind != effectport.KindChannelAsset {
 		return errors.New("invalid channel asset completion")
 	}
+	if result.Completion == effectport.StateRetryable {
+		return nil
+	}
 	completion := channelport.AssetCompletion{EffectRef: effectRef, State: string(result.Completion), Attempt: attempt.Number, CompletedAt: time.Now().UTC(), ResultDigest: string(result.ReceiptDigest)}
 	if result.Completion == effectport.StateExecuted {
-		if !result.Artifact.Valid() || result.Artifact.Kind != "channel.acquisition_asset.v1" {
+		if !result.Artifact.Valid() {
 			return errors.New("channel asset artifact missing")
+		}
+		if result.Artifact.Kind == "channel.acquisition_asset.deleted.v1" {
+			completion.ResultDigest = string(result.Artifact.Digest)
+			return sink.writer.CompletePublishedAsset(ctx, completion)
+		}
+		if result.Artifact.Kind != "channel.acquisition_asset.v1" {
+			return errors.New("channel asset artifact invalid")
 		}
 		var artifact struct {
 			ProviderAssetRef string `json:"provider_asset_ref"`

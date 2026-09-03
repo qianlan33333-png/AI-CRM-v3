@@ -155,6 +155,7 @@ type ProviderRouter struct {
 	groupMessage   effect.ProviderAdapter
 	channelAsset   effect.ProviderAdapter
 	channelEntrant effect.ProviderAdapter
+	channelLink    effect.ProviderAdapter
 }
 
 func NewProviderRouter(tagCatalog effect.ProviderAdapter) *ProviderRouter {
@@ -171,6 +172,9 @@ func NewProviderRouterWithChannels(tagCatalog, groupMessage, channelAsset effect
 
 func NewProviderRouterWithChannelEntrants(tagCatalog, groupMessage, channelAsset, channelEntrant effect.ProviderAdapter) *ProviderRouter {
 	return &ProviderRouter{tagCatalog: tagCatalog, groupMessage: groupMessage, channelAsset: channelAsset, channelEntrant: channelEntrant}
+}
+func NewProviderRouterWithAllChannels(tagCatalog, groupMessage, channelAsset, channelEntrant, channelLink effect.ProviderAdapter) *ProviderRouter {
+	return &ProviderRouter{tagCatalog: tagCatalog, groupMessage: groupMessage, channelAsset: channelAsset, channelEntrant: channelEntrant, channelLink: channelLink}
 }
 
 func (r *ProviderRouter) Execute(ctx context.Context, envelope effect.Envelope, attempt effect.Attempt) (effect.AdapterResult, error) {
@@ -191,6 +195,10 @@ func (r *ProviderRouter) Execute(ctx context.Context, envelope effect.Envelope, 
 		case effect.KindChannelWelcome, effect.KindChannelEntryTag:
 			if r.channelEntrant != nil {
 				return r.channelEntrant.Execute(ctx, envelope, attempt)
+			}
+		case effect.KindChannelLink:
+			if r.channelLink != nil {
+				return r.channelLink.Execute(ctx, envelope, attempt)
 			}
 		}
 	}

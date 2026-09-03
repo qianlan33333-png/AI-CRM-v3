@@ -41,19 +41,19 @@ func NewWelcomeGrantCipher(secret string) (*WelcomeGrantCipher, error) {
 	}
 	return &WelcomeGrantCipher{aead: aead}, nil
 }
-func (ciphertext *WelcomeGrantCipher) encrypt(value string) ([]byte, error) {
+func (ciphertext *WelcomeGrantCipher) encrypt(value string, associatedData []byte) ([]byte, error) {
 	nonce := make([]byte, ciphertext.aead.NonceSize())
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
 		return nil, err
 	}
-	return ciphertext.aead.Seal(nonce, nonce, []byte(value), nil), nil
+	return ciphertext.aead.Seal(nonce, nonce, []byte(value), associatedData), nil
 }
-func (ciphertext *WelcomeGrantCipher) decrypt(value []byte) (string, error) {
+func (ciphertext *WelcomeGrantCipher) decrypt(value, associatedData []byte) (string, error) {
 	size := ciphertext.aead.NonceSize()
 	if len(value) <= size {
 		return "", ErrWelcomeGrantUnavailable
 	}
-	plain, err := ciphertext.aead.Open(nil, value[:size], value[size:], nil)
+	plain, err := ciphertext.aead.Open(nil, value[:size], value[size:], associatedData)
 	if err != nil {
 		return "", ErrWelcomeGrantUnavailable
 	}
@@ -74,20 +74,24 @@ func (store *PostgreSQLWelcomeGrantStore) Seal(ctx context.Context, callbackKey,
 		return "", err
 	}
 	callback := sha256.Sum256([]byte(callbackKey))
+	valueDigest := sha256.Sum256([]byte(value))
 	var id int64
-	err = tx.QueryRow(ctx, `SELECT id FROM wecom_welcome_grants WHERE callback_digest=$1`, callback[:]).Scan(&id)
+	var existingDigest []byte
+	err = tx.QueryRow(ctx, `SELECT id,value_digest FROM wecom_welcome_grants WHERE callback_digest=$1`, callback[:]).Scan(&id, &existingDigest)
 	if err == nil {
+		if len(existingDigest) != sha256.Size || string(existingDigest) != string(valueDigest[:]) {
+			return "", ErrWelcomeGrantUnavailable
+		}
 		return "wgrant_" + formatGrantID(id), nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return "", err
 	}
-	encrypted, err := store.cipher.encrypt(value)
+	encrypted, err := store.cipher.encrypt(value, callback[:])
 	if err != nil {
 		return "", err
 	}
-	digest := sha256.Sum256([]byte(value))
-	err = tx.QueryRow(ctx, `INSERT INTO wecom_welcome_grants(callback_digest,value_digest,ciphertext,expires_at) VALUES($1,$2,$3,$4) RETURNING id`, callback[:], digest[:], encrypted, expires.UTC()).Scan(&id)
+	err = tx.QueryRow(ctx, `INSERT INTO wecom_welcome_grants(callback_digest,value_digest,ciphertext,expires_at) VALUES($1,$2,$3,$4) RETURNING id`, callback[:], valueDigest[:], encrypted, expires.UTC()).Scan(&id)
 	if err != nil {
 		return "", err
 	}
@@ -102,12 +106,25 @@ func (store *PostgreSQLWelcomeGrantStore) Redeem(ctx context.Context, reference,
 	if err != nil {
 		return "", err
 	}
-	var encrypted []byte
-	err = tx.QueryRow(ctx, `UPDATE wecom_welcome_grants SET consumed_at=clock_timestamp(),consumer_effect_ref=$2 WHERE id=$1 AND consumed_at IS NULL AND expires_at>clock_timestamp() RETURNING ciphertext`, id, effectRef).Scan(&encrypted)
+	var encrypted, callbackDigest, valueDigest []byte
+	err = tx.QueryRow(ctx, `UPDATE wecom_welcome_grants SET consumed_at=clock_timestamp(),consumer_effect_ref=$2 WHERE id=$1 AND consumed_at IS NULL AND expires_at>clock_timestamp() RETURNING ciphertext,callback_digest,value_digest`, id, effectRef).Scan(&encrypted, &callbackDigest, &valueDigest)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// A retry of the same durable effect may redeem its own grant again only
+		// while it is still live. A different effect always fails closed.
+		err = tx.QueryRow(ctx, `SELECT ciphertext,callback_digest,value_digest FROM wecom_welcome_grants WHERE id=$1 AND consumer_effect_ref=$2 AND expires_at>clock_timestamp()`, id, effectRef).Scan(&encrypted, &callbackDigest, &valueDigest)
+	}
 	if err != nil {
 		return "", ErrWelcomeGrantUnavailable
 	}
-	return store.cipher.decrypt(encrypted)
+	plain, err := store.cipher.decrypt(encrypted, callbackDigest)
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256([]byte(plain))
+	if len(valueDigest) != sha256.Size || string(valueDigest) != string(digest[:]) {
+		return "", ErrWelcomeGrantUnavailable
+	}
+	return plain, nil
 }
 func formatGrantID(id int64) string {
 	return strings.TrimLeft(hex.EncodeToString([]byte{byte(id >> 56), byte(id >> 48), byte(id >> 40), byte(id >> 32), byte(id >> 24), byte(id >> 16), byte(id >> 8), byte(id)}), "0")

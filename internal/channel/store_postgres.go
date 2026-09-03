@@ -279,6 +279,31 @@ func (*PostgreSQLStore) EndBinding(ctx context.Context, command EndStateBinding)
 	return updated, true, nil
 }
 
+// EndBindingForAssetID is the Channel-internal bridge used when an executed
+// Provider mutation supersedes or deletes a published acquisition asset. The
+// binding CAS and asset completion remain in the caller's current UoW.
+func (store *PostgreSQLStore) EndBindingForAssetID(ctx context.Context, assetID int64, activeUntil time.Time) error {
+	if store == nil || assetID < 1 || activeUntil.IsZero() {
+		return ErrInvalidStateBinding
+	}
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return err
+	}
+	binding, err := scanStateBinding(tx.QueryRow(ctx, `SELECT b.id,b.corp_id,b.digest_key_version,b.state_digest,b.channel_id,b.asset_kind,b.asset_version,b.binding_digest,b.active_from,b.active_until,b.version,b.created_at,b.updated_at FROM channel_acquisition_state_bindings b JOIN channel_acquisition_assets a ON a.channel_id=b.channel_id AND a.kind=b.asset_kind AND a.asset_version=b.asset_version WHERE a.id=$1`, assetID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if binding.ActiveUntil != nil {
+		return nil
+	}
+	_, _, err = store.EndBinding(ctx, EndStateBinding{BindingID: binding.ID, ExpectedVersion: binding.Version, ActiveUntil: activeUntil})
+	return err
+}
+
 const stateBindingColumns = `id, corp_id, digest_key_version, state_digest,
 	channel_id, asset_kind, asset_version, binding_digest, active_from,
 	active_until, version, created_at, updated_at`

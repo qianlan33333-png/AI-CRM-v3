@@ -10,7 +10,8 @@ import (
 // but never a customer external identifier.
 type PublishedConfig struct {
 	AssetID, ChannelID, ConfigVersion, AssetVersion int64
-	Kind, ChannelCode, ChannelName, StateValue      string
+	Kind, Operation, TargetProviderAssetRef         string
+	ChannelCode, ChannelName, StateValue            string
 	SkipVerify                                      bool
 	StaffProviderRefs                               []string
 }
