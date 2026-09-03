@@ -24,12 +24,14 @@ const json = (body, status = 200) => ({ ok: status >= 200 && status < 300, statu
 
 function page(query, createCode = "") {
   let html = fs.readFileSync(path.join(root, "web", "dist", "admin", "agentEdit.html"), "utf8");
-  html = html.replace("<head>", `<head><script>${adapter.replace(/<\/script/gi, "<\\/script")}</script>`);
+  // Model a real parser: the v3 host script is deferred, so it runs only
+  // after body parsing, then the unchanged donor module mounts its controller.
+  html = html.replace("<head>", `<head><script defer data-v3-host-adapter></script>`);
   if (createCode) html = html.replace("<body ", `<body data-automation-create-code="${createCode}" `);
   const requests = [];
   const dom = new JSDOM(html, {
     url: `https://test.invalid/admin/agentEdit.html${query}`,
-    runScripts: "dangerously",
+    runScripts: "outside-only",
     pretendToBeVisual: true,
     beforeParse(window) {
       window.__AICRM_TEST_MOCK__ = false;
@@ -46,8 +48,10 @@ function page(query, createCode = "") {
       };
     },
   });
-  // The browser parser has already executed the head adapter with no body.
-  // This unchanged frozen bundle mounts the input after that observer exists.
+  // Deferred host adapter executes after parsing; frozen donor module mounts
+  // after it. The adapter's observer and capture listener must bridge both
+  // orders without changing donor source.
+  dom.window.eval(adapter);
   dom.window.eval(bundle);
   return { dom, requests };
 }
@@ -57,7 +61,9 @@ const created = page("?type=agent", agentCode);
 await wait();
 const createDoc = created.dom.window.document;
 const createInput = createDoc.querySelector("#agentCode");
-if (!createInput || createInput.value !== agentCode || !valid(createInput.value) || !createInput.readOnly) throw new Error("head-loaded adapter did not prefill the readonly Agent create code");
+if (!createInput || createInput.value !== agentCode || !valid(createInput.value) || !createInput.readOnly) throw new Error("deferred adapter did not prefill the readonly Agent create code");
+let agentInputEvents = 0;
+createInput.addEventListener("input", () => { agentInputEvents += 1; });
 createDoc.querySelector("#agentName").value = "新 Agent";
 createDoc.querySelector("#agentRolePrompt").value = "角色";
 createDoc.querySelector("#agentTaskPrompt").value = "任务";
@@ -65,13 +71,16 @@ createDoc.querySelector("[data-agent-save]").click();
 await wait();
 const createdPost = created.requests.find((request) => request.path === "/api/admin/automation-agents" && request.method === "POST");
 if (!createdPost || createdPost.body.agent_code !== agentCode || createdPost.body.automation_type !== "agent") throw new Error("unchanged donor controller did not POST the host code for Agent");
+if (agentInputEvents === 0) throw new Error("capture-time Agent code synchronization did not reach the mounted frozen controller");
 created.dom.window.close();
 
 const fixedCode = "agent_fedcba9876543210fedcba9876543210";
 const fixed = page("?type=fixed_script", fixedCode);
 await wait();
 const fixedDoc = fixed.dom.window.document;
-if (fixedDoc.querySelector("#agentCode")?.value !== fixedCode || !valid(fixedCode)) throw new Error("head-loaded adapter did not prefill fixed-script create code");
+if (fixedDoc.querySelector("#agentCode")?.value !== fixedCode || !valid(fixedCode)) throw new Error("deferred adapter did not prefill fixed-script create code");
+let fixedInputEvents = 0;
+fixedDoc.querySelector("#agentCode")?.addEventListener("input", () => { fixedInputEvents += 1; });
 fixedDoc.querySelector("#agentName").value = "新固定话术";
 fixedDoc.querySelector("#agentType").value = "fixed_script";
 fixedDoc.querySelector("#agentRolePrompt").value = "固定角色";
@@ -80,7 +89,21 @@ fixedDoc.querySelector("[data-agent-save]").click();
 await wait();
 const fixedPost = fixed.requests.find((request) => request.path === "/api/admin/automation-agents" && request.method === "POST");
 if (!fixedPost || fixedPost.body.agent_code !== fixedCode || fixedPost.body.automation_type !== "fixed_script") throw new Error("unchanged donor controller did not POST the host code for fixed script");
+if (fixedInputEvents === 0) throw new Error("capture-time fixed-script code synchronization did not reach the mounted frozen controller");
 fixed.dom.window.close();
+
+const userValue = page("?type=agent", "agent_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+await wait();
+const userValueDoc = userValue.dom.window.document;
+userValueDoc.querySelector("#agentCode").value = "user_supplied_code";
+userValueDoc.querySelector("#agentName").value = "用户值";
+userValueDoc.querySelector("#agentRolePrompt").value = "角色";
+userValueDoc.querySelector("#agentTaskPrompt").value = "任务";
+userValueDoc.querySelector("[data-agent-save]").click();
+await wait();
+const userValuePost = userValue.requests.find((request) => request.path === "/api/admin/automation-agents" && request.method === "POST");
+if (!userValuePost || userValuePost.body.agent_code !== "user_supplied_code") throw new Error("host adapter overwrote a supplied create code");
+userValue.dom.window.close();
 
 const existing = page("?id=7", "agent_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
 await wait();
