@@ -34,7 +34,7 @@ External Effects: WeChat Pay prepay/refund and WeChat Shop refund are involved; 
 
 - `order`、`payment` 已推进为 `implemented`；只有生产历史全量 reconcile 与切流完成后才可推进 `cutover`。
 - Order 聚合、Port、事务型 PostgreSQL Store、管理 API、安全导出与 `0020_order.sql` 已完成并随主干 `8f62f867` 部署。
-- Payment 原子接纳、累计退款锁定、Payment/Order 同 UoW 结算、微信支付与微信小店 Adapter、回调、原键对账和 `0021/0024` migration 已完成；Provider 生产开关仍需独立凭据与审批。
+- Payment 原子接纳、累计退款锁定、Payment/Order 同 UoW 结算、微信支付与微信小店 Adapter、回调、原键对账和 `0021/0024-0026` migration 已完成；Provider 生产开关仍需独立凭据与审批。
 - `/admin/orders` 和详情页继续使用与冻结 v2 commit 字节一致的 donor 资产，真实请求由 v3 Adapter/API 承接；未修改受保护 donor 业务文件。
 - 生产 readiness 已验证包含交易首批提交；完整历史列表仍为空或不完整，直到本 PR 部署并完成生产数据迁移。
 

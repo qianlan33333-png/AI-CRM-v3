@@ -57,7 +57,9 @@ for migration_contract in \
   '0019_tag_catalog_sync_projection.sql:Tag catalog sync projection' \
   '0020_order.sql:Order' \
   '0021_payment.sql:Payment' \
-  '0024_transaction_closure.sql:transaction closure'; do
+  '0024_order_product_version.sql:order product version' \
+  '0025_payment_reconciliation.sql:payment reconciliation' \
+  '0026_identity_history_receipts.sql:identity history receipts'; do
   migration="${migration_contract%%:*}"
   label="${migration_contract#*:}"
   test -f "migrations/${migration}" || {
