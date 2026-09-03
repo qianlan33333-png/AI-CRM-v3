@@ -73,6 +73,7 @@ jobs:
           node web/scripts/survey-public-characterization.mjs
           node web/scripts/survey-unresolved-history-contract.mjs
           node --check internal/webshell/static/admin_console/survey_operations.js
+          scripts/check-pr08-frontend-donor-manifest.sh
           npm run typecheck
           npm test
           npm run build
@@ -92,7 +93,7 @@ jobs:
       - name: Check repository
         run: make check
       - name: Race-check security and identity boundaries
-        run: go test -race ./cmd/aicrm ./cmd/migrate-commerce-history ./internal/access/... ./internal/identity/... ./internal/wecom/... ./internal/externaleffects/... ./internal/platform/jobqueue/... ./internal/media/... ./internal/tag/... ./internal/groupops/... ./internal/outbound ./internal/automation/... ./internal/order/... ./internal/payment/...
+        run: go test -race ./cmd/aicrm ./cmd/migrate-commerce-history ./internal/access/... ./internal/identity/... ./internal/wecom/... ./internal/externaleffects/... ./internal/platform/jobqueue/... ./internal/media/... ./internal/tag/... ./internal/product/... ./internal/coupon/... ./internal/groupops/... ./internal/automation/... ./internal/operationcycle/... ./internal/outbound ./internal/order/... ./internal/payment/...
 
   deploy:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -151,6 +152,7 @@ jobs:
           node web/scripts/survey-public-characterization.mjs
           node web/scripts/survey-unresolved-history-contract.mjs
           node --check internal/webshell/static/admin_console/survey_operations.js
+          scripts/check-pr08-frontend-donor-manifest.sh
           npm run typecheck
           npm run build
           cp -R migrations deploy release/
