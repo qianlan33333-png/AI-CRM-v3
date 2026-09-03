@@ -1738,6 +1738,92 @@ paths:
       security: [{groupOpsWebhook: []}]
       requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: true}}}}
       responses: {"202": {description: Durable local run/EER intent accepted after HMAC and digest-only replay claim; Provider remains disabled, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsRunSummary"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /admin/automation-agents:
+    get:
+      operationId: openAutomationAgentsWorkspace
+      tags: [Automation]
+      security: [{adminSession: []}]
+      responses: {"200": {description: v3 one-sidebar shell with frozen Agent templates, content: {text/html: {schema: {type: string}}}}, "403": {$ref: "#/components/responses/Error"}}
+  /api/admin/automation-agents:
+    get:
+      operationId: listAutomationAgents
+      tags: [Automation]
+      security: [{adminSession: []}]
+      parameters: [{name: automation_type, in: query, schema: {type: string, enum: [agent, fixed_script]}}]
+      responses: {"200": {description: Local Agent summaries, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationAgentListEnvelope"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+    post:
+      operationId: createAutomationAgent
+      tags: [Automation]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/IdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationAgentCreateRequest"}}}}
+      responses: {"200": {description: Local Agent created, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationAgentEnvelope"}}}}, "400": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/automation-agents/{agent_id}:
+    get:
+      operationId: getAutomationAgent
+      tags: [Automation]
+      security: [{adminSession: []}]
+      parameters: [{$ref: "#/components/parameters/AutomationAgentID"}]
+      responses: {"200": {description: Local Agent detail, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationAgentEnvelope"}}}}, "404": {$ref: "#/components/responses/Error"}}
+    patch:
+      operationId: updateAutomationAgent
+      tags: [Automation]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/AutomationAgentID"}, {$ref: "#/components/parameters/IdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationAgentUpdateRequest"}}}}
+      responses: {"200": {description: Local Agent updated, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationAgentEnvelope"}}}}, "400": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+    delete:
+      operationId: archiveAutomationAgent
+      tags: [Automation]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/AutomationAgentID"}, {$ref: "#/components/parameters/IdempotencyKey"}]
+      responses: {"200": {description: Local Agent archived, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationAgentArchiveEnvelope"}}}}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+  /api/admin/automation-agents/{agent_id}/copy:
+    post:
+      operationId: copyAutomationAgent
+      tags: [Automation]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/AutomationAgentID"}, {$ref: "#/components/parameters/IdempotencyKey"}]
+      responses: {"200": {description: Local Agent copied, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationAgentEnvelope"}}}}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+  /api/admin/automation-agents/{agent_id}/pause:
+    post:
+      operationId: pauseAutomationAgent
+      tags: [Automation]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/AutomationAgentID"}, {$ref: "#/components/parameters/IdempotencyKey"}]
+      responses: {"200": {description: Persisted local pause transition, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationAgentEnvelope"}}}}, "404": {$ref: "#/components/responses/Error"}}
+  /api/admin/automation-agents/{agent_id}/precheck:
+    get:
+      operationId: precheckAutomationAgent
+      tags: [Automation]
+      security: [{adminSession: []}]
+      parameters: [{$ref: "#/components/parameters/AutomationAgentID"}]
+      responses: {"200": {description: Local fail-closed execution precheck, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationAgentPrecheckEnvelope"}}}}, "404": {$ref: "#/components/responses/Error"}}
+  /api/admin/automation-agents/{agent_id}/publish:
+    post:
+      operationId: publishAutomationAgent
+      description: Local prompt snapshot only; no Agent execution or provider call.
+      tags: [Automation]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/AutomationAgentID"}, {$ref: "#/components/parameters/IdempotencyKey"}]
+      responses: {"200": {description: Local published prompt snapshot, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationAgentEnvelope"}}}}, "404": {$ref: "#/components/responses/Error"}}
+  /api/admin/automation-agents/{agent_id}/fixed-content:
+    put:
+      operationId: saveAutomationAgentFixedContent
+      description: "Saves a local fixed-content snapshot only after stable Media-owned reference checks lock enabled eligible rows (and non-archived group invites): images max 3, attachments max 9, Mini Programs max 1, group invites max 1, with at most 9 references total. It does not upload, generate, enqueue, or send media."
+      tags: [Automation]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/AutomationAgentID"}, {$ref: "#/components/parameters/IdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false, required: [content_package], properties: {content_package: {$ref: "#/components/schemas/AutomationAgentFixedContent"}}}}}}
+      responses: {"200": {description: Local fixed content saved, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationAgentEnvelope"}}}}, "400": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+  /api/admin/automation-agents/{agent_id}/activate:
+    post:
+      operationId: activateAutomationAgent
+      description: Persists the local enabled state only after published configuration and fixed-script materials pass precheck; it does not invoke a provider.
+      tags: [Automation]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/AutomationAgentID"}, {$ref: "#/components/parameters/IdempotencyKey"}]
+      responses: {"200": {description: Persisted local activation, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationAgentEnvelope"}}}}, "400": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
 components:
   securitySchemes:
     adminSession: {type: apiKey, in: cookie, name: aicrm_admin_session}
@@ -1747,6 +1833,7 @@ components:
     groupOpsWebhook: {type: apiKey, in: header, name: X-AICRM-Signature}
   parameters:
     ID: {name: id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
+    AutomationAgentID: {name: agent_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
     ProductID: {name: product_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
     ServiceProductID: {name: service_product_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
     TagID: {name: tag_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
@@ -1794,6 +1881,14 @@ components:
     MutationOK: {description: Mutation completed, content: {application/json: {schema: {type: object, required: [ok], properties: {ok: {const: true}}}}}}
   schemas:
     PositiveID: {type: integer, format: int64, minimum: 1}
+    AutomationAgentFixedContent: {type: object, additionalProperties: false, required: [content_text, image_library_ids, miniprogram_library_ids, attachment_library_ids, group_invite_library_ids], properties: {content_text: {type: string, maxLength: 4000}, image_library_ids: {type: array, maxItems: 3, items: {$ref: "#/components/schemas/PositiveID"}}, miniprogram_library_ids: {type: array, maxItems: 1, items: {$ref: "#/components/schemas/PositiveID"}}, attachment_library_ids: {type: array, maxItems: 9, items: {$ref: "#/components/schemas/PositiveID"}}, group_invite_library_ids: {type: array, maxItems: 1, items: {$ref: "#/components/schemas/PositiveID"}}}}
+    AutomationAgentCreateRequest: {type: object, additionalProperties: false, required: [agent_name, agent_code, automation_type], properties: {agent_name: {type: string, minLength: 1, maxLength: 120}, agent_code: {type: string, pattern: '^[a-z0-9_-]+$', maxLength: 120}, automation_type: {type: string, enum: [agent, fixed_script]}, status: {type: string, enum: [paused]}, role_prompt: {type: string, maxLength: 20000}, task_prompt: {type: string, maxLength: 20000}, fixed_content_package: {$ref: "#/components/schemas/AutomationAgentFixedContent"}, legacy_configuration: {type: object, maxProperties: 200}}}
+    AutomationAgentUpdateRequest: {type: object, additionalProperties: false, minProperties: 1, properties: {agent_name: {type: string, minLength: 1, maxLength: 120}, automation_type: {type: string, enum: [agent, fixed_script]}, status: {type: string, enum: [paused]}, role_prompt: {type: string, maxLength: 20000}, task_prompt: {type: string, maxLength: 20000}, fixed_content_package: {$ref: "#/components/schemas/AutomationAgentFixedContent"}, legacy_configuration: {type: object, maxProperties: 200}}}
+    AutomationAgent: {type: object, required: [id, agent_name, agent_code, automation_type, status, execution_enabled, fixed_material_summary, updated_at], properties: {id: {$ref: "#/components/schemas/PositiveID"}, agent_name: {type: string}, agent_code: {type: string}, automation_type: {type: string, enum: [agent, fixed_script]}, status: {type: string, enum: [active, paused]}, execution_enabled: {type: boolean}, fixed_material_summary: {type: object, required: [image_count, miniprogram_count, attachment_count, group_invite_count], properties: {image_count: {type: integer, minimum: 0}, miniprogram_count: {type: integer, minimum: 0}, attachment_count: {type: integer, minimum: 0}, group_invite_count: {type: integer, minimum: 0}}}, updated_at: {type: string, format: date-time}}}
+    AutomationAgentEnvelope: {type: object, required: [ok, agent], properties: {ok: {const: true}, agent: {$ref: "#/components/schemas/AutomationAgent"}}}
+    AutomationAgentListEnvelope: {type: object, required: [ok, items, total], properties: {ok: {const: true}, items: {type: array, maxItems: 200, items: {$ref: "#/components/schemas/AutomationAgent"}}, total: {type: integer, minimum: 0, maximum: 200}}}
+    AutomationAgentArchiveEnvelope: {type: object, required: [ok, agent], properties: {ok: {const: true}, agent: {type: object, required: [id, status], properties: {id: {$ref: "#/components/schemas/PositiveID"}, status: {const: archived}}}}}
+    AutomationAgentPrecheckEnvelope: {type: object, required: [ok, agent_id, configuration_ready, materials_configured, execution_enabled, can_activate, reasons, real_external_call_executed], properties: {ok: {const: true}, agent_id: {$ref: "#/components/schemas/PositiveID"}, configuration_ready: {type: boolean}, materials_configured: {type: boolean}, execution_enabled: {type: boolean}, can_activate: {type: boolean}, reasons: {type: array, items: {type: string, enum: [prompt_unconfigured, material_unconfigured, unpublished_changes, already_active]}}, real_external_call_executed: {const: false}}}
     CouponRuleUpsert:
       type: object
       additionalProperties: false
