@@ -52,6 +52,7 @@ for migration_contract in \
   '0012_group_ops.sql:Group Ops' \
   '0013_automation_agents.sql:Automation agents' \
   '0014_operation_cycles.sql:Operation Cycle' \
+  '0015_config_adminops.sql:Config/AdminOps' \
   '0016_media_content_packages.sql:Media content packages' \
   '0017_group_ops_history.sql:Group Ops history' \
   '0019_tag_catalog_sync_projection.sql:Tag catalog sync projection' \
@@ -68,6 +69,13 @@ for migration_contract in \
   }
   grep -qx "test -f \"\$release_dir/migrations/${migration}\"" "$installer" || {
     echo "release must require the current ${label} migration filename" >&2
+    exit 1
+  }
+done
+config_migration="migrations/0015_config_adminops.sql"
+for table in config_settings config_audits config_outbox adminops_release_projections adminops_diagnostic_snapshots; do
+  grep -qE "^CREATE TABLE ${table}[[:space:]]*\\(" "$config_migration" || {
+    echo "Config/AdminOps migration must define ${table}" >&2
     exit 1
   }
 done

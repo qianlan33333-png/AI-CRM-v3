@@ -82,6 +82,7 @@ test -f "$release_dir/migrations/0021_payment.sql"
 test -f "$release_dir/migrations/0024_order_product_version.sql"
 test -f "$release_dir/migrations/0025_payment_reconciliation.sql"
 test -f "$release_dir/migrations/0026_identity_history_receipts.sql"
+test -f "$release_dir/migrations/0015_config_adminops.sql"
 test -f "$release_dir/web/dist/asset-manifest.json"
 test -f "$release_dir/release-files.sha256"
 (cd "$release_dir" && sha256sum --strict --check release-files.sha256)

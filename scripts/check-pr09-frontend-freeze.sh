@@ -7,7 +7,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
-DONOR_ROOT="${PR09_DONOR_ROOT:-/tmp/aicrm-v2-audit.yN3jmr}"
+DONOR_ROOT="${PR09_DONOR_ROOT:-}"
 DONOR_SHA="6bfbe5816bb89913c70adaca87d6a486260e016e"
 MANIFEST="$REPO_ROOT/docs/migration/adminops/pr09-donor-manifest.yaml"
 LEDGER="$REPO_ROOT/docs/migration/adminops/pr09-donor-sha256.txt"
@@ -20,7 +20,10 @@ fail() {
 
 command -v git >/dev/null || fail "git is required"
 command -v cmp >/dev/null || fail "cmp is required"
-command -v shasum >/dev/null || fail "shasum is required"
+[[ -n "$DONOR_ROOT" ]] || fail "PR09_DONOR_ROOT must point to the checked-out frozen v2 donor"
+if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1; then
+  fail "sha256sum or shasum is required"
+fi
 
 [[ -d "$DONOR_ROOT/.git" || -f "$DONOR_ROOT/HEAD" ]] || fail "donor worktree not found: $DONOR_ROOT"
 [[ -f "$MANIFEST" ]] || fail "manifest not found: $MANIFEST"
@@ -54,6 +57,18 @@ cmp -s "$tmp_dir/expected-source" "$tmp_dir/actual-source" || \
   fail "archive file set differs from manifest"
 
 checked=0
+sha256_stream() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum | awk '{ print $1 }'
+  else
+    shasum -a 256 | awk '{ print $1 }'
+  fi
+}
+
+sha256_file() {
+  sha256_stream < "$1"
+}
+
 for source in "${source_files[@]}"; do
   suffix="${source#web/src/}"
   [[ "$suffix" != "$source" ]] || fail "manifest source is outside web/src: $source"
@@ -66,8 +81,8 @@ for source in "${source_files[@]}"; do
   [[ "$source_expected" =~ ^[0-9a-f]{64}$ ]] || fail "missing source SHA ledger row: $source"
   [[ "$target_expected" =~ ^[0-9a-f]{64}$ ]] || fail "missing target SHA ledger row: $target"
 
-  source_actual="$(git -C "$DONOR_ROOT" show "$DONOR_SHA:$source" | shasum -a 256 | awk '{ print $1 }')"
-  target_actual="$(shasum -a 256 "$target_file" | awk '{ print $1 }')"
+  source_actual="$(git -C "$DONOR_ROOT" show "$DONOR_SHA:$source" | sha256_stream)"
+  target_actual="$(sha256_file "$target_file")"
   [[ "$source_actual" == "$source_expected" ]] || \
     fail "donor SHA mismatch for $source: $source_actual != $source_expected"
   [[ "$target_actual" == "$target_expected" ]] || \
@@ -81,12 +96,12 @@ done
 
 # PR09 templates are fragments. A second v2 shell/sidebar must never be
 # smuggled into the exact archive or mounted by a future adapter.
-if rg -n '<aside|class="shell"|class="side"|class="side-nav"' "$TARGET_ROOT" >/dev/null 2>&1; then
+if find "$TARGET_ROOT" -type f -exec grep -En '<aside|class="shell"|class="side"|class="side-nav"' {} + >/dev/null 2>&1; then
   fail "archive contains v2 shell/sidebar markup"
 fi
 
 # There are intentionally no PR09 CSS/image/font assets in the exact set.
-if find "$TARGET_ROOT" -type f -print | rg -n '\.(css|scss|less|png|jpe?g|gif|svg|webp|woff2?|ttf|otf|ico)$' >/dev/null 2>&1; then
+if find "$TARGET_ROOT" -type f -print | grep -En '\.(css|scss|less|png|jpe?g|gif|svg|webp|woff2?|ttf|otf|ico)$' >/dev/null 2>&1; then
   fail "archive unexpectedly contains a PR09 external CSS/media/font asset"
 fi
 
