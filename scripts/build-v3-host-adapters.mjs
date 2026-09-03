@@ -12,7 +12,10 @@ const manifestPath = path.join(dist, 'asset-manifest.json');
 if (!fs.existsSync(manifestPath)) throw new Error('run the frozen donor build before v3 host adapters');
 
 const result = await build({
-  entryPoints: { operationCyclesHost: path.join(repository, 'web', 'v3', 'operationCyclesAdapter.ts') },
+  entryPoints: {
+    operationCyclesHost: path.join(repository, 'web', 'v3', 'operationCyclesAdapter.ts'),
+    channelCenterHost: path.join(repository, 'web', 'v3', 'channelCenterAdapter.ts'),
+  },
   bundle: true,
   format: 'esm',
   splitting: true,
@@ -33,7 +36,7 @@ const metadataFor = (contents) => ({
   gzip_bytes: gzipSync(contents, { level: 9 }).byteLength,
   sha256: crypto.createHash('sha256').update(contents).digest('hex'),
 });
-let entry = '';
+const entries = new Map();
 for (const [output, metadata] of Object.entries(result.metafile.outputs)) {
   const relative = normalizeOutput(output);
   const contents = fs.readFileSync(path.join(dist, relative));
@@ -52,15 +55,22 @@ for (const [output, metadata] of Object.entries(result.metafile.outputs)) {
     inputs: Object.keys(metadata.inputs).map((input) => path.relative(repository, path.resolve(repository, input)).split(path.sep).join('/')).sort(),
   };
   manifest.release_files[relative] = metadataFor(contents);
-  if (metadata.entryPoint && path.resolve(repository, metadata.entryPoint) === path.join(repository, 'web', 'v3', 'operationCyclesAdapter.ts')) entry = relative;
+  if (metadata.entryPoint) {
+    const absoluteEntry = path.resolve(repository, metadata.entryPoint);
+    if (absoluteEntry === path.join(repository, 'web', 'v3', 'operationCyclesAdapter.ts')) entries.set('operationCyclesHost', relative);
+    if (absoluteEntry === path.join(repository, 'web', 'v3', 'channelCenterAdapter.ts')) entries.set('channelCenterHost', relative);
+  }
 }
-if (!entry) throw new Error('operation-cycle host adapter entry was not emitted');
-manifest.entries.operationCyclesHost = entry;
-const donorMain = manifest.files[entry].imports.find((item) => item.kind === 'dynamic-import' && manifest.files[item.path]?.inputs?.includes('web/src/admin/main.ts'))?.path;
-const donorLegacy = donorMain && manifest.files[donorMain].imports.find((item) => item.kind === 'dynamic-import' && manifest.files[item.path]?.inputs?.includes('web/src/admin/legacy.ts'))?.path;
-if (!donorMain || !donorLegacy) throw new Error('operation-cycle host must start the frozen donor main -> legacy runtime');
+for (const name of ['operationCyclesHost', 'channelCenterHost']) {
+  const entry = entries.get(name);
+  if (!entry) throw new Error(`${name} adapter entry was not emitted`);
+  manifest.entries[name] = entry;
+  const donorMain = manifest.files[entry].imports.find((item) => item.kind === 'dynamic-import' && manifest.files[item.path]?.inputs?.includes('web/src/admin/main.ts'))?.path;
+  const donorLegacy = donorMain && manifest.files[donorMain].imports.find((item) => item.kind === 'dynamic-import' && manifest.files[item.path]?.inputs?.includes('web/src/admin/legacy.ts'))?.path;
+  if (!donorMain || !donorLegacy) throw new Error(`${name} must start the frozen donor main -> legacy runtime`);
+}
 manifest.entries = Object.fromEntries(Object.entries(manifest.entries).sort(([left], [right]) => left.localeCompare(right)));
 manifest.files = Object.fromEntries(Object.entries(manifest.files).sort(([left], [right]) => left.localeCompare(right)));
 manifest.release_files = Object.fromEntries(Object.entries(manifest.release_files).sort(([left], [right]) => left.localeCompare(right)));
 fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
-console.log(`built v3 host adapter: ${entry}`);
+console.log(`built v3 host adapters: ${[...entries.values()].join(', ')}`);

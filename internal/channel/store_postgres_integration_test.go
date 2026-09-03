@@ -621,5 +621,10 @@ func channelMigrationPaths(t *testing.T) []string {
 		filepath.Join(root, "migrations", "0006_wecom_callback_channel_acquisition.sql"),
 		filepath.Join(root, "migrations", "0009_customer_activation.sql"),
 		filepath.Join(root, "migrations", "0029_channel_center.sql"),
+		filepath.Join(root, "migrations", "0031_channel_history_import.sql"),
+		filepath.Join(root, "migrations", "0032_channel_acquisition_assets.sql"),
+		filepath.Join(root, "migrations", "0033_wecom_welcome_grants.sql"),
+		filepath.Join(root, "migrations", "0034_channel_entrant_actions.sql"),
+		filepath.Join(root, "migrations", "0035_channel_acquisition_links.sql"),
 	}
 }

@@ -114,8 +114,31 @@ func (s *GroupMessageCompletionSink) CompleteEffect(ctx context.Context, effectR
 // CompletionRouter keeps EER's single completion-sink slot while routing
 // owner-specific projections by opaque envelope kind.
 type CompletionRouter struct {
-	tag   *TagCatalogCompletionSink
-	group *GroupMessageCompletionSink
+	tag     *TagCatalogCompletionSink
+	group   *GroupMessageCompletionSink
+	channel *ChannelAssetCompletionSink
+	entrant *ChannelEntrantCompletionSink
+	link    *ChannelLinkCompletionSink
+}
+
+func NewCompletionRouterWithChannels(tag *TagCatalogCompletionSink, group *GroupMessageCompletionSink, channel *ChannelAssetCompletionSink) (*CompletionRouter, error) {
+	if tag == nil && group == nil && channel == nil {
+		return nil, errors.New("at least one completion sink is required")
+	}
+	return &CompletionRouter{tag: tag, group: group, channel: channel}, nil
+}
+
+func NewCompletionRouterWithChannelEntrants(tag *TagCatalogCompletionSink, group *GroupMessageCompletionSink, channel *ChannelAssetCompletionSink, entrant *ChannelEntrantCompletionSink) (*CompletionRouter, error) {
+	if tag == nil && group == nil && channel == nil && entrant == nil {
+		return nil, errors.New("at least one completion sink is required")
+	}
+	return &CompletionRouter{tag: tag, group: group, channel: channel, entrant: entrant}, nil
+}
+func NewCompletionRouterWithAllChannels(tag *TagCatalogCompletionSink, group *GroupMessageCompletionSink, channel *ChannelAssetCompletionSink, entrant *ChannelEntrantCompletionSink, link *ChannelLinkCompletionSink) (*CompletionRouter, error) {
+	if tag == nil && group == nil && channel == nil && entrant == nil && link == nil {
+		return nil, errors.New("at least one completion sink is required")
+	}
+	return &CompletionRouter{tag: tag, group: group, channel: channel, entrant: entrant, link: link}, nil
 }
 
 func NewCompletionRouter(tag *TagCatalogCompletionSink, group *GroupMessageCompletionSink) (*CompletionRouter, error) {
@@ -140,6 +163,21 @@ func (r *CompletionRouter) CompleteEffect(ctx context.Context, effectRef string,
 			return errors.New("Group Ops completion sink is unavailable")
 		}
 		return r.group.CompleteEffect(ctx, effectRef, envelope, attempt, result)
+	case effectport.KindChannelAsset:
+		if r.channel == nil {
+			return errors.New("channel asset completion sink is unavailable")
+		}
+		return r.channel.CompleteEffect(ctx, effectRef, envelope, attempt, result)
+	case effectport.KindChannelWelcome, effectport.KindChannelEntryTag:
+		if r.entrant == nil {
+			return errors.New("channel entrant completion sink is unavailable")
+		}
+		return r.entrant.CompleteEffect(ctx, effectRef, envelope, attempt, result)
+	case effectport.KindChannelLink:
+		if r.link == nil {
+			return errors.New("channel link completion sink is unavailable")
+		}
+		return r.link.CompleteEffect(ctx, effectRef, envelope, attempt, result)
 	default:
 		return errors.New("unsupported completion kind")
 	}

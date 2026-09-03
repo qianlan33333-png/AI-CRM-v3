@@ -1248,19 +1248,324 @@ paths:
         "404": {$ref: "#/components/responses/Error"}
   /api/admin/channels:
     get:
-      operationId: listProductFormChannels
-      tags: [Products]
-      description: Read-only channel compatibility projection used by the frozen Product forms. Empty means the Channel catalog owner has no available rows; Product does not infer or create channels.
+      operationId: listChannels
+      tags: [Channels]
+      description: List canonical local channel definitions. This read never invokes WeCom.
       security: [{adminSession: []}]
       parameters:
         - {$ref: "#/components/parameters/ProductLimit"}
         - {name: include_archived, in: query, schema: {type: boolean, default: false}}
+        - {name: cursor, in: query, schema: {type: string, maxLength: 512}}
+        - {name: status, in: query, schema: {type: string, enum: [active, inactive, archived]}}
+        - {name: q, in: query, schema: {type: string, maxLength: 200}}
       responses:
         "200": {description: Channel compatibility page, content: {application/json: {schema: {$ref: "#/components/schemas/LegacyProductChannelPage"}}}}
         "400": {$ref: "#/components/responses/Error"}
         "401": {$ref: "#/components/responses/Error"}
         "403": {$ref: "#/components/responses/Error"}
         "503": {$ref: "#/components/responses/Unavailable"}
+    post:
+      operationId: createChannel
+      tags: [Channels]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/ChannelCatalogWrite"}}}}
+      responses:
+        "201": {description: Persisted local channel, content: {application/json: {schema: {$ref: "#/components/schemas/ChannelCatalogMutation"}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
+        "413": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/admin/channels/{channel_id}:
+    parameters:
+      - {name: channel_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
+    get:
+      operationId: getChannel
+      tags: [Channels]
+      security: [{adminSession: []}]
+      responses:
+        "200": {description: Canonical local channel, headers: {ETag: {schema: {type: string}}}, content: {application/json: {schema: {$ref: "#/components/schemas/ChannelCatalogDetail"}}}}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+    patch:
+      operationId: updateChannel
+      tags: [Channels]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters:
+        - {$ref: "#/components/parameters/RequiredIdempotencyKey"}
+        - {name: If-Match, in: header, required: true, schema: {type: string, pattern: '^"?[1-9][0-9]*"?$'}}
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/ChannelCatalogWrite"}}}}
+      responses:
+        "200": {description: Updated immutable channel version, headers: {ETag: {schema: {type: string}}}, content: {application/json: {schema: {$ref: "#/components/schemas/ChannelCatalogMutation"}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
+        "413": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/admin/channels/{channel_id}/acquisition-preview:
+    get:
+      operationId: previewChannelAcquisition
+      tags: [Channels]
+      security: [{adminSession: []}]
+      parameters: [{name: channel_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
+      responses:
+        "200": {description: Provider readiness and frozen local assignment preview, content: {application/json: {schema: {type: object}}}}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/admin/channels/{channel_id}/acquisition-staff:
+    get:
+      operationId: listChannelAcquisitionStaff
+      tags: [Channels]
+      description: Returns only the intersection of active local staff and current WeCom follow users; Provider read failure is fail closed.
+      security: [{adminSession: []}]
+      parameters: [{name: channel_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
+      responses:
+        "200": {description: Eligible staff, content: {application/json: {schema: {type: object}}}}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/admin/channels/{channel_id}/assignees:
+    get:
+      operationId: listChannelAssignees
+      tags: [Channels]
+      security: [{adminSession: []}]
+      parameters: [{name: channel_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
+      responses:
+        "200": {description: Immutable current assignment projection, content: {application/json: {schema: {type: object}}}}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+  /api/admin/channels/{channel_id}/history:
+    get:
+      operationId: listChannelHistory
+      tags: [Channels]
+      description: Safe canonical history without raw UnionID, external_userid, phone or State.
+      security: [{adminSession: []}]
+      parameters:
+        - {name: channel_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
+        - {$ref: "#/components/parameters/Limit"}
+        - {name: cursor, in: query, schema: {type: string, maxLength: 512}}
+      responses:
+        "200": {description: Imported and runtime channel history, content: {application/json: {schema: {type: object}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+  /api/admin/channels/{channel_id}/contacts:
+    get:
+      operationId: listChannelContacts
+      tags: [Channels]
+      description: Recent canonical customers and safe aggregate facts only.
+      security: [{adminSession: []}]
+      parameters:
+        - {name: channel_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
+        - {$ref: "#/components/parameters/Limit"}
+        - {name: cursor, in: query, schema: {type: string, maxLength: 512}}
+      responses:
+        "200": {description: Safe recent contacts, content: {application/json: {schema: {type: object}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+  /api/admin/channels/{channel_id}/acquisition-assets:
+    get:
+      operationId: listChannelAcquisitionAssets
+      tags: [Channels]
+      security: [{adminSession: []}]
+      parameters:
+        - {name: channel_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
+        - {$ref: "#/components/parameters/Limit"}
+        - {$ref: "#/components/parameters/BeforeID"}
+      responses:
+        "200": {description: Durable Channel asset projections, content: {application/json: {schema: {type: object}}}}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+    post:
+      operationId: publishChannelAcquisitionAsset
+      tags: [Channels]
+      description: Accepts and queues one frozen asset intent in the caller transaction. Acceptance is not delivery.
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters:
+        - {name: channel_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
+        - {$ref: "#/components/parameters/RequiredIdempotencyKey"}
+      requestBody:
+        required: true
+        content: {application/json: {schema: {type: object, additionalProperties: false, required: [kind], properties: {kind: {type: string, enum: [contact_way_qrcode, customer_acquisition_link]}}}}}
+      responses:
+        "202": {description: Durable accepted asset receipt, content: {application/json: {schema: {type: object}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
+  /api/admin/channels/{channel_id}/acquisition-assets/{effect_id}:
+    get:
+      operationId: getChannelAcquisitionAsset
+      tags: [Channels]
+      security: [{adminSession: []}]
+      parameters:
+        - {name: channel_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
+        - {name: effect_id, in: path, required: true, schema: {$ref: "#/components/schemas/ExternalEffectID"}}
+      responses:
+        "200": {description: Durable asset projection and controlled result, content: {application/json: {schema: {type: object}}}}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+    patch:
+      operationId: updateChannelContactWay
+      tags: [Channels]
+      description: Accepts a full Provider update using the channel current immutable config; the referenced executed QR asset is superseded only after execution or reconciliation.
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters:
+        - {name: channel_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
+        - {name: effect_id, in: path, required: true, schema: {$ref: "#/components/schemas/ExternalEffectID"}}
+        - {$ref: "#/components/parameters/RequiredIdempotencyKey"}
+      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false}}}}
+      responses:
+        "202": {description: Durable accepted contact-way update, content: {application/json: {schema: {type: object}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+    delete:
+      operationId: deleteChannelContactWay
+      tags: [Channels]
+      description: Accepts a Provider delete and retires the referenced QR asset and its active State binding only after execution or reconciliation.
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters:
+        - {name: channel_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
+        - {name: effect_id, in: path, required: true, schema: {$ref: "#/components/schemas/ExternalEffectID"}}
+        - {$ref: "#/components/parameters/RequiredIdempotencyKey"}
+      responses:
+        "202": {description: Durable accepted contact-way deletion, content: {application/json: {schema: {type: object}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/admin/channels/{channel_id}/acquisition-assets/{effect_id}/reconcile:
+    post:
+      operationId: reconcileChannelAcquisitionAsset
+      tags: [Channels]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters:
+        - {name: channel_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
+        - {name: effect_id, in: path, required: true, schema: {$ref: "#/components/schemas/ExternalEffectID"}}
+        - {$ref: "#/components/parameters/RequiredIdempotencyKey"}
+      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false, required: [resolution, evidence_digest], properties: {resolution: {type: string, enum: [provider_applied, provider_not_applied]}, evidence_digest: {type: string, pattern: '^sha256:[0-9a-f]{64}$'}, provider_asset_ref: {type: string}, asset_url: {type: string, format: uri}}}}}}
+      responses:
+        "200": {description: Atomically reconciled EER and Channel asset, content: {application/json: {schema: {type: object}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
+  /api/admin/channels/{channel_id}/qrcode/generate:
+    post:
+      operationId: generateChannelQRCode
+      tags: [Channels]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters:
+        - {name: channel_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
+        - {$ref: "#/components/parameters/RequiredIdempotencyKey"}
+      responses:
+        "202": {description: Durable accepted QR asset receipt, content: {application/json: {schema: {type: object}}}}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+  /api/admin/channels/{channel_id}/qrcode/download:
+    get:
+      operationId: downloadChannelQRCode
+      tags: [Channels]
+      description: Same-origin constrained image download; only executed or reconciled assets are eligible.
+      security: [{adminSession: []}]
+      parameters: [{name: channel_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
+      responses:
+        "200": {description: QR image, content: {image/png: {schema: {type: string, format: binary}}, image/jpeg: {schema: {type: string, format: binary}}}}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/admin/wecom-customer-acquisition-links:
+    get:
+      operationId: listWeComCustomerAcquisitionLinks
+      tags: [Channels]
+      security: [{adminSession: []}]
+      parameters:
+        - {name: cursor, in: query, schema: {type: string, maxLength: 1024}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 100}}
+      responses:
+        "200": {description: Provider link identifiers, content: {application/json: {schema: {type: object, additionalProperties: false, required: [items, next_cursor], properties: {items: {type: array, items: {type: object, additionalProperties: false, required: [link_id], properties: {link_id: {type: string}}}}, next_cursor: {type: string}}}}}}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+    post:
+      operationId: createWeComCustomerAcquisitionLink
+      tags: [Channels]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/CustomerAcquisitionLinkInput"}}}}
+      responses:
+        "202": {description: Durable accepted mutation receipt, content: {application/json: {schema: {$ref: "#/components/schemas/CustomerAcquisitionLinkReceipt"}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
+  /api/admin/wecom-customer-acquisition-links/{link_id}:
+    parameters: [{name: link_id, in: path, required: true, schema: {type: string, minLength: 1, maxLength: 1024}}]
+    get:
+      operationId: getWeComCustomerAcquisitionLink
+      tags: [Channels]
+      security: [{adminSession: []}]
+      responses:
+        "200": {description: Provider link, content: {application/json: {schema: {$ref: "#/components/schemas/CustomerAcquisitionLink"}}}}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+    patch:
+      operationId: updateWeComCustomerAcquisitionLink
+      tags: [Channels]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/CustomerAcquisitionLinkInput"}}}}
+      responses:
+        "202": {description: Durable accepted mutation receipt, content: {application/json: {schema: {$ref: "#/components/schemas/CustomerAcquisitionLinkReceipt"}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
+    delete:
+      operationId: deleteWeComCustomerAcquisitionLink
+      tags: [Channels]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      responses:
+        "202": {description: Durable accepted mutation receipt, content: {application/json: {schema: {$ref: "#/components/schemas/CustomerAcquisitionLinkReceipt"}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
+  /api/admin/wecom-customer-acquisition-links/{link_id}/reconcile:
+    post:
+      operationId: reconcileWeComCustomerAcquisitionLink
+      tags: [Channels]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters:
+        - {name: link_id, in: path, required: true, schema: {type: string, minLength: 1, maxLength: 1024}}
+        - {$ref: "#/components/parameters/RequiredIdempotencyKey"}
+      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false, required: [receipt_id, resolution, evidence_digest], properties: {receipt_id: {$ref: "#/components/schemas/PositiveID"}, resolution: {type: string, enum: [provider_applied, provider_not_applied]}, evidence_digest: {type: string, pattern: '^[0-9a-f]{64}$'}}}}}}
+      responses:
+        "200": {description: Atomically reconciled EER and Channel receipt, content: {application/json: {schema: {$ref: "#/components/schemas/CustomerAcquisitionLinkReceipt"}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
   /admin/operation-cycles:
     get:
       operationId: openOperationCyclesWorkspace
@@ -3197,12 +3502,131 @@ components:
     LegacyProductChannelPage:
       type: object
       additionalProperties: false
-      required: [ok, channels, reason, source]
+      required: [ok, channels, items, total, next_cursor, reason, source]
       properties:
         ok: {const: true}
         channels: {type: array, items: {type: object, additionalProperties: false, required: [id, channel_name, channel_code, status, assignee_count, channel_contact_count, created_at, updated_at], properties: {id: {$ref: "#/components/schemas/PositiveID"}, channel_name: {type: string}, channel_code: {type: string}, status: {type: string}, assignee_count: {type: integer, minimum: 0}, channel_contact_count: {type: integer, minimum: 0}, created_at: {type: string}, updated_at: {type: string}}}}
+        items: {type: array, items: {type: object}}
+        total: {type: integer, minimum: 0}
+        next_cursor: {type: string, maxLength: 512}
         reason: {const: channels_listed}
         source: {const: ai_crm_next}
+    ChannelCatalogWrite:
+      type: object
+      additionalProperties: false
+      required: [channel_type, carrier_type, channel_name, channel_code, status, assignment_mode, assignment_strategy]
+      properties:
+        channel_type: {type: string, enum: [qrcode, wecom_customer_acquisition]}
+        carrier_type: {type: string, enum: [qrcode, link]}
+        channel_name: {type: string, minLength: 1, maxLength: 200}
+        channel_code: {type: string, pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$'}
+        scene_value: {type: string, maxLength: 10000}
+        qr_url: {type: string, maxLength: 10000}
+        status: {type: string, enum: [active, inactive, archived]}
+        owner_staff_id: {type: string, pattern: '^(|[1-9][0-9]{0,18})$'}
+        customer_channel: {type: string, maxLength: 10000}
+        link_url: {type: string, maxLength: 10000}
+        final_url: {type: string, maxLength: 10000}
+        welcome_message: {type: string, maxLength: 10000}
+        welcome_image_library_ids: {type: array, maxItems: 12, uniqueItems: true, items: {$ref: "#/components/schemas/PositiveID"}}
+        welcome_miniprogram_library_ids: {type: array, maxItems: 12, uniqueItems: true, items: {$ref: "#/components/schemas/PositiveID"}}
+        welcome_attachment_library_ids: {type: array, maxItems: 12, uniqueItems: true, items: {$ref: "#/components/schemas/PositiveID"}}
+        welcome_group_invite_library_ids: {type: array, maxItems: 12, uniqueItems: true, items: {$ref: "#/components/schemas/PositiveID"}}
+        auto_accept_friend: {type: boolean}
+        entry_tag_id: {type: string, pattern: '^(|[1-9][0-9]{0,18})$'}
+        entry_tag_name: {type: string, maxLength: 200}
+        entry_tag_group_name: {type: string, maxLength: 200}
+        assignment_mode: {type: string, enum: [single_owner, multi_staff]}
+        assignment_strategy: {type: string, enum: [ratio, cap_switch]}
+        overflow_policy: {type: string, maxLength: 128}
+        assignment_config_json:
+          type: object
+          additionalProperties: false
+          properties:
+            assignees:
+              type: array
+              minItems: 1
+              maxItems: 5
+              items:
+                type: object
+                additionalProperties: false
+                required: [staff_id]
+                properties:
+                  staff_id: {$ref: "#/components/schemas/PositiveID"}
+                  priority: {type: integer, minimum: 1, maximum: 5}
+                  ratio_percent: {type: integer, minimum: 1, maximum: 100}
+                  max_scans_24h: {type: integer, minimum: 1}
+    ChannelCatalogResource:
+      allOf:
+        - {$ref: "#/components/schemas/ChannelCatalogWrite"}
+        - type: object
+          required: [id, version, config_version, created_at, updated_at, assignee_count, channel_contact_count]
+          properties:
+            id: {$ref: "#/components/schemas/PositiveID"}
+            version: {type: integer, minimum: 1}
+            config_version: {type: integer, minimum: 1}
+            created_at: {type: string, format: date-time}
+            updated_at: {type: string, format: date-time}
+            assignees: {type: array, maxItems: 5, items: {type: object}}
+            assignment_stats_24h: {type: array, maxItems: 5, items: {type: object}}
+            assignee_count: {type: integer, minimum: 1, maximum: 5}
+            channel_contact_count: {type: integer, minimum: 0}
+            latest_channel_entered_at: {type: string}
+            qrcode_asset_id: {type: integer, minimum: 0}
+            qrcode_status: {type: string}
+            qr_download_url: {type: string}
+            share_url: {type: string}
+            copy_text: {type: string}
+    ChannelCatalogDetail:
+      type: object
+      additionalProperties: false
+      required: [ok, channel, reason, source]
+      properties:
+        ok: {const: true}
+        channel: {$ref: "#/components/schemas/ChannelCatalogResource"}
+        reason: {const: channel_loaded}
+        source: {const: ai_crm_next}
+    ChannelCatalogMutation:
+      type: object
+      additionalProperties: false
+      required: [ok, channel, reason, source, fallback_used, provider_execution_eligible, real_external_call_executed]
+      properties:
+        ok: {const: true}
+        channel: {$ref: "#/components/schemas/ChannelCatalogResource"}
+        reason: {type: string, enum: [channel_created, channel_updated]}
+        source: {const: ai_crm_next}
+        fallback_used: {const: false}
+        provider_execution_eligible: {const: false}
+        real_external_call_executed: {const: false}
+    CustomerAcquisitionLinkInput:
+      type: object
+      additionalProperties: false
+      required: [link_name, user_ids, department_ids, skip_verify]
+      properties:
+        link_name: {type: string, minLength: 1, maxLength: 120}
+        user_ids: {type: array, maxItems: 500, uniqueItems: true, items: {type: string, minLength: 1, maxLength: 1024}}
+        department_ids: {type: array, maxItems: 500, uniqueItems: true, items: {type: integer, format: int64, minimum: 1}}
+        skip_verify: {type: boolean}
+    CustomerAcquisitionLink:
+      allOf:
+        - {$ref: "#/components/schemas/CustomerAcquisitionLinkInput"}
+        - type: object
+          required: [link_id, url]
+          properties:
+            link_id: {type: string, minLength: 1, maxLength: 1024}
+            url: {type: string, format: uri, pattern: '^https://'}
+    CustomerAcquisitionLinkReceipt:
+      type: object
+      additionalProperties: false
+      required: [receipt_id, state, business_endpoint_dispatched, real_external_call_executed]
+      properties:
+        receipt_id: {$ref: "#/components/schemas/PositiveID"}
+        state: {type: string, enum: [accepted, attempted, executed, final_failed, outcome_unknown, reconciled]}
+        business_endpoint_dispatched: {type: boolean}
+        real_external_call_executed: {type: boolean}
+        outcome_digest: {type: string, pattern: '^[0-9a-f]{64}$'}
+        resolution: {type: string, enum: [provider_applied, provider_not_applied]}
+        link: {$ref: "#/components/schemas/CustomerAcquisitionLink"}
     GroupOpsSafety:
       type: object
       required: [provider_execution_eligible, real_external_call_executed]

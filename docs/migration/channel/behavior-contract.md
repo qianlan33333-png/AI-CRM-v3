@@ -17,7 +17,7 @@ Baseline: `AI-CRM-v2@6bfbe5816bb89913c70adaca87d6a486260e016e`。
 | 客服分配 | PUT | `/api/admin/channels/{channel_id}/assignees` |
 | 客服候选 | GET | `/api/admin/channels/{channel_id}/acquisition-staff` |
 | 渠道资产 | GET, POST | `/api/admin/channels/{channel_id}/acquisition-assets` |
-| 资产详情 | GET | `/api/admin/channels/{channel_id}/acquisition-assets/{effect_id}` |
+| 资产详情与二维码维护 | GET, PATCH, DELETE | `/api/admin/channels/{channel_id}/acquisition-assets/{effect_id}` |
 | 资产对账 | POST | `/api/admin/channels/{channel_id}/acquisition-assets/{effect_id}/reconcile` |
 | 二维码兼容 | POST | `/api/admin/channels/{channel_id}/qrcode/generate` |
 | 二维码下载 | GET | `/api/admin/channels/{channel_id}/qrcode/download` |

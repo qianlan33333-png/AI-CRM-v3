@@ -24,7 +24,7 @@ if (fs.existsSync(stage)) fail(`refusing to overwrite an existing stage: ${stage
 if (!fs.statSync(manifestPath).isFile()) fail('missing asset-manifest.json');
 
 const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-const roots = ['admin', 'tokens', 'labs', 'operationCyclesHost'].map((name) => manifest.entries?.[name]);
+const roots = ['admin', 'tokens', 'labs', 'operationCyclesHost', 'channelCenterHost'].map((name) => manifest.entries?.[name]);
 if (roots.some((entry) => typeof entry !== 'string')) fail('campaigns entry assets are absent from manifest');
 const dynamicOutputForInput = (from, input) => (manifest.files[from]?.imports || []).find((item) =>
   item.kind === 'dynamic-import' && manifest.files[item.path]?.inputs?.includes(input)
@@ -38,7 +38,10 @@ const funnelEntry = legacyEntry && dynamicOutputForInput(legacyEntry, 'web/src/a
 const operationHost = manifest.entries.operationCyclesHost;
 const operationMainEntry = dynamicOutputForInput(operationHost, 'web/src/admin/main.ts');
 const operationLegacyEntry = operationMainEntry && dynamicOutputForInput(operationMainEntry, 'web/src/admin/legacy.ts');
-if (!legacyEntry || !campaignsEntry || !adminAccessEntry || !setupWizardEntry || !groupOpsHistoryEntry || !funnelEntry || !operationMainEntry || !operationLegacyEntry) fail('required admin runtime chunks are absent from manifest');
+const channelHost = manifest.entries.channelCenterHost;
+const channelMainEntry = dynamicOutputForInput(channelHost, 'web/src/admin/main.ts');
+const channelLegacyEntry = channelMainEntry && dynamicOutputForInput(channelMainEntry, 'web/src/admin/legacy.ts');
+if (!legacyEntry || !campaignsEntry || !adminAccessEntry || !setupWizardEntry || !groupOpsHistoryEntry || !funnelEntry || !operationMainEntry || !operationLegacyEntry || !channelMainEntry || !channelLegacyEntry) fail('required admin runtime chunks are absent from manifest');
 
 const selected = new Set();
 const includeStatic = (relative) => {
@@ -68,6 +71,8 @@ includeStatic(groupOpsHistoryEntry);
 includeStatic(funnelEntry);
 includeStatic(operationMainEntry);
 includeStatic(operationLegacyEntry);
+includeStatic(channelMainEntry);
+includeStatic(channelLegacyEntry);
 
 const privateTemplatePages = [
   'images', 'attach', 'mpLib',
@@ -78,6 +83,7 @@ const privateTemplatePages = [
   'agents', 'agentEdit',
   'cycles', 'cyclesDetail',
   'config', 'configDetail', 'apidocs',
+  'channels', 'channelForm',
 ];
 const releaseRoot = new Set([...selected, ...privateTemplatePages.map((page) => `admin/${page}.html`), 'admin/tags.html']);
 const releaseMetadataFor = (relative) => {
@@ -112,6 +118,9 @@ for (const page of ['agents', 'agentEdit']) copy(`admin/${page}.html`);
 for (const page of ['cycles', 'cyclesDetail']) copy(`admin/${page}.html`);
 // Config pages are release-private template carriers for the v3 host adapter.
 for (const page of ['config', 'configDetail', 'apidocs']) copy(`admin/${page}.html`);
+// Channel pages are byte-frozen private template carriers mounted through the
+// Channel-specific v3 host adapter; they are never routed as donor documents.
+for (const page of ['channels', 'channelForm']) copy(`admin/${page}.html`);
 // Tags also runs through the frozen donor admin entry. Keep the generated
 // donor page only as a release-private template source under a non-routable
 // filename; the Go adapter extracts template#tpl and mounts it in PR10's sole
@@ -124,7 +133,7 @@ fs.copyFileSync(tagsSource, tagsTarget);
 
 const stagedManifest = {
   ...manifest,
-  entries: Object.fromEntries(['admin', 'tokens', 'labs', 'operationCyclesHost'].map((name) => [name, manifest.entries[name]])),
+  entries: Object.fromEntries(['admin', 'tokens', 'labs', 'operationCyclesHost', 'channelCenterHost'].map((name) => [name, manifest.entries[name]])),
   files: Object.fromEntries([...selected].sort().map((relative) => [relative, manifest.files[relative]])),
   release_files: Object.fromEntries([...releaseRoot].sort().map((relative) => [relative, releaseMetadataFor(relative)])),
 };
@@ -140,7 +149,7 @@ const walk = (directory) => {
 };
 walk(stage);
 for (const relative of stagedFiles) {
-  const allowedHTML = ['admin/images.html', 'admin/attach.html', 'admin/mpLib.html', 'admin/tags.html', 'admin/products.html', 'admin/productForm.html', 'admin/spProducts.html', 'admin/spProductForm.html', 'admin/coupons.html', 'admin/couponForm.html', 'admin/orders.html', 'admin/orderDetail.html', 'admin/groupops.html', 'admin/groupopsDetail.html', 'admin/agents.html', 'admin/agentEdit.html', 'admin/cycles.html', 'admin/cyclesDetail.html', 'admin/config.html', 'admin/configDetail.html', 'admin/apidocs.html'];
+  const allowedHTML = ['admin/images.html', 'admin/attach.html', 'admin/mpLib.html', 'admin/tags.html', 'admin/products.html', 'admin/productForm.html', 'admin/spProducts.html', 'admin/spProductForm.html', 'admin/coupons.html', 'admin/couponForm.html', 'admin/orders.html', 'admin/orderDetail.html', 'admin/groupops.html', 'admin/groupopsDetail.html', 'admin/agents.html', 'admin/agentEdit.html', 'admin/cycles.html', 'admin/cyclesDetail.html', 'admin/config.html', 'admin/configDetail.html', 'admin/apidocs.html', 'admin/channels.html', 'admin/channelForm.html'];
   const allowed = relative === 'asset-manifest.json' || relative.startsWith('assets/') || allowedHTML.includes(relative);
   if (!allowed) fail(`unapproved release file: ${relative}`);
   if (relative.endsWith('.html') && !allowedHTML.includes(relative)) fail(`unapproved HTML surface: ${relative}`);

@@ -99,7 +99,7 @@ make_release() {
   local release="$test_root/package-${sha}"
   local archive="/tmp/aicrm-${sha}.tar.gz"
   mkdir -p "$release/bin" "$release/migrations" "$release/web/dist" "$release/deploy"
-  for binary in aicrm migrate-platform migrate-river migrate-phone-identities migrate-survey-v2 migrate-v2-config-definitions; do
+  for binary in aicrm migrate-platform migrate-river migrate-phone-identities migrate-survey-v2 migrate-v2-config-definitions migrate-channel-history; do
     printf '#!/usr/bin/env bash\nexit 0\n' > "$release/bin/$binary"
     chmod 0755 "$release/bin/$binary"
   done
@@ -112,7 +112,10 @@ make_release() {
     0022_customer_profile_sections.sql 0024_order_product_version.sql \
     0025_payment_reconciliation.sql 0026_identity_history_receipts.sql \
     0027_admin_access_login_compat.sql 0028_hxc_dashboard.sql \
-    0029_channel_center.sql 0030_config_definition_import.sql; do
+    0029_channel_center.sql 0030_config_definition_import.sql \
+    0031_channel_history_import.sql 0032_channel_acquisition_assets.sql \
+    0033_wecom_welcome_grants.sql 0034_channel_entrant_actions.sql \
+    0035_channel_acquisition_links.sql; do
     : > "$release/migrations/$migration"
   done
   : > "$release/web/dist/asset-manifest.json"

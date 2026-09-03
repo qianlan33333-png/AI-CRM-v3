@@ -23,6 +23,7 @@ var _ identityport.DirectoryIdentityReader = PostgreSQL{}
 var _ identityport.CommerceResolver = PostgreSQL{}
 var _ identityport.PaymentIdentityReader = PostgreSQL{}
 var _ identityport.HXCUnionIDBatchResolver = PostgreSQL{}
+var _ identityport.ExternalIdentityValueReader = PostgreSQL{}
 
 func NewPostgreSQL() PostgreSQL { return PostgreSQL{} }
 
@@ -264,6 +265,43 @@ func (PostgreSQL) RevealPhone(ctx context.Context, customerID customerdomain.Cus
 		return "", false, fmt.Errorf("query active phone: %w", err)
 	}
 	return phone, true, nil
+}
+
+func (PostgreSQL) VerifiedExternalIdentityValue(ctx context.Context, customerID customerdomain.CustomerID, kind identitydomain.Kind, scope string) (string, bool, error) {
+	if customerID < 1 || kind == identitydomain.KindPhone || scope == "" {
+		return "", false, ErrInvalidQuery
+	}
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return "", false, err
+	}
+	rows, err := tx.Query(ctx, `WITH RECURSIVE chain(id,status,merged_into_customer_id,visited) AS (
+		SELECT id,status,merged_into_customer_id,ARRAY[id] FROM customers WHERE id=$1
+		UNION ALL SELECT c.id,c.status,c.merged_into_customer_id,chain.visited||c.id FROM chain JOIN customers c ON c.id=chain.merged_into_customer_id WHERE NOT c.id=ANY(chain.visited)
+	), root AS (SELECT id FROM chain WHERE status<>'merged' ORDER BY cardinality(visited) DESC LIMIT 1)
+	SELECT normalized_value FROM customer_identities WHERE customer_id=(SELECT id FROM root) AND kind=$2 AND scope_key=$3 AND assurance='verified' AND status='active' ORDER BY id LIMIT 2`, customerID, kind, scope)
+	if err != nil {
+		return "", false, fmt.Errorf("query external identity: %w", err)
+	}
+	defer rows.Close()
+	values := []string{}
+	for rows.Next() {
+		var value string
+		if err = rows.Scan(&value); err != nil {
+			return "", false, fmt.Errorf("scan external identity: %w", err)
+		}
+		values = append(values, value)
+	}
+	if err = rows.Err(); err != nil {
+		return "", false, fmt.Errorf("iterate external identity: %w", err)
+	}
+	if len(values) == 0 {
+		return "", false, nil
+	}
+	if len(values) != 1 {
+		return "", false, ErrInvalidQuery
+	}
+	return values[0], true, nil
 }
 
 func maskPhone(value string) string {

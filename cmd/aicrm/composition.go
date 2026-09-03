@@ -32,6 +32,7 @@ import (
 	customerhttp "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/http"
 	customerstore "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/store"
 	externaleffects "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects"
+	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	groupops "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops"
 	groupopsapp "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/app"
 	groupopsstore "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/store"
@@ -247,6 +248,29 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return fail(err)
 	}
 	tagModule := tag.NewModuleRegistration()
+	var callbackStateDigester wecom.StateDigester
+	if cfg.WeCom.CallbackEnabled {
+		callbackStateDigester, err = wecom.NewHMACStateDigester([]byte(cfg.WeCom.ChannelStateHMACKey))
+		if err != nil {
+			return fail(err)
+		}
+	}
+	channelAssetStore := channelstore.NewPostgreSQLAssetStore(pool.Native())
+	channelAcquisition := channelstore.NewPostgreSQLStore()
+	channelEntrantActions := channelstore.NewEntrantActionStore(effectRepository, channelWelcomeMaterialAdapter{resolver: groupOpsMaterials})
+	channelLinkStore := channelstore.NewAcquisitionLinkStore()
+	channelAssetCompletionSink, err := outbound.NewChannelAssetCompletionSink(channelAssetCompletionAdapter{assets: channelAssetStore, bindings: channelAcquisition, digester: callbackStateDigester, corpID: cfg.WeCom.CorpID})
+	if err != nil {
+		return fail(err)
+	}
+	channelEntrantCompletionSink, err := outbound.NewChannelEntrantCompletionSink(channelEntrantActions)
+	if err != nil {
+		return fail(err)
+	}
+	channelLinkCompletionSink, err := outbound.NewChannelLinkCompletionSink(channelLinkStore)
+	if err != nil {
+		return fail(err)
+	}
 	tagRepository, err := tagstore.NewPostgreSQL(pool.Native(), uow)
 	if err != nil {
 		return fail(err)
@@ -276,7 +300,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
-	outboundCompletionSink, err := outbound.NewCompletionRouter(tagCompletionSink, groupOpsCompletionSink)
+	outboundCompletionSink, err := outbound.NewCompletionRouterWithAllChannels(tagCompletionSink, groupOpsCompletionSink, channelAssetCompletionSink, channelEntrantCompletionSink, channelLinkCompletionSink)
 	if err != nil {
 		return fail(err)
 	}
@@ -389,11 +413,30 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
-	channelCatalog, err := channelstore.NewLegacyChannelHTTPHandler(channelstore.NewLegacyChannelCatalogAdapter(), requestSecurity)
+	channelCursorKey := make([]byte, 32)
+	if _, err = rand.Read(channelCursorKey); err != nil {
+		return fail(err)
+	}
+	channelCatalogStore := channelstore.NewPostgreSQLCatalogStore()
+	channelModule := channelstore.NewModuleRegistration()
+	channelEvents, err := channelstore.NewChannelCatalogEventAppender(auditService, platformoutbox.NewPostgreSQL())
 	if err != nil {
 		return fail(err)
 	}
-	channelModule := channelstore.NewModuleRegistration()
+	channelCatalogService := channelstore.NewCatalogService(uow, channelCatalogStore, channelCatalogStore, channelEvents,
+		channelMaterialReferenceAdapter{media: mediaRepository}, channelTagReferenceAdapter{tags: tagRepository}, channelStaffReferenceAdapter{users: accessRepository})
+	channelCatalog, err := channelstore.NewCatalogHTTPHandler(channelstore.CatalogHTTPConfig{Application: channelCatalogService, Security: requestSecurity, CursorSigningKey: channelCursorKey})
+	if err != nil {
+		return fail(err)
+	}
+	channelAssetService := channelstore.NewAssetService(uow, channelCatalogStore, channelAssetStore, effectRepository, channelEvents)
+	if err = channelAssetService.SetReconciler(channelAssetReconciler{uow: uow, assets: channelAssetStore, effects: effectRepository, bindings: channelAcquisition, digester: callbackStateDigester, corpID: cfg.WeCom.CorpID}); err != nil {
+		return fail(err)
+	}
+	channelAssetHandler, err := channelstore.NewAssetHTTPHandler(channelAssetService, requestSecurity)
+	if err != nil {
+		return fail(err)
+	}
 	operationModule := operationcycle.NewModuleRegistration()
 	operationRepository := operationstore.NewRepository()
 	operationJournal := operationstore.NewEventJournal()
@@ -555,6 +598,59 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
+	if err = channelAssetService.SetProvider(providerClient); err != nil {
+		return fail(err)
+	}
+	channelAcquisitionService := channelstore.NewAcquisitionService(uow, channelCatalogService, channelStaffReferenceAdapter{users: accessRepository}, providerClient)
+	channelAcquisitionHandler, err := channelstore.NewAcquisitionHTTPHandler(channelAcquisitionService, requestSecurity)
+	if err != nil {
+		return fail(err)
+	}
+	channelHistoryService := channelstore.NewHistoryService(uow, channelCatalogService, channelstore.NewPostgreSQLStore())
+	channelHistoryHandler, err := channelstore.NewHistoryHTTPHandler(channelHistoryService, requestSecurity, channelCursorKey)
+	if err != nil {
+		return fail(err)
+	}
+	channelLinkService := channelstore.NewAcquisitionLinkService(uow, channelLinkStore, effectRepository)
+	if err = channelLinkService.SetProvider(providerClient); err != nil {
+		return fail(err)
+	}
+	if err = channelLinkService.SetReconciler(channelLinkReconciler{uow: uow, store: channelLinkStore, effects: effectRepository, provider: providerClient}); err != nil {
+		return fail(err)
+	}
+	channelLinkHandler, err := channelstore.NewAcquisitionLinkHTTPHandler(channelLinkService, requestSecurity)
+	if err != nil {
+		return fail(err)
+	}
+	channelCenter := channelstore.CenterHTTPHandler{Catalog: channelCatalog, Acquisition: channelAcquisitionHandler, History: channelHistoryHandler, Assets: channelAssetHandler}
+	var callbackCrypto *wecom.CallbackCrypto
+	var welcomeGrantStore *wecom.PostgreSQLWelcomeGrantStore
+	if cfg.WeCom.CallbackEnabled {
+		callbackCrypto, err = wecom.NewCallbackCrypto(cfg.WeCom.CallbackToken, cfg.WeCom.CallbackAESKey, cfg.WeCom.CorpID)
+		if err != nil {
+			return fail(err)
+		}
+		welcomeGrantCipher, cipherErr := wecom.NewWelcomeGrantCipher(cfg.WeCom.CallbackAESKey)
+		if cipherErr != nil {
+			return fail(cipherErr)
+		}
+		welcomeGrantStore = wecom.NewPostgreSQLWelcomeGrantStore(welcomeGrantCipher)
+	}
+	relationships := wecom.NewPostgreSQLFollowRelationshipStore()
+	var channelAssetProvider effectport.ProviderAdapter
+	var channelEntrantProvider effectport.ProviderAdapter
+	var channelLinkProvider effectport.ProviderAdapter
+	if cfg.WeCom.Enabled && cfg.WeCom.CallbackEnabled {
+		channelAssetProvider = outbound.NewChannelAssetProvider(channelPublishedConfigAdapter{uow: uow, assets: channelAssetStore, users: accessRepository}, providerClient)
+		channelEntrantProvider = outbound.NewChannelEntrantProvider(
+			channelEntrantActionReaderAdapter{uow: uow, source: channelEntrantActions}, uow, welcomeGrantStore,
+			channelCurrentContactAdapter{uow: uow, corpID: cfg.WeCom.CorpID, staff: accessRepository, relationships: relationships, identities: queries},
+			channelProviderTagAdapter{uow: uow, tags: tagRepository}, providerClient,
+		)
+	}
+	if cfg.WeCom.Enabled {
+		channelLinkProvider = outbound.NewChannelLinkProvider(channelLinkMutationReaderAdapter{uow: uow, source: channelLinkStore}, providerClient)
+	}
 	var tagCatalogProvider externaleffects.ProviderAdapter
 	if cfg.TagCatalog.Enabled {
 		catalogReader, readerErr := outbound.NewWeComTagCatalogReader(providerClient)
@@ -567,29 +663,15 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		}
 		tagCatalogProvider = catalogProvider
 	}
-	if err = effectsModule.SetProviderAdapter(composedProviderRouter{outbound: outbound.NewProviderRouterWithGroupMessage(tagCatalogProvider, groupOpsProvider), payment: paymentAdapter}); err != nil {
+	if err = effectsModule.SetProviderAdapter(composedProviderRouter{outbound: outbound.NewProviderRouterWithGroupMessageAndChannels(tagCatalogProvider, groupOpsProvider, channelAssetProvider, channelEntrantProvider, channelLinkProvider), payment: paymentAdapter}); err != nil {
 		return fail(err)
 	}
-	var callbackCrypto *wecom.CallbackCrypto
-	var callbackStateDigester wecom.StateDigester
-	if cfg.WeCom.CallbackEnabled {
-		callbackCrypto, err = wecom.NewCallbackCrypto(cfg.WeCom.CallbackToken, cfg.WeCom.CallbackAESKey, cfg.WeCom.CorpID)
-		if err != nil {
-			return fail(err)
-		}
-		callbackStateDigester, err = wecom.NewHMACStateDigester([]byte(cfg.WeCom.ChannelStateHMACKey))
-		if err != nil {
-			return fail(err)
-		}
-	}
-	relationships := wecom.NewPostgreSQLFollowRelationshipStore()
 	callbackReceipts := wecom.NewPostgreSQLCallbackReceiptStore()
-	channelAcquisition := channelstore.NewPostgreSQLStore()
 	oauthStates := wecom.NewPostgreSQLOAuthStateStore()
 	weComProcessor := wecom.InboxProcessor{
 		Enabled: cfg.WeCom.CallbackEnabled, CorpID: cfg.WeCom.CorpID, Inbox: inboxService, UOW: uow,
 		Lifecycle: wecom.ExternalContactLifecycle{
-			Identity: oneID, Relationships: relationships, States: channelAcquisition, Entrants: channelAcquisition,
+			Identity: oneID, Relationships: relationships, States: channelAcquisition, Entrants: channelAcquisition, Actions: channelEntrantActions,
 			Directory: customerStore, Outbox: platformoutbox.NewPostgreSQL(),
 		},
 		Receipts: callbackReceipts, Audit: auditService,
@@ -612,7 +694,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	hxcHandler := hxchttp.Handler{Service: hxcDashboard, Store: hxcRepository, Auth: requestSecurity, Key: []byte(cfg.HXCDashboard.SubjectHMACKey)}
 	syncHandler := wecom.CustomerSyncHTTPHandler{Service: customerSync, Auth: requestSecurity, CSRF: requestSecurity}
 	weComHandler, err := wecom.NewHTTPHandler(wecom.HTTPHandlerOptions{
-		Callback: wecom.CallbackHandler{Enabled: cfg.WeCom.CallbackEnabled, Crypto: callbackCrypto, StateDigester: callbackStateDigester, Inbox: inboxService, UOW: uow},
+		Callback: wecom.CallbackHandler{Enabled: cfg.WeCom.CallbackEnabled, Crypto: callbackCrypto, StateDigester: callbackStateDigester, Inbox: inboxService, UOW: uow, WelcomeGrants: welcomeGrantStore},
 		OAuth: wecom.OAuthService{Enabled: cfg.WeCom.Enabled, CorpID: cfg.WeCom.CorpID, StateStore: oauthStates, UOW: uow,
 			Client: providerClient, AllowedPaths: allowedOAuthRedirects(), StateTTL: 10 * time.Minute},
 		ContextTokens: wecom.ContextTokenService{CorpID: cfg.WeCom.CorpID, SigningKey: []byte(cfg.WeCom.ContextSigningKey),
@@ -675,8 +757,10 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	adminAPIs.Handle("/api/admin/setup-wizard", configBindings.Config)
 	adminAPIs.Handle("/api/admin/automation-agents", automationBindings.Agents)
 	adminAPIs.Handle("/api/admin/automation-agents/", automationBindings.Agents)
-	adminAPIs.Handle("/api/admin/channels", channelCatalog)
-	adminAPIs.Handle("/api/admin/channels/", channelCatalog)
+	adminAPIs.Handle("/api/admin/channels", channelCenter)
+	adminAPIs.Handle("/api/admin/channels/", channelCenter)
+	adminAPIs.Handle("/api/admin/wecom-customer-acquisition-links", channelLinkHandler)
+	adminAPIs.Handle("/api/admin/wecom-customer-acquisition-links/", channelLinkHandler)
 	mountSurveyAPIs(adminAPIs, surveyBindings.Survey)
 	adminAPIs.Handle("/api/admin/operation-cycles/", operationBindings.API)
 	adminAPIs.Handle("/api/operation-cycles/", operationBindings.API)
@@ -685,7 +769,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 			return checkErr
 		}
 		var complete bool
-		checkErr := pool.Native().QueryRow(readinessContext, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['0001','0002','0003','0004','0005','0006','0007','0008','0009','0010','0011','0012','0013','0014','0016','0017','0018','0019','0020','0021','0022','0023','0024','0025','0026','0027','0028','0029']) AS required(version) WHERE NOT EXISTS (SELECT 1 FROM platform_schema_migrations applied WHERE applied.version=required.version))`).Scan(&complete)
+		checkErr := pool.Native().QueryRow(readinessContext, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['0001','0002','0003','0004','0005','0006','0007','0008','0009','0010','0011','0012','0013','0014','0016','0017','0018','0019','0020','0021','0022','0023','0024','0025','0026','0027','0028','0029','0030','0031','0032','0033','0034','0035']) AS required(version) WHERE NOT EXISTS (SELECT 1 FROM platform_schema_migrations applied WHERE applied.version=required.version))`).Scan(&complete)
 		if checkErr != nil || !complete {
 			return errors.New("database schema is not ready")
 		}
@@ -785,11 +869,16 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		endpoint := map[string]string{"config": "api.admin_config", "configDetail": "api.admin_config", "apidocs": "api.admin_api_docs"}[page]
 		return renderer.RenderConfig(writer, webshell.AdminPageForRequest(request, title, "", endpoint), page, donorTemplate, webshell.ConfigAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS})
 	})
-	handler, err := routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(healthHandler, accessHandler.Routes(), adminAPIs, effectsBindings.Effects, effectsBindings.PushCenter, effectsUI, mediaBindings.Media, mediaUI, tagBindings.Tags, tagUI, productBindings.Products, productUI, couponBindings.Coupons, couponUI, channelCatalog, groupOpsBindings.GroupOps, groupOpsUI, automationBindings.Agents, automationUI, operationUI, configBindings.Config, configUI, weComHandler, shellHandler, authentication, cfg.PublicOrigin)
+	channelUI := channelModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, page, resourceID, donorTemplate string, assets channelstore.UIAssets) error {
+		title := map[string]string{"channels": "渠道码中心", "channelForm": "渠道配置"}[page]
+		endpoint := map[string]string{"channels": "api.admin_channels_page", "channelForm": "api.admin_channel_new_page"}[page]
+		return renderer.RenderChannels(writer, webshell.AdminPageForRequest(request, title, "管理渠道定义、客服分配、资产状态与安全历史归因。", endpoint), page, resourceID, donorTemplate, webshell.ChannelAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS})
+	})
+	handler, err := routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(healthHandler, accessHandler.Routes(), adminAPIs, effectsBindings.Effects, effectsBindings.PushCenter, effectsUI, mediaBindings.Media, mediaUI, tagBindings.Tags, tagUI, productBindings.Products, productUI, couponBindings.Coupons, couponUI, channelCenter, groupOpsBindings.GroupOps, groupOpsUI, automationBindings.Agents, automationUI, operationUI, configBindings.Config, configUI, weComHandler, shellHandler, authentication, cfg.PublicOrigin)
 	if err != nil {
 		return fail(err)
 	}
-	handler = securityHeaders(mountHXCUI(mountOrderUI(mountSurveyUI(handler, surveyUI, surveyPublicUI, authentication), orderUI, authentication), hxcUI, authentication))
+	handler = securityHeaders(mountChannelUI(mountHXCUI(mountOrderUI(mountSurveyUI(handler, surveyUI, surveyPublicUI, authentication), orderUI, authentication), hxcUI, authentication), channelUI, authentication))
 	// These are local observations only: they make the release and diagnostics
 	// projections truthful and readable after startup, without claiming deploy,
 	// cutover, provider execution, or runtime-secret application.
@@ -849,6 +938,19 @@ func mountSurveyUI(next, adminUI, publicUI http.Handler, authentication accessAu
 			requireAdminSession(authentication, adminUI).ServeHTTP(w, r)
 		case strings.HasPrefix(r.URL.Path, "/h5/") || strings.HasPrefix(r.URL.Path, "/survey-assets/"):
 			publicUI.ServeHTTP(w, r)
+		default:
+			next.ServeHTTP(w, r)
+		}
+	})
+}
+
+func mountChannelUI(next, adminUI http.Handler, authentication accessAuthentication) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimSuffix(r.URL.Path, "/")
+		isCanonicalEdit := strings.HasPrefix(path, "/admin/channels/") && strings.HasSuffix(path, "/edit")
+		switch {
+		case path == "/admin/channels", path == "/admin/channels.html", path == "/admin/channels/new", path == "/admin/channelForm.html", isCanonicalEdit:
+			requireAdminSession(authentication, adminUI).ServeHTTP(w, r)
 		default:
 			next.ServeHTTP(w, r)
 		}
@@ -1008,6 +1110,8 @@ func routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, acce
 	mux.Handle("/api/admin/setup-wizard", configHandler)
 	mux.Handle("/api/admin/channels", channelHandler)
 	mux.Handle("/api/admin/channels/", channelHandler)
+	mux.Handle("/api/admin/wecom-customer-acquisition-links", identity)
+	mux.Handle("/api/admin/wecom-customer-acquisition-links/", identity)
 	mux.Handle("/api/admin/automation-conversion/group-ops/", groupOpsHandler)
 	mux.Handle("/api/admin/automation-agents", automationHandler)
 	mux.Handle("/api/admin/automation-agents/", automationHandler)

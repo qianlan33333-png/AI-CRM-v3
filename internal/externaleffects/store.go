@@ -561,7 +561,7 @@ func (r *Repository) RunAttempt(ctx context.Context, id, generation, riverJobID 
 			receipt = Hash("provider-invalid", strconv.FormatInt(id, 10), strconv.Itoa(int(attempts)))
 		}
 	}
-	if next == StateExecuted && envelope.Kind == KindWeComTagCatalog && (r.sink == nil || !adapterResult.Artifact.Valid()) {
+	if next == StateExecuted && (envelope.Kind == KindWeComTagCatalog || envelope.Kind == KindChannelAsset || envelope.Kind == KindChannelLink) && (r.sink == nil || !adapterResult.Artifact.Valid()) {
 		next, receipt = StateUnknown, Hash("provider-artifact-invalid", strconv.FormatInt(id, 10), strconv.Itoa(int(attempts)))
 	}
 	tx, err = r.pool.Begin(ctx)
@@ -582,7 +582,7 @@ func (r *Repository) RunAttempt(ctx context.Context, id, generation, riverJobID 
 		return ErrTransition
 	}
 	terminal := next == StateExecuted || next == StateUnknown || next == StateRetryable || next == StateFinalFailed
-	shouldComplete := r.sink != nil && terminal && (envelope.Kind == KindGroupMessage || envelope.Kind == KindWeComTagCatalog || envelope.Owner == OwnerPayment)
+	shouldComplete := r.sink != nil && terminal && (envelope.Kind == KindGroupMessage || envelope.Kind == KindWeComTagCatalog || envelope.Kind == KindChannelAsset || envelope.Kind == KindChannelWelcome || envelope.Kind == KindChannelEntryTag || envelope.Kind == KindChannelLink || envelope.Owner == OwnerPayment)
 	if shouldComplete {
 		completionResult := adapterResult
 		completionResult.Completion = next

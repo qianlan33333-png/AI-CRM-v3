@@ -66,7 +66,12 @@ for migration_contract in \
   '0027_admin_access_login_compat.sql:Admin access login compatibility' \
   '0028_hxc_dashboard.sql:HXC dashboard' \
   '0029_channel_center.sql:Channel center' \
-  '0030_config_definition_import.sql:configuration definition import'; do
+  '0030_config_definition_import.sql:configuration definition import' \
+  '0031_channel_history_import.sql:Channel history import' \
+  '0032_channel_acquisition_assets.sql:Channel acquisition assets' \
+  '0033_wecom_welcome_grants.sql:WeCom welcome grants' \
+  '0034_channel_entrant_actions.sql:Channel entrant actions' \
+  '0035_channel_acquisition_links.sql:Channel acquisition links'; do
   migration="${migration_contract%%:*}"
   label="${migration_contract#*:}"
   test -f "migrations/${migration}" || {
@@ -88,6 +93,7 @@ done
 grep -qx 'test -x "$release_dir/bin/migrate-phone-identities"' "$installer" || { echo "release must include phone migration tool" >&2; exit 1; }
 grep -qx 'test -x "$release_dir/bin/migrate-v2-config-definitions"' "$installer" || { echo "release must include configuration definition migration tool" >&2; exit 1; }
 grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/migrate-v2-config-definitions ./cmd/migrate-v2-config-definitions' .github/workflows/ci.yml || { echo "CI must build the configuration definition migration tool" >&2; exit 1; }
+grep -qx 'test -x "$release_dir/bin/migrate-channel-history"' "$installer" || { echo "release must include channel history migration tool" >&2; exit 1; }
 grep -qx 'test -f "$release_dir/release-files.sha256"' "$installer" || { echo "release must require its immutable file manifest" >&2; exit 1; }
 grep -qx '(cd "$release_dir" && sha256sum --strict --check release-files.sha256)' "$installer" || { echo "existing releases must pass their complete file manifest before resume" >&2; exit 1; }
 grep -qF 'mv -T "$staging_dir" "$release_dir"' "$installer" || { echo "new releases must become visible only after staged verification" >&2; exit 1; }

@@ -283,6 +283,53 @@ func TestListTagCatalogTokenFailureIsPreCall(t *testing.T) {
 	}
 }
 
+func TestChannelContactWayLifecycleAndWelcomeAttachments(t *testing.T) {
+	calls := map[string]int{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls[r.URL.Path]++
+		if r.URL.Path == "/cgi-bin/gettoken" {
+			_, _ = w.Write([]byte(`{"errcode":0,"access_token":"contact-token","expires_in":120}`))
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		switch r.URL.Path {
+		case "/cgi-bin/externalcontact/get_contact_way":
+			if !strings.Contains(string(body), `"config_id":"cw-1"`) {
+				t.Fatalf("get body=%s", body)
+			}
+			_, _ = w.Write([]byte(`{"errcode":0,"contact_way":{"config_id":"cw-1"},"qr_code":"https://wework.qpic.cn/wwpic/1"}`))
+		case "/cgi-bin/externalcontact/update_contact_way":
+			if !strings.Contains(string(body), `"config_id":"cw-1"`) || !strings.Contains(string(body), `"state":"campaign"`) {
+				t.Fatalf("update body=%s", body)
+			}
+			_, _ = w.Write([]byte(`{"errcode":0}`))
+		case "/cgi-bin/externalcontact/del_contact_way":
+			_, _ = w.Write([]byte(`{"errcode":0}`))
+		case "/cgi-bin/externalcontact/send_welcome_msg":
+			if !strings.Contains(string(body), `"msgtype":"image"`) || !strings.Contains(string(body), `"media_id":"media-1"`) || !strings.Contains(string(body), `"msgtype":"link"`) || !strings.Contains(string(body), `"url":"https://work.weixin.qq.com/gm/`) {
+				t.Fatalf("welcome body=%s", body)
+			}
+			_, _ = w.Write([]byte(`{"errcode":0}`))
+		default:
+			t.Fatalf("unexpected path=%s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	client := newTestClient(t, server, func() time.Time { return testNow })
+	client.config.ContactSecret = "contact secret"
+	request := wecomport.AcquisitionAssetRequest{Name: "Campaign", State: "campaign", StaffUserIDs: []string{"staff-1"}}
+	updated, err := client.UpdateContactWay(context.Background(), "cw-1", request)
+	if err != nil || updated.ProviderAssetRef != "cw-1" || calls["/cgi-bin/externalcontact/update_contact_way"] != 1 || calls["/cgi-bin/externalcontact/get_contact_way"] != 1 {
+		t.Fatalf("updated=%+v calls=%v err=%v", updated, calls, err)
+	}
+	if err = client.SendWelcomeMessage(context.Background(), "welcome-code", "欢迎", []wecomport.WelcomeAttachment{{MsgType: "image", MediaID: "media-1"}, {MsgType: "link", Title: "入群", URL: "https://work.weixin.qq.com/gm/0123456789abcdef0123456789abcdef"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err = client.DeleteContactWay(context.Background(), "cw-1"); err != nil || calls["/cgi-bin/externalcontact/del_contact_way"] != 1 {
+		t.Fatalf("calls=%v err=%v", calls, err)
+	}
+}
+
 var testNow = time.Date(2026, 9, 2, 8, 0, 0, 0, time.UTC)
 
 func newTestClient(t *testing.T, server *httptest.Server, now func() time.Time) *Client {

@@ -53,6 +53,7 @@ type CallbackEvent struct {
 
 	WelcomeCodePresent bool   `json:"welcome_code_present"`
 	WelcomeCodeDigest  string `json:"welcome_code_digest,omitempty"`
+	WelcomeGrantRef    string `json:"welcome_grant_ref,omitempty"`
 	SourcePresent      bool   `json:"source_present"`
 	SourceDigest       string `json:"source_digest,omitempty"`
 	FailReasonPresent  bool   `json:"fail_reason_present"`
@@ -262,9 +263,11 @@ var callbackEventFields = map[string]string{
 // injected StateDigester has converted it into a fixed-size digest; this type
 // must never be marshalled or passed to a durable store.
 type callbackEventDraft struct {
-	event        CallbackEvent
-	state        string
-	statePresent bool
+	event          CallbackEvent
+	state          string
+	statePresent   bool
+	welcome        string
+	welcomePresent bool
 }
 
 // parseCallbackEvent parses only authenticated/decrypted XML and never keeps
@@ -356,6 +359,8 @@ func parseCallbackEventDraft(value []byte, corpIDs ...string) (callbackEventDraf
 		}
 		event.WelcomeCodePresent = true
 		event.WelcomeCodeDigest = callbackValueDigest(welcome.value)
+		draft.welcomePresent = true
+		draft.welcome = welcome.value
 	}
 	if source := fields["Source"]; source.present {
 		if !validSecretCallbackValue(source.value) {
@@ -478,6 +483,7 @@ type CallbackHandler struct {
 	StateDigester StateDigester
 	Inbox         *webhook.Service
 	UOW           port.UnitOfWork
+	WelcomeGrants WelcomeGrantStore
 }
 
 func (handler CallbackHandler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
@@ -538,6 +544,7 @@ func (handler CallbackHandler) ServeHTTP(writer http.ResponseWriter, request *ht
 			writeCallbackFailure(writer, err)
 			return
 		}
+		defer func() { draft.welcome = ""; draft.welcomePresent = false }()
 		event, err := materializeCallbackEvent(&draft, handler.StateDigester)
 		if err != nil {
 			// A missing/failing digester is a local dependency failure, not an
@@ -546,17 +553,26 @@ func (handler CallbackHandler) ServeHTTP(writer http.ResponseWriter, request *ht
 			writeWeComError(writer, http.StatusServiceUnavailable, "provider_unavailable")
 			return
 		}
-		payload, err := json.Marshal(event)
-		if err != nil {
-			writeWeComError(writer, http.StatusBadRequest, "invalid_request")
-			return
-		}
 		key, err := idempotency.Parse(callbackIdempotencyPrefix + stableCallbackKey(handler.Crypto.corpID, plain))
 		if err != nil {
 			writeWeComError(writer, http.StatusBadRequest, "invalid_request")
 			return
 		}
 		err = handler.UOW.Within(request.Context(), func(txContext context.Context) error {
+			if draft.welcomePresent && draft.welcome != "" {
+				if handler.WelcomeGrants == nil {
+					return ErrWelcomeGrantUnavailable
+				}
+				var sealErr error
+				event.WelcomeGrantRef, sealErr = handler.WelcomeGrants.Seal(txContext, string(key), draft.welcome, time.Now().UTC().Add(10*time.Minute))
+				if sealErr != nil {
+					return sealErr
+				}
+			}
+			payload, marshalErr := json.Marshal(event)
+			if marshalErr != nil {
+				return marshalErr
+			}
 			_, ingestErr := handler.Inbox.Ingest(txContext, webhook.Ingest{Provider: callbackProvider, IdempotencyKey: key, Payload: payload})
 			return ingestErr
 		})
