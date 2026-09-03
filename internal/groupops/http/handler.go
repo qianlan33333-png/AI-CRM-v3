@@ -22,6 +22,7 @@ import (
 
 const (
 	PlansPath            = "/api/admin/automation-conversion/group-ops/plans"
+	HistoryPath          = "/api/admin/automation-conversion/group-ops/history"
 	DirectoryPath        = "/api/admin/automation-conversion/group-ops/groups"
 	GroupPickerPath      = "/api/admin/automation-conversion/group-ops/group-picker"
 	OperationMembersPath = "/api/admin/common/operation-members"
@@ -57,6 +58,16 @@ type Application interface {
 	Preview(context.Context, int64) (groupopsport.ContentValidation, error)
 }
 
+// HistoryApplication is intentionally read-only. Its records are sealed
+// v3-owned historical facts and cannot be activated, reconciled, sent or
+// otherwise fed into the current Group Ops runtime.
+type HistoryApplication interface {
+	ListHistoricalPlans(context.Context, int32, int32) (groupopsport.HistoricalPlanPage, error)
+	ListHistoricalDirectory(context.Context, int32, int32) (groupopsport.HistoricalDirectoryPage, error)
+	ListHistoricalGroups(context.Context, int64, int32, int32) (groupopsport.HistoricalGroupPage, error)
+	ListHistoricalNodes(context.Context, int64, int32, int32) (groupopsport.HistoricalNodePage, error)
+}
+
 type RuntimeApplication interface {
 	PreviewRunDue(context.Context, int64) (groupopsport.RunDuePreview, error)
 	RunDue(context.Context, groupopsport.RunDueCommand) (groupopsport.RunSummary, error)
@@ -86,6 +97,7 @@ var ErrProtocolUnavailable = errors.New("Group Ops protocol authentication unava
 type Handler struct {
 	application     Application
 	runtime         RuntimeApplication
+	history         HistoryApplication
 	security        RequestSecurity
 	protocols       ProtocolAuthenticator
 	contentDelivery mediaport.ContentDeliveryService
@@ -109,6 +121,18 @@ func NewHandlerWithRuntime(application Application, runtime RuntimeApplication, 
 	return &Handler{application: application, runtime: runtime, security: security, protocols: protocols, contentDelivery: delivery}, nil
 }
 
+func NewHandlerWithRuntimeAndHistory(application Application, runtime RuntimeApplication, history HistoryApplication, security RequestSecurity, protocols ProtocolAuthenticator, contentDelivery ...mediaport.ContentDeliveryService) (*Handler, error) {
+	if application == nil || runtime == nil || history == nil || security == nil {
+		return nil, errors.New("Group Ops history HTTP dependencies are required")
+	}
+	handler, err := NewHandlerWithRuntime(application, runtime, security, protocols, contentDelivery...)
+	if err != nil {
+		return nil, err
+	}
+	handler.history = history
+	return handler, nil
+}
+
 func (h *Handler) ServeHTTP(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	if h == nil || h.application == nil || h.security == nil {
 		writeError(w, stdhttp.StatusServiceUnavailable, "group_ops_unavailable")
@@ -130,6 +154,10 @@ func (h *Handler) ServeHTTP(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		h.operationMembers(w, r)
 		return
 	}
+	if r.URL.Path == HistoryPath+"/plans" || r.URL.Path == HistoryPath+"/directory" || strings.HasPrefix(r.URL.Path, HistoryPath+"/plans/") {
+		h.historyRoutes(w, r)
+		return
+	}
 	if r.URL.Path == DirectoryPath || r.URL.Path == DirectoryPath+"/sync" || r.URL.Path == GroupPickerPath || r.URL.Path == GroupPickerPath+"/sync" {
 		h.directory(w, r)
 		return
@@ -139,6 +167,53 @@ func (h *Handler) ServeHTTP(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		return
 	}
 	h.plans(w, r)
+}
+
+func (h *Handler) historyRoutes(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	if h.history == nil {
+		writeError(w, stdhttp.StatusServiceUnavailable, "group_ops_unavailable")
+		return
+	}
+	if r.Method != stdhttp.MethodGet {
+		methodNotAllowed(w, stdhttp.MethodGet)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	if !h.read(w, r) {
+		return
+	}
+	limit, offset, valid := pageQuery(r, groupopsapp.DefaultLimit, groupopsapp.MaximumLimit)
+	if !valid {
+		writeError(w, stdhttp.StatusBadRequest, "invalid_page")
+		return
+	}
+	switch r.URL.Path {
+	case HistoryPath + "/plans":
+		value, err := h.history.ListHistoricalPlans(r.Context(), limit, offset)
+		h.respond(w, value, err)
+		return
+	case HistoryPath + "/directory":
+		value, err := h.history.ListHistoricalDirectory(r.Context(), limit, offset)
+		h.respond(w, value, err)
+		return
+	}
+	parts := splitPath(strings.TrimPrefix(r.URL.Path, HistoryPath+"/plans/"))
+	if len(parts) != 2 || (parts[1] != "groups" && parts[1] != "nodes") {
+		writeError(w, stdhttp.StatusNotFound, "not_found")
+		return
+	}
+	planID, valid := positiveID(parts[0])
+	if !valid {
+		writeError(w, stdhttp.StatusNotFound, "plan_not_found")
+		return
+	}
+	if parts[1] == "groups" {
+		value, err := h.history.ListHistoricalGroups(r.Context(), planID, limit, offset)
+		h.respond(w, value, err)
+		return
+	}
+	value, err := h.history.ListHistoricalNodes(r.Context(), planID, limit, offset)
+	h.respond(w, value, err)
 }
 
 // contentPackages is a transport adapter for the Media-owned content

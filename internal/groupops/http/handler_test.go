@@ -9,7 +9,9 @@ import (
 	"testing"
 
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
+	groupopsapp "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/app"
 	groupopshttp "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/http"
+	groupopsport "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/port"
 	mediaport "github.com/qianlan33333-png/AI-CRM-v3/internal/media/port"
 )
 
@@ -18,6 +20,40 @@ import (
 type applicationStub struct{ groupopshttp.Application }
 type runtimeStub struct {
 	groupopshttp.RuntimeApplication
+}
+
+type historyStub struct {
+	groupopshttp.HistoryApplication
+}
+
+func (historyStub) ListHistoricalPlans(context.Context, int32, int32) (groupopsport.HistoricalPlanPage, error) {
+	return groupopsport.HistoricalPlanPage{Source: "v1_history", ReadOnly: true, Items: []groupopsport.HistoricalPlan{}, Limit: 50}, nil
+}
+func (historyStub) ListHistoricalDirectory(context.Context, int32, int32) (groupopsport.HistoricalDirectoryPage, error) {
+	return groupopsport.HistoricalDirectoryPage{Source: "v1_history", ReadOnly: true, Items: []groupopsport.HistoricalDirectory{}, Limit: 50}, nil
+}
+func (historyStub) ListHistoricalGroups(context.Context, int64, int32, int32) (groupopsport.HistoricalGroupPage, error) {
+	return groupopsport.HistoricalGroupPage{Source: "v1_history", ReadOnly: true, Items: []groupopsport.HistoricalGroup{}, Limit: 50, PlanID: 1}, nil
+}
+func (historyStub) ListHistoricalNodes(context.Context, int64, int32, int32) (groupopsport.HistoricalNodePage, error) {
+	return groupopsport.HistoricalNodePage{Source: "v1_history", ReadOnly: true, Items: []groupopsport.HistoricalNode{}, Limit: 50, PlanID: 1}, nil
+}
+
+type unavailableHistoryStub struct {
+	groupopshttp.HistoryApplication
+}
+
+func (unavailableHistoryStub) ListHistoricalPlans(context.Context, int32, int32) (groupopsport.HistoricalPlanPage, error) {
+	return groupopsport.HistoricalPlanPage{}, groupopsapp.ErrUnavailable
+}
+func (unavailableHistoryStub) ListHistoricalDirectory(context.Context, int32, int32) (groupopsport.HistoricalDirectoryPage, error) {
+	return groupopsport.HistoricalDirectoryPage{}, groupopsapp.ErrUnavailable
+}
+func (unavailableHistoryStub) ListHistoricalGroups(context.Context, int64, int32, int32) (groupopsport.HistoricalGroupPage, error) {
+	return groupopsport.HistoricalGroupPage{}, groupopsapp.ErrUnavailable
+}
+func (unavailableHistoryStub) ListHistoricalNodes(context.Context, int64, int32, int32) (groupopsport.HistoricalNodePage, error) {
+	return groupopsport.HistoricalNodePage{}, groupopsapp.ErrUnavailable
 }
 
 type contentDeliveryStub struct {
@@ -64,6 +100,85 @@ func newBoundaryHandler(t *testing.T, security securityStub, protocols groupopsh
 		t.Fatal(err)
 	}
 	return handler
+}
+
+func newHistoryHandler(t *testing.T, security securityStub) http.Handler {
+	t.Helper()
+	handler, err := groupopshttp.NewHandlerWithRuntimeAndHistory(applicationStub{}, runtimeStub{}, historyStub{}, security, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return handler
+}
+
+func newUnavailableHistoryHandler(t *testing.T) http.Handler {
+	t.Helper()
+	handler, err := groupopshttp.NewHandlerWithRuntimeAndHistory(applicationStub{}, runtimeStub{}, unavailableHistoryStub{}, adminSecurity(nil), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return handler
+}
+
+func TestGroupOpsHistoryUsesExactReadOnlyDonorURLs(t *testing.T) {
+	handler := newHistoryHandler(t, adminSecurity(nil))
+	for _, target := range []string{
+		groupopshttp.HistoryPath + "/plans?limit=20&offset=0",
+		groupopshttp.HistoryPath + "/directory?limit=20&offset=0",
+		groupopshttp.HistoryPath + "/plans/1/groups?limit=20&offset=0",
+		groupopshttp.HistoryPath + "/plans/1/nodes?limit=20&offset=0",
+	} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, target, nil))
+		if response.Code != http.StatusOK || response.Header().Get("Cache-Control") != "no-store" || !strings.Contains(response.Body.String(), `"source":"v1_history"`) || !strings.Contains(response.Body.String(), `"read_only":true`) {
+			t.Fatalf("target=%s status=%d body=%s", target, response.Code, response.Body.String())
+		}
+	}
+}
+
+func TestGroupOpsHistoryRejectsInvalidSubresources(t *testing.T) {
+	handler := newHistoryHandler(t, adminSecurity(nil))
+	for _, target := range []string{
+		groupopshttp.HistoryPath + "/plans/not-a-plan/groups",
+		groupopshttp.HistoryPath + "/plans/1/unknown",
+	} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, target, nil))
+		if response.Code != http.StatusNotFound || response.Header().Get("Cache-Control") != "no-store" {
+			t.Fatalf("target=%s status=%d cache=%q body=%s", target, response.Code, response.Header().Get("Cache-Control"), response.Body.String())
+		}
+	}
+}
+
+func TestGroupOpsHistoryUnavailablePageBoundaryReturns503(t *testing.T) {
+	handler := newUnavailableHistoryHandler(t)
+	for _, target := range []string{
+		groupopshttp.HistoryPath + "/plans?limit=20&offset=0",
+		groupopshttp.HistoryPath + "/directory?limit=20&offset=0",
+		groupopshttp.HistoryPath + "/plans/1/groups?limit=20&offset=0",
+		groupopshttp.HistoryPath + "/plans/1/nodes?limit=20&offset=0",
+	} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, target, nil))
+		if response.Code != http.StatusServiceUnavailable || response.Header().Get("Cache-Control") != "no-store" || !strings.Contains(response.Body.String(), `"group_ops_unavailable"`) {
+			t.Fatalf("target=%s status=%d cache=%q body=%s", target, response.Code, response.Header().Get("Cache-Control"), response.Body.String())
+		}
+	}
+}
+
+func TestGroupOpsHistoryIsReadOnlyAndRequiresSession(t *testing.T) {
+	handler := newHistoryHandler(t, adminSecurity(nil))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, groupopshttp.HistoryPath+"/plans", nil))
+	if response.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("write status=%d body=%s", response.Code, response.Body.String())
+	}
+	response = httptest.NewRecorder()
+	handler = newHistoryHandler(t, securityStub{})
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, groupopshttp.HistoryPath+"/plans", nil))
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("anonymous status=%d body=%s", response.Code, response.Body.String())
+	}
 }
 
 func TestGroupOpsWebhookWithoutProtocolAdapterFailsClosed(t *testing.T) {
