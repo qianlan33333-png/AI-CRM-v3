@@ -20,6 +20,7 @@ import (
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/configmigration/source"
 	configtarget "github.com/qianlan33333-png/AI-CRM-v3/internal/configmigration/target"
 	couponstore "github.com/qianlan33333-png/AI-CRM-v3/internal/coupon/store"
+	groupopsapp "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/app"
 	groupopsstore "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/store"
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
@@ -62,6 +63,7 @@ func TestRunnerPostgresIntegrationApplyVerifyAndReplay(t *testing.T) {
 		"group_outbox": 0, "automation_receipts": 0, "automation_audit_events": 0, "automation_outbox": 0,
 		"coupon_receipts": 0, "coupon_audit_events": 0, "coupon_outbox": 0,
 	})
+	assertImportedGroupOpsDetailsReadable(t, ctx, pool)
 
 	verified, err := runner.Verify(ctx, snapshot, digest)
 	if err != nil {
@@ -190,6 +192,42 @@ func configMigrationActor(t *testing.T, ctx context.Context, pool *platformpostg
 	return id
 }
 
+func assertImportedGroupOpsDetailsReadable(t *testing.T, ctx context.Context, pool *platformpostgres.Pool) {
+	t.Helper()
+	uow, err := platformpostgres.NewUnitOfWork(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := groupopsstore.NewPostgreSQL(pool.Native(), uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := groupopsapp.NewService(uow, repository, configMigrationTestStaff{}, repository)
+	rows, err := pool.Native().Query(ctx, `SELECT target_id FROM config_definition_import_source_maps WHERE source_kind='automation_group_ops_plans' ORDER BY target_id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var planID int64
+		if err = rows.Scan(&planID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = service.Detail(ctx, planID); err != nil {
+			t.Fatalf("imported group plan %d is not readable through the production service: %v", planID, err)
+		}
+	}
+	if err = rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+type configMigrationTestStaff struct{}
+
+func (configMigrationTestStaff) IsActiveStaff(context.Context, int64) (bool, error) {
+	return true, nil
+}
+
 func assertConfigMigrationCounts(t *testing.T, ctx context.Context, pool *platformpostgres.Pool, expected map[string]int64) {
 	t.Helper()
 	queries := map[string]string{
@@ -286,7 +324,13 @@ func configMigrationFixture(t *testing.T, revision string) source.Snapshot {
 		if planID > 12 {
 			planID -= 12
 		}
-		snapshot.GroupAssets = append(snapshot.GroupAssets, source.GroupAsset{ID: id, PlanID: planID, ChatID: fmt.Sprintf("chat-%02d", id), CreatedAt: now})
+		chatID := fmt.Sprintf("chat-%02d", id)
+		if id == 1 {
+			chatID = "chat-z"
+		} else if id == 13 {
+			chatID = "chat-A"
+		}
+		snapshot.GroupAssets = append(snapshot.GroupAssets, source.GroupAsset{ID: id, PlanID: planID, ChatID: chatID, CreatedAt: now})
 	}
 	for id := int64(1); id <= 10; id++ {
 		status, kind := "archived", "fixed_script"
