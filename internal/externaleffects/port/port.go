@@ -7,8 +7,14 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"strings"
 	"time"
+)
+
+var (
+	ErrReconciliationNotFound = errors.New("external effect reconciliation target not found")
+	ErrReconciliationConflict = errors.New("external effect reconciliation conflict")
 )
 
 type Digest string
@@ -135,6 +141,29 @@ type TransactionalAccepter interface {
 // payload, Provider response, or control operation.
 type Reader interface {
 	Get(context.Context, string) (Projection, error)
+}
+
+// ReconciliationCandidate is the exact expired attempt fence an owning
+// domain must echo before an outcome_unknown effect can be closed manually.
+type ReconciliationCandidate struct {
+	Projection
+	Fence          int64     `json:"fence"`
+	LeaseExpiresAt time.Time `json:"lease_expires_at"`
+}
+
+type ReconcileCommand struct {
+	EffectID         string
+	ReceiptKey       Digest
+	EvidenceDigest   Digest
+	ActorAdminUserID int64
+	Generation       int64
+	Fence            int64
+	LeaseExpiresAt   time.Time
+}
+
+type TransactionalReconciler interface {
+	ReconciliationCandidate(context.Context, string) (ReconciliationCandidate, error)
+	ReconcileEffectWithin(context.Context, ReconcileCommand) (Projection, error)
 }
 
 // ProviderAdapter is implemented by outbound. The effect kernel invokes it

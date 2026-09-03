@@ -34,6 +34,7 @@ func (r *Repository) SetCompletionSink(sink port.CompletionSink) error {
 
 var _ port.Accepter = (*Repository)(nil)
 var _ port.TransactionalAccepter = (*Repository)(nil)
+var _ port.TransactionalReconciler = (*Repository)(nil)
 
 func NewRepository(pool *pgxpool.Pool, client *river.Client[pgx.Tx]) (*Repository, error) {
 	if pool == nil || client == nil {
@@ -258,6 +259,47 @@ func (r *Repository) Get(ctx context.Context, id string) (Projection, error) {
 		return Projection{}, ErrNotFound
 	}
 	return projection(numeric, Owner(owner), Kind(kind), State(state), attempts, generation, updated), err
+}
+
+func (r *Repository) ReconciliationCandidate(ctx context.Context, id string) (port.ReconciliationCandidate, error) {
+	numeric, err := parseEffectID(id)
+	if err != nil {
+		return port.ReconciliationCandidate{}, err
+	}
+	var owner, kind, state string
+	var attempts int32
+	var generation, fence int64
+	var leaseExpires *time.Time
+	var updated time.Time
+	err = r.pool.QueryRow(ctx, `SELECT owner,kind,state,attempt_count,generation,lease_fence,lease_expires_at,updated_at FROM external_effects WHERE id=$1`, numeric).Scan(&owner, &kind, &state, &attempts, &generation, &fence, &leaseExpires, &updated)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return port.ReconciliationCandidate{}, port.ErrReconciliationNotFound
+	}
+	if err != nil {
+		return port.ReconciliationCandidate{}, err
+	}
+	if State(state) != StateUnknown || generation < 1 || fence < 1 || leaseExpires == nil {
+		return port.ReconciliationCandidate{}, port.ErrReconciliationConflict
+	}
+	return port.ReconciliationCandidate{Projection: projection(numeric, Owner(owner), Kind(kind), State(state), attempts, generation, updated), Fence: fence, LeaseExpiresAt: leaseExpires.UTC()}, nil
+}
+
+func (r *Repository) ReconcileEffectWithin(ctx context.Context, command port.ReconcileCommand) (port.Projection, error) {
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return port.Projection{}, err
+	}
+	projection, _, err := r.controlWithin(ctx, tx, ControlCommand{
+		EffectID: command.EffectID, ReceiptKey: command.ReceiptKey, EvidenceDigest: command.EvidenceDigest,
+		ActorAdminUserID: command.ActorAdminUserID, Generation: command.Generation, Fence: command.Fence, LeaseExpiresAt: command.LeaseExpiresAt,
+	}, "reconcile")
+	if errors.Is(err, ErrNotFound) {
+		return port.Projection{}, port.ErrReconciliationNotFound
+	}
+	if errors.Is(err, ErrReconcileRequired) || errors.Is(err, ErrTransition) || errors.Is(err, ErrPayloadMismatch) {
+		return port.Projection{}, port.ErrReconciliationConflict
+	}
+	return projection, err
 }
 func (r *Repository) Diagnostics(ctx context.Context) (map[string]int64, error) {
 	stats, err := r.pushStats(ctx)

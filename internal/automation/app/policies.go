@@ -13,6 +13,7 @@ import (
 	automationdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/domain"
 	automationport "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/port"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
+	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	outboundport "github.com/qianlan33333-png/AI-CRM-v3/internal/outbound/port"
 	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
 	segmentport "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/port"
@@ -48,6 +49,8 @@ type RuntimeStore interface {
 	ListRuns(context.Context, int64, int) ([]automationdomain.RuntimeRun, string, error)
 	Run(context.Context, int64) (automationdomain.RuntimeRun, error)
 	RunRecipients(context.Context, int64, int64, int) ([]automationdomain.RuntimeRecipient, string, error)
+	RecipientForEffect(context.Context, int64, string) (automationdomain.RuntimeRecipient, error)
+	CreateRunReconciliation(context.Context, automationdomain.RunReconciliation) (automationdomain.RunReconciliation, error)
 	CancelRun(context.Context, int64, time.Time) (automationdomain.RuntimeRun, error)
 }
 type RuntimeService struct {
@@ -56,6 +59,7 @@ type RuntimeService struct {
 	audiences segmentport.ExecutionConfigurationReader
 	snapshots segmentport.SnapshotReader
 	messages  outboundport.TransactionalMessageAccepter
+	effects   effectport.TransactionalReconciler
 	now       func() time.Time
 }
 type PolicyCommand struct {
@@ -87,6 +91,14 @@ func (s *RuntimeService) SetMessageAccepter(messages outboundport.TransactionalM
 		return ErrRuntimeNotReady
 	}
 	s.messages = messages
+	return nil
+}
+
+func (s *RuntimeService) SetEffectReconciler(effects effectport.TransactionalReconciler) error {
+	if s == nil || effects == nil {
+		return ErrRuntimeNotReady
+	}
+	s.effects = effects
 	return nil
 }
 
@@ -427,6 +439,10 @@ func runtimeClassify(err error) error {
 	switch {
 	case errors.Is(err, ErrRuntimeInvalid), errors.Is(err, ErrRuntimeNotFound), errors.Is(err, ErrRuntimeConflict), errors.Is(err, ErrRuntimeNotReady):
 		return err
+	case errors.Is(err, effectport.ErrReconciliationNotFound):
+		return ErrRuntimeNotFound
+	case errors.Is(err, effectport.ErrReconciliationConflict):
+		return ErrRuntimeConflict
 	case errors.Is(err, automationdomain.ErrInvalidPolicy):
 		return ErrRuntimeInvalid
 	default:

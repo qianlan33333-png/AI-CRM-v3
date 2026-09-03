@@ -34,7 +34,7 @@ func (m *ModuleRegistration) Readiness(ctx context.Context, pool *pgxpool.Pool) 
 		return errors.New("automation module dependencies are required")
 	}
 	var ready bool
-	e := pool.QueryRow(ctx, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['automation_agents','automation_operation_receipts','automation_audit_events','automation_outbox']) AS required(name) WHERE to_regclass(current_schema() || '.' || required.name) IS NULL)`).Scan(&ready)
+	e := pool.QueryRow(ctx, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['automation_agents','automation_operation_receipts','automation_audit_events','automation_outbox','automation_policies','automation_policy_versions','automation_enrollments','automation_run_previews','automation_runs','automation_run_recipients','automation_run_reconciliations','automation_runtime_operation_receipts','automation_runtime_audit_events','automation_runtime_outbox']) AS required(name) WHERE to_regclass(current_schema() || '.' || required.name) IS NULL)`).Scan(&ready)
 	if e != nil {
 		return e
 	}

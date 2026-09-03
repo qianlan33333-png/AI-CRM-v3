@@ -349,18 +349,18 @@ func (r *Repository) ProjectMessageCompletion(ctx context.Context, completion ou
 	if e != nil {
 		return e
 	}
-	_, e = t.Exec(ctx, `UPDATE automation_runs SET state=CASE WHEN EXISTS(SELECT 1 FROM automation_run_recipients WHERE run_id=$1 AND state='outcome_unknown') THEN 'outcome_unknown' WHEN EXISTS(SELECT 1 FROM automation_run_recipients WHERE run_id=$1 AND state IN ('accepted','attempted','retryable_failed','provider_accepted')) THEN 'executing' WHEN EXISTS(SELECT 1 FROM automation_run_recipients WHERE run_id=$1 AND state IN ('final_failed','skipped')) THEN 'partial_failed' ELSE 'completed' END,updated_at=clock_timestamp(),completed_at=CASE WHEN NOT EXISTS(SELECT 1 FROM automation_run_recipients WHERE run_id=$1 AND state IN ('accepted','attempted','retryable_failed','provider_accepted','outcome_unknown')) THEN clock_timestamp() ELSE NULL END WHERE id=$1`, runID)
+	_, e = t.Exec(ctx, `UPDATE automation_runs SET state=CASE WHEN EXISTS(SELECT 1 FROM automation_run_recipients WHERE run_id=$1 AND state='outcome_unknown') THEN 'outcome_unknown' WHEN EXISTS(SELECT 1 FROM automation_run_recipients WHERE run_id=$1 AND state IN ('accepted','attempted','retryable_failed','provider_accepted')) THEN 'executing' WHEN EXISTS(SELECT 1 FROM automation_run_recipients WHERE run_id=$1 AND state IN ('final_failed','skipped')) OR EXISTS(SELECT 1 FROM automation_run_reconciliations WHERE run_id=$1 AND resolution='final_failed') THEN 'partial_failed' ELSE 'completed' END,updated_at=clock_timestamp(),completed_at=CASE WHEN NOT EXISTS(SELECT 1 FROM automation_run_recipients WHERE run_id=$1 AND state IN ('accepted','attempted','retryable_failed','provider_accepted','outcome_unknown')) THEN clock_timestamp() ELSE NULL END WHERE id=$1`, runID)
 	return e
 }
 
-const runColumns = `id,COALESCE(policy_id,0),COALESCE(policy_version,0),package_id,package_version,snapshot_id,agent_id,agent_published_version,binding_version,sender_set_version,preview_digest,state,target_count,skipped_count,created_by,created_at,updated_at,completed_at`
+const runColumns = `id,COALESCE(policy_id,0),COALESCE(policy_version,0),package_id,package_version,snapshot_id,agent_id,agent_published_version,binding_version,sender_set_version,preview_digest,state,target_count,skipped_count,(SELECT count(*) FROM automation_run_recipients unknown_recipient WHERE unknown_recipient.run_id=automation_runs.id AND unknown_recipient.state='outcome_unknown'),created_by,created_at,updated_at,completed_at`
 
 func scanRun(row pgx.Row) (automationdomain.RuntimeRun, error) {
 	var out automationdomain.RuntimeRun
 	var digest []byte
 	var state string
 	var completed *time.Time
-	e := row.Scan(&out.ID, &out.PolicyID, &out.PolicyVersion, &out.PackageID, &out.PackageVersion, &out.SnapshotID, &out.AgentID, &out.AgentPublishedVersion, &out.BindingVersion, &out.SenderSetVersion, &digest, &state, &out.TargetCount, &out.SkippedCount, &out.CreatedBy, &out.CreatedAt, &out.UpdatedAt, &completed)
+	e := row.Scan(&out.ID, &out.PolicyID, &out.PolicyVersion, &out.PackageID, &out.PackageVersion, &out.SnapshotID, &out.AgentID, &out.AgentPublishedVersion, &out.BindingVersion, &out.SenderSetVersion, &digest, &state, &out.TargetCount, &out.SkippedCount, &out.OutcomeUnknownCount, &out.CreatedBy, &out.CreatedAt, &out.UpdatedAt, &completed)
 	if errors.Is(e, pgx.ErrNoRows) {
 		return out, automationapp.ErrRuntimeNotFound
 	}
@@ -446,6 +446,33 @@ func (r *Repository) RunRecipients(ctx context.Context, runID, cursor int64, lim
 		out = out[:limit]
 	}
 	return out, next, nil
+}
+
+func (r *Repository) RecipientForEffect(ctx context.Context, runID int64, effectID string) (automationdomain.RuntimeRecipient, error) {
+	t, e := tx(ctx)
+	if e != nil {
+		return automationdomain.RuntimeRecipient{}, e
+	}
+	var out automationdomain.RuntimeRecipient
+	var state string
+	e = t.QueryRow(ctx, `SELECT id,run_id,customer_id,sender_staff_id,state,COALESCE(skip_code,''),COALESCE(effect_id,''),created_at,updated_at FROM automation_run_recipients WHERE run_id=$1 AND effect_id=$2 FOR UPDATE`, runID, effectID).Scan(&out.ID, &out.RunID, &out.CustomerID, &out.SenderStaffID, &state, &out.SkipCode, &out.EffectID, &out.CreatedAt, &out.UpdatedAt)
+	if errors.Is(e, pgx.ErrNoRows) {
+		return out, automationapp.ErrRuntimeNotFound
+	}
+	out.State = automationport.RecipientState(state)
+	return out, e
+}
+
+func (r *Repository) CreateRunReconciliation(ctx context.Context, record automationdomain.RunReconciliation) (automationdomain.RunReconciliation, error) {
+	t, e := tx(ctx)
+	if e != nil {
+		return record, e
+	}
+	e = t.QueryRow(ctx, `INSERT INTO automation_run_reconciliations(run_id,recipient_id,effect_id,generation,fence,lease_expires_at,evidence_digest,resolution,actor_id,receipt_key_digest,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`, record.RunID, record.RecipientID, record.EffectID, record.Generation, record.Fence, record.LeaseExpiresAt, record.EvidenceDigest[:], record.Resolution, record.ActorID, record.ReceiptDigest[:], record.CreatedAt).Scan(&record.ID)
+	if unique(e) {
+		return record, automationapp.ErrRuntimeConflict
+	}
+	return record, e
 }
 func (r *Repository) CancelRun(ctx context.Context, id int64, now time.Time) (automationdomain.RuntimeRun, error) {
 	t, e := tx(ctx)

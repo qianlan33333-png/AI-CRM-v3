@@ -425,12 +425,41 @@
       try {
         const result = await request(`${API}/automation-runs/${runID}/recipients?limit=100`);
         byID("sendRecordDrawerSubtitle").textContent = `运行 #${runID} · ${result.items?.length || 0} 个收件人`;
-        byID("sendRecordMeta").innerHTML = (result.items || []).map((item) => `<div class="ai-mini"><div class="label">Customer #${item.customer_id} · Staff #${item.sender_staff_id}</div><div class="value">${escapeHTML(runStateLabel(item.state))}</div>${item.effect_id ? `<div>Effect ${escapeHTML(item.effect_id)}</div>` : ""}</div>`).join("") || `<div class="ai-empty">暂无收件人</div>`;
+        byID("sendRecordMeta").innerHTML = (result.items || []).map((item) => `<div class="ai-mini"><div class="label">Customer #${item.customer_id} · Staff #${item.sender_staff_id}</div><div class="value">${escapeHTML(runStateLabel(item.state))}</div>${item.effect_id ? `<div>Effect ${escapeHTML(item.effect_id)}</div>` : ""}${item.state === "outcome_unknown" && item.effect_id ? `<button class="ai-btn soft" data-reconcile-effect="${escapeHTML(item.effect_id)}">读取对账 fence</button>` : ""}</div>`).join("") || `<div class="ai-empty">暂无收件人</div>`;
         byID("sendRecordContentDetail").innerHTML = `<div class="ai-status-line">消息正文、渠道身份与 Provider 原始响应不会在运行详情中持久化或展示。</div>`;
+        byID("sendRecordMeta").querySelectorAll("[data-reconcile-effect]").forEach((node) => node.addEventListener("click", () => showReconciliation(runID, node.dataset.reconcileEffect)));
         byID("sendRecordDrawerMask").style.display = "block";
         byID("sendRecordDrawer").style.display = "block";
         byID("sendRecordDrawer").setAttribute("aria-hidden", "false");
       } catch (error) { const detail = errorState(error); setStatus(byID("sendRecordStatusLine"), detail.message, "error"); }
+    }
+
+    async function showReconciliation(runID, effectID) {
+      const holder = byID("sendRecordContentDetail");
+      holder.innerHTML = `<div class="ai-status-line">正在读取精确 generation、fence 与已过期 lease…</div>`;
+      try {
+        const response = await request(`${API}/automation-runs/${runID}/effects/${encodeURIComponent(effectID)}/reconciliation-candidate`);
+        const candidate = response.data;
+        holder.innerHTML = `<div class="ai-field"><label class="ai-label">对账对象</label><div>Effect ${escapeHTML(effectID)} · generation ${candidate.generation} · fence ${candidate.fence}</div><div class="ai-label">lease ${escapeHTML(formatTime(candidate.lease_expires_at))}</div></div><div class="ai-field"><label class="ai-label" for="reconcileEvidenceDigest">证据摘要（64 位小写 SHA-256）</label><input class="ai-input" id="reconcileEvidenceDigest" maxlength="64" autocomplete="off"></div><div class="ai-field"><label class="ai-label" for="reconcileResolution">核验结论</label><select class="ai-select" id="reconcileResolution"><option value="delivery_proven">已证明送达</option><option value="provider_accepted">Provider 已接受</option><option value="final_failed">最终失败</option></select></div><button class="ai-btn primary" id="confirmReconciliationBtn">提交带 fence 的人工对账</button><div class="ai-status-line" id="reconciliationStatusLine">只记录摘要和结论，不保存 Provider 原始响应。</div>`;
+        byID("confirmReconciliationBtn").addEventListener("click", async () => {
+          const evidence = byID("reconcileEvidenceDigest").value.trim();
+          if (!/^[0-9a-f]{64}$/.test(evidence)) return setStatus(byID("reconciliationStatusLine"), "证据摘要必须是 64 位小写 SHA-256。", "error");
+          byID("confirmReconciliationBtn").disabled = true;
+          try {
+            await request(`${API}/automation-runs/${runID}/effects/${encodeURIComponent(effectID)}/reconcile`, { method: "POST", mutate: true, scope: "automation-effect-reconcile", body: { generation: candidate.generation, fence: candidate.fence, lease_expires_at: candidate.lease_expires_at, evidence_digest: evidence, resolution: byID("reconcileResolution").value } });
+            setStatus(byID("reconciliationStatusLine"), "对账证据、Automation 投影与 EER receipt 已在同一事务提交。", "success");
+            await loadRecipients(runID);
+            await loadRuns();
+          } catch (error) {
+            const detail = errorState(error);
+            setStatus(byID("reconciliationStatusLine"), detail.message, "error");
+            byID("confirmReconciliationBtn").disabled = false;
+          }
+        });
+      } catch (error) {
+        const detail = errorState(error);
+        holder.innerHTML = `<div class="ai-status-line" data-state="${escapeHTML(detail.state)}">${escapeHTML(detail.message)}</div>`;
+      }
     }
 
     async function createBroadcastPreview() {

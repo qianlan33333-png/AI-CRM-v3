@@ -144,9 +144,6 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	paymentRepository := paymentstore.NewPostgreSQL()
 	customerStore := customerstore.NewPostgreSQL()
 	requestSecurity := requestAccessSecurity{authentication: authentication}
-	if cfg.Effects.ProviderEnabled {
-		return fail(errors.New("outbound provider enabled but no outbound adapter is registered"))
-	}
 	effectsModule := externaleffects.NewModuleRegistration()
 	effectWorkers := river.NewWorkers()
 	if err = effectsModule.RegisterWorkers(effectWorkers); err != nil {
@@ -259,6 +256,9 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return fail(err)
 	}
 	if err = automationRuntime.SetMessageAccepter(outboundMessages); err != nil {
+		return fail(err)
+	}
+	if err = automationRuntime.SetEffectReconciler(effectRepository); err != nil {
 		return fail(err)
 	}
 	if err = audienceMemberEventWorker.Bind(segmentSnapshots, automationMemberEventSink{runtime: automationRuntime}); err != nil {

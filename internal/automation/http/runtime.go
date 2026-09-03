@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
 	automationapp "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/app"
@@ -342,10 +343,55 @@ func (h *RuntimeHandler) runs(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"run": runDTO(out)})
 		return
 	}
+	if len(parts) == 4 && parts[1] == "effects" && parts[2] != "" && parts[3] == "reconciliation-candidate" && r.Method == http.MethodGet {
+		if _, ok := h.principal(w, r, false); !ok {
+			return
+		}
+		out, e := h.service.EffectReconciliationCandidate(r.Context(), id, parts[2])
+		if e != nil {
+			runtimeError(w, e)
+			return
+		}
+		writeJSON(w, 200, map[string]any{"data": out})
+		return
+	}
+	if len(parts) == 4 && parts[1] == "effects" && parts[2] != "" && parts[3] == "reconcile" && r.Method == http.MethodPost {
+		principal, ok := h.principal(w, r, true)
+		if !ok {
+			return
+		}
+		key, ok := requestKey(w, r)
+		if !ok {
+			return
+		}
+		var body struct {
+			Generation     int64  `json:"generation"`
+			Fence          int64  `json:"fence"`
+			LeaseExpiresAt string `json:"lease_expires_at"`
+			EvidenceDigest string `json:"evidence_digest"`
+			Resolution     string `json:"resolution"`
+		}
+		if decode(r, &body) != nil {
+			errorJSON(w, 400, "invalid_automation_reconciliation")
+			return
+		}
+		lease, e := time.Parse(time.RFC3339Nano, body.LeaseExpiresAt)
+		if e != nil {
+			errorJSON(w, 400, "invalid_automation_reconciliation")
+			return
+		}
+		out, e := h.service.ReconcileRunEffect(r.Context(), automationapp.RunEffectReconcileCommand{RunID: id, Actor: principal.InternalID, Generation: body.Generation, Fence: body.Fence, EffectID: parts[2], IdempotencyKey: key, LeaseExpiresAt: lease, EvidenceDigest: body.EvidenceDigest, Resolution: body.Resolution})
+		if e != nil {
+			runtimeError(w, e)
+			return
+		}
+		writeJSON(w, 200, map[string]any{"data": out})
+		return
+	}
 	errorJSON(w, 404, "automation_run_not_found")
 }
 func runDTO(r automationdomain.RuntimeRun) map[string]any {
-	return map[string]any{"id": r.ID, "state": r.State, "target_count": r.TargetCount, "skipped_count": r.SkippedCount, "outcome_unknown_count": 0, "package_id": r.PackageID, "snapshot_id": r.SnapshotID, "agent_id": r.AgentID, "agent_published_version": r.AgentPublishedVersion, "created_at": r.CreatedAt}
+	return map[string]any{"id": r.ID, "policy_id": r.PolicyID, "policy_version": r.PolicyVersion, "state": r.State, "target_count": r.TargetCount, "skipped_count": r.SkippedCount, "outcome_unknown_count": r.OutcomeUnknownCount, "package_id": r.PackageID, "snapshot_id": r.SnapshotID, "agent_id": r.AgentID, "agent_published_version": r.AgentPublishedVersion, "created_at": r.CreatedAt}
 }
 func strictInt(v string) (int64, bool) {
 	n, e := strconv.ParseInt(v, 10, 64)

@@ -185,9 +185,25 @@ type RuntimeRun struct {
 	State                 automationport.RunState `json:"state"`
 	TargetCount           int64                   `json:"target_count"`
 	SkippedCount          int64                   `json:"skipped_count"`
+	OutcomeUnknownCount   int64                   `json:"outcome_unknown_count"`
 	CreatedBy             int64                   `json:"created_by"`
 	CreatedAt             time.Time               `json:"created_at"`
 	UpdatedAt             time.Time               `json:"updated_at"`
+}
+
+type RunReconciliation struct {
+	ID             int64     `json:"id"`
+	RunID          int64     `json:"run_id"`
+	RecipientID    int64     `json:"recipient_id"`
+	EffectID       string    `json:"effect_id"`
+	Generation     int64     `json:"generation"`
+	Fence          int64     `json:"fence"`
+	LeaseExpiresAt time.Time `json:"lease_expires_at"`
+	EvidenceDigest [32]byte  `json:"-"`
+	Resolution     string    `json:"resolution"`
+	ActorID        int64     `json:"actor_id"`
+	ReceiptDigest  [32]byte  `json:"-"`
+	CreatedAt      time.Time `json:"created_at"`
 }
 type RuntimeRecipient struct {
 	ID            int64                         `json:"id"`

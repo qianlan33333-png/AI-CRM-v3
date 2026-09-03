@@ -6,14 +6,23 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	automationdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/domain"
 	automationport "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/port"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
+	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	outboundport "github.com/qianlan33333-png/AI-CRM-v3/internal/outbound/port"
 	segmentport "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/port"
 )
+
+type RunEffectReconcileCommand struct {
+	RunID, Actor, Generation, Fence int64
+	EffectID, IdempotencyKey        string
+	LeaseExpiresAt                  time.Time
+	EvidenceDigest, Resolution      string
+}
 
 type RunConfirmCommand struct {
 	PackageID             int64
@@ -161,6 +170,84 @@ func (s *RuntimeService) RunRecipients(ctx context.Context, id, cursor int64, li
 		return e
 	})
 	return out, next, runtimeClassify(err)
+}
+
+func (s *RuntimeService) EffectReconciliationCandidate(ctx context.Context, runID int64, effectID string) (effectport.ReconciliationCandidate, error) {
+	if s == nil || s.effects == nil || runID < 1 || effectID == "" {
+		return effectport.ReconciliationCandidate{}, ErrRuntimeInvalid
+	}
+	var recipient automationdomain.RuntimeRecipient
+	err := s.uow.Within(ctx, func(tx context.Context) error {
+		var e error
+		recipient, e = s.store.RecipientForEffect(tx, runID, effectID)
+		return e
+	})
+	if err != nil {
+		return effectport.ReconciliationCandidate{}, runtimeClassify(err)
+	}
+	if recipient.State != automationport.RecipientOutcomeUnknown {
+		return effectport.ReconciliationCandidate{}, ErrRuntimeConflict
+	}
+	candidate, err := s.effects.ReconciliationCandidate(ctx, effectID)
+	if err != nil {
+		return effectport.ReconciliationCandidate{}, runtimeClassify(err)
+	}
+	if candidate.Owner != effectport.OwnerOutbound || candidate.Kind != effectport.KindOutboundMessage || candidate.State != effectport.StateUnknown {
+		return effectport.ReconciliationCandidate{}, ErrRuntimeConflict
+	}
+	return candidate, nil
+}
+
+func (s *RuntimeService) ReconcileRunEffect(ctx context.Context, command RunEffectReconcileCommand) (automationdomain.RunReconciliation, error) {
+	if s == nil || s.effects == nil || command.RunID < 1 || command.Actor < 1 || command.Generation < 1 || command.Fence < 1 || command.EffectID == "" || command.LeaseExpiresAt.IsZero() || !validRuntimeMutation(command.Actor, command.IdempotencyKey) || !validReconciliationResolution(command.Resolution) {
+		return automationdomain.RunReconciliation{}, ErrRuntimeInvalid
+	}
+	rawEvidence, err := hex.DecodeString(strings.ToLower(command.EvidenceDigest))
+	if err != nil || len(rawEvidence) != sha256.Size || hex.EncodeToString(rawEvidence) != command.EvidenceDigest {
+		return automationdomain.RunReconciliation{}, ErrRuntimeInvalid
+	}
+	now := s.now().UTC()
+	if now.Before(command.LeaseExpiresAt.UTC()) {
+		return automationdomain.RunReconciliation{}, ErrRuntimeConflict
+	}
+	candidate, err := s.EffectReconciliationCandidate(ctx, command.RunID, command.EffectID)
+	if err != nil {
+		return automationdomain.RunReconciliation{}, err
+	}
+	if candidate.Generation != command.Generation || candidate.Fence != command.Fence || !candidate.LeaseExpiresAt.Equal(command.LeaseExpiresAt.UTC()) {
+		return automationdomain.RunReconciliation{}, ErrRuntimeConflict
+	}
+	var evidence [32]byte
+	copy(evidence[:], rawEvidence)
+	payload, _ := json.Marshal(command)
+	var output automationdomain.RunReconciliation
+	err = s.runtimeMutation(ctx, "reconcile_effect", command.Actor, command.IdempotencyKey, payload, func(tx context.Context) (any, RuntimeFact, error) {
+		recipient, e := s.store.RecipientForEffect(tx, command.RunID, command.EffectID)
+		if e != nil {
+			return output, RuntimeFact{}, e
+		}
+		if recipient.State != automationport.RecipientOutcomeUnknown {
+			return output, RuntimeFact{}, ErrRuntimeConflict
+		}
+		output, e = s.store.CreateRunReconciliation(tx, automationdomain.RunReconciliation{RunID: command.RunID, RecipientID: recipient.ID, EffectID: command.EffectID, Generation: command.Generation, Fence: command.Fence, LeaseExpiresAt: command.LeaseExpiresAt.UTC(), EvidenceDigest: evidence, Resolution: command.Resolution, ActorID: command.Actor, ReceiptDigest: sha256.Sum256([]byte(command.IdempotencyKey)), CreatedAt: now})
+		if e != nil {
+			return output, RuntimeFact{}, e
+		}
+		projection, e := s.effects.ReconcileEffectWithin(tx, effectport.ReconcileCommand{EffectID: command.EffectID, ReceiptKey: effectport.Hash("automation.effect.reconcile", command.EffectID, command.IdempotencyKey), EvidenceDigest: effectport.Digest("sha256:" + command.EvidenceDigest), ActorAdminUserID: command.Actor, Generation: command.Generation, Fence: command.Fence, LeaseExpiresAt: command.LeaseExpiresAt.UTC()})
+		if e != nil {
+			return output, RuntimeFact{}, e
+		}
+		if projection.State != effectport.StateReconciled {
+			return output, RuntimeFact{}, ErrRuntimeConflict
+		}
+		factPayload, _ := json.Marshal(map[string]any{"reconciliation_id": output.ID, "run_id": output.RunID, "recipient_id": output.RecipientID, "effect_id": output.EffectID, "generation": output.Generation, "fence": output.Fence, "resolution": output.Resolution})
+		return output, runtimeFact("recipient", recipient.ID, "reconcile", "automation.recipient.reconciled.v1", command.Actor, command.IdempotencyKey, now, factPayload), nil
+	}, &output)
+	return output, runtimeClassify(err)
+}
+
+func validReconciliationResolution(value string) bool {
+	return value == "provider_accepted" || value == "delivery_proven" || value == "final_failed"
 }
 func (s *RuntimeService) CancelRun(ctx context.Context, id, actor int64, key string) (automationdomain.RuntimeRun, error) {
 	if id < 1 || !validRuntimeMutation(actor, key) {
