@@ -71,9 +71,12 @@ type AdminShellView struct {
 	Automation       bool
 	AutomationPage   string
 	AutomationAssets AutomationAssets
-	Survey           bool
-	SurveyPage       string
-	SurveyAssets     SurveyAssets
+	// AutomationCreateCode is a v3 host binding for the frozen create form.
+	// It is absent for existing records, whose immutable code stays donor-owned.
+	AutomationCreateCode string
+	Survey               bool
+	SurveyPage           string
+	SurveyAssets         SurveyAssets
 }
 
 // ExternalEffectsAssets are manifest-derived URLs for the frozen donor bundle.
@@ -293,14 +296,14 @@ func (renderer *Renderer) RenderGroupOps(writer http.ResponseWriter, data AdminP
 
 // RenderAutomation mounts one verified Agent template into the existing v3
 // admin shell. The outer donor document is never independently served.
-func (renderer *Renderer) RenderAutomation(writer http.ResponseWriter, data AdminPageData, page, donorTemplate string, assets AutomationAssets) error {
+func (renderer *Renderer) RenderAutomation(writer http.ResponseWriter, data AdminPageData, page, donorTemplate string, assets AutomationAssets, createCode string) error {
 	if renderer == nil || renderer.templates == nil || donorTemplate == "" || assets.TokensCSS == "" || assets.LabsCSS == "" || assets.AdminJS == "" || (page != "agents" && page != "agentEdit") {
 		return errors.New("automation shell assets are required")
 	}
 	normalizeAdminPage(&data)
 	data.ShowPageHeader = false
 	content := `<main id="stage" class="stage rich"></main><template id="tpl">` + donorTemplate + `</template>`
-	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: template.HTML(content), Automation: true, AutomationPage: page, AutomationAssets: assets})
+	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: template.HTML(content), Automation: true, AutomationPage: page, AutomationAssets: assets, AutomationCreateCode: createCode})
 	if err != nil {
 		return err
 	}
