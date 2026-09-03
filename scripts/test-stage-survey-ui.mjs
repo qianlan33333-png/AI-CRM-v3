@@ -29,7 +29,7 @@ for (const relative of required) {
   assert.ok(fs.readFileSync(path.join(stage, relative)).equals(fs.readFileSync(path.join(source, relative))), `staged asset drifted for ${relative}`);
 }
 
-const adminPages = ['questionnaires.html', 'questionnaireDetail.html', 'questionnaireDetail.fragment.html', 'questionnaireOps.html'];
+const adminPages = ['questionnaires.html', 'questionnaireDetail.html', 'questionnaireOps.html'];
 for (const page of adminPages) {
   const relative = path.join('admin', page);
   assert.ok(fs.readFileSync(path.join(stage, relative)).equals(fs.readFileSync(path.join(source, relative))), `staged private template drifted for ${relative}`);

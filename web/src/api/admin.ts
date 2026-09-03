@@ -1699,21 +1699,21 @@ export async function copyCouponDto(couponId: number): Promise<Coupon> { return 
 export async function archiveCouponDto(couponId: number): Promise<void> { await call(archiveLegacyCoupon(couponId, apiRequestOptions())); }
 export async function deleteCouponDto(couponId: number): Promise<void> { await call(deleteLegacyCoupon(couponId, apiRequestOptions())); }
 export type QuestionnaireWriteInput = LegacyQuestionnaireCreateRequest & { id?: number };
-const questionnaireWriteOptions = () => apiRequestOptions({ headers: { 'Idempotency-Key': globalThis.crypto?.randomUUID?.() || `web-survey-${Date.now()}` } });
 export async function saveQuestionnaireDto(input: QuestionnaireWriteInput, publish: boolean): Promise<Questionnaire> {
   const { id, ...payload } = input;
-  const result = obj(await call(id == null ? createLegacyQuestionnaire(payload, questionnaireWriteOptions()) : updateLegacyQuestionnaire(id, payload, questionnaireWriteOptions()) as ReturnType<typeof createLegacyQuestionnaire>));
+  const result = obj(await call(id == null ? createLegacyQuestionnaire(payload, apiRequestOptions()) : updateLegacyQuestionnaire(id, payload, apiRequestOptions()) as ReturnType<typeof createLegacyQuestionnaire>));
   const saved = (obj(result.data).questionnaire || result.questionnaire) as LegacyQuestionnaire | undefined;
   const questionnaireId = Number(saved?.id || result.questionnaire_id || id);
   if (!questionnaireId) throw new Error('后端未返回问卷 ID');
   if (publish) {
     const version = Number(saved?.version || obj(obj(await call(getLegacyQuestionnaire(questionnaireId, apiRequestOptions()))).questionnaire).version);
-    await call(publishQuestionnairePublicDefinition(questionnaireId, { expected_questionnaire_version: version }, questionnaireWriteOptions()));
+    await call(enableLegacyQuestionnaire(questionnaireId, apiRequestOptions()));
+    await call(publishQuestionnairePublicDefinition(questionnaireId, { expected_questionnaire_version: version }, apiRequestOptions()));
   }
   const detail = obj(await call(getLegacyQuestionnaire(questionnaireId, apiRequestOptions())));
   return questionnairePageDto((detail.questionnaire || obj(detail.data).questionnaire) as LegacyQuestionnaire);
 }
-export async function setQuestionnaireEnabledDto(questionnaireId: number, enabled: boolean): Promise<void> { await call(enabled ? enableLegacyQuestionnaire(questionnaireId, questionnaireWriteOptions()) : disableLegacyQuestionnaire(questionnaireId, { is_disabled: true }, questionnaireWriteOptions())); }
+export async function setQuestionnaireEnabledDto(questionnaireId: number, enabled: boolean): Promise<void> { await call(enabled ? enableLegacyQuestionnaire(questionnaireId, apiRequestOptions()) : disableLegacyQuestionnaire(questionnaireId, { is_disabled: true }, apiRequestOptions())); }
 export async function duplicateQuestionnaireDto(questionnaireId: number): Promise<Questionnaire> { const result = obj(await call(duplicateLegacyQuestionnaire(questionnaireId, undefined, apiRequestOptions()))); const id = Number(result.questionnaire_id || obj(result.questionnaire).id); if (!id) throw new Error('后端未返回复制后的问卷 ID'); const detail = obj(await call(getLegacyQuestionnaire(id, apiRequestOptions()))); return questionnairePageDto((detail.questionnaire || obj(detail.data).questionnaire) as LegacyQuestionnaire); }
 export async function deleteQuestionnaireDto(questionnaireId: number): Promise<void> { await call(deleteLegacyQuestionnaire(questionnaireId, apiRequestOptions())); }
 export type ChannelWriteInput = LegacyChannelWriteRequest & { id?: number };

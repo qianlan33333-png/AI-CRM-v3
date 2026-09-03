@@ -45,7 +45,7 @@ for (const key of entryKeys) {
 }
 for (const relative of [...selected].sort()) copy(relative);
 
-const adminPages = ['questionnaires.html', 'questionnaireDetail.html', 'questionnaireDetail.fragment.html', 'questionnaireOps.html'];
+const adminPages = ['questionnaires.html', 'questionnaireDetail.html', 'questionnaireOps.html'];
 for (const page of adminPages) copy(path.join('admin', page));
 
 const h5Pages = ['active.html', 'all.html', 'auth.html', 'done.html', 'error.html', 'expired.html', 'index.html', 'loading.html', 'one.html', 'pay.html', 'qr.html', 'result.html', 'signup.html'];

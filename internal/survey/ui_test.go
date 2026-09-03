@@ -31,7 +31,7 @@ func surveyTestDist(t *testing.T) string {
 			t.Fatal(err)
 		}
 	}
-	if err := os.WriteFile(filepath.Join(dist, "admin", "questionnaireDetail.fragment.html"), []byte(`<section id="editor">questionnaireDetail</section><div id="questionnaire-editor-config" hidden>{}</div>`), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dist, "admin", "questionnaireDetail.html"), []byte(`<!doctype html><html><body data-page="questionnaireDetail"><section id="editor">questionnaireDetail</section><div id="questionnaire-editor-config" hidden>{}</div><script type="module" src="../assets/questionnaireEditor-TEST.js"></script></body></html>`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dist, "h5", "all.html"), []byte(`<link href="../assets/tokens.css"><script src="../assets/h5.js"></script>`), 0o600); err != nil {

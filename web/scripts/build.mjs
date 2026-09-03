@@ -256,7 +256,6 @@ async function main() {
     const filename = screen.key === 'tags' ? 'wecom-tags.html' : `${screen.key}.html`;
     write(path.join(DIST, 'admin', filename), adminPage(screen, entries));
   }
-  write(path.join(DIST, 'admin/questionnaireDetail.fragment.html'), read(path.join(SRC, 'admin/templates/questionnaireEditorStandalone.html')));
   write(path.join(DIST, 'admin/index.html'), '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><meta http-equiv="refresh" content="0; url=customers.html"><title>AI-CRM 管理后台</title></head><body>正在进入管理后台… <a href="customers.html">手动进入</a></body></html>\n');
   for (const screen of h5Registry) write(path.join(DIST, 'h5', `${screen.key}.html`), h5Page(screen, entries));
   write(path.join(DIST, 'h5/index.html'), h5Index(entries));
