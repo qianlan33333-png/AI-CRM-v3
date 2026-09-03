@@ -85,6 +85,10 @@ func (s *memoryStore) List(_ context.Context, before *Cursor, limit int32, _ Lis
 	return rows, nil
 }
 
+func (s *memoryStore) Count(context.Context, ListFilter) (int64, error) {
+	return int64(len(s.orders)), nil
+}
+
 func (s *memoryStore) FindByReference(_ context.Context, reference string) ([]domain.Order, error) {
 	rows := []domain.Order{}
 	for _, snapshot := range s.orders {

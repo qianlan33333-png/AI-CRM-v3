@@ -188,6 +188,18 @@ func (r *Repository) Get(ctx context.Context, id int64, forUpdate bool) (domain.
 	return order, nil
 }
 
+func (r *Repository) ReservePaymentWithin(ctx context.Context, id int64) (domain.Snapshot, error) {
+	order, err := r.Get(ctx, id, true)
+	if err != nil {
+		return domain.Snapshot{}, err
+	}
+	snapshot := order.Snapshot()
+	if snapshot.RecordOrigin != domain.RecordOriginNative || !snapshot.EffectEligible || snapshot.Status != domain.StatusPendingPayment {
+		return domain.Snapshot{}, orderport.ErrConflict
+	}
+	return snapshot, nil
+}
+
 func (r *Repository) List(ctx context.Context, before *orderapp.Cursor, limit int32, filter orderapp.ListFilter) ([]domain.Order, error) {
 	if limit > orderapp.MaximumLimit+1 {
 		return nil, ErrInvalid
@@ -202,27 +214,23 @@ func (r *Repository) Export(ctx context.Context, filter orderapp.ListFilter, lim
 	return r.queryOrders(ctx, nil, limit, filter)
 }
 
-func (r *Repository) queryOrders(ctx context.Context, before *orderapp.Cursor, limit int32, filter orderapp.ListFilter) ([]domain.Order, error) {
+func (r *Repository) Count(ctx context.Context, filter orderapp.ListFilter) (int64, error) {
 	tx, err := transaction(ctx)
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
-	if limit < 1 {
-		return nil, ErrInvalid
-	}
-	query := `SELECT ` + orderColumns + ` FROM orders`
+	query, args := orderFilterSQL(filter)
+	var total int64
+	err = tx.QueryRow(ctx, `SELECT count(*) FROM orders`+query, args...).Scan(&total)
+	return total, mapError(err)
+}
+
+func orderFilterSQL(filter orderapp.ListFilter) (string, []any) {
 	args := []any{}
 	conditions := []string{}
 	add := func(template string, value any) {
 		args = append(args, value)
 		conditions = append(conditions, strings.ReplaceAll(template, "?", "$"+strconv.Itoa(len(args))))
-	}
-	if before != nil {
-		if before.ID < 1 || before.CreatedAt.IsZero() {
-			return nil, ErrInvalid
-		}
-		args = append(args, before.CreatedAt.UTC(), before.ID)
-		conditions = append(conditions, `(created_at,id) < ($`+strconv.Itoa(len(args)-1)+`,$`+strconv.Itoa(len(args))+`)`)
 	}
 	if filter.Provider != "" {
 		add(`provider=?`, filter.Provider)
@@ -251,8 +259,38 @@ func (r *Repository) queryOrders(ctx context.Context, before *orderapp.Cursor, l
 	if filter.CreatedTo != nil {
 		add(`created_at<?`, filter.CreatedTo.UTC())
 	}
+	if len(conditions) == 0 {
+		return "", args
+	}
+	return ` WHERE ` + strings.Join(conditions, ` AND `), args
+}
+
+func (r *Repository) queryOrders(ctx context.Context, before *orderapp.Cursor, limit int32, filter orderapp.ListFilter) ([]domain.Order, error) {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if limit < 1 {
+		return nil, ErrInvalid
+	}
+	query := `SELECT ` + orderColumns + ` FROM orders`
+	filterSQL, filterArgs := orderFilterSQL(filter)
+	query += filterSQL
+	args := filterArgs
+	conditions := []string{}
+	if before != nil {
+		if before.ID < 1 || before.CreatedAt.IsZero() {
+			return nil, ErrInvalid
+		}
+		args = append(args, before.CreatedAt.UTC(), before.ID)
+		conditions = append(conditions, `(created_at,id) < ($`+strconv.Itoa(len(args)-1)+`,$`+strconv.Itoa(len(args))+`)`)
+	}
 	if len(conditions) > 0 {
-		query += ` WHERE ` + strings.Join(conditions, ` AND `)
+		if filterSQL == "" {
+			query += ` WHERE ` + strings.Join(conditions, ` AND `)
+		} else {
+			query += ` AND ` + strings.Join(conditions, ` AND `)
+		}
 	}
 	query += ` ORDER BY created_at DESC,id DESC LIMIT $` + strconv.Itoa(len(args)+1)
 	args = append(args, limit)

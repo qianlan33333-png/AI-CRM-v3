@@ -93,7 +93,7 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request, path string) {
 	for _, item := range page.Items {
 		items = append(items, responseFrom(item))
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items, "orders": items, "total": int(query.Offset) + len(items), "limit": query.Limit, "offset": query.Offset, "has_more": page.NextCursor != "", "next_cursor": page.NextCursor})
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "orders": items, "total": page.Total, "limit": query.Limit, "offset": query.Offset, "has_more": page.NextCursor != "", "next_cursor": page.NextCursor})
 }
 
 func (h *Handler) orderTail(w http.ResponseWriter, r *http.Request, tail string) {

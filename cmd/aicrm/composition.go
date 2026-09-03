@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"crypto/rsa"
 	"errors"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -39,6 +41,12 @@ import (
 	orderhttp "github.com/qianlan33333-png/AI-CRM-v3/internal/order/http"
 	orderstore "github.com/qianlan33333-png/AI-CRM-v3/internal/order/store"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/outbound"
+	payment "github.com/qianlan33333-png/AI-CRM-v3/internal/payment"
+	paymentapp "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/app"
+	paymenthttp "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/http"
+	paymentprovider "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/provider"
+	paymentsession "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/session"
+	paymentstore "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/store"
 	platformaudit "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/audit"
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
 	platformjobqueue "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/jobqueue"
@@ -111,6 +119,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 
 	oneID := identityapp.OneIDService{Store: identitystore.NewPostgresStore()}
 	queries := identityquery.NewPostgreSQL()
+	paymentRepository := paymentstore.NewPostgreSQL()
 	customerStore := customerstore.NewPostgreSQL()
 	requestSecurity := requestAccessSecurity{authentication: authentication}
 	if cfg.Effects.ProviderEnabled {
@@ -223,11 +232,15 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
-	completionSink, err := outbound.NewCompletionRouter(tagCompletionSink, groupOpsCompletionSink)
+	outboundCompletionSink, err := outbound.NewCompletionRouter(tagCompletionSink, groupOpsCompletionSink)
 	if err != nil {
 		return fail(err)
 	}
-	if err = effectRepository.SetCompletionSink(completionSink); err != nil {
+	paymentCompletionSink, err := payment.NewCompletionSink(paymentRepository)
+	if err != nil {
+		return fail(err)
+	}
+	if err = effectRepository.SetCompletionSink(composedCompletionRouter{outbound: outboundCompletionSink, payment: paymentCompletionSink}); err != nil {
 		return fail(err)
 	}
 	if cfg.Survey.DataKey == "" {
@@ -327,6 +340,50 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
+	paymentSession, err := paymentsession.NewService(uow, oneID, paymentsession.NewPostgreSQL(), 10*time.Minute)
+	if err != nil {
+		return fail(err)
+	}
+	paymentService := paymentapp.NewService(uow, paymentRepository, orderRepository, paymentSession, effectRepository)
+	var paymentAdapter externaleffects.ProviderAdapter
+	var paymentCallbackVerifier *paymentprovider.CallbackVerifier
+	if cfg.WeChatPay.Enabled {
+		privateKey, readErr := os.ReadFile(cfg.WeChatPay.PrivateKeyPath)
+		if readErr != nil {
+			return fail(readErr)
+		}
+		platformCertificate, readErr := os.ReadFile(cfg.WeChatPay.PlatformCertPath)
+		if readErr != nil {
+			return fail(readErr)
+		}
+		signer, parseErr := paymentprovider.ParseMerchantPrivateKey(privateKey)
+		if parseErr != nil {
+			return fail(parseErr)
+		}
+		platformSerial, platformKey, parseErr := paymentprovider.ParsePlatformCertificate(platformCertificate)
+		if parseErr != nil {
+			return fail(parseErr)
+		}
+		credential := paymentprovider.Credential{MerchantID: cfg.WeChatPay.MerchantID, Serial: cfg.WeChatPay.MerchantSerial, Signer: signer, PlatformKeys: map[string]*rsa.PublicKey{platformSerial: platformKey}}
+		loader := paymentprovider.DBMaterialLoader{UOW: uow, Intents: paymentRepository, Identities: queries, AppScope: cfg.WeChatPay.AppScope}
+		paymentAdapter, err = paymentprovider.NewWeChatPay(paymentprovider.Config{Enabled: true, AppID: cfg.WeChatPay.AppID, AppScope: cfg.WeChatPay.AppScope, APIBaseURL: "https://api.mch.weixin.qq.com", PaymentNotifyURL: cfg.PublicOrigin + "/api/public/wechat-pay/callbacks/payment", RefundNotifyURL: cfg.PublicOrigin + "/api/public/wechat-pay/callbacks/refund", Credential: credential}, loader, &http.Client{Timeout: 10 * time.Second})
+		if err != nil {
+			return fail(err)
+		}
+		paymentCallbackVerifier, err = paymentprovider.NewCallbackVerifier(credential.PlatformKeys, []byte(cfg.WeChatPay.APIV3Key), cfg.WeChatPay.AppID, cfg.WeChatPay.MerchantID)
+		if err != nil {
+			return fail(err)
+		}
+	} else {
+		paymentAdapter, err = paymentprovider.NewWeChatPay(paymentprovider.Config{}, nil, nil)
+		if err != nil {
+			return fail(err)
+		}
+	}
+	paymentHandler, err := paymenthttp.NewHandler(paymentService, paymentCallbackVerifier, requestSecurity, cfg.WeChatPay.Enabled)
+	if err != nil {
+		return fail(err)
+	}
 
 	renderer, err := webshell.NewRenderer()
 	if err != nil {
@@ -362,7 +419,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		}
 		tagCatalogProvider = catalogProvider
 	}
-	if err = effectsModule.SetProviderAdapter(outbound.NewProviderRouterWithGroupMessage(tagCatalogProvider, groupOpsProvider)); err != nil {
+	if err = effectsModule.SetProviderAdapter(composedProviderRouter{outbound: outbound.NewProviderRouterWithGroupMessage(tagCatalogProvider, groupOpsProvider), payment: paymentAdapter}); err != nil {
 		return fail(err)
 	}
 	var callbackCrypto *wecom.CallbackCrypto
@@ -434,13 +491,16 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	adminAPIs.Handle("/api/admin/customer-sync-runs/", syncHandler.Routes())
 	adminAPIs.Handle("/api/admin/orders", orderHandler)
 	adminAPIs.Handle("/api/admin/orders/", orderHandler)
-	adminAPIs.Handle("/api/admin/refunds", orderHandler)
+	adminAPIs.Handle("/api/admin/refunds", paymentHandler)
 	adminAPIs.Handle("/api/admin/exports", orderHandler)
 	adminAPIs.Handle("/api/admin/exports/", orderHandler)
 	adminAPIs.Handle("/api/admin/alipay/transactions", orderHandler)
 	adminAPIs.Handle("/api/admin/wechat-pay/orders", orderHandler)
-	adminAPIs.Handle("/api/admin/wechat-pay/orders/", orderHandler)
+	adminAPIs.Handle("/api/admin/wechat-pay/orders/", paymentHandler)
 	adminAPIs.Handle("/api/admin/wechat-pay/order-exports", orderHandler)
+	adminAPIs.Handle("/api/admin/payments/", paymentHandler)
+	adminAPIs.Handle("/api/v1/wechat-pay/", paymentHandler)
+	adminAPIs.Handle("/api/public/wechat-pay/", paymentHandler)
 	adminAPIs.Handle("/api/v1/products", productBindings.Products)
 	adminAPIs.Handle("/api/v1/products/", productBindings.Products)
 	adminAPIs.Handle("/api/admin/wechat-pay/products", productBindings.Products)
@@ -647,6 +707,9 @@ func routeApplicationWithProductsCouponsGroupOps(health, access, identity, effec
 	mux.Handle("/api/admin/exports/", identity)
 	mux.Handle("/api/admin/alipay/transactions", identity)
 	mux.Handle("/api/admin/wechat-pay/orders", identity)
+	mux.Handle("/api/admin/payments/", identity)
+	mux.Handle("/api/v1/wechat-pay/", identity)
+	mux.Handle("/api/public/wechat-pay/", identity)
 	mux.Handle("/api/admin/wechat-pay/orders/", identity)
 	mux.Handle("/api/admin/wechat-pay/order-exports", identity)
 	mux.Handle("/api/admin/external-effects", effects)

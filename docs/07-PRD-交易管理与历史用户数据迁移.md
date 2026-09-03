@@ -2,12 +2,12 @@
 
 ## 1. 文档信息
 
-- 状态：方案已批准，开发中；生产只读盘点尚未开始
+- 状态：方案已批准，开发与生产只读盘点进行中；全量迁移受源权限门禁阻塞
 - 日期：2026-09-03
 - 本期唯一业务范围：交易管理
 - 代码供体：`AI-CRM-v2@6bfbe5816bb89913c70adaca87d6a486260e016e`
 - 当前 v3 开发基线：`origin/main@723b90914c20fe12bf07507e3683112816cf4fe3`
-- 数据源候选：`150.158.82.186` 上的现生产数据库；数据库名、schema、表、行数均未完成只读验证
+- 数据源：`150.158.82.186` 上的现生产 PostgreSQL；可授权视图已完成只读盘点，退款/微信小店/支付宝源表仍未授权
 - 产品 Owner：CRM Commerce
 - 数据 Owner：Order、Payment、Identity、Customer（各自只写本域表）
 
@@ -261,7 +261,9 @@ Payment-owned：
 
 - 已验证 `150.158.82.186` host key、受限只读账号和允许命令。
 - 数据 Owner 批准表清单、字段白名单、快照保留期和停写窗口。
-- 当前已知 `root + /Users/qianlan/Downloads/zhengshi.pem` 返回 `Permission denied (publickey)`；`crm-prod` 是受限入口，尚未取得普通 schema 只读结果。因此不能把本 PRD 中任何表名或数量当成生产确认事实。
+- `crm-prod` 受限入口已验证，只允许只读 `SELECT`。当前可见 `audience_read.identity_universe_v1` 与 `audience_read.orders_v1`；底层退款、微信小店和支付宝表存在，但只读账号无权访问，不能据部分视图执行全量导入。
+- 当前可见聚合基线：身份宇宙 25,649 行、24,255 个唯一身份、1,369 个 person；微信支付订单 769 行，订单金额合计 95,518,218 分。以上是部分源覆盖，不是全量迁移完成证明。
+- UnionID 记录没有可从生产配置确认的微信开放平台 scope。必须由数据 Owner 提供 `wechat-open-platform:<scope>`，否则不得以 UnionID 建客或跨渠道归属。
 - 源备份已完成并做可恢复性验证；目标 v3 在导入前也生成备份。
 - Provider 开关全部保持 disabled；迁移进程不得注册 Payment/Refund Worker。
 

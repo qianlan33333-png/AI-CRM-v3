@@ -81,6 +81,7 @@ type Store interface {
 	Insert(context.Context, domain.Order, int64, time.Time) (domain.Order, error)
 	Get(context.Context, int64, bool) (domain.Order, error)
 	List(context.Context, *Cursor, int32, ListFilter) ([]domain.Order, error)
+	Count(context.Context, ListFilter) (int64, error)
 	FindByReference(context.Context, string) ([]domain.Order, error)
 	Export(context.Context, ListFilter, int32) ([]domain.Order, error)
 	RecordExport(context.Context, ExportReceipt) (ExportReceipt, bool, error)
@@ -193,8 +194,13 @@ func (s *Service) List(ctx context.Context, query orderport.ListQuery) (orderpor
 		before = &decoded
 	}
 	var rows []domain.Order
+	var total int64
 	err := s.uow.Within(ctx, func(tx context.Context) error {
 		var listErr error
+		total, listErr = s.store.Count(tx, filterFrom(query))
+		if listErr != nil {
+			return listErr
+		}
 		rows, listErr = s.store.List(tx, before, query.Limit+1, filterFrom(query))
 		return listErr
 	})
@@ -204,7 +210,7 @@ func (s *Service) List(ctx context.Context, query orderport.ListQuery) (orderpor
 	if len(rows) > int(query.Limit)+1 {
 		return orderport.Page{}, orderport.ErrUnavailable
 	}
-	page := orderport.Page{Items: make([]domain.Snapshot, 0, min(len(rows), int(query.Limit)))}
+	page := orderport.Page{Items: make([]domain.Snapshot, 0, min(len(rows), int(query.Limit))), Total: total}
 	for index, order := range rows {
 		if index == int(query.Limit) {
 			break

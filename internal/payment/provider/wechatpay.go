@@ -1,0 +1,321 @@
+package provider
+
+import (
+	"context"
+	"crypto"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/base64"
+	"encoding/json"
+	"encoding/pem"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
+	"time"
+
+	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
+	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
+	identityport "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/port"
+	paymentport "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/port"
+	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
+)
+
+var ErrInvalidConfig = errors.New("invalid payment provider configuration")
+var ErrInvalidMaterial = errors.New("invalid payment provider material")
+var ErrInvalidResponse = errors.New("invalid payment provider response")
+
+type HTTPDoer interface {
+	Do(*http.Request) (*http.Response, error)
+}
+
+type Credential struct {
+	MerchantID, Serial string
+	Signer             crypto.Signer
+	PlatformKeys       map[string]*rsa.PublicKey
+}
+
+func (Credential) String() string   { return "[REDACTED]" }
+func (Credential) GoString() string { return "[REDACTED]" }
+
+func (c Credential) valid() bool {
+	key, ok := c.Signer.Public().(*rsa.PublicKey)
+	return strings.TrimSpace(c.MerchantID) == c.MerchantID && c.MerchantID != "" &&
+		strings.TrimSpace(c.Serial) == c.Serial && c.Serial != "" && ok && key.Size() >= 256 && len(c.PlatformKeys) > 0
+}
+
+func ParseMerchantPrivateKey(raw []byte) (crypto.Signer, error) {
+	block, _ := pem.Decode(raw)
+	if block == nil {
+		return nil, ErrInvalidConfig
+	}
+	if key, err := x509.ParsePKCS8PrivateKey(block.Bytes); err == nil {
+		if signer, ok := key.(crypto.Signer); ok {
+			return signer, nil
+		}
+	}
+	if key, err := x509.ParsePKCS1PrivateKey(block.Bytes); err == nil {
+		return key, nil
+	}
+	return nil, ErrInvalidConfig
+}
+
+func ParsePlatformCertificate(raw []byte) (string, *rsa.PublicKey, error) {
+	block, _ := pem.Decode(raw)
+	if block == nil {
+		return "", nil, ErrInvalidConfig
+	}
+	certificate, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return "", nil, ErrInvalidConfig
+	}
+	key, ok := certificate.PublicKey.(*rsa.PublicKey)
+	if !ok || key.Size() < 256 {
+		return "", nil, ErrInvalidConfig
+	}
+	return strings.ToUpper(certificate.SerialNumber.Text(16)), key, nil
+}
+
+type Config struct {
+	Enabled                           bool
+	AppID, AppScope                   string
+	APIBaseURL                        string
+	PaymentNotifyURL, RefundNotifyURL string
+	Credential                        Credential
+}
+
+func (Config) String() string   { return "WeChatPayConfig{credentials:[REDACTED]}" }
+func (Config) GoString() string { return "WeChatPayConfig{credentials:[REDACTED]}" }
+
+type Material struct {
+	Intent      paymentport.ProviderIntent
+	PayerOpenID string
+}
+
+type MaterialLoader interface {
+	Load(context.Context, effectport.Kind, effectport.Digest) (Material, error)
+}
+
+type DBMaterialLoader struct {
+	UOW        platformport.UnitOfWork
+	Intents    paymentport.ProviderIntentReader
+	Identities identityport.PaymentIdentityReader
+	AppScope   string
+}
+
+func (loader DBMaterialLoader) Load(ctx context.Context, kind effectport.Kind, source effectport.Digest) (Material, error) {
+	if loader.UOW == nil || loader.Intents == nil || strings.TrimSpace(loader.AppScope) != loader.AppScope || loader.AppScope == "" {
+		return Material{}, ErrInvalidMaterial
+	}
+	var material Material
+	err := loader.UOW.Within(ctx, func(tx context.Context) error {
+		intent, err := loader.Intents.ProviderIntent(tx, kind, source)
+		if err != nil {
+			return err
+		}
+		material.Intent = intent
+		if kind == effectport.KindWeChatPayPrepay {
+			if loader.Identities == nil {
+				return ErrInvalidMaterial
+			}
+			identity, ok, err := loader.Identities.VerifiedPaymentIdentity(tx, intent.PayerIdentityID, identitydomain.KindMPOpenID, loader.AppScope)
+			if err != nil || !ok || identity.IdentityID != intent.PayerIdentityID || identity.Scope != loader.AppScope {
+				return ErrInvalidMaterial
+			}
+			material.PayerOpenID = identity.Value
+		}
+		return nil
+	})
+	return material, err
+}
+
+type WeChatPay struct {
+	config Config
+	base   *url.URL
+	loader MaterialLoader
+	client HTTPDoer
+	now    func() time.Time
+	nonce  func() (string, error)
+}
+
+func NewWeChatPay(config Config, loader MaterialLoader, client HTTPDoer) (*WeChatPay, error) {
+	if !config.Enabled {
+		return &WeChatPay{config: config}, nil
+	}
+	base, err := url.Parse(config.APIBaseURL)
+	if err != nil || base.Scheme != "https" || base.Host == "" || base.Path != "" || loader == nil || client == nil || !config.Credential.valid() || !validHTTPS(config.PaymentNotifyURL) || !validHTTPS(config.RefundNotifyURL) || config.AppID == "" || config.AppScope == "" {
+		return nil, ErrInvalidConfig
+	}
+	return &WeChatPay{config: config, base: base, loader: loader, client: client, now: time.Now, nonce: randomNonce}, nil
+}
+
+func (provider *WeChatPay) Execute(ctx context.Context, envelope effectport.Envelope, attempt effectport.Attempt) (effectport.AdapterResult, error) {
+	if provider == nil || envelope.Owner != effectport.OwnerPayment || (envelope.Kind != effectport.KindWeChatPayPrepay && envelope.Kind != effectport.KindWeChatPayRefund) {
+		return final("wechatpay.unsupported", envelope, attempt), nil
+	}
+	if !provider.config.Enabled {
+		return final("wechatpay.disabled", envelope, attempt), nil
+	}
+	material, err := provider.loader.Load(ctx, envelope.Kind, envelope.SourceRefDigest)
+	if err != nil || material.Intent.PayloadDigest != envelope.PayloadDigest {
+		return final("wechatpay.material", envelope, attempt), nil
+	}
+	var path string
+	var payload any
+	if envelope.Kind == effectport.KindWeChatPayPrepay {
+		if material.PayerOpenID == "" || material.Intent.AmountMinor < 1 || material.Intent.Currency != "CNY" {
+			return final("wechatpay.prepay.invalid", envelope, attempt), nil
+		}
+		path = "/v3/pay/transactions/jsapi"
+		payload = map[string]any{
+			"appid": provider.config.AppID, "mchid": provider.config.Credential.MerchantID,
+			"description":  "CRM order " + material.Intent.MerchantOrderNo,
+			"out_trade_no": material.Intent.MerchantOrderNo, "notify_url": provider.config.PaymentNotifyURL,
+			"amount": map[string]any{"total": material.Intent.AmountMinor, "currency": material.Intent.Currency},
+			"payer":  map[string]any{"openid": material.PayerOpenID},
+		}
+	} else {
+		if material.Intent.RefundNo == "" || material.Intent.AmountMinor < 1 || material.Intent.AmountMinor > material.Intent.TotalMinor || material.Intent.Currency != "CNY" {
+			return final("wechatpay.refund.invalid", envelope, attempt), nil
+		}
+		path = "/v3/refund/domestic/refunds"
+		payload = map[string]any{
+			"out_trade_no": material.Intent.MerchantOrderNo, "out_refund_no": material.Intent.RefundNo,
+			"reason": material.Intent.RefundReason, "notify_url": provider.config.RefundNotifyURL,
+			"amount": map[string]any{"refund": material.Intent.AmountMinor, "total": material.Intent.TotalMinor, "currency": material.Intent.Currency},
+		}
+	}
+	body, _ := json.Marshal(payload)
+	response, dispatched, err := provider.signedJSON(ctx, http.MethodPost, path, body)
+	if err != nil {
+		result := effectport.AdapterResult{Completion: effectport.StateRetryable, ReceiptDigest: receipt("wechatpay.pre-dispatch", envelope, attempt), CallAttempted: false}
+		if dispatched {
+			result.Completion, result.CallAttempted, result.RealExternalCallExecuted = effectport.StateUnknown, true, true
+			result.ReceiptDigest = receipt("wechatpay.outcome-unknown", envelope, attempt)
+		}
+		return result, err
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return effectport.AdapterResult{Completion: effectport.StateFinalFailed, ReceiptDigest: receipt("wechatpay.provider-rejected", envelope, attempt), CallAttempted: true, RealExternalCallExecuted: true}, nil
+	}
+	if envelope.Kind == effectport.KindWeChatPayPrepay {
+		var decoded struct {
+			PrepayID string `json:"prepay_id"`
+		}
+		if json.Unmarshal(response.Body, &decoded) != nil || decoded.PrepayID == "" {
+			return effectport.AdapterResult{Completion: effectport.StateUnknown, ReceiptDigest: receipt("wechatpay.invalid-response", envelope, attempt), CallAttempted: true, RealExternalCallExecuted: true}, nil
+		}
+		artifactPayload, err := provider.handoff(decoded.PrepayID)
+		if err != nil {
+			return effectport.AdapterResult{Completion: effectport.StateUnknown, ReceiptDigest: receipt("wechatpay.invalid-handoff", envelope, attempt), CallAttempted: true, RealExternalCallExecuted: true}, nil
+		}
+		artifact := effectport.ResultArtifact{Kind: "wechat_pay_jsapi_handoff_v1", Payload: artifactPayload}
+		artifact.Digest = effectport.Hash("external-effect.artifact.v1", artifact.Kind, string(artifact.Payload))
+		return effectport.AdapterResult{Completion: effectport.StateExecuted, ReceiptDigest: effectport.Hash("wechatpay.executed", string(envelope.Fingerprint()), hashBytes(response.Body)), CallAttempted: true, RealExternalCallExecuted: true, Artifact: artifact}, nil
+	}
+	var decoded struct {
+		RefundID, OutRefundNo, Status string
+	}
+	if json.Unmarshal(response.Body, &decoded) != nil || decoded.RefundID == "" || decoded.OutRefundNo != material.Intent.RefundNo || decoded.Status == "" {
+		return effectport.AdapterResult{Completion: effectport.StateUnknown, ReceiptDigest: receipt("wechatpay.invalid-refund-response", envelope, attempt), CallAttempted: true, RealExternalCallExecuted: true}, nil
+	}
+	return effectport.AdapterResult{Completion: effectport.StateExecuted, ReceiptDigest: effectport.Hash("wechatpay.refund.executed", string(envelope.Fingerprint()), hashBytes(response.Body)), CallAttempted: true, RealExternalCallExecuted: true}, nil
+}
+
+type signedResponse struct {
+	StatusCode int
+	Body       []byte
+}
+
+func (provider *WeChatPay) signedJSON(ctx context.Context, method, path string, body []byte) (signedResponse, bool, error) {
+	nonce, err := provider.nonce()
+	if err != nil {
+		return signedResponse{}, false, err
+	}
+	timestamp := strconv.FormatInt(provider.now().UTC().Unix(), 10)
+	message := method + "\n" + path + "\n" + timestamp + "\n" + nonce + "\n" + string(body) + "\n"
+	signature, err := sign(provider.config.Credential.Signer, message)
+	if err != nil {
+		return signedResponse{}, false, err
+	}
+	request, err := http.NewRequestWithContext(ctx, method, provider.base.String()+path, strings.NewReader(string(body)))
+	if err != nil {
+		return signedResponse{}, false, err
+	}
+	request.Header.Set("Accept", "application/json")
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", fmt.Sprintf(`WECHATPAY2-SHA256-RSA2048 mchid="%s",nonce_str="%s",timestamp="%s",serial_no="%s",signature="%s"`, provider.config.Credential.MerchantID, nonce, timestamp, provider.config.Credential.Serial, signature))
+	response, err := provider.client.Do(request)
+	if err != nil {
+		return signedResponse{}, true, err
+	}
+	defer response.Body.Close()
+	responseBody, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+	if err != nil {
+		return signedResponse{}, true, err
+	}
+	if err = verifyResponse(provider.config.Credential.PlatformKeys, provider.now().UTC(), response.Header, responseBody); err != nil {
+		return signedResponse{}, true, err
+	}
+	return signedResponse{StatusCode: response.StatusCode, Body: responseBody}, true, nil
+}
+
+func (provider *WeChatPay) handoff(prepayID string) ([]byte, error) {
+	nonce, err := provider.nonce()
+	if err != nil {
+		return nil, err
+	}
+	timestamp := strconv.FormatInt(provider.now().UTC().Unix(), 10)
+	pkg := "prepay_id=" + prepayID
+	signature, err := sign(provider.config.Credential.Signer, provider.config.AppID+"\n"+timestamp+"\n"+nonce+"\n"+pkg+"\n")
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(map[string]string{"appId": provider.config.AppID, "timeStamp": timestamp, "nonceStr": nonce, "package": pkg, "signType": "RSA", "paySign": signature, "expiresAt": provider.now().UTC().Add(2 * time.Hour).Format(time.RFC3339Nano)})
+}
+
+func sign(signer crypto.Signer, message string) (string, error) {
+	digest := sha256.Sum256([]byte(message))
+	signature, err := signer.Sign(rand.Reader, digest[:], crypto.SHA256)
+	return base64.StdEncoding.EncodeToString(signature), err
+}
+
+func verifyResponse(keys map[string]*rsa.PublicKey, now time.Time, headers http.Header, body []byte) error {
+	timestamp, nonce, serial, encoded := headers.Get("Wechatpay-Timestamp"), headers.Get("Wechatpay-Nonce"), headers.Get("Wechatpay-Serial"), headers.Get("Wechatpay-Signature")
+	seconds, err := strconv.ParseInt(timestamp, 10, 64)
+	if err != nil || now.Sub(time.Unix(seconds, 0)).Abs() > 5*time.Minute || nonce == "" || serial == "" || encoded == "" {
+		return ErrInvalidResponse
+	}
+	key := keys[serial]
+	signature, err := base64.StdEncoding.Strict().DecodeString(encoded)
+	digest := sha256.Sum256([]byte(timestamp + "\n" + nonce + "\n" + string(body) + "\n"))
+	if err != nil || key == nil || rsa.VerifyPKCS1v15(key, crypto.SHA256, digest[:], signature) != nil {
+		return ErrInvalidResponse
+	}
+	return nil
+}
+
+func randomNonce() (string, error) {
+	raw := make([]byte, 18)
+	_, err := rand.Read(raw)
+	return base64.RawURLEncoding.EncodeToString(raw), err
+}
+
+func validHTTPS(value string) bool {
+	parsed, err := url.Parse(value)
+	return err == nil && parsed.Scheme == "https" && parsed.Host != ""
+}
+func hashBytes(value []byte) string { sum := sha256.Sum256(value); return fmt.Sprintf("%x", sum[:]) }
+func receipt(stage string, envelope effectport.Envelope, attempt effectport.Attempt) effectport.Digest {
+	return effectport.Hash(stage, string(envelope.Fingerprint()), strconv.Itoa(int(attempt.Number)), strconv.FormatInt(attempt.Generation, 10), strconv.FormatInt(attempt.Fence, 10))
+}
+func final(stage string, envelope effectport.Envelope, attempt effectport.Attempt) effectport.AdapterResult {
+	return effectport.AdapterResult{Completion: effectport.StateFinalFailed, ReceiptDigest: receipt(stage, envelope, attempt)}
+}
+
+var _ effectport.ProviderAdapter = (*WeChatPay)(nil)

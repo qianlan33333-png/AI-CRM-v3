@@ -37,6 +37,7 @@ type ListQuery struct {
 type Page struct {
 	Items      []domain.Snapshot `json:"items"`
 	NextCursor string            `json:"next_cursor"`
+	Total      int64             `json:"total"`
 }
 
 type SettlementCommand struct {
@@ -89,4 +90,10 @@ type SettlementWriter interface {
 
 type HistoricalImporter interface {
 	ImportHistorical(context.Context, HistoricalImportCommand) (domain.Snapshot, error)
+}
+
+// PaymentReservationReader locks and validates a native effect-eligible order
+// inside the caller's existing PostgreSQL Unit of Work.
+type PaymentReservationReader interface {
+	ReservePaymentWithin(context.Context, int64) (domain.Snapshot, error)
 }

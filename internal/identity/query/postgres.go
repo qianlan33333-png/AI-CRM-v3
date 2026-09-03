@@ -21,8 +21,32 @@ type PostgreSQL struct{}
 var _ Reader = PostgreSQL{}
 var _ identityport.DirectoryIdentityReader = PostgreSQL{}
 var _ identityport.CommerceResolver = PostgreSQL{}
+var _ identityport.PaymentIdentityReader = PostgreSQL{}
 
 func NewPostgreSQL() PostgreSQL { return PostgreSQL{} }
+
+func (PostgreSQL) VerifiedPaymentIdentity(ctx context.Context, identityID int64, kind identitydomain.Kind, scope string) (identityport.VerifiedCommerceIdentity, bool, error) {
+	if identityID < 1 || identitydomain.ValidateNamespace(kind, scope) != nil {
+		return identityport.VerifiedCommerceIdentity{}, false, identitydomain.ErrInvalidReference
+	}
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return identityport.VerifiedCommerceIdentity{}, false, err
+	}
+	var result identityport.VerifiedCommerceIdentity
+	err = tx.QueryRow(ctx, `WITH RECURSIVE lineage(id,status,merged_into_customer_id,visited) AS (
+		SELECT c.id,c.status,c.merged_into_customer_id,ARRAY[c.id] FROM customers c JOIN customer_identities i ON i.customer_id=c.id
+		WHERE i.id=$1 AND i.kind=$2 AND i.scope_key=$3 AND i.assurance='verified' AND i.status='active'
+		UNION ALL SELECT c.id,c.status,c.merged_into_customer_id,l.visited||c.id FROM customers c JOIN lineage l ON c.id=l.merged_into_customer_id WHERE NOT c.id=ANY(l.visited)
+	) SELECT i.id,l.id,i.kind,i.scope_key,i.normalized_value FROM customer_identities i JOIN lineage l ON TRUE WHERE i.id=$1 AND l.status<>'merged' LIMIT 1`, identityID, kind, scope).Scan(&result.IdentityID, &result.CustomerID, &result.Kind, &result.Scope, &result.Value)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return identityport.VerifiedCommerceIdentity{}, false, nil
+	}
+	if err != nil {
+		return identityport.VerifiedCommerceIdentity{}, false, fmt.Errorf("query verified payment identity: %w", err)
+	}
+	return result, true, nil
+}
 
 func (PostgreSQL) ResolveCommerce(ctx context.Context, set identityport.CommerceReferenceSet) (identityport.CommerceResolution, error) {
 	if len(set.References) == 0 || len(set.References) > identityport.MaximumCommerceReferences {

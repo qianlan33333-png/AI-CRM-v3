@@ -44,3 +44,17 @@ type CommerceResolution struct {
 type CommerceResolver interface {
 	ResolveCommerce(context.Context, CommerceReferenceSet) (CommerceResolution, error)
 }
+
+type VerifiedCommerceIdentity struct {
+	IdentityID int64
+	CustomerID customerdomain.CustomerID
+	Kind       identitydomain.Kind
+	Scope      string
+	Value      string
+}
+
+// PaymentIdentityReader is restricted to trusted Provider adapters. It is the
+// only commerce seam that can reveal a verified provider identifier.
+type PaymentIdentityReader interface {
+	VerifiedPaymentIdentity(context.Context, int64, identitydomain.Kind, string) (VerifiedCommerceIdentity, bool, error)
+}
