@@ -102,6 +102,7 @@ type Questionnaire struct {
 	ScoreRules        []ScoreRule         `json:"score_rules"`
 	CreatedBy         int64               `json:"created_by"`
 	Version           int64               `json:"version"`
+	DefinitionVersion int64               `json:"definition_version"`
 	CreatedAt         time.Time           `json:"created_at"`
 	UpdatedAt         time.Time           `json:"updated_at"`
 }
@@ -132,6 +133,7 @@ type DefinitionApplication interface {
 	Create(context.Context, CreateCommand) (Questionnaire, error)
 	Update(context.Context, UpdateCommand) (Questionnaire, error)
 	Duplicate(context.Context, ID, int64, string) (Questionnaire, error)
+	Publish(context.Context, ID, int64, int64, string) (Questionnaire, error)
 	SetStatus(context.Context, ID, int64, QuestionnaireStatus, int64, string) (Questionnaire, error)
 	DeleteDraft(context.Context, ID, int64, int64, string) error
 }

@@ -44,5 +44,8 @@ while read -r expected file_name; do
   count=$((count + 1))
 done < "$hash_manifest"
 
-[[ "$count" -eq 17 ]] || fail "expected 17 files, got $count"
+[[ "$count" -eq 16 ]] || fail "expected 16 unchanged donor files, got $count"
+editor="$repository_root/web/src/admin/sections/questionnaireEditor.ts"
+grep -q "from '../../api/questionnaireEditorV3'" "$editor" || fail 'missing v3 editor adapter boundary'
+if grep -q '多维测评和分数规则未开放写入' "$editor"; then fail 'legacy assessment block remains'; fi
 printf 'survey donor manifest: PASS (%d files; donor=%s; source-check=%s)\n' "$count" "$frozen_sha" "$([[ -n "$donor_root" ]] && printf enabled || printf skipped)"

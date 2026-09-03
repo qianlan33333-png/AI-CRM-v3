@@ -2,7 +2,6 @@
 # donor: https://github.com/qianlan33333-png/AI-CRM-v2
 # commit: 6bfbe5816bb89913c70adaca87d6a486260e016e
 d17595ec5c252063a1c4cb04658ff8f1ba8d9eeaf48aa3d2b18d07a21c708d4a  web/src/admin/sections/questionnaireEditor.css
-6226fc2c0e7a41aec9fc83b28de258e0e6796de873de9a7f8b64500d11ed419a  web/src/admin/sections/questionnaireEditor.ts
 1d01f49f1542d30c1f29f81cd521b8aca50798fe3dd4d11592325eb0b726f732  web/src/admin/sections/questionnaireEditorStyles.css
 7dece7733e8171ce3d3ef9f8cd01f2fc605fb4528e171dcba478a87e7f24721b  web/src/admin/sections/surveyUnresolvedHistory.ts
 441aa59954f4d828d18cc0f260d28ead4be3d4f2ac75ed263bcbaefcbcbe35ce  web/src/admin/templates/questionnaireDetail.html

@@ -46,6 +46,10 @@ import (
 	productmodule "github.com/qianlan33333-png/AI-CRM-v3/internal/product"
 	productapp "github.com/qianlan33333-png/AI-CRM-v3/internal/product/app"
 	productstore "github.com/qianlan33333-png/AI-CRM-v3/internal/product/store"
+	surveymodule "github.com/qianlan33333-png/AI-CRM-v3/internal/survey"
+	surveyapp "github.com/qianlan33333-png/AI-CRM-v3/internal/survey/app"
+	"github.com/qianlan33333-png/AI-CRM-v3/internal/survey/secure"
+	surveystore "github.com/qianlan33333-png/AI-CRM-v3/internal/survey/store"
 	tag "github.com/qianlan33333-png/AI-CRM-v3/internal/tag"
 	tagapp "github.com/qianlan33333-png/AI-CRM-v3/internal/tag/app"
 	tagstore "github.com/qianlan33333-png/AI-CRM-v3/internal/tag/store"
@@ -220,6 +224,24 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return fail(err)
 	}
 	if err = effectRepository.SetCompletionSink(completionSink); err != nil {
+		return fail(err)
+	}
+	if cfg.Survey.DataKey == "" {
+		return fail(errors.New("survey data encryption key is not configured"))
+	}
+	surveyCipher, err := secure.NewCipher(cfg.Survey.DataKey)
+	if err != nil {
+		return fail(err)
+	}
+	surveyRepository, err := surveystore.NewPostgreSQL(pool.Native(), uow, surveyCipher)
+	if err != nil {
+		return fail(err)
+	}
+	surveyDefinitions := surveyapp.NewService(uow, surveyRepository)
+	surveySubmissions := surveyapp.NewSubmissionService(uow, surveyRepository, surveyCipher)
+	surveyModule := surveymodule.NewModuleRegistration()
+	surveyBindings, err := surveyModule.Bind(surveyDefinitions, surveySubmissions, requestSecurity)
+	if err != nil {
 		return fail(err)
 	}
 	tagCatalog := tagapp.NewCatalogService(uow, tagRepository, tagRepository, tagRepository, tagRepository)
@@ -404,12 +426,19 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	adminAPIs.Handle("/api/admin/automation-agents/", automationBindings.Agents)
 	adminAPIs.Handle("/api/admin/channels", channelCatalog)
 	adminAPIs.Handle("/api/admin/channels/", channelCatalog)
+	adminAPIs.Handle("/api/admin/questionnaires", surveyBindings.Survey)
+	adminAPIs.Handle("/api/admin/questionnaires/", surveyBindings.Survey)
+	adminAPIs.Handle("/api/admin/survey-history/", surveyBindings.Survey)
+	adminAPIs.Handle("/api/public/questionnaires/", surveyBindings.Survey)
+	adminAPIs.Handle("/api/public/survey-submission-results/query", surveyBindings.Survey)
+	adminAPIs.Handle("/api/sidebar/v2/questionnaires", surveyBindings.Survey)
+	adminAPIs.Handle("/api/v1/customers/", surveyBindings.Survey)
 	readiness := platformruntime.ReadinessFunc(func(readinessContext context.Context) error {
 		if checkErr := pool.Check(readinessContext); checkErr != nil {
 			return checkErr
 		}
 		var complete bool
-		checkErr := pool.Native().QueryRow(readinessContext, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['0001','0002','0003','0004','0005','0006','0007','0008','0009','0010','0011','0012','0013','0016','0017','0019']) AS required(version) WHERE NOT EXISTS (SELECT 1 FROM platform_schema_migrations applied WHERE applied.version=required.version))`).Scan(&complete)
+		checkErr := pool.Native().QueryRow(readinessContext, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['0001','0002','0003','0004','0005','0006','0007','0008','0009','0010','0011','0012','0013','0016','0017','0018','0019']) AS required(version) WHERE NOT EXISTS (SELECT 1 FROM platform_schema_migrations applied WHERE applied.version=required.version))`).Scan(&complete)
 		if checkErr != nil || !complete {
 			return errors.New("database schema is not ready")
 		}
@@ -432,6 +461,9 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 			return checkErr
 		}
 		if checkErr = groupOpsModule.Readiness(readinessContext, pool.Native()); checkErr != nil {
+			return checkErr
+		}
+		if checkErr = surveyModule.Readiness(readinessContext, pool.Native()); checkErr != nil {
 			return checkErr
 		}
 		return nil
@@ -552,6 +584,13 @@ func routeApplicationWithProductsCouponsGroupOps(health, access, identity, effec
 	mux.Handle("/api/admin/customers/", identity)
 	mux.Handle("/api/admin/customer-sync-runs", identity)
 	mux.Handle("/api/admin/customer-sync-runs/", identity)
+	mux.Handle("/api/admin/questionnaires", identity)
+	mux.Handle("/api/admin/questionnaires/", identity)
+	mux.Handle("/api/admin/survey-history/", identity)
+	mux.Handle("/api/public/questionnaires/", identity)
+	mux.Handle("/api/public/survey-submission-results/query", identity)
+	mux.Handle("/api/sidebar/v2/questionnaires", identity)
+	mux.Handle("/api/v1/customers/", identity)
 	mux.Handle("/api/admin/external-effects", effects)
 	mux.Handle("/api/admin/external-effects/", effects)
 	mux.Handle("/api/admin/push-center/", pushCenter)

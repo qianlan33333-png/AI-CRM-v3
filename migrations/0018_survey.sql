@@ -123,6 +123,152 @@ CREATE TABLE survey_operation_receipts (
 );
 CREATE INDEX survey_operation_receipts_created_idx ON survey_operation_receipts(created_at DESC, id DESC);
 
+CREATE TABLE survey_submissions (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    questionnaire_id BIGINT NOT NULL REFERENCES survey_questionnaires(id) ON DELETE RESTRICT,
+    definition_version_id BIGINT NOT NULL REFERENCES survey_definition_versions(id) ON DELETE RESTRICT,
+    definition_version_number BIGINT NOT NULL CHECK (definition_version_number > 0),
+    customer_id BIGINT REFERENCES customers(id) ON DELETE RESTRICT,
+    identity_state TEXT NOT NULL CHECK (identity_state IN ('anonymous','resolved','unresolved','conflict')),
+    identity_reason TEXT NOT NULL DEFAULT '',
+    evidence_digest BYTEA CHECK (evidence_digest IS NULL OR octet_length(evidence_digest) = 32),
+    submission_key_digest BYTEA NOT NULL CHECK (octet_length(submission_key_digest) = 32),
+    payload_digest BYTEA NOT NULL CHECK (octet_length(payload_digest) = 32),
+    questionnaire_slug_snapshot TEXT NOT NULL,
+    title_snapshot TEXT NOT NULL,
+    mode_snapshot TEXT NOT NULL CHECK (mode_snapshot IN ('survey','assessment')),
+    total_score DOUBLE PRECISION NOT NULL DEFAULT 0 CHECK (total_score <> 'NaN'::float8),
+    result_snapshot JSONB NOT NULL DEFAULT '{}'::jsonb CHECK (jsonb_typeof(result_snapshot) = 'object'),
+    source_channel TEXT NOT NULL DEFAULT '',
+    campaign_id TEXT NOT NULL DEFAULT '',
+    staff_id TEXT NOT NULL DEFAULT '',
+    submitted_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL,
+    CONSTRAINT survey_submissions_identity CHECK ((identity_state = 'resolved' AND customer_id IS NOT NULL) OR (identity_state <> 'resolved' AND customer_id IS NULL)),
+    UNIQUE(questionnaire_id, submission_key_digest)
+);
+CREATE INDEX survey_submissions_questionnaire_idx ON survey_submissions(questionnaire_id, submitted_at DESC, id DESC);
+CREATE INDEX survey_submissions_customer_idx ON survey_submissions(customer_id, submitted_at DESC, id DESC) WHERE customer_id IS NOT NULL;
+CREATE INDEX survey_submissions_identity_idx ON survey_submissions(identity_state, submitted_at DESC, id DESC);
+
+CREATE TABLE survey_submission_answers (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    submission_id BIGINT NOT NULL REFERENCES survey_submissions(id) ON DELETE RESTRICT,
+    definition_question_id BIGINT REFERENCES survey_definition_questions(id) ON DELETE RESTRICT,
+    legacy_source_question_id BIGINT,
+    question_type TEXT NOT NULL CHECK (question_type IN ('single_choice','multi_choice','textarea','mobile','legacy_unknown')),
+    question_title_snapshot TEXT NOT NULL,
+    question_sort_order INTEGER NOT NULL DEFAULT 0,
+    required_snapshot BOOLEAN NOT NULL DEFAULT FALSE,
+    selected_options_snapshot JSONB NOT NULL DEFAULT '[]'::jsonb CHECK (jsonb_typeof(selected_options_snapshot) = 'array'),
+    text_value_ciphertext BYTEA,
+    text_value_masked TEXT NOT NULL DEFAULT '',
+    answer_digest BYTEA NOT NULL CHECK (octet_length(answer_digest) = 32),
+    score_snapshot DOUBLE PRECISION NOT NULL DEFAULT 0 CHECK (score_snapshot <> 'NaN'::float8),
+    legacy_definition_missing BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ NOT NULL,
+    UNIQUE(submission_id, id),
+    CONSTRAINT survey_submission_answers_legacy CHECK (legacy_definition_missing = FALSE OR definition_question_id IS NULL)
+);
+CREATE INDEX survey_submission_answers_submission_idx ON survey_submission_answers(submission_id, question_sort_order, id);
+
+CREATE TABLE survey_result_tokens (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    submission_id BIGINT NOT NULL UNIQUE REFERENCES survey_submissions(id) ON DELETE RESTRICT,
+    token_digest BYTEA NOT NULL UNIQUE CHECK (octet_length(token_digest) = 32),
+    created_at TIMESTAMPTZ NOT NULL,
+    expires_at TIMESTAMPTZ,
+    revoked_at TIMESTAMPTZ,
+    CONSTRAINT survey_result_tokens_expiry CHECK (expires_at IS NULL OR expires_at > created_at)
+);
+
+CREATE TABLE survey_external_operation_receipts (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    questionnaire_id BIGINT NOT NULL REFERENCES survey_questionnaires(id) ON DELETE RESTRICT,
+    submission_id BIGINT REFERENCES survey_submissions(id) ON DELETE RESTRICT,
+    operation_kind TEXT NOT NULL CHECK (operation_kind IN ('completion','external_push','scrm_apply')),
+    configuration_ref TEXT NOT NULL DEFAULT '',
+    effect_id TEXT,
+    status TEXT NOT NULL CHECK (status IN ('disabled','accepted','queued','attempted','executed','failed','outcome_unknown','reconciled','skipped','legacy_success','legacy_failed')),
+    failure_category TEXT NOT NULL DEFAULT '',
+    occurrence_count BIGINT NOT NULL DEFAULT 1 CHECK (occurrence_count > 0),
+    occurred_at TIMESTAMPTZ NOT NULL,
+    read_only_legacy BOOLEAN NOT NULL DEFAULT FALSE,
+    replayable BOOLEAN NOT NULL DEFAULT TRUE,
+    source_system TEXT,
+    source_table TEXT,
+    source_pk TEXT,
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL,
+    CONSTRAINT survey_external_operation_replay CHECK (read_only_legacy = FALSE OR replayable = FALSE),
+    CONSTRAINT survey_external_operation_source CHECK ((source_system IS NULL AND source_table IS NULL AND source_pk IS NULL) OR (source_system IS NOT NULL AND source_table IS NOT NULL AND source_pk IS NOT NULL)),
+    UNIQUE(source_system, source_table, source_pk)
+);
+CREATE INDEX survey_external_operation_questionnaire_idx ON survey_external_operation_receipts(questionnaire_id, occurred_at DESC, id DESC);
+
+CREATE TABLE survey_audit_events (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    event_type TEXT NOT NULL,
+    aggregate_type TEXT NOT NULL,
+    aggregate_id BIGINT NOT NULL,
+    actor_scope TEXT NOT NULL,
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb CHECK (jsonb_typeof(metadata) = 'object'),
+    occurred_at TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX survey_audit_events_aggregate_idx ON survey_audit_events(aggregate_type, aggregate_id, occurred_at DESC, id DESC);
+
+CREATE TABLE survey_outbox (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    event_type TEXT NOT NULL,
+    aggregate_type TEXT NOT NULL,
+    aggregate_id BIGINT NOT NULL,
+    payload JSONB NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+    idempotency_key TEXT NOT NULL UNIQUE,
+    occurred_at TIMESTAMPTZ NOT NULL,
+    published_at TIMESTAMPTZ
+);
+CREATE INDEX survey_outbox_pending_idx ON survey_outbox(id) WHERE published_at IS NULL;
+
+CREATE TABLE survey_migration_batches (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    batch_key TEXT NOT NULL UNIQUE,
+    source_system TEXT NOT NULL,
+    snapshot_at TIMESTAMPTZ NOT NULL,
+    manifest JSONB NOT NULL CHECK (jsonb_typeof(manifest) = 'object'),
+    manifest_digest BYTEA NOT NULL CHECK (octet_length(manifest_digest) = 32),
+    status TEXT NOT NULL CHECK (status IN ('extracted','validated','importing','imported','reconciled','rolled_back','failed')),
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE survey_migration_source_map (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    migration_batch_id BIGINT NOT NULL REFERENCES survey_migration_batches(id) ON DELETE RESTRICT,
+    source_system TEXT NOT NULL,
+    source_table TEXT NOT NULL,
+    source_pk TEXT NOT NULL,
+    target_table TEXT NOT NULL,
+    target_pk BIGINT,
+    record_digest BYTEA NOT NULL CHECK (octet_length(record_digest) = 32),
+    import_state TEXT NOT NULL CHECK (import_state IN ('imported','quarantined')),
+    created_at TIMESTAMPTZ NOT NULL,
+    UNIQUE(source_system, source_table, source_pk)
+);
+CREATE INDEX survey_migration_source_map_batch_idx ON survey_migration_source_map(migration_batch_id, source_table, id);
+
+CREATE TABLE survey_migration_quarantine (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    migration_batch_id BIGINT NOT NULL REFERENCES survey_migration_batches(id) ON DELETE RESTRICT,
+    source_system TEXT NOT NULL,
+    source_table TEXT NOT NULL,
+    source_pk TEXT NOT NULL,
+    reason_code TEXT NOT NULL,
+    safe_snapshot JSONB NOT NULL DEFAULT '{}'::jsonb CHECK (jsonb_typeof(safe_snapshot) = 'object'),
+    record_digest BYTEA NOT NULL CHECK (octet_length(record_digest) = 32),
+    created_at TIMESTAMPTZ NOT NULL,
+    UNIQUE(source_system, source_table, source_pk, reason_code)
+);
+
 CREATE FUNCTION survey_reject_immutable_version_change() RETURNS trigger
 LANGUAGE plpgsql AS $$
 BEGIN

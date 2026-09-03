@@ -11,12 +11,13 @@ import type {
 
 const validID = (value: number): boolean => Number.isSafeInteger(value) && value > 0;
 const validToken = (value: string): boolean => /^[A-Za-z0-9_-]{43}$/.test(value);
-const SUPPORTED_TYPES = ['single_choice', 'multi_choice'];
+const SUPPORTED_TYPES = ['single_choice', 'multi_choice', 'textarea', 'mobile'];
 
 export class H5Controller extends PageBase {
   private definition: PublicSurveyDefinition | null = null;
   private result: PublicSurveyResult | null = null;
   private answers = new Map<number, number[]>();
+  private textAnswers = new Map<number, string>();
   private unsupportedTypes = new Set<number>();
   private questionIndex = 0;
   private loading = false;
@@ -81,14 +82,17 @@ export class H5Controller extends PageBase {
         this.unsupportedTypes.add(question.id);
         continue;
       }
-      if (typeof question.required !== 'boolean' ||
-          !Array.isArray(question.options) || !question.options.length ||
+      if (typeof question.required !== 'boolean' || !Array.isArray(question.options)) {
+        throw new Error('问卷题目响应不完整');
+      }
+      if (['single_choice', 'multi_choice'].includes(question.type) && (!question.options.length ||
           !Number.isInteger(question.minimum_selections) || !Number.isInteger(question.maximum_selections) ||
           question.minimum_selections < 0 || question.maximum_selections < 1 ||
           question.minimum_selections > question.maximum_selections || question.maximum_selections > question.options.length ||
-          (question.required && question.minimum_selections === 0) || (question.type === 'single_choice' && question.maximum_selections !== 1)) {
+		  (question.required && question.minimum_selections === 0) || (question.type === 'single_choice' && question.maximum_selections !== 1))) {
         throw new Error('问卷题目超出当前单选/多选契约');
       }
+	  if (['textarea', 'mobile'].includes(question.type) && question.options.length) throw new Error('输入题不应包含选项');
       const options = new Set<number>();
       for (const option of question.options) {
         if (!validID(option.id) || options.has(option.id) || typeof option.option_text !== 'string' || !option.option_text) throw new Error('问卷选项响应不完整');
@@ -119,8 +123,25 @@ export class H5Controller extends PageBase {
     this.refresh();
   }
 
+  private setText(question: PublicSurveyQuestion, event: Event): void {
+    if (this.submitting || this.submitted || !this.supported(question)) return;
+    const value = String((event.target as HTMLInputElement | HTMLTextAreaElement).value || '');
+    if (value !== (this.textAnswers.get(question.id) || '')) this.submissionKey = '';
+    this.textAnswers.set(question.id, value);
+    this.error = '';
+  }
+
   private questionError(question: PublicSurveyQuestion): string {
     if (!this.supported(question)) return '';
+    if (question.type === 'textarea' || question.type === 'mobile') {
+      const value = this.textAnswers.get(question.id) || '';
+      if (!value && !question.required) return '';
+      if (!value) return `「${question.title}」请填写`;
+      if (question.type === 'mobile' && !/^\+[1-9][0-9]{1,14}$/.test(value)) return `「${question.title}」请填写 E.164 手机号，例如 +8613800138000`;
+      const length = [...value].length;
+      if (length < (question.minimum_length || 0) || length > (question.maximum_length || 10000)) return `「${question.title}」长度不符合要求`;
+      return '';
+    }
     const count = (this.answers.get(question.id) || []).length;
     if (count === 0 && !question.required) return '';
     return count < question.minimum_selections || count > question.maximum_selections
@@ -132,8 +153,8 @@ export class H5Controller extends PageBase {
     this.error = this.definition.questions.map((question) => this.questionError(question)).find(Boolean) || '';
     if (this.error) { this.refresh(); return; }
     const answers: PublicSurveySubmissionAnswer[] = this.definition.questions
-      .filter((question) => this.supported(question) && (this.answers.get(question.id) || []).length > 0)
-      .map((question) => ({ question_id: question.id, option_ids: [...this.answers.get(question.id)!] }));
+      .filter((question) => this.supported(question) && ((this.answers.get(question.id) || []).length > 0 || (this.textAnswers.get(question.id) || '') !== ''))
+      .map((question) => ({ question_id: question.id, option_ids: [...(this.answers.get(question.id) || [])], text_value: this.textAnswers.get(question.id) || undefined }));
     this.submitting = true;
     this.refresh();
     try {
@@ -185,12 +206,15 @@ export class H5Controller extends PageBase {
     const ready = !!definition && !this.loading && !this.submitted;
     const current = visible[0];
     const errorText = this.error || this.unsupportedNotice();
+    const assessment = (this.result?.assessment_result || {}) as Record<string, any>;
+    const dimensions = Array.isArray(assessment.dimensions) ? assessment.dimensions : [];
     const legacyNext = (): void => {
       if (!definition || this.questionIndex < questions.length - 1) this.move(1);
       else void this.submit();
     };
     return {
       loading: this.loading, error: errorText, errorEmpty: !errorText, ready, result: this.result,
+	  isAssessmentResult: this.result?.mode === 'assessment', resultTitle: this.result?.questionnaire_title || '问卷结果', totalScore: Number(this.result?.total_score || 0), overallTitle: assessment.overall_level?.title || '已完成', overallSummary: assessment.overall_level?.summary || '', dimensions,
       resultTime: this.result ? new Date(this.result.submitted_at).toLocaleString('zh-CN', { hour12: false }) : '',
       notWechatUA: !/MicroMessenger/i.test(navigator.userAgent || ''),
       submitted: this.submitted, resultPath: `result.html#result_token=${encodeURIComponent(this.resultToken)}`,
@@ -206,12 +230,14 @@ export class H5Controller extends PageBase {
         : '后端能力未就绪：当前页面没有可用的报名、支付、续费、二维码或完成状态契约；未执行任何外部操作。',
       questions: visible.map((question) => {
         const supported = this.supported(question);
+        const isText = question.type === 'textarea' || question.type === 'mobile';
         return {
           id: question.id, title: question.title, required: question.required ? '（必答）' : '（选答）',
           supported, unsupported: !supported,
+          isText, isChoice: !isText, inputType: question.type === 'mobile' ? 'tel' : 'text', inputValue: this.textAnswers.get(question.id) || '', placeholder: question.placeholder_text || '请输入', input: (event: Event) => this.setText(question, event),
           hint: !supported ? '当前端不支持该题型，本题不参与作答与提交'
-            : question.type === 'single_choice' ? '单选' : `多选，限选 ${question.maximum_selections} 项`,
-          options: supported ? question.options.map((option) => {
+            : question.type === 'single_choice' ? '单选' : question.type === 'multi_choice' ? `多选，限选 ${question.maximum_selections} 项` : question.type === 'mobile' ? '手机号（国际格式）' : '文本回答',
+          options: supported && !isText ? question.options.map((option) => {
             const selected = (this.answers.get(question.id) || []).includes(option.id);
             return { id: option.id, text: option.option_text, selected, mark: selected ? '✓' : '○',
               style: { background: selected ? '#EFF4FF' : '#fff', borderColor: selected ? '#3370ff' : '#DEE0E3' },

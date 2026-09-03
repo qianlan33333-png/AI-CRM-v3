@@ -11,7 +11,7 @@ const assertIncludes = (source, fragments, label) => {
 };
 
 const editor = read('src/admin/sections/questionnaireEditor.ts');
-const adapter = read('src/api/questionnaireEditor.ts');
+const adapter = read('src/api/questionnaireEditorV3.ts');
 const listTemplate = read('src/admin/templates/questionnaires.html');
 const operationsTemplate = read('src/admin/templates/questionnaireOps.html');
 
@@ -30,16 +30,9 @@ assertIncludes(editor, [
 ], 'editor');
 
 assertIncludes(adapter, [
-  'listLegacyQuestionnaires',
-  'getLegacyQuestionnaire',
-  'createLegacyQuestionnaire',
-  'replaceLegacyQuestionnaire',
-  'duplicateLegacyQuestionnaire',
-  'disableLegacyQuestionnaire',
-  'enableLegacyQuestionnaire',
-  'deleteLegacyQuestionnaire',
-  'getExportLegacyQuestionnaireSubmissionsUrl',
-  'apiRequestOptions()',
+  '/api/admin/questionnaires',
+  'Idempotency-Key',
+  'apiRequestOptions',
 ], 'editor adapter');
 
 assertIncludes(listTemplate, ['搜索问卷', '状态筛选', '复制'], 'list template');

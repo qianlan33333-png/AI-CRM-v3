@@ -7,7 +7,7 @@ import (
 )
 
 func TestSurveyDefinitionMigrationOwnershipAndImmutability(t *testing.T) {
-	contents, err := os.ReadFile("../../../migrations/0017_survey_definitions.sql")
+	contents, err := os.ReadFile("../../../migrations/0018_survey.sql")
 	if err != nil {
 		t.Fatal(err)
 	}

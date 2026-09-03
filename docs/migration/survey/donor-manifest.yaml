@@ -14,7 +14,7 @@ classification:
   persistence: local transaction; internal durable job; provider read; provider write through outbound and external effects
 
 rules:
-  frontend: the 17 active files in donor-sha256.txt remain byte-exact until a characterization-backed v3 adapter supersedes them
+  frontend: the donor hash manifest records the 16 unchanged donor files; questionnaireEditor.ts is superseded only by the characterization-backed questionnaireEditorV3 adapter import and assessment guard removal
   backend: reimplement behavior in the v3 survey domain; do not copy the v2 identity, queue, provider, store, or migration history
   migration: one read-only consistent snapshot; no cutover, dual write, continuous delta, or legacy effect replay
   sensitive_history: import business outcomes only; discard URL, request body, response body, and raw legacy user identifiers

@@ -2,6 +2,7 @@
 package config
 
 import (
+	"encoding/base64"
 	"errors"
 	"net"
 	"net/url"
@@ -29,6 +30,7 @@ type Runtime struct {
 	GroupOps            GroupOps
 	Effects             Effects
 	TagCatalog          TagCatalogProvider
+	Survey              Survey
 	WorkerOwner         string
 	WorkerLimit         int
 	CustomerSyncTrigger string
@@ -63,6 +65,13 @@ type GroupOps struct {
 }
 
 type Effects struct{ ProviderEnabled bool }
+type Survey struct {
+	DataKey             string
+	OAuthEnabled        bool
+	OAuthAppID          string
+	OAuthSecret         string
+	OAuthOpenPlatformID string
+}
 
 // TagCatalogProvider is intentionally separate from outbound message/write
 // configuration. It permits only the read-only catalog adapter and remains
@@ -97,6 +106,10 @@ func Load() (Runtime, error) {
 			ChannelStateHMACKey: os.Getenv("AICRM_CHANNEL_STATE_HMAC_KEY"),
 		},
 		GroupOps: GroupOps{WebhookSecret: os.Getenv("AICRM_GROUP_OPS_WEBHOOK_SECRET")},
+		Survey:   Survey{DataKey: os.Getenv("AICRM_SURVEY_DATA_KEY"), OAuthAppID: os.Getenv("AICRM_SURVEY_OAUTH_APP_ID"), OAuthSecret: os.Getenv("AICRM_SURVEY_OAUTH_SECRET"), OAuthOpenPlatformID: os.Getenv("AICRM_SURVEY_OAUTH_OPEN_PLATFORM_ID")},
+	}
+	if cfg.Survey.OAuthEnabled, err = strictBool("AICRM_SURVEY_OAUTH_ENABLED", false); err != nil {
+		return Runtime{}, err
 	}
 	if cfg.Effects.ProviderEnabled, err = strictBool("AICRM_OUTBOUND_PROVIDER_ENABLED", false); err != nil {
 		return Runtime{}, err
@@ -188,6 +201,17 @@ func Load() (Runtime, error) {
 	}
 	if cfg.GroupOps.WebhookSecret != "" && (strings.TrimSpace(cfg.GroupOps.WebhookSecret) != cfg.GroupOps.WebhookSecret || len(cfg.GroupOps.WebhookSecret) < 32 || len(cfg.GroupOps.WebhookSecret) > 4096) {
 		return Runtime{}, errors.New("invalid Group Ops webhook secret")
+	}
+	if cfg.Survey.DataKey != "" {
+		if decoded, decodeErr := base64.RawStdEncoding.DecodeString(cfg.Survey.DataKey); decodeErr != nil || len(decoded) != 32 {
+			return Runtime{}, errors.New("invalid AICRM_SURVEY_DATA_KEY")
+		}
+	}
+	if cfg.Survey.OAuthEnabled {
+		values := []string{cfg.Survey.OAuthAppID, cfg.Survey.OAuthSecret, cfg.Survey.OAuthOpenPlatformID}
+		if nonEmptyCount(values) != len(values) {
+			return Runtime{}, errors.New("enabled survey OAuth configuration is incomplete")
+		}
 	}
 	return cfg, nil
 }
