@@ -178,58 +178,6 @@ func (r *Repository) ListAppSettingsAudit(ctx context.Context) ([]configport.Pro
 	return out, rows.Err()
 }
 
-// ListReleaseProjections returns persisted deployment observations only. Empty
-// is an honest empty projection; it is never populated with fixture releases.
-func (r *Repository) ListReleaseProjections(ctx context.Context) ([]map[string]any, error) {
-	tx, err := platformpostgres.RequireTransaction(ctx)
-	if err != nil {
-		return nil, err
-	}
-	rows, err := tx.Query(ctx, `SELECT id,release_sha,status,observed_at,details FROM adminops_release_projections ORDER BY observed_at DESC,id DESC LIMIT 100`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := []map[string]any{}
-	for rows.Next() {
-		var id int64
-		var sha, status string
-		var observed time.Time
-		var details json.RawMessage
-		if err = rows.Scan(&id, &sha, &status, &observed, &details); err != nil {
-			return nil, err
-		}
-		out = append(out, map[string]any{"id": id, "release_sha": sha, "status": status, "observed_at": observed.UTC().Format(time.RFC3339Nano), "details": json.RawMessage(details)})
-	}
-	return out, rows.Err()
-}
-
-// ListDiagnosticSnapshots exposes bounded, persisted local observations. It
-// intentionally carries only DB-validated JSON details and has no provider.
-func (r *Repository) ListDiagnosticSnapshots(ctx context.Context) ([]map[string]any, error) {
-	tx, err := platformpostgres.RequireTransaction(ctx)
-	if err != nil {
-		return nil, err
-	}
-	rows, err := tx.Query(ctx, `SELECT id,diagnostic_key,status,observed_at,details FROM adminops_diagnostic_snapshots ORDER BY observed_at DESC,id DESC LIMIT 100`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := []map[string]any{}
-	for rows.Next() {
-		var id int64
-		var key, status string
-		var observed time.Time
-		var details json.RawMessage
-		if err = rows.Scan(&id, &key, &status, &observed, &details); err != nil {
-			return nil, err
-		}
-		out = append(out, map[string]any{"id": id, "key": key, "status": status, "observed_at": observed.UTC().Format(time.RFC3339Nano), "details": json.RawMessage(details)})
-	}
-	return out, rows.Err()
-}
-
 // Compile-time boundaries: Config app uses only this local repository and
 // transaction-bound appender; it never owns runtime/provider configuration.
 var _ configport.EventAppender = (*Repository)(nil)

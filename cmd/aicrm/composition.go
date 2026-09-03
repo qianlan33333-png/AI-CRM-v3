@@ -21,6 +21,7 @@ import (
 	channelstore "github.com/qianlan33333-png/AI-CRM-v3/internal/channel"
 	configapp "github.com/qianlan33333-png/AI-CRM-v3/internal/config/app"
 	configmodule "github.com/qianlan33333-png/AI-CRM-v3/internal/config/module"
+	configport "github.com/qianlan33333-png/AI-CRM-v3/internal/config/port"
 	configstore "github.com/qianlan33333-png/AI-CRM-v3/internal/config/store"
 	coupon "github.com/qianlan33333-png/AI-CRM-v3/internal/coupon"
 	couponapp "github.com/qianlan33333-png/AI-CRM-v3/internal/coupon/app"
@@ -340,7 +341,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
-	configBindings, err := configModule.Bind(settingsService, setupWizard, configRepository, requestSecurity)
+	configBindings, err := configModule.Bind(settingsService, setupWizard, configport.EmptySafeProjectionReader{}, requestSecurity)
 	if err != nil {
 		return fail(err)
 	}

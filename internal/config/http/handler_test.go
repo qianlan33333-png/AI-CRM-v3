@@ -10,6 +10,7 @@ import (
 
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
 	configapp "github.com/qianlan33333-png/AI-CRM-v3/internal/config/app"
+	configport "github.com/qianlan33333-png/AI-CRM-v3/internal/config/port"
 )
 
 type testSecurity struct {
@@ -37,13 +38,16 @@ func (s *testSettings) Save(_ context.Context, input configapp.SaveSettingsInput
 type testWizard struct {
 	save configapp.SetupWizardSaveInput
 }
-type testProjections struct{}
-
-func (testProjections) ListReleaseProjections(context.Context) ([]map[string]any, error) {
-	return []map[string]any{}, nil
+type testProjections struct {
+	releases    []configport.ReleaseProjection
+	diagnostics []configport.DiagnosticProjection
 }
-func (testProjections) ListDiagnosticSnapshots(context.Context) ([]map[string]any, error) {
-	return []map[string]any{}, nil
+
+func (projections testProjections) ListReleaseProjections(context.Context) ([]configport.ReleaseProjection, error) {
+	return projections.releases, nil
+}
+func (projections testProjections) ListDiagnosticSnapshots(context.Context) ([]configport.DiagnosticProjection, error) {
+	return projections.diagnostics, nil
 }
 
 func (s *testWizard) Get(context.Context) (configapp.SetupWizardSnapshot, error) {
@@ -108,5 +112,24 @@ func TestAppSettingsRejectsBodyTokenMismatchBeforeSave(t *testing.T) {
 	h.ServeHTTP(response, r)
 	if response.Code != 400 || settings.save.Actor != "" {
 		t.Fatalf("status/save=%d/%#v", response.Code, settings.save)
+	}
+}
+
+func TestHistoricalProjectionsExposeOnlyTypedSafeFields(t *testing.T) {
+	principal := accessdomain.Principal{InternalID: 7, Kind: accessdomain.KindAdmin, Roles: []accessdomain.Role{accessdomain.RoleViewer}}
+	projections := testProjections{
+		releases:    []configport.ReleaseProjection{{ID: 9, ReleaseSHA: "release-sha", Status: "observed"}},
+		diagnostics: []configport.DiagnosticProjection{{ID: 3, Key: "runtime", Status: "ok"}},
+	}
+	h, err := NewHandler(&testSettings{}, &testWizard{}, projections, testSecurity{principal: principal})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"/api/admin/config/releases", "/api/admin/config/diagnostics"} {
+		response := httptest.NewRecorder()
+		h.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		if response.Code != http.StatusOK || strings.Contains(response.Body.String(), "details") {
+			t.Fatalf("path=%s status=%d body=%s", path, response.Code, response.Body.String())
+		}
 	}
 }

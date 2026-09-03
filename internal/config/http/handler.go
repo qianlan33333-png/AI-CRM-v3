@@ -41,10 +41,7 @@ type wizardService interface {
 	Get(context.Context) (configapp.SetupWizardSnapshot, error)
 	Save(context.Context, configapp.SetupWizardSaveInput) (configapp.SetupWizardSaveResult, error)
 }
-type projectionReader interface {
-	ListReleaseProjections(context.Context) ([]map[string]any, error)
-	ListDiagnosticSnapshots(context.Context) ([]map[string]any, error)
-}
+type projectionReader = configport.SafeProjectionReader
 
 func NewHandler(settings settingsService, wizard wizardService, projections projectionReader, security RequestSecurity) (*Handler, error) {
 	if settings == nil || wizard == nil || projections == nil || security == nil {

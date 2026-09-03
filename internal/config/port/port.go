@@ -74,6 +74,45 @@ type ProjectionAudit struct {
 	CreatedAt  time.Time
 }
 
+// ReleaseProjection and DiagnosticProjection are the only historical facts
+// that the Config HTTP compatibility surface may expose. Details are
+// deliberately absent: AdminOps owns their source and must provide a
+// redacted adapter before any data is mounted here.
+type ReleaseProjection struct {
+	ID         int64     `json:"id"`
+	ReleaseSHA string    `json:"release_sha"`
+	Status     string    `json:"status"`
+	ObservedAt time.Time `json:"observed_at"`
+}
+
+type DiagnosticProjection struct {
+	ID         int64     `json:"id"`
+	Key        string    `json:"key"`
+	Status     string    `json:"status"`
+	ObservedAt time.Time `json:"observed_at"`
+}
+
+// SafeProjectionReader is a read-only, typed seam for AdminOps-owned
+// historical projections. It cannot carry arbitrary JSON details across the
+// Config boundary.
+type SafeProjectionReader interface {
+	ListReleaseProjections(context.Context) ([]ReleaseProjection, error)
+	ListDiagnosticSnapshots(context.Context) ([]DiagnosticProjection, error)
+}
+
+// EmptySafeProjectionReader is the honest default until an AdminOps-owned
+// store and redacting adapter are composed. It returns arrays rather than
+// null so the frozen read-only page sees an empty projection.
+type EmptySafeProjectionReader struct{}
+
+func (EmptySafeProjectionReader) ListReleaseProjections(context.Context) ([]ReleaseProjection, error) {
+	return []ReleaseProjection{}, nil
+}
+
+func (EmptySafeProjectionReader) ListDiagnosticSnapshots(context.Context) ([]DiagnosticProjection, error) {
+	return []DiagnosticProjection{}, nil
+}
+
 // Event is a local transactional fact. It is a seam only: Terra must adapt it
 // to the v3 versioned event/outbox implementation at composition time.
 type Event struct {
