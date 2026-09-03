@@ -52,7 +52,8 @@ func (m *ModuleRegistration) Readiness(ctx context.Context, pool *pgxpool.Pool) 
 			'segment_audience_automation_binding_versions',
 			'segment_audience_sender_sets',
 			'segment_audience_sender_set_members',
-			'segment_audience_member_events'
+			'segment_audience_member_events',
+			'segment_audience_schedule_states'
 		]) AS required(name)
 		WHERE to_regclass(current_schema() || '.' || required.name) IS NULL
 	)`).Scan(&ready)

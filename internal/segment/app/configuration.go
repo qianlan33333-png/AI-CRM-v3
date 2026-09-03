@@ -305,6 +305,9 @@ func (s *Service) PutConfiguration(ctx context.Context, command ConfigurationCom
 	if err != nil {
 		return segmentdomain.ConfigurationVersion{}, err
 	}
+	if err = ValidateRefreshCronUTC(command.RefreshCronUTC); err != nil {
+		return segmentdomain.ConfigurationVersion{}, err
+	}
 	now := s.now().UTC()
 	result, err := s.mutate(ctx, "put_configuration", command.Actor, command.IdempotencyKey, mutationPayload("put_configuration", command), func(tx context.Context) (any, segmentstore.MutationFact, error) {
 		item, putErr := s.store.LockPackage(tx, command.PackageID)

@@ -75,6 +75,7 @@ for migration_contract in \
 done
 grep -qx 'test -x "$release_dir/bin/migrate-automation-operations"' "$installer" || { echo "release must include Automation Operations migration tool" >&2; exit 1; }
 grep -qx 'test -f "$release_dir/migrations/0036_automation_operations_migration.sql"' "$installer" || { echo "release must require Automation Operations migration schema" >&2; exit 1; }
+grep -qx 'test -f "$release_dir/migrations/0037_segment_audience_schedule_state.sql"' "$installer" || { echo "release must require Automation Operations schedule state" >&2; exit 1; }
 config_migration="migrations/0015_config_adminops.sql"
 for table in config_settings config_audits config_outbox adminops_release_projections adminops_diagnostic_snapshots; do
   grep -qE "^CREATE TABLE ${table}[[:space:]]*\\(" "$config_migration" || {

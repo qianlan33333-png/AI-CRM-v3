@@ -261,6 +261,12 @@ func (s *ExecutionService) Precheck(ctx context.Context, packageID int64) (Prech
 		return Precheck{}, classify(err)
 	}
 	result := Precheck{ConfigurationVersionID: config.ID, BindingVersion: binding.Version, SenderSetVersion: senders.Version}
+	if _, definitionErr := CanonicalDefinition(config.Definition); definitionErr != nil {
+		result.Reasons = append(result.Reasons, "definition_unsupported")
+	}
+	if cronErr := ValidateRefreshCronUTC(config.RefreshCronUTC); cronErr != nil {
+		result.Reasons = append(result.Reasons, "schedule_invalid")
+	}
 	if snapshotFound {
 		result.SnapshotID = snapshot.ID
 	} else {

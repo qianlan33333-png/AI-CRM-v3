@@ -81,6 +81,10 @@ func InsertTxWithOptions(ctx context.Context, client *river.Client[pgx.Tx], tx p
 type Runtime struct{ client *river.Client[pgx.Tx] }
 
 func NewRuntime(pool *pgxpool.Pool, workers *river.Workers, queueNames ...string) (*Runtime, error) {
+	return NewRuntimeWithPeriodic(pool, workers, nil, queueNames...)
+}
+
+func NewRuntimeWithPeriodic(pool *pgxpool.Pool, workers *river.Workers, periodicJobs []*river.PeriodicJob, queueNames ...string) (*Runtime, error) {
 	if pool == nil || workers == nil {
 		return nil, ErrUnavailable
 	}
@@ -94,7 +98,7 @@ func NewRuntime(pool *pgxpool.Pool, workers *river.Workers, queueNames ...string
 		}
 		queues[name] = river.QueueConfig{MaxWorkers: 4}
 	}
-	client, err := river.NewClient(riverpgxv5.New(pool), &river.Config{Queues: queues, Workers: workers})
+	client, err := river.NewClient(riverpgxv5.New(pool), &river.Config{Queues: queues, Workers: workers, PeriodicJobs: periodicJobs})
 	if err != nil {
 		return nil, err
 	}

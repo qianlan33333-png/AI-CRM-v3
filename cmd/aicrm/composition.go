@@ -165,6 +165,10 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err = river.AddWorkerSafely[segment.AudienceMemberEventDispatchJobArgs](effectWorkers, audienceMemberEventWorker); err != nil {
 		return fail(err)
 	}
+	audienceScheduleWorker := segment.NewAudienceScheduleScanWorker()
+	if err = river.AddWorkerSafely[segment.AudienceScheduleScanJobArgs](effectWorkers, audienceScheduleWorker); err != nil {
+		return fail(err)
+	}
 	effectClient, err := platformjobqueue.NewInsertClient(pool.Native(), effectWorkers)
 	if err != nil {
 		return fail(err)
@@ -181,7 +185,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
-	effectsRuntime, err := platformjobqueue.NewRuntime(pool.Native(), effectWorkers, platformjobqueue.OutboundQueue, wecom.CustomerSyncQueue, payment.ReconciliationQueue, segment.AudienceRefreshQueue)
+	effectsRuntime, err := platformjobqueue.NewRuntimeWithPeriodic(pool.Native(), effectWorkers, []*river.PeriodicJob{segment.AudienceSchedulePeriodicJob()}, platformjobqueue.OutboundQueue, wecom.CustomerSyncQueue, payment.ReconciliationQueue, segment.AudienceRefreshQueue)
 	if err != nil {
 		return fail(err)
 	}
@@ -244,6 +248,13 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return fail(err)
 	}
 	if err = audienceRefreshWorker.BindService(segmentSnapshots); err != nil {
+		return fail(err)
+	}
+	scheduledRefreshes, err := segmentapp.NewScheduledRefreshService(uow, segmentRepository, segmentSnapshots)
+	if err != nil {
+		return fail(err)
+	}
+	if err = audienceScheduleWorker.BindService(scheduledRefreshes); err != nil {
 		return fail(err)
 	}
 	segmentStaff := automationOpsStaffAdapter{uow: uow, users: accessRepository}
