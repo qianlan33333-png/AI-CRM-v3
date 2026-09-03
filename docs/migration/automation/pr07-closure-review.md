@@ -8,6 +8,8 @@
 
 > 实施更新：本闭包复核的“NOT CLOSED”结论仅描述当时的只读基线，已被 `codex/feature-automation-final` 的 PR07 集成取代。该集成新增 Automation-owned PostgreSQL `0013`、Store/UoW receipt/audit/outbox、认证/CSRF HTTP adapter、OpenAPI、readiness、PR10 单壳挂载与 donor 20/20 SHA 门禁；不引入 OneID、客户/受众、Worker、Provider 或执行能力。后续收口还使 `active ↔ paused` 成为真实的本地持久状态，并在固定内容保存时通过 Media stable reader 验证图片、附件、小程序和群邀请素材；该状态绝不宣称 Provider 已执行。
 
+> 集成更新：PR23 已基于 `origin/main@507b8c9d610a44a386b77ec8f3d9693f8197abea`（PR06）重放。PR06 的 Group Ops OpenAPI、Composition Root、release migration 与 stage allowlist 均保留，PR07 仅追加 Automation 合同、`0013` 迁移和私有 donor 模板；不会替换任何既有能力。
+
 ## 结论
 
 PR07 的 donor 证据已通过 20/20 字节冻结检查，但 v3 能力闭包尚未完成，结论为 **NOT CLOSED**。
