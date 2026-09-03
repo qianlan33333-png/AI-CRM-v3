@@ -47,6 +47,7 @@ type SnapshotApplication interface {
 type ExecutionApplication interface {
 	PutBinding(context.Context, segmentapp.BindingCommand) (segmentdomain.AutomationBinding, error)
 	CurrentBinding(context.Context, int64) (segmentdomain.AutomationBinding, error)
+	DeleteBinding(context.Context, segmentapp.VersionCommand) error
 	ReplaceSenders(context.Context, segmentapp.SendersCommand) (segmentdomain.SenderSet, error)
 	CurrentSenderSet(context.Context, int64) (segmentdomain.SenderSet, error)
 	Precheck(context.Context, int64) (segmentapp.Precheck, error)
@@ -409,8 +410,8 @@ func (h *Handler) binding(w http.ResponseWriter, r *http.Request, packageID int6
 		respond(w, 200, map[string]any{"binding": item})
 		return
 	}
-	if r.Method != http.MethodPut {
-		method(w, "GET, PUT")
+	if r.Method != http.MethodPut && r.Method != http.MethodDelete {
+		method(w, "GET, PUT, DELETE")
 		return
 	}
 	principal, ok := h.write(w, r)
@@ -419,6 +420,15 @@ func (h *Handler) binding(w http.ResponseWriter, r *http.Request, packageID int6
 	}
 	key, ok := requestKey(w, r)
 	if !ok {
+		return
+	}
+	if r.Method == http.MethodDelete {
+		err := h.execution.DeleteBinding(r.Context(), segmentapp.VersionCommand{ID: packageID, ExpectedVersion: queryID(r, "expected_version"), Actor: principal.InternalID, IdempotencyKey: key})
+		if err != nil {
+			resultError(w, err)
+			return
+		}
+		respond(w, 200, map[string]any{"ok": true})
 		return
 	}
 	var in struct {

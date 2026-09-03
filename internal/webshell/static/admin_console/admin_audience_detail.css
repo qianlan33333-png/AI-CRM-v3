@@ -322,6 +322,48 @@
     border-top: 1px solid var(--ai-line2);
   }
 
+  .ai-status-line[data-state="error"],
+  .ai-status-line[data-capability-state="forbidden"],
+  .ai-status-line[data-capability-state="conflict"],
+  .ai-status-line[data-capability-state="unknown"] {
+    border: 1px solid #fecdca;
+    border-radius: 10px;
+    background: #fff1f3;
+    color: #b42318;
+    padding: 10px 12px;
+  }
+
+  .ai-status-line[data-state="success"],
+  .ai-status-line[data-capability-state="ready"] {
+    border: 1px solid #abefc6;
+    border-radius: 10px;
+    background: #ecfdf3;
+    color: #067647;
+    padding: 10px 12px;
+  }
+
+  .ai-status-line[data-capability-state="loading"],
+  .ai-status-line[data-capability-state="not-ready"],
+  .ai-status-line[data-capability-state="stale"] {
+    border: 1px solid #fedf89;
+    border-radius: 10px;
+    background: #fffaeb;
+    color: #b54708;
+    padding: 10px 12px;
+  }
+
+  .automation-run-card {
+    display: grid;
+    gap: 12px;
+    margin-top: 20px;
+    border: 1px solid #d6e4ff;
+    border-radius: 14px;
+    background: #f5f8ff;
+    padding: 18px;
+  }
+
+  .automation-run-card h4 { margin: 0; font-size: 17px; }
+
   .ai-table-wrap {
     overflow: auto;
     border: 1px solid var(--ai-line2);

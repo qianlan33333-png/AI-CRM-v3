@@ -63,6 +63,18 @@ func (r *Repository) SetCurrentBinding(ctx context.Context, packageID, bindingID
 	return item, err
 }
 
+func (r *Repository) ClearCurrentBinding(ctx context.Context, packageID, expectedVersion, actor int64, now time.Time) (segmentdomain.Package, error) {
+	t, err := tx(ctx)
+	if err != nil {
+		return segmentdomain.Package{}, err
+	}
+	item, err := scanPackage(t.QueryRow(ctx, `UPDATE segment_audience_packages SET current_automation_binding_id=NULL,version=version+1,updated_by=$3,updated_at=$4 WHERE id=$1 AND version=$2 AND lifecycle='paused' AND current_automation_binding_id IS NOT NULL RETURNING `+packageColumns, packageID, expectedVersion, actor, now))
+	if errors.Is(err, ErrNotFound) {
+		return item, ErrConflict
+	}
+	return item, err
+}
+
 func (r *Repository) CurrentSenderSet(ctx context.Context, packageID int64) (segmentdomain.SenderSet, error) {
 	t, err := tx(ctx)
 	if err != nil {

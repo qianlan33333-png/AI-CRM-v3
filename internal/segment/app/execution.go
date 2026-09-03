@@ -23,6 +23,7 @@ type ExecutionStore interface {
 	CurrentBinding(context.Context, int64) (segmentdomain.AutomationBinding, error)
 	CreateBinding(context.Context, segmentdomain.AutomationBinding) (segmentdomain.AutomationBinding, error)
 	SetCurrentBinding(context.Context, int64, int64, int64, int64, time.Time) (segmentdomain.Package, error)
+	ClearCurrentBinding(context.Context, int64, int64, int64, time.Time) (segmentdomain.Package, error)
 	CurrentSenderSet(context.Context, int64) (segmentdomain.SenderSet, error)
 	CreateSenderSet(context.Context, segmentdomain.SenderSet) (segmentdomain.SenderSet, error)
 	SetCurrentSenderSet(context.Context, int64, int64, int64, int64, time.Time) (segmentdomain.Package, error)
@@ -121,6 +122,39 @@ func (s *ExecutionService) CurrentBinding(ctx context.Context, packageID int64) 
 	var out segmentdomain.AutomationBinding
 	err := s.uow.Within(ctx, func(tx context.Context) error { var e error; out, e = s.store.CurrentBinding(tx, packageID); return e })
 	return out, classify(err)
+}
+func (s *ExecutionService) DeleteBinding(ctx context.Context, command VersionCommand) error {
+	if !validExecutionMutation(command.ID, command.ExpectedVersion, command.Actor, command.IdempotencyKey) {
+		return ErrInvalid
+	}
+	now := s.now().UTC()
+	payload, _ := json.Marshal(command)
+	err := s.uow.Within(ctx, func(tx context.Context) error {
+		receipt, owned, e := s.store.Reserve(tx, segmentstore.Reservation{Operation: "delete_binding", ActorScope: fmt.Sprintf("admin:%d", command.Actor), KeyDigest: sha256.Sum256([]byte(command.IdempotencyKey)), PayloadDigest: sha256.Sum256(payload), CreatedAt: now})
+		if e != nil {
+			return e
+		}
+		if !owned {
+			return nil
+		}
+		pkg, e := s.store.LockPackage(tx, command.ID)
+		if e != nil {
+			return e
+		}
+		if pkg.Version != command.ExpectedVersion || pkg.Lifecycle != segmentdomain.Paused || pkg.CurrentAutomationBindingID == nil {
+			return ErrConflict
+		}
+		bindingID := *pkg.CurrentAutomationBindingID
+		if _, e = s.store.ClearCurrentBinding(tx, command.ID, command.ExpectedVersion, command.Actor, now); e != nil {
+			return e
+		}
+		if _, e = s.store.AppendMutationFacts(tx, fact("binding", bindingID, "delete", "audience.binding.removed.v1", command.Actor, command.IdempotencyKey, now)); e != nil {
+			return e
+		}
+		_, e = s.store.Complete(tx, receipt.ID, json.RawMessage(`{"ok":true}`), now)
+		return e
+	})
+	return classify(err)
 }
 func (s *ExecutionService) ReplaceSenders(ctx context.Context, command SendersCommand) (segmentdomain.SenderSet, error) {
 	if !validExecutionMutation(command.PackageID, command.ExpectedPackageVersion, command.Actor, command.IdempotencyKey) || len(command.ProviderMemberIDs) < 1 || len(command.ProviderMemberIDs) > 5 {
@@ -287,6 +321,9 @@ func (f *RuntimeFacade) PutBinding(ctx context.Context, c BindingCommand) (segme
 }
 func (f *RuntimeFacade) CurrentBinding(ctx context.Context, id int64) (segmentdomain.AutomationBinding, error) {
 	return f.Execution.CurrentBinding(ctx, id)
+}
+func (f *RuntimeFacade) DeleteBinding(ctx context.Context, c VersionCommand) error {
+	return f.Execution.DeleteBinding(ctx, c)
 }
 func (f *RuntimeFacade) ReplaceSenders(ctx context.Context, c SendersCommand) (segmentdomain.SenderSet, error) {
 	return f.Execution.ReplaceSenders(ctx, c)

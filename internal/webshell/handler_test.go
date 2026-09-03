@@ -87,6 +87,7 @@ func TestStandaloneHandlerRendersAdminLoginSidebarAndAssets(t *testing.T) {
 				"当前分组暂无人群包",
 				"admin_console.js",
 				"admin_audience.css",
+				"admin_audience_detail.js",
 			},
 			notContain: []string{
 				"功能待接入",
@@ -135,14 +136,18 @@ func TestStandaloneHandlerRendersAdminLoginSidebarAndAssets(t *testing.T) {
 			path:   "/static/admin_console/admin_audience_detail.js",
 			status: http.StatusOK,
 			contains: []string{
-				"data-panel",
-				"ai-panel",
+				"/api/admin",
+				"credentials: \"same-origin\"",
+				"X-CSRF-Token",
+				"Idempotency-Key",
+				"broadcast-previews",
+				"outcome_unknown",
 			},
 			notContain: []string{
-				"fetch(",
-				"requestJson",
-				"XMLHttpRequest",
-				"/api/",
+				"sessionStorage",
+				"localStorage",
+				"mock.invalid",
+				"external_userid",
 			},
 		},
 		{

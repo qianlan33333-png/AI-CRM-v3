@@ -4,6 +4,7 @@ package http
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -23,15 +24,17 @@ type RequestSecurity interface {
 	AuthorizeCSRF(context.Context, *http.Request) (accessdomain.Principal, error)
 }
 type Handler struct {
-	service  automationport.AgentService
-	security RequestSecurity
+	service   automationport.AgentService
+	published automationport.PublishedAgentReader
+	security  RequestSecurity
 }
 
 func NewHandler(service automationport.AgentService, security RequestSecurity) (*Handler, error) {
 	if service == nil || security == nil {
 		return nil, errors.New("automation HTTP dependencies are required")
 	}
-	return &Handler{service, security}, nil
+	published, _ := service.(automationport.PublishedAgentReader)
+	return &Handler{service: service, published: published, security: security}, nil
 }
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	tail := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/admin/automation-agents"), "/")
@@ -178,7 +181,20 @@ func (h *Handler) detail(w http.ResponseWriter, r *http.Request, id automationpo
 		resultError(w, e)
 		return
 	}
-	writeJSON(w, 200, map[string]any{"ok": true, "agent": detailDTO(a)})
+	detail := detailDTO(a)
+	if h.published != nil {
+		published, found, readErr := h.published.PublishedAgent(r.Context(), id)
+		if readErr != nil {
+			resultError(w, readErr)
+			return
+		}
+		if found {
+			combined := sha256.Sum256(append(append([]byte{}, published.ContentDigest[:]...), published.MaterialsDigest[:]...))
+			detail["published_version"] = published.PublishedVersion
+			detail["published_digest"] = hex.EncodeToString(combined[:])
+		}
+	}
+	writeJSON(w, 200, map[string]any{"ok": true, "agent": detail})
 }
 
 type input struct {

@@ -40,5 +40,7 @@
   .aud-dialog { width:min(420px,100%); border-radius:16px; background:#fff; box-shadow:0 24px 70px rgba(16,24,40,.24); padding:22px; }
   .aud-dialog h3 { margin:0 0 16px; font-size:18px; }
   .aud-dialog input { width:100%; border:1px solid #d0d5dd; border-radius:9px; font:inherit; padding:11px 12px; }
+  .aud-dialog select { width:100%; border:1px solid #d0d5dd; border-radius:9px; background:#fff; font:inherit; padding:11px 12px; }
+  .aud-dialog .aud-group-note:not(:first-of-type) { margin-top:14px; }
   .aud-dialog .aud-actions { margin-top:18px; justify-content:flex-end; }
   @media(max-width:900px){ .aud-layout{grid-template-columns:1fr}.aud-groups{position:static}.aud-group-list{grid-template-columns:repeat(2,minmax(0,1fr))} }
