@@ -1,6 +1,8 @@
 package automation
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -13,7 +15,13 @@ import (
 )
 
 type AgentAssets struct{ TokensCSS, LabsCSS, AdminJS string }
-type AgentPageRenderer func(http.ResponseWriter, *http.Request, string, string, AgentAssets) error
+
+// AgentPageBootstrap is v3-owned host data. It deliberately carries only a
+// locally generated create-code suggestion; the frozen donor template and
+// controller remain unchanged.
+type AgentPageBootstrap struct{ CreateCode string }
+
+type AgentPageRenderer func(http.ResponseWriter, *http.Request, string, string, AgentAssets, AgentPageBootstrap) error
 type agentUI struct {
 	dist   string
 	render AgentPageRenderer
@@ -55,9 +63,28 @@ func (h *agentUI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "automation UI unavailable", 503)
 		return
 	}
-	if err = h.render(w, r, page, tpl, assets); err != nil {
+	bootstrap := AgentPageBootstrap{}
+	if page == "agentEdit" && r.URL.Query().Get("id") == "" {
+		bootstrap.CreateCode, err = newCreateCode()
+		if err != nil {
+			http.Error(w, "automation UI unavailable", http.StatusServiceUnavailable)
+			return
+		}
+	}
+	if err = h.render(w, r, page, tpl, assets, bootstrap); err != nil {
 		http.Error(w, "automation UI unavailable", 500)
 	}
+}
+
+// newCreateCode supplies a legal, high-entropy default for the frozen create
+// form. It reserves nothing: the Automation-owned PostgreSQL unique index is
+// still the concurrency authority when the unchanged donor controller POSTs.
+func newCreateCode() (string, error) {
+	raw := make([]byte, 16)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	return "agent_" + hex.EncodeToString(raw), nil
 }
 func agentPage(path string) (string, bool) {
 	switch path {

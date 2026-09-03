@@ -469,6 +469,7 @@ func TestStaticAssetsUseBrowserApplicableContentType(t *testing.T) {
 		{"/static/admin_console/ai_audience_send_records.css", "text/css"},
 		{"/static/admin_console/admin_console.js", "text/javascript"},
 		{"/static/admin_console/tag_sync_bridge.js", "text/javascript"},
+		{"/static/admin_console/automation_create_code_adapter.js", "text/javascript"},
 		{"/static/admin_console/nav-icons/automation_conversion.svg", "image/svg+xml"},
 	} {
 		response := httptest.NewRecorder()
@@ -527,6 +528,32 @@ func TestRenderCouponsKeepsPR10AsTheOnlyAdminShell(t *testing.T) {
 	body := response.Body.String()
 	if response.Code != http.StatusOK || strings.Count(body, `class="admin-sidebar"`) != 1 || strings.Count(body, `<main`) != 1 || strings.Count(body, `<aside`) != 1 || strings.Contains(body, `class="side"`) || strings.Contains(body, `class="shell"`) || !strings.Contains(body, `<template id="tpl"><section data-page="coupons">frozen donor coupon fragment</section></template>`) || !strings.Contains(body, `data-page="coupons"`) {
 		t.Fatalf("coupon shell mismatch status=%d body=%q", response.Code, body)
+	}
+}
+
+func TestRenderAutomationUsesOnlyV3CreateCodeHostBinding(t *testing.T) {
+	renderer, err := NewRenderer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	assets := AutomationAssets{TokensCSS: "/assets/tokens.css", LabsCSS: "/assets/labs.css", AdminJS: "/assets/admin.js"}
+	response := httptest.NewRecorder()
+	err = renderer.RenderAutomation(response, AdminPageForRequest(httptest.NewRequest(http.MethodGet, "/admin/agentEdit.html?type=agent", nil), "自动化话术", "", "api.admin_automation_agents"), "agentEdit", `<section data-page="agentEdit">frozen donor fragment</section>`, assets, "agent_0123456789abcdef0123456789abcdef")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := response.Body.String()
+	if response.Code != http.StatusOK || strings.Count(body, `class="admin-sidebar"`) != 1 || strings.Count(body, `<main`) != 1 || strings.Count(body, `<aside`) != 1 || strings.Contains(body, `class="side"`) || !strings.Contains(body, `<template id="tpl"><section data-page="agentEdit">frozen donor fragment</section></template>`) || !strings.Contains(body, `data-automation-create-code="agent_0123456789abcdef0123456789abcdef"`) || !strings.Contains(body, `/static/admin_console/automation_create_code_adapter.js`) {
+		t.Fatalf("automation create shell mismatch status=%d body=%q", response.Code, body)
+	}
+
+	response = httptest.NewRecorder()
+	err = renderer.RenderAutomation(response, AdminPageForRequest(httptest.NewRequest(http.MethodGet, "/admin/agentEdit.html?id=7", nil), "自动化话术", "", "api.admin_automation_agents"), "agentEdit", `<section data-page="agentEdit">frozen donor fragment</section>`, assets, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(response.Body.String(), `data-automation-create-code=`) {
+		t.Fatal("existing automation editor received a create-code binding")
 	}
 }
 

@@ -64,6 +64,15 @@ func TestPostgreSQLAgentFixedContentPublishActivatePauseJourney(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The page's high-entropy host suggestion is intentionally not a database
+	// reservation. The create command remains the sole concurrency authority:
+	// PostgreSQL rejects a duplicate code and rolls back its receipt/audit/outbox.
+	if _, err = service.Create(ctx, automationport.CreateCommand{Actor: 7, IdempotencyKey: "automation-pg-create-0002", Agent: automationport.Agent{
+		AgentName: "重复编码", AgentCode: created.AgentCode, AutomationType: automationport.AutomationTypeAgent,
+		Status: automationport.AgentStatusPaused,
+	}}); !errors.Is(err, automationapp.ErrAgentConflict) {
+		t.Fatalf("duplicate agent code err=%v", err)
+	}
 	content := automationport.FixedContentPackage{ContentText: "欢迎加入", ImageLibraryIDs: []int64{11}, AttachmentLibraryIDs: []int64{12}, MiniprogramLibraryIDs: []int64{13}, GroupInviteLibraryIDs: []int64{14}}
 	saved, err := service.SaveFixedContent(ctx, automationport.FixedContentCommand{ID: created.ID, ContentPackage: content, Actor: 7, IdempotencyKey: "automation-pg-content-01"})
 	if err != nil || saved.DraftVersion != 2 || saved.PublishedVersion != 1 {

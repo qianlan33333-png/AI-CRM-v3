@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"testing"
 )
 
@@ -30,8 +31,10 @@ func TestAgentUIExtractsPrivateTemplateAndPreservesAliases(t *testing.T) {
 		t.Fatal(err)
 	}
 	var gotPage, gotTemplate string
-	h := NewModuleRegistration().UIBinding(dist, func(_ http.ResponseWriter, _ *http.Request, page, tpl string, _ AgentAssets) error {
+	var gotBootstrap AgentPageBootstrap
+	h := NewModuleRegistration().UIBinding(dist, func(_ http.ResponseWriter, _ *http.Request, page, tpl string, _ AgentAssets, bootstrap AgentPageBootstrap) error {
 		gotPage, gotTemplate = page, tpl
+		gotBootstrap = bootstrap
 		return nil
 	})
 	w := httptest.NewRecorder()
@@ -41,15 +44,27 @@ func TestAgentUIExtractsPrivateTemplateAndPreservesAliases(t *testing.T) {
 	}
 	w = httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/admin/agentEdit.html?id=7", nil))
-	if w.Code != 200 || gotPage != "agentEdit" {
-		t.Fatalf("detail alias code=%d page=%q", w.Code, gotPage)
+	if w.Code != 200 || gotPage != "agentEdit" || gotBootstrap.CreateCode != "" {
+		t.Fatalf("detail alias code=%d page=%q bootstrap=%q", w.Code, gotPage, gotBootstrap.CreateCode)
 	}
+	codePattern := regexp.MustCompile(`^agent_[a-f0-9]{32}$`)
+	seen := map[string]bool{}
 	for _, target := range []string{"/admin/agentEdit.html", "/admin/agentEdit.html?type=agent", "/admin/agentEdit.html?type=fixed_script", "/admin/agentEdit.html?id=7&saved=1"} {
 		w = httptest.NewRecorder()
 		h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, target, nil))
 		if w.Code != http.StatusOK || gotPage != "agentEdit" {
 			t.Fatalf("editor target %s code=%d page=%q", target, w.Code, gotPage)
 		}
+		if target == "/admin/agentEdit.html?id=7&saved=1" {
+			if gotBootstrap.CreateCode != "" {
+				t.Fatalf("existing editor received create code %q", gotBootstrap.CreateCode)
+			}
+			continue
+		}
+		if !codePattern.MatchString(gotBootstrap.CreateCode) || seen[gotBootstrap.CreateCode] {
+			t.Fatalf("create editor target %s received invalid or repeated code %q", target, gotBootstrap.CreateCode)
+		}
+		seen[gotBootstrap.CreateCode] = true
 	}
 	for _, target := range []string{"/admin/agentEdit.html?type=unsupported", "/admin/agentEdit.html?type=agent&type=fixed_script", "/admin/agentEdit.html?type=agent&id=7"} {
 		w = httptest.NewRecorder()
