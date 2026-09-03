@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	platformjobqueue "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/jobqueue"
+	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 	"github.com/riverqueue/river"
 )
 
@@ -20,9 +21,19 @@ type Repository struct {
 	pool  *pgxpool.Pool
 	river *river.Client[pgx.Tx]
 	now   func() time.Time
+	sink  port.CompletionSink
+}
+
+func (r *Repository) SetCompletionSink(sink port.CompletionSink) error {
+	if r == nil || sink == nil || r.sink != nil {
+		return ErrInvalid
+	}
+	r.sink = sink
+	return nil
 }
 
 var _ port.Accepter = (*Repository)(nil)
+var _ port.TransactionalAccepter = (*Repository)(nil)
 
 func NewRepository(pool *pgxpool.Pool, client *river.Client[pgx.Tx]) (*Repository, error) {
 	if pool == nil || client == nil {
@@ -64,6 +75,28 @@ func (r *Repository) AcceptAndQueue(ctx context.Context, command AcceptCommand) 
 		return Projection{}, Receipt{}, err
 	}
 	defer tx.Rollback(ctx)
+	return r.acceptAndQueueTx(ctx, tx, command, true)
+}
+
+// AcceptAndQueueWithin joins the caller's existing Unit of Work. It is the
+// only supported way for a domain mutation to atomically persist its own
+// receipt/audit/outbox facts and EER acceptance/River enqueue facts.
+func (r *Repository) AcceptAndQueueWithin(ctx context.Context, command AcceptCommand) (Projection, Receipt, error) {
+	if r == nil || !command.Valid() {
+		return Projection{}, Receipt{}, ErrInvalid
+	}
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return Projection{}, Receipt{}, err
+	}
+	return r.acceptAndQueueTx(ctx, tx, command, false)
+}
+
+func (r *Repository) acceptAndQueueTx(ctx context.Context, tx pgx.Tx, command AcceptCommand, commit bool) (Projection, Receipt, error) {
+	if tx == nil || !command.Valid() {
+		return Projection{}, Receipt{}, ErrInvalid
+	}
+	var err error
 	// Serialize only identical opaque acceptance keys. This makes the unique
 	// acceptance receipt a deterministic replay/drift decision under races.
 	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, command.ReceiptKey); err != nil {
@@ -82,7 +115,16 @@ func (r *Repository) AcceptAndQueue(ctx context.Context, command AcceptCommand) 
 		if Digest(priorDigest) != command.Digest() {
 			return Projection{}, Receipt{}, ErrPayloadMismatch
 		}
-		return commitProjection(tx, projection(id, Owner(owner), Kind(kind), State(state), attempts, generation, updated), Receipt{ID: "eerop_" + strconv.FormatInt(priorReceiptID, 10), EffectID: effectID(id), CommandDigest: Digest(priorDigest), State: State(priorState), CompletedAt: priorCompleted})
+		p := projection(id, Owner(owner), Kind(kind), State(state), attempts, generation, updated)
+		p.QueueJobID, err = r.queueJobID(ctx, tx, id, generation)
+		if err != nil {
+			return Projection{}, Receipt{}, err
+		}
+		queueReceiptID, queueErr := r.queueReceiptID(ctx, tx, id)
+		if queueErr != nil {
+			return Projection{}, Receipt{}, queueErr
+		}
+		return finishAcceptance(tx, p, Receipt{ID: "eerop_" + strconv.FormatInt(priorReceiptID, 10), EffectID: effectID(id), CommandDigest: Digest(priorDigest), State: State(priorState), CompletedAt: priorCompleted, QueueReceiptID: queueReceiptID}, commit)
 	}
 	if !errors.Is(priorErr, pgx.ErrNoRows) {
 		return Projection{}, Receipt{}, priorErr
@@ -96,7 +138,16 @@ func (r *Repository) AcceptAndQueue(ctx context.Context, command AcceptCommand) 
 		if receiptErr != nil || Digest(digest) != command.Digest() {
 			return Projection{}, Receipt{}, ErrPayloadMismatch
 		}
-		return commitProjection(tx, projection(id, Owner(owner), Kind(kind), State(state), attempts, generation, updated), Receipt{ID: "eerop_" + strconv.FormatInt(rid, 10), EffectID: effectID(id), CommandDigest: Digest(digest), State: State(receiptState), CompletedAt: completed})
+		p := projection(id, Owner(owner), Kind(kind), State(state), attempts, generation, updated)
+		p.QueueJobID, err = r.queueJobID(ctx, tx, id, generation)
+		if err != nil {
+			return Projection{}, Receipt{}, err
+		}
+		queueReceiptID, queueErr := r.queueReceiptID(ctx, tx, id)
+		if queueErr != nil {
+			return Projection{}, Receipt{}, queueErr
+		}
+		return finishAcceptance(tx, p, Receipt{ID: "eerop_" + strconv.FormatInt(rid, 10), EffectID: effectID(id), CommandDigest: Digest(digest), State: State(receiptState), CompletedAt: completed, QueueReceiptID: queueReceiptID}, commit)
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return Projection{}, Receipt{}, err
@@ -128,14 +179,39 @@ func (r *Repository) AcceptAndQueue(ctx context.Context, command AcceptCommand) 
 	// The queue receipt is a distinct audit fact. The caller always receives
 	// the accept receipt so first delivery and an Idempotency-Key replay are
 	// byte-for-byte the same response-level acknowledgement.
-	if _, err = tx.Exec(ctx, `INSERT INTO external_effect_operation_receipts(operation,effect_id,receipt_key_digest,command_digest,state) VALUES ('queue',$1,$2,$3,'queued')`, id, queueKey, queueDigest); err != nil {
+	var queueReceiptID int64
+	if err = tx.QueryRow(ctx, `INSERT INTO external_effect_operation_receipts(operation,effect_id,receipt_key_digest,command_digest,state) VALUES ('queue',$1,$2,$3,'queued') RETURNING id`, id, queueKey, queueDigest).Scan(&queueReceiptID); err != nil {
 		return Projection{}, Receipt{}, err
 	}
 	var final time.Time
 	if err = tx.QueryRow(ctx, `SELECT updated_at FROM external_effects WHERE id=$1`, id).Scan(&final); err != nil {
 		return Projection{}, Receipt{}, err
 	}
-	return commitProjection(tx, projection(id, command.Envelope.Owner, command.Envelope.Kind, StateQueued, 0, 1, final), Receipt{ID: "eerop_" + strconv.FormatInt(acceptReceiptID, 10), EffectID: effectID(id), CommandDigest: command.Digest(), State: StateAccepted, CompletedAt: acceptCompleted})
+	p := projection(id, command.Envelope.Owner, command.Envelope.Kind, StateQueued, 0, 1, final)
+	p.QueueJobID = inserted.Job.ID
+	return finishAcceptance(tx, p, Receipt{ID: "eerop_" + strconv.FormatInt(acceptReceiptID, 10), EffectID: effectID(id), CommandDigest: command.Digest(), State: StateAccepted, CompletedAt: acceptCompleted, QueueReceiptID: "eerop_" + strconv.FormatInt(queueReceiptID, 10)}, commit)
+}
+
+func (r *Repository) queueJobID(ctx context.Context, tx pgx.Tx, effectID, generation int64) (int64, error) {
+	var id int64
+	err := tx.QueryRow(ctx, `SELECT river_job_id FROM external_effect_jobs WHERE effect_id=$1 AND generation=$2`, effectID, generation).Scan(&id)
+	return id, err
+}
+
+func (r *Repository) queueReceiptID(ctx context.Context, tx pgx.Tx, effectID int64) (string, error) {
+	var id int64
+	err := tx.QueryRow(ctx, `SELECT id FROM external_effect_operation_receipts WHERE operation='queue' AND effect_id=$1`, effectID).Scan(&id)
+	if err != nil {
+		return "", err
+	}
+	return "eerop_" + strconv.FormatInt(id, 10), nil
+}
+
+func finishAcceptance(tx pgx.Tx, p Projection, receipt Receipt, commit bool) (Projection, Receipt, error) {
+	if !commit {
+		return p, receipt, nil
+	}
+	return commitProjection(tx, p, receipt)
 }
 
 func commitProjection(tx pgx.Tx, p Projection, receipt Receipt) (Projection, Receipt, error) {
@@ -384,6 +460,9 @@ func (r *Repository) RunAttempt(ctx context.Context, id, generation, riverJobID 
 	var next State
 	var receipt Digest
 	var callAttempted, realExternalCallExecuted bool
+	var adapterResult AdapterResult
+	var callErr error
+	var envelope Envelope
 	if adapter == nil {
 		next = StateFinalFailed // Provider disabled: no call was attempted.
 		receipt = Hash("provider-disabled", strconv.FormatInt(id, 10), strconv.Itoa(int(attempts)))
@@ -392,7 +471,9 @@ func (r *Repository) RunAttempt(ctx context.Context, id, generation, riverJobID 
 		if err := r.pool.QueryRow(ctx, `SELECT owner,kind,source_ref_digest,target_ref_digest,payload_digest,policy_version_hash FROM external_effects WHERE id=$1 AND generation=$2`, id, generation).Scan(&owner, &kind, &source, &target, &payload, &policy); err != nil {
 			return err
 		}
-		result, callErr := adapter.Execute(ctx, Envelope{Owner: Owner(owner), Kind: Kind(kind), SourceRefDigest: Digest(source), TargetRefDigest: Digest(target), PayloadDigest: Digest(payload), PolicyVersionHash: Digest(policy)}, Attempt{Number: attempts, Generation: generation, Fence: fence})
+		envelope = Envelope{Owner: Owner(owner), Kind: Kind(kind), SourceRefDigest: Digest(source), TargetRefDigest: Digest(target), PayloadDigest: Digest(payload), PolicyVersionHash: Digest(policy)}
+		adapterResult, callErr = adapter.Execute(ctx, envelope, Attempt{Number: attempts, Generation: generation, Fence: fence})
+		result := adapterResult
 		callAttempted, realExternalCallExecuted = result.CallAttempted, result.RealExternalCallExecuted
 		if callErr != nil {
 			if result.CallAttempted {
@@ -429,6 +510,9 @@ func (r *Repository) RunAttempt(ctx context.Context, id, generation, riverJobID 
 			receipt = Hash("provider-invalid", strconv.FormatInt(id, 10), strconv.Itoa(int(attempts)))
 		}
 	}
+	if next == StateExecuted && envelope.Kind == KindWeComTagCatalog && (r.sink == nil || !adapterResult.Artifact.Valid()) {
+		next, receipt = StateUnknown, Hash("provider-artifact-invalid", strconv.FormatInt(id, 10), strconv.Itoa(int(attempts)))
+	}
 	tx, err = r.pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -445,6 +529,11 @@ func (r *Repository) RunAttempt(ctx context.Context, id, generation, riverJobID 
 			return updateErr
 		}
 		return ErrTransition
+	}
+	if next == StateExecuted && envelope.Kind == KindWeComTagCatalog {
+		if err = r.sink.CompleteEffect(platformpostgres.BindTransaction(ctx, tx), effectID(id), envelope, Attempt{Number: attempts, Generation: generation, Fence: fence}, adapterResult); err != nil {
+			return err
+		}
 	}
 	return tx.Commit(ctx)
 }

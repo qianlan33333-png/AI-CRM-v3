@@ -89,6 +89,7 @@ type Projection struct {
 	AttemptCount int32     `json:"attempt_count"`
 	Generation   int64     `json:"generation"`
 	UpdatedAt    time.Time `json:"updated_at"`
+	QueueJobID   int64     `json:"queue_job_id,omitempty"`
 }
 
 type Receipt struct {
@@ -98,12 +99,22 @@ type Receipt struct {
 	ActorAdminUserID *int64    `json:"actor_admin_user_id,omitempty"`
 	State            State     `json:"state"`
 	CompletedAt      time.Time `json:"completed_at"`
+	QueueReceiptID   string    `json:"queue_receipt_id,omitempty"`
 }
 
 // Accepter is implemented by the External Effects repository. Other domains
 // depend on this contract rather than the concrete module package.
 type Accepter interface {
 	AcceptAndQueue(context.Context, AcceptCommand) (Projection, Receipt, error)
+}
+
+// TransactionalAccepter is the atomic variant for a domain command that is
+// already inside a PostgreSQL Unit of Work. The context must carry that UoW's
+// transaction; implementations must not begin or commit another transaction.
+// Keeping pgx out of this port prevents business domains from importing the
+// effects store or queue implementation.
+type TransactionalAccepter interface {
+	AcceptAndQueueWithin(context.Context, AcceptCommand) (Projection, Receipt, error)
 }
 
 // ProviderAdapter is implemented by outbound. The effect kernel invokes it
@@ -123,4 +134,25 @@ type AdapterResult struct {
 	ReceiptDigest            Digest
 	CallAttempted            bool
 	RealExternalCallExecuted bool
+	Artifact                 ResultArtifact
+}
+
+// ResultArtifact is a validated, opaque result. EER persists no business
+// payload; a completion sink owned by composition routes it to its domain in
+// the same completion transaction.
+type ResultArtifact struct {
+	Kind    string
+	Digest  Digest
+	Payload []byte
+}
+
+func (a ResultArtifact) Valid() bool {
+	if a.Kind == "" || len(a.Kind) > 120 || len(a.Payload) == 0 || len(a.Payload) > 256<<10 || !ValidDigest(a.Digest) {
+		return false
+	}
+	return a.Digest == Hash("external-effect.artifact.v1", a.Kind, string(a.Payload))
+}
+
+type CompletionSink interface {
+	CompleteEffect(context.Context, string, Envelope, Attempt, AdapterResult) error
 }

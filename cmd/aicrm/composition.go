@@ -21,12 +21,16 @@ import (
 	media "github.com/qianlan33333-png/AI-CRM-v3/internal/media"
 	mediaapp "github.com/qianlan33333-png/AI-CRM-v3/internal/media/app"
 	mediastore "github.com/qianlan33333-png/AI-CRM-v3/internal/media/store"
+	"github.com/qianlan33333-png/AI-CRM-v3/internal/outbound"
 	platformaudit "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/audit"
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
 	platformjobqueue "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/jobqueue"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 	platformruntime "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/runtime"
 	platformwebhook "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/webhook"
+	tag "github.com/qianlan33333-png/AI-CRM-v3/internal/tag"
+	tagapp "github.com/qianlan33333-png/AI-CRM-v3/internal/tag/app"
+	tagstore "github.com/qianlan33333-png/AI-CRM-v3/internal/tag/store"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/webshell"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/wecom"
 	wecomadapter "github.com/qianlan33333-png/AI-CRM-v3/internal/wecom/adapter"
@@ -118,6 +122,29 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
+	tagModule := tag.NewModuleRegistration()
+	tagRepository, err := tagstore.NewPostgreSQL(pool.Native(), uow)
+	if err != nil {
+		return fail(err)
+	}
+	tagCompletionSink, err := outbound.NewTagCatalogCompletionSink(tagRepository)
+	if err != nil {
+		return fail(err)
+	}
+	if err = effectRepository.SetCompletionSink(tagCompletionSink); err != nil {
+		return fail(err)
+	}
+	tagCatalog := tagapp.NewCatalogService(uow, tagRepository, tagRepository, tagRepository, tagRepository)
+	tagOutbound, err := outbound.NewTagCatalogSyncAccepter(effectRepository)
+	if err != nil {
+		return fail(err)
+	}
+	tagSync := tagapp.NewSyncService(uow, tagRepository, tagRepository, tagOutbound)
+	tagGate := tagapp.NewExecutionStatusService(uow, tagRepository)
+	tagBindings, err := tagModule.Bind(tagCatalog, tagSync, tagGate, requestSecurity)
+	if err != nil {
+		return fail(err)
+	}
 	oneIDHandler, err := identityhttp.NewHandler(identityhttp.Config{
 		UnitOfWork: uow, Authenticator: requestSecurity, CSRF: requestSecurity,
 		OneID: oneID, Queries: queries, Audit: auditService,
@@ -147,6 +174,19 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	})
 	if err != nil {
 		return fail(err)
+	}
+	if cfg.TagCatalog.Enabled {
+		catalogReader, readerErr := outbound.NewWeComTagCatalogReader(providerClient)
+		if readerErr != nil {
+			return fail(readerErr)
+		}
+		catalogProvider, providerErr := outbound.NewTagCatalogProvider(catalogReader)
+		if providerErr != nil {
+			return fail(providerErr)
+		}
+		if providerErr = effectsModule.SetProviderAdapter(outbound.NewProviderRouter(catalogProvider)); providerErr != nil {
+			return fail(providerErr)
+		}
 	}
 	var callbackCrypto *wecom.CallbackCrypto
 	var callbackStateDigester wecom.StateDigester
@@ -208,7 +248,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 			return checkErr
 		}
 		var complete bool
-		checkErr := pool.Native().QueryRow(readinessContext, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['0001','0002','0003','0004','0005','0006','0007']) AS required(version) WHERE NOT EXISTS (SELECT 1 FROM platform_schema_migrations applied WHERE applied.version=required.version))`).Scan(&complete)
+		checkErr := pool.Native().QueryRow(readinessContext, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['0001','0002','0003','0004','0005','0006','0007','0008']) AS required(version) WHERE NOT EXISTS (SELECT 1 FROM platform_schema_migrations applied WHERE applied.version=required.version))`).Scan(&complete)
 		if checkErr != nil || !complete {
 			return errors.New("database schema is not ready")
 		}
@@ -216,6 +256,9 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 			return checkErr
 		}
 		if checkErr = mediaModule.Readiness(readinessContext, pool.Native()); checkErr != nil {
+			return checkErr
+		}
+		if checkErr = tagModule.Readiness(readinessContext, pool.Native()); checkErr != nil {
 			return checkErr
 		}
 		return nil
@@ -232,7 +275,10 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		endpoint := map[string]string{"images": "api.admin_image_library_workspace", "mpLib": "api.admin_miniprogram_library_workspace", "attach": "api.admin_attachment_library_workspace"}[page]
 		return renderer.RenderMedia(writer, webshell.AdminPageForRequest(request, map[string]string{"images": "图片素材库", "mpLib": "小程序素材库", "attach": "附件素材库"}[page], "仅管理本地素材、私有 blob 与审计事实。", endpoint), page, donorTemplate, webshell.MediaAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS})
 	})
-	handler, err := routeApplicationWithMedia(healthHandler, accessHandler.Routes(), adminAPIs, effectsBindings.Effects, effectsBindings.PushCenter, effectsUI, mediaBindings.Media, mediaUI, weComHandler, shellHandler, authentication, cfg.PublicOrigin)
+	tagUI := tagModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, donorTemplate string, assets tag.TagsAssets) error {
+		return renderer.RenderTags(writer, webshell.AdminPageForRequest(request, "企微标签管理", "管理标签目录与本地同步意图。", "api.admin_wecom_tags_page"), donorTemplate, webshell.TagsAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS})
+	})
+	handler, err := routeApplicationWithMediaTags(healthHandler, accessHandler.Routes(), adminAPIs, effectsBindings.Effects, effectsBindings.PushCenter, effectsUI, mediaBindings.Media, mediaUI, tagBindings.Tags, tagUI, weComHandler, shellHandler, authentication, cfg.PublicOrigin)
 	if err != nil {
 		return fail(err)
 	}
@@ -274,7 +320,11 @@ func routeApplicationWithEffects(health, access, identity, effects, pushCenter, 
 }
 
 func routeApplicationWithMedia(health, access, identity, effects, pushCenter, effectsUI, mediaHandler, mediaUI, weCom, shell http.Handler, authentication accessAuthentication, publicOrigin string) (http.Handler, error) {
-	if health == nil || access == nil || identity == nil || effects == nil || pushCenter == nil || effectsUI == nil || mediaHandler == nil || mediaUI == nil || weCom == nil || shell == nil || authentication == nil || canonicalOrigin(publicOrigin) == "" {
+	return routeApplicationWithMediaTags(health, access, identity, effects, pushCenter, effectsUI, mediaHandler, mediaUI, http.NotFoundHandler(), http.NotFoundHandler(), weCom, shell, authentication, publicOrigin)
+}
+
+func routeApplicationWithMediaTags(health, access, identity, effects, pushCenter, effectsUI, mediaHandler, mediaUI, tagHandler, tagUI, weCom, shell http.Handler, authentication accessAuthentication, publicOrigin string) (http.Handler, error) {
+	if health == nil || access == nil || identity == nil || effects == nil || pushCenter == nil || effectsUI == nil || mediaHandler == nil || mediaUI == nil || tagHandler == nil || tagUI == nil || weCom == nil || shell == nil || authentication == nil || canonicalOrigin(publicOrigin) == "" {
 		return nil, errors.New("application HTTP dependencies are required")
 	}
 	mux := http.NewServeMux()
@@ -297,8 +347,18 @@ func routeApplicationWithMedia(health, access, identity, effects, pushCenter, ef
 	mux.Handle("/api/admin/miniprogram-library/", mediaHandler)
 	mux.Handle("/api/admin/group-invite-library", mediaHandler)
 	mux.Handle("/api/admin/group-invite-library/", mediaHandler)
+	mux.Handle("/api/admin/wecom/tags", tagHandler)
+	mux.Handle("/api/admin/wecom/tags/", tagHandler)
+	mux.Handle("/api/admin/wecom/tag-groups", tagHandler)
+	mux.Handle("/api/admin/wecom/tag-groups/", tagHandler)
 	mux.Handle("/assets/", requireAdminSession(authentication, effectsUI))
 	mux.Handle("/media-assets/", requireAdminSession(authentication, mediaUI))
+	mux.Handle("/admin/wecom-tags", requireAdminSession(authentication, tagUI))
+	// The staged Tags donor document is a private template carrier. Only the
+	// canonical PR10-mounted route above is public; neither its private staging
+	// name nor the donor document name may fall through to a generic 200 shell.
+	mux.Handle("/admin/tags.html", http.NotFoundHandler())
+	mux.Handle("/admin/wecom-tags.html", http.NotFoundHandler())
 	mux.Handle("/admin/external-effects", requireAdminSession(authentication, effectsUI))
 	mux.Handle("/admin/campaigns.html", requireAdminSession(authentication, effectsUI))
 	mux.Handle("/admin/image-library", requireAdminSession(authentication, mediaUI))
@@ -379,7 +439,8 @@ func securityHeaders(next http.Handler) http.Handler {
 		writer.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
 		styleSource := "'self'"
 		mediaPage := request.URL.Path == "/admin/image-library" || request.URL.Path == "/admin/miniprogram-library" || request.URL.Path == "/admin/attachment-library"
-		if (request.URL.Path == "/admin/campaigns.html" && externaleffects.ValidUIQuery(request.URL.Query())) || mediaPage {
+		tagsPage := request.URL.Path == "/admin/wecom-tags"
+		if (request.URL.Path == "/admin/campaigns.html" && externaleffects.ValidUIQuery(request.URL.Query())) || mediaPage || tagsPage {
 			styleSource = "'self' 'unsafe-inline'"
 		}
 		imageSource := "'self' data:"

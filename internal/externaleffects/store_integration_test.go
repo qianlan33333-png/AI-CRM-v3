@@ -22,6 +22,7 @@ import (
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
 	platformjobqueue "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/jobqueue"
+	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 	"github.com/riverqueue/river/rivermigrate"
@@ -145,6 +146,116 @@ type integrationAdapter struct {
 func (a *integrationAdapter) Execute(context.Context, Envelope, Attempt) (AdapterResult, error) {
 	a.calls++
 	return a.result, a.err
+}
+
+type integrationCompletionSink struct{ fail bool }
+
+func (s integrationCompletionSink) CompleteEffect(ctx context.Context, effectRef string, _ Envelope, _ Attempt, _ AdapterResult) error {
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return err
+	}
+	if s.fail {
+		return errors.New("sink failed")
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO completion_sink_facts(effect_ref) VALUES($1)`, effectRef)
+	return err
+}
+
+func TestPostgreSQLTagCompletionSinkIsAtomic(t *testing.T) {
+	pool, cleanup := effectIntegrationPool(t)
+	defer cleanup()
+	workers := river.NewWorkers()
+	if err := river.AddWorkerSafely[EffectJobArgs](workers, NewWorker(nil, nil)); err != nil {
+		t.Fatal(err)
+	}
+	client, err := platformjobqueue.NewInsertClient(pool, workers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := NewRepository(pool, client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pool.Exec(context.Background(), `CREATE TABLE completion_sink_facts(effect_ref TEXT PRIMARY KEY)`); err != nil {
+		t.Fatal(err)
+	}
+	if err = repository.SetCompletionSink(integrationCompletionSink{}); err != nil {
+		t.Fatal(err)
+	}
+	envelope := envelopeForTest()
+	envelope.Kind = KindWeComTagCatalog
+	projection, _, err := repository.AcceptAndQueue(context.Background(), AcceptCommand{ReceiptKey: digestForTest("tag-completion"), Envelope: envelope})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := parseEffectID(projection.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var jobID int64
+	if err = pool.QueryRow(context.Background(), `SELECT river_job_id FROM external_effect_jobs WHERE effect_id=$1`, id).Scan(&jobID); err != nil {
+		t.Fatal(err)
+	}
+	payload := []byte(`{"groups":[]}`)
+	artifact := ResultArtifact{Kind: "wecom.tag_catalog.snapshot.v1", Payload: payload, Digest: Hash("external-effect.artifact.v1", "wecom.tag_catalog.snapshot.v1", string(payload))}
+	adapter := &integrationAdapter{result: AdapterResult{Completion: StateExecuted, ReceiptDigest: digestForTest("tag-executed"), CallAttempted: true, RealExternalCallExecuted: true, Artifact: artifact}}
+	if err = repository.RunAttempt(context.Background(), id, 1, jobID, adapter); err != nil {
+		t.Fatal(err)
+	}
+	current, err := repository.Get(context.Background(), projection.ID)
+	if err != nil || current.State != StateExecuted {
+		t.Fatalf("current=%+v err=%v", current, err)
+	}
+	var facts int
+	if err = pool.QueryRow(context.Background(), `SELECT count(*) FROM completion_sink_facts`).Scan(&facts); err != nil || facts != 1 {
+		t.Fatalf("facts=%d err=%v", facts, err)
+	}
+
+	// A sink failure rolls back the EER completion CAS and its domain fact.
+	failingEnvelope := envelope
+	failingEnvelope.PayloadDigest = digestForTest("tag-sink-fail-payload")
+	failing, _, err := repository.AcceptAndQueue(context.Background(), AcceptCommand{ReceiptKey: digestForTest("tag-sink-fail"), Envelope: failingEnvelope})
+	if err != nil {
+		t.Fatal(err)
+	}
+	failingID, _ := parseEffectID(failing.ID)
+	if err = pool.QueryRow(context.Background(), `SELECT river_job_id FROM external_effect_jobs WHERE effect_id=$1`, failingID).Scan(&jobID); err != nil {
+		t.Fatal(err)
+	}
+	repository.sink = integrationCompletionSink{fail: true}
+	if err = repository.RunAttempt(context.Background(), failingID, 1, jobID, adapter); err == nil {
+		t.Fatal("expected sink failure")
+	}
+	current, err = repository.Get(context.Background(), failing.ID)
+	if err != nil || current.State != StateAttempted {
+		t.Fatalf("rollback state=%+v err=%v", current, err)
+	}
+	if err = pool.QueryRow(context.Background(), `SELECT count(*) FROM completion_sink_facts`).Scan(&facts); err != nil || facts != 1 {
+		t.Fatalf("sink rollback facts=%d err=%v", facts, err)
+	}
+	// A post-call unknown result never reaches the snapshot sink.
+	unknownEnvelope := envelope
+	unknownEnvelope.PayloadDigest = digestForTest("tag-unknown-payload")
+	unknown, _, err := repository.AcceptAndQueue(context.Background(), AcceptCommand{ReceiptKey: digestForTest("tag-unknown"), Envelope: unknownEnvelope})
+	if err != nil {
+		t.Fatal(err)
+	}
+	unknownID, _ := parseEffectID(unknown.ID)
+	if err = pool.QueryRow(context.Background(), `SELECT river_job_id FROM external_effect_jobs WHERE effect_id=$1`, unknownID).Scan(&jobID); err != nil {
+		t.Fatal(err)
+	}
+	repository.sink = integrationCompletionSink{}
+	if err = repository.RunAttempt(context.Background(), unknownID, 1, jobID, &integrationAdapter{result: AdapterResult{CallAttempted: true}, err: errors.New("timeout after request")}); err != nil {
+		t.Fatal(err)
+	}
+	current, err = repository.Get(context.Background(), unknown.ID)
+	if err != nil || current.State != StateUnknown {
+		t.Fatalf("unknown=%+v err=%v", current, err)
+	}
+	if err = pool.QueryRow(context.Background(), `SELECT count(*) FROM completion_sink_facts`).Scan(&facts); err != nil || facts != 1 {
+		t.Fatalf("unknown wrote sink facts=%d err=%v", facts, err)
+	}
 }
 
 func TestPostgreSQLAttemptedLeaseRecoveryDoesNotRepeatProviderCall(t *testing.T) {

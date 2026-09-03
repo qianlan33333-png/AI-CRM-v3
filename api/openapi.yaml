@@ -540,6 +540,116 @@ paths:
         - {name: state, in: query, required: true, schema: {type: string}}
         - {name: code, in: query, required: true, schema: {type: string}}
       responses: {"302": {description: Independent Secure sidebar session issued}, "400": {$ref: "#/components/responses/Error"}}
+  /admin/wecom-tags:
+    get:
+      operationId: openWeComTagsWorkspace
+      tags: [WeComTags]
+      security: [{adminSession: []}]
+      responses: {"200": {description: v3 one-sidebar shell with the byte-frozen v2 tags workspace, content: {text/html: {schema: {type: string}}}}, "403": {$ref: "#/components/responses/Error"}}
+  /api/admin/wecom/tags:
+    get:
+      operationId: listLegacyWecomTags
+      tags: [WeComTags]
+      security: [{adminSession: []}]
+      responses: {"200": {description: Frozen local tag catalog DTO, content: {application/json: {schema: {$ref: "#/components/schemas/LegacyTagCatalogResponse"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}}
+    post:
+      operationId: createLegacyWecomTag
+      tags: [WeComTags]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/IdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/LegacyTagCreateRequest"}}}}
+      responses: {"200": {description: Tag created or dry-run validated, content: {application/json: {schema: {$ref: "#/components/schemas/LegacyTagMutationResponse"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/wecom/tags/{tag_id}:
+    get:
+      operationId: getLegacyWecomTag
+      tags: [WeComTags]
+      security: [{adminSession: []}]
+      parameters: [{$ref: "#/components/parameters/TagID"}]
+      responses: {"200": {description: Active tag, content: {application/json: {schema: {$ref: "#/components/schemas/LegacyTagResponse"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}}
+    patch:
+      operationId: updateLegacyWecomTagPatch
+      tags: [WeComTags]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/TagID"}, {$ref: "#/components/parameters/IdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/LegacyTagUpdateRequest"}}}}
+      responses: {"200": {description: Tag updated or validated, content: {application/json: {schema: {$ref: "#/components/schemas/LegacyTagMutationResponse"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+    put:
+      operationId: updateLegacyWecomTagPut
+      tags: [WeComTags]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/TagID"}, {$ref: "#/components/parameters/IdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/LegacyTagUpdateRequest"}}}}
+      responses: {"200": {description: Frozen compatibility success is void}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+    delete:
+      operationId: archiveLegacyWecomTag
+      tags: [WeComTags]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/TagID"}, {$ref: "#/components/parameters/IdempotencyKey"}]
+      requestBody: {required: false, content: {application/json: {schema: {$ref: "#/components/schemas/LegacyTagArchiveRequest"}}}}
+      responses: {"200": {description: Tag archived or validated, content: {application/json: {schema: {$ref: "#/components/schemas/LegacyTagMutationResponse"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/wecom/tag-groups:
+    get:
+      operationId: listLegacyWecomTagGroups
+      tags: [WeComTags]
+      security: [{adminSession: []}]
+      responses: {"200": {description: Local tag groups, content: {application/json: {schema: {$ref: "#/components/schemas/LegacyTagGroupsResponse"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+    post:
+      operationId: createLegacyWecomTagGroup
+      tags: [WeComTags]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/IdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/LegacyTagGroupCreateRequest"}}}}
+      responses: {"200": {description: Group created or dry-run validated, content: {application/json: {schema: {$ref: "#/components/schemas/LegacyTagMutationResponse"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/wecom/tag-groups/{group_id}:
+    get:
+      operationId: getLegacyWecomTagGroup
+      tags: [WeComTags]
+      security: [{adminSession: []}]
+      parameters: [{$ref: "#/components/parameters/TagGroupID"}]
+      responses: {"200": {description: Active tag group, content: {application/json: {schema: {$ref: "#/components/schemas/LegacyTagGroupResponse"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}}
+    patch:
+      operationId: updateLegacyWecomTagGroupPatch
+      tags: [WeComTags]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/TagGroupID"}, {$ref: "#/components/parameters/IdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/LegacyTagGroupUpdateRequest"}}}}
+      responses: {"200": {description: Group updated or validated, content: {application/json: {schema: {$ref: "#/components/schemas/LegacyTagMutationResponse"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+    put:
+      operationId: updateLegacyWecomTagGroupPut
+      tags: [WeComTags]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/TagGroupID"}, {$ref: "#/components/parameters/IdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/LegacyTagGroupUpdateRequest"}}}}
+      responses: {"200": {description: Frozen compatibility success is void}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+    delete:
+      operationId: archiveLegacyWecomTagGroup
+      tags: [WeComTags]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/TagGroupID"}, {$ref: "#/components/parameters/IdempotencyKey"}]
+      requestBody: {required: false, content: {application/json: {schema: {$ref: "#/components/schemas/LegacyTagArchiveRequest"}}}}
+      responses: {"200": {description: Group archived or validated, content: {application/json: {schema: {$ref: "#/components/schemas/LegacyTagMutationResponse"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/wecom/tags/live/gate:
+    get:
+      operationId: getLegacyWecomTagExecutionGate
+      tags: [WeComTags]
+      security: [{adminSession: []}]
+      responses: {"200": {description: Provider-disabled execution gate, content: {application/json: {schema: {$ref: "#/components/schemas/LegacyTagExecutionGate"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/wecom/tags/sync:
+    post:
+      operationId: requestLegacyWecomTagSync
+      tags: [WeComTags]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/IdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/LegacyTagSyncRequest"}}}}
+      responses: {"202": {description: Actual EER/River acceptance; this is not provider success, content: {application/json: {schema: {$ref: "#/components/schemas/LegacyTagQueuedAcceptance"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/wecom/tags/sync-due:
+    post:
+      operationId: requestLegacyWecomTagSyncDue
+      tags: [WeComTags]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/IdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/LegacyTagSyncRequest"}}}}
+      responses: {"202": {description: Actual EER/River due-sync acceptance, content: {application/json: {schema: {$ref: "#/components/schemas/LegacyTagQueuedAcceptance"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
   /api/sidebar/jssdk-config:
     get:
       operationId: getSidebarJSSDKConfig
@@ -573,6 +683,8 @@ components:
     contextToken: {type: http, scheme: bearer}
   parameters:
     ID: {name: id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
+    TagID: {name: tag_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
+    TagGroupID: {name: group_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
     ExternalEffectID: {name: id, in: path, required: true, schema: {$ref: "#/components/schemas/ExternalEffectID"}}
     PushJobID: {name: job_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
     ExternalEffectsView: {name: view, in: query, required: true, schema: {type: string, const: external-effects}}
@@ -772,9 +884,26 @@ components:
       additionalProperties: false
       required: [status, release_sha]
       properties: {status: {type: string}, release_sha: {type: string}}
+    LegacyTagWriteMetadata: {type: object, properties: {actor: {}, idempotency_key: {type: string, minLength: 16, maxLength: 128}, trace_id: {type: string, maxLength: 200}, dry_run: {type: boolean}}}
+    LegacyTagCreateRequest: {allOf: [{$ref: "#/components/schemas/LegacyTagWriteMetadata"}, {type: object, additionalProperties: false, required: [group_id, group_name, tag_name], properties: {group_id: {$ref: "#/components/schemas/PositiveID"}, group_name: {type: string, minLength: 1, maxLength: 200}, tag_name: {type: string, minLength: 1, maxLength: 200}, actor: {}, idempotency_key: {type: string, minLength: 16, maxLength: 128}, trace_id: {type: string, maxLength: 200}, dry_run: {type: boolean}}}]}
+    LegacyTagGroupCreateRequest: {allOf: [{$ref: "#/components/schemas/LegacyTagWriteMetadata"}, {type: object, additionalProperties: false, required: [group_name, first_tag_name], properties: {group_name: {type: string, minLength: 1, maxLength: 200}, first_tag_name: {type: string, minLength: 1, maxLength: 200}, actor: {}, idempotency_key: {type: string, minLength: 16, maxLength: 128}, trace_id: {type: string, maxLength: 200}, dry_run: {type: boolean}}}]}
+    LegacyTagUpdateRequest: {allOf: [{$ref: "#/components/schemas/LegacyTagWriteMetadata"}, {type: object, additionalProperties: false, required: [tag_name], properties: {tag_name: {type: string, minLength: 1, maxLength: 200}, actor: {}, idempotency_key: {type: string, minLength: 16, maxLength: 128}, trace_id: {type: string, maxLength: 200}, dry_run: {type: boolean}}}]}
+    LegacyTagGroupUpdateRequest: {allOf: [{$ref: "#/components/schemas/LegacyTagWriteMetadata"}, {type: object, additionalProperties: false, required: [group_name], properties: {group_name: {type: string, minLength: 1, maxLength: 200}, actor: {}, idempotency_key: {type: string, minLength: 16, maxLength: 128}, trace_id: {type: string, maxLength: 200}, dry_run: {type: boolean}}}]}
+    LegacyTagArchiveRequest: {type: object, additionalProperties: false, properties: {actor: {}, idempotency_key: {type: string, minLength: 16, maxLength: 128}, trace_id: {type: string, maxLength: 200}, dry_run: {type: boolean}}}
+    LegacyTagSyncRequest: {type: object, additionalProperties: false, properties: {idempotency_key: {type: string, minLength: 16, maxLength: 128}, trace_id: {type: string, maxLength: 200}}}
+    LegacyTag: {type: object, required: [tag_id, id, group_id, group_name, tag_name, name, sort_order], properties: {tag_id: {$ref: "#/components/schemas/PositiveID"}, id: {$ref: "#/components/schemas/PositiveID"}, group_id: {$ref: "#/components/schemas/PositiveID"}, group_name: {type: string}, tag_name: {type: string}, name: {type: string}, sort_order: {type: integer, minimum: 0}}}
+    LegacyTagMutationGroup: {type: object, required: [group_id, group_name, sort_order], properties: {group_id: {$ref: "#/components/schemas/PositiveID"}, group_name: {type: string}, sort_order: {type: integer, minimum: 0}}}
+    LegacyTagGroup: {type: object, required: [group_id, group_name, name, sort_order, tags], properties: {group_id: {$ref: "#/components/schemas/PositiveID"}, group_name: {type: string}, name: {type: string}, sort_order: {type: integer, minimum: 0}, tags: {type: array, items: {$ref: "#/components/schemas/LegacyTag"}}}}
+    LegacyTagCatalogResponse: {type: object, required: [ok, items, tags, groups, count, total_tags, tag_limit, synced_at, source_status, read_model_status, route_owner, fallback_used, real_external_call_executed, sync_executed, fixture_used], properties: {ok: {const: true}, items: {type: array, items: {$ref: "#/components/schemas/LegacyTag"}}, tags: {type: array, items: {$ref: "#/components/schemas/LegacyTag"}}, groups: {type: array, items: {$ref: "#/components/schemas/LegacyTagGroup"}}, count: {type: integer, minimum: 0}, total_tags: {type: integer, minimum: 0}, tag_limit: {const: 1000}, synced_at: {type: string, format: date-time}, source_status: {type: string}, read_model_status: {type: string}, route_owner: {const: ai_crm_next}, fallback_used: {const: false}, real_external_call_executed: {const: false}, sync_executed: {const: false}, fixture_used: {const: false}}}
+    LegacyTagGroupsResponse: {type: object, required: [ok, groups, items, count, source_status, real_external_call_executed, sync_executed], properties: {ok: {const: true}, groups: {type: array, items: {$ref: "#/components/schemas/LegacyTagGroup"}}, items: {type: array, items: {$ref: "#/components/schemas/LegacyTagGroup"}}, count: {type: integer, minimum: 0}, source_status: {const: local_catalog}, real_external_call_executed: {const: false}, sync_executed: {const: false}}}
+    LegacyTagResponse: {type: object, required: [ok, tag, source_status, real_external_call_executed, sync_executed], properties: {ok: {const: true}, tag: {$ref: "#/components/schemas/LegacyTag"}, source_status: {const: local_catalog}, real_external_call_executed: {const: false}, sync_executed: {const: false}}}
+    LegacyTagGroupResponse: {type: object, required: [ok, group, source_status, real_external_call_executed, sync_executed], properties: {ok: {const: true}, group: {$ref: "#/components/schemas/LegacyTagGroup"}, source_status: {const: local_catalog}, real_external_call_executed: {const: false}, sync_executed: {const: false}}}
+    LegacyTagMutationResponse: {type: object, required: [ok, reason, source_status, route_owner, fallback_used, real_external_call_executed, sync_executed, fixture_used, dry_run], properties: {ok: {const: true}, reason: {type: string}, source_status: {const: local_catalog}, route_owner: {const: ai_crm_next}, fallback_used: {const: false}, real_external_call_executed: {const: false}, sync_executed: {const: false}, fixture_used: {const: false}, dry_run: {type: boolean}, tag: {$ref: "#/components/schemas/LegacyTag"}, group: {$ref: "#/components/schemas/LegacyTagMutationGroup"}}}
+    LegacyTagExecutionGate: {type: object, required: [provider_execution_eligible, local_command_acceptance_available, local_queue_available, observed_at, real_external_call_executed, sync_executed], properties: {provider_execution_eligible: {const: false}, local_command_acceptance_available: {type: boolean}, local_queue_available: {type: boolean}, observed_at: {type: string, format: date-time}, real_external_call_executed: {const: false}, sync_executed: {const: false}}}
+    LegacyTagQueuedAcceptance: {type: object, required: [ok, accepted, state, receipt_id, event_id, river_job_id, effect_river_job_id, effect_id, effect_state, accept_receipt_id, queue_receipt_id, provider_call_attempted, provider_success_claimed, real_external_call_executed, sync_executed], properties: {ok: {const: true}, accepted: {const: true}, state: {const: queued}, receipt_id: {$ref: "#/components/schemas/PositiveID"}, event_id: {$ref: "#/components/schemas/PositiveID"}, river_job_id: {$ref: "#/components/schemas/PositiveID"}, effect_river_job_id: {$ref: "#/components/schemas/PositiveID"}, effect_id: {type: string, pattern: '^eer_[1-9][0-9]*$'}, effect_state: {const: queued}, accept_receipt_id: {type: string, minLength: 1}, queue_receipt_id: {type: string, minLength: 1}, provider_call_attempted: {const: false}, provider_success_claimed: {const: false}, real_external_call_executed: {const: false}, sync_executed: {const: false}}}
     ErrorResponse:
       type: object
-      properties: {ok: {type: boolean, const: false}, error: {type: string}, code: {type: string}}
+      properties: {ok: {type: boolean, const: false}, error: {type: string}, code: {type: string}, message: {type: string}, request_id: {type: string, minLength: 1}}
     LoginRequest:
       type: object
       additionalProperties: false

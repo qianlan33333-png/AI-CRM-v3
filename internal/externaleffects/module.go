@@ -24,6 +24,16 @@ func NewModuleRegistration() *ModuleRegistration {
 	return &ModuleRegistration{worker: NewWorker(nil, nil)}
 }
 
+// SetProviderAdapter is composition-only wiring. It is intentionally narrow:
+// binding a later-enabled connector never changes module routing or HTTP.
+func (module *ModuleRegistration) SetProviderAdapter(adapter ProviderAdapter) error {
+	if module == nil || module.worker == nil || module.worker.adapter != nil || adapter == nil {
+		return ErrInvalid
+	}
+	module.worker.adapter = adapter
+	return nil
+}
+
 func (module *ModuleRegistration) RegisterWorkers(workers *river.Workers) error {
 	if module == nil || module.worker == nil || workers == nil {
 		return ErrInvalid
