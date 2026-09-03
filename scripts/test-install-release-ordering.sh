@@ -99,7 +99,7 @@ make_release() {
   local release="$test_root/package-${sha}"
   local archive="/tmp/aicrm-${sha}.tar.gz"
   mkdir -p "$release/bin" "$release/migrations" "$release/web/dist" "$release/deploy"
-  for binary in aicrm migrate-platform migrate-river migrate-phone-identities migrate-identity-phone-vault migrate-survey-v2 migrate-v2-config-definitions migrate-channel-history; do
+  for binary in aicrm migrate-platform migrate-river migrate-phone-identities migrate-identity-phone-vault migrate-survey-v2 migrate-automation-operations migrate-v2-config-definitions migrate-channel-history; do
     printf '#!/usr/bin/env bash\nexit 0\n' > "$release/bin/$binary"
     chmod 0755 "$release/bin/$binary"
   done
@@ -116,7 +116,9 @@ make_release() {
     0031_channel_history_import.sql 0032_channel_acquisition_assets.sql \
     0033_wecom_welcome_grants.sql 0034_channel_entrant_actions.sql \
     0035_channel_acquisition_links.sql 0036_ai_assistant_review.sql \
-    0037_outbound_private_messages.sql 0038_survey_oauth_phone_vault.sql; do
+    0037_outbound_private_messages.sql 0038_survey_oauth_phone_vault.sql \
+    0047_automation_operations_migration.sql \
+    0048_segment_audience_schedule_state.sql; do
     : > "$release/migrations/$migration"
   done
   : > "$release/web/dist/asset-manifest.json"

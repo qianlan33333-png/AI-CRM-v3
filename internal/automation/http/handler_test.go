@@ -65,6 +65,9 @@ func (s *testAgents) SetStatus(_ context.Context, _ automationport.MutationComma
 func (s *testAgents) SaveFixedContent(context.Context, automationport.FixedContentCommand) (automationport.Agent, error) {
 	return s.item, s.err
 }
+func (s *testAgents) PublishedAgent(context.Context, automationport.AgentID) (automationport.PublishedAgent, bool, error) {
+	return automationport.PublishedAgent{AgentID: s.item.ID, AutomationType: s.item.AutomationType, Status: s.item.Status, PublishedVersion: s.item.PublishedVersion}, s.item.PublishedVersion > 0, s.err
+}
 func principal() accessdomain.Principal {
 	return accessdomain.Principal{InternalID: 7, Kind: accessdomain.KindAdmin, Roles: []accessdomain.Role{accessdomain.RoleAdmin}}
 }
@@ -118,6 +121,15 @@ func TestSummaryUsesPersistedMaterialCounts(t *testing.T) {
 	counts := got["fixed_material_summary"].(map[string]int)
 	if got["status"] != automationport.AgentStatusActive || got["execution_enabled"] != true || counts["image_count"] != 2 || counts["attachment_count"] != 1 {
 		t.Fatalf("summary=%#v", got)
+	}
+}
+func TestDetailExposesOnlyOpaquePublishedDigest(t *testing.T) {
+	s := &testAgents{item: agent()}
+	h, _ := NewHandler(s, testSecurity{p: principal()})
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/admin/automation-agents/1", nil))
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"published_digest":"`) || strings.Contains(w.Body.String(), "content_digest") || strings.Contains(w.Body.String(), "materials_digest") {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 	}
 }
 func TestErrorMapsNotFound(t *testing.T) {

@@ -34,6 +34,7 @@ func (r *Repository) SetCompletionSink(sink port.CompletionSink) error {
 
 var _ port.Accepter = (*Repository)(nil)
 var _ port.TransactionalAccepter = (*Repository)(nil)
+var _ port.TransactionalReconciler = (*Repository)(nil)
 var _ port.UnknownReconciler = (*Repository)(nil)
 
 func (r *Repository) ReconcileUnknownWithin(ctx context.Context, command port.ReconcileCommand) error {
@@ -279,6 +280,47 @@ func (r *Repository) Get(ctx context.Context, id string) (Projection, error) {
 	}
 	return projection(numeric, Owner(owner), Kind(kind), State(state), attempts, generation, updated), err
 }
+
+func (r *Repository) ReconciliationCandidate(ctx context.Context, id string) (port.ReconciliationCandidate, error) {
+	numeric, err := parseEffectID(id)
+	if err != nil {
+		return port.ReconciliationCandidate{}, err
+	}
+	var owner, kind, state string
+	var attempts int32
+	var generation, fence int64
+	var leaseExpires *time.Time
+	var updated time.Time
+	err = r.pool.QueryRow(ctx, `SELECT owner,kind,state,attempt_count,generation,lease_fence,lease_expires_at,updated_at FROM external_effects WHERE id=$1`, numeric).Scan(&owner, &kind, &state, &attempts, &generation, &fence, &leaseExpires, &updated)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return port.ReconciliationCandidate{}, port.ErrReconciliationNotFound
+	}
+	if err != nil {
+		return port.ReconciliationCandidate{}, err
+	}
+	if State(state) != StateUnknown || generation < 1 || fence < 1 || leaseExpires == nil {
+		return port.ReconciliationCandidate{}, port.ErrReconciliationConflict
+	}
+	return port.ReconciliationCandidate{Projection: projection(numeric, Owner(owner), Kind(kind), State(state), attempts, generation, updated), Fence: fence, LeaseExpiresAt: leaseExpires.UTC()}, nil
+}
+
+func (r *Repository) ReconcileEffectWithin(ctx context.Context, command port.ReconcileCommand) (port.Projection, error) {
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return port.Projection{}, err
+	}
+	projection, _, err := r.controlWithin(ctx, tx, ControlCommand{
+		EffectID: command.EffectID, ReceiptKey: command.ReceiptKey, EvidenceDigest: command.EvidenceDigest,
+		ActorAdminUserID: command.ActorAdminUserID, Generation: command.Generation, Fence: command.Fence, LeaseExpiresAt: command.LeaseExpiresAt,
+	}, "reconcile")
+	if errors.Is(err, ErrNotFound) {
+		return port.Projection{}, port.ErrReconciliationNotFound
+	}
+	if errors.Is(err, ErrReconcileRequired) || errors.Is(err, ErrTransition) || errors.Is(err, ErrPayloadMismatch) {
+		return port.Projection{}, port.ErrReconciliationConflict
+	}
+	return projection, err
+}
 func (r *Repository) Diagnostics(ctx context.Context) (map[string]int64, error) {
 	stats, err := r.pushStats(ctx)
 	return map[string]int64{"accepted": stats.Accepted, "queued": stats.Queued, "attempted": stats.Attempted, "executed": stats.Sent, "outcome_unknown": stats.Unknown, "reconciled": stats.Reconciled, "retryable_failed": stats.Retryable, "final_failed": stats.FinalFailed, "cancelled": stats.Cancelled, "total": stats.Total}, err
@@ -438,8 +480,9 @@ func (r *Repository) controlWithin(ctx context.Context, tx pgx.Tx, command Contr
 	}
 	// Group Ops owns its manual-reconciliation projection in RuntimeService;
 	// projecting it here as well would update the same execution twice. AI
-	// Assistant reconciliation delegates its owner projection to the sink.
-	if (Kind(kind) == KindWeComTagCatalog || Kind(kind) == KindOutboundMessage) && r.sink != nil {
+	// Assistant and Automation Operations delegate their owner projection to
+	// the sink.
+	if (Kind(kind) == KindWeComTagCatalog || Kind(kind) == KindOutboundMessage || Kind(kind) == KindAutomationMessage) && r.sink != nil {
 		envelope := Envelope{Owner: Owner(owner), Kind: Kind(kind), SourceRefDigest: Digest(source), TargetRefDigest: Digest(target), PayloadDigest: Digest(payload), PolicyVersionHash: Digest(policy)}
 		if err = r.sink.CompleteEffect(platformpostgres.BindTransaction(ctx, tx), effectID(id), envelope, Attempt{Number: attempts, Generation: generation, Fence: fence}, AdapterResult{Completion: next, ReceiptDigest: digest}); err != nil {
 			return Projection{}, Receipt{}, err
@@ -507,7 +550,7 @@ func (r *Repository) RunAttempt(ctx context.Context, id, generation, riverJobID 
 			}
 			return ErrTransition
 		}
-		if (Kind(kind) == KindWeComTagCatalog || Kind(kind) == KindGroupMessage || Kind(kind) == KindOutboundMessage) && r.sink != nil {
+		if (Kind(kind) == KindWeComTagCatalog || Kind(kind) == KindGroupMessage || Kind(kind) == KindOutboundMessage || Kind(kind) == KindAutomationMessage) && r.sink != nil {
 			envelope := Envelope{Owner: Owner(owner), Kind: Kind(kind), SourceRefDigest: Digest(source), TargetRefDigest: Digest(target), PayloadDigest: Digest(payload), PolicyVersionHash: Digest(policy)}
 			if err = r.sink.CompleteEffect(platformpostgres.BindTransaction(ctx, tx), effectID(id), envelope, Attempt{Number: attempts, Generation: generation, Fence: fence}, AdapterResult{Completion: StateUnknown, ReceiptDigest: recovery, CallAttempted: true}); err != nil {
 				return err
@@ -605,7 +648,7 @@ func (r *Repository) RunAttempt(ctx context.Context, id, generation, riverJobID 
 		return ErrTransition
 	}
 	terminal := next == StateExecuted || next == StateUnknown || next == StateRetryable || next == StateFinalFailed
-	shouldComplete := r.sink != nil && terminal && (envelope.Kind == KindGroupMessage || envelope.Kind == KindWeComTagCatalog || envelope.Kind == KindChannelAsset || envelope.Kind == KindChannelWelcome || envelope.Kind == KindChannelEntryTag || envelope.Kind == KindChannelLink || envelope.Kind == KindOutboundMessage || envelope.Owner == OwnerPayment)
+	shouldComplete := r.sink != nil && terminal && (envelope.Kind == KindGroupMessage || envelope.Kind == KindWeComTagCatalog || envelope.Kind == KindChannelAsset || envelope.Kind == KindChannelWelcome || envelope.Kind == KindChannelEntryTag || envelope.Kind == KindChannelLink || envelope.Kind == KindOutboundMessage || envelope.Kind == KindAutomationMessage || envelope.Owner == OwnerPayment)
 	if shouldComplete {
 		completionResult := adapterResult
 		completionResult.Completion = next

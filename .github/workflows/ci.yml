@@ -38,6 +38,7 @@ jobs:
       AICRM_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/aicrm_ci?sslmode=disable
       PR07_DONOR_DIR: ${{ github.workspace }}/.ci-donor-v2
       PR09_DONOR_ROOT: ${{ github.workspace }}/.ci-donor-v2
+      AICRM_AUTOMATIONOPS_DONOR_DIR: ${{ github.workspace }}/.ci-donor-v2
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -68,6 +69,7 @@ jobs:
           scripts/check-pr01-donor-manifest.sh
           scripts/check-pr02-donor-manifest.sh
           scripts/check-pr03-frontend-donor-manifest.sh
+          scripts/check-automationops-donor-manifest.sh
           scripts/check-channel-donor-manifest.sh
           donor_dir="$(mktemp -d)"
           git clone --quiet https://github.com/qianlan33333-png/AI-CRM-v2.git "$donor_dir"
@@ -81,6 +83,7 @@ jobs:
           node web/scripts/survey-public-characterization.mjs
           node web/scripts/survey-unresolved-history-contract.mjs
           node --check internal/webshell/static/admin_console/survey_operations.js
+          node --check internal/webshell/static/admin_console/admin_audience_detail.js
           scripts/check-pr08-frontend-donor-manifest.sh
           scripts/check-pr09-frontend-freeze.sh
           scripts/check-config-definition-import-boundary.sh
@@ -90,6 +93,7 @@ jobs:
           npx tsc -p web/v3/tsconfig.json --noEmit
           npm test
           npm run build
+          node --test internal/webshell/static/admin_console/automation_create_code_adapter.test.mjs
           node scripts/build-v3-host-adapters.mjs
           node scripts/operation-cycles-shell-e2e.mjs
           node scripts/ai-assistant-shell-e2e.mjs
@@ -109,7 +113,7 @@ jobs:
       - name: Check repository
         run: make check
       - name: Race-check security and identity boundaries
-        run: go test -race ./cmd/aicrm ./cmd/migrate-commerce-history ./cmd/migrate-v2-config-definitions ./cmd/migrate-channel-history ./internal/access/... ./internal/identity/... ./internal/wecom/... ./internal/externaleffects/... ./internal/platform/jobqueue/... ./internal/media/... ./internal/tag/... ./internal/product/... ./internal/coupon/... ./internal/groupops/... ./internal/automation/... ./internal/operationcycle/... ./internal/outbound ./internal/order/... ./internal/payment/... ./internal/config/... ./internal/adminops/... ./internal/release/... ./internal/configmigration/...
+        run: go test -race ./cmd/aicrm ./cmd/migrate-commerce-history ./cmd/migrate-automation-operations ./cmd/migrate-v2-config-definitions ./cmd/migrate-channel-history ./internal/access/... ./internal/identity/... ./internal/wecom/... ./internal/externaleffects/... ./internal/platform/jobqueue/... ./internal/media/... ./internal/tag/... ./internal/product/... ./internal/coupon/... ./internal/groupops/... ./internal/automation/... ./internal/segment/... ./internal/operationcycle/... ./internal/outbound ./internal/order/... ./internal/payment/... ./internal/config/... ./internal/adminops/... ./internal/release/... ./internal/configmigration/...
 
   deploy:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -124,6 +128,7 @@ jobs:
     env:
       PR07_DONOR_DIR: ${{ github.workspace }}/.ci-donor-v2
       PR09_DONOR_ROOT: ${{ github.workspace }}/.ci-donor-v2
+      AICRM_AUTOMATIONOPS_DONOR_DIR: ${{ github.workspace }}/.ci-donor-v2
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -160,6 +165,7 @@ jobs:
           go build -trimpath -ldflags "-s -w" -o release/bin/migrate-identity-phone-vault ./cmd/migrate-identity-phone-vault
           go build -trimpath -ldflags "-s -w" -o release/bin/migrate-survey-v2 ./cmd/migrate-survey-v2
           go build -trimpath -ldflags "-s -w" -o release/bin/migrate-commerce-history ./cmd/migrate-commerce-history
+          go build -trimpath -ldflags "-s -w" -o release/bin/migrate-automation-operations ./cmd/migrate-automation-operations
           go build -trimpath -ldflags "-s -w" -o release/bin/migrate-v2-config-definitions ./cmd/migrate-v2-config-definitions
           go build -trimpath -ldflags "-s -w" -o release/bin/migrate-channel-history ./cmd/migrate-channel-history
           npm ci
@@ -168,6 +174,7 @@ jobs:
           scripts/check-pr01-donor-manifest.sh
           scripts/check-pr02-donor-manifest.sh
           scripts/check-pr03-frontend-donor-manifest.sh
+          scripts/check-automationops-donor-manifest.sh
           scripts/check-channel-donor-manifest.sh
           scripts/check-survey-donor-manifest.sh
           node web/scripts/channel-center-characterization.mjs
@@ -175,6 +182,7 @@ jobs:
           node web/scripts/survey-public-characterization.mjs
           node web/scripts/survey-unresolved-history-contract.mjs
           node --check internal/webshell/static/admin_console/survey_operations.js
+          node --check internal/webshell/static/admin_console/admin_audience_detail.js
           scripts/check-pr08-frontend-donor-manifest.sh
           scripts/check-pr09-frontend-freeze.sh
           scripts/check-config-definition-import-boundary.sh
@@ -183,6 +191,7 @@ jobs:
           npm run typecheck
           npx tsc -p web/v3/tsconfig.json --noEmit
           npm run build
+          node --test internal/webshell/static/admin_console/automation_create_code_adapter.test.mjs
           node scripts/build-v3-host-adapters.mjs
           node scripts/operation-cycles-shell-e2e.mjs
           node scripts/ai-assistant-shell-e2e.mjs

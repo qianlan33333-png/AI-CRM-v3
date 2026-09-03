@@ -1,0 +1,81 @@
+package app
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"testing"
+	"time"
+
+	accessport "github.com/qianlan33333-png/AI-CRM-v3/internal/access/port"
+	automationport "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/port"
+	segmentdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/domain"
+	segmentport "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/port"
+)
+
+type executionStoreStub struct {
+	ExecutionStore
+	pkg      segmentdomain.Package
+	config   segmentdomain.ConfigurationVersion
+	binding  segmentdomain.AutomationBinding
+	senders  segmentdomain.SenderSet
+	snapshot segmentport.Snapshot
+}
+
+func (s executionStoreStub) LockPackage(context.Context, int64) (segmentdomain.Package, error) {
+	return s.pkg, nil
+}
+func (s executionStoreStub) CurrentConfiguration(context.Context, int64) (segmentdomain.ConfigurationVersion, error) {
+	return s.config, nil
+}
+func (s executionStoreStub) CurrentBinding(context.Context, int64) (segmentdomain.AutomationBinding, error) {
+	return s.binding, nil
+}
+func (s executionStoreStub) CurrentSenderSet(context.Context, int64) (segmentdomain.SenderSet, error) {
+	return s.senders, nil
+}
+func (s executionStoreStub) PublishedSnapshot(context.Context, segmentport.PackageID) (segmentport.Snapshot, bool, error) {
+	return s.snapshot, s.snapshot.ID > 0, nil
+}
+
+type publishedAgentStub struct {
+	value automationport.PublishedAgent
+	found bool
+}
+
+func (s publishedAgentStub) PublishedAgent(context.Context, automationport.AgentID) (automationport.PublishedAgent, bool, error) {
+	return s.value, s.found, nil
+}
+
+type staffReaderStub struct{ value accessport.StaffEligibility }
+
+func (s staffReaderStub) ResolveAutomationSender(context.Context, string) (accessport.StaffEligibility, bool, error) {
+	return s.value, true, nil
+}
+func (s staffReaderStub) AutomationSender(context.Context, accessport.StaffID) (accessport.StaffEligibility, bool, error) {
+	return s.value, true, nil
+}
+func TestBindingRejectsPublishedVersionDriftBeforeWriting(t *testing.T) {
+	agent := automationport.PublishedAgent{AgentID: 3, PublishedVersion: 2, AutomationType: automationport.AutomationTypeFixedScript, Status: automationport.AgentStatusActive, ContentDigest: sha256.Sum256([]byte("c")), MaterialsDigest: sha256.Sum256([]byte("m"))}
+	service, _ := NewExecutionService(directUOW{}, executionStoreStub{}, publishedAgentStub{agent, true}, staffReaderStub{}, false)
+	digest := sha256.Sum256(append(append([]byte{}, agent.ContentDigest[:]...), agent.MaterialsDigest[:]...))
+	_, err := service.PutBinding(context.Background(), BindingCommand{PackageID: 1, ExpectedPackageVersion: 1, AgentID: 3, ExpectedPublishedVersion: 1, ExpectedAgentDigest: hex.EncodeToString(digest[:]), Actor: 1, IdempotencyKey: "binding-command-01"})
+	if err != ErrConflict {
+		t.Fatalf("err=%v", err)
+	}
+}
+func TestSendersRejectDuplicateInternalStaffAndPrecheckReportsProviderDisabled(t *testing.T) {
+	now := time.Now().UTC()
+	staff := staffReaderStub{accessport.StaffEligibility{StaffID: 9, Active: true, Eligible: true, EligibilityVersion: 2, RefreshedAt: now}}
+	agent := automationport.PublishedAgent{AgentID: 3, PublishedVersion: 2, AutomationType: automationport.AutomationTypeFixedScript, Status: automationport.AgentStatusActive}
+	store := executionStoreStub{pkg: segmentdomain.Package{ID: 1, Lifecycle: segmentdomain.Paused}, config: segmentdomain.ConfigurationVersion{ID: 2}, binding: segmentdomain.AutomationBinding{AgentID: 3, AutomationType: agent.AutomationType, AgentPublishedVersion: 2}, senders: segmentdomain.SenderSet{Version: 1, Members: []segmentdomain.Sender{{StaffID: 9, EligibilityVersion: 2, EligibilityRefreshedAt: now}}}, snapshot: segmentport.Snapshot{ID: 4}}
+	service, _ := NewExecutionService(directUOW{}, store, publishedAgentStub{agent, true}, staff, false)
+	_, err := service.ReplaceSenders(context.Background(), SendersCommand{PackageID: 1, ExpectedPackageVersion: 1, ProviderMemberIDs: []string{"one", "two"}, Actor: 1, IdempotencyKey: "senders-command-01"})
+	if err != ErrConflict {
+		t.Fatalf("duplicate err=%v", err)
+	}
+	check, err := service.Precheck(context.Background(), 1)
+	if err != nil || check.Ready || len(check.Reasons) == 0 || check.Reasons[len(check.Reasons)-1] != "provider_disabled" {
+		t.Fatalf("check=%+v err=%v", check, err)
+	}
+}

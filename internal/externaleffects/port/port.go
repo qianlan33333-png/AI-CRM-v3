@@ -7,8 +7,14 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"strings"
 	"time"
+)
+
+var (
+	ErrReconciliationNotFound = errors.New("external effect reconciliation target not found")
+	ErrReconciliationConflict = errors.New("external effect reconciliation conflict")
 )
 
 type Digest string
@@ -29,19 +35,20 @@ type Owner string
 type Kind string
 
 const (
-	OwnerOutbound        Owner = "outbound"
-	OwnerPayment         Owner = "payment"
-	KindOutboundMessage  Kind  = "outbound_message"
-	KindOutboundMedia    Kind  = "outbound_media"
-	KindWeComTagCatalog  Kind  = "wecom_tag_catalog"
-	KindGroupMessage     Kind  = "group_message"
-	KindChannelAsset     Kind  = "channel_acquisition_asset"
-	KindChannelWelcome   Kind  = "channel_welcome_message"
-	KindChannelEntryTag  Kind  = "channel_entry_tag"
-	KindChannelLink      Kind  = "channel_acquisition_link_mutation"
-	KindWeChatPayPrepay  Kind  = "wechat_pay_prepay_v1"
-	KindWeChatPayRefund  Kind  = "wechat_pay_refund_v1"
-	KindWeChatShopRefund Kind  = "wechat_shop_refund_v1"
+	OwnerOutbound         Owner = "outbound"
+	OwnerPayment          Owner = "payment"
+	KindOutboundMessage   Kind  = "outbound_message"
+	KindAutomationMessage Kind  = "automation_message"
+	KindOutboundMedia     Kind  = "outbound_media"
+	KindWeComTagCatalog   Kind  = "wecom_tag_catalog"
+	KindGroupMessage      Kind  = "group_message"
+	KindChannelAsset      Kind  = "channel_acquisition_asset"
+	KindChannelWelcome    Kind  = "channel_welcome_message"
+	KindChannelEntryTag   Kind  = "channel_entry_tag"
+	KindChannelLink       Kind  = "channel_acquisition_link_mutation"
+	KindWeChatPayPrepay   Kind  = "wechat_pay_prepay_v1"
+	KindWeChatPayRefund   Kind  = "wechat_pay_refund_v1"
+	KindWeChatShopRefund  Kind  = "wechat_shop_refund_v1"
 )
 
 type State string
@@ -65,7 +72,7 @@ type Envelope struct {
 }
 
 func (value Envelope) Valid() bool {
-	kindValid := value.Owner == OwnerOutbound && (value.Kind == KindOutboundMessage || value.Kind == KindOutboundMedia || value.Kind == KindWeComTagCatalog || value.Kind == KindGroupMessage || value.Kind == KindChannelAsset || value.Kind == KindChannelWelcome || value.Kind == KindChannelEntryTag || value.Kind == KindChannelLink) ||
+	kindValid := value.Owner == OwnerOutbound && (value.Kind == KindOutboundMessage || value.Kind == KindAutomationMessage || value.Kind == KindOutboundMedia || value.Kind == KindWeComTagCatalog || value.Kind == KindGroupMessage || value.Kind == KindChannelAsset || value.Kind == KindChannelWelcome || value.Kind == KindChannelEntryTag || value.Kind == KindChannelLink) ||
 		value.Owner == OwnerPayment && (value.Kind == KindWeChatPayPrepay || value.Kind == KindWeChatPayRefund || value.Kind == KindWeChatShopRefund)
 	return kindValid && ValidDigest(value.SourceRefDigest) && ValidDigest(value.TargetRefDigest) && ValidDigest(value.PayloadDigest) && ValidDigest(value.PolicyVersionHash)
 }
@@ -141,11 +148,29 @@ type Reader interface {
 	Get(context.Context, string) (Projection, error)
 }
 
-type ReconcileCommand struct {
-	EffectID                            string
-	ReceiptKey, EvidenceDigest          Digest
-	ActorAdminUserID, Generation, Fence int64
+// ReconciliationCandidate is the exact expired attempt fence an owning
+// domain must echo before an outcome_unknown effect can be closed manually.
+type ReconciliationCandidate struct {
+	Projection
+	Fence          int64     `json:"fence"`
+	LeaseExpiresAt time.Time `json:"lease_expires_at"`
 }
+
+type ReconcileCommand struct {
+	EffectID         string
+	ReceiptKey       Digest
+	EvidenceDigest   Digest
+	ActorAdminUserID int64
+	Generation       int64
+	Fence            int64
+	LeaseExpiresAt   time.Time
+}
+
+type TransactionalReconciler interface {
+	ReconciliationCandidate(context.Context, string) (ReconciliationCandidate, error)
+	ReconcileEffectWithin(context.Context, ReconcileCommand) (Projection, error)
+}
+
 type UnknownReconciler interface {
 	ReconcileUnknownWithin(context.Context, ReconcileCommand) error
 }

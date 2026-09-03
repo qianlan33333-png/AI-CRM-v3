@@ -83,6 +83,11 @@ import (
 	productstore "github.com/qianlan33333-png/AI-CRM-v3/internal/product/store"
 	releaseapp "github.com/qianlan33333-png/AI-CRM-v3/internal/release/app"
 	releaseport "github.com/qianlan33333-png/AI-CRM-v3/internal/release/port"
+	segment "github.com/qianlan33333-png/AI-CRM-v3/internal/segment"
+	segmentapp "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/app"
+	segmentcompiler "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/compiler"
+	segmenthttp "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/http"
+	segmentstore "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/store"
 	surveymodule "github.com/qianlan33333-png/AI-CRM-v3/internal/survey"
 	surveyapp "github.com/qianlan33333-png/AI-CRM-v3/internal/survey/app"
 	surveyprovider "github.com/qianlan33333-png/AI-CRM-v3/internal/survey/provider"
@@ -181,6 +186,18 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err = river.AddWorkerSafely[payment.ReconciliationJobArgs](effectWorkers, paymentReconciliationWorker); err != nil {
 		return fail(err)
 	}
+	audienceRefreshWorker := segment.NewAudienceRefreshWorker()
+	if err = river.AddWorkerSafely[segment.AudienceRefreshJobArgs](effectWorkers, audienceRefreshWorker); err != nil {
+		return fail(err)
+	}
+	audienceMemberEventWorker := segment.NewAudienceMemberEventDispatchWorker()
+	if err = river.AddWorkerSafely[segment.AudienceMemberEventDispatchJobArgs](effectWorkers, audienceMemberEventWorker); err != nil {
+		return fail(err)
+	}
+	audienceScheduleWorker := segment.NewAudienceScheduleScanWorker()
+	if err = river.AddWorkerSafely[segment.AudienceScheduleScanJobArgs](effectWorkers, audienceScheduleWorker); err != nil {
+		return fail(err)
+	}
 	effectClient, err := platformjobqueue.NewInsertClient(pool.Native(), effectWorkers)
 	if err != nil {
 		return fail(err)
@@ -201,7 +218,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
-	effectsRuntime, err := platformjobqueue.NewRuntime(pool.Native(), effectWorkers, platformjobqueue.OutboundQueue, wecom.CustomerSyncQueue, payment.ReconciliationQueue, hxcworker.Queue)
+	effectsRuntime, err := platformjobqueue.NewRuntimeWithPeriodic(pool.Native(), effectWorkers, []*river.PeriodicJob{segment.AudienceSchedulePeriodicJob()}, platformjobqueue.OutboundQueue, wecom.CustomerSyncQueue, payment.ReconciliationQueue, hxcworker.Queue, segment.AudienceRefreshQueue)
 	if err != nil {
 		return fail(err)
 	}
@@ -259,8 +276,84 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
+	outboundMessages, err := outbound.NewMessageService(pool.Native(), uow, effectRepository, automationRepository)
+	if err != nil {
+		return fail(err)
+	}
 	automationService := automationapp.NewAgentServiceWithMediaReferences(uow, automationRepository, mediaRepository, mediaRepository, mediaRepository, mediaRepository, automationRepository)
 	automationBindings, err := automationModule.Bind(automationService, requestSecurity)
+	if err != nil {
+		return fail(err)
+	}
+	segmentModule := segment.NewModuleRegistration()
+	segmentRepository, err := segmentstore.NewPostgreSQL(pool.Native(), uow)
+	if err != nil {
+		return fail(err)
+	}
+	segmentService := segmentapp.NewService(uow, segmentRepository)
+	segmentEvaluator, err := segmentapp.NewEvaluator(segmentcompiler.Compiler{}, segmentSourceAdapter{uow: uow, customers: customerStore}, automationOpsCanonicalCustomers{resolver: canonicalCustomerAdapter{reader: queries}})
+	if err != nil {
+		return fail(err)
+	}
+	segmentEnqueuer, err := segment.NewRiverRefreshEnqueuer(effectClient)
+	if err != nil {
+		return fail(err)
+	}
+	segmentMemberEventEnqueuer, err := segment.NewRiverMemberEventEnqueuer(effectClient)
+	if err != nil {
+		return fail(err)
+	}
+	segmentSnapshots, err := segmentapp.NewSnapshotService(uow, segmentRepository, segmentEvaluator, segmentEnqueuer, segmentMemberEventEnqueuer)
+	if err != nil {
+		return fail(err)
+	}
+	if err = audienceRefreshWorker.BindService(segmentSnapshots); err != nil {
+		return fail(err)
+	}
+	scheduledRefreshes, err := segmentapp.NewScheduledRefreshService(uow, segmentRepository, segmentSnapshots)
+	if err != nil {
+		return fail(err)
+	}
+	if err = audienceScheduleWorker.BindService(scheduledRefreshes); err != nil {
+		return fail(err)
+	}
+	segmentStaff := automationOpsStaffAdapter{uow: uow, users: accessRepository}
+	automationProviderReady := cfg.Effects.ProviderEnabled && cfg.WeCom.Enabled && cfg.AutomationOperations.ProviderEnabled()
+	segmentExecution, err := segmentapp.NewExecutionService(uow, segmentRepository, automationService, segmentStaff, automationProviderReady)
+	if err != nil {
+		return fail(err)
+	}
+	automationRecipientLimit := cfg.AutomationOperations.MaxRecipientsPerRun
+	if automationRecipientLimit == 0 {
+		automationRecipientLimit = 1
+	}
+	automationRuntime, err := automationapp.NewRuntimeService(uow, automationRepository, segmentExecution, segmentSnapshots, automationRecipientLimit)
+	if err != nil {
+		return fail(err)
+	}
+	if err = automationRuntime.SetMessageAccepter(outboundMessages); err != nil {
+		return fail(err)
+	}
+	if err = automationRuntime.SetEffectReconciler(effectRepository); err != nil {
+		return fail(err)
+	}
+	if err = audienceMemberEventWorker.Bind(segmentSnapshots, automationMemberEventSink{runtime: automationRuntime}); err != nil {
+		return fail(err)
+	}
+	automationBindings.Runtime, err = automationModule.BindRuntime(automationRuntime, requestSecurity)
+	if err != nil {
+		return fail(err)
+	}
+	segmentRuntime := segmentapp.NewRuntimeFacade(segmentService, segmentSnapshots, segmentExecution)
+	segmentBindings, err := segmentModule.BindRuntime(segmentRuntime, segmentRuntime, requestSecurity)
+	if err != nil {
+		return fail(err)
+	}
+	segmentWebhookService, err := segmentapp.NewWebhookService(uow, segmentRepository, oneID, segmentSnapshots)
+	if err != nil {
+		return fail(err)
+	}
+	segmentWebhookHandler, err := segmenthttp.NewWebhookHandler(segmentWebhookService, cfg.AutomationOperations.WebhookSecret)
 	if err != nil {
 		return fail(err)
 	}
@@ -346,6 +439,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return fail(err)
 	}
 	outboundCompletionSink.WithPrivateMessage(privateCompletionSink)
+	outboundCompletionSink.WithAutomationMessage(outboundMessages)
 	if cfg.Survey.DataKey == "" {
 		return fail(errors.New("survey data encryption key is not configured"))
 	}
@@ -712,7 +806,12 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		}
 		tagCatalogProvider = catalogProvider
 	}
-	if err = effectsModule.SetProviderAdapter(composedProviderRouter{outbound: outbound.NewProviderRouterWithGroupMessageAndChannels(tagCatalogProvider, groupOpsProvider, channelAssetProvider, channelEntrantProvider, channelLinkProvider).WithPrivateMessage(privateProvider), payment: paymentAdapter}); err != nil {
+	messageProvider, providerErr := outbound.NewMessageProvider(outbound.MessageProviderConfig{Enabled: cfg.Effects.ProviderEnabled && cfg.WeCom.Enabled && cfg.AutomationOperations.ProviderEnabled(), CorpScope: "wecom-corp:" + cfg.WeCom.CorpID, Executions: outboundMessages, Identities: outboundIdentityAdapter{uow: uow, reader: queries}, Staff: segmentStaff, Content: automationService, Writer: providerClient})
+	if providerErr != nil {
+		return fail(providerErr)
+	}
+	providerRouter := outbound.NewProviderRouterWithGroupMessageAndChannels(tagCatalogProvider, groupOpsProvider, channelAssetProvider, channelEntrantProvider, channelLinkProvider).WithPrivateMessage(privateProvider).WithAutomationMessage(messageProvider)
+	if err = effectsModule.SetProviderAdapter(composedProviderRouter{outbound: providerRouter, payment: paymentAdapter}); err != nil {
 		return fail(err)
 	}
 	callbackReceipts := wecom.NewPostgreSQLCallbackReceiptStore()
@@ -806,6 +905,10 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	adminAPIs.Handle("/api/admin/setup-wizard", configBindings.Config)
 	adminAPIs.Handle("/api/admin/automation-agents", automationBindings.Agents)
 	adminAPIs.Handle("/api/admin/automation-agents/", automationBindings.Agents)
+	adminAPIs.Handle("/api/admin/automations", automationBindings.Runtime)
+	adminAPIs.Handle("/api/admin/automations/", automationBindings.Runtime)
+	adminAPIs.Handle("/api/admin/automation-runs", automationBindings.Runtime)
+	adminAPIs.Handle("/api/admin/automation-runs/", automationBindings.Runtime)
 	adminAPIs.Handle("/api/admin/channels", channelCenter)
 	adminAPIs.Handle("/api/admin/channels/", channelCenter)
 	adminAPIs.Handle("/api/admin/wecom-customer-acquisition-links", channelLinkHandler)
@@ -819,7 +922,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 			return checkErr
 		}
 		var complete bool
-		checkErr := pool.Native().QueryRow(readinessContext, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['0001','0002','0003','0004','0005','0006','0007','0008','0009','0010','0011','0012','0013','0014','0016','0017','0018','0019','0020','0021','0022','0023','0024','0025','0026','0027','0028','0029','0030','0031','0032','0033','0034','0035','0036','0037','0038']) AS required(version) WHERE NOT EXISTS (SELECT 1 FROM platform_schema_migrations applied WHERE applied.version=required.version))`).Scan(&complete)
+		checkErr := pool.Native().QueryRow(readinessContext, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['0001','0002','0003','0004','0005','0006','0007','0008','0009','0010','0011','0012','0013','0014','0015','0016','0017','0018','0019','0020','0021','0022','0023','0024','0025','0026','0027','0028','0029','0030','0031','0032','0033','0034','0035','0036','0037','0038','0039','0040','0041','0042','0043','0044','0045','0046','0047','0048']) AS required(version) WHERE NOT EXISTS (SELECT 1 FROM platform_schema_migrations applied WHERE applied.version=required.version))`).Scan(&complete)
 		if checkErr != nil || !complete {
 			return errors.New("database schema is not ready")
 		}
@@ -851,6 +954,9 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 			return checkErr
 		}
 		if checkErr = automationModule.Readiness(readinessContext, pool.Native()); checkErr != nil {
+			return checkErr
+		}
+		if checkErr = segmentModule.Readiness(readinessContext, pool.Native()); checkErr != nil {
 			return checkErr
 		}
 		if checkErr = groupOpsModule.Readiness(readinessContext, pool.Native()); checkErr != nil {
@@ -931,6 +1037,18 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return renderer.RenderAIAssistant(writer, webshell.AdminPageForRequest(request, "AI 助手", "AI 计划审阅与可对账执行结果。", "api.admin_ai_assistant"), page, donorTemplate, webshell.AIAssistantAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, GroupCSS: assets.GroupCSS, MaterialCSS: assets.MaterialCSS, ComposerCSS: assets.ComposerCSS, ReadonlyCSS: assets.ReadonlyCSS, HostJS: assets.HostJS})
 	})
 	handler, err := routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(healthHandler, accessHandler.Routes(), adminAPIs, effectsBindings.Effects, effectsBindings.PushCenter, effectsUI, mediaBindings.Media, mediaUI, tagBindings.Tags, tagUI, productBindings.Products, productUI, couponBindings.Coupons, couponUI, channelCenter, groupOpsBindings.GroupOps, groupOpsUI, automationBindings.Agents, automationUI, operationUI, configBindings.Config, configUI, weComHandler, shellHandler, authentication, cfg.PublicOrigin)
+	if err != nil {
+		return fail(err)
+	}
+	handler, err = mountSegmentAPI(handler, segmentBindings.Audience)
+	if err != nil {
+		return fail(err)
+	}
+	handler, err = mountAutomationRuntimeAPI(handler, automationBindings.Runtime)
+	if err != nil {
+		return fail(err)
+	}
+	handler, err = mountSegmentWebhook(handler, segmentWebhookHandler)
 	if err != nil {
 		return fail(err)
 	}

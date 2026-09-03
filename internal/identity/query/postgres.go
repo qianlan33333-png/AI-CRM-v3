@@ -23,6 +23,7 @@ var _ Reader = PostgreSQL{}
 var _ identityport.DirectoryIdentityReader = PostgreSQL{}
 var _ identityport.CommerceResolver = PostgreSQL{}
 var _ identityport.PaymentIdentityReader = PostgreSQL{}
+var _ identityport.OutboundIdentityReader = PostgreSQL{}
 var _ identityport.HXCUnionIDBatchResolver = PostgreSQL{}
 var _ identityport.ExternalIdentityValueReader = PostgreSQL{}
 var _ identityport.OutboundWeComIdentityReader = PostgreSQL{}
@@ -127,6 +128,42 @@ func (PostgreSQL) ResolveHXCUnionIDs(ctx context.Context, references []identityp
 		return nil, fmt.Errorf("iterate HXC unionids: %w", err)
 	}
 	return results, nil
+}
+
+func (PostgreSQL) VerifiedOutboundIdentity(ctx context.Context, customerID customerdomain.CustomerID, kind identitydomain.Kind, scope string) (identityport.OutboundIdentity, bool, error) {
+	if customerID < 1 || identitydomain.ValidateNamespace(kind, scope) != nil {
+		return identityport.OutboundIdentity{}, false, identitydomain.ErrInvalidReference
+	}
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return identityport.OutboundIdentity{}, false, err
+	}
+	rows, err := tx.Query(ctx, `WITH RECURSIVE lineage(id,status,merged_into_customer_id,visited) AS (
+	        SELECT id,status,merged_into_customer_id,ARRAY[id] FROM customers WHERE id=$1
+	        UNION ALL SELECT c.id,c.status,c.merged_into_customer_id,l.visited||c.id FROM customers c JOIN lineage l ON c.id=l.merged_into_customer_id WHERE NOT c.id=ANY(l.visited)
+	    ) SELECT i.id,l.id,i.kind,i.scope_key,i.normalized_value FROM lineage l JOIN customer_identities i ON i.customer_id=l.id WHERE l.status<>'merged' AND i.kind=$2 AND i.scope_key=$3 AND i.assurance='verified' AND i.status='active' ORDER BY i.id LIMIT 2`, customerID, kind, scope)
+	if err != nil {
+		return identityport.OutboundIdentity{}, false, fmt.Errorf("query verified outbound identity: %w", err)
+	}
+	defer rows.Close()
+	matches := []identityport.OutboundIdentity{}
+	for rows.Next() {
+		var item identityport.OutboundIdentity
+		if err = rows.Scan(&item.IdentityID, &item.CustomerID, &item.Kind, &item.Scope, &item.Value); err != nil {
+			return identityport.OutboundIdentity{}, false, fmt.Errorf("query verified outbound identity: %w", err)
+		}
+		matches = append(matches, item)
+	}
+	if err = rows.Err(); err != nil {
+		return identityport.OutboundIdentity{}, false, fmt.Errorf("query verified outbound identity: %w", err)
+	}
+	if len(matches) == 0 {
+		return identityport.OutboundIdentity{}, false, nil
+	}
+	if len(matches) > 1 {
+		return identityport.OutboundIdentity{}, false, errors.New("outbound identity is ambiguous")
+	}
+	return matches[0], true, nil
 }
 
 func (PostgreSQL) VerifiedPaymentIdentity(ctx context.Context, identityID int64, kind identitydomain.Kind, scope string) (identityport.VerifiedCommerceIdentity, bool, error) {
