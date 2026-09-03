@@ -173,6 +173,9 @@ func (manifest Manifest) Validate(requireComplete bool) error {
 		if _, canonical := identityKeys[row.SourceKey]; canonical {
 			return ErrInvalidManifest
 		}
+		if _, canonicalSubject := subjectKeys[row.SourceKey]; canonicalSubject {
+			return ErrInvalidManifest
+		}
 		if _, duplicate := quarantineKeys[row.SourceKey]; duplicate {
 			return ErrInvalidManifest
 		}

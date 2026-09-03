@@ -50,3 +50,17 @@ func TestValidateRejectsIdentityAssignedToTwoSubjectsAndFloatingRefund(t *testin
 		t.Fatal("identity assigned to two source subjects")
 	}
 }
+
+func TestValidateRejectsQuarantineKeyCollidingWithCanonicalSubjectReceipt(t *testing.T) {
+	manifest := Manifest{
+		SchemaVersion:       SchemaVersion,
+		RunKey:              "run",
+		Coverage:            Coverage{Identities: true, WeChatPayOrders: true, WeChatPayRefunds: true, WeChatShopOrders: true, WeChatShopRefunds: true, AlipayOrders: true},
+		Subjects:            []SubjectRow{{SourceKey: "person-1", IdentityKeys: []string{"identity-1"}}},
+		Identities:          []IdentityRow{{SourceKey: "identity-1", Kind: "mp_openid", Scope: "wechat-app:app", Value: "value", Source: "provider-history:test"}},
+		IdentityQuarantines: []IdentityQuarantineRow{{SourceKey: "person-1", ReasonCode: "missing_scope", EvidenceDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}},
+	}
+	if err := manifest.Validate(true); err == nil {
+		t.Fatal("quarantine key colliding with canonical subject receipt was accepted")
+	}
+}
