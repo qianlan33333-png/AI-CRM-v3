@@ -25,10 +25,13 @@ try {
     fs.writeFileSync(path.join(source, 'assets', file), file);
   }
   const files = Object.fromEntries([
-    ['assets/admin.js', { imports: [{ kind: 'import-statement', path: 'assets/legacy.js' }] }],
+    ['assets/admin.js', { imports: [{ kind: 'dynamic-import', path: 'assets/legacy.js' }] }],
     ['assets/tokens.css', { imports: [] }],
     ['assets/labs.css', { imports: [] }],
-    ['assets/legacy.js', { inputs: ['web/src/admin/legacy.ts'], imports: [{ kind: 'dynamic-import', path: 'assets/groupOpsHistory.js' }] }],
+    ['assets/legacy.js', { inputs: ['web/src/admin/legacy.ts'], imports: [
+      { kind: 'dynamic-import', path: 'assets/campaigns.js' },
+      { kind: 'dynamic-import', path: 'assets/groupOpsHistory.js' },
+    ] }],
     ['assets/campaigns.js', { inputs: ['web/src/admin/sections/campaigns.ts'], imports: [] }],
     ['assets/groupOpsHistory.js', { inputs: ['web/src/admin/sections/groupOpsHistory.ts'], imports: [] }],
     ['assets/cycles-host.js', { inputs: ['web/v3/operationCyclesAdapter.ts'], imports: [{ kind: 'dynamic-import', path: 'assets/cycles-main.js' }] }],
@@ -46,7 +49,10 @@ try {
   assert.equal(fs.readFileSync(path.join(stage, 'admin', 'tags.html'), 'utf8'), fs.readFileSync(path.join(source, 'admin', 'wecom-tags.html'), 'utf8'), 'generated donor Tags page must be copied byte-for-byte as the private template source');
   assert.deepEqual(staged.filter((entry) => entry.endsWith('.html')), ['admin/agentEdit.html', 'admin/agents.html', 'admin/attach.html', 'admin/couponForm.html', 'admin/coupons.html', 'admin/cycles.html', 'admin/cyclesDetail.html', 'admin/groupops.html', 'admin/groupopsDetail.html', 'admin/images.html', 'admin/mpLib.html', 'admin/productForm.html', 'admin/products.html', 'admin/spProductForm.html', 'admin/spProducts.html', 'admin/tags.html'], 'only approved private Media, Tags, Product, Coupon, Group Ops, Automation, and Operation Cycle templates may be staged');
   const stagedManifest = JSON.parse(fs.readFileSync(path.join(stage, 'asset-manifest.json'), 'utf8'));
-  assert.deepEqual(stagedManifest.files['assets/legacy.js'].imports, [{ kind: 'dynamic-import', path: 'assets/groupOpsHistory.js' }], 'the frozen Group Ops history dynamic module must remain fetchable from the staged manifest');
+  assert.deepEqual(stagedManifest.files['assets/legacy.js'].imports, [
+    { kind: 'dynamic-import', path: 'assets/campaigns.js' },
+    { kind: 'dynamic-import', path: 'assets/groupOpsHistory.js' },
+  ], 'the frozen Campaign and Group Ops history dynamic modules must remain fetchable from the staged manifest');
   console.log('PR01 effects UI staging contract passed');
 } finally {
   fs.rmSync(root, { recursive: true, force: true });

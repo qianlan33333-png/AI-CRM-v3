@@ -14,10 +14,12 @@ const readManifest = (root) => JSON.parse(fs.readFileSync(path.join(root, 'asset
 const sourceManifest = readManifest(source);
 const stagedManifest = readManifest(stage);
 
-const outputForInput = (manifest, input) => Object.entries(manifest.files || {}).find(([, file]) => file.inputs?.includes(input))?.[0];
 const adminEntry = sourceManifest.entries?.admin;
-const legacyEntry = outputForInput(sourceManifest, 'web/src/admin/legacy.ts');
-const historyEntry = outputForInput(sourceManifest, 'web/src/admin/sections/groupOpsHistory.ts');
+const dynamicOutputForInput = (manifest, from, input) => (manifest.files[from]?.imports || []).find((item) =>
+  item.kind === 'dynamic-import' && manifest.files[item.path]?.inputs?.includes(input)
+)?.path;
+const legacyEntry = adminEntry && dynamicOutputForInput(sourceManifest, adminEntry, 'web/src/admin/legacy.ts');
+const historyEntry = legacyEntry && dynamicOutputForInput(sourceManifest, legacyEntry, 'web/src/admin/sections/groupOpsHistory.ts');
 assert.ok(adminEntry && legacyEntry && historyEntry, 'the real donor build must contain the admin, legacy, and Group Ops history modules');
 
 const legacyImports = sourceManifest.files[legacyEntry]?.imports || [];

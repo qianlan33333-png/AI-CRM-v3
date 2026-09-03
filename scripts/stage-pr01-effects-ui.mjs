@@ -26,13 +26,15 @@ if (!fs.statSync(manifestPath).isFile()) fail('missing asset-manifest.json');
 const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
 const roots = ['admin', 'tokens', 'labs', 'operationCyclesHost'].map((name) => manifest.entries?.[name]);
 if (roots.some((entry) => typeof entry !== 'string')) fail('campaigns entry assets are absent from manifest');
-const outputForInput = (input) => Object.entries(manifest.files || {}).find(([, file]) => file.inputs?.includes(input))?.[0];
-const legacyEntry = outputForInput('web/src/admin/legacy.ts');
-const campaignsEntry = outputForInput('web/src/admin/sections/campaigns.ts');
-const groupOpsHistoryEntry = outputForInput('web/src/admin/sections/groupOpsHistory.ts');
+const dynamicOutputForInput = (from, input) => (manifest.files[from]?.imports || []).find((item) =>
+  item.kind === 'dynamic-import' && manifest.files[item.path]?.inputs?.includes(input)
+)?.path;
+const legacyEntry = dynamicOutputForInput(manifest.entries.admin, 'web/src/admin/legacy.ts');
+const campaignsEntry = legacyEntry && dynamicOutputForInput(legacyEntry, 'web/src/admin/sections/campaigns.ts');
+const groupOpsHistoryEntry = legacyEntry && dynamicOutputForInput(legacyEntry, 'web/src/admin/sections/groupOpsHistory.ts');
 const operationHost = manifest.entries.operationCyclesHost;
-const operationMainEntry = (manifest.files[operationHost]?.imports || []).find((item) => item.kind === 'dynamic-import' && manifest.files[item.path]?.inputs?.includes('web/src/admin/main.ts'))?.path;
-const operationLegacyEntry = operationMainEntry && (manifest.files[operationMainEntry]?.imports || []).find((item) => item.kind === 'dynamic-import' && manifest.files[item.path]?.inputs?.includes('web/src/admin/legacy.ts'))?.path;
+const operationMainEntry = dynamicOutputForInput(operationHost, 'web/src/admin/main.ts');
+const operationLegacyEntry = operationMainEntry && dynamicOutputForInput(operationMainEntry, 'web/src/admin/legacy.ts');
 if (!legacyEntry || !campaignsEntry || !groupOpsHistoryEntry || !operationMainEntry || !operationLegacyEntry) fail('required frozen admin runtime chunks are absent from manifest');
 
 const selected = new Set();
