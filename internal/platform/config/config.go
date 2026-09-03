@@ -36,6 +36,7 @@ type Runtime struct {
 	WorkerOwner                string
 	WorkerLimit                int
 	CustomerSyncTrigger        string
+	HXCDashboard               HXCDashboard
 	OperationCycleServiceToken string
 }
 
@@ -68,6 +69,13 @@ type GroupOps struct {
 }
 
 type Effects struct{ ProviderEnabled bool }
+type HXCDashboard struct {
+	Enabled        bool
+	SourceDSN      string
+	UnionIDScope   string
+	SubjectHMACKey string
+	SyncTrigger    string
+}
 type Survey struct {
 	DataKey             string
 	OAuthEnabled        bool
@@ -112,6 +120,7 @@ func Load() (Runtime, error) {
 		WorkerOwner:                valueOrDefault("AICRM_WORKER_OWNER", "aicrm-wecom-worker"),
 		WorkerLimit:                25,
 		CustomerSyncTrigger:        os.Getenv("AICRM_CUSTOMER_SYNC_TRIGGER"),
+		HXCDashboard:               HXCDashboard{SourceDSN: os.Getenv("AICRM_HXC_SOURCE_DSN"), UnionIDScope: os.Getenv("AICRM_HXC_UNIONID_SCOPE"), SubjectHMACKey: os.Getenv("AICRM_HXC_SUBJECT_HMAC_KEY"), SyncTrigger: os.Getenv("AICRM_HXC_SYNC_TRIGGER")},
 		OperationCycleServiceToken: os.Getenv("AICRM_OPERATION_CYCLE_SERVICE_TOKEN"),
 		Bootstrap: Bootstrap{
 			Username: os.Getenv("AICRM_BOOTSTRAP_USERNAME"), Password: os.Getenv("AICRM_BOOTSTRAP_PASSWORD"),
@@ -130,6 +139,9 @@ func Load() (Runtime, error) {
 		return Runtime{}, err
 	}
 	if cfg.Effects.ProviderEnabled, err = strictBool("AICRM_OUTBOUND_PROVIDER_ENABLED", false); err != nil {
+		return Runtime{}, err
+	}
+	if cfg.HXCDashboard.Enabled, err = strictBool("AICRM_HXC_SYNC_ENABLED", false); err != nil {
 		return Runtime{}, err
 	}
 	if cfg.TagCatalog.Enabled, err = strictBool("AICRM_WECOM_TAG_CATALOG_PROVIDER_ENABLED", false); err != nil {
@@ -194,6 +206,14 @@ func Load() (Runtime, error) {
 	}
 	if cfg.CustomerSyncTrigger != "" && cfg.CustomerSyncTrigger != "daily" && cfg.CustomerSyncTrigger != "initial" {
 		return Runtime{}, errors.New("invalid AICRM_CUSTOMER_SYNC_TRIGGER")
+	}
+	if cfg.HXCDashboard.SyncTrigger != "" && cfg.HXCDashboard.SyncTrigger != "scheduled" && cfg.HXCDashboard.SyncTrigger != "initial" {
+		return Runtime{}, errors.New("invalid AICRM_HXC_SYNC_TRIGGER")
+	}
+	if cfg.HXCDashboard.Enabled {
+		if strings.TrimSpace(cfg.HXCDashboard.SourceDSN) != cfg.HXCDashboard.SourceDSN || cfg.HXCDashboard.SourceDSN == "" || !strings.HasPrefix(cfg.HXCDashboard.UnionIDScope, "wechat-open-platform:") || len(cfg.HXCDashboard.UnionIDScope) <= len("wechat-open-platform:") || strings.TrimSpace(cfg.HXCDashboard.UnionIDScope) != cfg.HXCDashboard.UnionIDScope || len(cfg.HXCDashboard.SubjectHMACKey) < 32 {
+			return Runtime{}, errors.New("enabled HXC dashboard configuration is incomplete")
+		}
 	}
 	if cfg.OperationCycleServiceToken != "" && (strings.TrimSpace(cfg.OperationCycleServiceToken) != cfg.OperationCycleServiceToken || len(cfg.OperationCycleServiceToken) < 32) {
 		return Runtime{}, errors.New("invalid AICRM_OPERATION_CYCLE_SERVICE_TOKEN")
