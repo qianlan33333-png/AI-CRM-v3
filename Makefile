@@ -7,9 +7,9 @@ generate-orval:
 
 orval-check:
 	@before="$$(mktemp)"; after="$$(mktemp)"; \
-	find web/src/api/generated/hxc-dashboard -type f -print0 2>/dev/null | sort -z | xargs -0 shasum -a 256 > "$$before" 2>/dev/null || true; \
+	find web/v3/generated -type f -print0 2>/dev/null | sort -z | xargs -0 shasum -a 256 > "$$before" 2>/dev/null || true; \
 	npx orval --config ./orval.config.mjs >/dev/null; \
-	find web/src/api/generated/hxc-dashboard -type f -print0 | sort -z | xargs -0 shasum -a 256 > "$$after"; \
+	find web/v3/generated -type f -print0 | sort -z | xargs -0 shasum -a 256 > "$$after"; \
 	cmp -s "$$before" "$$after" || { echo 'generated HXC dashboard client is stale' >&2; rm -f "$$before" "$$after"; exit 1; }; \
 	rm -f "$$before" "$$after"
 

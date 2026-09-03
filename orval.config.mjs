@@ -11,7 +11,7 @@ export default defineConfig({
       },
     },
     output: {
-      target: './web/src/api/generated/hxc-dashboard/hxc-dashboard.ts',
+      target: './web/v3/generated/hxc-dashboard.ts',
       client: 'fetch',
       clean: true,
       prettier: true,

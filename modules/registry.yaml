@@ -53,3 +53,7 @@ modules:
     status: planned
     owner: crm-platform
     dependencies: [operations-modules]
+  - name: hxc-dashboard
+    status: implemented
+    owner: crm-operations
+    dependencies: [platform, access, identity]
