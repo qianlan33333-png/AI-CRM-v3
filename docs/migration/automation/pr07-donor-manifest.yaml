@@ -2,7 +2,7 @@ schema_version: 1
 pr: PR07
 scope: automation_agent_and_fixed_content
 status: integrated_local_configuration_closure
-v3_base: 2dcdd4d
+v3_base: 153aebb8f0399aa1d37e6ec0654f82dae68a76df
 target_branch: codex/feature-automation-final
 
 donor:
