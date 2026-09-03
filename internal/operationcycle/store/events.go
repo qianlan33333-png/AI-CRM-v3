@@ -38,12 +38,14 @@ func (journal *EventJournal) Append(ctx context.Context, event operationport.Eve
 	if err != nil {
 		return 0, err
 	}
+	actorType, actorID, resourceID := operationCycleAuditScope(event)
 	auditEvent, err := journal.audit.Append(ctx, platformaudit.Event{
 		IdempotencyKey: key,
 		Action:         "operation_cycle.fact_recorded",
-		ActorType:      "system",
+		ActorType:      actorType,
+		ActorID:        actorID,
 		ResourceType:   "operation_cycle",
-		ResourceID:     event.IdempotencyKey,
+		ResourceID:     resourceID,
 		Payload:        event.Payload,
 		OccurredAt:     event.OccurredAt,
 	})
@@ -66,6 +68,26 @@ func (journal *EventJournal) Append(ctx context.Context, event operationport.Eve
 		return 0, errors.New("operation-cycle journal did not persist")
 	}
 	return operationport.EventID(outboxEvent.ID), nil
+}
+
+func operationCycleAuditScope(event operationport.Event) (actorType, actorID, resourceID string) {
+	actorType, resourceID = "system", event.IdempotencyKey
+	var envelope struct {
+		Data struct {
+			ActorID     string `json:"actor_id"`
+			StrategyKey string `json:"strategy_key"`
+		} `json:"data"`
+	}
+	if json.Unmarshal(event.Payload, &envelope) != nil {
+		return actorType, "", resourceID
+	}
+	if strings.TrimSpace(envelope.Data.ActorID) != "" {
+		actorType, actorID = "admin", envelope.Data.ActorID
+	}
+	if strings.TrimSpace(envelope.Data.StrategyKey) != "" {
+		resourceID = envelope.Data.StrategyKey
+	}
+	return actorType, actorID, resourceID
 }
 
 func (journal *EventJournal) Accept(ctx context.Context, eventID operationport.EventID, consumer string) error {

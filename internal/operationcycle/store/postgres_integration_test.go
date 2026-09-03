@@ -212,6 +212,16 @@ func TestPostgreSQLOperationCycleAdminJourneyPersistsImmutableHistory(t *testing
 	if receipts != 5 || strategyVersions != 5 || audits != 5 || outbox != 5 {
 		t.Fatalf("receipts/versions/audits/outbox=%d/%d/%d/%d, want 5/5/5/5", receipts, strategyVersions, audits, outbox)
 	}
+	var actorType, actorID, resourceID string
+	if err = native.QueryRow(ctx, `SELECT actor_type, actor_id, resource_id
+		FROM audit_events
+		WHERE resource_type='operation_cycle' AND actor_id=$1
+		ORDER BY id LIMIT 1`, create.ActorID).Scan(&actorType, &actorID, &resourceID); err != nil {
+		t.Fatal(err)
+	}
+	if actorType != "admin" || actorID != create.ActorID || resourceID != create.StrategyKey {
+		t.Fatalf("admin audit attribution=%q/%q/%q, want admin/%s/%s", actorType, actorID, resourceID, create.ActorID, create.StrategyKey)
+	}
 	if _, err = native.Exec(ctx, `UPDATE operation_cycle_strategy_versions SET title='mutated' WHERE strategy_key=$1 AND version=1`, create.StrategyKey); err == nil {
 		t.Fatal("immutable strategy version accepted direct mutation")
 	}
