@@ -189,3 +189,14 @@ func TestDatabaseURLRequiresConfiguration(t *testing.T) {
 		t.Fatal("expected missing database URL error")
 	}
 }
+
+func TestNamedDatabaseURLUsesClosedMigrationAllowlist(t *testing.T) {
+	t.Setenv("AICRM_V2_AUTOMATION_DATABASE_URL", "postgres://readonly@source/aicrm")
+	value, err := NamedDatabaseURL("AICRM_V2_AUTOMATION_DATABASE_URL")
+	if err != nil || value != "postgres://readonly@source/aicrm" {
+		t.Fatalf("value=%q err=%v", value, err)
+	}
+	if _, err = NamedDatabaseURL("ARBITRARY_SECRET"); err == nil {
+		t.Fatal("expected unsupported environment name")
+	}
+}

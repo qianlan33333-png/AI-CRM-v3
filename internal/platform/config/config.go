@@ -4,6 +4,7 @@ package config
 import (
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"net"
 	"net/url"
 	"os"
@@ -333,4 +334,24 @@ func DatabaseURL() (string, error) {
 		}
 	}
 	return "", errors.New("database URL is not configured")
+}
+
+// NamedDatabaseURL is restricted to the two database roles used by the
+// controlled Automation Operations migration. Keeping this allowlist in the
+// configuration package prevents commands from treating arbitrary environment
+// values as credentials.
+func NamedDatabaseURL(name string) (string, error) {
+	switch name {
+	case "AICRM_DATABASE_URL", "AICRM_V2_AUTOMATION_DATABASE_URL":
+	default:
+		return "", errors.New("unsupported database URL environment")
+	}
+	value, ok := os.LookupEnv(name)
+	if !ok || value == "" {
+		return "", fmt.Errorf("database URL environment %s is not set", name)
+	}
+	if strings.TrimSpace(value) != value {
+		return "", errors.New("invalid database URL")
+	}
+	return value, nil
 }
