@@ -41,13 +41,27 @@ if grep -qE '^AICRM_ROLE=' deploy/aicrm.env.example; then
   exit 1
 fi
 grep -qx 'WantedBy=multi-user.target' deploy/aicrm-effects-worker.service || { echo "effects worker must be persistently enableable" >&2; exit 1; }
-grep -qx 'test -f "$release_dir/migrations/0007_media.sql"' "$installer" || { echo "release must require Media migration" >&2; exit 1; }
-grep -qx 'test -f "$release_dir/migrations/0008_tag_catalog.sql"' "$installer" || { echo "release must require Tag catalog migration" >&2; exit 1; }
-grep -qx 'test -f "$release_dir/migrations/0009_customer_activation.sql"' "$installer" || { echo "release must require customer migration" >&2; exit 1; }
-grep -qx 'test -f "$release_dir/migrations/0010_product.sql"' "$installer" || { echo "release must require Product migration" >&2; exit 1; }
-grep -qx 'test -f "$release_dir/migrations/0011_coupon.sql"' "$installer" || { echo "release must require Coupon migration" >&2; exit 1; }
-grep -qx 'test -f "$release_dir/migrations/0012_group_ops.sql"' "$installer" || { echo "release must require Group Ops migration" >&2; exit 1; }
-grep -qx 'test -f "$release_dir/migrations/0016_media_content_packages.sql"' "$installer" || { echo "release must require Media content-package migration" >&2; exit 1; }
+for migration_contract in \
+  '0005_external_effects.sql:External Effects' \
+  '0006_wecom_callback_channel_acquisition.sql:WeCom callback acquisition' \
+  '0007_media.sql:Media' \
+  '0008_tag_catalog.sql:Tag catalog' \
+  '0009_customer_activation.sql:customer activation' \
+  '0010_product.sql:Product' \
+  '0011_coupon_rules.sql:Coupon rules' \
+  '0012_group_ops.sql:Group Ops' \
+  '0016_media_content_packages.sql:Media content packages'; do
+  migration="${migration_contract%%:*}"
+  label="${migration_contract#*:}"
+  test -f "migrations/${migration}" || {
+    echo "${label} migration must exist in the source release" >&2
+    exit 1
+  }
+  grep -qx "test -f \"\$release_dir/migrations/${migration}\"" "$installer" || {
+    echo "release must require the current ${label} migration filename" >&2
+    exit 1
+  }
+done
 grep -qx 'test -x "$release_dir/bin/migrate-phone-identities"' "$installer" || { echo "release must include phone migration tool" >&2; exit 1; }
 grep -qx 'test -f "$release_dir/release-files.sha256"' "$installer" || { echo "release must require its immutable file manifest" >&2; exit 1; }
 grep -qx '(cd "$release_dir" && sha256sum --strict --check release-files.sha256)' "$installer" || { echo "existing releases must pass their complete file manifest before resume" >&2; exit 1; }
