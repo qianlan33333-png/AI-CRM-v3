@@ -24,8 +24,6 @@ web/scripts/e2e.mjs
 web/scripts/survey-editor-characterization.mjs
 web/scripts/survey-public-characterization.mjs
 web/src/admin/sections/questionnaireEditor.ts
-web/src/api/admin.ts
-web/src/api/generated/health.schemas.ts
 web/src/api/questionnaireEditorV3.ts
 web/src/h5/controller.ts
 web/src/h5/templates/all.html

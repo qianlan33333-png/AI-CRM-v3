@@ -72,6 +72,7 @@ jobs:
           node web/scripts/survey-editor-characterization.mjs
           node web/scripts/survey-public-characterization.mjs
           node web/scripts/survey-unresolved-history-contract.mjs
+          node --check internal/webshell/static/admin_console/survey_operations.js
           npm run typecheck
           npm test
           npm run build
@@ -146,6 +147,7 @@ jobs:
           node web/scripts/survey-editor-characterization.mjs
           node web/scripts/survey-public-characterization.mjs
           node web/scripts/survey-unresolved-history-contract.mjs
+          node --check internal/webshell/static/admin_console/survey_operations.js
           npm run typecheck
           npm run build
           cp -R migrations deploy release/

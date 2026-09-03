@@ -761,7 +761,18 @@ func (h *Handler) legacyOperationLogs(w http.ResponseWriter, r *http.Request, id
 		resultError(w, err)
 		return
 	}
-	writeJSON(w, 200, map[string]any{"items": items, "total": total, "limit": limit, "offset": offset, "has_more": int64(offset)+int64(len(items)) < total, "local_only": true, "real_external_call_executed": false})
+	// Keep the frozen donor log reader on its original local-queued contract.
+	// The v3 extension reads the canonical receipt states from /operations.
+	compatible := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		compatible = append(compatible, map[string]any{
+			"test_run_id": item.ID, "questionnaire_id": item.QuestionnaireID,
+			"created_at": item.OccurredAt, "status": "queued", "attempt_count": 0,
+			"side_effect_executed": false, "provider_result_received": false,
+			"unknown_after_dispatch": false, "auto_retry_allowed": false,
+		})
+	}
+	writeJSON(w, 200, map[string]any{"items": compatible, "total": total, "limit": limit, "offset": offset, "has_more": int64(offset)+int64(len(items)) < total, "local_only": true, "real_external_call_executed": false, "canonical_receipts_path": "/api/admin/questionnaires/{questionnaire_id}/operations"})
 }
 
 func definitionResponse(q surveyport.Questionnaire) map[string]any {

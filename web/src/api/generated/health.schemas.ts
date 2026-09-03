@@ -9801,8 +9801,6 @@ export interface PublicSurveyDefinition {
   /** @maxLength 10000 */
   description: string;
   answer_display_mode: PublicSurveyDefinitionAnswerDisplayMode;
-  mode: "survey" | "assessment";
-  assessment_config: Record<string, unknown>;
   /** @minimum 1 */
   version: number;
   /**
@@ -9819,8 +9817,6 @@ export type PublicSurveyQuestionType =
 export const PublicSurveyQuestionType = {
   single_choice: "single_choice",
   multi_choice: "multi_choice",
-  textarea: "textarea",
-  mobile: "mobile",
 } as const;
 
 export interface PublicSurveyQuestion {
@@ -9848,10 +9844,6 @@ export interface PublicSurveyQuestion {
    * @maximum 100
    */
   maximum_selections: number;
-  minimum_length?: number;
-  maximum_length?: number;
-  placeholder_text?: string;
-  assessment_dimension_key?: string;
   /**
    * @minItems 1
    * @maxItems 100
@@ -9888,7 +9880,6 @@ export interface PublicSurveySubmissionAnswer {
   question_id: number;
   /** @maxItems 100 */
   option_ids: number[];
-  text_value?: string;
 }
 
 export interface PublicSurveySubmissionReceipt {
@@ -9928,10 +9919,6 @@ export interface PublicSurveyResult {
   submitted_at: string;
   local_only: boolean;
   external_executed: boolean;
-  questionnaire_title?: string;
-  mode?: "survey" | "assessment";
-  total_score?: number;
-  assessment_result?: Record<string, unknown>;
 }
 
 export interface PublicSurveyPublishRequest {

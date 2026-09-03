@@ -9,13 +9,33 @@ import type {
   PublicSurveySubmissionAnswer,
 } from "../api/generated/health.schemas";
 
+type V3SurveyQuestion = Omit<PublicSurveyQuestion, 'type'> & {
+  type: PublicSurveyQuestion['type'] | 'textarea' | 'mobile';
+  minimum_length?: number;
+  maximum_length?: number;
+  placeholder_text?: string;
+  assessment_dimension_key?: string;
+};
+type V3SurveyDefinition = Omit<PublicSurveyDefinition, 'questions'> & {
+  mode: 'survey' | 'assessment';
+  assessment_config: Record<string, unknown>;
+  questions: V3SurveyQuestion[];
+};
+type V3SurveyResult = PublicSurveyResult & {
+  questionnaire_title?: string;
+  mode?: 'survey' | 'assessment';
+  total_score?: number;
+  assessment_result?: Record<string, unknown>;
+};
+type V3SurveySubmissionAnswer = PublicSurveySubmissionAnswer & { text_value?: string };
+
 const validID = (value: number): boolean => Number.isSafeInteger(value) && value > 0;
 const validToken = (value: string): boolean => /^[A-Za-z0-9_-]{43}$/.test(value);
 const SUPPORTED_TYPES = ['single_choice', 'multi_choice', 'textarea', 'mobile'];
 
 export class H5Controller extends PageBase {
-  private definition: PublicSurveyDefinition | null = null;
-  private result: PublicSurveyResult | null = null;
+  private definition: V3SurveyDefinition | null = null;
+  private result: V3SurveyResult | null = null;
   private answers = new Map<number, number[]>();
   private textAnswers = new Map<number, string>();
   private unsupportedTypes = new Set<number>();
@@ -40,7 +60,7 @@ export class H5Controller extends PageBase {
         const query = new URLSearchParams(location.search);
         this.resultToken ||= new URLSearchParams((location.hash || '').slice(1)).get('result_token') || query.get('result_token') || '';
         if (!validToken(this.resultToken)) throw new Error('缺少有效结果凭据，无法查询提交结果');
-        const result = await readSurveyResult(this.resultToken);
+        const result = await readSurveyResult(this.resultToken) as V3SurveyResult;
         if (!validID(result.submission_id) || !validID(result.definition_version) ||
             !Number.isFinite(Date.parse(result.submitted_at)) || result.local_only !== true || result.external_executed !== false) {
           throw new Error('提交结果响应不完整，未确认结果');
@@ -49,7 +69,7 @@ export class H5Controller extends PageBase {
       } else {
         const slug = new URLSearchParams(location.search).get('slug') || '';
         if (!/^[a-z0-9][a-z0-9-]{0,119}$/.test(slug)) throw new Error('缺少有效公开问卷 slug，不能填写或提交');
-        const definition = await readPublicSurvey(slug);
+        const definition = await readPublicSurvey(slug) as V3SurveyDefinition;
         this.validateDefinition(definition, slug);
         this.definition = definition;
       }
@@ -65,7 +85,7 @@ export class H5Controller extends PageBase {
 
   private refresh(): void { this.__render?.(); }
 
-  private validateDefinition(definition: PublicSurveyDefinition, slug: string): void {
+  private validateDefinition(definition: V3SurveyDefinition, slug: string): void {
     if (!definition || definition.slug !== slug || !validID(definition.id) || !validID(definition.version) ||
         typeof definition.title !== 'string' || !definition.title || typeof definition.description !== 'string' ||
         !['all_in_one', 'one_by_one'].includes(definition.answer_display_mode) ||
@@ -101,7 +121,7 @@ export class H5Controller extends PageBase {
     }
   }
 
-  private supported(question: PublicSurveyQuestion): boolean {
+  private supported(question: V3SurveyQuestion): boolean {
     return !this.unsupportedTypes.has(question.id);
   }
 
@@ -111,7 +131,7 @@ export class H5Controller extends PageBase {
       : '';
   }
 
-  private select(question: PublicSurveyQuestion, optionID: number): void {
+  private select(question: V3SurveyQuestion, optionID: number): void {
     if (this.submitting || this.submitted || !this.supported(question)) return;
     const previous = this.answers.get(question.id) || [];
     const next = question.type === 'single_choice' ? [optionID]
@@ -123,7 +143,7 @@ export class H5Controller extends PageBase {
     this.refresh();
   }
 
-  private setText(question: PublicSurveyQuestion, event: Event): void {
+  private setText(question: V3SurveyQuestion, event: Event): void {
     if (this.submitting || this.submitted || !this.supported(question)) return;
     const value = String((event.target as HTMLInputElement | HTMLTextAreaElement).value || '');
     if (value !== (this.textAnswers.get(question.id) || '')) this.submissionKey = '';
@@ -131,7 +151,7 @@ export class H5Controller extends PageBase {
     this.error = '';
   }
 
-  private questionError(question: PublicSurveyQuestion): string {
+  private questionError(question: V3SurveyQuestion): string {
     if (!this.supported(question)) return '';
     if (question.type === 'textarea' || question.type === 'mobile') {
       const value = this.textAnswers.get(question.id) || '';
@@ -152,7 +172,7 @@ export class H5Controller extends PageBase {
     if (!this.definition || this.submitting || this.submitted) return;
     this.error = this.definition.questions.map((question) => this.questionError(question)).find(Boolean) || '';
     if (this.error) { this.refresh(); return; }
-    const answers: PublicSurveySubmissionAnswer[] = this.definition.questions
+    const answers: V3SurveySubmissionAnswer[] = this.definition.questions
       .filter((question) => this.supported(question) && ((this.answers.get(question.id) || []).length > 0 || (this.textAnswers.get(question.id) || '') !== ''))
       .map((question) => ({ question_id: question.id, option_ids: [...(this.answers.get(question.id) || [])], text_value: this.textAnswers.get(question.id) || undefined }));
     this.submitting = true;
