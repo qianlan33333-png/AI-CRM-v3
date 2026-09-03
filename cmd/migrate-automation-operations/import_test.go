@@ -163,6 +163,13 @@ func TestImportDryRunApplyReplayAndReconcilePostgreSQL(t *testing.T) {
 	if _, err = Reconcile(ctx, pool, report.BatchKey); err != nil {
 		t.Fatal(err)
 	}
+	shadow, err := Shadow(ctx, pool, report.BatchKey, snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !shadow.ReadyForProbe || len(shadow.Packages) != 1 || !shadow.Packages[0].MemberDigestMatches {
+		t.Fatalf("shadow=%+v", shadow)
+	}
 }
 
 func applyPlatformSQL(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {

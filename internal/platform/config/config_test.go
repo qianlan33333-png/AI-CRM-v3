@@ -164,6 +164,41 @@ func TestTagCatalogProviderRequiresNarrowExplicitPermission(t *testing.T) {
 	}
 }
 
+func TestAutomationOperationsProviderIsIndependentAndFailClosed(t *testing.T) {
+	t.Setenv("AICRM_DATABASE_URL", "postgres://aicrm:test@localhost/aicrm")
+	t.Setenv("AICRM_AUTOMATION_OPS_PROVIDER_MODE", "probe")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected probe without provider prerequisites to fail")
+	}
+	t.Setenv("AICRM_OUTBOUND_PROVIDER_ENABLED", "true")
+	t.Setenv("AICRM_WECOM_ENABLED", "true")
+	t.Setenv("AICRM_WECOM_CORP_ID", "ww-corp")
+	t.Setenv("AICRM_WECOM_AGENT_ID", "1000002")
+	t.Setenv("AICRM_WECOM_SECRET", "provider-secret")
+	t.Setenv("AICRM_WECOM_CONTEXT_SIGNING_KEY", "0123456789abcdef0123456789abcdef")
+	t.Setenv("AICRM_AUTOMATION_OPS_PROVIDER_PERMISSION", "fixed-script-send-authorized")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.AutomationOperations.ProviderEnabled() || cfg.AutomationOperations.MaxRecipientsPerRun != 1 {
+		t.Fatalf("automation operations config=%+v", cfg.AutomationOperations)
+	}
+	t.Setenv("AICRM_AUTOMATION_OPS_MAX_RECIPIENTS", "2")
+	if _, err = Load(); err == nil {
+		t.Fatal("probe must remain limited to one recipient")
+	}
+	t.Setenv("AICRM_AUTOMATION_OPS_PROVIDER_MODE", "limited")
+	cfg, err = Load()
+	if err != nil || cfg.AutomationOperations.MaxRecipientsPerRun != 2 {
+		t.Fatalf("limited config=%+v err=%v", cfg.AutomationOperations, err)
+	}
+	t.Setenv("AICRM_AUTOMATION_OPS_PROVIDER_MODE", "enabled")
+	if _, err = Load(); err == nil {
+		t.Fatal("unknown provider mode must fail closed")
+	}
+}
+
 func TestDatabaseURLPrecedenceAndValidation(t *testing.T) {
 	t.Setenv("DATABASE_URL", "postgres://fallback")
 	t.Setenv("AICRM_DATABASE_URL", "postgres://canonical")

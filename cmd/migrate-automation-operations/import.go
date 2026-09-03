@@ -681,10 +681,13 @@ func (i *importer) snapshots() error {
 		}
 		for index, target := range mappedRows {
 			row := rows[index]
-			if err = i.mapRow("audience_members", fmt.Sprintf("%d:%d", row.SegmentID, row.CustomerID), "segment_audience_snapshot_members", &snapshotID, recordDigest(raws[index]), "mapped"); err != nil {
+			// A snapshot member is identified by (snapshot_id, customer_id), so
+			// storing the snapshot ID alone cannot prove which canonical OneID was
+			// selected. Persist the canonical customer ID for shadow comparison;
+			// the immutable source key already carries the source package/customer.
+			if err = i.mapRow("audience_members", fmt.Sprintf("%d:%d", row.SegmentID, row.CustomerID), "segment_audience_snapshot_members.customer_id", &target, recordDigest(raws[index]), "mapped"); err != nil {
 				return err
 			}
-			_ = target
 		}
 	}
 	return nil

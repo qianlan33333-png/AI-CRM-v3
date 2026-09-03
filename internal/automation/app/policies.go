@@ -54,13 +54,14 @@ type RuntimeStore interface {
 	CancelRun(context.Context, int64, time.Time) (automationdomain.RuntimeRun, error)
 }
 type RuntimeService struct {
-	uow       platformport.UnitOfWork
-	store     RuntimeStore
-	audiences segmentport.ExecutionConfigurationReader
-	snapshots segmentport.SnapshotReader
-	messages  outboundport.TransactionalMessageAccepter
-	effects   effectport.TransactionalReconciler
-	now       func() time.Time
+	uow            platformport.UnitOfWork
+	store          RuntimeStore
+	audiences      segmentport.ExecutionConfigurationReader
+	snapshots      segmentport.SnapshotReader
+	messages       outboundport.TransactionalMessageAccepter
+	effects        effectport.TransactionalReconciler
+	recipientLimit int64
+	now            func() time.Time
 }
 type PolicyCommand struct {
 	Code, Name                string
@@ -80,11 +81,11 @@ type PolicyLifecycleCommand struct {
 	IdempotencyKey                   string
 }
 
-func NewRuntimeService(uow platformport.UnitOfWork, store RuntimeStore, audiences segmentport.ExecutionConfigurationReader, snapshots segmentport.SnapshotReader) (*RuntimeService, error) {
-	if uow == nil || store == nil || audiences == nil || snapshots == nil {
+func NewRuntimeService(uow platformport.UnitOfWork, store RuntimeStore, audiences segmentport.ExecutionConfigurationReader, snapshots segmentport.SnapshotReader, recipientLimit int) (*RuntimeService, error) {
+	if uow == nil || store == nil || audiences == nil || snapshots == nil || recipientLimit < 1 || recipientLimit > 100000 {
 		return nil, ErrRuntimeNotReady
 	}
-	return &RuntimeService{uow: uow, store: store, audiences: audiences, snapshots: snapshots, now: time.Now}, nil
+	return &RuntimeService{uow: uow, store: store, audiences: audiences, snapshots: snapshots, recipientLimit: int64(recipientLimit), now: time.Now}, nil
 }
 func (s *RuntimeService) SetMessageAccepter(messages outboundport.TransactionalMessageAccepter) error {
 	if s == nil || messages == nil {

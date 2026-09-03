@@ -39,7 +39,7 @@ func main() {
 
 func execute(args []string, output io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("command required: keygen, inspect, extract, validate, dry-run, apply, replay-check, reconcile, rollback")
+		return errors.New("command required: keygen, inspect, extract, validate, dry-run, apply, replay-check, reconcile, shadow, rollback")
 	}
 	switch args[0] {
 	case "keygen":
@@ -134,6 +134,31 @@ func execute(args []string, output io.Writer) error {
 				return err
 			}
 			return writeJSON(output, report)
+		})
+	case "shadow":
+		flags, targetEnv, timeout := targetFlags("shadow")
+		batchKey := flags.String("batch-key", "", "migration batch key")
+		snapshotFile := flags.String("snapshot-file", "", "encrypted snapshot file")
+		keyFile := flags.String("key-file", "", "0600 AES-256 key file")
+		if err := flags.Parse(args[1:]); err != nil {
+			return err
+		}
+		snapshot, err := readEncryptedSnapshot(*snapshotFile, *keyFile)
+		if err != nil {
+			return err
+		}
+		return withPool(*targetEnv, *timeout, func(ctx context.Context, pool *pgxpool.Pool) error {
+			report, shadowErr := Shadow(ctx, pool, *batchKey, snapshot)
+			if shadowErr != nil {
+				return shadowErr
+			}
+			if err = writeJSON(output, report); err != nil {
+				return err
+			}
+			if !report.ReadyForProbe {
+				return errors.New("shadow comparison is not ready for a controlled probe")
+			}
+			return nil
 		})
 	case "rollback":
 		flags, targetEnv, timeout := targetFlags("rollback")

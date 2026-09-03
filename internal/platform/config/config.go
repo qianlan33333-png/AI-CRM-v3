@@ -69,7 +69,28 @@ type GroupOps struct {
 	WebhookSecret string
 }
 
-type AutomationOperations struct{ WebhookSecret string }
+type AutomationProviderMode string
+
+const (
+	AutomationProviderDisabled AutomationProviderMode = "disabled"
+	AutomationProviderProbe    AutomationProviderMode = "probe"
+	AutomationProviderLimited  AutomationProviderMode = "limited"
+)
+
+// AutomationOperations is deliberately narrower than the global External
+// Effects switch. Enabling the effects worker must never implicitly authorize
+// an Automation Operations send.
+type AutomationOperations struct {
+	WebhookSecret       string
+	ProviderMode        AutomationProviderMode
+	ProviderPermission  string
+	MaxRecipientsPerRun int
+}
+
+func (c AutomationOperations) ProviderEnabled() bool {
+	return c.ProviderMode == AutomationProviderProbe || c.ProviderMode == AutomationProviderLimited
+}
+
 type Effects struct{ ProviderEnabled bool }
 type Survey struct {
 	DataKey             string
@@ -126,9 +147,14 @@ func Load() (Runtime, error) {
 			CallbackAESKey: os.Getenv("AICRM_WECOM_CALLBACK_AES_KEY"), ContextSigningKey: os.Getenv("AICRM_WECOM_CONTEXT_SIGNING_KEY"),
 			ChannelStateHMACKey: os.Getenv("AICRM_CHANNEL_STATE_HMAC_KEY"),
 		},
-		GroupOps:             GroupOps{WebhookSecret: os.Getenv("AICRM_GROUP_OPS_WEBHOOK_SECRET")},
-		AutomationOperations: AutomationOperations{WebhookSecret: os.Getenv("AICRM_AUTOMATION_OPS_WEBHOOK_SECRET")},
-		Survey:               Survey{DataKey: os.Getenv("AICRM_SURVEY_DATA_KEY"), OAuthAppID: os.Getenv("AICRM_SURVEY_OAUTH_APP_ID"), OAuthSecret: os.Getenv("AICRM_SURVEY_OAUTH_SECRET"), OAuthOpenPlatformID: os.Getenv("AICRM_SURVEY_OAUTH_OPEN_PLATFORM_ID")},
+		GroupOps: GroupOps{WebhookSecret: os.Getenv("AICRM_GROUP_OPS_WEBHOOK_SECRET")},
+		AutomationOperations: AutomationOperations{
+			WebhookSecret:       os.Getenv("AICRM_AUTOMATION_OPS_WEBHOOK_SECRET"),
+			ProviderMode:        AutomationProviderMode(valueOrDefault("AICRM_AUTOMATION_OPS_PROVIDER_MODE", string(AutomationProviderDisabled))),
+			ProviderPermission:  os.Getenv("AICRM_AUTOMATION_OPS_PROVIDER_PERMISSION"),
+			MaxRecipientsPerRun: 1,
+		},
+		Survey: Survey{DataKey: os.Getenv("AICRM_SURVEY_DATA_KEY"), OAuthAppID: os.Getenv("AICRM_SURVEY_OAUTH_APP_ID"), OAuthSecret: os.Getenv("AICRM_SURVEY_OAUTH_SECRET"), OAuthOpenPlatformID: os.Getenv("AICRM_SURVEY_OAUTH_OPEN_PLATFORM_ID")},
 	}
 	if cfg.Survey.OAuthEnabled, err = strictBool("AICRM_SURVEY_OAUTH_ENABLED", false); err != nil {
 		return Runtime{}, err
@@ -171,6 +197,12 @@ func Load() (Runtime, error) {
 		cfg.WorkerLimit, err = strconv.Atoi(raw)
 		if err != nil || cfg.WorkerLimit < 1 || cfg.WorkerLimit > 100 {
 			return Runtime{}, errors.New("invalid AICRM_WORKER_LIMIT")
+		}
+	}
+	if raw := os.Getenv("AICRM_AUTOMATION_OPS_MAX_RECIPIENTS"); raw != "" {
+		cfg.AutomationOperations.MaxRecipientsPerRun, err = strconv.Atoi(raw)
+		if err != nil || cfg.AutomationOperations.MaxRecipientsPerRun < 1 || cfg.AutomationOperations.MaxRecipientsPerRun > 100000 {
+			return Runtime{}, errors.New("invalid AICRM_AUTOMATION_OPS_MAX_RECIPIENTS")
 		}
 	}
 	if strings.TrimSpace(cfg.ListenAddress) != cfg.ListenAddress || cfg.ListenAddress == "" {
@@ -269,6 +301,21 @@ func Load() (Runtime, error) {
 	}
 	if cfg.AutomationOperations.WebhookSecret != "" && (strings.TrimSpace(cfg.AutomationOperations.WebhookSecret) != cfg.AutomationOperations.WebhookSecret || len(cfg.AutomationOperations.WebhookSecret) < 32 || len(cfg.AutomationOperations.WebhookSecret) > 4096) {
 		return Runtime{}, errors.New("invalid Automation Operations webhook secret")
+	}
+	switch cfg.AutomationOperations.ProviderMode {
+	case AutomationProviderDisabled:
+		// A stale permission value is harmless while disabled. The actual writer
+		// remains closed and the execution precheck reports provider_disabled.
+	case AutomationProviderProbe:
+		if !cfg.Effects.ProviderEnabled || !cfg.WeCom.Enabled || cfg.AutomationOperations.ProviderPermission != "fixed-script-send-authorized" || cfg.AutomationOperations.MaxRecipientsPerRun != 1 {
+			return Runtime{}, errors.New("Automation Operations probe requires External Effects, WeCom, explicit permission, and a one-recipient limit")
+		}
+	case AutomationProviderLimited:
+		if !cfg.Effects.ProviderEnabled || !cfg.WeCom.Enabled || cfg.AutomationOperations.ProviderPermission != "fixed-script-send-authorized" {
+			return Runtime{}, errors.New("Automation Operations limited provider requires External Effects, WeCom, and explicit permission")
+		}
+	default:
+		return Runtime{}, errors.New("invalid AICRM_AUTOMATION_OPS_PROVIDER_MODE")
 	}
 	if cfg.Survey.DataKey != "" {
 		if decoded, decodeErr := base64.RawStdEncoding.DecodeString(cfg.Survey.DataKey); decodeErr != nil || len(decoded) != 32 {

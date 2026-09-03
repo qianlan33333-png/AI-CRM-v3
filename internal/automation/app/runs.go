@@ -46,6 +46,9 @@ func (s *RuntimeService) CreateBroadcastPreview(ctx context.Context, packageID, 
 	if !configuration.Ready || configuration.Snapshot.ID < 1 || len(configuration.SenderStaffIDs) < 1 {
 		return automationdomain.RunPreview{}, ErrRuntimeNotReady
 	}
+	if configuration.Snapshot.MemberCount < 1 || configuration.Snapshot.MemberCount > s.recipientLimit {
+		return automationdomain.RunPreview{}, ErrRuntimeNotReady
+	}
 	now := s.now().UTC()
 	digestInput, _ := json.Marshal([]any{configuration.PackageID, configuration.PackageVersion, configuration.Snapshot.ID, configuration.ConfigurationVersionID, configuration.AgentID, configuration.AgentPublishedVersion, configuration.BindingVersion, configuration.SenderSetVersion, configuration.Snapshot.MemberCount, now.UnixNano()})
 	preview := automationdomain.RunPreview{PackageID: packageID, PackageVersion: configuration.PackageVersion, SnapshotID: int64(configuration.Snapshot.ID), ConfigurationVersionID: int64(configuration.ConfigurationVersionID), AgentID: configuration.AgentID, AgentPublishedVersion: configuration.AgentPublishedVersion, BindingVersion: configuration.BindingVersion, SenderSetVersion: configuration.SenderSetVersion, TargetCount: configuration.Snapshot.MemberCount, PreviewDigest: sha256.Sum256(digestInput), CreatedBy: actor, CreatedAt: now, ExpiresAt: now.Add(15 * time.Minute)}
@@ -103,7 +106,7 @@ func (s *RuntimeService) ConfirmRun(ctx context.Context, c RunConfirmCommand) (a
 		}
 		cursor = page.NextCursor
 	}
-	if int64(len(members)) != preview.TargetCount || len(members) == 0 {
+	if int64(len(members)) != preview.TargetCount || len(members) == 0 || int64(len(members)) > s.recipientLimit {
 		return automationdomain.RuntimeRun{}, ErrRuntimeConflict
 	}
 	recipients := make([]automationdomain.RuntimeRecipient, len(members))
