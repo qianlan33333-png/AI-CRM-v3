@@ -6,8 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"io"
-	"mime"
 	nethttp "net/http"
 	"strconv"
 	"strings"
@@ -21,8 +19,6 @@ import (
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/platform/idempotency"
 	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
 )
-
-const maxRequestBodyBytes int64 = 16 << 10
 
 type Authenticator interface {
 	Authenticate(context.Context, *nethttp.Request) (accessdomain.Principal, error)
@@ -79,7 +75,7 @@ func (handler *Handler) list(response nethttp.ResponseWriter, request *nethttp.R
 	}
 	values := request.URL.Query()
 	for key, entries := range values {
-		if len(entries) != 1 || (key != "keyword" && key != "phone" && key != "status" && key != "activation_status" && key != "cursor" && key != "limit") {
+		if len(entries) != 1 || (key != "keyword" && key != "phone" && key != "status" && key != "cursor" && key != "limit") {
 			handler.writeError(response, customerapp.ErrInvalidQuery)
 			return
 		}
@@ -94,11 +90,15 @@ func (handler *Handler) list(response nethttp.ResponseWriter, request *nethttp.R
 		}
 	}
 	requestData := customerapp.ListRequest{Limit: limit, Cursor: values.Get("cursor"), Filters: customerapp.Filters{
-		Keyword: values.Get("keyword"), Status: values.Get("status"), ActivationStatus: values.Get("activation_status"),
+		Keyword: values.Get("keyword"), Status: values.Get("status"),
 	}}
 	var page customerapp.Page
 	err = handler.uow.Within(request.Context(), func(txContext context.Context) error {
 		if phone := values.Get("phone"); phone != "" {
+			phone, normalizeErr := normalizeCNPhoneSearch(phone)
+			if normalizeErr != nil {
+				return normalizeErr
+			}
 			customerID, found, queryErr := handler.identities.CustomerForPhone(txContext, phone)
 			if queryErr != nil {
 				return queryErr
@@ -161,18 +161,6 @@ func (handler *Handler) revealPhone(response nethttp.ResponseWriter, request *ne
 		handler.writeError(response, err)
 		return
 	}
-	var input struct {
-		Reason string `json:"reason"`
-	}
-	if err = decodeJSON(response, request, &input); err != nil {
-		handler.writeError(response, err)
-		return
-	}
-	input.Reason = strings.TrimSpace(input.Reason)
-	if len([]rune(input.Reason)) < 1 || len([]rune(input.Reason)) > 200 {
-		handler.writeError(response, customerapp.ErrInvalidQuery)
-		return
-	}
 	var phone string
 	var found bool
 	err = handler.uow.Within(request.Context(), func(txContext context.Context) error {
@@ -184,7 +172,7 @@ func (handler *Handler) revealPhone(response nethttp.ResponseWriter, request *ne
 		if !found {
 			return customerapp.ErrNotFound
 		}
-		payload, marshalErr := json.Marshal(map[string]any{"reason": input.Reason})
+		payload, marshalErr := json.Marshal(map[string]any{"purpose": "customer_detail_query"})
 		if marshalErr != nil {
 			return marshalErr
 		}
@@ -203,7 +191,30 @@ func (handler *Handler) revealPhone(response nethttp.ResponseWriter, request *ne
 	}
 	response.Header().Set("Cache-Control", "no-store")
 	response.Header().Set("Pragma", "no-cache")
-	writeJSON(response, nethttp.StatusOK, map[string]any{"phone": phone})
+	writeJSON(response, nethttp.StatusOK, map[string]any{"phone": localCNPhone(phone)})
+}
+
+func normalizeCNPhoneSearch(raw string) (string, error) {
+	value := strings.TrimSpace(raw)
+	if strings.HasPrefix(value, "+86") {
+		value = strings.TrimPrefix(value, "+86")
+	}
+	if len(value) != 11 || value[0] != '1' || value[1] < '3' || value[1] > '9' {
+		return "", identitydomain.ErrInvalidReference
+	}
+	for _, character := range value {
+		if character < '0' || character > '9' {
+			return "", identitydomain.ErrInvalidReference
+		}
+	}
+	return "+86" + value, nil
+}
+
+func localCNPhone(value string) string {
+	if strings.HasPrefix(value, "+86") {
+		return strings.TrimPrefix(value, "+86")
+	}
+	return value
 }
 
 func revealAuditKey(actorID, customerID int64) (idempotency.Key, error) {
@@ -229,24 +240,6 @@ func positiveID(raw string) (int64, error) {
 		return 0, customerapp.ErrInvalidQuery
 	}
 	return value, nil
-}
-
-func decodeJSON(response nethttp.ResponseWriter, request *nethttp.Request, destination any) error {
-	mediaType, _, err := mime.ParseMediaType(request.Header.Get("Content-Type"))
-	if err != nil || mediaType != "application/json" {
-		return customerapp.ErrInvalidQuery
-	}
-	request.Body = nethttp.MaxBytesReader(response, request.Body, maxRequestBodyBytes)
-	decoder := json.NewDecoder(request.Body)
-	decoder.DisallowUnknownFields()
-	if err = decoder.Decode(destination); err != nil {
-		return customerapp.ErrInvalidQuery
-	}
-	var trailing any
-	if err = decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		return customerapp.ErrInvalidQuery
-	}
-	return nil
 }
 
 func (handler *Handler) writeError(response nethttp.ResponseWriter, err error) {

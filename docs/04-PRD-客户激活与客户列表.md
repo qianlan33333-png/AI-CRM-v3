@@ -26,7 +26,7 @@ v3 必须用自身 PostgreSQL 和 OneID 交付可对账的企微客户激活与�
 1. 空库能从企微全量目录显式创建 OneID，重放时不重复建客。
 2. 后台客户列表、筛选、游标翻页和详情完全由 v3 数据驱动。
 3. 将授权的一次性生产快照按 `(corp_id, external_userid)` 精确附着 declared 手机号，每行有唯一、可重放、可对账的结果。
-4. 手机号默认脱敏；管理员按理由临时揭示时写入不可变审计。
+4. 手机号默认脱敏；Admin/SuperAdmin 在详情页直接查询完整手机号时写入不可变审计，页面无需填写理由。
 
 ## 3. 范围
 
@@ -51,10 +51,10 @@ v3 必须用自身 PostgreSQL 和 OneID 交付可对账的企微客户激活与�
 |---|---:|---:|---:|
 | 查看列表/详情/同步状态 | 允许 | 允许 | 允许 |
 | 手动创建全量轮次 | 允许 | 禁止 | 禁止 |
-| 揭示完整手机号 | 允许 | 允许 | 永久禁止 |
+| 查询完整手机号 | 允许 | 允许 | 永久禁止 |
 | 运行一次性导入 CLI | 受控运维 | 受控运维 | 禁止 |
 
-所有不安全 HTTP 方法均要求同源校验和 CSRF。揭示理由长度为 1–200，响应必须为 `Cache-Control: no-store`。
+所有不安全 HTTP 方法均要求同源校验和 CSRF。完整手机号查询使用固定审计 purpose，响应必须为 `Cache-Control: no-store`。
 
 ## 5. 用户旅程
 
@@ -70,7 +70,7 @@ v3 必须用自身 PostgreSQL 和 OneID 交付可对账的企微客户激活与�
 ### 5.2 查询客户
 
 1. 用户进入 `/admin/customers`，先看最近同步摘要。
-2. 可按名称/OneID、完整手机号、Customer 状态和激活状态筛选。
+2. 可按名称/OneID、11 位中国大陆手机号和 Customer 状态筛选；页面不展示国家码、assurance 或内部激活状态。
 3. 列表按固定 watermark 和 `(updated_at DESC, customer_id DESC)` 翻页，新写入不造成重复/跳页。
 4. 详情只显示本期范围字段，不返回 raw external_userid、UnionID 或完整手机号。
 
@@ -104,9 +104,9 @@ v3 必须用自身 PostgreSQL 和 OneID 交付可对账的企微客户激活与�
 
 ## 8. API 契约
 
-- `GET /api/admin/customers`：`keyword, phone, status, activation_status, cursor, limit`；默认 50，最大 200，精确计数上限 10,000。
+- `GET /api/admin/customers`：`keyword, phone, status, cursor, limit`；手机号输入为不带 `+86` 的 11 位中国大陆手机号，默认 50，最大 200，精确计数上限 10,000。
 - `GET /api/admin/customers/{customer_id}`：返回基础客户、企微资料、脱敏手机号、OneID 摘要和同步源。
-- `POST /api/admin/customers/{customer_id}/phone-reveal`：Admin/SuperAdmin + CSRF + 理由，响应 `no-store`并写审计。
+- `POST /api/admin/customers/{customer_id}/phone-reveal`：Admin/SuperAdmin + CSRF，无请求体；响应为不带 `+86` 的页面展示号码、`no-store`，并以固定 purpose 写审计。
 - `POST /api/admin/customer-sync-runs`：SuperAdmin + CSRF + `Idempotency-Key`。
 - `GET /api/admin/customer-sync-runs`、`GET /api/admin/customer-sync-runs/{run_id}`：仅返回阶段、进度、聚合计数和非 PII 错误码。
 
