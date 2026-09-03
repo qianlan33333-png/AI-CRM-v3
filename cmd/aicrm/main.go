@@ -49,8 +49,16 @@ func run() error {
 				_, _, processErr = application.customerSync.CreateScheduled(ctx, cfg.CustomerSyncTrigger, key)
 			}
 		}
+		if processErr == nil && application.hxcDashboard.Ready() && cfg.HXCDashboard.SyncTrigger != "" {
+			location, _ := time.LoadLocation("Asia/Shanghai")
+			key := "initial:hxc-dashboard-v1"
+			if cfg.HXCDashboard.SyncTrigger == "scheduled" {
+				key = "scheduled:" + time.Now().In(location).Format("2006-01-02T15")
+			}
+			_, _, processErr = application.hxcDashboard.Create(ctx, key, cfg.HXCDashboard.SyncTrigger, 0)
+		}
 		if processErr == nil {
-			slog.Info("wecom oneshot complete", "callback_processed", processed, "customer_sync_trigger", cfg.CustomerSyncTrigger != "", "release_sha", cfg.ReleaseSHA)
+			slog.Info("worker oneshot complete", "callback_processed", processed, "customer_sync_trigger", cfg.CustomerSyncTrigger != "", "hxc_sync_trigger", cfg.HXCDashboard.SyncTrigger != "", "release_sha", cfg.ReleaseSHA)
 		}
 		return processErr
 	}
