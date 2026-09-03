@@ -67,6 +67,10 @@ func TestApplyMigrationsFreshAndUpgradePostgreSQL(t *testing.T) {
 	defer pool.Close()
 	_, file, _, _ := runtime.Caller(0)
 	filesystem := os.DirFS(filepath.Join(filepath.Dir(file), "..", "..", "migrations"))
+	items, err := loadMigrations(filesystem)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err = applyMigrations(ctx, pool, filesystem); err != nil {
 		t.Fatalf("fresh migration: %v", err)
 	}
@@ -81,7 +85,7 @@ func TestApplyMigrationsFreshAndUpgradePostgreSQL(t *testing.T) {
 	if err = pool.QueryRow(ctx, `SELECT count(*) FROM platform_schema_migrations`).Scan(&applied); err != nil || applied != len(items) {
 		t.Fatalf("applied=%d expected=%d err=%v", applied, len(items), err)
 	}
-	for _, table := range []string{"media_blobs", "media_references", "media_attachment_upload_parts", "tag_groups", "tag_catalog_tags", "tag_provider_observations", "products", "product_operation_receipts", "product_external_push_configurations", "product_external_push_tests", "coupon_rules", "coupon_rule_targets", "coupon_operation_receipts", "coupon_audit_events", "coupon_outbox"} {
+	for _, table := range []string{"media_blobs", "media_references", "media_attachment_upload_parts", "media_content_packages", "media_content_package_versions", "media_content_package_version_refs", "media_content_delivery_receipts", "media_content_delivery_bindings", "tag_groups", "tag_catalog_tags", "tag_provider_observations", "products", "product_operation_receipts", "product_external_push_configurations", "product_external_push_tests", "operation_cycle_strategies", "operation_cycle_runs", "operation_cycle_action_requests", "coupon_rules", "coupon_rule_targets", "coupon_operation_receipts", "coupon_audit_events", "coupon_outbox"} {
 		var present bool
 		if err = pool.QueryRow(ctx, `SELECT to_regclass(current_schema() || '.' || $1) IS NOT NULL`, table).Scan(&present); err != nil || !present {
 			t.Fatalf("owned table %s present=%v err=%v", table, present, err)

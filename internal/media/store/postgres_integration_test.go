@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"image"
@@ -22,6 +24,201 @@ import (
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 )
+
+func TestPostgreSQLContentPackageVersionsSnapshotsBindingsAndCapture(t *testing.T) {
+	url, urlErr := platformconfig.DatabaseURL()
+	if urlErr != nil {
+		t.Skip("database URL not configured")
+	}
+	ctx := context.Background()
+	admin, err := pgxpool.New(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Close()
+	raw := make([]byte, 6)
+	if _, err = rand.Read(raw); err != nil {
+		t.Fatal(err)
+	}
+	schema := "media_content_" + hex.EncodeToString(raw)
+	if _, err = admin.Exec(ctx, "CREATE SCHEMA "+schema); err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Exec(ctx, "DROP SCHEMA "+schema+" CASCADE")
+	cfg, err := pgxpool.ParseConfig(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.ConnConfig.RuntimeParams["search_path"] = schema
+	native, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer native.Close()
+	_, file, _, _ := runtime.Caller(0)
+	for _, migration := range []string{"0007_media.sql", "0016_media_content_packages.sql"} {
+		sql, readErr := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "..", "migrations", migration))
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if _, execErr := native.Exec(ctx, string(sql)); execErr != nil {
+			t.Fatalf("%s: %v", migration, execErr)
+		}
+	}
+	pool, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	uow, err := platformpostgres.NewUnitOfWork(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo, err := NewPostgreSQL(native, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	image, err := repo.CreateImage(ctx, 7, "content-source-image-key-0001", ImageInput{FileName: "content.png", MIME: "image/png", Name: "content", Content: testPNG(t), Width: 2, Height: 2, Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	imageID := image["id"].(int64)
+	command := mediaport.ContentPackageCommand{Name: "晨间内容", ContentText: "早上好", Enabled: true, Refs: []mediaport.ContentRef{{Kind: "image", ID: imageID}}, Actor: 7, IdempotencyKey: "content-package-create-0001"}
+	now := time.Date(2026, 9, 3, 0, 0, 0, 0, time.UTC)
+	created := contentPackageMutation(t, ctx, uow, repo, "create", 7, command.IdempotencyKey, command, now, func(tx context.Context) (mediaport.ContentPackage, error) { return repo.Create(tx, command, now) })
+	replayed := contentPackageMutation(t, ctx, uow, repo, "create", 7, command.IdempotencyKey, command, now, func(context.Context) (mediaport.ContentPackage, error) {
+		t.Fatal("replay unexpectedly owned mutation")
+		return mediaport.ContentPackage{}, nil
+	})
+	if replayed.ID != created.ID || replayed.Version != 1 {
+		t.Fatalf("replay=%+v", replayed)
+	}
+	var sourceDigest, imageDigest string
+	if err = native.QueryRow(ctx, `SELECT source_digest FROM media_content_package_version_refs WHERE package_id=$1 AND version=1 AND position=0`, created.ID).Scan(&sourceDigest); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `SELECT blob_digest FROM media_images WHERE id=$1`, imageID).Scan(&imageDigest); err != nil || sourceDigest != imageDigest {
+		t.Fatalf("snapshot=%q image=%q err=%v", sourceDigest, imageDigest, err)
+	}
+	command.IdempotencyKey = "content-package-update-0001"
+	command.ContentText = "早上好，更新版"
+	update := mediaport.ContentPackageUpdateCommand{ID: created.ID, ExpectedVersion: created.Version, ContentPackageCommand: command}
+	updated := contentPackageMutation(t, ctx, uow, repo, "update", 7, command.IdempotencyKey, update, now, func(tx context.Context) (mediaport.ContentPackage, error) { return repo.Update(tx, update, now) })
+	if updated.Version != 2 {
+		t.Fatalf("updated=%+v", updated)
+	}
+	var versionCount, refs, protectionRefs int
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM media_content_package_versions WHERE package_id=$1`, created.ID).Scan(&versionCount); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM media_content_package_version_refs WHERE package_id=$1`, created.ID).Scan(&refs); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM media_references WHERE material_kind='image' AND material_id=$1 AND owner='media.content_package'`, imageID).Scan(&protectionRefs); err != nil {
+		t.Fatal(err)
+	}
+	if versionCount != 2 || refs != 2 || protectionRefs != 2 {
+		t.Fatalf("versions=%d refs=%d protection_refs=%d", versionCount, refs, protectionRefs)
+	}
+	invite, err := repo.CreateGroupInvite(ctx, 7, "content-bind-invite-0001", map[string]any{"name": "体验群", "title": "加入体验群", "description": "资料", "join_url": "https://work.weixin.qq.com/gm/0123456789abcdef0123456789abcdef", "enabled": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mini, err := repo.CreateMiniProgram(ctx, 7, "content-capture-mini-0001", map[string]any{"name": "课程卡", "appid": "wx-course", "pagepath": "pages/today", "title": "今日课程", "thumb_image_id": float64(imageID), "enabled": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var captured mediaport.GroupOpsMaterialSourceSnapshot
+	if err = uow.Within(ctx, func(tx context.Context) error {
+		var captureErr error
+		captured, captureErr = repo.CaptureGroupOpsMaterialSources(tx, mediaport.GroupOpsMaterialPlan{References: []mediaport.GroupOpsMaterialReference{{Kind: "image", ID: imageID}, {Kind: "miniprogram", ID: mini["id"].(int64)}, {Kind: "group_invite", ID: invite["id"].(int64)}}})
+		return captureErr
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(captured.References) != 3 || captured.References[0].SourceDigest != imageDigest || captured.References[1].ThumbnailSourceDigest != imageDigest || captured.References[1].ProviderFields.AppID != "wx-course" || captured.References[2].ProviderFields.URL == "" {
+		t.Fatalf("captured=%+v", captured)
+	}
+	bindingCommand := mediaport.DeliveryBindingCommand{CampaignCode: "campaign-local", PlanID: "plan-local", PackageID: updated.ID, GroupInviteID: invite["id"].(int64), Actor: 7, IdempotencyKey: "content-binding-key-0001"}
+	binding := contentBindingMutation(t, ctx, uow, repo, bindingCommand, now)
+	if binding.ID < 1 || binding.Version != 1 {
+		t.Fatalf("binding=%+v", binding)
+	}
+	var receipts, audits, outbox int
+	if err = native.QueryRow(ctx, `SELECT (SELECT count(*) FROM media_content_delivery_receipts),(SELECT count(*) FROM media_audit_events WHERE resource_kind='content_package'),(SELECT count(*) FROM media_outbox WHERE aggregate_kind='content_package')`).Scan(&receipts, &audits, &outbox); err != nil {
+		t.Fatal(err)
+	}
+	if receipts != 3 || audits != 3 || outbox != 3 {
+		t.Fatalf("receipt/audit/outbox=%d/%d/%d", receipts, audits, outbox)
+	}
+}
+
+func contentPackageMutation(t *testing.T, ctx context.Context, uow *platformpostgres.UnitOfWork, repo *Repository, operation string, actor int64, key string, payload any, now time.Time, mutate func(context.Context) (mediaport.ContentPackage, error)) mediaport.ContentPackage {
+	t.Helper()
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reservation := mediaport.ContentDeliveryMutationReservation{Operation: operation, Actor: actor, KeyDigest: sha256.Sum256([]byte(key)), PayloadDigest: sha256.Sum256(encoded), CreatedAt: now}
+	var out mediaport.ContentPackage
+	err = uow.Within(ctx, func(tx context.Context) error {
+		receipt, owned, e := repo.ReserveMutation(tx, reservation)
+		if e != nil {
+			return e
+		}
+		if !owned {
+			return json.Unmarshal(receipt.ResultSnapshot, &out)
+		}
+		out, e = mutate(tx)
+		if e != nil {
+			return e
+		}
+		snapshot, e := json.Marshal(out)
+		if e != nil {
+			return e
+		}
+		_, e = repo.CompleteMutation(tx, receipt.ID, snapshot)
+		return e
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+func contentBindingMutation(t *testing.T, ctx context.Context, uow *platformpostgres.UnitOfWork, repo *Repository, command mediaport.DeliveryBindingCommand, now time.Time) mediaport.DeliveryBinding {
+	t.Helper()
+	payload := command
+	payload.IdempotencyKey = ""
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reservation := mediaport.ContentDeliveryMutationReservation{Operation: "bind", Actor: command.Actor, KeyDigest: sha256.Sum256([]byte(command.IdempotencyKey)), PayloadDigest: sha256.Sum256(encoded), CreatedAt: now}
+	var out mediaport.DeliveryBinding
+	err = uow.Within(ctx, func(tx context.Context) error {
+		receipt, owned, e := repo.ReserveMutation(tx, reservation)
+		if e != nil {
+			return e
+		}
+		if !owned {
+			return json.Unmarshal(receipt.ResultSnapshot, &out)
+		}
+		out, e = repo.Bind(tx, command, now)
+		if e != nil {
+			return e
+		}
+		snapshot, e := json.Marshal(out)
+		if e != nil {
+			return e
+		}
+		_, e = repo.CompleteMutation(tx, receipt.ID, snapshot)
+		return e
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
 
 func TestPostgreSQLReceiptAuditOutboxAndPayloadDrift(t *testing.T) {
 	url, urlErr := platformconfig.DatabaseURL()
