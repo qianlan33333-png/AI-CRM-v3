@@ -68,6 +68,7 @@ jobs:
           scripts/check-pr01-donor-manifest.sh
           scripts/check-pr02-donor-manifest.sh
           scripts/check-pr03-frontend-donor-manifest.sh
+          scripts/check-channel-donor-manifest.sh
           donor_dir="$(mktemp -d)"
           git clone --quiet https://github.com/qianlan33333-png/AI-CRM-v2.git "$donor_dir"
           git -C "$donor_dir" checkout --quiet 6bfbe5816bb89913c70adaca87d6a486260e016e
@@ -75,6 +76,7 @@ jobs:
           AICRM_PR06_DONOR_DIR="$donor_dir" scripts/check-pr06-closure.sh
           rm -rf "$donor_dir"
           scripts/check-pr07-frontend-freeze.sh
+          node web/scripts/channel-center-characterization.mjs
           node web/scripts/survey-editor-characterization.mjs
           node web/scripts/survey-public-characterization.mjs
           node web/scripts/survey-unresolved-history-contract.mjs
@@ -159,7 +161,9 @@ jobs:
           scripts/check-pr01-donor-manifest.sh
           scripts/check-pr02-donor-manifest.sh
           scripts/check-pr03-frontend-donor-manifest.sh
+          scripts/check-channel-donor-manifest.sh
           scripts/check-survey-donor-manifest.sh
+          node web/scripts/channel-center-characterization.mjs
           node web/scripts/survey-editor-characterization.mjs
           node web/scripts/survey-public-characterization.mjs
           node web/scripts/survey-unresolved-history-contract.mjs

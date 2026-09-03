@@ -21,6 +21,7 @@ trap 'rm -rf "$scratch"' EXIT
 
 cat > "$scratch/v3-owned-survey" <<'EOF'
 web/scripts/e2e.mjs
+web/scripts/channel-center-characterization.mjs
 web/scripts/survey-editor-characterization.mjs
 web/scripts/survey-public-characterization.mjs
 web/src/admin/sections/questionnaireEditor.ts
@@ -29,6 +30,7 @@ web/src/h5/controller.ts
 web/src/h5/templates/all.html
 web/src/h5/templates/one.html
 web/src/h5/templates/result.html
+web/src/api/channelCenter.test.ts
 EOF
 
 awk 'NF == 2 && $1 ~ /^[0-9a-f]{64}$/ { print $2 }' "$manifest" \
