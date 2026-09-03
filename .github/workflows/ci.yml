@@ -69,6 +69,9 @@ jobs:
           AICRM_PR06_DONOR_DIR="$donor_dir" scripts/check-pr06-closure.sh
           rm -rf "$donor_dir"
           scripts/check-pr07-frontend-freeze.sh
+          node web/scripts/survey-editor-characterization.mjs
+          node web/scripts/survey-public-characterization.mjs
+          node web/scripts/survey-unresolved-history-contract.mjs
           npm run typecheck
           npm test
           npm run build
@@ -140,6 +143,9 @@ jobs:
           scripts/check-pr02-donor-manifest.sh
           scripts/check-pr03-frontend-donor-manifest.sh
           scripts/check-survey-donor-manifest.sh
+          node web/scripts/survey-editor-characterization.mjs
+          node web/scripts/survey-public-characterization.mjs
+          node web/scripts/survey-unresolved-history-contract.mjs
           npm run typecheck
           npm run build
           cp -R migrations deploy release/
