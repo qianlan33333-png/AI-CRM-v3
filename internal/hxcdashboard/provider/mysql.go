@@ -19,6 +19,11 @@ import (
 const BatchSize = 1000
 const sourceTimeout = 20 * time.Minute
 
+// HXC stores business timestamps in MySQL DATETIME columns using Beijing wall
+// time. DATETIME carries no timezone, so the driver must attach the source
+// location when scanning values and when formatting query parameters.
+var sourceLocation = time.FixedZone("Asia/Shanghai", 8*60*60)
+
 var ErrSourceNotReady = errors.New("hxc source is not ready")
 
 type MySQL struct{ db *sql.DB }
@@ -32,7 +37,7 @@ func Open(dsn string) (*MySQL, error) {
 		return nil, ErrSourceNotReady
 	}
 	cfg.ParseTime = true
-	cfg.Loc = time.UTC
+	cfg.Loc = sourceLocation
 	cfg.Timeout = 5 * time.Second
 	cfg.ReadTimeout = 2 * time.Minute
 	cfg.WriteTimeout = 5 * time.Second
@@ -146,9 +151,9 @@ func readBatch(ctx context.Context, tx *sql.Tx, after string, asOf time.Time) ([
 		var union, lastCapability, business, mainline, segment, pain sql.NullString
 		var expiry sql.NullTime
 		// MySQL reports the GREATEST/NULLIF expression as []byte even with
-		// parseTime enabled. mysql.NullTime accepts both expression bytes and
-		// native time.Time values; the source connection is normalized to UTC.
-		var lastUsed mysql.NullTime
+		// parseTime enabled, so use a scanner that applies the same source
+		// location as native DATETIME columns.
+		var lastUsed sourceNullTime
 		var capJSON, topicsJSON []byte
 		if err = rows.Scan(&row.HXCUserID, &union, &row.SubscriptionTier, &expiry, &row.MonthlyChatQuota, &row.CurrentPeriodUsed, &row.ConsultationLimit, &row.ConsultationUsed, &row.MembershipAttribution, &row.Sessions7D, &row.Sessions30D, &row.SessionsTotal, &row.UserMessages7D, &row.UserMessages30D, &row.UserMessagesTotal, &capJSON, &lastUsed, &lastCapability, &business, &mainline, &segment, &topicsJSON, &pain, &row.SourceUpdatedAt); err != nil {
 			return nil, fmt.Errorf("scan HXC batch: %w", err)
@@ -173,6 +178,42 @@ func readBatch(ctx context.Context, tx *sql.Tx, after string, asOf time.Time) ([
 		return nil, fmt.Errorf("iterate HXC batch: %w", err)
 	}
 	return result, nil
+}
+
+type sourceNullTime struct {
+	Time  time.Time
+	Valid bool
+}
+
+func (value *sourceNullTime) Scan(input any) error {
+	switch typed := input.(type) {
+	case nil:
+		value.Time = time.Time{}
+		value.Valid = false
+		return nil
+	case time.Time:
+		value.Time = typed.In(sourceLocation)
+		value.Valid = true
+		return nil
+	case []byte:
+		return value.scanText(string(typed))
+	case string:
+		return value.scanText(typed)
+	default:
+		return fmt.Errorf("unsupported HXC datetime type %T", input)
+	}
+}
+
+func (value *sourceNullTime) scanText(input string) error {
+	parsed, err := time.ParseInLocation("2006-01-02 15:04:05.999999999", input, sourceLocation)
+	if err != nil {
+		value.Time = time.Time{}
+		value.Valid = false
+		return fmt.Errorf("parse HXC datetime: %w", err)
+	}
+	value.Time = parsed
+	value.Valid = true
+	return nil
 }
 
 func batchArgs(after string, asOf time.Time) []any {
