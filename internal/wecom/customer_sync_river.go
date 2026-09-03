@@ -3,6 +3,7 @@ package wecom
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/riverqueue/river"
@@ -11,6 +12,8 @@ import (
 )
 
 const CustomerSyncQueue = "customer-directory"
+
+const customerSyncJobTimeout = 30 * time.Minute
 
 type CustomerSyncJobArgs struct {
 	RunID int64 `json:"run_id"`
@@ -55,6 +58,13 @@ type CustomerSyncWorker struct {
 }
 
 func NewCustomerSyncWorker() *CustomerSyncWorker { return &CustomerSyncWorker{} }
+
+// Timeout covers a complete resumable run. River's one-minute default is too
+// short for a full customer directory, while this bound still lets the job
+// rescuer recover a genuinely stuck execution before its one-hour horizon.
+func (*CustomerSyncWorker) Timeout(*river.Job[CustomerSyncJobArgs]) time.Duration {
+	return customerSyncJobTimeout
+}
 
 func (worker *CustomerSyncWorker) BindService(service CustomerSyncService) error {
 	if worker == nil || worker.service != nil || !service.Ready() {

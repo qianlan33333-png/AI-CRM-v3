@@ -90,11 +90,13 @@ if [[ "$ready" != true ]]; then
 fi
 
 systemctl enable --now aicrm-wecom-worker.timer
-if ! systemctl enable --now aicrm-effects-worker.service; then
+if ! systemctl enable aicrm-effects-worker.service || ! systemctl restart aicrm-effects-worker.service; then
   rollback
   exit 8
 fi
-if ! systemctl is-active --quiet aicrm-effects-worker.service; then
+effects_worker_pid="$(systemctl show aicrm-effects-worker.service -p MainPID --value)"
+if ! systemctl is-active --quiet aicrm-effects-worker.service || \
+  [[ "$(readlink -f "/proc/${effects_worker_pid}/exe")" != "$release_dir/bin/aicrm" ]]; then
   rollback
   exit 9
 fi
