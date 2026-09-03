@@ -80,20 +80,34 @@ func (r *Repository) List(ctx context.Context, limit, offset int32, search strin
 		return nil, 0, mapError(err)
 	}
 	defer rows.Close()
-	items := make([]surveyport.Questionnaire, 0)
+	type listItem struct {
+		questionnaire surveyport.Questionnaire
+		active        *int64
+	}
+	baseItems := make([]listItem, 0)
 	for rows.Next() {
 		q, active, e := scanBase(rows)
 		if e != nil {
 			return nil, 0, e
 		}
-		if active != nil {
-			if e = r.loadDefinition(ctx, t, &q, *active); e != nil {
-				return nil, 0, e
+		baseItems = append(baseItems, listItem{questionnaire: q, active: active})
+	}
+	if err = rows.Err(); err != nil {
+		return nil, 0, mapError(err)
+	}
+	// A pgx transaction has one connection. Fully consume and close the base
+	// result set before loadDefinition issues child queries on that connection.
+	rows.Close()
+	items := make([]surveyport.Questionnaire, 0, len(baseItems))
+	for _, baseItem := range baseItems {
+		if baseItem.active != nil {
+			if err = r.loadDefinition(ctx, t, &baseItem.questionnaire, *baseItem.active); err != nil {
+				return nil, 0, err
 			}
 		}
-		items = append(items, q)
+		items = append(items, baseItem.questionnaire)
 	}
-	return items, total, mapError(rows.Err())
+	return items, total, nil
 }
 
 func (r *Repository) Get(ctx context.Context, id surveyport.ID, lock bool) (surveyport.Questionnaire, error) {
