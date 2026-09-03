@@ -28,7 +28,9 @@ func mountAutomationRuntimeAPI(next, runtime http.Handler) (http.Handler, error)
 	}
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		isPackageRuntime := strings.HasPrefix(request.URL.Path, "/api/admin/ai-audience/packages/") && (strings.HasSuffix(request.URL.Path, "/broadcast-previews") || strings.HasSuffix(request.URL.Path, "/runs"))
-		if isPackageRuntime {
+		isPolicyRuntime := request.URL.Path == "/api/admin/automations" || strings.HasPrefix(request.URL.Path, "/api/admin/automations/")
+		isRunRuntime := request.URL.Path == "/api/admin/automation-runs" || strings.HasPrefix(request.URL.Path, "/api/admin/automation-runs/")
+		if isPackageRuntime || isPolicyRuntime || isRunRuntime {
 			runtime.ServeHTTP(writer, request)
 			return
 		}
