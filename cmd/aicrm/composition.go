@@ -912,6 +912,7 @@ func routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, acce
 	mux.Handle("/admin/questionnaires/", identity)
 	mux.Handle("/api/admin/orders", identity)
 	mux.Handle("/api/admin/orders/", identity)
+	mux.Handle("/api/admin/order-imports/", identity)
 	mux.Handle("/api/admin/refunds", identity)
 	mux.Handle("/api/admin/exports", identity)
 	mux.Handle("/api/admin/exports/", identity)
