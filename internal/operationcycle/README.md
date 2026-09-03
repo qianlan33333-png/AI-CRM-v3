@@ -14,10 +14,10 @@ ports; it does not call a Provider, enqueue a campaign recipient, or retry an
 identifiers or external-effect payloads appear in a snapshot, result,
 proposal, or context filter.
 
-The Store, HTTP adapter, runner wiring, PostgreSQL migration, generated
-queries, and historical observation/static-history readers remain deferred to
-Terra. They must preserve the local `accepted` fact boundary and add any
-outbound integration only through the versioned outbound contract.
+The Store, HTTP adapter, runner wiring, PostgreSQL migration, and generated
+queries are implemented in this module. Historical observation/static-history
+readers remain outside PR08. Any future outbound integration must preserve the
+local `accepted` fact boundary and use the versioned outbound contract.
 
 The frozen donor inventory and exact UI hashes are recorded in
 `docs/donor-manifests/pr08-operation-cycles.yaml` and
