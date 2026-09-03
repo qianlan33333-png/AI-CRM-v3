@@ -31,11 +31,13 @@ const dynamicOutputForInput = (from, input) => (manifest.files[from]?.imports ||
 )?.path;
 const legacyEntry = dynamicOutputForInput(manifest.entries.admin, 'web/src/admin/legacy.ts');
 const campaignsEntry = legacyEntry && dynamicOutputForInput(legacyEntry, 'web/src/admin/sections/campaigns.ts');
+const adminAccessEntry = legacyEntry && dynamicOutputForInput(legacyEntry, 'web/src/admin/sections/adminAccess.ts');
+const setupWizardEntry = legacyEntry && dynamicOutputForInput(legacyEntry, 'web/src/admin/sections/setupWizard.ts');
 const groupOpsHistoryEntry = legacyEntry && dynamicOutputForInput(legacyEntry, 'web/src/admin/sections/groupOpsHistory.ts');
 const operationHost = manifest.entries.operationCyclesHost;
 const operationMainEntry = dynamicOutputForInput(operationHost, 'web/src/admin/main.ts');
 const operationLegacyEntry = operationMainEntry && dynamicOutputForInput(operationMainEntry, 'web/src/admin/legacy.ts');
-if (!legacyEntry || !campaignsEntry || !groupOpsHistoryEntry || !operationMainEntry || !operationLegacyEntry) fail('required frozen admin runtime chunks are absent from manifest');
+if (!legacyEntry || !campaignsEntry || !adminAccessEntry || !setupWizardEntry || !groupOpsHistoryEntry || !operationMainEntry || !operationLegacyEntry) fail('required frozen admin runtime chunks are absent from manifest');
 
 const selected = new Set();
 const includeStatic = (relative) => {
@@ -49,7 +51,8 @@ const includeStatic = (relative) => {
 };
 // V2's loader contains dormant dynamic imports for every legacy page. The
 // release keeps the loader, its static dependencies, the campaigns chunk
-// selected by the External Effects workspace, and the Group Ops history chunk
+// selected by the External Effects workspace, the Admin Access and Setup
+// Wizard chunks selected by the Config host, and the Group Ops history chunk
 // selected by the byte-frozen groupops.html?history=1 route. No other legacy
 // page chunk is staged or fetchable. HTML stays v3-owned: the Go webshell
 // renders the single admin shell and mounts the frozen stage, so no donor HTML
@@ -57,6 +60,8 @@ const includeStatic = (relative) => {
 for (const root of roots) includeStatic(root);
 includeStatic(legacyEntry);
 includeStatic(campaignsEntry);
+includeStatic(adminAccessEntry);
+includeStatic(setupWizardEntry);
 includeStatic(groupOpsHistoryEntry);
 includeStatic(operationMainEntry);
 includeStatic(operationLegacyEntry);
