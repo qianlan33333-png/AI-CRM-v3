@@ -182,6 +182,26 @@ func TestApplicationRouterKeepsOwnershipAndProtectsAdminShell(t *testing.T) {
 	}
 }
 
+func TestTransactionRouteKeepsShellButReportsBackendUnavailable(t *testing.T) {
+	authentication := &fakeAccessAuthentication{principal: accessdomain.Principal{Kind: accessdomain.KindAdmin, InternalID: 7, Roles: []accessdomain.Role{accessdomain.RoleAdmin}}}
+	marker := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) { writer.WriteHeader(http.StatusNotFound) })
+	handler, err := routeApplication(marker, marker, marker, marker, webshell.MustHandler(), authentication, "https://crm.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/admin/orders", nil)
+	request.AddCookie(&http.Cookie{Name: "aicrm_admin_session", Value: "valid"})
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	body := response.Body.String()
+	if response.Code != http.StatusOK || !strings.Contains(body, "交易后端尚未就绪") || !strings.Contains(body, "功能待接入") {
+		t.Fatalf("status=%d body=%q", response.Code, body)
+	}
+	if strings.Contains(body, "orderTransactionId") || strings.Contains(body, "创建退款 intent") {
+		t.Fatal("blocked transaction shell mounted donor business actions before backend readiness")
+	}
+}
+
 func TestSecurityHeadersAllowBlobImagesOnlyOnMediaPages(t *testing.T) {
 	handler := securityHeaders(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	for path, allowsBlob := range map[string]bool{

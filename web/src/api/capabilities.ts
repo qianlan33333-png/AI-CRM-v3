@@ -13,6 +13,43 @@ export type Capability = Readonly<{
   reason?: string;
 }>;
 
+export type ReadinessProjection = Readonly<{
+  ready: boolean;
+  state: Extract<CapabilityState, 'real' | 'backend_blocked'>;
+  reason: string;
+  requiredEvidence: readonly string[];
+}>;
+
+/**
+ * Transaction screens exist as frozen UI evidence, but page presence and
+ * generated compatibility clients are not readiness evidence. Each flag is
+ * promoted only after the named backend/migration journey is verified.
+ */
+export const transactionReadiness: Readonly<{
+  orderRead: ReadinessProjection;
+  refundIntent: ReadinessProjection;
+  alipayRefundIntent: ReadinessProjection;
+}> = {
+  orderRead: {
+    ready: false,
+    state: 'backend_blocked',
+    reason: 'TX02 Order migration、真实查询 API 与管理端 Journey 尚未完成；当前页面只保留不可用态',
+    requiredEvidence: ['order migration', 'order query API', 'admin order journey'],
+  },
+  refundIntent: {
+    ready: false,
+    state: 'backend_blocked',
+    reason: 'TX05 Payment/EER 原子接纳、Provider disabled 验证与退款 Journey 尚未完成',
+    requiredEvidence: ['payment migration', 'payment-v1 EER acceptance', 'refund journey'],
+  },
+  alipayRefundIntent: {
+    ready: false,
+    state: 'backend_blocked',
+    reason: '冻结 donor 仅证明支付宝交易只读投影，没有可迁移的支付宝退款 intent/回调/对账契约',
+    requiredEvidence: ['separately approved Alipay write contract'],
+  },
+};
+
 export const ADMIN_SCREENS = ['customers', 'customerDetail', 'questionnaires', 'questionnaireDetail', 'channels', 'channelForm', 'orders', 'orderDetail', 'spProducts', 'coupons', 'couponForm', 'images', 'agents', 'agentEdit', 'config', 'configDetail', 'automation', 'cycles', 'groupops', 'campaigns', 'ai', 'radar', 'tags', 'products', 'mpLib', 'attach', 'ownerMig', 'apidocs', 'productForm', 'spProductForm', 'groupopsDetail', 'radarDetail', 'radarForm', 'aiDetail', 'audienceEdit', 'cyclesDetail', 'questionnaireOps', 'spProductData', 'couponData'] as const;
 
 export const CAPABILITIES: readonly Capability[] = [
@@ -25,9 +62,9 @@ export const CAPABILITIES: readonly Capability[] = [
   { surface: 'admin', screen: 'questionnaireOps', action: '执行真实外部推送', state: 'backend_blocked', reason: '当前问卷运营 OpenAPI 不提供从页面直接执行 Provider 派发的 operation' },
   { surface: 'admin', screen: 'channels/channelForm', action: '渠道与联系人读取', state: 'real', operation: 'listLegacyChannels/getLegacyChannel/listLegacyChannelEntrants' },
   { surface: 'admin', screen: 'channels/channelForm', action: '渠道、载体、客服、素材、标签与分配策略保存', state: 'real', operation: 'createLegacyChannel/updateLegacyChannel' },
-  { surface: 'admin', screen: 'orders/orderDetail', action: '订单、items 与支付来源读取', state: 'real', operation: 'listLegacyOrders/getLegacyOrder/getLegacyOrderItems' },
-  { surface: 'admin', screen: 'orders/orderDetail', action: '微信支付与微信小店退款 intent/receipt', state: 'real', operation: 'createLegacyWechatRefundIntent/createLegacyRefundIntent' },
-  { surface: 'admin', screen: 'orders/orderDetail', action: '支付宝退款 intent', state: 'backend_blocked', reason: '当前 OpenAPI 没有支付宝退款 intent operation，页面按订单 provider 阻止请求' },
+  { surface: 'admin', screen: 'orders/orderDetail', action: '订单、items 与支付来源读取', state: transactionReadiness.orderRead.state, operation: 'listLegacyOrders/getLegacyOrder/getLegacyOrderItems', reason: transactionReadiness.orderRead.reason },
+  { surface: 'admin', screen: 'orders/orderDetail', action: '微信支付与微信小店退款 intent/receipt', state: transactionReadiness.refundIntent.state, operation: 'createLegacyWechatRefundIntent/createLegacyRefundIntent', reason: transactionReadiness.refundIntent.reason },
+  { surface: 'admin', screen: 'orders/orderDetail', action: '支付宝退款 intent', state: transactionReadiness.alipayRefundIntent.state, reason: transactionReadiness.alipayRefundIntent.reason },
   { surface: 'admin', screen: 'products/productForm', action: '普通商品与权益读取', state: 'real', operation: 'listProducts/getProduct/listProductLocalEntitlements' },
   { surface: 'admin', screen: 'products/productForm', action: '普通商品 CRUD 与本地生命周期', state: 'real', operation: 'createProduct/updateProduct/enableLegacyWechatPayProduct/disableLegacyWechatPayProduct/copyLegacyWechatPayProduct/deleteLegacyWechatPayProduct' },
   { surface: 'admin', screen: 'products/productForm', action: '普通商品页面素材、购买后动作、企微标签与外推绑定保存', state: 'real', operation: 'createProduct/updateProduct/getWechatPayProductExternalPush/saveWechatPayProductExternalPush' },

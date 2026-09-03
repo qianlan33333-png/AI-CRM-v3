@@ -198,6 +198,7 @@ import {
 } from "./generated/p4-outbound-operations/p4-outbound-operations";
 
 import { ApiError } from './transport';
+import { transactionReadiness } from './capabilities';
 import { HttpApi } from '../shared/api/client';
 import { mountFunnelGrid } from '../admin/sections/funnelGrid';
 import { radarQrSvg, radarShareUrl } from '../admin/sections/qr';
@@ -240,6 +241,7 @@ const productAdminProjection = {
 const servicePeriodAdminProjection = (lifecycle: 'draft' | 'enabled' | 'disabled' | 'archived' = 'draft') => ({ ...productAdminProjection, status: `service_period_${lifecycle}`, enabled: lifecycle === 'enabled' });
 
 export async function runAdminAdapterTests(): Promise<void> {
+  assert(!transactionReadiness.orderRead.ready && !transactionReadiness.refundIntent.ready, 'admin adapter must not infer transaction readiness from generated routes or donor pages');
   // URL factories are generated from api/openapi.yaml; generated callers use GET for every read below.
   assert(getListCustomersUrl({ limit: 50 }) === '/api/v1/customers?limit=50', 'customer list URL/method');
   const customerListCalls: Array<{ input: string; init?: RequestInit }> = [];
