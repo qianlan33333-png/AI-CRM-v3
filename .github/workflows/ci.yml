@@ -58,6 +58,7 @@ jobs:
           git -C "$donor_dir" checkout --quiet 6bfbe5816bb89913c70adaca87d6a486260e016e
           AICRM_PR06_DONOR_DIR="$donor_dir" scripts/check-pr06-closure.sh
           rm -rf "$donor_dir"
+          scripts/check-pr07-frontend-freeze.sh
           npm run typecheck
           npm test
           npm run build
@@ -75,7 +76,7 @@ jobs:
       - name: Check repository
         run: make check
       - name: Race-check security and identity boundaries
-        run: go test -race ./cmd/aicrm ./internal/access/... ./internal/identity/... ./internal/wecom/... ./internal/externaleffects/... ./internal/platform/jobqueue/... ./internal/media/... ./internal/tag/... ./internal/groupops/... ./internal/outbound
+        run: go test -race ./cmd/aicrm ./internal/access/... ./internal/identity/... ./internal/wecom/... ./internal/externaleffects/... ./internal/platform/jobqueue/... ./internal/media/... ./internal/tag/... ./internal/groupops/... ./internal/outbound ./internal/automation/...
 
   deploy:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
