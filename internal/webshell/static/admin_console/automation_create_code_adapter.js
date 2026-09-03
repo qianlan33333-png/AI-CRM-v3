@@ -11,19 +11,20 @@
   const code = () => body()?.dataset.automationCreateCode || "";
   const legal = (value) => /^agent_[a-f0-9]{32}$/.test(value);
   const existingRecord = () => new URLSearchParams(pageWindow.location.search).has("id");
-  const bind = () => {
+  const synchronize = () => {
     try {
-      // This script intentionally runs in <head>, before the body and frozen
-      // controller template exist. Keep observing until both are present.
       if (!body()) return false;
       const createCode = code();
       const input = doc.getElementById("agentCode");
       if (existingRecord() || !legal(createCode)) return true;
       if (!(input instanceof HTMLInputElement)) return false;
+      // Never replace a value that the user or another trusted browser action
+      // has already supplied. The frozen input is unintentionally readonly on
+      // new pages, so the normal path begins blank and receives this host code.
       if (!input.value.trim()) {
         input.value = createCode;
-        input.dispatchEvent(new Event("input", { bubbles: true }));
       }
+      input.dispatchEvent(new Event("input", { bubbles: true }));
       return true;
     } catch (_) {
       // A document can be torn down while an observer is queued; it is no
@@ -31,9 +32,21 @@
       return true;
     }
   };
-  if (bind()) return;
+
+  // This listener is intentionally registered before the donor module. It
+  // replays an input event at click-capture time, after the frozen controller
+  // has mounted its own input listener but before its unchanged Save handler
+  // reads the form. That closes the parser/module ordering gap without
+  // replacing a donor listener, DTO, request URL, or visible interaction.
+  doc.addEventListener("click", (event) => {
+    const target = event.target instanceof Element ? event.target : null;
+    if (!target?.closest("[data-agent-save]")) return;
+    synchronize();
+  }, true);
+
+  if (synchronize()) return;
   const observer = new MutationObserver(() => {
-    if (bind()) observer.disconnect();
+    if (synchronize()) observer.disconnect();
   });
   observer.observe(doc.documentElement, { childList: true, subtree: true });
   pageWindow.setTimeout(() => observer.disconnect(), 10_000);

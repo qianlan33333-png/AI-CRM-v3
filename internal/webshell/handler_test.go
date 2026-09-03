@@ -559,7 +559,7 @@ func TestRenderAutomationUsesOnlyV3CreateCodeHostBinding(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := response.Body.String()
-	if response.Code != http.StatusOK || strings.Count(body, `class="admin-sidebar"`) != 1 || strings.Count(body, `<main`) != 1 || strings.Count(body, `<aside`) != 1 || strings.Contains(body, `class="side"`) || !strings.Contains(body, `<template id="tpl"><section data-page="agentEdit">frozen donor fragment</section></template>`) || !strings.Contains(body, `data-automation-create-code="agent_0123456789abcdef0123456789abcdef"`) || !strings.Contains(body, `/static/admin_console/automation_create_code_adapter.js`) {
+	if response.Code != http.StatusOK || strings.Count(body, `class="admin-sidebar"`) != 1 || strings.Count(body, `<main`) != 1 || strings.Count(body, `<aside`) != 1 || strings.Contains(body, `class="side"`) || !strings.Contains(body, `<template id="tpl"><section data-page="agentEdit">frozen donor fragment</section></template>`) || !strings.Contains(body, `data-automation-create-code="agent_0123456789abcdef0123456789abcdef"`) || !strings.Contains(body, `<script defer src="/static/admin_console/automation_create_code_adapter.js?v=automation-create-code-v2"></script>`) {
 		t.Fatalf("automation create shell mismatch status=%d body=%q", response.Code, body)
 	}
 
