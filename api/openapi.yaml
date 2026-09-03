@@ -1914,6 +1914,142 @@ paths:
   /api/v1/customers/{customer_id}/survey-answers:
     parameters: [{name: customer_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
     get: {operationId: listCustomerSurveyAnswers, security: [{adminSession: []}], responses: {"200": {description: OneID customer survey history}}}
+  /api/admin/orders:
+    get:
+      operationId: listLegacyOrders
+      tags: [Transactions]
+      security: [{adminSession: []}]
+      parameters:
+        - {$ref: "#/components/parameters/Limit"}
+        - {name: cursor, in: query, schema: {type: string, maxLength: 512}}
+        - {name: provider, in: query, schema: {type: string, enum: [wechat, wechat_pay, wechat_shop, alipay]}}
+        - {name: status, in: query, schema: {type: string, enum: [pending_payment, paid, partially_refunded, refunded, cancelled, payment_failed, closed]}}
+        - {name: order_ref, in: query, schema: {type: string, maxLength: 200}}
+        - {name: customer_id, in: query, schema: {$ref: "#/components/schemas/PositiveID"}}
+        - {name: product, in: query, schema: {type: string, maxLength: 200}}
+        - {name: created_from, in: query, schema: {type: string, format: date}}
+        - {name: created_to, in: query, schema: {type: string, format: date}}
+      responses: {"200": {description: Canonical order page, content: {application/json: {schema: {$ref: "#/components/schemas/TransactionOrderPage"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/orders/{order_ref}:
+    get:
+      operationId: getLegacyOrder
+      tags: [Transactions]
+      security: [{adminSession: []}]
+      parameters: [{$ref: "#/components/parameters/OrderReference"}]
+      responses: {"200": {description: Unique canonical order, content: {application/json: {schema: {$ref: "#/components/schemas/TransactionOrder"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/orders/{order_ref}/items:
+    get:
+      operationId: getLegacyOrderItems
+      tags: [Transactions]
+      security: [{adminSession: []}]
+      parameters: [{$ref: "#/components/parameters/OrderReference"}]
+      responses: {"200": {description: Immutable item snapshots, content: {application/json: {schema: {type: object, required: [items], properties: {items: {type: array, items: {$ref: "#/components/schemas/TransactionOrderItem"}}}}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+  /api/admin/refunds:
+    get:
+      operationId: listLegacyRefunds
+      tags: [Transactions]
+      security: [{adminSession: []}]
+      responses: {"200": {description: Refund page, content: {application/json: {schema: {type: object, additionalProperties: true}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}}
+  /api/admin/exports/preview:
+    post:
+      operationId: previewLegacyOrderExport
+      tags: [Transactions]
+      security: [{adminSession: [], csrfHeader: []}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/TransactionExportRequest"}}}}
+      responses: {"200": {description: Bounded export preview, content: {application/json: {schema: {type: object, additionalProperties: true}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}}
+  /api/admin/exports:
+    post:
+      operationId: createLegacyOrderExport
+      tags: [Transactions]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/TransactionExportRequest"}}}}
+      responses: {"200": {description: Receipt-backed CSV, content: {text/csv: {schema: {type: string}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+  /api/admin/wechat-pay/order-exports:
+    post:
+      operationId: createLegacyWechatOrderExport
+      tags: [Transactions]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/TransactionExportRequest"}}}}
+      responses: {"200": {description: PII-safe local order CSV, content: {text/csv: {schema: {type: string}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+  /api/admin/wechat-pay/orders:
+    get:
+      operationId: listLegacyWechatTransactions
+      tags: [Transactions]
+      security: [{adminSession: []}]
+      parameters: [{$ref: "#/components/parameters/Limit"}]
+      responses: {"200": {description: WeChat Pay order page, content: {application/json: {schema: {$ref: "#/components/schemas/TransactionOrderPage"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}}
+  /api/admin/alipay/transactions:
+    get:
+      operationId: listLegacyAlipayTransactions
+      tags: [Transactions]
+      security: [{adminSession: []}]
+      parameters: [{$ref: "#/components/parameters/Limit"}]
+      responses: {"200": {description: Imported Alipay read-only page, content: {application/json: {schema: {$ref: "#/components/schemas/TransactionOrderPage"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}}
+  /api/admin/wechat-pay/orders/{order_ref}/external-push-deliveries:
+    get:
+      operationId: listLegacyWechatOrderExternalEffects
+      tags: [Transactions]
+      security: [{adminSession: []}]
+      parameters: [{$ref: "#/components/parameters/OrderReference"}]
+      responses: {"200": {description: Safe external-effect projections, content: {application/json: {schema: {type: object, additionalProperties: true}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}}
+  /api/admin/wechat-pay/orders/{order_ref}/refunds:
+    post:
+      operationId: createLegacyWechatRefundIntent
+      tags: [Transactions]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/OrderReference"}, {$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false, required: [refund_amount_total, reason, transaction_id_confirmation, checked], properties: {provider: {type: string, enum: [wechat]}, order_no: {type: string, minLength: 1, maxLength: 200}, refund_amount_total: {type: integer, minimum: 1}, reason: {type: string, minLength: 1, maxLength: 500}, transaction_id_confirmation: {type: string, minLength: 1, maxLength: 200}, checked: {type: boolean}, operator: {type: string, maxLength: 200}}}}}}
+      responses: {"202": {description: WeChat Pay refund effect accepted atomically}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/v1/wechat-pay/checkouts:
+    post:
+      operationId: createWechatPayCheckout
+      tags: [Transactions]
+      security: [{paymentSession: []}]
+      parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [order_id]
+              properties: {order_id: {$ref: "#/components/schemas/PositiveID"}}
+      responses: {"202": {description: Payment effect accepted atomically, content: {application/json: {schema: {type: object, required: [payment_id, status, effect_id], properties: {payment_id: {$ref: "#/components/schemas/PositiveID"}, status: {type: string}, effect_id: {$ref: "#/components/schemas/ExternalEffectID"}}}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/payments/{payment_id}/refunds:
+    post:
+      operationId: requestWechatPaymentRefund
+      tags: [Transactions]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters:
+        - {name: payment_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
+        - {$ref: "#/components/parameters/RequiredIdempotencyKey"}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [amount_minor, refund_no, reason]
+              properties: {amount_minor: {type: integer, minimum: 1}, refund_no: {type: string, minLength: 1, maxLength: 200}, reason: {type: string, minLength: 1, maxLength: 500}}
+      responses: {"202": {description: Refund effect accepted atomically}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/public/wechat-pay/callbacks/payment:
+    post:
+      operationId: receiveWechatPayPaymentCallback
+      tags: [Transactions]
+      security: [{wechatPaySignature: []}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: true}}}}
+      responses: {"200": {description: Verified and idempotently settled}, "401": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/public/wechat-pay/callbacks/refund:
+    post:
+      operationId: receiveWechatPayRefundCallback
+      tags: [Transactions]
+      security: [{wechatPaySignature: []}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: true}}}}
+      responses: {"200": {description: Verified and idempotently settled}, "401": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
 components:
   securitySchemes:
     adminSession: {type: apiKey, in: cookie, name: aicrm_admin_session}
@@ -1921,6 +2057,8 @@ components:
     csrfHeader: {type: apiKey, in: header, name: X-CSRF-Token}
     contextToken: {type: http, scheme: bearer}
     groupOpsWebhook: {type: apiKey, in: header, name: X-AICRM-Signature}
+    paymentSession: {type: apiKey, in: cookie, name: aicrm_payment_session}
+    wechatPaySignature: {type: apiKey, in: header, name: Wechatpay-Signature}
   parameters:
     ID: {name: id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
     AutomationAgentID: {name: agent_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
@@ -1965,11 +2103,67 @@ components:
     GroupOpsWebhookTimestamp: {name: X-AICRM-Timestamp, in: header, required: true, schema: {type: string, pattern: "^[0-9]{1,20}$"}}
     GroupOpsWebhookEventID: {name: X-AICRM-Event-Id, in: header, required: true, schema: {type: string, minLength: 1, maxLength: 256}}
     GroupOpsWebhookSignature: {name: X-AICRM-Signature, in: header, required: true, schema: {type: string, pattern: "^[0-9a-fA-F]{64}$"}}
+    OrderReference: {name: order_ref, in: path, required: true, schema: {type: string, minLength: 1, maxLength: 200}}
   responses:
     Error: {description: Stable error response, content: {application/json: {schema: {$ref: "#/components/schemas/ErrorResponse"}}}}
     Unavailable: {description: Dependency or provider unavailable, content: {application/json: {schema: {$ref: "#/components/schemas/ErrorResponse"}}}}
     MutationOK: {description: Mutation completed, content: {application/json: {schema: {type: object, required: [ok], properties: {ok: {const: true}}}}}}
   schemas:
+    TransactionOrderItem:
+      type: object
+      additionalProperties: false
+      required: [line_no, product_code, name, unit_amount_minor, quantity, line_amount_minor, status, created_at]
+      properties:
+        line_no: {type: integer, minimum: 1}
+        product_id: {type: [integer, "null"], format: int64, minimum: 1}
+        product_code: {type: string, minLength: 1, maxLength: 200}
+        name: {type: string, minLength: 1, maxLength: 500}
+        unit_amount_minor: {type: integer, format: int64, minimum: 1}
+        quantity: {type: integer, minimum: 1}
+        line_amount_minor: {type: integer, format: int64, minimum: 1}
+        status: {type: string}
+        created_at: {type: string, format: date-time}
+    TransactionOrder:
+      type: object
+      additionalProperties: true
+      required: [id, record_origin, created_at, merchant_order_no, order_no, payer_name, payer_id, product_code, product_name, amount_yuan, currency, status, status_label, provider, provider_label, detail_url]
+      properties:
+        id: {$ref: "#/components/schemas/PositiveID"}
+        record_origin: {type: string, enum: [native, v1_history]}
+        created_at: {type: string, format: date-time}
+        merchant_order_no: {type: string, maxLength: 200}
+        order_no: {type: string, maxLength: 200}
+        payer_name: {type: string, maxLength: 200}
+        payer_id: {type: string, pattern: "^(customer:[1-9][0-9]*|)$"}
+        product_code: {type: string, maxLength: 200}
+        product_name: {type: string, maxLength: 500}
+        amount_yuan: {type: string, pattern: "^[0-9]+[.][0-9]{2}$"}
+        currency: {type: string, pattern: "^[A-Z]{3}$"}
+        status: {type: string}
+        status_label: {type: string}
+        provider: {type: string, enum: [wechat, wechat_shop, alipay]}
+        provider_label: {type: string}
+        detail_url: {type: string, maxLength: 2048}
+    TransactionOrderPage:
+      type: object
+      additionalProperties: false
+      required: [items, orders, total, limit, has_more, next_cursor]
+      properties:
+        items: {type: array, items: {$ref: "#/components/schemas/TransactionOrder"}}
+        orders: {type: array, items: {$ref: "#/components/schemas/TransactionOrder"}}
+        total: {type: integer, minimum: 0}
+        limit: {type: integer, minimum: 1, maximum: 100}
+        has_more: {type: boolean}
+        next_cursor: {type: string, maxLength: 512}
+    TransactionExportRequest:
+      type: object
+      additionalProperties: false
+      required: [resource, format]
+      properties:
+        resource: {type: string, const: orders}
+        format: {type: string, const: csv}
+        filter: {type: object, additionalProperties: true}
+        filters: {type: object, additionalProperties: true}
     PositiveID: {type: integer, format: int64, minimum: 1}
     AutomationAgentFixedContent: {type: object, additionalProperties: false, required: [content_text, image_library_ids, miniprogram_library_ids, attachment_library_ids, group_invite_library_ids], properties: {content_text: {type: string, maxLength: 4000}, image_library_ids: {type: array, maxItems: 3, items: {$ref: "#/components/schemas/PositiveID"}}, miniprogram_library_ids: {type: array, maxItems: 1, items: {$ref: "#/components/schemas/PositiveID"}}, attachment_library_ids: {type: array, maxItems: 9, items: {$ref: "#/components/schemas/PositiveID"}}, group_invite_library_ids: {type: array, maxItems: 1, items: {$ref: "#/components/schemas/PositiveID"}}}}
     AutomationAgentCreateRequest: {type: object, additionalProperties: false, required: [agent_name, agent_code, automation_type], properties: {agent_name: {type: string, minLength: 1, maxLength: 120}, agent_code: {type: string, pattern: '^[a-z0-9_-]+$', maxLength: 120}, automation_type: {type: string, enum: [agent, fixed_script]}, status: {type: string, enum: [paused]}, role_prompt: {type: string, maxLength: 20000}, task_prompt: {type: string, maxLength: 20000}, fixed_content_package: {$ref: "#/components/schemas/AutomationAgentFixedContent"}, legacy_configuration: {type: object, maxProperties: 200}}}

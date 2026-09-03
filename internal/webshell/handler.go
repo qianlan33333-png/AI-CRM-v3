@@ -219,12 +219,12 @@ var adminSpecs = map[string]adminSpec{
 	},
 	"/admin/orders": {
 		title:          "交易管理",
-		summary:        "交易管理入口已预留。",
+		summary:        "交易后端尚未就绪；当前仅保留导航与明确不可用态，不读取订单或发起退款。",
 		activeEndpoint: "api.admin_orders_page",
 	},
 	"/admin/wechat-pay/transactions": {
 		title:          "交易管理",
-		summary:        "微信支付交易入口已预留。",
+		summary:        "交易后端尚未就绪；当前仅保留导航与明确不可用态，不读取订单或发起退款。",
 		activeEndpoint: "api.admin_orders_page",
 	},
 	"/admin/wechat-pay/products": {

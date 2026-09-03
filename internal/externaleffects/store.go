@@ -581,7 +581,8 @@ func (r *Repository) RunAttempt(ctx context.Context, id, generation, riverJobID 
 		}
 		return ErrTransition
 	}
-	shouldComplete := r.sink != nil && (envelope.Kind == KindGroupMessage && (next == StateExecuted || next == StateUnknown || next == StateRetryable || next == StateFinalFailed) || envelope.Kind == KindWeComTagCatalog && (next == StateExecuted || next == StateUnknown || next == StateRetryable || next == StateFinalFailed))
+	terminal := next == StateExecuted || next == StateUnknown || next == StateRetryable || next == StateFinalFailed
+	shouldComplete := r.sink != nil && terminal && (envelope.Kind == KindGroupMessage || envelope.Kind == KindWeComTagCatalog || envelope.Owner == OwnerPayment)
 	if shouldComplete {
 		completionResult := adapterResult
 		completionResult.Completion = next

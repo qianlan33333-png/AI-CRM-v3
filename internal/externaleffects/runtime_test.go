@@ -3,6 +3,8 @@ package externaleffects
 import (
 	"errors"
 	"testing"
+
+	"github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 )
 
 func digestForTest(label string) Digest { return Hash("test", label) }
@@ -31,6 +33,16 @@ func TestClosedDigestOnlyEnvelopeAndStates(t *testing.T) {
 	}
 	if !CanTransition(StateUnknown, StateReconciled) {
 		t.Fatal("unknown result must reconcile")
+	}
+}
+
+func TestPaymentV1KindsUsePaymentOwnerWithoutRawPayload(t *testing.T) {
+	for _, kind := range []Kind{KindWeChatPayPrepay, KindWeChatPayRefund, KindWeChatShopRefund} {
+		intent := port.PaymentV1Intent{Kind: kind, ReceiptKey: digestForTest("payment-key"), SourceRefDigest: digestForTest("payment-source"), TargetRefDigest: digestForTest("payment-target"), PayloadDigest: digestForTest("payment-payload"), PolicyVersionHash: digestForTest("payment-policy")}
+		command, ok := intent.AcceptCommand()
+		if !ok || command.Envelope.Owner != OwnerPayment || command.Envelope.Kind != kind {
+			t.Fatalf("payment intent kind=%q command=%+v ok=%v", kind, command, ok)
+		}
 	}
 }
 

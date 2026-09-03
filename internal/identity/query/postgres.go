@@ -20,8 +20,86 @@ type PostgreSQL struct{}
 
 var _ Reader = PostgreSQL{}
 var _ identityport.DirectoryIdentityReader = PostgreSQL{}
+var _ identityport.CommerceResolver = PostgreSQL{}
+var _ identityport.PaymentIdentityReader = PostgreSQL{}
 
 func NewPostgreSQL() PostgreSQL { return PostgreSQL{} }
+
+func (PostgreSQL) VerifiedPaymentIdentity(ctx context.Context, identityID int64, kind identitydomain.Kind, scope string) (identityport.VerifiedCommerceIdentity, bool, error) {
+	if identityID < 1 || identitydomain.ValidateNamespace(kind, scope) != nil {
+		return identityport.VerifiedCommerceIdentity{}, false, identitydomain.ErrInvalidReference
+	}
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return identityport.VerifiedCommerceIdentity{}, false, err
+	}
+	var result identityport.VerifiedCommerceIdentity
+	err = tx.QueryRow(ctx, `WITH RECURSIVE lineage(id,status,merged_into_customer_id,visited) AS (
+		SELECT c.id,c.status,c.merged_into_customer_id,ARRAY[c.id] FROM customers c JOIN customer_identities i ON i.customer_id=c.id
+		WHERE i.id=$1 AND i.kind=$2 AND i.scope_key=$3 AND i.assurance='verified' AND i.status='active'
+		UNION ALL SELECT c.id,c.status,c.merged_into_customer_id,l.visited||c.id FROM customers c JOIN lineage l ON c.id=l.merged_into_customer_id WHERE NOT c.id=ANY(l.visited)
+	) SELECT i.id,l.id,i.kind,i.scope_key,i.normalized_value FROM customer_identities i JOIN lineage l ON TRUE WHERE i.id=$1 AND l.status<>'merged' LIMIT 1`, identityID, kind, scope).Scan(&result.IdentityID, &result.CustomerID, &result.Kind, &result.Scope, &result.Value)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return identityport.VerifiedCommerceIdentity{}, false, nil
+	}
+	if err != nil {
+		return identityport.VerifiedCommerceIdentity{}, false, fmt.Errorf("query verified payment identity: %w", err)
+	}
+	return result, true, nil
+}
+
+func (PostgreSQL) ResolveCommerce(ctx context.Context, set identityport.CommerceReferenceSet) (identityport.CommerceResolution, error) {
+	if len(set.References) == 0 || len(set.References) > identityport.MaximumCommerceReferences {
+		return identityport.CommerceResolution{Status: identityport.CommerceInvalid}, nil
+	}
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return identityport.CommerceResolution{}, err
+	}
+	result := identityport.CommerceResolution{Matches: make([]identityport.CommerceIdentityMatch, 0, len(set.References))}
+	missing := 0
+	for position, reference := range set.References {
+		normalized, normalizeErr := identitydomain.Normalize(reference)
+		if normalizeErr != nil {
+			return identityport.CommerceResolution{Status: identityport.CommerceInvalid}, nil
+		}
+		var identityID, customerID int64
+		var assurance identitydomain.Assurance
+		queryErr := tx.QueryRow(ctx, `WITH RECURSIVE lineage(id,status,merged_into_customer_id,visited) AS (
+			SELECT c.id,c.status,c.merged_into_customer_id,ARRAY[c.id] FROM customers c
+			JOIN customer_identities i ON i.customer_id=c.id
+			WHERE i.kind=$1 AND i.scope_key=$2 AND i.normalized_value=$3 AND i.status='active'
+			UNION ALL SELECT c.id,c.status,c.merged_into_customer_id,l.visited || c.id FROM customers c
+			JOIN lineage l ON c.id=l.merged_into_customer_id WHERE NOT c.id=ANY(l.visited)
+		) SELECT i.id,l.id,i.assurance FROM customer_identities i JOIN lineage l ON TRUE
+		WHERE i.kind=$1 AND i.scope_key=$2 AND i.normalized_value=$3 AND i.status='active'
+		AND l.status<>'merged' AND ($4<>'verified' OR i.assurance='verified')
+		LIMIT 1`, string(normalized.Kind), normalized.Scope, normalized.NormalizedValue, string(normalized.Assurance)).Scan(&identityID, &customerID, &assurance)
+		if errors.Is(queryErr, pgx.ErrNoRows) {
+			missing++
+			continue
+		}
+		if queryErr != nil {
+			return identityport.CommerceResolution{}, fmt.Errorf("resolve commerce identity: %w", queryErr)
+		}
+		match := identityport.CommerceIdentityMatch{Position: position, IdentityID: identityID, CustomerID: customerdomain.CustomerID(customerID), Assurance: assurance}
+		result.Matches = append(result.Matches, match)
+		if result.CustomerID == 0 {
+			result.CustomerID = match.CustomerID
+		} else if result.CustomerID != match.CustomerID {
+			result.Status, result.CustomerID = identityport.CommerceConflict, 0
+			return result, nil
+		}
+	}
+	if len(result.Matches) == 0 {
+		result.Status, result.CustomerID = identityport.CommerceNotFound, 0
+	} else if missing > 0 {
+		result.Status, result.CustomerID = identityport.CommercePartial, 0
+	} else {
+		result.Status = identityport.CommerceResolved
+	}
+	return result, nil
+}
 
 func (PostgreSQL) VerifiedWeComCustomer(ctx context.Context, corpID, externalUserID string) (customerdomain.CustomerID, bool, error) {
 	if strings.TrimSpace(corpID) != corpID || corpID == "" || strings.TrimSpace(externalUserID) != externalUserID || externalUserID == "" {

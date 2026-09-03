@@ -1,0 +1,539 @@
+package store
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
+	"github.com/qianlan33333-png/AI-CRM-v3/internal/payment/domain"
+	paymentport "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/port"
+	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
+)
+
+type Repository struct{}
+
+func NewPostgreSQL() *Repository             { return &Repository{} }
+func tx(ctx context.Context) (pgx.Tx, error) { return platformpostgres.RequireTransaction(ctx) }
+
+func (r *Repository) CreatePayment(ctx context.Context, p domain.Payment, key, payload [32]byte, actor string) (domain.Payment, bool, error) {
+	t, e := tx(ctx)
+	if e != nil {
+		return domain.Payment{}, false, e
+	}
+	if _, e = t.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, "payment:create:"+string(key[:])); e != nil {
+		return domain.Payment{}, false, e
+	}
+	var resultID int64
+	var oldPayload []byte
+	e = t.QueryRow(ctx, `SELECT result_id,payload_digest FROM payment_operation_receipts WHERE operation='create' AND actor_scope=$1 AND key_digest=$2`, actor, key[:]).Scan(&resultID, &oldPayload)
+	if e == nil {
+		if string(oldPayload) != string(payload[:]) {
+			return domain.Payment{}, false, paymentport.ErrConflict
+		}
+		found, e := r.GetPayment(ctx, resultID, false)
+		return found, false, e
+	}
+	if !errors.Is(e, pgx.ErrNoRows) {
+		return domain.Payment{}, false, e
+	}
+	e = t.QueryRow(ctx, `INSERT INTO payments(order_id,provider,merchant_order_no,payer_identity_id,payer_customer_id,beneficiary_customer_id,amount_minor,currency,status,version,created_at,updated_at)VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)RETURNING id`, p.OrderID, p.Provider, p.MerchantOrderNo, p.PayerIdentityID, p.PayerCustomerID, p.BeneficiaryCustomerID, p.AmountMinor, p.Currency, p.Status, p.Version, p.CreatedAt, p.UpdatedAt).Scan(&p.ID)
+	if e != nil {
+		return domain.Payment{}, false, mapError(e)
+	}
+	if _, e = t.Exec(ctx, `INSERT INTO payment_operation_receipts(operation,actor_scope,key_digest,payload_digest,result_kind,result_id,created_at)VALUES('create',$1,$2,$3,'payment',$4,$5)`, actor, key[:], payload[:], p.ID, p.CreatedAt); e != nil {
+		return domain.Payment{}, false, mapError(e)
+	}
+	if e = appendFacts(ctx, t, "payment.created", p.ID, actor, p.CreatedAt); e != nil {
+		return domain.Payment{}, false, e
+	}
+	return p, true, nil
+}
+
+func (r *Repository) BindPaymentEffect(ctx context.Context, p domain.Payment, intent effectport.PaymentV1Intent, snapshot map[string]any) (domain.Payment, error) {
+	t, e := tx(ctx)
+	if e != nil {
+		return domain.Payment{}, e
+	}
+	id, e := effectNumeric(p.EffectID)
+	if e != nil {
+		return domain.Payment{}, e
+	}
+	raw, _ := json.Marshal(snapshot)
+	result, e := t.Exec(ctx, `UPDATE payments SET external_effect_id=$2,version=$3,updated_at=$4 WHERE id=$1 AND version=$5 AND external_effect_id IS NULL`, p.ID, id, p.Version, p.UpdatedAt, p.Version-1)
+	if e != nil || result.RowsAffected() != 1 {
+		if e != nil {
+			return domain.Payment{}, mapError(e)
+		}
+		return domain.Payment{}, paymentport.ErrConflict
+	}
+	if _, e = t.Exec(ctx, `INSERT INTO payment_provider_intents(payment_id,effect_kind,source_ref_digest,target_ref_digest,payload_digest,policy_version_hash,request_snapshot,created_at)VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, p.ID, intent.Kind, intent.SourceRefDigest, intent.TargetRefDigest, intent.PayloadDigest, intent.PolicyVersionHash, raw, p.UpdatedAt); e != nil {
+		return domain.Payment{}, mapError(e)
+	}
+	return p, nil
+}
+
+func (r *Repository) GetPayment(ctx context.Context, id int64, lock bool) (domain.Payment, error) {
+	t, e := tx(ctx)
+	if e != nil {
+		return domain.Payment{}, e
+	}
+	q := `SELECT id,order_id,provider,merchant_order_no,payer_identity_id,payer_customer_id,beneficiary_customer_id,amount_minor,currency,status,COALESCE('eer_'||external_effect_id::text,''),COALESCE(provider_transaction_digest,''),version,created_at,updated_at FROM payments WHERE id=$1`
+	if lock {
+		q += ` FOR UPDATE`
+	}
+	var p domain.Payment
+	e = t.QueryRow(ctx, q, id).Scan(&p.ID, &p.OrderID, &p.Provider, &p.MerchantOrderNo, &p.PayerIdentityID, &p.PayerCustomerID, &p.BeneficiaryCustomerID, &p.AmountMinor, &p.Currency, &p.Status, &p.EffectID, &p.ProviderTransactionDigest, &p.Version, &p.CreatedAt, &p.UpdatedAt)
+	if errors.Is(e, pgx.ErrNoRows) {
+		return domain.Payment{}, paymentport.ErrNotFound
+	}
+	return p, mapError(e)
+}
+
+func (r *Repository) GetPaymentByMerchant(ctx context.Context, merchantOrderNo string, lock bool) (domain.Payment, error) {
+	return r.GetPaymentByMerchantProvider(ctx, domain.ProviderWeChatPay, merchantOrderNo, lock)
+}
+
+func (r *Repository) GetPaymentByMerchantProvider(ctx context.Context, provider domain.Provider, merchantOrderNo string, lock bool) (domain.Payment, error) {
+	t, err := tx(ctx)
+	if err != nil {
+		return domain.Payment{}, err
+	}
+	query := `SELECT id FROM payments WHERE provider=$1 AND merchant_order_no=$2`
+	if lock {
+		query += ` FOR UPDATE`
+	}
+	var id int64
+	err = t.QueryRow(ctx, query, provider, merchantOrderNo).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Payment{}, paymentport.ErrNotFound
+	}
+	if err != nil {
+		return domain.Payment{}, mapError(err)
+	}
+	return r.GetPayment(ctx, id, false)
+}
+
+func (r *Repository) CreateRefund(ctx context.Context, v domain.Refund, key, payload [32]byte, actor string) (domain.Refund, bool, error) {
+	t, e := tx(ctx)
+	if e != nil {
+		return domain.Refund{}, false, e
+	}
+	if _, e = t.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, "payment:refund:"+string(key[:])); e != nil {
+		return domain.Refund{}, false, e
+	}
+	var id int64
+	var old []byte
+	e = t.QueryRow(ctx, `SELECT result_id,payload_digest FROM payment_operation_receipts WHERE operation='refund' AND actor_scope=$1 AND key_digest=$2`, actor, key[:]).Scan(&id, &old)
+	if e == nil {
+		if string(old) != string(payload[:]) {
+			return domain.Refund{}, false, paymentport.ErrConflict
+		}
+		found, e := r.GetRefund(ctx, id, false)
+		return found, false, e
+	}
+	if !errors.Is(e, pgx.ErrNoRows) {
+		return domain.Refund{}, false, e
+	}
+	e = t.QueryRow(ctx, `INSERT INTO payment_refunds(payment_id,provider,refund_no,amount_minor,reason,status,version,created_at,updated_at)VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)RETURNING id`, v.PaymentID, v.Provider, v.RefundNo, v.AmountMinor, v.Reason, v.Status, v.Version, v.CreatedAt, v.UpdatedAt).Scan(&v.ID)
+	if e != nil {
+		return domain.Refund{}, false, mapError(e)
+	}
+	if _, e = t.Exec(ctx, `INSERT INTO payment_operation_receipts(operation,actor_scope,key_digest,payload_digest,result_kind,result_id,created_at)VALUES('refund',$1,$2,$3,'refund',$4,$5)`, actor, key[:], payload[:], v.ID, v.CreatedAt); e != nil {
+		return domain.Refund{}, false, mapError(e)
+	}
+	if e = appendFacts(ctx, t, "payment.refund_requested", v.ID, actor, v.CreatedAt); e != nil {
+		return domain.Refund{}, false, e
+	}
+	return v, true, nil
+}
+func (r *Repository) BindRefundEffect(ctx context.Context, v domain.Refund, intent effectport.PaymentV1Intent, snapshot map[string]any) (domain.Refund, error) {
+	t, e := tx(ctx)
+	if e != nil {
+		return domain.Refund{}, e
+	}
+	id, e := effectNumeric(v.EffectID)
+	if e != nil {
+		return domain.Refund{}, e
+	}
+	raw, _ := json.Marshal(snapshot)
+	result, e := t.Exec(ctx, `UPDATE payment_refunds SET status=$2,external_effect_id=$3,version=$4,updated_at=$5 WHERE id=$1 AND version=$6 AND external_effect_id IS NULL`, v.ID, v.Status, id, v.Version, v.UpdatedAt, v.Version-1)
+	if e != nil || result.RowsAffected() != 1 {
+		if e != nil {
+			return domain.Refund{}, mapError(e)
+		}
+		return domain.Refund{}, paymentport.ErrConflict
+	}
+	if _, e = t.Exec(ctx, `INSERT INTO payment_provider_intents(refund_id,effect_kind,source_ref_digest,target_ref_digest,payload_digest,policy_version_hash,request_snapshot,created_at)VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, v.ID, intent.Kind, intent.SourceRefDigest, intent.TargetRefDigest, intent.PayloadDigest, intent.PolicyVersionHash, raw, v.UpdatedAt); e != nil {
+		return domain.Refund{}, mapError(e)
+	}
+	return v, nil
+}
+func (r *Repository) GetRefund(ctx context.Context, id int64, lock bool) (domain.Refund, error) {
+	t, e := tx(ctx)
+	if e != nil {
+		return domain.Refund{}, e
+	}
+	q := `SELECT id,payment_id,provider,refund_no,reason,amount_minor,status,COALESCE('eer_'||external_effect_id::text,''),COALESCE(provider_refund_digest,''),version,created_at,updated_at FROM payment_refunds WHERE id=$1`
+	if lock {
+		q += ` FOR UPDATE`
+	}
+	var v domain.Refund
+	e = t.QueryRow(ctx, q, id).Scan(&v.ID, &v.PaymentID, &v.Provider, &v.RefundNo, &v.Reason, &v.AmountMinor, &v.Status, &v.EffectID, &v.ProviderRefundDigest, &v.Version, &v.CreatedAt, &v.UpdatedAt)
+	if errors.Is(e, pgx.ErrNoRows) {
+		return domain.Refund{}, paymentport.ErrNotFound
+	}
+	return v, mapError(e)
+}
+
+func (r *Repository) GetRefundByNumber(ctx context.Context, refundNo string, lock bool) (domain.Refund, error) {
+	t, err := tx(ctx)
+	if err != nil {
+		return domain.Refund{}, err
+	}
+	query := `SELECT id FROM payment_refunds WHERE refund_no=$1`
+	if lock {
+		query += ` FOR UPDATE`
+	}
+	var id int64
+	err = t.QueryRow(ctx, query, refundNo).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Refund{}, paymentport.ErrNotFound
+	}
+	if err != nil {
+		return domain.Refund{}, mapError(err)
+	}
+	return r.GetRefund(ctx, id, false)
+}
+
+func (r *Repository) ListRefunds(ctx context.Context, limit, offset int32) ([]paymentport.RefundProjection, int64, error) {
+	t, err := tx(ctx)
+	if err != nil {
+		return nil, 0, err
+	}
+	var total int64
+	if err = t.QueryRow(ctx, `SELECT count(*) FROM payment_refunds`).Scan(&total); err != nil {
+		return nil, 0, mapError(err)
+	}
+	rows, err := t.Query(ctx, `
+		SELECT r.id,r.payment_id,r.provider,r.refund_no,r.reason,r.amount_minor,r.status,
+			COALESCE('eer_'||r.external_effect_id::text,''),COALESCE(r.provider_refund_digest,''),r.version,r.created_at,r.updated_at,
+			p.order_id,p.merchant_order_no,COALESCE(p.provider_transaction_digest,''),p.amount_minor,p.currency
+		FROM payment_refunds r JOIN payments p ON p.id=r.payment_id
+		ORDER BY r.created_at DESC,r.id DESC LIMIT $1 OFFSET $2`, limit, offset)
+	if err != nil {
+		return nil, 0, mapError(err)
+	}
+	defer rows.Close()
+	result := make([]paymentport.RefundProjection, 0, limit)
+	for rows.Next() {
+		var item paymentport.RefundProjection
+		if err = rows.Scan(&item.Refund.ID, &item.Refund.PaymentID, &item.Refund.Provider, &item.Refund.RefundNo, &item.Refund.Reason, &item.Refund.AmountMinor, &item.Refund.Status, &item.Refund.EffectID, &item.Refund.ProviderRefundDigest, &item.Refund.Version, &item.Refund.CreatedAt, &item.Refund.UpdatedAt, &item.OrderID, &item.MerchantOrder, &item.TransactionRef, &item.OrderAmount, &item.Currency); err != nil {
+			return nil, 0, mapError(err)
+		}
+		result = append(result, item)
+	}
+	return result, total, mapError(rows.Err())
+}
+
+func (r *Repository) ClaimCallback(ctx context.Context, provider string, eventDigest, bodyDigest [32]byte, kind string, id int64) (bool, error) {
+	t, err := tx(ctx)
+	if err != nil {
+		return false, err
+	}
+	var existingBody []byte
+	var paymentID, refundID *int64
+	err = t.QueryRow(ctx, `SELECT body_digest,payment_id,refund_id FROM payment_callback_receipts WHERE provider=$1 AND event_digest=$2`, provider, eventDigest[:]).Scan(&existingBody, &paymentID, &refundID)
+	if err == nil {
+		matchesID := kind == "payment" && paymentID != nil && *paymentID == id || kind == "refund" && refundID != nil && *refundID == id
+		if string(existingBody) != string(bodyDigest[:]) || !matchesID {
+			return false, paymentport.ErrConflict
+		}
+		return true, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return false, mapError(err)
+	}
+	var paymentValue, refundValue any
+	if kind == "payment" {
+		paymentValue = id
+	} else if kind == "refund" {
+		refundValue = id
+	} else {
+		return false, paymentport.ErrConflict
+	}
+	_, err = t.Exec(ctx, `INSERT INTO payment_callback_receipts(provider,event_digest,body_digest,signature_verified,outcome,payment_id,refund_id) VALUES($1,$2,$3,true,'settled',$4,$5)`, provider, eventDigest[:], bodyDigest[:], paymentValue, refundValue)
+	return false, mapError(err)
+}
+
+func (r *Repository) ImportTerminalPayment(ctx context.Context, payment domain.Payment, digest [32]byte, runID string) (domain.Payment, error) {
+	t, err := tx(ctx)
+	if err != nil {
+		return domain.Payment{}, err
+	}
+	key := sha256.Sum256([]byte("payment-history:" + runID + ":" + payment.MerchantOrderNo))
+	var resultID int64
+	var oldDigest []byte
+	err = t.QueryRow(ctx, `SELECT result_id,payload_digest FROM payment_operation_receipts WHERE operation='history_import' AND actor_scope=$1 AND key_digest=$2`, runID, key[:]).Scan(&resultID, &oldDigest)
+	if err == nil {
+		if string(oldDigest) != string(digest[:]) {
+			return domain.Payment{}, paymentport.ErrConflict
+		}
+		return r.GetPayment(ctx, resultID, false)
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return domain.Payment{}, mapError(err)
+	}
+	err = t.QueryRow(ctx, `INSERT INTO payments(order_id,provider,merchant_order_no,payer_identity_id,payer_customer_id,beneficiary_customer_id,amount_minor,currency,status,provider_transaction_digest,version,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,NULLIF($10,''),$11,$12,$13) RETURNING id`, payment.OrderID, payment.Provider, payment.MerchantOrderNo, payment.PayerIdentityID, payment.PayerCustomerID, payment.BeneficiaryCustomerID, payment.AmountMinor, payment.Currency, payment.Status, payment.ProviderTransactionDigest, payment.Version, payment.CreatedAt, payment.UpdatedAt).Scan(&payment.ID)
+	if err != nil {
+		return domain.Payment{}, mapError(err)
+	}
+	_, err = t.Exec(ctx, `INSERT INTO payment_operation_receipts(operation,actor_scope,key_digest,payload_digest,result_kind,result_id,created_at) VALUES('history_import',$1,$2,$3,'payment',$4,$5)`, runID, key[:], digest[:], payment.ID, payment.CreatedAt)
+	if err != nil {
+		return domain.Payment{}, mapError(err)
+	}
+	if err = appendFacts(ctx, t, "payment.history_imported", payment.ID, "migration:"+runID, payment.CreatedAt); err != nil {
+		return domain.Payment{}, err
+	}
+	return payment, nil
+}
+
+func (r *Repository) ImportTerminalRefund(ctx context.Context, refund domain.Refund, digest [32]byte, runID string) (domain.Refund, error) {
+	t, err := tx(ctx)
+	if err != nil {
+		return domain.Refund{}, err
+	}
+	key := sha256.Sum256([]byte("refund-history:" + runID + ":" + refund.RefundNo))
+	var resultID int64
+	var oldDigest []byte
+	err = t.QueryRow(ctx, `SELECT result_id,payload_digest FROM payment_operation_receipts WHERE operation='history_import' AND actor_scope=$1 AND key_digest=$2`, runID, key[:]).Scan(&resultID, &oldDigest)
+	if err == nil {
+		if string(oldDigest) != string(digest[:]) {
+			return domain.Refund{}, paymentport.ErrConflict
+		}
+		return r.GetRefund(ctx, resultID, false)
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return domain.Refund{}, mapError(err)
+	}
+	err = t.QueryRow(ctx, `INSERT INTO payment_refunds(payment_id,provider,refund_no,amount_minor,reason,status,provider_refund_digest,version,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,NULLIF($7,''),$8,$9,$10) RETURNING id`, refund.PaymentID, refund.Provider, refund.RefundNo, refund.AmountMinor, refund.Reason, refund.Status, refund.ProviderRefundDigest, refund.Version, refund.CreatedAt, refund.UpdatedAt).Scan(&refund.ID)
+	if err != nil {
+		return domain.Refund{}, mapError(err)
+	}
+	_, err = t.Exec(ctx, `INSERT INTO payment_operation_receipts(operation,actor_scope,key_digest,payload_digest,result_kind,result_id,created_at) VALUES('history_import',$1,$2,$3,'refund',$4,$5)`, runID, key[:], digest[:], refund.ID, refund.CreatedAt)
+	if err != nil {
+		return domain.Refund{}, mapError(err)
+	}
+	if err = appendFacts(ctx, t, "payment.refund_history_imported", refund.ID, "migration:"+runID, refund.CreatedAt); err != nil {
+		return domain.Refund{}, err
+	}
+	return refund, nil
+}
+
+func (r *Repository) ProviderIntent(ctx context.Context, kind effectport.Kind, source effectport.Digest) (paymentport.ProviderIntent, error) {
+	t, err := tx(ctx)
+	if err != nil {
+		return paymentport.ProviderIntent{}, err
+	}
+	var out paymentport.ProviderIntent
+	var storedKind, storedSource, payload string
+	err = t.QueryRow(ctx, `
+		SELECT i.effect_kind,i.source_ref_digest,i.payload_digest,
+			COALESCE(p.id, rp.id),COALESCE(i.refund_id,0),
+			p.payer_identity_id,p.merchant_order_no,
+			COALESCE(r.refund_no,''),COALESCE(r.reason,''),
+			COALESCE(r.amount_minor,p.amount_minor),p.amount_minor,p.currency
+		FROM payment_provider_intents i
+		LEFT JOIN payments p ON p.id=i.payment_id
+		LEFT JOIN payment_refunds r ON r.id=i.refund_id
+		LEFT JOIN payments rp ON rp.id=r.payment_id
+		WHERE i.effect_kind=$1 AND i.source_ref_digest=$2`, kind, source,
+	).Scan(&storedKind, &storedSource, &payload, &out.PaymentID, &out.RefundID,
+		&out.PayerIdentityID, &out.MerchantOrderNo, &out.RefundNo, &out.RefundReason,
+		&out.AmountMinor, &out.TotalMinor, &out.Currency)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return paymentport.ProviderIntent{}, paymentport.ErrNotFound
+	}
+	if err != nil {
+		return paymentport.ProviderIntent{}, mapError(err)
+	}
+	out.Kind = effectport.Kind(storedKind)
+	out.SourceRefDigest = effectport.Digest(storedSource)
+	out.PayloadDigest = effectport.Digest(payload)
+	if out.Kind != kind || out.SourceRefDigest != source || !effectport.ValidDigest(out.PayloadDigest) {
+		return paymentport.ProviderIntent{}, paymentport.ErrConflict
+	}
+	return out, nil
+}
+
+func (r *Repository) CompleteEffectWithin(ctx context.Context, effectRef string, envelope effectport.Envelope, attempt effectport.Attempt, result effectport.AdapterResult) error {
+	t, err := tx(ctx)
+	if err != nil {
+		return err
+	}
+	effectID, err := effectNumeric(effectRef)
+	if err != nil || envelope.Owner != effectport.OwnerPayment || attempt.Number < 1 {
+		return paymentport.ErrConflict
+	}
+	var paymentID, refundID int64
+	err = t.QueryRow(ctx, `SELECT COALESCE(payment_id,0),COALESCE(refund_id,0) FROM payment_provider_intents WHERE effect_kind=$1 AND source_ref_digest=$2`, envelope.Kind, envelope.SourceRefDigest).Scan(&paymentID, &refundID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return paymentport.ErrNotFound
+	}
+	if err != nil {
+		return mapError(err)
+	}
+	now := time.Now().UTC()
+	switch envelope.Kind {
+	case effectport.KindWeChatPayPrepay:
+		status := domain.StatusFailed
+		if result.Completion == effectport.StateExecuted {
+			status = domain.StatusAwaitingPayment
+		} else if result.Completion == effectport.StateUnknown || result.Completion == effectport.StateRetryable {
+			return nil
+		}
+		updated, err := t.Exec(ctx, `UPDATE payments SET status=$2,version=version+1,updated_at=$3 WHERE id=$1 AND external_effect_id=$4 AND status='awaiting_prepay'`, paymentID, status, now, effectID)
+		if err != nil || updated.RowsAffected() != 1 {
+			if err != nil {
+				return mapError(err)
+			}
+			return paymentport.ErrConflict
+		}
+		if status == domain.StatusAwaitingPayment {
+			if !result.Artifact.Valid() || result.Artifact.Kind != "wechat_pay_jsapi_handoff_v1" || !json.Valid(result.Artifact.Payload) {
+				return paymentport.ErrConflict
+			}
+			var handoff struct {
+				ExpiresAt time.Time `json:"expiresAt"`
+			}
+			if json.Unmarshal(result.Artifact.Payload, &handoff) != nil || !handoff.ExpiresAt.After(now) {
+				return paymentport.ErrConflict
+			}
+			_, err = t.Exec(ctx, `INSERT INTO payment_handoffs(payment_id,effect_id,payload,payload_digest,expires_at,created_at) VALUES($1,$2,$3,$4,$5,$6)`, paymentID, effectID, result.Artifact.Payload, result.Artifact.Digest, handoff.ExpiresAt, now)
+			if err != nil {
+				return mapError(err)
+			}
+		}
+	case effectport.KindWeChatPayRefund, effectport.KindWeChatShopRefund:
+		if result.Completion == effectport.StateUnknown {
+			_, err = t.Exec(ctx, `UPDATE payment_refunds SET status='outcome_unknown',version=version+1,updated_at=$2 WHERE id=$1 AND external_effect_id=$3 AND status='effect_accepted'`, refundID, now, effectID)
+			return mapError(err)
+		}
+		if result.Completion == effectport.StateFinalFailed {
+			_, err = t.Exec(ctx, `UPDATE payment_refunds SET status='final_failed',version=version+1,updated_at=$2 WHERE id=$1 AND external_effect_id=$3 AND status='effect_accepted'`, refundID, now, effectID)
+			return mapError(err)
+		}
+	}
+	return nil
+}
+
+func (r *Repository) UpdatePaymentSettlement(ctx context.Context, p domain.Payment, providerDigest, receipt string) (domain.Payment, error) {
+	t, e := tx(ctx)
+	if e != nil {
+		return domain.Payment{}, e
+	}
+	if providerDigest != "" && !effectport.ValidDigest(effectport.Digest(providerDigest)) {
+		return domain.Payment{}, paymentport.ErrConflict
+	}
+	result, e := t.Exec(ctx, `UPDATE payments SET status=$2,provider_transaction_digest=NULLIF($3,''),version=$4,updated_at=$5 WHERE id=$1 AND version=$6`, p.ID, p.Status, providerDigest, p.Version, p.UpdatedAt, p.Version-1)
+	if e != nil || result.RowsAffected() != 1 {
+		if e != nil {
+			return domain.Payment{}, mapError(e)
+		}
+		return domain.Payment{}, paymentport.ErrConflict
+	}
+	if e = recordSettlement(ctx, t, "callback", "payment", p.ID, receipt, providerDigest, p.UpdatedAt); e != nil {
+		return domain.Payment{}, e
+	}
+	if e = appendFacts(ctx, t, "payment.settled", p.ID, "provider", p.UpdatedAt); e != nil {
+		return domain.Payment{}, e
+	}
+	return p, nil
+}
+func (r *Repository) UpdateRefundSettlement(ctx context.Context, v domain.Refund, providerDigest, receipt string) (domain.Refund, error) {
+	t, e := tx(ctx)
+	if e != nil {
+		return domain.Refund{}, e
+	}
+	if providerDigest != "" && !effectport.ValidDigest(effectport.Digest(providerDigest)) {
+		return domain.Refund{}, paymentport.ErrConflict
+	}
+	result, e := t.Exec(ctx, `UPDATE payment_refunds SET status=$2,provider_refund_digest=NULLIF($3,''),version=$4,updated_at=$5 WHERE id=$1 AND version=$6`, v.ID, v.Status, providerDigest, v.Version, v.UpdatedAt, v.Version-1)
+	if e != nil || result.RowsAffected() != 1 {
+		if e != nil {
+			return domain.Refund{}, mapError(e)
+		}
+		return domain.Refund{}, paymentport.ErrConflict
+	}
+	if e = recordSettlement(ctx, t, "callback", "refund", v.ID, receipt, providerDigest, v.UpdatedAt); e != nil {
+		return domain.Refund{}, e
+	}
+	if e = appendFacts(ctx, t, "payment.refund_settled", v.ID, "provider", v.UpdatedAt); e != nil {
+		return domain.Refund{}, e
+	}
+	return v, nil
+}
+
+func recordSettlement(ctx context.Context, t pgx.Tx, op, kind string, id int64, key, payload string, now time.Time) error {
+	k := sha256.Sum256([]byte(key))
+	p := sha256.Sum256([]byte(payload))
+	var oldPayload []byte
+	var oldKind string
+	var oldID int64
+	err := t.QueryRow(ctx, `SELECT payload_digest,result_kind,result_id FROM payment_operation_receipts WHERE operation=$1 AND actor_scope='provider' AND key_digest=$2`, op, k[:]).Scan(&oldPayload, &oldKind, &oldID)
+	if err == nil {
+		if string(oldPayload) != string(p[:]) || oldKind != kind || oldID != id {
+			return paymentport.ErrConflict
+		}
+		return nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return mapError(err)
+	}
+	_, err = t.Exec(ctx, `INSERT INTO payment_operation_receipts(operation,actor_scope,key_digest,payload_digest,result_kind,result_id,created_at)VALUES($1,'provider',$2,$3,$4,$5,$6)`, op, k[:], p[:], kind, id, now)
+	return mapError(err)
+}
+func appendFacts(ctx context.Context, t pgx.Tx, event string, id int64, actor string, now time.Time) error {
+	payload, _ := json.Marshal(map[string]any{"aggregate_id": id, "occurred_at": now.UTC()})
+	if _, e := t.Exec(ctx, `INSERT INTO payment_audit_events(event_type,aggregate_id,actor_scope,payload,occurred_at)VALUES($1,$2,$3,$4,$5)`, event, id, actor, payload, now); e != nil {
+		return e
+	}
+	idempotency := event + ":" + strconv.FormatInt(id, 10) + ":" + hashBytes(payload)
+	_, e := t.Exec(ctx, `INSERT INTO payment_outbox(event_type,idempotency_key,aggregate_id,payload,occurred_at)VALUES($1,$2,$3,$4,$5)`, event, idempotency, id, payload, now)
+	return e
+}
+func effectNumeric(v string) (int64, error) {
+	if !strings.HasPrefix(v, "eer_") {
+		return 0, paymentport.ErrConflict
+	}
+	id, e := strconv.ParseInt(strings.TrimPrefix(v, "eer_"), 10, 64)
+	if e != nil || id < 1 {
+		return 0, paymentport.ErrConflict
+	}
+	return id, nil
+}
+func mapError(e error) error {
+	if e == nil {
+		return nil
+	}
+	if errors.Is(e, pgx.ErrNoRows) {
+		return paymentport.ErrNotFound
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(e, &pgErr) && (pgErr.Code == "23505" || pgErr.Code == "23514" || pgErr.Code == "23503") {
+		return paymentport.ErrConflict
+	}
+	return e
+}
+
+func hashBytes(value []byte) string {
+	digest := sha256.Sum256(value)
+	return fmt.Sprintf("%x", digest[:8])
+}

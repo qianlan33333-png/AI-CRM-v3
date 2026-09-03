@@ -31,6 +31,7 @@ type Runtime struct {
 	Effects             Effects
 	TagCatalog          TagCatalogProvider
 	Survey              Survey
+	WeChatPay           WeChatPay
 	WorkerOwner         string
 	WorkerLimit         int
 	CustomerSyncTrigger string
@@ -81,6 +82,13 @@ type TagCatalogProvider struct {
 	Permission string
 }
 
+type WeChatPay struct {
+	Enabled                                     bool
+	AppID, AppScope, MerchantID, MerchantSerial string
+	PrivateKeyPath, PlatformCertPath            string
+	APIV3Key                                    string
+}
+
 func Load() (Runtime, error) {
 	databaseURL, err := DatabaseURL()
 	if err != nil {
@@ -117,6 +125,16 @@ func Load() (Runtime, error) {
 	if cfg.TagCatalog.Enabled, err = strictBool("AICRM_WECOM_TAG_CATALOG_PROVIDER_ENABLED", false); err != nil {
 		return Runtime{}, err
 	}
+	if cfg.WeChatPay.Enabled, err = strictBool("AICRM_WECHAT_PAY_PROVIDER_ENABLED", false); err != nil {
+		return Runtime{}, err
+	}
+	cfg.WeChatPay.AppID = os.Getenv("AICRM_WECHAT_PAY_APP_ID")
+	cfg.WeChatPay.AppScope = os.Getenv("AICRM_WECHAT_PAY_APP_SCOPE")
+	cfg.WeChatPay.MerchantID = os.Getenv("AICRM_WECHAT_PAY_MERCHANT_ID")
+	cfg.WeChatPay.MerchantSerial = os.Getenv("AICRM_WECHAT_PAY_MERCHANT_SERIAL")
+	cfg.WeChatPay.PrivateKeyPath = os.Getenv("AICRM_WECHAT_PAY_PRIVATE_KEY_PATH")
+	cfg.WeChatPay.PlatformCertPath = os.Getenv("AICRM_WECHAT_PAY_PLATFORM_CERT_PATH")
+	cfg.WeChatPay.APIV3Key = os.Getenv("AICRM_WECHAT_PAY_API_V3_KEY")
 	cfg.TagCatalog.Permission = os.Getenv("AICRM_WECOM_TAG_CATALOG_PROVIDER_PERMISSION")
 	if cfg.WeCom.Enabled, err = strictBool("AICRM_WECOM_ENABLED", false); err != nil {
 		return Runtime{}, err
@@ -197,6 +215,17 @@ func Load() (Runtime, error) {
 	if cfg.TagCatalog.Enabled {
 		if !cfg.WeCom.Enabled || cfg.TagCatalog.Permission != "catalog-read-authorized" {
 			return Runtime{}, errors.New("enabled tag catalog provider requires WeCom and explicit permission")
+		}
+	}
+	if cfg.WeChatPay.Enabled {
+		values := []string{cfg.WeChatPay.AppID, cfg.WeChatPay.AppScope, cfg.WeChatPay.MerchantID, cfg.WeChatPay.MerchantSerial, cfg.WeChatPay.PrivateKeyPath, cfg.WeChatPay.PlatformCertPath, cfg.WeChatPay.APIV3Key}
+		if nonEmptyCount(values) != len(values) || len(cfg.WeChatPay.APIV3Key) != 32 || !strings.HasPrefix(cfg.WeChatPay.AppScope, "wechat-app:") {
+			return Runtime{}, errors.New("enabled WeChat Pay configuration is incomplete")
+		}
+		for _, value := range values {
+			if strings.TrimSpace(value) != value {
+				return Runtime{}, errors.New("invalid enabled WeChat Pay configuration")
+			}
 		}
 	}
 	if cfg.GroupOps.WebhookSecret != "" && (strings.TrimSpace(cfg.GroupOps.WebhookSecret) != cfg.GroupOps.WebhookSecret || len(cfg.GroupOps.WebhookSecret) < 32 || len(cfg.GroupOps.WebhookSecret) > 4096) {

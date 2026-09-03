@@ -13,6 +13,10 @@ sources:
     commit: 69c5282fb38058f2cc9872b6feb3f0f54bfad64b
     role: admin_and_sidebar_shell_reference
     runtime_dependency_allowed: false
+  - repository: qianlan33333-png/AI-CRM-v2
+    commit: 6bfbe5816bb89913c70adaca87d6a486260e016e
+    role: transaction_behavior_tests_and_leaf_protocol_reference
+    runtime_dependency_allowed: false
 rules:
   preserve_source_repositories: true
   whitelist_migration_only: true

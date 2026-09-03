@@ -29,11 +29,15 @@ type Owner string
 type Kind string
 
 const (
-	OwnerOutbound       Owner = "outbound"
-	KindOutboundMessage Kind  = "outbound_message"
-	KindOutboundMedia   Kind  = "outbound_media"
-	KindWeComTagCatalog Kind  = "wecom_tag_catalog"
-	KindGroupMessage    Kind  = "group_message"
+	OwnerOutbound        Owner = "outbound"
+	OwnerPayment         Owner = "payment"
+	KindOutboundMessage  Kind  = "outbound_message"
+	KindOutboundMedia    Kind  = "outbound_media"
+	KindWeComTagCatalog  Kind  = "wecom_tag_catalog"
+	KindGroupMessage     Kind  = "group_message"
+	KindWeChatPayPrepay  Kind  = "wechat_pay_prepay_v1"
+	KindWeChatPayRefund  Kind  = "wechat_pay_refund_v1"
+	KindWeChatShopRefund Kind  = "wechat_shop_refund_v1"
 )
 
 type State string
@@ -57,7 +61,9 @@ type Envelope struct {
 }
 
 func (value Envelope) Valid() bool {
-	return value.Owner == OwnerOutbound && (value.Kind == KindOutboundMessage || value.Kind == KindOutboundMedia || value.Kind == KindWeComTagCatalog || value.Kind == KindGroupMessage) && ValidDigest(value.SourceRefDigest) && ValidDigest(value.TargetRefDigest) && ValidDigest(value.PayloadDigest) && ValidDigest(value.PolicyVersionHash)
+	kindValid := value.Owner == OwnerOutbound && (value.Kind == KindOutboundMessage || value.Kind == KindOutboundMedia || value.Kind == KindWeComTagCatalog || value.Kind == KindGroupMessage) ||
+		value.Owner == OwnerPayment && (value.Kind == KindWeChatPayPrepay || value.Kind == KindWeChatPayRefund || value.Kind == KindWeChatShopRefund)
+	return kindValid && ValidDigest(value.SourceRefDigest) && ValidDigest(value.TargetRefDigest) && ValidDigest(value.PayloadDigest) && ValidDigest(value.PolicyVersionHash)
 }
 func (value Envelope) Fingerprint() Digest {
 	if !value.Valid() {

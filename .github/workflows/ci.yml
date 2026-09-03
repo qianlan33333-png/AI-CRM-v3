@@ -90,7 +90,7 @@ jobs:
       - name: Check repository
         run: make check
       - name: Race-check security and identity boundaries
-        run: go test -race ./cmd/aicrm ./internal/access/... ./internal/identity/... ./internal/wecom/... ./internal/externaleffects/... ./internal/platform/jobqueue/... ./internal/media/... ./internal/tag/... ./internal/groupops/... ./internal/outbound ./internal/automation/...
+        run: go test -race ./cmd/aicrm ./cmd/migrate-commerce-history ./internal/access/... ./internal/identity/... ./internal/wecom/... ./internal/externaleffects/... ./internal/platform/jobqueue/... ./internal/media/... ./internal/tag/... ./internal/groupops/... ./internal/outbound ./internal/automation/... ./internal/order/... ./internal/payment/...
 
   deploy:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -137,6 +137,7 @@ jobs:
           go build -trimpath -ldflags "-s -w" -o release/bin/migrate-river ./cmd/migrate-river
           go build -trimpath -ldflags "-s -w" -o release/bin/migrate-phone-identities ./cmd/migrate-phone-identities
           go build -trimpath -ldflags "-s -w" -o release/bin/migrate-survey-v2 ./cmd/migrate-survey-v2
+          go build -trimpath -ldflags "-s -w" -o release/bin/migrate-commerce-history ./cmd/migrate-commerce-history
           npm ci
           npm run version:check
           node scripts/validate-openapi.mjs
