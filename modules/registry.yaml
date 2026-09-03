@@ -22,11 +22,11 @@ modules:
     owner: crm-connectors
     dependencies: [platform, access, identity]
   - name: order
-    status: contracted
+    status: implemented
     owner: crm-commerce
     dependencies: [platform, customer, identity]
   - name: payment
-    status: contracted
+    status: implemented
     owner: crm-commerce
     dependencies: [platform, order, identity]
   - name: webshell

@@ -31,6 +31,7 @@ import (
 	groupopsstore "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/store"
 	identityapp "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/app"
 	identityhttp "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/http"
+	identityprovider "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/provider"
 	identityquery "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/query"
 	identitystore "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/store"
 	media "github.com/qianlan33333-png/AI-CRM-v3/internal/media"
@@ -137,7 +138,15 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err = river.AddWorkerSafely[wecom.CustomerSyncJobArgs](effectWorkers, customerSyncWorker); err != nil {
 		return fail(err)
 	}
+	paymentReconciliationWorker := payment.NewReconciliationWorker()
+	if err = river.AddWorkerSafely[payment.ReconciliationJobArgs](effectWorkers, paymentReconciliationWorker); err != nil {
+		return fail(err)
+	}
 	effectClient, err := platformjobqueue.NewInsertClient(pool.Native(), effectWorkers)
+	if err != nil {
+		return fail(err)
+	}
+	paymentReconciliationEnqueuer, err := payment.NewRiverReconciliationEnqueuer(effectClient)
 	if err != nil {
 		return fail(err)
 	}
@@ -149,7 +158,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
-	effectsRuntime, err := platformjobqueue.NewRuntime(pool.Native(), effectWorkers, platformjobqueue.OutboundQueue, wecom.CustomerSyncQueue)
+	effectsRuntime, err := platformjobqueue.NewRuntime(pool.Native(), effectWorkers, platformjobqueue.OutboundQueue, wecom.CustomerSyncQueue, payment.ReconciliationQueue)
 	if err != nil {
 		return fail(err)
 	}
@@ -237,13 +246,6 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	}
 	outboundCompletionSink, err := outbound.NewCompletionRouter(tagCompletionSink, groupOpsCompletionSink)
 	if err != nil {
-		return fail(err)
-	}
-	paymentCompletionSink, err := payment.NewCompletionSink(paymentRepository)
-	if err != nil {
-		return fail(err)
-	}
-	if err = effectRepository.SetCompletionSink(composedCompletionRouter{outbound: outboundCompletionSink, payment: paymentCompletionSink}); err != nil {
 		return fail(err)
 	}
 	if cfg.Survey.DataKey == "" {
@@ -365,6 +367,22 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return fail(err)
 	}
 	paymentService := paymentapp.NewService(uow, paymentRepository, orderService, paymentSession, effectRepository, effectRepository)
+	if err = paymentService.SetCheckoutProductReader(productTargets); err != nil {
+		return fail(err)
+	}
+	if err = paymentService.SetReconciliationEnqueuer(paymentReconciliationEnqueuer); err != nil {
+		return fail(err)
+	}
+	paymentCompletionSink, err := payment.NewCompletionSink(paymentRepository, paymentReconciliationEnqueuer, orderService)
+	if err != nil {
+		return fail(err)
+	}
+	if err = effectRepository.SetCompletionSink(composedCompletionRouter{outbound: outboundCompletionSink, payment: paymentCompletionSink}); err != nil {
+		return fail(err)
+	}
+	if err = paymentReconciliationWorker.BindService(paymentService); err != nil {
+		return fail(err)
+	}
 	var wechatPayAdapter *paymentprovider.WeChatPay
 	var paymentCallbackVerifier *paymentprovider.CallbackVerifier
 	if cfg.WeChatPay.Enabled {
@@ -415,6 +433,15 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	paymentHandler, err := paymenthttp.NewHandler(paymentService, paymentCallbackVerifier, requestSecurity, cfg.WeChatPay.Enabled, cfg.WeChatShop.Enabled)
 	if err != nil {
 		return fail(err)
+	}
+	if cfg.WeChatPay.Enabled {
+		miniProgramVerifier, verifyErr := identityprovider.NewWeChatMiniProgram(identityprovider.WeChatMiniProgramConfig{AppID: cfg.WeChatPay.AppID, AppSecret: cfg.WeChatPay.AppSecret, APIBaseURL: "https://api.weixin.qq.com"}, &http.Client{Timeout: 10 * time.Second})
+		if verifyErr != nil {
+			return fail(verifyErr)
+		}
+		if err = paymentHandler.SetTrustedSessionIssuer(miniProgramVerifier, paymentSession); err != nil {
+			return fail(err)
+		}
 	}
 	if cfg.WeChatShop.Enabled {
 		shopCredential, credentialErr := paymentprovider.NewShopCallbackCredential(cfg.WeChatShop.AppID, cfg.WeChatShop.CallbackToken, cfg.WeChatShop.CallbackEncodingAESKey)
@@ -542,10 +569,12 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	adminAPIs.Handle("/api/admin/alipay/transactions", orderHandler)
 	adminAPIs.Handle("/api/admin/wechat-pay/orders", orderHandler)
 	adminAPIs.Handle("/api/admin/wechat-pay/orders/", paymentHandler)
+	adminAPIs.Handle("/api/admin/wechat-shop/refunds/", paymentHandler)
 	adminAPIs.Handle("/api/admin/wechat-pay/order-exports", orderHandler)
 	adminAPIs.Handle("/api/admin/payments/", paymentHandler)
 	adminAPIs.Handle("/api/v1/wechat-pay/", paymentHandler)
 	adminAPIs.Handle("/api/public/wechat-pay/", paymentHandler)
+	adminAPIs.Handle("/api/public/wechat-shop/", paymentHandler)
 	adminAPIs.Handle("/api/v1/products", productBindings.Products)
 	adminAPIs.Handle("/api/v1/products/", productBindings.Products)
 	adminAPIs.Handle("/api/admin/wechat-pay/products", productBindings.Products)
@@ -573,7 +602,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 			return checkErr
 		}
 		var complete bool
-		checkErr := pool.Native().QueryRow(readinessContext, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['0001','0002','0003','0004','0005','0006','0007','0008','0009','0010','0011','0012','0013','0014','0016','0017','0018','0019','0020','0021','0022','0023']) AS required(version) WHERE NOT EXISTS (SELECT 1 FROM platform_schema_migrations applied WHERE applied.version=required.version))`).Scan(&complete)
+		checkErr := pool.Native().QueryRow(readinessContext, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['0001','0002','0003','0004','0005','0006','0007','0008','0009','0010','0011','0012','0013','0014','0016','0017','0018','0019','0020','0021','0022','0023','0024']) AS required(version) WHERE NOT EXISTS (SELECT 1 FROM platform_schema_migrations applied WHERE applied.version=required.version))`).Scan(&complete)
 		if checkErr != nil || !complete {
 			return errors.New("database schema is not ready")
 		}
@@ -779,7 +808,9 @@ func routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, acce
 	mux.Handle("/api/admin/payments/", identity)
 	mux.Handle("/api/v1/wechat-pay/", identity)
 	mux.Handle("/api/public/wechat-pay/", identity)
+	mux.Handle("/api/public/wechat-shop/", identity)
 	mux.Handle("/api/admin/wechat-pay/orders/", identity)
+	mux.Handle("/api/admin/wechat-shop/refunds/", identity)
 	mux.Handle("/api/admin/wechat-pay/order-exports", identity)
 	mux.Handle("/api/admin/operation-cycles/", identity)
 	mux.Handle("/api/operation-cycles/", identity)

@@ -128,7 +128,7 @@ func (h *Handler) orderTail(w http.ResponseWriter, r *http.Request, tail string)
 	if len(parts) == 2 && parts[1] == "items" {
 		items := make([]map[string]any, 0, len(order.Items))
 		for _, item := range order.Items {
-			items = append(items, map[string]any{"line_no": item.LineNo, "product_id": item.ProductID, "product_code": item.ProductCode, "name": item.ProductName, "unit_amount_minor": item.UnitAmountMinor, "quantity": item.Quantity, "line_amount_minor": item.LineAmountMinor, "status": order.Status, "created_at": order.CreatedAt})
+			items = append(items, map[string]any{"line_no": item.LineNo, "product_id": item.ProductID, "product_version": item.ProductVersion, "product_code": item.ProductCode, "name": item.ProductName, "unit_amount_minor": item.UnitAmountMinor, "quantity": item.Quantity, "line_amount_minor": item.LineAmountMinor, "status": order.Status, "created_at": order.CreatedAt})
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"items": items})
 		return

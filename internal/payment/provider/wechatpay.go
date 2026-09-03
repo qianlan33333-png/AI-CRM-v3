@@ -222,7 +222,9 @@ func (provider *WeChatPay) Execute(ctx context.Context, envelope effectport.Enve
 		return effectport.AdapterResult{Completion: effectport.StateExecuted, ReceiptDigest: effectport.Hash("wechatpay.executed", string(envelope.Fingerprint()), hashBytes(response.Body)), CallAttempted: true, RealExternalCallExecuted: true, Artifact: artifact}, nil
 	}
 	var decoded struct {
-		RefundID, OutRefundNo, Status string
+		RefundID    string `json:"refund_id"`
+		OutRefundNo string `json:"out_refund_no"`
+		Status      string `json:"status"`
 	}
 	if json.Unmarshal(response.Body, &decoded) != nil || decoded.RefundID == "" || decoded.OutRefundNo != material.Intent.RefundNo || decoded.Status == "" {
 		return effectport.AdapterResult{Completion: effectport.StateUnknown, ReceiptDigest: receipt("wechatpay.invalid-refund-response", envelope, attempt), CallAttempted: true, RealExternalCallExecuted: true}, nil

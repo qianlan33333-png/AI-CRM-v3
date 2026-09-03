@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,20 +12,24 @@ import (
 	"time"
 
 	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
+	orderdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/order/domain"
 	orderport "github.com/qianlan33333-png/AI-CRM-v3/internal/order/port"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/payment/domain"
 	paymentport "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/port"
 	paymentprovider "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/provider"
 	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
+	productport "github.com/qianlan33333-png/AI-CRM-v3/internal/product/port"
 )
 
 type Store interface {
 	CreatePayment(context.Context, domain.Payment, [32]byte, [32]byte, string) (domain.Payment, bool, error)
+	ReplayPayment(context.Context, [32]byte, [32]byte, string) (domain.Payment, bool, error)
 	BindPaymentEffect(context.Context, domain.Payment, effectport.PaymentV1Intent, map[string]any) (domain.Payment, error)
 	GetPayment(context.Context, int64, bool) (domain.Payment, error)
 	GetHandoff(context.Context, int64) (paymentport.Handoff, error)
 	ReservedRefundMinor(context.Context, int64) (int64, error)
 	CreateRefund(context.Context, domain.Refund, [32]byte, [32]byte, string) (domain.Refund, bool, error)
+	ReplayRefund(context.Context, [32]byte, [32]byte, string) (domain.Refund, bool, error)
 	BindRefundEffect(context.Context, domain.Refund, effectport.PaymentV1Intent, map[string]any) (domain.Refund, error)
 	GetRefund(context.Context, int64, bool) (domain.Refund, error)
 	GetRefundByProviderReference(context.Context, domain.Provider, string, bool) (domain.Refund, error)
@@ -38,7 +43,7 @@ type Store interface {
 	UpdateRefundSettlement(context.Context, domain.Refund, string, string) (domain.Refund, error)
 	GetPaymentByMerchant(context.Context, string, bool) (domain.Payment, error)
 	GetRefundByNumber(context.Context, string, bool) (domain.Refund, error)
-	ClaimCallback(context.Context, string, [32]byte, [32]byte, string, int64) (bool, error)
+	ClaimCallback(context.Context, string, [32]byte, [32]byte, string, string, int64) (bool, error)
 	ImportTerminalPayment(context.Context, domain.Payment, [32]byte, string) (domain.Payment, error)
 	ImportTerminalRefund(context.Context, domain.Refund, [32]byte, string) (domain.Refund, error)
 }
@@ -47,12 +52,30 @@ type Service struct {
 	uow            platformport.UnitOfWork
 	store          Store
 	orders         orderport.PaymentCoordinator
-	sessions       paymentport.SessionConsumer
+	sessions       paymentport.SessionLifecycle
 	effects        effectport.TransactionalAccepter
 	effectReader   effectport.Reader
 	shopReconciler paymentport.ShopRefundReconciler
 	payReconciler  paymentport.WeChatPayReconciler
+	reconcileJobs  paymentport.ReconciliationEnqueuer
+	products       productport.CheckoutProductReader
 	now            func() time.Time
+}
+
+func (s *Service) SetReconciliationEnqueuer(enqueuer paymentport.ReconciliationEnqueuer) error {
+	if s == nil || enqueuer == nil {
+		return paymentport.ErrInvalid
+	}
+	s.reconcileJobs = enqueuer
+	return nil
+}
+
+func (s *Service) SetCheckoutProductReader(reader productport.CheckoutProductReader) error {
+	if s == nil || reader == nil {
+		return paymentport.ErrInvalid
+	}
+	s.products = reader
+	return nil
 }
 
 func (s *Service) SetShopReconciler(reconciler paymentport.ShopRefundReconciler) error {
@@ -71,7 +94,7 @@ func (s *Service) SetWeChatPayReconciler(reconciler paymentport.WeChatPayReconci
 	return nil
 }
 
-func NewService(uow platformport.UnitOfWork, store Store, orders orderport.PaymentCoordinator, sessions paymentport.SessionConsumer, effects effectport.TransactionalAccepter, readers ...effectport.Reader) *Service {
+func NewService(uow platformport.UnitOfWork, store Store, orders orderport.PaymentCoordinator, sessions paymentport.SessionLifecycle, effects effectport.TransactionalAccepter, readers ...effectport.Reader) *Service {
 	service := &Service{uow: uow, store: store, orders: orders, sessions: sessions, effects: effects, now: time.Now}
 	if len(readers) > 0 {
 		service.effectReader = readers[0]
@@ -80,20 +103,54 @@ func NewService(uow platformport.UnitOfWork, store Store, orders orderport.Payme
 }
 
 func (s *Service) Create(ctx context.Context, c paymentport.CreateCommand) (domain.Payment, error) {
-	if !s.ready() || c.OrderID < 1 || len(c.SessionToken) < 20 || len(c.SessionToken) > 100 || !validScope(c.ActorScope) || !validKey(c.IdempotencyKey) {
+	fromExistingOrder := c.OrderID > 0 && c.ProductID == 0 && c.ProductType == ""
+	fromProduct := c.OrderID == 0 && c.ProductID > 0 && (c.ProductType == string(productport.ProductOptionStandard) || c.ProductType == string(productport.ProductOptionServicePeriod))
+	if !s.ready() || (!fromExistingOrder && !fromProduct) || fromProduct && s.products == nil || len(c.SessionToken) < 20 || len(c.SessionToken) > 100 || !validScope(c.ActorScope) || !validKey(c.IdempotencyKey) {
 		return domain.Payment{}, paymentport.ErrInvalid
 	}
 	now := s.now().UTC()
+	sessionDigest := sha256.Sum256([]byte(c.SessionToken))
+	merchantDigest := sha256.Sum256([]byte("payment.checkout.v1\x00" + c.SessionToken + "\x00" + c.IdempotencyKey))
+	merchantOrderNo := "v3pay_" + hex.EncodeToString(merchantDigest[:16])
 	payload, _ := json.Marshal(c)
 	keyDigest := sha256.Sum256([]byte(c.IdempotencyKey))
 	payloadDigest := sha256.Sum256(payload)
 	var result domain.Payment
 	err := s.uow.Within(ctx, func(tx context.Context) error {
-		actor, err := s.sessions.ConsumeWithin(tx, c.SessionToken, now)
+		actor, err := s.sessions.LookupWithin(tx, c.SessionToken, now)
 		if err != nil {
 			return err
 		}
-		order, err := s.orders.ReservePaymentWithin(tx, c.OrderID)
+		replay, found, err := s.store.ReplayPayment(tx, keyDigest, payloadDigest, c.ActorScope)
+		if err != nil {
+			return err
+		}
+		if found {
+			if (fromExistingOrder && replay.OrderID != c.OrderID) || (fromProduct && replay.MerchantOrderNo != merchantOrderNo) || replay.PayerIdentityID != actor.PayerIdentityID || replay.PayerCustomerID != actor.PayerCustomerID || replay.BeneficiaryCustomerID != actor.BeneficiaryCustomerID {
+				return paymentport.ErrConflict
+			}
+			result = replay
+			return nil
+		}
+		var order orderdomain.Snapshot
+		if fromExistingOrder {
+			order, err = s.orders.ReservePaymentWithin(tx, c.OrderID)
+		} else {
+			product, productErr := s.products.ReadCheckoutProductWithin(tx, productport.ProductOptionType(c.ProductType), productport.ID(c.ProductID))
+			if productErr != nil || int64(product.ID) != c.ProductID || product.ProductType != productport.ProductOptionType(c.ProductType) || product.PriceMinor < 1 || product.Currency != "CNY" || product.Version < 1 {
+				if productErr != nil {
+					return productErr
+				}
+				return paymentport.ErrConflict
+			}
+			order, err = s.orders.CreatePaymentOrderWithin(tx, orderport.PaymentOrderCommand{
+				Provider: orderdomain.ProviderWeChatPay, MerchantOrderNo: merchantOrderNo,
+				PayerCustomerID: actor.PayerCustomerID, BeneficiaryCustomerID: actor.BeneficiaryCustomerID,
+				ProductID: int64(product.ID), ProductCode: product.Code, ProductName: product.Name,
+				ProductVersion: product.Version, UnitAmountMinor: product.PriceMinor, Currency: product.Currency,
+				ActorScope: "payment-session:" + hex.EncodeToString(sessionDigest[:]), IdempotencyKey: c.IdempotencyKey,
+			})
+		}
 		if err != nil {
 			return err
 		}
@@ -104,9 +161,19 @@ func (s *Service) Create(ctx context.Context, c paymentport.CreateCommand) (doma
 		if err != nil {
 			return err
 		}
-		payment, _, err = s.store.CreatePayment(tx, payment, keyDigest, payloadDigest, c.ActorScope)
+		var created bool
+		payment, created, err = s.store.CreatePayment(tx, payment, keyDigest, payloadDigest, c.ActorScope)
 		if err != nil {
 			return err
+		}
+		if created {
+			consumed, consumeErr := s.sessions.ConsumeWithin(tx, c.SessionToken, now)
+			if consumeErr != nil {
+				return consumeErr
+			}
+			if consumed != actor {
+				return paymentport.ErrConflict
+			}
 		}
 		kind := effectport.KindWeChatPayPrepay
 		if payment.Provider == domain.ProviderWeChatShop {
@@ -147,6 +214,26 @@ func (s *Service) RequestRefund(ctx context.Context, c paymentport.RefundCommand
 	if !s.ready() || c.PaymentID < 1 || c.AmountMinor < 1 || !validScope(c.ActorScope) || !validKey(c.IdempotencyKey) {
 		return domain.Refund{}, paymentport.ErrInvalid
 	}
+	payload, _ := json.Marshal(c)
+	keyDigest := sha256.Sum256([]byte(c.IdempotencyKey))
+	payloadDigest := sha256.Sum256(payload)
+	var result domain.Refund
+	err := s.uow.Within(ctx, func(tx context.Context) error {
+		var found bool
+		var replayErr error
+		result, found, replayErr = s.store.ReplayRefund(tx, keyDigest, payloadDigest, c.ActorScope)
+		if replayErr != nil || found {
+			return replayErr
+		}
+		result = domain.Refund{}
+		return nil
+	})
+	if err != nil {
+		return domain.Refund{}, classify(err)
+	}
+	if result.ID > 0 {
+		return result, nil
+	}
 	if c.ProviderOrderID != "" {
 		if s.shopReconciler == nil || !validShopRefundCommand(c) {
 			return domain.Refund{}, paymentport.ErrInvalid
@@ -167,17 +254,24 @@ func (s *Service) RequestRefund(ctx context.Context, c paymentport.RefundCommand
 		}
 	}
 	now := s.now().UTC()
-	payload, _ := json.Marshal(c)
-	keyDigest := sha256.Sum256([]byte(c.IdempotencyKey))
-	payloadDigest := sha256.Sum256(payload)
-	var result domain.Refund
-	err := s.uow.Within(ctx, func(tx context.Context) error {
+	err = s.uow.Within(ctx, func(tx context.Context) error {
 		payment, err := s.store.GetPayment(tx, c.PaymentID, true)
 		if err != nil {
 			return err
 		}
 		if payment.Provider == domain.ProviderWeChatShop && !validShopRefundCommand(c) {
 			return paymentport.ErrInvalid
+		}
+		replay, found, err := s.store.ReplayRefund(tx, keyDigest, payloadDigest, c.ActorScope)
+		if err != nil {
+			return err
+		}
+		if found {
+			if replay.PaymentID != payment.ID || replay.Provider != payment.Provider {
+				return paymentport.ErrConflict
+			}
+			result = replay
+			return nil
 		}
 		reserved, err := s.store.ReservedRefundMinor(tx, payment.ID)
 		if err != nil {
@@ -235,14 +329,13 @@ func (s *Service) GetPayment(ctx context.Context, id int64) (domain.Payment, err
 }
 
 func (s *Service) GetCheckout(ctx context.Context, merchantOrderNo, sessionToken string) (paymentport.Handoff, error) {
-	reader, ok := s.sessions.(paymentport.SessionReader)
-	if !ok || s == nil || s.uow == nil || s.store == nil || !validScope(merchantOrderNo) || len(sessionToken) < 20 || len(sessionToken) > 100 {
+	if s == nil || s.uow == nil || s.store == nil || s.sessions == nil || !validScope(merchantOrderNo) || len(sessionToken) < 20 || len(sessionToken) > 100 {
 		return paymentport.Handoff{}, paymentport.ErrInvalid
 	}
 	now := s.now().UTC()
 	var out paymentport.Handoff
 	err := s.uow.Within(ctx, func(tx context.Context) error {
-		actor, err := reader.LookupWithin(tx, sessionToken, now)
+		actor, err := s.sessions.LookupWithin(tx, sessionToken, now)
 		if err != nil {
 			return err
 		}
@@ -376,7 +469,7 @@ func (s *Service) ReconcileShopRefund(ctx context.Context, refundID int64) (doma
 		if locked.ProviderRefundReference != query.AfterSaleID || (locked.Status != domain.RefundEffectAccepted && locked.Status != domain.RefundOutcomeUnknown) {
 			return paymentport.ErrConflict
 		}
-		_, inner = s.store.RecordPaymentReconciliation(tx, locked.ID, query.EvidenceDigest, outcome, s.now().UTC())
+		_, inner = s.store.RecordReconciliation(tx, locked.ID, query.EvidenceDigest, outcome, s.now().UTC())
 		if inner != nil || outcome != "refunded" {
 			current = locked
 			return inner
@@ -401,10 +494,9 @@ func (s *Service) ReconcileShopRefund(ctx context.Context, refundID int64) (doma
 }
 
 func (s *Service) ApplyVerifiedShopCallback(ctx context.Context, callback paymentport.ShopRefundCallback) error {
-	if s == nil || s.uow == nil || s.store == nil || s.shopReconciler == nil || callback.AfterSaleID == "" || callback.ProviderOrderID == "" || callback.Status == "" || callback.EventDigest == ([32]byte{}) || callback.PayloadDigest == ([32]byte{}) || callback.OccurredAt.IsZero() {
+	if s == nil || s.uow == nil || s.store == nil || s.shopReconciler == nil || s.reconcileJobs == nil || callback.AfterSaleID == "" || callback.ProviderOrderID == "" || callback.Status == "" || callback.EventDigest == ([32]byte{}) || callback.PayloadDigest == ([32]byte{}) || callback.OccurredAt.IsZero() {
 		return paymentport.ErrInvalid
 	}
-	var refundID int64
 	err := s.uow.Within(ctx, func(tx context.Context) error {
 		refund, inner := s.store.GetRefundByProviderReference(tx, domain.ProviderWeChatShop, callback.AfterSaleID, true)
 		if inner != nil {
@@ -417,15 +509,13 @@ func (s *Service) ApplyVerifiedShopCallback(ctx context.Context, callback paymen
 			}
 			return paymentport.ErrConflict
 		}
-		_, inner = s.store.ClaimCallback(tx, "wechat_shop", callback.EventDigest, callback.PayloadDigest, "refund", refund.ID)
-		refundID = refund.ID
-		return inner
+		replay, inner := s.store.ClaimCallback(tx, "wechat_shop", callback.EventDigest, callback.PayloadDigest, "refund", "query_required", refund.ID)
+		if inner != nil || replay {
+			return inner
+		}
+		return s.reconcileJobs.EnqueueWithin(tx, paymentport.ReconciliationTarget{Provider: domain.ProviderWeChatShop, RefundID: refund.ID})
 	})
-	if err != nil {
-		return classify(err)
-	}
-	_, err = s.ReconcileShopRefund(ctx, refundID)
-	return err
+	return classify(err)
 }
 
 func (s *Service) ReconcileWeChatPayPayment(ctx context.Context, paymentID int64) (domain.Payment, error) {
@@ -455,23 +545,30 @@ func (s *Service) ReconcileWeChatPayPayment(ctx context.Context, paymentID int64
 		return domain.Payment{}, paymentport.ErrConflict
 	}
 	outcome := "pending"
-	if query.Status == "SUCCESS" {
+	switch query.Status {
+	case "SUCCESS":
 		if !effectport.ValidDigest(query.TransactionDigest) {
 			return domain.Payment{}, paymentport.ErrConflict
 		}
 		outcome = "paid"
+	case "CLOSED", "REVOKED", "PAYERROR":
+		outcome = "final_failed"
 	}
 	err = s.uow.Within(ctx, func(tx context.Context) error {
 		locked, inner := s.store.GetPayment(tx, paymentID, true)
 		if inner != nil {
 			return inner
 		}
-		_, inner = s.store.RecordReconciliation(tx, locked.ID, query.EvidenceDigest, outcome, s.now().UTC())
-		if inner != nil || outcome != "paid" || locked.Status == domain.StatusPaid {
+		_, inner = s.store.RecordPaymentReconciliation(tx, locked.ID, query.EvidenceDigest, outcome, s.now().UTC())
+		if inner != nil || outcome == "pending" || locked.Status == domain.StatusPaid || locked.Status == domain.StatusFailed {
 			current = locked
 			return inner
 		}
-		locked, inner = locked.Settle(locked.Version, domain.StatusPaid, query.OccurredAt)
+		next := domain.StatusPaid
+		if outcome == "final_failed" {
+			next = domain.StatusFailed
+		}
+		locked, inner = locked.Settle(locked.Version, next, query.OccurredAt)
 		if inner != nil {
 			return inner
 		}
@@ -480,7 +577,7 @@ func (s *Service) ReconcileWeChatPayPayment(ctx context.Context, paymentID int64
 		if inner != nil {
 			return inner
 		}
-		_, inner = s.orders.SettlePaymentWithin(tx, orderport.PaymentSettlementCommand{OrderID: current.OrderID, OccurredAt: query.OccurredAt, ReceiptKey: receiptKey})
+		_, inner = s.orders.SettlePaymentWithin(tx, orderport.PaymentSettlementCommand{OrderID: current.OrderID, Failed: outcome == "final_failed", OccurredAt: query.OccurredAt, ReceiptKey: receiptKey})
 		return inner
 	})
 	return current, classify(err)
@@ -515,11 +612,14 @@ func (s *Service) ReconcileWeChatPayRefund(ctx context.Context, refundID int64) 
 		return domain.Refund{}, paymentport.ErrConflict
 	}
 	outcome := "pending"
-	if query.Status == "SUCCESS" {
+	switch query.Status {
+	case "SUCCESS":
 		if !effectport.ValidDigest(query.RefundDigest) {
 			return domain.Refund{}, paymentport.ErrConflict
 		}
 		outcome = "refunded"
+	case "CLOSED":
+		outcome = "final_failed"
 	}
 	err = s.uow.Within(ctx, func(tx context.Context) error {
 		locked, inner := s.store.GetRefund(tx, refundID, true)
@@ -527,17 +627,21 @@ func (s *Service) ReconcileWeChatPayRefund(ctx context.Context, refundID int64) 
 			return inner
 		}
 		_, inner = s.store.RecordReconciliation(tx, locked.ID, query.EvidenceDigest, outcome, s.now().UTC())
-		if inner != nil || outcome != "refunded" || locked.Status == domain.RefundCompleted {
+		if inner != nil || outcome == "pending" || locked.Status == domain.RefundCompleted || locked.Status == domain.RefundFinalFailed {
 			current = locked
 			return inner
 		}
-		locked, inner = locked.Complete(locked.Version, domain.RefundCompleted, query.OccurredAt)
+		next := domain.RefundCompleted
+		if outcome == "final_failed" {
+			next = domain.RefundFinalFailed
+		}
+		locked, inner = locked.Complete(locked.Version, next, query.OccurredAt)
 		if inner != nil {
 			return inner
 		}
 		receiptKey := "reconcile:" + string(query.EvidenceDigest)
 		current, inner = s.store.UpdateRefundSettlement(tx, locked, string(query.RefundDigest), receiptKey)
-		if inner != nil {
+		if inner != nil || outcome == "final_failed" {
 			return inner
 		}
 		payment, inner = s.store.GetPayment(tx, current.PaymentID, false)
@@ -549,45 +653,6 @@ func (s *Service) ReconcileWeChatPayRefund(ctx context.Context, refundID int64) 
 	})
 	return current, classify(err)
 }
-func (s *Service) SettlePayment(ctx context.Context, c paymentport.SettlementCommand) (domain.Payment, error) {
-	if !s.ready() || c.PaymentID < 1 || c.ExpectedVersion < 1 || !validKey(c.ReceiptKey) {
-		return domain.Payment{}, paymentport.ErrInvalid
-	}
-	var out domain.Payment
-	err := s.uow.Within(ctx, func(tx context.Context) error {
-		p, e := s.store.GetPayment(tx, c.PaymentID, true)
-		if e != nil {
-			return e
-		}
-		p, e = p.Settle(c.ExpectedVersion, c.Status, c.OccurredAt)
-		if e != nil {
-			return e
-		}
-		out, e = s.store.UpdatePaymentSettlement(tx, p, c.ProviderTransactionDigest, c.ReceiptKey)
-		return e
-	})
-	return out, classify(err)
-}
-func (s *Service) SettleRefund(ctx context.Context, c paymentport.RefundSettlementCommand) (domain.Refund, error) {
-	if !s.ready() || c.RefundID < 1 || c.ExpectedVersion < 1 || !validKey(c.ReceiptKey) {
-		return domain.Refund{}, paymentport.ErrInvalid
-	}
-	var out domain.Refund
-	err := s.uow.Within(ctx, func(tx context.Context) error {
-		r, e := s.store.GetRefund(tx, c.RefundID, true)
-		if e != nil {
-			return e
-		}
-		r, e = r.Complete(c.ExpectedVersion, c.Status, c.OccurredAt)
-		if e != nil {
-			return e
-		}
-		out, e = s.store.UpdateRefundSettlement(tx, r, c.ProviderRefundDigest, c.ReceiptKey)
-		return e
-	})
-	return out, classify(err)
-}
-
 func (s *Service) ApplyVerifiedCallback(ctx context.Context, callback paymentprovider.CallbackResult) error {
 	if !s.ready() || (callback.Kind != "payment" && callback.Kind != "refund") || callback.AmountMinor < 1 || callback.Currency != "CNY" || callback.OccurredAt.IsZero() {
 		return paymentport.ErrInvalid
@@ -601,7 +666,7 @@ func (s *Service) ApplyVerifiedCallback(ctx context.Context, callback paymentpro
 			if payment.AmountMinor != callback.AmountMinor || payment.Currency != callback.Currency {
 				return paymentport.ErrConflict
 			}
-			replay, err := s.store.ClaimCallback(tx, "wechat_pay", callback.EventDigest, callback.BodyDigest, "payment", payment.ID)
+			replay, err := s.store.ClaimCallback(tx, "wechat_pay", callback.EventDigest, callback.BodyDigest, "payment", "settled", payment.ID)
 			if err != nil || replay {
 				return err
 			}
@@ -623,7 +688,7 @@ func (s *Service) ApplyVerifiedCallback(ctx context.Context, callback paymentpro
 		if refund.AmountMinor != callback.AmountMinor {
 			return paymentport.ErrConflict
 		}
-		replay, err := s.store.ClaimCallback(tx, "wechat_pay", callback.EventDigest, callback.BodyDigest, "refund", refund.ID)
+		replay, err := s.store.ClaimCallback(tx, "wechat_pay", callback.EventDigest, callback.BodyDigest, "refund", "settled", refund.ID)
 		if err != nil || replay {
 			return err
 		}

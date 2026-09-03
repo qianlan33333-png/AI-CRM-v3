@@ -2183,7 +2183,6 @@ paths:
       operationId: createWechatShopRefundIntent
       tags: [Transactions]
       security: [{adminSession: [], csrfHeader: []}]
-      parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}]
       requestBody:
         required: true
         content:
@@ -2287,6 +2286,22 @@ paths:
         - {$ref: "#/components/parameters/RequiredIdempotencyKey"}
       requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false}}}}
       responses: {"200": {description: Exact out-refund number queried and locally reconciled}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/v1/wechat-pay/sessions:
+    post:
+      operationId: issueWechatPaySession
+      tags: [Transactions]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [code]
+              properties:
+                code: {type: string, minLength: 1, maxLength: 256}
+      responses: {"201": {description: Provider-verified scoped OneID payment session issued; opaque cookie only}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
   /api/v1/wechat-pay/checkouts:
     post:
       operationId: createWechatPayCheckout
@@ -2300,9 +2315,11 @@ paths:
             schema:
               type: object
               additionalProperties: false
-              required: [order_id]
-              properties: {order_id: {$ref: "#/components/schemas/PositiveID"}}
-      responses: {"202": {description: Payment effect accepted atomically, content: {application/json: {schema: {type: object, required: [payment_id, status, effect_id], properties: {payment_id: {$ref: "#/components/schemas/PositiveID"}, status: {type: string}, effect_id: {$ref: "#/components/schemas/ExternalEffectID"}}}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+              required: [product_id, product_kind]
+              properties:
+                product_id: {$ref: "#/components/schemas/PositiveID"}
+                product_kind: {type: string, enum: [standard, service_period]}
+      responses: {"202": {description: "Order, Payment and effect accepted atomically", content: {application/json: {schema: {type: object, required: [order_id, merchant_order_no, payment_id, status, effect_id], properties: {order_id: {$ref: "#/components/schemas/PositiveID"}, merchant_order_no: {type: string, minLength: 1, maxLength: 200}, payment_id: {$ref: "#/components/schemas/PositiveID"}, status: {type: string}, effect_id: {$ref: "#/components/schemas/ExternalEffectID"}}}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
   /api/v1/wechat-pay/checkouts/{merchant_order_no}:
     get:
       operationId: getWechatPayCheckout
@@ -2431,6 +2448,7 @@ components:
       properties:
         line_no: {type: integer, minimum: 1}
         product_id: {type: [integer, "null"], format: int64, minimum: 1}
+        product_version: {type: [integer, "null"], format: int64, minimum: 1}
         product_code: {type: string, minLength: 1, maxLength: 200}
         name: {type: string, minLength: 1, maxLength: 500}
         unit_amount_minor: {type: integer, format: int64, minimum: 1}

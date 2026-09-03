@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
+	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
 	paymentapp "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/app"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/payment/domain"
 	paymentport "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/port"
@@ -41,6 +42,14 @@ type Application interface {
 	ListOrderEffects(context.Context, domain.Provider, string) ([]paymentport.EffectProjection, error)
 }
 
+type SessionIdentityVerifier interface {
+	VerifyCode(context.Context, string) (identitydomain.VerifiedFact, error)
+}
+
+type TrustedSessionIssuer interface {
+	IssueTrusted(context.Context, paymentsession.IssueCommand) (paymentsession.Issued, error)
+}
+
 type Handler struct {
 	app               Application
 	verifier          *paymentprovider.CallbackVerifier
@@ -48,6 +57,16 @@ type Handler struct {
 	writesEnabled     bool
 	shopWritesEnabled bool
 	shopVerifier      paymentport.ShopCallbackVerifier
+	sessionVerifier   SessionIdentityVerifier
+	sessionIssuer     TrustedSessionIssuer
+}
+
+func (handler *Handler) SetTrustedSessionIssuer(verifier SessionIdentityVerifier, issuer TrustedSessionIssuer) error {
+	if handler == nil || verifier == nil || issuer == nil {
+		return paymentport.ErrInvalid
+	}
+	handler.sessionVerifier, handler.sessionIssuer = verifier, issuer
+	return nil
 }
 
 func (handler *Handler) SetShopCallbackVerifier(verifier paymentport.ShopCallbackVerifier) error {
@@ -73,6 +92,8 @@ func (handler *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 	writer.Header().Set("Cache-Control", "no-store")
 	path := strings.TrimSuffix(request.URL.Path, "/")
 	switch {
+	case path == "/api/v1/wechat-pay/sessions":
+		handler.issueSession(writer, request)
 	case path == "/api/v1/wechat-pay/checkouts":
 		handler.checkout(writer, request)
 	case strings.HasPrefix(path, "/api/v1/wechat-pay/checkouts/"):
@@ -98,6 +119,39 @@ func (handler *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 	default:
 		writeError(writer, http.StatusNotFound, "not_found")
 	}
+}
+
+func (handler *Handler) issueSession(writer http.ResponseWriter, request *http.Request) {
+	if !handler.writesEnabled || handler.sessionVerifier == nil || handler.sessionIssuer == nil {
+		writeError(writer, http.StatusServiceUnavailable, "payment_provider_disabled")
+		return
+	}
+	if request.Method != http.MethodPost {
+		methodNotAllowed(writer, http.MethodPost)
+		return
+	}
+	var body struct {
+		Code string `json:"code"`
+	}
+	if !decodeJSON(writer, request, &body) {
+		return
+	}
+	fact, err := handler.sessionVerifier.VerifyCode(request.Context(), body.Code)
+	if err != nil || !fact.Valid() {
+		writeError(writer, http.StatusUnauthorized, "identity_verification_failed")
+		return
+	}
+	codeDigest := sha256.Sum256([]byte(body.Code))
+	issued, err := handler.sessionIssuer.IssueTrusted(request.Context(), paymentsession.IssueCommand{Fact: fact, IdempotencyKey: "payment-session:" + fmt.Sprintf("%x", codeDigest[:])})
+	if err != nil {
+		resultError(writer, err)
+		return
+	}
+	if err = WriteTrustedSessionCookie(writer, issued); err != nil {
+		writeError(writer, http.StatusServiceUnavailable, "unavailable")
+		return
+	}
+	writeJSON(writer, http.StatusCreated, map[string]any{"expires_at": issued.ExpiresAt, "verified": true})
 }
 
 func (handler *Handler) refunds(writer http.ResponseWriter, request *http.Request) {
@@ -307,18 +361,19 @@ func (handler *Handler) checkout(writer http.ResponseWriter, request *http.Reque
 		return
 	}
 	var body struct {
-		OrderID int64 `json:"order_id"`
+		ProductID   int64  `json:"product_id,omitempty"`
+		ProductType string `json:"product_kind,omitempty"`
 	}
 	if !decodeJSON(writer, request, &body) {
 		return
 	}
 	idempotency := request.Header.Get("Idempotency-Key")
-	payment, err := handler.app.Create(request.Context(), paymentport.CreateCommand{OrderID: body.OrderID, SessionToken: cookie.Value, ActorScope: "public-checkout", IdempotencyKey: idempotency})
+	payment, err := handler.app.Create(request.Context(), paymentport.CreateCommand{ProductID: body.ProductID, ProductType: body.ProductType, SessionToken: cookie.Value, ActorScope: "public-checkout", IdempotencyKey: idempotency})
 	if err != nil {
 		resultError(writer, err)
 		return
 	}
-	writeJSON(writer, http.StatusAccepted, map[string]any{"payment_id": payment.ID, "status": payment.Status, "effect_id": payment.EffectID})
+	writeJSON(writer, http.StatusAccepted, map[string]any{"order_id": payment.OrderID, "merchant_order_no": payment.MerchantOrderNo, "payment_id": payment.ID, "status": payment.Status, "effect_id": payment.EffectID})
 }
 
 func (handler *Handler) checkoutStatus(writer http.ResponseWriter, request *http.Request, merchantOrderNo string) {

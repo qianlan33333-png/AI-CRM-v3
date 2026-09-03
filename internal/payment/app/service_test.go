@@ -8,6 +8,7 @@ import (
 	orderport "github.com/qianlan33333-png/AI-CRM-v3/internal/order/port"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/payment/domain"
 	paymentport "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/port"
+	productport "github.com/qianlan33333-png/AI-CRM-v3/internal/product/port"
 	"testing"
 	"time"
 )
@@ -27,11 +28,51 @@ func (o orderStub) ReservePaymentWithin(ctx context.Context, _ int64) (orderdoma
 	}
 	return o.snapshot, nil
 }
+
+type checkoutOrderStub struct {
+	command orderport.PaymentOrderCommand
+}
+
+func (*checkoutOrderStub) ReservePaymentWithin(context.Context, int64) (orderdomain.Snapshot, error) {
+	return orderdomain.Snapshot{}, errors.New("unexpected existing order")
+}
+func (stub *checkoutOrderStub) CreatePaymentOrderWithin(ctx context.Context, command orderport.PaymentOrderCommand) (orderdomain.Snapshot, error) {
+	if ctx.Value(txKey{}) != true {
+		return orderdomain.Snapshot{}, errors.New("not in tx")
+	}
+	stub.command = command
+	order := nativeOrder()
+	order.MerchantOrderNo = command.MerchantOrderNo
+	order.Amount = orderdomain.Money{AmountMinor: command.UnitAmountMinor, Currency: command.Currency}
+	return order, nil
+}
+func (*checkoutOrderStub) SettlePaymentWithin(context.Context, orderport.PaymentSettlementCommand) (orderdomain.Snapshot, error) {
+	return orderdomain.Snapshot{}, nil
+}
+func (o orderStub) CreatePaymentOrderWithin(ctx context.Context, _ orderport.PaymentOrderCommand) (orderdomain.Snapshot, error) {
+	if ctx.Value(txKey{}) != true {
+		return orderdomain.Snapshot{}, errors.New("not in tx")
+	}
+	return o.snapshot, nil
+}
 func (o orderStub) SettlePaymentWithin(ctx context.Context, command orderport.PaymentSettlementCommand) (orderdomain.Snapshot, error) {
 	if ctx.Value(txKey{}) != true || command.OrderID < 1 {
 		return orderdomain.Snapshot{}, errors.New("not in tx")
 	}
 	return o.snapshot, nil
+}
+
+type recordingOrderStub struct {
+	orderStub
+	settlement *orderport.PaymentSettlementCommand
+}
+
+func (stub *recordingOrderStub) SettlePaymentWithin(ctx context.Context, command orderport.PaymentSettlementCommand) (orderdomain.Snapshot, error) {
+	if ctx.Value(txKey{}) != true || command.OrderID < 1 {
+		return orderdomain.Snapshot{}, errors.New("not in tx")
+	}
+	stub.settlement = &command
+	return stub.snapshot, nil
 }
 
 type sessionStub struct{ actor paymentport.SessionActor }
@@ -43,6 +84,25 @@ func (stub sessionStub) ConsumeWithin(ctx context.Context, token string, _ time.
 	return stub.actor, nil
 }
 func (stub sessionStub) LookupWithin(ctx context.Context, token string, _ time.Time) (paymentport.SessionActor, error) {
+	if ctx.Value(txKey{}) != true || token == "" {
+		return paymentport.SessionActor{}, errors.New("not in tx")
+	}
+	return stub.actor, nil
+}
+
+type oneShotSessionStub struct {
+	actor    paymentport.SessionActor
+	consumed bool
+}
+
+func (stub *oneShotSessionStub) ConsumeWithin(ctx context.Context, token string, _ time.Time) (paymentport.SessionActor, error) {
+	if ctx.Value(txKey{}) != true || token == "" || stub.consumed {
+		return paymentport.SessionActor{}, errors.New("session already consumed")
+	}
+	stub.consumed = true
+	return stub.actor, nil
+}
+func (stub *oneShotSessionStub) LookupWithin(ctx context.Context, token string, _ time.Time) (paymentport.SessionActor, error) {
 	if ctx.Value(txKey{}) != true || token == "" {
 		return paymentport.SessionActor{}, errors.New("not in tx")
 	}
@@ -70,10 +130,14 @@ func (e *effectStub) AcceptAndQueueWithin(ctx context.Context, c effectport.Acce
 }
 
 type storeStub struct {
-	payment  domain.Payment
-	refund   domain.Refund
-	bound    bool
-	reserved int64
+	payment                 domain.Payment
+	refund                  domain.Refund
+	shopMaterial            paymentport.ShopRefundMaterial
+	bound                   bool
+	reserved                int64
+	refundReconciliationID  int64
+	paymentReconciliationID int64
+	callbackOutcome         string
 }
 
 func (s *storeStub) CreatePayment(_ context.Context, p domain.Payment, _, _ [32]byte, _ string) (domain.Payment, bool, error) {
@@ -83,6 +147,9 @@ func (s *storeStub) CreatePayment(_ context.Context, p domain.Payment, _, _ [32]
 	p.ID = 7
 	s.payment = p
 	return p, true, nil
+}
+func (s *storeStub) ReplayPayment(context.Context, [32]byte, [32]byte, string) (domain.Payment, bool, error) {
+	return s.payment, s.payment.ID > 0, nil
 }
 func (s *storeStub) BindPaymentEffect(_ context.Context, p domain.Payment, _ effectport.PaymentV1Intent, _ map[string]any) (domain.Payment, error) {
 	s.payment = p
@@ -106,6 +173,9 @@ func (s *storeStub) CreateRefund(_ context.Context, r domain.Refund, _, _ [32]by
 	s.refund = r
 	return r, true, nil
 }
+func (s *storeStub) ReplayRefund(context.Context, [32]byte, [32]byte, string) (domain.Refund, bool, error) {
+	return s.refund, s.refund.ID > 0, nil
+}
 func (s *storeStub) BindRefundEffect(_ context.Context, r domain.Refund, _ effectport.PaymentV1Intent, _ map[string]any) (domain.Refund, error) {
 	s.refund = r
 	return r, nil
@@ -117,12 +187,14 @@ func (s *storeStub) GetRefundByProviderReference(context.Context, domain.Provide
 	return s.refund, nil
 }
 func (s *storeStub) GetShopRefundMaterial(context.Context, int64) (paymentport.ShopRefundMaterial, error) {
-	return paymentport.ShopRefundMaterial{}, nil
+	return s.shopMaterial, nil
 }
-func (s *storeStub) RecordReconciliation(context.Context, int64, effectport.Digest, string, time.Time) (bool, error) {
+func (s *storeStub) RecordReconciliation(_ context.Context, id int64, _ effectport.Digest, _ string, _ time.Time) (bool, error) {
+	s.refundReconciliationID = id
 	return true, nil
 }
-func (s *storeStub) RecordPaymentReconciliation(context.Context, int64, effectport.Digest, string, time.Time) (bool, error) {
+func (s *storeStub) RecordPaymentReconciliation(_ context.Context, id int64, _ effectport.Digest, _ string, _ time.Time) (bool, error) {
+	s.paymentReconciliationID = id
 	return true, nil
 }
 func (s *storeStub) UpdatePaymentSettlement(_ context.Context, p domain.Payment, _, _ string) (domain.Payment, error) {
@@ -148,7 +220,8 @@ func (s *storeStub) ListEffectBindings(context.Context, domain.Provider, string)
 func (s *storeStub) GetRefundByNumber(context.Context, string, bool) (domain.Refund, error) {
 	return s.refund, nil
 }
-func (s *storeStub) ClaimCallback(context.Context, string, [32]byte, [32]byte, string, int64) (bool, error) {
+func (s *storeStub) ClaimCallback(_ context.Context, _ string, _ [32]byte, _ [32]byte, _, outcome string, _ int64) (bool, error) {
+	s.callbackOutcome = outcome
 	return false, nil
 }
 func (s *storeStub) ImportTerminalPayment(_ context.Context, payment domain.Payment, _ [32]byte, _ string) (domain.Payment, error) {
@@ -166,7 +239,8 @@ func nativeOrder() orderdomain.Snapshot {
 func TestCreateAcceptsPaymentEffectInSameUOWAndReplays(t *testing.T) {
 	store := &storeStub{}
 	effects := &effectStub{}
-	service := NewService(uowStub{}, store, orderStub{nativeOrder()}, sessionStub{paymentport.SessionActor{PayerIdentityID: 4, PayerCustomerID: 11, BeneficiaryCustomerID: 22}}, effects)
+	sessions := &oneShotSessionStub{actor: paymentport.SessionActor{PayerIdentityID: 4, PayerCustomerID: 11, BeneficiaryCustomerID: 22}}
+	service := NewService(uowStub{}, store, orderStub{nativeOrder()}, sessions, effects)
 	service.now = func() time.Time { return time.Date(2026, 9, 3, 1, 0, 0, 0, time.UTC) }
 	command := paymentport.CreateCommand{OrderID: 3, SessionToken: "pays_session_token_0000000001", ActorScope: "customer:11", IdempotencyKey: "payment-create-key-0001"}
 	first, err := service.Create(context.Background(), command)
@@ -174,7 +248,7 @@ func TestCreateAcceptsPaymentEffectInSameUOWAndReplays(t *testing.T) {
 		t.Fatalf("payment=%+v store=%+v effects=%+v err=%v", first, store, effects, err)
 	}
 	replay, err := service.Create(context.Background(), command)
-	if err != nil || replay.ID != first.ID || replay.EffectID != first.EffectID {
+	if err != nil || replay.ID != first.ID || replay.EffectID != first.EffectID || !sessions.consumed {
 		t.Fatalf("replay=%+v err=%v", replay, err)
 	}
 }
@@ -198,6 +272,41 @@ func TestRefundReservesOutstandingAmountsAndRejectsOverRefund(t *testing.T) {
 	}
 }
 
+func TestRefundReplayReturnsExistingBeforeReservedAmountCheck(t *testing.T) {
+	now := time.Date(2026, 9, 3, 1, 0, 0, 0, time.UTC)
+	store := &storeStub{
+		payment:  domain.Payment{ID: 7, Provider: domain.ProviderWeChatPay, MerchantOrderNo: "M-7", AmountMinor: 1000, Currency: "CNY", Status: domain.StatusPaid, Version: 2, CreatedAt: now.Add(-time.Hour), UpdatedAt: now},
+		refund:   domain.Refund{ID: 9, PaymentID: 7, Provider: domain.ProviderWeChatPay, RefundNo: "R-7", Reason: "customer request", AmountMinor: 1000, Status: domain.RefundEffectAccepted, EffectID: "eer_9", Version: 2, CreatedAt: now, UpdatedAt: now},
+		reserved: 1000,
+	}
+	service := NewService(uowStub{}, store, orderStub{}, sessionStub{}, &effectStub{})
+	replay, err := service.RequestRefund(context.Background(), paymentport.RefundCommand{PaymentID: 7, AmountMinor: 1000, RefundNo: "R-7", Reason: "customer request", ActorScope: "admin:1", IdempotencyKey: "refund-key-000000001"})
+	if err != nil || replay.ID != 9 {
+		t.Fatalf("refund=%+v err=%v", replay, err)
+	}
+}
+
+func TestCheckoutFromProductCreatesOrderAndPaymentInSameUOW(t *testing.T) {
+	store := &storeStub{}
+	orders := &checkoutOrderStub{}
+	products := &checkoutProductStub{product: productport.CheckoutProduct{ID: 5, ProductType: productport.ProductOptionStandard, Code: "course-5", Name: "Course 5", PriceMinor: 8800, Currency: "CNY", Version: 3}}
+	sessions := &oneShotSessionStub{actor: paymentport.SessionActor{PayerIdentityID: 4, PayerCustomerID: 11, BeneficiaryCustomerID: 22}}
+	service := NewService(uowStub{}, store, orders, sessions, &effectStub{})
+	if err := service.SetCheckoutProductReader(products); err != nil {
+		t.Fatal(err)
+	}
+	command := paymentport.CreateCommand{ProductID: 5, ProductType: "standard", SessionToken: "pays_session_token_0000000005", ActorScope: "public-checkout", IdempotencyKey: "checkout-product-key-0005"}
+	first, err := service.Create(context.Background(), command)
+	if err != nil || first.ID != 7 || first.AmountMinor != 8800 || products.calls != 1 || orders.command.ProductID != 5 || orders.command.ProductVersion != 3 || orders.command.BeneficiaryCustomerID != 22 || orders.command.MerchantOrderNo == "" || !sessions.consumed {
+		t.Fatalf("payment=%+v product_calls=%d order=%+v consumed=%v err=%v", first, products.calls, orders.command, sessions.consumed, err)
+	}
+	store.payment.MerchantOrderNo = orders.command.MerchantOrderNo
+	replay, err := service.Create(context.Background(), command)
+	if err != nil || replay.ID != first.ID || products.calls != 1 {
+		t.Fatalf("replay=%+v product_calls=%d err=%v", replay, products.calls, err)
+	}
+}
+
 func TestListOrderEffectsJoinsOnlyPaymentOwnedProjection(t *testing.T) {
 	store := &storeStub{}
 	effects := &effectStub{}
@@ -205,5 +314,130 @@ func TestListOrderEffectsJoinsOnlyPaymentOwnedProjection(t *testing.T) {
 	items, err := service.ListOrderEffects(context.Background(), domain.ProviderWeChatPay, "M-7")
 	if err != nil || len(items) != 1 || items[0].State != effectport.StateQueued || items[0].AttemptCount != 1 {
 		t.Fatalf("items=%+v err=%v", items, err)
+	}
+}
+
+type payReconcilerStub struct {
+	payment paymentport.WeChatPayPaymentQuery
+	refund  paymentport.WeChatPayRefundQuery
+}
+
+func (s payReconcilerStub) QueryPayment(context.Context, string) (paymentport.WeChatPayPaymentQuery, error) {
+	return s.payment, nil
+}
+func (s payReconcilerStub) QueryRefund(context.Context, string) (paymentport.WeChatPayRefundQuery, error) {
+	return s.refund, nil
+}
+
+type shopReconcilerStub struct{ query paymentport.ShopRefundQuery }
+
+func (shopReconcilerStub) ValidateRefundMaterial(context.Context, paymentport.ShopRefundMaterial) error {
+	return nil
+}
+
+type reconciliationEnqueuerStub struct{ refundID int64 }
+
+func (s *reconciliationEnqueuerStub) EnqueueWithin(ctx context.Context, target paymentport.ReconciliationTarget) error {
+	if ctx.Value(txKey{}) != true {
+		return errors.New("not in tx")
+	}
+	s.refundID = target.RefundID
+	return nil
+}
+
+type checkoutProductStub struct {
+	product productport.CheckoutProduct
+	calls   int
+}
+
+func (stub *checkoutProductStub) ReadCheckoutProductWithin(ctx context.Context, _ productport.ProductOptionType, _ productport.ID) (productport.CheckoutProduct, error) {
+	if ctx.Value(txKey{}) != true {
+		return productport.CheckoutProduct{}, errors.New("not in tx")
+	}
+	stub.calls++
+	return stub.product, nil
+}
+func (s shopReconcilerStub) QueryRefund(context.Context, string) (paymentport.ShopRefundQuery, error) {
+	return s.query, nil
+}
+
+func TestWeChatPayPaymentReconciliationUsesPaymentForeignKey(t *testing.T) {
+	updatedAt := time.Date(2026, 9, 3, 1, 0, 0, 0, time.UTC)
+	store := &storeStub{payment: domain.Payment{ID: 7, OrderID: 3, Provider: domain.ProviderWeChatPay, MerchantOrderNo: "M-7", AmountMinor: 1000, Currency: "CNY", Status: domain.StatusAwaitingPayment, Version: 2, CreatedAt: updatedAt.Add(-time.Hour), UpdatedAt: updatedAt}}
+	service := NewService(uowStub{}, store, orderStub{snapshot: nativeOrder()}, sessionStub{}, &effectStub{})
+	if err := service.SetWeChatPayReconciler(payReconcilerStub{payment: paymentport.WeChatPayPaymentQuery{MerchantOrderNo: "M-7", Currency: "CNY", Status: "SUCCESS", AmountMinor: 1000, OccurredAt: updatedAt.Add(time.Minute), EvidenceDigest: effectport.Hash("pay-query", "M-7"), TransactionDigest: effectport.Hash("pay-transaction", "M-7")}}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.ReconcileWeChatPayPayment(context.Background(), 7)
+	if err != nil || result.Status != domain.StatusPaid || store.paymentReconciliationID != 7 || store.refundReconciliationID != 0 {
+		t.Fatalf("payment=%+v payment_reconciliation=%d refund_reconciliation=%d err=%v", result, store.paymentReconciliationID, store.refundReconciliationID, err)
+	}
+}
+
+func TestWeChatPayTerminalFailureClosesPaymentAndOrderAtomically(t *testing.T) {
+	updatedAt := time.Date(2026, 9, 3, 1, 0, 0, 0, time.UTC)
+	store := &storeStub{payment: domain.Payment{ID: 7, OrderID: 3, Provider: domain.ProviderWeChatPay, MerchantOrderNo: "M-7", AmountMinor: 1000, Currency: "CNY", Status: domain.StatusAwaitingPayment, Version: 2, CreatedAt: updatedAt.Add(-time.Hour), UpdatedAt: updatedAt}}
+	orders := &recordingOrderStub{orderStub: orderStub{snapshot: nativeOrder()}}
+	service := NewService(uowStub{}, store, orders, sessionStub{}, &effectStub{})
+	if err := service.SetWeChatPayReconciler(payReconcilerStub{payment: paymentport.WeChatPayPaymentQuery{MerchantOrderNo: "M-7", Currency: "CNY", Status: "CLOSED", AmountMinor: 1000, OccurredAt: updatedAt.Add(time.Minute), EvidenceDigest: effectport.Hash("pay-query", "closed-M-7")}}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.ReconcileWeChatPayPayment(context.Background(), 7)
+	if err != nil || result.Status != domain.StatusFailed || orders.settlement == nil || !orders.settlement.Failed || orders.settlement.OrderID != 3 {
+		t.Fatalf("payment=%+v settlement=%+v err=%v", result, orders.settlement, err)
+	}
+}
+
+func TestWeChatPayClosedRefundReleasesReservationWithoutChangingOrder(t *testing.T) {
+	updatedAt := time.Date(2026, 9, 3, 1, 0, 0, 0, time.UTC)
+	store := &storeStub{
+		payment: domain.Payment{ID: 7, OrderID: 3, Provider: domain.ProviderWeChatPay, MerchantOrderNo: "M-7", AmountMinor: 1000, Currency: "CNY", Status: domain.StatusPaid, Version: 2, CreatedAt: updatedAt.Add(-time.Hour), UpdatedAt: updatedAt},
+		refund:  domain.Refund{ID: 9, PaymentID: 7, Provider: domain.ProviderWeChatPay, RefundNo: "R-9", AmountMinor: 500, Status: domain.RefundEffectAccepted, EffectID: "eer_9", Version: 2, CreatedAt: updatedAt.Add(-time.Minute), UpdatedAt: updatedAt},
+	}
+	orders := &recordingOrderStub{orderStub: orderStub{snapshot: nativeOrder()}}
+	service := NewService(uowStub{}, store, orders, sessionStub{}, &effectStub{})
+	if err := service.SetWeChatPayReconciler(payReconcilerStub{refund: paymentport.WeChatPayRefundQuery{RefundNo: "R-9", Currency: "CNY", Status: "CLOSED", AmountMinor: 500, TotalMinor: 1000, OccurredAt: updatedAt.Add(time.Minute), EvidenceDigest: effectport.Hash("refund-query", "closed-R-9")}}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.ReconcileWeChatPayRefund(context.Background(), 9)
+	if err != nil || result.Status != domain.RefundFinalFailed || orders.settlement != nil {
+		t.Fatalf("refund=%+v settlement=%+v err=%v", result, orders.settlement, err)
+	}
+}
+
+func TestShopRefundReconciliationUsesRefundForeignKey(t *testing.T) {
+	updatedAt := time.Date(2026, 9, 3, 1, 0, 0, 0, time.UTC)
+	store := &storeStub{
+		payment:      domain.Payment{ID: 7, OrderID: 3, Provider: domain.ProviderWeChatShop, MerchantOrderNo: "SHOP-7", AmountMinor: 1000, Currency: "CNY", Status: domain.StatusPaid, Version: 2, CreatedAt: updatedAt.Add(-time.Hour), UpdatedAt: updatedAt},
+		refund:       domain.Refund{ID: 9, PaymentID: 7, Provider: domain.ProviderWeChatShop, RefundNo: "R-9", AmountMinor: 500, Status: domain.RefundEffectAccepted, EffectID: "eer_9", ProviderRefundReference: "AS-9", Version: 2, CreatedAt: updatedAt.Add(-time.Minute), UpdatedAt: updatedAt},
+		shopMaterial: paymentport.ShopRefundMaterial{RefundID: 9, PaymentID: 7, AmountMinor: 500, RefundNo: "R-9", ProviderOrderID: "SHOP-7", ProductID: "P-1", SKUID: "SKU-1", RefundCount: 1, ReasonCode: "10000000", Currency: "CNY"},
+	}
+	service := NewService(uowStub{}, store, orderStub{snapshot: nativeOrder()}, sessionStub{}, &effectStub{})
+	if err := service.SetShopReconciler(shopReconcilerStub{query: paymentport.ShopRefundQuery{AfterSaleID: "AS-9", ProviderOrderID: "SHOP-7", ProductID: "P-1", SKUID: "SKU-1", Count: 1, AmountMinor: 500, Currency: "CNY", Status: "MERCHANT_REFUND_SUCCESS", OccurredAt: updatedAt.Add(time.Minute), EvidenceDigest: effectport.Hash("shop-query", "AS-9"), ProviderRefundDigest: effectport.Hash("shop-refund", "AS-9")}}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.ReconcileShopRefund(context.Background(), 9)
+	if err != nil || result.Status != domain.RefundCompleted || store.refundReconciliationID != 9 || store.paymentReconciliationID != 0 {
+		t.Fatalf("refund=%+v payment_reconciliation=%d refund_reconciliation=%d err=%v", result, store.paymentReconciliationID, store.refundReconciliationID, err)
+	}
+}
+
+func TestShopCallbackPersistsQueryRequiredReceiptAndDurableJob(t *testing.T) {
+	now := time.Date(2026, 9, 3, 1, 0, 0, 0, time.UTC)
+	store := &storeStub{
+		refund:       domain.Refund{ID: 9, PaymentID: 7, Provider: domain.ProviderWeChatShop, RefundNo: "R-9", Status: domain.RefundEffectAccepted, ProviderRefundReference: "AS-9", Version: 2, CreatedAt: now.Add(-time.Minute), UpdatedAt: now},
+		shopMaterial: paymentport.ShopRefundMaterial{RefundID: 9, ProviderOrderID: "SHOP-7"},
+	}
+	jobs := &reconciliationEnqueuerStub{}
+	service := NewService(uowStub{}, store, orderStub{}, sessionStub{}, &effectStub{})
+	if err := service.SetShopReconciler(shopReconcilerStub{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.SetReconciliationEnqueuer(jobs); err != nil {
+		t.Fatal(err)
+	}
+	err := service.ApplyVerifiedShopCallback(context.Background(), paymentport.ShopRefundCallback{AfterSaleID: "AS-9", ProviderOrderID: "SHOP-7", Status: "MERCHANT_REFUND_SUCCESS", EventDigest: [32]byte{1}, PayloadDigest: [32]byte{2}, OccurredAt: now})
+	if err != nil || jobs.refundID != 9 || store.callbackOutcome != "query_required" {
+		t.Fatalf("job_refund=%d outcome=%q err=%v", jobs.refundID, store.callbackOutcome, err)
 	}
 }

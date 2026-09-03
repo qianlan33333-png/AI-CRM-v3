@@ -15,7 +15,8 @@ var ErrNotFound = errors.New("payment not found")
 var ErrUnavailable = errors.New("payment unavailable")
 
 type CreateCommand struct {
-	OrderID                    int64
+	OrderID, ProductID         int64
+	ProductType                string
 	SessionToken               string
 	ActorScope, IdempotencyKey string
 }
@@ -25,23 +26,6 @@ type RefundCommand struct {
 	ProviderOrderID, ProductID, SKUID, ReasonCode string
 	RefundCount                                   int64
 }
-type SettlementCommand struct {
-	PaymentID                 int64
-	ExpectedVersion           int64
-	Status                    domain.Status
-	ProviderTransactionDigest string
-	OccurredAt                time.Time
-	ReceiptKey                string
-}
-type RefundSettlementCommand struct {
-	RefundID             int64
-	ExpectedVersion      int64
-	Status               domain.RefundStatus
-	ProviderRefundDigest string
-	OccurredAt           time.Time
-	ReceiptKey           string
-}
-
 type Application interface {
 	Create(context.Context, CreateCommand) (domain.Payment, error)
 	RequestRefund(context.Context, RefundCommand) (domain.Refund, error)
@@ -81,10 +65,6 @@ type AdminQuery interface {
 	ListRefunds(context.Context, int32, int32) ([]RefundProjection, int64, error)
 	ListOrderEffects(context.Context, domain.Provider, string) ([]EffectProjection, error)
 }
-type SettlementWriter interface {
-	SettlePayment(context.Context, SettlementCommand) (domain.Payment, error)
-	SettleRefund(context.Context, RefundSettlementCommand) (domain.Refund, error)
-}
 type HistoricalImporter interface {
 	ImportTerminalPayment(context.Context, domain.Payment, [32]byte, string) (domain.Payment, error)
 	ImportTerminalRefund(context.Context, domain.Refund, [32]byte, string) (domain.Refund, error)
@@ -106,6 +86,14 @@ type SessionConsumer interface {
 // consumed the token. It never renews or mutates the session.
 type SessionReader interface {
 	LookupWithin(context.Context, string, time.Time) (SessionActor, error)
+}
+
+// SessionLifecycle supports idempotent checkout replay: callers first read the
+// still-valid actor, then consume only when a new mutation is persisted in the
+// same transaction.
+type SessionLifecycle interface {
+	SessionConsumer
+	SessionReader
 }
 
 // ProviderIntent is a Payment-owned, immutable request projection. It is read
@@ -156,6 +144,16 @@ type ShopCallbackVerifier interface {
 type ShopRefundReconciler interface {
 	ValidateRefundMaterial(context.Context, ShopRefundMaterial) error
 	QueryRefund(context.Context, string) (ShopRefundQuery, error)
+}
+
+type ReconciliationEnqueuer interface {
+	EnqueueWithin(context.Context, ReconciliationTarget) error
+}
+
+type ReconciliationTarget struct {
+	Provider            domain.Provider
+	OrderID             int64
+	PaymentID, RefundID int64
 }
 
 type WeChatPayPaymentQuery struct {

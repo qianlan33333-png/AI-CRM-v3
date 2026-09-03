@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"time"
 
@@ -17,7 +18,51 @@ var (
 	ErrConcurrentIdentityChange  = errors.New("concurrent identity change")
 	ErrLinkIntentPayloadMismatch = errors.New("link intent replay payload mismatch")
 	ErrDeclaredPayloadMismatch   = errors.New("declared identity replay payload mismatch")
+	ErrHistoricalSubjectConflict = errors.New("historical subject identity conflict")
 )
+
+// ProvisionHistoricalSubject creates or resolves one Customer root from the
+// first authoritative identity, then attaches the remaining identities only
+// when they are absent or already owned by that root. A cross-root hit is
+// returned as an error so the caller's PostgreSQL UoW rolls back the candidate
+// and the migration stops before assigning orders to the wrong person.
+func (service OneIDService) ProvisionHistoricalSubject(ctx context.Context, command identityport.HistoricalSubjectCommand) (identityport.HistoricalSubjectResult, error) {
+	if service.Store == nil || command.SubjectKey == "" || len(command.SubjectKey) > 200 || len(command.Facts) == 0 || command.SourceDigest == ([32]byte{}) {
+		return identityport.HistoricalSubjectResult{}, ErrHistoricalSubjectConflict
+	}
+	for _, fact := range command.Facts {
+		if !fact.Valid() {
+			return identityport.HistoricalSubjectResult{}, ErrHistoricalSubjectConflict
+		}
+	}
+	provisioned, err := service.Store.Provision(ctx, command.Facts[0])
+	if err != nil {
+		return identityport.HistoricalSubjectResult{}, err
+	}
+	result := identityport.HistoricalSubjectResult{CustomerID: provisioned.CustomerID, IdentityIDs: []int64{provisioned.IdentityID}}
+	for index := 1; index < len(command.Facts); index++ {
+		linked, linkErr := service.Store.Link(ctx, LinkCommand{
+			SourceCustomerID: provisioned.CustomerID,
+			Target:           command.Facts[index],
+			Evidence: identitydomain.LinkEvidence{
+				Type:          "provider_history_subject",
+				Strength:      identitydomain.EvidenceStrong,
+				Source:        "commerce_history",
+				EventID:       command.SubjectKey,
+				Digest:        "sha256:" + hex.EncodeToString(command.SourceDigest[:]),
+				PolicyVersion: "commerce-history-v1",
+			},
+		})
+		if linkErr != nil {
+			return identityport.HistoricalSubjectResult{}, linkErr
+		}
+		if (linked.Status != LinkAttached && linked.Status != LinkAlreadyLinked) || linked.CustomerID != provisioned.CustomerID || linked.IdentityID < 1 {
+			return identityport.HistoricalSubjectResult{}, ErrHistoricalSubjectConflict
+		}
+		result.IdentityIDs = append(result.IdentityIDs, linked.IdentityID)
+	}
+	return result, nil
+}
 
 type LinkStatus string
 

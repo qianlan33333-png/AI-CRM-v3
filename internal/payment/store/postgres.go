@@ -29,7 +29,7 @@ func (r *Repository) CreatePayment(ctx context.Context, p domain.Payment, key, p
 	if e != nil {
 		return domain.Payment{}, false, e
 	}
-	if _, e = t.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, "payment:create:"+string(key[:])); e != nil {
+	if _, e = t.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, "payment:create:"+hex.EncodeToString(key[:])); e != nil {
 		return domain.Payment{}, false, e
 	}
 	var resultID int64
@@ -56,6 +56,28 @@ func (r *Repository) CreatePayment(ctx context.Context, p domain.Payment, key, p
 		return domain.Payment{}, false, e
 	}
 	return p, true, nil
+}
+
+func (r *Repository) ReplayPayment(ctx context.Context, key, payload [32]byte, actor string) (domain.Payment, bool, error) {
+	t, err := tx(ctx)
+	if err != nil {
+		return domain.Payment{}, false, err
+	}
+	var resultID int64
+	var oldPayload []byte
+	var resultKind string
+	err = t.QueryRow(ctx, `SELECT result_id,payload_digest,result_kind FROM payment_operation_receipts WHERE operation='create' AND actor_scope=$1 AND key_digest=$2`, actor, key[:]).Scan(&resultID, &oldPayload, &resultKind)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Payment{}, false, nil
+	}
+	if err != nil {
+		return domain.Payment{}, false, mapError(err)
+	}
+	if string(oldPayload) != string(payload[:]) || resultKind != "payment" {
+		return domain.Payment{}, false, paymentport.ErrConflict
+	}
+	payment, err := r.GetPayment(ctx, resultID, false)
+	return payment, err == nil, err
 }
 
 func (r *Repository) BindPaymentEffect(ctx context.Context, p domain.Payment, intent effectport.PaymentV1Intent, snapshot map[string]any) (domain.Payment, error) {
@@ -157,7 +179,7 @@ func (r *Repository) CreateRefund(ctx context.Context, v domain.Refund, key, pay
 	if e != nil {
 		return domain.Refund{}, false, e
 	}
-	if _, e = t.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, "payment:refund:"+string(key[:])); e != nil {
+	if _, e = t.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, "payment:refund:"+hex.EncodeToString(key[:])); e != nil {
 		return domain.Refund{}, false, e
 	}
 	var id int64
@@ -184,6 +206,28 @@ func (r *Repository) CreateRefund(ctx context.Context, v domain.Refund, key, pay
 		return domain.Refund{}, false, e
 	}
 	return v, true, nil
+}
+
+func (r *Repository) ReplayRefund(ctx context.Context, key, payload [32]byte, actor string) (domain.Refund, bool, error) {
+	t, err := tx(ctx)
+	if err != nil {
+		return domain.Refund{}, false, err
+	}
+	var resultID int64
+	var oldPayload []byte
+	var resultKind string
+	err = t.QueryRow(ctx, `SELECT result_id,payload_digest,result_kind FROM payment_operation_receipts WHERE operation='refund' AND actor_scope=$1 AND key_digest=$2`, actor, key[:]).Scan(&resultID, &oldPayload, &resultKind)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Refund{}, false, nil
+	}
+	if err != nil {
+		return domain.Refund{}, false, mapError(err)
+	}
+	if string(oldPayload) != string(payload[:]) || resultKind != "refund" {
+		return domain.Refund{}, false, paymentport.ErrConflict
+	}
+	refund, err := r.GetRefund(ctx, resultID, false)
+	return refund, err == nil, err
 }
 func (r *Repository) BindRefundEffect(ctx context.Context, v domain.Refund, intent effectport.PaymentV1Intent, snapshot map[string]any) (domain.Refund, error) {
 	t, e := tx(ctx)
@@ -394,10 +438,13 @@ func (r *Repository) ListEffectBindings(ctx context.Context, provider domain.Pro
 	return result, mapError(rows.Err())
 }
 
-func (r *Repository) ClaimCallback(ctx context.Context, provider string, eventDigest, bodyDigest [32]byte, kind string, id int64) (bool, error) {
+func (r *Repository) ClaimCallback(ctx context.Context, provider string, eventDigest, bodyDigest [32]byte, kind, outcome string, id int64) (bool, error) {
 	t, err := tx(ctx)
 	if err != nil {
 		return false, err
+	}
+	if outcome != "settled" && outcome != "query_required" {
+		return false, paymentport.ErrConflict
 	}
 	var existingBody []byte
 	var paymentID, refundID *int64
@@ -420,7 +467,7 @@ func (r *Repository) ClaimCallback(ctx context.Context, provider string, eventDi
 	} else {
 		return false, paymentport.ErrConflict
 	}
-	_, err = t.Exec(ctx, `INSERT INTO payment_callback_receipts(provider,event_digest,body_digest,signature_verified,outcome,payment_id,refund_id) VALUES($1,$2,$3,true,'settled',$4,$5)`, provider, eventDigest[:], bodyDigest[:], paymentValue, refundValue)
+	_, err = t.Exec(ctx, `INSERT INTO payment_callback_receipts(provider,event_digest,body_digest,signature_verified,outcome,payment_id,refund_id) VALUES($1,$2,$3,true,$4,$5,$6)`, provider, eventDigest[:], bodyDigest[:], outcome, paymentValue, refundValue)
 	return false, mapError(err)
 }
 
@@ -618,6 +665,43 @@ func (r *Repository) CompleteEffectWithin(ctx context.Context, effectRef string,
 		}
 	}
 	return nil
+}
+
+func (r *Repository) ReconciliationTargetWithin(ctx context.Context, envelope effectport.Envelope) (paymentport.ReconciliationTarget, error) {
+	t, err := tx(ctx)
+	if err != nil {
+		return paymentport.ReconciliationTarget{}, err
+	}
+	if envelope.Owner != effectport.OwnerPayment || !effectport.ValidDigest(envelope.SourceRefDigest) {
+		return paymentport.ReconciliationTarget{}, paymentport.ErrConflict
+	}
+	var target paymentport.ReconciliationTarget
+	err = t.QueryRow(ctx, `SELECT COALESCE(i.payment_id,0),COALESCE(i.refund_id,0),COALESCE(p.order_id,rp.order_id,0)
+		FROM payment_provider_intents i
+		LEFT JOIN payments p ON p.id=i.payment_id
+		LEFT JOIN payment_refunds r ON r.id=i.refund_id
+		LEFT JOIN payments rp ON rp.id=r.payment_id
+		WHERE i.effect_kind=$1 AND i.source_ref_digest=$2`, envelope.Kind, envelope.SourceRefDigest).Scan(&target.PaymentID, &target.RefundID, &target.OrderID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return paymentport.ReconciliationTarget{}, paymentport.ErrNotFound
+	}
+	if err != nil {
+		return paymentport.ReconciliationTarget{}, mapError(err)
+	}
+	switch envelope.Kind {
+	case effectport.KindWeChatPayPrepay, effectport.KindWeChatPayRefund:
+		target.Provider = domain.ProviderWeChatPay
+	case effectport.KindWeChatShopRefund:
+		target.Provider = domain.ProviderWeChatShop
+	default:
+		return paymentport.ReconciliationTarget{}, paymentport.ErrConflict
+	}
+	validPayment := target.Provider == domain.ProviderWeChatPay && target.PaymentID > 0 && target.RefundID == 0
+	validRefund := target.RefundID > 0 && target.PaymentID == 0
+	if (!validPayment && !validRefund) || target.OrderID < 1 {
+		return paymentport.ReconciliationTarget{}, paymentport.ErrConflict
+	}
+	return target, nil
 }
 
 func (r *Repository) UpdatePaymentSettlement(ctx context.Context, p domain.Payment, providerDigest, receipt string) (domain.Payment, error) {

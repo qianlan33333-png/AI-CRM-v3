@@ -268,6 +268,26 @@ func TestApplicationRouterOwnsEffectsAndPushCenterSeparately(t *testing.T) {
 	}
 }
 
+func TestApplicationRouterMountsWeChatShopCallbackAndReconciliation(t *testing.T) {
+	marker := func(name string) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("X-Owner", name)
+			w.WriteHeader(http.StatusNoContent)
+		})
+	}
+	handler, err := routeApplication(marker("health"), marker("access"), marker("identity"), marker("wecom"), marker("shell"), &fakeAccessAuthentication{}, "https://crm.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"/api/public/wechat-shop/callbacks/refund", "/api/admin/wechat-shop/refunds/9/reconcile"} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, path, nil))
+		if response.Code != http.StatusNoContent || response.Header().Get("X-Owner") != "identity" {
+			t.Fatalf("%s status=%d owner=%q", path, response.Code, response.Header().Get("X-Owner"))
+		}
+	}
+}
+
 func TestExternalEffectsUIRequiresAdminAndExposesOnlyItsFrozenSurface(t *testing.T) {
 	dist := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dist, "assets"), 0o755); err != nil {

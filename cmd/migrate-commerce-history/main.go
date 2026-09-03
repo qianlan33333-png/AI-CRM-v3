@@ -13,6 +13,7 @@ import (
 	identityadapter "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/adapter"
 	identityapp "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/app"
 	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
+	identitymigration "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/migration"
 	identityport "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/port"
 	identitystore "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/store"
 	orderapp "github.com/qianlan33333-png/AI-CRM-v3/internal/order/app"
@@ -89,7 +90,7 @@ func run(ctx context.Context, args []string) error {
 	}
 	identity := identityapp.OneIDService{Store: identitystore.NewPostgresStore()}
 	paymentRepository := paymentstore.NewPostgreSQL()
-	runner := ordermigration.Runner{UOW: uow, Identities: identity, Facts: identityadapter.ProviderHistory{}, Orders: orderapp.NewService(uow, orderRepository), Payments: paymentapp.NewService(uow, paymentRepository, nil, nil, nil), Runs: ordermigration.PostgreSQLRuns{Pool: pool.Native()}}
+	runner := ordermigration.Runner{UOW: uow, Identities: identity, Facts: identityadapter.ProviderHistory{}, IdentityRuns: identitymigration.PostgreSQLReceipts{}, Orders: orderapp.NewService(uow, orderRepository), Payments: paymentapp.NewService(uow, paymentRepository, nil, nil, nil), Runs: ordermigration.PostgreSQLRuns{Pool: pool.Native()}}
 	result, err := runner.Apply(ctx, manifest)
 	if err != nil {
 		return err
@@ -98,7 +99,7 @@ func run(ctx context.Context, args []string) error {
 }
 
 func reconcile(ctx context.Context, pool *platformpostgres.Pool, manifest ordermigration.Manifest) error {
-	var orders, payments, refunds, runInput, runImported int64
+	var orders, payments, refunds, runInput, runImported, canonicalSubjects, quarantinedIdentities int64
 	var amount, refundAmount int64
 	err := pool.Native().QueryRow(ctx, `
 		SELECT count(*),COALESCE(sum(o.amount_minor),0)
@@ -135,22 +136,34 @@ func reconcile(ctx context.Context, pool *platformpostgres.Pool, manifest orderm
 		return err
 	}
 	oneID := identityapp.OneIDService{Store: identitystore.NewPostgresStore()}
-	resolvedIdentities := 0
+	identityByKey := make(map[string]ordermigration.IdentityRow, len(manifest.Identities))
 	for _, row := range manifest.Identities {
-		var resolved bool
-		err = uow.Within(ctx, func(tx context.Context) error {
-			result, resolveErr := oneID.Resolve(tx, identitydomain.Reference{Kind: identitydomain.Kind(row.Kind), Scope: row.Scope, Value: row.Value, Assurance: identitydomain.AssuranceVerified, Source: row.Source})
-			resolved = resolveErr == nil && result.Status == identityport.ResolveFound && result.CustomerID > 0 && result.IdentityID > 0
-			return resolveErr
-		})
-		if err != nil || !resolved {
-			return errors.New("commerce identity reconciliation mismatch")
+		identityByKey[row.SourceKey] = row
+	}
+	resolvedIdentities := 0
+	for _, subject := range manifest.Subjects {
+		var subjectCustomer int64
+		for _, identityKey := range subject.IdentityKeys {
+			row := identityByKey[identityKey]
+			var resolved identityport.ResolveResult
+			err = uow.Within(ctx, func(tx context.Context) error {
+				var resolveErr error
+				resolved, resolveErr = oneID.Resolve(tx, identitydomain.Reference{Kind: identitydomain.Kind(row.Kind), Scope: row.Scope, Value: row.Value, Assurance: identitydomain.AssuranceVerified, Source: row.Source})
+				return resolveErr
+			})
+			if err != nil || resolved.Status != identityport.ResolveFound || resolved.CustomerID < 1 || resolved.IdentityID < 1 || (subjectCustomer > 0 && int64(resolved.CustomerID) != subjectCustomer) {
+				return errors.New("commerce identity reconciliation mismatch")
+			}
+			subjectCustomer = int64(resolved.CustomerID)
+			resolvedIdentities++
 		}
-		resolvedIdentities++
+	}
+	if err = pool.Native().QueryRow(ctx, `SELECT count(*) FILTER (WHERE outcome='canonical'),count(*) FILTER (WHERE outcome='quarantined') FROM identity_history_import_receipts WHERE run_key=$1`, manifest.RunKey).Scan(&canonicalSubjects, &quarantinedIdentities); err != nil {
+		return err
 	}
 	summary := manifest.Summary()
-	expectedInput := int64(summary.IdentityRows + summary.OrderRows + summary.RefundRows)
-	match := resolvedIdentities == summary.IdentityRows && runInput == expectedInput && runImported == expectedInput && orders == int64(summary.OrderRows) && amount == summary.AmountMinor && payments == int64(summary.PaymentRows) && refunds == int64(summary.RefundRows) && refundAmount == summary.RefundMinor
+	expectedInput := int64(summary.SubjectRows + summary.IdentityQuarantineRows + summary.OrderRows + summary.RefundRows)
+	match := resolvedIdentities == summary.IdentityRows && canonicalSubjects == int64(summary.SubjectRows) && quarantinedIdentities == int64(summary.IdentityQuarantineRows) && runInput == expectedInput && runImported == expectedInput && orders == int64(summary.OrderRows) && amount == summary.AmountMinor && payments == int64(summary.PaymentRows) && refunds == int64(summary.RefundRows) && refundAmount == summary.RefundMinor
 	if !match {
 		return errors.New("commerce reconciliation mismatch")
 	}
@@ -161,7 +174,7 @@ func reconcile(ctx context.Context, pool *platformpostgres.Pool, manifest orderm
 		}
 		return errors.New("commerce reconciliation run state mismatch")
 	}
-	return printJSON(map[string]any{"mode": "reconcile", "matched": true, "identities": resolvedIdentities, "orders": orders, "payments": payments, "refunds": refunds, "amount_minor": amount, "refund_minor": refundAmount, "checked_at": time.Now().UTC()})
+	return printJSON(map[string]any{"mode": "reconcile", "matched": true, "subjects": canonicalSubjects, "identities": resolvedIdentities, "identity_quarantines": quarantinedIdentities, "orders": orders, "payments": payments, "refunds": refunds, "amount_minor": amount, "refund_minor": refundAmount, "checked_at": time.Now().UTC()})
 }
 
 func printJSON(value any) error { return json.NewEncoder(os.Stdout).Encode(value) }

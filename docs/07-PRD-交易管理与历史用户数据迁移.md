@@ -2,11 +2,11 @@
 
 ## 1. 文档信息
 
-- 状态：方案已批准，开发与生产只读盘点进行中；全量迁移受源权限门禁阻塞
+- 状态：前后端与支付闭环已实现，首批读取已部署；闭环增强待本 PR 部署，全量迁移受源权限门禁阻塞
 - 日期：2026-09-03
 - 本期唯一业务范围：交易管理
 - 代码供体：`AI-CRM-v2@6bfbe5816bb89913c70adaca87d6a486260e016e`
-- 当前 v3 开发基线：`origin/main@723b90914c20fe12bf07507e3683112816cf4fe3`
+- 当前 v3 开发基线：`origin/main@8f62f867b39b6aa57ee27f54b5b464aec7fa7c4b`
 - 数据源：`150.158.82.186` 上的现生产 PostgreSQL；可授权视图已完成只读盘点，退款/微信小店/支付宝源表仍未授权
 - 产品 Owner：CRM Commerce
 - 数据 Owner：Order、Payment、Identity、Customer（各自只写本域表）
@@ -30,13 +30,13 @@ External Effects: WeChat Pay prepay/refund and WeChat Shop refund are involved; 
 
 ## 3. 现状结论
 
-### 3.1 v3 当前状态（2026-09-03 第一批开发后）
+### 3.1 v3 当前状态（2026-09-03 闭环开发后）
 
-- `modules/registry.yaml` 中 `order`、`payment` 已为 `contracted`，只表示供体契约冻结，不代表能力上线。
-- Order 聚合、Port、事务型 PostgreSQL Store 与 `0020_order.sql` 已完成；Payment 原子接纳、微信支付 Adapter 和 `0021_payment.sql` 已完成，Provider 生产开关仍需独立配置。
-- `/admin/orders` 仍只有明确不可用的 v3 壳，没有挂载订单 API 或 donor 业务动作。
-- v3 的 `orders.html`、`orderDetail.html` 与冻结 v2 commit 字节一致；页面资产可复用，不需要重新设计。
-- `web/src/api/capabilities.ts` 已改为类型化 `transactionReadiness`，订单读取和全部退款在真实 API/Journey 完成前保持 `backend_blocked`。
+- `order`、`payment` 已推进为 `implemented`；只有生产历史全量 reconcile 与切流完成后才可推进 `cutover`。
+- Order 聚合、Port、事务型 PostgreSQL Store、管理 API、安全导出与 `0020_order.sql` 已完成并随主干 `8f62f867` 部署。
+- Payment 原子接纳、累计退款锁定、Payment/Order 同 UoW 结算、微信支付与微信小店 Adapter、回调、原键对账和 `0021/0024` migration 已完成；Provider 生产开关仍需独立凭据与审批。
+- `/admin/orders` 和详情页继续使用与冻结 v2 commit 字节一致的 donor 资产，真实请求由 v3 Adapter/API 承接；未修改受保护 donor 业务文件。
+- 生产 readiness 已验证包含交易首批提交；完整历史列表仍为空或不完整，直到本 PR 部署并完成生产数据迁移。
 
 ### 3.2 v2 可复用能力
 
@@ -72,7 +72,7 @@ External Effects: WeChat Pay prepay/refund and WeChat Shop refund are involved; 
 - 页面不是壳，列表/详情/筛选/分页/导出均由 v3 数据驱动。
 - 微信支付和微信小店的真实 Provider 能力经过预发验证；生产开关仍需独立审批后启用。
 - 回调重放只结算一次，金额或身份漂移返回冲突。
-- 历史导入完成 `inspect -> dry-run -> apply -> delta -> reconcile`，全部恒等式成立。
+- 冻结源写后，历史导入完成 `inspect -> dry-run -> apply -> reconcile`，全部恒等式成立。
 - 抽样订单在源库、快照、v3 API 和页面四处一致。
 - 没有 raw external ID、手机号、Cookie、Token、私钥、回调正文或完整 Provider 响应进入结构化日志。
 - 未完成权益模块时，交易页面明确显示“支付已结算，权益处理不在本期”，不得宣称权益已发放。
@@ -102,7 +102,7 @@ External Effects: WeChat Pay prepay/refund and WeChat Shop refund are involved; 
 - 微信支付 checkout、短时 JSAPI handoff、支付回调、退款回调和主动对账。
 - 微信小店订单物料 Provider read、退款 intent、退款回调和主动查询对账。
 - 支付宝历史交易只读。
-- 全量历史用户/身份和交易数据的一次性迁移、增量追平、冲突隔离和对账。
+- 冻结源写后的唯一全量历史用户/身份与交易快照迁移、冲突隔离和逐项对账。
 - Provider disabled/readiness、审计、指标、告警和运行手册。
 
 ### 6.2 明确不做
@@ -146,11 +146,11 @@ External Effects: WeChat Pay prepay/refund and WeChat Shop refund are involved; 
 ### 7.4 历史迁移
 
 1. 使用已验证 host key 和受限只读账号盘点源 schema、约束、行数、金额、空值、重复值和时间水位。
-2. 先导出用户/身份最小快照，再导出订单、订单项、支付终态、退款终态和允许的事件摘要；每个文件单独生成 SHA-256 和列 manifest。
-3. 用户/身份先走 Identity/Customer 迁移或现有企微全量同步；不可解析记录进入 identity quarantine。
+2. 先导出权威用户主体及其身份归组，再导出订单、订单项、支付终态、退款终态和允许的事件摘要；每个文件单独生成 SHA-256 和列 manifest。
+3. 每个 source subject 的首个 verified identity 显式 provision Customer，其余 verified identity 在同一 UoW 附着到该根；已存在跨根命中整笔回滚且不自动 merge。不可解析记录进入 identity quarantine。
 4. Order 导入通过 Identity Port 查找受益人和付款人；无法唯一解析时允许历史订单 `beneficiary_customer_id=NULL`，但必须保存脱敏快照和冲突收据。
 5. 历史支付/退款只写 `record_origin=production_history` 的终态事实，强制 `effect_eligible=false`。
-6. 全量导入后按 `(updated_at, source_pk)` 拉取 T0-T1 增量；源交易写入口停写后做最后 delta 和对账。
+6. 源交易写入口停写并确认无在途回调后，以最终 `(updated_at, source_pk)` 水位生成唯一冻结全量快照；不对已导入历史订单做静默覆盖。
 7. 全量恒等式、金额对账和抽样通过后再切换读路由；写路由最后切换，避免双主写。
 
 ## 8. 领域架构
@@ -196,6 +196,7 @@ Order-owned：
 - `order_status_history`：只存版本化业务状态事实和安全摘要。
 - `order_export_receipts`：导出幂等、筛选 digest、行数/字节数、过期时间；不持久化明文 CSV。
 - `order_import_runs/receipts/quarantines`：源 manifest、source key digest、payload digest、target digest、结果桶和错误码。
+- `identity_history_import_receipts`：每个 source subject 或 identity quarantine 一条 append-only 回执；隔离行只保留安全摘要，不保存 raw identity。
 
 Payment-owned：
 
@@ -217,6 +218,7 @@ Payment-owned：
 5. 手机号只作为 declared identity 附着到已唯一解析的 Customer，不能建客、合并或升级 verified。
 6. 多个 Customer 命中同一强证据时写 conflict/merge candidate；本期不自动合并。
 7. 历史订单无法唯一归属时保持 floating，不阻塞订单事实迁移，也不把付款人快照当 OneID。
+8. 同一 source subject 的多身份必须全部解析到同一个 Customer；一项跨根即失败关闭，禁止把一个历史用户拆成多个根后继续迁移。
 
 ## 10. API 契约
 
@@ -234,6 +236,7 @@ Payment-owned：
 - `GET /api/admin/wechat-pay/orders/{order_ref}/external-push-deliveries`
 - `POST /api/admin/wechat-pay/orders/{order_ref}/refunds`
 - `POST /api/admin/wechat-shop/refunds/{refund_id}/reconcile`
+- `POST /api/v1/wechat-pay/sessions`
 - `POST /api/v1/wechat-pay/checkouts`
 - `GET /api/v1/wechat-pay/checkouts/{merchant_order_no}`
 - `POST /api/public/wechat-pay/callbacks/payment`
@@ -253,7 +256,7 @@ Payment-owned：
 - 金额、币种、商户单号、Provider 单号或 identity 漂移：409 + 审计，不能覆盖。
 - Provider disabled：503 readiness，且必须证明零网络调用。
 - 历史行退款请求：409 `historical_order_read_only`。
-- 导入冲突：隔离当前行并继续统计；结构/manifest 漂移：整个 run 停止。
+- 无 scope 身份：写安全隔离回执并继续统计；同一主体跨 OneID 根、金融 payload 冲突或结构/manifest 漂移：整个 run 停止。
 
 ## 12. 历史数据迁移方案
 
@@ -290,6 +293,8 @@ events.jsonl.enc
 
 Manifest 记录 schema version、源表/列、source SHA、T0/T1 watermark、行数、明文 canonical digest、密文 digest、加密 key version 和导出工具版本。快照位于受控目录，权限 `0600`，不得提交 Git；密钥不与快照同机长期保存。
 
+规范化 apply manifest 使用 `aicrm-commerce-history-v3`：`subjects[]` 固化权威 source person 与 identity keys 的一对多归组；`identities[]` 只含 namespace 完整的 verified facts；`identity_quarantines[]` 只含 reason code 与 digest 等安全证据；`orders[].items[]` 保留全部不可变商品行，不再把多商品订单压成单行。
+
 ### 12.4 结果桶与恒等式
 
 ```text
@@ -315,7 +320,7 @@ source_refund_rows = imported_terminal + duplicate_same + missing_order_quaranti
 - 列表 API：50 条默认页，100 条最大页，正常索引命中下 p95 < 500 ms。
 - 订单详情：p95 < 500 ms；不得为每条时间线发起 N+1 跨域查询。
 - 导出：最多 10,000 行、5 MiB，防 CSV 公式注入，生成物短时保存或流式返回。
-- 迁移：可断点续传、同 manifest 重放无新增、payload 漂移失败；吞吐目标在生产行数盘点后确定。
+- 迁移：冻结全量快照可断点续传、同 manifest 重放无新增、payload 漂移失败；吞吐目标在生产行数盘点后确定。
 - 财务数据 RPO=0（已提交数据库事实），应用 RTO <= 4 小时；迁移窗口 RPO=0。
 - 结构化日志仅含内部 ID、digest、阶段和错误码；禁止 PII/Secret。
 - 关键指标：订单写入、回调验签失败、重复回调、金额冲突、effect unknown、对账滞留、导入结果桶和 quarantine 增长。
@@ -331,18 +336,18 @@ source_refund_rows = imported_terminal + duplicate_same + missing_order_quaranti
 - Provider 网络调用期间无数据库事务。
 - `outcome_unknown` 不产生第二退款，不换幂等键。
 - OneID scope、无 scope OpenID/UnionID、手机号 declared 和多根冲突测试。
-- 历史导入三 Provider、重放、断点、delta、quarantine、rollback 和金额对账测试。
+- 历史导入三 Provider、主体多身份同根、跨根失败关闭、多商品、部分/全额退款、重放、断点、冻结快照、quarantine、rollback 和金额对账测试。
 - RBAC、CSRF、no-store、CSV 注入、cursor 篡改、模糊 order ref 冲突。
 - 供体前端 hash、TypeScript、浏览器交互和真实 v3 API 合同测试。
 
 ### 14.2 上线验收
 
 1. 本地 `make check`、相关 race tests、OpenAPI/前端构建、安全扫描通过。
-2. 预发用脱敏生产等价数据完成全量和 delta 演练。
+2. 预发用脱敏生产等价数据完成冻结全量演练。
 3. Provider disabled 下部署 schema/API/UI，确认零网络调用。
 4. 只读历史导入和 UI shadow 对比通过后先切读。
 5. 微信支付/微信小店分别小流量灰度；每种 Provider 都需要一笔真实支付/退款或平台允许的等价沙箱证据。
-6. 最终停写、delta、恒等式和抽样通过后切写；监控一个完整结算周期。
+6. 最终停写、冻结全量、恒等式和抽样通过后切写；监控一个完整结算周期。
 
 ## 15. 分 PR 交付顺序
 
@@ -355,7 +360,7 @@ source_refund_rows = imported_terminal + duplicate_same + missing_order_quaranti
 | PR-TX05 | Payment 聚合、payment-v1 External Effects 契约和 Fake Adapter | disabled |
 | PR-TX06 | 微信支付 checkout、验签回调、退款和主动对账 | 默认 disabled |
 | PR-TX07 | 微信小店物料读取、退款、回调和主动对账 | 默认 disabled |
-| PR-TX08 | 生产全量/delta 迁移、shadow、切读、灰度切写与观察 | 分阶段审批 |
+| PR-TX08 | 生产冻结全量迁移、shadow、切读、灰度切写与观察 | 分阶段审批 |
 
 每个 PR 只在自身用户能力、真库测试和部署/运行证据完成后推进模块状态。CI 绿、HTTP 200、Fake Provider 或“任务已排队”都不能单独作为完成证据。
 

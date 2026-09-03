@@ -10,7 +10,7 @@ import (
 func TestInspectAllowsIncompleteButDryRunFailsClosed(t *testing.T) {
 	directory := t.TempDir()
 	path := filepath.Join(directory, "snapshot.json")
-	raw := `{"schema_version":"aicrm-commerce-history-v2","run_key":"test-run","coverage":{"identities":true},"identities":[],"orders":[],"refunds":[]}`
+	raw := `{"schema_version":"aicrm-commerce-history-v3","run_key":"test-run","coverage":{"identities":true},"subjects":[],"identities":[],"identity_quarantines":[],"orders":[],"refunds":[]}`
 	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
 		t.Fatal(err)
 	}

@@ -65,3 +65,20 @@ type ProductOptionReader interface {
 type ProductTargetReader interface {
 	ReadProductTarget(context.Context, ProductOptionType, ID) (ProductOption, error)
 }
+
+// CheckoutProduct is the immutable minimum required to freeze a sale into an
+// Order. The Within method requires the caller's existing PostgreSQL UoW so a
+// concurrent lifecycle/price change cannot be observed across transactions.
+type CheckoutProduct struct {
+	ID          ID
+	ProductType ProductOptionType
+	Code        string
+	Name        string
+	PriceMinor  int64
+	Currency    string
+	Version     int64
+}
+
+type CheckoutProductReader interface {
+	ReadCheckoutProductWithin(context.Context, ProductOptionType, ID) (CheckoutProduct, error)
+}
