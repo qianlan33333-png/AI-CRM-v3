@@ -1220,12 +1220,12 @@ export async function runAdminAdapterTests(): Promise<void> {
     assert(error instanceof Error && error.message.includes('后端能力未就绪') && !called, 'blocked AI action must not send request');
   } finally { globalThis.fetch = savedFetch; }
 
-  let funnelCalled = false;
-  globalThis.fetch = async (input) => { funnelCalled = String(input) === '/api/admin/hxc-current?limit=100'; return new Response(JSON.stringify({ source: 'hxc_current_sync', read_only: true, real_external_call_executed: false, total: 1, matched_count: 0, unmatched_count: 1, conflict_count: 0, last_synced_at: '2026-08-30T00:00:00Z', items: [{ user_ref: 'HXC-****1234', match_state: 'unmatched', subscription_tier: 'member', current_period_used: 2, monthly_chat_quota: 100, user_messages_7d: 3, user_messages_30d: 7, last_used_at: '2026-08-30T00:00:00Z', source_updated_at: '2026-08-30T00:00:00Z', synced_at: '2026-08-30T00:00:00Z' }] }), { status: 200 }); };
+  const funnelCalls: string[] = [];
+  globalThis.fetch = async (input) => { const url=String(input); funnelCalls.push(url); const body=url.endsWith('/summary') ? { projection_id: 9, projection_as_of: '2026-08-30T00:00:00Z', published_at: '2026-08-30T00:01:00Z', freshness: 'fresh', source_digest: 'a'.repeat(64), projection_digest: 'b'.repeat(64), counts: { total: 1, active_used: 0, active_unused: 1, registered_no_active_membership: 0, matched: 0, unmatched: 1, conflict: 0 } } : { projection_id: 9, items: [{ user_ref: 'HXC-aabbccddeeff', stage: 'active_unused', subscription_tier: 'member', monthly_chat_quota: 100, current_period_used: 2, consultation_limit: 0, consultation_used: 0, membership_attribution: 'user_id', sessions_7d: 0, sessions_30d: 0, sessions_total: 0, user_messages_7d: 3, user_messages_30d: 7, user_messages_total: 7, capability_usage: {}, focus_topics: [], identity_state: 'unmatched', source_updated_at: '2026-08-30T00:00:00Z' }], groups: [], next_cursor: '' }; return new Response(JSON.stringify(body), { status: 200 }); };
   try {
     const funnelRoot = { className: '', innerHTML: '' } as unknown as HTMLElement;
     await mountFunnelGrid(funnelRoot, new HttpApi({ baseUrl: '' }));
-    assert(funnelRoot.innerHTML.includes('黄小璨用户当前态') && funnelRoot.innerHTML.includes('HXC-****1234') && funnelCalled, 'HXC funnel reads the current synchronized snapshot in HTTP mode');
+    assert(funnelRoot.innerHTML.includes('HXC 当前全量投影') && funnelRoot.innerHTML.includes('HXC-aabbccddeeff') && funnelCalls.join(',').includes('/api/admin/hxc-dashboard/summary') && funnelCalls.join(',').includes('/api/admin/hxc-dashboard/query'), 'HXC funnel reads the versioned current projection without a 100-row cap');
   } finally { globalThis.fetch = savedFetch; }
 
   globalThis.fetch = async () => new Response(JSON.stringify({ code: 'conflict' }), { status: 409 });
