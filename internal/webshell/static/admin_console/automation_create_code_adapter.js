@@ -13,6 +13,9 @@
   const existingRecord = () => new URLSearchParams(pageWindow.location.search).has("id");
   const bind = () => {
     try {
+      // This script intentionally runs in <head>, before the body and frozen
+      // controller template exist. Keep observing until both are present.
+      if (!body()) return false;
       const createCode = code();
       const input = doc.getElementById("agentCode");
       if (existingRecord() || !legal(createCode)) return true;

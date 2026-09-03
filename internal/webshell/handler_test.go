@@ -1,8 +1,13 @@
 package webshell
 
 import (
+	"bytes"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -554,6 +559,30 @@ func TestRenderAutomationUsesOnlyV3CreateCodeHostBinding(t *testing.T) {
 	}
 	if strings.Contains(response.Body.String(), `data-automation-create-code=`) {
 		t.Fatal("existing automation editor received a create-code binding")
+	}
+}
+
+func TestAutomationCreateCodeAdapterBrowserTiming(t *testing.T) {
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node is not installed")
+	}
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("locate webshell test")
+	}
+	repo := filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
+	if _, err := os.Stat(filepath.Join(repo, "web", "dist", "admin", "agentEdit.html")); err != nil {
+		t.Skip("browser bundle is not staged")
+	}
+	command := exec.Command("node", "internal/webshell/static/admin_console/automation_create_code_adapter.test.mjs")
+	command.Dir = repo
+	var output bytes.Buffer
+	command.Stdout, command.Stderr = &output, &output
+	if err := command.Run(); err != nil {
+		t.Fatalf("browser timing contract failed: %v\n%s", err, output.String())
+	}
+	if !strings.Contains(output.String(), "automation-create-code-adapter-browser: PASS") {
+		t.Fatalf("browser timing contract did not report success: %q", output.String())
 	}
 }
 

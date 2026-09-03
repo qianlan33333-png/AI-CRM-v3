@@ -6,7 +6,6 @@ import { buildTestBrowserBundle } from './test-browser-bundle.mjs';
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const bundle = await buildTestBrowserBundle(path.join(root, 'src/admin/main.ts'));
-const createCodeAdapter = fs.readFileSync(path.join(root, '..', 'internal', 'webshell', 'static', 'admin_console', 'automation_create_code_adapter.js'), 'utf8');
 const calls = [];
 const agent = (patch = {}) => ({
   id: 7, automation_type: 'agent', agent_code: 'welcome_agent', agent_name: '欢迎 Agent',
@@ -21,7 +20,7 @@ const agent = (patch = {}) => ({
 const createdAgent = agent({ id: 9, agent_code: 'new_agent', agent_name: '新 Agent' });
 const json = (body, status = 200) => ({ ok: status >= 200 && status < 300, status, headers: new Headers({ 'Content-Type': 'application/json' }), text: async () => JSON.stringify(body) });
 
-function page(name, query = '', createCode = '') {
+function page(name, query = '') {
   const html = fs.readFileSync(path.join(root, `dist/admin/${name}.html`), 'utf8');
   const dom = new JSDOM(html, {
     url: `http://localhost/admin/${name}.html${query}`, runScripts: 'outside-only', pretendToBeVisual: true,
@@ -41,10 +40,6 @@ function page(name, query = '', createCode = '') {
       };
     },
   });
-  if (createCode) dom.window.document.body.dataset.automationCreateCode = createCode;
-  // The v3 host binding runs before the frozen donor admin module. The donor
-  // controller below remains responsible for the exact POST/PATCH behavior.
-  dom.window.eval(createCodeAdapter);
   dom.window.eval(bundle);
   return dom;
 }
@@ -72,7 +67,7 @@ if (!calls.some((call) => call.path === '/api/admin/automation-agents/7/precheck
 if (!list.window.document.body.textContent.includes('material_unconfigured') || !list.window.document.body.textContent.includes('execution_disabled')) throw new Error('启用前检查结果未渲染');
 list.window.close();
 
-const edit = page('agentEdit', '?id=7', 'agent_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+const edit = page('agentEdit', '?id=7');
 await wait();
 const detail = edit.window.document;
 const nameInput = detail.querySelector('#agentName');
@@ -103,13 +98,12 @@ if (update.body.agent_name !== '欢迎 Agent 新版' || update.body.automation_t
 edit.window.close();
 
 const detailGetsBeforeCreate = calls.filter((call) => /\/api\/admin\/automation-agents\/\d+$/.test(call.path) && call.method === 'GET').length;
-const generatedAgentCode = 'agent_0123456789abcdef0123456789abcdef';
-const create = page('agentEdit', '?type=agent', generatedAgentCode);
+const create = page('agentEdit', '?type=agent');
 await wait();
 if (calls.filter((call) => /\/api\/admin\/automation-agents\/\d+$/.test(call.path) && call.method === 'GET').length !== detailGetsBeforeCreate) throw new Error('创建页意外发起数字详情请求');
 const createDoc = create.window.document;
 createDoc.querySelector('#agentName').value = '新 Agent';
-if (createDoc.querySelector('#agentCode').value !== generatedAgentCode || !/^agent_[a-f0-9]{32}$/.test(createDoc.querySelector('#agentCode').value)) throw new Error('Agent 创建页未由 v3 host binding 预填合法编码');
+createDoc.querySelector('#agentCode').value = 'new_agent';
 createDoc.querySelector('#agentType').value = 'agent';
 createDoc.querySelector('#agentRolePrompt').value = '新角色';
 createDoc.querySelector('#agentTaskPrompt').value = '新任务';
@@ -120,27 +114,8 @@ if (!created) throw new Error('创建页未发起 POST 请求');
 assertHeaders(created);
 const postKeys = Object.keys(created.body).sort();
 if (JSON.stringify(postKeys) !== JSON.stringify(['agent_code', 'agent_name', 'automation_type', 'role_prompt', 'task_prompt'])) throw new Error('POST 请求体键不符合预期');
-if (created.body.agent_name !== '新 Agent' || created.body.agent_code !== generatedAgentCode || created.body.automation_type !== 'agent' || created.body.role_prompt !== '新角色' || created.body.task_prompt !== '新任务') throw new Error('POST 请求体值不符合预期');
+if (created.body.agent_name !== '新 Agent' || created.body.agent_code !== 'new_agent' || created.body.automation_type !== 'agent' || created.body.role_prompt !== '新角色' || created.body.task_prompt !== '新任务') throw new Error('POST 请求体值不符合预期');
 create.window.close();
-
-const generatedFixedCode = 'agent_fedcba9876543210fedcba9876543210';
-const fixed = page('agentEdit', '?type=fixed_script', generatedFixedCode);
-await wait();
-const fixedDoc = fixed.window.document;
-if (fixedDoc.querySelector('#agentCode').value !== generatedFixedCode) throw new Error('固定话术创建页未由 v3 host binding 预填合法编码');
-// The frozen donor select retains its native default until the user changes
-// it, so exercise its unchanged save controller with the fixed-script value.
-fixedDoc.querySelector('#agentType').value = 'fixed_script';
-fixedDoc.querySelector('#agentName').value = '新固定话术';
-fixedDoc.querySelector('#agentRolePrompt').value = '固定角色';
-fixedDoc.querySelector('#agentTaskPrompt').value = '固定任务';
-fixedDoc.querySelector('[data-agent-save]').click();
-await wait();
-const fixedCreated = calls.filter((call) => call.path === '/api/admin/automation-agents' && call.method === 'POST').at(-1);
-if (!fixedCreated) throw new Error('固定话术创建页未发起 POST 请求');
-assertHeaders(fixedCreated);
-if (fixedCreated.body.agent_name !== '新固定话术' || fixedCreated.body.agent_code !== generatedFixedCode || fixedCreated.body.automation_type !== 'fixed_script' || fixedCreated.body.role_prompt !== '固定角色' || fixedCreated.body.task_prompt !== '固定任务') throw new Error('固定话术 POST 请求体未保持 donor 保存契约');
-fixed.window.close();
 
 if (calls.some((call) => /activate|send|dispatch|execute|provider|payment|refund/i.test(call.path))) throw new Error('Agent 页面意外触发外部效果请求');
 if (calls.some((call) => !call.path.startsWith('/api/'))) throw new Error('存在非本地假 fetch 请求');
