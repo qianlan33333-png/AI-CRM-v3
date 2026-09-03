@@ -34,6 +34,26 @@ func (r *Repository) SetCompletionSink(sink port.CompletionSink) error {
 
 var _ port.Accepter = (*Repository)(nil)
 var _ port.TransactionalAccepter = (*Repository)(nil)
+var _ port.UnknownReconciler = (*Repository)(nil)
+
+func (r *Repository) ReconcileUnknownWithin(ctx context.Context, command port.ReconcileCommand) error {
+	if command.EffectID == "" || !ValidDigest(command.ReceiptKey) || !ValidDigest(command.EvidenceDigest) || command.ActorAdminUserID < 1 || command.Generation < 1 || command.Fence < 1 {
+		return ErrInvalid
+	}
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return err
+	}
+	id, err := parseEffectID(command.EffectID)
+	if err != nil {
+		return err
+	}
+	var lease *time.Time
+	if err = tx.QueryRow(ctx, `SELECT lease_expires_at FROM external_effects WHERE id=$1 AND state='outcome_unknown' AND generation=$2 AND lease_fence=$3`, id, command.Generation, command.Fence).Scan(&lease); err != nil || lease == nil {
+		return ErrReconcileRequired
+	}
+	return r.ReconcileWithin(ctx, ControlCommand{EffectID: command.EffectID, ReceiptKey: command.ReceiptKey, EvidenceDigest: command.EvidenceDigest, ActorAdminUserID: command.ActorAdminUserID, Generation: command.Generation, Fence: command.Fence, LeaseExpiresAt: *lease})
+}
 
 func NewRepository(pool *pgxpool.Pool, client *river.Client[pgx.Tx]) (*Repository, error) {
 	if pool == nil || client == nil {
@@ -416,7 +436,10 @@ func (r *Repository) controlWithin(ctx context.Context, tx pgx.Tx, command Contr
 	if err = tx.QueryRow(ctx, `SELECT updated_at FROM external_effects WHERE id=$1`, id).Scan(&updated); err != nil {
 		return Projection{}, Receipt{}, err
 	}
-	if Kind(kind) == KindWeComTagCatalog && r.sink != nil {
+	// Group Ops owns its manual-reconciliation projection in RuntimeService;
+	// projecting it here as well would update the same execution twice. AI
+	// Assistant reconciliation delegates its owner projection to the sink.
+	if (Kind(kind) == KindWeComTagCatalog || Kind(kind) == KindOutboundMessage) && r.sink != nil {
 		envelope := Envelope{Owner: Owner(owner), Kind: Kind(kind), SourceRefDigest: Digest(source), TargetRefDigest: Digest(target), PayloadDigest: Digest(payload), PolicyVersionHash: Digest(policy)}
 		if err = r.sink.CompleteEffect(platformpostgres.BindTransaction(ctx, tx), effectID(id), envelope, Attempt{Number: attempts, Generation: generation, Fence: fence}, AdapterResult{Completion: next, ReceiptDigest: digest}); err != nil {
 			return Projection{}, Receipt{}, err
@@ -484,7 +507,7 @@ func (r *Repository) RunAttempt(ctx context.Context, id, generation, riverJobID 
 			}
 			return ErrTransition
 		}
-		if Kind(kind) == KindWeComTagCatalog && r.sink != nil {
+		if (Kind(kind) == KindWeComTagCatalog || Kind(kind) == KindGroupMessage || Kind(kind) == KindOutboundMessage) && r.sink != nil {
 			envelope := Envelope{Owner: Owner(owner), Kind: Kind(kind), SourceRefDigest: Digest(source), TargetRefDigest: Digest(target), PayloadDigest: Digest(payload), PolicyVersionHash: Digest(policy)}
 			if err = r.sink.CompleteEffect(platformpostgres.BindTransaction(ctx, tx), effectID(id), envelope, Attempt{Number: attempts, Generation: generation, Fence: fence}, AdapterResult{Completion: StateUnknown, ReceiptDigest: recovery, CallAttempted: true}); err != nil {
 				return err
@@ -582,7 +605,7 @@ func (r *Repository) RunAttempt(ctx context.Context, id, generation, riverJobID 
 		return ErrTransition
 	}
 	terminal := next == StateExecuted || next == StateUnknown || next == StateRetryable || next == StateFinalFailed
-	shouldComplete := r.sink != nil && terminal && (envelope.Kind == KindGroupMessage || envelope.Kind == KindWeComTagCatalog || envelope.Kind == KindChannelAsset || envelope.Kind == KindChannelWelcome || envelope.Kind == KindChannelEntryTag || envelope.Kind == KindChannelLink || envelope.Owner == OwnerPayment)
+	shouldComplete := r.sink != nil && terminal && (envelope.Kind == KindGroupMessage || envelope.Kind == KindWeComTagCatalog || envelope.Kind == KindChannelAsset || envelope.Kind == KindChannelWelcome || envelope.Kind == KindChannelEntryTag || envelope.Kind == KindChannelLink || envelope.Kind == KindOutboundMessage || envelope.Owner == OwnerPayment)
 	if shouldComplete {
 		completionResult := adapterResult
 		completionResult.Completion = next

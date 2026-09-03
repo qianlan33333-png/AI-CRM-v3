@@ -71,7 +71,9 @@ for migration_contract in \
   '0032_channel_acquisition_assets.sql:Channel acquisition assets' \
   '0033_wecom_welcome_grants.sql:WeCom welcome grants' \
   '0034_channel_entrant_actions.sql:Channel entrant actions' \
-  '0035_channel_acquisition_links.sql:Channel acquisition links'; do
+  '0035_channel_acquisition_links.sql:Channel acquisition links' \
+  '0036_ai_assistant_review.sql:AI Assistant review' \
+  '0037_outbound_private_messages.sql:Outbound private messages'; do
   migration="${migration_contract%%:*}"
   label="${migration_contract#*:}"
   test -f "migrations/${migration}" || {

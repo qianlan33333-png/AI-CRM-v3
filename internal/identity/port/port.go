@@ -27,6 +27,13 @@ type Resolver interface {
 	Resolve(context.Context, identitydomain.Reference) (ResolveResult, error)
 }
 
+// OutboundWeComIdentityReader is consumed only by the composition-owned
+// private-message target resolver. It may reveal a verified channel identity
+// to Outbound in memory, never to an HTTP response or structured log.
+type OutboundWeComIdentityReader interface {
+	VerifiedWeComIdentityForCustomer(context.Context, customerdomain.CustomerID, string) (string, bool, error)
+}
+
 type ProvisionCommand struct {
 	Fact           identitydomain.VerifiedFact
 	IdempotencyKey string

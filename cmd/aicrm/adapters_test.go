@@ -596,3 +596,26 @@ func TestApplicationRouterDefersLoginPostToIndependentCSRFProtection(t *testing.
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 }
+
+func TestAIAssistantMountRejectsCrossSiteUnsafeRequests(t *testing.T) {
+	marker := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusNoContent)
+	})
+	handler := mountAIAssistant(marker, marker, marker, &fakeAccessAuthentication{}, true, "https://crm.example")
+
+	request := httptest.NewRequest(http.MethodPost, "/api/admin/ai-assistant/plans/7/approve", nil)
+	request.Header.Set("Origin", "https://evil.example")
+	request.Header.Set("Sec-Fetch-Site", "cross-site")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("cross-site status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "/api/integrations/ai-assistant/review-plans", nil)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("machine request status=%d body=%s", response.Code, response.Body.String())
+	}
+}

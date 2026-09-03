@@ -24,6 +24,37 @@ var _ identityport.CommerceResolver = PostgreSQL{}
 var _ identityport.PaymentIdentityReader = PostgreSQL{}
 var _ identityport.HXCUnionIDBatchResolver = PostgreSQL{}
 var _ identityport.ExternalIdentityValueReader = PostgreSQL{}
+var _ identityport.OutboundWeComIdentityReader = PostgreSQL{}
+
+func (PostgreSQL) VerifiedWeComIdentityForCustomer(ctx context.Context, customerID customerdomain.CustomerID, corpID string) (string, bool, error) {
+	if customerID < 1 || strings.TrimSpace(corpID) != corpID || corpID == "" {
+		return "", false, identitydomain.ErrInvalidReference
+	}
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return "", false, err
+	}
+	rows, err := tx.Query(ctx, `SELECT normalized_value FROM customer_identities WHERE customer_id=$1 AND kind='wecom_external_userid' AND scope_key=$2 AND assurance='verified' AND status='active' ORDER BY id LIMIT 2`, customerID, "wecom-corp:"+corpID)
+	if err != nil {
+		return "", false, err
+	}
+	defer rows.Close()
+	values := make([]string, 0, 2)
+	for rows.Next() {
+		var value string
+		if err = rows.Scan(&value); err != nil {
+			return "", false, err
+		}
+		values = append(values, value)
+	}
+	if err = rows.Err(); err != nil {
+		return "", false, err
+	}
+	if len(values) != 1 {
+		return "", false, nil
+	}
+	return values[0], true, nil
+}
 
 func NewPostgreSQL() PostgreSQL { return PostgreSQL{} }
 

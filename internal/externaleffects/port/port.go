@@ -141,6 +141,15 @@ type Reader interface {
 	Get(context.Context, string) (Projection, error)
 }
 
+type ReconcileCommand struct {
+	EffectID                            string
+	ReceiptKey, EvidenceDigest          Digest
+	ActorAdminUserID, Generation, Fence int64
+}
+type UnknownReconciler interface {
+	ReconcileUnknownWithin(context.Context, ReconcileCommand) error
+}
+
 // ProviderAdapter is implemented by outbound. The effect kernel invokes it
 // only after the attempted fact is committed, so it can never hold a database
 // transaction across a provider network call.
