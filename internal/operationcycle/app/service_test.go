@@ -292,3 +292,14 @@ func TestAdminStrategyRejectsDatabaseInvalidKeyAndUntypedDefinition(t *testing.T
 		t.Fatalf("PII idempotency key error=%v", err)
 	}
 }
+
+func TestAdminAuditKeyIsBoundedScopedAndDoesNotExposeRawIdempotencyKey(t *testing.T) {
+	raw := strings.Repeat("a", 200)
+	key := adminEventKey("operation_cycle.strategy_created", "7", raw)
+	if len(key) != len("ocadmin_")+64 || strings.Contains(key, raw) {
+		t.Fatalf("admin audit key is not bounded/digested: %q", key)
+	}
+	if key == adminEventKey("operation_cycle.strategy_updated", "7", raw) || key == adminEventKey("operation_cycle.strategy_created", "8", raw) {
+		t.Fatal("admin audit key is not operation/actor scoped")
+	}
+}

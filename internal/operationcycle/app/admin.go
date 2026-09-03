@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"strings"
 )
 
@@ -50,7 +52,7 @@ func (s *Service) CreateStrategy(ctx context.Context, command CreateStrategyComm
 	if !s.validAdmin() || !validStrategyIdentity(command.StrategyKey, command.Title, command.IdempotencyKey, command.ActorID) || !validDefinition(command.Definition) {
 		return nil, ErrInvalid
 	}
-	return s.adminMutation(ctx, "operation_cycle.strategy_created", "create:"+command.ActorID+":"+command.IdempotencyKey, command.ActorID, func(txCtx context.Context) (map[string]any, bool, error) {
+	return s.adminMutation(ctx, "operation_cycle.strategy_created", command.ActorID, command.IdempotencyKey, func(txCtx context.Context) (map[string]any, bool, error) {
 		return s.store.CreateStrategy(txCtx, command, s.now().UTC())
 	})
 }
@@ -59,7 +61,7 @@ func (s *Service) UpdateStrategy(ctx context.Context, command UpdateStrategyComm
 	if !s.validAdmin() || command.ExpectedVersion < 1 || !validStrategyIdentity(command.StrategyKey, command.Title, command.IdempotencyKey, command.ActorID) || !validDefinition(command.Definition) {
 		return nil, ErrInvalid
 	}
-	return s.adminMutation(ctx, "operation_cycle.strategy_updated", "update:"+command.ActorID+":"+command.IdempotencyKey, command.ActorID, func(txCtx context.Context) (map[string]any, bool, error) {
+	return s.adminMutation(ctx, "operation_cycle.strategy_updated", command.ActorID, command.IdempotencyKey, func(txCtx context.Context) (map[string]any, bool, error) {
 		return s.store.UpdateStrategy(txCtx, command, s.now().UTC())
 	})
 }
@@ -68,7 +70,7 @@ func (s *Service) TransitionStrategy(ctx context.Context, command TransitionStra
 	if !s.validAdmin() || command.ExpectedVersion < 1 || !validStrategyKey(command.StrategyKey) || !validKey(command.IdempotencyKey, 200) || containsForbidden([]any{command.StrategyKey, command.IdempotencyKey}) || !validKey(command.ActorID, 240) || (command.Status != "active" && command.Status != "paused" && command.Status != "archived") {
 		return nil, ErrInvalid
 	}
-	return s.adminMutation(ctx, "operation_cycle.strategy_"+command.Status, "status:"+command.ActorID+":"+command.IdempotencyKey, command.ActorID, func(txCtx context.Context) (map[string]any, bool, error) {
+	return s.adminMutation(ctx, "operation_cycle.strategy_"+command.Status, command.ActorID, command.IdempotencyKey, func(txCtx context.Context) (map[string]any, bool, error) {
 		return s.store.TransitionStrategy(txCtx, command, s.now().UTC())
 	})
 }
@@ -95,7 +97,7 @@ func (s *Service) validAdmin() bool {
 	return s != nil && s.uow != nil && s.store != nil && s.events != nil && s.deliveries != nil
 }
 
-func (s *Service) adminMutation(ctx context.Context, eventType, eventKey, actor string, mutate func(context.Context) (map[string]any, bool, error)) (map[string]any, error) {
+func (s *Service) adminMutation(ctx context.Context, eventType, actor, idempotencyKey string, mutate func(context.Context) (map[string]any, bool, error)) (map[string]any, error) {
 	var result map[string]any
 	err := s.uow.Within(ctx, func(txCtx context.Context) error {
 		var reused bool
@@ -109,9 +111,14 @@ func (s *Service) adminMutation(ctx context.Context, eventType, eventKey, actor 
 			auditValue[key] = value
 		}
 		auditValue["actor_id"] = actor
-		return s.append(txCtx, eventType, eventKey, auditValue)
+		return s.append(txCtx, eventType, adminEventKey(eventType, actor, idempotencyKey), auditValue)
 	})
 	return result, err
+}
+
+func adminEventKey(eventType, actor, idempotencyKey string) string {
+	digest := sha256.Sum256([]byte(eventType + "\x00" + actor + "\x00" + idempotencyKey))
+	return "ocadmin_" + hex.EncodeToString(digest[:])
 }
 
 func validStrategyIdentity(key, title, idempotencyKey, actor string) bool {
