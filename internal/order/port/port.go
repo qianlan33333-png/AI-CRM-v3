@@ -22,8 +22,16 @@ type CreateCommand struct {
 }
 
 type ListQuery struct {
-	Cursor string
-	Limit  int32
+	Cursor      string
+	Limit       int32
+	Offset      int32
+	Provider    domain.Provider
+	Status      domain.Status
+	OrderRef    string
+	CustomerID  int64
+	Product     string
+	CreatedFrom *time.Time
+	CreatedTo   *time.Time
 }
 
 type Page struct {
@@ -53,7 +61,26 @@ type CommandService interface {
 
 type Query interface {
 	Get(context.Context, int64) (domain.Snapshot, error)
+	GetByReference(context.Context, string) (domain.Snapshot, error)
 	List(context.Context, ListQuery) (Page, error)
+}
+
+type ExportPreview struct {
+	Rows      int  `json:"total"`
+	Truncated bool `json:"truncated"`
+}
+
+type ExportResult struct {
+	ReceiptID     int64
+	Rows          int
+	Bytes         int
+	Content       []byte
+	ContentDigest [32]byte
+}
+
+type Exporter interface {
+	PreviewExport(context.Context, ListQuery) (ExportPreview, error)
+	ExportCSV(context.Context, ListQuery, int64, string) (ExportResult, error)
 }
 
 type SettlementWriter interface {

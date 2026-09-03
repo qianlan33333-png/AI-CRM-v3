@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -21,10 +22,11 @@ type memoryStore struct {
 	receipts map[string]Receipt
 	imports  map[string]ImportReceipt
 	failSave bool
+	exports  map[string]ExportReceipt
 }
 
 func newMemoryStore() *memoryStore {
-	return &memoryStore{nextID: 1, orders: map[int64]domain.Snapshot{}, receipts: map[string]Receipt{}, imports: map[string]ImportReceipt{}}
+	return &memoryStore{nextID: 1, orders: map[int64]domain.Snapshot{}, receipts: map[string]Receipt{}, imports: map[string]ImportReceipt{}, exports: map[string]ExportReceipt{}}
 }
 
 func (s *memoryStore) Reserve(_ context.Context, reservation Reservation) (Receipt, bool, error) {
@@ -70,7 +72,7 @@ func (s *memoryStore) Get(_ context.Context, id int64, _ bool) (domain.Order, er
 	return domain.Restore(snapshot)
 }
 
-func (s *memoryStore) List(_ context.Context, before *Cursor, limit int32) ([]domain.Order, error) {
+func (s *memoryStore) List(_ context.Context, before *Cursor, limit int32, _ ListFilter) ([]domain.Order, error) {
 	rows := make([]domain.Order, 0)
 	for id := s.nextID - 1; id >= 1 && len(rows) < int(limit); id-- {
 		snapshot := s.orders[id]
@@ -81,6 +83,31 @@ func (s *memoryStore) List(_ context.Context, before *Cursor, limit int32) ([]do
 		rows = append(rows, order)
 	}
 	return rows, nil
+}
+
+func (s *memoryStore) FindByReference(_ context.Context, reference string) ([]domain.Order, error) {
+	rows := []domain.Order{}
+	for _, snapshot := range s.orders {
+		if snapshot.MerchantOrderNo == reference || snapshot.ProviderTransactionNo == reference || snapshot.SourceKey == reference {
+			order, _ := domain.Restore(snapshot)
+			rows = append(rows, order)
+		}
+	}
+	return rows, nil
+}
+
+func (s *memoryStore) Export(_ context.Context, _ ListFilter, limit int32) ([]domain.Order, error) {
+	return s.List(context.Background(), nil, limit, ListFilter{})
+}
+
+func (s *memoryStore) RecordExport(_ context.Context, receipt ExportReceipt) (ExportReceipt, bool, error) {
+	key := string(receipt.KeyDigest[:])
+	if existing, ok := s.exports[key]; ok {
+		return existing, false, nil
+	}
+	receipt.ID = int64(len(s.exports) + 1)
+	s.exports[key] = receipt
+	return receipt, true, nil
 }
 
 func (s *memoryStore) UpdateSettlement(_ context.Context, order domain.Order, _ domain.StatusEvent, _ string) (domain.Order, error) {
@@ -173,5 +200,23 @@ func TestHistoricalImportRejectsEffectEligibleAndReplaysSource(t *testing.T) {
 	command.SourceDigest = [32]byte{2}
 	if _, err = service.ImportHistorical(context.Background(), command); !errors.Is(err, orderport.ErrConflict) {
 		t.Fatalf("source drift err=%v", err)
+	}
+}
+
+func TestExportCSVIsReceiptBackedReplayAndEscapesFormulas(t *testing.T) {
+	store := newMemoryStore()
+	service := NewService(directUOW{}, store)
+	input := orderInput("export-1")
+	input.Items[0].ProductName = "=HYPERLINK(\"bad\")"
+	if _, err := service.Create(context.Background(), orderport.CreateCommand{Input: input, Actor: 7, IdempotencyKey: "order-create-export-0001"}); err != nil {
+		t.Fatal(err)
+	}
+	first, err := service.ExportCSV(context.Background(), orderport.ListQuery{}, 7, "order-export-key-0001")
+	if err != nil || first.ReceiptID < 1 || !strings.Contains(string(first.Content), `"'=HYPERLINK(""bad"")"`) {
+		t.Fatalf("result=%+v content=%s err=%v", first, first.Content, err)
+	}
+	replay, err := service.ExportCSV(context.Background(), orderport.ListQuery{}, 7, "order-export-key-0001")
+	if err != nil || replay.ReceiptID != first.ReceiptID || len(store.exports) != 1 {
+		t.Fatalf("replay=%+v err=%v receipts=%d", replay, err, len(store.exports))
 	}
 }

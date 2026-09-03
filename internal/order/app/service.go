@@ -52,13 +52,38 @@ type Cursor struct {
 	ID        int64
 }
 
+type ListFilter struct {
+	Offset      int32
+	Provider    domain.Provider
+	Status      domain.Status
+	OrderRef    string
+	CustomerID  int64
+	Product     string
+	CreatedFrom *time.Time
+	CreatedTo   *time.Time
+}
+
+type ExportReceipt struct {
+	ID            int64
+	Actor         int64
+	KeyDigest     [32]byte
+	FilterDigest  [32]byte
+	RowCount      int
+	ByteCount     int
+	ContentDigest [32]byte
+	CreatedAt     time.Time
+}
+
 // Store is private to Order app/store. Cross-domain callers use port only.
 type Store interface {
 	Reserve(context.Context, Reservation) (Receipt, bool, error)
 	Complete(context.Context, int64, json.RawMessage, time.Time) (Receipt, error)
 	Insert(context.Context, domain.Order, int64, time.Time) (domain.Order, error)
 	Get(context.Context, int64, bool) (domain.Order, error)
-	List(context.Context, *Cursor, int32) ([]domain.Order, error)
+	List(context.Context, *Cursor, int32, ListFilter) ([]domain.Order, error)
+	FindByReference(context.Context, string) ([]domain.Order, error)
+	Export(context.Context, ListFilter, int32) ([]domain.Order, error)
+	RecordExport(context.Context, ExportReceipt) (ExportReceipt, bool, error)
 	UpdateSettlement(context.Context, domain.Order, domain.StatusEvent, string) (domain.Order, error)
 	Import(context.Context, string, [32]byte, domain.Order) (domain.Order, bool, error)
 }
@@ -150,7 +175,7 @@ func (s *Service) Get(ctx context.Context, id int64) (domain.Snapshot, error) {
 }
 
 func (s *Service) List(ctx context.Context, query orderport.ListQuery) (orderport.Page, error) {
-	if !ready(s) {
+	if !ready(s) || !validListQuery(query) {
 		return orderport.Page{}, orderport.ErrUnavailable
 	}
 	if query.Limit == 0 {
@@ -170,7 +195,7 @@ func (s *Service) List(ctx context.Context, query orderport.ListQuery) (orderpor
 	var rows []domain.Order
 	err := s.uow.Within(ctx, func(tx context.Context) error {
 		var listErr error
-		rows, listErr = s.store.List(tx, before, query.Limit+1)
+		rows, listErr = s.store.List(tx, before, query.Limit+1, filterFrom(query))
 		return listErr
 	})
 	if err != nil {
@@ -191,6 +216,136 @@ func (s *Service) List(ctx context.Context, query orderport.ListQuery) (orderpor
 		page.NextCursor = encodeCursor(Cursor{CreatedAt: last.CreatedAt, ID: last.ID})
 	}
 	return page, nil
+}
+
+func (s *Service) GetByReference(ctx context.Context, reference string) (domain.Snapshot, error) {
+	if !ready(s) || !validScope(reference) {
+		return domain.Snapshot{}, orderport.ErrNotFound
+	}
+	var matches []domain.Order
+	err := s.uow.Within(ctx, func(tx context.Context) error {
+		var findErr error
+		matches, findErr = s.store.FindByReference(tx, reference)
+		return findErr
+	})
+	if err != nil {
+		return domain.Snapshot{}, classify(err)
+	}
+	if len(matches) == 0 {
+		return domain.Snapshot{}, orderport.ErrNotFound
+	}
+	if len(matches) != 1 {
+		return domain.Snapshot{}, orderport.ErrConflict
+	}
+	return matches[0].Snapshot(), nil
+}
+
+func (s *Service) PreviewExport(ctx context.Context, query orderport.ListQuery) (orderport.ExportPreview, error) {
+	if !ready(s) || !validListQuery(query) {
+		return orderport.ExportPreview{}, orderport.ErrConflict
+	}
+	var rows []domain.Order
+	err := s.uow.Within(ctx, func(tx context.Context) error {
+		var exportErr error
+		rows, exportErr = s.store.Export(tx, filterFrom(query), 10001)
+		return exportErr
+	})
+	if err != nil {
+		return orderport.ExportPreview{}, classify(err)
+	}
+	return orderport.ExportPreview{Rows: min(len(rows), 10000), Truncated: len(rows) > 10000}, nil
+}
+
+func (s *Service) ExportCSV(ctx context.Context, query orderport.ListQuery, actor int64, idempotencyKey string) (orderport.ExportResult, error) {
+	if !ready(s) || actor < 1 || !validKey(idempotencyKey) || !validListQuery(query) {
+		return orderport.ExportResult{}, orderport.ErrConflict
+	}
+	filterPayload, _ := json.Marshal(filterFrom(query))
+	receipt := ExportReceipt{Actor: actor, KeyDigest: sha256.Sum256([]byte(idempotencyKey)), FilterDigest: sha256.Sum256(filterPayload), CreatedAt: s.now().UTC()}
+	var result orderport.ExportResult
+	err := s.uow.Within(ctx, func(tx context.Context) error {
+		rows, exportErr := s.store.Export(tx, filterFrom(query), 10001)
+		if exportErr != nil {
+			return exportErr
+		}
+		if len(rows) > 10000 {
+			return orderport.ErrConflict
+		}
+		content := encodeCSV(rows)
+		if len(content) > 5<<20 {
+			return orderport.ErrConflict
+		}
+		receipt.RowCount, receipt.ByteCount, receipt.ContentDigest = len(rows), len(content), sha256.Sum256(content)
+		stored, _, recordErr := s.store.RecordExport(tx, receipt)
+		if recordErr != nil {
+			return recordErr
+		}
+		if stored.FilterDigest != receipt.FilterDigest || stored.ContentDigest != receipt.ContentDigest || stored.RowCount != receipt.RowCount || stored.ByteCount != receipt.ByteCount {
+			return orderport.ErrConflict
+		}
+		result = orderport.ExportResult{ReceiptID: stored.ID, Rows: len(rows), Bytes: len(content), Content: content, ContentDigest: receipt.ContentDigest}
+		return nil
+	})
+	if err != nil {
+		return orderport.ExportResult{}, classify(err)
+	}
+	return result, nil
+}
+
+func validListQuery(query orderport.ListQuery) bool {
+	if query.CustomerID < 0 || query.Offset < 0 || query.Offset > 1000000 || (query.Cursor != "" && query.Offset != 0) || len(query.OrderRef) > 200 || len(query.Product) > 200 {
+		return false
+	}
+	if query.Provider != "" && query.Provider != domain.ProviderWeChatPay && query.Provider != domain.ProviderWeChatShop && query.Provider != domain.ProviderAlipay {
+		return false
+	}
+	if query.Status != "" {
+		switch query.Status {
+		case domain.StatusPendingPayment, domain.StatusPaid, domain.StatusPartiallyRefunded, domain.StatusRefunded, domain.StatusCancelled, domain.StatusPaymentFailed, domain.StatusClosed:
+		default:
+			return false
+		}
+	}
+	return query.CreatedFrom == nil || query.CreatedTo == nil || !query.CreatedFrom.After(*query.CreatedTo)
+}
+
+func filterFrom(query orderport.ListQuery) ListFilter {
+	return ListFilter{Offset: query.Offset, Provider: query.Provider, Status: query.Status, OrderRef: strings.TrimSpace(query.OrderRef), CustomerID: query.CustomerID, Product: strings.TrimSpace(query.Product), CreatedFrom: query.CreatedFrom, CreatedTo: query.CreatedTo}
+}
+
+func encodeCSV(orders []domain.Order) []byte {
+	var builder strings.Builder
+	builder.WriteString("created_at,merchant_order_no,provider_transaction_no,provider,payer_customer_id,beneficiary_customer_id,product_code,product_name,amount_minor,currency,status,record_origin\r\n")
+	for _, order := range orders {
+		snapshot := order.Snapshot()
+		productCode, productName := "", ""
+		if len(snapshot.Items) > 0 {
+			productCode, productName = snapshot.Items[0].ProductCode, snapshot.Items[0].ProductName
+		}
+		values := []string{snapshot.CreatedAt.UTC().Format(time.RFC3339Nano), snapshot.MerchantOrderNo, snapshot.ProviderTransactionNo, string(snapshot.Provider), optionalID(snapshot.PayerCustomerID), optionalID(snapshot.BeneficiaryCustomerID), productCode, productName, strconv.FormatInt(snapshot.Amount.AmountMinor, 10), snapshot.Amount.Currency, string(snapshot.Status), string(snapshot.RecordOrigin)}
+		for index, value := range values {
+			if index > 0 {
+				builder.WriteByte(',')
+			}
+			builder.WriteString(csvCell(value))
+		}
+		builder.WriteString("\r\n")
+	}
+	return []byte(builder.String())
+}
+
+func optionalID(value *int64) string {
+	if value == nil {
+		return ""
+	}
+	return strconv.FormatInt(*value, 10)
+}
+
+func csvCell(value string) string {
+	if value != "" && strings.ContainsRune("=+-@", rune(value[0])) {
+		value = "'" + value
+	}
+	return `"` + strings.ReplaceAll(value, `"`, `""`) + `"`
 }
 
 func (s *Service) ApplySettlement(ctx context.Context, command orderport.SettlementCommand) (domain.Snapshot, error) {

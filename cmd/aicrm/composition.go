@@ -35,6 +35,9 @@ import (
 	mediaapp "github.com/qianlan33333-png/AI-CRM-v3/internal/media/app"
 	groupopsmaterial "github.com/qianlan33333-png/AI-CRM-v3/internal/media/groupopsmaterial"
 	mediastore "github.com/qianlan33333-png/AI-CRM-v3/internal/media/store"
+	orderapp "github.com/qianlan33333-png/AI-CRM-v3/internal/order/app"
+	orderhttp "github.com/qianlan33333-png/AI-CRM-v3/internal/order/http"
+	orderstore "github.com/qianlan33333-png/AI-CRM-v3/internal/order/store"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/outbound"
 	platformaudit "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/audit"
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
@@ -315,6 +318,15 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
+	orderRepository, err := orderstore.NewPostgreSQL(pool.Native(), uow)
+	if err != nil {
+		return fail(err)
+	}
+	orderService := orderapp.NewService(uow, orderRepository)
+	orderHandler, err := orderhttp.NewHandler(orderService, requestSecurity)
+	if err != nil {
+		return fail(err)
+	}
 
 	renderer, err := webshell.NewRenderer()
 	if err != nil {
@@ -420,6 +432,15 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	adminAPIs.Handle("/api/admin/customers/", customerHandler.Routes())
 	adminAPIs.Handle("/api/admin/customer-sync-runs", syncHandler.Routes())
 	adminAPIs.Handle("/api/admin/customer-sync-runs/", syncHandler.Routes())
+	adminAPIs.Handle("/api/admin/orders", orderHandler)
+	adminAPIs.Handle("/api/admin/orders/", orderHandler)
+	adminAPIs.Handle("/api/admin/refunds", orderHandler)
+	adminAPIs.Handle("/api/admin/exports", orderHandler)
+	adminAPIs.Handle("/api/admin/exports/", orderHandler)
+	adminAPIs.Handle("/api/admin/alipay/transactions", orderHandler)
+	adminAPIs.Handle("/api/admin/wechat-pay/orders", orderHandler)
+	adminAPIs.Handle("/api/admin/wechat-pay/orders/", orderHandler)
+	adminAPIs.Handle("/api/admin/wechat-pay/order-exports", orderHandler)
 	adminAPIs.Handle("/api/v1/products", productBindings.Products)
 	adminAPIs.Handle("/api/v1/products/", productBindings.Products)
 	adminAPIs.Handle("/api/admin/wechat-pay/products", productBindings.Products)
@@ -619,6 +640,15 @@ func routeApplicationWithProductsCouponsGroupOps(health, access, identity, effec
 	mux.Handle("/api/sidebar/v2/questionnaires", identity)
 	mux.Handle("/api/v1/customers/", identity)
 	mux.Handle("/admin/questionnaires/", identity)
+	mux.Handle("/api/admin/orders", identity)
+	mux.Handle("/api/admin/orders/", identity)
+	mux.Handle("/api/admin/refunds", identity)
+	mux.Handle("/api/admin/exports", identity)
+	mux.Handle("/api/admin/exports/", identity)
+	mux.Handle("/api/admin/alipay/transactions", identity)
+	mux.Handle("/api/admin/wechat-pay/orders", identity)
+	mux.Handle("/api/admin/wechat-pay/orders/", identity)
+	mux.Handle("/api/admin/wechat-pay/order-exports", identity)
 	mux.Handle("/api/admin/external-effects", effects)
 	mux.Handle("/api/admin/external-effects/", effects)
 	mux.Handle("/api/admin/push-center/", pushCenter)
