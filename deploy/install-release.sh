@@ -93,6 +93,14 @@ test -f "$release_dir/release-files.sha256"
 printf 'AICRM_RELEASE_SHA=%s\n' "$release_sha" > "$release_dir/release.env"
 chown -R aicrm:aicrm "$release_dir"
 
+cleanup_release_artifacts() {
+  rm -f -- "$archive"
+  if [[ "$0" == "/tmp/install-release-${release_sha}.sh" ]]; then
+    rm -f -- "$0"
+  fi
+}
+trap cleanup_release_artifacts EXIT
+
 # A workflow-level concurrency group cannot serialize every main deployment:
 # GitHub retains only one pending run per group, and SHA-unique groups allow
 # builds to overlap. The host therefore owns the release critical section.

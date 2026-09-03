@@ -204,7 +204,9 @@ jobs:
         run: |
           set -euo pipefail
           ssh_flags=(-i "$HOME/.ssh/deploy_key" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes)
-          scp "${ssh_flags[@]}" "aicrm-${GITHUB_SHA}.tar.gz" deploy/install-release.sh "${DEPLOY_USER}@${DEPLOY_HOST}:/tmp/"
+          remote_installer="/tmp/install-release-${GITHUB_SHA}.sh"
+          scp "${ssh_flags[@]}" "aicrm-${GITHUB_SHA}.tar.gz" "${DEPLOY_USER}@${DEPLOY_HOST}:/tmp/"
+          scp "${ssh_flags[@]}" deploy/install-release.sh "${DEPLOY_USER}@${DEPLOY_HOST}:${remote_installer}"
           ssh "${ssh_flags[@]}" "${DEPLOY_USER}@${DEPLOY_HOST}" \
-            "sudo /usr/bin/bash /tmp/install-release.sh /tmp/aicrm-${GITHUB_SHA}.tar.gz ${GITHUB_SHA} ${GITHUB_RUN_NUMBER}"
+            "sudo /usr/bin/bash ${remote_installer} /tmp/aicrm-${GITHUB_SHA}.tar.gz ${GITHUB_SHA} ${GITHUB_RUN_NUMBER}"
           curl --fail --silent --show-error --retry 5 --retry-delay 2 https://id-dev.youcangogogo.com/readyz

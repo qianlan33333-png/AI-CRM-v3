@@ -83,7 +83,7 @@ chmod 0755 "$test_root/bin"/*
   cat <<'EOF'
 test_lock_acquire() {
   while ! mkdir "$AICRM_TEST_LOCK_DIR" 2>/dev/null; do /bin/sleep 0.01; done
-  trap 'rmdir "$AICRM_TEST_LOCK_DIR" 2>/dev/null || true' EXIT
+  trap 'cleanup_release_artifacts; rmdir "$AICRM_TEST_LOCK_DIR" 2>/dev/null || true' EXIT
 }
 EOF
   tail -n +2 "$source_installer"
@@ -145,6 +145,7 @@ for sha in "$sha_one" "$sha_manual" "$sha_stale" "$sha_failed" "$sha_first" "$sh
 run_release "$sha_one" 100 initial
 [[ "$(<"$test_root/aicrm/last-successful-run-number")" == 100 ]] || fail "successful run did not persist its run number"
 [[ "$(readlink "$test_root/aicrm/current")" == "$test_root/aicrm/releases/$sha_one" ]] || fail "initial release was not activated"
+[[ ! -e "/tmp/aicrm-${sha_one}.tar.gz" ]] || fail "successful versioned install did not clean its archive"
 
 run_release "$sha_manual" "" manual
 [[ "$(<"$test_root/aicrm/last-successful-run-number")" == 100 ]] || fail "manual compatibility install advanced the CI run number"
