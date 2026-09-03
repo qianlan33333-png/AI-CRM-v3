@@ -88,24 +88,34 @@ func (r *Repository) List(ctx context.Context, limit, offset int32, search, stat
 		where = append(where, "status=$"+itoa(len(args)))
 	}
 	args = append(args, limit, offset)
-	rows, e := tx.Query(ctx, `SELECT `+couponColumns+` FROM coupon_rules WHERE `+strings.Join(where, " AND ")+` ORDER BY updated_at DESC,id DESC LIMIT $`+itoa(len(args)-1)+` OFFSET $`+itoa(len(args)))
+	rows, e := tx.Query(ctx, `SELECT `+couponColumns+` FROM coupon_rules WHERE `+strings.Join(where, " AND ")+` ORDER BY updated_at DESC,id DESC LIMIT $`+itoa(len(args)-1)+` OFFSET $`+itoa(len(args)), args...)
 	if e != nil {
 		return nil, e
 	}
-	defer rows.Close()
 	out := []couponport.Coupon{}
 	for rows.Next() {
 		c, e := scanCoupon(rows)
 		if e != nil {
-			return nil, e
-		}
-		c.TargetRefs, e = r.targets(ctx, tx, c.ID)
-		if e != nil {
+			rows.Close()
 			return nil, e
 		}
 		out = append(out, c)
 	}
-	return out, rows.Err()
+	if e = rows.Err(); e != nil {
+		rows.Close()
+		return nil, e
+	}
+	rows.Close()
+	// pgx transactions use one connection. Finish consuming and close the
+	// list cursor before issuing the per-rule target queries on that same
+	// connection; otherwise any non-empty result fails with "conn busy".
+	for index := range out {
+		out[index].TargetRefs, e = r.targets(ctx, tx, out[index].ID)
+		if e != nil {
+			return nil, e
+		}
+	}
+	return out, nil
 }
 func (r *Repository) Count(ctx context.Context, search, status string) (int64, error) {
 	tx, e := platformpostgres.RequireTransaction(ctx)
