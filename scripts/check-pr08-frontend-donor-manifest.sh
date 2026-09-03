@@ -45,9 +45,9 @@ git -C "$donor_root" rev-parse --git-dir >/dev/null 2>&1 || die "donor path is n
 
 # The YAML is deliberately checked without introducing a parser dependency;
 # the shape checks below guard the fields consumed by this script.
-rg -q "^source_commit: ${frozen_sha}$" "$yaml_manifest" || die "YAML source_commit does not match $frozen_sha"
-rg -q '^  exact_file_count: 2$' "$yaml_manifest" || die "YAML exact_file_count is not 2"
-rg -q '^  byte_exact_staged_under: web/donors/operation-cycles-v2/src$' "$yaml_manifest" || die "YAML staged root is not the allowlisted root"
+grep -qE "^source_commit: ${frozen_sha}$" "$yaml_manifest" || die "YAML source_commit does not match $frozen_sha"
+grep -qE '^  exact_file_count: 2$' "$yaml_manifest" || die "YAML exact_file_count is not 2"
+grep -qE '^  byte_exact_staged_under: web/donors/operation-cycles-v2/src$' "$yaml_manifest" || die "YAML staged root is not the allowlisted root"
 
 resolved_sha="$(git -C "$donor_root" rev-parse "${frozen_sha}^{commit}")"
 [[ "$resolved_sha" == "$frozen_sha" ]] || die "donor SHA mismatch: expected $frozen_sha, got $resolved_sha"
@@ -109,7 +109,7 @@ expected_target_files=$'admin/templates/cycles.html\nadmin/templates/cyclesDetai
 
 # Both files are HTML fragments.  A full v2 page or navigation shell would
 # create a second sidebar when mounted by the v3 webshell.
-if rg -n '<!DOCTYPE|<html|<body|<aside|class="shell"|class="side"' "$target_root"; then
+if grep -R -nE '<!DOCTYPE|<html|<body|<aside|class="shell"|class="side"' "$target_root"; then
   die "staged donor contains a complete page or v2 sidebar shell"
 fi
 

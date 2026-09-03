@@ -219,7 +219,6 @@ async function main() {
       questionnaireEditorStyles: path.join(SRC, 'admin/sections/questionnaireEditorStyles.css'),
       tokens: path.join(SRC, 'shared/ui/tokens.css'),
       labs: path.join(SRC, 'admin/sections/labs.css'),
-      operationCyclesHost: path.join(ROOT, 'v3/operationCyclesAdapter.ts'),
     },
     bundle: true,
     format: 'esm',
@@ -244,11 +243,10 @@ async function main() {
       questionnaireEditorStyles: path.join(SRC, 'admin/sections/questionnaireEditorStyles.css'),
       sidebarStyles: path.join(SRC, 'sidebar/sidebar.css'),
       tokens: path.join(SRC, 'shared/ui/tokens.css'), labs: path.join(SRC, 'admin/sections/labs.css'),
-      operationCyclesHost: path.join(ROOT, 'v3/operationCyclesAdapter.ts'),
     }).find(([, entry]) => path.resolve(REPOSITORY, metadata.entryPoint) === entry)?.[0];
     if (name) entries[name] = outputPath(output);
   }
-  for (const required of ['admin', 'h5', 'sidebar', 'sidebarStyles', 'memberGridShare', 'questionnaireEditor', 'questionnaireEditorStyles', 'tokens', 'labs', 'operationCyclesHost']) {
+  for (const required of ['admin', 'h5', 'sidebar', 'sidebarStyles', 'memberGridShare', 'questionnaireEditor', 'questionnaireEditorStyles', 'tokens', 'labs']) {
     if (!entries[required]) throw new Error(`missing build entry: ${required}`);
   }
 

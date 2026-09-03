@@ -10,5 +10,5 @@
     "outDir": "dist",
     "types": []
   },
-  "include": ["src/**/*.ts", "v3/**/*.ts"]
+  "include": ["src/**/*.ts"]
 }

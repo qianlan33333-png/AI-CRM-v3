@@ -55,6 +55,8 @@ jobs:
       - name: Pin frozen donor npm
         run: npm install --global npm@11.12.1
       - name: Build and stage frozen External Effects workspace
+        env:
+          PR08_DONOR_DIR: ${{ github.workspace }}/.ci-donor-v2
         run: |
           npm ci
           npm run version:check
@@ -75,8 +77,10 @@ jobs:
           node --check internal/webshell/static/admin_console/survey_operations.js
           scripts/check-pr08-frontend-donor-manifest.sh
           npm run typecheck
+          npx tsc -p web/v3/tsconfig.json --noEmit
           npm test
           npm run build
+          node scripts/build-v3-host-adapters.mjs
           mkdir -p release
           node scripts/stage-pr01-effects-ui.mjs web/dist release/web/dist
           node scripts/test-stage-pr01-effects-ui.mjs
@@ -132,6 +136,7 @@ jobs:
           CGO_ENABLED: "0"
           GOOS: linux
           GOARCH: amd64
+          PR08_DONOR_DIR: ${{ github.workspace }}/.ci-donor-v2
         run: |
           set -euo pipefail
           mkdir -p release/bin
@@ -154,7 +159,9 @@ jobs:
           node --check internal/webshell/static/admin_console/survey_operations.js
           scripts/check-pr08-frontend-donor-manifest.sh
           npm run typecheck
+          npx tsc -p web/v3/tsconfig.json --noEmit
           npm run build
+          node scripts/build-v3-host-adapters.mjs
           cp -R migrations deploy release/
           node scripts/stage-pr01-effects-ui.mjs web/dist release/web/dist
           node scripts/test-stage-pr01-effects-ui.mjs
