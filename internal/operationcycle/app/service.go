@@ -101,6 +101,11 @@ type Store interface {
 	CreateProposal(context.Context, ProposalCommand, time.Time) (map[string]any, bool, error)
 	ListProposals(context.Context, string, int32, int32) (map[string]any, error)
 	DecideProposal(context.Context, string, string, string, time.Time) (map[string]any, error)
+	CreateStrategy(context.Context, CreateStrategyCommand, time.Time) (map[string]any, bool, error)
+	UpdateStrategy(context.Context, UpdateStrategyCommand, time.Time) (map[string]any, bool, error)
+	TransitionStrategy(context.Context, TransitionStrategyCommand, time.Time) (map[string]any, bool, error)
+	ListStrategyVersions(context.Context, string, int32, int32) (map[string]any, error)
+	ListRunVersions(context.Context, string, int32, int32) (map[string]any, error)
 }
 
 type Service struct {

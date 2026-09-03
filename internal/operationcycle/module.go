@@ -31,7 +31,8 @@ func (m *ModuleRegistration) Readiness(ctx context.Context, pool *pgxpool.Pool) 
 	err := pool.QueryRow(ctx, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY[
 		'operation_cycle_strategies','operation_cycle_runs','operation_cycle_report_receipts',
 		'operation_cycle_runners','operation_cycle_action_requests','operation_cycle_action_request_events',
-		'operation_cycle_strategy_proposals']) AS required(name)
+		'operation_cycle_strategy_proposals','operation_cycle_strategy_versions',
+		'operation_cycle_run_versions','operation_cycle_admin_receipts']) AS required(name)
 		WHERE to_regclass(current_schema() || '.' || required.name) IS NULL)`).Scan(&ready)
 	if err != nil {
 		return err

@@ -58,17 +58,50 @@ func (h *Handler) serveAdmin(w http.ResponseWriter, r *http.Request, p []string)
 	}
 	limit, offset, pageOK := page(r)
 	switch {
+	case r.Method == http.MethodPost && len(p) == 1 && p[0] == "strategies" && noQuery(r):
+		var body strategyCreateBody
+		if decode(w, r, &body) != nil {
+			writeError(w, http.StatusBadRequest, "malformed_request")
+			return
+		}
+		value, err := h.service.CreateStrategy(r.Context(), operationapp.CreateStrategyCommand{StrategyKey: body.StrategyKey, Title: body.Title, Definition: body.Definition.command(), IdempotencyKey: strings.TrimSpace(r.Header.Get("Idempotency-Key")), ActorID: strconv.FormatInt(principal.InternalID, 10)})
+		writeResult(w, http.StatusCreated, value, err)
+	case r.Method == http.MethodPut && len(p) == 2 && p[0] == "strategies" && noQuery(r):
+		var body strategyUpdateBody
+		if decode(w, r, &body) != nil {
+			writeError(w, http.StatusBadRequest, "malformed_request")
+			return
+		}
+		value, err := h.service.UpdateStrategy(r.Context(), operationapp.UpdateStrategyCommand{StrategyKey: p[1], ExpectedVersion: body.ExpectedVersion, Title: body.Title, Definition: body.Definition.command(), IdempotencyKey: strings.TrimSpace(r.Header.Get("Idempotency-Key")), ActorID: strconv.FormatInt(principal.InternalID, 10)})
+		writeResult(w, http.StatusOK, value, err)
+	case r.Method == http.MethodPost && len(p) == 3 && p[0] == "strategies" && p[2] == "status" && noQuery(r):
+		var body struct {
+			ExpectedVersion int32  `json:"expected_version"`
+			Status          string `json:"status"`
+		}
+		if decode(w, r, &body) != nil {
+			writeError(w, http.StatusBadRequest, "malformed_request")
+			return
+		}
+		value, err := h.service.TransitionStrategy(r.Context(), operationapp.TransitionStrategyCommand{StrategyKey: p[1], ExpectedVersion: body.ExpectedVersion, Status: body.Status, IdempotencyKey: strings.TrimSpace(r.Header.Get("Idempotency-Key")), ActorID: strconv.FormatInt(principal.InternalID, 10)})
+		writeResult(w, http.StatusOK, value, err)
 	case r.Method == http.MethodGet && len(p) == 1 && p[0] == "strategies" && pageOK:
 		value, err := h.service.ListStrategies(r.Context(), limit, offset)
 		writeResult(w, http.StatusOK, value, err)
 	case r.Method == http.MethodGet && len(p) == 2 && p[0] == "strategies" && noQuery(r):
 		value, err := h.service.GetStrategy(r.Context(), p[1])
 		writeResult(w, http.StatusOK, value, err)
+	case r.Method == http.MethodGet && len(p) == 3 && p[0] == "strategies" && p[2] == "versions" && pageOK:
+		value, err := h.service.ListStrategyVersions(r.Context(), p[1], limit, offset)
+		writeResult(w, http.StatusOK, value, err)
 	case r.Method == http.MethodGet && len(p) == 1 && p[0] == "runs" && pageOK:
 		// Compatibility alias used by the v3 host adapter to resolve a run by key.
 		writeError(w, http.StatusBadRequest, "malformed_request")
 	case r.Method == http.MethodGet && len(p) == 2 && p[0] == "runs" && noQuery(r):
 		value, err := h.service.GetRun(r.Context(), p[1])
+		writeResult(w, http.StatusOK, value, err)
+	case r.Method == http.MethodGet && len(p) == 3 && p[0] == "runs" && p[2] == "versions" && pageOK:
+		value, err := h.service.ListRunVersions(r.Context(), p[1], limit, offset)
 		writeResult(w, http.StatusOK, value, err)
 	case r.Method == http.MethodGet && len(p) == 3 && p[0] == "strategies" && p[2] == "runs" && pageOK:
 		value, err := h.service.ListRuns(r.Context(), p[1], limit, offset)
@@ -110,6 +143,40 @@ func (h *Handler) serveAdmin(w http.ResponseWriter, r *http.Request, p []string)
 		}
 		writeError(w, http.StatusNotFound, "not_found")
 	}
+}
+
+type strategyStageBody struct {
+	Key   string `json:"key"`
+	Label string `json:"label"`
+	Color string `json:"color"`
+	State string `json:"state"`
+}
+
+type strategyDefinitionBody struct {
+	Schedule       string              `json:"schedule"`
+	IndicatorColor string              `json:"indicator_color"`
+	PrimaryAction  string              `json:"primary_action"`
+	Stages         []strategyStageBody `json:"stages"`
+}
+
+func (body strategyDefinitionBody) command() operationapp.StrategyDefinition {
+	stages := make([]operationapp.StrategyStage, 0, len(body.Stages))
+	for _, stage := range body.Stages {
+		stages = append(stages, operationapp.StrategyStage{Key: stage.Key, Label: stage.Label, Color: stage.Color, State: stage.State})
+	}
+	return operationapp.StrategyDefinition{Schedule: body.Schedule, IndicatorColor: body.IndicatorColor, PrimaryAction: body.PrimaryAction, Stages: stages}
+}
+
+type strategyCreateBody struct {
+	StrategyKey string                 `json:"strategy_key"`
+	Title       string                 `json:"title"`
+	Definition  strategyDefinitionBody `json:"definition"`
+}
+
+type strategyUpdateBody struct {
+	ExpectedVersion int32                  `json:"expected_version"`
+	Title           string                 `json:"title"`
+	Definition      strategyDefinitionBody `json:"definition"`
 }
 
 func (h *Handler) serveRunner(w http.ResponseWriter, r *http.Request, p []string) {

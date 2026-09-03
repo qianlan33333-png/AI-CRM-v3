@@ -1048,6 +1048,7 @@ INSERT INTO operation_cycle_runs (run_key, strategy_key, snapshot_revision, snap
 VALUES ($1, $2, $3, $4, $5)
 ON CONFLICT (run_key) DO UPDATE SET strategy_key = EXCLUDED.strategy_key, snapshot_revision = EXCLUDED.snapshot_revision,
   snapshot = EXCLUDED.snapshot, received_at = EXCLUDED.received_at
+WHERE EXCLUDED.snapshot_revision > operation_cycle_runs.snapshot_revision
 `
 
 type UpsertOperationCycleRunParams struct {
@@ -1105,6 +1106,7 @@ INSERT INTO operation_cycle_strategies (strategy_key, title, status, version, de
 VALUES ($1, $2, $3, $4, $5, $6, $7)
 ON CONFLICT (strategy_key) DO UPDATE SET title = EXCLUDED.title, status = EXCLUDED.status, version = EXCLUDED.version,
   definition = EXCLUDED.definition, snapshot = EXCLUDED.snapshot, updated_at = EXCLUDED.updated_at
+WHERE EXCLUDED.version >= operation_cycle_strategies.version
 `
 
 type UpsertOperationCycleStrategyParams struct {

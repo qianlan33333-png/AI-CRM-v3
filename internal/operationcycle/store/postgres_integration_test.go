@@ -106,6 +106,177 @@ func TestPostgreSQLOperationCycleReportToTerminalActionJourney(t *testing.T) {
 	}
 }
 
+// The admin Journey is entirely local: typed strategy definition changes,
+// immutable versions, receipts, audit and outbox commit in one PostgreSQL UoW.
+// A newly constructed service proves that a browser refresh reads persisted
+// state rather than an in-process projection.
+func TestPostgreSQLOperationCycleAdminJourneyPersistsImmutableHistory(t *testing.T) {
+	native, cleanup := operationCycleIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	wrapped, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wrapped.Close()
+	uow, err := platformpostgres.NewUnitOfWork(wrapped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newService := func() *operationapp.Service {
+		return operationapp.NewService(uow, NewRepository(), NewEventJournal(), NewEventJournal())
+	}
+	service := newService()
+	definition := operationapp.StrategyDefinition{
+		Schedule: "每周一 09:00", IndicatorColor: "#2EA121", PrimaryAction: "start_review",
+		Stages: []operationapp.StrategyStage{{Key: "prepare", Label: "准备", Color: "#3370FF", State: "completed"}, {Key: "retro", Label: "复盘", Color: "#2EA121", State: "current"}},
+	}
+	create := operationapp.CreateStrategyCommand{StrategyKey: "admin.weekly.review", Title: "每周复盘", Definition: definition, IdempotencyKey: "admin-create-weekly-review", ActorID: "7"}
+	created, err := service.CreateStrategy(ctx, create)
+	if err != nil || created["status"] != "draft" || created["version"] != int32(1) {
+		t.Fatalf("create=%#v err=%v", created, err)
+	}
+	replayed, err := service.CreateStrategy(ctx, create)
+	if err != nil || replayed["strategy_key"] != create.StrategyKey {
+		t.Fatalf("create replay=%#v err=%v", replayed, err)
+	}
+	drift := create
+	drift.Title = "漂移标题"
+	if _, err = service.CreateStrategy(ctx, drift); !errors.Is(err, operationapp.ErrConflict) {
+		t.Fatalf("create payload drift=%v, want conflict", err)
+	}
+	definition.Schedule = "每周二 10:00"
+	updated, err := service.UpdateStrategy(ctx, operationapp.UpdateStrategyCommand{StrategyKey: create.StrategyKey, ExpectedVersion: 1, Title: "每周复盘 v2", Definition: definition, IdempotencyKey: "admin-update-weekly-review", ActorID: "7"})
+	if err != nil || updated["version"] != int32(2) {
+		t.Fatalf("update=%#v err=%v", updated, err)
+	}
+	if _, err = service.UpdateStrategy(ctx, operationapp.UpdateStrategyCommand{StrategyKey: create.StrategyKey, ExpectedVersion: 1, Title: "陈旧更新", Definition: definition, IdempotencyKey: "admin-stale-update", ActorID: "7"}); !errors.Is(err, operationapp.ErrConflict) {
+		t.Fatalf("stale CAS=%v, want conflict", err)
+	}
+	active, err := service.TransitionStrategy(ctx, operationapp.TransitionStrategyCommand{StrategyKey: create.StrategyKey, ExpectedVersion: 2, Status: "active", IdempotencyKey: "admin-activate-weekly-review", ActorID: "7"})
+	if err != nil || active["version"] != int32(3) {
+		t.Fatalf("activate=%#v err=%v", active, err)
+	}
+	paused, err := service.TransitionStrategy(ctx, operationapp.TransitionStrategyCommand{StrategyKey: create.StrategyKey, ExpectedVersion: 3, Status: "paused", IdempotencyKey: "admin-pause-weekly-review", ActorID: "7"})
+	if err != nil || paused["version"] != int32(4) {
+		t.Fatalf("pause=%#v err=%v", paused, err)
+	}
+	concurrent := []operationapp.UpdateStrategyCommand{
+		{StrategyKey: create.StrategyKey, ExpectedVersion: 4, Title: "并发更新 A", Definition: definition, IdempotencyKey: "admin-concurrent-a", ActorID: "7"},
+		{StrategyKey: create.StrategyKey, ExpectedVersion: 4, Title: "并发更新 B", Definition: definition, IdempotencyKey: "admin-concurrent-b", ActorID: "7"},
+	}
+	results := make(chan error, len(concurrent))
+	for _, command := range concurrent {
+		command := command
+		go func() {
+			_, updateErr := service.UpdateStrategy(ctx, command)
+			results <- updateErr
+		}()
+	}
+	successes, conflicts := 0, 0
+	for range concurrent {
+		switch updateErr := <-results; {
+		case updateErr == nil:
+			successes++
+		case errors.Is(updateErr, operationapp.ErrConflict):
+			conflicts++
+		default:
+			t.Fatalf("concurrent CAS error=%v", updateErr)
+		}
+	}
+	if successes != 1 || conflicts != 1 {
+		t.Fatalf("concurrent CAS successes/conflicts=%d/%d, want 1/1", successes, conflicts)
+	}
+
+	refreshed := newService()
+	persisted, err := refreshed.GetStrategy(ctx, create.StrategyKey)
+	if err != nil || persisted["status"] != "paused" || persisted["version"] != int32(5) {
+		t.Fatalf("refreshed strategy=%#v err=%v", persisted, err)
+	}
+	history, err := refreshed.ListStrategyVersions(ctx, create.StrategyKey, 10, 0)
+	if err != nil {
+		t.Fatalf("list immutable strategy history: %v", err)
+	}
+	versions, ok := history["items"].([]map[string]any)
+	if !ok || len(versions) != 5 || versions[0]["version"] != int32(5) || versions[4]["version"] != int32(1) {
+		t.Fatalf("immutable strategy history=%#v err=%v", history, err)
+	}
+	var receipts, strategyVersions, audits, outbox int
+	if err = native.QueryRow(ctx, `SELECT
+		(SELECT count(*) FROM operation_cycle_admin_receipts),
+		(SELECT count(*) FROM operation_cycle_strategy_versions WHERE strategy_key=$1),
+		(SELECT count(*) FROM audit_events WHERE resource_type='operation_cycle'),
+		(SELECT count(*) FROM outbox_events WHERE aggregate_type='operation_cycle')`, create.StrategyKey).Scan(&receipts, &strategyVersions, &audits, &outbox); err != nil {
+		t.Fatal(err)
+	}
+	if receipts != 5 || strategyVersions != 5 || audits != 5 || outbox != 5 {
+		t.Fatalf("receipts/versions/audits/outbox=%d/%d/%d/%d, want 5/5/5/5", receipts, strategyVersions, audits, outbox)
+	}
+	if _, err = native.Exec(ctx, `UPDATE operation_cycle_strategy_versions SET title='mutated' WHERE strategy_key=$1 AND version=1`, create.StrategyKey); err == nil {
+		t.Fatal("immutable strategy version accepted direct mutation")
+	}
+}
+
+func TestPostgreSQLOperationCycleRunHistoryRejectsDestructiveOverwrite(t *testing.T) {
+	native, cleanup := operationCycleIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	wrapped, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wrapped.Close()
+	uow, err := platformpostgres.NewUnitOfWork(wrapped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := operationapp.NewService(uow, NewRepository(), NewEventJournal(), NewEventJournal())
+	base := map[string]any{
+		"schema_version": "operation_cycle_snapshot.v1", "strategy_key": "runner.weekly.review", "run_key": "runner.weekly.review.001",
+		"revision": 1, "strategy_version": 1, "status": "active", "title": "运行周期", "name": "运行周期", "cron": "每周一", "dot": "#2EA121", "action": "查看进度",
+		"steps": []any{map[string]any{"label": "复盘", "color": "#2EA121", "dim": false}},
+	}
+	if _, err = service.Report(ctx, operationapp.ReportCommand{Snapshot: base, IdempotencyKey: "history-report-1", ReporterID: "cycle-runner", ClientID: "v3-runner"}); err != nil {
+		t.Fatal(err)
+	}
+	overwrite := make(map[string]any, len(base))
+	for key, value := range base {
+		overwrite[key] = value
+	}
+	overwrite["title"] = "相同版本被覆盖"
+	if _, err = service.Report(ctx, operationapp.ReportCommand{Snapshot: overwrite, IdempotencyKey: "history-report-overwrite", ReporterID: "cycle-runner", ClientID: "v3-runner"}); !errors.Is(err, operationapp.ErrConflict) {
+		t.Fatalf("destructive overwrite=%v, want conflict", err)
+	}
+	second := make(map[string]any, len(base))
+	for key, value := range base {
+		second[key] = value
+	}
+	second["revision"] = 2
+	if _, err = service.Report(ctx, operationapp.ReportCommand{Snapshot: second, IdempotencyKey: "history-report-2", ReporterID: "cycle-runner", ClientID: "v3-runner"}); err != nil {
+		t.Fatalf("revision 2: %v", err)
+	}
+	if _, err = service.Report(ctx, operationapp.ReportCommand{Snapshot: base, IdempotencyKey: "history-report-old-replay", ReporterID: "cycle-runner", ClientID: "v3-runner"}); err != nil {
+		t.Fatalf("older immutable report replay: %v", err)
+	}
+	history, err := service.ListRunVersions(ctx, "runner.weekly.review.001", 10, 0)
+	if err != nil {
+		t.Fatalf("list immutable run history: %v", err)
+	}
+	versions, ok := history["items"].([]map[string]any)
+	if !ok || len(versions) != 2 || versions[0]["snapshot_revision"] != int32(2) || versions[1]["snapshot_revision"] != int32(1) {
+		t.Fatalf("immutable run history=%#v err=%v", history, err)
+	}
+	persisted, err := service.GetRun(ctx, "runner.weekly.review.001")
+	if err != nil || persisted["snapshot_revision"] != int32(2) {
+		t.Fatalf("latest run projection=%#v err=%v", persisted, err)
+	}
+	strategy, err := service.GetStrategy(ctx, "runner.weekly.review")
+	strategySnapshot, _ := strategy["snapshot"].(map[string]any)
+	if err != nil || strategySnapshot["revision"] != float64(2) {
+		t.Fatalf("latest strategy projection regressed=%#v err=%v", strategy, err)
+	}
+}
+
 func operationCycleIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 	t.Helper()
 	url, err := platformconfig.DatabaseURL()
@@ -147,7 +318,7 @@ func operationCycleIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 	}
 	files := make([]string, 0, len(entries))
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") || entry.Name() > "0014_operation_cycles.sql" {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") || entry.Name() > "0022_operation_cycle_admin_history.sql" {
 			continue
 		}
 		files = append(files, entry.Name())

@@ -1219,6 +1219,13 @@ paths:
       tags: [OperationCycles]
       security: [{adminSession: []}]
       responses: {"200": {description: Persisted strategies, content: {application/json: {schema: {$ref: "#/components/schemas/OperationCycleObject"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}}
+    post:
+      operationId: createOperationCycleStrategy
+      tags: [OperationCycles]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/OperationCycleStrategyCreate"}}}}
+      responses: {"201": {description: Strategy and immutable version persisted}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
   /api/admin/operation-cycles/strategies/{strategy_key}:
     get:
       operationId: getOperationCycleStrategy
@@ -1226,6 +1233,28 @@ paths:
       security: [{adminSession: []}]
       parameters: [{name: strategy_key, in: path, required: true, schema: {type: string, maxLength: 120}}]
       responses: {"200": {description: Persisted strategy}, "404": {$ref: "#/components/responses/Error"}}
+    put:
+      operationId: updateOperationCycleStrategy
+      tags: [OperationCycles]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{name: strategy_key, in: path, required: true, schema: {type: string, maxLength: 120}}, {$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/OperationCycleStrategyUpdate"}}}}
+      responses: {"200": {description: Strategy and immutable version persisted}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+  /api/admin/operation-cycles/strategies/{strategy_key}/status:
+    post:
+      operationId: transitionOperationCycleStrategy
+      tags: [OperationCycles]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{name: strategy_key, in: path, required: true, schema: {type: string, maxLength: 120}}, {$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/OperationCycleStrategyTransition"}}}}
+      responses: {"200": {description: Strategy status and immutable version persisted}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+  /api/admin/operation-cycles/strategies/{strategy_key}/versions:
+    get:
+      operationId: listOperationCycleStrategyVersions
+      tags: [OperationCycles]
+      security: [{adminSession: []}]
+      parameters: [{name: strategy_key, in: path, required: true, schema: {type: string, maxLength: 120}}]
+      responses: {"200": {description: Immutable strategy version history}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}}
   /api/admin/operation-cycles/strategies/{strategy_key}/runs:
     get:
       operationId: listOperationCycleRuns
@@ -1240,6 +1269,13 @@ paths:
       security: [{adminSession: []}]
       parameters: [{name: run_key, in: path, required: true, schema: {type: string, maxLength: 160}}]
       responses: {"200": {description: Persisted run dossier}, "404": {$ref: "#/components/responses/Error"}}
+  /api/admin/operation-cycles/runs/{run_key}/versions:
+    get:
+      operationId: listOperationCycleRunVersions
+      tags: [OperationCycles]
+      security: [{adminSession: []}]
+      parameters: [{name: run_key, in: path, required: true, schema: {type: string, maxLength: 160}}]
+      responses: {"200": {description: Immutable run snapshot history}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}}
   /api/admin/operation-cycles/strategies/{strategy_key}/current-action:
     get:
       operationId: getOperationCycleCurrentAction
@@ -2350,6 +2386,47 @@ components:
         format: {type: string, const: csv}
         filter: {type: object, additionalProperties: true}
         filters: {type: object, additionalProperties: true}
+    OperationCycleStage:
+      type: object
+      additionalProperties: false
+      required: [key, label, color, state]
+      properties:
+        key: {type: string, minLength: 1, maxLength: 80}
+        label: {type: string, minLength: 1, maxLength: 80}
+        color: {type: string, pattern: '^#[0-9A-Fa-f]{6}$'}
+        state: {type: string, enum: [completed, current, pending]}
+    OperationCycleStrategyDefinition:
+      type: object
+      additionalProperties: false
+      required: [schedule, indicator_color, primary_action, stages]
+      properties:
+        schedule: {type: string, minLength: 1, maxLength: 200}
+        indicator_color: {type: string, pattern: '^#[0-9A-Fa-f]{6}$'}
+        primary_action: {type: string, enum: [start_review, view_progress]}
+        stages: {type: array, minItems: 1, maxItems: 12, items: {$ref: "#/components/schemas/OperationCycleStage"}}
+    OperationCycleStrategyCreate:
+      type: object
+      additionalProperties: false
+      required: [strategy_key, title, definition]
+      properties:
+        strategy_key: {type: string, pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$'}
+        title: {type: string, minLength: 1, maxLength: 200}
+        definition: {$ref: "#/components/schemas/OperationCycleStrategyDefinition"}
+    OperationCycleStrategyUpdate:
+      type: object
+      additionalProperties: false
+      required: [expected_version, title, definition]
+      properties:
+        expected_version: {type: integer, format: int32, minimum: 1}
+        title: {type: string, minLength: 1, maxLength: 200}
+        definition: {$ref: "#/components/schemas/OperationCycleStrategyDefinition"}
+    OperationCycleStrategyTransition:
+      type: object
+      additionalProperties: false
+      required: [expected_version, status]
+      properties:
+        expected_version: {type: integer, format: int32, minimum: 1}
+        status: {type: string, enum: [active, paused, archived]}
     OperationCycleObject: {type: object, additionalProperties: true}
     PositiveID: {type: integer, format: int64, minimum: 1}
     AutomationAgentFixedContent: {type: object, additionalProperties: false, required: [content_text, image_library_ids, miniprogram_library_ids, attachment_library_ids, group_invite_library_ids], properties: {content_text: {type: string, maxLength: 4000}, image_library_ids: {type: array, maxItems: 3, items: {$ref: "#/components/schemas/PositiveID"}}, miniprogram_library_ids: {type: array, maxItems: 1, items: {$ref: "#/components/schemas/PositiveID"}}, attachment_library_ids: {type: array, maxItems: 9, items: {$ref: "#/components/schemas/PositiveID"}}, group_invite_library_ids: {type: array, maxItems: 1, items: {$ref: "#/components/schemas/PositiveID"}}}}

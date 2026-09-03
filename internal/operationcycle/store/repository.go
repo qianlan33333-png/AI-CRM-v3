@@ -93,6 +93,12 @@ func (repository *Repository) Report(ctx context.Context, command operationapp.R
 	}); err != nil {
 		return nil, false, storeError(err)
 	}
+	if err = refreshCurrentStrategySnapshot(ctx, strategyKey, version); err != nil {
+		return nil, false, err
+	}
+	if err = recordReportHistory(ctx, command.Snapshot, strategyKey, runKey, title, status, version, revision, definition, snapshot, now); err != nil {
+		return nil, false, err
+	}
 	receiptID, err := operationapp.NewID("ocrep_")
 	if err != nil {
 		return nil, false, operationapp.ErrUnavailable
@@ -111,6 +117,21 @@ func (repository *Repository) Report(ctx context.Context, command operationapp.R
 		return receiptResult(reserved.StrategyKey, reserved.RunKey, reserved.AcceptedRevision, reserved.ProjectionMade), true, nil
 	}
 	return receiptResult(strategyKey, runKey, revision, true), false, nil
+}
+
+func refreshCurrentStrategySnapshot(ctx context.Context, strategyKey string, version int32) error {
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return storeError(err)
+	}
+	_, err = tx.Exec(ctx, `UPDATE operation_cycle_strategies AS strategy
+		SET snapshot=latest.snapshot, updated_at=GREATEST(strategy.updated_at, latest.received_at)
+		FROM (
+			SELECT snapshot,received_at FROM operation_cycle_runs
+			WHERE strategy_key=$1 ORDER BY received_at DESC,run_key DESC LIMIT 1
+		) AS latest
+		WHERE strategy.strategy_key=$1 AND strategy.version=$2`, strategyKey, version)
+	return storeError(err)
 }
 
 func (repository *Repository) ListStrategies(ctx context.Context, limit, offset int32) (map[string]any, error) {
@@ -550,6 +571,72 @@ func operationCycleQueries(ctx context.Context) (*operationcycledb.Queries, erro
 		return nil, err
 	}
 	return operationcycledb.New(tx), nil
+}
+
+func recordReportHistory(ctx context.Context, report map[string]any, strategyKey, runKey, title, status string, version, revision int32, definition, snapshot []byte, now time.Time) error {
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return storeError(err)
+	}
+	strategySnapshot, err := reportStrategySnapshot(report)
+	if err != nil {
+		return operationapp.ErrInvalid
+	}
+	inserted, err := tx.Exec(ctx, `INSERT INTO operation_cycle_strategy_versions(strategy_key,version,title,status,definition,snapshot,created_by,created_at)
+		VALUES($1,$2,$3,$4,$5,$6,'runner-report',$7) ON CONFLICT DO NOTHING`, strategyKey, version, title, status, definition, strategySnapshot, now)
+	if err != nil {
+		return storeError(err)
+	}
+	if inserted.RowsAffected() == 0 {
+		var storedTitle, storedStatus string
+		var storedDefinition, storedSnapshot []byte
+		if err = tx.QueryRow(ctx, `SELECT title,status,definition,snapshot FROM operation_cycle_strategy_versions WHERE strategy_key=$1 AND version=$2`, strategyKey, version).Scan(&storedTitle, &storedStatus, &storedDefinition, &storedSnapshot); err != nil {
+			return storeError(err)
+		}
+		if storedTitle != title || storedStatus != status || !jsonEqual(storedDefinition, definition) || !jsonEqual(storedSnapshot, strategySnapshot) {
+			return operationapp.ErrConflict
+		}
+	}
+	inserted, err = tx.Exec(ctx, `INSERT INTO operation_cycle_run_versions(run_key,snapshot_revision,strategy_key,snapshot,received_at)
+		VALUES($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING`, runKey, revision, strategyKey, snapshot, now)
+	if err != nil {
+		return storeError(err)
+	}
+	if inserted.RowsAffected() == 0 {
+		var storedStrategy string
+		var storedSnapshot []byte
+		if err = tx.QueryRow(ctx, `SELECT strategy_key,snapshot FROM operation_cycle_run_versions WHERE run_key=$1 AND snapshot_revision=$2`, runKey, revision).Scan(&storedStrategy, &storedSnapshot); err != nil {
+			return storeError(err)
+		}
+		if storedStrategy != strategyKey || !jsonEqual(storedSnapshot, snapshot) {
+			return operationapp.ErrConflict
+		}
+	}
+	return nil
+}
+
+func reportStrategySnapshot(report map[string]any) ([]byte, error) {
+	result := make(map[string]any)
+	for _, key := range []string{"schema_version", "name", "cron", "dot", "action", "steps"} {
+		if value, exists := report[key]; exists {
+			result[key] = value
+		}
+	}
+	result["action_key"] = "start_review"
+	if stringValue(report, "action") == "查看进度" {
+		result["action_key"] = "view_progress"
+	}
+	return json.Marshal(result)
+}
+
+func jsonEqual(left, right []byte) bool {
+	var leftValue, rightValue any
+	if json.Unmarshal(left, &leftValue) != nil || json.Unmarshal(right, &rightValue) != nil {
+		return false
+	}
+	leftDigest, leftErr := operationapp.Digest(leftValue)
+	rightDigest, rightErr := operationapp.Digest(rightValue)
+	return leftErr == nil && rightErr == nil && bytes.Equal(leftDigest[:], rightDigest[:])
 }
 
 func storeError(err error) error {

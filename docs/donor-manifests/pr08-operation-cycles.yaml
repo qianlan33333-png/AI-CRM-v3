@@ -117,10 +117,10 @@ frontend:
   template_boundary:
     cycles.html: frozen task-list presentation; raw action/detail hooks are evidence only and must be wired through a v3 adapter
     cyclesDetail.html: frozen read-only run dossier; its audience, target-count, send-time, delivery, and recipient-oriented labels are retained for byte evidence but are excluded from PR08 integration
-  integration: donor templates are mounted only by the v3-owned operationCyclesAdapter through the existing PR10 webshell/primary sidebar; the adapter first binds typed read-only v3 operationcycle DTOs, then dynamically starts the unchanged donor main -> legacy -> AdminController chain; no second navigation shell, direct raw-route deployment, replacement renderer, mock fallback, or browser write binding
+  integration: donor templates are mounted only by the v3-owned operationCyclesAdapter through the existing PR10 webshell/primary sidebar; the adapter binds typed v3 operationcycle reads and captures the donor's existing primary button for the authorized host-side write Adapter before dynamically starting the unchanged donor main -> legacy -> AdminController chain; no second navigation shell, direct raw-route deployment, replacement renderer, mock fallback, or donor-file edit
   css_ts_and_dependencies:
     disposition: deferred-to-terra
-    notes: no standalone cycles-specific TS/CSS exists in the donor; the already frozen PR01 shared main/legacy/AdminController runtime is reused byte-for-byte. The v3 host adapter only installs a typed read-only loadDb binding before importing donor main; it does not copy or modify donor runtime files.
+    notes: no standalone cycles-specific TS/CSS exists in the donor; the already frozen PR01 shared main/legacy/AdminController runtime is reused byte-for-byte. The v3 host adapter installs typed loadDb and minimal authorized write bindings before importing donor main; it does not copy or modify donor runtime files or render new UI.
     contract_evidence:
       - web/src/admin/controller.ts
       - web/src/api/capabilities.ts
@@ -132,7 +132,7 @@ frontend:
       - web/src/api/generated/p4-static-history/p4-static-history.ts
       - web/src/api/staticHistory.ts
       - web/src/admin/sections/staticHistory.ts
-    notes: CycleStrategy/CycleVersion/CycleDocument/CycleMetric/CycleReference history needs v3 history HTTP/OpenAPI and is not part of current lifecycle wiring
+    notes: the broad V1 static-history UI remains excluded; PR08 exposes only typed local strategy-version and run-snapshot history through its v3 Admin API
 
 exclusion_audit:
   excluded_data_plane:

@@ -81,6 +81,7 @@ jobs:
           npm test
           npm run build
           node scripts/build-v3-host-adapters.mjs
+          node scripts/operation-cycles-shell-e2e.mjs
           mkdir -p release
           node scripts/stage-pr01-effects-ui.mjs web/dist release/web/dist
           node scripts/test-stage-pr01-effects-ui.mjs
@@ -162,6 +163,7 @@ jobs:
           npx tsc -p web/v3/tsconfig.json --noEmit
           npm run build
           node scripts/build-v3-host-adapters.mjs
+          node scripts/operation-cycles-shell-e2e.mjs
           cp -R migrations deploy release/
           node scripts/stage-pr01-effects-ui.mjs web/dist release/web/dist
           node scripts/test-stage-pr01-effects-ui.mjs

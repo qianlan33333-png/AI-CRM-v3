@@ -14,20 +14,22 @@ ports; it does not call a Provider, enqueue a campaign recipient, or retry an
 identifiers or external-effect payloads appear in a snapshot, result,
 proposal, or context filter.
 
-The Store, HTTP adapter, runner wiring, PostgreSQL migration, and generated
-queries are implemented in this module. Historical observation/static-history
-readers remain outside PR08. Any future outbound integration must preserve the
-local `accepted` fact boundary and use the versioned outbound contract.
+The Store, HTTP adapter, runner wiring, PostgreSQL migrations, and generated
+queries are implemented in this module. Strategy versions and run revisions are
+immutable owner-table history; the current tables are latest projections only.
+Historical observation/static-history readers remain outside PR08. Any future
+outbound integration must preserve the local `accepted` fact boundary and use
+the versioned outbound contract.
 
 The frozen donor inventory and exact UI hashes are recorded in
 `docs/donor-manifests/pr08-operation-cycles.yaml` and
 `docs/donor-manifests/pr08-operation-cycles.sha256`; raw templates are under
 `web/donors/operation-cycles-v2`. The only browser seam is
-`web/v3/operationCyclesAdapter.ts`: it installs a typed, read-only v3
-`loadDb` binding and then dynamically starts the byte-frozen donor
-`main.ts -> legacy.ts -> AdminController` chain inside PR10's one admin
-shell. It has no replacement renderer, styles, navigation, toast, mock, or
-write action. The donor's original blocked-action wording remains authoritative.
+`web/v3/operationCyclesAdapter.ts`: it installs typed v3 read bindings plus the
+minimal authorized host write binding for the donor's existing primary button,
+then dynamically starts the byte-frozen donor `main.ts -> legacy.ts ->
+AdminController` chain inside PR10's one admin shell. It has no replacement
+renderer, styles, navigation, mock fallback, or donor-file changes.
 
 Report snapshots are decoded through a typed allowlist before persistence. The
 original JSON object is never retained: the rebuilt projection is the only

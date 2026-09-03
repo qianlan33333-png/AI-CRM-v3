@@ -40,8 +40,11 @@ func (deliveries *operationCycleTestDeliveries) Accept(_ context.Context, eventI
 }
 
 type operationCycleStoreStub struct {
-	report func(context.Context, ReportCommand, time.Time) (map[string]any, bool, error)
-	event  func(context.Context, ActionEventCommand, time.Time) (map[string]any, bool, error)
+	report           func(context.Context, ReportCommand, time.Time) (map[string]any, bool, error)
+	event            func(context.Context, ActionEventCommand, time.Time) (map[string]any, bool, error)
+	createStrategy   func(context.Context, CreateStrategyCommand, time.Time) (map[string]any, bool, error)
+	updateStrategy   func(context.Context, UpdateStrategyCommand, time.Time) (map[string]any, bool, error)
+	transitionStatus func(context.Context, TransitionStrategyCommand, time.Time) (map[string]any, bool, error)
 }
 
 func (stub *operationCycleStoreStub) Report(ctx context.Context, command ReportCommand, now time.Time) (map[string]any, bool, error) {
@@ -96,6 +99,30 @@ func (*operationCycleStoreStub) ListProposals(context.Context, string, int32, in
 	return nil, ErrUnavailable
 }
 func (*operationCycleStoreStub) DecideProposal(context.Context, string, string, string, time.Time) (map[string]any, error) {
+	return nil, ErrUnavailable
+}
+func (stub *operationCycleStoreStub) CreateStrategy(ctx context.Context, command CreateStrategyCommand, now time.Time) (map[string]any, bool, error) {
+	if stub.createStrategy == nil {
+		return nil, false, ErrUnavailable
+	}
+	return stub.createStrategy(ctx, command, now)
+}
+func (stub *operationCycleStoreStub) UpdateStrategy(ctx context.Context, command UpdateStrategyCommand, now time.Time) (map[string]any, bool, error) {
+	if stub.updateStrategy == nil {
+		return nil, false, ErrUnavailable
+	}
+	return stub.updateStrategy(ctx, command, now)
+}
+func (stub *operationCycleStoreStub) TransitionStrategy(ctx context.Context, command TransitionStrategyCommand, now time.Time) (map[string]any, bool, error) {
+	if stub.transitionStatus == nil {
+		return nil, false, ErrUnavailable
+	}
+	return stub.transitionStatus(ctx, command, now)
+}
+func (*operationCycleStoreStub) ListStrategyVersions(context.Context, string, int32, int32) (map[string]any, error) {
+	return nil, ErrUnavailable
+}
+func (*operationCycleStoreStub) ListRunVersions(context.Context, string, int32, int32) (map[string]any, error) {
 	return nil, ErrUnavailable
 }
 
@@ -212,5 +239,56 @@ func TestStrategyContextRejectsExcludedDataPlaneFilters(t *testing.T) {
 		if !errors.Is(err, ErrInvalid) {
 			t.Fatalf("filter %q error=%v, want ErrInvalid", key, err)
 		}
+	}
+}
+
+func TestAdminStrategyMutationIsTypedAuditedAndIdempotent(t *testing.T) {
+	uow := &operationCycleTestUOW{}
+	events := &operationCycleTestEvents{}
+	deliveries := &operationCycleTestDeliveries{}
+	storeCalls := 0
+	store := &operationCycleStoreStub{createStrategy: func(_ context.Context, command CreateStrategyCommand, _ time.Time) (map[string]any, bool, error) {
+		storeCalls++
+		return map[string]any{"strategy_key": command.StrategyKey, "status": "draft", "version": 1}, storeCalls > 1, nil
+	}}
+	service := NewService(uow, store, events, deliveries)
+	command := CreateStrategyCommand{
+		StrategyKey: "weekly.review", Title: "每周复盘", IdempotencyKey: "create-weekly-review", ActorID: "7",
+		Definition: StrategyDefinition{Schedule: "每周一 09:00", IndicatorColor: "#2EA121", PrimaryAction: "start_review", Stages: []StrategyStage{{Key: "retro", Label: "复盘", Color: "#2EA121", State: "current"}}},
+	}
+	if _, err := service.CreateStrategy(context.Background(), command); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.CreateStrategy(context.Background(), command); err != nil {
+		t.Fatal(err)
+	}
+	if storeCalls != 2 || len(events.events) != 1 || len(deliveries.accepted) != 1 {
+		t.Fatalf("store/events/deliveries=%d/%d/%d, want 2/1/1", storeCalls, len(events.events), len(deliveries.accepted))
+	}
+	if events.events[0].Type != operationport.EvOperationCycleFact || !bytes.Contains(events.events[0].Payload, []byte(`"actor_id":"7"`)) {
+		t.Fatalf("admin audit payload=%s", events.events[0].Payload)
+	}
+}
+
+func TestAdminStrategyRejectsDatabaseInvalidKeyAndUntypedDefinition(t *testing.T) {
+	service := NewService(&operationCycleTestUOW{}, &operationCycleStoreStub{}, &operationCycleTestEvents{}, &operationCycleTestDeliveries{})
+	base := CreateStrategyCommand{
+		StrategyKey: "weekly.review", Title: "每周复盘", IdempotencyKey: "create-weekly-review", ActorID: "7",
+		Definition: StrategyDefinition{Schedule: "每周一 09:00", IndicatorColor: "#2EA121", PrimaryAction: "start_review", Stages: []StrategyStage{{Key: "retro", Label: "复盘", Color: "#2EA121", State: "current"}}},
+	}
+	invalidKey := base
+	invalidKey.StrategyKey = "weekly review"
+	if _, err := service.CreateStrategy(context.Background(), invalidKey); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("invalid strategy key error=%v", err)
+	}
+	invalidDefinition := base
+	invalidDefinition.Definition.PrimaryAction = "arbitrary_json_action"
+	if _, err := service.CreateStrategy(context.Background(), invalidDefinition); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("untyped definition error=%v", err)
+	}
+	piiKey := base
+	piiKey.IdempotencyKey = "person@example.test"
+	if _, err := service.CreateStrategy(context.Background(), piiKey); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("PII idempotency key error=%v", err)
 	}
 }

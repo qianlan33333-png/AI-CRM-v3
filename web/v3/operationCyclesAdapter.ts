@@ -1,13 +1,17 @@
 // This is the only v3-owned browser seam for operation cycles. It supplies a
-// narrow, read-only AdminApi.loadDb implementation and then starts the frozen
-// donor main -> legacy -> AdminController chain. It must not render, style,
-// navigate, toast, or bind an interaction itself.
+// narrow AdminApi.loadDb implementation plus the host-side HTTP binding for
+// the donor's existing primary action. It never renders or styles controls.
 import { emptyAdminDb, type AdminReadContext } from '../src/api/admin';
+import { request } from '../src/api/transport';
 import { api } from '../src/shared/api/client';
 import type { AdminDb, CycleRun, Tone } from '../src/shared/api/types';
 
 type RecordValue = Record<string, unknown>;
-type Strategy = { strategyKey: string; title: string; snapshot: RecordValue };
+type Strategy = { strategyKey: string; title: string; status: string; version: number; runKey: string; actionKey: string; snapshot: RecordValue };
+export type OperationCycleStageInput = { key: string; label: string; color: string; state: 'completed' | 'current' | 'pending' };
+export type OperationCycleStrategyDefinitionInput = { schedule: string; indicator_color: string; primary_action: 'start_review' | 'view_progress'; stages: OperationCycleStageInput[] };
+export type OperationCycleStrategyCreateInput = { strategy_key: string; title: string; definition: OperationCycleStrategyDefinitionInput };
+export type OperationCycleStrategyUpdateInput = { expected_version: number; title: string; definition: OperationCycleStrategyDefinitionInput };
 
 const object = (value: unknown): RecordValue => value !== null && typeof value === 'object' && !Array.isArray(value) ? value as RecordValue : {};
 const array = (value: unknown): unknown[] => Array.isArray(value) ? value : [];
@@ -34,9 +38,89 @@ async function listStrategies(): Promise<Strategy[]> {
     const item = object(value);
     const snapshot = object(item.snapshot);
     if (!snapshot.schema_version || snapshot.schema_version !== 'operation_cycle_snapshot.v1') throw new Error(`运营周期读取响应第 ${index + 1} 项不是已投影快照`);
-    return { strategyKey: requiredString(item.strategy_key, 'strategy_key'), title: requiredString(item.title, 'title'), snapshot };
+    const version = Number(item.version);
+    if (!Number.isSafeInteger(version) || version < 1) throw new Error(`运营周期读取响应第 ${index + 1} 项缺少有效版本`);
+    return {
+      strategyKey: requiredString(item.strategy_key, 'strategy_key'),
+      title: requiredString(item.title, 'title'),
+      status: requiredString(item.status, 'status'),
+      version,
+      runKey: string(snapshot.run_key),
+      actionKey: string(snapshot.action_key) || (string(snapshot.action) === '查看进度' ? 'view_progress' : 'start_review'),
+      snapshot,
+    };
   });
 }
+
+async function write(path: string, method: 'POST' | 'PUT', body: RecordValue, idempotencyKey: string): Promise<RecordValue> {
+  const response = await request(path, { method, headers: { Accept: 'application/json', 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey }, body: JSON.stringify(body) });
+  return object(await response.json());
+}
+
+export async function createOperationCycleStrategy(input: OperationCycleStrategyCreateInput, idempotencyKey: string): Promise<RecordValue> {
+  return write('/api/admin/operation-cycles/strategies', 'POST', input, idempotencyKey);
+}
+
+export async function updateOperationCycleStrategy(strategyKey: string, input: OperationCycleStrategyUpdateInput, idempotencyKey: string): Promise<RecordValue> {
+  return write(`/api/admin/operation-cycles/strategies/${encodeURIComponent(strategyKey)}`, 'PUT', input, idempotencyKey);
+}
+
+export async function setOperationCycleStatus(strategyKey: string, expectedVersion: number, status: 'active' | 'paused' | 'archived', idempotencyKey: string): Promise<RecordValue> {
+  return write(`/api/admin/operation-cycles/strategies/${encodeURIComponent(strategyKey)}/status`, 'POST', { expected_version: expectedVersion, status }, idempotencyKey);
+}
+
+export async function listOperationCycleStrategyVersions(strategyKey: string): Promise<RecordValue> {
+  return get(`/api/admin/operation-cycles/strategies/${encodeURIComponent(strategyKey)}/versions?limit=100&offset=0`);
+}
+
+export async function listOperationCycleRunVersions(runKey: string): Promise<RecordValue> {
+  return get(`/api/admin/operation-cycles/runs/${encodeURIComponent(runKey)}/versions?limit=100&offset=0`);
+}
+
+let loadedStrategies: Strategy[] = [];
+
+function stableActionKey(strategy: Strategy, operation: string): string {
+  return `cycle-${operation}-${strategy.strategyKey}-${strategy.version}-${strategy.runKey || 'no-run'}`;
+}
+
+async function runPrimaryAction(strategy: Strategy, ordinal: number): Promise<void> {
+  if (strategy.status === 'draft' || strategy.status === 'paused') {
+    await setOperationCycleStatus(strategy.strategyKey, strategy.version, 'active', stableActionKey(strategy, 'activate'));
+    globalThis.alert?.('运营周期已启用');
+    globalThis.location.reload();
+    return;
+  }
+  if (strategy.actionKey === 'view_progress') {
+    if (!strategy.runKey) throw new Error('该策略暂无运行档案');
+    globalThis.location.assign(`/admin/operation-cycles/cyclesDetail.html?id=${ordinal + 1}`);
+    return;
+  }
+  if (!strategy.runKey) throw new Error('该策略暂无可复盘的运行档案');
+  await write(`/api/admin/operation-cycles/strategies/${encodeURIComponent(strategy.strategyKey)}/actions/${encodeURIComponent(strategy.actionKey)}/start`, 'POST', { run_key: strategy.runKey, parent_request_id: '' }, stableActionKey(strategy, 'start'));
+  globalThis.alert?.('复盘请求已受理');
+}
+
+document.addEventListener('click', (event) => {
+  if (document.body.dataset.page !== 'cycles') return;
+  const target = event.target;
+  if (!(target instanceof Element)) return;
+  const button = target.closest('button');
+  const row = button?.closest('tbody tr');
+  if (!button || !row) return;
+  const buttons = Array.from(row.querySelectorAll('button'));
+  const rowIndex = Array.from(row.parentElement?.querySelectorAll(':scope > tr') || []).indexOf(row);
+  if (rowIndex < 0 || rowIndex >= loadedStrategies.length) return;
+  const strategy = loadedStrategies[rowIndex];
+  if (buttons[0] === button) {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    void runPrimaryAction(strategy, rowIndex).catch((error) => globalThis.alert?.(error instanceof Error ? error.message : '运营周期操作失败'));
+  } else if (buttons[1] === button && !strategy.runKey) {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    globalThis.alert?.('该策略暂无运行档案');
+  }
+}, true);
 
 function stringList(value: unknown): string[] {
   return array(value).map((item) => requiredString(item, 'display text'));
@@ -82,6 +166,7 @@ function displayRun(id: number, value: RecordValue): CycleRun {
 
 async function operationCyclesDb(context: AdminReadContext): Promise<AdminDb> {
   const strategies = await listStrategies();
+  loadedStrategies = strategies;
   const db = emptyAdminDb();
   db.cycleTasks = strategies.map((strategy, index) => ({
     id: index + 1,
