@@ -4,8 +4,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/go-sql-driver/mysql"
 )
 
 func TestCurrentQueryIsKeysetBatchedAndArgumentComplete(t *testing.T) {
@@ -37,12 +35,28 @@ func TestCurrentQueryUsesTimestampSentinelForLastUsedExpression(t *testing.T) {
 	}
 }
 
-func TestLastUsedScannerAcceptsMySQLExpressionBytes(t *testing.T) {
-	var value mysql.NullTime
+func TestLastUsedScannerAppliesHXCSourceTimezone(t *testing.T) {
+	var value sourceNullTime
 	if err := value.Scan([]byte("2026-09-04 01:02:03.123456")); err != nil {
 		t.Fatalf("scan computed MySQL datetime: %v", err)
 	}
-	if !value.Valid || value.Time.Location() != time.UTC {
-		t.Fatalf("computed MySQL datetime was not normalized to UTC: %#v", value)
+	_, offset := value.Time.Zone()
+	if !value.Valid || value.Time.Location() != sourceLocation || offset != 8*60*60 {
+		t.Fatalf("computed MySQL datetime did not retain Beijing source time: %#v", value)
+	}
+	want := time.Date(2026, 9, 3, 17, 2, 3, 123456000, time.UTC)
+	if !value.Time.Equal(want) {
+		t.Fatalf("computed MySQL datetime instant=%s want=%s", value.Time, want)
+	}
+}
+
+func TestLastUsedScannerAcceptsNativeAndNullValues(t *testing.T) {
+	native := time.Date(2026, 9, 4, 2, 3, 4, 0, time.UTC)
+	var value sourceNullTime
+	if err := value.Scan(native); err != nil || !value.Valid || !value.Time.Equal(native) || value.Time.Location() != sourceLocation {
+		t.Fatalf("scan native datetime: value=%#v err=%v", value, err)
+	}
+	if err := value.Scan(nil); err != nil || value.Valid || !value.Time.IsZero() {
+		t.Fatalf("scan NULL datetime: value=%#v err=%v", value, err)
 	}
 }
