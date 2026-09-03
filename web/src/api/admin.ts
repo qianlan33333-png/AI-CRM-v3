@@ -1899,22 +1899,30 @@ export async function deleteGroupOpsPlanDto(planId: string): Promise<void> {
 export type RefundIntentInput = { provider: string; orderNo: string; amount: string; reason: string; transactionIdConfirmation: string; checked: boolean; productId?: string; skuId?: string; refundCount?: number; reasonCode?: WechatShopRefundRequest['reason_code'] };
 export type RefundIntentResult = { id: string; state: string; provider: string; realExternalCallExecuted: boolean; deliveryProven: boolean };
 export type WechatOrderExportInput = { mobile?: string; identity?: string; transactionId?: string; productCode?: string; status?: string; createdFrom?: string; createdTo?: string };
+const safeCustomerID = (value?: string): number | undefined => {
+  const clean = value?.trim() || '';
+  if (!clean) return undefined;
+  const match = /^(?:customer:)?([1-9][0-9]*)$/.exec(clean);
+  if (!match) throw new Error('付款人筛选仅接受内部 customer ID，不发送手机号或外部身份');
+  const id = Number(match[1]);
+  if (!Number.isSafeInteger(id)) throw new Error('customer ID 无效');
+  return id;
+};
 export async function exportWechatOrdersDto(input: WechatOrderExportInput): Promise<Blob> {
   const clean = (value?: string): string | undefined => value?.trim() || undefined;
-  const requestBody: LegacyWechatOrderExportRequest = {
+  const requestBody = {
     resource: 'orders',
     format: 'csv',
     filters: {
       provider: 'wechat',
-      mobile: clean(input.mobile),
-      identity: clean(input.identity),
+      customer_id: safeCustomerID(input.identity || input.mobile),
       transaction_id: clean(input.transactionId),
       product_code: clean(input.productCode),
       status: clean(input.status),
       created_from: clean(input.createdFrom),
       created_to: clean(input.createdTo),
     },
-  };
+  } as unknown as LegacyWechatOrderExportRequest;
   const response = await request(getCreateLegacyWechatOrderExportUrl(), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Idempotency-Key': globalThis.crypto?.randomUUID?.() || `web-${Date.now()}` },
@@ -2017,14 +2025,16 @@ export async function readAdminRows(page?: string, customerList?: CustomerListQu
   const needs = (...screens: string[]) => !page || screens.includes(page);
   const skip = Promise.resolve({});
   const miniProgramParams = miniProgramListParams(miniProgramList);
-  // 仅语义等价的字段下发服务端：状态与时间窗；单号/付款人/商品为本地当前页筛选（OpenAPI 无跨字段模糊检索）。
   const orderParams = {
     limit: orderList?.limit ?? 50,
     offset: orderList?.offset ?? 0,
     ...(orderList?.status ? { payment_status: orderList.status } : {}),
+    ...(orderList?.transactionId?.trim() ? { order_ref: orderList.transactionId.trim() } : {}),
+    ...(orderList?.product?.trim() ? { product: orderList.product.trim() } : {}),
+    ...(orderList?.payer?.trim() ? { customer_id: safeCustomerID(orderList.payer) } : {}),
     ...(orderList?.createdFrom ? { created_from: orderList.createdFrom } : {}),
     ...(orderList?.createdTo ? { created_to: orderList.createdTo } : {}),
-  };
+  } as unknown as Parameters<typeof listLegacyOrders>[0];
   const customerParams = {
     limit: 50,
     ...(customerList?.cursor ? { cursor: customerList.cursor } : {}),

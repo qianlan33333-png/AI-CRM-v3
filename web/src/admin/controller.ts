@@ -1447,6 +1447,9 @@ export class AdminController extends PageBase {
     return {
       offset,
       limit: 50,
+      ...(f.transactionId ? { transactionId: f.transactionId } : {}),
+      ...(f.payer ? { payer: f.payer } : {}),
+      ...(f.product ? { product: f.product } : {}),
       ...(f.status ? { status: f.status } : {}),
       ...(f.createdFrom ? { createdFrom: f.createdFrom } : {}),
       ...(f.createdTo ? { createdTo: f.createdTo } : {}),

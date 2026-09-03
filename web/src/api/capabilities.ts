@@ -31,9 +31,9 @@ export const transactionReadiness: Readonly<{
   alipayRefundIntent: ReadinessProjection;
 }> = {
   orderRead: {
-    ready: false,
-    state: 'backend_blocked',
-    reason: 'TX02 Order migration、真实查询 API 与管理端 Journey 尚未完成；当前页面只保留不可用态',
+    ready: true,
+    state: 'real',
+    reason: 'TX02 Order migration、真实查询 API、安全导出与管理端 Journey 已接通；Provider 写仍独立受控',
     requiredEvidence: ['order migration', 'order query API', 'admin order journey'],
   },
   refundIntent: {
