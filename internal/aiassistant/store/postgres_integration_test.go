@@ -261,7 +261,7 @@ func TestPostgreSQLIntegrationReplayDoesNotResolveIdentityAgain(t *testing.T) {
 		SourceKind:     "automation",
 		SourceDigest:   effectport.Hash("identity-plan"),
 		Targets: []aiassistantapp.IdentityTarget{{
-			Reference: identitydomain.Reference{Kind: identitydomain.KindWeComExternalUserID, Scope: "corp-1", Value: "external-1", Assurance: identitydomain.AssuranceVerified, Source: "test"},
+			Reference: identitydomain.Reference{Kind: identitydomain.KindWeComExternalUserID, Scope: "wecom-corp:corp-1", Value: "external-1", Assurance: identitydomain.AssuranceVerified, Source: "test"},
 			StaffID:   21,
 			Content:   []aiassistantport.ContentBlock{{Kind: aiassistantport.ContentText, Text: "hello"}},
 		}},

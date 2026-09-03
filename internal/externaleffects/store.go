@@ -436,7 +436,10 @@ func (r *Repository) controlWithin(ctx context.Context, tx pgx.Tx, command Contr
 	if err = tx.QueryRow(ctx, `SELECT updated_at FROM external_effects WHERE id=$1`, id).Scan(&updated); err != nil {
 		return Projection{}, Receipt{}, err
 	}
-	if (Kind(kind) == KindWeComTagCatalog || Kind(kind) == KindGroupMessage || Kind(kind) == KindOutboundMessage) && r.sink != nil {
+	// Group Ops owns its manual-reconciliation projection in RuntimeService;
+	// projecting it here as well would update the same execution twice. AI
+	// Assistant reconciliation delegates its owner projection to the sink.
+	if (Kind(kind) == KindWeComTagCatalog || Kind(kind) == KindOutboundMessage) && r.sink != nil {
 		envelope := Envelope{Owner: Owner(owner), Kind: Kind(kind), SourceRefDigest: Digest(source), TargetRefDigest: Digest(target), PayloadDigest: Digest(payload), PolicyVersionHash: Digest(policy)}
 		if err = r.sink.CompleteEffect(platformpostgres.BindTransaction(ctx, tx), effectID(id), envelope, Attempt{Number: attempts, Generation: generation, Fence: fence}, AdapterResult{Completion: next, ReceiptDigest: digest}); err != nil {
 			return Projection{}, Receipt{}, err
