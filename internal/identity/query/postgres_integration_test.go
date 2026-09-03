@@ -17,6 +17,7 @@ import (
 
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
+	identityport "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/port"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/identity/query"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 )
@@ -85,10 +86,12 @@ func TestPostgreSQLOneIDQueries(t *testing.T) {
 	}
 	if _, err = native.Exec(ctx, `
 		INSERT INTO customer_identities(
-			customer_id, kind, scope_key, normalized_value, assurance, source, normalizer_version, status
+			customer_id, kind, scope_key, normalized_value, assurance, source, normalizer_version, status, verified_at
 		) VALUES
-			($1, 'phone', 'phone:e164', '+13800138000', 'declared', 'integration', 1, 'active'),
-			($1, 'ext', 'ext:test', 'retired-secret', 'declared', 'integration', 1, 'retired')`, canonicalID); err != nil {
+			($1, 'phone', 'phone:e164', '+13800138000', 'declared', 'integration', 1, 'active', NULL),
+			($1, 'mp_openid', 'wechat-app:commerce', 'payer-openid', 'verified', 'integration', 1, 'active', CURRENT_TIMESTAMP),
+			($2, 'mp_openid', 'wechat-app:commerce-other', 'beneficiary-openid', 'verified', 'integration', 1, 'active', CURRENT_TIMESTAMP),
+			($1, 'ext', 'ext:test', 'retired-secret', 'declared', 'integration', 1, 'retired', NULL)`, canonicalID, otherID); err != nil {
 		t.Fatal(err)
 	}
 	var evidenceID int64
@@ -134,8 +137,23 @@ func TestPostgreSQLOneIDQueries(t *testing.T) {
 			detail.CanonicalCustomerID != customerdomain.CustomerID(canonicalID) || detail.CanonicalStatus != customerdomain.StatusActive {
 			t.Errorf("customer detail=%#v", detail)
 		}
-		if len(detail.Identities) != 1 || detail.Identities[0].Kind != identitydomain.KindPhone || detail.Identities[0].Scope != "phone:e164" {
+		if len(detail.Identities) != 2 || detail.Identities[0].Kind != identitydomain.KindPhone || detail.Identities[0].Scope != "phone:e164" || detail.Identities[1].Kind != identitydomain.KindMPOpenID {
 			t.Errorf("safe active identities=%#v", detail.Identities)
+		}
+		resolved, queryErr := store.ResolveCommerce(txContext, identityport.CommerceReferenceSet{References: []identitydomain.Reference{{Kind: identitydomain.KindMPOpenID, Scope: "wechat-app:commerce", Value: "payer-openid", Assurance: identitydomain.AssuranceVerified, Source: "integration"}}})
+		if queryErr != nil || resolved.Status != identityport.CommerceResolved || resolved.CustomerID != customerdomain.CustomerID(canonicalID) || len(resolved.Matches) != 1 {
+			t.Errorf("commerce resolved=%#v err=%v", resolved, queryErr)
+		}
+		conflicted, queryErr := store.ResolveCommerce(txContext, identityport.CommerceReferenceSet{References: []identitydomain.Reference{
+			{Kind: identitydomain.KindMPOpenID, Scope: "wechat-app:commerce", Value: "payer-openid", Assurance: identitydomain.AssuranceVerified, Source: "integration"},
+			{Kind: identitydomain.KindMPOpenID, Scope: "wechat-app:commerce-other", Value: "beneficiary-openid", Assurance: identitydomain.AssuranceVerified, Source: "integration"},
+		}})
+		if queryErr != nil || conflicted.Status != identityport.CommerceConflict || conflicted.CustomerID != 0 {
+			t.Errorf("commerce conflict=%#v err=%v", conflicted, queryErr)
+		}
+		invalid, queryErr := store.ResolveCommerce(txContext, identityport.CommerceReferenceSet{References: []identitydomain.Reference{{Kind: identitydomain.KindMPOpenID, Scope: "", Value: "payer-openid", Assurance: identitydomain.AssuranceVerified, Source: "integration"}}})
+		if queryErr != nil || invalid.Status != identityport.CommerceInvalid || invalid.CustomerID != 0 || len(invalid.Matches) != 0 {
+			t.Errorf("scope-less commerce identity=%#v err=%v", invalid, queryErr)
 		}
 		if len(detail.MergeLineage) != 0 {
 			t.Errorf("unexpected merge lineage=%#v", detail.MergeLineage)
