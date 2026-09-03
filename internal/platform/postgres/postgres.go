@@ -118,6 +118,12 @@ func (pool *Pool) Native() *pgxpool.Pool {
 
 type transactionKey struct{}
 
+// BindTransaction exposes an already-open infrastructure transaction to a
+// stable domain port without asking that domain to import pgx.
+func BindTransaction(ctx context.Context, tx pgx.Tx) context.Context {
+	return context.WithValue(ctx, transactionKey{}, tx)
+}
+
 func transactionFromContext(ctx context.Context) (pgx.Tx, bool) {
 	tx, ok := ctx.Value(transactionKey{}).(pgx.Tx)
 	return tx, ok

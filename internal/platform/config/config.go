@@ -27,6 +27,7 @@ type Runtime struct {
 	Bootstrap           Bootstrap
 	WeCom               WeCom
 	Effects             Effects
+	TagCatalog          TagCatalogProvider
 	WorkerOwner         string
 	WorkerLimit         int
 	CustomerSyncTrigger string
@@ -53,6 +54,14 @@ type WeCom struct {
 	ChannelStateHMACKey string
 }
 type Effects struct{ ProviderEnabled bool }
+
+// TagCatalogProvider is intentionally separate from outbound message/write
+// configuration. It permits only the read-only catalog adapter and remains
+// off unless both the boolean and a human permission acknowledgement exist.
+type TagCatalogProvider struct {
+	Enabled    bool
+	Permission string
+}
 
 func Load() (Runtime, error) {
 	databaseURL, err := DatabaseURL()
@@ -82,6 +91,10 @@ func Load() (Runtime, error) {
 	if cfg.Effects.ProviderEnabled, err = strictBool("AICRM_OUTBOUND_PROVIDER_ENABLED", false); err != nil {
 		return Runtime{}, err
 	}
+	if cfg.TagCatalog.Enabled, err = strictBool("AICRM_WECOM_TAG_CATALOG_PROVIDER_ENABLED", false); err != nil {
+		return Runtime{}, err
+	}
+	cfg.TagCatalog.Permission = os.Getenv("AICRM_WECOM_TAG_CATALOG_PROVIDER_PERMISSION")
 	if cfg.WeCom.Enabled, err = strictBool("AICRM_WECOM_ENABLED", false); err != nil {
 		return Runtime{}, err
 	}
@@ -157,6 +170,11 @@ func Load() (Runtime, error) {
 	}
 	if cfg.WeCom.CustomerSyncEnabled && (!cfg.WeCom.Enabled || strings.TrimSpace(cfg.WeCom.ContactSecret) != cfg.WeCom.ContactSecret || cfg.WeCom.ContactSecret == "") {
 		return Runtime{}, errors.New("enabled WeCom customer sync configuration is incomplete")
+	}
+	if cfg.TagCatalog.Enabled {
+		if !cfg.WeCom.Enabled || cfg.TagCatalog.Permission != "catalog-read-authorized" {
+			return Runtime{}, errors.New("enabled tag catalog provider requires WeCom and explicit permission")
+		}
 	}
 	return cfg, nil
 }

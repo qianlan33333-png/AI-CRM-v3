@@ -56,6 +56,15 @@ for (const relative of [...selected].sort()) copy(relative);
 // templates are release-private inputs to the Go adapter, never HTTP-served
 // donor pages; keeping exactly these three preserves the PR01 asset closure.
 for (const page of ['images', 'attach', 'mpLib']) copy(`admin/${page}.html`);
+// Tags also runs through the frozen donor admin entry. Keep the generated
+// donor page only as a release-private template source under a non-routable
+// filename; the Go adapter extracts template#tpl and mounts it in PR10's sole
+// admin shell. The donor page's .shell/.side wrapper is therefore never sent.
+const tagsSource = path.join(source, 'admin', 'wecom-tags.html');
+const tagsTarget = path.join(stage, 'admin', 'tags.html');
+if (!fs.statSync(tagsSource).isFile()) fail('expected file is absent: admin/wecom-tags.html');
+fs.mkdirSync(path.dirname(tagsTarget), { recursive: true });
+fs.copyFileSync(tagsSource, tagsTarget);
 
 const stagedManifest = {
   ...manifest,
@@ -74,12 +83,12 @@ const walk = (directory) => {
 };
 walk(stage);
 for (const relative of stagedFiles) {
-  const allowed = relative === 'asset-manifest.json' || relative.startsWith('assets/') || ['admin/images.html', 'admin/attach.html', 'admin/mpLib.html'].includes(relative);
+  const allowed = relative === 'asset-manifest.json' || relative.startsWith('assets/') || ['admin/images.html', 'admin/attach.html', 'admin/mpLib.html', 'admin/tags.html'].includes(relative);
   if (!allowed) fail(`unapproved release file: ${relative}`);
-  if (relative.endsWith('.html') && !['admin/images.html', 'admin/attach.html', 'admin/mpLib.html'].includes(relative)) fail(`unapproved HTML surface: ${relative}`);
+  if (relative.endsWith('.html') && !['admin/images.html', 'admin/attach.html', 'admin/mpLib.html', 'admin/tags.html'].includes(relative)) fail(`unapproved HTML surface: ${relative}`);
   if (/(^|\/)(h5|sidebar|public)(\/|$)/.test(relative)) fail(`unapproved public surface: ${relative}`);
 }
 for (const relative of selected) {
   if (!stagedFiles.includes(relative)) fail(`missing staged dependency: ${relative}`);
 }
-console.log(`staged ${selected.size} frozen External Effects assets and 3 private Media donor templates in ${stage}`);
+console.log(`staged ${selected.size} frozen admin assets, 3 private Media templates, and 1 private Tags template in ${stage}`);

@@ -25,6 +25,7 @@ type Envelope = port.Envelope
 type AcceptCommand = port.AcceptCommand
 type Projection = port.Projection
 type Receipt = port.Receipt
+type ResultArtifact = port.ResultArtifact
 
 const (
 	OwnerOutbound       = port.OwnerOutbound

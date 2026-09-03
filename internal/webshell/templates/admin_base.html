@@ -38,8 +38,13 @@
   <link rel="stylesheet" href="/static/admin_console/admin_customers.css?v=customer-directory-v1">
   <script defer src="/static/admin_console/admin_customers.js?v=customer-directory-v1"></script>
   {{end}}
+  {{if .Tags}}
+  <link rel="stylesheet" href="{{.TagsAssets.TokensCSS}}">
+  <link rel="stylesheet" href="{{.TagsAssets.LabsCSS}}">
+  <script type="module" src="{{.TagsAssets.AdminJS}}"></script>
+  {{end}}
 </head>
-<body class="admin-shell" data-admin-shell-source="v3_webshell"{{if .ExternalEffects}} data-page="campaigns"{{end}}{{if .Media}} data-page="{{.MediaPage}}"{{end}}>
+<body class="admin-shell" data-admin-shell-source="v3_webshell"{{if .ExternalEffects}} data-page="campaigns"{{end}}{{if .Media}} data-page="{{.MediaPage}}"{{end}}{{if .Tags}} data-page="tags"{{end}}>
   <div class="admin-layout">
     <aside class="admin-sidebar">
       <div class="admin-brand">
@@ -111,7 +116,7 @@
       </header>
       {{end}}
 
-      {{if or .ExternalEffects .Media}}
+      {{if or .ExternalEffects .Media .Tags}}
       {{.Content}}
       {{else}}
       <main class="admin-page">

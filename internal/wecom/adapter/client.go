@@ -140,7 +140,7 @@ func (client *Client) BatchExternalContacts(ctx context.Context, staffID, cursor
 	if err != nil {
 		return wecomport.ExternalContactPage{}, ErrResponse
 	}
-	payload, err := client.requestJSON(ctx, "/cgi-bin/externalcontact/batch/get_by_user", url.Values{"access_token": {token}}, body)
+	payload, err := client.requestJSON(ctx, http.MethodPost, "/cgi-bin/externalcontact/batch/get_by_user", url.Values{"access_token": {token}}, body)
 	if err != nil {
 		return wecomport.ExternalContactPage{}, err
 	}
@@ -295,6 +295,7 @@ type response struct {
 	UserIDLower         string          `json:"userid"`
 	Ticket              string          `json:"ticket"`
 	ExpiresIn           int64           `json:"expires_in"`
+	TagGroups           *[]tagGroupWire `json:"tag_group"`
 	FollowUser          []string        `json:"follow_user"`
 	NextCursor          string          `json:"next_cursor"`
 	ExternalContactList []struct {
@@ -310,25 +311,82 @@ type response struct {
 	} `json:"external_contact_list"`
 }
 
+type TagCatalogGroup = wecomport.TagCatalogGroup
+type TagCatalogTag = wecomport.TagCatalogTag
+type tagGroupWire struct {
+	ID    string     `json:"group_id"`
+	Name  string     `json:"group_name"`
+	Order int32      `json:"order"`
+	Tags  *[]tagWire `json:"tag"`
+}
+type tagWire struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Order   int32  `json:"order"`
+	Deleted bool   `json:"deleted"`
+}
+
+// CatalogReadError describes only whether a network boundary may have been
+// crossed. It deliberately omits Provider status/body details.
+type CatalogReadError struct {
+	Err           error
+	CallAttempted bool
+}
+
+func (e *CatalogReadError) Error() string               { return e.Err.Error() }
+func (e *CatalogReadError) Unwrap() error               { return e.Err }
+func (e *CatalogReadError) ProviderCallAttempted() bool { return e.CallAttempted }
+
+// ListTagCatalog is the narrow read-only WeCom catalog endpoint. The caller
+// decides whether an enabled client may be used; this method never enables
+// network access itself and never logs Provider responses or credentials.
+func (client *Client) ListTagCatalog(ctx context.Context) ([]TagCatalogGroup, error) {
+	if !client.Ready() {
+		return nil, &CatalogReadError{Err: ErrUnavailable}
+	}
+	token, err := client.accessToken(ctx)
+	if err != nil {
+		// The catalog endpoint itself has not been attempted; this can be
+		// retried under the original effect key.
+		return nil, &CatalogReadError{Err: err}
+	}
+	payload, err := client.requestJSON(ctx, http.MethodPost, "/cgi-bin/externalcontact/get_corp_tag_list", url.Values{"access_token": {token}}, []byte(`{}`))
+	if err != nil {
+		return nil, &CatalogReadError{Err: err, CallAttempted: true}
+	}
+	if payload.TagGroups == nil {
+		return nil, &CatalogReadError{Err: ErrResponse, CallAttempted: true}
+	}
+	groups := make([]TagCatalogGroup, 0, len(*payload.TagGroups))
+	for _, group := range *payload.TagGroups {
+		tags := []tagWire{}
+		if group.Tags != nil {
+			tags = *group.Tags
+		}
+		value := TagCatalogGroup{ID: group.ID, Name: group.Name, Order: group.Order, Tags: make([]TagCatalogTag, 0, len(tags))}
+		for _, tag := range tags {
+			value.Tags = append(value.Tags, TagCatalogTag{ID: tag.ID, Name: tag.Name, Order: tag.Order, Deleted: tag.Deleted})
+		}
+		groups = append(groups, value)
+	}
+	return groups, nil
+}
+
 func (client *Client) request(ctx context.Context, path string, query url.Values) (response, error) {
-	return client.doRequest(ctx, http.MethodGet, path, query, nil)
+	return client.requestJSON(ctx, http.MethodGet, path, query, nil)
 }
 
-func (client *Client) requestJSON(ctx context.Context, path string, query url.Values, body []byte) (response, error) {
-	return client.doRequest(ctx, http.MethodPost, path, query, body)
-}
-
-func (client *Client) doRequest(ctx context.Context, method, path string, query url.Values, body []byte) (response, error) {
+func (client *Client) requestJSON(ctx context.Context, method, path string, query url.Values, body []byte) (response, error) {
 	endpoint := *client.apiBase
 	endpoint.Path = strings.TrimRight(endpoint.Path, "/") + path
 	endpoint.RawQuery = query.Encode()
 	requestCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
-	var reader io.Reader
+	var input io.Reader
 	if body != nil {
-		reader = bytes.NewReader(body)
+		input = bytes.NewReader(body)
 	}
-	req, err := http.NewRequestWithContext(requestCtx, method, endpoint.String(), reader)
+	req, err := http.NewRequestWithContext(requestCtx, method, endpoint.String(), input)
 	if err != nil {
 		return response{}, ErrUnavailable
 	}

@@ -5,6 +5,7 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -198,6 +199,80 @@ func TestCustomerDirectoryProviderListsStaffAndBatchPage(t *testing.T) {
 	page, err := client.BatchExternalContacts(context.Background(), "staff-1", "cursor-1", 100)
 	if err != nil || page.NextCursor != "next-1" || len(page.Contacts) != 1 || page.Contacts[0].ExternalUserID != "ext-1" {
 		t.Fatalf("page=%+v err=%v", page, err)
+	}
+}
+
+func TestListTagCatalogUsesNarrowPostAndPreservesProviderFacts(t *testing.T) {
+	for name, response := range map[string]string{
+		"missing":   `{"errcode":0}`,
+		"null":      `{"errcode":0,"tag_group":null}`,
+		"empty":     `{"errcode":0,"tag_group":[]}`,
+		"tag-null":  `{"errcode":0,"tag_group":[{"group_id":"g","group_name":"group","order":-1,"tag":null}]}`,
+		"raw-facts": `{"errcode":0,"tag_group":[{"group_id":"g","group_name":"group","order":1,"tag":[{"id":"dup","name":"one","order":2,"deleted":false},{"id":"dup","name":"gone","order":3,"deleted":true}]}]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/cgi-bin/gettoken":
+					if r.Method != http.MethodGet || r.URL.Query().Get("corpsecret") != "secret" {
+						t.Fatal("unexpected token request")
+					}
+					_, _ = w.Write([]byte(`{"errcode":0,"access_token":"token","expires_in":7200}`))
+				case "/cgi-bin/externalcontact/get_corp_tag_list":
+					if r.Method != http.MethodPost || r.URL.Query().Get("access_token") != "token" {
+						t.Fatal("unexpected catalog request")
+					}
+					body, _ := io.ReadAll(r.Body)
+					if string(body) != `{}` {
+						t.Fatalf("catalog body=%q", body)
+					}
+					_, _ = w.Write([]byte(response))
+				default:
+					t.Fatal("unexpected path")
+				}
+			}))
+			defer server.Close()
+			client, err := New(Config{Enabled: true, CorpID: "corp", AgentID: "1", Secret: "secret", AdminCallbackURI: "https://id-dev.youcangogogo.com/auth/wecom/callback", SidebarCallbackURI: "https://id-dev.youcangogogo.com/api/sidebar/oauth/callback", APIBase: server.URL, HTTPClient: server.Client()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			groups, err := client.ListTagCatalog(context.Background())
+			if name == "missing" || name == "null" {
+				var failure *CatalogReadError
+				if err == nil || !errors.As(err, &failure) || !failure.CallAttempted {
+					t.Fatalf("err=%v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if name == "empty" && (groups == nil || len(groups) != 0) {
+				t.Fatalf("groups=%#v", groups)
+			}
+			if name == "tag-null" && (len(groups) != 1 || groups[0].Tags == nil || len(groups[0].Tags) != 0 || groups[0].Order != -1) {
+				t.Fatalf("groups=%#v", groups)
+			}
+			if name == "raw-facts" && (len(groups) != 1 || len(groups[0].Tags) != 2 || groups[0].Tags[1].Deleted != true) {
+				t.Fatalf("groups=%#v", groups)
+			}
+		})
+	}
+}
+
+func TestListTagCatalogTokenFailureIsPreCall(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/cgi-bin/gettoken" {
+			t.Fatal("catalog endpoint should not be called")
+		}
+		_, _ = w.Write([]byte(`{"errcode":40001}`))
+	}))
+	defer server.Close()
+	client := newTestClient(t, server, func() time.Time { return testNow })
+	_, err := client.ListTagCatalog(context.Background())
+	var failure *CatalogReadError
+	if err == nil || !errors.As(err, &failure) || failure.CallAttempted {
+		t.Fatalf("err=%v failure=%+v", err, failure)
 	}
 }
 

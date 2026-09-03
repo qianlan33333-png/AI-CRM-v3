@@ -57,6 +57,8 @@ type AdminShellView struct {
 	Media           bool
 	MediaPage       string
 	MediaAssets     MediaAssets
+	Tags            bool
+	TagsAssets      TagsAssets
 }
 
 // ExternalEffectsAssets are manifest-derived URLs for the frozen donor bundle.
@@ -70,6 +72,10 @@ type ExternalEffectsAssets struct {
 // MediaAssets are manifest-derived URLs for the immutable Media donor bundle.
 // They are supplied by the Media module's release-only UI adapter.
 type MediaAssets struct{ TokensCSS, LabsCSS, AdminJS string }
+
+// TagsAssets are manifest-derived frozen donor bundle paths. The tag page is
+// mounted in admin_base and never publishes the donor's own shell/sidebar.
+type TagsAssets struct{ TokensCSS, LabsCSS, AdminJS string }
 
 // Render implements the small presentation contract consumed by the Access
 // HTTP handler. Keeping this adapter in webshell avoids a concrete import
@@ -179,6 +185,23 @@ func (renderer *Renderer) RenderMedia(writer http.ResponseWriter, data AdminPage
 	data.ShowPageHeader = false
 	content := `<main id="stage" class="stage rich"></main><template id="tpl">` + donorTemplate + `</template>`
 	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: template.HTML(content), Media: true, MediaPage: page, MediaAssets: assets})
+	if err != nil {
+		return err
+	}
+	return writeHTML(writer, http.StatusOK, body)
+}
+
+// RenderTags mounts the complete, byte-frozen tags workspace into the one v3
+// sidebar shell.  The supplied template was extracted from a verified release
+// asset by the tag module, not from request input.
+func (renderer *Renderer) RenderTags(writer http.ResponseWriter, data AdminPageData, donorTemplate string, assets TagsAssets) error {
+	if renderer == nil || renderer.templates == nil || donorTemplate == "" || assets.TokensCSS == "" || assets.LabsCSS == "" || assets.AdminJS == "" {
+		return errors.New("tags shell assets are required")
+	}
+	normalizeAdminPage(&data)
+	data.ShowPageHeader = false
+	content := `<main id="stage" class="stage rich"></main><template id="tpl">` + donorTemplate + `</template>`
+	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: template.HTML(content), Tags: true, TagsAssets: assets})
 	if err != nil {
 		return err
 	}
