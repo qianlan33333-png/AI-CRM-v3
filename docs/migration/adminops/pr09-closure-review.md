@@ -93,7 +93,7 @@ runtime/bundle 行为与被降级后的 fragment，**不得**把它生成的外�
 | setup wizard | 原样 module GET；POST Corp ID/Agent ID、四个空 secret 字段、expected digest/action token 和 `Idempotency-Key`；验证两 audits、两 events，随后 GET readback。 | `GET`/`POST /api/admin/setup-wizard`，冻结 `SetupWizardReadResponse`/`SetupWizardSaveResponse`。 | 可用候选；必须完整交付，不能把 local save 描述为已接入企微。 |
 | 配置类目 toggle | controller 调 `HttpApi.toggleConfigCategory`；冻结 HttpApi 直接 reject“DTO 未提供 route-bound token”，**没有 HTTP 请求**。 | 无。不得借 generated `PUT .../enabled` 自创可写 UI。 | 明确 blocked（原样 toast/error）。 |
 | 普通类目 save / category check | `saveConfigCategory` 对非 `app-settings` 直接 reject；`checkConfigCategory` 直接 reject，**没有 HTTP 请求**。 | 无。`PUT .../settings`、`POST .../check` 不可因 generated DTO 而提前暴露。 | 明确 blocked（原样 toast/error）。 |
-| push capability / release rows | config read mapper 把返回数据渲染为 read-only config rows；没有 frozen controller 写入口。 | 上述两个 GET 仅作 local/redacted read。 | 可展示只读投影；所有 PATCH/POST publish/rollback 仍 unmounted。 |
+| push capability / release rows | config read mapper 把返回数据渲染为 read-only config rows；没有 frozen controller 写入口。 | `GET /api/admin/config/push-capabilities` 必须返回顶层 `capabilities`；`GET /api/admin/config/releases` 必须返回顶层 `releases:[{id,state,checksum}]`，而不是仅有 `items`。两者均为 local/redacted read。 | 可展示只读投影；所有 PATCH/POST publish/rollback 仍 unmounted。 |
 | apidocs | 原样静态 fragment；“下载 OpenAPI” button 没有 id、handler 或 fetch。 | 无。 | 可原样静态渲染；不是动态 OpenAPI 下载页。 |
 | AdminAccess 相邻按钮 | `legacy.ts` 原样动态 import `adminAccess.ts`，但 access HTTP 是另一个领域。 | PR09 无。 | 必须在 v3 外层 capability policy block；不改模板文字/DOM。 |
 

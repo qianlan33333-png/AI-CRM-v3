@@ -100,19 +100,6 @@ type SafeProjectionReader interface {
 	ListDiagnosticSnapshots(context.Context) ([]DiagnosticProjection, error)
 }
 
-// EmptySafeProjectionReader is the honest default until an AdminOps-owned
-// store and redacting adapter are composed. It returns arrays rather than
-// null so the frozen read-only page sees an empty projection.
-type EmptySafeProjectionReader struct{}
-
-func (EmptySafeProjectionReader) ListReleaseProjections(context.Context) ([]ReleaseProjection, error) {
-	return []ReleaseProjection{}, nil
-}
-
-func (EmptySafeProjectionReader) ListDiagnosticSnapshots(context.Context) ([]DiagnosticProjection, error) {
-	return []DiagnosticProjection{}, nil
-}
-
 // Event is a local transactional fact. It is a seam only: Terra must adapt it
 // to the v3 versioned event/outbox implementation at composition time.
 type Event struct {

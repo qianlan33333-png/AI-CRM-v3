@@ -1,5 +1,5 @@
--- Owner: internal/config.  This migration holds only non-secret local
--- configuration facts.  Secret-bearing runtime environment values never enter
+-- Owner: internal/config. This section holds only non-secret local
+-- configuration facts. Secret-bearing runtime environment values never enter
 -- these tables.
 CREATE TABLE config_settings (
     setting_key TEXT PRIMARY KEY CHECK (setting_key IN (
@@ -33,9 +33,9 @@ CREATE TABLE config_outbox (
     published_at TIMESTAMPTZ
 );
 
--- Read-only release and diagnostic projections are intentionally separate from
--- configuration writes.  They are filled by deployment/runtime observation,
--- never by the admin UI in this PR.
+-- Owner: internal/adminops. Read-only release and diagnostic projections are
+-- intentionally separate from configuration writes. They are filled by
+-- deployment/runtime observation, never by the admin UI in this PR.
 CREATE TABLE adminops_release_projections (
     id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     release_sha TEXT NOT NULL CHECK (length(release_sha) BETWEEN 1 AND 200),

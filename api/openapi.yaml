@@ -2412,11 +2412,23 @@ paths:
   /api/admin/config/categories/{category_key}:
     get: {operationId: getConfigCategory, tags: [Config], security: [{adminSession: []}], parameters: [{name: category_key, in: path, required: true, schema: {type: string, enum: [app-settings]}}], responses: {"200": {description: Safe category projection, content: {application/json: {schema: {$ref: "#/components/schemas/LocalProjection"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}}}
   /api/admin/config/push-capabilities:
-    get: {operationId: listPushCapabilities, tags: [Config], security: [{adminSession: []}], responses: {"200": {description: Read-only local safe projection, content: {application/json: {schema: {$ref: "#/components/schemas/LocalProjection"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}}}
+    get:
+      operationId: listPushCapabilities
+      tags: [Config]
+      security: [{adminSession: []}]
+      responses: {"200": {description: Read-only local safe projection, content: {application/json: {schema: {$ref: "#/components/schemas/AdminConfigProjection"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}}
   /api/admin/config/releases:
-    get: {operationId: listReleaseProjections, tags: [Config], security: [{adminSession: []}], responses: {"200": {description: Read-only local release projection, content: {application/json: {schema: {$ref: "#/components/schemas/LocalProjection"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}}}
+    get:
+      operationId: listReleaseProjections
+      tags: [Config]
+      security: [{adminSession: []}]
+      responses: {"200": {description: Read-only local release projection, content: {application/json: {schema: {$ref: "#/components/schemas/AdminConfigProjection"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}}
   /api/admin/config/diagnostics:
-    get: {operationId: listAdminDiagnostics, tags: [Config], security: [{adminSession: []}], responses: {"200": {description: Bounded persisted local diagnostic observations, content: {application/json: {schema: {$ref: "#/components/schemas/LocalProjection"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}}
+    get:
+      operationId: listAdminDiagnostics
+      tags: [Config]
+      security: [{adminSession: []}]
+      responses: {"200": {description: Bounded persisted local diagnostic observations, content: {application/json: {schema: {$ref: "#/components/schemas/AdminConfigProjection"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
 components:
   securitySchemes:
     adminSession: {type: apiKey, in: cookie, name: aicrm_admin_session}
@@ -2481,6 +2493,32 @@ components:
       type: object
       required: [ok, items, source_status, local_only]
       properties: {ok: {const: true}, items: {type: array, items: {}}, source_status: {type: string}, local_only: {const: true}}
+    AdminConfigProjection:
+      type: object
+      required: [ok, source_status, local_only, real_external_call_executed]
+      properties:
+        ok: {const: true}
+        source_status: {type: string}
+        local_only: {const: true}
+        real_external_call_executed: {const: false}
+        capabilities: {type: object, additionalProperties: true}
+        releases: {type: array, items: {$ref: "#/components/schemas/AdminConfigReleaseProjection"}}
+        diagnostics: {type: array, items: {$ref: "#/components/schemas/AdminConfigDiagnosticProjection"}}
+    AdminConfigReleaseProjection:
+      type: object
+      required: [id, state, checksum]
+      properties:
+        id: {$ref: "#/components/schemas/PositiveID"}
+        state: {type: string, enum: [observed, active, superseded, failed]}
+        checksum: {type: string, minLength: 1, maxLength: 200}
+    AdminConfigDiagnosticProjection:
+      type: object
+      required: [id, key, status, observed_at]
+      properties:
+        id: {$ref: "#/components/schemas/PositiveID"}
+        key: {type: string, minLength: 1, maxLength: 120}
+        status: {type: string, enum: [ok, warning, error, unknown]}
+        observed_at: {type: string, format: date-time}
     ConfigSettingsRead:
       type: object
       required: [ok, config, source_status, fallback_used, admin_action_token]

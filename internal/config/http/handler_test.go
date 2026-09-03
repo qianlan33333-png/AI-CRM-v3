@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -125,11 +126,102 @@ func TestHistoricalProjectionsExposeOnlyTypedSafeFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	releaseResponse := httptest.NewRecorder()
+	h.ServeHTTP(releaseResponse, httptest.NewRequest(http.MethodGet, "/api/admin/config/releases", nil))
+	if releaseResponse.Code != http.StatusOK || strings.Contains(releaseResponse.Body.String(), "details") || strings.Contains(releaseResponse.Body.String(), `"items"`) {
+		t.Fatalf("releases status=%d body=%s", releaseResponse.Code, releaseResponse.Body.String())
+	}
+	var releaseBody struct {
+		Releases []struct {
+			ID       int64  `json:"id"`
+			State    string `json:"state"`
+			Checksum string `json:"checksum"`
+		} `json:"releases"`
+	}
+	if err = json.Unmarshal(releaseResponse.Body.Bytes(), &releaseBody); err != nil {
+		t.Fatal(err)
+	}
+	if len(releaseBody.Releases) != 1 || releaseBody.Releases[0].ID != 9 || releaseBody.Releases[0].State != "observed" || releaseBody.Releases[0].Checksum != "release-sha" {
+		t.Fatalf("release projection=%#v", releaseBody.Releases)
+	}
+	diagnosticResponse := httptest.NewRecorder()
+	h.ServeHTTP(diagnosticResponse, httptest.NewRequest(http.MethodGet, "/api/admin/config/diagnostics", nil))
+	if diagnosticResponse.Code != http.StatusOK || strings.Contains(diagnosticResponse.Body.String(), "details") || strings.Contains(diagnosticResponse.Body.String(), `"items"`) {
+		t.Fatalf("diagnostics status=%d body=%s", diagnosticResponse.Code, diagnosticResponse.Body.String())
+	}
+	var diagnosticBody struct {
+		Diagnostics []struct {
+			ID     int64  `json:"id"`
+			Key    string `json:"key"`
+			Status string `json:"status"`
+		} `json:"diagnostics"`
+	}
+	if err = json.Unmarshal(diagnosticResponse.Body.Bytes(), &diagnosticBody); err != nil {
+		t.Fatal(err)
+	}
+	if len(diagnosticBody.Diagnostics) != 1 || diagnosticBody.Diagnostics[0].ID != 3 || diagnosticBody.Diagnostics[0].Key != "runtime" || diagnosticBody.Diagnostics[0].Status != "ok" {
+		t.Fatalf("diagnostic projection=%#v", diagnosticBody.Diagnostics)
+	}
+}
+
+func TestPushCapabilitiesExposeDonorReadOnlyProjectionShape(t *testing.T) {
+	principal := accessdomain.Principal{InternalID: 7, Kind: accessdomain.KindAdmin, Roles: []accessdomain.Role{accessdomain.RoleViewer}}
+	h, err := NewHandler(&testSettings{}, &testWizard{}, testProjections{}, testSecurity{principal: principal})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	h.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/admin/config/push-capabilities", nil))
+	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), `"items":[]`) {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var body struct {
+		Capabilities map[string]map[string]any `json:"capabilities"`
+	}
+	if err = json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Capabilities) != 2 || body.Capabilities["local_projection"]["enabled"] != true || body.Capabilities["provider_write"]["enabled"] != false {
+		t.Fatalf("capabilities=%#v", body.Capabilities)
+	}
+}
+
+func TestHistoricalProjectionStoreFailureIsNotAnEmptySuccess(t *testing.T) {
+	principal := accessdomain.Principal{InternalID: 7, Kind: accessdomain.KindAdmin, Roles: []accessdomain.Role{accessdomain.RoleViewer}}
+	h, err := NewHandler(&testSettings{}, &testWizard{}, failingProjections{}, testSecurity{principal: principal})
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, path := range []string{"/api/admin/config/releases", "/api/admin/config/diagnostics"} {
 		response := httptest.NewRecorder()
 		h.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
-		if response.Code != http.StatusOK || strings.Contains(response.Body.String(), "details") {
+		if response.Code != http.StatusServiceUnavailable || strings.Contains(response.Body.String(), `"releases":[]`) || strings.Contains(response.Body.String(), `"diagnostics":[]`) {
 			t.Fatalf("path=%s status=%d body=%s", path, response.Code, response.Body.String())
 		}
 	}
+}
+
+func TestEmptyHistoricalProjectionIsFailClosed(t *testing.T) {
+	principal := accessdomain.Principal{InternalID: 7, Kind: accessdomain.KindAdmin, Roles: []accessdomain.Role{accessdomain.RoleViewer}}
+	h, err := NewHandler(&testSettings{}, &testWizard{}, testProjections{}, testSecurity{principal: principal})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"/api/admin/config/releases", "/api/admin/config/diagnostics"} {
+		response := httptest.NewRecorder()
+		h.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		if response.Code != http.StatusServiceUnavailable {
+			t.Fatalf("path=%s status=%d body=%s", path, response.Code, response.Body.String())
+		}
+	}
+}
+
+type failingProjections struct{}
+
+func (failingProjections) ListReleaseProjections(context.Context) ([]configport.ReleaseProjection, error) {
+	return nil, errors.New("projection store unavailable")
+}
+
+func (failingProjections) ListDiagnosticSnapshots(context.Context) ([]configport.DiagnosticProjection, error) {
+	return nil, errors.New("projection store unavailable")
 }

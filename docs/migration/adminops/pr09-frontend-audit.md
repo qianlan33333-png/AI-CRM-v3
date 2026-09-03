@@ -52,7 +52,7 @@ PASS: PR09 frontend freeze verified (16 files; donor 6bfbe5816bb89913c70adaca87d
 | 入口/页面 | registry/nav 事实 | 实际 donor 输出/URL | 入口行为和 PR09 决定 |
 | --- | --- | --- | --- |
 | 配置一级 `config` | `registry.json:L153-L160`，`nav.json:L117-L121`，nav key 为 `config` | `dist/admin/config.html`；静态浏览器地址是 `/admin/config.html`，不是 `/admin/config` | `body[data-page="config"]`，由 `main.ts` 默认加载 `legacy.ts`，再由 `AdminController` mount `config.html`。显示类目、开关、详情按钮，以及 setup/admin-access 两个静态扩展按钮。 |
-| 配置二级 `configDetail` | `registry.json:L162-L169`，无一级 nav | `dist/admin/configDetail.html`；controller 用 `configDetail.html?cat=<categoryKey>` | `cat` 默认 `wecom_base`，找不到时回退首类目；显示字段、开关、secret password 控件、检查/保存/返回。只允许 adapter 绑定 Config/AdminOps 闭集字段。 |
+| 配置二级 `configDetail` | `registry.json:L162-L169`，无一级 nav | `dist/admin/configDetail.html`；controller 用 `configDetail.html?cat=<categoryKey>` | v3 host 只允许活动闭集 `app-settings`、`push-capabilities`、`releases`；显示字段、开关、secret password 控件、检查/保存/返回。只允许 adapter 绑定 Config/AdminOps 闭集字段。 |
 | API 文档 `apidocs` | `registry.json:L279-L285`，`nav.json:L123-L127` | `dist/admin/apidocs.html`；静态地址 `/admin/apidocs.html` | 静态 donor 展示侧边栏 API 列表，下载按钮无 id/监听器，是 evidence fragment，不是 v3 OpenAPI 入口。 |
 | setup wizard modal | `config.html:L29-L35` 的 `#open-setup-wizard`，`legacy.ts:L422-L451` | 不生成独立页面；配置页的 `#config-extension-dialog` 内异步 mount `setupWizard.ts` | 只读取/保存 Corp ID、Agent ID；必须保留 `local_only=true`、`external=false`、`runtime_applied=false` 以及两审计/两事件回执检查。 |
 | AdminAccess modal（邻接但排除） | `config.html:L36-L41` 的 `#open-admin-access`，`legacy.ts:L452-L456` | 同一个 config modal | 对应 `/api/admin/admin-access`，属于 `internal/access`，不在 PR09 route、叶子或挂载范围；生成文件中出现只因 donor 页面相邻按钮存在。 |

@@ -58,12 +58,20 @@ func (h *ui) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 func configPage(r *http.Request) (string, bool) {
 	switch r.URL.Path {
-	case "/admin/config", "/admin/config.html":
+	case "/admin/config", "/admin/config/", "/admin/config.html":
 		return "config", len(r.URL.Query()) == 0
 	case "/admin/configDetail.html":
 		values := r.URL.Query()
 		cats := values["cat"]
-		return "configDetail", len(values) == 1 && len(cats) == 1 && cats[0] == "app-settings"
+		if len(values) != 1 || len(cats) != 1 {
+			return "", false
+		}
+		switch cats[0] {
+		case "app-settings", "push-capabilities", "releases":
+			return "configDetail", true
+		default:
+			return "", false
+		}
 	case "/admin/api-docs", "/admin/apidocs.html":
 		return "apidocs", len(r.URL.Query()) == 0
 	default:

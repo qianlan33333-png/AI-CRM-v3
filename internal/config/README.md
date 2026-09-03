@@ -11,5 +11,8 @@ configuration ports. The v3 HTTP adapter exposes the frozen app-settings and
 setup-wizard DTOs behind session, role, CSRF, route-bound action-token and
 idempotency checks. It saves only local material facts: `external=false`,
 `local_only=true`, and `runtime_applied=false`; it neither applies runtime
-configuration nor calls a Provider. The PR10 host adapter mounts only the
-verified donor fragments in the sole v3 admin shell.
+configuration nor calls a Provider. Release and diagnostics reads are served
+by the composed AdminOps-owned safe projection adapter, which returns real
+persisted rows and fails closed on malformed data rather than returning an
+empty success placeholder. The PR10 host adapter mounts only the verified
+donor fragments in the sole v3 admin shell.

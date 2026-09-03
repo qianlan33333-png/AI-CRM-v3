@@ -15,13 +15,15 @@ import (
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/access/credential"
 	accesshttp "github.com/qianlan33333-png/AI-CRM-v3/internal/access/http"
 	accessstore "github.com/qianlan33333-png/AI-CRM-v3/internal/access/store"
+	adminopsapp "github.com/qianlan33333-png/AI-CRM-v3/internal/adminops/app"
+	adminopsport "github.com/qianlan33333-png/AI-CRM-v3/internal/adminops/port"
+	adminopsstore "github.com/qianlan33333-png/AI-CRM-v3/internal/adminops/store"
 	automation "github.com/qianlan33333-png/AI-CRM-v3/internal/automation"
 	automationapp "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/app"
 	automationstore "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/store"
 	channelstore "github.com/qianlan33333-png/AI-CRM-v3/internal/channel"
 	configapp "github.com/qianlan33333-png/AI-CRM-v3/internal/config/app"
 	configmodule "github.com/qianlan33333-png/AI-CRM-v3/internal/config/module"
-	configport "github.com/qianlan33333-png/AI-CRM-v3/internal/config/port"
 	configstore "github.com/qianlan33333-png/AI-CRM-v3/internal/config/store"
 	coupon "github.com/qianlan33333-png/AI-CRM-v3/internal/coupon"
 	couponapp "github.com/qianlan33333-png/AI-CRM-v3/internal/coupon/app"
@@ -65,6 +67,8 @@ import (
 	productmodule "github.com/qianlan33333-png/AI-CRM-v3/internal/product"
 	productapp "github.com/qianlan33333-png/AI-CRM-v3/internal/product/app"
 	productstore "github.com/qianlan33333-png/AI-CRM-v3/internal/product/store"
+	releaseapp "github.com/qianlan33333-png/AI-CRM-v3/internal/release/app"
+	releaseport "github.com/qianlan33333-png/AI-CRM-v3/internal/release/port"
 	surveymodule "github.com/qianlan33333-png/AI-CRM-v3/internal/survey"
 	surveyapp "github.com/qianlan33333-png/AI-CRM-v3/internal/survey/app"
 	surveyprovider "github.com/qianlan33333-png/AI-CRM-v3/internal/survey/provider"
@@ -86,6 +90,9 @@ type composedApplication struct {
 	weComProcessor wecom.InboxProcessor
 	effectsRuntime *platformjobqueue.Runtime
 	customerSync   wecom.CustomerSyncService
+	adminOps       *adminopsapp.ProjectionService
+	release        *releaseapp.ObservationService
+	diagnostics    *adminopsapp.DiagnosticsService
 }
 
 func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplication, error) {
@@ -341,7 +348,23 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
-	configBindings, err := configModule.Bind(settingsService, setupWizard, configport.EmptySafeProjectionReader{}, requestSecurity)
+	adminOpsProjectionStore, err := adminopsstore.NewProjectionPostgreSQL(pool.Native(), uow)
+	if err != nil {
+		return fail(err)
+	}
+	adminOpsProjection, err := adminopsapp.NewProjectionService(uow, adminOpsProjectionStore)
+	if err != nil {
+		return fail(err)
+	}
+	diagnostics, err := adminopsapp.NewDiagnosticsService(adminOpsProjection)
+	if err != nil {
+		return fail(err)
+	}
+	releaseObservation, err := releaseapp.NewObservationService(adminOpsReleaseObservationWriter{projections: adminOpsProjection})
+	if err != nil {
+		return fail(err)
+	}
+	configBindings, err := configModule.Bind(settingsService, setupWizard, adminOpsProjection, requestSecurity)
 	if err != nil {
 		return fail(err)
 	}
@@ -652,6 +675,9 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		if checkErr = configModule.Readiness(readinessContext, pool.Native()); checkErr != nil {
 			return checkErr
 		}
+		if checkErr = configModule.Readiness(readinessContext, pool.Native()); checkErr != nil {
+			return checkErr
+		}
 		if checkErr = automationModule.Readiness(readinessContext, pool.Native()); checkErr != nil {
 			return checkErr
 		}
@@ -662,6 +688,9 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 			return checkErr
 		}
 		if checkErr = operationModule.Readiness(readinessContext, pool.Native()); checkErr != nil {
+			return checkErr
+		}
+		if checkErr = adminOpsProjectionStore.Readiness(readinessContext); checkErr != nil {
 			return checkErr
 		}
 		return nil
@@ -719,7 +748,16 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return fail(err)
 	}
 	handler = securityHeaders(mountSurveyUI(handler, surveyUI, surveyPublicUI, authentication))
-	return &composedApplication{pool: pool, handler: handler, management: management, weComProcessor: weComProcessor, effectsRuntime: effectsRuntime, customerSync: customerSync}, nil
+	// These are local observations only: they make the release and diagnostics
+	// projections truthful and readable after startup, without claiming deploy,
+	// cutover, provider execution, or runtime-secret application.
+	if err = releaseObservation.Record(ctx, releaseport.ReleaseObservation{ReleaseSHA: cfg.ReleaseSHA, Status: "observed"}); err != nil {
+		return fail(err)
+	}
+	if _, err = diagnostics.Record(ctx, adminopsport.DiagnosticSnapshot{Key: "aicrm.composition", Status: "ok"}); err != nil {
+		return fail(err)
+	}
+	return &composedApplication{pool: pool, handler: handler, management: management, weComProcessor: weComProcessor, effectsRuntime: effectsRuntime, customerSync: customerSync, adminOps: adminOpsProjection, release: releaseObservation, diagnostics: diagnostics}, nil
 }
 
 func mountSurveyUI(next, adminUI, publicUI http.Handler, authentication accessAuthentication) http.Handler {

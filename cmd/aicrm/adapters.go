@@ -10,12 +10,15 @@ import (
 	accessapp "github.com/qianlan33333-png/AI-CRM-v3/internal/access/app"
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
 	accesshttp "github.com/qianlan33333-png/AI-CRM-v3/internal/access/http"
+	adminopsapp "github.com/qianlan33333-png/AI-CRM-v3/internal/adminops/app"
+	adminopsport "github.com/qianlan33333-png/AI-CRM-v3/internal/adminops/port"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	identityapp "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/app"
 	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
 	identityport "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/port"
 	identityquery "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/query"
 	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
+	releaseport "github.com/qianlan33333-png/AI-CRM-v3/internal/release/port"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/wecom"
 )
 
@@ -26,6 +29,26 @@ type accessAuthentication interface {
 }
 
 type requestAccessSecurity struct{ authentication accessAuthentication }
+
+// adminOpsReleaseObservationWriter keeps the release plane on its stable
+// observation port while AdminOps remains the owner of the projection tables.
+// No release payload, actor metadata, URL, or external-effect result crosses
+// this adapter.
+type adminOpsReleaseObservationWriter struct {
+	projections *adminopsapp.ProjectionService
+}
+
+func (adapter adminOpsReleaseObservationWriter) RecordReleaseObservation(ctx context.Context, observation releaseport.ReleaseObservation) error {
+	if adapter.projections == nil {
+		return adminopsapp.ErrProjectionUnavailable
+	}
+	_, err := adapter.projections.RecordReleaseProjection(ctx, adminopsport.ReleaseProjection{
+		ReleaseSHA: observation.ReleaseSHA,
+		Status:     observation.Status,
+		ObservedAt: observation.ObservedAt,
+	})
+	return err
+}
 
 func (adapter requestAccessSecurity) Authenticate(ctx context.Context, request *http.Request) (accessdomain.Principal, error) {
 	return adapter.authentication.Authenticate(ctx, cookieValue(request, accesshttp.SessionCookieName))

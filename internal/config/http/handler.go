@@ -303,7 +303,16 @@ func (h *Handler) pushCapabilities(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.read(w, r); !ok {
 		return
 	}
-	writeJSON(w, 200, map[string]any{"ok": true, "items": []any{}, "source_status": "next_read_model", "local_only": true})
+	// These are runtime facts of this v3 composition, not a claim that a
+	// Provider is available.  The local projection is mounted; provider writes
+	// are deliberately disabled because no outbound adapter is composed.
+	writeJSON(w, 200, map[string]any{
+		"ok":                          true,
+		"capabilities":                map[string]any{"local_projection": map[string]any{"enabled": true, "state": "available", "local_only": true}, "provider_write": map[string]any{"enabled": false, "state": "disabled", "local_only": true}},
+		"source_status":               "local_runtime_policy",
+		"local_only":                  true,
+		"real_external_call_executed": false,
+	})
 }
 func (h *Handler) releases(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -314,11 +323,15 @@ func (h *Handler) releases(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	items, err := h.projections.ListReleaseProjections(r.Context())
-	if err != nil {
+	if err != nil || len(items) == 0 {
 		writeError(w, 503, "unavailable")
 		return
 	}
-	writeJSON(w, 200, map[string]any{"ok": true, "items": items, "source_status": "next_read_model", "local_only": true})
+	releases := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		releases = append(releases, map[string]any{"id": item.ID, "state": item.Status, "checksum": item.ReleaseSHA})
+	}
+	writeJSON(w, 200, map[string]any{"ok": true, "releases": releases, "source_status": "next_read_model", "local_only": true, "real_external_call_executed": false})
 }
 func (h *Handler) diagnostics(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -329,11 +342,15 @@ func (h *Handler) diagnostics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	items, err := h.projections.ListDiagnosticSnapshots(r.Context())
-	if err != nil {
+	if err != nil || len(items) == 0 {
 		writeError(w, 503, "unavailable")
 		return
 	}
-	writeJSON(w, 200, map[string]any{"ok": true, "items": items, "source_status": "next_read_model", "local_only": true})
+	diagnostics := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		diagnostics = append(diagnostics, map[string]any{"id": item.ID, "key": item.Key, "status": item.Status, "observed_at": item.ObservedAt.UTC()})
+	}
+	writeJSON(w, 200, map[string]any{"ok": true, "diagnostics": diagnostics, "source_status": "next_read_model", "local_only": true, "real_external_call_executed": false})
 }
 
 func decode(r *http.Request, v any) error {
