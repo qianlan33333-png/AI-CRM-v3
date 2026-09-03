@@ -129,7 +129,10 @@ func (r *Repository) Create(ctx context.Context, a automationport.Agent, now tim
 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13::jsonb,$14,$15,$16,$16) RETURNING ` + agentColumns
 	out, e := scanAgent(t.QueryRow(ctx, q, a.AgentName, a.AgentCode, string(a.AutomationType), string(a.Status), a.ExecutionEnabled, a.DraftRolePrompt, a.DraftTaskPrompt, a.PublishedRolePrompt, a.PublishedTaskPrompt, a.DraftVersion, a.PublishedVersion, fixed, legacy, a.CreatedBy, a.UpdatedBy, now))
 	if unique(e) {
-		return automationport.Agent{}, ErrConflict
+		// This is a user-visible uniqueness conflict. Return the stable App
+		// sentinel rather than the Store-private one so the transaction boundary
+		// preserves it and the unchanged HTTP adapter maps it to 409.
+		return automationport.Agent{}, automationapp.ErrAgentConflict
 	}
 	return out, e
 }

@@ -73,6 +73,13 @@ func TestPostgreSQLAgentFixedContentPublishActivatePauseJourney(t *testing.T) {
 	}}); !errors.Is(err, automationapp.ErrAgentConflict) {
 		t.Fatalf("duplicate agent code err=%v", err)
 	}
+	var conflictAgents, conflictReceipts, conflictAudits, conflictOutbox int
+	if err = native.QueryRow(ctx, `SELECT (SELECT count(*) FROM automation_agents),(SELECT count(*) FROM automation_operation_receipts),(SELECT count(*) FROM automation_audit_events),(SELECT count(*) FROM automation_outbox)`).Scan(&conflictAgents, &conflictReceipts, &conflictAudits, &conflictOutbox); err != nil {
+		t.Fatal(err)
+	}
+	if conflictAgents != 1 || conflictReceipts != 1 || conflictAudits != 1 || conflictOutbox != 1 {
+		t.Fatalf("duplicate create was not fully rolled back agents=%d receipts=%d audits=%d outbox=%d", conflictAgents, conflictReceipts, conflictAudits, conflictOutbox)
+	}
 	content := automationport.FixedContentPackage{ContentText: "欢迎加入", ImageLibraryIDs: []int64{11}, AttachmentLibraryIDs: []int64{12}, MiniprogramLibraryIDs: []int64{13}, GroupInviteLibraryIDs: []int64{14}}
 	saved, err := service.SaveFixedContent(ctx, automationport.FixedContentCommand{ID: created.ID, ContentPackage: content, Actor: 7, IdempotencyKey: "automation-pg-content-01"})
 	if err != nil || saved.DraftVersion != 2 || saved.PublishedVersion != 1 {
