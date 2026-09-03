@@ -49,6 +49,22 @@ modules:
     status: implemented
     owner: crm-operations
     dependencies: [platform, access]
+  - name: automation
+    status: implemented
+    owner: crm-operations
+    dependencies: [platform, access]
+  - name: externaleffects
+    status: implemented
+    owner: crm-platform
+    dependencies: [platform]
+  - name: outbound
+    status: implemented
+    owner: crm-connectors
+    dependencies: [platform, externaleffects]
+  - name: segment
+    status: contracted
+    owner: crm-operations
+    dependencies: [platform, customer, identity, access, automation, outbound]
   - name: intelligence-platform-tail
     status: planned
     owner: crm-platform

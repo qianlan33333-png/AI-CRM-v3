@@ -1,0 +1,43 @@
+package port
+
+import (
+	"context"
+
+	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
+	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
+)
+
+type AudienceResolutionStatus string
+
+const (
+	AudienceResolved   AudienceResolutionStatus = "resolved"
+	AudienceUnresolved AudienceResolutionStatus = "unresolved"
+	AudienceConflict   AudienceResolutionStatus = "conflict"
+	AudienceInvalid    AudienceResolutionStatus = "invalid"
+)
+
+type AudienceResolution struct {
+	Status     AudienceResolutionStatus
+	CustomerID customerdomain.CustomerID
+	IdentityID int64
+}
+
+// AudienceVerifiedResolver accepts only a VerifiedFact minted by a trusted
+// adapter. It deliberately exposes no provision, bind, or merge operation.
+type AudienceVerifiedResolver interface {
+	ResolveAudienceFact(context.Context, identitydomain.VerifiedFact) (AudienceResolution, error)
+}
+
+type OutboundIdentity struct {
+	IdentityID int64
+	CustomerID customerdomain.CustomerID
+	Kind       identitydomain.Kind
+	Scope      string
+	Value      string
+}
+
+// OutboundIdentityReader is restricted to the privileged Outbound provider
+// adapter. Returned values must never be persisted or structurally logged.
+type OutboundIdentityReader interface {
+	VerifiedOutboundIdentity(context.Context, customerdomain.CustomerID, identitydomain.Kind, string) (OutboundIdentity, bool, error)
+}
