@@ -48,26 +48,29 @@ func NewRenderer() (*Renderer, error) {
 // templates remain the package's stable presentation boundary.
 type AdminShellView struct {
 	AdminPageData
-	Content         template.HTML
-	AudienceList    bool
-	AudienceDetail  bool
-	Customers       bool
-	ExternalEffects bool
-	ExternalAssets  ExternalEffectsAssets
-	Media           bool
-	MediaPage       string
-	MediaAssets     MediaAssets
-	Tags            bool
-	TagsAssets      TagsAssets
-	Product         bool
-	ProductPage     string
-	ProductAssets   ProductAssets
-	Coupons         bool
-	CouponPage      string
-	CouponAssets    CouponAssets
-	GroupOps        bool
-	GroupOpsPage    string
-	GroupOpsAssets  GroupOpsAssets
+	Content          template.HTML
+	AudienceList     bool
+	AudienceDetail   bool
+	Customers        bool
+	ExternalEffects  bool
+	ExternalAssets   ExternalEffectsAssets
+	Media            bool
+	MediaPage        string
+	MediaAssets      MediaAssets
+	Tags             bool
+	TagsAssets       TagsAssets
+	Product          bool
+	ProductPage      string
+	ProductAssets    ProductAssets
+	Coupons          bool
+	CouponPage       string
+	CouponAssets     CouponAssets
+	GroupOps         bool
+	GroupOpsPage     string
+	GroupOpsAssets   GroupOpsAssets
+	Automation       bool
+	AutomationPage   string
+	AutomationAssets AutomationAssets
 }
 
 // ExternalEffectsAssets are manifest-derived URLs for the frozen donor bundle.
@@ -97,6 +100,10 @@ type CouponAssets struct{ TokensCSS, LabsCSS, AdminJS string }
 // bundle. The v3 shell owns the sidebar; the donor supplies only its stage
 // template and runtime assets.
 type GroupOpsAssets struct{ TokensCSS, LabsCSS, AdminJS string }
+
+// AutomationAssets are manifest-derived frozen Agent bundle paths. The v3
+// shell supplies only URLs; donor markup remains the extracted template.
+type AutomationAssets struct{ TokensCSS, LabsCSS, AdminJS string }
 
 // Render implements the small presentation contract consumed by the Access
 // HTTP handler. Keeping this adapter in webshell avoids a concrete import
@@ -273,6 +280,22 @@ func (renderer *Renderer) RenderGroupOps(writer http.ResponseWriter, data AdminP
 	data.ShowPageHeader = false
 	content := `<main id="stage" class="stage rich"></main><template id="tpl">` + donorTemplate + `</template>`
 	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: template.HTML(content), GroupOps: true, GroupOpsPage: page, GroupOpsAssets: assets})
+	if err != nil {
+		return err
+	}
+	return writeHTML(writer, http.StatusOK, body)
+}
+
+// RenderAutomation mounts one verified Agent template into the existing v3
+// admin shell. The outer donor document is never independently served.
+func (renderer *Renderer) RenderAutomation(writer http.ResponseWriter, data AdminPageData, page, donorTemplate string, assets AutomationAssets) error {
+	if renderer == nil || renderer.templates == nil || donorTemplate == "" || assets.TokensCSS == "" || assets.LabsCSS == "" || assets.AdminJS == "" || (page != "agents" && page != "agentEdit") {
+		return errors.New("automation shell assets are required")
+	}
+	normalizeAdminPage(&data)
+	data.ShowPageHeader = false
+	content := `<main id="stage" class="stage rich"></main><template id="tpl">` + donorTemplate + `</template>`
+	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: template.HTML(content), Automation: true, AutomationPage: page, AutomationAssets: assets})
 	if err != nil {
 		return err
 	}

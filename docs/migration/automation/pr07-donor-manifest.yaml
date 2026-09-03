@@ -1,9 +1,9 @@
 schema_version: 1
 pr: PR07
 scope: automation_agent_and_fixed_content
-status: preparation_only
-v3_base: 19384b93fe362c7786edc81dd5595b79570f6bb1
-target_branch: codex/import-automation
+status: integrated_local_configuration_closure
+v3_base: 2dcdd4d
+target_branch: codex/feature-automation-final
 
 donor:
   repository: /tmp/aicrm-v2-audit.yN3jmr
@@ -28,7 +28,7 @@ boundary:
     - Customer, OneID, Segment, Audience, Campaign, recipient selection, or audience binding
     - direct outbound, WeCom, Provider, LLM, token, credential, send, retry, or delivery behavior
     - activation of migrated configuration; active status is rejected in this preparation slice
-    - automation history/import, runtime/store SQL, HTTP/OpenAPI, composition, deployment, CI, and dependency manifests
+    - automation history/import, execution workers, deployment and dependency manifests
 
 behavior_contract:
   entities:
@@ -70,7 +70,7 @@ api_contract:
   page_handoff:
     - method: GET
       path: /admin/automation-agents
-      disposition: route evidence only; Terra must supply the v3 webshell adapter
+      disposition: mounted through the v3 webshell adapter; never directly serves the donor shell
   local_configuration_routes:
     - method: GET
       path: /api/admin/automation-agents
@@ -242,7 +242,7 @@ frontend:
       exclude: the mixed v2 bootstrap, mock data, and UI branches for excluded domains
   byte_integrity: every exact_file is compared against the frozen donor; any integration adaptation must live outside this directory
   route_requirement: generated donor routes remain evidence only; PR07 must not expose customer-automation, audience binding, activate/execution, outbound, Provider, or excluded identity routes
-  integration: PR10's v3-owned internal/webshell/admin_base and primary sidebar remain the only production shell. Terra/Web must mount a v3-owned adapter with the unchanged donor CSS/JS and never deploy a second .side navigation or edit donor files
+  integration: PR10's v3-owned internal/webshell/admin_base and primary sidebar are the only shell. The integrated v3 adapter mounts unchanged donor CSS/JS and never deploys a second .side navigation or edits donor files
 
 excluded_operations:
   - POST /api/admin/automation-agents/{agentId}/activate
@@ -251,27 +251,15 @@ excluded_operations:
   - Customer, OneID, Segment/Audience, Campaign, outbound, WeCom, Provider, LLM, token, credential, upload, send, retry, and delivery operations
   - fixed-content media upload/generation; this donor only records local references and the preparation validator rejects non-empty reference arrays
 
-deferred_to_terra:
-  - define Automation-owned PostgreSQL tables, CAS/locking, UoW receipts, audit, outbox, and independent v3 migrations
-  - adapt internal/automation/port/events.go to v3 versioned event/outbox ports without adding execution consumers
-  - adapt internal/automation/port/media.go to canonical Media ports and validate fixed-content references under the caller UoW
+integration_evidence:
+  - Automation-owned PostgreSQL tables, CAS/locking, UoW receipts, audit, outbox, independent `0013` migration, authenticated HTTP, OpenAPI, composition, readiness, and single-shell stage adapter are delivered in this branch
+  - internal/automation/port/events.go is backed by the local transactional event/outbox implementation without execution consumers
+  - internal/automation/port/media.go remains fail-closed: donor DTO media arrays are zero-length in this scope, so no Media table or Store is read
   - keep LegacyConfiguration opaque and prevent Customer/OneID/Segment/Audience/Campaign bindings from entering this domain
   - translate any future EffectIntent through outbound/EER with accepted/attempted/outcome_unknown/reconciled evidence; no direct Provider or LLM path
   - keep activation/execution disabled until a separately approved execution, approval, scheduler, and effect-reconciliation contract exists
-  - implement authenticated HTTP/OpenAPI routes and composition registration only after the v3 contracts are approved; excluded routes stay absent or feature-gated
-  - mount donor business hooks through a v3-owned adapter into PR10 internal/webshell/admin_base; do not deploy the raw v2 shell and do not modify web/donors/automation-v2
+  - excluded routes stay absent or feature-gated; activation/execution remains a separate future contract
 
-forbidden_touched:
-  - cmd/aicrm
-  - api/openapi.yaml
-  - migrations
-  - go.mod
-  - go.sum
-  - package.json
-  - package-lock.json
-  - pnpm-lock.yaml
-  - deploy
-  - CI
-  - internal/platform
-  - internal/access
-  - internal/webshell central routing
+frozen_donor_integrity:
+  - only web/donors/automation-v2 contains frozen donor snapshots; the 20/20 SHA gate verifies every file
+  - v3-only composition, OpenAPI, migration, webshell, and stage changes are outside the frozen donor directory

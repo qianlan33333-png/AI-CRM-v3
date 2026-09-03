@@ -6,6 +6,8 @@
 >
 > 固定 donor：AI-CRM-v2 `6bfbe5816bb89913c70adaca87d6a486260e016e`。既有 prep：`2f8849a39eb25e0a63c94bf80d70d78f4d01cd22`；既有 frontend audit：`596150b48283beca9139ef9d5272404bda2113f7`。
 
+> 实施更新：本闭包复核的“NOT CLOSED”结论仅描述当时的只读基线，已被 `codex/feature-automation-final` 的 PR07 集成取代。该集成新增 Automation-owned PostgreSQL `0013`、Store/UoW receipt/audit/outbox、认证/CSRF HTTP adapter、OpenAPI、readiness、PR10 单壳挂载与 donor 20/20 SHA 门禁；不引入 OneID、客户/受众、Worker、Provider 或执行能力。
+
 ## 结论
 
 PR07 的 donor 证据已通过 20/20 字节冻结检查，但 v3 能力闭包尚未完成，结论为 **NOT CLOSED**。
