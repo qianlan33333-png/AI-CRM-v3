@@ -16,18 +16,22 @@ type settingDefinition struct {
 }
 
 var settingRegistry = map[configport.Key]settingDefinition{
-	configport.WeComCorpID:           {validate: validateNonEmptyString},
-	configport.WeComAgentID:          {validate: validatePositiveInteger},
-	configport.OutboundRatePerSecond: {validate: validateIntegerRange(1, 50)},
-	configport.OutboundMaxAttempts:   {validate: validateIntegerRange(1, 10)},
-	configport.DatabaseURL:           {secret: true},
-	configport.WeComSecret:           {secret: true},
-	configport.WeComCallbackToken:    {secret: true},
-	configport.WeComCallbackAESKey:   {secret: true},
-	configport.AIAPIKey:              {secret: true},
-	configport.AuthJWTSecret:         {secret: true},
-	configport.ExtensionAPIKeyPepper: {secret: true},
-	configport.WebhookMasterKey:      {secret: true},
+	configport.WeComCorpID:                  {validate: validateNonEmptyString},
+	configport.WeComAgentID:                 {validate: validatePositiveInteger},
+	configport.OutboundRatePerSecond:        {validate: validateIntegerRange(1, 50)},
+	configport.OutboundMaxAttempts:          {validate: validateIntegerRange(1, 10)},
+	configport.AdminAppSettingsEnabled:      {validate: validateBoolean},
+	configport.AdminPushCapabilitiesEnabled: {validate: validateBoolean},
+	configport.AdminReleasesEnabled:         {validate: validateBoolean},
+	configport.AdminDiagnosticsEnabled:      {validate: validateBoolean},
+	configport.DatabaseURL:                  {secret: true},
+	configport.WeComSecret:                  {secret: true},
+	configport.WeComCallbackToken:           {secret: true},
+	configport.WeComCallbackAESKey:          {secret: true},
+	configport.AIAPIKey:                     {secret: true},
+	configport.AuthJWTSecret:                {secret: true},
+	configport.ExtensionAPIKeyPepper:        {secret: true},
+	configport.WebhookMasterKey:             {secret: true},
 }
 
 func ValidateSetting(key configport.Key, value json.RawMessage) (json.RawMessage, error) {
@@ -67,6 +71,15 @@ func validateNonEmptyString(value json.RawMessage) (json.RawMessage, bool) {
 
 func validatePositiveInteger(value json.RawMessage) (json.RawMessage, bool) {
 	return validateIntegerRange(1, 1<<63-1)(value)
+}
+
+func validateBoolean(value json.RawMessage) (json.RawMessage, bool) {
+	var decoded bool
+	if !decodeOne(value, &decoded) {
+		return nil, false
+	}
+	canonical, _ := json.Marshal(decoded)
+	return canonical, true
 }
 
 func validateIntegerRange(minimum, maximum int64) func(json.RawMessage) (json.RawMessage, bool) {

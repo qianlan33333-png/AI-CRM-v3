@@ -17,11 +17,11 @@ type Registration struct{}
 type HTTPBindings struct{ Config http.Handler }
 
 func NewRegistration() *Registration { return &Registration{} }
-func (m *Registration) Bind(settings *configapp.SettingsCompatibilityService, wizard *configapp.SetupWizardService, projections configport.SafeProjectionReader, security confighttp.RequestSecurity) (HTTPBindings, error) {
+func (m *Registration) Bind(settings *configapp.SettingsCompatibilityService, wizard *configapp.SetupWizardService, configService configport.Service, projections configport.SafeProjectionReader, security confighttp.RequestSecurity) (HTTPBindings, error) {
 	if m == nil {
 		return HTTPBindings{}, errors.New("config module is required")
 	}
-	h, e := confighttp.NewHandler(settings, wizard, projections, security)
+	h, e := confighttp.NewHandler(settings, wizard, configService, projections, security)
 	return HTTPBindings{Config: h}, e
 }
 func (m *Registration) Readiness(ctx context.Context, pool *pgxpool.Pool) error {
@@ -29,7 +29,7 @@ func (m *Registration) Readiness(ctx context.Context, pool *pgxpool.Pool) error 
 		return errors.New("config module dependencies are required")
 	}
 	var ready bool
-	e := pool.QueryRow(ctx, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['config_settings','config_audits','config_outbox']) AS required(name) WHERE to_regclass(current_schema() || '.' || required.name) IS NULL)`).Scan(&ready)
+	e := pool.QueryRow(ctx, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['config_settings','config_audits','config_outbox','config_command_receipts']) AS required(name) WHERE to_regclass(current_schema() || '.' || required.name) IS NULL)`).Scan(&ready)
 	if e != nil {
 		return e
 	}

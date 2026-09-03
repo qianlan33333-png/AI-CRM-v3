@@ -28,6 +28,7 @@ type RequestSecurity interface {
 type Handler struct {
 	settings    settingsService
 	wizard      wizardService
+	config      configport.Service
 	projections projectionReader
 	security    RequestSecurity
 	tokenKey    []byte
@@ -43,15 +44,15 @@ type wizardService interface {
 }
 type projectionReader = configport.SafeProjectionReader
 
-func NewHandler(settings settingsService, wizard wizardService, projections projectionReader, security RequestSecurity) (*Handler, error) {
-	if settings == nil || wizard == nil || projections == nil || security == nil {
+func NewHandler(settings settingsService, wizard wizardService, configService configport.Service, projections projectionReader, security RequestSecurity) (*Handler, error) {
+	if settings == nil || wizard == nil || configService == nil || projections == nil || security == nil {
 		return nil, errors.New("config HTTP dependencies are required")
 	}
 	key := make([]byte, 32)
 	if _, err := rand.Read(key); err != nil {
 		return nil, err
 	}
-	return &Handler{settings: settings, wizard: wizard, projections: projections, security: security, tokenKey: key}, nil
+	return &Handler{settings: settings, wizard: wizard, config: configService, projections: projections, security: security, tokenKey: key}, nil
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -73,9 +74,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.releases(w, r)
 	case "diagnostics":
 		h.diagnostics(w, r)
+	case "openapi.yaml":
+		h.openapi(w, r)
 	default:
 		if strings.HasPrefix(path, "categories/") {
-			h.categoryDetail(w, r, strings.TrimPrefix(path, "categories/"))
+			h.category(w, r, strings.TrimPrefix(path, "categories/"))
 			return
 		}
 		writeError(w, http.StatusNotFound, "not_found")
@@ -157,6 +160,15 @@ func (h *Handler) appSettings(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPut:
 		p, ok := h.mutate(w, r)
 		if !ok {
+			return
+		}
+		enabled, enabledErr := h.categoryEnabled(r.Context(), "app-settings")
+		if enabledErr != nil {
+			writeError(w, 503, "settings_unavailable")
+			return
+		}
+		if !enabled {
+			writeError(w, 409, "config_category_disabled")
 			return
 		}
 		var body struct {
@@ -279,21 +291,41 @@ func (h *Handler) categories(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.read(w, r); !ok {
 		return
 	}
-	writeJSON(w, 200, map[string]any{"ok": true, "items": []map[string]any{{"key": "app-settings", "name": "应用设置", "enabled": true, "local_only": true}}, "source_status": "next_read_model"})
+	enabled, err := h.categoryEnabled(r.Context(), "runtime-diagnostics")
+	if err != nil {
+		writeError(w, 503, "settings_unavailable")
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true, "items": []map[string]any{{"key": "runtime-diagnostics", "name": "运行诊断", "enabled": enabled, "local_only": true}}, "source_status": "next_read_model"})
 }
-func (h *Handler) categoryDetail(w http.ResponseWriter, r *http.Request, key string) {
-	if r.Method != http.MethodGet {
+func (h *Handler) category(w http.ResponseWriter, r *http.Request, tail string) {
+	parts := strings.Split(tail, "/")
+	if len(parts) == 2 && parts[1] == "enabled" {
+		h.categoryEnabledWrite(w, r, parts[0])
+		return
+	}
+	if len(parts) == 2 && parts[1] == "check" {
+		h.categoryCheck(w, r, parts[0])
+		return
+	}
+	if len(parts) != 1 || r.Method != http.MethodGet {
 		method(w, "GET")
 		return
 	}
-	if _, ok := h.read(w, r); !ok {
+	p, ok := h.read(w, r)
+	if !ok {
 		return
 	}
-	if key != "app-settings" {
+	if !knownCategory(parts[0]) {
 		writeError(w, 404, "not_found")
 		return
 	}
-	writeJSON(w, 200, map[string]any{"ok": true, "key": "app-settings", "name": "应用设置", "enabled": true, "local_only": true, "runtime_applied": false})
+	enabled, err := h.categoryEnabled(r.Context(), parts[0])
+	if err != nil {
+		writeError(w, 503, "settings_unavailable")
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true, "key": parts[0], "enabled": enabled, "local_only": true, "runtime_applied": false, "admin_action_token": h.actionToken(p, "category:"+parts[0])})
 }
 func (h *Handler) pushCapabilities(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -351,6 +383,145 @@ func (h *Handler) diagnostics(w http.ResponseWriter, r *http.Request) {
 		diagnostics = append(diagnostics, map[string]any{"id": item.ID, "key": item.Key, "status": item.Status, "observed_at": item.ObservedAt.UTC()})
 	}
 	writeJSON(w, 200, map[string]any{"ok": true, "diagnostics": diagnostics, "source_status": "next_read_model", "local_only": true, "real_external_call_executed": false})
+}
+
+var categorySettings = map[string]configport.Key{
+	"app-settings":        configport.AdminAppSettingsEnabled,
+	"push-capabilities":   configport.AdminPushCapabilitiesEnabled,
+	"releases":            configport.AdminReleasesEnabled,
+	"runtime-diagnostics": configport.AdminDiagnosticsEnabled,
+}
+
+func knownCategory(key string) bool {
+	_, ok := categorySettings[key]
+	return ok
+}
+
+func (h *Handler) categoryEnabled(ctx context.Context, category string) (bool, error) {
+	key, ok := categorySettings[category]
+	if !ok {
+		return false, configport.ErrUnknownSetting
+	}
+	setting, err := h.config.Get(ctx, key)
+	if errors.Is(err, configport.ErrSettingNotFound) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	var enabled bool
+	if err := json.Unmarshal(setting.Value, &enabled); err != nil {
+		return false, err
+	}
+	return enabled, nil
+}
+
+func (h *Handler) categoryEnabledWrite(w http.ResponseWriter, r *http.Request, category string) {
+	if r.Method != http.MethodPut {
+		method(w, "PUT")
+		return
+	}
+	p, ok := h.mutate(w, r)
+	if !ok {
+		return
+	}
+	key, known := categorySettings[category]
+	if !known {
+		writeError(w, 404, "not_found")
+		return
+	}
+	var body struct {
+		Enabled bool   `json:"enabled"`
+		Action  string `json:"admin_action_token"`
+	}
+	if err := decode(r, &body); err != nil {
+		writeError(w, 400, "invalid_request")
+		return
+	}
+	if !h.validActionToken(p, "category:"+category, actionFrom(r, body.Action)) {
+		writeError(w, 400, "invalid_action_token")
+		return
+	}
+	requestID := idempotency(r)
+	if requestID == "" {
+		writeError(w, 400, "invalid_idempotency_key")
+		return
+	}
+	// A category operation has one setting value; Manager.Set's audit receipt,
+	// setting update and outbox are consequently one transaction. Hashing keeps
+	// the per-setting receipt under the database's bounded request-id contract.
+	digest := sha256.Sum256([]byte("category-enabled:" + category + ":" + requestID))
+	commandID := "category:" + category + ":" + base64.RawURLEncoding.EncodeToString(digest[:18])
+	value, _ := json.Marshal(body.Enabled)
+	if _, err := h.config.Set(r.Context(), configport.SetCommand{Key: key, Value: value, Actor: strconv.FormatInt(p.InternalID, 10), RequestID: commandID}); err != nil {
+		writeSettingsError(w, err)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true, "key": category, "enabled": body.Enabled, "local_only": true, "runtime_applied": false, "real_external_call_executed": false})
+}
+
+func (h *Handler) categoryCheck(w http.ResponseWriter, r *http.Request, category string) {
+	if r.Method != http.MethodPost {
+		method(w, "POST")
+		return
+	}
+	p, ok := h.mutate(w, r)
+	if !ok {
+		return
+	}
+	if !knownCategory(category) {
+		writeError(w, 404, "not_found")
+		return
+	}
+	var body struct {
+		Action string `json:"admin_action_token"`
+	}
+	if err := decode(r, &body); err != nil {
+		writeError(w, 400, "invalid_request")
+		return
+	}
+	if !h.validActionToken(p, "category:"+category, actionFrom(r, body.Action)) {
+		writeError(w, 400, "invalid_action_token")
+		return
+	}
+	enabled, err := h.categoryEnabled(r.Context(), category)
+	if err != nil {
+		writeError(w, 503, "settings_unavailable")
+		return
+	}
+	if !enabled {
+		writeJSON(w, 200, map[string]any{"ok": true, "message": "检查发现：该本地能力已停用", "local_only": true, "real_external_call_executed": false})
+		return
+	}
+	var message string
+	switch category {
+	case "app-settings":
+		if _, err = h.settings.List(r.Context(), configapp.SettingsListInput{}); err == nil {
+			message = "检查通过，应用设置读取正常"
+		}
+	case "push-capabilities":
+		_, err = h.projections.ListDiagnosticSnapshots(r.Context())
+		message = "检查通过，Push 能力安全投影可读取；Provider 写入保持禁用"
+	case "releases":
+		var items []configport.ReleaseProjection
+		items, err = h.projections.ListReleaseProjections(r.Context())
+		if err == nil && len(items) == 0 {
+			err = errors.New("release projection missing")
+		}
+		message = "检查通过，发布记录安全投影可读取"
+	case "runtime-diagnostics":
+		var items []configport.DiagnosticProjection
+		items, err = h.projections.ListDiagnosticSnapshots(r.Context())
+		if err == nil && len(items) == 0 {
+			err = errors.New("diagnostic projection missing")
+		}
+		message = "检查通过，运行诊断安全投影可读取"
+	}
+	if err != nil {
+		writeError(w, 503, "unavailable")
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true, "message": message, "local_only": true, "real_external_call_executed": false})
 }
 
 func decode(r *http.Request, v any) error {

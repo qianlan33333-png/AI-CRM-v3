@@ -8,13 +8,25 @@ import (
 	"time"
 )
 
+// RequestReceipt is a Config-owned request-level idempotency fact. It carries
+// digests only, never setting values or secret material.
+type RequestReceipt struct {
+	ID            int64
+	PayloadDigest []byte
+	State         string
+}
+
 type Key string
 
 const (
-	WeComCorpID           Key = "wecom.corp_id"
-	WeComAgentID          Key = "wecom.agent_id"
-	OutboundRatePerSecond Key = "outbound.rate_per_second"
-	OutboundMaxAttempts   Key = "outbound.max_attempts"
+	WeComCorpID                  Key = "wecom.corp_id"
+	WeComAgentID                 Key = "wecom.agent_id"
+	OutboundRatePerSecond        Key = "outbound.rate_per_second"
+	OutboundMaxAttempts          Key = "outbound.max_attempts"
+	AdminAppSettingsEnabled      Key = "adminops.app_settings.enabled"
+	AdminPushCapabilitiesEnabled Key = "adminops.push_capabilities.enabled"
+	AdminReleasesEnabled         Key = "adminops.releases.enabled"
+	AdminDiagnosticsEnabled      Key = "adminops.diagnostics.enabled"
 
 	DatabaseURL           Key = "database.url"
 	WeComSecret           Key = "wecom.secret"

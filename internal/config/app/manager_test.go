@@ -23,6 +23,20 @@ type fakeRepository struct {
 	found                                        bool
 	audit                                        configport.Audit
 	auditInserted                                bool
+	receipt                                      configport.RequestReceipt
+	receiptOwned                                 bool
+	completedReceipt                             int64
+}
+
+func (repository *fakeRepository) ReserveSettingsBatch(_ context.Context, _ string, _ string, digest []byte, _ time.Time) (configport.RequestReceipt, bool, error) {
+	if repository.receipt.ID == 0 && repository.receiptOwned {
+		repository.receipt = configport.RequestReceipt{ID: 1, PayloadDigest: append([]byte(nil), digest...), State: "reserved"}
+	}
+	return repository.receipt, repository.receiptOwned, nil
+}
+func (repository *fakeRepository) CompleteSettingsBatch(_ context.Context, id int64, _ time.Time) error {
+	repository.completedReceipt = id
+	return nil
 }
 
 func (repository *fakeRepository) LockKey(context.Context, configport.Key) error {
@@ -150,6 +164,30 @@ func TestSetManyUsesOneUoWForAllSettingsAuditAndOutboxFacts(t *testing.T) {
 	}
 	if uow.calls != 1 || repo.auditCalls != 2 || repo.upsertCalls != 2 || events.calls != 2 {
 		t.Fatalf("uow/audits/upserts/events=%d/%d/%d/%d", uow.calls, repo.auditCalls, repo.upsertCalls, events.calls)
+	}
+}
+
+func TestSetManyWithRequestTreatsTheWholeFormAsTheIdempotencyPayload(t *testing.T) {
+	now := time.Date(2026, 9, 3, 10, 0, 0, 0, time.UTC)
+	uow := &fakeUoW{}
+	repo := &fakeRepository{auditInserted: true, audit: configport.Audit{ID: 9}, receiptOwned: true}
+	events := &fakeAppender{}
+	manager := NewManager(uow, repo, events)
+	manager.now = func() time.Time { return now }
+	commands := []configport.SetCommand{{Key: configport.WeComCorpID, Value: []byte(`"corp"`), Actor: "admin:1", RequestID: "browser-1:wecom.corp_id"}}
+	if err := manager.SetManyWithRequest(context.Background(), "admin:1", "browser-1", []byte(`[{"key":"wecom.corp_id","value":"corp"}]`), commands); err != nil {
+		t.Fatal(err)
+	}
+	if uow.calls != 1 || repo.completedReceipt != 1 || repo.upsertCalls != 1 || events.calls != 1 {
+		t.Fatalf("uow/receipt/upsert/events=%d/%d/%d/%d", uow.calls, repo.completedReceipt, repo.upsertCalls, events.calls)
+	}
+	repo.receiptOwned = false
+	repo.receipt.State = "completed"
+	if err := manager.SetManyWithRequest(context.Background(), "admin:1", "browser-1", []byte(`[{"key":"wecom.corp_id","value":"other"}]`), commands); !errors.Is(err, configport.ErrIdempotencyConflict) {
+		t.Fatalf("payload drift error=%v", err)
+	}
+	if repo.upsertCalls != 1 || events.calls != 1 {
+		t.Fatalf("payload drift mutated config: upserts/events=%d/%d", repo.upsertCalls, events.calls)
 	}
 }
 

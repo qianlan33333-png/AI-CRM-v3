@@ -3,7 +3,9 @@
 -- these tables.
 CREATE TABLE config_settings (
     setting_key TEXT PRIMARY KEY CHECK (setting_key IN (
-        'wecom.corp_id','wecom.agent_id','outbound.rate_per_second','outbound.max_attempts'
+		'wecom.corp_id','wecom.agent_id','outbound.rate_per_second','outbound.max_attempts',
+		'adminops.app_settings.enabled','adminops.push_capabilities.enabled',
+		'adminops.releases.enabled','adminops.diagnostics.enabled'
     )),
     value JSONB NOT NULL,
     updated_by TEXT NOT NULL CHECK (length(updated_by) BETWEEN 1 AND 200),
@@ -31,6 +33,21 @@ CREATE TABLE config_outbox (
     occurred_at TIMESTAMPTZ NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
     published_at TIMESTAMPTZ
+);
+
+-- The HTTP idempotency key names one whole settings form submission, not one
+-- row inside it.  Keeping this receipt in the same transaction prevents a
+-- replay with a different set of setting keys from silently adding rows.
+CREATE TABLE config_command_receipts (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    action TEXT NOT NULL CHECK (action = 'app_settings.save'),
+    actor TEXT NOT NULL CHECK (length(actor) BETWEEN 1 AND 200),
+    request_id TEXT NOT NULL CHECK (length(request_id) BETWEEN 1 AND 200),
+    payload_digest BYTEA NOT NULL CHECK (octet_length(payload_digest) = 32),
+    state TEXT NOT NULL CHECK (state IN ('reserved','completed')),
+    created_at TIMESTAMPTZ NOT NULL,
+    completed_at TIMESTAMPTZ,
+    UNIQUE (action, actor, request_id)
 );
 
 -- Owner: internal/adminops. Read-only release and diagnostic projections are

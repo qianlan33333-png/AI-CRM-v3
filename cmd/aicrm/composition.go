@@ -364,7 +364,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
-	configBindings, err := configModule.Bind(settingsService, setupWizard, adminOpsProjection, requestSecurity)
+	configBindings, err := configModule.Bind(settingsService, setupWizard, configManager, adminOpsProjection, requestSecurity)
 	if err != nil {
 		return fail(err)
 	}

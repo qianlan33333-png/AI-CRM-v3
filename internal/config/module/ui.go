@@ -67,7 +67,7 @@ func configPage(r *http.Request) (string, bool) {
 			return "", false
 		}
 		switch cats[0] {
-		case "app-settings", "push-capabilities", "releases":
+		case "app-settings", "push-capabilities", "releases", "runtime-diagnostics":
 			return "configDetail", true
 		default:
 			return "", false

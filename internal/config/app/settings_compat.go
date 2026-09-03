@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -249,6 +250,24 @@ func (service *SettingsCompatibilityService) Save(ctx context.Context, input Sav
 	}
 	if len(commands) == 0 {
 		return nil
+	}
+	sort.Slice(commands, func(i, j int) bool { return commands[i].Key < commands[j].Key })
+	type requestItem struct {
+		Key   configport.Key  `json:"key"`
+		Value json.RawMessage `json:"value"`
+	}
+	items := make([]requestItem, 0, len(commands))
+	for _, command := range commands {
+		items = append(items, requestItem{Key: command.Key, Value: command.Value})
+	}
+	payload, err := json.Marshal(items)
+	if err != nil {
+		return err
+	}
+	if batch, ok := service.manager.(interface {
+		SetManyWithRequest(context.Context, string, string, []byte, []configport.SetCommand) error
+	}); ok {
+		return batch.SetManyWithRequest(ctx, input.Actor, input.RequestID, payload, commands)
 	}
 	if batch, ok := service.manager.(interface {
 		SetMany(context.Context, []configport.SetCommand) error

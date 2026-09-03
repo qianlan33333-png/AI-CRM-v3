@@ -1,11 +1,14 @@
 package http
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -36,6 +39,31 @@ func (s *testSettings) Save(_ context.Context, input configapp.SaveSettingsInput
 	return nil
 }
 
+type testConfig struct {
+	settings map[configport.Key]configport.Setting
+	commands []configport.SetCommand
+}
+
+func (s *testConfig) Get(_ context.Context, key configport.Key) (configport.Setting, error) {
+	if value, ok := s.settings[key]; ok {
+		return value, nil
+	}
+	return configport.Setting{}, configport.ErrSettingNotFound
+}
+func (s *testConfig) Set(_ context.Context, command configport.SetCommand) (configport.Setting, error) {
+	s.commands = append(s.commands, command)
+	if s.settings == nil {
+		s.settings = map[configport.Key]configport.Setting{}
+	}
+	setting := configport.Setting{Key: command.Key, Value: append([]byte(nil), command.Value...), UpdatedBy: command.Actor}
+	s.settings[command.Key] = setting
+	return setting, nil
+}
+
+func newTestConfig() *testConfig {
+	return &testConfig{settings: map[configport.Key]configport.Setting{}}
+}
+
 type testWizard struct {
 	save configapp.SetupWizardSaveInput
 }
@@ -62,7 +90,7 @@ func (s *testWizard) Save(_ context.Context, input configapp.SetupWizardSaveInpu
 func TestSetupWizardRequiresSessionCSRFActionTokenAndIdempotency(t *testing.T) {
 	p := accessdomain.Principal{InternalID: 7, Kind: accessdomain.KindAdmin, Roles: []accessdomain.Role{accessdomain.RoleAdmin}}
 	settings, wizard := &testSettings{}, &testWizard{}
-	h, err := NewHandler(settings, wizard, testProjections{}, testSecurity{principal: p})
+	h, err := NewHandler(settings, wizard, newTestConfig(), testProjections{}, testSecurity{principal: p})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +130,7 @@ func TestSetupWizardRequiresSessionCSRFActionTokenAndIdempotency(t *testing.T) {
 func TestAppSettingsRejectsBodyTokenMismatchBeforeSave(t *testing.T) {
 	p := accessdomain.Principal{InternalID: 7, Kind: accessdomain.KindAdmin, Roles: []accessdomain.Role{accessdomain.RoleAdmin}}
 	settings := &testSettings{}
-	h, err := NewHandler(settings, &testWizard{}, testProjections{}, testSecurity{principal: p})
+	h, err := NewHandler(settings, &testWizard{}, newTestConfig(), testProjections{}, testSecurity{principal: p})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +150,7 @@ func TestHistoricalProjectionsExposeOnlyTypedSafeFields(t *testing.T) {
 		releases:    []configport.ReleaseProjection{{ID: 9, ReleaseSHA: "release-sha", Status: "observed"}},
 		diagnostics: []configport.DiagnosticProjection{{ID: 3, Key: "runtime", Status: "ok"}},
 	}
-	h, err := NewHandler(&testSettings{}, &testWizard{}, projections, testSecurity{principal: principal})
+	h, err := NewHandler(&testSettings{}, &testWizard{}, newTestConfig(), projections, testSecurity{principal: principal})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,7 +194,7 @@ func TestHistoricalProjectionsExposeOnlyTypedSafeFields(t *testing.T) {
 
 func TestPushCapabilitiesExposeDonorReadOnlyProjectionShape(t *testing.T) {
 	principal := accessdomain.Principal{InternalID: 7, Kind: accessdomain.KindAdmin, Roles: []accessdomain.Role{accessdomain.RoleViewer}}
-	h, err := NewHandler(&testSettings{}, &testWizard{}, testProjections{}, testSecurity{principal: principal})
+	h, err := NewHandler(&testSettings{}, &testWizard{}, newTestConfig(), testProjections{}, testSecurity{principal: principal})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,7 +216,7 @@ func TestPushCapabilitiesExposeDonorReadOnlyProjectionShape(t *testing.T) {
 
 func TestHistoricalProjectionStoreFailureIsNotAnEmptySuccess(t *testing.T) {
 	principal := accessdomain.Principal{InternalID: 7, Kind: accessdomain.KindAdmin, Roles: []accessdomain.Role{accessdomain.RoleViewer}}
-	h, err := NewHandler(&testSettings{}, &testWizard{}, failingProjections{}, testSecurity{principal: principal})
+	h, err := NewHandler(&testSettings{}, &testWizard{}, newTestConfig(), failingProjections{}, testSecurity{principal: principal})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -203,7 +231,7 @@ func TestHistoricalProjectionStoreFailureIsNotAnEmptySuccess(t *testing.T) {
 
 func TestEmptyHistoricalProjectionIsFailClosed(t *testing.T) {
 	principal := accessdomain.Principal{InternalID: 7, Kind: accessdomain.KindAdmin, Roles: []accessdomain.Role{accessdomain.RoleViewer}}
-	h, err := NewHandler(&testSettings{}, &testWizard{}, testProjections{}, testSecurity{principal: principal})
+	h, err := NewHandler(&testSettings{}, &testWizard{}, newTestConfig(), testProjections{}, testSecurity{principal: principal})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -214,6 +242,101 @@ func TestEmptyHistoricalProjectionIsFailClosed(t *testing.T) {
 			t.Fatalf("path=%s status=%d body=%s", path, response.Code, response.Body.String())
 		}
 	}
+}
+
+func TestCategoryToggleAndCheckUseAuthenticatedCSRFActionAndLocalConfigReceipt(t *testing.T) {
+	p := accessdomain.Principal{InternalID: 7, Kind: accessdomain.KindAdmin, Roles: []accessdomain.Role{accessdomain.RoleAdmin}}
+	config := newTestConfig()
+	projections := testProjections{diagnostics: []configport.DiagnosticProjection{{ID: 3, Key: "runtime", Status: "ok"}}}
+	h, err := NewHandler(&testSettings{}, &testWizard{}, config, projections, testSecurity{principal: p})
+	if err != nil {
+		t.Fatal(err)
+	}
+	detail := httptest.NewRecorder()
+	h.ServeHTTP(detail, httptest.NewRequest(http.MethodGet, "/api/admin/config/categories/runtime-diagnostics", nil))
+	if detail.Code != http.StatusOK {
+		t.Fatalf("detail=%d %s", detail.Code, detail.Body.String())
+	}
+	var read struct {
+		Token string `json:"admin_action_token"`
+	}
+	if err = json.Unmarshal(detail.Body.Bytes(), &read); err != nil || len(read.Token) != 43 {
+		t.Fatalf("detail token=%q err=%v", read.Token, err)
+	}
+	write := httptest.NewRequest(http.MethodPut, "/api/admin/config/categories/runtime-diagnostics/enabled", strings.NewReader(`{"enabled":false,"admin_action_token":"`+read.Token+`"}`))
+	write.Header.Set("Idempotency-Key", "toggle-1")
+	response := httptest.NewRecorder()
+	h.ServeHTTP(response, write)
+	if response.Code != http.StatusOK || len(config.commands) != 1 || config.commands[0].Key != configport.AdminDiagnosticsEnabled || string(config.commands[0].Value) != "false" || config.commands[0].RequestID == "toggle-1" {
+		t.Fatalf("toggle status/command=%d/%#v", response.Code, config.commands)
+	}
+	check := httptest.NewRequest(http.MethodPost, "/api/admin/config/categories/runtime-diagnostics/check", strings.NewReader(`{"admin_action_token":"`+read.Token+`"}`))
+	response = httptest.NewRecorder()
+	h.ServeHTTP(response, check)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "已停用") {
+		t.Fatalf("check=%d %s", response.Code, response.Body.String())
+	}
+	denied, err := NewHandler(&testSettings{}, &testWizard{}, newTestConfig(), projections, testSecurity{principal: p, csrf: errors.New("csrf")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response = httptest.NewRecorder()
+	denied.ServeHTTP(response, write)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("csrf status=%d", response.Code)
+	}
+}
+
+func TestDisabledApplicationSettingsRejectsTheUnchangedDonorSaveBeforeMutation(t *testing.T) {
+	p := accessdomain.Principal{InternalID: 7, Kind: accessdomain.KindAdmin, Roles: []accessdomain.Role{accessdomain.RoleAdmin}}
+	config := newTestConfig()
+	config.settings[configport.AdminAppSettingsEnabled] = configport.Setting{Key: configport.AdminAppSettingsEnabled, Value: []byte("false")}
+	settings := &testSettings{}
+	h, err := NewHandler(settings, &testWizard{}, config, testProjections{}, testSecurity{principal: p})
+	if err != nil {
+		t.Fatal(err)
+	}
+	get := httptest.NewRecorder()
+	h.ServeHTTP(get, httptest.NewRequest(http.MethodGet, "/api/admin/config/app-settings", nil))
+	var projection map[string]any
+	if err = json.Unmarshal(get.Body.Bytes(), &projection); err != nil {
+		t.Fatal(err)
+	}
+	token, _ := projection["admin_action_token"].(string)
+	request := httptest.NewRequest(http.MethodPut, "/api/admin/config/app-settings", strings.NewReader(`{"settings":{"wecom.corp_id":"corp"},"confirm":true,"admin_action_token":"`+token+`"}`))
+	request.Header.Set("Idempotency-Key", "disabled-save")
+	response := httptest.NewRecorder()
+	h.ServeHTTP(response, request)
+	if response.Code != http.StatusConflict || settings.save.Actor != "" || !strings.Contains(response.Body.String(), "config_category_disabled") {
+		t.Fatalf("disabled save=%d %s %#v", response.Code, response.Body.String(), settings.save)
+	}
+}
+
+func TestOpenAPIDownloadIsAuthenticatedAndMatchesTheReleaseSource(t *testing.T) {
+	p := accessdomain.Principal{InternalID: 7, Kind: accessdomain.KindAdmin, Roles: []accessdomain.Role{accessdomain.RoleViewer}}
+	h, err := NewHandler(&testSettings{}, &testWizard{}, newTestConfig(), testProjections{}, testSecurity{principal: p})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	h.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/admin/config/openapi.yaml", nil))
+	if response.Code != http.StatusOK || !strings.Contains(response.Header().Get("Content-Type"), "application/yaml") || !bytes.HasPrefix(response.Body.Bytes(), []byte("openapi:")) {
+		t.Fatalf("download=%d %q %q", response.Code, response.Header().Get("Content-Type"), response.Body.Bytes()[:min(20, response.Body.Len())])
+	}
+	source, err := os.ReadFile(filepath.Join("..", "..", "..", "api", "openapi.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(response.Body.Bytes(), source) {
+		t.Fatal("embedded OpenAPI differs from the release source")
+	}
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 type failingProjections struct{}

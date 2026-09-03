@@ -132,6 +132,43 @@ ON CONFLICT(idempotency_key) DO NOTHING RETURNING id`, event.Type, event.Idempot
 	return configport.EventID(id), nil
 }
 
+func (r *Repository) ReserveSettingsBatch(ctx context.Context, actor, requestID string, payloadDigest []byte, now time.Time) (configport.RequestReceipt, bool, error) {
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return configport.RequestReceipt{}, false, err
+	}
+	var out configport.RequestReceipt
+	err = tx.QueryRow(ctx, `INSERT INTO config_command_receipts(action,actor,request_id,payload_digest,state,created_at)
+VALUES('app_settings.save',$1,$2,$3,'reserved',$4)
+ON CONFLICT(action,actor,request_id) DO NOTHING
+RETURNING id,payload_digest,state`, actor, requestID, payloadDigest, now).Scan(&out.ID, &out.PayloadDigest, &out.State)
+	if err == nil {
+		return out, true, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return configport.RequestReceipt{}, false, err
+	}
+	err = tx.QueryRow(ctx, `SELECT id,payload_digest,state FROM config_command_receipts
+WHERE action='app_settings.save' AND actor=$1 AND request_id=$2`, actor, requestID).Scan(&out.ID, &out.PayloadDigest, &out.State)
+	return out, false, err
+}
+
+func (r *Repository) CompleteSettingsBatch(ctx context.Context, id int64, now time.Time) error {
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return err
+	}
+	command, err := tx.Exec(ctx, `UPDATE config_command_receipts
+SET state='completed',completed_at=$2 WHERE id=$1 AND state='reserved'`, id, now)
+	if err != nil {
+		return err
+	}
+	if command.RowsAffected() != 1 {
+		return errors.New("config settings batch receipt state conflict")
+	}
+	return nil
+}
+
 func (r *Repository) ListAppSettings(ctx context.Context) ([]configport.ProjectionSetting, error) {
 	tx, err := platformpostgres.RequireTransaction(ctx)
 	if err != nil {

@@ -33,7 +33,7 @@ func TestConfigUIOnlyMountsClosedDonorPagesAndPreservesDetailQuery(t *testing.T)
 		_, _ = w.Write([]byte(page + ":" + body + ":" + assets.AdminJS))
 		return nil
 	})
-	for _, path := range []string{"/admin/config", "/admin/config/", "/admin/configDetail.html?cat=app-settings", "/admin/configDetail.html?cat=push-capabilities", "/admin/configDetail.html?cat=releases", "/admin/api-docs"} {
+	for _, path := range []string{"/admin/config", "/admin/config/", "/admin/configDetail.html?cat=app-settings", "/admin/configDetail.html?cat=push-capabilities", "/admin/configDetail.html?cat=releases", "/admin/configDetail.html?cat=runtime-diagnostics", "/admin/api-docs"} {
 		response := httptest.NewRecorder()
 		h.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
 		if response.Code != 200 {
