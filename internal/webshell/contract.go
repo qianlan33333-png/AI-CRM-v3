@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"path"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -258,7 +259,12 @@ func PathFor(endpoint string, query map[string]string) string {
 	}
 	switch endpoint {
 	case "api.admin_console_customer_detail":
-		return "/admin/customers/" + escapedSegment(query["external_userid"])
+		customerID := query["customer_id"]
+		value, err := strconv.ParseInt(customerID, 10, 64)
+		if err != nil || value < 1 || strconv.FormatInt(value, 10) != customerID {
+			return "#"
+		}
+		return "/admin/customers/" + customerID
 	case "api.admin_cloud_orchestrator_plan_detail":
 		return "/admin/cloud-orchestrator/plans/" + escapedSegment(query["plan_id"])
 	case "api.admin_channel_edit_page":

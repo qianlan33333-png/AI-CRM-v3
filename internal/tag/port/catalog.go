@@ -46,6 +46,19 @@ type CatalogStore interface {
 	ReorderTags(context.Context, []int64) ([]domain.Tag, error)
 }
 
+// ProviderTagNameReader is the narrow read boundary used by composition
+// adapters that already hold Provider tag IDs. It never exposes customer-tag
+// relationships and cannot mutate the catalog.
+type ProviderTagName struct {
+	ProviderTagID string
+	Name          string
+	GroupName     string
+}
+
+type ProviderTagNameReader interface {
+	ProviderTagNames(context.Context, []string) ([]ProviderTagName, error)
+}
+
 // ReferenceGuard is an optional cross-domain read port used to keep archive
 // operations safe. It exposes counts only; it cannot mutate customer-tag
 // relationships and must never be implemented by a Tag store querying a

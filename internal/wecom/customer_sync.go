@@ -97,8 +97,10 @@ type CustomerSyncStore interface {
 	SaveStaff(context.Context, int64, int64, []string) error
 	InsertItem(context.Context, int64, string, SyncItem) (bool, error)
 	UpsertProfile(context.Context, int64, string, identityport.ProvisionResult, wecomport.ExternalContact, [32]byte, time.Time) error
+	UpsertProfileObservations(context.Context, int64, string, customerdomain.CustomerID, string, []wecomport.ExternalContactFollowInfo, time.Time) error
 	AddCountsAndAdvance(context.Context, int64, int64, int64, int64, int64, int64, int64, int, string, CustomerSyncStatus) error
 	StaleCustomers(context.Context, int64) ([]customerdomain.CustomerID, error)
+	ReconcileProfileObservations(context.Context, int64, time.Time) error
 	Complete(context.Context, int64, int64, int64) error
 	Fail(context.Context, int64, int64, CustomerSyncStatus, string) error
 	Terminate(context.Context, int64, string) error
@@ -110,6 +112,7 @@ type CustomerSyncService struct {
 	Provider   wecomport.DirectoryProvider
 	Identity   identityport.VerifiedProvisioner
 	Projection customerport.ProjectionWriter
+	Timeline   customerport.TimelineWriter
 	Store      CustomerSyncStore
 	Outbox     platformoutbox.Service
 	Enqueuer   CustomerSyncJobEnqueuer
@@ -122,7 +125,7 @@ type CustomerSyncService struct {
 
 func (service CustomerSyncService) Ready() bool {
 	return service.Enabled && service.CorpID != "" && service.Provider != nil && service.Provider.DirectoryReady() && service.Identity != nil &&
-		service.Projection != nil && service.Store != nil && service.Outbox != nil && service.Enqueuer != nil && service.Audit != nil && service.UOW != nil
+		service.Projection != nil && service.Timeline != nil && service.Store != nil && service.Outbox != nil && service.Enqueuer != nil && service.Audit != nil && service.UOW != nil
 }
 
 func (service CustomerSyncService) Create(ctx context.Context, command CreateCustomerSyncRun) (CustomerSyncRun, bool, error) {
@@ -303,6 +306,9 @@ func (service CustomerSyncService) ingestPage(ctx context.Context, run CustomerS
 			if insertErr != nil {
 				return insertErr
 			}
+			if err := service.Store.UpsertProfileObservations(txContext, run.ID, run.CorpScope, provision.CustomerID, staffID, contact.FollowInfo, now); err != nil {
+				return err
+			}
 			if !inserted {
 				continue
 			}
@@ -315,6 +321,11 @@ func (service CustomerSyncService) ingestPage(ctx context.Context, run CustomerS
 				OneIDLabel: "CID-" + strconv.FormatInt(int64(provision.CustomerID), 10), ActivationState: "active", Source: "wecom_directory_sync",
 				SourceVersion: run.ID, LastSyncedAt: now, UpdatedAt: now}
 			if err := service.Projection.UpsertDirectoryProjection(txContext, projection); err != nil {
+				return err
+			}
+			if err := service.Timeline.AppendTimeline(txContext, customerport.TimelineEvent{CustomerID: provision.CustomerID,
+				SourceDomain: "wecom", SourceEventID: "directory-sync:" + strconv.FormatInt(run.ID, 10) + ":" + itemDigestKey(item.ExternalUserIDDigest),
+				EventType: "customer.profile_synced", Title: "企微客户资料已同步", OccurredAt: now}); err != nil {
 				return err
 			}
 			outboxPayload, _ := json.Marshal(map[string]any{"customer_id": provision.CustomerID, "sync_run_id": run.ID})
@@ -362,6 +373,9 @@ func (service CustomerSyncService) reconcile(ctx context.Context, run CustomerSy
 		}
 		if stale != int64(len(staleIDs)) {
 			return ErrSyncCAS
+		}
+		if err = service.Store.ReconcileProfileObservations(txContext, run.ID, now); err != nil {
+			return errSyncProjection
 		}
 		pending, err := service.Outbox.PendingForSyncRun(txContext, run.ID)
 		if err != nil {

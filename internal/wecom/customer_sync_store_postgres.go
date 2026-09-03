@@ -183,6 +183,49 @@ func (PostgreSQLCustomerSyncStore) UpsertProfile(ctx context.Context, runID int6
 	return err
 }
 
+func (PostgreSQLCustomerSyncStore) UpsertProfileObservations(ctx context.Context, runID int64, corpScope string, customerID customerdomain.CustomerID, staffID string, followInfo []wecomport.ExternalContactFollowInfo, observedAt time.Time) error {
+	if runID < 1 || customerID < 1 || corpScope == "" || staffID == "" || observedAt.IsZero() {
+		return ErrSyncCAS
+	}
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return err
+	}
+	owners := map[string]wecomport.ExternalContactFollowInfo{staffID: {EmployeeID: staffID, Tags: []wecomport.ExternalContactTag{}}}
+	for _, follow := range followInfo {
+		if follow.EmployeeID == "" {
+			return ErrSyncCAS
+		}
+		owners[follow.EmployeeID] = follow
+	}
+	for employeeID, follow := range owners {
+		if _, err = tx.Exec(ctx, `INSERT INTO wecom_customer_owner_observations(customer_id,corp_scope,employee_id,relationship_status,last_seen_run_id,observed_at)
+			VALUES($1,$2,$3,'active',$4,$5) ON CONFLICT(customer_id,corp_scope,employee_id) DO UPDATE SET
+			relationship_status='active',last_seen_run_id=EXCLUDED.last_seen_run_id,observed_at=EXCLUDED.observed_at,stale_at=NULL,updated_at=clock_timestamp()`,
+			customerID, corpScope, employeeID, runID, observedAt.UTC()); err != nil {
+			return err
+		}
+		seenTags := map[string]struct{}{}
+		for _, tag := range follow.Tags {
+			if tag.ProviderTagID == "" || tag.Type < 1 || tag.Type > 2 {
+				return ErrSyncCAS
+			}
+			if _, duplicate := seenTags[tag.ProviderTagID]; duplicate {
+				continue
+			}
+			seenTags[tag.ProviderTagID] = struct{}{}
+			if _, err = tx.Exec(ctx, `INSERT INTO wecom_customer_tag_observations(customer_id,corp_scope,employee_id,provider_tag_id,provider_tag_type,observed_name,observation_status,last_seen_run_id,observed_at)
+				VALUES($1,$2,$3,$4,$5,$6,'active',$7,$8) ON CONFLICT(customer_id,corp_scope,employee_id,provider_tag_id) DO UPDATE SET
+				provider_tag_type=EXCLUDED.provider_tag_type,observed_name=EXCLUDED.observed_name,observation_status='active',last_seen_run_id=EXCLUDED.last_seen_run_id,
+				observed_at=EXCLUDED.observed_at,stale_at=NULL,updated_at=clock_timestamp()`, customerID, corpScope, employeeID,
+				tag.ProviderTagID, tag.Type, tag.Name, runID, observedAt.UTC()); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 func (PostgreSQLCustomerSyncStore) AddCountsAndAdvance(ctx context.Context, id, version, activated, linked, conflict, terminal, projected int64, staffIndex int, cursor string, status CustomerSyncStatus) error {
 	tx, err := platformpostgres.RequireTransaction(ctx)
 	if err != nil {
@@ -222,6 +265,77 @@ func (PostgreSQLCustomerSyncStore) StaleCustomers(ctx context.Context, runID int
 		ids = append(ids, id)
 	}
 	return ids, rows.Err()
+}
+
+func (PostgreSQLCustomerSyncStore) ReconcileProfileObservations(ctx context.Context, runID int64, at time.Time) error {
+	if runID < 1 || at.IsZero() {
+		return ErrSyncCAS
+	}
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `UPDATE wecom_customer_owner_observations SET relationship_status='stale',stale_at=$2,updated_at=$2
+		WHERE corp_scope=(SELECT corp_scope FROM wecom_customer_sync_runs WHERE id=$1)
+		AND last_seen_run_id<>$1 AND relationship_status='active'`, runID, at.UTC()); err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `UPDATE wecom_customer_tag_observations SET observation_status='stale',stale_at=$2,updated_at=$2
+		WHERE corp_scope=(SELECT corp_scope FROM wecom_customer_sync_runs WHERE id=$1)
+		AND last_seen_run_id<>$1 AND observation_status='active'`, runID, at.UTC())
+	return err
+}
+
+func (PostgreSQLCustomerSyncStore) CustomerOwnerObservations(ctx context.Context, customerID customerdomain.CustomerID) ([]wecomport.OwnerObservation, error) {
+	if customerID < 1 {
+		return nil, ErrSyncNotFound
+	}
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := tx.Query(ctx, `SELECT employee_id,relationship_status,observed_at FROM wecom_customer_owner_observations
+		WHERE customer_id=$1 ORDER BY (relationship_status='active') DESC,observed_at DESC,employee_id`, customerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []wecomport.OwnerObservation{}
+	for rows.Next() {
+		var item wecomport.OwnerObservation
+		if err = rows.Scan(&item.EmployeeID, &item.Status, &item.ObservedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (PostgreSQLCustomerSyncStore) CustomerTagObservations(ctx context.Context, customerID customerdomain.CustomerID) ([]wecomport.TagObservation, error) {
+	if customerID < 1 {
+		return nil, ErrSyncNotFound
+	}
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := tx.Query(ctx, `SELECT provider_tag_id,observed_name,provider_tag_type,observation_status,max(observed_at)
+		FROM wecom_customer_tag_observations WHERE customer_id=$1
+		GROUP BY provider_tag_id,observed_name,provider_tag_type,observation_status
+		ORDER BY (observation_status='active') DESC,max(observed_at) DESC,provider_tag_id`, customerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []wecomport.TagObservation{}
+	for rows.Next() {
+		var item wecomport.TagObservation
+		if err = rows.Scan(&item.ProviderTagID, &item.ObservedName, &item.ProviderType, &item.Status, &item.ObservedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
 }
 
 func (PostgreSQLCustomerSyncStore) Complete(ctx context.Context, id, version, stale int64) error {

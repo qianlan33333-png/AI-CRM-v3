@@ -187,7 +187,7 @@ func TestCustomerDirectoryProviderListsStaffAndBatchPage(t *testing.T) {
 			// Production pages with 100 contacts can legitimately exceed the old
 			// 64 KiB OAuth-oriented limit. Unknown Provider fields must remain
 			// safely ignored without making the response unbounded.
-			payload := `{"errcode":0,"next_cursor":"next-1","external_contact_list":[{"external_contact":{"external_userid":"ext-1","name":"Alice","avatar":"https://example/avatar","type":1,"gender":2,"corp_name":"Example","unionid":"union-ignored-here"}}],"provider_padding":"` + strings.Repeat("x", 70<<10) + `"}`
+			payload := `{"errcode":0,"next_cursor":"next-1","external_contact_list":[{"external_contact":{"external_userid":"ext-1","name":"Alice","avatar":"https://example/avatar","type":1,"gender":2,"corp_name":"Example","unionid":"union-ignored-here"},"follow_info":[{"userid":"staff-1","tags":[{"tag_id":"tag-1","tag_name":"重点客户","type":1}]}]}],"provider_padding":"` + strings.Repeat("x", 70<<10) + `"}`
 			_, _ = writer.Write([]byte(payload))
 		default:
 			t.Fatalf("unexpected path=%s", request.URL.Path)
@@ -203,6 +203,9 @@ func TestCustomerDirectoryProviderListsStaffAndBatchPage(t *testing.T) {
 	page, err := client.BatchExternalContacts(context.Background(), "staff-1", "cursor-1", 100)
 	if err != nil || page.NextCursor != "next-1" || len(page.Contacts) != 1 || page.Contacts[0].ExternalUserID != "ext-1" {
 		t.Fatalf("page=%+v err=%v", page, err)
+	}
+	if len(page.Contacts[0].FollowInfo) != 1 || page.Contacts[0].FollowInfo[0].EmployeeID != "staff-1" || len(page.Contacts[0].FollowInfo[0].Tags) != 1 || page.Contacts[0].FollowInfo[0].Tags[0].ProviderTagID != "tag-1" {
+		t.Fatalf("follow info=%+v", page.Contacts[0].FollowInfo)
 	}
 }
 

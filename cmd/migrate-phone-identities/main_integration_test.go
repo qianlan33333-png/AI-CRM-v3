@@ -56,7 +56,7 @@ func TestPhoneImportApplyAndRowReplayPostgreSQL(t *testing.T) {
 		t.Fatal(err)
 	}
 	root := filepath.Join("..", "..")
-	for _, name := range []string{"0001_platform.sql", "0002_identity.sql", "0009_customer_activation.sql"} {
+	for _, name := range []string{"0001_platform.sql", "0002_identity.sql", "0009_customer_activation.sql", "0022_customer_profile_sections.sql"} {
 		raw, readErr := os.ReadFile(filepath.Join(root, "migrations", name))
 		if readErr != nil {
 			t.Fatal(readErr)

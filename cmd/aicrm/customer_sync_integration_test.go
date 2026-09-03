@@ -39,7 +39,8 @@ func (integrationDirectoryProvider) ListContactStaff(context.Context) ([]string,
 	return []string{"staff-integration"}, nil
 }
 func (integrationDirectoryProvider) BatchExternalContacts(context.Context, string, string, int) (wecomport.ExternalContactPage, error) {
-	return wecomport.ExternalContactPage{Contacts: []wecomport.ExternalContact{{ExternalUserID: "external-integration", Name: "Integration Customer", Gender: 1, Type: 1, CorpName: "Integration Corp"}}}, nil
+	return wecomport.ExternalContactPage{Contacts: []wecomport.ExternalContact{{ExternalUserID: "external-integration", Name: "Integration Customer", Gender: 1, Type: 1, CorpName: "Integration Corp",
+		FollowInfo: []wecomport.ExternalContactFollowInfo{{EmployeeID: "staff-integration", Tags: []wecomport.ExternalContactTag{{ProviderTagID: "provider-tag", Name: "重点客户", Type: 1}}}}}}}, nil
 }
 
 func TestCustomerSyncJourneyPostgreSQL(t *testing.T) {
@@ -75,7 +76,7 @@ func TestCustomerSyncJourneyPostgreSQL(t *testing.T) {
 		t.Fatal(err)
 	}
 	root := filepath.Join("..", "..")
-	for _, name := range []string{"0001_platform.sql", "0002_identity.sql", "0003_access.sql", "0004_wecom.sql", "0009_customer_activation.sql"} {
+	for _, name := range []string{"0001_platform.sql", "0002_identity.sql", "0003_access.sql", "0004_wecom.sql", "0009_customer_activation.sql", "0022_customer_profile_sections.sql"} {
 		raw, readErr := os.ReadFile(filepath.Join(root, "migrations", name))
 		if readErr != nil {
 			t.Fatal(readErr)
@@ -99,7 +100,7 @@ func TestCustomerSyncJourneyPostgreSQL(t *testing.T) {
 	}
 	customerStore := customerstore.NewPostgreSQL()
 	enqueuer := &integrationSyncEnqueuer{}
-	service := wecom.CustomerSyncService{Enabled: true, CorpID: "integration-corp", Provider: integrationDirectoryProvider{}, Identity: identityapp.OneIDService{Store: identitystore.NewPostgresStore()}, Projection: customerStore, Store: wecom.NewPostgreSQLCustomerSyncStore(), Outbox: platformoutbox.NewPostgreSQL(), Enqueuer: enqueuer, Audit: audit, UOW: uow, Now: func() time.Time { return time.Now().UTC() }}
+	service := wecom.CustomerSyncService{Enabled: true, CorpID: "integration-corp", Provider: integrationDirectoryProvider{}, Identity: identityapp.OneIDService{Store: identitystore.NewPostgresStore()}, Projection: customerStore, Timeline: customerStore, Store: wecom.NewPostgreSQLCustomerSyncStore(), Outbox: platformoutbox.NewPostgreSQL(), Enqueuer: enqueuer, Audit: audit, UOW: uow, Now: func() time.Time { return time.Now().UTC() }}
 	run, _, err := service.CreateScheduled(ctx, "initial", "initial:integration-customer-sync")
 	if err != nil {
 		t.Fatal(err)
@@ -121,12 +122,15 @@ func TestCustomerSyncJourneyPostgreSQL(t *testing.T) {
 	if run.Status != wecom.SyncSucceeded || run.Discovered != 1 || run.Activated != 1 || run.Projected != 1 {
 		t.Fatalf("run=%+v", run)
 	}
-	var identities, projections, receipts, pending int
-	if err = pool.Native().QueryRow(ctx, `SELECT (SELECT count(*) FROM customer_identities WHERE kind='wecom_external_userid' AND assurance='verified'),(SELECT count(*) FROM customer_directory_projection),(SELECT count(*) FROM wecom_customer_sync_items WHERE run_id=$1),(SELECT count(*) FROM outbox_events WHERE processed_at IS NULL)`, run.ID).Scan(&identities, &projections, &receipts, &pending); err != nil {
+	var identities, projections, receipts, pending, owners, tags, timeline int
+	if err = pool.Native().QueryRow(ctx, `SELECT (SELECT count(*) FROM customer_identities WHERE kind='wecom_external_userid' AND assurance='verified'),
+		(SELECT count(*) FROM customer_directory_projection),(SELECT count(*) FROM wecom_customer_sync_items WHERE run_id=$1),
+		(SELECT count(*) FROM outbox_events WHERE processed_at IS NULL),(SELECT count(*) FROM wecom_customer_owner_observations WHERE last_seen_run_id=$1),
+		(SELECT count(*) FROM wecom_customer_tag_observations WHERE last_seen_run_id=$1),(SELECT count(*) FROM customer_timeline_projection WHERE source_domain='wecom')`, run.ID).Scan(&identities, &projections, &receipts, &pending, &owners, &tags, &timeline); err != nil {
 		t.Fatal(err)
 	}
-	if identities != 1 || projections != 1 || receipts != 1 || pending != 0 {
-		t.Fatalf("identities=%d projections=%d receipts=%d pending=%d", identities, projections, receipts, pending)
+	if identities != 1 || projections != 1 || receipts != 1 || pending != 0 || owners != 1 || tags != 1 || timeline != 1 {
+		t.Fatalf("identities=%d projections=%d receipts=%d pending=%d owners=%d tags=%d timeline=%d", identities, projections, receipts, pending, owners, tags, timeline)
 	}
 
 	var recoveryRunID int64

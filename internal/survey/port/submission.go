@@ -65,6 +65,25 @@ type SubmissionPage struct {
 	Limit, Offset int32
 }
 
+type CustomerHistoryQuery struct {
+	CustomerID int64
+	Limit      int32
+	Watermark  time.Time
+	AfterAt    time.Time
+	AfterID    ID
+}
+
+type CustomerHistoryWindow struct {
+	Items []Submission
+}
+
+// CustomerHistoryReader is the stable, customer_id-only read boundary used by
+// the Customer profile composition adapter. Returned free text is already
+// masked by Survey and must never be rehydrated by consumers.
+type CustomerHistoryReader interface {
+	CustomerHistoryWindow(context.Context, CustomerHistoryQuery) (CustomerHistoryWindow, error)
+}
+
 type Analytics struct {
 	QuestionnaireID   ID                  `json:"questionnaire_id"`
 	DefinitionVersion int64               `json:"definition_version"`
