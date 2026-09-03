@@ -42,7 +42,7 @@ while IFS=' ' read -r expected reference; do
       test -f "$target" || fail "missing active template: $source_path"
       [[ "$(sha256_file "$target")" == "$expected" ]] || fail "active template SHA drift: $source_path"
       git -C "$donor_dir" show "$donor_sha:$source_path" | cmp -s - "$target" || fail "active template byte drift: $source_path"
-      rg -q 'style=' "$target" || fail "channel inline style contract missing: $source_path"
+      grep -q 'style=' "$target" || fail "channel inline style contract missing: $source_path"
       active_count=$((active_count + 1))
       ;;
   esac
@@ -51,9 +51,9 @@ done < "$hash_file"
 [[ "$source_count" -eq 12 ]] || fail "expected 12 donor files, found $source_count"
 [[ "$active_count" -eq 2 ]] || fail "expected 2 active templates, found $active_count"
 
-if rg -n 'github\.com/qianlan33333-png/AI-CRM-v2|replace[[:space:]]+github\.com/qianlan33333-png/AI-CRM-v2' \
-  "$repo_root/go.mod" "$repo_root/go.sum" "$repo_root/internal" "$repo_root/cmd" \
-  --glob '*.go' --glob 'go.mod' --glob 'go.sum' >/dev/null; then
+if grep -ERn --include='*.go' --include='go.mod' --include='go.sum' \
+  'github\.com/qianlan33333-png/AI-CRM-v2|replace[[:space:]]+github\.com/qianlan33333-png/AI-CRM-v2' \
+  "$repo_root/go.mod" "$repo_root/go.sum" "$repo_root/internal" "$repo_root/cmd" >/dev/null; then
   fail "forbidden v2 runtime import detected"
 fi
 
