@@ -115,7 +115,8 @@ make_release() {
     0029_channel_center.sql 0030_config_definition_import.sql \
     0031_channel_history_import.sql 0032_channel_acquisition_assets.sql \
     0033_wecom_welcome_grants.sql 0034_channel_entrant_actions.sql \
-    0035_channel_acquisition_links.sql; do
+    0035_channel_acquisition_links.sql 0036_ai_assistant_review.sql \
+    0037_outbound_private_messages.sql; do
     : > "$release/migrations/$migration"
   done
   : > "$release/web/dist/asset-manifest.json"
