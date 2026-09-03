@@ -111,8 +111,8 @@ make_release() {
     0018_survey.sql 0019_tag_catalog_sync_projection.sql 0020_order.sql 0021_payment.sql \
     0022_customer_profile_sections.sql 0024_order_product_version.sql \
     0025_payment_reconciliation.sql 0026_identity_history_receipts.sql \
-    0027_admin_access_login_compat.sql 0036_automation_operations_migration.sql \
-    0037_segment_audience_schedule_state.sql; do
+    0027_admin_access_login_compat.sql 0046_automation_operations_migration.sql \
+    0047_segment_audience_schedule_state.sql; do
     : > "$release/migrations/$migration"
   done
   : > "$release/web/dist/asset-manifest.json"

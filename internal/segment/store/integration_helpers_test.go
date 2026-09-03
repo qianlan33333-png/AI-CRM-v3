@@ -44,7 +44,7 @@ func segmentDatabase(t *testing.T, ctx context.Context) (*pgxpool.Pool, func()) 
 		t.Fatal(err)
 	}
 	_, file, _, _ := runtime.Caller(0)
-	for _, name := range []string{"0028_segment_audience_configuration.sql", "0029_segment_audience_snapshots.sql", "0030_segment_audience_webhooks.sql", "0031_segment_audience_execution_bindings.sql"} {
+	for _, name := range []string{"0038_segment_audience_configuration.sql", "0039_segment_audience_snapshots.sql", "0040_segment_audience_webhooks.sql", "0041_segment_audience_execution_bindings.sql"} {
 		sql, readErr := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "..", "migrations", name))
 		if readErr != nil {
 			t.Fatal(readErr)
