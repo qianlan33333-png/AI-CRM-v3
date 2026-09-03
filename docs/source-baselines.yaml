@@ -5,6 +5,10 @@ new_repository:
   intended_remote: qianlan33333-png/AI-CRM-v3
   role: future_primary_runtime
 sources:
+  - repository: qianlan33333-png/AI-CRM-v2
+    commit: 6bfbe5816bb89913c70adaca87d6a486260e016e
+    role: read_only_behavior_frontend_and_leaf_protocol_donor
+    runtime_dependency_allowed: false
   - repository: qianlan33333-png/AI-CRM-production
     commit: 4af15e64fb7ebb311b52b17eaf5fc5ea5e8154c8
     role: production_behavior_and_oneid_reference
