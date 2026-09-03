@@ -87,13 +87,13 @@ func TestApplyMigrationsFreshAndUpgradePostgreSQL(t *testing.T) {
 		if item.name == "0015_config_adminops.sql" {
 			foundConfigMigration = true
 		}
-		if item.name == "0038_segment_audience_configuration.sql" {
+		if item.name == "0039_segment_audience_configuration.sql" {
 			foundSegmentMigration = true
 		}
-		if item.name == "0039_segment_audience_snapshots.sql" {
+		if item.name == "0040_segment_audience_snapshots.sql" {
 			foundSegmentSnapshotMigration = true
 		}
-		if item.name == "0040_segment_audience_webhooks.sql" {
+		if item.name == "0041_segment_audience_webhooks.sql" {
 			foundSegmentWebhookMigration = true
 		}
 	}
