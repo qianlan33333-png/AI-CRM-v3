@@ -348,16 +348,29 @@ func (r *Repository) FindByReference(ctx context.Context, reference string) ([]d
 	if err != nil {
 		return nil, mapError(err)
 	}
-	defer rows.Close()
-	result := []domain.Order{}
+	// pgx does not allow another query on the same transaction while Rows is
+	// still open. Materialize the matching order facts first, then load the
+	// item snapshots after the result set has been closed.
+	snapshots := make([]domain.Snapshot, 0, 2)
 	for rows.Next() {
 		snapshot, scanErr := scanOrder(rows)
 		if scanErr != nil {
+			rows.Close()
 			return nil, scanErr
 		}
-		snapshot.Items, scanErr = loadItems(ctx, tx, snapshot.ID)
-		if scanErr != nil {
-			return nil, scanErr
+		snapshots = append(snapshots, snapshot)
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return nil, mapError(err)
+	}
+	rows.Close()
+
+	result := make([]domain.Order, 0, len(snapshots))
+	for _, snapshot := range snapshots {
+		snapshot.Items, err = loadItems(ctx, tx, snapshot.ID)
+		if err != nil {
+			return nil, err
 		}
 		order, restoreErr := domain.Restore(snapshot)
 		if restoreErr != nil {
@@ -365,7 +378,7 @@ func (r *Repository) FindByReference(ctx context.Context, reference string) ([]d
 		}
 		result = append(result, order)
 	}
-	return result, mapError(rows.Err())
+	return result, nil
 }
 
 func (r *Repository) RecordExport(ctx context.Context, receipt orderapp.ExportReceipt) (orderapp.ExportReceipt, bool, error) {
