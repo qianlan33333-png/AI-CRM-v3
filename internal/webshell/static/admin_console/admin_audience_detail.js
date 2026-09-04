@@ -27,7 +27,11 @@
     }
   }
 
+  const transientRetryDelays = [150, 600];
+  const delay = (milliseconds) => new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+
   async function request(path, options = {}) {
+    const method = options.method || "GET";
     const headers = new Headers(options.headers || {});
     headers.set("Accept", "application/json");
     if (options.body !== undefined) headers.set("Content-Type", "application/json");
@@ -35,20 +39,44 @@
       headers.set("X-CSRF-Token", csrf());
       headers.set("Idempotency-Key", requestKey(options.scope || "automation-operations"));
     }
-    const response = await fetch(path, {
-      method: options.method || "GET",
-      credentials: "same-origin",
-      cache: "no-store",
-      headers,
-      body: options.body === undefined ? undefined : JSON.stringify(options.body),
-    });
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) throw new APIError(response.status, payload.error);
-    return payload;
+    // GETs and explicitly marked read-only commands may be retried across the
+    // sub-second service handoff performed by a versioned production deploy.
+    // Mutations are deliberately excluded: an interrupted response must stay
+    // unknown until the caller reloads the persisted receipt/state.
+    const retryDelays = method === "GET" || options.retryTransient ? transientRetryDelays : [];
+    for (let attempt = 0; ; attempt += 1) {
+      let response;
+      try {
+        response = await fetch(path, {
+          method,
+          credentials: "same-origin",
+          cache: "no-store",
+          headers,
+          body: options.body === undefined ? undefined : JSON.stringify(options.body),
+        });
+      } catch (_error) {
+        if (attempt < retryDelays.length) {
+          await delay(retryDelays[attempt]);
+          continue;
+        }
+        throw new APIError(0, "network_error");
+      }
+      const payload = await response.json().catch(() => ({}));
+      if (response.ok) return payload;
+      const code = typeof payload.error === "string" ? payload.error : "";
+      const gatewayUnavailable = response.status === 502 || response.status === 504 || (response.status === 503 && !code);
+      if (gatewayUnavailable && attempt < retryDelays.length) {
+        await delay(retryDelays[attempt]);
+        continue;
+      }
+      throw new APIError(response.status, code || (gatewayUnavailable ? "gateway_unavailable" : "unknown_error"));
+    }
   }
 
   function errorState(error) {
     if (!(error instanceof APIError)) return { state: "unknown", message: "网络或服务状态未知，请勿将本次操作视为成功。" };
+    if (error.code === "network_error") return { state: "unknown", message: "网络连接中断，已停止本次操作；请刷新页面核对实际状态后重试。" };
+    if (error.code === "gateway_unavailable") return { state: "not-ready", message: "服务正在发布或短暂不可用，已停止本次操作；请稍后重试。" };
     if (error.status === 401) return { state: "forbidden", message: "登录会话已失效，请重新登录。" };
     if (error.status === 403) return { state: "forbidden", message: error.code === "csrf_required" ? "页面安全令牌已失效，请刷新页面后重试。" : "当前账号没有执行此操作的权限。" };
     if (error.status === 409) return { state: "conflict", message: "服务端版本已经变化。页面将重新读取；请重新预览后确认。" };
@@ -176,7 +204,7 @@
       showNotice("正在提交并等待持久化收据…");
       try {
         if (action === "activate") {
-          const checked = await request(`${API}/ai-audience/packages/${id}/precheck`, { method: "POST", body: {} });
+          const checked = await request(`${API}/ai-audience/packages/${id}/precheck`, { method: "POST", body: {}, retryTransient: true });
           if (!checked.precheck?.ready) {
             showNotice(`暂不能激活：${readinessMessage(checked.precheck?.reasons) || "执行条件未满足"}。请点击人群包名称进入配置。`, true);
             return;

@@ -87,7 +87,7 @@ func TestStandaloneHandlerRendersAdminLoginSidebarAndAssets(t *testing.T) {
 				"当前分组暂无人群包",
 				"admin_console.js",
 				"admin_audience.css",
-				"admin_audience_detail.js?v=automation-operations-v4",
+				"admin_audience_detail.js?v=automation-operations-v5",
 			},
 			notContain: []string{
 				"功能待接入",
@@ -110,7 +110,7 @@ func TestStandaloneHandlerRendersAdminLoginSidebarAndAssets(t *testing.T) {
 				"成员列表",
 				"发送记录",
 				"admin_audience_detail.css",
-				"admin_audience_detail.js?v=automation-operations-v4",
+				"admin_audience_detail.js?v=automation-operations-v5",
 			},
 			notContain: []string{
 				"功能待接入",
