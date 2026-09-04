@@ -936,6 +936,12 @@ func legacyStateBindingAssetVersion(bindingDigest [sha256.Size]byte) int64 {
 	return 4_000_000_000 + int64(binary.BigEndian.Uint64(bindingDigest[:8])&((uint64(1)<<62)-1))
 }
 
+const channelActivationSQL = `UPDATE channels
+	SET status=$2,
+		archived_at=CASE WHEN $2='archived' THEN COALESCE(archived_at,clock_timestamp()) ELSE NULL END,
+		updated_at=clock_timestamp()
+	WHERE id=$1 AND current_config_version=$3`
+
 type legacyScene struct {
 	id     int64
 	value  string
@@ -1019,7 +1025,7 @@ func (runner importRunner) ActivateRepaired(ctx context.Context, manifest snapsh
 			if txErr != nil {
 				return txErr
 			}
-			updated, txErr := tx.Exec(txctx, `UPDATE channels SET status=$2,updated_at=clock_timestamp() WHERE id=$1 AND current_config_version=$3`, v.id, v.status, v.version)
+			updated, txErr := tx.Exec(txctx, channelActivationSQL, v.id, v.status, v.version)
 			if txErr != nil {
 				return txErr
 			}
