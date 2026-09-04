@@ -10,7 +10,7 @@ import (
 	segmentdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/domain"
 )
 
-const configurationColumns = `id,package_id,version,schema_version,definition,refresh_cron_utc,digest,created_by,created_at`
+const configurationColumns = `id,package_id,version,schema_version,definition,COALESCE(refresh_cron_utc,''),digest,created_by,created_at`
 
 func scanConfiguration(row pgx.Row) (segmentdomain.ConfigurationVersion, error) {
 	var item segmentdomain.ConfigurationVersion

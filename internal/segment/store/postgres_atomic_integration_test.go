@@ -97,6 +97,59 @@ func TestPostgreSQLAudienceConfigurationAtomicity(t *testing.T) {
 	assertSegmentCounts(t, ctx, native, [6]int{1, 1, 1, 1, 1, 1})
 }
 
+func TestPostgreSQLAudienceConfigurationEmptyCronRoundTrips(t *testing.T) {
+	ctx := context.Background()
+	native, cleanup := segmentDatabase(t, ctx)
+	defer cleanup()
+	wrapped, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uow, err := platformpostgres.NewUnitOfWork(wrapped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo, err := NewPostgreSQL(native, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 4, 5, 0, 0, 0, time.UTC)
+	err = uow.Within(ctx, func(tx context.Context) error {
+		group, createErr := segmentdomain.NewGroup("默认运营人群", 100, 7, now)
+		if createErr != nil {
+			return createErr
+		}
+		group, createErr = repo.CreateGroup(tx, group)
+		if createErr != nil {
+			return createErr
+		}
+		item, createErr := segmentdomain.NewPackage("empty-cron", "空刷新计划", &group.ID, 7, now)
+		if createErr != nil {
+			return createErr
+		}
+		item, createErr = repo.CreatePackage(tx, item)
+		if createErr != nil {
+			return createErr
+		}
+		definition := json.RawMessage(`{"schema_version":1,"expression":{"kind":"all"}}`)
+		configuration, createErr := segmentdomain.NewConfigurationVersion(item.ID, 1, definition, "", 7, now)
+		if createErr != nil {
+			return createErr
+		}
+		configuration, createErr = repo.CreateConfigurationVersion(tx, configuration)
+		if createErr != nil {
+			return createErr
+		}
+		if configuration.RefreshCronUTC != "" {
+			return errors.New("empty refresh cron did not round trip")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestPostgreSQLAudienceImmutableFacts(t *testing.T) {
 	ctx := context.Background()
 	native, cleanup := segmentDatabase(t, ctx)
