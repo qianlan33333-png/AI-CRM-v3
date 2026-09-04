@@ -43,6 +43,24 @@ def main() -> None:
     if len(sys.argv) != 4:
         raise SystemExit("usage: prepare-channel-semantic-rehearsal-fixtures.py STREAM STAFF_TSV TAG_TSV")
     tables = rows_by_table(pathlib.Path(sys.argv[1]))
+    active_assignments: dict[str, list[dict]] = {}
+    for item in tables.get("automation_channel_assignee", []):
+        if str(item.get("status") or "") == "inactive":
+            continue
+        active_assignments.setdefault(str(item.get("channel_id") or ""), []).append(item)
+    assignment_profiles: dict[str, int] = {}
+    for channel in tables.get("automation_channel", []):
+        channel_id = str(channel.get("id") or "")
+        members = active_assignments.get(channel_id, [])
+        if not members and str(channel.get("owner_staff_id") or "").strip():
+            members = [{"ratio_percent": 100, "max_scans_24h": 0}]
+        strategy = "cap_switch" if str(channel.get("assignment_strategy") or "") == "cap_switch" else "ratio"
+        ratios = sorted(int(item.get("ratio_percent") or 0) for item in members)
+        caps = sorted(int(item.get("max_scans_24h") or 0) for item in members)
+        if not members or (strategy == "ratio" and sum(ratios) != 100) or (strategy == "cap_switch" and any(cap < 1 for cap in caps)):
+            profile = json.dumps({"strategy": strategy, "member_count": len(members), "ratios": ratios, "caps": caps}, sort_keys=True, separators=(",", ":"))
+            assignment_profiles[profile] = assignment_profiles.get(profile, 0) + 1
+    print("assignment_profiles=" + json.dumps(assignment_profiles, sort_keys=True, separators=(",", ":")))
     staff: dict[str, str] = {}
     for item in tables.get("automation_channel_assignee", []):
         provider_id = str(item.get("staff_id") or "").strip()
