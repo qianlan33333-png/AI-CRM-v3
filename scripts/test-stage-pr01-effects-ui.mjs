@@ -35,7 +35,7 @@ try {
     'cloud_plan_review.js',
   ];
   for (const file of aiAssistantFiles) fs.writeFileSync(path.join(source, 'aiassistant', file), `aiassistant:${file}`);
-  for (const file of ['admin.js', 'tokens.css', 'labs.css', 'legacy.js', 'campaigns.js', 'adminAccess.js', 'adminAccess-runtime.js', 'setupWizard.js', 'setupWizard-runtime.js', 'groupOpsHistory.js', 'funnel.js', 'funnel-runtime.js', 'dormant.js', 'cycles-host.js', 'cycles-main.js', 'cycles-legacy.js', 'product-host.js', 'product-main.js', 'product-legacy.js', 'product-qr.js', 'channel-host.js', 'channel-main.js', 'channel-legacy.js', 'ai-host.js', 'ai-runtime.js']) {
+  for (const file of ['admin.js', 'tokens.css', 'labs.css', 'legacy.js', 'campaigns.js', 'adminAccess.js', 'adminAccess-runtime.js', 'setupWizard.js', 'setupWizard-runtime.js', 'groupOpsHistory.js', 'funnel.js', 'funnel-runtime.js', 'radar.js', 'radar-runtime.js', 'dormant.js', 'cycles-host.js', 'cycles-main.js', 'cycles-legacy.js', 'product-host.js', 'product-main.js', 'product-legacy.js', 'product-qr.js', 'channel-host.js', 'channel-main.js', 'channel-legacy.js', 'ai-host.js', 'ai-runtime.js']) {
     fs.writeFileSync(path.join(source, 'assets', file), file);
   }
   const files = Object.fromEntries([
@@ -48,6 +48,7 @@ try {
       { kind: 'dynamic-import', path: 'assets/setupWizard.js' },
       { kind: 'dynamic-import', path: 'assets/groupOpsHistory.js' },
       { kind: 'dynamic-import', path: 'assets/funnel.js' },
+      { kind: 'dynamic-import', path: 'assets/radar.js' },
       { kind: 'dynamic-import', path: 'assets/dormant.js' },
     ] }],
     ['assets/campaigns.js', { inputs: ['web/src/admin/sections/campaigns.ts'], imports: [] }],
@@ -58,6 +59,8 @@ try {
     ['assets/groupOpsHistory.js', { inputs: ['web/src/admin/sections/groupOpsHistory.ts'], imports: [] }],
     ['assets/funnel.js', { inputs: ['web/src/admin/sections/funnelGrid.ts'], imports: [{ kind: 'import-statement', path: 'assets/funnel-runtime.js' }] }],
     ['assets/funnel-runtime.js', { imports: [] }],
+    ['assets/radar.js', { inputs: ['web/src/admin/sections/radar.ts'], imports: [{ kind: 'import-statement', path: 'assets/radar-runtime.js' }] }],
+    ['assets/radar-runtime.js', { imports: [] }],
     ['assets/dormant.js', { inputs: ['web/src/admin/sections/campaignHistory.ts'], imports: [] }],
     ['assets/cycles-host.js', { inputs: ['web/v3/operationCyclesAdapter.ts'], imports: [{ kind: 'dynamic-import', path: 'assets/cycles-main.js' }] }],
     ['assets/cycles-main.js', { inputs: ['web/src/admin/main.ts'], imports: [{ kind: 'dynamic-import', path: 'assets/cycles-legacy.js' }] }],
@@ -85,7 +88,7 @@ try {
 
   execFileSync(process.execPath, ['scripts/stage-pr01-effects-ui.mjs', source, stage], { stdio: 'inherit' });
   const staged = fs.readdirSync(stage, { recursive: true }).map((entry) => String(entry).split(path.sep).join('/')).sort();
-  assert.deepEqual(staged, ['admin', 'admin/agentEdit.html', 'admin/agents.html', 'admin/apidocs.html', 'admin/attach.html', 'admin/channelForm.html', 'admin/channels.html', 'admin/config.html', 'admin/configDetail.html', 'admin/couponForm.html', 'admin/coupons.html', 'admin/cycles.html', 'admin/cyclesDetail.html', 'admin/groupops.html', 'admin/groupopsDetail.html', 'admin/images.html', 'admin/mpLib.html', 'admin/orderDetail.html', 'admin/orders.html', 'admin/productForm.html', 'admin/products.html', 'admin/radar.html', 'admin/radarDetail.html', 'admin/radarForm.html', 'admin/spProductForm.html', 'admin/spProducts.html', 'admin/tags.html', 'aiassistant', 'aiassistant/cloud_plan_review.js', 'aiassistant/detail.html', 'aiassistant/group_chat_picker.css', 'aiassistant/group_chat_picker.js', 'aiassistant/list.html', 'aiassistant/material_picker.css', 'aiassistant/material_picker.js', 'aiassistant/send_content_composer.css', 'aiassistant/send_content_composer.js', 'aiassistant/send_content_readonly_detail.css', 'aiassistant/send_content_readonly_detail.js', 'asset-manifest.json', 'assets', 'assets/admin.js', 'assets/adminAccess-runtime.js', 'assets/adminAccess.js', 'assets/ai-host.js', 'assets/ai-runtime.js', 'assets/campaigns.js', 'assets/channel-host.js', 'assets/channel-legacy.js', 'assets/channel-main.js', 'assets/cycles-host.js', 'assets/cycles-legacy.js', 'assets/cycles-main.js', 'assets/funnel-runtime.js', 'assets/funnel.js', 'assets/groupOpsHistory.js', 'assets/labs.css', 'assets/legacy.js', 'assets/product-host.js', 'assets/product-legacy.js', 'assets/product-main.js', 'assets/product-qr.js', 'assets/setupWizard-runtime.js', 'assets/setupWizard.js', 'assets/tokens.css']);
+  assert.deepEqual(staged, ['admin', 'admin/agentEdit.html', 'admin/agents.html', 'admin/apidocs.html', 'admin/attach.html', 'admin/channelForm.html', 'admin/channels.html', 'admin/config.html', 'admin/configDetail.html', 'admin/couponForm.html', 'admin/coupons.html', 'admin/cycles.html', 'admin/cyclesDetail.html', 'admin/groupops.html', 'admin/groupopsDetail.html', 'admin/images.html', 'admin/mpLib.html', 'admin/orderDetail.html', 'admin/orders.html', 'admin/productForm.html', 'admin/products.html', 'admin/radar.html', 'admin/radarDetail.html', 'admin/radarForm.html', 'admin/spProductForm.html', 'admin/spProducts.html', 'admin/tags.html', 'aiassistant', 'aiassistant/cloud_plan_review.js', 'aiassistant/detail.html', 'aiassistant/group_chat_picker.css', 'aiassistant/group_chat_picker.js', 'aiassistant/list.html', 'aiassistant/material_picker.css', 'aiassistant/material_picker.js', 'aiassistant/send_content_composer.css', 'aiassistant/send_content_composer.js', 'aiassistant/send_content_readonly_detail.css', 'aiassistant/send_content_readonly_detail.js', 'asset-manifest.json', 'assets', 'assets/admin.js', 'assets/adminAccess-runtime.js', 'assets/adminAccess.js', 'assets/ai-host.js', 'assets/ai-runtime.js', 'assets/campaigns.js', 'assets/channel-host.js', 'assets/channel-legacy.js', 'assets/channel-main.js', 'assets/cycles-host.js', 'assets/cycles-legacy.js', 'assets/cycles-main.js', 'assets/funnel-runtime.js', 'assets/funnel.js', 'assets/groupOpsHistory.js', 'assets/labs.css', 'assets/legacy.js', 'assets/product-host.js', 'assets/product-legacy.js', 'assets/product-main.js', 'assets/product-qr.js', 'assets/radar-runtime.js', 'assets/radar.js', 'assets/setupWizard-runtime.js', 'assets/setupWizard.js', 'assets/tokens.css']);
   assert.equal(fs.existsSync(path.join(stage, 'admin', 'campaigns.html')), false, 'donor campaign HTML must not be released');
   assert.equal(fs.readFileSync(path.join(stage, 'admin', 'tags.html'), 'utf8'), fs.readFileSync(path.join(source, 'admin', 'wecom-tags.html'), 'utf8'), 'generated donor Tags page must be copied byte-for-byte as the private template source');
   assert.deepEqual(staged.filter((entry) => entry.endsWith('.html')), ['admin/agentEdit.html', 'admin/agents.html', 'admin/apidocs.html', 'admin/attach.html', 'admin/channelForm.html', 'admin/channels.html', 'admin/config.html', 'admin/configDetail.html', 'admin/couponForm.html', 'admin/coupons.html', 'admin/cycles.html', 'admin/cyclesDetail.html', 'admin/groupops.html', 'admin/groupopsDetail.html', 'admin/images.html', 'admin/mpLib.html', 'admin/orderDetail.html', 'admin/orders.html', 'admin/productForm.html', 'admin/products.html', 'admin/radar.html', 'admin/radarDetail.html', 'admin/radarForm.html', 'admin/spProductForm.html', 'admin/spProducts.html', 'admin/tags.html', 'aiassistant/detail.html', 'aiassistant/list.html'], 'only approved private business templates may be staged');
@@ -109,6 +112,7 @@ try {
     { kind: 'dynamic-import', path: 'assets/setupWizard.js' },
     { kind: 'dynamic-import', path: 'assets/groupOpsHistory.js' },
     { kind: 'dynamic-import', path: 'assets/funnel.js' },
+    { kind: 'dynamic-import', path: 'assets/radar.js' },
     { kind: 'dynamic-import', path: 'assets/dormant.js' },
   ], 'the frozen legacy loader must retain its dynamic import metadata');
   for (const asset of ['assets/adminAccess.js', 'assets/adminAccess-runtime.js', 'assets/setupWizard.js', 'assets/setupWizard-runtime.js']) {
@@ -117,6 +121,11 @@ try {
     assert.ok(fs.existsSync(path.join(stage, asset)), `the staged release must include ${asset}`);
   }
   for (const asset of ['assets/funnel.js', 'assets/funnel-runtime.js']) {
+    assert.ok(stagedManifest.files[asset], `the staged manifest must include ${asset}`);
+    assert.ok(stagedManifest.release_files[asset], `the staged release manifest must include ${asset}`);
+    assert.ok(fs.existsSync(path.join(stage, asset)), `the staged release must include ${asset}`);
+  }
+  for (const asset of ['assets/radar.js', 'assets/radar-runtime.js']) {
     assert.ok(stagedManifest.files[asset], `the staged manifest must include ${asset}`);
     assert.ok(stagedManifest.release_files[asset], `the staged release manifest must include ${asset}`);
     assert.ok(fs.existsSync(path.join(stage, asset)), `the staged release must include ${asset}`);
