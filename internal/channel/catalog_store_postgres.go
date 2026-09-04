@@ -216,10 +216,46 @@ func getCatalogChannel(ctx context.Context, tx pgx.Tx, id int64) (channeldomain.
 	if err = rows.Err(); err != nil {
 		return channeldomain.Channel{}, err
 	}
-	if err = channeldomain.ValidateChannel(channel); err != nil {
+	if err = validateReadableCatalogChannel(ctx, tx, channel); err != nil {
 		return channeldomain.Channel{}, err
 	}
 	return channel, nil
+}
+
+func validateReadableCatalogChannel(ctx context.Context, tx pgx.Tx, channel channeldomain.Channel) error {
+	validationErr := channeldomain.ValidateChannel(channel)
+	if validationErr == nil {
+		return nil
+	}
+	// A semantic repair may faithfully preserve an incomplete or invalid V1
+	// assignee snapshot. Such a channel must remain visible so an administrator
+	// can repair it, but it must never become publishable. Normal creates and
+	// updates still use the strict domain validator; this read exception is
+	// limited to an inactive, migration-owned config with an explicit blocker.
+	if channel.Status == channeldomain.StatusActive {
+		return validationErr
+	}
+	structurallyValid := channel
+	structurallyValid.Config.Assignment = channeldomain.Assignment{
+		Mode: channeldomain.AssignmentSingle, Strategy: channeldomain.StrategyRatio,
+		Assignees: []channeldomain.Assignee{{StaffID: 1, Priority: 1, Ratio: 100}},
+	}
+	if channeldomain.ValidateChannel(structurallyValid) != nil {
+		return validationErr
+	}
+	var migrationBlocked bool
+	err := tx.QueryRow(ctx, `SELECT EXISTS(
+		SELECT 1 FROM channel_semantic_repaired_configs
+		WHERE channel_id=$1 AND config_version=$2 AND activated_at IS NULL
+		  AND blockers ?| ARRAY['assignees_missing','assignee_provider_ineligible','assignment_priority_invalid','assignment_ratio_invalid']
+	)`, channel.ID, channel.ConfigVersion).Scan(&migrationBlocked)
+	if err != nil {
+		return err
+	}
+	if !migrationBlocked {
+		return validationErr
+	}
+	return nil
 }
 
 func archivedAt(channel channeldomain.Channel) any {
