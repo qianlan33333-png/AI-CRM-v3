@@ -125,6 +125,12 @@ func TestApplyMigrationsFreshAndUpgradePostgreSQL(t *testing.T) {
 			t.Fatalf("sidebar owned table %s present=%v err=%v", table, present, err)
 		}
 	}
+	for _, table := range []string{"channel_semantic_repair_runs", "channel_semantic_repair_conflicts", "channel_semantic_repaired_configs", "channel_legacy_acquisition_assets", "channel_legacy_material_maps", "channel_legacy_tag_maps", "channel_history_contact_reconciliations"} {
+		var present bool
+		if err = pool.QueryRow(ctx, `SELECT to_regclass(current_schema() || '.' || $1) IS NOT NULL`, table).Scan(&present); err != nil || !present {
+			t.Fatalf("Channel semantic repair table %s present=%v err=%v", table, present, err)
+		}
+	}
 }
 
 func TestLoadMigrationsRejectsEmptySet(t *testing.T) {

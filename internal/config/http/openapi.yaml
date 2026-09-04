@@ -1448,7 +1448,7 @@ paths:
     get:
       operationId: listChannelAcquisitionStaff
       tags: [Channels]
-      description: Returns only the intersection of active local staff and current WeCom follow users; Provider read failure is fail closed.
+      description: Returns saved local staff even when Provider read is unavailable. provider_read_succeeded=false and publish_blocked=true make the degraded state explicit; writes and asset publish still fail closed.
       security: [{adminSession: []}]
       parameters: [{name: channel_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
       responses:
@@ -4244,7 +4244,7 @@ components:
       required: [ok, channels, items, total, next_cursor, reason, source]
       properties:
         ok: {const: true}
-        channels: {type: array, items: {type: object, additionalProperties: false, required: [id, channel_name, channel_code, status, assignee_count, channel_contact_count, created_at, updated_at], properties: {id: {$ref: "#/components/schemas/PositiveID"}, channel_name: {type: string}, channel_code: {type: string}, status: {type: string}, assignee_count: {type: integer, minimum: 0}, channel_contact_count: {type: integer, minimum: 0}, created_at: {type: string}, updated_at: {type: string}}}}
+        channels: {type: array, items: {type: object, additionalProperties: false, required: [id, channel_name, channel_code, status, assignee_count, channel_contact_count, channel_enter_count, qrcode_status, qrcode_origin, created_at, updated_at], properties: {id: {$ref: "#/components/schemas/PositiveID"}, channel_name: {type: string}, channel_code: {type: string}, status: {type: string}, assignee_count: {type: integer, minimum: 0}, channel_contact_count: {type: integer, minimum: 0}, channel_enter_count: {type: integer, minimum: 0}, latest_channel_entered_at: {type: string}, qrcode_status: {type: string, enum: [not_generated, accepted, queued, attempted, executed, reconciled, outcome_unknown, final_failed, legacy_unverified, legacy_verified_active, legacy_stale]}, qrcode_origin: {type: string, enum: ['', runtime, legacy]}, qr_download_url: {type: string}, created_at: {type: string}, updated_at: {type: string}}}}
         items: {type: array, items: {type: object}}
         total: {type: integer, minimum: 0}
         next_cursor: {type: string, maxLength: 512}
@@ -4299,7 +4299,7 @@ components:
       allOf:
         - {$ref: "#/components/schemas/ChannelCatalogWrite"}
         - type: object
-          required: [id, version, config_version, created_at, updated_at, assignee_count, channel_contact_count]
+          required: [id, version, config_version, created_at, updated_at, assignee_count, channel_contact_count, channel_enter_count, qrcode_status, qrcode_origin]
           properties:
             id: {$ref: "#/components/schemas/PositiveID"}
             version: {type: integer, minimum: 1}
@@ -4310,9 +4310,11 @@ components:
             assignment_stats_24h: {type: array, maxItems: 5, items: {type: object}}
             assignee_count: {type: integer, minimum: 1, maximum: 5}
             channel_contact_count: {type: integer, minimum: 0}
+            channel_enter_count: {type: integer, minimum: 0}
             latest_channel_entered_at: {type: string}
             qrcode_asset_id: {type: integer, minimum: 0}
-            qrcode_status: {type: string}
+            qrcode_status: {type: string, enum: [not_generated, accepted, queued, attempted, executed, reconciled, outcome_unknown, final_failed, legacy_unverified, legacy_verified_active, legacy_stale]}
+            qrcode_origin: {type: string, enum: ['', runtime, legacy]}
             qr_download_url: {type: string}
             share_url: {type: string}
             copy_text: {type: string}

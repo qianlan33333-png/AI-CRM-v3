@@ -2,6 +2,8 @@
 
 Baseline: `AI-CRM-v2@6bfbe5816bb89913c70adaca87d6a486260e016e`。
 
+V1 semantic reference: `AI-CRM@dd8d60dd8ddb983aca2ec88cc9e65a9f7563f79f`。V2 仍是两张活动模板的字节冻结供体；V1 只用于用户数、二维码选择、场景别名、客服、欢迎内容和入渠动作的行为取证，不是运行依赖或代码供体。
+
 本文件在 v3 后端重写前冻结用户可观察行为。兼容表示保留交互意图、校验结果和安全响应语义；不允许复制 donor 的身份匹配、数据库所有权、Provider 执行、重试状态机或 migration 历史。
 
 ## 路由清单
@@ -43,7 +45,7 @@ Baseline: `AI-CRM-v2@6bfbe5816bb89913c70adaca87d6a486260e016e`。
 
 - 支持单负责人，或 1–5 名多客服。
 - 多客服策略为按比例或 24 小时满额切换；比例、顺序、上限和溢出策略由服务端校验。
-- 候选集是本地 active staff 与企微 follow-user 的交集。Provider read 失败时失败关闭，不沿用过期候选或用户自报 userid。
+- 本地已保存客服始终可读；实时可发布候选是本地 active staff 与企微 follow-user 的交集。Provider read 失败时读取返回明确降级状态，保存客服和发布资产严格失败关闭，不沿用过期候选或用户自报 userid。
 - 发布预览必须明确本地配置、阻塞项和 Provider 开关；本地保存成功不等于企微生效。
 
 ## Journey 3：欢迎内容、素材和标签
@@ -73,7 +75,8 @@ Baseline: `AI-CRM-v2@6bfbe5816bb89913c70adaca87d6a486260e016e`。
 
 ## Journey 6：近期用户、历史与收据
 
-- 近期用户只返回 canonical `customer_id`、安全展示名、进入时间和安全统计。
+- “渠道用户”是历史与实时事实合并后的唯一用户数；已解析事实按 canonical `customer_id` 去重，未解析历史事实按稳定 source contact 去重。累计进入次数单独求和，不能用事件数冒充用户数。
+- 近期用户同时覆盖已导入历史联系人和 v3 回调；只返回 canonical `customer_id`、安全展示名、进入时间和安全统计，未解析历史用户显示安全占位。
 - 历史联系人和客服允许展示 source row reference、canonical customer 关联、名称快照和时间，但不返回 raw UnionID、OpenID、external_userid、手机号或 State。
 - 归因修正追加新收据，不改写旧证据；多候选、缺 scope、OneID conflict 都保持可审计 unresolved。
 - 所有敏感管理端读取返回 `Cache-Control: no-store`；游标不可推断原始身份。

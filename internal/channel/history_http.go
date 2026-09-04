@@ -127,15 +127,15 @@ func (handler *HistoryHTTPHandler) contacts(w http.ResponseWriter, r *http.Reque
 		}
 		limit = value
 	}
-	before := int64(0)
+	offset := int64(0)
 	if raw := r.URL.Query().Get("cursor"); raw != "" {
-		before = handler.parseCursor(raw, id, limit)
-		if before < 1 {
+		offset = handler.parseCursor(raw, id, limit)
+		if offset < 1 {
 			writeCatalogError(w, http.StatusUnprocessableEntity, "INVALID_CURSOR")
 			return
 		}
 	}
-	items, err := handler.app.Recent(r.Context(), id, limit+1, before)
+	items, err := handler.app.Recent(r.Context(), id, limit+1, offset)
 	if err != nil {
 		handler.appError(w, err)
 		return
@@ -146,11 +146,17 @@ func (handler *HistoryHTTPHandler) contacts(w http.ResponseWriter, r *http.Reque
 	}
 	projected := make([]map[string]any, 0, len(items))
 	for _, item := range items {
-		projected = append(projected, map[string]any{"customer_id": item.CustomerID, "display_name": safeCustomerLabel(item.CustomerID), "added_at": item.AddedAt.UTC().Format(time.RFC3339Nano), "last_interact_at": nil})
+		label := "待匹配历史用户"
+		var customerID any
+		if item.CustomerID != nil {
+			customerID = *item.CustomerID
+			label = safeCustomerLabel(*item.CustomerID)
+		}
+		projected = append(projected, map[string]any{"customer_id": customerID, "display_name": label, "resolution": item.Resolution, "source": item.Source, "enter_count": item.EnterCount, "added_at": item.AddedAt.UTC().Format(time.RFC3339Nano), "last_entered_at": item.LastEnteredAt.UTC().Format(time.RFC3339Nano), "last_interact_at": nil})
 	}
 	next := ""
 	if hasMore && len(items) > 0 {
-		next = handler.signCursor(items[len(items)-1].ReceiptID, id, limit)
+		next = handler.signCursor(offset+int64(limit), id, limit)
 	}
 	writeChannelJSON(w, http.StatusOK, map[string]any{"channel_id": id, "items": projected, "limit": limit, "has_more": hasMore, "next_cursor": next, "local_projection": true, "provider_execution_eligible": false, "real_external_call_executed": false})
 }

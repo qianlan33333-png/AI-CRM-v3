@@ -158,6 +158,37 @@ func TestLoadAcceptsEffectsWorkerRole(t *testing.T) {
 	}
 }
 
+func TestChannelProviderCapabilitiesAreIndependentAndFailClosed(t *testing.T) {
+	t.Setenv("AICRM_DATABASE_URL", "postgres://aicrm:test@localhost/aicrm")
+	t.Setenv("AICRM_CHANNEL_PROVIDER_READ_ENABLED", "true")
+	if _, err := Load(); err == nil {
+		t.Fatal("channel read accepted without shared provider prerequisites")
+	}
+	t.Setenv("AICRM_OUTBOUND_PROVIDER_ENABLED", "true")
+	t.Setenv("AICRM_WECOM_ENABLED", "true")
+	t.Setenv("AICRM_WECOM_CORP_ID", "ww-corp")
+	t.Setenv("AICRM_WECOM_AGENT_ID", "1000002")
+	t.Setenv("AICRM_WECOM_SECRET", "provider-secret")
+	t.Setenv("AICRM_WECOM_CONTEXT_SIGNING_KEY", strings.Repeat("k", 32))
+	t.Setenv("AICRM_WECOM_CONTACT_SECRET", "contact-secret")
+	cfg, err := Load()
+	if err != nil || !cfg.WeCom.ChannelProviderReadEnabled || cfg.WeCom.ChannelQRProviderEnabled || cfg.GroupOps.ProviderEnabled {
+		t.Fatalf("config=%+v err=%v", cfg, err)
+	}
+	t.Setenv("AICRM_CHANNEL_QR_PROVIDER_ENABLED", "true")
+	if _, err = Load(); err == nil {
+		t.Fatal("channel QR accepted without callback/state scope")
+	}
+	t.Setenv("AICRM_WECOM_CALLBACK_ENABLED", "true")
+	t.Setenv("AICRM_WECOM_CALLBACK_TOKEN", "callback-token")
+	t.Setenv("AICRM_WECOM_CALLBACK_AES_KEY", strings.Repeat("a", 43))
+	t.Setenv("AICRM_CHANNEL_STATE_HMAC_KEY", strings.Repeat("h", 32))
+	cfg, err = Load()
+	if err != nil || !cfg.WeCom.ChannelQRProviderEnabled || cfg.WeCom.ChannelWelcomeProviderEnabled || cfg.WeCom.ChannelTagProviderEnabled || cfg.GroupOps.ProviderEnabled {
+		t.Fatalf("config=%+v err=%v", cfg, err)
+	}
+}
+
 func TestWeChatShopProviderIsIndependentAndClosedConfiguration(t *testing.T) {
 	t.Setenv("AICRM_DATABASE_URL", "postgres://aicrm:test@localhost/aicrm")
 	t.Setenv("AICRM_WECHAT_SHOP_PROVIDER_ENABLED", "true")
@@ -316,5 +347,30 @@ func TestNamedDatabaseURLUsesClosedMigrationAllowlist(t *testing.T) {
 	}
 	if _, err = NamedDatabaseURL("ARBITRARY_SECRET"); err == nil {
 		t.Fatal("expected unsupported environment name")
+	}
+}
+
+func TestLoadChannelHistoryMigrationOwnsReadbackConfiguration(t *testing.T) {
+	t.Setenv("AICRM_CHANNEL_SOURCE_DATABASE_URL", "postgres://readonly@source/aicrm")
+	t.Setenv("AICRM_CHANNEL_SNAPSHOT_KEY", "snapshot-key")
+	t.Setenv("AICRM_WECOM_CORP_ID", "ww-corp")
+	t.Setenv("AICRM_WECOM_AGENT_ID", "1000002")
+	t.Setenv("AICRM_WECOM_SECRET", "provider-secret")
+	t.Setenv("AICRM_WECOM_CONTACT_SECRET", "contact-secret")
+	t.Setenv("AICRM_CHANNEL_STATE_HMAC_KEY", strings.Repeat("h", 32))
+	t.Setenv("AICRM_OUTBOUND_PROVIDER_ENABLED", "true")
+	t.Setenv("AICRM_CHANNEL_PROVIDER_READ_ENABLED", "true")
+
+	cfg, err := LoadChannelHistoryMigration()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.WeComCorpID != "ww-corp" || cfg.WeComAgentID != "1000002" || !cfg.ProviderEnabled || !cfg.ProviderReadEnabled {
+		t.Fatalf("unexpected channel migration config: %+v", cfg)
+	}
+
+	t.Setenv("AICRM_CHANNEL_PROVIDER_READ_ENABLED", "yes")
+	if _, err = LoadChannelHistoryMigration(); err == nil {
+		t.Fatal("expected invalid provider read boolean to fail closed")
 	}
 }

@@ -30,6 +30,17 @@ func TestAcquisitionCandidatesFailClosedOnProviderRead(t *testing.T) {
 	}
 }
 
+func TestAcquisitionLocalCandidatesRemainVisibleWhenProviderReadFails(t *testing.T) {
+	service := NewAcquisitionService(catalogDirectUOW{}, nil, acquisitionDirectory{items: []AcquisitionStaff{{ID: 9, WeComUserID: "saved-user", DisplayName: "Saved Owner", Active: true}}}, acquisitionProvider{err: errors.New("disabled")})
+	items, err := service.LocalCandidates(context.Background())
+	if err != nil || len(items) != 1 || items[0].ID != 9 {
+		t.Fatalf("items=%#v err=%v", items, err)
+	}
+	if _, err = service.Candidates(context.Background()); !errors.Is(err, ErrAcquisitionUnavailable) {
+		t.Fatalf("publish validation should remain closed: %v", err)
+	}
+}
+
 func TestAcquisitionReplaceMapsProviderStaffToLocalCatalogCAS(t *testing.T) {
 	store := &catalogMemoryStore{channels: map[int64]channeldomain.Channel{}, receipts: map[[32]byte]channelport.OperationReceipt{}}
 	catalog := NewCatalogService(catalogDirectUOW{}, store, store, &catalogMemoryEvents{}, catalogMaterialRefs{}, catalogTagRefs{}, catalogStaffRefs{})

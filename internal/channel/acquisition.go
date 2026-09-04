@@ -46,6 +46,35 @@ func NewAcquisitionService(uow platformport.UnitOfWork, catalog *CatalogService,
 	return &AcquisitionService{uow: uow, catalog: catalog, directory: directory, provider: provider}
 }
 
+// LocalCandidates is the durable projection used for rendering saved channel
+// configuration. It intentionally performs no provider read.
+func (service *AcquisitionService) LocalCandidates(ctx context.Context) ([]AcquisitionCandidate, error) {
+	if service == nil || service.uow == nil || service.directory == nil || ctx == nil {
+		return nil, ErrAcquisitionUnavailable
+	}
+	var staff []AcquisitionStaff
+	if err := service.uow.Within(ctx, func(tx context.Context) error {
+		var readErr error
+		staff, readErr = service.directory.ListAcquisitionStaff(tx)
+		return readErr
+	}); err != nil {
+		return nil, errors.Join(ErrAcquisitionUnavailable, err)
+	}
+	result := make([]AcquisitionCandidate, 0, len(staff))
+	for _, item := range staff {
+		if item.Active && item.ID > 0 && strings.TrimSpace(item.WeComUserID) != "" && strings.TrimSpace(item.DisplayName) != "" {
+			result = append(result, AcquisitionCandidate{ID: item.ID, WeComUserID: item.WeComUserID, DisplayName: item.DisplayName})
+		}
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].DisplayName == result[j].DisplayName {
+			return result[i].ID < result[j].ID
+		}
+		return result[i].DisplayName < result[j].DisplayName
+	})
+	return result, nil
+}
+
 func (service *AcquisitionService) Candidates(ctx context.Context) ([]AcquisitionCandidate, error) {
 	if service == nil || service.uow == nil || service.directory == nil || service.provider == nil || ctx == nil {
 		return nil, ErrAcquisitionUnavailable
@@ -61,23 +90,16 @@ func (service *AcquisitionService) Candidates(ctx context.Context) ([]Acquisitio
 			providerSet[id] = struct{}{}
 		}
 	}
-	var staff []AcquisitionStaff
-	if err = service.uow.Within(ctx, func(tx context.Context) error {
-		var readErr error
-		staff, readErr = service.directory.ListAcquisitionStaff(tx)
-		return readErr
-	}); err != nil {
-		return nil, errors.Join(ErrAcquisitionUnavailable, err)
+	local, err := service.LocalCandidates(ctx)
+	if err != nil {
+		return nil, err
 	}
-	result := make([]AcquisitionCandidate, 0, len(staff))
-	for _, item := range staff {
-		if !item.Active || item.ID < 1 || item.WeComUserID == "" || item.DisplayName == "" {
-			continue
-		}
+	result := make([]AcquisitionCandidate, 0, len(local))
+	for _, item := range local {
 		if _, ok := providerSet[item.WeComUserID]; !ok {
 			continue
 		}
-		result = append(result, AcquisitionCandidate{ID: item.ID, WeComUserID: item.WeComUserID, DisplayName: item.DisplayName})
+		result = append(result, item)
 	}
 	sort.Slice(result, func(i, j int) bool {
 		if result[i].DisplayName == result[j].DisplayName {
@@ -88,6 +110,33 @@ func (service *AcquisitionService) Candidates(ctx context.Context) ([]Acquisitio
 	return result, nil
 }
 
+// ValidatePublish proves that every assignee in the immutable configuration is
+// still both an active local staff member and a current WeCom follow user. The
+// provider read happens before AssetService opens its write transaction.
+func (service *AcquisitionService) ValidatePublish(ctx context.Context, channelID int64) (int64, error) {
+	if service == nil || service.catalog == nil || channelID < 1 {
+		return 0, ErrAcquisitionUnavailable
+	}
+	channel, err := service.catalog.Get(ctx, channelID)
+	if err != nil {
+		return 0, err
+	}
+	eligible, err := service.Candidates(ctx)
+	if err != nil {
+		return 0, err
+	}
+	ids := make(map[int64]struct{}, len(eligible))
+	for _, candidate := range eligible {
+		ids[candidate.ID] = struct{}{}
+	}
+	for _, assignee := range channel.Config.Assignment.Assignees {
+		if _, ok := ids[assignee.StaffID]; !ok {
+			return 0, ErrAcquisitionUnavailable
+		}
+	}
+	return channel.ConfigVersion, nil
+}
+
 func (service *AcquisitionService) Preview(ctx context.Context, channelID int64) (channeldomain.Channel, []AcquisitionCandidate, error) {
 	if service == nil || service.catalog == nil {
 		return channeldomain.Channel{}, nil, ErrAcquisitionUnavailable
@@ -96,18 +145,9 @@ func (service *AcquisitionService) Preview(ctx context.Context, channelID int64)
 	if err != nil {
 		return channeldomain.Channel{}, nil, err
 	}
-	candidates, err := service.Candidates(ctx)
+	candidates, err := service.LocalCandidates(ctx)
 	if err != nil {
 		return channeldomain.Channel{}, nil, err
-	}
-	byID := make(map[int64]AcquisitionCandidate, len(candidates))
-	for _, candidate := range candidates {
-		byID[candidate.ID] = candidate
-	}
-	for _, item := range channel.Config.Assignment.Assignees {
-		if _, ok := byID[item.StaffID]; !ok {
-			return channeldomain.Channel{}, nil, ErrAcquisitionUnavailable
-		}
 	}
 	return channel, candidates, nil
 }
