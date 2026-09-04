@@ -19,7 +19,8 @@ func scanRefresh(row pgx.Row) (segmentdomain.RefreshRun, error) {
 	var run segmentdomain.RefreshRun
 	var digest []byte
 	var state string
-	err := row.Scan(&run.ID, &run.PackageID, &run.ConfigurationVersionID, &digest, &run.ReferenceTime, &state, &run.RiverJobID, &run.ErrorCode, &run.CreatedAt, &run.UpdatedAt, &run.CompletedAt)
+	var errorCode *string
+	err := row.Scan(&run.ID, &run.PackageID, &run.ConfigurationVersionID, &digest, &run.ReferenceTime, &state, &run.RiverJobID, &errorCode, &run.CreatedAt, &run.UpdatedAt, &run.CompletedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return run, ErrNotFound
 	}
@@ -31,6 +32,9 @@ func scanRefresh(row pgx.Row) (segmentdomain.RefreshRun, error) {
 	}
 	copy(run.SourceKeyDigest[:], digest)
 	run.State = segmentdomain.RefreshState(state)
+	if errorCode != nil {
+		run.ErrorCode = *errorCode
+	}
 	return run, nil
 }
 
