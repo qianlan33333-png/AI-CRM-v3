@@ -36,6 +36,19 @@ func TestClosedDigestOnlyEnvelopeAndStates(t *testing.T) {
 	}
 }
 
+func TestStaleAttemptCompletionProjectionKinds(t *testing.T) {
+	for _, kind := range []Kind{KindWeComTagCatalog, KindGroupMessage, KindChannelAsset, KindOutboundMessage, KindAutomationMessage} {
+		if !projectsStaleAttempt(kind) {
+			t.Fatalf("stale attempted effect kind %q must project outcome_unknown to its owner", kind)
+		}
+	}
+	for _, kind := range []Kind{KindOutboundMedia, KindChannelWelcome, KindChannelEntryTag, KindChannelLink, port.KindSidebarJSSDKSend} {
+		if projectsStaleAttempt(kind) {
+			t.Fatalf("stale attempted effect kind %q lacks an approved crash-recovery projection", kind)
+		}
+	}
+}
+
 func TestPaymentV1KindsUsePaymentOwnerWithoutRawPayload(t *testing.T) {
 	for _, kind := range []Kind{KindWeChatPayPrepay, KindWeChatPayRefund, KindWeChatShopRefund} {
 		intent := port.PaymentV1Intent{Kind: kind, ReceiptKey: digestForTest("payment-key"), SourceRefDigest: digestForTest("payment-source"), TargetRefDigest: digestForTest("payment-target"), PayloadDigest: digestForTest("payment-payload"), PolicyVersionHash: digestForTest("payment-policy")}

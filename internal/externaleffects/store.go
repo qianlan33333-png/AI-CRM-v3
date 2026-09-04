@@ -606,7 +606,7 @@ func (r *Repository) RunAttempt(ctx context.Context, id, generation, riverJobID 
 			}
 			return ErrTransition
 		}
-		if (Kind(kind) == KindWeComTagCatalog || Kind(kind) == KindGroupMessage || Kind(kind) == KindOutboundMessage || Kind(kind) == KindAutomationMessage) && r.sink != nil {
+		if projectsStaleAttempt(Kind(kind)) && r.sink != nil {
 			envelope := Envelope{Owner: Owner(owner), Kind: Kind(kind), SourceRefDigest: Digest(source), TargetRefDigest: Digest(target), PayloadDigest: Digest(payload), PolicyVersionHash: Digest(policy)}
 			if err = r.sink.CompleteEffect(platformpostgres.BindTransaction(ctx, tx), effectID(id), envelope, Attempt{Number: attempts, Generation: generation, Fence: fence}, AdapterResult{Completion: StateUnknown, ReceiptDigest: recovery, CallAttempted: true}); err != nil {
 				return err
@@ -716,4 +716,13 @@ func (r *Repository) RunAttempt(ctx context.Context, id, generation, riverJobID 
 		}
 	}
 	return tx.Commit(ctx)
+}
+
+func projectsStaleAttempt(kind Kind) bool {
+	switch kind {
+	case KindWeComTagCatalog, KindGroupMessage, KindChannelAsset, KindOutboundMessage, KindAutomationMessage:
+		return true
+	default:
+		return false
+	}
 }
