@@ -20,6 +20,7 @@ cat > "$source_config" <<'EOF'
 AICRM_HXC_SYNC_ENABLED=true
 AICRM_HXC_SOURCE_DSN=reader:secret@tcp(mysql.internal:3306)/hxc?parseTime=true&loc=UTC
 AICRM_HXC_UNIONID_SCOPE=wechat-open-platform:hxc-app
+AICRM_HXC_UNIONID_VERIFIED=true
 EOF
 chmod 0600 "$runtime_env" "$source_config"
 
@@ -31,7 +32,8 @@ grep -qxF 'AICRM_PUBLIC_ORIGIN=https://example.invalid' "$runtime_env"
 grep -qxF 'AICRM_HXC_SYNC_ENABLED=true' "$runtime_env"
 grep -qxF 'AICRM_HXC_SOURCE_DSN=reader:secret@tcp(mysql.internal:3306)/hxc?parseTime=true&loc=UTC' "$runtime_env"
 grep -qxF 'AICRM_HXC_UNIONID_SCOPE=wechat-open-platform:hxc-app' "$runtime_env"
-[[ "$(grep -c '^AICRM_HXC_' "$runtime_env")" == 3 ]]
+grep -qxF 'AICRM_HXC_UNIONID_VERIFIED=true' "$runtime_env"
+[[ "$(grep -c '^AICRM_HXC_' "$runtime_env")" == 4 ]]
 [[ "$(stat -c '%a' "$runtime_env" 2>/dev/null || stat -f '%Lp' "$runtime_env")" == 600 ]]
 [[ ! -e "$source_config" ]]
 

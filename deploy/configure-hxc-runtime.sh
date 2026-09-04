@@ -25,6 +25,7 @@ fi
 enabled_count=0
 dsn_count=0
 scope_count=0
+union_verified_count=0
 while IFS= read -r line || [[ -n "$line" ]]; do
   case "$line" in
     AICRM_HXC_SYNC_ENABLED=true)
@@ -46,6 +47,9 @@ while IFS= read -r line || [[ -n "$line" ]]; do
       }
       ((scope_count += 1))
       ;;
+    AICRM_HXC_UNIONID_VERIFIED=true)
+      ((union_verified_count += 1))
+      ;;
     *)
       echo "unexpected HXC source configuration key" >&2
       exit 2
@@ -53,7 +57,7 @@ while IFS= read -r line || [[ -n "$line" ]]; do
   esac
 done < "$source_config"
 unset line value
-if ((enabled_count != 1 || dsn_count != 1 || scope_count != 1)); then
+if ((enabled_count != 1 || dsn_count != 1 || scope_count != 1 || union_verified_count != 1)); then
   echo "incomplete or duplicate HXC source configuration" >&2
   exit 2
 fi
@@ -71,7 +75,7 @@ trap cleanup EXIT
 cp -p -- "$runtime_env" "$backup_env"
 while IFS= read -r line || [[ -n "$line" ]]; do
   case "$line" in
-    AICRM_HXC_SYNC_ENABLED=*|AICRM_HXC_SOURCE_DSN=*|AICRM_HXC_UNIONID_SCOPE=*) ;;
+    AICRM_HXC_SYNC_ENABLED=*|AICRM_HXC_SOURCE_DSN=*|AICRM_HXC_UNIONID_SCOPE=*|AICRM_HXC_UNIONID_VERIFIED=*) ;;
     *) printf '%s\n' "$line" >> "$next_env" ;;
   esac
 done < "$runtime_env"

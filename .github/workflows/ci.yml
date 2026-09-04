@@ -288,12 +288,22 @@ jobs:
           }
           trap cleanup EXIT
           umask 077
-          printf 'AICRM_HXC_SYNC_ENABLED=true\nAICRM_HXC_SOURCE_DSN=%s\nAICRM_HXC_UNIONID_SCOPE=%s\n' \
+          printf 'AICRM_HXC_SYNC_ENABLED=true\nAICRM_HXC_SOURCE_DSN=%s\nAICRM_HXC_UNIONID_SCOPE=%s\nAICRM_HXC_UNIONID_VERIFIED=true\n' \
             "$AICRM_HXC_SOURCE_DSN" "$AICRM_HXC_UNIONID_SCOPE" > "$local_config"
           scp "${ssh_flags[@]}" "$local_config" "${DEPLOY_USER}@${DEPLOY_HOST}:${remote_config}"
           scp "${ssh_flags[@]}" deploy/configure-hxc-runtime.sh "${DEPLOY_USER}@${DEPLOY_HOST}:${remote_configurer}"
           ssh "${ssh_flags[@]}" "${DEPLOY_USER}@${DEPLOY_HOST}" \
             "trap 'sudo rm -f -- ${remote_config} ${remote_configurer}' EXIT; sudo /usr/bin/bash ${remote_configurer} ${remote_config} ${GITHUB_SHA}"
+          curl --fail --silent --show-error --retry 5 --retry-delay 2 https://id-dev.youcangogogo.com/readyz
+      - name: Roll out HXC OneID dual-key persistence
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          ssh_flags=(-i "$HOME/.ssh/deploy_key" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=4)
+          ssh "${ssh_flags[@]}" "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            "sudo /usr/bin/bash /opt/aicrm/current/deploy/rollout-hxc-identity-v2.sh ${GITHUB_SHA}"
           curl --fail --silent --show-error --retry 5 --retry-delay 2 https://id-dev.youcangogogo.com/readyz
       - name: Configure WeChat Pay H5 OAuth
         env:

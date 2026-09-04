@@ -33,6 +33,9 @@ for contract in \
     exit 1
   }
 done
+grep -qx 'test -f "$release_dir/deploy/aicrm-hxc-dashboard-rollout.service"' "$installer" || { echo "release must include the HXC rollout unit" >&2; exit 1; }
+grep -qx 'test -f "$release_dir/deploy/rollout-hxc-identity-v2.sh"' "$installer" || { echo "release must include the HXC rollout gate" >&2; exit 1; }
+grep -qx 'install -m 0644 "$release_dir/deploy/aicrm-hxc-dashboard-rollout.service" /etc/systemd/system/aicrm-hxc-dashboard-rollout.service' "$installer" || { echo "installer must install the HXC rollout unit" >&2; exit 1; }
 grep -qxF 'ExecStart=/usr/bin/env AICRM_ROLE=worker AICRM_CUSTOMER_SYNC_TRIGGER=daily /opt/aicrm/current/bin/aicrm' deploy/aicrm-customer-sync-daily.service || {
   echo "daily customer sync must pin its role and trigger at exec time" >&2
   exit 1
@@ -78,7 +81,9 @@ for migration_contract in \
   '0038_survey_oauth_phone_vault.sql:survey OAuth phone vault' \
   '0049_order_history_attribution.sql:order history attribution' \
   '0053_segment_audience_member_event_fact_kinds.sql:Segment audience member event fact kind repair' \
-  '0061_product_public_purchase.sql:product public purchase'; do
+  '0061_product_public_purchase.sql:product public purchase' \
+  '0063_identity_hxc_source_observations.sql:HXC identity source observations' \
+  '0064_hxc_dashboard_identity_v2.sql:HXC dashboard identity v2'; do
   migration="${migration_contract%%:*}"
   label="${migration_contract#*:}"
   test -f "migrations/${migration}" || {

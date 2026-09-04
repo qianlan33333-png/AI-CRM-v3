@@ -144,7 +144,9 @@ make_release() {
     0048_segment_audience_schedule_state.sql 0049_order_history_attribution.sql \
     0050_radar_core.sql 0051_radar_sessions_events.sql 0052_radar_legacy_import.sql \
     0053_segment_audience_member_event_fact_kinds.sql \
-    0061_product_public_purchase.sql; do
+    0061_product_public_purchase.sql \
+    0063_identity_hxc_source_observations.sql \
+    0064_hxc_dashboard_identity_v2.sql; do
     : > "$release/migrations/$migration"
   done
   : > "$release/web/dist/asset-manifest.json"
@@ -163,10 +165,11 @@ make_release() {
   for unit in \
     aicrm.service aicrm-migrate.service aicrm-wecom-worker.service aicrm-wecom-worker.timer \
     aicrm-effects-worker.service aicrm-customer-sync-daily.service aicrm-customer-sync-daily.timer \
-    aicrm-hxc-dashboard-refresh.service aicrm-hxc-dashboard-refresh.timer \
+    aicrm-hxc-dashboard-refresh.service aicrm-hxc-dashboard-refresh.timer aicrm-hxc-dashboard-rollout.service \
     aicrm-automation-bootstrap.service; do
     : > "$release/deploy/$unit"
   done
+  : > "$release/deploy/rollout-hxc-identity-v2.sh"
   (
     cd "$release"
     LC_ALL=C find . -type f ! -name release-files.sha256 -print0 | sort -z | xargs -0 sha256sum > release-files.sha256
