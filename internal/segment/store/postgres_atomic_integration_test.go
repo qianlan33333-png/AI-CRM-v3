@@ -168,6 +168,52 @@ func TestPostgreSQLAudienceConfigurationEmptyCronRoundTrips(t *testing.T) {
 	}
 }
 
+func TestPostgreSQLCurrentBindingQualifiesJoinedColumns(t *testing.T) {
+	ctx := context.Background()
+	native, cleanup := segmentDatabase(t, ctx)
+	defer cleanup()
+	wrapped, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uow, err := platformpostgres.NewUnitOfWork(wrapped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo, err := NewPostgreSQL(native, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var packageID int64
+	err = native.QueryRow(ctx, `INSERT INTO segment_audience_packages(code,name,created_by,updated_by,created_at,updated_at) VALUES('binding-read','Binding read',7,7,now(),now()) RETURNING id`).Scan(&packageID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var bindingID int64
+	err = native.QueryRow(ctx, `INSERT INTO segment_audience_automation_binding_versions(package_id,version,agent_id,automation_type,agent_published_version,content_digest,materials_digest,created_by,created_at) VALUES($1,1,9,'fixed_script',3,decode(repeat('11',32),'hex'),decode(repeat('22',32),'hex'),7,now()) RETURNING id`, packageID).Scan(&bindingID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = native.Exec(ctx, `UPDATE segment_audience_packages SET current_automation_binding_id=$2 WHERE id=$1`, packageID, bindingID); err != nil {
+		t.Fatal(err)
+	}
+
+	err = uow.Within(ctx, func(tx context.Context) error {
+		binding, readErr := repo.CurrentBinding(tx, packageID)
+		if readErr != nil {
+			return readErr
+		}
+		if binding.ID != bindingID || binding.PackageID != packageID || binding.AgentID != 9 || binding.AgentPublishedVersion != 3 {
+			t.Fatalf("binding=%+v", binding)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestPostgreSQLAudienceImmutableFacts(t *testing.T) {
 	ctx := context.Background()
 	native, cleanup := segmentDatabase(t, ctx)

@@ -12,6 +12,7 @@ import (
 )
 
 const bindingColumns = `id,package_id,version,agent_id,automation_type,agent_published_version,content_digest,materials_digest,created_by,created_at`
+const currentBindingColumns = `b.id,b.package_id,b.version,b.agent_id,b.automation_type,b.agent_published_version,b.content_digest,b.materials_digest,b.created_by,b.created_at`
 
 func scanBinding(row pgx.Row) (segmentdomain.AutomationBinding, error) {
 	var out segmentdomain.AutomationBinding
@@ -37,7 +38,7 @@ func (r *Repository) CurrentBinding(ctx context.Context, packageID int64) (segme
 	if err != nil {
 		return segmentdomain.AutomationBinding{}, err
 	}
-	return scanBinding(t.QueryRow(ctx, `SELECT `+bindingColumns+` FROM segment_audience_packages p JOIN segment_audience_automation_binding_versions b ON b.id=p.current_automation_binding_id AND b.package_id=p.id WHERE p.id=$1`, packageID))
+	return scanBinding(t.QueryRow(ctx, `SELECT `+currentBindingColumns+` FROM segment_audience_packages p JOIN segment_audience_automation_binding_versions b ON b.id=p.current_automation_binding_id AND b.package_id=p.id WHERE p.id=$1`, packageID))
 }
 func (r *Repository) CreateBinding(ctx context.Context, item segmentdomain.AutomationBinding) (segmentdomain.AutomationBinding, error) {
 	t, err := tx(ctx)
