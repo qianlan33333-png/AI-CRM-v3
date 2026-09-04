@@ -81,6 +81,10 @@ import (
 	productmodule "github.com/qianlan33333-png/AI-CRM-v3/internal/product"
 	productapp "github.com/qianlan33333-png/AI-CRM-v3/internal/product/app"
 	productstore "github.com/qianlan33333-png/AI-CRM-v3/internal/product/store"
+	radarapp "github.com/qianlan33333-png/AI-CRM-v3/internal/radar/app"
+	radarmodule "github.com/qianlan33333-png/AI-CRM-v3/internal/radar/module"
+	radarprovider "github.com/qianlan33333-png/AI-CRM-v3/internal/radar/provider"
+	radarstore "github.com/qianlan33333-png/AI-CRM-v3/internal/radar/store"
 	releaseapp "github.com/qianlan33333-png/AI-CRM-v3/internal/release/app"
 	releaseport "github.com/qianlan33333-png/AI-CRM-v3/internal/release/port"
 	segment "github.com/qianlan33333-png/AI-CRM-v3/internal/segment"
@@ -261,6 +265,31 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	}
 	contentDelivery := mediaapp.NewContentDeliveryService(uow, mediaRepository)
 	mediaService, err := mediaapp.NewHTTPFacade(mediaRepository)
+	if err != nil {
+		return fail(err)
+	}
+	radarModule := radarmodule.NewModuleRegistration()
+	radarRepository := radarstore.NewPostgres()
+	radarManager, err := radarapp.NewService(uow, radarRepository, radarRepository)
+	if err != nil {
+		return fail(err)
+	}
+	if err = radarManager.BindMediaValidator(radarMediaReferenceAdapter{media: mediaRepository}); err != nil {
+		return fail(err)
+	}
+	radarQuery, err := radarapp.NewQueryService(uow, radarRepository)
+	if err != nil {
+		return fail(err)
+	}
+	radarOAuth, err := radarprovider.NewWeChatOAuth(cfg.Survey.OAuthEnabled, cfg.Survey.OAuthAppID, cfg.Survey.OAuthSecret, cfg.Survey.OAuthOpenPlatformID, cfg.PublicOrigin+"/api/public/radar/oauth/callback")
+	if err != nil {
+		return fail(err)
+	}
+	radarPublic, err := radarapp.NewPublicAccessService(uow, radarRepository, radarRepository, radarQuery, radarOAuth, oneID, radarContentAdapter{media: mediaService})
+	if err != nil {
+		return fail(err)
+	}
+	radarBindings, err := radarModule.Bind(radarManager, radarQuery, radarPublic, requestSecurity, cfg.PublicOrigin)
 	if err != nil {
 		return fail(err)
 	}
@@ -933,6 +962,9 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		if checkErr = mediaModule.Readiness(readinessContext, pool.Native()); checkErr != nil {
 			return checkErr
 		}
+		if checkErr = radarModule.Readiness(readinessContext, pool.Native()); checkErr != nil {
+			return checkErr
+		}
 		if checkErr = aiModule.Readiness(readinessContext, pool.Native()); checkErr != nil {
 			return checkErr
 		}
@@ -1006,6 +1038,10 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		endpoints := map[string]string{"coupons": "api.admin_coupons_page", "couponForm": "api.admin_coupon_form_page"}
 		return renderer.RenderCoupons(writer, webshell.AdminPageForRequest(request, titles[page], "仅管理本地优惠券规则，不含领取、核销、客户持券或订单。", endpoints[page]), page, donorTemplate, webshell.CouponAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS})
 	})
+	radarUI := radarModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, page string, assets radarmodule.UIAssets) error {
+		titles := map[string]string{"radar": "内容雷达", "radarDetail": "雷达详情", "radarForm": "雷达配置"}
+		return renderer.RenderRadar(writer, webshell.AdminPageForRequest(request, titles[page], "UnionID 经 OneID 解析后形成可审计访问归因。", "api.admin_radar_links"), page, webshell.RadarAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS})
+	})
 	groupOpsUI := groupOpsModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, page, donorTemplate string, assets groupops.GroupOpsAssets) error {
 		endpoint := "api.admin_group_ops_ui"
 		if page == "groupopsDetail" {
@@ -1054,7 +1090,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return fail(err)
 	}
 	handler = mountAIAssistant(handler, aiHandler.Routes(), aiUI, authentication, cfg.AIAssistant.UIEnabled, cfg.PublicOrigin)
-	handler = securityHeaders(mountChannelUI(mountHXCUI(mountOrderUI(mountSurveyUI(handler, surveyUI, surveyPublicUI, authentication), orderUI, authentication), hxcUI, authentication), channelUI, authentication))
+	handler = securityHeaders(mountRadar(mountChannelUI(mountHXCUI(mountOrderUI(mountSurveyUI(handler, surveyUI, surveyPublicUI, authentication), orderUI, authentication), hxcUI, authentication), channelUI, authentication), radarBindings.Radar, radarUI, authentication))
 	// These are local observations only: they make the release and diagnostics
 	// projections truthful and readable after startup, without claiming deploy,
 	// cutover, provider execution, or runtime-secret application.

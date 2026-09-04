@@ -13,6 +13,7 @@ var (
 	ErrConflict            = errors.New("radar: conflict")
 	ErrIdempotencyConflict = errors.New("radar: idempotency conflict")
 	ErrUnavailable         = errors.New("radar: unavailable")
+	ErrGone                = errors.New("radar: disabled")
 )
 
 type CreateCommand struct {
@@ -47,6 +48,12 @@ type Manager interface {
 	Create(context.Context, CreateCommand) (LinkDetail, error)
 	Update(context.Context, UpdateCommand) (LinkDetail, error)
 	SetStatus(context.Context, SetStatusCommand) (LinkDetail, error)
+}
+
+// MediaReferenceValidator is implemented at the composition boundary by the
+// Media owner and validates references inside the caller's transaction.
+type MediaReferenceValidator interface {
+	ValidateRadarMedia(context.Context, radar.ContentType, radar.MediaID) error
 }
 
 type PublicCodeGenerator interface {

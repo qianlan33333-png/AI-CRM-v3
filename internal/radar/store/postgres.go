@@ -26,13 +26,13 @@ func NewPostgres() *Postgres { return &Postgres{} }
 
 type scanner interface{ Scan(...any) error }
 
-const linkColumns = `id,public_code,name,title,description,content_type,destination_url,media_id,auth_policy,status,version,created_at,updated_at`
+const linkColumns = `id,public_code,name,title,description,content_type,destination_url,media_id,auth_policy,status,version,created_by,updated_by,created_at,updated_at`
 
 func scanLink(row scanner) (radar.Link, error) {
 	var link radar.Link
 	var destination *string
 	var mediaID *int64
-	err := row.Scan(&link.ID, &link.PublicCode, &link.Name, &link.Title, &link.Description, &link.Content.Type, &destination, &mediaID, &link.AuthPolicy, &link.Status, &link.Version, &link.CreatedAt, &link.UpdatedAt)
+	err := row.Scan(&link.ID, &link.PublicCode, &link.Name, &link.Title, &link.Description, &link.Content.Type, &destination, &mediaID, &link.AuthPolicy, &link.Status, &link.Version, &link.CreatedBy, &link.UpdatedBy, &link.CreatedAt, &link.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return radar.Link{}, radarport.ErrNotFound
 	}

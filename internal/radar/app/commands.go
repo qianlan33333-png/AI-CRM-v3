@@ -28,6 +28,7 @@ type Service struct {
 	journal    radarport.MutationJournal
 	now        func() time.Time
 	code       func() (radar.PublicCode, error)
+	media      radarport.MediaReferenceValidator
 }
 
 var _ radarport.Manager = (*Service)(nil)
@@ -37,6 +38,24 @@ func NewService(uow platformport.UnitOfWork, repository radarport.Repository, jo
 		return nil, radarport.ErrUnavailable
 	}
 	return &Service{uow: uow, repository: repository, journal: journal, now: time.Now, code: randomPublicCode}, nil
+}
+
+func (service *Service) BindMediaValidator(validator radarport.MediaReferenceValidator) error {
+	if service == nil || validator == nil {
+		return radarport.ErrUnavailable
+	}
+	service.media = validator
+	return nil
+}
+
+func (service *Service) validateMedia(ctx context.Context, content radar.Content) error {
+	if content.Type == radar.ContentTypeLink {
+		return nil
+	}
+	if service.media == nil {
+		return radarport.ErrUnavailable
+	}
+	return service.media.ValidateRadarMedia(ctx, content.Type, content.MediaID)
 }
 
 func (service *Service) List(ctx context.Context, query radarport.ListQuery) (radarport.LinkPage, error) {
@@ -112,6 +131,9 @@ func (service *Service) Create(ctx context.Context, command radarport.CreateComm
 		if replay {
 			return service.replay(tx, receipt, payloadDigest, &result)
 		}
+		if validateErr := service.validateMedia(tx, command.Content); validateErr != nil {
+			return validateErr
+		}
 		created, createErr := service.repository.Create(tx, radarport.CreateRecord{PublicCode: code, Name: command.Name, Title: command.Title, Description: command.Description, Content: command.Content, AuthPolicy: command.AuthPolicy}, command.ActorID, now)
 		if createErr != nil {
 			return createErr
@@ -149,6 +171,9 @@ func (service *Service) Update(ctx context.Context, command radarport.UpdateComm
 		}
 		if replay {
 			return service.replay(tx, receipt, payloadDigest, &result)
+		}
+		if validateErr := service.validateMedia(tx, command.Revision.Content); validateErr != nil {
+			return validateErr
 		}
 		current, readErr := service.repository.Get(tx, command.RadarID)
 		if readErr != nil {
@@ -304,7 +329,7 @@ func classify(err error) error {
 	switch {
 	case err == nil:
 		return nil
-	case errors.Is(err, radar.ErrInvalidArgument), errors.Is(err, radar.ErrInvalidStatus), errors.Is(err, radar.ErrInvalidTransition), errors.Is(err, radar.ErrVersionConflict), errors.Is(err, radarport.ErrNotFound), errors.Is(err, radarport.ErrConflict), errors.Is(err, radarport.ErrIdempotencyConflict):
+	case errors.Is(err, radar.ErrInvalidArgument), errors.Is(err, radar.ErrInvalidStatus), errors.Is(err, radar.ErrInvalidTransition), errors.Is(err, radar.ErrVersionConflict), errors.Is(err, radarport.ErrNotFound), errors.Is(err, radarport.ErrGone), errors.Is(err, radarport.ErrConflict), errors.Is(err, radarport.ErrIdempotencyConflict):
 		return err
 	default:
 		return radarport.ErrUnavailable

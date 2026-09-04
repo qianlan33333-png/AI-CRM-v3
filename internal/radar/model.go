@@ -106,6 +106,8 @@ type Link struct {
 	AuthPolicy  AuthPolicy  `json:"auth_policy"`
 	Status      Status      `json:"status"`
 	Version     LinkVersion `json:"version"`
+	CreatedBy   int64       `json:"created_by"`
+	UpdatedBy   int64       `json:"updated_by"`
 	CreatedAt   time.Time   `json:"created_at"`
 	UpdatedAt   time.Time   `json:"updated_at"`
 }
@@ -131,7 +133,7 @@ func NewDraft(id RadarID, code PublicCode, name, title, description string, cont
 }
 
 func (link Link) Validate() error {
-	if !link.ID.Valid() || !link.PublicCode.Valid() || !link.AuthPolicy.Valid() || !link.Status.Valid() || !link.Version.Valid() {
+	if !link.ID.Valid() || !link.PublicCode.Valid() || !link.AuthPolicy.Valid() || !link.Status.Valid() || !link.Version.Valid() || link.CreatedBy < 0 || link.UpdatedBy < 0 {
 		return ErrInvalidArgument
 	}
 	if !validText(link.Name, MaxNameRunes, false) || !validText(link.Title, MaxTitleRunes, false) || !validText(link.Description, MaxDescriptionRunes, true) {

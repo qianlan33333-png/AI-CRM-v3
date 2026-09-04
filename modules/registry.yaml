@@ -66,7 +66,7 @@ modules:
     owner: crm-operations
     dependencies: [platform, customer, identity, access, automation, outbound]
   - name: radar
-    status: contracted
+    status: implemented
     owner: crm-operations
     dependencies: [platform, access, customer, identity, media, wecom]
   - name: aiassistant

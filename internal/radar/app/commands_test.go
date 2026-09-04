@@ -75,7 +75,14 @@ func newTestService(t *testing.T, memory *memoryPersistence) *Service {
 	}
 	service.now = func() time.Time { return time.Date(2026, 9, 4, 1, 2, 3, 0, time.UTC) }
 	service.code = func() (radar.PublicCode, error) { return "rd_0123456789abcdefghijAB", nil }
+	service.media = allowMedia{}
 	return service
+}
+
+type allowMedia struct{}
+
+func (allowMedia) ValidateRadarMedia(context.Context, radar.ContentType, radar.MediaID) error {
+	return nil
 }
 
 type memoryPersistence struct {

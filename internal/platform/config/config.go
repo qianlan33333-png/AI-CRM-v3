@@ -106,6 +106,16 @@ type ChannelHistoryMigration struct {
 	SnapshotKey       string
 }
 
+type RadarMigration struct{ SourceDatabaseURL string }
+
+func LoadRadarMigration() (RadarMigration, error) {
+	value := RadarMigration{SourceDatabaseURL: os.Getenv("AICRM_RADAR_SOURCE_DATABASE_URL")}
+	if strings.TrimSpace(value.SourceDatabaseURL) != value.SourceDatabaseURL {
+		return RadarMigration{}, errors.New("invalid radar migration configuration")
+	}
+	return value, nil
+}
+
 // LoadChannelHistoryMigration keeps migration credentials inside the sole
 // environment-owning package without adding them to the long-lived API
 // runtime configuration.

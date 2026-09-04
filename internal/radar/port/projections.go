@@ -27,6 +27,7 @@ type LinkSummary struct {
 	Link            radar.Link `json:"link"`
 	TotalLandings   int64      `json:"total_landings"`
 	AuthorizedUsers int64      `json:"authorized_users"`
+	AuthorizedViews int64      `json:"authorized_views"`
 	ViewCount       int64      `json:"view_count"`
 	LastViewedAt    *time.Time `json:"last_viewed_at,omitempty"`
 }
@@ -45,10 +46,18 @@ type LinkDetail struct {
 }
 
 type Stats struct {
-	TotalLandings   int64   `json:"total_landings"`
-	AuthorizedUsers int64   `json:"authorized_users"`
-	ViewCount       int64   `json:"view_count"`
-	ConversionRate  float64 `json:"conversion_rate"`
+	TotalLandings   int64      `json:"total_landings"`
+	AuthorizedUsers int64      `json:"authorized_users"`
+	AuthorizedViews int64      `json:"authorized_views"`
+	ViewCount       int64      `json:"view_count"`
+	ConversionRate  float64    `json:"conversion_rate"`
+	TotalEvents     int64      `json:"total_events"`
+	Redirects       int64      `json:"redirects"`
+	ImageLoaded     int64      `json:"image_loaded"`
+	PDFOpened       int64      `json:"pdf_opened"`
+	TodayLandings   int64      `json:"today_landings"`
+	TodayViews      int64      `json:"today_views"`
+	LastViewedAt    *time.Time `json:"last_viewed_at,omitempty"`
 }
 
 type AttributionStatus string
@@ -78,6 +87,7 @@ const (
 // EventProjection intentionally contains no raw UnionID, OpenID,
 // external_userid, phone, IP, user agent, referrer, OAuth code or token.
 type EventProjection struct {
+	EventID         int64             `json:"event_id"`
 	ReceiptID       string            `json:"receipt_id"`
 	RadarID         radar.RadarID     `json:"radar_id"`
 	Version         radar.LinkVersion `json:"version"`

@@ -6,6 +6,8 @@
 
 **Architecture:** 新建 v3-owned `internal/radar` 模块和 PostgreSQL 表；公开授权由微信 Provider read Adapter 产生 scoped verified UnionID fact，经 Identity Port Resolve/显式 Provision；冻结 donor UI 由独立 v3 host Adapter 接入。Radar 不保存原始外部身份、不跨领域查表、不产生 Provider write。
 
+**实施状态（2026-09-04）：** R1-R6 代码、冻结供体 Adapter、严格 UnionID/OneID 流程、管理/公开 API、真实统计、CSV、可重放迁移器与上线门禁均已实现；实时企微业务写不涉及。历史定义导入固定为 `disabled + unionid_required`，旧事件只进 legacy 投影，不伪造成实时 OneID 事件。
+
 **Tech Stack:** Go modular monolith、PostgreSQL 16、OpenAPI、React 18 donor UI、TypeScript host Adapter、现有 webshell、Identity/Customer/Media stable Ports、Go/Node/browser tests。
 
 ---
@@ -109,9 +111,9 @@ No-duplication evidence: no Radar identity matcher, customer key, queue, Worker,
 
 **Files:**
 
-- Create: `migrations/0049_radar_core.sql`
-- Create: `migrations/0050_radar_sessions_events.sql`
-- Create: `migrations/0051_radar_legacy_import.sql`
+- Create: `migrations/0050_radar_core.sql`
+- Create: `migrations/0051_radar_sessions_events.sql`
+- Create: `migrations/0052_radar_legacy_import.sql`
 - Modify: `cmd/migrate-platform/main_test.go`
 - Create: `internal/radar/store/postgres_integration_test.go`
 

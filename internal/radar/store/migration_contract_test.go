@@ -11,7 +11,7 @@ import (
 func TestRadarMigrationsOwnCompleteSchemaWithoutRawIdentityColumns(t *testing.T) {
 	_, file, _, _ := runtime.Caller(0)
 	root := filepath.Clean(filepath.Join(filepath.Dir(file), "..", "..", ".."))
-	files := []string{"migrations/0049_radar_core.sql", "migrations/0050_radar_sessions_events.sql", "migrations/0051_radar_legacy_import.sql"}
+	files := []string{"migrations/0050_radar_core.sql", "migrations/0051_radar_sessions_events.sql", "migrations/0052_radar_legacy_import.sql"}
 	var combined strings.Builder
 	for _, name := range files {
 		contents, err := os.ReadFile(filepath.Join(root, name))
