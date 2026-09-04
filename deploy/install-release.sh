@@ -176,6 +176,11 @@ if [[ -n "$release_run_number" ]]; then
     stale_pid="${stale_pid%/cmdline}"
     if [[ "$stale_pid" != "$$" && "${stale_args[1]:-}" =~ ^/tmp/install-release-[0-9a-f]{40}\.sh$ &&
       "${stale_args[4]:-}" =~ ^[1-9][0-9]*$ && ${stale_args[4]} -lt $release_run_number ]]; then
+      stale_children=""
+      read -r stale_children < "/proc/${stale_pid}/task/${stale_pid}/children" 2>/dev/null || true
+      for stale_child_pid in $stale_children; do
+        [[ "$stale_child_pid" =~ ^[1-9][0-9]*$ ]] && kill -TERM "$stale_child_pid" 2>/dev/null || true
+      done
       kill -TERM "$stale_pid" 2>/dev/null || true
     fi
   done

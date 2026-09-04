@@ -115,6 +115,7 @@ grep -qxF 'ExecStart=/opt/aicrm/current/bin/bootstrap-automation-operations' dep
 grep -qxF 'if [[ "$bootstrap_load_state" == loaded ]] && ! systemctl stop aicrm-automation-bootstrap.service; then' "$installer" || { echo "deployment must stop a stale Automation Operations bootstrap before waiting for the host lock" >&2; exit 1; }
 grep -qF '"${stale_args[1]:-}" =~ ^/tmp/install-release-[0-9a-f]{40}\.sh$' "$installer" || { echo "deployment must scope stale installer supersession to validated release commands" >&2; exit 1; }
 grep -qF '"${stale_args[4]:-}" =~ ^[1-9][0-9]*$ && ${stale_args[4]} -lt $release_run_number' "$installer" || { echo "deployment must supersede only older release run numbers" >&2; exit 1; }
+grep -qF 'read -r stale_children < "/proc/${stale_pid}/task/${stale_pid}/children"' "$installer" || { echo "deployment must release stale installer child waits before terminating their parent" >&2; exit 1; }
 grep -qxF 'if ! systemctl start aicrm-automation-bootstrap.service; then' "$installer" || { echo "deployment must run Automation Operations semantic bootstrap" >&2; exit 1; }
 bootstrap_start_line="$(grep -nF 'if ! systemctl start aicrm-automation-bootstrap.service; then' "$installer" | cut -d: -f1)"
 bootstrap_status_line="$(grep -nF '  systemctl status --no-pager --full aicrm-automation-bootstrap.service || true' "$installer" | tail -n 1 | cut -d: -f1)"
