@@ -46,7 +46,7 @@ type OperationReceipt struct {
 }
 
 type MutationJournal interface {
-	ReserveOperation(context.Context, OperationReceipt) (OperationReceipt, bool, error)
+	ReserveOperation(context.Context, OperationReceipt, time.Time) (OperationReceipt, bool, error)
 	CompleteOperation(context.Context, int64, radar.RadarID, radar.LinkVersion, time.Time) error
 	AppendAudit(context.Context, AuditRecord) error
 	AppendOutbox(context.Context, OutboxRecord) error
