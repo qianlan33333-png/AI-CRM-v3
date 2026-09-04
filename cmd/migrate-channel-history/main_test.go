@@ -183,6 +183,38 @@ func TestProjectMappedEntryTagRequiresCompleteOwnerProjection(t *testing.T) {
 	}
 }
 
+func TestSemanticSourceAssignmentDefectsRemainBlockedWithoutInventingData(t *testing.T) {
+	if got := semanticAssignmentBlockers("ratio", nil); len(got) != 1 || got[0] != "assignees_missing" {
+		t.Fatalf("empty assignment blockers=%v", got)
+	}
+	assigned := []semanticAssignment{{id: 1, priority: 1, ratio: 100}, {id: 2, priority: 2, ratio: 100}}
+	if got := semanticAssignmentBlockers("ratio", assigned); len(got) != 1 || got[0] != "assignment_ratio_invalid" {
+		t.Fatalf("invalid ratio blockers=%v", got)
+	}
+	if assigned[0].ratio != 100 || assigned[1].ratio != 100 {
+		t.Fatalf("source ratios were mutated: %+v", assigned)
+	}
+	assigned[1].priority = 1
+	if !normalizeSemanticPriorities(assigned) || assigned[0].priority != 1 || assigned[1].priority != 2 {
+		t.Fatalf("duplicate priorities were not deterministically projected: %+v", assigned)
+	}
+	if got := semanticAssignmentBlockers("ratio", []semanticAssignment{{ratio: 40}, {ratio: 60}}); len(got) != 0 {
+		t.Fatalf("valid ratio blockers=%v", got)
+	}
+}
+
+func TestSemanticConfigMismatchCountDoesNotDoubleCountConflicts(t *testing.T) {
+	if got := semanticConfigMismatchCount(51, 46); got != 5 {
+		t.Fatalf("mismatch count=%d", got)
+	}
+	if got := semanticConfigMismatchCount(51, 51); got != 0 {
+		t.Fatalf("complete mismatch count=%d", got)
+	}
+	if got := semanticConfigMismatchCount(51, 52); got != 0 {
+		t.Fatalf("overcomplete mismatch count=%d", got)
+	}
+}
+
 func hashText(value string) string {
 	digest := sha256.Sum256([]byte(value))
 	return "sha256:" + hex.EncodeToString(digest[:])

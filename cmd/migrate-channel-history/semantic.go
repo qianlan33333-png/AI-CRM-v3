@@ -40,6 +40,11 @@ type legacyAssetReader interface {
 	GetContactWay(context.Context, string) (wecomport.AcquisitionAssetResult, error)
 }
 
+type semanticAssignment struct {
+	id                   int64
+	priority, ratio, cap int
+}
+
 func validateSemantics(manifest snapshotManifest) (semanticValidation, error) {
 	for _, name := range expectedSourceTables {
 		if _, ok := manifest.table(name); !ok {
@@ -254,7 +259,7 @@ func semanticAssignees(manifest snapshotManifest) map[int64][]snapshotRow {
 		}
 	}
 	for id := range out {
-		sort.Slice(out[id], func(i, j int) bool {
+		sort.SliceStable(out[id], func(i, j int) bool {
 			a, _ := jsonInt(out[id][i].Payload, "priority")
 			b, _ := jsonInt(out[id][j].Payload, "priority")
 			return a < b
@@ -297,11 +302,7 @@ func (runner importRunner) repairChannelConfig(ctx context.Context, repairID, ru
 	if len(members) == 0 && firstString(row.Payload, "owner_staff_id") != "" {
 		members = []snapshotRow{{Payload: json.RawMessage(`{"staff_id":` + strconv.Quote(firstString(row.Payload, "owner_staff_id")) + `,"priority":1,"ratio_percent":100,"status":"active"}`)}}
 	}
-	type assignment struct {
-		id                   int64
-		priority, ratio, cap int
-	}
-	assigned := []assignment{}
+	assigned := []semanticAssignment{}
 	for index, item := range members {
 		providerID := firstString(item.Payload, "staff_id")
 		var staffID int64
@@ -314,14 +315,9 @@ func (runner importRunner) repairChannelConfig(ctx context.Context, repairID, ru
 		priority, _ := jsonInt(item.Payload, "priority")
 		ratio, _ := jsonInt(item.Payload, "ratio_percent")
 		cap, _ := jsonInt(item.Payload, "max_scans_24h")
-		if priority < 1 {
-			priority = int64(index + 1)
-		}
-		assigned = append(assigned, assignment{staffID, int(priority), int(ratio), int(cap)})
+		assigned = append(assigned, semanticAssignment{staffID, int(priority), int(ratio), int(cap)})
 	}
-	if len(assigned) == 0 {
-		return false, true, runner.recordSemanticConflict(ctx, repairID, channelID, "assignees", row.Payload, []byte("empty"))
-	}
+	priorityInvalid := normalizeSemanticPriorities(assigned)
 	mode := firstString(row.Payload, "assignment_mode")
 	if mode != "multi_staff" {
 		mode = "single_owner"
@@ -330,17 +326,16 @@ func (runner importRunner) repairChannelConfig(ctx context.Context, repairID, ru
 	if strategy != "cap_switch" {
 		strategy = "ratio"
 	}
-	if strategy == "ratio" {
-		sum := 0
+	if strategy == "ratio" && len(assigned) > 0 {
 		for i := range assigned {
 			if assigned[i].ratio == 0 && len(assigned) == 1 {
 				assigned[i].ratio = 100
 			}
-			sum += assigned[i].ratio
 		}
-		if sum != 100 {
-			return false, true, runner.recordSemanticConflict(ctx, repairID, channelID, "assignment_ratio", row.Payload, []byte(strconv.Itoa(sum)))
-		}
+	}
+	assignmentBlockers := semanticAssignmentBlockers(strategy, assigned)
+	if priorityInvalid {
+		assignmentBlockers = append(assignmentBlockers, "assignment_priority_invalid")
 	}
 	if strategy == "cap_switch" {
 		for _, a := range assigned {
@@ -368,7 +363,7 @@ func (runner importRunner) repairChannelConfig(ctx context.Context, repairID, ru
 		return false, false, err
 	}
 	missing = append(missing, m4...)
-	blockers := append([]string{}, missing...)
+	blockers := append(append([]string{}, assignmentBlockers...), missing...)
 	var tagID any
 	var tagName, tagGroupName string
 	providerTag := firstString(row.Payload, "entry_tag_id")
@@ -676,14 +671,11 @@ func (runner importRunner) SemanticReconcile(ctx context.Context, manifest snaps
 	if err := runner.Pool.Native().QueryRow(ctx, `SELECT r.id,s.id FROM channel_history_import_runs r JOIN channel_semantic_repair_runs s ON s.import_run_id=r.id WHERE r.snapshot_id=$1 AND r.manifest_digest=decode($2,'hex')`, manifest.SnapshotID, manifest.DigestHex()).Scan(&runID, &repairID); err != nil {
 		return gates, err
 	}
-	var repaired, conflicts int64
-	if err := runner.Pool.Native().QueryRow(ctx, `SELECT count(*),(SELECT count(*) FROM channel_semantic_repair_conflicts WHERE repair_run_id=$1) FROM channel_semantic_repaired_configs WHERE repair_run_id=$1`, repairID).Scan(&repaired, &conflicts); err != nil {
+	var repaired int64
+	if err := runner.Pool.Native().QueryRow(ctx, `SELECT count(*) FROM channel_semantic_repaired_configs WHERE repair_run_id=$1`, repairID).Scan(&repaired); err != nil {
 		return gates, err
 	}
-	gates.ChannelConfigFieldMismatches = int64(len(mustTable(manifest, "automation_channel").Rows)) - repaired + conflicts
-	if gates.ChannelConfigFieldMismatches < 0 {
-		gates.ChannelConfigFieldMismatches = conflicts
-	}
+	gates.ChannelConfigFieldMismatches = semanticConfigMismatchCount(int64(len(mustTable(manifest, "automation_channel").Rows)), repaired)
 	if err := runner.Pool.Native().QueryRow(ctx, `SELECT
 		(SELECT count(*) FROM channel_history_source_maps WHERE import_run_id=$1)-$2,
 		(SELECT count(*)-count(DISTINCT (source_table,source_pk)) FROM channel_history_source_maps WHERE import_run_id=$1),
@@ -734,6 +726,55 @@ func (runner importRunner) SemanticReconcile(ctx context.Context, manifest snaps
 	}
 	gates.WrongOneIDBindings = wrong
 	return gates, nil
+}
+
+func semanticConfigMismatchCount(sourceConfigs, repairedConfigs int64) int64 {
+	if sourceConfigs <= repairedConfigs {
+		return 0
+	}
+	return sourceConfigs - repairedConfigs
+}
+
+func semanticAssignmentBlockers(strategy string, assigned []semanticAssignment) []string {
+	if len(assigned) == 0 {
+		// An empty source assignment is a representable historical fact, not a
+		// three-way conflict. Preserve the remaining configuration and keep the
+		// channel disabled until an administrator assigns eligible staff.
+		return []string{"assignees_missing"}
+	}
+	if strategy != "ratio" {
+		return nil
+	}
+	sum := 0
+	for _, item := range assigned {
+		sum += item.ratio
+	}
+	if sum == 100 {
+		return nil
+	}
+	// Positive source ratios can be stored losslessly even when their sum is
+	// invalid for runtime routing. Keep them verbatim, but do not allow the
+	// repaired channel to become active.
+	return []string{"assignment_ratio_invalid"}
+}
+
+func normalizeSemanticPriorities(assigned []semanticAssignment) bool {
+	seen := map[int]bool{}
+	invalid := len(assigned) > 5
+	for _, item := range assigned {
+		if item.priority < 1 || item.priority > 5 || seen[item.priority] {
+			invalid = true
+		}
+		seen[item.priority] = true
+	}
+	if invalid && len(assigned) <= 5 {
+		// The immutable history projection keeps the original source priority.
+		// The runnable config only needs a deterministic unique order.
+		for index := range assigned {
+			assigned[index].priority = index + 1
+		}
+	}
+	return invalid
 }
 
 func (runner importRunner) VerifyLegacyAssets(ctx context.Context, manifest snapshotManifest, reader legacyAssetReader, digester wecom.StateDigester, corpID string) (legacyVerificationResult, error) {
