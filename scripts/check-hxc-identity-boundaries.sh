@@ -44,9 +44,14 @@ require_text 'AICRM_IDENTITY_OBSERVATION_VAULT_KEY' internal/platform/config/con
 require_text 'ciphertext BYTEA' migrations/0063_identity_hxc_source_observations.sql 'HXC identity observations must be encrypted'
 require_text '连续两个完整成功快照' 'docs/17-PRD-HXC漏斗-OneID双键匹配与身份持久化.md' 'HXC retirement policy must remain documented'
 require_text '--dbname="\$database_url"' deploy/rollout-hxc-identity-v2.sh 'HXC rollout must pass the database URL as a libpq connection string'
+require_text 'DELETE FROM hxc_dashboard_rows WHERE projection_id IN' internal/hxcdashboard/store/postgres.go 'HXC retention must prune row payloads without deleting immutable projection lineage'
 
 if grep -qF 'PGDATABASE="$database_url"' deploy/rollout-hxc-identity-v2.sh; then
   echo 'HXC rollout must not treat the database URL as a database name' >&2
+  exit 1
+fi
+if grep -qF 'DELETE FROM hxc_dashboard_versions' internal/hxcdashboard/store/postgres.go; then
+  echo 'HXC retention must not delete projection headers referenced by immutable refresh receipts' >&2
   exit 1
 fi
 

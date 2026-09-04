@@ -137,7 +137,10 @@ func (store *PostgreSQL) Publish(ctx context.Context, runID int64, projection do
 	if _, err = tx.Exec(ctx, `UPDATE hxc_dashboard_refresh_runs SET status='succeeded',projection_id=$2,source_count=$3,processed_count=$3,error_code=NULL,completed_at=now(),updated_at=now(),version=version+1 WHERE id=$1 AND status='publishing'`, runID, id, len(rows)); err != nil {
 		return 0, err
 	}
-	if _, err = tx.Exec(ctx, `DELETE FROM hxc_dashboard_versions WHERE id IN (SELECT id FROM hxc_dashboard_versions WHERE status='superseded' ORDER BY published_at DESC OFFSET 7)`); err != nil {
+	// Refresh receipts keep an immutable reference to every published version.
+	// Retention therefore prunes only the heavy row payload of old superseded
+	// versions; deleting the version header would violate that receipt lineage.
+	if _, err = tx.Exec(ctx, `DELETE FROM hxc_dashboard_rows WHERE projection_id IN (SELECT id FROM hxc_dashboard_versions WHERE status='superseded' ORDER BY published_at DESC,id DESC OFFSET 7)`); err != nil {
 		return 0, err
 	}
 	return id, nil
