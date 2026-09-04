@@ -852,7 +852,10 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err = channelAssetService.SetPublishValidator(channelAcquisitionService); err != nil {
 		return fail(err)
 	}
-	channelAcquisitionHandler, err := channelstore.NewAcquisitionHTTPHandler(channelAcquisitionService, requestSecurity)
+	channelAcquisitionHandler, err := channelstore.NewAcquisitionHTTPHandler(channelAcquisitionService, requestSecurity, channelstore.AcquisitionHTTPOptions{
+		ProviderReadEnabled:  cfg.WeCom.ChannelProviderReadEnabled,
+		ProviderWriteEnabled: cfg.Effects.ProviderEnabled && cfg.WeCom.ChannelQRProviderEnabled,
+	})
 	if err != nil {
 		return fail(err)
 	}

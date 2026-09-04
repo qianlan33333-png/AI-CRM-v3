@@ -95,6 +95,18 @@ function showProviderReadDegraded(): void {
   document.body.prepend(notice);
 }
 
+function makePreviewDonorCompatible(payload: Record<string, unknown>): Record<string, unknown> {
+  if (payload.provider_execution_eligible !== true) return payload;
+  return {
+    ...payload,
+    // The frozen donor DTO describes whether this read response itself may
+    // execute a Provider call. Keep that false while retaining the canonical
+    // API readiness fact for diagnostics.
+    adapter_provider_execution_eligible: true,
+    provider_execution_eligible: false,
+  };
+}
+
 async function normalizeChannelResponse(response: Response, url: URL): Promise<Response> {
   if (!response.ok || !String(response.headers.get('Content-Type')).toLowerCase().includes('application/json')) return response;
   if (url.pathname === '/api/admin/channels' && document.body?.dataset.page === 'channels') {
@@ -108,6 +120,9 @@ async function normalizeChannelResponse(response: Response, url: URL): Promise<R
       payload.adapter_provider_read_succeeded = false;
       return responseWithJSON(response, payload);
     }
+  }
+  if (url.pathname.match(/^\/api\/admin\/channels\/[1-9][0-9]*\/acquisition-preview$/)) {
+    return responseWithJSON(response, makePreviewDonorCompatible(await response.clone().json() as Record<string, unknown>));
   }
   if (channelAssetPath(url)) {
     const payload = await response.clone().json() as Record<string, unknown>;
@@ -149,7 +164,26 @@ function replaceFrozenQRHint(): void {
   }
 }
 
-new MutationObserver(replaceFrozenQRHint).observe(document.documentElement, { childList: true, subtree: true, characterData: true });
+function labelFrozenAssetAction(): void {
+  if (document.body?.dataset.page !== 'channelForm') return;
+  const copyButton = Array.from(document.querySelectorAll<HTMLButtonElement>('button'))
+    .find((button) => button.textContent?.trim() === '复制已保存链接');
+  const actionButton = Array.from(copyButton?.parentElement?.querySelectorAll<HTMLButtonElement>('button') || [])
+    .find((button) => button !== copyButton && button.textContent?.trim() === '');
+  if (!actionButton) return;
+  const carrier = document.getElementById('channelCarrier') as HTMLSelectElement | null;
+  const label = carrier?.value === 'link' ? '生成获客链接' : '生成渠道码';
+  actionButton.textContent = label;
+  actionButton.setAttribute('aria-label', label);
+}
+
+function repairFrozenChannelUI(): void {
+  replaceFrozenQRHint();
+  labelFrozenAssetAction();
+}
+
+new MutationObserver(repairFrozenChannelUI).observe(document.documentElement, { childList: true, subtree: true, characterData: true });
+repairFrozenChannelUI();
 
 globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
   const request = input instanceof Request ? input : null;

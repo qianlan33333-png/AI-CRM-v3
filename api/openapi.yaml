@@ -1494,7 +1494,7 @@ paths:
       security: [{adminSession: []}]
       parameters: [{name: channel_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
       responses:
-        "200": {description: Provider readiness and frozen local assignment preview, content: {application/json: {schema: {type: object}}}}
+        "200": {description: Provider readiness and frozen local assignment preview. The read is local-only; provider_execution_eligible reflects configured read/write readiness and never means a Provider call happened., content: {application/json: {schema: {type: object}}}}
         "401": {$ref: "#/components/responses/Error"}
         "403": {$ref: "#/components/responses/Error"}
         "404": {$ref: "#/components/responses/Error"}
