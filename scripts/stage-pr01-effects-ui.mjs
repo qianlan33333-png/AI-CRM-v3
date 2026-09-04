@@ -36,6 +36,7 @@ const adminAccessEntry = legacyEntry && dynamicOutputForInput(legacyEntry, 'web/
 const setupWizardEntry = legacyEntry && dynamicOutputForInput(legacyEntry, 'web/src/admin/sections/setupWizard.ts');
 const groupOpsHistoryEntry = legacyEntry && dynamicOutputForInput(legacyEntry, 'web/src/admin/sections/groupOpsHistory.ts');
 const funnelEntry = legacyEntry && dynamicOutputForInput(legacyEntry, 'web/src/admin/sections/funnelGrid.ts');
+const radarEntry = legacyEntry && dynamicOutputForInput(legacyEntry, 'web/src/admin/sections/radar.ts');
 const operationHost = manifest.entries.operationCyclesHost;
 const operationMainEntry = dynamicOutputForInput(operationHost, 'web/src/admin/main.ts');
 const operationLegacyEntry = operationMainEntry && dynamicOutputForInput(operationMainEntry, 'web/src/admin/legacy.ts');
@@ -45,7 +46,7 @@ const productLegacyEntry = productMainEntry && dynamicOutputForInput(productMain
 const channelHost = manifest.entries.channelCenterHost;
 const channelMainEntry = dynamicOutputForInput(channelHost, 'web/src/admin/main.ts');
 const channelLegacyEntry = channelMainEntry && dynamicOutputForInput(channelMainEntry, 'web/src/admin/legacy.ts');
-if (!legacyEntry || !campaignsEntry || !adminAccessEntry || !setupWizardEntry || !groupOpsHistoryEntry || !funnelEntry || !operationMainEntry || !operationLegacyEntry || !productMainEntry || !productLegacyEntry || !channelMainEntry || !channelLegacyEntry) fail('required admin runtime chunks are absent from manifest');
+if (!legacyEntry || !campaignsEntry || !adminAccessEntry || !setupWizardEntry || !groupOpsHistoryEntry || !funnelEntry || !radarEntry || !operationMainEntry || !operationLegacyEntry || !productMainEntry || !productLegacyEntry || !channelMainEntry || !channelLegacyEntry) fail('required admin runtime chunks are absent from manifest');
 
 const selected = new Set();
 const includeStatic = (relative) => {
@@ -62,7 +63,8 @@ const includeStatic = (relative) => {
 // selected by the External Effects workspace, the Admin Access and Setup
 // Wizard chunks selected by the Config host, the Group Ops history chunk
 // selected by the byte-frozen groupops.html?history=1 route, and the v3-owned
-// HXC dashboard chunk. No other legacy page chunk is staged or fetchable.
+// HXC dashboard and Radar chunks. No other legacy page chunk is staged or
+// fetchable.
 // HTML stays v3-owned: the Go webshell
 // renders the single admin shell and mounts the frozen stage, so no donor HTML
 // is ever packaged.
@@ -73,6 +75,7 @@ includeStatic(adminAccessEntry);
 includeStatic(setupWizardEntry);
 includeStatic(groupOpsHistoryEntry);
 includeStatic(funnelEntry);
+includeStatic(radarEntry);
 includeStatic(operationMainEntry);
 includeStatic(operationLegacyEntry);
 includeStatic(productMainEntry);
