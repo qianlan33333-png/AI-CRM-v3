@@ -332,6 +332,67 @@ func TestLegacyAssetUpsertAdvancesOnlyLiveCanonicalProjection(t *testing.T) {
 	}
 }
 
+func TestChannelActivationRestoresArchivedShapeAtomically(t *testing.T) {
+	databaseURL, err := platformconfig.DatabaseURL()
+	if err != nil {
+		t.Skip("database URL not configured")
+	}
+	ctx := context.Background()
+	admin, err := pgxpool.New(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Close()
+	schema := fmt.Sprintf("channel_activation_%d", time.Now().UnixNano())
+	if _, err = admin.Exec(ctx, "CREATE SCHEMA "+schema); err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Exec(ctx, "DROP SCHEMA "+schema+" CASCADE")
+	cfg, err := pgxpool.ParseConfig(databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.ConnConfig.RuntimeParams["search_path"] = schema
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	if _, err = pool.Exec(ctx, `CREATE TABLE channels (
+		id BIGINT PRIMARY KEY,
+		status TEXT NOT NULL CHECK(status IN ('active','inactive','archived')),
+		current_config_version BIGINT NOT NULL,
+		updated_at TIMESTAMPTZ NOT NULL,
+		archived_at TIMESTAMPTZ,
+		CHECK((status='archived' AND archived_at IS NOT NULL) OR (status<>'archived' AND archived_at IS NULL))
+	)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pool.Exec(ctx, `INSERT INTO channels(id,status,current_config_version,updated_at) VALUES(7,'inactive',3,clock_timestamp())`); err != nil {
+		t.Fatal(err)
+	}
+	if result, execErr := pool.Exec(ctx, channelActivationSQL, int64(7), "archived", int64(3)); execErr != nil || result.RowsAffected() != 1 {
+		t.Fatalf("archive activation result=%v err=%v", result.RowsAffected(), execErr)
+	}
+	var status string
+	var archivedAt *time.Time
+	if err = pool.QueryRow(ctx, `SELECT status,archived_at FROM channels WHERE id=7`).Scan(&status, &archivedAt); err != nil {
+		t.Fatal(err)
+	}
+	if status != "archived" || archivedAt == nil {
+		t.Fatalf("archived shape=(%q,%v)", status, archivedAt)
+	}
+	if _, err = pool.Exec(ctx, channelActivationSQL, int64(7), "active", int64(3)); err != nil {
+		t.Fatal(err)
+	}
+	if err = pool.QueryRow(ctx, `SELECT status,archived_at FROM channels WHERE id=7`).Scan(&status, &archivedAt); err != nil {
+		t.Fatal(err)
+	}
+	if status != "active" || archivedAt != nil {
+		t.Fatalf("active shape=(%q,%v)", status, archivedAt)
+	}
+}
+
 func hashText(value string) string {
 	digest := sha256.Sum256([]byte(value))
 	return "sha256:" + hex.EncodeToString(digest[:])
