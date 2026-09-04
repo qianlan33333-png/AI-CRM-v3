@@ -28,3 +28,4 @@ done
 grep -Fq 'getCurExternalContact' "$javascript"
 grep -Fq 'sendChatMessage' "$javascript"
 grep -Fq 'Authorization: "Bearer "' "$javascript"
+node scripts/sidebar-workbench-host-adapter-e2e.mjs
