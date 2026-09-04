@@ -107,3 +107,24 @@ func TestHistoricalOrdersCanRemainUnresolvedButNeverEffectEligible(t *testing.T)
 		t.Fatalf("unsafe history order=%#v", order)
 	}
 }
+
+func TestHistoricalPayerAttributionIsScopedAndIdempotent(t *testing.T) {
+	input := nativeInput()
+	input.RecordOrigin = RecordOriginHistory
+	input.PayerCustomerID, input.BeneficiaryCustomerID = nil, nil
+	order, err := NewOrder(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	linked, changed, err := order.AttributeHistoricalPayer(order.Version, 41, order.UpdatedAt.Add(time.Second))
+	if err != nil || !changed || linked.PayerCustomerID == nil || *linked.PayerCustomerID != 41 || linked.BeneficiaryCustomerID != nil || linked.EffectEligible || linked.Version != order.Version+1 {
+		t.Fatalf("linked=%+v changed=%t err=%v", linked.Snapshot(), changed, err)
+	}
+	replayed, changed, err := linked.AttributeHistoricalPayer(linked.Version, 41, linked.UpdatedAt)
+	if err != nil || changed || replayed.Version != linked.Version {
+		t.Fatalf("replayed=%+v changed=%t err=%v", replayed.Snapshot(), changed, err)
+	}
+	if _, _, err = linked.AttributeHistoricalPayer(linked.Version, 42, linked.UpdatedAt.Add(time.Second)); err == nil {
+		t.Fatal("historical payer attribution replaced an existing customer")
+	}
+}

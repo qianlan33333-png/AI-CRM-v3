@@ -381,6 +381,147 @@ func (r *Repository) FindByReference(ctx context.Context, reference string) ([]d
 	return result, nil
 }
 
+func (r *Repository) RecordHistoricalAttribution(ctx context.Context, command orderport.HistoricalAttributionCommand) (orderport.HistoricalAttributionResult, error) {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return orderport.HistoricalAttributionResult{}, err
+	}
+	if command.RunID < 1 || command.SourceKey == "" || len(command.SourceKey) > 200 || strings.TrimSpace(command.SourceKey) != command.SourceKey || command.OrderReference == "" || len(command.OrderReference) > 200 || strings.TrimSpace(command.OrderReference) != command.OrderReference || command.EvidenceDigest == ([32]byte{}) || command.OccurredAt.IsZero() || !validAttributionInput(command) {
+		return orderport.HistoricalAttributionResult{}, ErrInvalid
+	}
+	result, found, err := existingAttribution(ctx, tx, command)
+	if err != nil || found {
+		return result, err
+	}
+
+	result.Outcome = command.Outcome
+	if command.Outcome == orderport.AttributionLinked {
+		ids, findErr := orderIDsByReference(ctx, tx, command.OrderReference)
+		if findErr != nil {
+			return orderport.HistoricalAttributionResult{}, findErr
+		}
+		switch len(ids) {
+		case 0:
+			result.Outcome = orderport.AttributionOrderNotFound
+		case 1:
+			result.OrderID = ids[0]
+			current, getErr := r.Get(ctx, ids[0], true)
+			if getErr != nil {
+				return orderport.HistoricalAttributionResult{}, getErr
+			}
+			if current.PayerCustomerID != nil && *current.PayerCustomerID != command.PayerCustomerID {
+				result.Outcome = orderport.AttributionOrderPayerConflict
+				break
+			}
+			updated, changed, attributeErr := current.AttributeHistoricalPayer(current.Version, command.PayerCustomerID, command.OccurredAt.UTC())
+			if attributeErr != nil {
+				return orderport.HistoricalAttributionResult{}, orderport.ErrConflict
+			}
+			result.PayerCustomerID, result.PayerIdentityID = command.PayerCustomerID, command.PayerIdentityID
+			if !changed {
+				result.Outcome = orderport.AttributionAlreadyLinked
+				break
+			}
+			snapshot := updated.Snapshot()
+			update, updateErr := tx.Exec(ctx, `UPDATE orders SET payer_customer_id=$2,version=$3,updated_at=$4 WHERE id=$1 AND version=$5 AND payer_customer_id IS NULL AND record_origin='history' AND effect_eligible=FALSE`, snapshot.ID, snapshot.PayerCustomerID, snapshot.Version, snapshot.UpdatedAt, current.Version)
+			if updateErr != nil {
+				return orderport.HistoricalAttributionResult{}, mapError(updateErr)
+			}
+			if update.RowsAffected() != 1 {
+				return orderport.HistoricalAttributionResult{}, orderport.ErrConflict
+			}
+			payload, _ := json.Marshal(map[string]any{"order_id": snapshot.ID, "payer_customer_id": command.PayerCustomerID, "payer_identity_id": command.PayerIdentityID, "record_origin": snapshot.RecordOrigin, "version": snapshot.Version})
+			actorScope := "migration:history-attribution:" + strconv.FormatInt(command.RunID, 10)
+			if _, updateErr = tx.Exec(ctx, `INSERT INTO order_audit_events(event_type,order_id,actor_scope,payload,occurred_at) VALUES('order.payer_attributed',$1,$2,$3,$4)`, snapshot.ID, actorScope, payload, command.OccurredAt.UTC()); updateErr != nil {
+				return orderport.HistoricalAttributionResult{}, mapError(updateErr)
+			}
+			idempotencyKey := "order.payer_attributed:" + strconv.FormatInt(snapshot.ID, 10) + ":" + strconv.FormatInt(snapshot.Version, 10)
+			if _, updateErr = tx.Exec(ctx, `INSERT INTO order_outbox(event_type,idempotency_key,aggregate_id,payload,occurred_at) VALUES('order.payer_attributed',$1,$2,$3,$4)`, idempotencyKey, snapshot.ID, payload, command.OccurredAt.UTC()); updateErr != nil {
+				return orderport.HistoricalAttributionResult{}, mapError(updateErr)
+			}
+		default:
+			result.Outcome = orderport.AttributionOrderReferenceConflict
+		}
+	}
+	if result.Outcome != orderport.AttributionLinked && result.Outcome != orderport.AttributionAlreadyLinked {
+		result.PayerCustomerID, result.PayerIdentityID = 0, 0
+	}
+	if err = insertAttributionReceipt(ctx, tx, command, result); err != nil {
+		return orderport.HistoricalAttributionResult{}, err
+	}
+	return result, nil
+}
+
+func validAttributionInput(command orderport.HistoricalAttributionCommand) bool {
+	switch command.Outcome {
+	case orderport.AttributionLinked:
+		return command.PayerCustomerID > 0 && command.PayerIdentityID > 0
+	case orderport.AttributionSourceIdentityMissing, orderport.AttributionSourceIdentityNotFound, orderport.AttributionSourceIdentityAmbiguous, orderport.AttributionTargetIdentityNotFound, orderport.AttributionTargetIdentityConflict:
+		return command.PayerCustomerID == 0 && command.PayerIdentityID == 0
+	default:
+		return false
+	}
+}
+
+func existingAttribution(ctx context.Context, tx pgx.Tx, command orderport.HistoricalAttributionCommand) (orderport.HistoricalAttributionResult, bool, error) {
+	var result orderport.HistoricalAttributionResult
+	var orderID, customerID, identityID *int64
+	var digest []byte
+	err := tx.QueryRow(ctx, `SELECT outcome,order_id,payer_customer_id,payer_identity_id,evidence_digest FROM order_history_attribution_receipts WHERE run_id=$1 AND source_key=$2`, command.RunID, command.SourceKey).Scan(&result.Outcome, &orderID, &customerID, &identityID, &digest)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return result, false, nil
+	}
+	if err != nil {
+		return result, false, mapError(err)
+	}
+	if len(digest) != 32 || string(digest) != string(command.EvidenceDigest[:]) {
+		return orderport.HistoricalAttributionResult{}, false, orderport.ErrConflict
+	}
+	if orderID != nil {
+		result.OrderID = *orderID
+	}
+	if customerID != nil {
+		result.PayerCustomerID = *customerID
+	}
+	if identityID != nil {
+		result.PayerIdentityID = *identityID
+	}
+	result.Replayed = true
+	return result, true, nil
+}
+
+func orderIDsByReference(ctx context.Context, tx pgx.Tx, reference string) ([]int64, error) {
+	rows, err := tx.Query(ctx, `SELECT id FROM orders WHERE merchant_order_no=$1 OR provider_transaction_no=$1 OR source_key=$1 ORDER BY id LIMIT 2 FOR UPDATE`, reference)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	defer rows.Close()
+	ids := make([]int64, 0, 2)
+	for rows.Next() {
+		var id int64
+		if err = rows.Scan(&id); err != nil {
+			return nil, mapError(err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, mapError(rows.Err())
+}
+
+func insertAttributionReceipt(ctx context.Context, tx pgx.Tx, command orderport.HistoricalAttributionCommand, result orderport.HistoricalAttributionResult) error {
+	var orderID, customerID, identityID any
+	if result.OrderID > 0 {
+		orderID = result.OrderID
+	}
+	if result.PayerCustomerID > 0 {
+		customerID = result.PayerCustomerID
+	}
+	if result.PayerIdentityID > 0 {
+		identityID = result.PayerIdentityID
+	}
+	_, err := tx.Exec(ctx, `INSERT INTO order_history_attribution_receipts(run_id,source_key,order_reference,evidence_digest,outcome,order_id,payer_customer_id,payer_identity_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, command.RunID, command.SourceKey, command.OrderReference, command.EvidenceDigest[:], result.Outcome, orderID, customerID, identityID)
+	return mapError(err)
+}
+
 func (r *Repository) RecordExport(ctx context.Context, receipt orderapp.ExportReceipt) (orderapp.ExportReceipt, bool, error) {
 	tx, err := transaction(ctx)
 	if err != nil {

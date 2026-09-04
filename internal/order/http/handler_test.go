@@ -10,6 +10,7 @@ import (
 	"time"
 
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
+	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/order/domain"
 	orderport "github.com/qianlan33333-png/AI-CRM-v3/internal/order/port"
 )
@@ -34,9 +35,25 @@ type appStub struct {
 	exports int
 }
 
+type customerNamesStub map[customerdomain.CustomerID]string
+
+func (names customerNamesStub) DisplayNames(context.Context, []customerdomain.CustomerID) (map[customerdomain.CustomerID]string, error) {
+	return names, nil
+}
+
 func (a *appStub) Get(context.Context, int64) (domain.Snapshot, error) { return a.detail, a.getErr }
 func (a *appStub) GetByReference(context.Context, string) (domain.Snapshot, error) {
 	return a.detail, a.getErr
+}
+
+func TestListUsesCanonicalCustomerDisplayName(t *testing.T) {
+	application := &appStub{page: orderport.Page{Items: []domain.Snapshot{sampleOrder()}}}
+	handler, _ := NewHandler(application, adminSecurity(), customerNamesStub{11: "付款客户"})
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/admin/orders", nil))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"payer_name":"付款客户"`) || !strings.Contains(response.Body.String(), `"payer_id":"customer:11"`) {
+		t.Fatalf("code=%d body=%s", response.Code, response.Body.String())
+	}
 }
 func (a *appStub) List(_ context.Context, q orderport.ListQuery) (orderport.Page, error) {
 	a.query = q

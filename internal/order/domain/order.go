@@ -130,6 +130,30 @@ type StatusEvent struct {
 	OccurredAt    time.Time
 }
 
+// AttributeHistoricalPayer links a previously floating historical order to a
+// canonical Customer. It never changes the beneficiary or makes the order
+// eligible for provider effects. Replaying the same Customer is a no-op;
+// attempting to replace an existing payer fails closed.
+func (o Order) AttributeHistoricalPayer(expectedVersion, customerID int64, at time.Time) (Order, bool, error) {
+	if o.RecordOrigin != RecordOriginHistory || o.EffectEligible || expectedVersion != o.Version || customerID < 1 || at.IsZero() || at.Before(o.UpdatedAt) {
+		return Order{}, false, ErrInvalidOrder
+	}
+	if o.PayerCustomerID != nil {
+		if *o.PayerCustomerID == customerID {
+			return o, false, nil
+		}
+		return Order{}, false, ErrInvalidOrder
+	}
+	updated := o
+	updated.PayerCustomerID = &customerID
+	updated.Version++
+	updated.UpdatedAt = at.UTC()
+	if err := validate(updated); err != nil {
+		return Order{}, false, err
+	}
+	return updated, true, nil
+}
+
 func NewOrder(input NewOrderInput) (Order, error) {
 	origin := input.RecordOrigin
 	if origin == "" {
