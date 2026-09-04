@@ -44,10 +44,11 @@ archive_sha256="$(sha256sum "$archive" | awk '{print $1}')"
 [[ "$archive_sha256" =~ ^[0-9a-f]{64}$ ]] || { echo "invalid archive digest" >&2; exit 3; }
 
 # A single long-lived SCP has repeatedly outlived the deploy job when the
-# runner-to-host connection stalls. Small independently retried chunks keep
-# each transfer bounded; the host publishes the archive only after a complete
-# SHA-256 verification.
-split -b 4m -a 4 "$archive" "$chunk_dir/part-"
+# runner-to-host connection stalls. Production evidence also showed that a
+# 4 MiB chunk could not finish inside the five-minute attempt budget. Keep the
+# chunks small enough to make progress on that link; the host publishes the
+# archive only after a complete SHA-256 verification.
+split -b 1m -a 4 "$archive" "$chunk_dir/part-"
 chunks=("$chunk_dir"/part-*)
 [[ -f "${chunks[0]}" ]] || { echo "release archive produced no chunks" >&2; exit 3; }
 
