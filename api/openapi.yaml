@@ -17,6 +17,119 @@ paths:
       responses:
         "200": {description: PostgreSQL and migrations are ready, content: {application/json: {schema: {$ref: "#/components/schemas/StatusResponse"}}}}
         "503": {$ref: "#/components/responses/Unavailable"}
+  /api/admin/radar-links:
+    get:
+      operationId: listRadarLinksV3
+      tags: [Radar]
+      security: [{adminSession: []}]
+      parameters:
+        - {name: status, in: query, schema: {type: string, enum: [all, draft, enabled, disabled], default: all}}
+        - {$ref: "#/components/parameters/Limit"}
+        - {$ref: "#/components/parameters/Offset"}
+      responses:
+        "200": {description: Radar definitions with local lifecycle facts, content: {application/json: {schema: {$ref: "#/components/schemas/RadarLinkPage"}}}}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+    post:
+      operationId: createRadarLinkV3
+      tags: [Radar]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/IdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/RadarLinkMutation"}}}}
+      responses:
+        "201": {description: Draft Radar definition created atomically, content: {application/json: {schema: {$ref: "#/components/schemas/RadarLinkEnvelope"}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
+  /api/admin/radar-links/new/options:
+    get:
+      operationId: getRadarOptionsV3
+      tags: [Radar]
+      security: [{adminSession: []}]
+      responses: {"200": {description: Closed Radar form options}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}}
+  /api/admin/radar-links/{radar_id}:
+    parameters: [{$ref: "#/components/parameters/RadarID"}]
+    get:
+      operationId: getRadarLinkV3
+      tags: [Radar]
+      security: [{adminSession: []}]
+      responses: {"200": {description: Radar definition, content: {application/json: {schema: {$ref: "#/components/schemas/RadarLinkEnvelope"}}}}, "404": {$ref: "#/components/responses/Error"}}
+    put:
+      operationId: updateRadarLinkV3
+      tags: [Radar]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/IdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/RadarLinkMutation"}}}}
+      responses: {"200": {description: CAS-updated Radar definition, content: {application/json: {schema: {$ref: "#/components/schemas/RadarLinkEnvelope"}}}}, "400": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+  /api/admin/radar-links/{radar_id}/enable:
+    post:
+      operationId: enableRadarLinkV3
+      tags: [Radar]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/RadarID"}, {$ref: "#/components/parameters/IdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/RadarVersionRequest"}}}}
+      responses: {"200": {description: Enabled Radar definition, content: {application/json: {schema: {$ref: "#/components/schemas/RadarLinkEnvelope"}}}}, "409": {$ref: "#/components/responses/Error"}}
+  /api/admin/radar-links/{radar_id}/disable:
+    post:
+      operationId: disableRadarLinkV3
+      tags: [Radar]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/RadarID"}, {$ref: "#/components/parameters/IdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/RadarVersionRequest"}}}}
+      responses: {"200": {description: Disabled Radar definition, content: {application/json: {schema: {$ref: "#/components/schemas/RadarLinkEnvelope"}}}}, "409": {$ref: "#/components/responses/Error"}}
+  /api/admin/radar-links/{radar_id}/share:
+    get:
+      operationId: getRadarShareV3
+      tags: [Radar]
+      security: [{adminSession: []}]
+      parameters: [{$ref: "#/components/parameters/RadarID"}]
+      responses: {"200": {description: Same-origin public share projection}, "404": {$ref: "#/components/responses/Error"}}
+  /api/admin/radar-links/{radar_id}/stats:
+    get:
+      operationId: getRadarStatsV3
+      tags: [Radar]
+      security: [{adminSession: []}]
+      parameters: [{$ref: "#/components/parameters/RadarID"}]
+      responses: {"200": {description: OneID-attributed aggregate statistics, content: {application/json: {schema: {$ref: "#/components/schemas/RadarStats"}}}}, "404": {$ref: "#/components/responses/Error"}}
+  /api/admin/radar-links/{radar_id}/events:
+    get:
+      operationId: listRadarEventsV3
+      tags: [Radar]
+      security: [{adminSession: []}]
+      parameters: [{$ref: "#/components/parameters/RadarID"}, {$ref: "#/components/parameters/Limit"}, {$ref: "#/components/parameters/Offset"}, {name: start_at, in: query, schema: {type: string, format: date-time}}, {name: end_at, in: query, schema: {type: string, format: date-time}}]
+      responses: {"200": {description: Safe Radar event projections, content: {application/json: {schema: {$ref: "#/components/schemas/RadarEventPage"}}}}, "404": {$ref: "#/components/responses/Error"}}
+  /api/admin/radar-links/{radar_id}/events/export:
+    get:
+      operationId: exportRadarEventsV3
+      tags: [Radar]
+      security: [{adminSession: []}]
+      parameters: [{$ref: "#/components/parameters/RadarID"}, {name: start_at, in: query, schema: {type: string, format: date-time}}, {name: end_at, in: query, schema: {type: string, format: date-time}}]
+      responses: {"200": {description: Safe CSV without external identity values, content: {text/csv: {schema: {type: string}}}}, "409": {$ref: "#/components/responses/Error"}}
+  /r/{code}:
+    get:
+      operationId: openRadarContentV3
+      tags: [Radar]
+      parameters: [{$ref: "#/components/parameters/RadarCode"}]
+      responses: {"200": {description: Same-origin image or PDF viewer, content: {text/html: {schema: {type: string}}}}, "302": {description: OAuth or HTTPS destination redirect}, "404": {$ref: "#/components/responses/Error"}, "410": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/public/radar/oauth/callback:
+    get:
+      operationId: completeRadarOAuthV3
+      tags: [Radar]
+      parameters: [{name: state, in: query, required: true, schema: {type: string, minLength: 43, maxLength: 43}}, {name: code, in: query, required: true, schema: {type: string, minLength: 1, maxLength: 512}}]
+      responses: {"302": {description: "UnionID verified, OneID resolved, secure Radar session issued"}, "400": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/public/radar/{code}/content:
+    get:
+      operationId: readRadarContentV3
+      tags: [Radar]
+      parameters: [{$ref: "#/components/parameters/RadarCode"}]
+      responses: {"200": {description: Session-protected image or PDF bytes}, "404": {$ref: "#/components/responses/Error"}, "410": {$ref: "#/components/responses/Error"}}
+  /api/public/radar/{code}/events:
+    post:
+      operationId: recordRadarEventV3
+      tags: [Radar]
+      parameters: [{$ref: "#/components/parameters/RadarCode"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/RadarPublicEventRequest"}}}}
+      responses: {"200": {description: Immutable idempotent local receipt}, "400": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "410": {$ref: "#/components/responses/Error"}}
   /login:
     get:
       operationId: loginPage
@@ -3032,6 +3145,8 @@ components:
     aiAssistantIntegration: {type: apiKey, in: header, name: X-AICRM-Integration-Key}
   parameters:
     ID: {name: id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
+    RadarID: {name: radar_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
+    RadarCode: {name: code, in: path, required: true, schema: {type: string, pattern: "^rd_[A-Za-z0-9_-]{16,64}$"}}
     AutomationAgentID: {name: agent_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
     ProductID: {name: product_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
     ServiceProductID: {name: service_product_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
@@ -3103,6 +3218,102 @@ components:
     Unavailable: {description: Dependency or provider unavailable, content: {application/json: {schema: {$ref: "#/components/schemas/ErrorResponse"}}}}
     MutationOK: {description: Mutation completed, content: {application/json: {schema: {type: object, required: [ok], properties: {ok: {const: true}}}}}}
   schemas:
+    RadarLink:
+      type: object
+      additionalProperties: false
+      required: [link_id, public_code, name, title, destination_url, status, version, created_by, updated_by, created_at, updated_at, auth_policy]
+      properties:
+        link_id: {$ref: "#/components/schemas/PositiveID"}
+        public_code: {type: string, pattern: "^rd_[A-Za-z0-9_-]{16,64}$"}
+        name: {type: string, minLength: 1, maxLength: 120}
+        title: {type: string, minLength: 1, maxLength: 200}
+        description: {type: string, maxLength: 2000}
+        destination_url: {type: string, format: uri, pattern: "^https://"}
+        cover_image_id: {oneOf: [{$ref: "#/components/schemas/PositiveID"}, {type: "null"}]}
+        attachment_id: {oneOf: [{$ref: "#/components/schemas/PositiveID"}, {type: "null"}]}
+        auth_policy: {type: string, enum: [anonymous, unionid_required]}
+        status: {type: string, enum: [draft, enabled, disabled]}
+        version: {type: integer, format: int64, minimum: 1}
+        created_by: {$ref: "#/components/schemas/PositiveID"}
+        updated_by: {$ref: "#/components/schemas/PositiveID"}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    RadarLinkEnvelope:
+      type: object
+      additionalProperties: false
+      required: [link, local_projection, real_external_call_executed]
+      properties: {link: {$ref: "#/components/schemas/RadarLink"}, local_projection: {const: true}, real_external_call_executed: {const: false}}
+    RadarLinkPage:
+      type: object
+      additionalProperties: false
+      required: [items, total, limit, offset, has_more, local_projection, real_external_call_executed]
+      properties:
+        items: {type: array, maxItems: 100, items: {$ref: "#/components/schemas/RadarLink"}}
+        total: {type: integer, format: int64, minimum: 0}
+        limit: {type: integer, minimum: 1, maximum: 100}
+        offset: {type: integer, minimum: 0}
+        has_more: {type: boolean}
+        status_filter: {type: string, enum: [all, draft, enabled, disabled]}
+        sort: {type: string, enum: [updated_desc, created_desc, name_asc]}
+        local_projection: {const: true}
+        real_external_call_executed: {const: false}
+    RadarLinkMutation:
+      type: object
+      additionalProperties: false
+      required: [expected_version, name, title, destination_url]
+      properties:
+        expected_version: {type: integer, format: int64, minimum: 0}
+        name: {type: string, minLength: 1, maxLength: 120}
+        title: {type: string, minLength: 1, maxLength: 200}
+        description: {type: string, maxLength: 2000}
+        destination_url: {type: string, format: uri, pattern: "^https://"}
+        cover_image_id: {oneOf: [{$ref: "#/components/schemas/PositiveID"}, {type: "null"}]}
+        attachment_id: {oneOf: [{$ref: "#/components/schemas/PositiveID"}, {type: "null"}]}
+        auth_policy: {type: string, enum: [anonymous, unionid_required], default: unionid_required}
+    RadarVersionRequest:
+      type: object
+      additionalProperties: false
+      required: [expected_version]
+      properties: {expected_version: {type: integer, format: int64, minimum: 1}}
+    RadarStats:
+      type: object
+      additionalProperties: true
+      required: [link_id, total_events, total_landings, authorized_users, view_opens]
+      properties:
+        link_id: {$ref: "#/components/schemas/PositiveID"}
+        total_events: {type: integer, format: int64, minimum: 0}
+        total_landings: {type: integer, format: int64, minimum: 0}
+        authorized_users: {type: integer, format: int64, minimum: 0}
+        view_opens: {type: integer, format: int64, minimum: 0}
+        last_clicked_at: {oneOf: [{type: string, format: date-time}, {type: "null"}]}
+    RadarEvent:
+      type: object
+      additionalProperties: false
+      required: [receipt_id, link_id, stage, source, created_at]
+      properties:
+        event_id: {$ref: "#/components/schemas/PositiveID"}
+        receipt_id: {type: string, pattern: "^rre_[0-9a-f]{32}$"}
+        link_id: {$ref: "#/components/schemas/PositiveID"}
+        stage: {type: string, enum: [landing, oauth_started, oauth_verified, identity_resolved, content_opened, redirected, image_loaded, pdf_opened, failed]}
+        source: {type: string, enum: [public_event]}
+        created_at: {type: string, format: date-time}
+    RadarEventPage:
+      type: object
+      additionalProperties: true
+      required: [items, total, limit, offset, has_more, identity_attributed, real_external_call_executed]
+      properties:
+        items: {type: array, maxItems: 500, items: {$ref: "#/components/schemas/RadarEvent"}}
+        total: {type: integer, format: int64, minimum: 0}
+        limit: {type: integer, minimum: 1, maximum: 500}
+        offset: {type: integer, minimum: 0}
+        has_more: {type: boolean}
+        identity_attributed: {const: false}
+        real_external_call_executed: {const: false}
+    RadarPublicEventRequest:
+      type: object
+      additionalProperties: false
+      required: [stage, event_token]
+      properties: {stage: {type: string, enum: [image_loaded, pdf_opened]}, page: {type: integer, minimum: 1, maximum: 100000}, event_token: {type: string, minLength: 43, maxLength: 43}}
     AutomationOpsDigest: {type: string, pattern: "^[0-9a-f]{64}$"}
     AutomationOpsGroup: {type: object, additionalProperties: false, required: [id, name, sort_order, version], properties: {id: {$ref: "#/components/schemas/PositiveID"}, name: {type: string, minLength: 1, maxLength: 100}, sort_order: {type: integer, minimum: 0}, version: {type: integer, format: int64, minimum: 1}}}
     AutomationOpsGroupList: {type: object, additionalProperties: false, required: [items], properties: {items: {type: array, maxItems: 1000, items: {$ref: "#/components/schemas/AutomationOpsGroup"}}}}

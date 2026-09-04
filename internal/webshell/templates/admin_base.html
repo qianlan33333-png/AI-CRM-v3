@@ -67,6 +67,12 @@
   <link rel="stylesheet" href="{{.CouponAssets.LabsCSS}}">
   <script type="module" src="{{.CouponAssets.AdminJS}}"></script>
   {{end}}
+  {{if .Radar}}
+  <link rel="stylesheet" href="{{.RadarAssets.TokensCSS}}">
+  <link rel="stylesheet" href="{{.RadarAssets.LabsCSS}}">
+  <script defer src="/static/admin_console/radar_oneid_bridge.js?v=radar-oneid-v1"></script>
+  <script type="module" src="{{.RadarAssets.AdminJS}}"></script>
+  {{end}}
   {{if .GroupOps}}
   <link rel="stylesheet" href="{{.GroupOpsAssets.TokensCSS}}">
   <link rel="stylesheet" href="{{.GroupOpsAssets.LabsCSS}}">
@@ -111,7 +117,7 @@
   <script type="module" src="{{.AIAssistantAssets.HostJS}}"></script>
   {{end}}
 </head>
-<body class="admin-shell" data-admin-shell-source="v3_webshell"{{if .ExternalEffects}} data-page="campaigns"{{end}}{{if .HXC}} data-page="funnel"{{end}}{{if .Media}} data-page="{{.MediaPage}}"{{end}}{{if .Tags}} data-page="tags"{{end}}{{if .Product}} data-page="{{.ProductPage}}"{{end}}{{if .Order}} data-page="{{.OrderPage}}"{{end}}{{if .Coupons}} data-page="{{.CouponPage}}"{{end}}{{if .GroupOps}} data-page="{{.GroupOpsPage}}"{{end}}{{if .Automation}} data-page="{{.AutomationPage}}"{{end}}{{if .AutomationCreateCode}} data-automation-create-code="{{.AutomationCreateCode}}"{{end}}{{if .Survey}} data-page="{{.SurveyPage}}"{{end}}{{if .OperationCycles}} data-page="{{.OperationPage}}"{{end}}{{if .Config}} data-page="{{.ConfigPage}}"{{end}}{{if .Channel}} data-page="{{.ChannelPage}}"{{if .ChannelResourceID}} data-channel-resource-id="{{.ChannelResourceID}}"{{end}}{{end}}{{if .AIAssistant}} data-page="ai-assistant"{{end}}>
+<body class="admin-shell" data-admin-shell-source="v3_webshell"{{if .ExternalEffects}} data-page="campaigns"{{end}}{{if .HXC}} data-page="funnel"{{end}}{{if .Media}} data-page="{{.MediaPage}}"{{end}}{{if .Tags}} data-page="tags"{{end}}{{if .Product}} data-page="{{.ProductPage}}"{{end}}{{if .Order}} data-page="{{.OrderPage}}"{{end}}{{if .Coupons}} data-page="{{.CouponPage}}"{{end}}{{if .Radar}} data-page="{{.RadarPage}}"{{end}}{{if .GroupOps}} data-page="{{.GroupOpsPage}}"{{end}}{{if .Automation}} data-page="{{.AutomationPage}}"{{end}}{{if .AutomationCreateCode}} data-automation-create-code="{{.AutomationCreateCode}}"{{end}}{{if .Survey}} data-page="{{.SurveyPage}}"{{end}}{{if .OperationCycles}} data-page="{{.OperationPage}}"{{end}}{{if .Config}} data-page="{{.ConfigPage}}"{{end}}{{if .Channel}} data-page="{{.ChannelPage}}"{{if .ChannelResourceID}} data-channel-resource-id="{{.ChannelResourceID}}"{{end}}{{end}}{{if .AIAssistant}} data-page="ai-assistant"{{end}}>
   <div class="admin-layout">
     <aside class="admin-sidebar">
       <div class="admin-brand">
@@ -183,7 +189,7 @@
       </header>
       {{end}}
 
-      {{if or .ExternalEffects .HXC .Media .Tags .Product .Order .Coupons .GroupOps .Automation .Survey .OperationCycles .Config .Channel .AIAssistant}}
+      {{if or .ExternalEffects .HXC .Media .Tags .Product .Order .Coupons .Radar .GroupOps .Automation .Survey .OperationCycles .Config .Channel .AIAssistant}}
       {{.Content}}
       {{else}}
       <main class="admin-page">

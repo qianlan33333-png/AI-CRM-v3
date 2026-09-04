@@ -71,6 +71,9 @@ type AdminShellView struct {
 	Coupons          bool
 	CouponPage       string
 	CouponAssets     CouponAssets
+	Radar            bool
+	RadarPage        string
+	RadarAssets      RadarAssets
 	GroupOps         bool
 	GroupOpsPage     string
 	GroupOpsAssets   GroupOpsAssets
@@ -126,6 +129,8 @@ type OrderAssets struct{ TokensCSS, LabsCSS, AdminJS string }
 
 // CouponAssets are verified manifest paths for the frozen coupon workspaces.
 type CouponAssets struct{ TokensCSS, LabsCSS, AdminJS string }
+
+type RadarAssets struct{ TokensCSS, LabsCSS, AdminJS string }
 
 // GroupOpsAssets are manifest-derived URLs for the immutable donor Group Ops
 // bundle. The v3 shell owns the sidebar; the donor supplies only its stage
@@ -352,6 +357,22 @@ func (renderer *Renderer) RenderCoupons(writer http.ResponseWriter, data AdminPa
 	data.ShowPageHeader = false
 	content := `<main id="stage" class="stage rich"></main><template id="tpl">` + donorTemplate + `</template>`
 	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: template.HTML(content), Coupons: true, CouponPage: page, CouponAssets: assets})
+	if err != nil {
+		return err
+	}
+	return writeHTML(writer, http.StatusOK, body)
+}
+
+// RenderRadar mounts the byte-frozen Radar runtime in the v3 shell. Its host
+// bridge is additive v3 code and therefore remains outside the donor hash set.
+func (renderer *Renderer) RenderRadar(writer http.ResponseWriter, data AdminPageData, page string, assets RadarAssets) error {
+	if renderer == nil || renderer.templates == nil || assets.TokensCSS == "" || assets.LabsCSS == "" || assets.AdminJS == "" || (page != "radar" && page != "radarDetail" && page != "radarForm") {
+		return errors.New("radar shell assets are required")
+	}
+	normalizeAdminPage(&data)
+	data.ShowPageHeader = false
+	content := `<main id="stage" class="stage rich"></main>`
+	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: template.HTML(content), Radar: true, RadarPage: page, RadarAssets: assets})
 	if err != nil {
 		return err
 	}

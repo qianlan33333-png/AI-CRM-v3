@@ -104,6 +104,8 @@ grep -qx 'test -x "$release_dir/bin/migrate-phone-identities"' "$installer" || {
 grep -qx 'test -x "$release_dir/bin/migrate-v2-config-definitions"' "$installer" || { echo "release must include configuration definition migration tool" >&2; exit 1; }
 grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/migrate-v2-config-definitions ./cmd/migrate-v2-config-definitions' .github/workflows/ci.yml || { echo "CI must build the configuration definition migration tool" >&2; exit 1; }
 grep -qx 'test -x "$release_dir/bin/migrate-channel-history"' "$installer" || { echo "release must include channel history migration tool" >&2; exit 1; }
+grep -qx 'test -x "$release_dir/bin/migrate-radar-v2"' "$installer" || { echo "release must include Radar migration tool" >&2; exit 1; }
+grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/migrate-radar-v2 ./cmd/migrate-radar-v2' .github/workflows/ci.yml || { echo "release workflow must build Radar migration tool" >&2; exit 1; }
 grep -qx 'test -x "$release_dir/bin/bootstrap-automation-operations"' "$installer" || { echo "release must include Automation Operations semantic bootstrap" >&2; exit 1; }
 grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/bootstrap-automation-operations ./cmd/bootstrap-automation-operations' .github/workflows/ci.yml || { echo "CI must build Automation Operations semantic bootstrap" >&2; exit 1; }
 grep -qxF 'ExecStart=/opt/aicrm/current/bin/bootstrap-automation-operations' deploy/aicrm-automation-bootstrap.service || { echo "Automation Operations bootstrap unit must execute the release binary" >&2; exit 1; }
