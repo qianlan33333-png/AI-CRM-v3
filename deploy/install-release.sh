@@ -175,17 +175,22 @@ if [[ -n "$release_run_number" ]]; then
     mapfile -d '' -t stale_args < "$stale_cmdline" 2>/dev/null || continue
     stale_pid="${stale_cmdline#/proc/}"
     stale_pid="${stale_pid%/cmdline}"
-    if [[ "$stale_pid" != "$$" && "${stale_args[1]:-}" =~ ^/tmp/install-release-[0-9a-f]{40}\.sh$ &&
-      "${stale_args[4]:-}" =~ ^[1-9][0-9]*$ ]]; then
-      if ((stale_args[4] < release_run_number)); then
-        stale_installer_found=true
-        stale_children=""
-        read -r stale_children < "/proc/${stale_pid}/task/${stale_pid}/children" 2>/dev/null || true
-        for stale_child_pid in $stale_children; do
-          [[ "$stale_child_pid" =~ ^[1-9][0-9]*$ ]] && kill -TERM "$stale_child_pid" 2>/dev/null || true
-        done
-        kill -TERM "$stale_pid" 2>/dev/null || true
+    if [[ "$stale_pid" != "$$" && "${stale_args[1]:-}" =~ ^/tmp/install-release-[0-9a-f]{40}\.sh$ ]]; then
+      if [[ "${stale_args[4]:-}" =~ ^[1-9][0-9]*$ ]]; then
+        if ((stale_args[4] < release_run_number)); then
+          stale_installer_found=true
+          stale_children=""
+          read -r stale_children < "/proc/${stale_pid}/task/${stale_pid}/children" 2>/dev/null || true
+          for stale_child_pid in $stale_children; do
+            [[ "$stale_child_pid" =~ ^[1-9][0-9]*$ ]] && kill -TERM "$stale_child_pid" 2>/dev/null || true
+          done
+          kill -TERM "$stale_pid" 2>/dev/null || true
+        else
+          non_older_installer_found=true
+        fi
       else
+        # A manual or malformed installer has no comparable CI ordering proof.
+        # Never recover its lock out from under it.
         non_older_installer_found=true
       fi
     fi
@@ -232,14 +237,21 @@ run_is_not_newer() {
 # discovered. Manual installs and runs competing with an equal/newer installer
 # fail closed.
 release_lock_recovery_allowed="$stale_installer_found"
-if [[ -d /proc && -x "$(command -v flock)" && -n "$release_run_number" && -e "$last_successful_run_file" ]]; then
-  deployed_run_number="$(<"$last_successful_run_file")"
-  if [[ ! "$deployed_run_number" =~ ^[1-9][0-9]*$ ]]; then
-    echo "invalid last successful release run number" >&2
-    exit 11
-  fi
-  if ! run_is_not_newer "$release_run_number" "$deployed_run_number"; then
+if [[ -d /proc && -x "$(command -v flock)" && -n "$release_run_number" ]]; then
+  if [[ ! -e "$last_successful_run_file" ]]; then
+    # Hosts deployed before run ordering was introduced have no marker. When no
+    # active installer exists, an exact lock holder is necessarily detached
+    # from an obsolete install and can be recovered by this numbered CI run.
     release_lock_recovery_allowed=true
+  else
+    deployed_run_number="$(<"$last_successful_run_file")"
+    if [[ ! "$deployed_run_number" =~ ^[1-9][0-9]*$ ]]; then
+      echo "invalid last successful release run number" >&2
+      exit 11
+    fi
+    if ! run_is_not_newer "$release_run_number" "$deployed_run_number"; then
+      release_lock_recovery_allowed=true
+    fi
   fi
 fi
 if [[ "$non_older_installer_found" != true && "$release_lock_recovery_allowed" == true ]] && ! flock -w 15 9; then
