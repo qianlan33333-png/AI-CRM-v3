@@ -100,7 +100,7 @@ No-duplication evidence: no Radar identity matcher, customer key, queue, Worker,
 
    ```bash
    go test ./internal/radar/... -count=1
-   go run ./cmd/check-modules
+   python3 scripts/check-architecture.py
    ```
 
 6. 提交：`feat(radar): define v3 domain contracts`。
