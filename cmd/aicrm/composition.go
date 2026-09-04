@@ -165,6 +165,10 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
+	staffProjector, err := accessapp.NewWeComStaffProjector(accessRepository, passwords, auditService)
+	if err != nil {
+		return fail(err)
+	}
 
 	if cfg.Survey.IdentityPhoneDataKey == "" {
 		return fail(errors.New("identity phone data encryption key is not configured"))
@@ -189,6 +193,10 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	}
 	customerSyncWorker := wecom.NewCustomerSyncWorker()
 	if err = river.AddWorkerSafely[wecom.CustomerSyncJobArgs](effectWorkers, customerSyncWorker); err != nil {
+		return fail(err)
+	}
+	staffDirectoryWorker := wecom.NewStaffDirectoryRefreshWorker()
+	if err = river.AddWorkerSafely[wecom.StaffDirectoryRefreshJobArgs](effectWorkers, staffDirectoryWorker); err != nil {
 		return fail(err)
 	}
 	hxcDashboardWorker := &hxcworker.Worker{}
@@ -231,7 +239,11 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
-	effectsRuntime, err := platformjobqueue.NewRuntimeWithPeriodic(pool.Native(), effectWorkers, []*river.PeriodicJob{segment.AudienceSchedulePeriodicJob()}, platformjobqueue.OutboundQueue, wecom.CustomerSyncQueue, payment.ReconciliationQueue, hxcworker.Queue, segment.AudienceRefreshQueue)
+	periodicJobs := []*river.PeriodicJob{segment.AudienceSchedulePeriodicJob()}
+	if cfg.WeCom.ChannelProviderReadEnabled {
+		periodicJobs = append(periodicJobs, wecom.StaffDirectoryPeriodicJob(cfg.WeCom.StaffDirectoryRefreshInterval, nil))
+	}
+	effectsRuntime, err := platformjobqueue.NewRuntimeWithPeriodic(pool.Native(), effectWorkers, periodicJobs, platformjobqueue.OutboundQueue, wecom.CustomerSyncQueue, wecom.StaffDirectoryRefreshQueue, payment.ReconciliationQueue, hxcworker.Queue, segment.AudienceRefreshQueue)
 	if err != nil {
 		return fail(err)
 	}
@@ -816,6 +828,13 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
+	staffDirectoryRefresh := wecom.StaffDirectoryRefreshService{
+		Enabled: cfg.WeCom.ChannelProviderReadEnabled, Provider: providerClient, Projector: staffProjector,
+		Store: wecom.NewPostgreSQLStaffDirectoryRefreshStore(), Audit: auditService, UOW: uow,
+	}
+	if err = staffDirectoryWorker.BindService(staffDirectoryRefresh); err != nil {
+		return fail(err)
+	}
 	if err = channelAssetService.SetProvider(channelFollowUserGate{enabled: cfg.WeCom.ChannelProviderReadEnabled, source: providerClient}); err != nil {
 		return fail(err)
 	}
@@ -1177,6 +1196,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		"channel.provider.media_prep": cfg.WeCom.ChannelMediaPrepProviderEnabled,
 		"channel.provider.welcome":    cfg.WeCom.ChannelWelcomeProviderEnabled,
 		"channel.provider.tag":        cfg.WeCom.ChannelTagProviderEnabled,
+		"channel.staff_refresh":       cfg.WeCom.ChannelProviderReadEnabled && staffDirectoryRefresh.Ready(),
 	} {
 		status := "warning"
 		if enabled {

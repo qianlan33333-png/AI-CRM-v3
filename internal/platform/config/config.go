@@ -10,6 +10,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type Role string
@@ -67,6 +68,7 @@ type WeCom struct {
 	ChannelMediaPrepProviderEnabled bool
 	ChannelWelcomeProviderEnabled   bool
 	ChannelTagProviderEnabled       bool
+	StaffDirectoryRefreshInterval   time.Duration
 }
 
 // GroupOps contains only the inbound protocol secret for the local Group Ops
@@ -221,7 +223,8 @@ func Load() (Runtime, error) {
 			CorpID: os.Getenv("AICRM_WECOM_CORP_ID"), AgentID: os.Getenv("AICRM_WECOM_AGENT_ID"),
 			Secret: os.Getenv("AICRM_WECOM_SECRET"), ContactSecret: os.Getenv("AICRM_WECOM_CONTACT_SECRET"), CallbackToken: os.Getenv("AICRM_WECOM_CALLBACK_TOKEN"),
 			CallbackAESKey: os.Getenv("AICRM_WECOM_CALLBACK_AES_KEY"), ContextSigningKey: os.Getenv("AICRM_WECOM_CONTEXT_SIGNING_KEY"),
-			ChannelStateHMACKey: os.Getenv("AICRM_CHANNEL_STATE_HMAC_KEY"),
+			ChannelStateHMACKey:           os.Getenv("AICRM_CHANNEL_STATE_HMAC_KEY"),
+			StaffDirectoryRefreshInterval: 15 * time.Minute,
 		},
 		GroupOps: GroupOps{WebhookSecret: os.Getenv("AICRM_GROUP_OPS_WEBHOOK_SECRET")},
 		AutomationOperations: AutomationOperations{
@@ -308,6 +311,12 @@ func Load() (Runtime, error) {
 	}
 	if cfg.WeCom.ChannelTagProviderEnabled, err = strictBool("AICRM_CHANNEL_TAG_PROVIDER_ENABLED", false); err != nil {
 		return Runtime{}, err
+	}
+	if raw := os.Getenv("AICRM_CHANNEL_STAFF_REFRESH_INTERVAL"); raw != "" {
+		cfg.WeCom.StaffDirectoryRefreshInterval, err = time.ParseDuration(raw)
+		if err != nil || cfg.WeCom.StaffDirectoryRefreshInterval < 5*time.Minute || cfg.WeCom.StaffDirectoryRefreshInterval > 24*time.Hour {
+			return Runtime{}, errors.New("invalid AICRM_CHANNEL_STAFF_REFRESH_INTERVAL")
+		}
 	}
 	if cfg.GroupOps.ProviderEnabled, err = strictBool("AICRM_GROUP_OPS_PROVIDER_ENABLED", false); err != nil {
 		return Runtime{}, err

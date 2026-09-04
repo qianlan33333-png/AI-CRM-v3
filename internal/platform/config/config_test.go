@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLoadDefaultsAndRejectsInvalidRole(t *testing.T) {
@@ -172,8 +173,17 @@ func TestChannelProviderCapabilitiesAreIndependentAndFailClosed(t *testing.T) {
 	t.Setenv("AICRM_WECOM_CONTEXT_SIGNING_KEY", strings.Repeat("k", 32))
 	t.Setenv("AICRM_WECOM_CONTACT_SECRET", "contact-secret")
 	cfg, err := Load()
-	if err != nil || !cfg.WeCom.ChannelProviderReadEnabled || cfg.WeCom.ChannelQRProviderEnabled || cfg.GroupOps.ProviderEnabled {
+	if err != nil || !cfg.WeCom.ChannelProviderReadEnabled || cfg.WeCom.ChannelQRProviderEnabled || cfg.GroupOps.ProviderEnabled || cfg.WeCom.StaffDirectoryRefreshInterval != 15*time.Minute {
 		t.Fatalf("config=%+v err=%v", cfg, err)
+	}
+	t.Setenv("AICRM_CHANNEL_STAFF_REFRESH_INTERVAL", "4m")
+	if _, err = Load(); err == nil {
+		t.Fatal("accepted unsafe staff refresh interval")
+	}
+	t.Setenv("AICRM_CHANNEL_STAFF_REFRESH_INTERVAL", "30m")
+	cfg, err = Load()
+	if err != nil || cfg.WeCom.StaffDirectoryRefreshInterval != 30*time.Minute {
+		t.Fatalf("staff refresh interval=%s err=%v", cfg.WeCom.StaffDirectoryRefreshInterval, err)
 	}
 	t.Setenv("AICRM_CHANNEL_QR_PROVIDER_ENABLED", "true")
 	if _, err = Load(); err == nil {

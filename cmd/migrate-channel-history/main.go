@@ -9,10 +9,14 @@ import (
 	"os"
 	"strings"
 
+	accessapp "github.com/qianlan33333-png/AI-CRM-v3/internal/access/app"
+	"github.com/qianlan33333-png/AI-CRM-v3/internal/access/credential"
+	accessstore "github.com/qianlan33333-png/AI-CRM-v3/internal/access/store"
 	channelstore "github.com/qianlan33333-png/AI-CRM-v3/internal/channel"
 	identityapp "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/app"
 	identitystore "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/store"
 	mediastore "github.com/qianlan33333-png/AI-CRM-v3/internal/media/store"
+	platformaudit "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/audit"
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/wecom"
@@ -39,7 +43,7 @@ func run(ctx context.Context, args []string) error {
 	}
 	flags := flag.NewFlagSet("migrate-channel-history", flag.ContinueOnError)
 	var cfg options
-	flags.StringVar(&cfg.mode, "mode", "inspect", "inspect|inspect-stream|validate|dry-run|import|reconcile|replay-check|rollback|semantic-validate|semantic-repair|semantic-reconcile|verify-legacy-assets|activate-repaired")
+	flags.StringVar(&cfg.mode, "mode", "inspect", "inspect|inspect-stream|validate|dry-run|import|reconcile|replay-check|rollback|semantic-validate|sync-wecom-staff|semantic-repair|semantic-reconcile|verify-legacy-assets|activate-repaired")
 	flags.StringVar(&cfg.snapshot, "snapshot", "", "encrypted snapshot path")
 	flags.StringVar(&cfg.report, "report", "", "optional schema discovery report path")
 	flags.StringVar(&cfg.sourceStream, "source-stream", "", "trusted read-only psql stream path for inspect-stream")
@@ -107,6 +111,38 @@ func run(ctx context.Context, args []string) error {
 	}
 	runner := importRunner{Pool: pool, UOW: uow, Resolver: identityapp.OneIDService{Store: identitystore.NewPostgresStore()}, UnionIDScope: cfg.unionIDScope, WeComCorpID: cfg.wecomCorpID, ActorID: cfg.actorID, Media: mediaRepository, States: channelstore.NewPostgreSQLStore()}
 	switch cfg.mode {
+	case "sync-wecom-staff":
+		if !cfg.confirm {
+			return errors.New("sync-wecom-staff requires --confirm")
+		}
+		if !migrationConfig.ProviderEnabled || !migrationConfig.ProviderReadEnabled {
+			return errors.New("channel provider directory read is disabled")
+		}
+		provider, providerErr := wecomadapter.NewDirectory(wecomadapter.Config{
+			Enabled: true, CorpID: migrationConfig.WeComCorpID, ContactSecret: migrationConfig.WeComContactSecret,
+		})
+		if providerErr != nil {
+			return providerErr
+		}
+		audit, auditErr := platformaudit.NewService(platformaudit.NewPostgreSQLStore())
+		if auditErr != nil {
+			return auditErr
+		}
+		projector, projectorErr := accessapp.NewWeComStaffProjector(accessstore.NewPostgreSQL(), credential.PasswordHasher{}, audit)
+		if projectorErr != nil {
+			return projectorErr
+		}
+		runKey := "migration-" + manifest.SnapshotID
+		service := wecom.StaffDirectoryRefreshService{Enabled: true, Provider: provider, Projector: projector, DisplayNames: sourceStaffDisplayNames(manifest), Store: wecom.NewPostgreSQLStaffDirectoryRefreshStore(), Audit: audit, UOW: uow}
+		if refreshErr := service.Refresh(ctx, runKey, "manual", true); refreshErr != nil {
+			return refreshErr
+		}
+		var state string
+		var discovered, created, existing, inactive int64
+		if queryErr := pool.Native().QueryRow(ctx, `SELECT state,discovered_count,created_count,existing_count,inactive_count FROM wecom_staff_directory_refresh_runs WHERE run_key=$1`, runKey).Scan(&state, &discovered, &created, &existing, &inactive); queryErr != nil {
+			return queryErr
+		}
+		return printJSON(map[string]any{"mode": cfg.mode, "state": state, "discovered": discovered, "created": created, "existing": existing, "inactive": inactive, "provider_reads": 1, "provider_writes": 0, "provider_effects": 0})
 	case "import":
 		if !cfg.confirm {
 			return errors.New("import requires --confirm")
@@ -188,6 +224,20 @@ func run(ctx context.Context, args []string) error {
 	default:
 		return errors.New("unsupported mode")
 	}
+}
+
+func sourceStaffDisplayNames(manifest snapshotManifest) map[string]string {
+	result := map[string]string{}
+	for _, row := range mustTable(manifest, "automation_channel_assignee").Rows {
+		providerID := firstString(row.Payload, "staff_id")
+		displayName := firstString(row.Payload, "display_name_snapshot")
+		if providerID != "" && displayName != "" {
+			if _, exists := result[providerID]; !exists {
+				result[providerID] = displayName
+			}
+		}
+	}
+	return result
 }
 
 func printJSON(value any) error {
