@@ -33,6 +33,7 @@ sha_first=5555555555555555555555555555555555555555
 sha_second=6666666666666666666666666666666666666666
 sha_recovered=7777777777777777777777777777777777777777
 sha_orphaned=8888888888888888888888888888888888888888
+sha_orphan_only=9999999999999999999999999999999999999999
 
 mkdir -p "$test_root/bin" "$test_root/aicrm" "$test_root/etc-aicrm" "$test_root/systemd"
 printf 'AICRM_SURVEY_DATA_KEY=%043d\n' 0 > "$test_root/etc-aicrm/aicrm.env"
@@ -94,20 +95,26 @@ exit 0
 EOF
 chmod 0755 "$test_root/bin"/*
 
-{
-  head -n 1 "$source_installer"
-  cat <<'EOF'
+if command -v flock >/dev/null 2>&1; then
+  cp "$source_installer" "$test_root/install-release.sh"
+else
+  {
+    head -n 1 "$source_installer"
+    cat <<'EOF'
 test_lock_acquire() {
   while ! mkdir "$AICRM_TEST_LOCK_DIR" 2>/dev/null; do /bin/sleep 0.01; done
   trap 'cleanup_release_artifacts; rmdir "$AICRM_TEST_LOCK_DIR" 2>/dev/null || true' EXIT
 }
 EOF
-  tail -n +2 "$source_installer"
-} | sed \
+    tail -n +2 "$source_installer"
+  } | sed -e 's|flock 9|test_lock_acquire|' > "$test_root/install-release.sh"
+fi
+sed \
   -e "s|/opt/aicrm|$test_root/aicrm|g" \
   -e "s|/etc/aicrm|$test_root/etc-aicrm|g" \
   -e "s|/etc/systemd/system|$test_root/systemd|g" \
-  -e 's|flock 9|test_lock_acquire|' > "$test_root/install-release.sh"
+  "$test_root/install-release.sh" > "$test_root/install-release.rewritten.sh"
+mv "$test_root/install-release.rewritten.sh" "$test_root/install-release.sh"
 chmod 0755 "$test_root/install-release.sh"
 
 make_release() {
@@ -183,7 +190,7 @@ run_release() {
     "$test_root/install-release.sh" "/tmp/aicrm-${sha}.tar.gz" "$sha" "$run_number" >> "$test_root/installer.log" 2>&1
 }
 
-for sha in "$sha_one" "$sha_manual" "$sha_stale" "$sha_failed" "$sha_first" "$sha_second" "$sha_recovered"; do make_release "$sha"; done
+for sha in "$sha_one" "$sha_manual" "$sha_stale" "$sha_failed" "$sha_first" "$sha_second" "$sha_recovered" "$sha_orphan_only"; do make_release "$sha"; done
 
 run_release "$sha_one" 100 initial 1
 [[ "$(<"$test_root/effects-readlink-${sha_one}")" == 2 ]] || fail "effects worker executable readiness was not retried"
@@ -255,6 +262,26 @@ EOF
   [[ "$(readlink "$test_root/aicrm/current")" == "$test_root/aicrm/releases/$sha_recovered" ]] || fail "orphan lock recovery did not activate the newer release"
   [[ ! -e "/proc/$(<"$stale_lock_grandchild_pid_file")" ]] || fail "orphaned lock holder survived recovery"
   rm -f -- "$stale_installer"
+
+  # Model the production failure after the obsolete installer has already
+  # exited: only a detached descendant and its inherited lock fd remain.
+  orphan_only_pid_file="$test_root/orphan-only.pid"
+  (
+    exec 9>"$test_root/aicrm/install-release.lock"
+    flock 9
+    /bin/sleep 300 &
+    printf '%s\n' "$!" > "$orphan_only_pid_file"
+  )
+  for _ in $(seq 1 100); do
+    [[ -f "$orphan_only_pid_file" ]] && break
+    /bin/sleep 0.01
+  done
+  [[ -f "$orphan_only_pid_file" ]] || fail "orphan-only lock fixture did not start"
+  stale_lock_grandchild_pid_file="$orphan_only_pid_file"
+  run_release "$sha_orphan_only" 106 orphan-only
+  [[ "$(<"$test_root/aicrm/last-successful-run-number")" == 106 ]] || fail "orphan-only recovery did not persist the newer run number"
+  [[ "$(readlink "$test_root/aicrm/current")" == "$test_root/aicrm/releases/$sha_orphan_only" ]] || fail "orphan-only recovery did not activate the newer release"
+  [[ ! -e "/proc/$(<"$orphan_only_pid_file")" ]] || fail "orphan-only lock holder survived recovery"
 fi
 
 echo "install release ordering contract passed"
