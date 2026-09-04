@@ -23,10 +23,11 @@ type memoryStore struct {
 	imports  map[string]ImportReceipt
 	failSave bool
 	exports  map[string]ExportReceipt
+	contacts map[int64][]byte
 }
 
 func newMemoryStore() *memoryStore {
-	return &memoryStore{nextID: 1, orders: map[int64]domain.Snapshot{}, receipts: map[string]Receipt{}, imports: map[string]ImportReceipt{}, exports: map[string]ExportReceipt{}}
+	return &memoryStore{nextID: 1, orders: map[int64]domain.Snapshot{}, receipts: map[string]Receipt{}, imports: map[string]ImportReceipt{}, exports: map[string]ExportReceipt{}, contacts: map[int64][]byte{}}
 }
 
 func (s *memoryStore) Reserve(_ context.Context, reservation Reservation) (Receipt, bool, error) {
@@ -66,6 +67,17 @@ func (s *memoryStore) Insert(_ context.Context, order domain.Order, _ int64, _ t
 func (s *memoryStore) InsertScoped(ctx context.Context, order domain.Order, _ string, now time.Time) (domain.Order, error) {
 	return s.Insert(ctx, order, 1, now)
 }
+func (s *memoryStore) InsertContactSnapshot(_ context.Context, orderID int64, ciphertext []byte, _ int16, _ time.Time) error {
+	s.contacts[orderID] = append([]byte(nil), ciphertext...)
+	return nil
+}
+
+type contactCipherStub struct{}
+
+func (contactCipherStub) Encrypt(value string) ([]byte, error) {
+	return append(make([]byte, 28), value...), nil
+}
+func (contactCipherStub) KeyVersion() int16 { return 1 }
 
 func (s *memoryStore) Get(_ context.Context, id int64, _ bool) (domain.Order, error) {
 	snapshot, ok := s.orders[id]
@@ -178,6 +190,27 @@ func TestCreatePaymentOrderWithinFreezesProductVersionAndReplays(t *testing.T) {
 	replay, err := service.CreatePaymentOrderWithin(context.Background(), command)
 	if err != nil || replay.ID != first.ID || len(store.orders) != 1 {
 		t.Fatalf("replay=%+v orders=%d err=%v", replay, len(store.orders), err)
+	}
+}
+
+func TestCreatePaymentOrderWithinEncryptsRequiredContactSnapshot(t *testing.T) {
+	store := newMemoryStore()
+	service := NewService(directUOW{}, store)
+	if err := service.SetContactCipher(contactCipherStub{}); err != nil {
+		t.Fatal(err)
+	}
+	command := orderport.PaymentOrderCommand{
+		Provider: domain.ProviderWeChatPay, MerchantOrderNo: "v3pay_mobile_123456",
+		PayerCustomerID: 11, BeneficiaryCustomerID: 11, ProductID: 5, ProductCode: "course-5", ProductName: "Course 5", ProductVersion: 3,
+		UnitAmountMinor: 8800, Currency: "CNY", MobileE164: "+8613812345678", ActorScope: "payment-session:mobile-123456", IdempotencyKey: "checkout-mobile-key-0005",
+	}
+	order, err := service.CreatePaymentOrderWithin(context.Background(), command)
+	if err != nil || len(store.contacts[order.ID]) < 28 || strings.Contains(string(order.Items[0].ProductName), command.MobileE164) {
+		t.Fatalf("order=%+v contact=%x err=%v", order, store.contacts[order.ID], err)
+	}
+	command.MobileE164 = "+8612812345678"
+	if _, err = service.CreatePaymentOrderWithin(context.Background(), command); !errors.Is(err, orderport.ErrConflict) {
+		t.Fatalf("invalid mobile error=%v", err)
 	}
 }
 

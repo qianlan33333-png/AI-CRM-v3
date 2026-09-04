@@ -11,6 +11,7 @@ import (
 	"time"
 
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
+	productapp "github.com/qianlan33333-png/AI-CRM-v3/internal/product/app"
 	productport "github.com/qianlan33333-png/AI-CRM-v3/internal/product/port"
 )
 
@@ -64,6 +65,7 @@ func (catalog *testCatalog) Update(_ context.Context, command productport.Update
 type testLifecycle struct {
 	local      productport.LocalProduct
 	share      productport.LocalProductShare
+	shareErr   error
 	deleteCall *productport.DeleteLocalProductCommand
 }
 
@@ -81,7 +83,7 @@ func (lifecycle *testLifecycle) DeleteLocalProduct(_ context.Context, command pr
 }
 
 func (lifecycle *testLifecycle) ShareLocalProduct(context.Context, productport.ID) (productport.LocalProductShare, error) {
-	return lifecycle.share, nil
+	return lifecycle.share, lifecycle.shareErr
 }
 
 type testServicePeriod struct {
@@ -185,6 +187,22 @@ func TestHandlerDeleteCompatibilityPathReachesLifecycle(t *testing.T) {
 	handler.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK || lifecycle.deleteCall == nil || lifecycle.deleteCall.ID != 7 || lifecycle.deleteCall.ExpectedVersion != 2 || security.csrfCalls != 1 {
 		t.Fatalf("status=%d delete=%+v csrfCalls=%d body=%s", recorder.Code, lifecycle.deleteCall, security.csrfCalls, recorder.Body.String())
+	}
+}
+
+func TestHandlerShareReturnsPublicRouteOrProductNotEnabled(t *testing.T) {
+	handler, _, _, lifecycle := newHandlerForTest(t)
+	lifecycle.share = productport.LocalProductShare{ProductID: 7, ProductCode: "p-7", Lifecycle: productport.LocalProductEnabled, Available: true, PurchaseURL: "/p/7"}
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/admin/wechat-pay/products/7/share", nil))
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"available":true`) || !strings.Contains(recorder.Body.String(), `"purchase_url":"/p/7"`) {
+		t.Fatalf("share status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	lifecycle.shareErr = productapp.ErrLocalProductNotEnabled
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/admin/wechat-pay/products/7/share", nil))
+	if recorder.Code != http.StatusConflict || !strings.Contains(recorder.Body.String(), `"code":"product_not_enabled"`) {
+		t.Fatalf("disabled share status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 }
 

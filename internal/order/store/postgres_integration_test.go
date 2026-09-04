@@ -121,6 +121,62 @@ func TestPostgreSQLOrderAtomicReplayCursorAndConstraints(t *testing.T) {
 	}
 }
 
+func TestPostgreSQLPaidProductProjectionUsesHistoryAndExactFallback(t *testing.T) {
+	native, cleanup := orderIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	wrapper, _ := platformpostgres.Wrap(native, time.Second)
+	uow, _ := platformpostgres.NewUnitOfWork(wrapper)
+	repository, _ := NewPostgreSQL(native, uow)
+	now := time.Date(2026, 9, 4, 0, 0, 0, 0, time.UTC)
+	insertOrder := func(source, status string, refunded int64, productID *int64, code string, duplicate bool, paidHistory bool) int64 {
+		t.Helper()
+		var orderID int64
+		if err := native.QueryRow(ctx, `INSERT INTO orders(provider,source_system,source_key,merchant_order_no,payer_customer_id,beneficiary_customer_id,amount_minor,refunded_minor,currency,status,record_origin,effect_eligible,source_row_digest,version,created_at,updated_at) VALUES('wechat_pay','test',$1,$2,11,11,100,$3,'CNY',$4,'history',false,$5,2,$6,$6) RETURNING id`, source, "M-"+source, refunded, status, make([]byte, 32), now).Scan(&orderID); err != nil {
+			t.Fatal(err)
+		}
+		lines := 1
+		if duplicate {
+			lines = 2
+		}
+		for line := 1; line <= lines; line++ {
+			if _, err := native.Exec(ctx, `INSERT INTO order_items(order_id,line_no,product_id,product_code,product_name,unit_amount_minor,quantity,line_amount_minor) VALUES($1,$2,$3,$4,'Product',100,1,100)`, orderID, line, productID, code); err != nil {
+				t.Fatal(err)
+			}
+		}
+		toStatus := "pending_payment"
+		if paidHistory {
+			toStatus = "paid"
+		}
+		if _, err := native.Exec(ctx, `INSERT INTO order_status_history(order_id,from_status,to_status,refunded_minor,order_version,actor_scope,occurred_at) VALUES($1,NULL,$2,0,1,'test',$3)`, orderID, toStatus, now); err != nil {
+			t.Fatal(err)
+		}
+		return orderID
+	}
+	productOne, productTwo := int64(101), int64(202)
+	closed := insertOrder("closed", "closed", 0, &productOne, "P-1", false, true)
+	partial := insertOrder("partial", "partially_refunded", 40, &productOne, "P-1", true, true)
+	_ = insertOrder("pending", "pending_payment", 0, &productOne, "P-1", false, false)
+	legacy := insertOrder("legacy", "paid", 0, nil, "P-1", false, true)
+	_ = insertOrder("mismatch", "paid", 0, &productTwo, "P-1", false, true)
+	var facts []orderport.ProductOrderFact
+	err := uow.Within(ctx, func(tx context.Context) error {
+		var inner error
+		facts, inner = repository.ReadPaidProductOrdersWithin(tx, []orderport.ProductSalesKey{{ProductID: productOne, ProductCode: "P-1"}})
+		return inner
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[int64]orderport.ProductOrderFact{}
+	for _, fact := range facts {
+		seen[fact.OrderID] = fact
+	}
+	if len(seen) != 3 || seen[closed].OrderRefunded || !seen[partial].OrderRefunded || seen[legacy].ProductID != nil {
+		t.Fatalf("facts=%+v", facts)
+	}
+}
+
 func TestPostgreSQLHistoricalImportIsEffectIneligibleAndReplayableAcrossRuns(t *testing.T) {
 	native, cleanup := orderIntegrationPool(t)
 	defer cleanup()

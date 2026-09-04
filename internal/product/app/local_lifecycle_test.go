@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
+	"strconv"
 	"testing"
 	"time"
 
@@ -148,20 +149,24 @@ func TestLocalProductLifecycleDeleteIsDraftOnlyAndReferenceSafe(t *testing.T) {
 	}
 }
 
-func TestLocalProductLifecycleShareIsExplicitlyUnavailableWithoutPublicRoute(t *testing.T) {
+func TestLocalProductLifecycleShareUsesCanonicalPublicRouteOnlyWhenEnabled(t *testing.T) {
 	service, store, _ := newLocalProductLifecycleFixture()
 	product := seedLocalProduct(t, store, 31, productport.LocalProductEnabled, true, nil)
 	share, err := service.ShareLocalProduct(context.Background(), product.ID)
 	if err != nil || share.ProductID != product.ID || share.ProductCode != product.ProductCode || share.Lifecycle != productport.LocalProductEnabled ||
-		share.Available || share.Reason != LocalProductShareUnavailableReason || share.PurchaseURL != "" || share.QRCodeURL != "" {
+		!share.Available || share.Reason != "" || share.PurchaseURL != "/p/"+strconv.FormatInt(int64(product.ID), 10) || share.QRCodeURL != "" {
 		t.Fatalf("share=%+v err=%v", share, err)
+	}
+	disabled := seedLocalProduct(t, store, 32, productport.LocalProductDisabled, false, nil)
+	if _, err = service.ShareLocalProduct(context.Background(), disabled.ID); !errors.Is(err, ErrLocalProductNotEnabled) {
+		t.Fatalf("disabled share error=%v", err)
 	}
 	if _, err = service.ShareLocalProduct(context.Background(), 99999); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("missing share error=%v", err)
 	}
 
 	invalid := store.products[product.ID]
-	invalid.ID = 32
+	invalid.ID = 33
 	invalid.LegacyAdminProjection = json.RawMessage(`{"schema_version":1,"status":"unknown","enabled":false}`)
 	store.products[invalid.ID] = invalid
 	if _, err = service.ShareLocalProduct(context.Background(), invalid.ID); !errors.Is(err, ErrUnavailable) {

@@ -764,10 +764,13 @@ export interface Product {
   adminProjection?: ProductAdminProjection;
   externalPush?: ProductExternalPush;
   version?: number;
-  lifecycle?: string;
+  lifecycle?: 'draft' | 'enabled' | 'disabled';
   status: string;
   tone: Tone;
   sold: string;
+  paidOrderCount?: number;
+  refundOrderCount?: number;
+  soldCount?: number;
   updated: string;
 }
 

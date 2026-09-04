@@ -64,15 +64,14 @@ type DeleteLocalProductResult struct {
 	Deleted   bool `json:"deleted"`
 }
 
-// LocalProductShare is deliberately closed. A false Available value must be
-// accompanied by a reason; URL fields are only populated after an explicitly
-// authoritative public-purchase route is wired by a later integration lane.
+// LocalProductShare contains a same-origin public product URL. Rendering a QR
+// is a browser concern and does not send a Provider request.
 type LocalProductShare struct {
 	ProductID   ID                    `json:"product_id"`
 	ProductCode string                `json:"product_code"`
 	Lifecycle   LocalProductLifecycle `json:"lifecycle"`
 	Available   bool                  `json:"available"`
-	Reason      string                `json:"reason"`
+	Reason      string                `json:"reason,omitempty"`
 	PurchaseURL string                `json:"purchase_url,omitempty"`
 	QRCodeURL   string                `json:"qr_code_url,omitempty"`
 }

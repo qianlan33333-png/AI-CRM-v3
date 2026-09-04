@@ -22,6 +22,7 @@ import (
 	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
 	identityport "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/port"
+	paymentdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/domain"
 	paymentport "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/port"
 	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
 )
@@ -84,6 +85,7 @@ func ParsePlatformCertificate(raw []byte) (string, *rsa.PublicKey, error) {
 type Config struct {
 	Enabled                           bool
 	AppID, AppScope                   string
+	H5AppID, H5AppScope               string
 	APIBaseURL                        string
 	PaymentNotifyURL, RefundNotifyURL string
 	Credential                        Credential
@@ -106,6 +108,7 @@ type DBMaterialLoader struct {
 	Intents    paymentport.ProviderIntentReader
 	Identities identityport.PaymentIdentityReader
 	AppScope   string
+	H5AppScope string
 }
 
 func (loader DBMaterialLoader) Load(ctx context.Context, kind effectport.Kind, source effectport.Digest) (Material, error) {
@@ -126,8 +129,15 @@ func (loader DBMaterialLoader) Load(ctx context.Context, kind effectport.Kind, s
 			if loader.Identities == nil {
 				return ErrInvalidMaterial
 			}
-			identity, ok, err := loader.Identities.VerifiedPaymentIdentity(tx, intent.PayerIdentityID, identitydomain.KindMPOpenID, loader.AppScope)
-			if err != nil || !ok || identity.IdentityID != intent.PayerIdentityID || identity.Scope != loader.AppScope {
+			identityKind, scope := identitydomain.KindMPOpenID, loader.AppScope
+			if intent.Channel == paymentdomain.ChannelH5Official {
+				identityKind, scope = identitydomain.KindOAOpenID, loader.H5AppScope
+			}
+			if scope == "" {
+				return ErrInvalidMaterial
+			}
+			identity, ok, err := loader.Identities.VerifiedPaymentIdentity(tx, intent.PayerIdentityID, identityKind, scope)
+			if err != nil || !ok || identity.IdentityID != intent.PayerIdentityID || identity.Scope != scope {
 				return ErrInvalidMaterial
 			}
 			material.PayerOpenID = identity.Value
@@ -151,7 +161,7 @@ func NewWeChatPay(config Config, loader MaterialLoader, client HTTPDoer) (*WeCha
 		return &WeChatPay{config: config}, nil
 	}
 	base, err := url.Parse(config.APIBaseURL)
-	if err != nil || base.Scheme != "https" || base.Host == "" || base.Path != "" || loader == nil || client == nil || !config.Credential.valid() || !validHTTPS(config.PaymentNotifyURL) || !validHTTPS(config.RefundNotifyURL) || config.AppID == "" || config.AppScope == "" {
+	if err != nil || base.Scheme != "https" || base.Host == "" || base.Path != "" || loader == nil || client == nil || !config.Credential.valid() || !validHTTPS(config.PaymentNotifyURL) || !validHTTPS(config.RefundNotifyURL) || config.AppID == "" || config.AppScope == "" || (config.H5AppID == "") != (config.H5AppScope == "") {
 		return nil, ErrInvalidConfig
 	}
 	return &WeChatPay{config: config, base: base, loader: loader, client: client, now: time.Now, nonce: randomNonce}, nil
@@ -174,9 +184,16 @@ func (provider *WeChatPay) Execute(ctx context.Context, envelope effectport.Enve
 		if material.PayerOpenID == "" || material.Intent.AmountMinor < 1 || material.Intent.Currency != "CNY" {
 			return final("wechatpay.prepay.invalid", envelope, attempt), nil
 		}
+		appID := provider.config.AppID
+		if material.Intent.Channel == paymentdomain.ChannelH5Official {
+			appID = provider.config.H5AppID
+		}
+		if appID == "" {
+			return final("wechatpay.prepay.channel", envelope, attempt), nil
+		}
 		path = "/v3/pay/transactions/jsapi"
 		payload = map[string]any{
-			"appid": provider.config.AppID, "mchid": provider.config.Credential.MerchantID,
+			"appid": appID, "mchid": provider.config.Credential.MerchantID,
 			"description":  "CRM order " + material.Intent.MerchantOrderNo,
 			"out_trade_no": material.Intent.MerchantOrderNo, "notify_url": provider.config.PaymentNotifyURL,
 			"amount": map[string]any{"total": material.Intent.AmountMinor, "currency": material.Intent.Currency},
@@ -213,7 +230,11 @@ func (provider *WeChatPay) Execute(ctx context.Context, envelope effectport.Enve
 		if json.Unmarshal(response.Body, &decoded) != nil || decoded.PrepayID == "" {
 			return effectport.AdapterResult{Completion: effectport.StateUnknown, ReceiptDigest: receipt("wechatpay.invalid-response", envelope, attempt), CallAttempted: true, RealExternalCallExecuted: true}, nil
 		}
-		artifactPayload, err := provider.handoff(decoded.PrepayID)
+		appID := provider.config.AppID
+		if material.Intent.Channel == paymentdomain.ChannelH5Official {
+			appID = provider.config.H5AppID
+		}
+		artifactPayload, err := provider.handoff(decoded.PrepayID, appID)
 		if err != nil {
 			return effectport.AdapterResult{Completion: effectport.StateUnknown, ReceiptDigest: receipt("wechatpay.invalid-handoff", envelope, attempt), CallAttempted: true, RealExternalCallExecuted: true}, nil
 		}
@@ -360,18 +381,18 @@ func (provider *WeChatPay) signedJSON(ctx context.Context, method, path string, 
 	return signedResponse{StatusCode: response.StatusCode, Body: responseBody}, true, nil
 }
 
-func (provider *WeChatPay) handoff(prepayID string) ([]byte, error) {
+func (provider *WeChatPay) handoff(prepayID, appID string) ([]byte, error) {
 	nonce, err := provider.nonce()
 	if err != nil {
 		return nil, err
 	}
 	timestamp := strconv.FormatInt(provider.now().UTC().Unix(), 10)
 	pkg := "prepay_id=" + prepayID
-	signature, err := sign(provider.config.Credential.Signer, provider.config.AppID+"\n"+timestamp+"\n"+nonce+"\n"+pkg+"\n")
+	signature, err := sign(provider.config.Credential.Signer, appID+"\n"+timestamp+"\n"+nonce+"\n"+pkg+"\n")
 	if err != nil {
 		return nil, err
 	}
-	return json.Marshal(map[string]string{"appId": provider.config.AppID, "timeStamp": timestamp, "nonceStr": nonce, "package": pkg, "signType": "RSA", "paySign": signature, "expiresAt": provider.now().UTC().Add(2 * time.Hour).Format(time.RFC3339Nano)})
+	return json.Marshal(map[string]string{"appId": appID, "timeStamp": timestamp, "nonceStr": nonce, "package": pkg, "signType": "RSA", "paySign": signature, "expiresAt": provider.now().UTC().Add(2 * time.Hour).Format(time.RFC3339Nano)})
 }
 
 func sign(signer crypto.Signer, message string) (string, error) {

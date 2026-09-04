@@ -56,7 +56,7 @@ import { deleteGroupOpsPlanDto, saveGroupOpsPlanDto, transitionGroupOpsPlanDto, 
 import { archiveHxcSenderDto, refreshHxcDirectoryDto, reorderHxcSendersDto, saveHxcSenderDto, type HxcSenderWriteInput } from '../../api/admin';
 import { saveAppSettingsDto } from '../../api/admin';
 import { archiveAutomationAgentDto, copyAutomationAgentDto, pauseAutomationAgentDto, precheckAutomationAgentDto, saveAutomationAgentDto, type AutomationAgentPrecheck, type AutomationAgentWriteInput } from '../../api/admin';
-import { archiveAudiencePackage, archiveServiceProductDto, archiveTagDto, archiveTagGroupDto, copyAudiencePackageDto, copyProductDto, copyServiceProductDto, createOwnerReassignmentPreviewDto, createRefundIntentDto, deleteAttachmentItemDto, deleteAudienceGroup as deleteAudienceGroupDto, deleteImageItemDto, deleteMiniProgramItemDto, downloadAttachmentItemDto, downloadOwnerReassignmentReportDto, downloadOwnerReassignmentTemplateDto, executeOwnerReassignmentPreviewDto, exportWechatOrdersDto, getImageThumbnailDto, getOwnerReassignmentPreviewDto, queueTagSyncDto, readAdminPage, readCouponSharePath, readRadarEvents, readRadarSharePath, readServiceProductSharePath, saveAttachmentItemDto, saveAudienceGroup as saveAudienceGroupDto, saveImageItemDto, saveMiniProgramItemDto, saveProductDto, saveRadarLinkDto, saveServiceProductDto, saveTagDto, saveTagGroupDto, setAudiencePackageRunning, setCustomerTagDto, setProductEnabledDto, setRadarEnabled, setServiceProductEnabledDto, updateCustomerDto, uploadRadarImageDto, uploadRadarPdfDto, type AdminReadContext, type CustomerListQuery, type ProductWriteInput, type RefundIntentInput, type RefundIntentResult, type WechatOrderExportInput } from '../../api/admin';
+import { archiveAudiencePackage, archiveServiceProductDto, archiveTagDto, archiveTagGroupDto, copyAudiencePackageDto, copyProductDto, copyServiceProductDto, createOwnerReassignmentPreviewDto, createRefundIntentDto, deleteAttachmentItemDto, deleteAudienceGroup as deleteAudienceGroupDto, deleteImageItemDto, deleteMiniProgramItemDto, downloadAttachmentItemDto, downloadOwnerReassignmentReportDto, downloadOwnerReassignmentTemplateDto, executeOwnerReassignmentPreviewDto, exportWechatOrdersDto, getImageThumbnailDto, getOwnerReassignmentPreviewDto, queueTagSyncDto, readAdminPage, readCouponSharePath, readProductSharePath, readRadarEvents, readRadarSharePath, readServiceProductSharePath, saveAttachmentItemDto, saveAudienceGroup as saveAudienceGroupDto, saveImageItemDto, saveMiniProgramItemDto, saveProductDto, saveRadarLinkDto, saveServiceProductDto, saveTagDto, saveTagGroupDto, setAudiencePackageRunning, setCustomerTagDto, setProductEnabledDto, setRadarEnabled, setServiceProductEnabledDto, updateCustomerDto, uploadRadarImageDto, uploadRadarPdfDto, type AdminReadContext, type CustomerListQuery, type ProductWriteInput, type RefundIntentInput, type RefundIntentResult, type WechatOrderExportInput } from '../../api/admin';
 
 /* ================= 接口定义 ================= */
 
@@ -97,6 +97,7 @@ export interface AdminApi {
   listRadarEvents(linkId: number): Promise<RadarEvent[]>;
   getRadarSharePath(linkId: number): Promise<string>;
   getCouponSharePath(couponId: number): Promise<string>;
+  getProductSharePath(productId: number): Promise<string>;
   getServiceProductSharePath(serviceProductId: number): Promise<string>;
   /** 上传雷达图片素材（multipart），返回可引用的素材描述 */
   uploadRadarImage(file: File): Promise<RadarMedia>;
@@ -449,6 +450,11 @@ export class MockApi implements AdminApi {
     return delay(`/c/c-${couponId}`);
   }
 
+  getProductSharePath(productId: number): Promise<string> {
+    const product = this.db.rows.products.find((item) => item.resourceId === productId && item.lifecycle === 'enabled');
+    return product ? delay(`/p/${productId}`) : Promise.reject(new Error('请先启用商品'));
+  }
+
   getServiceProductSharePath(serviceProductId: number): Promise<string> {
     const product = this.db.rows.spProducts.find((item) => item.resourceId === serviceProductId && item.lifecycle === 'enabled');
     return product ? delay(`/p/service_period/${serviceProductId}`) : Promise.reject(new Error('周期商品尚未启用'));
@@ -779,12 +785,12 @@ export class MockApi implements AdminApi {
   }
 
   saveProduct(input: ProductWriteInput): Promise<Product> {
-    const item = input.id == null ? { resourceId: Date.now(), code: input.code, name: input.name, price: input.price, description: input.description, currency: input.currency, stockQuantity: input.stockQuantity, version: 1, lifecycle: 'draft', status: 'draft', tone: 'warn' as const, sold: '0', updated: '' } : this.db.rows.products.find((row) => row.resourceId === input.id)!;
+    const item: Product = input.id == null ? { resourceId: Date.now(), code: input.code, name: input.name, price: input.price, description: input.description, currency: input.currency, stockQuantity: input.stockQuantity, version: 1, lifecycle: 'draft', status: '草稿', tone: 'warn', sold: '0', paidOrderCount: 0, refundOrderCount: 0, soldCount: 0, updated: '' } : this.db.rows.products.find((row) => row.resourceId === input.id)!;
     Object.assign(item, input, { resourceId: item.resourceId, version: (item.version || 0) + 1 });
     if (input.id == null) this.db.rows.products.push(item);
     this.persist(); return delay(item);
   }
-  setProductEnabled(productId: number, enabled: boolean): Promise<Product> { const item = this.db.rows.products.find((row) => row.resourceId === productId)!; item.lifecycle = item.status = enabled ? 'enabled' : 'disabled'; this.persist(); return delay(item); }
+  setProductEnabled(productId: number, enabled: boolean): Promise<Product> { const item = this.db.rows.products.find((row) => row.resourceId === productId)!; item.lifecycle = enabled ? 'enabled' : 'disabled'; item.status = enabled ? '已启用' : '已停用'; item.tone = enabled ? 'ok' : 'gray'; this.persist(); return delay(item); }
   copyProduct(productId: number): Promise<Product> { const source = this.db.rows.products.find((row) => row.resourceId === productId)!; return this.saveProduct({ id: undefined, code: source.code + '-COPY', name: source.name + '（副本）', description: source.description || '', price: source.price, currency: source.currency || 'CNY', stockQuantity: source.stockQuantity || 0 }); }
   deleteProduct(productId: number): Promise<void> { this.db.rows.products = this.db.rows.products.filter((row) => row.resourceId !== productId); this.persist(); return delay(undefined); }
   saveServiceProduct(input: ProductWriteInput): Promise<SpProduct> { const item = input.id == null ? { resourceId: Date.now(), code: input.code, name: input.name, price: input.price, description: input.description, currency: input.currency, stockQuantity: input.stockQuantity, version: 1, lifecycle: 'draft', status: 'draft', tone: 'warn' as const, sold: '0', updated: '' } : this.db.rows.spProducts.find((row) => row.resourceId === input.id)!; Object.assign(item, input, { resourceId: item.resourceId, version: (item.version || 0) + 1 }); if (input.id == null) this.db.rows.spProducts.push(item); this.persist(); return delay(item); }
@@ -921,6 +927,10 @@ export class HttpApi implements AdminApi {
 
   getCouponSharePath(couponId: number): Promise<string> {
     return readCouponSharePath(couponId);
+  }
+
+  getProductSharePath(productId: number): Promise<string> {
+    return readProductSharePath(productId);
   }
 
   getServiceProductSharePath(serviceProductId: number): Promise<string> {

@@ -1097,12 +1097,41 @@ paths:
     get:
       operationId: shareLocalWechatPayProduct
       tags: [Products]
-      description: Ordinary Product sharing remains blocked until an authoritative public purchase route exists.
+      description: Return the canonical same-origin public purchase path for an enabled ordinary Product. This read does not send a Provider request.
       security: [{adminSession: []}]
       responses:
         "200": {description: Local sharing projection, content: {application/json: {schema: {$ref: "#/components/schemas/LocalProductShare"}}}}
         "401": {$ref: "#/components/responses/Error"}
         "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
+  /api/public/products/{product_id}:
+    parameters: [{$ref: "#/components/parameters/ProductID"}]
+    get:
+      operationId: getPublicProduct
+      tags: [Products]
+      description: Safe public fields for an enabled ordinary Product. Draft, disabled and missing products all return 404.
+      security: []
+      responses:
+        "200": {description: Enabled public Product, content: {application/json: {schema: {$ref: "#/components/schemas/PublicProduct"}}}}
+        "404": {$ref: "#/components/responses/Error"}
+  /p/{product_id}:
+    parameters: [{$ref: "#/components/parameters/ProductID"}]
+    get:
+      operationId: openPublicProduct
+      tags: [Products]
+      security: []
+      responses:
+        "200": {description: Enabled public Product page, content: {text/html: {schema: {type: string}}}}
+        "404": {$ref: "#/components/responses/Error"}
+  /pay/{product_id}:
+    parameters: [{$ref: "#/components/parameters/ProductID"}]
+    get:
+      operationId: openPublicProductPayment
+      tags: [Products, Payments]
+      security: []
+      responses:
+        "200": {description: Enabled Product WeChat payment page, content: {text/html: {schema: {type: string}}}}
         "404": {$ref: "#/components/responses/Error"}
   /api/admin/service-period-products:
     get:
@@ -2828,6 +2857,25 @@ paths:
         - {$ref: "#/components/parameters/RequiredIdempotencyKey"}
       requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false}}}}
       responses: {"200": {description: Exact out-refund number queried and locally reconciled}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/h5/wechat-pay/oauth/start:
+    get:
+      operationId: startWechatPayH5OAuth
+      tags: [Transactions]
+      description: Starts one-time Official Account OAuth for a strict same-origin /pay/{product_id} return path.
+      security: []
+      parameters:
+        - {name: return_url, in: query, required: true, schema: {type: string, pattern: "^/pay/[1-9][0-9]*$"}}
+      responses: {"302": {description: Redirect to WeChat OAuth}, "400": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/h5/wechat-pay/oauth/callback:
+    get:
+      operationId: completeWechatPayH5OAuth
+      tags: [Transactions]
+      description: Consumes one OAuth state, exchanges the code outside a database transaction, provisions trusted scoped OA OpenID through OneID, and issues a short-lived Payment Session.
+      security: []
+      parameters:
+        - {name: state, in: query, required: true, schema: {type: string, minLength: 32, maxLength: 128}}
+        - {name: code, in: query, required: true, schema: {type: string, minLength: 1, maxLength: 512}}
+      responses: {"302": {description: Redirect to the persisted same-origin payment path}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
   /api/v1/wechat-pay/sessions:
     post:
       operationId: issueWechatPaySession
@@ -2861,6 +2909,7 @@ paths:
               properties:
                 product_id: {$ref: "#/components/schemas/PositiveID"}
                 product_kind: {type: string, enum: [standard, service_period]}
+                mobile: {type: string, pattern: "^\\+861[3-9][0-9]{9}$", description: Encrypted Order contact snapshot only; never an identity claim.}
       responses: {"202": {description: "Order, Payment and effect accepted atomically", content: {application/json: {schema: {type: object, required: [order_id, merchant_order_no, payment_id, status, effect_id], properties: {order_id: {$ref: "#/components/schemas/PositiveID"}, merchant_order_no: {type: string, minLength: 1, maxLength: 200}, payment_id: {$ref: "#/components/schemas/PositiveID"}, status: {type: string}, effect_id: {$ref: "#/components/schemas/ExternalEffectID"}}}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
   /api/v1/wechat-pay/checkouts/{merchant_order_no}:
     get:
@@ -3988,7 +4037,7 @@ components:
     Product:
       type: object
       additionalProperties: false
-      required: [id, product_code, name, description, price_minor, currency, stock_quantity, images, admin_projection, created_by, created_at, updated_at, version]
+      required: [id, product_code, name, description, price_minor, currency, stock_quantity, images, admin_projection, created_by, created_at, updated_at, version, lifecycle, enabled, paid_order_count, refund_order_count, sold_count]
       properties:
         id: {$ref: "#/components/schemas/PositiveID"}
         product_code: {type: string, minLength: 1, maxLength: 200}
@@ -4003,6 +4052,24 @@ components:
         created_at: {type: string, format: date-time}
         updated_at: {type: string, format: date-time}
         version: {$ref: "#/components/schemas/PositiveID"}
+        lifecycle: {type: string, enum: [draft, enabled, disabled]}
+        enabled: {type: boolean}
+        paid_order_count: {type: integer, format: int64, minimum: 0}
+        refund_order_count: {type: integer, format: int64, minimum: 0}
+        sold_count: {type: integer, format: int64, minimum: 0}
+    PublicProduct:
+      type: object
+      additionalProperties: false
+      required: [id, name, description, price_minor, currency, images, buy_button_text, require_mobile]
+      properties:
+        id: {$ref: "#/components/schemas/PositiveID"}
+        name: {type: string, minLength: 1, maxLength: 200}
+        description: {type: string, maxLength: 10000}
+        price_minor: {type: integer, format: int64, minimum: 0}
+        currency: {type: string, pattern: "^[A-Z]{3}$"}
+        images: {type: array, maxItems: 20, items: {type: string, minLength: 1, maxLength: 2048}}
+        buy_button_text: {type: string, minLength: 1, maxLength: 2048}
+        require_mobile: {type: boolean}
     ProductPage:
       type: object
       additionalProperties: false
@@ -4071,14 +4138,14 @@ components:
     LocalProductShare:
       type: object
       additionalProperties: false
-      required: [product_id, product_code, lifecycle, available, reason]
+      required: [product_id, product_code, lifecycle, available, purchase_url]
       properties:
         product_id: {$ref: "#/components/schemas/PositiveID"}
         product_code: {type: string, minLength: 1, maxLength: 200}
         lifecycle: {type: string, enum: [draft, disabled, enabled]}
-        available: {const: false}
-        reason: {type: string, const: no_authoritative_public_purchase_route}
-        purchase_url: {type: string}
+        available: {const: true}
+        reason: {type: string}
+        purchase_url: {type: string, pattern: "^/p/[1-9][0-9]*$"}
         qr_code_url: {type: string}
     ServicePeriodProduct:
       type: object

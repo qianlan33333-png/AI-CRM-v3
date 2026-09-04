@@ -18,6 +18,7 @@ type CreateCommand struct {
 	OrderID, ProductID         int64
 	ProductType                string
 	SessionToken               string
+	MobileE164                 string
 	ActorScope, IdempotencyKey string
 }
 type RefundCommand struct {
@@ -33,6 +34,12 @@ type Application interface {
 type Query interface {
 	GetPayment(context.Context, int64) (domain.Payment, error)
 	GetRefund(context.Context, int64) (domain.Refund, error)
+}
+
+// RefundExposureReader returns order IDs with a requested, in-flight,
+// outcome-unknown, or completed refund. Final failures are excluded.
+type RefundExposureReader interface {
+	RefundRelatedOrderIDsWithin(context.Context, []int64) (map[int64]struct{}, error)
 }
 
 type RefundProjection struct {
@@ -74,6 +81,7 @@ type SessionActor struct {
 	PayerIdentityID       int64
 	PayerCustomerID       int64
 	BeneficiaryCustomerID int64
+	Channel               domain.Channel
 }
 
 // SessionConsumer consumes a trusted, opaque payment handoff inside the
@@ -102,6 +110,7 @@ type ProviderIntent struct {
 	Kind                    effectport.Kind
 	PaymentID, RefundID     int64
 	PayerIdentityID         int64
+	Channel                 domain.Channel
 	MerchantOrderNo         string
 	RefundNo, RefundReason  string
 	ProviderOrderID         string

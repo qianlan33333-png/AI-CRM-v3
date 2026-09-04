@@ -2,6 +2,7 @@ package paymenthttp
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -61,6 +62,24 @@ type securityStub struct{}
 
 func (securityStub) Authenticate(context.Context, *http.Request) (accessdomain.Principal, error) {
 	return accessdomain.Principal{}, nil
+}
+
+type h5OAuthStub struct {
+	enabled bool
+	starts  int
+	issued  paymentsession.Issued
+}
+
+func (stub *h5OAuthStub) Enabled() bool { return stub.enabled }
+func (stub *h5OAuthStub) Start(_ context.Context, returnPath string) (string, error) {
+	stub.starts++
+	if returnPath != "/pay/7" {
+		return "", errors.New("invalid")
+	}
+	return "https://open.weixin.qq.com/oauth", nil
+}
+func (stub *h5OAuthStub) Complete(context.Context, string, string) (paymentsession.Issued, string, error) {
+	return stub.issued, "/pay/7", nil
 }
 
 type sessionVerifierStub struct{ fact identitydomain.VerifiedFact }
@@ -127,6 +146,37 @@ func TestCheckoutAcceptsOnlyOpaqueCookieIdentity(t *testing.T) {
 	}
 }
 
+func TestH5OAuthStartRequiresWeChatAndDisabledMakesZeroCalls(t *testing.T) {
+	handler, _ := NewHandler(&appStub{}, nil, securityStub{}, true)
+	disabled := &h5OAuthStub{}
+	if err := handler.SetH5OAuth(disabled); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/api/h5/wechat-pay/oauth/start?return_url=%2Fpay%2F7", nil)
+	request.Header.Set("User-Agent", "MicroMessenger")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusServiceUnavailable || disabled.starts != 0 {
+		t.Fatalf("code=%d starts=%d", response.Code, disabled.starts)
+	}
+	enabled := &h5OAuthStub{enabled: true}
+	_ = handler.SetH5OAuth(enabled)
+	request = httptest.NewRequest(http.MethodGet, "/api/h5/wechat-pay/oauth/start?return_url=https%3A%2F%2Fevil.test%2Fpay%2F7", nil)
+	request.Header.Set("User-Agent", "MicroMessenger")
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest || enabled.starts != 1 {
+		t.Fatalf("code=%d starts=%d", response.Code, enabled.starts)
+	}
+	request = httptest.NewRequest(http.MethodGet, "/api/h5/wechat-pay/oauth/start?return_url=%2Fpay%2F7", nil)
+	request.Header.Set("User-Agent", "MicroMessenger")
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusFound || response.Header().Get("Location") != "https://open.weixin.qq.com/oauth" {
+		t.Fatalf("code=%d location=%q", response.Code, response.Header().Get("Location"))
+	}
+}
+
 func TestTrustedCookieSecurityAttributes(t *testing.T) {
 	response := httptest.NewRecorder()
 	err := WriteTrustedSessionCookie(response, paymentsession.Issued{Token: "pays_session_token_0000000001", ExpiresAt: time.Now().Add(time.Minute)})
@@ -136,7 +186,7 @@ func TestTrustedCookieSecurityAttributes(t *testing.T) {
 	}
 }
 
-func TestCheckoutHandoffPollingKeepsIdentityOpaqueAndClearsCookieOnDelivery(t *testing.T) {
+func TestCheckoutHandoffPollingKeepsIdentityOpaqueAndSessionUntilTerminalStatus(t *testing.T) {
 	application := &appStub{}
 	handler, _ := NewHandler(application, nil, securityStub{}, true)
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/wechat-pay/checkouts/M-7", nil)
@@ -146,8 +196,7 @@ func TestCheckoutHandoffPollingKeepsIdentityOpaqueAndClearsCookieOnDelivery(t *t
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"ready":true`) {
 		t.Fatalf("code=%d body=%s", response.Code, response.Body.String())
 	}
-	cookies := response.Result().Cookies()
-	if len(cookies) != 1 || cookies[0].Name != SessionCookieName || cookies[0].MaxAge != -1 {
-		t.Fatalf("cookies=%+v", cookies)
+	if cookies := response.Result().Cookies(); len(cookies) != 0 {
+		t.Fatalf("unexpected terminal cookie clear=%+v", cookies)
 	}
 }

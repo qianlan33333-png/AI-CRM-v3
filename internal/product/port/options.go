@@ -70,13 +70,14 @@ type ProductTargetReader interface {
 // Order. The Within method requires the caller's existing PostgreSQL UoW so a
 // concurrent lifecycle/price change cannot be observed across transactions.
 type CheckoutProduct struct {
-	ID          ID
-	ProductType ProductOptionType
-	Code        string
-	Name        string
-	PriceMinor  int64
-	Currency    string
-	Version     int64
+	ID            ID
+	ProductType   ProductOptionType
+	Code          string
+	Name          string
+	PriceMinor    int64
+	Currency      string
+	Version       int64
+	RequireMobile bool
 }
 
 type CheckoutProductReader interface {

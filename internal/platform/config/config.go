@@ -182,6 +182,9 @@ type TagCatalogProvider struct {
 type WeChatPay struct {
 	Enabled                          bool
 	AppID, AppSecret, AppScope       string
+	H5OAuthEnabled                   bool
+	H5AppID, H5AppSecret, H5AppScope string
+	OrderContactDataKey              string
 	MerchantID, MerchantSerial       string
 	PrivateKeyPath, PlatformCertPath string
 	APIV3Key                         string
@@ -259,9 +262,16 @@ func Load() (Runtime, error) {
 	if cfg.WeChatPay.Enabled, err = strictBool("AICRM_WECHAT_PAY_PROVIDER_ENABLED", false); err != nil {
 		return Runtime{}, err
 	}
+	if cfg.WeChatPay.H5OAuthEnabled, err = strictBool("AICRM_WECHAT_PAY_H5_OAUTH_ENABLED", false); err != nil {
+		return Runtime{}, err
+	}
 	cfg.WeChatPay.AppID = os.Getenv("AICRM_WECHAT_PAY_APP_ID")
 	cfg.WeChatPay.AppSecret = os.Getenv("AICRM_WECHAT_PAY_APP_SECRET")
 	cfg.WeChatPay.AppScope = os.Getenv("AICRM_WECHAT_PAY_APP_SCOPE")
+	cfg.WeChatPay.H5AppID = os.Getenv("AICRM_WECHAT_PAY_H5_APP_ID")
+	cfg.WeChatPay.H5AppSecret = os.Getenv("AICRM_WECHAT_PAY_H5_APP_SECRET")
+	cfg.WeChatPay.H5AppScope = os.Getenv("AICRM_WECHAT_PAY_H5_APP_SCOPE")
+	cfg.WeChatPay.OrderContactDataKey = os.Getenv("AICRM_ORDER_CONTACT_DATA_KEY")
 	cfg.WeChatPay.MerchantID = os.Getenv("AICRM_WECHAT_PAY_MERCHANT_ID")
 	cfg.WeChatPay.MerchantSerial = os.Getenv("AICRM_WECHAT_PAY_MERCHANT_SERIAL")
 	cfg.WeChatPay.PrivateKeyPath = os.Getenv("AICRM_WECHAT_PAY_PRIVATE_KEY_PATH")
@@ -416,6 +426,20 @@ func Load() (Runtime, error) {
 			if strings.TrimSpace(value) != value {
 				return Runtime{}, errors.New("invalid enabled WeChat Pay configuration")
 			}
+		}
+	}
+	if cfg.WeChatPay.H5OAuthEnabled {
+		values := []string{cfg.WeChatPay.H5AppID, cfg.WeChatPay.H5AppSecret, cfg.WeChatPay.H5AppScope, cfg.WeChatPay.OrderContactDataKey}
+		if !cfg.WeChatPay.Enabled || nonEmptyCount(values) != len(values) || cfg.WeChatPay.H5AppScope != "wechat-app:"+cfg.WeChatPay.H5AppID {
+			return Runtime{}, errors.New("enabled WeChat Pay H5 OAuth configuration is incomplete")
+		}
+		for _, value := range values[:3] {
+			if strings.TrimSpace(value) != value || strings.ContainsAny(value, "\r\n\x00") {
+				return Runtime{}, errors.New("invalid enabled WeChat Pay H5 OAuth configuration")
+			}
+		}
+		if decoded, decodeErr := base64.RawStdEncoding.DecodeString(cfg.WeChatPay.OrderContactDataKey); decodeErr != nil || len(decoded) != 32 {
+			return Runtime{}, errors.New("invalid AICRM_ORDER_CONTACT_DATA_KEY")
 		}
 	}
 	if cfg.WeChatShop.Enabled {

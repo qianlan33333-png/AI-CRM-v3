@@ -129,7 +129,7 @@ async function loadQuestionnaireEditor({ q = '', questionnaire } = {}) {
   return { dom, trace };
 }
 
-async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHistoryHttp, campaignHttp = false, memberGridHistoryHttp, contactHistoryHttp, hxcHistoryHttp, messageHistoryHttp = false, customerListHttp = false, groupDirectoryHttp = false, channelHttp = false, channelHttpFailure = false, channelHistoryHttpFailure = false, channelHistoryEmpty = false, channelQrUrl = false, opsGuardHttp = false, couponHistoryHttp, couponHttp = false, couponHttpFailure = false, audienceHttp = false, audienceEmpty = false, audienceActive = false, audienceHistoryHttp = false, radarHttp = false, serviceProductHttp = false, orderHistoryHttp = false, h5Http, h5WeChat = false, serviceHistoryHttp = false, serviceHistoryEmpty = false, serviceHistoryFailure = '', groupOpsHistoryHttp, miniProgramHttp = false } = {}) {
+async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHistoryHttp, campaignHttp = false, memberGridHistoryHttp, contactHistoryHttp, hxcHistoryHttp, messageHistoryHttp = false, customerListHttp = false, groupDirectoryHttp = false, channelHttp = false, channelHttpFailure = false, channelHistoryHttpFailure = false, channelHistoryEmpty = false, channelQrUrl = false, opsGuardHttp = false, couponHistoryHttp, couponHttp = false, couponHttpFailure = false, audienceHttp = false, audienceEmpty = false, audienceActive = false, audienceHistoryHttp = false, radarHttp = false, productHttp = false, serviceProductHttp = false, orderHistoryHttp = false, h5Http, h5WeChat = false, serviceHistoryHttp = false, serviceHistoryEmpty = false, serviceHistoryFailure = '', groupOpsHistoryHttp, miniProgramHttp = false } = {}) {
   const file = path.join(DIST, rel);
   let html = fs.readFileSync(file, 'utf8');
   // 用 jsdom 执行内联脚本：把 bundle 内联进去，避免资源加载配置
@@ -142,7 +142,7 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
     beforeParse(window) {
       if (h5WeChat) Object.defineProperty(window.navigator, 'userAgent', { value: 'MicroMessenger/8.0', configurable: true });
       // Mock 仅由 DOM 回归测试显式注入；浏览器默认运行态不会走此路径。
-      window.__AICRM_TEST_MOCK__ = !(automationHistoryHttp || campaignHistoryHttp || campaignHttp || memberGridHistoryHttp || contactHistoryHttp || hxcHistoryHttp || messageHistoryHttp || customerListHttp || groupDirectoryHttp || channelHttp || couponHistoryHttp || couponHttp || audienceHttp || audienceHistoryHttp || radarHttp || serviceProductHttp || orderHistoryHttp || h5Http || serviceHistoryHttp || groupOpsHistoryHttp || miniProgramHttp);
+      window.__AICRM_TEST_MOCK__ = !(automationHistoryHttp || campaignHistoryHttp || campaignHttp || memberGridHistoryHttp || contactHistoryHttp || hxcHistoryHttp || messageHistoryHttp || customerListHttp || groupDirectoryHttp || channelHttp || couponHistoryHttp || couponHttp || audienceHttp || audienceHistoryHttp || radarHttp || productHttp || serviceProductHttp || orderHistoryHttp || h5Http || serviceHistoryHttp || groupOpsHistoryHttp || miniProgramHttp);
       if (hxcHistoryHttp) {
         window.Headers = Headers;
         const test = window.__hxcHistoryHttpTest = { calls: [], fail: hxcHistoryHttp.fail || false };
@@ -690,6 +690,25 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
           if (/^\/api\/admin\/attachment-library\/uploads\/44\/parts\/\d+$/.test(url.pathname)) return json({}, 204);
           if (url.pathname === '/api/admin/attachment-library/uploads/44/complete') return json({ attachment_id: 45 });
           return json({ code: 'unexpected_radar_request' }, 500);
+        };
+        return;
+      }
+      if (productHttp) {
+        const calls = [], downloads = [], opened = [];
+        const projection = { schema_version: 1, status: 'active', enabled: true, buy_button_text: '立即购买', require_mobile: false, lead_program_id: null, lead_channel_id: null, lead_qr_title: '', lead_qr_subtitle: '', completion_redirect_enabled: false, completion_redirect_url: '', completion_target: null, wecom_tagging: {}, slices: [] };
+        const product = { id: 7, product_code: 'P-7', name: '真实商品', description: '公开商品', price_minor: 990, currency: 'CNY', stock_quantity: 5, images: [], admin_projection: projection, lifecycle: 'enabled', enabled: true, paid_order_count: 3, refund_order_count: 1, sold_count: 2, created_by: 9, version: 3, created_at: '2026-09-04T00:00:00Z', updated_at: '2026-09-04T00:00:00Z' };
+        const json = (data, status = 200) => ({ ok: status >= 200 && status < 300, status, headers: new Headers({ 'Content-Type': 'application/json' }), text: async () => JSON.stringify(data), json: async () => data, clone() { return this; } });
+        window.__productHttpTest = { calls, downloads, opened };
+        window.URL.createObjectURL = () => 'blob:product-qr';
+        window.URL.revokeObjectURL = () => {};
+        window.HTMLAnchorElement.prototype.click = function () { downloads.push({ href: this.href, download: this.download }); };
+        window.open = (...args) => { opened.push(args); return null; };
+        window.fetch = async (input, init = {}) => {
+          const url = new URL(String(input), window.location.origin), method = init.method || 'GET';
+          calls.push({ path: url.pathname, method });
+          if (url.pathname === '/api/v1/products') return json({ items: [product], next_cursor: '' });
+          if (url.pathname === '/api/admin/wechat-pay/products/7/share') return json({ product_id: 7, product_code: 'P-7', lifecycle: 'enabled', available: true, purchase_url: '/p/7' });
+          return json({ code: 'unexpected_product_request' }, 500);
         };
         return;
       }
@@ -2056,6 +2075,22 @@ console.log('admin/spProductData.html（V1 Member Grid 历史只读 GET）');
   dom.window.close();
 }
 
+console.log('admin/products.html（真实状态、销量与分享）');
+{
+  const dom = await loadPage('admin/products.html', { productHttp: true });
+  const d = dom.window.document, test = dom.window.__productHttpTest;
+  ok('普通商品显示服务端生命周期与非零销量', d.querySelector('#stage')?.textContent.includes('已启用') && d.querySelector('#stage')?.textContent.includes('2') && !d.querySelector('#stage')?.textContent.includes('未投影'));
+  click(dom, [...d.querySelectorAll('button')].find((button) => button.textContent.trim() === '分享'));
+  await sleep(40);
+  const expected = 'http://localhost/p/7', svg = d.querySelector('#shareQrBox svg');
+  ok('普通商品分享调用真实后端接口', test.calls.some((call) => call.path === '/api/admin/wechat-pay/products/7/share' && call.method === 'GET'));
+  ok('分享弹窗使用同源商品链接生成二维码', d.querySelector('input[readonly]')?.value === expected && svg?.getAttribute('data-qr-payload') === expected && svg?.querySelector('path'));
+  click(dom, [...d.querySelectorAll('button')].find((button) => button.textContent.trim() === '预览'));
+  click(dom, [...d.querySelectorAll('button')].find((button) => button.textContent.trim() === '保存二维码'));
+  await sleep(20);
+  ok('商品链接可预览且二维码可下载', test.opened[0]?.[0] === expected && test.downloads[0]?.download === 'P-7-qr.svg');
+  dom.window.close();
+}
 console.log('admin/spProducts.html（真实周期商品分享）');
 {
   const dom = await loadPage('admin/spProducts.html', { serviceProductHttp: true });

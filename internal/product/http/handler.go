@@ -104,7 +104,12 @@ func (h *Handler) ordinaryRoot(w http.ResponseWriter, r *http.Request) {
 		}
 		items := make([]productResponse, 0, len(page.Items))
 		for _, item := range page.Items {
-			items = append(items, productResponseFrom(item))
+			projected, projectionErr := productResponseFrom(item)
+			if projectionErr != nil {
+				resultError(w, projectionErr)
+				return
+			}
+			items = append(items, projected)
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"items": items, "next_cursor": page.NextCursor})
 	case http.MethodPost:
@@ -140,7 +145,12 @@ func (h *Handler) ordinaryRoot(w http.ResponseWriter, r *http.Request) {
 			resultError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusCreated, productResponseFrom(product))
+		projected, projectionErr := productResponseFrom(product)
+		if projectionErr != nil {
+			resultError(w, projectionErr)
+			return
+		}
+		writeJSON(w, http.StatusCreated, projected)
 	default:
 		methodNotAllowed(w, http.MethodGet+", "+http.MethodPost)
 	}
@@ -206,7 +216,12 @@ func (h *Handler) ordinaryTail(w http.ResponseWriter, r *http.Request, tail stri
 			resultError(w, getErr)
 			return
 		}
-		writeJSON(w, http.StatusOK, productResponseFrom(product))
+		projected, projectionErr := productResponseFrom(product)
+		if projectionErr != nil {
+			resultError(w, projectionErr)
+			return
+		}
+		writeJSON(w, http.StatusOK, projected)
 	case http.MethodPut:
 		principal, ok := h.write(w, r)
 		if !ok {
@@ -236,7 +251,12 @@ func (h *Handler) ordinaryTail(w http.ResponseWriter, r *http.Request, tail stri
 			resultError(w, updateErr)
 			return
 		}
-		writeJSON(w, http.StatusOK, productResponseFrom(product))
+		projected, projectionErr := productResponseFrom(product)
+		if projectionErr != nil {
+			resultError(w, projectionErr)
+			return
+		}
+		writeJSON(w, http.StatusOK, projected)
 	default:
 		methodNotAllowed(w, http.MethodGet+", "+http.MethodPut)
 	}
@@ -378,6 +398,10 @@ func (h *Handler) localShare(w http.ResponseWriter, r *http.Request, id int64) {
 	}
 	result, err := h.lifecycle.ShareLocalProduct(r.Context(), productport.ID(id))
 	if err != nil {
+		if errors.Is(err, productapp.ErrLocalProductNotEnabled) {
+			writeError(w, http.StatusConflict, "product_not_enabled")
+			return
+		}
 		resultError(w, err)
 		return
 	}
@@ -909,23 +933,39 @@ type externalConfigurationRequest struct {
 }
 
 type productResponse struct {
-	ID              productport.ID  `json:"id"`
-	ProductCode     string          `json:"product_code"`
-	Name            string          `json:"name"`
-	Description     string          `json:"description"`
-	PriceMinor      int64           `json:"price_minor"`
-	Currency        string          `json:"currency"`
-	StockQuantity   int32           `json:"stock_quantity"`
-	Images          []string        `json:"images"`
-	AdminProjection json.RawMessage `json:"admin_projection"`
-	CreatedBy       int64           `json:"created_by"`
-	CreatedAt       interface{}     `json:"created_at"`
-	UpdatedAt       interface{}     `json:"updated_at"`
-	Version         int64           `json:"version"`
+	ID               productport.ID                    `json:"id"`
+	ProductCode      string                            `json:"product_code"`
+	Name             string                            `json:"name"`
+	Description      string                            `json:"description"`
+	PriceMinor       int64                             `json:"price_minor"`
+	Currency         string                            `json:"currency"`
+	StockQuantity    int32                             `json:"stock_quantity"`
+	Images           []string                          `json:"images"`
+	AdminProjection  json.RawMessage                   `json:"admin_projection"`
+	CreatedBy        int64                             `json:"created_by"`
+	CreatedAt        interface{}                       `json:"created_at"`
+	UpdatedAt        interface{}                       `json:"updated_at"`
+	Version          int64                             `json:"version"`
+	Lifecycle        productport.LocalProductLifecycle `json:"lifecycle"`
+	Enabled          bool                              `json:"enabled"`
+	PaidOrderCount   int64                             `json:"paid_order_count"`
+	RefundOrderCount int64                             `json:"refund_order_count"`
+	SoldCount        int64                             `json:"sold_count"`
 }
 
-func productResponseFrom(value productport.Product) productResponse {
-	return productResponse{ID: value.ID, ProductCode: value.ProductCode, Name: value.Name, Description: value.Description, PriceMinor: value.PriceMinor, Currency: value.Currency, StockQuantity: value.StockQuantity, Images: append([]string(nil), value.Images...), AdminProjection: append(json.RawMessage(nil), value.LegacyAdminProjection...), CreatedBy: value.CreatedBy, CreatedAt: value.CreatedAt.UTC(), UpdatedAt: value.UpdatedAt.UTC(), Version: value.Version}
+func productResponseFrom(value productport.Product) (productResponse, error) {
+	local, err := productapp.ProjectLocalProduct(value)
+	if err != nil || value.PaidOrderCount < 0 || value.RefundOrderCount < 0 || value.SoldCount < 0 || value.SoldCount != maxInt64(0, value.PaidOrderCount-value.RefundOrderCount) {
+		return productResponse{}, productapp.ErrUnavailable
+	}
+	return productResponse{ID: value.ID, ProductCode: value.ProductCode, Name: value.Name, Description: value.Description, PriceMinor: value.PriceMinor, Currency: value.Currency, StockQuantity: value.StockQuantity, Images: append([]string(nil), value.Images...), AdminProjection: append(json.RawMessage(nil), value.LegacyAdminProjection...), CreatedBy: value.CreatedBy, CreatedAt: value.CreatedAt.UTC(), UpdatedAt: value.UpdatedAt.UTC(), Version: value.Version, Lifecycle: local.Lifecycle, Enabled: local.Enabled, PaidOrderCount: value.PaidOrderCount, RefundOrderCount: value.RefundOrderCount, SoldCount: value.SoldCount}, nil
+}
+
+func maxInt64(left, right int64) int64 {
+	if left > right {
+		return left
+	}
+	return right
 }
 
 func (h *Handler) read(w http.ResponseWriter, r *http.Request) bool {
@@ -1125,7 +1165,7 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 }
 
 func writeError(w http.ResponseWriter, status int, code string) {
-	compat := map[string]string{"invalid_request": "MALFORMED_REQUEST", "not_found": "NOT_FOUND", "conflict": "CONFLICT", "unauthorized": "UNAUTHORIZED", "permission_denied": "FORBIDDEN", "csrf_required": "FORBIDDEN", "unavailable": "DEPENDENCY_UNAVAILABLE", "method_not_allowed": "METHOD_NOT_ALLOWED"}[code]
+	compat := map[string]string{"invalid_request": "MALFORMED_REQUEST", "not_found": "NOT_FOUND", "conflict": "CONFLICT", "unauthorized": "UNAUTHORIZED", "permission_denied": "FORBIDDEN", "csrf_required": "FORBIDDEN", "unavailable": "DEPENDENCY_UNAVAILABLE", "method_not_allowed": "METHOD_NOT_ALLOWED", "product_not_enabled": "product_not_enabled"}[code]
 	if compat == "" {
 		compat = "DEPENDENCY_UNAVAILABLE"
 	}

@@ -706,6 +706,21 @@ export class AdminController extends PageBase {
       shareCode: code,
       shareUrl,
     });
+    // The frozen ordinary-product donor modal predates the preview action.
+    // Add the v3-owned host action at runtime without changing donor bytes.
+    queueMicrotask(() => {
+      if (this.state.modal !== 'share' || this.state.shareUrl !== shareUrl) return;
+      const input = [...document.querySelectorAll<HTMLInputElement>('input[readonly]')].find((candidate) => candidate.value === shareUrl);
+      const controls = input?.parentElement;
+      if (!controls || [...controls.querySelectorAll('button')].some((button) => button.textContent?.trim() === '预览')) return;
+      const preview = document.createElement('button');
+      preview.type = 'button';
+      preview.textContent = '预览';
+      preview.setAttribute('data-v3-share-preview', 'true');
+      preview.style.cssText = 'height:34px;padding:0 14px;border:1px solid #DEE0E3;border-radius:6px;background:#fff;color:#1F2329;font-size:13px;cursor:pointer;flex:none';
+      preview.addEventListener('click', () => this.previewShareLink());
+      controls.appendChild(preview);
+    });
     void import('./sections/qr').then(({ renderQr }) => {
       const el = document.getElementById('shareQrBox');
       if (el && this.state.modal === 'share' && this.state.shareUrl === shareUrl) renderQr(el, shareUrl, `${kind}分享`);
@@ -2810,7 +2825,10 @@ export class AdminController extends PageBase {
       ...p,
       cs: mk(p.tone),
       edit: () => p.resourceId ? this.goto('productForm', '?id=' + p.resourceId) : toast('商品缺少服务端 ID', true),
-      shareIt: () => this.blocked('商品分享投影返回 no_authoritative_public_purchase_route'),
+      shareIt: () => {
+        if (!p.resourceId) return toast('商品缺少服务端 ID', true);
+        void this.api.getProductSharePath(p.resourceId).then((path) => this.openShare('商品', p.name, p.code, path)).catch((error) => toast(error instanceof Error ? error.message : '分享地址读取失败', true));
+      },
       copyIt: () => p.resourceId && void this.api.copyProduct(p.resourceId).then(() => { toast('商品副本已创建为草稿'); void this.init(); }).catch((error) => toast(error instanceof Error ? error.message : '商品复制失败', true)),
       del: () => p.resourceId && confirmBox('删除商品', '仅未被引用的本地草稿可删除。确认继续？', '确认删除', true, () => { void this.api.deleteProduct(p.resourceId!).then(() => { toast('商品已删除'); void this.init(); }).catch((error) => toast(error instanceof Error ? error.message : '商品删除失败', true)); }),
       toggle: () => {

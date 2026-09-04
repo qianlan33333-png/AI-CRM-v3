@@ -8,6 +8,7 @@ import (
 	orderport "github.com/qianlan33333-png/AI-CRM-v3/internal/order/port"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/payment/domain"
 	paymentport "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/port"
+	paymentprovider "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/provider"
 	productport "github.com/qianlan33333-png/AI-CRM-v3/internal/product/port"
 	"testing"
 	"time"
@@ -44,6 +45,10 @@ func (stub *checkoutOrderStub) CreatePaymentOrderWithin(ctx context.Context, com
 	order := nativeOrder()
 	order.MerchantOrderNo = command.MerchantOrderNo
 	order.Amount = orderdomain.Money{AmountMinor: command.UnitAmountMinor, Currency: command.Currency}
+	payerCustomerID := command.PayerCustomerID
+	beneficiaryCustomerID := command.BeneficiaryCustomerID
+	order.PayerCustomerID = &payerCustomerID
+	order.BeneficiaryCustomerID = &beneficiaryCustomerID
 	return order, nil
 }
 func (*checkoutOrderStub) SettlePaymentWithin(context.Context, orderport.PaymentSettlementCommand) (orderdomain.Snapshot, error) {
@@ -262,6 +267,19 @@ func TestCreateFailsClosedWhenAtomicEffectAcceptanceFails(t *testing.T) {
 	}
 }
 
+func TestVerifiedCallbackAppIDMustMatchFrozenPaymentChannel(t *testing.T) {
+	now := time.Date(2026, 9, 4, 1, 0, 0, 0, time.UTC)
+	store := &storeStub{payment: domain.Payment{ID: 7, OrderID: 3, Provider: domain.ProviderWeChatPay, Channel: domain.ChannelH5Official, MerchantOrderNo: "M-7", PayerIdentityID: 4, PayerCustomerID: 11, BeneficiaryCustomerID: 22, AmountMinor: 1000, Currency: "CNY", Status: domain.StatusAwaitingPayment, Version: 2, CreatedAt: now.Add(-time.Hour), UpdatedAt: now}}
+	service := NewService(uowStub{}, store, orderStub{nativeOrder()}, sessionStub{}, &effectStub{})
+	if err := service.SetPaymentChannelAppIDs("wx-mini", "wx-oa"); err != nil {
+		t.Fatal(err)
+	}
+	callback := paymentprovider.CallbackResult{Kind: "payment", AppID: "wx-mini", MerchantOrderNo: "M-7", AmountMinor: 1000, Currency: "CNY", OccurredAt: now.Add(time.Minute)}
+	if err := service.ApplyVerifiedCallback(context.Background(), callback); !errors.Is(err, paymentport.ErrConflict) {
+		t.Fatalf("mismatched callback err=%v", err)
+	}
+}
+
 func TestRefundReservesOutstandingAmountsAndRejectsOverRefund(t *testing.T) {
 	store := &storeStub{payment: domain.Payment{ID: 7, Provider: domain.ProviderWeChatPay, MerchantOrderNo: "M-7", AmountMinor: 1000, Currency: "CNY", Status: domain.StatusPaid, Version: 2, CreatedAt: time.Now().Add(-time.Hour), UpdatedAt: time.Now().Add(-time.Minute)}, reserved: 800}
 	effects := &effectStub{}
@@ -304,6 +322,26 @@ func TestCheckoutFromProductCreatesOrderAndPaymentInSameUOW(t *testing.T) {
 	replay, err := service.Create(context.Background(), command)
 	if err != nil || replay.ID != first.ID || products.calls != 1 {
 		t.Fatalf("replay=%+v product_calls=%d err=%v", replay, products.calls, err)
+	}
+}
+
+func TestH5CheckoutRequiresAndFreezesNormalizedMobile(t *testing.T) {
+	store := &storeStub{}
+	orders := &checkoutOrderStub{}
+	products := &checkoutProductStub{product: productport.CheckoutProduct{ID: 5, ProductType: productport.ProductOptionStandard, Code: "course-5", Name: "Course 5", PriceMinor: 8800, Currency: "CNY", Version: 3, RequireMobile: true}}
+	sessions := &oneShotSessionStub{actor: paymentport.SessionActor{PayerIdentityID: 4, PayerCustomerID: 11, BeneficiaryCustomerID: 11, Channel: domain.ChannelH5Official}}
+	service := NewService(uowStub{}, store, orders, sessions, &effectStub{})
+	if err := service.SetCheckoutProductReader(products); err != nil {
+		t.Fatal(err)
+	}
+	command := paymentport.CreateCommand{ProductID: 5, ProductType: "standard", SessionToken: "pays_h5_session_token_00000005", ActorScope: "public-checkout", IdempotencyKey: "checkout-h5-key-0000005"}
+	if _, err := service.Create(context.Background(), command); !errors.Is(err, paymentport.ErrConflict) {
+		t.Fatalf("missing mobile err=%v", err)
+	}
+	command.MobileE164 = "+8613812345678"
+	payment, err := service.Create(context.Background(), command)
+	if err != nil || payment.Channel != domain.ChannelH5Official || orders.command.MobileE164 != command.MobileE164 {
+		t.Fatalf("payment=%+v order=%+v err=%v", payment, orders.command, err)
 	}
 }
 

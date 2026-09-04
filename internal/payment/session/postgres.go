@@ -22,11 +22,11 @@ func (PostgreSQL) Insert(ctx context.Context, record Record) (Record, error) {
 	err = tx.QueryRow(ctx, `
 		INSERT INTO payment_sessions(
 			token_digest,payer_identity_id,payer_customer_id,beneficiary_customer_id,
-			app_scope_digest,expires_at,created_at
-		) VALUES($1,$2,$3,$4,$5,$6,$7)
+			app_scope_digest,payment_channel,expires_at,created_at
+		) VALUES($1,$2,$3,$4,$5,$6,$7,$8)
 		RETURNING id`,
 		record.TokenDigest[:], record.PayerIdentityID, record.PayerCustomerID,
-		record.BeneficiaryCustomerID, record.AppScopeDigest[:], record.ExpiresAt,
+		record.BeneficiaryCustomerID, record.AppScopeDigest[:], record.Channel, record.ExpiresAt,
 		record.CreatedAt,
 	).Scan(&record.ID)
 	return record, err
@@ -45,11 +45,11 @@ func (PostgreSQL) Consume(ctx context.Context, digest [32]byte, now time.Time) (
 		SET consumed_at=$2
 		WHERE token_digest=$1 AND consumed_at IS NULL AND expires_at>$2
 		RETURNING id,token_digest,payer_identity_id,payer_customer_id,
-			beneficiary_customer_id,app_scope_digest,expires_at,consumed_at,created_at`,
+			beneficiary_customer_id,app_scope_digest,payment_channel,expires_at,consumed_at,created_at`,
 		digest[:], now,
 	).Scan(
 		&record.ID, &tokenDigest, &record.PayerIdentityID, &payer, &beneficiary,
-		&scopeDigest, &record.ExpiresAt, &record.ConsumedAt, &record.CreatedAt,
+		&scopeDigest, &record.Channel, &record.ExpiresAt, &record.ConsumedAt, &record.CreatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Record{}, ErrExpired
@@ -77,10 +77,10 @@ func (PostgreSQL) Lookup(ctx context.Context, digest [32]byte, now time.Time) (R
 	var payer, beneficiary int64
 	err = tx.QueryRow(ctx, `
 		SELECT id,token_digest,payer_identity_id,payer_customer_id,
-			beneficiary_customer_id,app_scope_digest,expires_at,consumed_at,created_at
+			beneficiary_customer_id,app_scope_digest,payment_channel,expires_at,consumed_at,created_at
 		FROM payment_sessions WHERE token_digest=$1 AND expires_at>$2`, digest[:], now).Scan(
 		&record.ID, &tokenDigest, &record.PayerIdentityID, &payer, &beneficiary,
-		&scopeDigest, &record.ExpiresAt, &record.ConsumedAt, &record.CreatedAt,
+		&scopeDigest, &record.Channel, &record.ExpiresAt, &record.ConsumedAt, &record.CreatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Record{}, ErrExpired

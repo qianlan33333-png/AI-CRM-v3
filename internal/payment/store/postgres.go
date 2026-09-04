@@ -45,7 +45,7 @@ func (r *Repository) CreatePayment(ctx context.Context, p domain.Payment, key, p
 	if !errors.Is(e, pgx.ErrNoRows) {
 		return domain.Payment{}, false, e
 	}
-	e = t.QueryRow(ctx, `INSERT INTO payments(order_id,provider,merchant_order_no,payer_identity_id,payer_customer_id,beneficiary_customer_id,amount_minor,currency,status,version,created_at,updated_at)VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)RETURNING id`, p.OrderID, p.Provider, p.MerchantOrderNo, p.PayerIdentityID, p.PayerCustomerID, p.BeneficiaryCustomerID, p.AmountMinor, p.Currency, p.Status, p.Version, p.CreatedAt, p.UpdatedAt).Scan(&p.ID)
+	e = t.QueryRow(ctx, `INSERT INTO payments(order_id,provider,payment_channel,merchant_order_no,payer_identity_id,payer_customer_id,beneficiary_customer_id,amount_minor,currency,status,version,created_at,updated_at)VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)RETURNING id`, p.OrderID, p.Provider, p.Channel, p.MerchantOrderNo, p.PayerIdentityID, p.PayerCustomerID, p.BeneficiaryCustomerID, p.AmountMinor, p.Currency, p.Status, p.Version, p.CreatedAt, p.UpdatedAt).Scan(&p.ID)
 	if e != nil {
 		return domain.Payment{}, false, mapError(e)
 	}
@@ -108,16 +108,50 @@ func (r *Repository) GetPayment(ctx context.Context, id int64, lock bool) (domai
 	if e != nil {
 		return domain.Payment{}, e
 	}
-	q := `SELECT id,order_id,provider,merchant_order_no,payer_identity_id,payer_customer_id,beneficiary_customer_id,amount_minor,currency,status,COALESCE('eer_'||external_effect_id::text,''),COALESCE(provider_transaction_digest,''),version,created_at,updated_at FROM payments WHERE id=$1`
+	q := `SELECT id,order_id,provider,payment_channel,merchant_order_no,payer_identity_id,payer_customer_id,beneficiary_customer_id,amount_minor,currency,status,COALESCE('eer_'||external_effect_id::text,''),COALESCE(provider_transaction_digest,''),version,created_at,updated_at FROM payments WHERE id=$1`
 	if lock {
 		q += ` FOR UPDATE`
 	}
 	var p domain.Payment
-	e = t.QueryRow(ctx, q, id).Scan(&p.ID, &p.OrderID, &p.Provider, &p.MerchantOrderNo, &p.PayerIdentityID, &p.PayerCustomerID, &p.BeneficiaryCustomerID, &p.AmountMinor, &p.Currency, &p.Status, &p.EffectID, &p.ProviderTransactionDigest, &p.Version, &p.CreatedAt, &p.UpdatedAt)
+	e = t.QueryRow(ctx, q, id).Scan(&p.ID, &p.OrderID, &p.Provider, &p.Channel, &p.MerchantOrderNo, &p.PayerIdentityID, &p.PayerCustomerID, &p.BeneficiaryCustomerID, &p.AmountMinor, &p.Currency, &p.Status, &p.EffectID, &p.ProviderTransactionDigest, &p.Version, &p.CreatedAt, &p.UpdatedAt)
 	if errors.Is(e, pgx.ErrNoRows) {
 		return domain.Payment{}, paymentport.ErrNotFound
 	}
 	return p, mapError(e)
+}
+
+func (r *Repository) RefundRelatedOrderIDsWithin(ctx context.Context, orderIDs []int64) (map[int64]struct{}, error) {
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return nil, err
+	}
+	result := make(map[int64]struct{})
+	if len(orderIDs) == 0 {
+		return result, nil
+	}
+	for _, id := range orderIDs {
+		if id < 1 {
+			return nil, paymentport.ErrInvalid
+		}
+	}
+	rows, err := tx.Query(ctx, `
+SELECT DISTINCT p.order_id
+FROM payment_refunds r
+JOIN payments p ON p.id=r.payment_id
+WHERE p.order_id=ANY($1::bigint[])
+  AND r.status IN ('requested','effect_accepted','outcome_unknown','completed')`, orderIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		if err = rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		result[id] = struct{}{}
+	}
+	return result, rows.Err()
 }
 
 func (r *Repository) ReservedRefundMinor(ctx context.Context, paymentID int64) (int64, error) {
@@ -489,7 +523,10 @@ func (r *Repository) ImportTerminalPayment(ctx context.Context, payment domain.P
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return domain.Payment{}, mapError(err)
 	}
-	err = t.QueryRow(ctx, `INSERT INTO payments(order_id,provider,merchant_order_no,payer_identity_id,payer_customer_id,beneficiary_customer_id,amount_minor,currency,status,provider_transaction_digest,version,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,NULLIF($10,''),$11,$12,$13) RETURNING id`, payment.OrderID, payment.Provider, payment.MerchantOrderNo, payment.PayerIdentityID, payment.PayerCustomerID, payment.BeneficiaryCustomerID, payment.AmountMinor, payment.Currency, payment.Status, payment.ProviderTransactionDigest, payment.Version, payment.CreatedAt, payment.UpdatedAt).Scan(&payment.ID)
+	if payment.Channel == "" {
+		payment.Channel = domain.ChannelMiniProgram
+	}
+	err = t.QueryRow(ctx, `INSERT INTO payments(order_id,provider,payment_channel,merchant_order_no,payer_identity_id,payer_customer_id,beneficiary_customer_id,amount_minor,currency,status,provider_transaction_digest,version,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NULLIF($11,''),$12,$13,$14) RETURNING id`, payment.OrderID, payment.Provider, payment.Channel, payment.MerchantOrderNo, payment.PayerIdentityID, payment.PayerCustomerID, payment.BeneficiaryCustomerID, payment.AmountMinor, payment.Currency, payment.Status, payment.ProviderTransactionDigest, payment.Version, payment.CreatedAt, payment.UpdatedAt).Scan(&payment.ID)
 	if err != nil {
 		return domain.Payment{}, mapError(err)
 	}
@@ -546,16 +583,16 @@ func (r *Repository) ProviderIntent(ctx context.Context, kind effectport.Kind, s
 	err = t.QueryRow(ctx, `
 		SELECT i.effect_kind,i.source_ref_digest,i.payload_digest,i.request_snapshot,
 			COALESCE(p.id, rp.id),COALESCE(i.refund_id,0),
-			p.payer_identity_id,p.merchant_order_no,
+			COALESCE(p.payer_identity_id,rp.payer_identity_id),COALESCE(p.payment_channel,rp.payment_channel),COALESCE(p.merchant_order_no,rp.merchant_order_no),
 			COALESCE(r.refund_no,''),COALESCE(r.reason,''),
-			COALESCE(r.amount_minor,p.amount_minor),p.amount_minor,p.currency
+			COALESCE(r.amount_minor,p.amount_minor),COALESCE(p.amount_minor,rp.amount_minor),COALESCE(p.currency,rp.currency)
 		FROM payment_provider_intents i
 		LEFT JOIN payments p ON p.id=i.payment_id
 		LEFT JOIN payment_refunds r ON r.id=i.refund_id
 		LEFT JOIN payments rp ON rp.id=r.payment_id
 		WHERE i.effect_kind=$1 AND i.source_ref_digest=$2`, kind, source,
 	).Scan(&storedKind, &storedSource, &payload, &requestSnapshot, &out.PaymentID, &out.RefundID,
-		&out.PayerIdentityID, &out.MerchantOrderNo, &out.RefundNo, &out.RefundReason,
+		&out.PayerIdentityID, &out.Channel, &out.MerchantOrderNo, &out.RefundNo, &out.RefundReason,
 		&out.AmountMinor, &out.TotalMinor, &out.Currency)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return paymentport.ProviderIntent{}, paymentport.ErrNotFound

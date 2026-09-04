@@ -232,6 +232,61 @@ func (r *Repository) Count(ctx context.Context, filter orderapp.ListFilter) (int
 	return total, mapError(err)
 }
 
+func (r *Repository) ReadPaidProductOrdersWithin(ctx context.Context, keys []orderport.ProductSalesKey) ([]orderport.ProductOrderFact, error) {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]int64, 0, len(keys))
+	codes := make([]string, 0, len(keys))
+	for _, key := range keys {
+		if key.ProductID < 1 || key.ProductCode == "" || strings.TrimSpace(key.ProductCode) != key.ProductCode {
+			return nil, ErrInvalid
+		}
+		ids = append(ids, key.ProductID)
+		codes = append(codes, key.ProductCode)
+	}
+	if len(ids) == 0 {
+		return []orderport.ProductOrderFact{}, nil
+	}
+	rows, err := tx.Query(ctx, `
+SELECT DISTINCT o.id,oi.product_id,oi.product_code,
+       (o.status IN ('partially_refunded','refunded') OR o.refunded_minor>0) AS order_refunded
+FROM orders o
+JOIN order_items oi ON oi.order_id=o.id
+WHERE (oi.product_id=ANY($1::bigint[]) OR (oi.product_id IS NULL AND oi.product_code=ANY($2::text[])))
+  AND EXISTS (
+    SELECT 1 FROM order_status_history h
+    WHERE h.order_id=o.id AND h.to_status IN ('paid','partially_refunded','refunded')
+  )
+ORDER BY o.id,oi.product_id NULLS LAST,oi.product_code`, ids, codes)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	defer rows.Close()
+	result := make([]orderport.ProductOrderFact, 0)
+	for rows.Next() {
+		var fact orderport.ProductOrderFact
+		if err = rows.Scan(&fact.OrderID, &fact.ProductID, &fact.ProductCode, &fact.OrderRefunded); err != nil {
+			return nil, mapError(err)
+		}
+		result = append(result, fact)
+	}
+	return result, mapError(rows.Err())
+}
+
+func (r *Repository) InsertContactSnapshot(ctx context.Context, orderID int64, ciphertext []byte, keyVersion int16, createdAt time.Time) error {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return err
+	}
+	if orderID < 1 || len(ciphertext) < 28 || keyVersion != 1 || createdAt.IsZero() {
+		return ErrInvalid
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO order_contact_snapshots(order_id,phone_ciphertext,key_version,created_at) VALUES($1,$2,$3,$4)`, orderID, ciphertext, keyVersion, createdAt.UTC())
+	return mapError(err)
+}
+
 func orderFilterSQL(filter orderapp.ListFilter) (string, []any) {
 	args := []any{}
 	conditions := []string{}

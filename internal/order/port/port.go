@@ -66,6 +66,24 @@ type Query interface {
 	List(context.Context, ListQuery) (Page, error)
 }
 
+type ProductSalesKey struct {
+	ProductID   int64
+	ProductCode string
+}
+
+type ProductOrderFact struct {
+	OrderID       int64
+	ProductID     *int64
+	ProductCode   string
+	OrderRefunded bool
+}
+
+// ProductSalesReader returns distinct orders that have authoritative paid
+// history and match the requested products. It requires the caller's UoW.
+type ProductSalesReader interface {
+	ReadPaidProductOrdersWithin(context.Context, []ProductSalesKey) ([]ProductOrderFact, error)
+}
+
 type CustomerOrderSummary struct {
 	Total    int64             `json:"total"`
 	Paid     int64             `json:"paid"`
@@ -127,6 +145,7 @@ type PaymentOrderCommand struct {
 	ProductCode, ProductName        string
 	ProductVersion, UnitAmountMinor int64
 	Currency                        string
+	MobileE164                      string
 	ActorScope, IdempotencyKey      string
 }
 
