@@ -9,9 +9,12 @@ const adapter = fs.readFileSync(path.join(here, "admin_audience_detail.js"), "ut
 const template = fs.readFileSync(path.join(root, "internal", "webshell", "templates", "admin_audience.html"), "utf8")
   .replace(/^\{\{define "admin_audience"\}\}/, "")
   .replace(/\{\{end\}\}\s*$/, "");
-const wait = () => new Promise((resolve) => setTimeout(resolve, 80));
+const wait = (milliseconds = 80) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 const json = (body, status = 200) => ({ ok: status >= 200 && status < 300, status, json: async () => body });
+const gatewayUnavailable = () => ({ ok: false, status: 502, json: async () => { throw new Error("non-json gateway response"); } });
 const requests = [];
+let precheckAttempts = 0;
+let persistGatewayFailure = false;
 
 const dom = new JSDOM(`<!doctype html><html><body>${template}</body></html>`, {
   url: "https://test.invalid/admin/automation-conversion",
@@ -30,6 +33,8 @@ const dom = new JSDOM(`<!doctype html><html><body>${template}</body></html>`, {
         return json({ items: [{ id: 13, code: "audience-073da67f778402ce", name: "近30天活跃客户", lifecycle: "paused", version: 2, member_count: 23460, published_at: "2026-09-04T08:30:00Z", readiness: "not_ready" }], total: 1, limit: 100, offset: 0 });
       }
       if (url.pathname === "/api/admin/ai-audience/packages/13/precheck" && method === "POST") {
+        precheckAttempts += 1;
+        if (precheckAttempts === 1 || persistGatewayFailure) return gatewayUnavailable();
         return json({ precheck: { ready: false, reasons: ["automation_binding_missing", "sender_set_missing", "provider_disabled"] } });
       }
       if (url.pathname === "/api/admin/ai-audience/packages/13/activate" && method === "POST") {
@@ -50,7 +55,7 @@ if (!row || Number(renderedCount) !== 23460) {
   throw new Error(`published snapshot count was not rendered: ${row?.textContent || "missing row"}`);
 }
 document.querySelector('[data-action="activate"][data-package-id="13"]')?.click();
-await wait();
+await wait(300);
 
 const notice = document.querySelector("#audNotice")?.textContent || "";
 if (!notice.includes("未绑定已发布的固定话术") || !notice.includes("未配置发送人白名单") || !notice.includes("Provider")) {
@@ -58,6 +63,20 @@ if (!notice.includes("未绑定已发布的固定话术") || !notice.includes("�
 }
 if (requests.some((request) => request.path.endsWith("/activate"))) {
   throw new Error("activation mutation ran after a failed readiness precheck");
+}
+if (precheckAttempts !== 2) {
+  throw new Error(`transient precheck was not retried exactly once: ${precheckAttempts}`);
+}
+
+persistGatewayFailure = true;
+document.querySelector('[data-action="activate"][data-package-id="13"]')?.click();
+await wait(900);
+const gatewayNotice = document.querySelector("#audNotice")?.textContent || "";
+if (!gatewayNotice.includes("服务正在发布或短暂不可用") || gatewayNotice.includes("unknown_error")) {
+  throw new Error(`persistent gateway failure was not classified: ${gatewayNotice}`);
+}
+if (precheckAttempts !== 5 || requests.some((request) => request.path.endsWith("/activate"))) {
+  throw new Error(`gateway retry crossed the read-only precheck boundary: attempts=${precheckAttempts}`);
 }
 
 dom.window.close();
