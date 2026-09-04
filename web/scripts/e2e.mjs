@@ -708,6 +708,11 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
           const url = new URL(String(input), window.location.origin), method = init.method || 'GET';
           calls.push({ path: url.pathname, method });
           if (url.pathname === '/api/v1/products') return json({ items: [product], next_cursor: '' });
+          if (url.pathname === '/api/v1/products/7') return json(product);
+          if (url.pathname === '/api/admin/channels') return json({ ok: false, code: 'MALFORMED_REQUEST' }, 400);
+          if (url.pathname === '/api/admin/image-library') return json({ items: [] });
+          if (url.pathname === '/api/admin/wecom/tag-groups' || url.pathname === '/api/admin/wecom/tags') return json({ items: [] });
+          if (url.pathname === '/api/admin/wechat-pay/products/7/external-push') return json({ product_id: 7, product_kind: 'wechat_pay', enabled: false, configuration_reference: '', updated_at: '2026-09-04T00:00:00Z' });
           if (url.pathname === '/api/admin/wechat-pay/products/7/share') return json({ product_id: 7, product_code: 'P-7', lifecycle: 'enabled', available: true, purchase_url: '/p/7' });
           return json({ code: 'unexpected_product_request' }, 500);
         };
@@ -2090,6 +2095,14 @@ console.log('admin/products.html（真实状态、销量与分享）');
   click(dom, [...d.querySelectorAll('button')].find((button) => button.textContent.trim() === '保存二维码'));
   await sleep(20);
   ok('商品链接可预览且二维码可下载', test.opened[0]?.[0] === expected && test.downloads[0]?.download === 'P-7-qr.svg');
+  dom.window.close();
+}
+console.log('admin/productForm.html（渠道存量异常隔离）');
+{
+  const dom = await loadPage('admin/productForm.html', { id: 7, productHttp: true });
+  const d = dom.window.document, test = dom.window.__productHttpTest;
+  ok('渠道目录 400 不再中断商品编辑页', d.body.textContent.includes('编辑普通商品') && d.querySelector('#pfName')?.value === '真实商品' && !d.body.textContent.includes('请求失败'));
+  ok('编辑页仍读取权威商品与外推配置', test.calls.some((call) => call.path === '/api/v1/products/7') && test.calls.some((call) => call.path === '/api/admin/wechat-pay/products/7/external-push'));
   dom.window.close();
 }
 console.log('admin/spProducts.html（真实周期商品分享）');
