@@ -123,3 +123,35 @@ func TestPostgreSQLAudienceImmutableFacts(t *testing.T) {
 		}
 	}
 }
+
+func TestPostgreSQLAudienceExtendedFactKindsRemainAccepted(t *testing.T) {
+	ctx := context.Background()
+	native, cleanup := segmentDatabase(t, ctx)
+	defer cleanup()
+	wrapped, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uow, err := platformpostgres.NewUnitOfWork(wrapped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo, err := NewPostgreSQL(native, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 4, 4, 0, 0, 0, time.UTC)
+	for index, kind := range []string{"webhook_receipt", "schedule", "member_event_batch"} {
+		err = uow.Within(ctx, func(tx context.Context) error {
+			_, appendErr := repo.AppendMutationFacts(tx, MutationFact{
+				ResourceKind: kind, ResourceID: int64(index + 11), Operation: "create",
+				EventType: "audience." + kind + ".created.v1", ActorID: 7,
+				Payload: json.RawMessage(`{"resource_id":11}`), IdempotencyKey: kind + ":11", OccurredAt: now,
+			})
+			return appendErr
+		})
+		if err != nil {
+			t.Fatalf("append %s facts after schedule migration: %v", kind, err)
+		}
+	}
+}

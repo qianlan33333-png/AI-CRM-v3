@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
+	segmentbootstrap "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/bootstrap"
+	segmentdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/domain"
 )
 
 type testUoW struct{ err error }
@@ -15,6 +18,44 @@ func (u testUoW) Within(ctx context.Context, fn func(context.Context) error) err
 		return u.err
 	}
 	return fn(ctx)
+}
+
+type refreshReaderStub struct {
+	runs map[int64]segmentdomain.RefreshRun
+	err  error
+}
+
+func (s refreshReaderStub) GetRefresh(_ context.Context, id int64) (segmentdomain.RefreshRun, error) {
+	if s.err != nil {
+		return segmentdomain.RefreshRun{}, s.err
+	}
+	return s.runs[id], nil
+}
+
+func TestWaitForPublishedRefreshesUpdatesDeploymentReport(t *testing.T) {
+	report := segmentbootstrap.Report{Packages: []segmentbootstrap.PackageReport{
+		{Refresh: &segmentbootstrap.RefreshReport{RunID: 10, State: segmentdomain.RefreshQueued}},
+		{SkippedReason: "operator_archived"},
+	}}
+	err := waitForPublishedRefreshes(context.Background(), &report, refreshReaderStub{runs: map[int64]segmentdomain.RefreshRun{
+		10: {ID: 10, State: segmentdomain.RefreshPublished},
+	}}, time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := report.Packages[0].Refresh.State; got != segmentdomain.RefreshPublished {
+		t.Fatalf("state=%s", got)
+	}
+}
+
+func TestWaitForPublishedRefreshesFailsClosed(t *testing.T) {
+	report := segmentbootstrap.Report{Packages: []segmentbootstrap.PackageReport{{Refresh: &segmentbootstrap.RefreshReport{RunID: 11, State: segmentdomain.RefreshQueued}}}}
+	err := waitForPublishedRefreshes(context.Background(), &report, refreshReaderStub{runs: map[int64]segmentdomain.RefreshRun{
+		11: {ID: 11, State: segmentdomain.RefreshFailed, ErrorCode: "persistence_conflict"},
+	}}, time.Millisecond)
+	if err == nil {
+		t.Fatal("expected failed refresh to fail deployment bootstrap")
+	}
 }
 
 type usersStub struct {

@@ -29,6 +29,7 @@ import (
 	segmentapp "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/app"
 	segmentbootstrap "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/bootstrap"
 	segmentcompiler "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/compiler"
+	segmentdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/domain"
 	segmentstore "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/store"
 )
 
@@ -108,9 +109,54 @@ func execute(parent context.Context, output *os.File) error {
 	if err != nil {
 		return err
 	}
+	if err = waitForPublishedRefreshes(ctx, &report, snapshots, 500*time.Millisecond); err != nil {
+		return err
+	}
 	encoder := json.NewEncoder(output)
 	encoder.SetEscapeHTML(false)
 	return encoder.Encode(report)
+}
+
+type refreshReader interface {
+	GetRefresh(context.Context, int64) (segmentdomain.RefreshRun, error)
+}
+
+func waitForPublishedRefreshes(ctx context.Context, report *segmentbootstrap.Report, reader refreshReader, pollEvery time.Duration) error {
+	if report == nil || reader == nil || pollEvery <= 0 {
+		return errors.New("refresh publication verifier unavailable")
+	}
+	for {
+		pending := 0
+		for index := range report.Packages {
+			refresh := report.Packages[index].Refresh
+			if refresh == nil || refresh.State == segmentdomain.RefreshPublished {
+				continue
+			}
+			run, err := reader.GetRefresh(ctx, refresh.RunID)
+			if err != nil {
+				return fmt.Errorf("verify audience refresh run %d: %w", refresh.RunID, err)
+			}
+			refresh.State = run.State
+			if run.State == segmentdomain.RefreshFailed {
+				return fmt.Errorf("audience refresh run %d failed with code %s", run.ID, run.ErrorCode)
+			}
+			if run.State != segmentdomain.RefreshPublished {
+				pending++
+			}
+		}
+		if pending == 0 {
+			return nil
+		}
+		timer := time.NewTimer(pollEvery)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return fmt.Errorf("wait for audience refresh publication: %w", ctx.Err())
+		case <-timer.C:
+		}
+	}
 }
 
 type userLister interface {
