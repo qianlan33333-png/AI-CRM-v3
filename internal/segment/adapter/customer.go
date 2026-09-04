@@ -55,12 +55,29 @@ type CanonicalCustomers struct {
 	Resolver customerport.CanonicalCustomerResolver
 }
 
+type canonicalCustomerBatchResolver interface {
+	ResolveCanonicalCustomers(context.Context, []customerdomain.CustomerID) ([]customerport.CanonicalCustomer, error)
+}
+
 func (a CanonicalCustomers) CanonicalCustomers(ctx context.Context, ids []customerdomain.CustomerID) ([]customerdomain.CustomerID, error) {
 	if a.UoW == nil || a.Resolver == nil {
 		return nil, ErrCustomerReadUnavailable
 	}
 	result := make([]customerdomain.CustomerID, 0, len(ids))
 	err := a.UoW.Within(ctx, func(tx context.Context) error {
+		if batch, ok := a.Resolver.(canonicalCustomerBatchResolver); ok {
+			canonical, resolveErr := batch.ResolveCanonicalCustomers(tx, ids)
+			if resolveErr != nil || len(canonical) != len(ids) {
+				return ErrCustomerReadUnavailable
+			}
+			for index, item := range canonical {
+				if item.RequestedCustomerID != ids[index] || item.CustomerID < 1 {
+					return ErrCustomerReadUnavailable
+				}
+				result = append(result, item.CustomerID)
+			}
+			return nil
+		}
 		for _, id := range ids {
 			canonical, resolveErr := a.Resolver.ResolveCanonicalCustomer(tx, id)
 			if resolveErr != nil || canonical.CustomerID < 1 {

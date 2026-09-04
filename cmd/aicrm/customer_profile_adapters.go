@@ -29,6 +29,33 @@ func (adapter canonicalCustomerAdapter) ResolveCanonicalCustomer(ctx context.Con
 	return customerport.CanonicalCustomer{RequestedCustomerID: id, CustomerID: detail.CanonicalCustomerID, Merged: detail.CanonicalCustomerID != id}, nil
 }
 
+func (adapter canonicalCustomerAdapter) ResolveCanonicalCustomers(ctx context.Context, ids []customerdomain.CustomerID) ([]customerport.CanonicalCustomer, error) {
+	reader, ok := adapter.reader.(identityquery.CanonicalCustomerReader)
+	if !ok {
+		result := make([]customerport.CanonicalCustomer, 0, len(ids))
+		for _, id := range ids {
+			item, err := adapter.ResolveCanonicalCustomer(ctx, id)
+			if err != nil {
+				return nil, err
+			}
+			result = append(result, item)
+		}
+		return result, nil
+	}
+	resolved, err := reader.CanonicalCustomers(ctx, ids)
+	if err != nil {
+		if errors.Is(err, identityquery.ErrNotFound) {
+			return nil, customerapp.ErrNotFound
+		}
+		return nil, err
+	}
+	result := make([]customerport.CanonicalCustomer, len(resolved))
+	for index, item := range resolved {
+		result[index] = customerport.CanonicalCustomer{RequestedCustomerID: item.RequestedCustomerID, CustomerID: item.CustomerID, Merged: item.RequestedCustomerID != item.CustomerID}
+	}
+	return result, nil
+}
+
 type customerOwnerAdapter struct {
 	uow          platformport.UnitOfWork
 	observations wecomport.CustomerProfileObservationReader
