@@ -158,6 +158,31 @@ func TestSemanticValidationRequiresReferencedDependenciesAndOwnerFallback(t *tes
 	}
 }
 
+func TestProjectMappedEntryTagRequiresCompleteOwnerProjection(t *testing.T) {
+	id := int64(41)
+	projected, name, group, ok := projectMappedEntryTag(&id, "mapped", " 新客 ", " 来源 ")
+	if !ok || projected != id || name != "新客" || group != "来源" {
+		t.Fatalf("mapped projection=(%v,%q,%q,%v)", projected, name, group, ok)
+	}
+	for testName, value := range map[string]struct {
+		id          *int64
+		state       string
+		name, group string
+	}{
+		"unresolved":    {&id, "unresolved", "新客", "来源"},
+		"missing id":    {nil, "mapped", "新客", "来源"},
+		"missing name":  {&id, "mapped", "", "来源"},
+		"missing group": {&id, "mapped", "新客", ""},
+	} {
+		t.Run(testName, func(t *testing.T) {
+			projected, name, group, ok := projectMappedEntryTag(value.id, value.state, value.name, value.group)
+			if ok || projected != nil || name != "" || group != "" {
+				t.Fatalf("unsafe projection=(%v,%q,%q,%v)", projected, name, group, ok)
+			}
+		})
+	}
+}
+
 func hashText(value string) string {
 	digest := sha256.Sum256([]byte(value))
 	return "sha256:" + hex.EncodeToString(digest[:])
