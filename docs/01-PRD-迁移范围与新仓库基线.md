@@ -289,13 +289,11 @@ AI 只产生建议或内容，不决定收件人、发送时机或 Provider 执�
 → 侧边栏员工 OAuth 建立 Staff Session
 → JSSDK 取得可信 external_userid
 → Identity Resolve
-→ 未建档时执行 ProvisionCustomerFromVerifiedIdentity
-→ 同事务创建 Customer、Identity、Audit、Outbox
-→ 签发绑定当前 Session 的 Customer Context
+→ 仅在已存在唯一 canonical Customer 时签发 Context Token
 → 返回最小客户档案
 ```
 
-必须覆盖：首次进入、重复进入、并发进入、员工会话过期、JSSDK 失败、外部联系人切换、身份冲突、事务回滚、反向代理误路由、Provider 超时。
+本侧边栏不隐式建客；identity not_found/conflict 均失败关闭。必须覆盖：重复进入、并发进入、员工会话过期、JSSDK 失败、外部联系人切换、身份冲突、事务回滚、反向代理误路由、Provider 超时。
 
 ### GJ-02：已存在客户再次进入
 

@@ -8,6 +8,7 @@ import (
 	"errors"
 	nethttp "net/http"
 	"strconv"
+	"time"
 
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
 	customerapp "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/app"
@@ -15,6 +16,7 @@ import (
 	customerport "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/port"
 	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
 	identityport "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/port"
+	orderport "github.com/qianlan33333-png/AI-CRM-v3/internal/order/port"
 	platformaudit "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/audit"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/platform/idempotency"
 	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
@@ -46,6 +48,7 @@ type Config struct {
 	Surveys           customerport.CustomerSurveyReader
 	Timeline          customerport.CustomerTimelineReader
 	Chat              customerport.CustomerChatActivityReader
+	Orders            orderport.CustomerOrderSummaryReader
 	ProfileSigningKey []byte
 }
 
@@ -63,6 +66,7 @@ type Handler struct {
 	surveys           customerport.CustomerSurveyReader
 	timeline          customerport.CustomerTimelineReader
 	chat              customerport.CustomerChatActivityReader
+	orders            orderport.CustomerOrderSummaryReader
 	profileSigningKey []byte
 }
 
@@ -73,7 +77,7 @@ func NewHandler(config Config) (*Handler, error) {
 	}
 	return &Handler{uow: config.UnitOfWork, auth: config.Auth, csrf: config.CSRF, directory: config.Directory,
 		store: config.Store, identities: config.Identities, audit: config.Audit, canonical: config.Canonical,
-		owners: config.Owners, tags: config.Tags, surveys: config.Surveys, timeline: config.Timeline, chat: config.Chat,
+		owners: config.Owners, tags: config.Tags, surveys: config.Surveys, timeline: config.Timeline, chat: config.Chat, orders: config.Orders,
 		profileSigningKey: append([]byte(nil), config.ProfileSigningKey...)}, nil
 }
 
@@ -81,6 +85,7 @@ func (handler *Handler) Routes() nethttp.Handler {
 	mux := nethttp.NewServeMux()
 	mux.HandleFunc("GET /api/admin/customers", handler.list)
 	mux.HandleFunc("GET /api/admin/customers/{customer_id}", handler.detail)
+	mux.HandleFunc("GET /api/admin/customers/{customer_id}/360", handler.customer360)
 	mux.HandleFunc("POST /api/admin/customers/{customer_id}/phone-reveal", handler.revealPhone)
 	mux.HandleFunc("GET /api/admin/customers/{customer_id}/owners", handler.ownerSection)
 	mux.HandleFunc("GET /api/admin/customers/{customer_id}/tags", handler.tagSection)
@@ -88,6 +93,98 @@ func (handler *Handler) Routes() nethttp.Handler {
 	mux.HandleFunc("GET /api/admin/customers/{customer_id}/timeline", handler.timelineSection)
 	mux.HandleFunc("GET /api/admin/customers/{customer_id}/chat-activity", handler.chatSection)
 	return mux
+}
+
+func (handler *Handler) customer360(response nethttp.ResponseWriter, request *nethttp.Request) {
+	response.Header().Set("Cache-Control", "private, no-store")
+	canonicalID, ok := handler.authorizedCanonical(response, request)
+	if !ok {
+		return
+	}
+	if len(request.URL.Query()) != 0 {
+		handler.writeError(response, customerapp.ErrInvalidQuery)
+		return
+	}
+	type section struct {
+		Status    string `json:"status"`
+		Data      any    `json:"data,omitempty"`
+		ErrorCode string `json:"error_code,omitempty"`
+	}
+	degraded := func() section { return section{Status: "degraded", ErrorCode: "section_unavailable"} }
+	identitySection, profileSection, orderSection, surveySection, timelineSection := degraded(), degraded(), degraded(), degraded(), degraded()
+
+	var detail customerapp.Detail
+	var identities []identityport.DirectoryIdentitySummary
+	var phones []identityport.MaskedPhone
+	if err := handler.uow.Within(request.Context(), func(txctx context.Context) error {
+		var err error
+		detail, err = handler.store.Detail(txctx, canonicalID)
+		if err != nil {
+			return err
+		}
+		identities, phones, err = handler.identities.DirectoryIdentities(txctx, canonicalID)
+		return err
+	}); err == nil {
+		safeIdentities := make([]map[string]string, 0, len(identities))
+		for _, identity := range identities {
+			if identity.Kind != identitydomain.KindPhone {
+				safeIdentities = append(safeIdentities, map[string]string{"type": safeIdentityType(identity.Kind), "summary": safeIdentitySummary(identity.Kind)})
+			}
+		}
+		safePhones := make([]map[string]string, 0, len(phones))
+		for _, phone := range phones {
+			safePhones = append(safePhones, map[string]string{"masked": localCNPhone(phone.Masked)})
+		}
+		identitySection = section{Status: "ready", Data: map[string]any{"identities": safeIdentities, "phones": safePhones}}
+		profileSection = section{Status: "ready", Data: safeDirectoryDetail(detail)}
+	}
+
+	orderSummary, orderErr := orderport.CustomerOrderSummary{}, errors.New("order section unavailable")
+	if handler.orders != nil {
+		orderSummary, orderErr = handler.orders.CustomerOrderSummary(request.Context(), int64(canonicalID), 20)
+	}
+	if orderErr == nil {
+		orderSection = section{Status: "ready", Data: orderSummary}
+	}
+
+	surveys, surveyErr := handler.surveys.CustomerSurveys(request.Context(), canonicalID, customerport.PageQuery{Limit: 20, Watermark: time.Now().UTC()})
+	if surveyErr == nil {
+		surveySection = section{Status: string(surveys.Status.State), Data: map[string]any{"total": len(surveys.Items), "recent": surveys.Items}}
+		if surveySection.Status == "" {
+			surveySection.Status = "ready"
+		}
+	}
+	timeline, timelineErr := handler.timeline.CustomerTimeline(request.Context(), canonicalID, customerport.PageQuery{Limit: 30, Watermark: time.Now().UTC()})
+	if timelineErr == nil {
+		timelineSection = section{Status: string(timeline.Status.State), Data: timeline.Items}
+		if timelineSection.Status == "" {
+			timelineSection.Status = "ready"
+		}
+	}
+
+	riskLevel := "low"
+	reasons := []string{}
+	if identitySection.Status != "ready" {
+		riskLevel = "unknown"
+		reasons = append(reasons, "identity_section_unavailable")
+	}
+	if orderSummary.Failed > 0 {
+		riskLevel = "medium"
+		reasons = append(reasons, "payment_failures_present")
+	}
+	if orderSummary.Refunded > 0 {
+		riskLevel = "medium"
+		reasons = append(reasons, "refunds_present")
+	}
+	writePrivateJSON(response, nethttp.StatusOK, map[string]any{
+		"canonical_customer_id": canonicalID,
+		"identity_summary":      identitySection,
+		"profile":               profileSection,
+		"order_summary":         orderSection,
+		"questionnaire_summary": surveySection,
+		"risk":                  section{Status: "ready", Data: map[string]any{"level": riskLevel, "reasons": reasons}},
+		"recent_touchpoints":    timelineSection,
+	})
 }
 
 func (handler *Handler) list(response nethttp.ResponseWriter, request *nethttp.Request) {

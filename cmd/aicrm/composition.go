@@ -93,6 +93,7 @@ import (
 	segmentcompiler "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/compiler"
 	segmenthttp "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/http"
 	segmentstore "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/store"
+	"github.com/qianlan33333-png/AI-CRM-v3/internal/sidebar"
 	surveymodule "github.com/qianlan33333-png/AI-CRM-v3/internal/survey"
 	surveyapp "github.com/qianlan33333-png/AI-CRM-v3/internal/survey/app"
 	surveyprovider "github.com/qianlan33333-png/AI-CRM-v3/internal/survey/provider"
@@ -173,6 +174,10 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	queries := identityquery.NewPostgreSQL(phoneVault)
 	paymentRepository := paymentstore.NewPostgreSQL()
 	customerStore := customerstore.NewPostgreSQL()
+	sidebarProfiles, err := customerapp.NewSidebarProfileApplication(uow, customerStore, oneID, customerStore, auditService, platformoutbox.NewPostgreSQL())
+	if err != nil {
+		return fail(err)
+	}
 	requestSecurity := requestAccessSecurity{authentication: authentication}
 	effectsModule := externaleffects.NewModuleRegistration()
 	effectWorkers := river.NewWorkers()
@@ -268,6 +273,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
+	mediaLibrary := mediaapp.NewReadService(uow, mediaRepository)
 	radarModule := radarmodule.NewModuleRegistration()
 	radarRepository := radarstore.NewPostgres()
 	radarManager, err := radarapp.NewService(uow, radarRepository, radarRepository)
@@ -470,6 +476,8 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	}
 	outboundCompletionSink.WithPrivateMessage(privateCompletionSink)
 	outboundCompletionSink.WithAutomationMessage(outboundMessages)
+	sidebarExpiry := outbound.SidebarJSSDKExpiry{}
+	outboundCompletionSink.WithSidebarJSSDK(sidebarExpiry)
 	if cfg.Survey.DataKey == "" {
 		return fail(errors.New("survey data encryption key is not configured"))
 	}
@@ -540,6 +548,10 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return fail(err)
 	}
 	couponService := couponapp.NewService(uow, couponRepository, productTargets, couponRepository)
+	customerCoupons, err := couponapp.NewCustomerCouponApplication(uow, couponRepository)
+	if err != nil {
+		return fail(err)
+	}
 	couponBindings, err := couponModule.Bind(couponService, productCatalog, requestSecurity)
 	if err != nil {
 		return fail(err)
@@ -625,6 +637,15 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if _, err = rand.Read(cursorSigningKey); err != nil {
 		return fail(err)
 	}
+	orderRepository, err := orderstore.NewPostgreSQL(pool.Native(), uow)
+	if err != nil {
+		return fail(err)
+	}
+	orderService := orderapp.NewService(uow, orderRepository)
+	entitlements, err := orderapp.NewEntitlementApplication(uow, orderRepository)
+	if err != nil {
+		return fail(err)
+	}
 	customerProfileStore := wecom.NewPostgreSQLCustomerSyncStore()
 	customerHandler, err := customerhttp.NewHandler(customerhttp.Config{UnitOfWork: uow, Auth: requestSecurity, CSRF: requestSecurity,
 		Directory: customerapp.Directory{Store: customerStore, SigningKey: cursorSigningKey}, Store: customerStore, Identities: queries, Audit: auditService,
@@ -632,15 +653,10 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		Owners:    customerOwnerAdapter{uow: uow, observations: customerProfileStore, users: accessRepository},
 		Tags:      customerTagAdapter{uow: uow, observations: customerProfileStore, names: tagRepository},
 		Surveys:   customerSurveyAdapter{reader: surveySubmissions},
-		Timeline:  customerTimelineAdapter{uow: uow, reader: customerStore}, Chat: disabledCustomerChatActivity{}, ProfileSigningKey: cursorSigningKey})
+		Timeline:  customerTimelineAdapter{uow: uow, reader: customerStore}, Chat: disabledCustomerChatActivity{}, Orders: orderService, ProfileSigningKey: cursorSigningKey})
 	if err != nil {
 		return fail(err)
 	}
-	orderRepository, err := orderstore.NewPostgreSQL(pool.Native(), uow)
-	if err != nil {
-		return fail(err)
-	}
-	orderService := orderapp.NewService(uow, orderRepository)
 	orderHandler, err := orderhttp.NewHandler(orderService, requestSecurity, orderCustomerDisplayNameAdapter{uow: uow, reader: customerStore})
 	if err != nil {
 		return fail(err)
@@ -840,7 +856,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if providerErr != nil {
 		return fail(providerErr)
 	}
-	providerRouter := outbound.NewProviderRouterWithGroupMessageAndChannels(tagCatalogProvider, groupOpsProvider, channelAssetProvider, channelEntrantProvider, channelLinkProvider).WithPrivateMessage(privateProvider).WithAutomationMessage(messageProvider)
+	providerRouter := outbound.NewProviderRouterWithGroupMessageAndChannels(tagCatalogProvider, groupOpsProvider, channelAssetProvider, channelEntrantProvider, channelLinkProvider).WithPrivateMessage(privateProvider).WithAutomationMessage(messageProvider).WithSidebarJSSDK(sidebarExpiry)
 	if err = effectsModule.SetProviderAdapter(composedProviderRouter{outbound: providerRouter, payment: paymentAdapter}); err != nil {
 		return fail(err)
 	}
@@ -871,16 +887,29 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	hxcDashboardWorker.Service = &hxcDashboard
 	hxcHandler := hxchttp.Handler{Service: hxcDashboard, Store: hxcRepository, Auth: requestSecurity, Key: []byte(cfg.HXCDashboard.SubjectHMACKey)}
 	syncHandler := wecom.CustomerSyncHTTPHandler{Service: customerSync, Auth: requestSecurity, CSRF: requestSecurity}
+	sidebarContextTokens := wecom.ContextTokenService{CorpID: cfg.WeCom.CorpID, SigningKey: []byte(cfg.WeCom.ContextSigningKey), TTL: 5 * time.Minute}
 	weComHandler, err := wecom.NewHTTPHandler(wecom.HTTPHandlerOptions{
 		Callback: wecom.CallbackHandler{Enabled: cfg.WeCom.CallbackEnabled, Crypto: callbackCrypto, StateDigester: callbackStateDigester, Inbox: inboxService, UOW: uow, WelcomeGrants: welcomeGrantStore},
 		OAuth: wecom.OAuthService{Enabled: cfg.WeCom.Enabled, CorpID: cfg.WeCom.CorpID, StateStore: oauthStates, UOW: uow,
 			Client: providerClient, AllowedPaths: allowedOAuthRedirects(), StateTTL: 10 * time.Minute},
-		ContextTokens: wecom.ContextTokenService{CorpID: cfg.WeCom.CorpID, SigningKey: []byte(cfg.WeCom.ContextSigningKey),
-			Relationships: relationships, UOW: uow, TTL: 5 * time.Minute},
-		JSSDKSigner: providerClient, JSSDKOrigin: cfg.PublicOrigin,
+		ContextTokens: sidebarContextTokens,
+		JSSDKSigner:   providerClient, JSSDKOrigin: cfg.PublicOrigin,
 		PrincipalResolver: sidebarPrincipalResolver{authentication: authentication, users: accessRepository, uow: uow, corpID: cfg.WeCom.CorpID},
-		CustomerViewer:    sidebarCustomerViewer{queries: queries, uow: uow}, SessionIssuer: weComSessionIssuer{authentication: authentication},
-		ExistingIdentity: existingWeComIdentityResolver{service: oneID, uow: uow, corpID: cfg.WeCom.CorpID}, CookieSecure: true,
+		SessionIssuer:     weComSessionIssuer{authentication: authentication},
+		ExistingIdentity:  existingWeComIdentityResolver{service: oneID, uow: uow, corpID: cfg.WeCom.CorpID}, CookieSecure: true,
+	})
+	if err != nil {
+		return fail(err)
+	}
+	sidebarSends, err := outbound.NewSidebarSendService(uow, effectRepository)
+	if err != nil {
+		return fail(err)
+	}
+	sidebarHandler, err := sidebar.NewHandler(sidebar.Config{
+		Contexts: sidebarContextAdapter{tokens: sidebarContextTokens}, Profiles: sidebarProfiles,
+		Surveys: customerSurveyAdapter{reader: surveySubmissions}, Timeline: customerTimelineAdapter{uow: uow, reader: customerStore},
+		Products: productCatalog, ProductByID: productTargets, Orders: orderService, Entitlements: entitlements,
+		Coupons: customerCoupons, Materials: mediaLibrary, MaterialSend: mediaLibrary, Radar: radarManager, Sends: sidebarSends, PublicOrigin: cfg.PublicOrigin,
 	})
 	if err != nil {
 		return fail(err)
@@ -944,6 +973,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	adminAPIs.Handle("/api/admin/wecom-customer-acquisition-links", channelLinkHandler)
 	adminAPIs.Handle("/api/admin/wecom-customer-acquisition-links/", channelLinkHandler)
 	adminAPIs.Handle("/api/admin/ai-assistant/", aiHandler.Routes())
+	adminAPIs.Handle("/api/sidebar/v2/", sidebarHandler.Routes())
 	mountSurveyAPIs(adminAPIs, surveyBindings.Survey)
 	adminAPIs.Handle("/api/admin/operation-cycles/", operationBindings.API)
 	adminAPIs.Handle("/api/operation-cycles/", operationBindings.API)
@@ -952,7 +982,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 			return checkErr
 		}
 		var complete bool
-		checkErr := pool.Native().QueryRow(readinessContext, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['0001','0002','0003','0004','0005','0006','0007','0008','0009','0010','0011','0012','0013','0014','0015','0016','0017','0018','0019','0020','0021','0022','0023','0024','0025','0026','0027','0028','0029','0030','0031','0032','0033','0034','0035','0036','0037','0038','0039','0040','0041','0042','0043','0044','0045','0046','0047','0048','0049','0050','0051','0052','0053']) AS required(version) WHERE NOT EXISTS (SELECT 1 FROM platform_schema_migrations applied WHERE applied.version=required.version))`).Scan(&complete)
+		checkErr := pool.Native().QueryRow(readinessContext, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['0001','0002','0003','0004','0005','0006','0007','0008','0009','0010','0011','0012','0013','0014','0015','0016','0017','0018','0019','0020','0021','0022','0023','0024','0025','0026','0027','0028','0029','0030','0031','0032','0033','0034','0035','0036','0037','0038','0039','0040','0041','0042','0043','0044','0045','0046','0047','0048','0049','0050','0051','0052','0053','0054','0055','0056','0057','0058']) AS required(version) WHERE NOT EXISTS (SELECT 1 FROM platform_schema_migrations applied WHERE applied.version=required.version))`).Scan(&complete)
 		if checkErr != nil || !complete {
 			return errors.New("database schema is not ready")
 		}
@@ -1112,7 +1142,6 @@ func mountSurveyAPIs(mux *http.ServeMux, survey http.Handler) {
 	mux.Handle("/api/h5/surveys/oauth/", survey)
 	mux.Handle("/api/h5/surveys/session", survey)
 	mux.Handle("/q/", survey)
-	mux.Handle("/api/sidebar/v2/questionnaires", survey)
 	mux.Handle("/api/v1/customers/", survey)
 	// The frozen operations workspace reads its history projection from this
 	// legacy page-shaped path. Keep it inside the authenticated admin mux so the
@@ -1295,7 +1324,11 @@ func routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, acce
 	mux.Handle("/api/h5/surveys/oauth/", identity)
 	mux.Handle("/api/h5/surveys/session", identity)
 	mux.Handle("/q/", identity)
-	mux.Handle("/api/sidebar/v2/questionnaires", identity)
+	// The active v3 Sidebar API has one owner. Mount the complete versioned
+	// subtree before the broader WeCom OAuth/JSSDK prefix below; the identity
+	// mux delegates it to internal/sidebar while WeCom retains only session,
+	// context-token and JSSDK protocol routes.
+	mux.Handle("/api/sidebar/v2/", identity)
 	mux.Handle("/api/v1/customers/", identity)
 	mux.Handle("/admin/questionnaires/", identity)
 	mux.Handle("/api/admin/orders", identity)

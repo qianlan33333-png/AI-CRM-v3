@@ -166,6 +166,7 @@ func TestApplicationRouterKeepsOwnershipAndProtectsAdminShell(t *testing.T) {
 	tests := map[string]string{
 		"/healthz": "health", "/readyz": "health", "/login": "access", "/api/admin/access/users": "access", "/api/admin/admin-access": "access",
 		"/api/admin/oneid/conflicts": "identity", "/auth/wecom/start": "wecom", "/api/sidebar/jssdk-config": "wecom",
+		"/api/sidebar/v2/profile": "identity", "/api/sidebar/v2/send-intents": "identity",
 		"/sidebar/bind-mobile": "shell", "/static/admin_console/admin_console.css": "shell",
 	}
 	for path, owner := range tests {

@@ -122,6 +122,7 @@ type CompletionRouter struct {
 	link       *ChannelLinkCompletionSink
 	private    *PrivateMessageCompletionSink
 	automation effectport.CompletionSink
+	sidebar    effectport.CompletionSink
 }
 
 func NewCompletionRouterWithChannels(tag *TagCatalogCompletionSink, group *GroupMessageCompletionSink, channel *ChannelAssetCompletionSink) (*CompletionRouter, error) {
@@ -205,6 +206,13 @@ func (r *CompletionRouter) WithAutomationMessage(message effectport.CompletionSi
 	return r
 }
 
+func (r *CompletionRouter) WithSidebarJSSDK(sink effectport.CompletionSink) *CompletionRouter {
+	if r != nil {
+		r.sidebar = sink
+	}
+	return r
+}
+
 func NewCompletionRouter(tag *TagCatalogCompletionSink, group *GroupMessageCompletionSink) (*CompletionRouter, error) {
 	if tag == nil && group == nil {
 		return nil, errors.New("at least one completion sink is required")
@@ -259,6 +267,11 @@ func (r *CompletionRouter) CompleteEffect(ctx context.Context, effectRef string,
 			return errors.New("private message completion sink is unavailable")
 		}
 		return r.private.CompleteEffect(ctx, effectRef, envelope, attempt, result)
+	case effectport.KindSidebarJSSDKSend:
+		if r.sidebar == nil {
+			return errors.New("sidebar JSSDK completion sink is unavailable")
+		}
+		return r.sidebar.CompleteEffect(ctx, effectRef, envelope, attempt, result)
 	default:
 		return errors.New("unsupported completion kind")
 	}

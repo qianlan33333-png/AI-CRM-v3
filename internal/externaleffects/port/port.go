@@ -46,6 +46,7 @@ const (
 	KindChannelWelcome    Kind  = "channel_welcome_message"
 	KindChannelEntryTag   Kind  = "channel_entry_tag"
 	KindChannelLink       Kind  = "channel_acquisition_link_mutation"
+	KindSidebarJSSDKSend  Kind  = "sidebar_jssdk_send"
 	KindWeChatPayPrepay   Kind  = "wechat_pay_prepay_v1"
 	KindWeChatPayRefund   Kind  = "wechat_pay_refund_v1"
 	KindWeChatShopRefund  Kind  = "wechat_shop_refund_v1"
@@ -72,7 +73,7 @@ type Envelope struct {
 }
 
 func (value Envelope) Valid() bool {
-	kindValid := value.Owner == OwnerOutbound && (value.Kind == KindOutboundMessage || value.Kind == KindAutomationMessage || value.Kind == KindOutboundMedia || value.Kind == KindWeComTagCatalog || value.Kind == KindGroupMessage || value.Kind == KindChannelAsset || value.Kind == KindChannelWelcome || value.Kind == KindChannelEntryTag || value.Kind == KindChannelLink) ||
+	kindValid := value.Owner == OwnerOutbound && (value.Kind == KindOutboundMessage || value.Kind == KindAutomationMessage || value.Kind == KindOutboundMedia || value.Kind == KindWeComTagCatalog || value.Kind == KindGroupMessage || value.Kind == KindChannelAsset || value.Kind == KindChannelWelcome || value.Kind == KindChannelEntryTag || value.Kind == KindChannelLink || value.Kind == KindSidebarJSSDKSend) ||
 		value.Owner == OwnerPayment && (value.Kind == KindWeChatPayPrepay || value.Kind == KindWeChatPayRefund || value.Kind == KindWeChatShopRefund)
 	return kindValid && ValidDigest(value.SourceRefDigest) && ValidDigest(value.TargetRefDigest) && ValidDigest(value.PayloadDigest) && ValidDigest(value.PolicyVersionHash)
 }
@@ -169,6 +170,19 @@ type ReconcileCommand struct {
 type TransactionalReconciler interface {
 	ReconciliationCandidate(context.Context, string) (ReconciliationCandidate, error)
 	ReconcileEffectWithin(context.Context, ReconcileCommand) (Projection, error)
+}
+
+type ClientCompletionCommand struct {
+	EffectID       string
+	ReceiptKey     Digest
+	EvidenceDigest Digest
+	State          State
+}
+
+// ClientCompleter closes a queued browser-owned JSSDK effect inside the
+// Outbound caller's transaction. It never claims provider delivery.
+type ClientCompleter interface {
+	CompleteClientEffectWithin(context.Context, ClientCompletionCommand) (Projection, error)
 }
 
 type UnknownReconciler interface {

@@ -6,12 +6,10 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"strings"
 	"time"
 
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
-	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
 )
 
 type SidebarPrincipal struct {
@@ -26,22 +24,11 @@ type SidebarPrincipalResolver interface {
 	SidebarPrincipal(context.Context, string) (SidebarPrincipal, error)
 }
 
-type SidebarCustomerView struct {
-	CustomerID customerdomain.CustomerID `json:"customer_id"`
-	Status     string                    `json:"status"`
-}
-
-type SidebarCustomerViewer interface {
-	SidebarCustomer(context.Context, customerdomain.CustomerID) (SidebarCustomerView, error)
-}
-
 type ContextTokenService struct {
-	CorpID        string
-	SigningKey    []byte
-	Relationships FollowRelationshipStore
-	UOW           platformport.UnitOfWork
-	TTL           time.Duration
-	Now           func() time.Time
+	CorpID     string
+	SigningKey []byte
+	TTL        time.Duration
+	Now        func() time.Time
 }
 
 type contextClaims struct {
@@ -54,14 +41,6 @@ type contextClaims struct {
 func (service ContextTokenService) Issue(ctx context.Context, principal SidebarPrincipal, customerID customerdomain.CustomerID) (string, error) {
 	if principal.CorpID != service.CorpID || principal.EmployeeID == "" || customerID < 1 || !service.valid() {
 		return "", ErrInvalidContext
-	}
-	var active bool
-	if err := service.UOW.Within(ctx, func(txContext context.Context) error {
-		var err error
-		active, err = service.Relationships.IsActive(txContext, principal.CorpID, principal.EmployeeID, customerID)
-		return err
-	}); err != nil || !active {
-		return "", ErrRelationship
 	}
 	ttl := service.TTL
 	if ttl <= 0 || ttl > 15*time.Minute {
@@ -105,18 +84,11 @@ func (service ContextTokenService) Verify(ctx context.Context, token string) (Si
 	}
 	principal := SidebarPrincipal{CorpID: claims.CorpID, EmployeeID: claims.EmployeeID}
 	customerID := customerdomain.CustomerID(claims.CustomerID)
-	var active bool
-	if err = service.UOW.Within(ctx, func(txContext context.Context) error {
-		active, err = service.Relationships.IsActive(txContext, claims.CorpID, claims.EmployeeID, customerID)
-		return err
-	}); err != nil || !active {
-		return SidebarPrincipal{}, 0, ErrRelationship
-	}
 	return principal, customerID, nil
 }
 
 func (service ContextTokenService) valid() bool {
-	return service.CorpID != "" && len(service.SigningKey) >= 32 && service.Relationships != nil && service.UOW != nil
+	return service.CorpID != "" && len(service.SigningKey) >= 32
 }
 
 func (service ContextTokenService) clock() func() time.Time {
@@ -125,5 +97,3 @@ func (service ContextTokenService) clock() func() time.Time {
 	}
 	return func() time.Time { return time.Now().UTC() }
 }
-
-var ErrCustomerNotFound = errors.New("sidebar customer not found")

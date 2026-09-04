@@ -13,7 +13,10 @@ export default defineConfig({
     output: {
       target: './web/v3/generated/hxc-dashboard.ts',
       client: 'fetch',
-      clean: true,
+      // The generated directory also contains the separately generated
+      // AI Assistant client. Cleaning the whole directory here makes the two
+      // generators delete each other's output.
+      clean: false,
       prettier: true,
     },
   },

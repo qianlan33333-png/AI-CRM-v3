@@ -17,6 +17,17 @@
     data-bind-mobile-url="{{.BindMobileURL}}"
     data-jssdk-config-url="{{.JSSDKConfigURL}}"
     data-context-token-url="{{.ContextTokenURL}}"
+	data-profile-url="/api/sidebar/v2/profile"
+	data-phone-url="/api/sidebar/v2/phone-binding"
+	data-questionnaires-url="/api/sidebar/v2/questionnaires"
+	data-timeline-url="/api/sidebar/v2/timeline"
+	data-products-url="/api/sidebar/v2/products"
+	data-orders-url="/api/sidebar/v2/orders"
+	data-periodic-orders-url="/api/sidebar/v2/periodic-orders"
+	data-coupons-url="/api/sidebar/v2/coupons"
+	data-materials-url="/api/sidebar/v2/materials"
+	data-radar-links-url="/api/sidebar/v2/radar-links"
+	data-send-intents-url="/api/sidebar/v2/send-intents"
   >
     <div class="top">
       <section class="profile-card" aria-label="客户信息">
@@ -28,7 +39,6 @@
             </div>
             <div class="meta" id="customer-id"></div>
             <div class="meta" id="customer-mobile"></div>
-            <div class="meta" id="customer-external-userid"></div>
             <div class="workflow" id="workflow-title"></div>
           </div>
           <button class="btn change" id="change-mobile-button" type="button">换手机号</button>

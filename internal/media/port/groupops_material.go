@@ -15,7 +15,21 @@ var ErrInvalidGroupOpsMaterialSnapshot = errors.New("invalid group ops material 
 var (
 	ErrInvalidGroupOpsMaterialPreparation  = errors.New("invalid group ops material preparation")
 	ErrGroupOpsMaterialPreparationConflict = errors.New("group ops material preparation conflict")
+	ErrSidebarMaterialNotReady             = errors.New("sidebar material is not provider ready")
 )
+
+// SidebarImageSendMaterial is the Provider-ready, lease-bound projection used
+// by WeCom's sendChatMessage image contract. It is read from Media-owned
+// preparation receipts and never manufactures a media ID from a local ID.
+type SidebarImageSendMaterial struct {
+	ImageID    int64
+	MediaID    string
+	ReadyUntil time.Time
+}
+
+type SidebarImageSendReader interface {
+	ReadSidebarImageForSend(context.Context, int64, time.Time) (SidebarImageSendMaterial, error)
+}
 
 // GroupOpsMaterialSnapshot is the immutable, provider-ready part of one
 // accepted Group Ops execution. Provider media IDs and link/card fields must

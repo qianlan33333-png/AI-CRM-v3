@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"net/url"
 	"strings"
@@ -16,7 +15,6 @@ import (
 	identityapp "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/app"
 	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
 	identityport "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/port"
-	identityquery "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/query"
 	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
 	releaseport "github.com/qianlan33333-png/AI-CRM-v3/internal/release/port"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/wecom"
@@ -141,27 +139,6 @@ func (adapter existingWeComIdentityResolver) ResolveExistingWeComIdentity(ctx co
 		return 0, false, err
 	}
 	return result.CustomerID, result.Status == identityport.ResolveFound, nil
-}
-
-type sidebarCustomerViewer struct {
-	queries identityquery.Reader
-	uow     platformport.UnitOfWork
-}
-
-func (adapter sidebarCustomerViewer) SidebarCustomer(ctx context.Context, customerID customerdomain.CustomerID) (wecom.SidebarCustomerView, error) {
-	var detail identityquery.CustomerDetail
-	err := adapter.uow.Within(ctx, func(txContext context.Context) error {
-		var queryErr error
-		detail, queryErr = adapter.queries.Customer(txContext, customerID)
-		return queryErr
-	})
-	if errors.Is(err, identityquery.ErrNotFound) {
-		return wecom.SidebarCustomerView{}, wecom.ErrCustomerNotFound
-	}
-	if err != nil {
-		return wecom.SidebarCustomerView{}, err
-	}
-	return wecom.SidebarCustomerView{CustomerID: detail.CanonicalCustomerID, Status: string(detail.CanonicalStatus)}, nil
 }
 
 func requireAdminSession(authentication accessAuthentication, next http.Handler) http.Handler {

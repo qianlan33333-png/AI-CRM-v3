@@ -240,3 +240,28 @@ func TestChatSectionIsExplicitlyNotReady(t *testing.T) {
 		t.Fatalf("status=%d cache=%q body=%s", response.Code, response.Header().Get("Cache-Control"), response.Body.String())
 	}
 }
+
+func TestCustomer360ContainsOnlyApprovedLocalSections(t *testing.T) {
+	security := testSecurity{principal: accessdomain.Principal{Kind: accessdomain.KindAdmin, InternalID: 7, Roles: []accessdomain.Role{accessdomain.RoleViewer}}}
+	store := &testCustomerStore{detail: customerapp.Detail{Item: customerapp.Item{CustomerID: 42, CustomerStatus: customerdomain.StatusActive, DisplayName: "Alice", OneIDLabel: "CID-42"}}}
+	handler, err := NewHandler(testConfig(security, store, &testIdentities{}, &testAudit{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/admin/customers/42/360", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, required := range []string{"identity_summary", "profile", "order_summary", "questionnaire_summary", "risk", "recent_touchpoints"} {
+		if !strings.Contains(body, `"`+required+`"`) {
+			t.Fatalf("missing %q: %s", required, body)
+		}
+	}
+	for _, forbidden := range []string{"message_summary", `"tags"`, `"owners"`, "user_ops_status", "automation_status", "chat_activity"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("forbidden %q: %s", forbidden, body)
+		}
+	}
+}

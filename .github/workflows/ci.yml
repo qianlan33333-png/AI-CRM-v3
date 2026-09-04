@@ -51,6 +51,14 @@ jobs:
           path: .ci-donor-v2
           fetch-depth: 1
           persist-credentials: false
+      - name: Checkout frozen sidebar donor
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: qianlan33333-png/AI-CRM
+          ref: dd8d60dd8ddb983aca2ec88cc9e65a9f7563f79f
+          path: .ci-donor-sidebar
+          fetch-depth: 1
+          persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version-file: go.mod
@@ -88,6 +96,7 @@ jobs:
           scripts/check-pr09-frontend-freeze.sh
           scripts/check-config-definition-import-boundary.sh
           scripts/check-ai-assistant-donor-manifest.sh
+          AICRM_SIDEBAR_DONOR_DIR="${{ github.workspace }}/.ci-donor-sidebar" scripts/check-sidebar-customer360-contract.sh
           make radar-check
           node scripts/generate-ai-assistant-client.mjs
           npm run typecheck
@@ -117,7 +126,7 @@ jobs:
         # service's lock table or race its catalog tuples.
         run: GOFLAGS=-p=1 make check
       - name: Race-check security and identity boundaries
-        run: go test -p 1 -race ./cmd/aicrm ./cmd/bootstrap-automation-operations ./cmd/migrate-commerce-history ./cmd/migrate-order-attribution ./cmd/migrate-automation-operations ./cmd/migrate-v2-config-definitions ./cmd/migrate-channel-history ./cmd/migrate-radar-v2 ./internal/radar/... ./internal/access/... ./internal/identity/... ./internal/wecom/... ./internal/externaleffects/... ./internal/platform/jobqueue/... ./internal/media/... ./internal/tag/... ./internal/product/... ./internal/coupon/... ./internal/groupops/... ./internal/automation/... ./internal/segment/... ./internal/operationcycle/... ./internal/outbound ./internal/order/... ./internal/payment/... ./internal/config/... ./internal/adminops/... ./internal/release/... ./internal/configmigration/...
+        run: go test -p 1 -race ./cmd/aicrm ./cmd/bootstrap-automation-operations ./cmd/migrate-commerce-history ./cmd/migrate-order-attribution ./cmd/migrate-automation-operations ./cmd/migrate-v2-config-definitions ./cmd/migrate-channel-history ./cmd/migrate-radar-v2 ./cmd/migrate-sidebar-history ./internal/radar/... ./internal/access/... ./internal/identity/... ./internal/wecom/... ./internal/externaleffects/... ./internal/platform/jobqueue/... ./internal/media/... ./internal/tag/... ./internal/product/... ./internal/coupon/... ./internal/groupops/... ./internal/automation/... ./internal/segment/... ./internal/operationcycle/... ./internal/outbound ./internal/order/... ./internal/payment/... ./internal/config/... ./internal/adminops/... ./internal/release/... ./internal/configmigration/...
 
   deploy:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -143,6 +152,14 @@ jobs:
           repository: qianlan33333-png/AI-CRM-v2
           ref: 6bfbe5816bb89913c70adaca87d6a486260e016e
           path: .ci-donor-v2
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Checkout frozen sidebar donor
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: qianlan33333-png/AI-CRM
+          ref: dd8d60dd8ddb983aca2ec88cc9e65a9f7563f79f
+          path: .ci-donor-sidebar
           fetch-depth: 1
           persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
@@ -174,6 +191,7 @@ jobs:
           go build -trimpath -ldflags "-s -w" -o release/bin/migrate-v2-config-definitions ./cmd/migrate-v2-config-definitions
           go build -trimpath -ldflags "-s -w" -o release/bin/migrate-channel-history ./cmd/migrate-channel-history
           go build -trimpath -ldflags "-s -w" -o release/bin/migrate-radar-v2 ./cmd/migrate-radar-v2
+          go build -trimpath -ldflags "-s -w" -o release/bin/migrate-sidebar-history ./cmd/migrate-sidebar-history
           go build -trimpath -ldflags "-s -w" -o release/bin/bootstrap-automation-operations ./cmd/bootstrap-automation-operations
           npm ci
           npm run version:check
@@ -194,6 +212,7 @@ jobs:
           scripts/check-pr09-frontend-freeze.sh
           scripts/check-config-definition-import-boundary.sh
           scripts/check-ai-assistant-donor-manifest.sh
+          AICRM_SIDEBAR_DONOR_DIR="${{ github.workspace }}/.ci-donor-sidebar" scripts/check-sidebar-customer360-contract.sh
           make radar-check
           node scripts/generate-ai-assistant-client.mjs
           npm run typecheck

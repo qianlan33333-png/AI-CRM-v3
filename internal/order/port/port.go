@@ -66,6 +66,18 @@ type Query interface {
 	List(context.Context, ListQuery) (Page, error)
 }
 
+type CustomerOrderSummary struct {
+	Total    int64             `json:"total"`
+	Paid     int64             `json:"paid"`
+	Failed   int64             `json:"failed"`
+	Refunded int64             `json:"refunded"`
+	Recent   []domain.Snapshot `json:"recent"`
+}
+
+type CustomerOrderSummaryReader interface {
+	CustomerOrderSummary(context.Context, int64, int32) (CustomerOrderSummary, error)
+}
+
 type ExportPreview struct {
 	Rows      int  `json:"total"`
 	Truncated bool `json:"truncated"`
