@@ -127,6 +127,9 @@ func TestPostgreSQLOneIDQueries(t *testing.T) {
 	if _, err = store.Customer(ctx, customerdomain.CustomerID(mergedID)); !errors.Is(err, platformpostgres.ErrTransactionNeeded) {
 		t.Fatalf("query without transaction error=%v", err)
 	}
+	if _, err = store.CanonicalCustomers(ctx, []customerdomain.CustomerID{customerdomain.CustomerID(mergedID)}); !errors.Is(err, platformpostgres.ErrTransactionNeeded) {
+		t.Fatalf("bulk query without transaction error=%v", err)
+	}
 
 	if err = unit.Within(ctx, func(txContext context.Context) error {
 		detail, queryErr := store.Customer(txContext, customerdomain.CustomerID(mergedID))
@@ -158,6 +161,29 @@ func TestPostgreSQLOneIDQueries(t *testing.T) {
 		if len(detail.MergeLineage) != 0 {
 			t.Errorf("unexpected merge lineage=%#v", detail.MergeLineage)
 		}
+		roots, queryErr := store.CanonicalCustomers(txContext, []customerdomain.CustomerID{
+			customerdomain.CustomerID(mergedID),
+			customerdomain.CustomerID(canonicalID),
+			customerdomain.CustomerID(otherID),
+			customerdomain.CustomerID(mergedID),
+		})
+		if queryErr != nil {
+			return queryErr
+		}
+		want := []query.CanonicalCustomerRoot{
+			{RequestedCustomerID: customerdomain.CustomerID(mergedID), CustomerID: customerdomain.CustomerID(canonicalID)},
+			{RequestedCustomerID: customerdomain.CustomerID(canonicalID), CustomerID: customerdomain.CustomerID(canonicalID)},
+			{RequestedCustomerID: customerdomain.CustomerID(otherID), CustomerID: customerdomain.CustomerID(otherID)},
+			{RequestedCustomerID: customerdomain.CustomerID(mergedID), CustomerID: customerdomain.CustomerID(canonicalID)},
+		}
+		if len(roots) != len(want) {
+			t.Fatalf("canonical roots=%#v", roots)
+		}
+		for index := range want {
+			if roots[index] != want[index] {
+				t.Fatalf("canonical root[%d]=%#v want %#v", index, roots[index], want[index])
+			}
+		}
 
 		conflicts, queryErr := store.Conflicts(txContext, query.ListOptions{})
 		if queryErr != nil {
@@ -186,6 +212,12 @@ func TestPostgreSQLOneIDQueries(t *testing.T) {
 		return queryErr
 	}); !errors.Is(err, query.ErrNotFound) {
 		t.Fatalf("missing customer error=%v", err)
+	}
+	if err = unit.Within(ctx, func(txContext context.Context) error {
+		_, queryErr := store.CanonicalCustomers(txContext, []customerdomain.CustomerID{customerdomain.CustomerID(otherID), customerdomain.CustomerID(otherID + 10000)})
+		return queryErr
+	}); !errors.Is(err, query.ErrNotFound) {
+		t.Fatalf("missing bulk customer error=%v", err)
 	}
 	if _, err = store.Conflicts(ctx, query.ListOptions{Status: "deleted", Limit: 1}); !errors.Is(err, query.ErrInvalidQuery) {
 		t.Fatalf("invalid status error=%v", err)
