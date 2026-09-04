@@ -20,11 +20,11 @@ SUMS
 cd - >/dev/null
 template="internal/webshell/templates/sidebar.html"
 javascript="internal/webshell/static/sidebar_workbench/sidebar_workbench.js"
-[[ "$(rg -o 'data-tab="[^"]+"' "$template" | wc -l | tr -d ' ')" == "6" ]]
-for label in 核心画像 问卷 商品 订单 优惠券 素材; do rg -q ">$label<" "$template"; done
+[[ "$(grep -Eo 'data-tab="[^"]+"' "$template" | wc -l | tr -d ' ')" == "6" ]]
+for label in 核心画像 问卷 商品 订单 优惠券 素材; do grep -Fq ">$label<" "$template"; done
 for removed in chat-activity other-staff-messages message_summary user_ops_status automation_status; do
-  ! rg -q "$removed" "$template" "$javascript"
+  ! grep -Fq "$removed" "$template" "$javascript"
 done
-rg -q 'getCurExternalContact' "$javascript"
-rg -q 'sendChatMessage' "$javascript"
-rg -q 'Authorization: "Bearer "' "$javascript"
+grep -Fq 'getCurExternalContact' "$javascript"
+grep -Fq 'sendChatMessage' "$javascript"
+grep -Fq 'Authorization: "Bearer "' "$javascript"
