@@ -327,24 +327,57 @@ func decodeCatalogWrite(response http.ResponseWriter, request *http.Request, def
 }
 
 type catalogListJSON struct {
-	ID                  int64                `json:"id"`
-	ChannelName         string               `json:"channel_name"`
-	ChannelCode         string               `json:"channel_code"`
-	Status              channeldomain.Status `json:"status"`
-	AssigneeCount       int                  `json:"assignee_count"`
-	ChannelContactCount int                  `json:"channel_contact_count"`
-	ChannelEnterCount   int64                `json:"channel_enter_count"`
-	LatestEnteredAt     string               `json:"latest_channel_entered_at"`
-	QRCodeAssetID       int64                `json:"qrcode_asset_id"`
-	QRCodeStatus        string               `json:"qrcode_status"`
-	QRCodeOrigin        string               `json:"qrcode_origin"`
-	QRDownloadURL       string               `json:"qr_download_url"`
-	CreatedAt           string               `json:"created_at"`
-	UpdatedAt           string               `json:"updated_at"`
+	ID                    int64                            `json:"id"`
+	ChannelType           channeldomain.ChannelType        `json:"channel_type"`
+	CarrierType           channeldomain.CarrierType        `json:"carrier_type"`
+	ChannelName           string                           `json:"channel_name"`
+	ChannelCode           string                           `json:"channel_code"`
+	SceneValue            string                           `json:"scene_value"`
+	QRCodeURL             string                           `json:"qr_url"`
+	Status                channeldomain.Status             `json:"status"`
+	OwnerStaffID          string                           `json:"owner_staff_id"`
+	CustomerChannel       string                           `json:"customer_channel"`
+	LinkURL               string                           `json:"link_url"`
+	FinalURL              string                           `json:"final_url"`
+	WelcomeMessage        string                           `json:"welcome_message"`
+	WelcomeImageIDs       []int64                          `json:"welcome_image_library_ids"`
+	WelcomeMiniProgramIDs []int64                          `json:"welcome_miniprogram_library_ids"`
+	WelcomeAttachmentIDs  []int64                          `json:"welcome_attachment_library_ids"`
+	WelcomeGroupInviteIDs []int64                          `json:"welcome_group_invite_library_ids"`
+	AutoAcceptFriend      bool                             `json:"auto_accept_friend"`
+	EntryTagID            string                           `json:"entry_tag_id"`
+	EntryTagName          string                           `json:"entry_tag_name"`
+	EntryTagGroupName     string                           `json:"entry_tag_group_name"`
+	AssignmentMode        channeldomain.AssignmentMode     `json:"assignment_mode"`
+	AssignmentStrategy    channeldomain.AssignmentStrategy `json:"assignment_strategy"`
+	OverflowPolicy        string                           `json:"overflow_policy"`
+	AssignmentConfig      map[string]any                   `json:"assignment_config_json"`
+	AssigneeCount         int                              `json:"assignee_count"`
+	ChannelContactCount   int                              `json:"channel_contact_count"`
+	ChannelEnterCount     int64                            `json:"channel_enter_count"`
+	LatestEnteredAt       string                           `json:"latest_channel_entered_at"`
+	QRCodeAssetID         int64                            `json:"qrcode_asset_id"`
+	QRCodeStatus          string                           `json:"qrcode_status"`
+	QRCodeOrigin          string                           `json:"qrcode_origin"`
+	QRDownloadURL         string                           `json:"qr_download_url"`
+	CreatedAt             string                           `json:"created_at"`
+	UpdatedAt             string                           `json:"updated_at"`
 }
 
 func projectCatalogList(channel channeldomain.Channel, summary CatalogSummary) catalogListJSON {
-	return catalogListJSON{ID: channel.ID, ChannelName: channel.Config.Name, ChannelCode: channel.Code, Status: channel.Status, AssigneeCount: len(channel.Config.Assignment.Assignees), ChannelContactCount: int(summary.UniqueUsers), ChannelEnterCount: summary.EnterCount, LatestEnteredAt: optionalCatalogTime(summary.LatestEnteredAt), QRCodeAssetID: summary.QRCodeAssetID, QRCodeStatus: summary.QRCodeStatus, QRCodeOrigin: summary.QRCodeOrigin, QRDownloadURL: summary.QRDownloadURL, CreatedAt: channel.CreatedAt.Format(time.RFC3339Nano), UpdatedAt: channel.UpdatedAt.Format(time.RFC3339Nano)}
+	assignment := make([]map[string]any, len(channel.Config.Assignment.Assignees))
+	for index, item := range channel.Config.Assignment.Assignees {
+		assignment[index] = map[string]any{"staff_id": item.StaffID, "priority": item.Priority, "ratio_percent": item.Ratio, "max_scans_24h": item.MaxScans24h}
+	}
+	return catalogListJSON{
+		ID: channel.ID, ChannelType: channel.Config.Type, CarrierType: channel.Config.Carrier, ChannelName: channel.Config.Name, ChannelCode: channel.Code,
+		SceneValue: channel.Config.SceneValue, QRCodeURL: channel.Config.QRCodeURL, Status: channel.Status, CustomerChannel: channel.Config.CustomerChannel, LinkURL: channel.Config.LinkURL, FinalURL: channel.Config.FinalURL,
+		WelcomeMessage: channel.Config.WelcomeMessage, WelcomeImageIDs: channel.Config.Media.Images, WelcomeMiniProgramIDs: channel.Config.Media.MiniPrograms, WelcomeAttachmentIDs: channel.Config.Media.Attachments, WelcomeGroupInviteIDs: channel.Config.Media.GroupInvites,
+		AutoAcceptFriend: channel.Config.AutoAcceptFriend, EntryTagID: optionalCatalogID(channel.Config.EntryTagID), EntryTagName: channel.Config.EntryTagName, EntryTagGroupName: channel.Config.EntryTagGroupName,
+		AssignmentMode: channel.Config.Assignment.Mode, AssignmentStrategy: channel.Config.Assignment.Strategy, OverflowPolicy: channel.Config.Assignment.OverflowPolicy, AssignmentConfig: map[string]any{"assignees": assignment},
+		AssigneeCount: len(assignment), ChannelContactCount: int(summary.UniqueUsers), ChannelEnterCount: summary.EnterCount, LatestEnteredAt: optionalCatalogTime(summary.LatestEnteredAt), QRCodeAssetID: summary.QRCodeAssetID, QRCodeStatus: summary.QRCodeStatus, QRCodeOrigin: summary.QRCodeOrigin, QRDownloadURL: summary.QRDownloadURL,
+		CreatedAt: channel.CreatedAt.Format(time.RFC3339Nano), UpdatedAt: channel.UpdatedAt.Format(time.RFC3339Nano),
+	}
 }
 
 func projectCatalogDetail(channel channeldomain.Channel, summary CatalogSummary) map[string]any {
