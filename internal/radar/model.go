@@ -25,7 +25,11 @@ var (
 	ErrInvalidStatus     = errors.New("radar: invalid status")
 	ErrInvalidTransition = errors.New("radar: invalid status transition")
 	ErrVersionConflict   = errors.New("radar: version conflict")
-	publicCodePattern    = regexp.MustCompile(`^rd_[A-Za-z0-9_-]{16,64}$`)
+	// New codes keep the rd_ prefix and at least 96 bits of entropy. The
+	// alphanumeric alternative is the immutable 1-8 character code generated
+	// by the production v1 Radar and is accepted only so existing share URLs
+	// survive the one-time migration; new writes never generate this shape.
+	publicCodePattern = regexp.MustCompile(`^(?:rd_[A-Za-z0-9_-]{16,64}|[A-Za-z0-9]{1,8})$`)
 )
 
 type RadarID int64

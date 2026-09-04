@@ -100,6 +100,16 @@ func TestDraftValidation(t *testing.T) {
 	}
 }
 
+func TestLegacyPublicCodeRemainsValidForMigratedShareURLs(t *testing.T) {
+	now := time.Date(2026, 9, 4, 1, 2, 3, 0, time.UTC)
+	if _, err := NewDraft(1, "a8f3k2", "name", "title", "", Content{Type: ContentTypeLink, DestinationURL: "https://example.com"}, AuthPolicyUnionIDRequired, now); err != nil {
+		t.Fatalf("legacy public code rejected: %v", err)
+	}
+	if PublicCode("a_b").Valid() || PublicCode("123456789").Valid() {
+		t.Fatal("unsupported legacy public code shape accepted")
+	}
+}
+
 func TestRevisionPreservesPublicCode(t *testing.T) {
 	now := time.Date(2026, 9, 4, 1, 2, 3, 0, time.UTC)
 	link := mustDraft(t, Content{Type: ContentTypeLink, DestinationURL: "https://example.com/old"}, now)
