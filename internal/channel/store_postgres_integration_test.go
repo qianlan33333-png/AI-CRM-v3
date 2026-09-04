@@ -150,6 +150,29 @@ func TestPostgreSQLCatalogReadsMigrationBlockedAssignmentForRepairIntegration(t 
 	}
 }
 
+func TestPostgreSQLAssetVersionLockAcceptsTypedChannelIDIntegration(t *testing.T) {
+	pool, cleanup := channelIntegrationPool(t)
+	defer cleanup()
+	unit, err := platformpostgres.NewUnitOfWork(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	store := NewPostgreSQLAssetStore(pool.Native())
+	var version int64
+	if err = unit.Within(ctx, func(txContext context.Context) error {
+		var nextErr error
+		version, nextErr = store.NextAssetVersion(txContext, 49, AcquisitionAssetQRCode)
+		return nextErr
+	}); err != nil {
+		t.Fatalf("next asset version rejected bigint channel id: %v", err)
+	}
+	if version != 1 {
+		t.Fatalf("next asset version=%d want=1", version)
+	}
+}
+
 func mustChannelAuditService(t *testing.T) *platformaudit.Service {
 	t.Helper()
 	service, err := platformaudit.NewService(platformaudit.NewPostgreSQLStore())
