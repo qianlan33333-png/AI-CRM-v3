@@ -35,6 +35,17 @@ function strictProjection(value: unknown, base: Product | undefined): ProductPro
   return { ...base, resourceId: id, lifecycle, status: labels[lifecycle], tone: tones[lifecycle], sold: String(sold) };
 }
 
+function externalPushProjection(value: unknown, productID: number): NonNullable<Product['externalPush']> {
+  const item = object(value);
+  if (Number(item.product_id) !== productID || item.product_kind !== 'wechat_pay' || typeof item.enabled !== 'boolean') {
+    throw new Error('商品外推配置响应不完整');
+  }
+  const reference = typeof item.configuration_reference === 'string' ? item.configuration_reference : '';
+  const updatedAt = typeof item.updated_at === 'string' ? item.updated_at : '';
+  if (!item.enabled && reference !== '') throw new Error('商品外推配置状态矛盾');
+  return { enabled: item.enabled, configurationReference: reference, updatedAt };
+}
+
 async function readJSON(path: string): Promise<unknown> {
   const response = await fetch(path, { method: 'GET', credentials: 'same-origin', headers: { Accept: 'application/json' } });
   let payload: unknown;
@@ -46,14 +57,45 @@ async function readJSON(path: string): Promise<unknown> {
 let loadedProducts: ProductProjection[] = [];
 const donorLoadDb = api.loadDb.bind(api);
 api.loadDb = async (context?: AdminReadContext): Promise<AdminDb> => {
-  const db = await donorLoadDb(context);
-  if (context?.page !== 'products' && context?.page !== 'productForm') return db;
-  let rawItems: unknown[];
-  if (context.page === 'productForm' && /^[1-9][0-9]*$/.test(context.id || '')) {
-    rawItems = [await readJSON(`/api/v1/products/${context.id}`)];
-  } else {
-    rawItems = list(object(await readJSON('/api/v1/products')).items);
+  if (context?.page === 'productForm' && /^[1-9][0-9]*$/.test(context.id || '')) {
+    const productID = Number(context.id);
+    const page = (name: AdminReadContext['page']): AdminReadContext => ({ ...context, page: name, id: undefined });
+    const optionalChannels = donorLoadDb(page('channels')).catch((error: unknown) => {
+      const failure = object(error);
+      const details = object(failure.details);
+      const expectedCatalogFailure = failure.status === 400 && details.code === 'MALFORMED_REQUEST' ||
+        failure.status === 503 && details.code === 'DEPENDENCY_UNAVAILABLE';
+      if (expectedCatalogFailure) return undefined;
+      throw error;
+    });
+    // The byte-frozen donor loader couples Product forms to the whole Channel
+    // catalog. Compose the form from independent local reads so malformed
+    // imported Channel rows cannot hide an otherwise valid Product definition.
+    const [db, imageDb, tagDb, channelDb, rawProduct, rawExternalPush] = await Promise.all([
+      donorLoadDb(page('products')),
+      donorLoadDb(page('images')),
+      donorLoadDb(page('tags')),
+      optionalChannels,
+      readJSON(`/api/v1/products/${productID}`),
+      readJSON(`/api/admin/wechat-pay/products/${productID}/external-push`),
+    ]);
+    db.rows.images = imageDb.rows.images;
+    db.tagGroups = tagDb.tagGroups;
+    db.wecomTags = tagDb.wecomTags;
+    db.rows.channels = channelDb?.rows.channels || [];
+    const base = db.rows.products.find((item) => item.resourceId === productID);
+    const product = strictProjection(rawProduct, base);
+    product.externalPush = externalPushProjection(rawExternalPush, productID);
+    loadedProducts = [product];
+    db.rows.products = loadedProducts;
+    db.rows.orderKv = [];
+    return db;
   }
+
+  const db = await donorLoadDb(context);
+  if (context?.page !== 'products') return db;
+  let rawItems: unknown[];
+  rawItems = list(object(await readJSON('/api/v1/products')).items);
   const byID = new Map(db.rows.products.map((item) => [item.resourceId, item]));
   loadedProducts = rawItems.map((item) => strictProjection(item, byID.get(Number(object(item).id))));
   db.rows.products = loadedProducts;
