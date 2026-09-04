@@ -19,6 +19,8 @@ type fakeCatalog struct {
 	nextPackage int64
 }
 
+var fakePackageCreatedAt = time.Date(2026, 9, 4, 0, 30, 0, 0, time.UTC)
+
 func newFakeCatalog() *fakeCatalog {
 	return &fakeCatalog{packages: map[string]segmentdomain.Package{}, configs: map[int64]segmentdomain.ConfigurationVersion{}, nextPackage: 10}
 }
@@ -41,7 +43,7 @@ func (f *fakeCatalog) CreatePackage(_ context.Context, command segmentapp.Packag
 		return item, nil
 	}
 	f.nextPackage++
-	item := segmentdomain.Package{ID: f.nextPackage, Name: command.Name, GroupID: command.GroupID, Lifecycle: segmentdomain.Paused, Version: 2}
+	item := segmentdomain.Package{ID: f.nextPackage, Name: command.Name, GroupID: command.GroupID, Lifecycle: segmentdomain.Paused, Version: 2, CreatedAt: fakePackageCreatedAt}
 	f.packages[command.IdempotencyKey] = item
 	definition, _ := segmentapp.DefaultDefinition(command.TemplateKey)
 	f.configs[item.ID] = segmentdomain.ConfigurationVersion{ID: item.ID * 10, PackageID: item.ID, Version: 1, Definition: definition}
@@ -73,17 +75,22 @@ func (f *fakeCatalog) PutConfiguration(_ context.Context, command segmentapp.Con
 }
 
 type fakeSnapshots struct {
-	previewed []int64
-	refreshed []int64
+	previewed  []int64
+	refreshed  []int64
+	references []time.Time
+	keys       []string
 }
 
 func (f *fakeSnapshots) Preview(_ context.Context, id int64, reference time.Time) (segmentapp.Preview, error) {
 	f.previewed = append(f.previewed, id)
+	f.references = append(f.references, reference)
 	return segmentapp.Preview{PackageID: id, ReferenceTime: reference, MemberCount: int(id), MemberDigest: "members", WatermarkDigest: "watermark"}, nil
 }
 
 func (f *fakeSnapshots) AcceptRefresh(_ context.Context, command segmentapp.RefreshCommand) (segmentdomain.RefreshRun, error) {
 	f.refreshed = append(f.refreshed, command.PackageID)
+	f.references = append(f.references, command.ReferenceTime)
+	f.keys = append(f.keys, command.IdempotencyKey)
 	return segmentdomain.RefreshRun{ID: command.PackageID * 100, PackageID: command.PackageID, State: segmentdomain.RefreshQueued}, nil
 }
 
@@ -100,6 +107,19 @@ func TestApplyCreatesSafePausedDefaultsAndIsIdempotent(t *testing.T) {
 	if catalog.putCalls != 3 || len(snapshots.previewed) != 3 || len(snapshots.refreshed) != 3 {
 		t.Fatalf("put=%d preview=%v refresh=%v", catalog.putCalls, snapshots.previewed, snapshots.refreshed)
 	}
+	if !report.ReferenceTime.Equal(fakePackageCreatedAt) {
+		t.Fatalf("reference=%s", report.ReferenceTime)
+	}
+	for index, got := range snapshots.references {
+		if !got.Equal(fakePackageCreatedAt) {
+			t.Fatalf("reference[%d]=%s", index, got)
+		}
+	}
+	for index, key := range snapshots.keys {
+		if key != "automation-operations-bootstrap-refresh-v3:"+managedDefaults[index].Code {
+			t.Fatalf("refresh key[%d]=%q", index, key)
+		}
+	}
 	for _, item := range report.Packages {
 		if item.Lifecycle != segmentdomain.Paused || item.ConfigurationVersion != 2 || item.Preview == nil || item.Refresh == nil {
 			t.Fatalf("unsafe or incomplete package report: %+v", item)
@@ -113,6 +133,9 @@ func TestApplyCreatesSafePausedDefaultsAndIsIdempotent(t *testing.T) {
 	}
 	if catalog.putCalls != 3 || len(second.Packages) != 3 {
 		t.Fatalf("replay overwrote configuration: calls=%d report=%+v", catalog.putCalls, second)
+	}
+	if !second.ReferenceTime.Equal(report.ReferenceTime) {
+		t.Fatalf("replay reference=%s first=%s", second.ReferenceTime, report.ReferenceTime)
 	}
 }
 
