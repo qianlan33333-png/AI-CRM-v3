@@ -6,7 +6,31 @@ cd "$repository_root"
 
 require_text() {
   local pattern="$1" file="$2" message="$3"
-  rg -q "$pattern" "$file" || { echo "$message" >&2; exit 1; }
+  if command -v rg >/dev/null 2>&1; then
+    rg -q "$pattern" "$file" || { echo "$message" >&2; exit 1; }
+  else
+    grep -Eq "$pattern" "$file" || { echo "$message" >&2; exit 1; }
+  fi
+}
+
+scan_go() {
+  local pattern="$1"
+  shift
+  if command -v rg >/dev/null 2>&1; then
+    rg -n "$pattern" "$@" --glob '*.go'
+  else
+    grep -REn --include='*.go' "$pattern" "$@"
+  fi
+}
+
+scan_go_non_test() {
+  local pattern="$1"
+  shift
+  if command -v rg >/dev/null 2>&1; then
+    rg -n "$pattern" "$@" --glob '*.go' --glob '!**/*_test.go'
+  else
+    grep -REn --include='*.go' --exclude='*_test.go' "$pattern" "$@"
+  fi
 }
 
 python3 scripts/check-architecture.py
@@ -20,19 +44,19 @@ require_text 'AICRM_IDENTITY_OBSERVATION_VAULT_KEY' internal/platform/config/con
 require_text 'ciphertext BYTEA' migrations/0063_identity_hxc_source_observations.sql 'HXC identity observations must be encrypted'
 require_text '连续两个完整成功快照' 'docs/17-PRD-HXC漏斗-OneID双键匹配与身份持久化.md' 'HXC retirement policy must remain documented'
 
-if rg -n 'identity_source_(subjects|observations|conflicts|resolution_receipts)' internal/hxcdashboard --glob '*.go'; then
+if scan_go 'identity_source_(subjects|observations|conflicts|resolution_receipts)' internal/hxcdashboard; then
   echo 'HXC dashboard crossed the Identity table ownership boundary' >&2
   exit 1
 fi
-if rg -n 'ProvisionCustomer|\.Provision\(' internal/hxcdashboard internal/identity/app/hxc_source.go --glob '*.go'; then
+if scan_go 'ProvisionCustomer|\.Provision\(' internal/hxcdashboard internal/identity/app/hxc_source.go; then
   echo 'HXC identity flow must never provision a Customer' >&2
   exit 1
 fi
-if rg -n '(slog|log)\.[A-Za-z]+\([^\n]*(UnionID|unionid|Phone|phone)' internal/hxcdashboard internal/identity --glob '*.go' --glob '!**/*_test.go'; then
+if scan_go_non_test '(slog|log)\.[A-Za-z]+\([^\n]*(UnionID|unionid|Phone|phone)' internal/hxcdashboard internal/identity; then
   echo 'HXC identity values must not enter logs' >&2
   exit 1
 fi
-if rg -n '(unionid|phone)[[:space:]]+(TEXT|VARCHAR)' migrations/0064_hxc_dashboard_identity_v2.sql -i; then
+if grep -Ein '(unionid|phone)[[:space:]]+(TEXT|VARCHAR)' migrations/0064_hxc_dashboard_identity_v2.sql; then
   echo 'HXC projection schema contains a raw identity value column' >&2
   exit 1
 fi
