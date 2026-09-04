@@ -235,9 +235,18 @@ if ! systemctl enable aicrm-effects-worker.service || ! systemctl restart aicrm-
   rollback
   exit 8
 fi
-effects_worker_pid="$(systemctl show aicrm-effects-worker.service -p MainPID --value)"
-if ! systemctl is-active --quiet aicrm-effects-worker.service || \
-  [[ "$(readlink -f "/proc/${effects_worker_pid}/exe")" != "$release_dir/bin/aicrm" ]]; then
+effects_worker_ready=false
+for _ in $(seq 1 30); do
+  effects_worker_pid="$(systemctl show aicrm-effects-worker.service -p MainPID --value)"
+  if systemctl is-active --quiet aicrm-effects-worker.service && \
+    [[ "$effects_worker_pid" =~ ^[1-9][0-9]*$ ]] && \
+    [[ "$(readlink -f "/proc/${effects_worker_pid}/exe")" == "$release_dir/bin/aicrm" ]]; then
+    effects_worker_ready=true
+    break
+  fi
+  sleep 1
+done
+if [[ "$effects_worker_ready" != true ]]; then
   rollback
   exit 9
 fi

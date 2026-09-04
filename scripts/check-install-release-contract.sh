@@ -6,7 +6,7 @@ start_line="$(grep -nE '^if ! systemctl enable aicrm-effects-worker\.service \|\
 test -n "$start_line" || { echo "effects worker enable and restart must be rollback guarded" >&2; exit 1; }
 exit_line="$(grep -nE '^  exit 8$' "$installer" | cut -d: -f1)"
 restart_line="$(grep -nE '^    systemctl restart aicrm-effects-worker\.service \|\| true$' "$installer" | cut -d: -f1)"
-active_line="$(grep -nF 'if ! systemctl is-active --quiet aicrm-effects-worker.service || \' "$installer" | cut -d: -f1)"
+active_line="$(grep -nF 'if [[ "$effects_worker_ready" != true ]]; then' "$installer" | cut -d: -f1)"
 active_exit_line="$(grep -nE '^  exit 9$' "$installer" | cut -d: -f1)"
 test -n "$exit_line" && test -n "$restart_line" && test -n "$active_line" && test -n "$active_exit_line" || {
   echo "effects worker failure must restart the previous compatible worker and exit" >&2; exit 1;
@@ -14,10 +14,11 @@ test -n "$exit_line" && test -n "$restart_line" && test -n "$active_line" && tes
 test "$(sed -n "$((start_line + 1))p" "$installer")" = "  rollback" && test "$((start_line + 2))" -eq "$exit_line" || {
   echo "effects worker rollback order is invalid" >&2; exit 1;
 }
-test "$(sed -n "$((active_line + 2))p" "$installer")" = "  rollback" && test "$((active_line + 3))" -eq "$active_exit_line" || {
+test "$(sed -n "$((active_line + 1))p" "$installer")" = "  rollback" && test "$((active_line + 2))" -eq "$active_exit_line" || {
   echo "effects worker must be active on the activated release" >&2; exit 1;
 }
-grep -qF '[[ "$(readlink -f "/proc/${effects_worker_pid}/exe")" != "$release_dir/bin/aicrm" ]]' "$installer" || {
+grep -qF 'for _ in $(seq 1 30); do' "$installer" || { echo "effects worker activation must have a bounded readiness retry" >&2; exit 1; }
+grep -qF '[[ "$(readlink -f "/proc/${effects_worker_pid}/exe")" == "$release_dir/bin/aicrm" ]]' "$installer" || {
   echo "effects worker executable must match the activated release" >&2; exit 1;
 }
 
