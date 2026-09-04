@@ -293,10 +293,16 @@ func (runner importRunner) repairChannelConfig(ctx context.Context, repairID, ru
 		return false, false, err
 	}
 	if entityVersion > 1 {
-		source := sha256.Sum256(row.Payload)
-		current := sha256.Sum256([]byte(strconv.FormatInt(currentVersion, 10)))
-		_, err := runner.Pool.Native().Exec(ctx, `INSERT INTO channel_semantic_repair_conflicts(repair_run_id,channel_id,field_name,source_digest,current_digest) VALUES($1,$2,'current_config_version',$3,$4) ON CONFLICT DO NOTHING`, repairID, channelID, source[:], current[:])
-		return false, true, err
+		migrationOwned, ownershipErr := runner.migrationOwnedCurrentConfig(ctx, repairID, channelID, currentVersion)
+		if ownershipErr != nil {
+			return false, false, ownershipErr
+		}
+		if !migrationOwned {
+			source := sha256.Sum256(row.Payload)
+			current := sha256.Sum256([]byte(strconv.FormatInt(currentVersion, 10)))
+			_, err := runner.Pool.Native().Exec(ctx, `INSERT INTO channel_semantic_repair_conflicts(repair_run_id,channel_id,field_name,source_digest,current_digest) VALUES($1,$2,'current_config_version',$3,$4) ON CONFLICT DO NOTHING`, repairID, channelID, source[:], current[:])
+			return false, true, err
+		}
 	}
 	members := sourceAssignees
 	if len(members) == 0 && firstString(row.Payload, "owner_staff_id") != "" {
@@ -424,6 +430,14 @@ func (runner importRunner) repairChannelConfig(ctx context.Context, repairID, ru
 		return e
 	})
 	return err == nil, false, err
+}
+
+func (runner importRunner) migrationOwnedCurrentConfig(ctx context.Context, repairID, channelID, configVersion int64) (bool, error) {
+	var owned bool
+	err := runner.Pool.Native().QueryRow(ctx, `SELECT
+		EXISTS(SELECT 1 FROM channel_semantic_repaired_configs c WHERE c.channel_id=$1 AND c.config_version=$2 AND c.repair_run_id<>$3)
+		AND NOT EXISTS(SELECT 1 FROM channel_operation_receipts r WHERE r.channel_id=$1 AND r.state='completed' AND r.operation<>'create')`, channelID, configVersion, repairID).Scan(&owned)
+	return owned, err
 }
 
 func normalizeChannelType(v string) string {

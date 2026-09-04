@@ -79,6 +79,23 @@ func New(config Config) (*Client, error) {
 	if invalid(config.CorpID) || invalid(config.AgentID) || invalid(config.Secret) || !validCallback(config.AdminCallbackURI) || !validCallback(config.SidebarCallbackURI) {
 		return nil, ErrUnavailable
 	}
+	return newConfiguredClient(config)
+}
+
+// NewDirectory creates the narrower external-contact client used by readback
+// and directory adapters. OAuth callback and application-secret validation do
+// not belong to this capability; its token is issued from ContactSecret.
+func NewDirectory(config Config) (*Client, error) {
+	if !config.Enabled {
+		return &Client{config: config, http: config.HTTPClient, tokens: map[string]credential{}}, nil
+	}
+	if invalid(config.CorpID) || invalid(config.ContactSecret) {
+		return nil, ErrUnavailable
+	}
+	return newConfiguredClient(config)
+}
+
+func newConfiguredClient(config Config) (*Client, error) {
 	base, err := validatedAPIBase(config.APIBase, config.HTTPClient != nil)
 	if err != nil {
 		return nil, ErrUnavailable
@@ -223,6 +240,9 @@ func (client *Client) AuthorizationURL(_ context.Context, purpose wecom.OAuthPur
 	callback := client.config.AdminCallbackURI
 	if purpose == wecom.OAuthSidebar {
 		callback = client.config.SidebarCallbackURI
+	}
+	if !validCallback(callback) {
+		return "", ErrUnavailable
 	}
 	values := url.Values{"appid": {client.config.CorpID}, "redirect_uri": {callback}, "state": {state}}
 	switch {
