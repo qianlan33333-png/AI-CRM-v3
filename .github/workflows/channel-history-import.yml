@@ -101,18 +101,20 @@ jobs:
           INSERT INTO admin_user_roles(admin_user_id,role_code)
           SELECT id,'super_admin' FROM admin_users WHERE username='migration-admin';
           SQL
-          psql "$AICRM_DATABASE_URL" -v ON_ERROR_STOP=1 \
-            -v staff_file="$RUNNER_TEMP/channel-rehearsal-staff.tsv" \
-            -v tag_file="$RUNNER_TEMP/channel-rehearsal-tags.tsv" <<'SQL'
+          # psql meta-commands deliberately do not perform :variable
+          # interpolation. Let the shell place the runner-owned fixture paths
+          # into this otherwise static script; escape the only literal dollar
+          # signs used by the rehearsal password hash below.
+          psql "$AICRM_DATABASE_URL" -v ON_ERROR_STOP=1 <<SQL
           CREATE TEMP TABLE rehearsal_channel_staff(provider_id text, display_name text);
-          \copy rehearsal_channel_staff FROM :'staff_file' WITH (FORMAT csv, DELIMITER E'\t')
+          \copy rehearsal_channel_staff FROM '$RUNNER_TEMP/channel-rehearsal-staff.tsv' WITH (FORMAT csv, DELIMITER E'\t')
           INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active)
-          SELECT 'rehearsal-'||left(md5(provider_id),16),'$argon2id$rehearsal',left(display_name,160),provider_id,true
+          SELECT 'rehearsal-'||left(md5(provider_id),16),'\$argon2id\$rehearsal',left(display_name,160),provider_id,true
           FROM rehearsal_channel_staff
           ON CONFLICT DO NOTHING;
 
           CREATE TEMP TABLE rehearsal_channel_tags(provider_tag_id text, provider_group_id text, tag_name text, group_name text);
-          \copy rehearsal_channel_tags FROM :'tag_file' WITH (FORMAT csv, DELIMITER E'\t')
+          \copy rehearsal_channel_tags FROM '$RUNNER_TEMP/channel-rehearsal-tags.tsv' WITH (FORMAT csv, DELIMITER E'\t')
           WITH source_groups AS (
             SELECT provider_group_id,min(group_name) AS group_name,dense_rank() OVER(ORDER BY provider_group_id) AS ordinal
             FROM rehearsal_channel_tags GROUP BY provider_group_id
