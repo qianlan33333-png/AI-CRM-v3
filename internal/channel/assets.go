@@ -92,7 +92,7 @@ func (store *PostgreSQLAssetStore) NextAssetVersion(ctx context.Context, channel
 	if e != nil {
 		return 0, e
 	}
-	if _, e = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('channel.asset:'||$1::text||':'||$2,0))`, channelID, kind); e != nil {
+	if _, e = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('channel.asset:'||$1::bigint::text||':'||$2::text,0))`, channelID, kind); e != nil {
 		return 0, e
 	}
 	var v int64
