@@ -56,6 +56,14 @@ EOF
 cat > "$test_root/bin/readlink" <<'EOF'
 #!/usr/bin/env bash
 if [[ "${1:-}" == -f && "${2:-}" == /proc/*/exe ]]; then
+  calls=0
+  [[ -f "$AICRM_TEST_EFFECTS_READLINK_STATE" ]] && calls="$(<"$AICRM_TEST_EFFECTS_READLINK_STATE")"
+  calls=$((calls + 1))
+  printf '%s\n' "$calls" > "$AICRM_TEST_EFFECTS_READLINK_STATE"
+  if ((calls <= AICRM_TEST_EFFECTS_EXE_DELAY_CALLS)); then
+    printf '/previous/aicrm\n'
+    exit 0
+  fi
   printf '%s\n' "$AICRM_TEST_EXPECTED_EXE"
   exit 0
 fi
@@ -150,17 +158,21 @@ run_release() {
   local sha="$1"
   local run_number="${2:-}"
   local label="$3"
+  local effects_delay="${4:-0}"
   PATH="$test_root/bin:$PATH" \
     AICRM_TEST_LOCK_DIR="$test_root/install.lock" \
     AICRM_TEST_LOG="$test_root/install.log" \
     AICRM_TEST_LABEL="$label" \
+    AICRM_TEST_EFFECTS_EXE_DELAY_CALLS="$effects_delay" \
+    AICRM_TEST_EFFECTS_READLINK_STATE="$test_root/effects-readlink-${sha}" \
     AICRM_TEST_EXPECTED_EXE="$test_root/aicrm/releases/${sha}/bin/aicrm" \
     "$test_root/install-release.sh" "/tmp/aicrm-${sha}.tar.gz" "$sha" "$run_number" >> "$test_root/installer.log" 2>&1
 }
 
 for sha in "$sha_one" "$sha_manual" "$sha_stale" "$sha_failed" "$sha_first" "$sha_second"; do make_release "$sha"; done
 
-run_release "$sha_one" 100 initial
+run_release "$sha_one" 100 initial 1
+[[ "$(<"$test_root/effects-readlink-${sha_one}")" == 2 ]] || fail "effects worker executable readiness was not retried"
 [[ "$(<"$test_root/aicrm/last-successful-run-number")" == 100 ]] || fail "successful run did not persist its run number"
 [[ "$(readlink "$test_root/aicrm/current")" == "$test_root/aicrm/releases/$sha_one" ]] || fail "initial release was not activated"
 [[ ! -e "/tmp/aicrm-${sha_one}.tar.gz" ]] || fail "successful versioned install did not clean its archive"
