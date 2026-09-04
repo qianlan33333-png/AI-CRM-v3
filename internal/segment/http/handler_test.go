@@ -7,10 +7,12 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
 	segmentapp "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/app"
 	segmentdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/domain"
+	segmentport "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/port"
 )
 
 type fakeSecurity struct {
@@ -26,6 +28,31 @@ func (f fakeSecurity) AuthorizeCSRF(context.Context, *http.Request) (accessdomai
 }
 
 type fakeApplication struct{}
+
+type packageListApplication struct{ fakeApplication }
+
+func (packageListApplication) ListPackages(context.Context, int, int, bool) (segmentapp.PackagePage, error) {
+	id := int64(9)
+	return segmentapp.PackagePage{Items: []segmentdomain.Package{{ID: 7, Name: "近30天活跃客户", Code: "active-30d", Lifecycle: segmentdomain.Paused, Version: 2, PublishedSnapshotID: &id}}, Total: 1, Limit: 50}, nil
+}
+
+type snapshotApplication struct{ snapshot segmentport.Snapshot }
+
+func (snapshotApplication) Preview(context.Context, int64, time.Time) (segmentapp.Preview, error) {
+	return segmentapp.Preview{}, nil
+}
+func (snapshotApplication) AcceptRefresh(context.Context, segmentapp.RefreshCommand) (segmentdomain.RefreshRun, error) {
+	return segmentdomain.RefreshRun{}, nil
+}
+func (snapshotApplication) GetRefresh(context.Context, int64) (segmentdomain.RefreshRun, error) {
+	return segmentdomain.RefreshRun{}, nil
+}
+func (s snapshotApplication) PublishedSnapshot(context.Context, segmentport.PackageID) (segmentport.Snapshot, bool, error) {
+	return s.snapshot, s.snapshot.ID > 0, nil
+}
+func (snapshotApplication) Members(context.Context, segmentport.SnapshotID, string, int) (segmentport.MemberPage, error) {
+	return segmentport.MemberPage{}, nil
+}
 
 func (fakeApplication) ListGroups(context.Context) ([]segmentdomain.Group, error) { return nil, nil }
 func (fakeApplication) CreateGroup(context.Context, segmentapp.GroupCommand) (segmentdomain.Group, error) {
@@ -87,6 +114,21 @@ func TestHandlerAuthRBACCSRFAndClosedTemplates(t *testing.T) {
 				t.Fatalf("body=%s", response.Body.String())
 			}
 		})
+	}
+}
+
+func TestPackageListProjectsPublishedSnapshotCountAndTime(t *testing.T) {
+	viewer := accessdomain.Principal{InternalID: 1, Kind: accessdomain.KindAdmin, Roles: []accessdomain.Role{accessdomain.RoleViewer}}
+	publishedAt := time.Date(2026, 9, 4, 8, 30, 0, 0, time.UTC)
+	handler, err := NewRuntimeHandler(packageListApplication{}, snapshotApplication{snapshot: segmentport.Snapshot{ID: 9, PackageID: 7, MemberCount: 23460, ReferenceTime: publishedAt, PublishedAt: &publishedAt}}, fakeSecurity{principal: viewer})
+	if err != nil {
+		t.Fatalf("new handler: %v", err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/api/admin/ai-audience/packages", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"member_count":23460`) || !strings.Contains(response.Body.String(), `"published_at":"2026-09-04T08:30:00Z"`) {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 }
 

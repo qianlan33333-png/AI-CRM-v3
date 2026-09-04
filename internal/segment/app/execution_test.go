@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"reflect"
 	"testing"
 	"time"
 
@@ -11,28 +12,67 @@ import (
 	automationport "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/port"
 	segmentdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/domain"
 	segmentport "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/port"
+	segmentstore "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/store"
 )
 
 type executionStoreStub struct {
 	ExecutionStore
-	pkg      segmentdomain.Package
-	config   segmentdomain.ConfigurationVersion
-	binding  segmentdomain.AutomationBinding
-	senders  segmentdomain.SenderSet
-	snapshot segmentport.Snapshot
+	pkg                               segmentdomain.Package
+	config                            segmentdomain.ConfigurationVersion
+	binding                           segmentdomain.AutomationBinding
+	senders                           segmentdomain.SenderSet
+	snapshot                          segmentport.Snapshot
+	configErr, bindingErr, sendersErr error
 }
 
 func (s executionStoreStub) LockPackage(context.Context, int64) (segmentdomain.Package, error) {
 	return s.pkg, nil
 }
 func (s executionStoreStub) CurrentConfiguration(context.Context, int64) (segmentdomain.ConfigurationVersion, error) {
-	return s.config, nil
+	return s.config, s.configErr
 }
 func (s executionStoreStub) CurrentBinding(context.Context, int64) (segmentdomain.AutomationBinding, error) {
-	return s.binding, nil
+	return s.binding, s.bindingErr
 }
 func (s executionStoreStub) CurrentSenderSet(context.Context, int64) (segmentdomain.SenderSet, error) {
-	return s.senders, nil
+	return s.senders, s.sendersErr
+}
+
+func TestPrecheckReportsMissingSetupWithoutTurningItIntoAReadFailure(t *testing.T) {
+	store := executionStoreStub{
+		pkg:        segmentdomain.Package{ID: 1, Lifecycle: segmentdomain.Paused},
+		config:     segmentdomain.ConfigurationVersion{ID: 2, Definition: []byte(`{"schema_version":1,"template_key":"active_contacts","parameters":{"within_days":"30"}}`)},
+		snapshot:   segmentport.Snapshot{ID: 4},
+		bindingErr: segmentstore.ErrNotFound,
+		sendersErr: segmentstore.ErrNotFound,
+	}
+	service, _ := NewExecutionService(directUOW{}, store, publishedAgentStub{}, staffReaderStub{}, false)
+	check, err := service.Precheck(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("precheck err=%v", err)
+	}
+	want := []string{"automation_binding_missing", "sender_set_missing", "provider_disabled"}
+	if check.Ready || !reflect.DeepEqual(check.Reasons, want) {
+		t.Fatalf("check=%+v want reasons=%v", check, want)
+	}
+}
+
+func TestPrecheckReportsMissingConfigurationAsReadinessReason(t *testing.T) {
+	store := executionStoreStub{
+		pkg:        segmentdomain.Package{ID: 1, Lifecycle: segmentdomain.Paused},
+		configErr:  segmentstore.ErrNotFound,
+		bindingErr: segmentstore.ErrNotFound,
+		sendersErr: segmentstore.ErrNotFound,
+	}
+	service, _ := NewExecutionService(directUOW{}, store, publishedAgentStub{}, staffReaderStub{}, false)
+	check, err := service.Precheck(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("precheck err=%v", err)
+	}
+	want := []string{"configuration_missing", "automation_binding_missing", "sender_set_missing", "published_snapshot_missing", "provider_disabled"}
+	if check.Ready || !reflect.DeepEqual(check.Reasons, want) {
+		t.Fatalf("check=%+v want reasons=%v", check, want)
+	}
 }
 func (s executionStoreStub) PublishedSnapshot(context.Context, segmentport.PackageID) (segmentport.Snapshot, bool, error) {
 	return s.snapshot, s.snapshot.ID > 0, nil

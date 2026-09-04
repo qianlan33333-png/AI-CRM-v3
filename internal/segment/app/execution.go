@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -235,6 +236,7 @@ func (s *ExecutionService) Precheck(ctx context.Context, packageID int64) (Prech
 	var binding segmentdomain.AutomationBinding
 	var senders segmentdomain.SenderSet
 	var snapshot segmentport.Snapshot
+	var configFound, bindingFound, sendersFound bool
 	var snapshotFound bool
 	err := s.uow.Within(ctx, func(tx context.Context) error {
 		var e error
@@ -243,16 +245,28 @@ func (s *ExecutionService) Precheck(ctx context.Context, packageID int64) (Prech
 			return e
 		}
 		config, e = s.store.CurrentConfiguration(tx, packageID)
-		if e != nil {
+		if errors.Is(e, segmentstore.ErrNotFound) {
+			e = nil
+		} else if e != nil {
 			return e
+		} else {
+			configFound = true
 		}
 		binding, e = s.store.CurrentBinding(tx, packageID)
-		if e != nil {
+		if errors.Is(e, segmentstore.ErrNotFound) {
+			e = nil
+		} else if e != nil {
 			return e
+		} else {
+			bindingFound = true
 		}
 		senders, e = s.store.CurrentSenderSet(tx, packageID)
-		if e != nil {
+		if errors.Is(e, segmentstore.ErrNotFound) {
+			e = nil
+		} else if e != nil {
 			return e
+		} else {
+			sendersFound = true
 		}
 		snapshot, snapshotFound, e = s.store.PublishedSnapshot(tx, segmentport.PackageID(packageID))
 		return e
@@ -260,30 +274,49 @@ func (s *ExecutionService) Precheck(ctx context.Context, packageID int64) (Prech
 	if err != nil {
 		return Precheck{}, classify(err)
 	}
-	result := Precheck{ConfigurationVersionID: config.ID, BindingVersion: binding.Version, SenderSetVersion: senders.Version}
-	if _, definitionErr := CanonicalDefinition(config.Definition); definitionErr != nil {
-		result.Reasons = append(result.Reasons, "definition_unsupported")
+	result := Precheck{}
+	if configFound {
+		result.ConfigurationVersionID = config.ID
+	} else {
+		result.Reasons = append(result.Reasons, "configuration_missing")
 	}
-	if cronErr := ValidateRefreshCronUTC(config.RefreshCronUTC); cronErr != nil {
-		result.Reasons = append(result.Reasons, "schedule_invalid")
+	if bindingFound {
+		result.BindingVersion = binding.Version
+	} else {
+		result.Reasons = append(result.Reasons, "automation_binding_missing")
+	}
+	if sendersFound {
+		result.SenderSetVersion = senders.Version
+	} else {
+		result.Reasons = append(result.Reasons, "sender_set_missing")
+	}
+	if configFound {
+		if _, definitionErr := CanonicalDefinition(config.Definition); definitionErr != nil {
+			result.Reasons = append(result.Reasons, "definition_unsupported")
+		}
+		if cronErr := ValidateRefreshCronUTC(config.RefreshCronUTC); cronErr != nil {
+			result.Reasons = append(result.Reasons, "schedule_invalid")
+		}
 	}
 	if snapshotFound {
 		result.SnapshotID = snapshot.ID
 	} else {
 		result.Reasons = append(result.Reasons, "published_snapshot_missing")
 	}
-	agent, found, readErr := s.agents.PublishedAgent(ctx, binding.AgentID)
-	if readErr != nil || !found {
-		result.Reasons = append(result.Reasons, "published_content_missing")
-	} else {
-		if agent.AutomationType != automationport.AutomationTypeFixedScript {
-			result.Reasons = append(result.Reasons, "agent_execution_not_supported")
-		}
-		if agent.Status != automationport.AgentStatusActive {
-			result.Reasons = append(result.Reasons, "content_not_active")
-		}
-		if agent.PublishedVersion != binding.AgentPublishedVersion || agent.ContentDigest != binding.ContentDigest || agent.MaterialsDigest != binding.MaterialsDigest {
-			result.Reasons = append(result.Reasons, "content_version_drift")
+	if bindingFound {
+		agent, found, readErr := s.agents.PublishedAgent(ctx, binding.AgentID)
+		if readErr != nil || !found {
+			result.Reasons = append(result.Reasons, "published_content_missing")
+		} else {
+			if agent.AutomationType != automationport.AutomationTypeFixedScript {
+				result.Reasons = append(result.Reasons, "agent_execution_not_supported")
+			}
+			if agent.Status != automationport.AgentStatusActive {
+				result.Reasons = append(result.Reasons, "content_not_active")
+			}
+			if agent.PublishedVersion != binding.AgentPublishedVersion || agent.ContentDigest != binding.ContentDigest || agent.MaterialsDigest != binding.MaterialsDigest {
+				result.Reasons = append(result.Reasons, "content_version_drift")
+			}
 		}
 	}
 	for _, sender := range senders.Members {
@@ -296,6 +329,9 @@ func (s *ExecutionService) Precheck(ctx context.Context, packageID int64) (Prech
 			result.Reasons = append(result.Reasons, "sender_version_drift")
 			break
 		}
+	}
+	if sendersFound && len(senders.Members) == 0 {
+		result.Reasons = append(result.Reasons, "sender_set_empty")
 	}
 	if pkg.Lifecycle == segmentdomain.Archived {
 		result.Reasons = append(result.Reasons, "package_archived")

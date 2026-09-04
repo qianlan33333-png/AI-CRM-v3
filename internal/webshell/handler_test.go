@@ -87,7 +87,7 @@ func TestStandaloneHandlerRendersAdminLoginSidebarAndAssets(t *testing.T) {
 				"当前分组暂无人群包",
 				"admin_console.js",
 				"admin_audience.css",
-				"admin_audience_detail.js",
+				"admin_audience_detail.js?v=automation-operations-v4",
 			},
 			notContain: []string{
 				"功能待接入",
@@ -110,7 +110,7 @@ func TestStandaloneHandlerRendersAdminLoginSidebarAndAssets(t *testing.T) {
 				"成员列表",
 				"发送记录",
 				"admin_audience_detail.css",
-				"admin_audience_detail.js",
+				"admin_audience_detail.js?v=automation-operations-v4",
 			},
 			notContain: []string{
 				"功能待接入",
@@ -645,6 +645,27 @@ func TestAutomationCreateCodeAdapterBrowserTiming(t *testing.T) {
 	}
 	if !strings.Contains(output.String(), "automation-create-code-adapter-browser: PASS") {
 		t.Fatalf("browser timing contract did not report success: %q", output.String())
+	}
+}
+
+func TestAudienceActivationReadinessBrowserContract(t *testing.T) {
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node is not installed")
+	}
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("locate webshell test")
+	}
+	repo := filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
+	command := exec.Command("node", "internal/webshell/static/admin_console/admin_audience_detail.test.mjs")
+	command.Dir = repo
+	var output bytes.Buffer
+	command.Stdout, command.Stderr = &output, &output
+	if err := command.Run(); err != nil {
+		t.Fatalf("audience readiness browser contract failed: %v\n%s", err, output.String())
+	}
+	if !strings.Contains(output.String(), "admin-audience-activation-readiness-browser: PASS") {
+		t.Fatalf("audience readiness browser contract did not report success: %q", output.String())
 	}
 }
 

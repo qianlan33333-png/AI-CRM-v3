@@ -57,6 +57,28 @@
     return { state: "unknown", message: `请求未完成（${escapeHTML(error.code)}），请勿按成功处理。` };
   }
 
+  const readinessReasonLabels = {
+    configuration_missing: "尚未配置人群筛选条件",
+    automation_binding_missing: "未绑定已发布的固定话术",
+    sender_set_missing: "未配置发送人白名单",
+    sender_set_empty: "发送人白名单为空",
+    published_snapshot_missing: "尚未发布人群快照",
+    published_content_missing: "固定话术尚未发布",
+    agent_execution_not_supported: "当前绑定不是固定话术",
+    content_not_active: "固定话术尚未激活",
+    content_version_drift: "固定话术版本已经变化，需要重新绑定",
+    sender_ineligible: "发送人当前不具备企微发送资格",
+    sender_version_drift: "发送人资格版本已经变化，需要重新保存",
+    provider_disabled: "Automation Provider 尚未获得生产发送授权",
+    definition_unsupported: "人群筛选定义不受支持",
+    schedule_invalid: "刷新计划无效",
+    package_archived: "人群包已归档",
+  };
+
+  function readinessMessage(reasons) {
+    return (Array.isArray(reasons) ? reasons : []).map((reason) => readinessReasonLabels[reason] || text(reason)).join("；");
+  }
+
   function setStatus(node, message, state = "") {
     if (!node) return;
     node.textContent = message;
@@ -153,6 +175,13 @@
       state.busy = true;
       showNotice("正在提交并等待持久化收据…");
       try {
+        if (action === "activate") {
+          const checked = await request(`${API}/ai-audience/packages/${id}/precheck`, { method: "POST", body: {} });
+          if (!checked.precheck?.ready) {
+            showNotice(`暂不能激活：${readinessMessage(checked.precheck?.reasons) || "执行条件未满足"}。请点击人群包名称进入配置。`, true);
+            return;
+          }
+        }
         const path = action === "archive" ? `${API}/ai-audience/packages/${id}?expected_version=${item.version}` : `${API}/ai-audience/packages/${id}/${action}`;
         await request(path, { method: action === "archive" ? "DELETE" : "POST", mutate: true, scope: `audience-${action}`, body: action === "copy" ? undefined : { expected_version: item.version } });
         await load();
@@ -221,12 +250,19 @@
     const match = window.location.pathname.match(/^\/admin\/automation-conversion\/packages\/([1-9][0-9]*)$/);
     if (!match) { setCapability("人群包路径无效。", "unknown"); return; }
     const packageID = Number(match[1]);
-    const state = { pkg: null, config: null, binding: null, senders: null, snapshot: null, agents: [], policies: [], preview: null, runs: [], busy: false };
+    const state = { pkg: null, config: null, binding: null, senders: null, snapshot: null, agents: [], policies: [], preview: null, runs: [], dependencyIssues: [], busy: false };
     let currentPanel = "basic";
 
-    const optional = async (path) => {
+    const optional = async (path, label = "") => {
       try { return await request(path); }
-      catch (error) { if (error instanceof APIError && error.status === 404) return null; throw error; }
+      catch (error) {
+        if (error instanceof APIError && error.status === 404) return null;
+        if (label && error instanceof APIError && (error.status === 422 || error.status === 503)) {
+          state.dependencyIssues.push(`${label}（${error.code}）`);
+          return null;
+        }
+        throw error;
+      }
     };
     const panelButtons = document.querySelectorAll("[data-panel]");
     const showPanel = (key) => {
@@ -244,8 +280,10 @@
     function renderSummary() {
       const pkg = state.pkg;
       byID("packageTitle").textContent = pkg?.name || "人群包配置";
-      byID("summaryCount").textContent = state.snapshot ? Number(state.snapshot.member_count).toLocaleString("zh-CN") : "尚无快照";
-      byID("summaryRefresh").textContent = state.snapshot ? formatTime(state.snapshot.published_at || state.snapshot.reference_time) : "—";
+      const memberCount = state.snapshot?.member_count ?? pkg?.member_count;
+      const publishedAt = state.snapshot?.published_at || state.snapshot?.reference_time || pkg?.published_at || pkg?.reference_time;
+      byID("summaryCount").textContent = memberCount === null || memberCount === undefined ? "尚无快照" : Number(memberCount).toLocaleString("zh-CN");
+      byID("summaryRefresh").textContent = formatTime(publishedAt);
       byID("summaryMode").textContent = state.config?.refresh_cron_utc ? `计划 ${state.config.refresh_cron_utc}` : "手动";
       byID("summaryStatus").textContent = lifecycleLabel(pkg?.lifecycle);
       byID("packageNameInput").value = pkg?.name || "";
@@ -287,13 +325,14 @@
     async function load() {
       setCapability("正在读取真实配置与持久执行状态…", "loading");
       try {
+        state.dependencyIssues = [];
         const [pkgResult, groups, templates, configResult, bindingResult, senderResult, agentResult] = await Promise.all([
           request(`${API}/ai-audience/packages/${packageID}`),
           request(`${API}/ai-audience/package-groups`),
           request(`${API}/ai-audience/templates`),
-          optional(`${API}/ai-audience/packages/${packageID}/configuration`),
-          optional(`${API}/ai-audience/packages/${packageID}/automation-binding`),
-          optional(`${API}/ai-audience/packages/${packageID}/senders`),
+          optional(`${API}/ai-audience/packages/${packageID}/configuration`, "基础配置"),
+          optional(`${API}/ai-audience/packages/${packageID}/automation-binding`, "固定话术绑定"),
+          optional(`${API}/ai-audience/packages/${packageID}/senders`, "发送人白名单"),
           request(`${API}/automation-agents?limit=100&offset=0`),
         ]);
         state.pkg = pkgResult.package;
@@ -311,10 +350,11 @@
         try {
           const check = await request(`${API}/ai-audience/packages/${packageID}/precheck`, { method: "POST", body: {} });
           const value = check.precheck;
-          setCapability(value.ready ? "执行预检通过：快照、固定话术、发送人和 Provider 均已就绪。" : `当前不可执行：${(value.reasons || []).join("、") || "条件未满足"}`, value.ready ? "ready" : "not-ready");
+          setCapability(value.ready ? "执行预检通过：快照、固定话术、发送人和 Provider 均已就绪。" : `当前不可执行：${readinessMessage(value.reasons) || "条件未满足"}`, value.ready ? "ready" : "not-ready");
         } catch (error) {
           const detail = errorState(error);
-          setCapability(detail.message, detail.state);
+          const dependencyMessage = state.dependencyIssues.length ? `部分配置读取失败：${state.dependencyIssues.join("；")}。` : "";
+          setCapability(dependencyMessage || detail.message, dependencyMessage ? "not-ready" : detail.state);
         }
       } catch (error) {
         const detail = errorState(error);
