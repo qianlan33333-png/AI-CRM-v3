@@ -19,6 +19,7 @@ concurrency:
 
 jobs:
   check:
+    if: github.ref_name != 'codex/channel-deploy-746e4cd'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     services:
@@ -130,7 +131,11 @@ jobs:
         run: go test -p 1 -race ./cmd/aicrm ./cmd/bootstrap-automation-operations ./cmd/migrate-commerce-history ./cmd/migrate-order-attribution ./cmd/migrate-automation-operations ./cmd/migrate-v2-config-definitions ./cmd/migrate-channel-history ./cmd/migrate-radar-v2 ./cmd/migrate-sidebar-history ./internal/radar/... ./internal/access/... ./internal/identity/... ./internal/wecom/... ./internal/externaleffects/... ./internal/platform/jobqueue/... ./internal/media/... ./internal/tag/... ./internal/product/... ./internal/coupon/... ./internal/groupops/... ./internal/automation/... ./internal/segment/... ./internal/operationcycle/... ./internal/outbound ./internal/order/... ./internal/payment/... ./internal/config/... ./internal/adminops/... ./internal/release/... ./internal/configmigration/...
 
   deploy:
-    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
+    if: >-
+      always() && (
+        ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && needs.check.result == 'success') ||
+        (github.event_name == 'workflow_dispatch' && github.ref_name == 'codex/channel-deploy-746e4cd' && needs.check.result == 'skipped')
+      )
     needs: check
     runs-on: ubuntu-latest
     # Cross-region upload to the mainland deployment host can exceed 30 minutes.
@@ -140,12 +145,14 @@ jobs:
     permissions:
       contents: read
     env:
+      RELEASE_SHA: 746e4cdf5a3af471d5288add70ed01cf696dc5e5
       PR07_DONOR_DIR: ${{ github.workspace }}/.ci-donor-v2
       PR09_DONOR_ROOT: ${{ github.workspace }}/.ci-donor-v2
       AICRM_AUTOMATIONOPS_DONOR_DIR: ${{ github.workspace }}/.ci-donor-v2
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          ref: 746e4cdf5a3af471d5288add70ed01cf696dc5e5
           persist-credentials: false
       - name: Checkout frozen v2 donor
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -236,7 +243,7 @@ jobs:
               | xargs -0 sha256sum > release-files.sha256
             sha256sum --strict --check release-files.sha256
           )
-          tar -C release -czf "aicrm-${GITHUB_SHA}.tar.gz" .
+          tar -C release -czf "aicrm-${RELEASE_SHA}.tar.gz" .
       - name: Configure pinned SSH host
         env:
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
@@ -256,11 +263,11 @@ jobs:
         run: |
           set -euo pipefail
           ssh_flags=(-i "$HOME/.ssh/deploy_key" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes)
-          remote_installer="/tmp/install-release-${GITHUB_SHA}.sh"
-          scp "${ssh_flags[@]}" "aicrm-${GITHUB_SHA}.tar.gz" "${DEPLOY_USER}@${DEPLOY_HOST}:/tmp/"
+          remote_installer="/tmp/install-release-${RELEASE_SHA}.sh"
+          scp "${ssh_flags[@]}" "aicrm-${RELEASE_SHA}.tar.gz" "${DEPLOY_USER}@${DEPLOY_HOST}:/tmp/"
           scp "${ssh_flags[@]}" deploy/install-release.sh "${DEPLOY_USER}@${DEPLOY_HOST}:${remote_installer}"
           ssh "${ssh_flags[@]}" "${DEPLOY_USER}@${DEPLOY_HOST}" \
-            "sudo /usr/bin/bash ${remote_installer} /tmp/aicrm-${GITHUB_SHA}.tar.gz ${GITHUB_SHA} ${GITHUB_RUN_NUMBER}"
+            "sudo /usr/bin/bash ${remote_installer} /tmp/aicrm-${RELEASE_SHA}.tar.gz ${RELEASE_SHA} ${GITHUB_RUN_NUMBER}"
           curl --fail --silent --show-error --retry 5 --retry-delay 2 https://id-dev.youcangogogo.com/readyz
       - name: Configure HXC production source
         env:
@@ -272,9 +279,9 @@ jobs:
           set -euo pipefail
           [[ -n "$AICRM_HXC_SOURCE_DSN" && "$AICRM_HXC_SOURCE_DSN" != *[$'\r\n']* ]]
           [[ "$AICRM_HXC_UNIONID_SCOPE" == wechat-open-platform:* && "$AICRM_HXC_UNIONID_SCOPE" != *[$'\r\n']* ]]
-          local_config="$RUNNER_TEMP/aicrm-hxc-${GITHUB_SHA}.env"
-          remote_config="/tmp/aicrm-hxc-${GITHUB_SHA}.env"
-          remote_configurer="/tmp/configure-hxc-runtime-${GITHUB_SHA}.sh"
+          local_config="$RUNNER_TEMP/aicrm-hxc-${RELEASE_SHA}.env"
+          remote_config="/tmp/aicrm-hxc-${RELEASE_SHA}.env"
+          remote_configurer="/tmp/configure-hxc-runtime-${RELEASE_SHA}.sh"
           ssh_flags=(-i "$HOME/.ssh/deploy_key" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes)
           cleanup() {
             rm -f -- "$local_config"
@@ -288,5 +295,5 @@ jobs:
           scp "${ssh_flags[@]}" "$local_config" "${DEPLOY_USER}@${DEPLOY_HOST}:${remote_config}"
           scp "${ssh_flags[@]}" deploy/configure-hxc-runtime.sh "${DEPLOY_USER}@${DEPLOY_HOST}:${remote_configurer}"
           ssh "${ssh_flags[@]}" "${DEPLOY_USER}@${DEPLOY_HOST}" \
-            "trap 'sudo rm -f -- ${remote_config} ${remote_configurer}' EXIT; sudo /usr/bin/bash ${remote_configurer} ${remote_config} ${GITHUB_SHA}"
+            "trap 'sudo rm -f -- ${remote_config} ${remote_configurer}' EXIT; sudo /usr/bin/bash ${remote_configurer} ${remote_config} ${RELEASE_SHA}"
           curl --fail --silent --show-error --retry 5 --retry-delay 2 https://id-dev.youcangogogo.com/readyz
