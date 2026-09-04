@@ -158,6 +158,10 @@ grep -qx 'release_run_number="${3:-}"' "$installer" || { echo "installer must ac
 grep -qF 'last_successful_run_file=/opt/aicrm/last-successful-run-number' "$installer" || { echo "installer must retain the successful CI run marker" >&2; exit 1; }
 grep -qF '${GITHUB_RUN_NUMBER}' .github/workflows/ci.yml || { echo "CI must pass the GitHub run number to the installer" >&2; exit 1; }
 grep -qF 'remote_installer="/tmp/install-release-${GITHUB_SHA}.sh"' .github/workflows/ci.yml || { echo "CI must upload each installer to a SHA-versioned remote path" >&2; exit 1; }
+grep -qF 'deploy/upload-release-chunks.sh \' .github/workflows/ci.yml || { echo "CI must upload the release through the bounded chunk uploader" >&2; exit 1; }
+grep -qF 'split -b 4m -a 4' deploy/upload-release-chunks.sh || { echo "release upload must use bounded chunks" >&2; exit 1; }
+grep -qF 'timeout 300s scp' deploy/upload-release-chunks.sh || { echo "each release chunk upload must be time bounded" >&2; exit 1; }
+grep -qF 'sha256sum --check --status' deploy/upload-release-chunks.sh || { echo "the reconstructed remote release must pass a SHA-256 check" >&2; exit 1; }
 grep -qF 'sudo /usr/bin/bash ${remote_installer}' .github/workflows/ci.yml || { echo "CI must execute the uploaded SHA-versioned installer" >&2; exit 1; }
 grep -qF 'if [[ "$0" == "/tmp/install-release-${release_sha}.sh" ]]; then' "$installer" || { echo "installer cleanup must be limited to its SHA-versioned path" >&2; exit 1; }
 grep -qF 'AICRM_HXC_SOURCE_DSN: ${{ secrets.AICRM_HXC_SOURCE_DSN }}' .github/workflows/ci.yml || { echo "CI must read the HXC DSN from Actions secrets" >&2; exit 1; }
