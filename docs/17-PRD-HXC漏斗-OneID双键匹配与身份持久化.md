@@ -1,7 +1,7 @@
 # PRD：HXC 漏斗 OneID 双键匹配与身份持久化
 
-> 状态：Approved for implementation  
-> 日期：2026-09-05  
+> 状态：Approved for implementation
+> 日期：2026-09-05
 > 目标页面：`/admin/hxc-dashboard`、`/admin/oneid`
 
 ## 1. 背景
