@@ -164,6 +164,14 @@ func (r *Repository) GetPackage(ctx context.Context, id int64) (segmentdomain.Pa
 	return scanPackage(t.QueryRow(ctx, `SELECT `+packageColumns+` FROM segment_audience_packages WHERE id=$1`, id))
 }
 
+func (r *Repository) GetPackageByCode(ctx context.Context, code string) (segmentdomain.Package, error) {
+	t, err := tx(ctx)
+	if err != nil {
+		return segmentdomain.Package{}, err
+	}
+	return scanPackage(t.QueryRow(ctx, `SELECT `+packageColumns+` FROM segment_audience_packages WHERE lower(code)=lower($1)`, code))
+}
+
 func (r *Repository) LockPackage(ctx context.Context, id int64) (segmentdomain.Package, error) {
 	t, err := tx(ctx)
 	if err != nil {

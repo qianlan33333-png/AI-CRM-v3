@@ -109,7 +109,7 @@ func execute(parent context.Context, output *os.File) error {
 	if err != nil {
 		return err
 	}
-	if err = waitForPublishedRefreshes(ctx, &report, snapshots, 500*time.Millisecond); err != nil {
+	if err = publishAndWaitForRefreshes(ctx, &report, snapshots, 500*time.Millisecond); err != nil {
 		return err
 	}
 	encoder := json.NewEncoder(output)
@@ -119,6 +119,43 @@ func execute(parent context.Context, output *os.File) error {
 
 type refreshReader interface {
 	GetRefresh(context.Context, int64) (segmentdomain.RefreshRun, error)
+}
+
+type refreshPublisher interface {
+	refreshReader
+	ProcessRefresh(context.Context, int64) error
+}
+
+// publishAndWaitForRefreshes preserves the accepted River job but also lets the
+// release bootstrap perform the same idempotent work inline. This prevents a
+// temporarily unhealthy worker runtime from turning a safe semantic bootstrap
+// into an opaque ten-minute deployment hang. A queued River replay observes the
+// published run and becomes a no-op.
+func publishAndWaitForRefreshes(ctx context.Context, report *segmentbootstrap.Report, publisher refreshPublisher, pollEvery time.Duration) error {
+	if report == nil || publisher == nil || pollEvery <= 0 {
+		return errors.New("refresh publication verifier unavailable")
+	}
+	for index := range report.Packages {
+		refresh := report.Packages[index].Refresh
+		if refresh == nil || refresh.State == segmentdomain.RefreshPublished {
+			continue
+		}
+		if err := publisher.ProcessRefresh(ctx, refresh.RunID); err != nil {
+			// Another worker may have won the publication race. Accept that only
+			// after reading the durable terminal state; otherwise surface the
+			// original stage error immediately.
+			run, readErr := publisher.GetRefresh(ctx, refresh.RunID)
+			if readErr == nil && run.State == segmentdomain.RefreshPublished {
+				refresh.State = run.State
+				continue
+			}
+			if readErr != nil {
+				return fmt.Errorf("process audience refresh run %d: %w", refresh.RunID, errors.Join(err, readErr))
+			}
+			return fmt.Errorf("process audience refresh run %d in state %s: %w", refresh.RunID, run.State, err)
+		}
+	}
+	return waitForPublishedRefreshes(ctx, report, publisher, pollEvery)
 }
 
 func waitForPublishedRefreshes(ctx context.Context, report *segmentbootstrap.Report, reader refreshReader, pollEvery time.Duration) error {
