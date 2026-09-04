@@ -380,6 +380,7 @@ type response struct {
 	QRCode      string          `json:"qr_code"`
 	ContactWay  struct {
 		ConfigID string `json:"config_id"`
+		QRCode   string `json:"qr_code"`
 	} `json:"contact_way"`
 	LinkID     string   `json:"link_id"`
 	URL        string   `json:"url"`
@@ -461,7 +462,10 @@ func (client *Client) GetContactWay(ctx context.Context, configID string) (wecom
 	if returnedID == "" {
 		returnedID = strings.TrimSpace(payload.ConfigID)
 	}
-	qrCode := strings.TrimSpace(payload.QRCode)
+	qrCode := strings.TrimSpace(payload.ContactWay.QRCode)
+	if qrCode == "" {
+		qrCode = strings.TrimSpace(payload.QRCode)
+	}
 	if returnedID != configID || !validProviderHTTPS(qrCode) {
 		return wecomport.AcquisitionAssetResult{}, ErrResponse
 	}

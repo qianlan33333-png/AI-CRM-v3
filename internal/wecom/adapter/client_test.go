@@ -181,7 +181,7 @@ func TestDirectoryClientDoesNotRequireOAuthConfiguration(t *testing.T) {
 			}
 			_, _ = writer.Write([]byte(`{"errcode":0,"access_token":"contact-token","expires_in":120}`))
 		case "/cgi-bin/externalcontact/get_contact_way":
-			_, _ = writer.Write([]byte(`{"errcode":0,"contact_way":{"config_id":"config-1"},"qr_code":"https://wework.qpic.cn/wwpic/example"}`))
+			_, _ = writer.Write([]byte(`{"errcode":0,"contact_way":{"config_id":"config-1","qr_code":"https://wework.qpic.cn/wwpic/example"}}`))
 		default:
 			t.Fatalf("unexpected path=%s", request.URL.Path)
 		}
@@ -327,7 +327,7 @@ func TestChannelContactWayLifecycleAndWelcomeAttachments(t *testing.T) {
 			if !strings.Contains(string(body), `"config_id":"cw-1"`) {
 				t.Fatalf("get body=%s", body)
 			}
-			_, _ = w.Write([]byte(`{"errcode":0,"contact_way":{"config_id":"cw-1"},"qr_code":"https://wework.qpic.cn/wwpic/1"}`))
+			_, _ = w.Write([]byte(`{"errcode":0,"contact_way":{"config_id":"cw-1","qr_code":"https://wework.qpic.cn/wwpic/1"}}`))
 		case "/cgi-bin/externalcontact/update_contact_way":
 			if !strings.Contains(string(body), `"config_id":"cw-1"`) || !strings.Contains(string(body), `"state":"campaign"`) {
 				t.Fatalf("update body=%s", body)
