@@ -38,7 +38,7 @@ exec 9>"$rollout_lock"
 flock 9
 
 run_sql() {
-  runuser -u aicrm -- env PGDATABASE="$database_url" "$psql_bin" -X -v ON_ERROR_STOP=1 -Atqc "$1"
+  runuser -u aicrm -- "$psql_bin" -X -v ON_ERROR_STOP=1 -Atq --dbname="$database_url" -c "$1"
 }
 
 set_write_mode() {

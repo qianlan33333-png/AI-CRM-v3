@@ -7,9 +7,9 @@ cd "$repository_root"
 require_text() {
   local pattern="$1" file="$2" message="$3"
   if command -v rg >/dev/null 2>&1; then
-    rg -q "$pattern" "$file" || { echo "$message" >&2; exit 1; }
+    rg -q -- "$pattern" "$file" || { echo "$message" >&2; exit 1; }
   else
-    grep -Eq "$pattern" "$file" || { echo "$message" >&2; exit 1; }
+    grep -Eq -- "$pattern" "$file" || { echo "$message" >&2; exit 1; }
   fi
 }
 
@@ -17,9 +17,9 @@ scan_go() {
   local pattern="$1"
   shift
   if command -v rg >/dev/null 2>&1; then
-    rg -n "$pattern" "$@" --glob '*.go'
+    rg -n --glob '*.go' -- "$pattern" "$@"
   else
-    grep -REn --include='*.go' "$pattern" "$@"
+    grep -REn --include='*.go' -- "$pattern" "$@"
   fi
 }
 
@@ -27,9 +27,9 @@ scan_go_non_test() {
   local pattern="$1"
   shift
   if command -v rg >/dev/null 2>&1; then
-    rg -n "$pattern" "$@" --glob '*.go' --glob '!**/*_test.go'
+    rg -n --glob '*.go' --glob '!**/*_test.go' -- "$pattern" "$@"
   else
-    grep -REn --include='*.go' --exclude='*_test.go' "$pattern" "$@"
+    grep -REn --include='*.go' --exclude='*_test.go' -- "$pattern" "$@"
   fi
 }
 
@@ -43,6 +43,12 @@ require_text 'AICRM_HXC_IDENTITY_WRITE_ENABLED' internal/platform/config/config.
 require_text 'AICRM_IDENTITY_OBSERVATION_VAULT_KEY' internal/platform/config/config.go 'HXC identity observations require a vault key'
 require_text 'ciphertext BYTEA' migrations/0063_identity_hxc_source_observations.sql 'HXC identity observations must be encrypted'
 require_text '连续两个完整成功快照' 'docs/17-PRD-HXC漏斗-OneID双键匹配与身份持久化.md' 'HXC retirement policy must remain documented'
+require_text '--dbname="\$database_url"' deploy/rollout-hxc-identity-v2.sh 'HXC rollout must pass the database URL as a libpq connection string'
+
+if grep -qF 'PGDATABASE="$database_url"' deploy/rollout-hxc-identity-v2.sh; then
+  echo 'HXC rollout must not treat the database URL as a database name' >&2
+  exit 1
+fi
 
 if scan_go 'identity_source_(subjects|observations|conflicts|resolution_receipts)' internal/hxcdashboard; then
   echo 'HXC dashboard crossed the Identity table ownership boundary' >&2
