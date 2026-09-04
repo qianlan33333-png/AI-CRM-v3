@@ -21,21 +21,35 @@ type AcquisitionApplication interface {
 }
 
 type AcquisitionHTTPHandler struct {
-	application AcquisitionApplication
-	security    interface {
+	application          AcquisitionApplication
+	providerReadEnabled  bool
+	providerWriteEnabled bool
+	security             interface {
 		Authenticate(context.Context, *http.Request) (accessdomain.Principal, error)
 		AuthorizeCSRF(context.Context, *http.Request) (accessdomain.Principal, error)
 	}
 }
 
+type AcquisitionHTTPOptions struct {
+	ProviderReadEnabled  bool
+	ProviderWriteEnabled bool
+}
+
 func NewAcquisitionHTTPHandler(application AcquisitionApplication, security interface {
 	Authenticate(context.Context, *http.Request) (accessdomain.Principal, error)
 	AuthorizeCSRF(context.Context, *http.Request) (accessdomain.Principal, error)
-}) (*AcquisitionHTTPHandler, error) {
+}, options ...AcquisitionHTTPOptions) (*AcquisitionHTTPHandler, error) {
 	if application == nil || security == nil {
 		return nil, errors.New("channel acquisition HTTP dependencies are required")
 	}
-	return &AcquisitionHTTPHandler{application: application, security: security}, nil
+	if len(options) > 1 {
+		return nil, errors.New("channel acquisition HTTP options must be provided once")
+	}
+	var option AcquisitionHTTPOptions
+	if len(options) == 1 {
+		option = options[0]
+	}
+	return &AcquisitionHTTPHandler{application: application, security: security, providerReadEnabled: option.ProviderReadEnabled, providerWriteEnabled: option.ProviderWriteEnabled}, nil
 }
 
 func (handler *AcquisitionHTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -97,7 +111,7 @@ func (handler *AcquisitionHTTPHandler) preview(w http.ResponseWriter, r *http.Re
 		writeAcquisitionError(w, err)
 		return
 	}
-	writeChannelJSON(w, http.StatusOK, previewJSON(channel, candidates))
+	writeChannelJSON(w, http.StatusOK, previewJSON(channel, candidates, handler.providerReadEnabled, handler.providerWriteEnabled))
 }
 
 func (handler *AcquisitionHTTPHandler) staff(w http.ResponseWriter, r *http.Request, channelID int64) {
@@ -202,9 +216,15 @@ func (handler *AcquisitionHTTPHandler) replace(w http.ResponseWriter, r *http.Re
 	writeChannelJSON(w, http.StatusOK, map[string]any{"channel_id": channelID, "assignees": acquisitionAssignees(channel, selected), "local_only": true, "provider_execution_eligible": false, "real_external_call_executed": false})
 }
 
-func previewJSON(channel channeldomain.Channel, candidates []AcquisitionCandidate) map[string]any {
+func previewJSON(channel channeldomain.Channel, candidates []AcquisitionCandidate, providerReadEnabled, providerWriteEnabled bool) map[string]any {
 	state := "local_prerequisites_ready"
-	blockers := []string{"provider_write_disabled"}
+	blockers := make([]string, 0, 4)
+	if !providerReadEnabled {
+		blockers = append(blockers, "provider_read_disabled")
+	}
+	if !providerWriteEnabled {
+		blockers = append(blockers, "provider_write_disabled")
+	}
 	if channel.Status == channeldomain.StatusInactive {
 		state = "paused"
 	}
@@ -214,14 +234,18 @@ func previewJSON(channel channeldomain.Channel, candidates []AcquisitionCandidat
 	if channel.Status != channeldomain.StatusActive {
 		blockers = append(blockers, "channel_not_active")
 	}
+	if len(channel.Config.Assignment.Assignees) == 0 {
+		blockers = append(blockers, "assignees_missing")
+	}
+	providerEligible := len(blockers) == 0
 	qrcodeStatus := "not_generated"
 	if channel.Config.QRCodeURL != "" {
 		qrcodeStatus = "legacy_untracked"
 	}
 	return map[string]any{"channel_id": channel.ID, "channel_code": channel.Code, "channel_name": channel.Config.Name,
-		"assignees": acquisitionAssignees(channel, candidates), "lifecycle": map[string]any{"state": state, "entrant_ready": false, "readiness_blockers": blockers},
+		"assignees": acquisitionAssignees(channel, candidates), "lifecycle": map[string]any{"state": state, "entrant_ready": providerEligible, "readiness_blockers": blockers},
 		"qrcode": map[string]any{"status": qrcodeStatus, "scene_value": channel.Config.SceneValue, "url": channel.Config.QRCodeURL},
-		"share":  map[string]any{"url": channel.Config.FinalURL, "copy_text": channel.Config.FinalURL}, "local_only": true, "provider_execution_eligible": false, "real_external_call_executed": false}
+		"share":  map[string]any{"url": channel.Config.FinalURL, "copy_text": channel.Config.FinalURL}, "local_only": true, "provider_execution_eligible": providerEligible, "real_external_call_executed": false}
 }
 
 func acquisitionAssignees(channel channeldomain.Channel, candidates []AcquisitionCandidate) []map[string]any {
