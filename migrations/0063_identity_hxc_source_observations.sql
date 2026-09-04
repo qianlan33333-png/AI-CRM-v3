@@ -36,7 +36,7 @@ CREATE TABLE identity_source_observations (
         OR (kind = 'phone' AND scope_key = 'phone:cn11')
     ),
     lookup_digest BYTEA NOT NULL CHECK (octet_length(lookup_digest) = 32),
-    ciphertext BYTEA NOT NULL CHECK (octet_length(ciphertext) >= 39),
+    ciphertext BYTEA NOT NULL CHECK (octet_length(ciphertext) >= 29),
     display_value TEXT NOT NULL CHECK (display_value <> '' AND length(display_value) <= 32),
     key_version SMALLINT NOT NULL CHECK (key_version > 0),
     assurance TEXT NOT NULL CHECK (assurance IN ('verified','declared')),
@@ -98,6 +98,17 @@ CREATE TABLE identity_source_resolution_receipts (
 CREATE INDEX identity_source_resolution_receipts_subject_idx
     ON identity_source_resolution_receipts(subject_id, id DESC);
 
+CREATE FUNCTION identity_source_receipts_reject_mutation() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    RAISE EXCEPTION 'identity source receipts are append-only';
+END;
+$$;
+
+CREATE TRIGGER identity_source_resolution_receipts_append_only
+    BEFORE UPDATE OR DELETE OR TRUNCATE ON identity_source_resolution_receipts
+    FOR EACH STATEMENT EXECUTE FUNCTION identity_source_receipts_reject_mutation();
+
 CREATE TABLE identity_source_conflict_actions (
     id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     conflict_id BIGINT NOT NULL REFERENCES identity_source_conflicts(id) ON DELETE RESTRICT,
@@ -109,3 +120,7 @@ CREATE TABLE identity_source_conflict_actions (
     outcome TEXT NOT NULL CHECK (outcome IN ('ignored','replayed')),
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TRIGGER identity_source_conflict_actions_append_only
+    BEFORE UPDATE OR DELETE OR TRUNCATE ON identity_source_conflict_actions
+    FOR EACH STATEMENT EXECUTE FUNCTION identity_source_receipts_reject_mutation();

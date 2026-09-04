@@ -96,6 +96,9 @@ func TestHXCSourceDualKeyPersistenceIntegration(t *testing.T) {
 	if customers != 1 || subjects != 1 || observations != 2 || receipts != 1 {
 		t.Fatalf("after replay customers=%d subjects=%d observations=%d receipts=%d", customers, subjects, observations, receipts)
 	}
+	if _, err = pool.Native().Exec(ctx, `UPDATE identity_source_resolution_receipts SET reason_code='changed'`); err == nil {
+		t.Fatal("immutable HXC resolution receipt accepted mutation")
+	}
 	var unionCipher, phoneCipher []byte
 	if err = pool.Native().QueryRow(ctx, `SELECT (SELECT ciphertext FROM identity_source_observations WHERE kind='unionid'),(SELECT ciphertext FROM identity_source_observations WHERE kind='phone')`).Scan(&unionCipher, &phoneCipher); err != nil {
 		t.Fatal(err)
