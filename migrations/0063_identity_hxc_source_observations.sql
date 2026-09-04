@@ -37,6 +37,7 @@ CREATE TABLE identity_source_observations (
     ),
     lookup_digest BYTEA NOT NULL CHECK (octet_length(lookup_digest) = 32),
     ciphertext BYTEA NOT NULL CHECK (octet_length(ciphertext) >= 39),
+    display_value TEXT NOT NULL CHECK (display_value <> '' AND length(display_value) <= 32),
     key_version SMALLINT NOT NULL CHECK (key_version > 0),
     assurance TEXT NOT NULL CHECK (assurance IN ('verified','declared')),
     status TEXT NOT NULL CHECK (status IN ('active','retired')),

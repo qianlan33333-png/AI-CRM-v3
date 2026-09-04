@@ -27,7 +27,10 @@ import (
 // PostgresStore has no pool deliberately: every operation obtains the
 // UnitOfWork-bound transaction from its context, so an accidental autocommit
 // call is rejected by platformpostgres.RequireTransaction.
-type PostgresStore struct{ phoneVault *identitysecure.PhoneVault }
+type PostgresStore struct {
+	phoneVault       *identitysecure.PhoneVault
+	observationVault *identitysecure.ObservationVault
+}
 
 func NewPostgresStore(phoneVault ...*identitysecure.PhoneVault) *PostgresStore {
 	store := &PostgresStore{}
@@ -35,6 +38,10 @@ func NewPostgresStore(phoneVault ...*identitysecure.PhoneVault) *PostgresStore {
 		store.phoneVault = phoneVault[0]
 	}
 	return store
+}
+
+func NewPostgresStoreWithObservation(phoneVault *identitysecure.PhoneVault, observationVault *identitysecure.ObservationVault) *PostgresStore {
+	return &PostgresStore{phoneVault: phoneVault, observationVault: observationVault}
 }
 
 var _ identityapp.Store = (*PostgresStore)(nil)
