@@ -5,8 +5,14 @@ repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source_installer="${repository_root}/deploy/install-release.sh"
 test_root="$(mktemp -d)"
 archives=()
+stale_lock_pid=""
+stale_lock_grandchild_pid_file=""
 
 cleanup() {
+  [[ -n "$stale_lock_pid" ]] && kill -KILL "$stale_lock_pid" 2>/dev/null || true
+  if [[ -n "$stale_lock_grandchild_pid_file" && -f "$stale_lock_grandchild_pid_file" ]]; then
+    kill -KILL "$(<"$stale_lock_grandchild_pid_file")" 2>/dev/null || true
+  fi
   rm -rf -- "$test_root"
   if ((${#archives[@]})); then
     rm -f -- "${archives[@]}"
@@ -25,6 +31,8 @@ sha_stale=3333333333333333333333333333333333333333
 sha_failed=4444444444444444444444444444444444444444
 sha_first=5555555555555555555555555555555555555555
 sha_second=6666666666666666666666666666666666666666
+sha_recovered=7777777777777777777777777777777777777777
+sha_orphaned=8888888888888888888888888888888888888888
 
 mkdir -p "$test_root/bin" "$test_root/aicrm" "$test_root/etc-aicrm" "$test_root/systemd"
 printf 'AICRM_SURVEY_DATA_KEY=%043d\n' 0 > "$test_root/etc-aicrm/aicrm.env"
@@ -175,7 +183,7 @@ run_release() {
     "$test_root/install-release.sh" "/tmp/aicrm-${sha}.tar.gz" "$sha" "$run_number" >> "$test_root/installer.log" 2>&1
 }
 
-for sha in "$sha_one" "$sha_manual" "$sha_stale" "$sha_failed" "$sha_first" "$sha_second"; do make_release "$sha"; done
+for sha in "$sha_one" "$sha_manual" "$sha_stale" "$sha_failed" "$sha_first" "$sha_second" "$sha_recovered"; do make_release "$sha"; done
 
 run_release "$sha_one" 100 initial 1
 [[ "$(<"$test_root/effects-readlink-${sha_one}")" == 2 ]] || fail "effects worker executable readiness was not retried"
@@ -218,5 +226,35 @@ wait "$first_pid"
 [[ "$(<"$test_root/aicrm/last-successful-run-number")" == 103 ]] || fail "serialized deployments did not retain the newest run number"
 [[ "$(readlink "$test_root/aicrm/current")" == "$test_root/aicrm/releases/$sha_second" ]] || fail "serialized deployments did not retain the newest release"
 [[ "$(grep '^migration:' "$test_root/install.log" | tail -n 2 | tr '\n' ' ')" == 'migration:first migration:second ' ]] || fail "second deployment entered the critical section before the first completed"
+
+if [[ -d /proc && -x "$(command -v flock)" ]]; then
+  stale_installer="/tmp/install-release-${sha_orphaned}.sh"
+  stale_lock_grandchild_pid_file="$test_root/stale-lock-grandchild.pid"
+  cat > "$stale_installer" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+exec 9>"$AICRM_TEST_RELEASE_LOCK"
+flock 9
+bash -c 'sleep 300 & printf "%s\n" "$!" > "$AICRM_TEST_GRANDCHILD_PID_FILE"; wait' &
+wait
+EOF
+  chmod 0755 "$stale_installer"
+  AICRM_TEST_RELEASE_LOCK="$test_root/aicrm/install-release.lock" \
+    AICRM_TEST_GRANDCHILD_PID_FILE="$stale_lock_grandchild_pid_file" \
+    /usr/bin/bash "$stale_installer" ignored ignored 104 &
+  stale_lock_pid=$!
+  for _ in $(seq 1 100); do
+    [[ -f "$stale_lock_grandchild_pid_file" ]] && break
+    /bin/sleep 0.01
+  done
+  [[ -f "$stale_lock_grandchild_pid_file" ]] || fail "stale lock fixture did not start"
+  run_release "$sha_recovered" 105 recovered
+  wait "$stale_lock_pid" 2>/dev/null || true
+  stale_lock_pid=""
+  [[ "$(<"$test_root/aicrm/last-successful-run-number")" == 105 ]] || fail "orphan lock recovery did not persist the newer run number"
+  [[ "$(readlink "$test_root/aicrm/current")" == "$test_root/aicrm/releases/$sha_recovered" ]] || fail "orphan lock recovery did not activate the newer release"
+  [[ ! -e "/proc/$(<"$stale_lock_grandchild_pid_file")" ]] || fail "orphaned lock holder survived recovery"
+  rm -f -- "$stale_installer"
+fi
 
 echo "install release ordering contract passed"

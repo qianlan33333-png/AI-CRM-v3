@@ -121,6 +121,11 @@ grep -qxF '  if ! timeout 15s systemctl stop aicrm-automation-bootstrap.service;
 grep -qF '"${stale_args[1]:-}" =~ ^/tmp/install-release-[0-9a-f]{40}\.sh$' "$installer" || { echo "deployment must scope stale installer supersession to validated release commands" >&2; exit 1; }
 grep -qF '"${stale_args[4]:-}" =~ ^[1-9][0-9]*$ && ${stale_args[4]} -lt $release_run_number' "$installer" || { echo "deployment must supersede only older release run numbers" >&2; exit 1; }
 grep -qF 'read -r stale_children < "/proc/${stale_pid}/task/${stale_pid}/children"' "$installer" || { echo "deployment must release stale installer child waits before terminating their parent" >&2; exit 1; }
+grep -qx 'stale_installer_found=false' "$installer" || { echo "deployment must prove an older validated installer exists before lock recovery" >&2; exit 1; }
+grep -qxF '    target="$(readlink -f "$lock_fd" 2>/dev/null || true)"' "$installer" || { echo "deployment lock recovery must inspect exact open file descriptors" >&2; exit 1; }
+grep -qxF '    [[ "$target" == "$release_lock" ]] || continue' "$installer" || { echo "deployment lock recovery must remain scoped to the release lock" >&2; exit 1; }
+grep -qxF 'if [[ "$stale_installer_found" == true ]] && ! flock -w 15 9; then' "$installer" || { echo "deployment may recover lock holders only after a bounded wait for a proven stale installer" >&2; exit 1; }
+grep -qxF '  if ! flock -w 15 9; then' "$installer" || { echo "deployment must bound the recovered lock acquisition" >&2; exit 1; }
 grep -qxF 'if ! systemctl start aicrm-automation-bootstrap.service; then' "$installer" || { echo "deployment must run Automation Operations semantic bootstrap" >&2; exit 1; }
 bootstrap_start_line="$(grep -nF 'if ! systemctl start aicrm-automation-bootstrap.service; then' "$installer" | cut -d: -f1)"
 bootstrap_status_line="$(grep -nF '  systemctl status --no-pager --full aicrm-automation-bootstrap.service || true' "$installer" | tail -n 1 | cut -d: -f1)"

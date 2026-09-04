@@ -167,6 +167,7 @@ trap cleanup_release_artifacts EXIT
 # while its installer still owns the host lock. A newer release may safely stop
 # it before waiting: every staged batch is transactional and the command resumes
 # through its idempotency receipts with the new release binary.
+stale_installer_found=false
 if [[ -n "$release_run_number" ]]; then
   for stale_cmdline in /proc/[0-9]*/cmdline; do
     stale_args=()
@@ -175,6 +176,7 @@ if [[ -n "$release_run_number" ]]; then
     stale_pid="${stale_pid%/cmdline}"
     if [[ "$stale_pid" != "$$" && "${stale_args[1]:-}" =~ ^/tmp/install-release-[0-9a-f]{40}\.sh$ &&
       "${stale_args[4]:-}" =~ ^[1-9][0-9]*$ && ${stale_args[4]} -lt $release_run_number ]]; then
+      stale_installer_found=true
       stale_children=""
       read -r stale_children < "/proc/${stale_pid}/task/${stale_pid}/children" 2>/dev/null || true
       for stale_child_pid in $stale_children; do
@@ -195,6 +197,32 @@ if [[ "$bootstrap_load_state" == loaded ]]; then
   fi
 fi
 exec 9>"$release_lock"
+# Terminating an obsolete installer is not sufficient when one of its deeper
+# descendants inherited fd 9: that orphan can keep the kernel lock forever.
+# Only a newer numbered release that actually found an older validated
+# installer may recover this condition. The fd scan is scoped to the exact
+# release lock and excludes this installer, which has opened but not yet locked
+# fd 9.
+terminate_stale_release_lock_holders() {
+  local signal="$1" lock_fd holder_pid target
+  for lock_fd in /proc/[0-9]*/fd/*; do
+    target="$(readlink -f "$lock_fd" 2>/dev/null || true)"
+    [[ "$target" == "$release_lock" ]] || continue
+    holder_pid="${lock_fd#/proc/}"
+    holder_pid="${holder_pid%%/*}"
+    [[ "$holder_pid" =~ ^[1-9][0-9]*$ && "$holder_pid" != "$$" ]] || continue
+    kill "-$signal" "$holder_pid" 2>/dev/null || true
+  done
+}
+if [[ "$stale_installer_found" == true ]] && ! flock -w 15 9; then
+  terminate_stale_release_lock_holders TERM
+  sleep 2
+  terminate_stale_release_lock_holders KILL
+  if ! flock -w 15 9; then
+    echo "timed out recovering stale release lock" >&2
+    exit 15
+  fi
+fi
 flock 9
 
 run_is_not_newer() {
