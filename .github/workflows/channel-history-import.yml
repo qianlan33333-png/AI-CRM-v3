@@ -64,6 +64,10 @@ jobs:
             SELECT id,state FROM channel_history_import_runs WHERE snapshot_id=:'snapshot_id'
           ), selected_repair AS (
             SELECT s.id,s.state FROM channel_semantic_repair_runs s JOIN selected_run r ON r.id=s.import_run_id
+          ), mapped_channels AS (
+            SELECT DISTINCT m.target_id AS channel_id
+            FROM channel_history_source_maps m JOIN selected_run r ON r.id=m.import_run_id
+            WHERE m.source_table='automation_channel' AND m.target_id IS NOT NULL
           )
           SELECT json_build_object(
             'import_runs',(SELECT count(*) FROM selected_run),
@@ -73,7 +77,13 @@ jobs:
             'repair_states',COALESCE((SELECT json_agg(state ORDER BY state) FROM selected_repair),'[]'::json),
             'repaired_configs',(SELECT count(*) FROM channel_semantic_repaired_configs c JOIN selected_repair r ON r.id=c.repair_run_id),
             'conflicts',(SELECT count(*) FROM channel_semantic_repair_conflicts c JOIN selected_repair r ON r.id=c.repair_run_id),
-            'legacy_assets',(SELECT count(*) FROM channel_legacy_acquisition_assets a JOIN selected_run r ON r.id=a.import_run_id)
+            'conflict_fields',COALESCE((SELECT json_object_agg(field_name,n) FROM (SELECT field_name,count(*) n FROM channel_semantic_repair_conflicts c JOIN selected_repair r ON r.id=c.repair_run_id GROUP BY field_name) q),'{}'::json),
+            'legacy_assets',(SELECT count(*) FROM channel_legacy_acquisition_assets a JOIN selected_run r ON r.id=a.import_run_id),
+            'mapped_channels',(SELECT count(*) FROM mapped_channels),
+            'entity_version_gt_one',(SELECT count(*) FROM channels c JOIN mapped_channels m ON m.channel_id=c.id WHERE c.version>1),
+            'current_config_from_prior_semantic_repair',(SELECT count(*) FROM channels c JOIN mapped_channels m ON m.channel_id=c.id WHERE EXISTS(SELECT 1 FROM channel_semantic_repaired_configs p WHERE p.channel_id=c.id AND p.config_version=c.current_config_version AND p.repair_run_id NOT IN(SELECT id FROM selected_repair))),
+            'channels_with_noncreate_receipts',(SELECT count(DISTINCT o.channel_id) FROM channel_operation_receipts o JOIN mapped_channels m ON m.channel_id=o.channel_id WHERE o.operation<>'create' AND o.state='completed'),
+            'noncreate_receipts_by_operation',COALESCE((SELECT json_object_agg(operation,n) FROM (SELECT operation,count(*) n FROM channel_operation_receipts o JOIN mapped_channels m ON m.channel_id=o.channel_id WHERE o.operation<>'create' AND o.state='completed' GROUP BY operation) q),'{}'::json)
           );
           SQL
           REMOTE
