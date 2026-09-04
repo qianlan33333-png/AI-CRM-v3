@@ -127,7 +127,8 @@ make_release() {
     0037_outbound_private_messages.sql 0038_survey_oauth_phone_vault.sql \
     0047_automation_operations_migration.sql \
     0048_segment_audience_schedule_state.sql 0049_order_history_attribution.sql \
-    0050_radar_core.sql 0051_radar_sessions_events.sql 0052_radar_legacy_import.sql; do
+    0050_radar_core.sql 0051_radar_sessions_events.sql 0052_radar_legacy_import.sql \
+    0053_segment_audience_member_event_fact_kinds.sql; do
     : > "$release/migrations/$migration"
   done
   : > "$release/web/dist/asset-manifest.json"

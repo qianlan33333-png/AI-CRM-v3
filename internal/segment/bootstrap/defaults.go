@@ -135,7 +135,10 @@ func Apply(ctx context.Context, catalog Catalog, snapshots Snapshots, actor int6
 		packageReport.Preview = &PreviewReport{MemberCount: preview.MemberCount, MemberDigest: preview.MemberDigest, WatermarkDigest: preview.WatermarkDigest}
 		run, err := snapshots.AcceptRefresh(ctx, segmentapp.RefreshCommand{
 			PackageID: item.ID, Actor: actor, ReferenceTime: reference,
-			IdempotencyKey: "automation-operations-bootstrap-refresh-v1:" + definition.Code,
+			// v2 intentionally supersedes the pre-0053 refresh key. A v1 run may
+			// be durably failed by the member-event fact-kind constraint and must
+			// never be blindly replayed as though it could become publishable.
+			IdempotencyKey: "automation-operations-bootstrap-refresh-v2:" + definition.Code,
 		})
 		if err != nil {
 			return Report{}, fmt.Errorf("queue package %s refresh: %w", definition.Code, err)
