@@ -52,6 +52,45 @@ type Service struct {
 	allowActivation bool
 }
 
+// PersistenceDiagnostic is a deliberately narrow, non-sensitive description
+// of a PostgreSQL failure. It never retains the database error, SQL text or
+// row values, so HTTP callers continue to receive only the public application
+// error while deployment tooling can identify a failed bootstrap stage.
+type PersistenceDiagnostic struct {
+	public     error
+	Stage      string
+	SQLState   string
+	Constraint string
+}
+
+func (e *PersistenceDiagnostic) Error() string { return e.public.Error() }
+func (e *PersistenceDiagnostic) Unwrap() error { return e.public }
+
+type persistenceStageError struct {
+	stage string
+	err   error
+}
+
+func (e *persistenceStageError) Error() string { return e.err.Error() }
+func (e *persistenceStageError) Unwrap() error { return e.err }
+
+func atPersistenceStage(stage string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return &persistenceStageError{stage: stage, err: err}
+}
+
+// PersistenceFailure returns safe diagnostic fields for operational logging.
+// False means the error was not an unclassified PostgreSQL persistence error.
+func PersistenceFailure(err error) (PersistenceDiagnostic, bool) {
+	var diagnostic *PersistenceDiagnostic
+	if !errors.As(err, &diagnostic) || diagnostic == nil {
+		return PersistenceDiagnostic{}, false
+	}
+	return *diagnostic, true
+}
+
 type GroupCommand struct {
 	ID, ExpectedVersion int64
 	Name                string
@@ -194,17 +233,21 @@ func (s *Service) CreatePackage(ctx context.Context, command PackageCreateComman
 		item, createErr := segmentdomain.NewPackage(code, command.Name, command.GroupID, command.Actor, now)
 		if createErr == nil {
 			item, createErr = s.store.CreatePackage(tx, item)
+			createErr = atPersistenceStage("create_package_record", createErr)
 		}
 		if createErr == nil {
 			configuration, configErr := segmentdomain.NewConfigurationVersion(item.ID, 1, definition, "", command.Actor, now)
 			if configErr == nil {
 				configuration, configErr = s.store.CreateConfigurationVersion(tx, configuration)
+				configErr = atPersistenceStage("create_configuration_version", configErr)
 			}
 			if configErr == nil {
 				item, configErr = s.store.SetCurrentConfiguration(tx, item.ID, configuration.ID, item.Version, command.Actor, now)
+				configErr = atPersistenceStage("set_current_configuration", configErr)
 			}
 			if configErr == nil {
 				_, configErr = s.store.AppendMutationFacts(tx, fact("configuration", configuration.ID, "create", "audience.configuration.created.v1", command.Actor, "configuration:"+command.IdempotencyKey, now))
+				configErr = atPersistenceStage("append_configuration_facts", configErr)
 			}
 			createErr = configErr
 		}
@@ -414,6 +457,14 @@ func classify(err error) error {
 	case errors.Is(err, segmentstore.ErrNotFound):
 		return ErrNotFound
 	default:
+		if persistence, ok := segmentstore.SafePersistenceFailure(err); ok {
+			stage := "unclassified_persistence"
+			var staged *persistenceStageError
+			if errors.As(err, &staged) && staged != nil && staged.stage != "" {
+				stage = staged.stage
+			}
+			return &PersistenceDiagnostic{public: ErrUnavailable, Stage: stage, SQLState: persistence.SQLState, Constraint: persistence.Constraint}
+		}
 		return ErrUnavailable
 	}
 }
