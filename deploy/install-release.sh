@@ -168,6 +168,7 @@ trap cleanup_release_artifacts EXIT
 # it before waiting: every staged batch is transactional and the command resumes
 # through its idempotency receipts with the new release binary.
 stale_installer_found=false
+non_older_installer_found=false
 if [[ -n "$release_run_number" ]]; then
   for stale_cmdline in /proc/[0-9]*/cmdline; do
     stale_args=()
@@ -175,14 +176,18 @@ if [[ -n "$release_run_number" ]]; then
     stale_pid="${stale_cmdline#/proc/}"
     stale_pid="${stale_pid%/cmdline}"
     if [[ "$stale_pid" != "$$" && "${stale_args[1]:-}" =~ ^/tmp/install-release-[0-9a-f]{40}\.sh$ &&
-      "${stale_args[4]:-}" =~ ^[1-9][0-9]*$ && ${stale_args[4]} -lt $release_run_number ]]; then
-      stale_installer_found=true
-      stale_children=""
-      read -r stale_children < "/proc/${stale_pid}/task/${stale_pid}/children" 2>/dev/null || true
-      for stale_child_pid in $stale_children; do
-        [[ "$stale_child_pid" =~ ^[1-9][0-9]*$ ]] && kill -TERM "$stale_child_pid" 2>/dev/null || true
-      done
-      kill -TERM "$stale_pid" 2>/dev/null || true
+      "${stale_args[4]:-}" =~ ^[1-9][0-9]*$ ]]; then
+      if ((stale_args[4] < release_run_number)); then
+        stale_installer_found=true
+        stale_children=""
+        read -r stale_children < "/proc/${stale_pid}/task/${stale_pid}/children" 2>/dev/null || true
+        for stale_child_pid in $stale_children; do
+          [[ "$stale_child_pid" =~ ^[1-9][0-9]*$ ]] && kill -TERM "$stale_child_pid" 2>/dev/null || true
+        done
+        kill -TERM "$stale_pid" 2>/dev/null || true
+      else
+        non_older_installer_found=true
+      fi
     fi
   done
 fi
@@ -214,7 +219,30 @@ terminate_stale_release_lock_holders() {
     kill "-$signal" "$holder_pid" 2>/dev/null || true
   done
 }
-if [[ "$stale_installer_found" == true ]] && ! flock -w 15 9; then
+run_is_not_newer() {
+  local candidate="$1"
+  local deployed="$2"
+  [[ ${#candidate} -lt ${#deployed} ]] || \
+    ([[ ${#candidate} -eq ${#deployed} ]] && [[ "$candidate" < "$deployed" || "$candidate" == "$deployed" ]])
+}
+
+# A cancelled workflow can outlive the installer process while leaving only a
+# descendant holding fd 9. A strictly newer CI run than the last successful
+# release may recover that orphan even when no stale installer remains to be
+# discovered. Manual installs and runs competing with an equal/newer installer
+# fail closed.
+release_lock_recovery_allowed="$stale_installer_found"
+if [[ -d /proc && -x "$(command -v flock)" && -n "$release_run_number" && -e "$last_successful_run_file" ]]; then
+  deployed_run_number="$(<"$last_successful_run_file")"
+  if [[ ! "$deployed_run_number" =~ ^[1-9][0-9]*$ ]]; then
+    echo "invalid last successful release run number" >&2
+    exit 11
+  fi
+  if ! run_is_not_newer "$release_run_number" "$deployed_run_number"; then
+    release_lock_recovery_allowed=true
+  fi
+fi
+if [[ "$non_older_installer_found" != true && "$release_lock_recovery_allowed" == true ]] && ! flock -w 15 9; then
   terminate_stale_release_lock_holders TERM
   sleep 2
   terminate_stale_release_lock_holders KILL
@@ -224,13 +252,6 @@ if [[ "$stale_installer_found" == true ]] && ! flock -w 15 9; then
   fi
 fi
 flock 9
-
-run_is_not_newer() {
-  local candidate="$1"
-  local deployed="$2"
-  [[ ${#candidate} -lt ${#deployed} ]] || \
-    ([[ ${#candidate} -eq ${#deployed} ]] && [[ "$candidate" < "$deployed" || "$candidate" == "$deployed" ]])
-}
 
 if [[ -n "$release_run_number" && -e "$last_successful_run_file" ]]; then
   last_successful_run_number="$(<"$last_successful_run_file")"
