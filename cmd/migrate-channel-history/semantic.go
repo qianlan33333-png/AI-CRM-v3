@@ -1014,7 +1014,28 @@ func (runner importRunner) ActivateRepaired(ctx context.Context, manifest snapsh
 				continue
 			}
 		}
-		if _, err = runner.Pool.Native().Exec(ctx, `UPDATE channels SET status=$2,updated_at=clock_timestamp() WHERE id=$1 AND current_config_version=$3;UPDATE channel_semantic_repaired_configs SET activated_at=clock_timestamp() WHERE repair_run_id=$4 AND channel_id=$1`, v.id, v.status, v.version, repairID); err != nil {
+		err = runner.UOW.Within(ctx, func(txctx context.Context) error {
+			tx, txErr := platformpostgres.RequireTransaction(txctx)
+			if txErr != nil {
+				return txErr
+			}
+			updated, txErr := tx.Exec(txctx, `UPDATE channels SET status=$2,updated_at=clock_timestamp() WHERE id=$1 AND current_config_version=$3`, v.id, v.status, v.version)
+			if txErr != nil {
+				return txErr
+			}
+			if updated.RowsAffected() != 1 {
+				return errors.New("channel changed concurrently during semantic activation")
+			}
+			marked, txErr := tx.Exec(txctx, `UPDATE channel_semantic_repaired_configs SET activated_at=clock_timestamp() WHERE repair_run_id=$1 AND channel_id=$2 AND activated_at IS NULL`, repairID, v.id)
+			if txErr != nil {
+				return txErr
+			}
+			if marked.RowsAffected() != 1 {
+				return errors.New("semantic activation receipt changed concurrently")
+			}
+			return nil
+		})
+		if err != nil {
 			return nil, err
 		}
 		activated++
