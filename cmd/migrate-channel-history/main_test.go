@@ -219,6 +219,18 @@ func TestSemanticConfigMismatchCountDoesNotDoubleCountConflicts(t *testing.T) {
 	}
 }
 
+func TestUnavailableHistoricalAssigneeIsRepresentedWithoutInventingAssignment(t *testing.T) {
+	if got := semanticUnprojectedAssigneeCount(2, 1, true); got != 0 {
+		t.Fatalf("represented unavailable assignee counted as loss: %d", got)
+	}
+	if got := semanticUnprojectedAssigneeCount(2, 1, false); got != 1 {
+		t.Fatalf("silent missing assignee count=%d", got)
+	}
+	if got := semanticUnprojectedAssigneeCount(1, 1, false); got != 0 {
+		t.Fatalf("fully projected assignee count=%d", got)
+	}
+}
+
 func TestLegacyAssetUpsertAdvancesOnlyLiveCanonicalProjection(t *testing.T) {
 	databaseURL, err := platformconfig.DatabaseURL()
 	if err != nil {

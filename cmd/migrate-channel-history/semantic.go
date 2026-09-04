@@ -309,14 +309,20 @@ func (runner importRunner) repairChannelConfig(ctx context.Context, repairID, ru
 		members = []snapshotRow{{Payload: json.RawMessage(`{"staff_id":` + strconv.Quote(firstString(row.Payload, "owner_staff_id")) + `,"priority":1,"ratio_percent":100,"status":"active"}`)}}
 	}
 	assigned := []semanticAssignment{}
-	for index, item := range members {
+	unavailableAssignees := 0
+	for _, item := range members {
 		providerID := firstString(item.Payload, "staff_id")
 		var staffID int64
 		if err := runner.Pool.Native().QueryRow(ctx, `SELECT id FROM admin_users WHERE wecom_userid=$1 AND is_active`, providerID).Scan(&staffID); err != nil {
-			s := sha256.Sum256([]byte(providerID))
-			c := sha256.Sum256([]byte("missing"))
-			_, insertErr := runner.Pool.Native().Exec(ctx, `INSERT INTO channel_semantic_repair_conflicts(repair_run_id,channel_id,field_name,source_digest,current_digest) VALUES($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING`, repairID, channelID, "assignee:"+strconv.Itoa(index), s[:], c[:])
-			return false, true, insertErr
+			if errors.Is(err, pgx.ErrNoRows) {
+				// A departed or otherwise Provider-ineligible historical assignee
+				// remains available in channel_history_assignees. Do not invent a
+				// replacement or an active Access account; repair the rest of the
+				// immutable config and keep activation blocked instead.
+				unavailableAssignees++
+				continue
+			}
+			return false, false, err
 		}
 		priority, _ := jsonInt(item.Payload, "priority")
 		ratio, _ := jsonInt(item.Payload, "ratio_percent")
@@ -340,6 +346,9 @@ func (runner importRunner) repairChannelConfig(ctx context.Context, repairID, ru
 		}
 	}
 	assignmentBlockers := semanticAssignmentBlockers(strategy, assigned)
+	if unavailableAssignees > 0 {
+		assignmentBlockers = append(assignmentBlockers, "assignee_provider_ineligible")
+	}
 	if priorityInvalid {
 		assignmentBlockers = append(assignmentBlockers, "assignment_priority_invalid")
 	}
@@ -748,9 +757,15 @@ func (runner importRunner) SemanticReconcile(ctx context.Context, manifest snaps
 		if err != nil {
 			return gates, err
 		}
-		if missing := int64(len(members)) - projected; missing > 0 {
-			gates.SourceAssigneesNotProjected += missing
+		var unavailableRepresented bool
+		if channelID > 0 {
+			err = runner.Pool.Native().QueryRow(ctx, `SELECT blockers ? 'assignee_provider_ineligible' FROM channel_semantic_repaired_configs WHERE repair_run_id=$1 AND channel_id=$2`, repairID, channelID).Scan(&unavailableRepresented)
+			if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+				return gates, err
+			}
+			err = nil
 		}
+		gates.SourceAssigneesNotProjected += semanticUnprojectedAssigneeCount(int64(len(members)), projected, unavailableRepresented)
 	}
 	wrong, err := runner.verifyOneIDBindings(ctx, runID, manifest)
 	if err != nil {
@@ -765,6 +780,13 @@ func semanticConfigMismatchCount(sourceConfigs, repairedConfigs int64) int64 {
 		return 0
 	}
 	return sourceConfigs - repairedConfigs
+}
+
+func semanticUnprojectedAssigneeCount(expected, projected int64, unavailableRepresented bool) int64 {
+	if projected >= expected || unavailableRepresented {
+		return 0
+	}
+	return expected - projected
 }
 
 func semanticAssignmentBlockers(strategy string, assigned []semanticAssignment) []string {
