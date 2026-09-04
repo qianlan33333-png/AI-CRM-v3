@@ -16,7 +16,70 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  audit:
+    if: github.ref_name == 'codex/channel-production-audit'
+    runs-on: ubuntu-latest
+    env:
+      SNAPSHOT_ID: ${{ inputs.deployed_release_sha }}
+    steps:
+      - name: Configure pinned deployment SSH host
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          umask 077
+          install -d -m 0700 "$HOME/.ssh"
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$HOME/.ssh/deploy_key"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$HOME/.ssh/deploy_known_hosts"
+          ssh-keygen -y -f "$HOME/.ssh/deploy_key" >/dev/null
+          test -s "$HOME/.ssh/deploy_known_hosts"
+      - name: Audit canceled channel import without mutation
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          [[ "$SNAPSHOT_ID" =~ ^channel-[0-9a-f]{24}$ ]]
+          ssh -i "$HOME/.ssh/deploy_key" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$HOME/.ssh/deploy_known_hosts" "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            "sudo /usr/bin/bash -s -- '$SNAPSHOT_ID'" <<'REMOTE'
+          set -euo pipefail
+          snapshot_id="$1"
+          database_url="$(sed -n 's/^AICRM_DATABASE_URL=//p' /etc/aicrm/aicrm.env | tail -n 1)"
+          test -n "$database_url"
+          printf 'release_sha=%s\n' "$(basename "$(readlink -f /opt/aicrm/current)")"
+          printf 'active_import_processes=%s\n' "$(ps -eo args= | grep -Ec '[/]opt/aicrm/releases/.*/bin/migrate-channel-history|[r]un-channel-history-import-' || true)"
+          report_dir="/var/lib/aicrm/channel-history-imports/$snapshot_id"
+          if [[ -d "$report_dir" ]]; then
+            printf 'report_files=%s\n' "$(find "$report_dir" -maxdepth 1 -type f | wc -l)"
+          else
+            printf 'report_files=0\n'
+          fi
+          for key in AICRM_OUTBOUND_PROVIDER_ENABLED AICRM_CHANNEL_PROVIDER_READ_ENABLED AICRM_CHANNEL_QR_PROVIDER_ENABLED AICRM_CHANNEL_MEDIA_PREP_PROVIDER_ENABLED AICRM_CHANNEL_WELCOME_PROVIDER_ENABLED AICRM_CHANNEL_TAG_PROVIDER_ENABLED; do
+            value="$(sed -n "s/^${key}=//p" /etc/aicrm/aicrm.env | tail -n 1)"
+            printf '%s=%s\n' "$key" "${value:-unset}"
+          done
+          runuser -u aicrm -- psql "$database_url" -v ON_ERROR_STOP=1 -v snapshot_id="$snapshot_id" -At <<'SQL'
+          WITH selected_run AS (
+            SELECT id,state FROM channel_history_import_runs WHERE snapshot_id=:'snapshot_id'
+          ), selected_repair AS (
+            SELECT s.id,s.state FROM channel_semantic_repair_runs s JOIN selected_run r ON r.id=s.import_run_id
+          )
+          SELECT json_build_object(
+            'import_runs',(SELECT count(*) FROM selected_run),
+            'import_states',COALESCE((SELECT json_agg(state ORDER BY state) FROM selected_run),'[]'::json),
+            'source_maps',(SELECT count(*) FROM channel_history_source_maps m JOIN selected_run r ON r.id=m.import_run_id),
+            'repair_runs',(SELECT count(*) FROM selected_repair),
+            'repair_states',COALESCE((SELECT json_agg(state ORDER BY state) FROM selected_repair),'[]'::json),
+            'repaired_configs',(SELECT count(*) FROM channel_semantic_repaired_configs c JOIN selected_repair r ON r.id=c.repair_run_id),
+            'conflicts',(SELECT count(*) FROM channel_semantic_repair_conflicts c JOIN selected_repair r ON r.id=c.repair_run_id),
+            'legacy_assets',(SELECT count(*) FROM channel_legacy_acquisition_assets a JOIN selected_run r ON r.id=a.import_run_id)
+          );
+          SQL
+          REMOTE
+
   import:
+    if: github.ref_name != 'codex/channel-production-audit'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     services:
