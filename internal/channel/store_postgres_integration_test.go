@@ -173,6 +173,50 @@ func TestPostgreSQLAssetVersionLockAcceptsTypedChannelIDIntegration(t *testing.T
 	}
 }
 
+func TestPostgreSQLVerifiedLegacyAssetCanBeRetiredIntegration(t *testing.T) {
+	pool, cleanup := channelIntegrationPool(t)
+	defer cleanup()
+	unit, err := platformpostgres.NewUnitOfWork(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	actorID := insertChannelAdmin(t, ctx, pool)
+	store := NewPostgreSQLCatalogStore()
+	events, err := NewChannelCatalogEventAppender(mustChannelAuditService(t), platformoutbox.NewPostgreSQL())
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewCatalogService(unit, store, store, events, nil, nil, fixedCatalogStaffReader{actorID: actorID})
+	create := validCatalogCreate()
+	create.Config.Assignment.Assignees[0].StaffID = actorID
+	created, err := service.Create(ctx, CatalogMutation{ActorID: actorID, IdempotencyKey: "pg-legacy-retire-0001", Create: create})
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := make([]byte, sha256.Size)
+	var importRunID int64
+	if err = pool.Native().QueryRow(ctx, `INSERT INTO channel_history_import_runs(snapshot_id,source_host_digest,snapshot_timestamp,manifest_digest,state,completed_at) VALUES('legacy-retire-snapshot',$1,clock_timestamp(),$1,'reconciled',clock_timestamp()) RETURNING id`, digest).Scan(&importRunID); err != nil {
+		t.Fatal(err)
+	}
+	var legacyID int64
+	if err = pool.Native().QueryRow(ctx, `INSERT INTO channel_legacy_acquisition_assets(import_run_id,source_asset_id,channel_id,config_version,asset_version,kind,provider_asset_ref,result_url,source_status,verification_status,source_digest,provider_readback_digest,verified_at) VALUES($1,1,$2,$3,1000000001,'contact_way_qrcode','provider-reference','https://wework.qpic.cn/example.png','active','legacy_verified_active',$4,'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',clock_timestamp()) RETURNING id`, importRunID, created.ID, created.ConfigVersion, digest).Scan(&legacyID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pool.Native().Exec(ctx, `UPDATE channel_legacy_acquisition_assets SET retired_at=clock_timestamp(),updated_at=clock_timestamp() WHERE id=$1`, legacyID); err != nil {
+		t.Fatalf("retire verified legacy asset: %v", err)
+	}
+	var status string
+	var retired bool
+	if err = pool.Native().QueryRow(ctx, `SELECT verification_status,retired_at IS NOT NULL FROM channel_legacy_acquisition_assets WHERE id=$1`, legacyID).Scan(&status, &retired); err != nil {
+		t.Fatal(err)
+	}
+	if status != "legacy_verified_active" || !retired {
+		t.Fatalf("legacy asset status=%q retired=%v", status, retired)
+	}
+}
+
 func mustChannelAuditService(t *testing.T) *platformaudit.Service {
 	t.Helper()
 	service, err := platformaudit.NewService(platformaudit.NewPostgreSQLStore())
@@ -718,5 +762,6 @@ func channelMigrationPaths(t *testing.T) []string {
 		filepath.Join(root, "migrations", "0034_channel_entrant_actions.sql"),
 		filepath.Join(root, "migrations", "0035_channel_acquisition_links.sql"),
 		filepath.Join(root, "migrations", "0059_channel_v1_semantic_repair.sql"),
+		filepath.Join(root, "migrations", "0065_channel_legacy_asset_retirement.sql"),
 	}
 }

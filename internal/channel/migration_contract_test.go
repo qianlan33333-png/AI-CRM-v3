@@ -61,3 +61,26 @@ func TestChannelRuntimeAndHistoryMigrationContracts(t *testing.T) {
 		}
 	}
 }
+
+func TestLegacyAssetRetirementMigrationContract(t *testing.T) {
+	contents, err := os.ReadFile("../../migrations/0065_channel_legacy_asset_retirement.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(contents)
+	for _, required := range []string{
+		"Owner: internal/channel", "Forward-only", "DROP CONSTRAINT channel_legacy_acquisition_assets_check",
+		"ADD CONSTRAINT channel_legacy_acquisition_assets_check", "provider_asset_ref <> ''",
+		"result_url <> ''", "verified_at IS NOT NULL",
+	} {
+		if !strings.Contains(source, required) {
+			t.Fatalf("legacy retirement migration missing %q", required)
+		}
+	}
+	if strings.Contains(source, "retired_at IS NULL") {
+		t.Fatal("verified legacy assets must remain valid audit facts after retirement")
+	}
+	if strings.Contains(source, "legacy_retired") {
+		t.Fatal("retirement must not overwrite provider verification status")
+	}
+}
