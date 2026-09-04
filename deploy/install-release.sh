@@ -168,6 +168,18 @@ if [[ "$bootstrap_load_state" == loaded ]] && ! systemctl stop aicrm-automation-
   systemctl status --no-pager --full aicrm-automation-bootstrap.service || true
   exit 14
 fi
+if [[ -n "$release_run_number" ]]; then
+  for stale_cmdline in /proc/[0-9]*/cmdline; do
+    stale_args=()
+    mapfile -d '' -t stale_args < "$stale_cmdline" 2>/dev/null || continue
+    stale_pid="${stale_cmdline#/proc/}"
+    stale_pid="${stale_pid%/cmdline}"
+    if [[ "$stale_pid" != "$$" && "${stale_args[1]:-}" =~ ^/tmp/install-release-[0-9a-f]{40}\.sh$ &&
+      "${stale_args[4]:-}" =~ ^[1-9][0-9]*$ && ${stale_args[4]} -lt $release_run_number ]]; then
+      kill -TERM "$stale_pid" 2>/dev/null || true
+    fi
+  done
+fi
 exec 9>"$release_lock"
 flock 9
 
