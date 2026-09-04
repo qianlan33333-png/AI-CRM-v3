@@ -278,8 +278,9 @@ EOF
   done
   [[ -f "$orphan_only_pid_file" ]] || fail "orphan-only lock fixture did not start"
   stale_lock_grandchild_pid_file="$orphan_only_pid_file"
+  rm -f -- "$test_root/aicrm/last-successful-run-number"
   run_release "$sha_orphan_only" 106 orphan-only
-  [[ "$(<"$test_root/aicrm/last-successful-run-number")" == 106 ]] || fail "orphan-only recovery did not persist the newer run number"
+  [[ "$(<"$test_root/aicrm/last-successful-run-number")" == 106 ]] || fail "unmarked orphan-only recovery did not persist the newer run number"
   [[ "$(readlink "$test_root/aicrm/current")" == "$test_root/aicrm/releases/$sha_orphan_only" ]] || fail "orphan-only recovery did not activate the newer release"
   [[ ! -e "/proc/$(<"$orphan_only_pid_file")" ]] || fail "orphan-only lock holder survived recovery"
 fi

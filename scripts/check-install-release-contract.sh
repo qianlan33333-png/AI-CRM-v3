@@ -119,15 +119,17 @@ grep -qxF 'ExecStart=/opt/aicrm/current/bin/bootstrap-automation-operations' dep
 grep -qxF '  systemctl kill --kill-whom=all --signal=KILL aicrm-automation-bootstrap.service 2>/dev/null || true' "$installer" || { echo "deployment must terminate a stale Automation Operations bootstrap before waiting for the host lock" >&2; exit 1; }
 grep -qxF '  if ! timeout 15s systemctl stop aicrm-automation-bootstrap.service; then' "$installer" || { echo "deployment must bound stale bootstrap stop confirmation" >&2; exit 1; }
 grep -qF '"${stale_args[1]:-}" =~ ^/tmp/install-release-[0-9a-f]{40}\.sh$' "$installer" || { echo "deployment must scope stale installer supersession to validated release commands" >&2; exit 1; }
-grep -qF '"${stale_args[4]:-}" =~ ^[1-9][0-9]*$' "$installer" || { echo "deployment must validate competing release run numbers" >&2; exit 1; }
-grep -qxF '      if ((stale_args[4] < release_run_number)); then' "$installer" || { echo "deployment must supersede only older release run numbers" >&2; exit 1; }
+grep -qxF '      if [[ "${stale_args[4]:-}" =~ ^[1-9][0-9]*$ ]]; then' "$installer" || { echo "deployment must validate competing release run numbers" >&2; exit 1; }
+grep -qxF '        if ((stale_args[4] < release_run_number)); then' "$installer" || { echo "deployment must supersede only older release run numbers" >&2; exit 1; }
+grep -qxF '        non_older_installer_found=true' "$installer" || { echo "deployment must fail closed for manual or malformed installers" >&2; exit 1; }
 grep -qF 'read -r stale_children < "/proc/${stale_pid}/task/${stale_pid}/children"' "$installer" || { echo "deployment must release stale installer child waits before terminating their parent" >&2; exit 1; }
 grep -qx 'stale_installer_found=false' "$installer" || { echo "deployment must prove an older validated installer exists before lock recovery" >&2; exit 1; }
 grep -qxF '    target="$(readlink -f "$lock_fd" 2>/dev/null || true)"' "$installer" || { echo "deployment lock recovery must inspect exact open file descriptors" >&2; exit 1; }
 grep -qxF '    [[ "$target" == "$release_lock" ]] || continue' "$installer" || { echo "deployment lock recovery must remain scoped to the release lock" >&2; exit 1; }
 grep -qxF 'release_lock_recovery_allowed="$stale_installer_found"' "$installer" || { echo "deployment must retain validated stale-installer recovery evidence" >&2; exit 1; }
-grep -qxF 'if [[ -d /proc && -x "$(command -v flock)" && -n "$release_run_number" && -e "$last_successful_run_file" ]]; then' "$installer" || { echo "orphan lock recovery must require Linux procfs and flock" >&2; exit 1; }
-grep -qxF '  if ! run_is_not_newer "$release_run_number" "$deployed_run_number"; then' "$installer" || { echo "deployment must allow orphan recovery only for a run newer than the deployed marker" >&2; exit 1; }
+grep -qxF 'if [[ -d /proc && -x "$(command -v flock)" && -n "$release_run_number" ]]; then' "$installer" || { echo "orphan lock recovery must require Linux procfs, flock, and a numbered CI run" >&2; exit 1; }
+grep -qxF '  if [[ ! -e "$last_successful_run_file" ]]; then' "$installer" || { echo "pre-ordering hosts must be able to recover detached release locks" >&2; exit 1; }
+grep -qxF '    if ! run_is_not_newer "$release_run_number" "$deployed_run_number"; then' "$installer" || { echo "deployment must allow orphan recovery only for a run newer than the deployed marker" >&2; exit 1; }
 grep -qxF 'if [[ "$non_older_installer_found" != true && "$release_lock_recovery_allowed" == true ]] && ! flock -w 15 9; then' "$installer" || { echo "deployment may recover lock holders only after a bounded wait with supersession evidence" >&2; exit 1; }
 grep -qxF '  if ! flock -w 15 9; then' "$installer" || { echo "deployment must bound the recovered lock acquisition" >&2; exit 1; }
 grep -qxF 'if ! systemctl start aicrm-automation-bootstrap.service; then' "$installer" || { echo "deployment must run Automation Operations semantic bootstrap" >&2; exit 1; }
