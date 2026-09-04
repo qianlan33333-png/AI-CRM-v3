@@ -26,6 +26,7 @@ type Catalog interface {
 	CreateGroup(context.Context, segmentapp.GroupCommand) (segmentdomain.Group, error)
 	CreatePackage(context.Context, segmentapp.PackageCreateCommand) (segmentdomain.Package, error)
 	GetPackage(context.Context, int64) (segmentdomain.Package, error)
+	GetPackageByCode(context.Context, string) (segmentdomain.Package, error)
 	CurrentConfiguration(context.Context, int64) (segmentdomain.ConfigurationVersion, error)
 	PutConfiguration(context.Context, segmentapp.ConfigurationCommand) (segmentdomain.ConfigurationVersion, error)
 }
@@ -91,10 +92,7 @@ func Apply(ctx context.Context, catalog Catalog, snapshots Snapshots, actor int6
 	}
 	report := Report{Mode: "semantic_bootstrap_no_legacy_data", ReferenceTime: reference, GroupID: group.ID, GroupName: group.Name, Packages: make([]PackageReport, 0, len(managedDefaults))}
 	for _, definition := range managedDefaults {
-		item, err := catalog.CreatePackage(ctx, segmentapp.PackageCreateCommand{
-			Name: definition.Name, TemplateKey: "active_contacts", GroupID: &group.ID, Actor: actor,
-			IdempotencyKey: "automation-operations-bootstrap-package-v1:" + definition.Code,
-		})
+		item, err := ensurePackage(ctx, catalog, definition, group.ID, actor)
 		if err != nil {
 			return Report{}, fmt.Errorf("ensure package %s: %w", definition.Code, err)
 		}
@@ -103,6 +101,11 @@ func Apply(ctx context.Context, catalog Catalog, snapshots Snapshots, actor int6
 			return Report{}, fmt.Errorf("read package %s: %w", definition.Code, err)
 		}
 		packageReport := PackageReport{ID: item.ID, Name: item.Name, Lifecycle: item.Lifecycle}
+		if item.Lifecycle == segmentdomain.Archived {
+			packageReport.SkippedReason = "operator_archived"
+			report.Packages = append(report.Packages, packageReport)
+			continue
+		}
 		configuration, err := catalog.CurrentConfiguration(ctx, item.ID)
 		if err != nil {
 			return Report{}, fmt.Errorf("read package %s configuration: %w", definition.Code, err)
@@ -115,7 +118,7 @@ func Apply(ctx context.Context, catalog Catalog, snapshots Snapshots, actor int6
 			configuration, err = catalog.PutConfiguration(ctx, segmentapp.ConfigurationCommand{
 				PackageID: item.ID, ExpectedPackageVersion: item.Version, Definition: desired,
 				RefreshCronUTC: defaultCronUTC, Actor: actor,
-				IdempotencyKey: "automation-operations-bootstrap-config-v1:" + definition.Code,
+				IdempotencyKey: "automation-operations-bootstrap-config-v2:" + definition.Code,
 			})
 			if err != nil {
 				return Report{}, fmt.Errorf("configure package %s: %w", definition.Code, err)
@@ -123,11 +126,6 @@ func Apply(ctx context.Context, catalog Catalog, snapshots Snapshots, actor int6
 			packageReport.ConfigurationInstalled = true
 		}
 		packageReport.ConfigurationVersion = configuration.Version
-		if item.Lifecycle == segmentdomain.Archived {
-			packageReport.SkippedReason = "operator_archived"
-			report.Packages = append(report.Packages, packageReport)
-			continue
-		}
 		preview, err := snapshots.Preview(ctx, item.ID, reference)
 		if err != nil {
 			return Report{}, fmt.Errorf("preview package %s: %w", definition.Code, err)
@@ -147,6 +145,30 @@ func Apply(ctx context.Context, catalog Catalog, snapshots Snapshots, actor int6
 		report.Packages = append(report.Packages, packageReport)
 	}
 	return report, nil
+}
+
+func ensurePackage(ctx context.Context, catalog Catalog, definition Default, groupID, actor int64) (segmentdomain.Package, error) {
+	keys := []string{
+		"automation-operations-bootstrap-package-v2:" + definition.Code,
+		"automation-operations-bootstrap-package-v1:" + definition.Code,
+	}
+	for _, key := range keys {
+		code, err := segmentapp.PackageCodeForIdempotencyKey(key)
+		if err != nil {
+			return segmentdomain.Package{}, err
+		}
+		item, err := catalog.GetPackageByCode(ctx, code)
+		if err == nil {
+			return item, nil
+		}
+		if !errors.Is(err, segmentapp.ErrNotFound) {
+			return segmentdomain.Package{}, err
+		}
+	}
+	return catalog.CreatePackage(ctx, segmentapp.PackageCreateCommand{
+		Name: definition.Name, TemplateKey: "active_contacts", GroupID: &groupID, Actor: actor,
+		IdempotencyKey: keys[0],
+	})
 }
 
 func ensureGroup(ctx context.Context, catalog Catalog, actor int64) (segmentdomain.Group, error) {

@@ -17,6 +17,7 @@ type fakeCatalog struct {
 	configs     map[int64]segmentdomain.ConfigurationVersion
 	putCalls    int
 	nextPackage int64
+	createKeys  []string
 }
 
 func newFakeCatalog() *fakeCatalog {
@@ -37,14 +38,24 @@ func (f *fakeCatalog) CreateGroup(_ context.Context, command segmentapp.GroupCom
 }
 
 func (f *fakeCatalog) CreatePackage(_ context.Context, command segmentapp.PackageCreateCommand) (segmentdomain.Package, error) {
-	if item, ok := f.packages[command.IdempotencyKey]; ok {
+	f.createKeys = append(f.createKeys, command.IdempotencyKey)
+	code, _ := segmentapp.PackageCodeForIdempotencyKey(command.IdempotencyKey)
+	if item, ok := f.packages[code]; ok {
 		return item, nil
 	}
 	f.nextPackage++
-	item := segmentdomain.Package{ID: f.nextPackage, Name: command.Name, GroupID: command.GroupID, Lifecycle: segmentdomain.Paused, Version: 2}
-	f.packages[command.IdempotencyKey] = item
+	item := segmentdomain.Package{ID: f.nextPackage, Code: code, Name: command.Name, GroupID: command.GroupID, Lifecycle: segmentdomain.Paused, Version: 2}
+	f.packages[code] = item
 	definition, _ := segmentapp.DefaultDefinition(command.TemplateKey)
 	f.configs[item.ID] = segmentdomain.ConfigurationVersion{ID: item.ID * 10, PackageID: item.ID, Version: 1, Definition: definition}
+	return item, nil
+}
+
+func (f *fakeCatalog) GetPackageByCode(_ context.Context, code string) (segmentdomain.Package, error) {
+	item, ok := f.packages[code]
+	if !ok {
+		return segmentdomain.Package{}, segmentapp.ErrNotFound
+	}
 	return item, nil
 }
 
@@ -99,6 +110,15 @@ func TestApplyCreatesSafePausedDefaultsAndIsIdempotent(t *testing.T) {
 	}
 	if catalog.putCalls != 3 || len(snapshots.previewed) != 3 || len(snapshots.refreshed) != 3 {
 		t.Fatalf("put=%d preview=%v refresh=%v", catalog.putCalls, snapshots.previewed, snapshots.refreshed)
+	}
+	if len(catalog.createKeys) != len(managedDefaults) {
+		t.Fatalf("create keys=%v", catalog.createKeys)
+	}
+	for index, definition := range managedDefaults {
+		want := "automation-operations-bootstrap-package-v2:" + definition.Code
+		if catalog.createKeys[index] != want {
+			t.Fatalf("create key[%d]=%q want %q", index, catalog.createKeys[index], want)
+		}
 	}
 	for _, item := range report.Packages {
 		if item.Lifecycle != segmentdomain.Paused || item.ConfigurationVersion != 2 || item.Preview == nil || item.Refresh == nil {
@@ -160,5 +180,37 @@ func TestApplyPreservesOperatorChangesAndArchivedPackage(t *testing.T) {
 func TestApplyRejectsInvalidDependencies(t *testing.T) {
 	if _, err := Apply(context.Background(), nil, nil, 0, time.Time{}); !errors.Is(err, ErrInvalidDependencies) {
 		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestApplyReusesLegacyArchivedPackageWithoutRecreatingIt(t *testing.T) {
+	catalog, snapshots := newFakeCatalog(), &fakeSnapshots{}
+	group := segmentdomain.Group{ID: 3, Name: DefaultGroupName, SortOrder: 100, Version: 1}
+	catalog.group = &group
+	legacyKey := "automation-operations-bootstrap-package-v1:active-7d"
+	legacyCode, err := segmentapp.PackageCodeForIdempotencyKey(legacyKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog.packages[legacyCode] = segmentdomain.Package{ID: 7, Code: legacyCode, Name: "近7天活跃客户", GroupID: &group.ID, Lifecycle: segmentdomain.Archived, Version: 3}
+
+	report, err := Apply(context.Background(), catalog, snapshots, 9, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, item := range report.Packages {
+		if item.ID == 7 && item.SkippedReason != "operator_archived" {
+			t.Fatalf("legacy archived package was not preserved: %+v", item)
+		}
+		found = found || item.ID == 7
+	}
+	if !found {
+		t.Fatalf("legacy package missing from report: %+v", report.Packages)
+	}
+	for _, key := range catalog.createKeys {
+		if key == "automation-operations-bootstrap-package-v2:active-7d" {
+			t.Fatalf("archived legacy package was recreated with %q", key)
+		}
 	}
 }
