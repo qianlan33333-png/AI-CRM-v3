@@ -19,7 +19,7 @@ import (
 // receives a request-controlled HTML string.
 type ProductPageRenderer func(http.ResponseWriter, *http.Request, string, string, ProductAssets) error
 
-type ProductAssets struct{ TokensCSS, LabsCSS, AdminJS string }
+type ProductAssets struct{ TokensCSS, LabsCSS, HostJS string }
 
 type productUI struct {
 	dist   string
@@ -211,11 +211,11 @@ func (h *productUI) assets() (ProductAssets, error) {
 	if err != nil {
 		return ProductAssets{}, err
 	}
-	admin, err := get("admin")
+	host, err := get("productHost")
 	if err != nil {
 		return ProductAssets{}, err
 	}
-	return ProductAssets{TokensCSS: tokens, LabsCSS: labs, AdminJS: admin}, nil
+	return ProductAssets{TokensCSS: tokens, LabsCSS: labs, HostJS: host}, nil
 }
 
 func (h *productUI) asset(w http.ResponseWriter, r *http.Request) {

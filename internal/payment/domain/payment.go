@@ -13,15 +13,19 @@ var ErrTransition = errors.New("invalid payment transition")
 var ErrVersion = errors.New("payment version conflict")
 
 type Provider string
+type Channel string
 
 const (
 	ProviderWeChatPay  Provider = "wechat_pay"
 	ProviderWeChatShop Provider = "wechat_shop"
+	ChannelMiniProgram Channel  = "mini_program"
+	ChannelH5Official  Channel  = "h5_official_account"
 )
 
 type Payment struct {
 	ID, OrderID                                             int64
 	Provider                                                Provider
+	Channel                                                 Channel
 	MerchantOrderNo                                         string
 	PayerIdentityID, PayerCustomerID, BeneficiaryCustomerID int64
 	AmountMinor                                             int64
@@ -45,7 +49,7 @@ type Refund struct {
 	CreatedAt, UpdatedAt    time.Time
 }
 
-func NewPayment(order orderdomain.Snapshot, payerIdentityID int64, now time.Time) (Payment, error) {
+func NewPayment(order orderdomain.Snapshot, payerIdentityID int64, now time.Time, requestedChannel ...Channel) (Payment, error) {
 	if order.ID < 1 || order.RecordOrigin != orderdomain.RecordOriginNative || !order.EffectEligible || order.PayerCustomerID == nil || order.BeneficiaryCustomerID == nil || payerIdentityID < 1 || now.IsZero() || order.Amount.Currency != "CNY" || order.Provider == orderdomain.ProviderAlipay {
 		return Payment{}, ErrInvalid
 	}
@@ -53,7 +57,14 @@ func NewPayment(order orderdomain.Snapshot, payerIdentityID int64, now time.Time
 	if provider != ProviderWeChatPay && provider != ProviderWeChatShop {
 		return Payment{}, ErrInvalid
 	}
-	return Payment{OrderID: order.ID, Provider: provider, MerchantOrderNo: order.MerchantOrderNo, PayerIdentityID: payerIdentityID, PayerCustomerID: *order.PayerCustomerID, BeneficiaryCustomerID: *order.BeneficiaryCustomerID, AmountMinor: order.Amount.AmountMinor, Currency: order.Amount.Currency, Status: StatusAwaitingPrepay, Version: 1, CreatedAt: now.UTC(), UpdatedAt: now.UTC()}, nil
+	channel := ChannelMiniProgram
+	if len(requestedChannel) > 0 {
+		channel = requestedChannel[0]
+	}
+	if channel != ChannelMiniProgram && channel != ChannelH5Official {
+		return Payment{}, ErrInvalid
+	}
+	return Payment{OrderID: order.ID, Provider: provider, Channel: channel, MerchantOrderNo: order.MerchantOrderNo, PayerIdentityID: payerIdentityID, PayerCustomerID: *order.PayerCustomerID, BeneficiaryCustomerID: *order.BeneficiaryCustomerID, AmountMinor: order.Amount.AmountMinor, Currency: order.Amount.Currency, Status: StatusAwaitingPrepay, Version: 1, CreatedAt: now.UTC(), UpdatedAt: now.UTC()}, nil
 }
 func (p Payment) BindEffect(expected int64, effectID string, now time.Time) (Payment, error) {
 	if expected != p.Version {

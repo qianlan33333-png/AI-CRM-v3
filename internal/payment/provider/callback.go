@@ -22,6 +22,7 @@ type CallbackVerifier struct {
 	PlatformKeys map[string]*rsa.PublicKey
 	APIV3Key     [32]byte
 	AppID        string
+	AppIDs       map[string]struct{}
 	MerchantID   string
 	now          func() time.Time
 }
@@ -30,6 +31,7 @@ type CallbackResult struct {
 	EventDigest, BodyDigest   [32]byte
 	Kind                      string
 	MerchantOrderNo, RefundNo string
+	AppID                     string
 	ProviderTransactionDigest string
 	ProviderRefundDigest      string
 	AmountMinor               int64
@@ -37,11 +39,18 @@ type CallbackResult struct {
 	OccurredAt                time.Time
 }
 
-func NewCallbackVerifier(keys map[string]*rsa.PublicKey, apiV3Key []byte, appID, merchantID string) (*CallbackVerifier, error) {
+func NewCallbackVerifier(keys map[string]*rsa.PublicKey, apiV3Key []byte, appID, merchantID string, additionalAppIDs ...string) (*CallbackVerifier, error) {
 	if len(keys) == 0 || len(apiV3Key) != 32 || appID == "" || merchantID == "" {
 		return nil, ErrInvalidConfig
 	}
-	verifier := &CallbackVerifier{PlatformKeys: keys, AppID: appID, MerchantID: merchantID, now: time.Now}
+	appIDs := map[string]struct{}{appID: {}}
+	for _, additional := range additionalAppIDs {
+		if additional == "" {
+			continue
+		}
+		appIDs[additional] = struct{}{}
+	}
+	verifier := &CallbackVerifier{PlatformKeys: keys, AppID: appID, AppIDs: appIDs, MerchantID: merchantID, now: time.Now}
 	copy(verifier.APIV3Key[:], apiV3Key)
 	return verifier, nil
 }
@@ -83,10 +92,14 @@ func (verifier *CallbackVerifier) Verify(_ context.Context, body []byte, headers
 			Currency string `json:"currency"`
 		} `json:"amount"`
 	}
-	if json.Unmarshal(plain, &value) != nil || value.AppID != verifier.AppID || value.MerchantID != verifier.MerchantID || value.Amount.Currency != "CNY" {
+	if json.Unmarshal(plain, &value) != nil {
 		return CallbackResult{}, ErrInvalidCallback
 	}
-	result := CallbackResult{EventDigest: sha256.Sum256([]byte(envelope.ID)), BodyDigest: sha256.Sum256(body), AmountMinor: value.Amount.Total, Currency: value.Amount.Currency, MerchantOrderNo: value.OutTradeNo}
+	_, acceptedAppID := verifier.AppIDs[value.AppID]
+	if !acceptedAppID || value.MerchantID != verifier.MerchantID || value.Amount.Currency != "CNY" {
+		return CallbackResult{}, ErrInvalidCallback
+	}
+	result := CallbackResult{EventDigest: sha256.Sum256([]byte(envelope.ID)), BodyDigest: sha256.Sum256(body), AppID: value.AppID, AmountMinor: value.Amount.Total, Currency: value.Amount.Currency, MerchantOrderNo: value.OutTradeNo}
 	if value.SuccessTime != "" {
 		result.OccurredAt, err = time.Parse(time.RFC3339Nano, value.SuccessTime)
 		if err != nil {

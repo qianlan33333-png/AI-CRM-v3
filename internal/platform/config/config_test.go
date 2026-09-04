@@ -225,6 +225,29 @@ func TestWeChatPayProviderRequiresMiniProgramIdentityCredential(t *testing.T) {
 	}
 }
 
+func TestWeChatPayH5OAuthIsIndependentAndFailClosed(t *testing.T) {
+	t.Setenv("AICRM_DATABASE_URL", "postgres://aicrm:test@localhost/aicrm")
+	t.Setenv("AICRM_WECHAT_PAY_H5_OAUTH_ENABLED", "true")
+	if _, err := Load(); err == nil {
+		t.Fatal("H5 OAuth enabled without payment provider")
+	}
+	for key, value := range map[string]string{
+		"AICRM_WECHAT_PAY_PROVIDER_ENABLED": "true", "AICRM_WECHAT_PAY_APP_ID": "wx-mini", "AICRM_WECHAT_PAY_APP_SECRET": "mini-secret", "AICRM_WECHAT_PAY_APP_SCOPE": "wechat-app:wx-mini",
+		"AICRM_WECHAT_PAY_MERCHANT_ID": "merchant", "AICRM_WECHAT_PAY_MERCHANT_SERIAL": "serial", "AICRM_WECHAT_PAY_PRIVATE_KEY_PATH": "/keys/merchant.pem", "AICRM_WECHAT_PAY_PLATFORM_CERT_PATH": "/keys/platform.pem", "AICRM_WECHAT_PAY_API_V3_KEY": strings.Repeat("k", 32),
+		"AICRM_WECHAT_PAY_H5_APP_ID": "wx-oa", "AICRM_WECHAT_PAY_H5_APP_SECRET": "oa-secret", "AICRM_WECHAT_PAY_H5_APP_SCOPE": "wechat-app:wx-oa", "AICRM_ORDER_CONTACT_DATA_KEY": base64.RawStdEncoding.EncodeToString(make([]byte, 32)),
+	} {
+		t.Setenv(key, value)
+	}
+	cfg, err := Load()
+	if err != nil || !cfg.WeChatPay.H5OAuthEnabled || cfg.WeChatPay.H5AppID != "wx-oa" {
+		t.Fatalf("config=%+v err=%v", cfg.WeChatPay, err)
+	}
+	t.Setenv("AICRM_WECHAT_PAY_H5_APP_SCOPE", "wechat-app:attacker")
+	if _, err = Load(); err == nil {
+		t.Fatal("accepted mismatched H5 AppScope")
+	}
+}
+
 func TestTagCatalogProviderRequiresNarrowExplicitPermission(t *testing.T) {
 	t.Setenv("AICRM_DATABASE_URL", "postgres://aicrm:test@localhost/aicrm")
 	t.Setenv("AICRM_WECOM_TAG_CATALOG_PROVIDER_ENABLED", "true")

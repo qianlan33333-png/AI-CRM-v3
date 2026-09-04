@@ -9,6 +9,7 @@ import (
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
 	identityport "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/port"
+	paymentdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/domain"
 	paymentport "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/port"
 	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
 	"time"
@@ -24,6 +25,7 @@ type Record struct {
 	PayerIdentityID                        int64
 	PayerCustomerID, BeneficiaryCustomerID customerdomain.CustomerID
 	AppScopeDigest                         [32]byte
+	Channel                                paymentdomain.Channel
 	ExpiresAt                              time.Time
 	ConsumedAt                             *time.Time
 	CreatedAt                              time.Time
@@ -44,6 +46,7 @@ type Issued struct {
 	ExpiresAt                              time.Time
 	PayerIdentityID                        int64
 	PayerCustomerID, BeneficiaryCustomerID customerdomain.CustomerID
+	Channel                                paymentdomain.Channel
 }
 type Service struct {
 	uow       platformport.UnitOfWork
@@ -70,6 +73,12 @@ func (s *Service) IssueTrusted(ctx context.Context, c IssueCommand) (Issued, err
 	token := "pays_" + base64.RawURLEncoding.EncodeToString(raw)
 	digest := sha256.Sum256([]byte(token))
 	ref := c.Fact.Reference()
+	channel := paymentdomain.ChannelMiniProgram
+	if ref.Kind == identitydomain.KindOAOpenID {
+		channel = paymentdomain.ChannelH5Official
+	} else if ref.Kind != identitydomain.KindMPOpenID {
+		return Issued{}, ErrInvalid
+	}
 	scopeDigest := sha256.Sum256([]byte(string(ref.Kind) + "\x00" + ref.Scope))
 	now := s.now().UTC()
 	var out Issued
@@ -85,11 +94,11 @@ func (s *Service) IssueTrusted(ctx context.Context, c IssueCommand) (Issued, err
 			}
 			beneficiary = c.BeneficiaryCustomerID
 		}
-		record, e := s.store.Insert(tx, Record{TokenDigest: digest, PayerIdentityID: p.IdentityID, PayerCustomerID: p.CustomerID, BeneficiaryCustomerID: beneficiary, AppScopeDigest: scopeDigest, ExpiresAt: now.Add(s.ttl), CreatedAt: now})
+		record, e := s.store.Insert(tx, Record{TokenDigest: digest, PayerIdentityID: p.IdentityID, PayerCustomerID: p.CustomerID, BeneficiaryCustomerID: beneficiary, AppScopeDigest: scopeDigest, Channel: channel, ExpiresAt: now.Add(s.ttl), CreatedAt: now})
 		if e != nil {
 			return e
 		}
-		out = Issued{Token: token, ExpiresAt: record.ExpiresAt, PayerIdentityID: record.PayerIdentityID, PayerCustomerID: record.PayerCustomerID, BeneficiaryCustomerID: record.BeneficiaryCustomerID}
+		out = Issued{Token: token, ExpiresAt: record.ExpiresAt, PayerIdentityID: record.PayerIdentityID, PayerCustomerID: record.PayerCustomerID, BeneficiaryCustomerID: record.BeneficiaryCustomerID, Channel: record.Channel}
 		return nil
 	})
 	return out, e
@@ -114,7 +123,7 @@ func (s *Service) ConsumeWithin(ctx context.Context, token string, now time.Time
 	if err != nil {
 		return paymentport.SessionActor{}, err
 	}
-	return paymentport.SessionActor{PayerIdentityID: record.PayerIdentityID, PayerCustomerID: int64(record.PayerCustomerID), BeneficiaryCustomerID: int64(record.BeneficiaryCustomerID)}, nil
+	return paymentport.SessionActor{PayerIdentityID: record.PayerIdentityID, PayerCustomerID: int64(record.PayerCustomerID), BeneficiaryCustomerID: int64(record.BeneficiaryCustomerID), Channel: record.Channel}, nil
 }
 
 func (s *Service) LookupWithin(ctx context.Context, token string, now time.Time) (paymentport.SessionActor, error) {
@@ -126,5 +135,5 @@ func (s *Service) LookupWithin(ctx context.Context, token string, now time.Time)
 	if err != nil {
 		return paymentport.SessionActor{}, err
 	}
-	return paymentport.SessionActor{PayerIdentityID: record.PayerIdentityID, PayerCustomerID: int64(record.PayerCustomerID), BeneficiaryCustomerID: int64(record.BeneficiaryCustomerID)}, nil
+	return paymentport.SessionActor{PayerIdentityID: record.PayerIdentityID, PayerCustomerID: int64(record.PayerCustomerID), BeneficiaryCustomerID: int64(record.BeneficiaryCustomerID), Channel: record.Channel}, nil
 }

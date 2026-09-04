@@ -63,10 +63,12 @@ import (
 	orderapp "github.com/qianlan33333-png/AI-CRM-v3/internal/order/app"
 	orderhttp "github.com/qianlan33333-png/AI-CRM-v3/internal/order/http"
 	ordermigration "github.com/qianlan33333-png/AI-CRM-v3/internal/order/migration"
+	ordersecure "github.com/qianlan33333-png/AI-CRM-v3/internal/order/secure"
 	orderstore "github.com/qianlan33333-png/AI-CRM-v3/internal/order/store"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/outbound"
 	payment "github.com/qianlan33333-png/AI-CRM-v3/internal/payment"
 	paymentapp "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/app"
+	paymenth5oauth "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/h5oauth"
 	paymenthttp "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/http"
 	paymentprovider "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/provider"
 	paymentsession "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/session"
@@ -80,6 +82,7 @@ import (
 	platformwebhook "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/webhook"
 	productmodule "github.com/qianlan33333-png/AI-CRM-v3/internal/product"
 	productapp "github.com/qianlan33333-png/AI-CRM-v3/internal/product/app"
+	producthttp "github.com/qianlan33333-png/AI-CRM-v3/internal/product/http"
 	productstore "github.com/qianlan33333-png/AI-CRM-v3/internal/product/store"
 	radarapp "github.com/qianlan33333-png/AI-CRM-v3/internal/radar/app"
 	radarmodule "github.com/qianlan33333-png/AI-CRM-v3/internal/radar/module"
@@ -538,6 +541,10 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
+	publicProductHandler, err := producthttp.NewPublicHandler(productCatalog)
+	if err != nil {
+		return fail(err)
+	}
 	productTargets, err := productapp.NewTargetReader(productCatalog, productServicePeriod)
 	if err != nil {
 		return fail(err)
@@ -642,6 +649,18 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return fail(err)
 	}
 	orderService := orderapp.NewService(uow, orderRepository)
+	if cfg.WeChatPay.H5OAuthEnabled {
+		contactCipher, cipherErr := ordersecure.NewContactCipher(cfg.WeChatPay.OrderContactDataKey)
+		if cipherErr != nil {
+			return fail(cipherErr)
+		}
+		if err = orderService.SetContactCipher(contactCipher); err != nil {
+			return fail(err)
+		}
+	}
+	if err = productCatalog.SetSalesSummaryReader(productSalesAdapter{orders: orderRepository, refunds: paymentRepository}); err != nil {
+		return fail(err)
+	}
 	entitlements, err := orderapp.NewEntitlementApplication(uow, orderRepository)
 	if err != nil {
 		return fail(err)
@@ -690,6 +709,9 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	var wechatPayAdapter *paymentprovider.WeChatPay
 	var paymentCallbackVerifier *paymentprovider.CallbackVerifier
 	if cfg.WeChatPay.Enabled {
+		if err = paymentService.SetPaymentChannelAppIDs(cfg.WeChatPay.AppID, cfg.WeChatPay.H5AppID); err != nil {
+			return fail(err)
+		}
 		privateKey, readErr := os.ReadFile(cfg.WeChatPay.PrivateKeyPath)
 		if readErr != nil {
 			return fail(readErr)
@@ -707,12 +729,12 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 			return fail(parseErr)
 		}
 		credential := paymentprovider.Credential{MerchantID: cfg.WeChatPay.MerchantID, Serial: cfg.WeChatPay.MerchantSerial, Signer: signer, PlatformKeys: map[string]*rsa.PublicKey{platformSerial: platformKey}}
-		loader := paymentprovider.DBMaterialLoader{UOW: uow, Intents: paymentRepository, Identities: queries, AppScope: cfg.WeChatPay.AppScope}
-		wechatPayAdapter, err = paymentprovider.NewWeChatPay(paymentprovider.Config{Enabled: true, AppID: cfg.WeChatPay.AppID, AppScope: cfg.WeChatPay.AppScope, APIBaseURL: "https://api.mch.weixin.qq.com", PaymentNotifyURL: cfg.PublicOrigin + "/api/public/wechat-pay/callbacks/payment", RefundNotifyURL: cfg.PublicOrigin + "/api/public/wechat-pay/callbacks/refund", Credential: credential}, loader, &http.Client{Timeout: 10 * time.Second})
+		loader := paymentprovider.DBMaterialLoader{UOW: uow, Intents: paymentRepository, Identities: queries, AppScope: cfg.WeChatPay.AppScope, H5AppScope: cfg.WeChatPay.H5AppScope}
+		wechatPayAdapter, err = paymentprovider.NewWeChatPay(paymentprovider.Config{Enabled: true, AppID: cfg.WeChatPay.AppID, AppScope: cfg.WeChatPay.AppScope, H5AppID: cfg.WeChatPay.H5AppID, H5AppScope: cfg.WeChatPay.H5AppScope, APIBaseURL: "https://api.mch.weixin.qq.com", PaymentNotifyURL: cfg.PublicOrigin + "/api/public/wechat-pay/callbacks/payment", RefundNotifyURL: cfg.PublicOrigin + "/api/public/wechat-pay/callbacks/refund", Credential: credential}, loader, &http.Client{Timeout: 10 * time.Second})
 		if err != nil {
 			return fail(err)
 		}
-		paymentCallbackVerifier, err = paymentprovider.NewCallbackVerifier(credential.PlatformKeys, []byte(cfg.WeChatPay.APIV3Key), cfg.WeChatPay.AppID, cfg.WeChatPay.MerchantID)
+		paymentCallbackVerifier, err = paymentprovider.NewCallbackVerifier(credential.PlatformKeys, []byte(cfg.WeChatPay.APIV3Key), cfg.WeChatPay.AppID, cfg.WeChatPay.MerchantID, cfg.WeChatPay.H5AppID)
 		if err != nil {
 			return fail(err)
 		}
@@ -746,6 +768,17 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		if err = paymentHandler.SetTrustedSessionIssuer(miniProgramVerifier, paymentSession); err != nil {
 			return fail(err)
 		}
+	}
+	h5OAuthProvider, err := paymentprovider.NewH5OAuthIdentity(cfg.WeChatPay.H5OAuthEnabled, cfg.WeChatPay.H5AppID, cfg.WeChatPay.H5AppSecret, cfg.WeChatPay.H5AppScope, cfg.PublicOrigin+"/api/h5/wechat-pay/oauth/callback")
+	if err != nil {
+		return fail(err)
+	}
+	h5OAuthService, err := paymenth5oauth.NewService(uow, paymenth5oauth.PostgreSQL{}, h5OAuthProvider, paymentSession)
+	if err != nil {
+		return fail(err)
+	}
+	if err = paymentHandler.SetH5OAuth(h5OAuthService); err != nil {
+		return fail(err)
 	}
 	if cfg.WeChatShop.Enabled {
 		shopCredential, credentialErr := paymentprovider.NewShopCallbackCredential(cfg.WeChatShop.AppID, cfg.WeChatShop.CallbackToken, cfg.WeChatShop.CallbackEncodingAESKey)
@@ -957,6 +990,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	adminAPIs.Handle("/api/admin/wechat-pay/order-exports", orderHandler)
 	adminAPIs.Handle("/api/admin/payments/", paymentHandler)
 	adminAPIs.Handle("/api/v1/wechat-pay/", paymentHandler)
+	adminAPIs.Handle("/api/h5/wechat-pay/oauth/", paymentHandler)
 	adminAPIs.Handle("/api/public/wechat-pay/", paymentHandler)
 	adminAPIs.Handle("/api/public/wechat-shop/", paymentHandler)
 	adminAPIs.Handle("/api/v1/products", productBindings.Products)
@@ -1064,7 +1098,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	productUI := productModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, page, donorTemplate string, assets productmodule.ProductAssets) error {
 		titles := map[string]string{"products": "普通商品", "productForm": "普通商品", "spProducts": "周期商品", "spProductForm": "周期商品"}
 		endpoints := map[string]string{"products": "api.admin_products_page", "productForm": "api.admin_product_form_page", "spProducts": "api.admin_service_period_products_page", "spProductForm": "api.admin_service_period_product_form_page"}
-		return renderer.RenderProducts(writer, webshell.AdminPageForRequest(request, titles[page], "仅管理本地商品定义、生命周期与受控配置。", endpoints[page]), page, donorTemplate, webshell.ProductAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS})
+		return renderer.RenderProducts(writer, webshell.AdminPageForRequest(request, titles[page], "仅管理本地商品定义、生命周期与受控配置。", endpoints[page]), page, donorTemplate, webshell.ProductAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, HostJS: assets.HostJS})
 	})
 	orderUI := orderui.NewUIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, page, donorTemplate string, assets orderui.PageAssets) error {
 		title := map[string]string{"orders": "交易管理", "orderDetail": "订单详情"}[page]
@@ -1127,7 +1161,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return fail(err)
 	}
 	handler = mountAIAssistant(handler, aiHandler.Routes(), aiUI, authentication, cfg.AIAssistant.UIEnabled, cfg.PublicOrigin)
-	handler = securityHeaders(mountRadar(mountChannelUI(mountHXCUI(mountOrderUI(mountSurveyUI(handler, surveyUI, surveyPublicUI, authentication), orderUI, authentication), hxcUI, authentication), channelUI, authentication), radarBindings.Radar, radarUI, authentication))
+	handler = securityHeaders(mountPublicProduct(mountRadar(mountChannelUI(mountHXCUI(mountOrderUI(mountSurveyUI(handler, surveyUI, surveyPublicUI, authentication), orderUI, authentication), hxcUI, authentication), channelUI, authentication), radarBindings.Radar, radarUI, authentication), publicProductHandler))
 	// These are local observations only: they make the release and diagnostics
 	// projections truthful and readable after startup, without claiming deploy,
 	// cutover, provider execution, or runtime-secret application.
@@ -1217,6 +1251,16 @@ func mountOrderUI(next, adminUI http.Handler, authentication accessAuthenticatio
 			}
 			next.ServeHTTP(w, r)
 		}
+	})
+}
+
+func mountPublicProduct(next, products http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/public/products/") || strings.HasPrefix(r.URL.Path, "/p/") || strings.HasPrefix(r.URL.Path, "/pay/") {
+			products.ServeHTTP(w, r)
+			return
+		}
+		next.ServeHTTP(w, r)
 	})
 }
 
@@ -1368,6 +1412,7 @@ func routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, acce
 	mux.Handle("/api/admin/wechat-pay/orders", identity)
 	mux.Handle("/api/admin/payments/", identity)
 	mux.Handle("/api/v1/wechat-pay/", identity)
+	mux.Handle("/api/h5/wechat-pay/oauth/", identity)
 	mux.Handle("/api/public/wechat-pay/", identity)
 	mux.Handle("/api/public/wechat-shop/", identity)
 	mux.Handle("/api/admin/wechat-pay/orders/", identity)

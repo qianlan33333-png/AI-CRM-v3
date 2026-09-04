@@ -59,7 +59,17 @@ type Service struct {
 	payReconciler  paymentport.WeChatPayReconciler
 	reconcileJobs  paymentport.ReconciliationEnqueuer
 	products       productport.CheckoutProductReader
+	miniAppID      string
+	h5AppID        string
 	now            func() time.Time
+}
+
+func (s *Service) SetPaymentChannelAppIDs(miniProgramAppID, h5OfficialAccountAppID string) error {
+	if s == nil || !validScope(miniProgramAppID) || h5OfficialAccountAppID != "" && !validScope(h5OfficialAccountAppID) {
+		return paymentport.ErrInvalid
+	}
+	s.miniAppID, s.h5AppID = miniProgramAppID, h5OfficialAccountAppID
+	return nil
 }
 
 func (s *Service) SetReconciliationEnqueuer(enqueuer paymentport.ReconciliationEnqueuer) error {
@@ -121,12 +131,19 @@ func (s *Service) Create(ctx context.Context, c paymentport.CreateCommand) (doma
 		if err != nil {
 			return err
 		}
+		channel := actor.Channel
+		if channel == "" {
+			channel = domain.ChannelMiniProgram
+		}
+		if channel != domain.ChannelMiniProgram && channel != domain.ChannelH5Official {
+			return paymentport.ErrConflict
+		}
 		replay, found, err := s.store.ReplayPayment(tx, keyDigest, payloadDigest, c.ActorScope)
 		if err != nil {
 			return err
 		}
 		if found {
-			if (fromExistingOrder && replay.OrderID != c.OrderID) || (fromProduct && replay.MerchantOrderNo != merchantOrderNo) || replay.PayerIdentityID != actor.PayerIdentityID || replay.PayerCustomerID != actor.PayerCustomerID || replay.BeneficiaryCustomerID != actor.BeneficiaryCustomerID {
+			if (fromExistingOrder && replay.OrderID != c.OrderID) || (fromProduct && replay.MerchantOrderNo != merchantOrderNo) || replay.PayerIdentityID != actor.PayerIdentityID || replay.PayerCustomerID != actor.PayerCustomerID || replay.BeneficiaryCustomerID != actor.BeneficiaryCustomerID || replay.Channel != channel {
 				return paymentport.ErrConflict
 			}
 			result = replay
@@ -143,11 +160,19 @@ func (s *Service) Create(ctx context.Context, c paymentport.CreateCommand) (doma
 				}
 				return paymentport.ErrConflict
 			}
+			if channel == domain.ChannelH5Official {
+				if product.RequireMobile != validMainlandMobileE164(c.MobileE164) {
+					return paymentport.ErrConflict
+				}
+			} else if c.MobileE164 != "" {
+				return paymentport.ErrConflict
+			}
 			order, err = s.orders.CreatePaymentOrderWithin(tx, orderport.PaymentOrderCommand{
 				Provider: orderdomain.ProviderWeChatPay, MerchantOrderNo: merchantOrderNo,
 				PayerCustomerID: actor.PayerCustomerID, BeneficiaryCustomerID: actor.BeneficiaryCustomerID,
 				ProductID: int64(product.ID), ProductCode: product.Code, ProductName: product.Name,
 				ProductVersion: product.Version, UnitAmountMinor: product.PriceMinor, Currency: product.Currency,
+				MobileE164: c.MobileE164,
 				ActorScope: "payment-session:" + hex.EncodeToString(sessionDigest[:]), IdempotencyKey: c.IdempotencyKey,
 			})
 		}
@@ -157,7 +182,7 @@ func (s *Service) Create(ctx context.Context, c paymentport.CreateCommand) (doma
 		if order.PayerCustomerID == nil || order.BeneficiaryCustomerID == nil || int64(*order.PayerCustomerID) != actor.PayerCustomerID || int64(*order.BeneficiaryCustomerID) != actor.BeneficiaryCustomerID {
 			return paymentport.ErrConflict
 		}
-		payment, err := domain.NewPayment(order, actor.PayerIdentityID, now)
+		payment, err := domain.NewPayment(order, actor.PayerIdentityID, now, channel)
 		if err != nil {
 			return err
 		}
@@ -663,7 +688,7 @@ func (s *Service) ApplyVerifiedCallback(ctx context.Context, callback paymentpro
 			if err != nil {
 				return err
 			}
-			if payment.AmountMinor != callback.AmountMinor || payment.Currency != callback.Currency {
+			if payment.AmountMinor != callback.AmountMinor || payment.Currency != callback.Currency || !s.callbackAppIDMatches(payment, callback.AppID) {
 				return paymentport.ErrConflict
 			}
 			replay, err := s.store.ClaimCallback(tx, "wechat_pay", callback.EventDigest, callback.BodyDigest, "payment", "settled", payment.ID)
@@ -688,6 +713,10 @@ func (s *Service) ApplyVerifiedCallback(ctx context.Context, callback paymentpro
 		if refund.AmountMinor != callback.AmountMinor {
 			return paymentport.ErrConflict
 		}
+		payment, err := s.store.GetPayment(tx, refund.PaymentID, false)
+		if err != nil || !s.callbackAppIDMatches(payment, callback.AppID) {
+			return paymentport.ErrConflict
+		}
 		replay, err := s.store.ClaimCallback(tx, "wechat_pay", callback.EventDigest, callback.BodyDigest, "refund", "settled", refund.ID)
 		if err != nil || replay {
 			return err
@@ -700,13 +729,19 @@ func (s *Service) ApplyVerifiedCallback(ctx context.Context, callback paymentpro
 		if _, err = s.store.UpdateRefundSettlement(tx, refund, callback.ProviderRefundDigest, receiptKey); err != nil {
 			return err
 		}
-		payment, err := s.store.GetPayment(tx, refund.PaymentID, false)
-		if err != nil {
-			return err
-		}
 		_, err = s.orders.SettlePaymentWithin(tx, orderport.PaymentSettlementCommand{OrderID: payment.OrderID, RefundedDelta: refund.AmountMinor, OccurredAt: callback.OccurredAt, ReceiptKey: receiptKey})
 		return err
 	}))
+}
+
+func (s *Service) callbackAppIDMatches(payment domain.Payment, appID string) bool {
+	if s.miniAppID == "" { // Tests and provider-disabled compositions have no accepted callback surface.
+		return true
+	}
+	if payment.Channel == domain.ChannelH5Official {
+		return s.h5AppID != "" && appID == s.h5AppID
+	}
+	return payment.Channel == domain.ChannelMiniProgram && appID == s.miniAppID
 }
 
 func hexDigest(value [32]byte) string { return fmt.Sprintf("%x", value[:]) }
@@ -753,6 +788,12 @@ func validShopRefundCommand(command paymentport.RefundCommand) bool {
 }
 func validKey(v string) bool   { return v == strings.TrimSpace(v) && len(v) >= 16 && len(v) <= 200 }
 func validScope(v string) bool { return v == strings.TrimSpace(v) && len(v) > 0 && len(v) <= 200 }
+func validMainlandMobileE164(v string) bool {
+	if len(v) != 14 || !strings.HasPrefix(v, "+861") || v[4] < '3' || v[4] > '9' {
+		return false
+	}
+	return strings.IndexFunc(v[1:], func(r rune) bool { return r < '0' || r > '9' }) < 0
+}
 func classify(err error) error {
 	switch {
 	case err == nil:

@@ -77,7 +77,8 @@ for migration_contract in \
   '0037_outbound_private_messages.sql:Outbound private messages' \
   '0038_survey_oauth_phone_vault.sql:survey OAuth phone vault' \
   '0049_order_history_attribution.sql:order history attribution' \
-  '0053_segment_audience_member_event_fact_kinds.sql:Segment audience member event fact kind repair'; do
+  '0053_segment_audience_member_event_fact_kinds.sql:Segment audience member event fact kind repair' \
+  '0061_product_public_purchase.sql:product public purchase'; do
   migration="${migration_contract%%:*}"
   label="${migration_contract#*:}"
   test -f "migrations/${migration}" || {

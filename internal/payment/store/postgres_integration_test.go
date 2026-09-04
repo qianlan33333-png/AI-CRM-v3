@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/payment/domain"
+	paymentport "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/port"
 	paymentstore "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/store"
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
@@ -79,6 +80,46 @@ func TestPostgreSQLHistoricalPaymentRefundReplayAndProviderScopedOrderNumber(t *
 	}
 }
 
+func TestPostgreSQLRefundExposureExcludesOnlyFinalFailed(t *testing.T) {
+	pool, cleanup := paymentIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	wrapper, _ := platformpostgres.Wrap(pool, time.Second)
+	uow, _ := platformpostgres.NewUnitOfWork(wrapper)
+	repository := paymentstore.NewPostgreSQL()
+	now := time.Date(2026, 9, 4, 0, 0, 0, 0, time.UTC)
+	orderIDs := make([]int64, 0, 5)
+	for index, refundStatus := range []string{"requested", "effect_accepted", "outcome_unknown", "completed", "final_failed"} {
+		var orderID, paymentID int64
+		key := "refund-exposure-" + string(rune('a'+index))
+		if err := pool.QueryRow(ctx, `INSERT INTO orders(provider,source_system,source_key,merchant_order_no,payer_customer_id,beneficiary_customer_id,amount_minor,currency,status,record_origin,effect_eligible,source_row_digest,created_at,updated_at) VALUES('wechat_pay','test',$1,$2,11,11,100,'CNY','paid','history',false,$3,$4,$4) RETURNING id`, key, "M-"+key, make([]byte, 32), now).Scan(&orderID); err != nil {
+			t.Fatal(err)
+		}
+		if err := pool.QueryRow(ctx, `INSERT INTO payments(order_id,provider,payment_channel,merchant_order_no,payer_identity_id,payer_customer_id,beneficiary_customer_id,amount_minor,currency,status,version,created_at,updated_at) VALUES($1,'wechat_pay','mini_program',$2,4,11,11,100,'CNY','paid',1,$3,$3) RETURNING id`, orderID, "M-"+key, now).Scan(&paymentID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pool.Exec(ctx, `INSERT INTO payment_refunds(payment_id,provider,refund_no,amount_minor,reason,status,version,created_at,updated_at) VALUES($1,'wechat_pay',$2,100,'test',$3,1,$4,$4)`, paymentID, "R-"+key, refundStatus, now); err != nil {
+			t.Fatal(err)
+		}
+		orderIDs = append(orderIDs, orderID)
+	}
+	var exposed map[int64]struct{}
+	if err := uow.Within(ctx, func(tx context.Context) error {
+		var inner error
+		exposed, inner = repository.RefundRelatedOrderIDsWithin(tx, orderIDs)
+		return inner
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(exposed) != 4 {
+		t.Fatalf("exposed=%+v", exposed)
+	}
+	if _, ok := exposed[orderIDs[4]]; ok {
+		t.Fatal("final_failed refund reduced sold count")
+	}
+	var _ paymentport.RefundExposureReader = repository
+}
+
 func paymentIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 	t.Helper()
 	url, err := platformconfig.DatabaseURL()
@@ -111,7 +152,7 @@ func paymentIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 	}
 	_, file, _, _ := runtime.Caller(0)
 	root := filepath.Join(filepath.Dir(file), "..", "..", "..")
-	for _, name := range []string{"0001_platform.sql", "0002_identity.sql", "0005_external_effects.sql", "0020_order.sql", "0021_payment.sql", "0024_order_product_version.sql", "0025_payment_reconciliation.sql"} {
+	for _, name := range []string{"0001_platform.sql", "0002_identity.sql", "0005_external_effects.sql", "0020_order.sql", "0021_payment.sql", "0024_order_product_version.sql", "0025_payment_reconciliation.sql", "0061_product_public_purchase.sql"} {
 		raw, readErr := os.ReadFile(filepath.Join(root, "migrations", name))
 		if readErr != nil {
 			t.Fatal(readErr)

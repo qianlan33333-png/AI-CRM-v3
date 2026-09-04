@@ -50,6 +50,12 @@ type TrustedSessionIssuer interface {
 	IssueTrusted(context.Context, paymentsession.IssueCommand) (paymentsession.Issued, error)
 }
 
+type H5OAuthApplication interface {
+	Enabled() bool
+	Start(context.Context, string) (string, error)
+	Complete(context.Context, string, string) (paymentsession.Issued, string, error)
+}
+
 type Handler struct {
 	app               Application
 	verifier          *paymentprovider.CallbackVerifier
@@ -59,6 +65,15 @@ type Handler struct {
 	shopVerifier      paymentport.ShopCallbackVerifier
 	sessionVerifier   SessionIdentityVerifier
 	sessionIssuer     TrustedSessionIssuer
+	h5OAuth           H5OAuthApplication
+}
+
+func (handler *Handler) SetH5OAuth(application H5OAuthApplication) error {
+	if handler == nil || application == nil {
+		return paymentport.ErrInvalid
+	}
+	handler.h5OAuth = application
+	return nil
 }
 
 func (handler *Handler) SetTrustedSessionIssuer(verifier SessionIdentityVerifier, issuer TrustedSessionIssuer) error {
@@ -92,6 +107,10 @@ func (handler *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 	writer.Header().Set("Cache-Control", "no-store")
 	path := strings.TrimSuffix(request.URL.Path, "/")
 	switch {
+	case path == "/api/h5/wechat-pay/oauth/start":
+		handler.startH5OAuth(writer, request)
+	case path == "/api/h5/wechat-pay/oauth/callback":
+		handler.completeH5OAuth(writer, request)
 	case path == "/api/v1/wechat-pay/sessions":
 		handler.issueSession(writer, request)
 	case path == "/api/v1/wechat-pay/checkouts":
@@ -119,6 +138,40 @@ func (handler *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 	default:
 		writeError(writer, http.StatusNotFound, "not_found")
 	}
+}
+
+func (handler *Handler) startH5OAuth(writer http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodGet || handler.h5OAuth == nil || !handler.h5OAuth.Enabled() {
+		writeError(writer, http.StatusServiceUnavailable, "payment_h5_oauth_disabled")
+		return
+	}
+	if !strings.Contains(strings.ToLower(request.UserAgent()), "micromessenger") || len(request.URL.Query()) != 1 {
+		writeError(writer, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	location, err := handler.h5OAuth.Start(request.Context(), request.URL.Query().Get("return_url"))
+	if err != nil {
+		writeError(writer, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	http.Redirect(writer, request, location, http.StatusFound)
+}
+
+func (handler *Handler) completeH5OAuth(writer http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodGet || handler.h5OAuth == nil || !handler.h5OAuth.Enabled() || len(request.URL.Query()) != 2 {
+		writeError(writer, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	issued, returnPath, err := handler.h5OAuth.Complete(request.Context(), request.URL.Query().Get("state"), request.URL.Query().Get("code"))
+	if err != nil {
+		writeError(writer, http.StatusUnauthorized, "identity_verification_failed")
+		return
+	}
+	if err = WriteTrustedSessionCookie(writer, issued); err != nil {
+		writeError(writer, http.StatusServiceUnavailable, "unavailable")
+		return
+	}
+	http.Redirect(writer, request, returnPath, http.StatusFound)
 }
 
 func (handler *Handler) issueSession(writer http.ResponseWriter, request *http.Request) {
@@ -363,12 +416,13 @@ func (handler *Handler) checkout(writer http.ResponseWriter, request *http.Reque
 	var body struct {
 		ProductID   int64  `json:"product_id,omitempty"`
 		ProductType string `json:"product_kind,omitempty"`
+		MobileE164  string `json:"mobile,omitempty"`
 	}
 	if !decodeJSON(writer, request, &body) {
 		return
 	}
 	idempotency := request.Header.Get("Idempotency-Key")
-	payment, err := handler.app.Create(request.Context(), paymentport.CreateCommand{ProductID: body.ProductID, ProductType: body.ProductType, SessionToken: cookie.Value, ActorScope: "public-checkout", IdempotencyKey: idempotency})
+	payment, err := handler.app.Create(request.Context(), paymentport.CreateCommand{ProductID: body.ProductID, ProductType: body.ProductType, MobileE164: body.MobileE164, SessionToken: cookie.Value, ActorScope: "public-checkout", IdempotencyKey: idempotency})
 	if err != nil {
 		resultError(writer, err)
 		return
@@ -406,6 +460,8 @@ func (handler *Handler) checkoutStatus(writer http.ResponseWriter, request *http
 		result["handoff"] = providerPayload
 		result["expires_at"] = handoff.ExpiresAt
 		status = http.StatusOK
+	}
+	if handoff.Status == domain.StatusPaid || handoff.Status == domain.StatusFailed || handoff.Status == domain.StatusCancelled {
 		clearSessionCookie(writer)
 	}
 	writeJSON(writer, status, result)

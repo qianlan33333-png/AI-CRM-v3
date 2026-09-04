@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"math"
 	"reflect"
+	"strconv"
 	"strings"
 	"time"
 
@@ -23,10 +24,10 @@ const (
 	LocalProductProjectionDraftStatus    = "draft"
 	LocalProductProjectionEnabledStatus  = "active"
 	LocalProductProjectionDisabledStatus = "disabled"
-	LocalProductShareUnavailableReason   = "no_authoritative_public_purchase_route"
 )
 
 var ErrLocalProductDeleteNotAllowed = errors.New("local product can only delete an unreferenced draft")
+var ErrLocalProductNotEnabled = errors.New("product is not enabled")
 
 // LocalProductLifecycleStore is the phase-1 repository contract. The
 // projection-aware update and safe delete methods are deliberately separate
@@ -310,9 +311,12 @@ func (service *LocalProductLifecycleService) ShareLocalProduct(ctx context.Conte
 		if projectErr != nil {
 			return projectErr
 		}
+		if !projected.Enabled || projected.Lifecycle != productport.LocalProductEnabled {
+			return ErrLocalProductNotEnabled
+		}
 		result = productport.LocalProductShare{
 			ProductID: projected.ID, ProductCode: projected.ProductCode, Lifecycle: projected.Lifecycle,
-			Available: false, Reason: LocalProductShareUnavailableReason,
+			Available: true, PurchaseURL: "/p/" + strconv.FormatInt(int64(projected.ID), 10),
 		}
 		return nil
 	})
@@ -601,7 +605,7 @@ func localProductDeleteConflict() error {
 
 func classifyLocalProductLifecycle(err error) error {
 	switch {
-	case errors.Is(err, ErrLocalProductDeleteNotAllowed):
+	case errors.Is(err, ErrLocalProductDeleteNotAllowed), errors.Is(err, ErrLocalProductNotEnabled):
 		return err
 	default:
 		return classify(err)

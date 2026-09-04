@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 
 	productport "github.com/qianlan33333-png/AI-CRM-v3/internal/product/port"
 )
@@ -58,7 +59,13 @@ func (reader *TargetReader) ReadCheckoutProductWithin(ctx context.Context, kind 
 		if !validOrdinaryProduct(item) || item.LocalLifecycle != productport.LocalProductEnabled {
 			return productport.CheckoutProduct{}, ErrNotFound
 		}
-		return productport.CheckoutProduct{ID: item.ID, ProductType: kind, Code: item.ProductCode, Name: item.Name, PriceMinor: item.PriceMinor, Currency: item.Currency, Version: item.Version}, nil
+		var projection struct {
+			RequireMobile bool `json:"require_mobile"`
+		}
+		if json.Unmarshal(item.LegacyAdminProjection, &projection) != nil {
+			return productport.CheckoutProduct{}, ErrUnavailable
+		}
+		return productport.CheckoutProduct{ID: item.ID, ProductType: kind, Code: item.ProductCode, Name: item.Name, PriceMinor: item.PriceMinor, Currency: item.Currency, Version: item.Version, RequireMobile: projection.RequireMobile}, nil
 	case productport.ProductOptionServicePeriod:
 		item, err := reader.period.store.GetServicePeriodProductForUpdate(ctx, id)
 		if err != nil {

@@ -91,13 +91,28 @@ type Store interface {
 }
 
 type Service struct {
-	uow   platformport.UnitOfWork
-	store Store
-	now   func() time.Time
+	uow           platformport.UnitOfWork
+	store         Store
+	contactCipher interface {
+		Encrypt(string) ([]byte, error)
+		KeyVersion() int16
+	}
+	now func() time.Time
 }
 
 func NewService(uow platformport.UnitOfWork, store Store) *Service {
 	return &Service{uow: uow, store: store, now: time.Now}
+}
+
+func (s *Service) SetContactCipher(cipher interface {
+	Encrypt(string) ([]byte, error)
+	KeyVersion() int16
+}) error {
+	if s == nil || cipher == nil {
+		return orderport.ErrConflict
+	}
+	s.contactCipher = cipher
+	return nil
 }
 
 func (s *Service) ReservePaymentWithin(ctx context.Context, id int64) (domain.Snapshot, error) {
@@ -121,6 +136,21 @@ func (s *Service) CreatePaymentOrderWithin(ctx context.Context, command orderpor
 	}
 	productID := command.ProductID
 	productVersion := command.ProductVersion
+	var phoneDigest [32]byte
+	var phoneCiphertext []byte
+	var phoneKeyVersion int16
+	var err error
+	if command.MobileE164 != "" {
+		if len(command.MobileE164) != 14 || !strings.HasPrefix(command.MobileE164, "+861") || strings.IndexFunc(command.MobileE164[1:], func(r rune) bool { return r < '0' || r > '9' }) >= 0 || command.MobileE164[4] < '3' || command.MobileE164[4] > '9' || s.contactCipher == nil {
+			return domain.Snapshot{}, orderport.ErrConflict
+		}
+		phoneDigest = sha256.Sum256([]byte(command.MobileE164))
+		phoneCiphertext, err = s.contactCipher.Encrypt(command.MobileE164)
+		if err != nil {
+			return domain.Snapshot{}, orderport.ErrUnavailable
+		}
+		phoneKeyVersion = s.contactCipher.KeyVersion()
+	}
 	input := domain.NewOrderInput{
 		Provider: command.Provider, SourceSystem: "v3-checkout", SourceKey: command.MerchantOrderNo,
 		MerchantOrderNo: command.MerchantOrderNo, PayerCustomerID: &command.PayerCustomerID,
@@ -136,7 +166,8 @@ func (s *Service) CreatePaymentOrderWithin(ctx context.Context, command orderpor
 	digestInput := struct {
 		Input          domain.NewOrderInput
 		ProductVersion int64
-	}{Input: input, ProductVersion: command.ProductVersion}
+		PhoneDigest    [32]byte
+	}{Input: input, ProductVersion: command.ProductVersion, PhoneDigest: phoneDigest}
 	digestInput.Input.CreatedAt = time.Time{}
 	payload, err := json.Marshal(digestInput)
 	if err != nil {
@@ -163,6 +194,14 @@ func (s *Service) CreatePaymentOrderWithin(ctx context.Context, command orderpor
 	persisted, err := s.store.InsertScoped(ctx, order, command.ActorScope, input.CreatedAt)
 	if err != nil {
 		return domain.Snapshot{}, classify(err)
+	}
+	if len(phoneCiphertext) > 0 {
+		contactStore, ok := s.store.(interface {
+			InsertContactSnapshot(context.Context, int64, []byte, int16, time.Time) error
+		})
+		if !ok || contactStore.InsertContactSnapshot(ctx, persisted.Snapshot().ID, phoneCiphertext, phoneKeyVersion, input.CreatedAt) != nil {
+			return domain.Snapshot{}, orderport.ErrUnavailable
+		}
 	}
 	result := persisted.Snapshot()
 	snapshot, err := json.Marshal(result)

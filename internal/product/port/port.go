@@ -34,6 +34,26 @@ type Product struct {
 	Version               int64                 `json:"version"`
 	LocalLifecycle        LocalProductLifecycle `json:"local_lifecycle,omitempty"`
 	LegacyAdminProjection json.RawMessage       `json:"legacy_admin_projection"`
+	PaidOrderCount        int64                 `json:"paid_order_count"`
+	RefundOrderCount      int64                 `json:"refund_order_count"`
+	SoldCount             int64                 `json:"sold_count"`
+}
+
+type SalesKey struct {
+	ProductID   ID
+	ProductCode string
+}
+
+type SalesSummary struct {
+	PaidOrderCount   int64
+	RefundOrderCount int64
+	SoldCount        int64
+}
+
+// SalesSummaryReader is implemented at the composition boundary from stable
+// Order and Payment read ports. Product never reads their tables directly.
+type SalesSummaryReader interface {
+	ReadSalesSummariesWithin(context.Context, []SalesKey) (map[ID]SalesSummary, error)
 }
 
 type CreateCommand struct {

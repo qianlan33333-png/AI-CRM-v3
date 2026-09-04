@@ -65,11 +65,51 @@ type Service struct {
 	uow    platformport.UnitOfWork
 	store  Store
 	events productport.EventAppender
+	sales  productport.SalesSummaryReader
 	now    func() time.Time
 }
 
 func NewService(uow platformport.UnitOfWork, store Store, events productport.EventAppender) *Service {
 	return &Service{uow: uow, store: store, events: events, now: time.Now}
+}
+
+func (s *Service) SetSalesSummaryReader(reader productport.SalesSummaryReader) error {
+	if s == nil || reader == nil {
+		return ErrUnavailable
+	}
+	s.sales = reader
+	return nil
+}
+
+func (s *Service) attachSales(ctx context.Context, products []productport.Product) error {
+	if s.sales == nil || len(products) == 0 {
+		return nil
+	}
+	keys := make([]productport.SalesKey, 0, len(products))
+	for _, product := range products {
+		keys = append(keys, productport.SalesKey{ProductID: product.ID, ProductCode: product.ProductCode})
+	}
+	summaries, err := s.sales.ReadSalesSummariesWithin(ctx, keys)
+	if err != nil {
+		return err
+	}
+	for index := range products {
+		summary, ok := summaries[products[index].ID]
+		if !ok || summary.PaidOrderCount < 0 || summary.RefundOrderCount < 0 || summary.SoldCount < 0 || summary.SoldCount != max64(0, summary.PaidOrderCount-summary.RefundOrderCount) {
+			return ErrUnavailable
+		}
+		products[index].PaidOrderCount = summary.PaidOrderCount
+		products[index].RefundOrderCount = summary.RefundOrderCount
+		products[index].SoldCount = summary.SoldCount
+	}
+	return nil
+}
+
+func max64(left, right int64) int64 {
+	if left > right {
+		return left
+	}
+	return right
 }
 
 func (s *Service) List(ctx context.Context, cursor string, limit int32) (productport.Page, error) {
@@ -95,7 +135,10 @@ func (s *Service) List(ctx context.Context, cursor string, limit int32) (product
 	if err := s.uow.Within(ctx, func(tx context.Context) error {
 		var err error
 		rows, err = s.store.List(tx, after, limit+1)
-		return err
+		if err != nil {
+			return err
+		}
+		return s.attachSales(tx, rows)
 	}); err != nil {
 		return productport.Page{}, classify(err)
 	}
@@ -121,6 +164,9 @@ func (s *Service) ListLegacy(ctx context.Context, limit, offset int32) (productp
 		if err != nil {
 			return err
 		}
+		if err = s.attachSales(tx, result.Items); err != nil {
+			return err
+		}
 		result.Total, err = s.store.Count(tx)
 		return err
 	}); err != nil {
@@ -136,7 +182,19 @@ func (s *Service) Get(ctx context.Context, id productport.ID) (productport.Produ
 		return productport.Product{}, ErrNotFound
 	}
 	var p productport.Product
-	err := s.uow.Within(ctx, func(tx context.Context) error { var e error; p, e = s.store.Get(tx, id); return e })
+	err := s.uow.Within(ctx, func(tx context.Context) error {
+		var e error
+		p, e = s.store.Get(tx, id)
+		if e != nil {
+			return e
+		}
+		values := []productport.Product{p}
+		if e = s.attachSales(tx, values); e != nil {
+			return e
+		}
+		p = values[0]
+		return nil
+	})
 	if err != nil {
 		return productport.Product{}, classify(err)
 	}
