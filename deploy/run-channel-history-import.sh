@@ -105,6 +105,7 @@ run_migrator --mode semantic-validate --snapshot "$snapshot" > "$report_root/sem
 run_migrator --mode import --snapshot "$snapshot" --manifest-sha256 "$manifest_digest" --confirm > "$report_root/import.json"
 run_migrator --mode reconcile --snapshot "$snapshot" --manifest-sha256 "$manifest_digest" > "$report_root/reconcile.json"
 run_migrator --mode replay-check --snapshot "$snapshot" --manifest-sha256 "$manifest_digest" > "$report_root/replay-check.json"
+run_provider_readback --mode sync-wecom-staff --snapshot "$snapshot" --manifest-sha256 "$manifest_digest" --confirm > "$report_root/sync-wecom-staff.json"
 run_migrator --mode semantic-repair --snapshot "$snapshot" --manifest-sha256 "$manifest_digest" --confirm > "$report_root/semantic-repair.json"
 run_provider_readback --mode verify-legacy-assets --snapshot "$snapshot" --manifest-sha256 "$manifest_digest" --confirm > "$report_root/verify-legacy-assets.json"
 run_migrator --mode semantic-reconcile --snapshot "$snapshot" --manifest-sha256 "$manifest_digest" > "$report_root/semantic-reconcile.json"
@@ -171,7 +172,7 @@ import sys
 
 root, backup = sys.argv[1:]
 payload = {}
-for name in ("validate", "dry-run", "semantic-validate", "import", "reconcile", "replay-check", "semantic-repair", "verify-legacy-assets", "semantic-reconcile", "activate-repaired", "provider-capabilities"):
+for name in ("validate", "dry-run", "semantic-validate", "import", "reconcile", "replay-check", "sync-wecom-staff", "semantic-repair", "verify-legacy-assets", "semantic-reconcile", "activate-repaired", "provider-capabilities"):
     with open(os.path.join(root, name + ".json"), encoding="utf-8") as handle:
         payload[name] = json.load(handle)
 payload["backup_created"] = os.path.isfile(backup) and os.path.getsize(backup) > 0
