@@ -55,6 +55,22 @@ async function load(url, requests) {
         requests.push({ url: requestURL, options });
         if (requestURL.pathname === '/api/admin/customer-sync-runs') return syncPage();
         if (requestURL.pathname === '/api/admin/customers/42/phone-reveal') return response({ phone: '+8613812345678' });
+        if (requestURL.pathname === '/api/admin/customers/42/360') {
+          return response({
+            identity_summary: {
+              status: 'ready',
+              data: {
+                identities: [{ type: 'wecom_external_userid', summary: '企微外部联系人' }],
+                phones: [{ masked: '138****5678' }],
+              },
+            },
+            profile: { status: 'ready', data: customer() },
+            order_summary: { status: 'ready', data: { total: 0, paid: 0, refunded: 0, failed: 0, recent: [] } },
+            questionnaire_summary: { status: 'ready', data: { total: 0, recent: [] } },
+            risk: { status: 'ready', data: { level: 'low', reasons: [] } },
+            recent_touchpoints: { status: 'ready', data: [] },
+          });
+        }
         if (requestURL.pathname === '/api/admin/customers/42') {
           return response({
             customer: customer(),
