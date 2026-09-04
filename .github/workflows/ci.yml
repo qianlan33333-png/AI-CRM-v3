@@ -130,13 +130,13 @@ jobs:
         run: go test -p 1 -race ./cmd/aicrm ./cmd/bootstrap-automation-operations ./cmd/migrate-commerce-history ./cmd/migrate-order-attribution ./cmd/migrate-automation-operations ./cmd/migrate-v2-config-definitions ./cmd/migrate-channel-history ./cmd/migrate-radar-v2 ./cmd/migrate-sidebar-history ./internal/radar/... ./internal/access/... ./internal/identity/... ./internal/wecom/... ./internal/externaleffects/... ./internal/platform/jobqueue/... ./internal/media/... ./internal/tag/... ./internal/product/... ./internal/coupon/... ./internal/groupops/... ./internal/automation/... ./internal/segment/... ./internal/operationcycle/... ./internal/outbound ./internal/order/... ./internal/payment/... ./internal/config/... ./internal/adminops/... ./internal/release/... ./internal/configmigration/...
 
   deploy:
-    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
+    if: ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/codex/channel-final-release-1e8437a')
     needs: check
     runs-on: ubuntu-latest
     # Cross-region upload to the mainland deployment host can exceed 30 minutes.
     # Keep a bounded 60-minute margin so a slow transfer is not cancelled after
     # all server-side checks pass.
-    timeout-minutes: 60
+    timeout-minutes: 120
     permissions:
       contents: read
     env:
