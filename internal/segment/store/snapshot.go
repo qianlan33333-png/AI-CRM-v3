@@ -164,13 +164,16 @@ func (r *Repository) StageRefreshBatch(ctx context.Context, runID int64, ordinal
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return err
 	}
-	for _, id := range ids {
-		if _, err = t.Exec(ctx, `INSERT INTO segment_audience_snapshot_members(snapshot_id,customer_id,entered_at,identity_disposition) VALUES($1,$2,$3,'resolved')`, snapshotID, id, now); err != nil {
-			if unique(err) {
-				return ErrConflict
-			}
-			return err
+	memberIDs := make([]int64, len(ids))
+	for index, id := range ids {
+		memberIDs[index] = int64(id)
+	}
+	if _, err = t.Exec(ctx, `INSERT INTO segment_audience_snapshot_members(snapshot_id,customer_id,entered_at,identity_disposition)
+		SELECT $1,member_id,$3,'resolved' FROM unnest($2::bigint[]) AS member_id`, snapshotID, memberIDs, now); err != nil {
+		if unique(err) {
+			return ErrConflict
 		}
+		return err
 	}
 	_, err = t.Exec(ctx, `INSERT INTO segment_audience_refresh_batches(refresh_run_id,batch_ordinal,first_customer_id,last_customer_id,member_count,member_digest,completed_at)
 		VALUES($1,$2,$3,$4,$5,$6,$7)`, runID, ordinal, ids[0], ids[len(ids)-1], len(ids), digest[:], now)
