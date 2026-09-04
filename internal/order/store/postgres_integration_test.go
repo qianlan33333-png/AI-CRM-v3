@@ -76,6 +76,10 @@ func TestPostgreSQLOrderAtomicReplayCursorAndConstraints(t *testing.T) {
 	if _, err = service.Create(ctx, nativeCommand("three")); err != nil {
 		t.Fatal(err)
 	}
+	byReference, err := service.GetByReference(ctx, first.MerchantOrderNo)
+	if err != nil || byReference.ID != first.ID || len(byReference.Items) != 1 || byReference.Items[0].ProductName != "课程" {
+		t.Fatalf("detail by reference=%#v err=%v", byReference, err)
+	}
 	settlement := orderport.SettlementCommand{OrderID: first.ID, ExpectedVersion: first.Version, Status: domain.StatusPaid, OccurredAt: first.CreatedAt.Add(time.Second), ActorScope: "payment:settlement", IdempotencyKey: "postgres-settlement-key-one"}
 	paid, err := service.ApplySettlement(ctx, settlement)
 	if err != nil || paid.Status != domain.StatusPaid || paid.Version != first.Version+1 {
