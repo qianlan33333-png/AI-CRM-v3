@@ -9,6 +9,7 @@
     customer: root.dataset.customerUrl || "/api/admin/oneid/customers/",
     conflicts: root.dataset.conflictsUrl || "/api/admin/oneid/conflicts",
     candidates: root.dataset.candidatesUrl || "/api/admin/oneid/merge-candidates",
+    sourceConflicts: root.dataset.sourceConflictsUrl || "/api/admin/oneid/source-conflicts",
   };
 
   const elements = {
@@ -45,6 +46,14 @@
     candidatesEmpty: document.getElementById("admin-oneid-candidates-empty"),
     candidatesTable: document.getElementById("admin-oneid-candidates-table-wrap"),
     candidatesBody: document.getElementById("admin-oneid-candidates-body"),
+    hxcConflictsRefresh: document.getElementById("admin-oneid-hxc-conflicts-refresh"),
+    hxcConflictsStatus: document.getElementById("admin-oneid-hxc-conflicts-status"),
+    hxcConflictsLoading: document.getElementById("admin-oneid-hxc-conflicts-loading"),
+    hxcConflictsError: document.getElementById("admin-oneid-hxc-conflicts-error"),
+    hxcConflictsErrorMessage: document.getElementById("admin-oneid-hxc-conflicts-error-message"),
+    hxcConflictsEmpty: document.getElementById("admin-oneid-hxc-conflicts-empty"),
+    hxcConflictsTable: document.getElementById("admin-oneid-hxc-conflicts-table-wrap"),
+    hxcConflictsBody: document.getElementById("admin-oneid-hxc-conflicts-body"),
   };
 
   const statusLabels = {
@@ -115,6 +124,17 @@
       throw failure;
     }
     return payload;
+  }
+
+  function csrfToken() {
+    const items = String(document.cookie || "").split(";");
+    for (const item of items) {
+      const part = item.trim();
+      for (const prefix of ["aicrm_admin_csrf=", "aicrm_csrf="]) {
+        if (part.indexOf(prefix) === 0) return decodeURIComponent(part.slice(prefix.length));
+      }
+    }
+    return "";
   }
 
   function textCell(value, className) {
@@ -373,6 +393,27 @@
         row.appendChild(textCell(String(item.reason || "other")));
         row.appendChild(textCell(displayStatus(item.status)));
         row.appendChild(textCell(displayDate(item.created_at), "admin-oneid-table__muted"));
+        const actions = document.createElement("td");
+        actions.className = "admin-oneid-candidate-actions";
+        [item.left_customer_id, item.right_customer_id].forEach(function (survivor) {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "admin-button admin-button--ghost";
+          button.textContent = "保留 #" + displayID(survivor);
+          button.addEventListener("click", async function () {
+            if (!window.confirm("确认将 Customer #" + displayID(survivor) + " 作为 survivor？该操作只能由 SuperAdmin 执行。")) return;
+            button.disabled = true;
+            try {
+              await requestJSON(api.candidates + "/" + encodeURIComponent(String(item.id)) + "/confirm", {method: "POST", headers: {"X-CSRF-Token": csrfToken()}, body: JSON.stringify({survivor_customer_id: survivor})});
+              showAlert("归并已确认；HXC Case 将在下一次刷新时自动复核。", "success");
+              await Promise.all([loadList("candidates"), loadHXCConflicts()]);
+            } catch (error) {
+              showAlert(errorMessage(error, "归并确认失败，请刷新后重试。"), "error");
+            } finally { button.disabled = false; }
+          });
+          actions.appendChild(button);
+        });
+        row.appendChild(actions);
         elements.candidatesBody.appendChild(row);
       });
     }
@@ -399,6 +440,68 @@
     }
   }
 
+  function renderHXCConflicts(page) {
+    const items = Array.isArray(page && page.items) ? page.items : [];
+    elements.hxcConflictsBody.replaceChildren();
+    elements.hxcConflictsEmpty.hidden = items.length !== 0;
+    elements.hxcConflictsTable.hidden = items.length === 0;
+    items.forEach(function (item) {
+      const row = document.createElement("tr");
+      row.appendChild(textCell(String(item.subject_ref || "—")));
+      row.appendChild(textCell(String(item.reason || "other")));
+      const observations = Array.isArray(item.observations) ? item.observations : [];
+      row.appendChild(textCell(observations.map(function (observation) {
+        const shown = observation.kind === "phone" ? observation.display_value : "已安全存储";
+        return String(observation.kind || "—") + " · " + String(observation.scope || "—") + " · " + shown;
+      }).join("；") || "—"));
+      row.appendChild(textCell(displayID(item.left_customer_id) + " ↔ " + displayID(item.right_customer_id), "admin-oneid-table__ids"));
+      row.appendChild(textCell((item.merge_candidate_id ? "候选 #" + displayID(item.merge_candidate_id) + " · " : "") + "Case #" + displayID(item.id)));
+      row.appendChild(textCell(String(item.evidence_digest || "—").slice(0, 16) + "…", "admin-oneid-table__muted"));
+      row.appendChild(textCell(displayStatus(item.status)));
+      const action = document.createElement("td");
+      if (item.status === "open") {
+        const select = document.createElement("select");
+        select.className = "admin-oneid-source-reason";
+        [["source_data_error", "来源数据错误"], ["shared_phone", "共享手机号"], ["not_same_person", "确认非同一人"], ["accepted_risk", "接受风险"]].forEach(function (option) {
+          const node = document.createElement("option"); node.value = option[0]; node.textContent = option[1]; select.appendChild(node);
+        });
+        const button = document.createElement("button");
+        button.type = "button"; button.className = "admin-button admin-button--ghost"; button.textContent = "忽略";
+        button.addEventListener("click", async function () {
+          button.disabled = true;
+          try {
+            await requestJSON(api.sourceConflicts + "/" + encodeURIComponent(String(item.id)) + "/ignore", {method: "POST", headers: {"X-CSRF-Token": csrfToken(), "Idempotency-Key": "hxc-conflict-" + crypto.randomUUID()}, body: JSON.stringify({expected_version: item.version, reason: select.value})});
+            showAlert("HXC 来源冲突已审计并标记忽略。", "success");
+            await loadHXCConflicts();
+          } catch (error) {
+            showAlert(errorMessage(error, "冲突处理失败，请刷新后重试。"), "error");
+          } finally { button.disabled = false; }
+        });
+        action.append(select, button);
+      } else action.textContent = "—";
+      row.appendChild(action);
+      elements.hxcConflictsBody.appendChild(row);
+    });
+    elements.hxcConflictsStatus.textContent = items.length + " 条开放 HXC 来源冲突";
+  }
+
+  async function loadHXCConflicts() {
+    elements.hxcConflictsLoading.hidden = false;
+    elements.hxcConflictsRefresh.disabled = true;
+    elements.hxcConflictsError.hidden = true;
+    try {
+      const page = await requestJSON(api.sourceConflicts + "?source=hxc&status=open&limit=100&offset=0", {method: "GET"});
+      renderHXCConflicts(page);
+    } catch (error) {
+      elements.hxcConflictsError.hidden = false;
+      elements.hxcConflictsErrorMessage.textContent = errorMessage(error, "HXC 冲突列表暂时不可用。");
+      elements.hxcConflictsStatus.textContent = "列表不可用";
+    } finally {
+      elements.hxcConflictsLoading.hidden = true;
+      elements.hxcConflictsRefresh.disabled = false;
+    }
+  }
+
   if (elements.resolveForm) elements.resolveForm.addEventListener("submit", resolveIdentity);
   if (elements.resolveClear) elements.resolveClear.addEventListener("click", function () {
     clearIdentityInputs();
@@ -410,7 +513,9 @@
   });
   if (elements.conflictsRefresh) elements.conflictsRefresh.addEventListener("click", function () { loadList("conflicts"); });
   if (elements.candidatesRefresh) elements.candidatesRefresh.addEventListener("click", function () { loadList("candidates"); });
+  if (elements.hxcConflictsRefresh) elements.hxcConflictsRefresh.addEventListener("click", loadHXCConflicts);
 
   loadList("conflicts");
   loadList("candidates");
+  loadHXCConflicts();
 }());

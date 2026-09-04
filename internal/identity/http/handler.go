@@ -3,6 +3,7 @@ package http
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -51,29 +52,31 @@ type OneIDService interface {
 }
 
 type Config struct {
-	UnitOfWork    platformport.UnitOfWork
-	Authenticator Authenticator
-	CSRF          CSRFAuthorizer
-	OneID         OneIDService
-	Queries       query.Reader
-	Audit         Auditor
+	UnitOfWork      platformport.UnitOfWork
+	Authenticator   Authenticator
+	CSRF            CSRFAuthorizer
+	OneID           OneIDService
+	SourceConflicts identityport.HXCSourceConflictManager
+	Queries         query.Reader
+	Audit           Auditor
 }
 
 type Handler struct {
-	uow     platformport.UnitOfWork
-	auth    Authenticator
-	csrf    CSRFAuthorizer
-	oneID   OneIDService
-	queries query.Reader
-	audit   Auditor
+	uow             platformport.UnitOfWork
+	auth            Authenticator
+	csrf            CSRFAuthorizer
+	oneID           OneIDService
+	sourceConflicts identityport.HXCSourceConflictManager
+	queries         query.Reader
+	audit           Auditor
 }
 
 func NewHandler(config Config) (*Handler, error) {
-	if config.UnitOfWork == nil || config.Authenticator == nil || config.CSRF == nil || config.OneID == nil || config.Queries == nil || config.Audit == nil {
+	if config.UnitOfWork == nil || config.Authenticator == nil || config.CSRF == nil || config.OneID == nil || config.SourceConflicts == nil || config.Queries == nil || config.Audit == nil {
 		return nil, errors.New("oneid HTTP dependencies are required")
 	}
 	return &Handler{uow: config.UnitOfWork, auth: config.Authenticator, csrf: config.CSRF,
-		oneID: config.OneID, queries: config.Queries, audit: config.Audit}, nil
+		oneID: config.OneID, sourceConflicts: config.SourceConflicts, queries: config.Queries, audit: config.Audit}, nil
 }
 
 func (handler *Handler) Routes() nethttp.Handler {
@@ -82,9 +85,91 @@ func (handler *Handler) Routes() nethttp.Handler {
 	mux.HandleFunc("GET /api/admin/oneid/customers/{customer_id}", handler.customer)
 	mux.HandleFunc("GET /api/admin/oneid/conflicts", handler.conflicts)
 	mux.HandleFunc("GET /api/admin/oneid/merge-candidates", handler.mergeCandidates)
+	mux.HandleFunc("GET /api/admin/oneid/source-conflicts", handler.hxcSourceConflicts)
+	mux.HandleFunc("POST /api/admin/oneid/source-conflicts/{id}/ignore", handler.ignoreHXCSourceConflict)
 	mux.HandleFunc("POST /api/admin/oneid/merge-candidates/{id}/confirm", handler.confirmMerge)
 	mux.HandleFunc("POST /api/admin/oneid/merges/{id}/reverse", handler.reverseMerge)
 	return noStore(mux)
+}
+
+func (handler *Handler) hxcSourceConflicts(response nethttp.ResponseWriter, request *nethttp.Request) {
+	if _, err := handler.readPrincipal(request); err != nil {
+		handler.writeError(response, err)
+		return
+	}
+	if request.URL.Query().Get("source") != "hxc" {
+		handler.writeError(response, query.ErrInvalidQuery)
+		return
+	}
+	options, err := sourceConflictListOptions(request)
+	if err != nil {
+		handler.writeError(response, err)
+		return
+	}
+	var page query.HXCSourceConflictPage
+	err = handler.uow.Within(request.Context(), func(txContext context.Context) error {
+		var queryErr error
+		page, queryErr = handler.queries.HXCSourceConflicts(txContext, options)
+		return queryErr
+	})
+	if err != nil {
+		handler.writeError(response, err)
+		return
+	}
+	writeJSON(response, nethttp.StatusOK, page)
+}
+
+func (handler *Handler) ignoreHXCSourceConflict(response nethttp.ResponseWriter, request *nethttp.Request) {
+	principal, err := handler.writePrincipal(request)
+	if err != nil {
+		handler.writeError(response, err)
+		return
+	}
+	conflictID, err := positiveID(request.PathValue("id"))
+	if err != nil {
+		handler.writeError(response, err)
+		return
+	}
+	key, err := idempotency.Parse(request.Header.Get("Idempotency-Key"))
+	if err != nil {
+		handler.writeError(response, err)
+		return
+	}
+	var input struct {
+		ExpectedVersion int64  `json:"expected_version"`
+		Reason          string `json:"reason"`
+	}
+	if err = decodeJSON(response, request, &input); err != nil || input.ExpectedVersion < 1 {
+		if err == nil {
+			err = query.ErrInvalidQuery
+		}
+		handler.writeError(response, err)
+		return
+	}
+	var item identityport.HXCSourceConflict
+	var replayed bool
+	err = handler.uow.Within(request.Context(), func(txContext context.Context) error {
+		var commandErr error
+		item, replayed, commandErr = handler.sourceConflicts.IgnoreHXCSourceConflict(txContext, identityport.IgnoreHXCSourceConflictCommand{
+			ConflictID: conflictID, ExpectedVersion: input.ExpectedVersion, ReasonCode: input.Reason,
+			Operator: principalOperator(principal), IdempotencyKey: string(key),
+		})
+		if commandErr != nil {
+			return commandErr
+		}
+		payload, marshalErr := json.Marshal(map[string]any{"conflict_id": conflictID, "reason": input.Reason, "replayed": replayed})
+		if marshalErr != nil {
+			return marshalErr
+		}
+		auditKeyDigest := sha256.Sum256([]byte(key))
+		_, auditErr := handler.audit.Append(txContext, platformaudit.Event{IdempotencyKey: idempotency.Key(fmt.Sprintf("identity:hxc-ignore:%d:%x", conflictID, auditKeyDigest)), Action: "identity.hxc_source_conflict_ignored", ActorType: string(principal.Kind), ActorID: strconv.FormatInt(principal.InternalID, 10), ResourceType: "identity_source_conflict", ResourceID: strconv.FormatInt(conflictID, 10), Payload: payload})
+		return auditErr
+	})
+	if err != nil {
+		handler.writeError(response, err)
+		return
+	}
+	writeJSON(response, nethttp.StatusOK, map[string]any{"conflict": item, "replayed": replayed})
 }
 
 func (handler *Handler) resolve(response nethttp.ResponseWriter, request *nethttp.Request) {
@@ -382,8 +467,11 @@ func (handler *Handler) writeError(response nethttp.ResponseWriter, err error) {
 		status, code = nethttp.StatusConflict, "identity_conflict"
 	case errors.Is(err, identityapp.ErrInsufficientLinkEvidence):
 		status, code = nethttp.StatusConflict, "identity_conflict"
+	case errors.Is(err, identityapp.ErrDeclaredPayloadMismatch):
+		status, code = nethttp.StatusConflict, "idempotency_payload_mismatch"
 	case errors.Is(err, query.ErrInvalidQuery), errors.Is(err, identitydomain.ErrInvalidReference),
-		errors.Is(err, identityapp.ErrInvalidLinkCommand), errors.Is(err, identityapp.ErrInvalidMergeID):
+		errors.Is(err, identityapp.ErrInvalidLinkCommand), errors.Is(err, identityapp.ErrInvalidMergeID),
+		errors.Is(err, idempotency.ErrInvalidKey):
 		status, code = nethttp.StatusBadRequest, "invalid_request"
 	}
 	writeJSON(response, status, map[string]any{"ok": false, "error": code})
@@ -404,6 +492,37 @@ func listOptions(request *nethttp.Request, allowed map[string]struct{}) (query.L
 		status = "open"
 	}
 	if _, ok := allowed[status]; !ok {
+		return query.ListOptions{}, query.ErrInvalidQuery
+	}
+	limit, err := optionalInteger(values.Get("limit"), query.DefaultLimit)
+	if err != nil || limit < 1 || limit > query.MaximumLimit {
+		return query.ListOptions{}, query.ErrInvalidQuery
+	}
+	offset, err := optionalInteger(values.Get("offset"), 0)
+	if err != nil || offset < 0 {
+		return query.ListOptions{}, query.ErrInvalidQuery
+	}
+	return query.ListOptions{Status: status, Limit: limit, Offset: offset}, nil
+}
+
+func sourceConflictListOptions(request *nethttp.Request) (query.ListOptions, error) {
+	values := request.URL.Query()
+	for key := range values {
+		if key != "source" && key != "status" && key != "limit" && key != "offset" {
+			return query.ListOptions{}, query.ErrInvalidQuery
+		}
+		if len(values[key]) != 1 {
+			return query.ListOptions{}, query.ErrInvalidQuery
+		}
+	}
+	if values.Get("source") != "hxc" {
+		return query.ListOptions{}, query.ErrInvalidQuery
+	}
+	status := values.Get("status")
+	if status == "" {
+		status = "open"
+	}
+	if status != "open" && status != "resolved" && status != "ignored" {
 		return query.ListOptions{}, query.ErrInvalidQuery
 	}
 	limit, err := optionalInteger(values.Get("limit"), query.DefaultLimit)

@@ -20,6 +20,16 @@ export interface HXCDashboardCounts {
   unmatched: number;
   /** @minimum 0 */
   conflict: number;
+  /** @minimum 0 */
+  matched_by_unionid: number;
+  /** @minimum 0 */
+  matched_by_phone: number;
+  /** @minimum 0 */
+  matched_by_both: number;
+  /** @minimum 0 */
+  pending_observation: number;
+  /** @minimum 0 */
+  invalid_identity: number;
 }
 
 export type HXCDashboardSummarySourceWatermark = string | null;
@@ -35,7 +45,7 @@ export const HXCDashboardSummaryFreshness = {
 
 export interface HXCDashboardSummary {
   projection_id: PositiveID;
-  rule_version: "hxc-current-v1";
+  rule_version: "hxc-current-v2";
   projection_as_of: string;
   source_watermark?: HXCDashboardSummarySourceWatermark;
   published_at: string;
@@ -68,6 +78,37 @@ export const HXCDashboardFiltersIdentityStateItem = {
   conflict: "conflict",
 } as const;
 
+export type HXCDashboardFiltersMatchedByItem =
+  (typeof HXCDashboardFiltersMatchedByItem)[keyof typeof HXCDashboardFiltersMatchedByItem];
+
+// eslint-disable-next-line @typescript-eslint/no-redeclare
+export const HXCDashboardFiltersMatchedByItem = {
+  none: "none",
+  unionid: "unionid",
+  phone: "phone",
+  both: "both",
+} as const;
+
+export type HXCDashboardFiltersIdentityReasonCodeItem =
+  (typeof HXCDashboardFiltersIdentityReasonCodeItem)[keyof typeof HXCDashboardFiltersIdentityReasonCodeItem];
+
+// eslint-disable-next-line @typescript-eslint/no-redeclare
+export const HXCDashboardFiltersIdentityReasonCodeItem = {
+  matched_unionid: "matched_unionid",
+  matched_phone: "matched_phone",
+  matched_both: "matched_both",
+  no_match: "no_match",
+  missing_identity: "missing_identity",
+  invalid_unionid: "invalid_unionid",
+  invalid_phone: "invalid_phone",
+  duplicate_hxc_unionid: "duplicate_hxc_unionid",
+  duplicate_hxc_phone: "duplicate_hxc_phone",
+  duplicate_hxc_customer: "duplicate_hxc_customer",
+  identity_multiple_roots: "identity_multiple_roots",
+  unionid_phone_cross_root: "unionid_phone_cross_root",
+  concurrent_identity_conflict: "concurrent_identity_conflict",
+} as const;
+
 export interface HXCDashboardFilters {
   /** @maxItems 3 */
   stage?: HXCDashboardFiltersStageItem[];
@@ -81,6 +122,10 @@ export interface HXCDashboardFilters {
   user_segment?: string[];
   /** @maxItems 3 */
   identity_state?: HXCDashboardFiltersIdentityStateItem[];
+  /** @maxItems 4 */
+  matched_by?: HXCDashboardFiltersMatchedByItem[];
+  /** @maxItems 13 */
+  identity_reason_code?: HXCDashboardFiltersIdentityReasonCodeItem[];
 }
 
 export type HXCDashboardQuerySort =
@@ -106,6 +151,8 @@ export const HXCDashboardQueryGroupBy = {
   business_stage: "business_stage",
   user_segment: "user_segment",
   identity_state: "identity_state",
+  matched_by: "matched_by",
+  identity_reason_code: "identity_reason_code",
 } as const;
 
 export interface HXCDashboardQuery {
@@ -173,6 +220,17 @@ export const HXCDashboardRowIdentityState = {
   conflict: "conflict",
 } as const;
 
+export type HXCDashboardRowMatchedBy =
+  (typeof HXCDashboardRowMatchedBy)[keyof typeof HXCDashboardRowMatchedBy];
+
+// eslint-disable-next-line @typescript-eslint/no-redeclare
+export const HXCDashboardRowMatchedBy = {
+  none: "none",
+  unionid: "unionid",
+  phone: "phone",
+  both: "both",
+} as const;
+
 export interface HXCDashboardRow {
   /** @pattern ^HXC-[0-9a-f]{12}$ */
   user_ref: string;
@@ -209,6 +267,11 @@ export interface HXCDashboardRow {
   focus_topics?: string[];
   pain_tag?: HXCDashboardRowPainTag;
   identity_state: HXCDashboardRowIdentityState;
+  matched_by: HXCDashboardRowMatchedBy;
+  /** @maxLength 80 */
+  identity_reason_code: string;
+  identity_case_id?: PositiveID;
+  merge_candidate_id?: PositiveID;
   source_updated_at: string;
 }
 
@@ -236,6 +299,15 @@ export const HXCDashboardRefreshTrigger = {
   initial: "initial",
 } as const;
 
+export type HXCDashboardRefreshIdentityMode =
+  (typeof HXCDashboardRefreshIdentityMode)[keyof typeof HXCDashboardRefreshIdentityMode];
+
+// eslint-disable-next-line @typescript-eslint/no-redeclare
+export const HXCDashboardRefreshIdentityMode = {
+  inspect: "inspect",
+  apply: "apply",
+} as const;
+
 export type HXCDashboardRefreshStatus =
   (typeof HXCDashboardRefreshStatus)[keyof typeof HXCDashboardRefreshStatus];
 
@@ -255,12 +327,15 @@ export type HXCDashboardRefreshCompletedAt = string | null;
 export interface HXCDashboardRefresh {
   run_id: PositiveID;
   trigger: HXCDashboardRefreshTrigger;
+  identity_mode: HXCDashboardRefreshIdentityMode;
   status: HXCDashboardRefreshStatus;
   projection_id?: PositiveID;
   /** @minimum 0 */
   source_count: number;
   /** @minimum 0 */
   processed_count: number;
+  /** @minimum 0 */
+  identity_replay_verified_count: number;
   error_code?: string;
   started_at?: HXCDashboardRefreshStartedAt;
   completed_at?: HXCDashboardRefreshCompletedAt;
@@ -285,6 +360,112 @@ export interface ErrorResponse {
   message?: string;
   /** @minLength 1 */
   request_id?: string;
+}
+
+export type HXCSourceObservationKind =
+  (typeof HXCSourceObservationKind)[keyof typeof HXCSourceObservationKind];
+
+// eslint-disable-next-line @typescript-eslint/no-redeclare
+export const HXCSourceObservationKind = {
+  unionid: "unionid",
+  phone: "phone",
+} as const;
+
+export type HXCSourceObservationAssurance =
+  (typeof HXCSourceObservationAssurance)[keyof typeof HXCSourceObservationAssurance];
+
+// eslint-disable-next-line @typescript-eslint/no-redeclare
+export const HXCSourceObservationAssurance = {
+  verified: "verified",
+  declared: "declared",
+} as const;
+
+export type HXCSourceObservationStatus =
+  (typeof HXCSourceObservationStatus)[keyof typeof HXCSourceObservationStatus];
+
+// eslint-disable-next-line @typescript-eslint/no-redeclare
+export const HXCSourceObservationStatus = {
+  active: "active",
+  retired: "retired",
+} as const;
+
+export interface HXCSourceObservation {
+  kind: HXCSourceObservationKind;
+  /** @maxLength 256 */
+  scope: string;
+  /**
+   * Masked phone or a fixed stored marker; never raw UnionID.
+   * @maxLength 32
+   */
+  display_value: string;
+  assurance: HXCSourceObservationAssurance;
+  status: HXCSourceObservationStatus;
+}
+
+export type HXCSourceConflictStatus =
+  (typeof HXCSourceConflictStatus)[keyof typeof HXCSourceConflictStatus];
+
+// eslint-disable-next-line @typescript-eslint/no-redeclare
+export const HXCSourceConflictStatus = {
+  open: "open",
+  resolved: "resolved",
+  ignored: "ignored",
+} as const;
+
+export type HXCSourceConflictResolvedAt = string | null;
+
+export interface HXCSourceConflict {
+  id: PositiveID;
+  /** @pattern ^HXC-[0-9a-f]{12}$ */
+  subject_ref: string;
+  /** @maxLength 80 */
+  reason: string;
+  left_customer_id?: PositiveID;
+  right_customer_id?: PositiveID;
+  merge_candidate_id?: PositiveID;
+  /** @pattern ^[0-9a-f]{64}$ */
+  evidence_digest: string;
+  status: HXCSourceConflictStatus;
+  /** @minimum 1 */
+  version: number;
+  /** @maxItems 20 */
+  observations?: HXCSourceObservation[];
+  created_at: string;
+  resolved_at?: HXCSourceConflictResolvedAt;
+}
+
+export interface HXCSourceConflictPage {
+  /** @maxItems 100 */
+  items: HXCSourceConflict[];
+  /**
+   * @minimum 1
+   * @maximum 100
+   */
+  limit: number;
+  /** @minimum 0 */
+  offset: number;
+}
+
+export type HXCSourceConflictIgnoreRequestReason =
+  (typeof HXCSourceConflictIgnoreRequestReason)[keyof typeof HXCSourceConflictIgnoreRequestReason];
+
+// eslint-disable-next-line @typescript-eslint/no-redeclare
+export const HXCSourceConflictIgnoreRequestReason = {
+  not_same_person: "not_same_person",
+  shared_phone: "shared_phone",
+  source_data_error: "source_data_error",
+  accepted_risk: "accepted_risk",
+} as const;
+
+export interface HXCSourceConflictIgnoreRequest {
+  /** @minimum 1 */
+  expected_version: number;
+  reason: HXCSourceConflictIgnoreRequestReason;
+}
+
+export interface HXCSourceConflictIgnoreResponse {
+  conflict: HXCSourceConflict;
+  replayed: boolean;
 }
 
 /**

@@ -122,6 +122,25 @@
   color: var(--muted);
 }
 
+.admin-oneid-source-table {
+  min-width: 1180px;
+}
+
+.admin-oneid-source-reason {
+  max-width: 150px;
+  margin-right: 6px;
+  padding: 7px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+}
+
+.admin-oneid-candidate-actions {
+  display: flex;
+  gap: 6px;
+  white-space: nowrap;
+}
+
 .admin-oneid-list-card .admin-state {
   min-height: 132px;
 }

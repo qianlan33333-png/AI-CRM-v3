@@ -98,8 +98,38 @@ type MergeCandidatePage struct {
 	Offset int              `json:"offset"`
 }
 
+type HXCSourceObservation struct {
+	Kind         string `json:"kind"`
+	Scope        string `json:"scope"`
+	DisplayValue string `json:"display_value"`
+	Assurance    string `json:"assurance"`
+	Status       string `json:"status"`
+}
+
+type HXCSourceConflict struct {
+	ID               int64                     `json:"id"`
+	SubjectRef       string                    `json:"subject_ref"`
+	Reason           string                    `json:"reason"`
+	LeftCustomerID   customerdomain.CustomerID `json:"left_customer_id,omitempty"`
+	RightCustomerID  customerdomain.CustomerID `json:"right_customer_id,omitempty"`
+	MergeCandidateID int64                     `json:"merge_candidate_id,omitempty"`
+	EvidenceDigest   string                    `json:"evidence_digest"`
+	Status           string                    `json:"status"`
+	Version          int64                     `json:"version"`
+	Observations     []HXCSourceObservation    `json:"observations"`
+	CreatedAt        time.Time                 `json:"created_at"`
+	ResolvedAt       *time.Time                `json:"resolved_at,omitempty"`
+}
+
+type HXCSourceConflictPage struct {
+	Items  []HXCSourceConflict `json:"items"`
+	Limit  int                 `json:"limit"`
+	Offset int                 `json:"offset"`
+}
+
 type Reader interface {
 	Customer(context.Context, customerdomain.CustomerID) (CustomerDetail, error)
 	Conflicts(context.Context, ListOptions) (ConflictPage, error)
 	MergeCandidates(context.Context, ListOptions) (MergeCandidatePage, error)
+	HXCSourceConflicts(context.Context, ListOptions) (HXCSourceConflictPage, error)
 }

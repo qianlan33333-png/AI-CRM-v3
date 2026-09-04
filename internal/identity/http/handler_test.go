@@ -61,17 +61,21 @@ func (security *testSecurity) AuthorizeCSRF(context.Context, *nethttp.Request) (
 }
 
 type testOneID struct {
-	resolveResult identityport.ResolveResult
-	resolveErr    error
-	resolveInput  identitydomain.Reference
-	resolveCalls  int
-	confirmResult identityapp.LinkResult
-	confirmErr    error
-	confirmInput  identityapp.ConfirmMergeCommand
-	confirmCalls  int
-	reverseResult identityapp.MergeRecord
-	reverseErr    error
-	reverseID     int64
+	resolveResult        identityport.ResolveResult
+	resolveErr           error
+	resolveInput         identitydomain.Reference
+	resolveCalls         int
+	confirmResult        identityapp.LinkResult
+	confirmErr           error
+	confirmInput         identityapp.ConfirmMergeCommand
+	confirmCalls         int
+	reverseResult        identityapp.MergeRecord
+	reverseErr           error
+	reverseID            int64
+	sourceConflict       identityport.HXCSourceConflict
+	sourceConflictReplay bool
+	sourceConflictErr    error
+	sourceConflictInput  identityport.IgnoreHXCSourceConflictCommand
 }
 
 func (service *testOneID) Resolve(ctx context.Context, input identitydomain.Reference) (identityport.ResolveResult, error) {
@@ -100,14 +104,24 @@ func (service *testOneID) RevertConfirmedMerge(ctx context.Context, mergeID int6
 	return service.reverseResult, service.reverseErr
 }
 
+func (service *testOneID) IgnoreHXCSourceConflict(ctx context.Context, input identityport.IgnoreHXCSourceConflictCommand) (identityport.HXCSourceConflict, bool, error) {
+	if ctx.Value(transactionMarker{}) != true {
+		return identityport.HXCSourceConflict{}, false, errors.New("source conflict write was not transaction bound")
+	}
+	service.sourceConflictInput = input
+	return service.sourceConflict, service.sourceConflictReplay, service.sourceConflictErr
+}
+
 type testQueries struct {
-	detail           query.CustomerDetail
-	detailErr        error
-	customerID       customerdomain.CustomerID
-	conflictPage     query.ConflictPage
-	conflictOptions  query.ListOptions
-	candidatePage    query.MergeCandidatePage
-	candidateOptions query.ListOptions
+	detail             query.CustomerDetail
+	detailErr          error
+	customerID         customerdomain.CustomerID
+	conflictPage       query.ConflictPage
+	conflictOptions    query.ListOptions
+	candidatePage      query.MergeCandidatePage
+	candidateOptions   query.ListOptions
+	hxcConflictPage    query.HXCSourceConflictPage
+	hxcConflictOptions query.ListOptions
 }
 
 func (queries *testQueries) Customer(ctx context.Context, id customerdomain.CustomerID) (query.CustomerDetail, error) {
@@ -132,6 +146,14 @@ func (queries *testQueries) MergeCandidates(ctx context.Context, options query.L
 	}
 	queries.candidateOptions = options
 	return queries.candidatePage, nil
+}
+
+func (queries *testQueries) HXCSourceConflicts(ctx context.Context, options query.ListOptions) (query.HXCSourceConflictPage, error) {
+	if ctx.Value(transactionMarker{}) != true {
+		return query.HXCSourceConflictPage{}, errors.New("HXC source conflict query was not transaction bound")
+	}
+	queries.hxcConflictOptions = options
+	return queries.hxcConflictPage, nil
 }
 
 func TestResolveRejectsClientTrustFieldsAndNeverProvisions(t *testing.T) {
@@ -374,6 +396,42 @@ func TestListPaginationDefaultsBoundsAndStatusWhitelist(t *testing.T) {
 	}
 }
 
+func TestHXCSourceConflictsAreSafeAndIgnoreIsSuperAdminCAS(t *testing.T) {
+	queries := &testQueries{hxcConflictPage: query.HXCSourceConflictPage{Items: []query.HXCSourceConflict{
+		{
+			ID: 9, SubjectRef: "HXC-aabbccddeeff", Reason: "unionid_phone_cross_root", LeftCustomerID: 11, RightCustomerID: 22,
+			EvidenceDigest: strings.Repeat("a", 64), Status: "open", Version: 3,
+			Observations: []query.HXCSourceObservation{{Kind: "unionid", Scope: "wechat-open-platform:app", DisplayValue: "stored", Assurance: "verified", Status: "active"}, {Kind: "phone", Scope: "phone:cn11", DisplayValue: "138****8000", Assurance: "declared", Status: "active"}},
+		},
+	}}}
+	service := &testOneID{sourceConflict: identityport.HXCSourceConflict{ID: 9, SubjectRef: "HXC-aabbccddeeff", Reason: identityport.HXCReasonCrossRoot, Status: "ignored", Version: 4}}
+	auditor := &testAuditor{}
+	security := &testSecurity{authPrincipal: activeAdmin(), csrfPrincipal: activeSuperAdmin()}
+	handler := configuredHandler(t, &testUnitOfWork{}, security, service, queries, auditor)
+
+	response := perform(handler, nethttp.MethodGet, "/api/admin/oneid/source-conflicts?source=hxc&status=open&limit=100&offset=0", "", false)
+	if response.Code != nethttp.StatusOK || queries.hxcConflictOptions != (query.ListOptions{Status: "open", Limit: 100}) {
+		t.Fatalf("status=%d options=%#v body=%q", response.Code, queries.hxcConflictOptions, response.Body.String())
+	}
+	for _, forbidden := range []string{"raw-unionid", "normalized_value", "13800138000"} {
+		if strings.Contains(response.Body.String(), forbidden) {
+			t.Fatalf("source conflict response leaked %q: %s", forbidden, response.Body.String())
+		}
+	}
+
+	request := httptest.NewRequest(nethttp.MethodPost, "/api/admin/oneid/source-conflicts/9/ignore", strings.NewReader(`{"expected_version":3,"reason":"source_data_error"}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Idempotency-Key", "hxc-ignore-case-9")
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != nethttp.StatusOK || service.sourceConflictInput.ConflictID != 9 || service.sourceConflictInput.ExpectedVersion != 3 || service.sourceConflictInput.Operator != "admin:1" || service.sourceConflictInput.IdempotencyKey != "hxc-ignore-case-9" {
+		t.Fatalf("status=%d input=%#v body=%q", response.Code, service.sourceConflictInput, response.Body.String())
+	}
+	if auditor.calls != 1 || auditor.event.Action != "identity.hxc_source_conflict_ignored" || !auditor.transactionBound {
+		t.Fatalf("audit=%#v calls=%d transaction=%v", auditor.event, auditor.calls, auditor.transactionBound)
+	}
+}
+
 func TestBodyLimitAndInternalErrorsAreSafe(t *testing.T) {
 	handler := newTestHandler(t, activeAdmin(), activeSuperAdmin(), &testOneID{}, &testQueries{}, nil)
 	large := `{"kind":"ext","scope":"ext:test","value":"` + strings.Repeat("x", int(maxRequestBodyBytes)) + `"}`
@@ -408,7 +466,11 @@ func newTestHandler(t *testing.T, read, write accessdomain.Principal, service On
 
 func configuredHandler(t *testing.T, unit *testUnitOfWork, security *testSecurity, service OneIDService, queries *testQueries, auditor Auditor) nethttp.Handler {
 	t.Helper()
-	handler, err := NewHandler(Config{UnitOfWork: unit, Authenticator: security, CSRF: security, OneID: service, Queries: queries, Audit: auditor})
+	manager, ok := service.(identityport.HXCSourceConflictManager)
+	if !ok {
+		manager = &testOneID{}
+	}
+	handler, err := NewHandler(Config{UnitOfWork: unit, Authenticator: security, CSRF: security, OneID: service, SourceConflicts: manager, Queries: queries, Audit: auditor})
 	if err != nil {
 		t.Fatal(err)
 	}

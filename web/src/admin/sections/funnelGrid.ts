@@ -17,7 +17,7 @@ interface Summary {
   freshness: "fresh" | "stale";
   source_digest: string;
   projection_digest: string;
-  counts: Record<"total" | Stage | IdentityState, number>;
+  counts: Record<"total" | Stage | IdentityState | "matched_by_unionid" | "matched_by_phone" | "matched_by_both" | "pending_observation" | "invalid_identity", number>;
 }
 interface Row {
   user_ref: string;
@@ -44,6 +44,10 @@ interface Row {
   focus_topics: string[];
   pain_tag?: string;
   identity_state: IdentityState;
+  matched_by: "none" | "unionid" | "phone" | "both";
+  identity_reason_code: string;
+  identity_case_id?: number;
+  merge_candidate_id?: number;
   source_updated_at: string;
 }
 interface Group {
@@ -74,6 +78,7 @@ const identityName: Record<IdentityState, string> = {
   unmatched: "未匹配",
   conflict: "冲突",
 };
+const matchName: Record<Row["matched_by"], string> = { none: "未命中", unionid: "UnionID", phone: "手机号", both: "双键" };
 const split = (value: string): string[] =>
   value
     .split(",")
@@ -125,8 +130,9 @@ export async function mountFunnelGrid(
   <div class="card" style="padding:14px;margin-top:14px"><div class="grid-toolbar" style="display:flex;gap:8px;flex-wrap:wrap">
     <select class="select" id="hxcStage"><option value="">全部漏斗阶段</option><option value="active_used">有效会员 · 已使用</option><option value="active_unused">有效会员 · 未使用</option><option value="registered_no_active_membership">已注册 · 无有效会员</option></select>
     <select class="select" id="hxcIdentity"><option value="">全部 OneID 状态</option><option value="matched">已匹配</option><option value="unmatched">未匹配</option><option value="conflict">冲突</option></select>
+    <select class="select" id="hxcMatchedBy"><option value="">全部匹配来源</option><option value="unionid">UnionID</option><option value="phone">手机号</option><option value="both">双键</option><option value="none">未命中</option></select>
     <input class="input" id="hxcTier" placeholder="会员等级（逗号分隔）" style="width:180px"><input class="input" id="hxcCapability" placeholder="最近能力（逗号分隔）" style="width:190px"><input class="input" id="hxcBusiness" placeholder="业务阶段（逗号分隔）" style="width:190px"><input class="input" id="hxcSegment" placeholder="用户分群（逗号分隔）" style="width:180px">
-    <select class="select" id="hxcGroup"><option value="">不分组</option><option value="stage">按漏斗阶段</option><option value="subscription_tier">按会员等级</option><option value="last_capability">按最近能力</option><option value="business_stage">按业务阶段</option><option value="user_segment">按用户分群</option><option value="identity_state">按 OneID 状态</option></select>
+    <select class="select" id="hxcGroup"><option value="">不分组</option><option value="stage">按漏斗阶段</option><option value="subscription_tier">按会员等级</option><option value="last_capability">按最近能力</option><option value="business_stage">按业务阶段</option><option value="user_segment">按用户分群</option><option value="identity_state">按 OneID 状态</option><option value="matched_by">按匹配来源</option><option value="identity_reason_code">按身份原因</option></select>
     <select class="select" id="hxcSort"><option value="last_used_at_desc">最近使用时间</option><option value="source_updated_at_desc">源更新时间</option><option value="subscription_expires_at_asc">会员到期（升序）</option><option value="subscription_expires_at_desc">会员到期（降序）</option><option value="messages_7d_desc">7 日消息数</option></select>
     <input class="input" id="hxcExact" placeholder="精确 HXC 用户 ID" style="width:190px"><button class="btn" id="hxcApply">应用临时筛选</button>
   </div><div id="hxcGroups" style="padding:8px 0"></div><div class="grid-meta"><span id="hxcMeta">—</span><span id="hxcVersion">—</span></div>
@@ -151,6 +157,7 @@ export async function mountFunnelGrid(
         business_stage: values("#hxcBusiness"),
         user_segment: values("#hxcSegment"),
         identity_state: values("#hxcIdentity"),
+        matched_by: values("#hxcMatchedBy"),
       },
       exact_hxc_user_id: ($("#hxcExact") as HTMLInputElement).value.trim(),
       sort: ($("#hxcSort") as HTMLSelectElement).value,
@@ -163,7 +170,7 @@ export async function mountFunnelGrid(
     summary = await json<Summary>("/api/admin/hxc-dashboard/summary");
     const c = summary.counts;
     $("#hxcStats").innerHTML =
-      `<div class="card stat"><div class="stat-l">HXC 当前有效用户</div><div class="stat-v">${fmtNumber(c.total)}</div><div class="stat-s">三段总和严格等于此数</div></div><div class="card stat ok"><div class="stat-l">有效会员 · 已使用</div><div class="stat-v" style="color:#2EA121">${fmtNumber(c.active_used)}</div><div class="stat-s">有效会员且有真实使用</div></div><div class="card stat warn"><div class="stat-l">有效会员 · 未使用</div><div class="stat-v" style="color:#D97917">${fmtNumber(c.active_unused)}</div><div class="stat-s">有效会员且从未使用</div></div><div class="card stat blue"><div class="stat-l">已注册 · 无有效会员</div><div class="stat-v" style="color:#D83931">${fmtNumber(c.registered_no_active_membership)}</div><div class="stat-s">free、过期或无到期时间</div></div><div class="card stat gray"><div class="stat-l">OneID 质量</div><div class="stat-v" style="font-size:18px">${fmtNumber(c.matched)} / ${fmtNumber(c.unmatched)} / ${fmtNumber(c.conflict)}</div><div class="stat-s">匹配 / 未匹配 / 冲突（不影响漏斗）</div></div>`;
+      `<div class="card stat"><div class="stat-l">HXC 当前有效用户</div><div class="stat-v">${fmtNumber(c.total)}</div><div class="stat-s">三段总和严格等于此数</div></div><div class="card stat ok"><div class="stat-l">有效会员 · 已使用</div><div class="stat-v" style="color:#2EA121">${fmtNumber(c.active_used)}</div><div class="stat-s">有效会员且有真实使用</div></div><div class="card stat warn"><div class="stat-l">有效会员 · 未使用</div><div class="stat-v" style="color:#D97917">${fmtNumber(c.active_unused)}</div><div class="stat-s">有效会员且从未使用</div></div><div class="card stat blue"><div class="stat-l">已注册 · 无有效会员</div><div class="stat-v" style="color:#D83931">${fmtNumber(c.registered_no_active_membership)}</div><div class="stat-s">free、过期或无到期时间</div></div><div class="card stat gray"><div class="stat-l">OneID 质量</div><div class="stat-v" style="font-size:18px">${fmtNumber(c.matched)} / ${fmtNumber(c.unmatched)} / ${fmtNumber(c.conflict)}</div><div class="stat-s">UnionID ${fmtNumber(c.matched_by_unionid)} · 手机 ${fmtNumber(c.matched_by_phone)} · 双键 ${fmtNumber(c.matched_by_both)} · 待解析 ${fmtNumber(c.pending_observation)} · 非法 ${fmtNumber(c.invalid_identity)}</div></div>`;
     $("#hxcStale").innerHTML =
       summary.freshness === "stale"
         ? '<div class="card" style="padding:12px;color:#D97917;margin-bottom:12px">⚠ 当前展示上一成功版本，数据已超过 8 小时未刷新。</div>'
@@ -190,7 +197,7 @@ export async function mountFunnelGrid(
         ? result.items
             .map(
               (row) =>
-                `<tr><td><code>${esc(row.user_ref)}</code></td><td><span class="chip ${row.stage === "active_used" ? "ok" : row.stage === "active_unused" ? "warn" : "red"}">${stageName[row.stage]}</span></td><td>${esc(row.subscription_tier)}</td><td>${fmtTime(row.subscription_expires_at)}</td><td>${fmtNumber(row.current_period_used)} / ${fmtNumber(row.monthly_chat_quota)}</td><td>${fmtNumber(row.consultation_used)} / ${fmtNumber(row.consultation_limit)}</td><td>${fmtNumber(row.sessions_7d)}</td><td>${fmtNumber(row.user_messages_7d)}</td><td>${esc(row.last_capability || "—")}</td><td>${fmtTime(row.last_used_at)}</td><td>${esc(row.business_stage || "—")}</td><td>${esc(row.user_segment || "—")}</td><td><span class="chip ${row.identity_state === "matched" ? "ok" : row.identity_state === "conflict" ? "red" : "gray"}">${identityName[row.identity_state]}</span></td><td>${esc(row.membership_attribution)}</td></tr>`,
+                `<tr><td><code>${esc(row.user_ref)}</code></td><td><span class="chip ${row.stage === "active_used" ? "ok" : row.stage === "active_unused" ? "warn" : "red"}">${stageName[row.stage]}</span></td><td>${esc(row.subscription_tier)}</td><td>${fmtTime(row.subscription_expires_at)}</td><td>${fmtNumber(row.current_period_used)} / ${fmtNumber(row.monthly_chat_quota)}</td><td>${fmtNumber(row.consultation_used)} / ${fmtNumber(row.consultation_limit)}</td><td>${fmtNumber(row.sessions_7d)}</td><td>${fmtNumber(row.user_messages_7d)}</td><td>${esc(row.last_capability || "—")}</td><td>${fmtTime(row.last_used_at)}</td><td>${esc(row.business_stage || "—")}</td><td>${esc(row.user_segment || "—")}</td><td><span class="chip ${row.identity_state === "matched" ? "ok" : row.identity_state === "conflict" ? "red" : "gray"}">${identityName[row.identity_state]}</span><br><small>${esc(matchName[row.matched_by] || row.matched_by)} · ${esc(row.identity_reason_code)}</small>${row.identity_case_id ? `<br><a href="/admin/oneid">冲突 Case #${fmtNumber(row.identity_case_id)}</a>` : ""}</td><td>${esc(row.membership_attribution)}</td></tr>`,
             )
             .join("")
         : '<tr><td colspan="14" style="text-align:center;padding:30px;color:#8F959E">没有符合临时筛选的数据</td></tr>';
