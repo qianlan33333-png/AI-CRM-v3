@@ -15,7 +15,8 @@ const configurationColumns = `id,package_id,version,schema_version,definition,re
 func scanConfiguration(row pgx.Row) (segmentdomain.ConfigurationVersion, error) {
 	var item segmentdomain.ConfigurationVersion
 	var digest []byte
-	err := row.Scan(&item.ID, &item.PackageID, &item.Version, &item.SchemaVersion, &item.Definition, &item.RefreshCronUTC, &digest, &item.CreatedBy, &item.CreatedAt)
+	var refreshCronUTC *string
+	err := row.Scan(&item.ID, &item.PackageID, &item.Version, &item.SchemaVersion, &item.Definition, &refreshCronUTC, &digest, &item.CreatedBy, &item.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return segmentdomain.ConfigurationVersion{}, ErrNotFound
 	}
@@ -24,6 +25,9 @@ func scanConfiguration(row pgx.Row) (segmentdomain.ConfigurationVersion, error) 
 	}
 	if len(digest) != sha256.Size {
 		return segmentdomain.ConfigurationVersion{}, ErrConflict
+	}
+	if refreshCronUTC != nil {
+		item.RefreshCronUTC = *refreshCronUTC
 	}
 	copy(item.Digest[:], digest)
 	return item, nil

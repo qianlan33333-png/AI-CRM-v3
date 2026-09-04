@@ -69,10 +69,13 @@ func TestPostgreSQLAudienceConfigurationAtomicity(t *testing.T) {
 			return e
 		}
 		definition := json.RawMessage(`{"schema_version":1,"expression":{"kind":"all"}}`)
-		configuration, _ := segmentdomain.NewConfigurationVersion(created.ID, 1, definition, "0 1 * * *", 7, now)
+		configuration, _ := segmentdomain.NewConfigurationVersion(created.ID, 1, definition, "", 7, now)
 		configuration, e = repo.CreateConfigurationVersion(tx, configuration)
 		if e != nil {
 			return e
+		}
+		if configuration.RefreshCronUTC != "" {
+			t.Fatalf("nullable refresh cron=%q", configuration.RefreshCronUTC)
 		}
 		created, e = repo.SetCurrentConfiguration(tx, created.ID, configuration.ID, created.Version, 7, now)
 		if e != nil {
