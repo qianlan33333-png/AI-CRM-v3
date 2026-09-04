@@ -157,6 +157,7 @@ jobs:
           jq '{mode,result}' "$RUNNER_TEMP/rehearsal-final.json"
           jq '{mode,result}' "$RUNNER_TEMP/rehearsal-semantic-repair.json"
           jq '{mode,result}' "$RUNNER_TEMP/rehearsal-semantic-reconcile.json"
+          psql "$AICRM_DATABASE_URL" -Atqc "SELECT field_name||'|'||count(*) FROM channel_semantic_repair_conflicts GROUP BY field_name ORDER BY field_name"
           jq -e '.result.DuplicateSourceMaps == 0 and .result.ProviderEffectsCreatedByImport == 0 and .result.ProviderCallsDuringImport == 0 and .result.SilentLoss == 0 and .result.WrongOneIDBindings == 0' "$RUNNER_TEMP/rehearsal-final.json" >/dev/null
           jq -e '.result.ProviderCalls == 0 and .result.ProviderEffects == 0' "$RUNNER_TEMP/rehearsal-semantic-repair.json" >/dev/null
           jq -e '.result.channel_config_field_mismatches == 0 and .result.source_contacts_not_counted == 0 and .result.source_assignees_not_projected == 0 and .result.referenced_materials_unmapped == 0 and .result.referenced_tags_unmapped == 0 and .result.duplicate_source_maps == 0 and .result.wrong_oneid_bindings == 0 and .result.provider_effects_created_by_import == 0 and .result.provider_calls_during_import == 0 and .result.silent_loss == 0' "$RUNNER_TEMP/rehearsal-semantic-reconcile.json" >/dev/null
