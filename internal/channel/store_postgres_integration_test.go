@@ -91,6 +91,74 @@ func TestPostgreSQLChannelCatalogAtomicReplayAndImmutableVersionsIntegration(t *
 	}
 }
 
+func TestPostgreSQLCatalogReadsMigrationBlockedAssignmentForRepairIntegration(t *testing.T) {
+	pool, cleanup := channelIntegrationPool(t)
+	defer cleanup()
+	unit, err := platformpostgres.NewUnitOfWork(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	actorID := insertChannelAdmin(t, ctx, pool)
+	store := NewPostgreSQLCatalogStore()
+	events, err := NewChannelCatalogEventAppender(mustChannelAuditService(t), platformoutbox.NewPostgreSQL())
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewCatalogService(unit, store, store, events, nil, nil, fixedCatalogStaffReader{actorID: actorID})
+	create := validCatalogCreate()
+	create.Config.Assignment.Assignees[0].StaffID = actorID
+	created, err := service.Create(ctx, CatalogMutation{ActorID: actorID, IdempotencyKey: "pg-channel-blocked-read-0001", Create: create})
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := make([]byte, sha256.Size)
+	var importRunID, repairRunID int64
+	if err = pool.Native().QueryRow(ctx, `INSERT INTO channel_history_import_runs(snapshot_id,source_host_digest,snapshot_timestamp,manifest_digest,state,completed_at) VALUES('blocked-read-snapshot',$1,clock_timestamp(),$1,'reconciled',clock_timestamp()) RETURNING id`, digest).Scan(&importRunID); err != nil {
+		t.Fatal(err)
+	}
+	if err = pool.Native().QueryRow(ctx, `INSERT INTO channel_semantic_repair_runs(import_run_id,state,source_config_count,repaired_config_count,conflict_count,completed_at) VALUES($1,'blocked',1,1,0,clock_timestamp()) RETURNING id`, importRunID).Scan(&repairRunID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pool.Native().Exec(ctx, `INSERT INTO channel_config_versions(
+		channel_id,config_version,channel_type,carrier_type,name,scene_value,qrcode_url,customer_channel,link_url,final_url,welcome_message,
+		welcome_image_ids,welcome_miniprogram_ids,welcome_attachment_ids,welcome_group_invite_ids,auto_accept_friend,
+		entry_tag_id,entry_tag_name,entry_tag_group_name,assignment_mode,assignment_strategy,overflow_policy,config_digest,created_by,created_at)
+		SELECT channel_id,2,channel_type,carrier_type,name,scene_value,qrcode_url,customer_channel,link_url,final_url,welcome_message,
+		welcome_image_ids,welcome_miniprogram_ids,welcome_attachment_ids,welcome_group_invite_ids,auto_accept_friend,
+		entry_tag_id,entry_tag_name,entry_tag_group_name,assignment_mode,assignment_strategy,overflow_policy,$2,created_by,clock_timestamp()
+		FROM channel_config_versions WHERE channel_id=$1 AND config_version=1`, created.ID, digest); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pool.Native().Exec(ctx, `UPDATE channels SET current_config_version=2,version=version+1,status='inactive',archived_at=NULL,updated_at=clock_timestamp() WHERE id=$1`, created.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pool.Native().Exec(ctx, `INSERT INTO channel_semantic_repaired_configs(repair_run_id,channel_id,config_version,desired_status,blockers) VALUES($1,$2,2,'active','["assignees_missing"]')`, repairRunID, created.ID); err != nil {
+		t.Fatal(err)
+	}
+	var loaded channeldomain.Channel
+	if err = unit.Within(ctx, func(txctx context.Context) error {
+		var readErr error
+		loaded, readErr = store.Get(txctx, created.ID)
+		return readErr
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Status != channeldomain.StatusInactive || loaded.ConfigVersion != 2 || len(loaded.Config.Assignment.Assignees) != 0 || loaded.CanPublish() {
+		t.Fatalf("blocked migration config was not safely readable: %#v", loaded)
+	}
+}
+
+func mustChannelAuditService(t *testing.T) *platformaudit.Service {
+	t.Helper()
+	service, err := platformaudit.NewService(platformaudit.NewPostgreSQLStore())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return service
+}
+
 type failingCatalogEventAppender struct{}
 
 func (failingCatalogEventAppender) Append(context.Context, channelport.CatalogEvent) error {
@@ -626,5 +694,6 @@ func channelMigrationPaths(t *testing.T) []string {
 		filepath.Join(root, "migrations", "0033_wecom_welcome_grants.sql"),
 		filepath.Join(root, "migrations", "0034_channel_entrant_actions.sql"),
 		filepath.Join(root, "migrations", "0035_channel_acquisition_links.sql"),
+		filepath.Join(root, "migrations", "0059_channel_v1_semantic_repair.sql"),
 	}
 }
