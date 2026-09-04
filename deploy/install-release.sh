@@ -164,11 +164,6 @@ trap cleanup_release_artifacts EXIT
 # while its installer still owns the host lock. A newer release may safely stop
 # it before waiting: every staged batch is transactional and the command resumes
 # through its idempotency receipts with the new release binary.
-bootstrap_load_state="$(systemctl show aicrm-automation-bootstrap.service -p LoadState --value 2>/dev/null || true)"
-if [[ "$bootstrap_load_state" == loaded ]] && ! systemctl stop aicrm-automation-bootstrap.service; then
-  systemctl status --no-pager --full aicrm-automation-bootstrap.service || true
-  exit 14
-fi
 if [[ -n "$release_run_number" ]]; then
   for stale_cmdline in /proc/[0-9]*/cmdline; do
     stale_args=()
@@ -185,6 +180,16 @@ if [[ -n "$release_run_number" ]]; then
       kill -TERM "$stale_pid" 2>/dev/null || true
     fi
   done
+fi
+bootstrap_load_state="$(systemctl show aicrm-automation-bootstrap.service -p LoadState --value 2>/dev/null || true)"
+if [[ "$bootstrap_load_state" == loaded ]]; then
+  systemctl kill --kill-whom=all --signal=TERM aicrm-automation-bootstrap.service 2>/dev/null || true
+  sleep 2
+  systemctl kill --kill-whom=all --signal=KILL aicrm-automation-bootstrap.service 2>/dev/null || true
+  if ! timeout 15s systemctl stop aicrm-automation-bootstrap.service; then
+    systemctl status --no-pager --full aicrm-automation-bootstrap.service || true
+    exit 14
+  fi
 fi
 exec 9>"$release_lock"
 flock 9
