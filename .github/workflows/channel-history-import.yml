@@ -2,6 +2,11 @@ name: channel-history-import
 
 on:
   workflow_dispatch:
+    inputs:
+      deployed_release_sha:
+        description: Exact release SHA currently active in production
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -32,6 +37,7 @@ jobs:
       AICRM_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/aicrm_channel_rehearsal?sslmode=disable
       AICRM_CHANNEL_SOURCE_SSH_HOST: ${{ vars.AICRM_CHANNEL_SOURCE_SSH_HOST }}
       AICRM_CHANNEL_SOURCE_SSH_USER: ${{ vars.AICRM_CHANNEL_SOURCE_SSH_USER }}
+      DEPLOYED_RELEASE_SHA: ${{ inputs.deployed_release_sha || github.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -128,7 +134,7 @@ jobs:
           scp "${ssh_flags[@]}" "$RUNNER_TEMP/channel-history.key" "${DEPLOY_USER}@${DEPLOY_HOST}:$remote_key"
           scp "${ssh_flags[@]}" deploy/run-channel-history-import.sh "${DEPLOY_USER}@${DEPLOY_HOST}:$remote_runner"
           ssh "${ssh_flags[@]}" "${DEPLOY_USER}@${DEPLOY_HOST}" \
-            "sudo /usr/bin/bash '$remote_runner' '$remote_snapshot' '$remote_key' '$MANIFEST_DIGEST' '$SNAPSHOT_ID' '$GITHUB_SHA'" \
+            "sudo /usr/bin/bash '$remote_runner' '$remote_snapshot' '$remote_key' '$MANIFEST_DIGEST' '$SNAPSHOT_ID' '$DEPLOYED_RELEASE_SHA'" \
             > "$RUNNER_TEMP/production-result.json"
           jq -e '.backup_created == true and .dry_run.provider_calls == 0 and .dry_run.provider_effects == 0 and .reconcile.result.DuplicateSourceMaps == 0 and .reconcile.result.ProviderEffectsCreatedByImport == 0 and .reconcile.result.ProviderCallsDuringImport == 0 and .reconcile.result.SilentLoss == 0 and .reconcile.result.WrongOneIDBindings == 0' "$RUNNER_TEMP/production-result.json" >/dev/null
           jq '{backup_created,import:.import.result,reconcile:.reconcile.result,replay_check:."replay-check".result}' "$RUNNER_TEMP/production-result.json"

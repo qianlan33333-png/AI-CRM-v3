@@ -20,6 +20,12 @@ if [[ ! -f "$snapshot" || ! -f "$key_file" || ! -f /etc/aicrm/aicrm.env ]]; then
   exit 2
 fi
 
+# CI uploads the encrypted snapshot as the restricted deployment user while
+# the migrator deliberately runs as the unprivileged aicrm account. Transfer
+# ownership only after the exact, bounded input paths have been validated.
+chown aicrm:aicrm "$snapshot"
+chmod 0600 "$snapshot"
+
 current_release="$(readlink -f /opt/aicrm/current)"
 if [[ "$current_release" != "/opt/aicrm/releases/${release_sha}" ]]; then
   echo "requested release is not active" >&2
