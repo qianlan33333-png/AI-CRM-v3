@@ -13,6 +13,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -39,11 +41,12 @@ type sourceLink struct {
 	UpdatedAt      time.Time `json:"updated_at"`
 }
 type sourceEvent struct {
-	ID        int64     `json:"id"`
-	LinkID    int64     `json:"link_id"`
-	Stage     string    `json:"stage"`
-	Page      *int32    `json:"page"`
-	CreatedAt time.Time `json:"created_at"`
+	SourceTable string    `json:"source_table"`
+	ID          int64     `json:"id"`
+	LinkID      int64     `json:"link_id"`
+	Stage       string    `json:"stage"`
+	Page        *int32    `json:"page"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 type snapshot struct {
 	Schema      int           `json:"schema"`
@@ -177,6 +180,9 @@ func extractStream(path string) (snapshot, error) {
 			var row sourceEvent
 			err = decodeMarker(strings.TrimPrefix(line, "__AICRM_RADAR_EVENT__|"), &row)
 			if err == nil {
+				if row.SourceTable == "" {
+					row.SourceTable = "radar_link_events"
+				}
 				s.Events = append(s.Events, row)
 			}
 		}
@@ -291,25 +297,32 @@ func digest(s snapshot) string {
 func preflight(s snapshot) map[string]int {
 	out := map[string]int{"links": len(s.Links), "events": len(s.Events), "eligible_links": 0, "quarantine_links": 0, "legacy_events": 0}
 	for _, v := range s.Links {
-		if _, _, err := adapt(v); err == nil {
+		if _, reason, err := adapt(v); err == nil {
 			out["eligible_links"]++
 		} else {
 			out["quarantine_links"]++
+			out["quarantine_links_"+reason]++
 		}
 	}
 	linkIDs := map[int64]bool{}
 	for _, v := range s.Links {
-		linkIDs[v.ID] = true
+		if _, _, err := adapt(v); err == nil {
+			linkIDs[v.ID] = true
+		}
 	}
 	for _, e := range s.Events {
-		if linkIDs[e.LinkID] && e.ID > 0 && !e.CreatedAt.IsZero() && strings.TrimSpace(e.Stage) == e.Stage && e.Stage != "" {
+		if linkIDs[e.LinkID] && validEvent(e) {
 			out["legacy_events"]++
+		} else if !validEvent(e) {
+			out["quarantine_events_invalid_event"]++
+		} else {
+			out["quarantine_events_link_unavailable"]++
 		}
 	}
 	return out
 }
 func adapt(v sourceLink) (radar.Content, string, error) {
-	if v.ID < 1 || !radar.PublicCode(v.PublicCode).Valid() || v.Name == "" || v.Title == "" || v.CreatedAt.IsZero() || v.UpdatedAt.Before(v.CreatedAt) {
+	if v.ID < 1 || !radar.PublicCode(v.PublicCode).Valid() || !validSourceText(v.Name, radar.MaxNameRunes) || !validSourceText(v.Title, radar.MaxTitleRunes) || v.CreatedAt.IsZero() || v.UpdatedAt.IsZero() || v.UpdatedAt.Before(v.CreatedAt) {
 		return radar.Content{}, "invalid_definition", radar.ErrInvalidArgument
 	}
 	switch {
@@ -325,6 +338,23 @@ func adapt(v sourceLink) (radar.Content, string, error) {
 	default:
 		return radar.Content{}, "ambiguous_media", radar.ErrInvalidArgument
 	}
+}
+
+func validSourceText(value string, maximum int) bool {
+	if value == "" || !utf8.ValidString(value) || value != strings.TrimSpace(value) || utf8.RuneCountInString(value) > maximum {
+		return false
+	}
+	for _, character := range value {
+		if unicode.IsControl(character) {
+			return false
+		}
+	}
+	return true
+}
+
+func validEvent(v sourceEvent) bool {
+	return (v.SourceTable == "radar_link_events" || v.SourceTable == "radar_click_events") &&
+		v.ID > 0 && v.LinkID > 0 && !v.CreatedAt.IsZero() && validSourceText(v.Stage, 80)
 }
 
 func apply(ctx context.Context, pool *pgxpool.Pool, s snapshot, o options) (map[string]int, error) {
@@ -419,9 +449,13 @@ func apply(ctx context.Context, pool *pgxpool.Pool, s snapshot, o options) (map[
 		}
 	}
 	for _, v := range s.Events {
-		if v.ID < 1 || v.LinkID < 1 || v.CreatedAt.IsZero() || v.Stage == "" || len(v.Stage) > 80 || strings.TrimSpace(v.Stage) != v.Stage {
+		sourceTable := v.SourceTable
+		if sourceTable == "" {
+			sourceTable = "radar_link_events"
+		}
+		if !validEvent(sourceEvent{SourceTable: sourceTable, ID: v.ID, LinkID: v.LinkID, Stage: v.Stage, Page: v.Page, CreatedAt: v.CreatedAt}) {
 			recordDigest := recordHash(v)
-			if err = quarantine(ctx, tx, batchID, "radar_link_events", v.ID, "invalid_event", recordDigest); err != nil {
+			if err = quarantine(ctx, tx, batchID, sourceTable, v.ID, "invalid_event", recordDigest); err != nil {
 				return nil, err
 			}
 			counts["quarantined_events"]++
@@ -430,10 +464,10 @@ func apply(ctx context.Context, pool *pgxpool.Pool, s snapshot, o options) (map[
 		targetID := targetBySource[v.LinkID]
 		if targetID == 0 {
 			recordDigest := recordHash(v)
-			if err = quarantine(ctx, tx, batchID, "radar_link_events", v.ID, "link_unavailable", recordDigest); err != nil {
+			if err = quarantine(ctx, tx, batchID, sourceTable, v.ID, "link_unavailable", recordDigest); err != nil {
 				return nil, err
 			}
-			if _, err = tx.Exec(ctx, `INSERT INTO radar_migration_source_map(batch_id,source_table,source_pk,target_table,target_pk,record_digest,disposition,created_at) VALUES($1,'radar_link_events',$2,'radar_legacy_events',NULL,$3,'quarantine',clock_timestamp())`, batchID, fmt.Sprint(v.ID), recordDigest); err != nil {
+			if _, err = tx.Exec(ctx, `INSERT INTO radar_migration_source_map(batch_id,source_table,source_pk,target_table,target_pk,record_digest,disposition,created_at) VALUES($1,$2,$3,'radar_legacy_events',NULL,$4,'quarantine',clock_timestamp())`, batchID, sourceTable, fmt.Sprint(v.ID), recordDigest); err != nil {
 				return nil, err
 			}
 			counts["quarantined_events"]++
@@ -441,14 +475,14 @@ func apply(ctx context.Context, pool *pgxpool.Pool, s snapshot, o options) (map[
 		}
 		recordDigest := recordHash(v)
 		summary, _ := json.Marshal(map[string]any{"page": v.Page})
-		command, e := tx.Exec(ctx, `INSERT INTO radar_legacy_events(batch_id,source_table,source_pk,radar_id,source_stage,record_digest,safe_summary,occurred_at,imported_at) VALUES($1,'radar_link_events',$2,$3,$4,$5,$6,$7,clock_timestamp()) ON CONFLICT(batch_id,source_table,source_pk) DO NOTHING`, batchID, fmt.Sprint(v.ID), targetID, v.Stage, recordDigest, summary, v.CreatedAt.UTC())
+		command, e := tx.Exec(ctx, `INSERT INTO radar_legacy_events(batch_id,source_table,source_pk,radar_id,source_stage,record_digest,safe_summary,occurred_at,imported_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,clock_timestamp()) ON CONFLICT(batch_id,source_table,source_pk) DO NOTHING`, batchID, sourceTable, fmt.Sprint(v.ID), targetID, v.Stage, recordDigest, summary, v.CreatedAt.UTC())
 		if e != nil {
 			return nil, e
 		}
 		if command.RowsAffected() > 0 {
 			counts["legacy_events"]++
 		}
-		_, e = tx.Exec(ctx, `INSERT INTO radar_migration_source_map(batch_id,source_table,source_pk,target_table,target_pk,record_digest,disposition,created_at) VALUES($1,'radar_link_events',$2,'radar_legacy_events',NULL,$3,'unattributed',clock_timestamp()) ON CONFLICT(batch_id,source_table,source_pk) DO NOTHING`, batchID, fmt.Sprint(v.ID), recordDigest)
+		_, e = tx.Exec(ctx, `INSERT INTO radar_migration_source_map(batch_id,source_table,source_pk,target_table,target_pk,record_digest,disposition,created_at) VALUES($1,$2,$3,'radar_legacy_events',NULL,$4,'unattributed',clock_timestamp()) ON CONFLICT(batch_id,source_table,source_pk) DO NOTHING`, batchID, sourceTable, fmt.Sprint(v.ID), recordDigest)
 		if e != nil {
 			return nil, e
 		}
@@ -469,13 +503,31 @@ func quarantine(ctx context.Context, tx pgx.Tx, batchID int64, table string, id 
 }
 func reconcile(ctx context.Context, pool *pgxpool.Pool, s snapshot) error {
 	sum, _ := hex.DecodeString(s.Digest)
+	var batchID int64
 	var status string
 	var source, imported, quarantined, mappings, legacy int64
-	err := pool.QueryRow(ctx, `SELECT b.status,b.source_count,b.imported_count,b.quarantined_count,(SELECT count(*) FROM radar_migration_source_map m WHERE m.batch_id=b.id),(SELECT count(*) FROM radar_legacy_events e WHERE e.batch_id=b.id) FROM radar_migration_batches b WHERE snapshot_digest=$1`, sum).Scan(&status, &source, &imported, &quarantined, &mappings, &legacy)
+	err := pool.QueryRow(ctx, `SELECT b.id,b.status,b.source_count,b.imported_count,b.quarantined_count,(SELECT count(*) FROM radar_migration_source_map m WHERE m.batch_id=b.id),(SELECT count(*) FROM radar_legacy_events e WHERE e.batch_id=b.id) FROM radar_migration_batches b WHERE snapshot_digest=$1`, sum).Scan(&batchID, &status, &source, &imported, &quarantined, &mappings, &legacy)
 	if err != nil {
 		return err
 	}
-	return print(map[string]any{"mode": "reconcile", "snapshot_sha256": s.Digest, "status": status, "source_count": source, "imported_count": imported, "quarantined_count": quarantined, "mapping_count": mappings, "legacy_event_count": legacy, "oneid_links_created": 0})
+	reasons := map[string]int64{}
+	rows, err := pool.Query(ctx, `SELECT reason_code,count(*) FROM radar_migration_quarantine WHERE batch_id=$1 GROUP BY reason_code ORDER BY reason_code`, batchID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var reason string
+		var count int64
+		if err = rows.Scan(&reason, &count); err != nil {
+			return err
+		}
+		reasons[reason] = count
+	}
+	if err = rows.Err(); err != nil {
+		return err
+	}
+	return print(map[string]any{"mode": "reconcile", "snapshot_sha256": s.Digest, "status": status, "source_count": source, "imported_count": imported, "quarantined_count": quarantined, "quarantine_by_reason": reasons, "mapping_count": mappings, "legacy_event_count": legacy, "oneid_links_created": 0})
 }
 func recordHash(v any) []byte { raw, _ := json.Marshal(v); sum := sha256.Sum256(raw); return sum[:] }
 func print(v any) error {

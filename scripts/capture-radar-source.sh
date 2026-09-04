@@ -26,6 +26,11 @@ cat > "$sql_file" <<'SQL'
 BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;
 SET LOCAL statement_timeout='10min';
 SELECT '__AICRM_RADAR_SNAPSHOT__|' || to_char(transaction_timestamp() AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"');
+SELECT EXISTS (
+  SELECT 1 FROM information_schema.columns
+  WHERE table_schema='public' AND table_name='radar_links' AND column_name='public_code'
+) AS radar_v2_shape \gset
+\if :radar_v2_shape
 SELECT '__AICRM_RADAR_LINK__|' || encode(convert_to(jsonb_build_object(
   'id',id,'public_code',public_code,'name',name,'title',title,
   'destination_url',destination_url,'status',status,
@@ -33,9 +38,28 @@ SELECT '__AICRM_RADAR_LINK__|' || encode(convert_to(jsonb_build_object(
   'version',version,'created_by',created_by,'updated_by',updated_by,
   'created_at',created_at,'updated_at',updated_at
 )::text,'UTF8'),'hex') FROM public.radar_links ORDER BY id;
+\else
+SELECT '__AICRM_RADAR_LINK__|' || encode(convert_to(jsonb_build_object(
+  'id',id,'public_code',code,'name',title,'title',title,
+  'destination_url',CASE WHEN target_type='link' THEN original_url ELSE '' END,
+  'status',CASE WHEN enabled THEN 'enabled' ELSE 'disabled' END,
+  'cover_image_id',CASE WHEN target_type='image' AND media_item_id ~ '^[1-9][0-9]*$' THEN media_item_id::bigint ELSE NULL END,
+  'attachment_id',CASE WHEN target_type='pdf' AND media_item_id ~ '^[1-9][0-9]*$' THEN media_item_id::bigint ELSE NULL END,
+  'version',1,'created_by',1,'updated_by',1,
+  'created_at',created_at,'updated_at',updated_at
+)::text,'UTF8'),'hex') FROM public.radar_links WHERE deleted_at IS NULL ORDER BY id;
+\endif
+SELECT to_regclass('public.radar_link_events') IS NOT NULL AS has_v2_events,
+       to_regclass('public.radar_click_events') IS NOT NULL AS has_legacy_events \gset
+\if :has_v2_events
 SELECT '__AICRM_RADAR_EVENT__|' || encode(convert_to(jsonb_build_object(
-  'id',id,'link_id',link_id,'stage',stage,'page',page_no,'created_at',created_at
+  'source_table','radar_link_events','id',id,'link_id',link_id,'stage',stage,'page',page_no,'created_at',created_at
 )::text,'UTF8'),'hex') FROM public.radar_link_events ORDER BY id;
+\elif :has_legacy_events
+SELECT '__AICRM_RADAR_EVENT__|' || encode(convert_to(jsonb_build_object(
+  'source_table','radar_click_events','id',id,'link_id',link_id,'stage',stage,'page',NULL,'created_at',created_at
+)::text,'UTF8'),'hex') FROM public.radar_click_events ORDER BY id;
+\endif
 COMMIT;
 SQL
 
