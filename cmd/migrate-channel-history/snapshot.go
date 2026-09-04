@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
@@ -26,9 +27,10 @@ import (
 const snapshotMagic = "AICRM-CHANNEL-SNAPSHOT-V1\n"
 
 var expectedSourceTables = []string{
-	"automation_channel", "automation_channel_assignee", "automation_channel_contact",
+	"automation_channel", "automation_channel_assignee", "automation_channel_assignment_event", "automation_channel_contact",
 	"automation_channel_entry_effect_log", "automation_channel_entry_runtime", "automation_channel_qrcode_asset",
 	"automation_channel_scene_alias", "channel_welcome_effect_dependency", "channel_welcome_effect_graph",
+	"wecom_customer_acquisition_links",
 }
 
 type snapshotManifest struct {
@@ -60,6 +62,13 @@ type discoveryTable struct {
 	OrphanChannelIDs   int64                       `json:"orphan_channel_ids"`
 	TimeWatermarks     map[string][2]string        `json:"time_watermarks"`
 	JSONTypeCounts     map[string]map[string]int64 `json:"json_type_counts"`
+}
+
+type discoveryReport struct {
+	SnapshotTimestamp time.Time        `json:"snapshot_timestamp"`
+	SourceHostDigest  string           `json:"source_host_digest"`
+	Tables            []discoveryTable `json:"tables"`
+	MissingTables     []string         `json:"missing_tables"`
 }
 
 func snapshotKeyFromEnvironment() ([]byte, error) {
@@ -104,12 +113,7 @@ func inspectSource(ctx context.Context, cfg options) error {
 	}
 	hostDigest := sha256.Sum256([]byte(strings.ToLower(parsed.Hostname())))
 	manifest := snapshotManifest{SchemaVersion: 1, SnapshotTimestamp: snapshotAt.UTC(), SourceHostDigest: "sha256:" + hex.EncodeToString(hostDigest[:]), Tables: []snapshotTable{}}
-	report := struct {
-		SnapshotTimestamp time.Time        `json:"snapshot_timestamp"`
-		SourceHostDigest  string           `json:"source_host_digest"`
-		Tables            []discoveryTable `json:"tables"`
-		MissingTables     []string         `json:"missing_tables"`
-	}{snapshotAt.UTC(), manifest.SourceHostDigest, []discoveryTable{}, []string{}}
+	report := discoveryReport{snapshotAt.UTC(), manifest.SourceHostDigest, []discoveryTable{}, []string{}}
 	sourceTables, err := discoverSourceTableNames(ctx, tx)
 	if err != nil {
 		return err
@@ -161,7 +165,7 @@ func inspectSource(ctx context.Context, cfg options) error {
 }
 
 func discoverSourceTableNames(ctx context.Context, tx pgx.Tx) ([]string, error) {
-	rows, err := tx.Query(ctx, `SELECT table_name FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE' AND (table_name LIKE 'automation_channel%' OR table_name LIKE 'channel_welcome_effect%') ORDER BY table_name`)
+	rows, err := tx.Query(ctx, `SELECT table_name FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE' AND (table_name LIKE 'automation_channel%' OR table_name LIKE 'channel_welcome_effect%' OR table_name='wecom_customer_acquisition_links') ORDER BY table_name`)
 	if err != nil {
 		return nil, err
 	}
@@ -175,6 +179,125 @@ func discoverSourceTableNames(ctx context.Context, tx pgx.Tx) ([]string, error) 
 		result = append(result, name)
 	}
 	return result, rows.Err()
+}
+
+// inspectSourceStream consumes the output of one remote psql session. The
+// producer starts a repeatable-read, read-only transaction before emitting the
+// timestamp, table metadata and hex-encoded JSON rows. Keeping transport out of
+// this command means the migration binary never owns SSH credentials and both
+// direct-DSN and forced-command sources produce the same authenticated format.
+func inspectSourceStream(cfg options) error {
+	if cfg.sourceStream == "" || cfg.sourceHost == "" {
+		return errors.New("inspect-stream requires --source-stream and --source-host")
+	}
+	parsed, err := url.Parse("ssh://" + cfg.sourceHost)
+	if err != nil || parsed.Hostname() == "" || parsed.Hostname() != cfg.sourceHost {
+		return errors.New("source host is invalid")
+	}
+	input, err := os.Open(cfg.sourceStream)
+	if err != nil {
+		return err
+	}
+	defer input.Close()
+	manifest, err := parseSourceStream(input, cfg.sourceHost)
+	if err != nil {
+		return err
+	}
+	report := discoveryReport{SnapshotTimestamp: manifest.SnapshotTimestamp, SourceHostDigest: manifest.SourceHostDigest, Tables: []discoveryTable{}, MissingTables: []string{}}
+	discovered := make(map[string]struct{}, len(manifest.Tables))
+	for _, table := range manifest.Tables {
+		discovered[table.Name] = struct{}{}
+		report.Tables = append(report.Tables, analyzeDiscoveryTable(table))
+	}
+	for _, tableName := range expectedSourceTables {
+		if _, ok := discovered[tableName]; !ok {
+			report.MissingTables = append(report.MissingTables, tableName)
+		}
+	}
+	if len(report.MissingTables) != 0 {
+		return fmt.Errorf("source stream is missing required tables: %s", strings.Join(report.MissingTables, ","))
+	}
+	applyOrphanDiagnostics(report.Tables, manifest)
+	manifest.ManifestDigest = manifest.computeDigest()
+	manifest.SnapshotID = "channel-" + strings.TrimPrefix(manifest.ManifestDigest, "sha256:")[:24]
+	if cfg.report != "" {
+		if err = writeJSONAtomic(cfg.report, report, 0o600); err != nil {
+			return err
+		}
+	}
+	if cfg.snapshot != "" {
+		key, keyErr := snapshotKeyFromEnvironment()
+		if keyErr != nil {
+			return keyErr
+		}
+		if err = writeEncryptedSnapshot(cfg.snapshot, key, manifest); err != nil {
+			return err
+		}
+	}
+	return printJSON(map[string]any{"mode": "inspect-stream", "snapshot_id": manifest.SnapshotID, "manifest_sha256": manifest.DigestHex(), "snapshot_written": cfg.snapshot != "", "report": report})
+}
+
+const (
+	streamSnapshotPrefix = "__AICRM_SNAPSHOT__|"
+	streamTablePrefix    = "__AICRM_TABLE__|"
+	streamRowPrefix      = "__AICRM_ROW__|"
+)
+
+func parseSourceStream(input io.Reader, sourceHost string) (snapshotManifest, error) {
+	hostDigest := sha256.Sum256([]byte(strings.ToLower(sourceHost)))
+	manifest := snapshotManifest{SchemaVersion: 1, SourceHostDigest: "sha256:" + hex.EncodeToString(hostDigest[:]), Tables: []snapshotTable{}}
+	known := map[string]bool{}
+	var current *snapshotTable
+	scanner := bufio.NewScanner(input)
+	scanner.Buffer(make([]byte, 64*1024), 64*1024*1024)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		switch {
+		case strings.HasPrefix(line, streamSnapshotPrefix):
+			if !manifest.SnapshotTimestamp.IsZero() {
+				return snapshotManifest{}, errors.New("duplicate source snapshot timestamp")
+			}
+			manifest.SnapshotTimestamp, _ = time.Parse(time.RFC3339Nano, strings.TrimPrefix(line, streamSnapshotPrefix))
+			if manifest.SnapshotTimestamp.IsZero() {
+				return snapshotManifest{}, errors.New("invalid source snapshot timestamp")
+			}
+		case strings.HasPrefix(line, streamTablePrefix):
+			parts := strings.SplitN(strings.TrimPrefix(line, streamTablePrefix), "|", 2)
+			if len(parts) != 2 || !validSourceTableName(parts[0]) || known[parts[0]] {
+				return snapshotManifest{}, errors.New("invalid source stream table marker")
+			}
+			columnsJSON, decodeErr := hex.DecodeString(parts[1])
+			var columns []string
+			if decodeErr != nil || json.Unmarshal(columnsJSON, &columns) != nil || len(columns) == 0 {
+				return snapshotManifest{}, errors.New("invalid source stream columns")
+			}
+			known[parts[0]] = true
+			manifest.Tables = append(manifest.Tables, snapshotTable{Name: parts[0], Columns: columns, Rows: []snapshotRow{}})
+			current = &manifest.Tables[len(manifest.Tables)-1]
+		case strings.HasPrefix(line, streamRowPrefix):
+			if current == nil {
+				return snapshotManifest{}, errors.New("source row appeared before table marker")
+			}
+			payload, decodeErr := hex.DecodeString(strings.TrimPrefix(line, streamRowPrefix))
+			payload, compactErr := compactJSONObject(payload)
+			if decodeErr != nil || compactErr != nil {
+				return snapshotManifest{}, errors.New("invalid source stream row")
+			}
+			digest := sha256.Sum256(payload)
+			current.Rows = append(current.Rows, snapshotRow{Digest: "sha256:" + hex.EncodeToString(digest[:]), Payload: append(json.RawMessage(nil), payload...)})
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return snapshotManifest{}, err
+	}
+	if manifest.SnapshotTimestamp.IsZero() || len(manifest.Tables) == 0 {
+		return snapshotManifest{}, errors.New("incomplete source stream")
+	}
+	for index := range manifest.Tables {
+		finalizeSnapshotTable(&manifest.Tables[index])
+	}
+	sort.Slice(manifest.Tables, func(i, j int) bool { return manifest.Tables[i].Name < manifest.Tables[j].Name })
+	return manifest, nil
 }
 
 func analyzeDiscoveryTable(table snapshotTable) discoveryTable {
@@ -293,7 +416,8 @@ func captureTable(ctx context.Context, tx pgx.Tx, name string, columns []string)
 		if err = rows.Scan(&payload); err != nil {
 			return snapshotTable{}, err
 		}
-		if !json.Valid(payload) {
+		payload, err = compactJSONObject(payload)
+		if err != nil {
 			return snapshotTable{}, errors.New("source row is not a JSON object")
 		}
 		digest := sha256.Sum256(payload)
@@ -302,6 +426,32 @@ func captureTable(ctx context.Context, tx pgx.Tx, name string, columns []string)
 	if err = rows.Err(); err != nil {
 		return snapshotTable{}, err
 	}
+	finalizeSnapshotTable(&table)
+	return table, nil
+}
+
+func compactJSONObject(payload []byte) ([]byte, error) {
+	if !json.Valid(payload) {
+		return nil, errors.New("invalid JSON")
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &object); err != nil || object == nil {
+		return nil, errors.New("JSON value is not an object")
+	}
+	// Marshal through RawMessage fields once so key ordering, insignificant
+	// whitespace and the encoder's HTML escaping are already in the exact form
+	// that the enclosing encrypted manifest will preserve.
+	compact, err := json.Marshal(object)
+	if err != nil {
+		return nil, err
+	}
+	if len(compact) == 0 || compact[0] != '{' {
+		return nil, errors.New("JSON value is not an object")
+	}
+	return compact, nil
+}
+
+func finalizeSnapshotTable(table *snapshotTable) {
 	sort.SliceStable(table.Rows, func(i, j int) bool { return string(table.Rows[i].Payload) < string(table.Rows[j].Payload) })
 	occurrences := map[string]int{}
 	for index := range table.Rows {
@@ -313,7 +463,6 @@ func captureTable(ctx context.Context, tx pgx.Tx, name string, columns []string)
 		table.Rows[index].SourcePK = fmt.Sprintf("%s#%d", base, occurrences[base])
 	}
 	table.Digest = digestRows(table.Rows)
-	return table, nil
 }
 
 func digestRows(rows []snapshotRow) string {
@@ -377,7 +526,7 @@ func (manifest snapshotManifest) Validate() error {
 }
 
 func validSourceTableName(name string) bool {
-	if strings.HasPrefix(name, "automation_channel") || strings.HasPrefix(name, "channel_welcome_effect") {
+	if strings.HasPrefix(name, "automation_channel") || strings.HasPrefix(name, "channel_welcome_effect") || name == "wecom_customer_acquisition_links" {
 		for _, character := range name {
 			if character != '_' && (character < 'a' || character > 'z') && (character < '0' || character > '9') {
 				return false

@@ -1,0 +1,135 @@
+name: channel-history-import
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: channel-history-production-import
+  cancel-in-progress: false
+
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: aicrm_channel_rehearsal
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d aicrm_channel_rehearsal"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      AICRM_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/aicrm_channel_rehearsal?sslmode=disable
+      AICRM_CHANNEL_SOURCE_SSH_HOST: ${{ vars.AICRM_CHANNEL_SOURCE_SSH_HOST }}
+      AICRM_CHANNEL_SOURCE_SSH_USER: ${{ vars.AICRM_CHANNEL_SOURCE_SSH_USER }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Configure pinned source SSH host
+        env:
+          SOURCE_SSH_KEY: ${{ secrets.AICRM_CHANNEL_SOURCE_SSH_KEY }}
+          SOURCE_KNOWN_HOSTS: ${{ secrets.AICRM_CHANNEL_SOURCE_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          [[ -n "$AICRM_CHANNEL_SOURCE_SSH_HOST" && -n "$AICRM_CHANNEL_SOURCE_SSH_USER" ]]
+          install -d -m 0700 "$HOME/.ssh"
+          umask 077
+          printf '%s\n' "$SOURCE_SSH_KEY" > "$HOME/.ssh/channel_source_key"
+          printf '%s\n' "$SOURCE_KNOWN_HOSTS" > "$HOME/.ssh/channel_source_known_hosts"
+          ssh-keygen -y -f "$HOME/.ssh/channel_source_key" >/dev/null
+          ssh-keygen -F "$AICRM_CHANNEL_SOURCE_SSH_HOST" -f "$HOME/.ssh/channel_source_known_hosts" >/dev/null
+      - name: Capture and authenticate production snapshot
+        run: |
+          set -euo pipefail
+          umask 077
+          snapshot_key="$(openssl rand -base64 32 | tr -d '\n')"
+          printf '%s' "$snapshot_key" > "$RUNNER_TEMP/channel-history.key"
+          export AICRM_CHANNEL_SNAPSHOT_KEY="$snapshot_key"
+          export AICRM_CHANNEL_SOURCE_SSH_KEY_FILE="$HOME/.ssh/channel_source_key"
+          export AICRM_CHANNEL_SOURCE_KNOWN_HOSTS_FILE="$HOME/.ssh/channel_source_known_hosts"
+          scripts/capture-channel-history-source.sh "$RUNNER_TEMP/channel-history.stream"
+          go build -trimpath -o "$RUNNER_TEMP/migrate-channel-history" ./cmd/migrate-channel-history
+          "$RUNNER_TEMP/migrate-channel-history" --mode inspect-stream \
+            --source-stream "$RUNNER_TEMP/channel-history.stream" \
+            --source-host "$AICRM_CHANNEL_SOURCE_SSH_HOST" \
+            --snapshot "$RUNNER_TEMP/channel-history.enc" \
+            --report "$RUNNER_TEMP/discovery.json" > "$RUNNER_TEMP/inspect.json"
+          unlink "$RUNNER_TEMP/channel-history.stream"
+          "$RUNNER_TEMP/migrate-channel-history" --mode validate --snapshot "$RUNNER_TEMP/channel-history.enc" > "$RUNNER_TEMP/validate.json"
+          "$RUNNER_TEMP/migrate-channel-history" --mode dry-run --snapshot "$RUNNER_TEMP/channel-history.enc" > "$RUNNER_TEMP/dry-run.json"
+          manifest_digest="$(jq -er '.manifest_sha256' "$RUNNER_TEMP/validate.json")"
+          snapshot_id="$(jq -er '.snapshot_id' "$RUNNER_TEMP/validate.json")"
+          [[ "$manifest_digest" =~ ^[0-9a-f]{64}$ && "$snapshot_id" =~ ^channel-[0-9a-f]{24}$ ]]
+          printf 'MANIFEST_DIGEST=%s\nSNAPSHOT_ID=%s\n' "$manifest_digest" "$snapshot_id" >> "$GITHUB_ENV"
+          jq -e '.eligible == true and .provider_calls == 0 and .provider_effects == 0' "$RUNNER_TEMP/dry-run.json" >/dev/null
+          jq '{snapshot_id,manifest_sha256,summary}' "$RUNNER_TEMP/validate.json"
+      - name: Rehearse import, replay and rollback on PostgreSQL 16
+        run: |
+          set -euo pipefail
+          export AICRM_CHANNEL_SNAPSHOT_KEY="$(<"$RUNNER_TEMP/channel-history.key")"
+          go run ./cmd/migrate-platform -dir migrations
+          psql "$AICRM_DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL'
+          INSERT INTO admin_users(username,password_hash,display_name,is_active)
+          VALUES('migration-admin','$argon2id$rehearsal','Migration Admin',true);
+          INSERT INTO admin_user_roles(admin_user_id,role_code)
+          SELECT id,'super_admin' FROM admin_users WHERE username='migration-admin';
+          SQL
+          migrator="$RUNNER_TEMP/migrate-channel-history"
+          snapshot="$RUNNER_TEMP/channel-history.enc"
+          "$migrator" --mode import --snapshot "$snapshot" --manifest-sha256 "$MANIFEST_DIGEST" --confirm > "$RUNNER_TEMP/rehearsal-import.json"
+          "$migrator" --mode reconcile --snapshot "$snapshot" --manifest-sha256 "$MANIFEST_DIGEST" > "$RUNNER_TEMP/rehearsal-reconcile.json"
+          "$migrator" --mode replay-check --snapshot "$snapshot" --manifest-sha256 "$MANIFEST_DIGEST" > "$RUNNER_TEMP/rehearsal-replay.json"
+          "$migrator" --mode rollback --snapshot "$snapshot" --manifest-sha256 "$MANIFEST_DIGEST" --confirm > "$RUNNER_TEMP/rehearsal-rollback.json"
+          "$migrator" --mode import --snapshot "$snapshot" --manifest-sha256 "$MANIFEST_DIGEST" --confirm > "$RUNNER_TEMP/rehearsal-reimport.json"
+          "$migrator" --mode reconcile --snapshot "$snapshot" --manifest-sha256 "$MANIFEST_DIGEST" > "$RUNNER_TEMP/rehearsal-final.json"
+          jq -e '.result.DuplicateSourceMaps == 0 and .result.ProviderEffectsCreatedByImport == 0 and .result.ProviderCallsDuringImport == 0 and .result.SilentLoss == 0 and .result.WrongOneIDBindings == 0' "$RUNNER_TEMP/rehearsal-final.json" >/dev/null
+          jq '{mode,result}' "$RUNNER_TEMP/rehearsal-final.json"
+      - name: Configure pinned deployment SSH host
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          umask 077
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$HOME/.ssh/deploy_key"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$HOME/.ssh/deploy_known_hosts"
+          ssh-keygen -y -f "$HOME/.ssh/deploy_key" >/dev/null
+          test -s "$HOME/.ssh/deploy_known_hosts"
+      - name: Backup, import and reconcile production
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          ssh_flags=(-i "$HOME/.ssh/deploy_key" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$HOME/.ssh/deploy_known_hosts")
+          remote_snapshot="/tmp/aicrm-channel-history-${SNAPSHOT_ID}.enc"
+          remote_key="/tmp/aicrm-channel-history-${SNAPSHOT_ID}.key"
+          remote_runner="/tmp/run-channel-history-import-${SNAPSHOT_ID}.sh"
+          cleanup() {
+            ssh "${ssh_flags[@]}" "${DEPLOY_USER}@${DEPLOY_HOST}" "sudo unlink '$remote_snapshot' '$remote_key' '$remote_runner' 2>/dev/null || true" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          scp "${ssh_flags[@]}" "$RUNNER_TEMP/channel-history.enc" "${DEPLOY_USER}@${DEPLOY_HOST}:$remote_snapshot"
+          scp "${ssh_flags[@]}" "$RUNNER_TEMP/channel-history.key" "${DEPLOY_USER}@${DEPLOY_HOST}:$remote_key"
+          scp "${ssh_flags[@]}" deploy/run-channel-history-import.sh "${DEPLOY_USER}@${DEPLOY_HOST}:$remote_runner"
+          ssh "${ssh_flags[@]}" "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            "sudo /usr/bin/bash '$remote_runner' '$remote_snapshot' '$remote_key' '$MANIFEST_DIGEST' '$SNAPSHOT_ID' '$GITHUB_SHA'" \
+            > "$RUNNER_TEMP/production-result.json"
+          jq -e '.backup_created == true and .dry_run.provider_calls == 0 and .dry_run.provider_effects == 0 and .reconcile.result.DuplicateSourceMaps == 0 and .reconcile.result.ProviderEffectsCreatedByImport == 0 and .reconcile.result.ProviderCallsDuringImport == 0 and .reconcile.result.SilentLoss == 0 and .reconcile.result.WrongOneIDBindings == 0' "$RUNNER_TEMP/production-result.json" >/dev/null
+          jq '{backup_created,import:.import.result,reconcile:.reconcile.result,replay_check:."replay-check".result}' "$RUNNER_TEMP/production-result.json"
+          curl --fail --silent --show-error --retry 5 --retry-delay 2 https://id-dev.youcangogogo.com/readyz

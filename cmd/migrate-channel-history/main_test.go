@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -12,7 +13,10 @@ import (
 )
 
 func TestEncryptedSnapshotRoundTripAndTamperDetection(t *testing.T) {
-	payload := json.RawMessage(`{"id":1,"channel_id":7}`)
+	payload, err := compactJSONObject([]byte(`{ "id": 1, "channel_id": 7, "url": "https://example.test/?a=1&b=<x>" }`))
+	if err != nil {
+		t.Fatal(err)
+	}
 	rowDigest := sha256.Sum256(payload)
 	row := snapshotRow{SourcePK: "1", Digest: "sha256:" + hex.EncodeToString(rowDigest[:]), Payload: payload}
 	manifest := snapshotManifest{SchemaVersion: 1, SnapshotTimestamp: time.Unix(1_788_336_000, 0).UTC(), SourceHostDigest: hashText("source"), Tables: []snapshotTable{{Name: "automation_channel_contact", Columns: []string{"id", "channel_id"}, Rows: []snapshotRow{row}}}}
@@ -80,6 +84,44 @@ func TestDuplicateSourceIDsAreDetectedWithoutConflatingOccurrences(t *testing.T)
 	}
 	if duplicateRowID(manifest.Tables[1].Rows[0], duplicates["automation_channel_contact"]) {
 		t.Fatalf("unique child row was marked duplicate: %v", duplicates)
+	}
+}
+
+func TestParseSourceStreamBuildsDeterministicManifest(t *testing.T) {
+	columns, err := json.Marshal([]string{"id", "channel_code"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := []byte(`{ "channel_code": "legacy", "id": 7 }`)
+	canonicalRow := `{"channel_code":"legacy","id":7}`
+	stream := fmt.Sprintf("ignored psql header\n %s2026-09-04T01:02:03.123456Z \n %sautomation_channel|%s \n %s%s \n(1 row)\n",
+		streamSnapshotPrefix, streamTablePrefix, hex.EncodeToString(columns), streamRowPrefix, hex.EncodeToString(row))
+	manifest, err := parseSourceStream(bytes.NewBufferString(stream), "source.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := manifest.SnapshotTimestamp.Format(time.RFC3339Nano); got != "2026-09-04T01:02:03.123456Z" {
+		t.Fatalf("snapshot timestamp=%s", got)
+	}
+	if len(manifest.Tables) != 1 || manifest.Tables[0].Name != "automation_channel" || len(manifest.Tables[0].Rows) != 1 {
+		t.Fatalf("manifest=%+v", manifest)
+	}
+	if manifest.Tables[0].Rows[0].SourcePK != "id=7#1" || string(manifest.Tables[0].Rows[0].Payload) != canonicalRow {
+		t.Fatalf("row=%+v", manifest.Tables[0].Rows[0])
+	}
+}
+
+func TestParseSourceStreamFailsClosed(t *testing.T) {
+	for name, stream := range map[string]string{
+		"missing timestamp": streamTablePrefix + "automation_channel|5b226964225d\n",
+		"row first":         streamSnapshotPrefix + "2026-09-04T01:02:03Z\n" + streamRowPrefix + "7b7d\n",
+		"bad row":           streamSnapshotPrefix + "2026-09-04T01:02:03Z\n" + streamTablePrefix + "automation_channel|5b226964225d\n" + streamRowPrefix + "00\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := parseSourceStream(bytes.NewBufferString(stream), "source.example"); err == nil {
+				t.Fatal("invalid source stream was accepted")
+			}
+		})
 	}
 }
 
