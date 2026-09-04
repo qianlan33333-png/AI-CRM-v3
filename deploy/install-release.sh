@@ -231,6 +231,8 @@ if ! systemctl is-active --quiet aicrm-effects-worker.service || \
   exit 9
 fi
 if ! systemctl start aicrm-automation-bootstrap.service; then
+  systemctl status --no-pager --full aicrm-automation-bootstrap.service || true
+  journalctl --no-pager -o cat -n 50 -u aicrm-automation-bootstrap.service || true
   rollback
   exit 13
 fi
