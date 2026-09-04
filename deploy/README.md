@@ -11,6 +11,7 @@ PostgreSQL 16 is the only runtime data dependency.
 - secrets and runtime settings: `/etc/aicrm/aicrm.env` (`0640`, never in Git)
 - API: `aicrm.service`
 - migrations: `aicrm-migrate.service` (oneshot before a release restart)
+- Automation Operations defaults: `aicrm-automation-bootstrap.service` (idempotent oneshot after API and River readiness)
 - WeCom inbox: `aicrm-wecom-worker.service` plus external systemd timer
 - durable River jobs: `aicrm-effects-worker.service` (External Effects and customer directory queues)
 - Daily customer reconciliation creation: `aicrm-customer-sync-daily.service` plus the 02:30 Asia/Shanghai systemd timer
@@ -29,6 +30,11 @@ atomically switches `/opt/aicrm/current`, restarts the API and checks `/readyz`.
 If migration, restart or readiness fails, the active symlink and service return
 to the previous binary. Database migrations are forward-compatible and are not
 destructively rolled back.
+
+After the API and durable worker are ready, every release runs the Automation
+Operations semantic bootstrap. It creates only paused 7/30/90-day canonical
+customer audiences and queues their initial River snapshots. It does not copy
+legacy rows or create outbound effects, and it preserves later operator edits.
 
 Required GitHub Actions secrets:
 

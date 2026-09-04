@@ -100,6 +100,10 @@ grep -qx 'test -x "$release_dir/bin/migrate-phone-identities"' "$installer" || {
 grep -qx 'test -x "$release_dir/bin/migrate-v2-config-definitions"' "$installer" || { echo "release must include configuration definition migration tool" >&2; exit 1; }
 grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/migrate-v2-config-definitions ./cmd/migrate-v2-config-definitions' .github/workflows/ci.yml || { echo "CI must build the configuration definition migration tool" >&2; exit 1; }
 grep -qx 'test -x "$release_dir/bin/migrate-channel-history"' "$installer" || { echo "release must include channel history migration tool" >&2; exit 1; }
+grep -qx 'test -x "$release_dir/bin/bootstrap-automation-operations"' "$installer" || { echo "release must include Automation Operations semantic bootstrap" >&2; exit 1; }
+grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/bootstrap-automation-operations ./cmd/bootstrap-automation-operations' .github/workflows/ci.yml || { echo "CI must build Automation Operations semantic bootstrap" >&2; exit 1; }
+grep -qxF 'ExecStart=/opt/aicrm/current/bin/bootstrap-automation-operations' deploy/aicrm-automation-bootstrap.service || { echo "Automation Operations bootstrap unit must execute the release binary" >&2; exit 1; }
+grep -qxF 'if ! systemctl start aicrm-automation-bootstrap.service; then' "$installer" || { echo "deployment must run Automation Operations semantic bootstrap" >&2; exit 1; }
 grep -qx 'test -x "$release_dir/bin/migrate-identity-phone-vault"' "$installer" || { echo "release must include phone vault migration tool" >&2; exit 1; }
 grep -qx 'test -f "$release_dir/release-files.sha256"' "$installer" || { echo "release must require its immutable file manifest" >&2; exit 1; }
 grep -qx '(cd "$release_dir" && sha256sum --strict --check release-files.sha256)' "$installer" || { echo "existing releases must pass their complete file manifest before resume" >&2; exit 1; }
