@@ -16,7 +16,7 @@
 - 每个任务先写失败测试，再做最小实现，再跑定向测试和全量门禁。
 - 每个 PR 只交付一个用户可观察能力；下游 PR 不掩盖上游缺口。
 - v2 只读基线固定为 `6bfbe5816bb89913c70adaca87d6a486260e016e`。
-- 开工时重新检查 migration 最大编号；下文 `0021-0023` 是建议值，不得覆盖主线已有 migration。
+- 已基于开工时主线最大编号 `0048` 将 Radar migration 分配为 `0049-0051`；合并前仍需重新检查主线是否新增冲突编号。
 - 雷达身份最终值必须是 Provider-verified、带开放平台 scope 的 UnionID；缺失时不得 fallback 到 OpenID。
 - 不在本计划内加入消息、标签、任务、自动化或任何 Provider 写入。
 
@@ -109,9 +109,9 @@ No-duplication evidence: no Radar identity matcher, customer key, queue, Worker,
 
 **Files:**
 
-- Create: `migrations/0021_radar_core.sql`
-- Create: `migrations/0022_radar_sessions_events.sql`
-- Create: `migrations/0023_radar_legacy_import.sql`
+- Create: `migrations/0049_radar_core.sql`
+- Create: `migrations/0050_radar_sessions_events.sql`
+- Create: `migrations/0051_radar_legacy_import.sql`
 - Modify: `cmd/migrate-platform/main_test.go`
 - Create: `internal/radar/store/postgres_integration_test.go`
 
