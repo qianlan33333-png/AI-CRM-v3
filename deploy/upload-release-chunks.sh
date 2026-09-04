@@ -47,7 +47,10 @@ archive_sha256="$(sha256sum "$archive" | awk '{print $1}')"
 # runner-to-host connection stalls. Small independently retried chunks keep
 # each transfer bounded; the host publishes the archive only after a complete
 # SHA-256 verification.
-split -b 4m -a 4 "$archive" "$chunk_dir/part-"
+# The runner-to-host path can stall long enough that a 4 MiB part repeatedly
+# exceeds its timeout. One MiB keeps each retry independently useful on the
+# observed slow link while the final archive digest still guards correctness.
+split -b 1m -a 4 "$archive" "$chunk_dir/part-"
 chunks=("$chunk_dir"/part-*)
 [[ -f "${chunks[0]}" ]] || { echo "release archive produced no chunks" >&2; exit 3; }
 
@@ -60,7 +63,7 @@ for chunk in "${chunks[@]}"; do
   chunk_name="$(basename "$chunk")"
   uploaded=false
   for attempt in 1 2 3 4 5; do
-    if timeout 300s scp "${ssh_flags[@]}" "$chunk" \
+    if timeout 120s scp "${ssh_flags[@]}" "$chunk" \
       "${deploy_target}:${remote_chunk_dir}/${chunk_name}"; then
       uploaded=true
       break
