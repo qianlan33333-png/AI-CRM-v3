@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -882,9 +883,41 @@ func (runner importRunner) VerifyLegacyAssets(ctx context.Context, manifest snap
 			if err != nil {
 				return result, err
 			}
-			bindingDigest := sha256.Sum256([]byte("legacy\x00" + strconv.FormatInt(id, 10) + "\x00" + scene.digest))
+			bindingInput := append([]byte("legacy-state\x00"+strconv.FormatInt(channelID, 10)+"\x00"), digest[:]...)
+			bindingDigest := sha256.Sum256(bindingInput)
 			err = runner.UOW.Within(ctx, func(txctx context.Context) error {
-				_, _, e := runner.States.PutBinding(txctx, channelstore.StateBinding{CorpID: corpID, DigestKeyVersion: 1, StateDigest: digest, ChannelID: channelID, AssetKind: channelstore.AcquisitionAssetQRCode, AssetVersion: int64(2_000_000_000) + scene.id, BindingDigest: bindingDigest, ActiveFrom: scene.active})
+				tx, e := platformpostgres.RequireTransaction(txctx)
+				if e != nil {
+					return e
+				}
+				_, e = tx.Exec(txctx, `SELECT pg_advisory_xact_lock(hashtextextended(
+					'channel.state-digest:' || $1 || ':1:' || encode($2::bytea, 'hex'), 0
+				))`, corpID, digest[:])
+				if e != nil {
+					return e
+				}
+				var represented bool
+				e = tx.QueryRow(txctx, `SELECT EXISTS(
+					SELECT 1 FROM channel_acquisition_state_bindings
+					WHERE corp_id=$1 AND digest_key_version=1 AND state_digest=$2
+					  AND channel_id=$3 AND asset_kind=$4 AND active_until IS NULL
+				)`, corpID, digest[:], channelID, channelstore.AcquisitionAssetQRCode).Scan(&represented)
+				if e != nil || represented {
+					return e
+				}
+				assetVersion := int64(2_000_000_000) + scene.id
+				var occupied bool
+				e = tx.QueryRow(txctx, `SELECT EXISTS(
+					SELECT 1 FROM channel_acquisition_state_bindings
+					WHERE channel_id=$1 AND asset_kind=$2 AND asset_version=$3
+				)`, channelID, channelstore.AcquisitionAssetQRCode, assetVersion).Scan(&occupied)
+				if e != nil {
+					return e
+				}
+				if occupied {
+					assetVersion = legacyStateBindingAssetVersion(bindingDigest)
+				}
+				_, _, e = runner.States.PutBinding(txctx, channelstore.StateBinding{CorpID: corpID, DigestKeyVersion: 1, StateDigest: digest, ChannelID: channelID, AssetKind: channelstore.AcquisitionAssetQRCode, AssetVersion: assetVersion, BindingDigest: bindingDigest, ActiveFrom: scene.active})
 				return e
 			})
 			if err != nil {
@@ -896,10 +929,17 @@ func (runner importRunner) VerifyLegacyAssets(ctx context.Context, manifest snap
 	return result, nil
 }
 
+func legacyStateBindingAssetVersion(bindingDigest [sha256.Size]byte) int64 {
+	// Keep migration-owned versions in a separate positive range. The digest
+	// makes a changed State for a reused source alias ID deterministic without
+	// rewriting the old immutable binding.
+	return 4_000_000_000 + int64(binary.BigEndian.Uint64(bindingDigest[:8])&((uint64(1)<<62)-1))
+}
+
 type legacyScene struct {
-	id            int64
-	value, digest string
-	active        time.Time
+	id     int64
+	value  string
+	active time.Time
 }
 
 func legacyScenes(manifest snapshotManifest, channelID int64, assetScene string) []legacyScene {
@@ -919,12 +959,11 @@ func legacyScenes(manifest snapshotManifest, channelID int64, assetScene string)
 		if active.IsZero() {
 			active = time.Now().UTC()
 		}
-		out = append(out, legacyScene{id, value, row.Digest, active})
+		out = append(out, legacyScene{id: id, value: value, active: active})
 		seen[value] = true
 	}
 	if assetScene != "" && !seen[assetScene] {
-		d := sha256.Sum256([]byte(assetScene))
-		out = append(out, legacyScene{9_000_000 + int64(len(out)), assetScene, hex.EncodeToString(d[:]), time.Now().UTC()})
+		out = append(out, legacyScene{id: 9_000_000 + int64(len(out)), value: assetScene, active: time.Now().UTC()})
 	}
 	return out
 }
