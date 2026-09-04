@@ -88,6 +88,7 @@ jobs:
           scripts/check-pr09-frontend-freeze.sh
           scripts/check-config-definition-import-boundary.sh
           scripts/check-ai-assistant-donor-manifest.sh
+          make radar-check
           node scripts/generate-ai-assistant-client.mjs
           npm run typecheck
           npx tsc -p web/v3/tsconfig.json --noEmit
@@ -116,7 +117,7 @@ jobs:
         # service's lock table or race its catalog tuples.
         run: GOFLAGS=-p=1 make check
       - name: Race-check security and identity boundaries
-        run: go test -p 1 -race ./cmd/aicrm ./cmd/bootstrap-automation-operations ./cmd/migrate-commerce-history ./cmd/migrate-order-attribution ./cmd/migrate-automation-operations ./cmd/migrate-v2-config-definitions ./cmd/migrate-channel-history ./internal/access/... ./internal/identity/... ./internal/wecom/... ./internal/externaleffects/... ./internal/platform/jobqueue/... ./internal/media/... ./internal/tag/... ./internal/product/... ./internal/coupon/... ./internal/groupops/... ./internal/automation/... ./internal/segment/... ./internal/operationcycle/... ./internal/outbound ./internal/order/... ./internal/payment/... ./internal/config/... ./internal/adminops/... ./internal/release/... ./internal/configmigration/...
+        run: go test -p 1 -race ./cmd/aicrm ./cmd/bootstrap-automation-operations ./cmd/migrate-commerce-history ./cmd/migrate-order-attribution ./cmd/migrate-automation-operations ./cmd/migrate-v2-config-definitions ./cmd/migrate-channel-history ./cmd/migrate-radar-v2 ./internal/radar/... ./internal/access/... ./internal/identity/... ./internal/wecom/... ./internal/externaleffects/... ./internal/platform/jobqueue/... ./internal/media/... ./internal/tag/... ./internal/product/... ./internal/coupon/... ./internal/groupops/... ./internal/automation/... ./internal/segment/... ./internal/operationcycle/... ./internal/outbound ./internal/order/... ./internal/payment/... ./internal/config/... ./internal/adminops/... ./internal/release/... ./internal/configmigration/...
 
   deploy:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -172,6 +173,7 @@ jobs:
           go build -trimpath -ldflags "-s -w" -o release/bin/migrate-automation-operations ./cmd/migrate-automation-operations
           go build -trimpath -ldflags "-s -w" -o release/bin/migrate-v2-config-definitions ./cmd/migrate-v2-config-definitions
           go build -trimpath -ldflags "-s -w" -o release/bin/migrate-channel-history ./cmd/migrate-channel-history
+          go build -trimpath -ldflags "-s -w" -o release/bin/migrate-radar-v2 ./cmd/migrate-radar-v2
           go build -trimpath -ldflags "-s -w" -o release/bin/bootstrap-automation-operations ./cmd/bootstrap-automation-operations
           npm ci
           npm run version:check
@@ -192,6 +194,7 @@ jobs:
           scripts/check-pr09-frontend-freeze.sh
           scripts/check-config-definition-import-boundary.sh
           scripts/check-ai-assistant-donor-manifest.sh
+          make radar-check
           node scripts/generate-ai-assistant-client.mjs
           npm run typecheck
           npx tsc -p web/v3/tsconfig.json --noEmit

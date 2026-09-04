@@ -113,6 +113,12 @@ func TestApplyMigrationsFreshAndUpgradePostgreSQL(t *testing.T) {
 			t.Fatalf("owned table %s present=%v err=%v", table, present, err)
 		}
 	}
+	for _, table := range []string{"radar_links", "radar_link_versions", "radar_operation_receipts", "radar_audit_events", "radar_outbox", "radar_oauth_states", "radar_view_sessions", "radar_events", "radar_migration_batches", "radar_migration_source_map", "radar_migration_quarantine", "radar_legacy_events"} {
+		var present bool
+		if err = pool.QueryRow(ctx, `SELECT to_regclass(current_schema() || '.' || $1) IS NOT NULL`, table).Scan(&present); err != nil || !present {
+			t.Fatalf("Radar-owned table %s present=%v err=%v", table, present, err)
+		}
+	}
 }
 
 func TestLoadMigrationsRejectsEmptySet(t *testing.T) {
