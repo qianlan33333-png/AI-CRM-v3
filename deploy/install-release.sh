@@ -126,6 +126,15 @@ test -f "$release_dir/migrations/0047_automation_operations_migration.sql"
 test -f "$release_dir/migrations/0048_segment_audience_schedule_state.sql"
 test -f "$release_dir/migrations/0015_config_adminops.sql"
 test -f "$release_dir/web/dist/asset-manifest.json"
+for ai_assistant_asset in \
+  list.html detail.html \
+  group_chat_picker.css group_chat_picker.js \
+  material_picker.css material_picker.js \
+  send_content_composer.css send_content_composer.js \
+  send_content_readonly_detail.css send_content_readonly_detail.js \
+  cloud_plan_review.js; do
+  test -f "$release_dir/web/dist/aiassistant/$ai_assistant_asset"
+done
 test -f "$release_dir/release-files.sha256"
 (cd "$release_dir" && sha256sum --strict --check release-files.sha256)
 printf 'AICRM_RELEASE_SHA=%s\n' "$release_sha" > "$release_dir/release.env"

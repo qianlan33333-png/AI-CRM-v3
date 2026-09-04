@@ -98,7 +98,7 @@ make_release() {
   local sha="$1"
   local release="$test_root/package-${sha}"
   local archive="/tmp/aicrm-${sha}.tar.gz"
-  mkdir -p "$release/bin" "$release/migrations" "$release/web/dist" "$release/deploy"
+  mkdir -p "$release/bin" "$release/migrations" "$release/web/dist/aiassistant" "$release/deploy"
   for binary in aicrm migrate-platform migrate-river migrate-phone-identities migrate-identity-phone-vault migrate-survey-v2 migrate-automation-operations migrate-v2-config-definitions migrate-channel-history bootstrap-automation-operations; do
     printf '#!/usr/bin/env bash\nexit 0\n' > "$release/bin/$binary"
     chmod 0755 "$release/bin/$binary"
@@ -122,6 +122,15 @@ make_release() {
     : > "$release/migrations/$migration"
   done
   : > "$release/web/dist/asset-manifest.json"
+  for ai_assistant_asset in \
+    list.html detail.html \
+    group_chat_picker.css group_chat_picker.js \
+    material_picker.css material_picker.js \
+    send_content_composer.css send_content_composer.js \
+    send_content_readonly_detail.css send_content_readonly_detail.js \
+    cloud_plan_review.js; do
+    : > "$release/web/dist/aiassistant/$ai_assistant_asset"
+  done
   for unit in \
     aicrm.service aicrm-migrate.service aicrm-wecom-worker.service aicrm-wecom-worker.timer \
     aicrm-effects-worker.service aicrm-customer-sync-daily.service aicrm-customer-sync-daily.timer \

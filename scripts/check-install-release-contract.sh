@@ -110,6 +110,18 @@ bootstrap_rollback_line="$(sed -n "$((bootstrap_start_line + 3))p" "$installer")
 test -n "$bootstrap_status_line" && test "$bootstrap_status_line" -gt "$bootstrap_start_line" && test "$bootstrap_rollback_line" = "  rollback" || { echo "bootstrap failure must emit service evidence before rollback" >&2; exit 1; }
 grep -qx 'test -x "$release_dir/bin/migrate-identity-phone-vault"' "$installer" || { echo "release must include phone vault migration tool" >&2; exit 1; }
 grep -qx 'test -f "$release_dir/release-files.sha256"' "$installer" || { echo "release must require its immutable file manifest" >&2; exit 1; }
+for ai_assistant_asset in \
+  list.html detail.html \
+  group_chat_picker.css group_chat_picker.js \
+  material_picker.css material_picker.js \
+  send_content_composer.css send_content_composer.js \
+  send_content_readonly_detail.css send_content_readonly_detail.js \
+  cloud_plan_review.js; do
+  grep -qF 'test -f "$release_dir/web/dist/aiassistant/$ai_assistant_asset"' "$installer" || {
+    echo "release installer must require AI Assistant UI assets" >&2
+    exit 1
+  }
+done
 grep -qx '(cd "$release_dir" && sha256sum --strict --check release-files.sha256)' "$installer" || { echo "existing releases must pass their complete file manifest before resume" >&2; exit 1; }
 grep -qF 'mv -T "$staging_dir" "$release_dir"' "$installer" || { echo "new releases must become visible only after staged verification" >&2; exit 1; }
 grep -qF 'sha256sum --strict --check release-files.sha256' .github/workflows/ci.yml || { echo "CI must generate and verify the immutable release manifest" >&2; exit 1; }
