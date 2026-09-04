@@ -238,9 +238,8 @@ func TestOAuthPreservesExternalEffectsNextQuery(t *testing.T) {
 	}
 }
 
-func TestContextTokenTamperingExpiryAndRelationshipTermination(t *testing.T) {
-	relationships := &memoryRelationships{active: map[string]bool{relationshipKey("wx-corp", "employee", 42): true}}
-	service := ContextTokenService{CorpID: "wx-corp", SigningKey: bytes32(), Relationships: relationships, UOW: directUOW{}, Now: func() time.Time { return fixedNow }, TTL: time.Minute}
+func TestContextTokenUsesAuthenticatedTripleWithoutFollowRelationship(t *testing.T) {
+	service := ContextTokenService{CorpID: "wx-corp", SigningKey: bytes32(), Now: func() time.Time { return fixedNow }, TTL: time.Minute}
 	token, err := service.Issue(context.Background(), SidebarPrincipal{CorpID: "wx-corp", EmployeeID: "employee"}, 42)
 	if err != nil {
 		t.Fatal(err)
@@ -251,11 +250,7 @@ func TestContextTokenTamperingExpiryAndRelationshipTermination(t *testing.T) {
 	if _, _, err := service.Verify(context.Background(), token+"x"); !errors.Is(err, ErrInvalidContext) {
 		t.Fatalf("tamper err=%v", err)
 	}
-	relationships.active[relationshipKey("wx-corp", "employee", 42)] = false
-	if _, _, err := service.Verify(context.Background(), token); !errors.Is(err, ErrRelationship) {
-		t.Fatalf("terminated err=%v", err)
-	}
-	expired := ContextTokenService{CorpID: "wx-corp", SigningKey: bytes32(), Relationships: &memoryRelationships{active: map[string]bool{relationshipKey("wx-corp", "employee", 42): true}}, UOW: directUOW{}, Now: func() time.Time { return fixedNow }, TTL: time.Nanosecond}
+	expired := ContextTokenService{CorpID: "wx-corp", SigningKey: bytes32(), Now: func() time.Time { return fixedNow }, TTL: time.Nanosecond}
 	expiredToken, _ := expired.Issue(context.Background(), SidebarPrincipal{CorpID: "wx-corp", EmployeeID: "employee"}, 42)
 	expired.Now = func() time.Time { return fixedNow.Add(time.Second) }
 	if _, _, err := expired.Verify(context.Background(), expiredToken); !errors.Is(err, ErrInvalidContext) {
@@ -264,8 +259,7 @@ func TestContextTokenTamperingExpiryAndRelationshipTermination(t *testing.T) {
 }
 
 func TestSidebarHTTPContractsAndDisabledProvider(t *testing.T) {
-	relationships := &memoryRelationships{active: map[string]bool{relationshipKey("wx-corp", "employee", 42): true}}
-	contextTokens := ContextTokenService{CorpID: "wx-corp", SigningKey: bytes32(), Relationships: relationships, UOW: directUOW{}, Now: func() time.Time { return fixedNow }}
+	contextTokens := ContextTokenService{CorpID: "wx-corp", SigningKey: bytes32(), Now: func() time.Time { return fixedNow }}
 	oauthStates := &memoryOAuthStates{states: map[[32]byte]storedOAuthState{}}
 	signer := &fakeJSSDKSigner{}
 	options := HTTPHandlerOptions{
@@ -274,7 +268,6 @@ func TestSidebarHTTPContractsAndDisabledProvider(t *testing.T) {
 		JSSDKSigner:       signer,
 		JSSDKOrigin:       "https://crm.example",
 		PrincipalResolver: fakePrincipal{},
-		CustomerViewer:    fakeCustomerViewer{},
 		ExistingIdentity:  fakeExistingIdentity{},
 		SessionIssuer:     fakeSessionIssuer{},
 		CookieSecure:      true,
@@ -329,12 +322,10 @@ func TestSidebarHTTPContractsAndDisabledProvider(t *testing.T) {
 	if err := json.Unmarshal(issue.Body.Bytes(), &issued); err != nil {
 		t.Fatal(err)
 	}
-	workbenchRequest := httptest.NewRequest(http.MethodGet, "/api/sidebar/v2/workbench", nil)
-	workbenchRequest.Header.Set("Authorization", "Bearer "+issued["context_token"])
-	workbench := httptest.NewRecorder()
-	handler.ServeHTTP(workbench, workbenchRequest)
-	if workbench.Code != http.StatusOK || !strings.Contains(workbench.Body.String(), `"customer_id":42`) {
-		t.Fatalf("workbench status=%d body=%s", workbench.Code, workbench.Body.String())
+	legacyWorkbench := httptest.NewRecorder()
+	handler.ServeHTTP(legacyWorkbench, httptest.NewRequest(http.MethodGet, "/api/sidebar/v2/workbench", nil))
+	if legacyWorkbench.Code != http.StatusNotFound {
+		t.Fatalf("WeCom protocol handler must not own v2 workbench: status=%d", legacyWorkbench.Code)
 	}
 	disabled := httptest.NewRecorder()
 	disabledHandler, err := NewHTTPHandler(HTTPHandlerOptions{})
@@ -373,8 +364,7 @@ func TestOAuthCallbackWritesSecureCookies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	relationships := &memoryRelationships{active: map[string]bool{relationshipKey("wx-corp", "employee", 42): true}}
-	handler, err := NewHTTPHandler(HTTPHandlerOptions{OAuth: service, ContextTokens: ContextTokenService{CorpID: "wx-corp", SigningKey: bytes32(), Relationships: relationships, UOW: directUOW{}}, JSSDKSigner: &fakeJSSDKSigner{}, JSSDKOrigin: "https://crm.example", PrincipalResolver: fakePrincipal{}, CustomerViewer: fakeCustomerViewer{}, ExistingIdentity: fakeExistingIdentity{}, SessionIssuer: fakeSessionIssuer{}, CookieSecure: true})
+	handler, err := NewHTTPHandler(HTTPHandlerOptions{OAuth: service, ContextTokens: ContextTokenService{CorpID: "wx-corp", SigningKey: bytes32()}, JSSDKSigner: &fakeJSSDKSigner{}, JSSDKOrigin: "https://crm.example", PrincipalResolver: fakePrincipal{}, ExistingIdentity: fakeExistingIdentity{}, SessionIssuer: fakeSessionIssuer{}, CookieSecure: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -395,9 +385,8 @@ func TestOAuthCallbackWritesSecureCookies(t *testing.T) {
 func TestOAuthModesAndSidebarSessionCookieBoundary(t *testing.T) {
 	states := &memoryOAuthStates{states: map[[32]byte]storedOAuthState{}}
 	service := OAuthService{Enabled: true, CorpID: "wx-corp", StateStore: states, UOW: directUOW{}, Client: fakeOAuthClient{}, AllowedPaths: map[string]struct{}{"/admin": {}, "/sidebar": {}}, Now: func() time.Time { return fixedNow }}
-	relationships := &memoryRelationships{active: map[string]bool{relationshipKey("wx-corp", "employee", 42): true}}
 	principal := &capturingPrincipal{}
-	handler, err := NewHTTPHandler(HTTPHandlerOptions{OAuth: service, ContextTokens: ContextTokenService{CorpID: "wx-corp", SigningKey: bytes32(), Relationships: relationships, UOW: directUOW{}}, JSSDKSigner: &fakeJSSDKSigner{}, JSSDKOrigin: "https://crm.example", PrincipalResolver: principal, CustomerViewer: fakeCustomerViewer{}, ExistingIdentity: fakeExistingIdentity{}, SessionIssuer: fakeSessionIssuer{}, CookieSecure: true})
+	handler, err := NewHTTPHandler(HTTPHandlerOptions{OAuth: service, ContextTokens: ContextTokenService{CorpID: "wx-corp", SigningKey: bytes32()}, JSSDKSigner: &fakeJSSDKSigner{}, JSSDKOrigin: "https://crm.example", PrincipalResolver: principal, ExistingIdentity: fakeExistingIdentity{}, SessionIssuer: fakeSessionIssuer{}, CookieSecure: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -607,12 +596,6 @@ func (principal *capturingPrincipal) SidebarPrincipal(_ context.Context, token s
 	principal.calls++
 	principal.got = token
 	return SidebarPrincipal{CorpID: "wx-corp", EmployeeID: "employee"}, nil
-}
-
-type fakeCustomerViewer struct{}
-
-func (fakeCustomerViewer) SidebarCustomer(_ context.Context, customerID customerdomain.CustomerID) (SidebarCustomerView, error) {
-	return SidebarCustomerView{CustomerID: customerID, Status: "active"}, nil
 }
 
 type fakeExistingIdentity struct{}

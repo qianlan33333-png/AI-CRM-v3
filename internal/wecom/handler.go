@@ -52,7 +52,6 @@ type HTTPHandlerOptions struct {
 	JSSDKSigner       JSSDKSigner
 	JSSDKOrigin       string
 	PrincipalResolver SidebarPrincipalResolver
-	CustomerViewer    SidebarCustomerViewer
 	SessionIssuer     EmployeeSessionIssuer
 	ExistingIdentity  ExistingWeComIdentityResolver
 	CookieSecure      bool
@@ -61,7 +60,7 @@ type HTTPHandlerOptions struct {
 // NewHTTPHandler creates the frozen WeCom routes. The caller mounts this
 // handler in cmd/aicrm; this package never registers routes globally.
 func NewHTTPHandler(options HTTPHandlerOptions) (http.Handler, error) {
-	if options.OAuth.Enabled && (!options.CookieSecure || options.SessionIssuer == nil || options.OAuth.StateStore == nil || options.OAuth.UOW == nil || options.OAuth.Client == nil || !providerReady(options.OAuth.Client) || options.OAuth.CorpID == "" || !options.ContextTokens.valid() || options.ContextTokens.CorpID != options.OAuth.CorpID || options.JSSDKSigner == nil || !providerReady(options.JSSDKSigner) || !validJSSDKOrigin(options.JSSDKOrigin) || options.PrincipalResolver == nil || options.CustomerViewer == nil || options.ExistingIdentity == nil) {
+	if options.OAuth.Enabled && (!options.CookieSecure || options.SessionIssuer == nil || options.OAuth.StateStore == nil || options.OAuth.UOW == nil || options.OAuth.Client == nil || !providerReady(options.OAuth.Client) || options.OAuth.CorpID == "" || !options.ContextTokens.valid() || options.ContextTokens.CorpID != options.OAuth.CorpID || options.JSSDKSigner == nil || !providerReady(options.JSSDKSigner) || !validJSSDKOrigin(options.JSSDKOrigin) || options.PrincipalResolver == nil || options.ExistingIdentity == nil) {
 		return nil, errors.New("enabled wecom oauth requires secure browser session dependencies")
 	}
 	mux := http.NewServeMux()
@@ -93,9 +92,6 @@ func NewHTTPHandler(options HTTPHandlerOptions) (http.Handler, error) {
 	})
 	mux.HandleFunc("POST /api/sidebar/context-token", func(writer http.ResponseWriter, request *http.Request) {
 		handleContextIssue(writer, request, options)
-	})
-	mux.HandleFunc("GET /api/sidebar/v2/workbench", func(writer http.ResponseWriter, request *http.Request) {
-		handleWorkbench(writer, request, options)
 	})
 	return mux, nil
 }
@@ -252,28 +248,6 @@ func writeBrowserCookies(writer http.ResponseWriter, purpose OAuthPurpose, crede
 	http.SetCookie(writer, &csrf)
 }
 
-func handleWorkbench(writer http.ResponseWriter, request *http.Request, options HTTPHandlerOptions) {
-	if !options.OAuth.Enabled || options.CustomerViewer == nil {
-		writeWeComError(writer, http.StatusServiceUnavailable, "provider_unavailable")
-		return
-	}
-	_, customerID, err := options.ContextTokens.Verify(request.Context(), bearerToken(request.Header.Get("Authorization")))
-	if err != nil {
-		writeContextError(writer, err)
-		return
-	}
-	view, err := options.CustomerViewer.SidebarCustomer(request.Context(), customerID)
-	if err != nil {
-		if errors.Is(err, ErrCustomerNotFound) {
-			writeWeComError(writer, http.StatusNotFound, "identity_not_found")
-			return
-		}
-		writeWeComError(writer, http.StatusServiceUnavailable, "provider_unavailable")
-		return
-	}
-	writeJSON(writer, http.StatusOK, view)
-}
-
 func writeOAuthError(writer http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, ErrProviderDisabled):
@@ -286,10 +260,6 @@ func writeOAuthError(writer http.ResponseWriter, err error) {
 }
 
 func writeContextError(writer http.ResponseWriter, err error) {
-	if errors.Is(err, ErrRelationship) {
-		writeWeComError(writer, http.StatusForbidden, "permission_denied")
-		return
-	}
 	writeWeComError(writer, http.StatusUnauthorized, "authentication_required")
 }
 

@@ -56,55 +56,9 @@
   </div>
 </section>
 
-<section class="admin-split-grid admin-customer-detail-layout">
-  <div class="admin-customer-detail-main">
-    <section class="admin-card" data-profile-section="owners" hidden>
-      <div class="admin-card-head admin-card-head--tight">
-        <div><h2>跟进成员</h2><p data-section-asof>读取最近一次企微客户关系观察。</p></div>
-        <button class="admin-button admin-button--ghost" data-section-retry type="button" hidden>重试</button>
-      </div>
-      <div class="admin-state admin-state--inline admin-state--loading" data-section-state><strong>正在加载跟进成员</strong><span>仅展示已匹配的企业成员姓名。</span></div>
-      <div class="admin-table-wrap" data-section-wrap hidden><table class="admin-table"><thead><tr><th>成员</th><th>关系状态</th><th>最近观察</th></tr></thead><tbody data-section-items></tbody></table></div>
-    </section>
-
-    <section class="admin-card" data-profile-section="tags" hidden>
-      <div class="admin-card-head admin-card-head--tight">
-        <div><h2>企微标签（最近同步）</h2><p data-section-asof>不在页面打开时访问企微。</p></div>
-        <button class="admin-button admin-button--ghost" data-section-retry type="button" hidden>重试</button>
-      </div>
-      <div class="admin-state admin-state--inline admin-state--loading" data-section-state><strong>正在加载企微标签</strong><span>读取本地最近同步快照。</span></div>
-      <div class="admin-profile-tag-list" data-section-items hidden></div>
-    </section>
-
-    <section class="admin-card" data-profile-section="surveys" hidden>
-      <div class="admin-card-head admin-card-head--tight">
-        <div><h2>已填写问卷及答案</h2><p data-section-asof>只展示题目、选项和 Survey 提供的脱敏答案。</p></div>
-        <div class="admin-toolbar"><button class="admin-button admin-button--ghost" data-section-retry type="button" hidden>重试</button><button class="admin-button admin-button--ghost" data-section-more type="button" hidden>加载更多</button></div>
-      </div>
-      <div class="admin-state admin-state--inline admin-state--loading" data-section-state><strong>正在加载问卷记录</strong><span>这里只展示题目和安全答案。</span></div>
-      <div class="admin-table-wrap" data-section-wrap hidden><table class="admin-table"><thead><tr><th>问题</th><th>答案</th></tr></thead><tbody data-section-items></tbody></table></div>
-    </section>
-  </div>
-
-  <div class="admin-customer-detail-sidebar">
-    <section class="admin-card" data-profile-section="chat_activity" hidden>
-      <div class="admin-card-head">
-        <div><h2>聊天记录</h2><p data-section-asof>只展示最近聊天活动，不展示正文和参与者标识。</p></div>
-        <div class="admin-toolbar"><button class="admin-button admin-button--ghost" data-section-retry type="button" hidden>重试</button><button class="admin-button admin-button--ghost" data-section-more type="button" hidden>加载更多</button></div>
-      </div>
-      <div class="admin-state admin-state--inline admin-state--loading" data-section-state><strong>正在加载聊天记录</strong><span>来源能力未接入时会明确提示。</span></div>
-      <div class="admin-profile-message-list" data-section-items hidden></div>
-    </section>
-
-    <section class="admin-card" data-profile-section="timeline" hidden>
-      <div class="admin-card-head">
-        <div><h2>客户时间线</h2><p data-section-asof>展示客户同步、手机号和问卷等安全事件。</p></div>
-        <div class="admin-toolbar"><button class="admin-button admin-button--ghost" data-section-retry type="button" hidden>重试</button><button class="admin-button admin-button--ghost" data-section-more type="button" hidden>加载更多</button></div>
-      </div>
-      <div class="admin-state admin-state--inline admin-state--loading" data-section-state><strong>正在加载客户时间线</strong><span>仅展示安全事件摘要。</span></div>
-      <div class="admin-profile-message-list" data-section-items hidden></div>
-    </section>
-  </div>
+<section class="admin-split-grid admin-customer-detail-layout" id="customer-360-sections" hidden>
+  <div class="admin-customer-detail-main" id="customer-360-main"></div>
+  <div class="admin-customer-detail-sidebar" id="customer-360-sidebar"></div>
 </section>
 {{end}}
 </div>

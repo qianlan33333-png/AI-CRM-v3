@@ -366,6 +366,26 @@ export type GroupOpsWebhookEventIDParameter = string;
 
 export type GroupOpsWebhookSignatureParameter = string;
 
+export type AutomationOpsSnapshotQueryParameter = number;
+
+export type ExpectedVersionParameter = number;
+
+export type CursorParameter = string;
+
+export type AutomationOpsWebhookTimestampParameter = string;
+
+export type AutomationOpsWebhookEventIDParameter = string;
+
+export type AIAssistantCursorParameter = string;
+
+export type AIAssistantLimitParameter = number;
+
+export type AIAssistantIntegrationTimestampParameter = string;
+
+export type AIAssistantIntegrationNonceParameter = string;
+
+export type AIAssistantIntegrationSignatureParameter = string;
+
 export type getHXCDashboardSummaryResponse200 = {
   data: HXCDashboardSummary;
   status: 200;

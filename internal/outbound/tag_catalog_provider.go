@@ -158,6 +158,7 @@ type ProviderRouter struct {
 	channelLink       effect.ProviderAdapter
 	privateMessage    effect.ProviderAdapter
 	automationMessage effect.ProviderAdapter
+	sidebarJSSDK      effect.ProviderAdapter
 }
 
 func NewProviderRouterWithPrivate(tagCatalog, groupMessage, privateMessage effect.ProviderAdapter) *ProviderRouter {
@@ -176,6 +177,13 @@ func (r *ProviderRouter) WithPrivateMessage(privateMessage effect.ProviderAdapte
 func (r *ProviderRouter) WithAutomationMessage(message effect.ProviderAdapter) *ProviderRouter {
 	if r != nil {
 		r.automationMessage = message
+	}
+	return r
+}
+
+func (r *ProviderRouter) WithSidebarJSSDK(provider effect.ProviderAdapter) *ProviderRouter {
+	if r != nil {
+		r.sidebarJSSDK = provider
 	}
 	return r
 }
@@ -233,6 +241,10 @@ func (r *ProviderRouter) Execute(ctx context.Context, envelope effect.Envelope, 
 		case effect.KindOutboundMessage:
 			if r.privateMessage != nil {
 				return r.privateMessage.Execute(ctx, envelope, attempt)
+			}
+		case effect.KindSidebarJSSDKSend:
+			if r.sidebarJSSDK != nil {
+				return r.sidebarJSSDK.Execute(ctx, envelope, attempt)
 			}
 		}
 	}

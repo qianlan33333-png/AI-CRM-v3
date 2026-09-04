@@ -633,6 +633,17 @@ paths:
       responses:
         "200": {description: Customer slice detail without raw external IDs or full phones, content: {application/json: {schema: {$ref: "#/components/schemas/CustomerDirectoryDetailResponse"}}}}
         "404": {$ref: "#/components/responses/Error"}
+  # The reduced 360 route is the only Customer detail aggregation consumed by
+  # the v3 customer page. Legacy section routes below remain for other callers.
+  /api/admin/customers/{customer_id}/360:
+    get:
+      operationId: getCustomer360
+      description: Local-only canonical Customer 360. Sections degrade independently and this read never calls a Provider.
+      security: [{adminSession: []}]
+      parameters: [{$ref: "#/components/parameters/CustomerID"}]
+      responses:
+        "200": {description: Identity profile order questionnaire risk and recent-touchpoint sections only}
+        "404": {$ref: "#/components/responses/Error"}
   /api/admin/customers/{customer_id}/phone-reveal:
     post:
       operationId: revealCustomerPhone
@@ -1869,6 +1880,50 @@ paths:
         "200": {description: Minimal OneID workbench, content: {application/json: {schema: {type: object, required: [customer_id, status], properties: {customer_id: {$ref: "#/components/schemas/PositiveID"}, status: {type: string, enum: [active, merged, closed]}}}}}}
         "401": {$ref: "#/components/responses/Error"}
         "403": {$ref: "#/components/responses/Error"}
+  /api/sidebar/v2/profile:
+    get: {operationId: getSidebarProfile, security: [{contextToken: []}], responses: {"200": {description: Customer-owned safe profile projection}}}
+    put:
+      operationId: updateSidebarProfile
+      security: [{contextToken: []}]
+      parameters: [{$ref: "#/components/parameters/IdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false, required: [display_name, gender, corp_name, expected_version], properties: {display_name: {type: string, minLength: 1, maxLength: 200}, gender: {type: integer, minimum: 0, maximum: 2}, corp_name: {type: string, maxLength: 200}, expected_version: {$ref: "#/components/schemas/PositiveID"}}}}}}
+      responses: {"200": {description: CAS-updated profile and durable receipt}, "409": {$ref: "#/components/responses/Error"}}
+  /api/sidebar/v2/phone-binding:
+    post:
+      operationId: bindSidebarDeclaredPhone
+      description: Adds declared phone evidence without raising assurance or merging Customer roots.
+      security: [{contextToken: []}]
+      parameters: [{$ref: "#/components/parameters/IdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false, required: [phone], properties: {phone: {type: string, pattern: '^1[0-9]{10}$'}}}}}}
+      responses: {"200": {description: Declared phone result}, "409": {$ref: "#/components/responses/Error"}}
+  /api/sidebar/v2/timeline:
+    get: {operationId: listSidebarTimeline, security: [{contextToken: []}], parameters: [{$ref: "#/components/parameters/Limit"}], responses: {"200": {description: Customer-owned safe timeline}}}
+  /api/sidebar/v2/products:
+    get: {operationId: listSidebarProducts, security: [{contextToken: []}], parameters: [{$ref: "#/components/parameters/Limit"}, {name: q, in: query, schema: {type: string}}, {name: product_type, in: query, schema: {type: string, enum: [all, standard, service_period]}}], responses: {"200": {description: Published local product options}}}
+  /api/sidebar/v2/orders:
+    get: {operationId: listSidebarOrders, security: [{contextToken: []}], parameters: [{$ref: "#/components/parameters/Limit"}], responses: {"200": {description: Canonical Customer order projection}}}
+  /api/sidebar/v2/periodic-orders:
+    get: {operationId: listSidebarPeriodicOrders, security: [{contextToken: []}], parameters: [{$ref: "#/components/parameters/Limit"}], responses: {"200": {description: Canonical Customer service entitlements}}}
+  /api/sidebar/v2/periodic-orders/{entitlement_id}/remark:
+    parameters: [{name: entitlement_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
+    put: {operationId: updateSidebarPeriodicRemark, security: [{contextToken: []}], parameters: [{$ref: "#/components/parameters/IdempotencyKey"}], requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false, required: [remark, expected_version], properties: {remark: {type: string, maxLength: 500}, expected_version: {$ref: "#/components/schemas/PositiveID"}}}}}}, responses: {"200": {description: Atomic Order-owned remark update}, "409": {$ref: "#/components/responses/Error"}}}
+  /api/sidebar/v2/coupons:
+    get: {operationId: listSidebarCustomerCoupons, security: [{contextToken: []}], parameters: [{$ref: "#/components/parameters/Limit"}], responses: {"200": {description: Canonical Customer coupon claims}}}
+  /api/sidebar/v2/materials:
+    get: {operationId: listSidebarMaterials, security: [{contextToken: []}], parameters: [{$ref: "#/components/parameters/Limit"}, {name: q, in: query, schema: {type: string}}, {name: category, in: query, schema: {type: string}}], responses: {"200": {description: Enabled local image materials}}}
+  /api/sidebar/v2/radar-links:
+    get: {operationId: listSidebarRadarLinks, security: [{contextToken: []}], parameters: [{$ref: "#/components/parameters/Limit"}], responses: {"200": {description: Enabled public radar links}}}
+  /api/sidebar/v2/send-intents:
+    post:
+      operationId: createSidebarSendIntent
+      description: Server resolves immutable content and atomically accepts a browser-executed JSSDK effect.
+      security: [{contextToken: []}]
+      parameters: [{$ref: "#/components/parameters/IdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false, required: [resource_kind, resource_id], properties: {resource_kind: {type: string, enum: [product, material, radar_link]}, resource_id: {type: string}, product_type: {type: string, enum: [standard, service_period]}}}}}}
+      responses: {"202": {description: One-time JSSDK grant and server-resolved payload}, "409": {$ref: "#/components/responses/Error"}, "503": {description: Provider-ready image lease is not available; no fake media id is returned}}
+  /api/sidebar/v2/send-intents/{intent_id}/outcome:
+    parameters: [{name: intent_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
+    post: {operationId: completeSidebarSendIntent, security: [{contextToken: []}], requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false, required: [grant, outcome, evidence], properties: {grant: {type: string}, outcome: {type: string, enum: [client_executed, outcome_unknown, final_failed]}, evidence: {type: string}}}}}}, responses: {"200": {description: Client outcome and EER receipt persisted atomically}, "409": {$ref: "#/components/responses/Error"}}}
   /admin/coupons:
     get:
       operationId: couponRulesPage
@@ -2613,7 +2668,7 @@ paths:
     parameters: [{name: submission_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
     get: {operationId: listSurveyUnresolvedAnswers, security: [{adminSession: []}], responses: {"200": {description: Read-only protected answer snapshots}}}
   /api/sidebar/v2/questionnaires:
-    get: {operationId: listSidebarSurveyHistory, security: [{adminSession: []}], responses: {"200": {description: Bounded customer-safe survey projection}}}
+    get: {operationId: listSidebarSurveyHistory, security: [{contextToken: []}], responses: {"200": {description: Bounded canonical Customer survey projection}}}
   /api/v1/customers/{customer_id}/survey-answers:
     parameters: [{name: customer_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
     get: {operationId: listCustomerSurveyAnswers, security: [{adminSession: []}], responses: {"200": {description: OneID customer survey history}}}

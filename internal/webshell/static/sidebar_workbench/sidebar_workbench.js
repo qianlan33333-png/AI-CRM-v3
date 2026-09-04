@@ -1,397 +1,49 @@
 (function () {
   "use strict";
+  const root = document.getElementById("sidebar-workbench-root"); if (!root) return;
+  const api = { jssdk: "/api/sidebar/jssdk-config", context: "/api/sidebar/context-token", workbench: "/api/sidebar/v2/workbench", oauth: "/api/sidebar/oauth/start?next=/sidebar/bind-mobile" };
+  const labels = { profile: "核心画像", questionnaires: "问卷", products: "商品", orders: "订单", coupons: "优惠券", materials: "素材" };
+  const content = document.getElementById("content"), tabs = Array.from(root.querySelectorAll("[data-tab]"));
+  const statusNode = document.getElementById("sidebar-startup-status"), customerName = document.getElementById("customer-name"), customerIDNode = document.getElementById("customer-id"), bindingState = document.getElementById("binding-state"), customerMobile = document.getElementById("customer-mobile"), workflowTitle = document.getElementById("workflow-title");
+  const modal = document.getElementById("mobile-modal"), mobileInput = document.getElementById("mobile-input"), mobileStatus = document.getElementById("mobile-status"), toast = document.getElementById("toast");
+  let token = "", profile = null, toastTimer = null;
 
-  const root = document.getElementById("sidebar-workbench-root");
-  if (!root) return;
+  function endpoint(name, fallback) { return String(root.dataset[name] || fallback || "").trim(); }
+  function uuid() { return (crypto.randomUUID && crypto.randomUUID()) || "sidebar-" + Date.now() + "-" + Math.random().toString(16).slice(2); }
+  function safeJSON(value) { try { return value ? JSON.parse(value) : {}; } catch (_e) { return {}; } }
+  function codeOf(payload) { return String((payload.error && payload.error.code) || payload.error || payload.error_code || ""); }
+  function friendly(error) { const names = { authentication_required: "员工会话已失效，请重新打开侧边栏。", invalid_context: "客户上下文已失效，请重新打开侧边栏。", section_unavailable: "该分区暂时不可用。", capability_not_ready: "图片尚未取得企微临时素材，请稍后再试。", conflict: "数据已更新，请刷新后重试。", resource_not_available: "该内容当前不可发送。" }; return names[codeOf((error && error.payload) || {})] || (error && error.message) || "侧边栏暂时不可用。"; }
+  function showToast(message, failed) { clearTimeout(toastTimer); toast.textContent = message; toast.className = "toast" + (failed ? " error" : ""); toast.classList.remove("hidden"); toastTimer = setTimeout(function () { toast.classList.add("hidden"); }, 3200); }
+  function setState(state, message) { root.dataset.sidebarShellState = state; if (statusNode) statusNode.textContent = message || ""; bindingState.className = "phone-state" + (state === "ready" ? "" : state === "error" ? " unbound" : " loading"); bindingState.textContent = state === "ready" ? "已识别" : state === "error" ? "不可用" : "加载中…"; }
+  async function requestJSON(url, options) { const opts = options || {}; const response = await fetch(url, { ...opts, credentials: "same-origin", cache: "no-store", headers: { Accept: "application/json", ...(opts.body !== undefined ? { "Content-Type": "application/json" } : {}), ...(token ? { Authorization: "Bearer " + token } : {}), ...(opts.headers || {}) } }); const payload = safeJSON(await response.text()); if (!response.ok) { const error = new Error("HTTP " + response.status); error.status = response.status; error.payload = payload; throw error; } return payload; }
+  function text(tag, value, className) { const node = document.createElement(tag); node.textContent = value == null ? "" : String(value); if (className) node.className = className; return node; }
+  function panel(title) { const node = text("section", "", "panel"), head = text("div", "", "head"); head.appendChild(text("h2", title)); node.appendChild(head); return node; }
+  function empty(node, value) { node.appendChild(text("div", value, "status")); }
+  function card(title, details) { const node = text("article", "", "card"); node.appendChild(text("h3", title)); (details || []).filter(Boolean).forEach(function (line) { node.appendChild(text("div", line, "mini")); }); return node; }
+  function action(label, fn) { const button = text("button", label, "btn primary"); button.type = "button"; button.addEventListener("click", fn); return button; }
+  function money(minor, currency) { return (currency || "CNY") + " " + (Number(minor || 0) / 100).toFixed(2); }
+  function firstValue(object, keys) { for (let i = 0; object && i < keys.length; i += 1) { const value = String(object[keys[i]] || "").trim(); if (value) return value; } return ""; }
 
-  // The bootstrap allowlist is intentional: unfinished sidebar tabs never
-  // become network clients by accident.
-  const SIDEBAR_BOOTSTRAP_APIS = Object.freeze({
-    jssdkConfig: "/api/sidebar/jssdk-config",
-    contextToken: "/api/sidebar/context-token",
-    workbench: "/api/sidebar/v2/workbench",
-    oauthStart: "/api/sidebar/oauth/start?next=/sidebar/bind-mobile",
-  });
+  function configureWeCom(payload) { if (!window.wx) return Promise.reject(new Error("企微 SDK 不可用")); const config = payload.config || {}, agent = payload.agent_config || payload.agentConfig || {}, corpID = firstValue(payload, ["corp_id", "corpId", "corpid", "appId"]), agentID = firstValue(payload, ["agent_id", "agentId", "agentid"]); return new Promise(function (resolve, reject) { let done = false; const timer = setTimeout(function () { finish(new Error("企微 SDK 配置超时")); }, 6000); function finish(error) { if (done) return; done = true; clearTimeout(timer); error ? reject(error) : resolve(); } window.wx.ready(function () { window.wx.agentConfig({ corpid: corpID, agentid: String(agentID), timestamp: Number(agent.timestamp), nonceStr: agent.nonceStr, signature: agent.signature, jsApiList: ["getCurExternalContact", "sendChatMessage"], success: function () { finish(); }, fail: function () { finish(new Error("企微应用配置失败")); } }); }); window.wx.error(function () { finish(new Error("企微 SDK 配置失败")); }); window.wx.config({ beta: true, debug: false, appId: corpID, timestamp: Number(config.timestamp), nonceStr: config.nonceStr, signature: config.signature, jsApiList: ["getCurExternalContact", "sendChatMessage"] }); }); }
+  function currentExternalContact() { return new Promise(function (resolve, reject) { window.wx.invoke("getCurExternalContact", {}, function (result) { const id = firstValue(result, ["external_userid", "externalUserid", "externalUserId"]); id ? resolve(id) : reject(new Error("未取得当前外部联系人")); }); }); }
+  function invokeSend(payload) { return new Promise(function (resolve) { window.wx.invoke("sendChatMessage", payload, function (result) { resolve(result || {}); }); }); }
+  function updateHeader() { customerName.textContent = profile.display_name || "客户工作台"; customerIDNode.textContent = profile.customer_id ? "客户编号：" + profile.customer_id : ""; customerMobile.textContent = profile.phone_masked ? "手机号：" + profile.phone_masked + "（" + (profile.phone_assurance || "declared") + "）" : "手机号未绑定"; workflowTitle.textContent = profile.status ? "状态：" + profile.status : ""; setState("ready", "客户工作台已加载"); }
+  async function loadProfile() { const result = await requestJSON(endpoint("profileUrl", "/api/sidebar/v2/profile")); profile = result.customer; updateHeader(); }
 
-  const content = document.getElementById("content");
-  const tabs = Array.from(root.querySelectorAll("[data-tab]"));
-  const startupStatus = document.getElementById("sidebar-startup-status");
-  const customerName = document.getElementById("customer-name");
-  const customerIDNode = document.getElementById("customer-id");
-  const bindingState = document.getElementById("binding-state");
-  const customerMobile = document.getElementById("customer-mobile");
-  const customerExternalUserid = document.getElementById("customer-external-userid");
-  const workflowTitle = document.getElementById("workflow-title");
-  const mobileModal = document.getElementById("mobile-modal");
-  const mobileInput = document.getElementById("mobile-input");
-  const mobileStatus = document.getElementById("mobile-status");
-  const toast = document.getElementById("toast");
-  const labels = {
-    profile: "核心画像",
-    questionnaires: "问卷",
-    products: "商品",
-    orders: "订单",
-    coupons: "优惠券",
-    materials: "素材",
-  };
-  const apiErrorLabels = {
-    authentication_required: "当前员工会话已失效。",
-    viewer_session_required: "当前员工会话未建立。",
-    permission_denied: "当前员工没有访问权限。",
-    provider_unavailable: "企微服务暂时不可用。",
-    external_userid_missing: "没有取得可信的外部联系人上下文。",
-  };
-
-  let activeTab = "profile";
-  let selectedExternalUserid = "";
-  let workbench = null;
-  let sidebarContextToken = "";
-  let toastTimer = null;
-
-  function endpoint(name) {
-    const fallback = name === "jssdkConfigUrl"
-      ? SIDEBAR_BOOTSTRAP_APIS.jssdkConfig
-      : name === "contextTokenUrl"
-        ? SIDEBAR_BOOTSTRAP_APIS.contextToken
-        : name === "workbenchUrl"
-          ? SIDEBAR_BOOTSTRAP_APIS.workbench
-          : "";
-    return String(root.dataset[name] || fallback).trim();
-  }
-
-  function setShellState(state, message) {
-    root.dataset.sidebarShellState = state;
-    if (startupStatus) startupStatus.textContent = message || "";
-    if (bindingState) {
-      bindingState.className = "phone-state" + (state === "ready" ? "" : state === "error" ? " unbound" : " loading");
-      bindingState.textContent = state === "ready" ? "已识别" : state === "error" ? "不可用" : "加载中...";
-    }
-  }
-
-  function showToast(message, isError) {
-    if (!toast) return;
-    window.clearTimeout(toastTimer);
-    toast.textContent = message || "";
-    toast.className = "toast" + (isError ? " error" : "");
-    toast.classList.remove("hidden");
-    toastTimer = window.setTimeout(function () {
-      toast.classList.add("hidden");
-    }, 3200);
-  }
-
-  function safeJSON(text) {
-    if (!text) return {};
-    try {
-      return JSON.parse(text);
-    } catch (_error) {
-      return {};
-    }
-  }
-
-  function friendlyError(error, fallback) {
-    const payload = (error && error.payload) || {};
-    const code = String(payload.error || payload.error_code || payload.status || "").trim();
-    if (apiErrorLabels[code]) return apiErrorLabels[code];
-    if (error && error.status === 401) return apiErrorLabels.authentication_required;
-    if (error && error.status === 403) return apiErrorLabels.permission_denied;
-    return fallback || "侧边栏暂时不可用，请稍后重试。";
-  }
-
-  async function requestJSON(url, options) {
-    const requestOptions = options || {};
-    const response = await fetch(url, {
-      ...requestOptions,
-      headers: {
-        Accept: "application/json",
-        ...(requestOptions.body !== undefined ? { "Content-Type": "application/json" } : {}),
-        ...(requestOptions.headers || {}),
-      },
-      credentials: "same-origin",
-      cache: "no-store",
-    });
-    const payload = safeJSON(await response.text());
-    if (!response.ok || payload.ok === false) {
-      const error = new Error(friendlyError({ status: response.status, payload: payload }));
-      error.status = response.status;
-      error.payload = payload;
-      throw error;
-    }
-    return payload;
-  }
-
-  function currentSignedURL() {
-    // WeCom signatures cover the exact page URL without the fragment. Keep all
-    // query parameters; changing them would invalidate the signature.
-    return window.location.href.split("#")[0];
-  }
-
-  function jssdkURL() {
-    const url = new URL(endpoint("jssdkConfigUrl"), window.location.origin);
-    url.searchParams.set("url", currentSignedURL());
-    return url.toString();
-  }
-
-  function firstValue(object, keys) {
-    if (!object || typeof object !== "object") return "";
-    for (let index = 0; index < keys.length; index += 1) {
-      const value = String(object[keys[index]] || "").trim();
-      if (value) return value;
-    }
-    return "";
-  }
-
-  function sdkConfigParts(payload) {
-    const config = payload.config || {};
-    const agentConfig = payload.agent_config || payload.agentConfig || {};
-    return {
-      corpID: firstValue(payload, ["corp_id", "corpId", "corpid", "appId"]),
-      agentID: firstValue(payload, ["agent_id", "agentId", "agentid"]),
-      config: config,
-      agentConfig: agentConfig,
-    };
-  }
-
-  function configureWeCom(payload) {
-    if (!window.wx || typeof window.wx.config !== "function") {
-      throw new Error("WeCom SDK unavailable");
-    }
-    const parts = sdkConfigParts(payload);
-    if (!parts.corpID || !parts.agentID || !parts.config.timestamp || !parts.config.nonceStr || !parts.config.signature) {
-      throw new Error("WeCom SDK configuration unavailable");
-    }
-    return new Promise(function (resolve, reject) {
-      let settled = false;
-      const timeout = window.setTimeout(function () {
-        if (settled) return;
-        settled = true;
-        reject(new Error("WeCom SDK configuration timed out"));
-      }, 6000);
-      function finish(error) {
-        if (settled) return;
-        settled = true;
-        window.clearTimeout(timeout);
-        if (error) reject(error); else resolve(parts);
-      }
-      window.wx.ready(function () {
-        if (typeof window.wx.agentConfig !== "function") {
-          finish(new Error("WeCom agent SDK unavailable"));
-          return;
-        }
-        if (!parts.agentConfig.timestamp || !parts.agentConfig.nonceStr || !parts.agentConfig.signature) {
-          finish(new Error("WeCom agent configuration unavailable"));
-          return;
-        }
-        window.wx.agentConfig({
-          corpid: parts.corpID,
-          agentid: String(parts.agentID),
-          timestamp: Number(parts.agentConfig.timestamp),
-          nonceStr: parts.agentConfig.nonceStr,
-          signature: parts.agentConfig.signature,
-          jsApiList: ["getCurExternalContact"],
-          success: function () { finish(); },
-          fail: function () { finish(new Error("WeCom agent configuration failed")); },
-        });
-      });
-      window.wx.error(function () { finish(new Error("WeCom SDK configuration failed")); });
-      window.wx.config({
-        beta: true,
-        debug: false,
-        appId: parts.corpID,
-        timestamp: Number(parts.config.timestamp),
-        nonceStr: parts.config.nonceStr,
-        signature: parts.config.signature,
-        jsApiList: ["getCurExternalContact"],
-      });
-    });
-  }
-
-  function externalUseridFrom(payload) {
-    return firstValue(payload, [
-      "external_userid",
-      "externalUserid",
-      "external_userId",
-      "externalUserId",
-      "external_user_id",
-      "user_id",
-      "userId",
-    ]);
-  }
-
-  function getCurrentExternalContact() {
-    if (!window.wx || typeof window.wx.invoke !== "function") {
-      return Promise.reject(new Error("WeCom contact context unavailable"));
-    }
-    return new Promise(function (resolve, reject) {
-      let settled = false;
-      const timeout = window.setTimeout(function () {
-        if (settled) return;
-        settled = true;
-        reject(new Error("WeCom contact context timed out"));
-      }, 6000);
-      window.wx.invoke("getCurExternalContact", {}, function (payload) {
-        if (settled) return;
-        settled = true;
-        window.clearTimeout(timeout);
-        const externalUserid = externalUseridFrom(payload || {});
-        if (!externalUserid) {
-          reject(new Error("No trusted external contact context"));
-          return;
-        }
-        resolve(externalUserid);
-      });
-    });
-  }
-
-  function shouldStartOAuth(error) {
-    const payload = (error && error.payload) || {};
-    const code = String(payload.error || payload.error_code || payload.sidebar_owner_token_status || "").trim();
-    return code === "viewer_session_required" || code === "authentication_required" || (error && error.status === 401);
-  }
-
-  function startOAuth() {
-    // OAuth establishes an independent sidebar staff session. It never shares
-    // the admin cookie and does not carry a customer identity in the URL.
-    window.location.assign(SIDEBAR_BOOTSTRAP_APIS.oauthStart);
-  }
-
-  function renderProfile() {
-    const customer = (workbench && workbench.customer) || {};
-    const customerID = firstValue(workbench, ["customer_id", "customerId"]) || firstValue(customer, ["customer_id", "customerId", "id"]);
-    const status = firstValue(workbench, ["status", "customer_status"]) || firstValue(customer, ["status", "customer_status"]);
-    if (customerName) customerName.textContent = customerID ? "客户工作台" : "客户信息不可用";
-    if (customerIDNode) customerIDNode.textContent = customerID ? "customer_id: " + customerID : "customer_id: 不可用";
-    if (customerMobile) customerMobile.textContent = "";
-    if (customerExternalUserid) customerExternalUserid.textContent = selectedExternalUserid ? "外部联系人上下文已确认" : "";
-    if (workflowTitle) workflowTitle.textContent = status ? "状态：" + status : "状态不可用";
-    setShellState("ready", customerID || status ? "客户工作台已加载" : "客户工作台已返回，但缺少客户状态字段");
-  }
-
-  function renderUnavailableProfile() {
-    if (customerName) customerName.textContent = "客户信息不可用";
-    if (customerIDNode) customerIDNode.textContent = "customer_id: 不可用";
-    if (customerMobile) customerMobile.textContent = "";
-    if (customerExternalUserid) customerExternalUserid.textContent = "";
-    if (workflowTitle) workflowTitle.textContent = "status: 不可用";
-  }
-
-  function renderPanel(tab) {
-    if (!content) return;
-    const panel = document.createElement("section");
-    panel.className = "panel";
-    panel.dataset.panel = tab;
-    const head = document.createElement("div");
-    head.className = "head";
-    const title = document.createElement("h2");
-    title.textContent = labels[tab] || "侧边栏";
-    head.appendChild(title);
-    panel.appendChild(head);
-    const state = document.createElement("div");
-    state.className = "status";
-    const strong = document.createElement("strong");
-    const message = document.createElement("span");
-    if (tab === "profile" && workbench) {
-      strong.textContent = "客户工作台";
-      message.textContent = "当前仅接入客户 ID 与状态。画像、问卷、商品、订单、优惠券和素材尚未接入。";
-    } else if (tab === "profile") {
-      strong.textContent = "客户信息不可用";
-      message.textContent = "未取得可信的企微客户上下文，未展示客户或模拟数据。";
-      state.classList.add("error");
-    } else {
-      strong.textContent = "功能待接入";
-      message.textContent = labels[tab] + "模块尚未接入，不会请求业务接口。";
-    }
-    state.appendChild(strong);
-    state.appendChild(message);
-    panel.appendChild(state);
-    content.replaceChildren(panel);
-  }
-
-  function selectTab(tab) {
-    activeTab = labels[tab] ? tab : "profile";
-    tabs.forEach(function (button) {
-      const selected = button.dataset.tab === activeTab;
-      button.classList.toggle("active", selected);
-      button.setAttribute("aria-selected", selected ? "true" : "false");
-    });
-    renderPanel(activeTab);
-  }
-
-  function openMobileModal() {
-    if (!mobileModal) return;
-    mobileModal.classList.remove("hidden");
-    if (mobileStatus) mobileStatus.textContent = "手机号绑定接口尚未接入。";
-    if (mobileInput) {
-      mobileInput.value = "";
-      mobileInput.focus();
-    }
-  }
-
-  function closeMobileModal() {
-    if (mobileModal) mobileModal.classList.add("hidden");
-  }
-
-  async function bootstrap() {
-    setShellState("identifying_customer", "正在加载企微身份…");
-    try {
-      const configPayload = await requestJSON(jssdkURL(), { method: "GET" });
-      await configureWeCom(configPayload);
-      selectedExternalUserid = await getCurrentExternalContact();
-      setShellState("loading_context", "正在确认当前客户访问上下文…");
-      const contextPayload = await requestJSON(endpoint("contextTokenUrl"), {
-        method: "POST",
-        body: JSON.stringify({ external_userid: selectedExternalUserid }),
-      });
-      sidebarContextToken = firstValue(contextPayload, ["context_token", "sidebar_owner_token", "token"]);
-      if (!sidebarContextToken) {
-        const contextError = new Error("Sidebar customer context unavailable");
-        contextError.payload = contextPayload;
-        // A successful response without a token is not by itself proof that
-        // OAuth is missing; shouldStartOAuth uses the server's explicit state.
-        contextError.status = 200;
-        throw contextError;
-      }
-      const workbenchURL = new URL(endpoint("workbenchUrl"), window.location.origin);
-      const workbenchPayload = await requestJSON(workbenchURL.toString(), {
-        method: "GET",
-        headers: { Authorization: "Bearer " + sidebarContextToken },
-      });
-      workbench = workbenchPayload;
-      renderProfile();
-      selectTab("profile");
-    } catch (error) {
-      if (shouldStartOAuth(error)) {
-        startOAuth();
-        return;
-      }
-      sidebarContextToken = "";
-      workbench = null;
-      setShellState("error", friendlyError(error, "侧边栏暂时不可用，请从企微侧边栏重新打开。"));
-      renderUnavailableProfile();
-      renderPanel("profile");
-      showToast(friendlyError(error), true);
-    }
-  }
-
-  tabs.forEach(function (button) {
-    button.addEventListener("click", function () {
-      selectTab(button.dataset.tab || "profile");
-    });
-  });
-  const changeButton = document.getElementById("change-mobile-button");
-  if (changeButton) changeButton.addEventListener("click", openMobileModal);
-  const closeButton = document.getElementById("close-mobile-modal");
-  if (closeButton) closeButton.addEventListener("click", closeMobileModal);
-  const cancelButton = document.getElementById("cancel-mobile-button");
-  if (cancelButton) cancelButton.addEventListener("click", closeMobileModal);
-  const confirmButton = document.getElementById("confirm-mobile-button");
-  if (confirmButton) confirmButton.addEventListener("click", function () {
-    if (mobileStatus) mobileStatus.textContent = "手机号绑定接口尚未接入。";
-    showToast("手机号绑定接口尚未接入。", true);
-  });
-  if (mobileModal) mobileModal.addEventListener("click", function (event) {
-    if (event.target === mobileModal) closeMobileModal();
-  });
-
-  selectTab("profile");
-  bootstrap();
+  async function renderProfile() { const node = panel("核心画像"); if (!profile) await loadProfile(); const editor = text("div", "", "editor"); [["客户名称", profile.display_name || "-"], ["手机号", profile.phone_masked || "未绑定"], ["企业", profile.corp_name || "-"], ["状态", profile.status || "-"], ["更新时间", profile.updated_at || "-"]].forEach(function (row) { const kv = text("div", "", "kv"); kv.appendChild(text("span", row[0])); kv.appendChild(text("strong", row[1])); editor.appendChild(kv); }); editor.appendChild(action("编辑画像", function () { renderProfileEditor(); })); node.appendChild(editor); node.appendChild(text("h3", "最近触点")); try { const page = await requestJSON(endpoint("timelineUrl", "/api/sidebar/v2/timeline") + "?limit=20"); (page.items || []).forEach(function (item) { node.appendChild(card(item.title || item.event_type, [item.source_domain || "本地事件", item.occurred_at || ""])); }); if (!(page.items || []).length) empty(node, "暂无最近触点"); } catch (error) { empty(node, friendly(error)); } content.replaceChildren(node); }
+  function renderProfileEditor() { const node = panel("编辑核心画像"), name = document.createElement("input"), corp = document.createElement("input"); name.value = profile.display_name || ""; corp.value = profile.corp_name || ""; name.className = corp.className = "textarea"; node.appendChild(text("label", "客户名称", "field-title")); node.appendChild(name); node.appendChild(text("label", "企业名称", "field-title")); node.appendChild(corp); node.appendChild(action("保存", async function () { try { const result = await requestJSON(endpoint("profileUrl", "/api/sidebar/v2/profile"), { method: "PUT", headers: { "Idempotency-Key": uuid() }, body: JSON.stringify({ display_name: name.value, corp_name: corp.value, gender: Number(profile.gender || 0), expected_version: Number(profile.version) }) }); profile = result.customer; updateHeader(); showToast("画像已保存"); await renderProfile(); } catch (error) { showToast(friendly(error), true); } })); content.replaceChildren(node); }
+  async function renderQuestionnaires() { const node = panel("问卷"), page = await requestJSON(endpoint("questionnairesUrl", "/api/sidebar/v2/questionnaires") + "?limit=50"); (page.items || []).forEach(function (item) { const lines = [item.submitted_at || ""]; (item.answers || []).forEach(function (answer) { lines.push((answer.question || "问题") + "：" + (answer.answers || []).join("、")); }); node.appendChild(card(item.title || "问卷", lines)); }); if (!(page.items || []).length) empty(node, "暂无问卷记录"); content.replaceChildren(node); }
+  async function sendResource(kind, id, productType) { try { const accepted = await requestJSON(endpoint("sendIntentsUrl", "/api/sidebar/v2/send-intents"), { method: "POST", headers: { "Idempotency-Key": uuid() }, body: JSON.stringify({ resource_kind: kind, resource_id: String(id), product_type: productType || undefined }) }); const result = await invokeSend(accepted.payload), message = String(result.err_msg || result.errMsg || ""), outcome = /:ok$/i.test(message) || message === "ok" ? "client_executed" : message ? "final_failed" : "outcome_unknown"; await requestJSON(endpoint("sendIntentsUrl", "/api/sidebar/v2/send-intents") + "/" + accepted.intent_id + "/outcome", { method: "POST", body: JSON.stringify({ grant: accepted.grant, outcome: outcome, evidence: JSON.stringify(result) }) }); showToast(outcome === "client_executed" ? "已调用企微发送" : "发送结果未确认，请在会话中核对", outcome !== "client_executed"); } catch (error) { showToast(friendly(error), true); } }
+  async function renderProducts() { const node = panel("商品"), page = await requestJSON(endpoint("productsUrl", "/api/sidebar/v2/products") + "?limit=100&product_type=all"); (page.items || []).forEach(function (item) { const row = card(item.name, [item.product_type === "service_period" ? "周期商品" : "普通商品", money(item.price_minor, item.currency)]); row.appendChild(action("发送", function () { sendResource("product", item.id, item.product_type); })); node.appendChild(row); }); if (!(page.items || []).length) empty(node, "暂无已发布商品"); content.replaceChildren(node); }
+  async function renderOrders() { const node = panel("订单"); try { const page = await requestJSON(endpoint("ordersUrl", "/api/sidebar/v2/orders") + "?limit=50"); node.appendChild(text("h3", "普通订单")); (page.items || []).forEach(function (item) { node.appendChild(card(item.merchant_order_no || "订单 #" + item.id, [item.status || "", money(item.amount && item.amount.amount_minor, item.amount && item.amount.currency), item.created_at || ""])); }); if (!(page.items || []).length) empty(node, "暂无普通订单"); } catch (error) { empty(node, friendly(error)); } try { const page = await requestJSON(endpoint("periodicOrdersUrl", "/api/sidebar/v2/periodic-orders") + "?limit=50"); node.appendChild(text("h3", "周期权益")); (page.items || []).forEach(function (item) { const row = card(item.title || "周期权益", [item.status || "", (item.start_at || "") + " 至 " + (item.end_at || ""), item.remark ? "备注：" + item.remark : "暂无备注"]); row.appendChild(action("编辑备注", function () { editRemark(item); })); node.appendChild(row); }); if (!(page.items || []).length) empty(node, "暂无周期权益"); } catch (error) { empty(node, friendly(error)); } content.replaceChildren(node); }
+  function editRemark(item) { const node = panel("编辑周期备注"), input = document.createElement("textarea"); input.className = "textarea periodic-remark-textarea"; input.value = item.remark || ""; node.appendChild(input); node.appendChild(action("保存备注", async function () { try { await requestJSON(endpoint("periodicOrdersUrl", "/api/sidebar/v2/periodic-orders") + "/" + item.id + "/remark", { method: "PUT", headers: { "Idempotency-Key": uuid() }, body: JSON.stringify({ remark: input.value, expected_version: item.version }) }); showToast("备注已保存"); await renderOrders(); } catch (error) { showToast(friendly(error), true); } })); content.replaceChildren(node); }
+  async function renderCoupons() { const node = panel("优惠券"), page = await requestJSON(endpoint("couponsUrl", "/api/sidebar/v2/coupons") + "?limit=50"); (page.items || []).forEach(function (item) { node.appendChild(card(item.name || "优惠券", [item.status || "", "优惠：" + money(item.discount_minor, item.currency), item.valid_until ? "有效期至 " + item.valid_until : ""])); }); if (!(page.items || []).length) empty(node, "暂无优惠券"); content.replaceChildren(node); }
+  async function renderMaterials() { const node = panel("素材"); try { const page = await requestJSON(endpoint("materialsUrl", "/api/sidebar/v2/materials") + "?limit=100"); node.appendChild(text("h3", "图片素材")); (page.items || []).forEach(function (item) { const row = card(item.name || item.file_name || "图片", [item.category || "", item.description || ""]); row.appendChild(action("发送", function () { sendResource("material", item.id); })); node.appendChild(row); }); if (!(page.items || []).length) empty(node, "暂无图片素材"); } catch (error) { empty(node, friendly(error)); } try { const page = await requestJSON(endpoint("radarLinksUrl", "/api/sidebar/v2/radar-links") + "?limit=50"); node.appendChild(text("h3", "雷达链接")); (page.items || []).forEach(function (item) { const row = card(item.title || item.name || "雷达链接", [item.content_type || "", item.url || ""]); row.appendChild(action("发送", function () { sendResource("radar_link", item.id); })); node.appendChild(row); }); if (!(page.items || []).length) empty(node, "暂无启用的雷达链接"); } catch (error) { empty(node, friendly(error)); } content.replaceChildren(node); }
+  async function selectTab(tab) { const selected = labels[tab] ? tab : "profile"; tabs.forEach(function (button) { button.classList.toggle("active", button.dataset.tab === selected); }); if (!token) return; content.replaceChildren(text("section", "正在加载" + labels[selected] + "…", "panel status")); try { await ({ profile: renderProfile, questionnaires: renderQuestionnaires, products: renderProducts, orders: renderOrders, coupons: renderCoupons, materials: renderMaterials }[selected])(); } catch (error) { const node = panel(labels[selected]); empty(node, friendly(error)); content.replaceChildren(node); } }
+  async function bootstrap() { setState("identifying_customer", "正在加载企微身份…"); try { const configURL = new URL(endpoint("jssdkConfigUrl", api.jssdk), location.origin); configURL.searchParams.set("url", location.href.split("#")[0]); await configureWeCom(await requestJSON(configURL.toString())); const externalUserid = await currentExternalContact(); const context = await requestJSON(endpoint("contextTokenUrl", api.context), { method: "POST", body: JSON.stringify({ external_userid: externalUserid }) }); token = firstValue(context, ["context_token", "token"]); if (!token) throw new Error("未取得客户上下文"); await requestJSON(endpoint("workbenchUrl", api.workbench)); await loadProfile(); await selectTab("profile"); } catch (error) { if (error.status === 401 || codeOf(error.payload || {}) === "viewer_session_required") { location.assign(api.oauth); return; } token = ""; setState("error", friendly(error)); showToast(friendly(error), true); } }
+  tabs.forEach(function (button) { button.addEventListener("click", function () { selectTab(button.dataset.tab); }); });
+  function closeMobile() { modal.classList.add("hidden"); }
+  document.getElementById("change-mobile-button").addEventListener("click", function () { mobileInput.value = ""; mobileStatus.textContent = "手机号只作为 declared 身份声明，不会自动合并客户。"; modal.classList.remove("hidden"); mobileInput.focus(); }); document.getElementById("close-mobile-modal").addEventListener("click", closeMobile); document.getElementById("cancel-mobile-button").addEventListener("click", closeMobile);
+  document.getElementById("confirm-mobile-button").addEventListener("click", async function () { try { const result = await requestJSON(endpoint("phoneUrl", "/api/sidebar/v2/phone-binding"), { method: "POST", headers: { "Idempotency-Key": uuid() }, body: JSON.stringify({ phone: mobileInput.value.trim() }) }); profile.phone_masked = result.phone_masked; profile.phone_assurance = result.phone_assurance; updateHeader(); closeMobile(); showToast("手机号声明已保存"); } catch (error) { mobileStatus.textContent = friendly(error); } });
+  selectTab("profile"); bootstrap();
 }());

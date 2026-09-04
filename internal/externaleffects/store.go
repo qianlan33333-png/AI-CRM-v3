@@ -36,6 +36,62 @@ var _ port.Accepter = (*Repository)(nil)
 var _ port.TransactionalAccepter = (*Repository)(nil)
 var _ port.TransactionalReconciler = (*Repository)(nil)
 var _ port.UnknownReconciler = (*Repository)(nil)
+var _ port.ClientCompleter = (*Repository)(nil)
+
+func (r *Repository) CompleteClientEffectWithin(ctx context.Context, command port.ClientCompletionCommand) (port.Projection, error) {
+	if r == nil || command.EffectID == "" || !port.ValidDigest(command.ReceiptKey) || !port.ValidDigest(command.EvidenceDigest) || (command.State != port.StateExecuted && command.State != port.StateUnknown && command.State != port.StateFinalFailed) {
+		return port.Projection{}, ErrInvalid
+	}
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return port.Projection{}, err
+	}
+	id, err := parseEffectID(command.EffectID)
+	if err != nil {
+		return port.Projection{}, err
+	}
+	var owner, kind, state string
+	var attempts int32
+	var generation int64
+	var updated time.Time
+	err = tx.QueryRow(ctx, `SELECT owner,kind,state,attempt_count,generation,updated_at FROM external_effects WHERE id=$1 FOR UPDATE`, id).Scan(&owner, &kind, &state, &attempts, &generation, &updated)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return port.Projection{}, ErrNotFound
+	}
+	if err != nil {
+		return port.Projection{}, err
+	}
+	if port.Kind(kind) != port.KindSidebarJSSDKSend {
+		return port.Projection{}, ErrInvalid
+	}
+	commandDigest := port.Hash("client-complete", command.EffectID, string(command.ReceiptKey), string(command.EvidenceDigest), string(command.State))
+	var priorDigest, priorState string
+	priorErr := tx.QueryRow(ctx, `SELECT command_digest,state FROM external_effect_operation_receipts WHERE operation='complete' AND effect_id=$1 AND receipt_key_digest=$2`, id, command.ReceiptKey).Scan(&priorDigest, &priorState)
+	if priorErr == nil {
+		if port.Digest(priorDigest) != commandDigest {
+			return port.Projection{}, ErrPayloadMismatch
+		}
+		return projection(id, Owner(owner), Kind(kind), State(state), attempts, generation, updated), nil
+	}
+	if !errors.Is(priorErr, pgx.ErrNoRows) {
+		return port.Projection{}, priorErr
+	}
+	if port.State(state) != port.StateQueued {
+		return port.Projection{}, ErrTransition
+	}
+	attempts++
+	callExecuted := command.State == port.StateExecuted || command.State == port.StateUnknown
+	if _, err = tx.Exec(ctx, `INSERT INTO external_effect_attempts(effect_id,number,generation,fence,state,receipt_digest,evidence_digest,call_attempted,real_external_call_executed,completed_at) VALUES($1,$2,$3,0,$4,$5,$6,true,$7,clock_timestamp())`, id, attempts, generation, command.State, command.EvidenceDigest, command.EvidenceDigest, callExecuted); err != nil {
+		return port.Projection{}, err
+	}
+	if err = tx.QueryRow(ctx, `UPDATE external_effects SET state=$2,attempt_count=$3,updated_at=clock_timestamp() WHERE id=$1 RETURNING updated_at`, id, command.State, attempts).Scan(&updated); err != nil {
+		return port.Projection{}, err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO external_effect_operation_receipts(operation,effect_id,receipt_key_digest,command_digest,state) VALUES('complete',$1,$2,$3,$4)`, id, command.ReceiptKey, commandDigest, command.State); err != nil {
+		return port.Projection{}, err
+	}
+	return projection(id, Owner(owner), Kind(kind), command.State, attempts, generation, updated), nil
+}
 
 func (r *Repository) ReconcileUnknownWithin(ctx context.Context, command port.ReconcileCommand) error {
 	if command.EffectID == "" || !ValidDigest(command.ReceiptKey) || !ValidDigest(command.EvidenceDigest) || command.ActorAdminUserID < 1 || command.Generation < 1 || command.Fence < 1 {

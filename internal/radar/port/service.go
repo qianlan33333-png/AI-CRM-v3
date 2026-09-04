@@ -16,6 +16,13 @@ var (
 	ErrGone                = errors.New("radar: disabled")
 )
 
+// Stable aliases keep cross-domain consumers on radar/port while preserving
+// Radar's validated value objects in Manager signatures.
+type RadarID = radar.RadarID
+type Status = radar.Status
+
+const StatusEnabled = radar.StatusEnabled
+
 type CreateCommand struct {
 	Name           string
 	Title          string

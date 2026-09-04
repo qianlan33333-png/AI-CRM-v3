@@ -26,7 +26,9 @@
     detailFields: byID("customer-detail-fields"),
     profileMeta: byID("customer-profile-meta"),
     ephemeral: byID("customer-phone-ephemeral"),
-    sections: Array.from(document.querySelectorAll("[data-profile-section]")),
+	sections360: byID("customer-360-sections"),
+	main360: byID("customer-360-main"),
+	sidebar360: byID("customer-360-sidebar"),
   };
 
   let activeQuery = "";
@@ -35,7 +37,6 @@
   let pageCursors = [""];
   let detailID = "";
   let clearPhoneTimer = 0;
-  const sectionCursors = {};
 
   function csrf() {
     const name = "aicrm_admin_csrf=";
@@ -241,165 +242,6 @@
     return item;
   }
 
-  function sectionParts(name) {
-    const section = document.querySelector('[data-profile-section="' + name + '"]');
-    if (!section) return null;
-    return {
-      section,
-      state: section.querySelector("[data-section-state]"),
-      items: section.querySelector("[data-section-items]"),
-      wrap: section.querySelector("[data-section-wrap]"),
-      retry: section.querySelector("[data-section-retry]"),
-      more: section.querySelector("[data-section-more]"),
-      asOf: section.querySelector("[data-section-asof]"),
-    };
-  }
-
-  function sectionState(name, title, detail, tone) {
-    const parts = sectionParts(name);
-    if (!parts) return;
-    parts.state.replaceChildren();
-    const strong = document.createElement("strong");
-    const span = document.createElement("span");
-    strong.textContent = title;
-    span.textContent = detail;
-    parts.state.append(strong, span);
-    parts.state.className = "admin-state admin-state--inline" + (tone === "loading" ? " admin-state--loading" : "") + (tone === "error" ? " admin-state--error" : "");
-    parts.state.hidden = false;
-    parts.items.hidden = true;
-    if (parts.wrap) parts.wrap.hidden = true;
-    parts.retry.hidden = tone !== "error";
-    if (parts.more) parts.more.hidden = true;
-  }
-
-  function observationStatus(value) {
-    return value === "active" ? "当前" : value === "stale" ? "历史观察" : "—";
-  }
-
-  function tableCell(value) {
-    const td = document.createElement("td");
-    td.textContent = String(value || "—");
-    return td;
-  }
-
-  function renderOwners(payload, target) {
-    const names = [];
-    for (const item of payload.items || []) {
-      names.push(item.display_name || "企微成员");
-      const row = document.createElement("tr");
-      row.append(tableCell(item.display_name || "企微成员"), tableCell(observationStatus(item.status)), tableCell(date(item.observed_at)));
-      target.append(row);
-    }
-    if (payload.unmatched_count > 0) {
-      const row = document.createElement("tr");
-      const note = tableCell("未匹配企微成员，共 " + payload.unmatched_count + " 位");
-      note.colSpan = 3;
-      note.className = "customer-section-note";
-      row.append(note);
-      target.append(row);
-    }
-    const summary = byID("customer-owner-summary");
-    if (summary) summary.textContent = names.length ? names.join("、") : (payload.unmatched_count > 0 ? "有未匹配成员" : "未分配");
-  }
-
-  function renderTags(payload, target) {
-    for (const item of payload.items || []) {
-      const tag = document.createElement("span");
-      tag.className = "admin-profile-tag";
-      tag.textContent = (item.group_name ? item.group_name + " · " : "") + item.name + (item.status === "stale" ? "（历史）" : "") + " · " + date(item.observed_at);
-      target.append(tag);
-    }
-  }
-
-  function renderSurveys(payload, target) {
-    for (const item of payload.items || []) {
-      const heading = document.createElement("tr");
-      heading.className = "customer-survey-heading";
-      const headingCell = tableCell((item.title || "问卷") + " · " + date(item.submitted_at) + " · 得分 " + item.score);
-      headingCell.colSpan = 2;
-      heading.append(headingCell);
-      target.append(heading);
-      if (item.assessment_label) {
-        const assessment = document.createElement("tr");
-        assessment.className = "customer-survey-assessment";
-        assessment.append(tableCell("测评结果"), tableCell(item.assessment_label));
-        target.append(assessment);
-      }
-      for (const answer of item.answers || []) {
-        const row = document.createElement("tr");
-        row.append(tableCell(answer.question || "未命名问题"), tableCell((answer.answers || []).join("、") || "未填写"));
-        target.append(row);
-      }
-    }
-  }
-
-  function renderActivity(payload, target, timeline) {
-    for (const item of payload.items || []) {
-      const article = document.createElement("article");
-      article.className = "admin-profile-message" + (timeline ? " customer-timeline-event" : "");
-      const meta = document.createElement("div");
-      meta.className = "admin-profile-message-meta";
-      const time = document.createElement("span");
-      const source = document.createElement("span");
-      time.textContent = date(item.occurred_at);
-      source.textContent = timeline ? ((item.source_domain || "customer") + " · " + (item.event_type || "event")) : (item.message_type || "消息活动");
-      meta.append(time, source);
-      const content = document.createElement("div");
-      content.className = "admin-profile-message-content";
-      content.textContent = timeline ? (item.title || "客户事件") : (item.chat_type === "group" ? "群聊活动" : "私聊活动");
-      article.append(meta, content);
-      target.append(article);
-    }
-  }
-
-  function renderSection(name, payload, target) {
-    if (name === "owners") renderOwners(payload, target);
-    else if (name === "tags") renderTags(payload, target);
-    else if (name === "surveys") renderSurveys(payload, target);
-    else if (name === "timeline") renderActivity(payload, target, true);
-    else renderActivity(payload, target, false);
-  }
-
-  function sectionReady(name, payload, append) {
-    const parts = sectionParts(name);
-    if (!parts) return;
-    if (!append) parts.items.replaceChildren();
-    renderSection(name, payload, parts.items);
-    const hasItems = parts.items.childElementCount > 0;
-    parts.state.hidden = hasItems;
-    parts.items.hidden = !hasItems;
-    if (parts.wrap) parts.wrap.hidden = !hasItems;
-    parts.retry.hidden = true;
-    if (!hasItems) sectionState(name, "当前没有记录", "暂未找到可展示的数据。", "empty");
-    sectionCursors[name] = payload.next_cursor || "";
-    if (parts.more) parts.more.hidden = !sectionCursors[name];
-    const prefix = payload.source_status === "degraded" ? "部分信息待完善" : "数据时间";
-    parts.asOf.textContent = payload.as_of ? prefix + "：" + date(payload.as_of) : (payload.source_status === "degraded" ? "部分信息待完善。" : "来自本地安全投影。");
-  }
-
-  async function loadSection(name, append) {
-    const parts = sectionParts(name);
-    if (!parts) return;
-    if (!append) sectionState(name, "正在加载", "读取该客户分区。", "loading");
-    const route = { owners: "owners", tags: "tags", surveys: "survey-answers", timeline: "timeline", chat_activity: "chat-activity" }[name];
-    const params = new URLSearchParams();
-    params.set("limit", "20");
-    if (append && sectionCursors[name]) params.set("cursor", sectionCursors[name]);
-    if (name === "owners" || name === "tags") params.delete("limit");
-    try {
-      const payload = await request(api.customers + "/" + detailID + "/" + route + (params.toString() ? "?" + params.toString() : ""));
-      sectionReady(name, payload, append);
-    } catch (error) {
-      if (append) {
-        parts.asOf.textContent = "继续加载失败，已加载内容仍保留";
-        if (parts.more) parts.more.hidden = false;
-        return;
-      }
-      if (error.status === 503 && error.message === "capability_not_ready") sectionState(name, "能力待接入", "来源模块尚未发布安全读取能力。", "not-ready");
-      else sectionState(name, "当前无法加载", "其他客户档案不受影响，可单独重试。", "error");
-    }
-  }
-
   function phoneField(masked) {
     const line = document.createElement("span");
     line.className = "customer-phone-line";
@@ -417,20 +259,41 @@
     return line;
   }
 
+  function sectionCard(title, section, render) {
+    const card = document.createElement("section");
+    card.className = "admin-card";
+    const heading = document.createElement("h2");
+    heading.textContent = title;
+    card.append(heading);
+    if (!section || section.status !== "ready") {
+      const state = document.createElement("div");
+      state.className = "admin-state admin-state--inline admin-state--error";
+      state.textContent = "该分区暂时不可用，其他客户信息不受影响。";
+      card.append(state);
+      return card;
+    }
+    render(card, section.data || {});
+    return card;
+  }
+
+  function line(target, value) {
+    const node = document.createElement("div");
+    node.className = "admin-profile-message";
+    node.textContent = value;
+    target.append(node);
+  }
+
   async function loadDetail(id) {
     detailID = String(id);
     try {
-      const data = await request(api.customers + "/" + id);
-      const item = data.customer || {};
-      const identities = (data.identities || []).map((identity) => identity.summary).filter(Boolean);
+	  const data = await request(api.customers + "/" + id + "/360");
+	  const item = (data.profile && data.profile.data) || {};
+	  const identity = (data.identity_summary && data.identity_summary.data) || {};
+	  const identities = (identity.identities || []).map((value) => value.summary).filter(Boolean);
       el.profileName.textContent = item.display_name || "未命名客户";
-      const owner = document.createElement("span");
-      owner.id = "customer-owner-summary";
-      owner.textContent = "正在读取";
       el.detailFields.replaceChildren(
         profileField("姓名", item.display_name || "未命名客户"),
-        profileField("手机号", phoneField((data.phones || [])[0] ? localPhone(data.phones[0].masked) : "")),
-        profileField("跟进成员", owner),
+		profileField("手机号", phoneField((identity.phones || [])[0] ? localPhone(identity.phones[0].masked) : "")),
         profileField("Customer ID", item.customer_id),
         profileField("OneID", [item.oneid, ...identities].filter(Boolean).join(" · ")),
       );
@@ -441,15 +304,17 @@
         metaItem("数据来源", item.source),
         metaItem("最后同步", date(item.last_synced_at)),
       );
-      if (data.merged_from_customer_id) el.profileMeta.append(metaItem("合并说明", "由 Customer #" + data.merged_from_customer_id + " 合并至 #" + data.canonical_customer_id));
       el.detailState.hidden = true;
       el.detailContent.hidden = false;
-      for (const section of el.sections) section.hidden = false;
-      for (const name of ["owners", "tags", "surveys", "timeline", "chat_activity"]) {
-        const capability = (data.sections || {})[name] || {};
-        if (capability.status === "not_ready") sectionState(name, "能力待接入", "来源模块尚未发布安全读取能力。", "not-ready");
-        else loadSection(name, false);
-      }
+	  el.main360.replaceChildren(
+		sectionCard("订单统计", data.order_summary, function (target, value) { line(target, "订单总数：" + (value.total || 0)); line(target, "已支付：" + (value.paid || 0) + "，退款相关：" + (value.refunded || 0) + "，支付失败：" + (value.failed || 0)); (value.recent || []).slice(0, 10).forEach(function (order) { line(target, (order.merchant_order_no || "订单 #" + order.id) + " · " + (order.status || "")); }); }),
+		sectionCard("问卷统计", data.questionnaire_summary, function (target, value) { line(target, "问卷记录：" + (value.total || 0)); (value.recent || []).forEach(function (survey) { line(target, (survey.title || "问卷") + " · " + date(survey.submitted_at)); }); })
+	  );
+	  el.sidebar360.replaceChildren(
+		sectionCard("风险摘要", data.risk, function (target, value) { line(target, "风险等级：" + (value.level || "unknown")); (value.reasons || []).forEach(function (reason) { line(target, reason); }); }),
+		sectionCard("最近触点", data.recent_touchpoints, function (target, value) { (Array.isArray(value) ? value : []).forEach(function (event) { line(target, (event.title || event.event_type || "客户事件") + " · " + date(event.occurred_at)); }); })
+	  );
+	  el.sections360.hidden = false;
     } catch (error) {
       el.detailState.className = "admin-state admin-state--inline admin-state--error";
       el.detailState.replaceChildren();
@@ -498,13 +363,6 @@
   if (el.previous) el.previous.addEventListener("click", function () { if (pageIndex > 0) loadList(pageCursors[pageIndex - 1], "previous"); });
   if (el.next) el.next.addEventListener("click", function () { if (nextCursor) loadList(nextCursor, "next"); });
   if (el.syncStart) el.syncStart.addEventListener("click", startSync);
-  for (const section of el.sections) {
-    const name = section.dataset.profileSection;
-    section.querySelector("[data-section-retry]").addEventListener("click", function () { loadSection(name, false); });
-    const more = section.querySelector("[data-section-more]");
-    if (more) more.addEventListener("click", function () { if (sectionCursors[name]) loadSection(name, true); });
-  }
-
   const match = location.pathname.match(/^\/admin\/customers\/([1-9][0-9]*)$/);
   if (match) loadDetail(match[1]);
   else {

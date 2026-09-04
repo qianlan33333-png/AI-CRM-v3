@@ -341,6 +341,49 @@ func (s *Service) List(ctx context.Context, query orderport.ListQuery) (orderpor
 	return page, nil
 }
 
+func (s *Service) CustomerOrderSummary(ctx context.Context, customerID int64, recentLimit int32) (orderport.CustomerOrderSummary, error) {
+	if !ready(s) || customerID < 1 || recentLimit < 1 || recentLimit > MaximumLimit {
+		return orderport.CustomerOrderSummary{}, orderport.ErrConflict
+	}
+	var out orderport.CustomerOrderSummary
+	err := s.uow.Within(ctx, func(tx context.Context) error {
+		base := ListFilter{CustomerID: customerID}
+		var err error
+		if out.Total, err = s.store.Count(tx, base); err != nil {
+			return err
+		}
+		if out.Paid, err = s.store.Count(tx, ListFilter{CustomerID: customerID, Status: domain.StatusPaid}); err != nil {
+			return err
+		}
+		if out.Failed, err = s.store.Count(tx, ListFilter{CustomerID: customerID, Status: domain.StatusPaymentFailed}); err != nil {
+			return err
+		}
+		if out.Refunded, err = s.store.Count(tx, ListFilter{CustomerID: customerID, Status: domain.StatusRefunded}); err != nil {
+			return err
+		}
+		partial, err := s.store.Count(tx, ListFilter{CustomerID: customerID, Status: domain.StatusPartiallyRefunded})
+		if err != nil {
+			return err
+		}
+		out.Refunded += partial
+		rows, err := s.store.List(tx, nil, recentLimit, base)
+		if err != nil {
+			return err
+		}
+		out.Recent = make([]domain.Snapshot, 0, len(rows))
+		for _, row := range rows {
+			out.Recent = append(out.Recent, row.Snapshot())
+		}
+		return nil
+	})
+	if err != nil {
+		return orderport.CustomerOrderSummary{}, classify(err)
+	}
+	return out, nil
+}
+
+var _ orderport.CustomerOrderSummaryReader = (*Service)(nil)
+
 func (s *Service) GetByReference(ctx context.Context, reference string) (domain.Snapshot, error) {
 	if !ready(s) || !validScope(reference) {
 		return domain.Snapshot{}, orderport.ErrNotFound
