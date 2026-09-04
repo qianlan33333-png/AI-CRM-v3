@@ -31,6 +31,12 @@ tables=(
   channel_welcome_effect_dependency
   channel_welcome_effect_graph
   wecom_customer_acquisition_links
+  image_library
+  miniprogram_library
+  attachment_library
+  group_invite_library
+  wecom_corp_tag_groups
+  wecom_corp_tags
 )
 
 umask 077
@@ -48,7 +54,29 @@ trap cleanup EXIT
   echo "SELECT '__AICRM_SNAPSHOT__|' || to_char(transaction_timestamp() AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"');"
   for table in "${tables[@]}"; do
     printf "SELECT '__AICRM_TABLE__|%s|' || encode(convert_to((SELECT json_agg(attname ORDER BY attnum)::text FROM pg_attribute WHERE attrelid='public.%s'::regclass AND attnum>0 AND NOT attisdropped),'UTF8'),'hex');\n" "$table" "$table"
-    printf "SELECT '__AICRM_ROW__|' || encode(convert_to(to_jsonb(source_row)::text,'UTF8'),'hex') FROM public.%s AS source_row;\n" "$table"
+    case "$table" in
+      image_library)
+        printf "SELECT '__AICRM_ROW__|' || encode(convert_to(to_jsonb(source_row)::text,'UTF8'),'hex') FROM public.image_library AS source_row WHERE id IN (SELECT DISTINCT value::bigint FROM public.automation_channel c CROSS JOIN LATERAL jsonb_array_elements_text(COALESCE(c.welcome_image_library_ids,'[]'::jsonb)) value WHERE value ~ '^[0-9]+$');\n"
+        ;;
+      miniprogram_library)
+        printf "SELECT '__AICRM_ROW__|' || encode(convert_to(to_jsonb(source_row)::text,'UTF8'),'hex') FROM public.miniprogram_library AS source_row WHERE id IN (SELECT DISTINCT value::bigint FROM public.automation_channel c CROSS JOIN LATERAL jsonb_array_elements_text(COALESCE(c.welcome_miniprogram_library_ids,'[]'::jsonb)) value WHERE value ~ '^[0-9]+$');\n"
+        ;;
+      attachment_library)
+        printf "SELECT '__AICRM_ROW__|' || encode(convert_to(to_jsonb(source_row)::text,'UTF8'),'hex') FROM public.attachment_library AS source_row WHERE id IN (SELECT DISTINCT value::bigint FROM public.automation_channel c CROSS JOIN LATERAL jsonb_array_elements_text(COALESCE(c.welcome_attachment_library_ids,'[]'::jsonb)) value WHERE value ~ '^[0-9]+$');\n"
+        ;;
+      group_invite_library)
+        printf "SELECT '__AICRM_ROW__|' || encode(convert_to(to_jsonb(source_row)::text,'UTF8'),'hex') FROM public.group_invite_library AS source_row WHERE id IN (SELECT DISTINCT value::bigint FROM public.automation_channel c CROSS JOIN LATERAL jsonb_array_elements_text(COALESCE(c.welcome_group_invite_library_ids,'[]'::jsonb)) value WHERE value ~ '^[0-9]+$');\n"
+        ;;
+      wecom_corp_tags)
+        printf "SELECT '__AICRM_ROW__|' || encode(convert_to(to_jsonb(source_row)::text,'UTF8'),'hex') FROM public.wecom_corp_tags AS source_row WHERE tag_id IN (SELECT DISTINCT entry_tag_id FROM public.automation_channel WHERE entry_tag_id<>'');\n"
+        ;;
+      wecom_corp_tag_groups)
+        printf "SELECT '__AICRM_ROW__|' || encode(convert_to(to_jsonb(source_row)::text,'UTF8'),'hex') FROM public.wecom_corp_tag_groups AS source_row WHERE group_id IN (SELECT DISTINCT group_id FROM public.wecom_corp_tags WHERE tag_id IN (SELECT DISTINCT entry_tag_id FROM public.automation_channel WHERE entry_tag_id<>''));\n"
+        ;;
+      *)
+        printf "SELECT '__AICRM_ROW__|' || encode(convert_to(to_jsonb(source_row)::text,'UTF8'),'hex') FROM public.%s AS source_row;\n" "$table"
+        ;;
+    esac
   done
   echo "COMMIT;"
 } > "$sql_file"

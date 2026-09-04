@@ -31,6 +31,7 @@ type AcquisitionAsset struct {
 	ResultURL, ResultDigest                                       string
 	RetiredAt                                                     *time.Time
 	CreatedAt, UpdatedAt                                          time.Time
+	Origin                                                        string
 }
 
 type PublishedAssetSnapshot struct {
@@ -126,9 +127,30 @@ func (store *PostgreSQLAssetStore) ListAssets(ctx context.Context, channelID int
 			return nil, e
 		}
 		a.Kind = AcquisitionAssetKind(kind)
+		a.Origin = "runtime"
 		result = append(result, a)
 	}
-	return result, rows.Err()
+	if e = rows.Err(); e != nil || len(result) >= limit || before != 0 {
+		return result, e
+	}
+	legacyRows, e := tx.Query(ctx, `SELECT id,channel_id,config_version,asset_version,kind,provider_asset_ref,result_url,verification_status,retired_at,created_at,updated_at FROM channel_legacy_acquisition_assets WHERE channel_id=$1 ORDER BY asset_version DESC,id DESC LIMIT $2`, channelID, limit-len(result))
+	if e != nil {
+		return nil, e
+	}
+	defer legacyRows.Close()
+	for legacyRows.Next() {
+		var a AcquisitionAsset
+		var kind string
+		if e = legacyRows.Scan(&a.ID, &a.ChannelID, &a.ConfigVersion, &a.AssetVersion, &kind, &a.ProviderAssetRef, &a.ResultURL, &a.State, &a.RetiredAt, &a.CreatedAt, &a.UpdatedAt); e != nil {
+			return nil, e
+		}
+		a.Kind = AcquisitionAssetKind(kind)
+		a.Operation = "create"
+		a.Origin = "legacy"
+		a.EffectRef = "legacy_" + strconv.FormatInt(a.ID, 10)
+		result = append(result, a)
+	}
+	return result, legacyRows.Err()
 }
 func (store *PostgreSQLAssetStore) GetAsset(ctx context.Context, channelID int64, effectRef string) (AcquisitionAsset, error) {
 	tx, e := platformpostgres.RequireTransaction(ctx)
@@ -137,8 +159,21 @@ func (store *PostgreSQLAssetStore) GetAsset(ctx context.Context, channelID int64
 	}
 	var a AcquisitionAsset
 	var kind string
-	e = tx.QueryRow(ctx, `SELECT id,channel_id,config_version,asset_version,kind,operation,supersedes_asset_id,target_provider_asset_ref,source_ref_digest,effect_ref,accept_receipt_ref,queue_receipt_ref,state,provider_asset_ref,result_url,result_digest,retired_at,created_at,updated_at FROM channel_acquisition_assets WHERE channel_id=$1 AND effect_ref=$2`, channelID, effectRef).Scan(&a.ID, &a.ChannelID, &a.ConfigVersion, &a.AssetVersion, &kind, &a.Operation, &a.SupersedesAssetID, &a.TargetProviderAssetRef, &a.SourceRefDigest, &a.EffectRef, &a.AcceptReceiptRef, &a.QueueReceiptRef, &a.State, &a.ProviderAssetRef, &a.ResultURL, &a.ResultDigest, &a.RetiredAt, &a.CreatedAt, &a.UpdatedAt)
-	a.Kind = AcquisitionAssetKind(kind)
+	if strings.HasPrefix(effectRef, "legacy_") {
+		id, parseErr := strconv.ParseInt(strings.TrimPrefix(effectRef, "legacy_"), 10, 64)
+		if parseErr != nil || id < 1 {
+			return AcquisitionAsset{}, ErrCatalogNotFound
+		}
+		e = tx.QueryRow(ctx, `SELECT id,channel_id,config_version,asset_version,kind,provider_asset_ref,result_url,verification_status,retired_at,created_at,updated_at FROM channel_legacy_acquisition_assets WHERE id=$1 AND channel_id=$2`, id, channelID).Scan(&a.ID, &a.ChannelID, &a.ConfigVersion, &a.AssetVersion, &kind, &a.ProviderAssetRef, &a.ResultURL, &a.State, &a.RetiredAt, &a.CreatedAt, &a.UpdatedAt)
+		a.Kind = AcquisitionAssetKind(kind)
+		a.Operation = "create"
+		a.Origin = "legacy"
+		a.EffectRef = effectRef
+	} else {
+		e = tx.QueryRow(ctx, `SELECT id,channel_id,config_version,asset_version,kind,operation,supersedes_asset_id,target_provider_asset_ref,source_ref_digest,effect_ref,accept_receipt_ref,queue_receipt_ref,state,provider_asset_ref,result_url,result_digest,retired_at,created_at,updated_at FROM channel_acquisition_assets WHERE channel_id=$1 AND effect_ref=$2`, channelID, effectRef).Scan(&a.ID, &a.ChannelID, &a.ConfigVersion, &a.AssetVersion, &kind, &a.Operation, &a.SupersedesAssetID, &a.TargetProviderAssetRef, &a.SourceRefDigest, &a.EffectRef, &a.AcceptReceiptRef, &a.QueueReceiptRef, &a.State, &a.ProviderAssetRef, &a.ResultURL, &a.ResultDigest, &a.RetiredAt, &a.CreatedAt, &a.UpdatedAt)
+		a.Kind = AcquisitionAssetKind(kind)
+		a.Origin = "runtime"
+	}
 	if errors.Is(e, pgx.ErrNoRows) {
 		return AcquisitionAsset{}, ErrCatalogNotFound
 	}
@@ -193,6 +228,14 @@ func (store *PostgreSQLAssetStore) ReconcileAsset(ctx context.Context, command A
 			return AcquisitionAsset{}, err
 		}
 	}
+	if state == "reconciled" && asset.Operation != "delete" {
+		if _, err = tx.Exec(ctx, `UPDATE channel_legacy_acquisition_assets SET retired_at=$3,updated_at=$3 WHERE channel_id=$1 AND kind=$2 AND retired_at IS NULL`, asset.ChannelID, asset.Kind, command.CompletedAt.UTC()); err != nil {
+			return AcquisitionAsset{}, err
+		}
+		if _, err = tx.Exec(ctx, `UPDATE channel_acquisition_state_bindings SET active_until=$3,version=version+1,updated_at=$3 WHERE channel_id=$1 AND asset_kind=$2 AND asset_version>=2000000000 AND active_until IS NULL`, asset.ChannelID, asset.Kind, command.CompletedAt.UTC()); err != nil {
+			return AcquisitionAsset{}, err
+		}
+	}
 	if _, err = tx.Exec(ctx, `INSERT INTO channel_asset_reconciliation_receipts(asset_id,actor_admin_user_id,operation_key_digest,resolution,evidence_digest,prior_state,resulting_state,created_at) VALUES($1,$2,$3,$4,$5,'outcome_unknown',$6,$7)`, asset.ID, command.ActorID, key[:], command.Resolution, command.EvidenceDigest, state, command.CompletedAt.UTC()); err != nil {
 		return AcquisitionAsset{}, err
 	}
@@ -241,9 +284,10 @@ func (store *PostgreSQLAssetStore) CompletePublishedAsset(ctx context.Context, c
 	if e != nil {
 		return e
 	}
-	var operation string
+	var operation, kind string
+	var channelID int64
 	var supersedes *int64
-	if e = tx.QueryRow(ctx, `SELECT operation,supersedes_asset_id FROM channel_acquisition_assets WHERE effect_ref=$1 FOR UPDATE`, c.EffectRef).Scan(&operation, &supersedes); e != nil {
+	if e = tx.QueryRow(ctx, `SELECT channel_id,kind,operation,supersedes_asset_id FROM channel_acquisition_assets WHERE effect_ref=$1 FOR UPDATE`, c.EffectRef).Scan(&channelID, &kind, &operation, &supersedes); e != nil {
 		return e
 	}
 	if c.State == "executed" && operation != "delete" && (c.ProviderAssetRef == "" || c.ResultURL == "") {
@@ -264,12 +308,24 @@ func (store *PostgreSQLAssetStore) CompletePublishedAsset(ctx context.Context, c
 			return e
 		}
 	}
+	if c.State == "executed" && operation != "delete" {
+		if _, e = tx.Exec(ctx, `UPDATE channel_legacy_acquisition_assets SET retired_at=$3,updated_at=$3 WHERE channel_id=$1 AND kind=$2 AND retired_at IS NULL`, channelID, kind, c.CompletedAt.UTC()); e != nil {
+			return e
+		}
+		if _, e = tx.Exec(ctx, `UPDATE channel_acquisition_state_bindings SET active_until=$3,version=version+1,updated_at=$3 WHERE channel_id=$1 AND asset_kind=$2 AND asset_version>=2000000000 AND active_until IS NULL`, channelID, kind, c.CompletedAt.UTC()); e != nil {
+			return e
+		}
+	}
 	return nil
 }
 
 type AssetEffectGateway interface {
 	effectport.TransactionalAccepter
 	effectport.Reader
+}
+
+type PublishEligibilityValidator interface {
+	ValidatePublish(context.Context, int64) (int64, error)
 }
 
 type AssetService struct {
@@ -280,9 +336,18 @@ type AssetService struct {
 	events     channelport.CatalogEventAppender
 	now        func() time.Time
 	reconciler AssetReconciler
+	validator  PublishEligibilityValidator
 	provider   interface {
 		GetContactWay(context.Context, string) (wecomport.AcquisitionAssetResult, error)
 	}
+}
+
+func (service *AssetService) SetPublishValidator(validator PublishEligibilityValidator) error {
+	if service == nil || validator == nil || service.validator != nil {
+		return ErrAssetUnavailable
+	}
+	service.validator = validator
+	return nil
 }
 
 func (service *AssetService) SetProvider(provider interface {
@@ -319,7 +384,35 @@ func (service *AssetService) Publish(ctx context.Context, channelID, actor int64
 	key := sha256.Sum256([]byte(idempotency))
 	request := sha256.Sum256([]byte(strconv.FormatInt(channelID, 10) + "\x00" + string(kind)))
 	var result AcquisitionAsset
+	var replayed bool
 	err := service.uow.Within(ctx, func(tx context.Context) error {
+		existing, digest, findErr := service.store.FindAssetByOperation(tx, actor, key)
+		if findErr == nil {
+			if digest != request {
+				return ErrCatalogConflict
+			}
+			result, replayed = existing, true
+			return nil
+		}
+		if errors.Is(findErr, pgx.ErrNoRows) {
+			return nil
+		}
+		return findErr
+	})
+	if err != nil {
+		return AcquisitionAsset{}, mapCatalogError(err)
+	}
+	if replayed {
+		return result, nil
+	}
+	validatedConfigVersion := int64(0)
+	if service.validator != nil {
+		validatedConfigVersion, err = service.validator.ValidatePublish(ctx, channelID)
+		if err != nil {
+			return AcquisitionAsset{}, errors.Join(ErrAssetUnavailable, err)
+		}
+	}
+	err = service.uow.Within(ctx, func(tx context.Context) error {
 		existing, digest, findErr := service.store.FindAssetByOperation(tx, actor, key)
 		if findErr == nil {
 			if digest != request {
@@ -336,6 +429,9 @@ func (service *AssetService) Publish(ctx context.Context, channelID, actor int64
 			return getErr
 		}
 		if !channel.CanPublish() {
+			return ErrCatalogConflict
+		}
+		if validatedConfigVersion > 0 && channel.ConfigVersion != validatedConfigVersion {
 			return ErrCatalogConflict
 		}
 		if kind == AcquisitionAssetQRCode && channel.Config.Carrier != "qrcode" || kind == AcquisitionAssetLink && channel.Config.Carrier != "link" {
@@ -466,6 +562,9 @@ func (service *AssetService) List(ctx context.Context, channelID int64, limit in
 		return nil, err
 	}
 	for index := range items {
+		if items[index].Origin == "legacy" {
+			continue
+		}
 		projection, readErr := service.effects.Get(ctx, items[index].EffectRef)
 		if readErr != nil {
 			return nil, readErr
@@ -484,6 +583,9 @@ func (service *AssetService) Get(ctx context.Context, channelID int64, effectRef
 	})
 	if err != nil {
 		return AcquisitionAsset{}, err
+	}
+	if a.Origin == "legacy" {
+		return a, nil
 	}
 	projection, readErr := service.effects.Get(ctx, a.EffectRef)
 	if readErr != nil {

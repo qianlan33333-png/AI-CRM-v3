@@ -31,6 +31,8 @@ var expectedSourceTables = []string{
 	"automation_channel_entry_effect_log", "automation_channel_entry_runtime", "automation_channel_qrcode_asset",
 	"automation_channel_scene_alias", "channel_welcome_effect_dependency", "channel_welcome_effect_graph",
 	"wecom_customer_acquisition_links",
+	"image_library", "miniprogram_library", "attachment_library", "group_invite_library",
+	"wecom_corp_tag_groups", "wecom_corp_tags",
 }
 
 type snapshotManifest struct {
@@ -165,7 +167,7 @@ func inspectSource(ctx context.Context, cfg options) error {
 }
 
 func discoverSourceTableNames(ctx context.Context, tx pgx.Tx) ([]string, error) {
-	rows, err := tx.Query(ctx, `SELECT table_name FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE' AND (table_name LIKE 'automation_channel%' OR table_name LIKE 'channel_welcome_effect%' OR table_name='wecom_customer_acquisition_links') ORDER BY table_name`)
+	rows, err := tx.Query(ctx, `SELECT table_name FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE' AND (table_name LIKE 'automation_channel%' OR table_name LIKE 'channel_welcome_effect%' OR table_name IN ('wecom_customer_acquisition_links','image_library','miniprogram_library','attachment_library','group_invite_library','wecom_corp_tag_groups','wecom_corp_tags')) ORDER BY table_name`)
 	if err != nil {
 		return nil, err
 	}
@@ -526,7 +528,7 @@ func (manifest snapshotManifest) Validate() error {
 }
 
 func validSourceTableName(name string) bool {
-	if strings.HasPrefix(name, "automation_channel") || strings.HasPrefix(name, "channel_welcome_effect") || name == "wecom_customer_acquisition_links" {
+	if strings.HasPrefix(name, "automation_channel") || strings.HasPrefix(name, "channel_welcome_effect") || name == "wecom_customer_acquisition_links" || name == "image_library" || name == "miniprogram_library" || name == "attachment_library" || name == "group_invite_library" || name == "wecom_corp_tag_groups" || name == "wecom_corp_tags" {
 		for _, character := range name {
 			if character != '_' && (character < 'a' || character > 'z') && (character < '0' || character > '9') {
 				return false

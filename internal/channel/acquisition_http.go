@@ -15,6 +15,7 @@ import (
 
 type AcquisitionApplication interface {
 	Candidates(context.Context) ([]AcquisitionCandidate, error)
+	LocalCandidates(context.Context) ([]AcquisitionCandidate, error)
 	Preview(context.Context, int64) (channeldomain.Channel, []AcquisitionCandidate, error)
 	Replace(context.Context, int64, AssignmentMutation) (channeldomain.Channel, []AcquisitionCandidate, error)
 }
@@ -110,10 +111,15 @@ func (handler *AcquisitionHTTPHandler) staff(w http.ResponseWriter, r *http.Requ
 	if _, ok := handler.read(w, r); !ok {
 		return
 	}
-	channel, all, err := handler.application.Preview(r.Context(), channelID)
+	channel, local, err := handler.application.Preview(r.Context(), channelID)
 	if err != nil {
 		writeAcquisitionError(w, err)
 		return
+	}
+	all, providerErr := handler.application.Candidates(r.Context())
+	providerSucceeded := providerErr == nil
+	if providerErr != nil {
+		all = local
 	}
 	assigned := make(map[int64]channeldomain.Assignee, len(channel.Config.Assignment.Assignees))
 	for _, item := range channel.Config.Assignment.Assignees {
@@ -134,7 +140,7 @@ func (handler *AcquisitionHTTPHandler) staff(w http.ResponseWriter, r *http.Requ
 		}
 		items = append(items, item)
 	}
-	writeChannelJSON(w, http.StatusOK, map[string]any{"channel_id": channelID, "items": items, "provider_source": "wecom_follow_user_list", "provider_read_succeeded": true, "real_external_call_executed": false})
+	writeChannelJSON(w, http.StatusOK, map[string]any{"channel_id": channelID, "items": items, "provider_source": "wecom_follow_user_list", "provider_read_succeeded": providerSucceeded, "publish_blocked": !providerSucceeded, "blocking_reason": map[bool]string{true: "", false: "provider_read_unavailable"}[providerSucceeded], "real_external_call_executed": false})
 }
 
 type assignmentRequest struct {

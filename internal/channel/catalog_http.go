@@ -30,6 +30,7 @@ type CatalogApplication interface {
 
 type CatalogHTTPConfig struct {
 	Application CatalogApplication
+	Summaries   CatalogSummaryReader
 	Security    interface {
 		Authenticate(context.Context, *http.Request) (accessdomain.Principal, error)
 		AuthorizeCSRF(context.Context, *http.Request) (accessdomain.Principal, error)
@@ -40,6 +41,7 @@ type CatalogHTTPConfig struct {
 
 type CatalogHTTPHandler struct {
 	application CatalogApplication
+	summaries   CatalogSummaryReader
 	security    CatalogHTTPConfig
 }
 
@@ -50,7 +52,7 @@ func NewCatalogHTTPHandler(config CatalogHTTPConfig) (*CatalogHTTPHandler, error
 	if config.Now == nil {
 		config.Now = time.Now
 	}
-	return &CatalogHTTPHandler{application: config.Application, security: config}, nil
+	return &CatalogHTTPHandler{application: config.Application, summaries: config.Summaries, security: config}, nil
 }
 
 func (handler *CatalogHTTPHandler) ServeHTTP(response http.ResponseWriter, request *http.Request) {
@@ -128,8 +130,17 @@ func (handler *CatalogHTTPHandler) list(response http.ResponseWriter, request *h
 		return
 	}
 	items := make([]catalogListJSON, len(page.Items))
+	ids := make([]int64, len(page.Items))
+	for index := range page.Items {
+		ids[index] = page.Items[index].ID
+	}
+	summaries, err := handler.readSummaries(request.Context(), ids)
+	if err != nil {
+		handler.applicationError(response, err)
+		return
+	}
 	for index, item := range page.Items {
-		items[index] = projectCatalogList(item)
+		items[index] = projectCatalogList(item, summaries[item.ID])
 	}
 	next := ""
 	if page.NextCursor != "" {
@@ -152,8 +163,13 @@ func (handler *CatalogHTTPHandler) get(response http.ResponseWriter, request *ht
 		handler.applicationError(response, err)
 		return
 	}
+	summaries, err := handler.readSummaries(request.Context(), []int64{id})
+	if err != nil {
+		handler.applicationError(response, err)
+		return
+	}
 	response.Header().Set("ETag", fmt.Sprintf(`"%d"`, channel.Version))
-	writeChannelJSON(response, http.StatusOK, map[string]any{"ok": true, "channel": projectCatalogDetail(channel), "reason": "channel_loaded", "source": "ai_crm_next"})
+	writeChannelJSON(response, http.StatusOK, map[string]any{"ok": true, "channel": projectCatalogDetail(channel, summaries[id]), "reason": "channel_loaded", "source": "ai_crm_next"})
 }
 
 func (handler *CatalogHTTPHandler) create(response http.ResponseWriter, request *http.Request) {
@@ -317,15 +333,21 @@ type catalogListJSON struct {
 	Status              channeldomain.Status `json:"status"`
 	AssigneeCount       int                  `json:"assignee_count"`
 	ChannelContactCount int                  `json:"channel_contact_count"`
+	ChannelEnterCount   int64                `json:"channel_enter_count"`
+	LatestEnteredAt     string               `json:"latest_channel_entered_at"`
+	QRCodeAssetID       int64                `json:"qrcode_asset_id"`
+	QRCodeStatus        string               `json:"qrcode_status"`
+	QRCodeOrigin        string               `json:"qrcode_origin"`
+	QRDownloadURL       string               `json:"qr_download_url"`
 	CreatedAt           string               `json:"created_at"`
 	UpdatedAt           string               `json:"updated_at"`
 }
 
-func projectCatalogList(channel channeldomain.Channel) catalogListJSON {
-	return catalogListJSON{ID: channel.ID, ChannelName: channel.Config.Name, ChannelCode: channel.Code, Status: channel.Status, AssigneeCount: len(channel.Config.Assignment.Assignees), ChannelContactCount: 0, CreatedAt: channel.CreatedAt.Format(time.RFC3339Nano), UpdatedAt: channel.UpdatedAt.Format(time.RFC3339Nano)}
+func projectCatalogList(channel channeldomain.Channel, summary CatalogSummary) catalogListJSON {
+	return catalogListJSON{ID: channel.ID, ChannelName: channel.Config.Name, ChannelCode: channel.Code, Status: channel.Status, AssigneeCount: len(channel.Config.Assignment.Assignees), ChannelContactCount: int(summary.UniqueUsers), ChannelEnterCount: summary.EnterCount, LatestEnteredAt: optionalCatalogTime(summary.LatestEnteredAt), QRCodeAssetID: summary.QRCodeAssetID, QRCodeStatus: summary.QRCodeStatus, QRCodeOrigin: summary.QRCodeOrigin, QRDownloadURL: summary.QRDownloadURL, CreatedAt: channel.CreatedAt.Format(time.RFC3339Nano), UpdatedAt: channel.UpdatedAt.Format(time.RFC3339Nano)}
 }
 
-func projectCatalogDetail(channel channeldomain.Channel) map[string]any {
+func projectCatalogDetail(channel channeldomain.Channel, summary CatalogSummary) map[string]any {
 	assignment := make([]map[string]any, len(channel.Config.Assignment.Assignees))
 	for index, item := range channel.Config.Assignment.Assignees {
 		assignment[index] = map[string]any{"staff_id": item.StaffID, "priority": item.Priority, "ratio_percent": item.Ratio, "max_scans_24h": item.MaxScans24h}
@@ -340,7 +362,8 @@ func projectCatalogDetail(channel channeldomain.Channel) map[string]any {
 		"auto_accept_friend": channel.Config.AutoAcceptFriend, "entry_tag_id": optionalCatalogID(channel.Config.EntryTagID), "entry_tag_name": channel.Config.EntryTagName, "entry_tag_group_name": channel.Config.EntryTagGroupName,
 		"assignment_mode": channel.Config.Assignment.Mode, "assignment_strategy": channel.Config.Assignment.Strategy, "overflow_policy": channel.Config.Assignment.OverflowPolicy,
 		"assignment_config_json": map[string]any{"assignees": assignment}, "assignees": []any{}, "assignment_stats_24h": []any{}, "assignee_count": len(assignment),
-		"channel_contact_count": 0, "latest_channel_entered_at": "", "qrcode_asset_id": 0, "qrcode_status": "not_generated", "qr_download_url": "", "share_url": "", "copy_text": "",
+		"channel_contact_count": summary.UniqueUsers, "channel_enter_count": summary.EnterCount, "latest_channel_entered_at": optionalCatalogTime(summary.LatestEnteredAt),
+		"qrcode_asset_id": summary.QRCodeAssetID, "qrcode_status": summary.QRCodeStatus, "qrcode_origin": summary.QRCodeOrigin, "qr_download_url": summary.QRDownloadURL, "share_url": "", "copy_text": "",
 		"created_at": channel.CreatedAt.Format(time.RFC3339Nano), "updated_at": channel.UpdatedAt.Format(time.RFC3339Nano),
 	}
 }
@@ -351,8 +374,21 @@ func optionalCatalogID(id int64) string {
 	}
 	return strconv.FormatInt(id, 10)
 }
+func optionalCatalogTime(value *time.Time) string {
+	if value == nil {
+		return ""
+	}
+	return value.UTC().Format(time.RFC3339Nano)
+}
 func catalogMutationResponse(channel channeldomain.Channel, reason string) map[string]any {
-	return map[string]any{"ok": true, "channel": projectCatalogDetail(channel), "reason": reason, "source": "ai_crm_next", "fallback_used": false, "provider_execution_eligible": false, "real_external_call_executed": false}
+	return map[string]any{"ok": true, "channel": projectCatalogDetail(channel, CatalogSummary{}), "reason": reason, "source": "ai_crm_next", "fallback_used": false, "provider_execution_eligible": false, "real_external_call_executed": false}
+}
+
+func (handler *CatalogHTTPHandler) readSummaries(ctx context.Context, ids []int64) (map[int64]CatalogSummary, error) {
+	if handler.summaries == nil {
+		return map[int64]CatalogSummary{}, nil
+	}
+	return handler.summaries.Summaries(ctx, ids)
 }
 
 func (handler *CatalogHTTPHandler) readPrincipal(request *http.Request) (accessdomain.Principal, error) {

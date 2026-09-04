@@ -132,6 +132,7 @@ func (handler *AssetHTTPHandler) mutate(w http.ResponseWriter, r *http.Request, 
 		writeAssetError(w, err)
 		return
 	}
+	w.Header().Set("Retry-After", "1")
 	writeChannelJSON(w, http.StatusAccepted, assetAcceptanceJSON(asset))
 }
 
@@ -223,6 +224,7 @@ func (handler *AssetHTTPHandler) publish(w http.ResponseWriter, r *http.Request,
 		writeAssetError(w, err)
 		return
 	}
+	w.Header().Set("Retry-After", "1")
 	writeChannelJSON(w, http.StatusAccepted, assetAcceptanceJSON(asset))
 }
 func (handler *AssetHTTPHandler) generate(w http.ResponseWriter, r *http.Request, id int64) {
@@ -323,7 +325,7 @@ func (handler *AssetHTTPHandler) downloadQR(w http.ResponseWriter, r *http.Reque
 	}
 	var asset *AcquisitionAsset
 	for index := range items {
-		if items[index].Kind == AcquisitionAssetQRCode && items[index].Operation != "delete" && items[index].RetiredAt == nil && (items[index].State == "executed" || items[index].State == "reconciled") && items[index].ResultURL != "" {
+		if items[index].Kind == AcquisitionAssetQRCode && items[index].Operation != "delete" && items[index].RetiredAt == nil && (items[index].State == "executed" || items[index].State == "reconciled" || items[index].State == "legacy_verified_active") && items[index].ResultURL != "" {
 			asset = &items[index]
 			break
 		}
@@ -378,11 +380,15 @@ func allowedQRHost(host string) bool {
 	}
 }
 func assetAcceptanceJSON(a AcquisitionAsset) map[string]any {
-	return map[string]any{"effect_id": a.EffectRef, "channel_id": a.ChannelID, "kind": a.Kind, "operation": a.Operation, "asset_version": a.AssetVersion, "supersedes_version": max64(a.AssetVersion-1, 0), "state": "queued", "accept_receipt_id": a.AcceptReceiptRef, "queue_receipt_id": a.QueueReceiptRef, "entrant_ready": false}
+	return map[string]any{"effect_id": a.EffectRef, "channel_id": a.ChannelID, "kind": a.Kind, "operation": a.Operation, "origin": "runtime", "asset_version": a.AssetVersion, "supersedes_version": max64(a.AssetVersion-1, 0), "state": "queued", "accept_receipt_id": a.AcceptReceiptRef, "queue_receipt_id": a.QueueReceiptRef, "entrant_ready": false, "status_url": "/api/admin/channels/" + strconv.FormatInt(a.ChannelID, 10) + "/acquisition-assets/" + a.EffectRef, "retry_after_seconds": 1}
 }
 func assetJSON(a AcquisitionAsset) map[string]any {
-	ready := (a.State == "executed" || a.State == "reconciled") && a.Operation != "delete" && a.RetiredAt == nil
-	value := map[string]any{"effect_id": a.EffectRef, "channel_id": a.ChannelID, "kind": a.Kind, "operation": a.Operation, "asset_version": a.AssetVersion, "supersedes_version": max64(a.AssetVersion-1, 0), "state": a.State, "retired": a.RetiredAt != nil, "accept_receipt_id": a.AcceptReceiptRef, "queue_receipt_id": a.QueueReceiptRef, "entrant_ready": ready, "created_at": a.CreatedAt.UTC().Format(time.RFC3339Nano), "updated_at": a.UpdatedAt.UTC().Format(time.RFC3339Nano)}
+	ready := (a.State == "executed" || a.State == "reconciled" || a.State == "legacy_verified_active") && a.Operation != "delete" && a.RetiredAt == nil
+	origin := a.Origin
+	if origin == "" {
+		origin = "runtime"
+	}
+	value := map[string]any{"effect_id": a.EffectRef, "channel_id": a.ChannelID, "kind": a.Kind, "operation": a.Operation, "origin": origin, "asset_version": a.AssetVersion, "supersedes_version": max64(a.AssetVersion-1, 0), "state": a.State, "retired": a.RetiredAt != nil, "accept_receipt_id": a.AcceptReceiptRef, "queue_receipt_id": a.QueueReceiptRef, "entrant_ready": ready, "created_at": a.CreatedAt.UTC().Format(time.RFC3339Nano), "updated_at": a.UpdatedAt.UTC().Format(time.RFC3339Nano)}
 	if ready {
 		if a.Kind == AcquisitionAssetLink {
 			value["asset_url"] = a.ResultURL

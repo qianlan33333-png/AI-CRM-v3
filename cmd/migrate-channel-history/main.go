@@ -9,16 +9,20 @@ import (
 	"os"
 	"strings"
 
+	channelstore "github.com/qianlan33333-png/AI-CRM-v3/internal/channel"
 	identityapp "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/app"
 	identitystore "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/store"
+	mediastore "github.com/qianlan33333-png/AI-CRM-v3/internal/media/store"
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
+	"github.com/qianlan33333-png/AI-CRM-v3/internal/wecom"
+	wecomadapter "github.com/qianlan33333-png/AI-CRM-v3/internal/wecom/adapter"
 )
 
 type options struct {
-	mode, snapshot, report, manifestDigest, unionIDScope, sourceStream, sourceHost string
-	actorID                                                                        int64
-	confirm                                                                        bool
+	mode, snapshot, report, manifestDigest, unionIDScope, wecomCorpID, sourceStream, sourceHost string
+	actorID                                                                                     int64
+	confirm                                                                                     bool
 }
 
 func main() {
@@ -29,15 +33,20 @@ func main() {
 }
 
 func run(ctx context.Context, args []string) error {
+	migrationConfig, err := platformconfig.LoadChannelHistoryMigration()
+	if err != nil {
+		return err
+	}
 	flags := flag.NewFlagSet("migrate-channel-history", flag.ContinueOnError)
 	var cfg options
-	flags.StringVar(&cfg.mode, "mode", "inspect", "inspect|inspect-stream|validate|dry-run|import|reconcile|replay-check|rollback")
+	flags.StringVar(&cfg.mode, "mode", "inspect", "inspect|inspect-stream|validate|dry-run|import|reconcile|replay-check|rollback|semantic-validate|semantic-repair|semantic-reconcile|verify-legacy-assets|activate-repaired")
 	flags.StringVar(&cfg.snapshot, "snapshot", "", "encrypted snapshot path")
 	flags.StringVar(&cfg.report, "report", "", "optional schema discovery report path")
 	flags.StringVar(&cfg.sourceStream, "source-stream", "", "trusted read-only psql stream path for inspect-stream")
 	flags.StringVar(&cfg.sourceHost, "source-host", "", "source hostname used only to derive the snapshot host digest")
 	flags.StringVar(&cfg.manifestDigest, "manifest-sha256", "", "required manifest digest for mutating modes")
 	flags.StringVar(&cfg.unionIDScope, "unionid-scope", "", "verified OneID scope, for example wechat-open-platform:main")
+	flags.StringVar(&cfg.wecomCorpID, "wecom-corp-id", migrationConfig.WeComCorpID, "WeCom corp scope used only to resolve existing historical external_userid identities")
 	flags.Int64Var(&cfg.actorID, "actor-id", 0, "active migration administrator id; zero selects the first active superadmin")
 	flags.BoolVar(&cfg.confirm, "confirm", false, "confirm import or rollback")
 	if err := flags.Parse(args); err != nil {
@@ -69,6 +78,13 @@ func run(ctx context.Context, args []string) error {
 	if cfg.mode == "dry-run" {
 		return printJSON(map[string]any{"mode": cfg.mode, "eligible": true, "provider_calls": 0, "provider_effects": 0, "snapshot_id": manifest.SnapshotID, "manifest_sha256": manifest.DigestHex(), "summary": manifest.Summary()})
 	}
+	if cfg.mode == "semantic-validate" {
+		result, validationErr := validateSemantics(manifest)
+		if validationErr != nil {
+			return validationErr
+		}
+		return printJSON(map[string]any{"mode": cfg.mode, "valid": true, "result": result, "provider_calls": 0, "provider_effects": 0})
+	}
 	if !strings.EqualFold(cfg.manifestDigest, manifest.DigestHex()) {
 		return errors.New("manifest digest confirmation mismatch")
 	}
@@ -85,7 +101,11 @@ func run(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	runner := importRunner{Pool: pool, UOW: uow, Resolver: identityapp.OneIDService{Store: identitystore.NewPostgresStore()}, UnionIDScope: cfg.unionIDScope, ActorID: cfg.actorID}
+	mediaRepository, err := mediastore.NewPostgreSQL(pool.Native(), uow)
+	if err != nil {
+		return err
+	}
+	runner := importRunner{Pool: pool, UOW: uow, Resolver: identityapp.OneIDService{Store: identitystore.NewPostgresStore()}, UnionIDScope: cfg.unionIDScope, WeComCorpID: cfg.wecomCorpID, ActorID: cfg.actorID, Media: mediaRepository, States: channelstore.NewPostgreSQLStore()}
 	switch cfg.mode {
 	case "import":
 		if !cfg.confirm {
@@ -115,6 +135,54 @@ func run(ctx context.Context, args []string) error {
 		result, rollbackErr := runner.Rollback(ctx, manifest)
 		if rollbackErr != nil {
 			return rollbackErr
+		}
+		return printJSON(map[string]any{"mode": cfg.mode, "result": result})
+	case "semantic-repair":
+		if !cfg.confirm {
+			return errors.New("semantic-repair requires --confirm")
+		}
+		if _, err = runner.Import(ctx, manifest); err != nil {
+			return err
+		}
+		result, repairErr := runner.SemanticRepair(ctx, manifest)
+		if repairErr != nil {
+			return repairErr
+		}
+		return printJSON(map[string]any{"mode": cfg.mode, "result": result})
+	case "verify-legacy-assets":
+		if !cfg.confirm {
+			return errors.New("verify-legacy-assets requires --confirm")
+		}
+		if !migrationConfig.ProviderEnabled || !migrationConfig.ProviderReadEnabled {
+			return errors.New("channel provider readback is disabled")
+		}
+		corpID := migrationConfig.WeComCorpID
+		digester, digestErr := wecom.NewHMACStateDigester([]byte(migrationConfig.ChannelStateHMACKey))
+		if digestErr != nil {
+			return digestErr
+		}
+		client, clientErr := wecomadapter.New(wecomadapter.Config{Enabled: true, CorpID: corpID, AgentID: migrationConfig.WeComAgentID, Secret: migrationConfig.WeComSecret, ContactSecret: migrationConfig.WeComContactSecret})
+		if clientErr != nil {
+			return clientErr
+		}
+		result, verifyErr := runner.VerifyLegacyAssets(ctx, manifest, client, digester, corpID)
+		if verifyErr != nil {
+			return verifyErr
+		}
+		return printJSON(map[string]any{"mode": cfg.mode, "result": result})
+	case "semantic-reconcile":
+		result, reconcileErr := runner.SemanticReconcile(ctx, manifest)
+		if reconcileErr != nil {
+			return reconcileErr
+		}
+		return printJSON(map[string]any{"mode": cfg.mode, "result": result})
+	case "activate-repaired":
+		if !cfg.confirm {
+			return errors.New("activate-repaired requires --confirm")
+		}
+		result, activateErr := runner.ActivateRepaired(ctx, manifest)
+		if activateErr != nil {
+			return activateErr
 		}
 		return printJSON(map[string]any{"mode": cfg.mode, "result": result})
 	default:

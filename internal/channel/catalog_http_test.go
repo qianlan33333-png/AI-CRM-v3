@@ -19,13 +19,13 @@ func TestCatalogHTTPRoleCSRFStrictJSONAndCAS(t *testing.T) {
 	now := time.Date(2026, 9, 3, 14, 0, 0, 0, time.UTC)
 	app := &catalogHTTPApplication{channel: catalogHTTPChannel(now)}
 	security := &catalogHTTPSecurity{principal: accessdomain.Principal{InternalID: 7, Kind: accessdomain.KindAdmin, Roles: []accessdomain.Role{accessdomain.RoleViewer}}}
-	handler, err := NewCatalogHTTPHandler(CatalogHTTPConfig{Application: app, Security: security, CursorSigningKey: []byte("01234567890123456789012345678901"), Now: func() time.Time { return now }})
+	handler, err := NewCatalogHTTPHandler(CatalogHTTPConfig{Application: app, Summaries: catalogHTTPSummaries{values: map[int64]CatalogSummary{3: {UniqueUsers: 7, EnterCount: 11, QRCodeStatus: "legacy_verified_active", QRCodeOrigin: "legacy", QRDownloadURL: "/api/admin/channels/3/qrcode/download"}}}, Security: security, CursorSigningKey: []byte("01234567890123456789012345678901"), Now: func() time.Time { return now }})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	response := catalogHTTPRequest(handler, http.MethodGet, "/api/admin/channels?limit=1", "", nil)
-	if response.Code != http.StatusOK || response.Header().Get("Cache-Control") != "no-store" || !strings.Contains(response.Body.String(), `"next_cursor"`) {
+	if response.Code != http.StatusOK || response.Header().Get("Cache-Control") != "no-store" || !strings.Contains(response.Body.String(), `"next_cursor"`) || !strings.Contains(response.Body.String(), `"channel_contact_count":7`) || !strings.Contains(response.Body.String(), `"channel_enter_count":11`) || !strings.Contains(response.Body.String(), `"qrcode_origin":"legacy"`) {
 		t.Fatalf("list status=%d headers=%v body=%s", response.Code, response.Header(), response.Body.String())
 	}
 	response = catalogHTTPRequest(handler, http.MethodGet, "/api/admin/channels/3", "", nil)
@@ -113,6 +113,16 @@ type catalogHTTPSecurity struct {
 	principal accessdomain.Principal
 	authErr   error
 	csrfErr   error
+}
+
+type catalogHTTPSummaries struct{ values map[int64]CatalogSummary }
+
+func (reader catalogHTTPSummaries) Summaries(_ context.Context, ids []int64) (map[int64]CatalogSummary, error) {
+	result := map[int64]CatalogSummary{}
+	for _, id := range ids {
+		result[id] = reader.values[id]
+	}
+	return result, nil
 }
 
 func (security *catalogHTTPSecurity) Authenticate(context.Context, *http.Request) (accessdomain.Principal, error) {

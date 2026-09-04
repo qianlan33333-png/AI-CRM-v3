@@ -399,7 +399,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return fail(err)
 	}
 	groupOpsProvider, err := outbound.NewGroupMessageProvider(outbound.GroupMessageProviderConfig{
-		Enabled:           cfg.Effects.ProviderEnabled,
+		Enabled:           cfg.Effects.ProviderEnabled && cfg.GroupOps.ProviderEnabled,
 		PreparationWriter: mediaPreparationBindings.Writer,
 	})
 	if err != nil {
@@ -455,7 +455,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	groupOpsService := groupopsapp.NewService(uow, groupOpsRepository, groupOpsStaff, groupOpsRepository)
 	groupOpsHistory := groupopsapp.NewHistoryService(uow, groupOpsRepository)
 	groupOpsRuntime := groupopsapp.NewRuntimeService(uow, groupOpsRepository, groupOpsRepository, effectRepository, groupOpsStaff, groupOpsDirectory, groupOpsStaff, groupOpsEvidence, groupOpsExternalReconciler{repository: effectRepository}, groupOpsMaterials)
-	groupOpsRuntime.SetDispatchEnabled(true)
+	groupOpsRuntime.SetDispatchEnabled(cfg.GroupOps.ProviderEnabled)
 	groupOpsProtocols := &groupOpsProtocolAuthenticator{key: []byte(cfg.GroupOps.WebhookSecret), replay: groupOpsRepository, now: time.Now}
 	groupOpsModule := groupops.NewModuleRegistration()
 	groupOpsBindings, err := groupOpsModule.BindWithHistory(groupOpsService, groupOpsRuntime, groupOpsHistory, requestSecurity, groupOpsProtocols, mediaContentBindings.ContentDelivery)
@@ -606,7 +606,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	}
 	channelCatalogService := channelstore.NewCatalogService(uow, channelCatalogStore, channelCatalogStore, channelEvents,
 		channelMaterialReferenceAdapter{media: mediaRepository}, channelTagReferenceAdapter{tags: tagRepository}, channelStaffReferenceAdapter{users: accessRepository})
-	channelCatalog, err := channelstore.NewCatalogHTTPHandler(channelstore.CatalogHTTPConfig{Application: channelCatalogService, Security: requestSecurity, CursorSigningKey: channelCursorKey})
+	channelCatalog, err := channelstore.NewCatalogHTTPHandler(channelstore.CatalogHTTPConfig{Application: channelCatalogService, Summaries: channelstore.NewPostgreSQLCatalogSummaryReader(uow), Security: requestSecurity, CursorSigningKey: channelCursorKey})
 	if err != nil {
 		return fail(err)
 	}
@@ -783,10 +783,13 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
-	if err = channelAssetService.SetProvider(providerClient); err != nil {
+	if err = channelAssetService.SetProvider(channelFollowUserGate{enabled: cfg.WeCom.ChannelProviderReadEnabled, source: providerClient}); err != nil {
 		return fail(err)
 	}
-	channelAcquisitionService := channelstore.NewAcquisitionService(uow, channelCatalogService, channelStaffReferenceAdapter{users: accessRepository}, providerClient)
+	channelAcquisitionService := channelstore.NewAcquisitionService(uow, channelCatalogService, channelStaffReferenceAdapter{users: accessRepository}, channelFollowUserGate{enabled: cfg.WeCom.ChannelProviderReadEnabled, source: providerClient})
+	if err = channelAssetService.SetPublishValidator(channelAcquisitionService); err != nil {
+		return fail(err)
+	}
 	channelAcquisitionHandler, err := channelstore.NewAcquisitionHTTPHandler(channelAcquisitionService, requestSecurity)
 	if err != nil {
 		return fail(err)
@@ -797,10 +800,11 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return fail(err)
 	}
 	channelLinkService := channelstore.NewAcquisitionLinkService(uow, channelLinkStore, effectRepository)
-	if err = channelLinkService.SetProvider(providerClient); err != nil {
+	channelLinkGate := channelLinkProviderGate{read: cfg.WeCom.ChannelProviderReadEnabled, write: cfg.WeCom.ChannelQRProviderEnabled, source: providerClient}
+	if err = channelLinkService.SetProvider(channelLinkGate); err != nil {
 		return fail(err)
 	}
-	if err = channelLinkService.SetReconciler(channelLinkReconciler{uow: uow, store: channelLinkStore, effects: effectRepository, provider: providerClient}); err != nil {
+	if err = channelLinkService.SetReconciler(channelLinkReconciler{uow: uow, store: channelLinkStore, effects: effectRepository, provider: channelLinkGate}); err != nil {
 		return fail(err)
 	}
 	channelLinkHandler, err := channelstore.NewAcquisitionLinkHTTPHandler(channelLinkService, requestSecurity)
@@ -825,15 +829,18 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	var channelAssetProvider effectport.ProviderAdapter
 	var channelEntrantProvider effectport.ProviderAdapter
 	var channelLinkProvider effectport.ProviderAdapter
-	if cfg.WeCom.Enabled && cfg.WeCom.CallbackEnabled {
+	if cfg.WeCom.ChannelQRProviderEnabled && cfg.WeCom.CallbackEnabled {
 		channelAssetProvider = outbound.NewChannelAssetProvider(channelPublishedConfigAdapter{uow: uow, assets: channelAssetStore, users: accessRepository}, providerClient)
-		channelEntrantProvider = outbound.NewChannelEntrantProvider(
+	}
+	if (cfg.WeCom.ChannelWelcomeProviderEnabled || cfg.WeCom.ChannelTagProviderEnabled) && cfg.WeCom.CallbackEnabled {
+		entrantProvider := outbound.NewChannelEntrantProvider(
 			channelEntrantActionReaderAdapter{uow: uow, source: channelEntrantActions}, uow, welcomeGrantStore,
 			channelCurrentContactAdapter{uow: uow, corpID: cfg.WeCom.CorpID, staff: accessRepository, relationships: relationships, identities: queries},
 			channelProviderTagAdapter{uow: uow, tags: tagRepository}, providerClient,
 		)
+		channelEntrantProvider = channelEntrantProviderGate{welcome: cfg.WeCom.ChannelWelcomeProviderEnabled, tag: cfg.WeCom.ChannelTagProviderEnabled, source: entrantProvider}
 	}
-	if cfg.WeCom.Enabled {
+	if cfg.WeCom.ChannelQRProviderEnabled {
 		channelLinkProvider = outbound.NewChannelLinkProvider(channelLinkMutationReaderAdapter{uow: uow, source: channelLinkStore}, providerClient)
 	}
 	privateProvider, err := outbound.NewPrivateMessageProvider(cfg.AIAssistant.DispatchEnabled, privateWriter, aiPrivateTargetResolver{uow: uow, identities: queries, access: accessRepository, relationships: relationships, corpID: cfg.WeCom.CorpID}, aiPrivatePayloadReader{content: aiRepository, images: mediaService, materials: mediaRepository}, providerClient)
@@ -982,7 +989,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 			return checkErr
 		}
 		var complete bool
-		checkErr := pool.Native().QueryRow(readinessContext, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['0001','0002','0003','0004','0005','0006','0007','0008','0009','0010','0011','0012','0013','0014','0015','0016','0017','0018','0019','0020','0021','0022','0023','0024','0025','0026','0027','0028','0029','0030','0031','0032','0033','0034','0035','0036','0037','0038','0039','0040','0041','0042','0043','0044','0045','0046','0047','0048','0049','0050','0051','0052','0053','0054','0055','0056','0057','0058']) AS required(version) WHERE NOT EXISTS (SELECT 1 FROM platform_schema_migrations applied WHERE applied.version=required.version))`).Scan(&complete)
+		checkErr := pool.Native().QueryRow(readinessContext, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['0001','0002','0003','0004','0005','0006','0007','0008','0009','0010','0011','0012','0013','0014','0015','0016','0017','0018','0019','0020','0021','0022','0023','0024','0025','0026','0027','0028','0029','0030','0031','0032','0033','0034','0035','0036','0037','0038','0039','0040','0041','0042','0043','0044','0045','0046','0047','0048','0049','0050','0051','0052','0053','0054','0055','0056','0057','0058','0059']) AS required(version) WHERE NOT EXISTS (SELECT 1 FROM platform_schema_migrations applied WHERE applied.version=required.version))`).Scan(&complete)
 		if checkErr != nil || !complete {
 			return errors.New("database schema is not ready")
 		}
@@ -1129,6 +1136,26 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	}
 	if _, err = diagnostics.Record(ctx, adminopsport.DiagnosticSnapshot{Key: "aicrm.composition", Status: "ok"}); err != nil {
 		return fail(err)
+	}
+	for key, enabled := range map[string]bool{
+		"channel.provider.read":       cfg.WeCom.ChannelProviderReadEnabled,
+		"channel.provider.qr":         cfg.WeCom.ChannelQRProviderEnabled,
+		"channel.provider.media_prep": cfg.WeCom.ChannelMediaPrepProviderEnabled,
+		"channel.provider.welcome":    cfg.WeCom.ChannelWelcomeProviderEnabled,
+		"channel.provider.tag":        cfg.WeCom.ChannelTagProviderEnabled,
+	} {
+		status := "warning"
+		if enabled {
+			status = "ok"
+		}
+		if _, err = diagnostics.Record(ctx, adminopsport.DiagnosticSnapshot{Key: key, Status: status}); err != nil {
+			return fail(err)
+		}
+	}
+	if cfg.Role == platformconfig.RoleEffectsWorker {
+		if _, err = diagnostics.Record(ctx, adminopsport.DiagnosticSnapshot{Key: "channel.effects_worker", Status: "ok"}); err != nil {
+			return fail(err)
+		}
 	}
 	return &composedApplication{pool: pool, handler: handler, management: management, weComProcessor: weComProcessor, effectsRuntime: effectsRuntime, customerSync: customerSync, hxcDashboard: hxcDashboard, hxcSource: hxcSource, adminOps: adminOpsProjection, release: releaseObservation, diagnostics: diagnostics}, nil
 }

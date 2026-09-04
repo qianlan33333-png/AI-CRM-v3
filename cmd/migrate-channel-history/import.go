@@ -12,8 +12,10 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	channelstore "github.com/qianlan33333-png/AI-CRM-v3/internal/channel"
 	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
 	identityport "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/port"
+	mediastore "github.com/qianlan33333-png/AI-CRM-v3/internal/media/store"
 	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 )
@@ -23,7 +25,10 @@ type importRunner struct {
 	UOW          platformport.UnitOfWork
 	Resolver     identityport.Resolver
 	UnionIDScope string
+	WeComCorpID  string
 	ActorID      int64
+	Media        *mediastore.Repository
+	States       *channelstore.PostgreSQLStore
 }
 type importResult struct {
 	RunID, SourceRows, Imported, AlreadyImported, Unresolved, Quarantined, Invalid int64
@@ -258,26 +263,14 @@ func (runner importRunner) importContactRow(ctx context.Context, runID int64, ro
 		if !idOK || id < 1 || !channelOK || !found || first.IsZero() || last.Before(first) || !countOK || count < 1 {
 			return insertSourceMap(txctx, tx, runID, "automation_channel_contact", row, "invalid", "", 0, "invalid_channel_contact")
 		}
-		var customerID *int64
-		outcome, reason := "unresolved", "identity_missing"
-		unionID := firstString(row.Payload, "unionid", "union_id")
-		if unionID != "" && strings.HasPrefix(runner.UnionIDScope, "wechat-open-platform:") {
-			resolved, resolveErr := runner.Resolver.Resolve(txctx, identitydomain.Reference{Kind: identitydomain.KindUnionID, Scope: runner.UnionIDScope, Value: unionID, Assurance: identitydomain.AssuranceDeclared, Source: "channel_history_import"})
-			if resolveErr != nil {
-				return resolveErr
-			}
-			if resolved.Status == identityport.ResolveFound && resolved.CustomerID > 0 {
-				value := int64(resolved.CustomerID)
-				customerID = &value
-				outcome = "imported"
-				reason = ""
-			} else if resolved.Status == identityport.ResolveConflict {
-				reason = "identity_conflict"
-			} else {
-				reason = "identity_not_found"
-			}
-		} else if unionID != "" {
-			reason = "unionid_scope_missing"
+		customerID, reason, err := runner.resolveHistoricalContact(txctx, row.Payload, "channel_history_import")
+		if err != nil {
+			return err
+		}
+		outcome := "unresolved"
+		if customerID != nil {
+			outcome = "imported"
+			reason = ""
 		}
 		owner := firstString(row.Payload, "owner_staff_id")
 		created := firstTime(row.Payload, "created_at")
@@ -306,6 +299,59 @@ func (runner importRunner) importContactRow(ctx context.Context, runID int64, ro
 		}
 		return insertSourceMap(txctx, tx, runID, "automation_channel_contact", row, outcome, "", 0, reason)
 	})
+}
+
+// resolveHistoricalContact only asks OneID to resolve an existing identity.
+// A source export is not provider verification, so the reference remains
+// declared and can never provision, attach or merge a customer root.
+func (runner importRunner) resolveHistoricalContact(ctx context.Context, raw json.RawMessage, source string) (*int64, string, error) {
+	externalID := firstString(raw, "external_userid", "external_user_id")
+	if externalID != "" && strings.TrimSpace(runner.WeComCorpID) != "" {
+		resolved, err := runner.Resolver.Resolve(ctx, identitydomain.Reference{
+			Kind: identitydomain.KindWeComExternalUserID, Scope: "wecom-corp:" + strings.TrimSpace(runner.WeComCorpID),
+			Value: externalID, Assurance: identitydomain.AssuranceDeclared, Source: source,
+		})
+		if err != nil {
+			return nil, "", err
+		}
+		switch resolved.Status {
+		case identityport.ResolveFound:
+			if resolved.CustomerID > 0 {
+				value := int64(resolved.CustomerID)
+				return &value, "", nil
+			}
+		case identityport.ResolveConflict:
+			return nil, "identity_conflict", nil
+		}
+	}
+	unionID := firstString(raw, "unionid", "union_id")
+	if unionID != "" && strings.HasPrefix(runner.UnionIDScope, "wechat-open-platform:") && len(runner.UnionIDScope) > len("wechat-open-platform:") {
+		resolved, err := runner.Resolver.Resolve(ctx, identitydomain.Reference{
+			Kind: identitydomain.KindUnionID, Scope: runner.UnionIDScope, Value: unionID,
+			Assurance: identitydomain.AssuranceDeclared, Source: source,
+		})
+		if err != nil {
+			return nil, "", err
+		}
+		if resolved.Status == identityport.ResolveFound && resolved.CustomerID > 0 {
+			value := int64(resolved.CustomerID)
+			return &value, "", nil
+		}
+		if resolved.Status == identityport.ResolveConflict {
+			return nil, "identity_conflict", nil
+		}
+		return nil, "identity_not_found", nil
+	}
+	if externalID != "" && strings.TrimSpace(runner.WeComCorpID) == "" {
+		return nil, "wecom_corp_scope_missing", nil
+	}
+	if unionID != "" {
+		return nil, "unionid_scope_missing", nil
+	}
+	if externalID != "" {
+		return nil, "identity_not_found", nil
+	}
+	return nil, "identity_missing", nil
 }
 
 func (runner importRunner) importAssigneeRow(ctx context.Context, runID int64, row snapshotRow, channelMap map[int64]int64, duplicateChannels map[int64]bool) error {
@@ -481,7 +527,6 @@ func (runner importRunner) verifyOneIDBindings(ctx context.Context, runID int64,
 		if !contactOK || !channelOK {
 			continue
 		}
-		unionID := firstString(row.Payload, "unionid", "union_id")
 		var actualCustomerID *int64
 		var targetChannelID int64
 		err := runner.Pool.Native().QueryRow(ctx, `SELECT target_id FROM channel_history_source_maps WHERE import_run_id=$1 AND source_table='automation_channel' AND (source_pk LIKE $2 OR source_pk=$3) AND target_kind='channel' ORDER BY id LIMIT 1`, runID, "id="+strconv.FormatInt(sourceChannelID, 10)+"#%", strconv.FormatInt(sourceChannelID, 10)).Scan(&targetChannelID)
@@ -491,7 +536,7 @@ func (runner importRunner) verifyOneIDBindings(ctx context.Context, runID int64,
 		if err != nil {
 			return wrong, err
 		}
-		err = runner.Pool.Native().QueryRow(ctx, `SELECT customer_id FROM channel_history_contacts WHERE import_run_id=$1 AND channel_id=$2 AND source_contact_id=$3`, runID, targetChannelID, sourceContactID).Scan(&actualCustomerID)
+		err = runner.Pool.Native().QueryRow(ctx, `SELECT COALESCE((SELECT customer_id FROM channel_history_contact_reconciliations WHERE history_contact_id=h.id ORDER BY reconciled_at DESC,id DESC LIMIT 1),h.customer_id) FROM channel_history_contacts h WHERE h.import_run_id=$1 AND h.channel_id=$2 AND h.source_contact_id=$3`, runID, targetChannelID, sourceContactID).Scan(&actualCustomerID)
 		if errors.Is(err, pgx.ErrNoRows) {
 			continue
 		}
@@ -499,21 +544,13 @@ func (runner importRunner) verifyOneIDBindings(ctx context.Context, runID int64,
 			return wrong, err
 		}
 		var expected *int64
-		if unionID != "" && strings.HasPrefix(runner.UnionIDScope, "wechat-open-platform:") {
-			err = runner.UOW.Within(ctx, func(txctx context.Context) error {
-				resolved, resolveErr := runner.Resolver.Resolve(txctx, identitydomain.Reference{Kind: identitydomain.KindUnionID, Scope: runner.UnionIDScope, Value: unionID, Assurance: identitydomain.AssuranceDeclared, Source: "channel_history_reconcile"})
-				if resolveErr != nil {
-					return resolveErr
-				}
-				if resolved.Status == identityport.ResolveFound && resolved.CustomerID > 0 {
-					value := int64(resolved.CustomerID)
-					expected = &value
-				}
-				return nil
-			})
-			if err != nil {
-				return wrong, err
-			}
+		err = runner.UOW.Within(ctx, func(txctx context.Context) error {
+			var resolveErr error
+			expected, _, resolveErr = runner.resolveHistoricalContact(txctx, row.Payload, "channel_history_reconcile")
+			return resolveErr
+		})
+		if err != nil {
+			return wrong, err
 		}
 		if expected == nil && actualCustomerID != nil || expected != nil && (actualCustomerID == nil || *actualCustomerID != *expected) {
 			wrong++

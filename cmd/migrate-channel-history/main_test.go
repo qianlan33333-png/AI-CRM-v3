@@ -125,6 +125,39 @@ func TestParseSourceStreamFailsClosed(t *testing.T) {
 	}
 }
 
+func TestSemanticValidationRequiresReferencedDependenciesAndOwnerFallback(t *testing.T) {
+	manifest := snapshotManifest{}
+	for _, name := range expectedSourceTables {
+		manifest.Tables = append(manifest.Tables, snapshotTable{Name: name})
+	}
+	for index := range manifest.Tables {
+		switch manifest.Tables[index].Name {
+		case "automation_channel":
+			manifest.Tables[index].Rows = []snapshotRow{{Payload: json.RawMessage(`{"id":7,"owner_staff_id":"owner-a","welcome_image_library_ids":[3],"entry_tag_id":"tag-a"}`)}}
+		case "image_library":
+			manifest.Tables[index].Rows = []snapshotRow{{Payload: json.RawMessage(`{"id":3}`)}}
+		case "wecom_corp_tags":
+			manifest.Tables[index].Rows = []snapshotRow{{Payload: json.RawMessage(`{"tag_id":"tag-a"}`)}}
+		}
+	}
+	result, err := validateSemantics(manifest)
+	if err != nil || result.Channels != 1 || result.ReferencedMaterials != 1 || result.ReferencedTags != 1 {
+		t.Fatalf("semantic validation=%+v err=%v", result, err)
+	}
+	assignees := semanticExpectedAssignees(manifest)
+	if len(assignees[7]) != 1 || firstString(assignees[7][0].Payload, "staff_id") != "owner-a" {
+		t.Fatalf("owner fallback=%v", assignees)
+	}
+	for index := range manifest.Tables {
+		if manifest.Tables[index].Name == "image_library" {
+			manifest.Tables[index].Rows = nil
+		}
+	}
+	if result, err = validateSemantics(manifest); err == nil || result.MissingMaterialRows != 1 {
+		t.Fatalf("missing material validation=%+v err=%v", result, err)
+	}
+}
+
 func hashText(value string) string {
 	digest := sha256.Sum256([]byte(value))
 	return "sha256:" + hex.EncodeToString(digest[:])

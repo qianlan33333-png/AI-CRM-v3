@@ -51,24 +51,30 @@ type Bootstrap struct {
 }
 
 type WeCom struct {
-	Enabled             bool
-	CallbackEnabled     bool
-	CustomerSyncEnabled bool
-	CorpID              string
-	AgentID             string
-	Secret              string
-	ContactSecret       string
-	CallbackToken       string
-	CallbackAESKey      string
-	ContextSigningKey   string
-	ChannelStateHMACKey string
+	Enabled                         bool
+	CallbackEnabled                 bool
+	CustomerSyncEnabled             bool
+	CorpID                          string
+	AgentID                         string
+	Secret                          string
+	ContactSecret                   string
+	CallbackToken                   string
+	CallbackAESKey                  string
+	ContextSigningKey               string
+	ChannelStateHMACKey             string
+	ChannelProviderReadEnabled      bool
+	ChannelQRProviderEnabled        bool
+	ChannelMediaPrepProviderEnabled bool
+	ChannelWelcomeProviderEnabled   bool
+	ChannelTagProviderEnabled       bool
 }
 
 // GroupOps contains only the inbound protocol secret for the local Group Ops
 // webhook. It is independent from WeCom/customer credentials and is never
 // exposed through a descriptor or structured log.
 type GroupOps struct {
-	WebhookSecret string
+	WebhookSecret   string
+	ProviderEnabled bool
 }
 
 type AutomationProviderMode string
@@ -102,8 +108,15 @@ type HXCDashboard struct {
 	SyncTrigger    string
 }
 type ChannelHistoryMigration struct {
-	SourceDatabaseURL string
-	SnapshotKey       string
+	SourceDatabaseURL   string
+	SnapshotKey         string
+	WeComCorpID         string
+	WeComAgentID        string
+	WeComSecret         string
+	WeComContactSecret  string
+	ChannelStateHMACKey string
+	ProviderEnabled     bool
+	ProviderReadEnabled bool
 }
 
 type RadarMigration struct{ SourceDatabaseURL string }
@@ -120,7 +133,22 @@ func LoadRadarMigration() (RadarMigration, error) {
 // environment-owning package without adding them to the long-lived API
 // runtime configuration.
 func LoadChannelHistoryMigration() (ChannelHistoryMigration, error) {
-	value := ChannelHistoryMigration{SourceDatabaseURL: os.Getenv("AICRM_CHANNEL_SOURCE_DATABASE_URL"), SnapshotKey: os.Getenv("AICRM_CHANNEL_SNAPSHOT_KEY")}
+	value := ChannelHistoryMigration{
+		SourceDatabaseURL:   os.Getenv("AICRM_CHANNEL_SOURCE_DATABASE_URL"),
+		SnapshotKey:         os.Getenv("AICRM_CHANNEL_SNAPSHOT_KEY"),
+		WeComCorpID:         os.Getenv("AICRM_WECOM_CORP_ID"),
+		WeComAgentID:        os.Getenv("AICRM_WECOM_AGENT_ID"),
+		WeComSecret:         os.Getenv("AICRM_WECOM_SECRET"),
+		WeComContactSecret:  os.Getenv("AICRM_WECOM_CONTACT_SECRET"),
+		ChannelStateHMACKey: os.Getenv("AICRM_CHANNEL_STATE_HMAC_KEY"),
+	}
+	var err error
+	if value.ProviderEnabled, err = strictBool("AICRM_OUTBOUND_PROVIDER_ENABLED", false); err != nil {
+		return ChannelHistoryMigration{}, err
+	}
+	if value.ProviderReadEnabled, err = strictBool("AICRM_CHANNEL_PROVIDER_READ_ENABLED", false); err != nil {
+		return ChannelHistoryMigration{}, err
+	}
 	if strings.TrimSpace(value.SourceDatabaseURL) != value.SourceDatabaseURL || strings.TrimSpace(value.SnapshotKey) != value.SnapshotKey {
 		return ChannelHistoryMigration{}, errors.New("invalid channel history migration configuration")
 	}
@@ -256,6 +284,24 @@ func Load() (Runtime, error) {
 	if cfg.WeCom.CustomerSyncEnabled, err = strictBool("AICRM_WECOM_CUSTOMER_SYNC_ENABLED", false); err != nil {
 		return Runtime{}, err
 	}
+	if cfg.WeCom.ChannelProviderReadEnabled, err = strictBool("AICRM_CHANNEL_PROVIDER_READ_ENABLED", false); err != nil {
+		return Runtime{}, err
+	}
+	if cfg.WeCom.ChannelQRProviderEnabled, err = strictBool("AICRM_CHANNEL_QR_PROVIDER_ENABLED", false); err != nil {
+		return Runtime{}, err
+	}
+	if cfg.WeCom.ChannelMediaPrepProviderEnabled, err = strictBool("AICRM_CHANNEL_MEDIA_PREP_PROVIDER_ENABLED", false); err != nil {
+		return Runtime{}, err
+	}
+	if cfg.WeCom.ChannelWelcomeProviderEnabled, err = strictBool("AICRM_CHANNEL_WELCOME_PROVIDER_ENABLED", false); err != nil {
+		return Runtime{}, err
+	}
+	if cfg.WeCom.ChannelTagProviderEnabled, err = strictBool("AICRM_CHANNEL_TAG_PROVIDER_ENABLED", false); err != nil {
+		return Runtime{}, err
+	}
+	if cfg.GroupOps.ProviderEnabled, err = strictBool("AICRM_GROUP_OPS_PROVIDER_ENABLED", false); err != nil {
+		return Runtime{}, err
+	}
 	if raw := os.Getenv("AICRM_WORKER_LIMIT"); raw != "" {
 		cfg.WorkerLimit, err = strconv.Atoi(raw)
 		if err != nil || cfg.WorkerLimit < 1 || cfg.WorkerLimit > 100 {
@@ -339,6 +385,16 @@ func Load() (Runtime, error) {
 	}
 	if cfg.WeCom.CustomerSyncEnabled && (!cfg.WeCom.Enabled || strings.TrimSpace(cfg.WeCom.ContactSecret) != cfg.WeCom.ContactSecret || cfg.WeCom.ContactSecret == "") {
 		return Runtime{}, errors.New("enabled WeCom customer sync configuration is incomplete")
+	}
+	channelProviderEnabled := cfg.WeCom.ChannelProviderReadEnabled || cfg.WeCom.ChannelQRProviderEnabled || cfg.WeCom.ChannelMediaPrepProviderEnabled || cfg.WeCom.ChannelWelcomeProviderEnabled || cfg.WeCom.ChannelTagProviderEnabled
+	if channelProviderEnabled && (!cfg.Effects.ProviderEnabled || !cfg.WeCom.Enabled || strings.TrimSpace(cfg.WeCom.ContactSecret) != cfg.WeCom.ContactSecret || cfg.WeCom.ContactSecret == "") {
+		return Runtime{}, errors.New("enabled channel provider capability requires External Effects, WeCom, and contact credentials")
+	}
+	if cfg.GroupOps.ProviderEnabled && !cfg.Effects.ProviderEnabled {
+		return Runtime{}, errors.New("enabled Group Ops provider requires External Effects")
+	}
+	if (cfg.WeCom.ChannelQRProviderEnabled || cfg.WeCom.ChannelWelcomeProviderEnabled || cfg.WeCom.ChannelTagProviderEnabled) && !cfg.WeCom.CallbackEnabled {
+		return Runtime{}, errors.New("enabled channel QR/welcome/tag capability requires verified WeCom callback")
 	}
 	if cfg.TagCatalog.Enabled {
 		if !cfg.WeCom.Enabled || cfg.TagCatalog.Permission != "catalog-read-authorized" {

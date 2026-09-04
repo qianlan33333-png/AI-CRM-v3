@@ -96,7 +96,15 @@ func readEntrantActionConfig(ctx context.Context, tx pgx.Tx, resolution channeld
 	var entryTagID *int64
 	err := tx.QueryRow(ctx, `SELECT a.channel_id,a.config_version,v.welcome_message,v.entry_tag_id,v.assignment_strategy,v.welcome_image_ids,v.welcome_miniprogram_ids,v.welcome_attachment_ids,v.welcome_group_invite_ids FROM channel_acquisition_assets a JOIN channel_config_versions v ON v.channel_id=a.channel_id AND v.config_version=a.config_version WHERE a.channel_id=$1 AND a.kind=$2 AND a.asset_version=$3 AND a.state IN ('executed','reconciled')`, resolution.Asset.ChannelID, providerKind, resolution.Asset.AssetVersion).Scan(&config.ChannelID, &config.ConfigVersion, &config.WelcomeMessage, &entryTagID, &config.Strategy, &config.WelcomeMaterials.ImageIDs, &config.WelcomeMaterials.MiniProgramIDs, &config.WelcomeMaterials.AttachmentIDs, &config.WelcomeMaterials.GroupInviteIDs)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return entrantActionConfig{}, ErrEntrantActionUnavailable
+		// Legacy bindings use synthetic immutable asset versions. They are only
+		// inserted after a successful Provider readback, and this fallback also
+		// requires a currently verified legacy asset before using current config.
+		err = tx.QueryRow(ctx, `SELECT c.id,c.current_config_version,v.welcome_message,v.entry_tag_id,v.assignment_strategy,v.welcome_image_ids,v.welcome_miniprogram_ids,v.welcome_attachment_ids,v.welcome_group_invite_ids
+			FROM channels c JOIN channel_config_versions v ON v.channel_id=c.id AND v.config_version=c.current_config_version
+			WHERE c.id=$1 AND c.status='active' AND EXISTS(SELECT 1 FROM channel_legacy_acquisition_assets l WHERE l.channel_id=c.id AND l.kind=$2 AND l.verification_status='legacy_verified_active' AND l.retired_at IS NULL)`, resolution.Asset.ChannelID, providerKind).Scan(&config.ChannelID, &config.ConfigVersion, &config.WelcomeMessage, &entryTagID, &config.Strategy, &config.WelcomeMaterials.ImageIDs, &config.WelcomeMaterials.MiniProgramIDs, &config.WelcomeMaterials.AttachmentIDs, &config.WelcomeMaterials.GroupInviteIDs)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return entrantActionConfig{}, ErrEntrantActionUnavailable
+		}
 	}
 	if err != nil {
 		return entrantActionConfig{}, err
