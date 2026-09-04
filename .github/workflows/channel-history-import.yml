@@ -138,5 +138,5 @@ jobs:
             "sudo /usr/bin/bash '$remote_runner' '$remote_snapshot' '$remote_key' '$MANIFEST_DIGEST' '$SNAPSHOT_ID' '$DEPLOYED_RELEASE_SHA'" \
             > "$RUNNER_TEMP/production-result.json"
           jq '{backup_created,import:.import.result,reconcile:.reconcile.result,replay_check:."replay-check".result}' "$RUNNER_TEMP/production-result.json"
-          jq -e '.backup_created == true and .dry_run.provider_calls == 0 and .dry_run.provider_effects == 0 and .reconcile.result.DuplicateSourceMaps == 0 and .reconcile.result.ProviderEffectsCreatedByImport == 0 and .reconcile.result.ProviderCallsDuringImport == 0 and .reconcile.result.SilentLoss == 0 and .reconcile.result.WrongOneIDBindings == 0' "$RUNNER_TEMP/production-result.json" >/dev/null
+          jq -e '.backup_created == true and ."dry-run".provider_calls == 0 and ."dry-run".provider_effects == 0 and .reconcile.result.DuplicateSourceMaps == 0 and .reconcile.result.ProviderEffectsCreatedByImport == 0 and .reconcile.result.ProviderCallsDuringImport == 0 and .reconcile.result.SilentLoss == 0 and .reconcile.result.WrongOneIDBindings == 0' "$RUNNER_TEMP/production-result.json" >/dev/null
           curl --fail --silent --show-error --retry 5 --retry-delay 2 https://id-dev.youcangogogo.com/readyz
