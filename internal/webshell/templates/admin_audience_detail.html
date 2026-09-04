@@ -15,6 +15,7 @@
       <div class="ai-mini"><div class="label">刷新方式</div><div class="value" id="summaryMode">-</div></div>
       <div class="ai-mini"><div class="label">状态</div><div class="value" id="summaryStatus">-</div></div>
     </div>
+    <div class="ai-status-line" id="capabilityStatus" data-capability-state="loading">正在读取真实配置与持久执行状态…</div>
   </section>
 
   <section class="ai-workspace">
@@ -24,6 +25,7 @@
       <button type="button" data-panel="senders"><span class="ai-index">3</span><span class="ai-nav-label">发送人白名单</span></button>
       <button type="button" data-panel="members"><span class="ai-index">4</span><span class="ai-nav-label">成员列表</span></button>
       <button type="button" data-panel="records"><span class="ai-index">5</span><span class="ai-nav-label">发送记录</span></button>
+      <button type="button" data-panel="policies"><span class="ai-index">6</span><span class="ai-nav-label">触发策略</span></button>
     </nav>
 
     <div class="ai-card">
@@ -138,8 +140,8 @@
           <table class="ai-table">
             <thead>
               <tr>
-                <th>昵称</th>
-                <th>外部联系人 ID</th>
+                <th>OneID 客户</th>
+                <th>身份结果</th>
                 <th>进入时间</th>
               </tr>
             </thead>
@@ -159,12 +161,12 @@
           <table class="ai-table" style="min-width:1080px">
             <thead>
               <tr>
-                <th>昵称</th>
-                <th>外部联系人 ID</th>
-                <th>发送来源</th>
+                <th>运行</th>
+                <th>状态</th>
+                <th>目标 / 跳过</th>
                 <th>发送状态</th>
                 <th>发送时间</th>
-                <th>失败原因</th>
+                <th>未知结果</th>
                 <th>发送明细</th>
               </tr>
             </thead>
@@ -181,6 +183,29 @@
           </div>
         </div>
         <div class="ai-status-line" id="sendRecordStatusLine"></div>
+        <section class="automation-run-card" aria-label="人工群发二次确认">
+          <h4>人工群发</h4>
+          <p class="ai-label">先冻结当前人群快照、已发布固定话术与发送人版本；只有相同摘要可二次确认。排队不代表送达。</p>
+          <div class="ai-status-line" id="broadcastPreviewState">尚未生成预览</div>
+          <div class="ai-btns"><button class="ai-btn soft" id="broadcastPreviewBtn" type="button">生成发送预览</button><button class="ai-btn primary" id="broadcastConfirmBtn" type="button" disabled>确认并创建持久运行</button></div>
+        </section>
+      </section>
+
+      <section class="ai-panel" id="panel-policies">
+        <div class="ai-panel-title-row"><h3>触发策略</h3><span class="ai-pill gray">不可变版本</span></div>
+        <div class="ai-form-grid">
+          <div class="ai-field"><label class="ai-label" for="policyCodeInput">策略代码</label><input class="ai-input" id="policyCodeInput" placeholder="member-entered-followup"></div>
+          <div class="ai-field"><label class="ai-label" for="policyNameInput">策略名称</label><input class="ai-input" id="policyNameInput"></div>
+          <div class="ai-field"><label class="ai-label" for="policyTriggerSelect">触发器</label><select class="ai-select" id="policyTriggerSelect"><option value="audience.member_entered.v1">成员进入人群</option><option value="customer.tag_applied.v1" disabled>客户打标（生产者未接入）</option></select></div>
+          <div class="ai-field"><label class="ai-label" for="policyActionSelect">动作</label><select class="ai-select" id="policyActionSelect"><option value="outbound_message">发送固定话术</option><option value="record">仅记录</option></select></div>
+          <div class="ai-field"><label class="ai-label" for="policyLimitInput">单次上限</label><input class="ai-input" id="policyLimitInput" type="number" min="1" max="100000" value="100"></div>
+          <div class="ai-field"><label class="ai-label" for="policyApprovalInput">审批人 Staff ID</label><input class="ai-input" id="policyApprovalInput" type="number" min="1"></div>
+          <div class="ai-field"><label class="ai-label" for="policyTimezoneInput">时区</label><input class="ai-input" id="policyTimezoneInput" value="Asia/Shanghai"></div>
+          <div class="ai-field"><label class="ai-label" for="policyQuietHoursInput">安静时段</label><input class="ai-input" id="policyQuietHoursInput" value="22:00-08:00"></div>
+        </div>
+        <div class="ai-panel-actions"><button class="ai-btn primary" id="createPolicyBtn" type="button">创建暂停策略</button></div>
+        <div class="ai-status-line" id="policyStatusLine"></div>
+        <div class="ai-table-wrap"><table class="ai-table"><thead><tr><th>策略</th><th>触发 / 动作</th><th>版本</th><th>状态</th><th style="text-align:right">操作</th></tr></thead><tbody id="policyRows"><tr><td class="ai-empty" colspan="5">—</td></tr></tbody></table></div>
       </section>
     </div>
   </section>

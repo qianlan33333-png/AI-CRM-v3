@@ -24,14 +24,18 @@ web/scripts/e2e.mjs
 web/scripts/channel-center-characterization.mjs
 web/scripts/survey-editor-characterization.mjs
 web/scripts/survey-public-characterization.mjs
+web/scripts/ui-shell-contract.mjs
 web/src/admin/sections/funnelGrid.ts
 web/src/admin/sections/questionnaireEditor.ts
+web/src/admin/pages/customers.ts
 web/src/api/admin.test.ts
 web/src/api/questionnaireEditorV3.ts
 web/src/h5/controller.ts
+web/src/h5/templates/auth.html
 web/src/h5/templates/all.html
 web/src/h5/templates/one.html
 web/src/h5/templates/result.html
+web/src/admin/templates/customers.html
 web/src/api/channelCenter.test.ts
 EOF
 

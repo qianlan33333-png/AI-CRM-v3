@@ -1,6 +1,7 @@
 import { PageBase, type Vals } from '../shared/ui/runtime';
 import { readPublicSurvey, readSurveyResult, submitSurvey } from '../api/public-survey';
 import { toast } from '../shared/ui/feedback';
+import { ApiError } from '../api/transport';
 
 import type {
   PublicSurveyDefinition,
@@ -46,11 +47,28 @@ export class H5Controller extends PageBase {
   private submissionKey = '';
   private resultToken = '';
   private submitted = false;
+	private slug = '';
 
   constructor(readonly page: string) { super(); }
 
   async init(): Promise<void> {
-    if (!['all', 'one', 'result'].includes(this.page)) return;
+	if (this.page === 'auth') {
+		this.slug = new URLSearchParams(location.search).get('slug') || '';
+		if (!/^[a-z0-9](?:[a-z0-9-]{0,126}[a-z0-9])?$/.test(this.slug)) this.error = '缺少有效公开问卷 slug';
+		else if (/MicroMessenger/i.test(navigator.userAgent || '')) {
+			try {
+				const session = await fetch(`/api/h5/surveys/session?slug=${encodeURIComponent(this.slug)}`, { credentials: 'same-origin', headers: { Accept: 'application/json' } });
+				if (session.ok) {
+					const body = await session.json() as { display?: string };
+					location.replace(`/h5/${body.display === 'one' ? 'one' : 'all'}.html?slug=${encodeURIComponent(this.slug)}`);
+				} else if (session.status === 409) this.error = '当前微信身份存在冲突，请联系管理员处理后再填写';
+				else if (session.status === 503) this.error = '微信授权暂不可用，请稍后再试';
+			} catch { this.error = '微信授权状态读取失败，请检查网络后重试'; }
+		}
+		this.refresh();
+		return;
+	}
+	if (!['all', 'one', 'result'].includes(this.page)) return;
     this.loading = true;
     this.error = '';
     this.unsupportedTypes = new Set();
@@ -67,13 +85,18 @@ export class H5Controller extends PageBase {
         }
         this.result = result;
       } else {
-        const slug = new URLSearchParams(location.search).get('slug') || '';
-        if (!/^[a-z0-9][a-z0-9-]{0,119}$/.test(slug)) throw new Error('缺少有效公开问卷 slug，不能填写或提交');
+		const slug = new URLSearchParams(location.search).get('slug') || '';
+		if (!/^[a-z0-9](?:[a-z0-9-]{0,126}[a-z0-9])?$/.test(slug)) throw new Error('缺少有效公开问卷 slug，不能填写或提交');
+		this.slug = slug;
         const definition = await readPublicSurvey(slug) as V3SurveyDefinition;
         this.validateDefinition(definition, slug);
         this.definition = definition;
       }
     } catch (error) {
+	  if (error instanceof ApiError && error.status === 401 && this.slug) {
+		location.replace(`/q/${encodeURIComponent(this.slug)}`);
+		return;
+	  }
       this.definition = null;
       this.result = null;
       this.error = error instanceof Error ? error.message : '问卷读取失败，请重试';
@@ -157,7 +180,7 @@ export class H5Controller extends PageBase {
       const value = this.textAnswers.get(question.id) || '';
       if (!value && !question.required) return '';
       if (!value) return `「${question.title}」请填写`;
-      if (question.type === 'mobile' && !/^\+[1-9][0-9]{1,14}$/.test(value)) return `「${question.title}」请填写 E.164 手机号，例如 +8613800138000`;
+      if (question.type === 'mobile' && !/^1[3-9][0-9]{9}$/.test(value)) return `「${question.title}」请输入11位中国大陆手机号`;
       const length = [...value].length;
       if (length < (question.minimum_length || 0) || length > (question.maximum_length || 10000)) return `「${question.title}」长度不符合要求`;
       return '';
@@ -237,6 +260,7 @@ export class H5Controller extends PageBase {
 	  isAssessmentResult: this.result?.mode === 'assessment', resultTitle: this.result?.questionnaire_title || '问卷结果', totalScore: Number(this.result?.total_score || 0), overallTitle: assessment.overall_level?.title || '已完成', overallSummary: assessment.overall_level?.summary || '', dimensions,
       resultTime: this.result ? new Date(this.result.submitted_at).toLocaleString('zh-CN', { hour12: false }) : '',
       notWechatUA: !/MicroMessenger/i.test(navigator.userAgent || ''),
+	  wechatUA: /MicroMessenger/i.test(navigator.userAgent || ''),
       submitted: this.submitted, resultPath: `result.html#result_token=${encodeURIComponent(this.resultToken)}`,
       title: definition?.title || '公开问卷', description: definition?.description || '',
       progress: stepMode ? `第 ${this.questionIndex + 1} / ${questions.length} 题` : `共 ${questions.length} 题`,
@@ -245,8 +269,8 @@ export class H5Controller extends PageBase {
       canSubmit: ready && (!stepMode || this.questionIndex === questions.length - 1) && !this.submitting,
       submitting: this.submitting,
       canRetry: !this.loading && !!this.error && !definition,
-      blockedReason: this.page === 'auth'
-        ? '后端能力未就绪：H5 OAuth Provider 当前禁用，不能授权。请使用已发布的匿名问卷测试入口。'
+	  blockedReason: this.page === 'auth'
+		? (this.error || (/MicroMessenger/i.test(navigator.userAgent || '') ? '授权仅用于识别本次问卷所属客户，不会发送短信。' : '请复制当前链接并在微信内打开。'))
         : '后端能力未就绪：当前页面没有可用的报名、支付、续费、二维码或完成状态契约；未执行任何外部操作。',
       questions: visible.map((question) => {
         const supported = this.supported(question);
@@ -254,9 +278,9 @@ export class H5Controller extends PageBase {
         return {
           id: question.id, title: question.title, required: question.required ? '（必答）' : '（选答）',
           supported, unsupported: !supported,
-          isText, isChoice: !isText, inputType: question.type === 'mobile' ? 'tel' : 'text', inputValue: this.textAnswers.get(question.id) || '', placeholder: question.placeholder_text || '请输入', input: (event: Event) => this.setText(question, event),
+          isText, isMobile: question.type === 'mobile', isTextarea: question.type === 'textarea', isChoice: !isText, inputType: question.type === 'mobile' ? 'tel' : 'text', inputValue: this.textAnswers.get(question.id) || '', placeholder: question.type === 'mobile' ? '请输入11位中国大陆手机号' : question.placeholder_text || '请输入', input: (event: Event) => this.setText(question, event),
           hint: !supported ? '当前端不支持该题型，本题不参与作答与提交'
-            : question.type === 'single_choice' ? '单选' : question.type === 'multi_choice' ? `多选，限选 ${question.maximum_selections} 项` : question.type === 'mobile' ? '手机号（国际格式）' : '文本回答',
+            : question.type === 'single_choice' ? '单选' : question.type === 'multi_choice' ? `多选，限选 ${question.maximum_selections} 项` : question.type === 'mobile' ? '11位中国大陆手机号' : '文本回答',
           options: supported && !isText ? question.options.map((option) => {
             const selected = (this.answers.get(question.id) || []).includes(option.id);
             return { id: option.id, text: option.option_text, selected, mark: selected ? '✓' : '○',
@@ -270,7 +294,10 @@ export class H5Controller extends PageBase {
       qTitle: current?.title || '问卷题目',
       act: {
         submit: () => { void this.submit(); }, previous: () => this.move(-1), next: () => this.move(1), retry: () => { void this.init(); },
-        authContinue: () => this.blocked('H5 微信授权'), submitAll: () => { void this.submit(); }, prevQ: () => this.move(-1), nextQ: legacyNext,
+		authContinue: () => {
+			if (!/MicroMessenger/i.test(navigator.userAgent || '') || !this.slug) return;
+			location.href = `/api/h5/surveys/oauth/start?slug=${encodeURIComponent(this.slug)}`;
+		}, submitAll: () => { void this.submit(); }, prevQ: () => this.move(-1), nextQ: legacyNext,
         signup: () => this.blocked('报名'), pay: () => this.blocked('支付'), renew: () => this.blocked('续费'),
         addWx: () => this.blocked('添加企微账号'), close: () => this.closePage(),
       },

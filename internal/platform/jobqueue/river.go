@@ -62,12 +62,29 @@ func InsertTxAt(ctx context.Context, client *river.Client[pgx.Tx], tx pgx.Tx, ar
 	if client == nil || tx == nil || args == nil {
 		return nil, ErrUnavailable
 	}
-	return client.InsertTx(ctx, tx, args, &river.InsertOpts{Queue: OutboundQueue, ScheduledAt: scheduledAt.UTC()})
+	return InsertTxWithOptions(ctx, client, tx, args, river.InsertOpts{Queue: OutboundQueue, ScheduledAt: scheduledAt.UTC()})
+}
+
+// InsertTxWithOptions is the stable internal-task seam for domain-owned River
+// workers. Callers select only a registered queue; the PostgreSQL transaction
+// still owns atomic acceptance with their business fact.
+func InsertTxWithOptions(ctx context.Context, client *river.Client[pgx.Tx], tx pgx.Tx, args river.JobArgs, opts river.InsertOpts) (*rivertype.JobInsertResult, error) {
+	if client == nil || tx == nil || args == nil || opts.Queue == "" {
+		return nil, ErrUnavailable
+	}
+	if opts.MaxAttempts < 0 {
+		return nil, ErrUnavailable
+	}
+	return client.InsertTx(ctx, tx, args, &opts)
 }
 
 type Runtime struct{ client *river.Client[pgx.Tx] }
 
 func NewRuntime(pool *pgxpool.Pool, workers *river.Workers, queueNames ...string) (*Runtime, error) {
+	return NewRuntimeWithPeriodic(pool, workers, nil, queueNames...)
+}
+
+func NewRuntimeWithPeriodic(pool *pgxpool.Pool, workers *river.Workers, periodicJobs []*river.PeriodicJob, queueNames ...string) (*Runtime, error) {
 	if pool == nil || workers == nil {
 		return nil, ErrUnavailable
 	}
@@ -81,7 +98,7 @@ func NewRuntime(pool *pgxpool.Pool, workers *river.Workers, queueNames ...string
 		}
 		queues[name] = river.QueueConfig{MaxWorkers: 4}
 	}
-	client, err := river.NewClient(riverpgxv5.New(pool), &river.Config{Queues: queues, Workers: workers})
+	client, err := river.NewClient(riverpgxv5.New(pool), &river.Config{Queues: queues, Workers: workers, PeriodicJobs: periodicJobs})
 	if err != nil {
 		return nil, err
 	}

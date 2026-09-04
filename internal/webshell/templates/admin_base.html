@@ -10,13 +10,14 @@
   <script defer src="/static/admin_console/admin_shell.js?v=static-mime2"></script>
   {{if .AudienceList}}
   <link rel="stylesheet" href="/static/admin_console/admin_audience.css?v=production-shell-41f80a11-mime2">
+  <script defer src="/static/admin_console/admin_audience_detail.js?v=automation-operations-v3"></script>
   {{end}}
   {{if .AudienceDetail}}
   <link rel="stylesheet" href="/static/admin_console/automation_capability_selector.css?v=production-shell-41f80a11-mime2">
   <link rel="stylesheet" href="/static/admin_console/send_content_readonly_detail.css?v=production-shell-41f80a11-mime2">
   <link rel="stylesheet" href="/static/admin_console/ai_audience_send_records.css?v=production-shell-41f80a11-mime2">
   <link rel="stylesheet" href="/static/admin_console/admin_audience_detail.css?v=production-shell-41f80a11-mime2">
-  <script defer src="/static/admin_console/admin_audience_detail.js?v=production-shell-41f80a11-shell2"></script>
+  <script defer src="/static/admin_console/admin_audience_detail.js?v=automation-operations-v3"></script>
   {{end}}
   {{if eq .RequestPath "/admin/config/login-access"}}
   <link rel="stylesheet" href="/static/admin_console/admin_access.css?v=static-mime2">
@@ -86,7 +87,7 @@
   <link rel="stylesheet" href="{{.SurveyAssets.LabsCSS}}">
   <script type="module" src="{{.SurveyAssets.AdminJS}}"></script>
   {{end}}
-  <script defer src="/static/admin_console/survey_operations.js?v=survey-receipts-v1"></script>
+  <script defer src="/static/admin_console/survey_operations.js?v=survey-bridge-v2"></script>
   {{end}}
   {{if .OperationCycles}}
   <link rel="stylesheet" href="{{.OperationAssets.TokensCSS}}">
@@ -104,8 +105,13 @@
   <link rel="stylesheet" href="{{.ChannelAssets.LabsCSS}}">
   <script type="module" src="{{.ChannelAssets.AdminJS}}"></script>
   {{end}}
+  {{if .AIAssistant}}
+  <link rel="stylesheet" href="{{.AIAssistantAssets.TokensCSS}}"><link rel="stylesheet" href="{{.AIAssistantAssets.LabsCSS}}">
+  <link rel="stylesheet" href="{{.AIAssistantAssets.GroupCSS}}"><link rel="stylesheet" href="{{.AIAssistantAssets.MaterialCSS}}"><link rel="stylesheet" href="{{.AIAssistantAssets.ComposerCSS}}"><link rel="stylesheet" href="{{.AIAssistantAssets.ReadonlyCSS}}">
+  <script type="module" src="{{.AIAssistantAssets.HostJS}}"></script>
+  {{end}}
 </head>
-<body class="admin-shell" data-admin-shell-source="v3_webshell"{{if .ExternalEffects}} data-page="campaigns"{{end}}{{if .HXC}} data-page="funnel"{{end}}{{if .Media}} data-page="{{.MediaPage}}"{{end}}{{if .Tags}} data-page="tags"{{end}}{{if .Product}} data-page="{{.ProductPage}}"{{end}}{{if .Order}} data-page="{{.OrderPage}}"{{end}}{{if .Coupons}} data-page="{{.CouponPage}}"{{end}}{{if .GroupOps}} data-page="{{.GroupOpsPage}}"{{end}}{{if .Automation}} data-page="{{.AutomationPage}}"{{end}}{{if .AutomationCreateCode}} data-automation-create-code="{{.AutomationCreateCode}}"{{end}}{{if .Survey}} data-page="{{.SurveyPage}}"{{end}}{{if .OperationCycles}} data-page="{{.OperationPage}}"{{end}}{{if .Config}} data-page="{{.ConfigPage}}"{{end}}{{if .Channel}} data-page="{{.ChannelPage}}"{{if .ChannelResourceID}} data-channel-resource-id="{{.ChannelResourceID}}"{{end}}{{end}}>
+<body class="admin-shell" data-admin-shell-source="v3_webshell"{{if .ExternalEffects}} data-page="campaigns"{{end}}{{if .HXC}} data-page="funnel"{{end}}{{if .Media}} data-page="{{.MediaPage}}"{{end}}{{if .Tags}} data-page="tags"{{end}}{{if .Product}} data-page="{{.ProductPage}}"{{end}}{{if .Order}} data-page="{{.OrderPage}}"{{end}}{{if .Coupons}} data-page="{{.CouponPage}}"{{end}}{{if .GroupOps}} data-page="{{.GroupOpsPage}}"{{end}}{{if .Automation}} data-page="{{.AutomationPage}}"{{end}}{{if .AutomationCreateCode}} data-automation-create-code="{{.AutomationCreateCode}}"{{end}}{{if .Survey}} data-page="{{.SurveyPage}}"{{end}}{{if .OperationCycles}} data-page="{{.OperationPage}}"{{end}}{{if .Config}} data-page="{{.ConfigPage}}"{{end}}{{if .Channel}} data-page="{{.ChannelPage}}"{{if .ChannelResourceID}} data-channel-resource-id="{{.ChannelResourceID}}"{{end}}{{end}}{{if .AIAssistant}} data-page="ai-assistant"{{end}}>
   <div class="admin-layout">
     <aside class="admin-sidebar">
       <div class="admin-brand">
@@ -177,7 +183,7 @@
       </header>
       {{end}}
 
-      {{if or .ExternalEffects .HXC .Media .Tags .Product .Order .Coupons .GroupOps .Automation .Survey .OperationCycles .Config .Channel}}
+      {{if or .ExternalEffects .HXC .Media .Tags .Product .Order .Coupons .GroupOps .Automation .Survey .OperationCycles .Config .Channel .AIAssistant}}
       {{.Content}}
       {{else}}
       <main class="admin-page">

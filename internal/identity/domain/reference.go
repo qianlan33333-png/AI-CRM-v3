@@ -35,6 +35,7 @@ const (
 var (
 	ErrInvalidReference = errors.New("invalid identity reference")
 	phoneE164           = regexp.MustCompile(`^\+[1-9][0-9]{1,14}$`)
+	phoneCN11           = regexp.MustCompile(`^1[3-9][0-9]{9}$`)
 )
 
 type Reference struct {
@@ -86,8 +87,13 @@ func Normalize(reference Reference) (NormalizedReference, error) {
 		return NormalizedReference{}, ErrInvalidReference
 	}
 	if reference.Kind == KindPhone {
-		value = compactPhone(value)
-		if !phoneE164.MatchString(value) {
+		if scope == "phone:e164" {
+			value = compactPhone(value)
+		}
+		if scope == "phone:cn11" && value != reference.Value {
+			return NormalizedReference{}, ErrInvalidReference
+		}
+		if scope == "phone:e164" && !phoneE164.MatchString(value) || scope == "phone:cn11" && !phoneCN11.MatchString(value) {
 			return NormalizedReference{}, ErrInvalidReference
 		}
 	}
@@ -134,7 +140,7 @@ func validScope(kind Kind, scope string) bool {
 	case KindFirstPartyMemberID:
 		return hasNamespace(scope, "first-party:")
 	case KindPhone:
-		return scope == "phone:e164"
+		return scope == "phone:e164" || scope == "phone:cn11"
 	case KindExtension:
 		return hasNamespace(scope, "ext:")
 	default:

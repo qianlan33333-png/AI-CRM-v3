@@ -2479,16 +2479,18 @@ paths:
     post: {operationId: reconcileSurveySubmissionExternalPush, security: [{adminSession: [], csrfHeader: []}], responses: {"503": {description: Provider disabled by default}}}
   /api/public/questionnaires/{slug}:
     parameters: [{name: slug, in: path, required: true, schema: {type: string, pattern: '^[a-z0-9][a-z0-9-]{0,127}$'}}]
-    get: {operationId: getPublicSurvey, responses: {"200": {description: Published immutable survey}}}
+    get: {operationId: getPublicSurvey, description: Requires a valid HttpOnly Survey OAuth session., responses: {"200": {description: Published immutable survey}, "401": {description: survey_oauth_required}, "409": {description: survey_identity_conflict}, "503": {description: survey_oauth_unavailable}}}
   /api/public/questionnaires/{slug}/submissions:
     parameters: [{name: slug, in: path, required: true, schema: {type: string, pattern: '^[a-z0-9][a-z0-9-]{0,127}$'}}]
-    post: {operationId: submitPublicSurvey, requestBody: {required: true, content: {application/json: {schema: {type: object}}}}, responses: {"201": {description: Idempotent local submission receipt}}}
+    post: {operationId: submitPublicSurvey, description: Requires a resolved Customer from a valid HttpOnly Survey OAuth session. Mobile answers accept only 11-digit mainland numbers and remain declared evidence., requestBody: {required: true, content: {application/json: {schema: {type: object}}}}, responses: {"201": {description: Idempotent local submission receipt}, "400": {description: invalid_public_input}, "401": {description: survey_oauth_required}, "409": {description: survey_identity_conflict}, "503": {description: survey_oauth_unavailable}}}
   /api/public/survey-submission-results/query:
-    post: {operationId: queryPublicSurveyResult, requestBody: {required: true, content: {application/json: {schema: {type: object}}}}, responses: {"200": {description: Result token projection}}}
+    post: {operationId: queryPublicSurveyResult, description: New resolved submissions require the same Customer OAuth session; historical anonymous result tokens remain read-only compatible., requestBody: {required: true, content: {application/json: {schema: {type: object}}}}, responses: {"200": {description: Result token projection}, "401": {description: survey_oauth_required}, "403": {description: survey_result_forbidden}, "409": {description: survey_identity_conflict}, "503": {description: survey_oauth_unavailable}}}
   /api/h5/surveys/oauth/start:
-    get: {operationId: startSurveyOAuth, responses: {"303": {description: Redirect to WeChat OAuth}, "503": {description: OAuth disabled}}}
+    get: {operationId: startSurveyOAuth, description: User-click initiated snsapi_userinfo authorization. Display mode is derived from the published server-side definition., parameters: [{name: slug, in: query, required: true, schema: {type: string, pattern: '^[a-z0-9][a-z0-9-]{0,127}$'}}], responses: {"303": {description: Redirect to WeChat OAuth}, "400": {description: survey_wechat_required}, "404": {description: questionnaire_not_found}, "503": {description: survey_oauth_unavailable}}}
   /api/h5/surveys/oauth/callback:
-    get: {operationId: completeSurveyOAuth, responses: {"303": {description: Verified identity session and safe H5 redirect}}}
+    get: {operationId: completeSurveyOAuth, parameters: [{name: code, in: query, required: true, schema: {type: string, minLength: 1, maxLength: 512}}, {name: state, in: query, required: true, schema: {type: string, pattern: '^[A-Za-z0-9_-]{43}$'}}], responses: {"303": {description: Verified identity session and safe H5 redirect; the session cookie is HttpOnly Secure SameSite Lax}}}
+  /api/h5/surveys/session:
+    get: {operationId: getSurveyOAuthSession, description: Returns only authorization state and display mode; never returns Customer ID OpenID or UnionID., parameters: [{name: slug, in: query, required: true, schema: {type: string, pattern: '^[a-z0-9][a-z0-9-]{0,127}$'}}], responses: {"200": {description: Safe OAuth session state}, "401": {description: survey_oauth_required}, "409": {description: survey_identity_conflict}, "503": {description: survey_oauth_unavailable}}}
   /api/admin/survey-history/submissions:
     get: {operationId: listSurveyUnresolvedHistory, security: [{adminSession: []}], responses: {"200": {description: Read-only unresolved migrated submissions}}}
   /api/admin/survey-history/submissions/{submission_id}:
@@ -2837,6 +2839,185 @@ paths:
       tags: [Config]
       security: [{adminSession: []}]
       responses: {"200": {description: Current v3 OpenAPI document, content: {application/yaml: {schema: {type: string}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}}
+  /admin/automation-conversion:
+    get: {operationId: openAutomationOperationsWorkspace, tags: [AutomationOperations], security: [{adminSession: []}], responses: {"200": {description: v3 webshell with frozen Automation Operations list template}, "303": {description: Redirect to login}, "403": {$ref: "#/components/responses/Error"}}}
+  /admin/automation-conversion/packages/{package_id}:
+    get: {operationId: openAutomationOperationsPackage, tags: [AutomationOperations], security: [{adminSession: []}], parameters: [{$ref: "#/components/parameters/AutomationOpsPackageID"}], responses: {"200": {description: v3 webshell with frozen audience package detail template}, "303": {description: Redirect to login}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}}}
+  /api/admin/ai-audience/package-groups:
+    get: {operationId: listAIAudiencePackageGroups, tags: [AutomationOperations], security: [{adminSession: []}], responses: {"200": {description: Audience package groups, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationOpsGroupList"}}}}, "403": {$ref: "#/components/responses/Error"}}}
+    post: {operationId: createAIAudiencePackageGroup, tags: [AutomationOperations], security: [{adminSession: [], csrfHeader: []}], parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}], requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationOpsGroupMutation"}}}}, responses: {"201": {description: Group created, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationOpsGroupEnvelope"}}}}, "400": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}}
+  /api/admin/ai-audience/package-groups/{group_id}:
+    patch: {operationId: updateAIAudiencePackageGroup, tags: [AutomationOperations], security: [{adminSession: [], csrfHeader: []}], parameters: [{$ref: "#/components/parameters/AutomationOpsGroupID"}, {$ref: "#/components/parameters/RequiredIdempotencyKey"}], requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationOpsGroupMutation"}}}}, responses: {"200": {description: Group updated, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationOpsGroupEnvelope"}}}}, "400": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}}
+    delete: {operationId: deleteAIAudiencePackageGroup, tags: [AutomationOperations], security: [{adminSession: [], csrfHeader: []}], parameters: [{$ref: "#/components/parameters/AutomationOpsGroupID"}, {$ref: "#/components/parameters/RequiredIdempotencyKey"}, {$ref: "#/components/parameters/ExpectedVersion"}], responses: {"200": {$ref: "#/components/responses/MutationOK"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}}
+  /api/admin/ai-audience/packages:
+    get: {operationId: listAIAudiencePackages, tags: [AutomationOperations], security: [{adminSession: []}], parameters: [{$ref: "#/components/parameters/Limit"}, {$ref: "#/components/parameters/Offset"}], responses: {"200": {description: Audience packages, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationOpsPackageList"}}}}, "403": {$ref: "#/components/responses/Error"}}}
+    post: {operationId: createAIAudiencePackage, tags: [AutomationOperations], security: [{adminSession: [], csrfHeader: []}], parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}], requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationOpsPackageCreate"}}}}, responses: {"201": {description: Paused package created, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationOpsPackageEnvelope"}}}}, "400": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}}
+  /api/admin/ai-audience/packages/{package_id}:
+    get: {operationId: getAIAudiencePackage, tags: [AutomationOperations], security: [{adminSession: []}], parameters: [{$ref: "#/components/parameters/AutomationOpsPackageID"}], responses: {"200": {description: Audience package, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationOpsPackageEnvelope"}}}}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}}}
+    patch: {operationId: updateAIAudiencePackage, tags: [AutomationOperations], security: [{adminSession: [], csrfHeader: []}], parameters: [{$ref: "#/components/parameters/AutomationOpsPackageID"}, {$ref: "#/components/parameters/RequiredIdempotencyKey"}], requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationOpsPackageUpdate"}}}}, responses: {"200": {description: Package updated, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationOpsPackageEnvelope"}}}}, "400": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}}
+    delete: {operationId: archiveAIAudiencePackage, tags: [AutomationOperations], security: [{adminSession: [], csrfHeader: []}], parameters: [{$ref: "#/components/parameters/AutomationOpsPackageID"}, {$ref: "#/components/parameters/RequiredIdempotencyKey"}, {$ref: "#/components/parameters/ExpectedVersion"}], responses: {"200": {description: Package archived, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationOpsPackageEnvelope"}}}}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}}
+  /api/admin/ai-audience/packages/{package_id}/copy:
+    post: {operationId: copyAIAudiencePackage, tags: [AutomationOperations], security: [{adminSession: [], csrfHeader: []}], parameters: [{$ref: "#/components/parameters/AutomationOpsPackageID"}, {$ref: "#/components/parameters/RequiredIdempotencyKey"}], responses: {"201": {description: Paused package copy, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationOpsPackageEnvelope"}}}}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}}
+  /api/admin/ai-audience/packages/{package_id}/{package_action}:
+    post: {operationId: transitionAIAudiencePackage, tags: [AutomationOperations], security: [{adminSession: [], csrfHeader: []}], parameters: [{$ref: "#/components/parameters/AutomationOpsPackageID"}, {$ref: "#/components/parameters/AutomationOpsPackageAction"}, {$ref: "#/components/parameters/RequiredIdempotencyKey"}], requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationOpsVersionRequest"}}}}, responses: {"200": {description: Package lifecycle changed or readiness returned, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationOpsPackageEnvelope"}}}}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "422": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}}
+  /api/admin/ai-audience/templates:
+    get: {operationId: listAIAudienceTemplates, tags: [AutomationOperations], security: [{adminSession: []}], responses: {"200": {description: Closed five-template catalog, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationOpsTemplateList"}}}}, "403": {$ref: "#/components/responses/Error"}}}
+  /api/admin/ai-audience/packages/{package_id}/configuration:
+    get: {operationId: getAIAudienceConfigurationVersion, tags: [AutomationOperations], security: [{adminSession: []}], parameters: [{$ref: "#/components/parameters/AutomationOpsPackageID"}], responses: {"200": {description: Current immutable configuration, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationOpsConfigurationEnvelope"}}}}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}}}
+    put: {operationId: putAIAudienceConfigurationVersion, tags: [AutomationOperations], security: [{adminSession: [], csrfHeader: []}], parameters: [{$ref: "#/components/parameters/AutomationOpsPackageID"}, {$ref: "#/components/parameters/RequiredIdempotencyKey"}], requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationOpsConfigurationPut"}}}}, responses: {"200": {description: Immutable configuration created, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationOpsConfigurationEnvelope"}}}}, "400": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "422": {$ref: "#/components/responses/Error"}}}
+  /api/admin/ai-audience/packages/{package_id}/configuration-preview:
+    post: {operationId: previewAIAudienceConfiguration, tags: [AutomationOperations], security: [{adminSession: []}], parameters: [{$ref: "#/components/parameters/AutomationOpsPackageID"}], requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationOpsPreviewRequest"}}}}, responses: {"200": {description: Count and safe immutable digests, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationOpsPreview"}}}}, "400": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "422": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}}
+  /api/admin/ai-audience/packages/{package_id}/configuration-materialize:
+    post: {operationId: materializeAIAudienceConfiguration, tags: [AutomationOperations], security: [{adminSession: [], csrfHeader: []}], parameters: [{$ref: "#/components/parameters/AutomationOpsPackageID"}, {$ref: "#/components/parameters/RequiredIdempotencyKey"}], requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationOpsMaterializeRequest"}}}}, responses: {"202": {description: Durable refresh accepted, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationOpsRefreshRunEnvelope"}}}}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "422": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}}
+  /api/admin/ai-audience/packages/{package_id}/refresh-runs:
+    post: {operationId: createAIAudienceRefreshRun, tags: [AutomationOperations], security: [{adminSession: [], csrfHeader: []}], parameters: [{$ref: "#/components/parameters/AutomationOpsPackageID"}, {$ref: "#/components/parameters/RequiredIdempotencyKey"}], responses: {"202": {description: Durable refresh accepted, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationOpsRefreshRunEnvelope"}}}}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}}
+  /api/admin/ai-audience/packages/{package_id}/refresh-runs/{refresh_run_id}:
+    get: {operationId: getAIAudienceRefreshRun, tags: [AutomationOperations], security: [{adminSession: []}], parameters: [{$ref: "#/components/parameters/AutomationOpsPackageID"}, {$ref: "#/components/parameters/AutomationOpsRefreshRunID"}], responses: {"200": {description: Refresh projection, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationOpsRefreshRunEnvelope"}}}}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}}}
+  /api/admin/ai-audience/packages/{package_id}/automation-binding:
+    get: {operationId: getAIAudienceAutomationBinding, tags: [AutomationOperations], security: [{adminSession: []}], parameters: [{$ref: "#/components/parameters/AutomationOpsPackageID"}], responses: {"200": {description: Published Agent binding, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationOpsObjectEnvelope"}}}}, "403": {$ref: "#/components/responses/Error"}}}
+    put: {operationId: putAIAudienceAutomationBinding, tags: [AutomationOperations], security: [{adminSession: [], csrfHeader: []}], parameters: [{$ref: "#/components/parameters/AutomationOpsPackageID"}, {$ref: "#/components/parameters/RequiredIdempotencyKey"}], requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationOpsBindingPut"}}}}, responses: {"200": {description: Binding saved, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationOpsObjectEnvelope"}}}}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "422": {$ref: "#/components/responses/Error"}}}
+    delete: {operationId: deleteAIAudienceAutomationBinding, tags: [AutomationOperations], security: [{adminSession: [], csrfHeader: []}], parameters: [{$ref: "#/components/parameters/AutomationOpsPackageID"}, {$ref: "#/components/parameters/ExpectedVersion"}, {$ref: "#/components/parameters/RequiredIdempotencyKey"}], responses: {"200": {$ref: "#/components/responses/MutationOK"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}}
+  /api/admin/ai-audience/packages/{package_id}/senders:
+    get: {operationId: getAIAudiencePackageSenders, tags: [AutomationOperations], security: [{adminSession: []}], parameters: [{$ref: "#/components/parameters/AutomationOpsPackageID"}], responses: {"200": {description: Internal Staff sender references, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationOpsObjectPage"}}}}, "403": {$ref: "#/components/responses/Error"}}}
+    put: {operationId: replaceAIAudiencePackageSenders, tags: [AutomationOperations], security: [{adminSession: [], csrfHeader: []}], parameters: [{$ref: "#/components/parameters/AutomationOpsPackageID"}, {$ref: "#/components/parameters/RequiredIdempotencyKey"}], requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationOpsSendersPut"}}}}, responses: {"200": {description: Sender references replaced, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationOpsObjectPage"}}}}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "422": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}}
+  /api/admin/ai-audience/packages/{package_id}/members:
+    get: {operationId: listAIAudiencePackageMembers, tags: [AutomationOperations], security: [{adminSession: []}], parameters: [{$ref: "#/components/parameters/AutomationOpsPackageID"}, {$ref: "#/components/parameters/AutomationOpsSnapshotQuery"}, {$ref: "#/components/parameters/Cursor"}, {$ref: "#/components/parameters/Limit"}], responses: {"200": {description: Canonical OneID members from one published snapshot, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationOpsMemberPage"}}}}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}}}
+  /api/ai/audience/packages/{package_key}/webhook:
+    post: {operationId: receiveAIAudienceInboundWebhook, tags: [AutomationOperations], security: [{automationOpsWebhook: []}], parameters: [{$ref: "#/components/parameters/AutomationOpsPackageKey"}, {$ref: "#/components/parameters/AutomationOpsWebhookTimestamp"}, {$ref: "#/components/parameters/AutomationOpsWebhookEventID"}], requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationOpsWebhookFact"}}}}, responses: {"202": {description: Identity disposition recorded, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationOpsWebhookReceipt"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "413": {$ref: "#/components/responses/Error"}}}
+  /api/admin/automations:
+    get: {operationId: listAutomationPolicies, tags: [AutomationOperations], security: [{adminSession: []}], responses: {"200": {description: Automation policies, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationOpsObjectPage"}}}}, "403": {$ref: "#/components/responses/Error"}}}
+    post: {operationId: createAutomationPolicy, tags: [AutomationOperations], security: [{adminSession: [], csrfHeader: []}], parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}], requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationOpsPolicyMutation"}}}}, responses: {"201": {description: Draft policy created, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationOpsObjectEnvelope"}}}}, "400": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}}
+  /api/admin/automations/{policy_id}:
+    get: {operationId: getAutomationPolicy, tags: [AutomationOperations], security: [{adminSession: []}], parameters: [{$ref: "#/components/parameters/AutomationOpsPolicyID"}], responses: {"200": {description: Policy and immutable version, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationOpsObjectEnvelope"}}}}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}}}
+    patch: {operationId: updateAutomationPolicy, tags: [AutomationOperations], security: [{adminSession: [], csrfHeader: []}], parameters: [{$ref: "#/components/parameters/AutomationOpsPolicyID"}, {$ref: "#/components/parameters/RequiredIdempotencyKey"}], requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationOpsPolicyMutation"}}}}, responses: {"200": {description: New policy version, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationOpsObjectEnvelope"}}}}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}}
+  /api/admin/automations/{policy_id}/{lifecycle_action}:
+    post: {operationId: transitionAutomationPolicy, tags: [AutomationOperations], security: [{adminSession: [], csrfHeader: []}], parameters: [{$ref: "#/components/parameters/AutomationOpsPolicyID"}, {$ref: "#/components/parameters/AutomationOpsLifecycleAction"}, {$ref: "#/components/parameters/RequiredIdempotencyKey"}], requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationOpsVersionRequest"}}}}, responses: {"200": {description: Policy lifecycle changed, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationOpsObjectEnvelope"}}}}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "422": {$ref: "#/components/responses/Error"}}}
+  /api/admin/ai-audience/packages/{package_id}/broadcast-previews:
+    post: {operationId: previewAudienceBroadcast, tags: [AutomationOperations], security: [{adminSession: []}], parameters: [{$ref: "#/components/parameters/AutomationOpsPackageID"}], responses: {"200": {description: Immutable broadcast preview, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationOpsBroadcastPreview"}}}}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "422": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}}
+  /api/admin/ai-audience/packages/{package_id}/runs:
+    post: {operationId: createAudienceRun, tags: [AutomationOperations], security: [{adminSession: [], csrfHeader: []}], parameters: [{$ref: "#/components/parameters/AutomationOpsPackageID"}, {$ref: "#/components/parameters/RequiredIdempotencyKey"}], requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationOpsRunConfirm"}}}}, responses: {"202": {description: Version-frozen run accepted, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationOpsRunEnvelope"}}}}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "422": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}}
+  /api/admin/automation-runs:
+    get: {operationId: listAutomationRuns, tags: [AutomationOperations], security: [{adminSession: []}], parameters: [{$ref: "#/components/parameters/Limit"}, {$ref: "#/components/parameters/Cursor"}], responses: {"200": {description: Automation runs, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationOpsRunPage"}}}}, "403": {$ref: "#/components/responses/Error"}}}
+  /api/admin/automation-runs/{run_id}:
+    get: {operationId: getAutomationRun, tags: [AutomationOperations], security: [{adminSession: []}], parameters: [{$ref: "#/components/parameters/AutomationOpsRunID"}], responses: {"200": {description: Immutable run projection, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationOpsRunEnvelope"}}}}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}}}
+  /api/admin/automation-runs/{run_id}/recipients:
+    get: {operationId: listAutomationRunRecipients, tags: [AutomationOperations], security: [{adminSession: []}], parameters: [{$ref: "#/components/parameters/AutomationOpsRunID"}, {$ref: "#/components/parameters/Limit"}, {$ref: "#/components/parameters/Cursor"}], responses: {"200": {description: Run-frozen recipients, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationOpsObjectPage"}}}}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}}}
+  /api/admin/automation-runs/{run_id}/cancel:
+    post: {operationId: cancelAutomationRun, tags: [AutomationOperations], security: [{adminSession: [], csrfHeader: []}], parameters: [{$ref: "#/components/parameters/AutomationOpsRunID"}, {$ref: "#/components/parameters/RequiredIdempotencyKey"}], responses: {"200": {description: Only not-attempted recipients cancelled, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationOpsRunEnvelope"}}}}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}}
+  /api/admin/automation-runs/{run_id}/effects/{effect_id}/reconciliation-candidate:
+    get: {operationId: getAutomationRunEffectReconciliationCandidate, tags: [AutomationOperations], security: [{adminSession: []}], parameters: [{$ref: "#/components/parameters/AutomationOpsRunID"}, {$ref: "#/components/parameters/AutomationOpsEffectID"}], responses: {"200": {description: Exact expired generation and fence for an outcome-unknown effect, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationOpsObjectEnvelope"}}}}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}}
+  /api/admin/automation-runs/{run_id}/effects/{effect_id}/reconcile:
+    post: {operationId: reconcileAutomationRunEffect, tags: [AutomationOperations], security: [{adminSession: [], csrfHeader: []}], parameters: [{$ref: "#/components/parameters/AutomationOpsRunID"}, {$ref: "#/components/parameters/AutomationOpsEffectID"}, {$ref: "#/components/parameters/RequiredIdempotencyKey"}], requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationOpsReconcileRequest"}}}}, responses: {"200": {description: Evidence-based reconciliation, content: {application/json: {schema: {$ref: "#/components/schemas/AutomationOpsObjectEnvelope"}}}}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "422": {$ref: "#/components/responses/Error"}}}
+  /api/admin/ai-assistant/plans:
+    get:
+      operationId: listAIAssistantPlans
+      tags: [AIAssistant]
+      security: [{adminSession: []}]
+      parameters:
+        - {name: keyword, in: query, schema: {type: string, maxLength: 200}}
+        - {name: status, in: query, schema: {$ref: "#/components/schemas/AIAssistantPlanState"}}
+        - {$ref: "#/components/parameters/AIAssistantCursor"}
+        - {$ref: "#/components/parameters/AIAssistantLimit"}
+      responses: {"200": {description: OneID-safe plan page, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantPlanPage"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+    post:
+      operationId: createAIAssistantPlan
+      tags: [AIAssistant]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantPlanCreateRequest"}}}}
+      responses: {"200": {description: Exact idempotent replay, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantPlanEnvelope"}}}}, "201": {description: Pending review plan; no external effect exists, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantPlanEnvelope"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "413": {$ref: "#/components/responses/Error"}, "422": {$ref: "#/components/responses/Error"}}
+  /api/admin/ai-assistant/plans/{plan_id}:
+    get:
+      operationId: getAIAssistantPlan
+      tags: [AIAssistant]
+      security: [{adminSession: []}]
+      parameters: [{$ref: "#/components/parameters/AIAssistantPlanID"}]
+      responses: {"200": {description: Plan detail, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantPlanEnvelope"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}}
+  /api/admin/ai-assistant/plans/{plan_id}/recipients:
+    get:
+      operationId: listAIAssistantRecipients
+      tags: [AIAssistant]
+      security: [{adminSession: []}]
+      parameters:
+        - {$ref: "#/components/parameters/AIAssistantPlanID"}
+        - {name: status, in: query, schema: {$ref: "#/components/schemas/AIAssistantReviewState"}}
+        - {$ref: "#/components/parameters/AIAssistantCursor"}
+        - {$ref: "#/components/parameters/AIAssistantLimit"}
+      responses: {"200": {description: OneID-safe recipient page, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantRecipientPage"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}}
+  /api/admin/ai-assistant/plans/{plan_id}/recipients/{recipient_id}:
+    get:
+      operationId: getAIAssistantRecipient
+      tags: [AIAssistant]
+      security: [{adminSession: []}]
+      parameters: [{$ref: "#/components/parameters/AIAssistantPlanID"}, {$ref: "#/components/parameters/AIAssistantRecipientID"}]
+      responses: {"200": {description: Recipient drawer detail, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantRecipientEnvelope"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}}
+  /api/admin/ai-assistant/plans/{plan_id}/recipients/{recipient_id}/content:
+    patch:
+      operationId: updateAIAssistantRecipientContent
+      tags: [AIAssistant]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/AIAssistantPlanID"}, {$ref: "#/components/parameters/AIAssistantRecipientID"}, {$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantContentUpdateRequest"}}}}
+      responses: {"200": {description: Immutable content version created, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantContentVersion"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "422": {$ref: "#/components/responses/Error"}}
+  /api/admin/ai-assistant/plans/{plan_id}/recipients/{recipient_id}/review:
+    post:
+      operationId: reviewAIAssistantRecipient
+      tags: [AIAssistant]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/AIAssistantPlanID"}, {$ref: "#/components/parameters/AIAssistantRecipientID"}, {$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantRecipientReviewRequest"}}}}
+      responses: {"200": {description: Review-only decision; no effect is accepted, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantRecipientEnvelope"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+  /api/admin/ai-assistant/plans/{plan_id}/preview-approval:
+    post:
+      operationId: previewAIAssistantPlanApproval
+      tags: [AIAssistant]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/AIAssistantPlanID"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantExpectedVersionRequest"}}}}
+      responses: {"200": {description: Immutable approval preview, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantApprovalPreview"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+  /api/admin/ai-assistant/plans/{plan_id}/approve:
+    post:
+      operationId: approveAIAssistantPlan
+      tags: [AIAssistant]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/AIAssistantPlanID"}, {$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantApproveRequest"}}}}
+      responses: {"200": {description: Approval and all Outbound effects accepted atomically, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantPlanEnvelope"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/ai-assistant/plans/{plan_id}/reject:
+    post:
+      operationId: rejectAIAssistantPlan
+      tags: [AIAssistant]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/AIAssistantPlanID"}, {$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantRejectRequest"}}}}
+      responses: {"200": {description: Plan rejected without accepting effects, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantPlanEnvelope"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+  /api/admin/ai-assistant/plans/{plan_id}/effects:
+    get:
+      operationId: listAIAssistantEffects
+      tags: [AIAssistant]
+      security: [{adminSession: []}]
+      parameters: [{$ref: "#/components/parameters/AIAssistantPlanID"}]
+      responses: {"200": {description: Digest-safe effect projections, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantEffectPage"}}}}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}}
+  /api/admin/ai-assistant/effects/{effect_id}/reconcile:
+    post:
+      operationId: reconcileAIAssistantEffect
+      tags: [AIAssistant]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/AIAssistantEffectID"}, {$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantReconcileRequest"}}}}
+      responses: {"200": {description: Original-key reconciliation result, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantReconcileResponse"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}}
+  /api/integrations/ai-assistant/review-plans:
+    post:
+      operationId: createAIAssistantIntegrationPlan
+      tags: [AIAssistant]
+      security: [{aiAssistantIntegration: []}]
+      parameters:
+        - {$ref: "#/components/parameters/RequiredIdempotencyKey"}
+        - {$ref: "#/components/parameters/AIAssistantIntegrationTimestamp"}
+        - {$ref: "#/components/parameters/AIAssistantIntegrationNonce"}
+        - {$ref: "#/components/parameters/AIAssistantIntegrationSignature"}
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantIntegrationPlanRequest"}}}}
+      responses: {"202": {description: Scoped identities resolved into a pending review plan; unresolved targets are reported but never persisted as recipients, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantIntegrationPlanResponse"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "413": {$ref: "#/components/responses/Error"}, "422": {$ref: "#/components/responses/Error"}}
 components:
   securitySchemes:
     adminSession: {type: apiKey, in: cookie, name: aicrm_admin_session}
@@ -2847,6 +3028,8 @@ components:
     paymentSession: {type: apiKey, in: cookie, name: aicrm_payment_session}
     wechatPaySignature: {type: apiKey, in: header, name: Wechatpay-Signature}
     operationCycleService: {type: http, scheme: bearer}
+    automationOpsWebhook: {type: apiKey, in: header, name: X-AICRM-Signature, description: HMAC-SHA256 over the exact body and versioned timestamp/event context.}
+    aiAssistantIntegration: {type: apiKey, in: header, name: X-AICRM-Integration-Key}
   parameters:
     ID: {name: id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
     AutomationAgentID: {name: agent_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
@@ -2893,11 +3076,67 @@ components:
     GroupOpsWebhookEventID: {name: X-AICRM-Event-Id, in: header, required: true, schema: {type: string, minLength: 1, maxLength: 256}}
     GroupOpsWebhookSignature: {name: X-AICRM-Signature, in: header, required: true, schema: {type: string, pattern: "^[0-9a-fA-F]{64}$"}}
     OrderReference: {name: order_ref, in: path, required: true, schema: {type: string, minLength: 1, maxLength: 200}}
+    AutomationOpsGroupID: {name: group_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
+    AutomationOpsPackageID: {name: package_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
+    AutomationOpsRefreshRunID: {name: refresh_run_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
+    AutomationOpsPolicyID: {name: policy_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
+    AutomationOpsRunID: {name: run_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
+    AutomationOpsEffectID: {name: effect_id, in: path, required: true, schema: {type: string, pattern: "^eej_v1_[A-Za-z0-9_-]{22,128}$"}}
+    AutomationOpsPackageKey: {name: package_key, in: path, required: true, schema: {type: string, pattern: "^[a-z0-9][a-z0-9_-]{0,119}$"}}
+    AutomationOpsPackageAction: {name: package_action, in: path, required: true, schema: {type: string, enum: [pause, activate, precheck]}}
+    AutomationOpsLifecycleAction: {name: lifecycle_action, in: path, required: true, schema: {type: string, enum: [activate, pause, archive]}}
+    AutomationOpsSnapshotQuery: {name: snapshot_id, in: query, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
+    ExpectedVersion: {name: expected_version, in: query, required: true, schema: {type: integer, format: int64, minimum: 1}}
+    Cursor: {name: cursor, in: query, schema: {type: string, maxLength: 512}}
+    AutomationOpsWebhookTimestamp: {name: X-AICRM-Timestamp, in: header, required: true, schema: {type: string, pattern: "^[0-9]{1,20}$"}}
+    AutomationOpsWebhookEventID: {name: X-AICRM-Event-Id, in: header, required: true, schema: {type: string, minLength: 1, maxLength: 200}}
+    AIAssistantPlanID: {name: plan_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
+    AIAssistantRecipientID: {name: recipient_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
+    AIAssistantEffectID: {name: effect_id, in: path, required: true, schema: {type: string, pattern: "^eer_[1-9][0-9]*$"}}
+    AIAssistantCursor: {name: cursor, in: query, schema: {type: string, maxLength: 512}}
+    AIAssistantLimit: {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 50, default: 50}}
+    AIAssistantIntegrationTimestamp: {name: X-AICRM-Timestamp, in: header, required: true, schema: {type: string, pattern: "^[0-9]{1,20}$"}}
+    AIAssistantIntegrationNonce: {name: X-AICRM-Nonce, in: header, required: true, schema: {type: string, minLength: 16, maxLength: 128}}
+    AIAssistantIntegrationSignature: {name: X-AICRM-Signature, in: header, required: true, schema: {type: string, pattern: "^[0-9a-f]{64}$"}}
   responses:
     Error: {description: Stable error response, content: {application/json: {schema: {$ref: "#/components/schemas/ErrorResponse"}}}}
     Unavailable: {description: Dependency or provider unavailable, content: {application/json: {schema: {$ref: "#/components/schemas/ErrorResponse"}}}}
     MutationOK: {description: Mutation completed, content: {application/json: {schema: {type: object, required: [ok], properties: {ok: {const: true}}}}}}
   schemas:
+    AutomationOpsDigest: {type: string, pattern: "^[0-9a-f]{64}$"}
+    AutomationOpsGroup: {type: object, additionalProperties: false, required: [id, name, sort_order, version], properties: {id: {$ref: "#/components/schemas/PositiveID"}, name: {type: string, minLength: 1, maxLength: 100}, sort_order: {type: integer, minimum: 0}, version: {type: integer, format: int64, minimum: 1}}}
+    AutomationOpsGroupList: {type: object, additionalProperties: false, required: [items], properties: {items: {type: array, maxItems: 1000, items: {$ref: "#/components/schemas/AutomationOpsGroup"}}}}
+    AutomationOpsGroupEnvelope: {type: object, additionalProperties: false, required: [group], properties: {group: {$ref: "#/components/schemas/AutomationOpsGroup"}}}
+    AutomationOpsGroupMutation: {type: object, additionalProperties: false, required: [name], properties: {name: {type: string, minLength: 1, maxLength: 100}, sort_order: {type: integer, minimum: 0}, expected_version: {type: integer, format: int64, minimum: 1}}}
+    AutomationOpsPackage: {type: object, additionalProperties: false, required: [id, code, name, lifecycle, version, readiness], properties: {id: {$ref: "#/components/schemas/PositiveID"}, group_id: {$ref: "#/components/schemas/PositiveID"}, code: {type: string, pattern: "^[a-z0-9][a-z0-9_-]{0,119}$"}, name: {type: string, minLength: 1, maxLength: 200}, lifecycle: {type: string, enum: [paused, active, archived]}, version: {type: integer, format: int64, minimum: 1}, configuration_version_id: {$ref: "#/components/schemas/PositiveID"}, published_snapshot_id: {$ref: "#/components/schemas/PositiveID"}, readiness: {type: string, enum: [not_ready, ready, stale, disabled]}}}
+    AutomationOpsPackageList: {type: object, additionalProperties: false, required: [items, total, limit, offset], properties: {items: {type: array, maxItems: 100, items: {$ref: "#/components/schemas/AutomationOpsPackage"}}, total: {type: integer, format: int64, minimum: 0}, limit: {type: integer, minimum: 1, maximum: 100}, offset: {type: integer, minimum: 0}}}
+    AutomationOpsPackageEnvelope: {type: object, additionalProperties: false, required: [package], properties: {package: {$ref: "#/components/schemas/AutomationOpsPackage"}}}
+    AutomationOpsPackageCreate: {type: object, additionalProperties: false, required: [name, template_key], properties: {name: {type: string, minLength: 1, maxLength: 200}, group_id: {$ref: "#/components/schemas/PositiveID"}, template_key: {type: string, enum: [active_contacts, stage_any, tag_any, owner_any, channel_any]}}}
+    AutomationOpsPackageUpdate: {type: object, additionalProperties: false, required: [expected_version], properties: {name: {type: string, minLength: 1, maxLength: 200}, group_id: {$ref: "#/components/schemas/PositiveID"}, expected_version: {type: integer, format: int64, minimum: 1}}}
+    AutomationOpsVersionRequest: {type: object, additionalProperties: false, required: [expected_version], properties: {expected_version: {type: integer, format: int64, minimum: 1}}}
+    AutomationOpsDefinition: {type: object, additionalProperties: false, required: [schema_version, template_key, parameters], properties: {schema_version: {type: integer, const: 1}, template_key: {type: string, enum: [active_contacts, stage_any, tag_any, owner_any, channel_any]}, parameters: {type: object, maxProperties: 20, additionalProperties: {oneOf: [{type: string, maxLength: 200}, {type: array, maxItems: 100, items: {type: string, maxLength: 200}}]}}}}
+    AutomationOpsConfigurationPut: {type: object, additionalProperties: false, required: [expected_package_version, definition], properties: {expected_package_version: {type: integer, format: int64, minimum: 1}, refresh_cron_utc: {type: string, minLength: 9, maxLength: 100}, definition: {$ref: "#/components/schemas/AutomationOpsDefinition"}}}
+    AutomationOpsConfiguration: {type: object, additionalProperties: false, required: [id, package_id, version, digest, definition], properties: {id: {$ref: "#/components/schemas/PositiveID"}, package_id: {$ref: "#/components/schemas/PositiveID"}, version: {type: integer, format: int64, minimum: 1}, digest: {$ref: "#/components/schemas/AutomationOpsDigest"}, definition: {$ref: "#/components/schemas/AutomationOpsDefinition"}}}
+    AutomationOpsConfigurationEnvelope: {type: object, additionalProperties: false, required: [configuration], properties: {configuration: {$ref: "#/components/schemas/AutomationOpsConfiguration"}}}
+    AutomationOpsPreviewRequest: {type: object, additionalProperties: false, required: [configuration_version_id, reference_time], properties: {configuration_version_id: {$ref: "#/components/schemas/PositiveID"}, reference_time: {type: string, format: date-time}}}
+    AutomationOpsPreview: {type: object, additionalProperties: false, required: [configuration_version_id, reference_time, member_count, member_digest, source_watermark_digest, preview_digest, dispositions], properties: {configuration_version_id: {$ref: "#/components/schemas/PositiveID"}, reference_time: {type: string, format: date-time}, member_count: {type: integer, format: int64, minimum: 0, maximum: 100000}, member_digest: {$ref: "#/components/schemas/AutomationOpsDigest"}, source_watermark_digest: {$ref: "#/components/schemas/AutomationOpsDigest"}, preview_digest: {$ref: "#/components/schemas/AutomationOpsDigest"}, dispositions: {type: object, additionalProperties: {type: integer, minimum: 0}}}}
+    AutomationOpsMaterializeRequest: {type: object, additionalProperties: false, required: [configuration_version_id, preview_digest, empty_confirmed], properties: {configuration_version_id: {$ref: "#/components/schemas/PositiveID"}, preview_digest: {$ref: "#/components/schemas/AutomationOpsDigest"}, empty_confirmed: {type: boolean}}}
+    AutomationOpsRefreshRunEnvelope: {type: object, additionalProperties: false, required: [refresh_run], properties: {refresh_run: {type: object, additionalProperties: false, required: [id, state, reference_time], properties: {id: {$ref: "#/components/schemas/PositiveID"}, state: {type: string, enum: [accepted, queued, evaluating, staging, published, failed]}, reference_time: {type: string, format: date-time}, snapshot_id: {$ref: "#/components/schemas/PositiveID"}, error_code: {type: string, maxLength: 100}}}}}
+    AutomationOpsBindingPut: {type: object, additionalProperties: false, required: [expected_version, agent_id, published_version, agent_digest], properties: {expected_version: {type: integer, format: int64, minimum: 1}, agent_id: {$ref: "#/components/schemas/PositiveID"}, published_version: {type: integer, format: int64, minimum: 1}, agent_digest: {$ref: "#/components/schemas/AutomationOpsDigest"}}}
+    AutomationOpsSendersPut: {type: object, additionalProperties: false, required: [expected_version, provider_member_references], properties: {expected_version: {type: integer, format: int64, minimum: 1}, provider_member_references: {type: array, minItems: 1, maxItems: 5, uniqueItems: true, items: {type: string, minLength: 1, maxLength: 128}}}}
+    AutomationOpsMemberPage: {type: object, additionalProperties: false, required: [snapshot_id, items, next_cursor], properties: {snapshot_id: {$ref: "#/components/schemas/PositiveID"}, items: {type: array, maxItems: 100, items: {type: object, additionalProperties: false, required: [customer_id, entered_at, identity_disposition], properties: {customer_id: {$ref: "#/components/schemas/PositiveID"}, display_name: {type: string, maxLength: 200}, entered_at: {type: string, format: date-time}, identity_disposition: {type: string, enum: [resolved, unresolved, conflict, invalid]}}}}, next_cursor: {type: string, maxLength: 512}}}
+    AutomationOpsWebhookFact: {type: object, additionalProperties: false, required: [kind, scope, value, source], properties: {kind: {type: string, enum: [wecom_external_userid, mp_openid, oa_openid, unionid]}, scope: {type: string, minLength: 1, maxLength: 200}, value: {type: string, minLength: 1, maxLength: 512}, source: {type: string, minLength: 1, maxLength: 100}}}
+    AutomationOpsWebhookReceipt: {type: object, additionalProperties: false, required: [receipt_id, disposition, refresh_requested, replayed], properties: {receipt_id: {$ref: "#/components/schemas/PositiveID"}, disposition: {type: string, enum: [resolved, unresolved, conflict, invalid]}, refresh_requested: {type: boolean}, replayed: {type: boolean}}}
+    AutomationOpsTemplateList: {type: object, additionalProperties: false, required: [items], properties: {items: {type: array, minItems: 5, maxItems: 5, items: {type: object, additionalProperties: false, required: [key, available], properties: {key: {type: string, enum: [active_contacts, stage_any, tag_any, owner_any, channel_any]}, available: {type: boolean}, unavailable_reason: {type: string, maxLength: 200}}}}}}
+    AutomationOpsPolicyMutation: {type: object, additionalProperties: false, required: [name, package_id, trigger, action, action_config, quiet_hours, single_run_limit, approval_staff_id, expected_version], properties: {code: {type: string, pattern: "^[a-z0-9][a-z0-9_-]{0,119}$"}, name: {type: string, minLength: 1, maxLength: 200}, package_id: {$ref: "#/components/schemas/PositiveID"}, trigger: {type: string, enum: [audience.member_entered.v1, customer.tag_applied.v1]}, action: {type: string, enum: [record, outbound_message]}, action_config: {type: object, additionalProperties: true}, quiet_hours: {type: object, additionalProperties: false, required: [timezone, start, end], properties: {timezone: {type: string, minLength: 1, maxLength: 100}, start: {type: string, pattern: "^[0-2][0-9]:[0-5][0-9]$"}, end: {type: string, pattern: "^[0-2][0-9]:[0-5][0-9]$"}}}, single_run_limit: {type: integer, minimum: 1, maximum: 100000}, approval_staff_id: {$ref: "#/components/schemas/PositiveID"}, expected_version: {type: integer, format: int64, minimum: 0}}}
+    AutomationOpsBroadcastPreview: {type: object, additionalProperties: false, required: [snapshot_id, agent_id, agent_published_version, target_count, skipped_count, preview_digest, expected_package_version], properties: {snapshot_id: {$ref: "#/components/schemas/PositiveID"}, agent_id: {$ref: "#/components/schemas/PositiveID"}, agent_published_version: {type: integer, format: int64, minimum: 1}, target_count: {type: integer, maximum: 100000}, skipped_count: {type: integer, maximum: 100000}, preview_digest: {$ref: "#/components/schemas/AutomationOpsDigest"}, expected_package_version: {type: integer, format: int64, minimum: 1}}}
+    AutomationOpsRunConfirm: {type: object, additionalProperties: false, required: [snapshot_id, agent_id, agent_published_version, preview_digest, expected_package_version], properties: {snapshot_id: {$ref: "#/components/schemas/PositiveID"}, agent_id: {$ref: "#/components/schemas/PositiveID"}, agent_published_version: {type: integer, format: int64, minimum: 1}, preview_digest: {$ref: "#/components/schemas/AutomationOpsDigest"}, expected_package_version: {type: integer, format: int64, minimum: 1}}}
+    AutomationOpsRun: {type: object, additionalProperties: false, required: [id, state, target_count, skipped_count, outcome_unknown_count], properties: {id: {$ref: "#/components/schemas/PositiveID"}, policy_id: {type: integer, format: int64, minimum: 0}, policy_version: {type: integer, format: int64, minimum: 0}, state: {type: string, enum: [preparing, ready, executing, completed, partial_failed, outcome_unknown, cancelled]}, target_count: {type: integer, minimum: 0}, skipped_count: {type: integer, minimum: 0}, outcome_unknown_count: {type: integer, minimum: 0}, package_id: {$ref: "#/components/schemas/PositiveID"}, snapshot_id: {$ref: "#/components/schemas/PositiveID"}, agent_id: {$ref: "#/components/schemas/PositiveID"}, agent_published_version: {type: integer, format: int64, minimum: 1}, created_at: {type: string, format: date-time}}}
+    AutomationOpsRunEnvelope: {type: object, additionalProperties: false, required: [run], properties: {run: {$ref: "#/components/schemas/AutomationOpsRun"}}}
+    AutomationOpsRunPage: {type: object, additionalProperties: false, required: [items, next_cursor], properties: {items: {type: array, maxItems: 100, items: {$ref: "#/components/schemas/AutomationOpsRun"}}, next_cursor: {type: string, maxLength: 512}}}
+    AutomationOpsReconcileRequest: {type: object, additionalProperties: false, required: [generation, fence, lease_expires_at, evidence_digest, resolution], properties: {generation: {type: integer, format: int64, minimum: 1}, fence: {type: integer, format: int64, minimum: 1}, lease_expires_at: {type: string, format: date-time}, evidence_digest: {$ref: "#/components/schemas/AutomationOpsDigest"}, resolution: {type: string, enum: [provider_accepted, delivery_proven, final_failed]}}}
+    AutomationOpsObjectEnvelope: {type: object, additionalProperties: false, required: [data], properties: {data: {type: object, additionalProperties: true}}}
+    AutomationOpsObjectPage: {type: object, additionalProperties: false, required: [items], properties: {items: {type: array, maxItems: 100, items: {type: object, additionalProperties: true}}, next_cursor: {type: string, maxLength: 512}}}
     HXCDashboardCounts:
       type: object
       additionalProperties: false
@@ -3011,6 +3250,240 @@ components:
       additionalProperties: false
       required: [run, replayed]
       properties: {run: {$ref: "#/components/schemas/HXCDashboardRefresh"}, replayed: {type: boolean}}
+    AIAssistantDigest: {type: string, pattern: "^sha256:[0-9a-f]{64}$"}
+    AIAssistantPlanState: {type: string, enum: [pending_review, partially_approved, approved, rejected, dispatching, needs_attention, completed_with_failures, completed]}
+    AIAssistantReviewState: {type: string, enum: [pending_review, approved, rejected, ineligible]}
+    AIAssistantExecutionState: {type: string, enum: [not_accepted, accepted, queued, attempted, provider_accepted, retryable_failed, outcome_unknown, reconciled, final_failed, delivery_proven]}
+    AIAssistantContentKind: {type: string, enum: [text, image, mini_program, link]}
+    AIAssistantContentBlock:
+      type: object
+      additionalProperties: false
+      required: [kind]
+      properties:
+        kind: {$ref: "#/components/schemas/AIAssistantContentKind"}
+        text: {type: string, maxLength: 8000}
+        material_kind: {type: string, maxLength: 64}
+        material_id: {$ref: "#/components/schemas/PositiveID"}
+        material_digest: {$ref: "#/components/schemas/AIAssistantDigest"}
+    AIAssistantPlanTarget:
+      type: object
+      additionalProperties: false
+      required: [customer_id, staff_id, content]
+      properties:
+        customer_id: {$ref: "#/components/schemas/PositiveID"}
+        staff_id: {$ref: "#/components/schemas/PositiveID"}
+        content: {type: array, minItems: 1, maxItems: 20, items: {$ref: "#/components/schemas/AIAssistantContentBlock"}}
+    AIAssistantPlanCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [name, source_kind, source_digest, recipients]
+      properties:
+        name: {type: string, minLength: 1, maxLength: 200}
+        source_kind: {type: string, minLength: 1, maxLength: 80}
+        source_digest: {$ref: "#/components/schemas/AIAssistantDigest"}
+        recipients: {type: array, minItems: 1, maxItems: 5000, items: {$ref: "#/components/schemas/AIAssistantPlanTarget"}}
+    AIAssistantPlan:
+      type: object
+      additionalProperties: false
+      required: [id, name, source_kind, source_digest, state, version, target_count, pending_count, approved_count, rejected_count, ineligible_count, needs_attention_count, created_by, created_at, updated_at]
+      properties:
+        id: {$ref: "#/components/schemas/PositiveID"}
+        name: {type: string}
+        source_kind: {type: string}
+        source_digest: {$ref: "#/components/schemas/AIAssistantDigest"}
+        state: {$ref: "#/components/schemas/AIAssistantPlanState"}
+        version: {type: integer, format: int64, minimum: 1}
+        target_count: {type: integer, minimum: 0, maximum: 5000}
+        pending_count: {type: integer, minimum: 0, maximum: 5000}
+        approved_count: {type: integer, minimum: 0, maximum: 5000}
+        rejected_count: {type: integer, minimum: 0, maximum: 5000}
+        ineligible_count: {type: integer, minimum: 0, maximum: 5000}
+        needs_attention_count: {type: integer, minimum: 0, maximum: 5000}
+        created_by: {$ref: "#/components/schemas/PositiveID"}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    AIAssistantPlanEnvelope:
+      type: object
+      additionalProperties: false
+      required: [ok, plan, replayed, dispatch_ready]
+      properties:
+        ok: {const: true}
+        plan: {$ref: "#/components/schemas/AIAssistantPlan"}
+        replayed: {type: boolean}
+        dispatch_ready: {type: boolean}
+    AIAssistantPlanPage:
+      type: object
+      additionalProperties: false
+      required: [ok, items, next_cursor]
+      properties:
+        ok: {const: true}
+        items: {type: array, maxItems: 50, items: {$ref: "#/components/schemas/AIAssistantPlan"}}
+        next_cursor: {type: string, maxLength: 512}
+    AIAssistantRecipient:
+      type: object
+      additionalProperties: false
+      required: [id, plan_id, customer_id, customer_name, oneid_label, staff_id, staff_display_name, review_state, execution_state, version, content_version_id, updated_at]
+      properties:
+        id: {$ref: "#/components/schemas/PositiveID"}
+        plan_id: {$ref: "#/components/schemas/PositiveID"}
+        customer_id: {$ref: "#/components/schemas/PositiveID"}
+        customer_name: {type: string, maxLength: 200}
+        oneid_label: {type: string, maxLength: 200}
+        staff_id: {$ref: "#/components/schemas/PositiveID"}
+        staff_display_name: {type: string, maxLength: 200}
+        review_state: {$ref: "#/components/schemas/AIAssistantReviewState"}
+        execution_state: {$ref: "#/components/schemas/AIAssistantExecutionState"}
+        version: {type: integer, format: int64, minimum: 1}
+        content_version_id: {$ref: "#/components/schemas/PositiveID"}
+        effect_id: {type: string, pattern: "^eer_[1-9][0-9]*$"}
+        updated_at: {type: string, format: date-time}
+    AIAssistantContentVersion:
+      type: object
+      additionalProperties: false
+      required: [id, recipient_id, version, digest, blocks, created_at]
+      properties:
+        id: {$ref: "#/components/schemas/PositiveID"}
+        recipient_id: {$ref: "#/components/schemas/PositiveID"}
+        version: {type: integer, format: int64, minimum: 1}
+        digest: {$ref: "#/components/schemas/AIAssistantDigest"}
+        blocks: {type: array, minItems: 1, maxItems: 20, items: {$ref: "#/components/schemas/AIAssistantContentBlock"}}
+        created_at: {type: string, format: date-time}
+    AIAssistantRecipientEnvelope:
+      type: object
+      additionalProperties: false
+      required: [ok, recipient, content]
+      properties:
+        ok: {const: true}
+        recipient: {$ref: "#/components/schemas/AIAssistantRecipient"}
+        content: {$ref: "#/components/schemas/AIAssistantContentVersion"}
+    AIAssistantRecipientPage:
+      type: object
+      additionalProperties: false
+      required: [ok, items, next_cursor]
+      properties:
+        ok: {const: true}
+        items: {type: array, maxItems: 50, items: {$ref: "#/components/schemas/AIAssistantRecipient"}}
+        next_cursor: {type: string, maxLength: 512}
+    AIAssistantExpectedVersionRequest:
+      type: object
+      additionalProperties: false
+      required: [expected_version]
+      properties: {expected_version: {type: integer, format: int64, minimum: 1}}
+    AIAssistantContentUpdateRequest:
+      type: object
+      additionalProperties: false
+      required: [expected_version, blocks]
+      properties:
+        expected_version: {type: integer, format: int64, minimum: 1}
+        blocks: {type: array, minItems: 1, maxItems: 20, items: {$ref: "#/components/schemas/AIAssistantContentBlock"}}
+    AIAssistantRecipientReviewRequest:
+      type: object
+      additionalProperties: false
+      required: [expected_version, decision]
+      properties:
+        expected_version: {type: integer, format: int64, minimum: 1}
+        decision: {type: string, enum: [approved, rejected]}
+        reason: {type: string, maxLength: 500}
+    AIAssistantApprovalPreview:
+      type: object
+      additionalProperties: false
+      required: [ok, plan_id, plan_version, eligible_count, preview_digest]
+      properties:
+        ok: {const: true}
+        plan_id: {$ref: "#/components/schemas/PositiveID"}
+        plan_version: {type: integer, format: int64, minimum: 1}
+        eligible_count: {type: integer, minimum: 1, maximum: 5000}
+        preview_digest: {$ref: "#/components/schemas/AIAssistantDigest"}
+    AIAssistantApproveRequest:
+      type: object
+      additionalProperties: false
+      required: [expected_version, preview_digest]
+      properties:
+        expected_version: {type: integer, format: int64, minimum: 1}
+        preview_digest: {$ref: "#/components/schemas/AIAssistantDigest"}
+    AIAssistantRejectRequest:
+      type: object
+      additionalProperties: false
+      required: [expected_version, reason]
+      properties:
+        expected_version: {type: integer, format: int64, minimum: 1}
+        reason: {type: string, minLength: 1, maxLength: 500}
+    AIAssistantEffect:
+      type: object
+      additionalProperties: false
+      required: [effect_id, recipient_id, state, generation, fence, attempt_count, provider_accepted, delivery_proven, updated_at]
+      properties:
+        effect_id: {type: string, pattern: "^eer_[1-9][0-9]*$"}
+        recipient_id: {$ref: "#/components/schemas/PositiveID"}
+        state: {$ref: "#/components/schemas/AIAssistantExecutionState"}
+        generation: {type: integer, format: int64, minimum: 0}
+        fence: {type: integer, format: int64, minimum: 0}
+        attempt_count: {type: integer, minimum: 0}
+        provider_accepted: {type: boolean}
+        delivery_proven: {type: boolean}
+        updated_at: {type: string, format: date-time}
+    AIAssistantEffectPage:
+      type: object
+      additionalProperties: false
+      required: [ok, items, next_cursor]
+      properties:
+        ok: {const: true}
+        items: {type: array, maxItems: 5000, items: {$ref: "#/components/schemas/AIAssistantEffect"}}
+        next_cursor: {type: string, maxLength: 512}
+    AIAssistantReconcileRequest:
+      type: object
+      additionalProperties: false
+      required: [generation, fence, evidence_digest, reason]
+      properties:
+        generation: {type: integer, format: int64, minimum: 1}
+        fence: {type: integer, format: int64, minimum: 1}
+        evidence_digest: {$ref: "#/components/schemas/AIAssistantDigest"}
+        reason: {type: string, minLength: 1, maxLength: 500}
+    AIAssistantReconcileResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, recipient]
+      properties:
+        ok: {const: true}
+        recipient: {$ref: "#/components/schemas/AIAssistantRecipient"}
+    AIAssistantIntegrationIdentity:
+      type: object
+      additionalProperties: false
+      required: [kind, scope, value, staff_id, content]
+      properties:
+        kind: {type: string, enum: [wecom_external_userid, unionid, mp_openid, oa_openid]}
+        scope: {type: string, minLength: 1, maxLength: 200}
+        value: {type: string, minLength: 1, maxLength: 512, writeOnly: true}
+        staff_id: {$ref: "#/components/schemas/PositiveID"}
+        content: {type: array, minItems: 1, maxItems: 20, items: {$ref: "#/components/schemas/AIAssistantContentBlock"}}
+    AIAssistantIntegrationPlanRequest:
+      type: object
+      additionalProperties: false
+      required: [name, source_kind, source_digest, identities]
+      properties:
+        name: {type: string, minLength: 1, maxLength: 200}
+        source_kind: {type: string, minLength: 1, maxLength: 80}
+        source_digest: {$ref: "#/components/schemas/AIAssistantDigest"}
+        identities: {type: array, minItems: 1, maxItems: 5000, items: {$ref: "#/components/schemas/AIAssistantIntegrationIdentity"}}
+    AIAssistantIntegrationResolution:
+      type: object
+      additionalProperties: false
+      required: [found, not_found, conflict, invalid]
+      properties:
+        found: {type: integer, minimum: 0, maximum: 5000}
+        not_found: {type: integer, minimum: 0, maximum: 5000}
+        conflict: {type: integer, minimum: 0, maximum: 5000}
+        invalid: {type: integer, minimum: 0, maximum: 5000}
+    AIAssistantIntegrationPlanResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, plan, replayed, dispatch_ready, resolution]
+      properties:
+        ok: {const: true}
+        plan: {$ref: "#/components/schemas/AIAssistantPlan"}
+        replayed: {type: boolean}
+        dispatch_ready: {type: boolean}
+        resolution: {$ref: "#/components/schemas/AIAssistantIntegrationResolution"}
     LocalProjection:
       type: object
       required: [ok, items, source_status, local_only]

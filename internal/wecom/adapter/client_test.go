@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha1"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	outboundport "github.com/qianlan33333-png/AI-CRM-v3/internal/outbound/port"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/wecom"
 	wecomport "github.com/qianlan33333-png/AI-CRM-v3/internal/wecom/port"
 )
@@ -327,6 +329,66 @@ func TestChannelContactWayLifecycleAndWelcomeAttachments(t *testing.T) {
 	}
 	if err = client.DeleteContactWay(context.Background(), "cw-1"); err != nil || calls["/cgi-bin/externalcontact/del_contact_way"] != 1 {
 		t.Fatalf("calls=%v err=%v", calls, err)
+	}
+}
+
+func TestPrivateMessageUsesSingleCustomerContractAndRejectsFailList(t *testing.T) {
+	for name, providerResponse := range map[string]string{
+		"accepted":        `{"errcode":0,"msgid":"msg-1","fail_list":[]}`,
+		"target rejected": `{"errcode":0,"msgid":"msg-1","fail_list":["external-secret-id"]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			calls := []string{}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls = append(calls, r.URL.Path)
+				switch r.URL.Path {
+				case "/cgi-bin/gettoken":
+					if r.URL.Query().Get("corpsecret") != "contact secret" {
+						t.Fatal("private message did not use contact secret")
+					}
+					_, _ = w.Write([]byte(`{"errcode":0,"access_token":"contact-token","expires_in":7200}`))
+				case "/cgi-bin/media/upload":
+					if r.URL.Query().Get("type") != "image" || !strings.Contains(r.Header.Get("Content-Type"), "multipart/form-data") {
+						t.Fatalf("upload request=%s", r.URL.String())
+					}
+					raw, _ := io.ReadAll(r.Body)
+					if !strings.Contains(string(raw), "Content-Type: image/png") || !strings.Contains(string(raw), "Content-Disposition: form-data;") || !strings.Contains(string(raw), "filename=image.png") || !strings.Contains(string(raw), "name=media") {
+						t.Fatalf("multipart headers=%q", raw)
+					}
+					_, _ = w.Write([]byte(`{"errcode":0,"media_id":"media-1"}`))
+				case "/cgi-bin/externalcontact/add_msg_template":
+					raw, _ := io.ReadAll(r.Body)
+					var body map[string]any
+					if json.Unmarshal(raw, &body) != nil || body["chat_type"] != "single" || body["sender"] != "staff-secret-id" {
+						t.Fatalf("message body=%s", raw)
+					}
+					targets, _ := body["external_userid"].([]any)
+					if len(targets) != 1 || targets[0] != "external-secret-id" {
+						t.Fatalf("targets=%v", targets)
+					}
+					_, _ = w.Write([]byte(providerResponse))
+				default:
+					t.Fatalf("unexpected path=%s", r.URL.Path)
+				}
+			}))
+			defer server.Close()
+			client := newTestClient(t, server, func() time.Time { return testNow })
+			client.config.ContactSecret = "contact secret"
+			receipt, attempted, err := client.SendPrivateMessage(context.Background(), outboundport.PrivateMessageTarget{ExternalUserID: "external-secret-id", StaffUserID: "staff-secret-id"}, outboundport.PrivateMessagePayload{Text: "hello", Attachments: []outboundport.PrivateMessageAttachment{{Kind: "image", Content: []byte("png-image-bytes"), FileName: "image.png", MediaType: "image/png"}}})
+			if !attempted || len(calls) != 3 {
+				t.Fatalf("attempted=%v calls=%v err=%v", attempted, calls, err)
+			}
+			if name == "accepted" {
+				if err != nil || receipt.MessageID != "msg-1" {
+					t.Fatalf("receipt=%+v err=%v", receipt, err)
+				}
+				return
+			}
+			var failure outboundport.PrivateMessageSendError
+			if err == nil || !errors.As(err, &failure) || failure.OutcomeUnknown() {
+				t.Fatalf("known target rejection err=%v", err)
+			}
+		})
 	}
 }
 

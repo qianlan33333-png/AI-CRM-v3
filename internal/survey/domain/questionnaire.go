@@ -23,7 +23,7 @@ var (
 )
 
 var slugPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,127}$`)
-var mobilePattern = regexp.MustCompile(`^\+?[1-9][0-9]{6,14}$`)
+var mobilePattern = regexp.MustCompile(`^1[3-9][0-9]{9}$`)
 var opaquePattern = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
 
 const (
@@ -35,7 +35,7 @@ const (
 
 func ValidateQuestionnaire(value surveyport.Questionnaire) error {
 	if !validText(value.Name, 200) || !validText(value.Title, 500) || !validOptionalText(value.Description, 10000) ||
-		!slugPattern.MatchString(value.Slug) || !validDisplay(value.AnswerDisplayMode) || !validStatus(value.Status) ||
+		!slugPattern.MatchString(value.Slug) || strings.HasSuffix(value.Slug, "-") || !validDisplay(value.AnswerDisplayMode) || !validStatus(value.Status) ||
 		(value.Mode != surveyport.ModeSurvey && value.Mode != surveyport.ModeAssessment) || len(value.Questions) == 0 || len(value.Questions) > MaximumQuestions {
 		return ErrInvalidQuestionnaire
 	}

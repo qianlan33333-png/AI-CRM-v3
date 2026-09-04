@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	aiassistantport "github.com/qianlan33333-png/AI-CRM-v3/internal/aiassistant/port"
 	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	groupopsport "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/port"
 	mediaport "github.com/qianlan33333-png/AI-CRM-v3/internal/media/port"
@@ -114,11 +115,13 @@ func (s *GroupMessageCompletionSink) CompleteEffect(ctx context.Context, effectR
 // CompletionRouter keeps EER's single completion-sink slot while routing
 // owner-specific projections by opaque envelope kind.
 type CompletionRouter struct {
-	tag     *TagCatalogCompletionSink
-	group   *GroupMessageCompletionSink
-	channel *ChannelAssetCompletionSink
-	entrant *ChannelEntrantCompletionSink
-	link    *ChannelLinkCompletionSink
+	tag        *TagCatalogCompletionSink
+	group      *GroupMessageCompletionSink
+	channel    *ChannelAssetCompletionSink
+	entrant    *ChannelEntrantCompletionSink
+	link       *ChannelLinkCompletionSink
+	private    *PrivateMessageCompletionSink
+	automation effectport.CompletionSink
 }
 
 func NewCompletionRouterWithChannels(tag *TagCatalogCompletionSink, group *GroupMessageCompletionSink, channel *ChannelAssetCompletionSink) (*CompletionRouter, error) {
@@ -141,6 +144,67 @@ func NewCompletionRouterWithAllChannels(tag *TagCatalogCompletionSink, group *Gr
 	return &CompletionRouter{tag: tag, group: group, channel: channel, entrant: entrant, link: link}, nil
 }
 
+type PrivateMessageCompletionSink struct {
+	outbound PrivateMessageCompletionProjector
+	ai       aiassistantport.EffectCompletionProjector
+}
+
+func NewPrivateMessageCompletionSink(outbound PrivateMessageCompletionProjector, ai aiassistantport.EffectCompletionProjector) (*PrivateMessageCompletionSink, error) {
+	if outbound == nil || ai == nil {
+		return nil, errors.New("private message completion projectors are required")
+	}
+	return &PrivateMessageCompletionSink{outbound: outbound, ai: ai}, nil
+}
+
+func (s *PrivateMessageCompletionSink) CompleteEffect(ctx context.Context, effectRef string, envelope effectport.Envelope, attempt effectport.Attempt, result effectport.AdapterResult) error {
+	if s == nil || envelope.Kind != effectport.KindOutboundMessage || !effectport.ValidDigest(result.ReceiptDigest) {
+		return errors.New("invalid private message completion")
+	}
+	state := aiassistantport.ExecutionOutcomeUnknown
+	providerAccepted := false
+	deliveryProven := false
+	switch result.Completion {
+	case effectport.StateExecuted:
+		state = aiassistantport.ExecutionProviderAccepted
+		providerAccepted = result.CallAttempted && result.RealExternalCallExecuted
+	case effectport.StateFinalFailed:
+		state = aiassistantport.ExecutionFinalFailed
+	case effectport.StateUnknown:
+		state = aiassistantport.ExecutionOutcomeUnknown
+	case effectport.StateRetryable:
+		state = aiassistantport.ExecutionRetryableFailed
+	case effectport.StateReconciled:
+		state = aiassistantport.ExecutionReconciled
+	default:
+		return errors.New("invalid private message completion state")
+	}
+	if err := s.outbound.CompletePrivateMessage(ctx, effectRef, string(state), time.Now().UTC()); err != nil {
+		return err
+	}
+	return s.ai.CompleteExternalEffect(ctx, effectRef, state, providerAccepted, deliveryProven, result.ReceiptDigest, attempt.Number, attempt.Generation, attempt.Fence, time.Now().UTC())
+}
+
+func NewCompletionRouterWithPrivate(tag *TagCatalogCompletionSink, group *GroupMessageCompletionSink, private *PrivateMessageCompletionSink) (*CompletionRouter, error) {
+	if tag == nil && group == nil && private == nil {
+		return nil, errors.New("at least one completion sink is required")
+	}
+	return &CompletionRouter{tag: tag, group: group, private: private}, nil
+}
+
+func (r *CompletionRouter) WithPrivateMessage(private *PrivateMessageCompletionSink) *CompletionRouter {
+	if r != nil {
+		r.private = private
+	}
+	return r
+}
+
+func (r *CompletionRouter) WithAutomationMessage(message effectport.CompletionSink) *CompletionRouter {
+	if r != nil {
+		r.automation = message
+	}
+	return r
+}
+
 func NewCompletionRouter(tag *TagCatalogCompletionSink, group *GroupMessageCompletionSink) (*CompletionRouter, error) {
 	if tag == nil && group == nil {
 		return nil, errors.New("at least one completion sink is required")
@@ -148,11 +212,23 @@ func NewCompletionRouter(tag *TagCatalogCompletionSink, group *GroupMessageCompl
 	return &CompletionRouter{tag: tag, group: group}, nil
 }
 
+func NewCompletionRouterWithMessage(tag *TagCatalogCompletionSink, group *GroupMessageCompletionSink, message effectport.CompletionSink) (*CompletionRouter, error) {
+	if tag == nil && group == nil && message == nil {
+		return nil, errors.New("at least one completion sink is required")
+	}
+	return &CompletionRouter{tag: tag, group: group, automation: message}, nil
+}
+
 func (r *CompletionRouter) CompleteEffect(ctx context.Context, effectRef string, envelope effectport.Envelope, attempt effectport.Attempt, result effectport.AdapterResult) error {
 	if r == nil {
 		return errors.New("completion router is unavailable")
 	}
 	switch envelope.Kind {
+	case effectport.KindAutomationMessage:
+		if r.automation == nil {
+			return errors.New("message completion sink is unavailable")
+		}
+		return r.automation.CompleteEffect(ctx, effectRef, envelope, attempt, result)
 	case effectport.KindWeComTagCatalog:
 		if r.tag == nil {
 			return errors.New("tag completion sink is unavailable")
@@ -178,6 +254,11 @@ func (r *CompletionRouter) CompleteEffect(ctx context.Context, effectRef string,
 			return errors.New("channel link completion sink is unavailable")
 		}
 		return r.link.CompleteEffect(ctx, effectRef, envelope, attempt, result)
+	case effectport.KindOutboundMessage:
+		if r.private == nil {
+			return errors.New("private message completion sink is unavailable")
+		}
+		return r.private.CompleteEffect(ctx, effectRef, envelope, attempt, result)
 	default:
 		return errors.New("unsupported completion kind")
 	}

@@ -45,6 +45,16 @@ and a separate context signing key to be present together. Customer directory
 sync additionally requires its own customer-contact Secret. Alipay has no live
 runtime configuration in this release.
 
+AI Assistant has three independent switches. `AICRM_AI_ASSISTANT_UI_ENABLED`
+serves the frozen two-level review UI; signed machine intake additionally needs
+an integration key, a 32-byte-or-longer secret and an internal actor ID. Real
+private-message dispatch requires all of
+`AICRM_AI_ASSISTANT_DISPATCH_ENABLED=true`,
+`AICRM_OUTBOUND_PROVIDER_ENABLED=true`, enabled WeCom contact credentials and
+`AICRM_AI_ASSISTANT_PROVIDER_PERMISSION=private-message-authorized`. Approval
+creates durable External Effects; Provider acceptance is shown separately from
+delivery proof, and ambiguous outcomes require the fenced reconciliation API.
+
 The phone migration command never connects to the source host. Export a minimal
 snapshot through a separately authorized read-only channel, compute its SHA-256,
 then run `inspect`, `dry-run`, `apply --confirm-apply`, and `reconcile` in order.

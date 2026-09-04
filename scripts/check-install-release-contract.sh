@@ -71,7 +71,10 @@ for migration_contract in \
   '0032_channel_acquisition_assets.sql:Channel acquisition assets' \
   '0033_wecom_welcome_grants.sql:WeCom welcome grants' \
   '0034_channel_entrant_actions.sql:Channel entrant actions' \
-  '0035_channel_acquisition_links.sql:Channel acquisition links'; do
+  '0035_channel_acquisition_links.sql:Channel acquisition links' \
+  '0036_ai_assistant_review.sql:AI Assistant review' \
+  '0037_outbound_private_messages.sql:Outbound private messages' \
+  '0038_survey_oauth_phone_vault.sql:survey OAuth phone vault'; do
   migration="${migration_contract%%:*}"
   label="${migration_contract#*:}"
   test -f "migrations/${migration}" || {
@@ -83,6 +86,9 @@ for migration_contract in \
     exit 1
   }
 done
+grep -qx 'test -x "$release_dir/bin/migrate-automation-operations"' "$installer" || { echo "release must include Automation Operations migration tool" >&2; exit 1; }
+grep -qx 'test -f "$release_dir/migrations/0047_automation_operations_migration.sql"' "$installer" || { echo "release must require Automation Operations migration schema" >&2; exit 1; }
+grep -qx 'test -f "$release_dir/migrations/0048_segment_audience_schedule_state.sql"' "$installer" || { echo "release must require Automation Operations schedule state" >&2; exit 1; }
 config_migration="migrations/0015_config_adminops.sql"
 for table in config_settings config_audits config_outbox adminops_release_projections adminops_diagnostic_snapshots; do
   grep -qE "^CREATE TABLE ${table}[[:space:]]*\\(" "$config_migration" || {
@@ -94,6 +100,7 @@ grep -qx 'test -x "$release_dir/bin/migrate-phone-identities"' "$installer" || {
 grep -qx 'test -x "$release_dir/bin/migrate-v2-config-definitions"' "$installer" || { echo "release must include configuration definition migration tool" >&2; exit 1; }
 grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/migrate-v2-config-definitions ./cmd/migrate-v2-config-definitions' .github/workflows/ci.yml || { echo "CI must build the configuration definition migration tool" >&2; exit 1; }
 grep -qx 'test -x "$release_dir/bin/migrate-channel-history"' "$installer" || { echo "release must include channel history migration tool" >&2; exit 1; }
+grep -qx 'test -x "$release_dir/bin/migrate-identity-phone-vault"' "$installer" || { echo "release must include phone vault migration tool" >&2; exit 1; }
 grep -qx 'test -f "$release_dir/release-files.sha256"' "$installer" || { echo "release must require its immutable file manifest" >&2; exit 1; }
 grep -qx '(cd "$release_dir" && sha256sum --strict --check release-files.sha256)' "$installer" || { echo "existing releases must pass their complete file manifest before resume" >&2; exit 1; }
 grep -qF 'mv -T "$staging_dir" "$release_dir"' "$installer" || { echo "new releases must become visible only after staged verification" >&2; exit 1; }

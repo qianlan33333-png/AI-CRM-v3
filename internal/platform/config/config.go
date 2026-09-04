@@ -4,6 +4,7 @@ package config
 import (
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"net"
 	"net/url"
 	"os"
@@ -28,6 +29,7 @@ type Runtime struct {
 	Bootstrap                  Bootstrap
 	WeCom                      WeCom
 	GroupOps                   GroupOps
+	AutomationOperations       AutomationOperations
 	Effects                    Effects
 	TagCatalog                 TagCatalogProvider
 	Survey                     Survey
@@ -38,6 +40,7 @@ type Runtime struct {
 	CustomerSyncTrigger        string
 	HXCDashboard               HXCDashboard
 	OperationCycleServiceToken string
+	AIAssistant                AIAssistant
 }
 
 type Bootstrap struct {
@@ -68,6 +71,28 @@ type GroupOps struct {
 	WebhookSecret string
 }
 
+type AutomationProviderMode string
+
+const (
+	AutomationProviderDisabled AutomationProviderMode = "disabled"
+	AutomationProviderProbe    AutomationProviderMode = "probe"
+	AutomationProviderLimited  AutomationProviderMode = "limited"
+)
+
+// AutomationOperations is deliberately narrower than the global External
+// Effects switch. Enabling the effects worker must never implicitly authorize
+// an Automation Operations send.
+type AutomationOperations struct {
+	WebhookSecret       string
+	ProviderMode        AutomationProviderMode
+	ProviderPermission  string
+	MaxRecipientsPerRun int
+}
+
+func (c AutomationOperations) ProviderEnabled() bool {
+	return c.ProviderMode == AutomationProviderProbe || c.ProviderMode == AutomationProviderLimited
+}
+
 type Effects struct{ ProviderEnabled bool }
 type HXCDashboard struct {
 	Enabled        bool
@@ -76,7 +101,6 @@ type HXCDashboard struct {
 	SubjectHMACKey string
 	SyncTrigger    string
 }
-
 type ChannelHistoryMigration struct {
 	SourceDatabaseURL string
 	SnapshotKey       string
@@ -93,12 +117,20 @@ func LoadChannelHistoryMigration() (ChannelHistoryMigration, error) {
 	return value, nil
 }
 
+type AIAssistant struct {
+	UIEnabled, IntakeEnabled, DispatchEnabled bool
+	IntegrationKey, IntegrationSecret         string
+	IntegrationActorID                        int64
+	ProviderPermission                        string
+}
 type Survey struct {
-	DataKey             string
-	OAuthEnabled        bool
-	OAuthAppID          string
-	OAuthSecret         string
-	OAuthOpenPlatformID string
+	DataKey              string
+	IdentityPhoneDataKey string
+	OAuthEnabled         bool
+	OAuthAppID           string
+	OAuthSecret          string
+	OAuthOpenPlatformID  string
+	OAuthScope           string
 }
 
 // TagCatalogProvider is intentionally separate from outbound message/write
@@ -139,6 +171,7 @@ func Load() (Runtime, error) {
 		CustomerSyncTrigger:        os.Getenv("AICRM_CUSTOMER_SYNC_TRIGGER"),
 		HXCDashboard:               HXCDashboard{SourceDSN: os.Getenv("AICRM_HXC_SOURCE_DSN"), UnionIDScope: os.Getenv("AICRM_HXC_UNIONID_SCOPE"), SubjectHMACKey: os.Getenv("AICRM_HXC_SUBJECT_HMAC_KEY"), SyncTrigger: os.Getenv("AICRM_HXC_SYNC_TRIGGER")},
 		OperationCycleServiceToken: os.Getenv("AICRM_OPERATION_CYCLE_SERVICE_TOKEN"),
+		AIAssistant:                AIAssistant{UIEnabled: true, IntegrationKey: os.Getenv("AICRM_AI_ASSISTANT_INTEGRATION_KEY"), IntegrationSecret: os.Getenv("AICRM_AI_ASSISTANT_INTEGRATION_SECRET"), ProviderPermission: os.Getenv("AICRM_AI_ASSISTANT_PROVIDER_PERMISSION")},
 		Bootstrap: Bootstrap{
 			Username: os.Getenv("AICRM_BOOTSTRAP_USERNAME"), Password: os.Getenv("AICRM_BOOTSTRAP_PASSWORD"),
 			DisplayName: os.Getenv("AICRM_BOOTSTRAP_DISPLAY_NAME"),
@@ -150,7 +183,13 @@ func Load() (Runtime, error) {
 			ChannelStateHMACKey: os.Getenv("AICRM_CHANNEL_STATE_HMAC_KEY"),
 		},
 		GroupOps: GroupOps{WebhookSecret: os.Getenv("AICRM_GROUP_OPS_WEBHOOK_SECRET")},
-		Survey:   Survey{DataKey: os.Getenv("AICRM_SURVEY_DATA_KEY"), OAuthAppID: os.Getenv("AICRM_SURVEY_OAUTH_APP_ID"), OAuthSecret: os.Getenv("AICRM_SURVEY_OAUTH_SECRET"), OAuthOpenPlatformID: os.Getenv("AICRM_SURVEY_OAUTH_OPEN_PLATFORM_ID")},
+		AutomationOperations: AutomationOperations{
+			WebhookSecret:       os.Getenv("AICRM_AUTOMATION_OPS_WEBHOOK_SECRET"),
+			ProviderMode:        AutomationProviderMode(valueOrDefault("AICRM_AUTOMATION_OPS_PROVIDER_MODE", string(AutomationProviderDisabled))),
+			ProviderPermission:  os.Getenv("AICRM_AUTOMATION_OPS_PROVIDER_PERMISSION"),
+			MaxRecipientsPerRun: 1,
+		},
+		Survey: Survey{DataKey: os.Getenv("AICRM_SURVEY_DATA_KEY"), IdentityPhoneDataKey: os.Getenv("AICRM_IDENTITY_PHONE_DATA_KEY"), OAuthAppID: os.Getenv("AICRM_SURVEY_OAUTH_APP_ID"), OAuthSecret: os.Getenv("AICRM_SURVEY_OAUTH_SECRET"), OAuthOpenPlatformID: os.Getenv("AICRM_SURVEY_OAUTH_OPEN_PLATFORM_ID"), OAuthScope: valueOrDefault("AICRM_SURVEY_OAUTH_SCOPE", "snsapi_userinfo")},
 	}
 	if cfg.Survey.OAuthEnabled, err = strictBool("AICRM_SURVEY_OAUTH_ENABLED", false); err != nil {
 		return Runtime{}, err
@@ -160,6 +199,21 @@ func Load() (Runtime, error) {
 	}
 	if cfg.HXCDashboard.Enabled, err = strictBool("AICRM_HXC_SYNC_ENABLED", false); err != nil {
 		return Runtime{}, err
+	}
+	if cfg.AIAssistant.UIEnabled, err = strictBool("AICRM_AI_ASSISTANT_UI_ENABLED", true); err != nil {
+		return Runtime{}, err
+	}
+	if cfg.AIAssistant.IntakeEnabled, err = strictBool("AICRM_AI_ASSISTANT_INTAKE_ENABLED", false); err != nil {
+		return Runtime{}, err
+	}
+	if cfg.AIAssistant.DispatchEnabled, err = strictBool("AICRM_AI_ASSISTANT_DISPATCH_ENABLED", false); err != nil {
+		return Runtime{}, err
+	}
+	if raw := os.Getenv("AICRM_AI_ASSISTANT_INTEGRATION_ACTOR_ID"); raw != "" {
+		cfg.AIAssistant.IntegrationActorID, err = strconv.ParseInt(raw, 10, 64)
+		if err != nil || cfg.AIAssistant.IntegrationActorID < 1 {
+			return Runtime{}, errors.New("invalid AICRM_AI_ASSISTANT_INTEGRATION_ACTOR_ID")
+		}
 	}
 	if cfg.TagCatalog.Enabled, err = strictBool("AICRM_WECOM_TAG_CATALOG_PROVIDER_ENABLED", false); err != nil {
 		return Runtime{}, err
@@ -196,6 +250,12 @@ func Load() (Runtime, error) {
 		cfg.WorkerLimit, err = strconv.Atoi(raw)
 		if err != nil || cfg.WorkerLimit < 1 || cfg.WorkerLimit > 100 {
 			return Runtime{}, errors.New("invalid AICRM_WORKER_LIMIT")
+		}
+	}
+	if raw := os.Getenv("AICRM_AUTOMATION_OPS_MAX_RECIPIENTS"); raw != "" {
+		cfg.AutomationOperations.MaxRecipientsPerRun, err = strconv.Atoi(raw)
+		if err != nil || cfg.AutomationOperations.MaxRecipientsPerRun < 1 || cfg.AutomationOperations.MaxRecipientsPerRun > 100000 {
+			return Runtime{}, errors.New("invalid AICRM_AUTOMATION_OPS_MAX_RECIPIENTS")
 		}
 	}
 	if strings.TrimSpace(cfg.ListenAddress) != cfg.ListenAddress || cfg.ListenAddress == "" {
@@ -275,6 +335,12 @@ func Load() (Runtime, error) {
 			return Runtime{}, errors.New("enabled tag catalog provider requires WeCom and explicit permission")
 		}
 	}
+	if cfg.AIAssistant.IntakeEnabled && (strings.TrimSpace(cfg.AIAssistant.IntegrationKey) != cfg.AIAssistant.IntegrationKey || cfg.AIAssistant.IntegrationKey == "" || len(cfg.AIAssistant.IntegrationSecret) < 32 || cfg.AIAssistant.IntegrationActorID < 1) {
+		return Runtime{}, errors.New("enabled AI Assistant intake configuration is incomplete")
+	}
+	if cfg.AIAssistant.DispatchEnabled && (!cfg.Effects.ProviderEnabled || !cfg.WeCom.Enabled || cfg.WeCom.ContactSecret == "" || cfg.AIAssistant.ProviderPermission != "private-message-authorized") {
+		return Runtime{}, errors.New("enabled AI Assistant dispatch requires External Effects, WeCom contact credentials, and explicit permission")
+	}
 	if cfg.WeChatPay.Enabled {
 		values := []string{cfg.WeChatPay.AppID, cfg.WeChatPay.AppSecret, cfg.WeChatPay.AppScope, cfg.WeChatPay.MerchantID, cfg.WeChatPay.MerchantSerial, cfg.WeChatPay.PrivateKeyPath, cfg.WeChatPay.PlatformCertPath, cfg.WeChatPay.APIV3Key}
 		if nonEmptyCount(values) != len(values) || len(cfg.WeChatPay.APIV3Key) != 32 || !strings.HasPrefix(cfg.WeChatPay.AppScope, "wechat-app:") {
@@ -300,9 +366,32 @@ func Load() (Runtime, error) {
 	if cfg.GroupOps.WebhookSecret != "" && (strings.TrimSpace(cfg.GroupOps.WebhookSecret) != cfg.GroupOps.WebhookSecret || len(cfg.GroupOps.WebhookSecret) < 32 || len(cfg.GroupOps.WebhookSecret) > 4096) {
 		return Runtime{}, errors.New("invalid Group Ops webhook secret")
 	}
+	if cfg.AutomationOperations.WebhookSecret != "" && (strings.TrimSpace(cfg.AutomationOperations.WebhookSecret) != cfg.AutomationOperations.WebhookSecret || len(cfg.AutomationOperations.WebhookSecret) < 32 || len(cfg.AutomationOperations.WebhookSecret) > 4096) {
+		return Runtime{}, errors.New("invalid Automation Operations webhook secret")
+	}
+	switch cfg.AutomationOperations.ProviderMode {
+	case AutomationProviderDisabled:
+		// A stale permission value is harmless while disabled. The actual writer
+		// remains closed and the execution precheck reports provider_disabled.
+	case AutomationProviderProbe:
+		if !cfg.Effects.ProviderEnabled || !cfg.WeCom.Enabled || cfg.AutomationOperations.ProviderPermission != "fixed-script-send-authorized" || cfg.AutomationOperations.MaxRecipientsPerRun != 1 {
+			return Runtime{}, errors.New("Automation Operations probe requires External Effects, WeCom, explicit permission, and a one-recipient limit")
+		}
+	case AutomationProviderLimited:
+		if !cfg.Effects.ProviderEnabled || !cfg.WeCom.Enabled || cfg.AutomationOperations.ProviderPermission != "fixed-script-send-authorized" {
+			return Runtime{}, errors.New("Automation Operations limited provider requires External Effects, WeCom, and explicit permission")
+		}
+	default:
+		return Runtime{}, errors.New("invalid AICRM_AUTOMATION_OPS_PROVIDER_MODE")
+	}
 	if cfg.Survey.DataKey != "" {
 		if decoded, decodeErr := base64.RawStdEncoding.DecodeString(cfg.Survey.DataKey); decodeErr != nil || len(decoded) != 32 {
 			return Runtime{}, errors.New("invalid AICRM_SURVEY_DATA_KEY")
+		}
+	}
+	if cfg.Survey.IdentityPhoneDataKey != "" {
+		if decoded, decodeErr := base64.RawStdEncoding.DecodeString(cfg.Survey.IdentityPhoneDataKey); decodeErr != nil || len(decoded) != 32 {
+			return Runtime{}, errors.New("invalid AICRM_IDENTITY_PHONE_DATA_KEY")
 		}
 	}
 	if cfg.Survey.OAuthEnabled {
@@ -310,8 +399,27 @@ func Load() (Runtime, error) {
 		if nonEmptyCount(values) != len(values) {
 			return Runtime{}, errors.New("enabled survey OAuth configuration is incomplete")
 		}
+		for _, value := range values {
+			if strings.TrimSpace(value) != value || strings.ContainsAny(value, "\r\n\x00") {
+				return Runtime{}, errors.New("invalid enabled survey OAuth configuration")
+			}
+		}
+		if cfg.Survey.OAuthScope != "snsapi_userinfo" {
+			return Runtime{}, errors.New("survey OAuth scope must be snsapi_userinfo")
+		}
 	}
 	return cfg, nil
+}
+
+// IdentityPhoneDataKey returns the dedicated phone-vault master key without
+// forcing maintenance commands to load unrelated runtime/provider settings.
+func IdentityPhoneDataKey() (string, error) {
+	key := os.Getenv("AICRM_IDENTITY_PHONE_DATA_KEY")
+	decoded, err := base64.RawStdEncoding.DecodeString(key)
+	if err != nil || len(decoded) != 32 {
+		return "", errors.New("invalid AICRM_IDENTITY_PHONE_DATA_KEY")
+	}
+	return key, nil
 }
 
 func strictBool(key string, fallback bool) (bool, error) {
@@ -364,6 +472,26 @@ func DatabaseURL() (string, error) {
 		}
 	}
 	return "", errors.New("database URL is not configured")
+}
+
+// NamedDatabaseURL is restricted to the two database roles used by the
+// controlled Automation Operations migration. Keeping this allowlist in the
+// configuration package prevents commands from treating arbitrary environment
+// values as credentials.
+func NamedDatabaseURL(name string) (string, error) {
+	switch name {
+	case "AICRM_DATABASE_URL", "AICRM_V2_AUTOMATION_DATABASE_URL":
+	default:
+		return "", errors.New("unsupported database URL environment")
+	}
+	value, ok := os.LookupEnv(name)
+	if !ok || value == "" {
+		return "", fmt.Errorf("database URL environment %s is not set", name)
+	}
+	if strings.TrimSpace(value) != value {
+		return "", errors.New("invalid database URL")
+	}
+	return value, nil
 }
 
 // SourceDatabaseURL is available only to explicit offline migration commands.

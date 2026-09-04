@@ -51,7 +51,10 @@ func TestPostgreSQLAdminAccessCompatibilityJourney(t *testing.T) {
 		WorkerOwner:  "admin-access-integration",
 		WorkerLimit:  1,
 		GroupOps:     platformconfig.GroupOps{WebhookSecret: "admin-access-integration-webhook-secret"},
-		Survey:       platformconfig.Survey{DataKey: base64.RawStdEncoding.EncodeToString(dataKey)},
+		Survey: platformconfig.Survey{
+			DataKey:              base64.RawStdEncoding.EncodeToString(dataKey),
+			IdentityPhoneDataKey: base64.RawStdEncoding.EncodeToString(dataKey),
+		},
 		Bootstrap: platformconfig.Bootstrap{
 			Enabled: true, Username: "owner", Password: "admin-access-owner-password", DisplayName: "Owner",
 		},
@@ -305,7 +308,14 @@ func adminAccessMigrateCompositionSchema(ctx context.Context, pool *pgxpool.Pool
 		if readErr != nil {
 			return readErr
 		}
-		if _, execErr := pool.Exec(ctx, string(sql)); execErr != nil {
+		// Historical migrations 0005 and 0006 explicitly qualify two trigger
+		// functions in public. Composition Journeys run against isolated schemas,
+		// so keeping that qualifier would make parallel package tests race while
+		// creating the same public pg_proc entries. The deployed migration bytes
+		// remain immutable; only this ephemeral test schema removes the qualifier.
+		statement := strings.ReplaceAll(string(sql), "public.external_effects_reject_delete", "external_effects_reject_delete")
+		statement = strings.ReplaceAll(statement, "public.wecom_callback_facts_reject_mutation", "wecom_callback_facts_reject_mutation")
+		if _, execErr := pool.Exec(ctx, statement); execErr != nil {
 			return execErr
 		}
 	}

@@ -70,8 +70,8 @@ class CustomersPage extends PageBase {
     const params: ListCustomersParams = { limit: PAGE_SIZE };
     if (filters.keyword) params.keyword = filters.keyword;
     if (filters.mobile) {
-      if (!/^\+[1-9][0-9]{1,14}$/.test(filters.mobile)) {
-        throw new Error("手机号必须是 E.164 格式，例如 +8613800000000");
+      if (!/^1[3-9][0-9]{9}$/.test(filters.mobile)) {
+        throw new Error("请输入11位中国大陆手机号");
       }
       params.mobile = filters.mobile;
     }

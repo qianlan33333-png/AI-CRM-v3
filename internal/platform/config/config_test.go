@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/base64"
 	"strings"
 	"testing"
 )
@@ -33,6 +34,45 @@ func TestSourceDatabaseURLIsExplicitAndTrimmed(t *testing.T) {
 	t.Setenv("AICRM_SOURCE_DATABASE_URL", " postgres:///legacy")
 	if _, err := SourceDatabaseURL(); err == nil {
 		t.Fatal("accepted source database URL with surrounding whitespace")
+	}
+}
+
+func TestSurveyOAuthAndPhoneVaultConfigurationFailClosed(t *testing.T) {
+	t.Setenv("AICRM_DATABASE_URL", "postgres://aicrm:test@localhost/aicrm")
+	t.Setenv("AICRM_IDENTITY_PHONE_DATA_KEY", base64.RawStdEncoding.EncodeToString(make([]byte, 32)))
+	t.Setenv("AICRM_SURVEY_OAUTH_ENABLED", "true")
+	t.Setenv("AICRM_SURVEY_OAUTH_APP_ID", "wx-app")
+	t.Setenv("AICRM_SURVEY_OAUTH_SECRET", "secret")
+	t.Setenv("AICRM_SURVEY_OAUTH_OPEN_PLATFORM_ID", "platform")
+	t.Setenv("AICRM_SURVEY_OAUTH_SCOPE", "snsapi_base")
+	if _, err := Load(); err == nil {
+		t.Fatal("non-interactive OAuth scope accepted")
+	}
+	t.Setenv("AICRM_SURVEY_OAUTH_SCOPE", "snsapi_userinfo")
+	cfg, err := Load()
+	if err != nil || !cfg.Survey.OAuthEnabled || cfg.Survey.OAuthScope != "snsapi_userinfo" {
+		t.Fatalf("config=%+v err=%v", cfg.Survey, err)
+	}
+	t.Setenv("AICRM_SURVEY_OAUTH_OPEN_PLATFORM_ID", " platform")
+	if _, err = Load(); err == nil {
+		t.Fatal("unsafe OAuth scope identifier accepted")
+	}
+	t.Setenv("AICRM_SURVEY_OAUTH_OPEN_PLATFORM_ID", "platform")
+	t.Setenv("AICRM_IDENTITY_PHONE_DATA_KEY", "not-base64")
+	if _, err = Load(); err == nil {
+		t.Fatal("invalid phone key accepted")
+	}
+}
+
+func TestIdentityPhoneDataKeyLoadsOnlyValidDedicatedKey(t *testing.T) {
+	valid := base64.RawStdEncoding.EncodeToString(make([]byte, 32))
+	t.Setenv("AICRM_IDENTITY_PHONE_DATA_KEY", valid)
+	if got, err := IdentityPhoneDataKey(); err != nil || got != valid {
+		t.Fatalf("key=%q err=%v", got, err)
+	}
+	t.Setenv("AICRM_IDENTITY_PHONE_DATA_KEY", "invalid")
+	if _, err := IdentityPhoneDataKey(); err == nil {
+		t.Fatal("invalid phone key accepted")
 	}
 }
 
@@ -175,6 +215,73 @@ func TestTagCatalogProviderRequiresNarrowExplicitPermission(t *testing.T) {
 	}
 }
 
+func TestAutomationOperationsProviderIsIndependentAndFailClosed(t *testing.T) {
+	t.Setenv("AICRM_DATABASE_URL", "postgres://aicrm:test@localhost/aicrm")
+	t.Setenv("AICRM_AUTOMATION_OPS_PROVIDER_MODE", "probe")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected probe without provider prerequisites to fail")
+	}
+	t.Setenv("AICRM_OUTBOUND_PROVIDER_ENABLED", "true")
+	t.Setenv("AICRM_WECOM_ENABLED", "true")
+	t.Setenv("AICRM_WECOM_CORP_ID", "ww-corp")
+	t.Setenv("AICRM_WECOM_AGENT_ID", "1000002")
+	t.Setenv("AICRM_WECOM_SECRET", "provider-secret")
+	t.Setenv("AICRM_WECOM_CONTEXT_SIGNING_KEY", "0123456789abcdef0123456789abcdef")
+	t.Setenv("AICRM_AUTOMATION_OPS_PROVIDER_PERMISSION", "fixed-script-send-authorized")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.AutomationOperations.ProviderEnabled() || cfg.AutomationOperations.MaxRecipientsPerRun != 1 {
+		t.Fatalf("automation operations config=%+v", cfg.AutomationOperations)
+	}
+	t.Setenv("AICRM_AUTOMATION_OPS_MAX_RECIPIENTS", "2")
+	if _, err = Load(); err == nil {
+		t.Fatal("probe must remain limited to one recipient")
+	}
+	t.Setenv("AICRM_AUTOMATION_OPS_PROVIDER_MODE", "limited")
+	cfg, err = Load()
+	if err != nil || cfg.AutomationOperations.MaxRecipientsPerRun != 2 {
+		t.Fatalf("limited config=%+v err=%v", cfg.AutomationOperations, err)
+	}
+	t.Setenv("AICRM_AUTOMATION_OPS_PROVIDER_MODE", "enabled")
+	if _, err = Load(); err == nil {
+		t.Fatal("unknown provider mode must fail closed")
+	}
+}
+
+func TestAIAssistantIntakeAndDispatchFailClosed(t *testing.T) {
+	t.Setenv("AICRM_DATABASE_URL", "postgres://aicrm:test@localhost/aicrm")
+	t.Setenv("AICRM_AI_ASSISTANT_INTAKE_ENABLED", "true")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected incomplete integration configuration rejection")
+	}
+	t.Setenv("AICRM_AI_ASSISTANT_INTEGRATION_KEY", "automation")
+	t.Setenv("AICRM_AI_ASSISTANT_INTEGRATION_SECRET", strings.Repeat("s", 32))
+	t.Setenv("AICRM_AI_ASSISTANT_INTEGRATION_ACTOR_ID", "7")
+	cfg, err := Load()
+	if err != nil || !cfg.AIAssistant.IntakeEnabled || cfg.AIAssistant.DispatchEnabled {
+		t.Fatalf("config=%+v err=%v", cfg.AIAssistant, err)
+	}
+
+	t.Setenv("AICRM_AI_ASSISTANT_DISPATCH_ENABLED", "true")
+	if _, err = Load(); err == nil {
+		t.Fatal("expected dispatch without provider permission to fail closed")
+	}
+	t.Setenv("AICRM_OUTBOUND_PROVIDER_ENABLED", "true")
+	t.Setenv("AICRM_WECOM_ENABLED", "true")
+	t.Setenv("AICRM_WECOM_CORP_ID", "ww-corp")
+	t.Setenv("AICRM_WECOM_AGENT_ID", "1000002")
+	t.Setenv("AICRM_WECOM_SECRET", "provider-secret")
+	t.Setenv("AICRM_WECOM_CONTEXT_SIGNING_KEY", strings.Repeat("k", 32))
+	t.Setenv("AICRM_WECOM_CONTACT_SECRET", "contact-secret")
+	t.Setenv("AICRM_AI_ASSISTANT_PROVIDER_PERMISSION", "private-message-authorized")
+	cfg, err = Load()
+	if err != nil || !cfg.AIAssistant.DispatchEnabled || !cfg.Effects.ProviderEnabled || !cfg.WeCom.Enabled {
+		t.Fatalf("config=%+v err=%v", cfg, err)
+	}
+}
+
 func TestDatabaseURLPrecedenceAndValidation(t *testing.T) {
 	t.Setenv("DATABASE_URL", "postgres://fallback")
 	t.Setenv("AICRM_DATABASE_URL", "postgres://canonical")
@@ -198,5 +305,16 @@ func TestDatabaseURLRequiresConfiguration(t *testing.T) {
 	t.Setenv("DATABASE_URL", "")
 	if _, err := DatabaseURL(); err == nil {
 		t.Fatal("expected missing database URL error")
+	}
+}
+
+func TestNamedDatabaseURLUsesClosedMigrationAllowlist(t *testing.T) {
+	t.Setenv("AICRM_V2_AUTOMATION_DATABASE_URL", "postgres://readonly@source/aicrm")
+	value, err := NamedDatabaseURL("AICRM_V2_AUTOMATION_DATABASE_URL")
+	if err != nil || value != "postgres://readonly@source/aicrm" {
+		t.Fatalf("value=%q err=%v", value, err)
+	}
+	if _, err = NamedDatabaseURL("ARBITRARY_SECRET"); err == nil {
+		t.Fatal("expected unsupported environment name")
 	}
 }

@@ -27,6 +27,13 @@ type Resolver interface {
 	Resolve(context.Context, identitydomain.Reference) (ResolveResult, error)
 }
 
+// OutboundWeComIdentityReader is consumed only by the composition-owned
+// private-message target resolver. It may reveal a verified channel identity
+// to Outbound in memory, never to an HTTP response or structured log.
+type OutboundWeComIdentityReader interface {
+	VerifiedWeComIdentityForCustomer(context.Context, customerdomain.CustomerID, string) (string, bool, error)
+}
+
 type ProvisionCommand struct {
 	Fact           identitydomain.VerifiedFact
 	IdempotencyKey string
@@ -75,6 +82,21 @@ type DeclaredAttachResult struct {
 // customer. It intentionally exposes neither Provision nor Merge.
 type DeclaredIdentityAttacher interface {
 	AttachDeclaredIdentity(context.Context, DeclaredAttachCommand) (DeclaredAttachResult, error)
+}
+
+// DeclaredPhoneCommand binds an unverified CN11 phone to an already-resolved
+// Customer. It cannot provision or merge roots. IdempotencyKey is stored only
+// as a digest; SourceEventID must not contain the phone value.
+type DeclaredPhoneCommand struct {
+	CustomerID     customerdomain.CustomerID
+	Phone          string
+	Source         string
+	SourceEventID  string
+	IdempotencyKey string
+}
+
+type DeclaredPhoneAttacher interface {
+	AttachDeclaredPhoneToCustomer(context.Context, DeclaredPhoneCommand) (DeclaredAttachResult, error)
 }
 
 type DirectoryIdentitySummary struct {

@@ -10,9 +10,12 @@
   <div class="aud-card">
     <header class="aud-detail-head">
       <div class="aud-detail-copy"><h2 id="selectedGroupName">未分组</h2><p id="selectedGroupMeta">0 个人群包 · 每页 20 个</p></div>
-      <div class="aud-actions" id="groupActions" hidden>
-        <button class="aud-btn" id="renameGroupBtn" type="button" disabled>编辑组名</button>
-        <button class="aud-btn danger" id="deleteGroupBtn" type="button" disabled>删除组</button>
+      <div class="aud-actions">
+        <button class="aud-btn primary" id="createPackageBtn" type="button" disabled>新建人群包</button>
+        <span class="aud-actions" id="groupActions" hidden>
+          <button class="aud-btn" id="renameGroupBtn" type="button" disabled>编辑组名</button>
+          <button class="aud-btn danger" id="deleteGroupBtn" type="button" disabled>删除组</button>
+        </span>
       </div>
     </header>
     <div class="aud-notice" id="audNotice" role="status" aria-live="polite" hidden></div>
@@ -35,6 +38,17 @@
     <label for="groupNameInput" class="aud-group-note">分组名称</label>
     <input id="groupNameInput" maxlength="80" autocomplete="off" disabled>
     <div class="aud-actions"><button class="aud-btn" id="cancelGroupBtn" type="button" disabled>取消</button><button class="aud-btn primary" type="submit" disabled>保存</button></div>
+  </form>
+</div>
+
+<div class="aud-modal" id="packageModal" hidden>
+  <form class="aud-dialog" id="packageForm">
+    <h3>新建人群包</h3>
+    <label for="packageCreateName" class="aud-group-note">人群包名称</label>
+    <input id="packageCreateName" maxlength="200" autocomplete="off" disabled>
+    <label for="packageCreateTemplate" class="aud-group-note">固定模板</label>
+    <select id="packageCreateTemplate" disabled></select>
+    <div class="aud-actions"><button class="aud-btn" id="cancelPackageBtn" type="button" disabled>取消</button><button class="aud-btn primary" type="submit" disabled>创建</button></div>
   </form>
 </div>
 {{end}}
