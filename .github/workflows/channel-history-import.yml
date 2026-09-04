@@ -122,6 +122,7 @@ jobs:
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
         run: |
           set -euo pipefail
+          [[ "$DEPLOYED_RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]]
           ssh_flags=(-i "$HOME/.ssh/deploy_key" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$HOME/.ssh/deploy_known_hosts")
           remote_snapshot="/tmp/aicrm-channel-history-${SNAPSHOT_ID}.enc"
           remote_key="/tmp/aicrm-channel-history-${SNAPSHOT_ID}.key"
@@ -136,6 +137,6 @@ jobs:
           ssh "${ssh_flags[@]}" "${DEPLOY_USER}@${DEPLOY_HOST}" \
             "sudo /usr/bin/bash '$remote_runner' '$remote_snapshot' '$remote_key' '$MANIFEST_DIGEST' '$SNAPSHOT_ID' '$DEPLOYED_RELEASE_SHA'" \
             > "$RUNNER_TEMP/production-result.json"
-          jq -e '.backup_created == true and .dry_run.provider_calls == 0 and .dry_run.provider_effects == 0 and .reconcile.result.DuplicateSourceMaps == 0 and .reconcile.result.ProviderEffectsCreatedByImport == 0 and .reconcile.result.ProviderCallsDuringImport == 0 and .reconcile.result.SilentLoss == 0 and .reconcile.result.WrongOneIDBindings == 0' "$RUNNER_TEMP/production-result.json" >/dev/null
           jq '{backup_created,import:.import.result,reconcile:.reconcile.result,replay_check:."replay-check".result}' "$RUNNER_TEMP/production-result.json"
+          jq -e '.backup_created == true and .dry_run.provider_calls == 0 and .dry_run.provider_effects == 0 and .reconcile.result.DuplicateSourceMaps == 0 and .reconcile.result.ProviderEffectsCreatedByImport == 0 and .reconcile.result.ProviderCallsDuringImport == 0 and .reconcile.result.SilentLoss == 0 and .reconcile.result.WrongOneIDBindings == 0' "$RUNNER_TEMP/production-result.json" >/dev/null
           curl --fail --silent --show-error --retry 5 --retry-delay 2 https://id-dev.youcangogogo.com/readyz
