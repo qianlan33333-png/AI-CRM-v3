@@ -194,7 +194,12 @@ func (h *Handler) packages(w http.ResponseWriter, r *http.Request) {
 		}
 		items := make([]map[string]any, 0, len(page.Items))
 		for _, item := range page.Items {
-			items = append(items, packageDTO(item))
+			projected, projectionErr := h.packageReadDTO(r.Context(), item)
+			if projectionErr != nil {
+				resultError(w, projectionErr)
+				return
+			}
+			items = append(items, projected)
 		}
 		respond(w, 200, map[string]any{"items": items, "total": page.Total, "limit": page.Limit, "offset": page.Offset})
 		return
@@ -240,7 +245,12 @@ func (h *Handler) packageItem(w http.ResponseWriter, r *http.Request, packageID 
 			resultError(w, e)
 			return
 		}
-		respond(w, 200, map[string]any{"package": packageDTO(item)})
+		projected, projectionErr := h.packageReadDTO(r.Context(), item)
+		if projectionErr != nil {
+			resultError(w, projectionErr)
+			return
+		}
+		respond(w, 200, map[string]any{"package": projected})
 		return
 	}
 	p, ok := h.write(w, r)
@@ -736,8 +746,28 @@ func packageDTO(p segmentdomain.Package) map[string]any {
 	}
 	return v
 }
+func (h *Handler) packageReadDTO(ctx context.Context, p segmentdomain.Package) (map[string]any, error) {
+	v := packageDTO(p)
+	v["member_count"] = 0
+	if h == nil || h.snapshots == nil {
+		return v, nil
+	}
+	snapshot, found, err := h.snapshots.PublishedSnapshot(ctx, segmentport.PackageID(p.ID))
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return v, nil
+	}
+	v["member_count"] = snapshot.MemberCount
+	v["reference_time"] = snapshot.ReferenceTime
+	if snapshot.PublishedAt != nil {
+		v["published_at"] = *snapshot.PublishedAt
+	}
+	return v, nil
+}
 func configurationDTO(v segmentdomain.ConfigurationVersion) map[string]any {
-	return map[string]any{"id": v.ID, "package_id": v.PackageID, "version": v.Version, "digest": hex.EncodeToString(v.Digest[:]), "definition": json.RawMessage(v.Definition)}
+	return map[string]any{"id": v.ID, "package_id": v.PackageID, "version": v.Version, "digest": hex.EncodeToString(v.Digest[:]), "definition": json.RawMessage(v.Definition), "refresh_cron_utc": v.RefreshCronUTC}
 }
 func resultError(w http.ResponseWriter, e error) {
 	switch {
