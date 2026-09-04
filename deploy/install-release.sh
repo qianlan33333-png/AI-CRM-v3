@@ -132,7 +132,7 @@ test -f "$release_dir/migrations/0047_automation_operations_migration.sql"
 test -f "$release_dir/migrations/0048_segment_audience_schedule_state.sql"
 test -f "$release_dir/migrations/0049_order_history_attribution.sql"
 test -f "$release_dir/migrations/0053_segment_audience_member_event_fact_kinds.sql"
-test -f "$release_dir/migrations/0060_product_public_purchase.sql"
+test -f "$release_dir/migrations/0061_product_public_purchase.sql"
 test -f "$release_dir/migrations/0015_config_adminops.sql"
 test -f "$release_dir/web/dist/asset-manifest.json"
 for ai_assistant_asset in \

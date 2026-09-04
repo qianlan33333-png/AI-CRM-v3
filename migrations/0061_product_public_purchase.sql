@@ -1,4 +1,4 @@
--- Owners: internal/payment (OAuth/session/channel) and internal/order (contact snapshot).
+-- Migration 0061. Owners: internal/payment (OAuth/session/channel) and internal/order (contact snapshot).
 -- Existing payment facts were created by the Mini Program-only implementation.
 ALTER TABLE payment_sessions
   ADD COLUMN payment_channel TEXT NOT NULL DEFAULT 'mini_program'
