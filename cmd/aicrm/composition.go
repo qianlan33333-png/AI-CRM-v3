@@ -84,6 +84,7 @@ import (
 	releaseapp "github.com/qianlan33333-png/AI-CRM-v3/internal/release/app"
 	releaseport "github.com/qianlan33333-png/AI-CRM-v3/internal/release/port"
 	segment "github.com/qianlan33333-png/AI-CRM-v3/internal/segment"
+	segmentadapter "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/adapter"
 	segmentapp "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/app"
 	segmentcompiler "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/compiler"
 	segmenthttp "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/http"
@@ -291,7 +292,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return fail(err)
 	}
 	segmentService := segmentapp.NewService(uow, segmentRepository)
-	segmentEvaluator, err := segmentapp.NewEvaluator(segmentcompiler.Compiler{}, segmentSourceAdapter{uow: uow, customers: customerStore}, automationOpsCanonicalCustomers{resolver: canonicalCustomerAdapter{reader: queries}})
+	segmentEvaluator, err := segmentapp.NewEvaluator(segmentcompiler.Compiler{}, segmentadapter.CustomerSource{UoW: uow, Customers: customerStore}, segmentadapter.CanonicalCustomers{UoW: uow, Resolver: canonicalCustomerAdapter{reader: queries}})
 	if err != nil {
 		return fail(err)
 	}

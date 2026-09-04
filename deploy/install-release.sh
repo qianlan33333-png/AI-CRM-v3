@@ -89,6 +89,7 @@ test -x "$release_dir/bin/migrate-survey-v2"
 test -x "$release_dir/bin/migrate-automation-operations"
 test -x "$release_dir/bin/migrate-v2-config-definitions"
 test -x "$release_dir/bin/migrate-channel-history"
+test -x "$release_dir/bin/bootstrap-automation-operations"
 test -f "$release_dir/migrations/0005_external_effects.sql"
 test -f "$release_dir/migrations/0006_wecom_callback_channel_acquisition.sql"
 test -f "$release_dir/migrations/0007_media.sql"
@@ -181,6 +182,7 @@ install -m 0644 "$release_dir/deploy/aicrm-customer-sync-daily.service" /etc/sys
 install -m 0644 "$release_dir/deploy/aicrm-customer-sync-daily.timer" /etc/systemd/system/aicrm-customer-sync-daily.timer
 install -m 0644 "$release_dir/deploy/aicrm-hxc-dashboard-refresh.service" /etc/systemd/system/aicrm-hxc-dashboard-refresh.service
 install -m 0644 "$release_dir/deploy/aicrm-hxc-dashboard-refresh.timer" /etc/systemd/system/aicrm-hxc-dashboard-refresh.timer
+install -m 0644 "$release_dir/deploy/aicrm-automation-bootstrap.service" /etc/systemd/system/aicrm-automation-bootstrap.service
 systemctl daemon-reload
 
 rollback() {
@@ -228,6 +230,11 @@ if ! systemctl is-active --quiet aicrm-effects-worker.service || \
   rollback
   exit 9
 fi
+if ! systemctl start aicrm-automation-bootstrap.service; then
+  rollback
+  exit 13
+fi
+journalctl --no-pager -o cat -n 20 -u aicrm-automation-bootstrap.service || true
 if ! systemctl enable --now aicrm-customer-sync-daily.timer; then
   rollback
   exit 10

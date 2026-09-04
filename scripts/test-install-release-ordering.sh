@@ -99,7 +99,7 @@ make_release() {
   local release="$test_root/package-${sha}"
   local archive="/tmp/aicrm-${sha}.tar.gz"
   mkdir -p "$release/bin" "$release/migrations" "$release/web/dist" "$release/deploy"
-  for binary in aicrm migrate-platform migrate-river migrate-phone-identities migrate-identity-phone-vault migrate-survey-v2 migrate-automation-operations migrate-v2-config-definitions migrate-channel-history; do
+  for binary in aicrm migrate-platform migrate-river migrate-phone-identities migrate-identity-phone-vault migrate-survey-v2 migrate-automation-operations migrate-v2-config-definitions migrate-channel-history bootstrap-automation-operations; do
     printf '#!/usr/bin/env bash\nexit 0\n' > "$release/bin/$binary"
     chmod 0755 "$release/bin/$binary"
   done
@@ -125,7 +125,8 @@ make_release() {
   for unit in \
     aicrm.service aicrm-migrate.service aicrm-wecom-worker.service aicrm-wecom-worker.timer \
     aicrm-effects-worker.service aicrm-customer-sync-daily.service aicrm-customer-sync-daily.timer \
-    aicrm-hxc-dashboard-refresh.service aicrm-hxc-dashboard-refresh.timer; do
+    aicrm-hxc-dashboard-refresh.service aicrm-hxc-dashboard-refresh.timer \
+    aicrm-automation-bootstrap.service; do
     : > "$release/deploy/$unit"
   done
   (
