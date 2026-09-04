@@ -46,6 +46,7 @@ import (
 	hxcprovider "github.com/qianlan33333-png/AI-CRM-v3/internal/hxcdashboard/provider"
 	hxcstore "github.com/qianlan33333-png/AI-CRM-v3/internal/hxcdashboard/store"
 	hxcworker "github.com/qianlan33333-png/AI-CRM-v3/internal/hxcdashboard/worker"
+	identityadapter "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/adapter"
 	identityapp "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/app"
 	identityhttp "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/http"
 	identityprovider "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/provider"
@@ -177,8 +178,17 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
-	oneID := identityapp.OneIDService{Store: identitystore.NewPostgresStore(phoneVault)}
+	identityRepository := identitystore.NewPostgresStore(phoneVault)
+	if cfg.HXCDashboard.IdentityObservationVaultKey != "" {
+		observationVault, vaultErr := identitysecure.NewObservationVault(cfg.HXCDashboard.IdentityObservationVaultKey)
+		if vaultErr != nil {
+			return fail(vaultErr)
+		}
+		identityRepository = identitystore.NewPostgresStoreWithObservation(phoneVault, observationVault)
+	}
+	oneID := identityapp.OneIDService{Store: identityRepository}
 	queries := identityquery.NewPostgreSQL(phoneVault)
+	hxcIdentity := identityapp.HXCSourceService{Inspector: queries, Store: identityRepository, OneID: oneID, VerifiedIdentity: identityadapter.HXCVerifiedUnionIDFactory{Enabled: cfg.HXCDashboard.UnionIDVerified}}
 	paymentRepository := paymentstore.NewPostgreSQL()
 	customerStore := customerstore.NewPostgreSQL()
 	sidebarProfiles, err := customerapp.NewSidebarProfileApplication(uow, customerStore, oneID, customerStore, auditService, platformoutbox.NewPostgreSQL())
@@ -647,7 +657,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	}
 	oneIDHandler, err := identityhttp.NewHandler(identityhttp.Config{
 		UnitOfWork: uow, Authenticator: requestSecurity, CSRF: requestSecurity,
-		OneID: oneID, Queries: queries, Audit: auditService,
+		OneID: oneID, SourceConflicts: hxcIdentity, Queries: queries, Audit: auditService,
 	})
 	if err != nil {
 		return fail(err)
@@ -942,7 +952,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		}
 	}
 	hxcRepository := hxcstore.NewPostgreSQL(pool.Native())
-	hxcDashboard := hxcapp.Service{Enabled: cfg.HXCDashboard.Enabled, Scope: cfg.HXCDashboard.UnionIDScope, SubjectKey: []byte(cfg.HXCDashboard.SubjectHMACKey), Source: hxcSource, Identity: queries, Store: hxcRepository, Enqueuer: hxcEnqueuer, Audit: auditService, UOW: uow}
+	hxcDashboard := hxcapp.Service{Enabled: cfg.HXCDashboard.Enabled, Scope: cfg.HXCDashboard.UnionIDScope, SubjectKey: []byte(cfg.HXCDashboard.SubjectHMACKey), Source: hxcSource, Identity: hxcIdentity, IdentityWriteEnabled: cfg.HXCDashboard.IdentityWriteEnabled, UnionIDVerified: cfg.HXCDashboard.UnionIDVerified, Store: hxcRepository, Enqueuer: hxcEnqueuer, Audit: auditService, UOW: uow}
 	hxcDashboardWorker.Service = &hxcDashboard
 	hxcHandler := hxchttp.Handler{Service: hxcDashboard, Store: hxcRepository, Auth: requestSecurity, Key: []byte(cfg.HXCDashboard.SubjectHMACKey)}
 	syncHandler := wecom.CustomerSyncHTTPHandler{Service: customerSync, Auth: requestSecurity, CSRF: requestSecurity}
@@ -1042,7 +1052,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 			return checkErr
 		}
 		var complete bool
-		checkErr := pool.Native().QueryRow(readinessContext, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['0001','0002','0003','0004','0005','0006','0007','0008','0009','0010','0011','0012','0013','0014','0015','0016','0017','0018','0019','0020','0021','0022','0023','0024','0025','0026','0027','0028','0029','0030','0031','0032','0033','0034','0035','0036','0037','0038','0039','0040','0041','0042','0043','0044','0045','0046','0047','0048','0049','0050','0051','0052','0053','0054','0055','0056','0057','0058','0059']) AS required(version) WHERE NOT EXISTS (SELECT 1 FROM platform_schema_migrations applied WHERE applied.version=required.version))`).Scan(&complete)
+		checkErr := pool.Native().QueryRow(readinessContext, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['0001','0002','0003','0004','0005','0006','0007','0008','0009','0010','0011','0012','0013','0014','0015','0016','0017','0018','0019','0020','0021','0022','0023','0024','0025','0026','0027','0028','0029','0030','0031','0032','0033','0034','0035','0036','0037','0038','0039','0040','0041','0042','0043','0044','0045','0046','0047','0048','0049','0050','0051','0052','0053','0054','0055','0056','0057','0058','0059','0060','0061','0062','0063','0064']) AS required(version) WHERE NOT EXISTS (SELECT 1 FROM platform_schema_migrations applied WHERE applied.version=required.version))`).Scan(&complete)
 		if checkErr != nil || !complete {
 			return errors.New("database schema is not ready")
 		}

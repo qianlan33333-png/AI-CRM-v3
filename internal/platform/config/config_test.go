@@ -77,6 +77,30 @@ func TestIdentityPhoneDataKeyLoadsOnlyValidDedicatedKey(t *testing.T) {
 	}
 }
 
+func TestHXCIdentityWritesRequireExplicitVaultAndSync(t *testing.T) {
+	t.Setenv("AICRM_DATABASE_URL", "postgres://aicrm:test@localhost/aicrm")
+	t.Setenv("AICRM_HXC_IDENTITY_WRITE_ENABLED", "true")
+	if _, err := Load(); err == nil {
+		t.Fatal("HXC identity writes accepted without HXC sync")
+	}
+	for key, value := range map[string]string{
+		"AICRM_HXC_SYNC_ENABLED": "true", "AICRM_HXC_SOURCE_DSN": "reader:secret@tcp(mysql:3306)/hxc",
+		"AICRM_HXC_UNIONID_SCOPE": "wechat-open-platform:hxc", "AICRM_HXC_SUBJECT_HMAC_KEY": strings.Repeat("h", 32),
+		"AICRM_IDENTITY_OBSERVATION_VAULT_KEY": base64.StdEncoding.EncodeToString(make([]byte, 32)),
+		"AICRM_HXC_UNIONID_VERIFIED":           "true",
+	} {
+		t.Setenv(key, value)
+	}
+	cfg, err := Load()
+	if err != nil || !cfg.HXCDashboard.IdentityWriteEnabled || !cfg.HXCDashboard.UnionIDVerified {
+		t.Fatalf("HXC identity config=%+v err=%v", cfg.HXCDashboard, err)
+	}
+	t.Setenv("AICRM_IDENTITY_OBSERVATION_VAULT_KEY", "invalid")
+	if _, err = Load(); err == nil {
+		t.Fatal("invalid HXC observation vault key accepted")
+	}
+}
+
 func TestLoadValidatesBootstrapAndWeComAsClosedConfigurationGroups(t *testing.T) {
 	t.Setenv("AICRM_DATABASE_URL", "postgres://aicrm:test@localhost/aicrm")
 	t.Setenv("AICRM_BOOTSTRAP_USERNAME", "admin")

@@ -51,9 +51,16 @@ func run() error {
 		}
 		if processErr == nil && application.hxcDashboard.Ready() && cfg.HXCDashboard.SyncTrigger != "" {
 			location, _ := time.LoadLocation("Asia/Shanghai")
-			key := "initial:hxc-dashboard-v1"
+			mode := "inspect"
+			if cfg.HXCDashboard.IdentityWriteEnabled {
+				mode = "apply"
+			}
+			key := "initial:hxc-dashboard-v2:" + mode
+			if cfg.ReleaseSHA != "" && cfg.ReleaseSHA != "dev" {
+				key += ":" + cfg.ReleaseSHA
+			}
 			if cfg.HXCDashboard.SyncTrigger == "scheduled" {
-				key = "scheduled:" + time.Now().In(location).Format("2006-01-02T15")
+				key = "scheduled:" + time.Now().In(location).Format("2006-01-02T15") + ":hxc-dashboard-v2:" + mode
 			}
 			_, _, processErr = application.hxcDashboard.Create(ctx, key, cfg.HXCDashboard.SyncTrigger, 0)
 		}

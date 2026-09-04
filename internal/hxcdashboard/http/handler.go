@@ -67,7 +67,7 @@ func (h Handler) summary(w http.ResponseWriter, r *http.Request) {
 	if age > 8*time.Hour {
 		freshness = "stale"
 	}
-	writeJSON(w, 200, map[string]any{"projection_id": s.ID, "rule_version": domain.RuleVersion, "projection_as_of": s.AsOf, "source_watermark": s.Watermark, "published_at": s.PublishedAt, "freshness": freshness, "age_seconds": int64(age.Seconds()), "source_digest": hex.EncodeToString(s.SourceDigest[:]), "projection_digest": hex.EncodeToString(s.ProjectionDigest[:]), "counts": map[string]int64{"total": s.Counts.Total, "active_used": s.Counts.ActiveUsed, "active_unused": s.Counts.ActiveUnused, "registered_no_active_membership": s.Counts.RegisteredNoActiveMembership, "matched": s.Counts.Matched, "unmatched": s.Counts.Unmatched, "conflict": s.Counts.Conflict}})
+	writeJSON(w, 200, map[string]any{"projection_id": s.ID, "rule_version": s.RuleVersion, "projection_as_of": s.AsOf, "source_watermark": s.Watermark, "published_at": s.PublishedAt, "freshness": freshness, "age_seconds": int64(age.Seconds()), "source_digest": hex.EncodeToString(s.SourceDigest[:]), "projection_digest": hex.EncodeToString(s.ProjectionDigest[:]), "counts": map[string]int64{"total": s.Counts.Total, "active_used": s.Counts.ActiveUsed, "active_unused": s.Counts.ActiveUnused, "registered_no_active_membership": s.Counts.RegisteredNoActiveMembership, "matched": s.Counts.Matched, "unmatched": s.Counts.Unmatched, "conflict": s.Counts.Conflict, "matched_by_unionid": s.Counts.MatchedByUnionID, "matched_by_phone": s.Counts.MatchedByPhone, "matched_by_both": s.Counts.MatchedByBoth, "pending_observation": s.Counts.PendingObservation, "invalid_identity": s.Counts.InvalidIdentity}})
 }
 
 type queryRequest struct {
@@ -87,6 +87,8 @@ type queryFilters struct {
 	BusinessStage    []string `json:"business_stage,omitempty"`
 	UserSegment      []string `json:"user_segment,omitempty"`
 	IdentityState    []string `json:"identity_state,omitempty"`
+	MatchedBy        []string `json:"matched_by,omitempty"`
+	IdentityReason   []string `json:"identity_reason_code,omitempty"`
 }
 type cursor struct {
 	ProjectionID int64 `json:"p"`
@@ -106,7 +108,7 @@ func (h Handler) query(w http.ResponseWriter, r *http.Request) {
 	if request.Limit == 0 {
 		request.Limit = 50
 	}
-	if request.Limit < 1 || request.Limit > 100 || !validValues(request.Filters.Stage, []string{"active_used", "active_unused", "registered_no_active_membership"}) || !validValues(request.Filters.IdentityState, []string{"matched", "unmatched", "conflict"}) || !validFreeform(request.Filters.SubscriptionTier) || !validFreeform(request.Filters.LastCapability) || !validFreeform(request.Filters.BusinessStage) || !validFreeform(request.Filters.UserSegment) || len(request.ExactHXCUserID) > 255 || !validSort(request.Sort) || !validGroup(request.GroupBy) {
+	if request.Limit < 1 || request.Limit > 100 || !validValues(request.Filters.Stage, []string{"active_used", "active_unused", "registered_no_active_membership"}) || !validValues(request.Filters.IdentityState, []string{"matched", "unmatched", "conflict"}) || !validValues(request.Filters.MatchedBy, []string{"none", "unionid", "phone", "both"}) || !validValues(request.Filters.IdentityReason, []string{"matched_unionid", "matched_phone", "matched_both", "no_match", "missing_identity", "invalid_unionid", "invalid_phone", "duplicate_hxc_unionid", "duplicate_hxc_phone", "duplicate_hxc_customer", "identity_multiple_roots", "unionid_phone_cross_root", "concurrent_identity_conflict"}) || !validFreeform(request.Filters.SubscriptionTier) || !validFreeform(request.Filters.LastCapability) || !validFreeform(request.Filters.BusinessStage) || !validFreeform(request.Filters.UserSegment) || len(request.ExactHXCUserID) > 255 || !validSort(request.Sort) || !validGroup(request.GroupBy) {
 		writeError(w, errors.New("invalid_query"))
 		return
 	}
@@ -127,7 +129,7 @@ func (h Handler) query(w http.ResponseWriter, r *http.Request) {
 		}
 		offset = value.Offset
 	}
-	q := hxcstore.Query{ProjectionID: projectionID, Stages: request.Filters.Stage, SubscriptionTiers: cleanValues(request.Filters.SubscriptionTier), LastCapabilities: cleanValues(request.Filters.LastCapability), BusinessStages: cleanValues(request.Filters.BusinessStage), UserSegments: cleanValues(request.Filters.UserSegment), IdentityStates: request.Filters.IdentityState, Sort: request.Sort, GroupBy: request.GroupBy, Limit: request.Limit, Offset: offset}
+	q := hxcstore.Query{ProjectionID: projectionID, Stages: request.Filters.Stage, SubscriptionTiers: cleanValues(request.Filters.SubscriptionTier), LastCapabilities: cleanValues(request.Filters.LastCapability), BusinessStages: cleanValues(request.Filters.BusinessStage), UserSegments: cleanValues(request.Filters.UserSegment), IdentityStates: request.Filters.IdentityState, MatchedBy: request.Filters.MatchedBy, IdentityReasonCodes: request.Filters.IdentityReason, Sort: request.Sort, GroupBy: request.GroupBy, Limit: request.Limit, Offset: offset}
 	if request.ExactHXCUserID != "" {
 		digest, _, err := domain.Subject(h.Key, request.ExactHXCUserID)
 		if err != nil {
@@ -244,7 +246,7 @@ func validSort(v string) bool {
 	return map[string]bool{"": true, "last_used_at_desc": true, "source_updated_at_desc": true, "subscription_expires_at_asc": true, "subscription_expires_at_desc": true, "messages_7d_desc": true}[v]
 }
 func validGroup(v string) bool {
-	return map[string]bool{"": true, "stage": true, "subscription_tier": true, "last_capability": true, "business_stage": true, "user_segment": true, "identity_state": true}[v]
+	return map[string]bool{"": true, "stage": true, "subscription_tier": true, "last_capability": true, "business_stage": true, "user_segment": true, "identity_state": true, "matched_by": true, "identity_reason_code": true}[v]
 }
 func (h Handler) signCursor(c cursor) string {
 	raw, _ := json.Marshal(c)

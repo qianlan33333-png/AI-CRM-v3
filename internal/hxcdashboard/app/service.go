@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -32,16 +33,18 @@ type Audit interface {
 }
 
 type Service struct {
-	Enabled    bool
-	Scope      string
-	SubjectKey []byte
-	Source     hxcport.CurrentSource
-	Identity   identityport.HXCUnionIDBatchResolver
-	Store      *hxcstore.PostgreSQL
-	Enqueuer   JobEnqueuer
-	Audit      Audit
-	UOW        platformport.UnitOfWork
-	Now        func() time.Time
+	Enabled              bool
+	Scope                string
+	SubjectKey           []byte
+	Source               hxcport.CurrentSource
+	Identity             identityport.HXCIdentityCoordinator
+	IdentityWriteEnabled bool
+	UnionIDVerified      bool
+	Store                *hxcstore.PostgreSQL
+	Enqueuer             JobEnqueuer
+	Audit                Audit
+	UOW                  platformport.UnitOfWork
+	Now                  func() time.Time
 }
 
 func (s Service) Ready() bool {
@@ -63,7 +66,11 @@ func (s Service) Create(ctx context.Context, runKey, trigger string, requestedBy
 	var replay bool
 	err := s.UOW.Within(ctx, func(txCtx context.Context) error {
 		var err error
-		run, replay, err = s.Store.CreateRun(txCtx, runKey, digest, trigger, requestedBy)
+		identityMode := "inspect"
+		if s.IdentityWriteEnabled {
+			identityMode = "apply"
+		}
+		run, replay, err = s.Store.CreateRun(txCtx, runKey, digest, trigger, identityMode, requestedBy)
 		if err != nil {
 			if errors.Is(err, hxcstore.ErrActiveRefresh) {
 				return ErrConflict
@@ -105,6 +112,10 @@ func (s Service) Refresh(ctx context.Context, runID int64) error {
 	if run.Status == domain.RefreshSucceeded || run.Status == domain.RefreshFailed {
 		return nil
 	}
+	applyIdentities := run.IdentityMode == "apply"
+	if applyIdentities && !s.IdentityWriteEnabled {
+		return s.fail(ctx, runID, "identity_writes_disabled", errors.New("HXC identity writes are disabled"))
+	}
 	if err = s.UOW.Within(ctx, func(txCtx context.Context) error { return s.Store.MarkRunning(txCtx, runID) }); err != nil {
 		return err
 	}
@@ -116,12 +127,12 @@ func (s Service) Refresh(ctx context.Context, runID int64) error {
 	if err != nil {
 		return s.fail(ctx, runID, "source_read_failed", err)
 	}
-	projection, err := s.project(ctx, snapshot)
+	projection, err := s.project(ctx, snapshot, applyIdentities)
 	if err != nil {
 		return s.fail(ctx, runID, "identity_resolution_failed", err)
 	}
 	if err = s.UOW.Within(ctx, func(txCtx context.Context) error {
-		return s.Store.MarkPublishing(txCtx, runID, int64(len(projection.Rows)))
+		return s.Store.MarkPublishing(txCtx, runID, int64(len(projection.Rows)), projection.IdentityReplayVerified)
 	}); err != nil {
 		return err
 	}
@@ -140,59 +151,107 @@ func (s Service) Refresh(ctx context.Context, runID int64) error {
 	return nil
 }
 
-func (s Service) project(ctx context.Context, snapshot hxcport.Snapshot) (domain.Projection, error) {
+func (s Service) project(ctx context.Context, snapshot hxcport.Snapshot, applyIdentities bool) (domain.Projection, error) {
 	projection := domain.Projection{AsOf: snapshot.AsOf, Watermark: snapshot.Watermark, SourceDigest: snapshot.Digest, Rows: make([]domain.ProjectionRow, len(snapshot.Rows))}
-	refs := make([]identityport.ScopedUnionID, 0, len(snapshot.Rows))
+	subjects := make([]identityport.HXCSubject, len(snapshot.Rows))
+	unionOwners := make(map[string][]int)
+	phoneOwners := make(map[string][]int)
 	for i, row := range snapshot.Rows {
 		digest, ref, err := domain.Subject(s.SubjectKey, row.HXCUserID)
 		if err != nil {
 			return domain.Projection{}, err
 		}
-		projection.Rows[i] = domain.ProjectionRow{SubjectDigest: digest, UserRef: ref, Stage: domain.Classify(row, snapshot.AsOf), SourceRow: row, IdentityState: domain.Unmatched}
+		phone, validPhone := normalizeCN11(row.Phone)
+		payloadDigest := hxcPayloadDigest(s.SubjectKey, row)
+		subjects[i] = identityport.HXCSubject{Position: i, SubjectDigest: digest, PayloadDigest: payloadDigest, UnionIDScope: s.Scope, UnionID: strings.TrimSpace(row.UnionID), UnionIDVerified: s.UnionIDVerified, Phone: phone, SourceUpdatedAt: row.SourceUpdatedAt, RuleVersion: domain.RuleVersion}
+		if row.Phone != "" && !validPhone {
+			subjects[i].ConflictReason = identityport.HXCReasonInvalidPhone
+		}
+		if subjects[i].UnionID != "" {
+			unionOwners[subjects[i].UnionID] = append(unionOwners[subjects[i].UnionID], i)
+		}
+		if validPhone && phone != "" {
+			phoneOwners[phone] = append(phoneOwners[phone], i)
+		}
+		projection.Rows[i] = domain.ProjectionRow{SubjectDigest: digest, UserRef: ref, Stage: domain.Classify(row, snapshot.AsOf), SourceRow: row, IdentityState: domain.Unmatched, MatchedBy: string(identityport.HXCMatchNone), IdentityReasonCode: string(identityport.HXCReasonNoMatch)}
 		projection.Rows[i].HXCUserID = ""
-		if row.UnionID != "" {
-			refs = append(refs, identityport.ScopedUnionID{Position: i, Scope: s.Scope, UnionID: row.UnionID})
-		}
 		projection.Rows[i].UnionID = ""
+		projection.Rows[i].Phone = ""
 	}
-	for start := 0; start < len(refs); start += 1000 {
+	markDuplicateSubjects(subjects, unionOwners, identityport.HXCReasonDuplicateUnionID)
+	markDuplicateSubjects(subjects, phoneOwners, identityport.HXCReasonDuplicatePhone)
+	results := make([]identityport.HXCSubjectResult, len(subjects))
+	for start := 0; start < len(subjects); start += 1000 {
 		end := start + 1000
-		if end > len(refs) {
-			end = len(refs)
+		if end > len(subjects) {
+			end = len(subjects)
 		}
-		var results []identityport.ScopedUnionIDResult
+		var batch []identityport.HXCSubjectResult
 		err := s.UOW.Within(ctx, func(txCtx context.Context) error {
 			var err error
-			results, err = s.Identity.ResolveHXCUnionIDs(txCtx, refs[start:end])
+			batch, err = s.Identity.InspectHXCSubjects(txCtx, subjects[start:end])
 			return err
 		})
 		if err != nil {
 			return domain.Projection{}, err
 		}
-		for _, result := range results {
-			row := &projection.Rows[result.Position]
-			switch result.Status {
-			case identityport.ResolveFound:
-				row.IdentityState = domain.Matched
-				row.CustomerID = result.CustomerID
-			case identityport.ResolveConflict:
-				row.IdentityState = domain.Conflict
-			}
+		if len(batch) != end-start {
+			return domain.Projection{}, errors.New("HXC identity result count mismatch")
+		}
+		for _, result := range batch {
+			results[result.Position] = result
 		}
 	}
 	owners := map[int64][]int{}
-	for i, row := range projection.Rows {
-		if row.IdentityState == domain.Matched {
-			owners[int64(row.CustomerID)] = append(owners[int64(row.CustomerID)], i)
+	for i, result := range results {
+		if result.Disposition == identityport.HXCMatched {
+			owners[int64(result.CustomerID)] = append(owners[int64(result.CustomerID)], i)
 		}
 	}
 	for _, positions := range owners {
 		if len(positions) > 1 {
 			for _, i := range positions {
-				projection.Rows[i].IdentityState = domain.Conflict
-				projection.Rows[i].CustomerID = 0
+				subjects[i].ConflictReason = identityport.HXCReasonDuplicateCustomer
+				results[i] = identityport.HXCSubjectResult{Position: i, Disposition: identityport.HXCConflict, MatchedBy: identityport.HXCMatchNone, Reason: identityport.HXCReasonDuplicateCustomer}
 			}
 		}
+	}
+	if applyIdentities {
+		for i := range subjects {
+			err := s.UOW.Within(ctx, func(txCtx context.Context) error {
+				var applyErr error
+				results[i], applyErr = s.Identity.ApplyHXCSubject(txCtx, subjects[i])
+				return applyErr
+			})
+			if err != nil {
+				return domain.Projection{}, err
+			}
+			var replay identityport.HXCSubjectResult
+			err = s.UOW.Within(ctx, func(txCtx context.Context) error {
+				var replayErr error
+				replay, replayErr = s.Identity.ApplyHXCSubject(txCtx, subjects[i])
+				return replayErr
+			})
+			if err != nil || !sameHXCResult(results[i], replay) || !replay.Replayed {
+				if err != nil {
+					return domain.Projection{}, err
+				}
+				return domain.Projection{}, errors.New("HXC identity replay verification failed")
+			}
+			projection.IdentityReplayVerified++
+		}
+		seen := make([][32]byte, 0, len(subjects))
+		for _, subject := range subjects {
+			seen = append(seen, subject.SubjectDigest)
+		}
+		if err := s.UOW.Within(ctx, func(txCtx context.Context) error {
+			return s.Identity.CompleteHXCSnapshot(txCtx, seen)
+		}); err != nil {
+			return domain.Projection{}, err
+		}
+	}
+	for i, result := range results {
+		applyIdentityResult(&projection.Rows[i], result)
 	}
 	h := sha256.New()
 	sort.Slice(projection.Rows, func(i, j int) bool {
@@ -213,14 +272,94 @@ func (s Service) project(ctx context.Context, snapshot hxcport.Snapshot) (domain
 		switch row.IdentityState {
 		case domain.Matched:
 			projection.Counts.Matched++
+			switch row.MatchedBy {
+			case string(identityport.HXCMatchUnionID):
+				projection.Counts.MatchedByUnionID++
+			case string(identityport.HXCMatchPhone):
+				projection.Counts.MatchedByPhone++
+			case string(identityport.HXCMatchBoth):
+				projection.Counts.MatchedByBoth++
+			}
 		case domain.Conflict:
 			projection.Counts.Conflict++
 		default:
 			projection.Counts.Unmatched++
+			if row.IdentityReasonCode == string(identityport.HXCReasonInvalidPhone) || row.IdentityReasonCode == string(identityport.HXCReasonInvalidUnionID) {
+				projection.Counts.InvalidIdentity++
+			} else {
+				projection.Counts.PendingObservation++
+			}
 		}
 	}
 	copy(projection.ProjectionDigest[:], h.Sum(nil))
 	return projection, nil
+}
+
+func sameHXCResult(left, right identityport.HXCSubjectResult) bool {
+	return left.Position == right.Position && left.Disposition == right.Disposition && left.MatchedBy == right.MatchedBy && left.Reason == right.Reason && left.CustomerID == right.CustomerID && left.ConflictID == right.ConflictID && left.MergeCandidateID == right.MergeCandidateID
+}
+
+func hxcPayloadDigest(key []byte, row domain.SourceRow) [32]byte {
+	encoded, _ := json.Marshal(row)
+	mac := hmac.New(sha256.New, key)
+	_, _ = mac.Write([]byte("hxc-payload-v2\x00"))
+	_, _ = mac.Write(encoded)
+	var digest [32]byte
+	copy(digest[:], mac.Sum(nil))
+	return digest
+}
+
+func normalizeCN11(value string) (string, bool) {
+	if value == "" {
+		return "", true
+	}
+	var compact strings.Builder
+	for _, character := range strings.TrimSpace(value) {
+		switch {
+		case character >= '0' && character <= '9':
+			compact.WriteRune(character)
+		case character == '+' || character == '-' || character == '(' || character == ')' || character == '.' || character == ' ' || character == '\t':
+		default:
+			return "", false
+		}
+	}
+	normalized := compact.String()
+	if len(normalized) == 13 && strings.HasPrefix(normalized, "86") {
+		normalized = normalized[2:]
+	}
+	if len(normalized) != 11 || normalized[0] != '1' || normalized[1] < '3' || normalized[1] > '9' {
+		return "", false
+	}
+	return normalized, true
+}
+
+func markDuplicateSubjects(subjects []identityport.HXCSubject, owners map[string][]int, reason identityport.HXCReason) {
+	for _, positions := range owners {
+		if len(positions) < 2 {
+			continue
+		}
+		for _, position := range positions {
+			if subjects[position].ConflictReason == "" {
+				subjects[position].ConflictReason = reason
+			}
+		}
+	}
+}
+
+func applyIdentityResult(row *domain.ProjectionRow, result identityport.HXCSubjectResult) {
+	row.MatchedBy = string(result.MatchedBy)
+	row.IdentityReasonCode = string(result.Reason)
+	row.IdentityCaseID = result.ConflictID
+	row.MergeCandidateID = result.MergeCandidateID
+	row.CustomerID = result.CustomerID
+	switch result.Disposition {
+	case identityport.HXCMatched:
+		row.IdentityState = domain.Matched
+	case identityport.HXCConflict:
+		row.IdentityState = domain.Conflict
+	default:
+		row.IdentityState = domain.Unmatched
+	}
 }
 func (s Service) fail(ctx context.Context, id int64, code string, cause error) error {
 	_ = s.UOW.Within(context.WithoutCancel(ctx), func(txCtx context.Context) error { return s.Store.Fail(txCtx, id, code) })
