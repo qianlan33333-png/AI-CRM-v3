@@ -24,8 +24,9 @@ if (fs.existsSync(stage)) fail(`refusing to overwrite an existing stage: ${stage
 if (!fs.statSync(manifestPath).isFile()) fail('missing asset-manifest.json');
 
 const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-const roots = ['admin', 'tokens', 'labs', 'operationCyclesHost', 'channelCenterHost'].map((name) => manifest.entries?.[name]);
-if (roots.some((entry) => typeof entry !== 'string')) fail('campaigns entry assets are absent from manifest');
+const entryNames = ['admin', 'tokens', 'labs', 'operationCyclesHost', 'channelCenterHost', 'aiAssistantHost'];
+const roots = entryNames.map((name) => manifest.entries?.[name]);
+if (roots.some((entry) => typeof entry !== 'string')) fail('required release entry assets are absent from manifest');
 const dynamicOutputForInput = (from, input) => (manifest.files[from]?.imports || []).find((item) =>
   item.kind === 'dynamic-import' && manifest.files[item.path]?.inputs?.includes(input)
 )?.path;
@@ -85,7 +86,21 @@ const privateTemplatePages = [
   'config', 'configDetail', 'apidocs',
   'channels', 'channelForm',
 ];
-const releaseRoot = new Set([...selected, ...privateTemplatePages.map((page) => `admin/${page}.html`), 'admin/tags.html']);
+const aiAssistantFiles = [
+  'aiassistant/list.html',
+  'aiassistant/detail.html',
+  'aiassistant/group_chat_picker.css',
+  'aiassistant/group_chat_picker.js',
+  'aiassistant/material_picker.css',
+  'aiassistant/material_picker.js',
+  'aiassistant/send_content_composer.css',
+  'aiassistant/send_content_composer.js',
+  'aiassistant/send_content_readonly_detail.css',
+  'aiassistant/send_content_readonly_detail.js',
+  'aiassistant/cloud_plan_review.js',
+];
+const fetchable = new Set([...selected, ...aiAssistantFiles]);
+const releaseRoot = new Set([...fetchable, ...privateTemplatePages.map((page) => `admin/${page}.html`), 'admin/tags.html']);
 const releaseMetadataFor = (relative) => {
   const sourceRelative = relative === 'admin/tags.html' ? 'admin/wecom-tags.html' : relative;
   const metadata = manifest.release_files?.[sourceRelative];
@@ -121,6 +136,11 @@ for (const page of ['config', 'configDetail', 'apidocs']) copy(`admin/${page}.ht
 // Channel pages are byte-frozen private template carriers mounted through the
 // Channel-specific v3 host adapter; they are never routed as donor documents.
 for (const page of ['channels', 'channelForm']) copy(`admin/${page}.html`);
+// AI Assistant fragments and frozen donor dependencies are private inputs to
+// its authenticated Go UI binding. The v3 host entry is already included via
+// the manifest dependency closure above; these stable files must travel with
+// it or the live route fails closed with a 503.
+for (const relative of aiAssistantFiles) copy(relative);
 // Tags also runs through the frozen donor admin entry. Keep the generated
 // donor page only as a release-private template source under a non-routable
 // filename; the Go adapter extracts template#tpl and mounts it in PR10's sole
@@ -133,8 +153,8 @@ fs.copyFileSync(tagsSource, tagsTarget);
 
 const stagedManifest = {
   ...manifest,
-  entries: Object.fromEntries(['admin', 'tokens', 'labs', 'operationCyclesHost', 'channelCenterHost'].map((name) => [name, manifest.entries[name]])),
-  files: Object.fromEntries([...selected].sort().map((relative) => [relative, manifest.files[relative]])),
+  entries: Object.fromEntries(entryNames.map((name) => [name, manifest.entries[name]])),
+  files: Object.fromEntries([...fetchable].sort().map((relative) => [relative, manifest.files[relative]])),
   release_files: Object.fromEntries([...releaseRoot].sort().map((relative) => [relative, releaseMetadataFor(relative)])),
 };
 fs.writeFileSync(path.join(stage, 'asset-manifest.json'), `${JSON.stringify(stagedManifest, null, 2)}\n`);
@@ -150,9 +170,9 @@ const walk = (directory) => {
 walk(stage);
 for (const relative of stagedFiles) {
   const allowedHTML = ['admin/images.html', 'admin/attach.html', 'admin/mpLib.html', 'admin/tags.html', 'admin/products.html', 'admin/productForm.html', 'admin/spProducts.html', 'admin/spProductForm.html', 'admin/coupons.html', 'admin/couponForm.html', 'admin/orders.html', 'admin/orderDetail.html', 'admin/groupops.html', 'admin/groupopsDetail.html', 'admin/agents.html', 'admin/agentEdit.html', 'admin/cycles.html', 'admin/cyclesDetail.html', 'admin/config.html', 'admin/configDetail.html', 'admin/apidocs.html', 'admin/channels.html', 'admin/channelForm.html'];
-  const allowed = relative === 'asset-manifest.json' || relative.startsWith('assets/') || allowedHTML.includes(relative);
+  const allowed = relative === 'asset-manifest.json' || relative.startsWith('assets/') || allowedHTML.includes(relative) || aiAssistantFiles.includes(relative);
   if (!allowed) fail(`unapproved release file: ${relative}`);
-  if (relative.endsWith('.html') && !allowedHTML.includes(relative)) fail(`unapproved HTML surface: ${relative}`);
+  if (relative.endsWith('.html') && !allowedHTML.includes(relative) && !aiAssistantFiles.includes(relative)) fail(`unapproved HTML surface: ${relative}`);
   if (/(^|\/)(h5|sidebar|public)(\/|$)/.test(relative)) fail(`unapproved public surface: ${relative}`);
 }
 for (const relative of selected) {
@@ -161,4 +181,4 @@ for (const relative of selected) {
 for (const relative of releaseRoot) {
   if (!stagedFiles.includes(relative)) fail(`missing staged release file: ${relative}`);
 }
-console.log(`staged ${selected.size} approved admin assets, including the v3 HXC dashboard chunk, and private donor templates including Transaction in ${stage}`);
+console.log(`staged ${fetchable.size} approved admin assets, including AI Assistant and private donor templates, in ${stage}`);
