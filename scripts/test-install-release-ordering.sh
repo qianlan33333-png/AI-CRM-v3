@@ -106,7 +106,7 @@ make_release() {
   local sha="$1"
   local release="$test_root/package-${sha}"
   local archive="/tmp/aicrm-${sha}.tar.gz"
-  mkdir -p "$release/bin" "$release/migrations" "$release/web/dist/aiassistant" "$release/deploy"
+  mkdir -p "$release/bin" "$release/migrations" "$release/web/dist/admin" "$release/web/dist/aiassistant" "$release/deploy"
   for binary in aicrm migrate-platform migrate-river migrate-phone-identities migrate-identity-phone-vault migrate-survey-v2 migrate-order-attribution migrate-automation-operations migrate-v2-config-definitions migrate-channel-history migrate-radar-v2 migrate-sidebar-history bootstrap-automation-operations; do
     printf '#!/usr/bin/env bash\nexit 0\n' > "$release/bin/$binary"
     chmod 0755 "$release/bin/$binary"
@@ -133,6 +133,9 @@ make_release() {
     : > "$release/migrations/$migration"
   done
   : > "$release/web/dist/asset-manifest.json"
+  for radar_page in radar radarDetail radarForm; do
+    : > "$release/web/dist/admin/$radar_page.html"
+  done
   for ai_assistant_asset in \
     list.html detail.html \
     group_chat_picker.css group_chat_picker.js \

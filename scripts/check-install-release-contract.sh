@@ -108,6 +108,9 @@ grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/migrate-v2-config-d
 grep -qx 'test -x "$release_dir/bin/migrate-channel-history"' "$installer" || { echo "release must include channel history migration tool" >&2; exit 1; }
 grep -qx 'test -x "$release_dir/bin/migrate-radar-v2"' "$installer" || { echo "release must include Radar migration tool" >&2; exit 1; }
 grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/migrate-radar-v2 ./cmd/migrate-radar-v2' .github/workflows/ci.yml || { echo "release workflow must build Radar migration tool" >&2; exit 1; }
+for page in radar radarDetail radarForm; do
+  grep -qx "test -f \"\$release_dir/web/dist/admin/$page.html\"" "$installer" || { echo "release must include Radar UI page $page" >&2; exit 1; }
+done
 grep -qx 'test -x "$release_dir/bin/migrate-sidebar-history"' "$installer" || { echo "release must include sidebar history migration tool" >&2; exit 1; }
 grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/migrate-sidebar-history ./cmd/migrate-sidebar-history' .github/workflows/ci.yml || { echo "release workflow must build sidebar history migration tool" >&2; exit 1; }
 grep -qx 'test -x "$release_dir/bin/bootstrap-automation-operations"' "$installer" || { echo "release must include Automation Operations semantic bootstrap" >&2; exit 1; }

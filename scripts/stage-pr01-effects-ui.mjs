@@ -90,6 +90,7 @@ const privateTemplatePages = [
   'cycles', 'cyclesDetail',
   'config', 'configDetail', 'apidocs',
   'channels', 'channelForm',
+  'radar', 'radarDetail', 'radarForm',
 ];
 const aiAssistantFiles = [
   'aiassistant/list.html',
@@ -141,6 +142,10 @@ for (const page of ['config', 'configDetail', 'apidocs']) copy(`admin/${page}.ht
 // Channel pages are byte-frozen private template carriers mounted through the
 // Channel-specific v3 host adapter; they are never routed as donor documents.
 for (const page of ['channels', 'channelForm']) copy(`admin/${page}.html`);
+// Radar pages are byte-frozen private template carriers mounted through the
+// Radar-specific v3 host adapter. The authenticated Go route reads these
+// files at request time, so all three must be present in every release.
+for (const page of ['radar', 'radarDetail', 'radarForm']) copy(`admin/${page}.html`);
 // AI Assistant fragments and frozen donor dependencies are private inputs to
 // its authenticated Go UI binding. The v3 host entry is already included via
 // the manifest dependency closure above; these stable files must travel with
@@ -173,8 +178,8 @@ const walk = (directory) => {
   }
 };
 walk(stage);
+const allowedHTML = [...privateTemplatePages.map((page) => `admin/${page}.html`), 'admin/tags.html'];
 for (const relative of stagedFiles) {
-  const allowedHTML = ['admin/images.html', 'admin/attach.html', 'admin/mpLib.html', 'admin/tags.html', 'admin/products.html', 'admin/productForm.html', 'admin/spProducts.html', 'admin/spProductForm.html', 'admin/coupons.html', 'admin/couponForm.html', 'admin/orders.html', 'admin/orderDetail.html', 'admin/groupops.html', 'admin/groupopsDetail.html', 'admin/agents.html', 'admin/agentEdit.html', 'admin/cycles.html', 'admin/cyclesDetail.html', 'admin/config.html', 'admin/configDetail.html', 'admin/apidocs.html', 'admin/channels.html', 'admin/channelForm.html'];
   const allowed = relative === 'asset-manifest.json' || relative.startsWith('assets/') || allowedHTML.includes(relative) || aiAssistantFiles.includes(relative);
   if (!allowed) fail(`unapproved release file: ${relative}`);
   if (relative.endsWith('.html') && !allowedHTML.includes(relative) && !aiAssistantFiles.includes(relative)) fail(`unapproved HTML surface: ${relative}`);
