@@ -27,7 +27,7 @@ import (
 
 type options struct {
 	mode, snapshot, digest string
-	confirm                bool
+	confirm, orderOnly     bool
 }
 
 func main() {
@@ -44,6 +44,7 @@ func run(ctx context.Context, args []string) error {
 	flags.StringVar(&cfg.snapshot, "snapshot", "", "path to normalized snapshot")
 	flags.StringVar(&cfg.digest, "manifest-sha256", "", "required snapshot sha256")
 	flags.BoolVar(&cfg.confirm, "confirm-apply", false, "confirm the exact apply manifest")
+	flags.BoolVar(&cfg.orderOnly, "order-only", false, "accept only the audited floating WeChat Pay order snapshot")
 	if err := flags.Parse(args); err != nil || cfg.snapshot == "" {
 		return errors.New("snapshot is required")
 	}
@@ -52,14 +53,22 @@ func run(ctx context.Context, args []string) error {
 		return err
 	}
 	summary := manifest.Summary()
-	if cfg.mode == "inspect" {
-		return printJSON(map[string]any{"mode": cfg.mode, "manifest_sha256": hex.EncodeToString(manifest.Digest[:]), "summary": summary})
+	if cfg.orderOnly {
+		if err = ordermigration.ValidateOrderOnly(manifest); err != nil {
+			return err
+		}
 	}
-	if err = manifest.Validate(true); err != nil {
+	if cfg.mode == "inspect" {
+		return printJSON(map[string]any{"mode": cfg.mode, "order_only": cfg.orderOnly, "manifest_sha256": hex.EncodeToString(manifest.Digest[:]), "summary": summary})
+	}
+	if !cfg.orderOnly {
+		err = manifest.Validate(true)
+	}
+	if err != nil {
 		return err
 	}
 	if cfg.mode == "dry-run" {
-		return printJSON(map[string]any{"mode": cfg.mode, "eligible": true, "manifest_sha256": hex.EncodeToString(manifest.Digest[:]), "summary": summary})
+		return printJSON(map[string]any{"mode": cfg.mode, "order_only": cfg.orderOnly, "eligible": true, "manifest_sha256": hex.EncodeToString(manifest.Digest[:]), "summary": summary})
 	}
 	provided, err := hex.DecodeString(cfg.digest)
 	if err != nil || len(provided) != 32 || string(provided) != string(manifest.Digest[:]) {
@@ -74,6 +83,14 @@ func run(ctx context.Context, args []string) error {
 		return err
 	}
 	defer pool.Close()
+	runs := ordermigration.PostgreSQLRuns{Pool: pool.Native()}
+	if cfg.mode == "reconcile" && cfg.orderOnly {
+		result, reconcileErr := runs.ReconcileOrders(ctx, manifest)
+		if reconcileErr != nil {
+			return reconcileErr
+		}
+		return printJSON(map[string]any{"mode": "reconcile", "order_only": true, "run_key": manifest.RunKey, "result": result})
+	}
 	if cfg.mode == "reconcile" {
 		return reconcile(ctx, pool, manifest)
 	}
@@ -88,9 +105,17 @@ func run(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	orderService := orderapp.NewService(uow, orderRepository)
+	if cfg.orderOnly {
+		result, applyErr := (ordermigration.OrderOnlyRunner{Orders: orderService, Runs: runs}).Apply(ctx, manifest)
+		if applyErr != nil {
+			return applyErr
+		}
+		return printJSON(map[string]any{"mode": "apply", "order_only": true, "result": result, "run_key": manifest.RunKey})
+	}
 	identity := identityapp.OneIDService{Store: identitystore.NewPostgresStore()}
 	paymentRepository := paymentstore.NewPostgreSQL()
-	runner := ordermigration.Runner{UOW: uow, Identities: identity, Facts: identityadapter.ProviderHistory{}, IdentityRuns: identitymigration.PostgreSQLReceipts{}, Orders: orderapp.NewService(uow, orderRepository), Payments: paymentapp.NewService(uow, paymentRepository, nil, nil, nil), Runs: ordermigration.PostgreSQLRuns{Pool: pool.Native()}}
+	runner := ordermigration.Runner{UOW: uow, Identities: identity, Facts: identityadapter.ProviderHistory{}, IdentityRuns: identitymigration.PostgreSQLReceipts{}, Orders: orderService, Payments: paymentapp.NewService(uow, paymentRepository, nil, nil, nil), Runs: runs}
 	result, err := runner.Apply(ctx, manifest)
 	if err != nil {
 		return err
