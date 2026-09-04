@@ -355,10 +355,10 @@ func (r *Repository) CreateMemberEnteredEvents(ctx context.Context, snapshot seg
 		return 0, err
 	}
 	result, err := t.Exec(ctx, `INSERT INTO segment_audience_member_events(event_id,package_id,snapshot_id,configuration_version_id,customer_id,occurred_at)
-		SELECT 'audmem_' || $1::text || '_' || current.customer_id::text,$2,$1,$3,current.customer_id,$5
+		SELECT 'audmem_' || ($1::bigint)::text || '_' || current.customer_id::text,$2::bigint,$1::bigint,$3::bigint,current.customer_id,$5::timestamptz
 		FROM segment_audience_snapshot_members current
-		WHERE current.snapshot_id=$1
-		  AND ($4::bigint IS NULL OR NOT EXISTS (SELECT 1 FROM segment_audience_snapshot_members previous WHERE previous.snapshot_id=$4 AND previous.customer_id=current.customer_id))
+		WHERE current.snapshot_id=$1::bigint
+		  AND ($4::bigint IS NULL OR NOT EXISTS (SELECT 1 FROM segment_audience_snapshot_members previous WHERE previous.snapshot_id=$4::bigint AND previous.customer_id=current.customer_id))
 		ON CONFLICT(snapshot_id,customer_id) DO NOTHING`, snapshot.ID, snapshot.PackageID, snapshot.ConfigurationVersionID, previousSnapshotID, occurredAt.UTC())
 	if err != nil {
 		return 0, err

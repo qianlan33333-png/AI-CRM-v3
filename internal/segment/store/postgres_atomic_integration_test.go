@@ -226,3 +226,62 @@ func TestPostgreSQLAudienceExtendedFactKindsRemainAccepted(t *testing.T) {
 		}
 	}
 }
+
+func TestPostgreSQLAudienceMemberEventsUseTypedSnapshotParameters(t *testing.T) {
+	ctx := context.Background()
+	native, cleanup := segmentDatabase(t, ctx)
+	defer cleanup()
+	wrapped, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uow, err := platformpostgres.NewUnitOfWork(wrapped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo, err := NewPostgreSQL(native, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 4, 6, 30, 0, 0, time.UTC)
+	var packageID, configurationID, refreshID, snapshotID int64
+	if err = native.QueryRow(ctx, `INSERT INTO segment_audience_packages(code,name,created_by,updated_by,created_at,updated_at) VALUES('typed-events','typed events',7,7,$1,$1) RETURNING id`, now).Scan(&packageID); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `INSERT INTO segment_audience_configuration_versions(package_id,version,schema_version,definition,digest,created_by,created_at) VALUES($1,1,1,'{"schema_version":1,"expression":{"kind":"all"}}',decode(repeat('00',32),'hex'),7,$2) RETURNING id`, packageID, now).Scan(&configurationID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = native.Exec(ctx, `UPDATE segment_audience_packages SET current_configuration_version_id=$2 WHERE id=$1`, packageID, configurationID); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `INSERT INTO segment_audience_refresh_runs(package_id,configuration_version_id,source_key_digest,reference_time,state,created_at,updated_at,completed_at) VALUES($1,$2,decode(repeat('01',32),'hex'),$3,'published',$3,$3,$3) RETURNING id`, packageID, configurationID, now).Scan(&refreshID); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `INSERT INTO segment_audience_snapshots(package_id,configuration_version_id,refresh_run_id,state,reference_time,member_count,member_digest,source_watermark_digest,created_at,published_at) VALUES($1,$2,$3,'published',$4,2,decode(repeat('02',32),'hex'),decode(repeat('03',32),'hex'),$4,$4) RETURNING id`, packageID, configurationID, refreshID, now).Scan(&snapshotID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = native.Exec(ctx, `INSERT INTO segment_audience_snapshot_members(snapshot_id,customer_id,entered_at,identity_disposition) VALUES($1,11,$2,'resolved'),($1,12,$2,'resolved')`, snapshotID, now); err != nil {
+		t.Fatal(err)
+	}
+
+	err = uow.Within(ctx, func(tx context.Context) error {
+		created, createErr := repo.CreateMemberEnteredEvents(tx, segmentdomain.Snapshot{
+			ID: snapshotID, PackageID: packageID, ConfigurationVersionID: configurationID,
+			State: "published", ReferenceTime: now, PublishedAt: &now,
+		}, nil, 7, now)
+		if createErr != nil {
+			return createErr
+		}
+		if created != 2 {
+			return errors.New("unexpected member event count")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var events int64
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM segment_audience_member_events WHERE snapshot_id=$1`, snapshotID).Scan(&events); err != nil || events != 2 {
+		t.Fatalf("member events=%d err=%v", events, err)
+	}
+}
