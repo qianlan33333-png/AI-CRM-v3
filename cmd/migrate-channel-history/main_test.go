@@ -231,6 +231,19 @@ func TestUnavailableHistoricalAssigneeIsRepresentedWithoutInventingAssignment(t 
 	}
 }
 
+func TestLegacyStateBindingAssetVersionIsDeterministicAndPositive(t *testing.T) {
+	digest := sha256.Sum256([]byte("legacy-state"))
+	first := legacyStateBindingAssetVersion(digest)
+	second := legacyStateBindingAssetVersion(digest)
+	if first != second || first < 4_000_000_000 {
+		t.Fatalf("legacy binding version is not deterministic and positive: %d %d", first, second)
+	}
+	other := sha256.Sum256([]byte("other-state"))
+	if first == legacyStateBindingAssetVersion(other) {
+		t.Fatal("distinct binding digests produced the same deterministic test version")
+	}
+}
+
 func TestLegacyAssetUpsertAdvancesOnlyLiveCanonicalProjection(t *testing.T) {
 	databaseURL, err := platformconfig.DatabaseURL()
 	if err != nil {
