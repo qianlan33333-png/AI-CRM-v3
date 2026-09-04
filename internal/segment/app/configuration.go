@@ -32,6 +32,7 @@ type Store interface {
 	ListPackages(context.Context, int, int, bool) ([]segmentdomain.Package, error)
 	CountPackages(context.Context, bool) (int64, error)
 	GetPackage(context.Context, int64) (segmentdomain.Package, error)
+	GetPackageByCode(context.Context, string) (segmentdomain.Package, error)
 	LockPackage(context.Context, int64) (segmentdomain.Package, error)
 	CreatePackage(context.Context, segmentdomain.Package) (segmentdomain.Package, error)
 	UpdatePackage(context.Context, segmentdomain.Package, int64) (segmentdomain.Package, error)
@@ -221,14 +222,43 @@ func (s *Service) GetPackage(ctx context.Context, id int64) (segmentdomain.Packa
 	return result, classify(err)
 }
 
+// GetPackageByCode resolves a stable, channel-neutral audience package code.
+// Semantic bootstrap uses this lookup before replaying an older idempotency
+// receipt so a partially completed release cannot create duplicate defaults.
+func (s *Service) GetPackageByCode(ctx context.Context, code string) (segmentdomain.Package, error) {
+	code = strings.TrimSpace(strings.ToLower(code))
+	if !s.ready() || code == "" || len(code) > 120 {
+		return segmentdomain.Package{}, ErrNotFound
+	}
+	var result segmentdomain.Package
+	err := s.uow.Within(ctx, func(tx context.Context) error {
+		var err error
+		result, err = s.store.GetPackageByCode(tx, code)
+		return err
+	})
+	return result, classify(err)
+}
+
+// PackageCodeForIdempotencyKey is the single stable derivation used by package
+// creation and by semantic bootstrap reconciliation.
+func PackageCodeForIdempotencyKey(key string) (string, error) {
+	if len(key) < 16 || len(key) > 128 || strings.TrimSpace(key) != key {
+		return "", ErrInvalid
+	}
+	digest := sha256.Sum256([]byte(key))
+	return "audience-" + hex.EncodeToString(digest[:8]), nil
+}
+
 func (s *Service) CreatePackage(ctx context.Context, command PackageCreateCommand) (segmentdomain.Package, error) {
 	definition, err := DefaultDefinition(command.TemplateKey)
 	if err != nil {
 		return segmentdomain.Package{}, ErrInvalid
 	}
 	now := s.now().UTC()
-	keyDigest := sha256.Sum256([]byte(command.IdempotencyKey))
-	code := "audience-" + hex.EncodeToString(keyDigest[:8])
+	code, err := PackageCodeForIdempotencyKey(command.IdempotencyKey)
+	if err != nil {
+		return segmentdomain.Package{}, err
+	}
 	result, err := s.mutate(ctx, "create_package", command.Actor, command.IdempotencyKey, mutationPayload("create_package", command), func(tx context.Context) (any, segmentstore.MutationFact, error) {
 		item, createErr := segmentdomain.NewPackage(code, command.Name, command.GroupID, command.Actor, now)
 		if createErr == nil {
