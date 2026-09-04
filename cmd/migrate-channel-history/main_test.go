@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -10,6 +11,9 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
 )
 
 func TestEncryptedSnapshotRoundTripAndTamperDetection(t *testing.T) {
@@ -212,6 +216,94 @@ func TestSemanticConfigMismatchCountDoesNotDoubleCountConflicts(t *testing.T) {
 	}
 	if got := semanticConfigMismatchCount(51, 52); got != 0 {
 		t.Fatalf("overcomplete mismatch count=%d", got)
+	}
+}
+
+func TestLegacyAssetUpsertAdvancesOnlyLiveCanonicalProjection(t *testing.T) {
+	databaseURL, err := platformconfig.DatabaseURL()
+	if err != nil {
+		t.Skip("database URL not configured")
+	}
+	ctx := context.Background()
+	admin, err := pgxpool.New(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Close()
+	schema := fmt.Sprintf("channel_asset_replay_%d", time.Now().UnixNano())
+	if _, err = admin.Exec(ctx, "CREATE SCHEMA "+schema); err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Exec(ctx, "DROP SCHEMA "+schema+" CASCADE")
+	cfg, err := pgxpool.ParseConfig(databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.ConnConfig.RuntimeParams["search_path"] = schema
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	_, err = pool.Exec(ctx, `CREATE TABLE channel_legacy_acquisition_assets (
+		id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+		import_run_id BIGINT NOT NULL,
+		source_asset_id BIGINT NOT NULL,
+		channel_id BIGINT NOT NULL,
+		config_version BIGINT NOT NULL,
+		asset_version BIGINT NOT NULL,
+		kind TEXT NOT NULL,
+		provider_asset_ref TEXT NOT NULL DEFAULT '',
+		result_url TEXT NOT NULL DEFAULT '',
+		source_status TEXT NOT NULL,
+		verification_status TEXT NOT NULL DEFAULT 'legacy_unverified',
+		source_digest BYTEA NOT NULL,
+		provider_readback_digest TEXT NOT NULL DEFAULT '',
+		verified_at TIMESTAMPTZ,
+		retired_at TIMESTAMPTZ,
+		created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+		updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+		UNIQUE(import_run_id,source_asset_id),
+		UNIQUE(channel_id,kind,asset_version)
+	)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digestOne := sha256.Sum256([]byte("one"))
+	digestTwo := sha256.Sum256([]byte("two"))
+	args := []any{int64(1), int64(7), int64(11), int64(3), int64(1_000_000_007), "config-old", "https://example.test/old", "active", digestOne[:]}
+	if _, err = pool.Exec(ctx, legacyAssetUpsertSQL, args...); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pool.Exec(ctx, `UPDATE channel_legacy_acquisition_assets SET verification_status='legacy_verified_active',provider_readback_digest=$1,verified_at=clock_timestamp()`, "sha256:"+hex.EncodeToString(digestOne[:])); err != nil {
+		t.Fatal(err)
+	}
+	args = []any{int64(2), int64(7), int64(11), int64(4), int64(1_000_000_007), "config-new", "https://example.test/new", "active", digestTwo[:]}
+	if _, err = pool.Exec(ctx, legacyAssetUpsertSQL, args...); err != nil {
+		t.Fatalf("later snapshot replay failed: %v", err)
+	}
+	var runID, configVersion int64
+	var providerRef, status, readback string
+	var verifiedAt *time.Time
+	if err = pool.QueryRow(ctx, `SELECT import_run_id,config_version,provider_asset_ref,verification_status,provider_readback_digest,verified_at FROM channel_legacy_acquisition_assets`).Scan(&runID, &configVersion, &providerRef, &status, &readback, &verifiedAt); err != nil {
+		t.Fatal(err)
+	}
+	if runID != 2 || configVersion != 4 || providerRef != "config-new" || status != "legacy_unverified" || readback != "" || verifiedAt != nil {
+		t.Fatalf("advanced projection=(run=%d config=%d ref=%q status=%q readback=%q verified=%v)", runID, configVersion, providerRef, status, readback, verifiedAt)
+	}
+	if _, err = pool.Exec(ctx, `UPDATE channel_legacy_acquisition_assets SET retired_at=clock_timestamp()`); err != nil {
+		t.Fatal(err)
+	}
+	args[0] = int64(3)
+	args[3] = int64(5)
+	if _, err = pool.Exec(ctx, legacyAssetUpsertSQL, args...); err != nil {
+		t.Fatal(err)
+	}
+	if err = pool.QueryRow(ctx, `SELECT import_run_id,config_version FROM channel_legacy_acquisition_assets`).Scan(&runID, &configVersion); err != nil {
+		t.Fatal(err)
+	}
+	if runID != 2 || configVersion != 4 {
+		t.Fatalf("retired projection was resurrected: run=%d config=%d", runID, configVersion)
 	}
 }
 

@@ -582,6 +582,24 @@ func mediaKind(table string) string {
 	return map[string]string{"image_library": "image", "miniprogram_library": "miniprogram", "attachment_library": "attachment", "group_invite_library": "group_invite"}[table]
 }
 
+const legacyAssetUpsertSQL = `INSERT INTO channel_legacy_acquisition_assets(
+	import_run_id,source_asset_id,channel_id,config_version,asset_version,kind,
+	provider_asset_ref,result_url,source_status,source_digest
+) VALUES($1,$2,$3,$4,$5,'contact_way_qrcode',$6,$7,$8,$9)
+ON CONFLICT(channel_id,kind,asset_version) DO UPDATE SET
+	import_run_id=EXCLUDED.import_run_id,
+	source_asset_id=EXCLUDED.source_asset_id,
+	config_version=EXCLUDED.config_version,
+	provider_asset_ref=EXCLUDED.provider_asset_ref,
+	result_url=EXCLUDED.result_url,
+	source_status=EXCLUDED.source_status,
+	verification_status='legacy_unverified',
+	source_digest=EXCLUDED.source_digest,
+	provider_readback_digest='',
+	verified_at=NULL,
+	updated_at=clock_timestamp()
+WHERE channel_legacy_acquisition_assets.retired_at IS NULL`
+
 func (runner importRunner) importReferencedTags(ctx context.Context, runID int64, manifest snapshotManifest) (int64, error) {
 	var count int64
 	groupNames := map[string]string{}
@@ -642,7 +660,7 @@ func (runner importRunner) importLegacyAssets(ctx context.Context, runID, repair
 		}
 		digest, _ := hex.DecodeString(strings.TrimPrefix(row.Digest, "sha256:"))
 		assetVersion := int64(1_000_000_000) + id
-		_, err := runner.Pool.Native().Exec(ctx, `INSERT INTO channel_legacy_acquisition_assets(import_run_id,source_asset_id,channel_id,config_version,asset_version,kind,provider_asset_ref,result_url,source_status,source_digest) VALUES($1,$2,$3,$4,$5,'contact_way_qrcode',$6,$7,$8,$9) ON CONFLICT(import_run_id,source_asset_id) DO NOTHING`, runID, id, channelID, configVersion, assetVersion, firstString(row.Payload, "config_id"), firstString(row.Payload, "qr_url"), nonempty(firstString(row.Payload, "status"), "unknown"), digest)
+		_, err := runner.Pool.Native().Exec(ctx, legacyAssetUpsertSQL, runID, id, channelID, configVersion, assetVersion, firstString(row.Payload, "config_id"), firstString(row.Payload, "qr_url"), nonempty(firstString(row.Payload, "status"), "unknown"), digest)
 		if err != nil {
 			return count, err
 		}
