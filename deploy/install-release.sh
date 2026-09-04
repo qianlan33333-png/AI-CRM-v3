@@ -159,6 +159,15 @@ trap cleanup_release_artifacts EXIT
 # A workflow-level concurrency group cannot serialize every main deployment:
 # GitHub retains only one pending run per group, and SHA-unique groups allow
 # builds to overlap. The host therefore owns the release critical section.
+# A cancelled SSH deployment can leave the durable bootstrap oneshot running
+# while its installer still owns the host lock. A newer release may safely stop
+# it before waiting: every staged batch is transactional and the command resumes
+# through its idempotency receipts with the new release binary.
+bootstrap_load_state="$(systemctl show aicrm-automation-bootstrap.service -p LoadState --value 2>/dev/null || true)"
+if [[ "$bootstrap_load_state" == loaded ]] && ! systemctl stop aicrm-automation-bootstrap.service; then
+  systemctl status --no-pager --full aicrm-automation-bootstrap.service || true
+  exit 14
+fi
 exec 9>"$release_lock"
 flock 9
 

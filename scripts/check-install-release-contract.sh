@@ -112,9 +112,10 @@ grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/migrate-sidebar-his
 grep -qx 'test -x "$release_dir/bin/bootstrap-automation-operations"' "$installer" || { echo "release must include Automation Operations semantic bootstrap" >&2; exit 1; }
 grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/bootstrap-automation-operations ./cmd/bootstrap-automation-operations' .github/workflows/ci.yml || { echo "CI must build Automation Operations semantic bootstrap" >&2; exit 1; }
 grep -qxF 'ExecStart=/opt/aicrm/current/bin/bootstrap-automation-operations' deploy/aicrm-automation-bootstrap.service || { echo "Automation Operations bootstrap unit must execute the release binary" >&2; exit 1; }
+grep -qxF 'if [[ "$bootstrap_load_state" == loaded ]] && ! systemctl stop aicrm-automation-bootstrap.service; then' "$installer" || { echo "deployment must stop a stale Automation Operations bootstrap before waiting for the host lock" >&2; exit 1; }
 grep -qxF 'if ! systemctl start aicrm-automation-bootstrap.service; then' "$installer" || { echo "deployment must run Automation Operations semantic bootstrap" >&2; exit 1; }
 bootstrap_start_line="$(grep -nF 'if ! systemctl start aicrm-automation-bootstrap.service; then' "$installer" | cut -d: -f1)"
-bootstrap_status_line="$(grep -nF '  systemctl status --no-pager --full aicrm-automation-bootstrap.service || true' "$installer" | cut -d: -f1)"
+bootstrap_status_line="$(grep -nF '  systemctl status --no-pager --full aicrm-automation-bootstrap.service || true' "$installer" | tail -n 1 | cut -d: -f1)"
 bootstrap_rollback_line="$(sed -n "$((bootstrap_start_line + 3))p" "$installer")"
 test -n "$bootstrap_status_line" && test "$bootstrap_status_line" -gt "$bootstrap_start_line" && test "$bootstrap_rollback_line" = "  rollback" || { echo "bootstrap failure must emit service evidence before rollback" >&2; exit 1; }
 grep -qx 'test -x "$release_dir/bin/migrate-identity-phone-vault"' "$installer" || { echo "release must include phone vault migration tool" >&2; exit 1; }
