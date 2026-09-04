@@ -150,6 +150,17 @@ func TestPostgreSQLAudienceConfigurationEmptyCronRoundTrips(t *testing.T) {
 		if configuration.RefreshCronUTC != "" {
 			return errors.New("empty refresh cron did not round trip")
 		}
+		item, createErr = repo.SetCurrentConfiguration(tx, item.ID, configuration.ID, item.Version, 7, now)
+		if createErr != nil {
+			return createErr
+		}
+		current, createErr := repo.CurrentConfiguration(tx, item.ID)
+		if createErr != nil {
+			return createErr
+		}
+		if current.RefreshCronUTC != "" {
+			return errors.New("empty current refresh cron did not round trip")
+		}
 		return nil
 	})
 	if err != nil {
