@@ -74,7 +74,8 @@ for migration_contract in \
   '0035_channel_acquisition_links.sql:Channel acquisition links' \
   '0036_ai_assistant_review.sql:AI Assistant review' \
   '0037_outbound_private_messages.sql:Outbound private messages' \
-  '0038_survey_oauth_phone_vault.sql:survey OAuth phone vault'; do
+  '0038_survey_oauth_phone_vault.sql:survey OAuth phone vault' \
+  '0049_order_history_attribution.sql:order history attribution'; do
   migration="${migration_contract%%:*}"
   label="${migration_contract#*:}"
   test -f "migrations/${migration}" || {
@@ -87,6 +88,8 @@ for migration_contract in \
   }
 done
 grep -qx 'test -x "$release_dir/bin/migrate-automation-operations"' "$installer" || { echo "release must include Automation Operations migration tool" >&2; exit 1; }
+grep -qx 'test -x "$release_dir/bin/migrate-order-attribution"' "$installer" || { echo "release must include order history attribution tool" >&2; exit 1; }
+grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/migrate-order-attribution ./cmd/migrate-order-attribution' .github/workflows/ci.yml || { echo "CI must build the order history attribution tool" >&2; exit 1; }
 grep -qx 'test -f "$release_dir/migrations/0047_automation_operations_migration.sql"' "$installer" || { echo "release must require Automation Operations migration schema" >&2; exit 1; }
 grep -qx 'test -f "$release_dir/migrations/0048_segment_audience_schedule_state.sql"' "$installer" || { echo "release must require Automation Operations schedule state" >&2; exit 1; }
 config_migration="migrations/0015_config_adminops.sql"
