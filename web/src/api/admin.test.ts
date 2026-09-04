@@ -2,7 +2,7 @@ import { acceptCampaignOutboundHandoffDto, appSettingsPageDto, attachmentPageDto
 import { createServicePeriodMemberGridCollaboratorDto, deleteServicePeriodMemberGridCollaboratorDto, getServicePeriodMemberDto, listMemberGridStaffDto, queryServicePeriodMemberGridDto, updateServicePeriodMemberFieldsDto, updateServicePeriodMemberGridCollaboratorDto } from './admin';
 import { archiveTagGroupDto } from './admin';
 import { exportWechatOrdersDto } from './admin';
-import { readProductSharePath, readRadarSharePath, readServiceProductSharePath } from './admin';
+import { readRadarSharePath, readServiceProductSharePath } from './admin';
 import { exportRadarEventsCsv, readRadarEvents } from './admin';
 import { listGlobalQuestionnairePushLogsDto } from './admin';
 import { getChannelHistoryDto } from './admin';
@@ -237,7 +237,6 @@ const productAdminProjection = {
   wecom_tagging: {},
   slices: [],
 };
-const productReadProjection = { lifecycle: 'draft' as const, enabled: false, paid_order_count: 0, refund_order_count: 0, sold_count: 0 };
 const servicePeriodAdminProjection = (lifecycle: 'draft' | 'enabled' | 'disabled' | 'archived' = 'draft') => ({ ...productAdminProjection, status: `service_period_${lifecycle}`, enabled: lifecycle === 'enabled' });
 
 export async function runAdminAdapterTests(): Promise<void> {
@@ -555,9 +554,7 @@ export async function runAdminAdapterTests(): Promise<void> {
   const historicalOrder = orderDetailDto({ id: 12, record_origin: 'v1_history', merchant_order_no: 'WX-H-12', provider: 'wechat', product_name: '历史营', amount_yuan: '99.00', status: 'paid', currency: 'CNY', historical_refunds: [{ id: 31, order_id: 12, source_refund_id: 801, refund_number: 'R-801', provider_refund_id: '', transaction_id: 'TX-12', status: 'refunded', amount_minor: 1990, order_amount_minor: 9900, currency: 'CNY', reason: '历史退款', created_at: '2026-08-28T00:00:00Z', updated_at: '2026-08-28T00:00:00Z' }] });
   assert(historicalOrder.recordOrigin === 'v1_history' && historicalOrder.historicalRefunds?.[0]?.amount === '¥19.90 CNY' && historicalOrder.historicalRefunds?.[0]?.reason === '历史退款', 'historical order detail maps only read-only refund fields');
   try { orderDetailDto({ id: 12, record_origin: 'v1_history', historical_refunds: [{ order_id: 99, amount_minor: 1, order_amount_minor: 1, currency: 'CNY', status: 'refunded', reason: '' }] }); assert(false, 'mismatched historical refund accepted'); } catch { /* expected: mismatched order binding remains closed */ }
-  assert(productPageDto({ id: 1, name: '商品', lifecycle: 'enabled', enabled: true, paid_order_count: 3, refund_order_count: 1, sold_count: 2, admin_projection: { ...productAdminProjection, status: 'active', enabled: true } }).tone === 'ok', 'product response mapping');
-  try { productPageDto({ id: 1, name: '商品', admin_projection: productAdminProjection }); assert(false, 'product mapping silently accepted missing lifecycle and sales'); }
-  catch (error) { assert(error instanceof Error && error.message.includes('lifecycle'), 'product mapping exposes missing lifecycle as an error'); }
+  assert(productPageDto({ id: 1, name: '商品', status: 'active', admin_projection: { ...productAdminProjection, status: 'active', enabled: true } }).tone === 'ok', 'product response mapping');
   assert(serviceProductPageDto({ id: 2, name: '周期', status: 'disabled', images: [], admin_projection: servicePeriodAdminProjection('disabled') }).tone === 'gray', 'service product response mapping');
   const couponProjection = couponPageDto({ name: '券', code: 'C', status: 'published', availability_status: 'active' });
   assert(couponProjection.status === 'published' && couponProjection.availabilityStatus === 'active' && couponProjection.tone === 'ok', 'coupon response mapping preserves lifecycle and availability separately');
@@ -615,21 +612,6 @@ export async function runAdminAdapterTests(): Promise<void> {
     assert(questionnaireCalls[1].input.endsWith('/41/enable') && questionnaireCalls[2].input.endsWith('/41/public-publish'), 'questionnaire enable/public publish sequence');
     assert(JSON.parse(String(questionnaireCalls[2].init?.body)).expected_questionnaire_version === 2, 'questionnaire publish CAS version');
   } finally { globalThis.fetch = savedFetch; }
-
-  let productShareCall: { input: string; init?: RequestInit } | undefined;
-  globalThis.fetch = async (input, init) => {
-    productShareCall = { input: String(input), init };
-    return new Response(JSON.stringify({ product_id: 7, product_code: 'P-7', lifecycle: 'enabled', available: true, purchase_url: '/p/7' }), { status: 200 });
-  };
-  try {
-    const publicPath = await readProductSharePath(7);
-    assert(publicPath === '/p/7' && productShareCall?.input === '/api/admin/wechat-pay/products/7/share' && productShareCall.init?.method === 'GET', 'product share adapter uses the generated same-origin read');
-  } finally { globalThis.fetch = savedFetch; }
-
-  globalThis.fetch = async () => new Response(JSON.stringify({ code: 'product_not_enabled' }), { status: 409 });
-  try { await readProductSharePath(7); assert(false, 'disabled product share succeeded'); }
-  catch (error) { assert(error instanceof Error && error.message === '请先启用商品', 'disabled product share has actionable message'); }
-  finally { globalThis.fetch = savedFetch; }
 
   let serviceShareCall: { input: string; init?: RequestInit } | undefined;
   globalThis.fetch = async (input, init) => {
@@ -992,7 +974,7 @@ export async function runAdminAdapterTests(): Promise<void> {
   } finally { globalThis.fetch = savedFetch; }
 
   let productWrite: RequestInit | undefined;
-  globalThis.fetch = async (_input, init) => { productWrite = init; return new Response(JSON.stringify({ id: 21, product_code: 'P-21', name: '课程', description: '说明', price_minor: 19900, currency: 'CNY', stock_quantity: 9, images: [], admin_projection: productAdminProjection, created_by: 1, created_at: '', updated_at: '', version: 1, ...productReadProjection }), { status: 201 }); };
+  globalThis.fetch = async (_input, init) => { productWrite = init; return new Response(JSON.stringify({ id: 21, product_code: 'P-21', name: '课程', description: '说明', price_minor: 19900, currency: 'CNY', stock_quantity: 9, images: [], admin_projection: productAdminProjection, created_by: 1, created_at: '', updated_at: '', version: 1 }), { status: 201 }); };
   try {
     const productSaved = await saveProductDto({ code: 'P-21', name: '课程', description: '说明', price: '199.00', currency: 'CNY', stockQuantity: 9 });
     assert(productSaved.resourceId === 21 && productSaved.price === '199.00' && productWrite?.method === 'POST' && new Headers(productWrite.headers).has('Idempotency-Key'), 'product create method/response mapping');
@@ -1002,9 +984,9 @@ export async function runAdminAdapterTests(): Promise<void> {
   const productUpdateCalls: Array<{ input: string; init?: RequestInit }> = [];
   globalThis.fetch = async (input, init) => {
     productUpdateCalls.push({ input: String(input), init });
-    if (init?.method === 'GET') return new Response(JSON.stringify({ id: 21, product_code: 'P-21', name: '课程', description: '说明', price_minor: 19900, currency: 'CNY', stock_quantity: 9, images: [], admin_projection: productAdminProjection, version: 1, ...productReadProjection }), { status: 200 });
+    if (init?.method === 'GET') return new Response(JSON.stringify({ id: 21, product_code: 'P-21', name: '课程', description: '说明', price_minor: 19900, currency: 'CNY', stock_quantity: 9, images: [], admin_projection: productAdminProjection, version: 1 }), { status: 200 });
     if (String(input).endsWith('/external-push')) return new Response(JSON.stringify({ product_id: 21, enabled: true, configuration_reference: 'push-course-21', updated_at: '2026-08-30T00:00:00Z' }), { status: 200 });
-    return new Response(JSON.stringify({ id: 21, product_code: 'P-21', name: '课程新版', description: '完整页面', price_minor: 19900, currency: 'CNY', stock_quantity: 9, images: ['https://cdn.example.test/course.png'], admin_projection: { ...productAdminProjection, buy_button_text: '立即购买', require_mobile: true, completion_redirect_enabled: true, completion_redirect_url: 'https://example.test/complete', wecom_tagging: { tag_ids: ['tag-1'] } }, version: 2, ...productReadProjection }), { status: 200 });
+    return new Response(JSON.stringify({ id: 21, product_code: 'P-21', name: '课程新版', description: '完整页面', price_minor: 19900, currency: 'CNY', stock_quantity: 9, images: ['https://cdn.example.test/course.png'], admin_projection: { ...productAdminProjection, buy_button_text: '立即购买', require_mobile: true, completion_redirect_enabled: true, completion_redirect_url: 'https://example.test/complete', wecom_tagging: { tag_ids: ['tag-1'] } }, version: 2 }), { status: 200 });
   };
   try {
     const updated = await saveProductDto({

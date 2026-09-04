@@ -25,7 +25,7 @@ func TestProductUIAllowlistUsesDonorTemplateAndDeniesDataPage(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	manifest := buildManifest{Entries: map[string]string{"tokens": "assets/tokens.css", "labs": "assets/labs.css", "admin": "assets/admin.js"}, Files: map[string]json.RawMessage{"assets/tokens.css": json.RawMessage("null"), "assets/labs.css": json.RawMessage("null"), "assets/admin.js": json.RawMessage("null")}}
+	manifest := buildManifest{Entries: map[string]string{"tokens": "assets/tokens.css", "labs": "assets/labs.css", "productHost": "assets/product-host.js"}, Files: map[string]json.RawMessage{"assets/tokens.css": json.RawMessage("null"), "assets/labs.css": json.RawMessage("null"), "assets/product-host.js": json.RawMessage("null")}}
 	rawManifest, err := json.Marshal(manifest)
 	if err != nil {
 		t.Fatal(err)
@@ -33,7 +33,7 @@ func TestProductUIAllowlistUsesDonorTemplateAndDeniesDataPage(t *testing.T) {
 	if err = os.WriteFile(filepath.Join(dist, "asset-manifest.json"), rawManifest, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	for name, content := range map[string]string{"tokens.css": "tokens", "labs.css": "labs", "admin.js": "admin"} {
+	for name, content := range map[string]string{"tokens.css": "tokens", "labs.css": "labs", "product-host.js": "host"} {
 		if err = os.WriteFile(filepath.Join(dist, "assets", name), []byte(content), 0o644); err != nil {
 			t.Fatal(err)
 		}
@@ -49,7 +49,7 @@ func TestProductUIAllowlistUsesDonorTemplateAndDeniesDataPage(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/admin/wechat-pay/products.html", nil))
-	if recorder.Code != http.StatusOK || rendered.page != "products" || !strings.Contains(rendered.body, "donor body") || rendered.assets.AdminJS != "/product-assets/admin.js" {
+	if recorder.Code != http.StatusOK || rendered.page != "products" || !strings.Contains(rendered.body, "donor body") || rendered.assets.HostJS != "/product-assets/product-host.js" {
 		t.Fatalf("status=%d page=%q body=%q assets=%+v", recorder.Code, rendered.page, rendered.body, rendered.assets)
 	}
 
@@ -67,8 +67,8 @@ func TestProductUIAllowlistUsesDonorTemplateAndDeniesDataPage(t *testing.T) {
 	}
 
 	recorder = httptest.NewRecorder()
-	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/product-assets/admin.js", nil))
-	if recorder.Code != http.StatusOK || recorder.Body.String() != "admin" {
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/product-assets/product-host.js", nil))
+	if recorder.Code != http.StatusOK || recorder.Body.String() != "host" {
 		t.Fatalf("asset status=%d body=%q", recorder.Code, recorder.Body.String())
 	}
 

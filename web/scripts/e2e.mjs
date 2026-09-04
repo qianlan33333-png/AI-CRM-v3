@@ -12,6 +12,7 @@ const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const DIST = path.join(ROOT, 'dist');
 const TEST_BUNDLES = {
   admin: await buildTestBrowserBundle(path.join(ROOT, 'src/admin/main.ts')),
+  productHost: await buildTestBrowserBundle(path.join(ROOT, 'v3/productAdapter.ts')),
   questionnaireEditor: await buildTestBrowserBundle(path.join(ROOT, 'src/admin/sections/questionnaireEditor.ts')),
   h5: await buildTestBrowserBundle(path.join(ROOT, 'src/h5/main.ts')),
   sidebar: await buildTestBrowserBundle(path.join(ROOT, 'src/sidebar/main.ts')),
@@ -133,7 +134,7 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
   const file = path.join(DIST, rel);
   let html = fs.readFileSync(file, 'utf8');
   // 用 jsdom 执行内联脚本：把 bundle 内联进去，避免资源加载配置
-  html = html.replace(/<script type="module" src="[^"]*assets\/(admin|h5|sidebar)-[^"]+\.js"><\/script>/, (_m, name) => `<script>${TEST_BUNDLES[name]}</script>`);
+  html = html.replace(/<script type="module" src="[^"]*assets\/(admin|h5|sidebar)-[^"]+\.js"><\/script>/, (_m, name) => `<script>${productHttp ? TEST_BUNDLES.productHost : TEST_BUNDLES[name]}</script>`);
   const qs = q || (id != null ? 'id=' + id : '');
   const dom = new JSDOM(html, {
     url: 'http://localhost/' + rel + (qs ? '?' + qs : ''),

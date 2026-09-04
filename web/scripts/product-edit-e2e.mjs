@@ -20,7 +20,6 @@ const libraryItem = {
 };
 const product = (patch = {}) => ({
   id: 21, product_code: 'P-21', name: '课程', description: '说明', price_minor: 19900, currency: 'CNY', stock_quantity: 9,
-  lifecycle: 'draft', enabled: false, paid_order_count: 0, refund_order_count: 0, sold_count: 0,
   images: ['/api/admin/image-library/8/variants/original'], admin_projection: projection, created_by: 1,
   created_at: '2026-08-30T00:00:00Z', updated_at: '2026-08-30T00:00:00Z', version: 1, ...patch,
 });

@@ -13,6 +13,7 @@ if (!fs.existsSync(manifestPath)) throw new Error('run the frozen donor build be
 
 const entryPoints = {
   operationCyclesHost: path.join(repository, 'web', 'v3', 'operationCyclesAdapter.ts'),
+  productHost: path.join(repository, 'web', 'v3', 'productAdapter.ts'),
   channelCenterHost: path.join(repository, 'web', 'v3', 'channelCenterAdapter.ts'),
   aiAssistantHost: path.join(repository, 'web', 'v3', 'aiAssistantAdapter.ts'),
 };

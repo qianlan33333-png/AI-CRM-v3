@@ -92,7 +92,6 @@ import {
   createProduct,
   disableLegacyWechatPayProduct,
   enableLegacyWechatPayProduct,
-  getLegacyWechatPayProductShare,
   updateProduct,
 } from "./generated/p4-product/p4-product";
 import {
@@ -1162,18 +1161,7 @@ const productAdminProjectionDto = (value: unknown): ProductAdminProjection => {
 };
 const productAdminProjectionApi = (value: ProductAdminProjection): ApiProductAdminProjection => ({ schema_version: 1, status: value.status, enabled: value.enabled, buy_button_text: value.buyButtonText, require_mobile: value.requireMobile, lead_program_id: value.leadProgramId, lead_channel_id: value.leadChannelId, lead_qr_title: value.leadQrTitle, lead_qr_subtitle: value.leadQrSubtitle, completion_redirect_enabled: value.completionRedirectEnabled, completion_redirect_url: value.completionRedirectUrl, completion_target: value.completionTarget, wecom_tagging: value.wecomTagging, slices: value.slices });
 const productExternalPushDto = (value: unknown): ProductExternalPush => { const x = obj(value); if (typeof x.enabled !== 'boolean') throw new Error('商品外推配置响应不完整'); return { enabled: x.enabled, configurationReference: text(x.configuration_reference, ''), updatedAt: text(x.updated_at, '') }; };
-export const productPageDto = (value: unknown, externalPush?: unknown): Product => {
-  const source = obj(value); const x = obj(source.product || value);
-  const lifecycle = x.lifecycle;
-  if (lifecycle !== 'draft' && lifecycle !== 'enabled' && lifecycle !== 'disabled') throw new Error('商品响应缺少有效 lifecycle');
-  if (typeof x.enabled !== 'boolean' || x.enabled !== (lifecycle === 'enabled')) throw new Error('商品状态投影矛盾');
-  const paidOrderCount = requiredNonNegative(x.paid_order_count, 'paid_order_count');
-  const refundOrderCount = requiredNonNegative(x.refund_order_count, 'refund_order_count');
-  const soldCount = requiredNonNegative(x.sold_count, 'sold_count');
-  if (soldCount !== Math.max(0, paidOrderCount - refundOrderCount)) throw new Error('商品销量投影矛盾');
-  const labels = { draft: '草稿', enabled: '已启用', disabled: '已停用' } as const;
-  return { resourceId: Number(x.id), code: text(x.product_code), name: text(x.name), price: (Number(x.price_minor || 0) / 100).toFixed(2), description: text(x.description, ''), currency: text(x.currency, 'CNY'), stockQuantity: Number(x.stock_quantity || 0), images: list(x, 'images').map(String), adminProjection: productAdminProjectionDto(x.admin_projection), externalPush: externalPush == null ? undefined : productExternalPushDto(externalPush), version: Number(x.version || 0), lifecycle, status: labels[lifecycle], tone: lifecycle === 'enabled' ? 'ok' : lifecycle === 'draft' ? 'warn' : 'gray', sold: String(soldCount), paidOrderCount, refundOrderCount, soldCount, updated: text(x.updated_at) };
-};
+export const productPageDto = (value: unknown, externalPush?: unknown): Product => { const source = obj(value); const x = obj(source.product || value); const lifecycle = text(x.lifecycle, text(x.status, x.enabled === true ? 'enabled' : x.enabled === false ? 'disabled' : '未投影')); return { resourceId: Number(x.id), code: text(x.product_code), name: text(x.name), price: (Number(x.price_minor || 0) / 100).toFixed(2), description: text(x.description, ''), currency: text(x.currency, 'CNY'), stockQuantity: Number(x.stock_quantity || 0), images: list(x, 'images').map(String), adminProjection: productAdminProjectionDto(x.admin_projection), externalPush: externalPush == null ? undefined : productExternalPushDto(externalPush), version: Number(x.version || 0), lifecycle, status: lifecycle, tone: toneFor(lifecycle), sold: text(x.sold_count, '0'), updated: text(x.updated_at) }; };
 export const serviceProductPageDto = (value: unknown, externalPush?: unknown): SpProduct => { const source = obj(value); const x = obj(source.product || value); const lifecycle = text(x.lifecycle, text(x.status, x.enabled === true ? 'enabled' : x.enabled === false ? 'disabled' : '未投影')); return { resourceId: Number(x.service_product_id || x.id), code: text(x.product_code), name: text(x.name), price: (Number(x.price_minor || 0) / 100).toFixed(2), description: text(x.description, ''), currency: text(x.currency, 'CNY'), stockQuantity: Number(x.stock_quantity || 0), images: list(x, 'images').map(String), adminProjection: productAdminProjectionDto(x.admin_projection), externalPush: externalPush == null ? undefined : productExternalPushDto(externalPush), version: Number(x.version || 0), lifecycle, status: lifecycle, tone: toneFor(lifecycle), sold: text(x.member_count, '0'), updated: text(x.updated_at) }; };
 export const couponPageDto = (value: unknown): Coupon => { const source = obj(value); const x = obj(source.coupon || value); const availabilityStatus = text(x.availability_status, text(x.status)); return { resourceId: Number(x.id), name: text(x.name), code: 'c-' + text(x.id), discountAmountTotal: Number(x.discount_amount_total || 0), totalIssueLimit: Number(x.total_issue_limit || 0), perUserIssueLimit: Number(x.per_user_issue_limit || 1), claimStartsAt: text(x.claim_starts_at, ''), claimEndsAt: text(x.claim_ends_at, ''), validityMode: x.validity_mode === 'fixed_range' ? 'fixed_range' : 'relative_days', useStartsAt: typeof x.use_starts_at === 'string' ? x.use_starts_at : null, useEndsAt: typeof x.use_ends_at === 'string' ? x.use_ends_at : null, relativeValidityDays: x.relative_validity_days == null ? null : Number(x.relative_validity_days), instructions: text(x.instructions, ''), targetRefs: list(x, 'target_refs').map(String), version: Number(x.version || 0), off: `¥${(Number(x.discount_amount_total || 0) / 100).toFixed(2)}`, scope: list(x, 'target_refs').join('、') || '—', window: `${text(x.claim_starts_at)} 至 ${text(x.claim_ends_at)}`, issue: `${text(x.issued_count, '0')} / ${text(x.total_issue_limit, '0')}`, availabilityStatus, status: text(x.status), tone: toneFor(availabilityStatus) }; };
 const imageMappingError = (field: string, detail: string): Error => {
@@ -1505,23 +1493,6 @@ export async function readRadarSharePath(linkId: number): Promise<string> {
   return sharePath;
 }
 export async function readCouponSharePath(couponId: number): Promise<string> { const projection = obj(await call(getLegacyCouponShare(couponId, apiRequestOptions()))); if (typeof projection.url !== 'string') throw new Error('后端尚未提供可用的优惠券分享路径'); return projection.url; }
-export async function readProductSharePath(productId: number): Promise<string> {
-  if (!Number.isSafeInteger(productId) || productId < 1) throw new Error('商品 ID 无效');
-  let projection: Record<string, unknown>;
-  try {
-    projection = obj(await call(getLegacyWechatPayProductShare(productId, apiRequestOptions())));
-  } catch (error) {
-    if (error instanceof ApiError && error.status === 409) {
-      const details = obj(error.details);
-      if (details.code === 'product_not_enabled' || details.error === 'product_not_enabled') throw new Error('请先启用商品');
-    }
-    throw error;
-  }
-  const responseId = Number(projection.product_id);
-  const path = typeof projection.purchase_url === 'string' ? projection.purchase_url : '';
-  if (responseId !== productId || projection.lifecycle !== 'enabled' || projection.available !== true || path !== `/p/${productId}` || projection.qr_code_url) throw new Error('商品分享响应不完整或越过站内边界');
-  return path;
-}
 export async function readServiceProductSharePath(serviceProductId: number): Promise<string> {
   if (!Number.isSafeInteger(serviceProductId) || serviceProductId < 1) throw new Error('周期商品 ID 无效');
   const projection = obj(await call(getServicePeriodProductShare(serviceProductId, apiRequestOptions())));
@@ -1559,8 +1530,8 @@ export async function saveProductDto(input: ProductWriteInput): Promise<Product>
   return productPageDto(saved, external);
 }
 const productMutationOptions = (scope: string): RequestInit => apiRequestOptions({ headers: { 'Idempotency-Key': `${scope}-${globalThis.crypto?.randomUUID?.() || Date.now()}` } });
-export async function setProductEnabledDto(productId: number, enabled: boolean): Promise<Product> { const current = obj(await call(getProduct(productId, apiRequestOptions()))); await call(enabled ? enableLegacyWechatPayProduct(productId, { expected_version: Number(current.version) }, productMutationOptions('product-enable')) : disableLegacyWechatPayProduct(productId, { expected_version: Number(current.version) }, productMutationOptions('product-disable'))); return productPageDto(await call(getProduct(productId, apiRequestOptions()))); }
-export async function copyProductDto(productId: number): Promise<Product> { const current = obj(await call(getProduct(productId, apiRequestOptions()))); const copied = obj(await call(copyLegacyWechatPayProduct(productId, { expected_version: Number(current.version) }, productMutationOptions('product-copy')))); const copiedId = requiredPositiveValue(copied.id, 'id'); return productPageDto(await call(getProduct(copiedId, apiRequestOptions()))); }
+export async function setProductEnabledDto(productId: number, enabled: boolean): Promise<Product> { const current = obj(await call(getProduct(productId, apiRequestOptions()))); return productPageDto(await call(enabled ? enableLegacyWechatPayProduct(productId, { expected_version: Number(current.version) }, productMutationOptions('product-enable')) : disableLegacyWechatPayProduct(productId, { expected_version: Number(current.version) }, productMutationOptions('product-disable')))); }
+export async function copyProductDto(productId: number): Promise<Product> { const current = obj(await call(getProduct(productId, apiRequestOptions()))); return productPageDto(await call(copyLegacyWechatPayProduct(productId, { expected_version: Number(current.version) }, productMutationOptions('product-copy')))); }
 export async function deleteProductDto(productId: number): Promise<void> { const current = obj(await call(getProduct(productId, apiRequestOptions()))); await call(deleteLegacyWechatPayProduct(productId, { expected_version: Number(current.version) }, productMutationOptions('product-delete'))); }
 
 export async function saveServiceProductDto(input: ProductWriteInput): Promise<SpProduct> {

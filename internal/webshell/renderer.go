@@ -122,7 +122,7 @@ type TagsAssets struct{ TokensCSS, LabsCSS, AdminJS string }
 
 // ProductAssets are manifest-derived URLs for the frozen donor Product
 // bundle. They are passed by the Product UI adapter and contain no markup.
-type ProductAssets struct{ TokensCSS, LabsCSS, AdminJS string }
+type ProductAssets struct{ TokensCSS, LabsCSS, HostJS string }
 
 // OrderAssets are release-manifest URLs for the frozen transaction UI.
 type OrderAssets struct{ TokensCSS, LabsCSS, AdminJS string }
@@ -313,7 +313,7 @@ func (renderer *Renderer) RenderTags(writer http.ResponseWriter, data AdminPageD
 // PR10 shell. The donor template is the release-built template#tpl fragment;
 // this method never renders the donor document or a second sidebar.
 func (renderer *Renderer) RenderProducts(writer http.ResponseWriter, data AdminPageData, page, donorTemplate string, assets ProductAssets) error {
-	if renderer == nil || renderer.templates == nil || donorTemplate == "" || assets.TokensCSS == "" || assets.LabsCSS == "" || assets.AdminJS == "" || (page != "products" && page != "productForm" && page != "spProducts" && page != "spProductForm") {
+	if renderer == nil || renderer.templates == nil || donorTemplate == "" || assets.TokensCSS == "" || assets.LabsCSS == "" || assets.HostJS == "" || (page != "products" && page != "productForm" && page != "spProducts" && page != "spProductForm") {
 		return errors.New("product shell assets are required")
 	}
 	normalizeAdminPage(&data)

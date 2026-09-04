@@ -24,13 +24,10 @@ web/scripts/e2e.mjs
 web/scripts/channel-center-characterization.mjs
 web/scripts/survey-editor-characterization.mjs
 web/scripts/survey-public-characterization.mjs
-web/scripts/product-edit-e2e.mjs
 web/scripts/ui-shell-contract.mjs
-web/src/admin/controller.ts
 web/src/admin/sections/funnelGrid.ts
 web/src/admin/sections/questionnaireEditor.ts
 web/src/admin/pages/customers.ts
-web/src/api/admin.ts
 web/src/api/admin.test.ts
 web/src/api/questionnaireEditorV3.ts
 web/src/h5/controller.ts
@@ -40,8 +37,6 @@ web/src/h5/templates/one.html
 web/src/h5/templates/result.html
 web/src/admin/templates/customers.html
 web/src/api/channelCenter.test.ts
-web/src/shared/api/client.ts
-web/src/shared/api/types.ts
 EOF
 
 awk 'NF == 2 && $1 ~ /^[0-9a-f]{64}$/ { print $2 }' "$manifest" \
