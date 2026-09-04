@@ -81,6 +81,13 @@ func TestPostgreSQLAudienceConfigurationAtomicity(t *testing.T) {
 		if created.Version != 2 || created.CurrentConfigurationVersionID == nil {
 			t.Fatalf("package=%+v", created)
 		}
+		refresh, owned, reserveErr := repo.ReserveRefresh(tx, segmentdomain.RefreshRun{
+			PackageID: created.ID, ConfigurationVersionID: configuration.ID,
+			SourceKeyDigest: [32]byte{1}, ReferenceTime: now, CreatedAt: now, UpdatedAt: now,
+		})
+		if reserveErr != nil || !owned || refresh.ErrorCode != "" || refresh.RiverJobID != nil {
+			t.Fatalf("nullable refresh fields: run=%+v owned=%v err=%v", refresh, owned, reserveErr)
+		}
 		receipt, _, e := repo.Reserve(tx, reservationFor("create-key", json.RawMessage(`{"code":"new-customers"}`), now))
 		if e != nil {
 			return e
@@ -142,6 +149,17 @@ func TestPostgreSQLAudienceConfigurationEmptyCronRoundTrips(t *testing.T) {
 		}
 		if configuration.RefreshCronUTC != "" {
 			return errors.New("empty refresh cron did not round trip")
+		}
+		item, createErr = repo.SetCurrentConfiguration(tx, item.ID, configuration.ID, item.Version, 7, now)
+		if createErr != nil {
+			return createErr
+		}
+		current, createErr := repo.CurrentConfiguration(tx, item.ID)
+		if createErr != nil {
+			return createErr
+		}
+		if current.RefreshCronUTC != "" {
+			return errors.New("empty current refresh cron did not round trip")
 		}
 		return nil
 	})

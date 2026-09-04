@@ -90,6 +90,7 @@ func Apply(ctx context.Context, catalog Catalog, snapshots Snapshots, actor int6
 		return Report{}, fmt.Errorf("ensure default audience group: %w", err)
 	}
 	report := Report{Mode: "semantic_bootstrap_no_legacy_data", ReferenceTime: reference, GroupID: group.ID, GroupName: group.Name, Packages: make([]PackageReport, 0, len(managedDefaults))}
+	var bootstrapReference time.Time
 	for _, definition := range managedDefaults {
 		item, err := catalog.CreatePackage(ctx, segmentapp.PackageCreateCommand{
 			Name: definition.Name, TemplateKey: "active_contacts", GroupID: &group.ID, Actor: actor,
@@ -101,6 +102,13 @@ func Apply(ctx context.Context, catalog Catalog, snapshots Snapshots, actor int6
 		item, err = catalog.GetPackage(ctx, item.ID)
 		if err != nil {
 			return Report{}, fmt.Errorf("read package %s: %w", definition.Code, err)
+		}
+		if bootstrapReference.IsZero() {
+			if item.CreatedAt.IsZero() {
+				return Report{}, fmt.Errorf("read package %s: %w", definition.Code, ErrInvalidDependencies)
+			}
+			bootstrapReference = item.CreatedAt.UTC()
+			report.ReferenceTime = bootstrapReference
 		}
 		packageReport := PackageReport{ID: item.ID, Name: item.Name, Lifecycle: item.Lifecycle}
 		configuration, err := catalog.CurrentConfiguration(ctx, item.ID)
@@ -128,17 +136,17 @@ func Apply(ctx context.Context, catalog Catalog, snapshots Snapshots, actor int6
 			report.Packages = append(report.Packages, packageReport)
 			continue
 		}
-		preview, err := snapshots.Preview(ctx, item.ID, reference)
+		preview, err := snapshots.Preview(ctx, item.ID, bootstrapReference)
 		if err != nil {
 			return Report{}, fmt.Errorf("preview package %s: %w", definition.Code, err)
 		}
 		packageReport.Preview = &PreviewReport{MemberCount: preview.MemberCount, MemberDigest: preview.MemberDigest, WatermarkDigest: preview.WatermarkDigest}
 		run, err := snapshots.AcceptRefresh(ctx, segmentapp.RefreshCommand{
-			PackageID: item.ID, Actor: actor, ReferenceTime: reference,
-			// v2 intentionally supersedes the pre-0053 refresh key. A v1 run may
-			// be durably failed by the member-event fact-kind constraint and must
-			// never be blindly replayed as though it could become publishable.
-			IdempotencyKey: "automation-operations-bootstrap-refresh-v2:" + definition.Code,
+			PackageID: item.ID, Actor: actor, ReferenceTime: bootstrapReference,
+			// v3 supersedes non-replayable bootstrap runs that used the wall clock
+			// with a stable key. The first managed package creation time is durable,
+			// common to the bootstrap, and therefore safe across partial retries.
+			IdempotencyKey: "automation-operations-bootstrap-refresh-v3:" + definition.Code,
 		})
 		if err != nil {
 			return Report{}, fmt.Errorf("queue package %s refresh: %w", definition.Code, err)
