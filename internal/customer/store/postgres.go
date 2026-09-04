@@ -23,6 +23,49 @@ var _ customerapp.Store = PostgreSQL{}
 var _ customerport.ProjectionWriter = PostgreSQL{}
 var _ customerport.CallbackProjectionWriter = PostgreSQL{}
 var _ customerport.AudienceReader = PostgreSQL{}
+var _ customerport.DirectoryDisplayNameReader = PostgreSQL{}
+
+func (PostgreSQL) DisplayNames(ctx context.Context, customerIDs []customerdomain.CustomerID) (map[customerdomain.CustomerID]string, error) {
+	result := make(map[customerdomain.CustomerID]string)
+	if len(customerIDs) == 0 {
+		return result, nil
+	}
+	if len(customerIDs) > 200 {
+		return nil, customerapp.ErrInvalidQuery
+	}
+	ids := make([]int64, 0, len(customerIDs))
+	seen := make(map[customerdomain.CustomerID]struct{}, len(customerIDs))
+	for _, id := range customerIDs {
+		if id < 1 {
+			return nil, customerapp.ErrInvalidQuery
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, int64(id))
+	}
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := tx.Query(ctx, `SELECT customer_id,display_name FROM customer_directory_projection WHERE customer_id=ANY($1)`, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id customerdomain.CustomerID
+		var name string
+		if err = rows.Scan(&id, &name); err != nil {
+			return nil, err
+		}
+		if name != "" {
+			result[id] = name
+		}
+	}
+	return result, rows.Err()
+}
 
 func (PostgreSQL) ActiveWithin(ctx context.Context, reference time.Time, days int) ([]customerdomain.CustomerID, time.Time, error) {
 	if reference.IsZero() || days < 1 || days > 999 {

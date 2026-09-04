@@ -16,6 +16,8 @@ import (
 	"time"
 
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
+	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
+	customerport "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/port"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/order/domain"
 	orderport "github.com/qianlan33333-png/AI-CRM-v3/internal/order/port"
 )
@@ -33,15 +35,20 @@ type Application interface {
 }
 
 type Handler struct {
-	app      Application
-	security RequestSecurity
+	app       Application
+	security  RequestSecurity
+	customers customerport.DirectoryDisplayNameReader
 }
 
-func NewHandler(app Application, security RequestSecurity) (*Handler, error) {
+func NewHandler(app Application, security RequestSecurity, customers ...customerport.DirectoryDisplayNameReader) (*Handler, error) {
 	if app == nil || security == nil {
 		return nil, errors.New("order HTTP dependencies are required")
 	}
-	return &Handler{app: app, security: security}, nil
+	var directory customerport.DirectoryDisplayNameReader
+	if len(customers) > 0 {
+		directory = customers[0]
+	}
+	return &Handler{app: app, security: security, customers: directory}, nil
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -90,8 +97,9 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request, path string) {
 		return
 	}
 	items := make([]orderResponse, 0, len(page.Items))
+	names := h.payerNames(r.Context(), page.Items)
 	for _, item := range page.Items {
-		items = append(items, responseFrom(item))
+		items = append(items, responseFrom(item, names))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items, "orders": items, "total": page.Total, "limit": query.Limit, "offset": query.Offset, "has_more": page.NextCursor != "", "next_cursor": page.NextCursor})
 }
@@ -120,7 +128,7 @@ func (h *Handler) orderTail(w http.ResponseWriter, r *http.Request, tail string)
 		return
 	}
 	if len(parts) == 1 {
-		response := responseFrom(order)
+		response := responseFrom(order, h.payerNames(r.Context(), []domain.Snapshot{order}))
 		response.RefundableAmountTotal = order.Amount.AmountMinor - order.RefundedMinor
 		writeJSON(w, http.StatusOK, response)
 		return
@@ -339,7 +347,7 @@ type orderResponse struct {
 	RefundableAmountTotal int64         `json:"refundable_amount_total"`
 }
 
-func responseFrom(order domain.Snapshot) orderResponse {
+func responseFrom(order domain.Snapshot, names map[customerdomain.CustomerID]string) orderResponse {
 	provider, label := string(order.Provider), string(order.Provider)
 	if order.Provider == domain.ProviderWeChatPay {
 		provider, label = "wechat", "微信支付"
@@ -361,8 +369,35 @@ func responseFrom(order domain.Snapshot) orderResponse {
 	if order.PayerCustomerID != nil {
 		payer = "customer:" + strconv.FormatInt(*order.PayerCustomerID, 10)
 		payerName = "客户 #" + strconv.FormatInt(*order.PayerCustomerID, 10)
+		if name := names[customerdomain.CustomerID(*order.PayerCustomerID)]; name != "" {
+			payerName = name
+		}
 	}
 	return orderResponse{ID: order.ID, RecordOrigin: origin, CreatedAt: order.CreatedAt, MerchantOrderNo: order.MerchantOrderNo, OutTradeNo: order.MerchantOrderNo, OrderNo: order.SourceKey, PlatformTransactionNo: order.ProviderTransactionNo, TransactionID: order.ProviderTransactionNo, PayerName: payerName, PayerID: payer, ProductCode: productCode, ProductName: productName, AmountYuan: fmt.Sprintf("%d.%02d", order.Amount.AmountMinor/100, order.Amount.AmountMinor%100), Currency: order.Amount.Currency, Status: order.Status, StatusLabel: string(order.Status), Provider: provider, ProviderLabel: label, DetailURL: "/admin/orderDetail.html?id=" + url.QueryEscape(order.MerchantOrderNo)}
+}
+
+func (h *Handler) payerNames(ctx context.Context, orders []domain.Snapshot) map[customerdomain.CustomerID]string {
+	if h.customers == nil {
+		return nil
+	}
+	ids := make([]customerdomain.CustomerID, 0, len(orders))
+	seen := make(map[customerdomain.CustomerID]struct{}, len(orders))
+	for _, order := range orders {
+		if order.PayerCustomerID == nil {
+			continue
+		}
+		id := customerdomain.CustomerID(*order.PayerCustomerID)
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	names, err := h.customers.DisplayNames(ctx, ids)
+	if err != nil {
+		return nil
+	}
+	return names
 }
 
 func (h *Handler) read(w http.ResponseWriter, r *http.Request) bool {

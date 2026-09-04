@@ -27,6 +27,13 @@ type DirectoryProjection struct {
 	UpdatedAt       time.Time
 }
 
+// DirectoryDisplayNameReader exposes only the presentation-safe names needed
+// by another domain after it already holds canonical Customer IDs. Missing
+// projections are omitted; this boundary never resolves external identities.
+type DirectoryDisplayNameReader interface {
+	DisplayNames(context.Context, []customerdomain.CustomerID) (map[customerdomain.CustomerID]string, error)
+}
+
 // ProjectionWriter is called by versioned event consumers. It does not grant
 // access to Identity or WeCom-owned tables.
 type ProjectionWriter interface {

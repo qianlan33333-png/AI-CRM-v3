@@ -166,6 +166,37 @@ func TestPostgreSQLHistoricalImportIsEffectIneligibleAndReplayableAcrossRuns(t *
 	if _, err = native.Exec(ctx, `UPDATE orders SET effect_eligible=TRUE WHERE id=$1`, first.ID); err == nil {
 		t.Fatal("historical order became effect eligible")
 	}
+	attributionRunDigest := make([]byte, 32)
+	attributionSchemaDigest := make([]byte, 32)
+	var attributionRunID int64
+	if err = native.QueryRow(ctx, `INSERT INTO order_history_attribution_runs(run_key,source_manifest_digest,source_schema_digest,identity_scope,snapshot_at,status,input_count) VALUES('attribution-run-1',$1,$2,'wecom-corp:test',CURRENT_TIMESTAMP,'applying',1) RETURNING id`, attributionRunDigest, attributionSchemaDigest).Scan(&attributionRunID); err != nil {
+		t.Fatal(err)
+	}
+	attribution := orderapp.NewHistoricalAttributionService(repository)
+	evidence := [32]byte{7}
+	attributionCommand := orderport.HistoricalAttributionCommand{RunID: attributionRunID, SourceKey: "history-order-1", OrderReference: first.MerchantOrderNo, EvidenceDigest: evidence, Outcome: orderport.AttributionLinked, PayerCustomerID: 55, PayerIdentityID: 66, OccurredAt: time.Now().UTC()}
+	var linked orderport.HistoricalAttributionResult
+	if err = uow.Within(ctx, func(tx context.Context) error {
+		linked, err = attribution.RecordHistoricalAttributionWithin(tx, attributionCommand)
+		return err
+	}); err != nil || linked.Outcome != orderport.AttributionLinked || linked.PayerCustomerID != 55 {
+		t.Fatalf("linked=%+v err=%v", linked, err)
+	}
+	var attributionReplay orderport.HistoricalAttributionResult
+	if err = uow.Within(ctx, func(tx context.Context) error {
+		attributionReplay, err = attribution.RecordHistoricalAttributionWithin(tx, attributionCommand)
+		return err
+	}); err != nil || !attributionReplay.Replayed || attributionReplay.Outcome != orderport.AttributionLinked {
+		t.Fatalf("replay=%+v err=%v", attributionReplay, err)
+	}
+	persisted, err := service.Get(ctx, first.ID)
+	if err != nil || persisted.PayerCustomerID == nil || *persisted.PayerCustomerID != 55 || persisted.BeneficiaryCustomerID != nil || persisted.EffectEligible {
+		t.Fatalf("persisted attribution=%+v err=%v", persisted, err)
+	}
+	var attributionReceipts, attributionAudits, attributionOutbox int
+	if err = native.QueryRow(ctx, `SELECT (SELECT count(*) FROM order_history_attribution_receipts),(SELECT count(*) FROM order_audit_events WHERE event_type='order.payer_attributed'),(SELECT count(*) FROM order_outbox WHERE event_type='order.payer_attributed')`).Scan(&attributionReceipts, &attributionAudits, &attributionOutbox); err != nil || attributionReceipts != 1 || attributionAudits != 1 || attributionOutbox != 1 {
+		t.Fatalf("attribution receipts=%d audits=%d outbox=%d err=%v", attributionReceipts, attributionAudits, attributionOutbox, err)
+	}
 	var orderCount, receiptCount int
 	if err = native.QueryRow(ctx, `SELECT (SELECT count(*) FROM orders),(SELECT count(*) FROM order_import_receipts)`).Scan(&orderCount, &receiptCount); err != nil || orderCount != 1 || receiptCount != 2 {
 		t.Fatalf("orders=%d receipts=%d err=%v", orderCount, receiptCount, err)
@@ -206,7 +237,7 @@ func orderIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 	if !ok {
 		t.Fatal("locate integration test")
 	}
-	for _, name := range []string{"0020_order.sql", "0024_order_product_version.sql"} {
+	for _, name := range []string{"0020_order.sql", "0024_order_product_version.sql", "0049_order_history_attribution.sql"} {
 		migration, readErr := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "..", "migrations", name))
 		if readErr != nil {
 			t.Fatal(readErr)
