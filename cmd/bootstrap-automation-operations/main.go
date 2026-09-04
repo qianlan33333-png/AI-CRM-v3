@@ -34,7 +34,15 @@ import (
 
 func main() {
 	if err := execute(context.Background(), os.Stdout); err != nil {
-		slog.Error("automation operations semantic bootstrap failed", "error", err)
+		attributes := []any{"error", err}
+		if diagnostic, ok := segmentapp.PersistenceFailure(err); ok {
+			attributes = append(attributes,
+				"failure_stage", diagnostic.Stage,
+				"sqlstate", diagnostic.SQLState,
+				"constraint", diagnostic.Constraint,
+			)
+		}
+		slog.Error("automation operations semantic bootstrap failed", attributes...)
 		os.Exit(1)
 	}
 }
