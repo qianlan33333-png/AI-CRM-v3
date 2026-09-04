@@ -439,6 +439,32 @@ paths:
         - {$ref: "#/components/parameters/Offset"}
       responses:
         "200": {description: Candidate page, content: {application/json: {schema: {$ref: "#/components/schemas/MergeCandidatePage"}}}}
+  /api/admin/oneid/source-conflicts:
+    get:
+      operationId: listOneIDSourceConflicts
+      description: Lists digest-safe HXC identity-source conflicts. Raw UnionID is never returned.
+      security: [{adminSession: []}]
+      parameters:
+        - {name: source, in: query, required: true, schema: {type: string, const: hxc}}
+        - {name: status, in: query, schema: {type: string, enum: [open, resolved, ignored], default: open}}
+        - {$ref: "#/components/parameters/Limit"}
+        - {$ref: "#/components/parameters/Offset"}
+      responses:
+        "200": {description: HXC source conflict page, content: {application/json: {schema: {$ref: "#/components/schemas/HXCSourceConflictPage"}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+  /api/admin/oneid/source-conflicts/{id}/ignore:
+    post:
+      operationId: ignoreOneIDSourceConflict
+      description: SuperAdmin-only exact-CAS audited ignore. It never merges Customer roots.
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/ID"}, {$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/HXCSourceConflictIgnoreRequest"}}}}
+      responses:
+        "200": {description: Conflict ignored or idempotently replayed, content: {application/json: {schema: {$ref: "#/components/schemas/HXCSourceConflictIgnoreResponse"}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
   /api/admin/oneid/merge-candidates/{id}/confirm:
     post:
       operationId: confirmOneIDMerge
@@ -3459,7 +3485,7 @@ components:
     HXCDashboardCounts:
       type: object
       additionalProperties: false
-      required: [total, active_used, active_unused, registered_no_active_membership, matched, unmatched, conflict]
+      required: [total, active_used, active_unused, registered_no_active_membership, matched, unmatched, conflict, matched_by_unionid, matched_by_phone, matched_by_both, pending_observation, invalid_identity]
       properties:
         total: {type: integer, format: int64, minimum: 0}
         active_used: {type: integer, format: int64, minimum: 0}
@@ -3468,13 +3494,18 @@ components:
         matched: {type: integer, format: int64, minimum: 0}
         unmatched: {type: integer, format: int64, minimum: 0}
         conflict: {type: integer, format: int64, minimum: 0}
+        matched_by_unionid: {type: integer, format: int64, minimum: 0}
+        matched_by_phone: {type: integer, format: int64, minimum: 0}
+        matched_by_both: {type: integer, format: int64, minimum: 0}
+        pending_observation: {type: integer, format: int64, minimum: 0}
+        invalid_identity: {type: integer, format: int64, minimum: 0}
     HXCDashboardSummary:
       type: object
       additionalProperties: false
       required: [projection_id, rule_version, projection_as_of, published_at, freshness, age_seconds, source_digest, projection_digest, counts]
       properties:
         projection_id: {$ref: "#/components/schemas/PositiveID"}
-        rule_version: {type: string, const: hxc-current-v1}
+        rule_version: {type: string, const: hxc-current-v2}
         projection_as_of: {type: string, format: date-time}
         source_watermark: {type: [string, "null"], format: date-time}
         published_at: {type: string, format: date-time}
@@ -3493,6 +3524,8 @@ components:
         business_stage: {type: array, maxItems: 20, uniqueItems: true, items: {type: string, minLength: 1, maxLength: 100}}
         user_segment: {type: array, maxItems: 20, uniqueItems: true, items: {type: string, minLength: 1, maxLength: 100}}
         identity_state: {type: array, maxItems: 3, uniqueItems: true, items: {type: string, enum: [matched, unmatched, conflict]}}
+        matched_by: {type: array, maxItems: 4, uniqueItems: true, items: {type: string, enum: [none, unionid, phone, both]}}
+        identity_reason_code: {type: array, maxItems: 13, uniqueItems: true, items: {type: string, enum: [matched_unionid, matched_phone, matched_both, no_match, missing_identity, invalid_unionid, invalid_phone, duplicate_hxc_unionid, duplicate_hxc_phone, duplicate_hxc_customer, identity_multiple_roots, unionid_phone_cross_root, concurrent_identity_conflict]}}
     HXCDashboardQuery:
       type: object
       additionalProperties: false
@@ -3501,13 +3534,13 @@ components:
         filters: {$ref: "#/components/schemas/HXCDashboardFilters"}
         exact_hxc_user_id: {type: string, minLength: 1, maxLength: 255, writeOnly: true}
         sort: {type: string, enum: [last_used_at_desc, source_updated_at_desc, subscription_expires_at_asc, subscription_expires_at_desc, messages_7d_desc]}
-        group_by: {type: string, enum: [stage, subscription_tier, last_capability, business_stage, user_segment, identity_state]}
+        group_by: {type: string, enum: [stage, subscription_tier, last_capability, business_stage, user_segment, identity_state, matched_by, identity_reason_code]}
         cursor: {type: string, maxLength: 2048}
         limit: {type: integer, minimum: 1, maximum: 100, default: 50}
     HXCDashboardRow:
       type: object
       additionalProperties: false
-      required: [user_ref, stage, subscription_tier, monthly_chat_quota, current_period_used, consultation_limit, consultation_used, membership_attribution, sessions_7d, sessions_30d, sessions_total, user_messages_7d, user_messages_30d, user_messages_total, capability_usage, identity_state, source_updated_at]
+      required: [user_ref, stage, subscription_tier, monthly_chat_quota, current_period_used, consultation_limit, consultation_used, membership_attribution, sessions_7d, sessions_30d, sessions_total, user_messages_7d, user_messages_30d, user_messages_total, capability_usage, identity_state, matched_by, identity_reason_code, source_updated_at]
       properties:
         user_ref: {type: string, pattern: '^HXC-[0-9a-f]{12}$'}
         stage: {type: string, enum: [active_used, active_unused, registered_no_active_membership]}
@@ -3533,6 +3566,10 @@ components:
         focus_topics: {type: array, items: {type: string}}
         pain_tag: {type: [string, "null"]}
         identity_state: {type: string, enum: [matched, unmatched, conflict]}
+        matched_by: {type: string, enum: [none, unionid, phone, both]}
+        identity_reason_code: {type: string, maxLength: 80}
+        identity_case_id: {$ref: "#/components/schemas/PositiveID"}
+        merge_candidate_id: {$ref: "#/components/schemas/PositiveID"}
         source_updated_at: {type: string, format: date-time}
     HXCDashboardGroup:
       type: object
@@ -3551,14 +3588,16 @@ components:
     HXCDashboardRefresh:
       type: object
       additionalProperties: false
-      required: [run_id, trigger, status, source_count, processed_count, created_at, updated_at]
+      required: [run_id, trigger, identity_mode, status, source_count, processed_count, identity_replay_verified_count, created_at, updated_at]
       properties:
         run_id: {$ref: "#/components/schemas/PositiveID"}
         trigger: {type: string, enum: [manual, scheduled, initial]}
+        identity_mode: {type: string, enum: [inspect, apply]}
         status: {type: string, enum: [queued, running, publishing, succeeded, failed]}
         projection_id: {$ref: "#/components/schemas/PositiveID"}
         source_count: {type: integer, format: int64, minimum: 0}
         processed_count: {type: integer, format: int64, minimum: 0}
+        identity_replay_verified_count: {type: integer, format: int64, minimum: 0}
         error_code: {type: string}
         started_at: {type: [string, "null"], format: date-time}
         completed_at: {type: [string, "null"], format: date-time}
@@ -5259,6 +5298,48 @@ components:
       type: object
       required: [id, left_customer_id, right_customer_id, evidence_strength, reason, status, created_at]
       properties: {id: {$ref: "#/components/schemas/PositiveID"}, left_customer_id: {$ref: "#/components/schemas/PositiveID"}, right_customer_id: {$ref: "#/components/schemas/PositiveID"}, evidence_strength: {type: string, enum: [strong, medium, weak]}, reason: {type: string}, status: {type: string}, selected_survivor_customer_id: {$ref: "#/components/schemas/PositiveID"}, created_at: {type: string, format: date-time}, resolved_at: {type: [string, "null"], format: date-time}}
+    HXCSourceObservation:
+      type: object
+      additionalProperties: false
+      required: [kind, scope, display_value, assurance, status]
+      properties:
+        kind: {type: string, enum: [unionid, phone]}
+        scope: {type: string, maxLength: 256}
+        display_value: {type: string, maxLength: 32, description: Masked phone or a fixed stored marker; never raw UnionID.}
+        assurance: {type: string, enum: [verified, declared]}
+        status: {type: string, enum: [active, retired]}
+    HXCSourceConflict:
+      type: object
+      additionalProperties: false
+      required: [id, subject_ref, reason, evidence_digest, status, version, created_at]
+      properties:
+        id: {$ref: "#/components/schemas/PositiveID"}
+        subject_ref: {type: string, pattern: '^HXC-[0-9a-f]{12}$'}
+        reason: {type: string, maxLength: 80}
+        left_customer_id: {$ref: "#/components/schemas/PositiveID"}
+        right_customer_id: {$ref: "#/components/schemas/PositiveID"}
+        merge_candidate_id: {$ref: "#/components/schemas/PositiveID"}
+        evidence_digest: {type: string, pattern: '^[0-9a-f]{64}$'}
+        status: {type: string, enum: [open, resolved, ignored]}
+        version: {type: integer, format: int64, minimum: 1}
+        observations: {type: array, maxItems: 20, items: {$ref: "#/components/schemas/HXCSourceObservation"}}
+        created_at: {type: string, format: date-time}
+        resolved_at: {type: [string, "null"], format: date-time}
+    HXCSourceConflictPage:
+      type: object
+      additionalProperties: false
+      required: [items, limit, offset]
+      properties: {items: {type: array, maxItems: 100, items: {$ref: "#/components/schemas/HXCSourceConflict"}}, limit: {type: integer, minimum: 1, maximum: 100}, offset: {type: integer, minimum: 0}}
+    HXCSourceConflictIgnoreRequest:
+      type: object
+      additionalProperties: false
+      required: [expected_version, reason]
+      properties: {expected_version: {type: integer, format: int64, minimum: 1}, reason: {type: string, enum: [not_same_person, shared_phone, source_data_error, accepted_risk]}}
+    HXCSourceConflictIgnoreResponse:
+      type: object
+      additionalProperties: false
+      required: [conflict, replayed]
+      properties: {conflict: {$ref: "#/components/schemas/HXCSourceConflict"}, replayed: {type: boolean}}
     CustomerDirectoryItem:
       type: object
       additionalProperties: false

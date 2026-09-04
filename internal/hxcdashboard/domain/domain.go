@@ -11,7 +11,7 @@ import (
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 )
 
-const RuleVersion = "hxc-current-v1"
+const RuleVersion = "hxc-current-v2"
 
 var ErrInvalidRow = errors.New("invalid hxc dashboard row")
 
@@ -34,6 +34,7 @@ const (
 type SourceRow struct {
 	HXCUserID                                                string
 	UnionID                                                  string
+	Phone                                                    string
 	SubscriptionTier                                         string
 	SubscriptionExpiresAt                                    *time.Time
 	MonthlyChatQuota, CurrentPeriodUsed                      int64
@@ -54,11 +55,20 @@ type ProjectionRow struct {
 	UserRef       string
 	Stage         Stage
 	SourceRow
-	CustomerID    customerdomain.CustomerID
-	IdentityState IdentityState
+	CustomerID         customerdomain.CustomerID
+	IdentityState      IdentityState
+	MatchedBy          string
+	IdentityReasonCode string
+	IdentityCaseID     int64
+	MergeCandidateID   int64
 }
 
-type Counts struct{ Total, ActiveUsed, ActiveUnused, RegisteredNoActiveMembership, Matched, Unmatched, Conflict int64 }
+type Counts struct {
+	Total, ActiveUsed, ActiveUnused, RegisteredNoActiveMembership int64
+	Matched, Unmatched, Conflict                                  int64
+	MatchedByUnionID, MatchedByPhone, MatchedByBoth               int64
+	PendingObservation, InvalidIdentity                           int64
+}
 
 type Projection struct {
 	ID                             int64
@@ -66,6 +76,7 @@ type Projection struct {
 	Watermark                      *time.Time
 	SourceDigest, ProjectionDigest [32]byte
 	Counts                         Counts
+	IdentityReplayVerified         int64
 	PublishedAt                    time.Time
 	Rows                           []ProjectionRow
 }
@@ -83,10 +94,12 @@ const (
 type RefreshRun struct {
 	ID             int64         `json:"run_id"`
 	Trigger        string        `json:"trigger"`
+	IdentityMode   string        `json:"identity_mode"`
 	Status         RefreshStatus `json:"status"`
 	ProjectionID   *int64        `json:"projection_id,omitempty"`
 	SourceCount    int64         `json:"source_count"`
 	ProcessedCount int64         `json:"processed_count"`
+	ReplayVerified int64         `json:"identity_replay_verified_count"`
 	ErrorCode      string        `json:"error_code,omitempty"`
 	Version        int64         `json:"-"`
 	RequestedBy    int64         `json:"-"`

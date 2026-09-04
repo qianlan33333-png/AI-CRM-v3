@@ -1,6 +1,6 @@
 SHELL := /usr/bin/env bash
 
-.PHONY: fmt fmt-check vet test arch build check run generate-orval orval-check radar-donor-check radar-check
+.PHONY: fmt fmt-check vet test arch build check run generate-orval orval-check radar-donor-check radar-check hxc-identity-boundaries
 
 generate-orval:
 	npx orval --config ./orval.config.mjs
@@ -32,7 +32,10 @@ build:
 	mkdir -p bin
 	GOWORK=off go build -o bin/aicrm ./cmd/aicrm
 
-check: fmt-check vet test arch build
+check: fmt-check vet test arch hxc-identity-boundaries build
+
+hxc-identity-boundaries:
+	bash scripts/check-hxc-identity-boundaries.sh
 
 radar-donor-check:
 	bash scripts/check-radar-donor-manifest.sh

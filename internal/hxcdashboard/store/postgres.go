@@ -22,13 +22,13 @@ type PostgreSQL struct{ pool *pgxpool.Pool }
 
 func NewPostgreSQL(pool *pgxpool.Pool) *PostgreSQL { return &PostgreSQL{pool: pool} }
 
-func (store *PostgreSQL) CreateRun(ctx context.Context, runKey string, requestDigest [32]byte, trigger string, requestedBy int64) (domain.RefreshRun, bool, error) {
+func (store *PostgreSQL) CreateRun(ctx context.Context, runKey string, requestDigest [32]byte, trigger, identityMode string, requestedBy int64) (domain.RefreshRun, bool, error) {
 	tx, err := platformpostgres.RequireTransaction(ctx)
 	if err != nil {
 		return domain.RefreshRun{}, false, err
 	}
 	var run domain.RefreshRun
-	err = tx.QueryRow(ctx, `INSERT INTO hxc_dashboard_refresh_runs(run_key,request_digest,trigger,status,requested_by) VALUES($1,$2,$3,'queued',NULLIF($4,0)) ON CONFLICT(run_key) DO NOTHING RETURNING id,trigger,status,projection_id,source_count,processed_count,COALESCE(error_code,''),version,COALESCE(requested_by,0),started_at,completed_at,created_at,updated_at`, runKey, requestDigest[:], trigger, requestedBy).Scan(&run.ID, &run.Trigger, &run.Status, &run.ProjectionID, &run.SourceCount, &run.ProcessedCount, &run.ErrorCode, &run.Version, &run.RequestedBy, &run.StartedAt, &run.CompletedAt, &run.CreatedAt, &run.UpdatedAt)
+	err = tx.QueryRow(ctx, `INSERT INTO hxc_dashboard_refresh_runs(run_key,request_digest,trigger,identity_mode,status,requested_by) VALUES($1,$2,$3,$4,'queued',NULLIF($5,0)) ON CONFLICT(run_key) DO NOTHING RETURNING id,trigger,identity_mode,status,projection_id,source_count,processed_count,identity_replay_verified_count,COALESCE(error_code,''),version,COALESCE(requested_by,0),started_at,completed_at,created_at,updated_at`, runKey, requestDigest[:], trigger, identityMode, requestedBy).Scan(&run.ID, &run.Trigger, &run.IdentityMode, &run.Status, &run.ProjectionID, &run.SourceCount, &run.ProcessedCount, &run.ReplayVerified, &run.ErrorCode, &run.Version, &run.RequestedBy, &run.StartedAt, &run.CompletedAt, &run.CreatedAt, &run.UpdatedAt)
 	if err == nil {
 		return run, false, nil
 	}
@@ -49,7 +49,7 @@ func (store *PostgreSQL) GetRun(ctx context.Context, id int64, runKey string) (d
 	if tx, err := platformpostgres.RequireTransaction(ctx); err == nil {
 		queryer = tx
 	}
-	query := `SELECT id,trigger,status,projection_id,source_count,processed_count,COALESCE(error_code,''),version,COALESCE(requested_by,0),started_at,completed_at,created_at,updated_at FROM hxc_dashboard_refresh_runs WHERE `
+	query := `SELECT id,trigger,identity_mode,status,projection_id,source_count,processed_count,identity_replay_verified_count,COALESCE(error_code,''),version,COALESCE(requested_by,0),started_at,completed_at,created_at,updated_at FROM hxc_dashboard_refresh_runs WHERE `
 	var arg any
 	if id > 0 {
 		query += "id=$1"
@@ -59,7 +59,7 @@ func (store *PostgreSQL) GetRun(ctx context.Context, id int64, runKey string) (d
 		arg = runKey
 	}
 	var run domain.RefreshRun
-	err := queryer.QueryRow(ctx, query, arg).Scan(&run.ID, &run.Trigger, &run.Status, &run.ProjectionID, &run.SourceCount, &run.ProcessedCount, &run.ErrorCode, &run.Version, &run.RequestedBy, &run.StartedAt, &run.CompletedAt, &run.CreatedAt, &run.UpdatedAt)
+	err := queryer.QueryRow(ctx, query, arg).Scan(&run.ID, &run.Trigger, &run.IdentityMode, &run.Status, &run.ProjectionID, &run.SourceCount, &run.ProcessedCount, &run.ReplayVerified, &run.ErrorCode, &run.Version, &run.RequestedBy, &run.StartedAt, &run.CompletedAt, &run.CreatedAt, &run.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.RefreshRun{}, ErrNotFound
 	}
@@ -89,12 +89,12 @@ func (store *PostgreSQL) MarkRunning(ctx context.Context, id int64) error {
 	}
 	return nil
 }
-func (store *PostgreSQL) MarkPublishing(ctx context.Context, id int64, count int64) error {
+func (store *PostgreSQL) MarkPublishing(ctx context.Context, id int64, count, replayVerified int64) error {
 	tx, err := platformpostgres.RequireTransaction(ctx)
 	if err != nil {
 		return err
 	}
-	_, err = tx.Exec(ctx, `UPDATE hxc_dashboard_refresh_runs SET status='publishing',source_count=$2,processed_count=$2,updated_at=now(),version=version+1 WHERE id=$1 AND status='running'`, id, count)
+	_, err = tx.Exec(ctx, `UPDATE hxc_dashboard_refresh_runs SET status='publishing',source_count=$2,processed_count=$2,identity_replay_verified_count=$3,updated_at=now(),version=version+1 WHERE id=$1 AND status='running'`, id, count, replayVerified)
 	return err
 }
 func (store *PostgreSQL) Fail(ctx context.Context, id int64, code string) error {
@@ -116,7 +116,7 @@ func (store *PostgreSQL) Publish(ctx context.Context, runID int64, projection do
 	}
 	var id int64
 	c := projection.Counts
-	err = tx.QueryRow(ctx, `INSERT INTO hxc_dashboard_versions(rule_version,status,projection_as_of,source_watermark,source_digest,projection_digest,total_count,active_used_count,active_unused_count,registered_no_active_membership_count,matched_count,unmatched_count,conflict_count) VALUES($1,'published',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id`, domain.RuleVersion, projection.AsOf, projection.Watermark, projection.SourceDigest[:], projection.ProjectionDigest[:], c.Total, c.ActiveUsed, c.ActiveUnused, c.RegisteredNoActiveMembership, c.Matched, c.Unmatched, c.Conflict).Scan(&id)
+	err = tx.QueryRow(ctx, `INSERT INTO hxc_dashboard_versions(rule_version,status,projection_as_of,source_watermark,source_digest,projection_digest,total_count,active_used_count,active_unused_count,registered_no_active_membership_count,matched_count,unmatched_count,conflict_count,matched_by_unionid_count,matched_by_phone_count,matched_by_both_count,pending_observation_count,invalid_identity_count) VALUES($1,'published',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING id`, domain.RuleVersion, projection.AsOf, projection.Watermark, projection.SourceDigest[:], projection.ProjectionDigest[:], c.Total, c.ActiveUsed, c.ActiveUnused, c.RegisteredNoActiveMembership, c.Matched, c.Unmatched, c.Conflict, c.MatchedByUnionID, c.MatchedByPhone, c.MatchedByBoth, c.PendingObservation, c.InvalidIdentity).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("insert projection: %w", err)
 	}
@@ -126,9 +126,9 @@ func (store *PostgreSQL) Publish(ctx context.Context, runID int64, projection do
 		if r.CustomerID > 0 {
 			customer = int64(r.CustomerID)
 		}
-		rows = append(rows, []any{id, r.SubjectDigest[:], r.UserRef, r.Stage, r.SubscriptionTier, r.SubscriptionExpiresAt, r.MonthlyChatQuota, r.CurrentPeriodUsed, r.ConsultationLimit, r.ConsultationUsed, r.MembershipAttribution, r.Sessions7D, r.Sessions30D, r.SessionsTotal, r.UserMessages7D, r.UserMessages30D, r.UserMessagesTotal, r.CapabilityUsage, r.LastUsedAt, nullString(r.LastCapability), nullString(r.BusinessStage), nullString(r.MainLineType), nullString(r.UserSegment), r.FocusTopics, nullString(r.PainTag), customer, r.IdentityState, r.SourceUpdatedAt})
+		rows = append(rows, []any{id, r.SubjectDigest[:], r.UserRef, r.Stage, r.SubscriptionTier, r.SubscriptionExpiresAt, r.MonthlyChatQuota, r.CurrentPeriodUsed, r.ConsultationLimit, r.ConsultationUsed, r.MembershipAttribution, r.Sessions7D, r.Sessions30D, r.SessionsTotal, r.UserMessages7D, r.UserMessages30D, r.UserMessagesTotal, r.CapabilityUsage, r.LastUsedAt, nullString(r.LastCapability), nullString(r.BusinessStage), nullString(r.MainLineType), nullString(r.UserSegment), r.FocusTopics, nullString(r.PainTag), customer, r.IdentityState, r.MatchedBy, r.IdentityReasonCode, nullableInt64(r.IdentityCaseID), nullableInt64(r.MergeCandidateID), r.SourceUpdatedAt})
 	}
-	columns := []string{"projection_id", "subject_digest", "user_ref", "stage", "subscription_tier", "subscription_expires_at", "monthly_chat_quota", "current_period_used", "consultation_limit", "consultation_used", "membership_attribution", "sessions_7d", "sessions_30d", "sessions_total", "user_messages_7d", "user_messages_30d", "user_messages_total", "capability_usage", "last_used_at", "last_capability", "business_stage", "main_line_type", "user_segment", "focus_topics", "pain_tag", "customer_id", "identity_state", "source_updated_at"}
+	columns := []string{"projection_id", "subject_digest", "user_ref", "stage", "subscription_tier", "subscription_expires_at", "monthly_chat_quota", "current_period_used", "consultation_limit", "consultation_used", "membership_attribution", "sessions_7d", "sessions_30d", "sessions_total", "user_messages_7d", "user_messages_30d", "user_messages_total", "capability_usage", "last_used_at", "last_capability", "business_stage", "main_line_type", "user_segment", "focus_topics", "pain_tag", "customer_id", "identity_state", "matched_by", "identity_reason_code", "identity_case_id", "merge_candidate_id", "source_updated_at"}
 	if len(rows) > 0 {
 		if n, copyErr := tx.CopyFrom(ctx, pgx.Identifier{"hxc_dashboard_rows"}, columns, pgx.CopyFromRows(rows)); copyErr != nil || n != int64(len(rows)) {
 			return 0, fmt.Errorf("copy projection rows: %w", copyErr)
@@ -149,6 +149,12 @@ func nullString(value string) any {
 	}
 	return value
 }
+func nullableInt64(value int64) any {
+	if value == 0 {
+		return nil
+	}
+	return value
+}
 func isUniqueViolation(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == "23505"
@@ -156,6 +162,7 @@ func isUniqueViolation(err error) bool {
 
 type Summary struct {
 	ID               int64
+	RuleVersion      string
 	AsOf             time.Time
 	Watermark        *time.Time
 	PublishedAt      time.Time
@@ -167,7 +174,7 @@ type Summary struct {
 func (store *PostgreSQL) Summary(ctx context.Context) (Summary, error) {
 	var s Summary
 	var sourceDigest, projectionDigest []byte
-	err := store.pool.QueryRow(ctx, `SELECT id,projection_as_of,source_watermark,published_at,source_digest,projection_digest,total_count,active_used_count,active_unused_count,registered_no_active_membership_count,matched_count,unmatched_count,conflict_count FROM hxc_dashboard_versions WHERE status='published'`).Scan(&s.ID, &s.AsOf, &s.Watermark, &s.PublishedAt, &sourceDigest, &projectionDigest, &s.Counts.Total, &s.Counts.ActiveUsed, &s.Counts.ActiveUnused, &s.Counts.RegisteredNoActiveMembership, &s.Counts.Matched, &s.Counts.Unmatched, &s.Counts.Conflict)
+	err := store.pool.QueryRow(ctx, `SELECT id,rule_version,projection_as_of,source_watermark,published_at,source_digest,projection_digest,total_count,active_used_count,active_unused_count,registered_no_active_membership_count,matched_count,unmatched_count,conflict_count,matched_by_unionid_count,matched_by_phone_count,matched_by_both_count,pending_observation_count,invalid_identity_count FROM hxc_dashboard_versions WHERE status='published'`).Scan(&s.ID, &s.RuleVersion, &s.AsOf, &s.Watermark, &s.PublishedAt, &sourceDigest, &projectionDigest, &s.Counts.Total, &s.Counts.ActiveUsed, &s.Counts.ActiveUnused, &s.Counts.RegisteredNoActiveMembership, &s.Counts.Matched, &s.Counts.Unmatched, &s.Counts.Conflict, &s.Counts.MatchedByUnionID, &s.Counts.MatchedByPhone, &s.Counts.MatchedByBoth, &s.Counts.PendingObservation, &s.Counts.InvalidIdentity)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Summary{}, ErrNotFound
 	}
@@ -179,6 +186,7 @@ func (store *PostgreSQL) Summary(ctx context.Context) (Summary, error) {
 type Query struct {
 	ProjectionID                                                                              int64
 	Stages, SubscriptionTiers, LastCapabilities, BusinessStages, UserSegments, IdentityStates []string
+	MatchedBy, IdentityReasonCodes                                                            []string
 	SubjectDigest                                                                             []byte
 	Sort                                                                                      string
 	GroupBy                                                                                   string
@@ -209,6 +217,10 @@ type Row struct {
 	FocusTopics           json.RawMessage `json:"focus_topics"`
 	PainTag               string          `json:"pain_tag,omitempty"`
 	IdentityState         string          `json:"identity_state"`
+	MatchedBy             string          `json:"matched_by"`
+	IdentityReasonCode    string          `json:"identity_reason_code"`
+	IdentityCaseID        int64           `json:"identity_case_id,omitempty"`
+	MergeCandidateID      int64           `json:"merge_candidate_id,omitempty"`
 	SourceUpdatedAt       time.Time       `json:"source_updated_at"`
 }
 type Group struct {
@@ -231,6 +243,8 @@ func (store *PostgreSQL) QueryRows(ctx context.Context, q Query) ([]Row, []Group
 	addArray("business_stage", q.BusinessStages)
 	addArray("user_segment", q.UserSegments)
 	addArray("identity_state", q.IdentityStates)
+	addArray("matched_by", q.MatchedBy)
+	addArray("identity_reason_code", q.IdentityReasonCodes)
 	if len(q.SubjectDigest) > 0 {
 		args = append(args, q.SubjectDigest)
 		where = append(where, fmt.Sprintf("subject_digest=$%d", len(args)))
@@ -240,7 +254,7 @@ func (store *PostgreSQL) QueryRows(ctx context.Context, q Query) ([]Row, []Group
 		order = "last_used_at DESC NULLS LAST,subject_digest"
 	}
 	args = append(args, q.Limit+1, q.Offset)
-	sqlText := `SELECT user_ref,stage,subscription_tier,subscription_expires_at,monthly_chat_quota,current_period_used,consultation_limit,consultation_used,membership_attribution,sessions_7d,sessions_30d,sessions_total,user_messages_7d,user_messages_30d,user_messages_total,capability_usage,last_used_at,COALESCE(last_capability,''),COALESCE(business_stage,''),COALESCE(main_line_type,''),COALESCE(user_segment,''),focus_topics,COALESCE(pain_tag,''),identity_state,source_updated_at FROM hxc_dashboard_rows WHERE ` + strings.Join(where, " AND ") + " ORDER BY " + order + fmt.Sprintf(" LIMIT $%d OFFSET $%d", len(args)-1, len(args))
+	sqlText := `SELECT user_ref,stage,subscription_tier,subscription_expires_at,monthly_chat_quota,current_period_used,consultation_limit,consultation_used,membership_attribution,sessions_7d,sessions_30d,sessions_total,user_messages_7d,user_messages_30d,user_messages_total,capability_usage,last_used_at,COALESCE(last_capability,''),COALESCE(business_stage,''),COALESCE(main_line_type,''),COALESCE(user_segment,''),focus_topics,COALESCE(pain_tag,''),identity_state,matched_by,identity_reason_code,COALESCE(identity_case_id,0),COALESCE(merge_candidate_id,0),source_updated_at FROM hxc_dashboard_rows WHERE ` + strings.Join(where, " AND ") + " ORDER BY " + order + fmt.Sprintf(" LIMIT $%d OFFSET $%d", len(args)-1, len(args))
 	rows, err := store.pool.Query(ctx, sqlText, args...)
 	if err != nil {
 		return nil, nil, false, err
@@ -249,7 +263,7 @@ func (store *PostgreSQL) QueryRows(ctx context.Context, q Query) ([]Row, []Group
 	items := make([]Row, 0, q.Limit+1)
 	for rows.Next() {
 		var row Row
-		if err = rows.Scan(&row.UserRef, &row.Stage, &row.SubscriptionTier, &row.SubscriptionExpiresAt, &row.MonthlyChatQuota, &row.CurrentPeriodUsed, &row.ConsultationLimit, &row.ConsultationUsed, &row.MembershipAttribution, &row.Sessions7D, &row.Sessions30D, &row.SessionsTotal, &row.UserMessages7D, &row.UserMessages30D, &row.UserMessagesTotal, &row.CapabilityUsage, &row.LastUsedAt, &row.LastCapability, &row.BusinessStage, &row.MainLineType, &row.UserSegment, &row.FocusTopics, &row.PainTag, &row.IdentityState, &row.SourceUpdatedAt); err != nil {
+		if err = rows.Scan(&row.UserRef, &row.Stage, &row.SubscriptionTier, &row.SubscriptionExpiresAt, &row.MonthlyChatQuota, &row.CurrentPeriodUsed, &row.ConsultationLimit, &row.ConsultationUsed, &row.MembershipAttribution, &row.Sessions7D, &row.Sessions30D, &row.SessionsTotal, &row.UserMessages7D, &row.UserMessages30D, &row.UserMessagesTotal, &row.CapabilityUsage, &row.LastUsedAt, &row.LastCapability, &row.BusinessStage, &row.MainLineType, &row.UserSegment, &row.FocusTopics, &row.PainTag, &row.IdentityState, &row.MatchedBy, &row.IdentityReasonCode, &row.IdentityCaseID, &row.MergeCandidateID, &row.SourceUpdatedAt); err != nil {
 			return nil, nil, false, err
 		}
 		items = append(items, row)
@@ -262,7 +276,7 @@ func (store *PostgreSQL) QueryRows(ctx context.Context, q Query) ([]Row, []Group
 		items = items[:q.Limit]
 	}
 	groups := []Group{}
-	groupColumn := map[string]string{"stage": "stage", "subscription_tier": "subscription_tier", "last_capability": "last_capability", "business_stage": "business_stage", "user_segment": "user_segment", "identity_state": "identity_state"}[q.GroupBy]
+	groupColumn := map[string]string{"stage": "stage", "subscription_tier": "subscription_tier", "last_capability": "last_capability", "business_stage": "business_stage", "user_segment": "user_segment", "identity_state": "identity_state", "matched_by": "matched_by", "identity_reason_code": "identity_reason_code"}[q.GroupBy]
 	if groupColumn != "" {
 		groupArgs := args[:len(args)-2]
 		groupRows, groupErr := store.pool.Query(ctx, `SELECT COALESCE(`+groupColumn+`,'(empty)'),COUNT(*) FROM hxc_dashboard_rows WHERE `+strings.Join(where, " AND ")+` GROUP BY `+groupColumn+` ORDER BY COUNT(*) DESC,1`, groupArgs...)

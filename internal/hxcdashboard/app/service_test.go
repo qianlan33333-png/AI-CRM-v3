@@ -15,27 +15,48 @@ type testUOW struct{}
 
 func (testUOW) Within(ctx context.Context, fn func(context.Context) error) error { return fn(ctx) }
 
-type testIdentity struct{ seen []identityport.ScopedUnionID }
+type testIdentity struct {
+	seen      []identityport.HXCSubject
+	applies   map[[32]byte]int
+	completed int
+}
 
-func (resolver *testIdentity) ResolveHXCUnionIDs(_ context.Context, refs []identityport.ScopedUnionID) ([]identityport.ScopedUnionIDResult, error) {
-	resolver.seen = append(resolver.seen, refs...)
-	out := make([]identityport.ScopedUnionIDResult, 0, len(refs))
-	for _, ref := range refs {
-		out = append(out, identityport.ScopedUnionIDResult{Position: ref.Position, Status: identityport.ResolveFound, CustomerID: customerdomain.CustomerID(77)})
+func (resolver *testIdentity) InspectHXCSubjects(_ context.Context, subjects []identityport.HXCSubject) ([]identityport.HXCSubjectResult, error) {
+	resolver.seen = append(resolver.seen, subjects...)
+	out := make([]identityport.HXCSubjectResult, 0, len(subjects))
+	for _, subject := range subjects {
+		result := identityport.HXCSubjectResult{Position: subject.Position, Disposition: identityport.HXCUnmatched, MatchedBy: identityport.HXCMatchNone, Reason: identityport.HXCReasonMissingIdentity}
+		if subject.UnionID != "" {
+			result = identityport.HXCSubjectResult{Position: subject.Position, Disposition: identityport.HXCMatched, MatchedBy: identityport.HXCMatchUnionID, Reason: identityport.HXCReasonMatchedUnionID, CustomerID: customerdomain.CustomerID(77)}
+		}
+		out = append(out, result)
 	}
 	return out, nil
+}
+func (resolver *testIdentity) ApplyHXCSubject(_ context.Context, subject identityport.HXCSubject) (identityport.HXCSubjectResult, error) {
+	result, err := resolver.InspectHXCSubjects(context.Background(), []identityport.HXCSubject{subject})
+	if resolver.applies == nil {
+		resolver.applies = map[[32]byte]int{}
+	}
+	resolver.applies[subject.SubjectDigest]++
+	result[0].Replayed = resolver.applies[subject.SubjectDigest] > 1
+	return result[0], err
+}
+func (resolver *testIdentity) CompleteHXCSnapshot(context.Context, [][32]byte) error {
+	resolver.completed++
+	return nil
 }
 
 func TestProjectUsesOnlyScopedUnionIDAndDetectsDuplicateAccountConflict(t *testing.T) {
 	resolver := &testIdentity{}
-	service := Service{Scope: "wechat-open-platform:platform-1", SubjectKey: []byte("01234567890123456789012345678901"), Identity: resolver, UOW: testUOW{}}
+	service := Service{Scope: "wechat-open-platform:platform-1", SubjectKey: []byte("01234567890123456789012345678901"), Identity: resolver, UnionIDVerified: true, UOW: testUOW{}}
 	now := time.Date(2026, 9, 3, 0, 0, 0, 0, time.UTC)
 	future := now.Add(time.Hour)
-	projection, err := service.project(context.Background(), hxcport.Snapshot{AsOf: now, Rows: []domain.SourceRow{{HXCUserID: "a", UnionID: "u-a", SubscriptionTier: "pro", SubscriptionExpiresAt: &future, LastUsedAt: &now}, {HXCUserID: "b", UnionID: "u-b", SubscriptionTier: "pro", SubscriptionExpiresAt: &future}, {HXCUserID: "c", SubscriptionTier: "free", SourceUpdatedAt: now}}})
+	projection, err := service.project(context.Background(), hxcport.Snapshot{AsOf: now, Rows: []domain.SourceRow{{HXCUserID: "a", UnionID: "u-a", Phone: "+86 138-0013-8000", SubscriptionTier: "pro", SubscriptionExpiresAt: &future, LastUsedAt: &now, SourceUpdatedAt: now}, {HXCUserID: "b", UnionID: "u-b", SubscriptionTier: "pro", SubscriptionExpiresAt: &future, SourceUpdatedAt: now}, {HXCUserID: "c", SubscriptionTier: "free", SourceUpdatedAt: now}}}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(resolver.seen) != 2 || resolver.seen[0].Scope != "wechat-open-platform:platform-1" {
+	if len(resolver.seen) != 3 || resolver.seen[0].UnionIDScope != "wechat-open-platform:platform-1" || resolver.seen[0].Phone != "13800138000" {
 		t.Fatalf("unexpected identity input: %#v", resolver.seen)
 	}
 	if projection.Counts.Total != 3 || projection.Counts.ActiveUsed != 1 || projection.Counts.ActiveUnused != 1 || projection.Counts.RegisteredNoActiveMembership != 1 {
@@ -45,8 +66,21 @@ func TestProjectUsesOnlyScopedUnionIDAndDetectsDuplicateAccountConflict(t *testi
 		t.Fatalf("bad identity counts: %#v", projection.Counts)
 	}
 	for _, row := range projection.Rows {
-		if row.HXCUserID != "" || row.UnionID != "" {
+		if row.HXCUserID != "" || row.UnionID != "" || row.Phone != "" {
 			t.Fatal("raw HXC identity survived projection")
 		}
+	}
+}
+
+func TestProjectApplyVerifiesExactReplayForEverySubject(t *testing.T) {
+	resolver := &testIdentity{}
+	service := Service{Scope: "wechat-open-platform:platform-1", SubjectKey: []byte("01234567890123456789012345678901"), Identity: resolver, UnionIDVerified: true, UOW: testUOW{}}
+	now := time.Date(2026, 9, 3, 0, 0, 0, 0, time.UTC)
+	projection, err := service.project(context.Background(), hxcport.Snapshot{AsOf: now, Rows: []domain.SourceRow{{HXCUserID: "a", UnionID: "u-a", SourceUpdatedAt: now}}}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if projection.IdentityReplayVerified != 1 || resolver.completed != 1 {
+		t.Fatalf("replay closure not proven: projection=%#v completed=%d", projection, resolver.completed)
 	}
 }

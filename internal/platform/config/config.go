@@ -103,11 +103,14 @@ func (c AutomationOperations) ProviderEnabled() bool {
 
 type Effects struct{ ProviderEnabled bool }
 type HXCDashboard struct {
-	Enabled        bool
-	SourceDSN      string
-	UnionIDScope   string
-	SubjectHMACKey string
-	SyncTrigger    string
+	Enabled                     bool
+	IdentityWriteEnabled        bool
+	UnionIDVerified             bool
+	SourceDSN                   string
+	UnionIDScope                string
+	SubjectHMACKey              string
+	IdentityObservationVaultKey string
+	SyncTrigger                 string
 }
 type ChannelHistoryMigration struct {
 	SourceDatabaseURL   string
@@ -212,7 +215,7 @@ func Load() (Runtime, error) {
 		WorkerOwner:                valueOrDefault("AICRM_WORKER_OWNER", "aicrm-wecom-worker"),
 		WorkerLimit:                25,
 		CustomerSyncTrigger:        os.Getenv("AICRM_CUSTOMER_SYNC_TRIGGER"),
-		HXCDashboard:               HXCDashboard{SourceDSN: os.Getenv("AICRM_HXC_SOURCE_DSN"), UnionIDScope: os.Getenv("AICRM_HXC_UNIONID_SCOPE"), SubjectHMACKey: os.Getenv("AICRM_HXC_SUBJECT_HMAC_KEY"), SyncTrigger: os.Getenv("AICRM_HXC_SYNC_TRIGGER")},
+		HXCDashboard:               HXCDashboard{SourceDSN: os.Getenv("AICRM_HXC_SOURCE_DSN"), UnionIDScope: os.Getenv("AICRM_HXC_UNIONID_SCOPE"), SubjectHMACKey: os.Getenv("AICRM_HXC_SUBJECT_HMAC_KEY"), IdentityObservationVaultKey: os.Getenv("AICRM_IDENTITY_OBSERVATION_VAULT_KEY"), SyncTrigger: os.Getenv("AICRM_HXC_SYNC_TRIGGER")},
 		OperationCycleServiceToken: os.Getenv("AICRM_OPERATION_CYCLE_SERVICE_TOKEN"),
 		AIAssistant:                AIAssistant{UIEnabled: true, IntegrationKey: os.Getenv("AICRM_AI_ASSISTANT_INTEGRATION_KEY"), IntegrationSecret: os.Getenv("AICRM_AI_ASSISTANT_INTEGRATION_SECRET"), ProviderPermission: os.Getenv("AICRM_AI_ASSISTANT_PROVIDER_PERMISSION")},
 		Bootstrap: Bootstrap{
@@ -242,6 +245,12 @@ func Load() (Runtime, error) {
 		return Runtime{}, err
 	}
 	if cfg.HXCDashboard.Enabled, err = strictBool("AICRM_HXC_SYNC_ENABLED", false); err != nil {
+		return Runtime{}, err
+	}
+	if cfg.HXCDashboard.IdentityWriteEnabled, err = strictBool("AICRM_HXC_IDENTITY_WRITE_ENABLED", false); err != nil {
+		return Runtime{}, err
+	}
+	if cfg.HXCDashboard.UnionIDVerified, err = strictBool("AICRM_HXC_UNIONID_VERIFIED", false); err != nil {
 		return Runtime{}, err
 	}
 	if cfg.AIAssistant.UIEnabled, err = strictBool("AICRM_AI_ASSISTANT_UI_ENABLED", true); err != nil {
@@ -365,6 +374,17 @@ func Load() (Runtime, error) {
 	if cfg.HXCDashboard.Enabled {
 		if strings.TrimSpace(cfg.HXCDashboard.SourceDSN) != cfg.HXCDashboard.SourceDSN || cfg.HXCDashboard.SourceDSN == "" || !strings.HasPrefix(cfg.HXCDashboard.UnionIDScope, "wechat-open-platform:") || len(cfg.HXCDashboard.UnionIDScope) <= len("wechat-open-platform:") || strings.TrimSpace(cfg.HXCDashboard.UnionIDScope) != cfg.HXCDashboard.UnionIDScope || len(cfg.HXCDashboard.SubjectHMACKey) < 32 {
 			return Runtime{}, errors.New("enabled HXC dashboard configuration is incomplete")
+		}
+	}
+	if cfg.HXCDashboard.IdentityWriteEnabled && (!cfg.HXCDashboard.Enabled || cfg.HXCDashboard.IdentityObservationVaultKey == "") {
+		return Runtime{}, errors.New("enabled HXC identity writes require sync and observation vault key")
+	}
+	if cfg.HXCDashboard.UnionIDVerified && !cfg.HXCDashboard.Enabled {
+		return Runtime{}, errors.New("HXC UnionID verification requires HXC sync")
+	}
+	if cfg.HXCDashboard.IdentityObservationVaultKey != "" {
+		if decoded, decodeErr := base64.StdEncoding.DecodeString(cfg.HXCDashboard.IdentityObservationVaultKey); decodeErr != nil || len(decoded) != 32 {
+			return Runtime{}, errors.New("invalid AICRM_IDENTITY_OBSERVATION_VAULT_KEY")
 		}
 	}
 	if cfg.OperationCycleServiceToken != "" && (strings.TrimSpace(cfg.OperationCycleServiceToken) != cfg.OperationCycleServiceToken || len(cfg.OperationCycleServiceToken) < 32) {

@@ -55,6 +55,24 @@ if ! grep -Eq '^AICRM_HXC_SUBJECT_HMAC_KEY=.{32,}$' /etc/aicrm/aicrm.env; then
   unset hxc_subject_hmac_key
   chmod 0600 /etc/aicrm/aicrm.env
 fi
+if ! grep -Eq '^AICRM_IDENTITY_OBSERVATION_VAULT_KEY=[A-Za-z0-9+/]{43}=$' /etc/aicrm/aicrm.env; then
+  identity_observation_vault_key="$(openssl rand -base64 32 | tr -d '\n')"
+  if grep -q '^AICRM_IDENTITY_OBSERVATION_VAULT_KEY=' /etc/aicrm/aicrm.env; then
+    sed -i "s|^AICRM_IDENTITY_OBSERVATION_VAULT_KEY=.*$|AICRM_IDENTITY_OBSERVATION_VAULT_KEY=${identity_observation_vault_key}|" /etc/aicrm/aicrm.env
+  else
+    printf '\nAICRM_IDENTITY_OBSERVATION_VAULT_KEY=%s\n' "$identity_observation_vault_key" >> /etc/aicrm/aicrm.env
+  fi
+  unset identity_observation_vault_key
+  chmod 0600 /etc/aicrm/aicrm.env
+fi
+if ! grep -Eq '^AICRM_HXC_IDENTITY_WRITE_ENABLED=(true|false)$' /etc/aicrm/aicrm.env; then
+  if grep -q '^AICRM_HXC_IDENTITY_WRITE_ENABLED=' /etc/aicrm/aicrm.env; then
+    sed -i 's|^AICRM_HXC_IDENTITY_WRITE_ENABLED=.*$|AICRM_HXC_IDENTITY_WRITE_ENABLED=false|' /etc/aicrm/aicrm.env
+  else
+    printf '\nAICRM_HXC_IDENTITY_WRITE_ENABLED=false\n' >> /etc/aicrm/aicrm.env
+  fi
+  chmod 0600 /etc/aicrm/aicrm.env
+fi
 
 release_dir="${release_root}/${release_sha}"
 
@@ -136,6 +154,10 @@ test -f "$release_dir/migrations/0048_segment_audience_schedule_state.sql"
 test -f "$release_dir/migrations/0049_order_history_attribution.sql"
 test -f "$release_dir/migrations/0053_segment_audience_member_event_fact_kinds.sql"
 test -f "$release_dir/migrations/0061_product_public_purchase.sql"
+test -f "$release_dir/migrations/0063_identity_hxc_source_observations.sql"
+test -f "$release_dir/migrations/0064_hxc_dashboard_identity_v2.sql"
+test -f "$release_dir/deploy/aicrm-hxc-dashboard-rollout.service"
+test -f "$release_dir/deploy/rollout-hxc-identity-v2.sh"
 test -f "$release_dir/migrations/0015_config_adminops.sql"
 test -f "$release_dir/web/dist/asset-manifest.json"
 for ai_assistant_asset in \
@@ -295,6 +317,7 @@ install -m 0644 "$release_dir/deploy/aicrm-customer-sync-daily.service" /etc/sys
 install -m 0644 "$release_dir/deploy/aicrm-customer-sync-daily.timer" /etc/systemd/system/aicrm-customer-sync-daily.timer
 install -m 0644 "$release_dir/deploy/aicrm-hxc-dashboard-refresh.service" /etc/systemd/system/aicrm-hxc-dashboard-refresh.service
 install -m 0644 "$release_dir/deploy/aicrm-hxc-dashboard-refresh.timer" /etc/systemd/system/aicrm-hxc-dashboard-refresh.timer
+install -m 0644 "$release_dir/deploy/aicrm-hxc-dashboard-rollout.service" /etc/systemd/system/aicrm-hxc-dashboard-rollout.service
 install -m 0644 "$release_dir/deploy/aicrm-automation-bootstrap.service" /etc/systemd/system/aicrm-automation-bootstrap.service
 systemctl daemon-reload
 
