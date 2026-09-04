@@ -58,6 +58,32 @@ function responseWithJSON(response: Response, payload: unknown): Response {
   return new Response(JSON.stringify(payload), { status: response.status, statusText: response.statusText, headers });
 }
 
+function donorCompatibleCatalog(value: unknown): unknown {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  const payload = { ...(value as Record<string, unknown>) };
+  const normalizeRows = (rows: unknown): unknown => {
+    if (!Array.isArray(rows)) return rows;
+    return rows.map((value) => {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+      const row = { ...(value as Record<string, unknown>) };
+      const materialIDs = [
+        row.welcome_image_library_ids,
+        row.welcome_miniprogram_library_ids,
+        row.welcome_attachment_library_ids,
+        row.welcome_group_invite_library_ids,
+      ].flatMap((ids) => Array.isArray(ids) ? ids : []);
+      // The frozen donor counts only welcome_image_library_ids. This
+      // compatibility payload is list-page-only; detail/edit reads continue
+      // to receive the four canonical, separately owned material arrays.
+      row.welcome_image_library_ids = materialIDs;
+      return row;
+    });
+  };
+  payload.channels = normalizeRows(payload.channels);
+  payload.items = normalizeRows(payload.items);
+  return payload;
+}
+
 function showProviderReadDegraded(): void {
   if (!document.body) return;
   if (document.getElementById('channel-provider-read-degraded')) return;
@@ -71,6 +97,9 @@ function showProviderReadDegraded(): void {
 
 async function normalizeChannelResponse(response: Response, url: URL): Promise<Response> {
   if (!response.ok || !String(response.headers.get('Content-Type')).toLowerCase().includes('application/json')) return response;
+  if (url.pathname === '/api/admin/channels' && document.body?.dataset.page === 'channels') {
+    return responseWithJSON(response, donorCompatibleCatalog(await response.clone().json()));
+  }
   if (url.pathname.match(/^\/api\/admin\/channels\/[1-9][0-9]*\/acquisition-staff$/)) {
     const payload = await response.clone().json() as Record<string, unknown>;
     if (payload.provider_read_succeeded === false) {

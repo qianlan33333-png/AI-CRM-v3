@@ -25,7 +25,7 @@ func TestCatalogHTTPRoleCSRFStrictJSONAndCAS(t *testing.T) {
 	}
 
 	response := catalogHTTPRequest(handler, http.MethodGet, "/api/admin/channels?limit=1", "", nil)
-	if response.Code != http.StatusOK || response.Header().Get("Cache-Control") != "no-store" || !strings.Contains(response.Body.String(), `"next_cursor"`) || !strings.Contains(response.Body.String(), `"channel_contact_count":7`) || !strings.Contains(response.Body.String(), `"channel_enter_count":11`) || !strings.Contains(response.Body.String(), `"qrcode_origin":"legacy"`) {
+	if response.Code != http.StatusOK || response.Header().Get("Cache-Control") != "no-store" || !strings.Contains(response.Body.String(), `"next_cursor"`) || !strings.Contains(response.Body.String(), `"channel_contact_count":7`) || !strings.Contains(response.Body.String(), `"channel_enter_count":11`) || !strings.Contains(response.Body.String(), `"qrcode_origin":"legacy"`) || !strings.Contains(response.Body.String(), `"welcome_message":"欢迎加入"`) || !strings.Contains(response.Body.String(), `"welcome_group_invite_library_ids":[12]`) || !strings.Contains(response.Body.String(), `"entry_tag_name":"新客"`) || !strings.Contains(response.Body.String(), `"assignment_config_json":{"assignees":[`) {
 		t.Fatalf("list status=%d headers=%v body=%s", response.Code, response.Header(), response.Body.String())
 	}
 	response = catalogHTTPRequest(handler, http.MethodGet, "/api/admin/channels/3", "", nil)
@@ -84,7 +84,7 @@ func catalogHTTPBody() string {
 }
 
 func catalogHTTPChannel(now time.Time) channeldomain.Channel {
-	return channeldomain.Channel{ID: 3, Code: "campaign", Status: channeldomain.StatusActive, ConfigVersion: 2, Version: 4, CreatedAt: now.Add(-time.Hour), UpdatedAt: now, Config: channeldomain.Config{Type: channeldomain.ChannelQRCode, Carrier: channeldomain.CarrierQRCode, Name: "Campaign", Assignment: channeldomain.Assignment{Mode: channeldomain.AssignmentSingle, Strategy: channeldomain.StrategyRatio, Assignees: []channeldomain.Assignee{{StaffID: 7, Priority: 1, Ratio: 100}}}}}
+	return channeldomain.Channel{ID: 3, Code: "campaign", Status: channeldomain.StatusActive, ConfigVersion: 2, Version: 4, CreatedAt: now.Add(-time.Hour), UpdatedAt: now, Config: channeldomain.Config{Type: channeldomain.ChannelQRCode, Carrier: channeldomain.CarrierQRCode, Name: "Campaign", WelcomeMessage: "欢迎加入", Media: channeldomain.MediaReferences{GroupInvites: []int64{12}}, EntryTagID: 9, EntryTagName: "新客", EntryTagGroupName: "来源", Assignment: channeldomain.Assignment{Mode: channeldomain.AssignmentSingle, Strategy: channeldomain.StrategyRatio, Assignees: []channeldomain.Assignee{{StaffID: 7, Priority: 1, Ratio: 100}}}}}
 }
 
 type catalogHTTPApplication struct {
