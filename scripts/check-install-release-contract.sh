@@ -151,5 +151,9 @@ grep -qF 'if [[ "$0" == "/tmp/install-release-${release_sha}.sh" ]]; then' "$ins
 grep -qF 'AICRM_HXC_SOURCE_DSN: ${{ secrets.AICRM_HXC_SOURCE_DSN }}' .github/workflows/ci.yml || { echo "CI must read the HXC DSN from Actions secrets" >&2; exit 1; }
 grep -qF 'AICRM_HXC_UNIONID_SCOPE: ${{ secrets.AICRM_HXC_UNIONID_SCOPE }}' .github/workflows/ci.yml || { echo "CI must read the HXC scope from Actions secrets" >&2; exit 1; }
 grep -qF 'sudo /usr/bin/bash ${remote_configurer} ${remote_config} ${GITHUB_SHA}' .github/workflows/ci.yml || { echo "CI must apply HXC configuration through the audited runtime configurer" >&2; exit 1; }
+grep -qF 'AICRM_WECHAT_PAY_H5_APP_ID: ${{ secrets.AICRM_WECHAT_PAY_H5_APP_ID }}' .github/workflows/ci.yml || { echo "CI must read the H5 OAuth AppID from Actions secrets" >&2; exit 1; }
+grep -qF 'AICRM_WECHAT_PAY_H5_APP_SECRET: ${{ secrets.AICRM_WECHAT_PAY_H5_APP_SECRET }}' .github/workflows/ci.yml || { echo "CI must read the H5 OAuth AppSecret from Actions secrets" >&2; exit 1; }
+grep -qF 'scp "${ssh_flags[@]}" deploy/configure-payment-h5-oauth-runtime.sh "${DEPLOY_USER}@${DEPLOY_HOST}:${remote_configurer}"' .github/workflows/ci.yml || { echo "CI must upload the audited H5 OAuth runtime configurer" >&2; exit 1; }
 scripts/test-configure-hxc-runtime.sh
+scripts/test-configure-payment-h5-oauth-runtime.sh
 scripts/test-install-release-ordering.sh

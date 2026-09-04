@@ -24,7 +24,7 @@ if (fs.existsSync(stage)) fail(`refusing to overwrite an existing stage: ${stage
 if (!fs.statSync(manifestPath).isFile()) fail('missing asset-manifest.json');
 
 const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-const entryNames = ['admin', 'tokens', 'labs', 'operationCyclesHost', 'channelCenterHost', 'aiAssistantHost'];
+const entryNames = ['admin', 'tokens', 'labs', 'operationCyclesHost', 'productHost', 'channelCenterHost', 'aiAssistantHost'];
 const roots = entryNames.map((name) => manifest.entries?.[name]);
 if (roots.some((entry) => typeof entry !== 'string')) fail('required release entry assets are absent from manifest');
 const dynamicOutputForInput = (from, input) => (manifest.files[from]?.imports || []).find((item) =>
@@ -39,10 +39,13 @@ const funnelEntry = legacyEntry && dynamicOutputForInput(legacyEntry, 'web/src/a
 const operationHost = manifest.entries.operationCyclesHost;
 const operationMainEntry = dynamicOutputForInput(operationHost, 'web/src/admin/main.ts');
 const operationLegacyEntry = operationMainEntry && dynamicOutputForInput(operationMainEntry, 'web/src/admin/legacy.ts');
+const productHost = manifest.entries.productHost;
+const productMainEntry = dynamicOutputForInput(productHost, 'web/src/admin/main.ts');
+const productLegacyEntry = productMainEntry && dynamicOutputForInput(productMainEntry, 'web/src/admin/legacy.ts');
 const channelHost = manifest.entries.channelCenterHost;
 const channelMainEntry = dynamicOutputForInput(channelHost, 'web/src/admin/main.ts');
 const channelLegacyEntry = channelMainEntry && dynamicOutputForInput(channelMainEntry, 'web/src/admin/legacy.ts');
-if (!legacyEntry || !campaignsEntry || !adminAccessEntry || !setupWizardEntry || !groupOpsHistoryEntry || !funnelEntry || !operationMainEntry || !operationLegacyEntry || !channelMainEntry || !channelLegacyEntry) fail('required admin runtime chunks are absent from manifest');
+if (!legacyEntry || !campaignsEntry || !adminAccessEntry || !setupWizardEntry || !groupOpsHistoryEntry || !funnelEntry || !operationMainEntry || !operationLegacyEntry || !productMainEntry || !productLegacyEntry || !channelMainEntry || !channelLegacyEntry) fail('required admin runtime chunks are absent from manifest');
 
 const selected = new Set();
 const includeStatic = (relative) => {
@@ -72,6 +75,8 @@ includeStatic(groupOpsHistoryEntry);
 includeStatic(funnelEntry);
 includeStatic(operationMainEntry);
 includeStatic(operationLegacyEntry);
+includeStatic(productMainEntry);
+includeStatic(productLegacyEntry);
 includeStatic(channelMainEntry);
 includeStatic(channelLegacyEntry);
 
