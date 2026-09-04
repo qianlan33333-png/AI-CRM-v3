@@ -172,6 +172,34 @@ func TestCustomerDirectoryProviderDisabledMakesZeroCalls(t *testing.T) {
 	}
 }
 
+func TestDirectoryClientDoesNotRequireOAuthConfiguration(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/cgi-bin/gettoken":
+			if request.URL.Query().Get("corpid") != "corp" || request.URL.Query().Get("corpsecret") != "contact-secret" {
+				t.Fatalf("token query=%s", request.URL.RawQuery)
+			}
+			_, _ = writer.Write([]byte(`{"errcode":0,"access_token":"contact-token","expires_in":120}`))
+		case "/cgi-bin/externalcontact/get_contact_way":
+			_, _ = writer.Write([]byte(`{"errcode":0,"contact_way":{"config_id":"config-1"},"qr_code":"https://wework.qpic.cn/wwpic/example"}`))
+		default:
+			t.Fatalf("unexpected path=%s", request.URL.Path)
+		}
+	}))
+	defer server.Close()
+	client, err := NewDirectory(Config{Enabled: true, CorpID: "corp", ContactSecret: "contact-secret", APIBase: server.URL, HTTPClient: server.Client()})
+	if err != nil || !client.DirectoryReady() {
+		t.Fatalf("directory client ready=%v err=%v", client != nil && client.DirectoryReady(), err)
+	}
+	asset, err := client.GetContactWay(context.Background(), "config-1")
+	if err != nil || asset.ProviderAssetRef != "config-1" || asset.URL == "" {
+		t.Fatalf("asset=%+v err=%v", asset, err)
+	}
+	if _, err = client.AuthorizationURL(context.Background(), wecom.OAuthAdmin, wecom.OAuthModeQR, "state", ""); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("directory-only OAuth err=%v", err)
+	}
+}
+
 func TestCustomerDirectoryProviderListsStaffAndBatchPage(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {

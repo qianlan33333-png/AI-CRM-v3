@@ -161,7 +161,7 @@ func run(ctx context.Context, args []string) error {
 		if digestErr != nil {
 			return digestErr
 		}
-		client, clientErr := wecomadapter.New(wecomadapter.Config{Enabled: true, CorpID: corpID, AgentID: migrationConfig.WeComAgentID, Secret: migrationConfig.WeComSecret, ContactSecret: migrationConfig.WeComContactSecret})
+		client, clientErr := wecomadapter.NewDirectory(wecomadapter.Config{Enabled: true, CorpID: corpID, ContactSecret: migrationConfig.WeComContactSecret})
 		if clientErr != nil {
 			return clientErr
 		}
