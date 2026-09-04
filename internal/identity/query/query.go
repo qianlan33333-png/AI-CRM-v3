@@ -53,6 +53,17 @@ type CustomerDetail struct {
 	MergeLineage        []MergeLineageSummary     `json:"merge_lineage"`
 }
 
+// CanonicalCustomerRoot is the minimal, channel-neutral OneID result used by
+// bulk audience evaluation. It intentionally contains no external identity.
+type CanonicalCustomerRoot struct {
+	RequestedCustomerID customerdomain.CustomerID
+	CustomerID          customerdomain.CustomerID
+}
+
+type CanonicalCustomerReader interface {
+	CanonicalCustomers(context.Context, []customerdomain.CustomerID) ([]CanonicalCustomerRoot, error)
+}
+
 type Conflict struct {
 	ID              int64                     `json:"id"`
 	LeftCustomerID  customerdomain.CustomerID `json:"left_customer_id"`

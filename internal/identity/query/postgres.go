@@ -496,6 +496,69 @@ func (PostgreSQL) Customer(ctx context.Context, customerID customerdomain.Custom
 	return detail, nil
 }
 
+// CanonicalCustomers resolves a bounded audience in one recursive query. It
+// follows only Customer-owned merge links and never reads, creates, binds, or
+// mutates external identities.
+func (PostgreSQL) CanonicalCustomers(ctx context.Context, customerIDs []customerdomain.CustomerID) ([]CanonicalCustomerRoot, error) {
+	if len(customerIDs) == 0 {
+		return []CanonicalCustomerRoot{}, nil
+	}
+	if len(customerIDs) > 100000 {
+		return nil, ErrInvalidQuery
+	}
+	ids := make([]int64, len(customerIDs))
+	for index, id := range customerIDs {
+		if id < 1 {
+			return nil, ErrInvalidQuery
+		}
+		ids[index] = int64(id)
+	}
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := tx.Query(ctx, `
+		WITH RECURSIVE requested(requested_id, ordinal) AS (
+			SELECT value, ordinal
+			FROM unnest($1::bigint[]) WITH ORDINALITY AS input(value, ordinal)
+		), customer_chain AS (
+			SELECT requested.requested_id, requested.ordinal, customer.id,
+				customer.merged_into_customer_id, 0 AS depth, ARRAY[customer.id] AS visited
+			FROM requested
+			JOIN customers customer ON customer.id=requested.requested_id
+			UNION ALL
+			SELECT chain.requested_id, chain.ordinal, next.id,
+				next.merged_into_customer_id, chain.depth+1, chain.visited||next.id
+			FROM customer_chain chain
+			JOIN customers next ON next.id=chain.merged_into_customer_id
+			WHERE NOT next.id=ANY(chain.visited)
+		), resolved AS (
+			SELECT DISTINCT ON (ordinal) ordinal, requested_id, id AS customer_id
+			FROM customer_chain
+			ORDER BY ordinal, depth DESC
+		)
+		SELECT requested_id, customer_id FROM resolved ORDER BY ordinal`, ids)
+	if err != nil {
+		return nil, fmt.Errorf("query canonical customer roots: %w", err)
+	}
+	defer rows.Close()
+	result := make([]CanonicalCustomerRoot, 0, len(customerIDs))
+	for rows.Next() {
+		var item CanonicalCustomerRoot
+		if err = rows.Scan(&item.RequestedCustomerID, &item.CustomerID); err != nil {
+			return nil, fmt.Errorf("scan canonical customer root: %w", err)
+		}
+		result = append(result, item)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate canonical customer roots: %w", err)
+	}
+	if len(result) != len(customerIDs) {
+		return nil, ErrNotFound
+	}
+	return result, nil
+}
+
 func (PostgreSQL) Conflicts(ctx context.Context, options ListOptions) (ConflictPage, error) {
 	options, err := normalizeOptions(options, map[string]struct{}{"open": {}, "resolved": {}, "ignored": {}})
 	if err != nil {
