@@ -123,11 +123,12 @@ jobs:
           ), inserted AS (
             INSERT INTO tag_groups(group_name,sort_order)
             SELECT source_groups.group_name,(boundary.base+source_groups.ordinal)::integer FROM source_groups CROSS JOIN boundary
-            ON CONFLICT DO NOTHING RETURNING id,group_name
+            ON CONFLICT DO NOTHING RETURNING id,group_name,sort_order
           )
           INSERT INTO tag_provider_group_bindings(provider_group_id,group_id)
-          SELECT source_groups.provider_group_id,groups.id
-          FROM source_groups JOIN tag_groups groups ON groups.group_name=source_groups.group_name AND groups.archived_at IS NULL
+          SELECT source_groups.provider_group_id,inserted.id
+          FROM source_groups CROSS JOIN boundary
+          JOIN inserted ON inserted.group_name=source_groups.group_name AND inserted.sort_order=(boundary.base+source_groups.ordinal)::integer
           ON CONFLICT DO NOTHING;
           WITH ranked AS (
             SELECT source.*,binding.group_id,row_number() OVER(PARTITION BY binding.group_id ORDER BY source.provider_tag_id)-1 AS sort_order
@@ -135,11 +136,11 @@ jobs:
           ), inserted AS (
             INSERT INTO tag_catalog_tags(group_id,tag_name,sort_order)
             SELECT group_id,tag_name,sort_order::integer FROM ranked
-            ON CONFLICT DO NOTHING RETURNING id,group_id,tag_name
+            ON CONFLICT DO NOTHING RETURNING id,group_id,tag_name,sort_order
           )
           INSERT INTO tag_provider_tag_bindings(provider_tag_id,tag_id)
-          SELECT ranked.provider_tag_id,tags.id
-          FROM ranked JOIN tag_catalog_tags tags ON tags.group_id=ranked.group_id AND tags.tag_name=ranked.tag_name AND tags.archived_at IS NULL
+          SELECT ranked.provider_tag_id,inserted.id
+          FROM ranked JOIN inserted ON inserted.group_id=ranked.group_id AND inserted.tag_name=ranked.tag_name AND inserted.sort_order=ranked.sort_order
           ON CONFLICT DO NOTHING;
           SQL
           migrator="$RUNNER_TEMP/migrate-channel-history"

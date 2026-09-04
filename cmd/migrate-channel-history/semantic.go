@@ -370,15 +370,24 @@ func (runner importRunner) repairChannelConfig(ctx context.Context, repairID, ru
 	missing = append(missing, m4...)
 	blockers := append([]string{}, missing...)
 	var tagID any
+	var tagName, tagGroupName string
 	providerTag := firstString(row.Payload, "entry_tag_id")
 	if providerTag != "" {
 		digest := sha256.Sum256([]byte(providerTag))
 		var local *int64
-		var state string
-		if err = runner.Pool.Native().QueryRow(ctx, `SELECT tag_id,state FROM channel_legacy_tag_maps WHERE import_run_id=$1 AND provider_tag_id_digest=$2`, runID, digest[:]).Scan(&local, &state); err != nil || local == nil || state != "mapped" {
+		var state, nameSnapshot, groupNameSnapshot string
+		err = runner.Pool.Native().QueryRow(ctx, `SELECT m.tag_id,m.state,COALESCE(t.tag_name,m.name_snapshot),COALESCE(g.group_name,m.group_name_snapshot)
+			FROM channel_legacy_tag_maps m
+			LEFT JOIN tag_catalog_tags t ON t.id=m.tag_id AND t.archived_at IS NULL
+			LEFT JOIN tag_groups g ON g.id=t.group_id AND g.archived_at IS NULL
+			WHERE m.import_run_id=$1 AND m.provider_tag_id_digest=$2`, runID, digest[:]).Scan(&local, &state, &nameSnapshot, &groupNameSnapshot)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return false, false, err
+		}
+		if projectedID, projectedName, projectedGroup, ok := projectMappedEntryTag(local, state, nameSnapshot, groupNameSnapshot); err != nil || !ok {
 			blockers = append(blockers, "tag_unmapped")
 		} else {
-			tagID = *local
+			tagID, tagName, tagGroupName = projectedID, projectedName, projectedGroup
 		}
 	}
 	configVersion := currentVersion + 1
@@ -396,7 +405,7 @@ func (runner importRunner) repairChannelConfig(ctx context.Context, repairID, ru
 		if e != nil {
 			return e
 		}
-		_, e = tx.Exec(txctx, `INSERT INTO channel_config_versions(channel_id,config_version,channel_type,carrier_type,name,scene_value,qrcode_url,customer_channel,link_url,final_url,welcome_message,welcome_image_ids,welcome_miniprogram_ids,welcome_attachment_ids,welcome_group_invite_ids,auto_accept_friend,entry_tag_id,entry_tag_name,entry_tag_group_name,assignment_mode,assignment_strategy,overflow_policy,config_digest,created_by,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)`, channelID, configVersion, normalizeChannelType(firstString(row.Payload, "channel_type")), normalizeCarrier(firstString(row.Payload, "carrier_type")), firstString(row.Payload, "channel_name", "name"), firstString(row.Payload, "scene_value"), firstString(row.Payload, "qr_url"), firstString(row.Payload, "customer_channel"), firstString(row.Payload, "link_url"), firstString(row.Payload, "final_url"), firstString(row.Payload, "welcome_message"), images, minis, attachments, groups, jsonBool(row.Payload, "auto_accept_friend"), tagID, firstString(row.Payload, "entry_tag_name"), firstString(row.Payload, "entry_tag_group_name"), mode, strategy, firstString(row.Payload, "overflow_policy"), digest[:], runner.ActorID, created)
+		_, e = tx.Exec(txctx, `INSERT INTO channel_config_versions(channel_id,config_version,channel_type,carrier_type,name,scene_value,qrcode_url,customer_channel,link_url,final_url,welcome_message,welcome_image_ids,welcome_miniprogram_ids,welcome_attachment_ids,welcome_group_invite_ids,auto_accept_friend,entry_tag_id,entry_tag_name,entry_tag_group_name,assignment_mode,assignment_strategy,overflow_policy,config_digest,created_by,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)`, channelID, configVersion, normalizeChannelType(firstString(row.Payload, "channel_type")), normalizeCarrier(firstString(row.Payload, "carrier_type")), firstString(row.Payload, "channel_name", "name"), firstString(row.Payload, "scene_value"), firstString(row.Payload, "qr_url"), firstString(row.Payload, "customer_channel"), firstString(row.Payload, "link_url"), firstString(row.Payload, "final_url"), firstString(row.Payload, "welcome_message"), images, minis, attachments, groups, jsonBool(row.Payload, "auto_accept_friend"), tagID, tagName, tagGroupName, mode, strategy, firstString(row.Payload, "overflow_policy"), digest[:], runner.ActorID, created)
 		if e != nil {
 			return e
 		}
@@ -433,6 +442,15 @@ func normalizeCarrier(v string) string {
 		return "link"
 	}
 	return "qrcode"
+}
+
+func projectMappedEntryTag(local *int64, state, name, group string) (any, string, string, bool) {
+	name = strings.TrimSpace(name)
+	group = strings.TrimSpace(group)
+	if local == nil || *local < 1 || state != "mapped" || name == "" || group == "" {
+		return nil, "", "", false
+	}
+	return *local, name, group, true
 }
 func (runner importRunner) recordSemanticConflict(ctx context.Context, repairID, channelID int64, field string, source, current []byte) error {
 	s := sha256.Sum256(source)
@@ -557,6 +575,12 @@ func mediaKind(table string) string {
 
 func (runner importRunner) importReferencedTags(ctx context.Context, runID int64, manifest snapshotManifest) (int64, error) {
 	var count int64
+	groupNames := map[string]string{}
+	for _, row := range mustTable(manifest, "wecom_corp_tag_groups").Rows {
+		if providerGroup := firstString(row.Payload, "group_id"); providerGroup != "" {
+			groupNames[providerGroup] = firstString(row.Payload, "group_name")
+		}
+	}
 	for _, row := range mustTable(manifest, "wecom_corp_tags").Rows {
 		provider := firstString(row.Payload, "tag_id")
 		if provider == "" {
@@ -577,7 +601,11 @@ func (runner importRunner) importReferencedTags(ctx context.Context, runID int64
 			local = nil
 			state = "deleted"
 		}
-		_, err = runner.Pool.Native().Exec(ctx, `INSERT INTO channel_legacy_tag_maps(import_run_id,provider_tag_id_digest,tag_id,name_snapshot,group_name_snapshot,state) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING`, runID, digest[:], local, firstString(row.Payload, "tag_name"), firstString(row.Payload, "group_name"), state)
+		groupName := firstString(row.Payload, "group_name")
+		if groupName == "" {
+			groupName = groupNames[firstString(row.Payload, "group_id")]
+		}
+		_, err = runner.Pool.Native().Exec(ctx, `INSERT INTO channel_legacy_tag_maps(import_run_id,provider_tag_id_digest,tag_id,name_snapshot,group_name_snapshot,state) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING`, runID, digest[:], local, firstString(row.Payload, "tag_name"), groupName, state)
 		if err != nil {
 			return count, err
 		}
