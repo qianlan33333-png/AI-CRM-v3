@@ -16,9 +16,9 @@ import (
 )
 
 type options struct {
-	mode, snapshot, report, manifestDigest, unionIDScope string
-	actorID                                              int64
-	confirm                                              bool
+	mode, snapshot, report, manifestDigest, unionIDScope, sourceStream, sourceHost string
+	actorID                                                                        int64
+	confirm                                                                        bool
 }
 
 func main() {
@@ -31,9 +31,11 @@ func main() {
 func run(ctx context.Context, args []string) error {
 	flags := flag.NewFlagSet("migrate-channel-history", flag.ContinueOnError)
 	var cfg options
-	flags.StringVar(&cfg.mode, "mode", "inspect", "inspect|validate|dry-run|import|reconcile|replay-check|rollback")
+	flags.StringVar(&cfg.mode, "mode", "inspect", "inspect|inspect-stream|validate|dry-run|import|reconcile|replay-check|rollback")
 	flags.StringVar(&cfg.snapshot, "snapshot", "", "encrypted snapshot path")
 	flags.StringVar(&cfg.report, "report", "", "optional schema discovery report path")
+	flags.StringVar(&cfg.sourceStream, "source-stream", "", "trusted read-only psql stream path for inspect-stream")
+	flags.StringVar(&cfg.sourceHost, "source-host", "", "source hostname used only to derive the snapshot host digest")
 	flags.StringVar(&cfg.manifestDigest, "manifest-sha256", "", "required manifest digest for mutating modes")
 	flags.StringVar(&cfg.unionIDScope, "unionid-scope", "", "verified OneID scope, for example wechat-open-platform:main")
 	flags.Int64Var(&cfg.actorID, "actor-id", 0, "active migration administrator id; zero selects the first active superadmin")
@@ -43,6 +45,9 @@ func run(ctx context.Context, args []string) error {
 	}
 	if cfg.mode == "inspect" {
 		return inspectSource(ctx, cfg)
+	}
+	if cfg.mode == "inspect-stream" {
+		return inspectSourceStream(cfg)
 	}
 	if cfg.snapshot == "" {
 		return errors.New("--snapshot is required")
