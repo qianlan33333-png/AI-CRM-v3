@@ -24,6 +24,7 @@ web/scripts/e2e.mjs
 web/scripts/channel-center-characterization.mjs
 web/scripts/survey-editor-characterization.mjs
 web/scripts/survey-public-characterization.mjs
+web/scripts/product-edit-e2e.mjs
 web/scripts/ui-shell-contract.mjs
 web/src/admin/sections/funnelGrid.ts
 web/src/admin/sections/questionnaireEditor.ts
