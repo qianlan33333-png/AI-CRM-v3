@@ -87,3 +87,12 @@ V3 本轮初次外推 PR 的该路由仍固定调用 `RecordDisabledOperation`�
 ## 12. 实际 OAuth 状态落库的前向修复
 
 完整PG/HTTP旅程已证实0018的survey_oauth_states_redirect约束在标准SQL字符串中使用了双反斜杠，合法Host路径无法创建OAuth state。0090分配Survey，以前向迁移修正该既有约束，保留all/one页面与slug允许范围；不改变身份机制或OAuth入口。原0018不改。同步Store PG fixture、实际约束readiness与发布迁移清单；验证两个合法入口及非法/外站路径拒绝，继续完整OAuth、同键提交、结果授权与历史版本旅程。0089已由Outbound使用，不得占用。
+
+
+## 原测评键的兼容性修正
+
+实际冻结测评保存被V3通用ASCII opaque校验拒绝。只读供体证据：repo_support.py的_text不改原字符串，repo.py保存题目/选项维度与类型key到TEXT；冻结编辑器保留中文key，原默认值包含“用户维护”“暖男/女型”，新增维度可为“维度 1”。这些是config、type_priority与题目/选项之间的业务引用，不是OneID或安全凭据。
+
+按旧能力优先，仅Question.AssessmentDimensionKey、Option.AssessmentTypeKey、AssessmentDimension.Key、AssessmentType.Key改用Survey专用业务键validator：有效UTF-8、非空且无首尾空白、最多128字符、无控制字符，原值原样持久化。维度/类型唯一性、priority成员和题目选项引用校验保持；通用validOpaque、标签、sidebar字段、template/asset及任何外部身份/完成参数不放宽。不添加中文到英文/摘要的映射机制。
+
+验证旧中文、内部空格、斜线键保存与重读不变，重复/错配引用继续拒绝；实际冻结管理页保存发布、修改后再发布及真实PG结果维度/类型关联回读。Owner仍Survey本地UoW，无新迁移/队列/外部效果。
