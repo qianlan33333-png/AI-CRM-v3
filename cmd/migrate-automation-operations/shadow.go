@@ -432,7 +432,8 @@ func shadowMappedTargets(ctx context.Context, tx pgx.Tx, snapshot segmentmigrati
 			var actualPackage int64
 			var definition []byte
 			var cron *string
-			err = tx.QueryRow(ctx, `SELECT package_id,definition::text,refresh_cron_utc FROM segment_audience_configuration_versions WHERE id=$1`, targetID).Scan(&actualPackage, &definition, &cron)
+			var mode string
+			err = tx.QueryRow(ctx, `SELECT package_id,definition::text,refresh_cron_utc,refresh_mode FROM segment_audience_configuration_versions WHERE id=$1`, targetID).Scan(&actualPackage, &definition, &cron, &mode)
 			if errors.Is(err, pgx.ErrNoRows) {
 				items = append(items, item)
 				continue
@@ -440,16 +441,16 @@ func shadowMappedTargets(ctx context.Context, tx pgx.Tx, snapshot segmentmigrati
 			if err != nil {
 				return nil, err
 			}
-			expectedCron := ""
-			if row.RefreshMode == "scheduled" && row.RefreshCron != nil {
-				expectedCron = *row.RefreshCron
+			expectedRefresh, refreshErr := frozenRefreshConfiguration(row)
+			if refreshErr != nil {
+				return nil, fmt.Errorf("configuration %s refresh: %w", source.pk, refreshErr)
 			}
 			actualCron := ""
 			if cron != nil {
 				actualCron = *cron
 			}
 			item.Exists = true
-			item.FactsMatch = actualPackage == packageID && sameJSON(definition, row.Definition) && actualCron == expectedCron
+			item.FactsMatch = actualPackage == packageID && sameJSON(definition, row.Definition) && mode == expectedRefresh.Mode && actualCron == expectedRefresh.Cron
 		case "audience_bindings":
 			var row bindingRow
 			if err = json.Unmarshal(source.raw, &row); err != nil {
@@ -629,22 +630,23 @@ func shadowInTx(ctx context.Context, tx pgx.Tx, batchKey string, snapshot segmen
 		item.TargetPackageID = targetPackageID
 		var targetDefinition []byte
 		var targetCron *string
+		var targetMode string
 		var targetName string
 		var targetGroupID *int64
 		var targetSnapshotID int64
 		var targetSnapshotState string
 		var targetReference time.Time
 		var targetDigest []byte
-		if err = tx.QueryRow(ctx, `SELECT p.lifecycle,p.name,p.group_id,c.definition::text,c.refresh_cron_utc,s.id,s.state,s.reference_time,s.member_count,s.member_digest FROM segment_audience_packages p JOIN segment_audience_configuration_versions c ON c.id=p.current_configuration_version_id AND c.package_id=p.id JOIN segment_audience_snapshots s ON s.id=p.published_snapshot_id AND s.package_id=p.id WHERE p.id=$1`, item.TargetPackageID).Scan(&item.Lifecycle, &targetName, &targetGroupID, &targetDefinition, &targetCron, &targetSnapshotID, &targetSnapshotState, &targetReference, &item.TargetMemberCount, &targetDigest); err != nil {
+		if err = tx.QueryRow(ctx, `SELECT p.lifecycle,p.name,p.group_id,c.definition::text,c.refresh_cron_utc,c.refresh_mode,s.id,s.state,s.reference_time,s.member_count,s.member_digest FROM segment_audience_packages p JOIN segment_audience_configuration_versions c ON c.id=p.current_configuration_version_id AND c.package_id=p.id JOIN segment_audience_snapshots s ON s.id=p.published_snapshot_id AND s.package_id=p.id WHERE p.id=$1`, item.TargetPackageID).Scan(&item.Lifecycle, &targetName, &targetGroupID, &targetDefinition, &targetCron, &targetMode, &targetSnapshotID, &targetSnapshotState, &targetReference, &item.TargetMemberCount, &targetDigest); err != nil {
 			return report, fmt.Errorf("package %d target projection: %w", source.ID, err)
 		}
 		sourceConfiguration, ok := latestConfig[source.ID]
 		if !ok {
 			return report, fmt.Errorf("package %d has no source configuration", source.ID)
 		}
-		expectedCron := ""
-		if sourceConfiguration.RefreshMode == "scheduled" && sourceConfiguration.RefreshCron != nil {
-			expectedCron = *sourceConfiguration.RefreshCron
+		expectedRefresh, refreshErr := frozenRefreshConfiguration(sourceConfiguration)
+		if refreshErr != nil {
+			return report, fmt.Errorf("package %d refresh: %w", source.ID, refreshErr)
 		}
 		actualCron := ""
 		if targetCron != nil {
@@ -659,7 +661,7 @@ func shadowInTx(ctx context.Context, tx pgx.Tx, batchKey string, snapshot segmen
 			}
 		}
 		item.StructureMatches = targetName == source.Name && ((targetGroupID == nil && expectedGroupID == nil) || (targetGroupID != nil && expectedGroupID != nil && *targetGroupID == *expectedGroupID))
-		item.ConfigurationMatches = sameJSON(sourceConfiguration.Definition, targetDefinition) && expectedCron == actualCron
+		item.ConfigurationMatches = sameJSON(sourceConfiguration.Definition, targetDefinition) && targetMode == expectedRefresh.Mode && actualCron == expectedRefresh.Cron
 		item.ReferenceTimeMatches = targetReference.UTC().Equal(snapshot.Manifest.SnapshotAt.UTC())
 		item.PausedOrArchived = item.Lifecycle == "paused" || (source.Lifecycle == "archived" && item.Lifecycle == "archived")
 

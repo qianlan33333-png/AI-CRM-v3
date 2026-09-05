@@ -8,9 +8,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	neturl "net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"sort"
 	"strconv"
@@ -154,6 +156,46 @@ func TestExpectedQuarantineReasonReplaysEveryImporterDisposition(t *testing.T) {
 			got, err := expectedQuarantineReason(test.source, test.receipt, test.receipts)
 			if err != nil || got != test.want {
 				t.Fatalf("reason=%q err=%v want=%q", got, err, test.want)
+			}
+		})
+	}
+}
+
+func TestFrozenRefreshConfigurationPreservesDonorModesAndLegacySnapshots(t *testing.T) {
+	definition := `{"schema_version":1,"template_key":"active_contacts","parameters":{"within_days":"30"}}`
+	tests := []struct {
+		name     string
+		refresh  string
+		wantMode string
+		wantCron string
+		wantErr  bool
+	}{
+		{name: "manual", refresh: `"refresh_mode":"manual"`, wantMode: "manual"},
+		{name: "every three minutes", refresh: `"refresh_mode":"incremental_3m"`, wantMode: "every_3m"},
+		{name: "daily", refresh: `"refresh_mode":"daily_0200"`, wantMode: "daily_0200"},
+		{name: "combined", refresh: `"refresh_mode":"incremental_3m_plus_daily_0200"`, wantMode: "every_3m_plus_daily_0200"},
+		{name: "prior scheduled custom cron", refresh: `"refresh_mode":"scheduled","refresh_cron":"0 2 * * *"`, wantMode: "legacy_custom", wantCron: "0 2 * * *"},
+		{name: "mode absent prior snapshot", refresh: `"refresh_cron":"0 2 * * *"`, wantMode: "legacy_custom", wantCron: "0 2 * * *"},
+		{name: "mode and cron absent prior snapshot", refresh: `"refresh_cron":null`, wantMode: "legacy_custom"},
+		{name: "unknown is not manual", refresh: `"refresh_mode":"hourly"`, wantErr: true},
+		{name: "automatic mode cannot carry arbitrary cron", refresh: `"refresh_mode":"manual","refresh_cron":"0 2 * * *"`, wantErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var row configRow
+			raw := fmt.Sprintf(`{"package_id":10,"version":1,"definition":%s,%s,"created_at":"2026-09-04T00:00:00Z"}`, definition, test.refresh)
+			if err := json.Unmarshal([]byte(raw), &row); err != nil {
+				t.Fatal(err)
+			}
+			got, err := frozenRefreshConfiguration(row)
+			if test.wantErr {
+				if err == nil {
+					t.Fatalf("refresh=%+v accepted", row)
+				}
+				return
+			}
+			if err != nil || got.Mode != test.wantMode || got.Cron != test.wantCron {
+				t.Fatalf("got=%+v err=%v want=%s/%q", got, err, test.wantMode, test.wantCron)
 			}
 		})
 	}
@@ -456,6 +498,52 @@ func TestImportDryRunApplyReplayAndReconcilePostgreSQL(t *testing.T) {
 	if !isolatedShadow.ReadyForReconcile || isolatedShadow.ReadyForProbe || len(isolatedShadow.Packages) != 1 || isolatedShadow.Packages[0].MappedMemberRows != 0 || isolatedShadow.Packages[0].IsolatedMemberRows != 1 || !isolatedShadow.Packages[0].MemberDigestMatches || len(isolatedShadow.Quarantines) != 2 {
 		t.Fatalf("all-isolated shadow=%+v", isolatedShadow)
 	}
+
+	// The donor stored four closed schedule modes. They remain independent
+	// configuration facts even when their audience definitions are byte-equal;
+	// a definition-only lookup would collapse all four into legacy_custom.
+	refreshModes := refreshModesMigrationSnapshot(t, snapshot, snapshot.Manifest.SnapshotAt.Add(3*time.Hour), "automation-refresh-modes")
+	refreshModesFile := filepath.Join(t.TempDir(), "refresh-modes.enc")
+	if err = writeEncryptedSnapshot(refreshModesFile, keyFile, refreshModes); err != nil {
+		t.Fatal(err)
+	}
+	refreshArgs := []string{"--actor-id", strconv.FormatInt(actorID, 10), "--snapshot-file", refreshModesFile, "--key-file", keyFile, "--target-url-env", "AICRM_AUTOMATION_RECONCILE_TEST_URL", "--timeout", "30s"}
+	refreshReport := executeImportCommand(t, "apply", append(refreshArgs, "--confirm-import")...)
+	rows, err := pool.Query(ctx, `SELECT c.version,c.refresh_mode,COALESCE(c.refresh_cron_utc,'') FROM segment_audience_configuration_versions c JOIN segment_audience_packages p ON p.id=c.package_id WHERE p.code='v2-audience-11' ORDER BY c.version`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	type refreshFact struct {
+		version int64
+		mode    string
+		cron    string
+	}
+	var actualRefreshes []refreshFact
+	for rows.Next() {
+		var item refreshFact
+		if err = rows.Scan(&item.version, &item.mode, &item.cron); err != nil {
+			t.Fatal(err)
+		}
+		actualRefreshes = append(actualRefreshes, item)
+	}
+	if err = rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	rows.Close()
+	wantRefreshes := []refreshFact{{1, "manual", ""}, {2, "every_3m", ""}, {3, "daily_0200", ""}, {4, "every_3m_plus_daily_0200", ""}}
+	if !reflect.DeepEqual(actualRefreshes, wantRefreshes) {
+		t.Fatalf("imported refresh configurations=%+v want=%+v", actualRefreshes, wantRefreshes)
+	}
+	if _, err = pool.Exec(ctx, `UPDATE segment_audience_configuration_versions SET refresh_mode='manual' WHERE id=(SELECT current_configuration_version_id FROM segment_audience_packages WHERE code='v2-audience-11')`); err != nil {
+		t.Fatal(err)
+	}
+	assertReconcileRejected(t, ctx, pool, refreshReport.BatchKey, refreshModes)
+	if _, err = pool.Exec(ctx, `UPDATE segment_audience_configuration_versions SET refresh_mode='every_3m_plus_daily_0200' WHERE id=(SELECT current_configuration_version_id FROM segment_audience_packages WHERE code='v2-audience-11')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = Reconcile(ctx, pool, refreshReport.BatchKey, refreshModes); err != nil {
+		t.Fatalf("reconcile refresh modes: %v", err)
+	}
 }
 
 func applyPlatformSQL(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
@@ -711,6 +799,39 @@ func allMembersIsolatedMigrationSnapshot(t *testing.T, source segmentmigration.S
 		t.Fatal(err)
 	}
 	snapshot.Tables["audience_members"] = raw
+	sealMigrationSnapshot(t, &snapshot)
+	return snapshot
+}
+
+func refreshModesMigrationSnapshot(t *testing.T, source segmentmigration.Snapshot, at time.Time, watermarkSeed string) segmentmigration.Snapshot {
+	t.Helper()
+	snapshot := derivedMigrationSnapshot(t, source, at, watermarkSeed)
+	definition := map[string]any{"schema_version": 1, "template_key": "active_contacts", "parameters": map[string]any{"within_days": "30"}}
+	rows := map[string]any{
+		"audience_groups":   []any{},
+		"audience_packages": []any{map[string]any{"id": 11, "group_id": nil, "lifecycle": "active", "version": 4, "name": "Legacy refresh modes", "definition": definition, "refresh_mode": "incremental_3m_plus_daily_0200", "member_count": 0, "created_at": at, "updated_at": at}},
+		"audience_configuration_versions": []any{
+			map[string]any{"package_id": 11, "version": 1, "definition": definition, "refresh_mode": "manual", "created_at": at},
+			map[string]any{"package_id": 11, "version": 2, "definition": definition, "refresh_mode": "incremental_3m", "created_at": at},
+			map[string]any{"package_id": 11, "version": 3, "definition": definition, "refresh_mode": "daily_0200", "created_at": at},
+			map[string]any{"package_id": 11, "version": 4, "definition": definition, "refresh_mode": "incremental_3m_plus_daily_0200", "created_at": at},
+		},
+		"automation_agents":          []any{},
+		"audience_bindings":          []any{},
+		"audience_senders":           []any{},
+		"audience_members":           []any{},
+		"automation_policies":        []any{},
+		"automation_policy_versions": []any{},
+		"automation_enrollments":     []any{},
+		"automation_actions":         []any{},
+	}
+	for table, value := range rows {
+		raw, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		snapshot.Tables[table] = raw
+	}
 	sealMigrationSnapshot(t, &snapshot)
 	return snapshot
 }
