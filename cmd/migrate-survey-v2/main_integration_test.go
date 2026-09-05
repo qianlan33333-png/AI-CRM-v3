@@ -165,7 +165,7 @@ func TestPostgreSQLFrozenSurveySnapshotImportReplayAndReconcile(t *testing.T) {
 	}
 	clean("result-token quarantine restore")
 
-	manifestDrift := frozenSurveySnapshot(t, snapshot.Manifest.SnapshotAt)
+	manifestDrift := cloneFrozenSurveySnapshot(t, snapshot, snapshot.Manifest.SnapshotAt)
 	var changed []questionnaire
 	decodeTable(manifestDrift, "questionnaires", &changed)
 	changed[0].Title = "changed manifest"
@@ -175,7 +175,7 @@ func TestPostgreSQLFrozenSurveySnapshotImportReplayAndReconcile(t *testing.T) {
 		t.Fatalf("same batch manifest drift err=%v", err)
 	}
 
-	childDrift := frozenSurveySnapshot(t, snapshot.Manifest.SnapshotAt.Add(time.Second))
+	childDrift := cloneFrozenSurveySnapshot(t, snapshot, snapshot.Manifest.SnapshotAt.Add(time.Second))
 	var options []option
 	decodeTable(childDrift, "questionnaire_options", &options)
 	options[0].Text = "changed option"
@@ -192,7 +192,7 @@ func TestPostgreSQLFrozenSurveySnapshotImportReplayAndReconcile(t *testing.T) {
 		t.Fatalf("child drift left a batch row: %d", laterBatches)
 	}
 
-	tokenConflict := frozenSurveySnapshot(t, snapshot.Manifest.SnapshotAt.Add(2*time.Second))
+	tokenConflict := cloneFrozenSurveySnapshot(t, snapshot, snapshot.Manifest.SnapshotAt.Add(2*time.Second))
 	var conflictSubmissions []submission
 	decodeTable(tokenConflict, "questionnaire_submissions", &conflictSubmissions)
 	conflictSubmissions = append(conflictSubmissions, submission{ID: 41, QuestionnaireID: 1, Token: "legacy-result-token", Result: json.RawMessage(`{}`), FinalTags: json.RawMessage(`[]`), SubmittedAt: tokenConflict.Manifest.SnapshotAt, CreatedAt: tokenConflict.Manifest.SnapshotAt})
@@ -208,7 +208,7 @@ func TestPostgreSQLFrozenSurveySnapshotImportReplayAndReconcile(t *testing.T) {
 		t.Fatalf("token conflict left a submission: %d", submissions)
 	}
 
-	bad := frozenSurveySnapshot(t, snapshot.Manifest.SnapshotAt.Add(3*time.Second))
+	bad := cloneFrozenSurveySnapshot(t, snapshot, snapshot.Manifest.SnapshotAt.Add(3*time.Second))
 	var badQuestionnaires []questionnaire
 	decodeTable(bad, "questionnaires", &badQuestionnaires)
 	badQuestionnaires = append(badQuestionnaires,
@@ -252,6 +252,24 @@ func frozenSurveySnapshot(t *testing.T, at time.Time) Snapshot {
 	setFrozenTable(t, &s, "questionnaire_external_push_logs", []operation{{ID: 60, QuestionnaireID: 1, SubmissionID: 40, Status: "success", OccurredAt: at}, {ID: 61, QuestionnaireID: 999, SubmissionID: 0, Status: "failed", FailureCategory: "provider_failure", OccurredAt: at}, {ID: 62, QuestionnaireID: 999, SubmissionID: 40, Status: "success", OccurredAt: at}})
 	setFrozenTable(t, &s, "questionnaire_scrm_apply_logs", []operation{{ID: 70, QuestionnaireID: 1, SubmissionID: 40, Status: "identity_unresolved", FailureCategory: "identity_unresolved", OccurredAt: at}})
 	return s
+}
+
+// cloneFrozenSurveySnapshot preserves every frozen source record verbatim.
+// Derived fixtures may vary the manifest timestamp and their explicitly
+// targeted source fact, so a token/rollback assertion cannot be masked by an
+// accidental source-drift failure caused by regenerated record timestamps.
+func cloneFrozenSurveySnapshot(t *testing.T, source Snapshot, snapshotAt time.Time) Snapshot {
+	t.Helper()
+	raw, err := json.Marshal(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var clone Snapshot
+	if err = json.Unmarshal(raw, &clone); err != nil {
+		t.Fatal(err)
+	}
+	clone.Manifest.SnapshotAt = snapshotAt
+	return clone
 }
 
 func setFrozenTable(t *testing.T, snapshot *Snapshot, table string, value any) {
