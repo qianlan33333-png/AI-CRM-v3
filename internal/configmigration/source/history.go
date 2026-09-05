@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -101,8 +102,33 @@ var historyQueries = map[string]string{
 	"nodes":                 `SELECT COALESCE(jsonb_agg(to_jsonb(x) ORDER BY plan_id,day_index,sort_order,id),'[]'::jsonb) FROM (SELECT id,plan_id,day_index,trigger_time_label AS trigger_time,sort_order,status,action_title,text_content,content_package_json AS content_package,attachments_json AS attachments,created_at,updated_at FROM public.automation_group_ops_plan_nodes) x`,
 }
 
+func validHistorySchema(value string) bool {
+	if value == "" || len(value) > 63 {
+		return false
+	}
+	for index, r := range value {
+		if !(r == '_' || r >= 'a' && r <= 'z' || index > 0 && r >= '0' && r <= '9') {
+			return false
+		}
+	}
+	return true
+}
+func historyQueriesForSchema(schema string) map[string]string {
+	queries := make(map[string]string, len(historyQueries))
+	for key, query := range historyQueries {
+		queries[key] = strings.ReplaceAll(query, "public.", schema+".")
+	}
+	return queries
+}
+
 func ExtractHistory(ctx context.Context, db TxBeginner, revision string) (HistorySnapshot, error) {
-	if db == nil || !validRevision.MatchString(revision) {
+	return ExtractHistoryFromSchema(ctx, db, revision, "public")
+}
+
+// ExtractHistoryFromSchema is the same read-only V1 query contract with an
+// explicit schema solely for isolated PostgreSQL characterization tests.
+func ExtractHistoryFromSchema(ctx context.Context, db TxBeginner, revision, schema string) (HistorySnapshot, error) {
+	if db == nil || !validRevision.MatchString(revision) || !validHistorySchema(schema) {
 		return HistorySnapshot{}, ErrInvalidSnapshot
 	}
 	tx, err := db.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
@@ -117,12 +143,13 @@ func ExtractHistory(ctx context.Context, db TxBeginner, revision string) (Histor
 	if err = tx.QueryRow(ctx, `SELECT transaction_timestamp()`).Scan(&out.Manifest.SnapshotAt); err != nil {
 		return out, err
 	}
+	queries := historyQueriesForSchema(schema)
 	for _, row := range []struct {
 		name string
 		dst  any
 	}{{"plans", &out.Plans}, {"directory_group_chats", &out.DirectoryChats}, {"directory_snapshots", &out.DirectorySnapshots}, {"groups", &out.Groups}, {"nodes", &out.Nodes}} {
 		var raw []byte
-		if err = tx.QueryRow(ctx, historyQueries[row.name]).Scan(&raw); err != nil || !json.Valid(raw) || json.Unmarshal(raw, row.dst) != nil {
+		if err = tx.QueryRow(ctx, queries[row.name]).Scan(&raw); err != nil || !json.Valid(raw) || json.Unmarshal(raw, row.dst) != nil {
 			return HistorySnapshot{}, fmt.Errorf("extract Group Ops history %s: %w", row.name, ErrInvalidSnapshot)
 		}
 	}

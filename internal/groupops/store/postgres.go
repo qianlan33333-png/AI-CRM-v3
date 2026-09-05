@@ -1121,6 +1121,9 @@ func (r *Repository) ListHistoricalNodes(ctx context.Context, planID int64, limi
 			return nil, 0, ErrInvalid
 		}
 		item.ContentPackage = append(json.RawMessage(nil), raw...)
+		if err = hydrateHistoricalNodeContent(&item); err != nil {
+			return nil, 0, err
+		}
 		item.CreatedAt, item.UpdatedAt = createdAt.Time, updatedAt.Time
 		items = append(items, item)
 	}

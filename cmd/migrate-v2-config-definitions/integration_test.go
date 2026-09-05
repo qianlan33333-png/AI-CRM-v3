@@ -242,6 +242,10 @@ type rejectingHistoryImporter struct {
 	inner groupopsport.HistoricalImporter
 }
 
+func (r rejectingHistoryImporter) PreflightHistoricalImport(ctx context.Context, batch groupopsport.HistoricalImportBatch) error {
+	return r.inner.PreflightHistoricalImport(ctx, batch)
+}
+
 func (r rejectingHistoryImporter) ApplyHistoricalImport(ctx context.Context, batch groupopsport.HistoricalImportBatch, records []groupopsport.HistoricalImportRecord) (groupopsport.HistoricalImportResult, error) {
 	if len(records) == 0 {
 		return groupopsport.HistoricalImportResult{}, errors.New("test: no history records")
@@ -368,6 +372,78 @@ func (historyHTTPSecurity) Authenticate(context.Context, *http.Request) (accessd
 }
 func (historyHTTPSecurity) AuthorizeCSRF(context.Context, *http.Request) (accessdomain.Principal, error) {
 	return historyHTTPSecurity{}.Authenticate(context.Background(), nil)
+}
+
+func TestGroupOpsHistoryExtractSealApplyAndHTTPFromLegacyPostgreSQL(t *testing.T) {
+	pool, cleanup := configMigrationIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	db := pool.Native()
+	schema := "legacy_history_source"
+	if _, err := db.Exec(ctx, `CREATE SCHEMA legacy_history_source;
+CREATE TABLE legacy_history_source.automation_group_ops_plans(id BIGINT,plan_code TEXT,plan_name TEXT,plan_type TEXT,status TEXT,owner_userid TEXT,created_by TEXT,updated_by TEXT,created_at TIMESTAMPTZ,updated_at TIMESTAMPTZ,archived_at TIMESTAMPTZ);
+CREATE TABLE legacy_history_source.group_chats(chat_id TEXT,group_name TEXT,owner_userid TEXT,member_count INTEGER,status TEXT,updated_at TIMESTAMPTZ);
+CREATE TABLE legacy_history_source.wecom_group_chat_snapshots(chat_id TEXT,group_name TEXT,owner_userid TEXT,owner_name TEXT,internal_member_count INTEGER,external_member_count INTEGER,status TEXT,synced_at TIMESTAMPTZ);
+CREATE TABLE legacy_history_source.automation_group_ops_plan_groups(id BIGINT,plan_id BIGINT,chat_id TEXT,group_name_snapshot TEXT,owner_userid_snapshot TEXT,internal_member_count_snapshot INTEGER,external_member_count_snapshot INTEGER,status TEXT,created_at TIMESTAMPTZ,removed_at TIMESTAMPTZ);
+CREATE TABLE legacy_history_source.automation_group_ops_plan_nodes(id BIGINT,plan_id BIGINT,day_index INTEGER,trigger_time_label TEXT,sort_order INTEGER,status TEXT,action_title TEXT,text_content TEXT,content_package_json JSONB,attachments_json JSONB,created_at TIMESTAMPTZ,updated_at TIMESTAMPTZ);`); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 5, 1, 2, 3, 0, time.UTC)
+	_, err := db.Exec(ctx, `INSERT INTO legacy_history_source.automation_group_ops_plans VALUES(901,'legacy','旧计划','standard','disabled','owner-1','creator-1','editor-1',$1,$1,NULL);
+INSERT INTO legacy_history_source.group_chats VALUES('chat-901','旧群','owner-1',2,'active',$1);
+INSERT INTO legacy_history_source.wecom_group_chat_snapshots VALUES('chat-901','旧群','owner-1','',1,1,'active',$1);
+INSERT INTO legacy_history_source.automation_group_ops_plan_groups VALUES(902,901,'chat-901','旧群','owner-1',1,1,'active',$1,NULL);
+INSERT INTO legacy_history_source.automation_group_ops_plan_nodes VALUES(903,901,1,'',1,'active','标题\u0007','正文\u000b','{}','[{"kind":"image","id":"m1"}]',$1,$1)`, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := source.ExtractHistoryFromSchema(ctx, db, strings.Repeat("f", 40), schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Nodes) != 1 || snapshot.Nodes[0].TriggerTime != "" || snapshot.Nodes[0].ActionTitle != "标题\a" || snapshot.Nodes[0].TextContent != "正文\v" {
+		t.Fatalf("extracted node=%#v", snapshot.Nodes)
+	}
+	dir := t.TempDir()
+	key := filepath.Join(dir, "key")
+	sealed := filepath.Join(dir, "sealed")
+	if err = os.WriteFile(key, []byte(strings.Repeat("k", 32)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	digest, err := source.SealHistoryToFile(snapshot, sealed, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, loadedDigest, err := source.LoadHistoryFile(sealed, key)
+	if err != nil || digest != loadedDigest {
+		t.Fatalf("sealed history err=%v", err)
+	}
+	runner := configHistoryRunner(t, pool)
+	if err = runner.Preflight(ctx, loaded, loadedDigest); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = runner.Apply(ctx, loaded, loadedDigest); err != nil {
+		t.Fatal(err)
+	}
+	uow, err := platformpostgres.NewUnitOfWork(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo, err := groupopsstore.NewPostgreSQL(db, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := groupopsapp.NewHistoryService(uow, repo)
+	handler, err := groupopshttp.NewHandlerWithRuntimeAndHistory(historyHTTPApplication{}, historyHTTPRuntime{}, service, historyHTTPSecurity{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, groupopshttp.HistoryPath+"/plans/901/nodes?limit=20&offset=0", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, req)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"action_title":"标题\u0007"`) || !strings.Contains(response.Body.String(), `"text_content":"正文\u000b"`) || !strings.Contains(response.Body.String(), `"trigger_time":""`) || !strings.Contains(response.Body.String(), `"attachments":[{"kind":"image","id":"m1"}]`) {
+		t.Fatalf("node HTTP=%d %s", response.Code, response.Body.String())
+	}
 }
 
 func configMigrationActor(t *testing.T, ctx context.Context, pool *platformpostgres.Pool) int64 {

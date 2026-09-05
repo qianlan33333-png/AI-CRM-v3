@@ -142,7 +142,13 @@ func historyRecords(snap source.HistorySnapshot) ([]groupopsport.HistoricalImpor
 		} else if x.ID < 1 || x.DayIndex < 0 || x.TriggerTime != strings.TrimSpace(x.TriggerTime) || x.SortOrder < 0 || x.Status == "" || x.Status != strings.TrimSpace(x.Status) || !json.Valid(x.ContentPackage) || !json.Valid(x.Attachments) || x.CreatedAt.IsZero() || x.UpdatedAt.Before(x.CreatedAt) {
 			r.QuarantineReason = "invalid_node"
 		} else {
-			content, err := json.Marshal(map[string]json.RawMessage{"source_content_package": x.ContentPackage, "source_attachments": x.Attachments, "source_action_title": json.RawMessage(fmt.Sprintf("%q", x.ActionTitle)), "source_text_content": json.RawMessage(fmt.Sprintf("%q", x.TextContent)), "source_trigger_time_label": json.RawMessage(fmt.Sprintf("%q", x.TriggerTime))})
+			content, err := json.Marshal(struct {
+				ContentPackage json.RawMessage `json:"source_content_package"`
+				Attachments    json.RawMessage `json:"source_attachments"`
+				ActionTitle    string          `json:"source_action_title"`
+				TextContent    string          `json:"source_text_content"`
+				TriggerTime    string          `json:"source_trigger_time_label"`
+			}{x.ContentPackage, x.Attachments, x.ActionTitle, x.TextContent, x.TriggerTime})
 			if err != nil {
 				return nil, err
 			}

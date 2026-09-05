@@ -113,3 +113,11 @@ $$;
 CREATE TRIGGER group_ops_v1_history_import_batches_append_only
     BEFORE DELETE OR TRUNCATE ON group_ops_v1_history_import_batches
     FOR EACH STATEMENT EXECUTE FUNCTION group_ops_v1_history_import_batches_reject_delete();
+
+-- V1 nodes legitimately used a blank trigger-time label. Keep it distinct from
+-- NULL and from a malformed padded label without rewriting the 0017 history.
+ALTER TABLE group_ops_v1_history_nodes
+    DROP CONSTRAINT IF EXISTS group_ops_v1_history_nodes_trigger_time_check;
+ALTER TABLE group_ops_v1_history_nodes
+    ADD CONSTRAINT group_ops_v1_history_nodes_trigger_time_check
+    CHECK (btrim(trigger_time) = trigger_time);
