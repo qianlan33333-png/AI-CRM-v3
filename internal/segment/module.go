@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	accessport "github.com/qianlan33333-png/AI-CRM-v3/internal/access/port"
 	segmenthttp "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/http"
 )
 
@@ -24,10 +25,13 @@ func (m *ModuleRegistration) Bind(service segmenthttp.ConfigurationApplication, 
 }
 
 func (m *ModuleRegistration) BindRuntime(service segmenthttp.ConfigurationApplication, snapshots segmenthttp.SnapshotApplication, security segmenthttp.RequestSecurity) (HTTPBindings, error) {
+	return m.BindRuntimeWithOwners(service, snapshots, security, nil)
+}
+func (m *ModuleRegistration) BindRuntimeWithOwners(service segmenthttp.ConfigurationApplication, snapshots segmenthttp.SnapshotApplication, security segmenthttp.RequestSecurity, owners accessport.AudienceOwnerResolver) (HTTPBindings, error) {
 	if m == nil {
 		return HTTPBindings{}, errors.New("segment module is required")
 	}
-	handler, err := segmenthttp.NewRuntimeHandler(service, snapshots, security)
+	handler, err := segmenthttp.NewRuntimeHandlerWithOwners(service, snapshots, security, owners)
 	return HTTPBindings{Audience: handler}, err
 }
 

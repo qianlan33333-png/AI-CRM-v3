@@ -79,5 +79,11 @@ func (a automationOpsStaffAdapter) OutboundProviderStaffID(ctx context.Context, 
 	return user.WeComUserID, true, nil
 }
 
+func (a automationOpsStaffAdapter) ResolveAudienceOwner(ctx context.Context, providerUserID string) (accessport.StaffID, bool, error) {
+	item, found, err := a.ResolveAutomationSender(ctx, providerUserID)
+	return item.StaffID, found, err
+}
+
 var _ accessport.AutomationOpsStaffReader = automationOpsStaffAdapter{}
 var _ accessport.OutboundStaffIdentityReader = automationOpsStaffAdapter{}
+var _ accessport.AudienceOwnerResolver = automationOpsStaffAdapter{}

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
+	accessport "github.com/qianlan33333-png/AI-CRM-v3/internal/access/port"
 	automationport "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/port"
 	segmentapp "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/app"
 	segmentdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/domain"
@@ -57,6 +58,7 @@ type Handler struct {
 	snapshots SnapshotApplication
 	execution ExecutionApplication
 	security  RequestSecurity
+	owners    accessport.AudienceOwnerResolver
 }
 
 func NewHandler(service ConfigurationApplication, security RequestSecurity) (*Handler, error) {
@@ -66,6 +68,9 @@ func NewHandler(service ConfigurationApplication, security RequestSecurity) (*Ha
 	return &Handler{service: service, security: security}, nil
 }
 func NewRuntimeHandler(service ConfigurationApplication, snapshots SnapshotApplication, security RequestSecurity) (*Handler, error) {
+	return NewRuntimeHandlerWithOwners(service, snapshots, security, nil)
+}
+func NewRuntimeHandlerWithOwners(service ConfigurationApplication, snapshots SnapshotApplication, security RequestSecurity, owners accessport.AudienceOwnerResolver) (*Handler, error) {
 	h, err := NewHandler(service, security)
 	if err != nil {
 		return nil, err
@@ -75,6 +80,7 @@ func NewRuntimeHandler(service ConfigurationApplication, snapshots SnapshotAppli
 	}
 	h.snapshots = snapshots
 	h.execution, _ = snapshots.(ExecutionApplication)
+	h.owners = owners
 	return h, nil
 }
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -395,12 +401,63 @@ func (h *Handler) configuration(w http.ResponseWriter, r *http.Request, packageI
 	if !decode(w, r, &in) {
 		return
 	}
-	item, e := h.service.PutConfiguration(r.Context(), segmentapp.ConfigurationCommand{PackageID: packageID, ExpectedPackageVersion: in.ExpectedPackageVersion, Definition: in.Definition, RefreshCronUTC: in.RefreshCronUTC, Actor: p.InternalID, IdempotencyKey: key})
+	definition, e := h.normalizeOwnerUserIDs(r.Context(), in.Definition)
+	if e != nil {
+		fail(w, 422, "owner_unavailable")
+		return
+	}
+	item, e := h.service.PutConfiguration(r.Context(), segmentapp.ConfigurationCommand{PackageID: packageID, ExpectedPackageVersion: in.ExpectedPackageVersion, Definition: definition, RefreshCronUTC: in.RefreshCronUTC, Actor: p.InternalID, IdempotencyKey: key})
 	if e != nil {
 		resultError(w, e)
 		return
 	}
 	respond(w, 200, map[string]any{"configuration": configurationDTO(item)})
+}
+
+// normalizeOwnerUserIDs is the frozen-form compatibility seam. Old forms send
+// owner_userids; the persisted closed AST holds only Access-resolved local
+// owner_staff_ids. Mixed or unknown input fails instead of widening a cohort.
+func (h *Handler) normalizeOwnerUserIDs(ctx context.Context, raw json.RawMessage) (json.RawMessage, error) {
+	var definition struct {
+		Parameters map[string]json.RawMessage `json:"parameters"`
+	}
+	if err := json.Unmarshal(raw, &definition); err != nil || definition.Parameters == nil {
+		return nil, errors.New("invalid definition")
+	}
+	legacy, exists := definition.Parameters["owner_userids"]
+	if !exists {
+		return raw, nil
+	}
+	if h.owners == nil {
+		return nil, errors.New("owner resolver unavailable")
+	}
+	var values []string
+	if err := json.Unmarshal(legacy, &values); err != nil || len(values) == 0 || len(values) > 100 {
+		return nil, errors.New("invalid owner userid")
+	}
+	staff := make([]string, 0, len(values))
+	seen := map[string]bool{}
+	for _, value := range values {
+		resolved, found, err := h.owners.ResolveAudienceOwner(ctx, value)
+		if err != nil || !found || resolved < 1 {
+			return nil, errors.New("owner unavailable")
+		}
+		id := strconv.FormatInt(int64(resolved), 10)
+		if !seen[id] {
+			seen[id] = true
+			staff = append(staff, id)
+		}
+	}
+	encoded, _ := json.Marshal(staff)
+	definition.Parameters["owner_staff_ids"] = encoded
+	delete(definition.Parameters, "owner_userids")
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return nil, err
+	}
+	parameters, _ := json.Marshal(definition.Parameters)
+	envelope["parameters"] = parameters
+	return json.Marshal(envelope)
 }
 
 func (h *Handler) binding(w http.ResponseWriter, r *http.Request, packageID int64) {

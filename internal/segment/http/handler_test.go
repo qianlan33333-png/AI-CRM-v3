@@ -10,6 +10,7 @@ import (
 	"time"
 
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
+	accessport "github.com/qianlan33333-png/AI-CRM-v3/internal/access/port"
 	segmentapp "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/app"
 	segmentdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/domain"
 	segmentport "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/port"
@@ -28,6 +29,24 @@ func (f fakeSecurity) AuthorizeCSRF(context.Context, *http.Request) (accessdomai
 }
 
 type fakeApplication struct{}
+type configurationCapture struct {
+	fakeApplication
+	command segmentapp.ConfigurationCommand
+}
+
+func (c *configurationCapture) PutConfiguration(_ context.Context, command segmentapp.ConfigurationCommand) (segmentdomain.ConfigurationVersion, error) {
+	c.command = command
+	return segmentdomain.ConfigurationVersion{ID: 1, PackageID: command.PackageID, Version: 1}, nil
+}
+
+type ownerResolverStub struct{}
+
+func (ownerResolverStub) ResolveAudienceOwner(_ context.Context, value string) (accessport.StaffID, bool, error) {
+	if value == "wecom-owner" {
+		return 9, true, nil
+	}
+	return 0, false, nil
+}
 
 type packageListApplication struct{ fakeApplication }
 
@@ -152,5 +171,22 @@ func TestHandlerRejectsUnknownAndOversizedBodiesAndFailsClosedActivation(t *test
 				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 			}
 		})
+	}
+}
+
+func TestConfigurationConvertsFrozenOwnerUserIDsThroughAccess(t *testing.T) {
+	admin := accessdomain.Principal{InternalID: 1, Kind: accessdomain.KindAdmin, Roles: []accessdomain.Role{accessdomain.RoleAdmin}}
+	capture := &configurationCapture{}
+	handler, err := NewRuntimeHandlerWithOwners(capture, snapshotApplication{}, fakeSecurity{principal: admin}, ownerResolverStub{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := `{"expected_package_version":1,"refresh_cron_utc":"","definition":{"schema_version":1,"template_key":"wecom_contact_registration","parameters":{"owner_scope":"specified","owner_userids":["wecom-owner"],"contact_statuses":["active"],"registration_status":"any"}}}`
+	request := httptest.NewRequest(http.MethodPut, "/api/admin/ai-audience/packages/7/configuration", strings.NewReader(body))
+	request.Header.Set("Idempotency-Key", "1234567890abcdef")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(string(capture.command.Definition), `"owner_staff_ids":["9"]`) || strings.Contains(string(capture.command.Definition), "owner_userids") {
+		t.Fatalf("status=%d definition=%s", response.Code, capture.command.Definition)
 	}
 }
