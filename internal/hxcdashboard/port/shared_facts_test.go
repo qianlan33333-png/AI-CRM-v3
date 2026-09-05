@@ -13,11 +13,11 @@ func TestMembershipWindowKeepsFreeAndUnknownFactsOutOfExpired(t *testing.T) {
 		facts           SharedFacts
 		active, expired bool
 	}{
-		{"active without expiry", SharedFacts{Availability: SharedFactsAvailable, IsMember: true}, true, false},
-		{"expiry equality", SharedFacts{Availability: SharedFactsAvailable, IsMember: true, ExpiresAt: &past}, false, true},
+		{"active without expiry", SharedFacts{Availability: SharedFactsAvailable, MembershipRecordFound: true, IsMember: true}, true, false},
+		{"membership expiry equality", SharedFacts{Availability: SharedFactsAvailable, MembershipRecordFound: true, IsMember: true, ExpiresAt: &past}, false, true},
 		{"free no member", SharedFacts{Availability: SharedFactsAvailable, Tier: "free", ExpiresAt: &past}, false, false},
 		{"explicit expired no date", SharedFacts{Availability: SharedFactsAvailable, MembershipRecordFound: true, MembershipStatus: "expired"}, false, true},
-		{"unavailable", SharedFacts{Availability: SharedFactsUnavailable, IsMember: true, ExpiresAt: &future}, false, false},
+		{"unavailable", SharedFacts{Availability: SharedFactsUnavailable, MembershipRecordFound: true, IsMember: true, ExpiresAt: &future}, false, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
