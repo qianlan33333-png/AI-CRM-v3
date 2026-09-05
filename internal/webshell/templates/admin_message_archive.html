@@ -1,4 +1,12 @@
 {{define "admin_message_archive"}}
+{{if eq .RequestPath "/admin/message-archive"}}
+<section class="admin-card archive-view" data-message-archive-entry>
+  <div class="admin-card-head">
+    <div><h2>会话存档</h2><p>先从现有客户目录选择客户，再查看该客户已入库的企业微信会话存档。</p></div>
+    <a class="admin-button admin-button--primary" href="/admin/customers">选择客户</a>
+  </div>
+</section>
+{{else}}
 <section class="admin-card archive-view" data-message-archive-root data-api-base="/api/admin/message-archive/customers/">
   <div class="admin-card-head">
     <div><h2>会话存档</h2><p>仅显示已入库的企业微信会话存档。读取不会触发企微拉取。</p></div>
@@ -17,4 +25,5 @@
   <div id="archive-message-list" class="admin-profile-message-list" hidden></div>
   <div class="archive-actions"><button id="archive-more" class="admin-button admin-button--secondary" type="button" hidden>加载更多</button></div>
 </section>
+{{end}}
 {{end}}
