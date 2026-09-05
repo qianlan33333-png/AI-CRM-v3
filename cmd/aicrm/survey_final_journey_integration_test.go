@@ -82,7 +82,7 @@ func TestSurveyOAuthSubmissionResultJourneyPostgreSQL(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	createBody := []byte(`{"name":"OAuth journey","title":"OAuth journey","description":"","answer_display_mode":"all_in_one","assessment_enabled":false,"assessment_config":{},"slug":"oauth-journey","questions":[{"type":"single_choice","title":"Continue?","required":true,"sort_order":0,"options":[{"option_text":"Yes","score":0,"tag_codes":[],"is_other":false,"sort_order":0}]}],"score_rules":[]}`)
+	createBody := []byte(`{"name":"OAuth journey","title":"OAuth journey","description":"","answer_display_mode":"all_in_one","assessment_enabled":false,"assessment_config":{},"slug":"oauth-journey","questions":[{"type":"single_choice","title":"Continue?","required":true,"sort_order":0,"options":[{"option_text":"Yes","score":0,"tag_codes":[],"is_other":false,"sort_order":0},{"option_text":"No","score":0,"tag_codes":[],"is_other":false,"sort_order":1}]}],"score_rules":[]}`)
 	created := surveyJourneyServe(t, handler, http.MethodPost, "/api/admin/questionnaires", createBody, "survey-oauth-create-0001", nil, "")
 	if created.Code != http.StatusOK {
 		t.Fatalf("create status=%d body=%s", created.Code, created.Body.String())
@@ -91,7 +91,7 @@ func TestSurveyOAuthSubmissionResultJourneyPostgreSQL(t *testing.T) {
 		Questionnaire surveyport.Questionnaire `json:"questionnaire"`
 	}
 	mustSurveyJourneyJSON(t, created, &createResult)
-	if createResult.Questionnaire.ID < 1 || len(createResult.Questionnaire.Questions) != 1 || len(createResult.Questionnaire.Questions[0].Options) != 1 {
+	if createResult.Questionnaire.ID < 1 || len(createResult.Questionnaire.Questions) != 1 || len(createResult.Questionnaire.Questions[0].Options) != 2 {
 		t.Fatalf("created questionnaire=%+v", createResult.Questionnaire)
 	}
 
