@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -42,7 +44,24 @@ type ShadowReport struct {
 	ProviderEffectsCreated int64           `json:"provider_effects_created"`
 	RiverJobsCreated       int64           `json:"river_jobs_created"`
 	OutcomeUnknownCount    int64           `json:"outcome_unknown_count"`
+	History                []ShadowHistory `json:"history"`
 	ReadyForProbe          bool            `json:"ready_for_probe"`
+}
+
+// ShadowHistory is a safe, read-only comparison of one frozen legacy runtime
+// record. It deliberately carries no source payload or Provider identifier.
+type ShadowHistory struct {
+	SourceTable               string    `json:"source_table"`
+	SourcePK                  string    `json:"source_pk"`
+	SourceState               string    `json:"source_state"`
+	OccurredAt                time.Time `json:"occurred_at"`
+	StateMatches              bool      `json:"state_matches"`
+	OccurredAtMatches         bool      `json:"occurred_at_matches"`
+	RecordDigestMatches       bool      `json:"record_digest_matches"`
+	SourceEffectDigestMatches bool      `json:"source_effect_digest_matches"`
+	ReadOnly                  bool      `json:"read_only"`
+	Replayable                bool      `json:"replayable"`
+	Ready                     bool      `json:"ready"`
 }
 
 func Shadow(ctx context.Context, pool *pgxpool.Pool, batchKey string, snapshot segmentmigration.Snapshot) (ShadowReport, error) {
@@ -156,6 +175,39 @@ func Shadow(ctx context.Context, pool *pgxpool.Pool, batchKey string, snapshot s
 	}
 	if err = tx.QueryRow(ctx, `SELECT count(*) FROM automation_run_recipients r JOIN automation_runs x ON x.id=r.run_id WHERE r.state='outcome_unknown' AND x.package_id IN (SELECT target_pk FROM automation_operations_migration_source_map WHERE batch_id=$1 AND source_table='audience_packages' AND target_pk IS NOT NULL)`, batchID).Scan(&report.OutcomeUnknownCount); err != nil {
 		return report, err
+	}
+	for _, name := range []string{"automation_policies", "automation_policy_versions", "automation_enrollments", "automation_actions"} {
+		var rows []json.RawMessage
+		if err = json.Unmarshal(snapshot.Tables[name], &rows); err != nil {
+			return report, err
+		}
+		for index, raw := range rows {
+			var object map[string]json.RawMessage
+			if json.Unmarshal(raw, &object) != nil {
+				return report, fmt.Errorf("invalid history row %s", name)
+			}
+			pk := historyPK(name, object, index)
+			item := ShadowHistory{SourceTable: name, SourcePK: pk, SourceState: historyString(object, "state", historyString(object, "status", "unknown")), OccurredAt: historyTime(object)}
+			var storedDigest, storedEffect []byte
+			var storedState string
+			var storedOccurred time.Time
+			if err = tx.QueryRow(ctx, `SELECT source_state,occurred_at,record_digest,source_effect_digest,read_only,replayable FROM automation_operations_legacy_history WHERE batch_id=$1 AND source_table=$2 AND source_pk=$3`, batchID, name, sourcePK(snapshot, pk)).Scan(&storedState, &storedOccurred, &storedDigest, &storedEffect, &item.ReadOnly, &item.Replayable); err != nil {
+				return report, fmt.Errorf("history %s/%s: %w", name, pk, err)
+			}
+			item.StateMatches = storedState == item.SourceState
+			item.OccurredAtMatches = storedOccurred.UTC().Equal(item.OccurredAt.UTC())
+			expected := recordDigest(raw)
+			item.RecordDigestMatches = bytes.Equal(storedDigest, expected[:])
+			expectedEffect := []byte(nil)
+			if effectID := historyString(object, "external_effect_id", ""); effectID != "" {
+				sum := sha256.Sum256([]byte(effectID))
+				expectedEffect = sum[:]
+			}
+			item.SourceEffectDigestMatches = bytes.Equal(storedEffect, expectedEffect)
+			item.Ready = item.StateMatches && item.OccurredAtMatches && item.RecordDigestMatches && item.SourceEffectDigestMatches && item.ReadOnly && !item.Replayable
+			allReady = allReady && item.Ready
+			report.History = append(report.History, item)
+		}
 	}
 	report.ReadyForProbe = allReady && report.OutcomeUnknownCount == 0 && len(report.Packages) > 0
 	if err = tx.Commit(ctx); err != nil {
