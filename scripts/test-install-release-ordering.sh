@@ -36,6 +36,14 @@ sha_orphaned=8888888888888888888888888888888888888888
 sha_orphan_only=9999999999999999999999999999999999999999
 sha_missing_commerce=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 sha_missing_archive=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+sha_missing_0066=cccccccccccccccccccccccccccccccccccccccc
+sha_missing_0067=dddddddddddddddddddddddddddddddddddddddd
+sha_missing_0071=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+sha_missing_0072=ffffffffffffffffffffffffffffffffffffffff
+sha_missing_0073=1010101010101010101010101010101010101010
+sha_missing_0074=2020202020202020202020202020202020202020
+sha_missing_0075=3030303030303030303030303030303030303030
+sha_missing_0080=4040404040404040404040404040404040404040
 
 mkdir -p "$test_root/bin" "$test_root/aicrm" "$test_root/etc-aicrm" "$test_root/systemd"
 printf 'AICRM_SURVEY_DATA_KEY=%043d\n' 0 > "$test_root/etc-aicrm/aicrm.env"
@@ -121,7 +129,7 @@ chmod 0755 "$test_root/install-release.sh"
 
 make_release() {
   local sha="$1"
-  local missing_binary="${2:-}"
+  local missing_release_file="${2:-}"
   local release="$test_root/package-${sha}"
   local archive="/tmp/aicrm-${sha}.tar.gz"
   mkdir -p "$release/bin" "$release/migrations" "$release/web/dist/admin" "$release/web/dist/aiassistant" "$release/deploy"
@@ -147,6 +155,8 @@ make_release() {
     0048_segment_audience_schedule_state.sql 0049_order_history_attribution.sql \
     0050_radar_core.sql 0051_radar_sessions_events.sql 0052_radar_legacy_import.sql \
     0053_segment_audience_member_event_fact_kinds.sql \
+    0066_channel_welcome_intents.sql \
+    0067_survey_completion_snapshots.sql \
     0083_segment_audience_refresh_modes.sql \
     0085_segment_audience_refresh_kind.sql \
     0086_wecom_profile_primary_owner.sql \
@@ -158,10 +168,16 @@ make_release() {
     0068_payment_session_beneficiary_selection.sql \
     0069_coupon_claim_redemption_lifecycle.sql \
     0070_service_period_entitlement_fulfillment.sql \
+    0071_message_archive_core.sql \
+    0072_message_archive_migration_receipts.sql \
+    0073_survey_completion_test_push_snapshots.sql \
+    0074_survey_external_operation_execution_facts.sql \
+    0075_external_effects_survey_completion_kind.sql \
     0076_order_checkout_snapshots.sql \
     0077_coupon_public_slug.sql \
     0078_group_ops_provider_tasks.sql \
     0079_service_period_member_grid.sql \
+    0080_media_legacy_material_mappings.sql \
     0081_group_ops_webhook_unconfigured_reference.sql \
     0082_group_ops_history_import.sql \
     0084_hxc_shared_facts.sql \
@@ -190,8 +206,8 @@ make_release() {
     : > "$release/deploy/$unit"
   done
   : > "$release/deploy/rollout-hxc-identity-v2.sh"
-  if [[ -n "$missing_binary" ]]; then
-    rm -f -- "$release/bin/$missing_binary"
+  if [[ -n "$missing_release_file" ]]; then
+    rm -f -- "$release/$missing_release_file"
   fi
   (
     cd "$release"
@@ -217,15 +233,29 @@ run_release() {
 }
 
 for sha in "$sha_one" "$sha_manual" "$sha_stale" "$sha_failed" "$sha_first" "$sha_second" "$sha_recovered" "$sha_orphan_only"; do make_release "$sha"; done
-make_release "$sha_missing_commerce" migrate-commerce-history
-make_release "$sha_missing_archive" migrate-message-archive
-
-if run_release "$sha_missing_commerce" 98 missing-commerce; then
-  fail "installer accepted a release missing migrate-commerce-history"
-fi
-if run_release "$sha_missing_archive" 99 missing-archive; then
-  fail "installer accepted a release missing migrate-message-archive"
-fi
+for missing_release in \
+  "$sha_missing_commerce:bin/migrate-commerce-history" \
+  "$sha_missing_archive:bin/migrate-message-archive" \
+  "$sha_missing_0066:migrations/0066_channel_welcome_intents.sql" \
+  "$sha_missing_0067:migrations/0067_survey_completion_snapshots.sql" \
+  "$sha_missing_0071:migrations/0071_message_archive_core.sql" \
+  "$sha_missing_0072:migrations/0072_message_archive_migration_receipts.sql" \
+  "$sha_missing_0073:migrations/0073_survey_completion_test_push_snapshots.sql" \
+  "$sha_missing_0074:migrations/0074_survey_external_operation_execution_facts.sql" \
+  "$sha_missing_0075:migrations/0075_external_effects_survey_completion_kind.sql" \
+  "$sha_missing_0080:migrations/0080_media_legacy_material_mappings.sql"; do
+  sha="${missing_release%%:*}"
+  missing_path="${missing_release#*:}"
+  label="missing-${missing_path##*/}"
+  make_release "$sha" "$missing_path"
+  if run_release "$sha" 98 "$label"; then
+    fail "installer accepted a release missing ${missing_path}"
+  fi
+  [[ ! -L "$test_root/aicrm/current" ]] || fail "missing ${missing_path} activated a release"
+  if [[ -f "$test_root/install.log" ]] && grep -Fqx "migration:${label}" "$test_root/install.log"; then
+    fail "missing ${missing_path} ran migrations"
+  fi
+done
 
 run_release "$sha_one" 100 initial 1
 [[ "$(<"$test_root/effects-readlink-${sha_one}")" == 2 ]] || fail "effects worker executable readiness was not retried"
