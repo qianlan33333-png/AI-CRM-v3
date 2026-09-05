@@ -207,6 +207,7 @@ management.dom.window.close();
 // waits for both the response and the completed Blob/download gesture.
 const normalPublished = await openEditor(`?id=${normalID}`);
 const normalPublishedDocument = normalPublished.dom.window.document;
+await waitFor("published editor export action", () => normalPublishedDocument.querySelector("#editor-export-btn") !== null);
 click(normalPublishedDocument.querySelector("#editor-export-btn"));
 await waitFor("actual CSV download", () => {
   const downloads = normalPublished.dom.window.__surveyRuntimeDownloads || [];
