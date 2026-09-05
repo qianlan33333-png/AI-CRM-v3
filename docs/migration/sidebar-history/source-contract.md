@@ -53,6 +53,15 @@ rule mapping, lifecycle status, explicit empty masked number, claimed/valid/
 redeemed timestamps, source receipt, and source timestamps. A quarantined row
 must retain its subject, digest, and still-applicable resolution reason.
 
+The map and quarantine receipts are mutually exclusive. When the same protected
+row later becomes resolvable, creation of its first map and deletion of its
+previous quarantine happen in one serializable receipt transaction. A row that
+already has a map cannot be turned into a quarantine by a later failed replay;
+that is evidence drift for reconciliation. Each mapped customer is also
+resolved again from the scoped, verified UnionID inside the reconciliation
+transaction, so a source map and target changed together to the same wrong
+customer still fail.
+
 Reconciliation uses one serializable transaction for the migration batch and
 only marks it `reconciled` after every fact matches. It is read verification
 plus that batch-ledger transition; it creates no historical effects.

@@ -242,6 +242,31 @@ func TestPostgreSQLSidebarHistoryReconcileVerifiesEveryImportedTargetFact(t *tes
 		t.Fatal(err)
 	}
 
+	// The source map and its target could be changed together while retaining
+	// the protected row digest. Reconciliation must bind the scoped, verified
+	// UnionID through OneID in the same Serializable transaction rather than
+	// trusting that two altered customer_id columns agree.
+	var originalCustomerID, wrongCustomerID int64
+	if err := pool.QueryRow(ctx, `SELECT customer_id FROM order_service_entitlements WHERE source_system=$1 AND source_key='101'`, productionSourceSystem).Scan(&originalCustomerID); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `INSERT INTO customers DEFAULT VALUES RETURNING id`).Scan(&wrongCustomerID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE order_service_entitlements SET customer_id=$1 WHERE source_system=$2 AND source_key='101'`, wrongCustomerID, productionSourceSystem); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE sidebar_history_migration_source_map SET customer_id=$1 WHERE source_kind='service_period_entitlement' AND source_key='101'`, wrongCustomerID); err != nil {
+		t.Fatal(err)
+	}
+	sidebarHistoryReconcileRejects(t, ctx, pool, reconcileArgs, "sidebar-full-facts-pg-001")
+	if _, err := pool.Exec(ctx, `UPDATE order_service_entitlements SET customer_id=$1 WHERE source_system=$2 AND source_key='101'`, originalCustomerID, productionSourceSystem); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE sidebar_history_migration_source_map SET customer_id=$1 WHERE source_kind='service_period_entitlement' AND source_key='101'`, originalCustomerID); err != nil {
+		t.Fatal(err)
+	}
+
 	// Quarantine has no target, but its protected reason is still an observable
 	// source result. A change must fail and a restored receipt can reconcile.
 	if _, err := pool.Exec(ctx, `UPDATE sidebar_history_migration_quarantine SET reason='identity_conflict' WHERE source_kind='service_period_entitlement' AND source_key='104'`); err != nil {
@@ -272,6 +297,74 @@ func TestPostgreSQLSidebarHistoryReconcileVerifiesEveryImportedTargetFact(t *tes
 	}
 	if err := run(ctx, reconcileArgs); err != nil {
 		t.Fatalf("reconcile replayed full facts: %v", err)
+	}
+
+	// Both remaining receipts have an identity_not_found outcome. Once their
+	// protected subject becomes verifiably resolvable, the existing Order and
+	// Coupon import paths add maps and atomically remove the old quarantines.
+	// A subsequent replay must retain exactly one outcome per source row.
+	var recoveredCustomerID int64
+	if err := pool.QueryRow(ctx, `INSERT INTO customers DEFAULT VALUES RETURNING id`).Scan(&recoveredCustomerID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO customer_identities(customer_id,kind,scope_key,normalized_value,assurance,source,normalizer_version,verified_at)
+		VALUES($1,'unionid','wechat-open-platform:primary','sidebar-full-unresolved','verified','provider-history:sidebar-full-recovery',1,clock_timestamp())`, recoveredCustomerID); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(ctx, applyArgs); err != nil {
+		t.Fatalf("apply resolved prior quarantines: %v", err)
+	}
+	var maps, quarantines, imported, replayed int64
+	if err := pool.QueryRow(ctx, `SELECT
+		(SELECT count(*) FROM sidebar_history_migration_source_map),
+		(SELECT count(*) FROM sidebar_history_migration_quarantine),
+		imported_count,replayed_count
+		FROM sidebar_history_migration_batches WHERE run_key='sidebar-full-facts-pg-001'`).Scan(&maps, &quarantines, &imported, &replayed); err != nil {
+		t.Fatal(err)
+	}
+	if maps != 8 || quarantines != 0 || imported != 2 || replayed != 6 {
+		t.Fatalf("resolved quarantine receipts maps=%d quarantines=%d imported=%d replayed=%d", maps, quarantines, imported, replayed)
+	}
+	if err := run(ctx, reconcileArgs); err != nil {
+		t.Fatalf("reconcile resolved prior quarantines: %v", err)
+	}
+	// A later loss of identity proof cannot convert an already mapped receipt
+	// back into a second quarantine outcome. Apply stops instead, retaining the
+	// map for reconciliation to report as evidence drift.
+	if _, err := pool.Exec(ctx, `UPDATE customer_identities SET status='retired' WHERE normalized_value='sidebar-full-unresolved'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(ctx, applyArgs); err == nil {
+		t.Fatal("apply converted an existing map into a second quarantine")
+	}
+	if err := pool.QueryRow(ctx, `SELECT
+		(SELECT count(*) FROM sidebar_history_migration_source_map),
+		(SELECT count(*) FROM sidebar_history_migration_quarantine)`).Scan(&maps, &quarantines); err != nil {
+		t.Fatal(err)
+	}
+	if maps != 8 || quarantines != 0 {
+		t.Fatalf("failed replay changed source outcomes maps=%d quarantines=%d", maps, quarantines)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE customer_identities SET status='active' WHERE normalized_value='sidebar-full-unresolved'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(ctx, applyArgs); err != nil {
+		t.Fatalf("replay resolved prior quarantines: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT
+		(SELECT count(*) FROM order_service_entitlements WHERE source_system=$1),
+		(SELECT count(*) FROM coupon_customer_claims WHERE source_system=$1),
+		(SELECT count(*) FROM sidebar_history_migration_source_map),
+		(SELECT count(*) FROM sidebar_history_migration_quarantine),
+		(SELECT count(*) FROM orders),
+		(SELECT count(*) FROM order_entitlement_fulfillment_receipts)`, productionSourceSystem).Scan(&entitlements, &claims, &maps, &quarantines, &orders, &grants); err != nil {
+		t.Fatal(err)
+	}
+	if entitlements != 4 || claims != 4 || maps != 8 || quarantines != 0 || orders != 0 || grants != 0 {
+		t.Fatalf("resolved quarantine replay conservation entitlements=%d claims=%d maps=%d quarantines=%d orders=%d grants=%d", entitlements, claims, maps, quarantines, orders, grants)
+	}
+	if err := run(ctx, reconcileArgs); err != nil {
+		t.Fatalf("reconcile replayed resolved quarantines: %v", err)
 	}
 }
 

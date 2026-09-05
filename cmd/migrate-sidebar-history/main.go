@@ -590,16 +590,70 @@ func definitionMap(ctx context.Context, pool *platformpostgres.Pool, source, dom
 }
 func quarantine(ctx context.Context, pool *platformpostgres.Pool, batch int64, kind, key string, digest [32]byte, subject, reason string) error {
 	subjectDigest := sha256.Sum256([]byte(subject))
-	_, err := pool.Native().Exec(ctx, `INSERT INTO sidebar_history_migration_quarantine(batch_id,source_kind,source_key,source_digest,subject_digest,reason) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(batch_id,source_kind,source_key) DO NOTHING`, batch, kind, key, digest[:], subjectDigest[:], reason)
-	return err
+	tx, err := pool.Native().BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err = lockMigrationSourceOutcomes(ctx, tx, batch); err != nil {
+		return err
+	}
+	var mapped bool
+	if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM sidebar_history_migration_source_map WHERE batch_id=$1 AND source_kind=$2 AND source_key=$3)`, batch, kind, key).Scan(&mapped); err != nil {
+		return err
+	}
+	if mapped {
+		// A successfully imported source may not be silently converted into a
+		// quarantine just because a later replay has lost its current identity
+		// proof. Reconcile must expose that evidence drift instead.
+		return errors.New("source outcome is already mapped")
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO sidebar_history_migration_quarantine(batch_id,source_kind,source_key,source_digest,subject_digest,reason) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(batch_id,source_kind,source_key) DO NOTHING`, batch, kind, key, digest[:], subjectDigest[:], reason); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
+
+// lockMigrationSourceOutcomes serializes the two mutually exclusive receipt
+// types for one batch. There is no cross-table unique constraint, so both the
+// map and quarantine writers lock their common batch parent before deciding
+// the source outcome.
+func lockMigrationSourceOutcomes(ctx context.Context, tx pgx.Tx, batch int64) error {
+	var locked int64
+	if err := tx.QueryRow(ctx, `SELECT id FROM sidebar_history_migration_batches WHERE id=$1 FOR UPDATE`, batch).Scan(&locked); err != nil {
+		return err
+	}
+	return nil
+}
+
 func mapSource(ctx context.Context, pool *platformpostgres.Pool, batch int64, kind, key string, digest [32]byte, customer int64, table string, target int64, created bool) error {
 	disposition := "replayed"
 	if created {
 		disposition = "imported"
 	}
-	_, err := pool.Native().Exec(ctx, `INSERT INTO sidebar_history_migration_source_map(batch_id,source_kind,source_key,source_digest,customer_id,target_table,target_id,disposition) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(batch_id,source_kind,source_key) DO NOTHING`, batch, kind, key, digest[:], customer, table, target, disposition)
-	return err
+	tx, err := pool.Native().BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err = lockMigrationSourceOutcomes(ctx, tx, batch); err != nil {
+		return err
+	}
+	tag, err := tx.Exec(ctx, `INSERT INTO sidebar_history_migration_source_map(batch_id,source_kind,source_key,source_digest,customer_id,target_table,target_id,disposition) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(batch_id,source_kind,source_key) DO NOTHING`, batch, kind, key, digest[:], customer, table, target, disposition)
+	if err != nil {
+		return err
+	}
+	// A source row can become resolvable after a prior identity or definition
+	// quarantine. The new immutable map replaces that outcome atomically, so a
+	// replay cannot leave both receipts and falsely fail conservation. Do not
+	// delete a quarantine when the map already existed: that is evidence drift
+	// for Reconcile rather than a recovery to repair implicitly.
+	if tag.RowsAffected() == 1 {
+		if _, err = tx.Exec(ctx, `DELETE FROM sidebar_history_migration_quarantine WHERE batch_id=$1 AND source_kind=$2 AND source_key=$3`, batch, kind, key); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
 }
 
 type reconciliationMapping struct {
@@ -735,6 +789,15 @@ func reconcileCouponTarget(ctx context.Context, db reconciliationQueryer, m mani
 	return nil
 }
 
+func reconcileMappedCustomer(ctx context.Context, tx pgx.Tx, m manifest, subject string, mapping reconciliationMapping) error {
+	oneID := identityapp.OneIDService{Store: identitystore.NewPostgresStore()}
+	resolved, err := oneID.Resolve(platformpostgres.BindTransaction(ctx, tx), identitydomain.Reference{Kind: identitydomain.KindUnionID, Scope: m.UnionIDScope, Value: subject, Assurance: identitydomain.AssuranceVerified, Source: "sidebar_history"})
+	if err != nil || resolved.Status != identityport.ResolveFound || int64(resolved.CustomerID) != mapping.customerID {
+		return errors.New("reconciliation mapped customer mismatch")
+	}
+	return nil
+}
+
 func reconcileQuarantineReason(ctx context.Context, tx pgx.Tx, m manifest, kind, subject string, definitionID int64) (string, error) {
 	oneID := identityapp.OneIDService{Store: identitystore.NewPostgresStore()}
 	resolved, err := oneID.Resolve(platformpostgres.BindTransaction(ctx, tx), identitydomain.Reference{Kind: identitydomain.KindUnionID, Scope: m.UnionIDScope, Value: subject, Assurance: identitydomain.AssuranceVerified, Source: "sidebar_history"})
@@ -805,6 +868,9 @@ func reconcile(ctx context.Context, pool *platformpostgres.Pool, m manifest) err
 			}
 			continue
 		}
+		if err = reconcileMappedCustomer(ctx, tx, m, row.UnionID, mapping); err != nil {
+			return err
+		}
 		if err = reconcileEntitlementTarget(ctx, tx, m, row, mapping, sourceDigest); err != nil {
 			return err
 		}
@@ -825,6 +891,9 @@ func reconcile(ctx context.Context, pool *platformpostgres.Pool, m manifest) err
 				return errors.New("reconciliation coupon quarantine mismatch")
 			}
 			continue
+		}
+		if err = reconcileMappedCustomer(ctx, tx, m, row.UnionID, mapping); err != nil {
+			return err
 		}
 		if err = reconcileCouponTarget(ctx, tx, m, row, mapping, sourceDigest); err != nil {
 			return err
