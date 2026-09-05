@@ -13,14 +13,14 @@ import (
 	segmentport "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/port"
 )
 
-const refreshColumns = `id,package_id,configuration_version_id,source_key_digest,reference_time,state,river_job_id,error_code,created_at,updated_at,completed_at`
+const refreshColumns = `id,package_id,configuration_version_id,source_key_digest,reference_time,refresh_kind,state,river_job_id,error_code,created_at,updated_at,completed_at`
 
 func scanRefresh(row pgx.Row) (segmentdomain.RefreshRun, error) {
 	var run segmentdomain.RefreshRun
 	var digest []byte
 	var state string
 	var errorCode *string
-	err := row.Scan(&run.ID, &run.PackageID, &run.ConfigurationVersionID, &digest, &run.ReferenceTime, &state, &run.RiverJobID, &errorCode, &run.CreatedAt, &run.UpdatedAt, &run.CompletedAt)
+	err := row.Scan(&run.ID, &run.PackageID, &run.ConfigurationVersionID, &digest, &run.ReferenceTime, &run.RefreshKind, &state, &run.RiverJobID, &errorCode, &run.CreatedAt, &run.UpdatedAt, &run.CompletedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return run, ErrNotFound
 	}
@@ -39,25 +39,36 @@ func scanRefresh(row pgx.Row) (segmentdomain.RefreshRun, error) {
 }
 
 func (r *Repository) ReserveRefresh(ctx context.Context, run segmentdomain.RefreshRun) (segmentdomain.RefreshRun, bool, error) {
+	if !segmentdomain.ValidRefreshKind(run.RefreshKind) {
+		return run, false, ErrInvalid
+	}
 	t, err := tx(ctx)
 	if err != nil {
 		return run, false, err
 	}
-	query := `INSERT INTO segment_audience_refresh_runs(package_id,configuration_version_id,source_key_digest,reference_time,state,created_at,updated_at)
-		VALUES($1,$2,$3,$4,'accepted',$5,$5) ON CONFLICT(package_id,source_key_digest) DO NOTHING RETURNING ` + refreshColumns
-	created, err := scanRefresh(t.QueryRow(ctx, query, run.PackageID, run.ConfigurationVersionID, run.SourceKeyDigest[:], run.ReferenceTime, run.CreatedAt))
+	query := `INSERT INTO segment_audience_refresh_runs(package_id,configuration_version_id,source_key_digest,reference_time,refresh_kind,state,created_at,updated_at)
+		VALUES($1,$2,$3,$4,$5,'accepted',$6,$6) ON CONFLICT(package_id,source_key_digest) DO NOTHING RETURNING ` + refreshColumns
+	created, err := scanRefresh(t.QueryRow(ctx, query, run.PackageID, run.ConfigurationVersionID, run.SourceKeyDigest[:], run.ReferenceTime, run.RefreshKind, run.CreatedAt))
 	if err == nil {
 		return created, true, nil
 	}
 	if !errors.Is(err, ErrNotFound) {
 		return run, false, err
 	}
-	existing, err := scanRefresh(t.QueryRow(ctx, `SELECT `+refreshColumns+` FROM segment_audience_refresh_runs WHERE package_id=$1 AND source_key_digest=$2`, run.PackageID, run.SourceKeyDigest[:]))
+	existing, err := scanRefresh(t.QueryRow(ctx, `SELECT `+refreshColumns+` FROM segment_audience_refresh_runs WHERE package_id=$1 AND source_key_digest=$2 FOR UPDATE`, run.PackageID, run.SourceKeyDigest[:]))
 	if err != nil {
 		return run, false, err
 	}
 	if existing.ConfigurationVersionID != run.ConfigurationVersionID || !existing.ReferenceTime.Equal(run.ReferenceTime) {
 		return run, false, ErrConflict
+	}
+	// A daily request may join an accepted/queued incremental occurrence, but
+	// upgrades it before any worker can publish the partial result.
+	if run.RefreshKind == segmentdomain.RefreshDaily && existing.RefreshKind != segmentdomain.RefreshDaily && (existing.State == segmentdomain.RefreshAccepted || existing.State == segmentdomain.RefreshQueued) {
+		existing, err = scanRefresh(t.QueryRow(ctx, `UPDATE segment_audience_refresh_runs SET refresh_kind='daily',updated_at=$2 WHERE id=$1 RETURNING `+refreshColumns, existing.ID, run.UpdatedAt))
+		if err != nil {
+			return run, false, err
+		}
 	}
 	return existing, false, nil
 }
@@ -184,73 +195,126 @@ func (r *Repository) StageRefreshBatch(ctx context.Context, runID int64, ordinal
 	return err
 }
 
-func (r *Repository) PublishRefresh(ctx context.Context, runID int64, expectedCount int64, expectedMemberDigest, watermarkDigest [32]byte, actor int64, now time.Time) (segmentdomain.Snapshot, error) {
+func (r *Repository) PublishRefresh(ctx context.Context, runID int64, expectedCount int64, expectedMemberDigest, watermarkDigest [32]byte, actor int64, now time.Time) (segmentdomain.PublishedRefresh, error) {
 	if runID < 1 || expectedCount < 0 || expectedCount > segmentport.MaximumEvaluationMembers || actor < 1 {
-		return segmentdomain.Snapshot{}, ErrInvalid
+		return segmentdomain.PublishedRefresh{}, ErrInvalid
 	}
 	t, err := tx(ctx)
 	if err != nil {
-		return segmentdomain.Snapshot{}, err
+		return segmentdomain.PublishedRefresh{}, err
 	}
 	run, err := scanRefresh(t.QueryRow(ctx, `SELECT `+refreshColumns+` FROM segment_audience_refresh_runs WHERE id=$1 FOR UPDATE`, runID))
 	if err != nil {
-		return segmentdomain.Snapshot{}, err
+		return segmentdomain.PublishedRefresh{}, err
 	}
 	if run.State == segmentdomain.RefreshPublished {
-		return scanSnapshot(t.QueryRow(ctx, `SELECT `+snapshotColumns+` FROM segment_audience_snapshots WHERE refresh_run_id=$1 AND state='published'`, runID))
+		snapshot, queryErr := scanSnapshot(t.QueryRow(ctx, `SELECT `+snapshotColumns+` FROM segment_audience_snapshots WHERE refresh_run_id=$1 AND state='published'`, runID))
+		return segmentdomain.PublishedRefresh{Snapshot: snapshot}, queryErr
 	}
 	if run.State != segmentdomain.RefreshEvaluating && run.State != segmentdomain.RefreshStaging {
-		return segmentdomain.Snapshot{}, ErrConflict
+		return segmentdomain.PublishedRefresh{}, ErrConflict
 	}
 	var currentConfiguration int64
+	var previousID *int64
+	var previousReference *time.Time
 	if err = t.QueryRow(ctx, `SELECT current_configuration_version_id FROM segment_audience_packages WHERE id=$1 FOR UPDATE`, run.PackageID).Scan(&currentConfiguration); err != nil {
-		return segmentdomain.Snapshot{}, err
+		return segmentdomain.PublishedRefresh{}, err
 	}
 	if currentConfiguration != run.ConfigurationVersionID {
-		return segmentdomain.Snapshot{}, ErrConflict
+		return segmentdomain.PublishedRefresh{}, ErrConflict
+	}
+	var currentID int64
+	var currentReference time.Time
+	if err = t.QueryRow(ctx, `SELECT s.id,s.reference_time FROM segment_audience_packages p JOIN segment_audience_snapshots s ON s.id=p.published_snapshot_id AND s.state='published' WHERE p.id=$1`, run.PackageID).Scan(&currentID, &currentReference); err == nil {
+		previousID, previousReference = &currentID, &currentReference
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return segmentdomain.PublishedRefresh{}, err
+	}
+	if previousReference != nil && previousReference.After(run.ReferenceTime) {
+		return segmentdomain.PublishedRefresh{}, ErrConflict
 	}
 	snapshot, err := scanSnapshot(t.QueryRow(ctx, `SELECT `+snapshotColumns+` FROM segment_audience_snapshots WHERE refresh_run_id=$1 AND state='preparing' FOR UPDATE`, runID))
 	if err != nil {
-		return snapshot, err
+		return segmentdomain.PublishedRefresh{}, err
+	}
+	// Verify the staged evaluation before an incremental run merges its additions
+	// into the currently published audience.
+	stagedRows, err := t.Query(ctx, `SELECT customer_id FROM segment_audience_snapshot_members WHERE snapshot_id=$1 ORDER BY customer_id`, snapshot.ID)
+	if err != nil {
+		return segmentdomain.PublishedRefresh{}, err
+	}
+	staged := []customerdomain.CustomerID{}
+	for stagedRows.Next() {
+		var id customerdomain.CustomerID
+		if err = stagedRows.Scan(&id); err != nil {
+			stagedRows.Close()
+			return segmentdomain.PublishedRefresh{}, err
+		}
+		staged = append(staged, id)
+	}
+	stagedRows.Close()
+	if err = stagedRows.Err(); err != nil || int64(len(staged)) != expectedCount || segmentdomain.DigestMembers(staged) != expectedMemberDigest {
+		return segmentdomain.PublishedRefresh{}, ErrConflict
+	}
+	if !run.RefreshKind.IsComplete() && previousID != nil {
+		if _, err = t.Exec(ctx, `INSERT INTO segment_audience_snapshot_members(snapshot_id,customer_id,entered_at,identity_disposition)
+			SELECT $1,previous.customer_id,$2,'resolved' FROM segment_audience_snapshot_members previous
+			WHERE previous.snapshot_id=$3 AND NOT EXISTS (SELECT 1 FROM segment_audience_snapshot_members added WHERE added.snapshot_id=$1 AND added.customer_id=previous.customer_id)`, snapshot.ID, now, *previousID); err != nil {
+			return segmentdomain.PublishedRefresh{}, err
+		}
 	}
 	rows, err := t.Query(ctx, `SELECT customer_id FROM segment_audience_snapshot_members WHERE snapshot_id=$1 ORDER BY customer_id`, snapshot.ID)
 	if err != nil {
-		return snapshot, err
+		return segmentdomain.PublishedRefresh{}, err
 	}
-	ids := make([]customerdomain.CustomerID, 0, expectedCount)
+	ids := []customerdomain.CustomerID{}
 	for rows.Next() {
 		var id customerdomain.CustomerID
 		if err = rows.Scan(&id); err != nil {
 			rows.Close()
-			return snapshot, err
+			return segmentdomain.PublishedRefresh{}, err
 		}
 		ids = append(ids, id)
 	}
 	rows.Close()
 	if err = rows.Err(); err != nil {
-		return snapshot, err
+		return segmentdomain.PublishedRefresh{}, err
 	}
-	if int64(len(ids)) != expectedCount || segmentdomain.DigestMembers(ids) != expectedMemberDigest {
-		return snapshot, ErrConflict
-	}
-	snapshot, err = scanSnapshot(t.QueryRow(ctx, `UPDATE segment_audience_snapshots SET state='published',member_count=$2,member_digest=$3,source_watermark_digest=$4,published_at=$5
-		WHERE id=$1 AND state='preparing' RETURNING `+snapshotColumns, snapshot.ID, expectedCount, expectedMemberDigest[:], watermarkDigest[:], now))
+	memberDigest := segmentdomain.DigestMembers(ids)
+	snapshot, err = scanSnapshot(t.QueryRow(ctx, `UPDATE segment_audience_snapshots SET state='published',member_count=$2,member_digest=$3,source_watermark_digest=$4,published_at=$5 WHERE id=$1 AND state='preparing' RETURNING `+snapshotColumns, snapshot.ID, len(ids), memberDigest[:], watermarkDigest[:], now))
 	if err != nil {
-		return snapshot, err
+		return segmentdomain.PublishedRefresh{}, err
 	}
-	_, err = t.Exec(ctx, `UPDATE segment_audience_packages SET published_snapshot_id=$2,updated_at=$3 WHERE id=$1`, run.PackageID, snapshot.ID, now)
-	if err != nil {
-		return snapshot, err
+	var exited int64
+	if run.RefreshKind == segmentdomain.RefreshDaily && previousID != nil {
+		command, execErr := t.Exec(ctx, `INSERT INTO segment_audience_member_exit_events(event_id,package_id,snapshot_id,configuration_version_id,customer_id,occurred_at)
+			SELECT 'audexit_' || $1::text || '_' || prior.customer_id::text,$2,$1,$3,prior.customer_id,$4
+			FROM segment_audience_snapshot_members prior WHERE prior.snapshot_id=$5
+			AND NOT EXISTS (SELECT 1 FROM segment_audience_snapshot_members current WHERE current.snapshot_id=$1 AND current.customer_id=prior.customer_id)
+			ON CONFLICT(snapshot_id,customer_id) DO NOTHING`, snapshot.ID, run.PackageID, run.ConfigurationVersionID, now, *previousID)
+		if execErr != nil {
+			return segmentdomain.PublishedRefresh{}, execErr
+		}
+		exited = command.RowsAffected()
+		if exited > 0 {
+			payload := []byte(`{"snapshot_id":` + strconv.FormatInt(snapshot.ID, 10) + `,"package_id":` + strconv.FormatInt(snapshot.PackageID, 10) + `,"exited_count":` + strconv.FormatInt(exited, 10) + `}`)
+			if _, err = r.AppendMutationFacts(ctx, MutationFact{ResourceKind: "member_exit_batch", ResourceID: snapshot.ID, Operation: "create", EventType: "audience.member_exited.batch.v1", ActorID: actor, Payload: payload, IdempotencyKey: "member-exits:" + strconv.FormatInt(snapshot.ID, 10), OccurredAt: now}); err != nil {
+				return segmentdomain.PublishedRefresh{}, err
+			}
+		}
 	}
-	_, err = t.Exec(ctx, `UPDATE segment_audience_refresh_runs SET state='published',updated_at=$2,completed_at=$2 WHERE id=$1`, runID, now)
-	if err != nil {
-		return snapshot, err
+	if _, err = t.Exec(ctx, `UPDATE segment_audience_packages SET published_snapshot_id=$2,updated_at=$3 WHERE id=$1`, run.PackageID, snapshot.ID, now); err != nil {
+		return segmentdomain.PublishedRefresh{}, err
 	}
-	payload := []byte(`{"snapshot_id":` + strconv.FormatInt(snapshot.ID, 10) + `,"package_id":` + strconv.FormatInt(snapshot.PackageID, 10) + `,"member_count":` + strconv.FormatInt(expectedCount, 10) + `}`)
-	_, err = r.AppendMutationFacts(ctx, MutationFact{ResourceKind: "snapshot", ResourceID: snapshot.ID, Operation: "publish", EventType: "audience.snapshot.published.v1", ActorID: actor, Payload: payload, IdempotencyKey: "snapshot-publish:" + strconv.FormatInt(runID, 10), OccurredAt: now})
-	return snapshot, err
+	if _, err = t.Exec(ctx, `UPDATE segment_audience_refresh_runs SET state='published',updated_at=$2,completed_at=$2 WHERE id=$1`, runID, now); err != nil {
+		return segmentdomain.PublishedRefresh{}, err
+	}
+	payload := []byte(`{"snapshot_id":` + strconv.FormatInt(snapshot.ID, 10) + `,"package_id":` + strconv.FormatInt(snapshot.PackageID, 10) + `,"member_count":` + strconv.FormatInt(snapshot.MemberCount, 10) + `,"refresh_kind":"` + string(run.RefreshKind) + `"}`)
+	if _, err = r.AppendMutationFacts(ctx, MutationFact{ResourceKind: "snapshot", ResourceID: snapshot.ID, Operation: "publish", EventType: "audience.snapshot.published.v1", ActorID: actor, Payload: payload, IdempotencyKey: "snapshot-publish:" + strconv.FormatInt(runID, 10), OccurredAt: now}); err != nil {
+		return segmentdomain.PublishedRefresh{}, err
+	}
+	return segmentdomain.PublishedRefresh{Snapshot: snapshot, PreviousSnapshotID: previousID, ExitedMemberCount: exited}, nil
 }
-
 func (r *Repository) FailRefresh(ctx context.Context, runID int64, code string, now time.Time) error {
 	if runID < 1 || code == "" || len(code) > 100 {
 		return ErrInvalid

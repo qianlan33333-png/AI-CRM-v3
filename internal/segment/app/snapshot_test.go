@@ -74,10 +74,10 @@ func (s *refreshStoreStub) StageRefreshBatch(_ context.Context, _ int64, _ int, 
 	s.batches++
 	return nil
 }
-func (s *refreshStoreStub) PublishRefresh(_ context.Context, _ int64, count int64, _ [32]byte, _ [32]byte, _ int64, _ time.Time) (segmentdomain.Snapshot, error) {
+func (s *refreshStoreStub) PublishRefresh(_ context.Context, _ int64, count int64, _ [32]byte, _ [32]byte, _ int64, _ time.Time) (segmentdomain.PublishedRefresh, error) {
 	s.published = count
 	s.run.State = segmentdomain.RefreshPublished
-	return segmentdomain.Snapshot{ID: 9, PackageID: 1, ConfigurationVersionID: 3, State: "published", ReferenceTime: s.run.ReferenceTime, MemberCount: count}, nil
+	return segmentdomain.PublishedRefresh{Snapshot: segmentdomain.Snapshot{ID: 9, PackageID: 1, ConfigurationVersionID: 3, State: "published", ReferenceTime: s.run.ReferenceTime, MemberCount: count}}, nil
 }
 func (s *refreshStoreStub) PublishedSnapshot(context.Context, segmentport.PackageID) (segmentport.Snapshot, bool, error) {
 	return segmentport.Snapshot{}, false, nil

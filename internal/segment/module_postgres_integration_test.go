@@ -24,6 +24,7 @@ func TestPostgreSQLReadinessRequiresRefreshModeSchema(t *testing.T) {
 		t.Fatal("readiness succeeded before refresh-mode schema was installed")
 	}
 	apply("0083_segment_audience_refresh_modes.sql")
+	apply("0085_segment_audience_refresh_kind.sql")
 	if err := module.Readiness(ctx, native); err != nil {
 		t.Fatalf("readiness after refresh-mode schema: %v", err)
 	}

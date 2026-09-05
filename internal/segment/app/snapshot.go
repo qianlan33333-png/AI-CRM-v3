@@ -26,7 +26,7 @@ type RefreshStore interface {
 	Refresh(context.Context, int64) (segmentdomain.RefreshRun, error)
 	BeginRefresh(context.Context, int64, time.Time) (segmentdomain.RefreshRun, segmentdomain.Snapshot, error)
 	StageRefreshBatch(context.Context, int64, int, []customerdomain.CustomerID, [32]byte, time.Time) error
-	PublishRefresh(context.Context, int64, int64, [32]byte, [32]byte, int64, time.Time) (segmentdomain.Snapshot, error)
+	PublishRefresh(context.Context, int64, int64, [32]byte, [32]byte, int64, time.Time) (segmentdomain.PublishedRefresh, error)
 	FailRefresh(context.Context, int64, string, time.Time) error
 	AppendMutationFacts(context.Context, segmentstore.MutationFact) (int64, error)
 	PublishedSnapshot(context.Context, segmentport.PackageID) (segmentport.Snapshot, bool, error)
@@ -54,10 +54,11 @@ type SnapshotService struct {
 }
 
 type RefreshCommand struct {
-	PackageID      int64     `json:"package_id"`
-	Actor          int64     `json:"actor"`
-	IdempotencyKey string    `json:"-"`
-	ReferenceTime  time.Time `json:"reference_time"`
+	PackageID      int64                     `json:"package_id"`
+	Actor          int64                     `json:"actor"`
+	IdempotencyKey string                    `json:"-"`
+	ReferenceTime  time.Time                 `json:"reference_time"`
+	RefreshKind    segmentdomain.RefreshKind `json:"refresh_kind"`
 }
 
 type Preview struct {
@@ -133,8 +134,19 @@ func (s *SnapshotService) PreviewDefinition(ctx context.Context, packageID int64
 	return makePreview(packageID, 0, evaluation), nil
 }
 
+func normalizedRefreshKind(value segmentdomain.RefreshKind) segmentdomain.RefreshKind {
+	if value == "" {
+		return segmentdomain.RefreshManual
+	}
+	return value
+}
+
 func (s *SnapshotService) AcceptRefresh(ctx context.Context, command RefreshCommand) (segmentdomain.RefreshRun, error) {
 	if s == nil || command.PackageID < 1 || command.Actor < 1 || len(command.IdempotencyKey) < 16 || len(command.IdempotencyKey) > 128 || strings.TrimSpace(command.IdempotencyKey) != command.IdempotencyKey {
+		return segmentdomain.RefreshRun{}, ErrInvalid
+	}
+	command.RefreshKind = normalizedRefreshKind(command.RefreshKind)
+	if !segmentdomain.ValidRefreshKind(command.RefreshKind) {
 		return segmentdomain.RefreshRun{}, ErrInvalid
 	}
 	if command.ReferenceTime.IsZero() {
@@ -157,7 +169,7 @@ func (s *SnapshotService) AcceptRefresh(ctx context.Context, command RefreshComm
 		if e != nil {
 			return e
 		}
-		run, owned, e := s.store.ReserveRefresh(tx, segmentdomain.RefreshRun{PackageID: command.PackageID, ConfigurationVersionID: config.ID, SourceKeyDigest: source, ReferenceTime: command.ReferenceTime, CreatedAt: now, UpdatedAt: now})
+		run, owned, e := s.store.ReserveRefresh(tx, segmentdomain.RefreshRun{PackageID: command.PackageID, ConfigurationVersionID: config.ID, SourceKeyDigest: source, ReferenceTime: command.ReferenceTime, RefreshKind: command.RefreshKind, CreatedAt: now, UpdatedAt: now})
 		if e != nil {
 			return e
 		}
@@ -186,6 +198,10 @@ func (s *SnapshotService) AcceptRefreshWithin(ctx context.Context, command Refre
 	if s == nil || command.PackageID < 1 || command.Actor < 1 || len(command.IdempotencyKey) < 16 || len(command.IdempotencyKey) > 128 || strings.TrimSpace(command.IdempotencyKey) != command.IdempotencyKey {
 		return segmentdomain.RefreshRun{}, ErrInvalid
 	}
+	command.RefreshKind = normalizedRefreshKind(command.RefreshKind)
+	if !segmentdomain.ValidRefreshKind(command.RefreshKind) {
+		return segmentdomain.RefreshRun{}, ErrInvalid
+	}
 	if command.ReferenceTime.IsZero() {
 		command.ReferenceTime = s.now().UTC()
 	} else {
@@ -204,7 +220,7 @@ func (s *SnapshotService) AcceptRefreshWithin(ctx context.Context, command Refre
 	if err != nil {
 		return segmentdomain.RefreshRun{}, classify(err)
 	}
-	run, owned, err := s.store.ReserveRefresh(ctx, segmentdomain.RefreshRun{PackageID: command.PackageID, ConfigurationVersionID: config.ID, SourceKeyDigest: source, ReferenceTime: command.ReferenceTime, CreatedAt: now, UpdatedAt: now})
+	run, owned, err := s.store.ReserveRefresh(ctx, segmentdomain.RefreshRun{PackageID: command.PackageID, ConfigurationVersionID: config.ID, SourceKeyDigest: source, ReferenceTime: command.ReferenceTime, RefreshKind: command.RefreshKind, CreatedAt: now, UpdatedAt: now})
 	if err != nil {
 		return segmentdomain.RefreshRun{}, classify(err)
 	}
@@ -276,24 +292,15 @@ func (s *SnapshotService) ProcessRefresh(ctx context.Context, runID int64) error
 	memberDigest := segmentdomain.DigestMembers(evaluation.CustomerIDs)
 	watermarkDigest := digestWatermarks(evaluation.Watermarks)
 	err = s.uow.Within(ctx, func(tx context.Context) error {
-		prior, priorFound, e := s.store.PublishedSnapshot(tx, segmentport.PackageID(run.PackageID))
+		published, e := s.store.PublishRefresh(tx, runID, int64(len(evaluation.CustomerIDs)), memberDigest, watermarkDigest, config.CreatedBy, s.now().UTC())
 		if e != nil {
 			return e
 		}
-		var priorID *int64
-		if priorFound {
-			value := int64(prior.ID)
-			priorID = &value
-		}
-		snapshot, e := s.store.PublishRefresh(tx, runID, int64(len(evaluation.CustomerIDs)), memberDigest, watermarkDigest, config.CreatedBy, s.now().UTC())
-		if e != nil {
-			return e
-		}
-		created, e := s.store.CreateMemberEnteredEvents(tx, snapshot, priorID, config.CreatedBy, snapshot.ReferenceTime)
+		created, e := s.store.CreateMemberEnteredEvents(tx, published.Snapshot, published.PreviousSnapshotID, config.CreatedBy, published.Snapshot.ReferenceTime)
 		if e != nil || created == 0 {
 			return e
 		}
-		_, e = s.events.EnqueueMemberEventsWithin(tx, segmentport.SnapshotID(snapshot.ID))
+		_, e = s.events.EnqueueMemberEventsWithin(tx, segmentport.SnapshotID(published.Snapshot.ID))
 		return e
 	})
 	return classify(err)

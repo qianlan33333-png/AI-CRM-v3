@@ -69,7 +69,8 @@ func (m *ModuleRegistration) Readiness(ctx context.Context, pool *pgxpool.Pool) 
 	) AND NOT EXISTS (
 		SELECT 1 FROM (VALUES
 			('segment_audience_configuration_versions'::text, 'refresh_mode'::text),
-			('segment_audience_schedule_states'::text, 'schedule_kind'::text)
+			('segment_audience_schedule_states'::text, 'schedule_kind'::text),
+			('segment_audience_refresh_runs'::text, 'refresh_kind'::text)
 		) AS required(table_name,column_name)
 		WHERE NOT EXISTS (
 			SELECT 1 FROM information_schema.columns

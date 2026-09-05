@@ -83,6 +83,13 @@ func (s *ScheduledRefreshService) ScanScheduled(ctx context.Context) error {
 	if len(items) == s.maxItems {
 		return ErrUnavailable
 	}
+	type dueItem struct {
+		item       segmentdomain.ScheduledConfiguration
+		occurrence time.Time
+		next       time.Time
+	}
+	groups := map[string][]dueItem{}
+	order := []string{}
 	for _, item := range items {
 		schedule, err := cron.ParseStandard(item.CronUTC)
 		if err != nil {
@@ -95,13 +102,38 @@ func (s *ScheduledRefreshService) ScanScheduled(ctx context.Context) error {
 		if !due {
 			continue
 		}
-		err = s.uow.Within(ctx, func(tx context.Context) error {
-			claimed, claimErr := s.store.ClaimScheduledOccurrence(tx, item, occurrence, next, now)
-			if claimErr != nil || !claimed {
-				return claimErr
+		key := fmt.Sprintf("%d:%d:%s", item.PackageID, item.ConfigurationVersionID, occurrence.Format(time.RFC3339Nano))
+		if _, found := groups[key]; !found {
+			order = append(order, key)
+		}
+		groups[key] = append(groups[key], dueItem{item: item, occurrence: occurrence, next: next})
+	}
+	for _, key := range order {
+		group := groups[key]
+		err := s.uow.Within(ctx, func(tx context.Context) error {
+			claimedAny := false
+			kind := segmentdomain.RefreshIncremental
+			for _, due := range group {
+				// Both cursor advances and the one shared refresh acceptance are
+				// transaction-bound. Daily wins before a River job can observe it.
+				if due.item.Kind == "daily" {
+					kind = segmentdomain.RefreshDaily
+				}
+				if due.item.Kind == "legacy" {
+					kind = segmentdomain.RefreshLegacy
+				}
+				claimed, claimErr := s.store.ClaimScheduledOccurrence(tx, due.item, due.occurrence, due.next, now)
+				if claimErr != nil {
+					return claimErr
+				}
+				claimedAny = claimedAny || claimed
 			}
-			digest := sha256.Sum256([]byte(fmt.Sprintf("audience.schedule.v1:%d:%d:%s", item.PackageID, item.ConfigurationVersionID, occurrence.Format(time.RFC3339))))
-			_, claimErr = s.refresh.AcceptRefreshWithin(tx, RefreshCommand{PackageID: item.PackageID, Actor: item.Actor, IdempotencyKey: "schedule-" + hex.EncodeToString(digest[:]), ReferenceTime: occurrence})
+			if !claimedAny {
+				return nil
+			}
+			first := group[0]
+			digest := sha256.Sum256([]byte(fmt.Sprintf("audience.schedule.v1:%d:%d:%s", first.item.PackageID, first.item.ConfigurationVersionID, first.occurrence.Format(time.RFC3339))))
+			_, claimErr := s.refresh.AcceptRefreshWithin(tx, RefreshCommand{PackageID: first.item.PackageID, Actor: first.item.Actor, IdempotencyKey: "schedule-" + hex.EncodeToString(digest[:]), ReferenceTime: first.occurrence, RefreshKind: kind})
 			return claimErr
 		})
 		if err != nil {

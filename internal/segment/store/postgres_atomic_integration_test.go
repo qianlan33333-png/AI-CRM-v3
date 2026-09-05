@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 	segmentdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/domain"
 )
@@ -83,7 +84,7 @@ func TestPostgreSQLAudienceConfigurationAtomicity(t *testing.T) {
 		}
 		refresh, owned, reserveErr := repo.ReserveRefresh(tx, segmentdomain.RefreshRun{
 			PackageID: created.ID, ConfigurationVersionID: configuration.ID,
-			SourceKeyDigest: [32]byte{1}, ReferenceTime: now, CreatedAt: now, UpdatedAt: now,
+			SourceKeyDigest: [32]byte{1}, ReferenceTime: now, RefreshKind: segmentdomain.RefreshLegacy, CreatedAt: now, UpdatedAt: now,
 		})
 		if reserveErr != nil || !owned || refresh.ErrorCode != "" || refresh.RiverJobID != nil {
 			t.Fatalf("nullable refresh fields: run=%+v owned=%v err=%v", refresh, owned, reserveErr)
@@ -329,5 +330,109 @@ func TestPostgreSQLAudienceMemberEventsUseTypedSnapshotParameters(t *testing.T) 
 	var events int64
 	if err = native.QueryRow(ctx, `SELECT count(*) FROM segment_audience_member_events WHERE snapshot_id=$1`, snapshotID).Scan(&events); err != nil || events != 2 {
 		t.Fatalf("member events=%d err=%v", events, err)
+	}
+}
+
+func TestPostgreSQLRefreshKindsPreserveIncrementalMembersAndDailyExits(t *testing.T) {
+	ctx := context.Background()
+	native, cleanup := segmentDatabase(t, ctx)
+	defer cleanup()
+	wrapped, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uow, err := platformpostgres.NewUnitOfWork(wrapped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo, err := NewPostgreSQL(native, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 5, 18, 0, 0, 0, time.UTC)
+	var packageID, configurationID int64
+	if err = uow.Within(ctx, func(tx context.Context) error {
+		group, e := segmentdomain.NewGroup("refresh kinds", 1, 7, now)
+		if e != nil {
+			return e
+		}
+		group, e = repo.CreateGroup(tx, group)
+		if e != nil {
+			return e
+		}
+		pkg, e := segmentdomain.NewPackage("refresh-kinds", "refresh kinds", &group.ID, 7, now)
+		if e != nil {
+			return e
+		}
+		pkg, e = repo.CreatePackage(tx, pkg)
+		if e != nil {
+			return e
+		}
+		config, e := segmentdomain.NewConfigurationVersion(pkg.ID, 1, json.RawMessage(`{"schema_version":1,"expression":{"kind":"all"}}`), "", "every_3m_plus_daily_0200", 7, now)
+		if e != nil {
+			return e
+		}
+		config, e = repo.CreateConfigurationVersion(tx, config)
+		if e != nil {
+			return e
+		}
+		if _, e = repo.SetCurrentConfiguration(tx, pkg.ID, config.ID, pkg.Version, 7, now); e != nil {
+			return e
+		}
+		packageID, configurationID = pkg.ID, config.ID
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	publish := func(kind segmentdomain.RefreshKind, reference time.Time, ids []customerdomain.CustomerID, key byte) (segmentdomain.PublishedRefresh, error) {
+		var out segmentdomain.PublishedRefresh
+		err := uow.Within(ctx, func(tx context.Context) error {
+			run, owned, e := repo.ReserveRefresh(tx, segmentdomain.RefreshRun{PackageID: packageID, ConfigurationVersionID: configurationID, SourceKeyDigest: [32]byte{key}, ReferenceTime: reference, RefreshKind: kind, CreatedAt: now, UpdatedAt: now})
+			if e != nil || !owned {
+				return e
+			}
+			if _, e = repo.AttachRefreshJob(tx, run.ID, int64(key), now); e != nil {
+				return e
+			}
+			if _, _, e = repo.BeginRefresh(tx, run.ID, now); e != nil {
+				return e
+			}
+			if len(ids) > 0 {
+				if e = repo.StageRefreshBatch(tx, run.ID, 0, ids, segmentdomain.DigestMembers(ids), now); e != nil {
+					return e
+				}
+			}
+			out, e = repo.PublishRefresh(tx, run.ID, int64(len(ids)), segmentdomain.DigestMembers(ids), [32]byte{}, 7, now)
+			return e
+		})
+		return out, err
+	}
+	first, err := publish(segmentdomain.RefreshDaily, now, []customerdomain.CustomerID{1, 2}, 1)
+	if err != nil || first.Snapshot.MemberCount != 2 || first.ExitedMemberCount != 0 {
+		t.Fatalf("first=%+v err=%v", first, err)
+	}
+	incremental, err := publish(segmentdomain.RefreshIncremental, now.Add(time.Minute), []customerdomain.CustomerID{3}, 2)
+	if err != nil || incremental.Snapshot.MemberCount != 3 || incremental.ExitedMemberCount != 0 {
+		t.Fatalf("incremental=%+v err=%v", incremental, err)
+	}
+	daily, err := publish(segmentdomain.RefreshDaily, now.Add(2*time.Minute), []customerdomain.CustomerID{1, 3}, 3)
+	if err != nil || daily.Snapshot.MemberCount != 2 || daily.ExitedMemberCount != 1 {
+		t.Fatalf("daily=%+v err=%v", daily, err)
+	}
+	var exits int
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM segment_audience_member_exit_events WHERE snapshot_id=$1 AND customer_id=2`, daily.Snapshot.ID).Scan(&exits); err != nil || exits != 1 {
+		t.Fatalf("daily exits=%d err=%v", exits, err)
+	}
+	manual, err := publish(segmentdomain.RefreshManual, now.Add(3*time.Minute), []customerdomain.CustomerID{4}, 4)
+	if err != nil || manual.Snapshot.MemberCount != 3 || manual.ExitedMemberCount != 0 {
+		t.Fatalf("manual=%+v err=%v", manual, err)
+	}
+	_, err = publish(segmentdomain.RefreshDaily, now.Add(time.Second), []customerdomain.CustomerID{1}, 5)
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("stale daily publish=%v", err)
+	}
+	var currentCount int64
+	if err = native.QueryRow(ctx, `SELECT s.member_count FROM segment_audience_packages p JOIN segment_audience_snapshots s ON s.id=p.published_snapshot_id WHERE p.id=$1`, packageID).Scan(&currentCount); err != nil || currentCount != 3 {
+		t.Fatalf("stale overwrite count=%d err=%v", currentCount, err)
 	}
 }

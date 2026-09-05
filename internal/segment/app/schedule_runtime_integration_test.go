@@ -163,6 +163,10 @@ func TestPostgreSQLCombinedScheduleConcurrentScannersDeduplicateRefresh(t *testi
 	if calls != 1 {
 		t.Fatalf("refresh enqueue calls=%d, want one shared occurrence", calls)
 	}
+	var refreshKind string
+	if err = native.QueryRow(ctx, `SELECT refresh_kind FROM segment_audience_refresh_runs WHERE package_id=$1`, configuration.PackageID).Scan(&refreshKind); err != nil || refreshKind != "daily" {
+		t.Fatalf("shared run kind=%q err=%v", refreshKind, err)
+	}
 	var incremental, daily time.Time
 	rows, err := native.Query(ctx, `SELECT schedule_kind,last_dispatched_at FROM segment_audience_schedule_states WHERE configuration_version_id=$1 ORDER BY schedule_kind`, configuration.ID)
 	if err != nil {
@@ -222,7 +226,7 @@ func scheduleRuntimeDatabase(t *testing.T, ctx context.Context) (*pgxpool.Pool, 
 	if !ok {
 		t.Fatal("locate schedule runtime integration test")
 	}
-	for _, name := range []string{"0039_segment_audience_configuration.sql", "0040_segment_audience_snapshots.sql", "0041_segment_audience_webhooks.sql", "0042_segment_audience_execution_bindings.sql", "0045_segment_audience_member_events.sql", "0048_segment_audience_schedule_state.sql", "0053_segment_audience_member_event_fact_kinds.sql", "0083_segment_audience_refresh_modes.sql"} {
+	for _, name := range []string{"0039_segment_audience_configuration.sql", "0040_segment_audience_snapshots.sql", "0041_segment_audience_webhooks.sql", "0042_segment_audience_execution_bindings.sql", "0045_segment_audience_member_events.sql", "0048_segment_audience_schedule_state.sql", "0053_segment_audience_member_event_fact_kinds.sql", "0083_segment_audience_refresh_modes.sql", "0085_segment_audience_refresh_kind.sql"} {
 		migration, readErr := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "..", "migrations", name))
 		if readErr != nil {
 			t.Fatal(readErr)
