@@ -9,7 +9,7 @@
 - 个体 PR 不逐个合并 main。总集成 PR 冻结唯一发布候选后，才提交用户做最终生产上线确认；确认后一次合并、一次部署。
 - 本矩阵后续为每个板块同时记录“个体审核结果”和“已纳入集成 HEAD”。未进入集成或联合验收未通过的项目不得标记整体完成。
 
-当前未合并总集成 PR：[PR #141](https://github.com/qianlan33333-png/AI-CRM-v3/pull/141)。最新审核纳入提交 `f2bfd5850cffa0319090aa590cb74f29571a50aa` 包含PR143准确HEAD `270d8f986342138aec384a58588ff91feae227b9`，源CI33975881872 SUCCESS、deploy SKIPPED；本地安装契约通过，待完整组合CI。此前含PR157的准确组合 `f4d6948b2416254a0210b3125f38a8952a254341` 已通过CI33975204629（check SUCCESS、deploy SKIPPED）。152/158尚未获准纳入。全部来源与保留父版本见下表。
+当前未合并总集成 PR：[PR #141](https://github.com/qianlan33333-png/AI-CRM-v3/pull/141)。最新审核纳入提交 `f2bfd5850cffa0319090aa590cb74f29571a50aa` 包含PR143准确HEAD `270d8f986342138aec384a58588ff91feae227b9`，源CI33975881872 SUCCESS、deploy SKIPPED；准确组合 `26ec5cf39f931a3e6698016158f986510599b41d` 已通过CI33977313172（check SUCCESS、deploy SKIPPED）。此前含PR157的准确组合 `f4d6948b2416254a0210b3125f38a8952a254341` 已通过CI33975204629（check SUCCESS、deploy SKIPPED）。152/158尚未获准纳入。全部来源与保留父版本见下表。
 
 | 来源 | 来源 HEAD / 独立 CI | 纳入提交 | 组合 CI | 当前结论 |
 |---|---|---|---|---|
@@ -30,7 +30,7 @@
 | #148 群写叶子、节点意图及送达读取 | 10b40e08aa9b8fc8844a5edd0f35d24a05c6438e / 33961391856 SUCCESS，deploy SKIPPED | 4e9b836a320e671bfbaa78b59e66d0516acc0c53 | 33962020352 SUCCESS，deploy SKIPPED | 本批源码审核与PG16/race通过；实际River顺序、全UI与历史仍待下一批 |
 | #151 AI助手旧调用方与整单执行 | 890444cf29070a6e0a18a757aeda7e54e28ac57e / 33961381169 SUCCESS，deploy SKIPPED | 61b802d3ad4d5d113b93864b978a4c04f97b1ceb | 33962020352 SUCCESS，deploy SKIPPED | 可信身份、签名HTTP、整单审批、River恢复、附件Host与旧素材映射导入已审核；05/06/07组合仍待 |
 | #153 群运行时/旧页/历史导入 | 629e38489d76903b0dd21d6614941e4f2cffeb69 / 33968755244 SUCCESS，deploy SKIPPED；保留014fd7b与4e51b676 | 889144c63426dfd7ead4ca827694037fa4dd94e5 | c2cf0ef / 33969480007 SUCCESS，deploy SKIPPED | 真实River、暂停恢复、多计划、逐行历史导入PG/HTTP通过；同一导入事实的历史浏览器Host补齐中 |
-| #143 商品、购买、会员表与历史联合 | 270d8f986342138aec384a58588ff91feae227b9 / 33975881872 SUCCESS，deploy SKIPPED；保留06ecac29 | f2bfd5850cffa0319090aa590cb74f29571a50aa | 当前组合待CI；父批f4d6948 / 33975204629 SUCCESS | 0088联盟来源/编辑/旧摘要兼容/隔离对账及安装清单已审核，03/04最终证据核账继续 |
+| #143 商品、购买、会员表与历史联合 | 270d8f986342138aec384a58588ff91feae227b9 / 33975881872 SUCCESS，deploy SKIPPED；保留06ecac29 | f2bfd5850cffa0319090aa590cb74f29571a50aa | 26ec5cf / 33977313172 SUCCESS，deploy SKIPPED；父批f4d6948已绿 | 0088联盟来源/编辑/旧摘要兼容/隔离对账及安装清单已审核，03/04最终证据核账继续 |
 | #157 群历史导入后原Host阅读 | c8792192a3462b1953b06acd12260a3d95cb918a / 33974411097 SUCCESS，deploy SKIPPED | d1adbccda6c114fc271662dcb4a056672545369d | f4d6948 / 33975204629 SUCCESS，deploy SKIPPED | 真实PG导入节点经实际HTTP/Host展示；合成分页反例验证迟到响应/ID碰撞/XSS，未把合成后页冒称生产历史 |
 | #154 HXC共用事实 | a093751b15ee2b51b349e01fa42590baf2eb5422 / 33969310749 SUCCESS，deploy SKIPPED | 25a711209840ae5826518237b152ba26da07512f | f4d6948 / 33975204629 SUCCESS，deploy SKIPPED | 真实源EXPLAIN、同源会员、PG固定代与清理并发通过；已放行03/05稳定Port接入 |
 | #155 群真实Access、unknown与AI同库运行时 | 3c69142ea55a5a40362b5d28042aa64dc5fb5546 / 33969767286 SUCCESS，deploy SKIPPED；保留0130e88 | 4242d30730b6736ff67838bfd05d6432aef6f341 | 4ec08bb / 33970748481 SUCCESS，deploy SKIPPED；父批79d26e1通过 | 真实Access/unknown及AI和Group共同PG/River/Outbound通过；自动化参与的最终组合仍待 |
@@ -39,7 +39,7 @@
 |---|---|---|---|---|---|---|---|
 | 客户同步 | 01 | #133与恢复缺陷#142、01/08组合#145均已纳入 | [#133](https://github.com/qianlan33333-png/AI-CRM-v3/pull/133) / c3195e2；[#142](https://github.com/qianlan33333-png/AI-CRM-v3/pull/142) / 5242e17；[#145](https://github.com/qianlan33333-png/AI-CRM-v3/pull/145) / e2a3c41 | Host列表通过；welcome先执行且发送标识不变 | #142真实PG16恢复；#145真实Inbox→同根双关系→River重启通过 | HTTP 200/-1限定三次，其他临时失败保留12次预算 | 独立恢复及01/08组合通过；整体随最终装配复核 |
 | 问卷 | 02 | 外推及历史导入均已批准纳入且组合通过 | #134/#137外推807873c；[#146](https://github.com/qianlan33333-png/AI-CRM-v3/pull/146) / 76a6d3054600af0026099187cd3a56a8c58e27fa | 冻结Host QR当前/全局分支通过 | CI33958659330实际PG16通过：逐条目标事实、密文、归属、隔离事实及漂移/回滚 | 外推与历史重放不新建身份、不触发历史效果 | #146准确HEAD审核通过并纳入f1bc29f；3edc92c组合通过，最终装配复核保留 |
-| 商品与支付 | 03 | #143联盟增量已审核，最终证据核账继续 | #143 / 270d8f98 | 冻结周期公开页、会员表保存视图/协作/分享、全量字段组合与购买恢复测试通过 | CI33973228872真实PG16/race；支付/退款签名及历史apply/replay/reconcile通过 | 未知建单保留原键；支付/券核销/权益故障同UoW回滚 | 纳入f2bfd58；旧联盟字段及安装完整性已补齐，新组合待CI |
+| 商品与支付 | 03 | #143联盟增量已审核，最终证据核账继续 | #143 / 270d8f98 | 冻结周期公开页、会员表保存视图/协作/分享、全量字段组合与购买恢复测试通过 | CI33973228872真实PG16/race；支付/退款签名及历史apply/replay/reconcile通过 | 未知建单保留原键；支付/券核销/权益故障同UoW回滚 | 26ec5cf组合已绿；旧联盟字段及安装完整性已补齐，完整券/权益历史目标对账仍待 |
 | 周期权益与优惠券 | 04 | #138独立领域及#143联合实现已纳入 | #138 / 599b5bf；#143 / 270d8f98 | 周期公开购买、券领取与数据页、原会员表接线通过 | 实际签名支付核销与开通、并发退款一次撤回、超额退款冲突、历史终态零效果通过 | 付款人与受益人边界、券占用/释放/核销、原单恢复各有专项证据 | 03/04及联盟批次审核通过，最终组合与证据核账保留 |
 | 自动化运营 | 05 | automation_sources继续六来源与旧表单接线批次 | [#152](https://github.com/qianlan33333-png/AI-CRM-v3/pull/152)，滚动修复中、未批准 | 六模板原UI/Host验证中 | Owner PG待新批次CI；完整运行时未验收 | §10原生渠道/会员/付款人与负责人语义修复中 | 未完成，后续仍需自动化全链路与历史 |
 | AI 助手 | 06 | #151独立板块增量已纳入且7b5b4f7组合通过 | [#151](https://github.com/qianlan33333-png/AI-CRM-v3/pull/151) / 890444cf29070a6e0a18a757aeda7e54e28ac57e | 冻结单人/批量调用方；素材回读/编辑/审阅Host守恒通过 | 真实Identity/AI Store与签名HTTP→River→实际本地WeCom叶子通过；unknown原键保留 | 0080导入合法缺映射及目标漂移反例通过；intake不自升可信、不建客 | 已批准纳入61b802d；05/06/07联合及最终装配保留 |
@@ -150,3 +150,5 @@
 - PR157准确c879219已通过CI33974411097（真实PG16、race、SDK ABI及冻结UI）并审核纳入d1adbccda。实际PG source节点走封存/导入/HTTP/Host原只读渲染；第二页为明确合成的浏览器竞态反例，保留真实plan身份以检验迟到响应与碰撞字段，未声称这些是实际导入历史。未修改冻结业务前端，V3 Host桥只展示无新发送命令。
 
 - 2026-09-06：PR143准确270d8f98通过CI33975881872并经总控源码审核，作为merge parent纳入f2bfd585。0088区分联盟未知/确认空值，旧无字段快照摘要保持不变，真实PG验证隔离行与目标篡改、CAS和Outbox失败回滚；原Host实际编辑/清空通过。安装清单冲突仅机械取各板块并集。问卷真实OAuth发现0018重定向约束双反斜杠缺陷，按PRD02分配0090前向修复；0089继续为Outbound独占，不能按旧分支文件推断空闲。
+
+- 2026-09-06：26ec5cf准确组合已通过CI33977313172，check SUCCESS、deploy SKIPPED。03/04核账复核仍有既有sidebar历史目标状态/时间字段对账缺口，按PRD03§21继续，不能只凭0088联盟切片标全历史通过。自动化历史目录已交member_grid独立clone修复；automation_sources继续运行时/素材/UI，group_runtime_ui继续问卷，最多三个开发智能体。

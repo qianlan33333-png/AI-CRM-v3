@@ -170,3 +170,12 @@ CI33964237463通过不代表新Host已验收。新Host与已有admin_audience_de
 - 图片、小程序、PDF和邀请至少各有完整PG/本地Provider协议证明，混合内容包、原数量与长度上限、禁用/缺素材零调用、素材漂移/进程重启、未知不重复均明确验证。原不支持的动态卡保持原拒绝，不把配置字段当作新功能授权。
 
 最小存储方案批准：0089归Outbound，仅在已有outbound_message_intents补业务意图的不可变内容/Media来源快照及摘要，不新增执行表/队列。接纳者经现有Media Source Capturer获得同UoW可校验事实，内容快照、intent、EER接受和业务绑定同事务落盘，网络准备在事务外；EER仍只有opaque引用和摘要。已存原格式意图没有素材快照时不得把当前可变素材当历史补造，纯文字兼容路径与不可恢复记录分别明确。自动和人工复用现有PrivateMessage payload准备与Provider写入；执行前源素材校验失配明确失败，不重新生成意图或更换效果键。
+
+## 21. 既有历史对账命令的最后核验
+
+复用 cmd/migrate-automation-operations 与其 Shadow，不增加导入框架。现 Reconcile 只核对收据数量和导入时效果计数，尚不能替代原定逐条目标事实对账。member_grid 从冻结 f57d4c2 独立工作区承担此目录，automation_sources 继续运行时/素材/原UI；本批不需要新迁移。
+
+- Reconcile 从同一受保护 source snapshot 读取并验证批次绑定，在标记 reconciled 前复用既有 Shadow 的配置/成员/历史目标字段与隔离记录校验；不要只检查持久化 source digest。
+- 保留源收据但改变目标 state、occurred_at、readonly、成员归属、snapshot，或删除目标、改隔离原因/摘要时，真实命令必须拒绝；恢复后通过。
+- 实际PG fixture使用既有River迁移；不能以自建 river_job 空表替代。历史 apply/replay/reconcile 不创建新的效果或持久执行任务。
+- 新PR注明依赖PR152准确基线，只有依赖实现和本增量分别通过审核后才纳入总集成，不提前执行生产导入。
