@@ -165,17 +165,32 @@ func (stub *testMemberEntitlements) ListServicePeriodMembers(_ context.Context, 
 	stub.queries = append(stub.queries, query)
 	page := stub.page
 	page.Items = append([]orderport.Entitlement(nil), stub.page.Items...)
-	if query.GroupByRemainingDays {
+	if query.GroupByRemainingDays || len(query.GridGroups) > 0 {
 		snapshot := query.SnapshotAt
 		if snapshot.IsZero() {
 			snapshot = time.Now().UTC()
 		}
-		counts := map[int]int64{}
-		for _, item := range page.Items {
-			counts[donorGridRemainingDays(item.EndAt, snapshot)]++
+		groups := query.GridGroups
+		if len(groups) == 0 {
+			groups = []orderport.MemberGridOrder{{Field: "remaining_days", Direction: "asc"}}
 		}
-		for index := range page.Items {
-			page.Items[index].MemberGridGroupCount = counts[donorGridRemainingDays(page.Items[index].EndAt, snapshot)]
+		for groupIndex, group := range groups {
+			if group.Field != "remaining_days" {
+				continue
+			}
+			counts := map[int]int64{}
+			for _, item := range page.Items {
+				counts[donorGridRemainingDays(item.EndAt, snapshot)]++
+			}
+			for index := range page.Items {
+				for len(page.Items[index].MemberGridGroupCounts) <= groupIndex {
+					page.Items[index].MemberGridGroupCounts = append(page.Items[index].MemberGridGroupCounts, 0)
+				}
+				page.Items[index].MemberGridGroupCounts[groupIndex] = counts[donorGridRemainingDays(page.Items[index].EndAt, snapshot)]
+				if groupIndex == 0 {
+					page.Items[index].MemberGridGroupCount = page.Items[index].MemberGridGroupCounts[groupIndex]
+				}
+			}
 		}
 	}
 	if page.SnapshotAt.IsZero() {
@@ -569,7 +584,7 @@ func TestFrozenMemberGridHTTPAPISavedViewCollaboratorShareAndRemarkJourney(t *te
 		handler.ServeHTTP(w, r)
 		return w
 	}
-	viewConfig := `{"schema_version":1,"filter":{"logic":"and","conditions":[{"field":"remaining_days","operator":"gte","value":7}]},"sorts":[{"field":"remaining_days","direction":"asc"}],"groups":[{"field":"remaining_days","direction":"asc"}]}`
+	viewConfig := `{"schema_version":1,"filter":{"logic":"and","conditions":[{"field":"remaining_days","operator":"gte","value":7}]},"sorts":[],"groups":[{"field":"remaining_days","direction":"asc"}]}`
 
 	access := adminRequest(http.MethodGet, "/api/admin/service-period-products/7/member-grid/access", "")
 	if access.Code != http.StatusOK || !strings.Contains(access.Body.String(), `"can_manage_views":true`) || !strings.Contains(access.Body.String(), `"can_manage_share":true`) {
@@ -602,7 +617,7 @@ func TestFrozenMemberGridHTTPAPISavedViewCollaboratorShareAndRemarkJourney(t *te
 		t.Fatalf("unavailable renewal must not be rendered as zero: %d %s", unavailableRenewal.Code, unavailableRenewal.Body.String())
 	}
 	_, _, _, queries := members.snapshot()
-	if len(queries) == 0 || queries[len(queries)-1].Sort != "remaining_days_asc" || queries[len(queries)-1].RemainingDays == nil {
+	if len(queries) == 0 || len(queries[len(queries)-1].GridGroups) != 1 || queries[len(queries)-1].GridGroups[0].Field != "remaining_days" || len(queries[len(queries)-1].GridFilters) != 1 || queries[len(queries)-1].GridFilters[0].Field != "remaining_days" {
 		t.Fatalf("saved view config was not applied: %+v", queries)
 	}
 	deleteView := adminRequest(http.MethodDelete, "/api/admin/service-period-products/7/member-views/13", `{"version":2}`)
@@ -773,9 +788,15 @@ func TestFrozenMemberGridBrowserJourneyUsesActualHTTPAPI(t *testing.T) {
 	}
 	var filtered, sorted, grouped bool
 	for _, query := range queries {
-		filtered = filtered || query.RemainingDays != nil
-		sorted = sorted || query.Sort == "remaining_days_asc"
-		grouped = grouped || query.GroupByRemainingDays
+		for _, filter := range query.GridFilters {
+			filtered = filtered || filter.Field == "remaining_days"
+		}
+		for _, sort := range query.GridSorts {
+			sorted = sorted || sort.Field == "remaining_days" && sort.Direction == "asc"
+		}
+		for _, group := range query.GridGroups {
+			grouped = grouped || group.Field == "remaining_days"
+		}
 	}
 	if !filtered || !sorted || !grouped {
 		t.Fatalf("frozen browser did not issue the supported filter/sort/group queries: %+v", queries)
@@ -799,6 +820,7 @@ func TestMemberGridPublicHttpAPIOnlyReadsEnabledShareAndSavedViews(t *testing.T)
 	handler, _, _, _ := newHandlerForTest(t)
 	workspace := handler.workspace.(*testMemberWorkspace)
 	workspace.share = productport.MemberGridShare{ProductID: 7, Enabled: true, PublicID: "mgshare1.abcdefghijklmnopqrstuv.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", Version: 1}
+	workspace.views = []productport.MemberGridView{{ID: 19, ProductID: 7, Name: "续费备注", Position: 1, Config: json.RawMessage(`{"schema_version":1,"filter":{"logic":"and","conditions":[{"field":"renewal_count","operator":"is_not_empty"},{"field":"remark","operator":"is_empty"}]},"sorts":[{"field":"renewal_count","direction":"desc"},{"field":"remark","direction":"asc"}],"groups":[{"field":"remaining_days","direction":"asc"}]}`), Version: 1}}
 	bootstrap := httptest.NewRequest(http.MethodGet, "/api/public/service-period-member-grid/bootstrap", nil)
 	bootstrap.Header.Set("X-AICRM-Grid-Share-Token", workspace.share.PublicID)
 	bootResponse := httptest.NewRecorder()
@@ -812,6 +834,18 @@ func TestMemberGridPublicHttpAPIOnlyReadsEnabledShareAndSavedViews(t *testing.T)
 	handler.ServeHTTP(queryResponse, query)
 	if queryResponse.Code != http.StatusOK || !strings.Contains(queryResponse.Body.String(), `"rows"`) {
 		t.Fatalf("query=%d %s", queryResponse.Code, queryResponse.Body.String())
+	}
+	saved := httptest.NewRequest(http.MethodPost, "/api/public/service-period-member-grid/query", strings.NewReader(`{"view_id":"19","limit":200}`))
+	saved.Header.Set("X-AICRM-Grid-Share-Token", workspace.share.PublicID)
+	savedResponse := httptest.NewRecorder()
+	handler.ServeHTTP(savedResponse, saved)
+	if savedResponse.Code != http.StatusOK || !strings.Contains(savedResponse.Body.String(), `"rows"`) {
+		t.Fatalf("saved view query=%d %s", savedResponse.Code, savedResponse.Body.String())
+	}
+	_, _, _, queries := handler.members.(*testMemberEntitlements).snapshot()
+	last := queries[len(queries)-1]
+	if len(last.GridFilters) != 2 || len(last.GridSorts) != 2 || len(last.GridGroups) != 1 || last.GridSorts[0].Field != "renewal_count" || last.GridSorts[1].Field != "remark" || last.GridGroups[0].Field != "remaining_days" {
+		t.Fatalf("public saved view did not preserve full Order-owned grid query: %+v", last)
 	}
 	workspace.share.Enabled = false
 	revoked := httptest.NewRecorder()

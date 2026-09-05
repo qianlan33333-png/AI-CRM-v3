@@ -281,6 +281,107 @@ func TestPostgreSQLMemberGridUsesFrozenCeilDaysForFiltersAndPagination(t *testin
 	}
 }
 
+func TestPostgreSQLMemberGridAppliesMultipleOrderFactsBeforeStablePaging(t *testing.T) {
+	native, cleanup := orderIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	wrapper, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wrapper.Close()
+	uow, err := platformpostgres.NewUnitOfWork(wrapper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := NewPostgreSQL(native, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	members, err := orderapp.NewEntitlementApplication(uow, repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	snapshot := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+	type seeded struct {
+		remark string
+		end    time.Time
+		id     int64
+	}
+	seed := []seeded{
+		{remark: " beta ", end: snapshot.Add(24 * time.Hour)},
+		{remark: "Alpha", end: snapshot.Add(48 * time.Hour)},
+		{remark: "alpha", end: snapshot.Add(24 * time.Hour)},
+	}
+	for index := range seed {
+		var customerID int64
+		if err = native.QueryRow(ctx, `INSERT INTO customers DEFAULT VALUES RETURNING id`).Scan(&customerID); err != nil {
+			t.Fatal(err)
+		}
+		digest := sha256.Sum256([]byte("member-grid-facts-" + strconv.Itoa(index)))
+		if err = native.QueryRow(ctx, `INSERT INTO order_service_entitlements(source_system,source_key,customer_id,service_product_id,product_name,status,start_at,end_at,remark,source_digest,created_at,updated_at) VALUES('legacy-import',$1,$2,740,'Member grid facts','active',$3,$4,$5,$6,$3,$3) RETURNING id`, "member-grid-facts-"+strconv.Itoa(index), customerID, snapshot.Add(-time.Hour), seed[index].end, seed[index].remark, digest[:]).Scan(&seed[index].id); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	base := orderport.ServicePeriodMemberQuery{
+		ServiceProductID: 740,
+		Limit:            1,
+		FilterLogic:      "and",
+		SnapshotAt:       snapshot,
+		GridFilters: []orderport.MemberGridFilter{
+			{Field: "remaining_days", Operator: "gte", Numbers: []float64{0.5}},
+			{Field: "remark", Operator: "contains", Text: "a"},
+			{Field: "renewal_count", Operator: "is_empty"},
+		},
+		GridSorts: []orderport.MemberGridOrder{
+			{Field: "remark", Direction: "asc"},
+			{Field: "remaining_days", Direction: "desc"},
+		},
+	}
+	first, err := members.ListServicePeriodMembers(ctx, base)
+	if err != nil || len(first.Items) != 1 || first.Items[0].ID != seed[1].id || first.NextCursor == "" {
+		t.Fatalf("first multi-sort page=%+v err=%v", first, err)
+	}
+	base.Cursor, base.SnapshotAt = first.NextCursor, snapshot.AddDate(0, 0, 1)
+	second, err := members.ListServicePeriodMembers(ctx, base)
+	if err != nil || len(second.Items) != 1 || second.Items[0].ID != seed[2].id || second.NextCursor == "" || !second.SnapshotAt.Equal(snapshot) {
+		t.Fatalf("second multi-sort page=%+v err=%v", second, err)
+	}
+	base.Cursor = second.NextCursor
+	third, err := members.ListServicePeriodMembers(ctx, base)
+	if err != nil || len(third.Items) != 1 || third.Items[0].ID != seed[0].id || third.NextCursor != "" || !third.SnapshotAt.Equal(snapshot) {
+		t.Fatalf("third multi-sort page=%+v err=%v", third, err)
+	}
+
+	// Two group levels are counted in the complete filtered relation before the
+	// cursor. remaining_days=1 contains beta and alpha; each second-level
+	// remark partition contains one record.
+	grouped := base
+	grouped.Cursor, grouped.SnapshotAt = "", snapshot
+	grouped.GridSorts = nil
+	grouped.GridGroups = []orderport.MemberGridOrder{{Field: "remaining_days", Direction: "asc"}, {Field: "remark", Direction: "asc"}}
+	seen := map[int64][]int64{}
+	for {
+		page, pageErr := members.ListServicePeriodMembers(ctx, grouped)
+		if pageErr != nil {
+			t.Fatal(pageErr)
+		}
+		for _, item := range page.Items {
+			seen[item.ID] = append([]int64(nil), item.MemberGridGroupCounts...)
+		}
+		if page.NextCursor == "" {
+			break
+		}
+		grouped.Cursor = page.NextCursor
+		grouped.SnapshotAt = snapshot.AddDate(0, 0, 2)
+	}
+	if len(seen) != 3 || len(seen[seed[0].id]) != 2 || len(seen[seed[1].id]) != 2 || len(seen[seed[2].id]) != 2 || seen[seed[0].id][0] != 2 || seen[seed[2].id][0] != 2 || seen[seed[1].id][0] != 1 || seen[seed[0].id][1] != 1 || seen[seed[1].id][1] != 1 || seen[seed[2].id][1] != 1 {
+		t.Fatalf("complete two-level group counts=%+v", seen)
+	}
+}
+
 func TestPostgreSQLMemberGridRenewalCountUsesVerifiedOrderSources(t *testing.T) {
 	native, cleanup := orderIntegrationPool(t)
 	defer cleanup()

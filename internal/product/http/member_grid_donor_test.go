@@ -1,27 +1,45 @@
 package http
 
 import (
+	"encoding/json"
 	"testing"
-	"time"
 )
 
-func TestDonorGridRemainingDaysMatchesDD8CeilAndClamp(t *testing.T) {
-	snapshot := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
-	for _, test := range []struct {
-		name string
-		end  time.Time
-		want int
-	}{
-		{name: "just under one day", end: snapshot.Add(24*time.Hour - time.Second), want: 1},
-		{name: "exactly one day", end: snapshot.Add(24 * time.Hour), want: 1},
-		{name: "just over one day", end: snapshot.Add(24*time.Hour + time.Second), want: 2},
-		{name: "expired", end: snapshot.Add(-time.Second), want: 0},
-		{name: "exact expiry", end: snapshot, want: 0},
+func TestDecodeDonorGridConfigPreservesOrderOwnedMultiFactContract(t *testing.T) {
+	config, err := decodeDonorGridConfig(json.RawMessage(`{
+  "schema_version":1,
+  "filter":{"logic":"and","conditions":[
+    {"field":"renewal_count","operator":"between","value":[4.5,2.25]},
+    {"field":"remark","operator":"not_contains","value":"已退款"},
+    {"field":"remark","operator":"is_not_empty"}
+  ]},
+  "sorts":[{"field":"renewal_count","direction":"desc"},{"field":"remark","direction":"asc"}],
+  "groups":[{"field":"remaining_days","direction":"asc"}]
+}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(config.Filter.Conditions) != 3 || len(config.Sorts) != 2 || len(config.Groups) != 1 {
+		t.Fatalf("decoded config=%+v", config)
+	}
+	values, ok := config.Filter.Conditions[0].Value.([]any)
+	if !ok || values[0] != 2.25 || values[1] != 4.5 {
+		t.Fatalf("donor between normalization=%#v", config.Filter.Conditions[0].Value)
+	}
+	query, err := donorGridOrderQuery(7, config, "", 200)
+	if err != nil || len(query.GridFilters) != 3 || len(query.GridSorts) != 2 || len(query.GridGroups) != 1 || query.GridFilters[0].Numbers[0] != 2.25 || query.GridFilters[0].Numbers[1] != 4.5 {
+		t.Fatalf("order query=%+v err=%v", query, err)
+	}
+}
+
+func TestDecodeDonorGridConfigRejectsOverlappingAndUnavailableFields(t *testing.T) {
+	for _, raw := range []string{
+		`{"schema_version":1,"filter":{"logic":"and","conditions":[]},"sorts":[{"field":"remark","direction":"asc"}],"groups":[{"field":"remark","direction":"asc"}]}`,
+		`{"schema_version":1,"filter":{"logic":"and","conditions":[{"field":"member","operator":"contains","value":"张"}]},"sorts":[],"groups":[]}`,
+		`{"schema_version":1,"filter":{"logic":"and","conditions":[]},"sorts":[{"field":"remaining_days","direction":"asc"},{"field":"remaining_days","direction":"desc"}],"groups":[]}`,
 	} {
-		t.Run(test.name, func(t *testing.T) {
-			if got := donorGridRemainingDays(test.end, snapshot); got != test.want {
-				t.Fatalf("remaining days=%d want=%d", got, test.want)
-			}
-		})
+		if _, err := decodeDonorGridConfig(json.RawMessage(raw)); err == nil {
+			t.Fatalf("accepted unsupported config %s", raw)
+		}
 	}
 }

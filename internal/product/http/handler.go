@@ -1379,7 +1379,7 @@ func (h *Handler) memberGridQuery(w http.ResponseWriter, r *http.Request, id int
 		Cursor string          `json:"cursor"`
 		Limit  int32           `json:"limit"`
 	}
-	if decodeJSON(r, &body) != nil || body.Limit < 1 || body.Limit > 100 || len(body.Cursor) > 1024 {
+	if decodeJSON(r, &body) != nil || body.Limit < 1 || body.Limit > 200 || len(body.Cursor) > 4096 {
 		writeError(w, http.StatusBadRequest, "invalid_request")
 		return
 	}

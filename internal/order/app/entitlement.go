@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"math"
 	"strings"
 	"time"
 
@@ -58,7 +59,7 @@ func (s *EntitlementApplication) ListCustomerEntitlements(ctx context.Context, c
 }
 
 func (s *EntitlementApplication) ListServicePeriodMembers(ctx context.Context, query orderport.ServicePeriodMemberQuery) (orderport.ServicePeriodMemberPage, error) {
-	if s == nil || query.ServiceProductID < 1 || query.Limit < 1 || query.Limit > 100 || (query.State != "" && query.State != "all" && query.State != "active" && query.State != "expired" && query.State != "removed") || (query.Source != "" && query.Source != "paid_order" && query.Source != "manual") || (query.Sort != "" && query.Sort != "updated_at_desc" && query.Sort != "starts_at_desc" && query.Sort != "remaining_days_desc" && query.Sort != "remaining_days_asc") || (query.FilterLogic != "" && query.FilterLogic != "and" && query.FilterLogic != "or") || !validMemberGridFilters(query) || len(query.Cursor) > 1024 {
+	if s == nil || query.ServiceProductID < 1 || query.Limit < 1 || query.Limit > 200 || (query.State != "" && query.State != "all" && query.State != "active" && query.State != "expired" && query.State != "removed") || (query.Source != "" && query.Source != "paid_order" && query.Source != "manual") || (query.Sort != "" && query.Sort != "updated_at_desc" && query.Sort != "starts_at_desc" && query.Sort != "remaining_days_desc" && query.Sort != "remaining_days_asc") || (query.FilterLogic != "" && query.FilterLogic != "and" && query.FilterLogic != "or") || !validMemberGridFilters(query) || len(query.Cursor) > 4096 {
 		return orderport.ServicePeriodMemberPage{}, orderport.ErrConflict
 	}
 	var page orderport.ServicePeriodMemberPage
@@ -71,6 +72,27 @@ func (s *EntitlementApplication) ListServicePeriodMembers(ctx context.Context, q
 }
 
 func validMemberGridFilters(query orderport.ServicePeriodMemberQuery) bool {
+	if len(query.GridFilters) > 20 || len(query.GridSorts) > 8 || len(query.GridGroups) > 2 {
+		return false
+	}
+	sortFields, groupFields := map[string]bool{}, map[string]bool{}
+	for _, item := range query.GridSorts {
+		if !validMemberGridOrder(item) || sortFields[item.Field] {
+			return false
+		}
+		sortFields[item.Field] = true
+	}
+	for _, item := range query.GridGroups {
+		if !validMemberGridOrder(item) || groupFields[item.Field] || sortFields[item.Field] {
+			return false
+		}
+		groupFields[item.Field] = true
+	}
+	for _, filter := range query.GridFilters {
+		if !validMemberGridFilter(filter) {
+			return false
+		}
+	}
 	if query.RemainingDays != nil {
 		f := query.RemainingDays
 		if (f.Operator != "equals" && f.Operator != "not_equals" && f.Operator != "gt" && f.Operator != "gte" && f.Operator != "lt" && f.Operator != "lte" && f.Operator != "between") || len(f.Values) == 0 || len(f.Values) > 2 || (f.Operator == "between" && len(f.Values) != 2) || (f.Operator != "between" && len(f.Values) != 1) {
@@ -84,6 +106,38 @@ func validMemberGridFilters(query orderport.ServicePeriodMemberQuery) bool {
 		}
 	}
 	return true
+}
+
+func validMemberGridOrder(item orderport.MemberGridOrder) bool {
+	return (item.Field == "remaining_days" || item.Field == "renewal_count" || item.Field == "remark") && (item.Direction == "asc" || item.Direction == "desc")
+}
+
+func validMemberGridFilter(filter orderport.MemberGridFilter) bool {
+	switch filter.Field {
+	case "remaining_days", "renewal_count":
+		if (filter.Operator != "equals" && filter.Operator != "not_equals" && filter.Operator != "gt" && filter.Operator != "gte" && filter.Operator != "lt" && filter.Operator != "lte" && filter.Operator != "between" && filter.Operator != "is_empty" && filter.Operator != "is_not_empty") || len(filter.Numbers) > 2 {
+			return false
+		}
+		if filter.Operator == "is_empty" || filter.Operator == "is_not_empty" {
+			return len(filter.Numbers) == 0
+		}
+		if !((filter.Operator == "between" && len(filter.Numbers) == 2) || (filter.Operator != "between" && len(filter.Numbers) == 1)) {
+			return false
+		}
+		for _, value := range filter.Numbers {
+			if math.IsNaN(value) || math.IsInf(value, 0) {
+				return false
+			}
+		}
+		return true
+	case "remark":
+		if (filter.Operator != "contains" && filter.Operator != "not_contains" && filter.Operator != "equals" && filter.Operator != "not_equals" && filter.Operator != "is_empty" && filter.Operator != "is_not_empty") || len(filter.Text) > 200 {
+			return false
+		}
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *EntitlementApplication) GetCustomerServicePeriodEntitlement(ctx context.Context, customerID, serviceProductID int64) (orderport.Entitlement, bool, error) {

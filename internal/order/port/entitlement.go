@@ -25,9 +25,15 @@ type Entitlement struct {
 	RenewalCount          int64 `json:"renewal_count,omitempty"`
 	RenewalCountAvailable bool  `json:"renewal_count_available"`
 	// MemberGridGroupCount is populated only for the requested, Order-owned
-	// remaining-days grouping. It is a window count over the complete filtered
-	// result, rather than a count of whichever page reached the Host.
-	MemberGridGroupCount int64 `json:"-"`
+	// grouping. It is a window count over the complete filtered result, rather
+	// than a count of whichever page reached the Host. One value is present for
+	// every requested group level, in order.
+	MemberGridGroupCount  int64   `json:"-"`
+	MemberGridGroupCounts []int64 `json:"-"`
+	// MemberGridOrderValues are the evaluated, stable keyset values for the
+	// row. They are private to the bounded member-grid read contract and are
+	// never exposed by Product.
+	MemberGridOrderValues []any `json:"-"`
 }
 
 type EntitlementPage struct {
@@ -45,8 +51,8 @@ type ServicePeriodMemberQuery struct {
 	Source           string
 	Cursor           string
 	Limit            int32
-	// Sort is intentionally bounded to the member-grid's two donor choices.
-	// Empty preserves the legacy end-at order used by the list endpoint.
+	// Sort preserves the legacy list endpoint choices. The frozen member-grid
+	// uses GridSorts and GridGroups below instead.
 	Sort string
 	// The Product member-grid host only admits filters that Order can evaluate
 	// from its own entitlement facts. Customer names deliberately stay outside
@@ -58,9 +64,16 @@ type ServicePeriodMemberQuery struct {
 	// request. A zero value lets ordinary list callers retain database-now
 	// behavior; the Product grid always supplies one explicit instant.
 	SnapshotAt time.Time
-	// GroupByRemainingDays requests the complete filtered partition count for
-	// the supported one-level donor grouping.
+	// GroupByRemainingDays preserves the legacy one-level request shape. New
+	// Product grid requests use GridGroups.
 	GroupByRemainingDays bool
+	// GridFilters, GridSorts and GridGroups express only fields owned by Order.
+	// They deliberately contain neither identities nor copied customer data.
+	// The repository evaluates the whole filtered relation before applying a
+	// config-bound keyset cursor.
+	GridFilters []MemberGridFilter
+	GridSorts   []MemberGridOrder
+	GridGroups  []MemberGridOrder
 }
 
 type MemberGridNumberFilter struct {
@@ -71,6 +84,24 @@ type MemberGridNumberFilter struct {
 type MemberGridTextFilter struct {
 	Operator string
 	Value    string
+}
+
+// MemberGridFilter is one validated member-grid predicate. Number values keep
+// the donor's numeric semantics (including decimal thresholds) for
+// remaining_days and renewal_count; Text is used for remark.
+type MemberGridFilter struct {
+	Field    string
+	Operator string
+	Numbers  []float64
+	Text     string
+}
+
+// MemberGridOrder follows the frozen dd8 field-first ordering contract.
+// Product supplies at most eight sorts and two groups; Order accepts only its
+// own entitlement facts.
+type MemberGridOrder struct {
+	Field     string
+	Direction string
 }
 
 type ServicePeriodMemberPage struct {
