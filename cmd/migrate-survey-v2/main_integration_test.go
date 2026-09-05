@@ -149,7 +149,12 @@ func TestPostgreSQLFrozenSurveySnapshotImportReplayAndReconcile(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT safe_snapshot,record_digest FROM survey_migration_quarantine WHERE source_table='questionnaire_result_tokens' AND source_pk='42'`).Scan(&resultQuarantineSafe, &resultQuarantineDigest); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, `UPDATE survey_migration_quarantine SET record_digest=decode('00','hex') WHERE source_table='questionnaire_result_tokens' AND source_pk='42'`); err != nil {
+	driftedResultQuarantineDigest := append([]byte(nil), resultQuarantineDigest...)
+	if len(driftedResultQuarantineDigest) != 32 {
+		t.Fatalf("result-token quarantine digest length=%d", len(driftedResultQuarantineDigest))
+	}
+	driftedResultQuarantineDigest[0] ^= 0xff
+	if _, err := pool.Exec(ctx, `UPDATE survey_migration_quarantine SET record_digest=$3 WHERE source_table=$1 AND source_pk=$2`, "questionnaire_result_tokens", "42", driftedResultQuarantineDigest); err != nil {
 		t.Fatal(err)
 	}
 	if err := reconcile([]string{"--target-url", targetURL, "--snapshot", file, "--snapshot-key-file", snapshotKey, "--data-key-file", dataKey}); err == nil || !strings.Contains(err.Error(), "missing result-token quarantine") {
