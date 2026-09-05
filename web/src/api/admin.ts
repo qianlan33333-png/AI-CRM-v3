@@ -1563,16 +1563,13 @@ export type MemberGridSource = 'manual' | 'paid_order';
 export type MemberGridSourceFilter = MemberGridSource | '';
 export type MemberGridSort = 'updated_at_desc' | 'starts_at_desc';
 export type MemberGridGroupBy = '' | 'state';
-// Built-in and persisted Product workspace views share the same bounded
-// endpoint.  Persisted IDs are decimal Product metadata IDs, never customer
-// or entitlement identifiers.
-export type MemberGridViewID = '' | 'default' | `${number}`;
+export type MemberGridViewID = '' | 'default';
 export type MemberGridStaffOption = { staffId: number; senderUserid: string; displayName: string };
 export type ServicePeriodMemberGridRow = { memberRef: string; serviceProductId: number; customerId: number; state: MemberGridState; source: MemberGridSource; startsAt: string; expiresAt: string | null; expiredAt: string | null; removedAt: string | null; version: number; updatedAt: string; displayName: string };
 export type ServicePeriodMemberGridPage = { rows: ServicePeriodMemberGridRow[]; limit: number; nextCursor: string; hasMore: boolean };
 export type ServicePeriodMemberDetail = ServicePeriodMemberGridRow & { remark: string | null; alliance: string | null; createdAt: string };
 export type ServicePeriodMemberGridCollaborator = { collaboratorId: number; serviceProductId: number; staffId: number; permission: 'view' | 'edit'; version: number; invitedBy: number; createdAt: string; updatedAt: string };
-export type ServicePeriodMemberGridMeta = { product: SpProduct; columns: Array<{ key: string; label: string; type: string; nullable: boolean }>; views: Array<{ id: string; name: string; readOnly: boolean }>; collaborators: number; collaboratorRows: ServicePeriodMemberGridCollaborator[]; canManageViews: boolean; canShare: boolean; externalShareEnabled: boolean; externalShareVersion: number };
+export type ServicePeriodMemberGridMeta = { product: SpProduct; columns: Array<{ key: string; label: string; type: string; nullable: boolean }>; views: Array<{ id: string; name: string; readOnly: boolean }>; collaborators: number; collaboratorRows: ServicePeriodMemberGridCollaborator[]; externalShareEnabled: boolean; externalShareVersion: number };
 const requiredPositiveValue = (value: unknown, field: string): number => { const number = Number(value); if (!Number.isSafeInteger(number) || number < 1) throw new Error(`响应缺少有效 ${field}`); return number; };
 const requiredNonNegative = (value: unknown, field: string): number => { const number = Number(value); if (!Number.isSafeInteger(number) || number < 0) throw new Error(`响应缺少有效 ${field}`); return number; };
 const requiredString = (value: unknown, field: string): string => { if (typeof value !== 'string' || !value) throw new Error(`响应缺少 ${field}`); return value; };
@@ -1628,19 +1625,19 @@ export async function getServicePeriodMemberGridMetaDto(productId: number): Prom
   const productSource = obj(productResult); const access = obj(accessResult); const schema = obj(schemaResult); const views = obj(viewsResult); const share = obj(shareResult);
   if (requiredPositiveValue(access.product_id, 'access.product_id') !== productId || requiredPositiveValue(schema.service_product_id, 'schema.service_product_id') !== productId || requiredPositiveValue(views.product_id, 'views.product_id') !== productId || requiredPositiveValue(share.service_product_id, 'share.service_product_id') !== productId) throw new Error('Member Grid 响应范围不匹配');
   if (access.can_view !== true || access.can_query !== true) throw new Error('当前账号无 Member Grid 读取权限');
-  if (typeof access.can_manage_views !== 'boolean' || typeof access.can_share !== 'boolean' || share.external_share_supported !== true || typeof share.external_share_enabled !== 'boolean' || share.real_external_call_executed !== false || share.collaborator_edit_is_local_metadata_only !== true || share.collaborator_edit_grants_central_permission !== false) throw new Error('Member Grid 响应越过聚合分享边界');
+  if (access.can_manage_views !== false || access.can_share !== false || share.external_share_supported !== true || typeof share.external_share_enabled !== 'boolean' || share.real_external_call_executed !== false || share.collaborator_edit_is_local_metadata_only !== true || share.collaborator_edit_grants_central_permission !== false) throw new Error('Member Grid 响应越过聚合分享边界');
   const externalShareVersion = requiredNonNegative(share.external_share_version, 'external_share_version');
   const columns = list(schema, 'columns').map((item) => { const column = obj(item); return { key: requiredString(column.key, 'column.key'), label: requiredString(column.label, 'column.label'), type: requiredString(column.type, 'column.type'), nullable: column.nullable === true }; });
-  const builtInViews = list(views, 'views').map((item) => { const view = obj(item); const id = requiredString(view.id, 'view.id'); const builtIn = view.source === 'built_in'; if ((builtIn && view.read_only !== true) || (!builtIn && (!/^[1-9][0-9]*$/.test(id) || view.read_only !== false))) throw new Error('Member Grid 视图响应无效'); return { id, name: requiredString(view.name, 'view.name'), readOnly: builtIn }; });
+  const builtInViews = list(views, 'views').map((item) => { const view = obj(item); if (view.source !== 'built_in' || view.read_only !== true) throw new Error('Member Grid 视图不是受限内置视图'); return { id: requiredString(view.id, 'view.id'), name: requiredString(view.name, 'view.name'), readOnly: true }; });
   if (columns.length !== 12 || builtInViews.length < 1) throw new Error('Member Grid 闭合 schema 或内置视图响应不完整');
   const collaboratorRows = list(share, 'collaborators').map((item) => collaboratorDto(item, productId));
-  return { product: serviceProductPageDto(productSource.product || productSource), columns, views: builtInViews, collaborators: collaboratorRows.length, collaboratorRows, canManageViews: access.can_manage_views, canShare: access.can_share, externalShareEnabled: share.external_share_enabled, externalShareVersion };
+  return { product: serviceProductPageDto(productSource.product || productSource), columns, views: builtInViews, collaborators: collaboratorRows.length, collaboratorRows, externalShareEnabled: share.external_share_enabled, externalShareVersion };
 }
-type MemberGridQueryRequestWithSelection = Omit<Parameters<typeof queryServicePeriodMemberGrid>[1], 'view_id'> & { sort?: MemberGridSort; group_by?: MemberGridGroupBy; view_id?: MemberGridViewID };
+type MemberGridQueryRequestWithSelection = Parameters<typeof queryServicePeriodMemberGrid>[1] & { sort?: MemberGridSort; group_by?: MemberGridGroupBy; view_id?: MemberGridViewID };
 export async function queryServicePeriodMemberGridDto(productId: number, input: { state?: MemberGridState; source?: MemberGridSourceFilter; sort?: MemberGridSort; groupBy?: MemberGridGroupBy; viewId?: MemberGridViewID; limit?: number; cursor?: string } = {}): Promise<ServicePeriodMemberGridPage> {
   if (!Number.isSafeInteger(productId) || productId < 1) throw new Error('Member Grid 商品 ID 无效');
   const state = input.state || 'all'; const source = input.source || ''; const sort = input.sort || 'updated_at_desc'; const groupBy = input.groupBy || ''; const viewId = input.viewId || ''; const limit = input.limit ?? 50;
-  if (!['active', 'expired', 'removed', 'all'].includes(state) || !['', 'manual', 'paid_order'].includes(source) || !['updated_at_desc', 'starts_at_desc'].includes(sort) || !['', 'state'].includes(groupBy) || !(viewId === '' || viewId === 'default' || /^[1-9][0-9]*$/.test(viewId)) || viewId === 'default' && (state !== 'all' || source !== '' || sort !== 'updated_at_desc' || groupBy !== '') || !Number.isSafeInteger(limit) || limit < 1 || limit > 50) throw new Error('Member Grid 查询条件无效');
+  if (!['active', 'expired', 'removed', 'all'].includes(state) || !['', 'manual', 'paid_order'].includes(source) || !['updated_at_desc', 'starts_at_desc'].includes(sort) || !['', 'state'].includes(groupBy) || !['', 'default'].includes(viewId) || viewId === 'default' && (state !== 'all' || source !== '' || sort !== 'updated_at_desc' || groupBy !== '') || !Number.isSafeInteger(limit) || limit < 1 || limit > 50) throw new Error('Member Grid 查询条件无效');
   const query: MemberGridQueryRequestWithSelection = { state, source: source || undefined, sort, group_by: groupBy || undefined, view_id: viewId || undefined, limit, cursor: input.cursor || '' };
   const page = obj(await call(queryServicePeriodMemberGrid(productId, query as Parameters<typeof queryServicePeriodMemberGrid>[1], apiRequestOptions())));
   if (!Array.isArray(page.rows) || typeof page.next_cursor !== 'string' || (page.has_more !== true && page.has_more !== false)) throw new Error('Member Grid 查询响应不完整');
