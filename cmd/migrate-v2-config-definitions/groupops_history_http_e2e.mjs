@@ -21,7 +21,13 @@ const readonly = await readonlyResponse.text();
 const bridge = await bridgeResponse.text();
 html = html.replace(`<script defer src="${readonlyPath}"></script>`, () => `<script>${readonly}</script>`);
 html = html.replace(`<script defer src="${bridgePath}"></script>`, () => `<script>${bridge}</script>`);
-html = html.replace(/<script[^>]+src="[^"]*admin-test\.js[^"]*"[^>]*><\/script>/, () => `<script>${bundle}</script>`);
+const adminEntry = /<script[^>]+src="[^"]*admin-test\.js[^"]*"[^>]*><\/script>/;
+if (!adminEntry.test(html)) throw new Error('actual Host admin entry was unavailable for the existing JSDOM harness');
+html = html.replace(adminEntry, '');
+// The production entry is a deferred module.  An inline replacement in the
+// template head runs before document.body exists, whereas placing it at the
+// end of the actual Host body preserves the donor entry's parsed-DOM timing.
+html = html.replace('</body>', () => `<script>${bundle}</script></body>`);
 if (!html.includes(bundle)) throw new Error('actual Host admin entry was not replaced for the existing JSDOM harness');
 
 async function waitFor(label, predicate) {
