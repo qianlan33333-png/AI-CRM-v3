@@ -54,7 +54,7 @@ func TestArchiveInboxBudgetIsRetryableAndNeverCompletes(t *testing.T) {
 	store := &memoryWebhookStore{}
 	inbox, _ := webhook.NewService(store)
 	key, _ := idempotency.Parse("wecom:archive-test:0001")
-	_, err := inbox.Ingest(context.Background(), webhook.Ingest{Provider: archiveCallbackProvider, IdempotencyKey: key, Payload: []byte(`{"corp_id":"wx-corp","event":"msgaudit_notify","received_at":"2026-09-05T00:00:00Z"}`)})
+	_, err := inbox.Ingest(context.Background(), webhook.Ingest{Provider: archiveCallbackProvider, IdempotencyKey: key, Payload: []byte(`{"corp_id":"wx-corp","event":"msgaudit_notify"}`)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +73,7 @@ func TestArchiveBudgetUsesInboxContinuationPastGenericAttemptLimit(t *testing.T)
 	store := &memoryWebhookStore{}
 	inbox, _ := webhook.NewService(store)
 	key, _ := idempotency.Parse("wecom:archive-continue:0001")
-	_, err := inbox.Ingest(context.Background(), webhook.Ingest{Provider: archiveCallbackProvider, IdempotencyKey: key, MaxAttempts: 1, Payload: []byte(`{"corp_id":"wx-corp","event":"msgaudit_notify","received_at":"2026-09-05T00:00:00Z"}`)})
+	_, err := inbox.Ingest(context.Background(), webhook.Ingest{Provider: archiveCallbackProvider, IdempotencyKey: key, MaxAttempts: 1, Payload: []byte(`{"corp_id":"wx-corp","event":"msgaudit_notify"}`)})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -33,13 +33,13 @@ func TestMessageArchiveMigrationDryRunApplyReplayResolveAndReconcilePostgreSQL(t
 	resolver := newHistoricalResolver(manifest)
 
 	dry, err := dryRun(ctx, native, manifest, resolver)
-	if err != nil || dry.Inserted != 1 || dry.Unresolved != 1 || len(dry.Rows) != 2 {
+	if err != nil || dry.Inserted != 1 || dry.Unresolved != 3 || len(dry.Rows) != 4 {
 		t.Fatalf("dry-run=%+v err=%v", dry, err)
 	}
 	assertArchiveMigrationCounts(t, ctx, native, 0, 0, 0)
 
 	applied, err := apply(ctx, native, manifest, resolver)
-	if err != nil || applied.Inserted != 1 || applied.Unresolved != 1 {
+	if err != nil || applied.Inserted != 1 || applied.Unresolved != 3 {
 		t.Fatalf("apply=%+v err=%v", applied, err)
 	}
 	var knownCustomer, knownStaff int64
@@ -49,20 +49,44 @@ func TestMessageArchiveMigrationDryRunApplyReplayResolveAndReconcilePostgreSQL(t
 	if matched, reconcileErr := reconcile(ctx, native, manifest); reconcileErr != nil || !matched {
 		t.Fatalf("initial reconcile matched=%t err=%v", matched, reconcileErr)
 	}
+	// A fully matching snapshot replays without creating a second message. The
+	// stronger existing-message comparison below must preserve this normal case.
+	replayed, err := apply(ctx, native, manifest, resolver)
+	if err != nil || replayed.Duplicates != 4 || replayed.Inserted != 0 || replayed.Unresolved != 0 || replayed.Quarantined != 0 {
+		t.Fatalf("duplicate replay=%+v err=%v", replayed, err)
+	}
+	if matched, reconcileErr := reconcile(ctx, native, manifest); reconcileErr != nil || !matched {
+		t.Fatalf("duplicate reconcile matched=%t err=%v", matched, reconcileErr)
+	}
 
 	if err = seedArchiveMigrationIdentity(ctx, native, "wm_later"); err != nil {
 		t.Fatal(err)
 	}
-	reResolved, err := reResolve(ctx, native, manifest, resolver, 20)
-	if err != nil || reResolved.Inserted != 1 || reResolved.Unresolved != 0 {
-		t.Fatalf("re-resolve=%+v err=%v", reResolved, err)
+	// The first bounded pass is deliberately occupied by unresolved rows that
+	// remain not_found. The operator receives a cursor and can continue past
+	// them to the later verified identity; there is no background worker.
+	firstPass, err := reResolve(ctx, native, manifest, resolver, 2, 0)
+	if err != nil || firstPass.Inserted != 0 || firstPass.Unresolved != 2 || firstPass.NextParticipantID < 1 {
+		t.Fatalf("first re-resolve=%+v err=%v", firstPass, err)
+	}
+	reResolved, err := reResolve(ctx, native, manifest, resolver, 2, firstPass.NextParticipantID)
+	if err != nil || reResolved.Inserted != 1 || reResolved.Unresolved != 0 || reResolved.NextParticipantID <= firstPass.NextParticipantID {
+		t.Fatalf("continued re-resolve=%+v err=%v", reResolved, err)
 	}
 	var attempts int
-	if err = native.QueryRow(ctx, `SELECT count(*) FROM message_archive_resolution_attempts`).Scan(&attempts); err != nil || attempts != 1 {
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM message_archive_resolution_attempts`).Scan(&attempts); err != nil || attempts != 3 {
 		t.Fatalf("resolution attempts=%d err=%v", attempts, err)
 	}
 	if matched, reconcileErr := reconcile(ctx, native, manifest); reconcileErr != nil || !matched {
 		t.Fatalf("reconcile after resolution matched=%t err=%v", matched, reconcileErr)
+	}
+	conflictManifest := archiveMigrationSequenceConflictManifest(t)
+	conflicted, err := apply(ctx, native, conflictManifest, resolver)
+	if err != nil || conflicted.Quarantined != 1 || conflicted.Duplicates != 0 || conflicted.Inserted != 0 {
+		t.Fatalf("same msgid changed seq=%+v err=%v", conflicted, err)
+	}
+	if matched, reconcileErr := reconcile(ctx, native, conflictManifest); reconcileErr != nil || !matched {
+		t.Fatalf("sequence conflict reconcile matched=%t err=%v", matched, reconcileErr)
 	}
 
 	if _, err = native.Exec(ctx, `UPDATE message_archive_messages SET content_text='drift' WHERE msgid='m-known'`); err != nil {
@@ -81,7 +105,29 @@ func archiveMigrationManifest(t *testing.T) archivemigration.Manifest {
 		"corp_scope":     "wecom-corp:wx-archive-integration",
 		"records": []map[string]any{
 			{"source_row_key": "row-known", "seq": 1, "msgid": "m-known", "payload": map[string]any{"msgid": "m-known", "from": "staff-one", "tolist": []string{"wm_known"}, "msgtype": "text", "msgtime": 1788336000, "text": map[string]string{"content": "known"}}},
-			{"source_row_key": "row-later", "seq": 2, "msgid": "m-later", "payload": map[string]any{"msgid": "m-later", "from": "staff-one", "tolist": []string{"wm_later"}, "msgtype": "text", "msgtime": 1788336060, "text": map[string]string{"content": "later"}}},
+			{"source_row_key": "row-never-one", "seq": 2, "msgid": "m-never-one", "payload": map[string]any{"msgid": "m-never-one", "from": "staff-one", "tolist": []string{"wm_never_one"}, "msgtype": "text", "msgtime": 1788336060, "text": map[string]string{"content": "never one"}}},
+			{"source_row_key": "row-never-two", "seq": 3, "msgid": "m-never-two", "payload": map[string]any{"msgid": "m-never-two", "from": "staff-one", "tolist": []string{"wm_never_two"}, "msgtype": "text", "msgtime": 1788336120, "text": map[string]string{"content": "never two"}}},
+			{"source_row_key": "row-later", "seq": 4, "msgid": "m-later", "payload": map[string]any{"msgid": "m-later", "from": "staff-one", "tolist": []string{"wm_later"}, "msgtype": "text", "msgtime": 1788336180, "text": map[string]string{"content": "later"}}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := archivemigration.Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return manifest
+}
+
+func archiveMigrationSequenceConflictManifest(t *testing.T) archivemigration.Manifest {
+	t.Helper()
+	raw, err := json.Marshal(map[string]any{
+		"schema_version": archivemigration.SchemaVersion,
+		"source_name":    "archive-migration-sequence-conflict",
+		"corp_scope":     "wecom-corp:wx-archive-integration",
+		"records": []map[string]any{
+			{"source_row_key": "row-sequence-conflict", "seq": 99, "msgid": "m-known", "payload": map[string]any{"msgid": "m-known", "from": "staff-one", "tolist": []string{"wm_known"}, "msgtype": "text", "msgtime": 1788336000, "text": map[string]string{"content": "known"}}},
 		},
 	})
 	if err != nil {

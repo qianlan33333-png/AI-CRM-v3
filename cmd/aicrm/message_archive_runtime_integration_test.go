@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"testing"
 	"time"
 
@@ -64,7 +66,7 @@ func TestMessageArchivePostgreSQLInboxJourney(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	notification, _ := json.Marshal(map[string]any{"corp_id": "wx-archive-journey", "event": "msgaudit_notify", "received_at": "2026-09-05T00:00:00Z"})
+	notification, _ := json.Marshal(map[string]any{"corp_id": "wx-archive-journey", "event": "msgaudit_notify"})
 	if err = uow.Within(ctx, func(tx context.Context) error {
 		_, ingestErr := inbox.Ingest(tx, webhook.Ingest{Provider: "wecom.message_archive", IdempotencyKey: key, Payload: notification, MaxAttempts: 1})
 		return ingestErr
@@ -119,6 +121,147 @@ func TestMessageArchivePostgreSQLInboxJourney(t *testing.T) {
 	if err != nil || processed != 0 || len(reader.cursors) != 2 {
 		t.Fatalf("replay processed=%d cursors=%v err=%v", processed, reader.cursors, err)
 	}
+}
+
+func TestMessageArchivePostgreSQLBatchRollbackAndConcurrentCursor(t *testing.T) {
+	native, cleanup := channelWelcomeIntegrationPool(t)
+	defer cleanup()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	applyMessageArchiveJourneyMigrations(t, ctx, native)
+	pool, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	uow, err := platformpostgres.NewUnitOfWork(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var staffID int64
+	if err = native.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active) VALUES('archive-atomic','$argon2id$atomic','Archive Atomic','archive-atomic',true) RETURNING id`).Scan(&staffID); err != nil {
+		t.Fatal(err)
+	}
+	fact, err := identitydomain.NewVerifiedFact(identitydomain.ProviderVerifiedIdentityInput{Kind: identitydomain.KindWeComExternalUserID, Scope: "wecom-corp:wx-archive-atomic", Value: "wm_unresolved", Source: "wecom.message_archive"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := &archiveJourneyReader{fact: fact}
+	store := &archiveFailOnceStore{Store: archivestore.NewPostgreSQL(), fail: true}
+	service := archiveapp.Service{Enabled: true, CorpScope: "wecom-corp:wx-archive-atomic", Reader: reader, Identity: archiveJourneyIdentity{}, Lineage: archiveJourneyLineage{}, Staff: archiveJourneyStaff{id: staffID}, Store: store, UOW: uow, PageLimit: 100, PageBudget: 2, Now: func() time.Time { return time.Unix(1_788_336_000, 0).UTC() }}
+	delivery := archiveport.InboxDelivery{ID: 8101, ReceivedAt: time.Unix(1_788_336_010, 0).UTC(), Payload: json.RawMessage(`{"corp_id":"wx-archive-atomic","event":"msgaudit_notify"}`)}
+	if err = service.ProcessArchiveDelivery(ctx, delivery); !errors.Is(err, errArchiveCommitInjected) {
+		t.Fatalf("injected batch failure=%v", err)
+	}
+	var messages, participants, cursor int
+	if err = native.QueryRow(ctx, `SELECT (SELECT count(*) FROM message_archive_messages),(SELECT count(*) FROM message_archive_participants),(SELECT last_seq FROM message_archive_sync_state WHERE corp_scope='wecom-corp:wx-archive-atomic')`).Scan(&messages, &participants, &cursor); err != nil || messages != 0 || participants != 0 || cursor != 0 {
+		t.Fatalf("rollback messages=%d participants=%d cursor=%d err=%v", messages, participants, cursor, err)
+	}
+	if err = service.ProcessArchiveDelivery(ctx, delivery); err != nil {
+		t.Fatalf("retry after rollback=%v", err)
+	}
+	if err = native.QueryRow(ctx, `SELECT (SELECT count(*) FROM message_archive_messages),(SELECT count(*) FROM message_archive_participants),(SELECT last_seq FROM message_archive_sync_state WHERE corp_scope='wecom-corp:wx-archive-atomic')`).Scan(&messages, &participants, &cursor); err != nil || messages != 2 || participants != 4 || cursor != 2 {
+		t.Fatalf("retry messages=%d participants=%d cursor=%d err=%v", messages, participants, cursor, err)
+	}
+
+	concurrentFact, err := identitydomain.NewVerifiedFact(identitydomain.ProviderVerifiedIdentityInput{Kind: identitydomain.KindWeComExternalUserID, Scope: "wecom-corp:wx-archive-concurrent", Value: "wm_unresolved", Source: "wecom.message_archive"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	barrier := newArchiveBarrierReader(concurrentFact)
+	concurrent := archiveapp.Service{Enabled: true, CorpScope: "wecom-corp:wx-archive-concurrent", Reader: barrier, Identity: archiveJourneyIdentity{}, Lineage: archiveJourneyLineage{}, Staff: archiveJourneyStaff{id: staffID}, Store: archivestore.NewPostgreSQL(), UOW: uow, PageLimit: 100, PageBudget: 2, Now: func() time.Time { return time.Unix(1_788_336_000, 0).UTC() }}
+	type outcome struct{ err error }
+	results := make(chan outcome, 2)
+	for id := int64(8201); id <= 8202; id++ {
+		go func(id int64) {
+			results <- outcome{err: concurrent.ProcessArchiveDelivery(ctx, archiveport.InboxDelivery{ID: id, ReceivedAt: time.Unix(1_788_336_010, 0).UTC(), Payload: json.RawMessage(`{"corp_id":"wx-archive-concurrent","event":"msgaudit_notify"}`)})}
+		}(id)
+	}
+	for range 2 {
+		select {
+		case <-barrier.arrived:
+		case <-ctx.Done():
+			t.Fatal("concurrent readers did not start from the same cursor")
+		}
+	}
+	close(barrier.release)
+	for range 2 {
+		if outcome := <-results; outcome.err != nil {
+			t.Fatalf("concurrent delivery=%v", outcome.err)
+		}
+	}
+	if err = native.QueryRow(ctx, `SELECT (SELECT count(*) FROM message_archive_messages WHERE corp_scope='wecom-corp:wx-archive-concurrent'),(SELECT count(*) FROM message_archive_participants participant JOIN message_archive_messages message ON message.id=participant.message_id WHERE message.corp_scope='wecom-corp:wx-archive-concurrent'),(SELECT last_seq FROM message_archive_sync_state WHERE corp_scope='wecom-corp:wx-archive-concurrent')`).Scan(&messages, &participants, &cursor); err != nil || messages != 2 || participants != 4 || cursor != 2 {
+		t.Fatalf("concurrent messages=%d participants=%d cursor=%d err=%v", messages, participants, cursor, err)
+	}
+	if barrier.countCursor(0) != 2 {
+		t.Fatalf("initial cursor calls=%d", barrier.countCursor(0))
+	}
+}
+
+var errArchiveCommitInjected = errors.New("archive commit injected failure")
+
+type archiveFailOnceStore struct {
+	archiveapp.Store
+	fail bool
+}
+
+func (store *archiveFailOnceStore) CommitBatch(ctx context.Context, batch archiveapp.Batch) (archiveapp.BatchResult, error) {
+	result, err := store.Store.CommitBatch(ctx, batch)
+	if err != nil {
+		return result, err
+	}
+	if store.fail {
+		store.fail = false
+		return archiveapp.BatchResult{}, errArchiveCommitInjected
+	}
+	return result, nil
+}
+
+type archiveBarrierReader struct {
+	fact    identitydomain.VerifiedFact
+	arrived chan struct{}
+	release chan struct{}
+	mu      sync.Mutex
+	cursors []uint64
+}
+
+func newArchiveBarrierReader(fact identitydomain.VerifiedFact) *archiveBarrierReader {
+	return &archiveBarrierReader{fact: fact, arrived: make(chan struct{}, 2), release: make(chan struct{})}
+}
+
+func (reader *archiveBarrierReader) ArchiveHealth(context.Context) (wecomport.ArchiveHealth, error) {
+	return wecomport.ArchiveHealth{}, nil
+}
+func (reader *archiveBarrierReader) GetChatData(_ context.Context, cursor uint64, _ uint32) ([]wecomport.EncryptedArchiveRecord, error) {
+	reader.mu.Lock()
+	reader.cursors = append(reader.cursors, cursor)
+	reader.mu.Unlock()
+	if cursor != 0 {
+		return nil, nil
+	}
+	reader.arrived <- struct{}{}
+	<-reader.release
+	return []wecomport.EncryptedArchiveRecord{{Seq: 1, MsgID: "concurrent-text"}, {Seq: 2, MsgID: "concurrent-unknown"}}, nil
+}
+func (reader *archiveBarrierReader) DecryptArchiveData(context.Context, []wecomport.EncryptedArchiveRecord) ([]wecomport.PlainArchiveRecord, error) {
+	return []wecomport.PlainArchiveRecord{
+		{Seq: 1, MsgID: "concurrent-text", Payload: json.RawMessage(`{"msgid":"concurrent-text","from":"archive-atomic","tolist":["wm_unresolved"],"msgtype":"text","msgtime":1788336000,"text":{"content":"fixture text"}}`), ExternalIdentities: []wecomport.TrustedArchiveExternalIdentity{{Value: "wm_unresolved", Fact: reader.fact}}},
+		{Seq: 2, MsgID: "concurrent-unknown", Payload: json.RawMessage(`{"msgid":"concurrent-unknown","from":"archive-atomic","tolist":["wm_unresolved"],"msgtype":"mixed_future","msgtime":1788336060,"mixed_future":{"fixture":true}}`), ExternalIdentities: []wecomport.TrustedArchiveExternalIdentity{{Value: "wm_unresolved", Fact: reader.fact}}},
+	}, nil
+}
+func (reader *archiveBarrierReader) GetArchiveMedia(context.Context, wecomport.ArchiveMediaRequest) (wecomport.ArchiveMediaChunk, error) {
+	return wecomport.ArchiveMediaChunk{}, archiveapp.ErrProviderPage
+}
+func (reader *archiveBarrierReader) countCursor(want uint64) int {
+	reader.mu.Lock()
+	defer reader.mu.Unlock()
+	count := 0
+	for _, cursor := range reader.cursors {
+		if cursor == want {
+			count++
+		}
+	}
+	return count
 }
 
 var errArchiveJourneyReplay = archiveJourneyError("expected Inbox replay")

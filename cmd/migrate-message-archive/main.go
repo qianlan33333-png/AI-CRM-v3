@@ -39,6 +39,7 @@ type options struct {
 	mode, snapshot, digest string
 	confirm                bool
 	limit                  int
+	afterParticipantID     int64
 }
 
 type rowResult struct {
@@ -50,6 +51,7 @@ type rowResult struct {
 type result struct {
 	Inserted, Duplicates, Unresolved, Quarantined int
 	Rows                                          []rowResult `json:"rows,omitempty"`
+	NextParticipantID                             int64       `json:"next_participant_id,omitempty"`
 }
 
 type historicalIdentityReader interface {
@@ -83,7 +85,8 @@ func run(ctx context.Context, args []string) error {
 	flags.StringVar(&cfg.digest, "manifest-sha256", "", "exact snapshot SHA-256 required for apply and reconcile")
 	flags.BoolVar(&cfg.confirm, "confirm-apply", false, "confirm the exact snapshot for apply")
 	flags.IntVar(&cfg.limit, "limit", 500, "bounded re-resolve participant count")
-	if err := flags.Parse(args); err != nil || cfg.snapshot == "" || cfg.limit < 1 || cfg.limit > 5000 {
+	flags.Int64Var(&cfg.afterParticipantID, "after-participant-id", 0, "exclusive participant ID cursor for re-resolve")
+	if err := flags.Parse(args); err != nil || cfg.snapshot == "" || cfg.limit < 1 || cfg.limit > 5000 || cfg.afterParticipantID < 0 {
 		return errInvalidArguments
 	}
 	manifest, err := archivemigration.Load(cfg.snapshot)
@@ -135,7 +138,7 @@ func run(ctx context.Context, args []string) error {
 		}
 		return printJSON(map[string]any{"mode": "reconcile", "matched": matched, "manifest_sha256": hex.EncodeToString(manifest.Digest[:]), "summary": summary})
 	case "re-resolve":
-		values, resolveErr := reResolve(ctx, native, manifest, resolver, cfg.limit)
+		values, resolveErr := reResolve(ctx, native, manifest, resolver, cfg.limit, cfg.afterParticipantID)
 		if resolveErr != nil {
 			return resolveErr
 		}
@@ -362,9 +365,7 @@ func applyRowTx(ctx context.Context, tx pgx.Tx, runID int64, manifest archivemig
 		return "", "", err
 	}
 	var existingID int64
-	var existingNormalized []byte
-	var existingProvider *[]byte
-	existingErr := tx.QueryRow(ctx, `SELECT id,normalized_payload,provider_payload FROM message_archive_messages WHERE corp_scope=$1 AND msgid=$2 FOR UPDATE`, manifest.CorpScope, row.MsgID).Scan(&existingID, &existingNormalized, &existingProvider)
+	existingErr := tx.QueryRow(ctx, `SELECT id FROM message_archive_messages WHERE corp_scope=$1 AND msgid=$2 FOR UPDATE`, manifest.CorpScope, row.MsgID).Scan(&existingID)
 	outcome, reason := "", ""
 	if errors.Is(existingErr, pgx.ErrNoRows) {
 		if existingID, err = insertMessage(ctx, tx, message); err != nil {
@@ -386,10 +387,20 @@ func applyRowTx(ctx context.Context, tx pgx.Tx, runID int64, manifest archivemig
 		}
 	} else if existingErr != nil {
 		return "", "", existingErr
-	} else if sameJSON(existingNormalized, message.Normalized) && sameJSON(optionalJSONPtr(existingProvider), optionalJSON(message.ProviderPayload)) {
-		outcome = "duplicate"
 	} else {
-		outcome, reason, existingID = "quarantined", "source_conflicts_existing_message", 0
+		// A repeated row is safe only when every immutable message, participant
+		// and media fact that reconcile checks agrees. Comparing just normalized
+		// JSON would accept a changed sequence or timestamp, then leave a receipt
+		// that reconciliation can never validate.
+		equivalenceErr := reconcileTarget(ctx, tx, existingID, message)
+		switch {
+		case equivalenceErr == nil:
+			outcome = "duplicate"
+		case errors.Is(equivalenceErr, errReconcileDrift):
+			outcome, reason, existingID = "quarantined", "source_conflicts_existing_message", 0
+		default:
+			return "", "", equivalenceErr
+		}
 	}
 	if _, err = tx.Exec(ctx, `INSERT INTO message_archive_migration_receipts(migration_run_id,source_row_key,source_digest,source_msgid,source_seq,target_message_id,outcome,reason_code) VALUES($1,$2,$3,$4,$5,NULLIF($6,0),$7,$8)`, runID, row.SourceRowKey, rowDigest[:], row.MsgID, int64(row.Seq), existingID, outcome, reason); err != nil {
 		return "", "", err
@@ -439,7 +450,10 @@ func insertMedia(ctx context.Context, tx pgx.Tx, messageID int64, media domain.M
 // reResolve is an operator-invoked, bounded pass over existing archive-owned
 // unresolved participant rows. It reads only pre-existing verified OneID facts
 // and Access staff rows. It is intentionally neither a worker nor a schedule.
-func reResolve(ctx context.Context, pool *pgxpool.Pool, manifest archivemigration.Manifest, resolver historicalResolver, limit int) (result, error) {
+func reResolve(ctx context.Context, pool *pgxpool.Pool, manifest archivemigration.Manifest, resolver historicalResolver, limit int, afterParticipantID int64) (result, error) {
+	if limit < 1 || limit > 5000 || afterParticipantID < 0 {
+		return result{}, errInvalidArguments
+	}
 	tx, err := pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return result{}, err
@@ -449,8 +463,8 @@ func reResolve(ctx context.Context, pool *pgxpool.Pool, manifest archivemigratio
 	rows, err := tx.Query(txContext, `SELECT participant.id,participant.actor_type,participant.provider_value,participant.resolution_status
 		FROM message_archive_participants participant
 		JOIN message_archive_messages message ON message.id=participant.message_id
-		WHERE message.corp_scope=$1 AND participant.resolution_status='not_found'
-		ORDER BY participant.id FOR UPDATE SKIP LOCKED LIMIT $2`, manifest.CorpScope, limit)
+		WHERE message.corp_scope=$1 AND participant.resolution_status='not_found' AND participant.id>$2
+		ORDER BY participant.id LIMIT $3 FOR UPDATE SKIP LOCKED`, manifest.CorpScope, afterParticipantID, limit)
 	if err != nil {
 		return result{}, err
 	}
@@ -475,6 +489,9 @@ func reResolve(ctx context.Context, pool *pgxpool.Pool, manifest archivemigratio
 	}
 	rows.Close()
 	values := result{}
+	if len(candidates) > 0 {
+		values.NextParticipantID = candidates[len(candidates)-1].id
+	}
 	for _, candidate := range candidates {
 		message := domain.Message{CorpScope: manifest.CorpScope, MsgID: "re-resolve", MessageType: "system", Conversation: "private", OccurredAt: time.Unix(1, 0), Normalized: json.RawMessage(`{}`), Participants: []domain.Participant{{Role: "subject", ActorType: candidate.actor, ProviderValue: candidate.value, ProviderDigest: domain.DigestProviderValue(candidate.value), ResolutionStatus: domain.ResolutionNotFound}}}
 		if err = resolver.Resolve(txContext, &message); err != nil {
@@ -577,13 +594,18 @@ func reconcileRow(ctx context.Context, tx pgx.Tx, runID int64, manifest archivem
 		if value.targetID != nil || value.reason != "source_conflicts_existing_message" {
 			return errReconcileDrift
 		}
-		var normalized []byte
-		var provider *[]byte
-		err = tx.QueryRow(ctx, `SELECT normalized_payload,provider_payload FROM message_archive_messages WHERE corp_scope=$1 AND msgid=$2`, manifest.CorpScope, row.MsgID).Scan(&normalized, &provider)
-		if err != nil || (sameJSON(normalized, message.Normalized) && sameJSON(optionalJSONPtr(provider), optionalJSON(message.ProviderPayload))) {
+		var conflictingMessageID int64
+		if err = tx.QueryRow(ctx, `SELECT id FROM message_archive_messages WHERE corp_scope=$1 AND msgid=$2`, manifest.CorpScope, row.MsgID).Scan(&conflictingMessageID); err != nil {
 			return errReconcileDrift
 		}
-		return nil
+		equivalenceErr := reconcileTarget(ctx, tx, conflictingMessageID, message)
+		if equivalenceErr == nil {
+			return errReconcileDrift
+		}
+		if errors.Is(equivalenceErr, errReconcileDrift) {
+			return nil
+		}
+		return equivalenceErr
 	default:
 		return errReconcileDrift
 	}
@@ -602,12 +624,12 @@ func validReceiptReason(outcome, reason string) bool {
 
 func reconcileTarget(ctx context.Context, tx pgx.Tx, targetID int64, expected domain.Message) error {
 	var scope, msgID, action, messageType, conversation, roomID, contentText, recalledMsgID string
-	var seq int64
+	var seq, messageTimeMS int64
 	var occurredAt time.Time
 	var normalized []byte
 	var provider *[]byte
-	err := tx.QueryRow(ctx, `SELECT corp_scope,seq,msgid,action,msgtype,conversation_type,roomid,occurred_at,content_text,normalized_payload,provider_payload,recalled_msgid FROM message_archive_messages WHERE id=$1`, targetID).Scan(&scope, &seq, &msgID, &action, &messageType, &conversation, &roomID, &occurredAt, &contentText, &normalized, &provider, &recalledMsgID)
-	if err != nil || scope != expected.CorpScope || seq != int64(expected.Seq) || msgID != expected.MsgID || action != expected.Action || messageType != expected.MessageType || conversation != expected.Conversation || roomID != expected.RoomID || !occurredAt.Equal(expected.OccurredAt) || contentText != expected.ContentText || recalledMsgID != expected.RecalledMsgID || !sameJSON(normalized, expected.Normalized) || !sameJSON(optionalJSONPtr(provider), optionalJSON(expected.ProviderPayload)) {
+	err := tx.QueryRow(ctx, `SELECT corp_scope,seq,msgid,action,msgtype,conversation_type,roomid,msgtime_ms,occurred_at,content_text,normalized_payload,provider_payload,recalled_msgid FROM message_archive_messages WHERE id=$1`, targetID).Scan(&scope, &seq, &msgID, &action, &messageType, &conversation, &roomID, &messageTimeMS, &occurredAt, &contentText, &normalized, &provider, &recalledMsgID)
+	if err != nil || scope != expected.CorpScope || seq != int64(expected.Seq) || msgID != expected.MsgID || action != expected.Action || messageType != expected.MessageType || conversation != expected.Conversation || roomID != expected.RoomID || messageTimeMS != expected.OccurredAt.UnixMilli() || !occurredAt.Equal(expected.OccurredAt) || contentText != expected.ContentText || recalledMsgID != expected.RecalledMsgID || !sameJSON(normalized, expected.Normalized) || !sameJSON(optionalJSONPtr(provider), optionalJSON(expected.ProviderPayload)) {
 		return errReconcileDrift
 	}
 	rows, err := tx.Query(ctx, `SELECT participant_role,actor_type,provider_value,provider_value_digest FROM message_archive_participants WHERE message_id=$1`, targetID)

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
+	accessport "github.com/qianlan33333-png/AI-CRM-v3/internal/access/port"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
 	identityport "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/port"
@@ -33,7 +34,7 @@ type Store interface {
 	RecordBlockedIssue(context.Context, string, IngestIssue, time.Time) error
 	FinishRun(context.Context, int64, SyncRunFinish) error
 	CustomerMessages(context.Context, archiveport.CustomerQuery) (archiveport.CustomerPage, error)
-	CustomerStaff(context.Context, []customerdomain.CustomerID) ([]archiveport.StaffOption, error)
+	CustomerStaffIDs(context.Context, []customerdomain.CustomerID) ([]int64, error)
 	MediaAccess(context.Context, MediaQuery) (MediaReference, error)
 }
 
@@ -96,18 +97,19 @@ type StaffReader interface {
 // ticker, job registration, provider write or own retry loop.  A caller must
 // invoke it from the existing durable Webhook Inbox processor.
 type Service struct {
-	Enabled     bool // Provider notification and SDK ingestion switch.
-	ReadEnabled bool // Local archive read-model switch; independent of Provider SDK.
-	CorpScope   string
-	Reader      wecomport.MessageArchiveReader
-	Identity    identityport.Resolver
-	Lineage     identityport.CanonicalLineageReader
-	Staff       StaffReader
-	Store       Store
-	UOW         platformport.UnitOfWork
-	PageLimit   uint32
-	PageBudget  int
-	Now         func() time.Time
+	Enabled        bool // Provider notification and SDK ingestion switch.
+	ReadEnabled    bool // Local archive read-model switch; independent of Provider SDK.
+	CorpScope      string
+	Reader         wecomport.MessageArchiveReader
+	Identity       identityport.Resolver
+	Lineage        identityport.CanonicalLineageReader
+	Staff          StaffReader
+	StaffDirectory accessport.MessageArchiveStaffDirectory
+	Store          Store
+	UOW            platformport.UnitOfWork
+	PageLimit      uint32
+	PageBudget     int
+	Now            func() time.Time
 }
 
 var _ archiveport.InboxDeliveryHandler = Service{}
@@ -116,9 +118,12 @@ func (service Service) ProcessArchiveDelivery(ctx context.Context, delivery arch
 	if err := service.valid(); err != nil {
 		return err
 	}
-	notification, err := decodeNotification(delivery.Payload, service.CorpScope)
+	_, err := decodeNotification(delivery.Payload, service.CorpScope)
 	if err != nil {
 		return err
+	}
+	if delivery.ReceivedAt.IsZero() {
+		return ErrProviderPage
 	}
 	started := service.now().UTC()
 	cursor, err := service.cursor(ctx)
@@ -181,7 +186,7 @@ func (service Service) ProcessArchiveDelivery(ctx context.Context, delivery arch
 			}
 			var commitErr error
 			committed, commitErr = service.Store.CommitBatch(tx, Batch{CorpScope: service.CorpScope, ExpectedCursor: cursor, EndSeq: next,
-				RunID: runID, Messages: messages, Issues: issues, NotifyReceivedAt: notification.ReceivedAt})
+				RunID: runID, Messages: messages, Issues: issues, NotifyReceivedAt: delivery.ReceivedAt.UTC()})
 			return commitErr
 		})
 		if errors.Is(err, ErrCursorAdvanced) {
@@ -403,7 +408,7 @@ func (service Service) ReadPrivateMedia(ctx context.Context, customerID customer
 }
 
 func (service Service) CustomerMessages(ctx context.Context, query archiveport.CustomerQuery) (archiveport.CustomerPage, error) {
-	if !service.ReadEnabled || service.Lineage == nil || service.Store == nil || service.UOW == nil || query.CustomerID < 1 {
+	if !service.ReadEnabled || service.Lineage == nil || service.Store == nil || service.StaffDirectory == nil || service.UOW == nil || query.CustomerID < 1 {
 		return archiveport.CustomerPage{}, archiveport.ErrNotReady
 	}
 	var page archiveport.CustomerPage
@@ -415,7 +420,10 @@ func (service Service) CustomerMessages(ctx context.Context, query archiveport.C
 		query.CustomerIDs = lineage
 		var readErr error
 		page, readErr = service.Store.CustomerMessages(tx, query)
-		return readErr
+		if readErr != nil {
+			return readErr
+		}
+		return service.populateStaffNames(tx, &page)
 	})
 	return page, err
 }
@@ -424,7 +432,7 @@ func (service Service) CustomerMessages(ctx context.Context, query archiveport.C
 // message page.  The option list is limited to staff already represented in
 // this customer's archive, so it does not become a general employee directory.
 func (service Service) CustomerStaff(ctx context.Context, customerID customerdomain.CustomerID) ([]archiveport.StaffOption, error) {
-	if !service.ReadEnabled || service.Lineage == nil || service.Store == nil || service.UOW == nil || customerID < 1 {
+	if !service.ReadEnabled || service.Lineage == nil || service.Store == nil || service.StaffDirectory == nil || service.UOW == nil || customerID < 1 {
 		return nil, archiveport.ErrNotReady
 	}
 	var options []archiveport.StaffOption
@@ -433,17 +441,53 @@ func (service Service) CustomerStaff(ctx context.Context, customerID customerdom
 		if err != nil {
 			return err
 		}
-		var readErr error
-		options, readErr = service.Store.CustomerStaff(tx, lineage)
-		return readErr
+		ids, readErr := service.Store.CustomerStaffIDs(tx, lineage)
+		if readErr != nil {
+			return readErr
+		}
+		staff, readErr := service.StaffDirectory.MessageArchiveStaff(tx, ids)
+		if readErr != nil {
+			return readErr
+		}
+		options = make([]archiveport.StaffOption, 0, len(staff))
+		for _, item := range staff {
+			options = append(options, archiveport.StaffOption{ID: item.ID, DisplayName: item.DisplayName})
+		}
+		return nil
 	})
 	return options, err
 }
 
+func (service Service) populateStaffNames(ctx context.Context, page *archiveport.CustomerPage) error {
+	if page == nil || len(page.Items) == 0 {
+		return nil
+	}
+	ids := make([]int64, 0)
+	for _, item := range page.Items {
+		ids = append(ids, item.StaffIDs...)
+	}
+	staff, err := service.StaffDirectory.MessageArchiveStaff(ctx, ids)
+	if err != nil {
+		return err
+	}
+	names := make(map[int64]string, len(staff))
+	for _, item := range staff {
+		names[item.ID] = item.DisplayName
+	}
+	for index := range page.Items {
+		page.Items[index].StaffNames = page.Items[index].StaffNames[:0]
+		for _, id := range page.Items[index].StaffIDs {
+			if name, found := names[id]; found {
+				page.Items[index].StaffNames = append(page.Items[index].StaffNames, name)
+			}
+		}
+	}
+	return nil
+}
+
 type notificationPayload struct {
-	CorpID     string    `json:"corp_id"`
-	Event      string    `json:"event"`
-	ReceivedAt time.Time `json:"received_at"`
+	CorpID string `json:"corp_id"`
+	Event  string `json:"event"`
 }
 
 func decodeNotification(raw []byte, scope string) (notificationPayload, error) {
@@ -457,7 +501,7 @@ func decodeNotification(raw []byte, scope string) (notificationPayload, error) {
 	if err := decoder.Decode(&trailing); err != io.EOF {
 		return notificationPayload{}, ErrProviderPage
 	}
-	if payload.CorpID == "" || scope != "wecom-corp:"+payload.CorpID || payload.Event != "msgaudit_notify" || payload.ReceivedAt.IsZero() {
+	if payload.CorpID == "" || scope != "wecom-corp:"+payload.CorpID || payload.Event != "msgaudit_notify" {
 		return notificationPayload{}, ErrProviderPage
 	}
 	return payload, nil

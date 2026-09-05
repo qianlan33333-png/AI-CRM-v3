@@ -695,7 +695,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
-	archiveService := archiveapp.Service{Enabled: cfg.WeCom.MessageArchiveEnabled, ReadEnabled: true, CorpScope: "wecom-corp:" + cfg.WeCom.CorpID, Reader: archiveReader, Identity: oneID, Lineage: queries, Staff: accessRepository, Store: archivestore.NewPostgreSQL(), UOW: uow, PageLimit: cfg.WeCom.MessageArchivePageLimit, PageBudget: cfg.WeCom.MessageArchivePageBudget}
+	archiveService := archiveapp.Service{Enabled: cfg.WeCom.MessageArchiveEnabled, ReadEnabled: true, CorpScope: "wecom-corp:" + cfg.WeCom.CorpID, Reader: archiveReader, Identity: oneID, Lineage: queries, Staff: accessRepository, StaffDirectory: accessRepository, Store: archivestore.NewPostgreSQL(), UOW: uow, PageLimit: cfg.WeCom.MessageArchivePageLimit, PageBudget: cfg.WeCom.MessageArchivePageBudget}
 	archiveHandler, err := archivehttp.NewHandler(requestSecurity, archiveService, auditService, uow)
 	if err != nil {
 		return fail(err)

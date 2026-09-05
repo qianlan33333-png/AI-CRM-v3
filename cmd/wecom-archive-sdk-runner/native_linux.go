@@ -22,7 +22,7 @@ F(NewSdk)F(DestroySdk)F(Init)F(GetChatData)F(DecryptData)F(NewSlice)F(FreeSlice)
 #undef F
 return 0;} static void closeapi(api*a){if(a->h)dlclose(a->h);}
 static int archive_allocations=0; static void* archive_malloc(size_t n){void*p=malloc(n);if(p)archive_allocations++;return p;} static void archive_memfree(void*p){if(p){archive_allocations--;free(p);}}
-__attribute__((destructor)) static void archive_stats(void){const char*path=getenv("ARCHIVE_RUNNER_ALLOC_STATS");if(path){FILE*f=fopen(path,"a");if(f){fprintf(f,"runner_allocations=%d\n",archive_allocations);fclose(f);}}}
+static void archive_write_stats(void){const char*path=getenv("ARCHIVE_RUNNER_ALLOC_STATS");if(path){FILE*f=fopen(path,"a");if(f){fprintf(f,"runner_allocations=%d\n",archive_allocations);fclose(f);}}}
 static int copy(char*src,int len,char**out,int*outlen){if(len<0||len>ARCHIVE_MAX_RESPONSE_BYTES||(len>0&&!src))return -3;size_t size=(size_t)(len?len:1);*out=archive_malloc(size);if(!*out)return -4;if(len)memcpy(*out,src,(size_t)len);*outlen=len;return 0;}
 int archive_health(const char*p){api a;int r=load(p,&a);if(r)return r;Sdk*s=a.NewSdk();if(!s){closeapi(&a);return -5;}a.DestroySdk(s);closeapi(&a);return 0;}
 int archive_chat(const char*p,const char*c,const char*sec,unsigned long long seq,unsigned int limit,char**out,int*n){api a;int r=load(p,&a);if(r)return r;Sdk*s=a.NewSdk();Slice*x=a.NewSlice();if(!s||!x){if(x)a.FreeSlice(x);if(s)a.DestroySdk(s);closeapi(&a);return -5;}r=a.Init(s,c,sec);if(!r)r=a.GetChatData(s,seq,limit,"","",10,x);if(!r)r=copy(a.GetContentFromSlice(x),a.GetSliceLen(x),out,n);a.FreeSlice(x);a.DestroySdk(s);closeapi(&a);return r;}
@@ -82,13 +82,14 @@ func nativeRun(r archivesdk.Request) archivesdk.Response {
 		items := make([][]byte, len(keys))
 		for i := range rawOut {
 			if !safeCLength(rawLens[i]) {
-				for j := range rawOut {
+				for j := i; j < len(rawOut); j++ {
 					C.archive_free(unsafe.Pointer(rawOut[j]))
 				}
 				return archivesdk.Response{ErrorCode: "sdk_output_invalid"}
 			}
 			items[i] = C.GoBytes(unsafe.Pointer(rawOut[i]), rawLens[i])
 			C.archive_free(unsafe.Pointer(rawOut[i]))
+			rawOut[i] = nil
 		}
 		return archivesdk.Response{Items: items}
 	case "fetch":
@@ -134,6 +135,8 @@ func nativeRun(r archivesdk.Request) archivesdk.Response {
 	C.archive_free(unsafe.Pointer(out))
 	return archivesdk.Response{Data: data}
 }
+
+func nativeShutdown() { C.archive_write_stats() }
 
 func safeCLength(length C.int) bool {
 	// []byte becomes base64 inside the JSON response frame, so keep native

@@ -39,6 +39,7 @@ type MessageItem struct {
 	RenderType  string    `json:"render_type"`
 	Direction   string    `json:"direction"`
 	StaffNames  []string  `json:"staff_names"`
+	StaffIDs    []int64   `json:"-"`
 	MediaIDs    []int64   `json:"media_ids"`
 }
 

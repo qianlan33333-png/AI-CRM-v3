@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/platform/idempotency"
 	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
@@ -25,12 +24,11 @@ var archiveCallbackFields = map[string]string{
 // official notification has neither ExternalUserID nor UserID, so accepting
 // it must never weaken the external-contact parser's required fields.
 type ArchiveNotifyEvent struct {
-	CorpID       string    `json:"corp_id"`
-	FromUserName string    `json:"from_user_name"`
-	CreateTime   int64     `json:"create_time"`
-	AgentID      int64     `json:"agent_id"`
-	Event        string    `json:"event"`
-	ReceivedAt   time.Time `json:"received_at"`
+	CorpID       string `json:"corp_id"`
+	FromUserName string `json:"from_user_name"`
+	CreateTime   int64  `json:"create_time"`
+	AgentID      int64  `json:"agent_id"`
+	Event        string `json:"event"`
 }
 
 func parseArchiveNotifyEvent(plain []byte, corpID string, expectedAgentID int64) (ArchiveNotifyEvent, error) {
@@ -81,12 +79,17 @@ func (dispatcher ArchiveCallbackDispatcher) DispatchDecryptedEvent(ctx context.C
 	if err != nil {
 		return err
 	}
-	event.ReceivedAt = input.ReceivedAt.UTC()
 	key, err := ArchiveNotifyIdempotencyKey(event)
 	if err != nil {
 		return err
 	}
-	payload, err := json.Marshal(event)
+	// The Inbox receipt owns first-received time. Persist only canonical
+	// provider facts so a legitimate callback replay at T+3s hashes to the
+	// first receipt instead of weakening webhook payload-drift protection.
+	payload, err := json.Marshal(struct {
+		CorpID string `json:"corp_id"`
+		Event  string `json:"event"`
+	}{CorpID: event.CorpID, Event: event.Event})
 	if err != nil {
 		return err
 	}

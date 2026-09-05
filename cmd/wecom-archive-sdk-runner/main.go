@@ -19,6 +19,10 @@ func main() {
 		os.Exit(2)
 	}
 	defer protocol.Close()
+	// The Go runtime does not promise to invoke C library destructors at process
+	// exit. Record the native allocation balance explicitly after every normal
+	// request so the Linux fixture verifies the production free path.
+	defer nativeShutdown()
 	var request archivesdk.Request
 	if err := archivesdk.ReadFrame(bufio.NewReader(os.Stdin), &request); err != nil {
 		os.Exit(2)

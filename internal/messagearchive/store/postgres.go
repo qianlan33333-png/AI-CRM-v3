@@ -195,13 +195,12 @@ func (PostgreSQL) CustomerMessages(ctx context.Context, query archiveport.Custom
 			WHEN BOOL_OR(sender.participant_role='sender' AND sender.actor_type='staff') THEN 'staff_to_customer'
 			ELSE 'unknown'
 		END,
-		COALESCE(array_remove(array_agg(DISTINCT NULLIF(staff_user.display_name,'')),NULL),'{}'::text[]),
+		COALESCE(array_remove(array_agg(DISTINCT staff.staff_user_id ORDER BY staff.staff_user_id),NULL),'{}'::bigint[]),
 		COALESCE(array_remove(array_agg(DISTINCT media.id),NULL),'{}'::bigint[])
 		FROM message_archive_messages message
 		JOIN message_archive_participants customer_participant ON customer_participant.message_id=message.id
 		LEFT JOIN message_archive_participants sender ON sender.message_id=message.id
 		LEFT JOIN message_archive_participants staff ON staff.message_id=message.id AND staff.actor_type='staff'
-		LEFT JOIN admin_users staff_user ON staff_user.id=staff.staff_user_id
 		LEFT JOIN message_archive_media media ON media.message_id=message.id
 		WHERE customer_participant.customer_id_at_ingest=ANY($1) AND ($2 OR message.occurred_at >= $3)
 		AND message.occurred_at <= $4 AND ($5='' OR message.conversation_type=$5)
@@ -218,7 +217,7 @@ func (PostgreSQL) CustomerMessages(ctx context.Context, query archiveport.Custom
 	page := archiveport.CustomerPage{Items: []archiveport.MessageItem{}, AsOf: query.Watermark}
 	for rows.Next() {
 		var item archiveport.MessageItem
-		if err = rows.Scan(&item.ID, &item.ChatType, &item.MessageType, &item.OccurredAt, &item.ContentText, &item.RenderType, &item.Direction, &item.StaffNames, &item.MediaIDs); err != nil {
+		if err = rows.Scan(&item.ID, &item.ChatType, &item.MessageType, &item.OccurredAt, &item.ContentText, &item.RenderType, &item.Direction, &item.StaffIDs, &item.MediaIDs); err != nil {
 			return archiveport.CustomerPage{}, err
 		}
 		page.Items = append(page.Items, item)
@@ -226,13 +225,13 @@ func (PostgreSQL) CustomerMessages(ctx context.Context, query archiveport.Custom
 	return page, rows.Err()
 }
 
-func (PostgreSQL) CustomerStaff(ctx context.Context, customerIDs []customerdomain.CustomerID) ([]archiveport.StaffOption, error) {
+func (PostgreSQL) CustomerStaffIDs(ctx context.Context, customerIDs []customerdomain.CustomerID) ([]int64, error) {
 	tx, err := platformpostgres.RequireTransaction(ctx)
 	if err != nil {
 		return nil, err
 	}
 	if len(customerIDs) == 0 {
-		return []archiveport.StaffOption{}, nil
+		return []int64{}, nil
 	}
 	ids := make([]int64, 0, len(customerIDs))
 	for _, id := range customerIDs {
@@ -241,19 +240,18 @@ func (PostgreSQL) CustomerStaff(ctx context.Context, customerIDs []customerdomai
 		}
 		ids = append(ids, int64(id))
 	}
-	rows, err := tx.Query(ctx, `SELECT DISTINCT user_row.id,user_row.display_name
+	rows, err := tx.Query(ctx, `SELECT DISTINCT participant.staff_user_id
 		FROM message_archive_participants participant
-		JOIN admin_users user_row ON user_row.id=participant.staff_user_id
-		WHERE participant.customer_id_at_ingest = ANY($1::bigint[])
-		ORDER BY user_row.display_name,user_row.id`, ids)
+		WHERE participant.customer_id_at_ingest = ANY($1::bigint[]) AND participant.staff_user_id IS NOT NULL
+		ORDER BY participant.staff_user_id`, ids)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []archiveport.StaffOption{}
+	items := []int64{}
 	for rows.Next() {
-		var item archiveport.StaffOption
-		if err = rows.Scan(&item.ID, &item.DisplayName); err != nil {
+		var item int64
+		if err = rows.Scan(&item); err != nil {
 			return nil, err
 		}
 		items = append(items, item)

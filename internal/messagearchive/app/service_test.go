@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
+	accessport "github.com/qianlan33333-png/AI-CRM-v3/internal/access/port"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
 	identityport "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/port"
@@ -99,8 +100,8 @@ func (s *storeStub) FinishRun(context.Context, int64, SyncRunFinish) error { ret
 func (s *storeStub) CustomerMessages(context.Context, archiveport.CustomerQuery) (archiveport.CustomerPage, error) {
 	return s.page, nil
 }
-func (s *storeStub) CustomerStaff(context.Context, []customerdomain.CustomerID) ([]archiveport.StaffOption, error) {
-	return []archiveport.StaffOption{{ID: 1, DisplayName: "员工"}}, nil
+func (s *storeStub) CustomerStaffIDs(context.Context, []customerdomain.CustomerID) ([]int64, error) {
+	return []int64{1}, nil
 }
 func (s *storeStub) MediaAccess(context.Context, MediaQuery) (MediaReference, error) {
 	if s.mediaRef.ProviderFileRef == "" {
@@ -118,10 +119,20 @@ func validPage() ([]wecomport.EncryptedArchiveRecord, []wecomport.PlainArchiveRe
 	return e, p
 }
 func serviceFor(r *readerStub, s *storeStub) Service {
-	return Service{Enabled: true, ReadEnabled: true, CorpScope: "wecom-corp:wx-corp", Reader: r, Identity: &resolverStub{}, Lineage: lineageStub{}, Staff: &staffStub{}, Store: s, UOW: directUOW{}, PageLimit: 100, PageBudget: 1, Now: func() time.Time { return time.Date(2026, 9, 5, 0, 0, 0, 0, time.UTC) }}
+	return Service{Enabled: true, ReadEnabled: true, CorpScope: "wecom-corp:wx-corp", Reader: r, Identity: &resolverStub{}, Lineage: lineageStub{}, Staff: &staffStub{}, StaffDirectory: staffDirectoryStub{}, Store: s, UOW: directUOW{}, PageLimit: 100, PageBudget: 1, Now: func() time.Time { return time.Date(2026, 9, 5, 0, 0, 0, 0, time.UTC) }}
+}
+
+type staffDirectoryStub struct{}
+
+func (staffDirectoryStub) MessageArchiveStaff(_ context.Context, ids []int64) ([]accessport.MessageArchiveStaff, error) {
+	items := make([]accessport.MessageArchiveStaff, 0, len(ids))
+	for _, id := range ids {
+		items = append(items, accessport.MessageArchiveStaff{ID: id, DisplayName: "员工"})
+	}
+	return items, nil
 }
 func delivery() archiveport.InboxDelivery {
-	return archiveport.InboxDelivery{ID: 1, Payload: []byte(`{"corp_id":"wx-corp","event":"msgaudit_notify","received_at":"2026-09-05T00:00:00Z"}`)}
+	return archiveport.InboxDelivery{ID: 1, ReceivedAt: time.Date(2026, 9, 5, 0, 0, 0, 0, time.UTC), Payload: []byte(`{"corp_id":"wx-corp","event":"msgaudit_notify"}`)}
 }
 func TestMalformedPageStoresProtectedBytesAndDoesNotAdvanceCursor(t *testing.T) {
 	e, p := validPage()
@@ -155,12 +166,12 @@ func TestPrivateMediaReadsBoundedChunksAfterLocalAuthorization(t *testing.T) {
 }
 
 func TestLocalReadWorksWhenProviderIngestionIsDisabled(t *testing.T) {
-	store := &storeStub{page: archiveport.CustomerPage{Items: []archiveport.MessageItem{{ID: 1}}}}
+	store := &storeStub{page: archiveport.CustomerPage{Items: []archiveport.MessageItem{{ID: 1, StaffIDs: []int64{1}}}}}
 	service := serviceFor(&readerStub{}, store)
 	service.Enabled = false
 	service.ReadEnabled = true
 	page, err := service.CustomerMessages(context.Background(), archiveport.CustomerQuery{CustomerID: 1})
-	if err != nil || len(page.Items) != 1 {
+	if err != nil || len(page.Items) != 1 || len(page.Items[0].StaffNames) != 1 || page.Items[0].StaffNames[0] != "员工" {
 		t.Fatalf("page=%+v err=%v", page, err)
 	}
 	if _, err = service.ReadPrivateMedia(context.Background(), 1, 7); !errors.Is(err, archiveport.ErrNotReady) {
