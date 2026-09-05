@@ -60,11 +60,14 @@ func (source *MySQL) Close() error {
 func (source *MySQL) Ready() bool { return source != nil && source.db != nil }
 
 var requiredColumns = map[string][]string{
-	"new_version_users":               {"id", "unionid", "phone", "member_level", "member_expires_at", "updated_at", "is_deleted"},
+	"new_version_users":               {"id", "unionid", "phone", "member_level", "member_expires_at", "first_login_at", "updated_at", "is_deleted"},
 	"new_version_user_subscriptions":  {"user_id", "tier", "expires_at", "monthly_chat_quota", "current_period_used", "updated_at"},
 	"new_version_memberships":         {"id", "user_id", "phone", "status", "consultation_limit", "consultation_used", "start_date", "end_date", "created_at", "updated_at"},
 	"new_version_conversations":       {"user_id", "lesson_id", "content_type", "chat_mode", "created_at", "updated_at", "is_deleted"},
-	"new_version_messages":            {"user_id", "role", "created_at", "is_deleted"},
+	"new_version_messages":            {"user_id", "role", "total_tokens", "created_at", "is_deleted"},
+	"new_version_user_path_progress":  {"id", "user_id", "path_id", "current_seq", "status", "updated_at"},
+	"new_version_lesson_path_items":   {"path_id"},
+	"new_version_card_open_log":       {"user_id", "opened_at"},
 	"new_version_consultation_states": {"user_id", "session_id", "is_deep_consult", "session_type", "started_at", "ended_at", "created_at", "updated_at"},
 	"new_version_assessments":         {"user_id", "status", "completed_at", "created_at", "updated_at"},
 	"new_version_growth_reviews":      {"user_id", "surfaced_at", "created_at"},
@@ -148,14 +151,16 @@ func readBatch(ctx context.Context, tx *sql.Tx, after string, asOf time.Time) ([
 	result := make([]domain.SourceRow, 0, BatchSize)
 	for rows.Next() {
 		var row domain.SourceRow
-		var union, phone, lastCapability, business, mainline, segment, pain sql.NullString
-		var expiry sql.NullTime
+		var union, phone, lastCapability, business, mainline, segment, pain, planStatus, membershipStatus sql.NullString
+		var expiry, formalLogin sql.NullTime
+		var tokenUsed, membershipFound, isMember int64
+		var learningCurrent, learningTotal, openCount int64
 		// MySQL reports the GREATEST/NULLIF expression as []byte even with
 		// parseTime enabled, so use a scanner that applies the same source
 		// location as native DATETIME columns.
-		var lastUsed sourceNullTime
+		var lastUsed, lastOpened sourceNullTime
 		var capJSON, topicsJSON []byte
-		if err = rows.Scan(&row.HXCUserID, &union, &phone, &row.SubscriptionTier, &expiry, &row.MonthlyChatQuota, &row.CurrentPeriodUsed, &row.ConsultationLimit, &row.ConsultationUsed, &row.MembershipAttribution, &row.Sessions7D, &row.Sessions30D, &row.SessionsTotal, &row.UserMessages7D, &row.UserMessages30D, &row.UserMessagesTotal, &capJSON, &lastUsed, &lastCapability, &business, &mainline, &segment, &topicsJSON, &pain, &row.SourceUpdatedAt); err != nil {
+		if err = rows.Scan(&row.HXCUserID, &union, &phone, &row.SubscriptionTier, &expiry, &row.MonthlyChatQuota, &row.CurrentPeriodUsed, &row.ConsultationLimit, &row.ConsultationUsed, &row.MembershipAttribution, &row.Sessions7D, &row.Sessions30D, &row.SessionsTotal, &row.UserMessages7D, &row.UserMessages30D, &row.UserMessagesTotal, &capJSON, &lastUsed, &lastCapability, &business, &mainline, &segment, &topicsJSON, &pain, &formalLogin, &tokenUsed, &planStatus, &learningCurrent, &learningTotal, &openCount, &lastOpened, &membershipFound, &isMember, &membershipStatus, &row.SourceUpdatedAt); err != nil {
 			return nil, fmt.Errorf("scan HXC batch: %w", err)
 		}
 		row.UnionID = union.String
@@ -166,6 +171,19 @@ func readBatch(ctx context.Context, tx *sql.Tx, after string, asOf time.Time) ([
 		if lastUsed.Valid {
 			row.LastUsedAt = &lastUsed.Time
 		}
+		if formalLogin.Valid {
+			row.FormalLoginAt = &formalLogin.Time
+			row.FormallyLoggedIn = true
+		}
+		row.HasTokenUsage = tokenUsed != 0
+		row.LearningPlanStatus = planStatus.String
+		row.LearningPlanCurrent, row.LearningPlanTotal = learningCurrent, learningTotal
+		row.CardOpenCount7D = openCount
+		if lastOpened.Valid {
+			row.CardLastOpenedAt = &lastOpened.Time
+		}
+		row.MembershipRecordFound, row.IsMember = membershipFound != 0, isMember != 0
+		row.MembershipStatus = membershipStatus.String
 		row.CapabilityUsage = append([]byte(nil), capJSON...)
 		row.FocusTopics = append([]byte(nil), topicsJSON...)
 		row.LastCapability = lastCapability.String
@@ -219,20 +237,25 @@ func (value *sourceNullTime) scanText(input string) error {
 
 func batchArgs(after string, asOf time.Time) []any {
 	args := []any{after, BatchSize}
-	for range 15 {
+	for range 16 {
 		args = append(args, asOf)
 	}
 	return args
 }
 
 const currentBatchSQL = `WITH active_users AS (
- SELECT id,unionid,phone,member_level,member_expires_at,updated_at FROM new_version_users WHERE is_deleted=0 AND id>? ORDER BY id LIMIT ?
+ SELECT id,unionid,phone,member_level,member_expires_at,first_login_at,updated_at FROM new_version_users WHERE is_deleted=0 AND id>? ORDER BY id LIMIT ?
 ), phone_counts AS (SELECT phone,COUNT(*) n FROM new_version_users WHERE is_deleted=0 AND phone IS NOT NULL AND TRIM(phone)<>'' GROUP BY phone),
 membership_ranked AS (
- SELECT u.id user_id,m.consultation_limit,m.consultation_used,IF(m.user_id=u.id,'user_id','unique_phone') attribution,COALESCE(m.updated_at,m.created_at,m.end_date,m.start_date) source_updated_at,
+ SELECT u.id user_id,m.consultation_limit,m.consultation_used,m.status,m.end_date,IF(m.user_id=u.id,'user_id','unique_phone') attribution,COALESCE(m.updated_at,m.created_at,m.end_date,m.start_date) source_updated_at,
  ROW_NUMBER() OVER(PARTITION BY u.id ORDER BY (m.user_id=u.id) DESC,(m.status='active' AND m.end_date>=?) DESC,(m.status='active') DESC,m.end_date DESC,COALESCE(m.updated_at,m.created_at,m.end_date,m.start_date) DESC,m.id DESC) row_num
  FROM active_users u LEFT JOIN phone_counts pc ON pc.phone=u.phone AND pc.n=1 JOIN new_version_memberships m ON m.user_id=u.id OR ((m.user_id IS NULL OR m.user_id='') AND pc.phone IS NOT NULL AND m.phone=pc.phone)
-), membership_current AS (SELECT user_id,consultation_limit,consultation_used,attribution,source_updated_at FROM membership_ranked WHERE row_num=1),
+), membership_current AS (SELECT user_id,consultation_limit,consultation_used,status,end_date,attribution,source_updated_at FROM membership_ranked WHERE row_num=1),
+token_usage AS (SELECT m.user_id,MAX(CASE WHEN COALESCE(m.total_tokens,0)>0 THEN 1 ELSE 0 END) has_token_usage,MAX(m.created_at) source_updated_at FROM new_version_messages m JOIN active_users u ON m.user_id COLLATE utf8mb4_general_ci=u.id WHERE m.is_deleted=0 GROUP BY m.user_id),
+lesson_totals AS (SELECT path_id,COUNT(*) total_lessons FROM new_version_lesson_path_items GROUP BY path_id),
+learning_ranked AS (SELECT p.user_id,p.status,LEAST(GREATEST(COALESCE(p.current_seq,0),0),COALESCE(t.total_lessons,0)) current_lessons,COALESCE(t.total_lessons,0) total_lessons,p.updated_at source_updated_at,ROW_NUMBER() OVER(PARTITION BY p.user_id ORDER BY CASE WHEN p.status='active' THEN 0 ELSE 1 END,p.updated_at DESC,p.id DESC) row_num FROM new_version_user_path_progress p JOIN active_users u ON p.user_id COLLATE utf8mb4_general_ci=u.id LEFT JOIN lesson_totals t ON t.path_id COLLATE utf8mb4_general_ci=p.path_id WHERE p.status IN ('active','done','paused')),
+learning_current AS (SELECT user_id,status,current_lessons,total_lessons,source_updated_at FROM learning_ranked WHERE row_num=1),
+card_open_usage AS (SELECT o.user_id,SUM(CASE WHEN o.opened_at>=? - INTERVAL 7 DAY THEN 1 ELSE 0 END) open_count_7d,MAX(o.opened_at) last_opened_at,MAX(o.opened_at) source_updated_at FROM new_version_card_open_log o JOIN active_users u ON o.user_id COLLATE utf8mb4_general_ci=u.id GROUP BY o.user_id),
 conversation_usage AS (SELECT c.user_id,COUNT(*) sessions_total,SUM(c.created_at>=? - INTERVAL 30 DAY) sessions_30d,SUM(c.created_at>=? - INTERVAL 7 DAY) sessions_7d,
  SUM(NOT((c.lesson_id IS NOT NULL AND c.lesson_id<>'') OR c.content_type='lesson') AND c.chat_mode='peer') peer_total,SUM(NOT((c.lesson_id IS NOT NULL AND c.lesson_id<>'') OR c.content_type='lesson') AND c.chat_mode='peer' AND c.created_at>=? - INTERVAL 30 DAY) peer_30d,SUM(NOT((c.lesson_id IS NOT NULL AND c.lesson_id<>'') OR c.content_type='lesson') AND c.chat_mode='peer' AND c.created_at>=? - INTERVAL 7 DAY) peer_7d,MAX(CASE WHEN NOT((c.lesson_id IS NOT NULL AND c.lesson_id<>'') OR c.content_type='lesson') AND c.chat_mode='peer' THEN c.updated_at END) peer_last,
  SUM((c.lesson_id IS NOT NULL AND c.lesson_id<>'') OR c.content_type='lesson') lesson_total,SUM(((c.lesson_id IS NOT NULL AND c.lesson_id<>'') OR c.content_type='lesson') AND c.created_at>=? - INTERVAL 30 DAY) lesson_30d,SUM(((c.lesson_id IS NOT NULL AND c.lesson_id<>'') OR c.content_type='lesson') AND c.created_at>=? - INTERVAL 7 DAY) lesson_7d,MAX(CASE WHEN (c.lesson_id IS NOT NULL AND c.lesson_id<>'') OR c.content_type='lesson' THEN c.updated_at END) lesson_last,MAX(c.updated_at) source_updated_at FROM new_version_conversations c JOIN active_users u ON u.id=c.user_id WHERE c.is_deleted=0 GROUP BY c.user_id),
@@ -244,6 +267,6 @@ SELECT u.id,NULLIF(TRIM(u.unionid),''),NULLIF(TRIM(u.phone),''),COALESCE(NULLIF(
 JSON_OBJECT('peer_chat',JSON_OBJECT('count_7d',COALESCE(c.peer_7d,0),'count_30d',COALESCE(c.peer_30d,0),'count_total',COALESCE(c.peer_total,0),'last_used_at',c.peer_last),'coach_consult',JSON_OBJECT('count_7d',COALESCE(coach.count_7d,0),'count_30d',COALESCE(coach.count_30d,0),'count_total',COALESCE(coach.total,0),'last_used_at',coach.last_used),'lesson',JSON_OBJECT('count_7d',COALESCE(c.lesson_7d,0),'count_30d',COALESCE(c.lesson_30d,0),'count_total',COALESCE(c.lesson_total,0),'last_used_at',c.lesson_last),'assessment',JSON_OBJECT('count_7d',COALESCE(a.count_7d,0),'count_30d',COALESCE(a.count_30d,0),'count_total',COALESCE(a.total,0),'last_used_at',a.last_used),'weekly_review',JSON_OBJECT('count_7d',COALESCE(r.count_7d,0),'count_30d',COALESCE(r.count_30d,0),'count_total',COALESCE(r.total,0),'last_used_at',r.last_used)),
 NULLIF(GREATEST(COALESCE(c.peer_last,TIMESTAMP('1000-01-01 00:00:00')),COALESCE(coach.last_used,TIMESTAMP('1000-01-01 00:00:00')),COALESCE(c.lesson_last,TIMESTAMP('1000-01-01 00:00:00')),COALESCE(a.last_used,TIMESTAMP('1000-01-01 00:00:00')),COALESCE(r.last_used,TIMESTAMP('1000-01-01 00:00:00')),COALESCE(msg.last_used,TIMESTAMP('1000-01-01 00:00:00'))),TIMESTAMP('1000-01-01 00:00:00')),
 CASE WHEN GREATEST(COALESCE(r.last_used,'1000-01-01'),COALESCE(a.last_used,'1000-01-01'),COALESCE(c.lesson_last,'1000-01-01'),COALESCE(coach.last_used,'1000-01-01'),COALESCE(c.peer_last,'1000-01-01'),COALESCE(msg.last_used,'1000-01-01'))='1000-01-01' THEN NULL WHEN COALESCE(msg.last_used,'1000-01-01')>=GREATEST(COALESCE(r.last_used,'1000-01-01'),COALESCE(a.last_used,'1000-01-01'),COALESCE(c.lesson_last,'1000-01-01'),COALESCE(coach.last_used,'1000-01-01'),COALESCE(c.peer_last,'1000-01-01')) THEN 'user_message' WHEN COALESCE(r.last_used,'1000-01-01')>=GREATEST(COALESCE(a.last_used,'1000-01-01'),COALESCE(c.lesson_last,'1000-01-01'),COALESCE(coach.last_used,'1000-01-01'),COALESCE(c.peer_last,'1000-01-01')) THEN 'weekly_review' WHEN COALESCE(a.last_used,'1000-01-01')>=GREATEST(COALESCE(c.lesson_last,'1000-01-01'),COALESCE(coach.last_used,'1000-01-01'),COALESCE(c.peer_last,'1000-01-01')) THEN 'assessment' WHEN COALESCE(c.lesson_last,'1000-01-01')>=GREATEST(COALESCE(coach.last_used,'1000-01-01'),COALESCE(c.peer_last,'1000-01-01')) THEN 'lesson' WHEN COALESCE(coach.last_used,'1000-01-01')>=COALESCE(c.peer_last,'1000-01-01') THEN 'coach_consult' ELSE 'peer_chat' END,
-COALESCE(NULLIF(TRIM(bg.business_stage),''),NULLIF(TRIM(d.stage),'')),COALESCE(NULLIF(TRIM(bg.main_line_type),''),NULLIF(TRIM(d.main_line_type),'')),NULLIF(TRIM(d.user_segment),''),CASE WHEN JSON_TYPE(bg.focus_topics)='ARRAY' AND JSON_LENGTH(bg.focus_topics)>0 THEN bg.focus_topics WHEN JSON_TYPE(i.interest_keys)='ARRAY' THEN i.interest_keys ELSE JSON_ARRAY() END,NULLIF(TRIM(bg.pain_tag),''),
-GREATEST(u.updated_at,COALESCE(s.updated_at,u.updated_at),COALESCE(mc.source_updated_at,u.updated_at),COALESCE(c.source_updated_at,u.updated_at),COALESCE(msg.source_updated_at,u.updated_at),COALESCE(coach.source_updated_at,u.updated_at),COALESCE(a.source_updated_at,u.updated_at),COALESCE(r.source_updated_at,u.updated_at),COALESCE(bg.updated_at,u.updated_at),COALESCE(d.updated_at,u.updated_at),COALESCE(i.updated_at,u.updated_at))
-FROM active_users u LEFT JOIN new_version_user_subscriptions s ON s.user_id COLLATE utf8mb4_general_ci=u.id LEFT JOIN membership_current mc ON mc.user_id=u.id LEFT JOIN conversation_usage c ON c.user_id=u.id LEFT JOIN message_usage msg ON msg.user_id=u.id LEFT JOIN coach_usage coach ON coach.user_id=u.id LEFT JOIN assessment_usage a ON a.user_id COLLATE utf8mb4_general_ci=u.id LEFT JOIN review_usage r ON r.user_id COLLATE utf8mb4_general_ci=u.id LEFT JOIN new_version_user_backgrounds bg ON bg.user_id COLLATE utf8mb4_general_ci=u.id LEFT JOIN new_version_user_diagnoses d ON d.user_id COLLATE utf8mb4_general_ci=u.id LEFT JOIN new_version_user_interests i ON i.user_id COLLATE utf8mb4_general_ci=u.id ORDER BY u.id`
+COALESCE(NULLIF(TRIM(bg.business_stage),''),NULLIF(TRIM(d.stage),'')),COALESCE(NULLIF(TRIM(bg.main_line_type),''),NULLIF(TRIM(d.main_line_type),'')),NULLIF(TRIM(d.user_segment),''),CASE WHEN JSON_TYPE(bg.focus_topics)='ARRAY' AND JSON_LENGTH(bg.focus_topics)>0 THEN bg.focus_topics WHEN JSON_TYPE(i.interest_keys)='ARRAY' THEN i.interest_keys ELSE JSON_ARRAY() END,NULLIF(TRIM(bg.pain_tag),''),u.first_login_at,COALESCE(tok.has_token_usage,0),COALESCE(lp.status,''),COALESCE(lp.current_lessons,0),COALESCE(lp.total_lessons,0),COALESCE(openlog.open_count_7d,0),openlog.last_opened_at,CASE WHEN mc.user_id IS NULL THEN 0 ELSE 1 END,CASE WHEN mc.status IN ('active','valid','premium','standard','trial') OR (mc.user_id IS NULL AND COALESCE(NULLIF(TRIM(s.tier),''),NULLIF(TRIM(u.member_level),''),'free')<>'free') THEN 1 ELSE 0 END,COALESCE(mc.status,''),
+GREATEST(u.updated_at,COALESCE(s.updated_at,u.updated_at),COALESCE(mc.source_updated_at,u.updated_at),COALESCE(c.source_updated_at,u.updated_at),COALESCE(msg.source_updated_at,u.updated_at),COALESCE(tok.source_updated_at,u.updated_at),COALESCE(lp.source_updated_at,u.updated_at),COALESCE(openlog.source_updated_at,u.updated_at),COALESCE(coach.source_updated_at,u.updated_at),COALESCE(a.source_updated_at,u.updated_at),COALESCE(r.source_updated_at,u.updated_at),COALESCE(bg.updated_at,u.updated_at),COALESCE(d.updated_at,u.updated_at),COALESCE(i.updated_at,u.updated_at))
+FROM active_users u LEFT JOIN new_version_user_subscriptions s ON s.user_id COLLATE utf8mb4_general_ci=u.id LEFT JOIN membership_current mc ON mc.user_id=u.id LEFT JOIN conversation_usage c ON c.user_id=u.id LEFT JOIN message_usage msg ON msg.user_id=u.id LEFT JOIN token_usage tok ON tok.user_id COLLATE utf8mb4_general_ci=u.id LEFT JOIN learning_current lp ON lp.user_id COLLATE utf8mb4_general_ci=u.id LEFT JOIN card_open_usage openlog ON openlog.user_id COLLATE utf8mb4_general_ci=u.id LEFT JOIN coach_usage coach ON coach.user_id=u.id LEFT JOIN assessment_usage a ON a.user_id COLLATE utf8mb4_general_ci=u.id LEFT JOIN review_usage r ON r.user_id COLLATE utf8mb4_general_ci=u.id LEFT JOIN new_version_user_backgrounds bg ON bg.user_id COLLATE utf8mb4_general_ci=u.id LEFT JOIN new_version_user_diagnoses d ON d.user_id COLLATE utf8mb4_general_ci=u.id LEFT JOIN new_version_user_interests i ON i.user_id COLLATE utf8mb4_general_ci=u.id ORDER BY u.id`

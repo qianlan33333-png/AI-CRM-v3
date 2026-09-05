@@ -86,7 +86,9 @@ for migration_contract in \
   '0086_wecom_profile_primary_owner.sql:WeCom profile primary owner' \
   '0061_product_public_purchase.sql:product public purchase' \
   '0063_identity_hxc_source_observations.sql:HXC identity source observations' \
-  '0064_hxc_dashboard_identity_v2.sql:HXC dashboard identity v2'; do
+   '0064_hxc_dashboard_identity_v2.sql:HXC dashboard identity v2' \
+   '0084_hxc_shared_facts.sql:HXC shared legacy facts' \
+   '0068_payment_session_beneficiary_selection.sql:payment session beneficiary selection'; do
   migration="${migration_contract%%:*}"
   label="${migration_contract#*:}"
   test -f "migrations/${migration}" || {

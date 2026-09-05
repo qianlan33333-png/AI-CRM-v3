@@ -149,7 +149,9 @@ make_release() {
     0086_wecom_profile_primary_owner.sql \
     0061_product_public_purchase.sql \
     0063_identity_hxc_source_observations.sql \
-    0064_hxc_dashboard_identity_v2.sql; do
+    0064_hxc_dashboard_identity_v2.sql \
+    0084_hxc_shared_facts.sql \
+    0068_payment_session_beneficiary_selection.sql; do
     : > "$release/migrations/$migration"
   done
   : > "$release/web/dist/asset-manifest.json"

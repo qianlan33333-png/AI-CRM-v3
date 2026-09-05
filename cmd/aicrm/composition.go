@@ -41,6 +41,7 @@ import (
 	groupops "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops"
 	groupopsapp "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/app"
 	groupopsstore "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/store"
+	hxc "github.com/qianlan33333-png/AI-CRM-v3/internal/hxcdashboard"
 	hxcapp "github.com/qianlan33333-png/AI-CRM-v3/internal/hxcdashboard/app"
 	hxchttp "github.com/qianlan33333-png/AI-CRM-v3/internal/hxcdashboard/http"
 	hxcprovider "github.com/qianlan33333-png/AI-CRM-v3/internal/hxcdashboard/provider"
@@ -967,6 +968,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 			return fail(err)
 		}
 	}
+	hxcModule := hxc.NewModuleRegistration()
 	hxcRepository := hxcstore.NewPostgreSQL(pool.Native())
 	legacyAudienceSource.Members = hxcRepository
 	hxcDashboard := hxcapp.Service{Enabled: cfg.HXCDashboard.Enabled, Scope: cfg.HXCDashboard.UnionIDScope, SubjectKey: []byte(cfg.HXCDashboard.SubjectHMACKey), Source: hxcSource, Identity: hxcIdentity, IdentityWriteEnabled: cfg.HXCDashboard.IdentityWriteEnabled, UnionIDVerified: cfg.HXCDashboard.UnionIDVerified, Store: hxcRepository, Enqueuer: hxcEnqueuer, Audit: auditService, UOW: uow}
@@ -1110,6 +1112,9 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 			return checkErr
 		}
 		if checkErr = groupOpsModule.Readiness(readinessContext, pool.Native()); checkErr != nil {
+			return checkErr
+		}
+		if checkErr = hxcModule.Readiness(readinessContext, pool.Native()); checkErr != nil {
 			return checkErr
 		}
 		if checkErr = surveyModule.Readiness(readinessContext, pool.Native()); checkErr != nil {

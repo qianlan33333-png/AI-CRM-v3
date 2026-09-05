@@ -60,3 +60,18 @@ func TestLastUsedScannerAcceptsNativeAndNullValues(t *testing.T) {
 		t.Fatalf("scan NULL datetime: value=%#v err=%v", value, err)
 	}
 }
+
+func TestCurrentQueryReadsDistinctLegacySharedFacts(t *testing.T) {
+	for _, required := range []string{
+		"first_login_at", "total_tokens", "new_version_user_path_progress", "new_version_lesson_path_items", "new_version_card_open_log",
+		"p.status IN ('active','done','paused')", "CASE WHEN p.status='active' THEN 0 ELSE 1 END", "p.updated_at DESC,p.id DESC",
+		"LEAST(GREATEST(COALESCE(p.current_seq,0),0),COALESCE(t.total_lessons,0))", "o.opened_at>=? - INTERVAL 7 DAY",
+	} {
+		if !strings.Contains(currentBatchSQL, required) {
+			t.Fatalf("shared fact query missing %q", required)
+		}
+	}
+	if strings.Contains(currentBatchSQL, "sessions_7d AS has_token_usage") || strings.Contains(currentBatchSQL, "last_used AS formally_logged_in") {
+		t.Fatal("dashboard counters must not stand in for legacy shared facts")
+	}
+}
