@@ -9,7 +9,7 @@
 - 个体 PR 不逐个合并 main。总集成 PR 冻结唯一发布候选后，才提交用户做最终生产上线确认；确认后一次合并、一次部署。
 - 本矩阵后续为每个板块同时记录“个体审核结果”和“已纳入集成 HEAD”。未进入集成或联合验收未通过的项目不得标记整体完成。
 
-当前未合并总集成 PR：[PR #141](https://github.com/qianlan33333-png/AI-CRM-v3/pull/141)。审核通过的实现来源 #133、#135、#136、#137、#138、#139、#142、#144、#145、#146、#147、#148、#149、#150、#151、#153、#155 已纳入，#140 总控文档亦已纳入。最新业务合并提交为 `28149072e70175244fdf7bb5ceb4f521e0cf8e2b`（PR155@0130e88），本次组合检查待推送后验证。当前完整绿色组合`4e17909bb5b71208836947ff24c0e17476a48ecc` / CI33966346271 SUCCESS、deploy SKIPPED；更早完整绿色组合`6b09ecb1e7e92b2e3439a62af63d8db7032c48f7` / CI33964016441 SUCCESS、deploy SKIPPED，含148/151及153主路径，实际PostgreSQL、SDK ABI、仓库与race检查通过。后续来源HEAD继续单独审核。
+当前未合并总集成 PR：[PR #141](https://github.com/qianlan33333-png/AI-CRM-v3/pull/141)。审核通过的实现来源 #133、#135、#136、#137、#138、#139、#142、#144、#145、#146、#147、#148、#149、#150、#151、#153、#155 已纳入，#140 总控文档亦已纳入。最新业务合并提交为 `889144c63426dfd7ead4ca827694037fa4dd94e5`（PR153@629e384历史导入），新组合待检查；此前准确组合79d26e102781d6e9a7accb9f24d36ebbc06f855c通过CI33968561427（check SUCCESS、deploy SKIPPED）。上一完整绿色组合`4e17909bb5b71208836947ff24c0e17476a48ecc` / CI33966346271 SUCCESS、deploy SKIPPED；更早完整绿色组合`6b09ecb1e7e92b2e3439a62af63d8db7032c48f7` / CI33964016441 SUCCESS、deploy SKIPPED，含148/151及153主路径，实际PostgreSQL、SDK ABI、仓库与race检查通过。后续来源HEAD继续单独审核。
 
 | 来源 | 来源 HEAD / 独立 CI | 纳入提交 | 组合 CI | 当前结论 |
 |---|---|---|---|---|
@@ -131,3 +131,6 @@
 
 
 - PR155准确HEAD0130e88eaeea4b6a930f27d951a61936f83d09f2通过CI33967837266（PG16、race、官方SDK ABI、冻结UI，deploy SKIPPED），源码审核通过并作为merge parent纳入28149072e70175244fdf7bb5ceb4f521e0cf8e2b。实际Access is_active撤权在Provider调用前阻止执行，真实River/本地WeCom接收后断开响应形成原EER unknown且无后继执行；AI+Group同库组合仍待，不以本子批代替05/06/07全验收。
+
+
+- PR153历史准确HEAD629e38489d76903b0dd21d6614941e4f2cffeb69通过CI33968755244（PG16、race、冻结UI，deploy SKIPPED），源码审核通过并作为merge parent纳入889144c63426dfd7ead4ca827694037fa4dd94e5。包含受保护五来源提取、密封快照、逐行导入/重放/隔离/漂移对账、标题正文附件真实PG与HTTP回读、nullable旧员工引用及中文字符长度；只写GroupOps历史Owner，不创建当前计划/客户/效果。独立history浏览器操作和最终同库装配继续回归。

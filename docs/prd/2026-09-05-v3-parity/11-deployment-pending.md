@@ -45,3 +45,6 @@
 - PR151：0080与`migrate-media-legacy-materials`工具随制品发布；先冻结旧素材记录和实际V3素材映射，inspect/dry-run/apply/verify按同一快照摘要执行，未映射的素材不会被intake自动创建。核对`AICRM_AI_ASSISTANT_INTAKE_ENABLED`、`AICRM_AI_ASSISTANT_DISPATCH_ENABLED`（均默认false）、`AICRM_AI_ASSISTANT_INTEGRATION_KEY`、`AICRM_AI_ASSISTANT_INTEGRATION_SECRET`、`AICRM_AI_ASSISTANT_INTEGRATION_ACTOR_ID`与`AICRM_AI_ASSISTANT_PROVIDER_PERMISSION`；Scope沿现有Corp与`AICRM_SURVEY_OAUTH_OPEN_PLATFORM_ID`配置，不能错用旧域或跨平台身份。旧调用方路由为`/api/admin/ai-assist/review-plans`，仍必须走机器签名校验；生产外部调用方及真实Provider验收独立记录，不导入旧AI执行。
 
 - 0081已作为群运营审核增量纳入：部署清单包括0078/0081，未配置Webhook的空引用允许多计划；非空仍唯一。本轮仅本地合成发布检查，不执行生产迁移。0082/0083/0084需各自源码与CI审核后再进入最终清单。
+
+
+- PR153历史增量已审核：0082随总集成候选发布。现有migrate-v2-config-definitions新增history-extract/inspect/dry-run/apply/verify模式；冻结来源版本与五类历史记录，使用独立受保护密封密钥文件（32字节值的base64、权限0600），逐行结果和源/目标摘要守恒。此处是生产阶段待执行清单，本轮只运行合成PG/HTTP验证，未从生产提取聊天/客户正文或apply历史。
