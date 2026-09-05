@@ -435,16 +435,22 @@ func TestGroupOpsSharedRiverRuntimeJourney(t *testing.T) {
 		t.Fatal(err)
 	}
 	start, stop := startGroupOpsRiver(t, sharedRuntime)
-	start()
 	first, err := runtimeService.AcceptBroadcast(ctx, planID, actorID, "river-runtime-broadcast-0001")
 	if err != nil || first.Accepted != 2 || len(first.Executions) != 2 {
 		t.Fatalf("first acceptance=%+v err=%v", first, err)
 	}
+	// The process is deliberately down while acceptance commits. These are real
+	// EER and River rows, so starting the shared runtime afterwards proves that
+	// an accepted broadcast survives a process boundary before any Provider
+	// call happens.
+	assertGroupOpsInitialEffectsPersisted(t, native, planID, 2)
+	start()
 	waitGroupOpsProviderCalls(t, native, provider, 2)
+	waitGroupOpsDelayedSuccessors(t, native, planID, 2)
 	stop()
 
 	var scheduled int
-	if err = native.QueryRow(ctx, `SELECT count(*) FROM river_job WHERE kind='external_effect.execute.v1' AND state='scheduled'`).Scan(&scheduled); err != nil || scheduled != 2 {
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM river_job job JOIN external_effect_jobs effect_job ON effect_job.river_job_id=job.id JOIN group_ops_executions execution ON execution.external_effect_id='eer_' || effect_job.effect_id::text WHERE execution.plan_id=$1 AND execution.node_position=3 AND job.kind='external_effect.execute.v1' AND job.state='scheduled' AND execution.scheduled_for > clock_timestamp()`, planID).Scan(&scheduled); err != nil || scheduled != 2 {
 		t.Fatalf("delayed River jobs=%d err=%v", scheduled, err)
 	}
 
@@ -459,7 +465,7 @@ func TestGroupOpsSharedRiverRuntimeJourney(t *testing.T) {
 	if got := provider.callCount(); got != 2 {
 		t.Fatalf("delayed successor ran before due time: calls=%d", got)
 	}
-	if tag, err := native.Exec(ctx, `UPDATE river_job SET state='available', scheduled_at=clock_timestamp()-interval '1 second' WHERE kind='external_effect.execute.v1' AND state='scheduled'`); err != nil || tag.RowsAffected() != 2 {
+	if tag, err := native.Exec(ctx, `UPDATE river_job job SET state='available', scheduled_at=clock_timestamp()-interval '1 second' FROM external_effect_jobs effect_job JOIN group_ops_executions execution ON execution.external_effect_id='eer_' || effect_job.effect_id::text WHERE job.id=effect_job.river_job_id AND execution.plan_id=$1 AND execution.node_position=3 AND job.kind='external_effect.execute.v1' AND job.state='scheduled' AND execution.scheduled_for > clock_timestamp()`, planID); err != nil || tag.RowsAffected() != 2 {
 		stop()
 		t.Fatalf("advance scheduled fixture rows=%d err=%v", tag.RowsAffected(), err)
 	}
@@ -598,6 +604,34 @@ func waitGroupOpsProviderCalls(t *testing.T, native *pgxpool.Pool, provider *gro
 		_ = native.QueryRow(context.Background(), `SELECT coalesce(string_agg(id::text || ':' || kind || ':' || state || ':' || attempt::text, ','),'') FROM river_job`).Scan(&jobs)
 	}
 	t.Fatalf("provider calls=%d, want %d; effects=%s river=%s", provider.callCount(), expected, effects, jobs)
+}
+
+func assertGroupOpsInitialEffectsPersisted(t *testing.T, native *pgxpool.Pool, planID int64, expected int) {
+	t.Helper()
+	var persisted int
+	err := native.QueryRow(context.Background(), `SELECT count(*) FROM group_ops_executions execution JOIN external_effects effect ON execution.external_effect_id='eer_' || effect.id::text JOIN external_effect_jobs effect_job ON effect_job.effect_id=effect.id AND effect_job.generation=effect.generation JOIN river_job job ON job.id=effect_job.river_job_id WHERE execution.plan_id=$1 AND execution.node_position=1 AND execution.state='accepted' AND effect.state='accepted' AND job.kind='external_effect.execute.v1' AND job.state IN ('available','scheduled')`, planID).Scan(&persisted)
+	if err != nil || persisted != expected {
+		t.Fatalf("persisted initial Group Ops effects=%d want=%d err=%v", persisted, expected, err)
+	}
+}
+
+func waitGroupOpsDelayedSuccessors(t *testing.T, native *pgxpool.Pool, planID int64, expected int) {
+	t.Helper()
+	deadline := time.Now().Add(12 * time.Second)
+	for time.Now().Before(deadline) {
+		var persisted int
+		err := native.QueryRow(context.Background(), `SELECT count(*) FROM group_ops_execution_intents intent JOIN group_ops_executions execution ON execution.external_effect_id='eer_' || intent.external_effect_id::text JOIN external_effects effect ON execution.external_effect_id='eer_' || effect.id::text JOIN external_effect_jobs effect_job ON effect_job.effect_id=effect.id AND effect_job.generation=effect.generation JOIN river_job job ON job.id=effect_job.river_job_id WHERE intent.plan_id=$1 AND intent.node_position=3 AND intent.state='accepted' AND execution.state='accepted' AND effect.state='accepted' AND job.kind='external_effect.execute.v1' AND job.state='scheduled' AND execution.scheduled_for > clock_timestamp()`, planID).Scan(&persisted)
+		if err == nil && persisted == expected {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	var intents, executions, effects, jobs string
+	_ = native.QueryRow(context.Background(), `SELECT coalesce(string_agg(node_position::text || ':' || state || ':' || coalesce(external_effect_id::text,'nil'), ','),'') FROM group_ops_execution_intents WHERE plan_id=$1`, planID).Scan(&intents)
+	_ = native.QueryRow(context.Background(), `SELECT coalesce(string_agg(node_position::text || ':' || state || ':' || external_effect_id, ','),'') FROM group_ops_executions WHERE plan_id=$1`, planID).Scan(&executions)
+	_ = native.QueryRow(context.Background(), `SELECT coalesce(string_agg(id::text || ':' || state, ','),'') FROM external_effects`).Scan(&effects)
+	_ = native.QueryRow(context.Background(), `SELECT coalesce(string_agg(id::text || ':' || kind || ':' || state, ','),'') FROM river_job`).Scan(&jobs)
+	t.Fatalf("delayed Group Ops successors did not persist; intents=%s executions=%s effects=%s river=%s", intents, executions, effects, jobs)
 }
 
 func startGroupOpsRiver(t *testing.T, runtime *platformjobqueue.Runtime) (func(), func()) {

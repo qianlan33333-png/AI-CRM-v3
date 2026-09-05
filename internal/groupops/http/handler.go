@@ -104,6 +104,40 @@ type Handler struct {
 	contentDelivery mediaport.ContentDeliveryService
 }
 
+// legacyExecutionPage is the presentation adapter for the frozen Group Ops
+// detail page. The runtime's state remains provider_accepted after a verified
+// delivery read; the donor DTO instead requires delivery_proven as its display
+// state when that fact and its Provider receipt are both present. Keep the
+// canonical runtime state alongside the adapted display state so this response
+// never hides the owner projection.
+type legacyExecutionPage struct {
+	Items   []legacyExecution `json:"items"`
+	Total   int64             `json:"total"`
+	Limit   int32             `json:"limit"`
+	Offset  int32             `json:"offset"`
+	HasMore bool              `json:"has_more"`
+	groupopsport.RuntimeSafety
+}
+
+type legacyExecution struct {
+	groupopsport.Execution
+	State        groupopsport.ExecutionState `json:"state"`
+	RuntimeState groupopsport.ExecutionState `json:"runtime_state,omitempty"`
+}
+
+func legacyExecutionPageResponse(value groupopsport.ExecutionPage) legacyExecutionPage {
+	items := make([]legacyExecution, len(value.Items))
+	for index, execution := range value.Items {
+		item := legacyExecution{Execution: execution, State: execution.State}
+		if execution.State == groupopsport.ExecutionProviderAccepted && execution.ProviderAccepted && execution.DeliveryProven && execution.ProviderReceiptPresent {
+			item.State = groupopsport.ExecutionDeliveryProven
+			item.RuntimeState = execution.State
+		}
+		items[index] = item
+	}
+	return legacyExecutionPage{Items: items, Total: value.Total, Limit: value.Limit, Offset: value.Offset, HasMore: value.HasMore, RuntimeSafety: value.RuntimeSafety}
+}
+
 func NewHandler(application Application, security RequestSecurity) (*Handler, error) {
 	if application == nil || security == nil {
 		return nil, errors.New("Group Ops HTTP dependencies are required")
@@ -574,7 +608,11 @@ func (h *Handler) plans(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 			return
 		}
 		value, err := h.runtime.ListExecutions(r.Context(), planID, limit, offset)
-		h.respond(w, value, err)
+		if err != nil {
+			h.respond(w, value, err)
+			return
+		}
+		h.respond(w, legacyExecutionPageResponse(value), nil)
 		return
 	}
 	if parts[1] == "executions" && len(parts) == 4 && parts[3] == "reconcile" && h.runtime != nil {
@@ -776,7 +814,11 @@ func (h *Handler) planSubresource(w stdhttp.ResponseWriter, r *stdhttp.Request, 
 			return
 		}
 		value, err := h.runtime.ListExecutions(r.Context(), planID, limit, offset)
-		h.respond(w, value, err)
+		if err != nil {
+			h.respond(w, value, err)
+			return
+		}
+		h.respond(w, legacyExecutionPageResponse(value), nil)
 		return
 	}
 	writeError(w, stdhttp.StatusNotFound, "not_found")
