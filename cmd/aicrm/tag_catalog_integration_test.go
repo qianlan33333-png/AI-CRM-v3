@@ -510,7 +510,7 @@ func TestPostgreSQLSurveySyntheticPushSurvivesRepositoryRestartAndDoesNotBlindRe
 		t.Fatal(err)
 	}
 	var questionID, customerID int64
-	if err = pool.QueryRow(ctx, `SELECT id FROM survey_questions WHERE questionnaire_id=$1 ORDER BY id LIMIT 1`, questionnaire).Scan(&questionID); err != nil {
+	if err = pool.QueryRow(ctx, `SELECT question.id FROM survey_definition_questions question JOIN survey_questionnaires q ON q.active_definition_version_id=question.definition_version_id WHERE q.id=$1 ORDER BY question.id LIMIT 1`, questionnaire).Scan(&questionID); err != nil {
 		t.Fatal(err)
 	}
 	if err = pool.QueryRow(ctx, `INSERT INTO customers DEFAULT VALUES RETURNING id`).Scan(&customerID); err != nil {
