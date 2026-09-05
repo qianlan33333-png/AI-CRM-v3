@@ -197,6 +197,28 @@ func (r *Repository) CreateEnrollment(ctx context.Context, e automationdomain.En
 	}
 	return e, false, nil
 }
+func (r *Repository) RuntimeReceipt(ctx context.Context, operation, actorScope string, keyDigest, payloadDigest [32]byte) (automationapp.RuntimeReceipt, bool, error) {
+	t, err := tx(ctx)
+	if err != nil {
+		return automationapp.RuntimeReceipt{}, false, err
+	}
+	var out automationapp.RuntimeReceipt
+	var key, payload []byte
+	err = t.QueryRow(ctx, `SELECT id,operation,actor_scope,key_digest,payload_digest,state,result_snapshot FROM automation_runtime_operation_receipts WHERE operation=$1 AND actor_scope=$2 AND key_digest=$3`, operation, actorScope, keyDigest[:]).Scan(&out.ID, &out.Operation, &out.ActorScope, &key, &payload, &out.State, &out.Result)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return automationapp.RuntimeReceipt{}, false, nil
+	}
+	if err != nil {
+		return automationapp.RuntimeReceipt{}, false, err
+	}
+	copy(out.KeyDigest[:], key)
+	copy(out.PayloadDigest[:], payload)
+	if out.PayloadDigest != payloadDigest {
+		return automationapp.RuntimeReceipt{}, false, automationapp.ErrRuntimeConflict
+	}
+	return out, true, nil
+}
+
 func (r *Repository) ReserveRuntime(ctx context.Context, in automationapp.RuntimeReservation) (automationapp.RuntimeReceipt, bool, error) {
 	t, e := tx(ctx)
 	if e != nil {

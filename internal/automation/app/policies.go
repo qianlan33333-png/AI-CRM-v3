@@ -40,6 +40,7 @@ type RuntimeStore interface {
 	SetPolicyLifecycle(context.Context, int64, int64, int64, automationdomain.PolicyLifecycle, time.Time) (automationdomain.Policy, error)
 	ActivePoliciesForPackage(context.Context, int64) ([]automationdomain.PolicyVersion, error)
 	CreateEnrollment(context.Context, automationdomain.Enrollment) (automationdomain.Enrollment, bool, error)
+	RuntimeReceipt(context.Context, string, string, [32]byte, [32]byte) (RuntimeReceipt, bool, error)
 	ReserveRuntime(context.Context, RuntimeReservation) (RuntimeReceipt, bool, error)
 	CompleteRuntime(context.Context, int64, json.RawMessage, time.Time) error
 	AppendRuntimeFact(context.Context, RuntimeFact) error
