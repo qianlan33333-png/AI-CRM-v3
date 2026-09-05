@@ -102,6 +102,20 @@ func newRouteHandler(t *testing.T, oauth routeOAuth) *Handler {
 	return handler
 }
 
+func TestDefinitionRequestAppliesFrozenSingleChoiceDefaultOnlyWhenAbsent(t *testing.T) {
+	request := definitionRequest{Questions: []surveyport.Question{{Type: surveyport.QuestionSingleChoice, Title: "选择", Options: []surveyport.Option{{Text: "A"}, {Text: "B"}}}}}
+	questionnaire := request.questionnaire()
+	if questionnaire.Questions[0].Validation.MaximumSelections == nil || *questionnaire.Questions[0].Validation.MaximumSelections != 1 {
+		t.Fatalf("frozen single-choice default=%+v", questionnaire.Questions[0].Validation)
+	}
+	explicit := 2
+	request.Questions[0].Validation.MaximumSelections = &explicit
+	questionnaire = request.questionnaire()
+	if questionnaire.Questions[0].Validation.MaximumSelections == nil || *questionnaire.Questions[0].Validation.MaximumSelections != 2 {
+		t.Fatalf("explicit validation was overwritten=%+v", questionnaire.Questions[0].Validation)
+	}
+}
+
 func TestPublicSurveyCannotBypassOAuth(t *testing.T) {
 	handler := newRouteHandler(t, routeOAuth{enabled: true})
 	for _, path := range []string{"/api/public/questionnaires/growth", "/api/public/questionnaires/growth/submissions"} {

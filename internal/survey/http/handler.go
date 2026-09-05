@@ -121,7 +121,19 @@ func (r definitionRequest) questionnaire() surveyport.Questionnaire {
 	if r.IsDisabled {
 		status = surveyport.StatusDisabled
 	}
-	return surveyport.Questionnaire{Name: r.Name, Title: r.Title, Description: r.Description, Mode: mode, AnswerDisplayMode: r.AnswerDisplayMode, AssessmentConfig: r.AssessmentConfig, Slug: r.Slug, Status: status, Questions: r.Questions, ScoreRules: r.ScoreRules}
+	questions := append([]surveyport.Question(nil), r.Questions...)
+	for index := range questions {
+		// The frozen editor omits validation for ordinary single-choice
+		// questions. Its established behavior is exactly one answer, while the
+		// domain's generic omitted maximum means every option. Normalize only
+		// that absent legacy default at the Host DTO boundary; explicit values
+		// still reach the Owner unchanged for validation.
+		if questions[index].Type == surveyport.QuestionSingleChoice && questions[index].Validation.MaximumSelections == nil {
+			maximum := 1
+			questions[index].Validation.MaximumSelections = &maximum
+		}
+	}
+	return surveyport.Questionnaire{Name: r.Name, Title: r.Title, Description: r.Description, Mode: mode, AnswerDisplayMode: r.AnswerDisplayMode, AssessmentConfig: r.AssessmentConfig, Slug: r.Slug, Status: status, Questions: questions, ScoreRules: r.ScoreRules}
 }
 
 func (h *Handler) adminRoot(w http.ResponseWriter, r *http.Request) {
