@@ -257,8 +257,12 @@ func TestImportDryRunApplyReplayAndReconcilePostgreSQL(t *testing.T) {
 		t.Fatal(err)
 	}
 	cliURL := databaseURLWithSearchPath(t, url, schema)
-	t.Setenv("AICRM_AUTOMATION_RECONCILE_TEST_URL", cliURL)
-	commandArgs := []string{"--actor-id", strconv.FormatInt(actorID, 10), "--snapshot-file", snapshotFile, "--key-file", keyFile, "--target-url-env", "AICRM_AUTOMATION_RECONCILE_TEST_URL", "--timeout", "30s"}
+	// The command deliberately accepts only the canonical target role (or the
+	// designated legacy source role), never an arbitrary environment variable.
+	// Override the canonical value with this isolated schema so the real CLI
+	// journey exercises that allowlist rather than bypassing it.
+	t.Setenv("AICRM_DATABASE_URL", cliURL)
+	commandArgs := []string{"--actor-id", strconv.FormatInt(actorID, 10), "--snapshot-file", snapshotFile, "--key-file", keyFile, "--timeout", "30s"}
 	report := executeImportCommand(t, "dry-run", commandArgs...)
 	if report.Tables["audience_members"].Mapped != 1 || report.Tables["audience_members"].Unresolved != 1 {
 		t.Fatalf("dry-run report=%+v", report)
@@ -442,7 +446,7 @@ func TestImportDryRunApplyReplayAndReconcilePostgreSQL(t *testing.T) {
 	}
 
 	var cliOutput bytes.Buffer
-	if err = execute([]string{"reconcile", "--batch-key", report.BatchKey, "--snapshot-file", snapshotFile, "--key-file", keyFile, "--target-url-env", "AICRM_AUTOMATION_RECONCILE_TEST_URL", "--timeout", "30s"}, &cliOutput); err != nil {
+	if err = execute([]string{"reconcile", "--batch-key", report.BatchKey, "--snapshot-file", snapshotFile, "--key-file", keyFile, "--timeout", "30s"}, &cliOutput); err != nil {
 		t.Fatalf("actual reconcile command: %v", err)
 	}
 	assertBatchStatus(t, ctx, pool, report.BatchKey, "reconciled")
@@ -466,7 +470,7 @@ func TestImportDryRunApplyReplayAndReconcilePostgreSQL(t *testing.T) {
 	if err = writeEncryptedSnapshot(historyOnlyFile, keyFile, historyOnly); err != nil {
 		t.Fatal(err)
 	}
-	historyArgs := []string{"--actor-id", strconv.FormatInt(actorID, 10), "--snapshot-file", historyOnlyFile, "--key-file", keyFile, "--target-url-env", "AICRM_AUTOMATION_RECONCILE_TEST_URL", "--timeout", "30s"}
+	historyArgs := []string{"--actor-id", strconv.FormatInt(actorID, 10), "--snapshot-file", historyOnlyFile, "--key-file", keyFile, "--timeout", "30s"}
 	historyReport := executeImportCommand(t, "apply", append(historyArgs, "--confirm-import")...)
 	if _, err = Reconcile(ctx, pool, historyReport.BatchKey, historyOnly); err != nil {
 		t.Fatalf("reconcile history-only batch: %v", err)
@@ -486,7 +490,7 @@ func TestImportDryRunApplyReplayAndReconcilePostgreSQL(t *testing.T) {
 	if err = writeEncryptedSnapshot(allIsolatedFile, keyFile, allIsolated); err != nil {
 		t.Fatal(err)
 	}
-	isolatedArgs := []string{"--actor-id", strconv.FormatInt(actorID, 10), "--snapshot-file", allIsolatedFile, "--key-file", keyFile, "--target-url-env", "AICRM_AUTOMATION_RECONCILE_TEST_URL", "--timeout", "30s"}
+	isolatedArgs := []string{"--actor-id", strconv.FormatInt(actorID, 10), "--snapshot-file", allIsolatedFile, "--key-file", keyFile, "--timeout", "30s"}
 	isolatedReport := executeImportCommand(t, "apply", append(isolatedArgs, "--confirm-import")...)
 	if _, err = Reconcile(ctx, pool, isolatedReport.BatchKey, allIsolated); err != nil {
 		t.Fatalf("reconcile all-isolated members batch: %v", err)
@@ -507,7 +511,7 @@ func TestImportDryRunApplyReplayAndReconcilePostgreSQL(t *testing.T) {
 	if err = writeEncryptedSnapshot(refreshModesFile, keyFile, refreshModes); err != nil {
 		t.Fatal(err)
 	}
-	refreshArgs := []string{"--actor-id", strconv.FormatInt(actorID, 10), "--snapshot-file", refreshModesFile, "--key-file", keyFile, "--target-url-env", "AICRM_AUTOMATION_RECONCILE_TEST_URL", "--timeout", "30s"}
+	refreshArgs := []string{"--actor-id", strconv.FormatInt(actorID, 10), "--snapshot-file", refreshModesFile, "--key-file", keyFile, "--timeout", "30s"}
 	refreshReport := executeImportCommand(t, "apply", append(refreshArgs, "--confirm-import")...)
 	rows, err := pool.Query(ctx, `SELECT c.version,c.refresh_mode,COALESCE(c.refresh_cron_utc,'') FROM segment_audience_configuration_versions c JOIN segment_audience_packages p ON p.id=c.package_id WHERE p.code='v2-audience-11' ORDER BY c.version`)
 	if err != nil {
