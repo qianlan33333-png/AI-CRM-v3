@@ -52,7 +52,7 @@ func (m *ModuleRegistration) Readiness(ctx context.Context, pool *pgxpool.Pool) 
 		return errors.New("Group Ops module dependencies are required")
 	}
 	var ready bool
-	err := pool.QueryRow(ctx, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['group_ops_plans','group_ops_plan_members','group_ops_plan_group_assets','group_ops_plan_nodes','group_ops_plan_webhook_descriptors','group_ops_operation_receipts','group_ops_audit_events','group_ops_outbox','group_ops_runs','group_ops_executions','group_ops_directory_groups','group_ops_directory_refresh_receipts','group_ops_protocol_replays','group_ops_v1_history_plans','group_ops_v1_history_directory','group_ops_v1_history_groups','group_ops_v1_history_nodes']) AS required(name) WHERE to_regclass(current_schema() || '.' || required.name) IS NULL)`).Scan(&ready)
+	err := pool.QueryRow(ctx, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['group_ops_plans','group_ops_plan_members','group_ops_plan_group_assets','group_ops_plan_nodes','group_ops_plan_webhook_descriptors','group_ops_operation_receipts','group_ops_audit_events','group_ops_outbox','group_ops_runs','group_ops_executions','group_ops_execution_intents','group_ops_group_message_tasks','group_ops_directory_groups','group_ops_directory_refresh_receipts','group_ops_protocol_replays','group_ops_v1_history_plans','group_ops_v1_history_directory','group_ops_v1_history_groups','group_ops_v1_history_nodes']) AS required(name) WHERE to_regclass(current_schema() || '.' || required.name) IS NULL)`).Scan(&ready)
 	if err != nil {
 		return err
 	}

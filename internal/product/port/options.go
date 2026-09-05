@@ -78,6 +78,9 @@ type CheckoutProduct struct {
 	Currency      string
 	Version       int64
 	RequireMobile bool
+	// ServicePeriodDurationDays is positive only for a service_period item.
+	// It is frozen by the Order checkout snapshot before payment begins.
+	ServicePeriodDurationDays int32
 }
 
 type CheckoutProductReader interface {

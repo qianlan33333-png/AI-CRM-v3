@@ -83,7 +83,10 @@ for migration_contract in \
   '0053_segment_audience_member_event_fact_kinds.sql:Segment audience member event fact kind repair' \
   '0061_product_public_purchase.sql:product public purchase' \
   '0063_identity_hxc_source_observations.sql:HXC identity source observations' \
-  '0064_hxc_dashboard_identity_v2.sql:HXC dashboard identity v2'; do
+  '0064_hxc_dashboard_identity_v2.sql:HXC dashboard identity v2' \
+  '0068_payment_session_beneficiary_selection.sql:payment session beneficiary selection' \
+  '0078_group_ops_provider_tasks.sql:Group Ops provider tasks' \
+  '0081_group_ops_webhook_unconfigured_reference.sql:Group Ops unconfigured webhook repair'; do
   migration="${migration_contract%%:*}"
   label="${migration_contract#*:}"
   test -f "migrations/${migration}" || {
@@ -96,6 +99,10 @@ for migration_contract in \
   }
 done
 grep -qx 'test -x "$release_dir/bin/migrate-automation-operations"' "$installer" || { echo "release must include Automation Operations migration tool" >&2; exit 1; }
+grep -qx 'test -x "$release_dir/bin/wecom-archive-sdk-runner"' "$installer" || { echo "release must include the WeCom archive SDK runner" >&2; exit 1; }
+grep -qF 'scripts/build-wecom-archive-sdk-runner-linux.sh release/bin/wecom-archive-sdk-runner' .github/workflows/ci.yml || { echo "release workflow must build the real Linux cgo archive runner" >&2; exit 1; }
+grep -qF 'CGO_ENABLED=1 GOOS=linux GOARCH=amd64 GOWORK=off' scripts/build-wecom-archive-sdk-runner-linux.sh || { echo "archive release runner must be a Linux amd64 cgo build" >&2; exit 1; }
+grep -qF 'scripts/build-wecom-archive-sdk-runner-linux.sh "$work/runner"' scripts/check-wecom-message-archive-sdk.sh || { echo "official SDK ABI check must exercise the release runner builder" >&2; exit 1; }
 grep -qx 'test -x "$release_dir/bin/migrate-order-attribution"' "$installer" || { echo "release must include order history attribution tool" >&2; exit 1; }
 grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/migrate-order-attribution ./cmd/migrate-order-attribution' .github/workflows/ci.yml || { echo "CI must build the order history attribution tool" >&2; exit 1; }
 grep -qx 'test -f "$release_dir/migrations/0047_automation_operations_migration.sql"' "$installer" || { echo "release must require Automation Operations migration schema" >&2; exit 1; }
@@ -110,6 +117,8 @@ done
 grep -qx 'test -x "$release_dir/bin/migrate-phone-identities"' "$installer" || { echo "release must include phone migration tool" >&2; exit 1; }
 grep -qx 'test -x "$release_dir/bin/migrate-v2-config-definitions"' "$installer" || { echo "release must include configuration definition migration tool" >&2; exit 1; }
 grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/migrate-v2-config-definitions ./cmd/migrate-v2-config-definitions' .github/workflows/ci.yml || { echo "CI must build the configuration definition migration tool" >&2; exit 1; }
+grep -qx 'test -x "$release_dir/bin/migrate-media-legacy-materials"' "$installer" || { echo "release must include legacy Media mapping migration tool" >&2; exit 1; }
+grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/migrate-media-legacy-materials ./cmd/migrate-media-legacy-materials' .github/workflows/ci.yml || { echo "CI must build the legacy Media mapping migration tool" >&2; exit 1; }
 grep -qx 'test -x "$release_dir/bin/migrate-channel-history"' "$installer" || { echo "release must include channel history migration tool" >&2; exit 1; }
 grep -qx 'test -x "$release_dir/bin/migrate-radar-v2"' "$installer" || { echo "release must include Radar migration tool" >&2; exit 1; }
 grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/migrate-radar-v2 ./cmd/migrate-radar-v2' .github/workflows/ci.yml || { echo "release workflow must build Radar migration tool" >&2; exit 1; }

@@ -5,13 +5,16 @@ import (
 	"errors"
 	"strings"
 
+	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
 	accessport "github.com/qianlan33333-png/AI-CRM-v3/internal/access/port"
 	aiassistantapp "github.com/qianlan33333-png/AI-CRM-v3/internal/aiassistant/app"
 	aiassistantport "github.com/qianlan33333-png/AI-CRM-v3/internal/aiassistant/port"
+	customerapp "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/app"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	identityport "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/port"
 	mediaport "github.com/qianlan33333-png/AI-CRM-v3/internal/media/port"
+	mediastore "github.com/qianlan33333-png/AI-CRM-v3/internal/media/store"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/outbound"
 	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
 )
@@ -25,6 +28,12 @@ type aiCustomerSnapshotAdapter struct {
 
 func (a aiCustomerSnapshotAdapter) CustomerSnapshot(ctx context.Context, id customerdomain.CustomerID) (aiassistantapp.CustomerSnapshot, error) {
 	canonical, status, name, label, err := a.read(ctx, id)
+	if errors.Is(err, customerapp.ErrNotFound) {
+		// A missing directory projection is a target eligibility fact, not a
+		// transient database failure. The service records it safely and creates
+		// no recipient for this target.
+		return aiassistantapp.CustomerSnapshot{}, nil
+	}
 	return aiassistantapp.CustomerSnapshot{CanonicalID: canonical, Status: status, DisplayName: name, OneIDLabel: label}, err
 }
 
@@ -32,6 +41,20 @@ type aiStaffSnapshotAdapter struct{ repository accessport.Repository }
 
 func (a aiStaffSnapshotAdapter) StaffSnapshot(ctx context.Context, id int64) (aiassistantapp.StaffSnapshot, error) {
 	user, err := a.repository.UserByID(ctx, id, false)
+	if errors.Is(err, accessdomain.ErrNotFound) {
+		return aiassistantapp.StaffSnapshot{}, nil
+	}
+	if err != nil {
+		return aiassistantapp.StaffSnapshot{}, err
+	}
+	return aiassistantapp.StaffSnapshot{ID: user.ID, DisplayName: user.DisplayName, Active: user.Active}, nil
+}
+
+func (a aiStaffSnapshotAdapter) StaffByWeComUserID(ctx context.Context, value string) (aiassistantapp.StaffSnapshot, error) {
+	user, err := a.repository.UserByWeComUserID(ctx, value, false)
+	if errors.Is(err, accessdomain.ErrNotFound) {
+		return aiassistantapp.StaffSnapshot{}, nil
+	}
 	if err != nil {
 		return aiassistantapp.StaffSnapshot{}, err
 	}
@@ -41,24 +64,50 @@ func (a aiStaffSnapshotAdapter) StaffSnapshot(ctx context.Context, id int64) (ai
 type aiMaterialAdapter struct {
 	capturer   mediaport.GroupOpsMaterialSourceCapturer
 	references mediaport.MaterialReferenceRegistrar
+	legacy     mediaport.LegacyMaterialMappingResolver
 }
 
 func (a aiMaterialAdapter) ResolveMaterial(ctx context.Context, block aiassistantport.ContentBlock) (aiassistantport.ContentBlock, error) {
 	kind := block.MaterialKind
-	if block.Kind == aiassistantport.ContentImage {
-		kind = "image"
-	} else if block.Kind == aiassistantport.ContentMiniProgram {
-		kind = "miniprogram"
-	} else if block.Kind == aiassistantport.ContentLink {
-		kind = "group_invite"
+	if block.LegacySourceSystem != "" || block.LegacyMaterialID != "" {
+		if a.legacy == nil || block.LegacySourceSystem == "" || block.LegacyMaterialID == "" {
+			return aiassistantport.ContentBlock{}, aiassistantapp.ErrLegacyMaterialUnmapped
+		}
+		mapping, found, err := a.legacy.ResolveLegacyMaterialMapping(ctx, mediaport.LegacyMaterialReference{SourceSystem: block.LegacySourceSystem, MaterialKind: kind, LegacyID: block.LegacyMaterialID})
+		if err != nil {
+			return aiassistantport.ContentBlock{}, err
+		}
+		if !found || mapping.MaterialKind != kind || mapping.MaterialID < 1 || mapping.SourceDigest == "" {
+			return aiassistantport.ContentBlock{}, aiassistantapp.ErrLegacyMaterialUnmapped
+		}
+		block.MaterialID = mapping.MaterialID
+		block.LegacySourceSystem, block.LegacyMaterialID = "", ""
+		// A mapping is only usable if the current Media fact still has exactly
+		// the digest verified by the frozen-source import.
+		snapshot, captureErr := a.capture(ctx, kind, block.MaterialID)
+		if errors.Is(captureErr, mediastore.ErrNotFound) || errors.Is(captureErr, mediastore.ErrConflict) || len(snapshot.References) != 1 || snapshot.References[0].SourceDigest != mapping.SourceDigest {
+			return aiassistantport.ContentBlock{}, aiassistantapp.ErrLegacyMaterialUnmapped
+		}
+		if captureErr != nil {
+			return aiassistantport.ContentBlock{}, captureErr
+		}
+		block.MaterialDigest = effectport.Digest(mapping.SourceDigest)
+		return block, nil
 	}
-	snapshot, err := a.capturer.CaptureGroupOpsMaterialSources(ctx, mediaport.GroupOpsMaterialPlan{References: []mediaport.GroupOpsMaterialReference{{Kind: kind, ID: block.MaterialID}}})
+	snapshot, err := a.capture(ctx, kind, block.MaterialID)
 	if err != nil || len(snapshot.References) != 1 {
 		return aiassistantport.ContentBlock{}, errors.New("material unavailable")
 	}
 	block.MaterialKind = kind
 	block.MaterialDigest = effectport.Digest(snapshot.References[0].SourceDigest)
 	return block, nil
+}
+
+func (a aiMaterialAdapter) capture(ctx context.Context, kind string, id int64) (mediaport.GroupOpsMaterialSourceSnapshot, error) {
+	if a.capturer == nil || id < 1 || kind == "" {
+		return mediaport.GroupOpsMaterialSourceSnapshot{}, errors.New("material unavailable")
+	}
+	return a.capturer.CaptureGroupOpsMaterialSources(ctx, mediaport.GroupOpsMaterialPlan{References: []mediaport.GroupOpsMaterialReference{{Kind: kind, ID: id}}})
 }
 
 func (a aiMaterialAdapter) RegisterMaterialReference(ctx context.Context, block aiassistantport.ContentBlock, reference effectport.Digest) error {
@@ -107,10 +156,14 @@ type aiMaterialDetails interface {
 	MiniProgram(context.Context, int64) (map[string]any, error)
 	GroupInvite(context.Context, int64) (map[string]any, error)
 }
+type aiAttachmentReader interface {
+	Attachment(context.Context, int64) (map[string]any, []byte, error)
+}
 type aiPrivatePayloadReader struct {
-	content   aiassistantport.OutboundPayloadReader
-	images    aiImageReader
-	materials aiMaterialDetails
+	content     aiassistantport.OutboundPayloadReader
+	images      aiImageReader
+	materials   aiMaterialDetails
+	attachments aiAttachmentReader
 }
 
 func (a aiPrivatePayloadReader) LoadPrivateMessagePayload(ctx context.Context, reference string, digest effectport.Digest) (outbound.PrivateMessagePayload, error) {
@@ -152,6 +205,15 @@ func (a aiPrivatePayloadReader) LoadPrivateMessagePayload(ctx context.Context, r
 				return outbound.PrivateMessagePayload{}, e
 			}
 			result.Attachments = append(result.Attachments, outbound.PrivateMessageAttachment{Kind: "link", Title: text(item["title"]), Description: text(item["description"]), URL: text(item["join_url"])})
+		case aiassistantport.ContentAttachment:
+			if a.attachments == nil {
+				return outbound.PrivateMessagePayload{}, errors.New("attachment reader unavailable")
+			}
+			metadata, content, e := a.attachments.Attachment(ctx, block.MaterialID)
+			if e != nil || !enabled(metadata) || text(metadata["mime_type"]) != "application/pdf" || len(content) == 0 {
+				return outbound.PrivateMessagePayload{}, errors.New("attachment unavailable")
+			}
+			result.Attachments = append(result.Attachments, outbound.PrivateMessageAttachment{Kind: "file", Content: content, FileName: text(metadata["file_name"]), MediaType: text(metadata["mime_type"])})
 		default:
 			return outbound.PrivateMessagePayload{}, errors.New("unsupported content kind")
 		}
@@ -159,7 +221,8 @@ func (a aiPrivatePayloadReader) LoadPrivateMessagePayload(ctx context.Context, r
 	result.Text = strings.TrimSpace(result.Text)
 	return result, nil
 }
-func text(value any) string { out, _ := value.(string); return out }
+func text(value any) string             { out, _ := value.(string); return out }
+func enabled(value map[string]any) bool { out, _ := value["enabled"].(bool); return out }
 func imageFileName(mediaType string) string {
 	if mediaType == "image/png" {
 		return "image.png"

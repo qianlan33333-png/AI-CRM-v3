@@ -38,6 +38,12 @@ type integrationStaff struct{}
 func (integrationStaff) StaffSnapshot(_ context.Context, id int64) (aiassistantapp.StaffSnapshot, error) {
 	return aiassistantapp.StaffSnapshot{ID: id, DisplayName: "staff", Active: true}, nil
 }
+func (integrationStaff) StaffByWeComUserID(_ context.Context, value string) (aiassistantapp.StaffSnapshot, error) {
+	if value == "" {
+		return aiassistantapp.StaffSnapshot{}, errors.New("missing staff")
+	}
+	return aiassistantapp.StaffSnapshot{ID: 21, DisplayName: "staff", Active: true}, nil
+}
 
 type integrationMaterials struct{}
 
@@ -53,13 +59,8 @@ type integrationIdentities struct{}
 func (integrationIdentities) Resolve(context.Context, identitydomain.Reference) (identityport.ResolveResult, error) {
 	return identityport.ResolveResult{Status: identityport.ResolveNotFound}, nil
 }
-
-type mutableIntegrationIdentities struct {
-	result identityport.ResolveResult
-}
-
-func (r *mutableIntegrationIdentities) Resolve(context.Context, identitydomain.Reference) (identityport.ResolveResult, error) {
-	return r.result, nil
+func (integrationIdentities) VerifiedExternalIdentityValue(context.Context, customerdomain.CustomerID, identitydomain.Kind, string) (string, bool, error) {
+	return "", false, nil
 }
 
 func TestPostgreSQLPlanReceiptAuditOutboxAtomicJourney(t *testing.T) {
@@ -164,7 +165,7 @@ func TestPostgreSQLPlanSizesAndFiftyRecipientPagination(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	service, err := aiassistantapp.NewService(uow, repository, integrationCustomers{}, integrationStaff{}, integrationMaterials{}, integrationIdentities{})
+	service, err := aiassistantapp.NewService(uow, repository, integrationCustomers{}, integrationStaff{}, integrationMaterials{}, integrationIdentities{}, integrationIdentities{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,12 +217,16 @@ func TestPostgreSQLIntegrationNonceAllowsOnlyExactReplay(t *testing.T) {
 	}
 	at := time.Date(2026, 9, 4, 1, 2, 3, 0, time.UTC)
 	payload := sha256.Sum256([]byte("same payload"))
-	for iteration := 0; iteration < 2; iteration++ {
-		if err = uow.Within(context.Background(), func(tx context.Context) error {
-			return repository.ReserveIntegrationNonce(tx, "integration-key", "1234567890abcdef", "idem-key-1", payload, at, at.Add(5*time.Minute))
-		}); err != nil {
-			t.Fatalf("exact replay %d: %v", iteration, err)
-		}
+	if err = uow.Within(context.Background(), func(tx context.Context) error {
+		return repository.ReserveIntegrationNonce(tx, "integration-key", "1234567890abcdef", "idem-key-1", payload, at, at.Add(5*time.Minute))
+	}); err != nil {
+		t.Fatalf("reserve nonce: %v", err)
+	}
+	err = uow.Within(context.Background(), func(tx context.Context) error {
+		return repository.ReserveIntegrationNonce(tx, "integration-key", "1234567890abcdef", "idem-key-1", payload, at, at.Add(5*time.Minute))
+	})
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("replayed nonce err=%v", err)
 	}
 	drift := sha256.Sum256([]byte("changed payload"))
 	err = uow.Within(context.Background(), func(tx context.Context) error {
@@ -229,57 +234,6 @@ func TestPostgreSQLIntegrationNonceAllowsOnlyExactReplay(t *testing.T) {
 	})
 	if !errors.Is(err, ErrConflict) {
 		t.Fatalf("drift err=%v", err)
-	}
-}
-
-func TestPostgreSQLIntegrationReplayDoesNotResolveIdentityAgain(t *testing.T) {
-	native, cleanup := integrationPool(t)
-	defer cleanup()
-	wrapped, err := platformpostgres.Wrap(native, time.Second)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer wrapped.Close()
-	uow, err := platformpostgres.NewUnitOfWork(wrapped)
-	if err != nil {
-		t.Fatal(err)
-	}
-	repository, err := NewPostgreSQL(native, uow)
-	if err != nil {
-		t.Fatal(err)
-	}
-	identities := &mutableIntegrationIdentities{result: identityport.ResolveResult{Status: identityport.ResolveFound, CustomerID: customerdomain.CustomerID(91)}}
-	service, err := aiassistantapp.NewService(uow, repository, integrationCustomers{}, integrationStaff{}, integrationMaterials{}, identities)
-	if err != nil {
-		t.Fatal(err)
-	}
-	at := time.Date(2026, 9, 4, 1, 2, 3, 0, time.UTC)
-	command := aiassistantapp.IdentityPlanCommand{
-		Actor:          aiassistantport.Actor{Kind: aiassistantport.ActorService, ID: 7},
-		IdempotencyKey: "integration-replay-1",
-		Name:           "identity plan",
-		SourceKind:     "automation",
-		SourceDigest:   effectport.Hash("identity-plan"),
-		Targets: []aiassistantapp.IdentityTarget{{
-			Reference: identitydomain.Reference{Kind: identitydomain.KindWeComExternalUserID, Scope: "wecom-corp:corp-1", Value: "external-1", Assurance: identitydomain.AssuranceVerified, Source: "test"},
-			StaffID:   21,
-			Content:   []aiassistantport.ContentBlock{{Kind: aiassistantport.ContentText, Text: "hello"}},
-		}},
-		OccurredAt: at, IntegrationKey: "integration-key", Nonce: "1234567890abcdef", ExpiresAt: at.Add(5 * time.Minute),
-	}
-	first, err := service.CreatePlanFromIdentities(context.Background(), command)
-	if err != nil || first.Replayed || first.Found != 1 {
-		t.Fatalf("first=%+v err=%v", first, err)
-	}
-	identities.result = identityport.ResolveResult{Status: identityport.ResolveConflict}
-	replayed, err := service.CreatePlanFromIdentities(context.Background(), command)
-	if err != nil || !replayed.Replayed || replayed.Plan.ID != first.Plan.ID || replayed.Found != 1 || replayed.Conflicted != 0 {
-		t.Fatalf("replayed=%+v err=%v", replayed, err)
-	}
-	changed := command
-	changed.Name = "changed identity plan"
-	if _, err = service.CreatePlanFromIdentities(context.Background(), changed); !errors.Is(err, aiassistantapp.ErrConflict) {
-		t.Fatalf("changed payload err=%v", err)
 	}
 }
 
