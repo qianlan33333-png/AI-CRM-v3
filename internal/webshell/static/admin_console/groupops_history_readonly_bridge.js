@@ -17,10 +17,11 @@
     });
   }
 
-  function requestContext(input) {
+  function requestContext(input, init) {
     var url;
     try { url = new URL(typeof input === "string" ? input : input.url, global.location.href); } catch (_error) { return null; }
-    if (!detailPath.test(url.pathname)) return null;
+    var method = (init && init.method) || (typeof input !== "string" && input.method) || "GET";
+    if (url.origin !== global.location.origin || method.toUpperCase() !== "GET" || !detailPath.test(url.pathname)) return null;
     var match = url.pathname.match(/\/plans\/([1-9][0-9]{0,18})\/nodes$/);
     if (!match) return null;
     var limit = Number(url.searchParams.get("limit"));
@@ -34,16 +35,17 @@
     var controls = host.querySelector("[data-refresh]");
     if (!heading || heading.textContent !== "历史节点 · plan_id=" + page.planID || !controls || !controls.parentElement) return false;
     var summary = controls.parentElement.textContent || "";
-    return summary.indexOf("offset=" + page.offset) !== -1 && summary.indexOf("每页 " + page.limit + " 条") !== -1;
+    var match = summary.match(/(?:^|·\s*)offset=(\d+)\s*·\s*每页\s+(\d+)\s+条/);
+    return !!match && Number(match[1]) === page.offset && Number(match[2]) === page.limit;
   }
 
   function articleForItem(rows, item) {
     var expected = String(item.id) + " / " + String(item.source_node_id);
     for (var index = 0; index < rows.length; index += 1) {
-      var values = rows[index].querySelectorAll("div > span:last-child");
-      for (var valueIndex = 0; valueIndex < values.length; valueIndex += 1) {
-        if ((values[valueIndex].textContent || "").trim() === expected) return rows[index];
-      }
+      var firstField = rows[index].firstElementChild;
+      if (!firstField || firstField.tagName !== "DIV") continue;
+      var spans = firstField.querySelectorAll("span");
+      if (spans.length === 2 && (spans[0].textContent || "").trim() === "V2 ID / 源节点 ID：" && (spans[1].textContent || "").trim() === expected) return rows[index];
     }
     return null;
   }
@@ -56,6 +58,7 @@
     if (!host || !pageIsCurrent(host, captured) || !renderer || typeof renderer.renderFull !== "function" || typeof renderer.escapeHtml !== "function") return;
     var rows = host.querySelectorAll("[data-history-rows] article");
     captured.items.forEach(function (item) {
+      if (String(item.plan_id) !== captured.planID) return;
       var article = articleForItem(rows, item);
       var raw = article && article.querySelector("details");
       if (!raw || raw.getAttribute("data-groupops-history-content") === "rendered") return;
@@ -93,7 +96,7 @@
   var previousFetch = global.fetch;
   if (typeof previousFetch === "function") {
     global.fetch = function (input, init) {
-      var context = requestContext(input);
+      var context = requestContext(input, init);
       var requestGeneration = context ? (++generation) : 0;
       if (context) captured = null;
       return Promise.resolve(previousFetch.call(this, input, init)).then(function (response) {

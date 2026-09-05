@@ -543,9 +543,21 @@ func assertImportedGroupOpsHistoryHostJourney(t *testing.T, historyHandler http.
 	ui := groupops.NewModuleRegistration().UIBinding(dist, func(writer http.ResponseWriter, request *http.Request, page, donor string, assets groupops.GroupOpsAssets) error {
 		return renderer.RenderGroupOps(writer, webshell.AdminPageForRequest(request, "群运营计划", "", "api.admin_group_ops_plan_detail"), page, donor, webshell.GroupOpsAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS, ReadonlyCSS: assets.ReadonlyCSS, ReadonlyJS: assets.ReadonlyJS})
 	})
+	shell, err := webshell.NewHandler(webshell.HandlerOptions{Renderer: renderer})
+	if err != nil {
+		t.Fatal(err)
+	}
 	var lock sync.Mutex
 	var historyCalls []string
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if strings.HasPrefix(request.URL.Path, "/static/") {
+			shell.ServeHTTP(writer, request)
+			return
+		}
+		if strings.HasPrefix(request.URL.Path, "/groupops-assets/") {
+			ui.ServeHTTP(writer, request)
+			return
+		}
 		if strings.HasPrefix(request.URL.Path, groupopshttp.HistoryPath) {
 			lock.Lock()
 			historyCalls = append(historyCalls, request.Method+" "+request.URL.RequestURI())

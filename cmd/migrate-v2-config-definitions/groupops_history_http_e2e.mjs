@@ -74,7 +74,9 @@ const dom = new JSDOM(html, {
       }
       if (offset === 20) {
         const first = original.items?.[0] || { source: 'v1_history', read_only: true, real_external_call_executed: false };
-        const page = { ...original, offset: 20, limit: 20, total: 21, items: [pageItem(first, 2001, 'later-1', '后页标题', '后页正文', 'later-1')] };
+        const firstLater = pageItem(first, 2001, 'later-1', '后页标题', '后页正文', 'later-1');
+        const collision = pageItem(first, first.plan_id, first.source_plan_id, '碰撞节点标题', '碰撞节点正文', 'collision-1');
+        const page = { ...original, offset: 20, limit: 20, total: 22, items: [firstLater, collision] };
         return delayedClone(new Response(JSON.stringify(page), { status: upstream.status, headers: { 'content-type': 'application/json' } }), 0);
       }
       return upstream;
@@ -85,7 +87,7 @@ const dom = new JSDOM(html, {
 const stage = dom.window.document.querySelector('#stage');
 await waitFor('the frozen runtime to render the first raw node page', () => !!stage?.querySelector('#group-history-secondary article details') && !stage.querySelector('#group-history-secondary [data-next]')?.hasAttribute('disabled'));
 stage.querySelector('#group-history-secondary [data-next]')?.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
-await waitFor('the newest node page read-only facts', () => (stage?.textContent || '').includes('后页标题') && !!stage?.querySelector('#group-history-secondary .send-readonly-detail'));
+await waitFor('the newest node page read-only facts', () => { const text = stage?.textContent || ''; return text.includes('后页标题') && text.includes('碰撞节点标题') && !!stage?.querySelector('#group-history-secondary .send-readonly-detail'); });
 const nextText = stage?.textContent || '';
 if (nextText.includes('旧页 0') || nextText.includes('标题 <img src=x onerror=alert(1)>')) throw new Error(`slow prior page overwrote the current node page: ${nextText}`);
 stage.querySelector('#group-history-secondary [data-prev]')?.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
