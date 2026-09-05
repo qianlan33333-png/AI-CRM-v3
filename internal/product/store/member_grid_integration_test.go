@@ -88,31 +88,71 @@ func TestMemberGridPostgreSQLCRUDAndCAS(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 9, 5, 0, 0, 0, 0, time.UTC)
+	viewConfig := json.RawMessage(`{"schema_version":1,"filter":{"logic":"and","conditions":[{"field":"remaining_days","operator":"gte","value":7}]},"sorts":[{"field":"remaining_days","direction":"asc"}],"groups":[]}`)
 	var view productport.MemberGridView
 	err = unit.Within(ctx, func(tx context.Context) error {
 		var e error
-		view, e = repo.CreateMemberGridView(tx, productport.MemberGridView{ProductID: productport.ID(productID), Name: "保存视图", Config: json.RawMessage(`{"state":"all"}`), CreatedBy: 1, UpdatedBy: 1, CreatedAt: now, UpdatedAt: now})
+		view, e = repo.CreateMemberGridView(tx, productport.MemberGridView{ProductID: productport.ID(productID), Name: "保存视图", Config: viewConfig, CreatedBy: 1, UpdatedBy: 1, CreatedAt: now, UpdatedAt: now})
 		return e
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	err = unit.Within(ctx, func(tx context.Context) error {
-		_, e := repo.UpdateMemberGridView(tx, productport.MemberGridView{ID: view.ID, ProductID: view.ProductID, Name: "保存视图二", Config: json.RawMessage(`{"state":"active"}`), Version: view.Version, UpdatedBy: 1, UpdatedAt: now.Add(time.Second)})
+		var e error
+		view, e = repo.UpdateMemberGridView(tx, productport.MemberGridView{ID: view.ID, ProductID: view.ProductID, Name: "保存视图二", Config: viewConfig, Version: view.Version, UpdatedBy: 1, UpdatedAt: now.Add(time.Second)})
 		return e
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	err = unit.Within(ctx, func(tx context.Context) error {
-		_, e := repo.UpdateMemberGridView(tx, productport.MemberGridView{ID: view.ID, ProductID: view.ProductID, Name: "过期CAS", Config: json.RawMessage(`{"state":"all"}`), Version: view.Version, UpdatedBy: 1, UpdatedAt: now})
+		_, e := repo.CreateMemberGridView(tx, productport.MemberGridView{ProductID: productport.ID(productID), Name: "保存视图二", Config: viewConfig, CreatedBy: 1, UpdatedBy: 1, CreatedAt: now, UpdatedAt: now})
+		return e
+	})
+	if err == nil {
+		t.Fatal("case-insensitive view name uniqueness unexpectedly accepted")
+	}
+	err = unit.Within(ctx, func(tx context.Context) error {
+		_, e := repo.UpdateMemberGridView(tx, productport.MemberGridView{ID: view.ID, ProductID: view.ProductID, Name: "过期CAS", Config: viewConfig, Version: view.Version - 1, UpdatedBy: 1, UpdatedAt: now})
 		return e
 	})
 	if err == nil {
 		t.Fatal("stale view CAS unexpectedly succeeded")
 	}
 	err = unit.Within(ctx, func(tx context.Context) error {
-		_, e := repo.CreateMemberGridCollaborator(tx, productport.MemberGridCollaborator{ProductID: productport.ID(productID), AdminUserID: 1, Permission: "edit", CreatedBy: 1, UpdatedBy: 1, CreatedAt: now, UpdatedAt: now})
+		_, e := repo.DeleteMemberGridView(tx, view.ProductID, view.ID, view.Version)
+		return e
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var collaborator productport.MemberGridCollaborator
+	err = unit.Within(ctx, func(tx context.Context) error {
+		var e error
+		collaborator, e = repo.CreateMemberGridCollaborator(tx, productport.MemberGridCollaborator{ProductID: productport.ID(productID), AdminUserID: 1, Permission: "edit", CreatedBy: 1, UpdatedBy: 1, CreatedAt: now, UpdatedAt: now})
+		return e
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = unit.Within(ctx, func(tx context.Context) error {
+		var e error
+		collaborator, e = repo.UpdateMemberGridCollaborator(tx, productport.MemberGridCollaborator{ID: collaborator.ID, ProductID: collaborator.ProductID, Permission: "read", Version: collaborator.Version, UpdatedBy: 1, UpdatedAt: now.Add(time.Second)})
+		return e
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = unit.Within(ctx, func(tx context.Context) error {
+		_, e := repo.UpdateMemberGridCollaborator(tx, productport.MemberGridCollaborator{ID: collaborator.ID, ProductID: collaborator.ProductID, Permission: "edit", Version: collaborator.Version - 1, UpdatedBy: 1, UpdatedAt: now})
+		return e
+	})
+	if err == nil {
+		t.Fatal("stale collaborator CAS unexpectedly succeeded")
+	}
+	err = unit.Within(ctx, func(tx context.Context) error {
+		_, e := repo.DeleteMemberGridCollaborator(tx, collaborator.ProductID, collaborator.ID, collaborator.Version)
 		return e
 	})
 	if err != nil {
@@ -124,6 +164,13 @@ func TestMemberGridPostgreSQLCRUDAndCAS(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	err = unit.Within(ctx, func(tx context.Context) error {
+		_, e := repo.SetMemberGridShare(tx, productport.MemberGridShare{ProductID: productport.ID(productID), Enabled: false, Generation: 1, CreatedBy: 1, UpdatedBy: 1, CreatedAt: now, UpdatedAt: now.Add(time.Second)}, 0)
+		return e
+	})
+	if err == nil {
+		t.Fatal("stale share CAS unexpectedly succeeded")
 	}
 	err = unit.Within(ctx, func(tx context.Context) error {
 		s, e := repo.GetMemberGridShareByToken(tx, "mgshare1.abcdefghijklmnopqrstuv.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")

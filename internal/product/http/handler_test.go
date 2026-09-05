@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -138,26 +139,50 @@ type testExternalPush struct {
 }
 
 type testMemberEntitlements struct {
-	page orderport.ServicePeriodMemberPage
+	page      orderport.ServicePeriodMemberPage
+	queries   []orderport.ServicePeriodMemberQuery
+	remarkCmd *orderport.RemarkCommand
 }
 
-func (stub testMemberEntitlements) ListCustomerEntitlements(context.Context, int64, int32) (orderport.EntitlementPage, error) {
+func (stub *testMemberEntitlements) ListCustomerEntitlements(context.Context, int64, int32) (orderport.EntitlementPage, error) {
 	return orderport.EntitlementPage{}, nil
 }
-func (stub testMemberEntitlements) ListServicePeriodMembers(context.Context, orderport.ServicePeriodMemberQuery) (orderport.ServicePeriodMemberPage, error) {
+func (stub *testMemberEntitlements) ListServicePeriodMembers(_ context.Context, query orderport.ServicePeriodMemberQuery) (orderport.ServicePeriodMemberPage, error) {
+	stub.queries = append(stub.queries, query)
 	return stub.page, nil
 }
-func (stub testMemberEntitlements) GetCustomerServicePeriodEntitlement(context.Context, int64, int64) (orderport.Entitlement, bool, error) {
+func (stub *testMemberEntitlements) GetCustomerServicePeriodEntitlement(context.Context, int64, int64) (orderport.Entitlement, bool, error) {
 	return orderport.Entitlement{}, false, nil
 }
-func (stub testMemberEntitlements) UpdateEntitlementRemark(context.Context, orderport.RemarkCommand) (orderport.Entitlement, error) {
-	return orderport.Entitlement{}, nil
+func (stub *testMemberEntitlements) UpdateEntitlementRemark(_ context.Context, command orderport.RemarkCommand) (orderport.Entitlement, error) {
+	stub.remarkCmd = &command
+	return orderport.Entitlement{ID: command.EntitlementID, ServiceProductID: command.ServiceProductID, Remark: command.Remark, Version: command.ExpectedVersion + 1, UpdatedAt: time.Now().UTC()}, nil
 }
 
 type testMemberNames struct{}
 
 func (testMemberNames) DisplayNames(context.Context, []customerdomain.CustomerID) (map[customerdomain.CustomerID]string, error) {
 	return map[customerdomain.CustomerID]string{}, nil
+}
+
+// This directory is an Access projection, as production composition supplies.
+// The old page submits the stable WeCom user id, never an internal numeric id.
+type testMemberStaffDirectory struct{ staff productport.MemberGridStaff }
+
+func (directory testMemberStaffDirectory) ActiveMemberGridStaff(_ context.Context, id int64) (bool, error) {
+	return directory.staff.Active && id == directory.staff.AdminUserID, nil
+}
+func (directory testMemberStaffDirectory) MemberGridStaffByWeComUserID(_ context.Context, value string) (productport.MemberGridStaff, bool, error) {
+	return directory.staff, directory.staff.WeComUserID == value, nil
+}
+func (directory testMemberStaffDirectory) MemberGridStaffByID(_ context.Context, id int64) (productport.MemberGridStaff, bool, error) {
+	return directory.staff, directory.staff.AdminUserID == id, nil
+}
+func (directory testMemberStaffDirectory) ListActiveMemberGridStaff(context.Context) ([]productport.MemberGridStaff, error) {
+	if !directory.staff.Active {
+		return []productport.MemberGridStaff{}, nil
+	}
+	return []productport.MemberGridStaff{directory.staff}, nil
 }
 
 // The HTTP fixture models the Product-owned workspace port.  It keeps the
@@ -215,7 +240,10 @@ func (s *testMemberWorkspace) SetShare(_ context.Context, c productport.SetMembe
 	}
 	return s.share, c.Enabled, nil
 }
-func (s *testMemberWorkspace) ResolveShare(context.Context, string) (productport.MemberGridShare, error) {
+func (s *testMemberWorkspace) ResolveShare(_ context.Context, token string) (productport.MemberGridShare, error) {
+	if !s.share.Enabled || token != s.share.PublicID {
+		return productport.MemberGridShare{}, productapp.ErrNotFound
+	}
 	return s.share, nil
 }
 
@@ -245,10 +273,14 @@ func newHandlerForTest(t *testing.T) (*Handler, *testSecurity, *testCatalog, *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = handler.SetServicePeriodMemberReaders(testMemberEntitlements{}, testMemberNames{}); err != nil {
+	members := &testMemberEntitlements{page: orderport.ServicePeriodMemberPage{Items: []orderport.Entitlement{{ID: 41, CustomerID: 77, ServiceProductID: 7, ProductName: "周期七", Status: "active", StartAt: now.Add(-24 * time.Hour), EndAt: now.Add(7 * 24 * time.Hour), Version: 5, UpdatedAt: now}}}}
+	if err = handler.SetServicePeriodMemberReaders(members, testMemberNames{}); err != nil {
 		t.Fatal(err)
 	}
 	if err = handler.SetServicePeriodMemberWorkspace(&testMemberWorkspace{access: productport.MemberGridAccess{CanView: true, CanEdit: true, CanManageViews: true, CanShare: true}, deniedID: 22}); err != nil {
+		t.Fatal(err)
+	}
+	if err = handler.SetServicePeriodMemberStaffDirectory(testMemberStaffDirectory{staff: productport.MemberGridStaff{AdminUserID: 5, WeComUserID: "zhangsan", DisplayName: "张三", Active: true}}); err != nil {
 		t.Fatal(err)
 	}
 	return handler, security, catalog, lifecycle
@@ -349,41 +381,140 @@ func TestHandlerReturnsTruthfulCompatibilityReads(t *testing.T) {
 	}
 }
 
-func TestMemberGridHttpAPICRUDAndPermissionGate(t *testing.T) {
+func TestFrozenMemberGridHTTPAPISavedViewCollaboratorShareAndRemarkJourney(t *testing.T) {
 	handler, security, _, _ := newHandlerForTest(t)
-	post := func(path, body string) *httptest.ResponseRecorder {
-		r := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
-		r.Header.Set("Idempotency-Key", "grid-http-api-key-0001")
+	requestNumber := 0
+	adminRequest := func(method, path, body string) *httptest.ResponseRecorder {
+		requestNumber++
+		r := httptest.NewRequest(method, path, strings.NewReader(body))
+		if method != http.MethodGet {
+			r.Header.Set("Idempotency-Key", fmt.Sprintf("grid-http-api-key-%04d", requestNumber))
+		}
 		w := httptest.NewRecorder()
 		handler.ServeHTTP(w, r)
 		return w
 	}
-	if got := post("/api/admin/service-period-products/7/member-views", `{"expected_version":0,"name":"本周","state":"all","sort":"granted_at_desc","columns":["state"]}`); got.Code != http.StatusCreated || !strings.Contains(got.Body.String(), `"view_id":13`) || !strings.Contains(got.Body.String(), `"version":1`) {
-		t.Fatalf("view create=%d %s", got.Code, got.Body.String())
+	viewConfig := `{"schema_version":1,"filter":{"logic":"and","conditions":[{"field":"remaining_days","operator":"gte","value":7}]},"sorts":[{"field":"remaining_days","direction":"asc"}],"groups":[{"field":"remaining_days","direction":"asc"}]}`
+
+	access := adminRequest(http.MethodGet, "/api/admin/service-period-products/7/member-grid/access", "")
+	if access.Code != http.StatusOK || !strings.Contains(access.Body.String(), `"can_manage_views":true`) || !strings.Contains(access.Body.String(), `"can_manage_share":true`) {
+		t.Fatalf("old access contract=%d %s", access.Code, access.Body.String())
 	}
-	if got := post("/api/admin/service-period-products/7/member-grid/collaborators", `{"expected_version":0,"staff_id":5,"permission":"edit"}`); got.Code != http.StatusCreated || !strings.Contains(got.Body.String(), `"collaborator_id":14`) || !strings.Contains(got.Body.String(), `"version":1`) {
-		t.Fatalf("collaborator create=%d %s", got.Code, got.Body.String())
+	schema := adminRequest(http.MethodGet, "/api/admin/service-period-products/7/member-grid/schema", "")
+	if schema.Code != http.StatusOK || !strings.Contains(schema.Body.String(), `"schema_version":1`) || !strings.Contains(schema.Body.String(), `"remaining_days"`) {
+		t.Fatalf("old schema contract=%d %s", schema.Code, schema.Body.String())
 	}
-	put := httptest.NewRequest(http.MethodPut, "/api/admin/service-period-products/7/member-grid/share-settings", strings.NewReader(`{"enabled":true,"expected_version":0}`))
-	put.Header.Set("Idempotency-Key", "grid-share-key-0001")
-	w := httptest.NewRecorder()
-	handler.ServeHTTP(w, put)
-	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "mgshare1.") {
-		t.Fatalf("share=%d %s", w.Code, w.Body.String())
+
+	createView := adminRequest(http.MethodPost, "/api/admin/service-period-products/7/member-views", `{"name":"本周","config":`+viewConfig+`}`)
+	if createView.Code != http.StatusCreated || !strings.Contains(createView.Body.String(), `"id":"13"`) || !strings.Contains(createView.Body.String(), `"version":1`) || !strings.Contains(createView.Body.String(), `"config"`) {
+		t.Fatalf("view create=%d %s", createView.Code, createView.Body.String())
 	}
-	query := httptest.NewRequest(http.MethodPost, "/api/admin/service-period-products/7/member-grid/query", strings.NewReader(`{"view_id":"13","limit":50}`))
-	queryW := httptest.NewRecorder()
-	handler.ServeHTTP(queryW, query)
-	if queryW.Code != http.StatusOK {
-		t.Fatalf("saved view query=%d %s", queryW.Code, queryW.Body.String())
+	updateView := adminRequest(http.MethodPut, "/api/admin/service-period-products/7/member-views/13", `{"name":"本周更新","version":1,"config":`+viewConfig+`}`)
+	if updateView.Code != http.StatusOK || !strings.Contains(updateView.Body.String(), `"version":2`) || !strings.Contains(updateView.Body.String(), "本周更新") {
+		t.Fatalf("view update=%d %s", updateView.Code, updateView.Body.String())
 	}
-	// A Viewer without Product workspace metadata cannot enumerate members or
-	// collaborator/share settings, even though the normal admin shell read is valid.
+	query := adminRequest(http.MethodPost, "/api/admin/service-period-products/7/member-grid/query", `{"config":`+viewConfig+`,"limit":50}`)
+	if query.Code != http.StatusOK || !strings.Contains(query.Body.String(), `"record_id":"spm_`) || !strings.Contains(query.Body.String(), `"group_path"`) || !strings.Contains(query.Body.String(), `"renewal_count_unavailable":true`) {
+		t.Fatalf("saved view query=%d %s", query.Code, query.Body.String())
+	}
+	members := handler.members.(*testMemberEntitlements)
+	if len(members.queries) == 0 || members.queries[len(members.queries)-1].Sort != "remaining_days_asc" || members.queries[len(members.queries)-1].RemainingDays == nil {
+		t.Fatalf("saved view config was not applied: %+v", members.queries)
+	}
+	deleteView := adminRequest(http.MethodDelete, "/api/admin/service-period-products/7/member-views/13", `{"version":2}`)
+	if deleteView.Code != http.StatusOK || !strings.Contains(deleteView.Body.String(), `"deleted":true`) || !strings.Contains(deleteView.Body.String(), `"id":"13"`) {
+		t.Fatalf("view delete=%d %s", deleteView.Code, deleteView.Body.String())
+	}
+
+	numericCollaborator := adminRequest(http.MethodPost, "/api/admin/service-period-products/7/member-grid/collaborators", `{"staff_id":5,"permission":"edit"}`)
+	if numericCollaborator.Code != http.StatusBadRequest {
+		t.Fatalf("numeric collaborator id bypass=%d %s", numericCollaborator.Code, numericCollaborator.Body.String())
+	}
+	staff := adminRequest(http.MethodGet, "/api/admin/service-period-products/7/member-grid/staff", "")
+	if staff.Code != http.StatusOK || !strings.Contains(staff.Body.String(), `"user_id":"zhangsan"`) {
+		t.Fatalf("staff picker=%d %s", staff.Code, staff.Body.String())
+	}
+	createCollaborator := adminRequest(http.MethodPost, "/api/admin/service-period-products/7/member-grid/collaborators", `{"wecom_userid":"zhangsan","permission":"edit"}`)
+	if createCollaborator.Code != http.StatusCreated || !strings.Contains(createCollaborator.Body.String(), `"id":"14"`) || !strings.Contains(createCollaborator.Body.String(), `"wecom_userid":"zhangsan"`) || !strings.Contains(createCollaborator.Body.String(), `"version":1`) {
+		t.Fatalf("collaborator create=%d %s", createCollaborator.Code, createCollaborator.Body.String())
+	}
+	updateCollaborator := adminRequest(http.MethodPut, "/api/admin/service-period-products/7/member-grid/collaborators/14", `{"permission":"read","version":1}`)
+	if updateCollaborator.Code != http.StatusOK || !strings.Contains(updateCollaborator.Body.String(), `"version":2`) {
+		t.Fatalf("collaborator update=%d %s", updateCollaborator.Code, updateCollaborator.Body.String())
+	}
+	deleteCollaborator := adminRequest(http.MethodDelete, "/api/admin/service-period-products/7/member-grid/collaborators/14", `{"version":2}`)
+	if deleteCollaborator.Code != http.StatusOK || !strings.Contains(deleteCollaborator.Body.String(), `"deleted":true`) || !strings.Contains(deleteCollaborator.Body.String(), `"version":2`) {
+		t.Fatalf("collaborator delete=%d %s", deleteCollaborator.Code, deleteCollaborator.Body.String())
+	}
+
+	enableShare := adminRequest(http.MethodPut, "/api/admin/service-period-products/7/member-grid/external-share", `{"enabled":true,"version":0}`)
+	if enableShare.Code != http.StatusOK || strings.Contains(enableShare.Body.String(), `"token"`) || !strings.Contains(enableShare.Body.String(), "/shared/service-period-member-grid#mgshare1.") {
+		t.Fatalf("share enable=%d %s", enableShare.Code, enableShare.Body.String())
+	}
+	workspace := handler.workspace.(*testMemberWorkspace)
+	bootstrap := httptest.NewRequest(http.MethodGet, "/api/public/service-period-member-grid/bootstrap", nil)
+	bootstrap.Header.Set("X-AICRM-Grid-Share-Token", workspace.share.PublicID)
+	bootResponse := httptest.NewRecorder()
+	handler.ServeHTTP(bootResponse, bootstrap)
+	if bootResponse.Code != http.StatusOK || strings.Contains(bootResponse.Body.String(), workspace.share.PublicID) {
+		t.Fatalf("public bootstrap=%d %s", bootResponse.Code, bootResponse.Body.String())
+	}
+	publicQuery := httptest.NewRequest(http.MethodPost, "/api/public/service-period-member-grid/query", strings.NewReader(`{"view_id":"default","limit":50}`))
+	publicQuery.Header.Set("X-AICRM-Grid-Share-Token", workspace.share.PublicID)
+	publicResponse := httptest.NewRecorder()
+	handler.ServeHTTP(publicResponse, publicQuery)
+	if publicResponse.Code != http.StatusOK || strings.Contains(publicResponse.Body.String(), workspace.share.PublicID) || !strings.Contains(publicResponse.Body.String(), `"rows"`) {
+		t.Fatalf("public query=%d %s", publicResponse.Code, publicResponse.Body.String())
+	}
+	revokeShare := adminRequest(http.MethodPut, "/api/admin/service-period-products/7/member-grid/external-share", `{"enabled":false,"version":1}`)
+	if revokeShare.Code != http.StatusOK || strings.Contains(revokeShare.Body.String(), "mgshare1.") || !strings.Contains(revokeShare.Body.String(), `"enabled":false`) {
+		t.Fatalf("share revoke=%d %s", revokeShare.Code, revokeShare.Body.String())
+	}
+	revoked := httptest.NewRecorder()
+	handler.ServeHTTP(revoked, bootstrap)
+	if revoked.Code != http.StatusGone || strings.Contains(revoked.Body.String(), `"rows"`) {
+		t.Fatalf("revoked public token=%d %s", revoked.Code, revoked.Body.String())
+	}
+
+	remark := adminRequest(http.MethodPut, "/api/admin/service-period-products/7/members/"+memberGridMemberRef(41)+"/remark", `{"remark":"已联系","version":5}`)
+	if remark.Code != http.StatusOK || !strings.Contains(remark.Body.String(), `"version":6`) {
+		t.Fatalf("remark=%d %s", remark.Code, remark.Body.String())
+	}
+	if members.remarkCmd == nil || members.remarkCmd.CustomerID != 0 || members.remarkCmd.ServiceProductID != 7 || members.remarkCmd.EntitlementID != 41 {
+		t.Fatalf("opaque remark did not carry only product scope: %+v", members.remarkCmd)
+	}
+
 	security.principal = accessdomain.Principal{Kind: accessdomain.KindAdmin, InternalID: 22, Roles: []accessdomain.Role{accessdomain.RoleViewer}}
 	denied := httptest.NewRecorder()
 	handler.ServeHTTP(denied, httptest.NewRequest(http.MethodGet, "/api/admin/service-period-products/7/members", nil))
 	if denied.Code != http.StatusForbidden {
 		t.Fatalf("revoked/no workspace read=%d %s", denied.Code, denied.Body.String())
+	}
+}
+
+func TestMemberGridPublicHttpAPIOnlyReadsEnabledShareAndSavedViews(t *testing.T) {
+	handler, _, _, _ := newHandlerForTest(t)
+	workspace := handler.workspace.(*testMemberWorkspace)
+	workspace.share = productport.MemberGridShare{ProductID: 7, Enabled: true, PublicID: "mgshare1.abcdefghijklmnopqrstuv.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", Version: 1}
+	bootstrap := httptest.NewRequest(http.MethodGet, "/api/public/service-period-member-grid/bootstrap", nil)
+	bootstrap.Header.Set("X-AICRM-Grid-Share-Token", workspace.share.PublicID)
+	bootResponse := httptest.NewRecorder()
+	handler.ServeHTTP(bootResponse, bootstrap)
+	if bootResponse.Code != http.StatusOK || !strings.Contains(bootResponse.Body.String(), `"views"`) || strings.Contains(bootResponse.Body.String(), workspace.share.PublicID) {
+		t.Fatalf("bootstrap=%d %s", bootResponse.Code, bootResponse.Body.String())
+	}
+	query := httptest.NewRequest(http.MethodPost, "/api/public/service-period-member-grid/query", strings.NewReader(`{"view_id":"default","limit":50}`))
+	query.Header.Set("X-AICRM-Grid-Share-Token", workspace.share.PublicID)
+	queryResponse := httptest.NewRecorder()
+	handler.ServeHTTP(queryResponse, query)
+	if queryResponse.Code != http.StatusOK || !strings.Contains(queryResponse.Body.String(), `"rows"`) {
+		t.Fatalf("query=%d %s", queryResponse.Code, queryResponse.Body.String())
+	}
+	workspace.share.Enabled = false
+	revoked := httptest.NewRecorder()
+	handler.ServeHTTP(revoked, bootstrap)
+	if revoked.Code != http.StatusGone || strings.Contains(revoked.Body.String(), `"rows"`) {
+		t.Fatalf("revoked=%d %s", revoked.Code, revoked.Body.String())
 	}
 }
 

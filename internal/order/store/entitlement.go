@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -96,15 +97,40 @@ func (r *Repository) ListServicePeriodMembers(ctx context.Context, query orderpo
 		state = "refunded"
 	}
 	source := strings.TrimSpace(query.Source)
+	filterArgs := make([]any, 0, 3)
+	nextPlaceholder := 9
+	remainingClause, remainingArgs := servicePeriodRemainingDaysClause(query.RemainingDays, nextPlaceholder)
+	nextPlaceholder += len(remainingArgs)
+	filterArgs = append(filterArgs, remainingArgs...)
+	remarkClause, remarkArgs := servicePeriodRemarkClause(query.Remark, nextPlaceholder)
+	filterArgs = append(filterArgs, remarkArgs...)
+	joiner := " AND "
+	if query.FilterLogic == "or" && query.RemainingDays != nil && query.Remark != nil {
+		joiner = " OR "
+	}
+	memberFilter := "TRUE"
+	if query.RemainingDays != nil && query.Remark != nil {
+		memberFilter = "(" + remainingClause + ")" + joiner + "(" + remarkClause + ")"
+	} else if query.RemainingDays != nil {
+		memberFilter = remainingClause
+	} else if query.Remark != nil {
+		memberFilter = remarkClause
+	}
+	args := []any{query.ServiceProductID, state, source, cursorUpdated, cursorStart, query.Sort, cursorID, cursorEnd}
+	args = append(args, filterArgs...)
+	args = append(args, query.Limit+1)
 	rows, err := tx.Query(ctx, `SELECT id,customer_id,service_product_id,product_name,last_order_id,status,start_at,end_at,remark,version,updated_at,source_system
 		FROM order_service_entitlements
 		WHERE service_product_id=$1
 		  AND ($2='' OR status=$2)
 		  AND ($3='' OR ($3='paid_order' AND source_system='native-payment') OR ($3='manual' AND source_system<>'native-payment'))
+		  AND (`+memberFilter+`)
 		  AND (($6='updated_at_desc' AND ($4::timestamptz IS NULL OR (updated_at,id)<($4::timestamptz,$7::bigint)))
 		    OR ($6='starts_at_desc' AND ($5::timestamptz IS NULL OR (start_at,id)<($5::timestamptz,$7::bigint)))
+		    OR ($6='remaining_days_desc' AND ($8::timestamptz IS NULL OR (end_at,id)<($8::timestamptz,$7::bigint)))
+		    OR ($6='remaining_days_asc' AND ($8::timestamptz IS NULL OR (end_at,id)>($8::timestamptz,$7::bigint)))
 		    OR ($6='' AND ($8::timestamptz IS NULL OR (end_at,id)<($8::timestamptz,$7::bigint))))
-		ORDER BY CASE WHEN $6='updated_at_desc' THEN updated_at WHEN $6='starts_at_desc' THEN start_at ELSE end_at END DESC,id DESC LIMIT $9`, query.ServiceProductID, state, source, cursorUpdated, cursorStart, query.Sort, cursorID, cursorEnd, query.Limit+1)
+		ORDER BY CASE WHEN $6='updated_at_desc' THEN updated_at WHEN $6='starts_at_desc' THEN start_at ELSE end_at END `+servicePeriodSortDirection(query.Sort)+`,id `+servicePeriodSortDirection(query.Sort)+` LIMIT $`+strconv.Itoa(len(args)), args...)
 	if err != nil {
 		return orderport.ServicePeriodMemberPage{}, err
 	}
@@ -131,6 +157,56 @@ func (r *Repository) ListServicePeriodMembers(ctx context.Context, query orderpo
 	page.NextCursor = base64.RawURLEncoding.EncodeToString(encoded)
 	page.Items = page.Items[:query.Limit]
 	return page, nil
+}
+
+func servicePeriodSortDirection(sort string) string {
+	if sort == "remaining_days_asc" {
+		return "ASC"
+	}
+	return "DESC"
+}
+
+func servicePeriodRemainingDaysClause(filter *orderport.MemberGridNumberFilter, start int) (string, []any) {
+	if filter == nil {
+		return "TRUE", nil
+	}
+	expression := "FLOOR(EXTRACT(EPOCH FROM (end_at - CURRENT_TIMESTAMP)) / 86400)::bigint"
+	if filter.Operator == "between" {
+		return expression + " BETWEEN $" + strconv.Itoa(start) + " AND $" + strconv.Itoa(start+1), []any{filter.Values[0], filter.Values[1]}
+	}
+	op := map[string]string{"equals": "=", "not_equals": "<>", "gt": ">", "gte": ">=", "lt": "<", "lte": "<="}[filter.Operator]
+	return expression + " " + op + " $" + strconv.Itoa(start), []any{filter.Values[0]}
+}
+
+func servicePeriodRemarkClause(filter *orderport.MemberGridTextFilter, start int) (string, []any) {
+	if filter == nil {
+		return "TRUE", nil
+	}
+	expression := "NULLIF(BTRIM(COALESCE(remark, '')), '')"
+	switch filter.Operator {
+	case "is_empty":
+		return expression + " IS NULL", nil
+	case "is_not_empty":
+		return expression + " IS NOT NULL", nil
+	case "contains", "not_contains":
+		clause := "LOWER(COALESCE(remark, '')) LIKE $" + strconv.Itoa(start) + " ESCAPE E'\\\\'"
+		if filter.Operator == "not_contains" {
+			clause = "NOT (" + clause + ")"
+		}
+		return clause, []any{"%" + escapeServicePeriodLike(strings.ToLower(filter.Value)) + "%"}
+	case "equals", "not_equals":
+		clause := "LOWER(COALESCE(remark, '')) = $" + strconv.Itoa(start)
+		if filter.Operator == "not_equals" {
+			clause = "NOT (" + clause + ")"
+		}
+		return clause, []any{strings.ToLower(filter.Value)}
+	default:
+		return "FALSE", nil
+	}
+}
+
+func escapeServicePeriodLike(value string) string {
+	return strings.NewReplacer("\\", "\\\\", "%", "\\%", "_", "\\_").Replace(value)
 }
 
 func (r *Repository) FindEntitlementReceipt(ctx context.Context, key [32]byte) (orderport.Entitlement, [32]byte, string, bool, error) {
@@ -181,7 +257,7 @@ func (r *Repository) UpdateEntitlementRemark(ctx context.Context, command orderp
 		return orderport.Entitlement{}, err
 	}
 	var item orderport.Entitlement
-	err = tx.QueryRow(ctx, `UPDATE order_service_entitlements SET remark=$5,version=version+1,updated_at=$6 WHERE id=$1 AND customer_id=$2 AND ($3=0 OR service_product_id=$3) AND version=$4 AND status IN ('active','expired') RETURNING id,customer_id,service_product_id,product_name,last_order_id,status,start_at,end_at,remark,version,updated_at`, command.EntitlementID, command.CustomerID, command.ServiceProductID, command.ExpectedVersion, command.Remark, at).Scan(&item.ID, &item.CustomerID, &item.ServiceProductID, &item.ProductName, &item.LastOrderID, &item.Status, &item.StartAt, &item.EndAt, &item.Remark, &item.Version, &item.UpdatedAt)
+	err = tx.QueryRow(ctx, `UPDATE order_service_entitlements SET remark=$5,version=version+1,updated_at=$6 WHERE id=$1 AND ($2=0 OR customer_id=$2) AND service_product_id=$3 AND version=$4 AND status IN ('active','expired') RETURNING id,customer_id,service_product_id,product_name,last_order_id,status,start_at,end_at,remark,version,updated_at`, command.EntitlementID, command.CustomerID, command.ServiceProductID, command.ExpectedVersion, command.Remark, at).Scan(&item.ID, &item.CustomerID, &item.ServiceProductID, &item.ProductName, &item.LastOrderID, &item.Status, &item.StartAt, &item.EndAt, &item.Remark, &item.Version, &item.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return item, orderport.ErrConflict
 	}

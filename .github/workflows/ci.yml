@@ -85,6 +85,7 @@ jobs:
           scripts/check-pr01-donor-manifest.sh
           scripts/check-pr02-donor-manifest.sh
           scripts/check-pr03-frontend-donor-manifest.sh
+          AICRM_SERVICE_PERIOD_MEMBER_GRID_DONOR_DIR="${{ github.workspace }}/.ci-donor-sidebar" scripts/check-service-period-member-grid-donor.sh
           scripts/check-automationops-donor-manifest.sh
           scripts/check-channel-donor-manifest.sh
           donor_dir="$(mktemp -d)"
@@ -214,6 +215,7 @@ jobs:
           scripts/check-pr01-donor-manifest.sh
           scripts/check-pr02-donor-manifest.sh
           scripts/check-pr03-frontend-donor-manifest.sh
+          AICRM_SERVICE_PERIOD_MEMBER_GRID_DONOR_DIR="${{ github.workspace }}/.ci-donor-sidebar" scripts/check-service-period-member-grid-donor.sh
           scripts/check-automationops-donor-manifest.sh
           scripts/check-channel-donor-manifest.sh
           scripts/check-survey-donor-manifest.sh

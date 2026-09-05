@@ -27,6 +27,19 @@ type MemberGridWorkspace interface {
 // Product stores the verified internal staff ID but never reads admin_users.
 type MemberGridStaffDirectory interface {
 	ActiveMemberGridStaff(context.Context, int64) (bool, error)
+	MemberGridStaffByWeComUserID(context.Context, string) (MemberGridStaff, bool, error)
+	MemberGridStaffByID(context.Context, int64) (MemberGridStaff, bool, error)
+	ListActiveMemberGridStaff(context.Context) ([]MemberGridStaff, error)
+}
+
+// MemberGridStaff is a safe Access-owned internal-directory projection. It
+// contains no customer identity and is used only to select or describe a
+// collaborator in this Product-owned workspace.
+type MemberGridStaff struct {
+	AdminUserID int64
+	WeComUserID string
+	DisplayName string
+	Active      bool
 }
 
 type MemberGridActor struct {

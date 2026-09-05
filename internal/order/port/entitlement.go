@@ -38,6 +38,22 @@ type ServicePeriodMemberQuery struct {
 	// Sort is intentionally bounded to the member-grid's two donor choices.
 	// Empty preserves the legacy end-at order used by the list endpoint.
 	Sort string
+	// The Product member-grid host only admits filters that Order can evaluate
+	// from its own entitlement facts. Customer names deliberately stay outside
+	// this port.
+	RemainingDays *MemberGridNumberFilter
+	Remark        *MemberGridTextFilter
+	FilterLogic   string
+}
+
+type MemberGridNumberFilter struct {
+	Operator string
+	Values   []int64
+}
+
+type MemberGridTextFilter struct {
+	Operator string
+	Value    string
 }
 
 type ServicePeriodMemberPage struct {

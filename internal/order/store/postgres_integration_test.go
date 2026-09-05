@@ -164,6 +164,13 @@ func TestEntitlementRemarkRejectsCrossProductBeforeMutation(t *testing.T) {
 	if remark != "原备注" || version != 1 || receipts != 0 || audits != 0 || outbox != 0 {
 		t.Fatalf("cross-product changed remark=%q version=%d receipts=%d audits=%d outbox=%d", remark, version, receipts, audits, outbox)
 	}
+	updated, err := app.UpdateEntitlementRemark(ctx, orderport.RemarkCommand{EntitlementID: id, CustomerID: 0, ServiceProductID: 81, EmployeeID: "admin:1", Remark: "不公开客户ID的备注", ExpectedVersion: 1, IdempotencyKey: "opaque-member-remark-key"})
+	if err != nil {
+		t.Fatalf("opaque product-scoped remark: %v", err)
+	}
+	if updated.ID != id || updated.CustomerID != 811 || updated.ServiceProductID != 81 || updated.Remark != "不公开客户ID的备注" || updated.Version != 2 {
+		t.Fatalf("opaque product-scoped result=%+v", updated)
+	}
 }
 
 func TestPostgreSQLOrderCheckoutSnapshotIsAtomicAndDatabaseFrozen(t *testing.T) {

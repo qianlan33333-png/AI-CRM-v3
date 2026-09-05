@@ -559,7 +559,8 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	// 0079 is Product-owned workspace metadata.  The HTTP host still reads
 	// members through the Order port and display names through the Customer
 	// port; it does not receive either store here.
-	productMemberGrid := productapp.NewMemberGridWorkspaceService(uow, productRepository, productMemberGridStaffDirectory{users: accessRepository}, productEvents)
+	productMemberGridStaff := productMemberGridStaffDirectory{users: accessRepository}
+	productMemberGrid := productapp.NewMemberGridWorkspaceService(uow, productRepository, productMemberGridStaff, productEvents)
 	productExternalPush, err := productapp.NewCommerceExternalPushService(uow, productRepository, productstore.NewLocalExternalPushEffectAccepter(), productEvents)
 	if err != nil {
 		return fail(err)
@@ -569,6 +570,9 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return fail(err)
 	}
 	if err = productBindings.ProductHandler.SetServicePeriodMemberWorkspace(productMemberGrid); err != nil {
+		return fail(err)
+	}
+	if err = productBindings.ProductHandler.SetServicePeriodMemberStaffDirectory(productMemberGridStaff); err != nil {
 		return fail(err)
 	}
 	publicProductHandler, err := producthttp.NewPublicHandler(productCatalog)
@@ -1071,6 +1075,8 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	adminAPIs.Handle("/api/h5/wechat-pay/oauth/", paymentHandler)
 	adminAPIs.Handle("/api/public/wechat-pay/", paymentHandler)
 	adminAPIs.Handle("/api/public/wechat-shop/", paymentHandler)
+	adminAPIs.Handle("/api/public/service-period-member-grid/bootstrap", productBindings.Products)
+	adminAPIs.Handle("/api/public/service-period-member-grid/query", productBindings.Products)
 	adminAPIs.Handle("/api/v1/products", productBindings.Products)
 	adminAPIs.Handle("/api/v1/products/", productBindings.Products)
 	adminAPIs.Handle("/api/admin/wechat-pay/products", productBindings.Products)
@@ -1173,7 +1179,11 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	tagUI := tagModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, donorTemplate string, assets tag.TagsAssets) error {
 		return renderer.RenderTags(writer, webshell.AdminPageForRequest(request, "企微标签管理", "管理标签目录与本地同步意图。", "api.admin_wecom_tags_page"), donorTemplate, webshell.TagsAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS})
 	})
+	memberGridUI := producthttp.NewMemberGridUI()
 	productUI := productModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, page, donorTemplate string, assets productmodule.ProductAssets) error {
+		if page == "spProductData" {
+			return producthttp.RenderMemberGridInternal(writer, request, request.URL.Query().Get("id"))
+		}
 		titles := map[string]string{"products": "普通商品", "productForm": "普通商品", "spProducts": "周期商品", "spProductForm": "周期商品", "spProductData": "周期商品 · 会员数据"}
 		endpoints := map[string]string{"products": "api.admin_products_page", "productForm": "api.admin_product_form_page", "spProducts": "api.admin_service_period_products_page", "spProductForm": "api.admin_service_period_product_form_page", "spProductData": "api.admin_service_period_member_grid"}
 		return renderer.RenderProducts(writer, webshell.AdminPageForRequest(request, titles[page], "管理本地商品、周期会员数据与受控配置。", endpoints[page]), page, donorTemplate, webshell.ProductAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, HostJS: assets.HostJS})
@@ -1226,6 +1236,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
+	handler = mountMemberGridUI(handler, memberGridUI)
 	handler, err = mountSegmentAPI(handler, segmentBindings.Audience)
 	if err != nil {
 		return fail(err)
@@ -1430,6 +1441,17 @@ func routeApplicationWithMedia(health, access, identity, effects, pushCenter, ef
 	return routeApplicationWithMediaTags(health, access, identity, effects, pushCenter, effectsUI, mediaHandler, mediaUI, http.NotFoundHandler(), http.NotFoundHandler(), weCom, shell, authentication, publicOrigin)
 }
 
+func mountMemberGridUI(next, ui http.Handler) http.Handler {
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		path := request.URL.Path
+		if path == "/shared/service-period-member-grid" || strings.HasPrefix(path, "/service-period-member-grid-assets/") || strings.HasPrefix(path, "/static/service-period/icons/") {
+			ui.ServeHTTP(writer, request)
+			return
+		}
+		next.ServeHTTP(writer, request)
+	})
+}
+
 func routeApplicationWithMediaTags(health, access, identity, effects, pushCenter, effectsUI, mediaHandler, mediaUI, tagHandler, tagUI, weCom, shell http.Handler, authentication accessAuthentication, publicOrigin string) (http.Handler, error) {
 	return routeApplicationWithProducts(health, access, identity, effects, pushCenter, effectsUI, mediaHandler, mediaUI, tagHandler, tagUI, http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(), weCom, shell, authentication, publicOrigin)
 }
@@ -1543,6 +1565,8 @@ func routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, acce
 	mux.Handle("/api/admin/wechat-pay/products/", productHandler)
 	mux.Handle("/api/admin/service-period-products", productHandler)
 	mux.Handle("/api/admin/service-period-products/", productHandler)
+	mux.Handle("/api/public/service-period-member-grid/bootstrap", productHandler)
+	mux.Handle("/api/public/service-period-member-grid/query", productHandler)
 	mux.Handle("/api/admin/coupons", couponHandler)
 	mux.Handle("/api/admin/coupons/", couponHandler)
 	mux.Handle("/api/admin/config/", configHandler)

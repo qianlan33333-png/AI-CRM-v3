@@ -15,7 +15,7 @@ CREATE TABLE product_service_period_member_views (
     created_by BIGINT NOT NULL REFERENCES admin_users(id) ON DELETE RESTRICT,
     updated_by BIGINT NOT NULL REFERENCES admin_users(id) ON DELETE RESTRICT,
     created_at TIMESTAMPTZ NOT NULL,
-    updated_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL
 );
 -- PostgreSQL permits an expression uniqueness rule only as an index, not as a
 -- table constraint.  Names therefore remain case-insensitively unique.
