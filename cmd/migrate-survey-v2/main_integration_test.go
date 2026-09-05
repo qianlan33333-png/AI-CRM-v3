@@ -51,8 +51,15 @@ func TestPostgreSQLFrozenSurveySnapshotImportReplayAndReconcile(t *testing.T) {
 		t.Fatalf("questionnaires=%d submissions=%d unresolved=%d missing_definition=%d receipts=%d quarantined=%d missing_token=%d outbox=%d customers=%d", questionnaires, submissions, unresolved, missingDefinition, receipts, quarantined, missingToken, mutableEffects, customers)
 	}
 
-	var submissionID, receiptID, answerID int64
-	if err := pool.QueryRow(ctx, `SELECT id FROM survey_submissions LIMIT 1`).Scan(&submissionID); err != nil {
+	clean := func(stage string) {
+		if err := reconcile([]string{"--target-url", targetURL, "--snapshot", file, "--snapshot-key-file", snapshotKey, "--data-key-file", dataKey}); err != nil {
+			t.Fatalf("clean %s reconcile: %v", stage, err)
+		}
+	}
+	var submissionID int64
+	var originalIdentity, originalTitle string
+	var originalCustomer *int64
+	if err := pool.QueryRow(ctx, `SELECT id,identity_state,customer_id,title_snapshot FROM survey_submissions WHERE identity_state='unresolved' ORDER BY id LIMIT 1`).Scan(&submissionID, &originalIdentity, &originalCustomer, &originalTitle); err != nil {
 		t.Fatal(err)
 	}
 	var customerID int64
@@ -65,19 +72,25 @@ func TestPostgreSQLFrozenSurveySnapshotImportReplayAndReconcile(t *testing.T) {
 	if err := reconcile([]string{"--target-url", targetURL, "--snapshot", file, "--snapshot-key-file", snapshotKey, "--data-key-file", dataKey}); err == nil || !strings.Contains(err.Error(), "submission target fact drift") {
 		t.Fatalf("legacy customer misbinding err=%v", err)
 	}
-	if _, err := pool.Exec(ctx, `UPDATE survey_submissions SET identity_state='unresolved',customer_id=NULL WHERE id=$1`, submissionID); err != nil {
+	if _, err := pool.Exec(ctx, `UPDATE survey_submissions SET identity_state=$2,customer_id=$3 WHERE id=$1`, submissionID, originalIdentity, originalCustomer); err != nil {
 		t.Fatal(err)
 	}
+	clean("customer restore")
 	if _, err := pool.Exec(ctx, `UPDATE survey_submissions SET title_snapshot='drifted title' WHERE id=$1`, submissionID); err != nil {
 		t.Fatal(err)
 	}
 	if err := reconcile([]string{"--target-url", targetURL, "--snapshot", file, "--snapshot-key-file", snapshotKey, "--data-key-file", dataKey}); err == nil || !strings.Contains(err.Error(), "submission target fact drift") {
 		t.Fatalf("submission snapshot drift err=%v", err)
 	}
-	if _, err := pool.Exec(ctx, `UPDATE survey_submissions SET title_snapshot='Legacy check-in' WHERE id=$1`, submissionID); err != nil {
+	if _, err := pool.Exec(ctx, `UPDATE survey_submissions SET title_snapshot=$2 WHERE id=$1`, submissionID, originalTitle); err != nil {
 		t.Fatal(err)
 	}
-	if err := pool.QueryRow(ctx, `SELECT id FROM survey_submission_answers WHERE legacy_definition_missing=FALSE LIMIT 1`).Scan(&answerID); err != nil {
+	clean("submission snapshot restore")
+
+	var answerID int64
+	var originalSelected string
+	var originalCiphertext []byte
+	if err := pool.QueryRow(ctx, `SELECT id,selected_options_snapshot::text,text_value_ciphertext FROM survey_submission_answers WHERE legacy_definition_missing=FALSE ORDER BY id LIMIT 1`).Scan(&answerID, &originalSelected, &originalCiphertext); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx, `UPDATE survey_submission_answers SET selected_options_snapshot='[{"drift":true}]'::jsonb WHERE id=$1`, answerID); err != nil {
@@ -86,19 +99,24 @@ func TestPostgreSQLFrozenSurveySnapshotImportReplayAndReconcile(t *testing.T) {
 	if err := reconcile([]string{"--target-url", targetURL, "--snapshot", file, "--snapshot-key-file", snapshotKey, "--data-key-file", dataKey}); err == nil || !strings.Contains(err.Error(), "answer target fact drift") {
 		t.Fatalf("answer field drift err=%v", err)
 	}
-	if _, err := pool.Exec(ctx, `UPDATE survey_submission_answers SET selected_options_snapshot='[{"id":20,"text":"Good","score":5,"tags":[]}]'::jsonb WHERE id=$1`, answerID); err != nil {
+	if _, err := pool.Exec(ctx, `UPDATE survey_submission_answers SET selected_options_snapshot=$2::jsonb,text_value_ciphertext=$3 WHERE id=$1`, answerID, originalSelected, originalCiphertext); err != nil {
 		t.Fatal(err)
 	}
+	clean("answer option restore")
 	if _, err := pool.Exec(ctx, `UPDATE survey_submission_answers SET text_value_ciphertext=decode('00','hex') WHERE id=$1`, answerID); err != nil {
 		t.Fatal(err)
 	}
 	if err := reconcile([]string{"--target-url", targetURL, "--snapshot", file, "--snapshot-key-file", snapshotKey, "--data-key-file", dataKey}); err == nil || !strings.Contains(err.Error(), "empty protected answer ciphertext drift") {
 		t.Fatalf("empty answer ciphertext drift err=%v", err)
 	}
-	if _, err := pool.Exec(ctx, `UPDATE survey_submission_answers SET text_value_ciphertext=NULL WHERE id=$1`, answerID); err != nil {
+	if _, err := pool.Exec(ctx, `UPDATE survey_submission_answers SET selected_options_snapshot=$2::jsonb,text_value_ciphertext=$3 WHERE id=$1`, answerID, originalSelected, originalCiphertext); err != nil {
 		t.Fatal(err)
 	}
-	if err := pool.QueryRow(ctx, `SELECT id FROM survey_external_operation_receipts WHERE operation_kind='external_push' LIMIT 1`).Scan(&receiptID); err != nil {
+	clean("answer ciphertext restore")
+
+	var receiptID int64
+	var originalStatus string
+	if err := pool.QueryRow(ctx, `SELECT id,status FROM survey_external_operation_receipts WHERE source_table='questionnaire_external_push_logs' AND source_pk='60'`).Scan(&receiptID, &originalStatus); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx, `UPDATE survey_external_operation_receipts SET status='failed' WHERE id=$1`, receiptID); err != nil {
@@ -107,9 +125,10 @@ func TestPostgreSQLFrozenSurveySnapshotImportReplayAndReconcile(t *testing.T) {
 	if err := reconcile([]string{"--target-url", targetURL, "--snapshot", file, "--snapshot-key-file", snapshotKey, "--data-key-file", dataKey}); err == nil || !strings.Contains(err.Error(), "legacy operation fact drift") {
 		t.Fatalf("legacy receipt field drift err=%v", err)
 	}
-	if _, err := pool.Exec(ctx, `UPDATE survey_external_operation_receipts SET status='legacy_success' WHERE id=$1`, receiptID); err != nil {
+	if _, err := pool.Exec(ctx, `UPDATE survey_external_operation_receipts SET status=$2 WHERE id=$1`, receiptID, originalStatus); err != nil {
 		t.Fatal(err)
 	}
+	clean("receipt restore")
 
 	manifestDrift := frozenSurveySnapshot(t, snapshot.Manifest.SnapshotAt)
 	var changed []questionnaire
