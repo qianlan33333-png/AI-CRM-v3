@@ -85,6 +85,80 @@ func TestResolveOneIDRejectsUnverifiedInvalidAndPropagatesStoreFailure(t *testin
 	}
 }
 
+func TestExpectedQuarantineReasonReplaysEveryImporterDisposition(t *testing.T) {
+	int64Pointer := func(value int64) *int64 { return &value }
+	packageMapped := map[string]sourceReceipt{
+		receiptKey("audience_packages", "10"): {targetTable: "segment_audience_packages", targetPK: int64Pointer(99), disposition: "imported"},
+	}
+	tests := []struct {
+		name     string
+		source   frozenSourceRow
+		receipt  sourceReceipt
+		receipts map[string]sourceReceipt
+		want     string
+	}{
+		{
+			name:    "invalid agent",
+			source:  frozenSourceRow{table: "automation_agents", pk: "0", raw: json.RawMessage(`{"id":0}`)},
+			receipt: sourceReceipt{disposition: "invalid"},
+			want:    "invalid_agent",
+		},
+		{
+			name:    "agent code conflict",
+			source:  frozenSourceRow{table: "automation_agents", pk: "1", raw: json.RawMessage(`{"id":1,"agent_code":"agent","published_version":1,"fixed_content_package_json":{}}`)},
+			receipt: sourceReceipt{disposition: "conflict"},
+			want:    "agent_code_digest_conflict",
+		},
+		{
+			name:    "invalid configuration definition",
+			source:  frozenSourceRow{table: "audience_configuration_versions", pk: "10:1", raw: json.RawMessage(`{"package_id":10,"version":1,"definition":"not-an-object"}`)},
+			receipt: sourceReceipt{disposition: "invalid"},
+			want:    "invalid_definition",
+		},
+		{
+			name:    "unresolved binding reference",
+			source:  frozenSourceRow{table: "audience_bindings", pk: "10", raw: json.RawMessage(`{"package_id":10,"automation_agent_id":20}`)},
+			receipt: sourceReceipt{disposition: "unresolved"},
+			want:    "binding_reference_unresolved",
+		},
+		{
+			name:     "sender package unresolved",
+			source:   frozenSourceRow{table: "audience_senders", pk: "10:1", raw: json.RawMessage(`{"package_id":10,"sender_userid":"staff","sort_order":1,"is_enabled":true}`)},
+			receipt:  sourceReceipt{disposition: "unresolved"},
+			receipts: map[string]sourceReceipt{},
+			want:     "sender_package_unresolved",
+		},
+		{
+			name:     "sender identity unresolved",
+			source:   frozenSourceRow{table: "audience_senders", pk: "10:1", raw: json.RawMessage(`{"package_id":10,"sender_userid":"staff","sort_order":1,"is_enabled":true}`)},
+			receipt:  sourceReceipt{disposition: "unresolved"},
+			receipts: packageMapped,
+			want:     "sender_identity_unresolved",
+		},
+		{
+			name:     "sender set incomplete",
+			source:   frozenSourceRow{table: "audience_senders", pk: "10:1", raw: json.RawMessage(`{"package_id":10,"sender_userid":"staff","sort_order":1,"is_enabled":true}`)},
+			receipt:  sourceReceipt{disposition: "quarantine"},
+			receipts: packageMapped,
+			want:     "sender_set_incomplete",
+		},
+		{
+			name:    "member oneid conflict",
+			source:  frozenSourceRow{table: "audience_members", pk: "10:1", raw: json.RawMessage(`{"segment_id":10,"customer_id":1}`)},
+			receipt: sourceReceipt{disposition: "conflict"},
+			want:    "oneid_conflict",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := expectedQuarantineReason(test.source, test.receipt, test.receipts)
+			if err != nil || got != test.want {
+				t.Fatalf("reason=%q err=%v want=%q", got, err, test.want)
+			}
+		})
+	}
+}
+
 func TestImportDryRunApplyReplayAndReconcilePostgreSQL(t *testing.T) {
 	url, err := platformconfig.DatabaseURL()
 	if err != nil {
@@ -256,12 +330,72 @@ func TestImportDryRunApplyReplayAndReconcilePostgreSQL(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Current target configuration is not proven by a preserved source digest
+	// alone. Each imported target association must be present and retain the
+	// immutable facts the importer declared.
+	if _, err = pool.Exec(ctx, `UPDATE automation_agents SET published_task_prompt='tampered' WHERE agent_code='migrated-fixed'`); err != nil {
+		t.Fatal(err)
+	}
+	assertReconcileRejected(t, ctx, pool, report.BatchKey, snapshot)
+	if _, err = pool.Exec(ctx, `UPDATE automation_agents SET published_task_prompt='' WHERE agent_code='migrated-fixed'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pool.Exec(ctx, `UPDATE segment_audience_groups SET sort_order=99 WHERE name='Migrated'`); err != nil {
+		t.Fatal(err)
+	}
+	assertReconcileRejected(t, ctx, pool, report.BatchKey, snapshot)
+	if _, err = pool.Exec(ctx, `UPDATE segment_audience_groups SET sort_order=1 WHERE name='Migrated'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pool.Exec(ctx, `UPDATE segment_audience_configuration_versions SET definition='{"schema_version":1,"template_key":"tampered","parameters":{"within_days":"30"}}'::jsonb`); err != nil {
+		t.Fatal(err)
+	}
+	assertReconcileRejected(t, ctx, pool, report.BatchKey, snapshot)
+	if _, err = pool.Exec(ctx, `UPDATE segment_audience_configuration_versions SET definition='{"schema_version":1,"template_key":"active_contacts","parameters":{"within_days":"30"}}'::jsonb`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pool.Exec(ctx, `UPDATE segment_audience_automation_binding_versions SET agent_published_version=2`); err != nil {
+		t.Fatal(err)
+	}
+	assertReconcileRejected(t, ctx, pool, report.BatchKey, snapshot)
+	if _, err = pool.Exec(ctx, `UPDATE segment_audience_automation_binding_versions SET agent_published_version=1`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pool.Exec(ctx, `UPDATE segment_audience_sender_set_members SET staff_id=99999`); err != nil {
+		t.Fatal(err)
+	}
+	assertReconcileRejected(t, ctx, pool, report.BatchKey, snapshot)
+	if _, err = pool.Exec(ctx, `UPDATE segment_audience_sender_set_members SET staff_id=$1`, actorID); err != nil {
+		t.Fatal(err)
+	}
+	var senderSetID, senderStaffID, senderEligibilityVersion int64
+	var senderPosition int16
+	var senderEligibilityRefreshed time.Time
+	if err = pool.QueryRow(ctx, `SELECT sender_set_id,sort_order,staff_id,eligibility_version,eligibility_refreshed_at FROM segment_audience_sender_set_members`).Scan(&senderSetID, &senderPosition, &senderStaffID, &senderEligibilityVersion, &senderEligibilityRefreshed); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pool.Exec(ctx, `DELETE FROM segment_audience_sender_set_members WHERE sender_set_id=$1 AND sort_order=$2`, senderSetID, senderPosition); err != nil {
+		t.Fatal(err)
+	}
+	assertReconcileRejected(t, ctx, pool, report.BatchKey, snapshot)
+	if _, err = pool.Exec(ctx, `INSERT INTO segment_audience_sender_set_members(sender_set_id,sort_order,staff_id,eligibility_version,eligibility_refreshed_at) VALUES($1,$2,$3,$4,$5)`, senderSetID, senderPosition, senderStaffID, senderEligibilityVersion, senderEligibilityRefreshed); err != nil {
+		t.Fatal(err)
+	}
+
 	originalQuarantine := loadQuarantineFixture(t, ctx, pool, report.BatchKey, "audience_members")
 	if _, err = pool.Exec(ctx, `UPDATE automation_operations_migration_quarantine SET reason_code='tampered' WHERE id=$1`, originalQuarantine.ID); err != nil {
 		t.Fatal(err)
 	}
 	assertReconcileRejected(t, ctx, pool, report.BatchKey, snapshot)
 	if _, err = pool.Exec(ctx, `UPDATE automation_operations_migration_quarantine SET reason_code=$2 WHERE id=$1`, originalQuarantine.ID, originalQuarantine.ReasonCode); err != nil {
+		t.Fatal(err)
+	}
+	originalAgentQuarantine := loadQuarantineFixture(t, ctx, pool, report.BatchKey, "automation_agents")
+	if _, err = pool.Exec(ctx, `UPDATE automation_operations_migration_quarantine SET reason_code='tampered' WHERE id=$1`, originalAgentQuarantine.ID); err != nil {
+		t.Fatal(err)
+	}
+	assertReconcileRejected(t, ctx, pool, report.BatchKey, snapshot)
+	if _, err = pool.Exec(ctx, `UPDATE automation_operations_migration_quarantine SET reason_code=$2 WHERE id=$1`, originalAgentQuarantine.ID, originalAgentQuarantine.ReasonCode); err != nil {
 		t.Fatal(err)
 	}
 
@@ -274,13 +408,53 @@ func TestImportDryRunApplyReplayAndReconcilePostgreSQL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !shadow.ReadyForProbe || !shadow.ReadyForReconcile || !shadow.SnapshotManifestMatches || len(shadow.Packages) != 1 || !shadow.Packages[0].MemberDigestMatches || shadow.Packages[0].IsolatedMemberRows != 1 || len(shadow.Quarantines) != 2 || !hasReadyQuarantine(shadow.Quarantines, "automation_agents") || !hasReadyQuarantine(shadow.Quarantines, "audience_members") || len(shadow.History) != 4 {
+	if !shadow.ReadyForProbe || !shadow.ReadyForReconcile || !shadow.SnapshotManifestMatches || len(shadow.Packages) != 1 || !shadow.Packages[0].StructureMatches || !shadow.Packages[0].MemberDigestMatches || shadow.Packages[0].IsolatedMemberRows != 1 || len(shadow.Targets) != 5 || !allReadyTargets(shadow.Targets) || len(shadow.Quarantines) != 2 || !hasReadyQuarantine(shadow.Quarantines, "automation_agents") || !hasReadyQuarantine(shadow.Quarantines, "audience_members") || len(shadow.History) != 4 {
 		t.Fatalf("shadow=%+v", shadow)
 	}
 	for _, item := range shadow.History {
 		if !item.Ready || !item.StateMatches || !item.OccurredAtMatches || !item.ReadOnly || item.Replayable {
 			t.Fatalf("history shadow=%+v", item)
 		}
+	}
+
+	// A frozen historical-only batch has no current audience to probe, but its
+	// every-row receipts and immutable history still permit reconciliation.
+	historyOnly := historyOnlyMigrationSnapshot(t, snapshot, snapshot.Manifest.SnapshotAt.Add(time.Hour), "automation-history-only")
+	historyOnlyFile := filepath.Join(t.TempDir(), "history-only.enc")
+	if err = writeEncryptedSnapshot(historyOnlyFile, keyFile, historyOnly); err != nil {
+		t.Fatal(err)
+	}
+	historyArgs := []string{"--actor-id", strconv.FormatInt(actorID, 10), "--snapshot-file", historyOnlyFile, "--key-file", keyFile, "--target-url-env", "AICRM_AUTOMATION_RECONCILE_TEST_URL", "--timeout", "30s"}
+	historyReport := executeImportCommand(t, "apply", append(historyArgs, "--confirm-import")...)
+	if _, err = Reconcile(ctx, pool, historyReport.BatchKey, historyOnly); err != nil {
+		t.Fatalf("reconcile history-only batch: %v", err)
+	}
+	historyShadow, err := Shadow(ctx, pool, historyReport.BatchKey, historyOnly)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !historyShadow.ReadyForReconcile || historyShadow.ReadyForProbe || len(historyShadow.Packages) != 0 || len(historyShadow.Targets) != 0 || len(historyShadow.History) != 4 {
+		t.Fatalf("history-only shadow=%+v", historyShadow)
+	}
+
+	// An audience whose every source member was intentionally isolated has a
+	// published zero-member target and is still a complete, reconcilable batch.
+	allIsolated := allMembersIsolatedMigrationSnapshot(t, snapshot, snapshot.Manifest.SnapshotAt.Add(2*time.Hour), "automation-members-isolated")
+	allIsolatedFile := filepath.Join(t.TempDir(), "all-members-isolated.enc")
+	if err = writeEncryptedSnapshot(allIsolatedFile, keyFile, allIsolated); err != nil {
+		t.Fatal(err)
+	}
+	isolatedArgs := []string{"--actor-id", strconv.FormatInt(actorID, 10), "--snapshot-file", allIsolatedFile, "--key-file", keyFile, "--target-url-env", "AICRM_AUTOMATION_RECONCILE_TEST_URL", "--timeout", "30s"}
+	isolatedReport := executeImportCommand(t, "apply", append(isolatedArgs, "--confirm-import")...)
+	if _, err = Reconcile(ctx, pool, isolatedReport.BatchKey, allIsolated); err != nil {
+		t.Fatalf("reconcile all-isolated members batch: %v", err)
+	}
+	isolatedShadow, err := Shadow(ctx, pool, isolatedReport.BatchKey, allIsolated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !isolatedShadow.ReadyForReconcile || isolatedShadow.ReadyForProbe || len(isolatedShadow.Packages) != 1 || isolatedShadow.Packages[0].MappedMemberRows != 0 || isolatedShadow.Packages[0].IsolatedMemberRows != 1 || !isolatedShadow.Packages[0].MemberDigestMatches || len(isolatedShadow.Quarantines) != 2 {
+		t.Fatalf("all-isolated shadow=%+v", isolatedShadow)
 	}
 }
 
@@ -384,6 +558,9 @@ func disableTestAppendOnlyGuards(t *testing.T, ctx context.Context, pool *pgxpoo
 		`ALTER TABLE automation_operations_legacy_history DISABLE TRIGGER automation_operations_legacy_history_append_only`,
 		`ALTER TABLE automation_operations_migration_quarantine DISABLE TRIGGER automation_operations_migration_quarantine_append_only`,
 		`ALTER TABLE segment_audience_snapshot_members DISABLE TRIGGER segment_audience_snapshot_members_append_only`,
+		`ALTER TABLE segment_audience_configuration_versions DISABLE TRIGGER segment_audience_configuration_append_only`,
+		`ALTER TABLE segment_audience_automation_binding_versions DISABLE TRIGGER segment_audience_binding_append_only`,
+		`ALTER TABLE segment_audience_sender_set_members DISABLE TRIGGER segment_audience_sender_members_append_only`,
 	} {
 		if _, err := pool.Exec(ctx, statement); err != nil {
 			t.Fatal(err)
@@ -397,6 +574,9 @@ func restoreTestAppendOnlyGuards(t *testing.T, ctx context.Context, pool *pgxpoo
 		`ALTER TABLE automation_operations_legacy_history ENABLE TRIGGER automation_operations_legacy_history_append_only`,
 		`ALTER TABLE automation_operations_migration_quarantine ENABLE TRIGGER automation_operations_migration_quarantine_append_only`,
 		`ALTER TABLE segment_audience_snapshot_members ENABLE TRIGGER segment_audience_snapshot_members_append_only`,
+		`ALTER TABLE segment_audience_configuration_versions ENABLE TRIGGER segment_audience_configuration_append_only`,
+		`ALTER TABLE segment_audience_automation_binding_versions ENABLE TRIGGER segment_audience_binding_append_only`,
+		`ALTER TABLE segment_audience_sender_set_members ENABLE TRIGGER segment_audience_sender_members_append_only`,
 	} {
 		if _, err := pool.Exec(ctx, statement); err != nil {
 			t.Error(err)
@@ -466,6 +646,73 @@ func hasReadyQuarantine(items []ShadowQuarantine, sourceTable string) bool {
 		}
 	}
 	return false
+}
+
+func allReadyTargets(items []ShadowTarget) bool {
+	for _, item := range items {
+		if !item.Ready || !item.Exists || !item.FactsMatch {
+			return false
+		}
+	}
+	return true
+}
+
+func derivedMigrationSnapshot(t *testing.T, source segmentmigration.Snapshot, at time.Time, watermarkSeed string) segmentmigration.Snapshot {
+	t.Helper()
+	raw, err := json.Marshal(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var derived segmentmigration.Snapshot
+	if err = json.Unmarshal(raw, &derived); err != nil {
+		t.Fatal(err)
+	}
+	derived.Manifest.SnapshotAt = at.UTC()
+	watermark := sha256.Sum256([]byte(watermarkSeed))
+	derived.Manifest.SourceWatermarkDigest = hex.EncodeToString(watermark[:])
+	return derived
+}
+
+func sealMigrationSnapshot(t *testing.T, snapshot *segmentmigration.Snapshot) {
+	t.Helper()
+	for _, table := range segmentmigration.LogicalTables {
+		var rows []json.RawMessage
+		if err := json.Unmarshal(snapshot.Tables[table], &rows); err != nil {
+			t.Fatal(err)
+		}
+		snapshot.Manifest.Counts[table] = len(rows)
+		digest := sha256.Sum256(snapshot.Tables[table])
+		snapshot.Manifest.Digests[table] = hex.EncodeToString(digest[:])
+	}
+	if err := segmentmigration.ValidateSnapshot(*snapshot); err != nil {
+		t.Fatalf("derived migration snapshot: %v", err)
+	}
+}
+
+func historyOnlyMigrationSnapshot(t *testing.T, source segmentmigration.Snapshot, at time.Time, watermarkSeed string) segmentmigration.Snapshot {
+	t.Helper()
+	snapshot := derivedMigrationSnapshot(t, source, at, watermarkSeed)
+	for _, table := range []string{"audience_groups", "audience_packages", "audience_configuration_versions", "automation_agents", "audience_bindings", "audience_senders", "audience_members"} {
+		snapshot.Tables[table] = json.RawMessage("[]")
+	}
+	sealMigrationSnapshot(t, &snapshot)
+	return snapshot
+}
+
+func allMembersIsolatedMigrationSnapshot(t *testing.T, source segmentmigration.Snapshot, at time.Time, watermarkSeed string) segmentmigration.Snapshot {
+	t.Helper()
+	snapshot := derivedMigrationSnapshot(t, source, at, watermarkSeed)
+	var members []json.RawMessage
+	if err := json.Unmarshal(snapshot.Tables["audience_members"], &members); err != nil || len(members) != 2 {
+		t.Fatalf("fixture members err=%v count=%d", err, len(members))
+	}
+	raw, err := json.Marshal([]json.RawMessage{members[1]})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot.Tables["audience_members"] = raw
+	sealMigrationSnapshot(t, &snapshot)
+	return snapshot
 }
 
 func databaseURLWithSearchPath(t *testing.T, databaseURL, schema string) string {
