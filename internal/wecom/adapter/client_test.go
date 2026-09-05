@@ -115,6 +115,103 @@ func TestClientSignsBothTicketsCachesAndRefreshes(t *testing.T) {
 	}
 }
 
+func TestClientGroupMessageUsesExactChatIDListAndRejectsPartialReceipt(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/cgi-bin/gettoken":
+			if request.URL.Query().Get("corpsecret") != "contact-secret" {
+				t.Fatalf("wrong token secret")
+			}
+			_, _ = writer.Write([]byte(`{"errcode":0,"access_token":"contact-token","expires_in":7200}`))
+		case "/cgi-bin/externalcontact/add_msg_template":
+			calls++
+			var body map[string]any
+			if json.NewDecoder(request.Body).Decode(&body) != nil {
+				t.Fatal("invalid JSON request")
+			}
+			if body["chat_type"] != "group" || body["sender"] != "owner-1" || body["allow_select"] != false {
+				t.Fatalf("body=%v", body)
+			}
+			ids, ok := body["chat_id_list"].([]any)
+			if !ok || len(ids) != 1 || ids[0] != "chat-1" || body["chat_ids"] != nil {
+				t.Fatalf("exact target body=%v", body)
+			}
+			if calls == 1 {
+				_, _ = writer.Write([]byte(`{"errcode":0,"msgid":"task-1"}`))
+				return
+			}
+			_, _ = writer.Write([]byte(`{"errcode":0,"msgid":"task-2","fail_list":["chat-1"]}`))
+		default:
+			t.Fatalf("unexpected endpoint=%s", request.URL.Path)
+		}
+	}))
+	defer server.Close()
+	client, err := NewDirectory(Config{Enabled: true, CorpID: "corp", ContactSecret: "contact-secret", APIBase: server.URL, HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := wecomport.GroupMessageRequest{SenderUserID: "owner-1", ChatIDs: []string{"chat-1"}, Text: "hello"}
+	receipt, attempted, err := client.SendGroupMessage(context.Background(), request)
+	if err != nil || !attempted || receipt.MessageID != "task-1" {
+		t.Fatalf("receipt=%+v attempted=%t err=%v", receipt, attempted, err)
+	}
+	_, attempted, err = client.SendGroupMessage(context.Background(), request)
+	if !attempted || err == nil {
+		t.Fatalf("partial receipt attempted=%t err=%v", attempted, err)
+	}
+	if rejected, ok := err.(wecomport.GroupMessageSendError); !ok || rejected.OutcomeUnknown() {
+		t.Fatalf("partial receipt classification=%T %v", err, err)
+	}
+}
+
+func TestClientGroupDirectoryReadsUseScopedListThenDetail(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/cgi-bin/gettoken":
+			if request.URL.Query().Get("corpsecret") != "contact-secret" {
+				t.Fatalf("wrong token secret")
+			}
+			_, _ = writer.Write([]byte(`{"errcode":0,"access_token":"contact-token","expires_in":7200}`))
+		case "/cgi-bin/externalcontact/groupchat/list":
+			var body map[string]any
+			if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			filter, ok := body["owner_filter"].(map[string]any)
+			ids, idsOK := filter["userid_list"].([]any)
+			if !ok || !idsOK || len(ids) != 1 || ids[0] != "owner-1" || body["status_filter"] != float64(0) || body["cursor"] != "" || body["limit"] != float64(100) {
+				t.Fatalf("list request=%v", body)
+			}
+			_, _ = writer.Write([]byte(`{"errcode":0,"group_chat_list":[{"chat_id":"chat-1","status":0}],"next_cursor":"cursor-2"}`))
+		case "/cgi-bin/externalcontact/groupchat/get":
+			var body map[string]any
+			if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if body["chat_id"] != "chat-1" || body["need_name"] != float64(1) {
+				t.Fatalf("detail request=%v", body)
+			}
+			_, _ = writer.Write([]byte(`{"errcode":0,"group_chat":{"chat_id":"chat-1","owner":"owner-1","name":"Group one","member_list":[{"userid":"u-1"}]}}`))
+		default:
+			t.Fatalf("unexpected endpoint=%s", request.URL.Path)
+		}
+	}))
+	defer server.Close()
+	client, err := NewDirectory(Config{Enabled: true, CorpID: "corp", ContactSecret: "contact-secret", APIBase: server.URL, HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := client.ListGroupChats(context.Background(), "owner-1", "", 100)
+	if err != nil || len(page.Items) != 1 || page.Items[0].ChatID != "chat-1" || page.NextCursor != "cursor-2" {
+		t.Fatalf("page=%+v err=%v", page, err)
+	}
+	detail, err := client.GetGroupChat(context.Background(), "chat-1")
+	if err != nil || detail.ChatID != "chat-1" || detail.OwnerUserID != "owner-1" || detail.Name != "Group one" || detail.MemberCount != 1 {
+		t.Fatalf("detail=%+v err=%v", detail, err)
+	}
+}
+
 func TestClientRejectsProviderErrorsOversizeAndDoesNotExposeSecrets(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.URL.Path == "/cgi-bin/gettoken" {
@@ -294,6 +391,38 @@ func TestListTagCatalogUsesNarrowPostAndPreservesProviderFacts(t *testing.T) {
 				t.Fatalf("groups=%#v", groups)
 			}
 		})
+	}
+}
+
+func TestGetGroupMessageSendResultSendsFrozenUserID(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/cgi-bin/gettoken":
+			if r.URL.Query().Get("corpsecret") != "contact-secret" {
+				t.Fatalf("token query=%s", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(`{"errcode":0,"access_token":"token","expires_in":7200}`))
+		case "/cgi-bin/externalcontact/get_groupmsg_send_result":
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if body["msgid"] != "msg-1" || body["userid"] != "frozen-sender" || body["cursor"] != "cursor-1" {
+				t.Fatalf("result body=%+v", body)
+			}
+			_, _ = w.Write([]byte(`{"errcode":0,"next_cursor":"cursor-2","send_list":[{"userid":"frozen-sender","chat_id":"chat-1","status":1}]}`))
+		default:
+			t.Fatalf("path=%s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	client, err := NewDirectory(Config{Enabled: true, CorpID: "corp", ContactSecret: "contact-secret", APIBase: server.URL, HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := client.GetGroupMessageSendResult(context.Background(), "msg-1", "frozen-sender", "cursor-1", 100)
+	if err != nil || page.NextCursor != "cursor-2" || len(page.Items) != 1 || page.Items[0].SenderUserID != "frozen-sender" || page.Items[0].ChatID != "chat-1" || page.Items[0].Status != 1 {
+		t.Fatalf("page=%+v err=%v", page, err)
 	}
 }
 

@@ -395,9 +395,26 @@ type response struct {
 		UserIDs       []string `json:"user_list"`
 		DepartmentIDs []int64  `json:"department_list"`
 	} `json:"range"`
-	MediaID             string   `json:"media_id"`
-	MessageID           string   `json:"msgid"`
-	FailList            []string `json:"fail_list"`
+	MediaID   string   `json:"media_id"`
+	MessageID string   `json:"msgid"`
+	FailList  []string `json:"fail_list"`
+	SendList  []struct {
+		UserID string `json:"userid"`
+		ChatID string `json:"chat_id"`
+		Status int    `json:"status"`
+	} `json:"send_list"`
+	GroupChatList []struct {
+		ChatID string `json:"chat_id"`
+		Status int    `json:"status"`
+	} `json:"group_chat_list"`
+	GroupChat struct {
+		ChatID  string `json:"chat_id"`
+		Owner   string `json:"owner"`
+		Name    string `json:"name"`
+		Members []struct {
+			UserID string `json:"userid"`
+		} `json:"member_list"`
+	} `json:"group_chat"`
 	ExternalContactList []struct {
 		ExternalContact struct {
 			ExternalUserID string `json:"external_userid"`
@@ -417,6 +434,61 @@ type response struct {
 			} `json:"tags"`
 		} `json:"follow_info"`
 	} `json:"external_contact_list"`
+}
+
+// ListGroupChats and GetGroupChat are the narrow, read-only group directory
+// protocol used by Group Ops. They use the customer-contact token and do not
+// mutate any provider record.
+func (client *Client) ListGroupChats(ctx context.Context, ownerUserID, cursor string, limit int) (wecomport.GroupChatPage, error) {
+	if !client.DirectoryReady() || invalid(ownerUserID) || strings.TrimSpace(cursor) != cursor || limit < 1 || limit > 100 {
+		return wecomport.GroupChatPage{}, wecomport.ErrDirectoryDisabled
+	}
+	token, err := client.contactAccessToken(ctx)
+	if err != nil {
+		return wecomport.GroupChatPage{}, err
+	}
+	body, err := json.Marshal(map[string]any{"status_filter": 0, "owner_filter": map[string]any{"userid_list": []string{ownerUserID}}, "cursor": cursor, "limit": limit})
+	if err != nil {
+		return wecomport.GroupChatPage{}, ErrResponse
+	}
+	payload, err := client.requestJSON(ctx, http.MethodPost, "/cgi-bin/externalcontact/groupchat/list", url.Values{"access_token": {token}}, body)
+	if err != nil {
+		return wecomport.GroupChatPage{}, err
+	}
+	page := wecomport.GroupChatPage{Items: make([]wecomport.GroupChatListItem, 0, len(payload.GroupChatList)), NextCursor: strings.TrimSpace(payload.NextCursor)}
+	seen := make(map[string]struct{}, len(payload.GroupChatList))
+	for _, item := range payload.GroupChatList {
+		chatID := strings.TrimSpace(item.ChatID)
+		if invalid(chatID) || item.Status < 0 || item.Status > 3 {
+			return wecomport.GroupChatPage{}, ErrResponse
+		}
+		if _, exists := seen[chatID]; exists {
+			return wecomport.GroupChatPage{}, ErrResponse
+		}
+		seen[chatID] = struct{}{}
+		page.Items = append(page.Items, wecomport.GroupChatListItem{ChatID: chatID, Status: item.Status})
+	}
+	return page, nil
+}
+
+func (client *Client) GetGroupChat(ctx context.Context, chatID string) (wecomport.GroupChat, error) {
+	if !client.DirectoryReady() || invalid(chatID) {
+		return wecomport.GroupChat{}, wecomport.ErrDirectoryDisabled
+	}
+	token, err := client.contactAccessToken(ctx)
+	if err != nil {
+		return wecomport.GroupChat{}, err
+	}
+	body, _ := json.Marshal(map[string]any{"chat_id": chatID, "need_name": 1})
+	payload, err := client.requestJSON(ctx, http.MethodPost, "/cgi-bin/externalcontact/groupchat/get", url.Values{"access_token": {token}}, body)
+	if err != nil {
+		return wecomport.GroupChat{}, err
+	}
+	value := wecomport.GroupChat{ChatID: strings.TrimSpace(payload.GroupChat.ChatID), OwnerUserID: strings.TrimSpace(payload.GroupChat.Owner), Name: strings.TrimSpace(payload.GroupChat.Name), MemberCount: len(payload.GroupChat.Members)}
+	if invalid(value.ChatID) || invalid(value.OwnerUserID) || value.Name == "" || strings.TrimSpace(value.Name) != value.Name || value.MemberCount < 0 {
+		return wecomport.GroupChat{}, ErrResponse
+	}
+	return value, nil
 }
 
 // CreateContactWay is the bounded customer-contact QR write used only by the
@@ -809,6 +881,114 @@ func (e privateSendError) Error() string {
 }
 func (e privateSendError) OutcomeUnknown() bool { return e.uncertain }
 
+// SendGroupMessage creates one WeCom customer-group task for the exact frozen
+// chat list. A msgid is acceptance evidence only; fail_list is always a
+// rejection, never a partial success. Transport ambiguity is surfaced as
+// outcome_unknown so External Effects keeps the original idempotency key.
+func (client *Client) SendGroupMessage(ctx context.Context, request wecomport.GroupMessageRequest) (wecomport.GroupMessageReceipt, bool, error) {
+	if !client.DirectoryReady() || invalid(request.SenderUserID) || len(request.ChatIDs) != 1 || (strings.TrimSpace(request.Text) == "" && len(request.Attachments) == 0) || len(request.Attachments) > 9 {
+		return wecomport.GroupMessageReceipt{}, false, privateSendError{}
+	}
+	chatID := strings.TrimSpace(request.ChatIDs[0])
+	if invalid(chatID) {
+		return wecomport.GroupMessageReceipt{}, false, privateSendError{}
+	}
+	token, err := client.contactAccessToken(ctx)
+	if err != nil {
+		return wecomport.GroupMessageReceipt{}, false, privateSendError{}
+	}
+	attachments, err := groupMessageAttachments(request.Attachments)
+	if err != nil {
+		return wecomport.GroupMessageReceipt{}, false, privateSendError{}
+	}
+	body := map[string]any{
+		"chat_type":    "group",
+		"sender":       request.SenderUserID,
+		"chat_id_list": []string{chatID},
+		"allow_select": false,
+	}
+	if text := strings.TrimSpace(request.Text); text != "" {
+		body["text"] = map[string]string{"content": text}
+	}
+	if len(attachments) > 0 {
+		body["attachments"] = attachments
+	}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return wecomport.GroupMessageReceipt{}, false, privateSendError{}
+	}
+	result, uncertain, err := client.privateJSON(ctx, "/cgi-bin/externalcontact/add_msg_template", url.Values{"access_token": {token}}, raw, "application/json")
+	if err != nil {
+		return wecomport.GroupMessageReceipt{}, true, privateSendError{uncertain: uncertain}
+	}
+	result.MessageID = strings.TrimSpace(result.MessageID)
+	if result.MessageID == "" || len(result.FailList) != 0 {
+		return wecomport.GroupMessageReceipt{}, true, privateSendError{}
+	}
+	return wecomport.GroupMessageReceipt{MessageID: result.MessageID}, true, nil
+}
+
+// GetGroupMessageSendResult is the documented, read-only task result query.
+// It never treats an empty/partial page as delivery proof; the Group Ops
+// evidence adapter matches the frozen sender and chat before any local CAS.
+func (client *Client) GetGroupMessageSendResult(ctx context.Context, messageID, senderUserID, cursor string, limit int) (wecomport.GroupMessageSendResultPage, error) {
+	if !client.DirectoryReady() || invalid(messageID) || invalid(senderUserID) || strings.TrimSpace(cursor) != cursor || limit < 1 || limit > 100 {
+		return wecomport.GroupMessageSendResultPage{}, wecomport.ErrDirectoryDisabled
+	}
+	token, err := client.contactAccessToken(ctx)
+	if err != nil {
+		return wecomport.GroupMessageSendResultPage{}, err
+	}
+	body, err := json.Marshal(map[string]any{"msgid": messageID, "userid": senderUserID, "cursor": cursor, "limit": limit})
+	if err != nil {
+		return wecomport.GroupMessageSendResultPage{}, ErrResponse
+	}
+	payload, err := client.requestJSON(ctx, http.MethodPost, "/cgi-bin/externalcontact/get_groupmsg_send_result", url.Values{"access_token": {token}}, body)
+	if err != nil {
+		return wecomport.GroupMessageSendResultPage{}, err
+	}
+	page := wecomport.GroupMessageSendResultPage{Items: make([]wecomport.GroupMessageSendResult, 0, len(payload.SendList)), NextCursor: strings.TrimSpace(payload.NextCursor)}
+	for _, item := range payload.SendList {
+		value := wecomport.GroupMessageSendResult{SenderUserID: strings.TrimSpace(item.UserID), ChatID: strings.TrimSpace(item.ChatID), Status: item.Status}
+		if invalid(value.SenderUserID) || invalid(value.ChatID) || value.Status < 0 {
+			return wecomport.GroupMessageSendResultPage{}, ErrResponse
+		}
+		page.Items = append(page.Items, value)
+	}
+	return page, nil
+}
+
+func groupMessageAttachments(items []wecomport.GroupMessageAttachment) ([]map[string]any, error) {
+	result := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		switch item.MsgType {
+		case "image":
+			if invalid(item.MediaID) {
+				return nil, ErrResponse
+			}
+			result = append(result, map[string]any{"msgtype": "image", "image": map[string]string{"media_id": item.MediaID}})
+		case "file":
+			if invalid(item.MediaID) {
+				return nil, ErrResponse
+			}
+			result = append(result, map[string]any{"msgtype": "file", "file": map[string]string{"media_id": item.MediaID}})
+		case "miniprogram":
+			if invalid(item.MediaID) || invalid(item.AppID) || invalid(item.PagePath) || invalid(item.Title) {
+				return nil, ErrResponse
+			}
+			result = append(result, map[string]any{"msgtype": "miniprogram", "miniprogram": map[string]string{"title": item.Title, "pic_media_id": item.MediaID, "appid": item.AppID, "page": item.PagePath}})
+		case "link":
+			if invalid(item.Title) || invalid(item.URL) || strings.TrimSpace(item.Description) != item.Description || strings.TrimSpace(item.PicURL) != item.PicURL {
+				return nil, ErrResponse
+			}
+			result = append(result, map[string]any{"msgtype": "link", "link": map[string]string{"title": item.Title, "url": item.URL, "desc": item.Description, "picurl": item.PicURL}})
+		default:
+			return nil, ErrResponse
+		}
+	}
+	return result, nil
+}
+
 func (client *Client) SendPrivateMessage(ctx context.Context, target outboundport.PrivateMessageTarget, payload outboundport.PrivateMessagePayload) (outboundport.PrivateMessageProviderReceipt, bool, error) {
 	if !client.DirectoryReady() || invalid(target.ExternalUserID) || invalid(target.StaffUserID) || len(payload.Attachments) > 9 || (strings.TrimSpace(payload.Text) == "" && len(payload.Attachments) == 0) {
 		return outboundport.PrivateMessageProviderReceipt{}, false, privateSendError{}
@@ -921,6 +1101,9 @@ func (client *Client) privateJSON(ctx context.Context, path string, query url.Va
 }
 
 var _ outboundport.PrivateMessageSender = (*Client)(nil)
+var _ wecomport.GroupMessageSender = (*Client)(nil)
+var _ wecomport.GroupMessageTaskReader = (*Client)(nil)
+var _ wecomport.GroupChatReader = (*Client)(nil)
 
 func (client *Client) request(ctx context.Context, path string, query url.Values) (response, error) {
 	return client.requestJSON(ctx, http.MethodGet, path, query, nil)
