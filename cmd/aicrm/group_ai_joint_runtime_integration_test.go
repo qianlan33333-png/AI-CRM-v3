@@ -395,10 +395,6 @@ func TestAutomationAIAssistantAndGroupOpsShareRiverRuntime(t *testing.T) {
 	if err = river.AddWorkerSafely[segment.AudienceMemberEventDispatchJobArgs](workers, memberWorker); err != nil {
 		t.Fatal(err)
 	}
-	effectsModule := externaleffects.NewModuleRegistration()
-	if err = effectsModule.RegisterWorkers(workers); err != nil {
-		t.Fatal(err)
-	}
 	continuation := groupopsapp.NewContinuationWorker()
 	if err = river.AddWorkerSafely[groupopsapp.ContinuationJobArgs](workers, continuation); err != nil {
 		t.Fatal(err)
