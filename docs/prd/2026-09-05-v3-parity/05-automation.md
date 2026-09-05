@@ -65,3 +65,18 @@ paid_order补充冻结：供体模板只选择status=paid；供体迁移0065的o
 现有独立工作区提交6cb9133、faa7149仅为局部实现，尚未装配或提交PR。PaidAudienceOrders目前SQL无占位参数却传入reference.UTC()，需修并用真实PG验证；六种Owner来源均须实际查询及边界夹具，不能以编译通过代替SQL执行。保留已有提交继续开发，不重写已冻结接口。
 
 局部LegacyTemplateSource.paid仅在require_active_wecom_contact=true时过滤owner；false时指定负责人条件被绕过，可能扩大受众。负责人条件与联系人活跃条件独立执行，加入“指定负责人且不要求活跃”的反例。HXC来源尚未检查是否存在published版本，不能把未装载投影当空受众。不要把这些局部实现直接启用或标记可发送。
+
+## 9. 接手基线更正与下一批次
+
+最新独立clone实际已有2063669a0b2ece180c3286151ce095369b7fbbf2（在faa7149之后）：已装配六Owner来源并修正SQL多余参数、负责人条件及HXC未发布检查。不要重新实现这些代码。先复核该准确提交的真实PG测试和冻结前端表单到六模板的HttpApi旅程，补缺口后提交以main为base的PR运行PG16检查。根未批准该提交，现有单测不替代全板块。
+
+后续必须补人群刷新/发布→策略/人工群发→批准或触发→共享River→真实本地Provider→原结果页，以及旧配置/历史只读导入逐条对账。此批与03共用Owner读Port仅新增独立文件，冲突及时交根协调；无生产启用、无第二套调度。
+
+## 10. 2063669源码对照发现的未闭环语义
+
+- 原模板参数为owner_userids，V3 AST为owner_staff_ids；冻结HttpApi必须验证边缘转换及Access作用域内标识映射，而非让旧原页面直接发送新自造字段。channel_codes当前与数字ChannelID比较，也须验证原选项值、精确渠道码和历史映射，不能静默空匹配。
+- Channel AudienceEntries目前只读channel_history_contacts。必须包含已可信归属的V3原生入客事实，依Owner Port读取已有entrant/assignment/binding；历史与原生相同客户/渠道聚合最后入客时间，重放不重复。不能使上线后新增客户永远不进入渠道人群。
+- HXC member当前仅用到期时间推断active，ExpiresAt为空即true；这样会把registered_no_active_membership且无到期时间者选成服务中。按旧is_member与membership_status合同获取明确会员状态，expired也须包含显式expired且日期缺失的事实，不能凭空补到期时间或把注册等同会员。
+- 原paid_order按Order来源owner_userid过滤；当前以任意当前企微关系过滤付款人不是同一事实。复核供体0065及后续迁移实际视图、现有Order归属Port，来源缺失时保留明确不可匹配，不擅自用联系人负责人补造订单负责人。
+- Radar原0165视图使用可归因authorized/authorized_click及带身份的landing；当前只选内容打开/跳转等后续事件，可能丢失成功授权后内容失败的首次点击。按现有V3已解析事实与原事件语义对照；不能放宽到匿名landing，不能把后续内容请求当新首次点击。owner_scope=all时不要无依据额外要求存在当前企微关系。
+- 六Owner真实PG边界用例、实际旧表单预览及每条目标守恒必须随提交交付。以上是旧行为及已入V3事实的接通，不增加新分析平台。

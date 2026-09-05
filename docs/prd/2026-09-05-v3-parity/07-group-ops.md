@@ -75,3 +75,5 @@ d6 `cmd/aicrm/group_ops_runtime_integration_test.go:TestGroupOpsPostgreSQLJourne
 - Provider分页读取在UoW外；按冻结msgid/sender/chat验证证据，在新UoW核对原绑定并保存GroupOps送达事实。调用者无需知道受保护msgid或自行构造Provider证据摘要；摘要由可信读取Adapter产生。无独立证据保持pending/unknown，创建任务成功不能当送达成功。
 - 复用Media的GroupOpsMaterialSourceCapturer、PreparationReader和既有准备凭据。必要的source/preparation digest与ReadyUntil随不可变业务意图持久化（仍用未部署0078）；实际调用前确认有效期及冻结附件匹配。不得临时上传、换用后来修改的内容包或新增媒体工作框架。
 - 补协议用例：请求userid、分页精确发送人/群、正常provider_accepted可读取、无msgid未知保持未知、过期/未准备素材零写调用。真实PG覆盖结果持久化与漂移回滚。随后完整PRD仍需实际River即时/延时/重启、有序节点、旧UI及历史逐条对账。
+
+6e63659增量复查：新material_source_snapshot同样经过JSONB，摘要和后续比较不能依赖原始字节的键序/空格。统一冻结与读回规范化后校验，实际PG round-trip必须能执行一次正确发送，漂移/过期则零调用。送达读取需保留重放和单调事实：较早pending回包不得覆盖已证实送达；查结果不更改原效果标识、不新发消息。

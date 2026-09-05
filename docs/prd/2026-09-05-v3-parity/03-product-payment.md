@@ -78,3 +78,11 @@ OneID：可信支付身份解析/既有显式建客、付款人和受益人分�
 迁移0076归 Order checkout 不可变快照，0077归 Coupon slug；不自行占用其他编号。历史与会员表可分成依赖明确的独立 PR，最终验收仍覆盖以上全部行为。
 
 公开图片复用线索：Product LegacyAdminProjection 已持久保存 slices；Media 已有 ImageVariantReader.GetImageVariant、ImageLibraryReader.LocalImageExists。旧 `_detail_image_source` 支持 image_library_id/library_image_id/asset_id 及 URL/src，公开 `/api/h5/product-images/{code}/{id}/variants/original` 依据商品绑定读取。沿现有 Product 绑定与 Media 只读 Port 最小适配，不能把封面 Images 当作完整详情图，也不能开放任意后台媒体ID；历史媒体ID若未建立可信映射须在导入对账中明确，不能猜测。
+
+## 10. 周期公开页渲染复查（68e811e后）
+
+模板已真正复用，但Go Host只归一化双大括号，没有执行Python字符串字面量转义。总控按现有替换步骤提取状态脚本并交Node语法检查，fetch路径正则报 `SyntaxError: Invalid regular expression flags`。修复Host的模板提取/转义，不改冻结供体；对实际Go渲染出的完整HTML执行脚本及浏览器交互测试，不能只断言字符串标记存在。
+
+当前按map遍历在完整页面不断ReplaceAll，然后对已插入用户内容与普通三引号函数片段再全局折叠大括号，可能改变标题/正文中的占位符或合法JS括号。模板转换应在插入动态事实前完成，动态事实只代入一次；保持原DOM/样式/行为。用含花括号和模板字样的标题、详情及企微模态脚本验证不受二次替换影响。服务中/过期/未开通/不可购买、详情图、二维码、状态刷新、报名/续费跳转均需实际浏览器无脚本错误。
+
+沿现有可信OAuth会话适配旧公开页身份恢复；不得直接删除旧身份引导后默认为所有新打开者都未开通，也不能接受旧签名片段或裸外部ID自报可信。记录必要Host变化和原入口的测试结果。上海日期边界的到期日须在服务端初始页面与刷新后结果一致。
