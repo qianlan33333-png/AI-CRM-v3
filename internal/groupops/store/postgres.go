@@ -1215,7 +1215,10 @@ func (r *Repository) CreateExecutionIntents(ctx context.Context, drafts []groupo
 			predecessor = previous[d.TargetReference]
 		}
 		var id int64
-		err = tx.QueryRow(ctx, `INSERT INTO group_ops_execution_intents(run_id,plan_id,node_id,plan_revision,node_position,target_reference,sender_userid_snapshot,target_digest,content_snapshot,content_digest,material_snapshot,material_digest,material_source_snapshot,material_source_digest,execution_key_digest,predecessor_intent_id,state,scheduled_for,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$19) ON CONFLICT(run_id,node_id,target_reference) DO UPDATE SET id=group_ops_execution_intents.id RETURNING id`, d.RunID, d.PlanID, d.NodeID, d.PlanRevision, d.NodePosition, d.TargetReference, d.SenderUserID, d.TargetDigest, d.ContentSnapshot, d.ContentDigest, d.MaterialSnapshot, d.MaterialDigest, d.MaterialSourceSnapshot, d.MaterialSourceDigest, d.ExecutionKeyDigest[:], predecessor, state, d.ScheduledFor, d.CreatedAt).Scan(&id)
+		err = tx.QueryRow(ctx, `INSERT INTO group_ops_execution_intents(run_id,plan_id,node_id,plan_revision,node_position,target_reference,sender_userid_snapshot,target_digest,content_snapshot,content_digest,material_snapshot,material_digest,material_source_snapshot,material_source_digest,execution_key_digest,predecessor_intent_id,state,scheduled_for,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$19) ON CONFLICT(run_id,node_id,target_reference) DO NOTHING RETURNING id`, d.RunID, d.PlanID, d.NodeID, d.PlanRevision, d.NodePosition, d.TargetReference, d.SenderUserID, d.TargetDigest, d.ContentSnapshot, d.ContentDigest, d.MaterialSnapshot, d.MaterialDigest, d.MaterialSourceSnapshot, d.MaterialSourceDigest, d.ExecutionKeyDigest[:], predecessor, state, d.ScheduledFor, d.CreatedAt).Scan(&id)
+		if errors.Is(err, pgx.ErrNoRows) {
+			err = tx.QueryRow(ctx, `SELECT id FROM group_ops_execution_intents WHERE run_id=$1 AND node_id=$2 AND target_reference=$3`, d.RunID, d.NodeID, d.TargetReference).Scan(&id)
+		}
 		if err != nil {
 			return nil, err
 		}
