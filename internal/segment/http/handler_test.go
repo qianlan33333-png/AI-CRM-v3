@@ -87,6 +87,25 @@ func (s radarReferenceStub) ResolveAudienceRadar(_ context.Context, value string
 	return id, ok, nil
 }
 
+type surveyReferenceStub struct {
+	questionnaires map[string]string
+	questions      map[string]string
+	options        map[string]string
+}
+
+func (s surveyReferenceStub) ResolveAudienceQuestionnaire(_ context.Context, value string) (string, bool, error) {
+	id, ok := s.questionnaires[value]
+	return id, ok, nil
+}
+func (s surveyReferenceStub) ResolveAudienceQuestion(_ context.Context, questionnaireID, value string) (string, bool, error) {
+	id, ok := s.questions[questionnaireID+"/"+value]
+	return id, ok, nil
+}
+func (s surveyReferenceStub) ResolveAudienceOption(_ context.Context, questionnaireID, questionID, value string) (string, bool, error) {
+	id, ok := s.options[questionnaireID+"/"+questionID+"/"+value]
+	return id, ok, nil
+}
+
 type packageListApplication struct{ fakeApplication }
 
 func (packageListApplication) ListPackages(context.Context, int, int, bool) (segmentapp.PackagePage, error) {
@@ -388,6 +407,63 @@ func TestChannelAndRadarReferencesRejectUnknown(t *testing.T) {
 		if response.Code != http.StatusUnprocessableEntity || !strings.Contains(response.Body.String(), `"error":"reference_unknown"`) {
 			t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 		}
+	}
+}
+
+func TestSurveyReferencesNormalizeForConfigurationAndPreview(t *testing.T) {
+	admin := accessdomain.Principal{InternalID: 1, Kind: accessdomain.KindAdmin, Roles: []accessdomain.Role{accessdomain.RoleAdmin}}
+	resolver := surveyReferenceStub{
+		questionnaires: map[string]string{"客户调研": "101", "101": "101"},
+		questions:      map[string]string{"101/获客方式": "202", "101/202": "202"},
+		options:        map[string]string{"101/202/内容": "303", "101/202/303": "303"},
+	}
+	definition := `{"schema_version":1,"template_key":"questionnaire_choice_answers","parameters":{"questionnaire_id":"客户调研","conditions":[{"question_id":"获客方式","option_ids":["内容"]}],"owner_scope":"all","owner_userids":[]}}`
+	for _, fixture := range []struct {
+		method, path, body string
+		preview            bool
+	}{
+		{http.MethodPut, "/api/admin/ai-audience/packages/7/configuration", `{"expected_package_version":1,"refresh_cron_utc":"","definition":` + definition + `}`, false},
+		{http.MethodPost, "/api/admin/ai-audience/packages/7/preview", `{"reference_time":"2026-09-05T08:00:00Z","definition":` + definition + `}`, true},
+	} {
+		capture := &configurationCapture{}
+		preview := &previewDefinitionCapture{}
+		handler, err := NewRuntimeHandlerWithOwners(capture, preview, fakeSecurity{principal: admin}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		handler.BindAudienceSurveyReferences(resolver)
+		request := httptest.NewRequest(fixture.method, fixture.path, strings.NewReader(fixture.body))
+		request.Header.Set("Idempotency-Key", "1234567890abcdef")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+		}
+		value := capture.command.Definition
+		if fixture.preview {
+			value = preview.definition
+		}
+		if !strings.Contains(string(value), `"questionnaire_id":"101"`) || !strings.Contains(string(value), `"question_id":"202"`) || !strings.Contains(string(value), `"option_ids":["303"]`) {
+			t.Fatalf("definition=%s", value)
+		}
+	}
+}
+
+func TestSurveyReferencesRejectUnknownOrUnscopedValues(t *testing.T) {
+	admin := accessdomain.Principal{InternalID: 1, Kind: accessdomain.KindAdmin, Roles: []accessdomain.Role{accessdomain.RoleAdmin}}
+	resolver := surveyReferenceStub{questionnaires: map[string]string{"客户调研": "101"}, questions: map[string]string{"101/题目": "202"}, options: map[string]string{}}
+	body := `{"expected_package_version":1,"refresh_cron_utc":"","definition":{"schema_version":1,"template_key":"questionnaire_choice_answers","parameters":{"questionnaire_id":"客户调研","conditions":[{"question_id":"题目","option_ids":["另一题目的同名选项"]}],"owner_scope":"all","owner_userids":[]}}}`
+	handler, err := NewRuntimeHandlerWithOwners(&configurationCapture{}, snapshotApplication{}, fakeSecurity{principal: admin}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler.BindAudienceSurveyReferences(resolver)
+	request := httptest.NewRequest(http.MethodPut, "/api/admin/ai-audience/packages/7/configuration", strings.NewReader(body))
+	request.Header.Set("Idempotency-Key", "1234567890abcdef")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusUnprocessableEntity || !strings.Contains(response.Body.String(), `"error":"reference_unknown"`) {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 }
 

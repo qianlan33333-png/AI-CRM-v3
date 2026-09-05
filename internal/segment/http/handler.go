@@ -64,6 +64,7 @@ type Handler struct {
 	products        AudienceProductReferenceResolver
 	channels        AudienceChannelReferenceResolver
 	radars          AudienceRadarReferenceResolver
+	surveys         AudienceSurveyReferenceResolver
 }
 type AudienceProductReferenceResolver interface {
 	ResolveAudienceProduct(context.Context, string) (string, bool, error)
@@ -87,6 +88,16 @@ type AudienceRadarReferenceResolver interface {
 
 func (h *Handler) BindAudienceRadarReferences(resolver AudienceRadarReferenceResolver) {
 	h.radars = resolver
+}
+
+type AudienceSurveyReferenceResolver interface {
+	ResolveAudienceQuestionnaire(context.Context, string) (string, bool, error)
+	ResolveAudienceQuestion(context.Context, string, string) (string, bool, error)
+	ResolveAudienceOption(context.Context, string, string, string) (string, bool, error)
+}
+
+func (h *Handler) BindAudienceSurveyReferences(resolver AudienceSurveyReferenceResolver) {
+	h.surveys = resolver
 }
 
 var (
@@ -593,6 +604,10 @@ func (h *Handler) normalizeDefinitionReferences(ctx context.Context, raw json.Ra
 	if err != nil {
 		return nil, err
 	}
+	resolved, err = h.normalizeSurveyReferences(ctx, resolved)
+	if err != nil {
+		return nil, err
+	}
 	return h.normalizeOwnerUserIDs(ctx, resolved)
 }
 
@@ -694,6 +709,88 @@ func normalizeReferenceList(ctx context.Context, raw json.RawMessage, templateKe
 	}
 	definition.Parameters[parameter] = encoded
 	return marshalNormalizedOwnerDefinition(raw, definition.Parameters)
+}
+
+func (h *Handler) normalizeSurveyReferences(ctx context.Context, raw json.RawMessage) (json.RawMessage, error) {
+	var definition struct {
+		TemplateKey string                     `json:"template_key"`
+		Parameters  map[string]json.RawMessage `json:"parameters"`
+	}
+	if err := json.Unmarshal(raw, &definition); err != nil || definition.Parameters == nil {
+		return nil, errReferenceInvalid
+	}
+	if definition.TemplateKey != "questionnaire_choice_answers" {
+		return raw, nil
+	}
+	if h.surveys == nil {
+		return nil, errReferenceUnavailable
+	}
+	var questionnaire string
+	if err := json.Unmarshal(definition.Parameters["questionnaire_id"], &questionnaire); err != nil || !validReferenceValue(questionnaire) {
+		return nil, errReferenceInvalid
+	}
+	questionnaireID, found, err := h.surveys.ResolveAudienceQuestionnaire(ctx, questionnaire)
+	if err != nil {
+		return nil, errReferenceUnavailable
+	}
+	if !found || questionnaireID == "" {
+		return nil, errReferenceUnknown
+	}
+	var conditions []struct {
+		QuestionID string   `json:"question_id"`
+		OptionIDs  []string `json:"option_ids"`
+	}
+	if err := json.Unmarshal(definition.Parameters["conditions"], &conditions); err != nil || len(conditions) == 0 || len(conditions) > 100 {
+		return nil, errReferenceInvalid
+	}
+	for index := range conditions {
+		condition := &conditions[index]
+		if !validReferenceValue(condition.QuestionID) || len(condition.OptionIDs) == 0 || len(condition.OptionIDs) > 100 {
+			return nil, errReferenceInvalid
+		}
+		questionID, questionFound, questionErr := h.surveys.ResolveAudienceQuestion(ctx, questionnaireID, condition.QuestionID)
+		if questionErr != nil {
+			return nil, errReferenceUnavailable
+		}
+		if !questionFound || questionID == "" {
+			return nil, errReferenceUnknown
+		}
+		condition.QuestionID = questionID
+		options := make([]string, 0, len(condition.OptionIDs))
+		seen := map[string]bool{}
+		for _, value := range condition.OptionIDs {
+			if !validReferenceValue(value) {
+				return nil, errReferenceInvalid
+			}
+			optionID, optionFound, optionErr := h.surveys.ResolveAudienceOption(ctx, questionnaireID, questionID, value)
+			if optionErr != nil {
+				return nil, errReferenceUnavailable
+			}
+			if !optionFound || optionID == "" {
+				return nil, errReferenceUnknown
+			}
+			if !seen[optionID] {
+				seen[optionID] = true
+				options = append(options, optionID)
+			}
+		}
+		condition.OptionIDs = options
+	}
+	questionnaireRaw, err := json.Marshal(questionnaireID)
+	if err != nil {
+		return nil, errReferenceInvalid
+	}
+	conditionsRaw, err := json.Marshal(conditions)
+	if err != nil {
+		return nil, errReferenceInvalid
+	}
+	definition.Parameters["questionnaire_id"] = questionnaireRaw
+	definition.Parameters["conditions"] = conditionsRaw
+	return marshalNormalizedOwnerDefinition(raw, definition.Parameters)
+}
+
+func validReferenceValue(value string) bool {
+	return value != "" && strings.TrimSpace(value) == value && len([]rune(value)) <= 200
 }
 
 func marshalNormalizedOwnerDefinition(raw json.RawMessage, parameters map[string]json.RawMessage) (json.RawMessage, error) {

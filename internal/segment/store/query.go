@@ -73,7 +73,7 @@ func (r *Repository) CurrentConfiguration(ctx context.Context, packageID int64) 
 	if err != nil {
 		return segmentdomain.ConfigurationVersion{}, err
 	}
-	query := `SELECT c.id,c.package_id,c.version,c.schema_version,c.definition,c.refresh_cron_utc,c.digest,c.created_by,c.created_at
+	query := `SELECT c.id,c.package_id,c.version,c.schema_version,c.definition,COALESCE(c.refresh_cron_utc,''),c.refresh_mode,c.digest,c.created_by,c.created_at
 		FROM segment_audience_packages p JOIN segment_audience_configuration_versions c
 		ON c.id=p.current_configuration_version_id AND c.package_id=p.id WHERE p.id=$1`
 	return scanConfiguration(t.QueryRow(ctx, query, packageID))

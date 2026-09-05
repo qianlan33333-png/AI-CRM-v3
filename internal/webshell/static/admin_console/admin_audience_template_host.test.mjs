@@ -190,22 +190,22 @@ for (const key of ["wecom_contact_registration", "paid_order", "channel_entry", 
   if (!savedKeys.includes(key)) throw new Error(`save did not use frozen form for ${key}: ${JSON.stringify(savedKeys)}`);
 }
 await saveTemplate("questionnaire_choice_answers", () => {
-  fieldInput("questionnaire").value = "101";
+  fieldInput("questionnaire").value = "客户调研";
   const conditionField = document.querySelector('[data-field-name="conditions"]');
   const first = conditionField.querySelector(".template-condition-row");
-  first.querySelector("[data-condition-question]").value = "202";
-  first.querySelector("[data-condition-options]").value = "303\n304";
+  first.querySelector("[data-condition-question]").value = "获客方式";
+  first.querySelector("[data-condition-options]").value = "内容\n投放";
   conditionField.querySelector(".template-condition-list > button").click();
   const second = conditionField.querySelectorAll(".template-condition-row")[1];
-  second.querySelector("[data-condition-question]").value = "203";
-  second.querySelector("[data-condition-options]").value = "305";
+  second.querySelector("[data-condition-question]").value = "成交方式";
+  second.querySelector("[data-condition-options]").value = "咨询";
   setSpecifiedOwner();
 }, (definition) => {
   const parameters = definition.parameters;
-  if (definition.template_key !== "questionnaire_choice_answers" || parameters.owner_userids.join(",") !== "bob" || parameters.questionnaire_id !== "101" || parameters.conditions.length !== 2 || parameters.conditions[0].question_id !== "202" || parameters.conditions[0].option_ids.join(",") !== "303,304" || parameters.conditions[1].question_id !== "203" || parameters.conditions[1].option_ids.join(",") !== "305") throw new Error(`questionnaire parameters=${JSON.stringify(definition)}`);
+  if (definition.template_key !== "questionnaire_choice_answers" || parameters.owner_userids.join(",") !== "bob" || parameters.questionnaire_id !== "客户调研" || parameters.conditions.length !== 2 || parameters.conditions[0].question_id !== "获客方式" || parameters.conditions[0].option_ids.join(",") !== "内容,投放" || parameters.conditions[1].question_id !== "成交方式" || parameters.conditions[1].option_ids.join(",") !== "咨询") throw new Error(`questionnaire parameters=${JSON.stringify(definition)}`);
 }, () => {
   const rows = document.querySelectorAll('[data-field-name="conditions"] .template-condition-row');
-  if (fieldInput("questionnaire").value !== "101" || rows.length !== 2 || rows[0].querySelector("[data-condition-options]").value !== "303\n304" || fieldInput("owner_userids").value !== "bob") throw new Error("questionnaire conditions or Access-backed owner did not reopen");
+  if (fieldInput("questionnaire").value !== "客户调研" || rows.length !== 2 || rows[0].querySelector("[data-condition-options]").value !== "内容\n投放" || fieldInput("owner_userids").value !== "bob") throw new Error("questionnaire conditions or Access-backed owner did not reopen");
 });
 if (writes.length !== 6 || previewWrites.length !== 6 || packageWrites.length !== 6) throw new Error(`six-form save/preview contract incomplete: ${JSON.stringify({ saves: writes.length, previews: previewWrites.length, packages: packageWrites.length })}`);
 dom.window.close();

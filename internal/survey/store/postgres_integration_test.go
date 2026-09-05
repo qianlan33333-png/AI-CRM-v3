@@ -261,6 +261,86 @@ func TestPostgreSQLAudienceChoicesReadFirstResolvedCompletion(t *testing.T) {
 	}
 }
 
+func TestPostgreSQLDefinitionReaderLoadsScopedQuestionAndOptionReferences(t *testing.T) {
+	native, cleanup := surveyIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	now := time.Date(2026, 9, 5, 13, 0, 0, 0, time.UTC)
+
+	var actorID int64
+	if err := native.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name) VALUES('survey-reference-test','$argon2id$test','Survey Reference Test') RETURNING id`).Scan(&actorID); err != nil {
+		t.Fatal(err)
+	}
+	type fixture struct{ questionnaire, acquisitionQuestion, acquisitionOption, conversionOption int64 }
+	insert := func(name, title, slug string, includeConversion bool) fixture {
+		t.Helper()
+		var item fixture
+		if err := native.QueryRow(ctx, `INSERT INTO survey_questionnaires(name,title,description,mode,answer_display_mode,slug,status,created_by,updated_by,created_at,updated_at) VALUES($1,$2,'','survey','all_in_one',$3,'published',$4,$4,$5,$5) RETURNING id`, name, title, slug, actorID, now).Scan(&item.questionnaire); err != nil {
+			t.Fatal(err)
+		}
+		var definitionID int64
+		if err := native.QueryRow(ctx, `INSERT INTO survey_definition_versions(questionnaire_id,version_number,mode,answer_display_mode,title_snapshot,description_snapshot,assessment_config,definition_digest,is_immutable,published_at,created_by,created_at) VALUES($1,1,'survey','all_in_one',$2,'','{}',$3,TRUE,$4,$5,$4) RETURNING id`, item.questionnaire, title, make([]byte, 32), now, actorID).Scan(&definitionID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := native.Exec(ctx, `UPDATE survey_questionnaires SET active_definition_version_id=$1 WHERE id=$2`, definitionID, item.questionnaire); err != nil {
+			t.Fatal(err)
+		}
+		if err := native.QueryRow(ctx, `INSERT INTO survey_definition_questions(definition_version_id,question_type,title,sort_order) VALUES($1,'single_choice','获客方式',0) RETURNING id`, definitionID).Scan(&item.acquisitionQuestion); err != nil {
+			t.Fatal(err)
+		}
+		if err := native.QueryRow(ctx, `INSERT INTO survey_definition_options(question_id,definition_version_id,option_text,sort_order) VALUES($1,$2,'内容',0) RETURNING id`, item.acquisitionQuestion, definitionID).Scan(&item.acquisitionOption); err != nil {
+			t.Fatal(err)
+		}
+		if includeConversion {
+			var conversionQuestion int64
+			if err := native.QueryRow(ctx, `INSERT INTO survey_definition_questions(definition_version_id,question_type,title,sort_order) VALUES($1,'single_choice','成交方式',1) RETURNING id`, definitionID).Scan(&conversionQuestion); err != nil {
+				t.Fatal(err)
+			}
+			if err := native.QueryRow(ctx, `INSERT INTO survey_definition_options(question_id,definition_version_id,option_text,sort_order) VALUES($1,$2,'内容',0) RETURNING id`, conversionQuestion, definitionID).Scan(&item.conversionOption); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return item
+	}
+	first := insert("customer-research", "客户调研", "customer-research", true)
+	second := insert("other-research", "另一问卷", "other-research", false)
+
+	wrapper, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uow, err := platformpostgres.NewUnitOfWork(wrapper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cipher, err := secure.NewCipher(base64.RawStdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := NewPostgreSQL(native, uow, cipher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	definitions := surveyapp.NewService(uow, repository)
+	page, err := definitions.List(ctx, 100, 0, "客户调研", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != 1 || len(page.Items) != 1 || int64(page.Items[0].ID) != first.questionnaire || len(page.Items[0].Questions) != 2 {
+		t.Fatalf("page=%+v", page)
+	}
+	loaded := page.Items[0]
+	if int64(loaded.Questions[0].ID) != first.acquisitionQuestion || len(loaded.Questions[0].Options) != 1 || int64(loaded.Questions[0].Options[0].ID) != first.acquisitionOption {
+		t.Fatalf("acquisition question=%+v", loaded.Questions[0])
+	}
+	if int64(loaded.Questions[1].Options[0].ID) != first.conversionOption || first.acquisitionOption == first.conversionOption || first.acquisitionQuestion == second.acquisitionQuestion {
+		t.Fatalf("same-title scope fixture was not distinct: first=%+v second=%+v", first, second)
+	}
+	if _, err = definitions.Get(ctx, surveyport.ID(second.questionnaire)); err != nil {
+		t.Fatalf("get second questionnaire: %v", err)
+	}
+}
+
 func surveyIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 	t.Helper()
 	databaseURL, err := platformconfig.DatabaseURL()

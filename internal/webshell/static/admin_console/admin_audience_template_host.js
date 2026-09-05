@@ -62,13 +62,13 @@
     const parameters = { ...value };
     if (parameters.owner_scope === "all") parameters.owner_userids = [];
     if (templateKey === "questionnaire_choice_answers") {
-      parameters.questionnaire_id = canonicalPositiveID(parameters.questionnaire, "问卷");
+      parameters.questionnaire_id = canonicalReference(parameters.questionnaire, "问卷");
       delete parameters.questionnaire;
       const conditions = Array.isArray(parameters.conditions) ? parameters.conditions : [];
       if (!conditions.length) throw new Error("至少需要一个题目条件。");
       parameters.conditions = conditions.map((item) => ({
-        question_id: canonicalPositiveID(item.question, "题目"),
-        option_ids: requiredList(item.options, "选项", canonicalPositiveID),
+        question_id: canonicalReference(item.question, "题目"),
+        option_ids: requiredList(item.options, "选项", canonicalReference),
       }));
     } else if (templateKey === "paid_order") {
       parameters.product_codes = requiredList(parameters.products, "商品", canonicalProductReference);

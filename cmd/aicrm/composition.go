@@ -522,6 +522,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	}
 	legacyAudienceSource.Survey = surveyRepository
 	surveyDefinitions := surveyapp.NewService(uow, surveyRepository)
+	segmentBindings.Handler.BindAudienceSurveyReferences(audienceSurveyReferenceAdapter{surveys: surveyDefinitions})
 	surveySubmissions := surveyapp.NewSubmissionService(uow, surveyRepository, surveyCipher)
 	if err = surveySubmissions.BindCustomerTimeline(customerStore); err != nil {
 		return fail(err)
