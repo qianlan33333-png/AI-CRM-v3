@@ -824,7 +824,7 @@ func TestRenderGroupOpsInjectsManifestVerifiedReadonlyContentRenderer(t *testing
 		t.Fatal(err)
 	}
 	body := response.Body.String()
-	if response.Code != http.StatusOK || !strings.Contains(body, `href="/groupops-assets/aiassistant/send_content_readonly_detail.css"`) || !strings.Contains(body, `<script defer src="/groupops-assets/aiassistant/send_content_readonly_detail.js"></script>`) || !strings.Contains(body, `<template id="tpl"><section data-page="groupopsDetail">frozen donor fragment</section></template>`) {
+	if response.Code != http.StatusOK || !strings.Contains(body, `href="/groupops-assets/aiassistant/send_content_readonly_detail.css"`) || !strings.Contains(body, `<script defer src="/groupops-assets/aiassistant/send_content_readonly_detail.js"></script>`) || !strings.Contains(body, `<script defer src="/static/admin_console/groupops_history_readonly_bridge.js"></script>`) || !strings.Contains(body, `<template id="tpl"><section data-page="groupopsDetail">frozen donor fragment</section></template>`) {
 		t.Fatalf("group ops read-only shell mismatch status=%d body=%q", response.Code, body)
 	}
 	if err := renderer.RenderGroupOps(httptest.NewRecorder(), AdminPageForRequest(httptest.NewRequest(http.MethodGet, "/admin/groupops.html", nil), "群运营计划", "", "api.admin_group_ops_ui"), "groupops", `<section></section>`, GroupOpsAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS}); err == nil {

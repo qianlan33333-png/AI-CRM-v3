@@ -13,9 +13,12 @@ const host = await fetch(hostURL);
 if (host.status !== 200) throw new Error(`host status=${host.status}`);
 let html = await host.text();
 const readonlyPath = '/groupops-assets/aiassistant/send_content_readonly_detail.js';
-if (!html.includes(`src="${readonlyPath}"`) || !html.includes('send_content_readonly_detail.css')) throw new Error('actual Group Ops Host did not include the manifest-verified read-only renderer');
+const bridgePath = '/static/admin_console/groupops_history_readonly_bridge.js';
+if (!html.includes(`src="${readonlyPath}"`) || !html.includes('send_content_readonly_detail.css') || !html.includes(`src="${bridgePath}"`)) throw new Error('actual Group Ops Host did not include the read-only renderer bridge');
 const readonly = fs.readFileSync(path.join(root, 'web/donors/ai-assistant-production/static/send_content_readonly_detail.js'), 'utf8');
+const bridge = fs.readFileSync(path.join(root, 'internal/webshell/static/admin_console/groupops_history_readonly_bridge.js'), 'utf8');
 html = html.replace(`<script defer src="${readonlyPath}"></script>`, `<script>${readonly}</script>`);
+html = html.replace(`<script defer src="${bridgePath}"></script>`, `<script>${bridge}</script>`);
 html = html.replace(/<script type="module" src="\/groupops-assets\/assets\/admin-test\.js"><\/script>/, `<script>${bundle}</script>`);
 if (!html.includes(bundle)) throw new Error('actual Host admin entry was not replaced for the existing JSDOM harness');
 const dom = new JSDOM(html, {
