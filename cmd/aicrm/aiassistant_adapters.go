@@ -5,9 +5,11 @@ import (
 	"errors"
 	"strings"
 
+	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
 	accessport "github.com/qianlan33333-png/AI-CRM-v3/internal/access/port"
 	aiassistantapp "github.com/qianlan33333-png/AI-CRM-v3/internal/aiassistant/app"
 	aiassistantport "github.com/qianlan33333-png/AI-CRM-v3/internal/aiassistant/port"
+	customerapp "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/app"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	identityport "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/port"
@@ -25,6 +27,12 @@ type aiCustomerSnapshotAdapter struct {
 
 func (a aiCustomerSnapshotAdapter) CustomerSnapshot(ctx context.Context, id customerdomain.CustomerID) (aiassistantapp.CustomerSnapshot, error) {
 	canonical, status, name, label, err := a.read(ctx, id)
+	if errors.Is(err, customerapp.ErrNotFound) {
+		// A missing directory projection is a target eligibility fact, not a
+		// transient database failure. The service records it safely and creates
+		// no recipient for this target.
+		return aiassistantapp.CustomerSnapshot{}, nil
+	}
 	return aiassistantapp.CustomerSnapshot{CanonicalID: canonical, Status: status, DisplayName: name, OneIDLabel: label}, err
 }
 
@@ -40,6 +48,9 @@ func (a aiStaffSnapshotAdapter) StaffSnapshot(ctx context.Context, id int64) (ai
 
 func (a aiStaffSnapshotAdapter) StaffByWeComUserID(ctx context.Context, value string) (aiassistantapp.StaffSnapshot, error) {
 	user, err := a.repository.UserByWeComUserID(ctx, value, false)
+	if errors.Is(err, accessdomain.ErrNotFound) {
+		return aiassistantapp.StaffSnapshot{}, nil
+	}
 	if err != nil {
 		return aiassistantapp.StaffSnapshot{}, err
 	}

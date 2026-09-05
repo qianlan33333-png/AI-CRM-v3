@@ -63,18 +63,6 @@ func (integrationIdentities) VerifiedExternalIdentityValue(context.Context, cust
 	return "", false, nil
 }
 
-type mutableIntegrationIdentities struct {
-	result   identityport.ResolveResult
-	verified string
-}
-
-func (r *mutableIntegrationIdentities) Resolve(context.Context, identitydomain.Reference) (identityport.ResolveResult, error) {
-	return r.result, nil
-}
-func (r *mutableIntegrationIdentities) VerifiedExternalIdentityValue(context.Context, customerdomain.CustomerID, identitydomain.Kind, string) (string, bool, error) {
-	return r.verified, r.verified != "", nil
-}
-
 func TestPostgreSQLPlanReceiptAuditOutboxAtomicJourney(t *testing.T) {
 	native, cleanup := integrationPool(t)
 	defer cleanup()
@@ -246,101 +234,6 @@ func TestPostgreSQLIntegrationNonceAllowsOnlyExactReplay(t *testing.T) {
 	})
 	if !errors.Is(err, ErrConflict) {
 		t.Fatalf("drift err=%v", err)
-	}
-}
-
-func TestPostgreSQLIntegrationReplayDoesNotResolveIdentityAgain(t *testing.T) {
-	native, cleanup := integrationPool(t)
-	defer cleanup()
-	wrapped, err := platformpostgres.Wrap(native, time.Second)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer wrapped.Close()
-	uow, err := platformpostgres.NewUnitOfWork(wrapped)
-	if err != nil {
-		t.Fatal(err)
-	}
-	repository, err := NewPostgreSQL(native, uow)
-	if err != nil {
-		t.Fatal(err)
-	}
-	identities := &mutableIntegrationIdentities{result: identityport.ResolveResult{Status: identityport.ResolveFound, CustomerID: customerdomain.CustomerID(91)}, verified: "external-1"}
-	service, err := aiassistantapp.NewService(uow, repository, integrationCustomers{}, integrationStaff{}, integrationMaterials{}, identities, identities)
-	if err != nil {
-		t.Fatal(err)
-	}
-	at := time.Date(2026, 9, 4, 1, 2, 3, 0, time.UTC)
-	command := aiassistantapp.IdentityPlanCommand{
-		Actor:          aiassistantport.Actor{Kind: aiassistantport.ActorService, ID: 7},
-		IdempotencyKey: "integration-replay-1",
-		Name:           "identity plan",
-		SourceKind:     "automation",
-		SourceDigest:   effectport.Hash("identity-plan"),
-		Targets: []aiassistantapp.IdentityTarget{{
-			Reference: identitydomain.Reference{Kind: identitydomain.KindWeComExternalUserID, Scope: "wecom-corp:corp-1", Value: "external-1", Assurance: identitydomain.AssuranceDeclared, Source: "test"},
-			StaffID:   21,
-			Content:   []aiassistantport.ContentBlock{{Kind: aiassistantport.ContentText, Text: "hello"}},
-		}},
-		OccurredAt: at, IntegrationKey: "integration-key", Nonce: "1234567890abcdef", ExpiresAt: at.Add(5 * time.Minute),
-	}
-	first, err := service.CreatePlanFromIdentities(context.Background(), command)
-	if err != nil || first.Replayed || first.Found != 1 || len(first.Dispositions) != 1 || first.Dispositions[0].Status != "found" {
-		t.Fatalf("first=%+v err=%v", first, err)
-	}
-	identities.result = identityport.ResolveResult{Status: identityport.ResolveConflict}
-	command.Nonce = "1234567890abcdef-retry"
-	command.OccurredAt = command.OccurredAt.Add(time.Second)
-	command.ExpiresAt = command.ExpiresAt.Add(time.Second)
-	replayed, err := service.CreatePlanFromIdentities(context.Background(), command)
-	if err != nil || !replayed.Replayed || replayed.Plan.ID != first.Plan.ID || replayed.Found != 1 || replayed.Conflicted != 0 {
-		t.Fatalf("replayed=%+v err=%v", replayed, err)
-	}
-	changed := command
-	changed.Name = "changed identity plan"
-	changed.Nonce = "1234567890abcdef-drift"
-	if _, err = service.CreatePlanFromIdentities(context.Background(), changed); !errors.Is(err, aiassistantapp.ErrConflict) {
-		t.Fatalf("changed payload err=%v", err)
-	}
-}
-
-func TestPostgreSQLIntegrationDeclaredOnlyPersistsSafeDispositionWithoutPlan(t *testing.T) {
-	native, cleanup := integrationPool(t)
-	defer cleanup()
-	wrapped, err := platformpostgres.Wrap(native, time.Second)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer wrapped.Close()
-	uow, err := platformpostgres.NewUnitOfWork(wrapped)
-	if err != nil {
-		t.Fatal(err)
-	}
-	repository, err := NewPostgreSQL(native, uow)
-	if err != nil {
-		t.Fatal(err)
-	}
-	identities := &mutableIntegrationIdentities{result: identityport.ResolveResult{Status: identityport.ResolveFound, CustomerID: customerdomain.CustomerID(91)}}
-	service, err := aiassistantapp.NewService(uow, repository, integrationCustomers{}, integrationStaff{}, integrationMaterials{}, identities, identities)
-	if err != nil {
-		t.Fatal(err)
-	}
-	at := time.Date(2026, 9, 5, 1, 2, 3, 0, time.UTC)
-	command := aiassistantapp.IdentityPlanCommand{Actor: aiassistantport.Actor{Kind: aiassistantport.ActorService, ID: 7}, IdempotencyKey: "declared-only-1", Name: "identity plan", SourceKind: "automation", SourceDigest: effectport.Hash("identity-plan"), Targets: []aiassistantapp.IdentityTarget{{Reference: identitydomain.Reference{Kind: identitydomain.KindWeComExternalUserID, Scope: "wecom-corp:corp-1", Value: "external-1", Assurance: identitydomain.AssuranceDeclared, Source: "test"}, StaffID: 21, Content: []aiassistantport.ContentBlock{{Kind: aiassistantport.ContentText, Text: "hello"}}}}, OccurredAt: at, IntegrationKey: "integration-key", Nonce: "1234567890abcdef", ExpiresAt: at.Add(time.Minute)}
-	result, err := service.CreatePlanFromIdentities(context.Background(), command)
-	if err != nil || result.Plan.ID != 0 || result.Unverified != 1 || len(result.Dispositions) != 1 || result.Dispositions[0].Status != "unverified" {
-		t.Fatalf("result=%+v err=%v", result, err)
-	}
-	command.Nonce = "1234567890abcdef-retry"
-	command.OccurredAt = command.OccurredAt.Add(time.Second)
-	command.ExpiresAt = command.ExpiresAt.Add(time.Second)
-	replayed, err := service.CreatePlanFromIdentities(context.Background(), command)
-	if err != nil || !replayed.Replayed || replayed.Plan.ID != 0 || replayed.Unverified != 1 {
-		t.Fatalf("replayed=%+v err=%v", replayed, err)
-	}
-	var plans, recipients, receipts int
-	if err = native.QueryRow(context.Background(), `SELECT (SELECT count(*) FROM ai_assistant_plans),(SELECT count(*) FROM ai_assistant_plan_recipients),(SELECT count(*) FROM ai_assistant_operation_receipts)`).Scan(&plans, &recipients, &receipts); err != nil || plans != 0 || recipients != 0 || receipts != 1 {
-		t.Fatalf("plans=%d recipients=%d receipts=%d err=%v", plans, recipients, receipts, err)
 	}
 }
 

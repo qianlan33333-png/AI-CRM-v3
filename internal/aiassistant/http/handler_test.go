@@ -1,6 +1,7 @@
 package http
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -13,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	aiassistantapp "github.com/qianlan33333-png/AI-CRM-v3/internal/aiassistant/app"
 	aiassistantport "github.com/qianlan33333-png/AI-CRM-v3/internal/aiassistant/port"
 	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
 )
@@ -64,10 +66,15 @@ func TestIntegrationTargetsTreatsSignedIdentityAsDeclaredAndFreezesLegacyShapes(
 		UnionID      string `json:"unionid"`
 		OwnerUserID  string `json:"owner_userid"`
 		SenderUserID string `json:"sender_userid"`
-	}{UnionID: "union-1", OwnerUserID: "staff-1"})
+		CustomerName string `json:"customer_name"`
+	}{UnionID: "union-1", OwnerUserID: "staff-1", CustomerName: "customer"})
 	targets, _, _, _, err = handler.integrationTargets(batch, "integration", "idem-key-2")
 	if err != nil || len(targets) != 1 || targets[0].Reference.Kind != identitydomain.KindUnionID || targets[0].Reference.Scope != "wechat-open-platform:platform-1" {
 		t.Fatalf("legacy batch targets=%+v err=%v", targets, err)
+	}
+	legacy.Recipients = batch.Recipients
+	if _, _, _, _, err = handler.integrationTargets(legacy, "integration", "idem-key-3"); err == nil {
+		t.Fatal("mixed legacy single and batch shapes were accepted")
 	}
 }
 
@@ -79,6 +86,40 @@ func TestRoutesExposeOnlyTheFrozenLegacyIntakeAdapter(t *testing.T) {
 	if response.Code != http.StatusServiceUnavailable {
 		t.Fatalf("legacy route status=%d", response.Code)
 	}
+}
+
+func TestSignedLegacyHTTPIntakeAcceptsFrozenMetadataWithoutTrustingIt(t *testing.T) {
+	now := time.Date(2026, 9, 4, 1, 2, 3, 0, time.UTC)
+	secret := strings.Repeat("s", 32)
+	app := &capturingIntegrationApplication{}
+	handler := &Handler{app: app, integration: IntegrationConfig{Enabled: true, Key: "automation", Secret: secret, ActorID: 7, MaxSkew: 5 * time.Minute, WeComCorpID: "corp-1", OpenPlatformID: "platform-1"}, now: func() time.Time { return now }}
+	body := []byte(`{"external_userid":"external-1","owner_userid":"staff-1","content_package":{"content_text":"hello"},"external_event_id":"event-1","idempotency_key":"donor-key-1","operator":"untrusted-operator","package_key":"legacy-package-1"}`)
+	request := signedIntegrationRequest(now, secret, body)
+	request.URL.Path = "/api/admin/ai-assist/review-plans"
+	response := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(response, request)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if app.command.Actor != (aiassistantport.Actor{Kind: aiassistantport.ActorService, ID: 7}) || app.command.IdempotencyKey != "integration-replay-1" || len(app.command.Targets) != 1 {
+		t.Fatalf("command=%+v", app.command)
+	}
+	target := app.command.Targets[0]
+	if target.Reference.Assurance != identitydomain.AssuranceDeclared || target.Reference.Value != "external-1" || target.StaffWeComUserID != "staff-1" || len(target.Content) != 1 || target.Content[0].Text != "hello" {
+		t.Fatalf("target=%+v", target)
+	}
+}
+
+// Embedding the application interface keeps this edge test focused on the
+// signed decoder and avoids replacing the application's production behavior.
+type capturingIntegrationApplication struct {
+	Application
+	command aiassistantapp.IdentityPlanCommand
+}
+
+func (a *capturingIntegrationApplication) CreatePlanFromIdentities(_ context.Context, command aiassistantapp.IdentityPlanCommand) (aiassistantapp.IdentityPlanResult, error) {
+	a.command = command
+	return aiassistantapp.IdentityPlanResult{Unverified: 1, Dispositions: []aiassistantapp.IdentityTargetDisposition{{Ordinal: 0, Status: "unverified"}}}, nil
 }
 
 func signedIntegrationRequest(at time.Time, secret string, body []byte) *http.Request {

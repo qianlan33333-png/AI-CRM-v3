@@ -418,11 +418,15 @@ type integrationRequest struct {
 	Message              string                     `json:"message"`
 	ContentPackage       map[string]json.RawMessage `json:"content_package"`
 	ExternalEventID      string                     `json:"external_event_id"`
+	IdempotencyKey       string                     `json:"idempotency_key"`
+	Operator             string                     `json:"operator"`
+	PackageKey           string                     `json:"package_key"`
 	DisplayName          string                     `json:"display_name"`
 	Recipients           []struct {
 		UnionID      string `json:"unionid"`
 		OwnerUserID  string `json:"owner_userid"`
 		SenderUserID string `json:"sender_userid"`
+		CustomerName string `json:"customer_name"`
 	} `json:"recipients"`
 }
 
@@ -457,7 +461,7 @@ func (h *Handler) integrationPlan(w stdhttp.ResponseWriter, r *stdhttp.Request) 
 	if result.Plan.ID > 0 {
 		plan = result.Plan
 	}
-	writeJSON(w, stdhttp.StatusAccepted, map[string]any{"ok": true, "plan": plan, "replayed": result.Replayed, "dispatch_ready": h.dispatchReady, "resolution": map[string]int{"found": result.Found, "not_found": result.NotFound, "conflict": result.Conflicted, "unverified": result.Unverified, "invalid": result.Invalid}, "dispositions": result.Dispositions})
+	writeJSON(w, stdhttp.StatusAccepted, map[string]any{"ok": true, "plan": plan, "replayed": result.Replayed, "dispatch_ready": h.dispatchReady, "resolution": map[string]int{"found": result.Found, "not_found": result.NotFound, "conflict": result.Conflicted, "unverified": result.Unverified, "ineligible": result.Ineligible, "invalid": result.Invalid}, "dispositions": result.Dispositions})
 }
 
 func (h *Handler) integrationTargets(input integrationRequest, key, idempotencyKey string) ([]aiassistantapp.IdentityTarget, string, string, effectport.Digest, error) {
@@ -506,6 +510,9 @@ func (h *Handler) integrationTargets(input integrationRequest, key, idempotencyK
 		external = legacyTarget
 	}
 	if external != "" {
+		if len(input.Recipients) > 0 {
+			return nil, "", "", "", errors.New("mixed legacy recipient shapes")
+		}
 		if h.integration.WeComCorpID == "" || owner == "" {
 			return nil, "", "", "", errors.New("legacy single configuration")
 		}

@@ -3840,18 +3840,23 @@ components:
         owner_userid: {type: string, minLength: 1, maxLength: 256, writeOnly: true}
         sender_userid: {type: string, minLength: 1, maxLength: 256, writeOnly: true}
         content_text: {type: string, minLength: 1, maxLength: 8000, writeOnly: true}
+        message: {type: string, minLength: 1, maxLength: 8000, writeOnly: true}
         content_package: {type: object, additionalProperties: true, writeOnly: true}
         external_event_id: {type: string, minLength: 1, maxLength: 200, writeOnly: true}
-        recipients: {type: array, minItems: 1, maxItems: 5000, writeOnly: true, items: {type: object, required: [unionid], properties: {unionid: {type: string, minLength: 1, maxLength: 512}, owner_userid: {type: string, maxLength: 256}, sender_userid: {type: string, maxLength: 256}}}}
+        idempotency_key: {type: string, minLength: 8, maxLength: 200, writeOnly: true, description: Frozen donor metadata. The authenticated Idempotency-Key header remains authoritative.}
+        operator: {type: string, minLength: 1, maxLength: 256, writeOnly: true, description: Frozen donor metadata and never an authenticated actor.}
+        package_key: {type: string, minLength: 1, maxLength: 200, writeOnly: true}
+        recipients: {type: array, minItems: 1, maxItems: 5000, writeOnly: true, items: {type: object, required: [unionid], properties: {unionid: {type: string, minLength: 1, maxLength: 512}, owner_userid: {type: string, maxLength: 256}, sender_userid: {type: string, maxLength: 256}, customer_name: {type: string, maxLength: 200, writeOnly: true}}}}
     AIAssistantIntegrationResolution:
       type: object
       additionalProperties: false
-      required: [found, not_found, conflict, unverified, invalid]
+      required: [found, not_found, conflict, unverified, ineligible, invalid]
       properties:
         found: {type: integer, minimum: 0, maximum: 5000}
         not_found: {type: integer, minimum: 0, maximum: 5000}
         conflict: {type: integer, minimum: 0, maximum: 5000}
         unverified: {type: integer, minimum: 0, maximum: 5000}
+        ineligible: {type: integer, minimum: 0, maximum: 5000}
         invalid: {type: integer, minimum: 0, maximum: 5000}
     AIAssistantIntegrationDisposition:
       type: object
@@ -3859,7 +3864,7 @@ components:
       required: [ordinal, status]
       properties:
         ordinal: {type: integer, minimum: 0, maximum: 4999}
-        status: {type: string, enum: [found, not_found, conflict, unverified, invalid, duplicate]}
+        status: {type: string, enum: [found, not_found, conflict, unverified, ineligible, invalid, duplicate]}
     AIAssistantIntegrationPlanResponse:
       type: object
       additionalProperties: false

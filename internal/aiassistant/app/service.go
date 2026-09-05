@@ -131,6 +131,7 @@ type IdentityPlanResult struct {
 	NotFound     int
 	Conflicted   int
 	Unverified   int
+	Ineligible   int
 	Invalid      int
 	Dispositions []IdentityTargetDisposition
 }
@@ -225,6 +226,7 @@ func (s *Service) CreatePlanFromIdentities(ctx context.Context, command Identity
 			result.NotFound = snapshot.NotFound
 			result.Conflicted = snapshot.Conflicted
 			result.Unverified = snapshot.Unverified
+			result.Ineligible = snapshot.Ineligible
 			result.Invalid = snapshot.Invalid
 			result.Dispositions = snapshot.Dispositions
 			return nil
@@ -242,8 +244,12 @@ func (s *Service) CreatePlanFromIdentities(ctx context.Context, command Identity
 			staffID := target.StaffID
 			if staffID == 0 && target.StaffWeComUserID != "" {
 				staff, staffErr := s.staff.StaffByWeComUserID(tx, target.StaffWeComUserID)
-				if staffErr != nil || !staff.Active {
-					result.Invalid++
+				if staffErr != nil {
+					return staffErr
+				}
+				if !staff.Active || staff.ID < 1 {
+					result.Ineligible++
+					disposition.Status = "ineligible"
 					result.Dispositions = append(result.Dispositions, disposition)
 					continue
 				}
@@ -277,6 +283,20 @@ func (s *Service) CreatePlanFromIdentities(ctx context.Context, command Identity
 					result.Dispositions = append(result.Dispositions, disposition)
 					continue
 				}
+				customer, customerErr := s.customers.CustomerSnapshot(tx, resolution.CustomerID)
+				if customerErr != nil {
+					return customerErr
+				}
+				staff, staffErr := s.staff.StaffSnapshot(tx, staffID)
+				if staffErr != nil {
+					return staffErr
+				}
+				if customer.CanonicalID != resolution.CustomerID || customer.Status != customerdomain.StatusActive || !staff.Active {
+					result.Ineligible++
+					disposition.Status = "ineligible"
+					result.Dispositions = append(result.Dispositions, disposition)
+					continue
+				}
 				seenCustomers[resolution.CustomerID] = struct{}{}
 				result.Found++
 				disposition.Status = "found"
@@ -293,7 +313,7 @@ func (s *Service) CreatePlanFromIdentities(ctx context.Context, command Identity
 			}
 		}
 		if len(resolved) == 0 {
-			snapshot, _ := json.Marshal(identityPlanSnapshot{Found: result.Found, NotFound: result.NotFound, Conflicted: result.Conflicted, Unverified: result.Unverified, Invalid: result.Invalid, Dispositions: result.Dispositions})
+			snapshot, _ := json.Marshal(identityPlanSnapshot{Found: result.Found, NotFound: result.NotFound, Conflicted: result.Conflicted, Unverified: result.Unverified, Ineligible: result.Ineligible, Invalid: result.Invalid, Dispositions: result.Dispositions})
 			_, err = s.store.Complete(tx, receipt.ID, snapshot, command.OccurredAt)
 			return err
 		}
@@ -308,11 +328,11 @@ func (s *Service) CreatePlanFromIdentities(ctx context.Context, command Identity
 		if err != nil {
 			return err
 		}
-		payload, _ := json.Marshal(map[string]int{"found": result.Found, "not_found": result.NotFound, "conflict": result.Conflicted, "unverified": result.Unverified, "invalid": result.Invalid})
+		payload, _ := json.Marshal(map[string]int{"found": result.Found, "not_found": result.NotFound, "conflict": result.Conflicted, "unverified": result.Unverified, "ineligible": result.Ineligible, "invalid": result.Invalid})
 		if err = s.store.AppendEvent(tx, aiassistantport.Event{Type: aiassistantport.EventIntegrationResolved, AggregateID: result.Plan.ID, ActorID: command.Actor.ID, IdempotencyKey: command.IdempotencyKey + ":resolution", Payload: payload, OccurredAt: command.OccurredAt}); err != nil {
 			return err
 		}
-		snapshot, _ := json.Marshal(identityPlanSnapshot{PlanID: int64(result.Plan.ID), Found: result.Found, NotFound: result.NotFound, Conflicted: result.Conflicted, Unverified: result.Unverified, Invalid: result.Invalid, Dispositions: result.Dispositions})
+		snapshot, _ := json.Marshal(identityPlanSnapshot{PlanID: int64(result.Plan.ID), Found: result.Found, NotFound: result.NotFound, Conflicted: result.Conflicted, Unverified: result.Unverified, Ineligible: result.Ineligible, Invalid: result.Invalid, Dispositions: result.Dispositions})
 		_, err = s.store.Complete(tx, receipt.ID, snapshot, command.OccurredAt)
 		return err
 	})
@@ -325,6 +345,7 @@ type identityPlanSnapshot struct {
 	NotFound     int                         `json:"not_found"`
 	Conflicted   int                         `json:"conflicted"`
 	Unverified   int                         `json:"unverified"`
+	Ineligible   int                         `json:"ineligible"`
 	Invalid      int                         `json:"invalid"`
 	Dispositions []IdentityTargetDisposition `json:"dispositions"`
 }
