@@ -220,6 +220,14 @@ func TestCustomerSyncJourneyPostgreSQL(t *testing.T) {
 	if recovery.Status != wecom.SyncFetchingProfiles || recovery.ProviderCursor != "cursor-committed" || recovery.StaffIndex != 0 {
 		t.Fatalf("recovery did not preserve cursor: %+v", recovery)
 	}
+	// This fixture deliberately observes resumable cursor preservation above.
+	// Terminate only that synthetic run before starting the independent paged
+	// journey: production keeps the one-active-sync-per-corporation invariant.
+	if err = uow.Within(ctx, func(txContext context.Context) error {
+		return syncStore.Terminate(txContext, recoveryRunID, "fixture_complete")
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	// Run the real River worker through two pages and two employees. A failure
 	// after the first employee commits must retain that relationship without
