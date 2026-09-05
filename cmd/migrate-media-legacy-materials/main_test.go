@@ -116,13 +116,34 @@ func TestFrozenMappingCommandDryRunApplyReplayAndVerify(t *testing.T) {
 	if err = run(ctx, append([]string{"--mode=verify"}, args...)); err != nil {
 		t.Fatal(err)
 	}
-	s.Materials[0].LegacyID = "missing"
+	missing := s
+	missing.Materials = append([]material(nil), s.Materials...)
+	missing.Materials[0].LegacyID = "missing"
+	missing.Materials[0].SourceRecord = json.RawMessage(`{"kind":"image","legacy_id":"missing"}`)
+	missing.Materials[0].SourceRecordDigest = digestHex(missing.Materials[0].SourceRecord)
+	body, _ = json.Marshal(missing)
+	if err = os.WriteFile(snapshotPath, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err = run(ctx, []string{"--mode=verify", "--snapshot=" + snapshotPath, "--snapshot-sha256=" + digestHex(body), "--actor-admin-user-id=7"}); err == nil || !strings.Contains(err.Error(), "verified mapping is missing for image:missing") {
+		t.Fatalf("verify missing mapping err=%v", err)
+	}
+	// The mapping exists again, but its originally verified V3 Media fact has
+	// changed. Verification must reject that drift rather than treating the
+	// immutable mapping row as sufficient evidence.
 	body, _ = json.Marshal(s)
 	if err = os.WriteFile(snapshotPath, body, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err = run(ctx, []string{"--mode=verify", "--snapshot=" + snapshotPath, "--snapshot-sha256=" + digestHex(body), "--actor-admin-user-id=7"}); err == nil {
-		t.Fatal("verify accepted a missing mapping")
+	driftDigest := "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+	if _, err = pool.Exec(ctx, `INSERT INTO media_blobs(digest,mime_type,byte_size,content) VALUES($1,'image/png',1,$2)`, driftDigest, []byte("y")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pool.Exec(ctx, `UPDATE media_images SET blob_digest=$1 WHERE id=$2`, driftDigest, imageID); err != nil {
+		t.Fatal(err)
+	}
+	if err = run(ctx, []string{"--mode=verify", "--snapshot=" + snapshotPath, "--snapshot-sha256=" + digestHex(body), "--actor-admin-user-id=7"}); err == nil || !strings.Contains(err.Error(), "target Media source drift or unavailable for image:1") {
+		t.Fatalf("verify target drift err=%v", err)
 	}
 }
 
