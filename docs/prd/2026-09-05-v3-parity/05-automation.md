@@ -80,3 +80,16 @@ paid_order补充冻结：供体模板只选择status=paid；供体迁移0065的o
 - 原paid_order按Order来源owner_userid过滤；当前以任意当前企微关系过滤付款人不是同一事实。复核供体0065及后续迁移实际视图、现有Order归属Port，来源缺失时保留明确不可匹配，不擅自用联系人负责人补造订单负责人。
 - Radar原0165视图使用可归因authorized/authorized_click及带身份的landing；当前只选内容打开/跳转等后续事件，可能丢失成功授权后内容失败的首次点击。按现有V3已解析事实与原事件语义对照；不能放宽到匿名landing，不能把后续内容请求当新首次点击。owner_scope=all时不要无依据额外要求存在当前企微关系。
 - 六Owner真实PG边界用例、实际旧表单预览及每条目标守恒必须随提交交付。以上是旧行为及已入V3事实的接通，不增加新分析平台。
+
+## 11. 原表单复用与Owner类型复核（PR152）
+
+实际V3 `internal/webshell/static/admin_console/admin_audience_detail.js` 的renderTemplates目前只写“AST以JSON保存”，没有渲染六个原表单；savePackage仍读取packageDefinitionInput。仅接收owner_userids的后台转换不等于原界面可操作。
+
+已定位冻结dd8供体 `aicrm_next/app/admin_console/static/admin_console/template_parameter_form.js`，包含TemplateParameterFormController及PackageTemplateController。原页面为`extensions/ai/ai_audience_ops/templates/admin_console/ai_audience_package_detail.html`，已有templateParameterForm节点与脚本引用。优先按必要文件字节冻结复用此脚本及现有原模板，通过V3 Host映射现有闭集模板元数据与接口；不重新手写六套表单，不修改现有冻结业务文件。
+
+- 原表单的questionnaire/conditions.question/options、products、channels、radars需要由各Owner稳定Port解析到可信本地ID/精确code。原可输入稳定ID/code或精确标题；歧义失败，不猜一条，不将旧数字ID直接当新ID。
+- owner_userids通过Access解析后持久化本地owner_staff_ids，回填也走同一Access映射；禁止把本地StaffID与Provider userid放入同一个字符串集合。真实Provider userid可为纯数字，必须覆盖StaffID9→userid bob和另一个userid9的碰撞反例。原生Channel Owner提供显式StaffID，历史Provider引用分开处理。指定员工且依赖不可用失败；all scope的空owner_userids不应被422阻止。
+- 预览与保存使用同一规范化规则，保存返回可重开回填；激活期间只读状态仍按旧逻辑。实际控件生成的参数进入真实Owner查询的结果，才算六模板Host接通。
+- refresh_mode沿原every_3m、daily_0200、every_3m_plus_daily_0200、manual实际选项映射现有River；不能忽略旧增量下拉框或把0200本地时间误作UTC。没有新cron/ticker或自建刷新Worker内核。
+
+本批先保证各Owner查询与字段归属真实可用，再补原表单组合journey。所有PG测试使用真实迁移，不以手造删减约束的表替代；fixtures必须命中需要验证的SQL路径。
