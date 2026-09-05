@@ -15,9 +15,13 @@ type Entitlement struct {
 	StartAt          time.Time `json:"start_at"`
 	EndAt            time.Time `json:"end_at"`
 	Remark           string    `json:"remark"`
-	Version          int64     `json:"version"`
-	UpdatedAt        time.Time `json:"updated_at"`
-	SourceSystem     string    `json:"source_system,omitempty"`
+	// Alliance is nil when historical source data did not collect or could not
+	// verify admin_alliance. It deliberately differs from an explicit "", which
+	// is the frozen editor's clear operation.
+	Alliance     *string   `json:"alliance"`
+	Version      int64     `json:"version"`
+	UpdatedAt    time.Time `json:"updated_at"`
+	SourceSystem string    `json:"source_system,omitempty"`
 	// RenewalCount is the number of effective paid service-period source
 	// orders after the first authoritative enrollment. It is available only
 	// when Order has a complete native or mapped-historical source chain; a
@@ -125,6 +129,17 @@ type RemarkCommand struct {
 	IdempotencyKey   string
 }
 
+type AllianceCommand struct {
+	EntitlementID int64
+	CustomerID    int64
+	// ServiceProductID is the required scope proof for the opaque member ref.
+	ServiceProductID int64
+	EmployeeID       string
+	Alliance         string
+	ExpectedVersion  int64
+	IdempotencyKey   string
+}
+
 type EntitlementService interface {
 	ListCustomerEntitlements(context.Context, int64, int32) (EntitlementPage, error)
 	ListServicePeriodMembers(context.Context, ServicePeriodMemberQuery) (ServicePeriodMemberPage, error)
@@ -132,6 +147,7 @@ type EntitlementService interface {
 	// It avoids inferring a product row from a capped customer entitlement list.
 	GetCustomerServicePeriodEntitlement(context.Context, int64, int64) (Entitlement, bool, error)
 	UpdateEntitlementRemark(context.Context, RemarkCommand) (Entitlement, error)
+	UpdateEntitlementAlliance(context.Context, AllianceCommand) (Entitlement, error)
 }
 
 type HistoricalEntitlement struct {
@@ -145,6 +161,7 @@ type HistoricalEntitlement struct {
 	StartAt          time.Time
 	EndAt            time.Time
 	Remark           string
+	Alliance         *string
 	SourceDigest     [32]byte
 	CreatedAt        time.Time
 	UpdatedAt        time.Time

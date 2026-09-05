@@ -149,11 +149,13 @@ type testExternalPush struct {
 }
 
 type testMemberEntitlements struct {
-	mu          sync.Mutex
-	page        orderport.ServicePeriodMemberPage
-	queries     []orderport.ServicePeriodMemberQuery
-	remarkCmd   *orderport.RemarkCommand
-	remarkCalls int
+	mu            sync.Mutex
+	page          orderport.ServicePeriodMemberPage
+	queries       []orderport.ServicePeriodMemberQuery
+	remarkCmd     *orderport.RemarkCommand
+	remarkCalls   int
+	allianceCmd   *orderport.AllianceCommand
+	allianceCalls int
 }
 
 func (stub *testMemberEntitlements) ListCustomerEntitlements(context.Context, int64, int32) (orderport.EntitlementPage, error) {
@@ -222,6 +224,28 @@ func (stub *testMemberEntitlements) UpdateEntitlementRemark(_ context.Context, c
 	return orderport.Entitlement{}, orderport.ErrNotFound
 }
 
+func (stub *testMemberEntitlements) UpdateEntitlementAlliance(_ context.Context, command orderport.AllianceCommand) (orderport.Entitlement, error) {
+	stub.mu.Lock()
+	defer stub.mu.Unlock()
+	stub.allianceCalls++
+	stub.allianceCmd = &command
+	for index := range stub.page.Items {
+		item := &stub.page.Items[index]
+		if item.ID != command.EntitlementID || item.ServiceProductID != command.ServiceProductID {
+			continue
+		}
+		if item.Version != command.ExpectedVersion {
+			return orderport.Entitlement{}, orderport.ErrConflict
+		}
+		alliance := command.Alliance
+		item.Alliance = &alliance
+		item.Version++
+		item.UpdatedAt = time.Now().UTC()
+		return *item, nil
+	}
+	return orderport.Entitlement{}, orderport.ErrNotFound
+}
+
 func (stub *testMemberEntitlements) snapshot() (orderport.RemarkCommand, bool, int, []orderport.ServicePeriodMemberQuery) {
 	stub.mu.Lock()
 	defer stub.mu.Unlock()
@@ -230,6 +254,15 @@ func (stub *testMemberEntitlements) snapshot() (orderport.RemarkCommand, bool, i
 		return orderport.RemarkCommand{}, false, stub.remarkCalls, queries
 	}
 	return *stub.remarkCmd, true, stub.remarkCalls, queries
+}
+
+func (stub *testMemberEntitlements) allianceSnapshot() (orderport.AllianceCommand, bool, int) {
+	stub.mu.Lock()
+	defer stub.mu.Unlock()
+	if stub.allianceCmd == nil {
+		return orderport.AllianceCommand{}, false, stub.allianceCalls
+	}
+	return *stub.allianceCmd, true, stub.allianceCalls
 }
 
 type testMemberNames struct{}
@@ -728,6 +761,7 @@ func TestReadOnlyMemberGridCollaboratorGetsExplicitForbiddenAndNoWrites(t *testi
 	assertForbidden("update view", request(http.MethodPut, "/api/admin/service-period-products/7/member-views/13", `{"name":"不可更新","version":1,"config":`+config+`}`))
 	assertForbidden("delete view", request(http.MethodDelete, "/api/admin/service-period-products/7/member-views/13", `{"version":1}`))
 	assertForbidden("edit remark", request(http.MethodPut, "/api/admin/service-period-products/7/members/"+memberGridMemberRef(41)+"/remark", `{"remark":"不可写","version":5}`))
+	assertForbidden("edit alliance", request(http.MethodPut, "/api/admin/service-period-products/7/members/"+memberGridMemberRef(41)+"/alliance", `{"alliance":"不可写","version":5}`))
 	assertForbidden("enable external share", request(http.MethodPut, "/api/admin/service-period-products/7/member-grid/external-share", `{"enabled":false,"version":1}`))
 	assertForbidden("create collaborator", request(http.MethodPost, "/api/admin/service-period-products/7/member-grid/collaborators", `{"wecom_userid":"zhangsan","permission":"edit"}`))
 	assertForbidden("update collaborator", request(http.MethodPut, "/api/admin/service-period-products/7/member-grid/collaborators/14", `{"permission":"read","version":1}`))
@@ -735,9 +769,10 @@ func TestReadOnlyMemberGridCollaboratorGetsExplicitForbiddenAndNoWrites(t *testi
 
 	members := handler.members.(*testMemberEntitlements)
 	_, _, remarkCalls, _ := members.snapshot()
+	_, _, allianceCalls := members.allianceSnapshot()
 	workspaceSnapshot := workspace.snapshot()
-	if remarkCalls != 0 || workspaceSnapshot.CreateViews != 0 || workspaceSnapshot.UpdateViews != 0 || workspaceSnapshot.DeleteViews != 0 || workspaceSnapshot.CreateCollaborators != 0 || workspaceSnapshot.UpdateCollaborators != 0 || workspaceSnapshot.DeleteCollaborators != 0 || workspaceSnapshot.SetShares != 0 {
-		t.Fatalf("read-only collaborator reached an owner write: remarks=%d views=%d/%d/%d collaborators=%d/%d/%d share=%d", remarkCalls, workspaceSnapshot.CreateViews, workspaceSnapshot.UpdateViews, workspaceSnapshot.DeleteViews, workspaceSnapshot.CreateCollaborators, workspaceSnapshot.UpdateCollaborators, workspaceSnapshot.DeleteCollaborators, workspaceSnapshot.SetShares)
+	if remarkCalls != 0 || allianceCalls != 0 || workspaceSnapshot.CreateViews != 0 || workspaceSnapshot.UpdateViews != 0 || workspaceSnapshot.DeleteViews != 0 || workspaceSnapshot.CreateCollaborators != 0 || workspaceSnapshot.UpdateCollaborators != 0 || workspaceSnapshot.DeleteCollaborators != 0 || workspaceSnapshot.SetShares != 0 {
+		t.Fatalf("read-only collaborator reached an owner write: remarks=%d alliances=%d views=%d/%d/%d collaborators=%d/%d/%d share=%d", remarkCalls, allianceCalls, workspaceSnapshot.CreateViews, workspaceSnapshot.UpdateViews, workspaceSnapshot.DeleteViews, workspaceSnapshot.CreateCollaborators, workspaceSnapshot.UpdateCollaborators, workspaceSnapshot.DeleteCollaborators, workspaceSnapshot.SetShares)
 	}
 }
 
@@ -785,6 +820,10 @@ func TestFrozenMemberGridBrowserJourneyUsesActualHTTPAPI(t *testing.T) {
 	remarkCommand, foundRemark, _, queries := members.snapshot()
 	if !foundRemark || remarkCommand.Remark != "第二次备注" || remarkCommand.ExpectedVersion != 6 || remarkCommand.CustomerID != 0 {
 		t.Fatalf("opaque remark CAS command=%+v", remarkCommand)
+	}
+	allianceCommand, foundAlliance, _ := members.allianceSnapshot()
+	if !foundAlliance || allianceCommand.Alliance != "" || allianceCommand.ExpectedVersion != 8 || allianceCommand.CustomerID != 0 {
+		t.Fatalf("opaque alliance CAS command=%+v", allianceCommand)
 	}
 	var scanned bool
 	for _, query := range queries {

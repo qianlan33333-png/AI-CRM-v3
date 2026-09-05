@@ -574,6 +574,8 @@ func (h *Handler) serviceTail(w http.ResponseWriter, r *http.Request, tail strin
 		h.serviceMembers(w, r, id)
 	case strings.HasPrefix(suffix, "members/") && strings.HasSuffix(suffix, "/remark"):
 		h.memberRemark(w, r, id, strings.TrimSuffix(strings.TrimPrefix(suffix, "members/"), "/remark"))
+	case strings.HasPrefix(suffix, "members/") && strings.HasSuffix(suffix, "/alliance"):
+		h.memberAlliance(w, r, id, strings.TrimSuffix(strings.TrimPrefix(suffix, "members/"), "/alliance"))
 	case suffix == "member-grid/access":
 		h.memberGridAccess(w, r, id)
 	case suffix == "member-grid/schema":
@@ -898,7 +900,7 @@ func (h *Handler) serviceMembers(w http.ResponseWriter, r *http.Request, id int6
 		if name == "" {
 			name = "客户 #" + strconv.FormatInt(item.CustomerID, 10)
 		}
-		items = append(items, map[string]any{"member_ref": memberGridMemberRef(item.ID), "entitlement_id": item.ID, "service_product_id": item.ServiceProductID, "customer_id": item.CustomerID, "display_name": name, "state": state, "source": source, "starts_at": item.StartAt.UTC(), "expires_at": item.EndAt.UTC(), "remark": item.Remark, "version": item.Version, "updated_at": item.UpdatedAt.UTC()})
+		items = append(items, map[string]any{"member_ref": memberGridMemberRef(item.ID), "entitlement_id": item.ID, "service_product_id": item.ServiceProductID, "customer_id": item.CustomerID, "display_name": name, "state": state, "source": source, "starts_at": item.StartAt.UTC(), "expires_at": item.EndAt.UTC(), "remark": item.Remark, "alliance": item.Alliance, "version": item.Version, "updated_at": item.UpdatedAt.UTC()})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items, "limit": limit, "next_cursor": page.NextCursor, "has_more": page.NextCursor != ""})
 }
@@ -945,6 +947,50 @@ func (h *Handler) memberRemark(w http.ResponseWriter, r *http.Request, productID
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "member_ref": memberGridMemberRef(result.ID), "remark": result.Remark, "version": result.Version, "updated_at": result.UpdatedAt.UTC()})
+}
+
+func (h *Handler) memberAlliance(w http.ResponseWriter, r *http.Request, productID int64, rawEntitlementID string) {
+	if r.Method != http.MethodPut {
+		methodNotAllowed(w, http.MethodPut)
+		return
+	}
+	access, actor, ok := h.memberGridAuthorize(w, r, productID, true)
+	if !ok {
+		return
+	}
+	if !access.CanEdit {
+		writeError(w, http.StatusForbidden, "permission_denied")
+		return
+	}
+	if h.members == nil {
+		writeError(w, http.StatusServiceUnavailable, "unavailable")
+		return
+	}
+	entitlementID, err := parseMemberGridMemberRef(rawEntitlementID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	var body struct {
+		CustomerID int64  `json:"customer_id"`
+		Alliance   string `json:"alliance"`
+		Version    int64  `json:"version"`
+	}
+	if decodeJSON(r, &body) != nil || body.CustomerID < 0 || body.Version < 1 {
+		writeError(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	key, err := requestIdempotencyKey(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	result, err := h.members.UpdateEntitlementAlliance(r.Context(), orderport.AllianceCommand{EntitlementID: entitlementID, CustomerID: body.CustomerID, ServiceProductID: productID, EmployeeID: strconv.FormatInt(actor.AdminUserID, 10), Alliance: body.Alliance, ExpectedVersion: body.Version, IdempotencyKey: key})
+	if err != nil {
+		resultError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "member_ref": memberGridMemberRef(result.ID), "alliance": result.Alliance, "version": result.Version, "updated_at": result.UpdatedAt.UTC()})
 }
 
 func (h *Handler) memberGridAccess(w http.ResponseWriter, r *http.Request, id int64) {

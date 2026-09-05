@@ -33,6 +33,9 @@ func (s *compositionEntitlements) GetCustomerServicePeriodEntitlement(context.Co
 func (s *compositionEntitlements) UpdateEntitlementRemark(context.Context, orderport.RemarkCommand) (orderport.Entitlement, error) {
 	return orderport.Entitlement{}, orderport.ErrNotFound
 }
+func (s *compositionEntitlements) UpdateEntitlementAlliance(context.Context, orderport.AllianceCommand) (orderport.Entitlement, error) {
+	return orderport.Entitlement{}, orderport.ErrNotFound
+}
 func (s *compositionEntitlements) ListServicePeriodMembers(_ context.Context, query orderport.ServicePeriodMemberQuery) (orderport.ServicePeriodMemberPage, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

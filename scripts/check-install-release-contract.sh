@@ -85,7 +85,13 @@ for migration_contract in \
   '0063_identity_hxc_source_observations.sql:HXC identity source observations' \
   '0064_hxc_dashboard_identity_v2.sql:HXC dashboard identity v2' \
   '0084_hxc_shared_facts.sql:HXC shared legacy facts' \
-  '0068_payment_session_beneficiary_selection.sql:payment session beneficiary selection'; do
+  '0068_payment_session_beneficiary_selection.sql:payment session beneficiary selection' \
+  '0069_coupon_claim_redemption_lifecycle.sql:coupon claim redemption lifecycle' \
+  '0070_service_period_entitlement_fulfillment.sql:service-period entitlement fulfillment' \
+  '0076_order_checkout_snapshots.sql:Order checkout snapshots' \
+  '0077_coupon_public_slug.sql:coupon public slug' \
+  '0079_service_period_member_grid.sql:service-period member grid' \
+  '0088_order_service_entitlement_alliance.sql:service-period alliance'; do
   migration="${migration_contract%%:*}"
   label="${migration_contract#*:}"
   test -f "migrations/${migration}" || {

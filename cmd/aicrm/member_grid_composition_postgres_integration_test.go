@@ -96,6 +96,9 @@ func TestPostgreSQLMemberGridCompositionHTTP(t *testing.T) {
 			targetEntitlement = entitlementID
 		}
 	}
+	if _, err = pool.Exec(ctx, `UPDATE order_service_entitlements SET alliance='联盟甲' WHERE id=$1`, targetEntitlement); err != nil {
+		t.Fatal(err)
+	}
 
 	hxc := hxcstore.NewPostgreSQL(pool)
 	memberGridPublishHXC(t, ctx, pool, uow, hxc, targetCustomer, snapshot)
@@ -116,7 +119,7 @@ func TestPostgreSQLMemberGridCompositionHTTP(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/api/admin/service-period-products/991/member-grid/query", strings.NewReader(`{
-		"config":{"schema_version":1,"filter":{"logic":"and","conditions":[{"field":"formally_logged_in","operator":"in","value":["yes"]}]},"sorts":[{"field":"member","direction":"asc"}],"groups":[{"field":"formally_logged_in","direction":"asc"}]},
+		"config":{"schema_version":1,"filter":{"logic":"and","conditions":[{"field":"formally_logged_in","operator":"in","value":["yes"]},{"field":"alliance","operator":"contains","value":"联盟"}]},"sorts":[{"field":"member","direction":"asc"}],"groups":[{"field":"formally_logged_in","direction":"asc"}]},
 		"limit":20
 	}`))
 	handler.ServeHTTP(recorder, request)
@@ -130,7 +133,8 @@ func TestPostgreSQLMemberGridCompositionHTTP(t *testing.T) {
 				Member struct {
 					Primary string `json:"primary"`
 				} `json:"member"`
-				Formal string `json:"formally_logged_in"`
+				Formal   string  `json:"formally_logged_in"`
+				Alliance *string `json:"alliance"`
 			} `json:"values"`
 			GroupPath []struct {
 				Count int64 `json:"count"`
@@ -140,7 +144,7 @@ func TestPostgreSQLMemberGridCompositionHTTP(t *testing.T) {
 	if err = json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
 	}
-	if len(response.Rows) != 1 || response.Rows[0].RecordID == "" || response.Rows[0].Values.Member.Primary != "第二页 HXC 会员" || response.Rows[0].Values.Formal != "yes" || len(response.Rows[0].GroupPath) != 1 || response.Rows[0].GroupPath[0].Count != 1 {
+	if len(response.Rows) != 1 || response.Rows[0].RecordID == "" || response.Rows[0].Values.Member.Primary != "第二页 HXC 会员" || response.Rows[0].Values.Formal != "yes" || response.Rows[0].Values.Alliance == nil || *response.Rows[0].Values.Alliance != "联盟甲" || len(response.Rows[0].GroupPath) != 1 || response.Rows[0].GroupPath[0].Count != 1 {
 		t.Fatalf("member-grid response=%s", recorder.Body.String())
 	}
 	if reader.calls < 2 || reader.targetPage < 2 {
@@ -206,6 +210,9 @@ func (r *memberGridPGEntitlements) GetCustomerServicePeriodEntitlement(ctx conte
 }
 func (r *memberGridPGEntitlements) UpdateEntitlementRemark(ctx context.Context, command orderport.RemarkCommand) (orderport.Entitlement, error) {
 	return r.delegate.UpdateEntitlementRemark(ctx, command)
+}
+func (r *memberGridPGEntitlements) UpdateEntitlementAlliance(ctx context.Context, command orderport.AllianceCommand) (orderport.Entitlement, error) {
+	return r.delegate.UpdateEntitlementAlliance(ctx, command)
 }
 
 type memberGridPGSecurity struct{}

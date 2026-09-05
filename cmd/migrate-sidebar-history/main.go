@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -15,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 	couponapp "github.com/qianlan33333-png/AI-CRM-v3/internal/coupon/app"
@@ -62,9 +64,85 @@ type sourceEntitlement struct {
 	StartAt          time.Time `json:"start_at"`
 	EndAt            time.Time `json:"end_at"`
 	Remark           string    `json:"remark"`
-	CreatedAt        time.Time `json:"created_at"`
-	UpdatedAt        time.Time `json:"updated_at"`
+	// Alliance is nil when the source did not collect it or collected a null
+	// value. alliancePresent preserves whether a protected manifest actually
+	// contained the key: older frozen snapshots had no key and their already
+	// imported per-row digest must serialize byte-for-byte as before. New
+	// snapshots always carry the key, so null and explicit "" remain distinct
+	// source facts.
+	Alliance        *string `json:"-"`
+	alliancePresent bool
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }
+
+// MarshalJSON is deliberately version-compatible for historical receipt
+// digests. Before alliance existed, the exact normalized row did not contain
+// that field; adding a null key would make an existing import unreplayable.
+func (row sourceEntitlement) MarshalJSON() ([]byte, error) {
+	if !row.alliancePresent {
+		return json.Marshal(struct {
+			SourceID         int64     `json:"source_id"`
+			UnionID          string    `json:"unionid"`
+			ServiceProductID int64     `json:"service_product_id"`
+			ProductName      string    `json:"product_name"`
+			Status           string    `json:"status"`
+			StartAt          time.Time `json:"start_at"`
+			EndAt            time.Time `json:"end_at"`
+			Remark           string    `json:"remark"`
+			CreatedAt        time.Time `json:"created_at"`
+			UpdatedAt        time.Time `json:"updated_at"`
+		}{row.SourceID, row.UnionID, row.ServiceProductID, row.ProductName, row.Status, row.StartAt, row.EndAt, row.Remark, row.CreatedAt, row.UpdatedAt})
+	}
+	return json.Marshal(struct {
+		SourceID         int64     `json:"source_id"`
+		UnionID          string    `json:"unionid"`
+		ServiceProductID int64     `json:"service_product_id"`
+		ProductName      string    `json:"product_name"`
+		Status           string    `json:"status"`
+		StartAt          time.Time `json:"start_at"`
+		EndAt            time.Time `json:"end_at"`
+		Remark           string    `json:"remark"`
+		Alliance         *string   `json:"alliance"`
+		CreatedAt        time.Time `json:"created_at"`
+		UpdatedAt        time.Time `json:"updated_at"`
+	}{row.SourceID, row.UnionID, row.ServiceProductID, row.ProductName, row.Status, row.StartAt, row.EndAt, row.Remark, row.Alliance, row.CreatedAt, row.UpdatedAt})
+}
+
+func (row *sourceEntitlement) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		SourceID         int64           `json:"source_id"`
+		UnionID          string          `json:"unionid"`
+		ServiceProductID int64           `json:"service_product_id"`
+		ProductName      string          `json:"product_name"`
+		Status           string          `json:"status"`
+		StartAt          time.Time       `json:"start_at"`
+		EndAt            time.Time       `json:"end_at"`
+		Remark           string          `json:"remark"`
+		Alliance         json.RawMessage `json:"alliance"`
+		CreatedAt        time.Time       `json:"created_at"`
+		UpdatedAt        time.Time       `json:"updated_at"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&raw); err != nil {
+		return err
+	}
+	row.SourceID, row.UnionID, row.ServiceProductID, row.ProductName, row.Status = raw.SourceID, raw.UnionID, raw.ServiceProductID, raw.ProductName, raw.Status
+	row.StartAt, row.EndAt, row.Remark, row.CreatedAt, row.UpdatedAt = raw.StartAt, raw.EndAt, raw.Remark, raw.CreatedAt, raw.UpdatedAt
+	row.Alliance = nil
+	row.alliancePresent = len(raw.Alliance) != 0
+	if !row.alliancePresent || bytes.Equal(bytes.TrimSpace(raw.Alliance), []byte("null")) {
+		return nil
+	}
+	var alliance string
+	if err := json.Unmarshal(raw.Alliance, &alliance); err != nil {
+		return err
+	}
+	row.Alliance = &alliance
+	return nil
+}
+
 type sourceCoupon struct {
 	SourceID   int64      `json:"source_id"`
 	UnionID    string     `json:"unionid"`
@@ -323,7 +401,7 @@ func validate(m manifest) error {
 	seen := map[string]bool{}
 	for _, row := range m.Entitlements {
 		key := "e:" + strconv.FormatInt(row.SourceID, 10)
-		if seen[key] || row.SourceID < 1 || row.UnionID == "" || row.ServiceProductID < 1 || row.ProductName == "" || (row.Status != "active" && row.Status != "expired" && row.Status != "refunded") || row.StartAt.IsZero() || row.EndAt.Before(row.StartAt) {
+		if seen[key] || row.SourceID < 1 || row.UnionID == "" || row.ServiceProductID < 1 || row.ProductName == "" || (row.Status != "active" && row.Status != "expired" && row.Status != "refunded") || row.StartAt.IsZero() || row.EndAt.Before(row.StartAt) || (row.Alliance != nil && utf8.RuneCountInString(*row.Alliance) > 500) {
 			return errors.New("invalid entitlement row")
 		}
 		seen[key] = true
@@ -385,7 +463,7 @@ func apply(ctx context.Context, pool *platformpostgres.Pool, m manifest) error {
 			out.Quarantined++
 			continue
 		}
-		item, created, err := entitlementApp.ImportHistoricalEntitlement(ctx, orderport.HistoricalEntitlement{SourceSystem: m.SourceSystem, SourceKey: sourceKey, CustomerID: customer, ServiceProductID: productID, ProductName: row.ProductName, Status: row.Status, StartAt: row.StartAt, EndAt: row.EndAt, Remark: row.Remark, SourceDigest: digest, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt})
+		item, created, err := entitlementApp.ImportHistoricalEntitlement(ctx, orderport.HistoricalEntitlement{SourceSystem: m.SourceSystem, SourceKey: sourceKey, CustomerID: customer, ServiceProductID: productID, ProductName: row.ProductName, Status: row.Status, StartAt: row.StartAt, EndAt: row.EndAt, Remark: row.Remark, Alliance: row.Alliance, SourceDigest: digest, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt})
 		if err != nil {
 			return err
 		}
@@ -499,6 +577,51 @@ func mapSource(ctx context.Context, pool *platformpostgres.Pool, batch int64, ki
 	_, err := pool.Native().Exec(ctx, `INSERT INTO sidebar_history_migration_source_map(batch_id,source_kind,source_key,source_digest,customer_id,target_table,target_id,disposition) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(batch_id,source_kind,source_key) DO NOTHING`, batch, kind, key, digest[:], customer, table, target, disposition)
 	return err
 }
+
+type reconciliationMapping struct {
+	targetTable string
+	targetID    int64
+	customerID  int64
+}
+
+// reconciliationSourceOutcome establishes one immutable outcome for every
+// protected source row. A mapped row must retain its current manifest digest;
+// an unresolved row has no target and instead retains the quarantine receipt's
+// digest, subject proof, and reason. This prevents a legitimate quarantine
+// from being mistaken for a missing map while still rejecting receipt drift.
+func reconciliationSourceOutcome(ctx context.Context, pool *platformpostgres.Pool, batchID int64, kind, key string, sourceDigest [32]byte, subject string) (reconciliationMapping, bool, error) {
+	var mapping reconciliationMapping
+	var mappedDigest []byte
+	err := pool.Native().QueryRow(ctx, `SELECT target_table,target_id,customer_id,source_digest
+		FROM sidebar_history_migration_source_map
+		WHERE batch_id=$1 AND source_kind=$2 AND source_key=$3`, batchID, kind, key).Scan(&mapping.targetTable, &mapping.targetID, &mapping.customerID, &mappedDigest)
+	if err == nil {
+		if len(mappedDigest) != len(sourceDigest) || !bytes.Equal(mappedDigest, sourceDigest[:]) {
+			return reconciliationMapping{}, false, errors.New("reconciliation source map digest mismatch")
+		}
+		return mapping, false, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return reconciliationMapping{}, false, err
+	}
+	var quarantinedDigest, subjectDigest []byte
+	var reason string
+	err = pool.Native().QueryRow(ctx, `SELECT source_digest,subject_digest,reason
+		FROM sidebar_history_migration_quarantine
+		WHERE batch_id=$1 AND source_kind=$2 AND source_key=$3`, batchID, kind, key).Scan(&quarantinedDigest, &subjectDigest, &reason)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return reconciliationMapping{}, false, errors.New("reconciliation source outcome missing")
+	}
+	if err != nil {
+		return reconciliationMapping{}, false, err
+	}
+	wantSubject := sha256.Sum256([]byte(subject))
+	if len(quarantinedDigest) != len(sourceDigest) || !bytes.Equal(quarantinedDigest, sourceDigest[:]) || len(subjectDigest) != len(wantSubject) || !bytes.Equal(subjectDigest, wantSubject[:]) || (reason != "identity_not_found" && reason != "identity_conflict" && reason != "definition_not_mapped" && reason != "invalid_source_row") {
+		return reconciliationMapping{}, false, errors.New("reconciliation quarantine receipt mismatch")
+	}
+	return reconciliationMapping{}, true, nil
+}
+
 func mapCouponStatus(value string) string {
 	switch value {
 	case "available":
@@ -530,6 +653,40 @@ func reconcile(ctx context.Context, pool *platformpostgres.Pool, m manifest) err
 	}
 	if mapped+quarantined != input || missing != 0 {
 		return errors.New("reconciliation conservation mismatch")
+	}
+	for _, row := range m.Entitlements {
+		raw, marshalErr := json.Marshal(row)
+		if marshalErr != nil {
+			return marshalErr
+		}
+		sourceDigest := sha256.Sum256(raw)
+		mapping, quarantinedRow, outcomeErr := reconciliationSourceOutcome(ctx, pool, id, "service_period_entitlement", strconv.FormatInt(row.SourceID, 10), sourceDigest, row.UnionID)
+		if outcomeErr != nil {
+			return outcomeErr
+		}
+		if quarantinedRow {
+			continue
+		}
+		if mapping.targetTable != "order_service_entitlements" {
+			return errors.New("reconciliation entitlement target mismatch")
+		}
+		var matches bool
+		err = pool.Native().QueryRow(ctx, `SELECT e.alliance IS NOT DISTINCT FROM $1
+			FROM order_service_entitlements e
+			WHERE e.id=$2 AND e.customer_id=$3 AND e.source_digest=$4`, row.Alliance, mapping.targetID, mapping.customerID, sourceDigest[:]).Scan(&matches)
+		if err != nil || !matches {
+			return errors.New("reconciliation entitlement alliance mismatch")
+		}
+	}
+	for _, row := range m.Coupons {
+		raw, marshalErr := json.Marshal(row)
+		if marshalErr != nil {
+			return marshalErr
+		}
+		sourceDigest := sha256.Sum256(raw)
+		if _, _, outcomeErr := reconciliationSourceOutcome(ctx, pool, id, "coupon_claim", strconv.FormatInt(row.SourceID, 10), sourceDigest, row.UnionID); outcomeErr != nil {
+			return outcomeErr
+		}
 	}
 	_, err = pool.Native().Exec(ctx, `UPDATE sidebar_history_migration_batches SET status='reconciled',completed_at=clock_timestamp() WHERE id=$1`, id)
 	if err != nil {

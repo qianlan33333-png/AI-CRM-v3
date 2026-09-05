@@ -59,10 +59,9 @@ type memberGridRow struct {
 	openCount    *int64
 	lastOpen     *time.Time
 
-	renewal     *int64
-	groupCounts []memberGridGroupCount
-	// alliance has no v3 Order-owned imported source yet. It stays unavailable
-	// instead of masquerading as an empty string or zero-value field.
+	renewal       *int64
+	groupCounts   []memberGridGroupCount
+	alliance      *string
 	allianceKnown bool
 }
 
@@ -278,7 +277,7 @@ func memberGridRows(items []orderport.Entitlement, names map[customerdomain.Cust
 	result := make([]memberGridRow, 0, len(items))
 	for _, item := range items {
 		name := strings.TrimSpace(names[customerdomain.CustomerID(item.CustomerID)])
-		row := memberGridRow{entitlement: item, name: name, nameKnown: name != "", remaining: int64(donorGridRemainingDays(item.EndAt, snapshot)), formal: "unavailable", token: "unavailable", progress: "unavailable"}
+		row := memberGridRow{entitlement: item, name: name, nameKnown: name != "", remaining: int64(donorGridRemainingDays(item.EndAt, snapshot)), formal: "unavailable", token: "unavailable", progress: "unavailable", alliance: item.Alliance, allianceKnown: item.Alliance != nil}
 		if item.RenewalCountAvailable {
 			value := item.RenewalCount
 			row.renewal = &value
@@ -438,7 +437,10 @@ func (row memberGridRow) memberGridText(field string) (string, bool) {
 	case "remark":
 		return row.entitlement.Remark, true
 	case "alliance":
-		return "", row.allianceKnown
+		if row.alliance == nil {
+			return "", false
+		}
+		return *row.alliance, true
 	}
 	return "", false
 }
@@ -675,7 +677,14 @@ func (row memberGridRow) memberGridOrderValue(field string, group bool) (any, bo
 		}
 		return value, true
 	case "alliance":
-		return nil, false
+		if row.alliance == nil {
+			return nil, false
+		}
+		value := strings.ToLower(strings.TrimSpace(*row.alliance))
+		if value == "" {
+			return nil, true
+		}
+		return value, true
 	}
 	return nil, false
 }
@@ -792,8 +801,8 @@ func donorGridCompositeResponse(row memberGridRow, config donorGridConfig) map[s
 		"open_count_7d":             row.openCount,
 		"last_open_at":              row.lastOpen,
 		"remark":                    strings.TrimSpace(row.entitlement.Remark),
-		"alliance":                  nil,
-		"alliance_unavailable":      true,
+		"alliance":                  row.alliance,
+		"alliance_unavailable":      !row.allianceKnown,
 		"hxc_unavailable":           !row.hxcKnown,
 		"renewal_count_unavailable": false,
 	}
@@ -855,6 +864,7 @@ func memberGridRelationHash(rows []memberGridRow, configHash string, snapshot ti
 		ID, CustomerID, Version, Remaining    int64
 		End, Updated                          string
 		Name, Remark, Formal, Token, Progress string
+		Alliance                              *string
 		NameKnown                             bool
 		ProgressRate                          *float64
 		Open                                  *int64
@@ -868,7 +878,7 @@ func memberGridRelationHash(rows []memberGridRow, configHash string, snapshot ti
 		if row.lastOpen != nil {
 			last = row.lastOpen.UTC().Format(time.RFC3339Nano)
 		}
-		digest = append(digest, digestRow{ID: row.entitlement.ID, CustomerID: row.entitlement.CustomerID, Version: row.entitlement.Version, Remaining: row.remaining, End: row.entitlement.EndAt.UTC().Format(time.RFC3339Nano), Updated: row.entitlement.UpdatedAt.UTC().Format(time.RFC3339Nano), Name: row.name, NameKnown: row.nameKnown, Remark: row.entitlement.Remark, Formal: row.formal, Token: row.token, Progress: row.progress, ProgressRate: row.progressRate, Open: row.openCount, Last: last, Renewal: row.renewal, HXCKnown: row.hxcKnown})
+		digest = append(digest, digestRow{ID: row.entitlement.ID, CustomerID: row.entitlement.CustomerID, Version: row.entitlement.Version, Remaining: row.remaining, End: row.entitlement.EndAt.UTC().Format(time.RFC3339Nano), Updated: row.entitlement.UpdatedAt.UTC().Format(time.RFC3339Nano), Name: row.name, NameKnown: row.nameKnown, Remark: row.entitlement.Remark, Alliance: row.alliance, Formal: row.formal, Token: row.token, Progress: row.progress, ProgressRate: row.progressRate, Open: row.openCount, Last: last, Renewal: row.renewal, HXCKnown: row.hxcKnown})
 	}
 	raw, err := json.Marshal(struct {
 		Config, Snapshot string

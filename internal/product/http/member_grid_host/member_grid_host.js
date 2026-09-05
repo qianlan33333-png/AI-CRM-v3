@@ -34,7 +34,7 @@
     const headers = {Accept: "application/json", ...(settings.headers || {})};
     let body = settings.body;
     if (method !== "GET") {
-      const member = /^\/api\/admin\/service-period-products\/[^/]+\/members\/([^/]+)\/remark$/.exec(path);
+      const member = /^\/api\/admin\/service-period-products\/[^/]+\/members\/([^/]+)\/(?:remark|alliance)$/.exec(path);
       if (member && body && body.version == null) body = {...body, version: versionByMember.get(decodeURIComponent(member[1]))};
       headers["Content-Type"] = "application/json";
       headers["X-CSRF-Token"] = cookie("aicrm_admin_csrf");
@@ -45,7 +45,7 @@
     // Inline edits use the opaque member reference and a row-version CAS.
     // Remember the acknowledged version immediately: waiting for the next
     // query would send a stale version if the user edits again before it runs.
-    const member = /^\/api\/admin\/service-period-products\/[^/]+\/members\/([^/]+)\/remark$/.exec(path);
+    const member = /^\/api\/admin\/service-period-products\/[^/]+\/members\/([^/]+)\/(?:remark|alliance)$/.exec(path);
     if (member && payload?.member_ref && Number.isInteger(Number(payload.version))) {
       versionByMember.set(String(payload.member_ref), Number(payload.version));
     }

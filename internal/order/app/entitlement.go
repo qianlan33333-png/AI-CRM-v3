@@ -8,6 +8,7 @@ import (
 	"math"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	orderport "github.com/qianlan33333-png/AI-CRM-v3/internal/order/port"
 	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
@@ -20,6 +21,8 @@ type EntitlementStore interface {
 	FindEntitlementReceipt(context.Context, [32]byte) (orderport.Entitlement, [32]byte, string, bool, error)
 	UpdateEntitlementRemark(context.Context, orderport.RemarkCommand, [32]byte, [32]byte, time.Time) (orderport.Entitlement, error)
 	RecordEntitlementConflict(context.Context, orderport.RemarkCommand, [32]byte, [32]byte, orderport.Entitlement, time.Time) error
+	UpdateEntitlementAlliance(context.Context, orderport.AllianceCommand, [32]byte, [32]byte, time.Time) (orderport.Entitlement, error)
+	RecordEntitlementAllianceConflict(context.Context, orderport.AllianceCommand, [32]byte, [32]byte, orderport.Entitlement, time.Time) error
 	ImportHistoricalEntitlement(context.Context, orderport.HistoricalEntitlement) (orderport.Entitlement, bool, error)
 }
 
@@ -109,7 +112,7 @@ func validMemberGridFilters(query orderport.ServicePeriodMemberQuery) bool {
 }
 
 func validMemberGridOrder(item orderport.MemberGridOrder) bool {
-	return (item.Field == "remaining_days" || item.Field == "renewal_count" || item.Field == "remark") && (item.Direction == "asc" || item.Direction == "desc")
+	return (item.Field == "remaining_days" || item.Field == "renewal_count" || item.Field == "remark" || item.Field == "alliance") && (item.Direction == "asc" || item.Direction == "desc")
 }
 
 func validMemberGridFilter(filter orderport.MemberGridFilter) bool {
@@ -130,7 +133,7 @@ func validMemberGridFilter(filter orderport.MemberGridFilter) bool {
 			}
 		}
 		return true
-	case "remark":
+	case "remark", "alliance":
 		if (filter.Operator != "contains" && filter.Operator != "not_contains" && filter.Operator != "equals" && filter.Operator != "not_equals" && filter.Operator != "is_empty" && filter.Operator != "is_not_empty") || len(filter.Text) > 200 {
 			return false
 		}
@@ -211,8 +214,64 @@ func (s *EntitlementApplication) UpdateEntitlementRemark(ctx context.Context, co
 	return result, err
 }
 
+func (s *EntitlementApplication) UpdateEntitlementAlliance(ctx context.Context, command orderport.AllianceCommand) (orderport.Entitlement, error) {
+	command.Alliance = strings.TrimSpace(command.Alliance)
+	if command.EntitlementID < 1 || command.CustomerID < 0 || command.ServiceProductID < 1 || command.EmployeeID == "" || len(command.EmployeeID) > 1024 || utf8.RuneCountInString(command.Alliance) > 500 || command.ExpectedVersion < 1 || len(command.IdempotencyKey) < 8 || len(command.IdempotencyKey) > 200 {
+		return orderport.Entitlement{}, orderport.ErrConflict
+	}
+	payload, _ := json.Marshal([]any{"alliance", command.EntitlementID, command.CustomerID, command.ServiceProductID, command.EmployeeID, command.Alliance, command.ExpectedVersion})
+	keyDigest, payloadDigest := sha256.Sum256([]byte(command.IdempotencyKey)), sha256.Sum256(payload)
+	var result orderport.Entitlement
+	conflicted := false
+	err := s.uow.Within(ctx, func(txctx context.Context) error {
+		prior, priorPayload, outcome, found, err := s.store.FindEntitlementReceipt(txctx, keyDigest)
+		if err != nil {
+			return err
+		}
+		if found {
+			if priorPayload != payloadDigest {
+				return orderport.ErrConflict
+			}
+			result = prior
+			conflicted = outcome == "version_conflict"
+			return nil
+		}
+		result, err = s.store.UpdateEntitlementAlliance(txctx, command, keyDigest, payloadDigest, s.now().UTC())
+		if errors.Is(err, orderport.ErrConflict) {
+			// An opaque product-scoped editor cannot ask Order to enumerate an
+			// unrelated customer merely to manufacture a conflict snapshot.
+			if command.CustomerID == 0 {
+				return orderport.ErrConflict
+			}
+			page, readErr := s.store.ListCustomerEntitlements(txctx, command.CustomerID, 100)
+			if readErr != nil {
+				return readErr
+			}
+			for _, item := range page.Items {
+				if item.ID == command.EntitlementID && item.ServiceProductID == command.ServiceProductID {
+					result = item
+					break
+				}
+			}
+			if result.ID == 0 {
+				return orderport.ErrNotFound
+			}
+			if recErr := s.store.RecordEntitlementAllianceConflict(txctx, command, keyDigest, payloadDigest, result, s.now().UTC()); recErr != nil {
+				return recErr
+			}
+			conflicted = true
+			return nil
+		}
+		return err
+	})
+	if err == nil && conflicted {
+		err = orderport.ErrConflict
+	}
+	return result, err
+}
+
 func (s *EntitlementApplication) ImportHistoricalEntitlement(ctx context.Context, input orderport.HistoricalEntitlement) (orderport.Entitlement, bool, error) {
-	if input.SourceSystem == "" || input.SourceKey == "" || input.CustomerID < 1 || input.ServiceProductID < 1 || input.ProductName == "" || input.SourceDigest == ([32]byte{}) || input.StartAt.IsZero() || input.EndAt.Before(input.StartAt) {
+	if input.SourceSystem == "" || input.SourceKey == "" || input.CustomerID < 1 || input.ServiceProductID < 1 || input.ProductName == "" || input.SourceDigest == ([32]byte{}) || input.StartAt.IsZero() || input.EndAt.Before(input.StartAt) || (input.Alliance != nil && utf8.RuneCountInString(*input.Alliance) > 500) {
 		return orderport.Entitlement{}, false, orderport.ErrConflict
 	}
 	var result orderport.Entitlement

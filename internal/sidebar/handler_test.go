@@ -91,6 +91,9 @@ func (testEntitlements) GetCustomerServicePeriodEntitlement(context.Context, int
 func (testEntitlements) UpdateEntitlementRemark(context.Context, orderport.RemarkCommand) (orderport.Entitlement, error) {
 	return orderport.Entitlement{}, nil
 }
+func (testEntitlements) UpdateEntitlementAlliance(context.Context, orderport.AllianceCommand) (orderport.Entitlement, error) {
+	return orderport.Entitlement{}, nil
+}
 
 type testCoupons struct{}
 
