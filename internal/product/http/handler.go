@@ -459,7 +459,7 @@ func (h *Handler) serviceRoot(w http.ResponseWriter, r *http.Request) {
 		}
 		product, err := h.service.CreateServicePeriodProduct(r.Context(), productport.CreateServicePeriodProductCommand{
 			ProductCode: body.ProductCode, Name: body.Name, Description: body.Description,
-			PriceMinor: body.PriceMinor, Currency: body.Currency, StockQuantity: body.StockQuantity,
+			PriceMinor: body.PriceMinor, Currency: body.Currency, DurationDays: body.DurationDays, StockQuantity: body.StockQuantity,
 			Images: body.Images, AdminProjection: projection, Actor: principal.InternalID, IdempotencyKey: key,
 		})
 		if err != nil {
@@ -556,7 +556,7 @@ func (h *Handler) serviceDetail(w http.ResponseWriter, r *http.Request, id int64
 		product, err := h.service.UpdateServicePeriodProduct(r.Context(), productport.UpdateServicePeriodProductCommand{
 			ID: productport.ID(id), ExpectedVersion: body.ExpectedVersion, Name: body.Name,
 			Description: body.Description, PriceMinor: body.PriceMinor, Currency: body.Currency,
-			StockQuantity: body.StockQuantity, Images: body.Images, AdminProjection: body.AdminProjection,
+			DurationDays: body.DurationDays, StockQuantity: body.StockQuantity, Images: body.Images, AdminProjection: body.AdminProjection,
 			Actor: principal.InternalID, IdempotencyKey: key,
 		})
 		if err != nil {
@@ -907,6 +907,7 @@ type serviceCreateRequest struct {
 	Description     string          `json:"description"`
 	PriceMinor      int64           `json:"price_minor"`
 	Currency        string          `json:"currency"`
+	DurationDays    int32           `json:"duration_days"`
 	StockQuantity   int32           `json:"stock_quantity"`
 	Images          []string        `json:"images"`
 	AdminProjection json.RawMessage `json:"admin_projection"`
@@ -918,6 +919,7 @@ type serviceUpdateRequest struct {
 	Description     string          `json:"description"`
 	PriceMinor      int64           `json:"price_minor"`
 	Currency        string          `json:"currency"`
+	DurationDays    int32           `json:"duration_days"`
 	StockQuantity   int32           `json:"stock_quantity"`
 	Images          []string        `json:"images"`
 	AdminProjection json.RawMessage `json:"admin_projection"`

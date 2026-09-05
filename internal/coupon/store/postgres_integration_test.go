@@ -5,9 +5,11 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"testing"
 	"time"
 
@@ -101,6 +103,252 @@ func TestPostgreSQLCouponRulesAtomicReceiptAuditAndOutbox(t *testing.T) {
 	// owner; only the audit ledger is database-append-only.
 }
 
+func TestPostgreSQLCouponCheckoutConcurrentClaimReservationAndSettlement(t *testing.T) {
+	native, cleanup := couponIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	wrapped, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uow, err := platformpostgres.NewUnitOfWork(wrapped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := NewPostgreSQL(native, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkout, err := couponapp.NewCheckoutService(uow, repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	first, second, third := checkoutCustomer(t, native), checkoutCustomer(t, native), checkoutCustomer(t, native)
+
+	// Distinct callers compete for the final available issue. PostgreSQL row
+	// locks choose exactly one winner; no mock covers this concurrency fence.
+	lastRule := checkoutPublishedRule(t, ctx, uow, repository, now, 1, "checkout-last")
+	lastResults := make(chan error, 2)
+	for i, holder := range []int64{first, second} {
+		go func(i int, holder int64) {
+			_, claimErr := checkout.Claim(ctx, couponport.ClaimCommand{CouponID: lastRule.ID, HolderCustomerID: holder, ActorScope: "checkout:last", IdempotencyKey: "checkout-last-claim-key-" + string(rune('a'+i)) + "000", ClaimedAt: now})
+			lastResults <- claimErr
+		}(i, holder)
+	}
+	var lastSuccess, lastUnavailable int
+	for range 2 {
+		err = <-lastResults
+		switch {
+		case err == nil:
+			lastSuccess++
+		case errors.Is(err, couponapp.ErrNoEligibleCoupon):
+			lastUnavailable++
+		default:
+			t.Fatalf("last coupon error=%v", err)
+		}
+	}
+	if lastSuccess != 1 || lastUnavailable != 1 {
+		t.Fatalf("last coupon success=%d unavailable=%d", lastSuccess, lastUnavailable)
+	}
+	var originalPrice couponport.ReservationSnapshot
+	if err = uow.Within(ctx, func(txctx context.Context) error {
+		var reserveErr error
+		originalPrice, reserveErr = checkout.ReserveWithin(txctx, couponport.ReserveCommand{HolderCustomerID: third, ProductID: 10, ProductType: "standard_product", ProductCode: "standard-10", GrossAmountMinor: 1000, Currency: "CNY", OrderReference: "order-coupon-auto-none-001", ActorScope: "payment:checkout", IdempotencyKey: "checkout-auto-none-reserve-0001", ReservedAt: now})
+		return reserveErr
+	}); err != nil || originalPrice.CouponApplied || originalPrice.ReservationRef != "" || originalPrice.PayableAmountMinor != 1000 {
+		t.Fatalf("automatic no-coupon snapshot=%+v err=%v", originalPrice, err)
+	}
+
+	// Equal key and scope must replay after the advisory lock, even under a
+	// concurrent first request. Different scope/holder with that browser key
+	// is independently valid and cannot collide in the canonical claim table.
+	rule := checkoutPublishedRule(t, ctx, uow, repository, now, 4, "checkout-main")
+	claimCommand := couponport.ClaimCommand{CouponID: rule.ID, HolderCustomerID: first, ActorScope: "checkout:payer:one", IdempotencyKey: "checkout-same-claim-key-0001", ClaimedAt: now}
+	var claims [2]couponport.CustomerCoupon
+	claimErrs := make(chan error, 2)
+	var claimWait sync.WaitGroup
+	for i := range claims {
+		claimWait.Add(1)
+		go func(index int) {
+			defer claimWait.Done()
+			claim, claimErr := checkout.Claim(ctx, claimCommand)
+			claims[index] = claim
+			claimErrs <- claimErr
+		}(i)
+	}
+	claimWait.Wait()
+	close(claimErrs)
+	for claimErr := range claimErrs {
+		if claimErr != nil {
+			t.Fatalf("same-key concurrent claim: %v", claimErr)
+		}
+	}
+	if claims[0].ClaimID == 0 || claims[0].ClaimID != claims[1].ClaimID {
+		t.Fatalf("same-key claims=%+v", claims)
+	}
+	if _, err = checkout.Claim(ctx, couponport.ClaimCommand{CouponID: rule.ID, HolderCustomerID: second, ActorScope: claimCommand.ActorScope, IdempotencyKey: claimCommand.IdempotencyKey, ClaimedAt: now}); !errors.Is(err, couponapp.ErrConflict) {
+		t.Fatalf("same key changed payload error=%v", err)
+	}
+	for _, command := range []couponport.ClaimCommand{
+		{CouponID: rule.ID, HolderCustomerID: second, ActorScope: "checkout:payer:two", IdempotencyKey: claimCommand.IdempotencyKey, ClaimedAt: now},
+		{CouponID: rule.ID, HolderCustomerID: third, ActorScope: "checkout:payer:three", IdempotencyKey: claimCommand.IdempotencyKey, ClaimedAt: now},
+	} {
+		if _, err = checkout.Claim(ctx, command); err != nil {
+			t.Fatalf("same client key different scope: %v", err)
+		}
+	}
+	var distinctNativeClaims int
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM coupon_customer_claims WHERE coupon_id=$1`, rule.ID).Scan(&distinctNativeClaims); err != nil || distinctNativeClaims != 3 {
+		t.Fatalf("scoped claims=%d err=%v", distinctNativeClaims, err)
+	}
+
+	reserve := couponport.ReserveCommand{HolderCustomerID: first, ClaimID: claims[0].ClaimID, ProductID: 9, ProductType: "standard_product", ProductCode: "standard-9", GrossAmountMinor: 1000, Currency: "CNY", OrderReference: "order-coupon-checkout-001", ActorScope: "payment:checkout", IdempotencyKey: "checkout-same-reserve-key-0001", ReservedAt: now.Add(time.Minute)}
+	var reservations [2]couponport.ReservationSnapshot
+	reservationErrs := make(chan error, 2)
+	var reserveWait sync.WaitGroup
+	for i := range reservations {
+		reserveWait.Add(1)
+		go func(index int) {
+			defer reserveWait.Done()
+			reservationErrs <- uow.Within(ctx, func(txctx context.Context) error {
+				var reserveErr error
+				reservations[index], reserveErr = checkout.ReserveWithin(txctx, reserve)
+				return reserveErr
+			})
+		}(i)
+	}
+	reserveWait.Wait()
+	close(reservationErrs)
+	for reserveErr := range reservationErrs {
+		if reserveErr != nil {
+			t.Fatalf("same-key concurrent reserve: %v", reserveErr)
+		}
+	}
+	if !reservations[0].CouponApplied || reservations[0].ReservationRef == "" || reservations[0] != reservations[1] || reservations[0].ProductType != "standard_product" || reservations[0].DiscountAmountMinor != 100 || reservations[0].PayableAmountMinor != 900 {
+		t.Fatalf("frozen reservation=%+v / %+v", reservations[0], reservations[1])
+	}
+
+	// An enclosing order UoW failure must leave neither an order reservation nor
+	// a claim state transition behind.
+	rollbackClaim, err := checkout.Claim(ctx, couponport.ClaimCommand{CouponID: rule.ID, HolderCustomerID: second, ActorScope: "checkout:rollback", IdempotencyKey: "checkout-rollback-claim-0001", ClaimedAt: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rollback := reserve
+	rollback.HolderCustomerID, rollback.ClaimID, rollback.OrderReference, rollback.IdempotencyKey = second, rollbackClaim.ClaimID, "order-coupon-rollback-001", "checkout-rollback-reserve-0001"
+	rollbackReserved := false
+	if err = uow.Within(ctx, func(txctx context.Context) error {
+		if _, reserveErr := checkout.ReserveWithin(txctx, rollback); reserveErr != nil {
+			return reserveErr
+		}
+		rollbackReserved = true
+		return errors.New("force enclosing order rollback")
+	}); err == nil {
+		t.Fatal("rollback unexpectedly committed")
+	}
+	if !rollbackReserved {
+		t.Fatal("rollback test did not execute reservation before forcing rollback")
+	}
+	var rollbackStatus string
+	var rollbackRedemptions int
+	if err = native.QueryRow(ctx, `SELECT status FROM coupon_customer_claims WHERE id=$1`, rollbackClaim.ClaimID).Scan(&rollbackStatus); err != nil || rollbackStatus != "available" {
+		t.Fatalf("rollback claim status=%q err=%v", rollbackStatus, err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM coupon_order_redemptions WHERE order_reference=$1`, rollback.OrderReference).Scan(&rollbackRedemptions); err != nil || rollbackRedemptions != 0 {
+		t.Fatalf("rollback redemptions=%d err=%v", rollbackRedemptions, err)
+	}
+	var rollbackReceipts, rollbackAudits, rollbackOutbox int
+	if err = native.QueryRow(ctx, `SELECT
+		(SELECT count(*) FROM coupon_redemption_operation_receipts receipt JOIN coupon_order_redemptions redemption ON redemption.id=receipt.redemption_id WHERE redemption.order_reference=$2),
+		(SELECT count(*) FROM coupon_claim_audit_events WHERE claim_id=$1 AND operation='reserve'),
+		(SELECT count(*) FROM coupon_claim_outbox WHERE claim_id=$1 AND event_type='coupon.reserved.v1')`, rollbackClaim.ClaimID, rollback.OrderReference).Scan(&rollbackReceipts, &rollbackAudits, &rollbackOutbox); err != nil || rollbackReceipts != 0 || rollbackAudits != 0 || rollbackOutbox != 0 {
+		// The forced failure must erase the reservation receipt, audit and outbox
+		// along with the claim status transition.
+		t.Fatalf("rollback lifecycle receipts=%d audits=%d outbox=%d err=%v", rollbackReceipts, rollbackAudits, rollbackOutbox, err)
+	}
+
+	if err = uow.Within(ctx, func(txctx context.Context) error {
+		_, consumeErr := checkout.ConsumeWithin(txctx, couponport.ConsumeCommand{ReservationRef: reservations[0].ReservationRef, OrderReference: reserve.OrderReference, SettledAmountMinor: 899, SettledCurrency: "CNY", ActorScope: "payment:settlement", IdempotencyKey: "checkout-wrong-settlement-0001", SettledAt: now.Add(2 * time.Minute)})
+		if !errors.Is(consumeErr, couponapp.ErrConflict) {
+			return fmt.Errorf("wrong settlement error=%v", consumeErr)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err = uow.Within(ctx, func(txctx context.Context) error {
+		_, consumeErr := checkout.ConsumeWithin(txctx, couponport.ConsumeCommand{ReservationRef: reservations[0].ReservationRef, OrderReference: reserve.OrderReference, SettledAmountMinor: 900, SettledCurrency: "CNY", ActorScope: "payment:settlement", IdempotencyKey: "checkout-settlement-0001", SettledAt: now.Add(2 * time.Minute)})
+		return consumeErr
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var consumed string
+	if err = native.QueryRow(ctx, `SELECT status FROM coupon_order_redemptions WHERE order_reference=$1`, reserve.OrderReference).Scan(&consumed); err != nil || consumed != "consumed" {
+		t.Fatalf("consumed status=%q err=%v", consumed, err)
+	}
+
+	// An authoritative close releases a still-reserved claim exactly once. If
+	// the close is after the claim's fixed local validity boundary, the claim
+	// is terminally expired rather than becoming available again.
+	fourth := checkoutCustomer(t, native)
+	releaseRule := checkoutPublishedRule(t, ctx, uow, repository, now, 1, "checkout-expired-release")
+	releaseClaim, err := checkout.Claim(ctx, couponport.ClaimCommand{CouponID: releaseRule.ID, HolderCustomerID: fourth, ActorScope: "checkout:expired-release", IdempotencyKey: "checkout-expired-claim-0001", ClaimedAt: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	releaseReserve := couponport.ReserveCommand{HolderCustomerID: fourth, ClaimID: releaseClaim.ClaimID, ProductID: 9, ProductType: "standard_product", ProductCode: "standard-9", GrossAmountMinor: 1000, Currency: "CNY", OrderReference: "order-coupon-expired-release-001", ActorScope: "payment:checkout", IdempotencyKey: "checkout-expired-reserve-0001", ReservedAt: now.Add(time.Minute)}
+	var releaseSnapshot couponport.ReservationSnapshot
+	if err = uow.Within(ctx, func(txctx context.Context) error {
+		var reserveErr error
+		releaseSnapshot, reserveErr = checkout.ReserveWithin(txctx, releaseReserve)
+		return reserveErr
+	}); err != nil {
+		t.Fatal(err)
+	}
+	releaseCommand := couponport.ReleaseCommand{ReservationRef: releaseSnapshot.ReservationRef, OrderReference: releaseReserve.OrderReference, CloseReason: "payment_closed", ActorScope: "payment:close", IdempotencyKey: "checkout-expired-release-0001", ClosedAt: now.AddDate(0, 0, 4)}
+	if err = uow.Within(ctx, func(txctx context.Context) error {
+		_, releaseErr := checkout.ReleaseWithin(txctx, releaseCommand)
+		return releaseErr
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err = uow.Within(ctx, func(txctx context.Context) error {
+		_, releaseErr := checkout.ReleaseWithin(txctx, releaseCommand)
+		return releaseErr
+	}); err != nil {
+		t.Fatalf("idempotent close release: %v", err)
+	}
+	var released, expired string
+	if err = native.QueryRow(ctx, `SELECT redemption.status,claim.status FROM coupon_order_redemptions redemption JOIN coupon_customer_claims claim ON claim.id=redemption.claim_id WHERE redemption.order_reference=$1`, releaseReserve.OrderReference).Scan(&released, &expired); err != nil || released != "released" || expired != "expired" {
+		t.Fatalf("expired close released=%q claim=%q err=%v", released, expired, err)
+	}
+}
+
+func checkoutCustomer(t *testing.T, pool *pgxpool.Pool) int64 {
+	t.Helper()
+	var id int64
+	if err := pool.QueryRow(context.Background(), `INSERT INTO customers DEFAULT VALUES RETURNING id`).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+func checkoutPublishedRule(t *testing.T, ctx context.Context, uow *platformpostgres.UnitOfWork, repository *Repository, now time.Time, total int64, key string) couponport.Coupon {
+	t.Helper()
+	days := int32(3)
+	rules := couponapp.NewService(uow, repository, productFacts{9: {ID: 9, ProductType: productport.ProductOptionStandard, Currency: "CNY", PriceMinor: 1000}}, repository)
+	created, err := rules.Create(ctx, couponport.UpsertCommand{Coupon: couponport.Coupon{Name: key, DiscountAmountTotal: 100, Currency: "CNY", TotalIssueLimit: total, PerUserIssueLimit: total, ClaimStartsAt: now.Add(-time.Hour), ClaimEndsAt: now.Add(time.Hour), ValidityMode: couponport.ValidityRelativeDays, RelativeValidityDays: &days, TargetRefs: []string{"standard_product:9"}}, Actor: 7, IdempotencyKey: key + "-create-key-0001"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	published, err := rules.Publish(ctx, created.ID, 7, key+"-publish-key-0001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return published
+}
+
 func couponIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 	t.Helper()
 	url, err := platformconfig.DatabaseURL()
@@ -135,12 +383,14 @@ func couponIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 	if !ok {
 		t.Fatal("locate test")
 	}
-	migration, err := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "..", "migrations", "0011_coupon_rules.sql"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err = pool.Exec(ctx, string(migration)); err != nil {
-		t.Fatalf("apply coupon migration: %v", err)
+	for _, name := range []string{"0002_identity.sql", "0011_coupon_rules.sql", "0056_coupon_customer_claims.sql", "0069_coupon_claim_redemption_lifecycle.sql"} {
+		migration, readErr := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "..", "migrations", name))
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if _, err = pool.Exec(ctx, string(migration)); err != nil {
+			t.Fatalf("apply %s: %v", name, err)
+		}
 	}
 	return pool, func() {
 		pool.Close()

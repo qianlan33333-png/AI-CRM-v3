@@ -71,11 +71,15 @@ func (reader *TargetReader) ReadCheckoutProductWithin(ctx context.Context, kind 
 		if err != nil {
 			return productport.CheckoutProduct{}, classify(err)
 		}
-		projected, err := projectServicePeriodProduct(item)
+		duration, err := reader.period.store.ReadServicePeriodDuration(ctx, id)
+		if err != nil || duration < 1 {
+			return productport.CheckoutProduct{}, ErrUnavailable
+		}
+		projected, err := projectServicePeriodProduct(item, duration)
 		if err != nil || !projected.Enabled || projected.Lifecycle != productport.ServicePeriodEnabled {
 			return productport.CheckoutProduct{}, ErrNotFound
 		}
-		return productport.CheckoutProduct{ID: projected.ServiceProductID, ProductType: kind, Code: projected.ProductCode, Name: projected.Name, PriceMinor: projected.PriceMinor, Currency: projected.Currency, Version: projected.Version}, nil
+		return productport.CheckoutProduct{ID: projected.ServiceProductID, ProductType: kind, Code: projected.ProductCode, Name: projected.Name, PriceMinor: projected.PriceMinor, Currency: projected.Currency, Version: projected.Version, ServicePeriodDurationDays: duration}, nil
 	default:
 		return productport.CheckoutProduct{}, ErrInvalidProduct
 	}
