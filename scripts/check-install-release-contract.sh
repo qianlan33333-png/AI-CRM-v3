@@ -112,6 +112,11 @@ grep -qx 'test -x "$release_dir/bin/wecom-archive-sdk-runner"' "$installer" || {
 grep -qF 'scripts/build-wecom-archive-sdk-runner-linux.sh release/bin/wecom-archive-sdk-runner' .github/workflows/ci.yml || { echo "release workflow must build the real Linux cgo archive runner" >&2; exit 1; }
 grep -qF 'CGO_ENABLED=1 GOOS=linux GOARCH=amd64 GOWORK=off' scripts/build-wecom-archive-sdk-runner-linux.sh || { echo "archive release runner must be a Linux amd64 cgo build" >&2; exit 1; }
 grep -qF 'scripts/build-wecom-archive-sdk-runner-linux.sh "$work/runner"' scripts/check-wecom-message-archive-sdk.sh || { echo "official SDK ABI check must exercise the release runner builder" >&2; exit 1; }
+grep -qx 'test -x "$release_dir/bin/migrate-commerce-history"' "$installer" || { echo "release must reject a missing commerce history migration tool" >&2; exit 1; }
+grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/migrate-commerce-history ./cmd/migrate-commerce-history' .github/workflows/ci.yml || { echo "CI must build the commerce history migration tool" >&2; exit 1; }
+grep -qx 'test -x "$release_dir/bin/migrate-message-archive"' "$installer" || { echo "release must reject a missing message archive migration tool" >&2; exit 1; }
+grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/migrate-message-archive ./cmd/migrate-message-archive' .github/workflows/ci.yml || { echo "CI must build the message archive migration tool" >&2; exit 1; }
+grep -qF './cmd/migrate-message-archive' .github/workflows/ci.yml || { echo "CI must test the message archive migration command" >&2; exit 1; }
 grep -qx 'test -x "$release_dir/bin/migrate-order-attribution"' "$installer" || { echo "release must include order history attribution tool" >&2; exit 1; }
 grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/migrate-order-attribution ./cmd/migrate-order-attribution' .github/workflows/ci.yml || { echo "CI must build the order history attribution tool" >&2; exit 1; }
 grep -qx 'test -f "$release_dir/migrations/0047_automation_operations_migration.sql"' "$installer" || { echo "release must require Automation Operations migration schema" >&2; exit 1; }
