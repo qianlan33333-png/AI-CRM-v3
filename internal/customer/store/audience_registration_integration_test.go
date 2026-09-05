@@ -13,12 +13,13 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
+	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 )
 
 func TestPostgreSQLAudienceRegistrationFactsUseDirectoryPhonePresence(t *testing.T) {
-	databaseURL := os.Getenv("AICRM_DATABASE_URL")
-	if databaseURL == "" {
+	databaseURL, configErr := platformconfig.DatabaseURL()
+	if configErr != nil {
 		t.Skip("AICRM_DATABASE_URL is not configured; skipping customer registration PostgreSQL integration test")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
