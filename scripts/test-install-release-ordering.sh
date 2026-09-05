@@ -34,6 +34,8 @@ sha_second=6666666666666666666666666666666666666666
 sha_recovered=7777777777777777777777777777777777777777
 sha_orphaned=8888888888888888888888888888888888888888
 sha_orphan_only=9999999999999999999999999999999999999999
+sha_missing_commerce=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+sha_missing_archive=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 
 mkdir -p "$test_root/bin" "$test_root/aicrm" "$test_root/etc-aicrm" "$test_root/systemd"
 printf 'AICRM_SURVEY_DATA_KEY=%043d\n' 0 > "$test_root/etc-aicrm/aicrm.env"
@@ -119,10 +121,11 @@ chmod 0755 "$test_root/install-release.sh"
 
 make_release() {
   local sha="$1"
+  local missing_binary="${2:-}"
   local release="$test_root/package-${sha}"
   local archive="/tmp/aicrm-${sha}.tar.gz"
   mkdir -p "$release/bin" "$release/migrations" "$release/web/dist/admin" "$release/web/dist/aiassistant" "$release/deploy"
-  for binary in aicrm wecom-archive-sdk-runner migrate-platform migrate-river migrate-phone-identities migrate-identity-phone-vault migrate-survey-v2 migrate-order-attribution migrate-automation-operations migrate-v2-config-definitions migrate-media-legacy-materials migrate-channel-history migrate-radar-v2 migrate-sidebar-history bootstrap-automation-operations; do
+  for binary in aicrm wecom-archive-sdk-runner migrate-platform migrate-river migrate-phone-identities migrate-identity-phone-vault migrate-survey-v2 migrate-commerce-history migrate-message-archive migrate-order-attribution migrate-automation-operations migrate-v2-config-definitions migrate-media-legacy-materials migrate-channel-history migrate-radar-v2 migrate-sidebar-history bootstrap-automation-operations; do
     printf '#!/usr/bin/env bash\nexit 0\n' > "$release/bin/$binary"
     chmod 0755 "$release/bin/$binary"
   done
@@ -182,6 +185,9 @@ make_release() {
     : > "$release/deploy/$unit"
   done
   : > "$release/deploy/rollout-hxc-identity-v2.sh"
+  if [[ -n "$missing_binary" ]]; then
+    rm -f -- "$release/bin/$missing_binary"
+  fi
   (
     cd "$release"
     LC_ALL=C find . -type f ! -name release-files.sha256 -print0 | sort -z | xargs -0 sha256sum > release-files.sha256
@@ -206,6 +212,15 @@ run_release() {
 }
 
 for sha in "$sha_one" "$sha_manual" "$sha_stale" "$sha_failed" "$sha_first" "$sha_second" "$sha_recovered" "$sha_orphan_only"; do make_release "$sha"; done
+make_release "$sha_missing_commerce" migrate-commerce-history
+make_release "$sha_missing_archive" migrate-message-archive
+
+if run_release "$sha_missing_commerce" 98 missing-commerce; then
+  fail "installer accepted a release missing migrate-commerce-history"
+fi
+if run_release "$sha_missing_archive" 99 missing-archive; then
+  fail "installer accepted a release missing migrate-message-archive"
+fi
 
 run_release "$sha_one" 100 initial 1
 [[ "$(<"$test_root/effects-readlink-${sha_one}")" == 2 ]] || fail "effects worker executable readiness was not retried"
