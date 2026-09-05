@@ -194,10 +194,14 @@ func TestRadarFirstClickPrefersTrustedPrimaryOwnerOverHistoricalFallback(t *test
 	facts := legacyFacts{radar: []radarport.AudienceFirstClick{
 		{CustomerID: 1, RadarID: 8, FirstClickedAt: at.Add(-72 * time.Hour), OwnerUserID: "staff-b"},
 		{CustomerID: 2, RadarID: 8, FirstClickedAt: at.Add(-72 * time.Hour)},
+		// A matching userid from another corp scope cannot be used as a
+		// fallback; otherwise a cross-corp userid collision misattributes it.
+		{CustomerID: 3, RadarID: 8, FirstClickedAt: at.Add(-72 * time.Hour), OwnerUserID: "staff-b"},
 	}}
-	source := LegacyTemplateSource{Radar: facts, Owners: facts, PrimaryOwners: primaryOwnerFacts{
+	source := LegacyTemplateSource{Radar: facts, Owners: facts, PrimaryOwnerCorpScope: "wecom-corp:test", PrimaryOwners: primaryOwnerFacts{
 		{CustomerID: 1, CorpScope: "wecom-corp:test", OwnerUserID: "staff-a", Status: "known"},
 		{CustomerID: 2, CorpScope: "wecom-corp:test", Status: "ambiguous"},
+		{CustomerID: 3, CorpScope: "wecom-corp:other", OwnerUserID: "staff-a", Status: "known"},
 	}}
 	staffA, err := source.Evaluate(context.Background(), legacyDefinition(t, segmentdsl.RadarFirstClickElapsed, `{"radar_ids":["8"],"elapsed_min":3,"elapsed_max":4,"elapsed_unit":"day","owner_scope":"specified","owner_staff_ids":["19"]}`), at)
 	if err != nil {

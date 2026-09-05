@@ -31,6 +31,10 @@ type LegacyTemplateSource struct {
 	Members       hxcport.AudienceMemberReader
 	Owners        accessport.AudienceOwnerReferenceReader
 	PrimaryOwners wecomport.AudiencePrimaryOwnerReader
+	// PrimaryOwnerCorpScope is the composition-owned active WeCom provider
+	// scope. A primary from another scope cannot be compared to this audience's
+	// provider userid, even when the strings happen to match.
+	PrimaryOwnerCorpScope string
 }
 
 func (s LegacyTemplateSource) Evaluate(ctx context.Context, definition segmentport.Definition, reference time.Time) (segmentport.Evaluation, error) {
@@ -424,12 +428,17 @@ func (s LegacyTemplateSource) radar(ctx context.Context, p map[string]json.RawMe
 		elapsed := int(at.Sub(fact.FirstClickedAt) / scale)
 		id := int64(fact.CustomerID)
 		// dd8 selects a trusted identity primary owner before historical click
-		// staff facts. Current relationship rows are never substituted here. A
-		// conflicting or unavailable primary may only fall back to a historical
-		// fact that the Radar Owner actually supplied.
+		// staff facts. Current relationship rows are never substituted here.
+		// An ambiguous primary or a primary from another provider scope cannot
+		// safely fall back to a weaker owner fact.
 		ownerUserID := fact.OwnerUserID
-		if primary, exists := primaryByCustomer[fact.CustomerID]; exists && primary.Status == "known" {
-			ownerUserID = primary.OwnerUserID
+		if primary, exists := primaryByCustomer[fact.CustomerID]; exists {
+			switch {
+			case primary.Status == "known" && s.PrimaryOwnerCorpScope != "" && primary.CorpScope == s.PrimaryOwnerCorpScope:
+				ownerUserID = primary.OwnerUserID
+			case primary.Status == "ambiguous" || primary.Status == "known":
+				ownerUserID = ""
+			}
 		}
 		ownerMatch := !scoped || (ownerUserID != "" && owner(p, ownerUserID))
 		if contains(radars, strconv.FormatInt(fact.RadarID, 10)) && elapsed >= minimum && (maximum == nil || elapsed < *maximum) && ownerMatch {

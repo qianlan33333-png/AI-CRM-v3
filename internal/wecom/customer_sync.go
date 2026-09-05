@@ -31,6 +31,11 @@ var (
 	errSyncAudit           = errors.New("wecom customer sync audit failed")
 )
 
+// maximumAudiencePrimaryOwnerBatch bounds the read-only audience bridge. It
+// matches Segment's evaluated-audience ceiling without making WeCom depend on
+// Segment implementation packages.
+const maximumAudiencePrimaryOwnerBatch = 100000
+
 type CustomerSyncStatus string
 
 const (

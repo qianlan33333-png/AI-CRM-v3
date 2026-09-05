@@ -354,7 +354,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	segmentService := segmentapp.NewService(uow, segmentRepository)
 	// Populate this composition-owned adapter as its Owner stores are built
 	// below. The process has not started serving requests at this point.
-	legacyAudienceSource := &segmentadapter.LegacyTemplateSource{Radar: radarRepository}
+	legacyAudienceSource := &segmentadapter.LegacyTemplateSource{Radar: radarRepository, PrimaryOwnerCorpScope: "wecom-corp:" + cfg.WeCom.CorpID}
 	segmentEvaluator, err := segmentapp.NewEvaluator(segmentcompiler.Compiler{}, segmentadapter.CustomerSource{UoW: uow, Customers: customerStore, Legacy: legacyAudienceSource}, segmentadapter.CanonicalCustomers{UoW: uow, Resolver: canonicalCustomerAdapter{reader: queries}})
 	if err != nil {
 		return fail(err)

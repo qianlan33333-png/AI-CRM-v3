@@ -191,9 +191,10 @@ func (PostgreSQLCustomerSyncStore) UpsertProfileObservations(ctx context.Context
 	if err != nil {
 		return err
 	}
-	// followInfo is the trusted provider detail's full follow-user set.  The
-	// paged request employee is intentionally not an owner fact: injecting it
-	// would turn an incomplete page into a false primary-owner candidate.
+	// FollowInfo is a provider observation returned for this page, not a claim
+	// that this page is the customer's complete follow-user set. The request
+	// employee is intentionally not injected: only the reconciled, completed
+	// run may derive a primary from these page observations.
 	owners := map[string]wecomport.ExternalContactFollowInfo{}
 	for _, follow := range followInfo {
 		if follow.EmployeeID == "" {
@@ -361,6 +362,9 @@ func (PostgreSQLCustomerSyncStore) CustomerOwnerObservations(ctx context.Context
 }
 
 func (PostgreSQLCustomerSyncStore) AudiencePrimaryOwners(ctx context.Context, customerIDs []customerdomain.CustomerID) ([]wecomport.AudiencePrimaryOwner, error) {
+	if len(customerIDs) > maximumAudiencePrimaryOwnerBatch {
+		return nil, ErrSyncCAS
+	}
 	ids := make([]int64, 0, len(customerIDs))
 	seen := map[customerdomain.CustomerID]struct{}{}
 	for _, customerID := range customerIDs {

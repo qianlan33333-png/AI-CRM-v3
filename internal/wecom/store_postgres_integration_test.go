@@ -522,6 +522,13 @@ func TestPostgreSQLAudiencePrimaryOwnersUseCompletedTrustedFollowScopes(t *testi
 		t.Fatal(err)
 	}
 	store := NewPostgreSQLCustomerSyncStore()
+	tooMany := make([]customerdomain.CustomerID, maximumAudiencePrimaryOwnerBatch+1)
+	if err = unit.Within(ctx, func(tx context.Context) error {
+		_, readErr := store.AudiencePrimaryOwners(tx, tooMany)
+		return readErr
+	}); !errors.Is(err, ErrSyncCAS) {
+		t.Fatalf("oversized audience owner batch=%v", err)
+	}
 	now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
 	var primaryCustomer, unknownCustomer, conflictingCustomer int64
 	for _, destination := range []*int64{&primaryCustomer, &unknownCustomer, &conflictingCustomer} {
