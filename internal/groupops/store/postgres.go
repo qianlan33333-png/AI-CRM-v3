@@ -930,14 +930,18 @@ func (r *Repository) RecordGroupMessageDelivery(ctx context.Context, task groupo
 	if err != nil {
 		return err
 	}
-	result, err := tx.Exec(ctx, `UPDATE group_ops_group_message_tasks SET delivery_status=$3,delivery_evidence_digest=$4,delivery_checked_at=clock_timestamp() WHERE execution_id=$1 AND external_effect_id=$2 AND msgid=$5 AND sender_userid_snapshot=$6 AND chat_reference=$7`, task.ExecutionID, effectID, *task.DeliveryStatus, evidenceDigest, task.MessageID, task.SenderUserID, task.ChatID)
+	// A delivered task is immutable as a fact: an older status page can refresh
+	// its observation time but cannot overwrite status=1 or its evidence.
+	result, err := tx.Exec(ctx, `UPDATE group_ops_group_message_tasks SET delivery_status=CASE WHEN delivery_status=1 THEN 1 ELSE $3 END,delivery_evidence_digest=CASE WHEN delivery_status=1 THEN delivery_evidence_digest ELSE $4 END,delivery_checked_at=clock_timestamp() WHERE execution_id=$1 AND external_effect_id=$2 AND msgid=$5 AND sender_userid_snapshot=$6 AND chat_reference=$7`, task.ExecutionID, effectID, *task.DeliveryStatus, evidenceDigest, task.MessageID, task.SenderUserID, task.ChatID)
 	if err != nil {
 		return err
 	}
 	if result.RowsAffected() != 1 {
 		return ErrConflict
 	}
-	updated, err := tx.Exec(ctx, `UPDATE group_ops_executions SET delivery_proven=($2=1),updated_at=clock_timestamp() WHERE id=$1 AND state='provider_accepted'`, task.ExecutionID, *task.DeliveryStatus)
+	// PostgreSQL row locking plus OR makes delivery_proven monotonic across
+	// concurrent reader transactions (including a later stale status=0 page).
+	updated, err := tx.Exec(ctx, `UPDATE group_ops_executions SET delivery_proven=(delivery_proven OR ($2=1)),updated_at=clock_timestamp() WHERE id=$1 AND state='provider_accepted'`, task.ExecutionID, *task.DeliveryStatus)
 	if err != nil {
 		return err
 	}

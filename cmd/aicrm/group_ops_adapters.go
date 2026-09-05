@@ -445,12 +445,20 @@ func (adapter groupOpsMaterialAdapter) ResolveMaterialIntentSnapshot(ctx context
 	if err != nil {
 		return nil, "", nil, "", err
 	}
+	raw, err = canonicalGroupOpsJSON(raw)
+	if err != nil {
+		return nil, "", nil, "", err
+	}
 	facts := struct {
 		SchemaVersion int                                      `json:"schema_version"`
 		Sources       mediaport.GroupOpsMaterialSourceSnapshot `json:"sources"`
 		Preparations  []groupopsmaterial.PreparedMaterial      `json:"preparations"`
 	}{SchemaVersion: 1, Sources: sources, Preparations: prepared}
 	factsRaw, err := json.Marshal(facts)
+	if err != nil {
+		return nil, "", nil, "", err
+	}
+	factsRaw, err = canonicalGroupOpsJSON(factsRaw)
 	if err != nil {
 		return nil, "", nil, "", err
 	}

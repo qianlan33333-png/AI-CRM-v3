@@ -474,44 +474,20 @@ func (s *RuntimeService) ReadProviderDelivery(ctx context.Context, command group
 		return groupopsport.Execution{}, ErrProviderDisabled
 	}
 	var existing groupopsport.Execution
-	var receipt Receipt
-	var owned bool
 	if err := s.uow.Within(ctx, func(tx context.Context) error {
 		var err error
 		existing, err = s.runtime.GetExecution(tx, command.ExecutionID)
-		if err != nil {
-			return err
-		}
-		payload := sha256.Sum256([]byte(strings.Join([]string{"group-ops.delivery-read.v1", strconv.FormatInt(existing.ID, 10), existing.ExternalEffectID}, "\x00")))
-		receipt, owned, err = s.plans.Reserve(tx, "execution_delivery_read", Reservation{ActorScope: "admin:" + strconv.FormatInt(command.ActorID, 10), KeyDigest: sha256.Sum256([]byte(command.IdempotencyKey)), PayloadDigest: payload, CreatedAt: s.nowUTC()})
 		return err
 	}); err != nil {
 		return groupopsport.Execution{}, classify(err)
 	}
-	if !owned {
-		if receipt.State != "completed" || json.Unmarshal(receipt.ResultSnapshot, &existing) != nil {
-			return groupopsport.Execution{}, ErrConflict
-		}
-		return existing, nil
-	}
 	if existing.State != groupopsport.ExecutionProviderAccepted || !existing.ProviderAccepted || existing.ExternalEffectID == "" {
 		return groupopsport.Execution{}, ErrStateConflict
 	}
-	if existing.DeliveryProven {
-		err := s.uow.Within(ctx, func(tx context.Context) error {
-			raw, marshalErr := json.Marshal(existing)
-			if marshalErr != nil {
-				return marshalErr
-			}
-			_, completeErr := s.plans.Complete(tx, receipt.ID, raw, s.nowUTC())
-			return completeErr
-		})
-		if err != nil {
-			return groupopsport.Execution{}, classify(err)
-		}
-		return existing, nil
-	}
-	// Provider pagination is deliberately outside the Unit of Work.
+	// The trusted Provider read is intentionally repeatable. No receipt is
+	// reserved before it succeeds, so a timeout or process exit cannot strand
+	// an idempotency key in-progress. The final local fact and its receipt are
+	// committed in one Unit of Work below.
 	task, found, err := reader.ReadProviderDelivery(ctx, groupopsport.ReconciliationEvidence{ExecutionID: existing.ID, ExternalEffectID: existing.ExternalEffectID})
 	if err != nil {
 		return groupopsport.Execution{}, classify(err)
@@ -519,36 +495,41 @@ func (s *RuntimeService) ReadProviderDelivery(ctx context.Context, command group
 	if found && (task.DeliveryStatus == nil || !effectport.ValidDigest(effectport.Digest(task.DeliveryEvidenceDigest))) {
 		return groupopsport.Execution{}, ErrConflict
 	}
+	payload := sha256.Sum256([]byte(strings.Join([]string{"group-ops.delivery-read.v1", strconv.FormatInt(existing.ID, 10), existing.ExternalEffectID}, "\x00")))
 	var result groupopsport.Execution
 	err = s.uow.Within(ctx, func(tx context.Context) error {
-		current, err := s.runtime.GetExecution(tx, command.ExecutionID)
-		if err != nil {
-			return err
+		receipt, owned, reserveErr := s.plans.Reserve(tx, "execution_delivery_read", Reservation{ActorScope: "admin:" + strconv.FormatInt(command.ActorID, 10), KeyDigest: sha256.Sum256([]byte(command.IdempotencyKey)), PayloadDigest: payload, CreatedAt: s.nowUTC()})
+		if reserveErr != nil {
+			return reserveErr
+		}
+		if !owned {
+			if receipt.State != "completed" || json.Unmarshal(receipt.ResultSnapshot, &result) != nil {
+				return ErrConflict
+			}
+			return nil
+		}
+		current, getErr := s.runtime.GetExecution(tx, command.ExecutionID)
+		if getErr != nil {
+			return getErr
 		}
 		if current.State != groupopsport.ExecutionProviderAccepted || current.ExternalEffectID != existing.ExternalEffectID {
 			return ErrStateConflict
 		}
-		if current.DeliveryProven {
-			result = current // delivery proof is monotonic; stale Provider pages cannot downgrade it.
-		} else if found {
-			if err = s.runtime.RecordGroupMessageDelivery(tx, task, task.DeliveryEvidenceDigest); err != nil {
-				return err
+		if found {
+			if recordErr := s.runtime.RecordGroupMessageDelivery(tx, task, task.DeliveryEvidenceDigest); recordErr != nil {
+				return recordErr
 			}
-			result, err = s.runtime.GetExecution(tx, command.ExecutionID)
-			if err != nil {
-				return err
-			}
-		} else {
-			result = current // task result is still pending.
+		}
+		result, getErr = s.runtime.GetExecution(tx, command.ExecutionID)
+		if getErr != nil {
+			return getErr
 		}
 		raw, marshalErr := json.Marshal(result)
 		if marshalErr != nil {
 			return marshalErr
 		}
-		if _, err = s.plans.Complete(tx, receipt.ID, raw, s.nowUTC()); err != nil {
-			return err
-		}
-		return nil
+		_, completeErr := s.plans.Complete(tx, receipt.ID, raw, s.nowUTC())
+		return completeErr
 	})
 	if err != nil {
 		return groupopsport.Execution{}, classify(err)
