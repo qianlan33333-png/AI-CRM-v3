@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"testing"
 	"time"
@@ -23,6 +24,9 @@ import (
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 )
 
+// messageAcceptanceStub supplies only the stable Outbound dependency needed
+// to reach the real intent table. This test proves table shape/readback; the
+// composed EER transaction remains covered by the runtime journey.
 type messageAcceptanceStub struct{ next int64 }
 
 func (s *messageAcceptanceStub) AcceptAndQueueWithin(_ context.Context, _ effectport.AcceptCommand) (effectport.Projection, effectport.Receipt, error) {
@@ -79,6 +83,27 @@ func TestPostgreSQLMessageContentSnapshotShapeAndLegacyReadback(t *testing.T) {
 		t.Fatalf("legacy execution=%+v found=%t err=%v", legacyExecution, found, err)
 	}
 
+	pre0089 := messageIntentFixture(4, nil, [32]byte{})
+	if err = insertPre0089AcceptedIntent(ctx, native, pre0089); err != nil {
+		t.Fatalf("insert pre-0089 intent: %v", err)
+	}
+	var replay outboundport.MessageAcceptance
+	if err = uow.Within(ctx, func(tx context.Context) error {
+		var acceptErr error
+		replay, acceptErr = service.AcceptMessageWithin(tx, pre0089)
+		return acceptErr
+	}); err != nil || !replay.Replayed || replay.EffectID != "eer_9004" {
+		t.Fatalf("pre-0089 replay=%+v err=%v", replay, err)
+	}
+	drift := pre0089
+	drift.PayloadDigest = [32]byte{99}
+	if err = uow.Within(ctx, func(tx context.Context) error {
+		_, acceptErr := service.AcceptMessageWithin(tx, drift)
+		return acceptErr
+	}); !errors.Is(err, ErrMessageIntentConflict) {
+		t.Fatalf("pre-0089 payload drift err=%v, want intent conflict", err)
+	}
+
 	raw := json.RawMessage(`{"text":"frozen"}`)
 	digest := sha256.Sum256(raw)
 	withSnapshot := messageIntentFixture(2, raw, digest)
@@ -95,7 +120,10 @@ func TestPostgreSQLMessageContentSnapshotShapeAndLegacyReadback(t *testing.T) {
 		t.Fatal(err)
 	}
 	execution, found, err := service.MessageExecution(ctx, fingerprint)
-	if err != nil || !found || string(execution.ContentSnapshot) != string(raw) || execution.ContentSnapshotDigest != digest {
+	var wantSnapshot, gotSnapshot map[string]any
+	_ = json.Unmarshal(raw, &wantSnapshot)
+	_ = json.Unmarshal(execution.ContentSnapshot, &gotSnapshot)
+	if err != nil || !found || !reflect.DeepEqual(gotSnapshot, wantSnapshot) || execution.ContentSnapshotDigest != digest {
 		t.Fatalf("frozen execution=%+v found=%t err=%v", execution, found, err)
 	}
 
@@ -112,6 +140,8 @@ func TestPostgreSQLMessageContentSnapshotShapeAndLegacyReadback(t *testing.T) {
 	}{
 		{name: "json null", snapshot: []byte(`null`), digest: make([]byte, 32)},
 		{name: "short digest", snapshot: []byte(`{}`), digest: []byte{1}},
+		{name: "object without digest", snapshot: []byte(`{}`), digest: nil},
+		{name: "digest without object", snapshot: nil, digest: make([]byte, 32)},
 	} {
 		t.Run(invalid.name, func(t *testing.T) {
 			err := insertSnapshotShapeRow(ctx, native, invalid.snapshot, invalid.digest, int64(100+len(invalid.name)))
@@ -131,6 +161,23 @@ func insertSnapshotShapeRow(ctx context.Context, pool *pgxpool.Pool, snapshot, d
 	value := byte(id)
 	_, err := pool.Exec(ctx, `INSERT INTO outbound_message_intents(source_kind,source_id,run_recipient_id,customer_id,sender_staff_id,agent_id,agent_published_version,content_reference,source_digest,target_digest,payload_digest,content_snapshot,content_snapshot_digest,policy_digest,receipt_key_digest,intent_digest,envelope_fingerprint,state,created_at,updated_at) VALUES('automation_enrollment',$1,$1,1,1,1,1,'automation-agent:1:published:1',$2,$2,$2,$3::jsonb,$4::bytea,$2,$2,$2,$5,'queued',clock_timestamp(),clock_timestamp())`, id, []byte{value, value, value, value, value, value, value, value, value, value, value, value, value, value, value, value, value, value, value, value, value, value, value, value, value, value, value, value, value, value, value, value}, snapshot, digest, effectport.Hash("shape", fmt.Sprint(id)))
 	return err
+}
+
+func insertPre0089AcceptedIntent(ctx context.Context, pool *pgxpool.Pool, intent outboundport.MessageIntent) error {
+	keyDigest := sha256.Sum256([]byte(intent.ReceiptKey))
+	digest := pre0089MessageIntentDigest(intent)
+	fingerprint := effectport.Envelope{Owner: effectport.OwnerOutbound, Kind: effectport.KindAutomationMessage, SourceRefDigest: digestToEffect("automation.message.source", intent.SourceDigest), TargetRefDigest: digestToEffect("automation.message.target", intent.TargetDigest), PayloadDigest: digestToEffect("automation.message.payload", intent.PayloadDigest), PolicyVersionHash: digestToEffect("automation.message.policy", intent.PolicyDigest)}.Fingerprint()
+	_, err := pool.Exec(ctx, `INSERT INTO outbound_message_intents(source_kind,source_id,run_recipient_id,customer_id,sender_staff_id,agent_id,agent_published_version,content_reference,source_digest,target_digest,payload_digest,content_snapshot,content_snapshot_digest,policy_digest,receipt_key_digest,intent_digest,envelope_fingerprint,effect_id,queue_receipt_id,state,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NULL,NULL,$12,$13,$14,$15,$16,$17,'queued',clock_timestamp(),clock_timestamp())`, intent.SourceKind, intent.SourceID, intent.RunRecipientID, intent.CustomerID, intent.SenderStaffID, intent.AgentID, intent.AgentPublishedVersion, intent.ContentReference, intent.SourceDigest[:], intent.TargetDigest[:], intent.PayloadDigest[:], intent.PolicyDigest[:], keyDigest[:], digest[:], fingerprint, fmt.Sprintf("eer_900%d", intent.SourceID), fmt.Sprintf("queue-old-%d", intent.SourceID))
+	return err
+}
+
+func pre0089MessageIntentDigest(intent outboundport.MessageIntent) [32]byte {
+	scheduledAt := ""
+	if !intent.ScheduledAt.IsZero() {
+		scheduledAt = intent.ScheduledAt.UTC().Format(time.RFC3339Nano)
+	}
+	raw, _ := json.Marshal([]any{intent.SourceKind, intent.SourceID, intent.RunRecipientID, intent.CustomerID, intent.SenderStaffID, intent.AgentID, intent.AgentPublishedVersion, intent.ContentReference, hex.EncodeToString(intent.SourceDigest[:]), hex.EncodeToString(intent.TargetDigest[:]), hex.EncodeToString(intent.PayloadDigest[:]), hex.EncodeToString(intent.PolicyDigest[:]), scheduledAt})
+	return sha256.Sum256(raw)
 }
 
 func pgErrorCode(err error) string {

@@ -73,7 +73,15 @@ func messageIntentDigest(in outboundport.MessageIntent) [32]byte {
 	if !in.ScheduledAt.IsZero() {
 		scheduledAt = in.ScheduledAt.UTC().Format(time.RFC3339Nano)
 	}
-	raw, _ := json.Marshal([]any{in.SourceKind, in.SourceID, in.RunRecipientID, in.CustomerID, in.SenderStaffID, in.AgentID, in.AgentPublishedVersion, in.ContentReference, hex.EncodeToString(in.SourceDigest[:]), hex.EncodeToString(in.TargetDigest[:]), hex.EncodeToString(in.PayloadDigest[:]), string(in.ContentSnapshot), hex.EncodeToString(in.ContentSnapshotDigest[:]), hex.EncodeToString(in.PolicyDigest[:]), scheduledAt})
+	// Intents accepted before 0089 did not have a content snapshot. Keep their
+	// exact canonical form so a lost response can replay the original receipt.
+	// New snapshots are explicitly versioned inside the digest input.
+	fields := []any{in.SourceKind, in.SourceID, in.RunRecipientID, in.CustomerID, in.SenderStaffID, in.AgentID, in.AgentPublishedVersion, in.ContentReference, hex.EncodeToString(in.SourceDigest[:]), hex.EncodeToString(in.TargetDigest[:]), hex.EncodeToString(in.PayloadDigest[:])}
+	if len(bytes.TrimSpace(in.ContentSnapshot)) != 0 {
+		fields = append(fields, "content-snapshot-v1", string(in.ContentSnapshot), hex.EncodeToString(in.ContentSnapshotDigest[:]))
+	}
+	fields = append(fields, hex.EncodeToString(in.PolicyDigest[:]), scheduledAt)
+	raw, _ := json.Marshal(fields)
 	return sha256.Sum256(raw)
 }
 func snapshotBytes(value [32]byte) []byte {
