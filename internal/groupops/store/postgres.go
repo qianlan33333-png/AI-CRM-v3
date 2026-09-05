@@ -528,7 +528,7 @@ func (r *Repository) getExecution(ctx context.Context, tx pgx.Tx, id int64) (gro
 	var e groupopsport.Execution
 	var effectID int64
 	var receipt, evidence *string
-	var deliveryStatus *int
+	var deliveryStatus pgtype.Int4
 	err := tx.QueryRow(ctx, `SELECT e.id,e.run_id,e.plan_id,e.plan_revision,e.node_id,e.node_position,e.target_reference,e.target_digest,e.content_digest,e.material_digest,e.external_effect_id,e.state,e.provider_accepted,e.delivery_proven,e.provider_receipt_digest,e.reconciliation_evidence_digest,e.attempt_count,e.scheduled_for,e.created_at,e.updated_at,t.delivery_status FROM group_ops_executions e LEFT JOIN group_ops_group_message_tasks t ON t.execution_id=e.id WHERE e.id=$1`, id).Scan(&e.ID, &e.RunID, &e.PlanID, &e.PlanRevision, &e.NodeID, &e.NodePosition, &e.TargetReference, &e.TargetDigest, &e.ContentDigest, &e.MaterialDigest, &effectID, &e.State, &e.ProviderAccepted, &e.DeliveryProven, &receipt, &evidence, &e.AttemptCount, &e.ScheduledFor, &e.CreatedAt, &e.UpdatedAt, &deliveryStatus)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return groupopsport.Execution{}, ErrNotFound
@@ -539,7 +539,10 @@ func (r *Repository) getExecution(ctx context.Context, tx pgx.Tx, id int64) (gro
 	e.ExternalEffectID = "eer_" + strconv.FormatInt(effectID, 10)
 	e.ProviderReceiptPresent = receipt != nil && *receipt != ""
 	e.ReconciliationEvidencePresent = evidence != nil && *evidence != ""
-	e.DeliveryStatus = deliveryStatus
+	if deliveryStatus.Valid {
+		value := int(deliveryStatus.Int32)
+		e.DeliveryStatus = &value
+	}
 	return e, nil
 }
 
