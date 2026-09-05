@@ -159,10 +159,10 @@ func TestServicePeriodPublicHostRetainsFrozenDonorStateDOM(t *testing.T) {
 		t.Fatalf("service-period donor hash=%s", got)
 	}
 	var page bytes.Buffer
-	if err := servicePeriodPublicPage.Execute(&page, servicePeriodPublicState{Product: publicProduct{ID: 71, Name: "31 天服务期", PriceMinor: 12800, PaymentPath: "/s/term-31/pay", ServicePeriodDurationDays: 31}, Status: "active", CTA: "立即续费", EndAt: time.Date(2026, 9, 20, 0, 0, 0, 0, time.UTC), RemainingDays: 15}); err != nil {
+	if err := servicePeriodPublicPage.Execute(&page, servicePeriodPublicState{DonorStyle: servicePeriodDonorStyles(), Product: publicProduct{ID: 71, Name: "31 天服务期", PriceMinor: 12800, PaymentPath: "/s/term-31/pay", ServicePeriodDurationDays: 31}, Status: "active", CTA: "立即续费", EndAt: time.Date(2026, 9, 20, 0, 0, 0, 0, time.UTC), RemainingDays: 15}); err != nil {
 		t.Fatal(err)
 	}
-	for _, marker := range []string{`service-period-page`, `servicePeriodStateCard`, `servicePeriodPayButton`, `data-route-owner="ai_crm_next"`} {
+	for _, marker := range []string{`service-period-page`, `servicePeriodStateCard`, `servicePeriodPayButton`, `data-route-owner="ai_crm_next"`, `service-period-wecom-action`, `detail-media`} {
 		if !strings.Contains(page.String(), marker) {
 			t.Fatalf("adapted donor state DOM missing %q", marker)
 		}
