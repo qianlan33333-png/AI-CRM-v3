@@ -338,10 +338,7 @@ func donorGridSchema(editable bool) map[string]any {
 		field("last_open_at", "最后打开时间", "datetime", "datetime", dateOps, true, true, false, []any{}),
 		field("renewal_count", "续费次数", "number", "number", numberOps, true, true, false, []any{}),
 		field("remark", "备注", "text", "text", textOps, true, true, editable, []any{}),
-		// 0079 has no imported V3 owner for the donor's admin_alliance source.
-		// Keep it visible and queryable as an explicit unavailable value, but do
-		// not advertise a write endpoint that would manufacture a second owner.
-		field("alliance", "联盟", "text", "text", textOps, true, true, false, []any{}),
+		field("alliance", "联盟", "text", "text", textOps, true, true, editable, []any{}),
 	}
 	return map[string]any{"schema_version": 1, "fields": fields, "limits": map[string]any{"filter_conditions": 20, "sorts": 8, "groups": 2, "page_size": 100}}
 }
@@ -393,7 +390,7 @@ func (h *Handler) donorGridRowsAt(ctx context.Context, items []orderport.Entitle
 		if item.RenewalCountAvailable {
 			renewalCount = item.RenewalCount
 		}
-		out = append(out, map[string]any{"record_id": memberGridMemberRef(item.ID), "unionid": memberGridMemberRef(item.ID), "version": item.Version, "values": map[string]any{"member": map[string]any{"primary": name, "secondary": ""}, "remaining_days": remaining, "formally_logged_in": "unmatched", "token_usage": "unmatched", "learning_plan_progress": map[string]any{"state": "unmatched"}, "open_count_7d": nil, "last_open_at": nil, "renewal_count": renewalCount, "renewal_count_unavailable": !item.RenewalCountAvailable, "remark": strings.TrimSpace(item.Remark), "alliance": nil, "alliance_unavailable": true}, "group_path": path})
+		out = append(out, map[string]any{"record_id": memberGridMemberRef(item.ID), "unionid": memberGridMemberRef(item.ID), "version": item.Version, "values": map[string]any{"member": map[string]any{"primary": name, "secondary": ""}, "remaining_days": remaining, "formally_logged_in": "unmatched", "token_usage": "unmatched", "learning_plan_progress": map[string]any{"state": "unmatched"}, "open_count_7d": nil, "last_open_at": nil, "renewal_count": renewalCount, "renewal_count_unavailable": !item.RenewalCountAvailable, "remark": strings.TrimSpace(item.Remark), "alliance": item.Alliance, "alliance_unavailable": item.Alliance == nil}, "group_path": path})
 	}
 	return out, nil
 }
@@ -412,6 +409,12 @@ func donorGridGroupPath(item orderport.Entitlement, c donorGridConfig, remaining
 		case "remark":
 			if text := strings.ToLower(strings.TrimSpace(item.Remark)); text != "" {
 				value = text
+			}
+		case "alliance":
+			if item.Alliance != nil {
+				if text := strings.ToLower(strings.TrimSpace(*item.Alliance)); text != "" {
+					value = text
+				}
 			}
 		}
 		count := int64(0)

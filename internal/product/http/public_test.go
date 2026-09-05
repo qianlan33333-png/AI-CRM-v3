@@ -173,6 +173,9 @@ func (stub servicePeriodEntitlementStub) GetCustomerServicePeriodEntitlement(_ c
 func (servicePeriodEntitlementStub) UpdateEntitlementRemark(context.Context, orderport.RemarkCommand) (orderport.Entitlement, error) {
 	return orderport.Entitlement{}, errors.New("unused")
 }
+func (servicePeriodEntitlementStub) UpdateEntitlementAlliance(context.Context, orderport.AllianceCommand) (orderport.Entitlement, error) {
+	return orderport.Entitlement{}, errors.New("unused")
+}
 
 type servicePeriodLeadQRStub struct{ value channelport.PublicLeadQRCode }
 

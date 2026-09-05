@@ -177,6 +177,120 @@ func TestEntitlementRemarkRejectsCrossProductBeforeMutation(t *testing.T) {
 	}
 }
 
+func TestEntitlementAlliancePreservesUnknownClearCASAndRollback(t *testing.T) {
+	native, cleanup := orderIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	wrapper, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wrapper.Close()
+	uow, err := platformpostgres.NewUnitOfWork(wrapper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo, err := NewPostgreSQL(native, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app, err := orderapp.NewEntitlementApplication(uow, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var customerID, entitlementID int64
+	if err = native.QueryRow(ctx, `INSERT INTO customers DEFAULT VALUES RETURNING id`).Scan(&customerID); err != nil {
+		t.Fatal(err)
+	}
+	base := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+	digest := sha256.Sum256([]byte("alliance-cas"))
+	if err = native.QueryRow(ctx, `INSERT INTO order_service_entitlements(source_system,source_key,customer_id,service_product_id,product_name,status,start_at,end_at,remark,source_digest,created_at,updated_at)
+		VALUES('test','alliance-cas',$1,91,'联盟商品','active',$2,$3,'',$4,$2,$2) RETURNING id`, customerID, base, base.AddDate(0, 0, 30), digest[:]).Scan(&entitlementID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = app.UpdateEntitlementAlliance(ctx, orderport.AllianceCommand{EntitlementID: entitlementID, CustomerID: customerID, ServiceProductID: 90, EmployeeID: "admin:1", Alliance: "越权联盟", ExpectedVersion: 1, IdempotencyKey: "cross-product-alliance-key"}); !errors.Is(err, orderport.ErrConflict) && !errors.Is(err, orderport.ErrNotFound) {
+		t.Fatalf("cross-product err=%v", err)
+	}
+	var alliance *string
+	var version, receipts, audits, outbox int64
+	if err = native.QueryRow(ctx, `SELECT alliance,version,(SELECT count(*) FROM order_entitlement_operation_receipts),(SELECT count(*) FROM order_entitlement_audit_events),(SELECT count(*) FROM order_entitlement_outbox) FROM order_service_entitlements WHERE id=$1`, entitlementID).Scan(&alliance, &version, &receipts, &audits, &outbox); err != nil {
+		t.Fatal(err)
+	}
+	if alliance != nil || version != 1 || receipts != 0 || audits != 0 || outbox != 0 {
+		t.Fatalf("cross-product changed alliance=%v version=%d receipts=%d audits=%d outbox=%d", alliance, version, receipts, audits, outbox)
+	}
+
+	command := orderport.AllianceCommand{EntitlementID: entitlementID, CustomerID: 0, ServiceProductID: 91, EmployeeID: "admin:1", Alliance: " 联盟甲 ", ExpectedVersion: 1, IdempotencyKey: "opaque-member-alliance-key"}
+	updated, err := app.UpdateEntitlementAlliance(ctx, command)
+	if err != nil || updated.Alliance == nil || *updated.Alliance != "联盟甲" || updated.Version != 2 {
+		t.Fatalf("alliance update=%+v err=%v", updated, err)
+	}
+	replayed, err := app.UpdateEntitlementAlliance(ctx, command)
+	if err != nil || replayed.Version != 2 || replayed.Alliance == nil || *replayed.Alliance != "联盟甲" {
+		t.Fatalf("alliance replay=%+v err=%v", replayed, err)
+	}
+	if _, err = app.UpdateEntitlementAlliance(ctx, orderport.AllianceCommand{EntitlementID: entitlementID, CustomerID: customerID, ServiceProductID: 91, EmployeeID: "admin:1", Alliance: "联盟乙", ExpectedVersion: 1, IdempotencyKey: "stale-alliance-key"}); !errors.Is(err, orderport.ErrConflict) {
+		t.Fatalf("alliance stale err=%v", err)
+	}
+
+	if _, err = native.Exec(ctx, `CREATE FUNCTION fail_alliance_outbox() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'rollback alliance outbox'; END $$; CREATE TRIGGER fail_alliance_outbox BEFORE INSERT ON order_entitlement_outbox FOR EACH ROW EXECUTE FUNCTION fail_alliance_outbox()`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = app.UpdateEntitlementAlliance(ctx, orderport.AllianceCommand{EntitlementID: entitlementID, CustomerID: 0, ServiceProductID: 91, EmployeeID: "admin:1", Alliance: "不会提交", ExpectedVersion: 2, IdempotencyKey: "rollback-alliance-key"}); err == nil {
+		t.Fatal("outbox failure accepted")
+	}
+	if _, err = native.Exec(ctx, `DROP TRIGGER fail_alliance_outbox ON order_entitlement_outbox; DROP FUNCTION fail_alliance_outbox()`); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `SELECT alliance,version,(SELECT count(*) FROM order_entitlement_operation_receipts),(SELECT count(*) FROM order_entitlement_audit_events),(SELECT count(*) FROM order_entitlement_outbox) FROM order_service_entitlements WHERE id=$1`, entitlementID).Scan(&alliance, &version, &receipts, &audits, &outbox); err != nil {
+		t.Fatal(err)
+	}
+	if alliance == nil || *alliance != "联盟甲" || version != 2 || receipts != 2 || audits != 1 || outbox != 1 {
+		t.Fatalf("outbox rollback leaked alliance=%v version=%d receipts=%d audits=%d outbox=%d", alliance, version, receipts, audits, outbox)
+	}
+	cleared, err := app.UpdateEntitlementAlliance(ctx, orderport.AllianceCommand{EntitlementID: entitlementID, CustomerID: 0, ServiceProductID: 91, EmployeeID: "admin:1", Alliance: "", ExpectedVersion: 2, IdempotencyKey: "clear-alliance-key"})
+	if err != nil || cleared.Alliance == nil || *cleared.Alliance != "" || cleared.Version != 3 {
+		t.Fatalf("explicit empty alliance=%+v err=%v", cleared, err)
+	}
+
+	// A missing legacy fact must stay unknown to grid predicates. It may not be
+	// folded into the explicit clear above merely because both sort as blank.
+	for _, row := range []struct {
+		key      string
+		alliance *string
+	}{
+		{key: "alliance-unknown", alliance: nil},
+		{key: "alliance-value", alliance: stringPointer("联盟甲")},
+	} {
+		var otherCustomer int64
+		if err = native.QueryRow(ctx, `INSERT INTO customers DEFAULT VALUES RETURNING id`).Scan(&otherCustomer); err != nil {
+			t.Fatal(err)
+		}
+		rowDigest := sha256.Sum256([]byte(row.key))
+		if _, err = native.Exec(ctx, `INSERT INTO order_service_entitlements(source_system,source_key,customer_id,service_product_id,product_name,status,start_at,end_at,remark,alliance,source_digest,created_at,updated_at)
+			VALUES('test',$1,$2,91,'联盟商品','active',$3,$4,'',$5,$6,$3,$3)`, row.key, otherCustomer, base, base.AddDate(0, 0, 30), row.alliance, rowDigest[:]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	query := orderport.ServicePeriodMemberQuery{ServiceProductID: 91, Limit: 10, SnapshotAt: base, GridFilters: []orderport.MemberGridFilter{{Field: "alliance", Operator: "is_empty"}}}
+	page, err := app.ListServicePeriodMembers(ctx, query)
+	if err != nil || len(page.Items) != 1 || page.Items[0].ID != entitlementID || page.Items[0].Alliance == nil || *page.Items[0].Alliance != "" {
+		t.Fatalf("alliance empty predicate=%+v err=%v", page, err)
+	}
+	query.GridFilters = []orderport.MemberGridFilter{{Field: "alliance", Operator: "not_contains", Text: "甲"}}
+	page, err = app.ListServicePeriodMembers(ctx, query)
+	if err != nil || len(page.Items) != 1 || page.Items[0].ID != entitlementID {
+		t.Fatalf("alliance not-contains predicate=%+v err=%v", page, err)
+	}
+	query.GridFilters = []orderport.MemberGridFilter{{Field: "alliance", Operator: "is_not_empty"}}
+	page, err = app.ListServicePeriodMembers(ctx, query)
+	if err != nil || len(page.Items) != 1 || page.Items[0].Alliance == nil || *page.Items[0].Alliance != "联盟甲" {
+		t.Fatalf("alliance known-value predicate=%+v err=%v", page, err)
+	}
+}
+
+func stringPointer(value string) *string { return &value }
+
 func TestPostgreSQLMemberGridUsesFrozenCeilDaysForFiltersAndPagination(t *testing.T) {
 	native, cleanup := orderIntegrationPool(t)
 	defer cleanup()
@@ -1186,7 +1300,7 @@ func orderIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 	if !ok {
 		t.Fatal("locate integration test")
 	}
-	for _, name := range []string{"0002_identity.sql", "0020_order.sql", "0024_order_product_version.sql", "0049_order_history_attribution.sql", "0055_order_service_entitlements.sql", "0070_service_period_entitlement_fulfillment.sql", "0076_order_checkout_snapshots.sql"} {
+	for _, name := range []string{"0002_identity.sql", "0020_order.sql", "0024_order_product_version.sql", "0049_order_history_attribution.sql", "0055_order_service_entitlements.sql", "0070_service_period_entitlement_fulfillment.sql", "0076_order_checkout_snapshots.sql", "0088_order_service_entitlement_alliance.sql"} {
 		migration, readErr := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "..", "migrations", name))
 		if readErr != nil {
 			t.Fatal(readErr)

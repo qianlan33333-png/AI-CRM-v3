@@ -35,7 +35,7 @@ func (r *Repository) ListCustomerEntitlements(ctx context.Context, customerID in
 	if err != nil {
 		return orderport.EntitlementPage{}, err
 	}
-	rows, err := tx.Query(ctx, `SELECT id,customer_id,service_product_id,product_name,last_order_id,status,start_at,end_at,remark,version,updated_at FROM order_service_entitlements WHERE customer_id=$1 AND status IN ('active','expired') ORDER BY end_at DESC,id DESC LIMIT $2`, customerID, limit)
+	rows, err := tx.Query(ctx, `SELECT id,customer_id,service_product_id,product_name,last_order_id,status,start_at,end_at,remark,alliance,version,updated_at FROM order_service_entitlements WHERE customer_id=$1 AND status IN ('active','expired') ORDER BY end_at DESC,id DESC LIMIT $2`, customerID, limit)
 	if err != nil {
 		return orderport.EntitlementPage{}, err
 	}
@@ -43,7 +43,7 @@ func (r *Repository) ListCustomerEntitlements(ctx context.Context, customerID in
 	page := orderport.EntitlementPage{Items: []orderport.Entitlement{}}
 	for rows.Next() {
 		var item orderport.Entitlement
-		if err = rows.Scan(&item.ID, &item.CustomerID, &item.ServiceProductID, &item.ProductName, &item.LastOrderID, &item.Status, &item.StartAt, &item.EndAt, &item.Remark, &item.Version, &item.UpdatedAt); err != nil {
+		if err = rows.Scan(&item.ID, &item.CustomerID, &item.ServiceProductID, &item.ProductName, &item.LastOrderID, &item.Status, &item.StartAt, &item.EndAt, &item.Remark, &item.Alliance, &item.Version, &item.UpdatedAt); err != nil {
 			return page, err
 		}
 		page.Items = append(page.Items, item)
@@ -106,7 +106,7 @@ func (r *Repository) ListServicePeriodMembers(ctx context.Context, query orderpo
 	// keyset pagination. A later page therefore reports the full count for each
 	// group prefix, matching the frozen dd8 relation rather than a page suffix.
 	rows, err := tx.Query(ctx, `WITH member_grid_base AS (
-		SELECT id,customer_id,service_product_id,product_name,last_order_id,status,start_at,end_at,remark,version,updated_at,source_system,
+		SELECT id,customer_id,service_product_id,product_name,last_order_id,status,start_at,end_at,remark,alliance,version,updated_at,source_system,
 		       GREATEST(0, CEIL(EXTRACT(EPOCH FROM (end_at-$4::timestamptz))/86400))::bigint AS remaining_days
 		FROM order_service_entitlements
 		WHERE service_product_id=$1
@@ -146,7 +146,8 @@ func (r *Repository) ListServicePeriodMembers(ctx context.Context, query orderpo
 	), member_grid_values AS (
 		SELECT member.*,
 		       CASE WHEN renewal_count_available THEN renewal_count ELSE NULL::bigint END AS renewal_count_value,
-		       NULLIF(LOWER(BTRIM(remark)), '') AS remark_sort
+		       NULLIF(LOWER(BTRIM(remark)), '') AS remark_sort,
+		       NULLIF(LOWER(BTRIM(alliance)), '') AS alliance_sort
 		FROM member_grid_renewals member
 	), member_grid_filtered AS (
 		SELECT * FROM member_grid_values WHERE `+memberFilter+`
@@ -154,7 +155,7 @@ func (r *Repository) ListServicePeriodMembers(ctx context.Context, query orderpo
 		SELECT member.*, `+groupCounts+` AS member_grid_group_counts
 		FROM member_grid_filtered member
 	)
-	SELECT id,customer_id,service_product_id,product_name,last_order_id,status,start_at,end_at,remark,version,updated_at,source_system,renewal_count,renewal_count_available,remaining_days,renewal_count_value,remark_sort,member_grid_group_counts
+	SELECT id,customer_id,service_product_id,product_name,last_order_id,status,start_at,end_at,remark,alliance,version,updated_at,source_system,renewal_count,renewal_count_available,remaining_days,renewal_count_value,remark_sort,alliance_sort,member_grid_group_counts
 		FROM member_grid_counted
 		WHERE `+keyset+`
 		ORDER BY `+memberGridOrderClause(elements)+` LIMIT $`+strconv.Itoa(len(args)), args...)
@@ -168,13 +169,14 @@ func (r *Repository) ListServicePeriodMembers(ctx context.Context, query orderpo
 		var remaining int64
 		var renewalValue *int64
 		var remarkSort *string
-		if err = rows.Scan(&item.ID, &item.CustomerID, &item.ServiceProductID, &item.ProductName, &item.LastOrderID, &item.Status, &item.StartAt, &item.EndAt, &item.Remark, &item.Version, &item.UpdatedAt, &item.SourceSystem, &item.RenewalCount, &item.RenewalCountAvailable, &remaining, &renewalValue, &remarkSort, &item.MemberGridGroupCounts); err != nil {
+		var allianceSort *string
+		if err = rows.Scan(&item.ID, &item.CustomerID, &item.ServiceProductID, &item.ProductName, &item.LastOrderID, &item.Status, &item.StartAt, &item.EndAt, &item.Remark, &item.Alliance, &item.Version, &item.UpdatedAt, &item.SourceSystem, &item.RenewalCount, &item.RenewalCountAvailable, &remaining, &renewalValue, &remarkSort, &allianceSort, &item.MemberGridGroupCounts); err != nil {
 			return orderport.ServicePeriodMemberPage{}, err
 		}
 		if len(item.MemberGridGroupCounts) > 0 {
 			item.MemberGridGroupCount = item.MemberGridGroupCounts[0]
 		}
-		item.MemberGridOrderValues = memberGridOrderValues(item, remaining, renewalValue, remarkSort, elements)
+		item.MemberGridOrderValues = memberGridOrderValues(item, remaining, renewalValue, remarkSort, allianceSort, elements)
 		page.Items = append(page.Items, item)
 	}
 	if err = rows.Err(); err != nil {
@@ -246,6 +248,8 @@ func memberGridOrderElements(sorts, groups []orderport.MemberGridOrder) []member
 			result = append(result, memberGridOrderElement{Alias: "renewal_count_value", Direction: direction, Cast: "bigint", Nullable: true})
 		case "remark":
 			result = append(result, memberGridOrderElement{Alias: "remark_sort", Direction: direction, Cast: "text", Nullable: true})
+		case "alliance":
+			result = append(result, memberGridOrderElement{Alias: "alliance_sort", Direction: direction, Cast: "text", Nullable: true})
 		case "updated_at":
 			result = append(result, memberGridOrderElement{Alias: "updated_at", Direction: direction, Cast: "timestamptz"})
 		case "starts_at":
@@ -286,7 +290,7 @@ func memberGridOrderExpression(element memberGridOrderElement) string {
 func memberGridFilterClause(filters []orderport.MemberGridFilter, logic string, args *[]any) string {
 	clauses := make([]string, 0, len(filters))
 	for _, filter := range filters {
-		alias := map[string]string{"remaining_days": "remaining_days", "renewal_count": "renewal_count_value", "remark": "remark_sort"}[filter.Field]
+		alias := map[string]string{"remaining_days": "remaining_days", "renewal_count": "renewal_count_value", "remark": "remark_sort", "alliance": "alliance_sort"}[filter.Field]
 		switch filter.Field {
 		case "remaining_days", "renewal_count":
 			if filter.Operator == "is_empty" {
@@ -303,24 +307,33 @@ func memberGridFilterClause(filters []orderport.MemberGridFilter, logic string, 
 			}
 			op := map[string]string{"equals": "=", "not_equals": "<>", "gt": ">", "gte": ">=", "lt": "<", "lte": "<="}[filter.Operator]
 			clauses = append(clauses, alias+" "+op+" "+memberGridBind(args, filter.Numbers[0], "numeric"))
-		case "remark":
+		case "remark", "alliance":
+			field := alias
+			// Alliance distinguishes a missing donor fact (alliance IS NULL) from
+			// a verified legacy empty string (alliance_sort IS NULL). Unknown
+			// values never satisfy a user-selected text predicate. Remark is
+			// historically always known, so retain its older NULL behavior.
+			known := "TRUE"
+			if filter.Field == "alliance" {
+				known = "alliance IS NOT NULL"
+			}
 			switch filter.Operator {
 			case "is_empty":
-				clauses = append(clauses, "remark_sort IS NULL")
+				clauses = append(clauses, known+" AND "+field+" IS NULL")
 			case "is_not_empty":
-				clauses = append(clauses, "remark_sort IS NOT NULL")
+				clauses = append(clauses, known+" AND "+field+" IS NOT NULL")
 			case "contains", "not_contains":
-				clause := "COALESCE(remark_sort, '') LIKE " + memberGridBind(args, "%"+escapeServicePeriodLike(strings.ToLower(filter.Text))+"%", "text") + " ESCAPE E'\\\\'"
+				clause := "COALESCE(" + field + ", '') LIKE " + memberGridBind(args, "%"+escapeServicePeriodLike(strings.ToLower(filter.Text))+"%", "text") + " ESCAPE E'\\\\'"
 				if filter.Operator == "not_contains" {
 					clause = "NOT (" + clause + ")"
 				}
-				clauses = append(clauses, clause)
+				clauses = append(clauses, known+" AND "+clause)
 			case "equals", "not_equals":
-				clause := "COALESCE(remark_sort, '') = " + memberGridBind(args, strings.ToLower(filter.Text), "text")
+				clause := "COALESCE(" + field + ", '') = " + memberGridBind(args, strings.ToLower(filter.Text), "text")
 				if filter.Operator == "not_equals" {
 					clause = "NOT (" + clause + ")"
 				}
-				clauses = append(clauses, clause)
+				clauses = append(clauses, known+" AND "+clause)
 			}
 		}
 	}
@@ -341,7 +354,7 @@ func memberGridGroupCounts(groups []orderport.MemberGridOrder) string {
 	parts := make([]string, 0, len(groups))
 	prefix := make([]string, 0, len(groups))
 	for _, group := range groups {
-		alias := map[string]string{"remaining_days": "remaining_days", "renewal_count": "renewal_count_value", "remark": "remark_sort"}[group.Field]
+		alias := map[string]string{"remaining_days": "remaining_days", "renewal_count": "renewal_count_value", "remark": "remark_sort", "alliance": "alliance_sort"}[group.Field]
 		prefix = append(prefix, alias)
 		parts = append(parts, "COUNT(*) OVER (PARTITION BY "+strings.Join(prefix, ",")+")")
 	}
@@ -430,7 +443,7 @@ func decodeMemberGridCursorValues(values []any, elements []memberGridOrderElemen
 	return decoded, nil
 }
 
-func memberGridOrderValues(item orderport.Entitlement, remaining int64, renewalValue *int64, remarkSort *string, elements []memberGridOrderElement) []any {
+func memberGridOrderValues(item orderport.Entitlement, remaining int64, renewalValue *int64, remarkSort, allianceSort *string, elements []memberGridOrderElement) []any {
 	values := make([]any, 0, len(elements))
 	for _, element := range elements {
 		var value any
@@ -448,6 +461,12 @@ func memberGridOrderValues(item orderport.Entitlement, remaining int64, renewalV
 				} else {
 					values = append(values, int64(0))
 				}
+			case "alliance_sort":
+				if allianceSort == nil {
+					values = append(values, int64(1))
+				} else {
+					values = append(values, int64(0))
+				}
 			}
 			continue
 		}
@@ -458,6 +477,8 @@ func memberGridOrderValues(item orderport.Entitlement, remaining int64, renewalV
 			value = renewalValue
 		case "remark_sort":
 			value = remarkSort
+		case "alliance_sort":
+			value = allianceSort
 		case "updated_at":
 			value = item.UpdatedAt.UTC()
 		case "start_at":
@@ -519,10 +540,10 @@ func (r *Repository) GetCustomerServicePeriodEntitlement(ctx context.Context, cu
 		return orderport.Entitlement{}, false, err
 	}
 	var item orderport.Entitlement
-	err = tx.QueryRow(ctx, `SELECT id,customer_id,service_product_id,product_name,last_order_id,status,start_at,end_at,remark,version,updated_at
+	err = tx.QueryRow(ctx, `SELECT id,customer_id,service_product_id,product_name,last_order_id,status,start_at,end_at,remark,alliance,version,updated_at
 		FROM order_service_entitlements WHERE customer_id=$1 AND service_product_id=$2
 		ORDER BY end_at DESC,id DESC LIMIT 1`, customerID, serviceProductID).
-		Scan(&item.ID, &item.CustomerID, &item.ServiceProductID, &item.ProductName, &item.LastOrderID, &item.Status, &item.StartAt, &item.EndAt, &item.Remark, &item.Version, &item.UpdatedAt)
+		Scan(&item.ID, &item.CustomerID, &item.ServiceProductID, &item.ProductName, &item.LastOrderID, &item.Status, &item.StartAt, &item.EndAt, &item.Remark, &item.Alliance, &item.Version, &item.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return orderport.Entitlement{}, false, nil
 	}
@@ -538,7 +559,7 @@ func (r *Repository) UpdateEntitlementRemark(ctx context.Context, command orderp
 		return orderport.Entitlement{}, err
 	}
 	var item orderport.Entitlement
-	err = tx.QueryRow(ctx, `UPDATE order_service_entitlements SET remark=$5,version=version+1,updated_at=$6 WHERE id=$1 AND ($2=0 OR customer_id=$2) AND service_product_id=$3 AND version=$4 AND status IN ('active','expired') RETURNING id,customer_id,service_product_id,product_name,last_order_id,status,start_at,end_at,remark,version,updated_at`, command.EntitlementID, command.CustomerID, command.ServiceProductID, command.ExpectedVersion, command.Remark, at).Scan(&item.ID, &item.CustomerID, &item.ServiceProductID, &item.ProductName, &item.LastOrderID, &item.Status, &item.StartAt, &item.EndAt, &item.Remark, &item.Version, &item.UpdatedAt)
+	err = tx.QueryRow(ctx, `UPDATE order_service_entitlements SET remark=$5,version=version+1,updated_at=$6 WHERE id=$1 AND ($2=0 OR customer_id=$2) AND service_product_id=$3 AND version=$4 AND status IN ('active','expired') RETURNING id,customer_id,service_product_id,product_name,last_order_id,status,start_at,end_at,remark,alliance,version,updated_at`, command.EntitlementID, command.CustomerID, command.ServiceProductID, command.ExpectedVersion, command.Remark, at).Scan(&item.ID, &item.CustomerID, &item.ServiceProductID, &item.ProductName, &item.LastOrderID, &item.Status, &item.StartAt, &item.EndAt, &item.Remark, &item.Alliance, &item.Version, &item.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return item, orderport.ErrConflict
 	}
@@ -567,6 +588,49 @@ func (r *Repository) RecordEntitlementConflict(ctx context.Context, command orde
 	return err
 }
 
+func (r *Repository) UpdateEntitlementAlliance(ctx context.Context, command orderport.AllianceCommand, key, payload [32]byte, at time.Time) (orderport.Entitlement, error) {
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return orderport.Entitlement{}, err
+	}
+	var item orderport.Entitlement
+	err = tx.QueryRow(ctx, `UPDATE order_service_entitlements SET alliance=$5,version=version+1,updated_at=$6
+		WHERE id=$1 AND ($2=0 OR customer_id=$2) AND service_product_id=$3 AND version=$4 AND status IN ('active','expired')
+		RETURNING id,customer_id,service_product_id,product_name,last_order_id,status,start_at,end_at,remark,alliance,version,updated_at`,
+		command.EntitlementID, command.CustomerID, command.ServiceProductID, command.ExpectedVersion, command.Alliance, at).
+		Scan(&item.ID, &item.CustomerID, &item.ServiceProductID, &item.ProductName, &item.LastOrderID, &item.Status, &item.StartAt, &item.EndAt, &item.Remark, &item.Alliance, &item.Version, &item.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return item, orderport.ErrConflict
+	}
+	if err != nil {
+		return item, err
+	}
+	raw, _ := json.Marshal(item)
+	actor := sha256.Sum256([]byte(command.EmployeeID))
+	if _, err = tx.Exec(ctx, `INSERT INTO order_entitlement_operation_receipts(operation,key_digest,payload_digest,entitlement_id,outcome,result_snapshot)
+		VALUES('alliance',$1,$2,$3,'updated',$4::jsonb)`, key[:], payload[:], item.ID, raw); err != nil {
+		return item, err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO order_entitlement_audit_events(entitlement_id,operation,actor_digest,payload_digest,occurred_at)
+		VALUES($1,'alliance',$2,$3,$4)`, item.ID, actor[:], payload[:], at); err != nil {
+		return item, err
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO order_entitlement_outbox(event_type,entitlement_id,payload,idempotency_digest,occurred_at)
+		VALUES('order.entitlement.alliance_updated.v1',$1,jsonb_build_object('entitlement_id',$1::bigint,'version',$2::bigint),$3,$4)`, item.ID, item.Version, key[:], at)
+	return item, err
+}
+
+func (r *Repository) RecordEntitlementAllianceConflict(ctx context.Context, command orderport.AllianceCommand, key, payload [32]byte, item orderport.Entitlement, at time.Time) error {
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return err
+	}
+	raw, _ := json.Marshal(item)
+	_, err = tx.Exec(ctx, `INSERT INTO order_entitlement_operation_receipts(operation,key_digest,payload_digest,entitlement_id,outcome,result_snapshot,created_at)
+		VALUES('alliance',$1,$2,$3,'version_conflict',$4::jsonb,$5)`, key[:], payload[:], item.ID, raw, at)
+	return err
+}
+
 func (r *Repository) ImportHistoricalEntitlement(ctx context.Context, input orderport.HistoricalEntitlement) (orderport.Entitlement, bool, error) {
 	tx, err := platformpostgres.RequireTransaction(ctx)
 	if err != nil {
@@ -574,7 +638,7 @@ func (r *Repository) ImportHistoricalEntitlement(ctx context.Context, input orde
 	}
 	var item orderport.Entitlement
 	var digest []byte
-	err = tx.QueryRow(ctx, `SELECT id,customer_id,service_product_id,product_name,last_order_id,status,start_at,end_at,remark,version,updated_at,source_digest FROM order_service_entitlements WHERE source_system=$1 AND source_key=$2 FOR UPDATE`, input.SourceSystem, input.SourceKey).Scan(&item.ID, &item.CustomerID, &item.ServiceProductID, &item.ProductName, &item.LastOrderID, &item.Status, &item.StartAt, &item.EndAt, &item.Remark, &item.Version, &item.UpdatedAt, &digest)
+	err = tx.QueryRow(ctx, `SELECT id,customer_id,service_product_id,product_name,last_order_id,status,start_at,end_at,remark,alliance,version,updated_at,source_digest FROM order_service_entitlements WHERE source_system=$1 AND source_key=$2 FOR UPDATE`, input.SourceSystem, input.SourceKey).Scan(&item.ID, &item.CustomerID, &item.ServiceProductID, &item.ProductName, &item.LastOrderID, &item.Status, &item.StartAt, &item.EndAt, &item.Remark, &item.Alliance, &item.Version, &item.UpdatedAt, &digest)
 	if err == nil {
 		if len(digest) != 32 || string(digest) != string(input.SourceDigest[:]) {
 			return item, false, orderport.ErrConflict
@@ -584,7 +648,7 @@ func (r *Repository) ImportHistoricalEntitlement(ctx context.Context, input orde
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return item, false, err
 	}
-	err = tx.QueryRow(ctx, `INSERT INTO order_service_entitlements(source_system,source_key,customer_id,service_product_id,product_name,last_order_id,status,start_at,end_at,remark,source_digest,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id,customer_id,service_product_id,product_name,last_order_id,status,start_at,end_at,remark,version,updated_at`, input.SourceSystem, input.SourceKey, input.CustomerID, input.ServiceProductID, input.ProductName, input.LastOrderID, input.Status, input.StartAt, input.EndAt, input.Remark, input.SourceDigest[:], input.CreatedAt, input.UpdatedAt).Scan(&item.ID, &item.CustomerID, &item.ServiceProductID, &item.ProductName, &item.LastOrderID, &item.Status, &item.StartAt, &item.EndAt, &item.Remark, &item.Version, &item.UpdatedAt)
+	err = tx.QueryRow(ctx, `INSERT INTO order_service_entitlements(source_system,source_key,customer_id,service_product_id,product_name,last_order_id,status,start_at,end_at,remark,alliance,source_digest,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING id,customer_id,service_product_id,product_name,last_order_id,status,start_at,end_at,remark,alliance,version,updated_at`, input.SourceSystem, input.SourceKey, input.CustomerID, input.ServiceProductID, input.ProductName, input.LastOrderID, input.Status, input.StartAt, input.EndAt, input.Remark, input.Alliance, input.SourceDigest[:], input.CreatedAt, input.UpdatedAt).Scan(&item.ID, &item.CustomerID, &item.ServiceProductID, &item.ProductName, &item.LastOrderID, &item.Status, &item.StartAt, &item.EndAt, &item.Remark, &item.Alliance, &item.Version, &item.UpdatedAt)
 	return item, err == nil, err
 }
 
@@ -614,8 +678,8 @@ func (r *Repository) GrantPaidServicePeriod(ctx context.Context, command orderpo
 		end := command.PaidAt.AddDate(0, 0, int(command.DurationDays))
 		err = tx.QueryRow(ctx, `INSERT INTO order_service_entitlements(source_system,source_key,customer_id,service_product_id,product_name,last_order_id,status,start_at,end_at,remark,source_digest,created_at,updated_at)
 			VALUES('native-payment',$1,$2,$3,$4,$5,'active',$6,$7,'',$8,$9,$9)
-			RETURNING id,customer_id,service_product_id,product_name,last_order_id,status,start_at,end_at,remark,version,updated_at`, sourceKey, command.BeneficiaryCustomerID, command.ServiceProductID, command.ProductName, command.SourceOrderID, command.PaidAt, end, sourceDigest[:], command.ProcessedAt).
-			Scan(&item.ID, &item.CustomerID, &item.ServiceProductID, &item.ProductName, &item.LastOrderID, &item.Status, &item.StartAt, &item.EndAt, &item.Remark, &item.Version, &item.UpdatedAt)
+			RETURNING id,customer_id,service_product_id,product_name,last_order_id,status,start_at,end_at,remark,alliance,version,updated_at`, sourceKey, command.BeneficiaryCustomerID, command.ServiceProductID, command.ProductName, command.SourceOrderID, command.PaidAt, end, sourceDigest[:], command.ProcessedAt).
+			Scan(&item.ID, &item.CustomerID, &item.ServiceProductID, &item.ProductName, &item.LastOrderID, &item.Status, &item.StartAt, &item.EndAt, &item.Remark, &item.Alliance, &item.Version, &item.UpdatedAt)
 	} else {
 		start, end := command.PaidAt, command.PaidAt.AddDate(0, 0, int(command.DurationDays))
 		if item.Status == "active" && item.EndAt.After(command.ProcessedAt) {
@@ -628,8 +692,8 @@ func (r *Repository) GrantPaidServicePeriod(ctx context.Context, command orderpo
 			operation, start, end = "renew", item.StartAt, item.EndAt.AddDate(0, 0, int(command.DurationDays))
 		}
 		err = tx.QueryRow(ctx, `UPDATE order_service_entitlements SET product_name=$2,last_order_id=$3,status='active',start_at=$4,end_at=$5,version=version+1,updated_at=$6 WHERE id=$1
-			RETURNING id,customer_id,service_product_id,product_name,last_order_id,status,start_at,end_at,remark,version,updated_at`, item.ID, command.ProductName, command.SourceOrderID, start, end, command.ProcessedAt).
-			Scan(&item.ID, &item.CustomerID, &item.ServiceProductID, &item.ProductName, &item.LastOrderID, &item.Status, &item.StartAt, &item.EndAt, &item.Remark, &item.Version, &item.UpdatedAt)
+			RETURNING id,customer_id,service_product_id,product_name,last_order_id,status,start_at,end_at,remark,alliance,version,updated_at`, item.ID, command.ProductName, command.SourceOrderID, start, end, command.ProcessedAt).
+			Scan(&item.ID, &item.CustomerID, &item.ServiceProductID, &item.ProductName, &item.LastOrderID, &item.Status, &item.StartAt, &item.EndAt, &item.Remark, &item.Alliance, &item.Version, &item.UpdatedAt)
 	}
 	if err != nil {
 		return orderport.Entitlement{}, err
@@ -711,10 +775,10 @@ func (r *Repository) ApplyServicePeriodRefund(ctx context.Context, command order
 		end, status = *mappedEnd, "active"
 	}
 	err = tx.QueryRow(ctx, `UPDATE order_service_entitlements SET status=$2,end_at=$3,version=version+1,updated_at=$4 WHERE id=$1
-		RETURNING id,customer_id,service_product_id,product_name,last_order_id,status,start_at,end_at,remark,version,updated_at`, item.ID, status, end, command.ProcessedAt).
+		RETURNING id,customer_id,service_product_id,product_name,last_order_id,status,start_at,end_at,remark,alliance,version,updated_at`, item.ID, status, end, command.ProcessedAt).
 		// Processing time is the update time; entitlement end may lie in the
 		// future when another unrefunded order remains.
-		Scan(&item.ID, &item.CustomerID, &item.ServiceProductID, &item.ProductName, &item.LastOrderID, &item.Status, &item.StartAt, &item.EndAt, &item.Remark, &item.Version, &item.UpdatedAt)
+		Scan(&item.ID, &item.CustomerID, &item.ServiceProductID, &item.ProductName, &item.LastOrderID, &item.Status, &item.StartAt, &item.EndAt, &item.Remark, &item.Alliance, &item.Version, &item.UpdatedAt)
 	if err != nil {
 		return orderport.Entitlement{}, err
 	}
@@ -794,9 +858,9 @@ func entitlementFulfillmentReceipt(ctx context.Context, tx pgx.Tx, operation str
 
 func latestServicePeriodEntitlement(ctx context.Context, tx pgx.Tx, customerID, productID int64) (orderport.Entitlement, bool, error) {
 	var item orderport.Entitlement
-	err := tx.QueryRow(ctx, `SELECT id,customer_id,service_product_id,product_name,last_order_id,status,start_at,end_at,remark,version,updated_at
+	err := tx.QueryRow(ctx, `SELECT id,customer_id,service_product_id,product_name,last_order_id,status,start_at,end_at,remark,alliance,version,updated_at
 		FROM order_service_entitlements WHERE customer_id=$1 AND service_product_id=$2 ORDER BY end_at DESC,id DESC LIMIT 1 FOR UPDATE`, customerID, productID).
-		Scan(&item.ID, &item.CustomerID, &item.ServiceProductID, &item.ProductName, &item.LastOrderID, &item.Status, &item.StartAt, &item.EndAt, &item.Remark, &item.Version, &item.UpdatedAt)
+		Scan(&item.ID, &item.CustomerID, &item.ServiceProductID, &item.ProductName, &item.LastOrderID, &item.Status, &item.StartAt, &item.EndAt, &item.Remark, &item.Alliance, &item.Version, &item.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return item, false, nil
 	}
@@ -805,8 +869,8 @@ func latestServicePeriodEntitlement(ctx context.Context, tx pgx.Tx, customerID, 
 
 func servicePeriodEntitlementByID(ctx context.Context, tx pgx.Tx, id int64) (orderport.Entitlement, error) {
 	var item orderport.Entitlement
-	err := tx.QueryRow(ctx, `SELECT id,customer_id,service_product_id,product_name,last_order_id,status,start_at,end_at,remark,version,updated_at FROM order_service_entitlements WHERE id=$1 FOR UPDATE`, id).
-		Scan(&item.ID, &item.CustomerID, &item.ServiceProductID, &item.ProductName, &item.LastOrderID, &item.Status, &item.StartAt, &item.EndAt, &item.Remark, &item.Version, &item.UpdatedAt)
+	err := tx.QueryRow(ctx, `SELECT id,customer_id,service_product_id,product_name,last_order_id,status,start_at,end_at,remark,alliance,version,updated_at FROM order_service_entitlements WHERE id=$1 FOR UPDATE`, id).
+		Scan(&item.ID, &item.CustomerID, &item.ServiceProductID, &item.ProductName, &item.LastOrderID, &item.Status, &item.StartAt, &item.EndAt, &item.Remark, &item.Alliance, &item.Version, &item.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return item, orderport.ErrNotFound
 	}

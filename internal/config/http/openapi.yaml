@@ -1365,7 +1365,7 @@ paths:
     get:
       operationId: listServicePeriodMembersCompatibility
       tags: [Products]
-      description: Truthful empty compatibility projection. Member, customer, and entitlement data are outside PR04.
+      description: Authorized compatibility projection of Order-owned service-period members. Customer display names are read through the Customer directory port.
       security: [{adminSession: []}]
       parameters:
         - {name: state, in: query, schema: {type: string, enum: [active, expired, removed, all]}}
@@ -1373,10 +1373,38 @@ paths:
         - {$ref: "#/components/parameters/ProductLimit"}
         - {name: cursor, in: query, schema: {type: string, maxLength: 1024}}
       responses:
-        "200": {description: Empty member compatibility projection, content: {application/json: {schema: {$ref: "#/components/schemas/ServicePeriodMemberPage"}}}}
+        "200": {description: Service-period member compatibility projection, content: {application/json: {schema: {$ref: "#/components/schemas/ServicePeriodMemberPage"}}}}
         "401": {$ref: "#/components/responses/Error"}
         "403": {$ref: "#/components/responses/Error"}
         "404": {$ref: "#/components/responses/Error"}
+  /api/admin/service-period-products/{service_product_id}/members/{member_ref}/alliance:
+    parameters:
+      - {$ref: "#/components/parameters/ServiceProductID"}
+      - {name: member_ref, in: path, required: true, schema: {type: string, pattern: '^spm_[A-Za-z0-9_-]{22}$'}}
+    put:
+      operationId: updateServicePeriodMemberAlliance
+      tags: [Products]
+      description: Atomically updates the Order-owned legacy alliance fact with a product-scoped opaque member reference and row-version CAS. An empty alliance is a confirmed clear; historical unknown remains null until edited.
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [alliance, version]
+              properties:
+                alliance: {type: string, maxLength: 500}
+                version: {$ref: "#/components/schemas/PositiveID"}
+      responses:
+        "200": {description: Order receipt acknowledged alliance update, content: {application/json: {schema: {$ref: "#/components/schemas/ServicePeriodMemberAllianceMutation"}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
   /api/admin/service-period-products/{service_product_id}/member-grid/access:
     parameters: [{$ref: "#/components/parameters/ServiceProductID"}]
     get:
@@ -3012,7 +3040,7 @@ paths:
               additionalProperties: false
               required: [amount_minor, refund_no, reason]
               properties: {amount_minor: {type: integer, minimum: 1}, refund_no: {type: string, minLength: 1, maxLength: 200}, reason: {type: string, minLength: 1, maxLength: 500}}
-      responses: {"202": {description: Refund effect accepted atomically}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+      responses: {"202": {description: Refund effect accepted atomically, content: {application/json: {schema: {$ref: "#/components/schemas/PaymentRefundEffectAccepted"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
   /api/public/wechat-pay/callbacks/payment:
     post:
       operationId: receiveWechatPayPaymentCallback
@@ -4395,6 +4423,25 @@ components:
         limit: {type: integer, minimum: 1, maximum: 100}
         next_cursor: {type: string}
         has_more: {const: false}
+    ServicePeriodMemberAllianceMutation:
+      type: object
+      additionalProperties: false
+      required: [ok, member_ref, alliance, version, updated_at]
+      properties:
+        ok: {const: true}
+        member_ref: {type: string, pattern: '^spm_[A-Za-z0-9_-]{22}$'}
+        alliance: {type: string, maxLength: 500}
+        version: {$ref: "#/components/schemas/PositiveID"}
+        updated_at: {type: string, format: date-time}
+    PaymentRefundEffectAccepted:
+      type: object
+      additionalProperties: false
+      required: [refund_id, out_refund_no, status, effect_id]
+      properties:
+        refund_id: {$ref: "#/components/schemas/PositiveID"}
+        out_refund_no: {type: string, minLength: 1, maxLength: 200}
+        status: {type: string, minLength: 1, maxLength: 80}
+        effect_id: {type: string, minLength: 1, maxLength: 200}
     ServicePeriodMemberGridAccess:
       type: object
       additionalProperties: false

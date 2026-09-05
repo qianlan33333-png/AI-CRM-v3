@@ -77,14 +77,17 @@ async function closeNameDialog(window, document, name) {
   dialog.close('default');
 }
 
-async function editRemark(window, document, value) {
-  const cell = await eventually(() => document.querySelector('td.sp-col-remark'), 'editable remark cell');
+async function editText(window, document, field, value) {
+  const cell = await eventually(() => document.querySelector(`td.sp-col-${field}`), `editable ${field} cell`);
   cell.dispatchEvent(new window.MouseEvent('dblclick', {bubbles: true, cancelable: true}));
   const editor = await eventually(() => cell.querySelector('textarea'), 'remark editor');
   editor.value = value;
+  // A prior inline save may still have a success toast. Clear it before this
+  // submit so the acknowledgement below belongs to this exact CAS request.
+  document.getElementById('spGridToast').textContent = '';
   editor.dispatchEvent(new window.KeyboardEvent('keydown', {key: 'Enter', bubbles: true, cancelable: true}));
-  await eventually(() => document.querySelector('td.sp-col-remark')?.textContent.trim() === value, `saved remark ${value}`);
-  await eventually(() => document.getElementById('spGridToast')?.textContent.includes('备注已保存'), `remark CAS acknowledgement ${value}`);
+  await eventually(() => document.querySelector(`td.sp-col-${field}`)?.textContent.trim() === (value || '—'), `saved ${field} ${value}`);
+  await eventually(() => document.getElementById('spGridToast')?.textContent.includes('已保存'), `${field} CAS acknowledgement ${value}`);
 }
 
 async function runInternalJourney() {
@@ -131,8 +134,10 @@ async function runInternalJourney() {
 
   // Inline editing must use the opaque member ref and carry forward the CAS
   // version acknowledged by the preceding write.
-  await editRemark(window, document, '第一次备注');
-  await editRemark(window, document, '第二次备注');
+  await editText(window, document, 'remark', '第一次备注');
+  await editText(window, document, 'remark', '第二次备注');
+  await editText(window, document, 'alliance', '联盟甲');
+  await editText(window, document, 'alliance', '');
 
   // The frozen sharing controller obtains a real Access-directory staff list,
   // creates, updates and removes a collaborator, then opens a revocable link.
