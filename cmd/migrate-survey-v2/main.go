@@ -1022,6 +1022,17 @@ func verifyMappedFact(ctx context.Context, tx pgx.Tx, batchID int64, source, tab
 		if !ok {
 			return fmt.Errorf("migration reconciliation failed: %s/%s unsafe quarantine fact", table, pk)
 		}
+		// An operation is quarantined only when neither its declared questionnaire nor
+		// its source submission supplies a mapped questionnaire. This matches import's
+		// deterministic owner fallback and prevents a valid operation being hidden.
+		if _, ownerErr := sourceTargetPK(ctx, tx, source, "questionnaires", operation.QuestionnaireID); ownerErr == nil {
+			return fmt.Errorf("migration reconciliation failed: %s/%s unsafe quarantine owner", table, pk)
+		}
+		if sourceSubmission, found := sourceIndex.submissions[operation.SubmissionID]; found {
+			if _, ownerErr := sourceTargetPK(ctx, tx, source, "questionnaires", sourceSubmission.QuestionnaireID); ownerErr == nil {
+				return fmt.Errorf("migration reconciliation failed: %s/%s unsafe quarantine owner", table, pk)
+			}
+		}
 		kind := map[string]string{"questionnaire_external_push_logs": "external_push", "questionnaire_scrm_apply_logs": "scrm_apply"}[table]
 		expectedSafe, _ := json.Marshal(map[string]any{"submission_source_id": operation.SubmissionID, "status": legacyStatus(kind, operation.Status)})
 		if reason != "missing_questionnaire_association" || !jsonEquivalent(safe, expectedSafe) {
@@ -1081,9 +1092,12 @@ func verifyDerivedQuarantines(ctx context.Context, tx pgx.Tx, batchID int64, sou
 		if strings.TrimSpace(value.Token) != "" {
 			continue
 		}
-		var exists bool
-		err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM survey_migration_quarantine WHERE migration_batch_id=$1 AND source_system=$2 AND source_table='questionnaire_result_tokens' AND source_pk=$3 AND reason_code='missing_result_token')`, batchID, source, fmt.Sprint(value.ID)).Scan(&exists)
-		if err != nil || !exists {
+		var reason string
+		var safe, storedDigest []byte
+		err := tx.QueryRow(ctx, `SELECT reason_code,safe_snapshot,record_digest FROM survey_migration_quarantine WHERE migration_batch_id=$1 AND source_system=$2 AND source_table='questionnaire_result_tokens' AND source_pk=$3`, batchID, source, fmt.Sprint(value.ID)).Scan(&reason, &safe, &storedDigest)
+		expectedSafe, _ := json.Marshal(map[string]any{"submission_source_id": value.ID})
+		expectedDigest := recordDigest(value)
+		if err != nil || reason != "missing_result_token" || !jsonEquivalent(safe, expectedSafe) || !bytes.Equal(storedDigest, expectedDigest[:]) {
 			return errors.New("migration reconciliation failed: missing result-token quarantine")
 		}
 	}

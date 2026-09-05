@@ -130,6 +130,36 @@ func TestPostgreSQLFrozenSurveySnapshotImportReplayAndReconcile(t *testing.T) {
 	}
 	clean("receipt restore")
 
+	var operationQuarantineSafe []byte
+	if err := pool.QueryRow(ctx, `SELECT safe_snapshot FROM survey_migration_quarantine WHERE source_table='questionnaire_external_push_logs' AND source_pk='61'`).Scan(&operationQuarantineSafe); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE survey_migration_quarantine SET safe_snapshot='{"submission_source_id":999,"status":"failed"}'::jsonb WHERE source_table='questionnaire_external_push_logs' AND source_pk='61'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := reconcile([]string{"--target-url", targetURL, "--snapshot", file, "--snapshot-key-file", snapshotKey, "--data-key-file", dataKey}); err == nil || !strings.Contains(err.Error(), "quarantine fact drift") {
+		t.Fatalf("operation quarantine fact drift err=%v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE survey_migration_quarantine SET safe_snapshot=$3::jsonb WHERE source_table=$1 AND source_pk=$2`, "questionnaire_external_push_logs", "61", operationQuarantineSafe); err != nil {
+		t.Fatal(err)
+	}
+	clean("operation quarantine restore")
+
+	var resultQuarantineSafe, resultQuarantineDigest []byte
+	if err := pool.QueryRow(ctx, `SELECT safe_snapshot,record_digest FROM survey_migration_quarantine WHERE source_table='questionnaire_result_tokens' AND source_pk='42'`).Scan(&resultQuarantineSafe, &resultQuarantineDigest); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE survey_migration_quarantine SET record_digest=decode('00','hex') WHERE source_table='questionnaire_result_tokens' AND source_pk='42'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := reconcile([]string{"--target-url", targetURL, "--snapshot", file, "--snapshot-key-file", snapshotKey, "--data-key-file", dataKey}); err == nil || !strings.Contains(err.Error(), "missing result-token quarantine") {
+		t.Fatalf("result-token quarantine digest drift err=%v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE survey_migration_quarantine SET safe_snapshot=$3::jsonb,record_digest=$4 WHERE source_table=$1 AND source_pk=$2`, "questionnaire_result_tokens", "42", resultQuarantineSafe, resultQuarantineDigest); err != nil {
+		t.Fatal(err)
+	}
+	clean("result-token quarantine restore")
+
 	manifestDrift := frozenSurveySnapshot(t, snapshot.Manifest.SnapshotAt)
 	var changed []questionnaire
 	decodeTable(manifestDrift, "questionnaires", &changed)
