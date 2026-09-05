@@ -63,24 +63,47 @@ func (a aiStaffSnapshotAdapter) StaffByWeComUserID(ctx context.Context, value st
 type aiMaterialAdapter struct {
 	capturer   mediaport.GroupOpsMaterialSourceCapturer
 	references mediaport.MaterialReferenceRegistrar
+	legacy     mediaport.LegacyMaterialMappingResolver
 }
 
 func (a aiMaterialAdapter) ResolveMaterial(ctx context.Context, block aiassistantport.ContentBlock) (aiassistantport.ContentBlock, error) {
 	kind := block.MaterialKind
-	if block.Kind == aiassistantport.ContentImage {
-		kind = "image"
-	} else if block.Kind == aiassistantport.ContentMiniProgram {
-		kind = "miniprogram"
-	} else if block.Kind == aiassistantport.ContentLink {
-		kind = "group_invite"
+	if block.LegacySourceSystem != "" || block.LegacyMaterialID != "" {
+		if a.legacy == nil || block.LegacySourceSystem == "" || block.LegacyMaterialID == "" {
+			return aiassistantport.ContentBlock{}, aiassistantapp.ErrLegacyMaterialUnmapped
+		}
+		mapping, found, err := a.legacy.ResolveLegacyMaterialMapping(ctx, mediaport.LegacyMaterialReference{SourceSystem: block.LegacySourceSystem, MaterialKind: kind, LegacyID: block.LegacyMaterialID})
+		if err != nil {
+			return aiassistantport.ContentBlock{}, err
+		}
+		if !found || mapping.MaterialKind != kind || mapping.MaterialID < 1 || mapping.SourceDigest == "" {
+			return aiassistantport.ContentBlock{}, aiassistantapp.ErrLegacyMaterialUnmapped
+		}
+		block.MaterialID = mapping.MaterialID
+		block.LegacySourceSystem, block.LegacyMaterialID = "", ""
+		// A mapping is only usable if the current Media fact still has exactly
+		// the digest verified by the frozen-source import.
+		snapshot, captureErr := a.capture(ctx, kind, block.MaterialID)
+		if captureErr != nil || len(snapshot.References) != 1 || snapshot.References[0].SourceDigest != mapping.SourceDigest {
+			return aiassistantport.ContentBlock{}, aiassistantapp.ErrLegacyMaterialUnmapped
+		}
+		block.MaterialDigest = effectport.Digest(mapping.SourceDigest)
+		return block, nil
 	}
-	snapshot, err := a.capturer.CaptureGroupOpsMaterialSources(ctx, mediaport.GroupOpsMaterialPlan{References: []mediaport.GroupOpsMaterialReference{{Kind: kind, ID: block.MaterialID}}})
+	snapshot, err := a.capture(ctx, kind, block.MaterialID)
 	if err != nil || len(snapshot.References) != 1 {
 		return aiassistantport.ContentBlock{}, errors.New("material unavailable")
 	}
 	block.MaterialKind = kind
 	block.MaterialDigest = effectport.Digest(snapshot.References[0].SourceDigest)
 	return block, nil
+}
+
+func (a aiMaterialAdapter) capture(ctx context.Context, kind string, id int64) (mediaport.GroupOpsMaterialSourceSnapshot, error) {
+	if a.capturer == nil || id < 1 || kind == "" {
+		return mediaport.GroupOpsMaterialSourceSnapshot{}, errors.New("material unavailable")
+	}
+	return a.capturer.CaptureGroupOpsMaterialSources(ctx, mediaport.GroupOpsMaterialPlan{References: []mediaport.GroupOpsMaterialReference{{Kind: kind, ID: id}}})
 }
 
 func (a aiMaterialAdapter) RegisterMaterialReference(ctx context.Context, block aiassistantport.ContentBlock, reference effectport.Digest) error {
@@ -129,10 +152,14 @@ type aiMaterialDetails interface {
 	MiniProgram(context.Context, int64) (map[string]any, error)
 	GroupInvite(context.Context, int64) (map[string]any, error)
 }
+type aiAttachmentReader interface {
+	Attachment(context.Context, int64) (map[string]any, []byte, error)
+}
 type aiPrivatePayloadReader struct {
-	content   aiassistantport.OutboundPayloadReader
-	images    aiImageReader
-	materials aiMaterialDetails
+	content     aiassistantport.OutboundPayloadReader
+	images      aiImageReader
+	materials   aiMaterialDetails
+	attachments aiAttachmentReader
 }
 
 func (a aiPrivatePayloadReader) LoadPrivateMessagePayload(ctx context.Context, reference string, digest effectport.Digest) (outbound.PrivateMessagePayload, error) {
@@ -174,6 +201,15 @@ func (a aiPrivatePayloadReader) LoadPrivateMessagePayload(ctx context.Context, r
 				return outbound.PrivateMessagePayload{}, e
 			}
 			result.Attachments = append(result.Attachments, outbound.PrivateMessageAttachment{Kind: "link", Title: text(item["title"]), Description: text(item["description"]), URL: text(item["join_url"])})
+		case aiassistantport.ContentAttachment:
+			if a.attachments == nil {
+				return outbound.PrivateMessagePayload{}, errors.New("attachment reader unavailable")
+			}
+			metadata, content, e := a.attachments.Attachment(ctx, block.MaterialID)
+			if e != nil || !enabled(metadata) || text(metadata["mime_type"]) != "application/pdf" || len(content) == 0 {
+				return outbound.PrivateMessagePayload{}, errors.New("attachment unavailable")
+			}
+			result.Attachments = append(result.Attachments, outbound.PrivateMessageAttachment{Kind: "file", Content: content, FileName: text(metadata["file_name"]), MediaType: text(metadata["mime_type"])})
 		default:
 			return outbound.PrivateMessagePayload{}, errors.New("unsupported content kind")
 		}
@@ -181,7 +217,8 @@ func (a aiPrivatePayloadReader) LoadPrivateMessagePayload(ctx context.Context, r
 	result.Text = strings.TrimSpace(result.Text)
 	return result, nil
 }
-func text(value any) string { out, _ := value.(string); return out }
+func text(value any) string             { out, _ := value.(string); return out }
+func enabled(value map[string]any) bool { out, _ := value["enabled"].(bool); return out }
 func imageFileName(mediaType string) string {
 	if mediaType == "image/png" {
 		return "image.png"

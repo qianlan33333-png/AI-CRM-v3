@@ -101,12 +101,45 @@ func TestSignedLegacyHTTPIntakeAcceptsFrozenMetadataWithoutTrustingIt(t *testing
 	if response.Code != http.StatusAccepted {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
-	if app.command.Actor != (aiassistantport.Actor{Kind: aiassistantport.ActorService, ID: 7}) || app.command.IdempotencyKey != "integration-replay-1" || len(app.command.Targets) != 1 {
+	if app.command.Actor != (aiassistantport.Actor{Kind: aiassistantport.ActorService, ID: 7}) || app.command.IdempotencyKey == "integration-replay-1" || !strings.HasPrefix(app.command.IdempotencyKey, "legacy-event-sha256:") || len(app.command.Targets) != 1 {
 		t.Fatalf("command=%+v", app.command)
 	}
 	target := app.command.Targets[0]
 	if target.Reference.Assurance != identitydomain.AssuranceDeclared || target.Reference.Value != "external-1" || target.StaffWeComUserID != "staff-1" || len(target.Content) != 1 || target.Content[0].Text != "hello" {
 		t.Fatalf("target=%+v", target)
+	}
+}
+
+func TestLegacyContentPackageUsesOnlyVerifiedMediaMappings(t *testing.T) {
+	input := integrationRequest{ContentPackage: map[string]json.RawMessage{
+		"content_text":             json.RawMessage(`"hello"`),
+		"image_library_ids":        json.RawMessage(`["11",12]`),
+		"miniprogram_library_ids":  json.RawMessage(`[21]`),
+		"attachment_library_ids":   json.RawMessage(`[31]`),
+		"group_invite_library_ids": json.RawMessage(`[41]`),
+		"dynamic_miniprogram_card": json.RawMessage(`{"appid":"wx1","pagepath":"pages/index"}`),
+	}}
+	blocks, err := legacyTextContent(input)
+	if err != nil || len(blocks) != 7 || blocks[0].Kind != aiassistantport.ContentText || blocks[1].LegacyMaterialID != "11" || blocks[1].MaterialID != 0 || blocks[1].LegacySourceSystem != "ai-crm-v2" || blocks[4].Kind != aiassistantport.ContentAttachment || !strings.HasPrefix(blocks[6].LegacyMaterialID, "dynamic_miniprogram:") {
+		t.Fatalf("blocks=%+v err=%v", blocks, err)
+	}
+	if blocks[1].Valid() || !blocks[1].ValidInput() {
+		t.Fatalf("legacy block must be input-only: %+v", blocks[1])
+	}
+	if _, err = legacyTextContent(integrationRequest{ContentPackage: map[string]json.RawMessage{"image_library_ids": json.RawMessage(`[1,2,3,4]`)}}); err == nil {
+		t.Fatal("over-limit donor package was accepted")
+	}
+}
+
+func TestLegacyEventBusinessKeySurvivesSignedHeaderRotation(t *testing.T) {
+	input := integrationRequest{ExternalEventID: "event-42", IdempotencyKey: "donor-request-key"}
+	first, err := integrationBusinessKey(input, "integration", "header-one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := integrationBusinessKey(input, "integration", "header-two")
+	if err != nil || first != second || !strings.HasPrefix(first, "legacy-event-sha256:") {
+		t.Fatalf("first=%q second=%q err=%v", first, second, err)
 	}
 }
 

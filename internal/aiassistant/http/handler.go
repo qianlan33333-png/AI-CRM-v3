@@ -447,12 +447,17 @@ func (h *Handler) integrationPlan(w stdhttp.ResponseWriter, r *stdhttp.Request) 
 		h.writeError(w, aiassistantapp.ErrInvalid)
 		return
 	}
-	targets, name, sourceKind, sourceDigest, adaptErr := h.integrationTargets(input, key, r.Header.Get("Idempotency-Key"))
+	businessKey, keyErr := integrationBusinessKey(input, key, r.Header.Get("Idempotency-Key"))
+	if keyErr != nil {
+		h.writeError(w, aiassistantapp.ErrInvalid)
+		return
+	}
+	targets, name, sourceKind, sourceDigest, adaptErr := h.integrationTargets(input, key, businessKey)
 	if adaptErr != nil {
 		h.writeError(w, aiassistantapp.ErrInvalid)
 		return
 	}
-	result, err := h.app.CreatePlanFromIdentities(r.Context(), aiassistantapp.IdentityPlanCommand{Actor: aiassistantport.Actor{Kind: aiassistantport.ActorService, ID: h.integration.ActorID}, IdempotencyKey: r.Header.Get("Idempotency-Key"), Name: name, SourceKind: sourceKind, SourceDigest: sourceDigest, Targets: targets, OccurredAt: timestamp, IntegrationKey: key, Nonce: nonce, ExpiresAt: timestamp.Add(h.integration.MaxSkew)})
+	result, err := h.app.CreatePlanFromIdentities(r.Context(), aiassistantapp.IdentityPlanCommand{Actor: aiassistantport.Actor{Kind: aiassistantport.ActorService, ID: h.integration.ActorID}, IdempotencyKey: businessKey, Name: name, SourceKind: sourceKind, SourceDigest: sourceDigest, Targets: targets, OccurredAt: timestamp, IntegrationKey: key, Nonce: nonce, ExpiresAt: timestamp.Add(h.integration.MaxSkew)})
 	if err != nil {
 		h.writeError(w, err)
 		return
@@ -461,7 +466,29 @@ func (h *Handler) integrationPlan(w stdhttp.ResponseWriter, r *stdhttp.Request) 
 	if result.Plan.ID > 0 {
 		plan = result.Plan
 	}
-	writeJSON(w, stdhttp.StatusAccepted, map[string]any{"ok": true, "plan": plan, "replayed": result.Replayed, "dispatch_ready": h.dispatchReady, "resolution": map[string]int{"found": result.Found, "not_found": result.NotFound, "conflict": result.Conflicted, "unverified": result.Unverified, "ineligible": result.Ineligible, "invalid": result.Invalid}, "dispositions": result.Dispositions})
+	writeJSON(w, stdhttp.StatusAccepted, map[string]any{"ok": true, "plan": plan, "replayed": result.Replayed, "dispatch_ready": h.dispatchReady, "resolution": map[string]int{"found": result.Found, "not_found": result.NotFound, "conflict": result.Conflicted, "unverified": result.Unverified, "ineligible": result.Ineligible, "invalid": result.Invalid, "material_unmapped": result.MaterialUnmapped}, "dispositions": result.Dispositions})
+}
+
+// integrationBusinessKey keeps the authenticated request key for nonce
+// protection, but makes the frozen donor's event key the plan idempotency
+// scope. A retry can therefore use a new signed nonce/header without minting
+// a second review plan for the same donor event.
+func integrationBusinessKey(input integrationRequest, integrationKey, headerKey string) (string, error) {
+	if len(input.Identities) > 0 {
+		return headerKey, nil
+	}
+	eventID := strings.TrimSpace(input.ExternalEventID)
+	donorKey := strings.TrimSpace(input.IdempotencyKey)
+	if eventID == "" {
+		eventID = donorKey
+	}
+	if eventID == "" {
+		return headerKey, nil
+	}
+	if len(eventID) > 512 || strings.ContainsAny(eventID, "\r\n\x00") || len(donorKey) > 512 || strings.ContainsAny(donorKey, "\r\n\x00") {
+		return "", errors.New("invalid legacy event key")
+	}
+	return "legacy-event-" + string(effectport.Hash("aiassistant.legacy-event", integrationKey, eventID)), nil
 }
 
 func (h *Handler) integrationTargets(input integrationRequest, key, idempotencyKey string) ([]aiassistantapp.IdentityTarget, string, string, effectport.Digest, error) {
@@ -495,7 +522,11 @@ func (h *Handler) integrationTargets(input integrationRequest, key, idempotencyK
 	}
 	digest := input.SourceDigest
 	if !effectport.ValidDigest(digest) {
-		digest = effectport.Hash("aiassistant.legacy-review", input.ExternalEventID, idempotencyKey, name, content[0].Text)
+		frozen, marshalErr := json.Marshal(content)
+		if marshalErr != nil {
+			return nil, "", "", "", marshalErr
+		}
+		digest = effectport.Hash("aiassistant.legacy-review", input.ExternalEventID, idempotencyKey, name, string(frozen))
 	}
 	owner := strings.TrimSpace(input.OwnerUserID)
 	if owner == "" {
@@ -537,9 +568,12 @@ func legacyTextContent(input integrationRequest) ([]aiassistantport.ContentBlock
 	if text == "" {
 		text = strings.TrimSpace(input.Message)
 	}
+	blocks := make([]aiassistantport.ContentBlock, 0, 10)
 	if input.ContentPackage != nil {
 		if raw := input.ContentPackage["content_text"]; len(raw) > 0 && text == "" {
-			_ = json.Unmarshal(raw, &text)
+			if err := json.Unmarshal(raw, &text); err != nil {
+				return nil, errors.New("invalid legacy content text")
+			}
 			text = strings.TrimSpace(text)
 		}
 		allowed := map[string]bool{"content_text": true, "image_library_ids": true, "miniprogram_library_ids": true, "attachment_library_ids": true, "group_invite_library_ids": true, "dynamic_miniprogram_card": true}
@@ -548,16 +582,96 @@ func legacyTextContent(input integrationRequest) ([]aiassistantport.ContentBlock
 				return nil, errors.New("unsupported legacy content package")
 			}
 		}
-		for _, key := range []string{"image_library_ids", "miniprogram_library_ids", "attachment_library_ids", "group_invite_library_ids", "dynamic_miniprogram_card"} {
-			if raw := input.ContentPackage[key]; len(raw) > 0 && string(raw) != "null" && string(raw) != "[]" && string(raw) != "{}" {
-				return nil, errors.New("legacy material requires explicit v3 reference")
+		for _, field := range []struct {
+			name, kind string
+			content    aiassistantport.ContentKind
+			maximum    int
+		}{
+			{"image_library_ids", "image", aiassistantport.ContentImage, 3},
+			{"miniprogram_library_ids", "miniprogram", aiassistantport.ContentMiniProgram, 1},
+			{"attachment_library_ids", "attachment", aiassistantport.ContentAttachment, 9},
+			{"group_invite_library_ids", "group_invite", aiassistantport.ContentLink, 1},
+		} {
+			ids, err := legacyPackageIDs(input.ContentPackage[field.name], field.name, field.maximum)
+			if err != nil {
+				return nil, err
+			}
+			for _, id := range ids {
+				blocks = append(blocks, aiassistantport.ContentBlock{Kind: field.content, MaterialKind: field.kind, LegacySourceSystem: "ai-crm-v2", LegacyMaterialID: id})
 			}
 		}
+		if raw := input.ContentPackage["dynamic_miniprogram_card"]; meaningfulJSON(raw) {
+			canonical, err := canonicalJSONObject(raw)
+			if err != nil {
+				return nil, errors.New("invalid legacy dynamic mini program")
+			}
+			sum := sha256.Sum256(canonical)
+			blocks = append(blocks, aiassistantport.ContentBlock{Kind: aiassistantport.ContentMiniProgram, MaterialKind: "miniprogram", LegacySourceSystem: "ai-crm-v2", LegacyMaterialID: "dynamic_miniprogram:" + hex.EncodeToString(sum[:])})
+		}
 	}
-	if text == "" {
+	if len([]rune(text)) > 4000 {
+		return nil, errors.New("legacy content text too long")
+	}
+	if text != "" {
+		blocks = append([]aiassistantport.ContentBlock{{Kind: aiassistantport.ContentText, Text: text}}, blocks...)
+	}
+	if len(blocks) == 0 || len(blocks) > 9+1 {
 		return nil, errors.New("legacy content required")
 	}
-	return []aiassistantport.ContentBlock{{Kind: aiassistantport.ContentText, Text: text}}, nil
+	return blocks, nil
+}
+
+func legacyPackageIDs(raw json.RawMessage, field string, maximum int) ([]string, error) {
+	if !meaningfulJSON(raw) {
+		return nil, nil
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var values []any
+	if err := decoder.Decode(&values); err != nil || decoder.Decode(&struct{}{}) != io.EOF {
+		return nil, errors.New("invalid legacy " + field)
+	}
+	ids := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		var rawID string
+		switch item := value.(type) {
+		case json.Number:
+			rawID = string(item)
+		case string:
+			rawID = item
+		default:
+			return nil, errors.New("invalid legacy " + field)
+		}
+		id, err := strconv.ParseInt(rawID, 10, 64)
+		if err != nil || id < 1 || rawID != strconv.FormatInt(id, 10) {
+			return nil, errors.New("invalid legacy " + field)
+		}
+		canonical := strconv.FormatInt(id, 10)
+		if _, exists := seen[canonical]; !exists {
+			seen[canonical] = struct{}{}
+			ids = append(ids, canonical)
+		}
+	}
+	if len(ids) > maximum {
+		return nil, errors.New("too many legacy " + field)
+	}
+	return ids, nil
+}
+
+func meaningfulJSON(raw json.RawMessage) bool {
+	value := strings.TrimSpace(string(raw))
+	return value != "" && value != "null" && value != "[]" && value != "{}"
+}
+
+func canonicalJSONObject(raw json.RawMessage) ([]byte, error) {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var value map[string]any
+	if err := decoder.Decode(&value); err != nil || len(value) == 0 || decoder.Decode(&struct{}{}) != io.EOF {
+		return nil, errors.New("invalid object")
+	}
+	return json.Marshal(value)
 }
 
 func (h *Handler) verifyIntegration(r *stdhttp.Request) ([]byte, time.Time, string, string, error) {

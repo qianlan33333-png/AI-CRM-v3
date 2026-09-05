@@ -31,6 +31,9 @@ var (
 	ErrUnavailable   = errors.New("AI Assistant dependency unavailable")
 	ErrNoRecipients  = errors.New("AI Assistant plan has no resolvable recipients")
 	ErrMaterialDrift = errors.New("AI Assistant material changed or unavailable")
+	// ErrLegacyMaterialUnmapped is a safe per-target compatibility result. It
+	// never carries a legacy identifier and cannot be used to mint a Media row.
+	ErrLegacyMaterialUnmapped = errors.New("AI Assistant legacy material is not mapped")
 )
 
 type Reservation struct {
@@ -125,15 +128,16 @@ type IdentityPlanCommand struct {
 }
 
 type IdentityPlanResult struct {
-	Plan         aiassistantport.Plan
-	Replayed     bool
-	Found        int
-	NotFound     int
-	Conflicted   int
-	Unverified   int
-	Ineligible   int
-	Invalid      int
-	Dispositions []IdentityTargetDisposition
+	Plan             aiassistantport.Plan
+	Replayed         bool
+	Found            int
+	NotFound         int
+	Conflicted       int
+	Unverified       int
+	Ineligible       int
+	Invalid          int
+	MaterialUnmapped int
+	Dispositions     []IdentityTargetDisposition
 }
 
 // IdentityTargetDisposition is deliberately free of raw external identity
@@ -228,6 +232,7 @@ func (s *Service) CreatePlanFromIdentities(ctx context.Context, command Identity
 			result.Unverified = snapshot.Unverified
 			result.Ineligible = snapshot.Ineligible
 			result.Invalid = snapshot.Invalid
+			result.MaterialUnmapped = snapshot.MaterialUnmapped
 			result.Dispositions = snapshot.Dispositions
 			return nil
 		}
@@ -297,11 +302,21 @@ func (s *Service) CreatePlanFromIdentities(ctx context.Context, command Identity
 					result.Dispositions = append(result.Dispositions, disposition)
 					continue
 				}
+				content, materialErr := s.resolveBlocks(tx, target.Content)
+				if errors.Is(materialErr, ErrLegacyMaterialUnmapped) {
+					result.MaterialUnmapped++
+					disposition.Status = "material_unmapped"
+					result.Dispositions = append(result.Dispositions, disposition)
+					continue
+				}
+				if materialErr != nil {
+					return materialErr
+				}
 				seenCustomers[resolution.CustomerID] = struct{}{}
 				result.Found++
 				disposition.Status = "found"
 				result.Dispositions = append(result.Dispositions, disposition)
-				resolved = append(resolved, aiassistantport.RecipientCandidate{CustomerID: resolution.CustomerID, StaffID: staffID, Content: target.Content})
+				resolved = append(resolved, aiassistantport.RecipientCandidate{CustomerID: resolution.CustomerID, StaffID: staffID, Content: content})
 			case identityport.ResolveConflict:
 				result.Conflicted++
 				disposition.Status = "conflict"
@@ -313,7 +328,7 @@ func (s *Service) CreatePlanFromIdentities(ctx context.Context, command Identity
 			}
 		}
 		if len(resolved) == 0 {
-			snapshot, _ := json.Marshal(identityPlanSnapshot{Found: result.Found, NotFound: result.NotFound, Conflicted: result.Conflicted, Unverified: result.Unverified, Ineligible: result.Ineligible, Invalid: result.Invalid, Dispositions: result.Dispositions})
+			snapshot, _ := json.Marshal(identityPlanSnapshot{Found: result.Found, NotFound: result.NotFound, Conflicted: result.Conflicted, Unverified: result.Unverified, Ineligible: result.Ineligible, Invalid: result.Invalid, MaterialUnmapped: result.MaterialUnmapped, Dispositions: result.Dispositions})
 			_, err = s.store.Complete(tx, receipt.ID, snapshot, command.OccurredAt)
 			return err
 		}
@@ -328,11 +343,11 @@ func (s *Service) CreatePlanFromIdentities(ctx context.Context, command Identity
 		if err != nil {
 			return err
 		}
-		payload, _ := json.Marshal(map[string]int{"found": result.Found, "not_found": result.NotFound, "conflict": result.Conflicted, "unverified": result.Unverified, "ineligible": result.Ineligible, "invalid": result.Invalid})
+		payload, _ := json.Marshal(map[string]int{"found": result.Found, "not_found": result.NotFound, "conflict": result.Conflicted, "unverified": result.Unverified, "ineligible": result.Ineligible, "invalid": result.Invalid, "material_unmapped": result.MaterialUnmapped})
 		if err = s.store.AppendEvent(tx, aiassistantport.Event{Type: aiassistantport.EventIntegrationResolved, AggregateID: result.Plan.ID, ActorID: command.Actor.ID, IdempotencyKey: command.IdempotencyKey + ":resolution", Payload: payload, OccurredAt: command.OccurredAt}); err != nil {
 			return err
 		}
-		snapshot, _ := json.Marshal(identityPlanSnapshot{PlanID: int64(result.Plan.ID), Found: result.Found, NotFound: result.NotFound, Conflicted: result.Conflicted, Unverified: result.Unverified, Ineligible: result.Ineligible, Invalid: result.Invalid, Dispositions: result.Dispositions})
+		snapshot, _ := json.Marshal(identityPlanSnapshot{PlanID: int64(result.Plan.ID), Found: result.Found, NotFound: result.NotFound, Conflicted: result.Conflicted, Unverified: result.Unverified, Ineligible: result.Ineligible, Invalid: result.Invalid, MaterialUnmapped: result.MaterialUnmapped, Dispositions: result.Dispositions})
 		_, err = s.store.Complete(tx, receipt.ID, snapshot, command.OccurredAt)
 		return err
 	})
@@ -340,14 +355,15 @@ func (s *Service) CreatePlanFromIdentities(ctx context.Context, command Identity
 }
 
 type identityPlanSnapshot struct {
-	PlanID       int64                       `json:"plan_id"`
-	Found        int                         `json:"found"`
-	NotFound     int                         `json:"not_found"`
-	Conflicted   int                         `json:"conflicted"`
-	Unverified   int                         `json:"unverified"`
-	Ineligible   int                         `json:"ineligible"`
-	Invalid      int                         `json:"invalid"`
-	Dispositions []IdentityTargetDisposition `json:"dispositions"`
+	PlanID           int64                       `json:"plan_id"`
+	Found            int                         `json:"found"`
+	NotFound         int                         `json:"not_found"`
+	Conflicted       int                         `json:"conflicted"`
+	Unverified       int                         `json:"unverified"`
+	Ineligible       int                         `json:"ineligible"`
+	Invalid          int                         `json:"invalid"`
+	MaterialUnmapped int                         `json:"material_unmapped"`
+	Dispositions     []IdentityTargetDisposition `json:"dispositions"`
 }
 
 func (s *Service) createWithin(ctx context.Context, command aiassistantport.CreatePlanCommand, recipients []aiassistantport.RecipientCandidate, result *aiassistantport.CreatePlanResult) error {
@@ -861,7 +877,13 @@ func (s *Service) resolveBlocks(ctx context.Context, blocks []aiassistantport.Co
 			continue
 		}
 		value, err := s.materials.ResolveMaterial(ctx, block)
-		if err != nil || !value.Valid() || value.Kind != block.Kind || value.MaterialID != block.MaterialID || value.MaterialKind != block.MaterialKind {
+		if err != nil {
+			return nil, err
+		}
+		if !value.Valid() || value.Kind != block.Kind || value.MaterialKind != block.MaterialKind {
+			return nil, ErrMaterialDrift
+		}
+		if block.LegacySourceSystem == "" && value.MaterialID != block.MaterialID {
 			return nil, ErrMaterialDrift
 		}
 		resolved[i] = value

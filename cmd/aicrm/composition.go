@@ -275,7 +275,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		detail, readErr := customerStore.Detail(ctx, id)
 		return detail.CustomerID, detail.CustomerStatus, detail.DisplayName, detail.OneIDLabel, readErr
 	}}
-	aiService, err := aiassistantapp.NewService(uow, aiRepository, aiCustomers, aiStaffSnapshotAdapter{repository: accessRepository}, aiMaterialAdapter{capturer: mediaRepository, references: mediaRepository}, oneID, queries)
+	aiService, err := aiassistantapp.NewService(uow, aiRepository, aiCustomers, aiStaffSnapshotAdapter{repository: accessRepository}, aiMaterialAdapter{capturer: mediaRepository, references: mediaRepository, legacy: mediaRepository}, oneID, queries)
 	if err != nil {
 		return fail(err)
 	}
@@ -908,7 +908,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if cfg.WeCom.ChannelQRProviderEnabled {
 		channelLinkProvider = outbound.NewChannelLinkProvider(channelLinkMutationReaderAdapter{uow: uow, source: channelLinkStore}, providerClient)
 	}
-	privateProvider, err := outbound.NewPrivateMessageProvider(cfg.AIAssistant.DispatchEnabled, privateWriter, aiPrivateTargetResolver{uow: uow, identities: queries, access: accessRepository, relationships: relationships, corpID: cfg.WeCom.CorpID}, aiPrivatePayloadReader{content: aiRepository, images: mediaService, materials: mediaRepository}, providerClient)
+	privateProvider, err := outbound.NewPrivateMessageProvider(cfg.AIAssistant.DispatchEnabled, privateWriter, aiPrivateTargetResolver{uow: uow, identities: queries, access: accessRepository, relationships: relationships, corpID: cfg.WeCom.CorpID}, aiPrivatePayloadReader{content: aiRepository, images: mediaService, materials: mediaRepository, attachments: mediaService}, providerClient)
 	if err != nil {
 		return fail(err)
 	}

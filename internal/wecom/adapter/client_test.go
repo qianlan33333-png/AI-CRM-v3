@@ -420,6 +420,43 @@ func TestPrivateMessageUsesSingleCustomerContractAndRejectsFailList(t *testing.T
 	}
 }
 
+func TestPrivateMessageUploadsPDFAsFile(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/cgi-bin/gettoken":
+			_, _ = w.Write([]byte(`{"errcode":0,"access_token":"contact-token","expires_in":7200}`))
+		case "/cgi-bin/media/upload":
+			if r.URL.Query().Get("type") != "file" || !strings.Contains(r.Header.Get("Content-Type"), "multipart/form-data") {
+				t.Fatalf("file upload request=%s", r.URL.String())
+			}
+			raw, _ := io.ReadAll(r.Body)
+			if !strings.Contains(string(raw), "Content-Type: application/pdf") || !strings.Contains(string(raw), "filename=guide.pdf") {
+				t.Fatalf("file multipart=%q", raw)
+			}
+			_, _ = w.Write([]byte(`{"errcode":0,"media_id":"file-media-1"}`))
+		case "/cgi-bin/externalcontact/add_msg_template":
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			attachments, _ := body["attachments"].([]any)
+			if len(attachments) != 1 {
+				t.Fatalf("attachments=%v", attachments)
+			}
+			_, _ = w.Write([]byte(`{"errcode":0,"msgid":"msg-file-1","fail_list":[]}`))
+		default:
+			t.Fatalf("unexpected path=%s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	client := newTestClient(t, server, func() time.Time { return testNow })
+	client.config.ContactSecret = "contact secret"
+	receipt, attempted, err := client.SendPrivateMessage(context.Background(), outboundport.PrivateMessageTarget{ExternalUserID: "external-secret-id", StaffUserID: "staff-secret-id"}, outboundport.PrivateMessagePayload{Attachments: []outboundport.PrivateMessageAttachment{{Kind: "file", Content: []byte("%PDF-1.7 test"), FileName: "guide.pdf", MediaType: "application/pdf"}}})
+	if err != nil || !attempted || receipt.MessageID != "msg-file-1" {
+		t.Fatalf("receipt=%+v attempted=%t err=%v", receipt, attempted, err)
+	}
+}
+
 var testNow = time.Date(2026, 9, 2, 8, 0, 0, 0, time.UTC)
 
 func newTestClient(t *testing.T, server *httptest.Server, now func() time.Time) *Client {
