@@ -148,3 +148,14 @@ CI33964237463通过不代表新Host已验收。新Host与已有admin_audience_de
 - Host只做原操作按钮/反馈/进入既有审阅页的必要适配，冻结业务文件保持原样。上限遵循现有两个Port，超限明确拒绝或按旧已验证分批合同处理，不静默截断。
 - 自动Agent仅保留已验证专用enqueue契约：need_human_review要求不被绕过；通用Webhook requires_approval不得被误当已人工批准，未有相应已实现契约时明确不可启用。不要为此新增通用Webhook/审批能力。
 - 同一实际PG/HTTP旅程：预览确认→pending plan且零效果→内容审阅零发送→整单批准→共享River/本地WeCom协议→运行记录回读；重复/并发确认与审批不重复，UoW故障无孤立运行/计划。原自动entered和unknown恢复另行保持回归。
+
+## 19. 注册条件按旧生产实际来源接线
+
+2026-09-05总控在150.158.82.186的openclaw_wecom通过BEGIN READ ONLY、statement_timeout及pg_get_viewdef核实：实际audience_read.registration_status_v1只有external_contact_bindings JOIN people，is_registered为people.mobile非空，source为people.mobile。0059代码中的其他可选分支没有进入该环境实际view。六模板中的WeCom注册条件读取此view，而非HXC用户行。此前Segment用SharedFacts.Registered（当前HXC存在用户行恒true）会令未注册分支静默为空，必须修正。
+
+- WeCom模板通过Customer稳定批量只读Port获取已canonical客户的目录手机资料是否存在；复用customer_directory_projection与现有更新/清除链，只有Customer Store查询自身表。不跨域查Identity表，不返回手机号或其hash，不新增持久化字段/同步器。
+- 目录存在且手机资料非空为旧业务registered，目录存在且为空为unregistered；缺目录或读取失败为unknown/unavailable，不能猜成false。使用既有有界批次和当前UoW，返回安全来源/更新时间。
+- 这是资料存在的业务判断，declared资料也不因此变verified；不能用该布尔做客户匹配、合并或建客。HXC用户是否存在与该条件分开测试：有HXC无手机、无HXC有手机、空手机、无目录均须守恒。
+- member_usage_status仍要求已确认MembershipRecordFound且MembershipSource非空，避免any筛选把普通注册行算会员。它的registration来源在旧投影中另含HXC及people.mobile，需按已经明确的canonical Owner事实组合并记录unknown；不得把WeCom的注册字段与HXC注册事实混为同一来源。没有可归属事实的旧会员仍保留隔离结果，不以手机号重新匹配。
+
+只读来源聚合用于范围核实，不代表数据已经导入V3：旧活动代22553行无会员/注册来源，963行会员来自user_ops_hxc_dashboard_snapshot且注册来源为people.mobile加snapshot，273行会员来自snapshot且注册来源people.mobile，131行仅people.mobile。上述是来源标签计数，不等于对应is_member或is_registered为true；本轮没有读取身份值、复制配置或修改生产事实。

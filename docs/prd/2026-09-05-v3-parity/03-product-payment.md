@@ -147,3 +147,16 @@ OneID：可信支付身份解析/既有显式建客、付款人和受益人分�
 一次最多10,000候选；必须探测第10,001条，超限整次返回明确member_grid_too_large，不以截断集合冒充全量。SnapshotAt只冻结日期计算，不能声称它是数据库快照；HXC分批绑定同一已发布代，分页绑定配置、有效事实摘要和最后规范行ID，源事实改变返回cursor_stale并重新读取。游标不携带仅签名未加密的姓名/备注等个人资料。旧保存视图和公开分享复用相同编排与现有鉴权。
 
 实际测试覆盖匹配行只在来源第二页以后、名字排序跨页、跨Owner的OR、两层分组全量计数、超限明确失败、HXC代或姓名更新使旧游标失效。NULL/unknown与真false/0分开；alliance只读旧权益metadata_json.admin_alliance的已验证历史Owner来源，不伪造字段。03/04真实资金/权益联合及历史逐行对账继续优先推进。
+
+## 19. 其他支付渠道的冻结来源核实
+
+供体dd8 channels/integration_gateway/payment_adapters.py的AlipayAdapter沿_GuardedPaymentAdapter._guarded_result，在production模式即使开关存在仍返回production_not_implemented；此冻结来源没有可迁入的真实Alipay生产扣款叶子。保留既有历史支付宝订单读取/导入对账，不据配置名或菜单另开发新支付渠道。微信支付及旧微信小店真实能力按原PRD继续，不因本项排除。该结论仅限定已冻结供体，不将未核实外部实现写为不存在。
+
+## 20. 原会员表联盟字段的最小恢复
+
+旧ServicePeriodRepository._member_payload直接读取service_period_entitlements.metadata_json.admin_alliance，原成员编辑入口也写该权益元数据。当前V3权益Owner与历史快照只有remark，因而alliance的unknown属于尚未迁入来源，不能作为完整原会员表交付。批准恢复这一已有字段，不建设新的会员体系或身份逻辑。
+
+- OneID只读既有权益的canonical Customer；Order拥有联盟事实、历史映射、变更收据、审计和Outbox，Product经稳定Port组合读取/编辑，继续原权限与CAS。
+- 0088分配Order：用可空字段区分尚未采集/无法核实的NULL和已确认原值（包括原空字符串）；长度、允许值与空值清除沿旧合同，不把缺失默认成否。旧快照缺该字段仍可安全导入为未知，新快照保留来源存在性和值。
+- 复用cmd/migrate-sidebar-history既有受保护提取/快照与Order导入Port，将该字段纳入源摘要、映射和目标逐行核验；同清单重放不重复，保留源摘要而篡改目标联盟字段必须对账失败。未知源身份不猜测、不建客，无任何新权益开通或效果。
+- 原冻结会员表读取、筛选、编辑回读及公开分享读取同一Order事实；编辑使用现有员工权限并同UoW提交业务、收据、审计与Outbox。真实PG验证未知/明确空/原值、重放/漂移、CAS冲突、越权与回滚；仍优先复用冻结前端。
