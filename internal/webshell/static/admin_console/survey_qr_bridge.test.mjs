@@ -28,7 +28,7 @@ Object.defineProperty(dom.window.crypto, 'randomUUID', {value:()=> '00000000-000
 let rawPosts = 0; const rawCalls = []; const savedBodies = [];
 dom.window.fetch = async (url, options = {}) => {
   const path = String(url); rawCalls.push({path, options});
-  if (path.includes('/external-push/test')) { rawPosts += 1; return {ok:true,status:202,json:async()=>({questionnaire_id:7,test_run_id:'questionnaire-test-0123456789abcdef0123456789abcdef',effect_id:'eer_7',status:'queued',accepted:true,synthetic_data:true})}; }
+  if (path.includes('/external-push/test')) { rawPosts += 1; if (rawPosts === 3) return {ok:false,status:503,json:async()=>({})}; return {ok:true,status:202,json:async()=>({questionnaire_id:7,test_run_id:'questionnaire-test-0123456789abcdef0123456789abcdef',effect_id:'eer_7',status:'queued',accepted:true,synthetic_data:true})}; }
   if (path.endsWith('/external-push')) { const body = JSON.parse(options.body); savedBodies.push(body); return {ok:true,json:async()=>({configuration_version: body.configuration_version + 1, external_push:{enabled:body.enabled,configuration_reference:body.configuration_reference,metadata:body.metadata}})}; }
   if (path.includes('/external-push-logs')) return {ok:true,json:async()=>({items:[
     {test_run_id:'questionnaire-test-executed',status:'executed',attempt_count:1,provider_result_received:true,updated_at:'2026-09-05T00:00:00Z'},
@@ -45,11 +45,14 @@ if (!frozenPayload.local_only || frozenPayload.items.length !== 0 || rawCalls.so
 if (!dom.window.document.querySelector('#preserved-submit-actions') || !dom.window.document.querySelector('#legacy-save') || !dom.window.document.querySelector('[data-survey-push-metadata]')) throw new Error('Host removed existing questionnaire operations controls');
 let navClicks = 0; dom.window.document.querySelector('#completion-nav').addEventListener('click', () => { navClicks += 1; }); dom.window.document.querySelector('#completion-nav').click();
 if (navClicks !== 1 || !dom.window.document.querySelector('#completion-channel')) throw new Error('submit actions navigation was not preserved');
-const oldTest = dom.window.document.querySelector('#legacy-test'); oldTest.click(); await wait(40);
-if (rawPosts !== 1 || !oldTest.textContent.includes('测试已创建') || !dom.window.document.body.textContent.includes('等待发送')) throw new Error('original test button was not taken over exactly once');
+const oldTest = dom.window.document.querySelector('#legacy-test'); oldTest.click(); await wait(40); oldTest.click(); await wait(40); oldTest.click(); await wait(40);
+if (!oldTest.textContent.includes('创建测试失败')) throw new Error('failed test did not report its failure'); oldTest.click(); await wait(40);
+if (rawPosts !== 4 || !oldTest.textContent.includes('测试已创建') || !dom.window.document.body.textContent.includes('等待处理')) throw new Error('original test button was not taken over for every click');
 dom.window.document.querySelector('[data-survey-log-scope="global"]').click(); await wait(5);
 const allText = dom.window.document.body.textContent;
-if (!allText.includes('已收到测试结果') || !allText.includes('结果待确认（不会自动重复发送）') || !allText.includes('当时未启用外推配置') || !allText.includes('尝试 2 次')) throw new Error('global true statuses and legacy attempt count were not rendered');
+if (!allText.includes('已收到处理结果') || !allText.includes('处理结果待确认（不会自动重复发送）') || !allText.includes('当时未启用外推配置') || !allText.includes('尝试 2 次')) throw new Error('global true statuses and legacy attempt count were not rendered');
+const filter = dom.window.document.querySelector('[placeholder="测试记录 ID / 问卷 ID"]'); filter.focus(); filter.value = 'unknown'; filter.dispatchEvent(new dom.window.Event('input', {bubbles:true})); filter.value = 'unknown-'; filter.dispatchEvent(new dom.window.Event('input', {bubbles:true}));
+if (dom.window.document.activeElement !== filter || !dom.window.document.body.textContent.includes('处理结果待确认')) throw new Error('filter lost focus or could not accept multiple characters');
 const form = dom.window.document.querySelector('[data-survey-push-metadata]');
 form.elements.type.value = 'new'; form.querySelector('[data-param-name]').value = 'campaign'; form.querySelector('[data-param-value]').value = 'autumn'; dom.window.document.querySelector('#opsConfigurationReference').value = 'push.v2';
 form.dispatchEvent(new dom.window.Event('submit', {bubbles:true,cancelable:true})); await wait(25);
