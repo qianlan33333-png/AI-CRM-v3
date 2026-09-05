@@ -38,8 +38,8 @@ CREATE INDEX group_ops_execution_intents_run_target_idx
   ON group_ops_execution_intents(run_id,target_reference,node_position,id);
 
 ALTER TABLE group_ops_executions
-  ADD COLUMN material_source_snapshot JSONB NOT NULL DEFAULT '{"schema_version":1,"sources":[],"preparations":[]}'::jsonb,
-  ADD COLUMN material_source_digest TEXT NOT NULL DEFAULT 'sha256:0a4a73b68bb078be9d6243e5109dd17f3143f9bea02a0b9ca51dfc7ea38c7c8d'
+  ADD COLUMN material_source_snapshot JSONB NOT NULL DEFAULT '{"preparations":[],"schema_version":1,"sources":{"references":[],"schema_version":1}}'::jsonb,
+  ADD COLUMN material_source_digest TEXT NOT NULL DEFAULT 'sha256:768811b26bb9b284090b10de4c82f7ed5c937e5d9046cfc0231f226cf6d56048'
     CHECK (material_source_digest ~ '^sha256:[0-9a-f]{64}$');
 
 ALTER TABLE group_ops_operation_receipts DROP CONSTRAINT group_ops_operation_receipts_operation_check;

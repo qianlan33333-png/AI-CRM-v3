@@ -322,7 +322,13 @@ func (s *RuntimeService) buildDrafts(tx context.Context, detail groupopsport.Det
 func (s *RuntimeService) resolveMaterialSnapshot(ctx context.Context, plan groupopsport.MaterialPlan, requiredThrough time.Time) (json.RawMessage, string, json.RawMessage, string, error) {
 	if len(plan.References) == 0 {
 		raw := json.RawMessage(`{"schema_version":1,"references":[]}`)
-		facts := json.RawMessage(`{"schema_version":1,"sources":[],"preparations":[]}`)
+		// Keep the empty intent on the same typed Media facts shape used for
+		// non-empty plans, so a later readiness reader and JSONB round trip see
+		// one canonical schema.
+		facts, err := canonicalRuntimeJSON(json.RawMessage(`{"schema_version":1,"sources":{"schema_version":1,"references":[]},"preparations":[]}`))
+		if err != nil {
+			return nil, "", nil, "", err
+		}
 		return raw, string(effectport.Hash("group-ops.material.snapshot.v1", string(raw))), facts, string(effectport.Hash("group-ops.material.intent.v1", string(facts))), nil
 	}
 	if s == nil || s.materials == nil {

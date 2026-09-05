@@ -2469,6 +2469,22 @@ paths:
       parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}]
       requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsReconcileRequest"}}}}
       responses: {"200": {description: Reconciled local execution only after verified evidence, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsExecution"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/automation-conversion/group-ops/plans/{plan_id}/executions/{execution_id}/delivery:
+    parameters: [{$ref: "#/components/parameters/GroupOpsPlanID"}, {$ref: "#/components/parameters/GroupOpsExecutionID"}]
+    post:
+      operationId: readGroupOpsPlanExecutionDelivery
+      tags: [GroupOps]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      responses: {"200": {description: Persisted delivery observation from the receipt-frozen trusted Provider read; no Provider identifiers are caller input, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsExecution"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/automation-conversion/group-ops/plans/executions/{execution_id}/delivery:
+    parameters: [{$ref: "#/components/parameters/GroupOpsExecutionID"}]
+    post:
+      operationId: readGroupOpsExecutionDelivery
+      tags: [GroupOps]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      responses: {"200": {description: Persisted delivery observation from the receipt-frozen trusted Provider read; no Provider identifiers are caller input, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsExecution"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
   /api/admin/automation-conversion/group-ops/groups:
     get:
       operationId: listGroupOpsDirectoryGroups
@@ -4857,6 +4873,7 @@ components:
         state: {$ref: "#/components/schemas/GroupOpsExecutionState"}
         provider_accepted: {type: boolean}
         delivery_proven: {type: boolean}
+        delivery_status: {type: integer, minimum: 0}
         attempt_count: {type: integer, minimum: 0}
         provider_receipt_present: {type: boolean}
         reconciliation_evidence_present: {type: boolean}

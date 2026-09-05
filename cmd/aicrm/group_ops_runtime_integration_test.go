@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -20,6 +21,8 @@ import (
 	groupopsapp "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/app"
 	groupopsport "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/port"
 	groupopsstore "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/store"
+	groupopsmaterial "github.com/qianlan33333-png/AI-CRM-v3/internal/media/groupopsmaterial"
+	mediastore "github.com/qianlan33333-png/AI-CRM-v3/internal/media/store"
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
 	platformjobqueue "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/jobqueue"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
@@ -56,6 +59,26 @@ func TestGroupOpsPostgreSQLJourney(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	mediaStore, err := mediastore.NewPostgreSQL(native, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	invite, err := mediaStore.CreateGroupInvite(ctx, actorID, "groupops-journey-invite-0001", map[string]any{"name": "Journey invite", "title": "Join Journey", "description": "Journey material", "join_url": "https://work.weixin.qq.com/gm/0123456789abcdef0123456789abcdef", "enabled": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inviteID, ok := invite["id"].(int64)
+	if !ok || inviteID < 1 {
+		t.Fatalf("invite=%+v", invite)
+	}
+	freezer, err := groupopsmaterial.NewFreezer(mediaPreparedPlanReader{reader: mediaStore})
+	if err != nil {
+		t.Fatal(err)
+	}
+	materialResolver, err := newGroupOpsMaterialAdapter(mediaStore, freezer)
+	if err != nil {
+		t.Fatal(err)
+	}
 	workers := river.NewWorkers()
 	if err = river.AddWorkerSafely[externaleffects.EffectJobArgs](workers, externaleffects.NewWorker(nil, nil)); err != nil {
 		t.Fatal(err)
@@ -76,7 +99,7 @@ func TestGroupOpsPostgreSQLJourney(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	planID := createJourneyPlan(t, ctx, uow, groupStore, actorID)
+	planID := createJourneyPlan(t, ctx, uow, groupStore, actorID, inviteID)
 	evidence := &journeyEvidence{status: 1}
 	runtimeService := groupopsapp.NewRuntimeService(
 		uow,
@@ -88,6 +111,7 @@ func TestGroupOpsPostgreSQLJourney(t *testing.T) {
 		journeySender{},
 		evidence,
 		journeyReconciler{repository: effectStore},
+		materialResolver,
 	)
 	runtimeService.SetDispatchEnabled(true)
 
@@ -186,9 +210,9 @@ func TestGroupOpsPostgreSQLJourney(t *testing.T) {
 	if err = native.QueryRow(ctx, `SELECT state FROM external_effects WHERE id=$1`, acceptedEffectID).Scan(&acceptedEffectState); err != nil || acceptedEffectState != string(effectport.StateExecuted) {
 		t.Fatalf("accepted EER state=%q err=%v", acceptedEffectState, err)
 	}
-	var sourceJSON []byte
+	var materialJSON, sourceJSON []byte
 	var sourceDigest string
-	if err = native.QueryRow(ctx, `SELECT material_source_snapshot,material_source_digest FROM group_ops_executions WHERE id=$1`, accepted.ID).Scan(&sourceJSON, &sourceDigest); err != nil {
+	if err = native.QueryRow(ctx, `SELECT material_snapshot,material_source_snapshot,material_source_digest FROM group_ops_executions WHERE id=$1`, accepted.ID).Scan(&materialJSON, &sourceJSON, &sourceDigest); err != nil {
 		t.Fatal(err)
 	}
 	var sourceValue any
@@ -199,13 +223,60 @@ func TestGroupOpsPostgreSQLJourney(t *testing.T) {
 	if err != nil || sourceDigest != string(effectport.Hash("group-ops.material.intent.v1", string(canonicalSource))) {
 		t.Fatalf("source digest=%q canonical=%s err=%v", sourceDigest, canonicalSource, err)
 	}
+	// This executes the actual Media SourceCapturer and Preparation Reader
+	// through the Composition adapter against JSONB-read facts. It verifies
+	// semantic equality rather than byte ordering and performs no upload.
+	readiness := groupOpsMaterialReadinessAdapter{uow: uow, capturer: mediaStore, freezer: freezer}
+	if err = readiness.VerifyMaterialReady(ctx, materialJSON, sourceJSON, sourceDigest, time.Now().UTC()); err != nil {
+		t.Fatalf("real Media readiness after JSONB round trip: %v", err)
+	}
 	if evidence.calls != 1 {
 		t.Fatalf("provider delivery calls=%d", evidence.calls)
 	}
+	// A same-key retry performs another safe Provider read, then returns the
+	// persisted completed receipt without a second local mutation.
+	sameKey, err := runtimeService.ReadProviderDelivery(ctx, groupopsport.ProviderDeliveryReadCommand{ExecutionID: accepted.ID, ActorID: actorID, IdempotencyKey: "journey-delivery-read-0001"})
+	if err != nil || !sameKey.DeliveryProven || sameKey.DeliveryStatus == nil || *sameKey.DeliveryStatus != 1 || evidence.calls != 2 {
+		t.Fatalf("same key=%+v err=%v calls=%d", sameKey, err, evidence.calls)
+	}
 	evidence.status = 0 // a stale page must never downgrade an established delivery fact.
 	replayedDelivery, err := runtimeService.ReadProviderDelivery(ctx, groupopsport.ProviderDeliveryReadCommand{ExecutionID: accepted.ID, ActorID: actorID, IdempotencyKey: "journey-delivery-read-0002"})
-	if err != nil || !replayedDelivery.DeliveryProven || replayedDelivery.DeliveryStatus == nil || *replayedDelivery.DeliveryStatus != 1 || evidence.calls != 1 {
+	if err != nil || !replayedDelivery.DeliveryProven || replayedDelivery.DeliveryStatus == nil || *replayedDelivery.DeliveryStatus != 1 || evidence.calls != 3 {
 		t.Fatalf("stale delivery=%+v err=%v calls=%d", replayedDelivery, err, evidence.calls)
+	}
+	// Exercise the SQL monotonic update under two real PostgreSQL transactions.
+	// Either order is allowed; status=1 must survive a concurrent status=0.
+	if _, err = native.Exec(ctx, `UPDATE group_ops_group_message_tasks SET delivery_status=NULL,delivery_evidence_digest=NULL,delivery_checked_at=NULL WHERE execution_id=$1`, accepted.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = native.Exec(ctx, `UPDATE group_ops_executions SET delivery_proven=FALSE WHERE id=$1`, accepted.ID); err != nil {
+		t.Fatal(err)
+	}
+	errCh := make(chan error, 2)
+	var wg sync.WaitGroup
+	for _, status := range []int{0, 1} {
+		status := status
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errCh <- uow.Within(ctx, func(tx context.Context) error {
+				return groupStore.RecordGroupMessageDelivery(tx, groupopsport.GroupMessageReceipt{ExecutionID: accepted.ID, ExternalEffectID: accepted.ExternalEffectID, MessageID: "journey-msgid", SenderUserID: "journey-sender", ChatID: "chat-journey-1", DeliveryStatus: &status, DeliveryEvidenceDigest: string(effectport.Hash("journey-concurrent-delivery", accepted.ExternalEffectID, strconv.Itoa(status)))}, string(effectport.Hash("journey-concurrent-delivery", accepted.ExternalEffectID, strconv.Itoa(status))))
+			})
+		}()
+	}
+	wg.Wait()
+	close(errCh)
+	for concurrentErr := range errCh {
+		if concurrentErr != nil {
+			t.Fatal(concurrentErr)
+		}
+	}
+	if err = uow.Within(ctx, func(tx context.Context) error {
+		var readErr error
+		accepted, readErr = groupStore.GetExecution(tx, accepted.ID)
+		return readErr
+	}); err != nil || !accepted.DeliveryProven || accepted.DeliveryStatus == nil || *accepted.DeliveryStatus != 1 {
+		t.Fatalf("concurrent delivery=%+v err=%v", accepted, err)
 	}
 
 	var generation, fence int64
@@ -329,7 +400,7 @@ func (sink *journeyCompletionSink) CompleteEffect(ctx context.Context, effectRef
 	return sink.projector.CompleteEffect(ctx, effectRef, state, result.Completion == effectport.StateExecuted, false, string(result.ReceiptDigest), attempt.Number, time.Now().UTC())
 }
 
-func createJourneyPlan(t *testing.T, ctx context.Context, uow *platformpostgres.UnitOfWork, repository *groupopsstore.Repository, actorID int64) int64 {
+func createJourneyPlan(t *testing.T, ctx context.Context, uow *platformpostgres.UnitOfWork, repository *groupopsstore.Repository, actorID, inviteID int64) int64 {
 	t.Helper()
 	now := time.Now().UTC()
 	var planID int64
@@ -346,7 +417,7 @@ func createJourneyPlan(t *testing.T, ctx context.Context, uow *platformpostgres.
 				{AssetRef: "chat-journey-1"},
 				{AssetRef: "chat-journey-2"},
 			},
-			Nodes: []groupopsport.Node{{Position: 1, Kind: groupopsport.NodeMessage, MessageText: "PG journey", MaterialPlan: groupopsport.MaterialPlan{References: []groupopsport.MaterialReference{}}}},
+			Nodes: []groupopsport.Node{{Position: 1, Kind: groupopsport.NodeMessage, MessageText: "PG journey", MaterialPlan: groupopsport.MaterialPlan{References: []groupopsport.MaterialReference{{Kind: "group_invite", ID: inviteID}}}}},
 		})
 	})
 	if err != nil {
