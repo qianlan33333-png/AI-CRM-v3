@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
+	accessstore "github.com/qianlan33333-png/AI-CRM-v3/internal/access/store"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
 	identityport "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/port"
@@ -195,6 +197,61 @@ func TestMessageArchivePostgreSQLBatchRollbackAndConcurrentCursor(t *testing.T) 
 	}
 	if barrier.countCursor(0) != 2 {
 		t.Fatalf("initial cursor calls=%d", barrier.countCursor(0))
+	}
+}
+
+func TestMessageArchivePostgreSQLCustomerStaffAndFilter(t *testing.T) {
+	native, cleanup := channelWelcomeIntegrationPool(t)
+	defer cleanup()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	applyMessageArchiveJourneyMigrations(t, ctx, native)
+	pool, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	uow, err := platformpostgres.NewUnitOfWork(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var customerID, staffID int64
+	if err = native.QueryRow(ctx, `INSERT INTO customers DEFAULT VALUES RETURNING id`).Scan(&customerID); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active) VALUES('archive-filter','$argon2id$filter','归档员工','archive-filter',true) RETURNING id`).Scan(&staffID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = native.Exec(ctx, `INSERT INTO message_archive_sync_state(corp_scope) VALUES('wecom-corp:wx-archive-filter')`); err != nil {
+		t.Fatal(err)
+	}
+	for index := int64(1); index <= 3; index++ {
+		var messageID int64
+		if err = native.QueryRow(ctx, `INSERT INTO message_archive_messages(corp_scope,seq,msgid,msgtype,conversation_type,msgtime_ms,occurred_at,content_text) VALUES('wecom-corp:wx-archive-filter',$1,$2,'text','private',$3,$4,$5) RETURNING id`, index, "filter-message-"+strconv.FormatInt(index, 10), index*1000, time.Unix(index, 0).UTC(), "staff filter fixture").Scan(&messageID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = native.Exec(ctx, `INSERT INTO message_archive_participants(message_id,participant_role,actor_type,provider_value,provider_value_digest,staff_user_id,customer_id_at_ingest,resolution_status) VALUES($1,'recipient','external_customer','wm_filter',decode(repeat('01',32),'hex'),NULL,$2,'found'),($1,'sender','staff','archive-filter',decode(repeat('02',32),'hex'),$3,NULL,'not_applicable')`, messageID, customerID, staffID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	service := archiveapp.Service{ReadEnabled: true, Lineage: archiveJourneyLineage{}, Store: archivestore.NewPostgreSQL(), StaffDirectory: accessstore.NewPostgreSQL(), UOW: uow}
+	staff, err := service.CustomerStaff(ctx, customerdomain.CustomerID(customerID))
+	if err != nil || len(staff) != 1 || staff[0].ID != staffID || staff[0].DisplayName != "归档员工" {
+		t.Fatalf("staff=%+v err=%v", staff, err)
+	}
+	page, err := service.CustomerMessages(ctx, archiveport.CustomerQuery{CustomerID: customerdomain.CustomerID(customerID), StaffUserID: staffID, Watermark: time.Unix(10, 0).UTC(), Limit: 10})
+	if err != nil || len(page.Items) != 3 {
+		t.Fatalf("filtered page=%+v err=%v", page, err)
+	}
+	for _, item := range page.Items {
+		if len(item.StaffIDs) != 1 || item.StaffIDs[0] != staffID || len(item.StaffNames) != 1 || item.StaffNames[0] != "归档员工" {
+			t.Fatalf("message staff projection=%+v", item)
+		}
+	}
+	empty, err := service.CustomerMessages(ctx, archiveport.CustomerQuery{CustomerID: customerdomain.CustomerID(customerID), StaffUserID: staffID + 1, Watermark: time.Unix(10, 0).UTC(), Limit: 10})
+	if err != nil || len(empty.Items) != 0 {
+		t.Fatalf("other staff page=%+v err=%v", empty, err)
 	}
 }
 

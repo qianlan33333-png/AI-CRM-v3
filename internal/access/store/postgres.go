@@ -85,9 +85,6 @@ func (*PostgreSQL) MessageArchiveStaff(ctx context.Context, ids []int64) ([]acce
 	if len(ids) == 0 {
 		return []accessport.MessageArchiveStaff{}, nil
 	}
-	if len(ids) > 1000 {
-		return nil, domain.ErrInvalidInput
-	}
 	unique := make([]int64, 0, len(ids))
 	seen := make(map[int64]struct{}, len(ids))
 	for _, id := range ids {
@@ -99,6 +96,9 @@ func (*PostgreSQL) MessageArchiveStaff(ctx context.Context, ids []int64) ([]acce
 		}
 		seen[id] = struct{}{}
 		unique = append(unique, id)
+	}
+	if len(unique) > 1000 {
+		return nil, domain.ErrInvalidInput
 	}
 	database, err := tx(ctx)
 	if err != nil {

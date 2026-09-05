@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"sort"
 	"strings"
 	"time"
 
@@ -445,7 +446,7 @@ func (service Service) CustomerStaff(ctx context.Context, customerID customerdom
 		if readErr != nil {
 			return readErr
 		}
-		staff, readErr := service.StaffDirectory.MessageArchiveStaff(tx, ids)
+		staff, readErr := service.readStaffDirectory(tx, ids)
 		if readErr != nil {
 			return readErr
 		}
@@ -466,7 +467,7 @@ func (service Service) populateStaffNames(ctx context.Context, page *archiveport
 	for _, item := range page.Items {
 		ids = append(ids, item.StaffIDs...)
 	}
-	staff, err := service.StaffDirectory.MessageArchiveStaff(ctx, ids)
+	staff, err := service.readStaffDirectory(ctx, ids)
 	if err != nil {
 		return err
 	}
@@ -483,6 +484,40 @@ func (service Service) populateStaffNames(ctx context.Context, page *archiveport
 		}
 	}
 	return nil
+}
+
+func uniqueIDs(ids []int64) []int64 {
+	unique := make([]int64, 0, len(ids))
+	seen := make(map[int64]struct{}, len(ids))
+	for _, id := range ids {
+		if _, found := seen[id]; found {
+			continue
+		}
+		seen[id] = struct{}{}
+		unique = append(unique, id)
+	}
+	return unique
+}
+
+func (service Service) readStaffDirectory(ctx context.Context, ids []int64) ([]accessport.MessageArchiveStaff, error) {
+	const batchLimit = 1000
+	ids = uniqueIDs(ids)
+	staff := make([]accessport.MessageArchiveStaff, 0, len(ids))
+	for start := 0; start < len(ids); start += batchLimit {
+		end := min(start+batchLimit, len(ids))
+		batch, err := service.StaffDirectory.MessageArchiveStaff(ctx, ids[start:end])
+		if err != nil {
+			return nil, err
+		}
+		staff = append(staff, batch...)
+	}
+	sort.Slice(staff, func(i, j int) bool {
+		if staff[i].DisplayName == staff[j].DisplayName {
+			return staff[i].ID < staff[j].ID
+		}
+		return staff[i].DisplayName < staff[j].DisplayName
+	})
+	return staff, nil
 }
 
 type notificationPayload struct {

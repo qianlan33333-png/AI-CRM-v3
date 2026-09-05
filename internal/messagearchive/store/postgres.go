@@ -240,10 +240,12 @@ func (PostgreSQL) CustomerStaffIDs(ctx context.Context, customerIDs []customerdo
 		}
 		ids = append(ids, int64(id))
 	}
-	rows, err := tx.Query(ctx, `SELECT DISTINCT participant.staff_user_id
-		FROM message_archive_participants participant
-		WHERE participant.customer_id_at_ingest = ANY($1::bigint[]) AND participant.staff_user_id IS NOT NULL
-		ORDER BY participant.staff_user_id`, ids)
+	rows, err := tx.Query(ctx, `SELECT DISTINCT staff_participant.staff_user_id
+		FROM message_archive_participants customer_participant
+		JOIN message_archive_participants staff_participant ON staff_participant.message_id=customer_participant.message_id
+		WHERE customer_participant.customer_id_at_ingest = ANY($1::bigint[])
+		AND staff_participant.staff_user_id IS NOT NULL
+		ORDER BY staff_participant.staff_user_id`, ids)
 	if err != nil {
 		return nil, err
 	}

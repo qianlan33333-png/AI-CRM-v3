@@ -78,6 +78,7 @@ type storeStub struct {
 	issue            IngestIssue
 	mediaRef         MediaReference
 	page             archiveport.CustomerPage
+	staffIDs         []int64
 }
 
 func (s *storeStub) CommittedCursor(context.Context, string) (uint64, error) { return s.cursor, nil }
@@ -101,6 +102,9 @@ func (s *storeStub) CustomerMessages(context.Context, archiveport.CustomerQuery)
 	return s.page, nil
 }
 func (s *storeStub) CustomerStaffIDs(context.Context, []customerdomain.CustomerID) ([]int64, error) {
+	if s.staffIDs != nil {
+		return s.staffIDs, nil
+	}
 	return []int64{1}, nil
 }
 func (s *storeStub) MediaAccess(context.Context, MediaQuery) (MediaReference, error) {
@@ -130,6 +134,17 @@ func (staffDirectoryStub) MessageArchiveStaff(_ context.Context, ids []int64) ([
 		items = append(items, accessport.MessageArchiveStaff{ID: id, DisplayName: "员工"})
 	}
 	return items, nil
+}
+
+type recordingStaffDirectory struct{ batches [][]int64 }
+
+func (directory *recordingStaffDirectory) MessageArchiveStaff(_ context.Context, ids []int64) ([]accessport.MessageArchiveStaff, error) {
+	directory.batches = append(directory.batches, append([]int64(nil), ids...))
+	staff := make([]accessport.MessageArchiveStaff, 0, len(ids))
+	for _, id := range ids {
+		staff = append(staff, accessport.MessageArchiveStaff{ID: id, DisplayName: "员工"})
+	}
+	return staff, nil
 }
 func delivery() archiveport.InboxDelivery {
 	return archiveport.InboxDelivery{ID: 1, ReceivedAt: time.Date(2026, 9, 5, 0, 0, 0, 0, time.UTC), Payload: []byte(`{"corp_id":"wx-corp","event":"msgaudit_notify"}`)}
@@ -177,6 +192,45 @@ func TestLocalReadWorksWhenProviderIngestionIsDisabled(t *testing.T) {
 	if _, err = service.ReadPrivateMedia(context.Background(), 1, 7); !errors.Is(err, archiveport.ErrNotReady) {
 		t.Fatalf("private media should remain SDK-disabled: %v", err)
 	}
+}
+
+func TestCustomerMessageStaffLookupDeduplicatesAcrossMessages(t *testing.T) {
+	items := make([]archiveport.MessageItem, 1002)
+	for index := range items {
+		staffID := int64(index + 1)
+		if index == 1001 {
+			staffID = 1
+		}
+		items[index] = archiveport.MessageItem{ID: int64(index + 1), StaffIDs: []int64{staffID}}
+	}
+	store := &storeStub{page: archiveport.CustomerPage{Items: items}}
+	directory := &recordingStaffDirectory{}
+	service := serviceFor(&readerStub{}, store)
+	service.StaffDirectory = directory
+	page, err := service.CustomerMessages(context.Background(), archiveport.CustomerQuery{CustomerID: 1})
+	if err != nil || len(directory.batches) != 2 || len(directory.batches[0]) != 1000 || len(directory.batches[1]) != 1 || len(page.Items[1000].StaffNames) != 1 || len(page.Items[1001].StaffNames) != 1 {
+		t.Fatalf("batch sizes=%v last=%+v duplicate=%+v err=%v", staffBatchSizes(directory.batches), page.Items[1000], page.Items[1001], err)
+	}
+
+	directory.batches = nil
+	store.page = archiveport.CustomerPage{}
+	store.staffIDs = make([]int64, 0, 1002)
+	for id := int64(1); id <= 1001; id++ {
+		store.staffIDs = append(store.staffIDs, id)
+	}
+	store.staffIDs = append(store.staffIDs, 1)
+	options, err := service.CustomerStaff(context.Background(), 1)
+	if err != nil || len(options) != 1001 || len(directory.batches) != 2 || len(directory.batches[0]) != 1000 || len(directory.batches[1]) != 1 {
+		t.Fatalf("options=%d batch sizes=%v err=%v", len(options), staffBatchSizes(directory.batches), err)
+	}
+}
+
+func staffBatchSizes(batches [][]int64) []int {
+	sizes := make([]int, len(batches))
+	for index := range batches {
+		sizes[index] = len(batches[index])
+	}
+	return sizes
 }
 
 func TestPageResolutionCachesTrustedExternalAndStaffReads(t *testing.T) {
