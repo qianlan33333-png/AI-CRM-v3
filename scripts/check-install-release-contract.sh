@@ -85,7 +85,8 @@ for migration_contract in \
   '0063_identity_hxc_source_observations.sql:HXC identity source observations' \
   '0064_hxc_dashboard_identity_v2.sql:HXC dashboard identity v2' \
   '0078_group_ops_provider_tasks.sql:Group Ops provider tasks' \
-  '0081_group_ops_webhook_unconfigured_reference.sql:Group Ops unconfigured webhook repair'; do
+  '0081_group_ops_webhook_unconfigured_reference.sql:Group Ops unconfigured webhook repair' \
+  '0082_group_ops_history_import.sql:Group Ops history import'; do
   migration="${migration_contract%%:*}"
   label="${migration_contract#*:}"
   test -f "migrations/${migration}" || {

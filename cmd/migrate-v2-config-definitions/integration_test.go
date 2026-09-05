@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -21,6 +22,7 @@ import (
 	configtarget "github.com/qianlan33333-png/AI-CRM-v3/internal/configmigration/target"
 	couponstore "github.com/qianlan33333-png/AI-CRM-v3/internal/coupon/store"
 	groupopsapp "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/app"
+	groupopsport "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/port"
 	groupopsstore "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/store"
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
@@ -151,6 +153,104 @@ func TestRunnerPostgresIntegrationRollsBackWholeBatch(t *testing.T) {
 	})
 }
 
+// OneID decision: not involved. V2 group/user text identifiers stay sealed
+// history facts and never become current Access or customer identities.
+// Persistence decision: one Group Ops owner transaction. This writes only the
+// four read-only history projections and source ledger, never runtime/effects.
+func TestGroupOpsHistoryPostgreSQLImportVerifyReplayAndDrift(t *testing.T) {
+	pool, cleanup := configMigrationIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	runner := configHistoryRunner(t, pool)
+	snapshot := configHistoryFixture(t, strings.Repeat("d", 40))
+	digest, err := snapshot.CanonicalDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = runner.Preflight(ctx, snapshot, digest); err != nil {
+		t.Fatalf("history preflight: %v", err)
+	}
+	applied, err := runner.Apply(ctx, snapshot, digest)
+	if err != nil || applied.NoOp || applied.Imported != 5 || applied.Quarantined != 2 {
+		t.Fatalf("history apply=%+v err=%v", applied, err)
+	}
+	for table, want := range map[string]int64{"group_ops_v1_history_plans": 1, "group_ops_v1_history_directory": 2, "group_ops_v1_history_groups": 1, "group_ops_v1_history_nodes": 1, "group_ops_v1_history_import_rows": 7, "group_ops_plans": 0, "group_ops_runs": 0, "group_ops_executions": 0, "external_effects": 0, "external_effect_jobs": 0} {
+		var got int64
+		if err = pool.Native().QueryRow(ctx, "SELECT count(*) FROM "+table).Scan(&got); err != nil || got != want {
+			t.Fatalf("%s=%d want=%d err=%v", table, got, want, err)
+		}
+	}
+	var ownerID *int64
+	var sourceOwner string
+	if err = pool.Native().QueryRow(ctx, `SELECT owner_staff_id,source_owner_reference FROM group_ops_v1_history_plans WHERE plan_id=101`).Scan(&ownerID, &sourceOwner); err != nil || ownerID != nil || sourceOwner != "9" {
+		t.Fatalf("text owner was coerced into current staff: id=%v source=%q err=%v", ownerID, sourceOwner, err)
+	}
+	assertImportedHistoryReadable(t, ctx, pool)
+	verified, err := runner.Verify(ctx, snapshot, digest)
+	if err != nil || verified.Imported != 5 || verified.Quarantined != 2 {
+		t.Fatalf("history verify=%+v err=%v", verified, err)
+	}
+	replayed, err := runner.Apply(ctx, snapshot, digest)
+	if err != nil || !replayed.NoOp || replayed.BatchID != applied.BatchID {
+		t.Fatalf("history replay=%+v err=%v", replayed, err)
+	}
+	drift := snapshot
+	drift.Plans = append([]source.HistoryPlan(nil), snapshot.Plans...)
+	drift.Plans[0].Name = "历史计划漂移"
+	if err = source.PopulateHistoryManifest(&drift, drift.Manifest.SourceSystem, drift.Manifest.SourceRevision, drift.Manifest.SnapshotAt); err != nil {
+		t.Fatal(err)
+	}
+	driftDigest, err := drift.CanonicalDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = runner.Apply(ctx, drift, driftDigest); !errors.Is(err, configtarget.ErrHistoryDrift) {
+		t.Fatalf("source drift err=%v", err)
+	}
+	if _, err = pool.Native().Exec(ctx, `UPDATE group_ops_v1_history_plans SET name='drift' WHERE plan_id=101`); err == nil {
+		t.Fatal("immutable historical target accepted drift")
+	}
+}
+
+func TestGroupOpsHistoryPostgreSQLImportRollsBackWholeBatch(t *testing.T) {
+	pool, cleanup := configMigrationIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	runner := configHistoryRunner(t, pool)
+	runner.GroupOps = rejectingHistoryImporter{inner: runner.GroupOps}
+	snapshot := configHistoryFixture(t, strings.Repeat("e", 40))
+	digest, err := snapshot.CanonicalDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = runner.Apply(ctx, snapshot, digest); err == nil {
+		t.Fatal("history import unexpectedly accepted a target-invalid source row")
+	}
+	for _, table := range []string{"group_ops_v1_history_plans", "group_ops_v1_history_directory", "group_ops_v1_history_groups", "group_ops_v1_history_nodes", "group_ops_v1_history_import_batches", "group_ops_v1_history_import_rows"} {
+		var n int64
+		if err = pool.Native().QueryRow(ctx, "SELECT count(*) FROM "+table).Scan(&n); err != nil || n != 0 {
+			t.Fatalf("rollback left %s=%d err=%v", table, n, err)
+		}
+	}
+}
+
+type rejectingHistoryImporter struct {
+	inner groupopsport.HistoricalImporter
+}
+
+func (r rejectingHistoryImporter) ApplyHistoricalImport(ctx context.Context, batch groupopsport.HistoricalImportBatch, records []groupopsport.HistoricalImportRecord) (groupopsport.HistoricalImportResult, error) {
+	if len(records) == 0 {
+		return groupopsport.HistoricalImportResult{}, errors.New("test: no history records")
+	}
+	if _, err := r.inner.ApplyHistoricalImport(ctx, batch, records[:1]); err != nil {
+		return groupopsport.HistoricalImportResult{}, err
+	}
+	return groupopsport.HistoricalImportResult{}, errors.New("test: fail after Group Ops history target write")
+}
+func (r rejectingHistoryImporter) VerifyHistoricalImport(ctx context.Context, batch groupopsport.HistoricalImportBatch, records []groupopsport.HistoricalImportRecord) (groupopsport.HistoricalImportResult, error) {
+	return r.inner.VerifyHistoricalImport(ctx, batch, records)
+}
+
 type rejectingAutomationImporter struct{}
 
 func (rejectingAutomationImporter) ImportDefinition(context.Context, automationport.DefinitionImport) (automationport.Agent, error) {
@@ -180,6 +280,61 @@ func configMigrationRunner(t *testing.T, pool *platformpostgres.Pool) configtarg
 		t.Fatal(err)
 	}
 	return configtarget.Runner{UOW: uow, Products: products, Coupons: coupons, GroupOps: groupOps, Automation: automation}
+}
+
+func configHistoryRunner(t *testing.T, pool *platformpostgres.Pool) configtarget.HistoryRunner {
+	t.Helper()
+	uow, err := platformpostgres.NewUnitOfWork(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	groupOps, err := groupopsstore.NewPostgreSQL(pool.Native(), uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return configtarget.HistoryRunner{UOW: uow, GroupOps: groupOps}
+}
+
+func configHistoryFixture(t *testing.T, revision string) source.HistorySnapshot {
+	t.Helper()
+	now := time.Date(2026, 9, 5, 1, 2, 3, 0, time.UTC)
+	owner, empty := "9", ""
+	snapshot := source.HistorySnapshot{
+		Plans:              []source.HistoryPlan{{ID: 101, PlanCode: "", Name: "历史计划", PlanType: "standard", Status: "disabled", OwnerReference: &owner, CreatedByReference: &empty, UpdatedByReference: &owner, CreatedAt: now, UpdatedAt: now}, {ID: 102, PlanCode: "invalid", Name: " leading", PlanType: "standard", Status: "disabled", CreatedAt: now, UpdatedAt: now}},
+		DirectoryChats:     []source.HistoryDirectoryChat{{ChatReference: "chat-history-1", DisplayName: "历史群", OwnerReference: &owner, MemberCount: 3, Status: "active", RecordedAt: now}},
+		DirectorySnapshots: []source.HistoryDirectorySnapshot{{ChatReference: "chat-history-1", DisplayName: "历史群", OwnerReference: &empty, OwnerName: "", InternalMemberCount: 1, ExternalMemberCount: 2, Status: "active", RecordedAt: now}},
+		Groups:             []source.HistoryGroup{{ID: 201, PlanID: 101, ChatReference: "chat-history-1", DisplayName: "历史群", OwnerReference: &owner, InternalMemberCount: 1, ExternalMemberCount: 2, Status: "active", CreatedAt: now}, {ID: 202, PlanID: 999, ChatReference: "orphan", DisplayName: "孤立群", InternalMemberCount: 1, ExternalMemberCount: 0, Status: "active", CreatedAt: now}},
+		Nodes:              []source.HistoryNode{{ID: 301, PlanID: 101, DayIndex: 1, TriggerTime: "09:00", SortOrder: 1, Status: "active", ContentPackage: json.RawMessage(`{"text":"历史内容"}`), Attachments: json.RawMessage(`[{"kind":"image","id":"m1"}]`), CreatedAt: now, UpdatedAt: now}},
+	}
+	if err := source.PopulateHistoryManifest(&snapshot, source.ProductionSourceSystem, revision, now); err != nil {
+		t.Fatal(err)
+	}
+	return snapshot
+}
+
+func assertImportedHistoryReadable(t *testing.T, ctx context.Context, pool *platformpostgres.Pool) {
+	t.Helper()
+	uow, err := platformpostgres.NewUnitOfWork(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := groupopsstore.NewPostgreSQL(pool.Native(), uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := groupopsapp.NewHistoryService(uow, repository)
+	plans, err := service.ListHistoricalPlans(ctx, 20, 0)
+	if err != nil || plans.Total != 1 || plans.Items[0].PlanID != 101 || plans.Items[0].CreatedBy != nil || plans.Items[0].SourceOwnerReference != nil {
+		t.Fatalf("history plan page=%#v err=%v", plans, err)
+	}
+	groups, err := service.ListHistoricalGroups(ctx, 101, 20, 0)
+	if err != nil || groups.Total != 1 || groups.Items[0].SourceOwnerReference != nil {
+		t.Fatalf("history group page=%#v err=%v", groups, err)
+	}
+	nodes, err := service.ListHistoricalNodes(ctx, 101, 20, 0)
+	if err != nil || nodes.Total != 1 || !strings.Contains(string(nodes.Items[0].ContentPackage), "source_attachments") {
+		t.Fatalf("history node page=%#v err=%v", nodes, err)
+	}
 }
 
 func configMigrationActor(t *testing.T, ctx context.Context, pool *platformpostgres.Pool) int64 {
@@ -430,7 +585,7 @@ func configMigrationPaths(t *testing.T) []string {
 		t.Fatal("locate configuration migration integration test source")
 	}
 	root := filepath.Clean(filepath.Join(filepath.Dir(filename), "..", ".."))
-	files := []string{"0001_platform.sql", "0003_access.sql", "0005_external_effects.sql", "0010_product.sql", "0011_coupon_rules.sql", "0012_group_ops.sql", "0013_automation_agents.sql", "0030_config_definition_import.sql"}
+	files := []string{"0001_platform.sql", "0003_access.sql", "0005_external_effects.sql", "0010_product.sql", "0011_coupon_rules.sql", "0012_group_ops.sql", "0013_automation_agents.sql", "0017_group_ops_history.sql", "0030_config_definition_import.sql", "0078_group_ops_provider_tasks.sql", "0081_group_ops_webhook_unconfigured_reference.sql", "0082_group_ops_history_import.sql"}
 	paths := make([]string, 0, len(files))
 	for _, file := range files {
 		paths = append(paths, filepath.Join(root, "migrations", file))

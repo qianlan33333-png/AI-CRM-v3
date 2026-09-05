@@ -993,7 +993,7 @@ func (r *Repository) ListHistoricalPlans(ctx context.Context, limit, offset int3
 	if err != nil {
 		return nil, 0, err
 	}
-	rows, err := tx.Query(ctx, `SELECT plan_id,name,status,revision,created_by,updated_by,created_at,updated_at,source_plan_id,source_code,plan_type,original_status,owner_staff_id,archived_at FROM group_ops_v1_history_plans ORDER BY plan_id LIMIT $1 OFFSET $2`, limit, offset)
+	rows, err := tx.Query(ctx, `SELECT plan_id,name,status,revision,created_by,updated_by,created_at,updated_at,source_plan_id,source_code,plan_type,original_status,owner_staff_id,archived_at,source_created_by_reference,source_updated_by_reference,source_owner_reference FROM group_ops_v1_history_plans ORDER BY plan_id LIMIT $1 OFFSET $2`, limit, offset)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -1021,7 +1021,7 @@ func (r *Repository) ListHistoricalDirectory(ctx context.Context, limit, offset 
 	if err != nil {
 		return nil, 0, err
 	}
-	rows, err := tx.Query(ctx, `SELECT id,source_kind,source_id,chat_reference,display_name,owner_staff_id,owner_name,member_count,internal_member_count,external_member_count,original_status,recorded_at FROM group_ops_v1_history_directory ORDER BY id LIMIT $1 OFFSET $2`, limit, offset)
+	rows, err := tx.Query(ctx, `SELECT id,source_kind,source_id,chat_reference,display_name,owner_staff_id,owner_name,member_count,internal_member_count,external_member_count,original_status,recorded_at,source_owner_reference FROM group_ops_v1_history_directory ORDER BY id LIMIT $1 OFFSET $2`, limit, offset)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -1030,10 +1030,10 @@ func (r *Repository) ListHistoricalDirectory(ctx context.Context, limit, offset 
 	for rows.Next() {
 		var item groupopsport.HistoricalDirectory
 		var sourceID, ownerID pgtype.Int8
-		var displayName, ownerName pgtype.Text
+		var displayName, ownerName, sourceOwnerReference pgtype.Text
 		var memberCount, internalCount, externalCount pgtype.Int4
 		var recordedAt pgtype.Timestamptz
-		if err = rows.Scan(&item.ID, &item.SourceKind, &sourceID, &item.ChatReference, &displayName, &ownerID, &ownerName, &memberCount, &internalCount, &externalCount, &item.OriginalStatus, &recordedAt); err != nil {
+		if err = rows.Scan(&item.ID, &item.SourceKind, &sourceID, &item.ChatReference, &displayName, &ownerID, &ownerName, &memberCount, &internalCount, &externalCount, &item.OriginalStatus, &recordedAt, &sourceOwnerReference); err != nil {
 			return nil, 0, err
 		}
 		if !recordedAt.Valid {
@@ -1043,6 +1043,7 @@ func (r *Repository) ListHistoricalDirectory(ctx context.Context, limit, offset 
 		item.DisplayName = nullableText(displayName)
 		item.OwnerStaffID = nullableInt64(ownerID)
 		item.OwnerName = nullableText(ownerName)
+		item.SourceOwnerReference = nullableText(sourceOwnerReference)
 		item.MemberCount = nullableInt32(memberCount)
 		item.InternalMemberCount = nullableInt32(internalCount)
 		item.ExternalMemberCount = nullableInt32(externalCount)
@@ -1064,7 +1065,7 @@ func (r *Repository) ListHistoricalGroups(ctx context.Context, planID int64, lim
 	if err != nil {
 		return nil, 0, err
 	}
-	rows, err := tx.Query(ctx, `SELECT id,source_group_id,source_plan_id,plan_id,chat_reference,display_name,owner_staff_id,internal_member_count,external_member_count,original_status,created_at,removed_at FROM group_ops_v1_history_groups WHERE plan_id=$1 ORDER BY id LIMIT $2 OFFSET $3`, planID, limit, offset)
+	rows, err := tx.Query(ctx, `SELECT id,source_group_id,source_plan_id,plan_id,chat_reference,display_name,owner_staff_id,internal_member_count,external_member_count,original_status,created_at,removed_at,source_owner_reference FROM group_ops_v1_history_groups WHERE plan_id=$1 ORDER BY id LIMIT $2 OFFSET $3`, planID, limit, offset)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -1073,14 +1074,15 @@ func (r *Repository) ListHistoricalGroups(ctx context.Context, planID int64, lim
 	for rows.Next() {
 		var item groupopsport.HistoricalGroup
 		var ownerID pgtype.Int8
+		var sourceOwnerReference pgtype.Text
 		var createdAt, removedAt pgtype.Timestamptz
-		if err = rows.Scan(&item.ID, &item.SourceGroupID, &item.SourcePlanID, &item.PlanID, &item.ChatReference, &item.DisplayName, &ownerID, &item.InternalMemberCount, &item.ExternalMemberCount, &item.OriginalStatus, &createdAt, &removedAt); err != nil {
+		if err = rows.Scan(&item.ID, &item.SourceGroupID, &item.SourcePlanID, &item.PlanID, &item.ChatReference, &item.DisplayName, &ownerID, &item.InternalMemberCount, &item.ExternalMemberCount, &item.OriginalStatus, &createdAt, &removedAt, &sourceOwnerReference); err != nil {
 			return nil, 0, err
 		}
 		if !createdAt.Valid {
 			return nil, 0, ErrInvalid
 		}
-		item.OwnerStaffID, item.RemovedAt, item.CreatedAt = nullableInt64(ownerID), nullableTime(removedAt), createdAt.Time
+		item.OwnerStaffID, item.RemovedAt, item.CreatedAt, item.SourceOwnerReference = nullableInt64(ownerID), nullableTime(removedAt), createdAt.Time, nullableText(sourceOwnerReference)
 		items = append(items, item)
 	}
 	if err = rows.Err(); err != nil {
@@ -1134,12 +1136,14 @@ func (r *Repository) ListHistoricalNodes(ctx context.Context, planID int64, limi
 
 func scanHistoricalPlan(rows pgx.Rows) (groupopsport.HistoricalPlan, error) {
 	var item groupopsport.HistoricalPlan
-	var ownerID pgtype.Int8
+	var createdBy, updatedBy, ownerID pgtype.Int8
 	var archivedAt pgtype.Timestamptz
-	if err := rows.Scan(&item.Plan.ID, &item.Plan.Name, &item.Plan.Status, &item.Plan.Revision, &item.Plan.CreatedBy, &item.Plan.UpdatedBy, &item.Plan.CreatedAt, &item.Plan.UpdatedAt, &item.SourcePlanID, &item.SourceCode, &item.PlanType, &item.OriginalStatus, &ownerID, &archivedAt); err != nil {
+	var sourceCreatedBy, sourceUpdatedBy, sourceOwner pgtype.Text
+	if err := rows.Scan(&item.PlanID, &item.Name, &item.Status, &item.Revision, &createdBy, &updatedBy, &item.CreatedAt, &item.UpdatedAt, &item.SourcePlanID, &item.SourceCode, &item.PlanType, &item.OriginalStatus, &ownerID, &archivedAt, &sourceCreatedBy, &sourceUpdatedBy, &sourceOwner); err != nil {
 		return groupopsport.HistoricalPlan{}, err
 	}
-	item.OwnerStaffID, item.ArchivedAt = nullableInt64(ownerID), nullableTime(archivedAt)
+	item.CreatedBy, item.UpdatedBy, item.OwnerStaffID, item.ArchivedAt = nullableInt64(createdBy), nullableInt64(updatedBy), nullableInt64(ownerID), nullableTime(archivedAt)
+	item.SourceCreatedByReference, item.SourceUpdatedByReference, item.SourceOwnerReference = nullableText(sourceCreatedBy), nullableText(sourceUpdatedBy), nullableText(sourceOwner)
 	return item, nil
 }
 
@@ -1164,6 +1168,7 @@ func nullableText(value pgtype.Text) *string {
 	result := value.String
 	return &result
 }
+
 func nullableTime(value pgtype.Timestamptz) *time.Time {
 	if !value.Valid {
 		return nil
