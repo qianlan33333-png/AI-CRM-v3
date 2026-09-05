@@ -1125,12 +1125,13 @@ export async function runAdminAdapterTests(): Promise<void> {
   try { const testRun = await queueQuestionnairePushTestDto(4); assert(testRun.id === 'questionnaire-test-0123456789abcdef0123456789abcdef' && testRun.status === 'queued' && testRun.attemptCount === 0 && pushTestMethod === 'POST', 'questionnaire local push test mapping/method'); }
   finally { globalThis.fetch = savedFetch; }
   const globalPushCalls: Array<{ input: string; init?: RequestInit }> = [];
-  globalThis.fetch = async (input, init) => { globalPushCalls.push({ input: String(input), init }); return new Response(JSON.stringify({ items: [{ test_run_id: 92, questionnaire_id: 4, status: 'queued', attempt_count: 0, side_effect_executed: false, provider_result_received: false, unknown_after_dispatch: false, auto_retry_allowed: false, created_at: '2026-08-27T00:00:00Z', updated_at: '2026-08-27T00:00:00Z' }], total: 1, limit: 100, offset: 0, has_more: false, local_only: true }), { status: 200 }); };
-  try { const logs = await listGlobalQuestionnairePushLogsDto(); assert(globalPushCalls.length === 1 && globalPushCalls[0].input === '/admin/questionnaires/external-push-logs?limit=100&offset=0' && globalPushCalls[0].init?.method === 'GET' && logs[0]?.sid === '#92' && logs[0]?.uid === '#4' && logs[0]?.err.includes('未执行外部派发'), 'global questionnaire push logs use local-only generated read'); }
-  finally { globalThis.fetch = savedFetch; }
-  globalThis.fetch = async () => new Response(JSON.stringify({ items: [{ test_run_id: 92, questionnaire_id: 4, status: 'queued', attempt_count: 0, side_effect_executed: true, provider_result_received: false, unknown_after_dispatch: false, auto_retry_allowed: false, created_at: '2026-08-27T00:00:00Z', updated_at: '2026-08-27T00:00:00Z' }], total: 1, limit: 100, offset: 0, has_more: false, local_only: true }), { status: 200 });
-  try { await listGlobalQuestionnairePushLogsDto(); assert(false, 'global push log with external effect was accepted'); }
-  catch (error) { assert(error instanceof Error && error.message.includes('仅本地 queued'), 'global push log with external effect fails closed'); }
+  globalThis.fetch = async (input, init) => { globalPushCalls.push({ input: String(input), init }); return new Response(JSON.stringify({ items: [
+    { test_run_id: 'questionnaire-test-0123456789abcdef0123456789abcdef', questionnaire_id: 4, status: 'queued', attempt_count: 0, created_at: '2026-08-27T00:00:00Z' },
+    { test_run_id: 'questionnaire-test-fedcba9876543210fedcba9876543210', questionnaire_id: 4, status: 'executed', attempt_count: 1, created_at: '2026-08-27T00:01:00Z' },
+    { test_run_id: 'questionnaire-test-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', questionnaire_id: 4, status: 'outcome_unknown', attempt_count: 1, created_at: '2026-08-27T00:02:00Z' },
+    { test_run_id: 92, questionnaire_id: 4, status: 'queued', attempt_count: 0, created_at: '2026-08-27T00:03:00Z' }
+  ], total: 4, limit: 100, offset: 0, has_more: false, provider_enabled: true }), { status: 200 }); };
+  try { const logs = await listGlobalQuestionnairePushLogsDto(); assert(globalPushCalls.length === 1 && globalPushCalls[0].input === '/admin/questionnaires/external-push-logs?limit=100&offset=0' && globalPushCalls[0].init?.method === 'GET' && logs[0]?.sid.includes('questionnaire-test-') && logs[0]?.err.includes('等待测试结果') && logs[1]?.tone === 'ok' && logs[1]?.err.includes('已收到测试结果') && logs[2]?.tone === 'red' && logs[2]?.err.includes('不会自动重复发送') && logs[3]?.sid === '#92', 'global questionnaire push logs preserve queued/executed/unknown and numeric legacy rows'); }
   finally { globalThis.fetch = savedFetch; }
 
   const hxcMapped = hxcSenderPageDto({ id: 'cfg-1', sender_userid: 'alice', display_name: 'Alice', priority: 2, is_active: true, created_at: '', updated_at: '' });

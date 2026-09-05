@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
@@ -56,13 +57,14 @@ type operationRouteSurvey struct {
 	testCalls     int
 	testReceipt   surveyport.CompletionTestReceipt
 	testErr       error
+	receipts      []surveyport.OperationReceipt
 }
 
 func (s *operationRouteSurvey) GetOperationConfiguration(context.Context, surveyport.ID) (surveyport.OperationConfiguration, error) {
 	return s.configuration, nil
 }
 func (s *operationRouteSurvey) ListOperationReceipts(context.Context, surveyport.ID, int32, int32) ([]surveyport.OperationReceipt, int64, error) {
-	return nil, 0, nil
+	return s.receipts, int64(len(s.receipts)), nil
 }
 func (s *operationRouteSurvey) SaveOperationConfiguration(_ context.Context, value surveyport.OperationConfiguration, _ int64, _ string) (surveyport.OperationConfiguration, error) {
 	s.saveCalls++
@@ -180,6 +182,26 @@ func TestLegacyQuestionnaireOpsSaveJourneyPreservesExternalPushMetadata(t *testi
 	handler.ServeHTTP(metadataResponse, newMetadataWithoutVersion)
 	if metadataResponse.Code != nethttp.StatusBadRequest || !strings.Contains(metadataResponse.Body.String(), "configuration_version_required") || survey.saveCalls != 2 {
 		t.Fatalf("metadata without version response=%d body=%s saves=%d", metadataResponse.Code, metadataResponse.Body.String(), survey.saveCalls)
+	}
+}
+
+func TestExternalPushLogsPreserveSyntheticRunAndTerminalStatus(t *testing.T) {
+	now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+	survey := &operationRouteSurvey{receipts: []surveyport.OperationReceipt{
+		{ID: 8, QuestionnaireID: 7, SourcePK: "questionnaire-test-0123456789abcdef0123456789abcdef", Status: "queued", OccurrenceCount: 0, OccurredAt: now},
+		{ID: 9, QuestionnaireID: 7, SourcePK: "questionnaire-test-fedcba9876543210fedcba9876543210", Status: "executed", OccurrenceCount: 1, RealEffectExecuted: true, OccurredAt: now},
+		{ID: 10, QuestionnaireID: 7, SourcePK: "questionnaire-test-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Status: "outcome_unknown", OccurrenceCount: 1, RealEffectExecuted: true, OccurredAt: now},
+		{ID: 11, QuestionnaireID: 7, Status: "queued", OccurrenceCount: 0, OccurredAt: now},
+	}}
+	handler, err := NewHandler(&routeDefinitions{}, survey, operationSecurity{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(nethttp.MethodGet, "/admin/questionnaires/external-push-logs", nil))
+	body := response.Body.String()
+	if response.Code != nethttp.StatusOK || !strings.Contains(body, `"test_run_id":"questionnaire-test-0123456789abcdef0123456789abcdef"`) || !strings.Contains(body, `"status":"executed"`) || !strings.Contains(body, `"status":"outcome_unknown"`) || !strings.Contains(body, `"test_run_id":11`) || strings.Contains(body, `"local_only":true`) {
+		t.Fatalf("logs response=%d body=%s", response.Code, body)
 	}
 }
 

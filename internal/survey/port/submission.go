@@ -105,6 +105,7 @@ type OperationReceipt struct {
 	OccurredAt         time.Time `json:"occurred_at"`
 	ReadOnlyLegacy     bool      `json:"read_only_legacy"`
 	Replayable         bool      `json:"replayable"`
+	SourcePK           string    `json:"source_pk,omitempty"`
 	RealEffectExecuted bool      `json:"real_external_call_executed"`
 }
 

@@ -938,18 +938,27 @@ func (h *Handler) legacyOperationLogs(w http.ResponseWriter, r *http.Request, id
 		resultError(w, err)
 		return
 	}
-	// Keep the frozen donor log reader on its original local-queued contract.
-	// The v3 extension reads the canonical receipt states from /operations.
 	compatible := make([]map[string]any, 0, len(items))
+	anyExternalCall := false
 	for _, item := range items {
+		// Synthetic runs retain their immutable textual test_run_id. Older
+		// donor-compatible receipts have no source_pk and continue to expose
+		// their numeric receipt id.
+		runID := any(item.ID)
+		if item.SourcePK != "" {
+			runID = item.SourcePK
+		}
+		resultReceived := item.Status == "executed" || item.Status == "reconciled" || item.Status == "final_failed" || item.Status == "retryable_failed"
+		unknown := item.Status == "outcome_unknown"
+		anyExternalCall = anyExternalCall || item.RealEffectExecuted
 		compatible = append(compatible, map[string]any{
-			"test_run_id": item.ID, "questionnaire_id": item.QuestionnaireID,
-			"created_at": item.OccurredAt, "status": "queued", "attempt_count": 0,
-			"side_effect_executed": false, "provider_result_received": false,
-			"unknown_after_dispatch": false, "auto_retry_allowed": false,
+			"test_run_id": runID, "questionnaire_id": item.QuestionnaireID,
+			"created_at": item.OccurredAt, "updated_at": item.OccurredAt, "status": item.Status, "attempt_count": item.OccurrenceCount,
+			"side_effect_executed": item.Status == "executed" || item.Status == "reconciled", "provider_result_received": resultReceived,
+			"unknown_after_dispatch": unknown, "auto_retry_allowed": item.Status == "retryable_failed", "real_external_call_executed": item.RealEffectExecuted,
 		})
 	}
-	writeJSON(w, 200, map[string]any{"items": compatible, "total": total, "limit": limit, "offset": offset, "has_more": int64(offset)+int64(len(items)) < total, "local_only": true, "real_external_call_executed": false, "canonical_receipts_path": "/api/admin/questionnaires/{questionnaire_id}/operations"})
+	writeJSON(w, 200, map[string]any{"items": compatible, "total": total, "limit": limit, "offset": offset, "has_more": int64(offset)+int64(len(items)) < total, "provider_enabled": h.completionProviderEnabled, "real_external_call_executed": anyExternalCall})
 }
 
 func definitionResponse(q surveyport.Questionnaire) map[string]any {

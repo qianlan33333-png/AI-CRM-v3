@@ -17,6 +17,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -300,26 +301,6 @@ func TestPostgreSQLSurveySyntheticPushSurvivesRepositoryRestartAndDoesNotBlindRe
 	if err != nil {
 		t.Fatal(err)
 	}
-	workers := river.NewWorkers()
-	if err = river.AddWorkerSafely[effects.EffectJobArgs](workers, effects.NewWorker(nil, nil)); err != nil {
-		t.Fatal(err)
-	}
-	client, err := platformjobqueue.NewInsertClient(pool, workers)
-	if err != nil {
-		t.Fatal(err)
-	}
-	effectRepository, err := effects.NewRepository(pool, client)
-	if err != nil {
-		t.Fatal(err)
-	}
-	sink, err := outbound.NewSurveyCompletionSink(surveys)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = effectRepository.SetCompletionSink(sink); err != nil {
-		t.Fatal(err)
-	}
-
 	var actor, questionnaire int64
 	now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
 	if err = pool.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name) VALUES('survey-synthetic-effect','$argon2id$test','Survey synthetic effect') RETURNING id`).Scan(&actor); err != nil {
@@ -328,12 +309,17 @@ func TestPostgreSQLSurveySyntheticPushSurvivesRepositoryRestartAndDoesNotBlindRe
 	if err = pool.QueryRow(ctx, `INSERT INTO survey_questionnaires(name,title,description,mode,answer_display_mode,slug,status,created_by,updated_by,created_at,updated_at) VALUES('Synthetic effect','Synthetic effect title','','survey','all_in_one','synthetic-effect','disabled',$1,$1,$2,$2) RETURNING id`, actor, now).Scan(&questionnaire); err != nil {
 		t.Fatal(err)
 	}
+	var receivedMu sync.Mutex
 	received := make([]string, 0, 1)
+	receivedSignal := make(chan struct{}, 2)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
+		receivedMu.Lock()
 		received = append(received, string(body))
-		if !strings.Contains(string(body), `"user_id":"questionnaire_test"`) || !strings.Contains(string(body), `"is_test":true`) || strings.Contains(string(body), "unionid") || strings.Contains(string(body), "must-not-send") {
-			t.Fatalf("unexpected synthetic body %s", body)
+		receivedMu.Unlock()
+		select {
+		case receivedSignal <- struct{}{}:
+		default:
 		}
 		w.WriteHeader(http.StatusNoContent)
 	}))
@@ -343,6 +329,11 @@ func TestPostgreSQLSurveySyntheticPushSurvivesRepositoryRestartAndDoesNotBlindRe
 	if err != nil {
 		t.Fatal(err)
 	}
+	sink, err := outbound.NewSurveyCompletionSink(surveys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	effectRepository, runtime := newSurveyEffectRuntime(t, pool, sink, provider)
 	service := surveyapp.NewSubmissionService(uow, surveys, cipher)
 	if err = service.BindCompletionPolicy(provider); err != nil {
 		t.Fatal(err)
@@ -375,78 +366,148 @@ func TestPostgreSQLSurveySyntheticPushSurvivesRepositoryRestartAndDoesNotBlindRe
 	if err != nil || replay != first {
 		t.Fatalf("replay=%+v first=%+v err=%v", replay, first, err)
 	}
-	var effectCount, job int64
+	var effectCount int64
 	if err = pool.QueryRow(ctx, `SELECT count(*) FROM external_effects`).Scan(&effectCount); err != nil || effectCount != 1 {
 		t.Fatalf("effect count=%d err=%v", effectCount, err)
 	}
-	if _, err = fmt.Sscanf(first.EffectID, "eer_%d", &effectCount); err != nil {
-		t.Fatal(err)
-	}
-	if err = pool.QueryRow(ctx, `SELECT river_job_id FROM external_effect_jobs WHERE effect_id=$1`, effectCount).Scan(&job); err != nil {
-		t.Fatal(err)
-	}
 
-	// Rebuild the durable EER repository before consuming the persisted River
-	// job. A second consume after executed returns without another HTTP write.
-	restartClient, err := platformjobqueue.NewInsertClient(pool, workers)
-	if err != nil {
-		t.Fatal(err)
+	// This starts the real River runtime. The effect was already committed to
+	// River before runtime startup, so a process restart cannot lose it.
+	stop, done := startSurveyEffectRuntime(t, runtime)
+	select {
+	case <-receivedSignal:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for River to deliver synthetic test")
 	}
-	restarted, err := effects.NewRepository(pool, restartClient)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = restarted.SetCompletionSink(sink); err != nil {
-		t.Fatal(err)
-	}
-	if err = restarted.RunAttempt(ctx, effectCount, 1, job, provider); err != nil {
-		t.Fatal(err)
-	}
-	if err = restarted.RunAttempt(ctx, effectCount, 1, job, provider); err != nil {
-		t.Fatal(err)
-	}
-	if len(received) != 1 || strings.Contains(received[0], "changed") || !strings.Contains(received[0], `"remark":"frozen"`) {
-		t.Fatalf("restart body=%v", received)
-	}
-	projection, err := restarted.Get(ctx, first.EffectID)
-	if err != nil || projection.State != effects.StateExecuted {
-		t.Fatalf("projection=%+v err=%v", projection, err)
+	waitForSurveyEffectState(t, effectRepository, first.EffectID, effects.StateExecuted)
+	stopSurveyEffectRuntime(t, stop, done)
+	receivedMu.Lock()
+	firstBody := append([]string(nil), received...)
+	receivedMu.Unlock()
+	if len(firstBody) != 1 || strings.Contains(firstBody[0], "changed") || !strings.Contains(firstBody[0], `"remark":"frozen"`) || !strings.Contains(firstBody[0], `"user_id":"questionnaire_test"`) || strings.Contains(firstBody[0], "unionid") || strings.Contains(firstBody[0], "must-not-send") {
+		t.Fatalf("runtime body=%v", firstBody)
 	}
 	var receiptState string
 	if err = pool.QueryRow(ctx, `SELECT status FROM survey_external_operation_receipts WHERE effect_id=$1`, first.EffectID).Scan(&receiptState); err != nil || receiptState != "executed" {
 		t.Fatalf("receipt=%q err=%v", receiptState, err)
 	}
+
+	// A fresh runtime observes no re-delivery after the prior process stopped.
+	_, restartedRuntime := newSurveyEffectRuntime(t, pool, sink, provider)
+	stop, done = startSurveyEffectRuntime(t, restartedRuntime)
+	time.Sleep(250 * time.Millisecond)
+	stopSurveyEffectRuntime(t, stop, done)
+	receivedMu.Lock()
+	if len(received) != 1 {
+		receivedMu.Unlock()
+		t.Fatalf("runtime restart repeated provider call: %d", len(received))
+	}
+	receivedMu.Unlock()
 	afterExecuted, err := service.QueueCompletionTest(ctx, surveyport.ID(questionnaire), actor, key)
-	if err != nil || afterExecuted.EffectID != first.EffectID || afterExecuted.State != "executed" || len(received) != 1 {
-		t.Fatalf("terminal replay=%+v err=%v calls=%d", afterExecuted, err, len(received))
+	if err != nil || afterExecuted.EffectID != first.EffectID || afterExecuted.State != "executed" {
+		t.Fatalf("terminal replay=%+v err=%v", afterExecuted, err)
 	}
 
 	unknown, err := service.QueueCompletionTest(ctx, surveyport.ID(questionnaire), actor, "survey-synthetic-test-unknown-0002")
 	if err != nil {
 		t.Fatal(err)
 	}
-	var unknownID, unknownJob int64
-	if _, err = fmt.Sscanf(unknown.EffectID, "eer_%d", &unknownID); err != nil {
-		t.Fatal(err)
-	}
-	if err = pool.QueryRow(ctx, `SELECT river_job_id FROM external_effect_jobs WHERE effect_id=$1`, unknownID).Scan(&unknownJob); err != nil {
-		t.Fatal(err)
-	}
+	var unknownMu sync.Mutex
 	unknownCalls := 0
+	unknownSignal := make(chan struct{}, 2)
 	unknownAdapter := integrationAdapter(func(context.Context, effectport.Envelope, effectport.Attempt) (effectport.AdapterResult, error) {
+		unknownMu.Lock()
 		unknownCalls++
+		unknownMu.Unlock()
+		select {
+		case unknownSignal <- struct{}{}:
+		default:
+		}
 		return effectport.AdapterResult{CallAttempted: true, RealExternalCallExecuted: true}, errors.New("post-call unknown")
 	})
-	if err = restarted.RunAttempt(ctx, unknownID, 1, unknownJob, unknownAdapter); err != nil {
+	unknownRepository, unknownRuntime := newSurveyEffectRuntime(t, pool, sink, unknownAdapter)
+	stop, done = startSurveyEffectRuntime(t, unknownRuntime)
+	select {
+	case <-unknownSignal:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for River unknown attempt")
+	}
+	waitForSurveyEffectState(t, unknownRepository, unknown.EffectID, effects.StateUnknown)
+	stopSurveyEffectRuntime(t, stop, done)
+	_, unknownRestart := newSurveyEffectRuntime(t, pool, sink, unknownAdapter)
+	stop, done = startSurveyEffectRuntime(t, unknownRestart)
+	time.Sleep(250 * time.Millisecond)
+	stopSurveyEffectRuntime(t, stop, done)
+	unknownMu.Lock()
+	if unknownCalls != 1 {
+		unknownMu.Unlock()
+		t.Fatalf("outcome_unknown was resent %d times", unknownCalls)
+	}
+	unknownMu.Unlock()
+
+}
+
+func newSurveyEffectRuntime(t *testing.T, pool *pgxpool.Pool, sink effectport.CompletionSink, adapter effectport.ProviderAdapter) (*effects.Repository, *platformjobqueue.Runtime) {
+	t.Helper()
+	workers := river.NewWorkers()
+	worker := effects.NewWorker(nil, adapter)
+	if err := river.AddWorkerSafely[effects.EffectJobArgs](workers, worker); err != nil {
 		t.Fatal(err)
 	}
-	if err = restarted.RunAttempt(ctx, unknownID, 1, unknownJob, unknownAdapter); err != nil {
+	client, err := platformjobqueue.NewInsertClient(pool, workers)
+	if err != nil {
 		t.Fatal(err)
 	}
-	projection, err = restarted.Get(ctx, unknown.EffectID)
-	if err != nil || projection.State != effects.StateUnknown || unknownCalls != 1 {
-		t.Fatalf("unknown projection=%+v calls=%d err=%v", projection, unknownCalls, err)
+	repository, err := effects.NewRepository(pool, client)
+	if err != nil {
+		t.Fatal(err)
 	}
+	if err = repository.SetCompletionSink(sink); err != nil {
+		t.Fatal(err)
+	}
+	if err = worker.BindRepository(repository); err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := platformjobqueue.NewRuntime(pool, workers, platformjobqueue.OutboundQueue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return repository, runtime
+}
+
+func startSurveyEffectRuntime(t *testing.T, runtime *platformjobqueue.Runtime) (context.CancelFunc, <-chan error) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- runtime.Run(ctx) }()
+	return cancel, done
+}
+
+func stopSurveyEffectRuntime(t *testing.T, cancel context.CancelFunc, done <-chan error) {
+	t.Helper()
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out stopping River runtime")
+	}
+}
+
+func waitForSurveyEffectState(t *testing.T, repository *effects.Repository, effectID string, want effects.State) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		current, err := repository.Get(context.Background(), effectID)
+		if err == nil && current.State == want {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	current, err := repository.Get(context.Background(), effectID)
+	t.Fatalf("effect %s state=%+v err=%v want=%s", effectID, current, err, want)
 }
 
 func applySurveyCompletionMigrations(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
