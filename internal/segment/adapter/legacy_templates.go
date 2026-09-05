@@ -72,42 +72,44 @@ func (s LegacyTemplateSource) Evaluate(ctx context.Context, definition segmentpo
 func (s LegacyTemplateSource) ownerReferences(ctx context.Context, params map[string]json.RawMessage) (map[string]json.RawMessage, error) {
 	raw, exists := params["owner_staff_ids"]
 	if !exists {
-		return params, nil
+		return nil, ErrCustomerReadUnavailable
 	}
 	var ids []string
 	if json.Unmarshal(raw, &ids) != nil {
 		return nil, ErrCustomerReadUnavailable
 	}
 	var scope string
-	_ = json.Unmarshal(params["owner_scope"], &scope)
-	needsResolver := false
-	for _, value := range ids {
-		if id, err := strconv.ParseInt(value, 10, 64); err == nil && id > 0 {
-			needsResolver = true
-		}
-	}
-	if s.Owners == nil && scope == "specified" && needsResolver {
+	if json.Unmarshal(params["owner_scope"], &scope) != nil || (scope != "all" && scope != "specified") || len(ids) > 100 || (scope == "specified" && len(ids) == 0) {
 		return nil, ErrCustomerReadUnavailable
 	}
-	if !needsResolver {
+	seen := map[string]bool{}
+	for _, value := range ids {
+		id, err := strconv.ParseInt(value, 10, 64)
+		if err != nil || id < 1 || strconv.FormatInt(id, 10) != value || seen[value] {
+			return nil, ErrCustomerReadUnavailable
+		}
+		seen[value] = true
+	}
+	// The all-scope empty selection is a valid frozen-form value and does not
+	// depend on Access. Specified scope must resolve every local StaffID before
+	// Owner facts are compared with provider userids.
+	if scope == "all" {
 		return params, nil
 	}
 	if s.Owners == nil {
-		return params, nil
+		return nil, ErrCustomerReadUnavailable
 	}
-	values := []string{}
+	values := make([]string, 0, len(ids))
 	for _, value := range ids {
-		id, err := strconv.ParseInt(value, 10, 64)
-		if err != nil || id < 1 {
-			continue
-		}
+		id, _ := strconv.ParseInt(value, 10, 64)
 		provider, found, err := s.Owners.AudienceOwnerUserID(ctx, accessport.StaffID(id))
 		if err != nil {
-			return nil, err
+			return nil, ErrCustomerReadUnavailable
 		}
-		if found {
-			values = append(values, provider)
+		if !found || provider == "" {
+			return nil, ErrCustomerReadUnavailable
 		}
+		values = append(values, provider)
 	}
 	encoded, _ := json.Marshal(values)
 	params["owner_staff_ids"] = encoded

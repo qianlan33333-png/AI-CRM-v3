@@ -28,8 +28,13 @@ type legacyFacts struct {
 }
 
 func (legacyFacts) AudienceOwnerUserID(_ context.Context, id accessport.StaffID) (string, bool, error) {
-	if id == 9 {
+	switch id {
+	case 9:
 		return "bob", true, nil
+	case 19:
+		return "staff-a", true, nil
+	case 20:
+		return "staff-b", true, nil
 	}
 	return "", false, nil
 }
@@ -113,17 +118,17 @@ func TestLegacyTemplateSourcesEvaluateFrozenConditions(t *testing.T) {
 		template         segmentdsl.Template
 		want             []customerdomain.CustomerID
 	}{
-		{"contact-registration", `{"owner_scope":"specified","owner_staff_ids":["staff-a"],"contact_statuses":["active"],"registration_status":"registered"}`, segmentdsl.WeComContactRegistration, []customerdomain.CustomerID{1}},
+		{"contact-registration", `{"owner_scope":"specified","owner_staff_ids":["19"],"contact_statuses":["active"],"registration_status":"registered"}`, segmentdsl.WeComContactRegistration, []customerdomain.CustomerID{1}},
 		// Question conditions use AND across questions and OR inside each option list.
-		{"first-questionnaire-choice", `{"questionnaire_id":"9","conditions":[{"question_id":"11","option_ids":["101","102"]},{"question_id":"12","option_ids":["202"]}],"owner_scope":"specified","owner_staff_ids":["staff-a"]}`, segmentdsl.QuestionnaireChoiceAnswers, []customerdomain.CustomerID{1}},
+		{"first-questionnaire-choice", `{"questionnaire_id":"9","conditions":[{"question_id":"11","option_ids":["101","102"]},{"question_id":"12","option_ids":["202"]}],"owner_scope":"specified","owner_staff_ids":["19"]}`, segmentdsl.QuestionnaireChoiceAnswers, []customerdomain.CustomerID{1}},
 		// A time window is [from,to); unknown PaidAt cannot enter it. Owner scope
 		// remains effective even when the active-contact switch is false.
-		{"paid-payer-window-owner", `{"product_codes":["paid-course"],"paid_at_from":"2026-09-05T09:00:00Z","paid_at_to":"2026-09-05T12:00:00Z","owner_scope":"specified","owner_staff_ids":["staff-a"],"require_active_wecom_contact":false}`, segmentdsl.PaidOrder, []customerdomain.CustomerID{1}},
-		{"channel-entry", `{"channel_codes":["channel-7"],"entered_days_min":2,"entered_days_max":3,"owner_scope":"specified","owner_staff_ids":["staff-a"],"require_active_wecom_contact":true}`, segmentdsl.ChannelEntry, []customerdomain.CustomerID{1}},
+		{"paid-payer-window-owner", `{"product_codes":["paid-course"],"paid_at_from":"2026-09-05T09:00:00Z","paid_at_to":"2026-09-05T12:00:00Z","owner_scope":"specified","owner_staff_ids":["19"],"require_active_wecom_contact":false}`, segmentdsl.PaidOrder, []customerdomain.CustomerID{1}},
+		{"channel-entry", `{"channel_codes":["channel-7"],"entered_days_min":2,"entered_days_max":3,"owner_scope":"specified","owner_staff_ids":["19"],"require_active_wecom_contact":true}`, segmentdsl.ChannelEntry, []customerdomain.CustomerID{1}},
 		// The source supplies the immutable first click, so a later click cannot
 		// reset this three-day elapsed result.
-		{"radar-first-click", `{"radar_ids":["8"],"elapsed_min":3,"elapsed_max":4,"elapsed_unit":"day","owner_scope":"specified","owner_staff_ids":["staff-a"]}`, segmentdsl.RadarFirstClickElapsed, []customerdomain.CustomerID{1}},
-		{"member-real-usage", `{"owner_scope":"specified","owner_staff_ids":["staff-a"],"service_period":"active","registration_status":"registered","usage_status":"used","membership_tiers":["pro"],"membership_statuses":["active"]}`, segmentdsl.MemberUsageStatus, []customerdomain.CustomerID{1}},
+		{"radar-first-click", `{"radar_ids":["8"],"elapsed_min":3,"elapsed_max":4,"elapsed_unit":"day","owner_scope":"specified","owner_staff_ids":["19"]}`, segmentdsl.RadarFirstClickElapsed, []customerdomain.CustomerID{1}},
+		{"member-real-usage", `{"owner_scope":"specified","owner_staff_ids":["19"],"service_period":"active","registration_status":"registered","usage_status":"used","membership_tiers":["pro"],"membership_statuses":["active"]}`, segmentdsl.MemberUsageStatus, []customerdomain.CustomerID{1}},
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
@@ -140,11 +145,11 @@ func TestLegacyTemplateSourceDoesNotBorrowCurrentContactOwnerOrExpireMembershipB
 	at := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
 	facts := legacyFacts{contacts: []wecomport.AudienceContact{{CustomerID: 9, OwnerUserID: "staff-a", Status: "active"}}, orders: []orderport.PaidAudienceOrder{{CustomerID: 9, ProductCode: "course"}}, members: []hxcport.AudienceMemberFact{{CustomerID: 9, Registered: true, IsMember: false, Tier: "pro", Status: "expired"}}}
 	source := LegacyTemplateSource{Contacts: facts, Orders: facts, Members: facts, Owners: facts}
-	paid, err := source.Evaluate(context.Background(), legacyDefinition(t, segmentdsl.PaidOrder, `{"product_codes":["course"],"paid_at_from":"","paid_at_to":"","owner_scope":"specified","owner_staff_ids":["staff-a"],"require_active_wecom_contact":false}`), at)
+	paid, err := source.Evaluate(context.Background(), legacyDefinition(t, segmentdsl.PaidOrder, `{"product_codes":["course"],"paid_at_from":"","paid_at_to":"","owner_scope":"specified","owner_staff_ids":["19"],"require_active_wecom_contact":false}`), at)
 	if err != nil || len(paid.CustomerIDs) != 0 {
 		t.Fatalf("paid=%+v err=%v", paid, err)
 	}
-	active, err := source.Evaluate(context.Background(), legacyDefinition(t, segmentdsl.MemberUsageStatus, `{"owner_scope":"specified","owner_staff_ids":["staff-a"],"service_period":"active","registration_status":"registered","usage_status":"any","membership_tiers":[],"membership_statuses":[]}`), at)
+	active, err := source.Evaluate(context.Background(), legacyDefinition(t, segmentdsl.MemberUsageStatus, `{"owner_scope":"specified","owner_staff_ids":["19"],"service_period":"active","registration_status":"registered","usage_status":"any","membership_tiers":[],"membership_statuses":[]}`), at)
 	if err != nil || len(active.CustomerIDs) != 0 {
 		t.Fatalf("active=%+v err=%v", active, err)
 	}
@@ -159,4 +164,30 @@ func TestChannelOwnerStaffIDDoesNotCollideWithProviderUserID(t *testing.T) {
 	if err != nil || len(r.CustomerIDs) != 1 || r.CustomerIDs[0] != 1 {
 		t.Fatalf("result=%+v err=%v", r, err)
 	}
+}
+
+func TestLegacyTemplateOwnerReferencesRejectNonCanonicalIDsAndNeedAccess(t *testing.T) {
+	at := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+	facts := legacyFacts{channels: []channelport.AudienceEntry{{CustomerID: 1, ChannelCode: "c", LastEnteredAt: at.Add(-24 * time.Hour)}}}
+	withOwners := LegacyTemplateSource{Channels: facts, Owners: facts}
+	for _, ids := range []string{
+		`["bob"]`, `["09"]`, `["0"]`, `["-1"]`, `[""]`, `["9223372036854775808"]`, `["19","bob"]`,
+	} {
+		t.Run(ids, func(t *testing.T) {
+			definition := legacyDefinition(t, segmentdsl.ChannelEntry, `{"channel_codes":["c"],"entered_days_min":1,"entered_days_max":2,"owner_scope":"specified","owner_staff_ids":`+ids+`,"require_active_wecom_contact":false}`)
+			if _, err := withOwners.Evaluate(context.Background(), definition, at); err == nil {
+				t.Fatalf("non-canonical owner ids accepted: %s", ids)
+			}
+		})
+	}
+	definition := legacyDefinition(t, segmentdsl.ChannelEntry, `{"channel_codes":["c"],"entered_days_min":1,"entered_days_max":2,"owner_scope":"specified","owner_staff_ids":["19"],"require_active_wecom_contact":false}`)
+	if _, err := (LegacyTemplateSource{Channels: facts}).Evaluate(context.Background(), definition, at); err == nil {
+		t.Fatal("specified owner succeeded without Access reader")
+	}
+	allDefinition := legacyDefinition(t, segmentdsl.ChannelEntry, `{"channel_codes":["c"],"entered_days_min":1,"entered_days_max":2,"owner_scope":"all","owner_staff_ids":[],"require_active_wecom_contact":false}`)
+	result, err := (LegacyTemplateSource{Channels: facts}).Evaluate(context.Background(), allDefinition, at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertAudienceIDs(t, result, 1)
 }

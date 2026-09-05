@@ -61,6 +61,12 @@ type Handler struct {
 	owners    accessport.AudienceOwnerResolver
 }
 
+var (
+	errOwnerInvalid     = errors.New("invalid owner selection")
+	errOwnerUnknown     = errors.New("unknown owner")
+	errOwnerUnavailable = errors.New("owner resolver unavailable")
+)
+
 func NewHandler(service ConfigurationApplication, security RequestSecurity) (*Handler, error) {
 	if service == nil || security == nil {
 		return nil, errors.New("segment HTTP dependencies are required")
@@ -403,7 +409,13 @@ func (h *Handler) configuration(w http.ResponseWriter, r *http.Request, packageI
 	}
 	definition, e := h.normalizeOwnerUserIDs(r.Context(), in.Definition)
 	if e != nil {
-		fail(w, 422, "owner_unavailable")
+		code := "owner_invalid"
+		if errors.Is(e, errOwnerUnknown) {
+			code = "owner_unknown"
+		} else if errors.Is(e, errOwnerUnavailable) {
+			code = "owner_unavailable"
+		}
+		fail(w, 422, code)
 		return
 	}
 	item, e := h.service.PutConfiguration(r.Context(), segmentapp.ConfigurationCommand{PackageID: packageID, ExpectedPackageVersion: in.ExpectedPackageVersion, Definition: definition, RefreshCronUTC: in.RefreshCronUTC, Actor: p.InternalID, IdempotencyKey: key})
@@ -422,28 +434,49 @@ func (h *Handler) normalizeOwnerUserIDs(ctx context.Context, raw json.RawMessage
 		Parameters map[string]json.RawMessage `json:"parameters"`
 	}
 	if err := json.Unmarshal(raw, &definition); err != nil || definition.Parameters == nil {
-		return nil, errors.New("invalid definition")
+		return nil, errOwnerInvalid
 	}
 	legacy, exists := definition.Parameters["owner_userids"]
 	if !exists {
+		var scope string
+		if json.Unmarshal(definition.Parameters["owner_scope"], &scope) == nil && scope == "specified" && h.owners == nil {
+			return nil, errOwnerUnavailable
+		}
 		return raw, nil
 	}
 	if _, mixed := definition.Parameters["owner_staff_ids"]; mixed {
-		return nil, errors.New("mixed owner identifiers")
+		return nil, errOwnerInvalid
 	}
-	if h.owners == nil {
-		return nil, errors.New("owner resolver unavailable")
+	var scope string
+	if err := json.Unmarshal(definition.Parameters["owner_scope"], &scope); err != nil || (scope != "all" && scope != "specified") {
+		return nil, errOwnerInvalid
 	}
 	var values []string
-	if err := json.Unmarshal(legacy, &values); err != nil || len(values) == 0 || len(values) > 100 {
-		return nil, errors.New("invalid owner userid")
+	if err := json.Unmarshal(legacy, &values); err != nil || len(values) > 100 || (scope == "specified" && len(values) == 0) {
+		return nil, errOwnerInvalid
+	}
+	// The frozen form sends an empty owner_userids list for all scope. It is a
+	// valid no-filter selection and must not require a live Access projection.
+	if scope == "all" && len(values) == 0 {
+		definition.Parameters["owner_staff_ids"] = json.RawMessage("[]")
+		delete(definition.Parameters, "owner_userids")
+		return marshalNormalizedOwnerDefinition(raw, definition.Parameters)
+	}
+	if h.owners == nil {
+		return nil, errOwnerUnavailable
 	}
 	staff := make([]string, 0, len(values))
 	seen := map[string]bool{}
 	for _, value := range values {
+		if value == "" || strings.TrimSpace(value) != value {
+			return nil, errOwnerInvalid
+		}
 		resolved, found, err := h.owners.ResolveAudienceOwner(ctx, value)
-		if err != nil || !found || resolved < 1 {
-			return nil, errors.New("owner unavailable")
+		if err != nil {
+			return nil, errOwnerUnavailable
+		}
+		if !found || resolved < 1 {
+			return nil, errOwnerUnknown
 		}
 		id := strconv.FormatInt(int64(resolved), 10)
 		if !seen[id] {
@@ -454,12 +487,19 @@ func (h *Handler) normalizeOwnerUserIDs(ctx context.Context, raw json.RawMessage
 	encoded, _ := json.Marshal(staff)
 	definition.Parameters["owner_staff_ids"] = encoded
 	delete(definition.Parameters, "owner_userids")
+	return marshalNormalizedOwnerDefinition(raw, definition.Parameters)
+}
+
+func marshalNormalizedOwnerDefinition(raw json.RawMessage, parameters map[string]json.RawMessage) (json.RawMessage, error) {
 	var envelope map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &envelope); err != nil {
 		return nil, err
 	}
-	parameters, _ := json.Marshal(definition.Parameters)
-	envelope["parameters"] = parameters
+	encoded, err := json.Marshal(parameters)
+	if err != nil {
+		return nil, err
+	}
+	envelope["parameters"] = encoded
 	return json.Marshal(envelope)
 }
 

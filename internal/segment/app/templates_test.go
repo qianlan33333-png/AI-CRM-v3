@@ -27,6 +27,12 @@ func TestDefinitionRejectsOpenEndedCapabilities(t *testing.T) {
 		`{"schema_version":1,"template_key":"wecom_contact_registration","parameters":{"owner_scope":"all","owner_staff_ids":[],"contact_statuses":[] ,"registration_status":"any"}}`,
 		`{"schema_version":1,"template_key":"active_contacts","parameters":{"within_days":"0"}}`,
 		`{"schema_version":1,"template_key":"channel_entry","parameters":{"channel_codes":["wecom"],"token":"secret"}}`,
+		`{"schema_version":1,"template_key":"wecom_contact_registration","parameters":{"owner_scope":"specified","owner_staff_ids":["bob"],"contact_statuses":["active"],"registration_status":"any"}}`,
+		`{"schema_version":1,"template_key":"wecom_contact_registration","parameters":{"owner_scope":"specified","owner_staff_ids":["09"],"contact_statuses":["active"],"registration_status":"any"}}`,
+		`{"schema_version":1,"template_key":"wecom_contact_registration","parameters":{"owner_scope":"specified","owner_staff_ids":["0"],"contact_statuses":["active"],"registration_status":"any"}}`,
+		`{"schema_version":1,"template_key":"wecom_contact_registration","parameters":{"owner_scope":"specified","owner_staff_ids":["-1"],"contact_statuses":["active"],"registration_status":"any"}}`,
+		`{"schema_version":1,"template_key":"wecom_contact_registration","parameters":{"owner_scope":"specified","owner_staff_ids":["9223372036854775808"],"contact_statuses":["active"],"registration_status":"any"}}`,
+		`{"schema_version":1,"template_key":"wecom_contact_registration","parameters":{"owner_scope":"specified","owner_staff_ids":["9","bob"],"contact_statuses":["active"],"registration_status":"any"}}`,
 	}
 	for _, raw := range invalid {
 		if _, err := CanonicalDefinition(json.RawMessage(raw)); !errors.Is(err, ErrUnsupportedDefinition) {

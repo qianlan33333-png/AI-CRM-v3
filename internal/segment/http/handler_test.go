@@ -48,6 +48,12 @@ func (ownerResolverStub) ResolveAudienceOwner(_ context.Context, value string) (
 	return 0, false, nil
 }
 
+type ownerResolverFailure struct{}
+
+func (ownerResolverFailure) ResolveAudienceOwner(context.Context, string) (accessport.StaffID, bool, error) {
+	return 0, false, errors.New("access projection unavailable")
+}
+
 type packageListApplication struct{ fakeApplication }
 
 func (packageListApplication) ListPackages(context.Context, int, int, bool) (segmentapp.PackagePage, error) {
@@ -188,5 +194,44 @@ func TestConfigurationConvertsFrozenOwnerUserIDsThroughAccess(t *testing.T) {
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK || !strings.Contains(string(capture.command.Definition), `"owner_staff_ids":["9"]`) || strings.Contains(string(capture.command.Definition), "owner_userids") {
 		t.Fatalf("status=%d definition=%s", response.Code, capture.command.Definition)
+	}
+}
+
+func TestConfigurationOwnerIdentifierFailuresAndAllScopeEmptyCompatibility(t *testing.T) {
+	admin := accessdomain.Principal{InternalID: 1, Kind: accessdomain.KindAdmin, Roles: []accessdomain.Role{accessdomain.RoleAdmin}}
+	requestFor := func(parameters string) *http.Request {
+		body := `{"expected_package_version":1,"refresh_cron_utc":"","definition":{"schema_version":1,"template_key":"wecom_contact_registration","parameters":` + parameters + `}}`
+		request := httptest.NewRequest(http.MethodPut, "/api/admin/ai-audience/packages/7/configuration", strings.NewReader(body))
+		request.Header.Set("Idempotency-Key", "1234567890abcdef")
+		return request
+	}
+	for _, fixture := range []struct {
+		name, parameters, wantCode string
+		owners                     accessport.AudienceOwnerResolver
+	}{
+		{"all empty without resolver", `{"owner_scope":"all","owner_userids":[],"contact_statuses":["active"],"registration_status":"any"}`, "", nil},
+		{"specified local ids without resolver", `{"owner_scope":"specified","owner_staff_ids":["9"],"contact_statuses":["active"],"registration_status":"any"}`, "owner_unavailable", nil},
+		{"mixed identifiers", `{"owner_scope":"specified","owner_userids":["wecom-owner"],"owner_staff_ids":["9"],"contact_statuses":["active"],"registration_status":"any"}`, "owner_invalid", ownerResolverStub{}},
+		{"unknown owner", `{"owner_scope":"specified","owner_userids":["unknown"],"contact_statuses":["active"],"registration_status":"any"}`, "owner_unknown", ownerResolverStub{}},
+		{"resolver unavailable", `{"owner_scope":"specified","owner_userids":["wecom-owner"],"contact_statuses":["active"],"registration_status":"any"}`, "owner_unavailable", ownerResolverFailure{}},
+	} {
+		t.Run(fixture.name, func(t *testing.T) {
+			capture := &configurationCapture{}
+			handler, err := NewRuntimeHandlerWithOwners(capture, snapshotApplication{}, fakeSecurity{principal: admin}, fixture.owners)
+			if err != nil {
+				t.Fatal(err)
+			}
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, requestFor(fixture.parameters))
+			if fixture.wantCode == "" {
+				if response.Code != http.StatusOK || !strings.Contains(string(capture.command.Definition), `"owner_staff_ids":[]`) || strings.Contains(string(capture.command.Definition), "owner_userids") {
+					t.Fatalf("status=%d definition=%s", response.Code, capture.command.Definition)
+				}
+				return
+			}
+			if response.Code != http.StatusUnprocessableEntity || !strings.Contains(response.Body.String(), `"error":"`+fixture.wantCode+`"`) {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+		})
 	}
 }

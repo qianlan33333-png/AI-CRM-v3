@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -256,7 +257,22 @@ func validWindow(from, to string) bool {
 func validOwner(values map[string]json.RawMessage) bool {
 	scope, ok := stringOf(values, "owner_scope")
 	ids, idsOK := stringsOf(values, "owner_staff_ids", 0, 100)
-	return ok && idsOK && validStrings(ids, 0, 100) && ((scope == "all") || (scope == "specified" && len(ids) > 0))
+	return ok && idsOK && validStaffIDs(ids) && ((scope == "all") || (scope == "specified" && len(ids) > 0))
+}
+
+// validStaffIDs keeps a persisted definition in the local Access namespace.
+// Provider userids, including numeric userids, are never valid here.
+func validStaffIDs(ids []string) bool {
+	if !validStrings(ids, 0, 100) {
+		return false
+	}
+	for _, value := range ids {
+		id, err := strconv.ParseInt(value, 10, 64)
+		if err != nil || id < 1 || strconv.FormatInt(id, 10) != value {
+			return false
+		}
+	}
+	return true
 }
 func positiveInt(value string) bool {
 	if len(value) > 3 {
