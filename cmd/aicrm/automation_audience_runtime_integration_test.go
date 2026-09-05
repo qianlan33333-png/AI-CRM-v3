@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -8,6 +9,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	"image/color"
+	"image/png"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -37,6 +42,8 @@ import (
 	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
 	identityport "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/port"
 	identityquery "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/query"
+	mediaapp "github.com/qianlan33333-png/AI-CRM-v3/internal/media/app"
+	mediastore "github.com/qianlan33333-png/AI-CRM-v3/internal/media/store"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/outbound"
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
 	platformjobqueue "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/jobqueue"
@@ -84,7 +91,12 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	aiService, err := aiassistantapp.NewService(uow, aiRepo, automationAudienceAIRecipients{}, automationAudienceAIStaff{}, automationAudienceAIMaterials{}, automationAudienceAIIdentities{})
+	mediaRepo, err := mediastore.NewPostgreSQL(native, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mediaService := mediaapp.NewReadService(uow, mediaRepo)
+	aiService, err := aiassistantapp.NewService(uow, aiRepo, automationAudienceAIRecipients{}, automationAudienceAIStaff{}, aiMaterialAdapter{capturer: mediaRepo, references: mediaRepo}, automationAudienceAIIdentities{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,6 +127,7 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 		t.Fatal(err)
 	}
 	staffID := automationAudienceInsertProviderStaff(t, ctx, native)
+	materials := automationAudienceCreateMedia(t, ctx, mediaRepo, staffID)
 	customerIDs := automationAudienceInsertProviderCustomers(t, ctx, native)
 	source := &automationAudienceSource{}
 	source.Set(customerIDs[:1])
@@ -132,8 +145,8 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 
 	now := time.Date(2026, 9, 5, 20, 0, 0, 0, time.UTC)
 	packageID := automationAudiencePackage(t, ctx, uow, segmentRepo, now)
-	automationService := automationapp.NewAgentService(uow, automationRepo, automationRepo)
-	agent := automationAudiencePublishedAgent(t, ctx, automationService, staffID)
+	automationService := automationapp.NewAgentServiceWithMediaReferences(uow, automationRepo, mediaRepo, mediaRepo, mediaRepo, mediaRepo, automationRepo)
+	agent := automationAudiencePublishedAgent(t, ctx, automationService, staffID, materials)
 	publishedAgent, found, err := automationService.PublishedAgent(ctx, agent.ID)
 	if err != nil || !found {
 		t.Fatalf("published agent=%+v found=%v err=%v", agent, found, err)
@@ -178,12 +191,13 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 		// transaction committed, so the Identity Owner needs this read adapter
 		// to bind its own local transaction.
 		Identities: outboundIdentityAdapter{uow: uow, reader: identityquery.NewPostgreSQL()},
-		Staff:      segmentStaff, Content: automationService, Payloads: automationAudienceFrozenPayload{}, Writer: writer,
+		Staff:      segmentStaff, Content: automationService,
+		Payloads: automationFrozenPayloadReader{preparer: aiPrivatePayloadReader{images: mediaService, materials: mediaRepo}}, Writer: writer,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	privateProvider, err := outbound.NewPrivateMessageProvider(true, privateWriter, automationAudiencePrivateTarget{}, automationAudiencePrivatePayload{content: aiRepo}, writer)
+	privateProvider, err := outbound.NewPrivateMessageProvider(true, privateWriter, automationAudiencePrivateTarget{}, aiPrivatePayloadReader{content: aiRepo, images: mediaService, materials: mediaRepo}, writer)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -214,7 +228,7 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 	if err = runtimeService.SetReviewPlanIntake(aiService, automationService); err != nil {
 		t.Fatal(err)
 	}
-	if err = runtimeService.SetOutboundContentFreezer(automationAudienceFrozenContent{}); err != nil {
+	if err = runtimeService.SetOutboundContentFreezer(automationOutboundContentFreezer{capturer: mediaRepo}); err != nil {
 		t.Fatal(err)
 	}
 	if err = runtimeService.SetEffectReconciler(effects); err != nil {
@@ -290,7 +304,7 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 		if native.QueryRow(ctx, `SELECT count(*) FROM outbound_message_intents WHERE source_kind='automation_enrollment' AND state='provider_accepted'`).Scan(&complete) != nil {
 			return false
 		}
-		return complete == 1
+		return complete == 1 && wecomServer.Uploads() == 3
 	}, func() string { return automationAudienceRuntimeDiagnostics(ctx, native, provider) })
 	// Incremental evaluation contains only the new result. Segment merges it
 	// with the prior snapshot, so the original member remains present.
@@ -315,7 +329,7 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 		if native.QueryRow(ctx, `SELECT count(*) FROM outbound_message_intents WHERE source_kind='automation_enrollment' AND state='provider_accepted'`).Scan(&complete) != nil {
 			return false
 		}
-		return prior == 1 && added == 1 && complete == 2
+		return prior == 1 && added == 1 && complete == 2 && wecomServer.Uploads() == 6
 	})
 	stopRuntime()
 	var enrollments, automaticEffects int
@@ -364,12 +378,12 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 		}
 		// The fourth local Provider request is deliberately disconnected. Its
 		// effect is unknown and must not be retried with a new key.
-		return accepted == 1 && unknown == 1 && wecomServer.Calls() == 4
+		return accepted == 1 && unknown == 1 && wecomServer.Calls() == 4 && wecomServer.Uploads() == 12
 	}, func() string { return automationAudienceRuntimeDiagnostics(ctx, native, provider) })
 	stopRuntime()
 	replayed, err := runtimeService.ConfirmRun(ctx, automationapp.RunConfirmCommand{PackageID: packageID, PackageVersion: preview.PackageVersion, SnapshotID: preview.SnapshotID, AgentID: preview.AgentID, AgentPublishedVersion: preview.AgentPublishedVersion, PreviewDigest: automationapp.PreviewDigestString(preview), Actor: staffID, IdempotencyKey: "audience-runtime-manual-0001"})
-	if err != nil || replayed.ID != manual.ID || replayed.AIPlanID != manual.AIPlanID || wecomServer.Calls() != 4 {
-		t.Fatalf("manual replay=%+v provider calls=%d err=%v", replayed, wecomServer.Calls(), err)
+	if err != nil || replayed.ID != manual.ID || replayed.AIPlanID != manual.AIPlanID || wecomServer.Calls() != 4 || wecomServer.Uploads() != 12 {
+		t.Fatalf("manual replay=%+v provider calls=%d uploads=%d err=%v", replayed, wecomServer.Calls(), wecomServer.Uploads(), err)
 	}
 
 	readHandler, err := automationhttp.NewRuntimeHandler(runtimeService, automationAudienceSecurity{})
@@ -383,6 +397,7 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 	for _, check := range []struct{ path, contains string }{
 		{"/api/admin/automation-runs?limit=100", `"ai_plan_state":"needs_attention"`},
 		{"/api/admin/automation-runs/" + automationAudienceInt(manual.ID), `"state":"outcome_unknown"`},
+		{"/api/admin/automation-runs/" + automationAudienceInt(manual.ID), `"outcome_unknown_count":1`},
 		{"/api/admin/automation-runs/" + automationAudienceInt(manual.ID), `"ai_plan_state":"needs_attention"`},
 		{"/api/admin/automation-runs/" + automationAudienceInt(manual.ID) + "/recipients?limit=100", "items"},
 	} {
@@ -454,31 +469,6 @@ func (automationAudienceCanonical) CanonicalCustomers(_ context.Context, ids []c
 	return ids, nil
 }
 
-type automationAudienceFrozenContent struct{}
-
-func (automationAudienceFrozenContent) FreezeOutboundContent(_ context.Context, content automationport.OutboundPublishedContent) (json.RawMessage, [32]byte, error) {
-	raw, err := json.Marshal(map[string]any{"schema_version": 1, "content_text": content.Content.ContentText})
-	if err != nil {
-		return nil, [32]byte{}, err
-	}
-	return raw, sha256.Sum256(raw), nil
-}
-
-type automationAudienceFrozenPayload struct{}
-
-func (automationAudienceFrozenPayload) LoadFrozenAutomationMessagePayload(_ context.Context, raw json.RawMessage, digest [32]byte) (outbound.PrivateMessagePayload, error) {
-	if len(raw) == 0 || sha256.Sum256(raw) != digest {
-		return outbound.PrivateMessagePayload{}, errors.New("invalid frozen automation fixture content")
-	}
-	var snapshot struct {
-		ContentText string `json:"content_text"`
-	}
-	if json.Unmarshal(raw, &snapshot) != nil || snapshot.ContentText != "runtime hello" {
-		return outbound.PrivateMessagePayload{}, errors.New("invalid frozen automation fixture payload")
-	}
-	return outbound.PrivateMessagePayload{Text: snapshot.ContentText}, nil
-}
-
 // These fixtures provide only already-canonical Customer and active-staff
 // facts to the real AI Plan service. The plan, receipt, audit and outbox still
 // use its PostgreSQL Owner store in the shared transaction.
@@ -494,15 +484,6 @@ func (automationAudienceAIStaff) StaffSnapshot(_ context.Context, id int64) (aia
 	return aiassistantapp.StaffSnapshot{ID: id, DisplayName: "runtime staff", Active: true}, nil
 }
 
-type automationAudienceAIMaterials struct{}
-
-func (automationAudienceAIMaterials) ResolveMaterial(_ context.Context, block aiassistantport.ContentBlock) (aiassistantport.ContentBlock, error) {
-	return block, nil
-}
-func (automationAudienceAIMaterials) RegisterMaterialReference(context.Context, aiassistantport.ContentBlock, effectport.Digest) error {
-	return nil
-}
-
 type automationAudienceAIIdentities struct{}
 
 func (automationAudienceAIIdentities) Resolve(context.Context, identitydomain.Reference) (identityport.ResolveResult, error) {
@@ -516,18 +497,6 @@ func (automationAudiencePrivateTarget) ResolvePrivateMessageTarget(_ context.Con
 		return outbound.PrivateMessageTarget{}, errors.New("invalid private-message fixture target")
 	}
 	return outbound.PrivateMessageTarget{ExternalUserID: "runtime-external-" + strconv.FormatInt(int64(customerID), 10), StaffUserID: "sender-a"}, nil
-}
-
-type automationAudiencePrivatePayload struct {
-	content aiassistantport.OutboundPayloadReader
-}
-
-func (p automationAudiencePrivatePayload) LoadPrivateMessagePayload(ctx context.Context, reference string, digest effectport.Digest) (outbound.PrivateMessagePayload, error) {
-	content, err := p.content.LoadOutboundContent(ctx, reference, digest)
-	if err != nil || len(content.Blocks) != 1 || content.Blocks[0].Kind != aiassistantport.ContentText {
-		return outbound.PrivateMessagePayload{}, errors.New("invalid private-message fixture content")
-	}
-	return outbound.PrivateMessagePayload{Text: content.Blocks[0].Text}, nil
 }
 
 type automationAudienceEnrollmentSink struct{ runtime *automationapp.RuntimeService }
@@ -564,10 +533,11 @@ func (p *automationAudienceRecordingProvider) Error() string {
 
 type automationAudienceWeComServer struct {
 	*httptest.Server
-	t     *testing.T
-	mu    sync.Mutex
-	calls int
-	errs  []string
+	t       *testing.T
+	mu      sync.Mutex
+	calls   int
+	uploads int
+	errs    []string
 }
 
 func newAutomationAudienceWeComServer(t *testing.T) *automationAudienceWeComServer {
@@ -599,8 +569,30 @@ func (s *automationAudienceWeComServer) handle(w http.ResponseWriter, r *http.Re
 			Text     struct {
 				Content string `json:"content"`
 			} `json:"text"`
+			Attachments []struct {
+				MessageType string `json:"msgtype"`
+				Image       struct {
+					MediaID string `json:"media_id"`
+				} `json:"image"`
+				MiniProgram struct {
+					Title      string `json:"title"`
+					PicMediaID string `json:"pic_media_id"`
+					AppID      string `json:"appid"`
+					Page       string `json:"page"`
+				} `json:"miniprogram"`
+				File struct {
+					MediaID string `json:"media_id"`
+				} `json:"file"`
+				Link struct{ Title, Desc, URL string } `json:"link"`
+			} `json:"attachments"`
 		}
-		if json.NewDecoder(r.Body).Decode(&body) != nil || !strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") || body.ChatType != "single" || len(body.External) != 1 || (body.External[0] != "runtime-external-1" && body.External[0] != "runtime-external-2") || body.Sender != "sender-a" || body.Text.Content != "runtime hello" {
+		if json.NewDecoder(r.Body).Decode(&body) != nil {
+			s.record("invalid message JSON")
+			http.Error(w, "bad message body", http.StatusBadRequest)
+			return
+		}
+		validAttachments := len(body.Attachments) == 4 && body.Attachments[0].MessageType == "image" && body.Attachments[0].Image.MediaID != "" && body.Attachments[1].MessageType == "miniprogram" && body.Attachments[1].MiniProgram.Title == "Runtime card" && body.Attachments[1].MiniProgram.PicMediaID != "" && body.Attachments[1].MiniProgram.AppID == "wx-runtime" && body.Attachments[1].MiniProgram.Page == "pages/runtime" && body.Attachments[2].MessageType == "file" && body.Attachments[2].File.MediaID != "" && body.Attachments[3].MessageType == "link" && body.Attachments[3].Link.Title == "Join runtime group" && body.Attachments[3].Link.Desc == "Runtime group" && body.Attachments[3].Link.URL == "https://work.weixin.qq.com/gm/runtime"
+		if !strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") || body.ChatType != "single" || len(body.External) != 1 || (body.External[0] != "runtime-external-1" && body.External[0] != "runtime-external-2") || body.Sender != "sender-a" || body.Text.Content != "runtime hello" || !validAttachments {
 			s.record("invalid signed message body")
 			http.Error(w, "bad message body", http.StatusBadRequest)
 			return
@@ -624,6 +616,35 @@ func (s *automationAudienceWeComServer) handle(w http.ResponseWriter, r *http.Re
 			return
 		}
 		_, _ = w.Write([]byte(fmt.Sprintf(`{"errcode":0,"msgid":"runtime-msg-%d"}`, call)))
+	case "/cgi-bin/media/upload":
+		if r.Method != http.MethodPost || r.URL.Query().Get("access_token") != "runtime-token" || (r.URL.Query().Get("type") != "image" && r.URL.Query().Get("type") != "file") {
+			s.record("unexpected media upload")
+			http.Error(w, "bad media upload", http.StatusBadRequest)
+			return
+		}
+		if err := r.ParseMultipartForm(1 << 20); err != nil || r.MultipartForm == nil || len(r.MultipartForm.File["media"]) != 1 {
+			s.record("invalid media upload form")
+			http.Error(w, "bad media upload form", http.StatusBadRequest)
+			return
+		}
+		file, err := r.MultipartForm.File["media"][0].Open()
+		if err != nil {
+			s.record("media upload read failure")
+			http.Error(w, "bad media upload file", http.StatusBadRequest)
+			return
+		}
+		defer file.Close()
+		content, err := io.ReadAll(file)
+		if err != nil || len(content) < 6 {
+			s.record("empty media upload")
+			http.Error(w, "bad media upload bytes", http.StatusBadRequest)
+			return
+		}
+		s.mu.Lock()
+		s.uploads++
+		upload := s.uploads
+		s.mu.Unlock()
+		_, _ = w.Write([]byte(fmt.Sprintf(`{"errcode":0,"media_id":"runtime-upload-%d"}`, upload)))
 	default:
 		s.record("unexpected provider path " + r.URL.Path)
 		http.NotFound(w, r)
@@ -642,6 +663,11 @@ func (s *automationAudienceWeComServer) Calls() int {
 		s.t.Errorf("provider assertions: %s", strings.Join(s.errs, "; "))
 	}
 	return s.calls
+}
+func (s *automationAudienceWeComServer) Uploads() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.uploads
 }
 
 func automationAudienceInsertProviderStaff(t *testing.T, ctx context.Context, pool *pgxpool.Pool) int64 {
@@ -670,9 +696,61 @@ func automationAudienceInsertProviderCustomers(t *testing.T, ctx context.Context
 	return ids
 }
 
-func automationAudiencePublishedAgent(t *testing.T, ctx context.Context, service *automationapp.Service, actor int64) automationport.Agent {
+type automationAudienceMaterials struct {
+	imageID, miniID, attachmentID, inviteID int64
+}
+
+func automationAudienceCreateMedia(t *testing.T, ctx context.Context, repository *mediastore.Repository, actor int64) automationAudienceMaterials {
 	t.Helper()
-	agent, err := service.Create(ctx, automationport.CreateCommand{Agent: automationport.Agent{AgentName: "Runtime fixed script", AgentCode: "runtime-fixed-script", AutomationType: automationport.AutomationTypeFixedScript, Status: automationport.AgentStatusPaused, DraftRolePrompt: "runtime role", DraftTaskPrompt: "runtime task", FixedContentPackage: automationport.FixedContentPackage{ContentText: "runtime hello"}}, Actor: actor, IdempotencyKey: "audience-runtime-agent-create-0001"})
+	image, err := repository.CreateImage(ctx, actor, "audience-runtime-image-0001", mediastore.ImageInput{FileName: "runtime.png", MIME: "image/png", Name: "Runtime image", Content: automationAudiencePNG(t), Width: 2, Height: 2, Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	imageID, ok := image["id"].(int64)
+	if !ok || imageID < 1 {
+		t.Fatalf("image=%+v", image)
+	}
+	attachment, err := repository.CreateAttachment(ctx, actor, "audience-runtime-pdf-0001", mediastore.AttachmentInput{FileName: "runtime.pdf", Name: "Runtime PDF", Content: []byte("%PDF-1.4\nruntime fixture\n"), Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	attachmentID, ok := attachment["id"].(int64)
+	if !ok || attachmentID < 1 {
+		t.Fatalf("attachment=%+v", attachment)
+	}
+	mini, err := repository.CreateMiniProgram(ctx, actor, "audience-runtime-mini-0001", map[string]any{"name": "Runtime mini", "appid": "wx-runtime", "pagepath": "pages/runtime", "title": "Runtime card", "thumb_image_id": float64(imageID), "enabled": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	miniID, ok := mini["id"].(int64)
+	if !ok || miniID < 1 {
+		t.Fatalf("mini=%+v", mini)
+	}
+	invite, err := repository.CreateGroupInvite(ctx, actor, "audience-runtime-invite-0001", map[string]any{"name": "Runtime invite", "title": "Join runtime group", "description": "Runtime group", "join_url": "https://work.weixin.qq.com/gm/runtime", "cover_image_id": float64(imageID), "enabled": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inviteID, ok := invite["id"].(int64)
+	if !ok || inviteID < 1 {
+		t.Fatalf("invite=%+v", invite)
+	}
+	return automationAudienceMaterials{imageID: imageID, miniID: miniID, attachmentID: attachmentID, inviteID: inviteID}
+}
+
+func automationAudiencePNG(t *testing.T) []byte {
+	t.Helper()
+	canvas := image.NewRGBA(image.Rect(0, 0, 2, 2))
+	canvas.Set(0, 0, color.RGBA{R: 30, G: 120, B: 240, A: 255})
+	var out bytes.Buffer
+	if err := png.Encode(&out, canvas); err != nil {
+		t.Fatal(err)
+	}
+	return out.Bytes()
+}
+
+func automationAudiencePublishedAgent(t *testing.T, ctx context.Context, service *automationapp.Service, actor int64, materials automationAudienceMaterials) automationport.Agent {
+	t.Helper()
+	agent, err := service.Create(ctx, automationport.CreateCommand{Agent: automationport.Agent{AgentName: "Runtime fixed script", AgentCode: "runtime-fixed-script", AutomationType: automationport.AutomationTypeFixedScript, Status: automationport.AgentStatusPaused, DraftRolePrompt: "runtime role", DraftTaskPrompt: "runtime task", FixedContentPackage: automationport.FixedContentPackage{ContentText: "runtime hello", ImageLibraryIDs: []int64{materials.imageID}, MiniprogramLibraryIDs: []int64{materials.miniID}, AttachmentLibraryIDs: []int64{materials.attachmentID}, GroupInviteLibraryIDs: []int64{materials.inviteID}}}, Actor: actor, IdempotencyKey: "audience-runtime-agent-create-0001"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -841,7 +919,7 @@ func automationAudienceRuntimePool(t *testing.T) (*pgxpool.Pool, func()) {
 	if !ok {
 		t.Fatal("locate automation audience journey")
 	}
-	for _, name := range []string{"0001_platform.sql", "0002_identity.sql", "0003_access.sql", "0005_external_effects.sql", "0013_automation_agents.sql", "0036_ai_assistant_review.sql", "0037_outbound_private_messages.sql", "0039_segment_audience_configuration.sql", "0040_segment_audience_snapshots.sql", "0041_segment_audience_webhooks.sql", "0042_segment_audience_execution_bindings.sql", "0043_automation_runtime.sql", "0044_outbound_automation_messages.sql", "0045_segment_audience_member_events.sql", "0046_automation_run_reconciliations.sql", "0048_segment_audience_schedule_state.sql", "0053_segment_audience_member_event_fact_kinds.sql", "0083_segment_audience_refresh_modes.sql", "0085_segment_audience_refresh_kind.sql", "0087_automation_manual_ai_review.sql", "0089_outbound_message_content_snapshots.sql"} {
+	for _, name := range []string{"0001_platform.sql", "0002_identity.sql", "0003_access.sql", "0005_external_effects.sql", "0007_media.sql", "0013_automation_agents.sql", "0036_ai_assistant_review.sql", "0037_outbound_private_messages.sql", "0039_segment_audience_configuration.sql", "0040_segment_audience_snapshots.sql", "0041_segment_audience_webhooks.sql", "0042_segment_audience_execution_bindings.sql", "0043_automation_runtime.sql", "0044_outbound_automation_messages.sql", "0045_segment_audience_member_events.sql", "0046_automation_run_reconciliations.sql", "0048_segment_audience_schedule_state.sql", "0053_segment_audience_member_event_fact_kinds.sql", "0083_segment_audience_refresh_modes.sql", "0085_segment_audience_refresh_kind.sql", "0087_automation_manual_ai_review.sql", "0089_outbound_message_content_snapshots.sql"} {
 		sql, readErr := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "migrations", name))
 		if readErr != nil {
 			native.Close()

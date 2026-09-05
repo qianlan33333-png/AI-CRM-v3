@@ -64,6 +64,11 @@ type crossedError struct{}
 
 func (crossedError) Error() string               { return "uncertain" }
 func (crossedError) ProviderCallAttempted() bool { return true }
+
+type privateWriterError struct{ unknown bool }
+
+func (e privateWriterError) Error() string        { return "private provider failure" }
+func (e privateWriterError) OutcomeUnknown() bool { return e.unknown }
 func messageEnvelope() effectport.Envelope {
 	return effectport.Envelope{Owner: effectport.OwnerOutbound, Kind: effectport.KindAutomationMessage, SourceRefDigest: effectport.Hash("s"), TargetRefDigest: effectport.Hash("t"), PayloadDigest: effectport.Hash("p"), PolicyVersionHash: effectport.Hash("v")}
 }
@@ -98,6 +103,42 @@ func TestMessageProviderPostCallErrorIsOutcomeUnknown(t *testing.T) {
 	if err == nil || !result.CallAttempted || result.Completion != effectport.StateUnknown {
 		t.Fatalf("result=%#v err=%v", result, err)
 	}
+}
+func TestMessageProviderPrivateMessageRejectionsAreFinalNotUnknown(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		attempted bool
+		unknown   bool
+		want      effectport.State
+	}{
+		{name: "invalid payload before request", attempted: false, unknown: false, want: effectport.StateFinalFailed},
+		{name: "provider rejection after request", attempted: true, unknown: false, want: effectport.StateFinalFailed},
+		{name: "disconnected response", attempted: true, unknown: true, want: effectport.StateUnknown},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			writer := &writerStub{err: privateWriterError{unknown: test.unknown}}
+			provider := messageProviderFixture(t, true, true, writer)
+			// writerStub reports a crossed request; override it here to cover the
+			// sender's explicit attempted bit without changing the production path.
+			provider.writer = messageWriterAttempt{attempted: test.attempted, err: privateWriterError{unknown: test.unknown}}
+			result, err := provider.Execute(context.Background(), messageEnvelope(), effectport.Attempt{Number: 1, Generation: 1, Fence: 1})
+			if err != nil || result.Completion != test.want || result.CallAttempted != test.attempted {
+				t.Fatalf("result=%+v err=%v", result, err)
+			}
+		})
+	}
+}
+
+type messageWriterAttempt struct {
+	attempted bool
+	err       error
+}
+
+func (w messageWriterAttempt) SendPrivateMessage(_ context.Context, target PrivateMessageTarget, payload PrivateMessagePayload) (PrivateMessageProviderReceipt, bool, error) {
+	if target.ExternalUserID != "external-secret" || target.StaffUserID != "sender-secret" || payload.Text != "hello" {
+		return PrivateMessageProviderReceipt{}, false, errors.New("unexpected test payload")
+	}
+	return PrivateMessageProviderReceipt{}, w.attempted, w.err
 }
 func TestMessageProviderMissingIdentityFailsWithoutCall(t *testing.T) {
 	w := &writerStub{}

@@ -255,13 +255,49 @@ func (s *RuntimeService) projectAIPlanState(ctx context.Context, run *automation
 	case aiassistantport.PlanCompletedWithFailures:
 		run.State = automationport.RunPartialFailed
 	case aiassistantport.PlanNeedsAttention:
-		run.State = automationport.RunOutcomeUnknown
+		unknown, retryable, readErr := s.aiAttentionCounts(ctx, aiassistantport.PlanID(run.AIPlanID))
+		if readErr != nil {
+			return ErrRuntimeUnavailable
+		}
+		run.OutcomeUnknownCount = int64(unknown)
+		// AI marks both retryable failures and uncertain Provider outcomes as
+		// needing attention. Preserve that distinction in the Automation read
+		// model: only an actual uncertain recipient makes the run unknown.
+		if unknown > 0 {
+			run.State = automationport.RunOutcomeUnknown
+		} else if retryable > 0 {
+			run.State = automationport.RunPartialFailed
+		} else {
+			return ErrRuntimeUnavailable
+		}
 	case aiassistantport.PlanRejected:
 		run.State = automationport.RunCancelled
 	default:
 		return ErrRuntimeUnavailable
 	}
 	return nil
+}
+
+func (s *RuntimeService) aiAttentionCounts(ctx context.Context, planID aiassistantport.PlanID) (unknown, retryable int, err error) {
+	cursor := ""
+	for {
+		page, readErr := s.reviewPlans.ListRecipients(ctx, aiassistantport.RecipientPageQuery{PlanID: planID, Cursor: cursor, Limit: 100})
+		if readErr != nil {
+			return 0, 0, readErr
+		}
+		for _, recipient := range page.Items {
+			switch recipient.ExecutionState {
+			case aiassistantport.ExecutionOutcomeUnknown:
+				unknown++
+			case aiassistantport.ExecutionRetryableFailed:
+				retryable++
+			}
+		}
+		if page.NextCursor == "" {
+			return unknown, retryable, nil
+		}
+		cursor = page.NextCursor
+	}
 }
 func (s *RuntimeService) RunRecipients(ctx context.Context, id, cursor int64, limit int) ([]automationdomain.RuntimeRecipient, string, error) {
 	if id < 1 || cursor < 0 || limit < 1 || limit > 100 {

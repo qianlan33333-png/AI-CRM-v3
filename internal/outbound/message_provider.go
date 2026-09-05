@@ -2,7 +2,6 @@ package outbound
 
 import (
 	"context"
-	"errors"
 
 	accessport "github.com/qianlan33333-png/AI-CRM-v3/internal/access/port"
 	automationport "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/port"
@@ -94,16 +93,29 @@ func (p *MessageProvider) Execute(ctx context.Context, envelope effectport.Envel
 	}
 	receipt, attempted, err := p.writer.SendPrivateMessage(ctx, PrivateMessageTarget{ExternalUserID: identity.Value, StaffUserID: sender}, payload)
 	if err != nil {
-		return effectport.AdapterResult{Completion: map[bool]effectport.State{true: effectport.StateUnknown, false: effectport.StateRetryable}[attempted], CallAttempted: attempted, RealExternalCallExecuted: attempted}, err
+		// The sender distinguishes a preflight rejection (invalid payload,
+		// attachment limit, or provider permission failure) from a request whose
+		// outcome is genuinely unknown. Do not turn deterministic rejections into
+		// retries or unknown effects merely because this adapter was attempted.
+		state := effectport.StateRetryable
+		if failure, ok := err.(PrivateMessageSendError); ok {
+			state = effectport.StateFinalFailed
+			if attempted && failure.OutcomeUnknown() {
+				state = effectport.StateUnknown
+			}
+			// The typed sender error is already a complete Provider outcome. The
+			// effect kernel treats a returned error as retryable/unknown before it
+			// examines AdapterResult, so keep this classification observable.
+			return effectport.AdapterResult{Completion: state, ReceiptDigest: effectport.Hash("outbound.message.provider-error", string(envelope.Fingerprint())), CallAttempted: attempted, RealExternalCallExecuted: attempted}, nil
+		} else if attempted {
+			state = effectport.StateUnknown
+		}
+		return effectport.AdapterResult{Completion: state, ReceiptDigest: effectport.Hash("outbound.message.provider-error", string(envelope.Fingerprint())), CallAttempted: attempted, RealExternalCallExecuted: attempted}, err
 	}
 	if !attempted || receipt.MessageID == "" {
 		return effectport.AdapterResult{Completion: effectport.StateFinalFailed, ReceiptDigest: effectport.Hash("outbound.message.provider-rejected", string(envelope.Fingerprint()))}, nil
 	}
 	return effectport.AdapterResult{Completion: effectport.StateExecuted, ReceiptDigest: effectport.Hash("outbound.message.provider-receipt", receipt.MessageID, string(envelope.Fingerprint())), CallAttempted: true, RealExternalCallExecuted: true}, nil
-}
-func providerCallAttempted(err error) bool {
-	var v interface{ ProviderCallAttempted() bool }
-	return errors.As(err, &v) && v.ProviderCallAttempted()
 }
 
 var _ effectport.ProviderAdapter = (*MessageProvider)(nil)

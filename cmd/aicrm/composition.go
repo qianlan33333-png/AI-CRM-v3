@@ -929,7 +929,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if cfg.WeCom.ChannelQRProviderEnabled {
 		channelLinkProvider = outbound.NewChannelLinkProvider(channelLinkMutationReaderAdapter{uow: uow, source: channelLinkStore}, providerClient)
 	}
-	privateProvider, err := outbound.NewPrivateMessageProvider(cfg.AIAssistant.DispatchEnabled, privateWriter, aiPrivateTargetResolver{uow: uow, identities: queries, access: accessRepository, relationships: relationships, corpID: cfg.WeCom.CorpID}, aiPrivatePayloadReader{content: aiRepository, images: mediaService, materials: mediaRepository, uow: uow, capturer: mediaRepository}, providerClient)
+	privateProvider, err := outbound.NewPrivateMessageProvider(cfg.AIAssistant.DispatchEnabled, privateWriter, aiPrivateTargetResolver{uow: uow, identities: queries, access: accessRepository, relationships: relationships, corpID: cfg.WeCom.CorpID}, aiPrivatePayloadReader{content: aiRepository, images: mediaService, materials: mediaRepository}, providerClient)
 	if err != nil {
 		return fail(err)
 	}
@@ -945,7 +945,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		}
 		tagCatalogProvider = catalogProvider
 	}
-	messageProvider, providerErr := outbound.NewMessageProvider(outbound.MessageProviderConfig{Enabled: cfg.Effects.ProviderEnabled && cfg.WeCom.Enabled && cfg.AutomationOperations.ProviderEnabled(), CorpScope: "wecom-corp:" + cfg.WeCom.CorpID, Executions: outboundMessages, Identities: outboundIdentityAdapter{uow: uow, reader: queries}, Staff: segmentStaff, Content: automationService, Payloads: automationFrozenPayloadReader{preparer: aiPrivatePayloadReader{images: mediaService, materials: mediaRepository, uow: uow, capturer: mediaRepository}}, Writer: providerClient})
+	messageProvider, providerErr := outbound.NewMessageProvider(outbound.MessageProviderConfig{Enabled: cfg.Effects.ProviderEnabled && cfg.WeCom.Enabled && cfg.AutomationOperations.ProviderEnabled(), CorpScope: "wecom-corp:" + cfg.WeCom.CorpID, Executions: outboundMessages, Identities: outboundIdentityAdapter{uow: uow, reader: queries}, Staff: segmentStaff, Content: automationService, Payloads: automationFrozenPayloadReader{preparer: aiPrivatePayloadReader{images: mediaService, materials: mediaRepository}}, Writer: providerClient})
 	if providerErr != nil {
 		return fail(providerErr)
 	}
