@@ -9,7 +9,7 @@
 - 个体 PR 不逐个合并 main。总集成 PR 冻结唯一发布候选后，才提交用户做最终生产上线确认；确认后一次合并、一次部署。
 - 本矩阵后续为每个板块同时记录“个体审核结果”和“已纳入集成 HEAD”。未进入集成或联合验收未通过的项目不得标记整体完成。
 
-当前未合并总集成 PR：[PR #141](https://github.com/qianlan33333-png/AI-CRM-v3/pull/141)。最新审核纳入提交 `21a563e224b0d2195dd204a31321c6f6a228c507` 包含PR158准确HEAD `039c823e9677986c1180b3ec121430aeb779b418`，源CI33977653567 SUCCESS、deploy SKIPPED；安装契约通过，推送后运行完整组合CI。此前包含联盟字段的准确组合 `26ec5cf39f931a3e6698016158f986510599b41d` 已通过CI33977313172（check SUCCESS、deploy SKIPPED）。152尚未获准纳入，158原后台UI后续增量继续。全部来源与保留父版本见下表。
+当前未合并总集成 PR：[PR #141](https://github.com/qianlan33333-png/AI-CRM-v3/pull/141)。最新审核纳入提交 `21a563e224b0d2195dd204a31321c6f6a228c507` 包含PR158准确HEAD `039c823e9677986c1180b3ec121430aeb779b418`，源CI33977653567 SUCCESS、deploy SKIPPED；准确组合 `6ca8dc0e87a498761679dbbbb3df32dde257535e` 已通过CI33978425968（真实PG16、race、SDK ABI与仓库检查成功，deploy跳过）。此前包含联盟字段的准确组合 `26ec5cf39f931a3e6698016158f986510599b41d` 已通过CI33977313172（check SUCCESS、deploy SKIPPED）。152尚未获准纳入，158原后台UI后续增量继续。全部来源与保留父版本见下表。
 
 | 来源 | 来源 HEAD / 独立 CI | 纳入提交 | 组合 CI | 当前结论 |
 |---|---|---|---|---|
@@ -32,7 +32,7 @@
 | #153 群运行时/旧页/历史导入 | 629e38489d76903b0dd21d6614941e4f2cffeb69 / 33968755244 SUCCESS，deploy SKIPPED；保留014fd7b与4e51b676 | 889144c63426dfd7ead4ca827694037fa4dd94e5 | c2cf0ef / 33969480007 SUCCESS，deploy SKIPPED | 真实River、暂停恢复、多计划、逐行历史导入PG/HTTP通过；同一导入事实的历史浏览器Host补齐中 |
 | #143 商品、购买、会员表与历史联合 | 270d8f986342138aec384a58588ff91feae227b9 / 33975881872 SUCCESS，deploy SKIPPED；保留06ecac29 | f2bfd5850cffa0319090aa590cb74f29571a50aa | 26ec5cf / 33977313172 SUCCESS，deploy SKIPPED；父批f4d6948已绿 | 0088联盟来源/编辑/旧摘要兼容/隔离对账及安装清单已审核，03/04最终证据核账继续 |
 | #157 群历史导入后原Host阅读 | c8792192a3462b1953b06acd12260a3d95cb918a / 33974411097 SUCCESS，deploy SKIPPED | d1adbccda6c114fc271662dcb4a056672545369d | f4d6948 / 33975204629 SUCCESS，deploy SKIPPED | 真实PG导入节点经实际HTTP/Host展示；合成分页反例验证迟到响应/ID碰撞/XSS，未把合成后页冒称生产历史 |
-| #158 问卷OAuth与提交结果联合 | 039c823e9677986c1180b3ec121430aeb779b418 / 33977653567 SUCCESS，deploy SKIPPED | 21a563e224b0d2195dd204a31321c6f6a228c507 | 当前组合待CI | 0090前向修正与真实PG readiness；实际OAuth Adapter/OneID/并发提交/结果授权/CSV/历史版本通过，Admin鉴权为测试Port，原后台UI继续 |
+| #158 问卷OAuth与提交结果联合 | 039c823e9677986c1180b3ec121430aeb779b418 / 33977653567 SUCCESS，deploy SKIPPED | 21a563e224b0d2195dd204a31321c6f6a228c507 | 6ca8dc0 / 33978425968 SUCCESS，deploy SKIPPED | 0090前向修正与真实PG readiness；实际OAuth Adapter/OneID/并发提交/结果授权/CSV/历史版本通过，Admin鉴权为测试Port，原后台UI继续 |
 | #154 HXC共用事实 | a093751b15ee2b51b349e01fa42590baf2eb5422 / 33969310749 SUCCESS，deploy SKIPPED | 25a711209840ae5826518237b152ba26da07512f | f4d6948 / 33975204629 SUCCESS，deploy SKIPPED | 真实源EXPLAIN、同源会员、PG固定代与清理并发通过；已放行03/05稳定Port接入 |
 | #155 群真实Access、unknown与AI同库运行时 | 3c69142ea55a5a40362b5d28042aa64dc5fb5546 / 33969767286 SUCCESS，deploy SKIPPED；保留0130e88 | 4242d30730b6736ff67838bfd05d6432aef6f341 | 4ec08bb / 33970748481 SUCCESS，deploy SKIPPED；父批79d26e1通过 | 真实Access/unknown及AI和Group共同PG/River/Outbound通过；自动化参与的最终组合仍待 |
 
