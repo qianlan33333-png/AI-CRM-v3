@@ -58,6 +58,7 @@ type ServicePeriodStoreUpdate struct {
 	Description           string
 	PriceMinor            int64
 	Currency              string
+	DurationDays          int32
 	StockQuantity         int32
 	Images                []string
 	LegacyAdminProjection json.RawMessage
@@ -69,9 +70,12 @@ type ServicePeriodStoreUpdate struct {
 type ServicePeriodStore interface {
 	ListServicePeriodProducts(context.Context, int32, int32) ([]productport.Product, int64, error)
 	GetServicePeriodProduct(context.Context, productport.ID) (productport.Product, error)
+	GetServicePeriodProductByCode(context.Context, string) (productport.Product, error)
 	GetServicePeriodProductForUpdate(context.Context, productport.ID) (productport.Product, error)
 	Create(context.Context, productport.CreateCommand, time.Time) (productport.Product, error)
 	UpdateServicePeriodProduct(context.Context, ServicePeriodStoreUpdate, time.Time) (productport.Product, error)
+	ReadServicePeriodDuration(context.Context, productport.ID) (int32, error)
+	SetServicePeriodDuration(context.Context, productport.ID, int32) error
 	Reserve(context.Context, Reservation) (Receipt, bool, error)
 	Complete(context.Context, int64, json.RawMessage, time.Time) (Receipt, error)
 }
@@ -109,9 +113,19 @@ func (service *ServicePeriodService) ListServicePeriodProducts(ctx context.Conte
 		Offset: offset,
 	}
 	var rows []productport.Product
+	durations := make(map[productport.ID]int32)
 	if err := service.uow.Within(ctx, func(tx context.Context) error {
 		var err error
 		rows, page.Total, err = service.store.ListServicePeriodProducts(tx, limit, offset)
+		if err != nil {
+			return err
+		}
+		for _, row := range rows {
+			durations[row.ID], err = service.store.ReadServicePeriodDuration(tx, row.ID)
+			if err != nil {
+				return err
+			}
+		}
 		return err
 	}); err != nil {
 		return productport.ServicePeriodPage{}, classify(err)
@@ -135,7 +149,7 @@ func (service *ServicePeriodService) ListServicePeriodProducts(ctx context.Conte
 		if row.ID <= previous {
 			return productport.ServicePeriodPage{}, ErrUnavailable
 		}
-		projected, err := projectServicePeriodProduct(row)
+		projected, err := projectServicePeriodProduct(row, durations[row.ID])
 		if err != nil {
 			return productport.ServicePeriodPage{}, err
 		}
@@ -150,14 +164,47 @@ func (service *ServicePeriodService) GetServicePeriodProduct(ctx context.Context
 		return productport.ServicePeriodProduct{}, ErrNotFound
 	}
 	var row productport.Product
+	var duration int32
 	if err := service.uow.Within(ctx, func(tx context.Context) error {
 		var err error
 		row, err = service.store.GetServicePeriodProduct(tx, id)
+		if err != nil {
+			return err
+		}
+		duration, err = service.store.ReadServicePeriodDuration(tx, id)
 		return err
 	}); err != nil {
 		return productport.ServicePeriodProduct{}, classify(err)
 	}
-	return projectServicePeriodProduct(row)
+	return projectServicePeriodProduct(row, duration)
+}
+
+// ReadPublicServicePeriodByCode provides the leaf reader for the separate
+// period-product public route. The ordinary public catalog intentionally never
+// calls it. Code comparison is exact and has no legacy numeric-ID fallback.
+func (service *ServicePeriodService) ReadPublicServicePeriodByCode(ctx context.Context, code string) (productport.CheckoutProduct, error) {
+	code = strings.TrimSpace(code)
+	if !servicePeriodReady(service) || code == "" || len(code) > 200 {
+		return productport.CheckoutProduct{}, ErrNotFound
+	}
+	var row productport.Product
+	var duration int32
+	if err := service.uow.Within(ctx, func(tx context.Context) error {
+		var err error
+		row, err = service.store.GetServicePeriodProductByCode(tx, code)
+		if err != nil {
+			return err
+		}
+		duration, err = service.store.ReadServicePeriodDuration(tx, row.ID)
+		return err
+	}); err != nil {
+		return productport.CheckoutProduct{}, classify(err)
+	}
+	projected, err := projectServicePeriodProduct(row, duration)
+	if err != nil || !projected.Enabled || projected.Lifecycle != productport.ServicePeriodEnabled {
+		return productport.CheckoutProduct{}, ErrNotFound
+	}
+	return productport.CheckoutProduct{ID: projected.ServiceProductID, ProductType: productport.ProductOptionServicePeriod, Code: projected.ProductCode, Name: projected.Name, PriceMinor: projected.PriceMinor, Currency: projected.Currency, Version: projected.Version, ServicePeriodDurationDays: duration}, nil
 }
 
 func (service *ServicePeriodService) CreateServicePeriodProduct(ctx context.Context, command productport.CreateServicePeriodProductCommand) (productport.ServicePeriodProduct, error) {
@@ -211,7 +258,10 @@ func (service *ServicePeriodService) CreateServicePeriodProduct(ctx context.Cont
 		if createErr != nil {
 			return createErr
 		}
-		result, createErr = projectServicePeriodProduct(created)
+		if createErr = service.store.SetServicePeriodDuration(tx, created.ID, normalized.DurationDays); createErr != nil {
+			return createErr
+		}
+		result, createErr = projectServicePeriodProduct(created, normalized.DurationDays)
 		if createErr != nil || result.Version != 1 || result.Lifecycle != productport.ServicePeriodDraft {
 			return ErrUnavailable
 		}
@@ -261,6 +311,7 @@ func (service *ServicePeriodService) UpdateServicePeriodProduct(ctx context.Cont
 				Description:           normalized.Description,
 				PriceMinor:            normalized.PriceMinor,
 				Currency:              normalized.Currency,
+				DurationDays:          normalized.DurationDays,
 				StockQuantity:         normalized.StockQuantity,
 				Images:                append([]string(nil), images...),
 				LegacyAdminProjection: projection,
@@ -364,7 +415,11 @@ func (service *ServicePeriodService) CopyServicePeriodProduct(ctx context.Contex
 		if sourceErr != nil {
 			return sourceErr
 		}
-		sourceProjection, sourceErr := projectServicePeriodProduct(source)
+		sourceDuration, sourceErr := service.store.ReadServicePeriodDuration(tx, source.ID)
+		if sourceErr != nil {
+			return sourceErr
+		}
+		sourceProjection, sourceErr := projectServicePeriodProduct(source, sourceDuration)
 		if sourceErr != nil {
 			return sourceErr
 		}
@@ -390,7 +445,10 @@ func (service *ServicePeriodService) CopyServicePeriodProduct(ctx context.Contex
 		if createErr != nil {
 			return createErr
 		}
-		result, createErr = projectServicePeriodProduct(created)
+		if createErr = service.store.SetServicePeriodDuration(tx, created.ID, sourceDuration); createErr != nil {
+			return createErr
+		}
+		result, createErr = projectServicePeriodProduct(created, sourceDuration)
 		if createErr != nil || result.Version != 1 || result.Lifecycle != productport.ServicePeriodDraft || result.ServiceProductID == source.ID {
 			return ErrUnavailable
 		}
@@ -446,7 +504,11 @@ func (service *ServicePeriodService) updateServicePeriod(ctx context.Context, wr
 		if currentErr != nil {
 			return currentErr
 		}
-		projected, currentErr := projectServicePeriodProduct(current)
+		currentDuration, currentErr := service.store.ReadServicePeriodDuration(tx, current.ID)
+		if currentErr != nil {
+			return currentErr
+		}
+		projected, currentErr := projectServicePeriodProduct(current, currentDuration)
 		if currentErr != nil {
 			return currentErr
 		}
@@ -459,12 +521,18 @@ func (service *ServicePeriodService) updateServicePeriod(ctx context.Context, wr
 		}
 		result = projected
 		if changed {
+			if storeUpdate.DurationDays < 1 {
+				storeUpdate.DurationDays = currentDuration
+			}
 			updated, updateErr := service.store.UpdateServicePeriodProduct(tx, storeUpdate, now)
 			if updateErr != nil {
 				return updateErr
 			}
-			result, updateErr = projectServicePeriodProduct(updated)
-			if updateErr != nil || result.Version != projected.Version+1 || result.ServiceProductID != projected.ServiceProductID || result.ProductCode != projected.ProductCode || !result.CreatedAt.Equal(projected.CreatedAt) || result.Lifecycle != target || !reflect.DeepEqual(result.Images, storeUpdate.Images) || !jsonEquivalent(result.AdminProjection, storeUpdate.LegacyAdminProjection) {
+			if updateErr = service.store.SetServicePeriodDuration(tx, updated.ID, storeUpdate.DurationDays); updateErr != nil {
+				return updateErr
+			}
+			result, updateErr = projectServicePeriodProduct(updated, storeUpdate.DurationDays)
+			if updateErr != nil || result.Version != projected.Version+1 || result.ServiceProductID != projected.ServiceProductID || result.ProductCode != projected.ProductCode || result.DurationDays != storeUpdate.DurationDays || !result.CreatedAt.Equal(projected.CreatedAt) || result.Lifecycle != target || !reflect.DeepEqual(result.Images, storeUpdate.Images) || !jsonEquivalent(result.AdminProjection, storeUpdate.LegacyAdminProjection) {
 				return ErrUnavailable
 			}
 			if appendErr := service.appendServicePeriodEvent(tx, productport.EventProductUpdated, write.action, result, 0, write.actor, actorScope, write.idempotencyKey, now); appendErr != nil {
@@ -551,7 +619,7 @@ func (service *ServicePeriodService) appendServicePeriodEvent(ctx context.Contex
 	return err
 }
 
-func projectServicePeriodProduct(product productport.Product) (productport.ServicePeriodProduct, error) {
+func projectServicePeriodProduct(product productport.Product, durationDays int32) (productport.ServicePeriodProduct, error) {
 	if !validProduct(product) {
 		return productport.ServicePeriodProduct{}, ErrUnavailable
 	}
@@ -566,6 +634,7 @@ func projectServicePeriodProduct(product productport.Product) (productport.Servi
 		Description:      product.Description,
 		PriceMinor:       product.PriceMinor,
 		Currency:         product.Currency,
+		DurationDays:     durationDays,
 		StockQuantity:    product.StockQuantity,
 		Images:           append([]string(nil), product.Images...),
 		AdminProjection:  append(json.RawMessage(nil), product.LegacyAdminProjection...),
@@ -659,7 +728,7 @@ func servicePeriodProjectionForLifecycle(raw json.RawMessage, lifecycle productp
 func validServicePeriodSnapshot(product productport.ServicePeriodProduct) bool {
 	if product.ServiceProductID < 1 || product.ProductCode == "" || len(product.ProductCode) > 200 || strings.TrimSpace(product.ProductCode) != product.ProductCode ||
 		product.Name == "" || len(product.Name) > 200 || strings.TrimSpace(product.Name) != product.Name || len(product.Description) > 10000 ||
-		product.PriceMinor < 0 || product.StockQuantity < 0 || len(product.Currency) != 3 || product.Currency != strings.ToUpper(product.Currency) || len(product.Images) > 20 || !IsServicePeriodProjection(product.AdminProjection) ||
+		product.PriceMinor < 0 || product.StockQuantity < 0 || product.DurationDays < 1 || len(product.Currency) != 3 || product.Currency != strings.ToUpper(product.Currency) || len(product.Images) > 20 || !IsServicePeriodProjection(product.AdminProjection) ||
 		product.Version < 1 || product.CreatedAt.IsZero() || product.UpdatedAt.IsZero() || product.UpdatedAt.Before(product.CreatedAt) {
 		return false
 	}
@@ -687,7 +756,7 @@ func normalizeServicePeriodCreate(command productport.CreateServicePeriodProduct
 	command.Description = strings.TrimSpace(command.Description)
 	command.Currency = strings.ToUpper(strings.TrimSpace(command.Currency))
 	if command.Actor < 1 || command.ProductCode == "" || len(command.ProductCode) > 200 || command.Name == "" || len(command.Name) > 200 ||
-		len(command.Description) > 10000 || command.PriceMinor < 0 || command.StockQuantity < 0 || len(command.Currency) != 3 || len(command.Images) > 20 || !validIdempotencyKey(command.IdempotencyKey) {
+		len(command.Description) > 10000 || command.PriceMinor < 0 || command.StockQuantity < 0 || command.DurationDays < 1 || len(command.Currency) != 3 || len(command.Images) > 20 || !validIdempotencyKey(command.IdempotencyKey) {
 		return productport.CreateServicePeriodProductCommand{}, [32]byte{}, ErrInvalidProduct
 	}
 	for index := range command.Images {
@@ -709,10 +778,11 @@ func normalizeServicePeriodCreate(command productport.CreateServicePeriodProduct
 		Description     string          `json:"description"`
 		PriceMinor      int64           `json:"price_minor"`
 		Currency        string          `json:"currency"`
+		DurationDays    int32           `json:"duration_days"`
 		StockQuantity   int32           `json:"stock_quantity"`
 		Images          []string        `json:"images"`
 		AdminProjection json.RawMessage `json:"admin_projection"`
-	}{command.ProductCode, command.Name, command.Description, command.PriceMinor, command.Currency, command.StockQuantity, command.Images, command.AdminProjection})
+	}{command.ProductCode, command.Name, command.Description, command.PriceMinor, command.Currency, command.DurationDays, command.StockQuantity, command.Images, command.AdminProjection})
 	if err != nil {
 		return productport.CreateServicePeriodProductCommand{}, [32]byte{}, ErrInvalidProduct
 	}
@@ -725,7 +795,7 @@ func normalizeServicePeriodUpdate(command productport.UpdateServicePeriodProduct
 	command.Description = strings.TrimSpace(command.Description)
 	command.Currency = strings.ToUpper(strings.TrimSpace(command.Currency))
 	if !validServicePeriodWriteIdentity(command.ID, command.ExpectedVersion, command.Actor, command.IdempotencyKey) ||
-		command.Name == "" || len(command.Name) > 200 || len(command.Description) > 10000 || command.PriceMinor < 0 || command.StockQuantity < 0 || len(command.Currency) != 3 || len(command.Images) > 20 {
+		command.Name == "" || len(command.Name) > 200 || len(command.Description) > 10000 || command.PriceMinor < 0 || command.StockQuantity < 0 || command.DurationDays < 1 || len(command.Currency) != 3 || len(command.Images) > 20 {
 		return productport.UpdateServicePeriodProductCommand{}, [32]byte{}, ErrInvalidProduct
 	}
 	for index := range command.Images {
@@ -748,10 +818,11 @@ func normalizeServicePeriodUpdate(command productport.UpdateServicePeriodProduct
 		Description     string          `json:"description"`
 		PriceMinor      int64           `json:"price_minor"`
 		Currency        string          `json:"currency"`
+		DurationDays    int32           `json:"duration_days"`
 		StockQuantity   int32           `json:"stock_quantity"`
 		Images          []string        `json:"images"`
 		AdminProjection json.RawMessage `json:"admin_projection"`
-	}{command.ID, command.ExpectedVersion, command.Name, command.Description, command.PriceMinor, command.Currency, command.StockQuantity, command.Images, command.AdminProjection})
+	}{command.ID, command.ExpectedVersion, command.Name, command.Description, command.PriceMinor, command.Currency, command.DurationDays, command.StockQuantity, command.Images, command.AdminProjection})
 	if err != nil {
 		return productport.UpdateServicePeriodProductCommand{}, [32]byte{}, ErrInvalidProduct
 	}
