@@ -263,7 +263,7 @@ func TestCreateAcceptsPaymentEffectInSameUOWAndReplays(t *testing.T) {
 	sessions := &oneShotSessionStub{actor: paymentport.SessionActor{PayerIdentityID: 4, PayerCustomerID: 11, BeneficiaryCustomerID: 22, BeneficiarySelection: paymentport.BeneficiarySelectionAdminAssisted}}
 	service := NewService(uowStub{}, store, orderStub{nativeOrder()}, sessions, effects)
 	service.now = func() time.Time { return time.Date(2026, 9, 3, 1, 0, 0, 0, time.UTC) }
-	command := paymentport.CreateCommand{OrderID: 3, SessionToken: "pays_session_token_0000000001", ActorScope: "customer:11", IdempotencyKey: "payment-create-key-0001"}
+	command := paymentport.CreateCommand{OrderID: 3, SessionToken: "pays_session_token_0000000001", CheckoutSessionBinding: paymentport.CheckoutSessionBinding("pays_session_token_0000000001"), ActorScope: "customer:11", IdempotencyKey: "payment-create-key-0001"}
 	first, err := service.Create(context.Background(), command)
 	if err != nil || first.EffectID != "eer_8" || !store.bound || !effects.within {
 		t.Fatalf("payment=%+v store=%+v effects=%+v err=%v", first, store, effects, err)
@@ -275,7 +275,7 @@ func TestCreateAcceptsPaymentEffectInSameUOWAndReplays(t *testing.T) {
 }
 
 func TestExistingOrderRejectsLegacySessionNewPaymentButAllowsExactReplay(t *testing.T) {
-	command := paymentport.CreateCommand{OrderID: 3, SessionToken: "pays_session_token_legacy_000001", ActorScope: "customer:11", IdempotencyKey: "payment-legacy-replay-key-0001"}
+	command := paymentport.CreateCommand{OrderID: 3, SessionToken: "pays_session_token_legacy_000001", CheckoutSessionBinding: paymentport.CheckoutSessionBinding("pays_session_token_legacy_000001"), ActorScope: "customer:11", IdempotencyKey: "payment-legacy-replay-key-0001"}
 	legacyActor := paymentport.SessionActor{PayerIdentityID: 4, PayerCustomerID: 11, BeneficiaryCustomerID: 22, BeneficiarySelection: paymentport.BeneficiarySelectionLegacyPrebound}
 	store := &storeStub{}
 	service := NewService(uowStub{}, store, orderStub{nativeOrder()}, sessionStub{actor: legacyActor}, &effectStub{})
@@ -292,7 +292,7 @@ func TestCreateFailsClosedWhenAtomicEffectAcceptanceFails(t *testing.T) {
 	store := &storeStub{}
 	effects := &effectStub{fail: true}
 	service := NewService(uowStub{}, store, orderStub{nativeOrder()}, sessionStub{paymentport.SessionActor{PayerIdentityID: 4, PayerCustomerID: 11, BeneficiaryCustomerID: 22, BeneficiarySelection: paymentport.BeneficiarySelectionAdminAssisted}}, effects)
-	_, err := service.Create(context.Background(), paymentport.CreateCommand{OrderID: 3, SessionToken: "pays_session_token_0000000002", ActorScope: "customer:11", IdempotencyKey: "payment-create-key-0002"})
+	_, err := service.Create(context.Background(), paymentport.CreateCommand{OrderID: 3, SessionToken: "pays_session_token_0000000002", CheckoutSessionBinding: paymentport.CheckoutSessionBinding("pays_session_token_0000000002"), ActorScope: "customer:11", IdempotencyKey: "payment-create-key-0002"})
 	if !errors.Is(err, paymentport.ErrUnavailable) || store.bound {
 		t.Fatalf("bound=%v err=%v", store.bound, err)
 	}
@@ -344,7 +344,7 @@ func TestCheckoutFromProductCreatesOrderAndPaymentInSameUOW(t *testing.T) {
 	if err := service.SetCheckoutProductReader(products); err != nil {
 		t.Fatal(err)
 	}
-	command := paymentport.CreateCommand{ProductID: 5, ProductType: "standard", BeneficiarySelection: paymentport.BeneficiarySelectionPayerSelf, SessionToken: "pays_session_token_0000000005", ActorScope: "public-checkout", IdempotencyKey: "checkout-product-key-0005"}
+	command := paymentport.CreateCommand{ProductID: 5, ProductType: "standard", BeneficiarySelection: paymentport.BeneficiarySelectionPayerSelf, SessionToken: "pays_session_token_0000000005", CheckoutSessionBinding: paymentport.CheckoutSessionBinding("pays_session_token_0000000005"), ActorScope: "public-checkout", IdempotencyKey: "checkout-product-key-0005"}
 	first, err := service.Create(context.Background(), command)
 	if err != nil || first.ID != 7 || first.AmountMinor != 8800 || products.calls != 1 || orders.command.ProductID != 5 || orders.command.ProductVersion != 3 || orders.command.BeneficiaryCustomerID != 11 || orders.command.MerchantOrderNo == "" || !sessions.consumed {
 		t.Fatalf("payment=%+v product_calls=%d order=%+v consumed=%v err=%v", first, products.calls, orders.command, sessions.consumed, err)
@@ -365,7 +365,7 @@ func TestH5CheckoutRequiresAndFreezesNormalizedMobile(t *testing.T) {
 	if err := service.SetCheckoutProductReader(products); err != nil {
 		t.Fatal(err)
 	}
-	command := paymentport.CreateCommand{ProductID: 5, ProductType: "standard", BeneficiarySelection: paymentport.BeneficiarySelectionPayerSelf, SessionToken: "pays_h5_session_token_00000005", ActorScope: "public-checkout", IdempotencyKey: "checkout-h5-key-0000005"}
+	command := paymentport.CreateCommand{ProductID: 5, ProductType: "standard", BeneficiarySelection: paymentport.BeneficiarySelectionPayerSelf, SessionToken: "pays_h5_session_token_00000005", CheckoutSessionBinding: paymentport.CheckoutSessionBinding("pays_h5_session_token_00000005"), ActorScope: "public-checkout", IdempotencyKey: "checkout-h5-key-0000005"}
 	if _, err := service.Create(context.Background(), command); !errors.Is(err, paymentport.ErrConflict) {
 		t.Fatalf("missing mobile err=%v", err)
 	}

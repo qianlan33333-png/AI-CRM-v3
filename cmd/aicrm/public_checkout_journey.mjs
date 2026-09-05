@@ -149,8 +149,8 @@ assert.equal(unknownStorage.values.size, 1, "unknown result keeps checkpoint for
 closePage(unknown);
 
 // A saved merchant order cannot be used under another opaque payment session.
-// The API rejects the old session binding, then the browser removes only its
-// local recovery marker and asks for a deliberate new purchase.
+// The browser detects the trusted-session binding mismatch before it polls or
+// creates anything, and retains the recovery marker to prohibit a new order.
 const switchStorage = new SharedStorage();
 const originalSession = await runPage(switchStorage, firstSession, normalBridge);
 setPurchase(originalSession, 13, "13800138000");
@@ -160,8 +160,8 @@ closePage(originalSession);
 const switchedSession = await runPage(switchStorage, secondSession, normalBridge);
 setPurchase(switchedSession, 13, "13800138000");
 switchedSession.window.document.getElementById("buy").click();
-await waitFor(switchedSession.window.document, "付款授权已变化，请重新发起购买", "session switch");
-assert.equal(switchStorage.values.size, 0, "session switch cannot retain the old checkpoint");
+await waitFor(switchedSession.window.document, "付款授权已变化，原订单标识已保留；请恢复原授权后继续", "session switch");
+assert.equal(switchStorage.values.size, 1, "session switch must retain the old checkpoint and prohibit a new order");
 closePage(switchedSession);
 
 // Failing browser storage blocks the very first payment request, so an
@@ -172,3 +172,19 @@ setPurchase(unavailable, 15, "13800138000");
 unavailable.window.document.getElementById("buy").click();
 await waitFor(unavailable.window.document, "无法保存本次订单恢复信息，请检查浏览器存储后重试", "storage unavailable");
 closePage(unavailable);
+
+// A checkpoint written by the immediately preceding Host version has no
+// session binding. If its create response was lost, it must remain visible but
+// never be treated as permission to generate a fresh idempotency key.
+const legacyStorage = new SharedStorage();
+legacyStorage.setItem("aicrm.checkout.v1:7:standard", JSON.stringify({
+  key: "legacy-checkpoint-0001",
+  merchant_order_no: "",
+  payload: { product_id: 7, product_kind: "standard", beneficiary_selection: "payer_self", coupon_claim_id: 16, mobile: "+8613800138000" },
+}));
+const legacy = await runPage(legacyStorage, firstSession, normalBridge);
+setPurchase(legacy, 16, "13800138000");
+legacy.window.document.getElementById("buy").click();
+await waitFor(legacy.window.document, "旧版订单恢复标识缺少付款会话绑定，已保留原标识，请勿重新下单", "legacy response-lost checkpoint");
+assert.equal(legacyStorage.values.size, 1, "legacy unbound recovery must remain and never create a new order");
+closePage(legacy);

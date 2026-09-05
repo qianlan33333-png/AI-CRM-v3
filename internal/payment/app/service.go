@@ -118,6 +118,13 @@ func (s *Service) Create(ctx context.Context, c paymentport.CreateCommand) (doma
 	if !s.ready() || (!fromExistingOrder && !fromProduct) || fromProduct && s.products == nil || c.CouponClaimID < 0 || fromExistingOrder && c.CouponClaimID != 0 || len(c.SessionToken) < 20 || len(c.SessionToken) > 100 || !validScope(c.ActorScope) || !validKey(c.IdempotencyKey) {
 		return domain.Payment{}, paymentport.ErrInvalid
 	}
+	// A response-lost browser recovery checkpoint is valid for precisely the
+	// trusted session that created it. Check before opening the mutation UoW so
+	// a renewed OAuth session cannot turn the old idempotency key into a second
+	// merchant order.
+	if !paymentport.MatchesCheckoutSessionBinding(c.SessionToken, c.CheckoutSessionBinding) {
+		return domain.Payment{}, paymentport.ErrSessionMismatch
+	}
 	now := s.now().UTC()
 	sessionDigest := sha256.Sum256([]byte(c.SessionToken))
 	merchantDigest := sha256.Sum256([]byte("payment.checkout.v1\x00" + c.SessionToken + "\x00" + c.IdempotencyKey))
@@ -428,6 +435,28 @@ func (s *Service) GetCheckout(ctx context.Context, merchantOrderNo, sessionToken
 		return nil
 	})
 	return out, classify(err)
+}
+
+// CheckoutSessionBinding proves only that the caller still holds a valid
+// trusted Payment session. It exposes an opaque marker, never an identity or
+// session cookie value, for the public Host's browser recovery checkpoint.
+func (s *Service) CheckoutSessionBinding(ctx context.Context, sessionToken string) (string, error) {
+	if s == nil || s.uow == nil || s.sessions == nil || len(sessionToken) < 20 || len(sessionToken) > 100 {
+		return "", paymentport.ErrInvalid
+	}
+	binding := paymentport.CheckoutSessionBinding(sessionToken)
+	if binding == "" {
+		return "", paymentport.ErrInvalid
+	}
+	now := s.now().UTC()
+	err := s.uow.Within(ctx, func(tx context.Context) error {
+		_, err := s.sessions.LookupWithin(tx, sessionToken, now)
+		return err
+	})
+	if err != nil {
+		return "", classify(err)
+	}
+	return binding, nil
 }
 func (s *Service) GetRefund(ctx context.Context, id int64) (domain.Refund, error) {
 	var out domain.Refund
@@ -851,6 +880,10 @@ func classify(err error) error {
 		return nil
 	case errors.Is(err, paymentport.ErrNotFound), errors.Is(err, orderport.ErrNotFound):
 		return paymentport.ErrNotFound
+	case errors.Is(err, paymentport.ErrSessionRequired):
+		return paymentport.ErrSessionRequired
+	case errors.Is(err, paymentport.ErrSessionMismatch):
+		return paymentport.ErrSessionMismatch
 	case errors.Is(err, paymentport.ErrConflict), errors.Is(err, orderport.ErrConflict), errors.Is(err, domain.ErrInvalid), errors.Is(err, domain.ErrTransition), errors.Is(err, domain.ErrVersion):
 		return paymentport.ErrConflict
 	default:
