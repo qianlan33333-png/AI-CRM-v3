@@ -541,7 +541,7 @@ func applySurveyCompletionMigrations(t *testing.T, ctx context.Context, pool *pg
 		t.Fatal("locate")
 	}
 	base := filepath.Join(filepath.Dir(file), "..", "..", "migrations")
-	for _, name := range []string{"0001_platform.sql", "0003_access.sql", "0018_survey.sql", "0067_survey_completion_snapshots.sql", "0073_survey_completion_test_push_snapshots.sql", "0074_survey_external_operation_execution_facts.sql"} {
+	for _, name := range []string{"0001_platform.sql", "0002_identity.sql", "0003_access.sql", "0018_survey.sql", "0067_survey_completion_snapshots.sql", "0073_survey_completion_test_push_snapshots.sql", "0074_survey_external_operation_execution_facts.sql"} {
 		sql, err := os.ReadFile(filepath.Join(base, name))
 		if err != nil {
 			t.Fatal(err)
