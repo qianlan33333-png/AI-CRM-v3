@@ -321,7 +321,9 @@ type groupOpsMaterialReadinessAdapter struct {
 }
 
 func (adapter groupOpsMaterialReadinessAdapter) VerifyMaterialReady(ctx context.Context, snapshotRaw, factsRaw json.RawMessage, factsDigest string, now time.Time) error {
-	if adapter.uow == nil || adapter.capturer == nil || adapter.freezer == nil || len(snapshotRaw) == 0 || len(factsRaw) == 0 || !effectport.ValidDigest(effectport.Digest(factsDigest)) || factsDigest != string(effectport.Hash("group-ops.material.intent.v1", string(factsRaw))) || now.IsZero() {
+	canonicalSnapshot, snapshotErr := canonicalGroupOpsJSON(snapshotRaw)
+	canonicalFacts, factsCanonicalErr := canonicalGroupOpsJSON(factsRaw)
+	if adapter.uow == nil || adapter.capturer == nil || adapter.freezer == nil || snapshotErr != nil || factsCanonicalErr != nil || !effectport.ValidDigest(effectport.Digest(factsDigest)) || factsDigest != string(effectport.Hash("group-ops.material.intent.v1", string(canonicalFacts))) || now.IsZero() {
 		return errors.New("Group Ops material readiness unavailable")
 	}
 	var facts struct {
@@ -329,7 +331,7 @@ func (adapter groupOpsMaterialReadinessAdapter) VerifyMaterialReady(ctx context.
 		Sources       mediaport.GroupOpsMaterialSourceSnapshot `json:"sources"`
 		Preparations  []groupopsmaterial.PreparedMaterial      `json:"preparations"`
 	}
-	if json.Unmarshal(factsRaw, &facts) != nil || facts.SchemaVersion != 1 || mediaport.ValidateGroupOpsMaterialSourceSnapshot(facts.Sources) != nil {
+	if json.Unmarshal(canonicalFacts, &facts) != nil || facts.SchemaVersion != 1 || mediaport.ValidateGroupOpsMaterialSourceSnapshot(facts.Sources) != nil {
 		return errors.New("invalid frozen Group Ops material facts")
 	}
 	plan := mediaport.GroupOpsMaterialPlan{References: make([]mediaport.GroupOpsMaterialReference, len(facts.Sources.References))}
@@ -362,11 +364,21 @@ func (adapter groupOpsMaterialReadinessAdapter) VerifyMaterialReady(ctx context.
 			Sources       mediaport.GroupOpsMaterialSourceSnapshot `json:"sources"`
 			Preparations  []groupopsmaterial.PreparedMaterial      `json:"preparations"`
 		}{1, current, prepared})
-		if marshalErr != nil || factsErr != nil || string(actualSnapshot) != string(snapshotRaw) || string(actualFacts) != string(factsRaw) {
+		actualSnapshot, marshalErr = canonicalGroupOpsJSON(actualSnapshot)
+		actualFacts, factsErr = canonicalGroupOpsJSON(actualFacts)
+		if marshalErr != nil || factsErr != nil || string(actualSnapshot) != string(canonicalSnapshot) || string(actualFacts) != string(canonicalFacts) {
 			return errors.New("Group Ops material preparation changed or expired")
 		}
 		return nil
 	})
+}
+
+func canonicalGroupOpsJSON(raw []byte) ([]byte, error) {
+	var value any
+	if len(raw) == 0 || json.Unmarshal(raw, &value) != nil {
+		return nil, errors.New("invalid Group Ops material JSON")
+	}
+	return json.Marshal(value)
 }
 
 var _ groupopsport.MaterialReadinessVerifier = groupOpsMaterialReadinessAdapter{}

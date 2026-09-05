@@ -113,6 +113,7 @@ type groupMessageSenderStub struct {
 	attempted bool
 	receipt   wecomport.GroupMessageReceipt
 	err       error
+	calls     int
 }
 
 type materialReadinessStub struct{ err error }
@@ -122,8 +123,22 @@ func (stub materialReadinessStub) VerifyMaterialReady(context.Context, json.RawM
 }
 
 func (s *groupMessageSenderStub) SendGroupMessage(_ context.Context, request wecomport.GroupMessageRequest) (wecomport.GroupMessageReceipt, bool, error) {
+	s.calls++
 	s.request = request
 	return s.receipt, s.attempted, s.err
+}
+
+func TestGroupMessageProviderDoesNotCallProviderWhenMaterialReadinessFails(t *testing.T) {
+	reader := groupDispatchReaderStub{value: groupopsport.DispatchExecution{ExternalEffectID: "eer_77", ExecutionID: 77, State: groupopsport.ExecutionAccepted, TargetReference: "chat-77", SenderUserID: "owner-77", ContentSnapshot: []byte(`{"schema_version":1,"kind":"message","message_text":"hello"}`), ContentDigest: string(effect.Hash("group-ops.content.snapshot.v1", `{"schema_version":1,"kind":"message","message_text":"hello"}`)), MaterialSnapshot: []byte(`{"schema_version":1,"references":[]}`), MaterialDigest: string(effect.Hash("group-ops.material.snapshot.v1", `{"schema_version":1,"references":[]}`)), SourceRefDigest: string(effect.Hash("group-ops.run", "1")), TargetRefDigest: string(effect.Hash("group-ops.target", "group-a")), PayloadDigest: string(effect.Hash("group-ops.payload", "message")), PolicyVersionHash: string(effect.Hash("group-ops.policy", "v1"))}}
+	sender := &groupMessageSenderStub{}
+	provider, err := NewGroupMessageProvider(GroupMessageProviderConfig{Enabled: true, Executions: reader, Materials: materialReadinessStub{err: errors.New("expired preparation")}, Writer: sender})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := provider.Execute(context.Background(), groupMessageEnvelope(), effect.Attempt{EffectID: "eer_77", Number: 1, Generation: 1, Fence: 1})
+	if err != nil || result.Completion != effect.StateFinalFailed || result.CallAttempted || sender.calls != 0 {
+		t.Fatalf("result=%+v err=%v calls=%d", result, err, sender.calls)
+	}
 }
 
 func TestGroupMessageProviderUsesEffectBoundSnapshotAndExactChat(t *testing.T) {

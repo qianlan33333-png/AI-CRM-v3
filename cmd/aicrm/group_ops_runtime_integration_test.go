@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -76,6 +77,7 @@ func TestGroupOpsPostgreSQLJourney(t *testing.T) {
 	}
 
 	planID := createJourneyPlan(t, ctx, uow, groupStore, actorID)
+	evidence := &journeyEvidence{status: 1}
 	runtimeService := groupopsapp.NewRuntimeService(
 		uow,
 		groupStore,
@@ -84,7 +86,7 @@ func TestGroupOpsPostgreSQLJourney(t *testing.T) {
 		journeyStaff{},
 		nil,
 		journeySender{},
-		journeyEvidence{},
+		evidence,
 		journeyReconciler{repository: effectStore},
 	)
 	runtimeService.SetDispatchEnabled(true)
@@ -184,6 +186,27 @@ func TestGroupOpsPostgreSQLJourney(t *testing.T) {
 	if err = native.QueryRow(ctx, `SELECT state FROM external_effects WHERE id=$1`, acceptedEffectID).Scan(&acceptedEffectState); err != nil || acceptedEffectState != string(effectport.StateExecuted) {
 		t.Fatalf("accepted EER state=%q err=%v", acceptedEffectState, err)
 	}
+	var sourceJSON []byte
+	var sourceDigest string
+	if err = native.QueryRow(ctx, `SELECT material_source_snapshot,material_source_digest FROM group_ops_executions WHERE id=$1`, accepted.ID).Scan(&sourceJSON, &sourceDigest); err != nil {
+		t.Fatal(err)
+	}
+	var sourceValue any
+	if json.Unmarshal(sourceJSON, &sourceValue) != nil {
+		t.Fatalf("source snapshot=%s", sourceJSON)
+	}
+	canonicalSource, err := json.Marshal(sourceValue)
+	if err != nil || sourceDigest != string(effectport.Hash("group-ops.material.intent.v1", string(canonicalSource))) {
+		t.Fatalf("source digest=%q canonical=%s err=%v", sourceDigest, canonicalSource, err)
+	}
+	if evidence.calls != 1 {
+		t.Fatalf("provider delivery calls=%d", evidence.calls)
+	}
+	evidence.status = 0 // a stale page must never downgrade an established delivery fact.
+	replayedDelivery, err := runtimeService.ReadProviderDelivery(ctx, groupopsport.ProviderDeliveryReadCommand{ExecutionID: accepted.ID, ActorID: actorID, IdempotencyKey: "journey-delivery-read-0002"})
+	if err != nil || !replayedDelivery.DeliveryProven || replayedDelivery.DeliveryStatus == nil || *replayedDelivery.DeliveryStatus != 1 || evidence.calls != 1 {
+		t.Fatalf("stale delivery=%+v err=%v calls=%d", replayedDelivery, err, evidence.calls)
+	}
 
 	var generation, fence int64
 	var lease time.Time
@@ -237,20 +260,21 @@ func (journeySender) ResolveExecutionSender(_ context.Context, target string) (s
 	return "journey-sender", true, nil
 }
 
-type journeyEvidence struct{}
+type journeyEvidence struct{ status, calls int }
 
-func (journeyEvidence) VerifyReconciliationEvidence(_ context.Context, input groupopsport.ReconciliationEvidence) (groupopsport.ReconciliationEvidenceResult, error) {
+func (*journeyEvidence) VerifyReconciliationEvidence(_ context.Context, input groupopsport.ReconciliationEvidence) (groupopsport.ReconciliationEvidenceResult, error) {
 	if input.ExecutionID < 1 || input.ExternalEffectID == "" || !effectport.ValidDigest(effectport.Digest(input.EvidenceDigest)) {
 		return groupopsport.ReconciliationEvidenceResult{}, errors.New("invalid journey evidence")
 	}
 	return groupopsport.ReconciliationEvidenceResult{EvidenceDigest: input.EvidenceDigest}, nil
 }
 
-func (journeyEvidence) ReadProviderDelivery(_ context.Context, input groupopsport.ReconciliationEvidence) (groupopsport.GroupMessageReceipt, bool, error) {
+func (evidence *journeyEvidence) ReadProviderDelivery(_ context.Context, input groupopsport.ReconciliationEvidence) (groupopsport.GroupMessageReceipt, bool, error) {
 	if input.ExecutionID < 1 || input.ExternalEffectID == "" {
 		return groupopsport.GroupMessageReceipt{}, false, errors.New("invalid journey delivery")
 	}
-	status := 1
+	evidence.calls++
+	status := evidence.status
 	return groupopsport.GroupMessageReceipt{ExecutionID: input.ExecutionID, ExternalEffectID: input.ExternalEffectID, MessageID: "journey-msgid", SenderUserID: "journey-sender", ChatID: "chat-journey-1", DeliveryStatus: &status, DeliveryEvidenceDigest: string(effectport.Hash("journey-delivery", input.ExternalEffectID))}, true, nil
 }
 

@@ -42,6 +42,15 @@ ALTER TABLE group_ops_executions
   ADD COLUMN material_source_digest TEXT NOT NULL DEFAULT 'sha256:0a4a73b68bb078be9d6243e5109dd17f3143f9bea02a0b9ca51dfc7ea38c7c8d'
     CHECK (material_source_digest ~ '^sha256:[0-9a-f]{64}$');
 
+ALTER TABLE group_ops_operation_receipts DROP CONSTRAINT group_ops_operation_receipts_operation_check;
+ALTER TABLE group_ops_operation_receipts ADD CONSTRAINT group_ops_operation_receipts_operation_check CHECK (operation IN (
+  'plan_create','plan_update','plan_activate','plan_pause','plan_archive',
+  'member_add','member_remove','group_asset_add','group_asset_remove',
+  'node_add','node_update','node_remove','webhook_descriptor_put',
+  'runtime_run_due','runtime_broadcast','runtime_webhook',
+  'directory_groups_refresh','directory_members_refresh','execution_reconcile','execution_delivery_read'
+));
+
 CREATE TABLE group_ops_group_message_tasks (
     id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     execution_id BIGINT NOT NULL UNIQUE REFERENCES group_ops_executions(id) ON DELETE RESTRICT,
