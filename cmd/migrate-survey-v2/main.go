@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -258,6 +259,21 @@ func validateSnapshot(s Snapshot) error {
 			return fmt.Errorf("digest mismatch %s", table)
 		}
 	}
+	var questionnaires []questionnaire
+	var questions []question
+	var options []option
+	var rules []rule
+	var submissions []submission
+	var answers []answer
+	var pushes, scrm []operation
+	for _, entry := range []struct {
+		name string
+		out  any
+	}{{"questionnaires", &questionnaires}, {"questionnaire_questions", &questions}, {"questionnaire_options", &options}, {"questionnaire_score_rules", &rules}, {"questionnaire_submissions", &submissions}, {"questionnaire_submission_answers", &answers}, {"questionnaire_external_push_logs", &pushes}, {"questionnaire_scrm_apply_logs", &scrm}} {
+		if err := decodeTable(s, entry.name, entry.out); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -316,14 +332,17 @@ func importSnapshot(args []string) error {
 	var submissions []submission
 	var answers []answer
 	var pushes, scrm []operation
-	decodeTable(snap, "questionnaires", &questionnaires)
-	decodeTable(snap, "questionnaire_questions", &questions)
-	decodeTable(snap, "questionnaire_options", &options)
-	decodeTable(snap, "questionnaire_score_rules", &rules)
-	decodeTable(snap, "questionnaire_submissions", &submissions)
-	decodeTable(snap, "questionnaire_submission_answers", &answers)
-	decodeTable(snap, "questionnaire_external_push_logs", &pushes)
-	decodeTable(snap, "questionnaire_scrm_apply_logs", &scrm)
+	for _, entry := range []struct {
+		name string
+		out  any
+	}{
+		{"questionnaires", &questionnaires}, {"questionnaire_questions", &questions}, {"questionnaire_options", &options}, {"questionnaire_score_rules", &rules},
+		{"questionnaire_submissions", &submissions}, {"questionnaire_submission_answers", &answers}, {"questionnaire_external_push_logs", &pushes}, {"questionnaire_scrm_apply_logs", &scrm},
+	} {
+		if err = decodeTable(snap, entry.name, entry.out); err != nil {
+			return err
+		}
+	}
 	qTarget := map[int64]int64{}
 	versionTarget := map[int64]int64{}
 	questionTarget := map[int64]int64{}
@@ -522,8 +541,15 @@ func importSnapshot(args []string) error {
 		submissionTarget[s.ID] = targetID
 		if strings.TrimSpace(s.Token) != "" {
 			tokenDigest := sha256.Sum256([]byte(s.Token))
-			if _, err = tx.Exec(ctx, `INSERT INTO survey_result_tokens(submission_id,token_digest,created_at) VALUES($1,$2,$3) ON CONFLICT(token_digest) DO NOTHING`, targetID, tokenDigest[:], s.CreatedAt); err != nil {
+			var tokenSubmissionID int64
+			err = tx.QueryRow(ctx, `INSERT INTO survey_result_tokens(submission_id,token_digest,created_at) VALUES($1,$2,$3)
+				ON CONFLICT(token_digest) DO UPDATE SET submission_id=survey_result_tokens.submission_id
+				RETURNING submission_id`, targetID, tokenDigest[:], s.CreatedAt).Scan(&tokenSubmissionID)
+			if err != nil {
 				return err
+			}
+			if tokenSubmissionID != targetID {
+				return errors.New("legacy result token conflicts with another submission")
 			}
 		} else {
 			if err = quarantine(ctx, tx, batchID, snap.Manifest.SourceSystem, "questionnaire_result_tokens", fmt.Sprint(s.ID), "missing_result_token", map[string]any{"submission_source_id": s.ID}, digest); err != nil {
@@ -696,6 +722,7 @@ func rollbackImport(args []string) error {
 func reconcile(args []string) error {
 	fs, file, keyFile := common("reconcile", args)
 	target := fs.String("target-url", "", "v3 PostgreSQL URL")
+	dataKeyFile := fs.String("data-key-file", "", "v3 survey data key file required for protected-answer reconciliation")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -704,6 +731,14 @@ func reconcile(args []string) error {
 		return err
 	}
 	if err = validateSnapshot(snap); err != nil {
+		return err
+	}
+	dataKey, err := readKey(*dataKeyFile)
+	if err != nil {
+		return errors.New("data-key-file is required for protected-answer reconciliation")
+	}
+	surveyCipher, err := secure.NewCipher(base64.RawStdEncoding.EncodeToString(dataKey))
+	if err != nil {
 		return err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
@@ -767,7 +802,11 @@ func reconcile(args []string) error {
 		for _, fact := range facts {
 			var expectedDigest [32]byte
 			copy(expectedDigest[:], fact.digest)
-			if err = verifyMappedFact(ctx, tx, batchID, snap.Manifest.SourceSystem, table, fact.pk, fact.targetTable, fact.targetPK, fact.state, expectedDigest); err != nil {
+			sourceFact, sourceErr := frozenSourceFact(snap, table, fact.pk)
+			if sourceErr != nil {
+				return sourceErr
+			}
+			if err = verifyMappedFact(ctx, tx, batchID, snap.Manifest.SourceSystem, table, fact.pk, fact.targetTable, fact.targetPK, fact.state, expectedDigest, sourceFact, surveyCipher); err != nil {
 				return err
 			}
 		}
@@ -806,14 +845,17 @@ func expectedSourceDigests(s Snapshot) (map[string]map[string][32]byte, error) {
 	var submissions []submission
 	var answers []answer
 	var pushes, scrm []operation
-	decodeTable(s, "questionnaires", &questionnaires)
-	decodeTable(s, "questionnaire_questions", &questions)
-	decodeTable(s, "questionnaire_options", &options)
-	decodeTable(s, "questionnaire_score_rules", &rules)
-	decodeTable(s, "questionnaire_submissions", &submissions)
-	decodeTable(s, "questionnaire_submission_answers", &answers)
-	decodeTable(s, "questionnaire_external_push_logs", &pushes)
-	decodeTable(s, "questionnaire_scrm_apply_logs", &scrm)
+	for _, entry := range []struct {
+		name string
+		out  any
+	}{
+		{"questionnaires", &questionnaires}, {"questionnaire_questions", &questions}, {"questionnaire_options", &options}, {"questionnaire_score_rules", &rules},
+		{"questionnaire_submissions", &submissions}, {"questionnaire_submission_answers", &answers}, {"questionnaire_external_push_logs", &pushes}, {"questionnaire_scrm_apply_logs", &scrm},
+	} {
+		if err := decodeTable(s, entry.name, entry.out); err != nil {
+			return nil, err
+		}
+	}
 	for _, value := range questionnaires {
 		if err := add("questionnaires", value.ID, value); err != nil {
 			return nil, err
@@ -857,7 +899,84 @@ func expectedSourceDigests(s Snapshot) (map[string]map[string][32]byte, error) {
 	return result, nil
 }
 
-func verifyMappedFact(ctx context.Context, tx pgx.Tx, batchID int64, source, table, pk, targetTable string, targetPK *int64, state string, digest [32]byte) error {
+func frozenSourceFact(s Snapshot, table, pk string) (any, error) {
+	match := func(id int64) bool { return fmt.Sprint(id) == pk }
+	switch table {
+	case "questionnaires":
+		var rows []questionnaire
+		if err := decodeTable(s, table, &rows); err != nil {
+			return nil, err
+		}
+		for _, row := range rows {
+			if match(row.ID) {
+				return row, nil
+			}
+		}
+	case "questionnaire_questions":
+		var rows []question
+		if err := decodeTable(s, table, &rows); err != nil {
+			return nil, err
+		}
+		for _, row := range rows {
+			if match(row.ID) {
+				return row, nil
+			}
+		}
+	case "questionnaire_options":
+		var rows []option
+		if err := decodeTable(s, table, &rows); err != nil {
+			return nil, err
+		}
+		for _, row := range rows {
+			if match(row.ID) {
+				return row, nil
+			}
+		}
+	case "questionnaire_score_rules":
+		var rows []rule
+		if err := decodeTable(s, table, &rows); err != nil {
+			return nil, err
+		}
+		for _, row := range rows {
+			if match(row.ID) {
+				return row, nil
+			}
+		}
+	case "questionnaire_submissions":
+		var rows []submission
+		if err := decodeTable(s, table, &rows); err != nil {
+			return nil, err
+		}
+		for _, row := range rows {
+			if match(row.ID) {
+				return row, nil
+			}
+		}
+	case "questionnaire_submission_answers":
+		var rows []answer
+		if err := decodeTable(s, table, &rows); err != nil {
+			return nil, err
+		}
+		for _, row := range rows {
+			if match(row.ID) {
+				return row, nil
+			}
+		}
+	case "questionnaire_external_push_logs", "questionnaire_scrm_apply_logs":
+		var rows []operation
+		if err := decodeTable(s, table, &rows); err != nil {
+			return nil, err
+		}
+		for _, row := range rows {
+			if match(row.ID) {
+				return row, nil
+			}
+		}
+	}
+	return nil, fmt.Errorf("frozen source fact missing: %s/%s", table, pk)
+}
+
+func verifyMappedFact(ctx context.Context, tx pgx.Tx, batchID int64, source, table, pk, targetTable string, targetPK *int64, state string, digest [32]byte, sourceFact any, surveyCipher *secure.Cipher) error {
 	if state == "quarantined" {
 		var exists bool
 		err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM survey_migration_quarantine WHERE migration_batch_id=$1 AND source_system=$2 AND source_table=$3 AND source_pk=$4 AND record_digest=$5)`, batchID, source, table, pk, digest[:]).Scan(&exists)
@@ -880,7 +999,7 @@ func verifyMappedFact(ctx context.Context, tx pgx.Tx, batchID int64, source, tab
 		if err != nil || !exists {
 			return fmt.Errorf("migration reconciliation failed: %s/%s missing target fact", table, pk)
 		}
-		return nil
+		return verifyDefinitionFact(ctx, tx, source, table, *targetPK, sourceFact)
 	case "survey_submissions":
 		if table != "questionnaire_submissions" {
 			return fmt.Errorf("migration reconciliation failed: %s/%s type mismatch", table, pk)
@@ -902,7 +1021,203 @@ func verifyMappedFact(ctx context.Context, tx pgx.Tx, batchID int64, source, tab
 	if err != nil || !exists {
 		return fmt.Errorf("migration reconciliation failed: %s/%s missing target fact", table, pk)
 	}
+	switch value := sourceFact.(type) {
+	case submission:
+		return verifySubmissionFact(ctx, tx, source, *targetPK, value, surveyCipher)
+	case answer:
+		return verifyAnswerFact(ctx, tx, source, *targetPK, value, surveyCipher)
+	case operation:
+		return verifyOperationFact(ctx, tx, source, table, *targetPK, value)
+	}
+	return fmt.Errorf("migration reconciliation failed: %s/%s source type mismatch", table, pk)
+}
+
+func sourceTargetPK(ctx context.Context, tx pgx.Tx, source, table string, sourceID int64) (int64, error) {
+	var target *int64
+	if err := tx.QueryRow(ctx, `SELECT target_pk FROM survey_migration_source_map WHERE source_system=$1 AND source_table=$2 AND source_pk=$3`, source, table, fmt.Sprint(sourceID)).Scan(&target); err != nil || target == nil {
+		return 0, errors.New("migration reconciliation failed: mapped owner missing")
+	}
+	return *target, nil
+}
+
+func verifyDefinitionFact(ctx context.Context, tx pgx.Tx, source, table string, targetPK int64, sourceFact any) error {
+	mismatch := func(ok bool) error {
+		if !ok {
+			return fmt.Errorf("migration reconciliation failed: %s target fact drift", table)
+		}
+		return nil
+	}
+	switch value := sourceFact.(type) {
+	case questionnaire:
+		var name, title, description, mode, displayMode, slug, status string
+		var active bool
+		err := tx.QueryRow(ctx, `SELECT name,title,description,mode,answer_display_mode,slug,status,active_definition_version_id IS NOT NULL FROM survey_questionnaires WHERE id=$1`, targetPK).Scan(&name, &title, &description, &mode, &displayMode, &slug, &status, &active)
+		return mismatch(err == nil && active && name == trimNonEmpty(value.Name, 200) && title == trimNonEmpty(value.Title, 500) && description == trim(value.Description, 10000) && mode == map[bool]string{true: "assessment", false: "survey"}[value.Assessment] && displayMode == display(value.Display) && slug == safeSlug(value.Slug, value.ID) && status == "disabled")
+	case question:
+		owner, err := sourceTargetPK(ctx, tx, source, "questionnaires", value.QuestionnaireID)
+		if err != nil {
+			return err
+		}
+		var typ, title, dimension, sidebar, placeholder string
+		var required bool
+		var questionnaireID int64
+		err = tx.QueryRow(ctx, `SELECT q.question_type,q.title,q.assessment_dimension_key,q.sidebar_profile_field,q.required,q.placeholder_text,v.questionnaire_id FROM survey_definition_questions q JOIN survey_definition_versions v ON v.id=q.definition_version_id WHERE q.id=$1`, targetPK).Scan(&typ, &title, &dimension, &sidebar, &required, &placeholder, &questionnaireID)
+		return mismatch(err == nil && questionnaireID == owner && typ == value.Type && title == trimNonEmpty(value.Title, 1000) && dimension == safeOpaque(value.Dimension) && sidebar == safeOpaque(value.Sidebar) && required == value.Required && placeholder == trim(value.Placeholder, 500))
+	case option:
+		owner, err := sourceTargetPK(ctx, tx, source, "questionnaire_questions", value.QuestionID)
+		if err != nil {
+			return err
+		}
+		var questionID int64
+		var text, typeKey, placeholder string
+		var score float64
+		var tags []byte
+		var isOther bool
+		var otherMaxLength int
+		err = tx.QueryRow(ctx, `SELECT question_id,option_text,score,assessment_type_key,tag_codes,is_other,other_placeholder,other_max_length FROM survey_definition_options WHERE id=$1`, targetPK).Scan(&questionID, &text, &score, &typeKey, &tags, &isOther, &placeholder, &otherMaxLength)
+		return mismatch(err == nil && questionID == owner && text == trimNonEmpty(value.Text, 1000) && score == value.Score && typeKey == safeOpaque(value.TypeKey) && jsonEquivalent(tags, validArray(value.Tags)) && isOther == value.IsOther && placeholder == trim(value.OtherPlaceholder, 500) && otherMaxLength == otherMax(value))
+	case rule:
+		owner, err := sourceTargetPK(ctx, tx, source, "questionnaires", value.QuestionnaireID)
+		if err != nil {
+			return err
+		}
+		var questionnaireID int64
+		var min, max *float64
+		var tags []byte
+		err = tx.QueryRow(ctx, `SELECT v.questionnaire_id,r.minimum_score,r.maximum_score,r.tag_codes FROM survey_score_rules r JOIN survey_definition_versions v ON v.id=r.definition_version_id WHERE r.id=$1`, targetPK).Scan(&questionnaireID, &min, &max, &tags)
+		return mismatch(err == nil && questionnaireID == owner && floatPointerEqual(min, value.Min) && floatPointerEqual(max, value.Max) && jsonEquivalent(tags, validArray(value.Tags)))
+	}
+	return errors.New("migration reconciliation failed: definition source type mismatch")
+}
+
+func verifySubmissionFact(ctx context.Context, tx pgx.Tx, source string, targetPK int64, value submission, surveyCipher *secure.Cipher) error {
+	questionnaireID, err := sourceTargetPK(ctx, tx, source, "questionnaires", value.QuestionnaireID)
+	if err != nil {
+		return err
+	}
+	var actualQuestionnaire int64
+	var customer *int64
+	var identityState, identityReason, slug, title, mode, channel, campaign, staff string
+	var evidence, payload []byte
+	var total float64
+	var result []byte
+	var submitted, created time.Time
+	err = tx.QueryRow(ctx, `SELECT questionnaire_id,customer_id,identity_state,identity_reason,evidence_digest,payload_digest,questionnaire_slug_snapshot,title_snapshot,mode_snapshot,total_score,result_snapshot,source_channel,campaign_id,staff_id,submitted_at,created_at FROM survey_submissions WHERE id=$1`, targetPK).Scan(&actualQuestionnaire, &customer, &identityState, &identityReason, &evidence, &payload, &slug, &title, &mode, &total, &result, &channel, &campaign, &staff, &submitted, &created)
+	if err != nil {
+		return errors.New("migration reconciliation failed: submission fact unreadable")
+	}
+	identity := "anonymous"
+	reason := ""
+	var expectedEvidence []byte
+	if strings.TrimSpace(value.UnionID) != "" {
+		identity = "unresolved"
+		reason = "legacy_unionid_scope_missing"
+		d := sha256.Sum256([]byte(strings.TrimSpace(value.UnionID)))
+		expectedEvidence = d[:]
+	}
+	resultObject := map[string]any{}
+	_ = json.Unmarshal(value.Result, &resultObject)
+	if resultObject == nil {
+		resultObject = map[string]any{}
+	}
+	var tags []any
+	if json.Unmarshal(value.FinalTags, &tags) == nil {
+		resultObject["_legacy_final_tags"] = tags
+	}
+	resultObject["_legacy_matched_by"] = trim(value.MatchedBy, 100)
+	expectedResult, _ := json.Marshal(resultObject)
+	payloadDigest := recordDigest(value)
+	if actualQuestionnaire != questionnaireID || customer != nil || identityState != identity || identityReason != reason || !bytes.Equal(evidence, expectedEvidence) || !bytes.Equal(payload, payloadDigest[:]) || slug == "" || title == "" || mode == "" || total != value.Total || !jsonEquivalent(result, expectedResult) || channel != trim(value.SourceChannel, 100) || campaign != trim(value.CampaignID, 200) || staff != trim(value.StaffID, 200) || !submitted.Equal(value.SubmittedAt) || !created.Equal(value.CreatedAt) {
+		return errors.New("migration reconciliation failed: submission target fact drift")
+	}
+	if strings.TrimSpace(value.Token) != "" {
+		d := sha256.Sum256([]byte(value.Token))
+		var tokenSubmission int64
+		if err = tx.QueryRow(ctx, `SELECT submission_id FROM survey_result_tokens WHERE token_digest=$1`, d[:]).Scan(&tokenSubmission); err != nil || tokenSubmission != targetPK {
+			return errors.New("migration reconciliation failed: result token binding drift")
+		}
+	}
+	_ = surveyCipher
 	return nil
+}
+
+func verifyAnswerFact(ctx context.Context, tx pgx.Tx, source string, targetPK int64, value answer, surveyCipher *secure.Cipher) error {
+	submissionID, err := sourceTargetPK(ctx, tx, source, "questionnaire_submissions", value.SubmissionID)
+	if err != nil {
+		return err
+	}
+	var actualSubmission int64
+	var definitionQuestion *int64
+	var legacyQuestion *int64
+	var typ, title, masked string
+	var selected, ciphertext, digest []byte
+	var score float64
+	var missing bool
+	var created time.Time
+	err = tx.QueryRow(ctx, `SELECT submission_id,definition_question_id,legacy_source_question_id,question_type,question_title_snapshot,selected_options_snapshot,text_value_ciphertext,text_value_masked,answer_digest,score_snapshot,legacy_definition_missing,created_at FROM survey_submission_answers WHERE id=$1`, targetPK).Scan(&actualSubmission, &definitionQuestion, &legacyQuestion, &typ, &title, &selected, &ciphertext, &masked, &digest, &score, &missing, &created)
+	if err != nil {
+		return errors.New("migration reconciliation failed: answer fact unreadable")
+	}
+	var expectedQuestion *int64
+	if q, e := sourceTargetPK(ctx, tx, source, "questionnaire_questions", value.QuestionID); e == nil {
+		expectedQuestion = &q
+	}
+	plain := ""
+	if value.Text != "" {
+		var decryptErr error
+		plain, decryptErr = surveyCipher.Decrypt(ciphertext)
+		if decryptErr != nil {
+			return errors.New("migration reconciliation failed: protected answer unreadable")
+		}
+	}
+	expectedMasked := ""
+	if value.Text != "" {
+		expectedMasked = "[protected]"
+		if value.Type == "mobile" {
+			expectedMasked = mask(value.Text)
+		}
+	}
+	answerDigest := recordDigest(value)
+	if actualSubmission != submissionID || !int64PointerEqual(definitionQuestion, expectedQuestion) || legacyQuestion == nil || *legacyQuestion != value.QuestionID || typ != validAnswerType(value.Type, expectedQuestion == nil) || title != trimNonEmpty(value.Title, 1000) || !jsonEquivalent(selected, selectedOptions(value)) || plain != value.Text || masked != expectedMasked || !bytes.Equal(digest, answerDigest[:]) || score != value.Score || missing != (expectedQuestion == nil) || !created.Equal(value.CreatedAt) {
+		return errors.New("migration reconciliation failed: answer target fact drift")
+	}
+	return nil
+}
+
+func verifyOperationFact(ctx context.Context, tx pgx.Tx, source, table string, targetPK int64, value operation) error {
+	questionnaireID, err := sourceTargetPK(ctx, tx, source, "questionnaires", value.QuestionnaireID)
+	if err != nil {
+		return err
+	}
+	var expectedSubmission *int64
+	if value.SubmissionID != 0 {
+		sub, subErr := sourceTargetPK(ctx, tx, source, "questionnaire_submissions", value.SubmissionID)
+		if subErr == nil {
+			expectedSubmission = &sub
+		}
+	}
+	kind := map[string]string{"questionnaire_external_push_logs": "external_push", "questionnaire_scrm_apply_logs": "scrm_apply"}[table]
+	var actualQuestionnaire int64
+	var actualSubmission *int64
+	var actualKind, status, failure string
+	var occurred time.Time
+	var readOnly, replayable bool
+	err = tx.QueryRow(ctx, `SELECT questionnaire_id,submission_id,operation_kind,status,failure_category,occurred_at,read_only_legacy,replayable FROM survey_external_operation_receipts WHERE id=$1`, targetPK).Scan(&actualQuestionnaire, &actualSubmission, &actualKind, &status, &failure, &occurred, &readOnly, &replayable)
+	if err != nil || actualQuestionnaire != questionnaireID || !int64PointerEqual(actualSubmission, expectedSubmission) || actualKind != kind || status != legacyStatus(kind, value.Status) || failure != trim(value.FailureCategory, 100) || !occurred.Equal(value.OccurredAt) || !readOnly || replayable {
+		return errors.New("migration reconciliation failed: legacy operation fact drift")
+	}
+	return nil
+}
+
+func jsonEquivalent(left, right []byte) bool {
+	var a, b any
+	return json.Unmarshal(left, &a) == nil && json.Unmarshal(right, &b) == nil && reflect.DeepEqual(a, b)
+}
+func int64PointerEqual(left, right *int64) bool {
+	return (left == nil && right == nil) || (left != nil && right != nil && *left == *right)
+}
+func floatPointerEqual(left, right *float64) bool {
+	return (left == nil && right == nil) || (left != nil && right != nil && *left == *right)
 }
 
 func mapTargetTable(source, target string) bool {
@@ -982,10 +1297,11 @@ func decrypt(key, value []byte) ([]byte, error) {
 	}
 	return plain, nil
 }
-func decodeTable(s Snapshot, name string, out any) {
+func decodeTable(s Snapshot, name string, out any) error {
 	if err := json.Unmarshal(s.Tables[name], out); err != nil {
-		panic(err)
+		return fmt.Errorf("invalid frozen table %s", name)
 	}
+	return nil
 }
 func recordDigest(v any) [32]byte { raw, _ := json.Marshal(v); return sha256.Sum256(raw) }
 func beginOrReplayBatch(ctx context.Context, tx pgx.Tx, batchKey string, manifest Manifest, manifestRaw []byte, digest [32]byte) (int64, error) {
@@ -1066,7 +1382,9 @@ func quarantine(ctx context.Context, tx pgx.Tx, batch int64, source, table, pk, 
 }
 func identityUnresolved(s Snapshot) int {
 	var rows []submission
-	decodeTable(s, "questionnaire_submissions", &rows)
+	if decodeTable(s, "questionnaire_submissions", &rows) != nil {
+		return 0
+	}
 	n := 0
 	for _, v := range rows {
 		if strings.TrimSpace(v.UnionID) != "" {
@@ -1078,8 +1396,9 @@ func identityUnresolved(s Snapshot) int {
 func missingDefinitions(s Snapshot) int {
 	var questions []question
 	var answers []answer
-	decodeTable(s, "questionnaire_questions", &questions)
-	decodeTable(s, "questionnaire_submission_answers", &answers)
+	if decodeTable(s, "questionnaire_questions", &questions) != nil || decodeTable(s, "questionnaire_submission_answers", &answers) != nil {
+		return 0
+	}
 	known := map[int64]bool{}
 	for _, v := range questions {
 		known[v.ID] = true
