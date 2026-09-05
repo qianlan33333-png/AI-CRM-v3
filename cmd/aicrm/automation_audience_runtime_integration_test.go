@@ -128,6 +128,68 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 	}
 	staffID := automationAudienceInsertProviderStaff(t, ctx, native)
 	materials := automationAudienceCreateMedia(t, ctx, mediaRepo, staffID)
+	// Capture an automatic intent's source before a Media owner edit, then
+	// prove the later payload reader refuses the changed mini-program fields.
+	// The actual agent below is published after this edit and therefore has its
+	// own current snapshot; this is deliberately a capture-then-change test.
+	preEditContent := automationport.OutboundPublishedContent{AgentID: 1, PublishedVersion: 1, Content: automationport.FixedContentPackage{ContentText: "runtime hello", ImageLibraryIDs: []int64{materials.imageID}, MiniprogramLibraryIDs: []int64{materials.miniID}, AttachmentLibraryIDs: []int64{materials.attachmentID}, GroupInviteLibraryIDs: []int64{materials.inviteID}}}
+	freezer := automationOutboundContentFreezer{capturer: mediaRepo}
+	var preEditSnapshot json.RawMessage
+	var preEditDigest [32]byte
+	if err = uow.Within(ctx, func(tx context.Context) error {
+		var freezeErr error
+		preEditSnapshot, preEditDigest, freezeErr = freezer.FreezeOutboundContent(tx, preEditContent)
+		return freezeErr
+	}); err != nil {
+		t.Fatal(err)
+	}
+	frozenReader := automationFrozenPayloadReader{preparer: aiPrivatePayloadReader{images: mediaService, materials: mediaRepo, uow: uow, capturer: mediaRepo}}
+	assertFrozenUnavailable := func(reason string) {
+		t.Helper()
+		if _, readErr := frozenReader.LoadFrozenAutomationMessagePayload(ctx, preEditSnapshot, preEditDigest); readErr == nil {
+			t.Fatalf("%s was accepted for an already-frozen automatic payload", reason)
+		}
+	}
+	if _, err = mediaRepo.UpdateAttachment(ctx, materials.attachmentID, staffID, "audience-runtime-pdf-disable-0001", map[string]any{"expected_version": float64(1), "enabled": false}); err != nil {
+		t.Fatal(err)
+	}
+	assertFrozenUnavailable("disabled PDF")
+	if _, err = mediaRepo.UpdateAttachment(ctx, materials.attachmentID, staffID, "audience-runtime-pdf-enable-0001", map[string]any{"expected_version": float64(2), "enabled": true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = mediaRepo.UpdateMiniProgram(ctx, materials.miniID, staffID, "audience-runtime-mini-disable-0001", map[string]any{"enabled": false}); err != nil {
+		t.Fatal(err)
+	}
+	assertFrozenUnavailable("disabled mini program")
+	if _, err = mediaRepo.UpdateMiniProgram(ctx, materials.miniID, staffID, "audience-runtime-mini-enable-0001", map[string]any{"enabled": true}); err != nil {
+		t.Fatal(err)
+	}
+	// This same image is both the image attachment and the mini/invite cover,
+	// so disabling it exercises dependent thumbnail availability as well.
+	if _, err = mediaRepo.UpdateImage(ctx, materials.imageID, staffID, "audience-runtime-image-disable-0001", map[string]any{"enabled": false}); err != nil {
+		t.Fatal(err)
+	}
+	assertFrozenUnavailable("disabled image or dependent cover")
+	if _, err = mediaRepo.UpdateImage(ctx, materials.imageID, staffID, "audience-runtime-image-enable-0001", map[string]any{"enabled": true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = mediaRepo.ArchiveGroupInvite(ctx, materials.inviteID, staffID, "audience-runtime-invite-archive-0001"); err != nil {
+		t.Fatal(err)
+	}
+	assertFrozenUnavailable("archived group invite")
+	replacement, createErr := mediaRepo.CreateGroupInvite(ctx, staffID, "audience-runtime-invite-replacement-0001", map[string]any{"name": "Runtime invite", "title": "Join runtime group", "description": "Runtime group", "join_url": "https://work.weixin.qq.com/gm/runtime", "cover_image_id": float64(materials.imageID), "enabled": true})
+	if createErr != nil {
+		t.Fatal(createErr)
+	}
+	var validInvite bool
+	materials.inviteID, validInvite = replacement["id"].(int64)
+	if !validInvite || materials.inviteID < 1 {
+		t.Fatalf("replacement invite=%+v", replacement)
+	}
+	if _, err = mediaRepo.UpdateMiniProgram(ctx, materials.miniID, staffID, "audience-runtime-mini-edit-0001", map[string]any{"title": "Runtime card revised"}); err != nil {
+		t.Fatal(err)
+	}
+	assertFrozenUnavailable("changed mini-program title")
 	customerIDs := automationAudienceInsertProviderCustomers(t, ctx, native)
 	source := &automationAudienceSource{}
 	source.Set(customerIDs[:1])
@@ -192,12 +254,12 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 		// to bind its own local transaction.
 		Identities: outboundIdentityAdapter{uow: uow, reader: identityquery.NewPostgreSQL()},
 		Staff:      segmentStaff, Content: automationService,
-		Payloads: automationFrozenPayloadReader{preparer: aiPrivatePayloadReader{images: mediaService, materials: mediaRepo}}, Writer: writer,
+		Payloads: automationFrozenPayloadReader{preparer: aiPrivatePayloadReader{images: mediaService, materials: mediaRepo, uow: uow, capturer: mediaRepo}}, Writer: writer,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	privateProvider, err := outbound.NewPrivateMessageProvider(true, privateWriter, automationAudiencePrivateTarget{}, aiPrivatePayloadReader{content: aiRepo, images: mediaService, materials: mediaRepo}, writer)
+	privateProvider, err := outbound.NewPrivateMessageProvider(true, privateWriter, automationAudiencePrivateTarget{}, aiPrivatePayloadReader{content: aiRepo, images: mediaService, materials: mediaRepo, uow: uow, capturer: mediaRepo}, writer)
 	if err != nil {
 		t.Fatal(err)
 	}
