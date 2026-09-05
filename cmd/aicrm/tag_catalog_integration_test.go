@@ -524,7 +524,18 @@ func TestPostgreSQLSurveySyntheticPushSurvivesRepositoryRestartAndDoesNotBlindRe
 		t.Fatal(err)
 	}
 	customer := customerdomain.CustomerID(customerID)
-	normal, err := service.Submit(ctx, surveyport.SubmitCommand{Slug: "synthetic-effect", DefinitionVersion: definition.DefinitionVersion, SubmissionKey: strings.Repeat("n", 43), Identity: surveyport.SubmissionIdentity{State: surveyport.IdentityResolved, CustomerID: &customer, EvidenceDigest: strings.Repeat("a", 64)}, Answers: []surveyport.SubmissionAnswer{{QuestionID: surveyport.ID(questionID), TextValue: "正常提交"}}})
+	var published surveyport.Questionnaire
+	if err = uow.Within(ctx, func(tx context.Context) error {
+		var readErr error
+		published, readErr = surveys.GetPublishedBySlug(tx, "synthetic-effect")
+		return readErr
+	}); err != nil {
+		t.Fatalf("normal submission fixture is not published: %v", err)
+	}
+	if published.DefinitionVersion < 1 || len(published.Questions) != 1 {
+		t.Fatalf("normal submission published definition=%+v", published)
+	}
+	normal, err := service.Submit(ctx, surveyport.SubmitCommand{Slug: "synthetic-effect", DefinitionVersion: published.DefinitionVersion, SubmissionKey: strings.Repeat("n", 43), Identity: surveyport.SubmissionIdentity{State: surveyport.IdentityResolved, CustomerID: &customer, EvidenceDigest: strings.Repeat("a", 64)}, Answers: []surveyport.SubmissionAnswer{{QuestionID: surveyport.ID(questionID), TextValue: "正常提交"}}})
 	if err != nil || normal.SubmissionID < 1 {
 		t.Fatalf("normal submission=%+v err=%v", normal, err)
 	}
