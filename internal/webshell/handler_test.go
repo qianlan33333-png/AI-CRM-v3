@@ -811,3 +811,23 @@ func TestMessageArchiveRendersAsSeparateArchiveHost(t *testing.T) {
 		t.Fatalf("archive host boundary mismatch: %s", body)
 	}
 }
+
+func TestRenderGroupOpsInjectsManifestVerifiedReadonlyContentRenderer(t *testing.T) {
+	renderer, err := NewRenderer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	assets := GroupOpsAssets{TokensCSS: "/groupops-assets/assets/tokens.css", LabsCSS: "/groupops-assets/assets/labs.css", AdminJS: "/groupops-assets/assets/admin.js", ReadonlyCSS: "/groupops-assets/aiassistant/send_content_readonly_detail.css", ReadonlyJS: "/groupops-assets/aiassistant/send_content_readonly_detail.js"}
+	response := httptest.NewRecorder()
+	err = renderer.RenderGroupOps(response, AdminPageForRequest(httptest.NewRequest(http.MethodGet, "/admin/groupopsDetail.html?history=1&id=9", nil), "群运营计划", "", "api.admin_group_ops_plan_detail"), "groupopsDetail", `<section data-page="groupopsDetail">frozen donor fragment</section>`, assets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := response.Body.String()
+	if response.Code != http.StatusOK || !strings.Contains(body, `href="/groupops-assets/aiassistant/send_content_readonly_detail.css"`) || !strings.Contains(body, `<script defer src="/groupops-assets/aiassistant/send_content_readonly_detail.js"></script>`) || !strings.Contains(body, `<template id="tpl"><section data-page="groupopsDetail">frozen donor fragment</section></template>`) {
+		t.Fatalf("group ops read-only shell mismatch status=%d body=%q", response.Code, body)
+	}
+	if err := renderer.RenderGroupOps(httptest.NewRecorder(), AdminPageForRequest(httptest.NewRequest(http.MethodGet, "/admin/groupops.html", nil), "群运营计划", "", "api.admin_group_ops_ui"), "groupops", `<section></section>`, GroupOpsAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS}); err == nil {
+		t.Fatal("group ops shell accepted missing read-only content assets")
+	}
+}

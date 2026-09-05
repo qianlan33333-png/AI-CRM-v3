@@ -15,6 +15,34 @@ const cell = (value: unknown): string => esc(value === null ? 'NULL（源未记�
 const field = (label: string, value: unknown): string => `<div><span style="color:#667085">${esc(label)}：</span><span style="white-space:pre-wrap">${cell(value)}</span></div>`;
 const record = (body: string): string => `<article style="border-top:1px solid #EEF0F3;padding:12px 0;display:grid;gap:5px;overflow-wrap:anywhere">${body}</article>`;
 
+type HistoricalNodeContent = { action_title?: unknown; text_content?: unknown; attachments?: unknown };
+type ReadonlyContentRenderer = { renderFull(detail: { content_text: string; content_basis_label: string; attachment_basis_label: string; attachments: Array<{ type_label: string; name: string; description: string }> }): string };
+
+function readonlyContentRenderer(): ReadonlyContentRenderer | undefined {
+  return (window as Window & { AICRMSendContentReadonlyDetail?: ReadonlyContentRenderer }).AICRMSendContentReadonlyDetail;
+}
+
+function attachmentSummary(value: unknown): Array<{ type_label: string; name: string; description: string }> {
+  if (!Array.isArray(value)) return [];
+  return value.map((item, index) => {
+    const row = item && typeof item === 'object' && !Array.isArray(item) ? item as Record<string, unknown> : {};
+    const kind = typeof row.kind === 'string' && row.kind !== '' ? row.kind : '附件';
+    const id = row.id === undefined || row.id === null || row.id === '' ? `#${index + 1}` : `#${String(row.id)}`;
+    return { type_label: `历史素材 · ${kind}`, name: `${kind} ${id}`, description: '原始附件引用（仅展示）' };
+  });
+}
+
+function readonlyNodeContent(row: GroupOpsHistoryNode): string {
+  const source = row as GroupOpsHistoryNode & HistoricalNodeContent;
+  const title = typeof source.action_title === 'string' ? source.action_title : '';
+  const text = typeof source.text_content === 'string' ? source.text_content : '';
+  const attachments = attachmentSummary(source.attachments);
+  const detail = { content_text: text, content_basis_label: '历史正文（仅展示，不执行）', attachment_basis_label: '历史附件引用（仅展示，不读取素材）', attachments };
+  const rendered = readonlyContentRenderer()?.renderFull(detail);
+  const fallback = `<section aria-label="历史内容" style="display:grid;gap:8px"><div>${field('历史正文', text)}</div><div>${field('历史附件', attachments.length ? attachments.map((item) => item.name).join('、') : '无')}</div></section>`;
+  return `${field('原操作标题', title)}${rendered || fallback}`;
+}
+
 function plans(rows: GroupOpsHistoryPlan[]): string {
   return rows.map((r) => record(`<a href="groupopsDetail.html?history=1&id=${encodeURIComponent(r.plan_id)}" style="color:#245BDB">${cell(r.name)} · 查看历史计划群与节点</a>${field('V2 plan_id / 源计划 ID', `${r.plan_id} / ${r.source_plan_id}`)}${field('源 code', r.source_code)}${field('源计划类型', r.plan_type)}${field('源状态', r.original_status)}${field('V2 只读状态 / revision', `${r.status} / ${r.revision}`)}${field('负责人 staff_id', r.owner_staff_id)}${field('创建时间', r.created_at)}${field('更新时间', r.updated_at)}${field('归档时间', r.archived_at)}`)).join('');
 }
@@ -28,7 +56,7 @@ function groups(rows: GroupOpsHistoryGroup[]): string {
 }
 
 function nodes(rows: GroupOpsHistoryNode[]): string {
-  return rows.map((r) => record(`${field('V2 ID / 源节点 ID', `${r.id} / ${r.source_node_id}`)}${field('V2 plan_id / 源计划 ID', `${r.plan_id} / ${r.source_plan_id}`)}${field('源 day_index', r.day_index)}${field('源触发标签', r.trigger_time)}${field('源排序', r.sort_order)}${field('源状态', r.original_status)}${field('创建时间', r.created_at)}${field('更新时间', r.updated_at)}<details><summary>历史内容包（仅展示，不执行）</summary><pre style="white-space:pre-wrap">${esc(JSON.stringify(r.content_package, null, 2))}</pre></details>`)).join('');
+  return rows.map((r) => record(`${field('V2 ID / 源节点 ID', `${r.id} / ${r.source_node_id}`)}${field('V2 plan_id / 源计划 ID', `${r.plan_id} / ${r.source_plan_id}`)}${field('源 day_index', r.day_index)}${field('源触发标签', r.trigger_time)}${field('源排序', r.sort_order)}${field('源状态', r.original_status)}${field('创建时间', r.created_at)}${field('更新时间', r.updated_at)}${readonlyNodeContent(r)}`)).join('');
 }
 
 async function section<T>(host: HTMLElement, title: string, read: (limit: number, offset: number) => Promise<{ items: T[]; total: number; limit: number; offset: number }>, render: (rows: T[]) => string): Promise<void> {
