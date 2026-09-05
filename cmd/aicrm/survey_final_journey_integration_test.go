@@ -12,8 +12,10 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -31,6 +33,7 @@ import (
 	surveyprovider "github.com/qianlan33333-png/AI-CRM-v3/internal/survey/provider"
 	surveysecure "github.com/qianlan33333-png/AI-CRM-v3/internal/survey/secure"
 	surveystore "github.com/qianlan33333-png/AI-CRM-v3/internal/survey/store"
+	"github.com/qianlan33333-png/AI-CRM-v3/internal/webshell"
 )
 
 // TestSurveyOAuthJourneyDefinitionFixtureIsAcceptedByApplication makes the
@@ -461,6 +464,107 @@ func TestSurveyOAuthSubmissionResultJourneyPostgreSQL(t *testing.T) {
 	if customers != 1 || identities != 1 || storedSubmissions != 2 || storedTokens != 2 || customerBoundSubmissions != 2 || exports != 1 {
 		t.Fatalf("customers=%d identities=%d submissions=%d result_tokens=%d customer_bound_submissions=%d exports=%d", customers, identities, storedSubmissions, storedTokens, customerBoundSubmissions, exports)
 	}
+}
+
+// TestSurveyFrozenAdminRuntimeJourneyPostgreSQL executes the emitted frozen
+// editor through Survey.UIBinding and the actual v3 web shell. Its browser
+// clicks create, preview, save-disabled, duplicate, export, assessment sort,
+// and H5 preview; the assertions below then read the authoritative Survey
+// Owner rather than treating browser requests or a 200 response as proof.
+func TestSurveyFrozenAdminRuntimeJourneyPostgreSQL(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	databaseURL, cleanup := adminAccessCompositionDatabase(t, ctx)
+	defer cleanup()
+	native, err := pgxpool.New(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer native.Close()
+
+	var actorID int64
+	if err = native.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name) VALUES('survey-frozen-admin-runtime','$argon2id$test','Survey Frozen Runtime') RETURNING id`).Scan(&actorID); err != nil {
+		t.Fatal(err)
+	}
+	wrapper, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wrapper.Close()
+	uow, err := platformpostgres.NewUnitOfWork(wrapper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cipher, err := surveysecure.NewCipher(base64.RawStdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := surveystore.NewPostgreSQL(native, uow, cipher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	definitions := surveyapp.NewService(uow, repository)
+	submissions := surveyapp.NewSubmissionService(uow, repository, cipher)
+	handler, err := surveyhttp.NewHandler(definitions, submissions, surveyJourneySecurity{actorID: actorID}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := surveyJourneyRepositoryRoot(t)
+	renderer, err := webshell.NewRenderer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ui := surveymodule.NewModuleRegistration().UIBinding(filepath.Join(root, "web", "dist"), func(writer http.ResponseWriter, request *http.Request, page, donor string, assets surveymodule.UIAssets) error {
+		return renderer.RenderSurvey(writer, webshell.AdminPageForRequest(request, "问卷编辑", "管理问卷定义、版本、答卷及只读外部效果回执。", "api.admin_questionnaires"), page, donor, webshell.SurveyAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS, EditorJS: assets.EditorJS, EditorCSS: assets.EditorCSS})
+	})
+	mux := http.NewServeMux()
+	mux.Handle("/admin/questionnaireDetail.html", ui)
+	mux.Handle("/api/admin/questionnaires", handler)
+	mux.Handle("/api/admin/questionnaires/", handler)
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	command := exec.CommandContext(ctx, "node", filepath.Join(root, "cmd", "aicrm", "survey_admin_frozen_runtime_e2e.mjs"))
+	command.Dir = root
+	command.Env = append(os.Environ(), "AICRM_SURVEY_ADMIN_RUNTIME_ORIGIN="+server.URL)
+	var output, diagnostics bytes.Buffer
+	command.Stdout = &output
+	command.Stderr = &diagnostics
+	err = command.Run()
+	if err != nil {
+		t.Fatalf("frozen Survey Host runtime: %v\n%s", err, diagnostics.String())
+	}
+	var result struct {
+		NormalID, CopyID, AssessmentID int64
+		FirstTitle                     string
+	}
+	if err = json.Unmarshal([]byte(strings.TrimSpace(output.String())), &result); err != nil {
+		t.Fatalf("decode frozen runtime output %q: %v", output.String(), err)
+	}
+	if result.NormalID < 1 || result.CopyID < 1 || result.AssessmentID < 1 || strings.TrimSpace(result.FirstTitle) == "" {
+		t.Fatalf("invalid frozen runtime result=%+v", result)
+	}
+	normal, err := definitions.Get(ctx, surveyport.ID(result.NormalID))
+	if err != nil || normal.Status != surveyport.StatusDisabled || normal.Name != "冻结后台实际问卷" || len(normal.Questions) != 2 || normal.Questions[0].Title != "第一道真实题" || normal.Questions[1].Title != "第二道真实题" {
+		t.Fatalf("frozen normal editor persistence=%+v err=%v", normal, err)
+	}
+	copy, err := definitions.Get(ctx, surveyport.ID(result.CopyID))
+	if err != nil || copy.Status != surveyport.StatusDraft || copy.ID == normal.ID || len(copy.Questions) != len(normal.Questions) {
+		t.Fatalf("frozen duplicate persistence=%+v err=%v", copy, err)
+	}
+	assessment, err := definitions.Get(ctx, surveyport.ID(result.AssessmentID))
+	if err != nil || assessment.Mode != surveyport.ModeAssessment || assessment.Status != surveyport.StatusDraft || len(assessment.Questions) < 2 || assessment.Questions[0].Title != result.FirstTitle {
+		t.Fatalf("frozen assessment persistence=%+v first=%q err=%v", assessment, result.FirstTitle, err)
+	}
+}
+
+func surveyJourneyRepositoryRoot(t *testing.T) string {
+	t.Helper()
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("locate survey journey repository root")
+	}
+	return filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
 }
 
 type surveyJourneySecurity struct{ actorID int64 }
