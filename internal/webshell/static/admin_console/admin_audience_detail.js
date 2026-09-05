@@ -569,7 +569,7 @@
       const action = byID("policyActionSelect").value;
       const agentID = Number(byID("automationAgentSelect")?.value || state.binding?.agent_id || 0);
       if (!quiet || (action === "outbound_message" && !agentID)) return setStatus(byID("policyStatusLine"), "请提供有效安静时段，并为发送动作选择固定话术。", "error");
-      const body = { code: byID("policyCodeInput").value.trim(), name: byID("policyNameInput").value.trim(), package_id: packageID, trigger: byID("policyTriggerSelect").value, action, action_config: action === "outbound_message" ? { agent_id: agentID } : { record_type: "audience_member_entered" }, quiet_hours: { timezone: byID("policyTimezoneInput").value.trim(), start: quiet[1], end: quiet[2] }, single_run_limit: Number(byID("policyLimitInput").value), approval_staff_id: Number(byID("policyApprovalInput").value), expected_version: 0 };
+      const body = { code: byID("policyCodeInput").value.trim(), name: byID("policyNameInput").value.trim(), package_id: packageID, trigger: byID("policyTriggerSelect").value, action, action_config: action === "outbound_message" ? { agent_id: agentID } : { record_type: "audience_member_entered" }, quiet_hours: { timezone: byID("policyTimezoneInput").value.trim(), start: quiet[1], end: quiet[2] }, single_run_limit: Number(byID("policyLimitInput").value), expected_version: 0 };
       try { await request(`${API}/automations`, { method: "POST", mutate: true, scope: "automation-policy-create", body }); setStatus(byID("policyStatusLine"), "暂停策略及不可变版本已创建。", "success"); await loadPolicies(); }
       catch (error) { const detail = errorState(error); setStatus(byID("policyStatusLine"), detail.message, "error"); }
     }
