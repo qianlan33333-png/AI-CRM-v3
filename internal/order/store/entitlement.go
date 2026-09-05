@@ -83,7 +83,7 @@ func (r *Repository) UpdateEntitlementRemark(ctx context.Context, command orderp
 	if _, err = tx.Exec(ctx, `INSERT INTO order_entitlement_audit_events(entitlement_id,operation,actor_digest,payload_digest,occurred_at) VALUES($1,'remark',$2,$3,$4)`, item.ID, actor[:], payload[:], at); err != nil {
 		return item, err
 	}
-	_, err = tx.Exec(ctx, `INSERT INTO order_entitlement_outbox(event_type,entitlement_id,payload,idempotency_digest,occurred_at) VALUES('order.entitlement.remark_updated.v1',$1,jsonb_build_object('entitlement_id',$1,'version',$2),$3,$4)`, item.ID, item.Version, key[:], at)
+	_, err = tx.Exec(ctx, `INSERT INTO order_entitlement_outbox(event_type,entitlement_id,payload,idempotency_digest,occurred_at) VALUES('order.entitlement.remark_updated.v1',$1,jsonb_build_object('entitlement_id',$1::bigint,'version',$2::bigint),$3,$4)`, item.ID, item.Version, key[:], at)
 	return item, err
 }
 
@@ -335,7 +335,7 @@ func recordEntitlementFulfillment(ctx context.Context, tx pgx.Tx, receiptOperati
 	}
 	eventType := map[string]string{"grant": "order.entitlement.granted.v1", "renew": "order.entitlement.renewed.v1", "refund": "order.entitlement.refunded.v1"}[eventOperation]
 	idempotency := sha256.Sum256([]byte(fmt.Sprintf("%s:%d", receiptOperation, sourceOrderID)))
-	_, err = tx.Exec(ctx, `INSERT INTO order_entitlement_outbox(event_type,entitlement_id,payload,idempotency_digest,occurred_at) VALUES($1,$2,jsonb_build_object('entitlement_id',$2,'source_order_id',$3),$4,$5)`, eventType, item.ID, sourceOrderID, idempotency[:], at)
+	_, err = tx.Exec(ctx, `INSERT INTO order_entitlement_outbox(event_type,entitlement_id,payload,idempotency_digest,occurred_at) VALUES($1,$2,jsonb_build_object('entitlement_id',$2::bigint,'source_order_id',$3::bigint),$4,$5)`, eventType, item.ID, sourceOrderID, idempotency[:], at)
 	return err
 }
 
