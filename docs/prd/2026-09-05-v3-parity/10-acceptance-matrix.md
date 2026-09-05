@@ -9,7 +9,7 @@
 - 个体 PR 不逐个合并 main。总集成 PR 冻结唯一发布候选后，才提交用户做最终生产上线确认；确认后一次合并、一次部署。
 - 本矩阵后续为每个板块同时记录“个体审核结果”和“已纳入集成 HEAD”。未进入集成或联合验收未通过的项目不得标记整体完成。
 
-当前未合并总集成 PR：[PR #141](https://github.com/qianlan33333-png/AI-CRM-v3/pull/141)。最新已推组合 `597115462e789866621ddd6992643264ac52c7cd` 的CI33982372650失败，仍为两个旧客户同步/欢迎语fixture漏载0086；修正PR161准确03713dc本身又被PR152旧历史回读竞态挡住。PR152新b0c369增加等待真实AI完成投影，正在独立CI中，尚未纳入。上一完全通过组合 `6ca8dc0e87a498761679dbbbb3df32dde257535e` / CI33978425968是真实PG16、race、SDK ABI及仓库检查成功，deploy跳过。
+当前未合并总集成 PR：[PR #141](https://github.com/qianlan33333-png/AI-CRM-v3/pull/141)。最新已推组合 `597115462e789866621ddd6992643264ac52c7cd` 的CI33982372650失败，仍为两个旧客户同步/欢迎语fixture漏载0086；修正PR161准确03713dc本身又被PR152旧历史回读竞态挡住。PR152新b0c369增加等待真实AI完成投影，已通过CI33982622908（PG16/race，deploy跳过）并经源码审核纳入16e09ba5b07740fae3be2203703e13ef879d484c，组合继续验证。上一完全通过组合 `6ca8dc0e87a498761679dbbbb3df32dde257535e` / CI33978425968是真实PG16、race、SDK ABI及仓库检查成功，deploy跳过。
 
 已审纳入的最新业务源为PR143 `e9e62809a569be09771e6107039e64c934201e37` / CI33981662058（完整历史目标及部分中断恢复），PR152 `950164b00d8a19e41fde605f507fec4746223232` / CI33980221396，PR160 `4982e4fb05c5e5c1b00990d463a42dd1248e8ccf` / CI33980816276。对应合并提交分别b0b20281、1bcb8fcb、7b8a1dc3，均保留准确来源祖先。PR158原后台UI/中文测评键、PR159自动化历史逐条对账、PR162的05/06/07共同运行及上述fixture修正仍待准确CI与审核，尚未冻结最终发布候选。
 
@@ -37,7 +37,7 @@
 | #158 问卷OAuth与提交结果联合 | 039c823e9677986c1180b3ec121430aeb779b418 / 33977653567 SUCCESS，deploy SKIPPED | 21a563e224b0d2195dd204a31321c6f6a228c507 | 6ca8dc0 / 33978425968 SUCCESS，deploy SKIPPED | 0090前向修正与真实PG readiness；实际OAuth Adapter/OneID/并发提交/结果授权/CSV/历史版本通过，Admin鉴权为测试Port，原后台UI继续 |
 | #154 HXC共用事实 | a093751b15ee2b51b349e01fa42590baf2eb5422 / 33969310749 SUCCESS，deploy SKIPPED | 25a711209840ae5826518237b152ba26da07512f | f4d6948 / 33975204629 SUCCESS，deploy SKIPPED | 真实源EXPLAIN、同源会员、PG固定代与清理并发通过；已放行03/05稳定Port接入 |
 | #155 群真实Access、unknown与AI同库运行时 | 3c69142ea55a5a40362b5d28042aa64dc5fb5546 / 33969767286 SUCCESS，deploy SKIPPED；保留0130e88 | 4242d30730b6736ff67838bfd05d6432aef6f341 | 4ec08bb / 33970748481 SUCCESS，deploy SKIPPED；父批79d26e1通过 | 真实Access/unknown及AI和Group共同PG/River/Outbound通过；自动化参与的最终组合仍待 |
-| #152 自动化六来源、原表单、人工待审与固定素材运行时 | 950164b00d8a19e41fde605f507fec4746223232 / 33980221396 SUCCESS，deploy SKIPPED | 1bcb8fcbb70d61abcdc2296fcf27478483e660a4 | 本批推送后验证 | 原页面JSDOM→实际Runtime HTTP/PG→AI待审/整单审批/回执；自动混合素材/冻结漂移/unknown/重启与分页50+通过；历史及最终共用运行仍待 |
+| #152 自动化六来源、原表单、人工待审与固定素材运行时 | b0c3694c9a85bbfe5de05574d90188df9f83fc94 / 33982622908 SUCCESS，deploy SKIPPED；保留950164b及其CI33980221396 | 16e09ba5b07740fae3be2203703e13ef879d484c | 本批推送后验证 | 原页面JSDOM→实际Runtime HTTP/PG→AI待审/整单审批/回执；自动混合素材/冻结漂移/unknown/重启与分页50+通过；历史及最终共用运行仍待 |
 | #160 存档历史导入工具随包交付 | 4982e4fb05c5e5c1b00990d463a42dd1248e8ccf / 33980816276 SUCCESS，deploy SKIPPED | 7b8a1dc37bcdbefed98536ef453ae2ff684671fe | 本批推送后验证 | 既有release构建加入archive importer；真实合成installer缺commerce/archive binary均拒绝，不改变workflow触发与部署权限 |
 
 | 板块 | PRD | 开发状态 | PR / HEAD | 旧行为/前端 | PostgreSQL/恢复 | 身份/效果协议 | 总控审核 |
@@ -167,3 +167,5 @@
 - 组合141a4fd本机make check退出0（PG因无DSN跳过），实际CI33981762102暴露旧fixture漏0086：CustomerSyncRiverRestart与CustomerSyncAndWelcome都停在reconciling，不能以本机通过掩盖。group_runtime_ui按12共同接线合同从该准确HEAD独立修复fixture，无业务/新迁移/超时放宽。
 
 - PR143 e9e62809真实PG16/race CI33981662058通过并根审纳入b0b2028：已持久第一条目标/收据后第二条失败，再运行首条replay及后续import守恒；隔离恢复后重新置applied并重新reconcile，同run互斥，无新效果。源码从270到e9的全部增量均已审，已完成的143历史不再计为待开发。
+
+- 2026-09-06：PR152 b0c369完整CI33982622908与源码审查通过，纳入16e09ba5。原测试提前读取历史存在时序竞争，现等待真实recipient/binding完成回执及实际RuntimeService只读投影，保留原历史断言。#159/#161/#162依赖此准确修正并行验证，未以重跑旧HEAD代替修正。
