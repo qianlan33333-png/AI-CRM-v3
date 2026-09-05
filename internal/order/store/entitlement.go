@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -118,3 +119,234 @@ func (r *Repository) ImportHistoricalEntitlement(ctx context.Context, input orde
 }
 
 var _ orderapp.EntitlementStore = (*Repository)(nil)
+
+func (r *Repository) GrantPaidServicePeriod(ctx context.Context, command orderport.ServicePeriodGrantCommand, payload [32]byte) (orderport.Entitlement, error) {
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return orderport.Entitlement{}, err
+	}
+	if err = lockServicePeriodEntitlement(ctx, tx, command.BeneficiaryCustomerID, command.ServiceProductID); err != nil {
+		return orderport.Entitlement{}, err
+	}
+	if prior, found, err := entitlementFulfillmentReceipt(ctx, tx, "grant", command.SourceOrderID, payload); err != nil || found {
+		return prior, err
+	}
+	item, found, err := latestServicePeriodEntitlement(ctx, tx, command.BeneficiaryCustomerID, command.ServiceProductID)
+	if err != nil {
+		return orderport.Entitlement{}, err
+	}
+	operation := "grant"
+	var priorActiveEnd *time.Time
+	if !found {
+		sourceKey := fmt.Sprintf("native-service-period:%d:%d", command.BeneficiaryCustomerID, command.ServiceProductID)
+		sourceDigest := sha256.Sum256([]byte(sourceKey))
+		end := command.PaidAt.AddDate(0, 0, int(command.DurationDays))
+		err = tx.QueryRow(ctx, `INSERT INTO order_service_entitlements(source_system,source_key,customer_id,service_product_id,product_name,last_order_id,status,start_at,end_at,remark,source_digest,created_at,updated_at)
+			VALUES('native-payment',$1,$2,$3,$4,$5,'active',$6,$7,'',$8,$9,$9)
+			RETURNING id,customer_id,service_product_id,product_name,last_order_id,status,start_at,end_at,remark,version,updated_at`, sourceKey, command.BeneficiaryCustomerID, command.ServiceProductID, command.ProductName, command.SourceOrderID, command.PaidAt, end, sourceDigest[:], command.ProcessedAt).
+			Scan(&item.ID, &item.CustomerID, &item.ServiceProductID, &item.ProductName, &item.LastOrderID, &item.Status, &item.StartAt, &item.EndAt, &item.Remark, &item.Version, &item.UpdatedAt)
+	} else {
+		start, end := command.PaidAt, command.PaidAt.AddDate(0, 0, int(command.DurationDays))
+		if item.Status == "active" && item.EndAt.After(command.ProcessedAt) {
+			frozen := item.EndAt
+			priorActiveEnd = &frozen
+			operation, start, end = "renew", item.StartAt, item.EndAt.AddDate(0, 0, int(command.DurationDays))
+		}
+		err = tx.QueryRow(ctx, `UPDATE order_service_entitlements SET product_name=$2,last_order_id=$3,status='active',start_at=$4,end_at=$5,version=version+1,updated_at=$6 WHERE id=$1
+			RETURNING id,customer_id,service_product_id,product_name,last_order_id,status,start_at,end_at,remark,version,updated_at`, item.ID, command.ProductName, command.SourceOrderID, start, end, command.ProcessedAt).
+			Scan(&item.ID, &item.CustomerID, &item.ServiceProductID, &item.ProductName, &item.LastOrderID, &item.Status, &item.StartAt, &item.EndAt, &item.Remark, &item.Version, &item.UpdatedAt)
+	}
+	if err != nil {
+		return orderport.Entitlement{}, err
+	}
+	if err = recordEntitlementFulfillment(ctx, tx, "grant", command.SourceOrderID, payload, item, command.DurationDays, priorActiveEnd, 0, operation, command.ProcessedAt); err != nil {
+		return orderport.Entitlement{}, err
+	}
+	return item, nil
+}
+
+func (r *Repository) ApplyServicePeriodRefund(ctx context.Context, command orderport.ServicePeriodRefundCommand, payload [32]byte) (orderport.Entitlement, error) {
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return orderport.Entitlement{}, err
+	}
+	if err = lockServicePeriodRefund(ctx, tx, command.SourceOrderID); err != nil {
+		return orderport.Entitlement{}, err
+	}
+	if prior, found, err := entitlementFulfillmentReceipt(ctx, tx, "refund", command.SourceOrderID, payload); err != nil || found {
+		return prior, err
+	}
+	var entitlementID int64
+	var duration int32
+	var priorActiveEnd *time.Time
+	err = tx.QueryRow(ctx, `SELECT entitlement_id,duration_days,prior_active_end_at FROM order_entitlement_fulfillment_receipts WHERE operation='grant' AND source_order_id=$1 FOR UPDATE`, command.SourceOrderID).Scan(&entitlementID, &duration, &priorActiveEnd)
+	if errors.Is(err, pgx.ErrNoRows) {
+		err = tx.QueryRow(ctx, `SELECT entitlement_id,issued_duration_days FROM order_entitlement_historical_sources WHERE source_order_id=$1 FOR UPDATE`, command.SourceOrderID).Scan(&entitlementID, &duration)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return orderport.Entitlement{}, orderport.ErrNotFound
+		}
+	}
+	if err != nil {
+		return orderport.Entitlement{}, err
+	}
+	item, err := servicePeriodEntitlementByID(ctx, tx, entitlementID)
+	if err != nil {
+		return orderport.Entitlement{}, err
+	}
+	var otherUnrefunded int64
+	err = tx.QueryRow(ctx, `SELECT count(*) FROM (
+		SELECT source_order_id FROM order_entitlement_fulfillment_receipts
+		WHERE operation='grant' AND entitlement_id=$1
+		UNION
+		SELECT source_order_id FROM order_entitlement_historical_sources
+		WHERE entitlement_id=$1
+	) sources
+	WHERE source_order_id<>$2
+	AND NOT EXISTS (SELECT 1 FROM order_entitlement_fulfillment_receipts refund_receipt WHERE refund_receipt.operation='refund' AND refund_receipt.source_order_id=sources.source_order_id)`, item.ID, command.SourceOrderID).Scan(&otherUnrefunded)
+	if err != nil {
+		return orderport.Entitlement{}, err
+	}
+	status, end := "refunded", command.ProcessedAt
+	if otherUnrefunded > 0 || (priorActiveEnd != nil && priorActiveEnd.After(command.ProcessedAt)) {
+		end = item.EndAt.AddDate(0, 0, -int(duration))
+		if end.Before(command.ProcessedAt) {
+			end = command.ProcessedAt
+		}
+		if end.After(command.ProcessedAt) {
+			status = "active"
+		} else {
+			status = "expired"
+		}
+	}
+	err = tx.QueryRow(ctx, `UPDATE order_service_entitlements SET status=$2,end_at=$3,version=version+1,updated_at=$4 WHERE id=$1
+		RETURNING id,customer_id,service_product_id,product_name,last_order_id,status,start_at,end_at,remark,version,updated_at`, item.ID, status, end, command.ProcessedAt).
+		// Processing time is the update time; entitlement end may lie in the
+		// future when another unrefunded order remains.
+		Scan(&item.ID, &item.CustomerID, &item.ServiceProductID, &item.ProductName, &item.LastOrderID, &item.Status, &item.StartAt, &item.EndAt, &item.Remark, &item.Version, &item.UpdatedAt)
+	if err != nil {
+		return orderport.Entitlement{}, err
+	}
+	if err = recordEntitlementFulfillment(ctx, tx, "refund", command.SourceOrderID, payload, item, duration, nil, command.RefundAmountMinor, "refund", command.ProcessedAt); err != nil {
+		return orderport.Entitlement{}, err
+	}
+	return item, nil
+}
+
+func (r *Repository) RecordHistoricalServicePeriodSource(ctx context.Context, command orderport.HistoricalServicePeriodSourceCommand) error {
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return err
+	}
+	var beneficiary, customerID *int64
+	var serviceProductID int64
+	if err = tx.QueryRow(ctx, `SELECT beneficiary_customer_id FROM orders WHERE id=$1 AND status='paid' FOR KEY SHARE`, command.SourceOrderID).Scan(&beneficiary); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return orderport.ErrNotFound
+		}
+		return err
+	}
+	if err = tx.QueryRow(ctx, `SELECT customer_id,service_product_id FROM order_service_entitlements WHERE id=$1 FOR KEY SHARE`, command.EntitlementID).Scan(&customerID, &serviceProductID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return orderport.ErrNotFound
+		}
+		return err
+	}
+	if beneficiary == nil || customerID == nil || *beneficiary != *customerID || serviceProductID != command.ServiceProductID {
+		return orderport.ErrConflict
+	}
+	var matched int64
+	if err = tx.QueryRow(ctx, `SELECT 1 FROM order_items WHERE order_id=$1 AND line_no=$2 AND product_id=$3 AND product_code=$4 FOR KEY SHARE`, command.SourceOrderID, command.SourceLineNo, command.ServiceProductID, command.ServiceProductCode).Scan(&matched); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return orderport.ErrConflict
+		}
+		return err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO order_entitlement_historical_sources(source_order_id,entitlement_id,source_line_no,product_id,product_code,issued_duration_days,source_start_at,source_end_at,imported_at)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)
+		ON CONFLICT (source_order_id) DO NOTHING`, command.SourceOrderID, command.EntitlementID, command.SourceLineNo, command.ServiceProductID, command.ServiceProductCode, command.DurationDays, command.StartAt, command.EndAt, command.ImportedAt); err != nil {
+		return err
+	}
+	var existing orderport.HistoricalServicePeriodSourceCommand
+	err = tx.QueryRow(ctx, `SELECT source_order_id,entitlement_id,source_line_no,product_id,product_code,issued_duration_days,source_start_at,source_end_at,imported_at FROM order_entitlement_historical_sources WHERE source_order_id=$1`, command.SourceOrderID).
+		Scan(&existing.SourceOrderID, &existing.EntitlementID, &existing.SourceLineNo, &existing.ServiceProductID, &existing.ServiceProductCode, &existing.DurationDays, &existing.StartAt, &existing.EndAt, &existing.ImportedAt)
+	if err != nil {
+		return err
+	}
+	if existing.EntitlementID != command.EntitlementID || existing.SourceLineNo != command.SourceLineNo || existing.ServiceProductID != command.ServiceProductID || existing.ServiceProductCode != command.ServiceProductCode || existing.DurationDays != command.DurationDays || !existing.StartAt.Equal(command.StartAt) || !existing.EndAt.Equal(command.EndAt) {
+		return orderport.ErrConflict
+	}
+	return nil
+}
+
+func entitlementFulfillmentReceipt(ctx context.Context, tx pgx.Tx, operation string, sourceOrderID int64, payload [32]byte) (orderport.Entitlement, bool, error) {
+	var item orderport.Entitlement
+	var prior, raw []byte
+	err := tx.QueryRow(ctx, `SELECT payload_digest,result_snapshot FROM order_entitlement_fulfillment_receipts WHERE operation=$1 AND source_order_id=$2 FOR UPDATE`, operation, sourceOrderID).Scan(&prior, &raw)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return item, false, nil
+	}
+	if err != nil {
+		return item, false, err
+	}
+	if len(prior) != 32 || json.Unmarshal(raw, &item) != nil {
+		return item, false, orderport.ErrConflict
+	}
+	// A refund receipt denotes that this source order has already revoked its
+	// complete period. Later partial/full refunds have different monetary facts
+	// but are valid no-ops by the frozen legacy rule.
+	if operation != "refund" && string(prior) != string(payload[:]) {
+		return item, false, orderport.ErrConflict
+	}
+	return item, true, nil
+}
+
+func latestServicePeriodEntitlement(ctx context.Context, tx pgx.Tx, customerID, productID int64) (orderport.Entitlement, bool, error) {
+	var item orderport.Entitlement
+	err := tx.QueryRow(ctx, `SELECT id,customer_id,service_product_id,product_name,last_order_id,status,start_at,end_at,remark,version,updated_at
+		FROM order_service_entitlements WHERE customer_id=$1 AND service_product_id=$2 ORDER BY end_at DESC,id DESC LIMIT 1 FOR UPDATE`, customerID, productID).
+		Scan(&item.ID, &item.CustomerID, &item.ServiceProductID, &item.ProductName, &item.LastOrderID, &item.Status, &item.StartAt, &item.EndAt, &item.Remark, &item.Version, &item.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return item, false, nil
+	}
+	return item, err == nil, err
+}
+
+func servicePeriodEntitlementByID(ctx context.Context, tx pgx.Tx, id int64) (orderport.Entitlement, error) {
+	var item orderport.Entitlement
+	err := tx.QueryRow(ctx, `SELECT id,customer_id,service_product_id,product_name,last_order_id,status,start_at,end_at,remark,version,updated_at FROM order_service_entitlements WHERE id=$1 FOR UPDATE`, id).
+		Scan(&item.ID, &item.CustomerID, &item.ServiceProductID, &item.ProductName, &item.LastOrderID, &item.Status, &item.StartAt, &item.EndAt, &item.Remark, &item.Version, &item.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return item, orderport.ErrNotFound
+	}
+	return item, err
+}
+
+func recordEntitlementFulfillment(ctx context.Context, tx pgx.Tx, receiptOperation string, sourceOrderID int64, payload [32]byte, item orderport.Entitlement, duration int32, priorActiveEnd *time.Time, refundAmountMinor int64, eventOperation string, at time.Time) error {
+	raw, err := json.Marshal(item)
+	if err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO order_entitlement_fulfillment_receipts(operation,source_order_id,payload_digest,entitlement_id,result_snapshot,duration_days,prior_active_end_at,refund_amount_minor,created_at) VALUES($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9)`, receiptOperation, sourceOrderID, payload[:], item.ID, raw, duration, priorActiveEnd, refundAmountMinor, at); err != nil {
+		return err
+	}
+	actor := sha256.Sum256([]byte("payment:service-period"))
+	if _, err = tx.Exec(ctx, `INSERT INTO order_entitlement_audit_events(entitlement_id,operation,actor_digest,payload_digest,occurred_at) VALUES($1,$2,$3,$4,$5)`, item.ID, eventOperation, actor[:], payload[:], at); err != nil {
+		return err
+	}
+	eventType := map[string]string{"grant": "order.entitlement.granted.v1", "renew": "order.entitlement.renewed.v1", "refund": "order.entitlement.refunded.v1"}[eventOperation]
+	idempotency := sha256.Sum256([]byte(fmt.Sprintf("%s:%d", receiptOperation, sourceOrderID)))
+	_, err = tx.Exec(ctx, `INSERT INTO order_entitlement_outbox(event_type,entitlement_id,payload,idempotency_digest,occurred_at) VALUES($1,$2,jsonb_build_object('entitlement_id',$2,'source_order_id',$3),$4,$5)`, eventType, item.ID, sourceOrderID, idempotency[:], at)
+	return err
+}
+
+func lockServicePeriodEntitlement(ctx context.Context, tx pgx.Tx, customerID, productID int64) error {
+	_, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, fmt.Sprintf("order:service-period:%d:%d", customerID, productID))
+	return err
+}
+
+func lockServicePeriodRefund(ctx context.Context, tx pgx.Tx, sourceOrderID int64) error {
+	_, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, fmt.Sprintf("order:service-period-refund:%d", sourceOrderID))
+	return err
+}
+
+var _ orderapp.EntitlementFulfillmentStore = (*Repository)(nil)
