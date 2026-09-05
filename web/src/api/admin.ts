@@ -1945,16 +1945,20 @@ function surveyExternalPushLogDto(value: unknown): AdminDb['rows']['qApply'][num
   const testRunID = typeof source.test_run_id === 'string' || typeof source.test_run_id === 'number' ? String(source.test_run_id) : '';
   const questionnaireID = Number(source.questionnaire_id);
   const status = text(source.status);
-  const attempts = Number(source.attempt_count);
-  if (!testRunID || !Number.isSafeInteger(questionnaireID) || questionnaireID < 1 || typeof source.created_at !== 'string' || !source.created_at || !Number.isSafeInteger(attempts) || attempts < 0) throw new Error('问卷外推日志缺少有效测试记录字段');
+  const attempts = source.attempt_count == null ? undefined : Number(source.attempt_count);
+  if (!testRunID || !Number.isSafeInteger(questionnaireID) || questionnaireID < 1 || typeof source.created_at !== 'string' || !source.created_at || attempts !== undefined && (!Number.isSafeInteger(attempts) || attempts < 0)) throw new Error('问卷外推日志缺少有效测试记录字段');
   let tone: Tone = 'warn';
   let detail = '等待测试结果';
-  if (status === 'executed' || status === 'reconciled') { tone = 'ok'; detail = '已收到测试结果'; }
+  if (status === 'executed') { tone = 'ok'; detail = '已收到测试结果'; }
+  else if (status === 'reconciled') { tone = 'blue'; detail = '已完成结果确认'; }
   else if (status === 'outcome_unknown') { tone = 'red'; detail = '结果待确认，不会自动重复发送'; }
   else if (status === 'retryable_failed') { tone = 'warn'; detail = '暂未完成，等待重试'; }
-  else if (status === 'final_failed') { tone = 'red'; detail = '测试未完成'; }
+  else if (status === 'final_failed' || status === 'failed' || status === 'legacy_failed') { tone = 'red'; detail = status === 'legacy_failed' ? '历史测试记录失败' : '测试未完成'; }
+  else if (status === 'disabled') { tone = 'gray'; detail = '当时未启用外推配置'; }
+  else if (status === 'skipped') { tone = 'gray'; detail = '测试未执行'; }
+  else if (status === 'legacy_success') { tone = 'ok'; detail = '历史测试记录成功'; }
   else if (status !== 'queued' && status !== 'accepted' && status !== 'attempted') throw new Error('问卷外推日志状态无效');
-  return { time: source.created_at, sid: `#${testRunID}`, uid: `#${questionnaireID}`, status, tone, err: `${detail}；尝试 ${attempts} 次` };
+  return { time: source.created_at, sid: `#${testRunID}`, uid: `#${questionnaireID}`, status, tone, err: `${detail}；${attempts === undefined ? '尝试次数未记录' : `尝试 ${attempts} 次`}` };
 }
 export async function listGlobalQuestionnairePushLogsDto(): Promise<AdminDb['rows']['qApply']> { const page = obj(await call(listSurveyExternalPushLogs({ limit: 100, offset: 0 }, apiRequestOptions()))); return list(page, 'items').map(surveyExternalPushLogDto); }
 export type HxcSenderWriteInput = { id: string; senderUserid: string; displayName: string; priority: number; active: boolean };

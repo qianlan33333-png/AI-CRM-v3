@@ -302,7 +302,15 @@ func (s *SurveyCompletionSink) CompleteEffect(ctx context.Context, effectID stri
 	if s == nil || s.projector == nil || effectID == "" || envelope.Kind != effectport.KindSurveyCompletion || !effectport.ValidDigest(result.ReceiptDigest) || attempt.Number < 1 {
 		return errors.New("invalid survey completion result")
 	}
-	return s.projector.CompleteCompletionEffect(ctx, effectID, string(result.Completion), result.RealExternalCallExecuted, string(result.ReceiptDigest), attempt.Number, time.Now().UTC())
+	// EER provides the call facts separately. A returned provider response is
+	// only known when the adapter entered the call and reached a non-unknown
+	// terminal result; reconciliation is local evidence and remains unknown.
+	var resultReceived *bool
+	if result.Completion != effectport.StateReconciled {
+		known := result.CallAttempted && result.Completion != effectport.StateUnknown
+		resultReceived = &known
+	}
+	return s.projector.CompleteCompletionEffect(ctx, effectID, string(result.Completion), result.CallAttempted, result.RealExternalCallExecuted, resultReceived, string(result.ReceiptDigest), attempt.Number, time.Now().UTC())
 }
 
 var _ effectport.ProviderAdapter = (*SurveyCompletionProvider)(nil)

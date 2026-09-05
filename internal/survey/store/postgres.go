@@ -734,7 +734,7 @@ func (r *Repository) ListOperationReceipts(ctx context.Context, id surveyport.ID
 	if err = t.QueryRow(ctx, `SELECT count(*) FROM survey_external_operation_receipts WHERE `+where, id).Scan(&total); err != nil {
 		return nil, 0, mapError(err)
 	}
-	rows, err := t.Query(ctx, `SELECT id,questionnaire_id,submission_id,operation_kind,status,failure_category,occurrence_count,occurred_at,read_only_legacy,replayable,COALESCE(source_pk,'') FROM survey_external_operation_receipts WHERE `+where+` ORDER BY occurred_at DESC,id DESC LIMIT $2 OFFSET $3`, id, limit, offset)
+	rows, err := t.Query(ctx, `SELECT id,questionnaire_id,submission_id,operation_kind,status,failure_category,occurrence_count,occurred_at,read_only_legacy,replayable,COALESCE(source_pk,''),provider_call_attempted,provider_real_call_executed,provider_result_received,provider_attempt_number FROM survey_external_operation_receipts WHERE `+where+` ORDER BY occurred_at DESC,id DESC LIMIT $2 OFFSET $3`, id, limit, offset)
 	if err != nil {
 		return nil, 0, mapError(err)
 	}
@@ -743,14 +743,14 @@ func (r *Repository) ListOperationReceipts(ctx context.Context, id surveyport.ID
 	for rows.Next() {
 		var item surveyport.OperationReceipt
 		var submission *int64
-		if err = rows.Scan(&item.ID, &item.QuestionnaireID, &submission, &item.OperationKind, &item.Status, &item.FailureCategory, &item.OccurrenceCount, &item.OccurredAt, &item.ReadOnlyLegacy, &item.Replayable, &item.SourcePK); err != nil {
+		if err = rows.Scan(&item.ID, &item.QuestionnaireID, &submission, &item.OperationKind, &item.Status, &item.FailureCategory, &item.OccurrenceCount, &item.OccurredAt, &item.ReadOnlyLegacy, &item.Replayable, &item.SourcePK, &item.ProviderCallAttempted, &item.ProviderRealCallExecuted, &item.ProviderResultReceived, &item.ProviderAttemptNumber); err != nil {
 			return nil, 0, mapError(err)
 		}
 		if submission != nil {
 			value := surveyport.ID(*submission)
 			item.SubmissionID = &value
 		}
-		item.RealEffectExecuted = item.Status == "executed" || item.Status == "reconciled" || item.Status == "outcome_unknown" || item.Status == "legacy_success"
+		item.RealEffectExecuted = item.ProviderRealCallExecuted != nil && *item.ProviderRealCallExecuted || item.ReadOnlyLegacy && item.Status == "legacy_success"
 		items = append(items, item)
 	}
 	return items, total, mapError(rows.Err())
@@ -872,7 +872,7 @@ func (r *Repository) RecordDisabledOperation(ctx context.Context, qid surveyport
 	}
 	var item surveyport.OperationReceipt
 	var submission *int64
-	err = t.QueryRow(ctx, `INSERT INTO survey_external_operation_receipts(questionnaire_id,submission_id,operation_kind,status,failure_category,occurred_at,read_only_legacy,replayable,idempotency_key_digest,created_at,updated_at) VALUES($1,$2,$3,'disabled','provider_disabled',$4,FALSE,TRUE,$5,$4,$4) ON CONFLICT(idempotency_key_digest) DO UPDATE SET updated_at=survey_external_operation_receipts.updated_at RETURNING id,questionnaire_id,submission_id,operation_kind,status,failure_category,occurrence_count,occurred_at,read_only_legacy,replayable`, qid, sid, kind, now, digest[:]).Scan(&item.ID, &item.QuestionnaireID, &submission, &item.OperationKind, &item.Status, &item.FailureCategory, &item.OccurrenceCount, &item.OccurredAt, &item.ReadOnlyLegacy, &item.Replayable, &item.SourcePK)
+	err = t.QueryRow(ctx, `INSERT INTO survey_external_operation_receipts(questionnaire_id,submission_id,operation_kind,status,failure_category,occurred_at,read_only_legacy,replayable,idempotency_key_digest,created_at,updated_at) VALUES($1,$2,$3,'disabled','provider_disabled',$4,FALSE,TRUE,$5,$4,$4) ON CONFLICT(idempotency_key_digest) DO UPDATE SET updated_at=survey_external_operation_receipts.updated_at RETURNING id,questionnaire_id,submission_id,operation_kind,status,failure_category,occurrence_count,occurred_at,read_only_legacy,replayable`, qid, sid, kind, now, digest[:]).Scan(&item.ID, &item.QuestionnaireID, &submission, &item.OperationKind, &item.Status, &item.FailureCategory, &item.OccurrenceCount, &item.OccurredAt, &item.ReadOnlyLegacy, &item.Replayable)
 	if submission != nil {
 		value := surveyport.ID(*submission)
 		item.SubmissionID = &value
@@ -1159,7 +1159,7 @@ func (r *Repository) readCompletionTestPayload(ctx context.Context, t pgx.Tx, so
 	return out, nil
 }
 
-func (r *Repository) CompleteCompletionEffect(ctx context.Context, effectID, state string, realCall bool, receiptDigest string, attempt int32, now time.Time) error {
+func (r *Repository) CompleteCompletionEffect(ctx context.Context, effectID, state string, callAttempted, realCall bool, resultReceived *bool, receiptDigest string, attempt int32, now time.Time) error {
 	t, err := tx(ctx)
 	if err != nil {
 		return err
@@ -1168,7 +1168,7 @@ func (r *Repository) CompleteCompletionEffect(ctx context.Context, effectID, sta
 		return surveyport.ErrInvalid
 	}
 	status, category := completionOperationStatus(state, realCall)
-	result, err := t.Exec(ctx, `UPDATE survey_external_operation_receipts SET status=$2,failure_category=$3,occurrence_count=GREATEST(occurrence_count,$4),occurred_at=$5,updated_at=$5 WHERE effect_id=$1 AND operation_kind='external_push' AND read_only_legacy=FALSE`, effectID, status, category, attempt, now)
+	result, err := t.Exec(ctx, `UPDATE survey_external_operation_receipts SET status=$2,failure_category=$3,occurred_at=$4,updated_at=$4,provider_call_attempted=$5,provider_real_call_executed=$6,provider_result_received=$7,provider_attempt_number=$8 WHERE effect_id=$1 AND operation_kind='external_push' AND read_only_legacy=FALSE`, effectID, status, category, now, callAttempted, realCall, resultReceived, attempt)
 	if err != nil {
 		return mapError(err)
 	}

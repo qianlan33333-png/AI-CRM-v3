@@ -101,6 +101,15 @@ func TestPostgreSQLCompletionReceiptBindsReadsAndRollsBackAtomically(t *testing.
 	}); err != nil {
 		t.Fatal(err)
 	}
+	var disabled surveyport.OperationReceipt
+	if err := uow.Within(ctx, func(txCtx context.Context) error {
+		var disabledErr error
+		disabled, disabledErr = repository.RecordDisabledOperation(txCtx, surveyport.ID(questionnaireID), nil, "external_push", sha256.Sum256([]byte("disabled-operation-scan")), now)
+		return disabledErr
+	}); err != nil || disabled.ID < 1 || disabled.SourcePK != "" || disabled.ProviderCallAttempted != nil {
+		t.Fatalf("disabled receipt=%+v err=%v", disabled, err)
+	}
+
 	var payload surveyport.CompletionPayload
 	if err := uow.Within(ctx, func(txCtx context.Context) error {
 		var readErr error
@@ -113,15 +122,19 @@ func TestPostgreSQLCompletionReceiptBindsReadsAndRollsBackAtomically(t *testing.
 		t.Fatalf("completion payload=%+v", payload)
 	}
 	if err := uow.Within(ctx, func(txCtx context.Context) error {
-		return repository.CompleteCompletionEffect(txCtx, "eer_1", "executed", true, sourceDigest, 1, now.Add(time.Minute))
+		return repository.CompleteCompletionEffect(txCtx, "eer_1", "executed", true, true, boolPointer(true), sourceDigest, 1, now.Add(time.Minute))
 	}); err != nil {
 		t.Fatal(err)
 	}
 	var status string
-	if err := native.QueryRow(ctx, `SELECT status FROM survey_external_operation_receipts WHERE effect_id='eer_1'`).Scan(&status); err != nil || status != "executed" {
-		t.Fatalf("completion receipt status=%q err=%v", status, err)
+	var callAttempted, realCall, resultReceived bool
+	var providerAttempt int32
+	if err := native.QueryRow(ctx, `SELECT status,provider_call_attempted,provider_real_call_executed,provider_result_received,provider_attempt_number FROM survey_external_operation_receipts WHERE effect_id='eer_1'`).Scan(&status, &callAttempted, &realCall, &resultReceived, &providerAttempt); err != nil || status != "executed" || !callAttempted || !realCall || !resultReceived || providerAttempt != 1 {
+		t.Fatalf("completion receipt status=%q call=%v real=%v result=%v attempt=%d err=%v", status, callAttempted, realCall, resultReceived, providerAttempt, err)
 	}
 }
+
+func boolPointer(value bool) *bool { return &value }
 
 func bytes32(value byte) []byte {
 	result := make([]byte, 32)
@@ -431,7 +444,7 @@ func surveyIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 	if !ok {
 		t.Fatal("locate integration test")
 	}
-	for _, migrationName := range []string{"0002_identity.sql", "0003_access.sql", "0018_survey.sql", "0067_survey_completion_snapshots.sql", "0073_survey_completion_test_push_snapshots.sql"} {
+	for _, migrationName := range []string{"0002_identity.sql", "0003_access.sql", "0018_survey.sql", "0067_survey_completion_snapshots.sql", "0073_survey_completion_test_push_snapshots.sql", "0074_survey_external_operation_execution_facts.sql"} {
 		migration, readErr := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "..", "migrations", migrationName))
 		if readErr != nil {
 			t.Fatal(readErr)

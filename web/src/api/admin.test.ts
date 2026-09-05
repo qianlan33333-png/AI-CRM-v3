@@ -1129,9 +1129,12 @@ export async function runAdminAdapterTests(): Promise<void> {
     { test_run_id: 'questionnaire-test-0123456789abcdef0123456789abcdef', questionnaire_id: 4, status: 'queued', attempt_count: 0, created_at: '2026-08-27T00:00:00Z' },
     { test_run_id: 'questionnaire-test-fedcba9876543210fedcba9876543210', questionnaire_id: 4, status: 'executed', attempt_count: 1, created_at: '2026-08-27T00:01:00Z' },
     { test_run_id: 'questionnaire-test-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', questionnaire_id: 4, status: 'outcome_unknown', attempt_count: 1, created_at: '2026-08-27T00:02:00Z' },
-    { test_run_id: 92, questionnaire_id: 4, status: 'queued', attempt_count: 0, created_at: '2026-08-27T00:03:00Z' }
-  ], total: 4, limit: 100, offset: 0, has_more: false, provider_enabled: true }), { status: 200 }); };
-  try { const logs = await listGlobalQuestionnairePushLogsDto(); assert(globalPushCalls.length === 1 && globalPushCalls[0].input === '/admin/questionnaires/external-push-logs?limit=100&offset=0' && globalPushCalls[0].init?.method === 'GET' && logs[0]?.sid.includes('questionnaire-test-') && logs[0]?.err.includes('等待测试结果') && logs[1]?.tone === 'ok' && logs[1]?.err.includes('已收到测试结果') && logs[2]?.tone === 'red' && logs[2]?.err.includes('不会自动重复发送') && logs[3]?.sid === '#92', 'global questionnaire push logs preserve queued/executed/unknown and numeric legacy rows'); }
+    { test_run_id: 92, questionnaire_id: 4, status: 'queued', attempt_count: 0, created_at: '2026-08-27T00:03:00Z' },
+    { test_run_id: 93, questionnaire_id: 4, status: 'disabled', attempt_count: 1, created_at: '2026-08-27T00:04:00Z' },
+    { test_run_id: 94, questionnaire_id: 4, status: 'legacy_success', attempt_count: 1, created_at: '2026-08-27T00:05:00Z' },
+    { test_run_id: 95, questionnaire_id: 4, status: 'legacy_failed', attempt_count: 2, created_at: '2026-08-27T00:06:00Z' }
+  ], total: 7, limit: 100, offset: 0, has_more: false, provider_enabled: true }), { status: 200 }); };
+  try { const logs = await listGlobalQuestionnairePushLogsDto(); assert(globalPushCalls.length === 1 && globalPushCalls[0].input === '/admin/questionnaires/external-push-logs?limit=100&offset=0' && globalPushCalls[0].init?.method === 'GET' && logs[0]?.sid.includes('questionnaire-test-') && logs[0]?.err.includes('等待测试结果') && logs[1]?.tone === 'ok' && logs[1]?.err.includes('已收到测试结果') && logs[2]?.tone === 'red' && logs[2]?.err.includes('不会自动重复发送') && logs[3]?.sid === '#92' && logs[4]?.tone === 'gray' && logs[5]?.tone === 'ok' && logs[6]?.tone === 'red', 'global questionnaire push logs preserve queued/executed/unknown and numeric legacy rows'); }
   finally { globalThis.fetch = savedFetch; }
 
   const hxcMapped = hxcSenderPageDto({ id: 'cfg-1', sender_userid: 'alice', display_name: 'Alice', priority: 2, is_active: true, created_at: '', updated_at: '' });

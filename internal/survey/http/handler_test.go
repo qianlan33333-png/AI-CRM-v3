@@ -185,12 +185,15 @@ func TestLegacyQuestionnaireOpsSaveJourneyPreservesExternalPushMetadata(t *testi
 	}
 }
 
+func boolTestPointer(value bool) *bool    { return &value }
+func int32TestPointer(value int32) *int32 { return &value }
+
 func TestExternalPushLogsPreserveSyntheticRunAndTerminalStatus(t *testing.T) {
 	now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
 	survey := &operationRouteSurvey{receipts: []surveyport.OperationReceipt{
 		{ID: 8, QuestionnaireID: 7, SourcePK: "questionnaire-test-0123456789abcdef0123456789abcdef", Status: "queued", OccurrenceCount: 0, OccurredAt: now},
-		{ID: 9, QuestionnaireID: 7, SourcePK: "questionnaire-test-fedcba9876543210fedcba9876543210", Status: "executed", OccurrenceCount: 1, RealEffectExecuted: true, OccurredAt: now},
-		{ID: 10, QuestionnaireID: 7, SourcePK: "questionnaire-test-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Status: "outcome_unknown", OccurrenceCount: 1, RealEffectExecuted: true, OccurredAt: now},
+		{ID: 9, QuestionnaireID: 7, SourcePK: "questionnaire-test-fedcba9876543210fedcba9876543210", Status: "executed", OccurrenceCount: 99, ProviderCallAttempted: boolTestPointer(true), ProviderRealCallExecuted: boolTestPointer(true), ProviderResultReceived: boolTestPointer(true), ProviderAttemptNumber: int32TestPointer(1), RealEffectExecuted: true, OccurredAt: now},
+		{ID: 10, QuestionnaireID: 7, SourcePK: "questionnaire-test-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Status: "outcome_unknown", OccurrenceCount: 99, ProviderCallAttempted: boolTestPointer(true), ProviderRealCallExecuted: boolTestPointer(true), ProviderResultReceived: boolTestPointer(false), ProviderAttemptNumber: int32TestPointer(1), RealEffectExecuted: true, OccurredAt: now},
 		{ID: 11, QuestionnaireID: 7, Status: "queued", OccurrenceCount: 0, OccurredAt: now},
 	}}
 	handler, err := NewHandler(&routeDefinitions{}, survey, operationSecurity{})
@@ -200,7 +203,7 @@ func TestExternalPushLogsPreserveSyntheticRunAndTerminalStatus(t *testing.T) {
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(nethttp.MethodGet, "/admin/questionnaires/external-push-logs", nil))
 	body := response.Body.String()
-	if response.Code != nethttp.StatusOK || !strings.Contains(body, `"test_run_id":"questionnaire-test-0123456789abcdef0123456789abcdef"`) || !strings.Contains(body, `"status":"executed"`) || !strings.Contains(body, `"status":"outcome_unknown"`) || !strings.Contains(body, `"test_run_id":11`) || strings.Contains(body, `"local_only":true`) {
+	if response.Code != nethttp.StatusOK || !strings.Contains(body, `"test_run_id":"questionnaire-test-0123456789abcdef0123456789abcdef"`) || !strings.Contains(body, `"status":"executed"`) || !strings.Contains(body, `"status":"outcome_unknown"`) || !strings.Contains(body, `"test_run_id":11`) || !strings.Contains(body, `"attempt_count":1`) || !strings.Contains(body, `"provider_result_received":false`) || strings.Contains(body, `"attempt_count":99`) || strings.Contains(body, `"local_only":true`) {
 		t.Fatalf("logs response=%d body=%s", response.Code, body)
 	}
 }

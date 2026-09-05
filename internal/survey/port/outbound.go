@@ -12,8 +12,8 @@ import (
 // carry a URL, credential, external identity, phone number, answer or message
 // body across the Survey boundary.
 type CompletionIntent struct {
-	QuestionnaireID        ID
-	SubmissionID           ID
+	QuestionnaireID ID
+	SubmissionID    ID
 	// TestRunID identifies an admin-triggered synthetic push. It is mutually
 	// exclusive with SubmissionID and never denotes a Customer or submission.
 	TestRunID              string
@@ -108,5 +108,5 @@ type CompletionPayloadReader interface {
 // CompletionEffectProjector accepts terminal EER state back into Survey's
 // own operation receipt in the completion transaction.
 type CompletionEffectProjector interface {
-	CompleteCompletionEffect(context.Context, string, string, bool, string, int32, time.Time) error
+	CompleteCompletionEffect(context.Context, string, string, bool, bool, *bool, string, int32, time.Time) error
 }

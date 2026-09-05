@@ -948,14 +948,14 @@ func (h *Handler) legacyOperationLogs(w http.ResponseWriter, r *http.Request, id
 		if item.SourcePK != "" {
 			runID = item.SourcePK
 		}
-		resultReceived := item.Status == "executed" || item.Status == "reconciled" || item.Status == "final_failed" || item.Status == "retryable_failed"
+		sideEffectExecuted := item.Status == "executed" && item.ProviderRealCallExecuted != nil && *item.ProviderRealCallExecuted && item.ProviderResultReceived != nil && *item.ProviderResultReceived
 		unknown := item.Status == "outcome_unknown"
 		anyExternalCall = anyExternalCall || item.RealEffectExecuted
 		compatible = append(compatible, map[string]any{
 			"test_run_id": runID, "questionnaire_id": item.QuestionnaireID,
-			"created_at": item.OccurredAt, "updated_at": item.OccurredAt, "status": item.Status, "attempt_count": item.OccurrenceCount,
-			"side_effect_executed": item.Status == "executed" || item.Status == "reconciled", "provider_result_received": resultReceived,
-			"unknown_after_dispatch": unknown, "auto_retry_allowed": item.Status == "retryable_failed", "real_external_call_executed": item.RealEffectExecuted,
+			"created_at": item.OccurredAt, "updated_at": item.OccurredAt, "status": item.Status, "attempt_count": item.ProviderAttemptNumber,
+			"side_effect_executed": sideEffectExecuted, "provider_call_attempted": item.ProviderCallAttempted, "provider_result_received": item.ProviderResultReceived,
+			"unknown_after_dispatch": unknown, "auto_retry_allowed": item.Status == "attempted", "real_external_call_executed": item.ProviderRealCallExecuted,
 		})
 	}
 	writeJSON(w, 200, map[string]any{"items": compatible, "total": total, "limit": limit, "offset": offset, "has_more": int64(offset)+int64(len(items)) < total, "provider_enabled": h.completionProviderEnabled, "real_external_call_executed": anyExternalCall})

@@ -52,3 +52,5 @@ npm run orval:check
 本机仍未配置隔离 `DATABASE_URL`，上述 PostgreSQL 集成测试在本机按测试代码跳过；它们会在 PR 的 PostgreSQL 16 service 中执行。不得将这次本地跳过标为 PostgreSQL 已通过。
 
 本增量的 River 证据使用 `platformjobqueue.NewRuntime` 启动实际 worker：先由事务入队，再启动 runtime 等待本地 HTTP 接收，停止后以新 runtime 重启并确认不重复写入。`outcome_unknown` 使用同一实际 runtime 路径，重启后保持一次调用。它不是手动 `RunAttempt` 或仅重建 Repository 的替代测试。全局测试记录页保留合成测试的文本运行 ID、旧数字记录 ID、真实状态和尝试次数；页面分别展示等待结果、已收到结果、结果待确认或未完成。
+
+部署待办：在 PostgreSQL 16 上应用 `0074_survey_external_operation_execution_facts.sql`。该迁移只增加可空的 Survey 回执执行事实列；旧行保持未知，不能据此显示“未调用”或“未收到结果”。
