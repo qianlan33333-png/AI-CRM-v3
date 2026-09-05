@@ -624,7 +624,8 @@ func createRiverJourneyPlan(t *testing.T, ctx context.Context, uow *platformpost
 		if err != nil {
 			return err
 		}
-		return repository.Save(tx, groupopsport.Detail{Plan: groupopsport.Plan{ID: planID, Name: "River runtime journey", Status: groupopsport.PlanActive, Revision: 1, CreatedBy: actorID, UpdatedBy: actorID, CreatedAt: now, UpdatedAt: now}, Members: []groupopsport.Member{{StaffID: actorID}}, GroupAssets: []groupopsport.GroupAsset{{AssetRef: "chat-river-1"}, {AssetRef: "chat-river-2"}}, Nodes: []groupopsport.Node{{Position: 1, Kind: groupopsport.NodeMessage, MessageText: "first"}, {Position: 2, Kind: groupopsport.NodeDelay, DelayMinutes: 1}, {Position: 3, Kind: groupopsport.NodeMessage, MessageText: "second"}}})
+		emptyMaterials := groupopsport.MaterialPlan{References: []groupopsport.MaterialReference{}}
+		return repository.Save(tx, groupopsport.Detail{Plan: groupopsport.Plan{ID: planID, Name: "River runtime journey", Status: groupopsport.PlanActive, Revision: 1, CreatedBy: actorID, UpdatedBy: actorID, CreatedAt: now, UpdatedAt: now}, Members: []groupopsport.Member{{StaffID: actorID}}, GroupAssets: []groupopsport.GroupAsset{{AssetRef: "chat-river-1"}, {AssetRef: "chat-river-2"}}, Nodes: []groupopsport.Node{{Position: 1, Kind: groupopsport.NodeMessage, MessageText: "first", MaterialPlan: emptyMaterials}, {Position: 2, Kind: groupopsport.NodeDelay, DelayMinutes: 1, MaterialPlan: emptyMaterials}, {Position: 3, Kind: groupopsport.NodeMessage, MessageText: "second", MaterialPlan: emptyMaterials}}})
 	})
 	if err != nil {
 		t.Fatal(err)
