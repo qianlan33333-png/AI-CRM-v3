@@ -739,7 +739,9 @@ func classify(err error) error {
 	case errors.Is(err, ErrInvalid), errors.Is(err, ErrNotFound), errors.Is(err, ErrConflict), errors.Is(err, ErrStateConflict):
 		return err
 	default:
-		return ErrUnavailable
+		// Preserve the owner-side cause for operators and integration journeys;
+		// HTTP still maps errors.Is(ErrUnavailable) to its stable public code.
+		return fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
 }
 func clonePlanPage(value groupopsport.PlanPage) groupopsport.PlanPage {

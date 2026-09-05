@@ -56,7 +56,7 @@ func TestPostgreSQLContentPackageVersionsSnapshotsBindingsAndCapture(t *testing.
 	}
 	defer native.Close()
 	_, file, _, _ := runtime.Caller(0)
-	for _, migration := range []string{"0007_media.sql", "0016_media_content_packages.sql"} {
+	for _, migration := range []string{"0007_media.sql", "0016_media_content_packages.sql", "0080_media_legacy_material_mappings.sql"} {
 		sql, readErr := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "..", "migrations", migration))
 		if readErr != nil {
 			t.Fatal(readErr)
@@ -99,6 +99,21 @@ func TestPostgreSQLContentPackageVersionsSnapshotsBindingsAndCapture(t *testing.
 	}
 	if err = native.QueryRow(ctx, `SELECT blob_digest FROM media_images WHERE id=$1`, imageID).Scan(&imageDigest); err != nil || sourceDigest != imageDigest {
 		t.Fatalf("snapshot=%q image=%q err=%v", sourceDigest, imageDigest, err)
+	}
+	mapping := mediaport.LegacyMaterialMapping{Reference: mediaport.LegacyMaterialReference{SourceSystem: "ai-crm-v2", MaterialKind: "image", LegacyID: "legacy-image-1"}, MaterialKind: "image", MaterialID: imageID, SourceDigest: imageDigest, SourceRecordDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+	if err = uow.Within(ctx, func(tx context.Context) error {
+		return repo.ImportLegacyMaterialMapping(tx, mapping, "frozen-import:test")
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err = uow.Within(ctx, func(tx context.Context) error {
+		resolved, found, resolveErr := repo.ResolveLegacyMaterialMapping(tx, mapping.Reference)
+		if resolveErr != nil || !found || resolved.MaterialID != imageID || resolved.SourceDigest != imageDigest {
+			t.Fatalf("resolved=%+v found=%t err=%v", resolved, found, resolveErr)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 	command.IdempotencyKey = "content-package-update-0001"
 	command.ContentText = "早上好，更新版"

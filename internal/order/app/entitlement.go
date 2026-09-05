@@ -20,6 +20,15 @@ type EntitlementStore interface {
 	ImportHistoricalEntitlement(context.Context, orderport.HistoricalEntitlement) (orderport.Entitlement, bool, error)
 }
 
+// EntitlementFulfillmentStore keeps payment-derived grant/refund facts within
+// Order's existing entitlement aggregate. Every method requires the caller's
+// PostgreSQL transaction; it does not query Payment or Product tables.
+type EntitlementFulfillmentStore interface {
+	GrantPaidServicePeriod(context.Context, orderport.ServicePeriodGrantCommand, [32]byte) (orderport.Entitlement, error)
+	ApplyServicePeriodRefund(context.Context, orderport.ServicePeriodRefundCommand, [32]byte) (orderport.Entitlement, error)
+	RecordHistoricalServicePeriodSource(context.Context, orderport.HistoricalServicePeriodSourceCommand) error
+}
+
 type EntitlementApplication struct {
 	uow   platformport.UnitOfWork
 	store EntitlementStore
@@ -113,3 +122,70 @@ func (s *EntitlementApplication) ImportHistoricalEntitlement(ctx context.Context
 
 var _ orderport.EntitlementService = (*EntitlementApplication)(nil)
 var _ orderport.HistoricalEntitlementImporter = (*EntitlementApplication)(nil)
+
+// EntitlementFulfillmentApplication is intentionally separate from the
+// sidebar/read-and-remark application so the Payment seam remains a narrow,
+// transaction-bound command port.
+type EntitlementFulfillmentApplication struct {
+	store EntitlementFulfillmentStore
+}
+
+var _ orderport.ServicePeriodEntitlementCoordinator = (*EntitlementFulfillmentApplication)(nil)
+var _ orderport.HistoricalServicePeriodSourceCoordinator = (*EntitlementFulfillmentApplication)(nil)
+
+func NewEntitlementFulfillmentApplication(store EntitlementFulfillmentStore) (*EntitlementFulfillmentApplication, error) {
+	if store == nil {
+		return nil, errors.New("order entitlement fulfillment store is required")
+	}
+	return &EntitlementFulfillmentApplication{store: store}, nil
+}
+
+func (s *EntitlementFulfillmentApplication) GrantPaidServicePeriodWithin(ctx context.Context, command orderport.ServicePeriodGrantCommand) (orderport.Entitlement, error) {
+	command.ProductName = strings.TrimSpace(command.ProductName)
+	command.PaidAt = command.PaidAt.UTC().Truncate(time.Microsecond)
+	command.ProcessedAt = command.ProcessedAt.UTC().Truncate(time.Microsecond)
+	if s == nil || s.store == nil || command.SourceOrderID < 1 || command.BeneficiaryCustomerID < 1 || command.ServiceProductID < 1 || command.ProductName == "" || len(command.ProductName) > 500 || command.DurationDays < 1 || command.PaidAt.IsZero() || command.ProcessedAt.IsZero() {
+		return orderport.Entitlement{}, orderport.ErrConflict
+	}
+	// Delivery time is not part of the paid fact. Preserve the first successful
+	// processing timestamp in the receipt, while retries of the same payment
+	// replay even when they arrive at a later wall-clock time.
+	payload, err := json.Marshal(struct {
+		SourceOrderID         int64
+		BeneficiaryCustomerID int64
+		ServiceProductID      int64
+		ProductName           string
+		DurationDays          int32
+		PaidAt                time.Time
+	}{command.SourceOrderID, command.BeneficiaryCustomerID, command.ServiceProductID, command.ProductName, command.DurationDays, command.PaidAt})
+	if err != nil {
+		return orderport.Entitlement{}, orderport.ErrUnavailable
+	}
+	return s.store.GrantPaidServicePeriod(ctx, command, sha256.Sum256(payload))
+}
+
+func (s *EntitlementFulfillmentApplication) ApplyServicePeriodRefundWithin(ctx context.Context, command orderport.ServicePeriodRefundCommand) (orderport.Entitlement, error) {
+	command.ProcessedAt = command.ProcessedAt.UTC().Truncate(time.Microsecond)
+	if s == nil || s.store == nil || command.SourceOrderID < 1 || command.RefundAmountMinor < 1 || command.ProcessedAt.IsZero() {
+		return orderport.Entitlement{}, orderport.ErrConflict
+	}
+	// A source order can revoke its period only once. The first amount and
+	// processing time are stored with that receipt; later successful partial or
+	// full refunds intentionally replay the same no-op result.
+	payload, err := json.Marshal(struct{ SourceOrderID int64 }{command.SourceOrderID})
+	if err != nil {
+		return orderport.Entitlement{}, orderport.ErrUnavailable
+	}
+	return s.store.ApplyServicePeriodRefund(ctx, command, sha256.Sum256(payload))
+}
+
+func (s *EntitlementFulfillmentApplication) RecordHistoricalServicePeriodSourceWithin(ctx context.Context, command orderport.HistoricalServicePeriodSourceCommand) error {
+	command.ServiceProductCode = strings.TrimSpace(command.ServiceProductCode)
+	command.StartAt = command.StartAt.UTC().Truncate(time.Microsecond)
+	command.EndAt = command.EndAt.UTC().Truncate(time.Microsecond)
+	command.ImportedAt = command.ImportedAt.UTC().Truncate(time.Microsecond)
+	if s == nil || s.store == nil || command.SourceOrderID < 1 || command.SourceLineNo < 1 || command.EntitlementID < 1 || command.ServiceProductID < 1 || command.ServiceProductCode == "" || len(command.ServiceProductCode) > 200 || command.DurationDays < 1 || command.StartAt.IsZero() || command.EndAt.IsZero() || !command.EndAt.After(command.StartAt) || command.ImportedAt.IsZero() {
+		return orderport.ErrConflict
+	}
+	return s.store.RecordHistoricalServicePeriodSource(ctx, command)
+}

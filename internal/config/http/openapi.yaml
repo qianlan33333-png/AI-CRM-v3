@@ -1131,8 +1131,8 @@ paths:
         "403": {$ref: "#/components/responses/Error"}
         "404": {$ref: "#/components/responses/Error"}
         "409": {$ref: "#/components/responses/Error"}
-  /api/public/products/{product_id}:
-    parameters: [{$ref: "#/components/parameters/ProductID"}]
+  /api/public/products/{product_code}:
+    parameters: [{$ref: "#/components/parameters/ProductCode"}]
     get:
       operationId: getPublicProduct
       tags: [Products]
@@ -1141,8 +1141,8 @@ paths:
       responses:
         "200": {description: Enabled public Product, content: {application/json: {schema: {$ref: "#/components/schemas/PublicProduct"}}}}
         "404": {$ref: "#/components/responses/Error"}
-  /p/{product_id}:
-    parameters: [{$ref: "#/components/parameters/ProductID"}]
+  /p/{product_code}:
+    parameters: [{$ref: "#/components/parameters/ProductCode"}]
     get:
       operationId: openPublicProduct
       tags: [Products]
@@ -1150,8 +1150,8 @@ paths:
       responses:
         "200": {description: Enabled public Product page, content: {text/html: {schema: {type: string}}}}
         "404": {$ref: "#/components/responses/Error"}
-  /pay/{product_id}:
-    parameters: [{$ref: "#/components/parameters/ProductID"}]
+  /pay/{product_code}:
+    parameters: [{$ref: "#/components/parameters/ProductCode"}]
     get:
       operationId: openPublicProductPayment
       tags: [Products, Payments]
@@ -2469,6 +2469,22 @@ paths:
       parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}]
       requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsReconcileRequest"}}}}
       responses: {"200": {description: Reconciled local execution only after verified evidence, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsExecution"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/automation-conversion/group-ops/plans/{plan_id}/executions/{execution_id}/delivery:
+    parameters: [{$ref: "#/components/parameters/GroupOpsPlanID"}, {$ref: "#/components/parameters/GroupOpsExecutionID"}]
+    post:
+      operationId: readGroupOpsPlanExecutionDelivery
+      tags: [GroupOps]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      responses: {"200": {description: Persisted delivery observation from the receipt-frozen trusted Provider read; no Provider identifiers are caller input, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsExecution"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/admin/automation-conversion/group-ops/plans/executions/{execution_id}/delivery:
+    parameters: [{$ref: "#/components/parameters/GroupOpsExecutionID"}]
+    post:
+      operationId: readGroupOpsExecutionDelivery
+      tags: [GroupOps]
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      responses: {"200": {description: Persisted delivery observation from the receipt-frozen trusted Provider read; no Provider identifiers are caller input, content: {application/json: {schema: {$ref: "#/components/schemas/GroupOpsExecution"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
   /api/admin/automation-conversion/group-ops/groups:
     get:
       operationId: listGroupOpsDirectoryGroups
@@ -2689,10 +2705,35 @@ paths:
     put: {operationId: saveSurveyCompletionOperation, security: [{adminSession: [], csrfHeader: []}], responses: {"503": {description: Provider disabled by default}}}
   /api/admin/questionnaires/{questionnaire_id}/operations/external-push:
     parameters: [{name: questionnaire_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
-    put: {operationId: saveSurveyExternalPushOperation, security: [{adminSession: [], csrfHeader: []}], responses: {"503": {description: Provider disabled by default}}}
+    put:
+      operationId: saveSurveyExternalPushOperation
+      description: Legacy toggle/reference writers may omit metadata and configuration_version; metadata writers must send the readback configuration_version and receive configuration_conflict on drift.
+      security: [{adminSession: [], csrfHeader: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled]
+              additionalProperties: false
+              properties:
+                enabled: {type: boolean}
+                configuration_reference: {type: string, minLength: 1, maxLength: 128, pattern: '^[A-Za-z0-9._:-]{1,128}$'}
+                metadata: {type: object, additionalProperties: true, description: Non-secret legacy push parameters. Requires configuration_version.}
+                configuration_version: {type: integer, minimum: 0, description: Readback version required whenever metadata is supplied.}
+      responses: {"200": {description: Persisted local configuration readback}, "400": {description: invalid_request or configuration_version_required}, "409": {description: configuration_conflict}, "503": {description: Provider disabled by default}}
   /api/admin/questionnaires/{questionnaire_id}/operations/external-push/test:
     parameters: [{name: questionnaire_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
-    post: {operationId: createSurveyExternalPushTest, security: [{adminSession: [], csrfHeader: []}], responses: {"503": {description: Provider disabled by default}}}
+    post:
+      operationId: createSurveyExternalPushTest
+      security: [{adminSession: [], csrfHeader: []}]
+      responses:
+        "202": {description: Synthetic test snapshot and durable external-effect acceptance; provider execution occurs later.}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "409": {description: provider_disabled or idempotency_conflict}
+        "503": {description: Completion effect integration unavailable}
   /api/admin/questionnaires/{questionnaire_id}/submissions/{submission_id}/external-push:
     parameters: [{name: questionnaire_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}, {name: submission_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
     get: {operationId: getSurveySubmissionExternalPush, security: [{adminSession: []}], responses: {"200": {description: Receipt state}}}
@@ -2887,10 +2928,10 @@ paths:
     get:
       operationId: startWechatPayH5OAuth
       tags: [Transactions]
-      description: Starts one-time Official Account OAuth for a strict same-origin /pay/{product_id} return path.
+      description: Starts one-time Official Account OAuth for a strict same-origin /pay/{product_code} return path.
       security: []
       parameters:
-        - {name: return_url, in: query, required: true, schema: {type: string, pattern: "^/pay/[1-9][0-9]*$"}}
+        - {name: return_url, in: query, required: true, schema: {type: string, pattern: "^/pay/[^/?#]+$"}}
       responses: {"302": {description: Redirect to WeChat OAuth}, "400": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
   /api/h5/wechat-pay/oauth/callback:
     get:
@@ -2931,10 +2972,11 @@ paths:
             schema:
               type: object
               additionalProperties: false
-              required: [product_id, product_kind]
+              required: [product_id, product_kind, beneficiary_selection]
               properties:
                 product_id: {$ref: "#/components/schemas/PositiveID"}
                 product_kind: {type: string, enum: [standard, service_period]}
+                beneficiary_selection: {type: string, enum: [payer_self], description: Confirms that the server-bound trusted payer is also the beneficiary. Customer IDs are never accepted from the browser.}
                 mobile: {type: string, pattern: "^\\+861[3-9][0-9]{9}$", description: Encrypted Order contact snapshot only; never an identity claim.}
       responses: {"202": {description: "Order, Payment and effect accepted atomically", content: {application/json: {schema: {type: object, required: [order_id, merchant_order_no, payment_id, status, effect_id], properties: {order_id: {$ref: "#/components/schemas/PositiveID"}, merchant_order_no: {type: string, minLength: 1, maxLength: 200}, payment_id: {$ref: "#/components/schemas/PositiveID"}, status: {type: string}, effect_id: {$ref: "#/components/schemas/ExternalEffectID"}}}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
   /api/v1/wechat-pay/checkouts/{merchant_order_no}:
@@ -3262,7 +3304,20 @@ paths:
         - {$ref: "#/components/parameters/AIAssistantIntegrationNonce"}
         - {$ref: "#/components/parameters/AIAssistantIntegrationSignature"}
       requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantIntegrationPlanRequest"}}}}
-      responses: {"202": {description: Scoped identities resolved into a pending review plan; unresolved targets are reported but never persisted as recipients, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantIntegrationPlanResponse"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "413": {$ref: "#/components/responses/Error"}, "422": {$ref: "#/components/responses/Error"}}
+      responses: {"202": {description: Scoped identities resolved into a pending review plan when eligible; every input ordinal receives a safe disposition and zero eligible targets create no empty plan, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantIntegrationPlanResponse"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "413": {$ref: "#/components/responses/Error"}, "422": {$ref: "#/components/responses/Error"}}
+  /api/admin/ai-assist/review-plans:
+    post:
+      operationId: createLegacyAIAssistantReviewPlan
+      deprecated: true
+      tags: [AIAssistant]
+      security: [{aiAssistantIntegration: []}]
+      parameters:
+        - {$ref: "#/components/parameters/RequiredIdempotencyKey"}
+        - {$ref: "#/components/parameters/AIAssistantIntegrationTimestamp"}
+        - {$ref: "#/components/parameters/AIAssistantIntegrationNonce"}
+        - {$ref: "#/components/parameters/AIAssistantIntegrationSignature"}
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantIntegrationPlanRequest"}}}}
+      responses: {"202": {description: Temporary donor-compatible authenticated intake adapter, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantIntegrationPlanResponse"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "413": {$ref: "#/components/responses/Error"}, "422": {$ref: "#/components/responses/Error"}}
 components:
   securitySchemes:
     adminSession: {type: apiKey, in: cookie, name: aicrm_admin_session}
@@ -3281,6 +3336,7 @@ components:
     RadarCode: {name: code, in: path, required: true, schema: {type: string, pattern: "^rd_[A-Za-z0-9_-]{16,64}$"}}
     AutomationAgentID: {name: agent_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
     ProductID: {name: product_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
+    ProductCode: {name: product_code, in: path, required: true, schema: {type: string, minLength: 1, maxLength: 200}}
     ServiceProductID: {name: service_product_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
     TagID: {name: tag_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
     TagGroupID: {name: group_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
@@ -3612,7 +3668,7 @@ components:
     AIAssistantPlanState: {type: string, enum: [pending_review, partially_approved, approved, rejected, dispatching, needs_attention, completed_with_failures, completed]}
     AIAssistantReviewState: {type: string, enum: [pending_review, approved, rejected, ineligible]}
     AIAssistantExecutionState: {type: string, enum: [not_accepted, accepted, queued, attempted, provider_accepted, retryable_failed, outcome_unknown, reconciled, final_failed, delivery_proven]}
-    AIAssistantContentKind: {type: string, enum: [text, image, mini_program, link]}
+    AIAssistantContentKind: {type: string, enum: [text, image, mini_program, attachment, link]}
     AIAssistantContentBlock:
       type: object
       additionalProperties: false
@@ -3817,31 +3873,53 @@ components:
     AIAssistantIntegrationPlanRequest:
       type: object
       additionalProperties: false
-      required: [name, source_kind, source_digest, identities]
       properties:
         name: {type: string, minLength: 1, maxLength: 200}
         source_kind: {type: string, minLength: 1, maxLength: 80}
         source_digest: {$ref: "#/components/schemas/AIAssistantDigest"}
         identities: {type: array, minItems: 1, maxItems: 5000, items: {$ref: "#/components/schemas/AIAssistantIntegrationIdentity"}}
+        external_userid: {type: string, minLength: 1, maxLength: 512, writeOnly: true}
+        target_external_userid: {type: string, minLength: 1, maxLength: 512, writeOnly: true}
+        owner_userid: {type: string, minLength: 1, maxLength: 256, writeOnly: true}
+        sender_userid: {type: string, minLength: 1, maxLength: 256, writeOnly: true}
+        content_text: {type: string, minLength: 1, maxLength: 8000, writeOnly: true}
+        message: {type: string, minLength: 1, maxLength: 8000, writeOnly: true}
+        content_package: {type: object, additionalProperties: true, writeOnly: true}
+        external_event_id: {type: string, minLength: 1, maxLength: 200, writeOnly: true}
+        idempotency_key: {type: string, minLength: 8, maxLength: 200, writeOnly: true, description: Frozen donor business key, used only when external_event_id is absent. The authenticated header remains scoped to request signature and nonce protection.}
+        operator: {type: string, minLength: 1, maxLength: 256, writeOnly: true, description: Frozen donor metadata and never an authenticated actor.}
+        package_key: {type: string, minLength: 1, maxLength: 200, writeOnly: true}
+        recipients: {type: array, minItems: 1, maxItems: 5000, writeOnly: true, items: {type: object, required: [unionid], properties: {unionid: {type: string, minLength: 1, maxLength: 512}, owner_userid: {type: string, maxLength: 256}, sender_userid: {type: string, maxLength: 256}, customer_name: {type: string, maxLength: 200, writeOnly: true}}}}
     AIAssistantIntegrationResolution:
       type: object
       additionalProperties: false
-      required: [found, not_found, conflict, invalid]
+      required: [found, not_found, conflict, unverified, ineligible, invalid, material_unmapped]
       properties:
         found: {type: integer, minimum: 0, maximum: 5000}
         not_found: {type: integer, minimum: 0, maximum: 5000}
         conflict: {type: integer, minimum: 0, maximum: 5000}
+        unverified: {type: integer, minimum: 0, maximum: 5000}
+        ineligible: {type: integer, minimum: 0, maximum: 5000}
         invalid: {type: integer, minimum: 0, maximum: 5000}
+        material_unmapped: {type: integer, minimum: 0, maximum: 5000}
+    AIAssistantIntegrationDisposition:
+      type: object
+      additionalProperties: false
+      required: [ordinal, status]
+      properties:
+        ordinal: {type: integer, minimum: 0, maximum: 4999}
+        status: {type: string, enum: [found, not_found, conflict, unverified, ineligible, invalid, duplicate, material_unmapped]}
     AIAssistantIntegrationPlanResponse:
       type: object
       additionalProperties: false
-      required: [ok, plan, replayed, dispatch_ready, resolution]
+      required: [ok, plan, replayed, dispatch_ready, resolution, dispositions]
       properties:
         ok: {const: true}
-        plan: {$ref: "#/components/schemas/AIAssistantPlan"}
+        plan: {oneOf: [{$ref: "#/components/schemas/AIAssistantPlan"}, {type: "null"}]}
         replayed: {type: boolean}
         dispatch_ready: {type: boolean}
         resolution: {$ref: "#/components/schemas/AIAssistantIntegrationResolution"}
+        dispositions: {type: array, maxItems: 5000, items: {$ref: "#/components/schemas/AIAssistantIntegrationDisposition"}}
     LocalProjection:
       type: object
       required: [ok, items, source_status, local_only]
@@ -4188,7 +4266,7 @@ components:
         lifecycle: {type: string, enum: [draft, disabled, enabled]}
         available: {const: true}
         reason: {type: string}
-        purchase_url: {type: string, pattern: "^/p/[1-9][0-9]*$"}
+        purchase_url: {type: string, pattern: "^/p/[^/]+$"}
         qr_code_url: {type: string}
     ServicePeriodProduct:
       type: object
@@ -4857,6 +4935,7 @@ components:
         state: {$ref: "#/components/schemas/GroupOpsExecutionState"}
         provider_accepted: {type: boolean}
         delivery_proven: {type: boolean}
+        delivery_status: {type: integer, minimum: 0}
         attempt_count: {type: integer, minimum: 0}
         provider_receipt_present: {type: boolean}
         reconciliation_evidence_present: {type: boolean}

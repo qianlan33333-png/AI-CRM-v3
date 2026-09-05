@@ -131,6 +131,32 @@ func (s *Service) Create(ctx context.Context, c paymentport.CreateCommand) (doma
 		if err != nil {
 			return err
 		}
+		if fromProduct {
+			switch actor.BeneficiarySelection {
+			case paymentport.BeneficiarySelectionUnresolved:
+				if c.BeneficiarySelection != paymentport.BeneficiarySelectionPayerSelf {
+					return paymentport.ErrConflict
+				}
+				actor, err = s.sessions.SelectPayerSelfWithin(tx, c.SessionToken, now)
+				if err != nil {
+					return err
+				}
+			case paymentport.BeneficiarySelectionPayerSelf:
+				if c.BeneficiarySelection != paymentport.BeneficiarySelectionPayerSelf || actor.BeneficiaryCustomerID != actor.PayerCustomerID {
+					return paymentport.ErrConflict
+				}
+			case paymentport.BeneficiarySelectionAdminAssisted:
+				// This state is set only by the trusted server-side session issuer.
+				// A public browser cannot select or replace its prebound recipient.
+				if c.BeneficiarySelection != "" || actor.BeneficiaryCustomerID < 1 {
+					return paymentport.ErrConflict
+				}
+			default:
+				// Legacy rows retain their original value but are never re-labelled as
+				// a fresh user confirmation by the public purchase path.
+				return paymentport.ErrConflict
+			}
+		}
 		channel := actor.Channel
 		if channel == "" {
 			channel = domain.ChannelMiniProgram
@@ -148,6 +174,12 @@ func (s *Service) Create(ctx context.Context, c paymentport.CreateCommand) (doma
 			}
 			result = replay
 			return nil
+		}
+		if !selectedBeneficiary(actor) {
+			// Pre-migration sessions retain their recipient value only to authorize
+			// an exact payment replay above. They cannot create a new command or
+			// silently turn an inferred recipient into a fresh confirmation.
+			return paymentport.ErrConflict
 		}
 		var order orderdomain.Snapshot
 		if fromExistingOrder {
@@ -788,6 +820,18 @@ func validShopRefundCommand(command paymentport.RefundCommand) bool {
 }
 func validKey(v string) bool   { return v == strings.TrimSpace(v) && len(v) >= 16 && len(v) <= 200 }
 func validScope(v string) bool { return v == strings.TrimSpace(v) && len(v) > 0 && len(v) <= 200 }
+
+func selectedBeneficiary(actor paymentport.SessionActor) bool {
+	switch actor.BeneficiarySelection {
+	case paymentport.BeneficiarySelectionPayerSelf:
+		return actor.PayerCustomerID > 0 && actor.BeneficiaryCustomerID == actor.PayerCustomerID
+	case paymentport.BeneficiarySelectionAdminAssisted:
+		return actor.BeneficiaryCustomerID > 0
+	default:
+		return false
+	}
+}
+
 func validMainlandMobileE164(v string) bool {
 	if len(v) != 14 || !strings.HasPrefix(v, "+861") || v[4] < '3' || v[4] > '9' {
 		return false
