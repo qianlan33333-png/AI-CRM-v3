@@ -152,8 +152,15 @@ func TestSurveyOAuthSubmissionResultJourneyPostgreSQL(t *testing.T) {
 		Questionnaire surveyport.Questionnaire `json:"questionnaire"`
 	}
 	mustSurveyJourneyJSON(t, published, &publishResult)
-	if publishResult.Questionnaire.Status != surveyport.StatusPublished || publishResult.Questionnaire.DefinitionVersion != 1 {
+	// The frozen admin HTTP DTO uses the legacy-compatible `active` status;
+	// verify the Owner's separate domain projection below rather than treating
+	// that compatibility value as surveyport.StatusPublished.
+	if publishResult.Questionnaire.Status != "active" || publishResult.Questionnaire.DefinitionVersion != 1 {
 		t.Fatalf("published questionnaire=%+v", publishResult.Questionnaire)
+	}
+	ownerPublished, err := definitions.Get(ctx, createResult.Questionnaire.ID)
+	if err != nil || ownerPublished.Status != surveyport.StatusPublished || ownerPublished.DefinitionVersion != 1 {
+		t.Fatalf("Owner published=%+v err=%v", ownerPublished, err)
 	}
 
 	start := surveyJourneyServe(t, handler, http.MethodGet, "/api/h5/surveys/oauth/start?slug=oauth-journey", nil, "", nil, "MicroMessenger Survey Journey")
