@@ -81,3 +81,4 @@ messagearchive 拥有消息、参与者、媒体引用、游标、运行/解析�
 - Archive Store不得直接JOIN Access的admin_users；通过稳定只读Port补充员工显示名，按页合并读取避免重复查询。
 - 真实PG注入批次后条写失败，前条消息、参与者和游标一起回滚；解除故障后原页可恢复。真实并发通知验证游标CAS与去重。纯内存Store及直接回调UoW不计此证据。
 - Linux SDK检查须证明实际句柄和输出内存释放，不得删除失败断言或跳过Linux测试。
+- 3362619改为Access Port后，CustomerStaffIDs仍同时筛同一参与者行的customer_id与staff_user_id；正常客户/员工为两行，结果必为空。需按message_id连接Archive-owned两类参与者，再由Access补显示名，并补真实PG员工下拉/筛选旅程。页面聚合staff ID先去重再检查批量限额，不能因同一员工在多条群消息重复出现而拒绝整页。

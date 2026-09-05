@@ -2,17 +2,24 @@
 
 更新时间：2026-09-05。只记录本轮证据；部署、生产 Provider 验收不计入本轮完成。
 
+## 审核与集成交付状态
+
+- 总控在每个 PR 可审时立即审核，不等待全部板块完成；CI 通过与总控审核分别记录。
+- 审核通过的准确提交持续进入 `codex/v3-parity-integration`，总集成 PR 以 main 为 base 持续运行组合 CI。
+- 个体 PR 不逐个合并 main。总集成 PR 冻结唯一发布候选后，才提交用户做最终生产上线确认；确认后一次合并、一次部署。
+- 本矩阵后续为每个板块同时记录“个体审核结果”和“已纳入集成 HEAD”。未进入集成或联合验收未通过的项目不得标记整体完成。
+
 | 板块 | PRD | 开发状态 | PR / HEAD | 旧行为/前端 | PostgreSQL/恢复 | 身份/效果协议 | 总控审核 |
 |---|---|---|---|---|---|---|---|
 | 客户同步 | 01 | 缺陷 PR CI 通过；板块联合验收待补 | [#133](https://github.com/qianlan33333-png/AI-CRM-v3/pull/133) / c3195e2 | Host 列表测试通过 | PostgreSQL 16 CI 通过 | token 一次刷新与耗尽状态通过 | 多员工多页及联合入客验证待补 |
-| 问卷 | 02 | 主PR检查通过；增量真实PG仍失败 | [#134](https://github.com/qianlan33333-png/AI-CRM-v3/pull/134) / b26ea89；[#137](https://github.com/qianlan33333-png/AI-CRM-v3/pull/137) / d91fb20 | 已改真实HttpApi原页测试；连续点击/筛选修复待最终审 | 6395c68的CI33952633962接纳失败；继续定位 | 0075已注册kind；完整事务/实际消费尚未过 | 未批准；父PR绿灯不证明整板块闭环 |
+| 问卷 | 02 | 增量修复继续；真实运行时消费尚未通过 | [#134](https://github.com/qianlan33333-png/AI-CRM-v3/pull/134) / b26ea89；[#137](https://github.com/qianlan33333-png/AI-CRM-v3/pull/137) / c835d95 | 已改真实HttpApi原页测试；参数/渠道/跳转回读待最终审核 | 实际PG接纳和同键重放已推进通过；River消费超时继续定位 | 0075注册kind；快照时间精度已修 | 未批准；父PR绿灯不证明整板块闭环 |
 | 商品与支付 | 03 | 独立缺陷PR开发测试通过；联合接线待完成 | [#136](https://github.com/qianlan33333-png/AI-CRM-v3/pull/136) / 1329c1e | 商品码新链接、数字历史别名、自购确认测试通过 | CI33949608992 PG16/race通过，含NULL约束反例 | 新会话受益人未确定；旧会话仅精确重放 | 独立PR通过；03/04闭环未完成 |
-| 周期权益与优惠券 | 04 | SQL及券时钟已修；退款顺序缺陷待修 | [#138](https://github.com/qianlan33333-png/AI-CRM-v3/pull/138) / b1cb517 | 券数据页与周期读Port已实现；03联合挂载中 | CI33952370213普通PG通过；race阶段权益最终状态断言失败 | 券跨时刻重放通过；两笔周期全退款结果受grant顺序影响 | 已交03联合任务修复；未批准 |
-| 自动化运营 | 05 | 已有局部实现；为04前置修复暂缓 | 本地 faa7149；未PR | 未验收 | PG/运行时未验收 | Owner只读Port已开发；composition未交付 | 不算完成；原上下文待继续 |
+| 周期权益与优惠券 | 04 | 退款顺序与独立历史覆盖修正进入CI | [#138](https://github.com/qianlan33333-png/AI-CRM-v3/pull/138) / 599b5bf | 券数据页与周期读Port已实现；03联合挂载中 | CI33954299348运行中；新增不同开通/退款顺序与历史共存反例 | 修正仅保留独立历史覆盖；券跨时刻重放已有证据 | 源码窄修已审；待准确HEAD实际PG及全量检查 |
+| 自动化运营 | 05 | 已有局部实现；为即时集成保留名额暂缓 | 本地 faa7149；未PR | 未验收 | PG/运行时未验收 | Owner只读Port已开发；composition未交付 | 不算完成；原上下文待继续 |
 | AI 助手 | 06 | 待派发 | — | 未验收 | 未验收 | 未验收 | 待审 |
 | 群运营 | 07 | 待派发 | — | 未验收 | 未验收 | 未验收 | 待审 |
 | 渠道欢迎语 | 08 | 独立实现开发测试通过；组合验收待进行 | [#135](https://github.com/qianlan33333-png/AI-CRM-v3/pull/135) / f23dc40 | 回调、管理、素材和原入客回归通过 | CI33948768346 PG16真实River拥堵/重启及race通过 | 过期原因、零期限禁止发送及schema readiness通过 | 独立PR审核通过；仍需01/09组合回归 |
-| 会话存档 | 09 | 审核退回修正 | [#139](https://github.com/qianlan33333-png/AI-CRM-v3/pull/139) / 5ea826c，含PR135 | 独立Host已实现；员工读取需改稳定Port | CI33952164978 Linux资源断言失败；PG原子回滚/并发需补 | 回调本地时钟重放冲突、导入继续位置等修正中 | 未批准；不算生产可用 |
+| 会话存档 | 09 | 当前CI绿；员工筛选缺陷待修 | [#139](https://github.com/qianlan33333-png/AI-CRM-v3/pull/139) / 3362619，含PR135 | 独立Host和Access Port已实现；员工参与者关联查询仍错误 | CI33953398123 PG原子/并发与Linux SDK实际加载检查通过 | 回调重放/导入继续位置及事实对账已修 | 未批准；补真实PG员工筛选及重复员工去重 |
 
 每项证据必须说明命令、环境、结果、对应提交；已有 CI 不能证明不同 HEAD。测试跳过、配置 disabled 与不可验证项目单独列出。只有适用测试实际通过、PR 可审查且总控审核通过，才标记完成。
 
@@ -33,9 +40,10 @@
 | 03 | /root/product_payment | Terra xhigh | /Users/qianlan/Downloads/新CRM/.codex-worktrees/product-payment-prd03 / codex/product-payment-parity | PR136修复SQL CHECK的NULL穿透后已交回；联合04尚未接线 |
 | 04 | /root/entitlement_coupon | Terra xhigh | /Users/qianlan/Downloads/新CRM/.codex-worktrees/entitlement-coupon-prd04 / codex/entitlement-coupon-parity | 已启动旧规则对照与领域实现；与03协调券事务契约 |
 | 09 | /root/message_archive | Terra xhigh | /Users/qianlan/Downloads/新CRM/.codex-worktrees/message-archive-prd09 / codex/message-archive-parity | 基于08准确提交堆叠，已启动通知/SDK/事务实现 |
-| 05 | /root/automation | Terra high | /Users/qianlan/Downloads/新CRM/.codex-worktrees/automation-prd05 / codex/automation-prd05-parity | 02交回名额后启动，基于d6冻结源；六类受众/执行/旧UI与历史对账 |
+| 05 | /root/automation | Terra high | /Users/qianlan/Downloads/新CRM/.codex-worktrees/automation-prd05 / codex/automation-prd05-parity | 保留局部工作暂缓；02或03交回名额后恢复 |
+| 集成 | /root/integration | Sol medium | /Users/qianlan/Downloads/新CRM/.codex-worktrees/v3-parity-integration / codex/v3-parity-integration | 持续纳入已审核准确HEAD并创建总PR；保持开发与集成并行 |
 
-当前调度：05保留局部提交与工作树并暂缓；04已提交修复b1cb517并交回，CI33952370213待核验；03在codex/commerce-parity-integration完成联合闭环。02已提交6395c68，CI33952633962检查0075和完整原页面旅程。PR139 CI33952164978在Linux SDK资源断言失败，由原04执行智能体承接09限定修复及导入审查修正。最多三个活动开发智能体。
+当前调度：02与03/04联合任务持续开发；05已保留原上下文和工作树并暂缓。总集成任务 /root/integration（Sol medium）已启动，立即纳入已审133/135/136并建立总集成PR，再并行补联合验收。根继续审核137/138/139；CI绿与业务审核分别记录。全程最多三个活动执行智能体。
 
 已有对话派发受应用审批策略阻止，未送达；本表不把它们标记为已接单。本任务内的开发智能体已实际启动。
 
