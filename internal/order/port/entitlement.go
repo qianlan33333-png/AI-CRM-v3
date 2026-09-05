@@ -18,6 +18,10 @@ type Entitlement struct {
 	Version          int64     `json:"version"`
 	UpdatedAt        time.Time `json:"updated_at"`
 	SourceSystem     string    `json:"source_system,omitempty"`
+	// MemberGridGroupCount is populated only for the requested, Order-owned
+	// remaining-days grouping. It is a window count over the complete filtered
+	// result, rather than a count of whichever page reached the Host.
+	MemberGridGroupCount int64 `json:"-"`
 }
 
 type EntitlementPage struct {
@@ -44,6 +48,13 @@ type ServicePeriodMemberQuery struct {
 	RemainingDays *MemberGridNumberFilter
 	Remark        *MemberGridTextFilter
 	FilterLogic   string
+	// SnapshotAt freezes remaining-day filters and row values for one grid
+	// request. A zero value lets ordinary list callers retain database-now
+	// behavior; the Product grid always supplies one explicit instant.
+	SnapshotAt time.Time
+	// GroupByRemainingDays requests the complete filtered partition count for
+	// the supported one-level donor grouping.
+	GroupByRemainingDays bool
 }
 
 type MemberGridNumberFilter struct {
@@ -59,6 +70,9 @@ type MemberGridTextFilter struct {
 type ServicePeriodMemberPage struct {
 	Items      []Entitlement
 	NextCursor string
+	// SnapshotAt is the effective Order snapshot. Cursored requests retain the
+	// first page's instant, so Product renders exactly the values it filtered.
+	SnapshotAt time.Time
 }
 
 type RemarkCommand struct {

@@ -810,7 +810,11 @@ func (h *Handler) serviceMembers(w http.ResponseWriter, r *http.Request, id int6
 		return
 	}
 	access, _, ok := h.memberGridAuthorize(w, r, id, false)
-	if !ok || !access.CanView {
+	if !ok {
+		return
+	}
+	if !access.CanView {
+		writeError(w, http.StatusForbidden, "permission_denied")
 		return
 	}
 	if !onlyQuery(r, "state", "source", "limit", "cursor") {
@@ -882,10 +886,15 @@ func (h *Handler) memberRemark(w http.ResponseWriter, r *http.Request, productID
 		return
 	}
 	access, actor, ok := h.memberGridAuthorize(w, r, productID, true)
-	if !ok || !access.CanEdit || h.members == nil {
-		if ok {
-			writeError(w, http.StatusServiceUnavailable, "unavailable")
-		}
+	if !ok {
+		return
+	}
+	if !access.CanEdit {
+		writeError(w, http.StatusForbidden, "permission_denied")
+		return
+	}
+	if h.members == nil {
+		writeError(w, http.StatusServiceUnavailable, "unavailable")
 		return
 	}
 	entitlementID, err := parseMemberGridMemberRef(rawEntitlementID)
@@ -947,7 +956,11 @@ func (h *Handler) memberGridSchema(w http.ResponseWriter, r *http.Request, id in
 		return
 	}
 	access, _, ok := h.memberGridAuthorize(w, r, id, false)
-	if !ok || !access.CanView {
+	if !ok {
+		return
+	}
+	if !access.CanView {
+		writeError(w, http.StatusForbidden, "permission_denied")
 		return
 	}
 	columns := []map[string]any{
@@ -976,7 +989,11 @@ func (h *Handler) memberViews(w http.ResponseWriter, r *http.Request, id int64) 
 	switch r.Method {
 	case http.MethodGet:
 		access, _, ok := h.memberGridAuthorize(w, r, id, false)
-		if !ok || !access.CanView {
+		if !ok {
+			return
+		}
+		if !access.CanView {
+			writeError(w, http.StatusForbidden, "permission_denied")
 			return
 		}
 		views, err := h.workspace.ListViews(r.Context(), productport.ID(id))
@@ -991,7 +1008,11 @@ func (h *Handler) memberViews(w http.ResponseWriter, r *http.Request, id int64) 
 		writeJSON(w, http.StatusOK, map[string]any{"product_id": id, "views": out, "items": out})
 	case http.MethodPost:
 		access, actor, ok := h.memberGridAuthorize(w, r, id, true)
-		if !ok || !access.CanManageViews {
+		if !ok {
+			return
+		}
+		if !access.CanManageViews {
+			writeError(w, http.StatusForbidden, "permission_denied")
 			return
 		}
 		var body struct {
@@ -1034,7 +1055,11 @@ func (h *Handler) memberGridShareSettings(w http.ResponseWriter, r *http.Request
 		return
 	}
 	access, _, ok := h.memberGridAuthorize(w, r, id, false)
-	if !ok || !access.CanView {
+	if !ok {
+		return
+	}
+	if !access.CanView {
+		writeError(w, http.StatusForbidden, "permission_denied")
 		return
 	}
 	collaborators, err := h.workspace.ListCollaborators(r.Context(), productport.ID(id))
@@ -1064,7 +1089,11 @@ func (h *Handler) memberGridExternalShare(w http.ResponseWriter, r *http.Request
 		return
 	}
 	access, actor, ok := h.memberGridAuthorize(w, r, id, true)
-	if !ok || !access.CanShare {
+	if !ok {
+		return
+	}
+	if !access.CanShare {
+		writeError(w, http.StatusForbidden, "permission_denied")
 		return
 	}
 	var body struct {
@@ -1098,7 +1127,11 @@ func (h *Handler) memberGridStaff(w http.ResponseWriter, r *http.Request, id int
 		return
 	}
 	access, _, ok := h.memberGridAuthorize(w, r, id, false)
-	if !ok || !access.CanShare {
+	if !ok {
+		return
+	}
+	if !access.CanShare {
+		writeError(w, http.StatusForbidden, "permission_denied")
 		return
 	}
 	if h.staff == nil {
@@ -1171,7 +1204,11 @@ func (h *Handler) memberView(w http.ResponseWriter, r *http.Request, productID i
 		return
 	}
 	access, actor, ok := h.memberGridAuthorize(w, r, productID, true)
-	if !ok || !access.CanManageViews {
+	if !ok {
+		return
+	}
+	if !access.CanManageViews {
+		writeError(w, http.StatusForbidden, "permission_denied")
 		return
 	}
 	switch r.Method {
@@ -1232,7 +1269,11 @@ func (h *Handler) memberGridCollaborators(w http.ResponseWriter, r *http.Request
 		return
 	}
 	access, actor, ok := h.memberGridAuthorize(w, r, id, true)
-	if !ok || !access.CanShare {
+	if !ok {
+		return
+	}
+	if !access.CanShare {
+		writeError(w, http.StatusForbidden, "permission_denied")
 		return
 	}
 	var body struct {
@@ -1276,7 +1317,11 @@ func (h *Handler) memberGridCollaborator(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	access, actor, ok := h.memberGridAuthorize(w, r, id, true)
-	if !ok || !access.CanShare {
+	if !ok {
+		return
+	}
+	if !access.CanShare {
+		writeError(w, http.StatusForbidden, "permission_denied")
 		return
 	}
 	var body struct {
@@ -1322,7 +1367,11 @@ func (h *Handler) memberGridQuery(w http.ResponseWriter, r *http.Request, id int
 		return
 	}
 	access, _, ok := h.memberGridAuthorize(w, r, id, false)
-	if !ok || !access.CanView {
+	if !ok {
+		return
+	}
+	if !access.CanView {
+		writeError(w, http.StatusForbidden, "permission_denied")
 		return
 	}
 	var body struct {
@@ -1657,7 +1706,7 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 }
 
 func writeError(w http.ResponseWriter, status int, code string) {
-	compat := map[string]string{"invalid_request": "MALFORMED_REQUEST", "not_found": "NOT_FOUND", "conflict": "CONFLICT", "unauthorized": "UNAUTHORIZED", "permission_denied": "FORBIDDEN", "csrf_required": "FORBIDDEN", "unavailable": "DEPENDENCY_UNAVAILABLE", "method_not_allowed": "METHOD_NOT_ALLOWED", "product_not_enabled": "product_not_enabled"}[code]
+	compat := map[string]string{"invalid_request": "MALFORMED_REQUEST", "not_found": "NOT_FOUND", "conflict": "CONFLICT", "unauthorized": "UNAUTHORIZED", "permission_denied": "FORBIDDEN", "csrf_required": "FORBIDDEN", "unavailable": "DEPENDENCY_UNAVAILABLE", "method_not_allowed": "METHOD_NOT_ALLOWED", "product_not_enabled": "product_not_enabled", "share_gone": "SHARE_GONE"}[code]
 	if compat == "" {
 		compat = "DEPENDENCY_UNAVAILABLE"
 	}

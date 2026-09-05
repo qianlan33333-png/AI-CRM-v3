@@ -201,5 +201,5 @@ func memberGridMigration(t *testing.T, name string) string {
 	if !ok {
 		t.Fatal("locate test")
 	}
-	return filepath.Join(filepath.Dir(file), "..", "..", "..", "..", "migrations", name)
+	return filepath.Join(filepath.Dir(file), "..", "..", "..", "migrations", name)
 }

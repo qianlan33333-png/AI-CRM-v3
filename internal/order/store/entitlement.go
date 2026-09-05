@@ -18,11 +18,12 @@ import (
 )
 
 type servicePeriodMemberCursor struct {
-	EndAt     string `json:"end_at"`
-	UpdatedAt string `json:"updated_at,omitempty"`
-	StartAt   string `json:"start_at,omitempty"`
-	Sort      string `json:"sort,omitempty"`
-	ID        int64  `json:"id"`
+	EndAt      string `json:"end_at"`
+	UpdatedAt  string `json:"updated_at,omitempty"`
+	StartAt    string `json:"start_at,omitempty"`
+	SnapshotAt string `json:"snapshot_at,omitempty"`
+	Sort       string `json:"sort,omitempty"`
+	ID         int64  `json:"id"`
 }
 
 func (r *Repository) ListCustomerEntitlements(ctx context.Context, customerID int64, limit int32) (orderport.EntitlementPage, error) {
@@ -55,6 +56,7 @@ func (r *Repository) ListServicePeriodMembers(ctx context.Context, query orderpo
 	if err != nil {
 		return orderport.ServicePeriodMemberPage{}, err
 	}
+	snapshot := query.SnapshotAt.UTC()
 	var cursorEnd, cursorUpdated, cursorStart *time.Time
 	var cursorID int64
 	if query.Cursor != "" {
@@ -65,6 +67,13 @@ func (r *Repository) ListServicePeriodMembers(ctx context.Context, query orderpo
 		}
 		if cursor.Sort != "" && cursor.Sort != query.Sort {
 			return orderport.ServicePeriodMemberPage{}, orderport.ErrConflict
+		}
+		if cursor.SnapshotAt != "" {
+			parsed, parseErr := time.Parse(time.RFC3339Nano, cursor.SnapshotAt)
+			if parseErr != nil {
+				return orderport.ServicePeriodMemberPage{}, orderport.ErrConflict
+			}
+			snapshot = parsed.UTC()
 		}
 		parsed, parseErr := time.Parse(time.RFC3339Nano, cursor.EndAt)
 		if parseErr != nil {
@@ -97,9 +106,12 @@ func (r *Repository) ListServicePeriodMembers(ctx context.Context, query orderpo
 		state = "refunded"
 	}
 	source := strings.TrimSpace(query.Source)
+	if snapshot.IsZero() {
+		snapshot = time.Now().UTC()
+	}
 	filterArgs := make([]any, 0, 3)
-	nextPlaceholder := 9
-	remainingClause, remainingArgs := servicePeriodRemainingDaysClause(query.RemainingDays, nextPlaceholder)
+	nextPlaceholder := 10
+	remainingClause, remainingArgs := servicePeriodRemainingDaysClause(query.RemainingDays, 9, nextPlaceholder)
 	nextPlaceholder += len(remainingArgs)
 	filterArgs = append(filterArgs, remainingArgs...)
 	remarkClause, remarkArgs := servicePeriodRemarkClause(query.Remark, nextPlaceholder)
@@ -116,10 +128,14 @@ func (r *Repository) ListServicePeriodMembers(ctx context.Context, query orderpo
 	} else if query.Remark != nil {
 		memberFilter = remarkClause
 	}
-	args := []any{query.ServiceProductID, state, source, cursorUpdated, cursorStart, query.Sort, cursorID, cursorEnd}
+	args := []any{query.ServiceProductID, state, source, cursorUpdated, cursorStart, query.Sort, cursorID, cursorEnd, snapshot}
 	args = append(args, filterArgs...)
 	args = append(args, query.Limit+1)
-	rows, err := tx.Query(ctx, `SELECT id,customer_id,service_product_id,product_name,last_order_id,status,start_at,end_at,remark,version,updated_at,source_system
+	groupCount := "0::bigint"
+	if query.GroupByRemainingDays {
+		groupCount = "COUNT(*) OVER (PARTITION BY " + servicePeriodRemainingDaysExpression(9) + ")"
+	}
+	rows, err := tx.Query(ctx, `SELECT id,customer_id,service_product_id,product_name,last_order_id,status,start_at,end_at,remark,version,updated_at,source_system,`+groupCount+`
 		FROM order_service_entitlements
 		WHERE service_product_id=$1
 		  AND ($2='' OR status=$2)
@@ -135,10 +151,10 @@ func (r *Repository) ListServicePeriodMembers(ctx context.Context, query orderpo
 		return orderport.ServicePeriodMemberPage{}, err
 	}
 	defer rows.Close()
-	page := orderport.ServicePeriodMemberPage{Items: []orderport.Entitlement{}}
+	page := orderport.ServicePeriodMemberPage{Items: []orderport.Entitlement{}, SnapshotAt: snapshot}
 	for rows.Next() {
 		var item orderport.Entitlement
-		if err = rows.Scan(&item.ID, &item.CustomerID, &item.ServiceProductID, &item.ProductName, &item.LastOrderID, &item.Status, &item.StartAt, &item.EndAt, &item.Remark, &item.Version, &item.UpdatedAt, &item.SourceSystem); err != nil {
+		if err = rows.Scan(&item.ID, &item.CustomerID, &item.ServiceProductID, &item.ProductName, &item.LastOrderID, &item.Status, &item.StartAt, &item.EndAt, &item.Remark, &item.Version, &item.UpdatedAt, &item.SourceSystem, &item.MemberGridGroupCount); err != nil {
 			return orderport.ServicePeriodMemberPage{}, err
 		}
 		page.Items = append(page.Items, item)
@@ -150,7 +166,7 @@ func (r *Repository) ListServicePeriodMembers(ctx context.Context, query orderpo
 		return page, nil
 	}
 	last := page.Items[query.Limit-1]
-	encoded, marshalErr := json.Marshal(servicePeriodMemberCursor{EndAt: last.EndAt.UTC().Format(time.RFC3339Nano), UpdatedAt: last.UpdatedAt.UTC().Format(time.RFC3339Nano), StartAt: last.StartAt.UTC().Format(time.RFC3339Nano), Sort: query.Sort, ID: last.ID})
+	encoded, marshalErr := json.Marshal(servicePeriodMemberCursor{EndAt: last.EndAt.UTC().Format(time.RFC3339Nano), UpdatedAt: last.UpdatedAt.UTC().Format(time.RFC3339Nano), StartAt: last.StartAt.UTC().Format(time.RFC3339Nano), SnapshotAt: snapshot.Format(time.RFC3339Nano), Sort: query.Sort, ID: last.ID})
 	if marshalErr != nil {
 		return orderport.ServicePeriodMemberPage{}, marshalErr
 	}
@@ -166,16 +182,23 @@ func servicePeriodSortDirection(sort string) string {
 	return "DESC"
 }
 
-func servicePeriodRemainingDaysClause(filter *orderport.MemberGridNumberFilter, start int) (string, []any) {
+func servicePeriodRemainingDaysClause(filter *orderport.MemberGridNumberFilter, snapshotPlaceholder, start int) (string, []any) {
 	if filter == nil {
 		return "TRUE", nil
 	}
-	expression := "FLOOR(EXTRACT(EPOCH FROM (end_at - CURRENT_TIMESTAMP)) / 86400)::bigint"
+	// dd8 defines a positive partial day as one day and clamps expired
+	// entitlements to zero. Use the request's frozen snapshot rather than a
+	// moving database clock so filtering and V3 row rendering agree.
+	expression := servicePeriodRemainingDaysExpression(snapshotPlaceholder)
 	if filter.Operator == "between" {
 		return expression + " BETWEEN $" + strconv.Itoa(start) + " AND $" + strconv.Itoa(start+1), []any{filter.Values[0], filter.Values[1]}
 	}
 	op := map[string]string{"equals": "=", "not_equals": "<>", "gt": ">", "gte": ">=", "lt": "<", "lte": "<="}[filter.Operator]
 	return expression + " " + op + " $" + strconv.Itoa(start), []any{filter.Values[0]}
+}
+
+func servicePeriodRemainingDaysExpression(snapshotPlaceholder int) string {
+	return "GREATEST(0, CEIL(EXTRACT(EPOCH FROM (end_at - $" + strconv.Itoa(snapshotPlaceholder) + "::timestamptz)) / 86400))::bigint"
 }
 
 func servicePeriodRemarkClause(filter *orderport.MemberGridTextFilter, start int) (string, []any) {

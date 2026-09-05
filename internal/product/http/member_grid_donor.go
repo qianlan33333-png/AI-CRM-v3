@@ -122,6 +122,16 @@ func donorGridOrderQuery(productID int64, c donorGridConfig, cursor string, limi
 	if len(c.Sorts) == 1 {
 		query.Sort = "remaining_days_" + c.Sorts[0].Direction
 	}
+	if len(c.Groups) == 1 {
+		// dd8 places a grouping field first in the effective order. We expose
+		// only the Order-owned remaining-days grouping, so use that direction
+		// when no explicit sort exists, and calculate a complete group count
+		// even when a saved view contains both sort and group rules.
+		if len(c.Sorts) == 0 {
+			query.Sort = "remaining_days_" + c.Groups[0].Direction
+		}
+		query.GroupByRemainingDays = true
+	}
 	for _, filter := range c.Filter.Conditions {
 		if filter.Field == "remark" {
 			value, _ := filter.Value.(string)
@@ -179,7 +189,19 @@ func defaultDonorGridView() map[string]any {
 }
 func strconvID(id productport.ID) string { return fmt.Sprintf("%d", id) }
 
+func donorGridRemainingDays(endAt, snapshot time.Time) int {
+	seconds := endAt.Sub(snapshot).Seconds()
+	if seconds <= 0 {
+		return 0
+	}
+	return max(1, int(math.Ceil(seconds/86400)))
+}
+
 func (h *Handler) donorGridRows(ctx context.Context, items []orderport.Entitlement, c donorGridConfig) ([]map[string]any, error) {
+	return h.donorGridRowsAt(ctx, items, c, time.Now().UTC())
+}
+
+func (h *Handler) donorGridRowsAt(ctx context.Context, items []orderport.Entitlement, c donorGridConfig, snapshot time.Time) ([]map[string]any, error) {
 	ids := make([]customerdomain.CustomerID, 0, len(items))
 	for _, item := range items {
 		ids = append(ids, customerdomain.CustomerID(item.CustomerID))
@@ -188,19 +210,18 @@ func (h *Handler) donorGridRows(ctx context.Context, items []orderport.Entitleme
 	if err != nil {
 		return nil, err
 	}
-	now := time.Now().UTC()
 	out := make([]map[string]any, 0, len(items))
 	for _, item := range items {
-		remaining := int(math.Floor(item.EndAt.Sub(now).Hours() / 24))
+		remaining := donorGridRemainingDays(item.EndAt, snapshot)
 		name := names[customerdomain.CustomerID(item.CustomerID)]
 		if name == "" {
 			name = "客户"
 		}
 		path := []any{}
 		if len(c.Groups) == 1 {
-			path = append(path, map[string]any{"field": "remaining_days", "value": remaining})
+			path = append(path, map[string]any{"field": "remaining_days", "value": remaining, "label": fmt.Sprintf("%d 天", remaining), "count": item.MemberGridGroupCount})
 		}
-		out = append(out, map[string]any{"record_id": memberGridMemberRef(item.ID), "unionid": memberGridMemberRef(item.ID), "version": item.Version, "values": map[string]any{"member": map[string]any{"primary": name, "secondary": ""}, "remaining_days": remaining, "formally_logged_in": "unmatched", "token_usage": "unmatched", "learning_plan_progress": map[string]any{"state": "unmatched"}, "open_count_7d": nil, "last_open_at": nil, "renewal_count": nil, "renewal_count_unavailable": true, "remark": item.Remark, "alliance": ""}, "group_path": path})
+		out = append(out, map[string]any{"record_id": memberGridMemberRef(item.ID), "unionid": memberGridMemberRef(item.ID), "version": item.Version, "values": map[string]any{"member": map[string]any{"primary": name, "secondary": ""}, "remaining_days": remaining, "formally_logged_in": "unmatched", "token_usage": "unmatched", "learning_plan_progress": map[string]any{"state": "unmatched"}, "open_count_7d": nil, "last_open_at": nil, "renewal_count": nil, "renewal_count_unavailable": true, "remark": item.Remark, "alliance": nil, "alliance_unavailable": true}, "group_path": path})
 	}
 	return out, nil
 }
@@ -213,11 +234,19 @@ func (h *Handler) queryDonorGrid(ctx context.Context, productID int64, c donorGr
 	if err != nil {
 		return nil, "", err
 	}
+	// Freeze the same instant for Order's SQL filter and the displayed rows.
+	// This preserves dd8's ceil-and-clamp remaining-day behavior even at a
+	// day boundary.
+	query.SnapshotAt = time.Now().UTC()
 	page, err := h.members.ListServicePeriodMembers(ctx, query)
 	if err != nil {
 		return nil, "", err
 	}
-	rows, err := h.donorGridRows(ctx, page.Items, c)
+	snapshot := page.SnapshotAt
+	if snapshot.IsZero() {
+		snapshot = query.SnapshotAt
+	}
+	rows, err := h.donorGridRowsAt(ctx, page.Items, c, snapshot)
 	return rows, page.NextCursor, err
 }
 

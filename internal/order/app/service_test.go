@@ -301,7 +301,10 @@ func TestPaymentCheckoutFreezesCouponPriceAndSettlesWithinOrderTransaction(t *te
 	if !frozen.CouponApplied || frozen.GrossAmountMinor != 8800 || frozen.DiscountAmountMinor != 1800 || frozen.PayableAmountMinor != 7000 || frozen.CouponReservationRef != "redemption-1" {
 		t.Fatalf("frozen=%+v", frozen)
 	}
-	paidAt := time.Date(2026, 9, 5, 10, 0, 0, 0, time.UTC)
+	// Settlement facts cannot predate their immutable order snapshot. Derive
+	// the callback time from the created snapshot so this test stays valid as
+	// the test clock advances without weakening the payment assertion.
+	paidAt := created.CreatedAt.Add(time.Minute)
 	if _, err = service.SettlePaymentWithin(context.Background(), orderport.PaymentSettlementCommand{OrderID: created.ID, OccurredAt: paidAt, ReceiptKey: "payment-callback-1"}); err != nil {
 		t.Fatal(err)
 	}

@@ -147,11 +147,15 @@ func TestEntitlementRemarkRejectsCrossProductBeforeMutation(t *testing.T) {
 	}
 	base := time.Date(2026, 9, 5, 0, 0, 0, 0, time.UTC)
 	digest := sha256.Sum256([]byte("cross-product-entitlement"))
-	var id int64
-	if err = native.QueryRow(ctx, `INSERT INTO order_service_entitlements(source_system,source_key,customer_id,service_product_id,product_name,status,start_at,end_at,remark,source_digest,created_at,updated_at) VALUES('test','cross-product',811,81,'B商品','active',$1,$2,'原备注',$3,$1,$1) RETURNING id`, base, base.AddDate(0, 0, 30), digest[:]).Scan(&id); err != nil {
+	var customerID int64
+	if err = native.QueryRow(ctx, `INSERT INTO customers DEFAULT VALUES RETURNING id`).Scan(&customerID); err != nil {
 		t.Fatal(err)
 	}
-	_, err = app.UpdateEntitlementRemark(ctx, orderport.RemarkCommand{EntitlementID: id, CustomerID: 811, ServiceProductID: 80, EmployeeID: "admin:1", Remark: "越权修改", ExpectedVersion: 1, IdempotencyKey: "cross-product-remark-key"})
+	var id int64
+	if err = native.QueryRow(ctx, `INSERT INTO order_service_entitlements(source_system,source_key,customer_id,service_product_id,product_name,status,start_at,end_at,remark,source_digest,created_at,updated_at) VALUES('test','cross-product',$1,81,'B商品','active',$2,$3,'原备注',$4,$2,$2) RETURNING id`, customerID, base, base.AddDate(0, 0, 30), digest[:]).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	_, err = app.UpdateEntitlementRemark(ctx, orderport.RemarkCommand{EntitlementID: id, CustomerID: customerID, ServiceProductID: 80, EmployeeID: "admin:1", Remark: "越权修改", ExpectedVersion: 1, IdempotencyKey: "cross-product-remark-key"})
 	if !errors.Is(err, orderport.ErrNotFound) && !errors.Is(err, orderport.ErrConflict) {
 		t.Fatalf("cross-product err=%v", err)
 	}
@@ -168,8 +172,92 @@ func TestEntitlementRemarkRejectsCrossProductBeforeMutation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("opaque product-scoped remark: %v", err)
 	}
-	if updated.ID != id || updated.CustomerID != 811 || updated.ServiceProductID != 81 || updated.Remark != "不公开客户ID的备注" || updated.Version != 2 {
+	if updated.ID != id || updated.CustomerID != customerID || updated.ServiceProductID != 81 || updated.Remark != "不公开客户ID的备注" || updated.Version != 2 {
 		t.Fatalf("opaque product-scoped result=%+v", updated)
+	}
+}
+
+func TestPostgreSQLMemberGridUsesFrozenCeilDaysForFiltersAndPagination(t *testing.T) {
+	native, cleanup := orderIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	wrapper, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wrapper.Close()
+	uow, err := platformpostgres.NewUnitOfWork(wrapper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := NewPostgreSQL(native, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app, err := orderapp.NewEntitlementApplication(uow, repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	snapshot := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+	type seeded struct {
+		key string
+		end time.Time
+		id  int64
+	}
+	items := []seeded{
+		{key: "just-under-one-day", end: snapshot.Add(24*time.Hour - time.Second)},
+		{key: "exactly-one-day", end: snapshot.Add(24 * time.Hour)},
+		{key: "just-over-one-day", end: snapshot.Add(24*time.Hour + time.Second)},
+		{key: "expired", end: snapshot.Add(-time.Second)},
+	}
+	for index := range items {
+		var customerID int64
+		if err = native.QueryRow(ctx, `INSERT INTO customers DEFAULT VALUES RETURNING id`).Scan(&customerID); err != nil {
+			t.Fatal(err)
+		}
+		digest := sha256.Sum256([]byte("member-grid-days-" + items[index].key))
+		if err = native.QueryRow(ctx, `INSERT INTO order_service_entitlements(source_system,source_key,customer_id,service_product_id,product_name,status,start_at,end_at,remark,source_digest,created_at,updated_at) VALUES('test',$1,$2,739,'Member grid','active',$3,$4,'',$5,$3,$3) RETURNING id`, items[index].key, customerID, snapshot.Add(-time.Hour), items[index].end, digest[:]).Scan(&items[index].id); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	base := orderport.ServicePeriodMemberQuery{ServiceProductID: 739, Limit: 50, Sort: "remaining_days_asc", SnapshotAt: snapshot}
+	oneDay := base
+	oneDay.RemainingDays = &orderport.MemberGridNumberFilter{Operator: "equals", Values: []int64{1}}
+	page, err := app.ListServicePeriodMembers(ctx, oneDay)
+	if err != nil || len(page.Items) != 2 || page.Items[0].ID != items[0].id || page.Items[1].ID != items[1].id {
+		t.Fatalf("one-day ceil filter page=%+v err=%v", page, err)
+	}
+	grouped := oneDay
+	grouped.GroupByRemainingDays = true
+	page, err = app.ListServicePeriodMembers(ctx, grouped)
+	if err != nil || len(page.Items) != 2 || page.Items[0].MemberGridGroupCount != 2 || page.Items[1].MemberGridGroupCount != 2 {
+		t.Fatalf("one-day group counts page=%+v err=%v", page, err)
+	}
+
+	expired := base
+	expired.RemainingDays = &orderport.MemberGridNumberFilter{Operator: "lte", Values: []int64{0}}
+	page, err = app.ListServicePeriodMembers(ctx, expired)
+	if err != nil || len(page.Items) != 1 || page.Items[0].ID != items[3].id {
+		t.Fatalf("expired clamp filter page=%+v err=%v", page, err)
+	}
+
+	paged := base
+	paged.Limit = 2
+	paged.RemainingDays = &orderport.MemberGridNumberFilter{Operator: "gte", Values: []int64{1}}
+	first, err := app.ListServicePeriodMembers(ctx, paged)
+	if err != nil || len(first.Items) != 2 || first.NextCursor == "" || !first.SnapshotAt.Equal(snapshot) || first.Items[0].ID != items[0].id || first.Items[1].ID != items[1].id {
+		t.Fatalf("first filtered page=%+v err=%v", first, err)
+	}
+	paged.Cursor = first.NextCursor
+	// A subsequent browser request inevitably has a newer wall clock. The
+	// opaque Order cursor, rather than the Product Host, owns the retained
+	// snapshot so the second page uses the same filter/display instant.
+	paged.SnapshotAt = snapshot.Add(48 * time.Hour)
+	second, err := app.ListServicePeriodMembers(ctx, paged)
+	if err != nil || len(second.Items) != 1 || second.NextCursor != "" || !second.SnapshotAt.Equal(snapshot) || second.Items[0].ID != items[2].id {
+		t.Fatalf("second filtered page=%+v err=%v", second, err)
 	}
 }
 
