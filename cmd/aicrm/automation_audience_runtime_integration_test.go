@@ -200,19 +200,16 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 		t.Fatalf("manual=%+v err=%v", manual, err)
 	}
 
-	rows, err := native.Query(ctx, `SELECT effect_id::text,river_job_id FROM external_effect_jobs ORDER BY id`)
+	rows, err := native.Query(ctx, `SELECT effect_id,river_job_id FROM external_effect_jobs ORDER BY id`)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer rows.Close()
-	type effectJob struct {
-		id      string
-		riverID int64
-	}
+	type effectJob struct{ effectID, riverID int64 }
 	var jobs []effectJob
 	for rows.Next() {
 		var j effectJob
-		if err = rows.Scan(&j.id, &j.riverID); err != nil {
+		if err = rows.Scan(&j.effectID, &j.riverID); err != nil {
 			t.Fatal(err)
 		}
 		jobs = append(jobs, j)
@@ -225,16 +222,13 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 	}
 	var unknownEffect string
 	for i, job := range jobs {
-		effectID, parseErr := automationAudienceEffectID(job.id)
-		if parseErr != nil {
-			t.Fatal(parseErr)
-		}
+		effectRef := fmt.Sprintf("eer_%d", job.effectID)
 		completion := effectport.StateExecuted
 		if i == len(jobs)-1 {
-			completion, unknownEffect = effectport.StateUnknown, job.id
+			completion, unknownEffect = effectport.StateUnknown, effectRef
 		}
-		adapter := automationAudienceProvider{result: effectport.AdapterResult{Completion: completion, ReceiptDigest: effectport.Hash("audience-runtime-provider", job.id), CallAttempted: true, RealExternalCallExecuted: true}}
-		if err = effects.RunAttempt(ctx, effectID, 1, job.riverID, &adapter); err != nil {
+		adapter := automationAudienceProvider{result: effectport.AdapterResult{Completion: completion, ReceiptDigest: effectport.Hash("audience-runtime-provider", effectRef), CallAttempted: true, RealExternalCallExecuted: true}}
+		if err = effects.RunAttempt(ctx, job.effectID, 1, job.riverID, &adapter); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -245,9 +239,9 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 	if err = native.QueryRow(ctx, `SELECT run_id FROM automation_run_recipients WHERE effect_id=$1`, unknownEffect).Scan(&unknownRun); err != nil {
 		t.Fatal(err)
 	}
-	effectID, err := automationAudienceEffectID(unknownEffect)
-	if err != nil {
-		t.Fatal(err)
+	var effectID int64
+	if _, err = fmt.Sscanf(unknownEffect, "eer_%d", &effectID); err != nil || effectID < 1 {
+		t.Fatalf("effect ref=%q err=%v", unknownEffect, err)
 	}
 	if _, err = native.Exec(ctx, `UPDATE external_effects SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE id=$1`, effectID); err != nil {
 		t.Fatal(err)
@@ -378,11 +372,6 @@ func automationAudienceCombinedDigest(d [32]byte) string {
 	raw := append(append([]byte{}, d[:]...), d[:]...)
 	out := sha256.Sum256(raw)
 	return hex.EncodeToString(out[:])
-}
-func automationAudienceEffectID(v string) (int64, error) {
-	var id int64
-	_, err := fmt.Sscanf(v, "eer_%d", &id)
-	return id, err
 }
 func automationAudienceInt(v int64) string { return strconv.FormatInt(v, 10) }
 
