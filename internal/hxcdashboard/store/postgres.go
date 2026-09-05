@@ -194,11 +194,15 @@ func (store *PostgreSQL) SharedFactsAtVersion(ctx context.Context, version int64
 		return out, nil
 	}
 	var available bool
-	if err := store.pool.QueryRow(ctx, `SELECT shared_facts_available FROM hxc_dashboard_versions WHERE id=$1`, version).Scan(&available); err != nil {
+	var expectedRows, retainedRows int64
+	if err := store.pool.QueryRow(ctx, `SELECT v.shared_facts_available,v.total_count,(SELECT count(*) FROM hxc_dashboard_rows r WHERE r.projection_id=v.id) FROM hxc_dashboard_versions v WHERE v.id=$1`, version).Scan(&available, &expectedRows, &retainedRows); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNotFound
 		}
 		return nil, fmt.Errorf("read HXC shared facts version: %w", err)
+	}
+	if expectedRows > 0 && retainedRows == 0 {
+		return nil, hxcport.ErrSharedFactsVersionUnavailable
 	}
 	rows, err := store.pool.Query(ctx, `SELECT r.customer_id,v.projection_as_of,r.source_updated_at,
 		r.formally_logged_in,r.formal_login_at,r.has_token_usage,r.learning_plan_found,COALESCE(r.learning_plan_status,''),r.learning_plan_current,r.learning_plan_total,COALESCE(r.card_open_count_7d,0),r.card_last_opened_at,
