@@ -37,7 +37,7 @@ func TestPackageLifecycleCopyAndCAS(t *testing.T) {
 
 func TestConfigurationVersionIsImmutableInputSnapshot(t *testing.T) {
 	definition := json.RawMessage(`{"schema_version":1,"expression":{"kind":"all"}}`)
-	v, err := NewConfigurationVersion(4, 1, definition, "0 1 * * *", 9, time.Now().UTC())
+	v, err := NewConfigurationVersion(4, 1, definition, "0 1 * * *", "legacy_custom", 9, time.Now().UTC())
 	if err != nil || v.Digest == ([32]byte{}) || v.SchemaVersion != 1 {
 		t.Fatalf("version=%+v err=%v", v, err)
 	}
@@ -46,7 +46,7 @@ func TestConfigurationVersionIsImmutableInputSnapshot(t *testing.T) {
 		t.Fatal("configuration retained caller-owned mutable bytes")
 	}
 	for _, invalid := range []json.RawMessage{nil, json.RawMessage(`[]`), json.RawMessage(`null`), json.RawMessage(`{"broken"`)} {
-		if _, err = NewConfigurationVersion(4, 1, invalid, "", 9, time.Now().UTC()); !errors.Is(err, ErrInvalid) {
+		if _, err = NewConfigurationVersion(4, 1, invalid, "", "manual", 9, time.Now().UTC()); !errors.Is(err, ErrInvalid) {
 			t.Fatalf("definition %q accepted: %v", invalid, err)
 		}
 	}

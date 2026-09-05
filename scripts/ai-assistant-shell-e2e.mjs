@@ -25,6 +25,13 @@ let planState = 'pending_review';
 let recipientVersion = 1;
 let recipientReview = 'pending_review';
 let executionState = 'not_accepted';
+let contentBlocks = [
+  { kind: 'text', text: '真实审阅话术' },
+  { kind: 'image', material_kind: 'image', material_id: 101 },
+  { kind: 'mini_program', material_kind: 'miniprogram', material_id: 202 },
+  { kind: 'attachment', material_kind: 'attachment', material_id: 303 },
+  { kind: 'link', material_kind: 'group_invite', material_id: 404 },
+];
 const plan = () => ({ id: 7, name: '九月复购计划', source_kind: 'automation', source_digest: `sha256:${'a'.repeat(64)}`, state: planState, version: planVersion, target_count: 1, pending_count: recipientReview === 'pending_review' ? 1 : 0, approved_count: recipientReview === 'approved' ? 1 : 0, rejected_count: 0, ineligible_count: 0, needs_attention_count: 0, created_by: 9, created_at: now, updated_at: now });
 const recipient = () => ({ id: 77, plan_id: 7, customer_id: 42, customer_name: '安全客户名', oneid_label: 'OneID #42', staff_id: 9, staff_display_name: '运营同学', review_state: recipientReview, execution_state: executionState, version: recipientVersion, content_version_id: 88, updated_at: now });
 
@@ -58,7 +65,19 @@ const dom = new JSDOM(`<!doctype html><html><body>${fragment}<script>${bundle}</
       requests.push(item);
       if (method === 'GET' && url.pathname === '/api/admin/ai-assistant/plans/7') return response({ ok: true, plan: plan(), replayed: false, dispatch_ready: true });
       if (method === 'GET' && url.pathname === '/api/admin/ai-assistant/plans/7/recipients') return response({ ok: true, items: [recipient()], next_cursor: '' });
-      if (method === 'GET' && url.pathname === '/api/admin/ai-assistant/plans/7/recipients/77') return response({ ok: true, recipient: recipient(), content: { id: 88, recipient_id: 77, version: 1, digest: `sha256:${'b'.repeat(64)}`, blocks: [{ kind: 'text', text: '真实审阅话术' }], created_at: now } });
+      if (method === 'GET' && url.pathname === '/api/admin/ai-assistant/plans/7/recipients/77') return response({ ok: true, recipient: recipient(), content: { id: 88, recipient_id: 77, version: 1, digest: `sha256:${'b'.repeat(64)}`, blocks: contentBlocks, created_at: now } });
+      if (method === 'POST' && url.pathname === '/api/admin/send-content/preview') return response({ ok: true, preview: { materials: [
+        { type: 'image', library_id: 101, title: '图片 101' }, { type: 'miniprogram', library_id: 202, title: '小程序 202' },
+        { type: 'attachment', library_id: 303, title: 'PDF 303' }, { type: 'group_invite', library_id: 404, title: '群邀请 404' },
+      ] } });
+      if (method === 'POST' && url.pathname === '/api/admin/send-content/validate') return response({ ok: true, content_package: item.body.content_package });
+      if (method === 'PATCH' && url.pathname === '/api/admin/ai-assistant/plans/7/recipients/77/content') {
+        const pkg = item.body;
+        if (!Array.isArray(pkg.blocks) || !pkg.blocks.some((block) => block.kind === 'attachment' && block.material_id === 303)) return response({ ok: false, error: 'attachment_not_preserved' }, 409);
+        contentBlocks = pkg.blocks;
+        recipientVersion++;
+        return response({ ok: true, id: 89, recipient_id: 77, version: 2, digest: `sha256:${'c'.repeat(64)}`, blocks: contentBlocks, created_at: now });
+      }
       if (method === 'POST' && url.pathname === '/api/admin/ai-assistant/plans/7/recipients/77/review') {
         if (item.body.expected_version !== recipientVersion || item.body.decision !== 'approved') return response({ ok: false, error: 'version_or_idempotency_conflict' }, 409);
         recipientReview = 'approved'; recipientVersion++; planVersion++;
@@ -70,7 +89,6 @@ const dom = new JSDOM(`<!doctype html><html><body>${fragment}<script>${bundle}</
         planState = 'dispatching'; executionState = 'queued'; planVersion++;
         return response({ ok: true, plan: plan(), replayed: false, dispatch_ready: true });
       }
-      if (method === 'POST' && url.pathname === '/api/admin/send-content/preview') return response({ ok: true, preview: { materials: [] } });
       return response({ ok: false, error: `unexpected ${method} ${url.pathname}` }, 500);
     };
   },
@@ -83,7 +101,14 @@ try {
   if (document.body.textContent.includes('external-secret-id')) throw new Error('raw external identity leaked into the page');
   document.querySelector('[data-open-recipient]')?.click();
   await new Promise((resolve) => setTimeout(resolve, 150));
-  if (!document.querySelector('[data-recipient-drawer]')?.classList.contains('is-open') || !document.body.textContent.includes('真实审阅话术')) throw new Error('recipient drawer did not load immutable content');
+  if (!document.querySelector('[data-recipient-drawer]')?.classList.contains('is-open') || !document.body.textContent.includes('真实审阅话术') || !document.body.textContent.includes('附件 1') || !document.body.textContent.includes('附件 #303')) throw new Error('recipient drawer did not show every frozen material');
+  document.querySelector('[data-edit-task]')?.click();
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  if (!document.body.textContent.includes('PDF/附件 303') || !document.querySelector('[data-composer-confirm]')) throw new Error('composer did not round-trip the frozen PDF attachment');
+  document.querySelector('[data-composer-confirm]')?.click();
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  const saved = requests.find((item) => item.method === 'PATCH' && item.path === '/api/admin/ai-assistant/plans/7/recipients/77/content');
+  if (!saved?.body?.blocks?.some((block) => block.kind === 'attachment' && block.material_id === 303)) throw new Error(`attachment was lost while saving composer: ${JSON.stringify(saved)}`);
   document.querySelector('[data-drawer-approve]')?.click();
   await new Promise((resolve) => setTimeout(resolve, 150));
   if (recipientReview !== 'approved' || executionState !== 'not_accepted') throw new Error('individual approval created or implied an external effect');

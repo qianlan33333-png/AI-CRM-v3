@@ -64,3 +64,25 @@ func TestValidateRejectsQuarantineKeyCollidingWithCanonicalSubjectReceipt(t *tes
 		t.Fatal("quarantine key colliding with canonical subject receipt was accepted")
 	}
 }
+
+func TestValidateRejectsCrossProviderPaymentAndRefundReceiptKeyCollisions(t *testing.T) {
+	manifest, err := Parse([]byte(`{"schema_version":"aicrm-commerce-history-v3","run_key":"receipt-collision-test","coverage":{"identities":true,"wechat_pay_orders":true,"wechat_pay_refunds":true,"wechat_shop_orders":true,"wechat_shop_refunds":true,"alipay_orders":true},"subjects":[{"source_key":"subject-1","identity_keys":["identity-1"]}],"identities":[{"source_key":"identity-1","kind":"mp_openid","scope":"wechat-app:app","value":"opaque","source":"provider-history"}],"identity_quarantines":[],"orders":[{"provider":"wechat_pay","source_key":"order-1","merchant_order_no":"merchant-1","provider_transaction_no":"transaction-1","payer_identity_key":"identity-1","payer_subject_key":"subject-1","beneficiary_subject_key":"subject-1","amount_minor":100,"currency":"CNY","status":"paid","items":[{"line_no":1,"product_code":"product-1","product_name":"Product 1","unit_amount_minor":100,"quantity":1,"line_amount_minor":100}],"created_at":"2026-09-01T00:00:00Z","updated_at":"2026-09-01T00:00:00Z"}],"refunds":[]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	second := manifest.Orders[0]
+	second.Provider, second.SourceKey, second.ProviderTransactionNo = "wechat_shop", "order-2", "transaction-2"
+	manifest.Orders = append(manifest.Orders, second)
+	if err = manifest.Validate(true); err == nil {
+		t.Fatal("cross-provider merchant receipt collision was accepted")
+	}
+	manifest.Orders[1].MerchantOrderNo = "merchant-2"
+	manifest.Orders[0].Status, manifest.Orders[1].Status = "partially_refunded", "partially_refunded"
+	manifest.Refunds = []RefundRow{
+		{Provider: "wechat_pay", SourceKey: "refund-1", MerchantOrderNo: "merchant-1", RefundNo: "refund-1", AmountMinor: 40, Reason: "历史退款", OccurredAt: manifest.Orders[0].UpdatedAt},
+		{Provider: "wechat_shop", SourceKey: "refund-2", MerchantOrderNo: "merchant-2", RefundNo: "refund-1", AmountMinor: 40, Reason: "历史退款", OccurredAt: manifest.Orders[1].UpdatedAt},
+	}
+	if err = manifest.Validate(true); err == nil {
+		t.Fatal("cross-provider refund receipt collision was accepted")
+	}
+}

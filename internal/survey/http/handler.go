@@ -35,8 +35,15 @@ type Handler struct {
 		surveyport.PublicApplication
 		surveyport.SubmissionApplication
 	}
-	security RequestSecurity
-	oauth    OAuthApplication
+	security                  RequestSecurity
+	oauth                     OAuthApplication
+	completionProviderEnabled bool
+}
+
+func (h *Handler) SetCompletionProviderEnabled(enabled bool) {
+	if h != nil {
+		h.completionProviderEnabled = enabled
+	}
 }
 
 func NewHandler(definitions surveyport.DefinitionApplication, submissions interface {
@@ -794,7 +801,7 @@ func (h *Handler) operationsDisabled(w http.ResponseWriter, r *http.Request, id 
 			resultError(w, err)
 			return
 		}
-		writeJSON(w, 200, map[string]any{"questionnaire_id": id, "completion": map[string]any{"navigation_target_id": config.CompletionNavigationRef, "channel_id": config.CompletionChannelID}, "external_push": map[string]any{"enabled": config.ExternalPushEnabled, "configuration_reference": config.ExternalPushConfigurationRef}, "configuration_version": config.Version, "provider_enabled": false, "local_only": true, "items": items, "total": total, "real_external_call_executed": false})
+		writeJSON(w, 200, map[string]any{"questionnaire_id": id, "completion": map[string]any{"navigation_target_id": config.CompletionNavigationRef, "channel_id": config.CompletionChannelID}, "external_push": map[string]any{"enabled": config.ExternalPushEnabled, "configuration_reference": config.ExternalPushConfigurationRef, "metadata": config.ExternalPushMetadata}, "configuration_version": config.Version, "operation_enabled": config.ExternalPushEnabled, "provider_enabled": h.completionProviderEnabled, "local_only": !h.completionProviderEnabled, "items": items, "total": total, "real_external_call_executed": false})
 		return
 	}
 	principal, ok := h.write(w, r)
@@ -819,21 +826,58 @@ func (h *Handler) operationsDisabled(w http.ResponseWriter, r *http.Request, id 
 			config.CompletionNavigationRef, config.CompletionChannelID = body.NavigationTargetID, body.ChannelID
 		} else {
 			var body struct {
-				Enabled                bool   `json:"enabled"`
-				ConfigurationReference string `json:"configuration_reference"`
+				Enabled                bool             `json:"enabled"`
+				ConfigurationReference string           `json:"configuration_reference"`
+				Metadata               *json.RawMessage `json:"metadata"`
+				ConfigurationVersion   *int64           `json:"configuration_version"`
 			}
 			if decode(r, &body) != nil {
 				writeError(w, 400, "invalid_request")
 				return
 			}
+			// The established questionnaire operations page saves completion
+			// first and then external-push without the newer metadata fields.
+			// Preserve its metadata and use the just-read server revision as the
+			// CAS value. New metadata writers must explicitly carry a revision.
+			if body.ConfigurationVersion != nil && *body.ConfigurationVersion != config.Version {
+				writeError(w, http.StatusConflict, "configuration_conflict")
+				return
+			}
+			if body.Metadata != nil && body.ConfigurationVersion == nil {
+				writeError(w, 400, "configuration_version_required")
+				return
+			}
 			config.ExternalPushEnabled, config.ExternalPushConfigurationRef = body.Enabled, body.ConfigurationReference
+			if body.Metadata != nil {
+				config.ExternalPushMetadata = *body.Metadata
+			}
 		}
 		stored, err := h.submissions.SaveOperationConfiguration(r.Context(), config, principal.InternalID, idempotency(r))
 		if err != nil {
 			resultError(w, err)
 			return
 		}
-		writeJSON(w, 200, map[string]any{"questionnaire_id": id, "completion": map[string]any{"navigation_target_id": stored.CompletionNavigationRef, "channel_id": stored.CompletionChannelID}, "external_push": map[string]any{"enabled": stored.ExternalPushEnabled, "configuration_reference": stored.ExternalPushConfigurationRef}, "configuration_version": stored.Version, "local_only": true, "provider_enabled": false, "real_external_call_executed": false})
+		writeJSON(w, 200, map[string]any{"questionnaire_id": id, "completion": map[string]any{"navigation_target_id": stored.CompletionNavigationRef, "channel_id": stored.CompletionChannelID}, "external_push": map[string]any{"enabled": stored.ExternalPushEnabled, "configuration_reference": stored.ExternalPushConfigurationRef, "metadata": stored.ExternalPushMetadata}, "configuration_version": stored.Version, "operation_enabled": stored.ExternalPushEnabled, "local_only": !h.completionProviderEnabled, "provider_enabled": h.completionProviderEnabled, "real_external_call_executed": false})
+		return
+	}
+	if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/operations/external-push/test") {
+		queuer, supported := h.submissions.(interface {
+			QueueCompletionTest(context.Context, surveyport.ID, int64, string) (surveyport.CompletionTestReceipt, error)
+		})
+		if !supported {
+			writeError(w, http.StatusServiceUnavailable, "provider_disabled")
+			return
+		}
+		receipt, err := queuer.QueueCompletionTest(r.Context(), surveyport.ID(id), principal.InternalID, idempotency(r))
+		if errors.Is(err, surveyport.ErrEffectUnavailable) {
+			writeError(w, http.StatusConflict, "provider_disabled")
+			return
+		}
+		if err != nil {
+			resultError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusAccepted, map[string]any{"questionnaire_id": id, "test_run_id": receipt.TestRunID, "effect_id": receipt.EffectID, "status": receipt.State, "synthetic_data": true, "accepted": true})
 		return
 	}
 	if r.Method == http.MethodPost && !strings.HasSuffix(r.URL.Path, "/reconcile") {
@@ -894,18 +938,27 @@ func (h *Handler) legacyOperationLogs(w http.ResponseWriter, r *http.Request, id
 		resultError(w, err)
 		return
 	}
-	// Keep the frozen donor log reader on its original local-queued contract.
-	// The v3 extension reads the canonical receipt states from /operations.
 	compatible := make([]map[string]any, 0, len(items))
+	anyExternalCall := false
 	for _, item := range items {
+		// Synthetic runs retain their immutable textual test_run_id. Older
+		// donor-compatible receipts have no source_pk and continue to expose
+		// their numeric receipt id.
+		runID := any(item.ID)
+		if item.SourcePK != "" {
+			runID = item.SourcePK
+		}
+		sideEffectExecuted := item.Status == "executed" && item.ProviderRealCallExecuted != nil && *item.ProviderRealCallExecuted && item.ProviderResultReceived != nil && *item.ProviderResultReceived
+		unknown := item.Status == "outcome_unknown"
+		anyExternalCall = anyExternalCall || item.RealEffectExecuted
 		compatible = append(compatible, map[string]any{
-			"test_run_id": item.ID, "questionnaire_id": item.QuestionnaireID,
-			"created_at": item.OccurredAt, "status": "queued", "attempt_count": 0,
-			"side_effect_executed": false, "provider_result_received": false,
-			"unknown_after_dispatch": false, "auto_retry_allowed": false,
+			"test_run_id": runID, "questionnaire_id": item.QuestionnaireID,
+			"created_at": item.OccurredAt, "updated_at": item.OccurredAt, "status": item.Status, "attempt_count": item.ProviderAttemptNumber,
+			"side_effect_executed": sideEffectExecuted, "provider_call_attempted": item.ProviderCallAttempted, "provider_result_received": item.ProviderResultReceived,
+			"unknown_after_dispatch": unknown, "auto_retry_allowed": item.Status == "attempted", "real_external_call_executed": item.ProviderRealCallExecuted,
 		})
 	}
-	writeJSON(w, 200, map[string]any{"items": compatible, "total": total, "limit": limit, "offset": offset, "has_more": int64(offset)+int64(len(items)) < total, "local_only": true, "real_external_call_executed": false, "canonical_receipts_path": "/api/admin/questionnaires/{questionnaire_id}/operations"})
+	writeJSON(w, 200, map[string]any{"items": compatible, "total": total, "limit": limit, "offset": offset, "has_more": int64(offset)+int64(len(items)) < total, "provider_enabled": h.completionProviderEnabled, "real_external_call_executed": anyExternalCall})
 }
 
 func definitionResponse(q surveyport.Questionnaire) map[string]any {

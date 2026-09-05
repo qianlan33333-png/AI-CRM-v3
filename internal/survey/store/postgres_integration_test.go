@@ -3,11 +3,16 @@ package store
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -19,6 +24,124 @@ import (
 	surveyport "github.com/qianlan33333-png/AI-CRM-v3/internal/survey/port"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/survey/secure"
 )
+
+func TestPostgreSQLCompletionReceiptBindsReadsAndRollsBackAtomically(t *testing.T) {
+	native, cleanup := surveyIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	now := time.Date(2026, 9, 5, 10, 0, 0, 0, time.UTC)
+
+	var actorID, customerID, questionnaireID, versionID, submissionID int64
+	if err := native.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name) VALUES('survey-completion-test','$argon2id$test','Survey Completion Test') RETURNING id`).Scan(&actorID); err != nil {
+		t.Fatal(err)
+	}
+	if err := native.QueryRow(ctx, `INSERT INTO customers DEFAULT VALUES RETURNING id`).Scan(&customerID); err != nil {
+		t.Fatal(err)
+	}
+	if err := native.QueryRow(ctx, `INSERT INTO survey_questionnaires(name,title,description,mode,answer_display_mode,slug,status,created_by,updated_by,created_at,updated_at) VALUES('Completion questionnaire','Completion questionnaire','','survey','all_in_one','completion-questionnaire','published',$1,$1,$2,$2) RETURNING id`, actorID, now).Scan(&questionnaireID); err != nil {
+		t.Fatal(err)
+	}
+	if err := native.QueryRow(ctx, `INSERT INTO survey_definition_versions(questionnaire_id,version_number,mode,answer_display_mode,title_snapshot,description_snapshot,assessment_config,definition_digest,is_immutable,published_at,created_by,created_at) VALUES($1,1,'survey','all_in_one','Completion questionnaire','', '{}', $2, TRUE, $3, $4, $3) RETURNING id`, questionnaireID, make([]byte, 32), now, actorID).Scan(&versionID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := native.Exec(ctx, `UPDATE survey_questionnaires SET active_definition_version_id=$1 WHERE id=$2`, versionID, questionnaireID); err != nil {
+		t.Fatal(err)
+	}
+	if err := native.QueryRow(ctx, `INSERT INTO survey_submissions(questionnaire_id,definition_version_id,definition_version_number,customer_id,identity_state,submission_key_digest,payload_digest,questionnaire_slug_snapshot,title_snapshot,mode_snapshot,result_snapshot,submitted_at,created_at) VALUES($1,$2,1,$3,'resolved',$4,$5,'completion-questionnaire','Completion questionnaire','survey','{}',$6,$6) RETURNING id`, questionnaireID, versionID, customerID, make([]byte, 32), bytes32(1), now).Scan(&submissionID); err != nil {
+		t.Fatal(err)
+	}
+	cipher, err := secure.NewCipher(base64.RawStdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	encrypted, err := cipher.Encrypt("需要回访")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := native.Exec(ctx, `INSERT INTO survey_submission_answers(submission_id,question_type,question_title_snapshot,text_value_ciphertext,answer_digest,created_at) VALUES($1,'textarea','需求',$2,$3,$4)`, submissionID, encrypted, bytes32(2), now); err != nil {
+		t.Fatal(err)
+	}
+
+	wrapper, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uow, err := platformpostgres.NewUnitOfWork(wrapper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := NewPostgreSQL(native, uow, cipher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceDigest := "sha256:" + strings.Repeat("0", 64)
+	identityCiphertext, err := cipher.Encrypt("union-snapshot")
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256([]byte(sourceDigest))
+	rollback := errors.New("force rollback")
+	err = uow.Within(ctx, func(txCtx context.Context) error {
+		if recordErr := repository.RecordCompletionEffect(txCtx, surveyport.ID(questionnaireID), surveyport.ID(submissionID), "local-webhook", "eer_rollback", "queued", digest, now); recordErr != nil {
+			return recordErr
+		}
+		return rollback
+	})
+	if !errors.Is(err, rollback) {
+		t.Fatalf("rollback error=%v", err)
+	}
+	var count int
+	if err := native.QueryRow(ctx, `SELECT count(*) FROM survey_external_operation_receipts`).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("rolled-back receipt count=%d err=%v", count, err)
+	}
+	if err := uow.Within(ctx, func(txCtx context.Context) error {
+		if err := repository.RecordCompletionEffect(txCtx, surveyport.ID(questionnaireID), surveyport.ID(submissionID), "local-webhook", "eer_1", "queued", digest, now); err != nil {
+			return err
+		}
+		return repository.RecordCompletionSnapshot(txCtx, surveyport.ID(questionnaireID), surveyport.ID(submissionID), surveyport.CompletionPolicy{ConfigurationReference: "local-webhook", ConfigurationVersion: "v1", ConfigurationDigest: sourceDigest}, strings.Repeat("a", 64), identityCiphertext, now)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var disabled surveyport.OperationReceipt
+	if err := uow.Within(ctx, func(txCtx context.Context) error {
+		var disabledErr error
+		disabled, disabledErr = repository.RecordDisabledOperation(txCtx, surveyport.ID(questionnaireID), nil, "external_push", sha256.Sum256([]byte("disabled-operation-scan")), now)
+		return disabledErr
+	}); err != nil || disabled.ID < 1 || disabled.SourcePK != "" || disabled.ProviderCallAttempted != nil {
+		t.Fatalf("disabled receipt=%+v err=%v", disabled, err)
+	}
+
+	var payload surveyport.CompletionPayload
+	if err := uow.Within(ctx, func(txCtx context.Context) error {
+		var readErr error
+		payload, readErr = repository.ReadCompletionPayload(txCtx, sourceDigest)
+		return readErr
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if payload.CustomerID != customerID || payload.ExternalUserID != "union-snapshot" || len(payload.Answers) != 1 || payload.Answers[0].TextValue != "需要回访" {
+		t.Fatalf("completion payload=%+v", payload)
+	}
+	if err := uow.Within(ctx, func(txCtx context.Context) error {
+		return repository.CompleteCompletionEffect(txCtx, "eer_1", "executed", true, true, boolPointer(true), sourceDigest, 1, now.Add(time.Minute))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var status string
+	var callAttempted, realCall, resultReceived bool
+	var providerAttempt int32
+	if err := native.QueryRow(ctx, `SELECT status,provider_call_attempted,provider_real_call_executed,provider_result_received,provider_attempt_number FROM survey_external_operation_receipts WHERE effect_id='eer_1'`).Scan(&status, &callAttempted, &realCall, &resultReceived, &providerAttempt); err != nil || status != "executed" || !callAttempted || !realCall || !resultReceived || providerAttempt != 1 {
+		t.Fatalf("completion receipt status=%q call=%v real=%v result=%v attempt=%d err=%v", status, callAttempted, realCall, resultReceived, providerAttempt, err)
+	}
+}
+
+func boolPointer(value bool) *bool { return &value }
+
+func bytes32(value byte) []byte {
+	result := make([]byte, 32)
+	result[0] = value
+	return result
+}
 
 func TestPostgreSQLListLoadsActiveDefinitionsAfterClosingBaseRows(t *testing.T) {
 	native, cleanup := surveyIntegrationPool(t)
@@ -84,6 +207,243 @@ func TestPostgreSQLListLoadsActiveDefinitionsAfterClosingBaseRows(t *testing.T) 
 	}
 }
 
+func TestPostgreSQLOperationConfigurationVersionConflictPreservesConcurrentToggleAndReference(t *testing.T) {
+	native, cleanup := surveyIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	now := time.Date(2026, 9, 5, 11, 0, 0, 0, time.UTC)
+
+	var actorID, questionnaireID int64
+	if err := native.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name) VALUES('survey-config-cas-test','$argon2id$test','Survey Config CAS Test') RETURNING id`).Scan(&actorID); err != nil {
+		t.Fatal(err)
+	}
+	if err := native.QueryRow(ctx, `INSERT INTO survey_questionnaires(name,title,description,mode,answer_display_mode,slug,status,created_by,updated_by,created_at,updated_at) VALUES('Configuration CAS questionnaire','Configuration CAS questionnaire','','survey','all_in_one','configuration-cas-questionnaire','disabled',$1,$1,$2,$2) RETURNING id`, actorID, now).Scan(&questionnaireID); err != nil {
+		t.Fatal(err)
+	}
+	wrapper, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uow, err := platformpostgres.NewUnitOfWork(wrapper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cipher, err := secure.NewCipher(base64.RawStdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := NewPostgreSQL(native, uow, cipher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := surveyapp.NewSubmissionService(uow, repository, cipher)
+
+	initial, err := service.GetOperationConfiguration(ctx, surveyport.ID(questionnaireID))
+	if err != nil || initial.Version != 0 {
+		t.Fatalf("initial config=%+v err=%v", initial, err)
+	}
+	first, err := service.SaveOperationConfiguration(ctx, surveyport.OperationConfiguration{QuestionnaireID: surveyport.ID(questionnaireID), ExternalPushEnabled: true, ExternalPushConfigurationRef: "push.v1", ExternalPushMetadata: json.RawMessage(`{"remark":"first"}`), Version: initial.Version}, actorID, "survey-config-cas-first-0001")
+	if err != nil || first.Version != 1 {
+		t.Fatalf("first config=%+v err=%v", first, err)
+	}
+
+	// Request A has read v1. Request B changes the independent enable/ref
+	// controls before A attempts its metadata-only save.
+	requestA, err := service.GetOperationConfiguration(ctx, surveyport.ID(questionnaireID))
+	if err != nil || requestA.Version != 1 {
+		t.Fatalf("request A config=%+v err=%v", requestA, err)
+	}
+	requestB := requestA
+	requestB.ExternalPushEnabled = false
+	requestB.ExternalPushConfigurationRef = "push.v2"
+	requestB.ExternalPushMetadata = json.RawMessage(`{"remark":"changed-by-b"}`)
+	updatedByB, err := service.SaveOperationConfiguration(ctx, requestB, actorID, "survey-config-cas-second-0002")
+	if err != nil || updatedByB.Version != 2 {
+		t.Fatalf("request B config=%+v err=%v", updatedByB, err)
+	}
+	requestA.ExternalPushMetadata = json.RawMessage(`{"remark":"stale-a","custom_params":{"campaign":"autumn"}}`)
+	if _, err = service.SaveOperationConfiguration(ctx, requestA, actorID, "survey-config-cas-stale-a-0003"); !errors.Is(err, surveyport.ErrConflict) {
+		t.Fatalf("stale request error=%v want conflict", err)
+	}
+
+	stored, err := service.GetOperationConfiguration(ctx, surveyport.ID(questionnaireID))
+	var storedMetadata map[string]string
+	metadataErr := json.Unmarshal(stored.ExternalPushMetadata, &storedMetadata)
+	if err != nil || metadataErr != nil || stored.Version != 2 || stored.ExternalPushEnabled || stored.ExternalPushConfigurationRef != "push.v2" || storedMetadata["remark"] != "changed-by-b" {
+		t.Fatalf("stale save overwrote concurrent configuration: %+v err=%v", stored, err)
+	}
+	for table, want := range map[string]int64{"survey_audit_events": 2, "survey_outbox": 2} {
+		var got int64
+		if err := native.QueryRow(ctx, `SELECT count(*) FROM `+table).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Fatalf("stale configuration transaction left %s rows=%d want=%d", table, got, want)
+		}
+	}
+}
+
+func TestPostgreSQLSyntheticCompletionTestSnapshotReplaysWithoutCustomer(t *testing.T) {
+	native, cleanup := surveyIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	now := time.Date(2026, 9, 5, 13, 0, 0, 0, time.UTC)
+	var actorID, questionnaireID int64
+	if err := native.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name) VALUES('survey-test-push','$argon2id$test','Survey Test Push') RETURNING id`).Scan(&actorID); err != nil {
+		t.Fatal(err)
+	}
+	if err := native.QueryRow(ctx, `INSERT INTO survey_questionnaires(name,title,description,mode,answer_display_mode,slug,status,created_by,updated_by,created_at,updated_at) VALUES('Synthetic test push','Synthetic test push','','survey','all_in_one','synthetic-test-push','disabled',$1,$1,$2,$2) RETURNING id`, actorID, now).Scan(&questionnaireID); err != nil {
+		t.Fatal(err)
+	}
+	wrapper, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uow, err := platformpostgres.NewUnitOfWork(wrapper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cipher, err := secure.NewCipher(base64.RawStdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := NewPostgreSQL(native, uow, cipher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	value := surveyapp.CompletionTestSnapshot{QuestionnaireID: surveyport.ID(questionnaireID), TestRunID: "questionnaire-test-0123456789abcdef0123456789abcdef", QuestionnaireTitle: "Synthetic test push", SubmittedAt: now, Policy: surveyport.CompletionPolicy{ConfigurationReference: "test-webhook", ConfigurationVersion: "v1", ConfigurationDigest: "sha256:" + strings.Repeat("a", 64), CustomParams: map[string]string{"campaign": "autumn"}}, SourceDigest: "sha256:" + strings.Repeat("b", 64), TargetDigest: "sha256:" + strings.Repeat("c", 64), PayloadDigest: "sha256:" + strings.Repeat("d", 64), PolicyDigest: "sha256:" + strings.Repeat("e", 64), IdempotencyKey: "survey-synthetic-test-push-0001"}
+	var created bool
+	if err = uow.Within(ctx, func(tx context.Context) error {
+		stored, didCreate, recordErr := repository.RecordCompletionTestSnapshot(tx, value)
+		if recordErr != nil || !didCreate || stored.TestRunID != value.TestRunID {
+			t.Fatalf("store synthetic snapshot=%+v created=%v err=%v", stored, didCreate, recordErr)
+		}
+		created = didCreate
+		digest := sha256.Sum256([]byte(value.SourceDigest))
+		return repository.RecordCompletionTestEffect(tx, value.QuestionnaireID, value.TestRunID, value.Policy.ConfigurationReference, "eer_synthetic_1", "queued", digest, now)
+	}); err != nil || !created {
+		t.Fatalf("persist synthetic snapshot err=%v created=%v", err, created)
+	}
+	var payload surveyport.CompletionPayload
+	if err = uow.Within(ctx, func(tx context.Context) error {
+		var readErr error
+		payload, readErr = repository.ReadCompletionPayload(tx, value.SourceDigest)
+		return readErr
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !payload.SyntheticTest || payload.TestRunID != value.TestRunID || payload.CustomerID != 0 || payload.SubmissionID != 0 || payload.ExternalUserID != "questionnaire_test" || len(payload.Answers) != 0 || payload.Policy.CustomParams["campaign"] != "autumn" {
+		t.Fatalf("synthetic payload=%+v", payload)
+	}
+	// The outbound provider runs after the accepting transaction has committed.
+	// It must reconstruct this protected synthetic payload through the
+	// repository's read-only pool path, not require a transaction that no
+	// longer exists.
+	payload, err = repository.ReadCompletionPayload(ctx, value.SourceDigest)
+	if err != nil {
+		t.Fatalf("synthetic payload outside transaction: %v", err)
+	}
+	if !payload.SyntheticTest || payload.TestRunID != value.TestRunID || payload.ExternalUserID != "questionnaire_test" || len(payload.Answers) != 0 || payload.Policy.CustomParams["campaign"] != "autumn" {
+		t.Fatalf("outside transaction synthetic payload=%+v", payload)
+	}
+	if err = uow.Within(ctx, func(tx context.Context) error {
+		_, didCreate, recordErr := repository.RecordCompletionTestSnapshot(tx, value)
+		if recordErr != nil || didCreate {
+			t.Fatalf("replay snapshot created=%v err=%v", didCreate, recordErr)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	drift := value
+	drift.PayloadDigest = "sha256:" + strings.Repeat("f", 64)
+	if err = uow.Within(ctx, func(tx context.Context) error {
+		_, _, recordErr := repository.RecordCompletionTestSnapshot(tx, drift)
+		return recordErr
+	}); !errors.Is(err, surveyport.ErrConflict) {
+		t.Fatalf("synthetic drift error=%v", err)
+	}
+}
+
+func TestPostgreSQLSyntheticCompletionTerminalReplayKeepsExecutionFacts(t *testing.T) {
+	native, cleanup := surveyIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	now := time.Date(2026, 9, 5, 13, 30, 0, 0, time.UTC)
+	var actorID, questionnaireID int64
+	if err := native.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name) VALUES('survey-terminal-replay','$argon2id$test','Survey terminal replay') RETURNING id`).Scan(&actorID); err != nil {
+		t.Fatal(err)
+	}
+	if err := native.QueryRow(ctx, `INSERT INTO survey_questionnaires(name,title,description,mode,answer_display_mode,slug,status,created_by,updated_by,created_at,updated_at) VALUES('Synthetic terminal replay','Synthetic terminal replay','','survey','all_in_one','synthetic-terminal-replay','disabled',$1,$1,$2,$2) RETURNING id`, actorID, now).Scan(&questionnaireID); err != nil {
+		t.Fatal(err)
+	}
+	wrapper, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uow, err := platformpostgres.NewUnitOfWork(wrapper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cipher, err := secure.NewCipher(base64.RawStdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := NewPostgreSQL(native, uow, cipher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name, terminal, wantStatus string
+		callAttempted              bool
+		resultReceived             *bool
+	}{
+		{name: "retryable", terminal: "retryable_failed", wantStatus: "attempted", callAttempted: true, resultReceived: boolPointer(true)},
+		{name: "final", terminal: "final_failed", wantStatus: "failed", callAttempted: true, resultReceived: boolPointer(true)},
+		{name: "cancelled", terminal: "cancelled", wantStatus: "queued", callAttempted: false, resultReceived: nil},
+	}
+	for index, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			testRunID := "questionnaire-test-" + strings.Repeat(string(rune('a'+index)), 32)
+			effectID := "eer_terminal_" + tc.name
+			digest := sha256.Sum256([]byte("survey-terminal-replay:" + tc.name))
+			if err := uow.Within(ctx, func(tx context.Context) error {
+				return repository.RecordCompletionTestEffect(tx, surveyport.ID(questionnaireID), testRunID, "test-webhook", effectID, "queued", digest, now)
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if tc.terminal != "cancelled" {
+				if err := uow.Within(ctx, func(tx context.Context) error {
+					return repository.CompleteCompletionEffect(tx, effectID, tc.terminal, tc.callAttempted, tc.callAttempted, tc.resultReceived, "sha256:"+strings.Repeat("a", 64), 1, now.Add(time.Minute))
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// EER can return a terminal projection when the same operator key is
+			// replayed. The prospective insert must satisfy the legacy receipt
+			// CHECK while the existing terminal execution facts remain unchanged.
+			if err := uow.Within(ctx, func(tx context.Context) error {
+				return repository.RecordCompletionTestEffect(tx, surveyport.ID(questionnaireID), testRunID, "test-webhook", effectID, tc.terminal, digest, now.Add(2*time.Minute))
+			}); err != nil {
+				t.Fatalf("terminal replay: %v", err)
+			}
+			var status string
+			var callAttempted, realCall *bool
+			var resultReceived *bool
+			var attempt *int32
+			if err := native.QueryRow(ctx, `SELECT status,provider_call_attempted,provider_real_call_executed,provider_result_received,provider_attempt_number FROM survey_external_operation_receipts WHERE effect_id=$1`, effectID).Scan(&status, &callAttempted, &realCall, &resultReceived, &attempt); err != nil {
+				t.Fatal(err)
+			}
+			if status != tc.wantStatus || (tc.terminal == "cancelled" && (callAttempted != nil || realCall != nil || resultReceived != nil || attempt != nil)) {
+				t.Fatalf("terminal replay status=%q call=%v real=%v result=%v attempt=%v", status, callAttempted, realCall, resultReceived, attempt)
+			}
+			if tc.terminal != "cancelled" && (callAttempted == nil || !*callAttempted || realCall == nil || !*realCall || resultReceived == nil || !*resultReceived || attempt == nil || *attempt != 1) {
+				t.Fatalf("terminal facts changed call=%v real=%v result=%v attempt=%v", callAttempted, realCall, resultReceived, attempt)
+			}
+		})
+	}
+}
+
 func TestPostgreSQLSetStatusPersistsReceiptAuditAndOutboxAtomically(t *testing.T) {
 	native, cleanup := surveyIntegrationPool(t)
 	defer cleanup()
@@ -141,6 +501,205 @@ func TestPostgreSQLSetStatusPersistsReceiptAuditAndOutboxAtomically(t *testing.T
 	}
 }
 
+func TestPostgreSQLAudienceChoicesReadFirstResolvedCompletion(t *testing.T) {
+	native, cleanup := surveyIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+
+	var actorID, customerID int64
+	if err := native.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name) VALUES('survey-audience-test','$argon2id$test','Survey Audience Test') RETURNING id`).Scan(&actorID); err != nil {
+		t.Fatal(err)
+	}
+	if err := native.QueryRow(ctx, `INSERT INTO customers(status) VALUES('active') RETURNING id`).Scan(&customerID); err != nil {
+		t.Fatal(err)
+	}
+	var questionnaireID, definitionID, questionID, firstOptionID, secondOptionID int64
+	if err := native.QueryRow(ctx, `
+		INSERT INTO survey_questionnaires(name,title,description,mode,answer_display_mode,slug,status,created_by,updated_by,created_at,updated_at)
+		VALUES('Audience source','Audience source','','survey','all_in_one','audience-source','published',$1,$1,$2,$2)
+		RETURNING id`, actorID, now).Scan(&questionnaireID); err != nil {
+		t.Fatal(err)
+	}
+	if err := native.QueryRow(ctx, `
+		INSERT INTO survey_definition_versions(questionnaire_id,version_number,mode,answer_display_mode,title_snapshot,description_snapshot,assessment_config,definition_digest,is_immutable,published_at,created_by,created_at)
+		VALUES($1,1,'survey','all_in_one','Audience source','','{}',$2,TRUE,$3,$4,$3)
+		RETURNING id`, questionnaireID, make([]byte, 32), now, actorID).Scan(&definitionID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := native.Exec(ctx, `UPDATE survey_questionnaires SET active_definition_version_id=$1 WHERE id=$2`, definitionID, questionnaireID); err != nil {
+		t.Fatal(err)
+	}
+	if err := native.QueryRow(ctx, `
+		INSERT INTO survey_definition_questions(definition_version_id,question_type,title,sort_order)
+		VALUES($1,'multi_choice','Which choices?',0) RETURNING id`, definitionID).Scan(&questionID); err != nil {
+		t.Fatal(err)
+	}
+	if err := native.QueryRow(ctx, `
+		INSERT INTO survey_definition_options(question_id,definition_version_id,option_text,sort_order)
+		VALUES($1,$2,'First choice',0) RETURNING id`, questionID, definitionID).Scan(&firstOptionID); err != nil {
+		t.Fatal(err)
+	}
+	if err := native.QueryRow(ctx, `
+		INSERT INTO survey_definition_options(question_id,definition_version_id,option_text,sort_order)
+		VALUES($1,$2,'Second choice',1) RETURNING id`, questionID, definitionID).Scan(&secondOptionID); err != nil {
+		t.Fatal(err)
+	}
+
+	insertSubmission := func(identityState, staffID string, customer *int64, submittedAt time.Time, key byte) int64 {
+		t.Helper()
+		keyDigest, payloadDigest := make([]byte, 32), make([]byte, 32)
+		keyDigest[0], payloadDigest[0] = key, key+10
+		var submissionID int64
+		err := native.QueryRow(ctx, `
+			INSERT INTO survey_submissions(
+				questionnaire_id,definition_version_id,definition_version_number,customer_id,identity_state,
+				submission_key_digest,payload_digest,questionnaire_slug_snapshot,title_snapshot,mode_snapshot,
+				result_snapshot,staff_id,submitted_at,created_at
+			) VALUES($1,$2,1,$3,$4,$5,$6,'audience-source','Audience source','survey','{}',$7,$8,$8)
+			RETURNING id`, questionnaireID, definitionID, customer, identityState, keyDigest, payloadDigest, staffID, submittedAt).Scan(&submissionID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return submissionID
+	}
+	insertAnswer := func(submissionID int64, options string, key byte) {
+		t.Helper()
+		digest := make([]byte, 32)
+		digest[0] = key
+		if _, err := native.Exec(ctx, `
+			INSERT INTO survey_submission_answers(
+				submission_id,definition_question_id,question_type,question_title_snapshot,
+				selected_options_snapshot,answer_digest,created_at
+			) VALUES($1,$2,'multi_choice','Which choices?',$3::jsonb,$4,$5)`,
+			submissionID, questionID, options, digest, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	firstSubmissionID := insertSubmission("resolved", "owner-first", &customerID, now.Add(-48*time.Hour), 1)
+	insertAnswer(firstSubmissionID, fmt.Sprintf(`[{"option_id":%d},{"option_id":%d}]`, firstOptionID, secondOptionID), 1)
+	laterSubmissionID := insertSubmission("resolved", "owner-later", &customerID, now.Add(-24*time.Hour), 2)
+	insertAnswer(laterSubmissionID, fmt.Sprintf(`[{"option_id":%d}]`, secondOptionID), 2)
+	unresolvedSubmissionID := insertSubmission("unresolved", "owner-unresolved", nil, now.Add(-72*time.Hour), 3)
+	insertAnswer(unresolvedSubmissionID, fmt.Sprintf(`[{"option_id":%d}]`, firstOptionID), 3)
+
+	wrapper, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uow, err := platformpostgres.NewUnitOfWork(wrapper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cipher, err := secure.NewCipher(base64.RawStdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := NewPostgreSQL(native, uow, cipher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var facts []surveyport.AudienceChoiceAnswer
+	if err := uow.Within(ctx, func(txCtx context.Context) error {
+		var readErr error
+		facts, readErr = repository.FirstCompleteAudienceChoices(txCtx, now)
+		return readErr
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(facts) != 1 {
+		t.Fatalf("facts=%+v", facts)
+	}
+	fact := facts[0]
+	if int64(fact.CustomerID) != customerID || fact.QuestionnaireID != surveyport.ID(questionnaireID) || fact.SubmissionID != surveyport.ID(firstSubmissionID) || fact.StaffID != "owner-first" || !fact.SubmittedAt.Equal(now.Add(-48*time.Hour)) || fact.QuestionID != surveyport.ID(questionID) {
+		t.Fatalf("fact=%+v", fact)
+	}
+	if len(fact.OptionIDs) != 2 || fact.OptionIDs[0] != surveyport.ID(firstOptionID) || fact.OptionIDs[1] != surveyport.ID(secondOptionID) {
+		t.Fatalf("option ids=%v", fact.OptionIDs)
+	}
+}
+
+func TestPostgreSQLDefinitionReaderLoadsScopedQuestionAndOptionReferences(t *testing.T) {
+	native, cleanup := surveyIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	now := time.Date(2026, 9, 5, 13, 0, 0, 0, time.UTC)
+
+	var actorID int64
+	if err := native.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name) VALUES('survey-reference-test','$argon2id$test','Survey Reference Test') RETURNING id`).Scan(&actorID); err != nil {
+		t.Fatal(err)
+	}
+	type fixture struct{ questionnaire, acquisitionQuestion, acquisitionOption, conversionOption int64 }
+	insert := func(name, title, slug string, includeConversion bool) fixture {
+		t.Helper()
+		var item fixture
+		if err := native.QueryRow(ctx, `INSERT INTO survey_questionnaires(name,title,description,mode,answer_display_mode,slug,status,created_by,updated_by,created_at,updated_at) VALUES($1,$2,'','survey','all_in_one',$3,'published',$4,$4,$5,$5) RETURNING id`, name, title, slug, actorID, now).Scan(&item.questionnaire); err != nil {
+			t.Fatal(err)
+		}
+		var definitionID int64
+		if err := native.QueryRow(ctx, `INSERT INTO survey_definition_versions(questionnaire_id,version_number,mode,answer_display_mode,title_snapshot,description_snapshot,assessment_config,definition_digest,is_immutable,published_at,created_by,created_at) VALUES($1,1,'survey','all_in_one',$2,'','{}',$3,TRUE,$4,$5,$4) RETURNING id`, item.questionnaire, title, make([]byte, 32), now, actorID).Scan(&definitionID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := native.Exec(ctx, `UPDATE survey_questionnaires SET active_definition_version_id=$1 WHERE id=$2`, definitionID, item.questionnaire); err != nil {
+			t.Fatal(err)
+		}
+		if err := native.QueryRow(ctx, `INSERT INTO survey_definition_questions(definition_version_id,question_type,title,sort_order) VALUES($1,'single_choice','获客方式',0) RETURNING id`, definitionID).Scan(&item.acquisitionQuestion); err != nil {
+			t.Fatal(err)
+		}
+		if err := native.QueryRow(ctx, `INSERT INTO survey_definition_options(question_id,definition_version_id,option_text,sort_order) VALUES($1,$2,'内容',0) RETURNING id`, item.acquisitionQuestion, definitionID).Scan(&item.acquisitionOption); err != nil {
+			t.Fatal(err)
+		}
+		if includeConversion {
+			var conversionQuestion int64
+			if err := native.QueryRow(ctx, `INSERT INTO survey_definition_questions(definition_version_id,question_type,title,sort_order) VALUES($1,'single_choice','成交方式',1) RETURNING id`, definitionID).Scan(&conversionQuestion); err != nil {
+				t.Fatal(err)
+			}
+			if err := native.QueryRow(ctx, `INSERT INTO survey_definition_options(question_id,definition_version_id,option_text,sort_order) VALUES($1,$2,'内容',0) RETURNING id`, conversionQuestion, definitionID).Scan(&item.conversionOption); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return item
+	}
+	first := insert("customer-research", "客户调研", "customer-research", true)
+	second := insert("other-research", "另一问卷", "other-research", false)
+
+	wrapper, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uow, err := platformpostgres.NewUnitOfWork(wrapper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cipher, err := secure.NewCipher(base64.RawStdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := NewPostgreSQL(native, uow, cipher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	definitions := surveyapp.NewService(uow, repository)
+	page, err := definitions.List(ctx, 100, 0, "客户调研", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != 1 || len(page.Items) != 1 || int64(page.Items[0].ID) != first.questionnaire || len(page.Items[0].Questions) != 2 {
+		t.Fatalf("page=%+v", page)
+	}
+	loaded := page.Items[0]
+	if int64(loaded.Questions[0].ID) != first.acquisitionQuestion || len(loaded.Questions[0].Options) != 1 || int64(loaded.Questions[0].Options[0].ID) != first.acquisitionOption {
+		t.Fatalf("acquisition question=%+v", loaded.Questions[0])
+	}
+	if int64(loaded.Questions[1].Options[0].ID) != first.conversionOption || first.acquisitionOption == first.conversionOption || first.acquisitionQuestion == second.acquisitionQuestion {
+		t.Fatalf("same-title scope fixture was not distinct: first=%+v second=%+v", first, second)
+	}
+	if _, err = definitions.Get(ctx, surveyport.ID(second.questionnaire)); err != nil {
+		t.Fatalf("get second questionnaire: %v", err)
+	}
+}
+
 func surveyIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 	t.Helper()
 	databaseURL, err := platformconfig.DatabaseURL()
@@ -175,7 +734,7 @@ func surveyIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 	if !ok {
 		t.Fatal("locate integration test")
 	}
-	for _, migrationName := range []string{"0002_identity.sql", "0003_access.sql", "0018_survey.sql"} {
+	for _, migrationName := range []string{"0002_identity.sql", "0003_access.sql", "0018_survey.sql", "0067_survey_completion_snapshots.sql", "0073_survey_completion_test_push_snapshots.sql", "0074_survey_external_operation_execution_facts.sql", "0090_survey_oauth_state_redirect.sql"} {
 		migration, readErr := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "..", "migrations", migrationName))
 		if readErr != nil {
 			t.Fatal(readErr)

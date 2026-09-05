@@ -81,9 +81,34 @@ for migration_contract in \
   '0038_survey_oauth_phone_vault.sql:survey OAuth phone vault' \
   '0049_order_history_attribution.sql:order history attribution' \
   '0053_segment_audience_member_event_fact_kinds.sql:Segment audience member event fact kind repair' \
+  '0083_segment_audience_refresh_modes.sql:Segment audience refresh modes' \
+  '0085_segment_audience_refresh_kind.sql:Segment audience refresh kind' \
+  '0086_wecom_profile_primary_owner.sql:WeCom profile primary owner' \
+  '0087_automation_manual_ai_review.sql:Automation manual AI review' \
+  '0089_outbound_message_content_snapshots.sql:Outbound message content snapshots' \
   '0061_product_public_purchase.sql:product public purchase' \
   '0063_identity_hxc_source_observations.sql:HXC identity source observations' \
-  '0064_hxc_dashboard_identity_v2.sql:HXC dashboard identity v2'; do
+  '0064_hxc_dashboard_identity_v2.sql:HXC dashboard identity v2' \
+  '0066_channel_welcome_intents.sql:Channel welcome intents' \
+  '0067_survey_completion_snapshots.sql:Survey completion snapshots' \
+  '0068_payment_session_beneficiary_selection.sql:payment session beneficiary selection' \
+  '0069_coupon_claim_redemption_lifecycle.sql:coupon claim redemption lifecycle' \
+  '0070_service_period_entitlement_fulfillment.sql:service-period entitlement fulfillment' \
+  '0071_message_archive_core.sql:message archive core' \
+  '0072_message_archive_migration_receipts.sql:message archive migration receipts' \
+  '0073_survey_completion_test_push_snapshots.sql:Survey completion test push snapshots' \
+  '0074_survey_external_operation_execution_facts.sql:Survey external operation execution facts' \
+  '0075_external_effects_survey_completion_kind.sql:Survey completion external effect kind' \
+  '0076_order_checkout_snapshots.sql:Order checkout snapshots' \
+  '0077_coupon_public_slug.sql:coupon public slug' \
+  '0078_group_ops_provider_tasks.sql:Group Ops provider tasks' \
+  '0079_service_period_member_grid.sql:service-period member grid' \
+  '0080_media_legacy_material_mappings.sql:AI Assistant legacy media mappings' \
+  '0081_group_ops_webhook_unconfigured_reference.sql:Group Ops unconfigured webhook repair' \
+  '0082_group_ops_history_import.sql:Group Ops history import' \
+  '0084_hxc_shared_facts.sql:HXC shared legacy facts' \
+  '0088_order_service_entitlement_alliance.sql:service-period alliance' \
+  '0090_survey_oauth_state_redirect.sql:Survey OAuth redirect repair'; do
   migration="${migration_contract%%:*}"
   label="${migration_contract#*:}"
   test -f "migrations/${migration}" || {
@@ -96,6 +121,15 @@ for migration_contract in \
   }
 done
 grep -qx 'test -x "$release_dir/bin/migrate-automation-operations"' "$installer" || { echo "release must include Automation Operations migration tool" >&2; exit 1; }
+grep -qx 'test -x "$release_dir/bin/wecom-archive-sdk-runner"' "$installer" || { echo "release must include the WeCom archive SDK runner" >&2; exit 1; }
+grep -qF 'scripts/build-wecom-archive-sdk-runner-linux.sh release/bin/wecom-archive-sdk-runner' .github/workflows/ci.yml || { echo "release workflow must build the real Linux cgo archive runner" >&2; exit 1; }
+grep -qF 'CGO_ENABLED=1 GOOS=linux GOARCH=amd64 GOWORK=off' scripts/build-wecom-archive-sdk-runner-linux.sh || { echo "archive release runner must be a Linux amd64 cgo build" >&2; exit 1; }
+grep -qF 'scripts/build-wecom-archive-sdk-runner-linux.sh "$work/runner"' scripts/check-wecom-message-archive-sdk.sh || { echo "official SDK ABI check must exercise the release runner builder" >&2; exit 1; }
+grep -qx 'test -x "$release_dir/bin/migrate-commerce-history"' "$installer" || { echo "release must reject a missing commerce history migration tool" >&2; exit 1; }
+grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/migrate-commerce-history ./cmd/migrate-commerce-history' .github/workflows/ci.yml || { echo "CI must build the commerce history migration tool" >&2; exit 1; }
+grep -qx 'test -x "$release_dir/bin/migrate-message-archive"' "$installer" || { echo "release must reject a missing message archive migration tool" >&2; exit 1; }
+grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/migrate-message-archive ./cmd/migrate-message-archive' .github/workflows/ci.yml || { echo "CI must build the message archive migration tool" >&2; exit 1; }
+grep -qF './cmd/migrate-message-archive' .github/workflows/ci.yml || { echo "CI must test the message archive migration command" >&2; exit 1; }
 grep -qx 'test -x "$release_dir/bin/migrate-order-attribution"' "$installer" || { echo "release must include order history attribution tool" >&2; exit 1; }
 grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/migrate-order-attribution ./cmd/migrate-order-attribution' .github/workflows/ci.yml || { echo "CI must build the order history attribution tool" >&2; exit 1; }
 grep -qx 'test -f "$release_dir/migrations/0047_automation_operations_migration.sql"' "$installer" || { echo "release must require Automation Operations migration schema" >&2; exit 1; }
@@ -110,6 +144,8 @@ done
 grep -qx 'test -x "$release_dir/bin/migrate-phone-identities"' "$installer" || { echo "release must include phone migration tool" >&2; exit 1; }
 grep -qx 'test -x "$release_dir/bin/migrate-v2-config-definitions"' "$installer" || { echo "release must include configuration definition migration tool" >&2; exit 1; }
 grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/migrate-v2-config-definitions ./cmd/migrate-v2-config-definitions' .github/workflows/ci.yml || { echo "CI must build the configuration definition migration tool" >&2; exit 1; }
+grep -qx 'test -x "$release_dir/bin/migrate-media-legacy-materials"' "$installer" || { echo "release must include legacy Media mapping migration tool" >&2; exit 1; }
+grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/migrate-media-legacy-materials ./cmd/migrate-media-legacy-materials' .github/workflows/ci.yml || { echo "CI must build the legacy Media mapping migration tool" >&2; exit 1; }
 grep -qx 'test -x "$release_dir/bin/migrate-channel-history"' "$installer" || { echo "release must include channel history migration tool" >&2; exit 1; }
 grep -qx 'test -x "$release_dir/bin/migrate-radar-v2"' "$installer" || { echo "release must include Radar migration tool" >&2; exit 1; }
 grep -qF 'go build -trimpath -ldflags "-s -w" -o release/bin/migrate-radar-v2 ./cmd/migrate-radar-v2' .github/workflows/ci.yml || { echo "release workflow must build Radar migration tool" >&2; exit 1; }

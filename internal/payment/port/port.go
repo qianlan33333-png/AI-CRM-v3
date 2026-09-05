@@ -2,6 +2,9 @@ package port
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/base64"
 	"errors"
 	"time"
 
@@ -13,12 +16,43 @@ var ErrInvalid = errors.New("invalid payment command")
 var ErrConflict = errors.New("payment conflict")
 var ErrNotFound = errors.New("payment not found")
 var ErrUnavailable = errors.New("payment unavailable")
+var ErrSessionRequired = errors.New("trusted payment session required")
+var ErrSessionMismatch = errors.New("payment checkout session mismatch")
+
+// TrustedSessionCookieName is shared by public Host adapters. Its opaque
+// value is resolved only by Payment's SessionReader inside a PostgreSQL UoW;
+// no adapter may treat it as a customer or identity claim.
+const TrustedSessionCookieName = "aicrm_payment_session"
+
+// CheckoutSessionBinding is an opaque, non-identity marker derived only from
+// the HttpOnly Payment session. Public pages retain it with a recovery
+// checkpoint, never the session token itself. A marker is useful only when
+// presented together with the current HttpOnly cookie, so it is not a second
+// credential or a browser-provided identity claim.
+func CheckoutSessionBinding(token string) string {
+	if len(token) < 20 || len(token) > 100 {
+		return ""
+	}
+	digest := sha256.Sum256([]byte("payment.checkout.session-binding.v1\x00" + token))
+	return base64.RawURLEncoding.EncodeToString(digest[:])
+}
+
+// MatchesCheckoutSessionBinding uses a constant-time comparison so the
+// checkout mutation can reject a checkpoint from another trusted session
+// before it reaches the payment/order Unit of Work.
+func MatchesCheckoutSessionBinding(token, binding string) bool {
+	expected := CheckoutSessionBinding(token)
+	return expected != "" && len(binding) == len(expected) && subtle.ConstantTimeCompare([]byte(expected), []byte(binding)) == 1
+}
 
 type CreateCommand struct {
 	OrderID, ProductID         int64
+	CouponClaimID              int64
 	ProductType                string
 	SessionToken               string
+	CheckoutSessionBinding     string
 	MobileE164                 string
+	BeneficiarySelection       BeneficiarySelection
 	ActorScope, IdempotencyKey string
 }
 type RefundCommand struct {
@@ -77,10 +111,23 @@ type HistoricalImporter interface {
 	ImportTerminalRefund(context.Context, domain.Refund, [32]byte, string) (domain.Refund, error)
 }
 
+// BeneficiarySelection records how a payment-session recipient was established.
+// The public checkout exposes only PayerSelf; AdminAssisted is a server-only
+// prebound session fact.
+type BeneficiarySelection string
+
+const (
+	BeneficiarySelectionLegacyPrebound BeneficiarySelection = "legacy_prebound"
+	BeneficiarySelectionUnresolved     BeneficiarySelection = "unresolved"
+	BeneficiarySelectionPayerSelf      BeneficiarySelection = "payer_self"
+	BeneficiarySelectionAdminAssisted  BeneficiarySelection = "admin_assisted"
+)
+
 type SessionActor struct {
 	PayerIdentityID       int64
 	PayerCustomerID       int64
 	BeneficiaryCustomerID int64
+	BeneficiarySelection  BeneficiarySelection
 	Channel               domain.Channel
 }
 
@@ -96,12 +143,20 @@ type SessionReader interface {
 	LookupWithin(context.Context, string, time.Time) (SessionActor, error)
 }
 
+// SessionBeneficiarySelector records the only public recipient choice within
+// the caller's existing transaction. It derives the recipient from the trusted
+// payer; callers cannot submit a customer ID.
+type SessionBeneficiarySelector interface {
+	SelectPayerSelfWithin(context.Context, string, time.Time) (SessionActor, error)
+}
+
 // SessionLifecycle supports idempotent checkout replay: callers first read the
 // still-valid actor, then consume only when a new mutation is persisted in the
 // same transaction.
 type SessionLifecycle interface {
 	SessionConsumer
 	SessionReader
+	SessionBeneficiarySelector
 }
 
 // ProviderIntent is a Payment-owned, immutable request projection. It is read

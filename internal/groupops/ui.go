@@ -20,7 +20,7 @@ import (
 // release; this module never edits or recompiles donor business files.
 type GroupOpsPageRenderer func(http.ResponseWriter, *http.Request, string, string, GroupOpsAssets) error
 
-type GroupOpsAssets struct{ TokensCSS, LabsCSS, AdminJS string }
+type GroupOpsAssets struct{ TokensCSS, LabsCSS, AdminJS, ReadonlyCSS, ReadonlyJS string }
 
 type groupOpsUI struct {
 	dist   string
@@ -156,9 +156,8 @@ func (h *groupOpsUI) assets() (GroupOpsAssets, error) {
 	if err = json.Unmarshal(raw, &manifest); err != nil {
 		return GroupOpsAssets{}, err
 	}
-	get := func(name string) (string, error) {
-		value := manifest.Entries[name]
-		if value == "" || strings.Contains(value, "..") || !strings.HasPrefix(value, "assets/") {
+	get := func(value string) (string, error) {
+		if value == "" || strings.Contains(value, "..") || strings.HasPrefix(value, "/") {
 			return "", errors.New("group ops bundle asset missing")
 		}
 		if _, ok := manifest.Files[value]; !ok {
@@ -169,19 +168,34 @@ func (h *groupOpsUI) assets() (GroupOpsAssets, error) {
 		}
 		return "/groupops-assets/" + value, nil
 	}
-	tokens, err := get("tokens")
+	entry := func(name string) (string, error) {
+		value := manifest.Entries[name]
+		if !strings.HasPrefix(value, "assets/") {
+			return "", errors.New("group ops bundle asset missing")
+		}
+		return get(value)
+	}
+	tokens, err := entry("tokens")
 	if err != nil {
 		return GroupOpsAssets{}, err
 	}
-	labs, err := get("labs")
+	labs, err := entry("labs")
 	if err != nil {
 		return GroupOpsAssets{}, err
 	}
-	admin, err := get("admin")
+	admin, err := entry("admin")
 	if err != nil {
 		return GroupOpsAssets{}, err
 	}
-	return GroupOpsAssets{TokensCSS: tokens, LabsCSS: labs, AdminJS: admin}, nil
+	readonlyCSS, err := get("aiassistant/send_content_readonly_detail.css")
+	if err != nil {
+		return GroupOpsAssets{}, err
+	}
+	readonlyJS, err := get("aiassistant/send_content_readonly_detail.js")
+	if err != nil {
+		return GroupOpsAssets{}, err
+	}
+	return GroupOpsAssets{TokensCSS: tokens, LabsCSS: labs, AdminJS: admin, ReadonlyCSS: readonlyCSS, ReadonlyJS: readonlyJS}, nil
 }
 
 func (h *groupOpsUI) asset(w http.ResponseWriter, r *http.Request) {

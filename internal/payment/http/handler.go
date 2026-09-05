@@ -20,7 +20,7 @@ import (
 	paymentsession "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/session"
 )
 
-const SessionCookieName = "aicrm_payment_session"
+const SessionCookieName = paymentport.TrustedSessionCookieName
 const maxBody = 64 << 10
 
 type RequestSecurity interface {
@@ -30,6 +30,7 @@ type RequestSecurity interface {
 
 type Application interface {
 	Create(context.Context, paymentport.CreateCommand) (domain.Payment, error)
+	CheckoutSessionBinding(context.Context, string) (string, error)
 	GetCheckout(context.Context, string, string) (paymentport.Handoff, error)
 	RequestRefund(context.Context, paymentport.RefundCommand) (domain.Refund, error)
 	ApplyVerifiedCallback(context.Context, paymentprovider.CallbackResult) error
@@ -113,6 +114,8 @@ func (handler *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 		handler.completeH5OAuth(writer, request)
 	case path == "/api/v1/wechat-pay/sessions":
 		handler.issueSession(writer, request)
+	case path == "/api/v1/wechat-pay/checkout-session":
+		handler.checkoutSession(writer, request)
 	case path == "/api/v1/wechat-pay/checkouts":
 		handler.checkout(writer, request)
 	case strings.HasPrefix(path, "/api/v1/wechat-pay/checkouts/"):
@@ -138,6 +141,31 @@ func (handler *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 	default:
 		writeError(writer, http.StatusNotFound, "not_found")
 	}
+}
+
+// checkoutSession returns an opaque current-session marker for a browser
+// recovery checkpoint. It deliberately verifies the HttpOnly cookie through
+// Payment before returning anything, and contains no OneID/customer facts.
+func (handler *Handler) checkoutSession(writer http.ResponseWriter, request *http.Request) {
+	if !handler.writesEnabled {
+		writeError(writer, http.StatusServiceUnavailable, "payment_provider_disabled")
+		return
+	}
+	if request.Method != http.MethodGet {
+		methodNotAllowed(writer, http.MethodGet)
+		return
+	}
+	cookie, err := request.Cookie(SessionCookieName)
+	if err != nil || cookie.Value == "" {
+		writeError(writer, http.StatusUnauthorized, "payment_session_required")
+		return
+	}
+	binding, err := handler.app.CheckoutSessionBinding(request.Context(), cookie.Value)
+	if err != nil {
+		resultError(writer, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, map[string]any{"checkout_session_binding": binding})
 }
 
 func (handler *Handler) startH5OAuth(writer http.ResponseWriter, request *http.Request) {
@@ -414,15 +442,22 @@ func (handler *Handler) checkout(writer http.ResponseWriter, request *http.Reque
 		return
 	}
 	var body struct {
-		ProductID   int64  `json:"product_id,omitempty"`
-		ProductType string `json:"product_kind,omitempty"`
-		MobileE164  string `json:"mobile,omitempty"`
+		ProductID              int64                            `json:"product_id,omitempty"`
+		CouponClaimID          int64                            `json:"coupon_claim_id,omitempty"`
+		ProductType            string                           `json:"product_kind,omitempty"`
+		MobileE164             string                           `json:"mobile,omitempty"`
+		BeneficiarySelection   paymentport.BeneficiarySelection `json:"beneficiary_selection,omitempty"`
+		CheckoutSessionBinding string                           `json:"checkout_session_binding"`
 	}
 	if !decodeJSON(writer, request, &body) {
 		return
 	}
+	if !paymentport.MatchesCheckoutSessionBinding(cookie.Value, body.CheckoutSessionBinding) {
+		writeError(writer, http.StatusConflict, "session_mismatch")
+		return
+	}
 	idempotency := request.Header.Get("Idempotency-Key")
-	payment, err := handler.app.Create(request.Context(), paymentport.CreateCommand{ProductID: body.ProductID, ProductType: body.ProductType, MobileE164: body.MobileE164, SessionToken: cookie.Value, ActorScope: "public-checkout", IdempotencyKey: idempotency})
+	payment, err := handler.app.Create(request.Context(), paymentport.CreateCommand{ProductID: body.ProductID, CouponClaimID: body.CouponClaimID, ProductType: body.ProductType, MobileE164: body.MobileE164, BeneficiarySelection: body.BeneficiarySelection, SessionToken: cookie.Value, CheckoutSessionBinding: body.CheckoutSessionBinding, ActorScope: "public-checkout", IdempotencyKey: idempotency})
 	if err != nil {
 		resultError(writer, err)
 		return
@@ -499,7 +534,7 @@ func (handler *Handler) refund(writer http.ResponseWriter, request *http.Request
 		resultError(writer, err)
 		return
 	}
-	writeJSON(writer, http.StatusAccepted, map[string]any{"refund_id": refund.ID, "status": refund.Status, "effect_id": refund.EffectID})
+	writeJSON(writer, http.StatusAccepted, map[string]any{"refund_id": refund.ID, "out_refund_no": refund.RefundNo, "status": refund.Status, "effect_id": refund.EffectID})
 }
 
 func (handler *Handler) callback(writer http.ResponseWriter, request *http.Request) {
@@ -672,12 +707,15 @@ func WriteTrustedSessionCookie(writer http.ResponseWriter, issued paymentsession
 	if issued.Token == "" || issued.ExpiresAt.IsZero() {
 		return paymentsession.ErrInvalid
 	}
-	http.SetCookie(writer, &http.Cookie{Name: SessionCookieName, Value: issued.Token, Path: "/api/v1/wechat-pay/", Expires: issued.ExpiresAt, Secure: true, HttpOnly: true, SameSite: http.SameSiteStrictMode})
+	// Coupon and service-period public pages reuse the same opaque OAuth
+	// session through their own same-origin H5 endpoints. Root scope preserves
+	// that trusted session without exposing a customer or external identity.
+	http.SetCookie(writer, &http.Cookie{Name: SessionCookieName, Value: issued.Token, Path: "/", Expires: issued.ExpiresAt, Secure: true, HttpOnly: true, SameSite: http.SameSiteStrictMode})
 	return nil
 }
 
 func clearSessionCookie(writer http.ResponseWriter) {
-	http.SetCookie(writer, &http.Cookie{Name: SessionCookieName, Path: "/api/v1/wechat-pay/", MaxAge: -1, Secure: true, HttpOnly: true, SameSite: http.SameSiteStrictMode})
+	http.SetCookie(writer, &http.Cookie{Name: SessionCookieName, Path: "/", MaxAge: -1, Secure: true, HttpOnly: true, SameSite: http.SameSiteStrictMode})
 }
 
 func decodeJSON(writer http.ResponseWriter, request *http.Request, destination any) bool {
@@ -705,6 +743,10 @@ func resultError(writer http.ResponseWriter, err error) {
 		writeError(writer, http.StatusBadRequest, "invalid_request")
 	case errors.Is(err, paymentport.ErrNotFound):
 		writeError(writer, http.StatusNotFound, "not_found")
+	case errors.Is(err, paymentport.ErrSessionRequired):
+		writeError(writer, http.StatusUnauthorized, "payment_session_required")
+	case errors.Is(err, paymentport.ErrSessionMismatch):
+		writeError(writer, http.StatusConflict, "session_mismatch")
 	case errors.Is(err, paymentport.ErrConflict):
 		writeError(writer, http.StatusConflict, "conflict")
 	default:

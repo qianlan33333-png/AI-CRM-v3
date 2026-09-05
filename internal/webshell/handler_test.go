@@ -2,6 +2,8 @@ package webshell
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -111,6 +113,8 @@ func TestStandaloneHandlerRendersAdminLoginSidebarAndAssets(t *testing.T) {
 				"发送记录",
 				"admin_audience_detail.css",
 				"admin_audience_detail.js?v=automation-operations-v5",
+				"template_parameter_form.js?v=dd8-frozen-ab63c644",
+				"admin_audience_template_host.js?v=prd05-template-host-v1",
 			},
 			notContain: []string{
 				"功能待接入",
@@ -317,8 +321,16 @@ func TestStandaloneHandlerRendersAdminLoginSidebarAndAssets(t *testing.T) {
 			method:     http.MethodGet,
 			path:       "/static/admin_console/admin_customers.js",
 			status:     http.StatusOK,
-			contains:   []string{"credentials: \"same-origin\"", "cache: \"no-store\"", "X-CSRF-Token", "customer_id", "phone-reveal", "phone.startsWith(\"+86\") ? phone.slice(3)", "/360", "订单统计", "问卷统计", "风险摘要", "最近触点"},
+			contains:   []string{"credentials: \"same-origin\"", "cache: \"no-store\"", "X-CSRF-Token", "customer_id", "phone-reveal", "phone.startsWith(\"+86\") ? phone.slice(3)", "/360", "订单统计", "问卷统计", "风险摘要", "最近触点", "/admin/message-archive/customers/"},
 			notContain: []string{"customer-avatar", "phone_assurance", "item.activation_status", "declared", "localStorage", "sessionStorage", "console.log", "/api/v2/", "chat-activity", "survey-answers"},
+		},
+		{
+			name:       "message archive customer entry",
+			method:     http.MethodGet,
+			path:       "/admin/message-archive",
+			status:     http.StatusOK,
+			contains:   []string{"data-message-archive-entry", "选择客户", "href=\"/admin/customers\""},
+			notContain: []string{"data-message-archive-root", "name=\"q\"", "Customer ID"},
 		},
 		{
 			name:       "customer profile page",
@@ -501,6 +513,8 @@ func TestStaticAssetsUseBrowserApplicableContentType(t *testing.T) {
 		{"/static/admin_console/automation_create_code_adapter.js", "text/javascript"},
 		{"/static/admin_console/survey_operations.js", "text/javascript"},
 		{"/static/admin_console/config_adminops_bridge.js", "text/javascript"},
+		{"/static/admin_console/template_parameter_form.js", "text/javascript"},
+		{"/static/admin_console/admin_audience_template_host.js", "text/javascript"},
 		{"/static/admin_console/nav-icons/automation_conversion.svg", "image/svg+xml"},
 	} {
 		response := httptest.NewRecorder()
@@ -511,6 +525,17 @@ func TestStaticAssetsUseBrowserApplicableContentType(t *testing.T) {
 		if got := response.Header().Get("Content-Type"); !strings.HasPrefix(got, test.contentType) {
 			t.Errorf("%s content-type=%q, want %s", test.path, got, test.contentType)
 		}
+	}
+}
+
+func TestAudienceTemplateControllerIsFrozenDD8Asset(t *testing.T) {
+	contents, err := os.ReadFile("static/admin_console/template_parameter_form.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(contents)
+	if got := hex.EncodeToString(digest[:]); got != "ab63c6446f37fd94c3fc07439a89cf90e6114b1c4e962d60cfe96bd72b8bdc1c" {
+		t.Fatalf("frozen template controller digest=%s", got)
 	}
 }
 
@@ -669,6 +694,27 @@ func TestAudienceActivationReadinessBrowserContract(t *testing.T) {
 	}
 }
 
+func TestAudienceFrozenTemplateHostBrowserContract(t *testing.T) {
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node is not installed")
+	}
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("locate webshell test")
+	}
+	repo := filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
+	command := exec.Command("node", "internal/webshell/static/admin_console/admin_audience_template_host.test.mjs")
+	command.Dir = repo
+	var output bytes.Buffer
+	command.Stdout, command.Stderr = &output, &output
+	if err := command.Run(); err != nil {
+		t.Fatalf("audience template Host browser contract failed: %v\n%s", err, output.String())
+	}
+	if !strings.Contains(output.String(), "admin-audience-template-host-browser: PASS") {
+		t.Fatalf("audience template Host browser contract did not report success: %q", output.String())
+	}
+}
+
 // TestOperationCyclesHostShellJourney is the release-facing host Journey:
 // an authenticated v3 route mounts one frozen fragment in the sole sidebar
 // shell and exposes only the v3 binding that starts the donor runtime.
@@ -731,6 +777,48 @@ func TestSurveyQRBridgeBrowserFallback(t *testing.T) {
 	}
 }
 
+func TestMessageArchiveBrowserPrivateImageContract(t *testing.T) {
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node is unavailable")
+	}
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("cannot locate repository")
+	}
+	repo := filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
+	command := exec.Command("node", "internal/webshell/static/admin_console/message_archive.test.mjs")
+	command.Dir = repo
+	var output bytes.Buffer
+	command.Stdout, command.Stderr = &output, &output
+	if err := command.Run(); err != nil {
+		t.Fatalf("message archive browser contract failed: %v\n%s", err, output.String())
+	}
+	if !strings.Contains(output.String(), "message-archive-browser: PASS") {
+		t.Fatalf("message archive browser contract did not report success: %q", output.String())
+	}
+}
+
+func TestAdminCustomersBrowserMessageArchiveEntry(t *testing.T) {
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node is unavailable")
+	}
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("cannot locate repository")
+	}
+	repo := filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
+	command := exec.Command("node", "internal/webshell/static/admin_console/admin_customers.test.mjs")
+	command.Dir = repo
+	var output bytes.Buffer
+	command.Stdout, command.Stderr = &output, &output
+	if err := command.Run(); err != nil {
+		t.Fatalf("admin customers browser contract failed: %v\n%s", err, output.String())
+	}
+	if !strings.Contains(output.String(), "admin-customers-browser: PASS") {
+		t.Fatalf("admin customers browser contract did not report success: %q", output.String())
+	}
+}
+
 func TestLoginPostNeverIssuesSession(t *testing.T) {
 	handler := MustHandler()
 	response := httptest.NewRecorder()
@@ -744,5 +832,40 @@ func TestLoginPostNeverIssuesSession(t *testing.T) {
 	}
 	if strings.Contains(response.Body.String(), "secret") {
 		t.Fatal("login shell echoed credential input")
+	}
+}
+func TestMessageArchiveRendersAsSeparateArchiveHost(t *testing.T) {
+	renderer, err := NewRenderer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/admin/message-archive/customers/7", nil)
+	if err = renderer.RenderAdminStatus(response, http.StatusOK, AdminPageForRequest(request, "会话存档", "", "")); err != nil {
+		t.Fatal(err)
+	}
+	body := response.Body.String()
+	if response.Code != http.StatusOK || !strings.Contains(body, `data-message-archive-root`) || !strings.Contains(body, `admin-profile-message-list`) || strings.Contains(body, `customer-profile-root`) || strings.Contains(body, `customer-chat-activity`) {
+		t.Fatalf("archive host boundary mismatch: %s", body)
+	}
+}
+
+func TestRenderGroupOpsInjectsManifestVerifiedReadonlyContentRenderer(t *testing.T) {
+	renderer, err := NewRenderer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	assets := GroupOpsAssets{TokensCSS: "/groupops-assets/assets/tokens.css", LabsCSS: "/groupops-assets/assets/labs.css", AdminJS: "/groupops-assets/assets/admin.js", ReadonlyCSS: "/groupops-assets/aiassistant/send_content_readonly_detail.css", ReadonlyJS: "/groupops-assets/aiassistant/send_content_readonly_detail.js"}
+	response := httptest.NewRecorder()
+	err = renderer.RenderGroupOps(response, AdminPageForRequest(httptest.NewRequest(http.MethodGet, "/admin/groupopsDetail.html?history=1&id=9", nil), "群运营计划", "", "api.admin_group_ops_plan_detail"), "groupopsDetail", `<section data-page="groupopsDetail">frozen donor fragment</section>`, assets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := response.Body.String()
+	if response.Code != http.StatusOK || !strings.Contains(body, `href="/groupops-assets/aiassistant/send_content_readonly_detail.css"`) || !strings.Contains(body, `<script defer src="/groupops-assets/aiassistant/send_content_readonly_detail.js"></script>`) || !strings.Contains(body, `<script defer src="/static/admin_console/groupops_history_readonly_bridge.js"></script>`) || !strings.Contains(body, `<template id="tpl"><section data-page="groupopsDetail">frozen donor fragment</section></template>`) {
+		t.Fatalf("group ops read-only shell mismatch status=%d body=%q", response.Code, body)
+	}
+	if err := renderer.RenderGroupOps(httptest.NewRecorder(), AdminPageForRequest(httptest.NewRequest(http.MethodGet, "/admin/groupops.html", nil), "群运营计划", "", "api.admin_group_ops_ui"), "groupops", `<section></section>`, GroupOpsAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS}); err == nil {
+		t.Fatal("group ops shell accepted missing read-only content assets")
 	}
 }

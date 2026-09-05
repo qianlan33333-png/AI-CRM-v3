@@ -27,7 +27,7 @@ func main() {
 }
 func run(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("migrate-v2-config-definitions", flag.ContinueOnError)
-	mode := fs.String("mode", "inspect", "inspect|extract|dry-run|apply|verify")
+	mode := fs.String("mode", "inspect", "inspect|extract|dry-run|apply|verify|history-inspect|history-extract|history-dry-run|history-apply|history-verify")
 	snapshot := fs.String("snapshot", "", "encrypted snapshot")
 	key := fs.String("snapshot-key-file", "", "0600 AES key")
 	revision := fs.String("source-revision", "", "40-char source revision")
@@ -36,6 +36,29 @@ func run(ctx context.Context, args []string) error {
 	confirm := fs.Bool("confirm-apply", false, "confirm target write")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if *mode == "history-extract" {
+		if *snapshot == "" || *key == "" || *revision == "" {
+			return errors.New("history-extract requires AICRM_SOURCE_DATABASE_URL, snapshot, snapshot-key-file, source-revision")
+		}
+		sourceDatabaseURL, e := platformconfig.SourceDatabaseURL()
+		if e != nil {
+			return e
+		}
+		p, e := pgxpool.New(ctx, sourceDatabaseURL)
+		if e != nil {
+			return e
+		}
+		defer p.Close()
+		s, e := source.ExtractHistory(ctx, p, *revision)
+		if e != nil {
+			return e
+		}
+		d, e := source.SealHistoryToFile(s, *snapshot, *key)
+		if e != nil {
+			return e
+		}
+		return print(historySummary("history-extract", s, d))
 	}
 	if *mode == "extract" {
 		if *snapshot == "" || *key == "" || *revision == "" {
@@ -65,6 +88,54 @@ func run(ctx context.Context, args []string) error {
 	}
 	if *snapshot == "" || *key == "" {
 		return errors.New("snapshot and snapshot-key-file are required")
+	}
+	if *mode == "history-inspect" || *mode == "history-dry-run" || *mode == "history-apply" || *mode == "history-verify" {
+		s, d, e := source.LoadHistoryFile(*snapshot, *key)
+		if e != nil {
+			return e
+		}
+		if *mode == "history-inspect" {
+			return print(historySummary(*mode, s, d))
+		}
+		url, e := platformconfig.DatabaseURL()
+		if e != nil {
+			return e
+		}
+		pool, e := platformpostgres.Open(ctx, platformpostgres.Config{URL: url})
+		if e != nil {
+			return e
+		}
+		defer pool.Close()
+		uow, e := platformpostgres.NewUnitOfWork(pool)
+		if e != nil {
+			return e
+		}
+		groupOps, e := groupopsstore.NewPostgreSQL(pool.Native(), uow)
+		if e != nil {
+			return e
+		}
+		runner := target.HistoryRunner{UOW: uow, GroupOps: groupOps}
+		if *mode == "history-dry-run" {
+			if e = runner.Preflight(ctx, s, d); e != nil {
+				return e
+			}
+			return print(map[string]any{"mode": *mode, "eligible": true, "manifest_sha256": target.DigestHex(d), "counts": s.Summary()})
+		}
+		if *mode == "history-apply" {
+			if !*confirm {
+				return errors.New("history-apply requires --confirm-apply")
+			}
+			out, e := runner.Apply(ctx, s, d)
+			if e != nil {
+				return e
+			}
+			return print(map[string]any{"mode": *mode, "manifest_sha256": target.DigestHex(d), "result": out})
+		}
+		out, e := runner.Verify(ctx, s, d)
+		if e != nil {
+			return e
+		}
+		return print(map[string]any{"mode": *mode, "manifest_sha256": target.DigestHex(d), "result": out})
 	}
 	s, d, e := source.LoadFile(*snapshot, *key)
 	if e != nil {
@@ -143,6 +214,17 @@ func run(ctx context.Context, args []string) error {
 func print(v any) error { return json.NewEncoder(os.Stdout).Encode(v) }
 
 func summary(mode string, snapshot source.Snapshot, digest [32]byte) map[string]any {
+	return map[string]any{
+		"mode":            mode,
+		"manifest_sha256": target.DigestHex(digest),
+		"source_system":   snapshot.Manifest.SourceSystem,
+		"source_revision": snapshot.Manifest.SourceRevision,
+		"snapshot_at":     snapshot.Manifest.SnapshotAt,
+		"counts":          snapshot.Summary(),
+	}
+}
+
+func historySummary(mode string, snapshot source.HistorySnapshot, digest [32]byte) map[string]any {
 	return map[string]any{
 		"mode":            mode,
 		"manifest_sha256": target.DigestHex(digest),
