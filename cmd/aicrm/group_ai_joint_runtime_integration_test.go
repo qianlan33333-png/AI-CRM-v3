@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -57,7 +58,7 @@ func TestAIAssistantAndGroupOpsShareRiverOutboundAndEffects(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var privateCalls, groupCalls atomic.Int32
+	var privateCalls, groupCalls, messageSequence atomic.Int32
 	providerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/cgi-bin/gettoken":
@@ -71,7 +72,9 @@ func TestAIAssistantAndGroupOpsShareRiverOutboundAndEffects(t *testing.T) {
 		case "/cgi-bin/externalcontact/add_msg_template":
 			var request map[string]any
 			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-				t.Fatal(err)
+				t.Errorf("decode joint WeCom request: %v", err)
+				http.Error(w, "bad request", http.StatusBadRequest)
+				return
 			}
 			sender, _ := request["sender"].(string)
 			switch sender {
@@ -85,7 +88,7 @@ func TestAIAssistantAndGroupOpsShareRiverOutboundAndEffects(t *testing.T) {
 			default:
 				t.Errorf("unknown sender=%q request=%#v", sender, request)
 			}
-			_ = json.NewEncoder(w).Encode(map[string]any{"errcode": 0, "msgid": "joint-msg"})
+			_ = json.NewEncoder(w).Encode(map[string]any{"errcode": 0, "msgid": fmt.Sprintf("joint-msg-%d", messageSequence.Add(1))})
 		default:
 			http.NotFound(w, r)
 		}
@@ -95,7 +98,7 @@ func TestAIAssistantAndGroupOpsShareRiverOutboundAndEffects(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	groupWeCom, err := wecomadapter.NewDirectory(wecomadapter.Config{Enabled: true, CorpID: "runtime-corp", ContactSecret: "runtime-contact-secret", APIBase: providerServer.URL, HTTPClient: providerServer.Client()})
+	groupWeCom, err := wecomadapter.NewDirectory(wecomadapter.Config{Enabled: true, CorpID: "corp-1", ContactSecret: "runtime-contact-secret", APIBase: providerServer.URL, HTTPClient: providerServer.Client()})
 	if err != nil {
 		t.Fatal(err)
 	}
