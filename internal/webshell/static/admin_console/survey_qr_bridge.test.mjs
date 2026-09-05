@@ -15,12 +15,34 @@ function legacyOpsFixture() {
   </div></body>`;
 }
 
-const qr = new JSDOM('<!doctype html><body data-page="questionnaires"></body>', {url:'https://test.invalid/admin/questionnaires', runScripts:'outside-only', pretendToBeVisual:true});
-qr.window.eval(adapter);
-const box = qr.window.document.createElement('div'); box.id = 'shareQrBox'; qr.window.document.body.appendChild(box);
+function qrPage() {
+  const dom = new JSDOM('<!doctype html><body data-page="questionnaires"></body>', {
+    url: 'https://test.invalid/admin/questionnaires',
+    runScripts: 'outside-only',
+    pretendToBeVisual: true,
+  });
+  dom.window.eval(adapter);
+  return dom;
+}
+
+const qr = qrPage();
+const box = qr.window.document.createElement('div');
+box.id = 'shareQrBox';
+qr.window.document.body.appendChild(box);
 await wait(1300);
-if (!box.querySelector('[data-survey-qr-fallback][role="alert"]')) throw new Error('QR fallback disappeared');
+const fallback = box.querySelector('[data-survey-qr-fallback="true"][role="alert"]');
+if (!fallback || !fallback.textContent.includes('复制')) throw new Error('empty QR mount did not expose the copy-link fallback');
 qr.window.close();
+
+const rendered = qrPage();
+const renderedBox = rendered.window.document.createElement('div');
+renderedBox.id = 'shareQrBox';
+rendered.window.document.body.appendChild(renderedBox);
+await wait(100);
+renderedBox.appendChild(rendered.window.document.createElementNS('http://www.w3.org/2000/svg', 'svg'));
+await wait(1200);
+if (renderedBox.querySelector('[data-survey-qr-fallback="true"]')) throw new Error('fallback replaced a rendered QR SVG');
+rendered.window.close();
 
 const dom = new JSDOM(legacyOpsFixture(), {url:'https://test.invalid/admin/questionnaireOps.html?id=7', runScripts:'outside-only', pretendToBeVisual:true});
 Object.defineProperty(dom.window.document, 'cookie', {value:'aicrm_admin_csrf=csrf-proof', configurable:true});
