@@ -190,6 +190,22 @@ func TestGroupOpsPostgreSQLJourney(t *testing.T) {
 	if unknown.ID < 1 {
 		t.Fatal("unknown execution was not projected")
 	}
+	// An ambiguous Provider result is terminal for automatic continuation. The
+	// same actual owner/EER transaction must leave its frozen successor waiting:
+	// no successor execution, effect, or fresh idempotency key is created.
+	if err = runtimeService.ContinueEffect(ctx, unknown.ExternalEffectID); err != nil {
+		t.Fatalf("unknown continuation check: %v", err)
+	}
+	var unknownSuccessors, allExecutions, allEffects int
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM group_ops_execution_intents child JOIN group_ops_execution_intents parent_intent ON parent_intent.id=child.predecessor_intent_id JOIN group_ops_executions parent ON parent.external_effect_id=parent_intent.external_effect_id WHERE parent.id=$1 AND child.state='waiting'`, unknown.ID).Scan(&unknownSuccessors); err != nil || unknownSuccessors != 1 {
+		t.Fatalf("unknown successor state=%d err=%v", unknownSuccessors, err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM group_ops_executions WHERE plan_id=$1`, planID).Scan(&allExecutions); err != nil || allExecutions != 2 {
+		t.Fatalf("unknown produced execution count=%d err=%v", allExecutions, err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM external_effects`).Scan(&allEffects); err != nil || allEffects != 2 {
+		t.Fatalf("unknown produced EER count=%d err=%v", allEffects, err)
+	}
 	var accepted groupopsport.Execution
 	for _, execution := range projected {
 		if execution.State == groupopsport.ExecutionProviderAccepted {
@@ -391,14 +407,15 @@ func TestGroupOpsSharedRiverRuntimeJourney(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	runtimeService := groupopsapp.NewRuntimeService(uow, groupStore, groupStore, effectStore, journeyStaff{}, nil, journeySender{}, nil, journeyReconciler{repository: effectStore}, materials)
+	sender := &runtimeJourneySender{eligible: true}
+	runtimeService := groupopsapp.NewRuntimeService(uow, groupStore, groupStore, effectStore, journeyStaff{}, nil, sender, nil, journeyReconciler{repository: effectStore}, materials)
 	runtimeService.SetDispatchEnabled(true)
 	if err = continuationWorker.Bind(runtimeService); err != nil {
 		t.Fatal(err)
 	}
 	readiness := groupOpsMaterialReadinessAdapter{uow: uow, capturer: mediaStore, freezer: freezer}
 	groupProvider, err := outbound.NewGroupMessageProvider(outbound.GroupMessageProviderConfig{
-		Enabled: true, Executions: groupOpsDispatchReader{uow: uow, execution: groupStore, senders: journeySender{}}, Materials: readiness, Writer: wecomClient,
+		Enabled: true, Executions: groupOpsDispatchReader{uow: uow, execution: groupStore, senders: sender}, Materials: readiness, Writer: wecomClient,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -491,6 +508,56 @@ func TestGroupOpsSharedRiverRuntimeJourney(t *testing.T) {
 	if err != nil || !delivery.DeliveryProven || delivery.DeliveryStatus == nil || *delivery.DeliveryStatus != 1 || delivery.State != groupopsport.ExecutionProviderAccepted {
 		t.Fatalf("separate delivery proof=%+v err=%v", delivery, err)
 	}
+
+	// Each case accepts against an active plan first, then changes one current
+	// authorization/binding fact while River is down. Starting the real shared
+	// runtime must finalize the EER effects without ever reaching the local
+	// WeCom writer.
+	planService := groupopsapp.NewService(uow, groupStore, journeyStaff{}, groupStore)
+	assertPreCallBlock := func(label string, mutate func(int64) error) {
+		t.Helper()
+		blockedPlanID := createRiverJourneyPlan(t, ctx, uow, groupStore, actorID)
+		acceptedRun, acceptErr := runtimeService.AcceptBroadcast(ctx, blockedPlanID, actorID, "river-precall-"+label+"-0001")
+		if acceptErr != nil || acceptedRun.Accepted != 2 {
+			t.Fatalf("%s acceptance=%+v err=%v", label, acceptedRun, acceptErr)
+		}
+		before := provider.callCount()
+		if mutateErr := mutate(blockedPlanID); mutateErr != nil {
+			t.Fatalf("%s mutation: %v", label, mutateErr)
+		}
+		blockedRuntime, runtimeErr := platformjobqueue.NewRuntime(native, workers)
+		if runtimeErr != nil {
+			t.Fatal(runtimeErr)
+		}
+		blockedStart, blockedStop := startGroupOpsRiver(t, blockedRuntime)
+		blockedStart()
+		waitGroupOpsPreCallFailures(t, native, blockedPlanID, 2)
+		blockedStop()
+		if after := provider.callCount(); after != before {
+			t.Fatalf("%s reached WeCom: before=%d after=%d", label, before, after)
+		}
+	}
+	assertPreCallBlock("revision", func(blockedPlanID int64) error {
+		_, updateErr := planService.Update(ctx, groupopsport.UpdatePlanCommand{PlanID: blockedPlanID, ExpectedRevision: 1, Name: "River revision changed", Actor: actorID, IdempotencyKey: "river-precall-revision-0001"})
+		return updateErr
+	})
+	assertPreCallBlock("group-binding", func(blockedPlanID int64) error {
+		_, removeErr := planService.RemoveGroupAsset(ctx, groupopsport.GroupAssetCommand{PlanID: blockedPlanID, ExpectedRevision: 1, AssetRef: "chat-river-1", Actor: actorID, IdempotencyKey: "river-precall-binding-0001"})
+		return removeErr
+	})
+	assertPreCallBlock("paused", func(blockedPlanID int64) error {
+		_, pauseErr := planService.Pause(ctx, groupopsport.TransitionCommand{PlanID: blockedPlanID, ExpectedRevision: 1, Actor: actorID, IdempotencyKey: "river-precall-paused-0001"})
+		return pauseErr
+	})
+	assertPreCallBlock("archived", func(blockedPlanID int64) error {
+		_, archiveErr := planService.Archive(ctx, groupopsport.TransitionCommand{PlanID: blockedPlanID, ExpectedRevision: 1, Actor: actorID, IdempotencyKey: "river-precall-archived-0001"})
+		return archiveErr
+	})
+	assertPreCallBlock("sender-revoked", func(int64) error {
+		sender.SetEligible(false)
+		return nil
+	})
+	sender.SetEligible(true)
 }
 
 type groupOpsRuntimeWeCom struct {
@@ -637,6 +704,23 @@ func waitGroupOpsDelayedSuccessors(t *testing.T, native *pgxpool.Pool, planID in
 	t.Fatalf("delayed Group Ops successors did not persist; intents=%s executions=%s effects=%s river=%s", intents, executions, effects, jobs)
 }
 
+func waitGroupOpsPreCallFailures(t *testing.T, native *pgxpool.Pool, planID int64, expected int) {
+	t.Helper()
+	deadline := time.Now().Add(12 * time.Second)
+	for time.Now().Before(deadline) {
+		var failed int
+		err := native.QueryRow(context.Background(), `SELECT count(*) FROM group_ops_executions execution JOIN external_effects effect ON effect.id=execution.external_effect_id WHERE execution.plan_id=$1 AND execution.node_position=1 AND execution.state='final_failed' AND effect.state='final_failed'`, planID).Scan(&failed)
+		if err == nil && failed == expected {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	var executions, effects string
+	_ = native.QueryRow(context.Background(), `SELECT coalesce(string_agg(node_position::text || ':' || target_reference || ':' || state, ','),'') FROM group_ops_executions WHERE plan_id=$1`, planID).Scan(&executions)
+	_ = native.QueryRow(context.Background(), `SELECT coalesce(string_agg(effect.id::text || ':' || effect.state, ','),'') FROM external_effects effect JOIN group_ops_executions execution ON execution.external_effect_id=effect.id WHERE execution.plan_id=$1`, planID).Scan(&effects)
+	t.Fatalf("pre-call block did not finalize; executions=%s effects=%s", executions, effects)
+}
+
 func startGroupOpsRiver(t *testing.T, runtime *platformjobqueue.Runtime) (func(), func()) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -677,6 +761,10 @@ func createRiverJourneyPlan(t *testing.T, ctx context.Context, uow *platformpost
 
 type journeyStaff struct{}
 
+func (journeyStaff) IsActiveStaff(_ context.Context, staffID int64) (bool, error) {
+	return staffID == 1, nil
+}
+
 func (journeyStaff) ListEligibleStaff(context.Context) ([]groupopsport.OperationMember, error) {
 	return []groupopsport.OperationMember{{StaffID: 1, SenderUserID: "journey-sender", DisplayName: "Journey"}}, nil
 }
@@ -688,6 +776,35 @@ func (journeySender) ResolveExecutionSender(_ context.Context, target string) (s
 		return "", false, nil
 	}
 	return "journey-sender", true, nil
+}
+
+// runtimeJourneySender models the single currently authorized sender lookup
+// used by the production-shaped dispatch reader. It lets the integration
+// journey revoke permission after EER acceptance and before River executes.
+type runtimeJourneySender struct {
+	mu       sync.RWMutex
+	eligible bool
+}
+
+func (sender *runtimeJourneySender) ResolveExecutionSender(_ context.Context, target string) (string, bool, error) {
+	if sender == nil || target == "" {
+		return "", false, nil
+	}
+	sender.mu.RLock()
+	eligible := sender.eligible
+	sender.mu.RUnlock()
+	if !eligible {
+		return "", false, nil
+	}
+	return "journey-sender", true, nil
+}
+
+func (sender *runtimeJourneySender) SetEligible(eligible bool) {
+	if sender != nil {
+		sender.mu.Lock()
+		sender.eligible = eligible
+		sender.mu.Unlock()
+	}
 }
 
 type journeyEvidence struct{ status, calls int }
@@ -776,7 +893,11 @@ func createJourneyPlan(t *testing.T, ctx context.Context, uow *platformpostgres.
 				{AssetRef: "chat-journey-1"},
 				{AssetRef: "chat-journey-2"},
 			},
-			Nodes: []groupopsport.Node{{Position: 1, Kind: groupopsport.NodeMessage, MessageText: "PG journey", MaterialPlan: groupopsport.MaterialPlan{References: []groupopsport.MaterialReference{{Kind: "group_invite", ID: inviteID}}}}},
+			Nodes: []groupopsport.Node{
+				{Position: 1, Kind: groupopsport.NodeMessage, MessageText: "PG journey", MaterialPlan: groupopsport.MaterialPlan{References: []groupopsport.MaterialReference{{Kind: "group_invite", ID: inviteID}}}},
+				{Position: 2, Kind: groupopsport.NodeDelay, DelayMinutes: 1, MaterialPlan: groupopsport.MaterialPlan{References: []groupopsport.MaterialReference{}}},
+				{Position: 3, Kind: groupopsport.NodeMessage, MessageText: "PG successor", MaterialPlan: groupopsport.MaterialPlan{References: []groupopsport.MaterialReference{{Kind: "group_invite", ID: inviteID}}}},
+			},
 		})
 	})
 	if err != nil {
