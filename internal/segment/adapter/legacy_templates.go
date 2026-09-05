@@ -71,12 +71,26 @@ func (s LegacyTemplateSource) Evaluate(ctx context.Context, definition segmentpo
 
 func (s LegacyTemplateSource) ownerReferences(ctx context.Context, params map[string]json.RawMessage) (map[string]json.RawMessage, error) {
 	raw, exists := params["owner_staff_ids"]
-	if !exists || s.Owners == nil {
+	if !exists {
 		return params, nil
 	}
 	var ids []string
 	if json.Unmarshal(raw, &ids) != nil {
 		return nil, ErrCustomerReadUnavailable
+	}
+	var scope string
+	_ = json.Unmarshal(params["owner_scope"], &scope)
+	needsResolver := false
+	for _, value := range ids {
+		if id, err := strconv.ParseInt(value, 10, 64); err == nil && id > 0 {
+			needsResolver = true
+		}
+	}
+	if s.Owners == nil && scope == "specified" && needsResolver {
+		return nil, ErrCustomerReadUnavailable
+	}
+	if s.Owners == nil {
+		return params, nil
 	}
 	values := []string{}
 	for _, value := range ids {
@@ -339,10 +353,14 @@ func (s LegacyTemplateSource) channel(ctx context.Context, p map[string]json.Raw
 	}
 	out := map[int64]bool{}
 	localOwners, _ := listParam(p, "owner_local_staff_ids")
+	scoped, e := ownerScoped(p)
+	if e != nil {
+		return nil, e
+	}
 	for _, fact := range facts {
 		age := int(at.Sub(fact.LastEnteredAt).Hours() / 24)
-		ownerMatch := owner(p, fact.OwnerReference)
-		if fact.OwnerStaffID != nil {
+		ownerMatch := !scoped || owner(p, fact.OwnerReference)
+		if scoped && fact.OwnerStaffID != nil {
 			ownerMatch = contains(localOwners, strconv.FormatInt(*fact.OwnerStaffID, 10))
 		}
 		if !contains(channels, fact.ChannelCode) || age < minimum || (maximum != nil && age >= *maximum) || !ownerMatch {
