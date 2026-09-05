@@ -514,7 +514,7 @@ func TestGroupOpsSharedRiverRuntimeJourney(t *testing.T) {
 	// runtime must finalize the EER effects without ever reaching the local
 	// WeCom writer.
 	planService := groupopsapp.NewService(uow, groupStore, journeyStaff{}, groupStore)
-	mutateAcceptedPlan := func(planID int64, change func(*groupopsport.Detail)) error {
+	mutateAcceptedPlan := func(planID int64, bumpRevision bool, change func(*groupopsport.Detail)) error {
 		// Active plans are intentionally immutable through the public service.
 		// The dispatch guard must still fail closed if its accepted snapshot is
 		// older than the current owner fact, so set up that fact through the real
@@ -525,7 +525,9 @@ func TestGroupOpsSharedRiverRuntimeJourney(t *testing.T) {
 				return err
 			}
 			change(&detail)
-			detail.Plan.Revision++
+			if bumpRevision {
+				detail.Plan.Revision++
+			}
 			detail.Plan.UpdatedAt = time.Now().UTC()
 			return groupStore.Save(tx, detail)
 		})
@@ -554,12 +556,24 @@ func TestGroupOpsSharedRiverRuntimeJourney(t *testing.T) {
 		}
 	}
 	assertPreCallBlock("revision", func(blockedPlanID int64) error {
-		return mutateAcceptedPlan(blockedPlanID, func(*groupopsport.Detail) {})
+		return mutateAcceptedPlan(blockedPlanID, true, func(*groupopsport.Detail) {})
 	})
 	assertPreCallBlock("group-binding", func(blockedPlanID int64) error {
-		return mutateAcceptedPlan(blockedPlanID, func(detail *groupopsport.Detail) {
-			detail.GroupAssets = detail.GroupAssets[1:]
-		})
+		// Keep the accepted revision intact: LoadDispatchExecution must reject
+		// the current target binding itself, rather than merely the version.
+		if err := mutateAcceptedPlan(blockedPlanID, false, func(detail *groupopsport.Detail) {
+			detail.GroupAssets = []groupopsport.GroupAsset{}
+		}); err != nil {
+			return err
+		}
+		var revision, bindings int64
+		if err := native.QueryRow(ctx, `SELECT p.revision,count(a.id) FROM group_ops_plans p LEFT JOIN group_ops_plan_group_assets a ON a.plan_id=p.id WHERE p.id=$1 GROUP BY p.id`, blockedPlanID).Scan(&revision, &bindings); err != nil {
+			return err
+		}
+		if revision != 1 || bindings != 0 {
+			return fmt.Errorf("binding guard setup revision=%d bindings=%d", revision, bindings)
+		}
+		return nil
 	})
 	assertPreCallBlock("paused", func(blockedPlanID int64) error {
 		_, pauseErr := planService.Pause(ctx, groupopsport.TransitionCommand{PlanID: blockedPlanID, ExpectedRevision: 1, Actor: actorID, IdempotencyKey: "river-precall-paused-0001"})
