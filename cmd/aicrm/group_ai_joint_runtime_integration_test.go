@@ -6,26 +6,41 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	accessapp "github.com/qianlan33333-png/AI-CRM-v3/internal/access/app"
 	accessstore "github.com/qianlan33333-png/AI-CRM-v3/internal/access/store"
 	aiassistantapp "github.com/qianlan33333-png/AI-CRM-v3/internal/aiassistant/app"
 	aiassistanthttp "github.com/qianlan33333-png/AI-CRM-v3/internal/aiassistant/http"
+	aiassistantport "github.com/qianlan33333-png/AI-CRM-v3/internal/aiassistant/port"
 	aiassistantstore "github.com/qianlan33333-png/AI-CRM-v3/internal/aiassistant/store"
+	automationapp "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/app"
+	automationdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/domain"
+	automationport "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/port"
+	automationstore "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/store"
 	externaleffects "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects"
+	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	groupopsapp "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/app"
 	groupopsstore "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/store"
 	identityapp "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/app"
 	identityquery "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/query"
 	identitystore "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/store"
+	mediaapp "github.com/qianlan33333-png/AI-CRM-v3/internal/media/app"
 	groupopsmaterial "github.com/qianlan33333-png/AI-CRM-v3/internal/media/groupopsmaterial"
 	mediastore "github.com/qianlan33333-png/AI-CRM-v3/internal/media/store"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/outbound"
 	platformjobqueue "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/jobqueue"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
+	"github.com/qianlan33333-png/AI-CRM-v3/internal/segment"
+	segmentapp "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/app"
+	segmentcompiler "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/compiler"
+	segmentport "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/port"
+	segmentstore "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/store"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/wecom"
 	wecomadapter "github.com/qianlan33333-png/AI-CRM-v3/internal/wecom/adapter"
 	"github.com/riverqueue/river"
@@ -304,4 +319,371 @@ func TestAIAssistantAndGroupOpsShareRiverOutboundAndEffects(t *testing.T) {
 	if err = native.QueryRow(ctx, `SELECT count(*) FROM external_effects`).Scan(&effectsCount); err != nil || effectsCount != effectBaseline {
 		t.Fatalf("replay/restart minted effects=%d baseline=%d err=%v", effectsCount, effectBaseline, err)
 	}
+}
+
+// TestAutomationAIAssistantAndGroupOpsShareRiverRuntime is the final 05/06/07
+// joint journey: a real Segment refresh creates Automation enrollment work,
+// manual audience confirmation creates an AI pending plan, and GroupOps shares
+// the same EER, River runtime, router and completion sink.
+func TestAutomationAIAssistantAndGroupOpsShareRiverRuntime(t *testing.T) {
+	ctx := context.Background()
+	native, cleanup := automationAudienceRuntimePool(t)
+	defer cleanup()
+	for _, migration := range []string{"0012_group_ops.sql", "0016_media_content_packages.sql", "0078_group_ops_provider_tasks.sql", "0081_group_ops_webhook_unconfigured_reference.sql"} {
+		if err := applyAIAssistantHTTPJourneyMigration(ctx, native, migration); err != nil {
+			t.Fatalf("apply %s: %v", migration, err)
+		}
+	}
+	pool, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	uow, err := platformpostgres.NewUnitOfWork(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	staffID := automationAudienceInsertProviderStaff(t, ctx, native)
+	var groupActor int64
+	if err = native.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active) VALUES('joint-runtime-group','$argon2id$joint','Joint Runtime Group','journey-sender',true) RETURNING id`).Scan(&groupActor); err != nil {
+		t.Fatal(err)
+	}
+	segmentRepo, err := segmentstore.NewPostgreSQL(native, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	automationRepo, err := automationstore.NewPostgreSQL(native, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	aiRepo, err := aiassistantstore.NewPostgreSQL(native, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mediaRepo, err := mediastore.NewPostgreSQL(native, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mediaService, err := mediaapp.NewHTTPFacade(mediaRepo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	groupStore, err := groupopsstore.NewPostgreSQL(native, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	accessRepository := accessstore.NewPostgreSQL()
+	identities := identityquery.NewPostgreSQL()
+	aiService, err := aiassistantapp.NewService(uow, aiRepo, automationAudienceAIRecipients{}, automationAudienceAIStaff{}, aiMaterialAdapter{capturer: mediaRepo, references: mediaRepo}, automationAudienceAIIdentities{}, identities)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	workers := river.NewWorkers()
+	refreshWorker, memberWorker := segment.NewAudienceRefreshWorker(), segment.NewAudienceMemberEventDispatchWorker()
+	if err = river.AddWorkerSafely[segment.AudienceRefreshJobArgs](workers, refreshWorker); err != nil {
+		t.Fatal(err)
+	}
+	if err = river.AddWorkerSafely[segment.AudienceMemberEventDispatchJobArgs](workers, memberWorker); err != nil {
+		t.Fatal(err)
+	}
+	effectsModule := externaleffects.NewModuleRegistration()
+	if err = effectsModule.RegisterWorkers(workers); err != nil {
+		t.Fatal(err)
+	}
+	continuation := groupopsapp.NewContinuationWorker()
+	if err = river.AddWorkerSafely[groupopsapp.ContinuationJobArgs](workers, continuation); err != nil {
+		t.Fatal(err)
+	}
+	client, err := platformjobqueue.NewInsertClient(native, workers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	effects, err := externaleffects.NewRepository(native, client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refreshJobs, err := segment.NewRiverRefreshEnqueuer(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	memberJobs, err := segment.NewRiverMemberEventEnqueuer(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	customers := automationAudienceInsertProviderCustomers(t, ctx, native)
+	source := &automationAudienceSource{}
+	evaluator, err := segmentapp.NewEvaluator(segmentcompiler.Compiler{}, source, automationAudienceCanonical{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshots, err := segmentapp.NewSnapshotService(uow, segmentRepo, evaluator, refreshJobs, memberJobs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = refreshWorker.BindService(snapshots); err != nil {
+		t.Fatal(err)
+	}
+	materials := automationAudienceCreateMedia(t, ctx, mediaRepo, staffID)
+	automationService := automationapp.NewAgentServiceWithMediaReferences(uow, automationRepo, mediaRepo, mediaRepo, mediaRepo, mediaRepo, automationRepo)
+	agent := automationAudiencePublishedAgent(t, ctx, automationService, staffID, materials)
+	published, found, err := automationService.PublishedAgent(ctx, agent.ID)
+	if err != nil || !found {
+		t.Fatalf("published agent=%+v found=%t err=%v", published, found, err)
+	}
+	packageID := automationAudiencePackage(t, ctx, uow, segmentRepo, time.Date(2026, 9, 6, 0, 0, 0, 0, time.UTC))
+	segmentStaff := automationOpsStaffAdapter{uow: uow, users: accessRepository}
+	execution, err := segmentapp.NewExecutionService(uow, segmentRepo, automationService, segmentStaff, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = execution.PutBinding(ctx, segmentapp.BindingCommand{PackageID: packageID, ExpectedPackageVersion: 2, AgentID: agent.ID, ExpectedPublishedVersion: published.PublishedVersion, ExpectedAgentDigest: automationAudienceCombinedDigest(published.ContentDigest, published.MaterialsDigest), Actor: staffID, IdempotencyKey: "joint-runtime-binding-0001"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = execution.ReplaceSenders(ctx, segmentapp.SendersCommand{PackageID: packageID, ExpectedPackageVersion: 3, ProviderMemberIDs: []string{"sender-a"}, Actor: staffID, IdempotencyKey: "joint-runtime-senders-0001"}); err != nil {
+		t.Fatal(err)
+	}
+
+	privateWriter, err := outbound.NewPrivateMessageRepository(native, effects)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = aiService.BindOutbound(privateWriter, true); err != nil {
+		t.Fatal(err)
+	}
+	if err = aiService.BindReconciler(effects); err != nil {
+		t.Fatal(err)
+	}
+	messages, err := outbound.NewMessageService(native, uow, effects, automationRepo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	automationWeCom := newAutomationAudienceWeComServer(t)
+	defer automationWeCom.Close()
+	automationWriter, err := wecomadapter.NewDirectory(wecomadapter.Config{Enabled: true, CorpID: "runtime-corp", ContactSecret: "runtime-contact-secret", APIBase: automationWeCom.URL, HTTPClient: automationWeCom.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	frozen := automationFrozenPayloadReader{preparer: aiPrivatePayloadReader{images: mediaService, materials: mediaRepo, attachments: mediaService, uow: uow, capturer: mediaRepo}}
+	messageProvider, err := outbound.NewMessageProvider(outbound.MessageProviderConfig{Enabled: true, CorpScope: "wecom-corp:runtime-corp", Executions: messages, Identities: outboundIdentityAdapter{uow: uow, reader: identities}, Staff: segmentStaff, Content: automationService, Payloads: frozen, Writer: automationWriter})
+	if err != nil {
+		t.Fatal(err)
+	}
+	privateProvider, err := outbound.NewPrivateMessageProvider(true, privateWriter, automationAudiencePrivateTarget{}, aiPrivatePayloadReader{content: aiRepo, images: mediaService, materials: mediaRepo, attachments: mediaService, uow: uow, capturer: mediaRepo}, automationWriter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	groupWeCom := newGroupOpsRuntimeWeCom(t)
+	defer groupWeCom.Close()
+	groupWriter, err := wecomadapter.NewDirectory(wecomadapter.Config{Enabled: true, CorpID: "runtime-corp", ContactSecret: "runtime-contact-secret", APIBase: groupWeCom.URL(), HTTPClient: groupWeCom.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	freezer, err := groupopsmaterial.NewFreezer(mediaPreparedPlanReader{reader: mediaRepo})
+	if err != nil {
+		t.Fatal(err)
+	}
+	groupMaterials, err := newGroupOpsMaterialAdapter(mediaRepo, freezer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	groupStaff := groupOpsStaffAdapter{access: accessRepository, owners: groupStore}
+	groupRuntime := groupopsapp.NewRuntimeService(uow, groupStore, groupStore, effects, groupStaff, nil, groupStaff, nil, journeyReconciler{repository: effects}, groupMaterials)
+	groupRuntime.SetDispatchEnabled(true)
+	if err = continuation.Bind(groupRuntime); err != nil {
+		t.Fatal(err)
+	}
+	groupProvider, err := outbound.NewGroupMessageProvider(outbound.GroupMessageProviderConfig{Enabled: true, Executions: groupOpsDispatchReader{uow: uow, execution: groupStore, senders: groupStaff}, Materials: groupOpsMaterialReadinessAdapter{uow: uow, capturer: mediaRepo, freezer: freezer}, Writer: groupWriter})
+	if err != nil {
+		t.Fatal(err)
+	}
+	effectWorker := externaleffects.NewWorker(nil, outbound.NewProviderRouterWithMessages(nil, groupProvider, messageProvider).WithPrivateMessage(privateProvider))
+	if err = river.AddWorkerSafely[externaleffects.EffectJobArgs](workers, effectWorker); err != nil {
+		t.Fatal(err)
+	}
+	if err = effectWorker.BindRepository(effects); err != nil {
+		t.Fatal(err)
+	}
+	groupCompletion, err := outbound.NewGroupMessageCompletionSink(groupStore, groupStore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	continuations, err := groupopsapp.NewRiverContinuationEnqueuer(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	groupCompletion.WithContinuation(continuations)
+	privateCompletion, err := outbound.NewPrivateMessageCompletionSink(privateWriter, aiRepo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	completion, err := outbound.NewCompletionRouterWithPrivate(nil, groupCompletion, privateCompletion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	completion.WithAutomationMessage(messages)
+	if err = effects.SetCompletionSink(completion); err != nil {
+		t.Fatal(err)
+	}
+
+	runtimeService, err := automationapp.NewRuntimeService(uow, automationRepo, execution, snapshots, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = runtimeService.SetMessageAccepter(messages); err != nil {
+		t.Fatal(err)
+	}
+	if err = runtimeService.SetReviewPlanIntake(aiService, automationService); err != nil {
+		t.Fatal(err)
+	}
+	if err = runtimeService.SetOutboundContentFreezer(automationOutboundContentFreezer{capturer: mediaRepo}); err != nil {
+		t.Fatal(err)
+	}
+	if err = memberWorker.Bind(snapshots, automationAudienceEnrollmentSink{runtime: runtimeService}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Bootstrap the empty and one-member snapshots while no policy is active.
+	// The shared runtime below is stopped for all three business acceptances.
+	bootstrap, err := platformjobqueue.NewRuntime(native, workers, segment.AudienceRefreshQueue, platformjobqueue.OutboundQueue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stopBootstrap := automationAudienceStartRuntime(t, bootstrap)
+	var stopBootstrapOnce sync.Once
+	stopBootstrapSafely := func() { stopBootstrapOnce.Do(stopBootstrap) }
+	defer stopBootstrapSafely()
+	source.Set(nil)
+	if _, err = snapshots.AcceptRefresh(ctx, segmentapp.RefreshCommand{PackageID: packageID, Actor: staffID, IdempotencyKey: "joint-runtime-empty-0001", ReferenceTime: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	automationAudienceEventually(t, "joint empty snapshot", func() bool {
+		snapshot, ok, e := snapshots.PublishedSnapshot(ctx, segmentport.PackageID(packageID))
+		return e == nil && ok && snapshot.MemberCount == 0
+	})
+	source.Set(customers[:1])
+	if _, err = snapshots.AcceptRefresh(ctx, segmentapp.RefreshCommand{PackageID: packageID, Actor: staffID, IdempotencyKey: "joint-runtime-one-member-0001", ReferenceTime: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	automationAudienceEventually(t, "joint one-member snapshot", func() bool {
+		snapshot, ok, e := snapshots.PublishedSnapshot(ctx, segmentport.PackageID(packageID))
+		return e == nil && ok && snapshot.MemberCount == 1
+	})
+	stopBootstrapSafely()
+	policy, err := runtimeService.CreatePolicy(ctx, automationapp.PolicyCommand{Code: "joint-runtime-entry", Name: "Joint runtime entry", PackageID: segmentport.PackageID(packageID), TriggerKind: automationport.TriggerAudienceMemberEnteredV1, ActionKind: automationport.ActionOutboundMessage, ActionConfig: json.RawMessage(fmt.Sprintf(`{"agent_id":%d}`, agent.ID)), QuietHours: json.RawMessage(`{"timezone":"UTC","start":"22:00","end":"08:00"}`), SingleRunLimit: 100, ApprovalStaffID: &staffID, Actor: staffID, IdempotencyKey: "joint-runtime-policy-0001"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = runtimeService.TransitionPolicy(ctx, automationapp.PolicyLifecycleCommand{PolicyID: policy.ID, ExpectedVersion: policy.Version, Actor: staffID, Target: automationdomain.PolicyActive, IdempotencyKey: "joint-runtime-policy-active-0001"}); err != nil {
+		t.Fatal(err)
+	}
+
+	preview, err := runtimeService.CreateBroadcastPreview(ctx, packageID, staffID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manual, err := runtimeService.ConfirmRun(ctx, automationapp.RunConfirmCommand{PackageID: packageID, PackageVersion: preview.PackageVersion, SnapshotID: preview.SnapshotID, AgentID: preview.AgentID, AgentPublishedVersion: preview.AgentPublishedVersion, PreviewDigest: automationapp.PreviewDigestString(preview), Actor: staffID, IdempotencyKey: "joint-runtime-manual-confirm-0001"})
+	if err != nil || manual.State != automationport.RunPendingReview || manual.AIPlanID < 1 {
+		t.Fatalf("manual=%+v err=%v", manual, err)
+	}
+	if effectsNow := jointEffectCount(t, ctx, native); effectsNow != 0 {
+		t.Fatalf("pending AI review accepted effects=%d", effectsNow)
+	}
+	plan, err := aiService.GetPlan(ctx, aiassistantport.PlanID(manual.AIPlanID))
+	if err != nil || plan.State != aiassistantport.PlanPendingReview {
+		t.Fatalf("manual plan=%+v err=%v", plan, err)
+	}
+	groupPlan := createRiverJourneyPlan(t, ctx, uow, groupStore, groupActor)
+	unknownPlan := createRiverJourneyPlanWithMessages(t, ctx, uow, groupStore, groupActor, "provider result intentionally unknown", "blocked")
+	if _, err = native.Exec(ctx, `INSERT INTO group_ops_directory_groups(chat_reference,owner_staff_id,display_name,member_count,source_digest,refreshed_at) VALUES ('chat-river-1',$1,'Joint one',1,$2,clock_timestamp()),('chat-river-2',$1,'Joint two',1,$3,clock_timestamp())`, groupActor, string(effectport.Hash("joint-directory", "1")), string(effectport.Hash("joint-directory", "2"))); err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range []struct {
+		plan int64
+		key  string
+	}{{groupPlan, "joint-runtime-group-0001"}, {unknownPlan, "joint-runtime-group-unknown-0001"}} {
+		if out, e := groupRuntime.AcceptBroadcast(ctx, item.plan, groupActor, item.key); e != nil || out.Accepted != 2 {
+			t.Fatalf("group acceptance=%+v err=%v", out, e)
+		}
+	}
+	approval, err := aiService.PreviewApproval(ctx, aiassistantport.PreviewApprovalCommand{Actor: aiassistantport.Actor{Kind: aiassistantport.ActorAdmin, ID: staffID}, PlanID: plan.ID, ExpectedVersion: plan.Version})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = aiService.ApprovePlan(ctx, aiassistantport.ApprovePlanCommand{Actor: aiassistantport.Actor{Kind: aiassistantport.ActorAdmin, ID: staffID}, PlanID: plan.ID, ExpectedVersion: plan.Version, PreviewDigest: approval.PreviewDigest, IdempotencyKey: "joint-runtime-manual-approve-0001"}); err != nil {
+		t.Fatal(err)
+	}
+	// This accepted refresh is durable while the only shared runtime is down.
+	source.Set(customers)
+	if _, err = snapshots.AcceptRefresh(ctx, segmentapp.RefreshCommand{PackageID: packageID, Actor: staffID, IdempotencyKey: "joint-runtime-entered-0001", ReferenceTime: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	if effectsNow := jointEffectCount(t, ctx, native); effectsNow != 5 {
+		t.Fatalf("pre-start effects=%d want group+manual 5", effectsNow)
+	}
+	var distinctPreStartEffects int
+	if err = native.QueryRow(ctx, `SELECT count(DISTINCT envelope_fingerprint) FROM external_effects`).Scan(&distinctPreStartEffects); err != nil || distinctPreStartEffects != 5 {
+		t.Fatalf("pre-start distinct effects=%d want 5 err=%v", distinctPreStartEffects, err)
+	}
+	if automationWeCom.Calls() != 0 || groupWeCom.callCount() != 0 {
+		t.Fatal("provider was called before shared runtime start")
+	}
+
+	shared, err := platformjobqueue.NewRuntime(native, workers, segment.AudienceRefreshQueue, platformjobqueue.OutboundQueue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stopShared := automationAudienceStartRuntime(t, shared)
+	var stopSharedOnce sync.Once
+	stopSharedSafely := func() { stopSharedOnce.Do(stopShared) }
+	defer stopSharedSafely()
+	automationAudienceEventually(t, "joint source completions", func() bool { return automationWeCom.Calls() == 2 && groupWeCom.callCount() == 4 })
+	if uploads := automationWeCom.Uploads(); uploads != 6 {
+		t.Fatalf("frozen mixed-media uploads=%d want 6", uploads)
+	}
+	waitGroupOpsDelayedSuccessors(t, native, groupPlan, 2)
+	stopSharedSafely()
+	effectsBeforeReplay := jointEffectCount(t, ctx, native)
+	if replay, e := groupRuntime.AcceptBroadcast(ctx, groupPlan, groupActor, "joint-runtime-group-0001"); e != nil || replay.Run.ID < 1 {
+		t.Fatalf("group replay=%+v err=%v", replay, e)
+	}
+	if _, err = aiService.ApprovePlan(ctx, aiassistantport.ApprovePlanCommand{Actor: aiassistantport.Actor{Kind: aiassistantport.ActorAdmin, ID: staffID}, PlanID: plan.ID, ExpectedVersion: plan.Version, PreviewDigest: approval.PreviewDigest, IdempotencyKey: "joint-runtime-manual-approve-0001"}); err != nil {
+		t.Fatal(err)
+	}
+	if effectsAfterReplay := jointEffectCount(t, ctx, native); effectsAfterReplay != effectsBeforeReplay {
+		t.Fatalf("replayed acceptance minted effects=%d want %d", effectsAfterReplay, effectsBeforeReplay)
+	}
+	// Restart must not re-send the unknown group effects or the delayed normal nodes.
+	restarted, err := platformjobqueue.NewRuntime(native, workers, segment.AudienceRefreshQueue, platformjobqueue.OutboundQueue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stopRestart := automationAudienceStartRuntime(t, restarted)
+	var stopRestartOnce sync.Once
+	stopRestartSafely := func() { stopRestartOnce.Do(stopRestart) }
+	defer stopRestartSafely()
+	time.Sleep(250 * time.Millisecond)
+	if automationWeCom.Calls() != 2 || groupWeCom.callCount() != 4 {
+		stopRestartSafely()
+		t.Fatalf("restart duplicated calls private=%d group=%d", automationWeCom.Calls(), groupWeCom.callCount())
+	}
+	if tag, e := native.Exec(ctx, `UPDATE river_job job SET state='available',scheduled_at=clock_timestamp()-interval '1 second' FROM external_effect_jobs effect_job JOIN group_ops_executions execution ON execution.external_effect_id=effect_job.effect_id WHERE job.id=effect_job.river_job_id AND execution.plan_id=$1 AND execution.node_position=3 AND job.state='scheduled'`, groupPlan); e != nil || tag.RowsAffected() != 2 {
+		stopRestartSafely()
+		t.Fatalf("advance delayed=%d err=%v", tag.RowsAffected(), e)
+	}
+	waitGroupOpsProviderCalls(t, native, groupWeCom, 6)
+	stopRestartSafely()
+	var unknown int
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM external_effects WHERE state='outcome_unknown'`).Scan(&unknown); err != nil || unknown != 2 {
+		t.Fatalf("unknown effects=%d err=%v", unknown, err)
+	}
+}
+
+func jointEffectCount(t *testing.T, ctx context.Context, pool *pgxpool.Pool) int {
+	t.Helper()
+	var count int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM external_effects`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	return count
 }
