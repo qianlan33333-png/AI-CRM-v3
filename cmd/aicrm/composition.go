@@ -520,18 +520,40 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	}
 	surveyDefinitions := surveyapp.NewService(uow, surveyRepository)
 	surveySubmissions := surveyapp.NewSubmissionService(uow, surveyRepository, surveyCipher)
+	surveyCompletionTargets, err := surveyCompletionTargets(cfg.Survey.CompletionTargetsJSON)
+	if err != nil {
+		return fail(err)
+	}
+	surveyCompletionProvider, err := outbound.NewSurveyCompletionProvider(outbound.SurveyCompletionProviderConfig{Enabled: cfg.Survey.CompletionProviderEnabled, Targets: surveyCompletionTargets, Reader: surveyRepository, Identities: queries})
+	if err != nil {
+		return fail(err)
+	}
+	surveyCompletionSink, err := outbound.NewSurveyCompletionSink(surveyRepository)
+	if err != nil {
+		return fail(err)
+	}
+	if err = surveySubmissions.BindCompletionIntent(surveyCompletionEffectAccepter{effects: effectRepository}); err != nil {
+		return fail(err)
+	}
+	if err = surveySubmissions.BindCompletionPolicy(surveyCompletionProvider); err != nil {
+		return fail(err)
+	}
+	if err = surveySubmissions.BindCompletionIdentity(surveyCompletionProvider); err != nil {
+		return fail(err)
+	}
 	if err = surveySubmissions.BindCustomerTimeline(customerStore); err != nil {
 		return fail(err)
 	}
 	if err = surveySubmissions.BindDeclaredPhone(oneID, customerStore); err != nil {
 		return fail(err)
 	}
+	outboundCompletionSink.WithSurveyCompletion(surveyCompletionSink)
 	surveyOAuthProvider, err := surveyprovider.NewWeChatOAuth(cfg.Survey.OAuthEnabled, cfg.Survey.OAuthAppID, cfg.Survey.OAuthSecret, cfg.Survey.OAuthOpenPlatformID, cfg.PublicOrigin+"/api/h5/surveys/oauth/callback", cfg.Survey.OAuthScope)
 	if err != nil {
 		return fail(err)
 	}
 	surveyOAuth := surveyapp.NewOAuthService(uow, surveyRepository, surveyOAuthProvider, oneID)
-	surveyModule := surveymodule.NewModuleRegistration()
+	surveyModule := surveymodule.NewModuleRegistration().SetCompletionProviderEnabled(cfg.Survey.CompletionProviderEnabled)
 	surveyBindings, err := surveyModule.Bind(surveyDefinitions, surveySubmissions, requestSecurity, surveyOAuth)
 	if err != nil {
 		return fail(err)
@@ -942,7 +964,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if providerErr != nil {
 		return fail(providerErr)
 	}
-	providerRouter := outbound.NewProviderRouterWithGroupMessageAndChannels(tagCatalogProvider, groupOpsProvider, channelAssetProvider, channelEntrantProvider, channelLinkProvider).WithPrivateMessage(privateProvider).WithAutomationMessage(messageProvider).WithSidebarJSSDK(sidebarExpiry)
+	providerRouter := outbound.NewProviderRouterWithGroupMessageAndChannels(tagCatalogProvider, groupOpsProvider, channelAssetProvider, channelEntrantProvider, channelLinkProvider).WithPrivateMessage(privateProvider).WithAutomationMessage(messageProvider).WithSidebarJSSDK(sidebarExpiry).WithSurveyCompletion(surveyCompletionProvider)
 	if err = effectsModule.SetProviderAdapter(composedProviderRouter{outbound: providerRouter, payment: paymentAdapter}); err != nil {
 		return fail(err)
 	}
