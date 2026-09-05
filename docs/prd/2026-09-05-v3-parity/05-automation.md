@@ -134,3 +134,17 @@ CI33964237463通过不代表新Host已验收。新Host与已有admin_audience_de
 
 
 退出事件范围复核：dd8 outbound_service.py:27/234/244及automation_binding/precheck.py:178只消费entered。日刷新exited保留为不可变变化事实及原回读，不新增退出运营发送触发；0087不为此分配。增量未移除成员、日刷新移除成员与进入发送幂等必须通过实际共享River验证。
+
+## 18. 人工群发复用既有 AI 待审计划
+
+冻结dd8实际来源：automation/ops_enrollment/application.py:ExecuteUserOpsBatchSendCommand 在confirm后调用UserOpsReviewPlanGateway.create_pending_review_plan，要求pending_review/draft及broadcast_job_count=0。它与subscription.requires_approval不同：automation_binding/repository.py的专用Agent订阅默认execute/false；automation_agents/worker.py对need_human_review=true返回human_review_required，false才生成enqueue_automation_send_plan，由webhook_service.py的专用流程自动批准。不能凭字段同名把这些流程混成直接发送。
+
+本次修复仅恢复上述旧人工流程，OneID涉及既有canonical目标和Access资格，持久化涉及Automation运行事实与AI待审计划；审批后的效果仍归AI/Outbound现有内核。
+
+- 人工群发继续复用当前预览、冻结成员/话术/发送人和CSRF确认；确认创建既有AI助手待审计划，进入已有AI审阅页。确认本身零outbound/EER发送接受，不能显示已排队发送。
+- 使用aiassistant/port.Intake及既有PlanReader/整单审批。AI CreatePlan当前开启自己的UoW，而平台禁止嵌套事务；需要同事务时仅新增稳定的CreatePlanWithin窄Port，复用现有validateCanonicalRecipients/createWithin与Owner Store，缺事务明确失败。禁止把两次独立commit称原子提交。
+- Automation保存自身运行与opaque AI PlanID关联；源snapshot/内容/发送人摘要、幂等收据、审计及AI计划同事务。相同确认或响应丢失重试返回同一计划，源变化明确冲突；保持实际接纳的目标/素材快照，不创建第二套客户或审批表。
+- 为必要的现有运行关联/待审状态预留0087，Owner Automation；只扩已有业务事实，不新增队列、审批引擎或执行Worker。若既有字段已足够则无需迁移，报告实际方案。AI计划状态/执行结果通过既有稳定只读Port回到运行页面，不在Automation重发或复制AI执行事实。
+- Host只做原操作按钮/反馈/进入既有审阅页的必要适配，冻结业务文件保持原样。上限遵循现有两个Port，超限明确拒绝或按旧已验证分批合同处理，不静默截断。
+- 自动Agent仅保留已验证专用enqueue契约：need_human_review要求不被绕过；通用Webhook requires_approval不得被误当已人工批准，未有相应已实现契约时明确不可启用。不要为此新增通用Webhook/审批能力。
+- 同一实际PG/HTTP旅程：预览确认→pending plan且零效果→内容审阅零发送→整单批准→共享River/本地WeCom协议→运行记录回读；重复/并发确认与审批不重复，UoW故障无孤立运行/计划。原自动entered和unknown恢复另行保持回归。

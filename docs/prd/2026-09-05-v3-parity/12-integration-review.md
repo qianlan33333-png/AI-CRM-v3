@@ -54,4 +54,4 @@ Provider HTTP200 中 errcode=-1 为系统繁忙，按官方错误说明建议稍
 
 全部开发与联合验收完成后冻结唯一发布候选 HEAD，补齐制品摘要、迁移顺序、配置变化、历史导入 dry-run、风险与回滚步骤。取得用户针对该候选的最终上线确认后，才允许一次合并 main 并执行一次生产部署。
 
-- 0085分配Segment：PRD05§16旧增量/日刷新差异与种类持久事实；复用现有RefreshRun/snapshot/UoW/River。0084仍HXC独占，0086分配WeCom主负责人恢复（PRD05§17），下一可用0087。
+- 0085分配Segment：PRD05§16旧增量/日刷新差异与种类持久事实；复用现有RefreshRun/snapshot/UoW/River。0084仍HXC独占，0086分配WeCom主负责人恢复（PRD05§17），0087预留Automation人工群发与既有AI待审计划关联（PRD05§18），下一可用0088。
