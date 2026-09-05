@@ -4,24 +4,36 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	effects "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects"
 	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
+	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/outbound"
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
 	platformjobqueue "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/jobqueue"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
+	surveyapp "github.com/qianlan33333-png/AI-CRM-v3/internal/survey/app"
+	surveyport "github.com/qianlan33333-png/AI-CRM-v3/internal/survey/port"
+	surveysecure "github.com/qianlan33333-png/AI-CRM-v3/internal/survey/secure"
+	surveystore "github.com/qianlan33333-png/AI-CRM-v3/internal/survey/store"
 	tagport "github.com/qianlan33333-png/AI-CRM-v3/internal/tag/port"
 	tagstore "github.com/qianlan33333-png/AI-CRM-v3/internal/tag/store"
 	"github.com/riverqueue/river"
@@ -260,3 +272,197 @@ func catalogIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 func itoa(value int64) string { return strconv.FormatInt(value, 10) }
 
 var _ tagport.SyncCompletionWriter = (*tagstore.Repository)(nil)
+
+type surveyCompletionIntegrationIdentity struct{}
+
+func (surveyCompletionIntegrationIdentity) VerifiedExternalIdentityValue(context.Context, customerdomain.CustomerID, identitydomain.Kind, string) (string, bool, error) {
+	return "", false, nil
+}
+
+func TestPostgreSQLSurveySyntheticPushSurvivesRepositoryRestartAndDoesNotBlindRetryUnknown(t *testing.T) {
+	pool, cleanup := catalogIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	applySurveyCompletionMigrations(t, ctx, pool)
+	wrapped, err := platformpostgres.Wrap(pool, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uow, err := platformpostgres.NewUnitOfWork(wrapped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cipher, err := surveysecure.NewCipher(base64.RawStdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	surveys, err := surveystore.NewPostgreSQL(pool, uow, cipher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workers := river.NewWorkers()
+	if err = river.AddWorkerSafely[effects.EffectJobArgs](workers, effects.NewWorker(nil, nil)); err != nil {
+		t.Fatal(err)
+	}
+	client, err := platformjobqueue.NewInsertClient(pool, workers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	effectRepository, err := effects.NewRepository(pool, client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sink, err := outbound.NewSurveyCompletionSink(surveys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = effectRepository.SetCompletionSink(sink); err != nil {
+		t.Fatal(err)
+	}
+
+	var actor, questionnaire int64
+	now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+	if err = pool.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name) VALUES('survey-synthetic-effect','$argon2id$test','Survey synthetic effect') RETURNING id`).Scan(&actor); err != nil {
+		t.Fatal(err)
+	}
+	if err = pool.QueryRow(ctx, `INSERT INTO survey_questionnaires(name,title,description,mode,answer_display_mode,slug,status,created_by,updated_by,created_at,updated_at) VALUES('Synthetic effect','Synthetic effect title','','survey','all_in_one','synthetic-effect','disabled',$1,$1,$2,$2) RETURNING id`, actor, now).Scan(&questionnaire); err != nil {
+		t.Fatal(err)
+	}
+	received := make([]string, 0, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		received = append(received, string(body))
+		if !strings.Contains(string(body), `"user_id":"questionnaire_test"`) || !strings.Contains(string(body), `"is_test":true`) || strings.Contains(string(body), "unionid") || strings.Contains(string(body), "must-not-send") {
+			t.Fatalf("unexpected synthetic body %s", body)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	target := outbound.SurveyCompletionTarget{Reference: "local-webhook", Endpoint: server.URL, SigningKey: []byte(strings.Repeat("s", 32)), ClientID: "survey-v3-test", AllowLoopbackHTTP: true, Version: "v1", IdentityKind: identitydomain.KindUnionID, IdentityScope: "wechat-open-platform:primary", CustomParams: map[string]string{"campaign": "control", "unionid": "must-not-send"}}
+	provider, err := outbound.NewSurveyCompletionProvider(outbound.SurveyCompletionProviderConfig{Enabled: true, Targets: []outbound.SurveyCompletionTarget{target}, Reader: surveys, Identities: surveyCompletionIntegrationIdentity{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := surveyapp.NewSubmissionService(uow, surveys, cipher)
+	if err = service.BindCompletionPolicy(provider); err != nil {
+		t.Fatal(err)
+	}
+	if err = service.BindCompletionIntent(surveyCompletionEffectAccepter{effects: effectRepository}); err != nil {
+		t.Fatal(err)
+	}
+	config, err := service.GetOperationConfiguration(ctx, surveyport.ID(questionnaire))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.SaveOperationConfiguration(ctx, surveyport.OperationConfiguration{QuestionnaireID: surveyport.ID(questionnaire), ExternalPushEnabled: true, ExternalPushConfigurationRef: target.Reference, ExternalPushMetadata: json.RawMessage(`{"remark":"frozen","custom_params":{"campaign":"control","unionid":"must-not-send"}}`), Version: config.Version}, actor, "survey-synthetic-config-0001"); err != nil {
+		t.Fatal(err)
+	}
+	key := "survey-synthetic-test-effect-0001"
+	first, err := service.QueueCompletionTest(ctx, surveyport.ID(questionnaire), actor, key)
+	if err != nil || first.EffectID == "" || first.State != "queued" {
+		t.Fatalf("accept=%+v err=%v", first, err)
+	}
+	// Change current metadata before replay. The stored target/body/timestamp
+	// must win, so no new effect or River job is created.
+	current, err := service.GetOperationConfiguration(ctx, surveyport.ID(questionnaire))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.SaveOperationConfiguration(ctx, surveyport.OperationConfiguration{QuestionnaireID: surveyport.ID(questionnaire), ExternalPushEnabled: true, ExternalPushConfigurationRef: target.Reference, ExternalPushMetadata: json.RawMessage(`{"remark":"changed","custom_params":{"campaign":"changed"}}`), Version: current.Version}, actor, "survey-synthetic-config-0002"); err != nil {
+		t.Fatal(err)
+	}
+	replay, err := service.QueueCompletionTest(ctx, surveyport.ID(questionnaire), actor, key)
+	if err != nil || replay != first {
+		t.Fatalf("replay=%+v first=%+v err=%v", replay, first, err)
+	}
+	var effectCount, job int64
+	if err = pool.QueryRow(ctx, `SELECT count(*) FROM external_effects`).Scan(&effectCount); err != nil || effectCount != 1 {
+		t.Fatalf("effect count=%d err=%v", effectCount, err)
+	}
+	if _, err = fmt.Sscanf(first.EffectID, "eer_%d", &effectCount); err != nil {
+		t.Fatal(err)
+	}
+	if err = pool.QueryRow(ctx, `SELECT river_job_id FROM external_effect_jobs WHERE effect_id=$1`, effectCount).Scan(&job); err != nil {
+		t.Fatal(err)
+	}
+
+	// Rebuild the durable EER repository before consuming the persisted River
+	// job. A second consume after executed returns without another HTTP write.
+	restartClient, err := platformjobqueue.NewInsertClient(pool, workers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := effects.NewRepository(pool, restartClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = restarted.SetCompletionSink(sink); err != nil {
+		t.Fatal(err)
+	}
+	if err = restarted.RunAttempt(ctx, effectCount, 1, job, provider); err != nil {
+		t.Fatal(err)
+	}
+	if err = restarted.RunAttempt(ctx, effectCount, 1, job, provider); err != nil {
+		t.Fatal(err)
+	}
+	if len(received) != 1 || strings.Contains(received[0], "changed") || !strings.Contains(received[0], `"remark":"frozen"`) {
+		t.Fatalf("restart body=%v", received)
+	}
+	projection, err := restarted.Get(ctx, first.EffectID)
+	if err != nil || projection.State != effects.StateExecuted {
+		t.Fatalf("projection=%+v err=%v", projection, err)
+	}
+	var receiptState string
+	if err = pool.QueryRow(ctx, `SELECT status FROM survey_external_operation_receipts WHERE effect_id=$1`, first.EffectID).Scan(&receiptState); err != nil || receiptState != "executed" {
+		t.Fatalf("receipt=%q err=%v", receiptState, err)
+	}
+	afterExecuted, err := service.QueueCompletionTest(ctx, surveyport.ID(questionnaire), actor, key)
+	if err != nil || afterExecuted.EffectID != first.EffectID || afterExecuted.State != "executed" || len(received) != 1 {
+		t.Fatalf("terminal replay=%+v err=%v calls=%d", afterExecuted, err, len(received))
+	}
+
+	unknown, err := service.QueueCompletionTest(ctx, surveyport.ID(questionnaire), actor, "survey-synthetic-test-unknown-0002")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var unknownID, unknownJob int64
+	if _, err = fmt.Sscanf(unknown.EffectID, "eer_%d", &unknownID); err != nil {
+		t.Fatal(err)
+	}
+	if err = pool.QueryRow(ctx, `SELECT river_job_id FROM external_effect_jobs WHERE effect_id=$1`, unknownID).Scan(&unknownJob); err != nil {
+		t.Fatal(err)
+	}
+	unknownCalls := 0
+	unknownAdapter := integrationAdapter(func(context.Context, effectport.Envelope, effectport.Attempt) (effectport.AdapterResult, error) {
+		unknownCalls++
+		return effectport.AdapterResult{CallAttempted: true, RealExternalCallExecuted: true}, errors.New("post-call unknown")
+	})
+	if err = restarted.RunAttempt(ctx, unknownID, 1, unknownJob, unknownAdapter); err != nil {
+		t.Fatal(err)
+	}
+	if err = restarted.RunAttempt(ctx, unknownID, 1, unknownJob, unknownAdapter); err != nil {
+		t.Fatal(err)
+	}
+	projection, err = restarted.Get(ctx, unknown.EffectID)
+	if err != nil || projection.State != effects.StateUnknown || unknownCalls != 1 {
+		t.Fatalf("unknown projection=%+v calls=%d err=%v", projection, unknownCalls, err)
+	}
+}
+
+func applySurveyCompletionMigrations(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
+	t.Helper()
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("locate")
+	}
+	base := filepath.Join(filepath.Dir(file), "..", "..", "migrations")
+	for _, name := range []string{"0001_platform.sql", "0003_access.sql", "0018_survey.sql", "0067_survey_completion_snapshots.sql", "0073_survey_completion_test_push_snapshots.sql"} {
+		sql, err := os.ReadFile(filepath.Join(base, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = pool.Exec(ctx, string(sql)); err != nil {
+			t.Fatalf("apply %s: %v", name, err)
+		}
+	}
+}

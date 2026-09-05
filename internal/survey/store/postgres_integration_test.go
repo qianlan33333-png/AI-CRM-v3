@@ -269,6 +269,77 @@ func TestPostgreSQLOperationConfigurationVersionConflictPreservesConcurrentToggl
 	}
 }
 
+func TestPostgreSQLSyntheticCompletionTestSnapshotReplaysWithoutCustomer(t *testing.T) {
+	native, cleanup := surveyIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	now := time.Date(2026, 9, 5, 13, 0, 0, 0, time.UTC)
+	var actorID, questionnaireID int64
+	if err := native.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name) VALUES('survey-test-push','$argon2id$test','Survey Test Push') RETURNING id`).Scan(&actorID); err != nil {
+		t.Fatal(err)
+	}
+	if err := native.QueryRow(ctx, `INSERT INTO survey_questionnaires(name,title,description,mode,answer_display_mode,slug,status,created_by,updated_by,created_at,updated_at) VALUES('Synthetic test push','Synthetic test push','','survey','all_in_one','synthetic-test-push','disabled',$1,$1,$2,$2) RETURNING id`, actorID, now).Scan(&questionnaireID); err != nil {
+		t.Fatal(err)
+	}
+	wrapper, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uow, err := platformpostgres.NewUnitOfWork(wrapper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cipher, err := secure.NewCipher(base64.RawStdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := NewPostgreSQL(native, uow, cipher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	value := surveyapp.CompletionTestSnapshot{QuestionnaireID: surveyport.ID(questionnaireID), TestRunID: "questionnaire-test-0123456789abcdef0123456789abcdef", QuestionnaireTitle: "Synthetic test push", SubmittedAt: now, Policy: surveyport.CompletionPolicy{ConfigurationReference: "test-webhook", ConfigurationVersion: "v1", ConfigurationDigest: "sha256:" + strings.Repeat("a", 64), CustomParams: map[string]string{"campaign": "autumn"}}, SourceDigest: "sha256:" + strings.Repeat("b", 64), TargetDigest: "sha256:" + strings.Repeat("c", 64), PayloadDigest: "sha256:" + strings.Repeat("d", 64), PolicyDigest: "sha256:" + strings.Repeat("e", 64), IdempotencyKey: "survey-synthetic-test-push-0001"}
+	var created bool
+	if err = uow.Within(ctx, func(tx context.Context) error {
+		stored, didCreate, recordErr := repository.RecordCompletionTestSnapshot(tx, value)
+		if recordErr != nil || !didCreate || stored.TestRunID != value.TestRunID {
+			t.Fatalf("store synthetic snapshot=%+v created=%v err=%v", stored, didCreate, recordErr)
+		}
+		created = didCreate
+		digest := sha256.Sum256([]byte(value.SourceDigest))
+		return repository.RecordCompletionTestEffect(tx, value.QuestionnaireID, value.TestRunID, value.Policy.ConfigurationReference, "eer_synthetic_1", "queued", digest, now)
+	}); err != nil || !created {
+		t.Fatalf("persist synthetic snapshot err=%v created=%v", err, created)
+	}
+	var payload surveyport.CompletionPayload
+	if err = uow.Within(ctx, func(tx context.Context) error {
+		var readErr error
+		payload, readErr = repository.ReadCompletionPayload(tx, value.SourceDigest)
+		return readErr
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !payload.SyntheticTest || payload.TestRunID != value.TestRunID || payload.CustomerID != 0 || payload.SubmissionID != 0 || payload.ExternalUserID != "questionnaire_test" || len(payload.Answers) != 0 || payload.Policy.CustomParams["campaign"] != "autumn" {
+		t.Fatalf("synthetic payload=%+v", payload)
+	}
+	if err = uow.Within(ctx, func(tx context.Context) error {
+		_, didCreate, recordErr := repository.RecordCompletionTestSnapshot(tx, value)
+		if recordErr != nil || didCreate {
+			t.Fatalf("replay snapshot created=%v err=%v", didCreate, recordErr)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	drift := value
+	drift.PayloadDigest = "sha256:" + strings.Repeat("f", 64)
+	if err = uow.Within(ctx, func(tx context.Context) error {
+		_, _, recordErr := repository.RecordCompletionTestSnapshot(tx, drift)
+		return recordErr
+	}); !errors.Is(err, surveyport.ErrConflict) {
+		t.Fatalf("synthetic drift error=%v", err)
+	}
+}
+
 func TestPostgreSQLSetStatusPersistsReceiptAuditAndOutboxAtomically(t *testing.T) {
 	native, cleanup := surveyIntegrationPool(t)
 	defer cleanup()
@@ -360,7 +431,7 @@ func surveyIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 	if !ok {
 		t.Fatal("locate integration test")
 	}
-	for _, migrationName := range []string{"0002_identity.sql", "0003_access.sql", "0018_survey.sql", "0067_survey_completion_snapshots.sql"} {
+	for _, migrationName := range []string{"0002_identity.sql", "0003_access.sql", "0018_survey.sql", "0067_survey_completion_snapshots.sql", "0073_survey_completion_test_push_snapshots.sql"} {
 		migration, readErr := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "..", "migrations", migrationName))
 		if readErr != nil {
 			t.Fatal(readErr)

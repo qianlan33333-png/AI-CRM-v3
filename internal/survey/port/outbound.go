@@ -14,6 +14,9 @@ import (
 type CompletionIntent struct {
 	QuestionnaireID        ID
 	SubmissionID           ID
+	// TestRunID identifies an admin-triggered synthetic push. It is mutually
+	// exclusive with SubmissionID and never denotes a Customer or submission.
+	TestRunID              string
 	ConfigurationReference string
 	SourceDigest           string
 	TargetDigest           string
@@ -51,6 +54,17 @@ type CompletionPayload struct {
 	AssessmentResult              json.RawMessage
 	Policy                        CompletionPolicy
 	ExternalUserID                string
+	SyntheticTest                 bool
+	TestRunID                     string
+}
+
+// CompletionTestReceipt is the safe operator projection for one synthetic
+// test push. It contains no endpoint, secret, customer, answer, or identity.
+type CompletionTestReceipt struct {
+	QuestionnaireID ID
+	TestRunID       string
+	EffectID        string
+	State           string
 }
 
 type CompletionAnswer struct {

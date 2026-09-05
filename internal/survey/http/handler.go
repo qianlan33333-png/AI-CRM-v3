@@ -860,6 +860,26 @@ func (h *Handler) operationsDisabled(w http.ResponseWriter, r *http.Request, id 
 		writeJSON(w, 200, map[string]any{"questionnaire_id": id, "completion": map[string]any{"navigation_target_id": stored.CompletionNavigationRef, "channel_id": stored.CompletionChannelID}, "external_push": map[string]any{"enabled": stored.ExternalPushEnabled, "configuration_reference": stored.ExternalPushConfigurationRef, "metadata": stored.ExternalPushMetadata}, "configuration_version": stored.Version, "operation_enabled": stored.ExternalPushEnabled, "local_only": !h.completionProviderEnabled, "provider_enabled": h.completionProviderEnabled, "real_external_call_executed": false})
 		return
 	}
+	if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/operations/external-push/test") {
+		queuer, supported := h.submissions.(interface {
+			QueueCompletionTest(context.Context, surveyport.ID, int64, string) (surveyport.CompletionTestReceipt, error)
+		})
+		if !supported {
+			writeError(w, http.StatusServiceUnavailable, "provider_disabled")
+			return
+		}
+		receipt, err := queuer.QueueCompletionTest(r.Context(), surveyport.ID(id), principal.InternalID, idempotency(r))
+		if errors.Is(err, surveyport.ErrEffectUnavailable) {
+			writeError(w, http.StatusConflict, "provider_disabled")
+			return
+		}
+		if err != nil {
+			resultError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusAccepted, map[string]any{"questionnaire_id": id, "test_run_id": receipt.TestRunID, "effect_id": receipt.EffectID, "status": receipt.State, "attempt_count": 0, "synthetic_data": true, "real_external_call_executed": false, "provider_result_received": false})
+		return
+	}
 	if r.Method == http.MethodPost && !strings.HasSuffix(r.URL.Path, "/reconcile") {
 		var sid *surveyport.ID
 		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")

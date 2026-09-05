@@ -3672,7 +3672,7 @@ export class AdminController extends PageBase {
         redirectTypeOpts,
         freqOpts,
         save: () => this.saveOps(),
-        testPush: () => { const qid = this.currentQid(); confirmBox('创建本地推送测试记录', '该 operation 只创建 queued 本地测试记录，不执行外部派发。确认继续？', '确认创建', false, () => { void this.api.queueQuestionnairePushTest(qid).then((result) => toast(`本地测试记录 ${result.id} 已创建，状态 ${result.status}，attempt_count ${result.attemptCount}；未执行外部派发`)).catch((error) => toast(error instanceof Error ? error.message : '测试记录创建失败', true)); }); },
+        testPush: () => { const qid = this.currentQid(); confirmBox('创建问卷外推测试请求', '将冻结合成测试正文并接纳外推效果；仅在已启用的本地 Provider 执行器中发送。确认继续？', '确认创建', false, () => { void this.api.queueQuestionnairePushTest(qid).then((result) => toast(`本地测试记录 ${result.id} 已创建，状态 ${result.status}，attempt_count ${result.attemptCount}；请求已接纳，等待受控执行与结果回读`)).catch((error) => toast(error instanceof Error ? error.message : '测试记录创建失败', true)); }); },
         showQuestionnaireLogs: () => this.setState({ opsLogScope: 'questionnaire', opsLogKeyword: '', opsLogStatus: '' }),
         showGlobalLogs: () => { if (this.api.mode !== 'http') { toast('backend_blocked：测试/本地模式不使用 Mock 全局外推日志', true); return; } void this.api.listGlobalQuestionnairePushLogs().then((logs) => { this.globalQuestionnairePushLogs = logs; this.setState({ opsLogScope: 'global', opsLogKeyword: '', opsLogStatus: '' }); }).catch((error) => toast(error instanceof Error ? error.message : '全局外推日志读取失败', true)); },
         filterLogs: () => this.setState({ opsLogKeyword: this.opsInputVal('opsLogKeyword').trim(), opsLogStatus: this.opsInputVal('opsLogStatus') }),

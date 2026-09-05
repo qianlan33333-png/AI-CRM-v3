@@ -2709,7 +2709,15 @@ paths:
       responses: {"200": {description: Persisted local configuration readback}, "400": {description: invalid_request or configuration_version_required}, "409": {description: configuration_conflict}, "503": {description: Provider disabled by default}}
   /api/admin/questionnaires/{questionnaire_id}/operations/external-push/test:
     parameters: [{name: questionnaire_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
-    post: {operationId: createSurveyExternalPushTest, security: [{adminSession: [], csrfHeader: []}], responses: {"503": {description: Provider disabled by default}}}
+    post:
+      operationId: createSurveyExternalPushTest
+      security: [{adminSession: [], csrfHeader: []}]
+      responses:
+        "202": {description: Synthetic test snapshot and durable external-effect acceptance; provider execution occurs later.}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "409": {description: provider_disabled or idempotency_conflict}
+        "503": {description: Completion effect integration unavailable}
   /api/admin/questionnaires/{questionnaire_id}/submissions/{submission_id}/external-push:
     parameters: [{name: questionnaire_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}, {name: submission_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
     get: {operationId: getSurveySubmissionExternalPush, security: [{adminSession: []}], responses: {"200": {description: Receipt state}}}

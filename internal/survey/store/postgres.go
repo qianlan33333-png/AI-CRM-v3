@@ -934,6 +934,126 @@ func (r *Repository) RecordCompletionSnapshot(ctx context.Context, qid, sid surv
 	return mapError(err)
 }
 
+func (r *Repository) GetCompletionTestSnapshot(ctx context.Context, qid surveyport.ID, key string) (surveyapp.CompletionTestSnapshot, bool, error) {
+	t, err := tx(ctx)
+	if err != nil {
+		return surveyapp.CompletionTestSnapshot{}, false, err
+	}
+	if qid < 1 || len(key) < 16 || len(key) > 200 {
+		return surveyapp.CompletionTestSnapshot{}, false, surveyport.ErrInvalid
+	}
+	keyDigest := sha256.Sum256([]byte(key))
+	var stored surveyapp.CompletionTestSnapshot
+	var storedConfigurationDigest, storedMetadata, storedSource, storedTarget, storedPayload, storedPolicy []byte
+	err = t.QueryRow(ctx, `SELECT questionnaire_id,test_run_id,questionnaire_title,submitted_at,configuration_ref,configuration_version,configuration_digest,metadata,source_digest,target_digest,payload_digest,policy_digest FROM survey_completion_test_push_snapshots WHERE idempotency_key_digest=$1 FOR UPDATE`, keyDigest[:]).Scan(&stored.QuestionnaireID, &stored.TestRunID, &stored.QuestionnaireTitle, &stored.SubmittedAt, &stored.Policy.ConfigurationReference, &stored.Policy.ConfigurationVersion, &storedConfigurationDigest, &storedMetadata, &storedSource, &storedTarget, &storedPayload, &storedPolicy)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return surveyapp.CompletionTestSnapshot{}, false, nil
+	}
+	if err != nil {
+		return surveyapp.CompletionTestSnapshot{}, false, mapError(err)
+	}
+	if stored.QuestionnaireID != qid {
+		return surveyapp.CompletionTestSnapshot{}, false, surveyport.ErrConflict
+	}
+	stored.Policy.ConfigurationDigest = "sha256:" + hex.EncodeToString(storedConfigurationDigest)
+	if err = json.Unmarshal(storedMetadata, &stored.Policy); err != nil {
+		return surveyapp.CompletionTestSnapshot{}, false, surveyport.ErrUnavailable
+	}
+	stored.SourceDigest, stored.TargetDigest = "sha256:"+hex.EncodeToString(storedSource), "sha256:"+hex.EncodeToString(storedTarget)
+	stored.PayloadDigest, stored.PolicyDigest = "sha256:"+hex.EncodeToString(storedPayload), "sha256:"+hex.EncodeToString(storedPolicy)
+	stored.IdempotencyKey = key
+	return stored, true, nil
+}
+
+func (r *Repository) RecordCompletionTestSnapshot(ctx context.Context, value surveyapp.CompletionTestSnapshot) (surveyapp.CompletionTestSnapshot, bool, error) {
+	t, err := tx(ctx)
+	if err != nil {
+		return surveyapp.CompletionTestSnapshot{}, false, err
+	}
+	if value.QuestionnaireID < 1 || !strings.HasPrefix(value.TestRunID, "questionnaire-test-") || len(value.TestRunID) != len("questionnaire-test-")+32 || value.QuestionnaireTitle == "" || len(value.QuestionnaireTitle) > 512 || !validCompletionReference(value.Policy.ConfigurationReference) || !validCompletionDigest(value.SourceDigest) || !validCompletionDigest(value.TargetDigest) || !validCompletionDigest(value.PayloadDigest) || !validCompletionDigest(value.PolicyDigest) || len(value.IdempotencyKey) < 16 || len(value.IdempotencyKey) > 200 {
+		return surveyapp.CompletionTestSnapshot{}, false, surveyport.ErrInvalid
+	}
+	configurationDigest, ok := rawCompletionDigest(value.Policy.ConfigurationDigest)
+	if !ok {
+		return surveyapp.CompletionTestSnapshot{}, false, surveyport.ErrInvalid
+	}
+	metadata, err := completionPolicyMetadata(value.Policy)
+	if err != nil {
+		return surveyapp.CompletionTestSnapshot{}, false, err
+	}
+	source, _ := rawCompletionDigest(value.SourceDigest)
+	target, _ := rawCompletionDigest(value.TargetDigest)
+	payload, _ := rawCompletionDigest(value.PayloadDigest)
+	policy, _ := rawCompletionDigest(value.PolicyDigest)
+	keyDigest := sha256.Sum256([]byte(value.IdempotencyKey))
+	result, err := t.Exec(ctx, `INSERT INTO survey_completion_test_push_snapshots(questionnaire_id,test_run_id,questionnaire_title,submitted_at,configuration_ref,configuration_version,configuration_digest,metadata,source_digest,target_digest,payload_digest,policy_digest,idempotency_key_digest,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$4) ON CONFLICT(idempotency_key_digest) DO NOTHING`, value.QuestionnaireID, value.TestRunID, value.QuestionnaireTitle, value.SubmittedAt, value.Policy.ConfigurationReference, value.Policy.ConfigurationVersion, configurationDigest, metadata, source, target, payload, policy, keyDigest[:])
+	if err != nil {
+		return surveyapp.CompletionTestSnapshot{}, false, mapError(err)
+	}
+	if result.RowsAffected() == 1 {
+		return value, true, nil
+	}
+	var stored surveyapp.CompletionTestSnapshot
+	var storedConfigurationDigest, storedMetadata, storedSource, storedTarget, storedPayload, storedPolicy []byte
+	err = t.QueryRow(ctx, `SELECT questionnaire_id,test_run_id,questionnaire_title,submitted_at,configuration_ref,configuration_version,configuration_digest,metadata,source_digest,target_digest,payload_digest,policy_digest FROM survey_completion_test_push_snapshots WHERE idempotency_key_digest=$1 FOR UPDATE`, keyDigest[:]).Scan(&stored.QuestionnaireID, &stored.TestRunID, &stored.QuestionnaireTitle, &stored.SubmittedAt, &stored.Policy.ConfigurationReference, &stored.Policy.ConfigurationVersion, &storedConfigurationDigest, &storedMetadata, &storedSource, &storedTarget, &storedPayload, &storedPolicy)
+	if err != nil {
+		return surveyapp.CompletionTestSnapshot{}, false, mapError(err)
+	}
+	stored.Policy.ConfigurationDigest = "sha256:" + hex.EncodeToString(storedConfigurationDigest)
+	if err = json.Unmarshal(storedMetadata, &stored.Policy); err != nil {
+		return surveyapp.CompletionTestSnapshot{}, false, surveyport.ErrUnavailable
+	}
+	stored.SourceDigest, stored.TargetDigest = "sha256:"+hex.EncodeToString(storedSource), "sha256:"+hex.EncodeToString(storedTarget)
+	stored.PayloadDigest, stored.PolicyDigest = "sha256:"+hex.EncodeToString(storedPayload), "sha256:"+hex.EncodeToString(storedPolicy)
+	stored.IdempotencyKey = value.IdempotencyKey
+	if stored.QuestionnaireID != value.QuestionnaireID || stored.TestRunID != value.TestRunID || stored.QuestionnaireTitle != value.QuestionnaireTitle || stored.Policy.ConfigurationReference != value.Policy.ConfigurationReference || stored.Policy.ConfigurationVersion != value.Policy.ConfigurationVersion || stored.Policy.ConfigurationDigest != value.Policy.ConfigurationDigest || stored.SourceDigest != value.SourceDigest || stored.TargetDigest != value.TargetDigest || stored.PayloadDigest != value.PayloadDigest || stored.PolicyDigest != value.PolicyDigest {
+		return surveyapp.CompletionTestSnapshot{}, false, surveyport.ErrConflict
+	}
+	return stored, false, nil
+}
+
+func completionPolicyMetadata(policy surveyport.CompletionPolicy) ([]byte, error) {
+	metadata, err := json.Marshal(struct {
+		Day          *int64            `json:"day,omitempty"`
+		Frequency    *int64            `json:"frequency,omitempty"`
+		ExpiresAtTS  *int64            `json:"expires_at_ts,omitempty"`
+		PushType     string            `json:"type,omitempty"`
+		Remark       string            `json:"remark,omitempty"`
+		CustomParams map[string]string `json:"custom_params,omitempty"`
+	}{policy.Day, policy.Frequency, policy.ExpiresAtTS, policy.PushType, policy.Remark, policy.CustomParams})
+	if err != nil {
+		return nil, surveyport.ErrInvalid
+	}
+	return metadata, nil
+}
+
+func (r *Repository) RecordCompletionTestEffect(ctx context.Context, qid surveyport.ID, testRunID, configurationRef, effectID, state string, digest [32]byte, now time.Time) error {
+	t, err := tx(ctx)
+	if err != nil {
+		return err
+	}
+	if qid < 1 || !strings.HasPrefix(testRunID, "questionnaire-test-") || !validCompletionReference(configurationRef) || effectID == "" || !validCompletionEffectState(state) {
+		return surveyport.ErrInvalid
+	}
+	var priorEffect, priorRef, priorRun string
+	err = t.QueryRow(ctx, `INSERT INTO survey_external_operation_receipts(questionnaire_id,operation_kind,configuration_ref,effect_id,status,occurred_at,read_only_legacy,replayable,idempotency_key_digest,source_system,source_table,source_pk,created_at,updated_at) VALUES($1,'external_push',$2,$3,$4,$5,FALSE,TRUE,$6,'survey','completion_test_push_snapshots',$7,$5,$5) ON CONFLICT(idempotency_key_digest) DO UPDATE SET updated_at=survey_external_operation_receipts.updated_at RETURNING effect_id,configuration_ref,source_pk`, qid, configurationRef, effectID, state, now, digest[:], testRunID).Scan(&priorEffect, &priorRef, &priorRun)
+	if err != nil {
+		return mapError(err)
+	}
+	if priorEffect != effectID || priorRef != configurationRef || priorRun != testRunID {
+		return surveyport.ErrConflict
+	}
+	return nil
+}
+
+func validCompletionEffectState(value string) bool {
+	switch value {
+	case "accepted", "queued", "attempted", "executed", "outcome_unknown", "reconciled", "retryable_failed", "final_failed", "cancelled":
+		return true
+	}
+	return false
+}
+
 func (r *Repository) ReadCompletionPayload(ctx context.Context, sourceDigest string) (surveyport.CompletionPayload, error) {
 	t, err := tx(ctx)
 	if err != nil {
@@ -950,6 +1070,9 @@ func (r *Repository) ReadCompletionPayload(ctx context.Context, sourceDigest str
 	var configurationDigest, metadata, resultSnapshot, identityCiphertext []byte
 	err = t.QueryRow(ctx, `SELECT r.questionnaire_id,r.submission_id,r.configuration_ref,s.customer_id,s.title_snapshot,s.submitted_at,s.payload_digest,p.configuration_version,p.configuration_digest,p.identity_kind,p.identity_scope,p.external_identity_ciphertext,p.metadata,p.result_snapshot FROM survey_external_operation_receipts r JOIN survey_submissions s ON s.id=r.submission_id JOIN survey_completion_push_snapshots p ON p.submission_id=s.id WHERE r.operation_kind='external_push' AND r.idempotency_key_digest=$1`, digest).Scan(&out.QuestionnaireID, &out.SubmissionID, &out.ConfigurationReference, &customer, &out.QuestionnaireTitle, &out.SubmittedAt, &storedDigest, &configurationVersion, &configurationDigest, &identityKind, &identityScope, &identityCiphertext, &metadata, &resultSnapshot)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return r.readCompletionTestPayload(ctx, t, sourceDigest)
+		}
 		return surveyport.CompletionPayload{}, mapError(err)
 	}
 	if customer == nil || *customer < 1 || len(storedDigest) != 32 {
@@ -1011,6 +1134,31 @@ func (r *Repository) ReadCompletionPayload(ctx context.Context, sourceDigest str
 	return out, nil
 }
 
+func (r *Repository) readCompletionTestPayload(ctx context.Context, t pgx.Tx, sourceDigest string) (surveyport.CompletionPayload, error) {
+	source, ok := rawCompletionDigest(sourceDigest)
+	if !ok {
+		return surveyport.CompletionPayload{}, surveyport.ErrInvalid
+	}
+	var out surveyport.CompletionPayload
+	var configurationDigest, metadata, target, payload, policy []byte
+	err := t.QueryRow(ctx, `SELECT questionnaire_id,test_run_id,questionnaire_title,submitted_at,configuration_ref,configuration_version,configuration_digest,metadata,target_digest,payload_digest,policy_digest FROM survey_completion_test_push_snapshots WHERE source_digest=$1`, source).Scan(&out.QuestionnaireID, &out.TestRunID, &out.QuestionnaireTitle, &out.SubmittedAt, &out.ConfigurationReference, &out.Policy.ConfigurationVersion, &configurationDigest, &metadata, &target, &payload, &policy)
+	if err != nil {
+		return surveyport.CompletionPayload{}, mapError(err)
+	}
+	if len(configurationDigest) != 32 || len(target) != 32 || len(payload) != 32 || len(policy) != 32 || !json.Valid(metadata) {
+		return surveyport.CompletionPayload{}, surveyport.ErrUnavailable
+	}
+	out.SyntheticTest, out.ExternalUserID, out.SourceDigest = true, "questionnaire_test", sourceDigest
+	out.TargetDigest, out.PayloadDigest, out.PolicyDigest = "sha256:"+hex.EncodeToString(target), "sha256:"+hex.EncodeToString(payload), "sha256:"+hex.EncodeToString(policy)
+	out.IdempotencyKey = "survey.completion.test:" + out.TestRunID
+	out.Answers, out.AssessmentResult = []surveyport.CompletionAnswer{}, json.RawMessage(`{}`)
+	out.Policy.ConfigurationReference, out.Policy.ConfigurationDigest = out.ConfigurationReference, "sha256:"+hex.EncodeToString(configurationDigest)
+	if err = json.Unmarshal(metadata, &out.Policy); err != nil {
+		return surveyport.CompletionPayload{}, surveyport.ErrUnavailable
+	}
+	return out, nil
+}
+
 func (r *Repository) CompleteCompletionEffect(ctx context.Context, effectID, state string, realCall bool, receiptDigest string, attempt int32, now time.Time) error {
 	t, err := tx(ctx)
 	if err != nil {
@@ -1061,6 +1209,18 @@ func completionDigest(parts ...string) string {
 func validCompletionDigest(value string) bool {
 	_, ok := completionDigestBytes(value)
 	return ok
+}
+
+func validCompletionReference(value string) bool {
+	if value == "" || len(value) > 128 {
+		return false
+	}
+	for _, r := range value {
+		if !(r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || strings.ContainsRune("._:-", r)) {
+			return false
+		}
+	}
+	return true
 }
 
 func validCompletionState(state string) bool {

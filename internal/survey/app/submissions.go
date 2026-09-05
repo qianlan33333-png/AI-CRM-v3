@@ -30,6 +30,7 @@ type PersistSubmission struct {
 }
 
 type SubmissionStore interface {
+	Get(context.Context, surveyport.ID, bool) (surveyport.Questionnaire, error)
 	GetPublishedBySlug(context.Context, string) (surveyport.Questionnaire, error)
 	CreateSubmission(context.Context, PersistSubmission) (surveyport.Submission, bool, error)
 	GetSubmissionByTokenDigest(context.Context, [32]byte) (surveyport.Submission, error)
@@ -46,8 +47,23 @@ type SubmissionStore interface {
 	RecordDisabledOperation(context.Context, surveyport.ID, *surveyport.ID, string, [32]byte, time.Time) (surveyport.OperationReceipt, error)
 	RecordCompletionEffect(context.Context, surveyport.ID, surveyport.ID, string, string, string, [32]byte, time.Time) error
 	RecordCompletionSnapshot(context.Context, surveyport.ID, surveyport.ID, surveyport.CompletionPolicy, string, []byte, time.Time) error
+	GetCompletionTestSnapshot(context.Context, surveyport.ID, string) (CompletionTestSnapshot, bool, error)
+	RecordCompletionTestSnapshot(context.Context, CompletionTestSnapshot) (CompletionTestSnapshot, bool, error)
+	RecordCompletionTestEffect(context.Context, surveyport.ID, string, string, string, string, [32]byte, time.Time) error
 	AppendAuditAndOutbox(context.Context, string, surveyport.ID, string, json.RawMessage, string, time.Time) error
 	RecordPhoneBinding(context.Context, surveyport.ID, surveyport.ID, int64, int64, identityport.DeclaredAttachStatus, [32]byte, time.Time) error
+}
+
+// CompletionTestSnapshot freezes one admin-triggered synthetic test request.
+// It never carries a Customer, external identity, phone number, or answers.
+type CompletionTestSnapshot struct {
+	QuestionnaireID               surveyport.ID
+	TestRunID, QuestionnaireTitle string
+	SubmittedAt                   time.Time
+	Policy                        surveyport.CompletionPolicy
+	SourceDigest, TargetDigest    string
+	PayloadDigest, PolicyDigest   string
+	IdempotencyKey                string
 }
 
 type customerHistoryWindowStore interface {
@@ -521,6 +537,130 @@ func (s *SubmissionService) RecordDisabledOperation(ctx context.Context, qid sur
 		return s.store.AppendAuditAndOutbox(tx, "survey_external_operation_disabled", qid, fmt.Sprint(actor), payload, "survey-disabled:"+key, now)
 	})
 	return receipt, classify(err)
+}
+
+// QueueCompletionTest restores the donor's synthetic questionnaire push. It
+// deliberately has no Customer or submission: the immutable snapshot is only
+// a safe test body and the effect is accepted in this same transaction.
+func (s *SubmissionService) QueueCompletionTest(ctx context.Context, qid surveyport.ID, actor int64, key string) (surveyport.CompletionTestReceipt, error) {
+	if s == nil || s.uow == nil || s.store == nil || qid < 1 || actor < 1 || !validPublicKeyish(key) {
+		return surveyport.CompletionTestReceipt{}, surveyport.ErrInvalid
+	}
+	now := s.now().UTC()
+	var receipt surveyport.CompletionTestReceipt
+	err := s.uow.Within(ctx, func(tx context.Context) error {
+		testRunID := completionTestRunID(key)
+		// A prior accepted test is authoritative even if an administrator later
+		// changes or disables the current target. Reuse its immutable body and
+		// target; never retarget an accepted effect on replay.
+		if snapshot, found, err := s.store.GetCompletionTestSnapshot(tx, qid, key); err != nil {
+			return err
+		} else if found {
+			return s.acceptFrozenCompletionTest(tx, qid, actor, snapshot, false, &receipt)
+		}
+		questionnaire, err := s.store.Get(tx, qid, false)
+		if err != nil {
+			return err
+		}
+		configuration, err := s.store.GetOperationConfiguration(tx, qid)
+		if err != nil {
+			return err
+		}
+		if !configuration.ExternalPushEnabled || configuration.ExternalPushConfigurationRef == "" {
+			return surveyport.ErrEffectUnavailable
+		}
+		if s.completion == nil || s.completionPolicy == nil {
+			return surveyport.ErrEffectUnavailable
+		}
+		policy, found, err := s.completionPolicy.CompletionPolicy(tx, configuration.ExternalPushConfigurationRef)
+		if err != nil {
+			return err
+		}
+		if !found {
+			return surveyport.ErrEffectUnavailable
+		}
+		if len(configuration.ExternalPushMetadata) > 0 && json.Unmarshal(configuration.ExternalPushMetadata, &policy) != nil {
+			return surveyport.ErrInvalid
+		}
+		policy.ConfigurationReference = configuration.ExternalPushConfigurationRef
+		policy = syntheticTestPolicy(policy)
+		intent := completionTestIntent(qid, testRunID, questionnaire.Title, policy, now)
+		snapshot, created, err := s.store.RecordCompletionTestSnapshot(tx, CompletionTestSnapshot{QuestionnaireID: qid, TestRunID: testRunID, QuestionnaireTitle: questionnaire.Title, SubmittedAt: now, Policy: policy, SourceDigest: intent.SourceDigest, TargetDigest: intent.TargetDigest, PayloadDigest: intent.PayloadDigest, PolicyDigest: intent.PolicyDigest, IdempotencyKey: key})
+		if err != nil {
+			return err
+		}
+		return s.acceptFrozenCompletionTest(tx, qid, actor, snapshot, created, &receipt)
+	})
+	return receipt, classify(err)
+}
+
+func (s *SubmissionService) acceptFrozenCompletionTest(ctx context.Context, qid surveyport.ID, actor int64, snapshot CompletionTestSnapshot, created bool, receipt *surveyport.CompletionTestReceipt) error {
+	if s.completion == nil || receipt == nil {
+		return surveyport.ErrEffectUnavailable
+	}
+	intent := completionTestIntent(snapshot.QuestionnaireID, snapshot.TestRunID, snapshot.QuestionnaireTitle, snapshot.Policy, snapshot.SubmittedAt)
+	binding, err := s.completion.AcceptCompletionWithin(ctx, intent)
+	if err != nil || binding.EffectID == "" || binding.State == "" {
+		if err != nil {
+			return err
+		}
+		return surveyport.ErrEffectUnavailable
+	}
+	keyDigest := sha256.Sum256([]byte(intent.SourceDigest))
+	if err = s.store.RecordCompletionTestEffect(ctx, qid, snapshot.TestRunID, snapshot.Policy.ConfigurationReference, binding.EffectID, binding.State, keyDigest, snapshot.SubmittedAt); err != nil {
+		return err
+	}
+	if created {
+		payload, _ := json.Marshal(map[string]any{"questionnaire_id": qid, "test_run_id": snapshot.TestRunID, "synthetic_data": true})
+		if err = s.store.AppendAuditAndOutbox(ctx, "survey_completion_test_queued", qid, fmt.Sprint(actor), payload, "survey-completion-test:"+snapshot.TestRunID, snapshot.SubmittedAt); err != nil {
+			return err
+		}
+	}
+	*receipt = surveyport.CompletionTestReceipt{QuestionnaireID: qid, TestRunID: snapshot.TestRunID, EffectID: binding.EffectID, State: binding.State}
+	return nil
+}
+
+func completionTestRunID(key string) string {
+	digest := sha256.Sum256([]byte("survey.completion.test.run.v1\x00" + key))
+	return "questionnaire-test-" + hex.EncodeToString(digest[:16])
+}
+
+func completionTestIntent(questionnaireID surveyport.ID, testRunID, title string, policy surveyport.CompletionPolicy, submittedAt time.Time) surveyport.CompletionIntent {
+	policyBytes, _ := json.Marshal(policy)
+	source := surveyDigest("survey.completion.test.source.v1", fmt.Sprint(questionnaireID), testRunID)
+	return surveyport.CompletionIntent{QuestionnaireID: questionnaireID, TestRunID: testRunID, ConfigurationReference: policy.ConfigurationReference,
+		SourceDigest: source, TargetDigest: surveyDigest("survey.completion.target.v1", policy.ConfigurationReference),
+		PayloadDigest:  surveyDigest("survey.completion.test.payload.v1", testRunID, title, policy.ConfigurationDigest, string(policyBytes)),
+		PolicyDigest:   surveyDigest("survey.completion.test.policy.v1", policy.ConfigurationDigest),
+		IdempotencyKey: "survey.completion.test:" + testRunID, ScheduledAt: submittedAt}
+}
+
+func syntheticTestPolicy(policy surveyport.CompletionPolicy) surveyport.CompletionPolicy {
+	filtered := make(map[string]string, len(policy.CustomParams))
+	for key, value := range policy.CustomParams {
+		if safeSyntheticTestParameter(key) {
+			filtered[key] = value
+		}
+	}
+	policy.CustomParams = filtered
+	return policy
+}
+
+func safeSyntheticTestParameter(key string) bool {
+	switch key {
+	case "", "user_id", "questionnaire_title", "submitted_at", "answers", "phone_number", "type", "expires_at_ts", "day", "frequency", "remark", "assessment_result_snapshot", "is_test", "test_run_id":
+		return false
+	}
+	if len(key) > 128 {
+		return false
+	}
+	normalized := strings.ToLower(key)
+	for _, fragment := range []string{"phone", "mobile", "openid", "unionid", "external_user", "respondent", "identity", "customer"} {
+		if strings.Contains(normalized, fragment) {
+			return false
+		}
+	}
+	return true
 }
 
 func validOpaque(v string) bool {

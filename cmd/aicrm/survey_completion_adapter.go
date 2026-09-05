@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
+	"strings"
 
 	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/outbound"
@@ -20,18 +21,24 @@ type surveyCompletionEffectAccepter struct {
 }
 
 func (a surveyCompletionEffectAccepter) AcceptCompletionWithin(ctx context.Context, in surveyport.CompletionIntent) (surveyport.EffectBinding, error) {
-	if a.effects == nil || in.QuestionnaireID < 1 || in.SubmissionID < 1 || in.ConfigurationReference == "" || in.IdempotencyKey == "" ||
+	isSubmission := in.SubmissionID > 0 && in.TestRunID == ""
+	isSyntheticTest := in.SubmissionID == 0 && strings.HasPrefix(in.TestRunID, "questionnaire-test-") && len(in.TestRunID) == len("questionnaire-test-")+32
+	if a.effects == nil || in.QuestionnaireID < 1 || (!isSubmission && !isSyntheticTest) || in.ConfigurationReference == "" || in.IdempotencyKey == "" ||
 		!effectport.ValidDigest(effectport.Digest(in.SourceDigest)) || !effectport.ValidDigest(effectport.Digest(in.TargetDigest)) ||
 		!effectport.ValidDigest(effectport.Digest(in.PayloadDigest)) || !effectport.ValidDigest(effectport.Digest(in.PolicyDigest)) {
 		return surveyport.EffectBinding{}, errors.New("invalid survey completion intent")
 	}
+	receiptScope := "survey.completion.accept.v1"
+	if isSyntheticTest {
+		receiptScope = "survey.completion.test.accept.v1"
+	}
 	projection, receipt, err := a.effects.AcceptAndQueueWithin(ctx, effectport.AcceptCommand{
-		ReceiptKey: effectport.Hash("survey.completion.accept.v1", in.IdempotencyKey),
+		ReceiptKey: effectport.Hash(receiptScope, in.IdempotencyKey),
 		Envelope: effectport.Envelope{Owner: effectport.OwnerOutbound, Kind: effectport.KindSurveyCompletion,
 			SourceRefDigest: effectport.Digest(in.SourceDigest), TargetRefDigest: effectport.Digest(in.TargetDigest), PayloadDigest: effectport.Digest(in.PayloadDigest), PolicyVersionHash: effectport.Digest(in.PolicyDigest)},
 		ScheduledAt: in.ScheduledAt,
 	})
-	if err != nil || projection.ID == "" || receipt.QueueReceiptID == "" || projection.State != effectport.StateQueued {
+	if err != nil || projection.ID == "" || receipt.QueueReceiptID == "" || projection.State == "" {
 		if err != nil {
 			return surveyport.EffectBinding{}, err
 		}

@@ -192,7 +192,9 @@ func (p *SurveyCompletionProvider) SnapshotCompletionIdentity(ctx context.Contex
 }
 
 func matchesSurveyCompletionEnvelope(payload surveyport.CompletionPayload, envelope effectport.Envelope) bool {
-	return payload.QuestionnaireID > 0 && payload.SubmissionID > 0 && payload.CustomerID > 0 && payload.ConfigurationReference != "" &&
+	isProtectedSubmission := !payload.SyntheticTest && payload.SubmissionID > 0 && payload.CustomerID > 0
+	isSyntheticTest := payload.SyntheticTest && payload.SubmissionID == 0 && payload.CustomerID == 0 && payload.TestRunID != "" && payload.ExternalUserID == "questionnaire_test" && len(payload.Answers) == 0
+	return payload.QuestionnaireID > 0 && (isProtectedSubmission || isSyntheticTest) && payload.ConfigurationReference != "" &&
 		payload.SourceDigest == string(envelope.SourceRefDigest) && payload.TargetDigest == string(envelope.TargetRefDigest) &&
 		payload.PayloadDigest == string(envelope.PayloadDigest) && payload.PolicyDigest == string(envelope.PolicyVersionHash) && payload.IdempotencyKey != ""
 }
@@ -262,9 +264,13 @@ func marshalSurveyCompletion(payload surveyport.CompletionPayload, userID string
 		}
 	}
 	for key, value := range payload.Policy.CustomParams {
-		if !reservedSurveyPayloadField(key) {
+		if !reservedSurveyPayloadField(key) && (!payload.SyntheticTest || safeSyntheticSurveyPayloadField(key)) {
 			full[key] = value
 		}
+	}
+	if payload.SyntheticTest {
+		full["is_test"] = true
+		full["test_run_id"] = payload.TestRunID
 	}
 	return json.Marshal(full)
 }
@@ -310,4 +316,14 @@ func reservedSurveyPayloadField(key string) bool {
 		return true
 	}
 	return key == "" || len(key) > 128
+}
+
+func safeSyntheticSurveyPayloadField(key string) bool {
+	normalized := strings.ToLower(key)
+	for _, fragment := range []string{"phone", "mobile", "openid", "unionid", "external_user", "respondent", "identity", "customer"} {
+		if strings.Contains(normalized, fragment) {
+			return false
+		}
+	}
+	return true
 }

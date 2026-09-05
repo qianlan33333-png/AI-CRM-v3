@@ -1121,8 +1121,8 @@ export async function runAdminAdapterTests(): Promise<void> {
   catch (error) { assert(error instanceof Error && !invalidOpsCalled, 'invalid questionnaire operations must not request'); }
   finally { globalThis.fetch = savedFetch; }
   let pushTestMethod = '';
-  globalThis.fetch = async (_input, init) => { pushTestMethod = init?.method || ''; return new Response(JSON.stringify({ test_run_id: 91, questionnaire_id: 4, status: 'queued', attempt_count: 0, real_external_call_executed: false }), { status: 202 }); };
-  try { const testRun = await queueQuestionnairePushTestDto(4); assert(testRun.id === 91 && testRun.status === 'queued' && testRun.attemptCount === 0 && pushTestMethod === 'POST', 'questionnaire local push test mapping/method'); }
+  globalThis.fetch = async (_input, init) => { pushTestMethod = init?.method || ''; return new Response(JSON.stringify({ test_run_id: 'questionnaire-test-0123456789abcdef0123456789abcdef', questionnaire_id: 4, status: 'queued', attempt_count: 0, synthetic_data: true, real_external_call_executed: false }), { status: 202 }); };
+  try { const testRun = await queueQuestionnairePushTestDto(4); assert(testRun.id === 'questionnaire-test-0123456789abcdef0123456789abcdef' && testRun.status === 'queued' && testRun.attemptCount === 0 && pushTestMethod === 'POST', 'questionnaire local push test mapping/method'); }
   finally { globalThis.fetch = savedFetch; }
   const globalPushCalls: Array<{ input: string; init?: RequestInit }> = [];
   globalThis.fetch = async (input, init) => { globalPushCalls.push({ input: String(input), init }); return new Response(JSON.stringify({ items: [{ test_run_id: 92, questionnaire_id: 4, status: 'queued', attempt_count: 0, side_effect_executed: false, provider_result_received: false, unknown_after_dispatch: false, auto_retry_allowed: false, created_at: '2026-08-27T00:00:00Z', updated_at: '2026-08-27T00:00:00Z' }], total: 1, limit: 100, offset: 0, has_more: false, local_only: true }), { status: 200 }); };

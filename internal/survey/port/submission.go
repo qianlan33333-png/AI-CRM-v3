@@ -155,6 +155,7 @@ type SubmissionApplication interface {
 	GetOperationConfiguration(context.Context, ID) (OperationConfiguration, error)
 	SaveOperationConfiguration(context.Context, OperationConfiguration, int64, string) (OperationConfiguration, error)
 	RecordDisabledOperation(context.Context, ID, *ID, string, int64, string) (OperationReceipt, error)
+	QueueCompletionTest(context.Context, ID, int64, string) (CompletionTestReceipt, error)
 }
 
 type MigrationRecord struct {
