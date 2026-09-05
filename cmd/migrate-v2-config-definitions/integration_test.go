@@ -389,13 +389,19 @@ CREATE TABLE legacy_history_source.automation_group_ops_plan_nodes(id BIGINT,pla
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 9, 5, 1, 2, 3, 0, time.UTC)
-	_, err := db.Exec(ctx, `INSERT INTO legacy_history_source.automation_group_ops_plans VALUES(901,'legacy','旧计划','standard','disabled','owner-1','creator-1','editor-1',$1,$1,NULL);
-INSERT INTO legacy_history_source.group_chats VALUES('chat-901','旧群','owner-1',2,'active',$1);
-INSERT INTO legacy_history_source.wecom_group_chat_snapshots VALUES('chat-901','旧群','owner-1','',1,1,'active',$1);
-INSERT INTO legacy_history_source.automation_group_ops_plan_groups VALUES(902,901,'chat-901','旧群','owner-1',1,1,'active',$1,NULL);
-INSERT INTO legacy_history_source.automation_group_ops_plan_nodes VALUES(903,901,1,'',1,'active','标题\u0007','正文\u000b','{}','[{"kind":"image","id":"m1"}]',$1,$1)`, now)
-	if err != nil {
-		t.Fatal(err)
+	for _, row := range []struct {
+		query string
+		args  []any
+	}{
+		{`INSERT INTO legacy_history_source.automation_group_ops_plans VALUES(901,'legacy','旧计划','standard','disabled','owner-1','creator-1','editor-1',$1,$1,NULL)`, []any{now}},
+		{`INSERT INTO legacy_history_source.group_chats VALUES('chat-901','旧群','owner-1',2,'active',$1)`, []any{now}},
+		{`INSERT INTO legacy_history_source.wecom_group_chat_snapshots VALUES('chat-901','旧群','owner-1','',1,1,'active',$1)`, []any{now}},
+		{`INSERT INTO legacy_history_source.automation_group_ops_plan_groups VALUES(902,901,'chat-901','旧群','owner-1',1,1,'active',$1,NULL)`, []any{now}},
+		{`INSERT INTO legacy_history_source.automation_group_ops_plan_nodes VALUES(903,901,1,'',1,'active',$1,$2,'{}','[{"kind":"image","id":"m1"}]',$3,$3)`, []any{"标题\a", "正文\v", now}},
+	} {
+		if _, err := db.Exec(ctx, row.query, row.args...); err != nil {
+			t.Fatal(err)
+		}
 	}
 	snapshot, err := source.ExtractHistoryFromSchema(ctx, db, strings.Repeat("f", 40), schema)
 	if err != nil {
@@ -424,6 +430,9 @@ INSERT INTO legacy_history_source.automation_group_ops_plan_nodes VALUES(903,901
 	}
 	if _, err = runner.Apply(ctx, loaded, loadedDigest); err != nil {
 		t.Fatal(err)
+	}
+	if verified, err := runner.Verify(ctx, loaded, loadedDigest); err != nil || verified.Imported != 5 || verified.Quarantined != 0 {
+		t.Fatalf("verify=%+v err=%v", verified, err)
 	}
 	uow, err := platformpostgres.NewUnitOfWork(pool)
 	if err != nil {
