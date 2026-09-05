@@ -463,7 +463,7 @@ func newHandlerForTest(t *testing.T) (*Handler, *testSecurity, *testCatalog, *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	members := &testMemberEntitlements{page: orderport.ServicePeriodMemberPage{Items: []orderport.Entitlement{{ID: 41, CustomerID: 77, ServiceProductID: 7, ProductName: "周期七", Status: "active", StartAt: now.Add(-24 * time.Hour), EndAt: now.Add(7 * 24 * time.Hour), RenewalCount: 0, RenewalCountAvailable: true, Version: 5, UpdatedAt: now}}}}
+	members := &testMemberEntitlements{page: orderport.ServicePeriodMemberPage{Items: []orderport.Entitlement{{ID: 41, CustomerID: 77, ServiceProductID: 7, ProductName: "周期七", Status: "active", StartAt: now.Add(-24 * time.Hour), EndAt: time.Now().UTC().Add(23 * time.Hour), RenewalCount: 0, RenewalCountAvailable: true, Version: 5, UpdatedAt: now}}}}
 	if err = handler.SetServicePeriodMemberReaders(members, testMemberNames{}); err != nil {
 		t.Fatal(err)
 	}
@@ -584,7 +584,7 @@ func TestFrozenMemberGridHTTPAPISavedViewCollaboratorShareAndRemarkJourney(t *te
 		handler.ServeHTTP(w, r)
 		return w
 	}
-	viewConfig := `{"schema_version":1,"filter":{"logic":"and","conditions":[{"field":"remaining_days","operator":"gte","value":7}]},"sorts":[],"groups":[{"field":"remaining_days","direction":"asc"}]}`
+	viewConfig := `{"schema_version":1,"filter":{"logic":"and","conditions":[{"field":"remaining_days","operator":"gte","value":1}]},"sorts":[],"groups":[{"field":"remaining_days","direction":"asc"}]}`
 
 	access := adminRequest(http.MethodGet, "/api/admin/service-period-products/7/member-grid/access", "")
 	if access.Code != http.StatusOK || !strings.Contains(access.Body.String(), `"can_manage_views":true`) || !strings.Contains(access.Body.String(), `"can_manage_share":true`) {
@@ -617,8 +617,8 @@ func TestFrozenMemberGridHTTPAPISavedViewCollaboratorShareAndRemarkJourney(t *te
 		t.Fatalf("unavailable renewal must not be rendered as zero: %d %s", unavailableRenewal.Code, unavailableRenewal.Body.String())
 	}
 	_, _, _, queries := members.snapshot()
-	if len(queries) == 0 || len(queries[len(queries)-1].GridGroups) != 1 || queries[len(queries)-1].GridGroups[0].Field != "remaining_days" || len(queries[len(queries)-1].GridFilters) != 1 || queries[len(queries)-1].GridFilters[0].Field != "remaining_days" {
-		t.Fatalf("saved view config was not applied: %+v", queries)
+	if len(queries) == 0 || queries[len(queries)-1].ServiceProductID != 7 || queries[len(queries)-1].SnapshotAt.IsZero() || len(queries[len(queries)-1].GridFilters) != 0 {
+		t.Fatalf("Product composition did not scan the complete Order relation: %+v", queries)
 	}
 	deleteView := adminRequest(http.MethodDelete, "/api/admin/service-period-products/7/member-views/13", `{"version":2}`)
 	if deleteView.Code != http.StatusOK || !strings.Contains(deleteView.Body.String(), `"deleted":true`) || !strings.Contains(deleteView.Body.String(), `"id":"13"`) {
@@ -786,20 +786,12 @@ func TestFrozenMemberGridBrowserJourneyUsesActualHTTPAPI(t *testing.T) {
 	if !foundRemark || remarkCommand.Remark != "第二次备注" || remarkCommand.ExpectedVersion != 6 || remarkCommand.CustomerID != 0 {
 		t.Fatalf("opaque remark CAS command=%+v", remarkCommand)
 	}
-	var filtered, sorted, grouped bool
+	var scanned bool
 	for _, query := range queries {
-		for _, filter := range query.GridFilters {
-			filtered = filtered || filter.Field == "remaining_days"
-		}
-		for _, sort := range query.GridSorts {
-			sorted = sorted || sort.Field == "remaining_days" && sort.Direction == "asc"
-		}
-		for _, group := range query.GridGroups {
-			grouped = grouped || group.Field == "remaining_days"
-		}
+		scanned = scanned || (query.ServiceProductID == 7 && !query.SnapshotAt.IsZero() && len(query.GridFilters) == 0 && len(query.GridSorts) == 0 && len(query.GridGroups) == 0)
 	}
-	if !filtered || !sorted || !grouped {
-		t.Fatalf("frozen browser did not issue the supported filter/sort/group queries: %+v", queries)
+	if !scanned {
+		t.Fatalf("frozen browser did not reach the complete Product member composition: %+v", queries)
 	}
 	var savedGroup, savedSort bool
 	workspaceSnapshot := workspace.snapshot()
@@ -844,8 +836,8 @@ func TestMemberGridPublicHttpAPIOnlyReadsEnabledShareAndSavedViews(t *testing.T)
 	}
 	_, _, _, queries := handler.members.(*testMemberEntitlements).snapshot()
 	last := queries[len(queries)-1]
-	if len(last.GridFilters) != 2 || len(last.GridSorts) != 2 || len(last.GridGroups) != 1 || last.GridSorts[0].Field != "renewal_count" || last.GridSorts[1].Field != "remark" || last.GridGroups[0].Field != "remaining_days" {
-		t.Fatalf("public saved view did not preserve full Order-owned grid query: %+v", last)
+	if last.ServiceProductID != 7 || last.SnapshotAt.IsZero() || len(last.GridFilters) != 0 || len(last.GridSorts) != 0 || len(last.GridGroups) != 0 {
+		t.Fatalf("public saved view did not use the complete Product member composition: %+v", last)
 	}
 	workspace.share.Enabled = false
 	revoked := httptest.NewRecorder()

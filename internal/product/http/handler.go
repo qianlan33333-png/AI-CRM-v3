@@ -21,6 +21,7 @@ import (
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	customerport "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/port"
+	hxcport "github.com/qianlan33333-png/AI-CRM-v3/internal/hxcdashboard/port"
 	orderport "github.com/qianlan33333-png/AI-CRM-v3/internal/order/port"
 	productapp "github.com/qianlan33333-png/AI-CRM-v3/internal/product/app"
 	productport "github.com/qianlan33333-png/AI-CRM-v3/internal/product/port"
@@ -56,8 +57,15 @@ type Handler struct {
 	security  RequestSecurity
 	members   orderport.EntitlementService
 	names     customerport.DirectoryDisplayNameReader
-	workspace productport.MemberGridWorkspace
-	staff     productport.MemberGridStaffDirectory
+	// sharedFacts is the bounded, versioned HXC projection. It is optional:
+	// a deployment before HXC has published facts still renders Order/Customer
+	// fields and marks HXC-derived values unavailable.
+	sharedFacts hxcport.VersionedSharedFactsReader
+	// memberGridCursorKey signs only compact relation fingerprints and canonical
+	// row references; never member names, remarks, or HXC values.
+	memberGridCursorKey []byte
+	workspace           productport.MemberGridWorkspace
+	staff               productport.MemberGridStaffDirectory
 }
 
 // SetServicePeriodMemberWorkspace binds Product-owned local view,
@@ -96,7 +104,22 @@ func NewHandler(catalog CatalogApplication, lifecycle productport.LocalProductLi
 	if catalog == nil || lifecycle == nil || service == nil || external == nil || security == nil {
 		return nil, errors.New("product HTTP dependencies are required")
 	}
-	return &Handler{catalog: catalog, lifecycle: lifecycle, service: service, external: external, security: security}, nil
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		return nil, err
+	}
+	return &Handler{catalog: catalog, lifecycle: lifecycle, service: service, external: external, security: security, memberGridCursorKey: key}, nil
+}
+
+// SetServicePeriodMemberSharedFacts adds HXC's versioned, bounded projection
+// to the read-only member-grid composition. Product receives no HXC store or
+// raw external identifiers.
+func (h *Handler) SetServicePeriodMemberSharedFacts(reader hxcport.VersionedSharedFactsReader) error {
+	if h == nil || reader == nil {
+		return errors.New("service-period member shared facts reader is required")
+	}
+	h.sharedFacts = reader
+	return nil
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -1388,9 +1411,11 @@ func (h *Handler) memberGridQuery(w http.ResponseWriter, r *http.Request, id int
 		writeError(w, http.StatusBadRequest, "invalid_request")
 		return
 	}
-	rows, next, err := h.queryDonorGrid(r.Context(), id, config, body.Cursor, body.Limit)
+	rows, next, err := h.queryDonorGridComposed(r.Context(), id, config, body.Cursor, body.Limit)
 	if err != nil {
-		resultError(w, err)
+		if !productMemberGridQueryError(w, err) {
+			resultError(w, err)
+		}
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"rows": rows, "limit": body.Limit, "next_cursor": next, "has_more": next != ""})
@@ -1706,7 +1731,7 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 }
 
 func writeError(w http.ResponseWriter, status int, code string) {
-	compat := map[string]string{"invalid_request": "MALFORMED_REQUEST", "not_found": "NOT_FOUND", "conflict": "CONFLICT", "unauthorized": "UNAUTHORIZED", "permission_denied": "FORBIDDEN", "csrf_required": "FORBIDDEN", "unavailable": "DEPENDENCY_UNAVAILABLE", "method_not_allowed": "METHOD_NOT_ALLOWED", "product_not_enabled": "product_not_enabled", "share_gone": "SHARE_GONE"}[code]
+	compat := map[string]string{"invalid_request": "MALFORMED_REQUEST", "not_found": "NOT_FOUND", "conflict": "CONFLICT", "unauthorized": "UNAUTHORIZED", "permission_denied": "FORBIDDEN", "csrf_required": "FORBIDDEN", "unavailable": "DEPENDENCY_UNAVAILABLE", "method_not_allowed": "METHOD_NOT_ALLOWED", "product_not_enabled": "product_not_enabled", "share_gone": "SHARE_GONE", "cursor_stale": "CURSOR_STALE", "member_grid_too_large": "MEMBER_GRID_TOO_LARGE"}[code]
 	if compat == "" {
 		compat = "DEPENDENCY_UNAVAILABLE"
 	}

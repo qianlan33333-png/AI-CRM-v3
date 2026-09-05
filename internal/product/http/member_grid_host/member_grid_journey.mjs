@@ -108,6 +108,9 @@ async function runInternalJourney() {
   click(window, namedTab(document, '默认视图'), 'default view');
   click(window, document.getElementById('spGroupButton'), 'group button');
   click(window, await eventually(() => document.querySelector('[data-add-order][data-kind="groups"]'), 'add group control'), 'add group');
+  const groupField = await eventually(() => document.querySelector('[data-order-field][data-kind="groups"]'), 'group field selector');
+  groupField.value = 'remaining_days';
+  change(window, groupField, 'remaining-days group field');
   await eventually(() => document.querySelector('.sp-group-row'), 'grouped data read');
 	await eventually(() => /\d+ 天/.test(document.querySelector('.sp-group-row')?.textContent || '') && document.querySelector('.sp-group-row')?.textContent.includes('1 条'), 'complete grouped result label and count');
   click(window, document.getElementById('spSaveAsView'), 'save grouped view');
@@ -118,6 +121,9 @@ async function runInternalJourney() {
   click(window, namedTab(document, '默认视图'), 'default view after grouping');
   click(window, document.getElementById('spSortButton'), 'sort button');
   click(window, await eventually(() => document.querySelector('[data-add-order][data-kind="sorts"]'), 'add sort control'), 'add sort');
+  const sortField = await eventually(() => document.querySelector('[data-order-field][data-kind="sorts"]'), 'sort field selector');
+  sortField.value = 'remaining_days';
+  change(window, sortField, 'remaining-days sort field');
   await eventually(() => !document.getElementById('spSaveAsView').hidden, 'sort draft state');
   click(window, document.getElementById('spSaveAsView'), 'save sorted view');
   await closeNameDialog(window, document, '排序视图');

@@ -35,7 +35,7 @@ func TestDecodeDonorGridConfigPreservesOrderOwnedMultiFactContract(t *testing.T)
 func TestDecodeDonorGridConfigRejectsOverlappingAndUnavailableFields(t *testing.T) {
 	for _, raw := range []string{
 		`{"schema_version":1,"filter":{"logic":"and","conditions":[]},"sorts":[{"field":"remark","direction":"asc"}],"groups":[{"field":"remark","direction":"asc"}]}`,
-		`{"schema_version":1,"filter":{"logic":"and","conditions":[{"field":"member","operator":"contains","value":"张"}]},"sorts":[],"groups":[]}`,
+		`{"schema_version":1,"filter":{"logic":"and","conditions":[{"field":"formally_logged_in","operator":"in","value":["unavailable"]}]},"sorts":[],"groups":[]}`,
 		`{"schema_version":1,"filter":{"logic":"and","conditions":[]},"sorts":[{"field":"remaining_days","direction":"asc"},{"field":"remaining_days","direction":"desc"}],"groups":[]}`,
 	} {
 		if _, err := decodeDonorGridConfig(json.RawMessage(raw)); err == nil {
