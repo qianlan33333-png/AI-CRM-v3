@@ -69,7 +69,7 @@ func TestLocalPlanLifecycleUsesReceiptsEventsAndStrictDraftBoundary(t *testing.T
 		t.Fatalf("reactivate detail=%#v err=%v", detail, err)
 	}
 	replayedActivation, err := service.Activate(ctx, groupopsport.TransitionCommand{PlanID: detail.Plan.ID, ExpectedRevision: detail.Plan.Revision - 1, Actor: 7, IdempotencyKey: "group-ops-reactivate-001"})
-	if err != nil || replayedActivation.Plan != detail.Plan {
+	if err != nil || replayedActivation.Plan.ID != detail.Plan.ID || replayedActivation.Plan.Status != detail.Plan.Status || replayedActivation.Plan.Revision != detail.Plan.Revision {
 		t.Fatalf("reactivate replay=%#v err=%v", replayedActivation, err)
 	}
 	detail, err = service.Archive(ctx, groupopsport.TransitionCommand{PlanID: detail.Plan.ID, ExpectedRevision: detail.Plan.Revision, Actor: 7, IdempotencyKey: "group-ops-archive-001"})

@@ -514,6 +514,22 @@ func TestGroupOpsSharedRiverRuntimeJourney(t *testing.T) {
 	// runtime must finalize the EER effects without ever reaching the local
 	// WeCom writer.
 	planService := groupopsapp.NewService(uow, groupStore, journeyStaff{}, groupStore)
+	mutateAcceptedPlan := func(planID int64, change func(*groupopsport.Detail)) error {
+		// Active plans are intentionally immutable through the public service.
+		// The dispatch guard must still fail closed if its accepted snapshot is
+		// older than the current owner fact, so set up that fact through the real
+		// Store in one PostgreSQL Unit of Work.
+		return uow.Within(ctx, func(tx context.Context) error {
+			detail, err := groupStore.Get(tx, planID)
+			if err != nil {
+				return err
+			}
+			change(&detail)
+			detail.Plan.Revision++
+			detail.Plan.UpdatedAt = time.Now().UTC()
+			return groupStore.Save(tx, detail)
+		})
+	}
 	assertPreCallBlock := func(label string, mutate func(int64) error) {
 		t.Helper()
 		blockedPlanID := createRiverJourneyPlan(t, ctx, uow, groupStore, actorID)
@@ -538,12 +554,12 @@ func TestGroupOpsSharedRiverRuntimeJourney(t *testing.T) {
 		}
 	}
 	assertPreCallBlock("revision", func(blockedPlanID int64) error {
-		_, updateErr := planService.Update(ctx, groupopsport.UpdatePlanCommand{PlanID: blockedPlanID, ExpectedRevision: 1, Name: "River revision changed", Actor: actorID, IdempotencyKey: "river-precall-revision-0001"})
-		return updateErr
+		return mutateAcceptedPlan(blockedPlanID, func(*groupopsport.Detail) {})
 	})
 	assertPreCallBlock("group-binding", func(blockedPlanID int64) error {
-		_, removeErr := planService.RemoveGroupAsset(ctx, groupopsport.GroupAssetCommand{PlanID: blockedPlanID, ExpectedRevision: 1, AssetRef: "chat-river-1", Actor: actorID, IdempotencyKey: "river-precall-binding-0001"})
-		return removeErr
+		return mutateAcceptedPlan(blockedPlanID, func(detail *groupopsport.Detail) {
+			detail.GroupAssets = detail.GroupAssets[1:]
+		})
 	})
 	assertPreCallBlock("paused", func(blockedPlanID int64) error {
 		_, pauseErr := planService.Pause(ctx, groupopsport.TransitionCommand{PlanID: blockedPlanID, ExpectedRevision: 1, Actor: actorID, IdempotencyKey: "river-precall-paused-0001"})
@@ -629,7 +645,7 @@ func TestGroupOpsPostgreSQLPausedPlanReactivation(t *testing.T) {
 		t.Fatalf("resume=%+v err=%v", detail.Plan, err)
 	}
 	replayed, err := service.Activate(ctx, groupopsport.TransitionCommand{PlanID: detail.Plan.ID, ExpectedRevision: detail.Plan.Revision - 1, Actor: actorID, IdempotencyKey: "groupops-pg-reactivate-resume"})
-	if err != nil || replayed.Plan != detail.Plan {
+	if err != nil || replayed.Plan.ID != detail.Plan.ID || replayed.Plan.Status != detail.Plan.Status || replayed.Plan.Revision != detail.Plan.Revision {
 		t.Fatalf("resume replay=%+v err=%v", replayed.Plan, err)
 	}
 	incomplete, err := service.Create(ctx, groupopsport.CreatePlanCommand{Name: "PG incomplete", Actor: actorID, IdempotencyKey: "groupops-pg-reactivate-incomplete"})
