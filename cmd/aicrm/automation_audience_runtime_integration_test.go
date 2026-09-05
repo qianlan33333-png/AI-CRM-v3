@@ -153,13 +153,17 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 	}
 	messageProvider, err := outbound.NewMessageProvider(outbound.MessageProviderConfig{
 		Enabled: true, CorpScope: "wecom-corp:runtime-corp", Executions: messages,
+		// Match the composition root: a Provider reads after its effect
+		// transaction committed, so the Identity Owner needs this read adapter
+		// to bind its own local transaction.
 		Identities: outboundIdentityAdapter{uow: uow, reader: identityquery.NewPostgreSQL()},
 		Staff:      segmentStaff, Content: automationService, Writer: writer,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	effectWorker := externaleffects.NewWorker(nil, messageProvider)
+	provider := &automationAudienceRecordingProvider{inner: messageProvider}
+	effectWorker := externaleffects.NewWorker(nil, provider)
 	if err = river.AddWorkerSafely[externaleffects.EffectJobArgs](workers, effectWorker); err != nil {
 		t.Fatal(err)
 	}
@@ -251,7 +255,7 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 			return false
 		}
 		return complete == 1
-	}, func() string { return automationAudienceRuntimeDiagnostics(ctx, native) })
+	}, func() string { return automationAudienceRuntimeDiagnostics(ctx, native, provider) })
 	// Incremental evaluation contains only the new result. Segment merges it
 	// with the prior snapshot, so the original member remains present.
 	source.Set(customerIDs[1:])
@@ -426,6 +430,31 @@ type automationAudienceEnrollmentSink struct{ runtime *automationapp.RuntimeServ
 func (s automationAudienceEnrollmentSink) HandleAudienceMemberEntered(ctx context.Context, e segmentport.MemberEnteredV1) error {
 	_, err := s.runtime.EnrollAudienceMember(ctx, e)
 	return err
+}
+
+// automationAudienceRecordingProvider preserves the exact adapter error in a
+// failing integration fixture. It delegates every runtime call unchanged.
+type automationAudienceRecordingProvider struct {
+	inner effectport.ProviderAdapter
+	mu    sync.Mutex
+	err   error
+}
+
+func (p *automationAudienceRecordingProvider) Execute(ctx context.Context, envelope effectport.Envelope, attempt effectport.Attempt) (effectport.AdapterResult, error) {
+	result, err := p.inner.Execute(ctx, envelope, attempt)
+	p.mu.Lock()
+	p.err = err
+	p.mu.Unlock()
+	return result, err
+}
+
+func (p *automationAudienceRecordingProvider) Error() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.err == nil {
+		return ""
+	}
+	return p.err.Error()
 }
 
 type automationAudienceWeComServer struct {
@@ -639,7 +668,7 @@ func automationAudienceEventuallyWithDiagnostics(t *testing.T, label string, rea
 // automationAudienceRuntimeDiagnostics retains the failing worker state in the
 // integration-test output. It reads only the fixture schema and is never part
 // of the runtime path.
-func automationAudienceRuntimeDiagnostics(ctx context.Context, pool *pgxpool.Pool) string {
+func automationAudienceRuntimeDiagnostics(ctx context.Context, pool *pgxpool.Pool, provider *automationAudienceRecordingProvider) string {
 	if pool == nil {
 		return "pool unavailable"
 	}
@@ -655,7 +684,10 @@ func automationAudienceRuntimeDiagnostics(ctx context.Context, pool *pgxpool.Poo
 	if err != nil {
 		return "diagnostics query: " + err.Error()
 	}
-	return string(raw)
+	if provider == nil || provider.Error() == "" {
+		return string(raw)
+	}
+	return string(raw) + "; provider_error=" + provider.Error()
 }
 
 func automationAudienceRuntimePool(t *testing.T) (*pgxpool.Pool, func()) {
