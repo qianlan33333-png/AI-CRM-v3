@@ -83,18 +83,22 @@ func TestSelectMembershipSourcePreservesLegacyORAndSourcePairs(t *testing.T) {
 		name                                 string
 		membership, subscription, profile    membershipCandidate
 		wantSource, wantStatus               string
-		wantFound, wantActive, wantNilExpiry bool
+		wantFound, wantMember, wantNilExpiry bool
 	}{
 		{name: "free has no membership fact", subscription: membershipCandidate{source: "subscription", status: "free", expiresAt: &future}, wantNilExpiry: true},
+		{name: "free expired date has no membership fact", subscription: membershipCandidate{source: "subscription", status: "free", expiresAt: &past}, wantNilExpiry: true},
+		{name: "nil unknown has no membership fact", subscription: membershipCandidate{source: "subscription"}, wantNilExpiry: true},
 		{name: "explicit expired without period remains readable", membership: membershipCandidate{found: true, source: "user_id", status: "expired"}, wantSource: "user_id", wantStatus: "expired", wantFound: true, wantNilExpiry: true},
-		{name: "valid subscription supersedes expired consultation membership", membership: membershipCandidate{found: true, source: "user_id", status: "expired", expiresAt: &past}, subscription: membershipCandidate{source: "subscription", status: "standard", expiresAt: &future}, wantSource: "subscription", wantStatus: "standard", wantFound: true, wantActive: true},
-		{name: "subscription without expiry stays paired ahead of expired profile", subscription: membershipCandidate{source: "subscription", status: "standard"}, profile: membershipCandidate{source: "user_profile", status: "standard", expiresAt: &past}, wantSource: "subscription", wantStatus: "standard", wantFound: true, wantActive: true, wantNilExpiry: true},
-		{name: "only user profile is member evidence", profile: membershipCandidate{source: "user_profile", status: "trial", expiresAt: &future}, wantSource: "user_profile", wantStatus: "trial", wantFound: true, wantActive: true},
+		{name: "valid subscription supersedes expired consultation membership", membership: membershipCandidate{found: true, source: "user_id", status: "expired", expiresAt: &past}, subscription: membershipCandidate{source: "subscription", status: "standard", expiresAt: &future}, wantSource: "subscription", wantStatus: "standard", wantFound: true, wantMember: true},
+		{name: "expired active consultation membership yields to future subscription", membership: membershipCandidate{found: true, source: "user_id", status: "active", expiresAt: &past}, subscription: membershipCandidate{source: "subscription", status: "standard", expiresAt: &future}, wantSource: "subscription", wantStatus: "standard", wantFound: true, wantMember: true},
+		{name: "expired subscription remains readable when alone", subscription: membershipCandidate{source: "subscription", status: "standard", expiresAt: &past}, wantSource: "subscription", wantStatus: "standard", wantFound: true, wantMember: true},
+		{name: "subscription without expiry stays paired ahead of expired profile", subscription: membershipCandidate{source: "subscription", status: "standard"}, profile: membershipCandidate{source: "user_profile", status: "standard", expiresAt: &past}, wantSource: "subscription", wantStatus: "standard", wantFound: true, wantMember: true, wantNilExpiry: true},
+		{name: "only user profile is member evidence", profile: membershipCandidate{source: "user_profile", status: "trial", expiresAt: &future}, wantSource: "user_profile", wantStatus: "trial", wantFound: true, wantMember: true},
 		{name: "expiry instant is not future evidence", membership: membershipCandidate{found: true, source: "user_id", expiresAt: &atBoundary}, wantSource: "user_id", wantFound: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			got := selectMembershipSource(reference, test.membership, test.subscription, test.profile)
-			if got.source != test.wantSource || got.status != test.wantStatus || got.found != test.wantFound || got.active != test.wantActive || (got.expiresAt == nil) != test.wantNilExpiry {
+			if got.source != test.wantSource || got.status != test.wantStatus || got.found != test.wantFound || got.isMember != test.wantMember || (got.expiresAt == nil) != test.wantNilExpiry {
 				t.Fatalf("selected=%+v", got)
 			}
 		})

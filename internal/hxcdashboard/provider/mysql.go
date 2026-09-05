@@ -211,7 +211,7 @@ func scanSourceRow(scanner sourceRowScanner, asOf time.Time) (domain.SourceRow, 
 		row.CardLastOpenedAt = &lastOpened.Time
 	}
 	selected := selectMembershipSource(asOf, membershipCandidate{found: membershipFound != 0, source: membershipAttribution.String, status: membershipStatus.String, expiresAt: nullableTime(membershipExpiry)}, membershipCandidate{source: "subscription", status: subscriptionTier.String, expiresAt: nullableTime(subscriptionExpiry)}, membershipCandidate{source: "user_profile", status: profileTier.String, expiresAt: nullableTime(profileExpiry)})
-	row.MembershipRecordFound, row.IsMember = selected.found, selected.active
+	row.MembershipRecordFound, row.IsMember = selected.found, selected.isMember
 	row.MembershipSource, row.MembershipStatus, row.MembershipExpiresAt = selected.source, selected.status, selected.expiresAt
 	row.CapabilityUsage = append([]byte(nil), capJSON...)
 	row.FocusTopics = append([]byte(nil), topicsJSON...)
@@ -228,7 +228,8 @@ type membershipCandidate struct {
 	source    string
 	status    string
 	expiresAt *time.Time
-	active    bool
+	isMember  bool
+	effective bool
 }
 
 // selectMembershipSource preserves the legacy OR predicate without pairing a
@@ -236,37 +237,56 @@ type membershipCandidate struct {
 // consultation membership yields to independently valid subscription/profile
 // evidence; otherwise it remains observable as the selected source.
 func selectMembershipSource(reference time.Time, membership, subscription, profile membershipCandidate) membershipCandidate {
-	membership.active = membership.found && membershipEvidenceActive(reference, membership.status, membership.expiresAt)
-	subscription.found = membershipEvidencePresent(subscription.status, subscription.expiresAt)
-	subscription.active = subscription.found && membershipEvidenceActive(reference, subscription.status, subscription.expiresAt)
-	profile.found = membershipEvidencePresent(profile.status, profile.expiresAt)
-	profile.active = profile.found && membershipEvidenceActive(reference, profile.status, profile.expiresAt)
+	membership.isMember = membership.found && membershipEvidenceActive(reference, membership.status, membership.expiresAt)
+	membership.effective = membership.isMember && membershipExpiryEffective(reference, membership.expiresAt)
+	subscription.found = subscriptionEvidencePresent(reference, subscription.status, subscription.expiresAt)
+	subscription.isMember = subscription.found && membershipEvidenceActive(reference, subscription.status, subscription.expiresAt)
+	subscription.effective = subscription.isMember && membershipExpiryEffective(reference, subscription.expiresAt)
+	profile.found = subscriptionEvidencePresent(reference, profile.status, profile.expiresAt)
+	profile.isMember = profile.found && membershipEvidenceActive(reference, profile.status, profile.expiresAt)
+	profile.effective = profile.isMember && membershipExpiryEffective(reference, profile.expiresAt)
 
-	if membership.active {
-		return membership
-	}
-	if subscription.active {
-		return subscription
-	}
-	if profile.active {
-		return profile
+	// A source only wins the current fact if its own expiry is still effective.
+	// This keeps an expired active consultation record from hiding a valid
+	// subscription, while retaining source-local facts when all are expired.
+	for _, candidate := range []membershipCandidate{membership, subscription, profile} {
+		if candidate.effective {
+			return candidate
+		}
 	}
 	if membership.found {
 		return membership
 	}
+	if subscription.found {
+		return subscription
+	}
+	if profile.found {
+		return profile
+	}
 	return membershipCandidate{}
 }
 
-func membershipEvidencePresent(status string, expiresAt *time.Time) bool {
-	return normalizedMembershipStatus(status) != "" && normalizedMembershipStatus(status) != "free" || expiresAt != nil
+func subscriptionEvidencePresent(reference time.Time, status string, expiresAt *time.Time) bool {
+	normalized := normalizedMembershipStatus(status)
+	if normalized == "free" {
+		return false
+	}
+	return normalized != "" || expiresAt != nil && expiresAt.After(reference)
 }
 
+// membershipEvidenceActive is the frozen legacy OR predicate: a recognized
+// membership status or a future source-local expiry is evidence. An explicit
+// expired/free source cannot become a member merely because it has a date.
 func membershipEvidenceActive(reference time.Time, status string, expiresAt *time.Time) bool {
 	normalized := normalizedMembershipStatus(status)
-	if normalized == "expired" || normalized == "free" || normalized == "" {
-		return expiresAt != nil && expiresAt.After(reference) && normalized != "expired" && normalized != "free"
+	if normalized == "expired" || normalized == "free" {
+		return false
 	}
 	return normalized == "active" || normalized == "valid" || normalized == "premium" || normalized == "standard" || normalized == "trial" || expiresAt != nil && expiresAt.After(reference)
+}
+
+func membershipExpiryEffective(reference time.Time, expiresAt *time.Time) bool {
+	return expiresAt == nil || expiresAt.After(reference)
 }
 
 func normalizedMembershipStatus(value string) string {
