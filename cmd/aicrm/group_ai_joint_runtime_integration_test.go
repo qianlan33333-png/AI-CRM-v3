@@ -580,9 +580,25 @@ func TestAutomationAIAssistantAndGroupOpsShareRiverRuntime(t *testing.T) {
 	if _, err = snapshots.AcceptRefresh(ctx, segmentapp.RefreshCommand{PackageID: packageID, Actor: staffID, IdempotencyKey: "joint-runtime-one-member-0001", ReferenceTime: time.Now().UTC()}); err != nil {
 		t.Fatal(err)
 	}
+	var bootstrapSnapshotID int64
 	automationAudienceEventually(t, "joint one-member snapshot", func() bool {
 		snapshot, ok, e := snapshots.PublishedSnapshot(ctx, segmentport.PackageID(packageID))
-		return e == nil && ok && snapshot.MemberCount == 1
+		if e != nil || !ok || snapshot.MemberCount != 1 {
+			return false
+		}
+		bootstrapSnapshotID = int64(snapshot.ID)
+		return true
+	})
+	// The baseline member-entered fact must be consumed while no policy is
+	// active. Otherwise stopping this bootstrap runtime can defer it until after
+	// activation, incorrectly enrolling the baseline customer in the joint run.
+	automationAudienceEventually(t, "bootstrap member-event dispatch", func() bool {
+		var completed, effectsNow int
+		err := native.QueryRow(ctx, `SELECT count(*) FROM river_job WHERE kind='segment.audience-member-entered-dispatch.v1' AND args->>'snapshot_id'=$1 AND state='completed'`, automationAudienceInt(bootstrapSnapshotID)).Scan(&completed)
+		if err != nil || completed != 1 {
+			return false
+		}
+		return native.QueryRow(ctx, `SELECT count(*) FROM external_effects`).Scan(&effectsNow) == nil && effectsNow == 0
 	})
 	stopBootstrapSafely()
 	policy, err := runtimeService.CreatePolicy(ctx, automationapp.PolicyCommand{Code: "joint-runtime-entry", Name: "Joint runtime entry", PackageID: segmentport.PackageID(packageID), TriggerKind: automationport.TriggerAudienceMemberEnteredV1, ActionKind: automationport.ActionOutboundMessage, ActionConfig: json.RawMessage(fmt.Sprintf(`{"agent_id":%d}`, agent.ID)), QuietHours: json.RawMessage(`{"timezone":"UTC","start":"22:00","end":"08:00"}`), SingleRunLimit: 100, ApprovalStaffID: &staffID, Actor: staffID, IdempotencyKey: "joint-runtime-policy-0001"})
