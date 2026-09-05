@@ -1,5 +1,4 @@
 import { JSDOM } from 'jsdom';
-import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -15,8 +14,11 @@ let html = await host.text();
 const readonlyPath = '/groupops-assets/aiassistant/send_content_readonly_detail.js';
 const bridgePath = '/static/admin_console/groupops_history_readonly_bridge.js';
 if (!html.includes(`src="${readonlyPath}"`) || !html.includes('send_content_readonly_detail.css') || !html.includes(`src="${bridgePath}"`)) throw new Error('actual Group Ops Host did not include the read-only renderer bridge');
-const readonly = fs.readFileSync(path.join(root, 'web/donors/ai-assistant-production/static/send_content_readonly_detail.js'), 'utf8');
-const bridge = fs.readFileSync(path.join(root, 'internal/webshell/static/admin_console/groupops_history_readonly_bridge.js'), 'utf8');
+const readonlyResponse = await fetch(new URL(readonlyPath, base));
+const bridgeResponse = await fetch(new URL(bridgePath, base));
+if (!readonlyResponse.ok || !bridgeResponse.ok) throw new Error('actual Group Ops Host assets were unavailable');
+const readonly = await readonlyResponse.text();
+const bridge = await bridgeResponse.text();
 html = html.replace(`<script defer src="${readonlyPath}"></script>`, `<script>${readonly}</script>`);
 html = html.replace(`<script defer src="${bridgePath}"></script>`, `<script>${bridge}</script>`);
 html = html.replace(/<script type="module" src="\/groupops-assets\/assets\/admin-test\.js"><\/script>/, `<script>${bundle}</script>`);
