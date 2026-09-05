@@ -113,6 +113,84 @@ func TestPostgreSQLSidebarHistoryAllianceApplyReplayReconcile(t *testing.T) {
 	}
 }
 
+// TestPostgreSQLSidebarHistoryCaptureAllianceExpressionPreservesSourceFacts
+// executes the production capture expression against PostgreSQL. The source
+// stream must preserve key absence, JSON null, and the untrimmed Unicode text;
+// only the v2 Go parser later applies the donor's Python whitespace rule.
+func TestPostgreSQLSidebarHistoryCaptureAllianceExpressionPreservesSourceFacts(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	_, pool, cleanup := sidebarHistoryCommandDatabase(t, ctx)
+	defer cleanup()
+
+	_, source, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("locate capture script")
+	}
+	root := filepath.Join(filepath.Dir(source), "..", "..")
+	script, err := os.ReadFile(filepath.Join(root, "scripts", "capture-sidebar-history-source.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(script, []byte("encode(convert_to((jsonb_build_object(")) || !bytes.Contains(script, []byte("jsonb_build_object('alliance', e.metadata_json->'admin_alliance')")) {
+		t.Fatal("capture script no longer contains the tested Alliance JSON expression")
+	}
+
+	rows, err := pool.Query(ctx, `
+		WITH source(source_id,metadata_json) AS (
+			VALUES
+				(1,'{}'::jsonb),
+				(2,'{"admin_alliance":null}'::jsonb),
+				(3,jsonb_build_object('admin_alliance', chr(160) || '联盟' || chr(28)))
+		)
+		SELECT encode(convert_to((jsonb_build_object('source_id',source_id) || CASE
+			WHEN metadata_json ? 'admin_alliance'
+				THEN jsonb_build_object('alliance', metadata_json->'admin_alliance')
+			ELSE '{}'::jsonb
+		END)::text,'UTF8'),'hex')
+		FROM source
+		ORDER BY source_id`)
+	if err != nil {
+		t.Fatalf("execute capture alliance SQL expression: %v", err)
+	}
+	defer rows.Close()
+	var payloads []map[string]json.RawMessage
+	for rows.Next() {
+		var encoded string
+		if err = rows.Scan(&encoded); err != nil {
+			t.Fatal(err)
+		}
+		raw, decodeErr := hex.DecodeString(encoded)
+		if decodeErr != nil {
+			t.Fatal(decodeErr)
+		}
+		var payload map[string]json.RawMessage
+		if err = json.Unmarshal(raw, &payload); err != nil {
+			t.Fatal(err)
+		}
+		payloads = append(payloads, payload)
+	}
+	if err = rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if len(payloads) != 3 {
+		t.Fatalf("capture expression rows=%d", len(payloads))
+	}
+	if _, exists := payloads[0]["alliance"]; exists {
+		t.Fatal("missing source key was emitted as an alliance fact")
+	}
+	if string(payloads[1]["alliance"]) != "null" {
+		t.Fatalf("source JSON null=%s", payloads[1]["alliance"])
+	}
+	var alliance string
+	if err = json.Unmarshal(payloads[2]["alliance"], &alliance); err != nil {
+		t.Fatal(err)
+	}
+	if alliance != "\u00a0联盟\u001c" {
+		t.Fatalf("capture expression altered raw Unicode alliance=%q", alliance)
+	}
+}
+
 // TestPostgreSQLSidebarHistoryReconcileVerifiesEveryImportedTargetFact is the
 // command-level proof that preserved source digests alone cannot make a batch
 // reconciled. It uses the real Order and Coupon importers with mixed terminal

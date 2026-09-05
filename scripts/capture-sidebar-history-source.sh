@@ -26,7 +26,7 @@ cat > "$sql_file" <<'SQL'
 BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;
 SET LOCAL statement_timeout='15min';
 SELECT '__AICRM_SIDEBAR_SNAPSHOT__|' || to_char(transaction_timestamp() AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"');
-SELECT '__AICRM_SIDEBAR_ENTITLEMENT__|' || encode(convert_to(jsonb_build_object(
+SELECT '__AICRM_SIDEBAR_ENTITLEMENT__|' || encode(convert_to((jsonb_build_object(
   'source_id',e.id,
   'unionid',e.unionid,
   'service_product_id',e.service_product_id,

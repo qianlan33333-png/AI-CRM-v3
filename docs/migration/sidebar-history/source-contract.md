@@ -60,7 +60,9 @@ already has a map cannot be turned into a quarantine by a later failed replay;
 that is evidence drift for reconciliation. Each mapped customer is also
 resolved again from the scoped, verified UnionID inside the reconciliation
 transaction, so a source map and target changed together to the same wrong
-customer still fail.
+customer still fail. The deleted quarantine is the superseded migration
+outcome, not an append-only source log: the sealed source row and manifest
+digest remain protected for the mapped outcome's reconciliation.
 
 Reconciliation uses one serializable transaction for the migration batch and
 only marks it `reconciled` after every fact matches. It is read verification
