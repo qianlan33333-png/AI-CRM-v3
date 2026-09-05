@@ -253,7 +253,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if cfg.WeCom.ChannelProviderReadEnabled {
 		periodicJobs = append(periodicJobs, wecom.StaffDirectoryPeriodicJob(cfg.WeCom.StaffDirectoryRefreshInterval, nil))
 	}
-	effectsRuntime, err := platformjobqueue.NewRuntimeWithPeriodic(pool.Native(), effectWorkers, periodicJobs, platformjobqueue.OutboundQueue, wecom.CustomerSyncQueue, wecom.StaffDirectoryRefreshQueue, payment.ReconciliationQueue, hxcworker.Queue, segment.AudienceRefreshQueue)
+	effectsRuntime, err := platformjobqueue.NewRuntimeWithPeriodic(pool.Native(), effectWorkers, periodicJobs, platformjobqueue.OutboundQueue, platformjobqueue.OutboundWelcomeQueue, wecom.CustomerSyncQueue, wecom.StaffDirectoryRefreshQueue, payment.ReconciliationQueue, hxcworker.Queue, segment.AudienceRefreshQueue)
 	if err != nil {
 		return fail(err)
 	}
@@ -961,7 +961,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	syncHandler := wecom.CustomerSyncHTTPHandler{Service: customerSync, Auth: requestSecurity, CSRF: requestSecurity}
 	sidebarContextTokens := wecom.ContextTokenService{CorpID: cfg.WeCom.CorpID, SigningKey: []byte(cfg.WeCom.ContextSigningKey), TTL: 5 * time.Minute}
 	weComHandler, err := wecom.NewHTTPHandler(wecom.HTTPHandlerOptions{
-		Callback: wecom.CallbackHandler{Enabled: cfg.WeCom.CallbackEnabled, Crypto: callbackCrypto, StateDigester: callbackStateDigester, Inbox: inboxService, UOW: uow, WelcomeGrants: welcomeGrantStore},
+		Callback: wecom.CallbackHandler{Enabled: cfg.WeCom.CallbackEnabled, Crypto: callbackCrypto, StateDigester: callbackStateDigester, Inbox: inboxService, UOW: uow, WelcomeGrants: welcomeGrantStore, WelcomeActions: channelEntrantActions, States: channelAcquisition},
 		OAuth: wecom.OAuthService{Enabled: cfg.WeCom.Enabled, CorpID: cfg.WeCom.CorpID, StateStore: oauthStates, UOW: uow,
 			Client: providerClient, AllowedPaths: allowedOAuthRedirects(), StateTTL: 10 * time.Minute},
 		ContextTokens: sidebarContextTokens,
