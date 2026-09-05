@@ -147,7 +147,9 @@ make_release() {
     0061_product_public_purchase.sql \
     0063_identity_hxc_source_observations.sql \
     0064_hxc_dashboard_identity_v2.sql \
-    0068_payment_session_beneficiary_selection.sql; do
+    0068_payment_session_beneficiary_selection.sql \
+    0078_group_ops_provider_tasks.sql \
+    0081_group_ops_webhook_unconfigured_reference.sql; do
     : > "$release/migrations/$migration"
   done
   : > "$release/web/dist/asset-manifest.json"

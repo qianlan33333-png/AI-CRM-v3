@@ -84,7 +84,9 @@ for migration_contract in \
   '0061_product_public_purchase.sql:product public purchase' \
   '0063_identity_hxc_source_observations.sql:HXC identity source observations' \
   '0064_hxc_dashboard_identity_v2.sql:HXC dashboard identity v2' \
-  '0068_payment_session_beneficiary_selection.sql:payment session beneficiary selection'; do
+  '0068_payment_session_beneficiary_selection.sql:payment session beneficiary selection' \
+  '0078_group_ops_provider_tasks.sql:Group Ops provider tasks' \
+  '0081_group_ops_webhook_unconfigured_reference.sql:Group Ops unconfigured webhook repair'; do
   migration="${migration_contract%%:*}"
   label="${migration_contract#*:}"
   test -f "migrations/${migration}" || {
