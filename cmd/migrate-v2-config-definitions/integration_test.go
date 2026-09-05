@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync"
@@ -566,7 +567,16 @@ func assertImportedGroupOpsHistoryHostJourney(t *testing.T, historyHandler http.
 	}
 	lock.Lock()
 	defer lock.Unlock()
-	if len(historyCalls) != 2 || !(historyCalls[0] == "GET /api/admin/automation-conversion/group-ops/history/plans/901/groups?limit=20&offset=0" || historyCalls[1] == "GET /api/admin/automation-conversion/group-ops/history/plans/901/groups?limit=20&offset=0") || !(historyCalls[0] == "GET /api/admin/automation-conversion/group-ops/history/plans/901/nodes?limit=20&offset=0" || historyCalls[1] == "GET /api/admin/automation-conversion/group-ops/history/plans/901/nodes?limit=20&offset=0") {
+	expected := map[string]int{
+		"GET /api/admin/automation-conversion/group-ops/history/plans/901/groups?limit=20&offset=0": 1,
+		"GET /api/admin/automation-conversion/group-ops/history/plans/901/nodes?limit=20&offset=0":  2,
+		"GET /api/admin/automation-conversion/group-ops/history/plans/901/nodes?limit=20&offset=20": 1,
+	}
+	actual := make(map[string]int, len(historyCalls))
+	for _, call := range historyCalls {
+		actual[call]++
+	}
+	if !reflect.DeepEqual(actual, expected) {
 		t.Fatalf("history Host journey calls=%v", historyCalls)
 	}
 }

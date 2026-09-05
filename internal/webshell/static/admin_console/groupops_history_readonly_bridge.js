@@ -4,6 +4,7 @@
   var detailPath = /^\/api\/admin\/automation-conversion\/group-ops\/history\/plans\/[1-9][0-9]{0,18}\/nodes$/;
   var captured = null;
   var scheduled = false;
+  var generation = 0;
 
   function text(value) { return typeof value === "string" ? value : ""; }
   function attachments(value) {
@@ -16,16 +17,46 @@
     });
   }
 
+  function requestContext(input) {
+    var url;
+    try { url = new URL(typeof input === "string" ? input : input.url, global.location.href); } catch (_error) { return null; }
+    if (!detailPath.test(url.pathname)) return null;
+    var match = url.pathname.match(/\/plans\/([1-9][0-9]{0,18})\/nodes$/);
+    if (!match) return null;
+    var limit = Number(url.searchParams.get("limit"));
+    var offset = Number(url.searchParams.get("offset"));
+    if (!Number.isSafeInteger(limit) || limit < 1 || !Number.isSafeInteger(offset) || offset < 0) return null;
+    return { planID: match[1], limit: limit, offset: offset };
+  }
+
+  function pageIsCurrent(host, page) {
+    var heading = host.querySelector("h2");
+    var controls = host.querySelector("[data-refresh]");
+    if (!heading || heading.textContent !== "历史节点 · plan_id=" + page.planID || !controls || !controls.parentElement) return false;
+    var summary = controls.parentElement.textContent || "";
+    return summary.indexOf("offset=" + page.offset) !== -1 && summary.indexOf("每页 " + page.limit + " 条") !== -1;
+  }
+
+  function articleForItem(rows, item) {
+    var expected = String(item.id) + " / " + String(item.source_node_id);
+    for (var index = 0; index < rows.length; index += 1) {
+      var values = rows[index].querySelectorAll("div > span:last-child");
+      for (var valueIndex = 0; valueIndex < values.length; valueIndex += 1) {
+        if ((values[valueIndex].textContent || "").trim() === expected) return rows[index];
+      }
+    }
+    return null;
+  }
+
   function render() {
     scheduled = false;
     if (!captured || !Array.isArray(captured.items)) return;
-    var host = document.querySelector("#group-history-secondary [data-history-rows]");
+    var host = document.querySelector("#group-history-secondary [data-history-rows]")?.parentElement;
     var renderer = global.AICRMSendContentReadonlyDetail;
-    if (!host || !renderer || typeof renderer.renderFull !== "function" || typeof renderer.escapeHtml !== "function") return;
-    var rows = host.querySelectorAll("article");
-    if (rows.length < captured.items.length) return;
-    captured.items.forEach(function (item, index) {
-      var article = rows[index];
+    if (!host || !pageIsCurrent(host, captured) || !renderer || typeof renderer.renderFull !== "function" || typeof renderer.escapeHtml !== "function") return;
+    var rows = host.querySelectorAll("[data-history-rows] article");
+    captured.items.forEach(function (item) {
+      var article = articleForItem(rows, item);
       var raw = article && article.querySelector("details");
       if (!raw || raw.getAttribute("data-groupops-history-content") === "rendered") return;
       var content = document.createElement("section");
@@ -48,13 +79,12 @@
     global.setTimeout(render, 0);
   }
 
-  function capture(response, input) {
-    var url;
-    try { url = new URL(typeof input === "string" ? input : input.url, global.location.href); } catch (_error) { return; }
-    if (!detailPath.test(url.pathname) || !response || typeof response.clone !== "function") return;
+  function capture(response, context, requestGeneration) {
+    if (!response || typeof response.clone !== "function") return;
     Promise.resolve(response.clone().json()).then(function (page) {
-      if (page && page.source === "v1_history" && page.read_only === true && page.real_external_call_executed === false && Array.isArray(page.items)) {
-        captured = page;
+      if (requestGeneration !== generation) return;
+      if (page && page.source === "v1_history" && page.read_only === true && page.real_external_call_executed === false && Array.isArray(page.items) && Number(page.offset) === context.offset && Number(page.limit) === context.limit) {
+        captured = { planID: context.planID, limit: context.limit, offset: context.offset, items: page.items };
         schedule();
       }
     }).catch(function () {});
@@ -63,8 +93,11 @@
   var previousFetch = global.fetch;
   if (typeof previousFetch === "function") {
     global.fetch = function (input, init) {
+      var context = requestContext(input);
+      var requestGeneration = context ? (++generation) : 0;
+      if (context) captured = null;
       return Promise.resolve(previousFetch.call(this, input, init)).then(function (response) {
-        capture(response, input);
+        if (context) capture(response, context, requestGeneration);
         return response;
       });
     };

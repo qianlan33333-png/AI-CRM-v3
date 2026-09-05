@@ -21,20 +21,78 @@ html = html.replace(`<script defer src="${readonlyPath}"></script>`, `<script>${
 html = html.replace(`<script defer src="${bridgePath}"></script>`, `<script>${bridge}</script>`);
 html = html.replace(/<script type="module" src="\/groupops-assets\/assets\/admin-test\.js"><\/script>/, `<script>${bundle}</script>`);
 if (!html.includes(bundle)) throw new Error('actual Host admin entry was not replaced for the existing JSDOM harness');
+
+async function waitFor(label, predicate) {
+  const deadline = Date.now() + 1500;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`timed out waiting for ${label}`);
+}
+
+function delayedClone(response, delay) {
+  const clone = response.clone.bind(response);
+  Object.defineProperty(response, 'clone', {
+    value() {
+      const copied = clone();
+      return { json: () => new Promise((resolve) => setTimeout(resolve, delay)).then(() => copied.json()) };
+    },
+  });
+  return response;
+}
+
+function pageItem(baseItem, id, sourceNodeID, title, body, attachmentID) {
+  return { ...baseItem, id: String(id), source_node_id: String(sourceNodeID), action_title: title, text_content: body, attachments: [{ kind: 'image', id: attachmentID }] };
+}
+
 const dom = new JSDOM(html, {
   url: hostURL.href,
   runScripts: 'dangerously',
   pretendToBeVisual: true,
   beforeParse(window) {
     window.Headers = Headers;
-    window.fetch = (input, init = {}) => fetch(new URL(String(input), window.location.href), init);
+    window.fetch = async (input, init = {}) => {
+      const url = new URL(String(input), window.location.href);
+      const upstream = await fetch(url, init);
+      if (!/\/history\/plans\/901\/nodes$/.test(url.pathname)) return upstream;
+      const original = await upstream.clone().json();
+      const offset = Number(url.searchParams.get('offset') || '0');
+      if (offset === 0) {
+        const first = original.items?.[0];
+        if (!first) throw new Error('actual historical node HTTP did not return imported source row');
+        const page = {
+          ...original,
+          offset: 0,
+          limit: 20,
+          total: 21,
+          items: [first, ...Array.from({ length: 19 }, (_, index) => pageItem(first, 1000 + index, `old-${index}`, `旧页 ${index}`, `旧正文 ${index}`, `old-${index}`))],
+        };
+        return delayedClone(new Response(JSON.stringify(page), { status: upstream.status, headers: { 'content-type': 'application/json' } }), 120);
+      }
+      if (offset === 20) {
+        const first = original.items?.[0] || { source: 'v1_history', read_only: true, real_external_call_executed: false };
+        const page = { ...original, offset: 20, limit: 20, total: 21, items: [pageItem(first, 2001, 'later-1', '后页标题', '后页正文', 'later-1')] };
+        return delayedClone(new Response(JSON.stringify(page), { status: upstream.status, headers: { 'content-type': 'application/json' } }), 0);
+      }
+      return upstream;
+    };
   },
 });
-await new Promise((resolve) => setTimeout(resolve, 80));
+
 const stage = dom.window.document.querySelector('#stage');
+await waitFor('the frozen runtime to render the first raw node page', () => !!stage?.querySelector('#group-history-secondary article details') && !stage.querySelector('#group-history-secondary [data-next]')?.hasAttribute('disabled'));
+stage.querySelector('#group-history-secondary [data-next]')?.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
+await waitFor('the newest node page read-only facts', () => (stage?.textContent || '').includes('后页标题') && !!stage?.querySelector('#group-history-secondary .send-readonly-detail'));
+const nextText = stage?.textContent || '';
+if (nextText.includes('旧页 0') || nextText.includes('标题 <img src=x onerror=alert(1)>')) throw new Error(`slow prior page overwrote the current node page: ${nextText}`);
+stage.querySelector('#group-history-secondary [data-prev]')?.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
+await waitFor('the imported first node read-only facts after returning to its page', () => {
+  const text = stage?.textContent || '';
+  return text.includes('标题 <img src=x onerror=alert(1)>') && text.includes('正文 <script>window.__groupopsHistoryXSS=1</script>') && text.includes('image #m1') && !!stage?.querySelector('#group-history-secondary .send-readonly-detail');
+});
 const text = stage?.textContent || '';
 if (!stage || !stage.querySelector('.send-readonly-detail')) throw new Error('historical node did not mount through the actual Host renderer');
-if (!text.includes('标题 <img src=x onerror=alert(1)>') || !text.includes('正文 <script>window.__groupopsHistoryXSS=1</script>') || !text.includes('image #m1')) throw new Error(`imported node facts missing from rendered Host: ${text}`);
 if (stage.querySelector('img') || stage.querySelector('script') || dom.window.__groupopsHistoryXSS === 1) throw new Error('historical title/body executed as markup');
 if ([...stage.querySelectorAll('button')].some((button) => /创建|同步|激活|发送/.test(button.textContent || ''))) throw new Error('history Host exposed a current-plan command');
 dom.window.close();
