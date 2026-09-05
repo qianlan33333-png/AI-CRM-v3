@@ -339,7 +339,8 @@ const priorPublishedVersion = Number((priorPublishConfirmations.at(-1)?.response
 click(assessmentDocument.querySelector("#v2-publish-save"));
 await waitFor("assessment republish", () => assessment.calls.filter((call) => call.path === `/api/admin/questionnaires/${assessmentID}/public-publish` && call.method === "POST" && call.status === 200).length === 2);
 const revisedSave = assessment.calls.findLast((call) => call.path === `/api/admin/questionnaires/${assessmentID}` && call.method === "PUT" && call.status === 200);
-const revisedQuestionID = Number(JSON.parse(revisedSave?.body || "{}").questions?.find((question) => question.title === firstTitle)?.id);
+await waitFor("revised Owner save response", () => Array.isArray(revisedSave?.response?.questions));
+const revisedQuestionID = Number(revisedSave.response.questions.find((question) => question.title === firstTitle)?.id);
 if (!Number.isSafeInteger(revisedQuestionID) || revisedQuestionID < 1) throw new Error(`revised frozen question did not retain an Owner id: ${summarizeCalls(assessment.calls)}`);
 await waitFor("assessment republish Owner confirmation", () => {
   const confirmations = assessment.calls.filter((call) => call.path === `/api/admin/questionnaires/${assessmentID}` && call.method === "GET" && call.status === 200);
