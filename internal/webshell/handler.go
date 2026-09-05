@@ -194,7 +194,7 @@ var adminSpecs = map[string]adminSpec{
 	},
 	"/admin/message-archive": {
 		title:          "会话存档",
-		summary:        "按 Customer ID 查看已入库会话存档。",
+		summary:        "从客户列表选择客户，查看已入库会话存档。",
 		activeEndpoint: "",
 	},
 	"/admin/customers": {

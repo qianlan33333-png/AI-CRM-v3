@@ -188,11 +188,18 @@
       row.append(td);
     }
     const action = document.createElement("td");
+    const actions = document.createElement("div");
+    actions.className = "admin-toolbar";
     const link = document.createElement("a");
     link.className = "admin-button admin-button--secondary";
     link.href = "/admin/customers/" + item.customer_id;
     link.textContent = "查看档案";
-    action.append(link);
+    const archive = document.createElement("a");
+    archive.className = "admin-button admin-button--ghost";
+    archive.href = "/admin/message-archive/customers/" + item.customer_id;
+    archive.textContent = "会话存档";
+    actions.append(link, archive);
+    action.append(actions);
     row.append(action);
     return row;
   }

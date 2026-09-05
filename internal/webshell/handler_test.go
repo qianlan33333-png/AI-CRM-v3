@@ -317,8 +317,16 @@ func TestStandaloneHandlerRendersAdminLoginSidebarAndAssets(t *testing.T) {
 			method:     http.MethodGet,
 			path:       "/static/admin_console/admin_customers.js",
 			status:     http.StatusOK,
-			contains:   []string{"credentials: \"same-origin\"", "cache: \"no-store\"", "X-CSRF-Token", "customer_id", "phone-reveal", "phone.startsWith(\"+86\") ? phone.slice(3)", "/360", "订单统计", "问卷统计", "风险摘要", "最近触点"},
+			contains:   []string{"credentials: \"same-origin\"", "cache: \"no-store\"", "X-CSRF-Token", "customer_id", "phone-reveal", "phone.startsWith(\"+86\") ? phone.slice(3)", "/360", "订单统计", "问卷统计", "风险摘要", "最近触点", "/admin/message-archive/customers/"},
 			notContain: []string{"customer-avatar", "phone_assurance", "item.activation_status", "declared", "localStorage", "sessionStorage", "console.log", "/api/v2/", "chat-activity", "survey-answers"},
+		},
+		{
+			name:       "message archive customer entry",
+			method:     http.MethodGet,
+			path:       "/admin/message-archive",
+			status:     http.StatusOK,
+			contains:   []string{"data-message-archive-entry", "选择客户", "href=\"/admin/customers\""},
+			notContain: []string{"data-message-archive-root", "name=\"q\"", "Customer ID"},
 		},
 		{
 			name:       "customer profile page",
@@ -749,6 +757,27 @@ func TestMessageArchiveBrowserPrivateImageContract(t *testing.T) {
 	}
 	if !strings.Contains(output.String(), "message-archive-browser: PASS") {
 		t.Fatalf("message archive browser contract did not report success: %q", output.String())
+	}
+}
+
+func TestAdminCustomersBrowserMessageArchiveEntry(t *testing.T) {
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node is unavailable")
+	}
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("cannot locate repository")
+	}
+	repo := filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
+	command := exec.Command("node", "internal/webshell/static/admin_console/admin_customers.test.mjs")
+	command.Dir = repo
+	var output bytes.Buffer
+	command.Stdout, command.Stderr = &output, &output
+	if err := command.Run(); err != nil {
+		t.Fatalf("admin customers browser contract failed: %v\n%s", err, output.String())
+	}
+	if !strings.Contains(output.String(), "admin-customers-browser: PASS") {
+		t.Fatalf("admin customers browser contract did not report success: %q", output.String())
 	}
 }
 
