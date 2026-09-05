@@ -1,4 +1,5 @@
 import { JSDOM } from "jsdom";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildTestBrowserBundle } from "../../web/scripts/test-browser-bundle.mjs";
@@ -8,6 +9,7 @@ const origin = process.env.AICRM_SURVEY_ADMIN_RUNTIME_ORIGIN;
 if (!origin) throw new Error("AICRM_SURVEY_ADMIN_RUNTIME_ORIGIN is required");
 
 const editorBundle = await buildTestBrowserBundle(path.join(root, "web/src/admin/sections/questionnaireEditor.ts"));
+const hostBridge = await readFile(path.join(root, "internal/webshell/static/admin_console/survey_operations.js"), "utf8");
 let nextKey = 1;
 
 async function waitFor(label, predicate, timeout = 4000) {
@@ -53,20 +55,32 @@ async function openEditor(query) {
       window.confirm = () => true;
       window.prompt = () => null;
       Object.defineProperty(window.crypto, "randomUUID", { configurable: true, value: () => `00000000-0000-4000-8000-${String(nextKey++).padStart(12, "0")}` });
-      window.URL.createObjectURL = () => "blob:survey-runtime";
+      window.__surveyRuntimeDownloads = [];
+      window.URL.createObjectURL = (blob) => {
+        window.__surveyRuntimeDownloads.push({ blob, clicked: false, filename: "" });
+        return `blob:survey-runtime-${window.__surveyRuntimeDownloads.length}`;
+      };
       window.URL.revokeObjectURL = () => {};
       window.HTMLAnchorElement.prototype.click = function clickAnchor() {
-        this.dataset.runtimeClicked = "true";
+        const download = window.__surveyRuntimeDownloads.at(-1);
+        if (download) {
+          download.clicked = true;
+          download.filename = this.download || "";
+        }
       };
     },
   });
   const calls = [];
   dom.window.fetch = async (inputValue, init = {}) => {
     const target = new URL(String(inputValue), origin);
-    calls.push({ path: target.pathname, method: init.method || "GET" });
-    return globalThis.fetch(target, init);
+    const call = { path: target.pathname, method: init.method || "GET", status: 0 };
+    calls.push(call);
+    const response = await globalThis.fetch(target, init);
+    call.status = response.status;
+    return response;
   };
   dom.window.eval(editorBundle);
+  dom.window.eval(hostBridge);
   await waitFor("frozen editor initial render", () => dom.window.document.querySelector("#save-btn") !== null && dom.window.document.querySelector("#inspector-body") !== null);
   return { dom, calls };
 }
@@ -78,19 +92,35 @@ input(normal.dom.window, normalDocument.querySelector("#field-title"), "冻结�
 input(normal.dom.window, normalDocument.querySelector("#field-slug"), "frozen-admin-runtime");
 click(normalDocument.querySelector("#add-single"));
 input(normal.dom.window, normalDocument.querySelector("#question-title"), "第一道真实题");
+input(normal.dom.window, normalDocument.querySelector('[data-option-field="option_text"]'), "第一题选项 A");
+click(normalDocument.querySelector("#add-option-btn"));
+await waitFor("first question second option", () => normalDocument.querySelectorAll('[data-option-field="option_text"]').length === 2);
+input(normal.dom.window, normalDocument.querySelectorAll('[data-option-field="option_text"]')[1], "第一题选项 B");
 click(normalDocument.querySelector("#add-single"));
 input(normal.dom.window, normalDocument.querySelector("#question-title"), "第二道真实题");
+input(normal.dom.window, normalDocument.querySelector('[data-option-field="option_text"]'), "第二题选项 A");
+click(normalDocument.querySelector("#add-option-btn"));
+await waitFor("second question second option", () => normalDocument.querySelectorAll('[data-option-field="option_text"]').length === 2);
+input(normal.dom.window, normalDocument.querySelectorAll('[data-option-field="option_text"]')[1], "第二题选项 B");
 if (!normalDocument.querySelector("#preview-questions")?.textContent.includes("第二道真实题")) {
   throw new Error("frozen preview did not render the edited question before save");
 }
 click(normalDocument.querySelector("#save-btn"));
-await waitFor("normal editor create", () => /\?id=[1-9]\d*$/.test(normal.dom.window.location.search) && normalDocument.querySelector("#editor-duplicate-btn") !== null);
+await waitFor("normal editor create", () => /\?id=[1-9]\d*$/.test(normal.dom.window.location.search) && normalDocument.querySelector("#editor-duplicate-btn") !== null).catch((error) => {
+  const toast = normalDocument.querySelector("#toast")?.textContent || "";
+  throw new Error(`${error.message}; toast=${toast}; calls=${JSON.stringify(normal.calls)}`);
+});
 const normalID = Number(new URLSearchParams(normal.dom.window.location.search).get("id"));
 if (!Number.isSafeInteger(normalID) || normalID < 1) throw new Error("created editor did not retain a server questionnaire id");
 
 click(normalDocument.querySelector("#editor-export-btn"));
-await waitFor("actual CSV export", () => normal.calls.some((call) => call.path === `/api/admin/questionnaires/${normalID}/export`));
-if (!normalDocument.querySelector('a[data-runtime-clicked="true"]')) throw new Error("download action did not create the browser download anchor");
+await waitFor("actual CSV download", () => {
+  const downloads = normal.dom.window.__surveyRuntimeDownloads || [];
+  return normal.calls.some((call) => call.path === `/api/admin/questionnaires/${normalID}/export` && call.status === 200)
+    && downloads.length === 1 && downloads[0].clicked && downloads[0].blob instanceof normal.dom.window.Blob;
+});
+const csv = await normal.dom.window.__surveyRuntimeDownloads[0].blob.text();
+if (!csv.includes("submission_id") || !csv.includes("customer_id")) throw new Error(`downloaded CSV did not contain the Survey export contract: ${csv.slice(0, 160)}`);
 
 change(normal.dom.window, normalDocument.querySelector("#field-is-disabled"), true);
 click(normalDocument.querySelector("#save-btn"));
@@ -120,11 +150,20 @@ const firstTitle = assessmentDocument.querySelector("[data-question-key]")?.quer
 click(assessmentDocument.querySelector('[data-assessment-step="preview"]'));
 await waitFor("assessment preview", () => assessmentDocument.querySelector(".h5-question-v2 strong")?.textContent === firstTitle);
 click(assessmentDocument.querySelector("#v2-publish-save"));
+await waitFor("assessment publish", () => assessmentDocument.querySelector('[data-survey-host-publish-status] a[data-survey-host-published-path]')?.getAttribute("href") === "/q/frozen-admin-assessment");
+const publishedPath = assessmentDocument.querySelector('[data-survey-host-publish-status] a[data-survey-host-published-path]')?.getAttribute("href") || "";
+if (publishedPath !== "/q/frozen-admin-assessment") throw new Error(`published Host share path=${publishedPath}`);
 await waitFor("assessment save", () => /\?id=[1-9]\d*$/.test(assessment.dom.window.location.search));
 const assessmentID = Number(new URLSearchParams(assessment.dom.window.location.search).get("id"));
 if (!assessment.calls.some((call) => call.path === "/api/admin/questionnaires" && call.method === "POST")) {
   throw new Error("frozen assessment save did not use the actual create endpoint");
 }
+if (!assessment.calls.some((call) => call.path === `/api/admin/questionnaires/${assessmentID}/public-publish` && call.method === "POST" && call.status === 200)
+  || assessment.calls.some((call) => call.path === `/api/admin/questionnaires/${assessmentID}/enable`)) {
+  throw new Error(`Host publish bridge did not use the V3 publish contract: ${JSON.stringify(assessment.calls)}`);
+}
 assessment.dom.window.close();
 
-console.log(JSON.stringify({ normalID, copyID, assessmentID, firstTitle }));
+const h5 = await fetch(`${origin}/h5/all.html?slug=frozen-admin-assessment`);
+if (!h5.ok || !h5.headers.get("content-type")?.includes("text/html") || (await h5.text()).length < 100) throw new Error("actual public H5 Host was unavailable after publish");
+console.log(JSON.stringify({ normalID, copyID, assessmentID, firstTitle, publishedPath }));

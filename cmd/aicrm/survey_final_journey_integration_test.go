@@ -522,6 +522,9 @@ func TestSurveyFrozenAdminRuntimeJourneyPostgreSQL(t *testing.T) {
 	mux.Handle("/admin/questionnaireDetail.html", ui)
 	mux.Handle("/api/admin/questionnaires", handler)
 	mux.Handle("/api/admin/questionnaires/", handler)
+	publicUI := surveymodule.NewModuleRegistration().PublicUIBinding(dist)
+	mux.Handle("/h5/", publicUI)
+	mux.Handle("/survey-assets/", publicUI)
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
@@ -537,7 +540,7 @@ func TestSurveyFrozenAdminRuntimeJourneyPostgreSQL(t *testing.T) {
 	}
 	var result struct {
 		NormalID, CopyID, AssessmentID int64
-		FirstTitle                     string
+		FirstTitle, PublishedPath      string
 	}
 	if err = json.Unmarshal([]byte(strings.TrimSpace(output.String())), &result); err != nil {
 		t.Fatalf("decode frozen runtime output %q: %v", output.String(), err)
@@ -554,8 +557,11 @@ func TestSurveyFrozenAdminRuntimeJourneyPostgreSQL(t *testing.T) {
 		t.Fatalf("frozen duplicate persistence=%+v err=%v", copy, err)
 	}
 	assessment, err := definitions.Get(ctx, surveyport.ID(result.AssessmentID))
-	if err != nil || assessment.Mode != surveyport.ModeAssessment || assessment.Status != surveyport.StatusDraft || len(assessment.Questions) < 2 || assessment.Questions[0].Title != result.FirstTitle {
-		t.Fatalf("frozen assessment persistence=%+v first=%q err=%v", assessment, result.FirstTitle, err)
+	if err != nil || assessment.Mode != surveyport.ModeAssessment || assessment.Status != surveyport.StatusPublished || len(assessment.Questions) < 2 || assessment.Questions[0].Title != result.FirstTitle || result.PublishedPath != "/q/"+assessment.Slug {
+		t.Fatalf("frozen assessment persistence=%+v first=%q path=%q err=%v", assessment, result.FirstTitle, result.PublishedPath, err)
+	}
+	if shared, readErr := submissions.ReadPublic(ctx, assessment.Slug); readErr != nil || shared.ID != assessment.ID || shared.Status != surveyport.StatusPublished {
+		t.Fatalf("published assessment was not shareable through the Survey Owner: %+v err=%v", shared, readErr)
 	}
 }
 

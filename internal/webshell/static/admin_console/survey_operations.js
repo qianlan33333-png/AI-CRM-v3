@@ -25,6 +25,87 @@
     const heading = Array.from(document.querySelectorAll('h3')).find(function (node) { return /问卷.*(?:外推|推送).*记录/.test(node.textContent); });
     return heading ? heading.parentElement : null;
   }
+  function installFrozenPublishBridge() {
+    if (!document.body || document.body.dataset.page !== 'questionnaireDetail') return;
+    let pendingButton = null;
+    let publishing = false;
+    function currentButton(fallback) { return document.getElementById('v2-publish-save') || fallback || null; }
+    function showPublishState(button, questionnaire, failed) {
+      const target = currentButton(button);
+      let status = document.querySelector('[data-survey-host-publish-status]');
+      if (!status) {
+        status = document.createElement('span');
+        status.dataset.surveyHostPublishStatus = 'true';
+        status.style.cssText = 'margin-left:10px;font-size:13px';
+        if (target && target.parentElement) target.parentElement.appendChild(status);
+      }
+      if (failed) {
+        status.textContent = '发布失败，请重试';
+        status.style.color = '#d93026';
+        return;
+      }
+      const publicPath = text(questionnaire && questionnaire.public_path);
+      status.replaceChildren();
+      status.style.color = '#1f7a1f';
+      status.appendChild(document.createTextNode('已发布 · '));
+      const link = document.createElement('a');
+      link.href = publicPath;
+      link.textContent = '打开公开问卷';
+      link.dataset.surveyHostPublishedPath = publicPath;
+      status.appendChild(link);
+    }
+    function responseQuestionnaire(value) {
+      if (!value || typeof value !== 'object') return null;
+      if (value.questionnaire && typeof value.questionnaire === 'object') return value.questionnaire;
+      if (value.data && value.data.questionnaire && typeof value.data.questionnaire === 'object') return value.data.questionnaire;
+      return value;
+    }
+    async function publishSavedQuestionnaire(saved, button) {
+      const questionnaire = responseQuestionnaire(saved);
+      const id = Number(questionnaire && questionnaire.id);
+      if (!Number.isSafeInteger(id) || id < 1) throw new Error('saved questionnaire id is missing');
+      await adminRequest('/api/admin/questionnaires/' + id + '/public-publish', { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, body: JSON.stringify({ expected_questionnaire_version: Number(questionnaire.version) || 0 }) });
+      const detail = responseQuestionnaire(await adminRequest('/api/admin/questionnaires/' + id, { method: 'GET', headers: { Accept: 'application/json' } }));
+      if (!detail || detail.status !== 'active' || detail.enabled !== true || !text(detail.public_path)) throw new Error('published questionnaire was not confirmed');
+      showPublishState(button, detail, false);
+    }
+    const originalFetch = window.fetch;
+    if (typeof originalFetch !== 'function') return;
+    window.fetch = function (input, options) {
+      const method = text(options && options.method || input && input.method || 'GET').toUpperCase();
+      const rawURL = typeof input === 'string' ? input : input && input.url || '';
+      let pathname = rawURL;
+      try { pathname = new URL(rawURL, window.location.href).pathname; } catch (_error) {}
+      const save = pendingButton && !publishing && (method === 'POST' || method === 'PUT') && /^\/api\/admin\/questionnaires(?:\/[1-9][0-9]*)?$/.test(pathname);
+      const response = originalFetch(input, options);
+      if (!save) return response;
+      const button = pendingButton;
+      pendingButton = null;
+      publishing = true;
+      Promise.resolve(response).then(function (result) {
+        if (!result || !result.ok) throw new Error('save failed');
+        return result.clone().json();
+      }).then(function (saved) {
+        return publishSavedQuestionnaire(saved, button);
+      }).catch(function () {
+        showPublishState(button, null, true);
+      }).finally(function () {
+        publishing = false;
+      });
+      return response;
+    };
+    document.addEventListener('click', function (event) {
+      const button = event.target && event.target.closest && event.target.closest('#v2-publish-save');
+      if (!button) return;
+      if (pendingButton || publishing) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        return;
+      }
+      pendingButton = button;
+      queueMicrotask(function () { if (pendingButton === button && !publishing) pendingButton = null; });
+    }, true);
+  }
   function installQrFallback() {
     const page = document.body.dataset.page || ''; if (!['questionnaires', 'questionnaireDetail', 'questionnaireOps'].includes(page)) return;
     const pending = new WeakSet();
@@ -88,6 +169,7 @@
     let scheduled = false; const ensureHost = function () { if (scheduled || (findExternalPushCard() && findExternalPushCard().querySelector('[data-survey-push-metadata]'))) return; scheduled = true; setTimeout(function () { scheduled = false; void mount(); }, 0); };
     new MutationObserver(ensureHost).observe(stage, { childList: true, subtree: true }); ensureHost(); setTimeout(ensureHost, 50);
   }
+  installFrozenPublishBridge();
   installLegacyQuestionnaireOpsGuard();
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, { once: true }); else start();
 }());
