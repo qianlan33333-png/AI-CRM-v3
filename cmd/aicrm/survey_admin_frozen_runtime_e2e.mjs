@@ -332,8 +332,19 @@ firstTitle = `${assessmentDocument.querySelector("[data-question-key]")?.querySe
 input(assessment.dom.window, assessmentDocument.querySelector("[data-question-key]")?.querySelector(".question-title-input"), firstTitle);
 click(assessmentDocument.querySelector('[data-assessment-step="preview"]'));
 await waitFor("assessment revised preview", () => assessmentDocument.querySelector(".h5-question-v2 strong")?.textContent === firstTitle);
+const priorPublishConfirmationCount = assessment.calls.filter((call) => call.path === `/api/admin/questionnaires/${assessmentID}` && call.method === "GET" && call.status === 200).length;
 click(assessmentDocument.querySelector("#v2-publish-save"));
 await waitFor("assessment republish", () => assessment.calls.filter((call) => call.path === `/api/admin/questionnaires/${assessmentID}/public-publish` && call.method === "POST" && call.status === 200).length === 2);
+await waitFor("assessment republish Owner confirmation", () => {
+  const confirmations = assessment.calls.filter((call) => call.path === `/api/admin/questionnaires/${assessmentID}` && call.method === "GET" && call.status === 200);
+  const latest = confirmations.at(-1)?.response?.questionnaire || confirmations.at(-1)?.response?.data?.questionnaire;
+  return confirmations.length === priorPublishConfirmationCount + 1
+    && latest?.status === "active" && latest?.enabled === true
+    && latest?.title === firstTitle
+    && assessmentDocument.querySelector('[data-survey-host-publish-status] a[data-survey-host-published-path]')?.getAttribute("href") === "/q/frozen-admin-assessment";
+}).catch((error) => {
+  throw new Error(`${error.message}; calls=${summarizeCalls(assessment.calls)}`);
+});
 if (!assessment.calls.some((call) => call.path === `/api/admin/questionnaires/${assessmentID}` && call.method === "PUT" && call.status === 200)) {
   throw new Error(`frozen assessment edit did not save through the current Owner version: ${summarizeCalls(assessment.calls)}`);
 }
