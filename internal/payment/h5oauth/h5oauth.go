@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -20,7 +21,10 @@ import (
 
 var ErrUnavailable = errors.New("payment H5 OAuth unavailable")
 var ErrInvalid = errors.New("invalid payment H5 OAuth request")
-var returnPathPattern = regexp.MustCompile(`^/pay/[1-9][0-9]*$`)
+
+// The public product URL is keyed by the stable product code. This permits one
+// escaped path segment only and keeps the OAuth return same-origin.
+var returnPathPattern = regexp.MustCompile(`^/pay/[^/?#]+$`)
 
 type Provider interface {
 	Enabled() bool
@@ -56,7 +60,7 @@ func (PostgreSQL) Consume(ctx context.Context, digest [32]byte, now time.Time) (
 	}
 	var state State
 	err = tx.QueryRow(ctx, `UPDATE payment_h5_oauth_states SET consumed_at=$2 WHERE state_digest=$1 AND consumed_at IS NULL AND expires_at>$2 RETURNING return_path,expires_at`, digest[:], now).Scan(&state.ReturnPath, &state.ExpiresAt)
-	if err != nil || !returnPathPattern.MatchString(state.ReturnPath) {
+	if err != nil || !validReturnPath(state.ReturnPath) {
 		return State{}, ErrInvalid
 	}
 	return state, nil
@@ -84,7 +88,7 @@ func NewService(uow platformport.UnitOfWork, store Store, provider Provider, iss
 func (s *Service) Enabled() bool { return s != nil && s.provider != nil && s.provider.Enabled() }
 
 func (s *Service) Start(ctx context.Context, returnPath string) (string, error) {
-	if !s.Enabled() || !returnPathPattern.MatchString(returnPath) {
+	if !s.Enabled() || !validReturnPath(returnPath) {
 		return "", ErrInvalid
 	}
 	raw := make([]byte, 32)
@@ -129,4 +133,12 @@ func (s *Service) Complete(ctx context.Context, stateToken, code string) (paymen
 
 func safe(value string, maximum int) bool {
 	return value != "" && len(value) <= maximum && strings.TrimSpace(value) == value && !strings.ContainsAny(value, "\r\n\x00")
+}
+
+func validReturnPath(value string) bool {
+	if !returnPathPattern.MatchString(value) {
+		return false
+	}
+	productCode, err := url.PathUnescape(strings.TrimPrefix(value, "/pay/"))
+	return err == nil && safe(productCode, 200)
 }

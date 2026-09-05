@@ -9,8 +9,8 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/url"
 	"reflect"
-	"strconv"
 	"strings"
 	"time"
 
@@ -316,7 +316,7 @@ func (service *LocalProductLifecycleService) ShareLocalProduct(ctx context.Conte
 		}
 		result = productport.LocalProductShare{
 			ProductID: projected.ID, ProductCode: projected.ProductCode, Lifecycle: projected.Lifecycle,
-			Available: true, PurchaseURL: "/p/" + strconv.FormatInt(int64(projected.ID), 10),
+			Available: true, PurchaseURL: "/p/" + url.PathEscape(projected.ProductCode),
 		}
 		return nil
 	})

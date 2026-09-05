@@ -192,6 +192,11 @@ var adminSpecs = map[string]adminSpec{
 		summary:        "AI 助手观测入口已预留。",
 		activeEndpoint: "api.admin_cloud_orchestrator_workspace",
 	},
+	"/admin/message-archive": {
+		title:          "会话存档",
+		summary:        "按 Customer ID 查看已入库会话存档。",
+		activeEndpoint: "",
+	},
 	"/admin/customers": {
 		title:          "客户激活 / 客户列表",
 		summary:        "从 v3 OneID 与企微同步投影查看客户，手机号默认脱敏。",
@@ -295,6 +300,9 @@ func adminSpecForPath(requestPath string) adminSpec {
 	}
 	if strings.HasPrefix(requestPath, "/admin/customers/") {
 		return adminSpec{title: "客户档案", summary: "按 Customer ID 查看分区式安全客户档案。", activeEndpoint: "api.admin_console_customers"}
+	}
+	if strings.HasPrefix(requestPath, "/admin/message-archive/customers/") {
+		return adminSpec{title: "会话存档", summary: "仅显示已入库的本地会话存档。", activeEndpoint: ""}
 	}
 	for route, spec := range adminSpecs {
 		if route != AdminRootPath && strings.HasPrefix(requestPath, route+"/") {

@@ -99,6 +99,7 @@ else
   trap - EXIT
 fi
 test -x "$release_dir/bin/aicrm"
+test -x "$release_dir/bin/wecom-archive-sdk-runner"
 test -x "$release_dir/bin/migrate-platform"
 test -x "$release_dir/bin/migrate-river"
 test -x "$release_dir/bin/migrate-phone-identities"
@@ -156,6 +157,7 @@ test -f "$release_dir/migrations/0053_segment_audience_member_event_fact_kinds.s
 test -f "$release_dir/migrations/0061_product_public_purchase.sql"
 test -f "$release_dir/migrations/0063_identity_hxc_source_observations.sql"
 test -f "$release_dir/migrations/0064_hxc_dashboard_identity_v2.sql"
+test -f "$release_dir/migrations/0068_payment_session_beneficiary_selection.sql"
 test -f "$release_dir/deploy/aicrm-hxc-dashboard-rollout.service"
 test -f "$release_dir/deploy/rollout-hxc-identity-v2.sh"
 test -f "$release_dir/migrations/0015_config_adminops.sql"

@@ -122,7 +122,7 @@ make_release() {
   local release="$test_root/package-${sha}"
   local archive="/tmp/aicrm-${sha}.tar.gz"
   mkdir -p "$release/bin" "$release/migrations" "$release/web/dist/admin" "$release/web/dist/aiassistant" "$release/deploy"
-  for binary in aicrm migrate-platform migrate-river migrate-phone-identities migrate-identity-phone-vault migrate-survey-v2 migrate-order-attribution migrate-automation-operations migrate-v2-config-definitions migrate-channel-history migrate-radar-v2 migrate-sidebar-history bootstrap-automation-operations; do
+  for binary in aicrm wecom-archive-sdk-runner migrate-platform migrate-river migrate-phone-identities migrate-identity-phone-vault migrate-survey-v2 migrate-order-attribution migrate-automation-operations migrate-v2-config-definitions migrate-channel-history migrate-radar-v2 migrate-sidebar-history bootstrap-automation-operations; do
     printf '#!/usr/bin/env bash\nexit 0\n' > "$release/bin/$binary"
     chmod 0755 "$release/bin/$binary"
   done
@@ -146,7 +146,8 @@ make_release() {
     0053_segment_audience_member_event_fact_kinds.sql \
     0061_product_public_purchase.sql \
     0063_identity_hxc_source_observations.sql \
-    0064_hxc_dashboard_identity_v2.sql; do
+    0064_hxc_dashboard_identity_v2.sql \
+    0068_payment_session_beneficiary_selection.sql; do
     : > "$release/migrations/$migration"
   done
   : > "$release/web/dist/asset-manifest.json"
