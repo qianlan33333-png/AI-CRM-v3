@@ -86,7 +86,7 @@ func TestPostgreSQLFrozenSurveySnapshotImportReplayAndReconcile(t *testing.T) {
 	if err := reconcile([]string{"--target-url", targetURL, "--snapshot", file, "--snapshot-key-file", snapshotKey, "--data-key-file", dataKey}); err == nil || !strings.Contains(err.Error(), "answer target fact drift") {
 		t.Fatalf("answer field drift err=%v", err)
 	}
-	if _, err := pool.Exec(ctx, `UPDATE survey_submission_answers SET selected_options_snapshot='[]'::jsonb WHERE id=$1`, answerID); err != nil {
+	if _, err := pool.Exec(ctx, `UPDATE survey_submission_answers SET selected_options_snapshot='[{"id":20,"text":"Good","score":5,"tags":[]}]'::jsonb WHERE id=$1`, answerID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx, `UPDATE survey_submission_answers SET text_value_ciphertext=decode('00','hex') WHERE id=$1`, answerID); err != nil {
