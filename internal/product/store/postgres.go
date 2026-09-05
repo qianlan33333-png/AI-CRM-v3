@@ -256,6 +256,17 @@ func (r *Repository) Get(ctx context.Context, id productport.ID) (productport.Pr
 	return r.get(ctx, id, false, "")
 }
 
+func (r *Repository) GetByCode(ctx context.Context, code string) (productport.Product, error) {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return productport.Product{}, err
+	}
+	if code == "" || code != strings.TrimSpace(code) || len(code) > 200 {
+		return productport.Product{}, productport.ErrProductReadNotFound
+	}
+	return scanProduct(tx.QueryRow(ctx, `SELECT `+productColumns+` FROM products WHERE product_code=$1`, code))
+}
+
 func (r *Repository) GetForUpdate(ctx context.Context, id productport.ID) (productport.Product, error) {
 	return r.get(ctx, id, true, "")
 }
