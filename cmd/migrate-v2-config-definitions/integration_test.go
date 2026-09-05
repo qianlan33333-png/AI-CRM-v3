@@ -308,7 +308,7 @@ func configHistoryFixture(t *testing.T, revision string) source.HistorySnapshot 
 		DirectoryChats:     []source.HistoryDirectoryChat{{ChatReference: "chat-history-1", DisplayName: "历史群", OwnerReference: &owner, MemberCount: 3, Status: "active", RecordedAt: now}},
 		DirectorySnapshots: []source.HistoryDirectorySnapshot{{ChatReference: "chat-history-1", DisplayName: "历史群", OwnerReference: &empty, OwnerName: "", InternalMemberCount: 1, ExternalMemberCount: 2, Status: "active", RecordedAt: now}},
 		Groups:             []source.HistoryGroup{{ID: 201, PlanID: 101, ChatReference: "chat-history-1", DisplayName: "历史群", OwnerReference: &owner, InternalMemberCount: 1, ExternalMemberCount: 2, Status: "active", CreatedAt: now}, {ID: 202, PlanID: 999, ChatReference: "orphan", DisplayName: "孤立群", InternalMemberCount: 1, ExternalMemberCount: 0, Status: "active", CreatedAt: now}},
-		Nodes:              []source.HistoryNode{{ID: 301, PlanID: 101, DayIndex: 1, TriggerTime: "09:00", SortOrder: 1, Status: "active", ContentPackage: json.RawMessage(`{"text":"历史内容"}`), Attachments: json.RawMessage(`[{"kind":"image","id":"m1"}]`), CreatedAt: now, UpdatedAt: now}},
+		Nodes:              []source.HistoryNode{{ID: 301, PlanID: 101, DayIndex: 1, TriggerTime: "09:00", SortOrder: 1, Status: "active", ActionTitle: "历史标题", TextContent: "历史正文", ContentPackage: json.RawMessage(`{"text":"历史内容"}`), Attachments: json.RawMessage(`[{"kind":"image","id":"m1"}]`), CreatedAt: now, UpdatedAt: now}},
 	}
 	if err := source.PopulateHistoryManifest(&snapshot, source.ProductionSourceSystem, revision, now); err != nil {
 		t.Fatal(err)
@@ -328,15 +328,15 @@ func assertImportedHistoryReadable(t *testing.T, ctx context.Context, pool *plat
 	}
 	service := groupopsapp.NewHistoryService(uow, repository)
 	plans, err := service.ListHistoricalPlans(ctx, 20, 0)
-	if err != nil || plans.Total != 1 || plans.Items[0].PlanID != 101 || plans.Items[0].CreatedBy != nil || plans.Items[0].SourceOwnerReference != nil {
+	if err != nil || plans.Total != 1 || plans.Items[0].PlanID != 101 || plans.Items[0].CreatedBy != nil || plans.Items[0].SourceOwnerReference == nil || *plans.Items[0].SourceOwnerReference != "9" {
 		t.Fatalf("history plan page=%#v err=%v", plans, err)
 	}
 	groups, err := service.ListHistoricalGroups(ctx, 101, 20, 0)
-	if err != nil || groups.Total != 1 || groups.Items[0].SourceOwnerReference != nil {
+	if err != nil || groups.Total != 1 || groups.Items[0].SourceOwnerReference == nil || *groups.Items[0].SourceOwnerReference != "9" {
 		t.Fatalf("history group page=%#v err=%v", groups, err)
 	}
 	nodes, err := service.ListHistoricalNodes(ctx, 101, 20, 0)
-	if err != nil || nodes.Total != 1 || !strings.Contains(string(nodes.Items[0].ContentPackage), "source_attachments") {
+	if err != nil || nodes.Total != 1 || nodes.Items[0].ActionTitle != "历史标题" || nodes.Items[0].TextContent != "历史正文" || string(nodes.Items[0].Attachments) != `[{"kind":"image","id":"m1"}]` || !strings.Contains(string(nodes.Items[0].ContentPackage), "source_attachments") {
 		t.Fatalf("history node page=%#v err=%v", nodes, err)
 	}
 	handler, err := groupopshttp.NewHandlerWithRuntimeAndHistory(historyHTTPApplication{}, historyHTTPRuntime{}, service, historyHTTPSecurity{}, nil)
@@ -348,6 +348,12 @@ func assertImportedHistoryReadable(t *testing.T, ctx context.Context, pool *plat
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), "source_owner_reference") || !strings.Contains(response.Body.String(), `"plan_id":"101"`) {
 		t.Fatalf("history HTTP response status=%d body=%s", response.Code, response.Body.String())
+	}
+	request = httptest.NewRequest(http.MethodGet, groupopshttp.HistoryPath+"/plans/101/nodes?limit=20&offset=0", nil)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"action_title":"历史标题"`) || !strings.Contains(response.Body.String(), `"text_content":"历史正文"`) || !strings.Contains(response.Body.String(), `"attachments":[{"kind":"image","id":"m1"}]`) {
+		t.Fatalf("history node HTTP response status=%d body=%s", response.Code, response.Body.String())
 	}
 }
 

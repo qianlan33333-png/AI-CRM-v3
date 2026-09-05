@@ -77,6 +77,9 @@ type HistoricalNode struct {
 	TriggerTime    string          `json:"trigger_time"`
 	SortOrder      int32           `json:"sort_order"`
 	OriginalStatus string          `json:"original_status"`
+	ActionTitle    string          `json:"action_title"`
+	TextContent    string          `json:"text_content"`
+	Attachments    json.RawMessage `json:"attachments"`
 	ContentPackage json.RawMessage `json:"content_package"`
 	CreatedAt      time.Time       `json:"created_at"`
 	UpdatedAt      time.Time       `json:"updated_at"`
@@ -137,6 +140,7 @@ type HistoricalImportResult struct {
 // HistoricalImporter is the Group Ops owner write port for its four sealed
 // V1 history projections and their append-only source ledger.
 type HistoricalImporter interface {
+	PreflightHistoricalImport(context.Context, HistoricalImportBatch) error
 	ApplyHistoricalImport(context.Context, HistoricalImportBatch, []HistoricalImportRecord) (HistoricalImportResult, error)
 	VerifyHistoricalImport(context.Context, HistoricalImportBatch, []HistoricalImportRecord) (HistoricalImportResult, error)
 }

@@ -35,7 +35,7 @@ func TestHistoryRecordsPreserveTextReferencesAndQuarantine(t *testing.T) {
 			groupMissingParent = record.QuarantineReason == "missing_plan"
 		}
 		if record.SourceKind == "nodes" && record.SourceKey == "21" {
-			nodeFound = record.Node != nil && string(record.Node.ContentPackage) == `{"source_attachments":[],"source_content_package":{"text":"hello"}}`
+			nodeFound = record.Node != nil && record.Node.TriggerTime == "09:00" && record.Node.TextContent == "" && string(record.Node.Attachments) == `[]` && strings.Contains(string(record.Node.ContentPackage), `"source_content_package":{"text":"hello"}`)
 		}
 	}
 	if !planFound || !groupMissingParent || !nodeFound {

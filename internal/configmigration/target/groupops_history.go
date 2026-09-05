@@ -9,11 +9,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/configmigration/source"
 	groupopsport "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/port"
 	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
-	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 )
 
 var ErrHistoryDrift = errors.New("Group Ops history import drift")
@@ -33,20 +31,17 @@ func (r HistoryRunner) Preflight(ctx context.Context, snap source.HistorySnapsho
 	if _, err := historyRecords(snap); err != nil {
 		return ErrInvalid
 	}
+	manifest, err := json.Marshal(snap.Manifest)
+	if err != nil {
+		return ErrInvalid
+	}
+	batch := groupopsport.HistoricalImportBatch{SourceSystem: snap.Manifest.SourceSystem, SourceRevision: snap.Manifest.SourceRevision, SnapshotDigest: digest, Manifest: manifest}
 	return r.UOW.Within(ctx, func(tx context.Context) error {
-		t, err := platformpostgres.RequireTransaction(tx)
-		if err != nil {
-			return err
-		}
-		var previous []byte
-		err = t.QueryRow(tx, `SELECT snapshot_digest FROM group_ops_v1_history_import_batches WHERE source_system=$1 AND source_revision=$2`, snap.Manifest.SourceSystem, snap.Manifest.SourceRevision).Scan(&previous)
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil
-		}
-		if err != nil || len(previous) != sha256.Size || string(previous) != string(digest[:]) {
+		err := r.GroupOps.PreflightHistoricalImport(tx, batch)
+		if errors.Is(err, groupopsport.ErrHistoryConflict) {
 			return ErrHistoryDrift
 		}
-		return nil
+		return err
 	})
 }
 
@@ -144,14 +139,14 @@ func historyRecords(snap source.HistorySnapshot) ([]groupopsport.HistoricalImpor
 		r := historyRecord("nodes", fmt.Sprint(x.ID), x)
 		if !importedPlans[x.PlanID] {
 			r.QuarantineReason = "missing_plan"
-		} else if x.ID < 1 || x.DayIndex < 0 || x.TriggerTime == "" || x.TriggerTime != strings.TrimSpace(x.TriggerTime) || x.SortOrder < 0 || x.Status == "" || x.Status != strings.TrimSpace(x.Status) || !json.Valid(x.ContentPackage) || !json.Valid(x.Attachments) || x.CreatedAt.IsZero() || x.UpdatedAt.Before(x.CreatedAt) {
+		} else if x.ID < 1 || x.DayIndex < 0 || x.TriggerTime != strings.TrimSpace(x.TriggerTime) || x.SortOrder < 0 || x.Status == "" || x.Status != strings.TrimSpace(x.Status) || !json.Valid(x.ContentPackage) || !json.Valid(x.Attachments) || x.CreatedAt.IsZero() || x.UpdatedAt.Before(x.CreatedAt) {
 			r.QuarantineReason = "invalid_node"
 		} else {
-			content, err := json.Marshal(map[string]json.RawMessage{"source_content_package": x.ContentPackage, "source_attachments": x.Attachments})
+			content, err := json.Marshal(map[string]json.RawMessage{"source_content_package": x.ContentPackage, "source_attachments": x.Attachments, "source_action_title": json.RawMessage(fmt.Sprintf("%q", x.ActionTitle)), "source_text_content": json.RawMessage(fmt.Sprintf("%q", x.TextContent)), "source_trigger_time_label": json.RawMessage(fmt.Sprintf("%q", x.TriggerTime))})
 			if err != nil {
 				return nil, err
 			}
-			r.Node = &groupopsport.HistoricalNode{SourceNodeID: x.ID, SourcePlanID: x.PlanID, PlanID: x.PlanID, DayIndex: x.DayIndex, TriggerTime: x.TriggerTime, SortOrder: x.SortOrder, OriginalStatus: x.Status, ContentPackage: content, CreatedAt: x.CreatedAt, UpdatedAt: x.UpdatedAt}
+			r.Node = &groupopsport.HistoricalNode{SourceNodeID: x.ID, SourcePlanID: x.PlanID, PlanID: x.PlanID, DayIndex: x.DayIndex, TriggerTime: x.TriggerTime, SortOrder: x.SortOrder, OriginalStatus: x.Status, ActionTitle: x.ActionTitle, TextContent: x.TextContent, Attachments: append(json.RawMessage(nil), x.Attachments...), ContentPackage: content, CreatedAt: x.CreatedAt, UpdatedAt: x.UpdatedAt}
 		}
 		records = append(records, r)
 	}

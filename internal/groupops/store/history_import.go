@@ -19,6 +19,26 @@ var _ groupopsport.HistoricalStore = (*Repository)(nil)
 // append-only provenance. It is called inside the import command's one target
 // transaction and deliberately does not touch current plans, runtime, River,
 // External Effects, Access, or Provider adapters.
+
+func (r *Repository) PreflightHistoricalImport(ctx context.Context, batch groupopsport.HistoricalImportBatch) error {
+	if !validHistoryBatch(batch) {
+		return groupopsport.ErrHistoryInvalid
+	}
+	tx, err := transaction(ctx)
+	if err != nil {
+		return err
+	}
+	var digest []byte
+	err = tx.QueryRow(ctx, `SELECT snapshot_digest FROM group_ops_v1_history_import_batches WHERE source_system=$1 AND source_revision=$2`, batch.SourceSystem, batch.SourceRevision).Scan(&digest)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil || len(digest) != sha256.Size || string(digest) != string(batch.SnapshotDigest[:]) {
+		return groupopsport.ErrHistoryConflict
+	}
+	return nil
+}
+
 func (r *Repository) ApplyHistoricalImport(ctx context.Context, batch groupopsport.HistoricalImportBatch, records []groupopsport.HistoricalImportRecord) (out groupopsport.HistoricalImportResult, err error) {
 	tx, err := transaction(ctx)
 	if err != nil || !validHistoryBatch(batch) || !validHistoryRecords(records) {
@@ -250,7 +270,7 @@ func validHistoricalGroup(x groupopsport.HistoricalGroup) bool {
 	return x.SourceGroupID > 0 && x.SourcePlanID > 0 && x.PlanID > 0 && x.ChatReference != "" && x.DisplayName != "" && x.InternalMemberCount >= 0 && x.ExternalMemberCount >= 0 && x.OriginalStatus != "" && !x.CreatedAt.IsZero()
 }
 func validHistoricalNode(x groupopsport.HistoricalNode) bool {
-	return x.SourceNodeID > 0 && x.SourcePlanID > 0 && x.PlanID > 0 && x.DayIndex >= 0 && x.TriggerTime != "" && x.SortOrder >= 0 && x.OriginalStatus != "" && json.Valid(x.ContentPackage) && !x.CreatedAt.IsZero() && !x.UpdatedAt.Before(x.CreatedAt)
+	return x.SourceNodeID > 0 && x.SourcePlanID > 0 && x.PlanID > 0 && x.DayIndex >= 0 && x.SortOrder >= 0 && x.OriginalStatus != "" && json.Valid(x.ContentPackage) && !x.CreatedAt.IsZero() && !x.UpdatedAt.Before(x.CreatedAt)
 }
 
 func (r *Repository) CreateHistoricalPlan(ctx context.Context, item groupopsport.HistoricalPlan) (groupopsport.HistoricalPlan, error) {
@@ -381,5 +401,37 @@ func (r *Repository) getHistoricalNode(ctx context.Context, id int64) (groupopsp
 	}
 	var x groupopsport.HistoricalNode
 	err = tx.QueryRow(ctx, `SELECT id,source_node_id,source_plan_id,plan_id,day_index,trigger_time,sort_order,original_status,content_package,created_at,updated_at FROM group_ops_v1_history_nodes WHERE id=$1`, id).Scan(&x.ID, &x.SourceNodeID, &x.SourcePlanID, &x.PlanID, &x.DayIndex, &x.TriggerTime, &x.SortOrder, &x.OriginalStatus, &x.ContentPackage, &x.CreatedAt, &x.UpdatedAt)
-	return x, err
+	if err != nil {
+		return x, err
+	}
+	return x, hydrateHistoricalNodeContent(&x)
+}
+
+func hydrateHistoricalNodeContent(item *groupopsport.HistoricalNode) error {
+	if item == nil || !json.Valid(item.ContentPackage) {
+		return ErrInvalid
+	}
+	var wrapped struct {
+		ActionTitle json.RawMessage `json:"source_action_title"`
+		TextContent json.RawMessage `json:"source_text_content"`
+		Attachments json.RawMessage `json:"source_attachments"`
+	}
+	if err := json.Unmarshal(item.ContentPackage, &wrapped); err != nil {
+		return ErrInvalid
+	}
+	if len(wrapped.ActionTitle) > 0 && json.Unmarshal(wrapped.ActionTitle, &item.ActionTitle) != nil {
+		return ErrInvalid
+	}
+	if len(wrapped.TextContent) > 0 && json.Unmarshal(wrapped.TextContent, &item.TextContent) != nil {
+		return ErrInvalid
+	}
+	if len(wrapped.Attachments) > 0 {
+		if !json.Valid(wrapped.Attachments) {
+			return ErrInvalid
+		}
+		item.Attachments = append(json.RawMessage(nil), wrapped.Attachments...)
+	} else {
+		item.Attachments = json.RawMessage(`[]`)
+	}
+	return nil
 }

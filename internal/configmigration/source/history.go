@@ -84,6 +84,8 @@ type HistoryNode struct {
 	TriggerTime    string          `json:"trigger_time"`
 	SortOrder      int32           `json:"sort_order"`
 	Status         string          `json:"status"`
+	ActionTitle    string          `json:"action_title"`
+	TextContent    string          `json:"text_content"`
 	ContentPackage json.RawMessage `json:"content_package"`
 	Attachments    json.RawMessage `json:"attachments"`
 	CreatedAt      time.Time       `json:"created_at"`
@@ -96,7 +98,7 @@ var historyQueries = map[string]string{
 	"directory_group_chats": `SELECT COALESCE(jsonb_agg(to_jsonb(x) ORDER BY chat_reference),'[]'::jsonb) FROM (SELECT chat_id AS chat_reference,group_name AS display_name,owner_userid AS owner_reference,member_count,status,updated_at AS recorded_at FROM public.group_chats) x`,
 	"directory_snapshots":   `SELECT COALESCE(jsonb_agg(to_jsonb(x) ORDER BY chat_reference),'[]'::jsonb) FROM (SELECT chat_id AS chat_reference,group_name AS display_name,owner_userid AS owner_reference,owner_name,internal_member_count,external_member_count,status,synced_at AS recorded_at FROM public.wecom_group_chat_snapshots) x`,
 	"groups":                `SELECT COALESCE(jsonb_agg(to_jsonb(x) ORDER BY id),'[]'::jsonb) FROM (SELECT id,plan_id,chat_id AS chat_reference,group_name_snapshot AS display_name,owner_userid_snapshot AS owner_reference,internal_member_count_snapshot AS internal_member_count,external_member_count_snapshot AS external_member_count,status,created_at,removed_at FROM public.automation_group_ops_plan_groups) x`,
-	"nodes":                 `SELECT COALESCE(jsonb_agg(to_jsonb(x) ORDER BY plan_id,day_index,sort_order,id),'[]'::jsonb) FROM (SELECT id,plan_id,day_index,trigger_time_label AS trigger_time,sort_order,status,content_package_json AS content_package,attachments_json AS attachments,created_at,updated_at FROM public.automation_group_ops_plan_nodes) x`,
+	"nodes":                 `SELECT COALESCE(jsonb_agg(to_jsonb(x) ORDER BY plan_id,day_index,sort_order,id),'[]'::jsonb) FROM (SELECT id,plan_id,day_index,trigger_time_label AS trigger_time,sort_order,status,action_title,text_content,content_package_json AS content_package,attachments_json AS attachments,created_at,updated_at FROM public.automation_group_ops_plan_nodes) x`,
 }
 
 func ExtractHistory(ctx context.Context, db TxBeginner, revision string) (HistorySnapshot, error) {
