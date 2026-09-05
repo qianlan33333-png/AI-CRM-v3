@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -263,12 +264,15 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 	if err = native.QueryRow(ctx, `SELECT count(*) FROM automation_runtime_audit_events`).Scan(&before); err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{"/api/admin/automation-runs?limit=100", "/api/admin/automation-runs/" + automationAudienceInt(manual.ID) + "/recipients?limit=100"} {
-		req := httptest.NewRequest(http.MethodGet, path, nil)
+	for _, check := range []struct{ path, contains string }{
+		{"/api/admin/automation-runs?limit=100", automationAudienceInt(manual.ID)},
+		{"/api/admin/automation-runs/" + automationAudienceInt(manual.ID) + "/recipients?limit=100", unknownEffect},
+	} {
+		req := httptest.NewRequest(http.MethodGet, check.path, nil)
 		res := httptest.NewRecorder()
 		readHandler.ServeHTTP(res, req)
-		if res.Code != http.StatusOK || !json.Valid(res.Body.Bytes()) {
-			t.Fatalf("read history %s status=%d body=%s", path, res.Code, res.Body.String())
+		if res.Code != http.StatusOK || !json.Valid(res.Body.Bytes()) || !strings.Contains(res.Body.String(), check.contains) {
+			t.Fatalf("read history %s status=%d body=%s", check.path, res.Code, res.Body.String())
 		}
 	}
 	if err = native.QueryRow(ctx, `SELECT count(*) FROM automation_runtime_audit_events`).Scan(&after); err != nil {
