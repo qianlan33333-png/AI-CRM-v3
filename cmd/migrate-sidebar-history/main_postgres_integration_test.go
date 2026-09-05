@@ -393,15 +393,16 @@ func TestPostgreSQLSidebarHistoryReconcileVerifiesEveryImportedTargetFact(t *tes
 		t.Fatalf("apply resolved prior quarantines: %v", err)
 	}
 	var maps, quarantines, imported, replayed int64
+	var status string
 	if err := pool.QueryRow(ctx, `SELECT
 		(SELECT count(*) FROM sidebar_history_migration_source_map),
 		(SELECT count(*) FROM sidebar_history_migration_quarantine),
-		imported_count,replayed_count
-		FROM sidebar_history_migration_batches WHERE run_key='sidebar-full-facts-pg-001'`).Scan(&maps, &quarantines, &imported, &replayed); err != nil {
+		imported_count,replayed_count,status
+		FROM sidebar_history_migration_batches WHERE run_key='sidebar-full-facts-pg-001'`).Scan(&maps, &quarantines, &imported, &replayed, &status); err != nil {
 		t.Fatal(err)
 	}
-	if maps != 8 || quarantines != 0 || imported != 2 || replayed != 6 {
-		t.Fatalf("resolved quarantine receipts maps=%d quarantines=%d imported=%d replayed=%d", maps, quarantines, imported, replayed)
+	if maps != 8 || quarantines != 0 || imported != 2 || replayed != 6 || status != "applied" {
+		t.Fatalf("resolved quarantine receipts maps=%d quarantines=%d imported=%d replayed=%d status=%q", maps, quarantines, imported, replayed, status)
 	}
 	if err := run(ctx, reconcileArgs); err != nil {
 		t.Fatalf("reconcile resolved prior quarantines: %v", err)

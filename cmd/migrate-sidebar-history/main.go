@@ -543,8 +543,12 @@ func apply(ctx context.Context, pool *platformpostgres.Pool, m manifest) error {
 	if out.Input != out.Imported+out.Replayed+out.Quarantined {
 		return errors.New("migration conservation mismatch")
 	}
-	if _, err = pool.Native().Exec(ctx, `UPDATE sidebar_history_migration_batches SET imported_count=$2,replayed_count=$3,quarantined_count=$4,status='applied',completed_at=clock_timestamp() WHERE id=$1 AND status IN ('applying','applied')`, batchID, out.Imported, out.Replayed, out.Quarantined); err != nil {
+	tag, err := pool.Native().Exec(ctx, `UPDATE sidebar_history_migration_batches SET imported_count=$2,replayed_count=$3,quarantined_count=$4,status='applied',completed_at=clock_timestamp() WHERE id=$1 AND status='applying'`, batchID, out.Imported, out.Replayed, out.Quarantined)
+	if err != nil {
 		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return errors.New("migration batch apply outcome was concurrently changed")
 	}
 	return json.NewEncoder(os.Stdout).Encode(map[string]any{"mode": "apply", "run_key": m.RunKey, "result": out})
 }
@@ -576,6 +580,22 @@ func beginBatch(ctx context.Context, pool *platformpostgres.Pool, m manifest) (i
 		err = pool.Native().QueryRow(ctx, `SELECT id,manifest_digest,status FROM sidebar_history_migration_batches WHERE run_key=$1`, m.RunKey).Scan(&id, &digest, &status)
 		if err == nil && string(digest) != string(m.rawDigest[:]) {
 			return 0, errors.New("batch replay mismatch")
+		}
+		if err != nil {
+			return 0, err
+		}
+		if status == "applying" {
+			return 0, errors.New("migration batch apply is already in progress")
+		}
+		if status != "applied" && status != "reconciled" {
+			return 0, fmt.Errorf("migration batch cannot be applied from status %q", status)
+		}
+		tag, updateErr := pool.Native().Exec(ctx, `UPDATE sidebar_history_migration_batches SET status='applying',completed_at=NULL WHERE id=$1 AND status=$2`, id, status)
+		if updateErr != nil {
+			return 0, updateErr
+		}
+		if tag.RowsAffected() != 1 {
+			return 0, errors.New("migration batch apply status was concurrently changed")
 		}
 	}
 	return id, err
