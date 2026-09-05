@@ -9,7 +9,7 @@
 - 个体 PR 不逐个合并 main。总集成 PR 冻结唯一发布候选后，才提交用户做最终生产上线确认；确认后一次合并、一次部署。
 - 本矩阵后续为每个板块同时记录“个体审核结果”和“已纳入集成 HEAD”。未进入集成或联合验收未通过的项目不得标记整体完成。
 
-当前未合并总集成 PR：[PR #141](https://github.com/qianlan33333-png/AI-CRM-v3/pull/141)。已纳入的实现来源为 #133、#135、#136、#137、#138、#139、#142、#144；#140 的总控文档也已纳入。#145 的01/08组合与 #146 的02历史对账当前仍在独立审核。
+当前未合并总集成 PR：[PR #141](https://github.com/qianlan33333-png/AI-CRM-v3/pull/141)。已纳入的实现来源为 #133、#135、#136、#137、#138、#139、#142、#144、#145、#147、#149；#140 的总控文档也已纳入。#150 Linux cgo runner打包按审核意见更新后正在CI；#146 的02历史对账当前真实PG失败，未批准。
 
 | 来源 | 来源 HEAD / 独立 CI | 纳入提交 | 组合 CI | 当前结论 |
 |---|---|---|---|---|
@@ -19,21 +19,25 @@
 | CI 必需 rg | c85c4fc2d91c241689a5ec89fd14d37405ea7f54 / 总控源码审核通过 | c85c4fc2d91c241689a5ec89fd14d37405ea7f54 | 33954398244 因纳入 #138 取消；33954780090 SUCCESS且实际执行rg安装，deploy SKIPPED | 已纳入并通过当前组合 |
 | #138 周期权益与优惠券 | 599b5bf1102b66476db4c9bc10d5f6b049c5dfcd / 33954299348 SUCCESS，deploy SKIPPED | 6eab2bd347fccd748211531a3967b9159cdb0f4e | 33954780090 SUCCESS，deploy SKIPPED | 独立领域已纳入；整体未完成 |
 | #140 总控文档 | f9e1633519a59c49857dac565916a98a42fae17a / 33954387627 SUCCESS，deploy SKIPPED | 733cdd44d9431136c652bdb2bdd53c7fa640b9e6 | 33955272229 因纳入 #142 取消 | 已批准纳入 |
-| #142 客户同步恢复 | 5242e17930776df3e5b9cdb4e3c632b199658ba4 / 33954830233 SUCCESS，deploy SKIPPED | 4fe92c109f129a06d83ed460c87107b593e14f74 | 33955384604 SUCCESS，deploy SKIPPED | 已纳入；01独立恢复项通过，01/08联合#145审核中 |
-| #139/#144 会话存档与员工读取 | 7d558bd7cf7ba74f4188cbb68a34ffd8a24ecc61（保留父336261941f58810108328bf841c042c19dca4c18）/ 33955835930 SUCCESS，deploy SKIPPED | f41a2b13fcde01a9f614454ac983285461ae17b2 | 33956346715 运行中 | 已纳入；09入口与08/09组合仍待补 |
-| #134/#137 问卷外推 | 807873cba38bd180859e303a32082539f402a51d（保留父b26ea890ddcdcb7998f6114b959fc2f9c59881d6）/ 33955879884 SUCCESS，deploy SKIPPED | 待本轮合入提交 | 待合入后组合CI | 已批准纳入；02历史#146仍未通过 |
+| #142 客户同步恢复 | 5242e17930776df3e5b9cdb4e3c632b199658ba4 / 33954830233 SUCCESS，deploy SKIPPED | 4fe92c109f129a06d83ed460c87107b593e14f74 | 33955384604 SUCCESS，deploy SKIPPED | 已纳入；01独立恢复项及后续01/08组合通过 |
+| #139/#144 会话存档与员工读取 | 7d558bd7cf7ba74f4188cbb68a34ffd8a24ecc61（保留父336261941f58810108328bf841c042c19dca4c18）/ 33955835930 SUCCESS，deploy SKIPPED | f41a2b13fcde01a9f614454ac983285461ae17b2 | 33956346715 因后续集成提交取消 | 已纳入；09入口与08/09组合继续独立验收 |
+| #134/#137 问卷外推 | 807873cba38bd180859e303a32082539f402a51d（保留父b26ea890ddcdcb7998f6114b959fc2f9c59881d6）/ 33955879884 SUCCESS，deploy SKIPPED | 1c8ddb65efcf66d545bb7817e54b91bba62a0e54 | 33956447855 因纳入#145取消 | 已纳入；02历史#146仍未通过 |
+| #145 客户同步/欢迎语组合 | e2a3c41d1846bda44d4e5966e480f6eb8bce56a9 / 33956133831 SUCCESS，deploy SKIPPED | d74187fec1953939aa10ca1dbbc33a12c39a3c51 | 33956614448 SUCCESS，deploy SKIPPED | 已纳入；同身份根、双员工关系与欢迎发送标识稳定通过 |
+| #147 欢迎语/存档组合 | 44187711305cef21e9d2c0338bde3322bdb45bf7 / 33956596446 SUCCESS，deploy SKIPPED | 205cf1a5a44c6f7cc6ab1e8e12c25c598b801f7f | 本轮文档提交后组合CI | 已批准纳入；真实PG16中存档Provider阻塞不延误欢迎语 |
+| #149 会话存档客户入口 | 94fad015a57424f159f5360ef835c62a6e69d6db / 33957048733 SUCCESS，deploy SKIPPED | 148e891a9c8b3a91cb6a612afed166ceafb47f5e | 本轮组合CI | 已批准纳入；复用现有客户查找并由canonical CustomerID进入独立Host |
+| #150 会话存档runner打包 | 4652583c62e93400fd163ea1cc4b23c753782fae / 33957899828 运行中 | 待总控批准后纳入 | 待纳入后组合CI | Linux amd64专用CGO=1构建；保留macOS应用交叉构建；源码与CI待批准 |
 
 | 板块 | PRD | 开发状态 | PR / HEAD | 旧行为/前端 | PostgreSQL/恢复 | 身份/效果协议 | 总控审核 |
 |---|---|---|---|---|---|---|---|
-| 客户同步 | 01 | #133与恢复缺陷#142均已纳入；独立恢复项通过 | [#133](https://github.com/qianlan33333-png/AI-CRM-v3/pull/133) / c3195e2；[#142](https://github.com/qianlan33333-png/AI-CRM-v3/pull/142) / 5242e17；[#145](https://github.com/qianlan33333-png/AI-CRM-v3/pull/145) / e2a3c41 | Host 列表测试通过；#145保持welcome先执行且发送标识不变 | #142真实PG16恢复通过；#145真实PG16+River组合运行中 | HTTP 200/-1限定三次，其他临时失败保留12次预算 | 独立恢复项通过；01/08组合#145待审 |
-| 问卷 | 02 | 独立外推运行时已批准纳入；历史导入验证为另一个未完成任务 | [#134](https://github.com/qianlan33333-png/AI-CRM-v3/pull/134) / b26ea89；[#137](https://github.com/qianlan33333-png/AI-CRM-v3/pull/137) / 807873c；[#146](https://github.com/qianlan33333-png/AI-CRM-v3/pull/146) / 24015d2 | 冻结Host QR当前/全局两分支恢复并通过 | CI33955879884：正常提交、合成外推、重启、同键重放及真实HTTP通过；历史逐条目标事实/密文/错误归属对账仍退回 | 0075注册kind；不可变快照/回执事实已补 | 外推增量已批准纳入；历史#146未通过，板块整体未完成 |
+| 客户同步 | 01 | #133与恢复缺陷#142、01/08组合#145均已纳入 | [#133](https://github.com/qianlan33333-png/AI-CRM-v3/pull/133) / c3195e2；[#142](https://github.com/qianlan33333-png/AI-CRM-v3/pull/142) / 5242e17；[#145](https://github.com/qianlan33333-png/AI-CRM-v3/pull/145) / e2a3c41 | Host列表通过；welcome先执行且发送标识不变 | #142真实PG16恢复；#145真实Inbox→同根双关系→River重启通过 | HTTP 200/-1限定三次，其他临时失败保留12次预算 | 独立恢复及01/08组合通过；整体随最终装配复核 |
+| 问卷 | 02 | 独立外推运行时已批准纳入；历史导入验证为另一个未完成任务 | [#134](https://github.com/qianlan33333-png/AI-CRM-v3/pull/134) / b26ea89；[#137](https://github.com/qianlan33333-png/AI-CRM-v3/pull/137) / 807873c；[#146](https://github.com/qianlan33333-png/AI-CRM-v3/pull/146) / 711f10f | 冻结Host QR当前/全局两分支恢复并通过 | 外推CI33955879884通过；#146 CI33956877785真实PG因answer target fact drift失败 | 0075注册kind；不可变快照/回执事实已补 | 外推增量已批准纳入；历史#146未通过，板块整体未完成 |
 | 商品与支付 | 03 | 独立缺陷PR开发测试通过；联合接线待完成 | [#136](https://github.com/qianlan33333-png/AI-CRM-v3/pull/136) / 1329c1e | 商品码新链接、数字历史别名、自购确认测试通过 | CI33949608992 PG16/race通过，含NULL约束反例 | 新会话受益人未确定；旧会话仅精确重放 | 独立PR通过；03/04闭环未完成 |
 | 周期权益与优惠券 | 04 | 独立领域PR通过并已纳入；03/04联合接线待完成 | [#138](https://github.com/qianlan33333-png/AI-CRM-v3/pull/138) / 599b5bf | 券数据页与周期读Port已实现；03联合挂载中 | CI33954299348 PG16/race通过，含不同开通/退款顺序与历史共存 | 仅保留独立历史覆盖；券跨时刻重放通过 | 独立领域已批准并纳入6eab2bd；整体未完成 |
 | 自动化运营 | 05 | 已有局部实现；为即时集成保留名额暂缓 | 本地 faa7149；未PR | 未验收 | PG/运行时未验收 | Owner只读Port已开发；composition未交付 | 不算完成；原上下文待继续 |
 | AI 助手 | 06 | 待派发 | — | 未验收 | 未验收 | 未验收 | 待审 |
 | 群运营 | 07 | d6只有对象接线；真实发送/目录Provider叶子与顺序/发前资格缺失，开发中 | — | 已定位旧add_msg_template及groupchat/list/get叶子协议；实际适配未完成 | 真实共享River顺序、停启、暂停/取消竞态及历史逐条对账未验收 | enabled下发送仍固定provider-not-configured，目录仍providerDisabled | 已派/root/group_ops；不能把composition对象注册计为可用Provider |
-| 渠道欢迎语 | 08 | 独立实现通过；01/08组合#145运行中，08/09待补 | [#135](https://github.com/qianlan33333-png/AI-CRM-v3/pull/135) / f23dc40；[#145](https://github.com/qianlan33333-png/AI-CRM-v3/pull/145) / f816a9c | 回调、管理、素材和原入客回归通过 | 独立PG16真实River拥堵/重启通过；#145欢迎先于建客组合运行中 | 过期原因、零期限禁止发送及schema readiness通过 | 独立PR通过；组合#145待审，08/09待补 |
-| 会话存档 | 09 | #139及员工筛选修正#144已批准纳入；客户入口与08/09组合待补 | [#139](https://github.com/qianlan33333-png/AI-CRM-v3/pull/139) / 3362619；[#144](https://github.com/qianlan33333-png/AI-CRM-v3/pull/144) / 7d558bd | 独立Host/Access Port与员工筛选已实现；仍需复用现有客户选择入口 | CI33955835930：真实PG员工下拉/筛选、重复员工及1001唯一员工分批通过 | 回调重放/导入继续位置及事实对账已修 | 已纳入f41a2b1；入口与08/09组合未完成 |
+| 渠道欢迎语 | 08 | 独立实现、01/08组合#145及08/09组合#147已纳入 | [#135](https://github.com/qianlan33333-png/AI-CRM-v3/pull/135) / f23dc40；[#145](https://github.com/qianlan33333-png/AI-CRM-v3/pull/145) / e2a3c41；[#147](https://github.com/qianlan33333-png/AI-CRM-v3/pull/147) / 4418771 | 回调、管理、素材和原入客回归通过 | 独立拥堵/重启、01/08同根及08/09阻塞隔离通过 | 过期原因、零期限禁止发送及schema readiness通过 | 三项已批准纳入；整体随最终装配复核 |
+| 会话存档 | 09 | #139/#144/#147/#149已纳入；发布runner#150按审核意见更新后CI中 | [#139](https://github.com/qianlan33333-png/AI-CRM-v3/pull/139) / 3362619；[#144](https://github.com/qianlan33333-png/AI-CRM-v3/pull/144) / 7d558bd；[#147](https://github.com/qianlan33333-png/AI-CRM-v3/pull/147) / 4418771；[#149](https://github.com/qianlan33333-png/AI-CRM-v3/pull/149) / 94fad01；[#150](https://github.com/qianlan33333-png/AI-CRM-v3/pull/150) / 4652583 | #149已复用现有客户搜索结果进入独立归档Host | 员工筛选/1001分批及#147 PG16阻塞隔离通过 | 回调重放/导入对账已修；#150保持默认disabled并补Linux amd64 runner | #147/#149已纳入；#150仍待批准，整体未完成 |
 
 每项证据必须说明命令、环境、结果、对应提交；已有 CI 不能证明不同 HEAD。测试跳过、配置 disabled 与不可验证项目单独列出。只有适用测试实际通过、PR 可审查且总控审核通过，才标记完成。
 

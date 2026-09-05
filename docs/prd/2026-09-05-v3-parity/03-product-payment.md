@@ -75,3 +75,5 @@ OneID：可信支付身份解析/既有显式建客、付款人和受益人分�
 - 历史订单/支付/退款/权益/券的冻结快照导入、重放与逐行对账必须在隔离库完成本轮测试。生产执行留下一阶段，测试工具及隔离验收不能整体移入生产待办。每行有明确来源、摘要、目标或隔离原因；核实不会创建新的付款、退款、发送或历史补发权益。
 
 迁移0076归 Order checkout 不可变快照，0077归 Coupon slug；不自行占用其他编号。历史与会员表可分成依赖明确的独立 PR，最终验收仍覆盖以上全部行为。
+
+公开图片复用线索：Product LegacyAdminProjection 已持久保存 slices；Media 已有 ImageVariantReader.GetImageVariant、ImageLibraryReader.LocalImageExists。旧 `_detail_image_source` 支持 image_library_id/library_image_id/asset_id 及 URL/src，公开 `/api/h5/product-images/{code}/{id}/variants/original` 依据商品绑定读取。沿现有 Product 绑定与 Media 只读 Port 最小适配，不能把封面 Images 当作完整详情图，也不能开放任意后台媒体ID；历史媒体ID若未建立可信映射须在导入对账中明确，不能猜测。

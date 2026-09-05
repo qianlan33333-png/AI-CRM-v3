@@ -53,3 +53,13 @@ d6 `cmd/aicrm/group_ops_runtime_integration_test.go:TestGroupOpsPostgreSQLJourne
 - 复用 `cmd/migrate-v2-config-definitions` 与现有历史导入工具，核对计划、节点、素材引用及历史只读记录的逐条结果；不要另造migrate-groupops框架。现有历史页有读取服务，不代表所有历史来源已导入验收。
 
 已定位供体叶子：`aicrm_next/channels/integration_gateway/wecom_group_adapter.py`、`wecom_customer_group_client.py`，外层接纳在 `platform/platform_foundation/external_effects/adapters.py:WeComGroupMessageExternalEffectAdapter`，计划物化在 `automation/automation_engine/group_ops/scheduler.py`。旧写协议为 `/cgi-bin/externalcontact/add_msg_template`，目标字段 `chat_id_list` 必须精确包含冻结群；读取为 `groupchat/list` 与 `groupchat/get`。缺msgid、非空fail_list不能报全部成功，返回msgid仅表示企微任务已接受，不能宣称成员已收到。复用叶子协议时以V3未知结果原键恢复规则覆盖旧层将所有网络异常都标retryable的行为，不复制不确定写入的盲重试。
+
+## 8. PR148 审核要求与已批准的必要补齐
+
+第7节的 not-configured / disabled 是待修复现状，不是必须保留的实现限制。开发必须接通真实叶子适配，配置缺省仍关闭；本轮不打开生产开关。仅协议叶子加单测不能作为板块完成。
+
+- 批准使用预留0078保存群运营自有 Provider 任务收据：唯一 effect_id、唯一 execution_id、msgid、冻结sender/chat、任务证据摘要、送达状态/证据与时间。经已有GroupMessageReceiptWriter/Reader访问；无原始响应、凭据或日志身份泄漏。与执行完成投影及领域后续动作需要原子的事实同UoW；Provider调用保持事务外。保存失败必须保留未知结果，不能产生可盲重发的假失败。
+- 批准在现有 Completion Sink、groupops运行/节点事实和共享jobqueue之间补最小衔接。前一节点满足旧版继续条件后，同一事务记录结果并投递后续内部任务；任务重放检查既有唯一effect binding/节点状态，再以同一稳定标识接受后续效果。延时沿用共享scheduled job。无需River内建工作流功能，不另建队列、lease、重试或调度框架。unknown/暂停/取消不能放行后续节点；多群独立性按旧版合同测试。
+- EER Attempt增加只读EffectID以供既有DispatchExecutionReader取冻结Owner事实可以接受；必须核对返回记录与Envelope的source/target/payload/policy四摘要全匹配。不能只比较记录内部的content/material摘要。不得改变effect标识或重试语义；补兼容测试。
+- 区分发送前读取失败、确定拒绝、已尝试但未知、企微任务已接受及实际送达。补已存在的ProviderResultReceived事实；不能因为缺msgid将已经尝试的网络调用记成未尝试。发送前检查素材有效期、发送资格、群绑定与计划版本。
+- 完成配置装配、原UI、PG真实River即时/延时/重启顺序与回执读取旅程后再申请板块审核。旧版历史配置/节点/只读执行导入仍须逐条对账。
