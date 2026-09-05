@@ -3263,6 +3263,19 @@ paths:
         - {$ref: "#/components/parameters/AIAssistantIntegrationSignature"}
       requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantIntegrationPlanRequest"}}}}
       responses: {"202": {description: Scoped identities resolved into a pending review plan when eligible; every input ordinal receives a safe disposition and zero eligible targets create no empty plan, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantIntegrationPlanResponse"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "413": {$ref: "#/components/responses/Error"}, "422": {$ref: "#/components/responses/Error"}}
+  /api/admin/ai-assist/review-plans:
+    post:
+      operationId: createLegacyAIAssistantReviewPlan
+      deprecated: true
+      tags: [AIAssistant]
+      security: [{aiAssistantIntegration: []}]
+      parameters:
+        - {$ref: "#/components/parameters/RequiredIdempotencyKey"}
+        - {$ref: "#/components/parameters/AIAssistantIntegrationTimestamp"}
+        - {$ref: "#/components/parameters/AIAssistantIntegrationNonce"}
+        - {$ref: "#/components/parameters/AIAssistantIntegrationSignature"}
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantIntegrationPlanRequest"}}}}
+      responses: {"202": {description: Temporary donor-compatible authenticated intake adapter, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantIntegrationPlanResponse"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "413": {$ref: "#/components/responses/Error"}, "422": {$ref: "#/components/responses/Error"}}
 components:
   securitySchemes:
     adminSession: {type: apiKey, in: cookie, name: aicrm_admin_session}

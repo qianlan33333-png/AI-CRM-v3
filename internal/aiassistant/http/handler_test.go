@@ -71,6 +71,16 @@ func TestIntegrationTargetsTreatsSignedIdentityAsDeclaredAndFreezesLegacyShapes(
 	}
 }
 
+func TestRoutesExposeOnlyTheFrozenLegacyIntakeAdapter(t *testing.T) {
+	handler := &Handler{}
+	request := httptest.NewRequest(http.MethodPost, "/api/admin/ai-assist/review-plans", nil)
+	response := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(response, request)
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("legacy route status=%d", response.Code)
+	}
+}
+
 func signedIntegrationRequest(at time.Time, secret string, body []byte) *http.Request {
 	req := httptest.NewRequest("POST", "/api/integrations/ai-assistant/review-plans", strings.NewReader(string(body)))
 	timestamp := strconv.FormatInt(at.Unix(), 10)

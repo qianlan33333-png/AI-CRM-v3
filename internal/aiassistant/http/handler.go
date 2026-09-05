@@ -107,6 +107,9 @@ func (h *Handler) Routes() stdhttp.Handler {
 	mux.HandleFunc("GET /api/admin/ai-assistant/plans/{plan_id}/effects", h.listEffects)
 	mux.HandleFunc("POST /api/admin/ai-assistant/effects/{effect_id}/reconcile", h.reconcileEffect)
 	mux.HandleFunc("POST /api/integrations/ai-assistant/review-plans", h.integrationPlan)
+	// Frozen donor caller route. It shares the authenticated adapter and never
+	// forks a second plan implementation.
+	mux.HandleFunc("POST /api/admin/ai-assist/review-plans", h.integrationPlan)
 	return mux
 }
 
@@ -495,8 +498,12 @@ func (h *Handler) integrationTargets(input integrationRequest, key, idempotencyK
 		owner = strings.TrimSpace(input.SenderUserID)
 	}
 	external := strings.TrimSpace(input.ExternalUserID)
+	legacyTarget := strings.TrimSpace(input.TargetExternalUserID)
+	if external != "" && legacyTarget != "" && external != legacyTarget {
+		return nil, "", "", "", errors.New("ambiguous legacy target")
+	}
 	if external == "" {
-		external = strings.TrimSpace(input.TargetExternalUserID)
+		external = legacyTarget
 	}
 	if external != "" {
 		if h.integration.WeComCorpID == "" || owner == "" {
@@ -527,6 +534,12 @@ func legacyTextContent(input integrationRequest) ([]aiassistantport.ContentBlock
 		if raw := input.ContentPackage["content_text"]; len(raw) > 0 && text == "" {
 			_ = json.Unmarshal(raw, &text)
 			text = strings.TrimSpace(text)
+		}
+		allowed := map[string]bool{"content_text": true, "image_library_ids": true, "miniprogram_library_ids": true, "attachment_library_ids": true, "group_invite_library_ids": true, "dynamic_miniprogram_card": true}
+		for key := range input.ContentPackage {
+			if !allowed[key] {
+				return nil, errors.New("unsupported legacy content package")
+			}
 		}
 		for _, key := range []string{"image_library_ids", "miniprogram_library_ids", "attachment_library_ids", "group_invite_library_ids", "dynamic_miniprogram_card"} {
 			if raw := input.ContentPackage[key]; len(raw) > 0 && string(raw) != "null" && string(raw) != "[]" && string(raw) != "{}" {
