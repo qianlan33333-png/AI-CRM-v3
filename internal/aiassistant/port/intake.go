@@ -45,6 +45,7 @@ const (
 	ContentImage       ContentKind = "image"
 	ContentMiniProgram ContentKind = "mini_program"
 	ContentLink        ContentKind = "link"
+	ContentAttachment  ContentKind = "attachment"
 )
 
 type ContentBlock struct {
@@ -59,7 +60,7 @@ func (b ContentBlock) Valid() bool {
 	switch b.Kind {
 	case ContentText:
 		return strings.TrimSpace(b.Text) != "" && len(b.Text) <= 8000 && b.MaterialID == 0 && b.MaterialDigest == ""
-	case ContentImage, ContentMiniProgram, ContentLink:
+	case ContentImage, ContentMiniProgram, ContentLink, ContentAttachment:
 		return b.MaterialID > 0 && b.MaterialKind != "" && effectport.ValidDigest(b.MaterialDigest) && len(b.Text) <= 2000
 	default:
 		return false

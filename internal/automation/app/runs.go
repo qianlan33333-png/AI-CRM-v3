@@ -166,10 +166,10 @@ func (s *RuntimeService) ConfirmRun(ctx context.Context, c RunConfirmCommand) (a
 	return run, runtimeClassify(err)
 }
 func reviewContentBlocks(content automationport.FixedContentPackage) ([]aiassistantport.ContentBlock, error) {
-	if len(content.AttachmentLibraryIDs) != 0 || len(content.DynamicMiniprogramCard) != 0 {
+	if len(content.DynamicMiniprogramCard) != 0 {
 		return nil, ErrRuntimeNotReady
 	}
-	blocks := make([]aiassistantport.ContentBlock, 0, 1+len(content.ImageLibraryIDs)+len(content.MiniprogramLibraryIDs)+len(content.GroupInviteLibraryIDs))
+	blocks := make([]aiassistantport.ContentBlock, 0, 1+len(content.ImageLibraryIDs)+len(content.MiniprogramLibraryIDs)+len(content.AttachmentLibraryIDs)+len(content.GroupInviteLibraryIDs))
 	if text := strings.TrimSpace(content.ContentText); text != "" {
 		blocks = append(blocks, aiassistantport.ContentBlock{Kind: aiassistantport.ContentText, Text: text})
 	}
@@ -178,6 +178,9 @@ func reviewContentBlocks(content automationport.FixedContentPackage) ([]aiassist
 	}
 	for _, id := range content.MiniprogramLibraryIDs {
 		blocks = append(blocks, aiassistantport.ContentBlock{Kind: aiassistantport.ContentMiniProgram, MaterialKind: "miniprogram", MaterialID: id})
+	}
+	for _, id := range content.AttachmentLibraryIDs {
+		blocks = append(blocks, aiassistantport.ContentBlock{Kind: aiassistantport.ContentAttachment, MaterialKind: "attachment", MaterialID: id})
 	}
 	for _, id := range content.GroupInviteLibraryIDs {
 		blocks = append(blocks, aiassistantport.ContentBlock{Kind: aiassistantport.ContentLink, MaterialKind: "group_invite", MaterialID: id})

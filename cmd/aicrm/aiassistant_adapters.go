@@ -51,6 +51,8 @@ func (a aiMaterialAdapter) ResolveMaterial(ctx context.Context, block aiassistan
 		kind = "miniprogram"
 	} else if block.Kind == aiassistantport.ContentLink {
 		kind = "group_invite"
+	} else if block.Kind == aiassistantport.ContentAttachment {
+		kind = "attachment"
 	}
 	snapshot, err := a.capturer.CaptureGroupOpsMaterialSources(ctx, mediaport.GroupOpsMaterialPlan{References: []mediaport.GroupOpsMaterialReference{{Kind: kind, ID: block.MaterialID}}})
 	if err != nil || len(snapshot.References) != 1 {
@@ -106,11 +108,43 @@ type aiImageReader interface {
 type aiMaterialDetails interface {
 	MiniProgram(context.Context, int64) (map[string]any, error)
 	GroupInvite(context.Context, int64) (map[string]any, error)
+	Attachment(context.Context, int64) (map[string]any, []byte, error)
 }
 type aiPrivatePayloadReader struct {
 	content   aiassistantport.OutboundPayloadReader
 	images    aiImageReader
 	materials aiMaterialDetails
+	uow       platformport.UnitOfWork
+	capturer  mediaport.GroupOpsMaterialSourceCapturer
+}
+
+func (a aiPrivatePayloadReader) verifyFrozenMaterial(ctx context.Context, block aiassistantport.ContentBlock) error {
+	if block.Kind == aiassistantport.ContentText || a.uow == nil || a.capturer == nil || !effectport.ValidDigest(block.MaterialDigest) {
+		if block.Kind == aiassistantport.ContentText {
+			return nil
+		}
+		return errors.New("frozen material verification unavailable")
+	}
+	kind := block.MaterialKind
+	if block.Kind == aiassistantport.ContentImage {
+		kind = "image"
+	}
+	if block.Kind == aiassistantport.ContentMiniProgram {
+		kind = "miniprogram"
+	}
+	if block.Kind == aiassistantport.ContentLink {
+		kind = "group_invite"
+	}
+	if block.Kind == aiassistantport.ContentAttachment {
+		kind = "attachment"
+	}
+	return a.uow.Within(ctx, func(tx context.Context) error {
+		snapshot, err := a.capturer.CaptureGroupOpsMaterialSources(tx, mediaport.GroupOpsMaterialPlan{References: []mediaport.GroupOpsMaterialReference{{Kind: kind, ID: block.MaterialID}}})
+		if err != nil || len(snapshot.References) != 1 || effectport.Digest(snapshot.References[0].SourceDigest) != block.MaterialDigest {
+			return errors.New("frozen material drift")
+		}
+		return nil
+	})
 }
 
 func (a aiPrivatePayloadReader) LoadPrivateMessagePayload(ctx context.Context, reference string, digest effectport.Digest) (outbound.PrivateMessagePayload, error) {
@@ -120,6 +154,9 @@ func (a aiPrivatePayloadReader) LoadPrivateMessagePayload(ctx context.Context, r
 	}
 	result := outbound.PrivateMessagePayload{}
 	for _, block := range content.Blocks {
+		if err := a.verifyFrozenMaterial(ctx, block); err != nil {
+			return outbound.PrivateMessagePayload{}, err
+		}
 		switch block.Kind {
 		case aiassistantport.ContentText:
 			if result.Text != "" {
@@ -152,6 +189,12 @@ func (a aiPrivatePayloadReader) LoadPrivateMessagePayload(ctx context.Context, r
 				return outbound.PrivateMessagePayload{}, e
 			}
 			result.Attachments = append(result.Attachments, outbound.PrivateMessageAttachment{Kind: "link", Title: text(item["title"]), Description: text(item["description"]), URL: text(item["join_url"])})
+		case aiassistantport.ContentAttachment:
+			item, bytes, e := a.materials.Attachment(ctx, block.MaterialID)
+			if e != nil || text(item["mime_type"]) != "application/pdf" || len(bytes) == 0 {
+				return outbound.PrivateMessagePayload{}, errors.New("PDF attachment unavailable")
+			}
+			result.Attachments = append(result.Attachments, outbound.PrivateMessageAttachment{Kind: "file", Content: bytes, FileName: text(item["file_name"]), MediaType: text(item["mime_type"])})
 		default:
 			return outbound.PrivateMessagePayload{}, errors.New("unsupported content kind")
 		}
