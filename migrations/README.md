@@ -11,4 +11,4 @@ v3 从新的 Schema 基线开始，不复制 production 或 V2 的完整 migrati
 - `0082_group_ops_history_import.sql`：Group Ops 的四类 V1 只读历史投影导入批次与逐行摘要/隔离收据；保留文本来源员工和群标识，不创建当前计划、任务或外部效果；forward-only。
 
 - `0084_hxc_shared_facts.sql`：HXC既有发布投影的原登录、使用、学习、打开记录及会员来源字段；旧代明确未加载，不改变OneID归属或新增同步器。
-- `0089_survey_oauth_state_redirect.sql`：修正 Survey OAuth state 的旧 redirect 正则，使既有 Host `/h5/all.html` 与 `/h5/one.html` 回跳可持久化；forward-only，不修改已保存 state 或身份事实。
+- `0090_survey_oauth_state_redirect.sql`：修正 Survey OAuth state 的旧 redirect 正则，使既有 Host `/h5/all.html` 与 `/h5/one.html` 回跳可持久化；forward-only，不修改已保存 state 或身份事实。
