@@ -96,7 +96,12 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	mediaService := mediaapp.NewReadService(uow, mediaRepo)
+	// Use the same Media facade as composition: ReadImageVariant's store row is
+	// adapted at the app boundary before the outbound payload reader consumes it.
+	mediaService, err := mediaapp.NewHTTPFacade(mediaRepo)
+	if err != nil {
+		t.Fatal(err)
+	}
 	aiService, err := aiassistantapp.NewService(uow, aiRepo, automationAudienceAIRecipients{}, automationAudienceAIStaff{}, aiMaterialAdapter{capturer: mediaRepo, references: mediaRepo}, automationAudienceAIIdentities{})
 	if err != nil {
 		t.Fatal(err)
@@ -145,6 +150,9 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 		t.Fatal(err)
 	}
 	frozenReader := automationFrozenPayloadReader{preparer: aiPrivatePayloadReader{images: mediaService, materials: mediaRepo, uow: uow, capturer: mediaRepo}}
+	if _, err = frozenReader.LoadFrozenAutomationMessagePayload(ctx, preEditSnapshot, preEditDigest); err != nil {
+		t.Fatalf("valid frozen automatic payload could not be prepared: %v", err)
+	}
 	assertFrozenUnavailable := func(reason string) {
 		t.Helper()
 		if _, readErr := frozenReader.LoadFrozenAutomationMessagePayload(ctx, preEditSnapshot, preEditDigest); readErr == nil {

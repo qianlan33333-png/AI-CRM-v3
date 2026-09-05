@@ -31,6 +31,9 @@ const writes = [];
 const previewWrites = [];
 const packageWrites = [];
 let templateReads = 0;
+let broadcastRuns = [];
+let broadcastPreviewCalls = 0;
+let broadcastConfirmCalls = 0;
 const dom = new JSDOM(`<!doctype html><html><body>${template}</body></html>`, {
   url: "https://test.invalid/admin/automation-conversion/packages/13",
   runScripts: "outside-only",
@@ -75,6 +78,16 @@ const dom = new JSDOM(`<!doctype html><html><body>${template}</body></html>`, {
         previewWrites.push(body);
         return json({ preview: { member_count: 1, member_digest: "member", watermark_digest: "watermark" } });
       }
+      if (url.pathname === "/api/admin/ai-audience/packages/13/broadcast-previews" && init.method === "POST") {
+        broadcastPreviewCalls += 1;
+        return json({ snapshot_id: 77, target_count: 2, skipped_count: 0, agent_id: 8, agent_published_version: 3, expected_package_version: packageVersion, preview_digest: "a".repeat(64) });
+      }
+      if (url.pathname === "/api/admin/ai-audience/packages/13/runs" && init.method === "POST") {
+        broadcastConfirmCalls += 1;
+        broadcastRuns = [{ id: 91, package_id: 13, state: "pending_review", ai_plan_id: 44, ai_plan_state: "pending_review", target_count: 2, skipped_count: 0, outcome_unknown_count: 0, created_at: "2026-09-05T12:00:00Z" }];
+        return json({ run: broadcastRuns[0] });
+      }
+      if (url.pathname === "/api/admin/automation-runs" && (!init.method || init.method === "GET")) return json({ items: broadcastRuns, next_cursor: "" });
       return json({ error: `unexpected ${url.pathname}` }, 500);
     };
   },
@@ -208,5 +221,17 @@ await saveTemplate("questionnaire_choice_answers", () => {
   if (fieldInput("questionnaire").value !== "客户调研" || rows.length !== 2 || rows[0].querySelector("[data-condition-options]").value !== "内容\n投放" || fieldInput("owner_userids").value !== "bob") throw new Error("questionnaire conditions or Access-backed owner did not reopen");
 });
 if (writes.length !== 6 || previewWrites.length !== 6 || packageWrites.length !== 6) throw new Error(`six-form save/preview contract incomplete: ${JSON.stringify({ saves: writes.length, previews: previewWrites.length, packages: packageWrites.length })}`);
+// The frozen detail page owns this action: a user clicks the real preview and
+// confirmation controls, then is taken to the existing AI review/recipients
+// page instead of an Automation-only recipient drawer.
+document.querySelector("#broadcastPreviewBtn").click();
+await wait(180);
+if (broadcastPreviewCalls !== 1 || document.querySelector("#broadcastConfirmBtn").disabled) throw new Error("manual broadcast preview did not enable confirmation");
+document.querySelector("#broadcastConfirmBtn").click();
+await wait(180);
+if (broadcastConfirmCalls !== 1) throw new Error("manual broadcast confirmation did not create the AI-backed run");
+const runRow = document.querySelector("#sendRecordRows tr");
+const aiReviewLink = runRow?.querySelector('a[href="/admin/cloud-orchestrator/plans/44"]');
+if (!aiReviewLink || !aiReviewLink.textContent.includes("AI 审阅与收件人") || runRow.querySelector("[data-run-id]")) throw new Error("manual run did not render the existing AI review and recipients handoff");
 dom.window.close();
 console.log("admin-audience-template-host-browser: PASS");
