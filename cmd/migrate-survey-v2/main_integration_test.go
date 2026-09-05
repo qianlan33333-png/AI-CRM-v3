@@ -67,7 +67,7 @@ func TestPostgreSQLFrozenSurveySnapshotImportReplayAndReconcile(t *testing.T) {
 	if _, err := pool.Exec(ctx, `UPDATE survey_submissions SET identity_state='unresolved',customer_id=NULL WHERE id=$1`, submissionID); err != nil {
 		t.Fatal(err)
 	}
-	if err := pool.QueryRow(ctx, `SELECT id FROM survey_submission_answers LIMIT 1`).Scan(&answerID); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT id FROM survey_submission_answers WHERE legacy_definition_missing=FALSE LIMIT 1`).Scan(&answerID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx, `UPDATE survey_submission_answers SET selected_options_snapshot='[{"drift":true}]'::jsonb WHERE id=$1`, answerID); err != nil {
@@ -172,7 +172,10 @@ func frozenSurveySnapshot(t *testing.T, at time.Time) Snapshot {
 	setFrozenTable(t, &s, "questionnaire_options", []option{{ID: 20, QuestionID: 10, Text: "Good", Score: 5, Tags: json.RawMessage(`[]`), Sort: 0}})
 	setFrozenTable(t, &s, "questionnaire_score_rules", []rule{{ID: 30, QuestionnaireID: 1, Min: &min, Max: &max, Tags: json.RawMessage(`[]`), Sort: 0}})
 	setFrozenTable(t, &s, "questionnaire_submissions", []submission{{ID: 40, QuestionnaireID: 1, UnionID: "unresolved-union", Result: json.RawMessage(`{}`), FinalTags: json.RawMessage(`[]`), Token: "legacy-result-token", SubmittedAt: at, CreatedAt: at}})
-	setFrozenTable(t, &s, "questionnaire_submission_answers", []answer{{ID: 50, SubmissionID: 40, QuestionID: 999, Type: "textarea", Title: "removed question", Text: "protected legacy answer", OptionIDs: json.RawMessage(`[]`), OptionTexts: json.RawMessage(`[]`), OptionScores: json.RawMessage(`[]`), OptionTags: json.RawMessage(`[]`), CreatedAt: at}})
+	setFrozenTable(t, &s, "questionnaire_submission_answers", []answer{
+		{ID: 50, SubmissionID: 40, QuestionID: 999, Type: "textarea", Title: "removed question", Text: "protected legacy answer", OptionIDs: json.RawMessage(`[]`), OptionTexts: json.RawMessage(`[]`), OptionScores: json.RawMessage(`[]`), OptionTags: json.RawMessage(`[]`), CreatedAt: at},
+		{ID: 51, SubmissionID: 40, QuestionID: 10, Type: "single_choice", Title: "How are you?", OptionIDs: json.RawMessage(`[20]`), OptionTexts: json.RawMessage(`["Good"]`), OptionScores: json.RawMessage(`[5]`), OptionTags: json.RawMessage(`[[]]`), Score: 5, CreatedAt: at},
+	})
 	setFrozenTable(t, &s, "questionnaire_external_push_logs", []operation{{ID: 60, QuestionnaireID: 1, SubmissionID: 40, Status: "success", OccurredAt: at}, {ID: 61, QuestionnaireID: 999, SubmissionID: 0, Status: "failed", FailureCategory: "provider_failure", OccurredAt: at}})
 	setFrozenTable(t, &s, "questionnaire_scrm_apply_logs", []operation{{ID: 70, QuestionnaireID: 1, SubmissionID: 40, Status: "identity_unresolved", FailureCategory: "identity_unresolved", OccurredAt: at}})
 	return s
