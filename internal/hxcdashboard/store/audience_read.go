@@ -2,7 +2,9 @@ package store
 
 import (
 	"context"
+	"fmt"
 	hxcport "github.com/qianlan33333-png/AI-CRM-v3/internal/hxcdashboard/port"
+	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 	"time"
 )
 
@@ -13,7 +15,20 @@ func (store *PostgreSQL) AudienceMemberFacts(ctx context.Context, reference time
 	if store == nil || reference.IsZero() {
 		return nil, ErrNotFound
 	}
-	rows, err := store.pool.Query(ctx, `SELECT r.customer_id,r.subscription_tier,CASE WHEN r.stage='registered_no_active_membership' THEN 'expired' ELSE 'active' END,r.subscription_expires_at,r.last_used_at,r.source_updated_at FROM hxc_dashboard_rows r JOIN hxc_dashboard_versions v ON v.id=r.projection_id AND v.status='published' WHERE r.identity_state='matched' AND r.customer_id IS NOT NULL AND r.source_updated_at <= $1 ORDER BY r.customer_id`, reference.UTC())
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var published bool
+	if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM hxc_dashboard_versions WHERE status='published')`).Scan(&published); err != nil {
+		return nil, fmt.Errorf("read published HXC projection: %w", err)
+	}
+	if !published {
+		// An uninitialised projection is not factual evidence for an empty
+		// audience. Fail closed so callers expose source-unavailable instead.
+		return nil, ErrNotFound
+	}
+	rows, err := tx.Query(ctx, `SELECT r.customer_id,r.subscription_tier,CASE WHEN r.stage='registered_no_active_membership' THEN 'expired' ELSE 'active' END,r.subscription_expires_at,r.last_used_at,r.source_updated_at FROM hxc_dashboard_rows r JOIN hxc_dashboard_versions v ON v.id=r.projection_id AND v.status='published' WHERE r.identity_state='matched' AND r.customer_id IS NOT NULL AND r.source_updated_at <= $1 ORDER BY r.customer_id`, reference.UTC())
 	if err != nil {
 		return nil, err
 	}

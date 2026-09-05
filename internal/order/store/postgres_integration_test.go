@@ -177,6 +177,76 @@ func TestPostgreSQLPaidProductProjectionUsesHistoryAndExactFallback(t *testing.T
 	}
 }
 
+func TestPostgreSQLPaidAudienceOrdersUsePayerAndPaymentEvidence(t *testing.T) {
+	native, cleanup := orderIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	wrapper, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uow, err := platformpostgres.NewUnitOfWork(wrapper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := NewPostgreSQL(native, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created := time.Date(2026, 9, 4, 10, 0, 0, 0, time.UTC)
+	paidOutside := created.Add(-24 * time.Hour)
+	insert := func(source, status string, payer, beneficiary int64, paidAt *time.Time) {
+		t.Helper()
+		var id int64
+		if err := native.QueryRow(ctx, `INSERT INTO orders(provider,source_system,source_key,merchant_order_no,payer_customer_id,beneficiary_customer_id,amount_minor,refunded_minor,currency,status,record_origin,effect_eligible,source_row_digest,version,created_at,updated_at) VALUES('wechat_pay','test',$1,$2,$3,$4,100,0,'CNY',$5,'history',false,$6,2,$7,$7) RETURNING id`, source, "M-"+source, payer, beneficiary, status, make([]byte, 32), created).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := native.Exec(ctx, `INSERT INTO order_items(order_id,line_no,product_code,product_name,unit_amount_minor,quantity,line_amount_minor) VALUES($1,1,'course','Course',100,1,100)`, id); err != nil {
+			t.Fatal(err)
+		}
+		if paidAt != nil {
+			if _, err := native.Exec(ctx, `INSERT INTO order_status_history(order_id,from_status,to_status,refunded_minor,order_version,actor_scope,occurred_at) VALUES($1,'pending_payment','paid',0,2,'payment:settlement',$2)`, id, *paidAt); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	// The first row proves that payer identity, rather than the beneficiary,
+	// is what reaches the audience. A partial refund is never paid-only.
+	insert("payer", "paid", 101, 202, &paidOutside)
+	insert("partial", "partially_refunded", 303, 303, &paidOutside)
+	// This historical paid row has no payment-time evidence. It remains
+	// eligible for an unbounded paid audience but has a nil timestamp for the
+	// template's half-open time window to reject.
+	insert("unknown-time", "paid", 404, 404, nil)
+	var facts []orderport.PaidAudienceOrder
+	if err = uow.Within(ctx, func(tx context.Context) error {
+		var readErr error
+		facts, readErr = repository.PaidAudienceOrders(tx, created)
+		return readErr
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(facts) != 2 {
+		t.Fatalf("facts=%+v", facts)
+	}
+	byCustomer := map[int64]orderport.PaidAudienceOrder{}
+	for _, fact := range facts {
+		byCustomer[int64(fact.CustomerID)] = fact
+	}
+	if got := byCustomer[101]; got.ProductCode != "course" || got.PaidAt == nil || !got.PaidAt.Equal(paidOutside) {
+		t.Fatalf("payer fact=%+v", got)
+	}
+	if got := byCustomer[404]; got.PaidAt != nil {
+		t.Fatalf("historical no-time fact=%+v", got)
+	}
+	if _, exists := byCustomer[202]; exists {
+		t.Fatalf("beneficiary leaked into audience facts=%+v", facts)
+	}
+	if _, exists := byCustomer[303]; exists {
+		t.Fatalf("partially refunded order leaked into paid facts=%+v", facts)
+	}
+}
+
 func TestPostgreSQLHistoricalImportIsEffectIneligibleAndReplayableAcrossRuns(t *testing.T) {
 	native, cleanup := orderIntegrationPool(t)
 	defer cleanup()

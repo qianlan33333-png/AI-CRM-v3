@@ -83,6 +83,13 @@ func owner(params map[string]json.RawMessage, value string) bool {
 	var values []string
 	return json.Unmarshal(params["owner_scope"], &scope) == nil && json.Unmarshal(params["owner_staff_ids"], &values) == nil && (scope == "all" || contains(values, value))
 }
+func ownerScoped(params map[string]json.RawMessage) (bool, error) {
+	var scope string
+	if json.Unmarshal(params["owner_scope"], &scope) != nil || (scope != "all" && scope != "specified") {
+		return false, ErrCustomerReadUnavailable
+	}
+	return scope == "specified", nil
+}
 func contains(values []string, value string) bool {
 	for _, v := range values {
 		if v == value {
@@ -235,13 +242,21 @@ func (s LegacyTemplateSource) paid(ctx context.Context, p map[string]json.RawMes
 	if e != nil {
 		return nil, e
 	}
+	scoped, e := ownerScoped(p)
+	if e != nil {
+		return nil, e
+	}
 	eligible := map[int64]bool{}
-	if require {
+	if require || scoped {
 		contacts, e := s.contacts(ctx, at)
 		if e != nil {
 			return nil, e
 		}
-		eligible = contactsFor(contacts, []string{"active"}, p)
+		statuses := []string{"active", "deleted"}
+		if require {
+			statuses = []string{"active"}
+		}
+		eligible = contactsFor(contacts, statuses, p)
 	}
 	out := map[int64]bool{}
 	for _, fact := range orders {
@@ -249,7 +264,7 @@ func (s LegacyTemplateSource) paid(ctx context.Context, p map[string]json.RawMes
 			continue
 		}
 		id := int64(fact.CustomerID)
-		if !require || eligible[id] {
+		if (!require && !scoped) || eligible[id] {
 			out[id] = true
 		}
 	}

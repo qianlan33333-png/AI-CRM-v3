@@ -352,7 +352,10 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return fail(err)
 	}
 	segmentService := segmentapp.NewService(uow, segmentRepository)
-	segmentEvaluator, err := segmentapp.NewEvaluator(segmentcompiler.Compiler{}, segmentadapter.CustomerSource{UoW: uow, Customers: customerStore}, segmentadapter.CanonicalCustomers{UoW: uow, Resolver: canonicalCustomerAdapter{reader: queries}})
+	// Populate this composition-owned adapter as its Owner stores are built
+	// below. The process has not started serving requests at this point.
+	legacyAudienceSource := &segmentadapter.LegacyTemplateSource{Radar: radarRepository}
+	segmentEvaluator, err := segmentapp.NewEvaluator(segmentcompiler.Compiler{}, segmentadapter.CustomerSource{UoW: uow, Customers: customerStore, Legacy: legacyAudienceSource}, segmentadapter.CanonicalCustomers{UoW: uow, Resolver: canonicalCustomerAdapter{reader: queries}})
 	if err != nil {
 		return fail(err)
 	}
@@ -448,6 +451,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	}
 	channelAssetStore := channelstore.NewPostgreSQLAssetStore(pool.Native())
 	channelAcquisition := channelstore.NewPostgreSQLStore()
+	legacyAudienceSource.Channels = channelAcquisition
 	channelEntrantActions := channelstore.NewEntrantActionStore(effectRepository, channelWelcomeMaterialAdapter{resolver: groupOpsMaterials})
 	channelLinkStore := channelstore.NewAcquisitionLinkStore()
 	channelAssetCompletionSink, err := outbound.NewChannelAssetCompletionSink(channelAssetCompletionAdapter{assets: channelAssetStore, bindings: channelAcquisition, digester: callbackStateDigester, corpID: cfg.WeCom.CorpID})
@@ -514,6 +518,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
+	legacyAudienceSource.Survey = surveyRepository
 	surveyDefinitions := surveyapp.NewService(uow, surveyRepository)
 	surveySubmissions := surveyapp.NewSubmissionService(uow, surveyRepository, surveyCipher)
 	if err = surveySubmissions.BindCustomerTimeline(customerStore); err != nil {
@@ -670,6 +675,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
+	legacyAudienceSource.Orders = orderRepository
 	orderService := orderapp.NewService(uow, orderRepository)
 	if cfg.WeChatPay.H5OAuthEnabled {
 		contactCipher, cipherErr := ordersecure.NewContactCipher(cfg.WeChatPay.OrderContactDataKey)
@@ -891,6 +897,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		welcomeGrantStore = wecom.NewPostgreSQLWelcomeGrantStore(welcomeGrantCipher)
 	}
 	relationships := wecom.NewPostgreSQLFollowRelationshipStore()
+	legacyAudienceSource.Contacts = relationships
 	var channelAssetProvider effectport.ProviderAdapter
 	var channelEntrantProvider effectport.ProviderAdapter
 	var channelLinkProvider effectport.ProviderAdapter
@@ -955,6 +962,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		}
 	}
 	hxcRepository := hxcstore.NewPostgreSQL(pool.Native())
+	legacyAudienceSource.Members = hxcRepository
 	hxcDashboard := hxcapp.Service{Enabled: cfg.HXCDashboard.Enabled, Scope: cfg.HXCDashboard.UnionIDScope, SubjectKey: []byte(cfg.HXCDashboard.SubjectHMACKey), Source: hxcSource, Identity: hxcIdentity, IdentityWriteEnabled: cfg.HXCDashboard.IdentityWriteEnabled, UnionIDVerified: cfg.HXCDashboard.UnionIDVerified, Store: hxcRepository, Enqueuer: hxcEnqueuer, Audit: auditService, UOW: uow}
 	hxcDashboardWorker.Service = &hxcDashboard
 	hxcHandler := hxchttp.Handler{Service: hxcDashboard, Store: hxcRepository, Auth: requestSecurity, Key: []byte(cfg.HXCDashboard.SubjectHMACKey)}

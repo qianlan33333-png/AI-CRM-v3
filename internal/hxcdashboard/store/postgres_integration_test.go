@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -12,10 +13,56 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/hxcdashboard/domain"
+	hxcport "github.com/qianlan33333-png/AI-CRM-v3/internal/hxcdashboard/port"
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 )
+
+func TestAudienceMemberFactsRequirePublishedProjection(t *testing.T) {
+	native, uow, cleanup := hxcIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	store := NewPostgreSQL(native)
+	reference := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+	if err := uow.Within(ctx, func(tx context.Context) error {
+		_, err := store.AudienceMemberFacts(tx, reference)
+		return err
+	}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unpublished source err=%v", err)
+	}
+	if _, err := native.Exec(ctx, `INSERT INTO customers(id) VALUES(91)`); err != nil {
+		t.Fatal(err)
+	}
+	var runID int64
+	if err := native.QueryRow(ctx, `INSERT INTO hxc_dashboard_refresh_runs(run_key,request_digest,trigger,identity_mode,status,source_count,processed_count,identity_replay_verified_count) VALUES('audience-published', $1, 'manual', 'apply', 'publishing', 1, 1, 1) RETURNING id`, make([]byte, 32)).Scan(&runID); err != nil {
+		t.Fatal(err)
+	}
+	expires, used := reference.Add(time.Hour), reference.Add(-time.Hour)
+	projection := domain.Projection{
+		AsOf: reference, Counts: domain.Counts{Total: 1, ActiveUsed: 1, Matched: 1, MatchedByUnionID: 1},
+		Rows: []domain.ProjectionRow{{
+			SubjectDigest: [32]byte{1}, UserRef: "HXC-000000000001", Stage: domain.ActiveUsed,
+			SourceRow:  domain.SourceRow{SubscriptionTier: "pro", SubscriptionExpiresAt: &expires, LastUsedAt: &used, MembershipAttribution: "user_id", CapabilityUsage: []byte(`{}`), FocusTopics: []byte(`[]`), SourceUpdatedAt: reference},
+			CustomerID: customerdomain.CustomerID(91), IdentityState: domain.Matched, MatchedBy: "unionid", IdentityReasonCode: "matched_unionid",
+		}},
+	}
+	if err := uow.Within(ctx, func(tx context.Context) error {
+		_, err := store.Publish(tx, runID, projection)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var facts []hxcport.AudienceMemberFact
+	if err := uow.Within(ctx, func(tx context.Context) error {
+		var err error
+		facts, err = store.AudienceMemberFacts(tx, reference)
+		return err
+	}); err != nil || len(facts) != 1 || facts[0].CustomerID != 91 || !facts[0].Registered || facts[0].LastUsedAt == nil {
+		t.Fatalf("facts=%+v err=%v", facts, err)
+	}
+}
 
 func TestPublishRetainsReceiptLineageAfterEightProjections(t *testing.T) {
 	native, uow, cleanup := hxcIntegrationPool(t)
