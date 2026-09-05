@@ -17,6 +17,14 @@ type DirectoryFailure interface {
 	DirectoryFailureRetryable() bool
 }
 
+// DirectoryFailureAttemptLimit optionally narrows River's normal attempt
+// budget for one specific Provider classification. Zero keeps the job's
+// configured limit. Callers must not infer a limit from the failure code.
+type DirectoryFailureAttemptLimit interface {
+	DirectoryFailure
+	DirectoryFailureMaxAttempts() int
+}
+
 type ExternalContact struct {
 	ExternalUserID string
 	Name           string

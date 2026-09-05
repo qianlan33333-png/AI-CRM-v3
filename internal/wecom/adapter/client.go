@@ -52,15 +52,17 @@ func (err *providerResponseError) Error() string { return ErrResponse.Error() }
 func (err *providerResponseError) Unwrap() error { return ErrResponse }
 
 type directoryReadError struct {
-	cause     error
-	code      string
-	retryable bool
+	cause       error
+	code        string
+	retryable   bool
+	maxAttempts int
 }
 
-func (err *directoryReadError) Error() string                   { return err.cause.Error() }
-func (err *directoryReadError) Unwrap() error                   { return err.cause }
-func (err *directoryReadError) DirectoryFailureCode() string    { return err.code }
-func (err *directoryReadError) DirectoryFailureRetryable() bool { return err.retryable }
+func (err *directoryReadError) Error() string                    { return err.cause.Error() }
+func (err *directoryReadError) Unwrap() error                    { return err.cause }
+func (err *directoryReadError) DirectoryFailureCode() string     { return err.code }
+func (err *directoryReadError) DirectoryFailureRetryable() bool  { return err.retryable }
+func (err *directoryReadError) DirectoryFailureMaxAttempts() int { return err.maxAttempts }
 
 // Config is injected by the composition root. Secrets are intentionally only
 // held in memory and no method in this package logs request parameters.
@@ -1061,6 +1063,13 @@ func classifyDirectoryReadError(cause error) error {
 	}
 	if providerFailure.statusCode == http.StatusTooManyRequests || providerFailure.errCode == 45009 {
 		classification.code, classification.retryable = "provider_rate_limited", true
+		return classification
+	}
+	// WeCom documents errcode -1 as a transient system-busy response even
+	// when the HTTP status is 200. Keep the retry decision on the existing
+	// durable customer-sync job instead of adding an adapter-local retry loop.
+	if providerFailure.statusCode == http.StatusOK && providerFailure.errCode == -1 {
+		classification.code, classification.retryable, classification.maxAttempts = "provider_unavailable", true, 3
 		return classification
 	}
 	if providerFailure.retryable || providerFailure.statusCode >= 500 {

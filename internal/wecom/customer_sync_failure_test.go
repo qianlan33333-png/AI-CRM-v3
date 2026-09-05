@@ -49,11 +49,11 @@ func TestClassifySyncFailureKeepsBusinessFailureStateDistinct(t *testing.T) {
 	}
 }
 
-type retryExhaustedProvider struct{}
+type retryExhaustedProvider struct{ failure error }
 
 func (retryExhaustedProvider) DirectoryReady() bool { return true }
-func (retryExhaustedProvider) ListContactStaff(context.Context) ([]string, error) {
-	return nil, classifiedDirectoryFailure{code: "provider_rate_limited", retryable: true}
+func (provider retryExhaustedProvider) ListContactStaff(context.Context) ([]string, error) {
+	return nil, provider.failure
 }
 func (retryExhaustedProvider) BatchExternalContacts(context.Context, string, string, int) (wecomport.ExternalContactPage, error) {
 	return wecomport.ExternalContactPage{}, nil
@@ -130,18 +130,43 @@ func (retryExhaustedAudit) Append(_ context.Context, event platformaudit.Event) 
 	return event, nil
 }
 
+type boundedClassifiedDirectoryFailure struct {
+	classifiedDirectoryFailure
+	maxAttempts int
+}
+
+func (failure boundedClassifiedDirectoryFailure) DirectoryFailureMaxAttempts() int {
+	return failure.maxAttempts
+}
+
 func TestCustomerSyncWorkerPersistsRetryExhaustionAsBusinessTerminalState(t *testing.T) {
-	store := &retryExhaustedStore{run: CustomerSyncRun{ID: 8, Status: SyncListingStaff, Version: 3}}
-	service := CustomerSyncService{
-		Enabled: true, CorpID: "corp", Provider: retryExhaustedProvider{}, Identity: retryExhaustedIdentity{}, Projection: retryExhaustedProjection{},
-		Timeline: retryExhaustedTimeline{}, Store: store, Outbox: retryExhaustedOutbox{}, Enqueuer: retryExhaustedEnqueuer{}, Audit: retryExhaustedAudit{}, UOW: directUOW{},
+	tests := []struct {
+		name       string
+		failure    error
+		attempt    int
+		wantStatus CustomerSyncStatus
+		wantCode   string
+		wantErr    bool
+	}{
+		{name: "system busy stops at its narrower third attempt", failure: boundedClassifiedDirectoryFailure{classifiedDirectoryFailure: classifiedDirectoryFailure{code: "provider_unavailable", retryable: true}, maxAttempts: 3}, attempt: 3, wantStatus: SyncFailedTerminal, wantCode: "retry_exhausted:provider_unavailable"},
+		{name: "rate limit keeps the normal budget after attempt three", failure: classifiedDirectoryFailure{code: "provider_rate_limited", retryable: true}, attempt: 3, wantStatus: SyncFailedRetryable, wantCode: "provider_rate_limited", wantErr: true},
+		{name: "rate limit exhausts the normal twelfth attempt", failure: classifiedDirectoryFailure{code: "provider_rate_limited", retryable: true}, attempt: 12, wantStatus: SyncFailedTerminal, wantCode: "retry_exhausted:provider_rate_limited"},
 	}
-	worker := NewCustomerSyncWorker()
-	if err := worker.BindService(service); err != nil {
-		t.Fatal(err)
-	}
-	err := worker.Work(context.Background(), &river.Job[CustomerSyncJobArgs]{JobRow: &rivertype.JobRow{Attempt: 12, MaxAttempts: 12}, Args: CustomerSyncJobArgs{RunID: 8}})
-	if err != nil || store.run.Status != SyncFailedTerminal || store.run.LastErrorCode != "retry_exhausted:provider_rate_limited" {
-		t.Fatalf("err=%v run=%+v", err, store.run)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := &retryExhaustedStore{run: CustomerSyncRun{ID: 8, Status: SyncListingStaff, Version: 3}}
+			service := CustomerSyncService{
+				Enabled: true, CorpID: "corp", Provider: retryExhaustedProvider{failure: test.failure}, Identity: retryExhaustedIdentity{}, Projection: retryExhaustedProjection{},
+				Timeline: retryExhaustedTimeline{}, Store: store, Outbox: retryExhaustedOutbox{}, Enqueuer: retryExhaustedEnqueuer{}, Audit: retryExhaustedAudit{}, UOW: directUOW{},
+			}
+			worker := NewCustomerSyncWorker()
+			if err := worker.BindService(service); err != nil {
+				t.Fatal(err)
+			}
+			err := worker.Work(context.Background(), &river.Job[CustomerSyncJobArgs]{JobRow: &rivertype.JobRow{Attempt: test.attempt, MaxAttempts: 12}, Args: CustomerSyncJobArgs{RunID: 8}})
+			if (err != nil) != test.wantErr || store.run.Status != test.wantStatus || store.run.LastErrorCode != test.wantCode {
+				t.Fatalf("err=%v run=%+v", err, store.run)
+			}
+		})
 	}
 }
