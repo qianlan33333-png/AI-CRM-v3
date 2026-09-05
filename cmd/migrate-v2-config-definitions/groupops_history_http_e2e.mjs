@@ -54,6 +54,7 @@ function pageItem(baseItem, id, sourceNodeID, title, body, attachmentID) {
   return { ...baseItem, id: String(id), source_node_id: String(sourceNodeID), action_title: title, text_content: body, attachments: [{ kind: 'image', id: attachmentID }] };
 }
 
+let importedNodeTemplate = null;
 const dom = new JSDOM(html, {
   url: hostURL.href,
   runScripts: 'dangerously',
@@ -69,6 +70,7 @@ const dom = new JSDOM(html, {
       if (offset === 0) {
         const first = original.items?.[0];
         if (!first) throw new Error('actual historical node HTTP did not return imported source row');
+        importedNodeTemplate = first;
         const page = {
           ...original,
           offset: 0,
@@ -79,9 +81,13 @@ const dom = new JSDOM(html, {
         return delayedClone(new Response(JSON.stringify(page), { status: upstream.status, headers: { 'content-type': 'application/json' } }), 120);
       }
       if (offset === 20) {
-        const first = original.items?.[0] || { source: 'v1_history', read_only: true, real_external_call_executed: false };
+        const first = importedNodeTemplate;
+        if (!first || first.plan_id === undefined || first.source_plan_id === undefined) throw new Error('second-page fixture lost the actual imported plan identity');
         const firstLater = pageItem(first, 2001, 'later-1', '后页标题', '后页正文', 'later-1');
-        const collision = pageItem(first, first.plan_id, first.source_plan_id, '碰撞节点标题', '碰撞节点正文', 'collision-1');
+        // A historical node may share a numeric value with its plan ID. The
+        // bridge must still use the frozen node-ID field, not a broad value
+        // search over the article.
+        const collision = pageItem(first, first.plan_id, 'collision-node', '碰撞节点标题', '碰撞节点正文', 'collision-1');
         const page = { ...original, offset: 20, limit: 20, total: 22, items: [firstLater, collision] };
         return delayedClone(new Response(JSON.stringify(page), { status: upstream.status, headers: { 'content-type': 'application/json' } }), 0);
       }
