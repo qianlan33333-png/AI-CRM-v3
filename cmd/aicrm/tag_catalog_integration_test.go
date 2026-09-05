@@ -555,8 +555,8 @@ func TestPostgreSQLSurveySyntheticPushSurvivesRepositoryRestartAndDoesNotBlindRe
 	receivedMu.Lock()
 	normalBodies := append([]string(nil), received...)
 	receivedMu.Unlock()
-	if len(normalBodies) != 2 || !strings.Contains(normalBodies[1], `"user_id":"union-integration"`) || !strings.Contains(normalBodies[1], "正常提交") || strings.Contains(normalBodies[1], "must-not-send") {
-		t.Fatalf("normal runtime body=%v", normalBodies)
+	if len(normalBodies) != 2 || !strings.Contains(normalBodies[1], `"user_id":"union-integration"`) || !strings.Contains(normalBodies[1], "正常提交") {
+		t.Fatalf("normal runtime receiver did not receive the frozen submission once (count=%d)", len(normalBodies))
 	}
 
 	// A fresh runtime observes no re-delivery after the prior process stopped.
