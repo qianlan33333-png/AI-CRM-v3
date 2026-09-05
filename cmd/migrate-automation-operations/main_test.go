@@ -83,6 +83,9 @@ func TestCommandValidationDoesNotNeedDatabase(t *testing.T) {
 	if err := execute([]string{"rollback"}, &output); err == nil || !strings.Contains(err.Error(), "confirm-rollback") {
 		t.Fatalf("unexpected rollback error %v", err)
 	}
+	if err := execute([]string{"reconcile", "--batch-key", "batch"}, &output); err == nil || !strings.Contains(err.Error(), "snapshot-file") {
+		t.Fatalf("unexpected reconcile error %v", err)
+	}
 	if err := execute([]string{"unknown"}, &output); err == nil {
 		t.Fatal("expected unknown command")
 	}
