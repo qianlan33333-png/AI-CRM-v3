@@ -72,6 +72,7 @@ This document freezes user-observable behavior before the v3 backend is introduc
 ## Operations and effects
 
 - Survey stores opaque configuration references only; URLs and credentials are rejected.
+- The established operations page writes completion first and then writes only the external-push toggle/reference. That narrow legacy PUT preserves externally configured metadata. Metadata editors must send the readback `configuration_version`; a drift returns `configuration_conflict` and commits nothing.
 - Accepted and queued are not Provider success. Executed is not delivery proof.
 - `outcome_unknown` can only reconcile the original effect identity.
 - Historical push/SCRM results are read-only and can never create a queue job.
