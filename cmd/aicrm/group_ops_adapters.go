@@ -16,6 +16,7 @@ import (
 	groupopsport "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/port"
 	groupopsmaterial "github.com/qianlan33333-png/AI-CRM-v3/internal/media/groupopsmaterial"
 	mediaport "github.com/qianlan33333-png/AI-CRM-v3/internal/media/port"
+	wecomport "github.com/qianlan33333-png/AI-CRM-v3/internal/wecom/port"
 )
 
 // providerDisabledGroupOpsDirectory is a concrete id-dev source adapter. It
@@ -43,6 +44,132 @@ func (providerDisabledGroupOpsEvidence) VerifyReconciliationEvidence(context.Con
 
 var _ groupopsport.GroupDirectorySource = providerDisabledGroupOpsDirectory{}
 var _ groupopsport.ReconciliationEvidenceVerifier = providerDisabledGroupOpsEvidence{}
+
+// wecomGroupOpsDirectory performs every provider read before RuntimeService
+// opens its persistence transaction. A full snapshot is required before a
+// replacement is allowed, so failed pagination cannot erase the prior group
+// projection.
+type wecomGroupOpsDirectory struct {
+	enabled bool
+	groups  wecomport.GroupChatReader
+	staffs  wecomport.DirectoryProvider
+	staff   groupOpsStaffAdapter
+	now     func() time.Time
+}
+
+func (adapter *wecomGroupOpsDirectory) ListOwnedGroups(ctx context.Context, ownerID int64, _ int32) (groupopsport.GroupDirectorySnapshot, error) {
+	if adapter == nil || !adapter.enabled || adapter.groups == nil || adapter.staff.access == nil || ownerID < 1 {
+		return groupopsport.GroupDirectorySnapshot{}, groupopsapp.ErrProviderDisabled
+	}
+	owner, err := adapter.staff.access.UserByID(ctx, ownerID, false)
+	if err != nil || !owner.Active || !validGroupOpsSenderID(owner.WeComUserID) {
+		return groupopsport.GroupDirectorySnapshot{}, groupopsapp.ErrProviderDisabled
+	}
+	cursor := ""
+	seenCursor := map[string]struct{}{}
+	seenChat := map[string]struct{}{}
+	items := make([]groupopsport.GroupDirectoryItem, 0)
+	now := time.Now().UTC()
+	if adapter.now != nil {
+		now = adapter.now().UTC()
+	}
+	for {
+		page, pageErr := adapter.groups.ListGroupChats(ctx, owner.WeComUserID, cursor, 100)
+		if pageErr != nil {
+			return groupopsport.GroupDirectorySnapshot{}, pageErr
+		}
+		for _, summary := range page.Items {
+			if summary.Status != 0 {
+				continue
+			}
+			if _, duplicate := seenChat[summary.ChatID]; duplicate {
+				return groupopsport.GroupDirectorySnapshot{}, errors.New("WeCom group directory returned duplicate chat")
+			}
+			seenChat[summary.ChatID] = struct{}{}
+			detail, detailErr := adapter.groups.GetGroupChat(ctx, summary.ChatID)
+			if detailErr != nil || detail.ChatID != summary.ChatID || detail.OwnerUserID != owner.WeComUserID {
+				return groupopsport.GroupDirectorySnapshot{}, errors.New("WeCom group directory detail is incomplete")
+			}
+			items = append(items, groupopsport.GroupDirectoryItem{ChatReference: detail.ChatID, OwnerStaffID: ownerID, DisplayName: detail.Name, MemberCount: int32(detail.MemberCount), RefreshedAt: now})
+		}
+		if page.NextCursor == "" {
+			break
+		}
+		if _, repeated := seenCursor[page.NextCursor]; repeated {
+			return groupopsport.GroupDirectorySnapshot{}, errors.New("WeCom group directory cursor repeated")
+		}
+		seenCursor[page.NextCursor] = struct{}{}
+		cursor = page.NextCursor
+	}
+	sort.SliceStable(items, func(i, j int) bool { return items[i].ChatReference < items[j].ChatReference })
+	return groupopsport.GroupDirectorySnapshot{Items: items, Complete: true}, nil
+}
+
+func (adapter *wecomGroupOpsDirectory) RefreshOperationMembers(ctx context.Context, pageSize int32) ([]groupopsport.OperationMember, error) {
+	if adapter == nil || !adapter.enabled || adapter.staffs == nil || adapter.staff.access == nil || !adapter.staffs.DirectoryReady() {
+		return nil, groupopsapp.ErrProviderDisabled
+	}
+	providerIDs, err := adapter.staffs.ListContactStaff(ctx)
+	if err != nil {
+		return nil, err
+	}
+	allowed := make(map[string]struct{}, len(providerIDs))
+	for _, id := range providerIDs {
+		if validGroupOpsSenderID(id) {
+			allowed[id] = struct{}{}
+		}
+	}
+	local, err := adapter.staff.ListEligibleStaff(ctx)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]groupopsport.OperationMember, 0, len(local))
+	for _, item := range local {
+		if _, found := allowed[item.SenderUserID]; found {
+			items = append(items, item)
+		}
+	}
+	if len(items) > int(pageSize) {
+		return nil, errors.New("WeCom operation-member snapshot exceeds requested page")
+	}
+	return items, nil
+}
+
+var _ groupopsport.GroupDirectorySource = (*wecomGroupOpsDirectory)(nil)
+
+// groupOpsDispatchReader rechecks the current target owner/sender under the
+// Group Ops UoW immediately before outbound crosses the provider boundary.
+// A paused plan, changed group binding, or ineligible sender is therefore a
+// deterministic pre-dispatch failure, not a send attempt.
+type groupOpsDispatchReader struct {
+	uow interface {
+		Within(context.Context, func(context.Context) error) error
+	}
+	execution groupopsport.DispatchExecutionReader
+	senders   groupopsport.ExecutionSenderResolver
+}
+
+func (adapter groupOpsDispatchReader) LoadDispatchExecution(ctx context.Context, effectID string) (groupopsport.DispatchExecution, error) {
+	if adapter.uow == nil || adapter.execution == nil || adapter.senders == nil || effectID == "" {
+		return groupopsport.DispatchExecution{}, errors.New("Group Ops dispatch reader is unavailable")
+	}
+	var execution groupopsport.DispatchExecution
+	err := adapter.uow.Within(ctx, func(tx context.Context) error {
+		value, loadErr := adapter.execution.LoadDispatchExecution(tx, effectID)
+		if loadErr != nil {
+			return loadErr
+		}
+		sender, found, senderErr := adapter.senders.ResolveExecutionSender(tx, value.TargetReference)
+		if senderErr != nil || !found || sender != value.SenderUserID {
+			return errors.New("Group Ops sender eligibility changed")
+		}
+		execution = value
+		return nil
+	})
+	return execution, err
+}
+
+var _ groupopsport.DispatchExecutionReader = groupOpsDispatchReader{}
 
 // groupOpsExternalReconciler is the only Composition Root bridge from the
 // Group Ops domain to EER control. It keeps the EER operation and the Group Ops

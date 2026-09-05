@@ -480,6 +480,44 @@ func (r *Repository) GetExecution(ctx context.Context, id int64) (groupopsport.E
 	return r.getExecution(ctx, tx, id)
 }
 
+// LoadDispatchExecution returns the owner-owned immutable payload only while
+// the accepted plan, its version, and the precise group binding remain valid.
+// Outbound calls this through the stable Group Ops port before crossing the
+// Provider boundary; it never exposes a mutable plan or a provider response.
+func (r *Repository) LoadDispatchExecution(ctx context.Context, effectRef string) (groupopsport.DispatchExecution, error) {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return groupopsport.DispatchExecution{}, err
+	}
+	effectID, err := parseEffectID(effectRef)
+	if err != nil {
+		return groupopsport.DispatchExecution{}, err
+	}
+	var item groupopsport.DispatchExecution
+	err = tx.QueryRow(ctx, `
+SELECT e.id,e.state,e.delivery_proven,e.target_reference,e.sender_userid_snapshot,
+       e.content_snapshot,e.content_digest,e.material_snapshot,e.material_digest
+FROM group_ops_executions e
+JOIN group_ops_plans p ON p.id=e.plan_id
+JOIN group_ops_plan_group_assets a ON a.plan_id=e.plan_id AND a.asset_reference=e.target_reference
+JOIN group_ops_directory_groups g ON g.chat_reference=e.target_reference
+WHERE e.external_effect_id=$1
+  AND e.state='accepted'
+  AND p.status='active'
+  AND p.revision=e.plan_revision`, effectID).Scan(
+		&item.ExecutionID, &item.State, &item.DeliveryProven, &item.TargetReference, &item.SenderUserID,
+		&item.ContentSnapshot, &item.ContentDigest, &item.MaterialSnapshot, &item.MaterialDigest,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return groupopsport.DispatchExecution{}, ErrNotFound
+	}
+	if err != nil {
+		return groupopsport.DispatchExecution{}, err
+	}
+	item.ExternalEffectID = effectRef
+	return item, nil
+}
+
 func (r *Repository) getExecution(ctx context.Context, tx pgx.Tx, id int64) (groupopsport.Execution, error) {
 	var e groupopsport.Execution
 	var effectID int64

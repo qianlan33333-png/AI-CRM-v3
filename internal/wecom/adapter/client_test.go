@@ -115,6 +115,56 @@ func TestClientSignsBothTicketsCachesAndRefreshes(t *testing.T) {
 	}
 }
 
+func TestClientGroupMessageUsesExactChatIDListAndRejectsPartialReceipt(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/cgi-bin/gettoken":
+			if request.URL.Query().Get("corpsecret") != "contact-secret" {
+				t.Fatalf("wrong token secret")
+			}
+			_, _ = writer.Write([]byte(`{"errcode":0,"access_token":"contact-token","expires_in":7200}`))
+		case "/cgi-bin/externalcontact/add_msg_template":
+			calls++
+			var body map[string]any
+			if json.NewDecoder(request.Body).Decode(&body) != nil {
+				t.Fatal("invalid JSON request")
+			}
+			if body["chat_type"] != "group" || body["sender"] != "owner-1" || body["allow_select"] != false {
+				t.Fatalf("body=%v", body)
+			}
+			ids, ok := body["chat_id_list"].([]any)
+			if !ok || len(ids) != 1 || ids[0] != "chat-1" || body["chat_ids"] != nil {
+				t.Fatalf("exact target body=%v", body)
+			}
+			if calls == 1 {
+				_, _ = writer.Write([]byte(`{"errcode":0,"msgid":"task-1"}`))
+				return
+			}
+			_, _ = writer.Write([]byte(`{"errcode":0,"msgid":"task-2","fail_list":["chat-1"]}`))
+		default:
+			t.Fatalf("unexpected endpoint=%s", request.URL.Path)
+		}
+	}))
+	defer server.Close()
+	client, err := NewDirectory(Config{Enabled: true, CorpID: "corp", ContactSecret: "contact-secret", APIBase: server.URL, HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := wecomport.GroupMessageRequest{SenderUserID: "owner-1", ChatIDs: []string{"chat-1"}, Text: "hello"}
+	receipt, attempted, err := client.SendGroupMessage(context.Background(), request)
+	if err != nil || !attempted || receipt.MessageID != "task-1" {
+		t.Fatalf("receipt=%+v attempted=%t err=%v", receipt, attempted, err)
+	}
+	_, attempted, err = client.SendGroupMessage(context.Background(), request)
+	if !attempted || err == nil {
+		t.Fatalf("partial receipt attempted=%t err=%v", attempted, err)
+	}
+	if rejected, ok := err.(wecomport.GroupMessageSendError); !ok || rejected.OutcomeUnknown() {
+		t.Fatalf("partial receipt classification=%T %v", err, err)
+	}
+}
+
 func TestClientRejectsProviderErrorsOversizeAndDoesNotExposeSecrets(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.URL.Path == "/cgi-bin/gettoken" {

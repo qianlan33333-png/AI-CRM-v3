@@ -435,17 +435,18 @@ func (s *RuntimeService) RefreshOperationMembers(ctx context.Context, command gr
 		// a deterministic 503 rather than a malformed client command.
 		return groupopsport.OperationMemberPage{}, ErrProviderDisabled
 	}
-	now := s.nowUTC()
-	var items []groupopsport.OperationMember
-	err := s.uow.Within(ctx, func(tx context.Context) error {
-		var err error
-		items, err = s.directory.RefreshOperationMembers(tx, command.PageSize)
+	// Provider reads are deliberately outside the UoW. A failed or partial read
+	// therefore cannot hold a database transaction or replace the prior local
+	// projection.
+	items, err := s.directory.RefreshOperationMembers(ctx, command.PageSize)
+	if err != nil || items == nil || len(items) > int(command.PageSize) {
 		if err != nil {
-			return err
+			return groupopsport.OperationMemberPage{}, classify(err)
 		}
-		if items == nil || len(items) > int(command.PageSize) {
-			return ErrConflict
-		}
+		return groupopsport.OperationMemberPage{}, ErrConflict
+	}
+	now := s.nowUTC()
+	err = s.uow.Within(ctx, func(tx context.Context) error {
 		raw, err := json.Marshal(items)
 		if err != nil {
 			return err
@@ -487,16 +488,19 @@ func (s *RuntimeService) RefreshGroups(ctx context.Context, command groupopsport
 		// not delete/replace the local projection or guess an owner.
 		return groupopsport.GroupDirectoryPage{}, ErrProviderDisabled
 	}
+	// The full provider snapshot is fetched before the persistence UoW. Only a
+	// complete snapshot may replace the current directory, which prevents a
+	// paging or transport failure from deleting existing group bindings.
+	snapshot, readErr := s.directory.ListOwnedGroups(ctx, command.OwnerStaffID, command.Limit)
+	if readErr != nil {
+		return groupopsport.GroupDirectoryPage{}, classify(readErr)
+	}
+	if !snapshot.Complete {
+		return groupopsport.GroupDirectoryPage{}, ErrConflict
+	}
 	now := s.nowUTC()
-	var items []groupopsport.GroupDirectoryItem
+	items := append([]groupopsport.GroupDirectoryItem(nil), snapshot.Items...)
 	err := s.uow.Within(ctx, func(tx context.Context) error {
-		snapshot, err := s.directory.ListOwnedGroups(tx, command.OwnerStaffID, command.Limit)
-		if err != nil {
-			return err
-		}
-		if !snapshot.Complete || len(snapshot.Items) > int(command.Limit) {
-			return ErrConflict
-		}
 		for _, item := range snapshot.Items {
 			if item.OwnerStaffID != command.OwnerStaffID || !validOpaqueReference(item.ChatReference) || item.MemberCount < 0 {
 				return ErrConflict
@@ -512,13 +516,16 @@ func (s *RuntimeService) RefreshGroups(ctx context.Context, command groupopsport
 		if err = s.runtime.RecordDirectoryRefresh(tx, "groups", command.ActorID, command.OwnerStaffID, sha256.Sum256([]byte(command.IdempotencyKey)), string(effectport.Hash("group-ops.groups.snapshot", string(raw))), int32(len(snapshot.Items)), true, now); err != nil {
 			return err
 		}
-		items = snapshot.Items
 		return nil
 	})
 	if err != nil {
 		return groupopsport.GroupDirectoryPage{}, classify(err)
 	}
-	return groupopsport.GroupDirectoryPage{Items: items, Total: int64(len(items)), Limit: command.Limit, Offset: 0, HasMore: false, RuntimeSafety: s.safety()}, nil
+	pageItems := items
+	if len(pageItems) > int(command.Limit) {
+		pageItems = pageItems[:command.Limit]
+	}
+	return groupopsport.GroupDirectoryPage{Items: pageItems, Total: int64(len(items)), Limit: command.Limit, Offset: 0, HasMore: len(pageItems) < len(items), RuntimeSafety: s.safety()}, nil
 }
 
 func countMessageDrafts(detail groupopsport.Detail, existing map[string]struct{}) int {

@@ -2,6 +2,7 @@ package outbound
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -9,6 +10,7 @@ import (
 	effect "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	groupopsport "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/port"
 	mediaport "github.com/qianlan33333-png/AI-CRM-v3/internal/media/port"
+	wecomport "github.com/qianlan33333-png/AI-CRM-v3/internal/wecom/port"
 )
 
 func groupMessageEnvelope() effect.Envelope {
@@ -72,6 +74,59 @@ func TestGroupMessageProviderKeepsPreparationWriteDisabled(t *testing.T) {
 	result, err = enabled.Execute(context.Background(), groupMessageEnvelope(), effect.Attempt{Number: 1, Generation: 1, Fence: 1})
 	if err != nil || result.Completion != effect.StateFinalFailed || result.CallAttempted || result.RealExternalCallExecuted {
 		t.Fatalf("unconfigured execution=%+v err=%v", result, err)
+	}
+}
+
+type groupDispatchReaderStub struct {
+	value groupopsport.DispatchExecution
+	err   error
+}
+
+func (s groupDispatchReaderStub) LoadDispatchExecution(_ context.Context, effectID string) (groupopsport.DispatchExecution, error) {
+	if s.err != nil {
+		return groupopsport.DispatchExecution{}, s.err
+	}
+	if effectID != s.value.ExternalEffectID {
+		return groupopsport.DispatchExecution{}, errors.New("unexpected effect id")
+	}
+	return s.value, nil
+}
+
+type groupMessageSenderStub struct {
+	request   wecomport.GroupMessageRequest
+	attempted bool
+	receipt   wecomport.GroupMessageReceipt
+	err       error
+}
+
+func (s *groupMessageSenderStub) SendGroupMessage(_ context.Context, request wecomport.GroupMessageRequest) (wecomport.GroupMessageReceipt, bool, error) {
+	s.request = request
+	return s.receipt, s.attempted, s.err
+}
+
+func TestGroupMessageProviderUsesEffectBoundSnapshotAndExactChat(t *testing.T) {
+	content, err := json.Marshal(map[string]any{"schema_version": 1, "node_id": 4, "position": 2, "kind": "message", "message_text": "hello"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	material := []byte(`{"schema_version":1,"references":[]}`)
+	effectID := "eer_42"
+	reader := groupDispatchReaderStub{value: groupopsport.DispatchExecution{
+		ExecutionID: 42, ExternalEffectID: effectID, State: groupopsport.ExecutionAccepted, TargetReference: "chat-42", SenderUserID: "owner-42",
+		ContentSnapshot: content, ContentDigest: string(effect.Hash("group-ops.content.snapshot.v1", string(content))),
+		MaterialSnapshot: material, MaterialDigest: string(effect.Hash("group-ops.material.snapshot.v1", string(material))),
+	}}
+	sender := &groupMessageSenderStub{attempted: true, receipt: wecomport.GroupMessageReceipt{MessageID: "msg-42"}}
+	provider, err := NewGroupMessageProvider(GroupMessageProviderConfig{Enabled: true, Executions: reader, Writer: sender})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := provider.Execute(context.Background(), groupMessageEnvelope(), effect.Attempt{EffectID: effectID, Number: 1, Generation: 1, Fence: 9})
+	if err != nil || result.Completion != effect.StateExecuted || !result.CallAttempted || !result.RealExternalCallExecuted {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	if sender.request.SenderUserID != "owner-42" || sender.request.Text != "hello" || len(sender.request.ChatIDs) != 1 || sender.request.ChatIDs[0] != "chat-42" {
+		t.Fatalf("exact WeCom request=%+v", sender.request)
 	}
 }
 
