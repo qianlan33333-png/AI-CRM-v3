@@ -103,7 +103,7 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	source := &automationAudienceSource{ids: []customerdomain.CustomerID{101, 202}}
+	source := &automationAudienceSource{ids: []customerdomain.CustomerID{101}}
 	evaluator, err := segmentapp.NewEvaluator(segmentcompiler.Compiler{}, source, automationAudienceCanonical{})
 	if err != nil {
 		t.Fatal(err)
@@ -178,17 +178,42 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 		t.Fatalf("accept refresh=%+v err=%v", refresh, err)
 	}
 	var published segmentport.Snapshot
-	automationAudienceEventually(t, "published audience and automatic delivery", func() bool {
+	automationAudienceEventually(t, "initial audience and automatic delivery", func() bool {
 		var found bool
 		published, found, err = snapshots.PublishedSnapshot(ctx, segmentport.PackageID(packageID))
-		if err != nil || !found || published.MemberCount != 2 {
+		if err != nil || !found || published.MemberCount != 1 {
 			return false
 		}
 		var complete int
 		if native.QueryRow(ctx, `SELECT count(*) FROM outbound_message_intents WHERE source_kind='automation_enrollment' AND state='provider_accepted'`).Scan(&complete) != nil {
 			return false
 		}
-		return complete == 2
+		return complete == 1
+	})
+	// Incremental evaluation contains only the new result. Segment merges it
+	// with the prior snapshot, so the original member remains present.
+	source.ids = []customerdomain.CustomerID{202}
+	incremental, err := snapshots.AcceptRefresh(ctx, segmentapp.RefreshCommand{PackageID: packageID, Actor: 1, IdempotencyKey: "audience-runtime-incremental-0001", RefreshKind: segmentdomain.RefreshIncremental, ReferenceTime: now.Add(time.Minute)})
+	if err != nil || incremental.RiverJobID == nil {
+		t.Fatalf("accept incremental=%+v err=%v", incremental, err)
+	}
+	automationAudienceEventually(t, "incremental membership merge and automatic delivery", func() bool {
+		var found bool
+		published, found, err = snapshots.PublishedSnapshot(ctx, segmentport.PackageID(packageID))
+		if err != nil || !found || published.MemberCount != 2 {
+			return false
+		}
+		var prior, added, complete int
+		if native.QueryRow(ctx, `SELECT count(*) FROM segment_audience_snapshot_members WHERE snapshot_id=$1 AND customer_id=101`, published.ID).Scan(&prior) != nil {
+			return false
+		}
+		if native.QueryRow(ctx, `SELECT count(*) FROM segment_audience_snapshot_members WHERE snapshot_id=$1 AND customer_id=202`, published.ID).Scan(&added) != nil {
+			return false
+		}
+		if native.QueryRow(ctx, `SELECT count(*) FROM outbound_message_intents WHERE source_kind='automation_enrollment' AND state='provider_accepted'`).Scan(&complete) != nil {
+			return false
+		}
+		return prior == 1 && added == 1 && complete == 2
 	})
 	stop()
 	var enrollments, automaticEffects int
