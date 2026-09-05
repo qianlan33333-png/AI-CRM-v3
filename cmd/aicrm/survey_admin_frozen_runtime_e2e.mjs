@@ -196,6 +196,10 @@ await waitFor("normal list disable", () => management.calls.some((call) => call.
 await waitFor("normal list re-enable action", () => managementAction(managementDocument, normalID, "冻结后台实际标题", "启用") !== null);
 click(managementAction(managementDocument, normalID, "冻结后台实际标题", "启用"));
 await waitFor("normal list re-enable", () => management.calls.filter((call) => call.path === `/api/admin/questionnaires/${normalID}/enable` && call.status === 200).length === 1);
+// The frozen controller refreshes its own list after a successful toggle. Wait
+// for that actual rendered state before closing this JSDOM realm so its pending
+// refresh cannot observe a torn-down window.
+await waitFor("normal re-enable refresh", () => managementAction(managementDocument, normalID, "冻结后台实际标题", "停用") !== null);
 management.dom.window.close();
 
 // Export is a readback operation on the published Owner definition. Re-open
