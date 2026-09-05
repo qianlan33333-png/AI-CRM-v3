@@ -41,5 +41,13 @@ func (m *ModuleRegistration) Readiness(ctx context.Context, pool *pgxpool.Pool) 
 	if !ready {
 		return errors.New("automation schema is not ready")
 	}
+	var reviewReady bool
+	e = pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='automation_runs' AND column_name='ai_plan_id')`).Scan(&reviewReady)
+	if e != nil {
+		return e
+	}
+	if !reviewReady {
+		return errors.New("automation manual review schema is not ready")
+	}
 	return nil
 }

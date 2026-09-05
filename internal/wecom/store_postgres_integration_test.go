@@ -27,6 +27,7 @@ import (
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/platform/idempotency"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/platform/webhook"
+	wecomport "github.com/qianlan33333-png/AI-CRM-v3/internal/wecom/port"
 )
 
 func TestPostgreSQLArchiveCallbackReplayKeepsFirstReceipt(t *testing.T) {
@@ -520,6 +521,194 @@ func TestPostgreSQLWeComStoresIntegration(t *testing.T) {
 	})
 }
 
+func TestPostgreSQLAudienceContactsUseRelationshipFacts(t *testing.T) {
+	pool, cleanup := wecomIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	unit, err := platformpostgres.NewUnitOfWork(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var first, second int64
+	if err := pool.Native().QueryRow(ctx, `INSERT INTO customers(status) VALUES('active') RETURNING id`).Scan(&first); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.Native().QueryRow(ctx, `INSERT INTO customers(status) VALUES('active') RETURNING id`).Scan(&second); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+	var runID, firstIdentityID, secondIdentityID int64
+	if err := pool.Native().QueryRow(ctx, `
+		INSERT INTO wecom_customer_sync_runs(run_key,trigger_type,status,corp_scope,completed_at)
+		VALUES('audience-contact-fixture','manual','succeeded','wecom-corp:test',$1)
+		RETURNING id`, now).Scan(&runID); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.Native().QueryRow(ctx, `
+		INSERT INTO customer_identities(customer_id,kind,scope_key,normalized_value,assurance,source,normalizer_version,verified_at)
+		VALUES($1,'wecom_external_userid','wecom-corp:test','external-first','verified','test-fixture',1,$2)
+		RETURNING id`, first, now).Scan(&firstIdentityID); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.Native().QueryRow(ctx, `
+		INSERT INTO customer_identities(customer_id,kind,scope_key,normalized_value,assurance,source,normalizer_version,verified_at)
+		VALUES($1,'wecom_external_userid','wecom-corp:test','external-second','verified','test-fixture',1,$2)
+		RETURNING id`, second, now).Scan(&secondIdentityID); err != nil {
+		t.Fatal(err)
+	}
+	profileDigest := sha256.Sum256([]byte("audience-contact-profile"))
+	if _, err := pool.Native().Exec(ctx, `
+		INSERT INTO wecom_external_contact_profiles(
+			customer_id,corp_scope,external_identity_id,activation_status,profile_digest,
+			last_seen_run_id,fetched_at,stale_at,updated_at
+		) VALUES
+			($1,'wecom-corp:test',$2,'active',$3,$4,$5,NULL,$5),
+			($6,'wecom-corp:test',$7,'stale',$3,$4,$5,$5,$5)`,
+		first, firstIdentityID, profileDigest[:], runID, now, second, secondIdentityID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Native().Exec(ctx, `INSERT INTO wecom_follow_relationships(corp_id,employee_id,customer_id,active,created_at,updated_at) VALUES('wx','owner-a',$1,true,$2,$3),('wx','owner-b',$4,true,$2,$3)`, first, now.Add(-48*time.Hour), now, second); err != nil {
+		t.Fatal(err)
+	}
+	var facts []wecomport.AudienceContact
+	if err := unit.Within(ctx, func(tx context.Context) error {
+		var e error
+		facts, e = PostgreSQLFollowRelationshipStore{}.AudienceContacts(tx, now.Add(time.Hour))
+		return e
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(facts) != 2 || facts[0].CustomerID != customerdomain.CustomerID(first) || facts[0].OwnerUserID != "owner-a" || facts[0].Status != "active" || !facts[0].ObservedAt.Equal(now.Add(-48*time.Hour)) || facts[1].Status != "deleted" {
+		t.Fatalf("facts=%+v", facts)
+	}
+}
+
+func TestPostgreSQLAudiencePrimaryOwnersUseCompletedTrustedFollowScopes(t *testing.T) {
+	pool, cleanup := wecomIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	unit, err := platformpostgres.NewUnitOfWork(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := NewPostgreSQLCustomerSyncStore()
+	tooMany := make([]customerdomain.CustomerID, maximumAudiencePrimaryOwnerBatch+1)
+	if err = unit.Within(ctx, func(tx context.Context) error {
+		_, readErr := store.AudiencePrimaryOwners(tx, tooMany)
+		return readErr
+	}); !errors.Is(err, ErrSyncCAS) {
+		t.Fatalf("oversized audience owner batch=%v", err)
+	}
+	now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+	var primaryCustomer, unknownCustomer, conflictingCustomer int64
+	for _, destination := range []*int64{&primaryCustomer, &unknownCustomer, &conflictingCustomer} {
+		if err = pool.Native().QueryRow(ctx, `INSERT INTO customers(status) VALUES('active') RETURNING id`).Scan(destination); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	insertRun := func(key, scope string, status CustomerSyncStatus, completedAt *time.Time) int64 {
+		t.Helper()
+		var id int64
+		if err = pool.Native().QueryRow(ctx, `INSERT INTO wecom_customer_sync_runs(run_key,trigger_type,status,corp_scope,completed_at)
+			VALUES($1,'manual',$2,$3,$4) RETURNING id`, key, status, scope, completedAt).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	insertIdentity := func(customerID int64, value string) int64 {
+		t.Helper()
+		var id int64
+		if err = pool.Native().QueryRow(ctx, `INSERT INTO customer_identities(customer_id,kind,scope_key,normalized_value,assurance,source,normalizer_version,verified_at)
+			VALUES($1,'wecom_external_userid','wecom-corp:test',$2,'verified','test-fixture',1,$3) RETURNING id`, customerID, value, now).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	insertProfile := func(customerID, identityID, runID int64, scope string) {
+		t.Helper()
+		digest := sha256.Sum256([]byte("primary-owner-profile-" + strconv.FormatInt(customerID, 10)))
+		if _, err = pool.Native().Exec(ctx, `INSERT INTO wecom_external_contact_profiles(
+			customer_id,corp_scope,external_identity_id,activation_status,profile_digest,last_seen_run_id,fetched_at,updated_at
+		) VALUES($1,$2,$3,'active',$4,$5,$6,$6)`, customerID, scope, identityID, digest[:], runID, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	scope := "wecom-corp:test"
+	primaryRun := insertRun("primary-owner-run-1", scope, SyncReconciling, nil)
+	insertProfile(primaryCustomer, insertIdentity(primaryCustomer, "primary-owner-external"), primaryRun, scope)
+	if err = unit.Within(ctx, func(tx context.Context) error {
+		// The request employee is intentionally absent: only the provider's
+		// trusted follow_user records participate in the primary selection.
+		if e := store.UpsertProfileObservations(tx, primaryRun, scope, customerdomain.CustomerID(primaryCustomer), []wecomport.ExternalContactFollowInfo{{EmployeeID: "zara"}, {EmployeeID: "bob"}}, now); e != nil {
+			return e
+		}
+		if e := store.ReconcileProfileObservations(tx, primaryRun, now); e != nil {
+			return e
+		}
+		if e := store.RefreshProfilePrimaryOwners(tx, primaryRun, now); e != nil {
+			return e
+		}
+		return store.Complete(tx, primaryRun, 1, 0)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var profilePrimary string
+	var primaryRunID int64
+	if err = pool.Native().QueryRow(ctx, `SELECT primary_owner_userid,primary_owner_run_id FROM wecom_external_contact_profiles WHERE customer_id=$1`, primaryCustomer).Scan(&profilePrimary, &primaryRunID); err != nil {
+		t.Fatal(err)
+	}
+	if profilePrimary != "bob" || primaryRunID != primaryRun {
+		t.Fatalf("profile primary=%q run=%d", profilePrimary, primaryRunID)
+	}
+
+	// A later complete scope with no provider follow users stales its
+	// observations but preserves the old primary, exactly as the donor does.
+	secondRun := insertRun("primary-owner-run-2", scope, SyncReconciling, nil)
+	if _, err = pool.Native().Exec(ctx, `UPDATE wecom_external_contact_profiles SET last_seen_run_id=$2 WHERE customer_id=$1`, primaryCustomer, secondRun); err != nil {
+		t.Fatal(err)
+	}
+	if err = unit.Within(ctx, func(tx context.Context) error {
+		if e := store.ReconcileProfileObservations(tx, secondRun, now.Add(time.Hour)); e != nil {
+			return e
+		}
+		if e := store.RefreshProfilePrimaryOwners(tx, secondRun, now.Add(time.Hour)); e != nil {
+			return e
+		}
+		return store.Complete(tx, secondRun, 1, 0)
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	completed := now.Add(-time.Hour)
+	unknownRun := insertRun("primary-owner-legacy", scope, SyncSucceeded, &completed)
+	insertProfile(unknownCustomer, insertIdentity(unknownCustomer, "unknown-owner-external"), unknownRun, scope)
+
+	conflictRunOne := insertRun("primary-owner-conflict-one", scope, SyncSucceeded, &completed)
+	insertProfile(conflictingCustomer, insertIdentity(conflictingCustomer, "conflict-owner-external"), conflictRunOne, scope)
+	if _, err = pool.Native().Exec(ctx, `UPDATE wecom_external_contact_profiles SET primary_owner_userid='bob',primary_owner_run_id=$2 WHERE customer_id=$1`, conflictingCustomer, conflictRunOne); err != nil {
+		t.Fatal(err)
+	}
+	conflictRunTwo := insertRun("primary-owner-conflict-two", "wecom-corp:other", SyncSucceeded, &completed)
+	if _, err = pool.Native().Exec(ctx, `INSERT INTO wecom_customer_owner_observations(customer_id,corp_scope,employee_id,relationship_status,last_seen_run_id,observed_at,primary_owner_userid)
+		VALUES($1,$2,'zoe','active',$3,$4,'zoe')`, conflictingCustomer, "wecom-corp:other", conflictRunTwo, now); err != nil {
+		t.Fatal(err)
+	}
+
+	var facts []wecomport.AudiencePrimaryOwner
+	if err = unit.Within(ctx, func(tx context.Context) error {
+		var readErr error
+		facts, readErr = store.AudiencePrimaryOwners(tx, []customerdomain.CustomerID{customerdomain.CustomerID(primaryCustomer), customerdomain.CustomerID(unknownCustomer), customerdomain.CustomerID(conflictingCustomer)})
+		return readErr
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(facts) != 3 || facts[0].CustomerID != customerdomain.CustomerID(primaryCustomer) || facts[0].CorpScope != scope || facts[0].OwnerUserID != "bob" || facts[0].Status != "known" || facts[1].CustomerID != customerdomain.CustomerID(unknownCustomer) || facts[1].Status != "unknown" || facts[2].CustomerID != customerdomain.CustomerID(conflictingCustomer) || facts[2].OwnerUserID != "" || facts[2].Status != "ambiguous" {
+		t.Fatalf("primary facts=%+v", facts)
+	}
+}
+
 func insertWeComInbox(t *testing.T, ctx context.Context, pool *platformpostgres.Pool, suffix, status string, attempts int) int64 {
 	t.Helper()
 	digest := sha256.Sum256([]byte("payload-" + suffix))
@@ -633,5 +822,8 @@ func wecomMigrationPaths(t *testing.T) []string {
 		filepath.Join(root, "migrations", "0004_wecom.sql"),
 		filepath.Join(root, "migrations", "0005_external_effects.sql"),
 		filepath.Join(root, "migrations", "0006_wecom_callback_channel_acquisition.sql"),
+		filepath.Join(root, "migrations", "0009_customer_activation.sql"),
+		filepath.Join(root, "migrations", "0022_customer_profile_sections.sql"),
+		filepath.Join(root, "migrations", "0086_wecom_profile_primary_owner.sql"),
 	}
 }

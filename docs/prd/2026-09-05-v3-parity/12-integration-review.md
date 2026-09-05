@@ -54,4 +54,20 @@ Provider HTTP200 中 errcode=-1 为系统繁忙，按官方错误说明建议稍
 
 全部开发与联合验收完成后冻结唯一发布候选 HEAD，补齐制品摘要、迁移顺序、配置变化、历史导入 dry-run、风险与回滚步骤。取得用户针对该候选的最终上线确认后，才允许一次合并 main 并执行一次生产部署。
 
-- 0085分配Segment：PRD05§16旧增量/日刷新差异与种类持久事实；复用现有RefreshRun/snapshot/UoW/River。0084仍HXC独占，0086分配WeCom主负责人恢复（PRD05§17），0087分配Automation人工群发与既有AI待审计划关联（PRD05§18），0088分配Order原联盟字段及历史恢复（PRD03§20），0089分配Outbound既有自动意图不可变内容与素材快照（PRD05§20），0090分配Survey OAuth状态redirect约束前向修正（PRD02），下一可用0091。
+- 0085分配Segment：PRD05§16旧增量/日刷新差异与种类持久事实；复用现有RefreshRun/snapshot/UoW/River。0084仍HXC独占，0086分配WeCom主负责人恢复（PRD05§17），0087分配Automation人工群发与既有AI待审计划关联（PRD05§18），0088分配Order原联盟字段及历史恢复（PRD03§20），0089分配Outbound既有自动意图不可变内容与素材快照（PRD05§20），0090分配Survey OAuth状态redirect约束前向修正（PRD02），0091分配Survey原测评业务键的前向CHECK兼容，下一可用0092。
+
+## 最后一项共同运行验证的执行合同
+
+本项只补上述05/06/07联合验收，不新增产品机制。等PR152准确HEAD审核通过后，从包含该HEAD的总集成提交创建独立clone；禁止将PR152未审核的后续提交带入。执行者由空闲开发名额承接，根继续审核和机械集成。
+
+分类：涉及客户归属，复用真实Identity/Access与既有目标解析；涉及持久化和Provider写，复用同库UoW、共享River、Outbound Provider/Completion Router、既有Media读取/准备与EER。没有新的表、迁移、队列框架或身份匹配需求。
+
+复用来源：已纳入的 `cmd/aicrm/group_ai_joint_runtime_integration_test.go`、`group_ops_runtime_integration_test.go` 与PR152的 `automation_audience_runtime_integration_test.go`。优先扩展已有联合夹具，不复制一套执行器。单独板块已有暂停、撤权、历史和素材反例不必机械重复；共同测试必须证明实际接线共存。
+
+1. 一个隔离PostgreSQL16 schema、一个共享River runtime、一个真实EER Repository和完整Provider/Completion Router中同时接入Automation自动消息、Automation人工待审AI计划和GroupOps节点。使用合成可信身份、真实Owner表和本地协议服务器，列明仍使用的测试Port。
+2. 接纳前River不启动：受众刷新后的自动意图、群初始执行及其效果/任务正确落盘；人工群发只产生AI待审事实，单项审阅仍零发送，整单审批后才接纳该私信效果。断言Owner关联与事务事实，不能仅以Provider调用次数代替落盘。
+3. 正常共享运行后，各业务收到自身回执；同值的局部ID/合法业务幂等键不导致跨来源复用效果。实际请求目标、固定文本和至少一种既有Media素材与对应冻结内容一致，保留每个来源到Outbound/EER/Completion的关联。
+4. 停止并重新创建共享runtime：延时群后继按已存期限执行；重复接纳/审批不会新增效果或发送。一个Provider已接收但响应断开所形成的unknown保持原效果标识，重启不重发，其他来源可以完成，不因Router接线遗漏丢回执。
+5. CI在实际PostgreSQL16中运行该联合测试及适用race；本机因数据库不可用跳过必须单独记录。只交付未合并PR、准确HEAD、增量文件和证据。若发现业务缺陷，先报告所属Owner并由总控指定原任务修复，不在联合测试中绕过。
+
+完成后更新10矩阵中的05/06/07联合项，不能据此代替尚未通过的问卷原页面、历史逐条对账或生产服务商验收。

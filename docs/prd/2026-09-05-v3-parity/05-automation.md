@@ -179,3 +179,5 @@ CI33964237463通过不代表新Host已验收。新Host与已有admin_audience_de
 - 保留源收据但改变目标 state、occurred_at、readonly、成员归属、snapshot，或删除目标、改隔离原因/摘要时，真实命令必须拒绝；恢复后通过。
 - 实际PG fixture使用既有River迁移；不能以自建 river_job 空表替代。历史 apply/replay/reconcile 不创建新的效果或持久执行任务。
 - 新PR注明依赖PR152准确基线，只有依赖实现和本增量分别通过审核后才纳入总集成，不提前执行生产导入。
+
+补充最终审核合同：0083已恢复旧刷新模式，历史配置导入必须显式保存同一规范模式并参加配置去重、目标逐条核验；同definition而刷新模式/时刻不同不可复用成同一配置。缺字段快照沿原明确兼容语义，不识别的模式明确隔离或拒绝，不静默猜成manual。真实PG覆盖manual及旧四模式、同definition不同刷新设置、目标refresh_mode漂移拒绝；继续保持导入后暂停且零River/Provider效果。本项由PR159沿既有Segment规则修复，无新迁移。

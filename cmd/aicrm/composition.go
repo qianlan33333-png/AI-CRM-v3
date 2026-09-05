@@ -367,7 +367,10 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return fail(err)
 	}
 	segmentService := segmentapp.NewService(uow, segmentRepository)
-	segmentEvaluator, err := segmentapp.NewEvaluator(segmentcompiler.Compiler{}, segmentadapter.CustomerSource{UoW: uow, Customers: customerStore}, segmentadapter.CanonicalCustomers{UoW: uow, Resolver: canonicalCustomerAdapter{reader: queries}})
+	// Populate this composition-owned adapter as its Owner stores are built
+	// below. The process has not started serving requests at this point.
+	legacyAudienceSource := &segmentadapter.LegacyTemplateSource{Radar: radarRepository, PrimaryOwnerCorpScope: "wecom-corp:" + cfg.WeCom.CorpID}
+	segmentEvaluator, err := segmentapp.NewEvaluator(segmentcompiler.Compiler{}, segmentadapter.CustomerSource{UoW: uow, Customers: customerStore, Legacy: legacyAudienceSource}, segmentadapter.CanonicalCustomers{UoW: uow, Resolver: canonicalCustomerAdapter{reader: queries}})
 	if err != nil {
 		return fail(err)
 	}
@@ -394,6 +397,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return fail(err)
 	}
 	segmentStaff := automationOpsStaffAdapter{uow: uow, users: accessRepository}
+	legacyAudienceSource.Owners = segmentStaff
 	automationProviderReady := cfg.Effects.ProviderEnabled && cfg.WeCom.Enabled && cfg.AutomationOperations.ProviderEnabled()
 	segmentExecution, err := segmentapp.NewExecutionService(uow, segmentRepository, automationService, segmentStaff, automationProviderReady)
 	if err != nil {
@@ -410,6 +414,12 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err = automationRuntime.SetMessageAccepter(outboundMessages); err != nil {
 		return fail(err)
 	}
+	if err = automationRuntime.SetReviewPlanIntake(aiService, automationService); err != nil {
+		return fail(err)
+	}
+	if err = automationRuntime.SetOutboundContentFreezer(automationOutboundContentFreezer{capturer: mediaRepository}); err != nil {
+		return fail(err)
+	}
 	if err = automationRuntime.SetEffectReconciler(effectRepository); err != nil {
 		return fail(err)
 	}
@@ -421,10 +431,11 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return fail(err)
 	}
 	segmentRuntime := segmentapp.NewRuntimeFacade(segmentService, segmentSnapshots, segmentExecution)
-	segmentBindings, err := segmentModule.BindRuntime(segmentRuntime, segmentRuntime, requestSecurity)
+	segmentBindings, err := segmentModule.BindRuntimeWithOwnerReferences(segmentRuntime, segmentRuntime, requestSecurity, segmentStaff, segmentStaff)
 	if err != nil {
 		return fail(err)
 	}
+	segmentBindings.Handler.BindAudienceRadarReferences(audienceRadarReferenceAdapter{radars: radarManager})
 	segmentWebhookService, err := segmentapp.NewWebhookService(uow, segmentRepository, oneID, segmentSnapshots)
 	if err != nil {
 		return fail(err)
@@ -457,6 +468,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	}
 	channelAssetStore := channelstore.NewPostgreSQLAssetStore(pool.Native())
 	channelAcquisition := channelstore.NewPostgreSQLStore()
+	legacyAudienceSource.Channels = channelAcquisition
 	channelEntrantActions := channelstore.NewEntrantActionStore(effectRepository, channelWelcomeMaterialAdapter{resolver: groupOpsMaterials})
 	channelLinkStore := channelstore.NewAcquisitionLinkStore()
 	channelAssetCompletionSink, err := outbound.NewChannelAssetCompletionSink(channelAssetCompletionAdapter{assets: channelAssetStore, bindings: channelAcquisition, digester: callbackStateDigester, corpID: cfg.WeCom.CorpID})
@@ -527,7 +539,9 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
+	legacyAudienceSource.Survey = surveyRepository
 	surveyDefinitions := surveyapp.NewService(uow, surveyRepository)
+	segmentBindings.Handler.BindAudienceSurveyReferences(audienceSurveyReferenceAdapter{surveys: surveyDefinitions})
 	surveySubmissions := surveyapp.NewSubmissionService(uow, surveyRepository, surveyCipher)
 	surveyCompletionTargets, err := surveyCompletionTargets(cfg.Survey.CompletionTargetsJSON)
 	if err != nil {
@@ -588,6 +602,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return fail(err)
 	}
 	productCatalog := productapp.NewService(uow, productRepository, productEvents)
+	segmentBindings.Handler.BindAudienceProductReferences(audienceProductReferenceAdapter{products: productCatalog})
 	productLifecycle := productapp.NewLocalProductLifecycleService(uow, productRepository, productEvents)
 	productServicePeriod := productapp.NewServicePeriodService(uow, productRepository, productEvents)
 	// 0079 is Product-owned workspace metadata.  The HTTP host still reads
@@ -693,6 +708,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	}
 	channelCatalogService := channelstore.NewCatalogService(uow, channelCatalogStore, channelCatalogStore, channelEvents,
 		channelMaterialReferenceAdapter{media: mediaRepository}, channelTagReferenceAdapter{tags: tagRepository}, channelStaffReferenceAdapter{users: accessRepository})
+	segmentBindings.Handler.BindAudienceChannelReferences(audienceChannelReferenceAdapter{channels: channelCatalogService})
 	channelCatalog, err := channelstore.NewCatalogHTTPHandler(channelstore.CatalogHTTPConfig{Application: channelCatalogService, Summaries: channelstore.NewPostgreSQLCatalogSummaryReader(uow), Security: requestSecurity, CursorSigningKey: channelCursorKey})
 	if err != nil {
 		return fail(err)
@@ -728,6 +744,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
+	legacyAudienceSource.Orders = orderRepository
 	orderService := orderapp.NewService(uow, orderRepository)
 	if err = orderService.SetCheckoutCouponCoordinator(couponCheckout); err != nil {
 		return fail(err)
@@ -769,6 +786,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return fail(err)
 	}
 	customerProfileStore := wecom.NewPostgreSQLCustomerSyncStore()
+	legacyAudienceSource.PrimaryOwners = customerProfileStore
 	customerHandler, err := customerhttp.NewHandler(customerhttp.Config{UnitOfWork: uow, Auth: requestSecurity, CSRF: requestSecurity,
 		Directory: customerapp.Directory{Store: customerStore, SigningKey: cursorSigningKey}, Store: customerStore, Identities: queries, Audit: auditService,
 		Canonical: canonicalCustomerAdapter{reader: queries},
@@ -1001,6 +1019,8 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		welcomeGrantStore = wecom.NewPostgreSQLWelcomeGrantStore(welcomeGrantCipher)
 	}
 	relationships := wecom.NewPostgreSQLFollowRelationshipStore()
+	legacyAudienceSource.RegistrationFacts = customerStore
+	legacyAudienceSource.Contacts = relationships
 	var channelAssetProvider effectport.ProviderAdapter
 	var channelEntrantProvider effectport.ProviderAdapter
 	var channelLinkProvider effectport.ProviderAdapter
@@ -1018,7 +1038,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if cfg.WeCom.ChannelQRProviderEnabled {
 		channelLinkProvider = outbound.NewChannelLinkProvider(channelLinkMutationReaderAdapter{uow: uow, source: channelLinkStore}, providerClient)
 	}
-	privateProvider, err := outbound.NewPrivateMessageProvider(cfg.AIAssistant.DispatchEnabled, privateWriter, aiPrivateTargetResolver{uow: uow, identities: queries, access: accessRepository, relationships: relationships, corpID: cfg.WeCom.CorpID}, aiPrivatePayloadReader{content: aiRepository, images: mediaService, materials: mediaRepository, attachments: mediaService}, providerClient)
+	privateProvider, err := outbound.NewPrivateMessageProvider(cfg.AIAssistant.DispatchEnabled, privateWriter, aiPrivateTargetResolver{uow: uow, identities: queries, access: accessRepository, relationships: relationships, corpID: cfg.WeCom.CorpID}, aiPrivatePayloadReader{content: aiRepository, images: mediaService, materials: mediaRepository, attachments: mediaService, uow: uow, capturer: mediaRepository}, providerClient)
 	if err != nil {
 		return fail(err)
 	}
@@ -1034,7 +1054,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		}
 		tagCatalogProvider = catalogProvider
 	}
-	messageProvider, providerErr := outbound.NewMessageProvider(outbound.MessageProviderConfig{Enabled: cfg.Effects.ProviderEnabled && cfg.WeCom.Enabled && cfg.AutomationOperations.ProviderEnabled(), CorpScope: "wecom-corp:" + cfg.WeCom.CorpID, Executions: outboundMessages, Identities: outboundIdentityAdapter{uow: uow, reader: queries}, Staff: segmentStaff, Content: automationService, Writer: providerClient})
+	messageProvider, providerErr := outbound.NewMessageProvider(outbound.MessageProviderConfig{Enabled: cfg.Effects.ProviderEnabled && cfg.WeCom.Enabled && cfg.AutomationOperations.ProviderEnabled(), CorpScope: "wecom-corp:" + cfg.WeCom.CorpID, Executions: outboundMessages, Identities: outboundIdentityAdapter{uow: uow, reader: queries}, Staff: segmentStaff, Content: automationService, Payloads: automationFrozenPayloadReader{preparer: aiPrivatePayloadReader{images: mediaService, materials: mediaRepository, attachments: mediaService, uow: uow, capturer: mediaRepository}}, Writer: providerClient})
 	if providerErr != nil {
 		return fail(providerErr)
 	}
@@ -1072,6 +1092,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err = productBindings.ProductHandler.SetServicePeriodMemberSharedFacts(hxcRepository); err != nil {
 		return fail(err)
 	}
+	legacyAudienceSource.MemberFacts = hxcRepository
 	hxcDashboard := hxcapp.Service{Enabled: cfg.HXCDashboard.Enabled, Scope: cfg.HXCDashboard.UnionIDScope, SubjectKey: []byte(cfg.HXCDashboard.SubjectHMACKey), Source: hxcSource, Identity: hxcIdentity, IdentityWriteEnabled: cfg.HXCDashboard.IdentityWriteEnabled, UnionIDVerified: cfg.HXCDashboard.UnionIDVerified, Store: hxcRepository, Enqueuer: hxcEnqueuer, Audit: auditService, UOW: uow}
 	hxcDashboardWorker.Service = &hxcDashboard
 	hxcHandler := hxchttp.Handler{Service: hxcDashboard, Store: hxcRepository, Auth: requestSecurity, Key: []byte(cfg.HXCDashboard.SubjectHMACKey)}
@@ -1180,12 +1201,15 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		}
 		var complete bool
 		checkErr := pool.Native().QueryRow(readinessContext, `SELECT
-			NOT EXISTS (SELECT 1 FROM unnest(ARRAY['0001','0002','0003','0004','0005','0006','0007','0008','0009','0010','0011','0012','0013','0014','0015','0016','0017','0018','0019','0020','0021','0022','0023','0024','0025','0026','0027','0028','0029','0030','0031','0032','0033','0034','0035','0036','0037','0038','0039','0040','0041','0042','0043','0044','0045','0046','0047','0048','0049','0050','0051','0052','0053','0054','0055','0056','0057','0058','0059','0060','0061','0062','0063','0064','0068','0069','0070','0076','0077','0079','0084','0088']) AS required(version) WHERE NOT EXISTS (SELECT 1 FROM platform_schema_migrations applied WHERE applied.version=required.version))
+			NOT EXISTS (SELECT 1 FROM unnest(ARRAY['0001','0002','0003','0004','0005','0006','0007','0008','0009','0010','0011','0012','0013','0014','0015','0016','0017','0018','0019','0020','0021','0022','0023','0024','0025','0026','0027','0028','0029','0030','0031','0032','0033','0034','0035','0036','0037','0038','0039','0040','0041','0042','0043','0044','0045','0046','0047','0048','0049','0050','0051','0052','0053','0054','0055','0056','0057','0058','0059','0060','0061','0062','0063','0064','0068','0069','0070','0076','0077','0079','0083','0084','0085','0086','0087','0088','0089']) AS required(version) WHERE NOT EXISTS (SELECT 1 FROM platform_schema_migrations applied WHERE applied.version=required.version))
 			AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='order_service_entitlements' AND column_name='alliance')`).Scan(&complete)
 		if checkErr != nil || !complete {
 			return errors.New("database schema is not ready")
 		}
 		if checkErr = effectsModule.Readiness(readinessContext, pool.Native()); checkErr != nil {
+			return checkErr
+		}
+		if checkErr = outbound.Readiness(readinessContext, pool.Native()); checkErr != nil {
 			return checkErr
 		}
 		if checkErr = mediaModule.Readiness(readinessContext, pool.Native()); checkErr != nil {

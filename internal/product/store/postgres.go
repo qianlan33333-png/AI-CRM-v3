@@ -227,7 +227,7 @@ func (r *Repository) ListProductOptions(ctx context.Context, query productport.P
 	limitPlaceholder := len(args) + 1
 	offsetPlaceholder := len(args) + 2
 	args = append(args, query.Limit, query.Offset)
-	rows, err := tx.Query(ctx, `SELECT id,name,price_minor,currency,CASE WHEN `+servicePeriodStatusSQL()+` THEN 'service_period' ELSE 'standard' END FROM products WHERE `+whereSQL+` ORDER BY id LIMIT $`+itoa(limitPlaceholder)+` OFFSET $`+itoa(offsetPlaceholder), args...)
+	rows, err := tx.Query(ctx, `SELECT id,product_code,name,price_minor,currency,CASE WHEN `+servicePeriodStatusSQL()+` THEN 'service_period' ELSE 'standard' END FROM products WHERE `+whereSQL+` ORDER BY id LIMIT $`+itoa(limitPlaceholder)+` OFFSET $`+itoa(offsetPlaceholder), args...)
 	if err != nil {
 		return productport.ProductOptionPage{}, mapDatabaseError(err)
 	}
@@ -235,7 +235,7 @@ func (r *Repository) ListProductOptions(ctx context.Context, query productport.P
 	items := make([]productport.ProductOption, 0)
 	for rows.Next() {
 		var item productport.ProductOption
-		if err := rows.Scan(&item.ID, &item.Name, &item.PriceMinor, &item.Currency, &item.ProductType); err != nil {
+		if err := rows.Scan(&item.ID, &item.Code, &item.Name, &item.PriceMinor, &item.Currency, &item.ProductType); err != nil {
 			return productport.ProductOptionPage{}, mapDatabaseError(err)
 		}
 		items = append(items, item)

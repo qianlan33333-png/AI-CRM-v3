@@ -44,8 +44,8 @@ const (
 	ContentText        ContentKind = "text"
 	ContentImage       ContentKind = "image"
 	ContentMiniProgram ContentKind = "mini_program"
-	ContentAttachment  ContentKind = "attachment"
 	ContentLink        ContentKind = "link"
+	ContentAttachment  ContentKind = "attachment"
 )
 
 type ContentBlock struct {
@@ -152,4 +152,14 @@ type CreatePlanResult struct {
 
 type Intake interface {
 	CreatePlan(context.Context, CreatePlanCommand) (CreatePlanResult, error)
+}
+
+// TransactionalIntake creates a review plan in the caller's already-bound
+// PostgreSQL transaction. It exists for the small set of Owners that must
+// commit their own durable fact and an AI review plan atomically.
+//
+// Calling it without a transaction is an explicit failure; it never opens a
+// nested Unit of Work.
+type TransactionalIntake interface {
+	CreatePlanWithin(context.Context, CreatePlanCommand) (CreatePlanResult, error)
 }
