@@ -506,7 +506,7 @@ func TestPostgreSQLSurveySyntheticPushSurvivesRepositoryRestartAndDoesNotBlindRe
 	// River runtime reads its frozen protected payload outside that transaction
 	// and reaches the local receiver once. This is intentionally distinct from
 	// the synthetic operator test above.
-	if _, err = pool.Exec(ctx, `UPDATE survey_questionnaires SET status='published' WHERE id=$1`, questionnaire); err != nil {
+	if _, err = definitionService.Publish(ctx, surveyport.ID(questionnaire), definition.Version, actor, "survey-normal-publish-0001"); err != nil {
 		t.Fatal(err)
 	}
 	var questionID, customerID int64
