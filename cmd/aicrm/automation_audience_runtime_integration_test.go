@@ -186,6 +186,11 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 	if err = effectWorker.BindRepository(effects); err != nil {
 		t.Fatal(err)
 	}
+	runtime, err := platformjobqueue.NewRuntime(native, workers, segment.AudienceRefreshQueue, platformjobqueue.OutboundQueue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stop := automationAudienceStartRuntime(t, runtime)
 
 	approval := staffID
 	actionConfig, err := json.Marshal(map[string]int64{"agent_id": int64(agent.ID)})
@@ -196,14 +201,21 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Policy activation requires a real published snapshot. Publish an empty
+	// baseline first; this has no active policy and therefore creates no send.
+	source.Set(nil)
+	baseline, err := snapshots.AcceptRefresh(ctx, segmentapp.RefreshCommand{PackageID: packageID, Actor: staffID, IdempotencyKey: "audience-runtime-baseline-0001", ReferenceTime: now.Add(-time.Minute)})
+	if err != nil || baseline.RiverJobID == nil {
+		t.Fatalf("accept baseline=%+v err=%v", baseline, err)
+	}
+	automationAudienceEventually(t, "empty baseline snapshot", func() bool {
+		snapshot, found, readErr := snapshots.PublishedSnapshot(ctx, segmentport.PackageID(packageID))
+		return readErr == nil && found && snapshot.MemberCount == 0
+	})
 	if _, err = runtimeService.TransitionPolicy(ctx, automationapp.PolicyLifecycleCommand{PolicyID: policy.ID, ExpectedVersion: policy.Version, Actor: staffID, Target: automationdomain.PolicyActive, IdempotencyKey: "audience-runtime-activate-0001"}); err != nil {
 		t.Fatal(err)
 	}
-	runtime, err := platformjobqueue.NewRuntime(native, workers, segment.AudienceRefreshQueue, platformjobqueue.OutboundQueue)
-	if err != nil {
-		t.Fatal(err)
-	}
-	stop := automationAudienceStartRuntime(t, runtime)
+	source.Set(customerIDs[:1])
 	refresh, err := snapshots.AcceptRefresh(ctx, segmentapp.RefreshCommand{PackageID: packageID, Actor: staffID, IdempotencyKey: "audience-runtime-refresh-0001", ReferenceTime: now})
 	if err != nil || refresh.RiverJobID == nil {
 		t.Fatalf("accept refresh=%+v err=%v", refresh, err)
