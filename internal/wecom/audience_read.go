@@ -15,7 +15,7 @@ func (PostgreSQLFollowRelationshipStore) AudienceContacts(ctx context.Context, r
 	if err != nil {
 		return nil, err
 	}
-	rows, err := tx.Query(ctx, `SELECT r.customer_id,r.employee_id,CASE WHEN r.active AND p.activation_status='active' THEN 'active' ELSE 'deleted' END,GREATEST(r.updated_at,p.updated_at)
+	rows, err := tx.Query(ctx, `SELECT r.customer_id,r.employee_id,CASE WHEN r.active AND p.activation_status='active' THEN 'active' ELSE 'deleted' END,r.created_at
 		FROM wecom_follow_relationships r JOIN wecom_external_contact_profiles p ON p.customer_id=r.customer_id
 		WHERE r.updated_at <= $1 AND p.updated_at <= $1 ORDER BY r.customer_id,r.employee_id`, reference.UTC())
 	if err != nil {

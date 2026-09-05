@@ -24,6 +24,7 @@ import (
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/platform/idempotency"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/platform/webhook"
+	wecomport "github.com/qianlan33333-png/AI-CRM-v3/internal/wecom/port"
 )
 
 func TestPostgreSQLWeComStoresIntegration(t *testing.T) {
@@ -448,6 +449,44 @@ func TestPostgreSQLWeComStoresIntegration(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
+}
+
+func TestPostgreSQLAudienceContactsUseRelationshipFacts(t *testing.T) {
+	pool, cleanup := wecomIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	unit, err := platformpostgres.NewUnitOfWork(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Native().Exec(ctx, `CREATE TABLE wecom_external_contact_profiles(customer_id BIGINT PRIMARY KEY, activation_status TEXT NOT NULL, updated_at TIMESTAMPTZ NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	var first, second int64
+	if err := pool.Native().QueryRow(ctx, `INSERT INTO customers(status) VALUES('active') RETURNING id`).Scan(&first); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.Native().QueryRow(ctx, `INSERT INTO customers(status) VALUES('active') RETURNING id`).Scan(&second); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+	if _, err := pool.Native().Exec(ctx, `INSERT INTO wecom_external_contact_profiles VALUES($1,'active',$2),($3,'stale',$2)`, first, now, second); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Native().Exec(ctx, `INSERT INTO wecom_follow_relationships(corp_id,employee_id,customer_id,active,created_at,updated_at) VALUES('wx','owner-a',$1,true,$2,$3),('wx','owner-b',$4,true,$2,$3)`, first, now.Add(-48*time.Hour), now, second); err != nil {
+		t.Fatal(err)
+	}
+	var facts []wecomport.AudienceContact
+	if err := unit.Within(ctx, func(tx context.Context) error {
+		var e error
+		facts, e = PostgreSQLFollowRelationshipStore{}.AudienceContacts(tx, now.Add(time.Hour))
+		return e
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(facts) != 2 || facts[0].CustomerID != customerdomain.CustomerID(first) || facts[0].OwnerUserID != "owner-a" || facts[0].Status != "active" || !facts[0].ObservedAt.Equal(now.Add(-48*time.Hour)) || facts[1].Status != "deleted" {
+		t.Fatalf("facts=%+v", facts)
+	}
 }
 
 func insertWeComInbox(t *testing.T, ctx context.Context, pool *platformpostgres.Pool, suffix, status string, attempts int) int64 {
