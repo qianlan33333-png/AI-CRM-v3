@@ -3,6 +3,7 @@ package adapter
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -19,12 +20,13 @@ import (
 )
 
 type legacyFacts struct {
-	contacts []wecomport.AudienceContact
-	survey   []surveyport.AudienceChoiceAnswer
-	orders   []orderport.PaidAudienceOrder
-	channels []channelport.AudienceEntry
-	radar    []radarport.AudienceFirstClick
-	members  []hxcport.AudienceMemberFact
+	contacts  []wecomport.AudienceContact
+	survey    []surveyport.AudienceChoiceAnswer
+	orders    []orderport.PaidAudienceOrder
+	channels  []channelport.AudienceEntry
+	radar     []radarport.AudienceFirstClick
+	shared    map[customerdomain.CustomerID]hxcport.SharedFacts
+	sharedErr error
 }
 
 func (legacyFacts) AudienceOwnerUserID(_ context.Context, id accessport.StaffID) (string, bool, error) {
@@ -54,8 +56,21 @@ func (f legacyFacts) AudienceEntries(context.Context, time.Time) ([]channelport.
 func (f legacyFacts) AudienceFirstClicks(context.Context, time.Time) ([]radarport.AudienceFirstClick, error) {
 	return f.radar, nil
 }
-func (f legacyFacts) AudienceMemberFacts(context.Context, time.Time) ([]hxcport.AudienceMemberFact, error) {
-	return f.members, nil
+func (legacyFacts) CurrentSharedFactsVersion(context.Context) (int64, error) { return 1, nil }
+func (f legacyFacts) SharedFactsAtVersion(_ context.Context, version int64, customerIDs []customerdomain.CustomerID) (map[customerdomain.CustomerID]hxcport.SharedFacts, error) {
+	if f.sharedErr != nil {
+		return nil, f.sharedErr
+	}
+	if version != 1 {
+		return nil, hxcport.ErrSharedFactsVersionUnavailable
+	}
+	out := make(map[customerdomain.CustomerID]hxcport.SharedFacts, len(customerIDs))
+	for _, customerID := range customerIDs {
+		if fact, found := f.shared[customerID]; found {
+			out[customerID] = fact
+		}
+	}
+	return out, nil
 }
 
 type primaryOwnerFacts []wecomport.AudiencePrimaryOwner
@@ -116,9 +131,9 @@ func TestLegacyTemplateSourcesEvaluateFrozenConditions(t *testing.T) {
 		},
 		channels: []channelport.AudienceEntry{{CustomerID: 1, ChannelID: 7, ChannelCode: "channel-7", OwnerReference: "staff-a", LastEnteredAt: at.Add(-48 * time.Hour)}},
 		radar:    []radarport.AudienceFirstClick{{CustomerID: 1, RadarID: 8, FirstClickedAt: at.Add(-72 * time.Hour), OwnerUserID: "staff-a"}},
-		members:  []hxcport.AudienceMemberFact{{CustomerID: 1, Registered: true, IsMember: true, Tier: "pro", Status: "active", ExpiresAt: &expires, LastUsedAt: &used}},
+		shared:   map[customerdomain.CustomerID]hxcport.SharedFacts{1: {CustomerID: 1, Availability: hxcport.SharedFactsAvailable, Registered: true, IsMember: true, Tier: "pro", MembershipStatus: "active", ExpiresAt: &expires, HasRealUsage: true, LastUsedAt: &used}},
 	}
-	source := CustomerSource{UoW: passthroughUoW{}, Legacy: LegacyTemplateSource{Contacts: facts, Survey: facts, Orders: facts, Channels: facts, Radar: facts, Members: facts, Owners: facts}}
+	source := CustomerSource{UoW: passthroughUoW{}, Legacy: LegacyTemplateSource{Contacts: facts, Survey: facts, Orders: facts, Channels: facts, Radar: facts, MemberFacts: facts, Owners: facts}}
 	cases := []struct {
 		name, parameters string
 		template         segmentdsl.Template
@@ -149,8 +164,8 @@ func TestLegacyTemplateSourcesEvaluateFrozenConditions(t *testing.T) {
 
 func TestLegacyTemplateSourceDoesNotBorrowCurrentContactOwnerOrExpireMembershipByGuess(t *testing.T) {
 	at := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
-	facts := legacyFacts{contacts: []wecomport.AudienceContact{{CustomerID: 9, OwnerUserID: "staff-a", Status: "active"}}, orders: []orderport.PaidAudienceOrder{{CustomerID: 9, ProductCode: "course"}}, members: []hxcport.AudienceMemberFact{{CustomerID: 9, Registered: true, IsMember: false, Tier: "pro", Status: "expired"}}}
-	source := LegacyTemplateSource{Contacts: facts, Orders: facts, Members: facts, Owners: facts}
+	facts := legacyFacts{contacts: []wecomport.AudienceContact{{CustomerID: 9, OwnerUserID: "staff-a", Status: "active"}}, orders: []orderport.PaidAudienceOrder{{CustomerID: 9, ProductCode: "course"}}, shared: map[customerdomain.CustomerID]hxcport.SharedFacts{9: {CustomerID: 9, Availability: hxcport.SharedFactsAvailable, Registered: true, IsMember: false, Tier: "pro", MembershipStatus: "unknown"}}}
+	source := LegacyTemplateSource{Contacts: facts, Orders: facts, MemberFacts: facts, Owners: facts}
 	paid, err := source.Evaluate(context.Background(), legacyDefinition(t, segmentdsl.PaidOrder, `{"product_codes":["course"],"paid_at_from":"","paid_at_to":"","owner_scope":"specified","owner_staff_ids":["19"],"require_active_wecom_contact":false}`), at)
 	if err != nil || len(paid.CustomerIDs) != 0 {
 		t.Fatalf("paid=%+v err=%v", paid, err)
@@ -158,6 +173,23 @@ func TestLegacyTemplateSourceDoesNotBorrowCurrentContactOwnerOrExpireMembershipB
 	active, err := source.Evaluate(context.Background(), legacyDefinition(t, segmentdsl.MemberUsageStatus, `{"owner_scope":"specified","owner_staff_ids":["19"],"service_period":"active","registration_status":"registered","usage_status":"any","membership_tiers":[],"membership_statuses":[]}`), at)
 	if err != nil || len(active.CustomerIDs) != 0 {
 		t.Fatalf("active=%+v err=%v", active, err)
+	}
+	expired, err := source.Evaluate(context.Background(), legacyDefinition(t, segmentdsl.MemberUsageStatus, `{"owner_scope":"specified","owner_staff_ids":["19"],"service_period":"expired","registration_status":"registered","usage_status":"any","membership_tiers":[],"membership_statuses":[]}`), at)
+	if err != nil || len(expired.CustomerIDs) != 0 {
+		t.Fatalf("non-membership cannot be guessed expired: result=%+v err=%v", expired, err)
+	}
+}
+
+func TestLegacyTemplateSourceDoesNotTurnSharedFactsFailureIntoAnEmptyAudience(t *testing.T) {
+	at := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+	facts := legacyFacts{
+		contacts:  []wecomport.AudienceContact{{CustomerID: 9, OwnerUserID: "staff-a", Status: "active"}},
+		sharedErr: errors.New("shared facts temporary read failure"),
+	}
+	source := LegacyTemplateSource{Contacts: facts, MemberFacts: facts, Owners: facts}
+	_, err := source.Evaluate(context.Background(), legacyDefinition(t, segmentdsl.MemberUsageStatus, `{"owner_scope":"specified","owner_staff_ids":["19"],"service_period":"any","registration_status":"any","usage_status":"any","membership_tiers":[],"membership_statuses":[]}`), at)
+	if !errors.Is(err, ErrCustomerReadUnavailable) {
+		t.Fatalf("shared-facts failure must surface, got %v", err)
 	}
 }
 

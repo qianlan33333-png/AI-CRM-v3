@@ -28,7 +28,7 @@ type LegacyTemplateSource struct {
 	Orders        orderport.PaidAudienceReader
 	Channels      channelport.AudienceEntryReader
 	Radar         radarport.AudienceFirstClickReader
-	Members       hxcport.AudienceMemberReader
+	MemberFacts   hxcport.VersionedSharedFactsReader
 	Owners        accessport.AudienceOwnerReferenceReader
 	PrimaryOwners wecomport.AudiencePrimaryOwnerReader
 	// PrimaryOwnerCorpScope is the composition-owned active WeCom provider
@@ -131,11 +131,40 @@ func (s LegacyTemplateSource) contacts(ctx context.Context, reference time.Time)
 	}
 	return s.Contacts.AudienceContacts(ctx, reference)
 }
-func (s LegacyTemplateSource) members(ctx context.Context, reference time.Time) ([]hxcport.AudienceMemberFact, error) {
-	if s.Members == nil {
+func (s LegacyTemplateSource) memberFacts(ctx context.Context, customerIDs []customerdomain.CustomerID) (map[customerdomain.CustomerID]hxcport.SharedFacts, error) {
+	if s.MemberFacts == nil {
 		return nil, ErrCustomerReadUnavailable
 	}
-	return s.Members.AudienceMemberFacts(ctx, reference)
+	version, err := s.MemberFacts.CurrentSharedFactsVersion(ctx)
+	if err != nil || version < 1 {
+		return nil, ErrCustomerReadUnavailable
+	}
+	seen := make(map[customerdomain.CustomerID]bool, len(customerIDs))
+	ids := make([]customerdomain.CustomerID, 0, len(customerIDs))
+	for _, id := range customerIDs {
+		if id < 1 || seen[id] {
+			continue
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	out := make(map[customerdomain.CustomerID]hxcport.SharedFacts, len(ids))
+	for start := 0; start < len(ids); start += hxcport.MaxSharedFactsCustomerIDs {
+		end := start + hxcport.MaxSharedFactsCustomerIDs
+		if end > len(ids) {
+			end = len(ids)
+		}
+		facts, readErr := s.MemberFacts.SharedFactsAtVersion(ctx, version, ids[start:end])
+		if readErr != nil {
+			return nil, ErrCustomerReadUnavailable
+		}
+		for customerID, fact := range facts {
+			if customerID == fact.CustomerID && seen[customerID] {
+				out[customerID] = fact
+			}
+		}
+	}
+	return out, nil
 }
 func owner(params map[string]json.RawMessage, value string) bool {
 	var scope string
@@ -216,16 +245,17 @@ func (s LegacyTemplateSource) wecom(ctx context.Context, p map[string]json.RawMe
 	if registration == "any" {
 		return idsFrom(set), nil
 	}
-	members, e := s.members(ctx, at)
+	customerIDs := make([]customerdomain.CustomerID, 0, len(set))
+	for id := range set {
+		customerIDs = append(customerIDs, customerdomain.CustomerID(id))
+	}
+	members, e := s.memberFacts(ctx, customerIDs)
 	if e != nil {
 		return nil, e
 	}
-	registered := map[int64]bool{}
-	for _, fact := range members {
-		registered[int64(fact.CustomerID)] = fact.Registered
-	}
 	for id := range set {
-		if registered[id] != (registration == "registered") {
+		fact, found := members[customerdomain.CustomerID(id)]
+		if !found || fact.Availability != hxcport.SharedFactsAvailable || fact.Registered != (registration == "registered") {
 			delete(set, id)
 		}
 	}
@@ -448,10 +478,6 @@ func (s LegacyTemplateSource) radar(ctx context.Context, p map[string]json.RawMe
 	return idsFrom(out), nil
 }
 func (s LegacyTemplateSource) member(ctx context.Context, p map[string]json.RawMessage, at time.Time) ([]int64, error) {
-	facts, e := s.members(ctx, at)
-	if e != nil {
-		return nil, e
-	}
 	var period, registration, usage string
 	var tiers, statuses []string
 	if json.Unmarshal(p["service_period"], &period) != nil || json.Unmarshal(p["registration_status"], &registration) != nil || json.Unmarshal(p["usage_status"], &usage) != nil || json.Unmarshal(p["membership_tiers"], &tiers) != nil || json.Unmarshal(p["membership_statuses"], &statuses) != nil {
@@ -462,12 +488,23 @@ func (s LegacyTemplateSource) member(ctx context.Context, p map[string]json.RawM
 		return nil, e
 	}
 	eligible := contactsFor(contacts, []string{"active", "deleted"}, p)
+	customerIDs := make([]customerdomain.CustomerID, 0, len(eligible))
+	for id := range eligible {
+		customerIDs = append(customerIDs, customerdomain.CustomerID(id))
+	}
+	facts, e := s.memberFacts(ctx, customerIDs)
+	if e != nil {
+		return nil, e
+	}
 	out := map[int64]bool{}
-	for _, fact := range facts {
-		id := int64(fact.CustomerID)
-		active := fact.IsMember && fact.Status == "active"
-		used := fact.LastUsedAt != nil
-		if !eligible[id] || (period == "active" && !active) || (period == "expired" && active) || (registration == "registered" && !fact.Registered) || (registration == "unregistered" && fact.Registered) || (usage == "used" && !used) || (usage == "unused" && used) || (len(tiers) > 0 && !contains(tiers, fact.Tier)) || (len(statuses) > 0 && !contains(statuses, fact.Status)) {
+	for id := range eligible {
+		fact, found := facts[customerdomain.CustomerID(id)]
+		if !found || fact.Availability != hxcport.SharedFactsAvailable {
+			continue
+		}
+		active := fact.ActiveAt(at)
+		expired := fact.ExpiredAt(at)
+		if (period == "active" && !active) || (period == "expired" && !expired) || (registration == "registered" && !fact.Registered) || (registration == "unregistered" && fact.Registered) || (usage == "used" && !fact.HasRealUsage) || (usage == "unused" && fact.HasRealUsage) || (len(tiers) > 0 && !contains(tiers, fact.Tier)) || (len(statuses) > 0 && !contains(statuses, fact.MembershipStatus)) {
 			continue
 		}
 		out[id] = true
