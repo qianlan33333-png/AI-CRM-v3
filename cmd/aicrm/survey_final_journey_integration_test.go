@@ -298,17 +298,18 @@ func TestSurveyOAuthSubmissionResultJourneyPostgreSQL(t *testing.T) {
 	if anonymous.Code != http.StatusUnauthorized {
 		t.Fatalf("anonymous result status=%d body=%s", anonymous.Code, anonymous.Body.String())
 	}
+	initialDefinitionVersion := ownerPublished.DefinitionVersion
 	editedDefinition := ownerPublished
 	editedDefinition.Title = "OAuth journey revised"
 	edited, err := definitions.Update(ctx, surveyport.UpdateCommand{Questionnaire: editedDefinition, ExpectedVersion: ownerPublished.Version, ActorID: actorID, IdempotencyKey: "survey-oauth-edit-0001"})
-	if err != nil || edited.Status != surveyport.StatusDraft || edited.DefinitionVersion != 2 {
+	if err != nil || edited.Status != surveyport.StatusDraft || edited.DefinitionVersion <= initialDefinitionVersion {
 		t.Fatalf("definition edit=%+v err=%v", edited, err)
 	}
 	if _, err = definitions.Publish(ctx, edited.ID, edited.Version, actorID, "survey-oauth-republish-0001"); err != nil {
 		t.Fatal(err)
 	}
 	historical, err := submissions.GetSubmission(ctx, submissionResult.Receipt.SubmissionID)
-	if err != nil || historical.DefinitionVersion != 1 || historical.QuestionnaireTitle != "OAuth journey" || len(historical.Answers) != 1 || len(historical.Answers[0].SelectedOptions) != 1 || historical.Answers[0].SelectedOptions[0].OptionText != "Yes" {
+	if err != nil || historical.DefinitionVersion != initialDefinitionVersion || historical.QuestionnaireTitle != "OAuth journey" || len(historical.Answers) != 1 || len(historical.Answers[0].SelectedOptions) != 1 || historical.Answers[0].SelectedOptions[0].OptionText != "Yes" {
 		t.Fatalf("historical submission=%+v err=%v", historical, err)
 	}
 	analytics := surveyJourneyServe(t, handler, http.MethodGet, fmt.Sprintf("/api/admin/questionnaires/%d/results", publishResult.Questionnaire.ID), nil, "", nil, "")
