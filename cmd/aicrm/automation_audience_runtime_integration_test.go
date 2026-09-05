@@ -18,7 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
+	goruntime "runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -426,7 +426,12 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 	// the PostgreSQL fixture.
 	detailServer := httptest.NewServer(runtimeHandler)
 	defer detailServer.Close()
-	detailUI := exec.CommandContext(ctx, "node", filepath.Join("internal", "webshell", "static", "admin_console", "admin_audience_manual_broadcast_pg.test.mjs"))
+	_, testFile, _, callerOK := goruntime.Caller(0)
+	if !callerOK {
+		t.Fatal("cannot locate runtime audience test source")
+	}
+	detailScript := filepath.Join(filepath.Dir(testFile), "..", "..", "internal", "webshell", "static", "admin_console", "admin_audience_manual_broadcast_pg.test.mjs")
+	detailUI := exec.CommandContext(ctx, "node", detailScript)
 	detailUI.Env = append(os.Environ(), "AICRM_RUNTIME_TEST_URL="+detailServer.URL, "AICRM_RUNTIME_TEST_PACKAGE_ID="+automationAudienceInt(packageID))
 	detailOutput, detailErr := detailUI.CombinedOutput()
 	if detailErr != nil {
@@ -1031,7 +1036,7 @@ func automationAudienceRuntimePool(t *testing.T) (*pgxpool.Pool, func()) {
 		admin.Close()
 		t.Fatal(err)
 	}
-	_, file, _, ok := runtime.Caller(0)
+	_, file, _, ok := goruntime.Caller(0)
 	if !ok {
 		t.Fatal("locate automation audience journey")
 	}
