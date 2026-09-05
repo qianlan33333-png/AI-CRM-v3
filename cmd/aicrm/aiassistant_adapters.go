@@ -125,9 +125,18 @@ type aiPrivatePayloadReader struct {
 // accepted automatic message. It holds only fixed text and Media source
 // digests/local references; it never stores binary content or Provider IDs.
 type frozenAutomationContent struct {
-	SchemaVersion int                                      `json:"schema_version"`
-	ContentText   string                                   `json:"content_text,omitempty"`
-	Sources       mediaport.GroupOpsMaterialSourceSnapshot `json:"sources,omitempty"`
+	SchemaVersion int                              `json:"schema_version"`
+	ContentText   string                           `json:"content_text,omitempty"`
+	Sources       []frozenAutomationMaterialSource `json:"sources,omitempty"`
+}
+
+// frozenAutomationMaterialSource excludes Provider-shaped metadata and binary
+// content. The captured digest proves the complete Media-owned source when it
+// is re-read immediately before the one Provider request.
+type frozenAutomationMaterialSource struct {
+	Kind         string `json:"kind"`
+	ID           int64  `json:"id"`
+	SourceDigest string `json:"source_digest"`
 }
 
 type automationOutboundContentFreezer struct {
@@ -154,12 +163,16 @@ func (a automationOutboundContentFreezer) FreezeOutboundContent(ctx context.Cont
 	snapshot := frozenAutomationContent{SchemaVersion: 1, ContentText: strings.TrimSpace(content.Content.ContentText)}
 	if len(references) > 0 {
 		var err error
-		snapshot.Sources, err = a.capturer.CaptureGroupOpsMaterialSources(ctx, mediaport.GroupOpsMaterialPlan{References: references})
-		if err != nil || mediaport.ValidateGroupOpsMaterialSourceSnapshot(snapshot.Sources) != nil {
+		captured, err := a.capturer.CaptureGroupOpsMaterialSources(ctx, mediaport.GroupOpsMaterialPlan{References: references})
+		if err != nil || mediaport.ValidateGroupOpsMaterialSourceSnapshot(captured) != nil {
 			return nil, [32]byte{}, errors.New("automation content material unavailable")
 		}
+		snapshot.Sources = make([]frozenAutomationMaterialSource, len(captured.References))
+		for index, source := range captured.References {
+			snapshot.Sources[index] = frozenAutomationMaterialSource{Kind: source.Reference.Kind, ID: source.Reference.ID, SourceDigest: source.SourceDigest}
+		}
 	}
-	if snapshot.ContentText == "" && len(snapshot.Sources.References) == 0 {
+	if snapshot.ContentText == "" && len(snapshot.Sources) == 0 {
 		return nil, [32]byte{}, errors.New("automation content is empty")
 	}
 	raw, err := json.Marshal(snapshot)
@@ -176,16 +189,23 @@ func (a automationFrozenPayloadReader) LoadFrozenAutomationMessagePayload(ctx co
 	if len(raw) == 0 || json.Unmarshal(raw, &snapshot) != nil || snapshot.SchemaVersion != 1 || sha256.Sum256(mustMarshalFrozenAutomationContent(snapshot)) != digest {
 		return outbound.PrivateMessagePayload{}, errors.New("automation content snapshot is invalid")
 	}
-	if len(snapshot.Sources.References) > 0 && mediaport.ValidateGroupOpsMaterialSourceSnapshot(snapshot.Sources) != nil {
+	references := make([]mediaport.GroupOpsMaterialReference, len(snapshot.Sources))
+	for index, source := range snapshot.Sources {
+		if !effectport.ValidDigest(effectport.Digest(source.SourceDigest)) {
+			return outbound.PrivateMessagePayload{}, errors.New("automation content source digest is invalid")
+		}
+		references[index] = mediaport.GroupOpsMaterialReference{Kind: source.Kind, ID: source.ID}
+	}
+	if len(references) > 0 && mediaport.ValidateGroupOpsMaterialPlan(mediaport.GroupOpsMaterialPlan{References: references}) != nil {
 		return outbound.PrivateMessagePayload{}, errors.New("automation content sources are invalid")
 	}
-	blocks := make([]aiassistantport.ContentBlock, 0, 1+len(snapshot.Sources.References))
+	blocks := make([]aiassistantport.ContentBlock, 0, 1+len(snapshot.Sources))
 	if text := strings.TrimSpace(snapshot.ContentText); text != "" {
 		blocks = append(blocks, aiassistantport.ContentBlock{Kind: aiassistantport.ContentText, Text: text})
 	}
-	for _, source := range snapshot.Sources.References {
-		block := aiassistantport.ContentBlock{MaterialKind: source.Reference.Kind, MaterialID: source.Reference.ID, MaterialDigest: effectport.Digest(source.SourceDigest)}
-		switch source.Reference.Kind {
+	for _, source := range snapshot.Sources {
+		block := aiassistantport.ContentBlock{MaterialKind: source.Kind, MaterialID: source.ID, MaterialDigest: effectport.Digest(source.SourceDigest)}
+		switch source.Kind {
 		case "image":
 			block.Kind = aiassistantport.ContentImage
 		case "miniprogram":
