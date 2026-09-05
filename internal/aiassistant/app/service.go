@@ -20,6 +20,7 @@ import (
 	identityport "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/port"
 	outboundport "github.com/qianlan33333-png/AI-CRM-v3/internal/outbound/port"
 	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
+	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 )
 
 const MaximumPageSize = 50
@@ -178,6 +179,28 @@ func (s *Service) CreatePlan(ctx context.Context, command aiassistantport.Create
 		return s.createWithin(tx, command, recipients, &result)
 	})
 	return result, classify(err)
+}
+
+// CreatePlanWithin shares the same validation and Owner writes as CreatePlan,
+// but deliberately does not open a Unit of Work. A caller that needs its own
+// durable fact to commit with this plan must pass the transaction-bound
+// context it already owns.
+func (s *Service) CreatePlanWithin(ctx context.Context, command aiassistantport.CreatePlanCommand) (aiassistantport.CreatePlanResult, error) {
+	if s == nil || !command.Valid() {
+		return aiassistantport.CreatePlanResult{}, ErrInvalid
+	}
+	if _, err := platformpostgres.RequireTransaction(ctx); err != nil {
+		return aiassistantport.CreatePlanResult{}, ErrUnavailable
+	}
+	recipients, err := s.validateCanonicalRecipients(ctx, command.Recipients)
+	if err != nil {
+		return aiassistantport.CreatePlanResult{}, classify(err)
+	}
+	var result aiassistantport.CreatePlanResult
+	if err = s.createWithin(ctx, command, recipients, &result); err != nil {
+		return aiassistantport.CreatePlanResult{}, classify(err)
+	}
+	return result, nil
 }
 
 func (s *Service) CreatePlanFromIdentities(ctx context.Context, command IdentityPlanCommand) (IdentityPlanResult, error) {
@@ -936,5 +959,6 @@ func classify(err error) error {
 }
 
 var _ aiassistantport.Intake = (*Service)(nil)
+var _ aiassistantport.TransactionalIntake = (*Service)(nil)
 var _ aiassistantport.Reader = (*Service)(nil)
 var _ aiassistantport.Reviewer = (*Service)(nil)

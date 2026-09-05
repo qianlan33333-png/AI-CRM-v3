@@ -11,7 +11,7 @@ import (
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 )
 
-const RuleVersion = "hxc-current-v2"
+const RuleVersion = "hxc-current-v3"
 
 var ErrInvalidRow = errors.New("invalid hxc dashboard row")
 
@@ -47,7 +47,20 @@ type SourceRow struct {
 	LastCapability, BusinessStage, MainLineType, UserSegment string
 	FocusTopics                                              []byte
 	PainTag                                                  string
-	SourceUpdatedAt                                          time.Time
+	// Shared facts are read from the same immutable source snapshot. They are
+	// deliberately separate from dashboard display-stage fields.
+	FormallyLoggedIn, HasTokenUsage        bool
+	FormalLoginAt, CardLastOpenedAt        *time.Time
+	LearningPlanFound                      bool
+	LearningPlanStatus                     string
+	LearningPlanCurrent, LearningPlanTotal *int64
+	CardOpenCount7D                        int64
+	// MembershipSource, status and expiry all come from the same selected
+	// new_version_memberships row. Dashboard subscription expiry is separate.
+	MembershipRecordFound, IsMember    bool
+	MembershipSource, MembershipStatus string
+	MembershipExpiresAt                *time.Time
+	SourceUpdatedAt                    time.Time
 }
 
 type ProjectionRow struct {
@@ -77,6 +90,7 @@ type Projection struct {
 	SourceDigest, ProjectionDigest [32]byte
 	Counts                         Counts
 	IdentityReplayVerified         int64
+	SharedFactsAvailable           bool
 	PublishedAt                    time.Time
 	Rows                           []ProjectionRow
 }

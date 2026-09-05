@@ -10,13 +10,13 @@ import (
 	segmentdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/domain"
 )
 
-const configurationColumns = `id,package_id,version,schema_version,definition,COALESCE(refresh_cron_utc,''),digest,created_by,created_at`
+const configurationColumns = `id,package_id,version,schema_version,definition,COALESCE(refresh_cron_utc,''),refresh_mode,digest,created_by,created_at`
 
 func scanConfiguration(row pgx.Row) (segmentdomain.ConfigurationVersion, error) {
 	var item segmentdomain.ConfigurationVersion
 	var digest []byte
 	var refreshCronUTC *string
-	err := row.Scan(&item.ID, &item.PackageID, &item.Version, &item.SchemaVersion, &item.Definition, &refreshCronUTC, &digest, &item.CreatedBy, &item.CreatedAt)
+	err := row.Scan(&item.ID, &item.PackageID, &item.Version, &item.SchemaVersion, &item.Definition, &refreshCronUTC, &item.RefreshMode, &digest, &item.CreatedBy, &item.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return segmentdomain.ConfigurationVersion{}, ErrNotFound
 	}
@@ -38,9 +38,9 @@ func (r *Repository) CreateConfigurationVersion(ctx context.Context, item segmen
 	if err != nil {
 		return segmentdomain.ConfigurationVersion{}, err
 	}
-	query := `INSERT INTO segment_audience_configuration_versions(package_id,version,schema_version,definition,refresh_cron_utc,digest,created_by,created_at)
-		VALUES($1,$2,$3,$4::jsonb,NULLIF($5,''),$6,$7,$8) RETURNING ` + configurationColumns
-	created, err := scanConfiguration(t.QueryRow(ctx, query, item.PackageID, item.Version, item.SchemaVersion, item.Definition, item.RefreshCronUTC, item.Digest[:], item.CreatedBy, item.CreatedAt))
+	query := `INSERT INTO segment_audience_configuration_versions(package_id,version,schema_version,definition,refresh_cron_utc,refresh_mode,digest,created_by,created_at)
+		VALUES($1,$2,$3,$4::jsonb,NULLIF($5,''),$6,$7,$8,$9) RETURNING ` + configurationColumns
+	created, err := scanConfiguration(t.QueryRow(ctx, query, item.PackageID, item.Version, item.SchemaVersion, item.Definition, item.RefreshCronUTC, item.RefreshMode, item.Digest[:], item.CreatedBy, item.CreatedAt))
 	if unique(err) {
 		return segmentdomain.ConfigurationVersion{}, ErrConflict
 	}

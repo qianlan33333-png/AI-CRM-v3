@@ -45,6 +45,7 @@ const (
 	ContentImage       ContentKind = "image"
 	ContentMiniProgram ContentKind = "mini_program"
 	ContentLink        ContentKind = "link"
+	ContentAttachment  ContentKind = "attachment"
 )
 
 type ContentBlock struct {
@@ -59,7 +60,7 @@ func (b ContentBlock) Valid() bool {
 	switch b.Kind {
 	case ContentText:
 		return strings.TrimSpace(b.Text) != "" && len(b.Text) <= 8000 && b.MaterialID == 0 && b.MaterialDigest == ""
-	case ContentImage, ContentMiniProgram, ContentLink:
+	case ContentImage, ContentMiniProgram, ContentLink, ContentAttachment:
 		return b.MaterialID > 0 && b.MaterialKind != "" && effectport.ValidDigest(b.MaterialDigest) && len(b.Text) <= 2000
 	default:
 		return false
@@ -124,4 +125,14 @@ type CreatePlanResult struct {
 
 type Intake interface {
 	CreatePlan(context.Context, CreatePlanCommand) (CreatePlanResult, error)
+}
+
+// TransactionalIntake creates a review plan in the caller's already-bound
+// PostgreSQL transaction. It exists for the small set of Owners that must
+// commit their own durable fact and an AI review plan atomically.
+//
+// Calling it without a transaction is an explicit failure; it never opens a
+// nested Unit of Work.
+type TransactionalIntake interface {
+	CreatePlanWithin(context.Context, CreatePlanCommand) (CreatePlanResult, error)
 }
