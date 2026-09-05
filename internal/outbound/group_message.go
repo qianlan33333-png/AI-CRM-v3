@@ -26,6 +26,7 @@ type GroupMessageProvider struct {
 	enabled           bool
 	preparationWriter mediaport.GroupOpsMaterialPreparationWriter
 	executions        groupopsport.DispatchExecutionReader
+	materials         groupopsport.MaterialReadinessVerifier
 	writer            wecomport.GroupMessageSender
 }
 
@@ -33,11 +34,12 @@ type GroupMessageProviderConfig struct {
 	Enabled           bool
 	PreparationWriter mediaport.GroupOpsMaterialPreparationWriter
 	Executions        groupopsport.DispatchExecutionReader
+	Materials         groupopsport.MaterialReadinessVerifier
 	Writer            wecomport.GroupMessageSender
 }
 
 func NewGroupMessageProvider(config GroupMessageProviderConfig) (*GroupMessageProvider, error) {
-	return &GroupMessageProvider{enabled: config.Enabled, preparationWriter: config.PreparationWriter, executions: config.Executions, writer: config.Writer}, nil
+	return &GroupMessageProvider{enabled: config.Enabled, preparationWriter: config.PreparationWriter, executions: config.Executions, materials: config.Materials, writer: config.Writer}, nil
 }
 
 // RecordPreparedMaterials is the only preparation write seam exposed to a
@@ -58,13 +60,16 @@ func (p *GroupMessageProvider) Execute(ctx context.Context, envelope effectport.
 		return effectport.AdapterResult{Completion: effectport.StateFinalFailed, ReceiptDigest: effectport.Hash("group-ops-provider-disabled", string(envelope.Fingerprint())), CallAttempted: false, RealExternalCallExecuted: false}, nil
 	}
 	base := effectport.Hash("group-ops.provider.v1", string(envelope.Fingerprint()), attempt.EffectID, strconv.Itoa(int(attempt.Number)), strconv.FormatInt(attempt.Generation, 10), strconv.FormatInt(attempt.Fence, 10))
-	if p.executions == nil || p.writer == nil || attempt.EffectID == "" {
+	if p.executions == nil || p.materials == nil || p.writer == nil || attempt.EffectID == "" {
 		return effectport.AdapterResult{Completion: effectport.StateFinalFailed, ReceiptDigest: effectport.Hash(string(base), "not-configured")}, nil
 	}
 	execution, err := p.executions.LoadDispatchExecution(ctx, attempt.EffectID)
 	if err != nil || execution.ExternalEffectID != attempt.EffectID || execution.State != groupopsport.ExecutionAccepted || execution.DeliveryProven ||
 		execution.SourceRefDigest != string(envelope.SourceRefDigest) || execution.TargetRefDigest != string(envelope.TargetRefDigest) || execution.PayloadDigest != string(envelope.PayloadDigest) || execution.PolicyVersionHash != string(envelope.PolicyVersionHash) {
 		return effectport.AdapterResult{Completion: effectport.StateFinalFailed, ReceiptDigest: effectport.Hash(string(base), "dispatch-unavailable")}, nil
+	}
+	if err = p.materials.VerifyMaterialReady(ctx, execution.MaterialSnapshot, execution.MaterialSourceSnapshot, execution.MaterialSourceDigest, time.Now().UTC()); err != nil {
+		return effectport.AdapterResult{Completion: effectport.StateFinalFailed, ReceiptDigest: effectport.Hash(string(base), "material-not-ready"), CallAttempted: false, RealExternalCallExecuted: false}, nil
 	}
 	request, err := groupMessageRequest(execution)
 	if err != nil {

@@ -158,6 +158,32 @@ func TestGroupOpsPostgreSQLJourney(t *testing.T) {
 	if unknown.ID < 1 {
 		t.Fatal("unknown execution was not projected")
 	}
+	var accepted groupopsport.Execution
+	for _, execution := range projected {
+		if execution.State == groupopsport.ExecutionProviderAccepted {
+			accepted = execution
+		}
+	}
+	if accepted.ID < 1 {
+		t.Fatal("provider accepted execution was not projected")
+	}
+	if err = uow.Within(ctx, func(tx context.Context) error {
+		return groupStore.RecordGroupMessageTask(tx, groupopsport.GroupMessageReceipt{ExecutionID: accepted.ID, ExternalEffectID: accepted.ExternalEffectID, MessageID: "journey-msgid", SenderUserID: "journey-sender", ChatID: "chat-journey-1", TaskEvidenceDigest: string(effectport.Hash("journey-task", accepted.ExternalEffectID))})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	read, err := runtimeService.ReadProviderDelivery(ctx, groupopsport.ProviderDeliveryReadCommand{ExecutionID: accepted.ID, ActorID: actorID, IdempotencyKey: "journey-delivery-read-0001"})
+	if err != nil || !read.DeliveryProven || read.DeliveryStatus == nil || *read.DeliveryStatus != 1 || read.State != groupopsport.ExecutionProviderAccepted {
+		t.Fatalf("delivery read=%+v err=%v", read, err)
+	}
+	acceptedEffectID, err := strconv.ParseInt(accepted.ExternalEffectID[len("eer_"):], 10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var acceptedEffectState string
+	if err = native.QueryRow(ctx, `SELECT state FROM external_effects WHERE id=$1`, acceptedEffectID).Scan(&acceptedEffectState); err != nil || acceptedEffectState != string(effectport.StateExecuted) {
+		t.Fatalf("accepted EER state=%q err=%v", acceptedEffectState, err)
+	}
 
 	var generation, fence int64
 	var lease time.Time
@@ -218,6 +244,14 @@ func (journeyEvidence) VerifyReconciliationEvidence(_ context.Context, input gro
 		return groupopsport.ReconciliationEvidenceResult{}, errors.New("invalid journey evidence")
 	}
 	return groupopsport.ReconciliationEvidenceResult{EvidenceDigest: input.EvidenceDigest}, nil
+}
+
+func (journeyEvidence) ReadProviderDelivery(_ context.Context, input groupopsport.ReconciliationEvidence) (groupopsport.GroupMessageReceipt, bool, error) {
+	if input.ExecutionID < 1 || input.ExternalEffectID == "" {
+		return groupopsport.GroupMessageReceipt{}, false, errors.New("invalid journey delivery")
+	}
+	status := 1
+	return groupopsport.GroupMessageReceipt{ExecutionID: input.ExecutionID, ExternalEffectID: input.ExternalEffectID, MessageID: "journey-msgid", SenderUserID: "journey-sender", ChatID: "chat-journey-1", DeliveryStatus: &status, DeliveryEvidenceDigest: string(effectport.Hash("journey-delivery", input.ExternalEffectID))}, true, nil
 }
 
 type journeyReconciler struct {
@@ -340,7 +374,7 @@ func groupOpsIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 	if !ok {
 		t.Fatal("locate Group Ops Journey test")
 	}
-	for _, migration := range []string{"0003_access.sql", "0005_external_effects.sql", "0012_group_ops.sql"} {
+	for _, migration := range []string{"0003_access.sql", "0005_external_effects.sql", "0012_group_ops.sql", "0078_group_ops_provider_tasks.sql"} {
 		sql, readErr := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "migrations", migration))
 		if readErr != nil {
 			native.Close()

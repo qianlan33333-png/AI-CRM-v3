@@ -855,6 +855,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		Enabled:           cfg.Effects.ProviderEnabled && cfg.WeCom.Enabled && cfg.GroupOps.ProviderEnabled,
 		PreparationWriter: mediaPreparationBindings.Writer,
 		Executions:        groupOpsDispatchReader{uow: uow, execution: groupOpsRepository, senders: groupOpsStaff},
+		Materials:         groupOpsMaterialReadinessAdapter{uow: uow, capturer: mediaContentBindings.SourceCapturer, freezer: materialFreezer},
 		Writer:            providerClient,
 	})
 	if err != nil {

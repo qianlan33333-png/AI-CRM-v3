@@ -22,6 +22,7 @@ type DispatchExecution struct {
 	MaterialSnapshot       json.RawMessage
 	MaterialDigest         string
 	MaterialSourceSnapshot json.RawMessage
+	MaterialSourceDigest   string
 	SourceRefDigest        string
 	TargetRefDigest        string
 	PayloadDigest          string
@@ -70,6 +71,13 @@ type ReconciliationEvidence struct {
 type ReconciliationEvidenceResult struct {
 	DeliveryProven bool
 	EvidenceDigest string
+}
+
+// ProviderDeliveryReader is a trusted, owner-side read boundary for a
+// provider_accepted task.  It owns the protected msgid/sender lookup and the
+// Provider pagination; HTTP callers receive neither input nor raw response.
+type ProviderDeliveryReader interface {
+	ReadProviderDelivery(context.Context, ReconciliationEvidence) (GroupMessageReceipt, bool, error)
 }
 
 // GroupMessageReceipt is owner-only Provider evidence. It is intentionally

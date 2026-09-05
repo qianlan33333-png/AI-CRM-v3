@@ -931,15 +931,15 @@ func (client *Client) SendGroupMessage(ctx context.Context, request wecomport.Gr
 // GetGroupMessageSendResult is the documented, read-only task result query.
 // It never treats an empty/partial page as delivery proof; the Group Ops
 // evidence adapter matches the frozen sender and chat before any local CAS.
-func (client *Client) GetGroupMessageSendResult(ctx context.Context, messageID, cursor string, limit int) (wecomport.GroupMessageSendResultPage, error) {
-	if !client.DirectoryReady() || invalid(messageID) || strings.TrimSpace(cursor) != cursor || limit < 1 || limit > 100 {
+func (client *Client) GetGroupMessageSendResult(ctx context.Context, messageID, senderUserID, cursor string, limit int) (wecomport.GroupMessageSendResultPage, error) {
+	if !client.DirectoryReady() || invalid(messageID) || invalid(senderUserID) || strings.TrimSpace(cursor) != cursor || limit < 1 || limit > 100 {
 		return wecomport.GroupMessageSendResultPage{}, wecomport.ErrDirectoryDisabled
 	}
 	token, err := client.contactAccessToken(ctx)
 	if err != nil {
 		return wecomport.GroupMessageSendResultPage{}, err
 	}
-	body, err := json.Marshal(map[string]any{"msgid": messageID, "cursor": cursor, "limit": limit})
+	body, err := json.Marshal(map[string]any{"msgid": messageID, "userid": senderUserID, "cursor": cursor, "limit": limit})
 	if err != nil {
 		return wecomport.GroupMessageSendResultPage{}, ErrResponse
 	}

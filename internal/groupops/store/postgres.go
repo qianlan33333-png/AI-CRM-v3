@@ -467,7 +467,7 @@ func (r *Repository) InsertExecution(ctx context.Context, draft groupopsport.Exe
 		return groupopsport.Execution{}, err
 	}
 	var id int64
-	err = tx.QueryRow(ctx, `INSERT INTO group_ops_executions(run_id,plan_id,node_id,plan_revision,node_position,target_reference,sender_userid_snapshot,target_digest,content_snapshot,content_digest,material_snapshot,material_digest,execution_key_digest,external_effect_id,state,scheduled_for,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'accepted',$15,$16,$16) RETURNING id`, draft.RunID, draft.PlanID, draft.NodeID, draft.PlanRevision, draft.NodePosition, draft.TargetReference, draft.SenderUserID, draft.TargetDigest, draft.ContentSnapshot, draft.ContentDigest, draft.MaterialSnapshot, draft.MaterialDigest, draft.ExecutionKeyDigest[:], effectID, draft.ScheduledFor, draft.CreatedAt).Scan(&id)
+	err = tx.QueryRow(ctx, `INSERT INTO group_ops_executions(run_id,plan_id,node_id,plan_revision,node_position,target_reference,sender_userid_snapshot,target_digest,content_snapshot,content_digest,material_snapshot,material_digest,material_source_snapshot,material_source_digest,execution_key_digest,external_effect_id,state,scheduled_for,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,'accepted',$17,$18,$18) RETURNING id`, draft.RunID, draft.PlanID, draft.NodeID, draft.PlanRevision, draft.NodePosition, draft.TargetReference, draft.SenderUserID, draft.TargetDigest, draft.ContentSnapshot, draft.ContentDigest, draft.MaterialSnapshot, draft.MaterialDigest, draft.MaterialSourceSnapshot, draft.MaterialSourceDigest, draft.ExecutionKeyDigest[:], effectID, draft.ScheduledFor, draft.CreatedAt).Scan(&id)
 	if err != nil {
 		return groupopsport.Execution{}, err
 	}
@@ -499,7 +499,7 @@ func (r *Repository) LoadDispatchExecution(ctx context.Context, effectRef string
 	var runID int64
 	err = tx.QueryRow(ctx, `
 SELECT e.id,e.run_id,e.state,e.delivery_proven,e.target_reference,e.sender_userid_snapshot,
-       e.content_snapshot,e.content_digest,e.material_snapshot,e.material_digest,e.target_digest
+       e.content_snapshot,e.content_digest,e.material_snapshot,e.material_digest,e.material_source_snapshot,e.material_source_digest,e.target_digest
 FROM group_ops_executions e
 JOIN group_ops_plans p ON p.id=e.plan_id
 JOIN group_ops_plan_group_assets a ON a.plan_id=e.plan_id AND a.asset_reference=e.target_reference
@@ -509,7 +509,7 @@ WHERE e.external_effect_id=$1
   AND p.status='active'
   AND p.revision=e.plan_revision`, effectID).Scan(
 		&item.ExecutionID, &runID, &item.State, &item.DeliveryProven, &item.TargetReference, &item.SenderUserID,
-		&item.ContentSnapshot, &item.ContentDigest, &item.MaterialSnapshot, &item.MaterialDigest, &item.TargetRefDigest,
+		&item.ContentSnapshot, &item.ContentDigest, &item.MaterialSnapshot, &item.MaterialDigest, &item.MaterialSourceSnapshot, &item.MaterialSourceDigest, &item.TargetRefDigest,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return groupopsport.DispatchExecution{}, ErrNotFound
@@ -528,7 +528,8 @@ func (r *Repository) getExecution(ctx context.Context, tx pgx.Tx, id int64) (gro
 	var e groupopsport.Execution
 	var effectID int64
 	var receipt, evidence *string
-	err := tx.QueryRow(ctx, `SELECT id,run_id,plan_id,plan_revision,node_id,node_position,target_reference,target_digest,content_digest,material_digest,external_effect_id,state,provider_accepted,delivery_proven,provider_receipt_digest,reconciliation_evidence_digest,attempt_count,scheduled_for,created_at,updated_at FROM group_ops_executions WHERE id=$1`, id).Scan(&e.ID, &e.RunID, &e.PlanID, &e.PlanRevision, &e.NodeID, &e.NodePosition, &e.TargetReference, &e.TargetDigest, &e.ContentDigest, &e.MaterialDigest, &effectID, &e.State, &e.ProviderAccepted, &e.DeliveryProven, &receipt, &evidence, &e.AttemptCount, &e.ScheduledFor, &e.CreatedAt, &e.UpdatedAt)
+	var deliveryStatus *int
+	err := tx.QueryRow(ctx, `SELECT e.id,e.run_id,e.plan_id,e.plan_revision,e.node_id,e.node_position,e.target_reference,e.target_digest,e.content_digest,e.material_digest,e.external_effect_id,e.state,e.provider_accepted,e.delivery_proven,e.provider_receipt_digest,e.reconciliation_evidence_digest,e.attempt_count,e.scheduled_for,e.created_at,e.updated_at,t.delivery_status FROM group_ops_executions e LEFT JOIN group_ops_group_message_tasks t ON t.execution_id=e.id WHERE e.id=$1`, id).Scan(&e.ID, &e.RunID, &e.PlanID, &e.PlanRevision, &e.NodeID, &e.NodePosition, &e.TargetReference, &e.TargetDigest, &e.ContentDigest, &e.MaterialDigest, &effectID, &e.State, &e.ProviderAccepted, &e.DeliveryProven, &receipt, &evidence, &e.AttemptCount, &e.ScheduledFor, &e.CreatedAt, &e.UpdatedAt, &deliveryStatus)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return groupopsport.Execution{}, ErrNotFound
 	}
@@ -538,6 +539,7 @@ func (r *Repository) getExecution(ctx context.Context, tx pgx.Tx, id int64) (gro
 	e.ExternalEffectID = "eer_" + strconv.FormatInt(effectID, 10)
 	e.ProviderReceiptPresent = receipt != nil && *receipt != ""
 	e.ReconciliationEvidencePresent = evidence != nil && *evidence != ""
+	e.DeliveryStatus = deliveryStatus
 	return e, nil
 }
 
@@ -935,6 +937,13 @@ func (r *Repository) RecordGroupMessageDelivery(ctx context.Context, task groupo
 	if result.RowsAffected() != 1 {
 		return ErrConflict
 	}
+	updated, err := tx.Exec(ctx, `UPDATE group_ops_executions SET delivery_proven=($2=1),updated_at=clock_timestamp() WHERE id=$1 AND state='provider_accepted'`, task.ExecutionID, *task.DeliveryStatus)
+	if err != nil {
+		return err
+	}
+	if updated.RowsAffected() != 1 {
+		return ErrConflict
+	}
 	return nil
 }
 
@@ -1199,7 +1208,7 @@ func (r *Repository) CreateExecutionIntents(ctx context.Context, drafts []groupo
 			predecessor = previous[d.TargetReference]
 		}
 		var id int64
-		err = tx.QueryRow(ctx, `INSERT INTO group_ops_execution_intents(run_id,plan_id,node_id,plan_revision,node_position,target_reference,sender_userid_snapshot,target_digest,content_snapshot,content_digest,material_snapshot,material_digest,execution_key_digest,predecessor_intent_id,state,scheduled_for,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$17) ON CONFLICT(run_id,node_id,target_reference) DO UPDATE SET id=group_ops_execution_intents.id RETURNING id`, d.RunID, d.PlanID, d.NodeID, d.PlanRevision, d.NodePosition, d.TargetReference, d.SenderUserID, d.TargetDigest, d.ContentSnapshot, d.ContentDigest, d.MaterialSnapshot, d.MaterialDigest, d.ExecutionKeyDigest[:], predecessor, state, d.ScheduledFor, d.CreatedAt).Scan(&id)
+		err = tx.QueryRow(ctx, `INSERT INTO group_ops_execution_intents(run_id,plan_id,node_id,plan_revision,node_position,target_reference,sender_userid_snapshot,target_digest,content_snapshot,content_digest,material_snapshot,material_digest,material_source_snapshot,material_source_digest,execution_key_digest,predecessor_intent_id,state,scheduled_for,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$19) ON CONFLICT(run_id,node_id,target_reference) DO UPDATE SET id=group_ops_execution_intents.id RETURNING id`, d.RunID, d.PlanID, d.NodeID, d.PlanRevision, d.NodePosition, d.TargetReference, d.SenderUserID, d.TargetDigest, d.ContentSnapshot, d.ContentDigest, d.MaterialSnapshot, d.MaterialDigest, d.MaterialSourceSnapshot, d.MaterialSourceDigest, d.ExecutionKeyDigest[:], predecessor, state, d.ScheduledFor, d.CreatedAt).Scan(&id)
 		if err != nil {
 			return nil, err
 		}
@@ -1214,7 +1223,7 @@ func (r *Repository) InitialExecutionIntents(ctx context.Context, runID int64) (
 	if err != nil {
 		return nil, err
 	}
-	rows, err := tx.Query(ctx, `SELECT id,run_id,plan_id,plan_revision,node_id,node_position,target_reference,sender_userid_snapshot,target_digest,content_snapshot,content_digest,material_snapshot,material_digest,execution_key_digest,scheduled_for,created_at FROM group_ops_execution_intents WHERE run_id=$1 AND predecessor_intent_id IS NULL AND state='ready_to_accept' ORDER BY target_reference,node_position,id FOR UPDATE`, runID)
+	rows, err := tx.Query(ctx, `SELECT id,run_id,plan_id,plan_revision,node_id,node_position,target_reference,sender_userid_snapshot,target_digest,content_snapshot,content_digest,material_snapshot,material_digest,material_source_snapshot,material_source_digest,execution_key_digest,scheduled_for,created_at FROM group_ops_execution_intents WHERE run_id=$1 AND predecessor_intent_id IS NULL AND state='ready_to_accept' ORDER BY target_reference,node_position,id FOR UPDATE`, runID)
 	if err != nil {
 		return nil, err
 	}
@@ -1231,7 +1240,7 @@ func (r *Repository) ClaimNextExecutionIntent(ctx context.Context, effectRef str
 	if err != nil {
 		return groupopsport.ExecutionDraft{}, false, err
 	}
-	rows, err := tx.Query(ctx, `SELECT child.id,child.run_id,child.plan_id,child.plan_revision,child.node_id,child.node_position,child.target_reference,child.sender_userid_snapshot,child.target_digest,child.content_snapshot,child.content_digest,child.material_snapshot,child.material_digest,child.execution_key_digest,child.scheduled_for,child.created_at FROM group_ops_execution_intents parent JOIN group_ops_executions execution ON execution.external_effect_id=$1 JOIN group_ops_execution_intents child ON child.predecessor_intent_id=parent.id WHERE parent.run_id=execution.run_id AND parent.target_reference=execution.target_reference AND parent.node_id=execution.node_id AND parent.state='accepted' AND execution.state='provider_accepted' AND child.state='waiting' ORDER BY child.node_position,child.id FOR UPDATE OF child`, effectID)
+	rows, err := tx.Query(ctx, `SELECT child.id,child.run_id,child.plan_id,child.plan_revision,child.node_id,child.node_position,child.target_reference,child.sender_userid_snapshot,child.target_digest,child.content_snapshot,child.content_digest,child.material_snapshot,child.material_digest,child.material_source_snapshot,child.material_source_digest,child.execution_key_digest,child.scheduled_for,child.created_at FROM group_ops_execution_intents parent JOIN group_ops_executions execution ON execution.external_effect_id=$1 JOIN group_ops_execution_intents child ON child.predecessor_intent_id=parent.id WHERE parent.run_id=execution.run_id AND parent.target_reference=execution.target_reference AND parent.node_id=execution.node_id AND parent.state='accepted' AND execution.state='provider_accepted' AND child.state='waiting' ORDER BY child.node_position,child.id FOR UPDATE OF child`, effectID)
 	if err != nil {
 		return groupopsport.ExecutionDraft{}, false, err
 	}
@@ -1295,7 +1304,7 @@ func scanIntentDrafts(rows pgx.Rows) ([]groupopsport.ExecutionDraft, error) {
 	for rows.Next() {
 		var d groupopsport.ExecutionDraft
 		var key []byte
-		if err := rows.Scan(&d.IntentID, &d.RunID, &d.PlanID, &d.PlanRevision, &d.NodeID, &d.NodePosition, &d.TargetReference, &d.SenderUserID, &d.TargetDigest, &d.ContentSnapshot, &d.ContentDigest, &d.MaterialSnapshot, &d.MaterialDigest, &key, &d.ScheduledFor, &d.CreatedAt); err != nil {
+		if err := rows.Scan(&d.IntentID, &d.RunID, &d.PlanID, &d.PlanRevision, &d.NodeID, &d.NodePosition, &d.TargetReference, &d.SenderUserID, &d.TargetDigest, &d.ContentSnapshot, &d.ContentDigest, &d.MaterialSnapshot, &d.MaterialDigest, &d.MaterialSourceSnapshot, &d.MaterialSourceDigest, &key, &d.ScheduledFor, &d.CreatedAt); err != nil {
 			return nil, err
 		}
 		if len(key) != sha256.Size {

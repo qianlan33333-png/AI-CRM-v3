@@ -15,6 +15,8 @@ CREATE TABLE group_ops_execution_intents (
     content_digest TEXT NOT NULL CHECK (content_digest ~ '^sha256:[0-9a-f]{64}$'),
     material_snapshot JSONB NOT NULL CHECK (jsonb_typeof(material_snapshot) = 'object'),
     material_digest TEXT NOT NULL CHECK (material_digest ~ '^sha256:[0-9a-f]{64}$'),
+    material_source_snapshot JSONB NOT NULL CHECK (jsonb_typeof(material_source_snapshot) = 'object'),
+    material_source_digest TEXT NOT NULL CHECK (material_source_digest ~ '^sha256:[0-9a-f]{64}$'),
     execution_key_digest BYTEA NOT NULL UNIQUE CHECK (octet_length(execution_key_digest) = 32),
     predecessor_intent_id BIGINT REFERENCES group_ops_execution_intents(id) ON DELETE RESTRICT,
     state TEXT NOT NULL CHECK (state IN ('waiting','ready_to_accept','accepted','halted')),
@@ -34,6 +36,11 @@ CREATE INDEX group_ops_execution_intents_predecessor_idx
   ON group_ops_execution_intents(predecessor_intent_id,state,id);
 CREATE INDEX group_ops_execution_intents_run_target_idx
   ON group_ops_execution_intents(run_id,target_reference,node_position,id);
+
+ALTER TABLE group_ops_executions
+  ADD COLUMN material_source_snapshot JSONB NOT NULL DEFAULT '{"schema_version":1,"sources":[],"preparations":[]}'::jsonb,
+  ADD COLUMN material_source_digest TEXT NOT NULL DEFAULT 'sha256:0a4a73b68bb078be9d6243e5109dd17f3143f9bea02a0b9ca51dfc7ea38c7c8d'
+    CHECK (material_source_digest ~ '^sha256:[0-9a-f]{64}$');
 
 CREATE TABLE group_ops_group_message_tasks (
     id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,

@@ -394,6 +394,38 @@ func TestListTagCatalogUsesNarrowPostAndPreservesProviderFacts(t *testing.T) {
 	}
 }
 
+func TestGetGroupMessageSendResultSendsFrozenUserID(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/cgi-bin/gettoken":
+			if r.URL.Query().Get("corpsecret") != "contact-secret" {
+				t.Fatalf("token query=%s", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(`{"errcode":0,"access_token":"token","expires_in":7200}`))
+		case "/cgi-bin/externalcontact/get_groupmsg_send_result":
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if body["msgid"] != "msg-1" || body["userid"] != "frozen-sender" || body["cursor"] != "cursor-1" {
+				t.Fatalf("result body=%+v", body)
+			}
+			_, _ = w.Write([]byte(`{"errcode":0,"next_cursor":"cursor-2","send_list":[{"userid":"frozen-sender","chat_id":"chat-1","status":1}]}`))
+		default:
+			t.Fatalf("path=%s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	client, err := NewDirectory(Config{Enabled: true, CorpID: "corp", ContactSecret: "contact-secret", APIBase: server.URL, HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := client.GetGroupMessageSendResult(context.Background(), "msg-1", "frozen-sender", "cursor-1", 100)
+	if err != nil || page.NextCursor != "cursor-2" || len(page.Items) != 1 || page.Items[0].SenderUserID != "frozen-sender" || page.Items[0].ChatID != "chat-1" || page.Items[0].Status != 1 {
+		t.Fatalf("page=%+v err=%v", page, err)
+	}
+}
+
 func TestListTagCatalogTokenFailureIsPreCall(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/cgi-bin/gettoken" {

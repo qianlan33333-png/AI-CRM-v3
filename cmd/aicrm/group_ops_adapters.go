@@ -77,7 +77,7 @@ func (adapter wecomGroupOpsEvidence) VerifyReconciliationEvidence(ctx context.Co
 	cursor := ""
 	seen := map[string]struct{}{}
 	for {
-		page, readErr := adapter.reader.GetGroupMessageSendResult(ctx, receipt.MessageID, cursor, 100)
+		page, readErr := adapter.reader.GetGroupMessageSendResult(ctx, receipt.MessageID, receipt.SenderUserID, cursor, 100)
 		if readErr != nil {
 			return groupopsport.ReconciliationEvidenceResult{}, readErr
 		}
@@ -103,7 +103,46 @@ func (adapter wecomGroupOpsEvidence) VerifyReconciliationEvidence(ctx context.Co
 	return groupopsport.ReconciliationEvidenceResult{}, groupopsapp.ErrProviderDisabled
 }
 
+func (adapter wecomGroupOpsEvidence) ReadProviderDelivery(ctx context.Context, input groupopsport.ReconciliationEvidence) (groupopsport.GroupMessageReceipt, bool, error) {
+	if adapter.uow == nil || adapter.receipts == nil || adapter.reader == nil || input.ExecutionID < 1 || input.ExternalEffectID == "" {
+		return groupopsport.GroupMessageReceipt{}, false, groupopsapp.ErrProviderDisabled
+	}
+	var receipt groupopsport.GroupMessageReceipt
+	var found bool
+	if err := adapter.uow.Within(ctx, func(tx context.Context) error {
+		var err error
+		receipt, found, err = adapter.receipts.FindGroupMessageReceipt(tx, input)
+		return err
+	}); err != nil || !found {
+		return groupopsport.GroupMessageReceipt{}, false, err
+	}
+	cursor, seen := "", map[string]struct{}{}
+	for {
+		page, err := adapter.reader.GetGroupMessageSendResult(ctx, receipt.MessageID, receipt.SenderUserID, cursor, 100)
+		if err != nil {
+			return groupopsport.GroupMessageReceipt{}, false, err
+		}
+		for _, item := range page.Items {
+			if item.SenderUserID == receipt.SenderUserID && item.ChatID == receipt.ChatID {
+				status := item.Status
+				receipt.DeliveryStatus = &status
+				receipt.DeliveryEvidenceDigest = string(effectport.Hash("group-ops.wecom-delivery.v1", receipt.MessageID, item.SenderUserID, item.ChatID, strconv.Itoa(item.Status)))
+				return receipt, true, nil
+			}
+		}
+		if page.NextCursor == "" {
+			return groupopsport.GroupMessageReceipt{}, false, nil
+		}
+		if _, duplicate := seen[page.NextCursor]; duplicate {
+			return groupopsport.GroupMessageReceipt{}, false, groupopsapp.ErrConflict
+		}
+		seen[page.NextCursor] = struct{}{}
+		cursor = page.NextCursor
+	}
+}
+
 var _ groupopsport.ReconciliationEvidenceVerifier = wecomGroupOpsEvidence{}
+var _ groupopsport.ProviderDeliveryReader = wecomGroupOpsEvidence{}
 
 // wecomGroupOpsDirectory performs every provider read before RuntimeService
 // opens its persistence transaction. A full snapshot is required before a
@@ -269,36 +308,145 @@ type groupOpsMaterialAdapter struct {
 	freezer  mediaport.GroupOpsMaterialSnapshotFreezer
 }
 
+// groupOpsMaterialReadinessAdapter repeats Media's capture/read boundary
+// immediately before a write. It never prepares or uploads material: changed
+// source content, a changed receipt digest, or an expired ReadyUntil fails
+// before the outbound adapter crosses the Provider boundary.
+type groupOpsMaterialReadinessAdapter struct {
+	uow interface {
+		Within(context.Context, func(context.Context) error) error
+	}
+	capturer mediaport.GroupOpsMaterialSourceCapturer
+	freezer  mediaport.GroupOpsMaterialSnapshotFreezer
+}
+
+func (adapter groupOpsMaterialReadinessAdapter) VerifyMaterialReady(ctx context.Context, snapshotRaw, factsRaw json.RawMessage, factsDigest string, now time.Time) error {
+	if adapter.uow == nil || adapter.capturer == nil || adapter.freezer == nil || len(snapshotRaw) == 0 || len(factsRaw) == 0 || !effectport.ValidDigest(effectport.Digest(factsDigest)) || factsDigest != string(effectport.Hash("group-ops.material.intent.v1", string(factsRaw))) || now.IsZero() {
+		return errors.New("Group Ops material readiness unavailable")
+	}
+	var facts struct {
+		SchemaVersion int                                      `json:"schema_version"`
+		Sources       mediaport.GroupOpsMaterialSourceSnapshot `json:"sources"`
+		Preparations  []groupopsmaterial.PreparedMaterial      `json:"preparations"`
+	}
+	if json.Unmarshal(factsRaw, &facts) != nil || facts.SchemaVersion != 1 || mediaport.ValidateGroupOpsMaterialSourceSnapshot(facts.Sources) != nil {
+		return errors.New("invalid frozen Group Ops material facts")
+	}
+	plan := mediaport.GroupOpsMaterialPlan{References: make([]mediaport.GroupOpsMaterialReference, len(facts.Sources.References))}
+	for i, source := range facts.Sources.References {
+		plan.References[i] = source.Reference
+	}
+	return adapter.uow.Within(ctx, func(tx context.Context) error {
+		current, err := adapter.capturer.CaptureGroupOpsMaterialSources(tx, plan)
+		if err != nil {
+			return err
+		}
+		currentRaw, err := json.Marshal(current)
+		frozenRaw, frozenErr := json.Marshal(facts.Sources)
+		if err != nil || frozenErr != nil || string(currentRaw) != string(frozenRaw) {
+			return errors.New("Group Ops material source changed")
+		}
+		withFacts, ok := adapter.freezer.(interface {
+			FreezeGroupOpsMaterialWithFacts(context.Context, mediaport.GroupOpsMaterialSourceSnapshot, time.Time) (mediaport.GroupOpsMaterialSnapshot, []groupopsmaterial.PreparedMaterial, error)
+		})
+		if !ok {
+			return errors.New("Group Ops material preparation facts unavailable")
+		}
+		snapshot, prepared, err := withFacts.FreezeGroupOpsMaterialWithFacts(tx, current, now.UTC())
+		if err != nil {
+			return err
+		}
+		actualSnapshot, marshalErr := json.Marshal(snapshot)
+		actualFacts, factsErr := json.Marshal(struct {
+			SchemaVersion int                                      `json:"schema_version"`
+			Sources       mediaport.GroupOpsMaterialSourceSnapshot `json:"sources"`
+			Preparations  []groupopsmaterial.PreparedMaterial      `json:"preparations"`
+		}{1, current, prepared})
+		if marshalErr != nil || factsErr != nil || string(actualSnapshot) != string(snapshotRaw) || string(actualFacts) != string(factsRaw) {
+			return errors.New("Group Ops material preparation changed or expired")
+		}
+		return nil
+	})
+}
+
+var _ groupopsport.MaterialReadinessVerifier = groupOpsMaterialReadinessAdapter{}
+
 func (adapter groupOpsMaterialAdapter) ResolveMaterialSnapshot(ctx context.Context, plan groupopsport.MaterialPlan, requiredThrough time.Time) (json.RawMessage, string, error) {
+	raw, digest, _, _, err := adapter.ResolveMaterialIntentSnapshot(ctx, plan, requiredThrough)
+	if err != nil {
+		// Retain the narrow legacy resolver contract for consumers that do not
+		// persist a Group Ops intent. Runtime dispatch uses the richer method
+		// above and fails closed when receipt facts are unavailable.
+		mediaPlan := mediaport.GroupOpsMaterialPlan{References: make([]mediaport.GroupOpsMaterialReference, len(plan.References))}
+		for index, reference := range plan.References {
+			mediaPlan.References[index] = mediaport.GroupOpsMaterialReference{Kind: reference.Kind, ID: reference.ID}
+		}
+		if adapter.capturer == nil || adapter.freezer == nil || mediaport.ValidateGroupOpsMaterialPlan(mediaPlan) != nil {
+			return nil, "", err
+		}
+		sources, captureErr := adapter.capturer.CaptureGroupOpsMaterialSources(ctx, mediaPlan)
+		if captureErr != nil {
+			return nil, "", captureErr
+		}
+		snapshot, freezeErr := adapter.freezer.FreezeGroupOpsMaterial(ctx, sources, requiredThrough)
+		if freezeErr != nil || mediaport.ValidateGroupOpsMaterialSnapshot(snapshot) != nil {
+			return nil, "", err
+		}
+		raw, marshalErr := json.Marshal(snapshot)
+		if marshalErr != nil {
+			return nil, "", marshalErr
+		}
+		return raw, string(effectport.Hash("group-ops.material.snapshot.v1", string(raw))), nil
+	}
+	return raw, digest, err
+}
+
+func (adapter groupOpsMaterialAdapter) ResolveMaterialIntentSnapshot(ctx context.Context, plan groupopsport.MaterialPlan, requiredThrough time.Time) (json.RawMessage, string, json.RawMessage, string, error) {
 	if adapter.capturer == nil || adapter.freezer == nil || ctx == nil || requiredThrough.IsZero() {
-		return nil, "", errors.New("Group Ops material ports are unavailable")
+		return nil, "", nil, "", errors.New("Group Ops material ports are unavailable")
 	}
 	mediaPlan := mediaport.GroupOpsMaterialPlan{References: make([]mediaport.GroupOpsMaterialReference, len(plan.References))}
 	for index, reference := range plan.References {
 		mediaPlan.References[index] = mediaport.GroupOpsMaterialReference{Kind: reference.Kind, ID: reference.ID}
 	}
 	if err := mediaport.ValidateGroupOpsMaterialPlan(mediaPlan); err != nil {
-		return nil, "", err
+		return nil, "", nil, "", err
 	}
 	sources, err := adapter.capturer.CaptureGroupOpsMaterialSources(ctx, mediaPlan)
 	if err != nil {
-		return nil, "", err
+		return nil, "", nil, "", err
 	}
-	snapshot, err := adapter.freezer.FreezeGroupOpsMaterial(ctx, sources, requiredThrough)
+	withFacts, ok := adapter.freezer.(interface {
+		FreezeGroupOpsMaterialWithFacts(context.Context, mediaport.GroupOpsMaterialSourceSnapshot, time.Time) (mediaport.GroupOpsMaterialSnapshot, []groupopsmaterial.PreparedMaterial, error)
+	})
+	if !ok {
+		return nil, "", nil, "", errors.New("Group Ops material preparation facts are unavailable")
+	}
+	snapshot, prepared, err := withFacts.FreezeGroupOpsMaterialWithFacts(ctx, sources, requiredThrough)
 	if err != nil {
-		return nil, "", err
+		return nil, "", nil, "", err
 	}
 	if err = mediaport.ValidateGroupOpsMaterialSnapshot(snapshot); err != nil {
-		return nil, "", err
+		return nil, "", nil, "", err
 	}
 	raw, err := json.Marshal(snapshot)
 	if err != nil {
-		return nil, "", err
+		return nil, "", nil, "", err
 	}
-	return raw, string(effectport.Hash("group-ops.material.snapshot.v1", string(raw))), nil
+	facts := struct {
+		SchemaVersion int                                      `json:"schema_version"`
+		Sources       mediaport.GroupOpsMaterialSourceSnapshot `json:"sources"`
+		Preparations  []groupopsmaterial.PreparedMaterial      `json:"preparations"`
+	}{SchemaVersion: 1, Sources: sources, Preparations: prepared}
+	factsRaw, err := json.Marshal(facts)
+	if err != nil {
+		return nil, "", nil, "", err
+	}
+	return raw, string(effectport.Hash("group-ops.material.snapshot.v1", string(raw))), factsRaw, string(effectport.Hash("group-ops.material.intent.v1", string(factsRaw))), nil
 }
 
 var _ groupopsport.MaterialSnapshotResolver = groupOpsMaterialAdapter{}
+var _ groupopsport.MaterialIntentSnapshotResolver = groupOpsMaterialAdapter{}
 
 func newGroupOpsMaterialAdapter(capturer mediaport.GroupOpsMaterialSourceCapturer, freezer mediaport.GroupOpsMaterialSnapshotFreezer) (groupopsport.MaterialSnapshotResolver, error) {
 	if capturer == nil || freezer == nil {

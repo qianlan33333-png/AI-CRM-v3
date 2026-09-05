@@ -282,7 +282,7 @@ func (s *RuntimeService) buildDrafts(tx context.Context, detail groupopsport.Det
 		if err != nil {
 			return nil, ErrRuntimeInvalid
 		}
-		materialRaw, _, err := s.resolveMaterialSnapshot(tx, node.MaterialPlan, now.Add(delay))
+		materialRaw, _, materialSourceRaw, materialSourceDigest, err := s.resolveMaterialSnapshot(tx, node.MaterialPlan, now.Add(delay))
 		if err != nil {
 			// Material is owned by Media and must be frozen before an EER
 			// intent exists. A missing/changed source is an unavailable
@@ -310,7 +310,7 @@ func (s *RuntimeService) buildDrafts(tx context.Context, detail groupopsport.Det
 				return nil, ErrUnavailable
 			}
 			keyDigest := sha256.Sum256([]byte(strings.Join([]string{"group-ops.execution.v1", strconv.FormatInt(run.ID, 10), strconv.FormatInt(node.ID, 10), asset.AssetRef, strconv.FormatInt(run.PlanRevision, 10)}, "\x00")))
-			drafts = append(drafts, groupopsport.ExecutionDraft{RunID: run.ID, PlanID: run.PlanID, PlanRevision: run.PlanRevision, NodeID: node.ID, NodePosition: node.Position, TargetReference: asset.AssetRef, SenderUserID: sender, TargetDigest: string(effectport.Hash("group-ops.target", asset.AssetRef)), ContentSnapshot: contentRaw, ContentDigest: contentDigest, MaterialSnapshot: materialRaw, MaterialDigest: materialDigest, ExecutionKeyDigest: keyDigest, ScheduledFor: now.Add(delay), CreatedAt: now})
+			drafts = append(drafts, groupopsport.ExecutionDraft{RunID: run.ID, PlanID: run.PlanID, PlanRevision: run.PlanRevision, NodeID: node.ID, NodePosition: node.Position, TargetReference: asset.AssetRef, SenderUserID: sender, TargetDigest: string(effectport.Hash("group-ops.target", asset.AssetRef)), ContentSnapshot: contentRaw, ContentDigest: contentDigest, MaterialSnapshot: materialRaw, MaterialDigest: materialDigest, MaterialSourceSnapshot: materialSourceRaw, MaterialSourceDigest: materialSourceDigest, ExecutionKeyDigest: keyDigest, ScheduledFor: now.Add(delay), CreatedAt: now})
 		}
 	}
 	if len(drafts) == 0 && len(existing) == 0 {
@@ -319,19 +319,24 @@ func (s *RuntimeService) buildDrafts(tx context.Context, detail groupopsport.Det
 	return drafts, nil
 }
 
-func (s *RuntimeService) resolveMaterialSnapshot(ctx context.Context, plan groupopsport.MaterialPlan, requiredThrough time.Time) (json.RawMessage, string, error) {
+func (s *RuntimeService) resolveMaterialSnapshot(ctx context.Context, plan groupopsport.MaterialPlan, requiredThrough time.Time) (json.RawMessage, string, json.RawMessage, string, error) {
 	if len(plan.References) == 0 {
 		raw := json.RawMessage(`{"schema_version":1,"references":[]}`)
-		return raw, string(effectport.Hash("group-ops.material.snapshot.v1", string(raw))), nil
+		facts := json.RawMessage(`{"schema_version":1,"sources":[],"preparations":[]}`)
+		return raw, string(effectport.Hash("group-ops.material.snapshot.v1", string(raw))), facts, string(effectport.Hash("group-ops.material.intent.v1", string(facts))), nil
 	}
 	if s == nil || s.materials == nil {
-		return nil, "", ErrUnavailable
+		return nil, "", nil, "", ErrUnavailable
 	}
-	raw, digest, err := s.materials.ResolveMaterialSnapshot(ctx, plan, requiredThrough)
-	if err != nil || !validMaterialSnapshotResult(raw, digest) {
-		return nil, "", ErrUnavailable
+	resolver, ok := s.materials.(groupopsport.MaterialIntentSnapshotResolver)
+	if !ok {
+		return nil, "", nil, "", ErrUnavailable
 	}
-	return append(json.RawMessage(nil), raw...), digest, nil
+	raw, digest, sourceRaw, sourceDigest, err := resolver.ResolveMaterialIntentSnapshot(ctx, plan, requiredThrough)
+	if err != nil || !validMaterialSnapshotResult(raw, digest) || len(sourceRaw) == 0 || !json.Valid(sourceRaw) || !effectport.ValidDigest(effectport.Digest(sourceDigest)) || sourceDigest != string(effectport.Hash("group-ops.material.intent.v1", string(sourceRaw))) {
+		return nil, "", nil, "", ErrUnavailable
+	}
+	return append(json.RawMessage(nil), raw...), digest, append(json.RawMessage(nil), sourceRaw...), sourceDigest, nil
 }
 
 func validMaterialSnapshotResult(raw json.RawMessage, digest string) bool {
@@ -353,7 +358,7 @@ func (s *RuntimeService) materialBlockers(ctx context.Context, detail groupopspo
 		if len(node.MaterialPlan.References) == 0 {
 			continue
 		}
-		_, _, err := s.resolveMaterialSnapshot(ctx, node.MaterialPlan, now.Add(delay))
+		_, _, _, _, err := s.resolveMaterialSnapshot(ctx, node.MaterialPlan, now.Add(delay))
 		if err == nil {
 			continue
 		}
@@ -445,6 +450,60 @@ func (s *RuntimeService) ManualReconcile(ctx context.Context, command groupopspo
 			return err
 		}
 		result, err = s.runtime.ReconcileExecution(tx, current.ID, command.EvidenceDigest, verified.DeliveryProven, now)
+		return err
+	})
+	if err != nil {
+		return groupopsport.Execution{}, classify(err)
+	}
+	return result, nil
+}
+
+// ReadProviderDelivery records a factual status for an already accepted
+// WeCom task. It never changes the EER state and it never turns a missing
+// msgid/outcome_unknown attempt into a resendable operation.
+func (s *RuntimeService) ReadProviderDelivery(ctx context.Context, command groupopsport.ProviderDeliveryReadCommand) (groupopsport.Execution, error) {
+	if s == nil || s.uow == nil || s.runtime == nil || command.ExecutionID < 1 || command.ActorID < 1 || !validRuntimeKey(command.IdempotencyKey) {
+		return groupopsport.Execution{}, ErrRuntimeInvalid
+	}
+	reader, ok := s.evidence.(groupopsport.ProviderDeliveryReader)
+	if !ok || reader == nil {
+		return groupopsport.Execution{}, ErrProviderDisabled
+	}
+	var existing groupopsport.Execution
+	if err := s.uow.Within(ctx, func(tx context.Context) error {
+		var err error
+		existing, err = s.runtime.GetExecution(tx, command.ExecutionID)
+		return err
+	}); err != nil {
+		return groupopsport.Execution{}, classify(err)
+	}
+	if existing.State != groupopsport.ExecutionProviderAccepted || !existing.ProviderAccepted || existing.ExternalEffectID == "" {
+		return groupopsport.Execution{}, ErrStateConflict
+	}
+	// Provider pagination is deliberately outside the Unit of Work.
+	task, found, err := reader.ReadProviderDelivery(ctx, groupopsport.ReconciliationEvidence{ExecutionID: existing.ID, ExternalEffectID: existing.ExternalEffectID})
+	if err != nil {
+		return groupopsport.Execution{}, classify(err)
+	}
+	if !found {
+		return existing, nil // task is still pending; acceptance is not delivery.
+	}
+	if task.DeliveryStatus == nil || !effectport.ValidDigest(effectport.Digest(task.DeliveryEvidenceDigest)) {
+		return groupopsport.Execution{}, ErrConflict
+	}
+	var result groupopsport.Execution
+	err = s.uow.Within(ctx, func(tx context.Context) error {
+		current, err := s.runtime.GetExecution(tx, command.ExecutionID)
+		if err != nil {
+			return err
+		}
+		if current.State != groupopsport.ExecutionProviderAccepted || current.ExternalEffectID != existing.ExternalEffectID {
+			return ErrStateConflict
+		}
+		if err = s.runtime.RecordGroupMessageDelivery(tx, task, task.DeliveryEvidenceDigest); err != nil {
+			return err
+		}
+		result, err = s.runtime.GetExecution(tx, command.ExecutionID)
 		return err
 	})
 	if err != nil {

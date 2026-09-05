@@ -115,6 +115,12 @@ type groupMessageSenderStub struct {
 	err       error
 }
 
+type materialReadinessStub struct{ err error }
+
+func (stub materialReadinessStub) VerifyMaterialReady(context.Context, json.RawMessage, json.RawMessage, string, time.Time) error {
+	return stub.err
+}
+
 func (s *groupMessageSenderStub) SendGroupMessage(_ context.Context, request wecomport.GroupMessageRequest) (wecomport.GroupMessageReceipt, bool, error) {
 	s.request = request
 	return s.receipt, s.attempted, s.err
@@ -141,7 +147,7 @@ func TestGroupMessageProviderUsesEffectBoundSnapshotAndExactChat(t *testing.T) {
 		t.Fatalf("request err=%v", requestErr)
 	}
 	sender := &groupMessageSenderStub{attempted: true, receipt: wecomport.GroupMessageReceipt{MessageID: "msg-42"}}
-	provider, err := NewGroupMessageProvider(GroupMessageProviderConfig{Enabled: true, Executions: reader, Writer: sender})
+	provider, err := NewGroupMessageProvider(GroupMessageProviderConfig{Enabled: true, Executions: reader, Materials: materialReadinessStub{}, Writer: sender})
 	if err != nil {
 		t.Fatal(err)
 	}

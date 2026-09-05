@@ -80,12 +80,21 @@ type Execution struct {
 	State                         ExecutionState `json:"state"`
 	ProviderAccepted              bool           `json:"provider_accepted"`
 	DeliveryProven                bool           `json:"delivery_proven"`
+	DeliveryStatus                *int           `json:"delivery_status,omitempty"`
 	AttemptCount                  int32          `json:"attempt_count"`
 	ProviderReceiptPresent        bool           `json:"provider_receipt_present"`
 	ReconciliationEvidencePresent bool           `json:"reconciliation_evidence_present"`
 	ScheduledFor                  time.Time      `json:"scheduled_for"`
 	CreatedAt                     time.Time      `json:"created_at"`
 	UpdatedAt                     time.Time      `json:"updated_at"`
+}
+
+// ProviderDeliveryReadCommand contains no Provider identifiers. The Group
+// Ops receipt freezes msgid and sender before the trusted reader is called.
+type ProviderDeliveryReadCommand struct {
+	ExecutionID    int64
+	ActorID        int64
+	IdempotencyKey string
 }
 
 type ExecutionIntentState string
@@ -257,6 +266,11 @@ type MaterialSnapshotResolver interface {
 	ResolveMaterialSnapshot(context.Context, MaterialPlan, time.Time) (json.RawMessage, string, error)
 }
 
+type MaterialIntentSnapshotResolver interface {
+	MaterialSnapshotResolver
+	ResolveMaterialIntentSnapshot(context.Context, MaterialPlan, time.Time) (json.RawMessage, string, json.RawMessage, string, error)
+}
+
 // ExecutionTargetOwnerResolver is the Group Ops side of sender resolution.
 // It returns only the local staff owner of an opaque group target; the
 // Composition Root combines it with the Access staff port to obtain an
@@ -292,6 +306,8 @@ type ExecutionDraft struct {
 	ContentDigest                       string
 	MaterialSnapshot                    json.RawMessage
 	MaterialDigest                      string
+	MaterialSourceSnapshot              json.RawMessage
+	MaterialSourceDigest                string
 	ExecutionKeyDigest                  [sha256.Size]byte
 	ExternalEffectID                    string
 	IntentID                            int64
@@ -315,6 +331,7 @@ type RuntimeStore interface {
 	ReadRunSummary(context.Context, int64) (RunSummary, error)
 	RecordExecutionOutcome(context.Context, int64, ExecutionState, bool, bool, string, int32, time.Time) (Execution, error)
 	ReconcileExecution(context.Context, int64, string, bool, time.Time) (Execution, error)
+	RecordGroupMessageDelivery(context.Context, GroupMessageReceipt, string) error
 	FindPlanByWebhookReference(context.Context, string) (int64, error)
 	ListDirectoryGroups(context.Context, int64, int32, int32) ([]GroupDirectoryItem, int64, error)
 	ReplaceDirectoryGroups(context.Context, int64, []GroupDirectoryItem, time.Time) error

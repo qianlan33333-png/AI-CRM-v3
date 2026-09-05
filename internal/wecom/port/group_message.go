@@ -38,7 +38,9 @@ type GroupMessageSender interface {
 // boundary. A task msgid is accepted input; callers must still match sender,
 // chat and the returned status before treating it as delivery evidence.
 type GroupMessageTaskReader interface {
-	GetGroupMessageSendResult(context.Context, string, string, int) (GroupMessageSendResultPage, error)
+	// senderUserID is frozen by the Group Ops owner receipt.  WeCom requires it
+	// alongside msgid; callers must never supply a replacement sender.
+	GetGroupMessageSendResult(context.Context, string, string, string, int) (GroupMessageSendResultPage, error)
 }
 
 type GroupMessageSendResultPage struct {
