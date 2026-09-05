@@ -83,3 +83,7 @@ V3 本轮初次外推 PR 的该路由仍固定调用 `RecordDisabledOperation`�
 - OAuth state签发→本地Provider兑换→可信同作用域OneID→受限提交会话→公开all/one提交→result token读取；不能以mock customer resolver或手工插入session冒称整链。覆盖错误state/重放/错误scope与匿名绕过。
 - 同载荷并发提交只一份答卷/业务收据，改载荷冲突；发布后编辑不得改历史题目/答案/结果。沿用已有验证器，失败回滚依实际PG证明。
 - 只读分析及导出不创造任何效果。记录本地PG跳过和CI实跑分别结果；已有测试覆盖则引用，不堆重复测试。
+
+## 12. 实际 OAuth 状态落库的前向修复
+
+完整PG/HTTP旅程已证实0018的survey_oauth_states_redirect约束在标准SQL字符串中使用了双反斜杠，合法Host路径无法创建OAuth state。0090分配Survey，以前向迁移修正该既有约束，保留all/one页面与slug允许范围；不改变身份机制或OAuth入口。原0018不改。同步Store PG fixture、实际约束readiness与发布迁移清单；验证两个合法入口及非法/外站路径拒绝，继续完整OAuth、同键提交、结果授权与历史版本旅程。0089已由Outbound使用，不得占用。
