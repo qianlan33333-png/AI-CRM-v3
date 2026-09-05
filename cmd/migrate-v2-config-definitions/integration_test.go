@@ -555,7 +555,7 @@ func assertImportedGroupOpsHistoryHostJourney(t *testing.T, historyHandler http.
 		ui.ServeHTTP(writer, request)
 	}))
 	defer server.Close()
-	command := exec.Command("node", "web/scripts/groupops-history-http-e2e.mjs", server.URL)
+	command := exec.Command("node", "cmd/migrate-v2-config-definitions/groupops_history_http_e2e.mjs", server.URL)
 	command.Dir = repository
 	output, err := command.CombinedOutput()
 	if err != nil {
