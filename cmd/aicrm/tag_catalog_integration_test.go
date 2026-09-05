@@ -24,9 +24,11 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
+	customerport "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/port"
 	effects "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects"
 	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
+	identityport "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/port"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/outbound"
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
 	platformjobqueue "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/jobqueue"
@@ -323,7 +325,31 @@ var _ tagport.SyncCompletionWriter = (*tagstore.Repository)(nil)
 type surveyCompletionIntegrationIdentity struct{}
 
 func (surveyCompletionIntegrationIdentity) VerifiedExternalIdentityValue(context.Context, customerdomain.CustomerID, identitydomain.Kind, string) (string, bool, error) {
-	return "", false, nil
+	return "union-integration", true, nil
+}
+
+// These dependencies are required by the public submission service even when
+// the fixture has no mobile question. They deliberately expose no identity
+// resolution or customer creation behavior.
+type surveyCompletionNoopPhone struct{}
+
+func (surveyCompletionNoopPhone) AttachDeclaredPhoneToCustomer(context.Context, identityport.DeclaredPhoneCommand) (identityport.DeclaredAttachResult, error) {
+	return identityport.DeclaredAttachResult{}, nil
+}
+
+type surveyCompletionNoopProjection struct{}
+
+func (surveyCompletionNoopProjection) UpsertDirectoryProjection(context.Context, customerport.DirectoryProjection) error {
+	return nil
+}
+func (surveyCompletionNoopProjection) MarkDirectoryStale(context.Context, []customerdomain.CustomerID, time.Time) (int64, error) {
+	return 0, nil
+}
+func (surveyCompletionNoopProjection) UpdateDirectoryPhone(context.Context, customerdomain.CustomerID, string, identitydomain.Assurance, int64, time.Time) error {
+	return nil
+}
+func (surveyCompletionNoopProjection) ClearDirectoryPhone(context.Context, customerdomain.CustomerID, time.Time) error {
+	return nil
 }
 
 func TestPostgreSQLSurveySyntheticPushSurvivesRepositoryRestartAndDoesNotBlindRetryUnknown(t *testing.T) {
@@ -408,6 +434,12 @@ func TestPostgreSQLSurveySyntheticPushSurvivesRepositoryRestartAndDoesNotBlindRe
 	if err = service.BindCompletionIntent(surveyCompletionEffectAccepter{effects: effectRepository}); err != nil {
 		t.Fatal(err)
 	}
+	if err = service.BindCompletionIdentity(provider); err != nil {
+		t.Fatal(err)
+	}
+	if err = service.BindDeclaredPhone(surveyCompletionNoopPhone{}, surveyCompletionNoopProjection{}); err != nil {
+		t.Fatal(err)
+	}
 	config, err := service.GetOperationConfiguration(ctx, surveyport.ID(questionnaire))
 	if err != nil {
 		t.Fatal(err)
@@ -468,6 +500,52 @@ func TestPostgreSQLSurveySyntheticPushSurvivesRepositoryRestartAndDoesNotBlindRe
 	var attemptNumber int32
 	if err = pool.QueryRow(ctx, `SELECT status,provider_call_attempted,provider_real_call_executed,provider_result_received,provider_attempt_number FROM survey_external_operation_receipts WHERE effect_id=$1`, first.EffectID).Scan(&receiptState, &callAttempted, &realCall, &resultReceived, &attemptNumber); err != nil || receiptState != "executed" || !callAttempted || !realCall || !resultReceived || attemptNumber != 1 {
 		t.Fatalf("executed receipt state=%q call=%t real=%t result=%t attempt=%d err=%v", receiptState, callAttempted, realCall, resultReceived, attemptNumber, err)
+	}
+
+	// A normal public submission is accepted in its own UoW, then the restarted
+	// River runtime reads its frozen protected payload outside that transaction
+	// and reaches the local receiver once. This is intentionally distinct from
+	// the synthetic operator test above.
+	if _, err = pool.Exec(ctx, `UPDATE survey_questionnaires SET status='published' WHERE id=$1`, questionnaire); err != nil {
+		t.Fatal(err)
+	}
+	var questionID, customerID int64
+	if err = pool.QueryRow(ctx, `SELECT id FROM survey_questions WHERE questionnaire_id=$1 ORDER BY id LIMIT 1`, questionnaire).Scan(&questionID); err != nil {
+		t.Fatal(err)
+	}
+	if err = pool.QueryRow(ctx, `INSERT INTO customers DEFAULT VALUES RETURNING id`).Scan(&customerID); err != nil {
+		t.Fatal(err)
+	}
+	current, err = service.GetOperationConfiguration(ctx, surveyport.ID(questionnaire))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.SaveOperationConfiguration(ctx, surveyport.OperationConfiguration{QuestionnaireID: surveyport.ID(questionnaire), ExternalPushEnabled: true, ExternalPushConfigurationRef: target.Reference, ExternalPushMetadata: json.RawMessage(`{"remark":"frozen","custom_params":{"campaign":"control"}}`), Version: current.Version}, actor, "survey-normal-config-0001"); err != nil {
+		t.Fatal(err)
+	}
+	customer := customerdomain.CustomerID(customerID)
+	normal, err := service.Submit(ctx, surveyport.SubmitCommand{Slug: "synthetic-effect", DefinitionVersion: definition.DefinitionVersion, SubmissionKey: strings.Repeat("n", 43), Identity: surveyport.SubmissionIdentity{State: surveyport.IdentityResolved, CustomerID: &customer, EvidenceDigest: strings.Repeat("a", 64)}, Answers: []surveyport.SubmissionAnswer{{QuestionID: surveyport.ID(questionID), TextValue: "正常提交"}}})
+	if err != nil || normal.SubmissionID < 1 {
+		t.Fatalf("normal submission=%+v err=%v", normal, err)
+	}
+	normalRepository, normalRuntime := newSurveyEffectRuntime(t, pool, sink, provider)
+	stop, done = startSurveyEffectRuntime(t, normalRuntime)
+	select {
+	case <-receivedSignal:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for River to deliver normal submission")
+	}
+	var normalEffectID string
+	if err = pool.QueryRow(ctx, `SELECT effect_id FROM survey_external_operation_receipts WHERE submission_id=$1 AND operation_kind='external_push'`, normal.SubmissionID).Scan(&normalEffectID); err != nil {
+		t.Fatal(err)
+	}
+	waitForSurveyEffectState(t, normalRepository, normalEffectID, effects.StateExecuted)
+	stopSurveyEffectRuntime(t, stop, done)
+	receivedMu.Lock()
+	normalBodies := append([]string(nil), received...)
+	receivedMu.Unlock()
+	if len(normalBodies) != 2 || !strings.Contains(normalBodies[1], `"user_id":"union-integration"`) || !strings.Contains(normalBodies[1], "正常提交") || strings.Contains(normalBodies[1], "must-not-send") {
+		t.Fatalf("normal runtime body=%v", normalBodies)
 	}
 
 	// A fresh runtime observes no re-delivery after the prior process stopped.

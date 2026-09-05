@@ -1032,11 +1032,12 @@ func (r *Repository) RecordCompletionTestEffect(ctx context.Context, qid surveyp
 	if err != nil {
 		return err
 	}
-	if qid < 1 || !strings.HasPrefix(testRunID, "questionnaire-test-") || !validCompletionReference(configurationRef) || effectID == "" || !validCompletionEffectState(state) {
+	receiptState, ok := completionTestReceiptStatus(state)
+	if qid < 1 || !strings.HasPrefix(testRunID, "questionnaire-test-") || !validCompletionReference(configurationRef) || effectID == "" || !ok {
 		return surveyport.ErrInvalid
 	}
 	var priorEffect, priorRef, priorRun string
-	err = t.QueryRow(ctx, `INSERT INTO survey_external_operation_receipts(questionnaire_id,operation_kind,configuration_ref,effect_id,status,occurred_at,read_only_legacy,replayable,idempotency_key_digest,source_system,source_table,source_pk,created_at,updated_at) VALUES($1,'external_push',$2,$3,$4,$5,FALSE,TRUE,$6,'survey','completion_test_push_snapshots',$7,$5,$5) ON CONFLICT(idempotency_key_digest) DO UPDATE SET updated_at=survey_external_operation_receipts.updated_at RETURNING effect_id,configuration_ref,source_pk`, qid, configurationRef, effectID, state, now, digest[:], testRunID).Scan(&priorEffect, &priorRef, &priorRun)
+	err = t.QueryRow(ctx, `INSERT INTO survey_external_operation_receipts(questionnaire_id,operation_kind,configuration_ref,effect_id,status,occurred_at,read_only_legacy,replayable,idempotency_key_digest,source_system,source_table,source_pk,created_at,updated_at) VALUES($1,'external_push',$2,$3,$4,$5,FALSE,TRUE,$6,'survey','completion_test_push_snapshots',$7,$5,$5) ON CONFLICT(idempotency_key_digest) DO UPDATE SET updated_at=survey_external_operation_receipts.updated_at RETURNING effect_id,configuration_ref,source_pk`, qid, configurationRef, effectID, receiptState, now, digest[:], testRunID).Scan(&priorEffect, &priorRef, &priorRun)
 	if err != nil {
 		return mapError(err)
 	}
@@ -1046,12 +1047,22 @@ func (r *Repository) RecordCompletionTestEffect(ctx context.Context, qid surveyp
 	return nil
 }
 
-func validCompletionEffectState(value string) bool {
+// completionTestReceiptStatus translates External Effects states into the
+// older Survey receipt vocabulary. The mapping is only used for a replay's
+// prospective INSERT: an existing receipt retains the terminal execution
+// facts recorded by CompleteCompletionEffect in the EER completion UoW.
+func completionTestReceiptStatus(value string) (string, bool) {
 	switch value {
-	case "accepted", "queued", "attempted", "executed", "outcome_unknown", "reconciled", "retryable_failed", "final_failed", "cancelled":
-		return true
+	case "accepted", "queued", "attempted", "executed", "outcome_unknown", "reconciled":
+		return value, true
+	case "retryable_failed":
+		return "attempted", true
+	case "final_failed":
+		return "failed", true
+	case "cancelled":
+		return "skipped", true
 	}
-	return false
+	return "", false
 }
 
 // completionPayloadQuerier permits the outbound provider to reconstruct its

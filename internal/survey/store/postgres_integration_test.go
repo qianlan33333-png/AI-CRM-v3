@@ -364,6 +364,85 @@ func TestPostgreSQLSyntheticCompletionTestSnapshotReplaysWithoutCustomer(t *test
 	}
 }
 
+func TestPostgreSQLSyntheticCompletionTerminalReplayKeepsExecutionFacts(t *testing.T) {
+	native, cleanup := surveyIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	now := time.Date(2026, 9, 5, 13, 30, 0, 0, time.UTC)
+	var actorID, questionnaireID int64
+	if err := native.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name) VALUES('survey-terminal-replay','$argon2id$test','Survey terminal replay') RETURNING id`).Scan(&actorID); err != nil {
+		t.Fatal(err)
+	}
+	if err := native.QueryRow(ctx, `INSERT INTO survey_questionnaires(name,title,description,mode,answer_display_mode,slug,status,created_by,updated_by,created_at,updated_at) VALUES('Synthetic terminal replay','Synthetic terminal replay','','survey','all_in_one','synthetic-terminal-replay','disabled',$1,$1,$2,$2) RETURNING id`, actorID, now).Scan(&questionnaireID); err != nil {
+		t.Fatal(err)
+	}
+	wrapper, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uow, err := platformpostgres.NewUnitOfWork(wrapper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cipher, err := secure.NewCipher(base64.RawStdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := NewPostgreSQL(native, uow, cipher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name, terminal, wantStatus string
+		callAttempted              bool
+		resultReceived             *bool
+	}{
+		{name: "retryable", terminal: "retryable_failed", wantStatus: "attempted", callAttempted: true, resultReceived: boolPointer(true)},
+		{name: "final", terminal: "final_failed", wantStatus: "failed", callAttempted: true, resultReceived: boolPointer(true)},
+		{name: "cancelled", terminal: "cancelled", wantStatus: "queued", callAttempted: false, resultReceived: nil},
+	}
+	for index, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			testRunID := "questionnaire-test-" + strings.Repeat(string(rune('a'+index)), 32)
+			effectID := "eer_terminal_" + tc.name
+			digest := sha256.Sum256([]byte("survey-terminal-replay:" + tc.name))
+			if err := uow.Within(ctx, func(tx context.Context) error {
+				return repository.RecordCompletionTestEffect(tx, surveyport.ID(questionnaireID), testRunID, "test-webhook", effectID, "queued", digest, now)
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if tc.terminal != "cancelled" {
+				if err := uow.Within(ctx, func(tx context.Context) error {
+					return repository.CompleteCompletionEffect(tx, effectID, tc.terminal, tc.callAttempted, tc.callAttempted, tc.resultReceived, "sha256:"+strings.Repeat("a", 64), 1, now.Add(time.Minute))
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// EER can return a terminal projection when the same operator key is
+			// replayed. The prospective insert must satisfy the legacy receipt
+			// CHECK while the existing terminal execution facts remain unchanged.
+			if err := uow.Within(ctx, func(tx context.Context) error {
+				return repository.RecordCompletionTestEffect(tx, surveyport.ID(questionnaireID), testRunID, "test-webhook", effectID, tc.terminal, digest, now.Add(2*time.Minute))
+			}); err != nil {
+				t.Fatalf("terminal replay: %v", err)
+			}
+			var status string
+			var callAttempted, realCall *bool
+			var resultReceived *bool
+			var attempt *int32
+			if err := native.QueryRow(ctx, `SELECT status,provider_call_attempted,provider_real_call_executed,provider_result_received,provider_attempt_number FROM survey_external_operation_receipts WHERE effect_id=$1`, effectID).Scan(&status, &callAttempted, &realCall, &resultReceived, &attempt); err != nil {
+				t.Fatal(err)
+			}
+			if status != tc.wantStatus || (tc.terminal == "cancelled" && (callAttempted != nil || realCall != nil || resultReceived != nil || attempt != nil)) {
+				t.Fatalf("terminal replay status=%q call=%v real=%v result=%v attempt=%v", status, callAttempted, realCall, resultReceived, attempt)
+			}
+			if tc.terminal != "cancelled" && (callAttempted == nil || !*callAttempted || realCall == nil || !*realCall || resultReceived == nil || !*resultReceived || attempt == nil || *attempt != 1) {
+				t.Fatalf("terminal facts changed call=%v real=%v result=%v attempt=%v", callAttempted, realCall, resultReceived, attempt)
+			}
+		})
+	}
+}
+
 func TestPostgreSQLSetStatusPersistsReceiptAuditAndOutboxAtomically(t *testing.T) {
 	native, cleanup := surveyIntegrationPool(t)
 	defer cleanup()
