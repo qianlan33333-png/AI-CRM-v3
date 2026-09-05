@@ -34,6 +34,24 @@ type GroupMessageSender interface {
 	SendGroupMessage(context.Context, GroupMessageRequest) (GroupMessageReceipt, bool, error)
 }
 
+// GroupMessageTaskReader is deliberately a separate, read-only evidence
+// boundary. A task msgid is accepted input; callers must still match sender,
+// chat and the returned status before treating it as delivery evidence.
+type GroupMessageTaskReader interface {
+	GetGroupMessageSendResult(context.Context, string, string, int) (GroupMessageSendResultPage, error)
+}
+
+type GroupMessageSendResultPage struct {
+	Items      []GroupMessageSendResult
+	NextCursor string
+}
+
+type GroupMessageSendResult struct {
+	SenderUserID string
+	ChatID       string
+	Status       int
+}
+
 type GroupMessageSendError interface {
 	error
 	OutcomeUnknown() bool

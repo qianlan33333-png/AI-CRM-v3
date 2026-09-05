@@ -60,6 +60,14 @@ func (s *RuntimeService) SetDispatchEnabled(enabled bool) {
 	}
 }
 
+// SetEvidenceVerifier is composition-only wiring for the opt-in provider
+// read capability. The default verifier remains fail-closed.
+func (s *RuntimeService) SetEvidenceVerifier(verifier groupopsport.ReconciliationEvidenceVerifier) {
+	if s != nil && verifier != nil {
+		s.evidence = verifier
+	}
+}
+
 func (s *RuntimeService) safety() groupopsport.RuntimeSafety {
 	if s != nil && s.dispatchEnabled {
 		return groupopsport.DispatchEnabledRuntimeSafety()
@@ -406,23 +414,37 @@ func (s *RuntimeService) ManualReconcile(ctx context.Context, command groupopspo
 	if now.Before(command.LeaseExpiresAt) {
 		return groupopsport.Execution{}, ErrConflict
 	}
-	var result groupopsport.Execution
+	var existing groupopsport.Execution
 	err := s.uow.Within(ctx, func(tx context.Context) error {
-		existing, err := s.runtime.GetExecution(tx, command.ExecutionID)
+		var loadErr error
+		existing, loadErr = s.runtime.GetExecution(tx, command.ExecutionID)
+		return loadErr
+	})
+	if err != nil || existing.State != groupopsport.ExecutionOutcomeUnknown || existing.ExternalEffectID == "" {
+		if err != nil {
+			return groupopsport.Execution{}, classify(err)
+		}
+		return groupopsport.Execution{}, ErrStateConflict
+	}
+	// The receipt query is a provider read. It must complete before the local
+	// CAS transaction begins, so a slow WeCom page never holds a database lock.
+	verified, verifyErr := s.evidence.VerifyReconciliationEvidence(ctx, groupopsport.ReconciliationEvidence{ExecutionID: existing.ID, ExternalEffectID: existing.ExternalEffectID, EvidenceDigest: command.EvidenceDigest})
+	if verifyErr != nil || !effectport.ValidDigest(effectport.Digest(verified.EvidenceDigest)) || verified.EvidenceDigest != command.EvidenceDigest {
+		return groupopsport.Execution{}, ErrConflict
+	}
+	var result groupopsport.Execution
+	err = s.uow.Within(ctx, func(tx context.Context) error {
+		current, err := s.runtime.GetExecution(tx, command.ExecutionID)
 		if err != nil {
 			return err
 		}
-		if existing.State != groupopsport.ExecutionOutcomeUnknown || existing.ExternalEffectID == "" {
+		if current.State != groupopsport.ExecutionOutcomeUnknown || current.ExternalEffectID != existing.ExternalEffectID {
 			return ErrStateConflict
-		}
-		verified, err := s.evidence.VerifyReconciliationEvidence(tx, groupopsport.ReconciliationEvidence{ExecutionID: existing.ID, ExternalEffectID: existing.ExternalEffectID, EvidenceDigest: command.EvidenceDigest})
-		if err != nil || !effectport.ValidDigest(effectport.Digest(verified.EvidenceDigest)) || verified.EvidenceDigest != command.EvidenceDigest {
-			return ErrConflict
 		}
 		if err = s.reconciler.ReconcileExternalEffect(tx, groupopsport.ExternalReconcileCommand{EffectID: existing.ExternalEffectID, ReceiptKey: command.IdempotencyKey, EvidenceDigest: command.EvidenceDigest, ActorID: command.ActorID, Generation: command.Generation, Fence: command.Fence, LeaseExpiresAt: command.LeaseExpiresAt}); err != nil {
 			return err
 		}
-		result, err = s.runtime.ReconcileExecution(tx, existing.ID, command.EvidenceDigest, verified.DeliveryProven, now)
+		result, err = s.runtime.ReconcileExecution(tx, current.ID, command.EvidenceDigest, verified.DeliveryProven, now)
 		return err
 	})
 	if err != nil {

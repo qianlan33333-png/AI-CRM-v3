@@ -40,6 +40,7 @@ import (
 	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	groupops "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops"
 	groupopsapp "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/app"
+	groupopsport "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/port"
 	groupopsstore "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/store"
 	hxcapp "github.com/qianlan33333-png/AI-CRM-v3/internal/hxcdashboard/app"
 	hxchttp "github.com/qianlan33333-png/AI-CRM-v3/internal/hxcdashboard/http"
@@ -478,7 +479,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	}
 	groupOpsStaff := groupOpsStaffAdapter{access: accessRepository, owners: groupOpsRepository}
 	groupOpsDirectory := &wecomGroupOpsDirectory{enabled: cfg.GroupOps.ProviderEnabled, staff: groupOpsStaff}
-	groupOpsEvidence := providerDisabledGroupOpsEvidence{}
+	groupOpsEvidence := groupopsport.ReconciliationEvidenceVerifier(providerDisabledGroupOpsEvidence{})
 	groupOpsService := groupopsapp.NewService(uow, groupOpsRepository, groupOpsStaff, groupOpsRepository)
 	groupOpsHistory := groupopsapp.NewHistoryService(uow, groupOpsRepository)
 	groupOpsRuntime := groupopsapp.NewRuntimeService(uow, groupOpsRepository, groupOpsRepository, effectRepository, groupOpsStaff, groupOpsDirectory, groupOpsStaff, groupOpsEvidence, groupOpsExternalReconciler{repository: effectRepository}, groupOpsMaterials)
@@ -846,6 +847,10 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	}
 	groupOpsDirectory.groups = providerClient
 	groupOpsDirectory.staffs = providerClient
+	if cfg.Effects.ProviderEnabled && cfg.WeCom.Enabled && cfg.GroupOps.ProviderEnabled {
+		groupOpsEvidence = wecomGroupOpsEvidence{uow: uow, receipts: groupOpsRepository, reader: providerClient}
+		groupOpsRuntime.SetEvidenceVerifier(groupOpsEvidence)
+	}
 	groupOpsProvider, err = outbound.NewGroupMessageProvider(outbound.GroupMessageProviderConfig{
 		Enabled:           cfg.Effects.ProviderEnabled && cfg.WeCom.Enabled && cfg.GroupOps.ProviderEnabled,
 		PreparationWriter: mediaPreparationBindings.Writer,

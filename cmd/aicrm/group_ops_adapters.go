@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -44,6 +45,65 @@ func (providerDisabledGroupOpsEvidence) VerifyReconciliationEvidence(context.Con
 
 var _ groupopsport.GroupDirectorySource = providerDisabledGroupOpsDirectory{}
 var _ groupopsport.ReconciliationEvidenceVerifier = providerDisabledGroupOpsEvidence{}
+
+// wecomGroupOpsEvidence performs its provider pagination outside every UoW,
+// then returns only a digest-bound observation. A msgid alone is task
+// acceptance; delivery is true only for a matching sender/chat result status.
+type wecomGroupOpsEvidence struct {
+	uow interface {
+		Within(context.Context, func(context.Context) error) error
+	}
+	receipts groupopsport.GroupMessageReceiptReader
+	reader   wecomport.GroupMessageTaskReader
+}
+
+func (adapter wecomGroupOpsEvidence) VerifyReconciliationEvidence(ctx context.Context, input groupopsport.ReconciliationEvidence) (groupopsport.ReconciliationEvidenceResult, error) {
+	if adapter.uow == nil || adapter.receipts == nil || adapter.reader == nil {
+		return groupopsport.ReconciliationEvidenceResult{}, groupopsapp.ErrProviderDisabled
+	}
+	var receipt groupopsport.GroupMessageReceipt
+	var found bool
+	err := adapter.uow.Within(ctx, func(tx context.Context) error {
+		var readErr error
+		receipt, found, readErr = adapter.receipts.FindGroupMessageReceipt(tx, input)
+		return readErr
+	})
+	if err != nil || !found {
+		if err != nil {
+			return groupopsport.ReconciliationEvidenceResult{}, err
+		}
+		return groupopsport.ReconciliationEvidenceResult{}, groupopsapp.ErrProviderDisabled
+	}
+	cursor := ""
+	seen := map[string]struct{}{}
+	for {
+		page, readErr := adapter.reader.GetGroupMessageSendResult(ctx, receipt.MessageID, cursor, 100)
+		if readErr != nil {
+			return groupopsport.ReconciliationEvidenceResult{}, readErr
+		}
+		for _, item := range page.Items {
+			if item.SenderUserID != receipt.SenderUserID || item.ChatID != receipt.ChatID {
+				continue
+			}
+			digest := string(effectport.Hash("group-ops.wecom-delivery.v1", receipt.MessageID, item.SenderUserID, item.ChatID, strconv.Itoa(item.Status)))
+			if digest != input.EvidenceDigest {
+				return groupopsport.ReconciliationEvidenceResult{}, groupopsapp.ErrConflict
+			}
+			return groupopsport.ReconciliationEvidenceResult{DeliveryProven: item.Status == 1, EvidenceDigest: digest}, nil
+		}
+		if page.NextCursor == "" {
+			break
+		}
+		if _, duplicate := seen[page.NextCursor]; duplicate {
+			return groupopsport.ReconciliationEvidenceResult{}, groupopsapp.ErrConflict
+		}
+		seen[page.NextCursor] = struct{}{}
+		cursor = page.NextCursor
+	}
+	return groupopsport.ReconciliationEvidenceResult{}, groupopsapp.ErrProviderDisabled
+}
+
+var _ groupopsport.ReconciliationEvidenceVerifier = wecomGroupOpsEvidence{}
 
 // wecomGroupOpsDirectory performs every provider read before RuntimeService
 // opens its persistence transaction. A full snapshot is required before a
