@@ -202,7 +202,7 @@ func TestAIAssistantAndGroupOpsShareRiverOutboundAndEffects(t *testing.T) {
 		t.Fatal(err)
 	}
 	routes := handler.Routes()
-	created := journeySignedJSON(t, routes, now, "01234567890123456789012345678901", "joint-nonce-1", "joint-intake-1", map[string]any{"external_userid": "external-1", "owner_userid": "staff-1", "content_package": map[string]any{"content_text": "joint private"}, "external_event_id": "joint-event-1"})
+	created := journeySignedJSON(t, routes, now, "01234567890123456789012345678901", "joint-nonce-00000001", "joint-intake-key-00001", map[string]any{"external_userid": "external-1", "owner_userid": "staff-1", "content_package": map[string]any{"content_text": "joint private"}, "external_event_id": "joint-event-1"})
 	var intake struct {
 		Plan struct {
 			ID int64 `json:"id"`
