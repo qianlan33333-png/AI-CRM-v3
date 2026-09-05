@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -42,7 +43,6 @@ import (
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 	"github.com/riverqueue/river/rivermigrate"
-	"github.com/riverqueue/river/rivertype"
 )
 
 // TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL proves
@@ -74,7 +74,9 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 	}
 
 	workers := river.NewWorkers()
-	if err = river.AddWorkerSafely[externaleffects.EffectJobArgs](workers, externaleffects.NewWorker(nil, nil)); err != nil {
+	provider := &automationAudienceProvider{unknownCall: 4}
+	effectWorker := externaleffects.NewWorker(nil, provider)
+	if err = river.AddWorkerSafely[externaleffects.EffectJobArgs](workers, effectWorker); err != nil {
 		t.Fatal(err)
 	}
 	refreshWorker := segment.NewAudienceRefreshWorker()
@@ -101,7 +103,8 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	evaluator, err := segmentapp.NewEvaluator(segmentcompiler.Compiler{}, automationAudienceSource{}, automationAudienceCanonical{})
+	source := &automationAudienceSource{ids: []customerdomain.CustomerID{101, 202}}
+	evaluator, err := segmentapp.NewEvaluator(segmentcompiler.Compiler{}, source, automationAudienceCanonical{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,18 +118,6 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 
 	now := time.Date(2026, 9, 5, 20, 0, 0, 0, time.UTC)
 	packageID := automationAudiencePackage(t, ctx, uow, segmentRepo, now)
-	refresh, err := snapshots.AcceptRefresh(ctx, segmentapp.RefreshCommand{PackageID: packageID, Actor: 1, IdempotencyKey: "audience-runtime-refresh-0001", ReferenceTime: now})
-	if err != nil || refresh.RiverJobID == nil {
-		t.Fatalf("accept refresh=%+v err=%v", refresh, err)
-	}
-	if err = refreshWorker.Work(ctx, &river.Job[segment.AudienceRefreshJobArgs]{JobRow: &rivertype.JobRow{Attempt: 1, MaxAttempts: 12}, Args: segment.AudienceRefreshJobArgs{RefreshRunID: refresh.ID}}); err != nil {
-		t.Fatal(err)
-	}
-	published, found, err := snapshots.PublishedSnapshot(ctx, segmentport.PackageID(packageID))
-	if err != nil || !found || published.MemberCount != 2 {
-		t.Fatalf("snapshot=%+v found=%v err=%v", published, found, err)
-	}
-
 	digest := [32]byte{1}
 	execution, err := segmentapp.NewExecutionService(uow, segmentRepo, automationAudienceAgent{digest: digest}, automationAudienceStaff{}, true)
 	if err != nil {
@@ -165,6 +156,9 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 	if err = memberWorker.Bind(snapshots, automationAudienceEnrollmentSink{runtime: runtimeService}); err != nil {
 		t.Fatal(err)
 	}
+	if err = effectWorker.BindRepository(effects); err != nil {
+		t.Fatal(err)
+	}
 
 	approval := int64(1)
 	policy, err := runtimeService.CreatePolicy(ctx, automationapp.PolicyCommand{Code: "audience-entry", Name: "Audience entry", PackageID: segmentport.PackageID(packageID), TriggerKind: automationport.TriggerAudienceMemberEnteredV1, ActionKind: automationport.ActionOutboundMessage, ActionConfig: json.RawMessage(`{"agent_id":77}`), QuietHours: json.RawMessage(`{"timezone":"UTC","start":"22:00","end":"08:00"}`), SingleRunLimit: 100, ApprovalStaffID: &approval, Actor: 1, IdempotencyKey: "audience-runtime-policy-0001"})
@@ -174,13 +168,29 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 	if _, err = runtimeService.TransitionPolicy(ctx, automationapp.PolicyLifecycleCommand{PolicyID: policy.ID, ExpectedVersion: policy.Version, Actor: 1, Target: automationdomain.PolicyActive, IdempotencyKey: "audience-runtime-activate-0001"}); err != nil {
 		t.Fatal(err)
 	}
-	if err = memberWorker.Work(ctx, &river.Job[segment.AudienceMemberEventDispatchJobArgs]{JobRow: &rivertype.JobRow{Attempt: 1, MaxAttempts: 12}, Args: segment.AudienceMemberEventDispatchJobArgs{SnapshotID: published.ID}}); err != nil {
+	runtime, err := platformjobqueue.NewRuntime(native, workers, segment.AudienceRefreshQueue, platformjobqueue.OutboundQueue)
+	if err != nil {
 		t.Fatal(err)
 	}
-	// A River replay must reuse enrollment/effect receipts instead of sending again.
-	if err = memberWorker.Work(ctx, &river.Job[segment.AudienceMemberEventDispatchJobArgs]{JobRow: &rivertype.JobRow{Attempt: 2, MaxAttempts: 12}, Args: segment.AudienceMemberEventDispatchJobArgs{SnapshotID: published.ID}}); err != nil {
-		t.Fatal(err)
+	stop := automationAudienceStartRuntime(t, runtime)
+	refresh, err := snapshots.AcceptRefresh(ctx, segmentapp.RefreshCommand{PackageID: packageID, Actor: 1, IdempotencyKey: "audience-runtime-refresh-0001", ReferenceTime: now})
+	if err != nil || refresh.RiverJobID == nil {
+		t.Fatalf("accept refresh=%+v err=%v", refresh, err)
 	}
+	var published segmentport.Snapshot
+	automationAudienceEventually(t, "published audience and automatic delivery", func() bool {
+		var found bool
+		published, found, err = snapshots.PublishedSnapshot(ctx, segmentport.PackageID(packageID))
+		if err != nil || !found || published.MemberCount != 2 {
+			return false
+		}
+		var complete int
+		if native.QueryRow(ctx, `SELECT count(*) FROM outbound_message_intents WHERE source_kind='automation_enrollment' AND state='provider_accepted'`).Scan(&complete) != nil {
+			return false
+		}
+		return complete == 2
+	})
+	stop()
 	var enrollments, automaticEffects int
 	if err = native.QueryRow(ctx, `SELECT count(*) FROM automation_enrollments`).Scan(&enrollments); err != nil {
 		t.Fatal(err)
@@ -189,7 +199,7 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 		t.Fatal(err)
 	}
 	if enrollments != 2 || automaticEffects != 2 {
-		t.Fatalf("replayed entered events created enrollments=%d intents=%d", enrollments, automaticEffects)
+		t.Fatalf("entered events created enrollments=%d intents=%d", enrollments, automaticEffects)
 	}
 
 	preview, err := runtimeService.CreateBroadcastPreview(ctx, packageID, 1)
@@ -200,41 +210,24 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 	if err != nil || manual.TargetCount != 2 {
 		t.Fatalf("manual=%+v err=%v", manual, err)
 	}
-
-	rows, err := native.Query(ctx, `SELECT effect_id,river_job_id FROM external_effect_jobs ORDER BY id`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer rows.Close()
-	type effectJob struct{ effectID, riverID int64 }
-	var jobs []effectJob
-	for rows.Next() {
-		var j effectJob
-		if err = rows.Scan(&j.effectID, &j.riverID); err != nil {
-			t.Fatal(err)
+	// The manual intents were accepted while the first runtime was stopped.
+	// Restarting the shared runtime is what executes their already-committed
+	// EER jobs; it never recreates the entered-policy sends from the first run.
+	stop = automationAudienceStartRuntime(t, runtime)
+	automationAudienceEventually(t, "manual effects after runtime restart", func() bool {
+		var accepted, unknown int
+		if native.QueryRow(ctx, `SELECT count(*) FROM automation_run_recipients WHERE run_id=$1 AND state='provider_accepted'`, manual.ID).Scan(&accepted) != nil {
+			return false
 		}
-		jobs = append(jobs, j)
-	}
-	if err = rows.Err(); err != nil {
-		t.Fatal(err)
-	}
-	if len(jobs) != 4 {
-		t.Fatalf("external jobs=%+v", jobs)
-	}
+		if native.QueryRow(ctx, `SELECT count(*) FROM automation_run_recipients WHERE run_id=$1 AND state='outcome_unknown'`, manual.ID).Scan(&unknown) != nil {
+			return false
+		}
+		return accepted == 1 && unknown == 1 && provider.Calls() == 4
+	})
+	stop()
 	var unknownEffect string
-	for i, job := range jobs {
-		effectRef := fmt.Sprintf("eer_%d", job.effectID)
-		completion := effectport.StateExecuted
-		if i == len(jobs)-1 {
-			completion, unknownEffect = effectport.StateUnknown, effectRef
-		}
-		adapter := automationAudienceProvider{result: effectport.AdapterResult{Completion: completion, ReceiptDigest: effectport.Hash("audience-runtime-provider", effectRef), CallAttempted: true, RealExternalCallExecuted: true}}
-		if err = effects.RunAttempt(ctx, job.effectID, 1, job.riverID, &adapter); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if unknownEffect == "" {
-		t.Fatal("expected one unknown provider effect")
+	if err = native.QueryRow(ctx, `SELECT effect_id FROM automation_run_recipients WHERE run_id=$1 AND state='outcome_unknown'`, manual.ID).Scan(&unknownEffect); err != nil {
+		t.Fatal(err)
 	}
 	var unknownRun int64
 	if err = native.QueryRow(ctx, `SELECT run_id FROM automation_run_recipients WHERE effect_id=$1`, unknownEffect).Scan(&unknownRun); err != nil {
@@ -254,6 +247,10 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 	evidence := string(effectport.Hash("audience-runtime-independent-evidence", unknownEffect))
 	if _, err = runtimeService.ReconcileRunEffect(ctx, automationapp.RunEffectReconcileCommand{RunID: unknownRun, Actor: 1, Generation: candidate.Generation, Fence: candidate.Fence, EffectID: unknownEffect, LeaseExpiresAt: candidate.LeaseExpiresAt, EvidenceDigest: evidence[len("sha256:"):], Resolution: "provider_accepted", IdempotencyKey: "audience-runtime-reconcile-0001"}); err != nil {
 		t.Fatal(err)
+	}
+	replayed, err := runtimeService.ConfirmRun(ctx, automationapp.RunConfirmCommand{PackageID: packageID, PackageVersion: preview.PackageVersion, SnapshotID: preview.SnapshotID, AgentID: preview.AgentID, AgentPublishedVersion: preview.AgentPublishedVersion, PreviewDigest: automationapp.PreviewDigestString(preview), Actor: 1, IdempotencyKey: "audience-runtime-manual-0001"})
+	if err != nil || replayed.ID != manual.ID || provider.Calls() != 4 {
+		t.Fatalf("manual replay=%+v provider calls=%d err=%v", replayed, provider.Calls(), err)
 	}
 
 	readHandler, err := automationhttp.NewRuntimeHandler(runtimeService, automationAudienceSecurity{})
@@ -281,12 +278,40 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 	if before != after {
 		t.Fatalf("history GET wrote audit rows: before=%d after=%d", before, after)
 	}
+	// Daily exits are Segment facts only. A third runtime start processes the
+	// persisted daily job, but no member-entered event or outbound send appears.
+	source.ids = []customerdomain.CustomerID{101}
+	stop = automationAudienceStartRuntime(t, runtime)
+	daily, err := snapshots.AcceptRefresh(ctx, segmentapp.RefreshCommand{PackageID: packageID, Actor: 1, IdempotencyKey: "audience-runtime-daily-exit-0001", RefreshKind: segmentdomain.RefreshDaily, ReferenceTime: now.Add(time.Hour)})
+	if err != nil || daily.RiverJobID == nil {
+		t.Fatal(err)
+	}
+	var exitSnapshot segmentport.Snapshot
+	automationAudienceEventually(t, "daily exit without entered send", func() bool {
+		var found bool
+		exitSnapshot, found, err = snapshots.PublishedSnapshot(ctx, segmentport.PackageID(packageID))
+		if err != nil || !found || exitSnapshot.ID == published.ID {
+			return false
+		}
+		var exits, entered, intents int
+		if native.QueryRow(ctx, `SELECT count(*) FROM segment_audience_member_exit_events WHERE snapshot_id=$1 AND customer_id=202`, exitSnapshot.ID).Scan(&exits) != nil {
+			return false
+		}
+		if native.QueryRow(ctx, `SELECT count(*) FROM segment_audience_member_events WHERE snapshot_id=$1`, exitSnapshot.ID).Scan(&entered) != nil {
+			return false
+		}
+		if native.QueryRow(ctx, `SELECT count(*) FROM outbound_message_intents`).Scan(&intents) != nil {
+			return false
+		}
+		return exits == 1 && entered == 0 && intents == 4 && provider.Calls() == 4
+	})
+	stop()
 }
 
-type automationAudienceSource struct{}
+type automationAudienceSource struct{ ids []customerdomain.CustomerID }
 
-func (automationAudienceSource) Evaluate(_ context.Context, _ segmentport.Definition, reference time.Time) (segmentport.Evaluation, error) {
-	return segmentport.Evaluation{CustomerIDs: []customerdomain.CustomerID{101, 202}, ReferenceAt: reference.UTC()}, nil
+func (s *automationAudienceSource) Evaluate(_ context.Context, _ segmentport.Definition, reference time.Time) (segmentport.Evaluation, error) {
+	return segmentport.Evaluation{CustomerIDs: append([]customerdomain.CustomerID(nil), s.ids...), ReferenceAt: reference.UTC()}, nil
 }
 
 type automationAudienceCanonical struct{}
@@ -317,11 +342,22 @@ func (s automationAudienceEnrollmentSink) HandleAudienceMemberEntered(ctx contex
 	return err
 }
 
-type automationAudienceProvider struct{ result effectport.AdapterResult }
-
-func (p *automationAudienceProvider) Execute(context.Context, effectport.Envelope, effectport.Attempt) (effectport.AdapterResult, error) {
-	return p.result, nil
+type automationAudienceProvider struct {
+	mu                 sync.Mutex
+	calls, unknownCall int
 }
+
+func (p *automationAudienceProvider) Execute(_ context.Context, envelope effectport.Envelope, _ effectport.Attempt) (effectport.AdapterResult, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.calls++
+	state := effectport.StateExecuted
+	if p.calls == p.unknownCall {
+		state = effectport.StateUnknown
+	}
+	return effectport.AdapterResult{Completion: state, ReceiptDigest: effectport.Hash("audience-runtime-provider", string(envelope.Fingerprint())), CallAttempted: true, RealExternalCallExecuted: true}, nil
+}
+func (p *automationAudienceProvider) Calls() int { p.mu.Lock(); defer p.mu.Unlock(); return p.calls }
 
 type automationAudienceSecurity struct{}
 
@@ -378,6 +414,30 @@ func automationAudienceCombinedDigest(d [32]byte) string {
 	return hex.EncodeToString(out[:])
 }
 func automationAudienceInt(v int64) string { return strconv.FormatInt(v, 10) }
+
+func automationAudienceStartRuntime(t *testing.T, runtime *platformjobqueue.Runtime) func() {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- runtime.Run(ctx) }()
+	return func() {
+		cancel()
+		if err := <-done; err != nil {
+			t.Fatalf("River runtime stop=%v", err)
+		}
+	}
+}
+
+func automationAudienceEventually(t *testing.T, label string, ready func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(12 * time.Second)
+	for !ready() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", label)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+}
 
 func automationAudienceRuntimePool(t *testing.T) (*pgxpool.Pool, func()) {
 	t.Helper()
