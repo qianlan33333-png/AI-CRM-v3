@@ -165,6 +165,53 @@ func TestClientGroupMessageUsesExactChatIDListAndRejectsPartialReceipt(t *testin
 	}
 }
 
+func TestClientGroupDirectoryReadsUseScopedListThenDetail(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/cgi-bin/gettoken":
+			if request.URL.Query().Get("corpsecret") != "contact-secret" {
+				t.Fatalf("wrong token secret")
+			}
+			_, _ = writer.Write([]byte(`{"errcode":0,"access_token":"contact-token","expires_in":7200}`))
+		case "/cgi-bin/externalcontact/groupchat/list":
+			var body map[string]any
+			if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			filter, ok := body["owner_filter"].(map[string]any)
+			ids, idsOK := filter["userid_list"].([]any)
+			if !ok || !idsOK || len(ids) != 1 || ids[0] != "owner-1" || body["status_filter"] != float64(0) || body["cursor"] != "" || body["limit"] != float64(100) {
+				t.Fatalf("list request=%v", body)
+			}
+			_, _ = writer.Write([]byte(`{"errcode":0,"group_chat_list":[{"chat_id":"chat-1","status":0}],"next_cursor":"cursor-2"}`))
+		case "/cgi-bin/externalcontact/groupchat/get":
+			var body map[string]any
+			if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if body["chat_id"] != "chat-1" || body["need_name"] != float64(1) {
+				t.Fatalf("detail request=%v", body)
+			}
+			_, _ = writer.Write([]byte(`{"errcode":0,"group_chat":{"chat_id":"chat-1","owner":"owner-1","name":"Group one","member_list":[{"userid":"u-1"}]}}`))
+		default:
+			t.Fatalf("unexpected endpoint=%s", request.URL.Path)
+		}
+	}))
+	defer server.Close()
+	client, err := NewDirectory(Config{Enabled: true, CorpID: "corp", ContactSecret: "contact-secret", APIBase: server.URL, HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := client.ListGroupChats(context.Background(), "owner-1", "", 100)
+	if err != nil || len(page.Items) != 1 || page.Items[0].ChatID != "chat-1" || page.NextCursor != "cursor-2" {
+		t.Fatalf("page=%+v err=%v", page, err)
+	}
+	detail, err := client.GetGroupChat(context.Background(), "chat-1")
+	if err != nil || detail.ChatID != "chat-1" || detail.OwnerUserID != "owner-1" || detail.Name != "Group one" || detail.MemberCount != 1 {
+		t.Fatalf("detail=%+v err=%v", detail, err)
+	}
+}
+
 func TestClientRejectsProviderErrorsOversizeAndDoesNotExposeSecrets(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.URL.Path == "/cgi-bin/gettoken" {
