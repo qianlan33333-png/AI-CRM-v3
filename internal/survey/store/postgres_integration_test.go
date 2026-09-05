@@ -334,6 +334,17 @@ func TestPostgreSQLSyntheticCompletionTestSnapshotReplaysWithoutCustomer(t *test
 	if !payload.SyntheticTest || payload.TestRunID != value.TestRunID || payload.CustomerID != 0 || payload.SubmissionID != 0 || payload.ExternalUserID != "questionnaire_test" || len(payload.Answers) != 0 || payload.Policy.CustomParams["campaign"] != "autumn" {
 		t.Fatalf("synthetic payload=%+v", payload)
 	}
+	// The outbound provider runs after the accepting transaction has committed.
+	// It must reconstruct this protected synthetic payload through the
+	// repository's read-only pool path, not require a transaction that no
+	// longer exists.
+	payload, err = repository.ReadCompletionPayload(ctx, value.SourceDigest)
+	if err != nil {
+		t.Fatalf("synthetic payload outside transaction: %v", err)
+	}
+	if !payload.SyntheticTest || payload.TestRunID != value.TestRunID || payload.ExternalUserID != "questionnaire_test" || len(payload.Answers) != 0 || payload.Policy.CustomParams["campaign"] != "autumn" {
+		t.Fatalf("outside transaction synthetic payload=%+v", payload)
+	}
 	if err = uow.Within(ctx, func(tx context.Context) error {
 		_, didCreate, recordErr := repository.RecordCompletionTestSnapshot(tx, value)
 		if recordErr != nil || didCreate {

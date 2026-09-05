@@ -1054,11 +1054,24 @@ func validCompletionEffectState(value string) bool {
 	return false
 }
 
-func (r *Repository) ReadCompletionPayload(ctx context.Context, sourceDigest string) (surveyport.CompletionPayload, error) {
-	t, err := tx(ctx)
-	if err != nil {
-		return surveyport.CompletionPayload{}, err
+// completionPayloadQuerier permits the outbound provider to reconstruct its
+// protected payload after External Effects has committed the attempt. Writes
+// still require a Unit of Work; this is the deliberately read-only exception
+// that uses the repository pool when no transaction is bound to the context.
+type completionPayloadQuerier interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}
+
+func (r *Repository) completionPayloadQuerier(ctx context.Context) completionPayloadQuerier {
+	if bound, err := tx(ctx); err == nil {
+		return bound
 	}
+	return r.pool
+}
+
+func (r *Repository) ReadCompletionPayload(ctx context.Context, sourceDigest string) (surveyport.CompletionPayload, error) {
+	t := r.completionPayloadQuerier(ctx)
 	digest, ok := completionDigestBytes(sourceDigest)
 	if !ok {
 		return surveyport.CompletionPayload{}, surveyport.ErrInvalid
@@ -1068,7 +1081,7 @@ func (r *Repository) ReadCompletionPayload(ctx context.Context, sourceDigest str
 	var storedDigest []byte
 	var configurationVersion, identityKind, identityScope string
 	var configurationDigest, metadata, resultSnapshot, identityCiphertext []byte
-	err = t.QueryRow(ctx, `SELECT r.questionnaire_id,r.submission_id,r.configuration_ref,s.customer_id,s.title_snapshot,s.submitted_at,s.payload_digest,p.configuration_version,p.configuration_digest,p.identity_kind,p.identity_scope,p.external_identity_ciphertext,p.metadata,p.result_snapshot FROM survey_external_operation_receipts r JOIN survey_submissions s ON s.id=r.submission_id JOIN survey_completion_push_snapshots p ON p.submission_id=s.id WHERE r.operation_kind='external_push' AND r.idempotency_key_digest=$1`, digest).Scan(&out.QuestionnaireID, &out.SubmissionID, &out.ConfigurationReference, &customer, &out.QuestionnaireTitle, &out.SubmittedAt, &storedDigest, &configurationVersion, &configurationDigest, &identityKind, &identityScope, &identityCiphertext, &metadata, &resultSnapshot)
+	err := t.QueryRow(ctx, `SELECT r.questionnaire_id,r.submission_id,r.configuration_ref,s.customer_id,s.title_snapshot,s.submitted_at,s.payload_digest,p.configuration_version,p.configuration_digest,p.identity_kind,p.identity_scope,p.external_identity_ciphertext,p.metadata,p.result_snapshot FROM survey_external_operation_receipts r JOIN survey_submissions s ON s.id=r.submission_id JOIN survey_completion_push_snapshots p ON p.submission_id=s.id WHERE r.operation_kind='external_push' AND r.idempotency_key_digest=$1`, digest).Scan(&out.QuestionnaireID, &out.SubmissionID, &out.ConfigurationReference, &customer, &out.QuestionnaireTitle, &out.SubmittedAt, &storedDigest, &configurationVersion, &configurationDigest, &identityKind, &identityScope, &identityCiphertext, &metadata, &resultSnapshot)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return r.readCompletionTestPayload(ctx, t, sourceDigest)
@@ -1134,7 +1147,7 @@ func (r *Repository) ReadCompletionPayload(ctx context.Context, sourceDigest str
 	return out, nil
 }
 
-func (r *Repository) readCompletionTestPayload(ctx context.Context, t pgx.Tx, sourceDigest string) (surveyport.CompletionPayload, error) {
+func (r *Repository) readCompletionTestPayload(ctx context.Context, t completionPayloadQuerier, sourceDigest string) (surveyport.CompletionPayload, error) {
 	source, ok := rawCompletionDigest(sourceDigest)
 	if !ok {
 		return surveyport.CompletionPayload{}, surveyport.ErrInvalid
