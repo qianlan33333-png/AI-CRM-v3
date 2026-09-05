@@ -235,7 +235,11 @@ let firstTitle = assessmentDocument.querySelector("[data-question-key]")?.queryS
 click(assessmentDocument.querySelector('[data-assessment-step="preview"]'));
 await waitFor("assessment preview", () => assessmentDocument.querySelector(".h5-question-v2 strong")?.textContent === firstTitle);
 click(assessmentDocument.querySelector("#v2-publish-save"));
-await waitFor("assessment publish", () => assessmentDocument.querySelector('[data-survey-host-publish-status] a[data-survey-host-published-path]')?.getAttribute("href") === "/q/frozen-admin-assessment");
+await waitFor("assessment publish", () => assessmentDocument.querySelector('[data-survey-host-publish-status] a[data-survey-host-published-path]')?.getAttribute("href") === "/q/frozen-admin-assessment").catch((error) => {
+  const toast = assessmentDocument.querySelector("#toast")?.textContent || "";
+  const publishState = assessmentDocument.querySelector('[data-survey-host-publish-status]')?.textContent || "";
+  throw new Error(`${error.message}; toast=${toast}; publish_state=${publishState}; calls=${JSON.stringify(assessment.calls)}`);
+});
 const publishedPath = assessmentDocument.querySelector('[data-survey-host-publish-status] a[data-survey-host-published-path]')?.getAttribute("href") || "";
 if (publishedPath !== "/q/frozen-admin-assessment") throw new Error(`published Host share path=${publishedPath}`);
 await waitFor("assessment save", () => /\?id=[1-9]\d*$/.test(assessment.dom.window.location.search));
