@@ -2,6 +2,7 @@ package port
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
@@ -75,6 +76,13 @@ type OutboundPublishedContent struct {
 }
 type OutboundPublishedContentReader interface {
 	OutboundPublishedContent(context.Context, AgentID, int64) (OutboundPublishedContent, bool, error)
+}
+
+// OutboundContentFreezer captures immutable fixed-content and Media source
+// facts inside the accepting Automation transaction. It returns opaque JSON
+// for the Outbound owner; it never performs Provider preparation or writing.
+type OutboundContentFreezer interface {
+	FreezeOutboundContent(context.Context, OutboundPublishedContent) (json.RawMessage, [32]byte, error)
 }
 
 type PublishedAgentReader interface {

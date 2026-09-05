@@ -178,7 +178,7 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 		// transaction committed, so the Identity Owner needs this read adapter
 		// to bind its own local transaction.
 		Identities: outboundIdentityAdapter{uow: uow, reader: identityquery.NewPostgreSQL()},
-		Staff:      segmentStaff, Content: automationService, Writer: writer,
+		Staff:      segmentStaff, Content: automationService, Payloads: automationAudienceFrozenPayload{}, Writer: writer,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -212,6 +212,9 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 		t.Fatal(err)
 	}
 	if err = runtimeService.SetReviewPlanIntake(aiService, automationService); err != nil {
+		t.Fatal(err)
+	}
+	if err = runtimeService.SetOutboundContentFreezer(automationAudienceFrozenContent{}); err != nil {
 		t.Fatal(err)
 	}
 	if err = runtimeService.SetEffectReconciler(effects); err != nil {
@@ -378,8 +381,9 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 		t.Fatal(err)
 	}
 	for _, check := range []struct{ path, contains string }{
-		{"/api/admin/automation-runs?limit=100", automationAudienceInt(manual.ID)},
-		{"/api/admin/automation-runs/" + automationAudienceInt(manual.ID), `"ai_plan_state":"completed"`},
+		{"/api/admin/automation-runs?limit=100", `"ai_plan_state":"needs_attention"`},
+		{"/api/admin/automation-runs/" + automationAudienceInt(manual.ID), `"state":"outcome_unknown"`},
+		{"/api/admin/automation-runs/" + automationAudienceInt(manual.ID), `"ai_plan_state":"needs_attention"`},
 		{"/api/admin/automation-runs/" + automationAudienceInt(manual.ID) + "/recipients?limit=100", "items"},
 	} {
 		req := httptest.NewRequest(http.MethodGet, check.path, nil)
@@ -448,6 +452,31 @@ type automationAudienceCanonical struct{}
 
 func (automationAudienceCanonical) CanonicalCustomers(_ context.Context, ids []customerdomain.CustomerID) ([]customerdomain.CustomerID, error) {
 	return ids, nil
+}
+
+type automationAudienceFrozenContent struct{}
+
+func (automationAudienceFrozenContent) FreezeOutboundContent(_ context.Context, content automationport.OutboundPublishedContent) (json.RawMessage, [32]byte, error) {
+	raw, err := json.Marshal(map[string]any{"schema_version": 1, "content_text": content.Content.ContentText})
+	if err != nil {
+		return nil, [32]byte{}, err
+	}
+	return raw, sha256.Sum256(raw), nil
+}
+
+type automationAudienceFrozenPayload struct{}
+
+func (automationAudienceFrozenPayload) LoadFrozenAutomationMessagePayload(_ context.Context, raw json.RawMessage, digest [32]byte) (outbound.PrivateMessagePayload, error) {
+	if len(raw) == 0 || sha256.Sum256(raw) != digest {
+		return outbound.PrivateMessagePayload{}, errors.New("invalid frozen automation fixture content")
+	}
+	var snapshot struct {
+		ContentText string `json:"content_text"`
+	}
+	if json.Unmarshal(raw, &snapshot) != nil || snapshot.ContentText != "runtime hello" {
+		return outbound.PrivateMessagePayload{}, errors.New("invalid frozen automation fixture payload")
+	}
+	return outbound.PrivateMessagePayload{Text: snapshot.ContentText}, nil
 }
 
 // These fixtures provide only already-canonical Customer and active-staff

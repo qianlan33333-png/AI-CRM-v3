@@ -2,12 +2,15 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"strings"
 
 	accessport "github.com/qianlan33333-png/AI-CRM-v3/internal/access/port"
 	aiassistantapp "github.com/qianlan33333-png/AI-CRM-v3/internal/aiassistant/app"
 	aiassistantport "github.com/qianlan33333-png/AI-CRM-v3/internal/aiassistant/port"
+	automationport "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/port"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	identityport "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/port"
@@ -118,6 +121,95 @@ type aiPrivatePayloadReader struct {
 	capturer  mediaport.GroupOpsMaterialSourceCapturer
 }
 
+// frozenAutomationContent is the versioned object stored by Outbound for an
+// accepted automatic message. It holds only fixed text and Media source
+// digests/local references; it never stores binary content or Provider IDs.
+type frozenAutomationContent struct {
+	SchemaVersion int                                      `json:"schema_version"`
+	ContentText   string                                   `json:"content_text,omitempty"`
+	Sources       mediaport.GroupOpsMaterialSourceSnapshot `json:"sources,omitempty"`
+}
+
+type automationOutboundContentFreezer struct {
+	capturer mediaport.GroupOpsMaterialSourceCapturer
+}
+
+func (a automationOutboundContentFreezer) FreezeOutboundContent(ctx context.Context, content automationport.OutboundPublishedContent) (json.RawMessage, [32]byte, error) {
+	if a.capturer == nil || content.AgentID < 1 || content.PublishedVersion < 1 || len(content.Content.DynamicMiniprogramCard) != 0 {
+		return nil, [32]byte{}, errors.New("automation content freezer unavailable")
+	}
+	references := make([]mediaport.GroupOpsMaterialReference, 0, len(content.Content.ImageLibraryIDs)+len(content.Content.MiniprogramLibraryIDs)+len(content.Content.AttachmentLibraryIDs)+len(content.Content.GroupInviteLibraryIDs))
+	for _, id := range content.Content.ImageLibraryIDs {
+		references = append(references, mediaport.GroupOpsMaterialReference{Kind: "image", ID: id})
+	}
+	for _, id := range content.Content.MiniprogramLibraryIDs {
+		references = append(references, mediaport.GroupOpsMaterialReference{Kind: "miniprogram", ID: id})
+	}
+	for _, id := range content.Content.AttachmentLibraryIDs {
+		references = append(references, mediaport.GroupOpsMaterialReference{Kind: "attachment", ID: id})
+	}
+	for _, id := range content.Content.GroupInviteLibraryIDs {
+		references = append(references, mediaport.GroupOpsMaterialReference{Kind: "group_invite", ID: id})
+	}
+	snapshot := frozenAutomationContent{SchemaVersion: 1, ContentText: strings.TrimSpace(content.Content.ContentText)}
+	if len(references) > 0 {
+		var err error
+		snapshot.Sources, err = a.capturer.CaptureGroupOpsMaterialSources(ctx, mediaport.GroupOpsMaterialPlan{References: references})
+		if err != nil || mediaport.ValidateGroupOpsMaterialSourceSnapshot(snapshot.Sources) != nil {
+			return nil, [32]byte{}, errors.New("automation content material unavailable")
+		}
+	}
+	if snapshot.ContentText == "" && len(snapshot.Sources.References) == 0 {
+		return nil, [32]byte{}, errors.New("automation content is empty")
+	}
+	raw, err := json.Marshal(snapshot)
+	if err != nil {
+		return nil, [32]byte{}, err
+	}
+	return raw, sha256.Sum256(raw), nil
+}
+
+type automationFrozenPayloadReader struct{ preparer aiPrivatePayloadReader }
+
+func (a automationFrozenPayloadReader) LoadFrozenAutomationMessagePayload(ctx context.Context, raw json.RawMessage, digest [32]byte) (outbound.PrivateMessagePayload, error) {
+	var snapshot frozenAutomationContent
+	if len(raw) == 0 || json.Unmarshal(raw, &snapshot) != nil || snapshot.SchemaVersion != 1 || sha256.Sum256(mustMarshalFrozenAutomationContent(snapshot)) != digest {
+		return outbound.PrivateMessagePayload{}, errors.New("automation content snapshot is invalid")
+	}
+	if len(snapshot.Sources.References) > 0 && mediaport.ValidateGroupOpsMaterialSourceSnapshot(snapshot.Sources) != nil {
+		return outbound.PrivateMessagePayload{}, errors.New("automation content sources are invalid")
+	}
+	blocks := make([]aiassistantport.ContentBlock, 0, 1+len(snapshot.Sources.References))
+	if text := strings.TrimSpace(snapshot.ContentText); text != "" {
+		blocks = append(blocks, aiassistantport.ContentBlock{Kind: aiassistantport.ContentText, Text: text})
+	}
+	for _, source := range snapshot.Sources.References {
+		block := aiassistantport.ContentBlock{MaterialKind: source.Reference.Kind, MaterialID: source.Reference.ID, MaterialDigest: effectport.Digest(source.SourceDigest)}
+		switch source.Reference.Kind {
+		case "image":
+			block.Kind = aiassistantport.ContentImage
+		case "miniprogram":
+			block.Kind = aiassistantport.ContentMiniProgram
+		case "attachment":
+			block.Kind = aiassistantport.ContentAttachment
+		case "group_invite":
+			block.Kind = aiassistantport.ContentLink
+		default:
+			return outbound.PrivateMessagePayload{}, errors.New("automation content source kind is invalid")
+		}
+		blocks = append(blocks, block)
+	}
+	return a.preparer.prepareBlocks(ctx, blocks)
+}
+
+func mustMarshalFrozenAutomationContent(value frozenAutomationContent) []byte {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return nil
+	}
+	return raw
+}
+
 func (a aiPrivatePayloadReader) verifyFrozenMaterial(ctx context.Context, block aiassistantport.ContentBlock) error {
 	if block.Kind == aiassistantport.ContentText || a.uow == nil || a.capturer == nil || !effectport.ValidDigest(block.MaterialDigest) {
 		if block.Kind == aiassistantport.ContentText {
@@ -152,8 +244,12 @@ func (a aiPrivatePayloadReader) LoadPrivateMessagePayload(ctx context.Context, r
 	if err != nil {
 		return outbound.PrivateMessagePayload{}, err
 	}
+	return a.prepareBlocks(ctx, content.Blocks)
+}
+
+func (a aiPrivatePayloadReader) prepareBlocks(ctx context.Context, blocks []aiassistantport.ContentBlock) (outbound.PrivateMessagePayload, error) {
 	result := outbound.PrivateMessagePayload{}
-	for _, block := range content.Blocks {
+	for _, block := range blocks {
 		if err := a.verifyFrozenMaterial(ctx, block); err != nil {
 			return outbound.PrivateMessagePayload{}, err
 		}

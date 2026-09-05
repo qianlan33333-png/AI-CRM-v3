@@ -46,6 +46,13 @@ type MessageExecutionReader interface {
 	MessageExecution(context.Context, string) (MessageExecution, bool, error)
 }
 
+// FrozenAutomationMessagePayloadReader converts an immutable Outbound intent
+// snapshot into the one PrivateMessage payload accepted by the WeCom writer.
+// It must fail closed if any frozen Media source no longer verifies.
+type FrozenAutomationMessagePayloadReader interface {
+	LoadFrozenAutomationMessagePayload(context.Context, json.RawMessage, [32]byte) (PrivateMessagePayload, error)
+}
+
 type MessageAcceptance struct {
 	MessageIntentID int64
 	EffectID        string

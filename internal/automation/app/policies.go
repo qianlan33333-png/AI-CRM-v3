@@ -69,6 +69,7 @@ type RuntimeService struct {
 	effects        effectport.TransactionalReconciler
 	reviewPlans    reviewPlanGateway
 	content        automationport.OutboundPublishedContentReader
+	contentFreezer automationport.OutboundContentFreezer
 	recipientLimit int64
 	now            func() time.Time
 }
@@ -121,6 +122,16 @@ func (s *RuntimeService) SetReviewPlanIntake(intake reviewPlanGateway, content a
 		return ErrRuntimeNotReady
 	}
 	s.reviewPlans, s.content = intake, content
+	return nil
+}
+
+// SetOutboundContentFreezer keeps the automatic path inside the existing
+// Automation UoW while delegating Media source capture through a stable port.
+func (s *RuntimeService) SetOutboundContentFreezer(freezer automationport.OutboundContentFreezer) error {
+	if s == nil || freezer == nil {
+		return ErrRuntimeNotReady
+	}
+	s.contentFreezer = freezer
 	return nil
 }
 
@@ -267,12 +278,24 @@ func (s *RuntimeService) EnrollAudienceMember(ctx context.Context, event segment
 		needsOutbound = needsOutbound || version.ActionKind == automationport.ActionOutboundMessage
 	}
 	var configuration segmentport.ExecutionConfiguration
+	var published automationport.OutboundPublishedContent
 	if needsOutbound {
 		configuration, err = s.audiences.AudienceExecutionConfiguration(ctx, event.PackageID)
 		if err != nil {
 			return nil, ErrRuntimeUnavailable
 		}
 		if !configuration.Ready {
+			return nil, ErrRuntimeNotReady
+		}
+		if s.content == nil || s.contentFreezer == nil {
+			return nil, ErrRuntimeNotReady
+		}
+		var found bool
+		published, found, err = s.content.OutboundPublishedContent(ctx, automationport.AgentID(configuration.AgentID), configuration.AgentPublishedVersion)
+		if err != nil {
+			return nil, ErrRuntimeUnavailable
+		}
+		if !found || published.ContentDigest != configuration.ContentDigest {
 			return nil, ErrRuntimeNotReady
 		}
 	}
@@ -324,7 +347,7 @@ func (s *RuntimeService) EnrollAudienceMember(ctx context.Context, event segment
 					return e
 				}
 				if v.ActionKind == automationport.ActionOutboundMessage {
-					if e = s.acceptEnrollmentMessage(tx, event, v, configuration, enrollment, actionDigest, actor, now); e != nil {
+					if e = s.acceptEnrollmentMessage(tx, event, v, configuration, published, enrollment, actionDigest, actor, now); e != nil {
 						return e
 					}
 				}
@@ -335,8 +358,12 @@ func (s *RuntimeService) EnrollAudienceMember(ctx context.Context, event segment
 	return output, runtimeClassify(err)
 }
 
-func (s *RuntimeService) acceptEnrollmentMessage(ctx context.Context, event segmentport.MemberEnteredV1, version automationdomain.PolicyVersion, configuration segmentport.ExecutionConfiguration, enrollment automationdomain.Enrollment, actionDigest [32]byte, actor int64, now time.Time) error {
+func (s *RuntimeService) acceptEnrollmentMessage(ctx context.Context, event segmentport.MemberEnteredV1, version automationdomain.PolicyVersion, configuration segmentport.ExecutionConfiguration, published automationport.OutboundPublishedContent, enrollment automationdomain.Enrollment, actionDigest [32]byte, actor int64, now time.Time) error {
 	if s.messages == nil || len(configuration.SenderStaffIDs) == 0 {
+		return ErrRuntimeNotReady
+	}
+	contentSnapshot, contentSnapshotDigest, err := s.contentFreezer.FreezeOutboundContent(ctx, published)
+	if err != nil || len(contentSnapshot) == 0 || contentSnapshotDigest == ([32]byte{}) {
 		return ErrRuntimeNotReady
 	}
 	eventDigest := sha256.Sum256([]byte(event.EventID))
@@ -354,7 +381,7 @@ func (s *RuntimeService) acceptEnrollmentMessage(ctx context.Context, event segm
 	recipient := createdRecipients[0]
 	sourceDigest := sha256.Sum256([]byte(fmt.Sprintf("automation-enrollment:%d:recipient:%d", enrollment.ID, recipient.ID)))
 	targetDigest := sha256.Sum256([]byte(fmt.Sprintf("customer:%d", recipient.CustomerID)))
-	acceptance, err := s.messages.AcceptMessageWithin(ctx, outboundport.MessageIntent{SourceKind: "automation_enrollment", SourceID: enrollment.ID, RunRecipientID: recipient.ID, CustomerID: customerdomain.CustomerID(recipient.CustomerID), SenderStaffID: recipient.SenderStaffID, AgentID: created.AgentID, AgentPublishedVersion: created.AgentPublishedVersion, ContentReference: fmt.Sprintf("automation-agent:%d:published:%d", created.AgentID, created.AgentPublishedVersion), SourceDigest: sourceDigest, TargetDigest: targetDigest, PayloadDigest: configuration.ContentDigest, PolicyDigest: version.Digest, ReceiptKey: fmt.Sprintf("automation-enrollment-%d-recipient-%d", enrollment.ID, recipient.ID), ScheduledAt: nextAllowedExecution(now, version.QuietHours)})
+	acceptance, err := s.messages.AcceptMessageWithin(ctx, outboundport.MessageIntent{SourceKind: "automation_enrollment", SourceID: enrollment.ID, RunRecipientID: recipient.ID, CustomerID: customerdomain.CustomerID(recipient.CustomerID), SenderStaffID: recipient.SenderStaffID, AgentID: created.AgentID, AgentPublishedVersion: created.AgentPublishedVersion, ContentReference: fmt.Sprintf("automation-agent:%d:published:%d", created.AgentID, created.AgentPublishedVersion), SourceDigest: sourceDigest, TargetDigest: targetDigest, PayloadDigest: configuration.ContentDigest, ContentSnapshot: contentSnapshot, ContentSnapshotDigest: contentSnapshotDigest, PolicyDigest: version.Digest, ReceiptKey: fmt.Sprintf("automation-enrollment-%d-recipient-%d", enrollment.ID, recipient.ID), ScheduledAt: nextAllowedExecution(now, version.QuietHours)})
 	if err != nil {
 		return err
 	}

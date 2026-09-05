@@ -2,6 +2,7 @@ package outbound
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -45,12 +46,18 @@ type writerStub struct {
 	err   error
 }
 
-func (w *writerStub) SendExternalContactText(_ context.Context, sender, external, content string) (string, error) {
+func (w *writerStub) SendPrivateMessage(_ context.Context, target PrivateMessageTarget, payload PrivateMessagePayload) (PrivateMessageProviderReceipt, bool, error) {
 	w.calls++
-	if sender != "sender-secret" || external != "external-secret" || content != "hello" {
-		return "", errors.New("unexpected provider payload")
+	if target.StaffUserID != "sender-secret" || target.ExternalUserID != "external-secret" || payload.Text != "hello" || len(payload.Attachments) != 0 {
+		return PrivateMessageProviderReceipt{}, false, errors.New("unexpected provider payload")
 	}
-	return "provider-receipt", w.err
+	return PrivateMessageProviderReceipt{MessageID: "provider-receipt"}, true, w.err
+}
+
+type frozenPayloadStub struct{ payload PrivateMessagePayload }
+
+func (s frozenPayloadStub) LoadFrozenAutomationMessagePayload(context.Context, json.RawMessage, [32]byte) (PrivateMessagePayload, error) {
+	return s.payload, nil
 }
 
 type crossedError struct{}
@@ -65,7 +72,7 @@ func messageProviderFixture(t *testing.T, enabled bool, identityFound bool, writ
 	digest := [32]byte{1}
 	execution := outboundport.MessageExecution{MessageIntentID: 1, RunRecipientID: 1, CustomerID: 2, SenderStaffID: 3, AgentID: 4, AgentPublishedVersion: 5, PayloadDigest: digest}
 	content := automationport.OutboundPublishedContent{AgentID: 4, PublishedVersion: 5, ContentDigest: digest, Content: automationport.FixedContentPackage{ContentText: "hello"}}
-	p, err := NewMessageProvider(MessageProviderConfig{Enabled: enabled, CorpScope: "wecom-corp:c", Executions: executionStub{execution}, Identities: identityStub{identityFound}, Staff: staffStub{}, Content: contentStub{content}, Writer: writer})
+	p, err := NewMessageProvider(MessageProviderConfig{Enabled: enabled, CorpScope: "wecom-corp:c", Executions: executionStub{execution}, Identities: identityStub{identityFound}, Staff: staffStub{}, Content: contentStub{content}, Payloads: frozenPayloadStub{}, Writer: writer})
 	if err != nil {
 		t.Fatal(err)
 	}

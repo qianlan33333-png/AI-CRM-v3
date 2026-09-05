@@ -204,7 +204,15 @@ func (s *RuntimeService) ListRuns(ctx context.Context, cursor int64, limit int) 
 		out, next, e = s.store.ListRuns(tx, cursor, limit)
 		return e
 	})
-	return out, next, runtimeClassify(err)
+	if err != nil {
+		return out, next, runtimeClassify(err)
+	}
+	for index := range out {
+		if err = s.projectAIPlanState(ctx, &out[index]); err != nil {
+			return nil, "", err
+		}
+	}
+	return out, next, nil
 }
 func (s *RuntimeService) Run(ctx context.Context, id int64) (automationdomain.RuntimeRun, error) {
 	if id < 1 {
@@ -215,18 +223,45 @@ func (s *RuntimeService) Run(ctx context.Context, id int64) (automationdomain.Ru
 	if err != nil {
 		return out, runtimeClassify(err)
 	}
-	if out.AIPlanID < 1 {
-		return out, nil
+	if err = s.projectAIPlanState(ctx, &out); err != nil {
+		return automationdomain.RuntimeRun{}, err
+	}
+	return out, nil
+}
+
+// projectAIPlanState is a read-only projection of the existing AI Assistant
+// plan. Automation never writes the plan lifecycle or invents a second
+// dispatch state machine; a pending review remains pending only while its
+// actual plan is reviewable.
+func (s *RuntimeService) projectAIPlanState(ctx context.Context, run *automationdomain.RuntimeRun) error {
+	if run == nil || run.AIPlanID < 1 {
+		return nil
 	}
 	if s.reviewPlans == nil {
-		return automationdomain.RuntimeRun{}, ErrRuntimeNotReady
+		return ErrRuntimeNotReady
 	}
-	plan, err := s.reviewPlans.GetPlan(ctx, aiassistantport.PlanID(out.AIPlanID))
+	plan, err := s.reviewPlans.GetPlan(ctx, aiassistantport.PlanID(run.AIPlanID))
 	if err != nil {
-		return automationdomain.RuntimeRun{}, ErrRuntimeUnavailable
+		return ErrRuntimeUnavailable
 	}
-	out.AIPlanState = string(plan.State)
-	return out, nil
+	run.AIPlanState = string(plan.State)
+	switch plan.State {
+	case aiassistantport.PlanPendingReview, aiassistantport.PlanPartiallyApproved:
+		run.State = automationport.RunPendingReview
+	case aiassistantport.PlanApproved, aiassistantport.PlanDispatching:
+		run.State = automationport.RunExecuting
+	case aiassistantport.PlanCompleted:
+		run.State = automationport.RunCompleted
+	case aiassistantport.PlanCompletedWithFailures:
+		run.State = automationport.RunPartialFailed
+	case aiassistantport.PlanNeedsAttention:
+		run.State = automationport.RunOutcomeUnknown
+	case aiassistantport.PlanRejected:
+		run.State = automationport.RunCancelled
+	default:
+		return ErrRuntimeUnavailable
+	}
+	return nil
 }
 func (s *RuntimeService) RunRecipients(ctx context.Context, id, cursor int64, limit int) ([]automationdomain.RuntimeRecipient, string, error) {
 	if id < 1 || cursor < 0 || limit < 1 || limit > 100 {

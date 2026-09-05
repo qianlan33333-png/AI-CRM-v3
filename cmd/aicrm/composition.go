@@ -403,6 +403,9 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err = automationRuntime.SetReviewPlanIntake(aiService, automationService); err != nil {
 		return fail(err)
 	}
+	if err = automationRuntime.SetOutboundContentFreezer(automationOutboundContentFreezer{capturer: mediaRepository}); err != nil {
+		return fail(err)
+	}
 	if err = automationRuntime.SetEffectReconciler(effectRepository); err != nil {
 		return fail(err)
 	}
@@ -942,7 +945,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		}
 		tagCatalogProvider = catalogProvider
 	}
-	messageProvider, providerErr := outbound.NewMessageProvider(outbound.MessageProviderConfig{Enabled: cfg.Effects.ProviderEnabled && cfg.WeCom.Enabled && cfg.AutomationOperations.ProviderEnabled(), CorpScope: "wecom-corp:" + cfg.WeCom.CorpID, Executions: outboundMessages, Identities: outboundIdentityAdapter{uow: uow, reader: queries}, Staff: segmentStaff, Content: automationService, Writer: providerClient})
+	messageProvider, providerErr := outbound.NewMessageProvider(outbound.MessageProviderConfig{Enabled: cfg.Effects.ProviderEnabled && cfg.WeCom.Enabled && cfg.AutomationOperations.ProviderEnabled(), CorpScope: "wecom-corp:" + cfg.WeCom.CorpID, Executions: outboundMessages, Identities: outboundIdentityAdapter{uow: uow, reader: queries}, Staff: segmentStaff, Content: automationService, Payloads: automationFrozenPayloadReader{preparer: aiPrivatePayloadReader{images: mediaService, materials: mediaRepository, uow: uow, capturer: mediaRepository}}, Writer: providerClient})
 	if providerErr != nil {
 		return fail(providerErr)
 	}

@@ -133,7 +133,7 @@
   }
 
   function runStateLabel(value) {
-    return ({ accepted: "已接受", queued: "已排队", executing: "执行中", completed: "已完成", partial: "部分完成", failed: "失败", cancelled: "已取消", outcome_unknown: "结果未知", reconciled: "已对账", provider_accepted: "Provider 已接受", delivery_proven: "已证明送达", retryable_failed: "可重试失败", final_failed: "最终失败" })[value] || text(value);
+    return ({ accepted: "已接受", queued: "已排队", pending_review: "等待 AI 审阅", executing: "执行中", completed: "已完成", partial: "部分完成", partial_failed: "部分失败", failed: "失败", cancelled: "已取消", outcome_unknown: "结果未知", reconciled: "已对账", provider_accepted: "Provider 已接受", delivery_proven: "已证明送达", retryable_failed: "可重试失败", final_failed: "最终失败" })[value] || text(value);
   }
 
   async function bootList() {
@@ -483,7 +483,7 @@
         const result = await request(`${API}/automation-runs?limit=100`);
         state.runs = (result.items || []).filter((run) => run.package_id === packageID);
         byID("sendRecordTotal").textContent = `${state.runs.length} 次运行`;
-        byID("sendRecordRows").innerHTML = state.runs.length ? state.runs.map((run) => `<tr><td>#${run.id}</td><td><span class="ai-pill${run.state === "outcome_unknown" ? " gray" : ""}">${runStateLabel(run.state)}</span></td><td>${run.target_count} / ${run.skipped_count}</td><td>${formatTime(run.created_at)}</td><td>${run.outcome_unknown_count || 0}</td><td><button class="ai-btn soft" data-run-id="${run.id}">查看收件人</button></td></tr>`).join("") : `<tr><td class="ai-empty" colspan="7">尚无真实运行记录</td></tr>`;
+        byID("sendRecordRows").innerHTML = state.runs.length ? state.runs.map((run) => `<tr><td>#${run.id}</td><td><span class="ai-pill${run.state === "outcome_unknown" ? " gray" : ""}">${runStateLabel(run.state)}</span>${run.ai_plan_state ? `<div class="ai-label">AI：${escapeHTML(run.ai_plan_state)}</div>` : ""}</td><td>${run.target_count} / ${run.skipped_count}</td><td>${formatTime(run.created_at)}</td><td>${run.outcome_unknown_count || 0}</td><td><button class="ai-btn soft" data-run-id="${run.id}">查看收件人</button>${run.ai_plan_id ? ` <a class="ai-btn soft" href="/admin/cloud-orchestrator/plans/${encodeURIComponent(run.ai_plan_id)}">查看 AI 审阅</a>` : ""}</td></tr>`).join("") : `<tr><td class="ai-empty" colspan="7">尚无真实运行记录</td></tr>`;
         byID("sendRecordRows").querySelectorAll("[data-run-id]").forEach((node) => node.addEventListener("click", () => loadRecipients(Number(node.dataset.runId))));
         setStatus(byID("sendRecordStatusLine"), "accepted / queued / Provider 接受 / 送达证明 / 未知结果分别展示。", "success");
       } catch (error) { const detail = errorState(error); setStatus(byID("sendRecordStatusLine"), detail.message, "error"); }
