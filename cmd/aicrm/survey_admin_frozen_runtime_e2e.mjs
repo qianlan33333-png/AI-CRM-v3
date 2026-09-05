@@ -78,6 +78,7 @@ async function openEditor(query) {
     calls.push(call);
     const response = await globalThis.fetch(target, init);
     call.status = response.status;
+    response.clone().json().then((value) => { call.response = value; }).catch(() => {});
     return response;
   };
   dom.window.eval(editorBundle);
@@ -109,6 +110,7 @@ async function openManagement() {
     calls.push(call);
     const response = await globalThis.fetch(target, init);
     call.status = response.status;
+    response.clone().json().then((value) => { call.response = value; }).catch(() => {});
     return response;
   };
   dom.window.eval(adminBundle);
@@ -156,13 +158,11 @@ if (!frozenNormalPayload.assessment_config || !frozenNormalPayload.questions?.ev
 }
 
 click(normalDocument.querySelector("#editor-duplicate-btn"));
-await waitFor("frozen duplicate", () => {
-  const id = Number(new URLSearchParams(normal.dom.window.location.search).get("id"));
-  return Number.isSafeInteger(id) && id > normalID;
-});
-const copyID = Number(new URLSearchParams(normal.dom.window.location.search).get("id"));
-if (!normal.calls.some((call) => call.path === `/api/admin/questionnaires/${normalID}/duplicate` && call.method === "POST")) {
-  throw new Error("frozen duplicate did not use the actual duplicate endpoint");
+await waitFor("frozen duplicate", () => normal.calls.some((call) => call.path === `/api/admin/questionnaires/${normalID}/duplicate` && call.method === "POST" && call.status === 200 && Number(call.response?.questionnaire?.id || call.response?.data?.questionnaire?.id) > normalID));
+const duplicateCall = normal.calls.find((call) => call.path === `/api/admin/questionnaires/${normalID}/duplicate` && call.method === "POST" && call.status === 200);
+const copyID = Number(duplicateCall?.response?.questionnaire?.id || duplicateCall?.response?.data?.questionnaire?.id);
+if (!Number.isSafeInteger(copyID) || copyID <= normalID) {
+  throw new Error(`frozen duplicate response did not identify its copy: ${JSON.stringify(duplicateCall)}`);
 }
 normal.dom.window.close();
 
