@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/configmigration/source"
 	groupopsport "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/port"
@@ -98,7 +99,7 @@ func historyRecords(snap source.HistorySnapshot) ([]groupopsport.HistoricalImpor
 	importedPlans := make(map[int64]bool, len(snap.Plans))
 	for _, x := range snap.Plans {
 		r := historyRecord("plans", fmt.Sprint(x.ID), x)
-		if x.ID < 1 || x.Name == "" || len(x.Name) > 128 || x.Name != strings.TrimSpace(x.Name) || len(x.PlanCode) > 128 || x.PlanCode != strings.TrimSpace(x.PlanCode) || x.PlanType == "" || x.PlanType != strings.TrimSpace(x.PlanType) || x.Status == "" || x.Status != strings.TrimSpace(x.Status) || !historyReferenceValid(x.OwnerReference) || !historyReferenceValid(x.CreatedByReference) || !historyReferenceValid(x.UpdatedByReference) || x.CreatedAt.IsZero() || x.UpdatedAt.Before(x.CreatedAt) {
+		if x.ID < 1 || x.Name == "" || historyTextTooLong(x.Name) || x.Name != strings.TrimSpace(x.Name) || historyTextTooLong(x.PlanCode) || x.PlanCode != strings.TrimSpace(x.PlanCode) || x.PlanType == "" || x.PlanType != strings.TrimSpace(x.PlanType) || x.Status == "" || x.Status != strings.TrimSpace(x.Status) || !historyReferenceValid(x.OwnerReference) || !historyReferenceValid(x.CreatedByReference) || !historyReferenceValid(x.UpdatedByReference) || x.CreatedAt.IsZero() || x.UpdatedAt.Before(x.CreatedAt) {
 			r.QuarantineReason = "invalid_plan"
 		} else {
 			r.Plan = &groupopsport.HistoricalPlan{PlanID: x.ID, Name: x.Name, Status: groupopsport.PlanArchived, Revision: 1, CreatedAt: x.CreatedAt, UpdatedAt: x.UpdatedAt, SourcePlanID: x.ID, SourceCode: x.PlanCode, PlanType: x.PlanType, OriginalStatus: x.Status, ArchivedAt: x.ArchivedAt, SourceCreatedByReference: x.CreatedByReference, SourceUpdatedByReference: x.UpdatedByReference, SourceOwnerReference: x.OwnerReference}
@@ -108,7 +109,7 @@ func historyRecords(snap source.HistorySnapshot) ([]groupopsport.HistoricalImpor
 	}
 	for _, x := range snap.DirectoryChats {
 		r := historyRecord("directory_group_chats", "chat:"+x.ChatReference, x)
-		if x.ChatReference == "" || len(x.ChatReference) > 128 || x.ChatReference != strings.TrimSpace(x.ChatReference) || x.DisplayName != strings.TrimSpace(x.DisplayName) || x.Status == "" || x.Status != strings.TrimSpace(x.Status) || !historyReferenceValid(x.OwnerReference) || x.MemberCount < 0 || x.RecordedAt.IsZero() {
+		if x.ChatReference == "" || historyTextTooLong(x.ChatReference) || x.ChatReference != strings.TrimSpace(x.ChatReference) || x.DisplayName != strings.TrimSpace(x.DisplayName) || x.Status == "" || x.Status != strings.TrimSpace(x.Status) || !historyReferenceValid(x.OwnerReference) || x.MemberCount < 0 || x.RecordedAt.IsZero() {
 			r.QuarantineReason = "invalid_directory"
 		} else {
 			r.Directory = &groupopsport.HistoricalDirectory{SourceKind: "group_chats", ChatReference: x.ChatReference, DisplayName: optionalText(x.DisplayName), OwnerName: nil, MemberCount: &x.MemberCount, OriginalStatus: x.Status, RecordedAt: x.RecordedAt, SourceOwnerReference: x.OwnerReference}
@@ -117,7 +118,7 @@ func historyRecords(snap source.HistorySnapshot) ([]groupopsport.HistoricalImpor
 	}
 	for _, x := range snap.DirectorySnapshots {
 		r := historyRecord("directory_snapshots", "chat:"+x.ChatReference, x)
-		if x.ChatReference == "" || len(x.ChatReference) > 128 || x.ChatReference != strings.TrimSpace(x.ChatReference) || x.DisplayName != strings.TrimSpace(x.DisplayName) || x.Status == "" || x.Status != strings.TrimSpace(x.Status) || !historyReferenceValid(x.OwnerReference) || x.InternalMemberCount < 0 || x.ExternalMemberCount < 0 || x.RecordedAt.IsZero() {
+		if x.ChatReference == "" || historyTextTooLong(x.ChatReference) || x.ChatReference != strings.TrimSpace(x.ChatReference) || x.DisplayName != strings.TrimSpace(x.DisplayName) || x.Status == "" || x.Status != strings.TrimSpace(x.Status) || !historyReferenceValid(x.OwnerReference) || x.InternalMemberCount < 0 || x.ExternalMemberCount < 0 || x.RecordedAt.IsZero() {
 			r.QuarantineReason = "invalid_directory"
 		} else {
 			r.Directory = &groupopsport.HistoricalDirectory{SourceKind: "wecom_group_chat_snapshots", ChatReference: x.ChatReference, DisplayName: optionalText(x.DisplayName), OwnerName: optionalText(x.OwnerName), InternalMemberCount: &x.InternalMemberCount, ExternalMemberCount: &x.ExternalMemberCount, OriginalStatus: x.Status, RecordedAt: x.RecordedAt, SourceOwnerReference: x.OwnerReference}
@@ -128,7 +129,7 @@ func historyRecords(snap source.HistorySnapshot) ([]groupopsport.HistoricalImpor
 		r := historyRecord("groups", fmt.Sprint(x.ID), x)
 		if !importedPlans[x.PlanID] {
 			r.QuarantineReason = "missing_plan"
-		} else if x.ID < 1 || x.ChatReference == "" || len(x.ChatReference) > 128 || x.ChatReference != strings.TrimSpace(x.ChatReference) || x.DisplayName == "" || len(x.DisplayName) > 128 || x.DisplayName != strings.TrimSpace(x.DisplayName) || x.Status == "" || x.Status != strings.TrimSpace(x.Status) || !historyReferenceValid(x.OwnerReference) || x.InternalMemberCount < 0 || x.ExternalMemberCount < 0 || x.CreatedAt.IsZero() {
+		} else if x.ID < 1 || x.ChatReference == "" || historyTextTooLong(x.ChatReference) || x.ChatReference != strings.TrimSpace(x.ChatReference) || x.DisplayName == "" || historyTextTooLong(x.DisplayName) || x.DisplayName != strings.TrimSpace(x.DisplayName) || x.Status == "" || x.Status != strings.TrimSpace(x.Status) || !historyReferenceValid(x.OwnerReference) || x.InternalMemberCount < 0 || x.ExternalMemberCount < 0 || x.CreatedAt.IsZero() {
 			r.QuarantineReason = "invalid_group"
 		} else {
 			r.Group = &groupopsport.HistoricalGroup{SourceGroupID: x.ID, SourcePlanID: x.PlanID, PlanID: x.PlanID, ChatReference: x.ChatReference, DisplayName: x.DisplayName, InternalMemberCount: x.InternalMemberCount, ExternalMemberCount: x.ExternalMemberCount, OriginalStatus: x.Status, CreatedAt: x.CreatedAt, RemovedAt: x.RemovedAt, SourceOwnerReference: x.OwnerReference}
@@ -173,4 +174,6 @@ func historyRecord(kind, key string, value any) groupopsport.HistoricalImportRec
 
 func optionalText(value string) *string { return &value }
 
-func historyReferenceValid(value *string) bool { return value == nil || len(*value) <= 128 }
+func historyTextTooLong(value string) bool { return utf8.RuneCountInString(value) > 128 }
+
+func historyReferenceValid(value *string) bool { return value == nil || !historyTextTooLong(*value) }

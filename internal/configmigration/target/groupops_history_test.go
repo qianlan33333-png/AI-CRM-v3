@@ -42,3 +42,42 @@ func TestHistoryRecordsPreserveTextReferencesAndQuarantine(t *testing.T) {
 		t.Fatalf("records do not preserve protected source facts: %#v", records)
 	}
 }
+
+func TestHistoryRecordsUsePostgreSQLCharacterLimits(t *testing.T) {
+	now := time.Date(2026, 9, 5, 0, 0, 0, 0, time.UTC)
+	accepted := strings.Repeat("群", 60) // 180 UTF-8 bytes, 60 PostgreSQL characters.
+	over := strings.Repeat("群", 129)
+	snap := source.HistorySnapshot{
+		Plans: []source.HistoryPlan{
+			{ID: 1, PlanCode: accepted, Name: accepted, PlanType: "standard", Status: "disabled", CreatedAt: now, UpdatedAt: now},
+			{ID: 2, PlanCode: "too-long", Name: over, PlanType: "standard", Status: "disabled", CreatedAt: now, UpdatedAt: now},
+		},
+		Groups: []source.HistoryGroup{{ID: 1, PlanID: 1, ChatReference: accepted, DisplayName: accepted, InternalMemberCount: 1, ExternalMemberCount: 1, Status: "active", CreatedAt: now}},
+	}
+	if err := source.PopulateHistoryManifest(&snap, source.ProductionSourceSystem, strings.Repeat("b", 40), now); err != nil {
+		t.Fatal(err)
+	}
+	records, err := historyRecords(snap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var acceptedPlan, rejectedPlan, acceptedGroup bool
+	for _, record := range records {
+		switch record.SourceKey {
+		case "1":
+			if record.SourceKind == "plans" {
+				acceptedPlan = record.Plan != nil && record.Plan.Name == accepted && record.Plan.SourceCode == accepted
+			}
+			if record.SourceKind == "groups" {
+				acceptedGroup = record.Group != nil && record.Group.ChatReference == accepted && record.Group.DisplayName == accepted
+			}
+		case "2":
+			if record.SourceKind == "plans" {
+				rejectedPlan = record.Plan == nil && record.QuarantineReason == "invalid_plan"
+			}
+		}
+	}
+	if !acceptedPlan || !acceptedGroup || !rejectedPlan {
+		t.Fatalf("character-length validation lost source facts: %#v", records)
+	}
+}
