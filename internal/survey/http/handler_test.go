@@ -11,11 +11,33 @@ import (
 
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
+	surveydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/survey/domain"
 	surveyport "github.com/qianlan33333-png/AI-CRM-v3/internal/survey/port"
 )
 
 type routeDefinitions struct {
 	surveyport.DefinitionApplication
+}
+
+type publishVersionDefinitions struct {
+	surveyport.DefinitionApplication
+	questionnaire     surveyport.Questionnaire
+	publishedExpected int64
+	publishCalls      int
+}
+
+func (d *publishVersionDefinitions) Get(context.Context, surveyport.ID) (surveyport.Questionnaire, error) {
+	return d.questionnaire, nil
+}
+func (d *publishVersionDefinitions) Publish(_ context.Context, _ surveyport.ID, expected, _ int64, _ string) (surveyport.Questionnaire, error) {
+	d.publishCalls++
+	d.publishedExpected = expected
+	if expected != d.questionnaire.Version {
+		return surveyport.Questionnaire{}, surveyport.ErrConflict
+	}
+	d.questionnaire.Status = surveyport.StatusPublished
+	d.questionnaire.Version++
+	return d.questionnaire, nil
 }
 
 type routeSurvey struct {
@@ -100,6 +122,77 @@ func newRouteHandler(t *testing.T, oauth routeOAuth) *Handler {
 		t.Fatal(err)
 	}
 	return handler
+}
+
+func TestPublicPublishUsesExplicitQuestionnaireVersionCAS(t *testing.T) {
+	definitions := &publishVersionDefinitions{questionnaire: surveyport.Questionnaire{ID: 7, Version: 4, Status: surveyport.StatusDraft, Slug: "versioned"}}
+	handler, err := NewHandler(definitions, &routeSurvey{}, operationSecurity{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := httptest.NewRequest(nethttp.MethodPost, "/api/admin/questionnaires/7/public-publish", strings.NewReader(`{"expected_questionnaire_version":3}`))
+	stale.Header.Set("Idempotency-Key", "survey-public-publish-stale-0001")
+	staleResponse := httptest.NewRecorder()
+	handler.ServeHTTP(staleResponse, stale)
+	if staleResponse.Code != nethttp.StatusConflict || definitions.publishedExpected != 3 || definitions.publishCalls != 1 {
+		t.Fatalf("stale public publish response=%d expected=%d calls=%d body=%s", staleResponse.Code, definitions.publishedExpected, definitions.publishCalls, staleResponse.Body.String())
+	}
+	current := httptest.NewRequest(nethttp.MethodPost, "/api/admin/questionnaires/7/public-publish", strings.NewReader(`{"expected_questionnaire_version":4}`))
+	current.Header.Set("Idempotency-Key", "survey-public-publish-current-0002")
+	currentResponse := httptest.NewRecorder()
+	handler.ServeHTTP(currentResponse, current)
+	if currentResponse.Code != nethttp.StatusOK || definitions.publishedExpected != 4 || definitions.questionnaire.Status != surveyport.StatusPublished {
+		t.Fatalf("current public publish response=%d expected=%d questionnaire=%+v body=%s", currentResponse.Code, definitions.publishedExpected, definitions.questionnaire, currentResponse.Body.String())
+	}
+}
+
+func TestDefinitionRequestAppliesFrozenSingleChoiceDefaultOnlyWhenAbsent(t *testing.T) {
+	request := definitionRequest{Questions: []surveyport.Question{{Type: surveyport.QuestionSingleChoice, Title: "选择", Options: []surveyport.Option{{Text: "A"}, {Text: "B"}}}}}
+	questionnaire := request.questionnaire()
+	if questionnaire.Questions[0].Validation.MaximumSelections == nil || *questionnaire.Questions[0].Validation.MaximumSelections != 1 {
+		t.Fatalf("frozen single-choice default=%+v", questionnaire.Questions[0].Validation)
+	}
+	explicit := 2
+	request.Questions[0].Validation.MaximumSelections = &explicit
+	questionnaire = request.questionnaire()
+	if questionnaire.Questions[0].Validation.MaximumSelections == nil || *questionnaire.Questions[0].Validation.MaximumSelections != 2 {
+		t.Fatalf("explicit validation was overwritten=%+v", questionnaire.Questions[0].Validation)
+	}
+}
+
+func TestDefinitionRequestStripsOnlyFrozenHiddenOrdinaryDefaults(t *testing.T) {
+	request := definitionRequest{
+		Name: "frozen-normal", Title: "冻结普通问卷", AnswerDisplayMode: surveyport.DisplayAllInOne, Slug: "frozen-normal",
+		AssessmentConfig: []byte(`{"dimensions":[{"hidden":true}]}`),
+		Questions: []surveyport.Question{{Type: surveyport.QuestionSingleChoice, Title: "选择", SortOrder: 0, Options: []surveyport.Option{
+			{Text: "A", SortOrder: 0, OtherMaximumLength: 80},
+			{Text: "B", SortOrder: 1, OtherMaximumLength: 80},
+		}}},
+	}
+	questionnaire := request.questionnaire()
+	if string(questionnaire.AssessmentConfig) != "{}" || questionnaire.Questions[0].Options[0].OtherMaximumLength != 0 || questionnaire.Questions[0].Options[1].OtherMaximumLength != 0 {
+		t.Fatalf("hidden frozen defaults were retained=%+v", questionnaire)
+	}
+	if err := surveydomain.ValidateQuestionnaire(questionnaire); err != nil {
+		t.Fatalf("normalized frozen ordinary definition is invalid: %v", err)
+	}
+	request.AssessmentEnabled = true
+	request.AssessmentConfig = []byte(`{"template_id":"template-1"}`)
+	request.Questions[0].Options[0].IsOther = true
+	request.Questions[0].Options[0].OtherPlaceholder = "请填写"
+	request.Questions[0].Options[0].OtherMaximumLength = 80
+	assessment := request.questionnaire()
+	if string(assessment.AssessmentConfig) != `{"template_id":"template-1"}` || !assessment.Questions[0].Options[0].IsOther || assessment.Questions[0].Options[0].OtherMaximumLength != 80 {
+		t.Fatalf("enabled configuration was changed=%+v", assessment)
+	}
+}
+
+func TestDefinitionResponseMarksDraftAsDisabledForFrozenEditor(t *testing.T) {
+	draft := definitionResponse(surveyport.Questionnaire{Status: surveyport.StatusDraft})
+	published := definitionResponse(surveyport.Questionnaire{Status: surveyport.StatusPublished})
+	if draft["is_disabled"] != true || draft["status"] != "disabled" || published["is_disabled"] != false || published["status"] != "active" {
+		t.Fatalf("frozen editor lifecycle DTO draft=%+v published=%+v", draft, published)
+	}
 }
 
 func TestPublicSurveyCannotBypassOAuth(t *testing.T) {

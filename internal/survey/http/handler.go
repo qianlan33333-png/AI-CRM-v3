@@ -99,6 +99,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// publicPublishRequest preserves the frozen empty-body compatibility path while
+// making an explicitly supplied version a real compare-and-swap precondition.
+// An absent field intentionally retains the established /enable-era behavior.
+type publicPublishRequest struct {
+	ExpectedQuestionnaireVersion *int64 `json:"expected_questionnaire_version"`
+}
+
 type definitionRequest struct {
 	Name              string                       `json:"name"`
 	Title             string                       `json:"title"`
@@ -121,7 +128,38 @@ func (r definitionRequest) questionnaire() surveyport.Questionnaire {
 	if r.IsDisabled {
 		status = surveyport.StatusDisabled
 	}
-	return surveyport.Questionnaire{Name: r.Name, Title: r.Title, Description: r.Description, Mode: mode, AnswerDisplayMode: r.AnswerDisplayMode, AssessmentConfig: r.AssessmentConfig, Slug: r.Slug, Status: status, Questions: r.Questions, ScoreRules: r.ScoreRules}
+	questions := append([]surveyport.Question(nil), r.Questions...)
+	for index := range questions {
+		// The frozen editor omits validation for ordinary single-choice
+		// questions. Its established behavior is exactly one answer, while the
+		// domain's generic omitted maximum means every option. Normalize only
+		// that absent legacy default at the Host DTO boundary; explicit values
+		// still reach the Owner unchanged for validation.
+		if questions[index].Type == surveyport.QuestionSingleChoice && questions[index].Validation.MaximumSelections == nil {
+			maximum := 1
+			questions[index].Validation.MaximumSelections = &maximum
+		}
+		options := append([]surveyport.Option(nil), questions[index].Options...)
+		for optionIndex := range options {
+			// Hidden “other” controls in the frozen editor serialize their 80
+			// character default even when the option is not an other option.
+			// It is not enabled business configuration, so omit it before the
+			// strict Owner validation; enabled other-option values are retained.
+			if !options[optionIndex].IsOther {
+				options[optionIndex].OtherPlaceholder = ""
+				options[optionIndex].OtherMaximumLength = 0
+			}
+		}
+		questions[index].Options = options
+	}
+	assessmentConfig := r.AssessmentConfig
+	if mode == surveyport.ModeSurvey {
+		// The same frozen editor serializes its hidden assessment builder for
+		// ordinary questionnaires. Survey-owned definitions do not enable that
+		// product surface, so retain the canonical empty object instead.
+		assessmentConfig = json.RawMessage(`{}`)
+	}
+	return surveyport.Questionnaire{Name: r.Name, Title: r.Title, Description: r.Description, Mode: mode, AnswerDisplayMode: r.AnswerDisplayMode, AssessmentConfig: assessmentConfig, Slug: r.Slug, Status: status, Questions: questions, ScoreRules: r.ScoreRules}
 }
 
 func (h *Handler) adminRoot(w http.ResponseWriter, r *http.Request) {
@@ -313,9 +351,27 @@ func (h *Handler) setStatus(w http.ResponseWriter, r *http.Request, id int64, st
 		resultError(w, err)
 		return
 	}
+	expected := current.Version
+	if publish && r.Body != nil {
+		var body publicPublishRequest
+		decoder := json.NewDecoder(io.LimitReader(r.Body, maxBody))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+			writeError(w, http.StatusBadRequest, "invalid_request")
+			return
+		} else if err == nil {
+			if decoder.Decode(&struct{}{}) != io.EOF {
+				writeError(w, http.StatusBadRequest, "invalid_request")
+				return
+			}
+			if body.ExpectedQuestionnaireVersion != nil {
+				expected = *body.ExpectedQuestionnaireVersion
+			}
+		}
+	}
 	var q surveyport.Questionnaire
 	if publish {
-		q, err = h.definitions.Publish(r.Context(), surveyport.ID(id), current.Version, p.InternalID, idempotency(r))
+		q, err = h.definitions.Publish(r.Context(), surveyport.ID(id), expected, p.InternalID, idempotency(r))
 	} else {
 		q, err = h.definitions.SetStatus(r.Context(), surveyport.ID(id), current.Version, status, p.InternalID, idempotency(r))
 	}
@@ -962,7 +1018,7 @@ func (h *Handler) legacyOperationLogs(w http.ResponseWriter, r *http.Request, id
 }
 
 func definitionResponse(q surveyport.Questionnaire) map[string]any {
-	return map[string]any{"id": q.ID, "name": q.Name, "title": q.Title, "description": q.Description, "answer_display_mode": q.AnswerDisplayMode, "assessment_enabled": q.Mode == surveyport.ModeAssessment, "assessment_config": json.RawMessage(q.AssessmentConfig), "slug": q.Slug, "is_disabled": q.Status == surveyport.StatusDisabled, "enabled": q.Status == surveyport.StatusPublished, "status": map[surveyport.QuestionnaireStatus]string{surveyport.StatusPublished: "active", surveyport.StatusDisabled: "disabled", surveyport.StatusDraft: "disabled"}[q.Status], "version": q.Version, "definition_version": q.DefinitionVersion, "question_count": len(q.Questions), "submission_count": q.SubmissionCount, "created_at": q.CreatedAt, "updated_at": q.UpdatedAt, "public_path": "/q/" + q.Slug, "submitted_path": "/h5/result.html", "questions": q.Questions, "score_rules": q.ScoreRules}
+	return map[string]any{"id": q.ID, "name": q.Name, "title": q.Title, "description": q.Description, "answer_display_mode": q.AnswerDisplayMode, "assessment_enabled": q.Mode == surveyport.ModeAssessment, "assessment_config": json.RawMessage(q.AssessmentConfig), "slug": q.Slug, "is_disabled": q.Status != surveyport.StatusPublished, "enabled": q.Status == surveyport.StatusPublished, "status": map[surveyport.QuestionnaireStatus]string{surveyport.StatusPublished: "active", surveyport.StatusDisabled: "disabled", surveyport.StatusDraft: "disabled"}[q.Status], "version": q.Version, "definition_version": q.DefinitionVersion, "question_count": len(q.Questions), "submission_count": q.SubmissionCount, "created_at": q.CreatedAt, "updated_at": q.UpdatedAt, "public_path": "/q/" + q.Slug, "submitted_path": "/h5/result.html", "questions": q.Questions, "score_rules": q.ScoreRules}
 }
 func definitionEnvelope(q surveyport.Questionnaire, status string, source int64) map[string]any {
 	value := definitionResponse(q)

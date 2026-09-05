@@ -25,6 +25,129 @@
     const heading = Array.from(document.querySelectorAll('h3')).find(function (node) { return /问卷.*(?:外推|推送).*记录/.test(node.textContent); });
     return heading ? heading.parentElement : null;
   }
+  function installFrozenPublishBridge() {
+    if (!document.body || document.body.dataset.page !== 'questionnaireDetail') return;
+    let pendingButton = null;
+    let publishing = false;
+    function currentButton(fallback) { return document.getElementById('v2-publish-save') || fallback || null; }
+    function showPublishState(button, questionnaire, failed) {
+      const target = currentButton(button);
+      let status = document.querySelector('[data-survey-host-publish-status]');
+      if (!status) {
+        status = document.createElement('span');
+        status.dataset.surveyHostPublishStatus = 'true';
+        status.style.cssText = 'margin-left:10px;font-size:13px';
+        if (target && target.parentElement) target.parentElement.appendChild(status);
+      }
+      if (failed) {
+        status.textContent = '发布失败，请重试';
+        status.style.color = '#d93026';
+        return;
+      }
+      const publicPath = text(questionnaire && questionnaire.public_path);
+      status.replaceChildren();
+      status.style.color = '#1f7a1f';
+      status.dataset.surveyHostPublishedVersion = text(questionnaire && questionnaire.version);
+      status.appendChild(document.createTextNode('已发布 · '));
+      const link = document.createElement('a');
+      link.href = publicPath;
+      link.textContent = '打开公开问卷';
+      link.dataset.surveyHostPublishedPath = publicPath;
+      status.appendChild(link);
+    }
+    function responseQuestionnaire(value) {
+      if (!value || typeof value !== 'object') return null;
+      if (value.questionnaire && typeof value.questionnaire === 'object') return value.questionnaire;
+      if (value.data && value.data.questionnaire && typeof value.data.questionnaire === 'object') return value.data.questionnaire;
+      return value;
+    }
+    async function publishSavedQuestionnaire(saved, button) {
+      const questionnaire = responseQuestionnaire(saved);
+      const id = Number(questionnaire && questionnaire.id);
+      if (!Number.isSafeInteger(id) || id < 1) throw new Error('saved questionnaire id is missing');
+      await adminRequest('/api/admin/questionnaires/' + id + '/public-publish', { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, body: JSON.stringify({ expected_questionnaire_version: Number(questionnaire.version) || 0 }) });
+      const detail = responseQuestionnaire(await adminRequest('/api/admin/questionnaires/' + id, { method: 'GET', headers: { Accept: 'application/json' } }));
+      if (!detail || detail.status !== 'active' || detail.enabled !== true || !text(detail.public_path)) throw new Error('published questionnaire was not confirmed');
+      showPublishState(button, detail, false);
+    }
+    window.addEventListener('aicrm:survey-editor-save', function (event) {
+      const detail = event && event.detail;
+      const button = pendingButton;
+      if (!button || publishing || !detail || !detail.promise || typeof detail.promise.then !== 'function') return;
+      pendingButton = null;
+      publishing = true;
+      // questionnaireEditorV3 dispatches this event synchronously with the
+      // promise for the save it has just started. Do not infer a publish from
+      // fetch timing: an unrelated regular save must never consume this click.
+      Promise.resolve(detail.promise).then(function (saved) {
+        return publishSavedQuestionnaire(saved, button);
+      }).catch(function () {
+        showPublishState(button, null, true);
+      }).finally(function () {
+        publishing = false;
+      });
+    });
+    document.addEventListener('click', function (event) {
+      // A previous validation failure cannot survive into another control's
+      // click. The current publish click is installed below and is cleared in
+      // its bubble phase if the Adapter does not synchronously consume it.
+      if (pendingButton && !publishing) pendingButton = null;
+      const button = event.target && event.target.closest && event.target.closest('#v2-publish-save');
+      if (!button) return;
+      if (pendingButton || publishing) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        return;
+      }
+      pendingButton = button;
+    }, true);
+    document.addEventListener('click', function () {
+      // The frozen button's target listener runs before this bubble listener.
+      // A valid save has already handed its exact promise to the Host; a
+      // validation failure has not, so discard only the unconsumed gesture.
+      if (pendingButton && !publishing) pendingButton = null;
+    });
+  }
+  function installFrozenEnableBridge() {
+    if (!document.body || !['questionnaires', 'questionnaireDetail'].includes(document.body.dataset.page || '')) return;
+    const originalFetch = window.fetch;
+    if (typeof originalFetch !== 'function') return;
+    window.fetch = function (input, options) {
+      const method = text(options && options.method || input && input.method || 'GET').toUpperCase();
+      const rawURL = typeof input === 'string' ? input : input && input.url || '';
+      let pathname = rawURL;
+      try { pathname = new URL(rawURL, window.location.href).pathname; } catch (_error) {}
+      const match = /^\/api\/admin\/questionnaires\/([1-9][0-9]*)\/enable$/.exec(pathname);
+      const response = originalFetch(input, options);
+      if (method !== 'POST' || !match) return response;
+      // A frozen editor calls /enable for a just-saved draft. The Owner correctly
+      // rejects that because a draft has no immutable definition. Keep normal
+      // re-enables on /enable; only its concrete conflict is retried through the
+      // Owner's definition-freezing public-publish operation.
+      return Promise.resolve(response).then(function (result) {
+        if (!result || result.status !== 409) return result;
+        // Do not publish whatever happens to be current after the /enable
+        // conflict. Read the draft once and submit that exact version so a
+        // concurrent edit remains a visible 409 instead of a silent publish.
+        return platformFetch('/api/admin/questionnaires/' + match[1], { method: 'GET', credentials: 'same-origin', headers: { Accept: 'application/json' } }).then(function (detailResponse) {
+          if (!detailResponse || !detailResponse.ok) return result;
+          return detailResponse.json();
+        }).then(function (detail) {
+          const questionnaire = detail && (detail.questionnaire || detail.data && detail.data.questionnaire || detail);
+          if (!questionnaire || !Number.isSafeInteger(Number(questionnaire.version)) || Number(questionnaire.version) < 1) return result;
+          const headers = new Headers((options && options.headers) || {});
+          headers.set('Content-Type', 'application/json');
+          headers.set('Accept', 'application/json');
+          headers.set('X-CSRF-Token', csrfToken());
+          headers.set('Idempotency-Key', requestKey());
+          return platformFetch('/api/admin/questionnaires/' + match[1] + '/public-publish', {
+            method: 'POST', credentials: 'same-origin', headers: headers,
+            body: JSON.stringify({ expected_questionnaire_version: Number(questionnaire.version) }),
+          });
+        }).catch(function () { return result; });
+      });
+    };
+  }
   function installQrFallback() {
     const page = document.body.dataset.page || ''; if (!['questionnaires', 'questionnaireDetail', 'questionnaireOps'].includes(page)) return;
     const pending = new WeakSet();
@@ -88,6 +211,8 @@
     let scheduled = false; const ensureHost = function () { if (scheduled || (findExternalPushCard() && findExternalPushCard().querySelector('[data-survey-push-metadata]'))) return; scheduled = true; setTimeout(function () { scheduled = false; void mount(); }, 0); };
     new MutationObserver(ensureHost).observe(stage, { childList: true, subtree: true }); ensureHost(); setTimeout(ensureHost, 50);
   }
+  installFrozenPublishBridge();
+  installFrozenEnableBridge();
   installLegacyQuestionnaireOpsGuard();
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, { once: true }); else start();
 }());

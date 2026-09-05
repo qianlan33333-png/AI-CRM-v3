@@ -108,7 +108,8 @@ for migration_contract in \
   '0082_group_ops_history_import.sql:Group Ops history import' \
   '0084_hxc_shared_facts.sql:HXC shared legacy facts' \
   '0088_order_service_entitlement_alliance.sql:service-period alliance' \
-  '0090_survey_oauth_state_redirect.sql:Survey OAuth redirect repair'; do
+  '0090_survey_oauth_state_redirect.sql:Survey OAuth redirect repair' \
+  '0091_survey_assessment_business_keys.sql:Survey assessment business key repair'; do
   migration="${migration_contract%%:*}"
   label="${migration_contract#*:}"
   test -f "migrations/${migration}" || {

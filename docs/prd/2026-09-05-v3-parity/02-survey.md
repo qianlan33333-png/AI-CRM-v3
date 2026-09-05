@@ -64,6 +64,8 @@ V3 本轮初次外推 PR 的该路由仍固定调用 `RecordDisabledOperation`�
 `web/src/admin/controller.ts`、`web/src/api/admin.ts`、`web/src/shared/api/client.ts`均属于冻结供体，修改在V3 Host实现，禁止更新哈希/白名单绕过。不能把整页stage换成新外推表单，原提交后动作、渠道码选择、导航目标、分享入口、统计、两页签与日志筛选必须保留。
 
 在原外推卡片/日志容器做最小挂载或事件接管，原位置按钮只发一次POST；不能保留先发出请求再因旧DTO而提示失败的入口。新记录回读真实执行事实，旧未采集字段保持未知；显示日志不能硬编码queued。完整测试必须加载实际冻结模板和runtime，验证连续保存、页签重绘、提交后动作以及当前/全局日志，不以手写相似DOM替代旧整页行为。
+
+- 冻结测评预览页 `#v2-publish-save` 的按钮文案承诺发布；其供体点击只保存定义时，由 V3 Host 在该按钮的成功保存后复用既有 `public-publish → detail readback` HTTP 合同。Host 不伪造 active：仅在 Owner 回读 `status=active`、`enabled=true` 及 `public_path` 后展示公开链接。普通 `#save-btn`，包括 `is_disabled=true` 的保存，不进入该发布链，仍由 Owner 保持 draft/disabled。冻结普通编辑器对刚保存草稿发出的 `/enable` 被 Owner 拒绝时，Host 仅重放为 `public-publish`；已有不可变定义的重新启用仍直达 `/enable`。
 ## 10. 总控历史导入验收补充
 
 既有 `cmd/migrate-survey-v2` 只含SQL文本断言和加密单测，尚无真实PG整份快照导入/重放/对账证据。其 `reconcile` 当前只比较source_map行数，未验证逐行源摘要和目标事实，却输出silent_loss=0等结论，不能作为本轮验收通过证据。这是既定历史导入要求的缺陷修正，不新增数据治理范围。

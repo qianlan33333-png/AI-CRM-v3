@@ -62,5 +62,30 @@ func (m *ModuleRegistration) Readiness(ctx context.Context, pool *pgxpool.Pool) 
 	if !redirectConstraintReady {
 		return errors.New("survey OAuth state redirect constraint is not ready")
 	}
+	var assessmentBusinessKeyConstraintsReady bool
+	err = pool.QueryRow(ctx, `SELECT count(*) = 2
+		FROM pg_constraint c
+		JOIN pg_class rel ON rel.oid=c.conrelid
+		JOIN pg_namespace ns ON ns.oid=rel.relnamespace
+		WHERE ns.nspname=current_schema()
+		  AND (
+			(c.conname='survey_definition_questions_dimension'
+			 AND rel.relname='survey_definition_questions'
+			 AND strpos(pg_get_constraintdef(c.oid), 'char_length(assessment_dimension_key)') > 0
+			 AND strpos(pg_get_constraintdef(c.oid), '[[:space:]]') > 0
+			 AND strpos(pg_get_constraintdef(c.oid), '[[:cntrl:]]') > 0)
+			OR
+			(c.conname='survey_definition_options_type'
+			 AND rel.relname='survey_definition_options'
+			 AND strpos(pg_get_constraintdef(c.oid), 'char_length(assessment_type_key)') > 0
+			 AND strpos(pg_get_constraintdef(c.oid), '[[:space:]]') > 0
+			 AND strpos(pg_get_constraintdef(c.oid), '[[:cntrl:]]') > 0)
+		  )`).Scan(&assessmentBusinessKeyConstraintsReady)
+	if err != nil {
+		return err
+	}
+	if !assessmentBusinessKeyConstraintsReady {
+		return errors.New("survey assessment business key constraints are not ready")
+	}
 	return nil
 }

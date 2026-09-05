@@ -20,6 +20,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -274,6 +276,16 @@ func validateSnapshot(s Snapshot) error {
 			return err
 		}
 	}
+	for _, row := range questions {
+		if !validAssessmentBusinessKey(row.Dimension) {
+			return fmt.Errorf("invalid assessment business key questionnaire_questions/%d", row.ID)
+		}
+	}
+	for _, row := range options {
+		if !validAssessmentBusinessKey(row.TypeKey) {
+			return fmt.Errorf("invalid assessment business key questionnaire_options/%d", row.ID)
+		}
+	}
 	return nil
 }
 
@@ -424,7 +436,7 @@ func importSnapshot(args []string) error {
 				}
 				validationRaw, _ := json.Marshal(validation)
 				var targetQuestion int64
-				err = tx.QueryRow(ctx, `INSERT INTO survey_definition_questions(definition_version_id,question_type,title,assessment_dimension_key,sidebar_profile_field,required,sort_order,placeholder_text,validation) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`, versionID, item.Type, trimNonEmpty(item.Title, 1000), safeOpaque(item.Dimension), safeOpaque(item.Sidebar), item.Required, index, trim(item.Placeholder, 500), validationRaw).Scan(&targetQuestion)
+				err = tx.QueryRow(ctx, `INSERT INTO survey_definition_questions(definition_version_id,question_type,title,assessment_dimension_key,sidebar_profile_field,required,sort_order,placeholder_text,validation) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`, versionID, item.Type, trimNonEmpty(item.Title, 1000), item.Dimension, safeOpaque(item.Sidebar), item.Required, index, trim(item.Placeholder, 500), validationRaw).Scan(&targetQuestion)
 				if err != nil {
 					return err
 				}
@@ -436,7 +448,7 @@ func importSnapshot(args []string) error {
 				for oi, opt := range orderedOptions {
 					tags := validArray(opt.Tags)
 					var targetOption int64
-					err = tx.QueryRow(ctx, `INSERT INTO survey_definition_options(question_id,definition_version_id,option_text,score,assessment_type_key,tag_codes,is_other,other_placeholder,other_max_length,sort_order) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`, targetQuestion, versionID, trimNonEmpty(opt.Text, 1000), opt.Score, safeOpaque(opt.TypeKey), tags, opt.IsOther, trim(opt.OtherPlaceholder, 500), otherMax(opt), oi).Scan(&targetOption)
+					err = tx.QueryRow(ctx, `INSERT INTO survey_definition_options(question_id,definition_version_id,option_text,score,assessment_type_key,tag_codes,is_other,other_placeholder,other_max_length,sort_order) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`, targetQuestion, versionID, trimNonEmpty(opt.Text, 1000), opt.Score, opt.TypeKey, tags, opt.IsOther, trim(opt.OtherPlaceholder, 500), otherMax(opt), oi).Scan(&targetOption)
 					if err != nil {
 						return err
 					}
@@ -1160,7 +1172,7 @@ func verifyDefinitionFact(ctx context.Context, tx pgx.Tx, source, table string, 
 			expectedValidation["max_selections"] = sourceIndex.optionsForQuestion(value.ID)
 		}
 		expectedValidationRaw, _ := json.Marshal(expectedValidation)
-		return mismatch(err == nil && questionnaireID == owner && typ == value.Type && title == trimNonEmpty(value.Title, 1000) && dimension == safeOpaque(value.Dimension) && sidebar == safeOpaque(value.Sidebar) && required == value.Required && placeholder == trim(value.Placeholder, 500) && sortOrder == sourceIndex.questionSort(value) && jsonEquivalent(validation, expectedValidationRaw))
+		return mismatch(err == nil && questionnaireID == owner && typ == value.Type && title == trimNonEmpty(value.Title, 1000) && dimension == value.Dimension && sidebar == safeOpaque(value.Sidebar) && required == value.Required && placeholder == trim(value.Placeholder, 500) && sortOrder == sourceIndex.questionSort(value) && jsonEquivalent(validation, expectedValidationRaw))
 	case option:
 		owner, err := sourceTargetPK(ctx, tx, source, "questionnaire_questions", value.QuestionID)
 		if err != nil {
@@ -1173,7 +1185,7 @@ func verifyDefinitionFact(ctx context.Context, tx pgx.Tx, source, table string, 
 		var isOther bool
 		var otherMaxLength, sortOrder int
 		err = tx.QueryRow(ctx, `SELECT question_id,option_text,score,assessment_type_key,tag_codes,is_other,other_placeholder,other_max_length,sort_order FROM survey_definition_options WHERE id=$1`, targetPK).Scan(&questionID, &text, &score, &typeKey, &tags, &isOther, &placeholder, &otherMaxLength, &sortOrder)
-		return mismatch(err == nil && questionID == owner && text == trimNonEmpty(value.Text, 1000) && score == value.Score && typeKey == safeOpaque(value.TypeKey) && jsonEquivalent(tags, validArray(value.Tags)) && isOther == value.IsOther && placeholder == trim(value.OtherPlaceholder, 500) && otherMaxLength == otherMax(value) && sortOrder == sourceIndex.optionSort(value))
+		return mismatch(err == nil && questionID == owner && text == trimNonEmpty(value.Text, 1000) && score == value.Score && typeKey == value.TypeKey && jsonEquivalent(tags, validArray(value.Tags)) && isOther == value.IsOther && placeholder == trim(value.OtherPlaceholder, 500) && otherMaxLength == otherMax(value) && sortOrder == sourceIndex.optionSort(value))
 	case rule:
 		owner, err := sourceTargetPK(ctx, tx, source, "questionnaires", value.QuestionnaireID)
 		if err != nil {
@@ -1608,6 +1620,24 @@ func safeOpaque(v string) string {
 		return ""
 	}
 	return v
+}
+
+// validAssessmentBusinessKey is intentionally only for the legacy assessment
+// association columns. A nonempty invalid source key is rejected before the
+// import transaction, rather than silently changing an old association.
+func validAssessmentBusinessKey(v string) bool {
+	if v == "" {
+		return true
+	}
+	if !utf8.ValidString(v) || strings.TrimSpace(v) != v || len([]rune(v)) > 128 {
+		return false
+	}
+	for _, r := range v {
+		if unicode.IsControl(r) {
+			return false
+		}
+	}
+	return true
 }
 func display(v string) string {
 	if v == "one_by_one" {
