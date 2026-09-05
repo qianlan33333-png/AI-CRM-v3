@@ -52,12 +52,13 @@ ops.window.eval(adapter);
 await wait(20);
 const form = ops.window.document.querySelector('[data-survey-push-metadata]');
 if (!form || !ops.window.document.querySelector('[data-survey-test-records]').textContent.includes('暂无测试记录')) throw new Error('zero-receipt page lost push metadata editor');
+form.elements.enabled.checked = false; form.elements.configuration_reference.value = 'push.v2';
 form.elements.type.value = 'new';
 form.querySelector('[data-param-name]').value = 'campaign'; form.querySelector('[data-param-value]').value = 'autumn';
 form.dispatchEvent(new ops.window.Event('submit', {bubbles:true,cancelable:true}));
 await wait(20);
 const put = requests.find((item)=>item.options.method==='PUT');
-if (!put || put.options.headers.get('X-CSRF-Token') !== 'csrf-proof' || JSON.parse(put.options.body).configuration_reference !== 'push.v1' || JSON.parse(put.options.body).configuration_version !== 3 || savedMetadata.custom_params.campaign !== 'autumn') throw new Error('metadata save did not preserve current config revision with CSRF');
+if (!put || put.options.headers.get('X-CSRF-Token') !== 'csrf-proof' || JSON.parse(put.options.body).configuration_reference !== 'push.v2' || JSON.parse(put.options.body).enabled !== false || JSON.parse(put.options.body).configuration_version !== 3 || savedMetadata.custom_params.campaign !== 'autumn') throw new Error('metadata save did not preserve current config revision with CSRF');
 ops.window.close();
 
 const conflict = new JSDOM('<!doctype html><body data-page="questionnaireOps"><div id="stage"></div></body>', {url:'https://test.invalid/admin/questionnaireOps.html?id=7', runScripts:'outside-only', pretendToBeVisual:true});
@@ -125,3 +126,34 @@ if (!forbidden.window.document.body.textContent.includes('无操作权限')) thr
 forbidden.window.close();
 
 console.log("survey-operations-host-journey: PASS");
+
+const legacyShell = new JSDOM('<!doctype html><body data-page="questionnaireOps"><div id="stage"></div></body>', {url:'https://test.invalid/admin/questionnaireOps.html?id=7', runScripts:'outside-only', pretendToBeVisual:true});
+Object.defineProperty(legacyShell.window.document, 'cookie', {value:'aicrm_admin_csrf=csrf-proof', configurable:true});
+Object.defineProperty(legacyShell.window.crypto, 'randomUUID', {value:()=> '00000000-0000-4000-8000-000000000000'});
+const rawCalls = []; let legacyPostCalls = 0;
+legacyShell.window.fetch = async (url, options = {}) => {
+  const path = String(url); rawCalls.push({path, options});
+  if (path.includes('/external-push/test')) { legacyPostCalls += 1; return {ok:true,status:202,json:async()=>({questionnaire_id:7,test_run_id:'questionnaire-test-0123456789abcdef0123456789abcdef',effect_id:'eer_7',status:'queued',accepted:true,synthetic_data:true})}; }
+  if (path.includes('/external-push-logs')) return {ok:true,json:async()=>({items:[{test_run_id:'questionnaire-test-unknown',status:'outcome_unknown',attempt_count:1,provider_result_received:false,updated_at:'2026-09-05T00:00:01Z'}]})};
+  return {ok:true,json:async()=>({items:[{source_pk:'questionnaire-test-0123456789abcdef0123456789abcdef',status:'executed',provider_attempt_number:1,provider_result_received:true,occurred_at:'2026-09-05T00:00:00Z'}],configuration_version:5,external_push:{enabled:true,configuration_reference:'push.v1',metadata:{}}})};
+};
+legacyShell.window.eval(adapter);
+await wait(30);
+const guardedLogs = await legacyShell.window.fetch('/admin/questionnaires/7/external-push-logs');
+const guardedPayload = await guardedLogs.json();
+if (!guardedPayload.local_only || guardedPayload.items.length !== 0 || rawCalls.some((item) => item.path === '/admin/questionnaires/7/external-push-logs')) throw new Error('frozen queued-only mapper was not isolated from real records');
+const legacyStage = legacyShell.window.document.getElementById('stage');
+legacyStage.replaceChildren();
+const oldButton = legacyShell.window.document.createElement('button'); oldButton.textContent = '测试推送（仅本地记录）'; let donorClick = 0; oldButton.addEventListener('click', () => { donorClick += 1; }); legacyStage.appendChild(oldButton);
+oldButton.click();
+await wait(30);
+if (donorClick !== 0 || legacyShell.window.document.querySelector('button')?.textContent.includes('仅本地记录')) throw new Error('frozen test button remained active after Host takeover');
+const hostButton = legacyShell.window.document.querySelector('[data-survey-push-test]');
+if (!hostButton) throw new Error('Host did not replace the frozen questionnaire operations entry');
+hostButton.click();
+await wait(40);
+const shellText = legacyShell.window.document.body.textContent;
+if (legacyPostCalls !== 1 || !shellText.includes('已收到测试结果') || !shellText.includes('结果待确认（不会自动重复发送）')) throw new Error('Host did not use one real test request and readable current/global results');
+legacyShell.window.close();
+
+console.log("survey-operations-frozen-shell-takeover: PASS");

@@ -1,6 +1,7 @@
 (function () {
   'use strict';
 
+  const platformFetch = typeof window.fetch === 'function' ? window.fetch.bind(window) : function () { return Promise.reject(new Error('fetch unavailable')); };
   function text(value) { return value == null ? '' : String(value); }
   function csrfToken() {
     const match = document.cookie.match(/(?:^|;\s*)(?:aicrm_admin_csrf|aicrm_csrf)=([^;]+)/);
@@ -10,11 +11,10 @@
     return prefix + '-' + (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36));
   }
   async function adminRequest(path, options) {
-    if (window.AdminApi && typeof window.AdminApi.requestJson === 'function') return window.AdminApi.requestJson(path, options);
     const headers = new Headers((options && options.headers) || {});
     headers.set('X-CSRF-Token', csrfToken());
     headers.set('Idempotency-Key', requestKey('survey-admin'));
-    const response = await fetch(path, Object.assign({ credentials: 'same-origin' }, options, { headers: headers }));
+    const response = await platformFetch(path, Object.assign({ credentials: 'same-origin' }, options, { headers: headers }));
     if (!response.ok) {
       const error = new Error('HTTP ' + response.status);
       error.status = response.status;
@@ -39,7 +39,8 @@
     return '历史记录：' + text(item.status || '状态未知');
   }
   function attemptLabel(item) {
-    return Number.isInteger(item.provider_attempt_number) ? '尝试 ' + item.provider_attempt_number + ' 次' : '尝试次数未记录';
+    const attempt = Number.isInteger(item.provider_attempt_number) ? item.provider_attempt_number : item.attempt_count;
+    return Number.isInteger(attempt) ? '尝试 ' + attempt + ' 次' : '尝试次数未记录';
   }
   function makeRecords(title, items, marker) {
     const section = document.createElement('section');
@@ -74,10 +75,10 @@
     if (!/^[1-9][0-9]*$/.test(questionnaireID)) return;
     const stage = document.getElementById('stage');
     if (!stage || document.querySelector('[data-survey-canonical-receipts]')) return;
-    const panel = document.createElement('section'); panel.dataset.surveyCanonicalReceipts = 'true'; panel.style.cssText = 'margin:16px 20px;padding:16px;background:#fff;border:1px solid #dee0e3;border-radius:8px';
+    const panel = document.createElement('section'); panel.dataset.surveyCanonicalReceipts = 'true'; panel.dataset.surveyHost = 'true'; panel.style.cssText = 'margin:16px 20px;padding:16px;background:#fff;border:1px solid #dee0e3;border-radius:8px';
     const heading = document.createElement('h3'); heading.textContent = '外推设置与测试'; heading.style.cssText = 'margin:0 0 6px;font-size:15px';
     const note = document.createElement('p'); note.textContent = '在这里设置外推参数，并查看本问卷和全部问卷的测试结果。'; note.style.cssText = 'margin:0 0 12px;color:#8f959e;font-size:12px';
-    const content = document.createElement('div'); content.setAttribute('role', 'status'); content.textContent = '正在读取设置…'; panel.append(heading, note, content); stage.insertAdjacentElement('afterend', panel);
+    const content = document.createElement('div'); content.setAttribute('role', 'status'); content.textContent = '正在读取设置…'; panel.append(heading, note, content); stage.replaceChildren(panel);
     const operationsPath = '/api/admin/questionnaires/' + questionnaireID + '/operations';
     async function load() {
       const [payload, global] = await Promise.all([adminRequest(operationsPath, { method: 'GET', headers: { Accept: 'application/json' } }), adminRequest('/admin/questionnaires/external-push-logs?limit=100&offset=0', { method: 'GET', headers: { Accept: 'application/json' } })]);
@@ -87,6 +88,8 @@
     function metadataForm(payload) {
       const push = payload.external_push || {}, metadata = push.metadata && typeof push.metadata === 'object' ? push.metadata : {};
       const form = document.createElement('form'); form.dataset.surveyPushMetadata = 'true'; form.style.cssText = 'display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:0 0 14px;padding:12px;border:1px solid #eef0f2;border-radius:6px';
+      const enabled = document.createElement('label'); enabled.style.cssText = 'display:flex;gap:6px;align-items:center'; const enabledInput = document.createElement('input'); enabledInput.type = 'checkbox'; enabledInput.name = 'enabled'; enabledInput.checked = push.enabled === true; enabled.append(enabledInput, document.createTextNode('启用外推')); form.appendChild(enabled);
+      const reference = document.createElement('label'); reference.textContent = '推送配置引用'; const referenceInput = document.createElement('input'); referenceInput.name = 'configuration_reference'; referenceInput.value = push.configuration_reference == null ? '' : String(push.configuration_reference); referenceInput.style.cssText = 'display:block;width:100%;box-sizing:border-box;margin-top:4px;height:28px;border:1px solid #dee0e3;border-radius:4px'; reference.appendChild(referenceInput); form.appendChild(reference);
       [['推送类型', 'type'], ['有效期秒时间戳', 'expires_at_ts'], ['第几天', 'day'], ['频次', 'frequency'], ['备注', 'remark']].forEach(function (item) { const label = document.createElement('label'); label.textContent = item[0]; const input = document.createElement('input'); input.name = item[1]; input.value = metadata[item[1]] == null ? '' : String(metadata[item[1]]); input.style.cssText = 'display:block;width:100%;box-sizing:border-box;margin-top:4px;height:28px;border:1px solid #dee0e3;border-radius:4px'; label.appendChild(input); form.appendChild(label); });
       const params = document.createElement('div'); params.dataset.surveyPushParams = 'true'; params.style.cssText = 'grid-column:1/-1;display:grid;gap:6px'; form.appendChild(params);
       function paramRow(name, value) { const row = document.createElement('div'); row.style.cssText = 'display:grid;grid-template-columns:1fr 1fr auto;gap:6px'; const key = document.createElement('input'), val = document.createElement('input'), remove = document.createElement('button'); key.dataset.paramName = 'true'; key.placeholder = '参数名'; key.value = name || ''; val.dataset.paramValue = 'true'; val.placeholder = '参数值'; val.value = value || ''; remove.type = 'button'; remove.textContent = '删除'; remove.onclick = function () { row.remove(); }; row.append(key, val, remove); params.appendChild(row); }
@@ -98,9 +101,8 @@
         try {
           const next = { custom_params: {} }; ['type', 'expires_at_ts', 'day', 'frequency', 'remark'].forEach(function (key) { const value = form.elements[key].value.trim(); if (value) { const numeric = /^(day|frequency|expires_at_ts)$/.test(key), parsed = numeric ? Number(value) : value; if (numeric && (!Number.isFinite(parsed) || parsed < 0)) throw new Error('invalid metadata field'); next[key] = parsed; } });
           params.querySelectorAll('div').forEach(function (row) { const name = row.querySelector('[data-param-name]').value.trim(), value = row.querySelector('[data-param-value]').value; if (name) next.custom_params[name] = value; });
-          const current = await adminRequest(operationsPath, { method: 'GET', headers: { Accept: 'application/json' } });
-          if (!Number.isInteger(current.configuration_version) || current.configuration_version < 0) throw new Error('invalid configuration revision');
-          const saved = await adminRequest(operationsPath + '/external-push', { method: 'PUT', headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, body: JSON.stringify({ enabled: Boolean(current.external_push && current.external_push.enabled), configuration_reference: current.external_push && current.external_push.configuration_reference || '', metadata: next, configuration_version: current.configuration_version }) });
+          if (!Number.isInteger(payload.configuration_version) || payload.configuration_version < 0) throw new Error('invalid configuration revision');
+          const saved = await adminRequest(operationsPath + '/external-push', { method: 'PUT', headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, body: JSON.stringify({ enabled: form.elements.enabled.checked, configuration_reference: form.elements.configuration_reference.value.trim(), metadata: next, configuration_version: payload.configuration_version }) });
           push.enabled = saved.external_push.enabled; push.configuration_reference = saved.external_push.configuration_reference; push.metadata = saved.external_push.metadata; save.textContent = '已保存';
         } catch (error) { save.textContent = error && (error.status === 409 || /\b409\b/.test(error.message || '')) ? '配置已更新，请重新打开后再保存' : '保存失败'; }
       });
@@ -116,6 +118,40 @@
     }
     try { await render(); } catch (_error) { content.setAttribute('role', 'alert'); content.textContent = '读取设置失败，请稍后重试。'; }
   }
-  function start() { installQrFallback(); setTimeout(mount, 0); }
+  function installLegacyQuestionnaireOpsGuard() {
+    if (document.body.dataset.page !== 'questionnaireOps') return;
+    window.fetch = function (input, options) {
+      const method = (options && options.method || (input && input.method) || 'GET').toUpperCase();
+      const url = typeof input === 'string' ? input : input && input.url || '';
+      // The donor controller only understands its historical queued-only log
+      // projection. It may complete its frozen page boot with an empty list;
+      // the Host replaces that view and reads the unmodified records itself.
+      if (method === 'GET' && /^\/admin\/questionnaires\/[1-9][0-9]*\/external-push-logs(?:\?|$)/.test(url)) {
+        return Promise.resolve({ok:true,status:200,json:function () { return Promise.resolve({items:[],total:0,limit:100,offset:0,has_more:false,local_only:true}); }});
+      }
+      return platformFetch(input, options);
+    };
+    document.addEventListener('click', function (event) {
+      const button = event.target && event.target.closest && event.target.closest('button');
+      if (button && button.textContent && button.textContent.includes('测试推送（仅本地记录）')) {
+        event.preventDefault(); event.stopImmediatePropagation();
+      }
+    }, true);
+  }
+  function start() {
+    installQrFallback();
+    if (document.body.dataset.page !== 'questionnaireOps') { setTimeout(mount, 0); return; }
+    const stage = document.getElementById('stage');
+    if (!stage) return;
+    let scheduled = false;
+    const ensureHost = function () {
+      if (scheduled || stage.querySelector('[data-survey-host]')) return;
+      scheduled = true;
+      setTimeout(function () { scheduled = false; if (!stage.querySelector('[data-survey-host]')) void mount(); }, 0);
+    };
+    new MutationObserver(ensureHost).observe(stage, { childList: true, subtree: true });
+    ensureHost();
+  }
+  installLegacyQuestionnaireOpsGuard();
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, { once: true }); else start();
 })();

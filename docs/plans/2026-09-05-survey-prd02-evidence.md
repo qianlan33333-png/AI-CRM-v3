@@ -37,7 +37,7 @@ node internal/webshell/static/admin_console/survey_qr_bridge.test.mjs
 | 旧版测试外推、参数过滤、重放和结果回读 | `QueueCompletionTest`、`ReadCompletionPayload`、`SurveyCompletionProvider` | `TestQueueCompletionTestFreezesSyntheticRequestAndReplaysSameEffect`、`TestExternalPushTestUsesSyntheticQueueAndFailsClosedWhenDisabled`、`TestPostgreSQLSyntheticCompletionTestSnapshotReplaysWithoutCustomer` |
 | 重启执行一次、unknown 不盲重试、配置漂移和重定向 | `external_effects` + `SurveyCompletionProvider` | `TestPostgreSQLSurveySyntheticPushSurvivesRepositoryRestartAndDoesNotBlindRetryUnknown`；`TestSurveyCompletionProviderDoesNotForwardBodyOnRedirect`；`TestSurveyCompletionProviderRejectsTargetConfigDriftBeforeCallingNewEndpoint` |
 
-未冻结的 V3 Host `internal/webshell/static/admin_console/survey_operations.js` 直接调用 `POST /api/admin/questionnaires/{id}/operations/external-push/test`，携带 Host 的 CSRF header；接受响应只陈述“测试已创建”，随后重新读取本问卷与全局测试记录，因此不会把已发生的尝试或结果固定显示为零/否。`survey_qr_bridge.test.mjs` 覆盖按钮、CSRF、queued/executed/outcome_unknown 与 disabled 历史记录的浏览器旅程；`TestExternalPushTestRequiresCSRFBeforeAcceptingSyntheticEffect` 证明拒绝时不会接纳效果。禁用配置返回 `409 provider_disabled` 且零效果接受/零 Provider 调用。
+未冻结的 V3 Host `internal/webshell/static/admin_console/survey_operations.js` 接管问卷运营页：冻结的 queued-only mapper 在初始化期间只得到空记录，Host 随即替换该旧入口，直接调用 `POST /api/admin/questionnaires/{id}/operations/external-push/test` 并重新读取本问卷与全局真实记录。请求携带 Host 的 CSRF header；接受响应只陈述“测试已创建”，不会把已发生的尝试或结果固定显示为零/否。Host 也保留开关、配置引用和参数的 CAS 保存。`survey_qr_bridge.test.mjs` 覆盖冻结壳接管、旧按钮屏蔽、一次 POST、CSRF、queued/executed/outcome_unknown 与 disabled 历史记录的浏览器旅程；`TestExternalPushTestRequiresCSRFBeforeAcceptingSyntheticEffect` 证明拒绝时不会接纳效果。禁用配置返回 `409 provider_disabled` 且零效果接受/零 Provider 调用。
 
 本次本地已通过：
 
