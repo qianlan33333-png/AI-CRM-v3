@@ -240,7 +240,7 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 		t.Fatalf("accept refresh=%+v err=%v", refresh, err)
 	}
 	var published segmentport.Snapshot
-	automationAudienceEventually(t, "initial audience and automatic delivery", func() bool {
+	automationAudienceEventuallyWithDiagnostics(t, "initial audience and automatic delivery", func() bool {
 		var found bool
 		published, found, err = snapshots.PublishedSnapshot(ctx, segmentport.PackageID(packageID))
 		if err != nil || !found || published.MemberCount != 1 {
@@ -251,7 +251,7 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 			return false
 		}
 		return complete == 1
-	})
+	}, func() string { return automationAudienceRuntimeDiagnostics(ctx, native) })
 	// Incremental evaluation contains only the new result. Segment merges it
 	// with the prior snapshot, so the original member remains present.
 	source.Set(customerIDs[1:])
@@ -619,14 +619,43 @@ func automationAudienceStartRuntime(t *testing.T, runtime *platformjobqueue.Runt
 }
 
 func automationAudienceEventually(t *testing.T, label string, ready func() bool) {
+	automationAudienceEventuallyWithDiagnostics(t, label, ready, nil)
+}
+
+func automationAudienceEventuallyWithDiagnostics(t *testing.T, label string, ready func() bool, diagnostics func() string) {
 	t.Helper()
 	deadline := time.Now().Add(12 * time.Second)
 	for !ready() {
 		if time.Now().After(deadline) {
+			if diagnostics != nil {
+				t.Fatalf("timed out waiting for %s; diagnostics=%s", label, diagnostics())
+			}
 			t.Fatalf("timed out waiting for %s", label)
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
+}
+
+// automationAudienceRuntimeDiagnostics retains the failing worker state in the
+// integration-test output. It reads only the fixture schema and is never part
+// of the runtime path.
+func automationAudienceRuntimeDiagnostics(ctx context.Context, pool *pgxpool.Pool) string {
+	if pool == nil {
+		return "pool unavailable"
+	}
+	var raw []byte
+	err := pool.QueryRow(ctx, `SELECT json_build_object(
+  'snapshots', (SELECT COALESCE(json_agg(to_jsonb(s) ORDER BY id), '[]'::json) FROM segment_audience_snapshots s),
+  'events', (SELECT COALESCE(json_agg(to_jsonb(e) ORDER BY id), '[]'::json) FROM segment_audience_member_events e),
+  'enrollments', (SELECT COALESCE(json_agg(to_jsonb(e) ORDER BY id), '[]'::json) FROM automation_enrollments e),
+  'runs', (SELECT COALESCE(json_agg(to_jsonb(r) ORDER BY id), '[]'::json) FROM automation_runs r),
+  'intents', (SELECT COALESCE(json_agg(to_jsonb(i) ORDER BY id), '[]'::json) FROM outbound_message_intents i),
+  'river_jobs', (SELECT COALESCE(json_agg(to_jsonb(j) ORDER BY id), '[]'::json) FROM river_job j)
+)`).Scan(&raw)
+	if err != nil {
+		return "diagnostics query: " + err.Error()
+	}
+	return string(raw)
 }
 
 func automationAudienceRuntimePool(t *testing.T) (*pgxpool.Pool, func()) {
