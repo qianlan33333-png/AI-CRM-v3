@@ -2,10 +2,15 @@ package port
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 )
+
+const MaxSharedFactsCustomerIDs = 500
+
+var ErrSharedFactsBatchTooLarge = errors.New("too many customer IDs for HXC shared facts")
 
 // SharedFactsAvailability prevents pre-0084 generations and identity conflicts
 // from being presented as known false or zero values.
@@ -28,13 +33,15 @@ type SharedFacts struct {
 	FormallyLoggedIn                       bool
 	FormalLoginAt                          *time.Time
 	HasTokenUsage                          bool
+	LearningPlanFound                      bool
 	LearningPlanStatus                     string
-	LearningPlanCurrent, LearningPlanTotal int64
+	LearningPlanCurrent, LearningPlanTotal *int64
 	CardOpenCount7D                        int64
 	CardLastOpenedAt                       *time.Time
 
 	MembershipRecordFound bool
 	IsMember              bool
+	MembershipSource      string
 	MembershipStatus      string
 	Tier                  string
 	ExpiresAt             *time.Time
@@ -62,5 +69,5 @@ func (facts SharedFacts) ExpiredAt(reference time.Time) bool {
 	if facts.MembershipStatus == "expired" {
 		return true
 	}
-	return facts.IsMember && facts.ExpiresAt != nil && !facts.ExpiresAt.After(reference)
+	return facts.MembershipRecordFound && facts.ExpiresAt != nil && !facts.ExpiresAt.After(reference)
 }

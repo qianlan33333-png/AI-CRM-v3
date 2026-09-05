@@ -49,13 +49,18 @@ type SourceRow struct {
 	PainTag                                                  string
 	// Shared facts are read from the same immutable source snapshot. They are
 	// deliberately separate from dashboard display-stage fields.
-	FormallyLoggedIn, HasTokenUsage                         bool
-	FormalLoginAt, CardLastOpenedAt                         *time.Time
-	LearningPlanStatus                                      string
-	LearningPlanCurrent, LearningPlanTotal, CardOpenCount7D int64
-	MembershipRecordFound, IsMember                         bool
-	MembershipStatus                                        string
-	SourceUpdatedAt                                         time.Time
+	FormallyLoggedIn, HasTokenUsage        bool
+	FormalLoginAt, CardLastOpenedAt        *time.Time
+	LearningPlanFound                      bool
+	LearningPlanStatus                     string
+	LearningPlanCurrent, LearningPlanTotal *int64
+	CardOpenCount7D                        int64
+	// MembershipSource, status and expiry all come from the same selected
+	// new_version_memberships row. Dashboard subscription expiry is separate.
+	MembershipRecordFound, IsMember    bool
+	MembershipSource, MembershipStatus string
+	MembershipExpiresAt                *time.Time
+	SourceUpdatedAt                    time.Time
 }
 
 type ProjectionRow struct {
