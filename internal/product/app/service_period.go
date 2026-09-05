@@ -204,7 +204,7 @@ func (service *ServicePeriodService) ReadPublicServicePeriodByCode(ctx context.C
 	if err != nil || !projected.Enabled || projected.Lifecycle != productport.ServicePeriodEnabled {
 		return productport.CheckoutProduct{}, ErrNotFound
 	}
-	return productport.CheckoutProduct{ID: projected.ServiceProductID, ProductType: productport.ProductOptionServicePeriod, Code: projected.ProductCode, Name: projected.Name, PriceMinor: projected.PriceMinor, Currency: projected.Currency, Version: projected.Version, ServicePeriodDurationDays: duration}, nil
+	return productport.CheckoutProduct{ID: projected.ServiceProductID, ProductType: productport.ProductOptionServicePeriod, Code: projected.ProductCode, Name: projected.Name, PriceMinor: projected.PriceMinor, Currency: projected.Currency, Version: projected.Version, Images: append([]string(nil), projected.Images...), ServicePeriodDurationDays: duration}, nil
 }
 
 func (service *ServicePeriodService) CreateServicePeriodProduct(ctx context.Context, command productport.CreateServicePeriodProductCommand) (productport.ServicePeriodProduct, error) {

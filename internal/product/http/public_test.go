@@ -170,7 +170,7 @@ func TestServicePeriodPublicHostRetainsFrozenDonorStateDOM(t *testing.T) {
 }
 
 func TestPublicServicePeriodRendersTrustedEntitlementWithoutIdentityFallback(t *testing.T) {
-	reader := &servicePeriodPublicStub{product: productport.CheckoutProduct{ID: 71, ProductType: productport.ProductOptionServicePeriod, Code: "term-31", Name: "31 天服务期", PriceMinor: 12800, Currency: "CNY", Version: 4, ServicePeriodDurationDays: 31}}
+	reader := &servicePeriodPublicStub{product: productport.CheckoutProduct{ID: 71, ProductType: productport.ProductOptionServicePeriod, Code: "term-31", Name: "31 天服务期", PriceMinor: 12800, Currency: "CNY", Version: 4, Images: []string{"https://cdn.example.test/detail.png"}, ServicePeriodDurationDays: 31}}
 	handler, err := NewServicePeriodPublicHandler(reader)
 	if err != nil {
 		t.Fatal(err)
@@ -184,7 +184,7 @@ func TestPublicServicePeriodRendersTrustedEntitlementWithoutIdentityFallback(t *
 	request.AddCookie(&http.Cookie{Name: paymentport.TrustedSessionCookieName, Value: "service-period-trusted"})
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `is-active`) || !strings.Contains(response.Body.String(), "服务中") || !strings.Contains(response.Body.String(), "剩余 15 天") || !strings.Contains(response.Body.String(), "立即续费") {
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `is-active`) || !strings.Contains(response.Body.String(), "服务中") || !strings.Contains(response.Body.String(), "剩余 15 天") || !strings.Contains(response.Body.String(), "立即续费") || !strings.Contains(response.Body.String(), `class="slice-img"`) || !strings.Contains(response.Body.String(), "detail.png") {
 		t.Fatalf("active page status=%d body=%s", response.Code, response.Body.String())
 	}
 	untrusted := httptest.NewRecorder()
@@ -195,7 +195,7 @@ func TestPublicServicePeriodRendersTrustedEntitlementWithoutIdentityFallback(t *
 }
 
 func TestPublicServicePeriodUsesExactCodeAndSeparateCheckoutRoute(t *testing.T) {
-	reader := &servicePeriodPublicStub{product: productport.CheckoutProduct{ID: 71, ProductType: productport.ProductOptionServicePeriod, Code: "term-31", Name: "31 天服务期", PriceMinor: 12800, Currency: "CNY", Version: 4, ServicePeriodDurationDays: 31}}
+	reader := &servicePeriodPublicStub{product: productport.CheckoutProduct{ID: 71, ProductType: productport.ProductOptionServicePeriod, Code: "term-31", Name: "31 天服务期", PriceMinor: 12800, Currency: "CNY", Version: 4, Images: []string{"https://cdn.example.test/detail.png"}, ServicePeriodDurationDays: 31}}
 	handler, err := NewServicePeriodPublicHandler(reader)
 	if err != nil {
 		t.Fatal(err)

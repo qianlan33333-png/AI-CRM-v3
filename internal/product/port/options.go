@@ -78,6 +78,8 @@ type CheckoutProduct struct {
 	Currency      string
 	Version       int64
 	RequireMobile bool
+	// Images are public detail media owned by Product; checkout persists none of them.
+	Images []string
 	// ServicePeriodDurationDays is positive only for a service_period item.
 	// It is frozen by the Order checkout snapshot before payment begins.
 	ServicePeriodDurationDays int32
