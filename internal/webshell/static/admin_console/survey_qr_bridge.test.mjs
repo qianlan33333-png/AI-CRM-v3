@@ -51,7 +51,7 @@ ops.window.fetch = async (url, options = {}) => {
 ops.window.eval(adapter);
 await wait(20);
 const form = ops.window.document.querySelector('[data-survey-push-metadata]');
-if (!form || !ops.window.document.querySelector('[role="status"] p').textContent.includes('暂无外部操作回执')) throw new Error('zero-receipt page lost push metadata editor');
+if (!form || !ops.window.document.querySelector('[data-survey-test-records]').textContent.includes('暂无测试记录')) throw new Error('zero-receipt page lost push metadata editor');
 form.elements.type.value = 'new';
 form.querySelector('[data-param-name]').value = 'campaign'; form.querySelector('[data-param-value]').value = 'autumn';
 form.dispatchEvent(new ops.window.Event('submit', {bubbles:true,cancelable:true}));
@@ -78,3 +78,50 @@ if (conflictSave.textContent === '已保存' || !conflictSave.textContent.includ
 conflict.window.close();
 
 console.log("survey-qr-bridge-browser: PASS");
+
+const journey = new JSDOM('<!doctype html><body data-page="questionnaireOps"><div id="stage"></div></body>', {url:'https://test.invalid/admin/questionnaireOps.html?id=7', runScripts:'outside-only', pretendToBeVisual:true});
+Object.defineProperty(journey.window.document, 'cookie', {value:'aicrm_admin_csrf=csrf-proof', configurable:true});
+Object.defineProperty(journey.window.crypto, 'randomUUID', {value:()=> '00000000-0000-4000-8000-000000000000'});
+let created = false;
+const journeyRequests = [];
+journey.window.fetch = async (url, options = {}) => {
+  const path = String(url); journeyRequests.push({path, options});
+  if (path.includes('/external-push/test')) {
+    if (options.headers.get('X-CSRF-Token') !== 'csrf-proof') return {ok:false,status:403,json:async()=>({})};
+    created = true;
+    return {ok:true,status:202,json:async()=>({questionnaire_id:7,test_run_id:'questionnaire-test-0123456789abcdef0123456789abcdef',effect_id:'eer_7',status:'queued',synthetic_data:true,accepted:true})};
+  }
+  if (path.includes('/admin/questionnaires/external-push-logs')) return {ok:true,json:async()=>({items:[
+    {test_run_id:'questionnaire-test-0123456789abcdef0123456789abcdef',status:'executed',provider_attempt_number:1,provider_result_received:true,updated_at:'2026-09-05T00:00:00Z'},
+    {test_run_id:'questionnaire-test-unknown',status:'outcome_unknown',provider_attempt_number:1,provider_result_received:false,updated_at:'2026-09-05T00:00:01Z'},
+    {test_run_id:9,status:'disabled',updated_at:'2026-08-01T00:00:00Z',read_only_legacy:true},
+  ]})};
+  return {ok:true,json:async()=>({provider_enabled:true,items:created ? [{source_pk:'questionnaire-test-0123456789abcdef0123456789abcdef',status:'executed',provider_attempt_number:1,provider_result_received:true,occurred_at:'2026-09-05T00:00:00Z'}] : [{source_pk:'questionnaire-test-0123456789abcdef0123456789abcdef',status:'queued',occurred_at:'2026-09-05T00:00:00Z'}],configuration_version:3,external_push:{enabled:true,configuration_reference:'push.v1',metadata:{}}})};
+};
+journey.window.eval(adapter);
+await wait(30);
+const testButton = journey.window.document.querySelector('[data-survey-push-test]');
+if (!testButton || !journey.window.document.querySelector('[data-survey-test-records]') || !journey.window.document.querySelector('[data-survey-global-test-records]')) throw new Error('host did not expose test controls and both record views');
+testButton.click();
+await wait(40);
+const post = journeyRequests.find((item) => item.path.includes('/external-push/test'));
+const combined = journey.window.document.body.textContent;
+if (!post || post.options.headers.get('X-CSRF-Token') !== 'csrf-proof' || !combined.includes('已收到测试结果') || !combined.includes('结果待确认（不会自动重复发送）') || !combined.includes('当时未启用外推配置')) throw new Error('test journey did not carry CSRF or render terminal and historical results');
+journey.window.close();
+
+const forbidden = new JSDOM('<!doctype html><body data-page="questionnaireOps"><div id="stage"></div></body>', {url:'https://test.invalid/admin/questionnaireOps.html?id=7', runScripts:'outside-only', pretendToBeVisual:true});
+Object.defineProperty(forbidden.window.document, 'cookie', {value:'aicrm_admin_csrf=wrong', configurable:true});
+Object.defineProperty(forbidden.window.crypto, 'randomUUID', {value:()=> '00000000-0000-4000-8000-000000000000'});
+forbidden.window.fetch = async (url, options = {}) => {
+  if (String(url).includes('/external-push/test')) return {ok:false,status:403,json:async()=>({})};
+  if (String(url).includes('/external-push-logs')) return {ok:true,json:async()=>({items:[]})};
+  return {ok:true,json:async()=>({items:[],configuration_version:1,external_push:{enabled:true,configuration_reference:'push.v1',metadata:{}}})};
+};
+forbidden.window.eval(adapter);
+await wait(30);
+forbidden.window.document.querySelector('[data-survey-push-test]').click();
+await wait(20);
+if (!forbidden.window.document.body.textContent.includes('无操作权限')) throw new Error('CSRF refusal was not shown to the operator');
+forbidden.window.close();
+
+console.log("survey-operations-host-journey: PASS");

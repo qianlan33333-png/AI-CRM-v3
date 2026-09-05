@@ -194,7 +194,9 @@ func TestExternalPushLogsPreserveSyntheticRunAndTerminalStatus(t *testing.T) {
 		{ID: 8, QuestionnaireID: 7, SourcePK: "questionnaire-test-0123456789abcdef0123456789abcdef", Status: "queued", OccurrenceCount: 0, OccurredAt: now},
 		{ID: 9, QuestionnaireID: 7, SourcePK: "questionnaire-test-fedcba9876543210fedcba9876543210", Status: "executed", OccurrenceCount: 99, ProviderCallAttempted: boolTestPointer(true), ProviderRealCallExecuted: boolTestPointer(true), ProviderResultReceived: boolTestPointer(true), ProviderAttemptNumber: int32TestPointer(1), RealEffectExecuted: true, OccurredAt: now},
 		{ID: 10, QuestionnaireID: 7, SourcePK: "questionnaire-test-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Status: "outcome_unknown", OccurrenceCount: 99, ProviderCallAttempted: boolTestPointer(true), ProviderRealCallExecuted: boolTestPointer(true), ProviderResultReceived: boolTestPointer(false), ProviderAttemptNumber: int32TestPointer(1), RealEffectExecuted: true, OccurredAt: now},
-		{ID: 11, QuestionnaireID: 7, Status: "queued", OccurrenceCount: 0, OccurredAt: now},
+		{ID: 11, QuestionnaireID: 7, Status: "disabled", OccurrenceCount: 0, ReadOnlyLegacy: true, OccurredAt: now},
+		{ID: 12, QuestionnaireID: 7, Status: "legacy_success", OccurrenceCount: 4, ReadOnlyLegacy: true, OccurredAt: now},
+		{ID: 13, QuestionnaireID: 7, Status: "legacy_failed", OccurrenceCount: 2, ReadOnlyLegacy: true, OccurredAt: now},
 	}}
 	handler, err := NewHandler(&routeDefinitions{}, survey, operationSecurity{})
 	if err != nil {
@@ -203,7 +205,7 @@ func TestExternalPushLogsPreserveSyntheticRunAndTerminalStatus(t *testing.T) {
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(nethttp.MethodGet, "/admin/questionnaires/external-push-logs", nil))
 	body := response.Body.String()
-	if response.Code != nethttp.StatusOK || !strings.Contains(body, `"test_run_id":"questionnaire-test-0123456789abcdef0123456789abcdef"`) || !strings.Contains(body, `"status":"executed"`) || !strings.Contains(body, `"status":"outcome_unknown"`) || !strings.Contains(body, `"test_run_id":11`) || !strings.Contains(body, `"attempt_count":1`) || !strings.Contains(body, `"provider_result_received":false`) || strings.Contains(body, `"attempt_count":99`) || strings.Contains(body, `"local_only":true`) {
+	if response.Code != nethttp.StatusOK || !strings.Contains(body, `"test_run_id":"questionnaire-test-0123456789abcdef0123456789abcdef"`) || !strings.Contains(body, `"status":"executed"`) || !strings.Contains(body, `"status":"outcome_unknown"`) || !strings.Contains(body, `"test_run_id":11`) || !strings.Contains(body, `"status":"disabled"`) || !strings.Contains(body, `"status":"legacy_success"`) || !strings.Contains(body, `"status":"legacy_failed"`) || !strings.Contains(body, `"attempt_count":1`) || !strings.Contains(body, `"provider_result_received":false`) || strings.Contains(body, `"attempt_count":99`) || strings.Contains(body, `"local_only":true`) {
 		t.Fatalf("logs response=%d body=%s", response.Code, body)
 	}
 }
@@ -218,7 +220,7 @@ func TestExternalPushTestUsesSyntheticQueueAndFailsClosedWhenDisabled(t *testing
 	request.Header.Set("Idempotency-Key", "survey-completion-test-http-0001")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
-	if response.Code != nethttp.StatusAccepted || survey.testCalls != 1 || !strings.Contains(response.Body.String(), "questionnaire-test-") || !strings.Contains(response.Body.String(), "synthetic_data") {
+	if response.Code != nethttp.StatusAccepted || survey.testCalls != 1 || !strings.Contains(response.Body.String(), "questionnaire-test-") || !strings.Contains(response.Body.String(), "synthetic_data") || !strings.Contains(response.Body.String(), "\"accepted\":true") || strings.Contains(response.Body.String(), "attempt_count") || strings.Contains(response.Body.String(), "provider_result_received") {
 		t.Fatalf("test queue response=%d body=%s calls=%d", response.Code, response.Body.String(), survey.testCalls)
 	}
 	survey.testErr = surveyport.ErrEffectUnavailable

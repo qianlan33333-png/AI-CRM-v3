@@ -388,8 +388,10 @@ func TestPostgreSQLSurveySyntheticPushSurvivesRepositoryRestartAndDoesNotBlindRe
 		t.Fatalf("runtime body=%v", firstBody)
 	}
 	var receiptState string
-	if err = pool.QueryRow(ctx, `SELECT status FROM survey_external_operation_receipts WHERE effect_id=$1`, first.EffectID).Scan(&receiptState); err != nil || receiptState != "executed" {
-		t.Fatalf("receipt=%q err=%v", receiptState, err)
+	var callAttempted, realCall, resultReceived bool
+	var attemptNumber int32
+	if err = pool.QueryRow(ctx, `SELECT status,provider_call_attempted,provider_real_call_executed,provider_result_received,provider_attempt_number FROM survey_external_operation_receipts WHERE effect_id=$1`, first.EffectID).Scan(&receiptState, &callAttempted, &realCall, &resultReceived, &attemptNumber); err != nil || receiptState != "executed" || !callAttempted || !realCall || !resultReceived || attemptNumber != 1 {
+		t.Fatalf("executed receipt state=%q call=%t real=%t result=%t attempt=%d err=%v", receiptState, callAttempted, realCall, resultReceived, attemptNumber, err)
 	}
 
 	// A fresh runtime observes no re-delivery after the prior process stopped.
@@ -444,6 +446,28 @@ func TestPostgreSQLSurveySyntheticPushSurvivesRepositoryRestartAndDoesNotBlindRe
 		t.Fatalf("outcome_unknown was resent %d times", unknownCalls)
 	}
 	unknownMu.Unlock()
+	var unknownCall, unknownReal, unknownResult bool
+	var unknownAttempt int32
+	if err = pool.QueryRow(ctx, `SELECT provider_call_attempted,provider_real_call_executed,provider_result_received,provider_attempt_number FROM survey_external_operation_receipts WHERE effect_id=$1`, unknown.EffectID).Scan(&unknownCall, &unknownReal, &unknownResult, &unknownAttempt); err != nil || !unknownCall || !unknownReal || unknownResult || unknownAttempt != 1 {
+		t.Fatalf("unknown receipt call=%t real=%t result=%t attempt=%d err=%v", unknownCall, unknownReal, unknownResult, unknownAttempt, err)
+	}
+
+	preCall, err := service.QueueCompletionTest(ctx, surveyport.ID(questionnaire), actor, "survey-synthetic-test-pre-call-0003")
+	if err != nil {
+		t.Fatal(err)
+	}
+	preCallAdapter := integrationAdapter(func(context.Context, effectport.Envelope, effectport.Attempt) (effectport.AdapterResult, error) {
+		return effectport.AdapterResult{Completion: effectport.StateFinalFailed, ReceiptDigest: effectport.Hash("survey-pre-call-rejected")}, nil
+	})
+	preCallRepository, preCallRuntime := newSurveyEffectRuntime(t, pool, sink, preCallAdapter)
+	stop, done = startSurveyEffectRuntime(t, preCallRuntime)
+	waitForSurveyEffectState(t, preCallRepository, preCall.EffectID, effects.StateFinalFailed)
+	stopSurveyEffectRuntime(t, stop, done)
+	var preCallAttempted, preCallReal, preCallResult bool
+	var preCallAttemptNumber int32
+	if err = pool.QueryRow(ctx, `SELECT provider_call_attempted,provider_real_call_executed,provider_result_received,provider_attempt_number FROM survey_external_operation_receipts WHERE effect_id=$1`, preCall.EffectID).Scan(&preCallAttempted, &preCallReal, &preCallResult, &preCallAttemptNumber); err != nil || preCallAttempted || preCallReal || preCallResult || preCallAttemptNumber != 1 {
+		t.Fatalf("pre-call receipt call=%t real=%t result=%t attempt=%d err=%v", preCallAttempted, preCallReal, preCallResult, preCallAttemptNumber, err)
+	}
 
 }
 

@@ -143,7 +143,7 @@ export interface AdminApi {
 
   /* ---- 问卷 · 运营配置 ---- */
   saveQuestionnaireOps(qid: number, ops: QuestionnaireOps): Promise<void>;
-  queueQuestionnairePushTest(qid: number): Promise<{ id: string; status: string; attemptCount: number }>;
+  queueQuestionnairePushTest(qid: number): Promise<{ id: number; status: string; attemptCount: number }>;
   listGlobalQuestionnairePushLogs(): Promise<AdminDb['rows']['qApply']>;
   saveQuestionnaire(input: QuestionnaireWriteInput, publish: boolean): Promise<Questionnaire>;
   setQuestionnaireEnabled(questionnaireId: number, enabled: boolean): Promise<void>;
@@ -693,7 +693,7 @@ export class MockApi implements AdminApi {
     this.persist();
     return delay(undefined, 500);
   }
-  queueQuestionnairePushTest(qid: number): Promise<{ id: string; status: string; attemptCount: number }> { return delay({ id: `questionnaire-test-${String(qid).padStart(32, '0')}`, status: 'queued', attemptCount: 0 }); }
+  queueQuestionnairePushTest(qid: number): Promise<{ id: number; status: string; attemptCount: number }> { return delay({ id: qid, status: 'queued', attemptCount: 0 }); }
   listGlobalQuestionnairePushLogs(): Promise<AdminDb['rows']['qApply']> { return Promise.reject(new Error('backend_blocked：测试/本地模式不使用 Mock 全局外推日志')); }
 
   saveQuestionnaire(input: QuestionnaireWriteInput, publish: boolean): Promise<Questionnaire> {
@@ -1041,7 +1041,7 @@ export class HttpApi implements AdminApi {
   saveQuestionnaireOps(qid: number, ops: QuestionnaireOps): Promise<void> {
     return saveQuestionnaireOpsDto(qid, ops);
   }
-  queueQuestionnairePushTest(qid: number): Promise<{ id: string; status: string; attemptCount: number }> { return queueQuestionnairePushTestDto(qid); }
+  queueQuestionnairePushTest(qid: number): Promise<{ id: number; status: string; attemptCount: number }> { return queueQuestionnairePushTestDto(qid); }
   listGlobalQuestionnairePushLogs(): Promise<AdminDb['rows']['qApply']> { return listGlobalQuestionnairePushLogsDto(); }
   saveQuestionnaire(input: QuestionnaireWriteInput, publish: boolean): Promise<Questionnaire> { return saveQuestionnaireDto(input, publish); }
   setQuestionnaireEnabled(questionnaireId: number, enabled: boolean): Promise<void> { return setQuestionnaireEnabledDto(questionnaireId, enabled); }

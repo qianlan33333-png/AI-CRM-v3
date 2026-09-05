@@ -37,7 +37,7 @@ node internal/webshell/static/admin_console/survey_qr_bridge.test.mjs
 | 旧版测试外推、参数过滤、重放和结果回读 | `QueueCompletionTest`、`ReadCompletionPayload`、`SurveyCompletionProvider` | `TestQueueCompletionTestFreezesSyntheticRequestAndReplaysSameEffect`、`TestExternalPushTestUsesSyntheticQueueAndFailsClosedWhenDisabled`、`TestPostgreSQLSyntheticCompletionTestSnapshotReplaysWithoutCustomer` |
 | 重启执行一次、unknown 不盲重试、配置漂移和重定向 | `external_effects` + `SurveyCompletionProvider` | `TestPostgreSQLSurveySyntheticPushSurvivesRepositoryRestartAndDoesNotBlindRetryUnknown`；`TestSurveyCompletionProviderDoesNotForwardBodyOnRedirect`；`TestSurveyCompletionProviderRejectsTargetConfigDriftBeforeCallingNewEndpoint` |
 
-宿主按钮通过既有 `queueQuestionnairePushTestDto` → `POST /api/admin/questionnaires/{id}/operations/external-push/test` 调用。DTO 保留冻结字符串 `test_run_id`，请求使用既有 `apiRequestOptions()` 的 CSRF header；`TestExternalPushTestRequiresCSRFBeforeAcceptingSyntheticEffect` 证明拒绝时不会接纳效果，`web/src/api/admin.test.ts` 与 `npm run admin:adapter:contract` 覆盖页面 adapter 的请求映射。禁用配置返回 `409 provider_disabled` 且零效果接受/零 Provider 调用。
+未冻结的 V3 Host `internal/webshell/static/admin_console/survey_operations.js` 直接调用 `POST /api/admin/questionnaires/{id}/operations/external-push/test`，携带 Host 的 CSRF header；接受响应只陈述“测试已创建”，随后重新读取本问卷与全局测试记录，因此不会把已发生的尝试或结果固定显示为零/否。`survey_qr_bridge.test.mjs` 覆盖按钮、CSRF、queued/executed/outcome_unknown 与 disabled 历史记录的浏览器旅程；`TestExternalPushTestRequiresCSRFBeforeAcceptingSyntheticEffect` 证明拒绝时不会接纳效果。禁用配置返回 `409 provider_disabled` 且零效果接受/零 Provider 调用。
 
 本次本地已通过：
 
@@ -51,6 +51,6 @@ npm run orval:check
 
 本机仍未配置隔离 `DATABASE_URL`，上述 PostgreSQL 集成测试在本机按测试代码跳过；它们会在 PR 的 PostgreSQL 16 service 中执行。不得将这次本地跳过标为 PostgreSQL 已通过。
 
-本增量的 River 证据使用 `platformjobqueue.NewRuntime` 启动实际 worker：先由事务入队，再启动 runtime 等待本地 HTTP 接收，停止后以新 runtime 重启并确认不重复写入。`outcome_unknown` 使用同一实际 runtime 路径，重启后保持一次调用。它不是手动 `RunAttempt` 或仅重建 Repository 的替代测试。全局测试记录页保留合成测试的文本运行 ID、旧数字记录 ID、真实状态和尝试次数；页面分别展示等待结果、已收到结果、结果待确认或未完成。
+本增量的 River 证据使用 `platformjobqueue.NewRuntime` 启动实际 worker：先由事务入队，再启动 runtime 等待本地 HTTP 接收，停止后以新 runtime 重启并确认不重复写入。`outcome_unknown` 使用同一实际 runtime 路径，重启后保持一次调用；执行成功、调用后超时和调用前拒绝分别持久化真实的尝试、调用及结果事实。它不是手动 `RunAttempt` 或仅重建 Repository 的替代测试。全局测试记录页保留合成测试的文本运行 ID、旧数字记录 ID、真实状态和可用的尝试事实；页面分别展示等待结果、已收到结果、结果待确认或当时未启用外推配置。
 
 部署待办：在 PostgreSQL 16 上应用 `0074_survey_external_operation_execution_facts.sql`。该迁移只增加可空的 Survey 回执执行事实列；旧行保持未知，不能据此显示“未调用”或“未收到结果”。

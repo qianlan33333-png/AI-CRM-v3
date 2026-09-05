@@ -163,3 +163,62 @@ func syntheticRedirectPayload() surveyport.CompletionPayload {
 func completionEnvelope(payload surveyport.CompletionPayload) effectport.Envelope {
 	return effectport.Envelope{Owner: effectport.OwnerOutbound, Kind: effectport.KindSurveyCompletion, SourceRefDigest: effectport.Digest(payload.SourceDigest), TargetRefDigest: effectport.Digest(payload.TargetDigest), PayloadDigest: effectport.Digest(payload.PayloadDigest), PolicyVersionHash: effectport.Digest(payload.PolicyDigest)}
 }
+
+type completionProjectionCall struct {
+	state                   string
+	callAttempted, realCall bool
+	resultReceived          *bool
+	attempt                 int32
+}
+type completionProjectionStub struct{ calls []completionProjectionCall }
+
+func (s *completionProjectionStub) CompleteCompletionEffect(_ context.Context, _ string, state string, callAttempted, realCall bool, resultReceived *bool, _ string, attempt int32, _ time.Time) error {
+	s.calls = append(s.calls, completionProjectionCall{state: state, callAttempted: callAttempted, realCall: realCall, resultReceived: resultReceived, attempt: attempt})
+	return nil
+}
+
+func TestSurveyCompletionProviderTimeoutIsOutcomeUnknownAfterCall(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { time.Sleep(100 * time.Millisecond) }))
+	defer server.Close()
+	payload := syntheticRedirectPayload()
+	target := SurveyCompletionTarget{Reference: "timeout-target", Endpoint: server.URL, SigningKey: []byte(strings.Repeat("t", 32)), ClientID: "survey-v3-test", AllowLoopbackHTTP: true, Version: "v1", IdentityKind: identitydomain.KindUnionID, IdentityScope: "wechat-open-platform:primary"}
+	payload.ConfigurationReference, payload.Policy.ConfigurationDigest = target.Reference, target.policyDigest()
+	provider, err := NewSurveyCompletionProvider(SurveyCompletionProviderConfig{Enabled: true, Targets: []SurveyCompletionTarget{target}, Reader: surveyCompletionReaderStub{payload: payload}, Identities: surveyIdentityStub{}, Client: &http.Client{Timeout: 20 * time.Millisecond}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := provider.Execute(context.Background(), completionEnvelope(payload), effectport.Attempt{Number: 1, Generation: 1, Fence: 1})
+	if err == nil || result.Completion != effectport.StateUnknown || !result.CallAttempted || !result.RealExternalCallExecuted {
+		t.Fatalf("timeout result=%+v err=%v", result, err)
+	}
+}
+
+func TestSurveyCompletionSinkRecordsCallFactsWithoutInferringProviderResult(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		result       effectport.AdapterResult
+		wantReceived *bool
+	}{
+		{"timeout", effectport.AdapterResult{Completion: effectport.StateUnknown, ReceiptDigest: effectport.Hash("timeout"), CallAttempted: true, RealExternalCallExecuted: true}, boolPointerForSurvey(false)},
+		{"pre_call_rejected", effectport.AdapterResult{Completion: effectport.StateFinalFailed, ReceiptDigest: effectport.Hash("pre-call")}, boolPointerForSurvey(false)},
+		{"reconciled", effectport.AdapterResult{Completion: effectport.StateReconciled, ReceiptDigest: effectport.Hash("reconciled"), CallAttempted: true, RealExternalCallExecuted: true}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			projector := &completionProjectionStub{}
+			sink, err := NewSurveyCompletionSink(projector)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = sink.CompleteEffect(context.Background(), "eer_7", effectport.Envelope{Kind: effectport.KindSurveyCompletion}, effectport.Attempt{Number: 1}, tc.result)
+			if err != nil || len(projector.calls) != 1 {
+				t.Fatalf("calls=%+v err=%v", projector.calls, err)
+			}
+			got := projector.calls[0]
+			if got.callAttempted != tc.result.CallAttempted || got.realCall != tc.result.RealExternalCallExecuted || got.attempt != 1 || (got.resultReceived == nil) != (tc.wantReceived == nil) || got.resultReceived != nil && *got.resultReceived != *tc.wantReceived {
+				t.Fatalf("projection=%+v want=%+v", got, tc.wantReceived)
+			}
+		})
+	}
+}
+
+func boolPointerForSurvey(value bool) *bool { return &value }

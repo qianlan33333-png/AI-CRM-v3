@@ -1939,28 +1939,16 @@ export async function createRefundIntentDto(input: RefundIntentInput): Promise<R
   return { id: text(x.id, text(x.refund_id)), state: text(x.state, text(x.status)), provider: text(x.provider, input.provider), realExternalCallExecuted: x.real_external_call_executed === true, deliveryProven: x.delivery_proven === true };
 }
 export async function saveQuestionnaireOpsDto(questionnaireId: number, ops: QuestionnaireOps): Promise<void> { const opaque = /^[A-Za-z0-9._:-]{1,128}$/; const navigation = ops.completionNavigationTargetId.trim(); const reference = ops.externalPushConfigurationReference.trim(); const channel = ops.completionChannelId.trim(); if (navigation && !opaque.test(navigation)) throw new Error('提交后导航目标必须是 1-128 位 opaque reference，不能填写 URL'); if (reference && !opaque.test(reference)) throw new Error('外部推送配置必须是 1-128 位 opaque reference，不能填写 URL'); if (ops.pushEnabled && !reference) throw new Error('启用外部推送时必须提供 configuration reference'); const channel_id = channel ? Number(channel) : undefined; if (channel && (!Number.isInteger(channel_id) || Number(channel_id) < 1)) throw new Error('渠道资源 ID 必须是正整数'); const opt = apiRequestOptions(); await call(saveSurveyCompletionOperations(questionnaireId, navigation || channel_id ? { navigation_target_id: navigation || undefined, channel_id } : {}, opt)); await call(saveSurveyExternalPushOperations(questionnaireId, { enabled: ops.pushEnabled, configuration_reference: ops.pushEnabled ? reference : undefined }, opt)); }
-export async function queueQuestionnairePushTestDto(questionnaireId: number): Promise<{ id: string; status: string; attemptCount: number }> { const result = obj(await call(queueSurveyExternalPushTest(questionnaireId, apiRequestOptions()))); const id = text(result.test_run_id); if (!/^questionnaire-test-[a-f0-9]{32}$/.test(id)) throw new Error('问卷测试请求缺少冻结 test_run_id'); return { id, status: text(result.status), attemptCount: Number(result.attempt_count || 0) }; }
+export async function queueQuestionnairePushTestDto(questionnaireId: number): Promise<{ id: number; status: string; attemptCount: number }> { const result = obj(await call(queueSurveyExternalPushTest(questionnaireId, apiRequestOptions()))); return { id: Number(result.test_run_id), status: text(result.status), attemptCount: Number(result.attempt_count || 0) }; }
 function surveyExternalPushLogDto(value: unknown): AdminDb['rows']['qApply'][number] {
   const source = obj(value);
-  const testRunID = typeof source.test_run_id === 'string' || typeof source.test_run_id === 'number' ? String(source.test_run_id) : '';
+  const testRunID = Number(source.test_run_id);
   const questionnaireID = Number(source.questionnaire_id);
-  const status = text(source.status);
-  const attempts = source.attempt_count == null ? undefined : Number(source.attempt_count);
-  if (!testRunID || !Number.isSafeInteger(questionnaireID) || questionnaireID < 1 || typeof source.created_at !== 'string' || !source.created_at || attempts !== undefined && (!Number.isSafeInteger(attempts) || attempts < 0)) throw new Error('问卷外推日志缺少有效测试记录字段');
-  let tone: Tone = 'warn';
-  let detail = '等待测试结果';
-  if (status === 'executed') { tone = 'ok'; detail = '已收到测试结果'; }
-  else if (status === 'reconciled') { tone = 'blue'; detail = '已完成结果确认'; }
-  else if (status === 'outcome_unknown') { tone = 'red'; detail = '结果待确认，不会自动重复发送'; }
-  else if (status === 'retryable_failed') { tone = 'warn'; detail = '暂未完成，等待重试'; }
-  else if (status === 'final_failed' || status === 'failed' || status === 'legacy_failed') { tone = 'red'; detail = status === 'legacy_failed' ? '历史测试记录失败' : '测试未完成'; }
-  else if (status === 'disabled') { tone = 'gray'; detail = '当时未启用外推配置'; }
-  else if (status === 'skipped') { tone = 'gray'; detail = '测试未执行'; }
-  else if (status === 'legacy_success') { tone = 'ok'; detail = '历史测试记录成功'; }
-  else if (status !== 'queued' && status !== 'accepted' && status !== 'attempted') throw new Error('问卷外推日志状态无效');
-  return { time: source.created_at, sid: `#${testRunID}`, uid: `#${questionnaireID}`, status, tone, err: `${detail}；${attempts === undefined ? '尝试次数未记录' : `尝试 ${attempts} 次`}` };
+  if (!Number.isSafeInteger(testRunID) || testRunID < 1 || !Number.isSafeInteger(questionnaireID) || questionnaireID < 1 || typeof source.created_at !== 'string' || !source.created_at) throw new Error('问卷外推日志缺少有效本地测试记录字段');
+  if (source.status !== 'queued' || source.attempt_count !== 0 || source.side_effect_executed !== false || source.provider_result_received !== false || source.unknown_after_dispatch !== false || source.auto_retry_allowed !== false) throw new Error('问卷外推日志不符合仅本地 queued 契约');
+  return { time: source.created_at, sid: `#${testRunID}`, uid: `#${questionnaireID}`, status: 'queued', tone: 'warn', err: '仅本地队列；未执行外部派发' };
 }
-export async function listGlobalQuestionnairePushLogsDto(): Promise<AdminDb['rows']['qApply']> { const page = obj(await call(listSurveyExternalPushLogs({ limit: 100, offset: 0 }, apiRequestOptions()))); return list(page, 'items').map(surveyExternalPushLogDto); }
+export async function listGlobalQuestionnairePushLogsDto(): Promise<AdminDb['rows']['qApply']> { const page = obj(await call(listSurveyExternalPushLogs({ limit: 100, offset: 0 }, apiRequestOptions()))); if (page.local_only !== true) throw new Error('问卷全局外推日志缺少本地边界'); return list(page, 'items').map(surveyExternalPushLogDto); }
 export type HxcSenderWriteInput = { id: string; senderUserid: string; displayName: string; priority: number; active: boolean };
 export async function saveHxcSenderDto(input: HxcSenderWriteInput): Promise<AdminDb['rows']['agents'][number]> { if (!input.id || !input.senderUserid) throw new Error('配置 ID 和 sender_userid 不能为空'); if (!Number.isInteger(input.priority) || input.priority < 0 || input.priority > 100000) throw new Error('优先级必须是 0-100000 的整数'); const result = obj(await call(upsertLegacyHXCSendConfig({ id: input.id, sender_userid: input.senderUserid, display_name: input.displayName, priority: input.priority, is_active: input.active }, apiRequestOptions()))); return hxcSenderPageDto(result.item as LegacyHXCSenderConfig); }
 export async function reorderHxcSendersDto(ids: string[]): Promise<void> { const clean = ids.map((id) => id.trim()).filter(Boolean); if (!clean.length || new Set(clean).size !== clean.length) throw new Error('排序列表不能为空且 ID 不能重复'); await call(reorderLegacyHXCSendConfigs({ ids: clean }, apiRequestOptions())); }

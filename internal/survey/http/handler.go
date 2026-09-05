@@ -877,7 +877,7 @@ func (h *Handler) operationsDisabled(w http.ResponseWriter, r *http.Request, id 
 			resultError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusAccepted, map[string]any{"questionnaire_id": id, "test_run_id": receipt.TestRunID, "effect_id": receipt.EffectID, "status": receipt.State, "attempt_count": 0, "synthetic_data": true, "real_external_call_executed": false, "provider_result_received": false})
+		writeJSON(w, http.StatusAccepted, map[string]any{"questionnaire_id": id, "test_run_id": receipt.TestRunID, "effect_id": receipt.EffectID, "status": receipt.State, "synthetic_data": true, "accepted": true})
 		return
 	}
 	if r.Method == http.MethodPost && !strings.HasSuffix(r.URL.Path, "/reconcile") {
