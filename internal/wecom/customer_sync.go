@@ -36,7 +36,10 @@ type CustomerSyncStatus string
 // syncRetryError retains only a safe business failure code for River's final
 // attempt. The original Provider error may contain transport detail and must
 // not be propagated into job logs.
-type syncRetryError struct{ code string }
+type syncRetryError struct {
+	code        string
+	maxAttempts int
+}
 
 func (err *syncRetryError) Error() string { return "customer sync step scheduled for retry" }
 
@@ -416,7 +419,12 @@ func (service CustomerSyncService) recordFailure(ctx context.Context, run Custom
 	if err != nil {
 		return err
 	}
-	return &syncRetryError{code: code}
+	maxAttempts := 0
+	var limited wecomport.DirectoryFailureAttemptLimit
+	if errors.As(cause, &limited) && limited.DirectoryFailureMaxAttempts() > 0 {
+		maxAttempts = limited.DirectoryFailureMaxAttempts()
+	}
+	return &syncRetryError{code: code, maxAttempts: maxAttempts}
 }
 
 func classifySyncFailure(cause error) (CustomerSyncStatus, string) {

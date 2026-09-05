@@ -246,10 +246,12 @@ func TestCustomerDirectoryProviderClassifiesProviderReadFailures(t *testing.T) {
 		body          string
 		wantCode      string
 		wantRetryable bool
+		wantMax       int
 	}{
 		{name: "permission", status: http.StatusOK, body: `{"errcode":48001}`, wantCode: "provider_permission_denied"},
 		{name: "rate limited", status: http.StatusTooManyRequests, body: `{"errcode":45009}`, wantCode: "provider_rate_limited", wantRetryable: true},
 		{name: "unavailable", status: http.StatusServiceUnavailable, body: `{"errcode":-1}`, wantCode: "provider_unavailable", wantRetryable: true},
+		{name: "http 200 system busy", status: http.StatusOK, body: `{"errcode":-1}`, wantCode: "provider_unavailable", wantRetryable: true, wantMax: 3},
 		{name: "invalid response", status: http.StatusOK, body: `{"errcode":0,"external_contact_list":[{"external_contact":{"external_userid":""}}]}`, wantCode: "provider_response_invalid"},
 	}
 	for _, test := range tests {
@@ -272,6 +274,10 @@ func TestCustomerDirectoryProviderClassifiesProviderReadFailures(t *testing.T) {
 			var failure wecomport.DirectoryFailure
 			if err == nil || !errors.As(err, &failure) || failure.DirectoryFailureCode() != test.wantCode || failure.DirectoryFailureRetryable() != test.wantRetryable {
 				t.Fatalf("err=%v failure=%v", err, failure)
+			}
+			var limited wecomport.DirectoryFailureAttemptLimit
+			if !errors.As(err, &limited) || limited.DirectoryFailureMaxAttempts() != test.wantMax {
+				t.Fatalf("attempt limit=%v; want %d", limited, test.wantMax)
 			}
 			if strings.Contains(err.Error(), "contact-token") {
 				t.Fatalf("provider token leaked in error=%q", err)
