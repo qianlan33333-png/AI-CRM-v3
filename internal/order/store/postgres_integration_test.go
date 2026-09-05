@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -361,6 +362,223 @@ func TestPostgreSQLServicePeriodFulfillmentKeepsLegacyCoverageAndRevokesOnce(t *
 		return refundErr
 	}); err != nil || refunded.Status != "refunded" || !refunded.EndAt.Equal(lastRefundAt) || !refunded.UpdatedAt.Equal(lastRefundAt) {
 		t.Fatalf("last source revocation refunded=%+v err=%v", refunded, err)
+	}
+}
+
+// This covers the aggregate fact that a period is the sum of still-valid
+// source orders, not the order in which their grants happened. In particular,
+// a prior_active_end_at captured by the second native grant is not historical
+// coverage: after both native sources are refunded it must not survive.
+func TestPostgreSQLServicePeriodRefundKeepsOnlyIndependentHistory(t *testing.T) {
+	native, cleanup := orderIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	wrapper, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uow, err := platformpostgres.NewUnitOfWork(wrapper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := NewPostgreSQL(native, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fulfillment, err := orderapp.NewEntitlementFulfillmentApplication(repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := time.Date(2026, 2, 3, 9, 0, 0, 0, time.UTC)
+	type scenario struct {
+		name           string
+		grantOrder     []int
+		refundOrder    []int
+		withHistorical bool
+	}
+	for _, scenario := range []scenario{
+		{name: "grant_a_then_b_refund_a_then_b", grantOrder: []int{0, 1}, refundOrder: []int{0, 1}},
+		{name: "grant_b_then_a_refund_a_then_b", grantOrder: []int{1, 0}, refundOrder: []int{0, 1}},
+		{name: "grant_a_then_b_refund_b_then_a", grantOrder: []int{0, 1}, refundOrder: []int{1, 0}},
+		{name: "grant_b_then_a_refund_b_then_a", grantOrder: []int{1, 0}, refundOrder: []int{1, 0}},
+		{name: "independent_legacy_history", grantOrder: []int{0, 1}, refundOrder: []int{1, 0}, withHistorical: true},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			var customerID int64
+			if err := native.QueryRow(ctx, `INSERT INTO customers DEFAULT VALUES RETURNING id`).Scan(&customerID); err != nil {
+				t.Fatal(err)
+			}
+			legacyEnd := base.AddDate(0, 0, 100)
+			if scenario.withHistorical {
+				digest := sha256.Sum256([]byte("unmapped-legacy-" + scenario.name))
+				if _, err := native.Exec(ctx, `INSERT INTO order_service_entitlements(source_system,source_key,customer_id,service_product_id,product_name,status,start_at,end_at,remark,source_digest,created_at,updated_at) VALUES('legacy-import',$1,$2,99,'可追溯前置历史','active',$3,$4,'',$5,$3,$3)`, scenario.name, customerID, base.AddDate(0, 0, -9), legacyEnd, digest[:]); err != nil {
+					t.Fatal(err)
+				}
+			}
+			orders := []int64{
+				entitlementTestOrder(t, native, customerID, scenario.name+"-a", base),
+				entitlementTestOrder(t, native, customerID, scenario.name+"-b", base),
+			}
+			for _, index := range scenario.grantOrder {
+				orderID := orders[index]
+				if err := uow.Within(ctx, func(txctx context.Context) error {
+					_, grantErr := fulfillment.GrantPaidServicePeriodWithin(txctx, orderport.ServicePeriodGrantCommand{SourceOrderID: orderID, BeneficiaryCustomerID: customerID, ServiceProductID: 99, ProductName: "并发退款顺序", DurationDays: 31, PaidAt: base, ProcessedAt: base})
+					return grantErr
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			firstAt := base.Add(time.Hour)
+			var first orderport.Entitlement
+			if err := uow.Within(ctx, func(txctx context.Context) error {
+				var refundErr error
+				first, refundErr = fulfillment.ApplyServicePeriodRefundWithin(txctx, orderport.ServicePeriodRefundCommand{SourceOrderID: orders[scenario.refundOrder[0]], RefundAmountMinor: 1, ProcessedAt: firstAt})
+				return refundErr
+			}); err != nil {
+				t.Fatal(err)
+			}
+			wantFirstEnd := base.AddDate(0, 0, 31)
+			if scenario.withHistorical {
+				wantFirstEnd = legacyEnd.AddDate(0, 0, 31)
+			}
+			if first.Status != "active" || !first.EndAt.Equal(wantFirstEnd) {
+				t.Fatalf("first refund=%+v want active through %s", first, wantFirstEnd)
+			}
+			var duplicate orderport.Entitlement
+			if err := uow.Within(ctx, func(txctx context.Context) error {
+				var refundErr error
+				duplicate, refundErr = fulfillment.ApplyServicePeriodRefundWithin(txctx, orderport.ServicePeriodRefundCommand{SourceOrderID: orders[scenario.refundOrder[0]], RefundAmountMinor: 999, ProcessedAt: firstAt.Add(time.Hour)})
+				return refundErr
+			}); err != nil || duplicate.Status != first.Status || !duplicate.EndAt.Equal(first.EndAt) || !duplicate.UpdatedAt.Equal(first.UpdatedAt) {
+				t.Fatalf("duplicate refund=%+v first=%+v err=%v", duplicate, first, err)
+			}
+			secondAt := firstAt.Add(2 * time.Hour)
+			var final orderport.Entitlement
+			if err := uow.Within(ctx, func(txctx context.Context) error {
+				var refundErr error
+				final, refundErr = fulfillment.ApplyServicePeriodRefundWithin(txctx, orderport.ServicePeriodRefundCommand{SourceOrderID: orders[scenario.refundOrder[1]], RefundAmountMinor: 1000, ProcessedAt: secondAt})
+				return refundErr
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if scenario.withHistorical {
+				if final.Status != "active" || !final.EndAt.Equal(legacyEnd) {
+					t.Fatalf("independent history was not restored: %+v want %s", final, legacyEnd)
+				}
+			} else if final.Status != "refunded" || !final.EndAt.Equal(secondAt) {
+				t.Fatalf("native periods survived both refunds: %+v want refunded at %s", final, secondAt)
+			}
+		})
+	}
+}
+
+func TestPostgreSQLServicePeriodRefundRevokesMappedHistoryAndNeverReclassifiesExpiredHistory(t *testing.T) {
+	native, cleanup := orderIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	wrapper, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uow, err := platformpostgres.NewUnitOfWork(wrapper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := NewPostgreSQL(native, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fulfillment, err := orderapp.NewEntitlementFulfillmentApplication(repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := time.Date(2026, 3, 4, 9, 0, 0, 0, time.UTC)
+	for _, refundMappedFirst := range []bool{true, false} {
+		t.Run(map[bool]string{true: "mapped_history_then_native", false: "native_then_mapped_history"}[refundMappedFirst], func(t *testing.T) {
+			var customerID int64
+			if err := native.QueryRow(ctx, `INSERT INTO customers DEFAULT VALUES RETURNING id`).Scan(&customerID); err != nil {
+				t.Fatal(err)
+			}
+			historyOrder := entitlementTestOrder(t, native, customerID, "mapped-history-"+strconv.FormatBool(refundMappedFirst), base)
+			entitlementTestOrderItem(t, native, historyOrder, 1, 109, "mapped-service")
+			digest := sha256.Sum256([]byte("mapped-history-entitlement-" + strconv.FormatBool(refundMappedFirst)))
+			legacyEnd := base.AddDate(0, 0, 31)
+			var entitlementID int64
+			if err := native.QueryRow(ctx, `INSERT INTO order_service_entitlements(source_system,source_key,customer_id,service_product_id,product_name,last_order_id,status,start_at,end_at,remark,source_digest,created_at,updated_at) VALUES('legacy-import',$1,$2,109,'可撤回历史',$3,'active',$4,$5,'',$6,$4,$4) RETURNING id`, "mapped-history-"+strconv.FormatBool(refundMappedFirst), customerID, historyOrder, base, legacyEnd, digest[:]).Scan(&entitlementID); err != nil {
+				t.Fatal(err)
+			}
+			if err := uow.Within(ctx, func(txctx context.Context) error {
+				return fulfillment.RecordHistoricalServicePeriodSourceWithin(txctx, orderport.HistoricalServicePeriodSourceCommand{SourceOrderID: historyOrder, SourceLineNo: 1, EntitlementID: entitlementID, ServiceProductID: 109, ServiceProductCode: "mapped-service", DurationDays: 31, StartAt: base, EndAt: legacyEnd, ImportedAt: base})
+			}); err != nil {
+				t.Fatal(err)
+			}
+			nativeOrder := entitlementTestOrder(t, native, customerID, "mapped-native-"+strconv.FormatBool(refundMappedFirst), base)
+			if err := uow.Within(ctx, func(txctx context.Context) error {
+				_, grantErr := fulfillment.GrantPaidServicePeriodWithin(txctx, orderport.ServicePeriodGrantCommand{SourceOrderID: nativeOrder, BeneficiaryCustomerID: customerID, ServiceProductID: 109, ProductName: "可撤回历史", DurationDays: 31, PaidAt: base, ProcessedAt: base})
+				return grantErr
+			}); err != nil {
+				t.Fatal(err)
+			}
+			first, second := nativeOrder, historyOrder
+			if refundMappedFirst {
+				first, second = historyOrder, nativeOrder
+			}
+			var afterFirst orderport.Entitlement
+			if err := uow.Within(ctx, func(txctx context.Context) error {
+				var refundErr error
+				afterFirst, refundErr = fulfillment.ApplyServicePeriodRefundWithin(txctx, orderport.ServicePeriodRefundCommand{SourceOrderID: first, RefundAmountMinor: 1, ProcessedAt: base.Add(time.Hour)})
+				return refundErr
+			}); err != nil || afterFirst.Status != "active" || !afterFirst.EndAt.Equal(legacyEnd) {
+				t.Fatalf("first mapped/native refund=%+v err=%v", afterFirst, err)
+			}
+			var final orderport.Entitlement
+			if err := uow.Within(ctx, func(txctx context.Context) error {
+				var refundErr error
+				final, refundErr = fulfillment.ApplyServicePeriodRefundWithin(txctx, orderport.ServicePeriodRefundCommand{SourceOrderID: second, RefundAmountMinor: 2, ProcessedAt: base.Add(2 * time.Hour)})
+				return refundErr
+			}); err != nil || final.Status != "refunded" || !final.EndAt.Equal(base.Add(2*time.Hour)) {
+				t.Fatalf("mapped history survived its own refund: %+v err=%v", final, err)
+			}
+		})
+	}
+
+	// A legacy aggregate can retain its source_system after the original period
+	// has expired. Its first native grant rightly has no historical baseline;
+	// a second renewal must not freeze the new native end as one.
+	var expiredCustomer int64
+	if err := native.QueryRow(ctx, `INSERT INTO customers DEFAULT VALUES RETURNING id`).Scan(&expiredCustomer); err != nil {
+		t.Fatal(err)
+	}
+	expiredDigest := sha256.Sum256([]byte("expired-history"))
+	if _, err := native.Exec(ctx, `INSERT INTO order_service_entitlements(source_system,source_key,customer_id,service_product_id,product_name,status,start_at,end_at,remark,source_digest,created_at,updated_at) VALUES('legacy-import','expired-history',$1,110,'过期历史','expired',$2,$3,'',$4,$2,$2)`, expiredCustomer, base.AddDate(0, 0, -62), base.AddDate(0, 0, -1), expiredDigest[:]); err != nil {
+		t.Fatal(err)
+	}
+	expiredA := entitlementTestOrder(t, native, expiredCustomer, "expired-native-a", base)
+	expiredB := entitlementTestOrder(t, native, expiredCustomer, "expired-native-b", base)
+	for _, sourceOrderID := range []int64{expiredA, expiredB} {
+		if err := uow.Within(ctx, func(txctx context.Context) error {
+			_, grantErr := fulfillment.GrantPaidServicePeriodWithin(txctx, orderport.ServicePeriodGrantCommand{SourceOrderID: sourceOrderID, BeneficiaryCustomerID: expiredCustomer, ServiceProductID: 110, ProductName: "过期历史", DurationDays: 31, PaidAt: base, ProcessedAt: base})
+			return grantErr
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for index, sourceOrderID := range []int64{expiredA, expiredB} {
+		at := base.Add(time.Duration(index+1) * time.Hour)
+		var refunded orderport.Entitlement
+		if err := uow.Within(ctx, func(txctx context.Context) error {
+			var refundErr error
+			refunded, refundErr = fulfillment.ApplyServicePeriodRefundWithin(txctx, orderport.ServicePeriodRefundCommand{SourceOrderID: sourceOrderID, RefundAmountMinor: 1, ProcessedAt: at})
+			return refundErr
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if index == 0 && (refunded.Status != "active" || !refunded.EndAt.Equal(base.AddDate(0, 0, 31))) {
+			t.Fatalf("first expired-history native refund=%+v", refunded)
+		}
+		if index == 1 && (refunded.Status != "refunded" || !refunded.EndAt.Equal(at)) {
+			t.Fatalf("expired history was reclassified as coverage: %+v", refunded)
+		}
 	}
 }
 
