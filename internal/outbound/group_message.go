@@ -99,6 +99,22 @@ func (p *GroupMessageProvider) Execute(ctx context.Context, envelope effectport.
 	return effectport.AdapterResult{Completion: effectport.StateExecuted, ReceiptDigest: effectport.Hash(string(base), "provider-accepted", receipt.MessageID), CallAttempted: true, RealExternalCallExecuted: true, Artifact: artifact}, nil
 }
 
+func canonicalGroupMessageJSON(raw []byte) ([]byte, error) {
+	var value any
+	if len(raw) == 0 || json.Unmarshal(raw, &value) != nil {
+		return nil, errors.New("invalid Group Ops snapshot JSON")
+	}
+	return json.Marshal(value)
+}
+
+func emptyGroupMessageMaterial(raw []byte) bool {
+	var value struct {
+		SchemaVersion int               `json:"schema_version"`
+		References    []json.RawMessage `json:"references"`
+	}
+	return json.Unmarshal(raw, &value) == nil && value.SchemaVersion == 1 && len(value.References) == 0
+}
+
 func groupMessageRequest(execution groupopsport.DispatchExecution) (wecomport.GroupMessageRequest, error) {
 	if execution.ExecutionID < 1 || execution.TargetReference == "" || strings.TrimSpace(execution.SenderUserID) != execution.SenderUserID || execution.SenderUserID == "" || !effectport.ValidDigest(effectport.Digest(execution.ContentDigest)) || !effectport.ValidDigest(effectport.Digest(execution.MaterialDigest)) {
 		return wecomport.GroupMessageRequest{}, errors.New("invalid Group Ops dispatch execution")
@@ -111,16 +127,18 @@ func groupMessageRequest(execution groupopsport.DispatchExecution) (wecomport.Gr
 	if json.Unmarshal(execution.ContentSnapshot, &content) != nil || content.SchemaVersion != 1 || content.Kind != "message" || strings.TrimSpace(content.MessageText) != content.MessageText {
 		return wecomport.GroupMessageRequest{}, errors.New("invalid Group Ops content snapshot")
 	}
-	if string(effectport.Hash("group-ops.content.snapshot.v1", string(execution.ContentSnapshot))) != execution.ContentDigest {
+	canonicalContent, canonicalErr := canonicalGroupMessageJSON(execution.ContentSnapshot)
+	if canonicalErr != nil || string(effectport.Hash("group-ops.content.snapshot.v1", string(canonicalContent))) != execution.ContentDigest {
 		return wecomport.GroupMessageRequest{}, errors.New("Group Ops content digest mismatch")
 	}
-	if string(effectport.Hash("group-ops.material.snapshot.v1", string(execution.MaterialSnapshot))) != execution.MaterialDigest {
+	canonicalMaterial, canonicalErr := canonicalGroupMessageJSON(execution.MaterialSnapshot)
+	if canonicalErr != nil || string(effectport.Hash("group-ops.material.snapshot.v1", string(canonicalMaterial))) != execution.MaterialDigest {
 		return wecomport.GroupMessageRequest{}, errors.New("invalid Group Ops material snapshot")
 	}
 	attachments := []wecomport.GroupMessageAttachment{}
-	if string(execution.MaterialSnapshot) != `{"schema_version":1,"references":[]}` {
+	if !emptyGroupMessageMaterial(canonicalMaterial) {
 		var materials mediaport.GroupOpsMaterialSnapshot
-		if json.Unmarshal(execution.MaterialSnapshot, &materials) != nil || mediaport.ValidateGroupOpsMaterialSnapshot(materials) != nil {
+		if json.Unmarshal(canonicalMaterial, &materials) != nil || mediaport.ValidateGroupOpsMaterialSnapshot(materials) != nil {
 			return wecomport.GroupMessageRequest{}, errors.New("invalid Group Ops material snapshot")
 		}
 		attachments = make([]wecomport.GroupMessageAttachment, len(materials.Attachments))

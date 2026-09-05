@@ -869,8 +869,73 @@ func (r *Repository) RecordGroupMessageTask(ctx context.Context, task groupopspo
 	if storedExecution != task.ExecutionID || storedEffect != effectID || sender != task.SenderUserID || chat != task.ChatID {
 		return ErrConflict
 	}
-	_, err = tx.Exec(ctx, `INSERT INTO group_ops_group_message_tasks(execution_id,external_effect_id,msgid,sender_userid_snapshot,chat_reference,task_evidence_digest,accepted_at) VALUES($1,$2,$3,$4,$5,$6,clock_timestamp()) ON CONFLICT(external_effect_id) DO UPDATE SET msgid=EXCLUDED.msgid,sender_userid_snapshot=EXCLUDED.sender_userid_snapshot,chat_reference=EXCLUDED.chat_reference,task_evidence_digest=EXCLUDED.task_evidence_digest WHERE group_ops_group_message_tasks.execution_id=EXCLUDED.execution_id AND group_ops_group_message_tasks.msgid=EXCLUDED.msgid AND group_ops_group_message_tasks.sender_userid_snapshot=EXCLUDED.sender_userid_snapshot AND group_ops_group_message_tasks.chat_reference=EXCLUDED.chat_reference AND group_ops_group_message_tasks.task_evidence_digest=EXCLUDED.task_evidence_digest`, task.ExecutionID, effectID, task.MessageID, task.SenderUserID, task.ChatID, task.TaskEvidenceDigest)
-	return err
+	result, err := tx.Exec(ctx, `INSERT INTO group_ops_group_message_tasks(execution_id,external_effect_id,msgid,sender_userid_snapshot,chat_reference,task_evidence_digest,accepted_at) VALUES($1,$2,$3,$4,$5,$6,clock_timestamp()) ON CONFLICT(external_effect_id) DO UPDATE SET msgid=EXCLUDED.msgid,sender_userid_snapshot=EXCLUDED.sender_userid_snapshot,chat_reference=EXCLUDED.chat_reference,task_evidence_digest=EXCLUDED.task_evidence_digest WHERE group_ops_group_message_tasks.execution_id=EXCLUDED.execution_id AND group_ops_group_message_tasks.msgid=EXCLUDED.msgid AND group_ops_group_message_tasks.sender_userid_snapshot=EXCLUDED.sender_userid_snapshot AND group_ops_group_message_tasks.chat_reference=EXCLUDED.chat_reference AND group_ops_group_message_tasks.task_evidence_digest=EXCLUDED.task_evidence_digest`, task.ExecutionID, effectID, task.MessageID, task.SenderUserID, task.ChatID, task.TaskEvidenceDigest)
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() != 1 {
+		return ErrConflict
+	}
+	return nil
+}
+
+// FindGroupMessageReceipt returns the owner-held WeCom task reference only
+// when the reconciliation request names the same execution/effect pair. This
+// is deliberately separate from EER: a msgid proves task acceptance, not
+// member delivery.
+func (r *Repository) FindGroupMessageReceipt(ctx context.Context, evidence groupopsport.ReconciliationEvidence) (groupopsport.GroupMessageReceipt, bool, error) {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return groupopsport.GroupMessageReceipt{}, false, err
+	}
+	if evidence.ExecutionID < 1 {
+		return groupopsport.GroupMessageReceipt{}, false, ErrInvalid
+	}
+	effectID, err := parseEffectID(evidence.ExternalEffectID)
+	if err != nil {
+		return groupopsport.GroupMessageReceipt{}, false, err
+	}
+	var task groupopsport.GroupMessageReceipt
+	var status pgtype.Int4
+	var deliveryDigest pgtype.Text
+	err = tx.QueryRow(ctx, `SELECT execution_id,external_effect_id,msgid,sender_userid_snapshot,chat_reference,task_evidence_digest,delivery_status,delivery_evidence_digest FROM group_ops_group_message_tasks WHERE execution_id=$1 AND external_effect_id=$2`, evidence.ExecutionID, effectID).Scan(&task.ExecutionID, new(int64), &task.MessageID, &task.SenderUserID, &task.ChatID, &task.TaskEvidenceDigest, &status, &deliveryDigest)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return groupopsport.GroupMessageReceipt{}, false, nil
+	}
+	if err != nil {
+		return groupopsport.GroupMessageReceipt{}, false, err
+	}
+	task.ExternalEffectID = evidence.ExternalEffectID
+	if status.Valid {
+		value := int(status.Int32)
+		task.DeliveryStatus = &value
+	}
+	if deliveryDigest.Valid {
+		task.DeliveryEvidenceDigest = deliveryDigest.String
+	}
+	return task, true, nil
+}
+
+func (r *Repository) RecordGroupMessageDelivery(ctx context.Context, task groupopsport.GroupMessageReceipt, evidenceDigest string) error {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return err
+	}
+	if task.ExecutionID < 1 || task.DeliveryStatus == nil || !effectport.ValidDigest(effectport.Digest(evidenceDigest)) {
+		return ErrInvalid
+	}
+	effectID, err := parseEffectID(task.ExternalEffectID)
+	if err != nil {
+		return err
+	}
+	result, err := tx.Exec(ctx, `UPDATE group_ops_group_message_tasks SET delivery_status=$3,delivery_evidence_digest=$4,delivery_checked_at=clock_timestamp() WHERE execution_id=$1 AND external_effect_id=$2 AND msgid=$5 AND sender_userid_snapshot=$6 AND chat_reference=$7`, task.ExecutionID, effectID, *task.DeliveryStatus, evidenceDigest, task.MessageID, task.SenderUserID, task.ChatID)
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() != 1 {
+		return ErrConflict
+	}
+	return nil
 }
 
 // CompleteEffect is called by the External Effects completion sink with a
@@ -1092,6 +1157,7 @@ func nullableTime(value pgtype.Timestamptz) *time.Time {
 }
 
 var _ groupopsport.ExecutionTargetOwnerResolver = (*Repository)(nil)
+var _ groupopsport.GroupMessageReceiptReader = (*Repository)(nil)
 var _ groupopsport.RuntimeStore = (*Repository)(nil)
 var _ groupopsport.WebhookReplayStore = (*Repository)(nil)
 var _ groupopsapp.Store = (*Repository)(nil)
@@ -1180,6 +1246,13 @@ func (r *Repository) ClaimNextExecutionIntent(ctx context.Context, effectRef str
 	if len(items) != 1 {
 		return groupopsport.ExecutionDraft{}, false, ErrConflict
 	}
+	updated, updateErr := tx.Exec(ctx, `UPDATE group_ops_execution_intents SET state='ready_to_accept',updated_at=clock_timestamp() WHERE id=$1 AND state='waiting'`, items[0].IntentID)
+	if updateErr != nil {
+		return groupopsport.ExecutionDraft{}, false, updateErr
+	}
+	if updated.RowsAffected() != 1 {
+		return groupopsport.ExecutionDraft{}, false, ErrConflict
+	}
 	return items[0], true, nil
 }
 
@@ -1193,6 +1266,21 @@ func (r *Repository) BindAcceptedExecutionIntent(ctx context.Context, intentID i
 		return err
 	}
 	result, err := tx.Exec(ctx, `UPDATE group_ops_execution_intents SET state='accepted',external_effect_id=$2,updated_at=clock_timestamp() WHERE id=$1 AND state='ready_to_accept'`, intentID, effectID)
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() != 1 {
+		return ErrConflict
+	}
+	return nil
+}
+
+func (r *Repository) HaltExecutionIntent(ctx context.Context, intentID int64) error {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return err
+	}
+	result, err := tx.Exec(ctx, `UPDATE group_ops_execution_intents SET state='halted',updated_at=clock_timestamp() WHERE id=$1 AND state='ready_to_accept'`, intentID)
 	if err != nil {
 		return err
 	}

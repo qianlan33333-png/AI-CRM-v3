@@ -34,7 +34,7 @@ func (e *RiverContinuationEnqueuer) EnqueueGroupOpsContinuationWithin(ctx contex
 	if err != nil {
 		return err
 	}
-	_, err = platformjobqueue.InsertTxWithOptions(ctx, e.client, tx, ContinuationJobArgs{EffectID: effectID}, river.InsertOpts{Queue: platformjobqueue.OutboundQueue, MaxAttempts: 1, UniqueOpts: river.UniqueOpts{ByArgs: true}})
+	_, err = platformjobqueue.InsertTxWithOptions(ctx, e.client, tx, ContinuationJobArgs{EffectID: effectID}, river.InsertOpts{Queue: platformjobqueue.OutboundQueue, MaxAttempts: 12, UniqueOpts: river.UniqueOpts{ByArgs: true}})
 	return err
 }
 
@@ -83,7 +83,7 @@ func (s *RuntimeService) ContinueEffect(ctx context.Context, effectID string) er
 			return err
 		}
 		if detail.Plan.Status != port.PlanActive || detail.Plan.Revision != draft.PlanRevision {
-			return nil
+			return s.runtime.HaltExecutionIntent(tx, draft.IntentID)
 		}
 		projection, receipt, err := s.effects.AcceptAndQueueWithin(tx, groupOpsEffectAcceptCommand(draft, "continuation:"+effectID))
 		if err != nil {

@@ -131,9 +131,15 @@ func TestGroupMessageProviderUsesEffectBoundSnapshotAndExactChat(t *testing.T) {
 	reader := groupDispatchReaderStub{value: groupopsport.DispatchExecution{
 		ExecutionID: 42, ExternalEffectID: effectID, State: groupopsport.ExecutionAccepted, TargetReference: "chat-42", SenderUserID: "owner-42",
 		ContentSnapshot: content, ContentDigest: string(effect.Hash("group-ops.content.snapshot.v1", string(content))),
-		MaterialSnapshot: material, MaterialDigest: string(effect.Hash("group-ops.material.snapshot.v1", string(material))),
+		MaterialSnapshot: material, MaterialDigest: func() string {
+			normalized, _ := canonicalGroupMessageJSON(material)
+			return string(effect.Hash("group-ops.material.snapshot.v1", string(normalized)))
+		}(),
 		SourceRefDigest: string(envelope.SourceRefDigest), TargetRefDigest: string(envelope.TargetRefDigest), PayloadDigest: string(envelope.PayloadDigest), PolicyVersionHash: string(envelope.PolicyVersionHash),
 	}}
+	if _, requestErr := groupMessageRequest(reader.value); requestErr != nil {
+		t.Fatalf("request err=%v", requestErr)
+	}
 	sender := &groupMessageSenderStub{attempted: true, receipt: wecomport.GroupMessageReceipt{MessageID: "msg-42"}}
 	provider, err := NewGroupMessageProvider(GroupMessageProviderConfig{Enabled: true, Executions: reader, Writer: sender})
 	if err != nil {
@@ -145,6 +151,27 @@ func TestGroupMessageProviderUsesEffectBoundSnapshotAndExactChat(t *testing.T) {
 	}
 	if sender.request.SenderUserID != "owner-42" || sender.request.Text != "hello" || len(sender.request.ChatIDs) != 1 || sender.request.ChatIDs[0] != "chat-42" {
 		t.Fatalf("exact WeCom request=%+v", sender.request)
+	}
+}
+
+func TestGroupMessageRequestCanonicalizesJSONBSnapshotsWithoutWeakeningDigestChecks(t *testing.T) {
+	content := []byte(` { "message_text" : "hello", "kind":"message", "schema_version":1 } `)
+	material := []byte(` { "references": [ ], "schema_version": 1 } `)
+	canonicalContent, err := canonicalGroupMessageJSON(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonicalMaterial, err := canonicalGroupMessageJSON(material)
+	if err != nil {
+		t.Fatal(err)
+	}
+	execution := groupopsport.DispatchExecution{ExecutionID: 7, TargetReference: "chat-7", SenderUserID: "owner-7", ContentSnapshot: content, ContentDigest: string(effect.Hash("group-ops.content.snapshot.v1", string(canonicalContent))), MaterialSnapshot: material, MaterialDigest: string(effect.Hash("group-ops.material.snapshot.v1", string(canonicalMaterial)))}
+	if _, err = groupMessageRequest(execution); err != nil {
+		t.Fatalf("JSONB equivalent snapshots rejected: %v", err)
+	}
+	execution.ContentSnapshot = []byte(`{"schema_version":1,"kind":"message","message_text":"changed"}`)
+	if _, err = groupMessageRequest(execution); err == nil {
+		t.Fatal("semantic content change bypassed digest check")
 	}
 }
 

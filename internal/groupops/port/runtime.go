@@ -307,6 +307,7 @@ type RuntimeStore interface {
 	CreateExecutionIntents(context.Context, []ExecutionDraft) ([]ExecutionIntent, error)
 	InitialExecutionIntents(context.Context, int64) ([]ExecutionDraft, error)
 	ClaimNextExecutionIntent(context.Context, string) (ExecutionDraft, bool, error)
+	HaltExecutionIntent(context.Context, int64) error
 	BindAcceptedExecutionIntent(context.Context, int64, string) error
 	InsertExecution(context.Context, ExecutionDraft) (Execution, error)
 	GetExecution(context.Context, int64) (Execution, error)

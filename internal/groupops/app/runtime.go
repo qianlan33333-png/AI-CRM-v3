@@ -234,6 +234,15 @@ func (s *RuntimeService) AcceptWebhook(ctx context.Context, webhookReference, ke
 	return s.AcceptPlan(ctx, command)
 }
 
+func canonicalRuntimeJSON(raw []byte) (json.RawMessage, error) {
+	var value any
+	if len(raw) == 0 || json.Unmarshal(raw, &value) != nil {
+		return nil, ErrRuntimeInvalid
+	}
+	normalized, err := json.Marshal(value)
+	return json.RawMessage(normalized), err
+}
+
 func groupOpsEffectAcceptCommand(draft groupopsport.ExecutionDraft, key string) effectport.AcceptCommand {
 	return effectport.AcceptCommand{ReceiptKey: effectport.Hash("group-ops.accept.v1", strconv.FormatInt(draft.PlanID, 10), strconv.FormatInt(draft.RunID, 10), strconv.FormatInt(draft.NodeID, 10), draft.TargetReference, key), Envelope: effectport.Envelope{Owner: effectport.OwnerOutbound, Kind: effectport.KindGroupMessage, SourceRefDigest: effectport.Hash("group-ops.run", strconv.FormatInt(draft.RunID, 10)), TargetRefDigest: effectport.Hash("group-ops.target", draft.TargetReference), PayloadDigest: effectport.Hash("group-ops.payload", draft.ContentDigest, draft.MaterialDigest, draft.SenderUserID), PolicyVersionHash: effectport.Hash("group-ops.policy", "v1")}, ScheduledAt: draft.ScheduledFor}
 }
@@ -261,13 +270,22 @@ func (s *RuntimeService) buildDrafts(tx context.Context, detail groupopsport.Det
 		if err != nil {
 			return nil, ErrRuntimeInvalid
 		}
-		materialRaw, materialDigest, err := s.resolveMaterialSnapshot(tx, node.MaterialPlan, now.Add(delay))
+		contentRaw, err = canonicalRuntimeJSON(contentRaw)
+		if err != nil {
+			return nil, ErrRuntimeInvalid
+		}
+		materialRaw, _, err := s.resolveMaterialSnapshot(tx, node.MaterialPlan, now.Add(delay))
 		if err != nil {
 			// Material is owned by Media and must be frozen before an EER
 			// intent exists. A missing/changed source is an unavailable
 			// dependency, not permission to manufacture a kind/id digest.
 			return nil, ErrUnavailable
 		}
+		materialRaw, err = canonicalRuntimeJSON(materialRaw)
+		if err != nil {
+			return nil, ErrRuntimeInvalid
+		}
+		materialDigest := string(effectport.Hash("group-ops.material.snapshot.v1", string(materialRaw)))
 		contentDigest := string(effectport.Hash("group-ops.content.snapshot.v1", string(contentRaw)))
 		for _, asset := range assets {
 			key := executionKeyString(node.ID, asset.AssetRef)
