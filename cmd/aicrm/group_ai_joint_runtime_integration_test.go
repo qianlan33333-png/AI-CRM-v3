@@ -274,6 +274,12 @@ func TestAIAssistantAndGroupOpsShareRiverOutboundAndEffects(t *testing.T) {
 	for privateCalls.Load()+groupCalls.Load() != 3 && time.Now().Before(deadline) {
 		time.Sleep(25 * time.Millisecond)
 	}
+	waitGroupOpsDelayedSuccessors(t, native, groupPlan, 2)
+	var effectBaseline int
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM external_effects`).Scan(&effectBaseline); err != nil || effectBaseline != 5 {
+		stop()
+		t.Fatalf("first group completion must persist two delayed successors: effects=%d err=%v", effectBaseline, err)
+	}
 	stop()
 	if privateCalls.Load() != 1 || groupCalls.Load() != 2 {
 		t.Fatalf("shared leaves private=%d group=%d", privateCalls.Load(), groupCalls.Load())
@@ -295,7 +301,7 @@ func TestAIAssistantAndGroupOpsShareRiverOutboundAndEffects(t *testing.T) {
 	if privateCalls.Load() != 1 || groupCalls.Load() != 2 {
 		t.Fatalf("replay/restart duplicated provider calls: private=%d group=%d", privateCalls.Load(), groupCalls.Load())
 	}
-	if err = native.QueryRow(ctx, `SELECT count(*) FROM external_effects`).Scan(&effectsCount); err != nil || effectsCount != 3 {
-		t.Fatalf("replay/restart minted effects=%d err=%v", effectsCount, err)
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM external_effects`).Scan(&effectsCount); err != nil || effectsCount != effectBaseline {
+		t.Fatalf("replay/restart minted effects=%d baseline=%d err=%v", effectsCount, effectBaseline, err)
 	}
 }
