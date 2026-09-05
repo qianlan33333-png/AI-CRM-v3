@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -14,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/hxcdashboard/domain"
+	hxcport "github.com/qianlan33333-png/AI-CRM-v3/internal/hxcdashboard/port"
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 )
@@ -24,6 +26,7 @@ func TestPublishRetainsReceiptLineageAfterEightProjections(t *testing.T) {
 	ctx := context.Background()
 	store := NewPostgreSQL(native)
 
+	var firstVersion int64
 	for index := 1; index <= 9; index++ {
 		var runID int64
 		requestDigest := make([]byte, 32)
@@ -35,11 +38,17 @@ func TestPublishRetainsReceiptLineageAfterEightProjections(t *testing.T) {
 		}
 		projection := hxcRetentionProjection(index)
 		if err := uow.Within(ctx, func(txCtx context.Context) error {
-			_, publishErr := store.Publish(txCtx, runID, projection)
+			version, publishErr := store.Publish(txCtx, runID, projection)
+			if index == 1 {
+				firstVersion = version
+			}
 			return publishErr
 		}); err != nil {
 			t.Fatalf("publish projection %d: %v", index, err)
 		}
+	}
+	if _, err := store.SharedFactsAtVersion(ctx, firstVersion, []customerdomain.CustomerID{1}); !errors.Is(err, hxcport.ErrSharedFactsVersionUnavailable) {
+		t.Fatalf("pruned immutable generation must return a stable Port error, got %v", err)
 	}
 
 	var versions, receipts, retainedRows, oldestVersionRows int64

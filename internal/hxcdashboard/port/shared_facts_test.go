@@ -18,6 +18,7 @@ func TestMembershipWindowKeepsFreeAndUnknownFactsOutOfExpired(t *testing.T) {
 		{"membership expiry equality", SharedFacts{Availability: SharedFactsAvailable, MembershipRecordFound: true, IsMember: true, ExpiresAt: &past}, false, true},
 		{"free no member", SharedFacts{Availability: SharedFactsAvailable, Tier: "free", ExpiresAt: &past}, false, false},
 		{"explicit expired no date", SharedFacts{Availability: SharedFactsAvailable, MembershipRecordFound: true, MembershipStatus: "expired"}, false, true},
+		{"explicit expired legacy casing and whitespace", SharedFacts{Availability: SharedFactsAvailable, MembershipRecordFound: true, MembershipStatus: " EXPIRED "}, false, true},
 		{"unavailable", SharedFacts{Availability: SharedFactsUnavailable, MembershipRecordFound: true, IsMember: true, ExpiresAt: &future}, false, false},
 	}
 	for _, tc := range cases {
