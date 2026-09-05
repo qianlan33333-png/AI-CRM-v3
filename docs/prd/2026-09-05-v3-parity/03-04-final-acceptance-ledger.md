@@ -1,8 +1,8 @@
 # PRD-03/04 最终验收核账
 
 核对日期：2026-09-06（Asia/Shanghai）
-实现 HEAD：`270d8f986342138aec384a58588ff91feae227b9`（PR #143 分支）
-总控依据：`v3-parity-integration` 工作区当日的 `03-product-payment.md`、`04-entitlement-coupon.md`、`10-acceptance-matrix.md`。该工作区正在机械整合，本文不把它的未提交状态当作本分支的实现事实。
+最终已审核来源 HEAD：`e9e62809a569be09771e6107039e64c934201e37`（PR #143，保留 `270d8f986342138aec384a58588ff91feae227b9` 及前置联合实现）
+总控依据：`v3-parity-integration` 工作区当日的 `03-product-payment.md`、`04-entitlement-coupon.md`、`10-acceptance-matrix.md`。最终来源、组合 HEAD 和 CI 以验收矩阵及 PR141 描述为准，不把未提交工作或不同 HEAD 的测试结果当作交付证据。
 
 ## 范围与判定
 
@@ -15,7 +15,7 @@
 OneID：读取既有 canonical customer、可信 Payment OAuth 会话和既有 Identity 历史解析；没有新增身份匹配、隐式建客或客户副本。
 持久化/效果：订单、券、权益、Payment 的业务事实分别由 Owner 在 PostgreSQL UoW 中写入；本轮签名支付只使用本地模拟 Provider，未发起生产付款、退款或 OAuth 启用。
 
-本分支的完整 CI `33975881872` 在 HEAD `270d8f9` 成功完成 repository PostgreSQL 检查和 race-check；deploy 为 skipped。此前 `06ecac29f3d872ba57902ef7e4a29e475fad7d2f` 的 CI `33973228872` 是已获总控审核的 03/04 联合及历史基线。本文未在本机重跑 PG：本机没有可用测试数据库，集成测试会跳过，故不把本地跳过写成通过。
+最终来源 `e9e62809` 的完整 CI `33981662058` 已通过 PostgreSQL16 与 race，deploy 为 skipped；准确来源已纳入合并提交 `b0b202818f8ec7a3ab81d3756ffe062d594d5764`，随后组合 `b160cc4438e3ebf50c5e17dd948527201c3fecd0` / CI `33984380779` 也通过。此前 `270d8f9` 的 CI `33975881872` 是其保留的旧验收基线。此前 `06ecac29f3d872ba57902ef7e4a29e475fad7d2f` 的 CI `33973228872` 是已获总控审核的 03/04 联合及历史基线。本文未在本机重跑 PG：本机没有可用测试数据库，集成测试会跳过，故不把本地跳过写成通过。
 
 ## 已有证据（不列为缺口）
 
@@ -32,14 +32,11 @@ OneID：读取既有 canonical customer、可信 Payment OAuth 会话和既有 I
 | 历史周期权益和券定义/持券事实 | `service_period_entitlements`、`commerce_coupon_claims`；`commerce_coupons` 与绑定表 | `cmd/migrate-sidebar-history/main_postgres_integration_test.go`: `TestPostgreSQLSidebarHistoryAllianceApplyReplayReconcile`、`TestPostgreSQLSidebarHistoryLegacyNoAllianceDigestReplayAndQuarantine`；券定义由 `internal/configmigration/source/extract.go`/`target/runner.go` 的 `commerce_coupons` 映射及 `cmd/migrate-v2-config-definitions/integration_test.go` 覆盖 | 周期权益、券领取/核销行与券定义由各自 Owner 的历史工具处理；未知身份隔离，不通过在线支付、领券或开通流程补造事实。 |
 | 0088 联盟的 unknown/明确空/值、编辑、回读、回放、目标漂移和发布清单 | `ServicePeriodRepository._member_payload` 与 `member_admin_fields.py` 的 `metadata_json.admin_alliance`；`member_grid.py` 的联盟列 | `internal/order/store/postgres_integration_test.go`: `TestEntitlementAlliancePreservesUnknownClearCASAndRollback`；上列 member-grid HTTP/JSDOM 行程；两项 `cmd/migrate-sidebar-history` PG 测试；`scripts/check-install-release-contract.sh` 与 `scripts/test-install-release-ordering.sh` 在 CI 执行 | `0088_order_service_entitlement_alliance.sql` 及 Release readiness 已在 `270d8f9`；旧快照缺字段保持旧 canonical digest，mapped 与 quarantined 行均逐条对账。 |
 
-## 真实剩余风险与最终门槛
+## 后续复核发现项的关闭证据
 
-1. **0088 尚未进入新的总控组合 HEAD/组合 CI。** `270d8f9` 的源 CI 已通过，但总控工作区尚处于整合冲突处理状态。它是最终交付门槛，不是本分支尚缺的联盟、会员表或支付实现。纳入后应以包含该 SHA 的新组合运行验证；不能拿 `11c1c69` 或 `df2dfd4` 的旧组合 CI 代替。
+- 0088 联盟字段已随准确来源及后续修正纳入总集成，并通过上述组合 CI，不再计作待开发或待纳入。
+- 原 capture 的 ASCII BTRIM 不能代表 Python Unicode strip；已修为 schema2 提取保留源字段存在性/JSON 类型，再由既有 Go 工具按冻结 Python 规则规范化。`TestExtractStreamNormalizesAllianceWithFrozenPythonStripContract` 与 `TestPostgreSQLSidebarHistoryCaptureAllianceExpressionPreservesSourceFacts` 覆盖普通空格、tab、Unicode 空白、明确空、缺字段及非字符串。原 schema1 摘要与旧快照重放保持兼容。
+- 后续总控发现的权益、券完整目标与源映射/隔离核验缺口已关闭。`TestPostgreSQLSidebarHistoryReconcileVerifiesEveryImportedTargetFact` 在真实 PG 修改状态、时间、身份及其他业务字段后逐项拒绝对账，不只检查旁存摘要或计数。
+- 同一 run 的历史导入使用现有工具内的 PG 会话锁互斥；已经提交第一条目标/收据后第二条失败，再执行会重放第一条并继续余下记录，批次计数守恒。恢复后重新完成 apply 并重新 reconcile；不以 applying 永久阻断恢复，也不换 run-key 掩盖中断，不产生新 Provider/EER/River 效果。上述实际中断用例已包含在最终来源 CI。
 
-2. **首次真实侧栏历史快照的 alliance 空白字符合同尚未精确证明。** `scripts/capture-sidebar-history-source.sh` 第 39–42 行声称 PostgreSQL `BTRIM` 与 Python `str(...).strip()` 相同，这不成立：默认 `BTRIM` 只移除 ASCII space，Python/Go 的 `strip`/`TrimSpace` 还会移除 tab 和 Unicode 空白。冻结旧写路径是 `api.py` → `application.py` → `domain.text`，其中 `text(value)` 为 `str(value or "").strip()`，并在 `member_admin_fields.py` 入库；`member_grid.py:704` 读模型也再次 Python `strip()`。因此经旧 HTTP 编辑的正常值通常已经规范化，风险局限于早期/直写数据或非 ASCII 外侧空白；但在没有真实只读快照样本前，不能把 `BTRIM` 的注释称为精确等价。
-
-   在首次生产源提取前，应冻结下列一个明确输入合同并补测试向量：`" 联盟 "`、`"\\t联盟\\t"`、`"\\u00a0联盟\\u00a0"`、明确空字符串、字段缺失、JSON 非 string。若迁入目标必须保存旧页面的可编辑值，应明确采用旧 HTTP 写路径的 Unicode `strip` 规范化并把“原始值→规范值”记录为受审转换；若要保留原始证据，则源摘要和目标事实不能再以同一字符串直接比较。此项无需改产品页面或身份设计，但在确认前不应运行真实 capture/apply。
-
-3. **生产 Provider/生产 OAuth 与真实历史数据库执行仍是刻意保留的上线阶段。** PRD-03/04 明确要求本轮只跑隔离 PG 与本地签名 Provider；CI deploy 均 skipped。它们不是本轮待补的开发能力，不能被当前测试宣称为已生产验收。
-
-除以上三项，本次核查没有发现仍未由准确实现、冻结来源和实际测试共同覆盖的 PRD-03/04 退回能力。特别是旧的空会员表、公开页字符串替换、保存 view 不生效、协作撤销后仍可写、未知支付换键、资金链未验签、退款重复扣期、历史只计数不逐行核验，均已有上述证据，故不重复列为待开发。
+03/04 本轮实现与独立联合验收通过，最终整仓交付仍以 PR141 准确最终 HEAD 的完整组合 CI 为条件。生产 OAuth、付款退款、配置应用和真实历史快照 capture/dry-run/apply 保留在部署阶段；本轮未执行，也不以合成测试替代。已关闭的开发缺口不得继续列为待开发，生产待办则不得改写为已完成。
