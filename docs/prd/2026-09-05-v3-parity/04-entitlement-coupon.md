@@ -64,3 +64,7 @@ OneID：读取 canonical 受益人/持券客户，不按姓名手机号新建匹
 供体 `aicrm_next/extensions/commerce/commerce/coupons/public_api.py` 已有 `/c/{public_slug}`、`GET /api/h5/coupons/available?target_ref=...`、优惠券状态读取与 `POST /api/h5/coupons/{public_slug}/claim`。因此仅提供内部ClaimApplication不算完成领取能力。联合03/04任务应复用旧coupon_public.html，在V3 Host适配既有微信OAuth会话和可信OneID，领取不接收客户端CustomerID，保持幂等、Cookie/CSRF等现有安全边界，并接购买页的可用券展示/选择。无可信身份不领取；不新建第二套OAuth或客户匹配。
 
 旧分享slug、过期/售罄/每人限额/已领取状态、仅微信内领取提示及数据页统计按供体冻结；Admin表单/列表已有页面不重写。PR138已实现内部领取与结算Port，以上公开流程仍需后续联合PR完成。
+
+## 9. 联合审核剩余条件
+
+PR138 的领域修复已通过真实 PG 审核并纳入集成，但不代表会员表、公开购买与历史验收已完成。PR143 的具体退回要求以 PRD03 第9节为准：消除会员表空实现、实际复用周期公开模板、统一自动用券文案、保持未知购买的原幂等键、补签名支付回调与权益的真实 PG 联合旅程、完成隔离历史导入对账。以上均属于本 PRD 原定能力。
