@@ -37,7 +37,7 @@ node internal/webshell/static/admin_console/survey_qr_bridge.test.mjs
 | 旧版测试外推、参数过滤、重放和结果回读 | `QueueCompletionTest`、`ReadCompletionPayload`、`SurveyCompletionProvider` | `TestQueueCompletionTestFreezesSyntheticRequestAndReplaysSameEffect`、`TestExternalPushTestUsesSyntheticQueueAndFailsClosedWhenDisabled`、`TestPostgreSQLSyntheticCompletionTestSnapshotReplaysWithoutCustomer` |
 | 重启执行一次、unknown 不盲重试、配置漂移和重定向 | `external_effects` + `SurveyCompletionProvider` | `TestPostgreSQLSurveySyntheticPushSurvivesRepositoryRestartAndDoesNotBlindRetryUnknown`；`TestSurveyCompletionProviderDoesNotForwardBodyOnRedirect`；`TestSurveyCompletionProviderRejectsTargetConfigDriftBeforeCallingNewEndpoint` |
 
-未冻结的 V3 Host `internal/webshell/static/admin_console/survey_operations.js` 接管问卷运营页：冻结的 queued-only mapper 在初始化期间只得到空记录，Host 随即替换该旧入口，直接调用 `POST /api/admin/questionnaires/{id}/operations/external-push/test` 并重新读取本问卷与全局真实记录。请求携带 Host 的 CSRF header；接受响应只陈述“测试已创建”，不会把已发生的尝试或结果固定显示为零/否。Host 也保留开关、配置引用和参数的 CAS 保存。`survey_qr_bridge.test.mjs` 覆盖冻结壳接管、旧按钮屏蔽、一次 POST、CSRF、queued/executed/outcome_unknown 与 disabled 历史记录的浏览器旅程；`TestExternalPushTestRequiresCSRFBeforeAcceptingSyntheticEffect` 证明拒绝时不会接纳效果。禁用配置返回 `409 provider_disabled` 且零效果接受/零 Provider 调用。
+未冻结的 V3 Host `internal/webshell/static/admin_console/survey_operations.js` 在原有外部推送卡片和日志容器上做窄挂载：冻结的 queued-only mapper 在初始化期间只得到空记录，Host 保留提交后动作、渠道选择和原测试按钮，直接调用 `POST /api/admin/questionnaires/{id}/operations/external-push/test` 并在原日志容器重新读取本问卷与全局真实记录。请求携带 Host 的 CSRF header；接受响应只陈述“测试已创建”，不会把已发生的尝试或结果固定显示为零/否。Host 也保留开关、配置引用和参数的 CAS 保存。`survey_qr_bridge.test.mjs` 覆盖冻结壳接管、旧按钮屏蔽、一次 POST、CSRF、queued/executed/outcome_unknown 与 disabled 历史记录的浏览器旅程；`survey_operations_frozen_runtime.test.mjs` 使用构建后的真实问卷运营模板和冻结控制器验证保留提交后动作、原测试按钮、外推参数保存、当前/全局真实日志和切换后不重绘。`TestExternalPushTestRequiresCSRFBeforeAcceptingSyntheticEffect` 证明拒绝时不会接纳效果。禁用配置返回 `409 provider_disabled` 且零效果接受/零 Provider 调用。
 
 本次本地已通过：
 
@@ -53,4 +53,4 @@ npm run orval:check
 
 本增量的 River 证据使用 `platformjobqueue.NewRuntime` 启动实际 worker：先由事务入队，再启动 runtime 等待本地 HTTP 接收，停止后以新 runtime 重启并确认不重复写入。`outcome_unknown` 使用同一实际 runtime 路径，重启后保持一次调用；执行成功、调用后超时和调用前拒绝分别持久化真实的尝试、调用及结果事实。它不是手动 `RunAttempt` 或仅重建 Repository 的替代测试。全局测试记录页保留合成测试的文本运行 ID、旧数字记录 ID、真实状态和可用的尝试事实；页面分别展示等待结果、已收到结果、结果待确认或当时未启用外推配置。
 
-部署待办：在 PostgreSQL 16 上应用 `0074_survey_external_operation_execution_facts.sql`。该迁移只增加可空的 Survey 回执执行事实列；旧行保持未知，不能据此显示“未调用”或“未收到结果”。
+部署待办：在 PostgreSQL 16 上顺序应用 `0066_channel_welcome_intents.sql`、`0074_survey_external_operation_execution_facts.sql` 与 `0075_external_effects_survey_completion_kind.sql`。0075 由 External Effects Owner 维护，只注册 `outbound/survey_completion`，且保留 welcome 队列约束和既有 Outbound、Payment owner/kind 组合；0074 的旧行保持未知，不能据此显示“未调用”或“未收到结果”。

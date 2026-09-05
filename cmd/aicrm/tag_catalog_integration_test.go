@@ -50,6 +50,63 @@ func (f integrationCatalogReader) ListCatalog(ctx context.Context) (outbound.Cat
 
 type integrationAdapter func(context.Context, effectport.Envelope, effectport.Attempt) (effectport.AdapterResult, error)
 
+type inspectedSurveyCompletionAccepter struct {
+	delegate surveyport.CompletionIntentAccepter
+	err      error
+}
+
+// TestPostgreSQLSurveyCompletionKindRegistryAfterWelcomeQueueMigration proves
+// the 0075 External Effects extension against the complete production
+// migration sequence.  0066 belongs to Channel and is intentionally not
+// copied into this branch; its queue constraint is applied here exactly as
+// that preceding migration defines it before the registry is exercised.
+func TestPostgreSQLSurveyCompletionKindRegistryAfterWelcomeQueueMigration(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	databaseURL, cleanup := adminAccessCompositionDatabase(t, ctx)
+	defer cleanup()
+	pool, err := pgxpool.New(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+
+	if _, err = pool.Exec(ctx, `
+		ALTER TABLE external_effect_jobs DROP CONSTRAINT IF EXISTS external_effect_jobs_queue_check;
+		ALTER TABLE external_effect_jobs ADD CONSTRAINT external_effect_jobs_queue_check CHECK(queue IN ('outbound','outbound_welcome'));
+	`); err != nil {
+		t.Fatalf("apply 0066 queue predecessor: %v", err)
+	}
+	var queueConstraint string
+	if err = pool.QueryRow(ctx, `SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid='external_effect_jobs'::regclass AND conname='external_effect_jobs_queue_check'`).Scan(&queueConstraint); err != nil || !strings.Contains(queueConstraint, "outbound_welcome") || !strings.Contains(queueConstraint, "outbound") {
+		t.Fatalf("welcome queue constraint=%q err=%v", queueConstraint, err)
+	}
+
+	valid := []struct{ owner, kind string }{
+		{"outbound", "survey_completion"},
+		{"outbound", "channel_welcome_message"},
+		{"payment", "wechat_pay_prepay_v1"},
+	}
+	for index, item := range valid {
+		seed := fmt.Sprintf("registry-%d-%s-%s", index, item.owner, item.kind)
+		if _, err = pool.Exec(ctx, `INSERT INTO external_effects(owner,kind,source_ref_digest,target_ref_digest,payload_digest,policy_version_hash,envelope_fingerprint,state) VALUES($1,$2,$3,$4,$5,$6,$7,'accepted')`, item.owner, item.kind, effectport.Hash(seed, "source"), effectport.Hash(seed, "target"), effectport.Hash(seed, "payload"), effectport.Hash(seed, "policy"), effectport.Hash(seed, "fingerprint")); err != nil {
+			t.Fatalf("valid owner/kind %s/%s rejected: %v", item.owner, item.kind, err)
+		}
+	}
+	for _, item := range []struct{ owner, kind string }{{"payment", "survey_completion"}, {"outbound", "wechat_pay_prepay_v1"}, {"outbound", "not_a_registered_kind"}} {
+		seed := "invalid-" + item.owner + "-" + item.kind
+		if _, err = pool.Exec(ctx, `INSERT INTO external_effects(owner,kind,source_ref_digest,target_ref_digest,payload_digest,policy_version_hash,envelope_fingerprint,state) VALUES($1,$2,$3,$4,$5,$6,$7,'accepted')`, item.owner, item.kind, effectport.Hash(seed, "source"), effectport.Hash(seed, "target"), effectport.Hash(seed, "payload"), effectport.Hash(seed, "policy"), effectport.Hash(seed, "fingerprint")); err == nil {
+			t.Fatalf("invalid owner/kind %s/%s was accepted", item.owner, item.kind)
+		}
+	}
+}
+
+func (a *inspectedSurveyCompletionAccepter) AcceptCompletionWithin(ctx context.Context, intent surveyport.CompletionIntent) (surveyport.EffectBinding, error) {
+	binding, err := a.delegate.AcceptCompletionWithin(ctx, intent)
+	a.err = err
+	return binding, err
+}
+
 func (f integrationAdapter) Execute(ctx context.Context, e effectport.Envelope, a effectport.Attempt) (effectport.AdapterResult, error) {
 	return f(ctx, e, a)
 }
@@ -338,7 +395,8 @@ func TestPostgreSQLSurveySyntheticPushSurvivesRepositoryRestartAndDoesNotBlindRe
 	if err = service.BindCompletionPolicy(provider); err != nil {
 		t.Fatal(err)
 	}
-	if err = service.BindCompletionIntent(surveyCompletionEffectAccepter{effects: effectRepository}); err != nil {
+	completionAccepter := &inspectedSurveyCompletionAccepter{delegate: surveyCompletionEffectAccepter{effects: effectRepository}}
+	if err = service.BindCompletionIntent(completionAccepter); err != nil {
 		t.Fatal(err)
 	}
 	config, err := service.GetOperationConfiguration(ctx, surveyport.ID(questionnaire))
@@ -351,7 +409,7 @@ func TestPostgreSQLSurveySyntheticPushSurvivesRepositoryRestartAndDoesNotBlindRe
 	key := "survey-synthetic-test-effect-0001"
 	first, err := service.QueueCompletionTest(ctx, surveyport.ID(questionnaire), actor, key)
 	if err != nil || first.EffectID == "" || first.State != "queued" {
-		t.Fatalf("accept=%+v err=%v", first, err)
+		t.Fatalf("accept=%+v err=%v completion_accept_err=%v", first, err, completionAccepter.err)
 	}
 	// Change current metadata before replay. The stored target/body/timestamp
 	// must win, so no new effect or River job is created.
@@ -541,7 +599,7 @@ func applySurveyCompletionMigrations(t *testing.T, ctx context.Context, pool *pg
 		t.Fatal("locate")
 	}
 	base := filepath.Join(filepath.Dir(file), "..", "..", "migrations")
-	for _, name := range []string{"0001_platform.sql", "0002_identity.sql", "0003_access.sql", "0018_survey.sql", "0067_survey_completion_snapshots.sql", "0073_survey_completion_test_push_snapshots.sql", "0074_survey_external_operation_execution_facts.sql"} {
+	for _, name := range []string{"0001_platform.sql", "0002_identity.sql", "0003_access.sql", "0018_survey.sql", "0067_survey_completion_snapshots.sql", "0073_survey_completion_test_push_snapshots.sql", "0074_survey_external_operation_execution_facts.sql", "0075_external_effects_survey_completion_kind.sql"} {
 		sql, err := os.ReadFile(filepath.Join(base, name))
 		if err != nil {
 			t.Fatal(err)
