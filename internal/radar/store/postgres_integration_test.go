@@ -77,7 +77,7 @@ func TestPostgreSQLAudienceFirstClicksKeepsFirstResolvedAttribution(t *testing.T
 		}
 		return sessionID
 	}
-	insertEvent := func(radarID, sessionID int64, attribution, stage string, occurredAt time.Time) {
+	insertEvent := func(radarID, sessionID int64, attribution, stage string, occurredAt time.Time) int64 {
 		t.Helper()
 		keyDigest, payloadDigest := make([]byte, 32), make([]byte, 32)
 		keyDigest[0], payloadDigest[0] = nextDigest, nextDigest+1
@@ -87,16 +87,19 @@ func TestPostgreSQLAudienceFirstClicksKeepsFirstResolvedAttribution(t *testing.T
 		if attribution == "resolved" {
 			identity, customer = identityID, customerID
 		}
-		if _, err := native.Exec(ctx, `
+		var eventID int64
+		if err := native.QueryRow(ctx, `
 			INSERT INTO radar_events(receipt_id,radar_id,radar_version,session_id,stage,attribution_status,identity_id,customer_id,key_digest,payload_digest,occurred_at,created_at)
-			VALUES($1,$2,1,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
-			receiptID, radarID, sessionID, stage, attribution, identity, customer, keyDigest, payloadDigest, occurredAt, now); err != nil {
+			VALUES($1,$2,1,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
+			receiptID, radarID, sessionID, stage, attribution, identity, customer, keyDigest, payloadDigest, occurredAt, now).Scan(&eventID); err != nil {
 			t.Fatal(err)
 		}
+		return eventID
 	}
 
 	firstResolved := insertSession(radarOneID, "resolved")
-	insertEvent(radarOneID, firstResolved, "resolved", "oauth_verified", now.Add(-48*time.Hour))
+	firstEventID := insertEvent(radarOneID, firstResolved, "resolved", "oauth_verified", now.Add(-48*time.Hour))
+	insertEvent(radarOneID, insertSession(radarOneID, "resolved"), "resolved", "identity_resolved", now.Add(-48*time.Hour))
 	insertEvent(radarOneID, firstResolved, "resolved", "content_opened", now.Add(-24*time.Hour))
 	secondRadar := insertSession(radarTwoID, "resolved")
 	insertEvent(radarTwoID, secondRadar, "resolved", "identity_resolved", now.Add(-36*time.Hour))
@@ -124,7 +127,7 @@ func TestPostgreSQLAudienceFirstClicksKeepsFirstResolvedAttribution(t *testing.T
 	if len(facts) != 2 {
 		t.Fatalf("facts=%+v", facts)
 	}
-	if int64(facts[0].CustomerID) != customerID || facts[0].RadarID != radarOneID || !facts[0].FirstClickedAt.Equal(now.Add(-48*time.Hour)) {
+	if int64(facts[0].CustomerID) != customerID || facts[0].RadarID != radarOneID || facts[0].FirstClickEventID != firstEventID || !facts[0].FirstClickedAt.Equal(now.Add(-48*time.Hour)) || facts[0].OwnerUserID != "" {
 		t.Fatalf("first radar fact=%+v", facts[0])
 	}
 	if int64(facts[1].CustomerID) != customerID || facts[1].RadarID != radarTwoID || !facts[1].FirstClickedAt.Equal(now.Add(-36*time.Hour)) {

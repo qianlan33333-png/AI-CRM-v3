@@ -396,14 +396,6 @@ func (s LegacyTemplateSource) radar(ctx context.Context, p map[string]json.RawMe
 	if e != nil {
 		return nil, e
 	}
-	eligible := map[int64]bool{}
-	if scoped {
-		contacts, e := s.contacts(ctx, at)
-		if e != nil {
-			return nil, e
-		}
-		eligible = contactsFor(contacts, []string{"active", "deleted"}, p)
-	}
 	facts, e := s.Radar.AudienceFirstClicks(ctx, at)
 	if e != nil {
 		return nil, e
@@ -416,7 +408,11 @@ func (s LegacyTemplateSource) radar(ctx context.Context, p map[string]json.RawMe
 	for _, fact := range facts {
 		elapsed := int(at.Sub(fact.FirstClickedAt) / scale)
 		id := int64(fact.CustomerID)
-		if contains(radars, strconv.FormatInt(fact.RadarID, 10)) && elapsed >= minimum && (maximum == nil || elapsed < *maximum) && (!scoped || eligible[id]) {
+		// Radar Owner supplies the historical first-click owner. Do not use a
+		// current contact relationship: a reassignment after the click must not
+		// alter this cohort. An absent historical owner fails specified scope.
+		ownerMatch := !scoped || (fact.OwnerUserID != "" && owner(p, fact.OwnerUserID))
+		if contains(radars, strconv.FormatInt(fact.RadarID, 10)) && elapsed >= minimum && (maximum == nil || elapsed < *maximum) && ownerMatch {
 			out[id] = true
 		}
 	}

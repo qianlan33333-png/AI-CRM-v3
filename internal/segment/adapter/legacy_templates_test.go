@@ -109,7 +109,7 @@ func TestLegacyTemplateSourcesEvaluateFrozenConditions(t *testing.T) {
 			{CustomerID: 3, ProductCode: "paid-course"},
 		},
 		channels: []channelport.AudienceEntry{{CustomerID: 1, ChannelID: 7, ChannelCode: "channel-7", OwnerReference: "staff-a", LastEnteredAt: at.Add(-48 * time.Hour)}},
-		radar:    []radarport.AudienceFirstClick{{CustomerID: 1, RadarID: 8, FirstClickedAt: at.Add(-72 * time.Hour)}},
+		radar:    []radarport.AudienceFirstClick{{CustomerID: 1, RadarID: 8, FirstClickedAt: at.Add(-72 * time.Hour), OwnerUserID: "staff-a"}},
 		members:  []hxcport.AudienceMemberFact{{CustomerID: 1, Registered: true, IsMember: true, Tier: "pro", Status: "active", ExpiresAt: &expires, LastUsedAt: &used}},
 	}
 	source := CustomerSource{UoW: passthroughUoW{}, Legacy: LegacyTemplateSource{Contacts: facts, Survey: facts, Orders: facts, Channels: facts, Radar: facts, Members: facts, Owners: facts}}
@@ -153,6 +153,34 @@ func TestLegacyTemplateSourceDoesNotBorrowCurrentContactOwnerOrExpireMembershipB
 	if err != nil || len(active.CustomerIDs) != 0 {
 		t.Fatalf("active=%+v err=%v", active, err)
 	}
+}
+
+func TestRadarFirstClickUsesHistoricalOwnerAndFailsClosedWhenAbsent(t *testing.T) {
+	at := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+	facts := legacyFacts{
+		// The current contact belongs to staff-a. The first click was recorded
+		// for staff-b and therefore must not be reassigned from this relation.
+		contacts: []wecomport.AudienceContact{{CustomerID: 1, OwnerUserID: "staff-a", Status: "active"}},
+		radar: []radarport.AudienceFirstClick{
+			{CustomerID: 1, RadarID: 8, FirstClickEventID: 10, FirstClickedAt: at.Add(-72 * time.Hour), OwnerUserID: "staff-b"},
+			{CustomerID: 2, RadarID: 8, FirstClickEventID: 11, FirstClickedAt: at.Add(-72 * time.Hour), OwnerUserID: ""},
+		},
+	}
+	source := LegacyTemplateSource{Contacts: facts, Radar: facts, Owners: facts}
+	all, err := source.Evaluate(context.Background(), legacyDefinition(t, segmentdsl.RadarFirstClickElapsed, `{"radar_ids":["8"],"elapsed_min":3,"elapsed_max":4,"elapsed_unit":"day","owner_scope":"all","owner_staff_ids":[]}`), at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertAudienceIDs(t, all, 1, 2)
+	staffA, err := source.Evaluate(context.Background(), legacyDefinition(t, segmentdsl.RadarFirstClickElapsed, `{"radar_ids":["8"],"elapsed_min":3,"elapsed_max":4,"elapsed_unit":"day","owner_scope":"specified","owner_staff_ids":["19"]}`), at)
+	if err != nil || len(staffA.CustomerIDs) != 0 {
+		t.Fatalf("staff-a result=%+v err=%v", staffA, err)
+	}
+	staffB, err := source.Evaluate(context.Background(), legacyDefinition(t, segmentdsl.RadarFirstClickElapsed, `{"radar_ids":["8"],"elapsed_min":3,"elapsed_max":4,"elapsed_unit":"day","owner_scope":"specified","owner_staff_ids":["20"]}`), at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertAudienceIDs(t, staffB, 1)
 }
 
 func TestChannelOwnerStaffIDDoesNotCollideWithProviderUserID(t *testing.T) {
