@@ -89,13 +89,21 @@ for migration_contract in \
   '0061_product_public_purchase.sql:product public purchase' \
   '0063_identity_hxc_source_observations.sql:HXC identity source observations' \
   '0064_hxc_dashboard_identity_v2.sql:HXC dashboard identity v2' \
+  '0066_channel_welcome_intents.sql:Channel welcome intents' \
+  '0067_survey_completion_snapshots.sql:Survey completion snapshots' \
   '0068_payment_session_beneficiary_selection.sql:payment session beneficiary selection' \
   '0069_coupon_claim_redemption_lifecycle.sql:coupon claim redemption lifecycle' \
   '0070_service_period_entitlement_fulfillment.sql:service-period entitlement fulfillment' \
+  '0071_message_archive_core.sql:message archive core' \
+  '0072_message_archive_migration_receipts.sql:message archive migration receipts' \
+  '0073_survey_completion_test_push_snapshots.sql:Survey completion test push snapshots' \
+  '0074_survey_external_operation_execution_facts.sql:Survey external operation execution facts' \
+  '0075_external_effects_survey_completion_kind.sql:Survey completion external effect kind' \
   '0076_order_checkout_snapshots.sql:Order checkout snapshots' \
   '0077_coupon_public_slug.sql:coupon public slug' \
   '0078_group_ops_provider_tasks.sql:Group Ops provider tasks' \
   '0079_service_period_member_grid.sql:service-period member grid' \
+  '0080_media_legacy_material_mappings.sql:AI Assistant legacy media mappings' \
   '0081_group_ops_webhook_unconfigured_reference.sql:Group Ops unconfigured webhook repair' \
   '0082_group_ops_history_import.sql:Group Ops history import' \
   '0084_hxc_shared_facts.sql:HXC shared legacy facts' \
