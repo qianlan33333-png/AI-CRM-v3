@@ -57,6 +57,9 @@ import (
 	mediaapp "github.com/qianlan33333-png/AI-CRM-v3/internal/media/app"
 	groupopsmaterial "github.com/qianlan33333-png/AI-CRM-v3/internal/media/groupopsmaterial"
 	mediastore "github.com/qianlan33333-png/AI-CRM-v3/internal/media/store"
+	archiveapp "github.com/qianlan33333-png/AI-CRM-v3/internal/messagearchive/app"
+	archivehttp "github.com/qianlan33333-png/AI-CRM-v3/internal/messagearchive/http"
+	archivestore "github.com/qianlan33333-png/AI-CRM-v3/internal/messagearchive/store"
 	operationcycle "github.com/qianlan33333-png/AI-CRM-v3/internal/operationcycle"
 	operationapp "github.com/qianlan33333-png/AI-CRM-v3/internal/operationcycle/app"
 	operationstore "github.com/qianlan33333-png/AI-CRM-v3/internal/operationcycle/store"
@@ -113,17 +116,18 @@ import (
 )
 
 type composedApplication struct {
-	pool           *platformpostgres.Pool
-	handler        http.Handler
-	management     *accessapp.Management
-	weComProcessor wecom.InboxProcessor
-	effectsRuntime *platformjobqueue.Runtime
-	customerSync   wecom.CustomerSyncService
-	adminOps       *adminopsapp.ProjectionService
-	release        *releaseapp.ObservationService
-	diagnostics    *adminopsapp.DiagnosticsService
-	hxcDashboard   hxcapp.Service
-	hxcSource      *hxcprovider.MySQL
+	pool                  *platformpostgres.Pool
+	handler               http.Handler
+	management            *accessapp.Management
+	weComProcessor        wecom.InboxProcessor
+	weComArchiveProcessor wecom.ArchiveInboxProcessor
+	effectsRuntime        *platformjobqueue.Runtime
+	customerSync          wecom.CustomerSyncService
+	adminOps              *adminopsapp.ProjectionService
+	release               *releaseapp.ObservationService
+	diagnostics           *adminopsapp.DiagnosticsService
+	hxcDashboard          hxcapp.Service
+	hxcSource             *hxcprovider.MySQL
 }
 
 func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplication, error) {
@@ -687,6 +691,16 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
+	archiveReader, err := wecomadapter.NewMessageArchiveReader(wecomadapter.MessageArchiveConfig{Enabled: cfg.WeCom.MessageArchiveEnabled, CorpID: cfg.WeCom.CorpID, Secret: cfg.WeCom.MessageArchiveSecret, RunnerPath: cfg.WeCom.MessageArchiveRunnerPath, LibraryPath: cfg.WeCom.MessageArchiveLibraryPath, PrivateKeyPaths: cfg.WeCom.MessageArchivePrivateKeyPaths, Timeout: 15 * time.Second})
+	if err != nil {
+		return fail(err)
+	}
+	archiveService := archiveapp.Service{Enabled: cfg.WeCom.MessageArchiveEnabled, ReadEnabled: true, CorpScope: "wecom-corp:" + cfg.WeCom.CorpID, Reader: archiveReader, Identity: oneID, Lineage: queries, Staff: accessRepository, Store: archivestore.NewPostgreSQL(), UOW: uow, PageLimit: cfg.WeCom.MessageArchivePageLimit, PageBudget: cfg.WeCom.MessageArchivePageBudget}
+	archiveHandler, err := archivehttp.NewHandler(requestSecurity, archiveService, auditService, uow)
+	if err != nil {
+		return fail(err)
+	}
+
 	customerProfileStore := wecom.NewPostgreSQLCustomerSyncStore()
 	customerHandler, err := customerhttp.NewHandler(customerhttp.Config{UnitOfWork: uow, Auth: requestSecurity, CSRF: requestSecurity,
 		Directory: customerapp.Directory{Store: customerStore, SigningKey: cursorSigningKey}, Store: customerStore, Identities: queries, Audit: auditService,
@@ -942,6 +956,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		},
 		Receipts: callbackReceipts, Audit: auditService,
 	}
+	weComArchiveProcessor := wecom.ArchiveInboxProcessor{Enabled: cfg.WeCom.MessageArchiveEnabled, Inbox: inboxService, UOW: uow, Archive: archiveService}
 	customerSync := wecom.CustomerSyncService{Enabled: cfg.WeCom.CustomerSyncEnabled, CorpID: cfg.WeCom.CorpID, Provider: providerClient,
 		Identity: oneID, Projection: customerStore, Timeline: customerStore, Store: customerProfileStore, Outbox: platformoutbox.NewPostgreSQL(),
 		Enqueuer: customerSyncEnqueuer, Audit: auditService, UOW: uow}
@@ -960,8 +975,12 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	hxcHandler := hxchttp.Handler{Service: hxcDashboard, Store: hxcRepository, Auth: requestSecurity, Key: []byte(cfg.HXCDashboard.SubjectHMACKey)}
 	syncHandler := wecom.CustomerSyncHTTPHandler{Service: customerSync, Auth: requestSecurity, CSRF: requestSecurity}
 	sidebarContextTokens := wecom.ContextTokenService{CorpID: cfg.WeCom.CorpID, SigningKey: []byte(cfg.WeCom.ContextSigningKey), TTL: 5 * time.Minute}
+	callbackDispatcher := wecom.CallbackEventDispatcher{ExternalContact: wecom.ExternalContactCallbackDispatcher{StateDigester: callbackStateDigester, Inbox: inboxService, UOW: uow, WelcomeGrants: welcomeGrantStore, WelcomeActions: channelEntrantActions, States: channelAcquisition}}
+	if cfg.WeCom.MessageArchiveEnabled {
+		callbackDispatcher.Archive = wecom.ArchiveCallbackDispatcher{Inbox: inboxService, UOW: uow}
+	}
 	weComHandler, err := wecom.NewHTTPHandler(wecom.HTTPHandlerOptions{
-		Callback: wecom.CallbackHandler{Enabled: cfg.WeCom.CallbackEnabled, Crypto: callbackCrypto, StateDigester: callbackStateDigester, Inbox: inboxService, UOW: uow, WelcomeGrants: welcomeGrantStore, WelcomeActions: channelEntrantActions, States: channelAcquisition},
+		Callback: wecom.CallbackHandler{Enabled: cfg.WeCom.CallbackEnabled, Crypto: callbackCrypto, StateDigester: callbackStateDigester, Inbox: inboxService, UOW: uow, WelcomeGrants: welcomeGrantStore, WelcomeActions: channelEntrantActions, States: channelAcquisition, Dispatcher: callbackDispatcher},
 		OAuth: wecom.OAuthService{Enabled: cfg.WeCom.Enabled, CorpID: cfg.WeCom.CorpID, StateStore: oauthStates, UOW: uow,
 			Client: providerClient, AllowedPaths: allowedOAuthRedirects(), StateTTL: 10 * time.Minute},
 		ContextTokens: sidebarContextTokens,
@@ -1194,6 +1213,10 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	}
 	handler = mountAIAssistant(handler, aiHandler.Routes(), aiUI, authentication, cfg.AIAssistant.UIEnabled, cfg.PublicOrigin)
 	handler = securityHeaders(mountPublicProduct(mountRadar(mountChannelUI(mountHXCUI(mountOrderUI(mountSurveyUI(handler, surveyUI, surveyPublicUI, authentication), orderUI, authentication), hxcUI, authentication), channelUI, authentication), radarBindings.Radar, radarUI, authentication), publicProductHandler))
+	handler, err = mountMessageArchive(handler, archiveHandler.Routes())
+	if err != nil {
+		return fail(err)
+	}
 	// These are local observations only: they make the release and diagnostics
 	// projections truthful and readable after startup, without claiming deploy,
 	// cutover, provider execution, or runtime-secret application.
@@ -1224,7 +1247,17 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 			return fail(err)
 		}
 	}
-	return &composedApplication{pool: pool, handler: handler, management: management, weComProcessor: weComProcessor, effectsRuntime: effectsRuntime, customerSync: customerSync, hxcDashboard: hxcDashboard, hxcSource: hxcSource, adminOps: adminOpsProjection, release: releaseObservation, diagnostics: diagnostics}, nil
+	return &composedApplication{pool: pool, handler: handler, management: management, weComProcessor: weComProcessor, weComArchiveProcessor: weComArchiveProcessor, effectsRuntime: effectsRuntime, customerSync: customerSync, hxcDashboard: hxcDashboard, hxcSource: hxcSource, adminOps: adminOpsProjection, release: releaseObservation, diagnostics: diagnostics}, nil
+}
+
+func mountMessageArchive(next, archive http.Handler) (http.Handler, error) {
+	if next == nil || archive == nil {
+		return nil, errors.New("message archive HTTP routes are required")
+	}
+	mux := http.NewServeMux()
+	mux.Handle("/api/admin/message-archive/", archive)
+	mux.Handle("/", next)
+	return mux, nil
 }
 
 func mountSurveyAPIs(mux *http.ServeMux, survey http.Handler) {

@@ -66,6 +66,8 @@ jobs:
           cache: true
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
         with: {node-version: '24.18.0', cache: npm}
+      - name: Verify official WeCom archive SDK ABI in isolation
+        run: scripts/check-wecom-message-archive-sdk.sh
       - name: Pin frozen donor npm
         run: npm install --global npm@11.12.1
       - name: Build and stage frozen External Effects workspace
