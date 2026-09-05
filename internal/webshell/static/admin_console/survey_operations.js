@@ -103,7 +103,12 @@
         return;
       }
       pendingButton = button;
-      queueMicrotask(function () { if (pendingButton === button && !publishing) pendingButton = null; });
+      // The frozen editor validates and serializes in asynchronous work before
+      // it reaches fetch. A microtask expires before that real save request,
+      // leaving a disabled draft. Keep only this button's strictly-matched
+      // create/update request eligible, and clear the gesture after a bounded
+      // window when validation did not produce one.
+      setTimeout(function () { if (pendingButton === button && !publishing) pendingButton = null; }, 500);
     }, true);
   }
   function installFrozenEnableBridge() {
