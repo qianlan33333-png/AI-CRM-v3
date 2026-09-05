@@ -549,6 +549,17 @@ func TestGroupOpsSharedRiverRuntimeJourney(t *testing.T) {
 		_, pauseErr := planService.Pause(ctx, groupopsport.TransitionCommand{PlanID: blockedPlanID, ExpectedRevision: 1, Actor: actorID, IdempotencyKey: "river-precall-paused-0001"})
 		return pauseErr
 	})
+	assertPreCallBlock("paused-reactivated", func(blockedPlanID int64) error {
+		paused, pauseErr := planService.Pause(ctx, groupopsport.TransitionCommand{PlanID: blockedPlanID, ExpectedRevision: 1, Actor: actorID, IdempotencyKey: "river-precall-resume-pause"})
+		if pauseErr != nil {
+			return pauseErr
+		}
+		// Resuming enables only new valid work. The already accepted execution
+		// carries revision 1, so the dispatch reader still blocks it before the
+		// Provider boundary after the plan reaches revision 3.
+		_, resumeErr := planService.Activate(ctx, groupopsport.TransitionCommand{PlanID: blockedPlanID, ExpectedRevision: paused.Plan.Revision, Actor: actorID, IdempotencyKey: "river-precall-resume-active"})
+		return resumeErr
+	})
 	assertPreCallBlock("archived", func(blockedPlanID int64) error {
 		_, archiveErr := planService.Archive(ctx, groupopsport.TransitionCommand{PlanID: blockedPlanID, ExpectedRevision: 1, Actor: actorID, IdempotencyKey: "river-precall-archived-0001"})
 		return archiveErr
@@ -558,6 +569,105 @@ func TestGroupOpsSharedRiverRuntimeJourney(t *testing.T) {
 		return nil
 	})
 	sender.SetEligible(true)
+}
+
+// TestGroupOpsPostgreSQLPausedPlanReactivation proves the frozen list's
+// enable action works after a pause against the real receipt/event owner
+// store. It is deliberately lifecycle-only: no effect is accepted or sent.
+func TestGroupOpsPostgreSQLPausedPlanReactivation(t *testing.T) {
+	native, cleanup := groupOpsIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	platformPool, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer platformPool.Close()
+	uow, err := platformpostgres.NewUnitOfWork(platformPool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var actorID int64
+	if err = native.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active) VALUES('groupops-reactivate','$argon2id$reactivate','Group Ops Reactivate','journey-sender',true) RETURNING id`).Scan(&actorID); err != nil {
+		t.Fatal(err)
+	}
+	store, err := groupopsstore.NewPostgreSQL(native, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := groupopsapp.NewService(uow, store, journeyStaff{}, store)
+	detail, err := service.Create(ctx, groupopsport.CreatePlanCommand{Name: "PG paused reactivation", Actor: actorID, IdempotencyKey: "groupops-pg-reactivate-create"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	detail, err = service.AddMember(ctx, groupopsport.MemberCommand{PlanID: detail.Plan.ID, ExpectedRevision: detail.Plan.Revision, StaffID: actorID, Actor: actorID, IdempotencyKey: "groupops-pg-reactivate-member"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	detail, err = service.AddGroupAsset(ctx, groupopsport.GroupAssetCommand{PlanID: detail.Plan.ID, ExpectedRevision: detail.Plan.Revision, AssetRef: "reactivate-group", Actor: actorID, IdempotencyKey: "groupops-pg-reactivate-group"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	detail, err = service.AddNode(ctx, groupopsport.NodeCreateCommand{PlanID: detail.Plan.ID, ExpectedRevision: detail.Plan.Revision, Position: 1, Kind: groupopsport.NodeMessage, MessageText: "reactivate", MaterialPlan: groupopsport.MaterialPlan{References: []groupopsport.MaterialReference{}}, Actor: actorID, IdempotencyKey: "groupops-pg-reactivate-node"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	detail, err = service.Activate(ctx, groupopsport.TransitionCommand{PlanID: detail.Plan.ID, ExpectedRevision: detail.Plan.Revision, Actor: actorID, IdempotencyKey: "groupops-pg-reactivate-first"})
+	if err != nil || detail.Plan.Status != groupopsport.PlanActive {
+		t.Fatalf("first activation=%+v err=%v", detail.Plan, err)
+	}
+	detail, err = service.Pause(ctx, groupopsport.TransitionCommand{PlanID: detail.Plan.ID, ExpectedRevision: detail.Plan.Revision, Actor: actorID, IdempotencyKey: "groupops-pg-reactivate-pause"})
+	if err != nil || detail.Plan.Status != groupopsport.PlanPaused {
+		t.Fatalf("pause=%+v err=%v", detail.Plan, err)
+	}
+	_, err = service.Activate(ctx, groupopsport.TransitionCommand{PlanID: detail.Plan.ID, ExpectedRevision: detail.Plan.Revision - 1, Actor: actorID, IdempotencyKey: "groupops-pg-reactivate-stale"})
+	if !errors.Is(err, groupopsapp.ErrConflict) {
+		t.Fatalf("stale activation err=%v", err)
+	}
+	detail, err = service.Activate(ctx, groupopsport.TransitionCommand{PlanID: detail.Plan.ID, ExpectedRevision: detail.Plan.Revision, Actor: actorID, IdempotencyKey: "groupops-pg-reactivate-resume"})
+	if err != nil || detail.Plan.Status != groupopsport.PlanActive {
+		t.Fatalf("resume=%+v err=%v", detail.Plan, err)
+	}
+	replayed, err := service.Activate(ctx, groupopsport.TransitionCommand{PlanID: detail.Plan.ID, ExpectedRevision: detail.Plan.Revision - 1, Actor: actorID, IdempotencyKey: "groupops-pg-reactivate-resume"})
+	if err != nil || replayed.Plan != detail.Plan {
+		t.Fatalf("resume replay=%+v err=%v", replayed.Plan, err)
+	}
+	incomplete, err := service.Create(ctx, groupopsport.CreatePlanCommand{Name: "PG incomplete", Actor: actorID, IdempotencyKey: "groupops-pg-reactivate-incomplete"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = service.Activate(ctx, groupopsport.TransitionCommand{PlanID: incomplete.Plan.ID, ExpectedRevision: incomplete.Plan.Revision, Actor: actorID, IdempotencyKey: "groupops-pg-reactivate-invalid"})
+	if !errors.Is(err, groupopsapp.ErrStateConflict) {
+		t.Fatalf("incomplete activation err=%v", err)
+	}
+	// Multiple plans deliberately start with the same explicit "not
+	// configured" webhook state. Configured opaque references remain unique;
+	// clearing one restores that shared unconfigured state without inventing a
+	// placeholder key.
+	other, err := service.Create(ctx, groupopsport.CreatePlanCommand{Name: "PG other unconfigured", Actor: actorID, IdempotencyKey: "groupops-pg-webhook-other"})
+	if err != nil || other.WebhookDescriptor.Configured || other.WebhookDescriptor.Reference != "" {
+		t.Fatalf("second unconfigured plan=%+v err=%v", other.WebhookDescriptor, err)
+	}
+	incomplete, err = service.PutWebhookDescriptor(ctx, groupopsport.WebhookDescriptorCommand{PlanID: incomplete.Plan.ID, ExpectedRevision: incomplete.Plan.Revision, Reference: "shared-local-webhook", Actor: actorID, IdempotencyKey: "groupops-pg-webhook-set"})
+	if err != nil || !incomplete.WebhookDescriptor.Configured {
+		t.Fatalf("set configured webhook=%+v err=%v", incomplete.WebhookDescriptor, err)
+	}
+	_, err = service.PutWebhookDescriptor(ctx, groupopsport.WebhookDescriptorCommand{PlanID: other.Plan.ID, ExpectedRevision: other.Plan.Revision, Reference: "shared-local-webhook", Actor: actorID, IdempotencyKey: "groupops-pg-webhook-duplicate"})
+	if err == nil {
+		t.Fatal("duplicate configured webhook reference was accepted")
+	}
+	incomplete, err = service.PutWebhookDescriptor(ctx, groupopsport.WebhookDescriptorCommand{PlanID: incomplete.Plan.ID, ExpectedRevision: incomplete.Plan.Revision, Actor: actorID, IdempotencyKey: "groupops-pg-webhook-clear"})
+	if err != nil || incomplete.WebhookDescriptor.Configured || incomplete.WebhookDescriptor.Reference != "" {
+		t.Fatalf("clear configured webhook=%+v err=%v", incomplete.WebhookDescriptor, err)
+	}
+	other, err = service.PutWebhookDescriptor(ctx, groupopsport.WebhookDescriptorCommand{PlanID: other.Plan.ID, ExpectedRevision: other.Plan.Revision, Reference: "shared-local-webhook", Actor: actorID, IdempotencyKey: "groupops-pg-webhook-reuse"})
+	if err != nil || !other.WebhookDescriptor.Configured {
+		t.Fatalf("reuse cleared webhook=%+v err=%v", other.WebhookDescriptor, err)
+	}
+	third, err := service.Create(ctx, groupopsport.CreatePlanCommand{Name: "PG third unconfigured", Actor: actorID, IdempotencyKey: "groupops-pg-webhook-third"})
+	if err != nil || third.WebhookDescriptor.Configured || third.WebhookDescriptor.Reference != "" {
+		t.Fatalf("third unconfigured plan=%+v err=%v", third.WebhookDescriptor, err)
+	}
 }
 
 type groupOpsRuntimeWeCom struct {
@@ -949,7 +1059,7 @@ func groupOpsIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 	if !ok {
 		t.Fatal("locate Group Ops Journey test")
 	}
-	for _, migration := range []string{"0003_access.sql", "0005_external_effects.sql", "0007_media.sql", "0012_group_ops.sql", "0016_media_content_packages.sql", "0078_group_ops_provider_tasks.sql"} {
+	for _, migration := range []string{"0003_access.sql", "0005_external_effects.sql", "0007_media.sql", "0012_group_ops.sql", "0016_media_content_packages.sql", "0078_group_ops_provider_tasks.sql", "0081_group_ops_webhook_unconfigured_reference.sql"} {
 		sql, readErr := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "migrations", migration))
 		if readErr != nil {
 			native.Close()

@@ -60,6 +60,18 @@ func TestLocalPlanLifecycleUsesReceiptsEventsAndStrictDraftBoundary(t *testing.T
 	if err != nil || detail.Plan.Status != groupopsport.PlanPaused {
 		t.Fatalf("pause detail=%#v err=%v", detail, err)
 	}
+	_, err = service.Activate(ctx, groupopsport.TransitionCommand{PlanID: detail.Plan.ID, ExpectedRevision: detail.Plan.Revision - 1, Actor: 7, IdempotencyKey: "group-ops-reactivate-stale"})
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("stale reactivate err=%v", err)
+	}
+	detail, err = service.Activate(ctx, groupopsport.TransitionCommand{PlanID: detail.Plan.ID, ExpectedRevision: detail.Plan.Revision, Actor: 7, IdempotencyKey: "group-ops-reactivate-001"})
+	if err != nil || detail.Plan.Status != groupopsport.PlanActive {
+		t.Fatalf("reactivate detail=%#v err=%v", detail, err)
+	}
+	replayedActivation, err := service.Activate(ctx, groupopsport.TransitionCommand{PlanID: detail.Plan.ID, ExpectedRevision: detail.Plan.Revision - 1, Actor: 7, IdempotencyKey: "group-ops-reactivate-001"})
+	if err != nil || replayedActivation.Plan != detail.Plan {
+		t.Fatalf("reactivate replay=%#v err=%v", replayedActivation, err)
+	}
 	detail, err = service.Archive(ctx, groupopsport.TransitionCommand{PlanID: detail.Plan.ID, ExpectedRevision: detail.Plan.Revision, Actor: 7, IdempotencyKey: "group-ops-archive-001"})
 	if err != nil || detail.Plan.Status != groupopsport.PlanArchived {
 		t.Fatalf("archive detail=%#v err=%v", detail, err)
@@ -74,13 +86,25 @@ func TestLocalPlanLifecycleUsesReceiptsEventsAndStrictDraftBoundary(t *testing.T
 			completed++
 		}
 	}
-	if completed != 7 || len(events.items) != 7 {
+	if completed != 8 || len(events.items) != 8 {
 		t.Fatalf("completed receipts/events=%d/%d", completed, len(events.items))
 	}
 	for _, event := range events.items {
 		if event.Type != groupopsport.EvGroupOpsPlanUpdated {
 			t.Fatalf("event=%#v", event)
 		}
+	}
+}
+
+func TestPausedActivationRejectsIncompleteDefinition(t *testing.T) {
+	service, _, _ := newTestService()
+	detail, err := service.Create(context.Background(), groupopsport.CreatePlanCommand{Name: "incomplete", Actor: 7, IdempotencyKey: "group-ops-incomplete-001"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = service.Activate(context.Background(), groupopsport.TransitionCommand{PlanID: detail.Plan.ID, ExpectedRevision: detail.Plan.Revision, Actor: 7, IdempotencyKey: "group-ops-incomplete-activate"})
+	if !errors.Is(err, ErrStateConflict) {
+		t.Fatalf("incomplete activation err=%v", err)
 	}
 }
 

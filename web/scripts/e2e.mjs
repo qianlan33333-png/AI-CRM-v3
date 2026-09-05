@@ -295,7 +295,11 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
           if (url.pathname.endsWith('/webhook-descriptor')) return json({ ...safety, configured: false });
           if (/\/plans\/10\/(activate|pause|archive)$/.test(url.pathname)) {
             if (method !== 'POST' || !requireMutation()) return json({ code: 'conflict' }, 409);
-            const action = url.pathname.split('/').pop(); detail.plan.status = action === 'activate' ? 'active' : action === 'pause' ? 'paused' : 'archived'; return revise();
+            const action = url.pathname.split('/').pop();
+            if (action === 'activate' && !['draft', 'paused'].includes(detail.plan.status)) return json({ code: 'conflict' }, 409);
+            if (action === 'pause' && detail.plan.status !== 'active') return json({ code: 'conflict' }, 409);
+            if (action === 'archive' && detail.plan.status === 'archived') return json({ code: 'conflict' }, 409);
+            detail.plan.status = action === 'activate' ? 'active' : action === 'pause' ? 'paused' : 'archived'; return revise();
           }
           if (url.pathname.endsWith('/plans/10') && method === 'DELETE') {
             if (!requireMutation()) return json({ code: 'conflict' }, 409);
@@ -2036,7 +2040,7 @@ console.log('admin/groupopsDetail.html（真实 HTTP 保存与预览契约）');
   ok('编辑计划采用逐次 revision 与幂等键，替换群和节点后重新读取预览', rename?.body.name === '已编辑计划' && Number.isInteger(rename?.body.expected_revision) && rename.headers.get('Idempotency-Key') && test.calls.some((call) => call.path.endsWith('/group-assets/group-old') && call.method === 'DELETE') && test.calls.some((call) => call.path.endsWith('/nodes') && call.method === 'POST' && call.body.kind === 'delay' && call.body.delay_minutes === 3) && test.calls.filter((call) => call.path.endsWith('/plans/10')).some((call) => call.method === 'GET') && test.calls.some((call) => call.path.endsWith('/content/preview') && call.method === 'POST'));
   dom.window.close();
 }
-for (const [status, label, route] of [['active', '暂停', '/pause'], ['draft', '启用', '/activate'], ['active', '归档', '/archive'], ['draft', '删除草稿', '/plans/10']]) {
+for (const [status, label, route] of [['active', '暂停', '/pause'], ['draft', '启用', '/activate'], ['paused', '启用', '/activate'], ['active', '归档', '/archive'], ['draft', '删除草稿', '/plans/10']]) {
   const dom = await loadPage('admin/groupops.html', { groupDirectoryHttp: { status } });
   const d = dom.window.document, test = dom.window.__groupDirectoryTest;
   click(dom, [...d.querySelectorAll('button')].find((button) => button.textContent.trim() === label));
