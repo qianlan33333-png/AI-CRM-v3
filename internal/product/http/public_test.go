@@ -46,6 +46,14 @@ func TestPublicProductEnabledOnlyAndSafeDTO(t *testing.T) {
 	if payment.Code != http.StatusOK || !strings.Contains(payment.Body.String(), "我确认购买后权益归我本人") || !strings.Contains(payment.Body.String(), "beneficiary_selection:'payer_self'") || strings.Contains(payment.Body.String(), "beneficiary_customer_id") {
 		t.Fatalf("payment page status=%d body=%s", payment.Code, payment.Body.String())
 	}
+	for _, required := range []string{"自动选择最优优惠券", "checkoutStorageKey", "merchant_order_no", "正在恢复原订单", "Idempotency-Key':checkpoint.key", "clearCheckout()"} {
+		if !strings.Contains(payment.Body.String(), required) {
+			t.Fatalf("payment page missing stable checkout behaviour %q: %s", required, payment.Body.String())
+		}
+	}
+	if strings.Contains(payment.Body.String(), "Idempotency-Key':crypto.randomUUID()") {
+		t.Fatalf("payment page must not replace an unknown checkout key: %s", payment.Body.String())
+	}
 	legacyID := httptest.NewRecorder()
 	handler.ServeHTTP(legacyID, httptest.NewRequest(http.MethodGet, "/p/7", nil))
 	if legacyID.Code != http.StatusOK || catalog.getCode != "7" || catalog.getID != 7 {
