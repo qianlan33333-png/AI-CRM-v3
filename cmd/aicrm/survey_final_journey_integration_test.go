@@ -126,7 +126,8 @@ func TestSurveyOAuthSubmissionResultJourneyPostgreSQL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	oauth := surveyapp.NewOAuthService(uow, repository, oauthProvider, oneID)
+	oauthStore := &surveyJourneyOAuthStore{OAuthStore: repository}
+	oauth := surveyapp.NewOAuthService(uow, oauthStore, oauthProvider, oneID)
 	handler, err := surveyhttp.NewHandler(definitions, submissions, surveyJourneySecurity{actorID: actorID}, oauth)
 	if err != nil {
 		t.Fatal(err)
@@ -179,7 +180,7 @@ func TestSurveyOAuthSubmissionResultJourneyPostgreSQL(t *testing.T) {
 
 	start := surveyJourneyServe(t, handler, http.MethodGet, "/api/h5/surveys/oauth/start?slug=oauth-journey", nil, "", nil, "MicroMessenger Survey Journey")
 	if start.Code != http.StatusSeeOther {
-		t.Fatalf("OAuth start status=%d body=%s", start.Code, start.Body.String())
+		t.Fatalf("OAuth start status=%d body=%s StoreError=%v", start.Code, start.Body.String(), oauthStore.lastError)
 	}
 	authorization := surveyFinalJourneyLocation(t, start)
 	state := authorization.Query().Get("state")
@@ -386,6 +387,30 @@ func TestSurveyOAuthSubmissionResultJourneyPostgreSQL(t *testing.T) {
 }
 
 type surveyJourneySecurity struct{ actorID int64 }
+
+// surveyJourneyOAuthStore only records the original Store error that the
+// public OAuth service deliberately maps to a safe generic response. Every
+// OAuth operation still delegates to the real PostgreSQL Owner.
+type surveyJourneyOAuthStore struct {
+	surveyapp.OAuthStore
+	lastError error
+}
+
+func (s *surveyJourneyOAuthStore) GetPublishedBySlug(ctx context.Context, slug string) (surveyport.Questionnaire, error) {
+	questionnaire, err := s.OAuthStore.GetPublishedBySlug(ctx, slug)
+	if err != nil {
+		s.lastError = fmt.Errorf("GetPublishedBySlug: %w", err)
+	}
+	return questionnaire, err
+}
+
+func (s *surveyJourneyOAuthStore) CreateOAuthState(ctx context.Context, digest [32]byte, state surveyapp.OAuthState, now time.Time) error {
+	err := s.OAuthStore.CreateOAuthState(ctx, digest, state, now)
+	if err != nil {
+		s.lastError = fmt.Errorf("CreateOAuthState: %w", err)
+	}
+	return err
+}
 
 func (s surveyJourneySecurity) Authenticate(context.Context, *http.Request) (accessdomain.Principal, error) {
 	return accessdomain.Principal{Kind: accessdomain.KindAdmin, InternalID: s.actorID, Roles: []accessdomain.Role{accessdomain.RoleAdmin}}, nil
