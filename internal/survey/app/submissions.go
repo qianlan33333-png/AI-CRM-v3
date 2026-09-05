@@ -546,7 +546,10 @@ func (s *SubmissionService) QueueCompletionTest(ctx context.Context, qid surveyp
 	if s == nil || s.uow == nil || s.store == nil || qid < 1 || actor < 1 || !validPublicKeyish(key) {
 		return surveyport.CompletionTestReceipt{}, surveyport.ErrInvalid
 	}
-	now := s.now().UTC()
+	// PostgreSQL persists timestamptz at microsecond precision. Canonicalize
+	// before the immutable test snapshot is accepted, because ScheduledAt is
+	// part of the External Effects acceptance digest and must survive replay.
+	now := s.now().UTC().Truncate(time.Microsecond)
 	var receipt surveyport.CompletionTestReceipt
 	err := s.uow.Within(ctx, func(tx context.Context) error {
 		testRunID := completionTestRunID(key)
@@ -626,6 +629,7 @@ func completionTestRunID(key string) string {
 }
 
 func completionTestIntent(questionnaireID surveyport.ID, testRunID, title string, policy surveyport.CompletionPolicy, submittedAt time.Time) surveyport.CompletionIntent {
+	submittedAt = submittedAt.UTC().Truncate(time.Microsecond)
 	policyBytes, _ := json.Marshal(policy)
 	source := surveyDigest("survey.completion.test.source.v1", fmt.Sprint(questionnaireID), testRunID)
 	return surveyport.CompletionIntent{QuestionnaireID: questionnaireID, TestRunID: testRunID, ConfigurationReference: policy.ConfigurationReference,

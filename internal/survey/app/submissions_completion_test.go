@@ -79,8 +79,9 @@ func (s *completionStore) AppendAuditAndOutbox(context.Context, string, surveypo
 }
 
 type completionAccepter struct {
-	calls int
-	fail  bool
+	calls     int
+	fail      bool
+	scheduled []time.Time
 }
 
 type completionPolicyStub struct{ policy surveyport.CompletionPolicy }
@@ -91,6 +92,7 @@ func (s completionPolicyStub) CompletionPolicy(context.Context, string) (surveyp
 
 func (a *completionAccepter) AcceptCompletionWithin(_ context.Context, in surveyport.CompletionIntent) (surveyport.EffectBinding, error) {
 	a.calls++
+	a.scheduled = append(a.scheduled, in.ScheduledAt)
 	if a.fail {
 		return surveyport.EffectBinding{}, errors.New("effect acceptance failed")
 	}
@@ -170,7 +172,8 @@ func TestQueueCompletionTestFreezesSyntheticRequestAndReplaysSameEffect(t *testi
 	if err = service.BindCompletionPolicy(completionPolicyStub{policy: surveyport.CompletionPolicy{ConfigurationReference: "local-webhook", ConfigurationVersion: "v1", ConfigurationDigest: "sha256:" + strings.Repeat("a", 64)}}); err != nil {
 		t.Fatal(err)
 	}
-	fixed := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+	fixed := time.Date(2026, 9, 5, 12, 0, 0, 987654321, time.UTC)
+	canonical := fixed.Truncate(time.Microsecond)
 	service.now = func() time.Time { return fixed }
 	key := "survey-completion-test-command-0001"
 	first, err := service.QueueCompletionTest(context.Background(), q.ID, 8, key)
@@ -182,7 +185,7 @@ func TestQueueCompletionTestFreezesSyntheticRequestAndReplaysSameEffect(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.TestRunID == "" || first != second || accepter.calls != 2 || store.testSnapshot.SubmittedAt != fixed || store.testSnapshot.Policy.CustomParams["campaign"] != "autumn" || store.testSnapshot.Policy.CustomParams["unionid"] != "" {
+	if first.TestRunID == "" || first != second || accepter.calls != 2 || store.testSnapshot.SubmittedAt != canonical || len(accepter.scheduled) != 2 || accepter.scheduled[0] != canonical || accepter.scheduled[1] != canonical || store.testSnapshot.Policy.CustomParams["campaign"] != "autumn" || store.testSnapshot.Policy.CustomParams["unionid"] != "" {
 		t.Fatalf("synthetic replay=%+v/%+v snapshot=%+v calls=%d", first, second, store.testSnapshot, accepter.calls)
 	}
 	store.configuration.ExternalPushMetadata = json.RawMessage(`{"remark":"changed"}`)

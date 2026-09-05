@@ -50,30 +50,6 @@ func (f integrationCatalogReader) ListCatalog(ctx context.Context) (outbound.Cat
 
 type integrationAdapter func(context.Context, effectport.Envelope, effectport.Attempt) (effectport.AdapterResult, error)
 
-// replayInspection only annotates this PostgreSQL journey's failure output.
-// It keeps the production UoW and real Store unchanged.
-type replayInspection struct {
-	delegate  surveyport.CompletionIntentAccepter
-	acceptErr error
-}
-
-func (r *replayInspection) AcceptCompletionWithin(ctx context.Context, intent surveyport.CompletionIntent) (surveyport.EffectBinding, error) {
-	binding, err := r.delegate.AcceptCompletionWithin(ctx, intent)
-	r.acceptErr = err
-	return binding, err
-}
-
-type replayReceiptInspection struct {
-	surveyapp.SubmissionStore
-	recordErr error
-}
-
-func (r *replayReceiptInspection) RecordCompletionTestEffect(ctx context.Context, qid surveyport.ID, testRunID, configurationRef, effectID, state string, digest [32]byte, now time.Time) error {
-	err := r.SubmissionStore.RecordCompletionTestEffect(ctx, qid, testRunID, configurationRef, effectID, state, digest, now)
-	r.recordErr = err
-	return err
-}
-
 // TestPostgreSQLSurveyCompletionKindRegistryAfterWelcomeQueueMigration proves
 // the 0075 External Effects extension against the complete production
 // migration sequence.  0066 belongs to Channel and is intentionally not
@@ -425,13 +401,11 @@ func TestPostgreSQLSurveySyntheticPushSurvivesRepositoryRestartAndDoesNotBlindRe
 		t.Fatal(err)
 	}
 	effectRepository, runtime := newSurveyEffectRuntime(t, pool, sink, provider)
-	replayStore := &replayReceiptInspection{SubmissionStore: surveys}
-	service := surveyapp.NewSubmissionService(uow, replayStore, cipher)
+	service := surveyapp.NewSubmissionService(uow, surveys, cipher)
 	if err = service.BindCompletionPolicy(provider); err != nil {
 		t.Fatal(err)
 	}
-	completion := &replayInspection{delegate: surveyCompletionEffectAccepter{effects: effectRepository}}
-	if err = service.BindCompletionIntent(completion); err != nil {
+	if err = service.BindCompletionIntent(surveyCompletionEffectAccepter{effects: effectRepository}); err != nil {
 		t.Fatal(err)
 	}
 	config, err := service.GetOperationConfiguration(ctx, surveyport.ID(questionnaire))
@@ -464,10 +438,9 @@ func TestPostgreSQLSurveySyntheticPushSurvivesRepositoryRestartAndDoesNotBlindRe
 	}); err != nil || !frozenFound || frozen.Policy.Remark != "frozen" || frozen.Policy.CustomParams["campaign"] != "control" {
 		t.Fatalf("frozen replay snapshot=%+v found=%t err=%v", frozen, frozenFound, err)
 	}
-	completion.acceptErr, replayStore.recordErr = nil, nil
 	replay, err := service.QueueCompletionTest(ctx, surveyport.ID(questionnaire), actor, key)
 	if err != nil || replay != first {
-		t.Fatalf("replay=%+v first=%+v err=%v accept_err=%v record_effect_err=%v", replay, first, err, completion.acceptErr, replayStore.recordErr)
+		t.Fatalf("replay=%+v first=%+v err=%v", replay, first, err)
 	}
 	var effectCount int64
 	if err = pool.QueryRow(ctx, `SELECT count(*) FROM external_effects`).Scan(&effectCount); err != nil || effectCount != 1 {
