@@ -761,10 +761,11 @@ func reconcile(args []string) error {
 	if !bytes.Equal(storedManifest, manifestDigest[:]) {
 		return errors.New("migration batch manifest mismatch")
 	}
-	expected, err := expectedSourceDigests(snap)
+	sourceIndex, err := buildFrozenSourceIndex(snap)
 	if err != nil {
 		return err
 	}
+	expected := sourceIndex.digests()
 	for _, table := range tables {
 		rows, err := tx.Query(ctx, `SELECT source_pk,target_table,target_pk,record_digest,import_state FROM survey_migration_source_map WHERE migration_batch_id=$1 AND source_table=$2 ORDER BY id`, batchID, table)
 		if err != nil {
@@ -802,14 +803,17 @@ func reconcile(args []string) error {
 		for _, fact := range facts {
 			var expectedDigest [32]byte
 			copy(expectedDigest[:], fact.digest)
-			sourceFact, sourceErr := frozenSourceFact(snap, table, fact.pk)
+			sourceFact, sourceErr := sourceIndex.fact(table, fact.pk)
 			if sourceErr != nil {
 				return sourceErr
 			}
-			if err = verifyMappedFact(ctx, tx, batchID, snap.Manifest.SourceSystem, table, fact.pk, fact.targetTable, fact.targetPK, fact.state, expectedDigest, sourceFact, surveyCipher); err != nil {
+			if err = verifyMappedFact(ctx, tx, batchID, snap.Manifest.SourceSystem, table, fact.pk, fact.targetTable, fact.targetPK, fact.state, expectedDigest, sourceFact, sourceIndex, surveyCipher); err != nil {
 				return err
 			}
 		}
+	}
+	if err = verifyDerivedQuarantines(ctx, tx, batchID, snap.Manifest.SourceSystem, sourceIndex); err != nil {
+		return err
 	}
 	var duplicates int
 	if err = tx.QueryRow(ctx, `SELECT count(*) FROM (SELECT source_system,source_table,source_pk,count(*) FROM survey_migration_source_map WHERE migration_batch_id=$1 GROUP BY 1,2,3 HAVING count(*)>1)x`, batchID).Scan(&duplicates); err != nil || duplicates != 0 {
@@ -825,17 +829,30 @@ func reconcile(args []string) error {
 	return nil
 }
 
-func expectedSourceDigests(s Snapshot) (map[string]map[string][32]byte, error) {
-	result := make(map[string]map[string][32]byte, len(tables))
+type frozenSourceIndex struct {
+	facts          map[string]map[string]any
+	questionnaires map[int64]questionnaire
+	questions      map[int64]question
+	options        map[int64]option
+	rules          map[int64]rule
+	submissions    map[int64]submission
+	questionOrder  map[int64]int
+	optionOrder    map[int64]int
+	ruleOrder      map[int64]int
+	optionCount    map[int64]int
+}
+
+func buildFrozenSourceIndex(s Snapshot) (*frozenSourceIndex, error) {
+	index := &frozenSourceIndex{facts: map[string]map[string]any{}, questionnaires: map[int64]questionnaire{}, questions: map[int64]question{}, options: map[int64]option{}, rules: map[int64]rule{}, submissions: map[int64]submission{}, questionOrder: map[int64]int{}, optionOrder: map[int64]int{}, ruleOrder: map[int64]int{}, optionCount: map[int64]int{}}
 	for _, table := range tables {
-		result[table] = map[string][32]byte{}
+		index.facts[table] = map[string]any{}
 	}
 	add := func(table string, id int64, value any) error {
 		pk := fmt.Sprint(id)
-		if _, duplicate := result[table][pk]; duplicate {
+		if _, ok := index.facts[table][pk]; ok {
 			return fmt.Errorf("duplicate frozen source row %s/%s", table, pk)
 		}
-		result[table][pk] = recordDigest(value)
+		index.facts[table][pk] = value
 		return nil
 	}
 	var questionnaires []questionnaire
@@ -848,140 +865,167 @@ func expectedSourceDigests(s Snapshot) (map[string]map[string][32]byte, error) {
 	for _, entry := range []struct {
 		name string
 		out  any
-	}{
-		{"questionnaires", &questionnaires}, {"questionnaire_questions", &questions}, {"questionnaire_options", &options}, {"questionnaire_score_rules", &rules},
-		{"questionnaire_submissions", &submissions}, {"questionnaire_submission_answers", &answers}, {"questionnaire_external_push_logs", &pushes}, {"questionnaire_scrm_apply_logs", &scrm},
-	} {
+	}{{"questionnaires", &questionnaires}, {"questionnaire_questions", &questions}, {"questionnaire_options", &options}, {"questionnaire_score_rules", &rules}, {"questionnaire_submissions", &submissions}, {"questionnaire_submission_answers", &answers}, {"questionnaire_external_push_logs", &pushes}, {"questionnaire_scrm_apply_logs", &scrm}} {
 		if err := decodeTable(s, entry.name, entry.out); err != nil {
 			return nil, err
 		}
 	}
-	for _, value := range questionnaires {
-		if err := add("questionnaires", value.ID, value); err != nil {
+	for _, row := range questionnaires {
+		if err := add("questionnaires", row.ID, row); err != nil {
+			return nil, err
+		}
+		index.questionnaires[row.ID] = row
+	}
+	for _, row := range questions {
+		if err := add("questionnaire_questions", row.ID, row); err != nil {
+			return nil, err
+		}
+		index.questions[row.ID] = row
+	}
+	for _, row := range options {
+		if err := add("questionnaire_options", row.ID, row); err != nil {
+			return nil, err
+		}
+		index.options[row.ID] = row
+	}
+	for _, row := range rules {
+		if err := add("questionnaire_score_rules", row.ID, row); err != nil {
+			return nil, err
+		}
+		index.rules[row.ID] = row
+	}
+	for _, row := range submissions {
+		if err := add("questionnaire_submissions", row.ID, row); err != nil {
+			return nil, err
+		}
+		index.submissions[row.ID] = row
+	}
+	for _, row := range answers {
+		if err := add("questionnaire_submission_answers", row.ID, row); err != nil {
 			return nil, err
 		}
 	}
-	for _, value := range questions {
-		if err := add("questionnaire_questions", value.ID, value); err != nil {
+	for _, row := range pushes {
+		if err := add("questionnaire_external_push_logs", row.ID, row); err != nil {
 			return nil, err
 		}
 	}
-	for _, value := range options {
-		if err := add("questionnaire_options", value.ID, value); err != nil {
+	for _, row := range scrm {
+		if err := add("questionnaire_scrm_apply_logs", row.ID, row); err != nil {
 			return nil, err
 		}
 	}
-	for _, value := range rules {
-		if err := add("questionnaire_score_rules", value.ID, value); err != nil {
-			return nil, err
+	questionGroups := map[int64][]question{}
+	optionGroups := map[int64][]option{}
+	ruleGroups := map[int64][]rule{}
+	for _, value := range index.questions {
+		questionGroups[value.QuestionnaireID] = append(questionGroups[value.QuestionnaireID], value)
+	}
+	for _, value := range index.options {
+		optionGroups[value.QuestionID] = append(optionGroups[value.QuestionID], value)
+		index.optionCount[value.QuestionID]++
+	}
+	for _, value := range index.rules {
+		ruleGroups[value.QuestionnaireID] = append(ruleGroups[value.QuestionnaireID], value)
+	}
+	for _, rows := range questionGroups {
+		sort.SliceStable(rows, func(a, b int) bool {
+			if rows[a].Sort == rows[b].Sort {
+				return rows[a].ID < rows[b].ID
+			}
+			return rows[a].Sort < rows[b].Sort
+		})
+		for position, value := range rows {
+			index.questionOrder[value.ID] = position
 		}
 	}
-	for _, value := range submissions {
-		if err := add("questionnaire_submissions", value.ID, value); err != nil {
-			return nil, err
+	for _, rows := range optionGroups {
+		sort.SliceStable(rows, func(a, b int) bool {
+			if rows[a].Sort == rows[b].Sort {
+				return rows[a].ID < rows[b].ID
+			}
+			return rows[a].Sort < rows[b].Sort
+		})
+		for position, value := range rows {
+			index.optionOrder[value.ID] = position
 		}
 	}
-	for _, value := range answers {
-		if err := add("questionnaire_submission_answers", value.ID, value); err != nil {
-			return nil, err
+	for _, rows := range ruleGroups {
+		sort.SliceStable(rows, func(a, b int) bool {
+			if rows[a].Sort == rows[b].Sort {
+				return rows[a].ID < rows[b].ID
+			}
+			return rows[a].Sort < rows[b].Sort
+		})
+		for position, value := range rows {
+			index.ruleOrder[value.ID] = position
 		}
 	}
-	for _, value := range pushes {
-		if err := add("questionnaire_external_push_logs", value.ID, value); err != nil {
-			return nil, err
+	return index, nil
+}
+func (i *frozenSourceIndex) digests() map[string]map[string][32]byte {
+	out := map[string]map[string][32]byte{}
+	for table, rows := range i.facts {
+		out[table] = map[string][32]byte{}
+		for pk, value := range rows {
+			out[table][pk] = recordDigest(value)
 		}
 	}
-	for _, value := range scrm {
-		if err := add("questionnaire_scrm_apply_logs", value.ID, value); err != nil {
-			return nil, err
-		}
+	return out
+}
+func (i *frozenSourceIndex) fact(table, pk string) (any, error) {
+	value, ok := i.facts[table][pk]
+	if !ok {
+		return nil, fmt.Errorf("frozen source fact missing: %s/%s", table, pk)
 	}
-	return result, nil
+	return value, nil
+}
+func (i *frozenSourceIndex) questionSort(value question) int { return i.questionOrder[value.ID] }
+func (i *frozenSourceIndex) optionSort(value option) int     { return i.optionOrder[value.ID] }
+func (i *frozenSourceIndex) ruleSort(value rule) int         { return i.ruleOrder[value.ID] }
+func (i *frozenSourceIndex) optionsForQuestion(questionID int64) int {
+	return i.optionCount[questionID]
 }
 
-func frozenSourceFact(s Snapshot, table, pk string) (any, error) {
-	match := func(id int64) bool { return fmt.Sprint(id) == pk }
-	switch table {
-	case "questionnaires":
-		var rows []questionnaire
-		if err := decodeTable(s, table, &rows); err != nil {
-			return nil, err
-		}
-		for _, row := range rows {
-			if match(row.ID) {
-				return row, nil
-			}
-		}
-	case "questionnaire_questions":
-		var rows []question
-		if err := decodeTable(s, table, &rows); err != nil {
-			return nil, err
-		}
-		for _, row := range rows {
-			if match(row.ID) {
-				return row, nil
-			}
-		}
-	case "questionnaire_options":
-		var rows []option
-		if err := decodeTable(s, table, &rows); err != nil {
-			return nil, err
-		}
-		for _, row := range rows {
-			if match(row.ID) {
-				return row, nil
-			}
-		}
-	case "questionnaire_score_rules":
-		var rows []rule
-		if err := decodeTable(s, table, &rows); err != nil {
-			return nil, err
-		}
-		for _, row := range rows {
-			if match(row.ID) {
-				return row, nil
-			}
-		}
-	case "questionnaire_submissions":
-		var rows []submission
-		if err := decodeTable(s, table, &rows); err != nil {
-			return nil, err
-		}
-		for _, row := range rows {
-			if match(row.ID) {
-				return row, nil
-			}
-		}
-	case "questionnaire_submission_answers":
-		var rows []answer
-		if err := decodeTable(s, table, &rows); err != nil {
-			return nil, err
-		}
-		for _, row := range rows {
-			if match(row.ID) {
-				return row, nil
-			}
-		}
-	case "questionnaire_external_push_logs", "questionnaire_scrm_apply_logs":
-		var rows []operation
-		if err := decodeTable(s, table, &rows); err != nil {
-			return nil, err
-		}
-		for _, row := range rows {
-			if match(row.ID) {
-				return row, nil
-			}
+func (i *frozenSourceIndex) definitionDigest(value questionnaire) [32]byte {
+	questions := []question{}
+	rules := []rule{}
+	for _, candidate := range i.questions {
+		if candidate.QuestionnaireID == value.ID {
+			questions = append(questions, candidate)
 		}
 	}
-	return nil, fmt.Errorf("frozen source fact missing: %s/%s", table, pk)
+	for _, candidate := range i.rules {
+		if candidate.QuestionnaireID == value.ID {
+			rules = append(rules, candidate)
+		}
+	}
+	sort.SliceStable(questions, func(a, b int) bool { return questions[a].ID < questions[b].ID })
+	sort.SliceStable(rules, func(a, b int) bool { return rules[a].ID < rules[b].ID })
+	return recordDigest(struct {
+		Q         questionnaire
+		Questions []question
+		Rules     []rule
+	}{value, questions, rules})
 }
 
-func verifyMappedFact(ctx context.Context, tx pgx.Tx, batchID int64, source, table, pk, targetTable string, targetPK *int64, state string, digest [32]byte, sourceFact any, surveyCipher *secure.Cipher) error {
+func verifyMappedFact(ctx context.Context, tx pgx.Tx, batchID int64, source, table, pk, targetTable string, targetPK *int64, state string, digest [32]byte, sourceFact any, sourceIndex *frozenSourceIndex, surveyCipher *secure.Cipher) error {
 	if state == "quarantined" {
-		var exists bool
-		err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM survey_migration_quarantine WHERE migration_batch_id=$1 AND source_system=$2 AND source_table=$3 AND source_pk=$4 AND record_digest=$5)`, batchID, source, table, pk, digest[:]).Scan(&exists)
-		if err != nil || !exists || targetTable != "survey_migration_quarantine" || targetPK != nil {
+		var reason string
+		var safe []byte
+		var storedDigest []byte
+		err := tx.QueryRow(ctx, `SELECT reason_code,safe_snapshot,record_digest FROM survey_migration_quarantine WHERE migration_batch_id=$1 AND source_system=$2 AND source_table=$3 AND source_pk=$4`, batchID, source, table, pk).Scan(&reason, &safe, &storedDigest)
+		if err != nil || !bytes.Equal(storedDigest, digest[:]) || targetTable != "survey_migration_quarantine" || targetPK != nil {
 			return fmt.Errorf("migration reconciliation failed: %s/%s missing quarantine fact", table, pk)
+		}
+		operation, ok := sourceFact.(operation)
+		if !ok {
+			return fmt.Errorf("migration reconciliation failed: %s/%s unsafe quarantine fact", table, pk)
+		}
+		kind := map[string]string{"questionnaire_external_push_logs": "external_push", "questionnaire_scrm_apply_logs": "scrm_apply"}[table]
+		expectedSafe, _ := json.Marshal(map[string]any{"submission_source_id": operation.SubmissionID, "status": legacyStatus(kind, operation.Status)})
+		if reason != "missing_questionnaire_association" || !jsonEquivalent(safe, expectedSafe) {
+			return fmt.Errorf("migration reconciliation failed: %s/%s quarantine fact drift", table, pk)
 		}
 		return nil
 	}
@@ -999,7 +1043,7 @@ func verifyMappedFact(ctx context.Context, tx pgx.Tx, batchID int64, source, tab
 		if err != nil || !exists {
 			return fmt.Errorf("migration reconciliation failed: %s/%s missing target fact", table, pk)
 		}
-		return verifyDefinitionFact(ctx, tx, source, table, *targetPK, sourceFact)
+		return verifyDefinitionFact(ctx, tx, source, table, *targetPK, sourceFact, sourceIndex)
 	case "survey_submissions":
 		if table != "questionnaire_submissions" {
 			return fmt.Errorf("migration reconciliation failed: %s/%s type mismatch", table, pk)
@@ -1023,13 +1067,27 @@ func verifyMappedFact(ctx context.Context, tx pgx.Tx, batchID int64, source, tab
 	}
 	switch value := sourceFact.(type) {
 	case submission:
-		return verifySubmissionFact(ctx, tx, source, *targetPK, value, surveyCipher)
+		return verifySubmissionFact(ctx, tx, source, *targetPK, value, sourceIndex, surveyCipher)
 	case answer:
-		return verifyAnswerFact(ctx, tx, source, *targetPK, value, surveyCipher)
+		return verifyAnswerFact(ctx, tx, source, *targetPK, value, sourceIndex, surveyCipher)
 	case operation:
-		return verifyOperationFact(ctx, tx, source, table, *targetPK, value)
+		return verifyOperationFact(ctx, tx, source, table, *targetPK, value, sourceIndex)
 	}
 	return fmt.Errorf("migration reconciliation failed: %s/%s source type mismatch", table, pk)
+}
+
+func verifyDerivedQuarantines(ctx context.Context, tx pgx.Tx, batchID int64, source string, sourceIndex *frozenSourceIndex) error {
+	for _, value := range sourceIndex.submissions {
+		if strings.TrimSpace(value.Token) != "" {
+			continue
+		}
+		var exists bool
+		err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM survey_migration_quarantine WHERE migration_batch_id=$1 AND source_system=$2 AND source_table='questionnaire_result_tokens' AND source_pk=$3 AND reason_code='missing_result_token')`, batchID, source, fmt.Sprint(value.ID)).Scan(&exists)
+		if err != nil || !exists {
+			return errors.New("migration reconciliation failed: missing result-token quarantine")
+		}
+	}
+	return nil
 }
 
 func sourceTargetPK(ctx context.Context, tx pgx.Tx, source, table string, sourceID int64) (int64, error) {
@@ -1040,7 +1098,7 @@ func sourceTargetPK(ctx context.Context, tx pgx.Tx, source, table string, source
 	return *target, nil
 }
 
-func verifyDefinitionFact(ctx context.Context, tx pgx.Tx, source, table string, targetPK int64, sourceFact any) error {
+func verifyDefinitionFact(ctx context.Context, tx pgx.Tx, source, table string, targetPK int64, sourceFact any, sourceIndex *frozenSourceIndex) error {
 	mismatch := func(ok bool) error {
 		if !ok {
 			return fmt.Errorf("migration reconciliation failed: %s target fact drift", table)
@@ -1050,9 +1108,24 @@ func verifyDefinitionFact(ctx context.Context, tx pgx.Tx, source, table string, 
 	switch value := sourceFact.(type) {
 	case questionnaire:
 		var name, title, description, mode, displayMode, slug, status string
-		var active bool
-		err := tx.QueryRow(ctx, `SELECT name,title,description,mode,answer_display_mode,slug,status,active_definition_version_id IS NOT NULL FROM survey_questionnaires WHERE id=$1`, targetPK).Scan(&name, &title, &description, &mode, &displayMode, &slug, &status, &active)
-		return mismatch(err == nil && active && name == trimNonEmpty(value.Name, 200) && title == trimNonEmpty(value.Title, 500) && description == trim(value.Description, 10000) && mode == map[bool]string{true: "assessment", false: "survey"}[value.Assessment] && displayMode == display(value.Display) && slug == safeSlug(value.Slug, value.ID) && status == "disabled")
+		var activeVersion *int64
+		err := tx.QueryRow(ctx, `SELECT name,title,description,mode,answer_display_mode,slug,status,active_definition_version_id FROM survey_questionnaires WHERE id=$1`, targetPK).Scan(&name, &title, &description, &mode, &displayMode, &slug, &status, &activeVersion)
+		if err != nil || activeVersion == nil || name != trimNonEmpty(value.Name, 200) || title != trimNonEmpty(value.Title, 500) || description != trim(value.Description, 10000) || mode != map[bool]string{true: "assessment", false: "survey"}[value.Assessment] || displayMode != display(value.Display) || slug != safeSlug(value.Slug, value.ID) || status != "disabled" {
+			return mismatch(false)
+		}
+		assessment := value.AssessmentConfig
+		if !value.Assessment || !json.Valid(assessment) {
+			assessment = json.RawMessage(`{}`)
+		}
+		expectedDigest := sourceIndex.definitionDigest(value)
+		var owner, number int64
+		var vmode, vdisplay, vtitle, vdescription string
+		var vassessment, vdigest []byte
+		var immutable bool
+		var published time.Time
+		err = tx.QueryRow(ctx, `SELECT questionnaire_id,version_number,mode,answer_display_mode,title_snapshot,description_snapshot,assessment_config,definition_digest,is_immutable,published_at FROM survey_definition_versions WHERE id=$1`, *activeVersion).Scan(&owner, &number, &vmode, &vdisplay, &vtitle, &vdescription, &vassessment, &vdigest, &immutable, &published)
+		return mismatch(err == nil && owner == targetPK && number == 1 && vmode == mode && vdisplay == displayMode && vtitle == trimNonEmpty(value.Title, 500) && vdescription == trim(value.Description, 10000) && jsonEquivalent(vassessment, assessment) && bytes.Equal(vdigest, expectedDigest[:]) && immutable && published.Equal(value.UpdatedAt))
+
 	case question:
 		owner, err := sourceTargetPK(ctx, tx, source, "questionnaires", value.QuestionnaireID)
 		if err != nil {
@@ -1061,8 +1134,19 @@ func verifyDefinitionFact(ctx context.Context, tx pgx.Tx, source, table string, 
 		var typ, title, dimension, sidebar, placeholder string
 		var required bool
 		var questionnaireID int64
-		err = tx.QueryRow(ctx, `SELECT q.question_type,q.title,q.assessment_dimension_key,q.sidebar_profile_field,q.required,q.placeholder_text,v.questionnaire_id FROM survey_definition_questions q JOIN survey_definition_versions v ON v.id=q.definition_version_id WHERE q.id=$1`, targetPK).Scan(&typ, &title, &dimension, &sidebar, &required, &placeholder, &questionnaireID)
-		return mismatch(err == nil && questionnaireID == owner && typ == value.Type && title == trimNonEmpty(value.Title, 1000) && dimension == safeOpaque(value.Dimension) && sidebar == safeOpaque(value.Sidebar) && required == value.Required && placeholder == trim(value.Placeholder, 500))
+		var sortOrder int
+		var validation []byte
+		err = tx.QueryRow(ctx, `SELECT q.question_type,q.title,q.assessment_dimension_key,q.sidebar_profile_field,q.required,q.placeholder_text,q.sort_order,q.validation,v.questionnaire_id FROM survey_definition_questions q JOIN survey_definition_versions v ON v.id=q.definition_version_id WHERE q.id=$1`, targetPK).Scan(&typ, &title, &dimension, &sidebar, &required, &placeholder, &sortOrder, &validation, &questionnaireID)
+		expectedValidation := map[string]any{}
+		if value.Type == "single_choice" {
+			expectedValidation["min_selections"] = 1
+			expectedValidation["max_selections"] = 1
+		} else if value.Type == "multi_choice" {
+			expectedValidation["min_selections"] = map[bool]int{true: 1, false: 0}[value.Required]
+			expectedValidation["max_selections"] = sourceIndex.optionsForQuestion(value.ID)
+		}
+		expectedValidationRaw, _ := json.Marshal(expectedValidation)
+		return mismatch(err == nil && questionnaireID == owner && typ == value.Type && title == trimNonEmpty(value.Title, 1000) && dimension == safeOpaque(value.Dimension) && sidebar == safeOpaque(value.Sidebar) && required == value.Required && placeholder == trim(value.Placeholder, 500) && sortOrder == sourceIndex.questionSort(value) && jsonEquivalent(validation, expectedValidationRaw))
 	case option:
 		owner, err := sourceTargetPK(ctx, tx, source, "questionnaire_questions", value.QuestionID)
 		if err != nil {
@@ -1073,9 +1157,9 @@ func verifyDefinitionFact(ctx context.Context, tx pgx.Tx, source, table string, 
 		var score float64
 		var tags []byte
 		var isOther bool
-		var otherMaxLength int
-		err = tx.QueryRow(ctx, `SELECT question_id,option_text,score,assessment_type_key,tag_codes,is_other,other_placeholder,other_max_length FROM survey_definition_options WHERE id=$1`, targetPK).Scan(&questionID, &text, &score, &typeKey, &tags, &isOther, &placeholder, &otherMaxLength)
-		return mismatch(err == nil && questionID == owner && text == trimNonEmpty(value.Text, 1000) && score == value.Score && typeKey == safeOpaque(value.TypeKey) && jsonEquivalent(tags, validArray(value.Tags)) && isOther == value.IsOther && placeholder == trim(value.OtherPlaceholder, 500) && otherMaxLength == otherMax(value))
+		var otherMaxLength, sortOrder int
+		err = tx.QueryRow(ctx, `SELECT question_id,option_text,score,assessment_type_key,tag_codes,is_other,other_placeholder,other_max_length,sort_order FROM survey_definition_options WHERE id=$1`, targetPK).Scan(&questionID, &text, &score, &typeKey, &tags, &isOther, &placeholder, &otherMaxLength, &sortOrder)
+		return mismatch(err == nil && questionID == owner && text == trimNonEmpty(value.Text, 1000) && score == value.Score && typeKey == safeOpaque(value.TypeKey) && jsonEquivalent(tags, validArray(value.Tags)) && isOther == value.IsOther && placeholder == trim(value.OtherPlaceholder, 500) && otherMaxLength == otherMax(value) && sortOrder == sourceIndex.optionSort(value))
 	case rule:
 		owner, err := sourceTargetPK(ctx, tx, source, "questionnaires", value.QuestionnaireID)
 		if err != nil {
@@ -1084,25 +1168,26 @@ func verifyDefinitionFact(ctx context.Context, tx pgx.Tx, source, table string, 
 		var questionnaireID int64
 		var min, max *float64
 		var tags []byte
-		err = tx.QueryRow(ctx, `SELECT v.questionnaire_id,r.minimum_score,r.maximum_score,r.tag_codes FROM survey_score_rules r JOIN survey_definition_versions v ON v.id=r.definition_version_id WHERE r.id=$1`, targetPK).Scan(&questionnaireID, &min, &max, &tags)
-		return mismatch(err == nil && questionnaireID == owner && floatPointerEqual(min, value.Min) && floatPointerEqual(max, value.Max) && jsonEquivalent(tags, validArray(value.Tags)))
+		var sortOrder int
+		err = tx.QueryRow(ctx, `SELECT v.questionnaire_id,r.minimum_score,r.maximum_score,r.tag_codes,r.sort_order FROM survey_score_rules r JOIN survey_definition_versions v ON v.id=r.definition_version_id WHERE r.id=$1`, targetPK).Scan(&questionnaireID, &min, &max, &tags, &sortOrder)
+		return mismatch(err == nil && questionnaireID == owner && floatPointerEqual(min, value.Min) && floatPointerEqual(max, value.Max) && jsonEquivalent(tags, validArray(value.Tags)) && sortOrder == sourceIndex.ruleSort(value))
 	}
 	return errors.New("migration reconciliation failed: definition source type mismatch")
 }
 
-func verifySubmissionFact(ctx context.Context, tx pgx.Tx, source string, targetPK int64, value submission, surveyCipher *secure.Cipher) error {
+func verifySubmissionFact(ctx context.Context, tx pgx.Tx, source string, targetPK int64, value submission, sourceIndex *frozenSourceIndex, surveyCipher *secure.Cipher) error {
 	questionnaireID, err := sourceTargetPK(ctx, tx, source, "questionnaires", value.QuestionnaireID)
 	if err != nil {
 		return err
 	}
-	var actualQuestionnaire int64
+	var actualQuestionnaire, actualDefinitionVersion int64
 	var customer *int64
 	var identityState, identityReason, slug, title, mode, channel, campaign, staff string
 	var evidence, payload []byte
 	var total float64
 	var result []byte
 	var submitted, created time.Time
-	err = tx.QueryRow(ctx, `SELECT questionnaire_id,customer_id,identity_state,identity_reason,evidence_digest,payload_digest,questionnaire_slug_snapshot,title_snapshot,mode_snapshot,total_score,result_snapshot,source_channel,campaign_id,staff_id,submitted_at,created_at FROM survey_submissions WHERE id=$1`, targetPK).Scan(&actualQuestionnaire, &customer, &identityState, &identityReason, &evidence, &payload, &slug, &title, &mode, &total, &result, &channel, &campaign, &staff, &submitted, &created)
+	err = tx.QueryRow(ctx, `SELECT questionnaire_id,definition_version_id,customer_id,identity_state,identity_reason,evidence_digest,payload_digest,questionnaire_slug_snapshot,title_snapshot,mode_snapshot,total_score,result_snapshot,source_channel,campaign_id,staff_id,submitted_at,created_at FROM survey_submissions WHERE id=$1`, targetPK).Scan(&actualQuestionnaire, &actualDefinitionVersion, &customer, &identityState, &identityReason, &evidence, &payload, &slug, &title, &mode, &total, &result, &channel, &campaign, &staff, &submitted, &created)
 	if err != nil {
 		return errors.New("migration reconciliation failed: submission fact unreadable")
 	}
@@ -1127,7 +1212,16 @@ func verifySubmissionFact(ctx context.Context, tx pgx.Tx, source string, targetP
 	resultObject["_legacy_matched_by"] = trim(value.MatchedBy, 100)
 	expectedResult, _ := json.Marshal(resultObject)
 	payloadDigest := recordDigest(value)
-	if actualQuestionnaire != questionnaireID || customer != nil || identityState != identity || identityReason != reason || !bytes.Equal(evidence, expectedEvidence) || !bytes.Equal(payload, payloadDigest[:]) || slug == "" || title == "" || mode == "" || total != value.Total || !jsonEquivalent(result, expectedResult) || channel != trim(value.SourceChannel, 100) || campaign != trim(value.CampaignID, 200) || staff != trim(value.StaffID, 200) || !submitted.Equal(value.SubmittedAt) || !created.Equal(value.CreatedAt) {
+	questionnaireSource, ok := sourceIndex.questionnaires[value.QuestionnaireID]
+	if !ok {
+		return errors.New("migration reconciliation failed: submission owner missing")
+	}
+	var activeDefinition int64
+	if err = tx.QueryRow(ctx, `SELECT active_definition_version_id FROM survey_questionnaires WHERE id=$1`, questionnaireID).Scan(&activeDefinition); err != nil {
+		return errors.New("migration reconciliation failed: submission definition missing")
+	}
+	expectedMode := map[bool]string{true: "assessment", false: "survey"}[questionnaireSource.Assessment]
+	if actualQuestionnaire != questionnaireID || actualDefinitionVersion != activeDefinition || customer != nil || identityState != identity || identityReason != reason || !bytes.Equal(evidence, expectedEvidence) || !bytes.Equal(payload, payloadDigest[:]) || slug != safeSlug(questionnaireSource.Slug, questionnaireSource.ID) || title != trimNonEmpty(questionnaireSource.Title, 500) || mode != expectedMode || total != value.Total || !jsonEquivalent(result, expectedResult) || channel != trim(value.SourceChannel, 100) || campaign != trim(value.CampaignID, 200) || staff != trim(value.StaffID, 200) || !submitted.Equal(value.SubmittedAt) || !created.Equal(value.CreatedAt) {
 		return errors.New("migration reconciliation failed: submission target fact drift")
 	}
 	if strings.TrimSpace(value.Token) != "" {
@@ -1141,7 +1235,7 @@ func verifySubmissionFact(ctx context.Context, tx pgx.Tx, source string, targetP
 	return nil
 }
 
-func verifyAnswerFact(ctx context.Context, tx pgx.Tx, source string, targetPK int64, value answer, surveyCipher *secure.Cipher) error {
+func verifyAnswerFact(ctx context.Context, tx pgx.Tx, source string, targetPK int64, value answer, sourceIndex *frozenSourceIndex, surveyCipher *secure.Cipher) error {
 	submissionID, err := sourceTargetPK(ctx, tx, source, "questionnaire_submissions", value.SubmissionID)
 	if err != nil {
 		return err
@@ -1163,6 +1257,9 @@ func verifyAnswerFact(ctx context.Context, tx pgx.Tx, source string, targetPK in
 		expectedQuestion = &q
 	}
 	plain := ""
+	if value.Text == "" && ciphertext != nil {
+		return errors.New("migration reconciliation failed: empty protected answer ciphertext drift")
+	}
 	if value.Text != "" {
 		var decryptErr error
 		plain, decryptErr = surveyCipher.Decrypt(ciphertext)
@@ -1184,10 +1281,17 @@ func verifyAnswerFact(ctx context.Context, tx pgx.Tx, source string, targetPK in
 	return nil
 }
 
-func verifyOperationFact(ctx context.Context, tx pgx.Tx, source, table string, targetPK int64, value operation) error {
+func verifyOperationFact(ctx context.Context, tx pgx.Tx, source, table string, targetPK int64, value operation, sourceIndex *frozenSourceIndex) error {
 	questionnaireID, err := sourceTargetPK(ctx, tx, source, "questionnaires", value.QuestionnaireID)
 	if err != nil {
-		return err
+		sourceSubmission, ok := sourceIndex.submissions[value.SubmissionID]
+		if !ok {
+			return err
+		}
+		questionnaireID, err = sourceTargetPK(ctx, tx, source, "questionnaires", sourceSubmission.QuestionnaireID)
+		if err != nil {
+			return err
+		}
 	}
 	var expectedSubmission *int64
 	if value.SubmissionID != 0 {

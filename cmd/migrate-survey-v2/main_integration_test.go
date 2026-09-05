@@ -34,7 +34,7 @@ func TestPostgreSQLFrozenSurveySnapshotImportReplayAndReconcile(t *testing.T) {
 		t.Fatalf("reconcile frozen snapshot: %v", err)
 	}
 	ctx := context.Background()
-	var questionnaires, submissions, unresolved, missingDefinition, receipts, quarantined, mutableEffects, customers int
+	var questionnaires, submissions, unresolved, missingDefinition, receipts, quarantined, missingToken, mutableEffects, customers int
 	if err := pool.QueryRow(ctx, `SELECT
 		(SELECT count(*) FROM survey_questionnaires),
 		(SELECT count(*) FROM survey_submissions),
@@ -42,12 +42,13 @@ func TestPostgreSQLFrozenSurveySnapshotImportReplayAndReconcile(t *testing.T) {
 		(SELECT count(*) FROM survey_submission_answers WHERE legacy_definition_missing=TRUE AND definition_question_id IS NULL),
 		(SELECT count(*) FROM survey_external_operation_receipts WHERE read_only_legacy=TRUE AND replayable=FALSE),
 		(SELECT count(*) FROM survey_migration_quarantine WHERE reason_code='missing_questionnaire_association'),
+		(SELECT count(*) FROM survey_migration_quarantine WHERE reason_code='missing_result_token' AND source_table='questionnaire_result_tokens'),
 		(SELECT count(*) FROM survey_outbox),
-		(SELECT count(*) FROM customers)`).Scan(&questionnaires, &submissions, &unresolved, &missingDefinition, &receipts, &quarantined, &mutableEffects, &customers); err != nil {
+		(SELECT count(*) FROM customers)`).Scan(&questionnaires, &submissions, &unresolved, &missingDefinition, &receipts, &quarantined, &missingToken, &mutableEffects, &customers); err != nil {
 		t.Fatal(err)
 	}
-	if questionnaires != 1 || submissions != 1 || unresolved != 1 || missingDefinition != 1 || receipts != 2 || quarantined != 1 || mutableEffects != 0 || customers != 0 {
-		t.Fatalf("questionnaires=%d submissions=%d unresolved=%d missing_definition=%d receipts=%d quarantined=%d outbox=%d customers=%d", questionnaires, submissions, unresolved, missingDefinition, receipts, quarantined, mutableEffects, customers)
+	if questionnaires != 1 || submissions != 2 || unresolved != 1 || missingDefinition != 1 || receipts != 3 || quarantined != 1 || missingToken != 1 || mutableEffects != 0 || customers != 0 {
+		t.Fatalf("questionnaires=%d submissions=%d unresolved=%d missing_definition=%d receipts=%d quarantined=%d missing_token=%d outbox=%d customers=%d", questionnaires, submissions, unresolved, missingDefinition, receipts, quarantined, missingToken, mutableEffects, customers)
 	}
 
 	var submissionID, receiptID, answerID int64
@@ -67,6 +68,15 @@ func TestPostgreSQLFrozenSurveySnapshotImportReplayAndReconcile(t *testing.T) {
 	if _, err := pool.Exec(ctx, `UPDATE survey_submissions SET identity_state='unresolved',customer_id=NULL WHERE id=$1`, submissionID); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := pool.Exec(ctx, `UPDATE survey_submissions SET title_snapshot='drifted title' WHERE id=$1`, submissionID); err != nil {
+		t.Fatal(err)
+	}
+	if err := reconcile([]string{"--target-url", targetURL, "--snapshot", file, "--snapshot-key-file", snapshotKey, "--data-key-file", dataKey}); err == nil || !strings.Contains(err.Error(), "submission target fact drift") {
+		t.Fatalf("submission snapshot drift err=%v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE survey_submissions SET title_snapshot='Legacy check-in' WHERE id=$1`, submissionID); err != nil {
+		t.Fatal(err)
+	}
 	if err := pool.QueryRow(ctx, `SELECT id FROM survey_submission_answers WHERE legacy_definition_missing=FALSE LIMIT 1`).Scan(&answerID); err != nil {
 		t.Fatal(err)
 	}
@@ -77,6 +87,15 @@ func TestPostgreSQLFrozenSurveySnapshotImportReplayAndReconcile(t *testing.T) {
 		t.Fatalf("answer field drift err=%v", err)
 	}
 	if _, err := pool.Exec(ctx, `UPDATE survey_submission_answers SET selected_options_snapshot='[]'::jsonb WHERE id=$1`, answerID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE survey_submission_answers SET text_value_ciphertext=decode('00','hex') WHERE id=$1`, answerID); err != nil {
+		t.Fatal(err)
+	}
+	if err := reconcile([]string{"--target-url", targetURL, "--snapshot", file, "--snapshot-key-file", snapshotKey, "--data-key-file", dataKey}); err == nil || !strings.Contains(err.Error(), "empty protected answer ciphertext drift") {
+		t.Fatalf("empty answer ciphertext drift err=%v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE survey_submission_answers SET text_value_ciphertext=NULL WHERE id=$1`, answerID); err != nil {
 		t.Fatal(err)
 	}
 	if err := pool.QueryRow(ctx, `SELECT id FROM survey_external_operation_receipts WHERE operation_kind='external_push' LIMIT 1`).Scan(&receiptID); err != nil {
@@ -131,7 +150,7 @@ func TestPostgreSQLFrozenSurveySnapshotImportReplayAndReconcile(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM survey_submissions`).Scan(&submissions); err != nil {
 		t.Fatal(err)
 	}
-	if submissions != 1 {
+	if submissions != 2 {
 		t.Fatalf("token conflict left a submission: %d", submissions)
 	}
 
@@ -171,12 +190,12 @@ func frozenSurveySnapshot(t *testing.T, at time.Time) Snapshot {
 	setFrozenTable(t, &s, "questionnaire_questions", []question{{ID: 10, QuestionnaireID: 1, Type: "single_choice", Title: "How are you?", Required: true, Sort: 0}})
 	setFrozenTable(t, &s, "questionnaire_options", []option{{ID: 20, QuestionID: 10, Text: "Good", Score: 5, Tags: json.RawMessage(`[]`), Sort: 0}})
 	setFrozenTable(t, &s, "questionnaire_score_rules", []rule{{ID: 30, QuestionnaireID: 1, Min: &min, Max: &max, Tags: json.RawMessage(`[]`), Sort: 0}})
-	setFrozenTable(t, &s, "questionnaire_submissions", []submission{{ID: 40, QuestionnaireID: 1, UnionID: "unresolved-union", Result: json.RawMessage(`{}`), FinalTags: json.RawMessage(`[]`), Token: "legacy-result-token", SubmittedAt: at, CreatedAt: at}})
+	setFrozenTable(t, &s, "questionnaire_submissions", []submission{{ID: 40, QuestionnaireID: 1, UnionID: "unresolved-union", Result: json.RawMessage(`{}`), FinalTags: json.RawMessage(`[]`), Token: "legacy-result-token", SubmittedAt: at, CreatedAt: at}, {ID: 42, QuestionnaireID: 1, Result: json.RawMessage(`{}`), FinalTags: json.RawMessage(`[]`), SubmittedAt: at, CreatedAt: at}})
 	setFrozenTable(t, &s, "questionnaire_submission_answers", []answer{
 		{ID: 50, SubmissionID: 40, QuestionID: 999, Type: "textarea", Title: "removed question", Text: "protected legacy answer", OptionIDs: json.RawMessage(`[]`), OptionTexts: json.RawMessage(`[]`), OptionScores: json.RawMessage(`[]`), OptionTags: json.RawMessage(`[]`), CreatedAt: at},
 		{ID: 51, SubmissionID: 40, QuestionID: 10, Type: "single_choice", Title: "How are you?", OptionIDs: json.RawMessage(`[20]`), OptionTexts: json.RawMessage(`["Good"]`), OptionScores: json.RawMessage(`[5]`), OptionTags: json.RawMessage(`[[]]`), Score: 5, CreatedAt: at},
 	})
-	setFrozenTable(t, &s, "questionnaire_external_push_logs", []operation{{ID: 60, QuestionnaireID: 1, SubmissionID: 40, Status: "success", OccurredAt: at}, {ID: 61, QuestionnaireID: 999, SubmissionID: 0, Status: "failed", FailureCategory: "provider_failure", OccurredAt: at}})
+	setFrozenTable(t, &s, "questionnaire_external_push_logs", []operation{{ID: 60, QuestionnaireID: 1, SubmissionID: 40, Status: "success", OccurredAt: at}, {ID: 61, QuestionnaireID: 999, SubmissionID: 0, Status: "failed", FailureCategory: "provider_failure", OccurredAt: at}, {ID: 62, QuestionnaireID: 999, SubmissionID: 40, Status: "success", OccurredAt: at}})
 	setFrozenTable(t, &s, "questionnaire_scrm_apply_logs", []operation{{ID: 70, QuestionnaireID: 1, SubmissionID: 40, Status: "identity_unresolved", FailureCategory: "identity_unresolved", OccurredAt: at}})
 	return s
 }
