@@ -102,5 +102,13 @@
       });
     };
   }
-  new MutationObserver(schedule).observe(document.documentElement, { childList: true, subtree: true });
+  function observe() {
+    var root = document.documentElement;
+    if (!root) {
+      global.setTimeout(observe, 0);
+      return;
+    }
+    new MutationObserver(schedule).observe(root, { childList: true, subtree: true });
+  }
+  observe();
 })(window);
