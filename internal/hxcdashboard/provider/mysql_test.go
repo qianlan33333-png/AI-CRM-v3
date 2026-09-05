@@ -14,7 +14,7 @@ type sharedFactsScanner struct {
 
 func (s sharedFactsScanner) Scan(dest ...any) error {
 	s.testing.Helper()
-	if len(dest) != 38 {
+	if len(dest) != 41 {
 		s.testing.Fatalf("shared-facts scan destinations=%d", len(dest))
 	}
 	beijing := time.Date(2026, 9, 5, 9, 0, 0, 0, sourceLocation)
@@ -45,17 +45,21 @@ func (s sharedFactsScanner) Scan(dest ...any) error {
 	}
 	*dest[30].(*int64) = 7
 	*dest[31].(*sourceNullTime) = sourceNullTime{Time: beijing.Add(-2 * time.Hour), Valid: true}
-	*dest[32].(*int64), *dest[33].(*int64) = 1, 1
-	*dest[34].(*sql.NullString) = sql.NullString{String: "user_id", Valid: true}
-	*dest[35].(*sql.NullString) = sql.NullString{String: "active", Valid: true}
-	*dest[36].(*sql.NullTime) = sql.NullTime{Time: beijing.Add(24 * time.Hour), Valid: true}
-	*dest[37].(*time.Time) = beijing
+	*dest[32].(*int64) = 1
+	*dest[33].(*sql.NullString) = sql.NullString{String: "user_id", Valid: true}
+	*dest[34].(*sql.NullString) = sql.NullString{String: "active", Valid: true}
+	*dest[35].(*sql.NullTime) = sql.NullTime{Time: beijing.Add(24 * time.Hour), Valid: true}
+	*dest[36].(*sql.NullString) = sql.NullString{String: "standard", Valid: true}
+	*dest[37].(*sql.NullTime) = sql.NullTime{Time: beijing.Add(72 * time.Hour), Valid: true}
+	*dest[38].(*sql.NullString) = sql.NullString{String: "standard", Valid: true}
+	*dest[39].(*sql.NullTime) = sql.NullTime{Time: beijing.Add(48 * time.Hour), Valid: true}
+	*dest[40].(*time.Time) = beijing
 	return nil
 }
 
 func TestSharedFactsScannerPreservesMembershipSourceAndNullableLearningPlan(t *testing.T) {
 	for _, plan := range []bool{false, true} {
-		row, err := scanSourceRow(sharedFactsScanner{testing: t, plan: plan})
+		row, err := scanSourceRow(sharedFactsScanner{testing: t, plan: plan}, time.Date(2026, 9, 5, 0, 0, 0, 0, sourceLocation))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -69,6 +73,31 @@ func TestSharedFactsScannerPreservesMembershipSourceAndNullableLearningPlan(t *t
 		} else if row.LearningPlanFound || row.LearningPlanCurrent != nil || row.LearningPlanTotal != nil || row.LearningPlanStatus != "" {
 			t.Fatalf("missing learning plan became a zero plan: %+v", row)
 		}
+	}
+}
+
+func TestSelectMembershipSourcePreservesLegacyORAndSourcePairs(t *testing.T) {
+	reference := time.Date(2026, 9, 5, 9, 0, 0, 0, sourceLocation)
+	future, past, atBoundary := reference.Add(time.Second), reference.Add(-time.Second), reference
+	for _, test := range []struct {
+		name                                 string
+		membership, subscription, profile    membershipCandidate
+		wantSource, wantStatus               string
+		wantFound, wantActive, wantNilExpiry bool
+	}{
+		{name: "free has no membership fact", subscription: membershipCandidate{source: "subscription", status: "free", expiresAt: &future}, wantNilExpiry: true},
+		{name: "explicit expired without period remains readable", membership: membershipCandidate{found: true, source: "user_id", status: "expired"}, wantSource: "user_id", wantStatus: "expired", wantFound: true, wantNilExpiry: true},
+		{name: "valid subscription supersedes expired consultation membership", membership: membershipCandidate{found: true, source: "user_id", status: "expired", expiresAt: &past}, subscription: membershipCandidate{source: "subscription", status: "standard", expiresAt: &future}, wantSource: "subscription", wantStatus: "standard", wantFound: true, wantActive: true},
+		{name: "subscription without expiry stays paired ahead of expired profile", subscription: membershipCandidate{source: "subscription", status: "standard"}, profile: membershipCandidate{source: "user_profile", status: "standard", expiresAt: &past}, wantSource: "subscription", wantStatus: "standard", wantFound: true, wantActive: true, wantNilExpiry: true},
+		{name: "only user profile is member evidence", profile: membershipCandidate{source: "user_profile", status: "trial", expiresAt: &future}, wantSource: "user_profile", wantStatus: "trial", wantFound: true, wantActive: true},
+		{name: "expiry instant is not future evidence", membership: membershipCandidate{found: true, source: "user_id", expiresAt: &atBoundary}, wantSource: "user_id", wantFound: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got := selectMembershipSource(reference, test.membership, test.subscription, test.profile)
+			if got.source != test.wantSource || got.status != test.wantStatus || got.found != test.wantFound || got.active != test.wantActive || (got.expiresAt == nil) != test.wantNilExpiry {
+				t.Fatalf("selected=%+v", got)
+			}
+		})
 	}
 }
 
@@ -137,13 +166,14 @@ func TestCurrentQueryReadsDistinctLegacySharedFacts(t *testing.T) {
 			t.Fatalf("shared fact query missing %q", required)
 		}
 	}
+	if !strings.Contains(currentBatchSQL, "COALESCE(m.is_deleted,0)=0") {
+		t.Fatal("nullable legacy is_deleted must preserve non-deleted token rows")
+	}
 	for _, required := range []string{
-		"THEN 'subscription' WHEN NULLIF(TRIM(u.member_level),'')",
-		"THEN 'user_profile' ELSE 'none' END",
-		"THEN s.expires_at WHEN NULLIF(TRIM(u.member_level),'')",
-		"THEN u.member_expires_at ELSE NULL END",
-		"mc.status COLLATE utf8mb4_general_ci = 'expired'",
-		"mc.status COLLATE utf8mb4_general_ci",
+		"CASE WHEN mc.user_id IS NULL THEN 0 ELSE 1 END",
+		"COALESCE(mc.attribution,'')",
+		"NULLIF(TRIM(s.tier),''),s.expires_at",
+		"NULLIF(TRIM(u.member_level),''),u.member_expires_at",
 	} {
 		if !strings.Contains(currentBatchSQL, required) {
 			t.Fatalf("shared membership source rule missing %q", required)

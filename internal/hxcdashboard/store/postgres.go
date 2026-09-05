@@ -148,33 +148,63 @@ func (store *PostgreSQL) Publish(ctx context.Context, runID int64, projection do
 	return id, nil
 }
 
-// SharedFacts implements the bounded canonical-customer read port. The query
-// reads exactly one published generation, so a failed publication cannot expose
-// a mixture of old and new fields.
-func (store *PostgreSQL) SharedFacts(ctx context.Context, customerIDs []customerdomain.CustomerID) (map[customerdomain.CustomerID]hxcport.SharedFacts, error) {
-	out := make(map[customerdomain.CustomerID]hxcport.SharedFacts)
-	if len(customerIDs) == 0 {
-		return out, nil
-	}
-	ids := make([]int64, 0, len(customerIDs))
-	seen := map[customerdomain.CustomerID]bool{}
-	for _, id := range customerIDs {
-		if id > 0 && !seen[id] {
-			seen[id] = true
-			ids = append(ids, int64(id))
+// CurrentSharedFactsVersion returns the immutable projection currently exposed
+// to consumers. Callers that need more than one bounded read keep this ID.
+func (store *PostgreSQL) CurrentSharedFactsVersion(ctx context.Context) (int64, error) {
+	var id int64
+	if err := store.pool.QueryRow(ctx, `SELECT id FROM hxc_dashboard_versions WHERE status='published'`).Scan(&id); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, ErrNotFound
 		}
+		return 0, fmt.Errorf("read current HXC shared facts version: %w", err)
+	}
+	return id, nil
+}
+
+// SharedFacts implements a bounded read from the currently published immutable
+// generation. Consumers with several batches should pin a version first.
+func (store *PostgreSQL) SharedFacts(ctx context.Context, customerIDs []customerdomain.CustomerID) (map[customerdomain.CustomerID]hxcport.SharedFacts, error) {
+	ids, err := sharedFactsIDs(customerIDs)
+	if err != nil {
+		return nil, err
+	}
+	if len(ids) == 0 {
+		return map[customerdomain.CustomerID]hxcport.SharedFacts{}, nil
+	}
+	version, err := store.CurrentSharedFactsVersion(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return store.SharedFactsAtVersion(ctx, version, customerIDs)
+}
+
+// SharedFactsAtVersion reads a retained immutable generation. It deliberately
+// accepts a superseded version: a consumer that pinned it can finish its
+// bounded batches without changing generations beneath the same evaluation.
+func (store *PostgreSQL) SharedFactsAtVersion(ctx context.Context, version int64, customerIDs []customerdomain.CustomerID) (map[customerdomain.CustomerID]hxcport.SharedFacts, error) {
+	out := make(map[customerdomain.CustomerID]hxcport.SharedFacts)
+	if version <= 0 {
+		return nil, ErrNotFound
+	}
+	ids, err := sharedFactsIDs(customerIDs)
+	if err != nil {
+		return nil, err
 	}
 	if len(ids) == 0 {
 		return out, nil
 	}
-	if len(ids) > hxcport.MaxSharedFactsCustomerIDs {
-		return nil, hxcport.ErrSharedFactsBatchTooLarge
+	var available bool
+	if err := store.pool.QueryRow(ctx, `SELECT shared_facts_available FROM hxc_dashboard_versions WHERE id=$1`, version).Scan(&available); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("read HXC shared facts version: %w", err)
 	}
-	rows, err := store.pool.Query(ctx, `SELECT r.customer_id,v.shared_facts_available,v.projection_as_of,r.source_updated_at,
+	rows, err := store.pool.Query(ctx, `SELECT r.customer_id,v.projection_as_of,r.source_updated_at,
 		r.formally_logged_in,r.formal_login_at,r.has_token_usage,r.learning_plan_found,COALESCE(r.learning_plan_status,''),r.learning_plan_current,r.learning_plan_total,COALESCE(r.card_open_count_7d,0),r.card_last_opened_at,
 		r.membership_record_found,r.is_member,COALESCE(r.membership_source,''),COALESCE(r.membership_status,''),r.subscription_tier,r.membership_expires_at,r.last_used_at
 		FROM hxc_dashboard_versions v JOIN hxc_dashboard_rows r ON r.projection_id=v.id
-		WHERE v.status='published' AND r.identity_state='matched' AND r.customer_id=ANY($1)`, ids)
+		WHERE v.id=$1 AND r.identity_state='matched' AND r.customer_id=ANY($2)`, version, ids)
 	if err != nil {
 		return nil, fmt.Errorf("read HXC shared facts: %w", err)
 	}
@@ -182,10 +212,9 @@ func (store *PostgreSQL) SharedFacts(ctx context.Context, customerIDs []customer
 	for rows.Next() {
 		var item hxcport.SharedFacts
 		var customerID int64
-		var available bool
 		var formalLogin, cardOpened, expires, lastUsed *time.Time
 		var formallyLogged, tokenUsed, learningFound, membershipFound, isMember *bool
-		if err = rows.Scan(&customerID, &available, &item.SourceAsOf, &item.SourceUpdatedAt, &formallyLogged, &formalLogin, &tokenUsed, &learningFound, &item.LearningPlanStatus, &item.LearningPlanCurrent, &item.LearningPlanTotal, &item.CardOpenCount7D, &cardOpened, &membershipFound, &isMember, &item.MembershipSource, &item.MembershipStatus, &item.Tier, &expires, &lastUsed); err != nil {
+		if err = rows.Scan(&customerID, &item.SourceAsOf, &item.SourceUpdatedAt, &formallyLogged, &formalLogin, &tokenUsed, &learningFound, &item.LearningPlanStatus, &item.LearningPlanCurrent, &item.LearningPlanTotal, &item.CardOpenCount7D, &cardOpened, &membershipFound, &isMember, &item.MembershipSource, &item.MembershipStatus, &item.Tier, &expires, &lastUsed); err != nil {
 			return nil, fmt.Errorf("scan HXC shared facts: %w", err)
 		}
 		item.CustomerID = customerdomain.CustomerID(customerID)
@@ -215,7 +244,23 @@ func (store *PostgreSQL) SharedFacts(ctx context.Context, customerIDs []customer
 	return out, nil
 }
 
+func sharedFactsIDs(customerIDs []customerdomain.CustomerID) ([]int64, error) {
+	ids := make([]int64, 0, len(customerIDs))
+	seen := map[customerdomain.CustomerID]bool{}
+	for _, id := range customerIDs {
+		if id > 0 && !seen[id] {
+			seen[id] = true
+			ids = append(ids, int64(id))
+		}
+	}
+	if len(ids) > hxcport.MaxSharedFactsCustomerIDs {
+		return nil, hxcport.ErrSharedFactsBatchTooLarge
+	}
+	return ids, nil
+}
+
 var _ hxcport.SharedFactsReader = (*PostgreSQL)(nil)
+var _ hxcport.VersionedSharedFactsReader = (*PostgreSQL)(nil)
 
 func nullString(value string) any {
 	if value == "" {
