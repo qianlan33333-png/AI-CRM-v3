@@ -8,3 +8,9 @@ import "context"
 type AudienceOwnerResolver interface {
 	ResolveAudienceOwner(context.Context, string) (StaffID, bool, error)
 }
+
+// AudienceOwnerReferenceReader exposes the Provider reference only while an
+// owner read is evaluated. It is never persisted by Segment.
+type AudienceOwnerReferenceReader interface {
+	AudienceOwnerUserID(context.Context, StaffID) (string, bool, error)
+}

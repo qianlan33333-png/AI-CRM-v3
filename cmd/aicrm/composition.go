@@ -382,6 +382,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return fail(err)
 	}
 	segmentStaff := automationOpsStaffAdapter{uow: uow, users: accessRepository}
+	legacyAudienceSource.Owners = segmentStaff
 	automationProviderReady := cfg.Effects.ProviderEnabled && cfg.WeCom.Enabled && cfg.AutomationOperations.ProviderEnabled()
 	segmentExecution, err := segmentapp.NewExecutionService(uow, segmentRepository, automationService, segmentStaff, automationProviderReady)
 	if err != nil {

@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"time"
 
+	accessport "github.com/qianlan33333-png/AI-CRM-v3/internal/access/port"
 	channelport "github.com/qianlan33333-png/AI-CRM-v3/internal/channel/port"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	hxcport "github.com/qianlan33333-png/AI-CRM-v3/internal/hxcdashboard/port"
@@ -28,6 +29,7 @@ type LegacyTemplateSource struct {
 	Channels channelport.AudienceEntryReader
 	Radar    radarport.AudienceFirstClickReader
 	Members  hxcport.AudienceMemberReader
+	Owners   accessport.AudienceOwnerReferenceReader
 }
 
 func (s LegacyTemplateSource) Evaluate(ctx context.Context, definition segmentport.Definition, reference time.Time) (segmentport.Evaluation, error) {
@@ -37,6 +39,9 @@ func (s LegacyTemplateSource) Evaluate(ctx context.Context, definition segmentpo
 	}
 	var ids []int64
 	var err error
+	if ast.Parameters, err = s.ownerReferences(ctx, ast.Parameters); err != nil {
+		return segmentport.Evaluation{}, err
+	}
 	switch ast.Template {
 	case segmentdsl.WeComContactRegistration:
 		ids, err = s.wecom(ctx, ast.Parameters, reference)
@@ -62,6 +67,34 @@ func (s LegacyTemplateSource) Evaluate(ctx context.Context, definition segmentpo
 	}
 	digest := sha256.Sum256([]byte(string(ast.Template) + "\x00" + reference.UTC().Format(time.RFC3339Nano)))
 	return segmentport.Evaluation{CustomerIDs: customers, ReferenceAt: reference.UTC(), Watermarks: []segmentport.SourceWatermark{{Source: "owner.audience-facts.v1", AsOf: reference.UTC(), Fresh: true, SafeDigest: digest}}}, nil
+}
+
+func (s LegacyTemplateSource) ownerReferences(ctx context.Context, params map[string]json.RawMessage) (map[string]json.RawMessage, error) {
+	raw, exists := params["owner_staff_ids"]
+	if !exists || s.Owners == nil {
+		return params, nil
+	}
+	var ids []string
+	if json.Unmarshal(raw, &ids) != nil {
+		return nil, ErrCustomerReadUnavailable
+	}
+	values := append([]string{}, ids...)
+	for _, value := range ids {
+		id, err := strconv.ParseInt(value, 10, 64)
+		if err != nil || id < 1 {
+			continue
+		}
+		provider, found, err := s.Owners.AudienceOwnerUserID(ctx, accessport.StaffID(id))
+		if err != nil {
+			return nil, err
+		}
+		if found {
+			values = append(values, provider)
+		}
+	}
+	encoded, _ := json.Marshal(values)
+	params["owner_staff_ids"] = encoded
+	return params, nil
 }
 
 // segmentport aliases CustomerID through customer/domain in current V3; keep
