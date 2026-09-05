@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -14,15 +15,35 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	automationapp "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/app"
+	automationdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/domain"
 	automationport "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/port"
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
+	segmentport "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/port"
 )
 
 // automationMediaReader is a test double for Media's stable port. The
 // production composition injects Media's repository; Automation never imports
 // its concrete store, including from tests.
 type automationMediaReader struct{ enabled map[int64]bool }
+
+type automationExecutionReader struct{ packageID segmentport.PackageID }
+
+func (r automationExecutionReader) AudienceExecutionConfiguration(context.Context, segmentport.PackageID) (segmentport.ExecutionConfiguration, error) {
+	return segmentport.ExecutionConfiguration{PackageID: r.packageID, Ready: true}, nil
+}
+
+type automationSnapshotReader struct{}
+
+func (automationSnapshotReader) PublishedSnapshot(context.Context, segmentport.PackageID) (segmentport.Snapshot, bool, error) {
+	return segmentport.Snapshot{}, false, nil
+}
+func (automationSnapshotReader) Snapshot(context.Context, segmentport.SnapshotID) (segmentport.Snapshot, bool, error) {
+	return segmentport.Snapshot{}, false, nil
+}
+func (automationSnapshotReader) Members(context.Context, segmentport.SnapshotID, string, int) (segmentport.MemberPage, error) {
+	return segmentport.MemberPage{}, nil
+}
 
 func (r automationMediaReader) ImageExists(_ context.Context, id int64) (bool, error) {
 	return r.enabled[id], nil
@@ -123,6 +144,78 @@ func TestPostgreSQLAgentFixedContentPublishActivatePauseJourney(t *testing.T) {
 	}
 }
 
+func TestPostgreSQLPolicyCreateVersionLifecycleAndReplayJourney(t *testing.T) {
+	native, cleanup := automationRuntimeIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	wrapped, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wrapped.Close()
+	uow, err := platformpostgres.NewUnitOfWork(wrapped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := NewPostgreSQL(native, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	packageID := segmentport.PackageID(17)
+	service, err := automationapp.NewRuntimeService(uow, repository, automationExecutionReader{packageID: packageID}, automationSnapshotReader{}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	approval := int64(7)
+	command := automationapp.PolicyCommand{Code: "pg-lifecycle", Name: "PostgreSQL lifecycle", PackageID: packageID, TriggerKind: automationport.TriggerAudienceMemberEnteredV1, ActionKind: automationport.ActionRecord, ActionConfig: json.RawMessage(`{"record_type":"entry"}`), QuietHours: json.RawMessage(`{"timezone":"UTC","start":"22:00","end":"08:00"}`), SingleRunLimit: 10, ApprovalStaffID: &approval, Actor: 7, IdempotencyKey: "policy-postgres-create-0001"}
+	created, err := service.CreatePolicy(ctx, command)
+	if err != nil || created.Version != 2 || created.Lifecycle != automationdomain.PolicyPaused {
+		t.Fatalf("created=%+v err=%v", created, err)
+	}
+	versionCommand := command
+	versionCommand.PolicyID, versionCommand.ExpectedVersion, versionCommand.IdempotencyKey = created.ID, created.Version, "policy-postgres-version-0001"
+	versioned, err := service.PutPolicyVersion(ctx, versionCommand)
+	if err != nil || versioned.Version != 2 {
+		t.Fatalf("versioned=%+v err=%v", versioned, err)
+	}
+	// Keep the direct Store probe transaction-only: on a PostgreSQL regression
+	// it identifies the failing lifecycle write without leaving a test row, and
+	// normal behavior is still verified by the real transitions below.
+	probeRollback := errors.New("rollback policy lifecycle probe")
+	probeErr := uow.Within(ctx, func(tx context.Context) error {
+		current, e := repository.LockPolicy(tx, created.ID)
+		if e != nil {
+			return e
+		}
+		if _, e = repository.SetPolicyLifecycle(tx, current.ID, current.Version, 7, automationdomain.PolicyActive, time.Date(2026, 9, 5, 20, 0, 0, 0, time.UTC)); e != nil {
+			return e
+		}
+		return probeRollback
+	})
+	if !errors.Is(probeErr, probeRollback) {
+		t.Fatalf("policy lifecycle rollback probe: %v", probeErr)
+	}
+	active, err := service.TransitionPolicy(ctx, automationapp.PolicyLifecycleCommand{PolicyID: created.ID, ExpectedVersion: 3, Actor: 7, Target: automationdomain.PolicyActive, IdempotencyKey: "policy-postgres-active-0001"})
+	if err != nil || active.Lifecycle != automationdomain.PolicyActive || active.Version != 4 {
+		t.Fatalf("active=%+v err=%v", active, err)
+	}
+	replayed, err := service.TransitionPolicy(ctx, automationapp.PolicyLifecycleCommand{PolicyID: created.ID, ExpectedVersion: 3, Actor: 7, Target: automationdomain.PolicyActive, IdempotencyKey: "policy-postgres-active-0001"})
+	if err != nil || replayed.ID != active.ID || replayed.Version != active.Version {
+		t.Fatalf("active replay=%+v err=%v", replayed, err)
+	}
+	paused, err := service.TransitionPolicy(ctx, automationapp.PolicyLifecycleCommand{PolicyID: created.ID, ExpectedVersion: active.Version, Actor: 7, Target: automationdomain.PolicyPaused, IdempotencyKey: "policy-postgres-pause-0001"})
+	if err != nil || paused.Lifecycle != automationdomain.PolicyPaused || paused.Version != 5 {
+		t.Fatalf("paused=%+v err=%v", paused, err)
+	}
+	archived, err := service.TransitionPolicy(ctx, automationapp.PolicyLifecycleCommand{PolicyID: created.ID, ExpectedVersion: paused.Version, Actor: 7, Target: automationdomain.PolicyArchived, IdempotencyKey: "policy-postgres-archive-0001"})
+	if err != nil || archived.Lifecycle != automationdomain.PolicyArchived || archived.ArchivedAt == nil || archived.Version != 6 {
+		t.Fatalf("archived=%+v err=%v", archived, err)
+	}
+	if _, err = service.TransitionPolicy(ctx, automationapp.PolicyLifecycleCommand{PolicyID: created.ID, ExpectedVersion: archived.Version, Actor: 7, Target: automationdomain.PolicyArchived, IdempotencyKey: "policy-postgres-archive-0002"}); !errors.Is(err, automationapp.ErrRuntimeConflict) {
+		t.Fatalf("second archive err=%v", err)
+	}
+}
+
 func automationIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 	t.Helper()
 	url, err := platformconfig.DatabaseURL()
@@ -158,6 +251,64 @@ func automationIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 		t.Fatal("locate test")
 	}
 	for _, name := range []string{"0013_automation_agents.sql"} {
+		migration, readErr := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "..", "migrations", name))
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if _, execErr := pool.Exec(ctx, string(migration)); execErr != nil {
+			t.Fatalf("apply %s: %v", name, execErr)
+		}
+	}
+	return pool, func() {
+		pool.Close()
+		cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, _ = admin.Exec(cleanup, "DROP SCHEMA "+pgx.Identifier{schema}.Sanitize()+" CASCADE")
+		admin.Close(cleanup)
+	}
+}
+
+func automationRuntimeIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
+	t.Helper()
+	pool, cleanup := automationIntegrationPoolWithMigrations(t, []string{"0013_automation_agents.sql", "0043_automation_runtime.sql"})
+	return pool, cleanup
+}
+
+func automationIntegrationPoolWithMigrations(t *testing.T, migrations []string) (*pgxpool.Pool, func()) {
+	t.Helper()
+	url, err := platformconfig.DatabaseURL()
+	if err != nil {
+		t.Skip("DATABASE_URL is not configured; skipping automation PostgreSQL integration test")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	var random [8]byte
+	if _, err = rand.Read(random[:]); err != nil {
+		t.Fatal(err)
+	}
+	schema := "aicrm_automation_runtime_test_" + hex.EncodeToString(random[:])
+	admin, err := pgx.Connect(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = admin.Exec(ctx, "CREATE SCHEMA "+pgx.Identifier{schema}.Sanitize()); err != nil {
+		admin.Close(ctx)
+		t.Fatal(err)
+	}
+	config, err := pgxpool.ParseConfig(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.ConnConfig.RuntimeParams["search_path"] = schema
+	pool, err := pgxpool.NewWithConfig(ctx, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("locate test")
+	}
+	for _, name := range migrations {
 		migration, readErr := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "..", "migrations", name))
 		if readErr != nil {
 			t.Fatal(readErr)
