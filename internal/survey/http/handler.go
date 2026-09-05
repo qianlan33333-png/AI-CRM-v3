@@ -132,8 +132,27 @@ func (r definitionRequest) questionnaire() surveyport.Questionnaire {
 			maximum := 1
 			questions[index].Validation.MaximumSelections = &maximum
 		}
+		options := append([]surveyport.Option(nil), questions[index].Options...)
+		for optionIndex := range options {
+			// Hidden “other” controls in the frozen editor serialize their 80
+			// character default even when the option is not an other option.
+			// It is not enabled business configuration, so omit it before the
+			// strict Owner validation; enabled other-option values are retained.
+			if !options[optionIndex].IsOther {
+				options[optionIndex].OtherPlaceholder = ""
+				options[optionIndex].OtherMaximumLength = 0
+			}
+		}
+		questions[index].Options = options
 	}
-	return surveyport.Questionnaire{Name: r.Name, Title: r.Title, Description: r.Description, Mode: mode, AnswerDisplayMode: r.AnswerDisplayMode, AssessmentConfig: r.AssessmentConfig, Slug: r.Slug, Status: status, Questions: questions, ScoreRules: r.ScoreRules}
+	assessmentConfig := r.AssessmentConfig
+	if mode == surveyport.ModeSurvey {
+		// The same frozen editor serializes its hidden assessment builder for
+		// ordinary questionnaires. Survey-owned definitions do not enable that
+		// product surface, so retain the canonical empty object instead.
+		assessmentConfig = json.RawMessage(`{}`)
+	}
+	return surveyport.Questionnaire{Name: r.Name, Title: r.Title, Description: r.Description, Mode: mode, AnswerDisplayMode: r.AnswerDisplayMode, AssessmentConfig: assessmentConfig, Slug: r.Slug, Status: status, Questions: questions, ScoreRules: r.ScoreRules}
 }
 
 func (h *Handler) adminRoot(w http.ResponseWriter, r *http.Request) {

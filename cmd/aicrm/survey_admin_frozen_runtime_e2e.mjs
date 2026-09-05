@@ -73,7 +73,7 @@ async function openEditor(query) {
   const calls = [];
   dom.window.fetch = async (inputValue, init = {}) => {
     const target = new URL(String(inputValue), origin);
-    const call = { path: target.pathname, method: init.method || "GET", status: 0 };
+    const call = { path: target.pathname, method: init.method || "GET", body: typeof init.body === "string" ? init.body : "", status: 0 };
     calls.push(call);
     const response = await globalThis.fetch(target, init);
     call.status = response.status;
@@ -112,6 +112,10 @@ await waitFor("normal editor create", () => /\?id=[1-9]\d*$/.test(normal.dom.win
 });
 const normalID = Number(new URLSearchParams(normal.dom.window.location.search).get("id"));
 if (!Number.isSafeInteger(normalID) || normalID < 1) throw new Error("created editor did not retain a server questionnaire id");
+const frozenNormalPayload = JSON.parse(normal.calls.find((call) => call.path === "/api/admin/questionnaires" && call.method === "POST")?.body || "{}");
+if (!frozenNormalPayload.assessment_config || !frozenNormalPayload.questions?.every((question) => question.options.every((option) => option.other_max_length === 80 && option.is_other === false))) {
+  throw new Error(`fixture no longer captures the frozen hidden defaults: ${JSON.stringify(frozenNormalPayload)}`);
+}
 
 // A newly saved normal questionnaire is represented as disabled by the
 // compatibility DTO. The frozen list's first “启用” must publish its draft,

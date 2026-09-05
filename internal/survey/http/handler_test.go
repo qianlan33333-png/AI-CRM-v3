@@ -11,6 +11,7 @@ import (
 
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
+	surveydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/survey/domain"
 	surveyport "github.com/qianlan33333-png/AI-CRM-v3/internal/survey/port"
 )
 
@@ -113,6 +114,33 @@ func TestDefinitionRequestAppliesFrozenSingleChoiceDefaultOnlyWhenAbsent(t *test
 	questionnaire = request.questionnaire()
 	if questionnaire.Questions[0].Validation.MaximumSelections == nil || *questionnaire.Questions[0].Validation.MaximumSelections != 2 {
 		t.Fatalf("explicit validation was overwritten=%+v", questionnaire.Questions[0].Validation)
+	}
+}
+
+func TestDefinitionRequestStripsOnlyFrozenHiddenOrdinaryDefaults(t *testing.T) {
+	request := definitionRequest{
+		Name: "frozen-normal", Title: "冻结普通问卷", AnswerDisplayMode: surveyport.DisplayAllInOne, Slug: "frozen-normal",
+		AssessmentConfig: []byte(`{"dimensions":[{"hidden":true}]}`),
+		Questions: []surveyport.Question{{Type: surveyport.QuestionSingleChoice, Title: "选择", SortOrder: 0, Options: []surveyport.Option{
+			{Text: "A", SortOrder: 0, OtherMaximumLength: 80},
+			{Text: "B", SortOrder: 1, OtherMaximumLength: 80},
+		}}},
+	}
+	questionnaire := request.questionnaire()
+	if string(questionnaire.AssessmentConfig) != "{}" || questionnaire.Questions[0].Options[0].OtherMaximumLength != 0 || questionnaire.Questions[0].Options[1].OtherMaximumLength != 0 {
+		t.Fatalf("hidden frozen defaults were retained=%+v", questionnaire)
+	}
+	if err := surveydomain.ValidateQuestionnaire(questionnaire); err != nil {
+		t.Fatalf("normalized frozen ordinary definition is invalid: %v", err)
+	}
+	request.AssessmentEnabled = true
+	request.AssessmentConfig = []byte(`{"template_id":"template-1"}`)
+	request.Questions[0].Options[0].IsOther = true
+	request.Questions[0].Options[0].OtherPlaceholder = "请填写"
+	request.Questions[0].Options[0].OtherMaximumLength = 80
+	assessment := request.questionnaire()
+	if string(assessment.AssessmentConfig) != `{"template_id":"template-1"}` || !assessment.Questions[0].Options[0].IsOther || assessment.Questions[0].Options[0].OtherMaximumLength != 80 {
+		t.Fatalf("enabled configuration was changed=%+v", assessment)
 	}
 }
 
