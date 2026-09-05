@@ -13,6 +13,7 @@ type AudienceEntry struct {
 	// ChannelID is retained only as an Owner-local lookup key.
 	ChannelCode                   string
 	OwnerReference                string
+	OwnerStaffID                  *int64
 	FirstEnteredAt, LastEnteredAt time.Time
 }
 type AudienceEntryReader interface {

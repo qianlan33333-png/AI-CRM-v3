@@ -78,7 +78,7 @@ func (s LegacyTemplateSource) ownerReferences(ctx context.Context, params map[st
 	if json.Unmarshal(raw, &ids) != nil {
 		return nil, ErrCustomerReadUnavailable
 	}
-	values := append([]string{}, ids...)
+	values := []string{}
 	for _, value := range ids {
 		id, err := strconv.ParseInt(value, 10, 64)
 		if err != nil || id < 1 {
@@ -94,6 +94,8 @@ func (s LegacyTemplateSource) ownerReferences(ctx context.Context, params map[st
 	}
 	encoded, _ := json.Marshal(values)
 	params["owner_staff_ids"] = encoded
+	local, _ := json.Marshal(ids)
+	params["owner_local_staff_ids"] = local
 	return params, nil
 }
 
@@ -336,9 +338,14 @@ func (s LegacyTemplateSource) channel(ctx context.Context, p map[string]json.Raw
 		return nil, e
 	}
 	out := map[int64]bool{}
+	localOwners, _ := listParam(p, "owner_local_staff_ids")
 	for _, fact := range facts {
 		age := int(at.Sub(fact.LastEnteredAt).Hours() / 24)
-		if !contains(channels, fact.ChannelCode) || age < minimum || (maximum != nil && age >= *maximum) || !owner(p, fact.OwnerReference) {
+		ownerMatch := owner(p, fact.OwnerReference)
+		if fact.OwnerStaffID != nil {
+			ownerMatch = contains(localOwners, strconv.FormatInt(*fact.OwnerStaffID, 10))
+		}
+		if !contains(channels, fact.ChannelCode) || age < minimum || (maximum != nil && age >= *maximum) || !ownerMatch {
 			continue
 		}
 		id := int64(fact.CustomerID)

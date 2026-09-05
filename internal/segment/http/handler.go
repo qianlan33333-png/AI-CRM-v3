@@ -428,6 +428,9 @@ func (h *Handler) normalizeOwnerUserIDs(ctx context.Context, raw json.RawMessage
 	if !exists {
 		return raw, nil
 	}
+	if _, mixed := definition.Parameters["owner_staff_ids"]; mixed {
+		return nil, errors.New("mixed owner identifiers")
+	}
 	if h.owners == nil {
 		return nil, errors.New("owner resolver unavailable")
 	}
