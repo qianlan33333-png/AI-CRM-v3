@@ -2,6 +2,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
@@ -301,8 +302,7 @@ func importSnapshot(args []string) error {
 	batchKey := "survey-v2-" + snap.Manifest.SnapshotAt.Format("20060102T150405Z")
 	manifestRaw, _ := json.Marshal(snap.Manifest)
 	var batchID int64
-	err = tx.QueryRow(ctx, `INSERT INTO survey_migration_batches(batch_key,source_system,snapshot_at,manifest,manifest_digest,status,created_at,updated_at) VALUES($1,$2,$3,$4,$5,'importing',clock_timestamp(),clock_timestamp()) ON CONFLICT(batch_key) DO UPDATE SET updated_at=clock_timestamp() RETURNING id`, batchKey, snap.Manifest.SourceSystem, snap.Manifest.SnapshotAt, manifestRaw, manifestDigest[:]).Scan(&batchID)
-	if err != nil {
+	if batchID, err = beginOrReplayBatch(ctx, tx, batchKey, snap.Manifest, manifestRaw, manifestDigest); err != nil {
 		return err
 	}
 	var actor int64
@@ -454,6 +454,13 @@ func importSnapshot(args []string) error {
 			_ = tx.QueryRow(ctx, `SELECT active_definition_version_id FROM survey_questionnaires WHERE id=$1`, targetID).Scan(&versionID)
 			versionTarget[q.ID] = versionID
 		}
+	}
+	// Definitions are immutable facts. A replay may reuse their mappings only
+	// when every child fact still has the exact frozen source digest. In
+	// particular, an already-mapped questionnaire cannot hide an option or
+	// score-rule change from a later snapshot.
+	if err = verifyDefinitionGraph(ctx, tx, snap.Manifest.SourceSystem, questions, options, rules); err != nil {
+		return err
 	}
 	// Reload definition source mappings so a repeated import has the same
 	// source-to-target graph before answers are reconciled.
@@ -692,41 +699,217 @@ func reconcile(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	snap, _, err := load(*file, *keyFile)
+	snap, manifestDigest, err := load(*file, *keyFile)
 	if err != nil {
+		return err
+	}
+	if err = validateSnapshot(snap); err != nil {
 		return err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	pool, err := pgxpool.New(ctx, *target)
 	if err != nil {
-		return err
+		return errors.New("connect target")
 	}
 	defer pool.Close()
-	problems := []string{}
+	tx, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable, AccessMode: pgx.ReadWrite})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	var batchID int64
+	var storedManifest []byte
+	if err = tx.QueryRow(ctx, `SELECT id,manifest_digest FROM survey_migration_batches WHERE source_system=$1 AND snapshot_at=$2 FOR UPDATE`, snap.Manifest.SourceSystem, snap.Manifest.SnapshotAt).Scan(&batchID, &storedManifest); err != nil {
+		return err
+	}
+	if !bytes.Equal(storedManifest, manifestDigest[:]) {
+		return errors.New("migration batch manifest mismatch")
+	}
+	expected, err := expectedSourceDigests(snap)
+	if err != nil {
+		return err
+	}
 	for _, table := range tables {
-		var count int
-		err = pool.QueryRow(ctx, `SELECT count(*) FROM survey_migration_source_map WHERE source_system=$1 AND source_table=$2`, snap.Manifest.SourceSystem, table).Scan(&count)
+		rows, err := tx.Query(ctx, `SELECT source_pk,target_table,target_pk,record_digest,import_state FROM survey_migration_source_map WHERE migration_batch_id=$1 AND source_table=$2 ORDER BY id`, batchID, table)
 		if err != nil {
 			return err
 		}
-		if count != snap.Manifest.Counts[table] {
-			problems = append(problems, fmt.Sprintf("%s source=%d target=%d", table, snap.Manifest.Counts[table], count))
+		type mappedFact struct {
+			pk, targetTable, state string
+			targetPK               *int64
+			digest                 []byte
+		}
+		facts := []mappedFact{}
+		seen := map[string]bool{}
+		for rows.Next() {
+			var fact mappedFact
+			if err = rows.Scan(&fact.pk, &fact.targetTable, &fact.targetPK, &fact.digest, &fact.state); err != nil {
+				rows.Close()
+				return err
+			}
+			expectedDigest, ok := expected[table][fact.pk]
+			if !ok || seen[fact.pk] || !bytes.Equal(fact.digest, expectedDigest[:]) {
+				rows.Close()
+				return fmt.Errorf("migration reconciliation failed: %s/%s mapping drift", table, fact.pk)
+			}
+			seen[fact.pk] = true
+			facts = append(facts, fact)
+		}
+		if err = rows.Err(); err != nil {
+			rows.Close()
+			return err
+		}
+		rows.Close()
+		if len(seen) != len(expected[table]) {
+			return fmt.Errorf("migration reconciliation failed: %s source=%d target=%d", table, len(expected[table]), len(seen))
+		}
+		for _, fact := range facts {
+			var expectedDigest [32]byte
+			copy(expectedDigest[:], fact.digest)
+			if err = verifyMappedFact(ctx, tx, batchID, snap.Manifest.SourceSystem, table, fact.pk, fact.targetTable, fact.targetPK, fact.state, expectedDigest); err != nil {
+				return err
+			}
 		}
 	}
-	if len(problems) > 0 {
-		return errors.New("migration reconciliation failed: " + strings.Join(problems, "; "))
-	}
 	var duplicates int
-	if err = pool.QueryRow(ctx, `SELECT count(*) FROM (SELECT source_system,source_table,source_pk,count(*) FROM survey_migration_source_map WHERE source_system=$1 GROUP BY 1,2,3 HAVING count(*)>1)x`, snap.Manifest.SourceSystem).Scan(&duplicates); err != nil || duplicates != 0 {
+	if err = tx.QueryRow(ctx, `SELECT count(*) FROM (SELECT source_system,source_table,source_pk,count(*) FROM survey_migration_source_map WHERE migration_batch_id=$1 GROUP BY 1,2,3 HAVING count(*)>1)x`, batchID).Scan(&duplicates); err != nil || duplicates != 0 {
 		return errors.New("duplicate source mapping")
 	}
-	_, err = pool.Exec(ctx, `UPDATE survey_migration_batches SET status='reconciled',updated_at=clock_timestamp() WHERE source_system=$1 AND snapshot_at=$2`, snap.Manifest.SourceSystem, snap.Manifest.SnapshotAt)
-	if err != nil {
+	if _, err = tx.Exec(ctx, `UPDATE survey_migration_batches SET status='reconciled',updated_at=clock_timestamp() WHERE id=$1`, batchID); err != nil {
+		return err
+	}
+	if err = tx.Commit(ctx); err != nil {
 		return err
 	}
 	fmt.Printf("reconciled counts=%s duplicates=0 silent_loss=0 wrong_oneid_bindings=0 provider_effects_created=0\n", safeCounts(snap.Manifest.Counts))
 	return nil
+}
+
+func expectedSourceDigests(s Snapshot) (map[string]map[string][32]byte, error) {
+	result := make(map[string]map[string][32]byte, len(tables))
+	for _, table := range tables {
+		result[table] = map[string][32]byte{}
+	}
+	add := func(table string, id int64, value any) error {
+		pk := fmt.Sprint(id)
+		if _, duplicate := result[table][pk]; duplicate {
+			return fmt.Errorf("duplicate frozen source row %s/%s", table, pk)
+		}
+		result[table][pk] = recordDigest(value)
+		return nil
+	}
+	var questionnaires []questionnaire
+	var questions []question
+	var options []option
+	var rules []rule
+	var submissions []submission
+	var answers []answer
+	var pushes, scrm []operation
+	decodeTable(s, "questionnaires", &questionnaires)
+	decodeTable(s, "questionnaire_questions", &questions)
+	decodeTable(s, "questionnaire_options", &options)
+	decodeTable(s, "questionnaire_score_rules", &rules)
+	decodeTable(s, "questionnaire_submissions", &submissions)
+	decodeTable(s, "questionnaire_submission_answers", &answers)
+	decodeTable(s, "questionnaire_external_push_logs", &pushes)
+	decodeTable(s, "questionnaire_scrm_apply_logs", &scrm)
+	for _, value := range questionnaires {
+		if err := add("questionnaires", value.ID, value); err != nil {
+			return nil, err
+		}
+	}
+	for _, value := range questions {
+		if err := add("questionnaire_questions", value.ID, value); err != nil {
+			return nil, err
+		}
+	}
+	for _, value := range options {
+		if err := add("questionnaire_options", value.ID, value); err != nil {
+			return nil, err
+		}
+	}
+	for _, value := range rules {
+		if err := add("questionnaire_score_rules", value.ID, value); err != nil {
+			return nil, err
+		}
+	}
+	for _, value := range submissions {
+		if err := add("questionnaire_submissions", value.ID, value); err != nil {
+			return nil, err
+		}
+	}
+	for _, value := range answers {
+		if err := add("questionnaire_submission_answers", value.ID, value); err != nil {
+			return nil, err
+		}
+	}
+	for _, value := range pushes {
+		if err := add("questionnaire_external_push_logs", value.ID, value); err != nil {
+			return nil, err
+		}
+	}
+	for _, value := range scrm {
+		if err := add("questionnaire_scrm_apply_logs", value.ID, value); err != nil {
+			return nil, err
+		}
+	}
+	return result, nil
+}
+
+func verifyMappedFact(ctx context.Context, tx pgx.Tx, batchID int64, source, table, pk, targetTable string, targetPK *int64, state string, digest [32]byte) error {
+	if state == "quarantined" {
+		var exists bool
+		err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM survey_migration_quarantine WHERE migration_batch_id=$1 AND source_system=$2 AND source_table=$3 AND source_pk=$4 AND record_digest=$5)`, batchID, source, table, pk, digest[:]).Scan(&exists)
+		if err != nil || !exists || targetTable != "survey_migration_quarantine" || targetPK != nil {
+			return fmt.Errorf("migration reconciliation failed: %s/%s missing quarantine fact", table, pk)
+		}
+		return nil
+	}
+	if state != "imported" || targetPK == nil {
+		return fmt.Errorf("migration reconciliation failed: %s/%s invalid mapped fact", table, pk)
+	}
+	var exists bool
+	var err error
+	switch targetTable {
+	case "survey_questionnaires", "survey_definition_questions", "survey_definition_options", "survey_score_rules":
+		if !mapTargetTable(table, targetTable) {
+			return fmt.Errorf("migration reconciliation failed: %s/%s type mismatch", table, pk)
+		}
+		err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM `+targetTable+` WHERE id=$1)`, *targetPK).Scan(&exists)
+		if err != nil || !exists {
+			return fmt.Errorf("migration reconciliation failed: %s/%s missing target fact", table, pk)
+		}
+		return nil
+	case "survey_submissions":
+		if table != "questionnaire_submissions" {
+			return fmt.Errorf("migration reconciliation failed: %s/%s type mismatch", table, pk)
+		}
+		err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM survey_submissions WHERE id=$1 AND payload_digest=$2)`, *targetPK, digest[:]).Scan(&exists)
+	case "survey_submission_answers":
+		if table != "questionnaire_submission_answers" {
+			return fmt.Errorf("migration reconciliation failed: %s/%s type mismatch", table, pk)
+		}
+		err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM survey_submission_answers WHERE id=$1 AND answer_digest=$2)`, *targetPK, digest[:]).Scan(&exists)
+	case "survey_external_operation_receipts":
+		if table != "questionnaire_external_push_logs" && table != "questionnaire_scrm_apply_logs" {
+			return fmt.Errorf("migration reconciliation failed: %s/%s type mismatch", table, pk)
+		}
+		err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM survey_external_operation_receipts WHERE id=$1 AND read_only_legacy=TRUE AND replayable=FALSE AND source_system=$2 AND source_table=$3 AND source_pk=$4)`, *targetPK, source, table, pk).Scan(&exists)
+	default:
+		return fmt.Errorf("migration reconciliation failed: %s/%s unknown target type", table, pk)
+	}
+	if err != nil || !exists {
+		return fmt.Errorf("migration reconciliation failed: %s/%s missing target fact", table, pk)
+	}
+	return nil
+}
+
+func mapTargetTable(source, target string) bool {
+	return (source == "questionnaires" && target == "survey_questionnaires") ||
+		(source == "questionnaire_questions" && target == "survey_definition_questions") ||
+		(source == "questionnaire_options" && target == "survey_definition_options") ||
+		(source == "questionnaire_score_rules" && target == "survey_score_rules")
 }
 
 func load(file, keyFile string) (Snapshot, [32]byte, error) {
@@ -805,6 +988,55 @@ func decodeTable(s Snapshot, name string, out any) {
 	}
 }
 func recordDigest(v any) [32]byte { raw, _ := json.Marshal(v); return sha256.Sum256(raw) }
+func beginOrReplayBatch(ctx context.Context, tx pgx.Tx, batchKey string, manifest Manifest, manifestRaw []byte, digest [32]byte) (int64, error) {
+	var (
+		batchID        int64
+		sourceSystem   string
+		snapshotAt     time.Time
+		existingDigest []byte
+	)
+	err := tx.QueryRow(ctx, `INSERT INTO survey_migration_batches(batch_key,source_system,snapshot_at,manifest,manifest_digest,status,created_at,updated_at)
+		VALUES($1,$2,$3,$4,$5,'importing',clock_timestamp(),clock_timestamp())
+		ON CONFLICT(batch_key) DO UPDATE SET batch_key=survey_migration_batches.batch_key
+		RETURNING id,source_system,snapshot_at,manifest_digest`, batchKey, manifest.SourceSystem, manifest.SnapshotAt, manifestRaw, digest[:]).Scan(&batchID, &sourceSystem, &snapshotAt, &existingDigest)
+	if err != nil {
+		return 0, err
+	}
+	if sourceSystem != manifest.SourceSystem || !snapshotAt.Equal(manifest.SnapshotAt) || !bytes.Equal(existingDigest, digest[:]) {
+		return 0, errors.New("migration batch manifest mismatch")
+	}
+	return batchID, nil
+}
+
+func verifyDefinitionGraph(ctx context.Context, tx pgx.Tx, source string, questions []question, options []option, rules []rule) error {
+	verify := func(table, pk string, digest [32]byte) error {
+		found, target, err := mapped(ctx, tx, source, table, pk, digest)
+		if err != nil {
+			return err
+		}
+		if !found || target == 0 {
+			return fmt.Errorf("migration definition graph incomplete: %s/%s", table, pk)
+		}
+		return nil
+	}
+	for _, item := range questions {
+		if err := verify("questionnaire_questions", fmt.Sprint(item.ID), recordDigest(item)); err != nil {
+			return err
+		}
+	}
+	for _, item := range options {
+		if err := verify("questionnaire_options", fmt.Sprint(item.ID), recordDigest(item)); err != nil {
+			return err
+		}
+	}
+	for _, item := range rules {
+		if err := verify("questionnaire_score_rules", fmt.Sprint(item.ID), recordDigest(item)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func writeMap(ctx context.Context, tx pgx.Tx, batch int64, source, table, pk, target string, targetPK any, digest [32]byte, state string) error {
 	_, err := tx.Exec(ctx, `INSERT INTO survey_migration_source_map(migration_batch_id,source_system,source_table,source_pk,target_table,target_pk,record_digest,import_state,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,clock_timestamp())`, batch, source, table, pk, target, targetPK, digest[:], state)
 	return err
