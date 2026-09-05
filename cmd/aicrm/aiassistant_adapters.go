@@ -40,6 +40,9 @@ type aiStaffSnapshotAdapter struct{ repository accessport.Repository }
 
 func (a aiStaffSnapshotAdapter) StaffSnapshot(ctx context.Context, id int64) (aiassistantapp.StaffSnapshot, error) {
 	user, err := a.repository.UserByID(ctx, id, false)
+	if errors.Is(err, accessdomain.ErrNotFound) {
+		return aiassistantapp.StaffSnapshot{}, nil
+	}
 	if err != nil {
 		return aiassistantapp.StaffSnapshot{}, err
 	}

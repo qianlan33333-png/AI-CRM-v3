@@ -19,9 +19,10 @@ import (
 	aiassistantstore "github.com/qianlan33333-png/AI-CRM-v3/internal/aiassistant/store"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
+	identityapp "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/app"
 	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
-	identityport "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/port"
 	identityquery "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/query"
+	identitystore "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/store"
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 )
@@ -47,7 +48,7 @@ func TestAIAssistantIntakeRequiresStoredVerifiedIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	installAIAssistantIdentity(t, native, "declared")
-	service, err := aiassistantapp.NewService(uow, repository, aiAssistantIdentityCustomers{}, aiAssistantIdentityStaff{}, aiAssistantIdentityMaterials{}, aiAssistantIdentityResolver{}, identityquery.NewPostgreSQL())
+	service, err := aiassistantapp.NewService(uow, repository, aiAssistantIdentityCustomers{}, aiAssistantIdentityStaff{}, aiAssistantIdentityMaterials{}, identityapp.OneIDService{Store: identitystore.NewPostgresStore()}, identityquery.NewPostgreSQL())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,6 +57,12 @@ func TestAIAssistantIntakeRequiresStoredVerifiedIdentity(t *testing.T) {
 	result, err := service.CreatePlanFromIdentities(context.Background(), declared)
 	if err != nil || result.Plan.ID != 0 || result.Unverified != 1 || len(result.Dispositions) != 1 || result.Dispositions[0].Status != "unverified" {
 		t.Fatalf("declared result=%+v err=%v", result, err)
+	}
+	wrongScope := aiAssistantIdentityCommand(at.Add(30*time.Second), "wrong-scope-intake", "1234567890abcdef-scope")
+	wrongScope.Targets[0].Reference.Scope = "wecom-corp:other"
+	scoped, err := service.CreatePlanFromIdentities(context.Background(), wrongScope)
+	if err != nil || scoped.Plan.ID != 0 || scoped.NotFound != 1 || len(scoped.Dispositions) != 1 || scoped.Dispositions[0].Status != "not_found" {
+		t.Fatalf("wrong scope=%+v err=%v", scoped, err)
 	}
 	if _, err = native.Exec(context.Background(), `UPDATE customer_identities SET assurance='verified',verified_at=clock_timestamp() WHERE customer_id=91`); err != nil {
 		t.Fatal(err)
@@ -123,14 +130,6 @@ func (aiAssistantIdentityMaterials) ResolveMaterial(_ context.Context, block aia
 
 func (aiAssistantIdentityMaterials) RegisterMaterialReference(context.Context, aiassistantport.ContentBlock, effectport.Digest) error {
 	return nil
-}
-
-// This resolver represents the already-completed Identity Resolve port. The
-// test's assurance check comes exclusively from identityquery.PostgreSQL.
-type aiAssistantIdentityResolver struct{}
-
-func (aiAssistantIdentityResolver) Resolve(context.Context, identitydomain.Reference) (identityport.ResolveResult, error) {
-	return identityport.ResolveResult{Status: identityport.ResolveFound, CustomerID: 91}, nil
 }
 
 func installAIAssistantIdentity(t *testing.T, native *pgxpool.Pool, assurance string) {
