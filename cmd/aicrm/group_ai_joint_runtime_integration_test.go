@@ -332,7 +332,7 @@ func TestAutomationAIAssistantAndGroupOpsShareRiverRuntime(t *testing.T) {
 	ctx := context.Background()
 	native, cleanup := automationAudienceRuntimePool(t)
 	defer cleanup()
-	for _, migration := range []string{"0004_wecom.sql", "0009_customer_activation.sql", "0012_group_ops.sql", "0016_media_content_packages.sql", "0078_group_ops_provider_tasks.sql", "0081_group_ops_webhook_unconfigured_reference.sql"} {
+	for _, migration := range []string{"0004_wecom.sql", "0009_customer_activation.sql", "0022_customer_profile_sections.sql", "0012_group_ops.sql", "0016_media_content_packages.sql", "0078_group_ops_provider_tasks.sql", "0081_group_ops_webhook_unconfigured_reference.sql"} {
 		if err := applyAIAssistantHTTPJourneyMigration(ctx, native, migration); err != nil {
 			t.Fatalf("apply %s: %v", migration, err)
 		}
@@ -437,6 +437,9 @@ func TestAutomationAIAssistantAndGroupOpsShareRiverRuntime(t *testing.T) {
 		t.Fatal(err)
 	}
 	materials := automationAudienceCreateMedia(t, ctx, mediaRepo, staffID)
+	if _, err = mediaRepo.UpdateMiniProgram(ctx, materials.miniID, staffID, "joint-runtime-mini-revised-0001", map[string]any{"title": "Runtime card revised"}); err != nil {
+		t.Fatal(err)
+	}
 	automationService := automationapp.NewAgentServiceWithMediaReferences(uow, automationRepo, mediaRepo, mediaRepo, mediaRepo, mediaRepo, automationRepo)
 	agent := automationAudiencePublishedAgent(t, ctx, automationService, staffID, materials)
 	published, found, err := automationService.PublishedAgent(ctx, agent.ID)
@@ -667,7 +670,9 @@ func TestAutomationAIAssistantAndGroupOpsShareRiverRuntime(t *testing.T) {
 	var stopSharedOnce sync.Once
 	stopSharedSafely := func() { stopSharedOnce.Do(stopShared) }
 	defer stopSharedSafely()
-	automationAudienceEventually(t, "joint source completions", func() bool { return automationWeCom.Calls() == 2 && groupWeCom.callCount() == 4 })
+	automationAudienceEventually(t, "joint source completions", func() bool {
+		return automationWeCom.Calls() == 2 && groupWeCom.callCount() == 4 && jointInitialCompletionsPersisted(ctx, native, policy.ID, plan.ID, groupPlan, unknownPlan, customers[1], staffID)
+	})
 	if uploads := automationWeCom.Uploads(); uploads != 6 {
 		t.Fatalf("frozen mixed-media uploads=%d want 6", uploads)
 	}
@@ -717,6 +722,9 @@ func TestAutomationAIAssistantAndGroupOpsShareRiverRuntime(t *testing.T) {
 		t.Fatalf("advance delayed=%d err=%v", tag.RowsAffected(), e)
 	}
 	waitGroupOpsProviderCalls(t, native, groupWeCom, 6)
+	automationAudienceEventually(t, "joint delayed owner completions", func() bool {
+		return jointCompletionOwnershipPersisted(ctx, native, policy.ID, manual.ID, plan.ID, groupPlan, customers[0], customers[1], staffID)
+	})
 	stopRestartSafely()
 	var unknown int
 	if err = native.QueryRow(ctx, `SELECT count(*) FROM external_effects WHERE state='outcome_unknown'`).Scan(&unknown); err != nil || unknown != 2 {
@@ -750,6 +758,74 @@ func jointUnknownEffectIDs(t *testing.T, ctx context.Context, pool *pgxpool.Pool
 	return ids
 }
 
+func jointInitialCompletionsPersisted(ctx context.Context, pool *pgxpool.Pool, policyID int64, manualPlanID aiassistantport.PlanID, groupPlanID, unknownPlanID int64, automaticCustomer customerdomain.CustomerID, staffID int64) bool {
+	var automatic, manual, regularGroup, unknownGroup int
+	if pool.QueryRow(ctx, `SELECT count(*)
+		FROM automation_runs run
+		JOIN automation_run_recipients recipient ON recipient.run_id=run.id
+		JOIN outbound_message_intents intent ON intent.run_recipient_id=recipient.id
+		JOIN external_effects effect ON ('eer_'||effect.id::text)=intent.effect_id
+		WHERE run.policy_id=$1 AND recipient.customer_id=$2 AND recipient.sender_staff_id=$3
+		  AND intent.source_kind='automation_enrollment' AND intent.state='provider_accepted'
+		  AND intent.receipt_digest IS NOT NULL AND effect.kind='automation_message' AND effect.state='executed'`, policyID, automaticCustomer, staffID).Scan(&automatic) != nil || automatic != 1 {
+		return false
+	}
+	if pool.QueryRow(ctx, `SELECT count(*)
+		FROM ai_assistant_plans plan
+		JOIN ai_assistant_plan_recipients recipient ON recipient.plan_id=plan.id
+		JOIN ai_assistant_effect_bindings binding ON binding.recipient_id=recipient.id
+		JOIN outbound_private_message_intents intent ON intent.id=binding.outbound_intent_id AND intent.external_effect_id=binding.external_effect_id
+		JOIN external_effects effect ON ('eer_'||effect.id::text)=binding.external_effect_id
+		WHERE plan.id=$1 AND plan.state='completed' AND recipient.execution_state='provider_accepted'
+		  AND binding.state='provider_accepted' AND binding.provider_receipt_digest IS NOT NULL
+		  AND intent.state='provider_accepted' AND effect.kind='outbound_message' AND effect.state='executed'`, manualPlanID).Scan(&manual) != nil || manual != 1 {
+		return false
+	}
+	if pool.QueryRow(ctx, `SELECT
+		count(*) FILTER (WHERE execution.plan_id=$1 AND execution.state='provider_accepted' AND execution.provider_receipt_digest IS NOT NULL AND effect.state='executed'),
+		count(*) FILTER (WHERE execution.plan_id=$2 AND execution.state='outcome_unknown' AND effect.state='outcome_unknown')
+		FROM group_ops_executions execution
+		JOIN external_effects effect ON effect.id=execution.external_effect_id
+		WHERE execution.plan_id IN ($1,$2) AND execution.node_position=1`, groupPlanID, unknownPlanID).Scan(&regularGroup, &unknownGroup) != nil {
+		return false
+	}
+	return regularGroup == 2 && unknownGroup == 2
+}
+
+func jointCompletionOwnershipPersisted(ctx context.Context, pool *pgxpool.Pool, policyID, manualRunID int64, manualPlanID aiassistantport.PlanID, groupPlanID int64, manualCustomer, automaticCustomer customerdomain.CustomerID, staffID int64) bool {
+	var automatic, manual, group int
+	if pool.QueryRow(ctx, `SELECT count(*)
+		FROM automation_runs run
+		JOIN automation_run_recipients recipient ON recipient.run_id=run.id
+		JOIN outbound_message_intents intent ON intent.run_recipient_id=recipient.id
+		JOIN external_effects effect ON ('eer_'||effect.id::text)=intent.effect_id
+		WHERE run.policy_id=$1 AND recipient.customer_id=$2 AND recipient.sender_staff_id=$3
+		  AND intent.source_kind='automation_enrollment' AND intent.state='provider_accepted'
+		  AND intent.receipt_digest IS NOT NULL AND effect.kind='automation_message' AND effect.state='executed'`, policyID, automaticCustomer, staffID).Scan(&automatic) != nil || automatic != 1 {
+		return false
+	}
+	if pool.QueryRow(ctx, `SELECT count(*)
+		FROM automation_runs run
+		JOIN ai_assistant_plans plan ON plan.id=run.ai_plan_id
+		JOIN ai_assistant_plan_recipients recipient ON recipient.plan_id=plan.id
+		JOIN ai_assistant_effect_bindings binding ON binding.recipient_id=recipient.id
+		JOIN outbound_private_message_intents intent ON intent.id=binding.outbound_intent_id AND intent.external_effect_id=binding.external_effect_id
+		JOIN external_effects effect ON ('eer_'||effect.id::text)=binding.external_effect_id
+		WHERE run.id=$1 AND plan.id=$2 AND plan.state='completed' AND recipient.customer_id=$3 AND recipient.staff_id=$4
+		  AND recipient.execution_state='provider_accepted' AND binding.state='provider_accepted' AND binding.provider_receipt_digest IS NOT NULL
+		  AND intent.state='provider_accepted' AND effect.kind='outbound_message' AND effect.state='executed'`, manualRunID, manualPlanID, manualCustomer, staffID).Scan(&manual) != nil || manual != 1 {
+		return false
+	}
+	if pool.QueryRow(ctx, `SELECT count(*)
+		FROM group_ops_executions execution
+		JOIN external_effects effect ON effect.id=execution.external_effect_id
+		WHERE execution.plan_id=$1 AND execution.state='provider_accepted' AND execution.provider_receipt_digest IS NOT NULL
+		  AND effect.kind='group_message' AND effect.state='executed'`, groupPlanID).Scan(&group) != nil || group != 4 {
+		return false
+	}
+	return true
+}
+
 func jointAssertCompletionOwnership(t *testing.T, ctx context.Context, pool *pgxpool.Pool, policyID, manualRunID int64, manualPlanID aiassistantport.PlanID, groupPlanID int64, manualCustomer, automaticCustomer customerdomain.CustomerID, staffID int64) {
 	t.Helper()
 	var automatic, manual, group int
@@ -760,7 +836,7 @@ func jointAssertCompletionOwnership(t *testing.T, ctx context.Context, pool *pgx
 		JOIN external_effects effect ON ('eer_'||effect.id::text)=intent.effect_id
 		WHERE run.policy_id=$1 AND recipient.customer_id=$2 AND recipient.sender_staff_id=$3
 		  AND intent.source_kind='automation_enrollment' AND intent.state='provider_accepted'
-		  AND effect.kind='outbound_message' AND effect.state='executed'`, policyID, automaticCustomer, staffID).Scan(&automatic); err != nil || automatic != 1 {
+		  AND intent.receipt_digest IS NOT NULL AND effect.kind='automation_message' AND effect.state='executed'`, policyID, automaticCustomer, staffID).Scan(&automatic); err != nil || automatic != 1 {
 		t.Fatalf("automatic owner->intent->effect=%d want 1 err=%v", automatic, err)
 	}
 	if err := pool.QueryRow(ctx, `SELECT count(*)
@@ -770,9 +846,9 @@ func jointAssertCompletionOwnership(t *testing.T, ctx context.Context, pool *pgx
 		JOIN ai_assistant_effect_bindings binding ON binding.recipient_id=recipient.id
 		JOIN outbound_private_message_intents intent ON intent.id=binding.outbound_intent_id AND intent.external_effect_id=binding.external_effect_id
 		JOIN external_effects effect ON ('eer_'||effect.id::text)=binding.external_effect_id
-		WHERE run.id=$1 AND plan.id=$2 AND recipient.customer_id=$3 AND recipient.staff_id=$4
+		WHERE run.id=$1 AND plan.id=$2 AND plan.state='completed' AND recipient.customer_id=$3 AND recipient.staff_id=$4
 		  AND recipient.execution_state='provider_accepted' AND binding.state='provider_accepted'
-		  AND intent.state='provider_accepted' AND effect.kind='outbound_message' AND effect.state='executed'`, manualRunID, manualPlanID, manualCustomer, staffID).Scan(&manual); err != nil || manual != 1 {
+		  AND binding.provider_receipt_digest IS NOT NULL AND intent.state='provider_accepted' AND effect.kind='outbound_message' AND effect.state='executed'`, manualRunID, manualPlanID, manualCustomer, staffID).Scan(&manual); err != nil || manual != 1 {
 		t.Fatalf("manual run->AI plan->intent->effect=%d want 1 err=%v", manual, err)
 	}
 	if err := pool.QueryRow(ctx, `SELECT count(*)
