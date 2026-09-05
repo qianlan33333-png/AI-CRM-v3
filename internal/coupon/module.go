@@ -45,6 +45,20 @@ func (m *ModuleRegistration) BindWithClaims(rules couponport.RuleApplication, pr
 	return HTTPBindings{Coupons: h}, nil
 }
 
+// BindWithClaimsAndPublic wires the frozen couponData share action to the
+// Coupon-owned immutable-slug application without broadening any Product,
+// Payment, or Identity dependency into the admin adapter.
+func (m *ModuleRegistration) BindWithClaimsAndPublic(rules couponport.RuleApplication, products productport.ProductOptionReader, claims couponport.CouponClaimAdminReader, public couponport.PublicCouponApplication, security couponhttp.RequestSecurity) (HTTPBindings, error) {
+	if m == nil {
+		return HTTPBindings{}, errors.New("coupon module is required")
+	}
+	h, err := couponhttp.NewHandlerWithClaimsAndPublic(rules, products, claims, public, security)
+	if err != nil {
+		return HTTPBindings{}, err
+	}
+	return HTTPBindings{Coupons: h}, nil
+}
+
 func (m *ModuleRegistration) Readiness(ctx context.Context, pool *pgxpool.Pool) error {
 	if m == nil || pool == nil {
 		return errors.New("coupon module dependencies are required")

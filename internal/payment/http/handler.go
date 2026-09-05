@@ -20,7 +20,7 @@ import (
 	paymentsession "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/session"
 )
 
-const SessionCookieName = "aicrm_payment_session"
+const SessionCookieName = paymentport.TrustedSessionCookieName
 const maxBody = 64 << 10
 
 type RequestSecurity interface {
@@ -415,6 +415,7 @@ func (handler *Handler) checkout(writer http.ResponseWriter, request *http.Reque
 	}
 	var body struct {
 		ProductID            int64                            `json:"product_id,omitempty"`
+		CouponClaimID        int64                            `json:"coupon_claim_id,omitempty"`
 		ProductType          string                           `json:"product_kind,omitempty"`
 		MobileE164           string                           `json:"mobile,omitempty"`
 		BeneficiarySelection paymentport.BeneficiarySelection `json:"beneficiary_selection,omitempty"`
@@ -423,7 +424,7 @@ func (handler *Handler) checkout(writer http.ResponseWriter, request *http.Reque
 		return
 	}
 	idempotency := request.Header.Get("Idempotency-Key")
-	payment, err := handler.app.Create(request.Context(), paymentport.CreateCommand{ProductID: body.ProductID, ProductType: body.ProductType, MobileE164: body.MobileE164, BeneficiarySelection: body.BeneficiarySelection, SessionToken: cookie.Value, ActorScope: "public-checkout", IdempotencyKey: idempotency})
+	payment, err := handler.app.Create(request.Context(), paymentport.CreateCommand{ProductID: body.ProductID, CouponClaimID: body.CouponClaimID, ProductType: body.ProductType, MobileE164: body.MobileE164, BeneficiarySelection: body.BeneficiarySelection, SessionToken: cookie.Value, ActorScope: "public-checkout", IdempotencyKey: idempotency})
 	if err != nil {
 		resultError(writer, err)
 		return
@@ -673,12 +674,15 @@ func WriteTrustedSessionCookie(writer http.ResponseWriter, issued paymentsession
 	if issued.Token == "" || issued.ExpiresAt.IsZero() {
 		return paymentsession.ErrInvalid
 	}
-	http.SetCookie(writer, &http.Cookie{Name: SessionCookieName, Value: issued.Token, Path: "/api/v1/wechat-pay/", Expires: issued.ExpiresAt, Secure: true, HttpOnly: true, SameSite: http.SameSiteStrictMode})
+	// Coupon and service-period public pages reuse the same opaque OAuth
+	// session through their own same-origin H5 endpoints. Root scope preserves
+	// that trusted session without exposing a customer or external identity.
+	http.SetCookie(writer, &http.Cookie{Name: SessionCookieName, Value: issued.Token, Path: "/", Expires: issued.ExpiresAt, Secure: true, HttpOnly: true, SameSite: http.SameSiteStrictMode})
 	return nil
 }
 
 func clearSessionCookie(writer http.ResponseWriter) {
-	http.SetCookie(writer, &http.Cookie{Name: SessionCookieName, Path: "/api/v1/wechat-pay/", MaxAge: -1, Secure: true, HttpOnly: true, SameSite: http.SameSiteStrictMode})
+	http.SetCookie(writer, &http.Cookie{Name: SessionCookieName, Path: "/", MaxAge: -1, Secure: true, HttpOnly: true, SameSite: http.SameSiteStrictMode})
 }
 
 func decodeJSON(writer http.ResponseWriter, request *http.Request, destination any) bool {

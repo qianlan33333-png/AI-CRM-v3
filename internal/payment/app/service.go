@@ -115,7 +115,7 @@ func NewService(uow platformport.UnitOfWork, store Store, orders orderport.Payme
 func (s *Service) Create(ctx context.Context, c paymentport.CreateCommand) (domain.Payment, error) {
 	fromExistingOrder := c.OrderID > 0 && c.ProductID == 0 && c.ProductType == ""
 	fromProduct := c.OrderID == 0 && c.ProductID > 0 && (c.ProductType == string(productport.ProductOptionStandard) || c.ProductType == string(productport.ProductOptionServicePeriod))
-	if !s.ready() || (!fromExistingOrder && !fromProduct) || fromProduct && s.products == nil || len(c.SessionToken) < 20 || len(c.SessionToken) > 100 || !validScope(c.ActorScope) || !validKey(c.IdempotencyKey) {
+	if !s.ready() || (!fromExistingOrder && !fromProduct) || fromProduct && s.products == nil || c.CouponClaimID < 0 || fromExistingOrder && c.CouponClaimID != 0 || len(c.SessionToken) < 20 || len(c.SessionToken) > 100 || !validScope(c.ActorScope) || !validKey(c.IdempotencyKey) {
 		return domain.Payment{}, paymentport.ErrInvalid
 	}
 	now := s.now().UTC()
@@ -186,7 +186,7 @@ func (s *Service) Create(ctx context.Context, c paymentport.CreateCommand) (doma
 			order, err = s.orders.ReservePaymentWithin(tx, c.OrderID)
 		} else {
 			product, productErr := s.products.ReadCheckoutProductWithin(tx, productport.ProductOptionType(c.ProductType), productport.ID(c.ProductID))
-			if productErr != nil || int64(product.ID) != c.ProductID || product.ProductType != productport.ProductOptionType(c.ProductType) || product.PriceMinor < 1 || product.Currency != "CNY" || product.Version < 1 {
+			if productErr != nil || int64(product.ID) != c.ProductID || product.ProductType != productport.ProductOptionType(c.ProductType) || product.PriceMinor < 1 || product.Currency != "CNY" || product.Version < 1 || product.ProductType == productport.ProductOptionServicePeriod && product.ServicePeriodDurationDays < 1 {
 				if productErr != nil {
 					return productErr
 				}
@@ -202,8 +202,8 @@ func (s *Service) Create(ctx context.Context, c paymentport.CreateCommand) (doma
 			order, err = s.orders.CreatePaymentOrderWithin(tx, orderport.PaymentOrderCommand{
 				Provider: orderdomain.ProviderWeChatPay, MerchantOrderNo: merchantOrderNo,
 				PayerCustomerID: actor.PayerCustomerID, BeneficiaryCustomerID: actor.BeneficiaryCustomerID,
-				ProductID: int64(product.ID), ProductCode: product.Code, ProductName: product.Name,
-				ProductVersion: product.Version, UnitAmountMinor: product.PriceMinor, Currency: product.Currency,
+				ProductID: int64(product.ID), CouponClaimID: c.CouponClaimID, ProductCode: product.Code, ProductName: product.Name,
+				ProductVersion: product.Version, ProductType: orderCheckoutProductType(product.ProductType), ServicePeriodDurationDays: product.ServicePeriodDurationDays, UnitAmountMinor: product.PriceMinor, Currency: product.Currency,
 				MobileE164: c.MobileE164,
 				ActorScope: "payment-session:" + hex.EncodeToString(sessionDigest[:]), IdempotencyKey: c.IdempotencyKey,
 			})
@@ -265,6 +265,13 @@ func (s *Service) Create(ctx context.Context, c paymentport.CreateCommand) (doma
 		return domain.Payment{}, classify(err)
 	}
 	return result, nil
+}
+
+func orderCheckoutProductType(kind productport.ProductOptionType) string {
+	if kind == productport.ProductOptionServicePeriod {
+		return "service_period"
+	}
+	return "standard_product"
 }
 
 func (s *Service) RequestRefund(ctx context.Context, c paymentport.RefundCommand) (domain.Refund, error) {

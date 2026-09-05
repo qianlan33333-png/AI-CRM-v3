@@ -14,8 +14,14 @@ var ErrConflict = errors.New("payment conflict")
 var ErrNotFound = errors.New("payment not found")
 var ErrUnavailable = errors.New("payment unavailable")
 
+// TrustedSessionCookieName is shared by public Host adapters. Its opaque
+// value is resolved only by Payment's SessionReader inside a PostgreSQL UoW;
+// no adapter may treat it as a customer or identity claim.
+const TrustedSessionCookieName = "aicrm_payment_session"
+
 type CreateCommand struct {
 	OrderID, ProductID         int64
+	CouponClaimID              int64
 	ProductType                string
 	SessionToken               string
 	MobileE164                 string

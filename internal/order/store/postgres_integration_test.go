@@ -124,6 +124,47 @@ func TestPostgreSQLOrderAtomicReplayCursorAndConstraints(t *testing.T) {
 	}
 }
 
+func TestPostgreSQLOrderCheckoutSnapshotIsAtomicAndDatabaseFrozen(t *testing.T) {
+	native, cleanup := orderIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	wrapper, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uow, err := platformpostgres.NewUnitOfWork(wrapper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := NewPostgreSQL(native, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := orderapp.NewService(uow, repository)
+	command := orderport.PaymentOrderCommand{Provider: domain.ProviderWeChatPay, MerchantOrderNo: "checkout-snapshot-pg-001", PayerCustomerID: 11, BeneficiaryCustomerID: 22, ProductID: 9, ProductCode: "standard-9", ProductName: "标准商品", ProductVersion: 3, ProductType: "standard_product", UnitAmountMinor: 8800, Currency: "CNY", ActorScope: "payment-session:snapshot", IdempotencyKey: "checkout-snapshot-pg-key-0001"}
+	var created domain.Snapshot
+	if err = uow.Within(ctx, func(txctx context.Context) error {
+		var createErr error
+		created, createErr = service.CreatePaymentOrderWithin(txctx, command)
+		return createErr
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var productType, productCode, currency, reservationRef string
+	var duration int32
+	var gross, discount, payable int64
+	var couponApplied bool
+	if err = native.QueryRow(ctx, `SELECT product_type,product_code,service_period_duration_days,gross_amount_minor,discount_amount_minor,payable_amount_minor,currency,coupon_applied,coupon_reservation_ref FROM order_checkout_snapshots WHERE order_id=$1`, created.ID).Scan(&productType, &productCode, &duration, &gross, &discount, &payable, &currency, &couponApplied, &reservationRef); err != nil || productType != "standard_product" || productCode != "standard-9" || duration != 0 || gross != 8800 || discount != 0 || payable != 8800 || currency != "CNY" || couponApplied || reservationRef != "" {
+		t.Fatalf("checkout snapshot type=%q code=%q duration=%d gross=%d discount=%d payable=%d currency=%q applied=%t ref=%q err=%v", productType, productCode, duration, gross, discount, payable, currency, couponApplied, reservationRef, err)
+	}
+	if _, err = native.Exec(ctx, `UPDATE order_checkout_snapshots SET coupon_applied=TRUE WHERE order_id=$1`, created.ID); err == nil {
+		t.Fatal("database accepted coupon state without immutable reservation facts")
+	}
+	if _, err = native.Exec(ctx, `UPDATE order_checkout_snapshots SET service_period_duration_days=31 WHERE order_id=$1`, created.ID); err == nil {
+		t.Fatal("database accepted a service period on standard-product checkout")
+	}
+}
+
 func TestPostgreSQLServicePeriodFulfillmentKeepsLegacyCoverageAndRevokesOnce(t *testing.T) {
 	native, cleanup := orderIntegrationPool(t)
 	defer cleanup()
@@ -770,7 +811,7 @@ func orderIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 	if !ok {
 		t.Fatal("locate integration test")
 	}
-	for _, name := range []string{"0002_identity.sql", "0020_order.sql", "0024_order_product_version.sql", "0049_order_history_attribution.sql", "0055_order_service_entitlements.sql", "0070_service_period_entitlement_fulfillment.sql"} {
+	for _, name := range []string{"0002_identity.sql", "0020_order.sql", "0024_order_product_version.sql", "0049_order_history_attribution.sql", "0055_order_service_entitlements.sql", "0070_service_period_entitlement_fulfillment.sql", "0076_order_checkout_snapshots.sql"} {
 		migration, readErr := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "..", "migrations", name))
 		if readErr != nil {
 			t.Fatal(readErr)
