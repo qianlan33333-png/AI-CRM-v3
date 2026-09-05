@@ -16,6 +16,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	channeldomain "github.com/qianlan33333-png/AI-CRM-v3/internal/channel/domain"
+	channelport "github.com/qianlan33333-png/AI-CRM-v3/internal/channel/port"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/platform/idempotency"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/platform/webhook"
@@ -478,15 +480,129 @@ func stableCallbackKey(corpID string, plaintext []byte) string {
 }
 
 type CallbackHandler struct {
-	Enabled       bool
-	Crypto        *CallbackCrypto
-	StateDigester StateDigester
-	Inbox         *webhook.Service
-	UOW           port.UnitOfWork
-	WelcomeGrants WelcomeGrantStore
+	Enabled        bool
+	Crypto         *CallbackCrypto
+	StateDigester  StateDigester
+	Inbox          *webhook.Service
+	UOW            port.UnitOfWork
+	WelcomeGrants  WelcomeGrantStore
+	WelcomeActions channelport.CallbackWelcomeAccepter
+	States         channelport.StateResolver
+	Dispatcher     DecryptedEventDispatcher
+	Now            func() time.Time
+}
+
+// DecryptedCallbackEvent is restricted to the authenticated WeCom boundary.
+// Plaintext is request-scoped, is never logged or persisted directly, and is
+// exposed only so independently owned Event handlers can parse their own
+// strict protocol after the common verify/decrypt/Corp checks have passed.
+type DecryptedCallbackEvent struct {
+	CorpID      string
+	CallbackKey idempotency.Key
+	Plaintext   []byte
+	ReceivedAt  time.Time
+}
+
+type DecryptedEventDispatcher interface {
+	DispatchDecryptedEvent(context.Context, DecryptedCallbackEvent) error
+}
+
+// CallbackEventDispatcher is the narrow post-decryption Event router. New
+// callback consumers register their strict handler here instead of changing
+// the external-contact parser or weakening its required fields.
+type CallbackEventDispatcher struct {
+	ExternalContact DecryptedEventDispatcher
+}
+
+func (dispatcher CallbackEventDispatcher) DispatchDecryptedEvent(ctx context.Context, input DecryptedCallbackEvent) error {
+	fields, err := parseSimpleXML(input.Plaintext, "xml", map[string]string{"Event": "Event"})
+	if err != nil || !fields["Event"].present || !validCallbackLabel(fields["Event"].value) {
+		return ErrMalformedXML
+	}
+	switch fields["Event"].value {
+	case "change_external_contact":
+		if dispatcher.ExternalContact == nil {
+			return ErrMalformedXML
+		}
+		return dispatcher.ExternalContact.DispatchDecryptedEvent(ctx, input)
+	default:
+		return ErrMalformedXML
+	}
+}
+
+// ExternalContactCallbackDispatcher keeps the established external-contact
+// protocol strict while accepting the time-critical welcome intent in the
+// same UoW as its Inbox row and encrypted grant.
+type ExternalContactCallbackDispatcher struct {
+	StateDigester  StateDigester
+	Inbox          *webhook.Service
+	UOW            port.UnitOfWork
+	WelcomeGrants  WelcomeGrantStore
+	WelcomeActions channelport.CallbackWelcomeAccepter
+	States         channelport.StateResolver
+}
+
+func (dispatcher ExternalContactCallbackDispatcher) DispatchDecryptedEvent(ctx context.Context, input DecryptedCallbackEvent) error {
+	if dispatcher.Inbox == nil || dispatcher.UOW == nil || input.CorpID == "" || input.CallbackKey == "" || input.ReceivedAt.IsZero() {
+		return ErrMalformedXML
+	}
+	draft, err := parseCallbackEventDraft(input.Plaintext, input.CorpID)
+	if err != nil {
+		return err
+	}
+	defer func() { draft.welcome = ""; draft.welcomePresent = false }()
+	event, err := materializeCallbackEvent(&draft, dispatcher.StateDigester)
+	if err != nil {
+		return err
+	}
+	return dispatcher.UOW.Within(ctx, func(txContext context.Context) error {
+		if draft.welcomePresent && draft.welcome != "" {
+			if dispatcher.WelcomeGrants == nil || dispatcher.WelcomeActions == nil {
+				return ErrWelcomeGrantUnavailable
+			}
+			grant, sealErr := dispatcher.WelcomeGrants.Seal(txContext, string(input.CallbackKey), draft.welcome, input.ReceivedAt.UTC().Add(10*time.Minute))
+			if sealErr != nil {
+				return sealErr
+			}
+			event.WelcomeGrantRef = grant
+			resolution := channeldomain.StateResolution{Status: channeldomain.StateUnmatched}
+			if event.StatePresent {
+				if dispatcher.States == nil {
+					return ErrWelcomeGrantUnavailable
+				}
+				digest, digestErr := ParseStateDigest(event.StateDigest)
+				if digestErr != nil {
+					return digestErr
+				}
+				resolution, digestErr = dispatcher.States.ResolveStateDigest(txContext, input.CorpID, digest, time.Unix(event.CreateTime, 0).UTC())
+				if digestErr != nil || !resolution.Valid() {
+					if digestErr != nil {
+						return digestErr
+					}
+					return ErrWelcomeGrantUnavailable
+				}
+			}
+			if acceptErr := dispatcher.WelcomeActions.AcceptCallbackWelcome(txContext, channelport.CallbackWelcomeCommand{
+				CallbackID: string(input.CallbackKey), CorpID: input.CorpID, Resolution: resolution, WelcomeGrantRef: grant,
+				OccurredAt: time.Unix(event.CreateTime, 0).UTC(), FirstReceivedAt: input.ReceivedAt.UTC(), SendDeadlineAt: input.ReceivedAt.UTC().Add(20 * time.Second),
+			}); acceptErr != nil {
+				return acceptErr
+			}
+		}
+		payload, marshalErr := json.Marshal(event)
+		if marshalErr != nil {
+			return marshalErr
+		}
+		_, ingestErr := dispatcher.Inbox.Ingest(txContext, webhook.Ingest{Provider: callbackProvider, IdempotencyKey: input.CallbackKey, Payload: payload})
+		return ingestErr
+	})
 }
 
 func (handler CallbackHandler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
+	// Establish the business window at HTTP arrival, before decrypting or
+	// parsing. Only a verified callback can commit it, but signature work must
+	// not silently extend the time available to call the welcome endpoint.
+	receivedAt := handler.now()
 	if !handler.Enabled {
 		writeWeComError(writer, http.StatusServiceUnavailable, "provider_unavailable")
 		return
@@ -539,44 +655,28 @@ func (handler CallbackHandler) ServeHTTP(writer http.ResponseWriter, request *ht
 			writeCallbackFailure(writer, err)
 			return
 		}
-		draft, err := parseCallbackEventDraft(plain, handler.Crypto.corpID)
-		if err != nil {
-			writeCallbackFailure(writer, err)
-			return
-		}
-		defer func() { draft.welcome = ""; draft.welcomePresent = false }()
-		event, err := materializeCallbackEvent(&draft, handler.StateDigester)
-		if err != nil {
-			// A missing/failing digester is a local dependency failure, not an
-			// invalid provider callback. Do not ingest a payload without State
-			// attribution and do not acknowledge it as successful.
-			writeWeComError(writer, http.StatusServiceUnavailable, "provider_unavailable")
-			return
-		}
 		key, err := idempotency.Parse(callbackIdempotencyPrefix + stableCallbackKey(handler.Crypto.corpID, plain))
 		if err != nil {
 			writeWeComError(writer, http.StatusBadRequest, "invalid_request")
 			return
 		}
-		err = handler.UOW.Within(request.Context(), func(txContext context.Context) error {
-			if draft.welcomePresent && draft.welcome != "" {
-				if handler.WelcomeGrants == nil {
-					return ErrWelcomeGrantUnavailable
-				}
-				var sealErr error
-				event.WelcomeGrantRef, sealErr = handler.WelcomeGrants.Seal(txContext, string(key), draft.welcome, time.Now().UTC().Add(10*time.Minute))
-				if sealErr != nil {
-					return sealErr
-				}
-			}
-			payload, marshalErr := json.Marshal(event)
-			if marshalErr != nil {
-				return marshalErr
-			}
-			_, ingestErr := handler.Inbox.Ingest(txContext, webhook.Ingest{Provider: callbackProvider, IdempotencyKey: key, Payload: payload})
-			return ingestErr
-		})
+		dispatcher := handler.Dispatcher
+		if dispatcher == nil {
+			dispatcher = CallbackEventDispatcher{ExternalContact: ExternalContactCallbackDispatcher{
+				StateDigester: handler.StateDigester, Inbox: handler.Inbox, UOW: handler.UOW,
+				WelcomeGrants: handler.WelcomeGrants, WelcomeActions: handler.WelcomeActions, States: handler.States,
+			}}
+		}
+		err = dispatcher.DispatchDecryptedEvent(request.Context(), DecryptedCallbackEvent{CorpID: handler.Crypto.corpID, CallbackKey: key, Plaintext: plain, ReceivedAt: receivedAt})
 		if err != nil {
+			if errors.Is(err, ErrMalformedXML) || errors.Is(err, ErrCorpMismatch) {
+				writeCallbackFailure(writer, err)
+				return
+			}
+			// Missing local dependencies or a failed UoW must never be
+			// acknowledged. The provider can replay the exact callback, which
+			// preserves its already-derived idempotency key and deadline once
+			// acceptance succeeds.
 			writeWeComError(writer, http.StatusServiceUnavailable, "provider_unavailable")
 			return
 		}
@@ -591,6 +691,13 @@ func (handler CallbackHandler) ServeHTTP(writer http.ResponseWriter, request *ht
 		writer.Header().Set("Allow", "GET, POST")
 		writeWeComError(writer, http.StatusMethodNotAllowed, "invalid_request")
 	}
+}
+
+func (handler CallbackHandler) now() time.Time {
+	if handler.Now != nil {
+		return handler.Now().UTC()
+	}
+	return time.Now().UTC()
 }
 
 func callbackQuery(request *http.Request) (signature, timestamp, nonce, encrypted string, ok bool) {
