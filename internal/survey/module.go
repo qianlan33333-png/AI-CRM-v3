@@ -48,13 +48,13 @@ func (m *ModuleRegistration) Readiness(ctx context.Context, pool *pgxpool.Pool) 
 	var redirectConstraintReady bool
 	err = pool.QueryRow(ctx, `SELECT EXISTS(
 		SELECT 1
-		FROM pg_constraint constraint
-		JOIN pg_class relation ON relation.oid=constraint.conrelid
-		JOIN pg_namespace namespace ON namespace.oid=relation.relnamespace
-		WHERE namespace.nspname=current_schema()
-		  AND relation.relname='survey_oauth_states'
-		  AND constraint.conname='survey_oauth_states_redirect'
-		  AND pg_get_constraintdef(constraint.oid) LIKE '%/h5/(all|one)\.html\?slug=%' ESCAPE ''
+		FROM pg_constraint c
+		JOIN pg_class rel ON rel.oid=c.conrelid
+		JOIN pg_namespace ns ON ns.oid=rel.relnamespace
+		WHERE ns.nspname=current_schema()
+		  AND rel.relname='survey_oauth_states'
+		  AND c.conname='survey_oauth_states_redirect'
+		  AND pg_get_constraintdef(c.oid) LIKE '%/h5/(all|one)\.html\?slug=%' ESCAPE ''
 	)`).Scan(&redirectConstraintReady)
 	if err != nil {
 		return err
