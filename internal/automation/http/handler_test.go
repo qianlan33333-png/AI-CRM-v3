@@ -158,8 +158,8 @@ func TestPolicyCommandDoesNotAcceptClientSelectedApprover(t *testing.T) {
 		t.Fatal(err)
 	}
 	command := policyCommand(input, 7, "1234567890123456")
-	if command.ApprovalStaffID != nil {
-		t.Fatalf("untrusted approval staff reached runtime command: %d", *command.ApprovalStaffID)
+	if command.ApprovalStaffID == nil || *command.ApprovalStaffID != 7 {
+		t.Fatalf("approval actor=%v, want authenticated actor 7", command.ApprovalStaffID)
 	}
 	if command.Actor != 7 {
 		t.Fatalf("actor=%d, want authenticated actor", command.Actor)

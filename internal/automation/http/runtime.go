@@ -208,8 +208,10 @@ func (h *RuntimeHandler) policies(w http.ResponseWriter, r *http.Request) {
 func policyCommand(in policyInput, actor int64, key string) automationapp.PolicyCommand {
 	// The frozen automation contract only has a requires-approval gate. It
 	// never lets the policy editor nominate an arbitrary staff member as an
-	// approver or execution actor. Keep that value local to trusted workflows.
-	return automationapp.PolicyCommand{Code: in.Code, Name: in.Name, ExpectedVersion: in.ExpectedVersion, PackageID: segmentport.PackageID(in.PackageID), TriggerKind: in.Trigger, ActionKind: in.Action, ActionConfig: in.ActionConfig, QuietHours: in.QuietHours, SingleRunLimit: in.SingleRunLimit, Actor: actor, IdempotencyKey: key}
+	// approver. The existing immutable policy record still requires a trusted
+	// local actor, so bind it to the authenticated caller only.
+	approval := actor
+	return automationapp.PolicyCommand{Code: in.Code, Name: in.Name, ExpectedVersion: in.ExpectedVersion, PackageID: segmentport.PackageID(in.PackageID), TriggerKind: in.Trigger, ActionKind: in.Action, ActionConfig: in.ActionConfig, QuietHours: in.QuietHours, SingleRunLimit: in.SingleRunLimit, ApprovalStaffID: &approval, Actor: actor, IdempotencyKey: key}
 }
 func (h *RuntimeHandler) packageRun(w http.ResponseWriter, r *http.Request) {
 	tail := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/admin/ai-audience/packages/"), "/")

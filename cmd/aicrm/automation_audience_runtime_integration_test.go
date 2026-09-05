@@ -191,6 +191,12 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 		t.Fatal(err)
 	}
 	stop := automationAudienceStartRuntime(t, runtime)
+	// Keep the River runtime owned by this fixture alive until every assertion
+	// completes, while also stopping it if a preceding t.Fatal aborts early.
+	// Otherwise its maintenance goroutines can outlive the PostgreSQL pool.
+	var stopOnce sync.Once
+	stopRuntime := func() { stopOnce.Do(stop) }
+	t.Cleanup(stopRuntime)
 
 	approval := staffID
 	actionConfig, err := json.Marshal(map[string]int64{"agent_id": int64(agent.ID)})
@@ -212,6 +218,10 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 		snapshot, found, readErr := snapshots.PublishedSnapshot(ctx, segmentport.PackageID(packageID))
 		return readErr == nil && found && snapshot.MemberCount == 0
 	})
+	precheck, precheckErr := execution.Precheck(ctx, packageID)
+	if precheckErr != nil || !precheck.Ready {
+		t.Fatalf("baseline execution precheck=%+v err=%v", precheck, precheckErr)
+	}
 	if _, err = runtimeService.TransitionPolicy(ctx, automationapp.PolicyLifecycleCommand{PolicyID: policy.ID, ExpectedVersion: policy.Version, Actor: staffID, Target: automationdomain.PolicyActive, IdempotencyKey: "audience-runtime-activate-0001"}); err != nil {
 		t.Fatal(err)
 	}
@@ -258,7 +268,7 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 		}
 		return prior == 1 && added == 1 && complete == 2
 	})
-	stop()
+	stopRuntime()
 	var enrollments, automaticEffects int
 	if err = native.QueryRow(ctx, `SELECT count(*) FROM automation_enrollments`).Scan(&enrollments); err != nil {
 		t.Fatal(err)
@@ -282,6 +292,7 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 	// Restarting the shared runtime is what executes their already-committed
 	// EER jobs; it never recreates the entered-policy sends from the first run.
 	stop = automationAudienceStartRuntime(t, runtime)
+	stopOnce = sync.Once{}
 	automationAudienceEventually(t, "manual effects after runtime restart", func() bool {
 		var accepted, unknown int
 		if native.QueryRow(ctx, `SELECT count(*) FROM automation_run_recipients WHERE run_id=$1 AND state='provider_accepted'`, manual.ID).Scan(&accepted) != nil {
@@ -292,7 +303,7 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 		}
 		return accepted == 1 && unknown == 1 && wecomServer.Calls() == 4
 	})
-	stop()
+	stopRuntime()
 	var unknownEffect string
 	if err = native.QueryRow(ctx, `SELECT effect_id FROM automation_run_recipients WHERE run_id=$1 AND state='outcome_unknown'`, manual.ID).Scan(&unknownEffect); err != nil {
 		t.Fatal(err)
@@ -350,6 +361,7 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 	// persisted daily job, but no member-entered event or outbound send appears.
 	source.Set(customerIDs[:1])
 	stop = automationAudienceStartRuntime(t, runtime)
+	stopOnce = sync.Once{}
 	daily, err := snapshots.AcceptRefresh(ctx, segmentapp.RefreshCommand{PackageID: packageID, Actor: staffID, IdempotencyKey: "audience-runtime-daily-exit-0001", RefreshKind: segmentdomain.RefreshDaily, ReferenceTime: now.Add(time.Hour)})
 	if err != nil || daily.RiverJobID == nil {
 		t.Fatalf("accept daily=%+v err=%v", daily, err)
@@ -373,7 +385,7 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 		}
 		return exits == 1 && entered == 0 && intents == 4 && wecomServer.Calls() == 4
 	})
-	stop()
+	stopRuntime()
 }
 
 type automationAudienceSource struct {
