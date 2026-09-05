@@ -12,6 +12,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -683,7 +684,7 @@ func (h *Handler) serviceShare(w http.ResponseWriter, r *http.Request, id int64)
 		writeError(w, http.StatusNotFound, "not_found")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "service_product_id": id, "public_path": "/p/service_period/" + strconv.FormatInt(id, 10), "local_only": true, "real_external_call_executed": false})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "service_product_id": id, "product_code": product.ProductCode, "public_path": "/s/" + url.PathEscape(product.ProductCode), "local_only": true, "real_external_call_executed": false})
 }
 
 func (h *Handler) externalRoute(w http.ResponseWriter, r *http.Request, id int64, kind productport.ExternalPushProductKind) {
