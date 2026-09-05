@@ -119,8 +119,14 @@ async function openManagement() {
   return { dom, calls };
 }
 
-function managementAction(document, title, label) {
-  const row = [...document.querySelectorAll("tr")].find((item) => item.textContent?.includes(title));
+function managementRow(document, questionnaireID, title) {
+  const idText = `#${questionnaireID}`;
+  return [...document.querySelectorAll("tr")].find((item) => item.textContent?.includes(title)
+    && [...item.querySelectorAll("span")].some((span) => span.textContent?.trim() === idText)) || null;
+}
+
+function managementAction(document, questionnaireID, title, label) {
+  const row = managementRow(document, questionnaireID, title);
   if (!row) return null;
   return [...row.querySelectorAll("a,button")].find((item) => item.textContent?.trim() === label) || null;
 }
@@ -171,10 +177,10 @@ normal.dom.window.close();
 // publish that exact draft, while stopping and re-enabling use the lifecycle.
 const management = await openManagement();
 const managementDocument = management.dom.window.document;
-await waitFor("normal management action", () => managementAction(managementDocument, "冻结后台实际标题", "启用") !== null);
-click(managementAction(managementDocument, "冻结后台实际标题", "启用"));
+await waitFor("normal management action", () => managementAction(managementDocument, normalID, "冻结后台实际标题", "启用") !== null);
+click(managementAction(managementDocument, normalID, "冻结后台实际标题", "启用"));
 await waitFor("normal list enable conflict", () => management.calls.some((call) => call.path === `/api/admin/questionnaires/${normalID}/enable` && call.status === 409)).catch((error) => {
-  const row = [...managementDocument.querySelectorAll("tr")].find((item) => item.textContent?.includes("冻结后台实际标题"));
+  const row = managementRow(managementDocument, normalID, "冻结后台实际标题");
   throw new Error(`${error.message}; row=${row?.textContent || "missing"}; calls=${JSON.stringify(management.calls)}`);
 });
 await waitFor("normal draft publish", () => management.calls.some((call) => call.path === `/api/admin/questionnaires/${normalID}/public-publish` && call.status === 200));
@@ -182,13 +188,13 @@ const normalPublish = management.calls.find((call) => call.path === `/api/admin/
 if (!normalPublish || !Number.isSafeInteger(Number(JSON.parse(normalPublish.body || "{}").expected_questionnaire_version)) || Number(JSON.parse(normalPublish.body || "{}").expected_questionnaire_version) < 1) {
   throw new Error(`normal draft publish was not a versioned CAS: ${JSON.stringify(normalPublish)}`);
 }
-await waitFor("normal list stop action", () => managementAction(managementDocument, "冻结后台实际标题", "停用") !== null);
-click(managementAction(managementDocument, "冻结后台实际标题", "停用"));
+await waitFor("normal list stop action", () => managementAction(managementDocument, normalID, "冻结后台实际标题", "停用") !== null);
+click(managementAction(managementDocument, normalID, "冻结后台实际标题", "停用"));
 await waitFor("normal stop confirmation", () => [...managementDocument.querySelectorAll("button")].some((item) => item.textContent?.trim() === "确认停用"));
 click([...managementDocument.querySelectorAll("button")].find((item) => item.textContent?.trim() === "确认停用"));
 await waitFor("normal list disable", () => management.calls.some((call) => call.path === `/api/admin/questionnaires/${normalID}/disable` && call.status === 200));
-await waitFor("normal list re-enable action", () => managementAction(managementDocument, "冻结后台实际标题", "启用") !== null);
-click(managementAction(managementDocument, "冻结后台实际标题", "启用"));
+await waitFor("normal list re-enable action", () => managementAction(managementDocument, normalID, "冻结后台实际标题", "启用") !== null);
+click(managementAction(managementDocument, normalID, "冻结后台实际标题", "启用"));
 await waitFor("normal list re-enable", () => management.calls.filter((call) => call.path === `/api/admin/questionnaires/${normalID}/enable` && call.status === 200).length === 1);
 management.dom.window.close();
 
