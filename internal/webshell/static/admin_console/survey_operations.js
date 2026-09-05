@@ -87,6 +87,10 @@
       });
     });
     document.addEventListener('click', function (event) {
+      // A previous validation failure cannot survive into another control's
+      // click. The current publish click is installed below and is cleared in
+      // its bubble phase if the Adapter does not synchronously consume it.
+      if (pendingButton && !publishing) pendingButton = null;
       const button = event.target && event.target.closest && event.target.closest('#v2-publish-save');
       if (!button) return;
       if (pendingButton || publishing) {
@@ -95,11 +99,13 @@
         return;
       }
       pendingButton = button;
-      // Validation failures never call questionnaireEditorV3. Clear this
-      // gesture at the end of the current event; a successful adapter call
-      // synchronously transfers its own promise above before this runs.
-      queueMicrotask(function () { if (pendingButton === button && !publishing) pendingButton = null; });
     }, true);
+    document.addEventListener('click', function () {
+      // The frozen button's target listener runs before this bubble listener.
+      // A valid save has already handed its exact promise to the Host; a
+      // validation failure has not, so discard only the unconsumed gesture.
+      if (pendingButton && !publishing) pendingButton = null;
+    });
   }
   function installFrozenEnableBridge() {
     if (!document.body || !['questionnaires', 'questionnaireDetail'].includes(document.body.dataset.page || '')) return;

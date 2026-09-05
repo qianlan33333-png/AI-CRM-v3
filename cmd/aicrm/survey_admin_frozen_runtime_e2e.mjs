@@ -289,7 +289,13 @@ await waitFor("assessment reorder", () => assessmentDocument.querySelector("[dat
 let firstTitle = assessmentDocument.querySelector("[data-question-key]")?.querySelector(".question-title-input")?.value;
 click(assessmentDocument.querySelector('[data-assessment-step="preview"]'));
 await waitFor("assessment preview", () => assessmentDocument.querySelector(".h5-question-v2 strong")?.textContent === firstTitle);
-click(assessmentDocument.querySelector("#v2-publish-save"));
+const publishButton = assessmentDocument.querySelector("#v2-publish-save");
+const publishEventOrder = [];
+assessmentDocument.addEventListener("click", (event) => { if (event.target === publishButton) publishEventOrder.push("capture"); }, { capture: true, once: true });
+publishButton.addEventListener("click", () => publishEventOrder.push("target"), { once: true });
+assessmentDocument.addEventListener("click", (event) => { if (event.target === publishButton) publishEventOrder.push("bubble"); }, { once: true });
+click(publishButton);
+if (publishEventOrder.join(",") !== "capture,target,bubble") throw new Error(`frozen publish click order=${publishEventOrder.join(",")}`);
 await waitFor("assessment publish", () => assessmentDocument.querySelector('[data-survey-host-publish-status] a[data-survey-host-published-path]')?.getAttribute("href") === "/q/frozen-admin-assessment").catch((error) => {
   const toast = assessmentDocument.querySelector("#toast")?.textContent || "";
   const publishState = assessmentDocument.querySelector('[data-survey-host-publish-status]')?.textContent || "";
