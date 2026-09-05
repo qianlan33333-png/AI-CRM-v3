@@ -765,8 +765,8 @@ func jointInitialCompletionsPersisted(ctx context.Context, pool *pgxpool.Pool, p
 		JOIN automation_run_recipients recipient ON recipient.run_id=run.id
 		JOIN outbound_message_intents intent ON intent.run_recipient_id=recipient.id
 		JOIN external_effects effect ON ('eer_'||effect.id::text)=intent.effect_id
-		WHERE run.policy_id=$1 AND recipient.customer_id=$2 AND recipient.sender_staff_id=$3
-		  AND intent.source_kind='automation_enrollment' AND intent.state='provider_accepted'
+		WHERE run.policy_id=$1 AND run.state='executing' AND recipient.customer_id=$2 AND recipient.sender_staff_id=$3
+		  AND recipient.state='provider_accepted' AND intent.source_kind='automation_enrollment' AND intent.state='provider_accepted'
 		  AND intent.receipt_digest IS NOT NULL AND effect.kind='automation_message' AND effect.state='executed'`, policyID, automaticCustomer, staffID).Scan(&automatic) != nil || automatic != 1 {
 		return false
 	}
@@ -799,8 +799,8 @@ func jointCompletionOwnershipPersisted(ctx context.Context, pool *pgxpool.Pool, 
 		JOIN automation_run_recipients recipient ON recipient.run_id=run.id
 		JOIN outbound_message_intents intent ON intent.run_recipient_id=recipient.id
 		JOIN external_effects effect ON ('eer_'||effect.id::text)=intent.effect_id
-		WHERE run.policy_id=$1 AND recipient.customer_id=$2 AND recipient.sender_staff_id=$3
-		  AND intent.source_kind='automation_enrollment' AND intent.state='provider_accepted'
+		WHERE run.policy_id=$1 AND run.state='executing' AND recipient.customer_id=$2 AND recipient.sender_staff_id=$3
+		  AND recipient.state='provider_accepted' AND intent.source_kind='automation_enrollment' AND intent.state='provider_accepted'
 		  AND intent.receipt_digest IS NOT NULL AND effect.kind='automation_message' AND effect.state='executed'`, policyID, automaticCustomer, staffID).Scan(&automatic) != nil || automatic != 1 {
 		return false
 	}
@@ -834,8 +834,8 @@ func jointAssertCompletionOwnership(t *testing.T, ctx context.Context, pool *pgx
 		JOIN automation_run_recipients recipient ON recipient.run_id=run.id
 		JOIN outbound_message_intents intent ON intent.run_recipient_id=recipient.id
 		JOIN external_effects effect ON ('eer_'||effect.id::text)=intent.effect_id
-		WHERE run.policy_id=$1 AND recipient.customer_id=$2 AND recipient.sender_staff_id=$3
-		  AND intent.source_kind='automation_enrollment' AND intent.state='provider_accepted'
+		WHERE run.policy_id=$1 AND run.state='executing' AND recipient.customer_id=$2 AND recipient.sender_staff_id=$3
+		  AND recipient.state='provider_accepted' AND intent.source_kind='automation_enrollment' AND intent.state='provider_accepted'
 		  AND intent.receipt_digest IS NOT NULL AND effect.kind='automation_message' AND effect.state='executed'`, policyID, automaticCustomer, staffID).Scan(&automatic); err != nil || automatic != 1 {
 		t.Fatalf("automatic owner->intent->effect=%d want 1 err=%v", automatic, err)
 	}
