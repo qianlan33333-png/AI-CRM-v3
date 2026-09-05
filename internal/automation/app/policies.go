@@ -54,6 +54,11 @@ type RuntimeStore interface {
 	CreateRunReconciliation(context.Context, automationdomain.RunReconciliation) (automationdomain.RunReconciliation, error)
 	CancelRun(context.Context, int64, time.Time) (automationdomain.RuntimeRun, error)
 }
+type reviewPlanGateway interface {
+	aiassistantport.TransactionalIntake
+	aiassistantport.Reader
+}
+
 type RuntimeService struct {
 	uow            platformport.UnitOfWork
 	store          RuntimeStore
@@ -61,7 +66,7 @@ type RuntimeService struct {
 	snapshots      segmentport.SnapshotReader
 	messages       outboundport.TransactionalMessageAccepter
 	effects        effectport.TransactionalReconciler
-	reviewPlans    aiassistantport.TransactionalIntake
+	reviewPlans    reviewPlanGateway
 	content        automationport.OutboundPublishedContentReader
 	recipientLimit int64
 	now            func() time.Time
@@ -85,7 +90,7 @@ type PolicyLifecycleCommand struct {
 }
 
 func NewRuntimeService(uow platformport.UnitOfWork, store RuntimeStore, audiences segmentport.ExecutionConfigurationReader, snapshots segmentport.SnapshotReader, recipientLimit int) (*RuntimeService, error) {
-	if uow == nil || store == nil || audiences == nil || snapshots == nil || recipientLimit < 1 || recipientLimit > 100000 {
+	if uow == nil || store == nil || audiences == nil || snapshots == nil || recipientLimit < 1 || recipientLimit > aiassistantport.MaxRecipients {
 		return nil, ErrRuntimeNotReady
 	}
 	return &RuntimeService{uow: uow, store: store, audiences: audiences, snapshots: snapshots, recipientLimit: int64(recipientLimit), now: time.Now}, nil
@@ -110,7 +115,7 @@ func (s *RuntimeService) SetEffectReconciler(effects effectport.TransactionalRec
 // audience broadcasts. It is intentionally separate from the automatic
 // outbound accepter: a manual confirmation must create a pending plan and
 // accept no external effect until that plan is approved.
-func (s *RuntimeService) SetReviewPlanIntake(intake aiassistantport.TransactionalIntake, content automationport.OutboundPublishedContentReader) error {
+func (s *RuntimeService) SetReviewPlanIntake(intake reviewPlanGateway, content automationport.OutboundPublishedContentReader) error {
 	if s == nil || intake == nil || content == nil {
 		return ErrRuntimeNotReady
 	}

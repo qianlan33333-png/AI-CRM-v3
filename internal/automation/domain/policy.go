@@ -180,6 +180,7 @@ type RuntimeRun struct {
 	AgentID               int64                   `json:"agent_id"`
 	AgentPublishedVersion int64                   `json:"agent_published_version"`
 	AIPlanID              int64                   `json:"ai_plan_id,omitempty"`
+	AIPlanState           string                  `json:"ai_plan_state,omitempty"`
 	BindingVersion        int64                   `json:"binding_version"`
 	SenderSetVersion      int64                   `json:"sender_set_version"`
 	PreviewDigest         [32]byte                `json:"-"`

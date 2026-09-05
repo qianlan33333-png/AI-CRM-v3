@@ -192,10 +192,15 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 	if err = river.AddWorkerSafely[externaleffects.EffectJobArgs](workers, effectWorker); err != nil {
 		t.Fatal(err)
 	}
-	router, err := outbound.NewCompletionRouterWithMessage(nil, nil, messages)
+	privateCompletion, err := outbound.NewPrivateMessageCompletionSink(privateWriter, aiRepo)
 	if err != nil {
 		t.Fatal(err)
 	}
+	router, err := outbound.NewCompletionRouterWithPrivate(nil, nil, privateCompletion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	router.WithAutomationMessage(messages)
 	if err = effects.SetCompletionSink(router); err != nil {
 		t.Fatal(err)
 	}
@@ -372,6 +377,7 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 	}
 	for _, check := range []struct{ path, contains string }{
 		{"/api/admin/automation-runs?limit=100", automationAudienceInt(manual.ID)},
+		{"/api/admin/automation-runs/" + automationAudienceInt(manual.ID), `"ai_plan_state":"completed"`},
 		{"/api/admin/automation-runs/" + automationAudienceInt(manual.ID) + "/recipients?limit=100", "items"},
 	} {
 		req := httptest.NewRequest(http.MethodGet, check.path, nil)
