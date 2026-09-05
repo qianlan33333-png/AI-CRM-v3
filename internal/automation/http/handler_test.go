@@ -2,6 +2,7 @@ package http
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -148,6 +149,20 @@ func TestCompatibilityIdempotencyKeyFailsClosedWhenRandomReadFails(t *testing.T)
 	})
 	if !errors.Is(err, wantErr) || key != "" {
 		t.Fatalf("key=%q err=%v, want empty key and entropy error", key, err)
+	}
+}
+
+func TestPolicyCommandDoesNotAcceptClientSelectedApprover(t *testing.T) {
+	var input policyInput
+	if err := json.Unmarshal([]byte(`{"code":"p","name":"Policy","package_id":1,"trigger":"audience.member_entered.v1","action":"record","action_config":{},"quiet_hours":{},"single_run_limit":1,"approval_staff_id":999}`), &input); err != nil {
+		t.Fatal(err)
+	}
+	command := policyCommand(input, 7, "1234567890123456")
+	if command.ApprovalStaffID == nil || *command.ApprovalStaffID != 7 {
+		t.Fatalf("approval actor=%v, want authenticated actor 7", command.ApprovalStaffID)
+	}
+	if command.Actor != 7 {
+		t.Fatalf("actor=%d, want authenticated actor", command.Actor)
 	}
 }
 

@@ -31,7 +31,22 @@ var (
 	errSyncAudit           = errors.New("wecom customer sync audit failed")
 )
 
+// maximumAudiencePrimaryOwnerBatch bounds the read-only audience bridge. It
+// matches Segment's evaluated-audience ceiling without making WeCom depend on
+// Segment implementation packages.
+const maximumAudiencePrimaryOwnerBatch = 100000
+
 type CustomerSyncStatus string
+
+// syncRetryError retains only a safe business failure code for River's final
+// attempt. The original Provider error may contain transport detail and must
+// not be propagated into job logs.
+type syncRetryError struct {
+	code        string
+	maxAttempts int
+}
+
+func (err *syncRetryError) Error() string { return "customer sync step scheduled for retry" }
 
 const (
 	SyncQueued           CustomerSyncStatus = "queued"
@@ -97,10 +112,11 @@ type CustomerSyncStore interface {
 	SaveStaff(context.Context, int64, int64, []string) error
 	InsertItem(context.Context, int64, string, SyncItem) (bool, error)
 	UpsertProfile(context.Context, int64, string, identityport.ProvisionResult, wecomport.ExternalContact, [32]byte, time.Time) error
-	UpsertProfileObservations(context.Context, int64, string, customerdomain.CustomerID, string, []wecomport.ExternalContactFollowInfo, time.Time) error
+	UpsertProfileObservations(context.Context, int64, string, customerdomain.CustomerID, []wecomport.ExternalContactFollowInfo, time.Time) error
 	AddCountsAndAdvance(context.Context, int64, int64, int64, int64, int64, int64, int64, int, string, CustomerSyncStatus) error
 	StaleCustomers(context.Context, int64) ([]customerdomain.CustomerID, error)
 	ReconcileProfileObservations(context.Context, int64, time.Time) error
+	RefreshProfilePrimaryOwners(context.Context, int64, time.Time) error
 	Complete(context.Context, int64, int64, int64) error
 	Fail(context.Context, int64, int64, CustomerSyncStatus, string) error
 	Terminate(context.Context, int64, string) error
@@ -247,6 +263,10 @@ func (service CustomerSyncService) processRunOnce(ctx context.Context, run Custo
 }
 
 func syncRetryCode(err error) string {
+	var retry *syncRetryError
+	if errors.As(err, &retry) && retry.code != "" {
+		return retry.code
+	}
 	if errors.Is(err, ErrSyncCAS) {
 		return "sync_cas"
 	}
@@ -306,7 +326,7 @@ func (service CustomerSyncService) ingestPage(ctx context.Context, run CustomerS
 			if insertErr != nil {
 				return insertErr
 			}
-			if err := service.Store.UpsertProfileObservations(txContext, run.ID, run.CorpScope, provision.CustomerID, staffID, contact.FollowInfo, now); err != nil {
+			if err := service.Store.UpsertProfileObservations(txContext, run.ID, run.CorpScope, provision.CustomerID, contact.FollowInfo, now); err != nil {
 				return err
 			}
 			if !inserted {
@@ -377,6 +397,11 @@ func (service CustomerSyncService) reconcile(ctx context.Context, run CustomerSy
 		if err = service.Store.ReconcileProfileObservations(txContext, run.ID, now); err != nil {
 			return errSyncProjection
 		}
+		// A primary is valid only after every staff/page in this scope has been
+		// ingested and its absent relationships reconciled in this same UoW.
+		if err = service.Store.RefreshProfilePrimaryOwners(txContext, run.ID, now); err != nil {
+			return errSyncProjection
+		}
 		pending, err := service.Outbox.PendingForSyncRun(txContext, run.ID)
 		if err != nil {
 			return errSyncOutboxReconcile
@@ -398,17 +423,35 @@ func (service CustomerSyncService) reconcile(ctx context.Context, run CustomerSy
 }
 
 func (service CustomerSyncService) recordFailure(ctx context.Context, run CustomerSyncRun, cause error) error {
-	status, code := SyncFailedRetryable, "provider_unavailable"
-	if errors.Is(cause, wecomport.ErrDirectoryDisabled) {
-		status, code = SyncFailedTerminal, "provider_disabled"
-	}
+	status, code := classifySyncFailure(cause)
 	err := service.UOW.Within(ctx, func(txContext context.Context) error {
 		return service.Store.Fail(txContext, run.ID, run.Version, status, code)
 	})
 	if err != nil {
 		return err
 	}
-	return errors.New("customer sync step scheduled for retry")
+	maxAttempts := 0
+	var limited wecomport.DirectoryFailureAttemptLimit
+	if errors.As(cause, &limited) && limited.DirectoryFailureMaxAttempts() > 0 {
+		maxAttempts = limited.DirectoryFailureMaxAttempts()
+	}
+	return &syncRetryError{code: code, maxAttempts: maxAttempts}
+}
+
+func classifySyncFailure(cause error) (CustomerSyncStatus, string) {
+	status, code := SyncFailedRetryable, "provider_unavailable"
+	if errors.Is(cause, wecomport.ErrDirectoryDisabled) {
+		status, code = SyncFailedTerminal, "provider_disabled"
+	} else {
+		var failure wecomport.DirectoryFailure
+		if errors.As(cause, &failure) {
+			code = failure.DirectoryFailureCode()
+			if !failure.DirectoryFailureRetryable() {
+				status = SyncFailedTerminal
+			}
+		}
+	}
+	return status, code
 }
 
 func (service CustomerSyncService) now() time.Time {

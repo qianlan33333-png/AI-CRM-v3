@@ -76,6 +76,7 @@ type RuntimeApplication interface {
 	ListExecutions(context.Context, int64, int32, int32) (groupopsport.ExecutionPage, error)
 	ProjectExecutionOutcome(context.Context, groupopsport.ExecutionOutcomeCommand) (groupopsport.Execution, error)
 	ManualReconcile(context.Context, groupopsport.ManualReconcileCommand) (groupopsport.Execution, error)
+	ReadProviderDelivery(context.Context, groupopsport.ProviderDeliveryReadCommand) (groupopsport.Execution, error)
 	ListOperationMembers(context.Context, int32) (groupopsport.OperationMemberPage, error)
 	RefreshOperationMembers(context.Context, groupopsport.OperationMemberRefreshCommand) (groupopsport.OperationMemberPage, error)
 	ListGroups(context.Context, int64, int32, int32) (groupopsport.GroupDirectoryPage, error)
@@ -101,6 +102,40 @@ type Handler struct {
 	security        RequestSecurity
 	protocols       ProtocolAuthenticator
 	contentDelivery mediaport.ContentDeliveryService
+}
+
+// legacyExecutionPage is the presentation adapter for the frozen Group Ops
+// detail page. The runtime's state remains provider_accepted after a verified
+// delivery read; the donor DTO instead requires delivery_proven as its display
+// state when that fact and its Provider receipt are both present. Keep the
+// canonical runtime state alongside the adapted display state so this response
+// never hides the owner projection.
+type legacyExecutionPage struct {
+	Items   []legacyExecution `json:"items"`
+	Total   int64             `json:"total"`
+	Limit   int32             `json:"limit"`
+	Offset  int32             `json:"offset"`
+	HasMore bool              `json:"has_more"`
+	groupopsport.RuntimeSafety
+}
+
+type legacyExecution struct {
+	groupopsport.Execution
+	State        groupopsport.ExecutionState `json:"state"`
+	RuntimeState groupopsport.ExecutionState `json:"runtime_state,omitempty"`
+}
+
+func legacyExecutionPageResponse(value groupopsport.ExecutionPage) legacyExecutionPage {
+	items := make([]legacyExecution, len(value.Items))
+	for index, execution := range value.Items {
+		item := legacyExecution{Execution: execution, State: execution.State}
+		if execution.State == groupopsport.ExecutionProviderAccepted && execution.ProviderAccepted && execution.DeliveryProven && execution.ProviderReceiptPresent {
+			item.State = groupopsport.ExecutionDeliveryProven
+			item.RuntimeState = execution.State
+		}
+		items[index] = item
+	}
+	return legacyExecutionPage{Items: items, Total: value.Total, Limit: value.Limit, Offset: value.Offset, HasMore: value.HasMore, RuntimeSafety: value.RuntimeSafety}
 }
 
 func NewHandler(application Application, security RequestSecurity) (*Handler, error) {
@@ -503,6 +538,15 @@ func (h *Handler) plans(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		h.reconcileExecution(w, r, executionID)
 		return
 	}
+	if len(parts) == 3 && parts[0] == "executions" && parts[2] == "delivery" {
+		executionID, valid := positiveID(parts[1])
+		if !valid {
+			writeError(w, stdhttp.StatusNotFound, "not_found")
+			return
+		}
+		h.readProviderDelivery(w, r, executionID)
+		return
+	}
 	planID, ok := positiveID(parts[0])
 	if !ok {
 		writeError(w, stdhttp.StatusNotFound, "plan_not_found")
@@ -564,7 +608,11 @@ func (h *Handler) plans(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 			return
 		}
 		value, err := h.runtime.ListExecutions(r.Context(), planID, limit, offset)
-		h.respond(w, value, err)
+		if err != nil {
+			h.respond(w, value, err)
+			return
+		}
+		h.respond(w, legacyExecutionPageResponse(value), nil)
 		return
 	}
 	if parts[1] == "executions" && len(parts) == 4 && parts[3] == "reconcile" && h.runtime != nil {
@@ -574,6 +622,15 @@ func (h *Handler) plans(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 			return
 		}
 		h.reconcileExecution(w, r, executionID)
+		return
+	}
+	if parts[1] == "executions" && len(parts) == 4 && parts[3] == "delivery" && h.runtime != nil {
+		executionID, valid := positiveID(parts[2])
+		if !valid {
+			writeError(w, stdhttp.StatusNotFound, "not_found")
+			return
+		}
+		h.readProviderDelivery(w, r, executionID)
 		return
 	}
 	h.planSubresource(w, r, planID, parts[1:])
@@ -757,7 +814,11 @@ func (h *Handler) planSubresource(w stdhttp.ResponseWriter, r *stdhttp.Request, 
 			return
 		}
 		value, err := h.runtime.ListExecutions(r.Context(), planID, limit, offset)
-		h.respond(w, value, err)
+		if err != nil {
+			h.respond(w, value, err)
+			return
+		}
+		h.respond(w, legacyExecutionPageResponse(value), nil)
 		return
 	}
 	writeError(w, stdhttp.StatusNotFound, "not_found")
@@ -1118,6 +1179,28 @@ func (h *Handler) reconcileExecution(w stdhttp.ResponseWriter, r *stdhttp.Reques
 		return
 	}
 	value, err := h.runtime.ManualReconcile(r.Context(), groupopsport.ManualReconcileCommand{ExecutionID: executionID, ActorID: actor.InternalID, IdempotencyKey: key, Generation: body.Generation, Fence: body.Fence, LeaseExpiresAt: lease, EvidenceDigest: body.EvidenceDigest, DeliveryProven: body.DeliveryProven})
+	h.respond(w, value, err)
+}
+
+func (h *Handler) readProviderDelivery(w stdhttp.ResponseWriter, r *stdhttp.Request, executionID int64) {
+	if h.runtime == nil {
+		writeError(w, stdhttp.StatusServiceUnavailable, "group_ops_unavailable")
+		return
+	}
+	if r.Method != stdhttp.MethodPost {
+		methodNotAllowed(w, stdhttp.MethodPost)
+		return
+	}
+	actor, ok := h.mutate(w, r)
+	if !ok {
+		return
+	}
+	key, valid := requiredIdempotencyKey(r)
+	if !valid {
+		writeError(w, stdhttp.StatusBadRequest, "invalid_idempotency_key")
+		return
+	}
+	value, err := h.runtime.ReadProviderDelivery(r.Context(), groupopsport.ProviderDeliveryReadCommand{ExecutionID: executionID, ActorID: actor.InternalID, IdempotencyKey: key})
 	h.respond(w, value, err)
 }
 

@@ -13,7 +13,10 @@ import (
 	"github.com/riverqueue/river/rivertype"
 )
 
-const OutboundQueue = "outbound"
+const (
+	OutboundQueue        = "outbound"
+	OutboundWelcomeQueue = "outbound_welcome"
+)
 
 var ErrUnavailable = errors.New("River client unavailable")
 

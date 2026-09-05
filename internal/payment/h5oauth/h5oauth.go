@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -20,7 +21,12 @@ import (
 
 var ErrUnavailable = errors.New("payment H5 OAuth unavailable")
 var ErrInvalid = errors.New("invalid payment H5 OAuth request")
-var returnPathPattern = regexp.MustCompile(`^/pay/[1-9][0-9]*$`)
+
+// Public commerce routes use one escaped code/slug segment only and keep the
+// OAuth return same-origin. /p is intentionally absent because it contains no
+// authenticated action; /pay, /s/{code}, /s/{code}/pay and /c/{slug} reuse
+// the same trusted payment session without accepting browser identity input.
+var returnPathPattern = regexp.MustCompile(`^/(?:pay/[^/?#]+|s/[^/?#]+(?:/pay)?|c/[a-z][a-z0-9-]{5,119})$`)
 
 type Provider interface {
 	Enabled() bool
@@ -56,7 +62,7 @@ func (PostgreSQL) Consume(ctx context.Context, digest [32]byte, now time.Time) (
 	}
 	var state State
 	err = tx.QueryRow(ctx, `UPDATE payment_h5_oauth_states SET consumed_at=$2 WHERE state_digest=$1 AND consumed_at IS NULL AND expires_at>$2 RETURNING return_path,expires_at`, digest[:], now).Scan(&state.ReturnPath, &state.ExpiresAt)
-	if err != nil || !returnPathPattern.MatchString(state.ReturnPath) {
+	if err != nil || !validReturnPath(state.ReturnPath) {
 		return State{}, ErrInvalid
 	}
 	return state, nil
@@ -84,7 +90,7 @@ func NewService(uow platformport.UnitOfWork, store Store, provider Provider, iss
 func (s *Service) Enabled() bool { return s != nil && s.provider != nil && s.provider.Enabled() }
 
 func (s *Service) Start(ctx context.Context, returnPath string) (string, error) {
-	if !s.Enabled() || !returnPathPattern.MatchString(returnPath) {
+	if !s.Enabled() || !validReturnPath(returnPath) {
 		return "", ErrInvalid
 	}
 	raw := make([]byte, 32)
@@ -129,4 +135,19 @@ func (s *Service) Complete(ctx context.Context, stateToken, code string) (paymen
 
 func safe(value string, maximum int) bool {
 	return value != "" && len(value) <= maximum && strings.TrimSpace(value) == value && !strings.ContainsAny(value, "\r\n\x00")
+}
+
+func validReturnPath(value string) bool {
+	if !returnPathPattern.MatchString(value) {
+		return false
+	}
+	parts := strings.Split(strings.TrimPrefix(value, "/"), "/")
+	if len(parts) < 2 || len(parts) > 3 || (parts[0] != "pay" && parts[0] != "s" && parts[0] != "c") || (len(parts) == 3 && (parts[0] != "s" || parts[2] != "pay")) {
+		return false
+	}
+	code, err := url.PathUnescape(parts[1])
+	// PathUnescape happens after the raw one-segment regex. Reject separators
+	// introduced by percent encoding as well; otherwise /s/a%2Fb would pass the
+	// regex and later redirect to a different multi-segment route.
+	return err == nil && safe(code, 200) && !strings.ContainsAny(code, "/\\?#")
 }

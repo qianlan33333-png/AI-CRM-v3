@@ -80,6 +80,7 @@ type Execution struct {
 	State                         ExecutionState `json:"state"`
 	ProviderAccepted              bool           `json:"provider_accepted"`
 	DeliveryProven                bool           `json:"delivery_proven"`
+	DeliveryStatus                *int           `json:"delivery_status,omitempty"`
 	AttemptCount                  int32          `json:"attempt_count"`
 	ProviderReceiptPresent        bool           `json:"provider_receipt_present"`
 	ReconciliationEvidencePresent bool           `json:"reconciliation_evidence_present"`
@@ -88,23 +89,33 @@ type Execution struct {
 	UpdatedAt                     time.Time      `json:"updated_at"`
 }
 
+// ProviderDeliveryReadCommand contains no Provider identifiers. The Group
+// Ops receipt freezes msgid and sender before the trusted reader is called.
+type ProviderDeliveryReadCommand struct {
+	ExecutionID    int64
+	ActorID        int64
+	IdempotencyKey string
+}
+
 type ExecutionIntentState string
 
 const (
-	ExecutionIntentMaterialPending ExecutionIntentState = "material_pending"
-	ExecutionIntentReadyToAccept   ExecutionIntentState = "ready_to_accept"
-	ExecutionIntentAccepted        ExecutionIntentState = "accepted"
-	ExecutionIntentFinalFailed     ExecutionIntentState = "final_failed"
+	ExecutionIntentWaitingForPredecessor ExecutionIntentState = "waiting"
+	ExecutionIntentMaterialPending       ExecutionIntentState = "material_pending"
+	ExecutionIntentReadyToAccept         ExecutionIntentState = "ready_to_accept"
+	ExecutionIntentAccepted              ExecutionIntentState = "accepted"
+	ExecutionIntentFinalFailed           ExecutionIntentState = "final_failed"
 )
 
 type ExecutionIntent struct {
-	ID              int64                `json:"intent_id,string"`
-	NodeID          int64                `json:"node_id,string"`
-	NodePosition    int32                `json:"node_position"`
-	TargetReference string               `json:"target_reference"`
-	ScheduledFor    time.Time            `json:"scheduled_for"`
-	State           ExecutionIntentState `json:"state"`
-	ManualBlocker   bool                 `json:"manual_blocker"`
+	ID               int64                `json:"intent_id,string"`
+	ExternalEffectID string               `json:"external_effect_id,omitempty"`
+	NodeID           int64                `json:"node_id,string"`
+	NodePosition     int32                `json:"node_position"`
+	TargetReference  string               `json:"target_reference"`
+	ScheduledFor     time.Time            `json:"scheduled_for"`
+	State            ExecutionIntentState `json:"state"`
+	ManualBlocker    bool                 `json:"manual_blocker"`
 }
 
 type RunSummary struct {
@@ -255,6 +266,11 @@ type MaterialSnapshotResolver interface {
 	ResolveMaterialSnapshot(context.Context, MaterialPlan, time.Time) (json.RawMessage, string, error)
 }
 
+type MaterialIntentSnapshotResolver interface {
+	MaterialSnapshotResolver
+	ResolveMaterialIntentSnapshot(context.Context, MaterialPlan, time.Time) (json.RawMessage, string, json.RawMessage, string, error)
+}
+
 // ExecutionTargetOwnerResolver is the Group Ops side of sender resolution.
 // It returns only the local staff owner of an opaque group target; the
 // Composition Root combines it with the Access staff port to obtain an
@@ -290,8 +306,11 @@ type ExecutionDraft struct {
 	ContentDigest                       string
 	MaterialSnapshot                    json.RawMessage
 	MaterialDigest                      string
+	MaterialSourceSnapshot              json.RawMessage
+	MaterialSourceDigest                string
 	ExecutionKeyDigest                  [sha256.Size]byte
 	ExternalEffectID                    string
+	IntentID                            int64
 	ScheduledFor, CreatedAt             time.Time
 }
 
@@ -301,12 +320,18 @@ type ExecutionDraft struct {
 type RuntimeStore interface {
 	ListExecutionKeys(context.Context, int64, int64) ([]ExecutionKey, error)
 	ReserveRun(context.Context, RunReservation) (Run, error)
+	CreateExecutionIntents(context.Context, []ExecutionDraft) ([]ExecutionIntent, error)
+	InitialExecutionIntents(context.Context, int64) ([]ExecutionDraft, error)
+	ClaimNextExecutionIntent(context.Context, string) (ExecutionDraft, bool, error)
+	HaltExecutionIntent(context.Context, int64) error
+	BindAcceptedExecutionIntent(context.Context, int64, string) error
 	InsertExecution(context.Context, ExecutionDraft) (Execution, error)
 	GetExecution(context.Context, int64) (Execution, error)
 	ListExecutions(context.Context, int64, int32, int32) ([]Execution, int64, error)
 	ReadRunSummary(context.Context, int64) (RunSummary, error)
 	RecordExecutionOutcome(context.Context, int64, ExecutionState, bool, bool, string, int32, time.Time) (Execution, error)
 	ReconcileExecution(context.Context, int64, string, bool, time.Time) (Execution, error)
+	RecordGroupMessageDelivery(context.Context, GroupMessageReceipt, string) error
 	FindPlanByWebhookReference(context.Context, string) (int64, error)
 	ListDirectoryGroups(context.Context, int64, int32, int32) ([]GroupDirectoryItem, int64, error)
 	ReplaceDirectoryGroups(context.Context, int64, []GroupDirectoryItem, time.Time) error
@@ -318,4 +343,10 @@ type RuntimeStore interface {
 // members picker. It has no customer or external-recipient semantics.
 type EligibleStaffReader interface {
 	ListEligibleStaff(context.Context) ([]OperationMember, error)
+}
+
+// ExecutionContinuationEnqueuer inserts a unique, effect-bound shared River
+// job in the caller's current transaction. It owns no retry or lease state.
+type ExecutionContinuationEnqueuer interface {
+	EnqueueGroupOpsContinuationWithin(context.Context, string) error
 }

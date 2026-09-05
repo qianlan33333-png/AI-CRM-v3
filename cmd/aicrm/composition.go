@@ -31,6 +31,7 @@ import (
 	configstore "github.com/qianlan33333-png/AI-CRM-v3/internal/config/store"
 	coupon "github.com/qianlan33333-png/AI-CRM-v3/internal/coupon"
 	couponapp "github.com/qianlan33333-png/AI-CRM-v3/internal/coupon/app"
+	couponhttp "github.com/qianlan33333-png/AI-CRM-v3/internal/coupon/http"
 	couponstore "github.com/qianlan33333-png/AI-CRM-v3/internal/coupon/store"
 	customerapp "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/app"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
@@ -40,7 +41,9 @@ import (
 	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	groupops "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops"
 	groupopsapp "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/app"
+	groupopsport "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/port"
 	groupopsstore "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/store"
+	hxc "github.com/qianlan33333-png/AI-CRM-v3/internal/hxcdashboard"
 	hxcapp "github.com/qianlan33333-png/AI-CRM-v3/internal/hxcdashboard/app"
 	hxchttp "github.com/qianlan33333-png/AI-CRM-v3/internal/hxcdashboard/http"
 	hxcprovider "github.com/qianlan33333-png/AI-CRM-v3/internal/hxcdashboard/provider"
@@ -57,6 +60,9 @@ import (
 	mediaapp "github.com/qianlan33333-png/AI-CRM-v3/internal/media/app"
 	groupopsmaterial "github.com/qianlan33333-png/AI-CRM-v3/internal/media/groupopsmaterial"
 	mediastore "github.com/qianlan33333-png/AI-CRM-v3/internal/media/store"
+	archiveapp "github.com/qianlan33333-png/AI-CRM-v3/internal/messagearchive/app"
+	archivehttp "github.com/qianlan33333-png/AI-CRM-v3/internal/messagearchive/http"
+	archivestore "github.com/qianlan33333-png/AI-CRM-v3/internal/messagearchive/store"
 	operationcycle "github.com/qianlan33333-png/AI-CRM-v3/internal/operationcycle"
 	operationapp "github.com/qianlan33333-png/AI-CRM-v3/internal/operationcycle/app"
 	operationstore "github.com/qianlan33333-png/AI-CRM-v3/internal/operationcycle/store"
@@ -113,17 +119,18 @@ import (
 )
 
 type composedApplication struct {
-	pool           *platformpostgres.Pool
-	handler        http.Handler
-	management     *accessapp.Management
-	weComProcessor wecom.InboxProcessor
-	effectsRuntime *platformjobqueue.Runtime
-	customerSync   wecom.CustomerSyncService
-	adminOps       *adminopsapp.ProjectionService
-	release        *releaseapp.ObservationService
-	diagnostics    *adminopsapp.DiagnosticsService
-	hxcDashboard   hxcapp.Service
-	hxcSource      *hxcprovider.MySQL
+	pool                  *platformpostgres.Pool
+	handler               http.Handler
+	management            *accessapp.Management
+	weComProcessor        wecom.InboxProcessor
+	weComArchiveProcessor wecom.ArchiveInboxProcessor
+	effectsRuntime        *platformjobqueue.Runtime
+	customerSync          wecom.CustomerSyncService
+	adminOps              *adminopsapp.ProjectionService
+	release               *releaseapp.ObservationService
+	diagnostics           *adminopsapp.DiagnosticsService
+	hxcDashboard          hxcapp.Service
+	hxcSource             *hxcprovider.MySQL
 }
 
 func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplication, error) {
@@ -229,7 +236,15 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err = river.AddWorkerSafely[segment.AudienceScheduleScanJobArgs](effectWorkers, audienceScheduleWorker); err != nil {
 		return fail(err)
 	}
+	groupOpsContinuationWorker := groupopsapp.NewContinuationWorker()
+	if err = river.AddWorkerSafely[groupopsapp.ContinuationJobArgs](effectWorkers, groupOpsContinuationWorker); err != nil {
+		return fail(err)
+	}
 	effectClient, err := platformjobqueue.NewInsertClient(pool.Native(), effectWorkers)
+	if err != nil {
+		return fail(err)
+	}
+	groupOpsContinuationEnqueuer, err := groupopsapp.NewRiverContinuationEnqueuer(effectClient)
 	if err != nil {
 		return fail(err)
 	}
@@ -253,7 +268,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if cfg.WeCom.ChannelProviderReadEnabled {
 		periodicJobs = append(periodicJobs, wecom.StaffDirectoryPeriodicJob(cfg.WeCom.StaffDirectoryRefreshInterval, nil))
 	}
-	effectsRuntime, err := platformjobqueue.NewRuntimeWithPeriodic(pool.Native(), effectWorkers, periodicJobs, platformjobqueue.OutboundQueue, wecom.CustomerSyncQueue, wecom.StaffDirectoryRefreshQueue, payment.ReconciliationQueue, hxcworker.Queue, segment.AudienceRefreshQueue)
+	effectsRuntime, err := platformjobqueue.NewRuntimeWithPeriodic(pool.Native(), effectWorkers, periodicJobs, platformjobqueue.OutboundQueue, platformjobqueue.OutboundWelcomeQueue, wecom.CustomerSyncQueue, wecom.StaffDirectoryRefreshQueue, payment.ReconciliationQueue, hxcworker.Queue, segment.AudienceRefreshQueue)
 	if err != nil {
 		return fail(err)
 	}
@@ -275,7 +290,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		detail, readErr := customerStore.Detail(ctx, id)
 		return detail.CustomerID, detail.CustomerStatus, detail.DisplayName, detail.OneIDLabel, readErr
 	}}
-	aiService, err := aiassistantapp.NewService(uow, aiRepository, aiCustomers, aiStaffSnapshotAdapter{repository: accessRepository}, aiMaterialAdapter{capturer: mediaRepository, references: mediaRepository}, oneID)
+	aiService, err := aiassistantapp.NewService(uow, aiRepository, aiCustomers, aiStaffSnapshotAdapter{repository: accessRepository}, aiMaterialAdapter{capturer: mediaRepository, references: mediaRepository, legacy: mediaRepository}, oneID, queries)
 	if err != nil {
 		return fail(err)
 	}
@@ -289,7 +304,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err = aiService.BindReconciler(effectRepository); err != nil {
 		return fail(err)
 	}
-	aiHandler, err := aiassistanthttp.NewHandler(aiassistanthttp.Config{Application: aiService, Security: requestSecurity, Authorizer: accessapp.AIAssistantAuthorizer{}, Integration: aiassistanthttp.IntegrationConfig{Enabled: cfg.AIAssistant.IntakeEnabled, Key: cfg.AIAssistant.IntegrationKey, Secret: cfg.AIAssistant.IntegrationSecret, ActorID: cfg.AIAssistant.IntegrationActorID}, DispatchReady: cfg.AIAssistant.DispatchEnabled})
+	aiHandler, err := aiassistanthttp.NewHandler(aiassistanthttp.Config{Application: aiService, Security: requestSecurity, Authorizer: accessapp.AIAssistantAuthorizer{}, Integration: aiassistanthttp.IntegrationConfig{Enabled: cfg.AIAssistant.IntakeEnabled, Key: cfg.AIAssistant.IntegrationKey, Secret: cfg.AIAssistant.IntegrationSecret, ActorID: cfg.AIAssistant.IntegrationActorID, WeComCorpID: cfg.WeCom.CorpID, OpenPlatformID: cfg.Survey.OAuthOpenPlatformID}, DispatchReady: cfg.AIAssistant.DispatchEnabled})
 	if err != nil {
 		return fail(err)
 	}
@@ -352,7 +367,10 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return fail(err)
 	}
 	segmentService := segmentapp.NewService(uow, segmentRepository)
-	segmentEvaluator, err := segmentapp.NewEvaluator(segmentcompiler.Compiler{}, segmentadapter.CustomerSource{UoW: uow, Customers: customerStore}, segmentadapter.CanonicalCustomers{UoW: uow, Resolver: canonicalCustomerAdapter{reader: queries}})
+	// Populate this composition-owned adapter as its Owner stores are built
+	// below. The process has not started serving requests at this point.
+	legacyAudienceSource := &segmentadapter.LegacyTemplateSource{Radar: radarRepository, PrimaryOwnerCorpScope: "wecom-corp:" + cfg.WeCom.CorpID}
+	segmentEvaluator, err := segmentapp.NewEvaluator(segmentcompiler.Compiler{}, segmentadapter.CustomerSource{UoW: uow, Customers: customerStore, Legacy: legacyAudienceSource}, segmentadapter.CanonicalCustomers{UoW: uow, Resolver: canonicalCustomerAdapter{reader: queries}})
 	if err != nil {
 		return fail(err)
 	}
@@ -379,6 +397,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return fail(err)
 	}
 	segmentStaff := automationOpsStaffAdapter{uow: uow, users: accessRepository}
+	legacyAudienceSource.Owners = segmentStaff
 	automationProviderReady := cfg.Effects.ProviderEnabled && cfg.WeCom.Enabled && cfg.AutomationOperations.ProviderEnabled()
 	segmentExecution, err := segmentapp.NewExecutionService(uow, segmentRepository, automationService, segmentStaff, automationProviderReady)
 	if err != nil {
@@ -395,6 +414,12 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err = automationRuntime.SetMessageAccepter(outboundMessages); err != nil {
 		return fail(err)
 	}
+	if err = automationRuntime.SetReviewPlanIntake(aiService, automationService); err != nil {
+		return fail(err)
+	}
+	if err = automationRuntime.SetOutboundContentFreezer(automationOutboundContentFreezer{capturer: mediaRepository}); err != nil {
+		return fail(err)
+	}
 	if err = automationRuntime.SetEffectReconciler(effectRepository); err != nil {
 		return fail(err)
 	}
@@ -406,10 +431,11 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return fail(err)
 	}
 	segmentRuntime := segmentapp.NewRuntimeFacade(segmentService, segmentSnapshots, segmentExecution)
-	segmentBindings, err := segmentModule.BindRuntime(segmentRuntime, segmentRuntime, requestSecurity)
+	segmentBindings, err := segmentModule.BindRuntimeWithOwnerReferences(segmentRuntime, segmentRuntime, requestSecurity, segmentStaff, segmentStaff)
 	if err != nil {
 		return fail(err)
 	}
+	segmentBindings.Handler.BindAudienceRadarReferences(audienceRadarReferenceAdapter{radars: radarManager})
 	segmentWebhookService, err := segmentapp.NewWebhookService(uow, segmentRepository, oneID, segmentSnapshots)
 	if err != nil {
 		return fail(err)
@@ -423,13 +449,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
-	groupOpsProvider, err := outbound.NewGroupMessageProvider(outbound.GroupMessageProviderConfig{
-		Enabled:           cfg.Effects.ProviderEnabled && cfg.GroupOps.ProviderEnabled,
-		PreparationWriter: mediaPreparationBindings.Writer,
-	})
-	if err != nil {
-		return fail(err)
-	}
+	var groupOpsProvider *outbound.GroupMessageProvider
 	materialFreezer, err := groupopsmaterial.NewFreezer(mediaPreparedPlanReader{reader: mediaPreparationBindings.Reader})
 	if err != nil {
 		return fail(err)
@@ -448,6 +468,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	}
 	channelAssetStore := channelstore.NewPostgreSQLAssetStore(pool.Native())
 	channelAcquisition := channelstore.NewPostgreSQLStore()
+	legacyAudienceSource.Channels = channelAcquisition
 	channelEntrantActions := channelstore.NewEntrantActionStore(effectRepository, channelWelcomeMaterialAdapter{resolver: groupOpsMaterials})
 	channelLinkStore := channelstore.NewAcquisitionLinkStore()
 	channelAssetCompletionSink, err := outbound.NewChannelAssetCompletionSink(channelAssetCompletionAdapter{assets: channelAssetStore, bindings: channelAcquisition, digester: callbackStateDigester, corpID: cfg.WeCom.CorpID})
@@ -475,22 +496,26 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return fail(err)
 	}
 	groupOpsStaff := groupOpsStaffAdapter{access: accessRepository, owners: groupOpsRepository}
-	groupOpsDirectory := providerDisabledGroupOpsDirectory{}
-	groupOpsEvidence := providerDisabledGroupOpsEvidence{}
+	groupOpsDirectory := &wecomGroupOpsDirectory{enabled: cfg.GroupOps.ProviderEnabled, staff: groupOpsStaff}
+	groupOpsEvidence := groupopsport.ReconciliationEvidenceVerifier(providerDisabledGroupOpsEvidence{})
 	groupOpsService := groupopsapp.NewService(uow, groupOpsRepository, groupOpsStaff, groupOpsRepository)
 	groupOpsHistory := groupopsapp.NewHistoryService(uow, groupOpsRepository)
 	groupOpsRuntime := groupopsapp.NewRuntimeService(uow, groupOpsRepository, groupOpsRepository, effectRepository, groupOpsStaff, groupOpsDirectory, groupOpsStaff, groupOpsEvidence, groupOpsExternalReconciler{repository: effectRepository}, groupOpsMaterials)
 	groupOpsRuntime.SetDispatchEnabled(cfg.GroupOps.ProviderEnabled)
+	if err = groupOpsContinuationWorker.Bind(groupOpsRuntime); err != nil {
+		return fail(err)
+	}
 	groupOpsProtocols := &groupOpsProtocolAuthenticator{key: []byte(cfg.GroupOps.WebhookSecret), replay: groupOpsRepository, now: time.Now}
 	groupOpsModule := groupops.NewModuleRegistration()
 	groupOpsBindings, err := groupOpsModule.BindWithHistory(groupOpsService, groupOpsRuntime, groupOpsHistory, requestSecurity, groupOpsProtocols, mediaContentBindings.ContentDelivery)
 	if err != nil {
 		return fail(err)
 	}
-	groupOpsCompletionSink, err := outbound.NewGroupMessageCompletionSink(groupOpsRepository)
+	groupOpsCompletionSink, err := outbound.NewGroupMessageCompletionSink(groupOpsRepository, groupOpsRepository)
 	if err != nil {
 		return fail(err)
 	}
+	groupOpsCompletionSink.WithContinuation(groupOpsContinuationEnqueuer)
 	privateCompletionSink, err := outbound.NewPrivateMessageCompletionSink(privateWriter, aiRepository)
 	if err != nil {
 		return fail(err)
@@ -514,20 +539,44 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
+	legacyAudienceSource.Survey = surveyRepository
 	surveyDefinitions := surveyapp.NewService(uow, surveyRepository)
+	segmentBindings.Handler.BindAudienceSurveyReferences(audienceSurveyReferenceAdapter{surveys: surveyDefinitions})
 	surveySubmissions := surveyapp.NewSubmissionService(uow, surveyRepository, surveyCipher)
+	surveyCompletionTargets, err := surveyCompletionTargets(cfg.Survey.CompletionTargetsJSON)
+	if err != nil {
+		return fail(err)
+	}
+	surveyCompletionProvider, err := outbound.NewSurveyCompletionProvider(outbound.SurveyCompletionProviderConfig{Enabled: cfg.Survey.CompletionProviderEnabled, Targets: surveyCompletionTargets, Reader: surveyRepository, Identities: queries})
+	if err != nil {
+		return fail(err)
+	}
+	surveyCompletionSink, err := outbound.NewSurveyCompletionSink(surveyRepository)
+	if err != nil {
+		return fail(err)
+	}
+	if err = surveySubmissions.BindCompletionIntent(surveyCompletionEffectAccepter{effects: effectRepository}); err != nil {
+		return fail(err)
+	}
+	if err = surveySubmissions.BindCompletionPolicy(surveyCompletionProvider); err != nil {
+		return fail(err)
+	}
+	if err = surveySubmissions.BindCompletionIdentity(surveyCompletionProvider); err != nil {
+		return fail(err)
+	}
 	if err = surveySubmissions.BindCustomerTimeline(customerStore); err != nil {
 		return fail(err)
 	}
 	if err = surveySubmissions.BindDeclaredPhone(oneID, customerStore); err != nil {
 		return fail(err)
 	}
+	outboundCompletionSink.WithSurveyCompletion(surveyCompletionSink)
 	surveyOAuthProvider, err := surveyprovider.NewWeChatOAuth(cfg.Survey.OAuthEnabled, cfg.Survey.OAuthAppID, cfg.Survey.OAuthSecret, cfg.Survey.OAuthOpenPlatformID, cfg.PublicOrigin+"/api/h5/surveys/oauth/callback", cfg.Survey.OAuthScope)
 	if err != nil {
 		return fail(err)
 	}
 	surveyOAuth := surveyapp.NewOAuthService(uow, surveyRepository, surveyOAuthProvider, oneID)
-	surveyModule := surveymodule.NewModuleRegistration()
+	surveyModule := surveymodule.NewModuleRegistration().SetCompletionProviderEnabled(cfg.Survey.CompletionProviderEnabled)
 	surveyBindings, err := surveyModule.Bind(surveyDefinitions, surveySubmissions, requestSecurity, surveyOAuth)
 	if err != nil {
 		return fail(err)
@@ -553,8 +602,14 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return fail(err)
 	}
 	productCatalog := productapp.NewService(uow, productRepository, productEvents)
+	segmentBindings.Handler.BindAudienceProductReferences(audienceProductReferenceAdapter{products: productCatalog})
 	productLifecycle := productapp.NewLocalProductLifecycleService(uow, productRepository, productEvents)
 	productServicePeriod := productapp.NewServicePeriodService(uow, productRepository, productEvents)
+	// 0079 is Product-owned workspace metadata.  The HTTP host still reads
+	// members through the Order port and display names through the Customer
+	// port; it does not receive either store here.
+	productMemberGridStaff := productMemberGridStaffDirectory{users: accessRepository}
+	productMemberGrid := productapp.NewMemberGridWorkspaceService(uow, productRepository, productMemberGridStaff, productEvents)
 	productExternalPush, err := productapp.NewCommerceExternalPushService(uow, productRepository, productstore.NewLocalExternalPushEffectAccepter(), productEvents)
 	if err != nil {
 		return fail(err)
@@ -563,7 +618,17 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
+	if err = productBindings.ProductHandler.SetServicePeriodMemberWorkspace(productMemberGrid); err != nil {
+		return fail(err)
+	}
+	if err = productBindings.ProductHandler.SetServicePeriodMemberStaffDirectory(productMemberGridStaff); err != nil {
+		return fail(err)
+	}
 	publicProductHandler, err := producthttp.NewPublicHandler(productCatalog)
+	if err != nil {
+		return fail(err)
+	}
+	publicServicePeriodHandler, err := producthttp.NewServicePeriodPublicHandler(productServicePeriod)
 	if err != nil {
 		return fail(err)
 	}
@@ -581,7 +646,15 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
-	couponBindings, err := couponModule.Bind(couponService, productCatalog, requestSecurity)
+	couponCheckout, err := couponapp.NewCheckoutService(uow, couponRepository)
+	if err != nil {
+		return fail(err)
+	}
+	couponPublic, err := couponapp.NewPublicCouponService(uow, couponRepository)
+	if err != nil {
+		return fail(err)
+	}
+	couponBindings, err := couponModule.BindWithClaimsAndPublic(couponService, productCatalog, couponRepository, couponPublic, requestSecurity)
 	if err != nil {
 		return fail(err)
 	}
@@ -635,6 +708,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	}
 	channelCatalogService := channelstore.NewCatalogService(uow, channelCatalogStore, channelCatalogStore, channelEvents,
 		channelMaterialReferenceAdapter{media: mediaRepository}, channelTagReferenceAdapter{tags: tagRepository}, channelStaffReferenceAdapter{users: accessRepository})
+	segmentBindings.Handler.BindAudienceChannelReferences(audienceChannelReferenceAdapter{channels: channelCatalogService})
 	channelCatalog, err := channelstore.NewCatalogHTTPHandler(channelstore.CatalogHTTPConfig{Application: channelCatalogService, Summaries: channelstore.NewPostgreSQLCatalogSummaryReader(uow), Security: requestSecurity, CursorSigningKey: channelCursorKey})
 	if err != nil {
 		return fail(err)
@@ -670,7 +744,11 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
+	legacyAudienceSource.Orders = orderRepository
 	orderService := orderapp.NewService(uow, orderRepository)
+	if err = orderService.SetCheckoutCouponCoordinator(couponCheckout); err != nil {
+		return fail(err)
+	}
 	if cfg.WeChatPay.H5OAuthEnabled {
 		contactCipher, cipherErr := ordersecure.NewContactCipher(cfg.WeChatPay.OrderContactDataKey)
 		if cipherErr != nil {
@@ -687,7 +765,28 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
+	archiveReader, err := wecomadapter.NewMessageArchiveReader(wecomadapter.MessageArchiveConfig{Enabled: cfg.WeCom.MessageArchiveEnabled, CorpID: cfg.WeCom.CorpID, Secret: cfg.WeCom.MessageArchiveSecret, RunnerPath: cfg.WeCom.MessageArchiveRunnerPath, LibraryPath: cfg.WeCom.MessageArchiveLibraryPath, PrivateKeyPaths: cfg.WeCom.MessageArchivePrivateKeyPaths, Timeout: 15 * time.Second})
+	if err != nil {
+		return fail(err)
+	}
+	archiveService := archiveapp.Service{Enabled: cfg.WeCom.MessageArchiveEnabled, ReadEnabled: true, CorpScope: "wecom-corp:" + cfg.WeCom.CorpID, Reader: archiveReader, Identity: oneID, Lineage: queries, Staff: accessRepository, StaffDirectory: accessRepository, Store: archivestore.NewPostgreSQL(), UOW: uow, PageLimit: cfg.WeCom.MessageArchivePageLimit, PageBudget: cfg.WeCom.MessageArchivePageBudget}
+	archiveHandler, err := archivehttp.NewHandler(requestSecurity, archiveService, auditService, uow)
+	if err != nil {
+		return fail(err)
+	}
+
+	if err = productBindings.ProductHandler.SetServicePeriodMemberReaders(entitlements, orderCustomerDisplayNameAdapter{uow: uow, reader: customerStore}); err != nil {
+		return fail(err)
+	}
+	entitlementFulfillment, err := orderapp.NewEntitlementFulfillmentApplication(orderRepository)
+	if err != nil {
+		return fail(err)
+	}
+	if err = orderService.SetServicePeriodEntitlementCoordinator(entitlementFulfillment); err != nil {
+		return fail(err)
+	}
 	customerProfileStore := wecom.NewPostgreSQLCustomerSyncStore()
+	legacyAudienceSource.PrimaryOwners = customerProfileStore
 	customerHandler, err := customerhttp.NewHandler(customerhttp.Config{UnitOfWork: uow, Auth: requestSecurity, CSRF: requestSecurity,
 		Directory: customerapp.Directory{Store: customerStore, SigningKey: cursorSigningKey}, Store: customerStore, Identities: queries, Audit: auditService,
 		Canonical: canonicalCustomerAdapter{reader: queries},
@@ -795,11 +894,24 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
+	if err = publicServicePeriodHandler.SetTrustedPublicState(uow, paymentSession, entitlements); err != nil {
+		return fail(err)
+	}
+	if err = publicServicePeriodHandler.SetPublicMediaReader(mediaService); err != nil {
+		return fail(err)
+	}
+	if err = publicServicePeriodHandler.SetPublicLeadQRCodeReader(channelPublicLeadQRCodeAdapter{catalog: channelCatalogService}); err != nil {
+		return fail(err)
+	}
 	h5OAuthService, err := paymenth5oauth.NewService(uow, paymenth5oauth.PostgreSQL{}, h5OAuthProvider, paymentSession)
 	if err != nil {
 		return fail(err)
 	}
 	if err = paymentHandler.SetH5OAuth(h5OAuthService); err != nil {
+		return fail(err)
+	}
+	couponPublicHandler, err := couponhttp.NewPublicHandler(couponPublic, couponCheckout, paymentSession, productTargets, uow)
+	if err != nil {
 		return fail(err)
 	}
 	if cfg.WeChatShop.Enabled {
@@ -834,6 +946,22 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	providerClient, err := wecomadapter.New(wecomadapter.Config{
 		Enabled: cfg.WeCom.Enabled, CorpID: cfg.WeCom.CorpID, AgentID: cfg.WeCom.AgentID, Secret: cfg.WeCom.Secret, ContactSecret: cfg.WeCom.ContactSecret,
 		AdminCallbackURI: cfg.PublicOrigin + "/auth/wecom/callback", SidebarCallbackURI: cfg.PublicOrigin + "/api/sidebar/oauth/callback",
+	})
+	if err != nil {
+		return fail(err)
+	}
+	groupOpsDirectory.groups = providerClient
+	groupOpsDirectory.staffs = providerClient
+	if cfg.Effects.ProviderEnabled && cfg.WeCom.Enabled && cfg.GroupOps.ProviderEnabled {
+		groupOpsEvidence = wecomGroupOpsEvidence{uow: uow, receipts: groupOpsRepository, reader: providerClient}
+		groupOpsRuntime.SetEvidenceVerifier(groupOpsEvidence)
+	}
+	groupOpsProvider, err = outbound.NewGroupMessageProvider(outbound.GroupMessageProviderConfig{
+		Enabled:           cfg.Effects.ProviderEnabled && cfg.WeCom.Enabled && cfg.GroupOps.ProviderEnabled,
+		PreparationWriter: mediaPreparationBindings.Writer,
+		Executions:        groupOpsDispatchReader{uow: uow, execution: groupOpsRepository, senders: groupOpsStaff},
+		Materials:         groupOpsMaterialReadinessAdapter{uow: uow, capturer: mediaContentBindings.SourceCapturer, freezer: materialFreezer},
+		Writer:            providerClient,
 	})
 	if err != nil {
 		return fail(err)
@@ -891,6 +1019,8 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		welcomeGrantStore = wecom.NewPostgreSQLWelcomeGrantStore(welcomeGrantCipher)
 	}
 	relationships := wecom.NewPostgreSQLFollowRelationshipStore()
+	legacyAudienceSource.RegistrationFacts = customerStore
+	legacyAudienceSource.Contacts = relationships
 	var channelAssetProvider effectport.ProviderAdapter
 	var channelEntrantProvider effectport.ProviderAdapter
 	var channelLinkProvider effectport.ProviderAdapter
@@ -908,7 +1038,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if cfg.WeCom.ChannelQRProviderEnabled {
 		channelLinkProvider = outbound.NewChannelLinkProvider(channelLinkMutationReaderAdapter{uow: uow, source: channelLinkStore}, providerClient)
 	}
-	privateProvider, err := outbound.NewPrivateMessageProvider(cfg.AIAssistant.DispatchEnabled, privateWriter, aiPrivateTargetResolver{uow: uow, identities: queries, access: accessRepository, relationships: relationships, corpID: cfg.WeCom.CorpID}, aiPrivatePayloadReader{content: aiRepository, images: mediaService, materials: mediaRepository}, providerClient)
+	privateProvider, err := outbound.NewPrivateMessageProvider(cfg.AIAssistant.DispatchEnabled, privateWriter, aiPrivateTargetResolver{uow: uow, identities: queries, access: accessRepository, relationships: relationships, corpID: cfg.WeCom.CorpID}, aiPrivatePayloadReader{content: aiRepository, images: mediaService, materials: mediaRepository, attachments: mediaService, uow: uow, capturer: mediaRepository}, providerClient)
 	if err != nil {
 		return fail(err)
 	}
@@ -924,11 +1054,11 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		}
 		tagCatalogProvider = catalogProvider
 	}
-	messageProvider, providerErr := outbound.NewMessageProvider(outbound.MessageProviderConfig{Enabled: cfg.Effects.ProviderEnabled && cfg.WeCom.Enabled && cfg.AutomationOperations.ProviderEnabled(), CorpScope: "wecom-corp:" + cfg.WeCom.CorpID, Executions: outboundMessages, Identities: outboundIdentityAdapter{uow: uow, reader: queries}, Staff: segmentStaff, Content: automationService, Writer: providerClient})
+	messageProvider, providerErr := outbound.NewMessageProvider(outbound.MessageProviderConfig{Enabled: cfg.Effects.ProviderEnabled && cfg.WeCom.Enabled && cfg.AutomationOperations.ProviderEnabled(), CorpScope: "wecom-corp:" + cfg.WeCom.CorpID, Executions: outboundMessages, Identities: outboundIdentityAdapter{uow: uow, reader: queries}, Staff: segmentStaff, Content: automationService, Payloads: automationFrozenPayloadReader{preparer: aiPrivatePayloadReader{images: mediaService, materials: mediaRepository, attachments: mediaService, uow: uow, capturer: mediaRepository}}, Writer: providerClient})
 	if providerErr != nil {
 		return fail(providerErr)
 	}
-	providerRouter := outbound.NewProviderRouterWithGroupMessageAndChannels(tagCatalogProvider, groupOpsProvider, channelAssetProvider, channelEntrantProvider, channelLinkProvider).WithPrivateMessage(privateProvider).WithAutomationMessage(messageProvider).WithSidebarJSSDK(sidebarExpiry)
+	providerRouter := outbound.NewProviderRouterWithGroupMessageAndChannels(tagCatalogProvider, groupOpsProvider, channelAssetProvider, channelEntrantProvider, channelLinkProvider).WithPrivateMessage(privateProvider).WithAutomationMessage(messageProvider).WithSidebarJSSDK(sidebarExpiry).WithSurveyCompletion(surveyCompletionProvider)
 	if err = effectsModule.SetProviderAdapter(composedProviderRouter{outbound: providerRouter, payment: paymentAdapter}); err != nil {
 		return fail(err)
 	}
@@ -942,6 +1072,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		},
 		Receipts: callbackReceipts, Audit: auditService,
 	}
+	weComArchiveProcessor := wecom.ArchiveInboxProcessor{Enabled: cfg.WeCom.MessageArchiveEnabled, Inbox: inboxService, UOW: uow, Archive: archiveService}
 	customerSync := wecom.CustomerSyncService{Enabled: cfg.WeCom.CustomerSyncEnabled, CorpID: cfg.WeCom.CorpID, Provider: providerClient,
 		Identity: oneID, Projection: customerStore, Timeline: customerStore, Store: customerProfileStore, Outbox: platformoutbox.NewPostgreSQL(),
 		Enqueuer: customerSyncEnqueuer, Audit: auditService, UOW: uow}
@@ -954,14 +1085,25 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 			return fail(err)
 		}
 	}
+	hxcModule := hxc.NewModuleRegistration()
 	hxcRepository := hxcstore.NewPostgreSQL(pool.Native())
+	// Product receives only HXC's versioned shared-facts Port. It never opens
+	// an HXC store or reads dashboard tables while composing the member grid.
+	if err = productBindings.ProductHandler.SetServicePeriodMemberSharedFacts(hxcRepository); err != nil {
+		return fail(err)
+	}
+	legacyAudienceSource.MemberFacts = hxcRepository
 	hxcDashboard := hxcapp.Service{Enabled: cfg.HXCDashboard.Enabled, Scope: cfg.HXCDashboard.UnionIDScope, SubjectKey: []byte(cfg.HXCDashboard.SubjectHMACKey), Source: hxcSource, Identity: hxcIdentity, IdentityWriteEnabled: cfg.HXCDashboard.IdentityWriteEnabled, UnionIDVerified: cfg.HXCDashboard.UnionIDVerified, Store: hxcRepository, Enqueuer: hxcEnqueuer, Audit: auditService, UOW: uow}
 	hxcDashboardWorker.Service = &hxcDashboard
 	hxcHandler := hxchttp.Handler{Service: hxcDashboard, Store: hxcRepository, Auth: requestSecurity, Key: []byte(cfg.HXCDashboard.SubjectHMACKey)}
 	syncHandler := wecom.CustomerSyncHTTPHandler{Service: customerSync, Auth: requestSecurity, CSRF: requestSecurity}
 	sidebarContextTokens := wecom.ContextTokenService{CorpID: cfg.WeCom.CorpID, SigningKey: []byte(cfg.WeCom.ContextSigningKey), TTL: 5 * time.Minute}
+	callbackDispatcher := wecom.CallbackEventDispatcher{ExternalContact: wecom.ExternalContactCallbackDispatcher{StateDigester: callbackStateDigester, Inbox: inboxService, UOW: uow, WelcomeGrants: welcomeGrantStore, WelcomeActions: channelEntrantActions, States: channelAcquisition}}
+	if cfg.WeCom.MessageArchiveEnabled {
+		callbackDispatcher.Archive = wecom.ArchiveCallbackDispatcher{Inbox: inboxService, UOW: uow}
+	}
 	weComHandler, err := wecom.NewHTTPHandler(wecom.HTTPHandlerOptions{
-		Callback: wecom.CallbackHandler{Enabled: cfg.WeCom.CallbackEnabled, Crypto: callbackCrypto, StateDigester: callbackStateDigester, Inbox: inboxService, UOW: uow, WelcomeGrants: welcomeGrantStore},
+		Callback: wecom.CallbackHandler{Enabled: cfg.WeCom.CallbackEnabled, Crypto: callbackCrypto, StateDigester: callbackStateDigester, Inbox: inboxService, UOW: uow, WelcomeGrants: welcomeGrantStore, WelcomeActions: channelEntrantActions, States: channelAcquisition, Dispatcher: callbackDispatcher},
 		OAuth: wecom.OAuthService{Enabled: cfg.WeCom.Enabled, CorpID: cfg.WeCom.CorpID, StateStore: oauthStates, UOW: uow,
 			Client: providerClient, AllowedPaths: allowedOAuthRedirects(), StateTTL: 10 * time.Minute},
 		ContextTokens: sidebarContextTokens,
@@ -1025,6 +1167,8 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	adminAPIs.Handle("/api/h5/wechat-pay/oauth/", paymentHandler)
 	adminAPIs.Handle("/api/public/wechat-pay/", paymentHandler)
 	adminAPIs.Handle("/api/public/wechat-shop/", paymentHandler)
+	adminAPIs.Handle("/api/public/service-period-member-grid/bootstrap", productBindings.Products)
+	adminAPIs.Handle("/api/public/service-period-member-grid/query", productBindings.Products)
 	adminAPIs.Handle("/api/v1/products", productBindings.Products)
 	adminAPIs.Handle("/api/v1/products/", productBindings.Products)
 	adminAPIs.Handle("/api/admin/wechat-pay/products", productBindings.Products)
@@ -1046,6 +1190,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	adminAPIs.Handle("/api/admin/wecom-customer-acquisition-links", channelLinkHandler)
 	adminAPIs.Handle("/api/admin/wecom-customer-acquisition-links/", channelLinkHandler)
 	adminAPIs.Handle("/api/admin/ai-assistant/", aiHandler.Routes())
+	adminAPIs.Handle("/api/admin/ai-assist/review-plans", aiHandler.Routes())
 	adminAPIs.Handle("/api/sidebar/v2/", sidebarHandler.Routes())
 	mountSurveyAPIs(adminAPIs, surveyBindings.Survey)
 	adminAPIs.Handle("/api/admin/operation-cycles/", operationBindings.API)
@@ -1055,11 +1200,16 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 			return checkErr
 		}
 		var complete bool
-		checkErr := pool.Native().QueryRow(readinessContext, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['0001','0002','0003','0004','0005','0006','0007','0008','0009','0010','0011','0012','0013','0014','0015','0016','0017','0018','0019','0020','0021','0022','0023','0024','0025','0026','0027','0028','0029','0030','0031','0032','0033','0034','0035','0036','0037','0038','0039','0040','0041','0042','0043','0044','0045','0046','0047','0048','0049','0050','0051','0052','0053','0054','0055','0056','0057','0058','0059','0060','0061','0062','0063','0064']) AS required(version) WHERE NOT EXISTS (SELECT 1 FROM platform_schema_migrations applied WHERE applied.version=required.version))`).Scan(&complete)
+		checkErr := pool.Native().QueryRow(readinessContext, `SELECT
+			NOT EXISTS (SELECT 1 FROM unnest(ARRAY['0001','0002','0003','0004','0005','0006','0007','0008','0009','0010','0011','0012','0013','0014','0015','0016','0017','0018','0019','0020','0021','0022','0023','0024','0025','0026','0027','0028','0029','0030','0031','0032','0033','0034','0035','0036','0037','0038','0039','0040','0041','0042','0043','0044','0045','0046','0047','0048','0049','0050','0051','0052','0053','0054','0055','0056','0057','0058','0059','0060','0061','0062','0063','0064','0068','0069','0070','0076','0077','0079','0083','0084','0085','0086','0087','0088','0089']) AS required(version) WHERE NOT EXISTS (SELECT 1 FROM platform_schema_migrations applied WHERE applied.version=required.version))
+			AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='order_service_entitlements' AND column_name='alliance')`).Scan(&complete)
 		if checkErr != nil || !complete {
 			return errors.New("database schema is not ready")
 		}
 		if checkErr = effectsModule.Readiness(readinessContext, pool.Native()); checkErr != nil {
+			return checkErr
+		}
+		if checkErr = outbound.Readiness(readinessContext, pool.Native()); checkErr != nil {
 			return checkErr
 		}
 		if checkErr = mediaModule.Readiness(readinessContext, pool.Native()); checkErr != nil {
@@ -1098,6 +1248,9 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		if checkErr = groupOpsModule.Readiness(readinessContext, pool.Native()); checkErr != nil {
 			return checkErr
 		}
+		if checkErr = hxcModule.Readiness(readinessContext, pool.Native()); checkErr != nil {
+			return checkErr
+		}
 		if checkErr = surveyModule.Readiness(readinessContext, pool.Native()); checkErr != nil {
 			return checkErr
 		}
@@ -1127,19 +1280,23 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	tagUI := tagModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, donorTemplate string, assets tag.TagsAssets) error {
 		return renderer.RenderTags(writer, webshell.AdminPageForRequest(request, "企微标签管理", "管理标签目录与本地同步意图。", "api.admin_wecom_tags_page"), donorTemplate, webshell.TagsAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS})
 	})
+	memberGridUI := producthttp.NewMemberGridUI()
 	productUI := productModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, page, donorTemplate string, assets productmodule.ProductAssets) error {
-		titles := map[string]string{"products": "普通商品", "productForm": "普通商品", "spProducts": "周期商品", "spProductForm": "周期商品"}
-		endpoints := map[string]string{"products": "api.admin_products_page", "productForm": "api.admin_product_form_page", "spProducts": "api.admin_service_period_products_page", "spProductForm": "api.admin_service_period_product_form_page"}
-		return renderer.RenderProducts(writer, webshell.AdminPageForRequest(request, titles[page], "仅管理本地商品定义、生命周期与受控配置。", endpoints[page]), page, donorTemplate, webshell.ProductAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, HostJS: assets.HostJS})
+		if page == "spProductData" {
+			return producthttp.RenderMemberGridInternal(writer, request, request.URL.Query().Get("id"))
+		}
+		titles := map[string]string{"products": "普通商品", "productForm": "普通商品", "spProducts": "周期商品", "spProductForm": "周期商品", "spProductData": "周期商品 · 会员数据"}
+		endpoints := map[string]string{"products": "api.admin_products_page", "productForm": "api.admin_product_form_page", "spProducts": "api.admin_service_period_products_page", "spProductForm": "api.admin_service_period_product_form_page", "spProductData": "api.admin_service_period_member_grid"}
+		return renderer.RenderProducts(writer, webshell.AdminPageForRequest(request, titles[page], "管理本地商品、周期会员数据与受控配置。", endpoints[page]), page, donorTemplate, webshell.ProductAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, HostJS: assets.HostJS})
 	})
 	orderUI := orderui.NewUIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, page, donorTemplate string, assets orderui.PageAssets) error {
 		title := map[string]string{"orders": "交易管理", "orderDetail": "订单详情"}[page]
 		return renderer.RenderOrders(writer, webshell.AdminPageForRequest(request, title, "历史订单默认只读；未验证身份不归属 OneID。", "api.admin_orders_page"), page, donorTemplate, webshell.OrderAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS})
 	})
 	couponUI := couponModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, page, donorTemplate string, assets coupon.Assets) error {
-		titles := map[string]string{"coupons": "优惠券", "couponForm": "优惠券"}
-		endpoints := map[string]string{"coupons": "api.admin_coupons_page", "couponForm": "api.admin_coupon_form_page"}
-		return renderer.RenderCoupons(writer, webshell.AdminPageForRequest(request, titles[page], "仅管理本地优惠券规则，不含领取、核销、客户持券或订单。", endpoints[page]), page, donorTemplate, webshell.CouponAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS})
+		titles := map[string]string{"coupons": "优惠券", "couponForm": "优惠券", "couponData": "优惠券 · 领取数据"}
+		endpoints := map[string]string{"coupons": "api.admin_coupons_page", "couponForm": "api.admin_coupon_form_page", "couponData": "api.admin_coupon_claims"}
+		return renderer.RenderCoupons(writer, webshell.AdminPageForRequest(request, titles[page], "管理本地优惠券规则、领取事实与核销快照。", endpoints[page]), page, donorTemplate, webshell.CouponAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS})
 	})
 	radarUI := radarModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, page string, assets radarmodule.UIAssets) error {
 		titles := map[string]string{"radar": "内容雷达", "radarDetail": "雷达详情", "radarForm": "雷达配置"}
@@ -1150,7 +1307,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		if page == "groupopsDetail" {
 			endpoint = "api.admin_group_ops_plan_detail"
 		}
-		return renderer.RenderGroupOps(writer, webshell.AdminPageForRequest(request, "群运营计划", "管理本地群计划、节点、素材快照与执行回执。", endpoint), page, donorTemplate, webshell.GroupOpsAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS})
+		return renderer.RenderGroupOps(writer, webshell.AdminPageForRequest(request, "群运营计划", "管理本地群计划、节点、素材快照与执行回执。", endpoint), page, donorTemplate, webshell.GroupOpsAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS, ReadonlyCSS: assets.ReadonlyCSS, ReadonlyJS: assets.ReadonlyJS})
 	})
 	automationUI := automationModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, page, donorTemplate string, assets automation.AgentAssets, bootstrap automation.AgentPageBootstrap) error {
 		return renderer.RenderAutomation(writer, webshell.AdminPageForRequest(request, "自动化话术", "管理本地 Agent 与固定话术配置。", "api.admin_automation_agents"), page, donorTemplate, webshell.AutomationAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS}, bootstrap.CreateCode)
@@ -1180,6 +1337,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
+	handler = mountMemberGridUI(handler, memberGridUI)
 	handler, err = mountSegmentAPI(handler, segmentBindings.Audience)
 	if err != nil {
 		return fail(err)
@@ -1193,7 +1351,11 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return fail(err)
 	}
 	handler = mountAIAssistant(handler, aiHandler.Routes(), aiUI, authentication, cfg.AIAssistant.UIEnabled, cfg.PublicOrigin)
-	handler = securityHeaders(mountPublicProduct(mountRadar(mountChannelUI(mountHXCUI(mountOrderUI(mountSurveyUI(handler, surveyUI, surveyPublicUI, authentication), orderUI, authentication), hxcUI, authentication), channelUI, authentication), radarBindings.Radar, radarUI, authentication), publicProductHandler))
+	handler = securityHeaders(mountPublicCoupon(mountPublicServicePeriod(mountPublicProduct(mountRadar(mountChannelUI(mountHXCUI(mountOrderUI(mountSurveyUI(handler, surveyUI, surveyPublicUI, authentication), orderUI, authentication), hxcUI, authentication), channelUI, authentication), radarBindings.Radar, radarUI, authentication), publicProductHandler), publicServicePeriodHandler), couponPublicHandler))
+	handler, err = mountMessageArchive(handler, archiveHandler.Routes())
+	if err != nil {
+		return fail(err)
+	}
 	// These are local observations only: they make the release and diagnostics
 	// projections truthful and readable after startup, without claiming deploy,
 	// cutover, provider execution, or runtime-secret application.
@@ -1224,7 +1386,17 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 			return fail(err)
 		}
 	}
-	return &composedApplication{pool: pool, handler: handler, management: management, weComProcessor: weComProcessor, effectsRuntime: effectsRuntime, customerSync: customerSync, hxcDashboard: hxcDashboard, hxcSource: hxcSource, adminOps: adminOpsProjection, release: releaseObservation, diagnostics: diagnostics}, nil
+	return &composedApplication{pool: pool, handler: handler, management: management, weComProcessor: weComProcessor, weComArchiveProcessor: weComArchiveProcessor, effectsRuntime: effectsRuntime, customerSync: customerSync, hxcDashboard: hxcDashboard, hxcSource: hxcSource, adminOps: adminOpsProjection, release: releaseObservation, diagnostics: diagnostics}, nil
+}
+
+func mountMessageArchive(next, archive http.Handler) (http.Handler, error) {
+	if next == nil || archive == nil {
+		return nil, errors.New("message archive HTTP routes are required")
+	}
+	mux := http.NewServeMux()
+	mux.Handle("/api/admin/message-archive/", archive)
+	mux.Handle("/", next)
+	return mux, nil
 }
 
 func mountSurveyAPIs(mux *http.ServeMux, survey http.Handler) {
@@ -1256,7 +1428,7 @@ func mountHXCUI(next, dashboardUI http.Handler, authentication accessAuthenticat
 func mountAIAssistant(next, api, ui http.Handler, authentication accessAuthentication, uiEnabled bool, publicOrigin string) http.Handler {
 	api = rejectCrossSiteUnsafeRequests(api, canonicalOrigin(publicOrigin))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/api/admin/ai-assistant/") || r.URL.Path == "/api/integrations/ai-assistant/review-plans" {
+		if strings.HasPrefix(r.URL.Path, "/api/admin/ai-assistant/") || r.URL.Path == "/api/admin/ai-assist/review-plans" || r.URL.Path == "/api/integrations/ai-assistant/review-plans" {
 			api.ServeHTTP(w, r)
 			return
 		}
@@ -1291,6 +1463,26 @@ func mountPublicProduct(next, products http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/api/public/products/") || strings.HasPrefix(r.URL.Path, "/p/") || strings.HasPrefix(r.URL.Path, "/pay/") {
 			products.ServeHTTP(w, r)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func mountPublicServicePeriod(next, products http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/s/") || strings.HasPrefix(r.URL.Path, "/api/h5/service-period-products/") {
+			products.ServeHTTP(w, r)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func mountPublicCoupon(next, coupons http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/c/") || r.URL.Path == "/api/h5/coupons/available" || strings.HasPrefix(r.URL.Path, "/api/h5/coupons/") {
+			coupons.ServeHTTP(w, r)
 			return
 		}
 		next.ServeHTTP(w, r)
@@ -1362,6 +1554,17 @@ func routeApplicationWithEffects(health, access, identity, effects, pushCenter, 
 
 func routeApplicationWithMedia(health, access, identity, effects, pushCenter, effectsUI, mediaHandler, mediaUI, weCom, shell http.Handler, authentication accessAuthentication, publicOrigin string) (http.Handler, error) {
 	return routeApplicationWithMediaTags(health, access, identity, effects, pushCenter, effectsUI, mediaHandler, mediaUI, http.NotFoundHandler(), http.NotFoundHandler(), weCom, shell, authentication, publicOrigin)
+}
+
+func mountMemberGridUI(next, ui http.Handler) http.Handler {
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		path := request.URL.Path
+		if path == "/shared/service-period-member-grid" || strings.HasPrefix(path, "/service-period-member-grid-assets/") || strings.HasPrefix(path, "/static/service-period/icons/") {
+			ui.ServeHTTP(writer, request)
+			return
+		}
+		next.ServeHTTP(writer, request)
+	})
 }
 
 func routeApplicationWithMediaTags(health, access, identity, effects, pushCenter, effectsUI, mediaHandler, mediaUI, tagHandler, tagUI, weCom, shell http.Handler, authentication accessAuthentication, publicOrigin string) (http.Handler, error) {
@@ -1477,6 +1680,8 @@ func routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, acce
 	mux.Handle("/api/admin/wechat-pay/products/", productHandler)
 	mux.Handle("/api/admin/service-period-products", productHandler)
 	mux.Handle("/api/admin/service-period-products/", productHandler)
+	mux.Handle("/api/public/service-period-member-grid/bootstrap", productHandler)
+	mux.Handle("/api/public/service-period-member-grid/query", productHandler)
 	mux.Handle("/api/admin/coupons", couponHandler)
 	mux.Handle("/api/admin/coupons/", couponHandler)
 	mux.Handle("/api/admin/config/", configHandler)
@@ -1513,9 +1718,9 @@ func routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, acce
 	mux.Handle("/admin/image-library", requireAdminSession(authentication, mediaUI))
 	mux.Handle("/admin/miniprogram-library", requireAdminSession(authentication, mediaUI))
 	mux.Handle("/admin/attachment-library", requireAdminSession(authentication, mediaUI))
-	// PR04 canonical/nested Product aliases all mount the donor template#tpl
-	// fragment in admin_base. Exact spProductData paths are denied before the
-	// generic admin shell so the excluded member-grid page cannot boot.
+	// Canonical/nested Product aliases mount the frozen donor fragment through
+	// the existing V3 Host. The member-grid data page receives the same session
+	// and asset boundary as the lifecycle pages.
 	for _, path := range []string{
 		"/admin/wechat-pay/products", "/admin/wechat-pay/products/",
 		"/admin/wechat-pay/products.html", "/admin/products.html",
@@ -1527,18 +1732,14 @@ func routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, acce
 	} {
 		mux.Handle(path, requireAdminSession(authentication, productUI))
 	}
-	// The coupon donor documents are private template carriers. The two exact
-	// v2 routes below are the only public mounts; claim/redeem and public-link
-	// routes remain absent rather than receiving a shell placeholder.
-	for _, path := range []string{"/admin/coupons", "/admin/coupons.html", "/admin/couponForm.html"} {
+	for _, path := range []string{"/admin/coupons", "/admin/coupons.html", "/admin/couponForm.html", "/admin/couponData.html"} {
 		mux.Handle(path, requireAdminSession(authentication, couponUI))
 	}
-	mux.Handle("/admin/couponData.html", requireAdminSession(authentication, http.NotFoundHandler()))
 	for _, path := range []string{
 		"/admin/spProductData.html", "/admin/wechat-pay/spProductData.html",
 		"/admin/wechat-pay/products/spProductData.html", "/admin/service-period-products/spProductData.html",
 	} {
-		mux.Handle(path, requireAdminSession(authentication, http.NotFoundHandler()))
+		mux.Handle(path, requireAdminSession(authentication, productUI))
 	}
 	mux.Handle("/admin/automation-conversion/group-ops/ui", requireAdminSession(authentication, groupOpsUI))
 	mux.Handle("/admin/automation-conversion/group-ops/groups/ui", requireAdminSession(authentication, groupOpsUI))

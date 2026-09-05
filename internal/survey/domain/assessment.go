@@ -35,7 +35,7 @@ func ParseAssessmentConfig(raw json.RawMessage, questions []surveyport.Question)
 	}
 	dimensions := make(map[string]surveyport.AssessmentDimension, len(config.Dimensions))
 	for index, dimension := range config.Dimensions {
-		if dimension.SortOrder != index+1 || !validOpaque(dimension.Key) || !validText(dimension.Name, 500) || !validOptionalText(dimension.Summary, 10000) ||
+		if dimension.SortOrder != index+1 || !validAssessmentBusinessKey(dimension.Key) || !validText(dimension.Name, 500) || !validOptionalText(dimension.Summary, 10000) ||
 			dimension.ScoringMethod != "sum" || dimension.CategoryMethod != "most_selected" || len(dimension.Types) == 0 || len(dimension.Types) > 100 || len(dimension.Levels) == 0 || len(dimension.Levels) > 100 {
 			return surveyport.AssessmentConfig{}, ErrInvalidAssessment
 		}
@@ -47,7 +47,7 @@ func ParseAssessmentConfig(raw json.RawMessage, questions []surveyport.Question)
 		}
 		types := make(map[string]struct{}, len(dimension.Types))
 		for typeIndex, assessmentType := range dimension.Types {
-			if assessmentType.SortOrder != typeIndex+1 || !validOpaque(assessmentType.Key) || !validText(assessmentType.Name, 500) || !validText(assessmentType.Title, 500) ||
+			if assessmentType.SortOrder != typeIndex+1 || !validAssessmentBusinessKey(assessmentType.Key) || !validText(assessmentType.Name, 500) || !validText(assessmentType.Title, 500) ||
 				!validOptionalText(assessmentType.Greeting, 10000) || !validOptionalText(assessmentType.Summary, 10000) || !validOptionalText(assessmentType.Diagnosis, 10000) ||
 				!validOptionalText(assessmentType.ProblemHint, 10000) || !validOptionalText(assessmentType.RecommendedAction, 10000) || !validOptionalText(assessmentType.CourseName, 500) ||
 				!validCourseURL(assessmentType.CourseURL) || !validOptionalText(assessmentType.CTAText, 500) || !validTags(assessmentType.TagCodes) {
