@@ -9,5 +9,6 @@ ALTER TABLE outbound_message_intents
   ADD CONSTRAINT outbound_message_intents_content_snapshot_shape CHECK (
     (content_snapshot IS NULL AND content_snapshot_digest IS NULL)
     OR (content_snapshot IS NOT NULL AND jsonb_typeof(content_snapshot)='object'
+        AND content_snapshot_digest IS NOT NULL
         AND octet_length(content_snapshot_digest)=32)
   );

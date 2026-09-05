@@ -1,6 +1,7 @@
 package outbound
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -38,7 +39,34 @@ func NewMessageService(pool *pgxpool.Pool, uow platformport.UnitOfWork, effects 
 	return &MessageService{pool: pool, uow: uow, effects: effects, projector: projector, now: time.Now}, nil
 }
 func validMessageIntent(in outboundport.MessageIntent) bool {
-	return (in.SourceKind == "automation_run" || in.SourceKind == "automation_enrollment") && in.SourceID > 0 && in.RunRecipientID > 0 && in.CustomerID > 0 && in.SenderStaffID > 0 && in.AgentID > 0 && in.AgentPublishedVersion > 0 && len(in.ContentReference) > 0 && len(in.ContentReference) <= 200 && len(in.ReceiptKey) >= 16 && len(in.ReceiptKey) <= 128 && strings.TrimSpace(in.ReceiptKey) == in.ReceiptKey && in.SourceDigest != ([32]byte{}) && in.TargetDigest != ([32]byte{}) && in.PayloadDigest != ([32]byte{}) && in.PolicyDigest != ([32]byte{})
+	return (in.SourceKind == "automation_run" || in.SourceKind == "automation_enrollment") && in.SourceID > 0 && in.RunRecipientID > 0 && in.CustomerID > 0 && in.SenderStaffID > 0 && in.AgentID > 0 && in.AgentPublishedVersion > 0 && len(in.ContentReference) > 0 && len(in.ContentReference) <= 200 && len(in.ReceiptKey) >= 16 && len(in.ReceiptKey) <= 128 && strings.TrimSpace(in.ReceiptKey) == in.ReceiptKey && in.SourceDigest != ([32]byte{}) && in.TargetDigest != ([32]byte{}) && in.PayloadDigest != ([32]byte{}) && in.PolicyDigest != ([32]byte{}) && validContentSnapshot(in.ContentSnapshot, in.ContentSnapshotDigest)
+}
+
+func validContentSnapshot(raw json.RawMessage, digest [32]byte) bool {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 {
+		return digest == ([32]byte{})
+	}
+	return digest != ([32]byte{}) && validContentSnapshotJSON(raw)
+}
+
+func validContentSnapshotJSON(raw []byte) bool {
+	if !json.Valid(raw) {
+		return false
+	}
+	var object map[string]json.RawMessage
+	return json.Unmarshal(raw, &object) == nil && object != nil
+}
+
+// normalizedContentSnapshot deliberately turns the legacy no-snapshot form
+// into SQL NULL. json.RawMessage(nil) is otherwise encoded as JSON null by
+// some PostgreSQL codecs, which is not the historical pure-text shape.
+func normalizedContentSnapshot(raw json.RawMessage, digest [32]byte) (any, []byte) {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	return raw, digest[:]
 }
 func messageIntentDigest(in outboundport.MessageIntent) [32]byte {
 	scheduledAt := ""
@@ -67,6 +95,7 @@ func (s *MessageService) AcceptMessageWithin(ctx context.Context, in outboundpor
 		return outboundport.MessageAcceptance{}, err
 	}
 	intentDigest := messageIntentDigest(in)
+	contentSnapshot, contentSnapshotDigest := normalizedContentSnapshot(in.ContentSnapshot, in.ContentSnapshotDigest)
 	keyDigest := sha256.Sum256([]byte(in.ReceiptKey))
 	now := s.now().UTC()
 	envelope := effectport.Envelope{Owner: effectport.OwnerOutbound, Kind: effectport.KindAutomationMessage, SourceRefDigest: digestToEffect("automation.message.source", in.SourceDigest), TargetRefDigest: digestToEffect("automation.message.target", in.TargetDigest), PayloadDigest: digestToEffect("automation.message.payload", in.PayloadDigest), PolicyVersionHash: digestToEffect("automation.message.policy", in.PolicyDigest)}
@@ -74,7 +103,7 @@ func (s *MessageService) AcceptMessageWithin(ctx context.Context, in outboundpor
 	var id int64
 	var existingDigest []byte
 	var effectID, queueID *string
-	err = tx.QueryRow(ctx, `INSERT INTO outbound_message_intents(source_kind,source_id,run_recipient_id,customer_id,sender_staff_id,agent_id,agent_published_version,content_reference,source_digest,target_digest,payload_digest,content_snapshot,content_snapshot_digest,policy_digest,receipt_key_digest,intent_digest,envelope_fingerprint,state,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13::bytea,$14,$15,$16,$17,'accepted',$18,$18) ON CONFLICT(receipt_key_digest) DO NOTHING RETURNING id,intent_digest,effect_id,queue_receipt_id`, in.SourceKind, in.SourceID, in.RunRecipientID, in.CustomerID, in.SenderStaffID, in.AgentID, in.AgentPublishedVersion, in.ContentReference, in.SourceDigest[:], in.TargetDigest[:], in.PayloadDigest[:], in.ContentSnapshot, snapshotBytes(in.ContentSnapshotDigest), in.PolicyDigest[:], keyDigest[:], intentDigest[:], fingerprint, now).Scan(&id, &existingDigest, &effectID, &queueID)
+	err = tx.QueryRow(ctx, `INSERT INTO outbound_message_intents(source_kind,source_id,run_recipient_id,customer_id,sender_staff_id,agent_id,agent_published_version,content_reference,source_digest,target_digest,payload_digest,content_snapshot,content_snapshot_digest,policy_digest,receipt_key_digest,intent_digest,envelope_fingerprint,state,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13::bytea,$14,$15,$16,$17,'accepted',$18,$18) ON CONFLICT(receipt_key_digest) DO NOTHING RETURNING id,intent_digest,effect_id,queue_receipt_id`, in.SourceKind, in.SourceID, in.RunRecipientID, in.CustomerID, in.SenderStaffID, in.AgentID, in.AgentPublishedVersion, in.ContentReference, in.SourceDigest[:], in.TargetDigest[:], in.PayloadDigest[:], contentSnapshot, contentSnapshotDigest, in.PolicyDigest[:], keyDigest[:], intentDigest[:], fingerprint, now).Scan(&id, &existingDigest, &effectID, &queueID)
 	replayed := false
 	if errors.Is(err, pgx.ErrNoRows) {
 		replayed = true
@@ -120,12 +149,13 @@ func (s *MessageService) MessageExecution(ctx context.Context, fingerprint strin
 	}
 	var out outboundport.MessageExecution
 	var payloadDigest []byte
+	var contentSnapshot, contentSnapshotDigest []byte
 	err := s.uow.Within(ctx, func(txctx context.Context) error {
 		tx, e := platformpostgres.RequireTransaction(txctx)
 		if e != nil {
 			return e
 		}
-		return tx.QueryRow(txctx, `SELECT id,run_recipient_id,customer_id,sender_staff_id,agent_id,agent_published_version,content_reference,payload_digest,content_snapshot,content_snapshot_digest FROM outbound_message_intents WHERE envelope_fingerprint=$1 AND state IN ('queued','attempted')`, fingerprint).Scan(&out.MessageIntentID, &out.RunRecipientID, &out.CustomerID, &out.SenderStaffID, &out.AgentID, &out.AgentPublishedVersion, &out.ContentReference, &payloadDigest, &out.ContentSnapshot, &out.ContentSnapshotDigest)
+		return tx.QueryRow(txctx, `SELECT id,run_recipient_id,customer_id,sender_staff_id,agent_id,agent_published_version,content_reference,payload_digest,content_snapshot,content_snapshot_digest FROM outbound_message_intents WHERE envelope_fingerprint=$1 AND state IN ('queued','attempted')`, fingerprint).Scan(&out.MessageIntentID, &out.RunRecipientID, &out.CustomerID, &out.SenderStaffID, &out.AgentID, &out.AgentPublishedVersion, &out.ContentReference, &payloadDigest, &contentSnapshot, &contentSnapshotDigest)
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return out, false, nil
@@ -135,6 +165,16 @@ func (s *MessageService) MessageExecution(ctx context.Context, fingerprint strin
 			return outboundport.MessageExecution{}, false, ErrMessageIntentConflict
 		}
 		copy(out.PayloadDigest[:], payloadDigest)
+		if (contentSnapshot == nil) != (contentSnapshotDigest == nil) || (contentSnapshot != nil && (!validContentSnapshotJSON(contentSnapshot) || len(contentSnapshotDigest) != len(out.ContentSnapshotDigest))) {
+			return outboundport.MessageExecution{}, false, ErrMessageIntentConflict
+		}
+		if contentSnapshot != nil {
+			copy(out.ContentSnapshotDigest[:], contentSnapshotDigest)
+			if !validContentSnapshot(contentSnapshot, out.ContentSnapshotDigest) {
+				return outboundport.MessageExecution{}, false, ErrMessageIntentConflict
+			}
+			out.ContentSnapshot = append(json.RawMessage(nil), contentSnapshot...)
+		}
 	}
 	return out, err == nil, err
 }
