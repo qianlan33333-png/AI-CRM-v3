@@ -5,11 +5,23 @@ import (
 	"testing"
 
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
+	platformjobqueue "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/jobqueue"
 )
 
 func digestForTest(label string) Digest { return Hash("test", label) }
 func envelopeForTest() Envelope {
 	return Envelope{Owner: OwnerOutbound, Kind: KindOutboundMessage, SourceRefDigest: digestForTest("source"), TargetRefDigest: digestForTest("target"), PayloadDigest: digestForTest("payload"), PolicyVersionHash: digestForTest("policy")}
+}
+
+func TestChannelWelcomeUsesRegisteredDedicatedQueueOnly(t *testing.T) {
+	if got := effectQueue(KindChannelWelcome); got != platformjobqueue.OutboundWelcomeQueue {
+		t.Fatalf("welcome queue=%q", got)
+	}
+	for _, kind := range []Kind{KindOutboundMessage, KindOutboundMedia, KindChannelEntryTag, KindGroupMessage} {
+		if got := effectQueue(kind); got != platformjobqueue.OutboundQueue {
+			t.Fatalf("kind=%q queue=%q", kind, got)
+		}
+	}
 }
 
 func TestClosedDigestOnlyEnvelopeAndStates(t *testing.T) {
