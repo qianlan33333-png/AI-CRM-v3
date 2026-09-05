@@ -183,9 +183,17 @@ func (service *ServicePeriodService) GetServicePeriodProduct(ctx context.Context
 // period-product public route. The ordinary public catalog intentionally never
 // calls it. Code comparison is exact and has no legacy numeric-ID fallback.
 func (service *ServicePeriodService) ReadPublicServicePeriodByCode(ctx context.Context, code string) (productport.CheckoutProduct, error) {
+	presentation, available, err := service.ReadServicePeriodPublicPresentationByCode(ctx, code)
+	if err != nil || !available {
+		return productport.CheckoutProduct{}, ErrNotFound
+	}
+	return presentation, nil
+}
+
+func (service *ServicePeriodService) ReadServicePeriodPublicPresentationByCode(ctx context.Context, code string) (productport.CheckoutProduct, bool, error) {
 	code = strings.TrimSpace(code)
 	if !servicePeriodReady(service) || code == "" || len(code) > 200 {
-		return productport.CheckoutProduct{}, ErrNotFound
+		return productport.CheckoutProduct{}, false, ErrNotFound
 	}
 	var row productport.Product
 	var duration int32
@@ -198,17 +206,18 @@ func (service *ServicePeriodService) ReadPublicServicePeriodByCode(ctx context.C
 		duration, err = service.store.ReadServicePeriodDuration(tx, row.ID)
 		return err
 	}); err != nil {
-		return productport.CheckoutProduct{}, classify(err)
+		return productport.CheckoutProduct{}, false, classify(err)
 	}
 	projected, err := projectServicePeriodProduct(row, duration)
-	if err != nil || !projected.Enabled || projected.Lifecycle != productport.ServicePeriodEnabled {
-		return productport.CheckoutProduct{}, ErrNotFound
+	if err != nil {
+		return productport.CheckoutProduct{}, false, ErrNotFound
 	}
 	presentation, presentationErr := publicServicePeriodPresentation(projected.AdminProjection)
 	if presentationErr != nil {
-		return productport.CheckoutProduct{}, ErrUnavailable
+		return productport.CheckoutProduct{}, false, ErrUnavailable
 	}
-	return productport.CheckoutProduct{ID: projected.ServiceProductID, ProductType: productport.ProductOptionServicePeriod, Code: projected.ProductCode, Name: projected.Name, PriceMinor: projected.PriceMinor, Currency: projected.Currency, Version: projected.Version, Images: append([]string(nil), projected.Images...), DetailMedia: presentation.Media, LeadChannelID: presentation.LeadChannelID, LeadQRTitle: presentation.LeadQRTitle, LeadQRSubtitle: presentation.LeadQRSubtitle, CompletionBlocksLeadQR: presentation.CompletionBlocksLeadQR, ServicePeriodDurationDays: duration}, nil
+	checkout := productport.CheckoutProduct{ID: projected.ServiceProductID, ProductType: productport.ProductOptionServicePeriod, Code: projected.ProductCode, Name: projected.Name, PriceMinor: projected.PriceMinor, Currency: projected.Currency, Version: projected.Version, Images: append([]string(nil), projected.Images...), DetailMedia: presentation.Media, LeadChannelID: presentation.LeadChannelID, LeadQRTitle: presentation.LeadQRTitle, LeadQRSubtitle: presentation.LeadQRSubtitle, CompletionBlocksLeadQR: presentation.CompletionBlocksLeadQR, ServicePeriodDurationDays: duration}
+	return checkout, projected.Enabled && projected.Lifecycle == productport.ServicePeriodEnabled, nil
 }
 
 func (service *ServicePeriodService) CreateServicePeriodProduct(ctx context.Context, command productport.CreateServicePeriodProductCommand) (productport.ServicePeriodProduct, error) {

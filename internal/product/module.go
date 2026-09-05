@@ -18,7 +18,8 @@ import (
 type ModuleRegistration struct{}
 
 type HTTPBindings struct {
-	Products http.Handler
+	Products       http.Handler
+	ProductHandler *producthttp.Handler
 }
 
 func NewModuleRegistration() *ModuleRegistration { return &ModuleRegistration{} }
@@ -31,7 +32,7 @@ func (m *ModuleRegistration) Bind(catalog producthttp.CatalogApplication, lifecy
 	if err != nil {
 		return HTTPBindings{}, err
 	}
-	return HTTPBindings{Products: handler}, nil
+	return HTTPBindings{Products: handler, ProductHandler: handler}, nil
 }
 
 func (m *ModuleRegistration) Readiness(ctx context.Context, pool *pgxpool.Pool) error {

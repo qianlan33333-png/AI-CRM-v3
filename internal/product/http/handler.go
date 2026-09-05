@@ -16,6 +16,9 @@ import (
 	"strings"
 
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
+	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
+	customerport "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/port"
+	orderport "github.com/qianlan33333-png/AI-CRM-v3/internal/order/port"
 	productapp "github.com/qianlan33333-png/AI-CRM-v3/internal/product/app"
 	productport "github.com/qianlan33333-png/AI-CRM-v3/internal/product/port"
 )
@@ -48,6 +51,19 @@ type Handler struct {
 	service   productport.ServicePeriodApplication
 	external  productport.CommerceExternalPushApplication
 	security  RequestSecurity
+	members   orderport.EntitlementService
+	names     customerport.DirectoryDisplayNameReader
+}
+
+// SetServicePeriodMemberReaders connects the Product-owned grid Host to the
+// Order entitlement read/remark port and Customer's display-only projection.
+// The Product module neither imports a Store nor reads another domain table.
+func (h *Handler) SetServicePeriodMemberReaders(members orderport.EntitlementService, names customerport.DirectoryDisplayNameReader) error {
+	if h == nil || members == nil || names == nil {
+		return errors.New("service-period member readers are required")
+	}
+	h.members, h.names = members, names
+	return nil
 }
 
 func NewHandler(catalog CatalogApplication, lifecycle productport.LocalProductLifecycleApplication, service productport.ServicePeriodApplication, external productport.CommerceExternalPushApplication, security RequestSecurity) (*Handler, error) {
@@ -488,28 +504,30 @@ func (h *Handler) serviceTail(w http.ResponseWriter, r *http.Request, tail strin
 		return
 	}
 	suffix := strings.Join(parts[1:], "/")
-	switch suffix {
-	case "enable":
+	switch {
+	case suffix == "enable":
 		h.serviceEnable(w, r, id, true)
-	case "disable":
+	case suffix == "disable":
 		h.serviceEnable(w, r, id, false)
-	case "copy":
+	case suffix == "copy":
 		h.serviceCopy(w, r, id)
-	case "share":
+	case suffix == "share":
 		h.serviceShare(w, r, id)
-	case "external-push":
+	case suffix == "external-push":
 		h.externalRoute(w, r, id, productport.ExternalPushServicePeriod)
-	case "external-push/test":
+	case suffix == "external-push/test":
 		h.externalTest(w, r, id, productport.ExternalPushServicePeriod)
-	case "members":
+	case suffix == "members":
 		h.serviceMembers(w, r, id)
-	case "member-grid/access":
+	case strings.HasPrefix(suffix, "members/") && strings.HasSuffix(suffix, "/remark"):
+		h.memberRemark(w, r, id, strings.TrimSuffix(strings.TrimPrefix(suffix, "members/"), "/remark"))
+	case suffix == "member-grid/access":
 		h.memberGridAccess(w, r, id)
-	case "member-grid/schema":
+	case suffix == "member-grid/schema":
 		h.memberGridSchema(w, r, id)
-	case "member-views":
+	case suffix == "member-views":
 		h.memberViews(w, r, id)
-	case "member-grid/share-settings":
+	case suffix == "member-grid/share-settings":
 		h.memberGridShareSettings(w, r, id)
 	default:
 		// Member Grid data, writes, history and customer/entitlement joins are
@@ -778,9 +796,83 @@ func (h *Handler) serviceMembers(w http.ResponseWriter, r *http.Request, id int6
 		resultError(w, err)
 		return
 	}
-	// PR04 does not own members. This exact empty list is a truthful
-	// compatibility projection for the active form's metadata read.
-	writeJSON(w, http.StatusOK, map[string]any{"items": []any{}, "limit": limit, "next_cursor": "", "has_more": false})
+	if h.members == nil || h.names == nil {
+		writeError(w, http.StatusServiceUnavailable, "unavailable")
+		return
+	}
+	page, err := h.members.ListServicePeriodMembers(r.Context(), orderport.ServicePeriodMemberQuery{ServiceProductID: id, State: query.Get("state"), Source: query.Get("source"), Cursor: query.Get("cursor"), Limit: limit})
+	if err != nil {
+		resultError(w, err)
+		return
+	}
+	ids := make([]customerdomain.CustomerID, 0, len(page.Items))
+	for _, item := range page.Items {
+		ids = append(ids, customerdomain.CustomerID(item.CustomerID))
+	}
+	names, err := h.names.DisplayNames(r.Context(), ids)
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "unavailable")
+		return
+	}
+	items := make([]map[string]any, 0, len(page.Items))
+	for _, item := range page.Items {
+		state := item.Status
+		if state == "refunded" {
+			state = "removed"
+		}
+		source := "manual"
+		if item.SourceSystem == "native-payment" {
+			source = "paid_order"
+		}
+		name := names[customerdomain.CustomerID(item.CustomerID)]
+		if name == "" {
+			name = "客户 #" + strconv.FormatInt(item.CustomerID, 10)
+		}
+		items = append(items, map[string]any{"member_ref": strconv.FormatInt(item.ID, 10), "entitlement_id": item.ID, "service_product_id": item.ServiceProductID, "customer_id": item.CustomerID, "display_name": name, "state": state, "source": source, "starts_at": item.StartAt.UTC(), "expires_at": item.EndAt.UTC(), "remark": item.Remark, "version": item.Version, "updated_at": item.UpdatedAt.UTC()})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "limit": limit, "next_cursor": page.NextCursor, "has_more": page.NextCursor != ""})
+}
+
+func (h *Handler) memberRemark(w http.ResponseWriter, r *http.Request, productID int64, rawEntitlementID string) {
+	if r.Method != http.MethodPut {
+		methodNotAllowed(w, http.MethodPut)
+		return
+	}
+	principal, ok := h.write(w, r)
+	if !ok || h.members == nil {
+		if ok {
+			writeError(w, http.StatusServiceUnavailable, "unavailable")
+		}
+		return
+	}
+	entitlementID, err := parseID(rawEntitlementID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	var body struct {
+		CustomerID int64  `json:"customer_id"`
+		Remark     string `json:"remark"`
+		Version    int64  `json:"version"`
+	}
+	if decodeJSON(r, &body) != nil || body.CustomerID < 1 || body.Version < 1 {
+		writeError(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	key, err := requestIdempotencyKey(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	result, err := h.members.UpdateEntitlementRemark(r.Context(), orderport.RemarkCommand{EntitlementID: entitlementID, CustomerID: body.CustomerID, EmployeeID: strconv.FormatInt(principal.InternalID, 10), Remark: body.Remark, ExpectedVersion: body.Version, IdempotencyKey: key})
+	if err != nil || result.ServiceProductID != productID {
+		if err == nil {
+			err = orderport.ErrNotFound
+		}
+		resultError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "member_ref": strconv.FormatInt(result.ID, 10), "remark": result.Remark, "version": result.Version, "updated_at": result.UpdatedAt.UTC()})
 }
 
 func (h *Handler) memberGridAccess(w http.ResponseWriter, r *http.Request, id int64) {
@@ -799,7 +891,7 @@ func (h *Handler) memberGridAccess(w http.ResponseWriter, r *http.Request, id in
 		resultError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"product_id": id, "can_view": false, "can_query": false, "can_edit": false, "can_manage_views": false, "can_share": false})
+	writeJSON(w, http.StatusOK, map[string]any{"product_id": id, "can_view": true, "can_query": true, "can_edit": true, "can_manage_views": true, "can_share": false})
 }
 
 func (h *Handler) memberGridSchema(w http.ResponseWriter, r *http.Request, id int64) {
@@ -831,6 +923,7 @@ func (h *Handler) memberGridSchema(w http.ResponseWriter, r *http.Request, id in
 		{"key": "version", "label": "版本", "type": "integer", "nullable": false},
 		{"key": "updated_at", "label": "更新时间", "type": "timestamp", "nullable": false},
 		{"key": "display_name", "label": "显示名", "type": "string", "nullable": false},
+		{"key": "remark", "label": "备注", "type": "string", "nullable": true, "editable": true},
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"service_product_id": id, "columns": columns})
 }

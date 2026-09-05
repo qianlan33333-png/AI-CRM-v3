@@ -17,11 +17,29 @@ type Entitlement struct {
 	Remark           string    `json:"remark"`
 	Version          int64     `json:"version"`
 	UpdatedAt        time.Time `json:"updated_at"`
+	SourceSystem     string    `json:"source_system,omitempty"`
 }
 
 type EntitlementPage struct {
 	Items []Entitlement `json:"items"`
 	Total int64         `json:"total"`
+}
+
+// ServicePeriodMemberQuery is the bounded Order-owned projection for the
+// Product member workspace. Product never reads entitlement tables directly.
+// Source describes provenance only: native payment facts are paid_order and
+// imported/manual facts stay manual.
+type ServicePeriodMemberQuery struct {
+	ServiceProductID int64
+	State            string
+	Source           string
+	Cursor           string
+	Limit            int32
+}
+
+type ServicePeriodMemberPage struct {
+	Items      []Entitlement
+	NextCursor string
 }
 
 type RemarkCommand struct {
@@ -35,6 +53,7 @@ type RemarkCommand struct {
 
 type EntitlementService interface {
 	ListCustomerEntitlements(context.Context, int64, int32) (EntitlementPage, error)
+	ListServicePeriodMembers(context.Context, ServicePeriodMemberQuery) (ServicePeriodMemberPage, error)
 	// GetCustomerServicePeriodEntitlement is an exact, bounded public-state read.
 	// It avoids inferring a product row from a capped customer entitlement list.
 	GetCustomerServicePeriodEntitlement(context.Context, int64, int64) (Entitlement, bool, error)

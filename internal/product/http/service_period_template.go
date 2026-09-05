@@ -1,17 +1,21 @@
 package http
 
 import (
-	"html/template"
+	"fmt"
+	"html"
+	"io"
+	"strconv"
+	"strings"
 	"time"
 )
 
+// servicePeriodPublicState is the small Host-owned fact set substituted into
+// the frozen renderer. Product supplies already-public product facts; Payment
+// supplies the trusted session and Order supplies an entitlement projection.
+// No donor business code is executed.
 type servicePeriodPublicState struct {
-	DonorStyle                             template.CSS
-	DonorScript                            template.JS
 	Available                              bool
 	LeadQRURL, LeadQRTitle, LeadQRSubtitle string
-	LeadQRModal                            template.HTML
-	LeadQRController                       template.HTML
 	Product                                publicProduct
 	Status                                 string
 	CTA                                    string
@@ -19,18 +23,149 @@ type servicePeriodPublicState struct {
 	RemainingDays                          int32
 }
 
-// This Host template keeps the donor service-period page's route, state-card,
-// status labels, fixed action bar and element IDs. Product and Order provide
-// only the dynamic facts; no legacy runtime or business implementation runs.
-var servicePeriodPublicPage = template.Must(template.New("service-period-public").Funcs(template.FuncMap{
-	"cny": func(value int64) float64 { return float64(value) / 100 },
-	"date": func(value time.Time) string {
-		if value.IsZero() {
-			return "-"
+// renderServicePeriodPublicPage adapts the exact HTML f-string returned by
+// the frozen donor's render_service_period_public_page. Keeping the source
+// body as the rendering template preserves its DOM, styles and state script;
+// this function substitutes only the V3 Host facts that the Python code used
+// to calculate before rendering.
+func renderServicePeriodPublicPage(w io.Writer, state servicePeriodPublicState) error {
+	page := frozenServicePeriodPageBody()
+	if page == "" {
+		return fmt.Errorf("frozen service-period renderer body unavailable")
+	}
+
+	status := state.Status
+	if status == "" {
+		status = "none"
+	}
+	price := fmt.Sprintf("%.2f", float64(state.Product.PriceMinor)/100)
+	title := html.EscapeString(state.Product.Name)
+	cta := html.EscapeString(state.CTA)
+	if cta == "" {
+		cta = "立即报名"
+	}
+
+	var tagText, heroText, barMeta, card string
+	tagHidden, heroHidden, wecomHidden := " hidden", " hidden", " hidden"
+	switch {
+	case !state.Available || status == "unavailable":
+		status = "unavailable"
+		tagText, heroText, barMeta = "未上架", "该周期商品暂未开放", "暂未开放"
+		tagHidden, heroHidden = "", ""
+		if state.CTA == "" {
+			cta = "暂未开放"
 		}
-		return value.In(time.FixedZone("Asia/Shanghai", 8*60*60)).Format("2006-01-02")
-	},
-}).Parse(`<!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1"><title>{{.Product.Name}}</title>
-<style>{{.DonorStyle}}</style></head>
-<body><main class="service-period-page is-{{.Status}}" data-route-owner="ai_crm_next" data-fallback-used="false"><section class="service-period-hero">{{if eq .Status "active"}}<span class="service-period-tag" id="servicePeriodTag">服务中</span>{{else if eq .Status "expired"}}<span class="service-period-tag" id="servicePeriodTag">已过期</span>{{end}}<h1>{{.Product.Name}}</h1>{{if eq .Status "expired"}}<p id="servicePeriodHeroText">服务期已结束</p>{{end}}</section><section class="service-period-card" id="servicePeriodStateCard">{{if eq .Status "active"}}<div class="service-period-muted">剩余有效期</div><div class="service-period-state-big">{{.RemainingDays}} 天</div><div class="service-period-progress" aria-label="剩余服务期"><span style="width:100%"></span></div><div class="service-period-line"><span class="service-period-muted">到期日</span><strong>{{date .EndAt}}</strong></div><div class="service-period-line"><span class="service-period-muted">续费价格 / 有效期</span><strong>¥{{printf "%.2f" (cny .Product.PriceMinor)}} / {{.Product.ServicePeriodDurationDays}} 天</strong></div>{{else if eq .Status "expired"}}<div class="service-period-state-big">已过期</div><div class="service-period-line"><span class="service-period-muted">上次到期日</span><strong>{{date .EndAt}}</strong></div><div class="service-period-line"><span class="service-period-muted">重新开通价格 / 有效期</span><strong>¥{{printf "%.2f" (cny .Product.PriceMinor)}} / {{.Product.ServicePeriodDurationDays}} 天</strong></div>{{else}}<div class="service-period-price"><small>¥</small>{{printf "%.2f" (cny .Product.PriceMinor)}}</div><div class="service-period-line"><span class="service-period-muted">有效期</span><strong>{{.Product.ServicePeriodDurationDays}} 天</strong></div>{{end}}</section><div class="service-period-wecom-action" id="servicePeriodWecomAction" hidden><button class="service-period-wecom-button" id="servicePeriodAddWecomButton" type="button">添加企微账号</button></div>{{if .Product.Images}}<section class="detail-media" aria-label="商品详情媒体">{{range .Product.Images}}<img class="slice-img" src="{{.}}" alt="商品详情">{{end}}</section>{{end}}</main><nav class="service-period-bar" aria-label="服务期商品操作"><div><div class="service-period-bar-title">{{.Product.Name}}</div><div class="service-period-bar-meta">{{if eq .Status "active"}}剩余 {{.RemainingDays}} 天{{else}}¥{{printf "%.2f" (cny .Product.PriceMinor)}} / {{.Product.ServicePeriodDurationDays}} 天{{end}}</div></div><button class="service-period-button" id="servicePeriodPayButton" type="button" onclick="location.href='{{.Product.PaymentPath}}'">{{.CTA}}</button></nav>{{.LeadQRModal}}{{.LeadQRController}}<script>{{.DonorScript}}</script></body></html>`))
+		card = servicePeriodUnavailableCard(price, state.Product.ServicePeriodDurationDays)
+	case status == "active":
+		tagText, barMeta = "服务中", fmt.Sprintf("剩余 %d 天", state.RemainingDays)
+		tagHidden = ""
+		pct := 0
+		if state.Product.ServicePeriodDurationDays > 0 {
+			pct = int((int64(state.RemainingDays)*100 + int64(state.Product.ServicePeriodDurationDays)/2) / int64(state.Product.ServicePeriodDurationDays))
+		}
+		if pct > 100 {
+			pct = 100
+		}
+		card = servicePeriodActiveCard(state.RemainingDays, pct, state.EndAt, price, state.Product.ServicePeriodDurationDays)
+		if state.LeadQRURL != "" {
+			wecomHidden = ""
+		}
+	case status == "expired", status == "refunded":
+		status, tagText, heroText = "expired", "已过期", "服务期已结束"
+		tagHidden, heroHidden = "", ""
+		barMeta = fmt.Sprintf("¥%s / %d 天", price, state.Product.ServicePeriodDurationDays)
+		card = servicePeriodExpiredCard(state.EndAt, price, state.Product.ServicePeriodDurationDays)
+	default:
+		status, barMeta = "none", fmt.Sprintf("¥%s / %d 天", price, state.Product.ServicePeriodDurationDays)
+		card = servicePeriodNoneCard(price, state.Product.ServicePeriodDurationDays)
+	}
+
+	// These replacement keys are the dynamic Python f-string expressions in
+	// the donor source. Values generated here are escaped or are Host-built
+	// route/markup fragments. The final brace normalization reproduces Python
+	// f-string escaping for CSS and JavaScript.
+	replacements := map[string]string{
+		"{title}":                             title,
+		"{escape(status)}":                    html.EscapeString(status),
+		"{tag_hidden}":                        tagHidden,
+		"{escape(tag_text)}":                  html.EscapeString(tagText),
+		"{hero_text_hidden}":                  heroHidden,
+		"{escape(hero_text)}":                 html.EscapeString(heroText),
+		"{card_html}":                         card,
+		"{wecom_action_hidden}":               wecomHidden,
+		"{media}":                             servicePeriodDetailMedia(state.Product.Images),
+		"{escape(bar_meta)}":                  html.EscapeString(barMeta),
+		"{cta_text}":                          cta,
+		"{render_lead_qr_modal()}":            servicePeriodLeadQRModal(),
+		"{lead_qr_modal_controller_script()}": servicePeriodLeadQRController(),
+		"{lead_qr_modal_styles()}":            servicePeriodLeadQRStyles(),
+		"{state_json}":                        servicePeriodStateJSON(state, status),
+		"{duration_days}":                     strconv.FormatInt(int64(state.Product.ServicePeriodDurationDays), 10),
+		"{price_yuan}":                        price,
+		"{product_context_fragment_bootstrap_script()}": "",
+	}
+	for source, value := range replacements {
+		page = strings.ReplaceAll(page, source, value)
+	}
+	page = strings.ReplaceAll(page, "{{", "{")
+	page = strings.ReplaceAll(page, "}}", "}")
+	_, err := io.WriteString(w, page)
+	return err
+}
+
+func frozenServicePeriodPageBody() string {
+	const start = "return f\"\"\"<!doctype html>"
+	from := strings.Index(frozenServicePeriodPublicRenderer, start)
+	if from < 0 {
+		return ""
+	}
+	from += len("return f\"\"\"")
+	to := strings.Index(frozenServicePeriodPublicRenderer[from:], "\"\"\"\n\n\ndef render_service_period_pay_page")
+	if to < 0 {
+		return ""
+	}
+	return frozenServicePeriodPublicRenderer[from : from+to]
+}
+
+func servicePeriodNoneCard(price string, duration int32) string {
+	return fmt.Sprintf("\n      <div class=\"service-period-price\"><small>¥</small>%s</div>\n      <div class=\"service-period-line\"><span class=\"service-period-muted\">有效期</span><strong>%d 天</strong></div>", price, duration)
+}
+
+func servicePeriodUnavailableCard(price string, duration int32) string {
+	return servicePeriodNoneCard(price, duration) + "\n      <p class=\"service-period-tip\">该周期商品尚未上架，暂不可购买。</p>"
+}
+
+func servicePeriodActiveCard(days int32, percent int, end time.Time, price string, duration int32) string {
+	return fmt.Sprintf("\n      <div class=\"service-period-muted\">剩余有效期</div>\n      <div class=\"service-period-state-big\">%d 天</div>\n      <div class=\"service-period-progress\" aria-label=\"剩余服务期\"><span style=\"width:%d%%\"></span></div>\n      <div class=\"service-period-line\"><span class=\"service-period-muted\">到期日</span><strong>%s</strong></div>\n      <div class=\"service-period-line\"><span class=\"service-period-muted\">续费价格 / 有效期</span><strong>¥%s / %d 天</strong></div>", days, percent, servicePeriodEndDate(end), price, duration)
+}
+
+func servicePeriodExpiredCard(end time.Time, price string, duration int32) string {
+	return fmt.Sprintf("\n      <div class=\"service-period-state-big\">已过期</div>\n      <div class=\"service-period-line\"><span class=\"service-period-muted\">上次到期日</span><strong>%s</strong></div>\n      <div class=\"service-period-line\"><span class=\"service-period-muted\">重新开通价格 / 有效期</span><strong>¥%s / %d 天</strong></div>", servicePeriodEndDate(end), price, duration)
+}
+
+func servicePeriodEndDate(value time.Time) string {
+	if value.IsZero() {
+		return "-"
+	}
+	return value.In(time.FixedZone("Asia/Shanghai", 8*60*60)).Format("2006-01-02")
+}
+
+func servicePeriodDetailMedia(images []string) string {
+	if len(images) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("    <section class=\"detail-media\" aria-label=\"商品详情图\">\n")
+	for index, image := range images {
+		if image == "" {
+			continue
+		}
+		loading, priority := "lazy", ""
+		if index == 0 {
+			loading, priority = "eager", " fetchpriority=\"high\""
+		}
+		fmt.Fprintf(&b, "      <img class=\"slice-img\" src=\"%s\" loading=\"%s\" decoding=\"async\"%s alt=\"\">\n", html.EscapeString(image), loading, priority)
+	}
+	b.WriteString("    </section>")
+	return b.String()
+}

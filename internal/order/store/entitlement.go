@@ -3,9 +3,11 @@ package store
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -13,6 +15,11 @@ import (
 	orderport "github.com/qianlan33333-png/AI-CRM-v3/internal/order/port"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 )
+
+type servicePeriodMemberCursor struct {
+	EndAt string `json:"end_at"`
+	ID    int64  `json:"id"`
+}
 
 func (r *Repository) ListCustomerEntitlements(ctx context.Context, customerID int64, limit int32) (orderport.EntitlementPage, error) {
 	tx, err := platformpostgres.RequireTransaction(ctx)
@@ -37,6 +44,69 @@ func (r *Repository) ListCustomerEntitlements(ctx context.Context, customerID in
 	}
 	err = tx.QueryRow(ctx, `SELECT count(*) FROM order_service_entitlements WHERE customer_id=$1 AND status IN ('active','expired')`, customerID).Scan(&page.Total)
 	return page, err
+}
+
+func (r *Repository) ListServicePeriodMembers(ctx context.Context, query orderport.ServicePeriodMemberQuery) (orderport.ServicePeriodMemberPage, error) {
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return orderport.ServicePeriodMemberPage{}, err
+	}
+	var cursorEnd *time.Time
+	var cursorID int64
+	if query.Cursor != "" {
+		decoded, decodeErr := base64.RawURLEncoding.DecodeString(query.Cursor)
+		var cursor servicePeriodMemberCursor
+		if decodeErr != nil || json.Unmarshal(decoded, &cursor) != nil || cursor.ID < 1 {
+			return orderport.ServicePeriodMemberPage{}, orderport.ErrConflict
+		}
+		parsed, parseErr := time.Parse(time.RFC3339Nano, cursor.EndAt)
+		if parseErr != nil {
+			return orderport.ServicePeriodMemberPage{}, orderport.ErrConflict
+		}
+		parsed = parsed.UTC()
+		cursorEnd, cursorID = &parsed, cursor.ID
+	}
+	state := strings.TrimSpace(query.State)
+	if state == "all" {
+		state = ""
+	}
+	if state == "removed" {
+		state = "refunded"
+	}
+	source := strings.TrimSpace(query.Source)
+	rows, err := tx.Query(ctx, `SELECT id,customer_id,service_product_id,product_name,last_order_id,status,start_at,end_at,remark,version,updated_at,source_system
+		FROM order_service_entitlements
+		WHERE service_product_id=$1
+		  AND ($2='' OR status=$2)
+		  AND ($3='' OR ($3='paid_order' AND source_system='native-payment') OR ($3='manual' AND source_system<>'native-payment'))
+		  AND ($4::timestamptz IS NULL OR (end_at,id)<($4::timestamptz,$5::bigint))
+		ORDER BY end_at DESC,id DESC LIMIT $6`, query.ServiceProductID, state, source, cursorEnd, cursorID, query.Limit+1)
+	if err != nil {
+		return orderport.ServicePeriodMemberPage{}, err
+	}
+	defer rows.Close()
+	page := orderport.ServicePeriodMemberPage{Items: []orderport.Entitlement{}}
+	for rows.Next() {
+		var item orderport.Entitlement
+		if err = rows.Scan(&item.ID, &item.CustomerID, &item.ServiceProductID, &item.ProductName, &item.LastOrderID, &item.Status, &item.StartAt, &item.EndAt, &item.Remark, &item.Version, &item.UpdatedAt, &item.SourceSystem); err != nil {
+			return orderport.ServicePeriodMemberPage{}, err
+		}
+		page.Items = append(page.Items, item)
+	}
+	if err = rows.Err(); err != nil {
+		return orderport.ServicePeriodMemberPage{}, err
+	}
+	if len(page.Items) <= int(query.Limit) {
+		return page, nil
+	}
+	last := page.Items[query.Limit-1]
+	encoded, marshalErr := json.Marshal(servicePeriodMemberCursor{EndAt: last.EndAt.UTC().Format(time.RFC3339Nano), ID: last.ID})
+	if marshalErr != nil {
+		return orderport.ServicePeriodMemberPage{}, marshalErr
+	}
+	page.NextCursor = base64.RawURLEncoding.EncodeToString(encoded)
+	page.Items = page.Items[:query.Limit]
+	return page, nil
 }
 
 func (r *Repository) FindEntitlementReceipt(ctx context.Context, key [32]byte) (orderport.Entitlement, [32]byte, string, bool, error) {

@@ -27,6 +27,7 @@ type publicServicePeriodMediaReader interface {
 
 type ServicePeriodPublicHandler struct {
 	products     productport.ServicePeriodPublicReader
+	presentation productport.ServicePeriodPublicPresentationReader
 	media        publicServicePeriodMediaReader
 	leadQR       channelport.PublicLeadQRCodeReader
 	uow          platformport.UnitOfWork
@@ -39,7 +40,11 @@ func NewServicePeriodPublicHandler(products productport.ServicePeriodPublicReade
 	if products == nil {
 		return nil, errors.New("service period public reader is required")
 	}
-	return &ServicePeriodPublicHandler{products: products, now: time.Now}, nil
+	h := &ServicePeriodPublicHandler{products: products, now: time.Now}
+	if presentation, ok := products.(productport.ServicePeriodPublicPresentationReader); ok {
+		h.presentation = presentation
+	}
+	return h, nil
 }
 
 // SetTrustedPublicState adds existing session and entitlement readers to the
@@ -75,7 +80,7 @@ func (h *ServicePeriodPublicHandler) ServeHTTP(w http.ResponseWriter, r *http.Re
 		return
 	}
 	if strings.HasPrefix(r.URL.Path, "/api/h5/service-period-products/") {
-		h.detailMedia(w, r)
+		h.publicStateOrDetailMedia(w, r)
 		return
 	}
 	code, payment, ok := servicePeriodPublicCode(r.URL.EscapedPath())
@@ -84,6 +89,10 @@ func (h *ServicePeriodPublicHandler) ServeHTTP(w http.ResponseWriter, r *http.Re
 		return
 	}
 	product, err := h.products.ReadPublicServicePeriodByCode(r.Context(), code)
+	available := err == nil
+	if err != nil && h.presentation != nil {
+		product, available, err = h.presentation.ReadServicePeriodPublicPresentationByCode(r.Context(), code)
+	}
 	if err != nil || product.ID < 1 || product.ProductType != productport.ProductOptionServicePeriod || product.Code != code || product.Name == "" || product.PriceMinor < 1 || product.Currency != "CNY" || product.Version < 1 || product.ServicePeriodDurationDays < 1 {
 		http.NotFound(w, r)
 		return
@@ -92,7 +101,7 @@ func (h *ServicePeriodPublicHandler) ServeHTTP(w http.ResponseWriter, r *http.Re
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Security-Policy", "default-src 'self'; img-src 'self' https: data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
-	if payment {
+	if payment && available {
 		if err = publicProductPage.Execute(w, struct {
 			Product publicProduct
 			Payment bool
@@ -101,35 +110,69 @@ func (h *ServicePeriodPublicHandler) ServeHTTP(w http.ResponseWriter, r *http.Re
 		}
 		return
 	}
-	state := servicePeriodPublicState{DonorStyle: servicePeriodDonorStyles(), LeadQRModal: servicePeriodLeadQRModal(), LeadQRController: servicePeriodLeadQRController(), Available: true, Product: public, Status: "none", CTA: "立即报名"}
-	entitlement, found, entitlementErr := h.trustedEntitlement(r.Context(), r, product.ID)
+	state, entitlementErr := h.publicState(r.Context(), r, product, public)
 	if entitlementErr != nil {
 		http.Error(w, "service state unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	if found {
-		state.Status, state.EndAt = entitlement.Status, entitlement.EndAt.UTC()
-		if state.Status == "active" && !state.EndAt.After(h.now().UTC()) {
-			state.Status = "expired"
-		}
-		switch state.Status {
-		case "active":
-			state.CTA = "立即续费"
-			state.RemainingDays = remainingServicePeriodDays(h.now().UTC(), state.EndAt)
-		case "expired", "refunded":
-			state.Status, state.CTA = "expired", "重新开通"
-		default:
-			state.Status, state.CTA = "none", "立即报名"
-		}
-		if state.Status == "active" && !product.CompletionBlocksLeadQR && product.LeadChannelID > 0 && h.leadQR != nil {
-			lead, leadErr := h.leadQR.ReadPublicLeadQRCode(r.Context(), product.LeadChannelID)
-			if leadErr == nil && lead.URL != "" {
-				state.LeadQRURL, state.LeadQRTitle, state.LeadQRSubtitle = lead.URL, product.LeadQRTitle, product.LeadQRSubtitle
-			}
+	if !available {
+		state.Available, state.Status, state.CTA, state.LeadQRURL = false, "unavailable", "暂未开放", ""
+	}
+	_ = renderServicePeriodPublicPage(w, state)
+}
+
+func (h *ServicePeriodPublicHandler) publicState(ctx context.Context, r *http.Request, product productport.CheckoutProduct, public publicProduct) (servicePeriodPublicState, error) {
+	state := servicePeriodPublicState{Available: true, Product: public, Status: "none", CTA: "立即报名"}
+	entitlement, found, err := h.trustedEntitlement(ctx, r, product.ID)
+	if err != nil || !found {
+		return state, err
+	}
+	state.Status, state.EndAt = entitlement.Status, entitlement.EndAt.UTC()
+	if state.Status == "active" && !state.EndAt.After(h.now().UTC()) {
+		state.Status = "expired"
+	}
+	switch state.Status {
+	case "active":
+		state.CTA = "立即续费"
+		state.RemainingDays = remainingServicePeriodDays(h.now().UTC(), state.EndAt)
+	case "expired", "refunded":
+		state.Status, state.CTA = "expired", "重新开通"
+	default:
+		state.Status, state.CTA = "none", "立即报名"
+	}
+	if state.Status == "active" && !product.CompletionBlocksLeadQR && product.LeadChannelID > 0 && h.leadQR != nil {
+		lead, leadErr := h.leadQR.ReadPublicLeadQRCode(ctx, product.LeadChannelID)
+		if leadErr == nil && lead.URL != "" {
+			state.LeadQRURL, state.LeadQRTitle, state.LeadQRSubtitle = lead.URL, product.LeadQRTitle, product.LeadQRSubtitle
 		}
 	}
-	state.DonorScript = servicePeriodDonorScript(state)
-	_ = servicePeriodPublicPage.Execute(w, state)
+	return state, nil
+}
+
+func (h *ServicePeriodPublicHandler) publicStateOrDetailMedia(w http.ResponseWriter, r *http.Request) {
+	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/h5/service-period-products/"), "/")
+	if len(parts) == 1 && parts[0] != "" {
+		code, err := url.PathUnescape(parts[0])
+		if err != nil || code == "" || code != strings.TrimSpace(code) {
+			http.NotFound(w, r)
+			return
+		}
+		product, readErr := h.products.ReadPublicServicePeriodByCode(r.Context(), code)
+		if readErr != nil || product.Code != code || product.ProductType != productport.ProductOptionServicePeriod || product.ID < 1 || product.ServicePeriodDurationDays < 1 {
+			http.NotFound(w, r)
+			return
+		}
+		public := publicProduct{ID: product.ID, Name: product.Name, PriceMinor: product.PriceMinor, Currency: product.Currency, PaymentPath: "/s/" + url.PathEscape(product.Code) + "/pay", BuyButtonText: "立即报名", ProductKind: "service_period", CouponTargetRef: "service_period:" + strconv.FormatInt(int64(product.ID), 10), ServicePeriodDurationDays: product.ServicePeriodDurationDays, Images: publicDetailMedia(product.Code, product.DetailMedia)}
+		state, stateErr := h.publicState(r.Context(), r, product, public)
+		if stateErr != nil {
+			http.Error(w, "service state unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "available": state.Available, "entitlement": map[string]any{"status": state.Status, "end_at": state.EndAt.UTC().Format(time.RFC3339), "remaining_days": state.RemainingDays}, "lead_qr": map[string]any{"qr_url": state.LeadQRURL, "title": state.LeadQRTitle, "subtitle": state.LeadQRSubtitle}, "cta_text": state.CTA, "checkout_url": state.Product.PaymentPath})
+		return
+	}
+	h.detailMedia(w, r)
 }
 
 func (h *ServicePeriodPublicHandler) detailMedia(w http.ResponseWriter, r *http.Request) {

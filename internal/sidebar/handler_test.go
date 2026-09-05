@@ -82,6 +82,12 @@ type testEntitlements struct{}
 func (testEntitlements) ListCustomerEntitlements(context.Context, int64, int32) (orderport.EntitlementPage, error) {
 	return orderport.EntitlementPage{Items: []orderport.Entitlement{}}, nil
 }
+func (testEntitlements) ListServicePeriodMembers(context.Context, orderport.ServicePeriodMemberQuery) (orderport.ServicePeriodMemberPage, error) {
+	return orderport.ServicePeriodMemberPage{Items: []orderport.Entitlement{}}, nil
+}
+func (testEntitlements) GetCustomerServicePeriodEntitlement(context.Context, int64, int64) (orderport.Entitlement, bool, error) {
+	return orderport.Entitlement{}, false, nil
+}
 func (testEntitlements) UpdateEntitlementRemark(context.Context, orderport.RemarkCommand) (orderport.Entitlement, error) {
 	return orderport.Entitlement{}, nil
 }

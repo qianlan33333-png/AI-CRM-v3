@@ -11,6 +11,8 @@ import (
 	"time"
 
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
+	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
+	orderport "github.com/qianlan33333-png/AI-CRM-v3/internal/order/port"
 	productapp "github.com/qianlan33333-png/AI-CRM-v3/internal/product/app"
 	productport "github.com/qianlan33333-png/AI-CRM-v3/internal/product/port"
 )
@@ -135,6 +137,29 @@ type testExternalPush struct {
 	test          productport.ExternalPushTest
 }
 
+type testMemberEntitlements struct {
+	page orderport.ServicePeriodMemberPage
+}
+
+func (stub testMemberEntitlements) ListCustomerEntitlements(context.Context, int64, int32) (orderport.EntitlementPage, error) {
+	return orderport.EntitlementPage{}, nil
+}
+func (stub testMemberEntitlements) ListServicePeriodMembers(context.Context, orderport.ServicePeriodMemberQuery) (orderport.ServicePeriodMemberPage, error) {
+	return stub.page, nil
+}
+func (stub testMemberEntitlements) GetCustomerServicePeriodEntitlement(context.Context, int64, int64) (orderport.Entitlement, bool, error) {
+	return orderport.Entitlement{}, false, nil
+}
+func (stub testMemberEntitlements) UpdateEntitlementRemark(context.Context, orderport.RemarkCommand) (orderport.Entitlement, error) {
+	return orderport.Entitlement{}, nil
+}
+
+type testMemberNames struct{}
+
+func (testMemberNames) DisplayNames(context.Context, []customerdomain.CustomerID) (map[customerdomain.CustomerID]string, error) {
+	return map[customerdomain.CustomerID]string{}, nil
+}
+
 func (external *testExternalPush) GetExternalPushConfiguration(context.Context, productport.ID, productport.ExternalPushProductKind) (productport.ExternalPushConfiguration, error) {
 	return external.configuration, nil
 }
@@ -159,6 +184,9 @@ func newHandlerForTest(t *testing.T) (*Handler, *testSecurity, *testCatalog, *te
 	external := &testExternalPush{configuration: productport.ExternalPushConfiguration{ProductID: 7, ProductKind: productport.ExternalPushWeChatPay, Enabled: false, UpdatedAt: now}, test: productport.ExternalPushTest{ProductID: 7, ProductKind: productport.ExternalPushWeChatPay, EffectID: "eer_1", State: "accepted", CreatedAt: now}}
 	handler, err := NewHandler(catalog, lifecycle, service, external, security)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err = handler.SetServicePeriodMemberReaders(testMemberEntitlements{}, testMemberNames{}); err != nil {
 		t.Fatal(err)
 	}
 	return handler, security, catalog, lifecycle

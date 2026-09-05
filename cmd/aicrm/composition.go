@@ -703,6 +703,9 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
+	if err = productBindings.ProductHandler.SetServicePeriodMemberReaders(entitlements, orderCustomerDisplayNameAdapter{uow: uow, reader: customerStore}); err != nil {
+		return fail(err)
+	}
 	entitlementFulfillment, err := orderapp.NewEntitlementFulfillmentApplication(orderRepository)
 	if err != nil {
 		return fail(err)

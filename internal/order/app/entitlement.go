@@ -14,6 +14,7 @@ import (
 
 type EntitlementStore interface {
 	ListCustomerEntitlements(context.Context, int64, int32) (orderport.EntitlementPage, error)
+	ListServicePeriodMembers(context.Context, orderport.ServicePeriodMemberQuery) (orderport.ServicePeriodMemberPage, error)
 	GetCustomerServicePeriodEntitlement(context.Context, int64, int64) (orderport.Entitlement, bool, error)
 	FindEntitlementReceipt(context.Context, [32]byte) (orderport.Entitlement, [32]byte, string, bool, error)
 	UpdateEntitlementRemark(context.Context, orderport.RemarkCommand, [32]byte, [32]byte, time.Time) (orderport.Entitlement, error)
@@ -52,6 +53,19 @@ func (s *EntitlementApplication) ListCustomerEntitlements(ctx context.Context, c
 		var err error
 		page, err = s.store.ListCustomerEntitlements(txctx, customerID, limit)
 		return err
+	})
+	return page, err
+}
+
+func (s *EntitlementApplication) ListServicePeriodMembers(ctx context.Context, query orderport.ServicePeriodMemberQuery) (orderport.ServicePeriodMemberPage, error) {
+	if s == nil || query.ServiceProductID < 1 || query.Limit < 1 || query.Limit > 100 || (query.State != "" && query.State != "all" && query.State != "active" && query.State != "expired" && query.State != "removed") || (query.Source != "" && query.Source != "paid_order" && query.Source != "manual") || len(query.Cursor) > 1024 {
+		return orderport.ServicePeriodMemberPage{}, orderport.ErrConflict
+	}
+	var page orderport.ServicePeriodMemberPage
+	err := s.uow.Within(ctx, func(txctx context.Context) error {
+		var readErr error
+		page, readErr = s.store.ListServicePeriodMembers(txctx, query)
+		return readErr
 	})
 	return page, err
 }

@@ -118,3 +118,12 @@ type ServicePeriodApplication interface {
 type ServicePeriodPublicReader interface {
 	ReadPublicServicePeriodByCode(context.Context, string) (CheckoutProduct, error)
 }
+
+// ServicePeriodPublicPresentationReader returns a strict-code public
+// presentation for an existing service-period item even when it is disabled.
+// Its availability boolean is the only lifecycle fact exposed to the public
+// Host so it can render the donor's unavailable card while keeping checkout
+// closed. It has no numeric fallback and never reads ordinary products.
+type ServicePeriodPublicPresentationReader interface {
+	ReadServicePeriodPublicPresentationByCode(context.Context, string) (CheckoutProduct, bool, error)
+}

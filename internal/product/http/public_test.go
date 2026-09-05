@@ -152,6 +152,9 @@ func (stub servicePeriodEntitlementStub) ListCustomerEntitlements(_ context.Cont
 	}
 	return stub.page, nil
 }
+func (servicePeriodEntitlementStub) ListServicePeriodMembers(context.Context, orderport.ServicePeriodMemberQuery) (orderport.ServicePeriodMemberPage, error) {
+	return orderport.ServicePeriodMemberPage{}, errors.New("unused")
+}
 func (stub servicePeriodEntitlementStub) GetCustomerServicePeriodEntitlement(_ context.Context, customerID, productID int64) (orderport.Entitlement, bool, error) {
 	if customerID != 11 {
 		return orderport.Entitlement{}, false, errors.New("wrong customer")
@@ -181,10 +184,10 @@ func TestServicePeriodPublicHostRetainsFrozenDonorStateDOM(t *testing.T) {
 		t.Fatalf("public-product service donor hash=%s", got)
 	}
 	var page bytes.Buffer
-	if err := servicePeriodPublicPage.Execute(&page, servicePeriodPublicState{DonorStyle: servicePeriodDonorStyles(), Available: true, Product: publicProduct{ID: 71, Name: "31 天服务期", PriceMinor: 12800, PaymentPath: "/s/term-31/pay", ServicePeriodDurationDays: 31}, Status: "active", CTA: "立即续费", EndAt: time.Date(2026, 9, 20, 0, 0, 0, 0, time.UTC), RemainingDays: 15}); err != nil {
+	if err := renderServicePeriodPublicPage(&page, servicePeriodPublicState{Available: true, Product: publicProduct{ID: 71, Name: "31 天服务期", PriceMinor: 12800, PaymentPath: "/s/term-31/pay", ServicePeriodDurationDays: 31}, Status: "active", CTA: "立即续费", EndAt: time.Date(2026, 9, 20, 0, 0, 0, 0, time.UTC), RemainingDays: 15}); err != nil {
 		t.Fatal(err)
 	}
-	for _, marker := range []string{`service-period-page`, `servicePeriodStateCard`, `servicePeriodPayButton`, `data-route-owner="ai_crm_next"`, `service-period-wecom-action`, `detail-media`} {
+	for _, marker := range []string{`service-period-page`, `servicePeriodStateCard`, `servicePeriodPayButton`, `data-route-owner="ai_crm_next"`, `service-period-wecom-action`, `detail-media`, `width:48%`, `fetch(window.location.pathname.replace(`} {
 		if !strings.Contains(page.String(), marker) {
 			t.Fatalf("adapted donor state DOM missing %q", marker)
 		}
@@ -227,7 +230,7 @@ func TestPublicServicePeriodUsesExactCodeAndSeparateCheckoutRoute(t *testing.T) 
 	}
 	page := httptest.NewRecorder()
 	handler.ServeHTTP(page, httptest.NewRequest(http.MethodGet, "/s/term-31", nil))
-	if page.Code != http.StatusOK || reader.code != "term-31" || !strings.Contains(page.Body.String(), `class="service-period-page is-none"`) || !strings.Contains(page.Body.String(), "有效期</span><strong>31 天") || !strings.Contains(page.Body.String(), `\/s\/term-31\/pay`) || !strings.Contains(page.Body.String(), `fetch(window.location.pathname`) || !strings.Contains(page.Body.String(), `createLeadQrModalController`) {
+	if page.Code != http.StatusOK || reader.code != "term-31" || !strings.Contains(page.Body.String(), `class="service-period-page is-none"`) || !strings.Contains(page.Body.String(), "有效期</span><strong>31 天") || !strings.Contains(page.Body.String(), `"checkout_url":"/s/term-31/pay"`) || !strings.Contains(page.Body.String(), `fetch(window.location.pathname`) || !strings.Contains(page.Body.String(), `createLeadQrModalController`) {
 		t.Fatalf("page status=%d code=%q body=%s", page.Code, reader.code, page.Body.String())
 	}
 	payment := httptest.NewRecorder()
@@ -241,6 +244,25 @@ func TestPublicServicePeriodUsesExactCodeAndSeparateCheckoutRoute(t *testing.T) 
 		if response.Code != http.StatusNotFound {
 			t.Fatalf("path=%s status=%d", path, response.Code)
 		}
+	}
+}
+
+func TestPublicServicePeriodStateEndpointUsesTheFrozenStateContract(t *testing.T) {
+	reader := &servicePeriodPublicStub{product: productport.CheckoutProduct{ID: 71, ProductType: productport.ProductOptionServicePeriod, Code: "term-31", Name: "31 天服务期", PriceMinor: 12800, Currency: "CNY", Version: 4, ServicePeriodDurationDays: 31}}
+	h, err := NewServicePeriodPublicHandler(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = h.SetTrustedPublicState(servicePeriodTestUOW{}, servicePeriodSessionStub{}, servicePeriodEntitlementStub{page: orderport.EntitlementPage{Items: []orderport.Entitlement{{ServiceProductID: 71, Status: "active", EndAt: time.Date(2026, 9, 20, 0, 0, 0, 0, time.UTC)}}}}); err != nil {
+		t.Fatal(err)
+	}
+	h.now = func() time.Time { return time.Date(2026, 9, 5, 9, 0, 0, 0, time.UTC) }
+	request := httptest.NewRequest(http.MethodGet, "/api/h5/service-period-products/term-31", nil)
+	request.AddCookie(&http.Cookie{Name: paymentport.TrustedSessionCookieName, Value: "service-period-trusted"})
+	response := httptest.NewRecorder()
+	h.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"available":true`) || !strings.Contains(response.Body.String(), `"status":"active"`) || !strings.Contains(response.Body.String(), `"remaining_days":15`) || !strings.Contains(response.Body.String(), `"checkout_url":"/s/term-31/pay"`) {
+		t.Fatalf("state endpoint status=%d body=%s", response.Code, response.Body.String())
 	}
 }
 
