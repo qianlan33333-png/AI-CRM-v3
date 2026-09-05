@@ -179,7 +179,7 @@ func (s snapshot) validate() error {
 	}
 	seen := make(map[string]struct{}, len(s.Materials))
 	for _, item := range s.Materials {
-		if !validKind(item.Kind) || item.MaterialID < 1 || !validDigest(item.SourceDigest) || !validDigest(item.SourceRecordDigest) || !validLegacyID(item.LegacyID) || !validSourceRecord(item.SourceRecord, item.SourceRecordDigest) {
+		if !validKind(item.Kind) || item.MaterialID < 1 || !validDigest(item.SourceDigest) || !validDigest(item.SourceRecordDigest) || !validLegacyID(item.LegacyID) || !validSourceRecord(item.SourceRecord, item.SourceRecordDigest, item.Kind, item.LegacyID) {
 			return errors.New("invalid frozen Media mapping record")
 		}
 		key := item.Kind + "\x00" + item.LegacyID
@@ -191,7 +191,7 @@ func (s snapshot) validate() error {
 	return nil
 }
 
-func validSourceRecord(raw json.RawMessage, expected string) bool {
+func validSourceRecord(raw json.RawMessage, expected, kind, legacyID string) bool {
 	decoder := json.NewDecoder(strings.NewReader(string(raw)))
 	decoder.UseNumber()
 	var record map[string]any
@@ -199,6 +199,27 @@ func validSourceRecord(raw json.RawMessage, expected string) bool {
 		return false
 	}
 	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return false
+	}
+	if sourceKind, _ := record["kind"].(string); sourceKind != kind {
+		return false
+	}
+	var sourceID string
+	switch value := record["legacy_id"].(type) {
+	case json.Number:
+		sourceID = string(value)
+	case string:
+		sourceID = value
+	}
+	if sourceID == "" {
+		switch value := record["id"].(type) {
+		case json.Number:
+			sourceID = string(value)
+		case string:
+			sourceID = value
+		}
+	}
+	if sourceID != legacyID {
 		return false
 	}
 	canonical, err := json.Marshal(record)

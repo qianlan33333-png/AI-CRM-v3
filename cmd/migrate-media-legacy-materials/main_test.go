@@ -31,6 +31,11 @@ func TestFrozenSnapshotRejectsDuplicateAndUnverifiedRecords(t *testing.T) {
 	if err := s.validate(); err == nil {
 		t.Fatal("unverified source record digest was accepted")
 	}
+	s = validSnapshot()
+	s.Materials[0].Kind = "attachment"
+	if err := s.validate(); err == nil {
+		t.Fatal("source record with a mismatched material kind was accepted")
+	}
 }
 
 func TestFrozenMappingCommandDryRunApplyReplayAndVerify(t *testing.T) {
