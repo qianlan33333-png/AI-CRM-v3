@@ -192,6 +192,42 @@ func TestSharedFactsPublishedGenerationAndLegacyAvailability(t *testing.T) {
 	if err != nil || pinnedVersion <= 0 {
 		t.Fatalf("pin current shared facts generation: version=%d err=%v", pinnedVersion, err)
 	}
+	// Publishing and retention run concurrently with a pinned consumer. Every
+	// result must be the complete first generation or the explicit Port error;
+	// a cleanup race must never surface as an empty successful map.
+	readResults := make(chan error, 32)
+	stopPinnedReads := make(chan struct{})
+	pinnedReadsDone := make(chan struct{})
+	go func() {
+		defer close(pinnedReadsDone)
+		for {
+			select {
+			case <-stopPinnedReads:
+				return
+			default:
+			}
+			facts, readErr := store.SharedFactsAtVersion(ctx, pinnedVersion, []domainCustomerID{77})
+			if readErr == nil && (facts[77].Availability != hxcport.SharedFactsAvailable || facts[77].MembershipSource != "user_id") {
+				readErr = fmt.Errorf("pinned read became incomplete: %+v", facts[77])
+			}
+			select {
+			case readResults <- readErr:
+			case <-stopPinnedReads:
+				return
+			}
+		}
+	}()
+	for index := 0; index < 8; index++ {
+		publish(fmt.Sprintf("shared-facts-rollover-%d", index), base(78, true))
+	}
+	close(stopPinnedReads)
+	<-pinnedReadsDone
+	close(readResults)
+	for readErr := range readResults {
+		if readErr != nil && !errors.Is(readErr, hxcport.ErrSharedFactsVersionUnavailable) {
+			t.Fatal(readErr)
+		}
+	}
 	facts, err := store.SharedFacts(ctx, []domainCustomerID{77, 78})
 	if err != nil {
 		t.Fatal(err)
