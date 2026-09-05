@@ -150,7 +150,7 @@ func readBatch(ctx context.Context, tx *sql.Tx, after string, asOf time.Time) ([
 	defer rows.Close()
 	result := make([]domain.SourceRow, 0, BatchSize)
 	for rows.Next() {
-		row, scanErr := scanSourceRow(rows)
+		row, scanErr := scanSourceRow(rows, asOf)
 		if scanErr != nil {
 			return nil, scanErr
 		}
@@ -166,11 +166,13 @@ type sourceRowScanner interface{ Scan(...any) error }
 
 // scanSourceRow keeps the projection contract in one place so the database
 // path and the controlled scanner fixture exercise the identical column order.
-func scanSourceRow(scanner sourceRowScanner) (domain.SourceRow, error) {
+func scanSourceRow(scanner sourceRowScanner, asOf time.Time) (domain.SourceRow, error) {
 	var row domain.SourceRow
-	var union, phone, lastCapability, business, mainline, segment, pain, planStatus, membershipSource, membershipStatus sql.NullString
-	var expiry, formalLogin, membershipExpiry sql.NullTime
-	var tokenUsed, learningFound, membershipFound, isMember int64
+	var union, phone, lastCapability, business, mainline, segment, pain, planStatus sql.NullString
+	var expiry, formalLogin sql.NullTime
+	var tokenUsed, learningFound, membershipFound int64
+	var membershipAttribution, membershipStatus, subscriptionTier, profileTier sql.NullString
+	var membershipExpiry, subscriptionExpiry, profileExpiry sql.NullTime
 	var learningCurrent, learningTotal sql.NullInt64
 	var openCount int64
 	// MySQL reports the GREATEST/NULLIF expression as []byte even with
@@ -178,7 +180,7 @@ func scanSourceRow(scanner sourceRowScanner) (domain.SourceRow, error) {
 	// location as native DATETIME columns.
 	var lastUsed, lastOpened sourceNullTime
 	var capJSON, topicsJSON []byte
-	if err := scanner.Scan(&row.HXCUserID, &union, &phone, &row.SubscriptionTier, &expiry, &row.MonthlyChatQuota, &row.CurrentPeriodUsed, &row.ConsultationLimit, &row.ConsultationUsed, &row.MembershipAttribution, &row.Sessions7D, &row.Sessions30D, &row.SessionsTotal, &row.UserMessages7D, &row.UserMessages30D, &row.UserMessagesTotal, &capJSON, &lastUsed, &lastCapability, &business, &mainline, &segment, &topicsJSON, &pain, &formalLogin, &tokenUsed, &learningFound, &planStatus, &learningCurrent, &learningTotal, &openCount, &lastOpened, &membershipFound, &isMember, &membershipSource, &membershipStatus, &membershipExpiry, &row.SourceUpdatedAt); err != nil {
+	if err := scanner.Scan(&row.HXCUserID, &union, &phone, &row.SubscriptionTier, &expiry, &row.MonthlyChatQuota, &row.CurrentPeriodUsed, &row.ConsultationLimit, &row.ConsultationUsed, &row.MembershipAttribution, &row.Sessions7D, &row.Sessions30D, &row.SessionsTotal, &row.UserMessages7D, &row.UserMessages30D, &row.UserMessagesTotal, &capJSON, &lastUsed, &lastCapability, &business, &mainline, &segment, &topicsJSON, &pain, &formalLogin, &tokenUsed, &learningFound, &planStatus, &learningCurrent, &learningTotal, &openCount, &lastOpened, &membershipFound, &membershipAttribution, &membershipStatus, &membershipExpiry, &subscriptionTier, &subscriptionExpiry, &profileTier, &profileExpiry, &row.SourceUpdatedAt); err != nil {
 		return domain.SourceRow{}, fmt.Errorf("scan HXC batch: %w", err)
 	}
 	row.UnionID = union.String
@@ -208,11 +210,9 @@ func scanSourceRow(scanner sourceRowScanner) (domain.SourceRow, error) {
 	if lastOpened.Valid {
 		row.CardLastOpenedAt = &lastOpened.Time
 	}
-	row.MembershipRecordFound, row.IsMember = membershipFound != 0, isMember != 0
-	row.MembershipSource, row.MembershipStatus = membershipSource.String, membershipStatus.String
-	if membershipExpiry.Valid {
-		row.MembershipExpiresAt = &membershipExpiry.Time
-	}
+	selected := selectMembershipSource(asOf, membershipCandidate{found: membershipFound != 0, source: membershipAttribution.String, status: membershipStatus.String, expiresAt: nullableTime(membershipExpiry)}, membershipCandidate{source: "subscription", status: subscriptionTier.String, expiresAt: nullableTime(subscriptionExpiry)}, membershipCandidate{source: "user_profile", status: profileTier.String, expiresAt: nullableTime(profileExpiry)})
+	row.MembershipRecordFound, row.IsMember = selected.found, selected.active
+	row.MembershipSource, row.MembershipStatus, row.MembershipExpiresAt = selected.source, selected.status, selected.expiresAt
 	row.CapabilityUsage = append([]byte(nil), capJSON...)
 	row.FocusTopics = append([]byte(nil), topicsJSON...)
 	row.LastCapability = lastCapability.String
@@ -221,6 +221,64 @@ func scanSourceRow(scanner sourceRowScanner) (domain.SourceRow, error) {
 	row.UserSegment = segment.String
 	row.PainTag = pain.String
 	return row, nil
+}
+
+type membershipCandidate struct {
+	found     bool
+	source    string
+	status    string
+	expiresAt *time.Time
+	active    bool
+}
+
+// selectMembershipSource preserves the legacy OR predicate without pairing a
+// status from one source with an expiry from another. A concrete expired
+// consultation membership yields to independently valid subscription/profile
+// evidence; otherwise it remains observable as the selected source.
+func selectMembershipSource(reference time.Time, membership, subscription, profile membershipCandidate) membershipCandidate {
+	membership.active = membership.found && membershipEvidenceActive(reference, membership.status, membership.expiresAt)
+	subscription.found = membershipEvidencePresent(subscription.status, subscription.expiresAt)
+	subscription.active = subscription.found && membershipEvidenceActive(reference, subscription.status, subscription.expiresAt)
+	profile.found = membershipEvidencePresent(profile.status, profile.expiresAt)
+	profile.active = profile.found && membershipEvidenceActive(reference, profile.status, profile.expiresAt)
+
+	if membership.active {
+		return membership
+	}
+	if subscription.active {
+		return subscription
+	}
+	if profile.active {
+		return profile
+	}
+	if membership.found {
+		return membership
+	}
+	return membershipCandidate{}
+}
+
+func membershipEvidencePresent(status string, expiresAt *time.Time) bool {
+	return normalizedMembershipStatus(status) != "" && normalizedMembershipStatus(status) != "free" || expiresAt != nil
+}
+
+func membershipEvidenceActive(reference time.Time, status string, expiresAt *time.Time) bool {
+	normalized := normalizedMembershipStatus(status)
+	if normalized == "expired" || normalized == "free" || normalized == "" {
+		return expiresAt != nil && expiresAt.After(reference) && normalized != "expired" && normalized != "free"
+	}
+	return normalized == "active" || normalized == "valid" || normalized == "premium" || normalized == "standard" || normalized == "trial" || expiresAt != nil && expiresAt.After(reference)
+}
+
+func normalizedMembershipStatus(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func nullableTime(value sql.NullTime) *time.Time {
+	if !value.Valid {
+		return nil
+	}
+	copy := value.Time
+	return &copy
 }
 
 type sourceNullTime struct {
@@ -275,7 +333,7 @@ membership_ranked AS (
  ROW_NUMBER() OVER(PARTITION BY u.id ORDER BY (m.user_id=u.id) DESC,(m.status='active' AND m.end_date>=?) DESC,(m.status='active') DESC,m.end_date DESC,COALESCE(m.updated_at,m.created_at,m.end_date,m.start_date) DESC,m.id DESC) row_num
  FROM active_users u LEFT JOIN phone_counts pc ON pc.phone=u.phone AND pc.n=1 JOIN new_version_memberships m ON m.user_id=u.id OR ((m.user_id IS NULL OR m.user_id='') AND pc.phone IS NOT NULL AND m.phone=pc.phone)
 ), membership_current AS (SELECT user_id,consultation_limit,consultation_used,status,end_date,attribution,source_updated_at FROM membership_ranked WHERE row_num=1),
-token_usage AS (SELECT m.user_id,MAX(CASE WHEN COALESCE(m.total_tokens,0)>0 THEN 1 ELSE 0 END) has_token_usage,MAX(m.created_at) source_updated_at FROM new_version_messages m JOIN active_users u ON m.user_id COLLATE utf8mb4_general_ci=u.id WHERE m.is_deleted=0 GROUP BY m.user_id),
+token_usage AS (SELECT m.user_id,MAX(CASE WHEN COALESCE(m.total_tokens,0)>0 THEN 1 ELSE 0 END) has_token_usage,MAX(m.created_at) source_updated_at FROM new_version_messages m JOIN active_users u ON m.user_id COLLATE utf8mb4_general_ci=u.id WHERE COALESCE(m.is_deleted,0)=0 GROUP BY m.user_id),
 lesson_totals AS (SELECT path_id,COUNT(*) total_lessons FROM new_version_lesson_path_items GROUP BY path_id),
 learning_ranked AS (SELECT p.user_id,p.status,LEAST(GREATEST(COALESCE(p.current_seq,0),0),COALESCE(t.total_lessons,0)) current_lessons,COALESCE(t.total_lessons,0) total_lessons,p.updated_at source_updated_at,ROW_NUMBER() OVER(PARTITION BY p.user_id ORDER BY CASE WHEN p.status='active' THEN 0 ELSE 1 END,p.updated_at DESC,p.id DESC) row_num FROM new_version_user_path_progress p JOIN active_users u ON p.user_id COLLATE utf8mb4_general_ci=u.id LEFT JOIN lesson_totals t ON t.path_id COLLATE utf8mb4_general_ci=p.path_id WHERE p.status IN ('active','done','paused')),
 learning_current AS (SELECT user_id,status,current_lessons,total_lessons,source_updated_at FROM learning_ranked WHERE row_num=1),
@@ -292,10 +350,7 @@ JSON_OBJECT('peer_chat',JSON_OBJECT('count_7d',COALESCE(c.peer_7d,0),'count_30d'
 NULLIF(GREATEST(COALESCE(c.peer_last,TIMESTAMP('1000-01-01 00:00:00')),COALESCE(coach.last_used,TIMESTAMP('1000-01-01 00:00:00')),COALESCE(c.lesson_last,TIMESTAMP('1000-01-01 00:00:00')),COALESCE(a.last_used,TIMESTAMP('1000-01-01 00:00:00')),COALESCE(r.last_used,TIMESTAMP('1000-01-01 00:00:00')),COALESCE(msg.last_used,TIMESTAMP('1000-01-01 00:00:00'))),TIMESTAMP('1000-01-01 00:00:00')),
 CASE WHEN GREATEST(COALESCE(r.last_used,'1000-01-01'),COALESCE(a.last_used,'1000-01-01'),COALESCE(c.lesson_last,'1000-01-01'),COALESCE(coach.last_used,'1000-01-01'),COALESCE(c.peer_last,'1000-01-01'),COALESCE(msg.last_used,'1000-01-01'))='1000-01-01' THEN NULL WHEN COALESCE(msg.last_used,'1000-01-01')>=GREATEST(COALESCE(r.last_used,'1000-01-01'),COALESCE(a.last_used,'1000-01-01'),COALESCE(c.lesson_last,'1000-01-01'),COALESCE(coach.last_used,'1000-01-01'),COALESCE(c.peer_last,'1000-01-01')) THEN 'user_message' WHEN COALESCE(r.last_used,'1000-01-01')>=GREATEST(COALESCE(a.last_used,'1000-01-01'),COALESCE(c.lesson_last,'1000-01-01'),COALESCE(coach.last_used,'1000-01-01'),COALESCE(c.peer_last,'1000-01-01')) THEN 'weekly_review' WHEN COALESCE(a.last_used,'1000-01-01')>=GREATEST(COALESCE(c.lesson_last,'1000-01-01'),COALESCE(coach.last_used,'1000-01-01'),COALESCE(c.peer_last,'1000-01-01')) THEN 'assessment' WHEN COALESCE(c.lesson_last,'1000-01-01')>=GREATEST(COALESCE(coach.last_used,'1000-01-01'),COALESCE(c.peer_last,'1000-01-01')) THEN 'lesson' WHEN COALESCE(coach.last_used,'1000-01-01')>=COALESCE(c.peer_last,'1000-01-01') THEN 'coach_consult' ELSE 'peer_chat' END,
 COALESCE(NULLIF(TRIM(bg.business_stage),''),NULLIF(TRIM(d.stage),'')),COALESCE(NULLIF(TRIM(bg.main_line_type),''),NULLIF(TRIM(d.main_line_type),'')),NULLIF(TRIM(d.user_segment),''),CASE WHEN JSON_TYPE(bg.focus_topics)='ARRAY' AND JSON_LENGTH(bg.focus_topics)>0 THEN bg.focus_topics WHEN JSON_TYPE(i.interest_keys)='ARRAY' THEN i.interest_keys ELSE JSON_ARRAY() END,NULLIF(TRIM(bg.pain_tag),''),u.first_login_at,COALESCE(tok.has_token_usage,0),CASE WHEN lp.user_id IS NULL THEN 0 ELSE 1 END,lp.status,lp.current_lessons,lp.total_lessons,COALESCE(openlog.open_count_7d,0),openlog.last_opened_at,
-CASE WHEN mc.user_id IS NOT NULL AND NOT (mc.status COLLATE utf8mb4_general_ci = 'expired' AND (NULLIF(TRIM(s.tier),'') COLLATE utf8mb4_general_ci <> '' AND NULLIF(TRIM(s.tier),'') COLLATE utf8mb4_general_ci <> 'free' OR NULLIF(TRIM(u.member_level),'') COLLATE utf8mb4_general_ci <> '' AND NULLIF(TRIM(u.member_level),'') COLLATE utf8mb4_general_ci <> 'free')) OR (NOT (mc.user_id IS NOT NULL AND NOT (mc.status COLLATE utf8mb4_general_ci = 'expired' AND (NULLIF(TRIM(s.tier),'') COLLATE utf8mb4_general_ci <> '' AND NULLIF(TRIM(s.tier),'') COLLATE utf8mb4_general_ci <> 'free' OR NULLIF(TRIM(u.member_level),'') COLLATE utf8mb4_general_ci <> '' AND NULLIF(TRIM(u.member_level),'') COLLATE utf8mb4_general_ci <> 'free'))) AND (NULLIF(TRIM(s.tier),'') COLLATE utf8mb4_general_ci <> '' AND NULLIF(TRIM(s.tier),'') COLLATE utf8mb4_general_ci <> 'free' OR (NOT (NULLIF(TRIM(s.tier),'') COLLATE utf8mb4_general_ci <> '' AND NULLIF(TRIM(s.tier),'') COLLATE utf8mb4_general_ci <> 'free') AND NULLIF(TRIM(u.member_level),'') COLLATE utf8mb4_general_ci <> '' AND NULLIF(TRIM(u.member_level),'') COLLATE utf8mb4_general_ci <> 'free'))) THEN 1 ELSE 0 END,
-CASE WHEN mc.user_id IS NOT NULL AND NOT (mc.status COLLATE utf8mb4_general_ci = 'expired' AND (NULLIF(TRIM(s.tier),'') COLLATE utf8mb4_general_ci <> '' AND NULLIF(TRIM(s.tier),'') COLLATE utf8mb4_general_ci <> 'free' OR NULLIF(TRIM(u.member_level),'') COLLATE utf8mb4_general_ci <> '' AND NULLIF(TRIM(u.member_level),'') COLLATE utf8mb4_general_ci <> 'free')) THEN CASE WHEN mc.status COLLATE utf8mb4_general_ci IN ('active','valid','premium','standard','trial') THEN 1 ELSE 0 END WHEN NULLIF(TRIM(s.tier),'') COLLATE utf8mb4_general_ci <> '' AND NULLIF(TRIM(s.tier),'') COLLATE utf8mb4_general_ci <> 'free' OR (NOT (NULLIF(TRIM(s.tier),'') COLLATE utf8mb4_general_ci <> '' AND NULLIF(TRIM(s.tier),'') COLLATE utf8mb4_general_ci <> 'free') AND NULLIF(TRIM(u.member_level),'') COLLATE utf8mb4_general_ci <> '' AND NULLIF(TRIM(u.member_level),'') COLLATE utf8mb4_general_ci <> 'free') THEN 1 ELSE 0 END,
-CASE WHEN mc.user_id IS NOT NULL AND NOT (mc.status COLLATE utf8mb4_general_ci = 'expired' AND (NULLIF(TRIM(s.tier),'') COLLATE utf8mb4_general_ci <> '' AND NULLIF(TRIM(s.tier),'') COLLATE utf8mb4_general_ci <> 'free' OR NULLIF(TRIM(u.member_level),'') COLLATE utf8mb4_general_ci <> '' AND NULLIF(TRIM(u.member_level),'') COLLATE utf8mb4_general_ci <> 'free')) THEN COALESCE(mc.attribution,'none') WHEN NULLIF(TRIM(s.tier),'') COLLATE utf8mb4_general_ci <> '' AND NULLIF(TRIM(s.tier),'') COLLATE utf8mb4_general_ci <> 'free' THEN 'subscription' WHEN NULLIF(TRIM(u.member_level),'') COLLATE utf8mb4_general_ci <> '' AND NULLIF(TRIM(u.member_level),'') COLLATE utf8mb4_general_ci <> 'free' THEN 'user_profile' ELSE 'none' END,
-CASE WHEN mc.user_id IS NOT NULL AND NOT (mc.status COLLATE utf8mb4_general_ci = 'expired' AND (NULLIF(TRIM(s.tier),'') COLLATE utf8mb4_general_ci <> '' AND NULLIF(TRIM(s.tier),'') COLLATE utf8mb4_general_ci <> 'free' OR NULLIF(TRIM(u.member_level),'') COLLATE utf8mb4_general_ci <> '' AND NULLIF(TRIM(u.member_level),'') COLLATE utf8mb4_general_ci <> 'free')) THEN COALESCE(mc.status,'') WHEN NULLIF(TRIM(s.tier),'') COLLATE utf8mb4_general_ci <> '' AND NULLIF(TRIM(s.tier),'') COLLATE utf8mb4_general_ci <> 'free' THEN NULLIF(TRIM(s.tier),'') WHEN NULLIF(TRIM(u.member_level),'') COLLATE utf8mb4_general_ci <> '' AND NULLIF(TRIM(u.member_level),'') COLLATE utf8mb4_general_ci <> 'free' THEN NULLIF(TRIM(u.member_level),'') ELSE '' END,
-CASE WHEN mc.user_id IS NOT NULL AND NOT (mc.status COLLATE utf8mb4_general_ci = 'expired' AND (NULLIF(TRIM(s.tier),'') COLLATE utf8mb4_general_ci <> '' AND NULLIF(TRIM(s.tier),'') COLLATE utf8mb4_general_ci <> 'free' OR NULLIF(TRIM(u.member_level),'') COLLATE utf8mb4_general_ci <> '' AND NULLIF(TRIM(u.member_level),'') COLLATE utf8mb4_general_ci <> 'free')) THEN mc.end_date WHEN NULLIF(TRIM(s.tier),'') COLLATE utf8mb4_general_ci <> '' AND NULLIF(TRIM(s.tier),'') COLLATE utf8mb4_general_ci <> 'free' THEN s.expires_at WHEN NULLIF(TRIM(u.member_level),'') COLLATE utf8mb4_general_ci <> '' AND NULLIF(TRIM(u.member_level),'') COLLATE utf8mb4_general_ci <> 'free' THEN u.member_expires_at ELSE NULL END,
+CASE WHEN mc.user_id IS NULL THEN 0 ELSE 1 END,COALESCE(mc.attribution,''),COALESCE(mc.status,''),mc.end_date,
+NULLIF(TRIM(s.tier),''),s.expires_at,NULLIF(TRIM(u.member_level),''),u.member_expires_at,
 GREATEST(u.updated_at,COALESCE(s.updated_at,u.updated_at),COALESCE(mc.source_updated_at,u.updated_at),COALESCE(c.source_updated_at,u.updated_at),COALESCE(msg.source_updated_at,u.updated_at),COALESCE(tok.source_updated_at,u.updated_at),COALESCE(lp.source_updated_at,u.updated_at),COALESCE(openlog.source_updated_at,u.updated_at),COALESCE(coach.source_updated_at,u.updated_at),COALESCE(a.source_updated_at,u.updated_at),COALESCE(r.source_updated_at,u.updated_at),COALESCE(bg.updated_at,u.updated_at),COALESCE(d.updated_at,u.updated_at),COALESCE(i.updated_at,u.updated_at))
 FROM active_users u LEFT JOIN new_version_user_subscriptions s ON s.user_id COLLATE utf8mb4_general_ci=u.id LEFT JOIN membership_current mc ON mc.user_id=u.id LEFT JOIN conversation_usage c ON c.user_id=u.id LEFT JOIN message_usage msg ON msg.user_id=u.id LEFT JOIN token_usage tok ON tok.user_id COLLATE utf8mb4_general_ci=u.id LEFT JOIN learning_current lp ON lp.user_id COLLATE utf8mb4_general_ci=u.id LEFT JOIN card_open_usage openlog ON openlog.user_id COLLATE utf8mb4_general_ci=u.id LEFT JOIN coach_usage coach ON coach.user_id=u.id LEFT JOIN assessment_usage a ON a.user_id COLLATE utf8mb4_general_ci=u.id LEFT JOIN review_usage r ON r.user_id COLLATE utf8mb4_general_ci=u.id LEFT JOIN new_version_user_backgrounds bg ON bg.user_id COLLATE utf8mb4_general_ci=u.id LEFT JOIN new_version_user_diagnoses d ON d.user_id COLLATE utf8mb4_general_ci=u.id LEFT JOIN new_version_user_interests i ON i.user_id COLLATE utf8mb4_general_ci=u.id ORDER BY u.id`

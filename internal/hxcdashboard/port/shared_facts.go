@@ -56,6 +56,13 @@ type SharedFactsReader interface {
 	SharedFacts(context.Context, []customerdomain.CustomerID) (map[customerdomain.CustomerID]SharedFacts, error)
 }
 
+// VersionedSharedFactsReader lets a consumer pin one immutable publication
+// before splitting a large canonical-customer set into bounded reads.
+type VersionedSharedFactsReader interface {
+	CurrentSharedFactsVersion(context.Context) (int64, error)
+	SharedFactsAtVersion(context.Context, int64, []customerdomain.CustomerID) (map[customerdomain.CustomerID]SharedFacts, error)
+}
+
 // ActiveAt and ExpiredAt preserve the old membership predicates at the time a
 // consumer evaluates them; dashboard stage is deliberately not reused.
 func (facts SharedFacts) ActiveAt(reference time.Time) bool {

@@ -175,6 +175,10 @@ func TestSharedFactsPublishedGenerationAndLegacyAvailability(t *testing.T) {
 		return domain.Projection{AsOf: now, SharedFactsAvailable: available, Counts: domain.Counts{Total: 1, ActiveUsed: 1, Matched: 1, MatchedByUnionID: 1}, Rows: []domain.ProjectionRow{{SubjectDigest: [32]byte{byte(customer)}, UserRef: "HXC-000000000077", Stage: domain.ActiveUsed, SourceRow: domain.SourceRow{SubscriptionTier: "standard", SubscriptionExpiresAt: &future, MembershipAttribution: "none", FormallyLoggedIn: true, FormalLoginAt: &login, HasTokenUsage: true, LearningPlanFound: true, LearningPlanStatus: "active", LearningPlanCurrent: &current, LearningPlanTotal: &total, CardOpenCount7D: 0, CardLastOpenedAt: &opened, MembershipRecordFound: true, IsMember: true, MembershipSource: "user_id", MembershipStatus: "active", MembershipExpiresAt: &pastMembership, LastUsedAt: &used, SourceUpdatedAt: now, CapabilityUsage: []byte(`{}`), FocusTopics: []byte(`[]`)}, CustomerID: domainCustomer(customer), IdentityState: domain.Matched, MatchedBy: "unionid", IdentityReasonCode: "matched_unionid"}}}
 	}
 	publish("shared-facts-available", base(77, true))
+	pinnedVersion, err := store.CurrentSharedFactsVersion(ctx)
+	if err != nil || pinnedVersion <= 0 {
+		t.Fatalf("pin current shared facts generation: version=%d err=%v", pinnedVersion, err)
+	}
 	facts, err := store.SharedFacts(ctx, []domainCustomerID{77, 78})
 	if err != nil {
 		t.Fatal(err)
@@ -187,6 +191,14 @@ func TestSharedFactsPublishedGenerationAndLegacyAvailability(t *testing.T) {
 		t.Fatalf("membership expiry must come from membership source, not subscription: %+v", got)
 	}
 	publish("shared-facts-legacy", base(78, false))
+	currentVersion, err := store.CurrentSharedFactsVersion(ctx)
+	if err != nil || currentVersion == pinnedVersion {
+		t.Fatalf("new publication must advance the current generation: current=%d pinned=%d err=%v", currentVersion, pinnedVersion, err)
+	}
+	pinnedFacts, err := store.SharedFactsAtVersion(ctx, pinnedVersion, []domainCustomerID{77})
+	if err != nil || pinnedFacts[77].Availability != "available" || pinnedFacts[77].MembershipSource != "user_id" {
+		t.Fatalf("pinned generation must remain readable through bounded batches: facts=%+v err=%v", pinnedFacts[77], err)
+	}
 	facts, err = store.SharedFacts(ctx, []domainCustomerID{78})
 	if err != nil {
 		t.Fatal(err)
