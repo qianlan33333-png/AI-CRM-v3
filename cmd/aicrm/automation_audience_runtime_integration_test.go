@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -155,6 +156,13 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
+	privateWriter, err := outbound.NewPrivateMessageRepository(native, effects)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = aiService.BindOutbound(privateWriter, true); err != nil {
+		t.Fatal(err)
+	}
 	wecomServer := newAutomationAudienceWeComServer(t)
 	defer wecomServer.Close()
 	writer, err := wecomadapter.NewDirectory(wecomadapter.Config{
@@ -175,7 +183,11 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	provider := &automationAudienceRecordingProvider{inner: messageProvider}
+	privateProvider, err := outbound.NewPrivateMessageProvider(true, privateWriter, automationAudiencePrivateTarget{}, automationAudiencePrivatePayload{content: aiRepo}, writer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := &automationAudienceRecordingProvider{inner: outbound.NewProviderRouterWithMessages(nil, nil, messageProvider).WithPrivateMessage(privateProvider)}
 	effectWorker := externaleffects.NewWorker(nil, provider)
 	if err = river.AddWorkerSafely[externaleffects.EffectJobArgs](workers, effectWorker); err != nil {
 		t.Fatal(err)
@@ -328,8 +340,25 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 	if err = native.QueryRow(ctx, `SELECT count(*) FROM automation_run_recipients WHERE run_id=$1`, manual.ID).Scan(&runRecipientCount); err != nil || runRecipientCount != 0 {
 		t.Fatalf("confirmation runtime recipients=%d err=%v", runRecipientCount, err)
 	}
+	approvalPreview, err := aiService.PreviewApproval(ctx, aiassistantport.PreviewApprovalCommand{Actor: aiassistantport.Actor{Kind: aiassistantport.ActorAdmin, ID: staffID}, PlanID: plan.ID, ExpectedVersion: plan.Version})
+	if err != nil || approvalPreview.EligibleCount != 2 {
+		t.Fatalf("review preview=%+v err=%v", approvalPreview, err)
+	}
+	if _, err = aiService.ApprovePlan(ctx, aiassistantport.ApprovePlanCommand{Actor: aiassistantport.Actor{Kind: aiassistantport.ActorAdmin, ID: staffID}, PlanID: plan.ID, ExpectedVersion: plan.Version, PreviewDigest: approvalPreview.PreviewDigest, IdempotencyKey: "audience-runtime-manual-approve-0001"}); err != nil {
+		t.Fatal(err)
+	}
+	stop = automationAudienceStartRuntime(t, runtime)
+	stopOnce = sync.Once{}
+	automationAudienceEventually(t, "approved manual effects", func() bool {
+		var accepted int
+		if native.QueryRow(ctx, `SELECT count(*) FROM outbound_private_message_intents WHERE state='provider_accepted'`).Scan(&accepted) != nil {
+			return false
+		}
+		return accepted == 2 && wecomServer.Calls() == 4
+	})
+	stopRuntime()
 	replayed, err := runtimeService.ConfirmRun(ctx, automationapp.RunConfirmCommand{PackageID: packageID, PackageVersion: preview.PackageVersion, SnapshotID: preview.SnapshotID, AgentID: preview.AgentID, AgentPublishedVersion: preview.AgentPublishedVersion, PreviewDigest: automationapp.PreviewDigestString(preview), Actor: staffID, IdempotencyKey: "audience-runtime-manual-0001"})
-	if err != nil || replayed.ID != manual.ID || replayed.AIPlanID != manual.AIPlanID || wecomServer.Calls() != 2 {
+	if err != nil || replayed.ID != manual.ID || replayed.AIPlanID != manual.AIPlanID || wecomServer.Calls() != 4 {
 		t.Fatalf("manual replay=%+v provider calls=%d err=%v", replayed, wecomServer.Calls(), err)
 	}
 
@@ -384,7 +413,7 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 		if native.QueryRow(ctx, `SELECT count(*) FROM outbound_message_intents`).Scan(&intents) != nil {
 			return false
 		}
-		return exits == 1 && entered == 0 && intents == 2 && wecomServer.Calls() == 2
+		return exits == 1 && entered == 0 && intents == 2 && wecomServer.Calls() == 4
 	})
 	stopRuntime()
 }
@@ -441,6 +470,27 @@ type automationAudienceAIIdentities struct{}
 
 func (automationAudienceAIIdentities) Resolve(context.Context, identitydomain.Reference) (identityport.ResolveResult, error) {
 	return identityport.ResolveResult{Status: identityport.ResolveNotFound}, nil
+}
+
+type automationAudiencePrivateTarget struct{}
+
+func (automationAudiencePrivateTarget) ResolvePrivateMessageTarget(_ context.Context, customerID customerdomain.CustomerID, staffID int64) (outbound.PrivateMessageTarget, error) {
+	if customerID < 1 || staffID < 1 {
+		return outbound.PrivateMessageTarget{}, errors.New("invalid private-message fixture target")
+	}
+	return outbound.PrivateMessageTarget{ExternalUserID: "runtime-external-" + strconv.FormatInt(int64(customerID), 10), StaffUserID: "sender-a"}, nil
+}
+
+type automationAudiencePrivatePayload struct {
+	content aiassistantport.OutboundPayloadReader
+}
+
+func (p automationAudiencePrivatePayload) LoadPrivateMessagePayload(ctx context.Context, reference string, digest effectport.Digest) (outbound.PrivateMessagePayload, error) {
+	content, err := p.content.LoadOutboundContent(ctx, reference, digest)
+	if err != nil || len(content.Blocks) != 1 || content.Blocks[0].Kind != aiassistantport.ContentText {
+		return outbound.PrivateMessagePayload{}, errors.New("invalid private-message fixture content")
+	}
+	return outbound.PrivateMessagePayload{Text: content.Blocks[0].Text}, nil
 }
 
 type automationAudienceEnrollmentSink struct{ runtime *automationapp.RuntimeService }
