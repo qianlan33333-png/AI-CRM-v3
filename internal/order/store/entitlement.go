@@ -109,9 +109,20 @@ func (r *Repository) ListServicePeriodMembers(ctx context.Context, query orderpo
 	if snapshot.IsZero() {
 		snapshot = time.Now().UTC()
 	}
+	// $1-$8 are always consumed by the Product/source/cursor predicates. The
+	// frozen snapshot is a SQL parameter only when an Order-side remaining-day
+	// filter or group count needs it. pgx's extended protocol rejects an extra
+	// untyped argument, while cursor rendering still retains SnapshotAt below.
+	usesSnapshot := query.RemainingDays != nil || query.GroupByRemainingDays
+	args := []any{query.ServiceProductID, state, source, cursorUpdated, cursorStart, query.Sort, cursorID, cursorEnd}
+	snapshotPlaceholder := 0
+	if usesSnapshot {
+		args = append(args, snapshot)
+		snapshotPlaceholder = len(args)
+	}
 	filterArgs := make([]any, 0, 3)
-	nextPlaceholder := 10
-	remainingClause, remainingArgs := servicePeriodRemainingDaysClause(query.RemainingDays, 9, nextPlaceholder)
+	nextPlaceholder := len(args) + 1
+	remainingClause, remainingArgs := servicePeriodRemainingDaysClause(query.RemainingDays, snapshotPlaceholder, nextPlaceholder)
 	nextPlaceholder += len(remainingArgs)
 	filterArgs = append(filterArgs, remainingArgs...)
 	remarkClause, remarkArgs := servicePeriodRemarkClause(query.Remark, nextPlaceholder)
@@ -128,20 +139,30 @@ func (r *Repository) ListServicePeriodMembers(ctx context.Context, query orderpo
 	} else if query.Remark != nil {
 		memberFilter = remarkClause
 	}
-	args := []any{query.ServiceProductID, state, source, cursorUpdated, cursorStart, query.Sort, cursorID, cursorEnd, snapshot}
 	args = append(args, filterArgs...)
 	args = append(args, query.Limit+1)
 	groupCount := "0::bigint"
 	if query.GroupByRemainingDays {
-		groupCount = "COUNT(*) OVER (PARTITION BY " + servicePeriodRemainingDaysExpression(9) + ")"
+		groupCount = "COUNT(*) OVER (PARTITION BY " + servicePeriodRemainingDaysExpression(snapshotPlaceholder) + ")"
 	}
-	rows, err := tx.Query(ctx, `SELECT id,customer_id,service_product_id,product_name,last_order_id,status,start_at,end_at,remark,version,updated_at,source_system,`+groupCount+`
+	// Compute window counts over the complete Product/source/field-filtered
+	// relation before applying the keyset cursor. Otherwise the second page of
+	// one remaining-days group would report only the suffix count.
+	rows, err := tx.Query(ctx, `WITH member_grid_filtered AS (
+		SELECT id,customer_id,service_product_id,product_name,last_order_id,status,start_at,end_at,remark,version,updated_at,source_system
 		FROM order_service_entitlements
 		WHERE service_product_id=$1
 		  AND ($2='' OR status=$2)
 		  AND ($3='' OR ($3='paid_order' AND source_system='native-payment') OR ($3='manual' AND source_system<>'native-payment'))
 		  AND (`+memberFilter+`)
-		  AND (($6='updated_at_desc' AND ($4::timestamptz IS NULL OR (updated_at,id)<($4::timestamptz,$7::bigint)))
+	), member_grid_counted AS (
+		SELECT id,customer_id,service_product_id,product_name,last_order_id,status,start_at,end_at,remark,version,updated_at,source_system,`+groupCount+` AS member_grid_group_count
+		FROM member_grid_filtered
+	)
+		SELECT id,customer_id,service_product_id,product_name,last_order_id,status,start_at,end_at,remark,version,updated_at,source_system,member_grid_group_count
+		FROM member_grid_counted
+		WHERE
+		  (($6='updated_at_desc' AND ($4::timestamptz IS NULL OR (updated_at,id)<($4::timestamptz,$7::bigint)))
 		    OR ($6='starts_at_desc' AND ($5::timestamptz IS NULL OR (start_at,id)<($5::timestamptz,$7::bigint)))
 		    OR ($6='remaining_days_desc' AND ($8::timestamptz IS NULL OR (end_at,id)<($8::timestamptz,$7::bigint)))
 		    OR ($6='remaining_days_asc' AND ($8::timestamptz IS NULL OR (end_at,id)>($8::timestamptz,$7::bigint)))

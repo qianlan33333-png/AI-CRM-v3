@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -23,6 +24,7 @@ import (
 )
 
 type testSecurity struct {
+	mu        sync.Mutex
 	principal accessdomain.Principal
 	authErr   error
 	csrfErr   error
@@ -31,11 +33,15 @@ type testSecurity struct {
 }
 
 func (security *testSecurity) Authenticate(context.Context, *http.Request) (accessdomain.Principal, error) {
+	security.mu.Lock()
+	defer security.mu.Unlock()
 	security.authCalls++
 	return security.principal, security.authErr
 }
 
 func (security *testSecurity) AuthorizeCSRF(context.Context, *http.Request) (accessdomain.Principal, error) {
+	security.mu.Lock()
+	defer security.mu.Unlock()
 	security.csrfCalls++
 	return security.principal, security.csrfErr
 }
@@ -143,6 +149,7 @@ type testExternalPush struct {
 }
 
 type testMemberEntitlements struct {
+	mu          sync.Mutex
 	page        orderport.ServicePeriodMemberPage
 	queries     []orderport.ServicePeriodMemberQuery
 	remarkCmd   *orderport.RemarkCommand
@@ -153,6 +160,8 @@ func (stub *testMemberEntitlements) ListCustomerEntitlements(context.Context, in
 	return orderport.EntitlementPage{}, nil
 }
 func (stub *testMemberEntitlements) ListServicePeriodMembers(_ context.Context, query orderport.ServicePeriodMemberQuery) (orderport.ServicePeriodMemberPage, error) {
+	stub.mu.Lock()
+	defer stub.mu.Unlock()
 	stub.queries = append(stub.queries, query)
 	page := stub.page
 	page.Items = append([]orderport.Entitlement(nil), stub.page.Items...)
@@ -178,6 +187,8 @@ func (stub *testMemberEntitlements) GetCustomerServicePeriodEntitlement(context.
 	return orderport.Entitlement{}, false, nil
 }
 func (stub *testMemberEntitlements) UpdateEntitlementRemark(_ context.Context, command orderport.RemarkCommand) (orderport.Entitlement, error) {
+	stub.mu.Lock()
+	defer stub.mu.Unlock()
 	stub.remarkCalls++
 	stub.remarkCmd = &command
 	for index := range stub.page.Items {
@@ -194,6 +205,16 @@ func (stub *testMemberEntitlements) UpdateEntitlementRemark(_ context.Context, c
 		return *item, nil
 	}
 	return orderport.Entitlement{}, orderport.ErrNotFound
+}
+
+func (stub *testMemberEntitlements) snapshot() (orderport.RemarkCommand, bool, int, []orderport.ServicePeriodMemberQuery) {
+	stub.mu.Lock()
+	defer stub.mu.Unlock()
+	queries := append([]orderport.ServicePeriodMemberQuery(nil), stub.queries...)
+	if stub.remarkCmd == nil {
+		return orderport.RemarkCommand{}, false, stub.remarkCalls, queries
+	}
+	return *stub.remarkCmd, true, stub.remarkCalls, queries
 }
 
 type testMemberNames struct{}
@@ -226,6 +247,7 @@ func (directory testMemberStaffDirectory) ListActiveMemberGridStaff(context.Cont
 // handler test on the real HttpApi surface and deliberately has no Order or
 // Customer store access.
 type testMemberWorkspace struct {
+	mu                      sync.Mutex
 	access                  productport.MemberGridAccess
 	deniedID                int64
 	views                   []productport.MemberGridView
@@ -241,15 +263,21 @@ type testMemberWorkspace struct {
 }
 
 func (s *testMemberWorkspace) Access(_ context.Context, _ productport.ID, actor productport.MemberGridActor) (productport.MemberGridAccess, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if actor.AdminUserID == s.deniedID {
 		return productport.MemberGridAccess{}, productapp.ErrNotFound
 	}
 	return s.access, nil
 }
 func (s *testMemberWorkspace) ListViews(context.Context, productport.ID) ([]productport.MemberGridView, error) {
-	return s.views, nil
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]productport.MemberGridView(nil), s.views...), nil
 }
 func (s *testMemberWorkspace) CreateView(_ context.Context, c productport.CreateMemberGridViewCommand) (productport.MemberGridView, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.createViewCalls++
 	id := productport.ID(13)
 	for _, current := range s.views {
@@ -262,6 +290,8 @@ func (s *testMemberWorkspace) CreateView(_ context.Context, c productport.Create
 	return v, nil
 }
 func (s *testMemberWorkspace) UpdateView(_ context.Context, c productport.UpdateMemberGridViewCommand) (productport.MemberGridView, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.updateViewCalls++
 	for index := range s.views {
 		view := &s.views[index]
@@ -277,6 +307,8 @@ func (s *testMemberWorkspace) UpdateView(_ context.Context, c productport.Update
 	return productport.MemberGridView{}, productapp.ErrNotFound
 }
 func (s *testMemberWorkspace) DeleteView(_ context.Context, c productport.DeleteMemberGridViewCommand) (productport.MemberGridView, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.deleteViewCalls++
 	for index, view := range s.views {
 		if view.ID != c.ViewID || view.ProductID != c.ProductID {
@@ -291,9 +323,13 @@ func (s *testMemberWorkspace) DeleteView(_ context.Context, c productport.Delete
 	return productport.MemberGridView{}, productapp.ErrNotFound
 }
 func (s *testMemberWorkspace) ListCollaborators(context.Context, productport.ID) ([]productport.MemberGridCollaborator, error) {
-	return s.collaborators, nil
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]productport.MemberGridCollaborator(nil), s.collaborators...), nil
 }
 func (s *testMemberWorkspace) CreateCollaborator(_ context.Context, c productport.CreateMemberGridCollaboratorCommand) (productport.MemberGridCollaborator, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.createCollaboratorCalls++
 	id := productport.ID(14)
 	for _, current := range s.collaborators {
@@ -306,6 +342,8 @@ func (s *testMemberWorkspace) CreateCollaborator(_ context.Context, c productpor
 	return v, nil
 }
 func (s *testMemberWorkspace) UpdateCollaborator(_ context.Context, c productport.UpdateMemberGridCollaboratorCommand) (productport.MemberGridCollaborator, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.updateCollaboratorCalls++
 	for index := range s.collaborators {
 		item := &s.collaborators[index]
@@ -321,6 +359,8 @@ func (s *testMemberWorkspace) UpdateCollaborator(_ context.Context, c productpor
 	return productport.MemberGridCollaborator{}, productapp.ErrNotFound
 }
 func (s *testMemberWorkspace) DeleteCollaborator(_ context.Context, c productport.DeleteMemberGridCollaboratorCommand) (productport.MemberGridCollaborator, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.deleteCollaboratorCalls++
 	for index, item := range s.collaborators {
 		if item.ID != c.CollaboratorID || item.ProductID != c.ProductID {
@@ -335,9 +375,13 @@ func (s *testMemberWorkspace) DeleteCollaborator(_ context.Context, c productpor
 	return productport.MemberGridCollaborator{}, productapp.ErrNotFound
 }
 func (s *testMemberWorkspace) Share(context.Context, productport.ID) (productport.MemberGridShare, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return s.share, nil
 }
 func (s *testMemberWorkspace) SetShare(_ context.Context, c productport.SetMemberGridShareCommand) (productport.MemberGridShare, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.setShareCalls++
 	s.share = productport.MemberGridShare{ProductID: c.ProductID, Enabled: c.Enabled, Version: c.ExpectedVersion + 1}
 	if c.Enabled {
@@ -346,10 +390,36 @@ func (s *testMemberWorkspace) SetShare(_ context.Context, c productport.SetMembe
 	return s.share, c.Enabled, nil
 }
 func (s *testMemberWorkspace) ResolveShare(_ context.Context, token string) (productport.MemberGridShare, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if !s.share.Enabled || token != s.share.PublicID {
 		return productport.MemberGridShare{}, productapp.ErrNotFound
 	}
 	return s.share, nil
+}
+
+type testMemberWorkspaceSnapshot struct {
+	Views, Collaborators                                          int
+	Share                                                         productport.MemberGridShare
+	CreateViews, UpdateViews, DeleteViews                         int
+	CreateCollaborators, UpdateCollaborators, DeleteCollaborators int
+	SetShares                                                     int
+	ViewConfigs                                                   []json.RawMessage
+}
+
+func (s *testMemberWorkspace) snapshot() testMemberWorkspaceSnapshot {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	configs := make([]json.RawMessage, 0, len(s.views))
+	for _, view := range s.views {
+		configs = append(configs, append(json.RawMessage(nil), view.Config...))
+	}
+	return testMemberWorkspaceSnapshot{
+		Views: len(s.views), Collaborators: len(s.collaborators), Share: s.share,
+		CreateViews: s.createViewCalls, UpdateViews: s.updateViewCalls, DeleteViews: s.deleteViewCalls,
+		CreateCollaborators: s.createCollaboratorCalls, UpdateCollaborators: s.updateCollaboratorCalls, DeleteCollaborators: s.deleteCollaboratorCalls, SetShares: s.setShareCalls,
+		ViewConfigs: configs,
+	}
 }
 
 func (external *testExternalPush) GetExternalPushConfiguration(context.Context, productport.ID, productport.ExternalPushProductKind) (productport.ExternalPushConfiguration, error) {
@@ -523,8 +593,9 @@ func TestFrozenMemberGridHTTPAPISavedViewCollaboratorShareAndRemarkJourney(t *te
 		t.Fatalf("saved view query=%d %s", query.Code, query.Body.String())
 	}
 	members := handler.members.(*testMemberEntitlements)
-	if len(members.queries) == 0 || members.queries[len(members.queries)-1].Sort != "remaining_days_asc" || members.queries[len(members.queries)-1].RemainingDays == nil {
-		t.Fatalf("saved view config was not applied: %+v", members.queries)
+	_, _, _, queries := members.snapshot()
+	if len(queries) == 0 || queries[len(queries)-1].Sort != "remaining_days_asc" || queries[len(queries)-1].RemainingDays == nil {
+		t.Fatalf("saved view config was not applied: %+v", queries)
 	}
 	deleteView := adminRequest(http.MethodDelete, "/api/admin/service-period-products/7/member-views/13", `{"version":2}`)
 	if deleteView.Code != http.StatusOK || !strings.Contains(deleteView.Body.String(), `"deleted":true`) || !strings.Contains(deleteView.Body.String(), `"id":"13"`) {
@@ -585,8 +656,9 @@ func TestFrozenMemberGridHTTPAPISavedViewCollaboratorShareAndRemarkJourney(t *te
 	if remark.Code != http.StatusOK || !strings.Contains(remark.Body.String(), `"version":6`) {
 		t.Fatalf("remark=%d %s", remark.Code, remark.Body.String())
 	}
-	if members.remarkCmd == nil || members.remarkCmd.CustomerID != 0 || members.remarkCmd.ServiceProductID != 7 || members.remarkCmd.EntitlementID != 41 {
-		t.Fatalf("opaque remark did not carry only product scope: %+v", members.remarkCmd)
+	remarkCommand, foundRemark, _, _ := members.snapshot()
+	if !foundRemark || remarkCommand.CustomerID != 0 || remarkCommand.ServiceProductID != 7 || remarkCommand.EntitlementID != 41 {
+		t.Fatalf("opaque remark did not carry only product scope: %+v", remarkCommand)
 	}
 
 	security.principal = accessdomain.Principal{Kind: accessdomain.KindAdmin, InternalID: 22, Roles: []accessdomain.Role{accessdomain.RoleViewer}}
@@ -639,8 +711,10 @@ func TestReadOnlyMemberGridCollaboratorGetsExplicitForbiddenAndNoWrites(t *testi
 	assertForbidden("delete collaborator", request(http.MethodDelete, "/api/admin/service-period-products/7/member-grid/collaborators/14", `{"version":1}`))
 
 	members := handler.members.(*testMemberEntitlements)
-	if members.remarkCalls != 0 || workspace.createViewCalls != 0 || workspace.updateViewCalls != 0 || workspace.deleteViewCalls != 0 || workspace.createCollaboratorCalls != 0 || workspace.updateCollaboratorCalls != 0 || workspace.deleteCollaboratorCalls != 0 || workspace.setShareCalls != 0 {
-		t.Fatalf("read-only collaborator reached an owner write: remarks=%d views=%d/%d/%d collaborators=%d/%d/%d share=%d", members.remarkCalls, workspace.createViewCalls, workspace.updateViewCalls, workspace.deleteViewCalls, workspace.createCollaboratorCalls, workspace.updateCollaboratorCalls, workspace.deleteCollaboratorCalls, workspace.setShareCalls)
+	_, _, remarkCalls, _ := members.snapshot()
+	workspaceSnapshot := workspace.snapshot()
+	if remarkCalls != 0 || workspaceSnapshot.CreateViews != 0 || workspaceSnapshot.UpdateViews != 0 || workspaceSnapshot.DeleteViews != 0 || workspaceSnapshot.CreateCollaborators != 0 || workspaceSnapshot.UpdateCollaborators != 0 || workspaceSnapshot.DeleteCollaborators != 0 || workspaceSnapshot.SetShares != 0 {
+		t.Fatalf("read-only collaborator reached an owner write: remarks=%d views=%d/%d/%d collaborators=%d/%d/%d share=%d", remarkCalls, workspaceSnapshot.CreateViews, workspaceSnapshot.UpdateViews, workspaceSnapshot.DeleteViews, workspaceSnapshot.CreateCollaborators, workspaceSnapshot.UpdateCollaborators, workspaceSnapshot.DeleteCollaborators, workspaceSnapshot.SetShares)
 	}
 }
 
@@ -685,29 +759,31 @@ func TestFrozenMemberGridBrowserJourneyUsesActualHTTPAPI(t *testing.T) {
 	}
 
 	members := handler.members.(*testMemberEntitlements)
-	if members.remarkCmd == nil || members.remarkCmd.Remark != "第二次备注" || members.remarkCmd.ExpectedVersion != 6 || members.remarkCmd.CustomerID != 0 {
-		t.Fatalf("opaque remark CAS command=%+v", members.remarkCmd)
+	remarkCommand, foundRemark, _, queries := members.snapshot()
+	if !foundRemark || remarkCommand.Remark != "第二次备注" || remarkCommand.ExpectedVersion != 6 || remarkCommand.CustomerID != 0 {
+		t.Fatalf("opaque remark CAS command=%+v", remarkCommand)
 	}
 	var filtered, sorted, grouped bool
-	for _, query := range members.queries {
+	for _, query := range queries {
 		filtered = filtered || query.RemainingDays != nil
 		sorted = sorted || query.Sort == "remaining_days_asc"
 		grouped = grouped || query.GroupByRemainingDays
 	}
 	if !filtered || !sorted || !grouped {
-		t.Fatalf("frozen browser did not issue the supported filter/sort/group queries: %+v", members.queries)
+		t.Fatalf("frozen browser did not issue the supported filter/sort/group queries: %+v", queries)
 	}
 	var savedGroup, savedSort bool
-	for _, view := range workspace.views {
+	workspaceSnapshot := workspace.snapshot()
+	for _, configBytes := range workspaceSnapshot.ViewConfigs {
 		var config donorGridConfig
-		if json.Unmarshal(view.Config, &config) != nil {
-			t.Fatalf("saved view config=%s", view.Config)
+		if json.Unmarshal(configBytes, &config) != nil {
+			t.Fatalf("saved view config=%s", configBytes)
 		}
 		savedGroup = savedGroup || len(config.Groups) == 1
 		savedSort = savedSort || len(config.Sorts) == 1
 	}
-	if !savedGroup || !savedSort || len(workspace.collaborators) != 0 || workspace.share.Enabled || workspace.share.PublicID != "" {
-		t.Fatalf("frozen UI persistence group=%t sort=%t collaborators=%+v share=%+v", savedGroup, savedSort, workspace.collaborators, workspace.share)
+	if !savedGroup || !savedSort || workspaceSnapshot.Collaborators != 0 || workspaceSnapshot.Share.Enabled || workspaceSnapshot.Share.PublicID != "" {
+		t.Fatalf("frozen UI persistence group=%t sort=%t collaborators=%d share=%+v", savedGroup, savedSort, workspaceSnapshot.Collaborators, workspaceSnapshot.Share)
 	}
 }
 

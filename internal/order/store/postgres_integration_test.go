@@ -223,6 +223,12 @@ func TestPostgreSQLMemberGridUsesFrozenCeilDaysForFiltersAndPagination(t *testin
 	}
 
 	base := orderport.ServicePeriodMemberQuery{ServiceProductID: 739, Limit: 50, Sort: "remaining_days_asc", SnapshotAt: snapshot}
+	// Product supplies a frozen render instant even to its ordinary default
+	// list. The repository must not bind it when no SQL predicate consumes it.
+	plain, err := app.ListServicePeriodMembers(ctx, base)
+	if err != nil || len(plain.Items) != 4 || !plain.SnapshotAt.Equal(snapshot) {
+		t.Fatalf("plain member list=%+v err=%v", plain, err)
+	}
 	oneDay := base
 	oneDay.RemainingDays = &orderport.MemberGridNumberFilter{Operator: "equals", Values: []int64{1}}
 	page, err := app.ListServicePeriodMembers(ctx, oneDay)
@@ -234,6 +240,20 @@ func TestPostgreSQLMemberGridUsesFrozenCeilDaysForFiltersAndPagination(t *testin
 	page, err = app.ListServicePeriodMembers(ctx, grouped)
 	if err != nil || len(page.Items) != 2 || page.Items[0].MemberGridGroupCount != 2 || page.Items[1].MemberGridGroupCount != 2 {
 		t.Fatalf("one-day group counts page=%+v err=%v", page, err)
+	}
+	groupedPage := grouped
+	groupedPage.Limit = 1
+	firstGroup, err := app.ListServicePeriodMembers(ctx, groupedPage)
+	if err != nil || len(firstGroup.Items) != 1 || firstGroup.NextCursor == "" || firstGroup.Items[0].MemberGridGroupCount != 2 {
+		t.Fatalf("first grouped cursor page=%+v err=%v", firstGroup, err)
+	}
+	// The cursor's static snapshot is retained, but its count remains the
+	// complete filtered one-day group rather than the one remaining row.
+	groupedPage.Cursor = firstGroup.NextCursor
+	groupedPage.SnapshotAt = snapshot.Add(48 * time.Hour)
+	secondGroup, err := app.ListServicePeriodMembers(ctx, groupedPage)
+	if err != nil || len(secondGroup.Items) != 1 || secondGroup.NextCursor != "" || !secondGroup.SnapshotAt.Equal(snapshot) || secondGroup.Items[0].MemberGridGroupCount != 2 {
+		t.Fatalf("second grouped cursor page=%+v err=%v", secondGroup, err)
 	}
 
 	expired := base
