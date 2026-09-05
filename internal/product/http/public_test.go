@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	channelport "github.com/qianlan33333-png/AI-CRM-v3/internal/channel/port"
+	mediaport "github.com/qianlan33333-png/AI-CRM-v3/internal/media/port"
 	orderport "github.com/qianlan33333-png/AI-CRM-v3/internal/order/port"
 	paymentport "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/port"
 	productport "github.com/qianlan33333-png/AI-CRM-v3/internal/product/port"
@@ -165,9 +167,18 @@ func (servicePeriodEntitlementStub) UpdateEntitlementRemark(context.Context, ord
 	return orderport.Entitlement{}, errors.New("unused")
 }
 
+type servicePeriodLeadQRStub struct{ value channelport.PublicLeadQRCode }
+
+func (stub servicePeriodLeadQRStub) ReadPublicLeadQRCode(context.Context, int64) (channelport.PublicLeadQRCode, error) {
+	return stub.value, nil
+}
+
 func TestServicePeriodPublicHostRetainsFrozenDonorStateDOM(t *testing.T) {
 	if got := fmt.Sprintf("%x", sha256.Sum256([]byte(frozenServicePeriodPublicRenderer))); got != frozenServicePeriodPublicRendererSHA256 {
 		t.Fatalf("service-period donor hash=%s", got)
+	}
+	if got := fmt.Sprintf("%x", sha256.Sum256([]byte(frozenPublicProductService))); got != frozenPublicProductServiceSHA256 {
+		t.Fatalf("public-product service donor hash=%s", got)
 	}
 	var page bytes.Buffer
 	if err := servicePeriodPublicPage.Execute(&page, servicePeriodPublicState{DonorStyle: servicePeriodDonorStyles(), Available: true, Product: publicProduct{ID: 71, Name: "31 天服务期", PriceMinor: 12800, PaymentPath: "/s/term-31/pay", ServicePeriodDurationDays: 31}, Status: "active", CTA: "立即续费", EndAt: time.Date(2026, 9, 20, 0, 0, 0, 0, time.UTC), RemainingDays: 15}); err != nil {
@@ -181,7 +192,7 @@ func TestServicePeriodPublicHostRetainsFrozenDonorStateDOM(t *testing.T) {
 }
 
 func TestPublicServicePeriodRendersTrustedEntitlementWithoutIdentityFallback(t *testing.T) {
-	reader := &servicePeriodPublicStub{product: productport.CheckoutProduct{ID: 71, ProductType: productport.ProductOptionServicePeriod, Code: "term-31", Name: "31 天服务期", PriceMinor: 12800, Currency: "CNY", Version: 4, Images: []string{"https://cdn.example.test/detail.png"}, ServicePeriodDurationDays: 31}}
+	reader := &servicePeriodPublicStub{product: productport.CheckoutProduct{ID: 71, ProductType: productport.ProductOptionServicePeriod, Code: "term-31", Name: "31 天服务期", PriceMinor: 12800, Currency: "CNY", Version: 4, DetailMedia: []productport.PublicDetailMedia{{ImageID: 88}}, LeadChannelID: 44, LeadQRTitle: "加企微", LeadQRSubtitle: "领取资料", ServicePeriodDurationDays: 31}}
 	handler, err := NewServicePeriodPublicHandler(reader)
 	if err != nil {
 		t.Fatal(err)
@@ -190,12 +201,15 @@ func TestPublicServicePeriodRendersTrustedEntitlementWithoutIdentityFallback(t *
 	if err = handler.SetTrustedPublicState(servicePeriodTestUOW{}, servicePeriodSessionStub{}, servicePeriodEntitlementStub{page: orderport.EntitlementPage{Items: []orderport.Entitlement{{CustomerID: 11, ServiceProductID: 71, Status: "active", EndAt: activeEnd}}}}); err != nil {
 		t.Fatal(err)
 	}
+	if err = handler.SetPublicLeadQRCodeReader(servicePeriodLeadQRStub{value: channelport.PublicLeadQRCode{URL: "https://work.weixin.qq.com/q/term"}}); err != nil {
+		t.Fatal(err)
+	}
 	handler.now = func() time.Time { return time.Date(2026, 9, 5, 9, 0, 0, 0, time.UTC) }
 	request := httptest.NewRequest(http.MethodGet, "/s/term-31", nil)
 	request.AddCookie(&http.Cookie{Name: paymentport.TrustedSessionCookieName, Value: "service-period-trusted"})
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `is-active`) || !strings.Contains(response.Body.String(), "服务中") || !strings.Contains(response.Body.String(), "剩余 15 天") || !strings.Contains(response.Body.String(), "立即续费") || !strings.Contains(response.Body.String(), `class="slice-img"`) || !strings.Contains(response.Body.String(), "detail.png") {
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `is-active`) || !strings.Contains(response.Body.String(), "服务中") || !strings.Contains(response.Body.String(), "剩余 15 天") || !strings.Contains(response.Body.String(), "立即续费") || !strings.Contains(response.Body.String(), "https://work.weixin.qq.com/q/term") || !strings.Contains(response.Body.String(), `class="slice-img"`) || !strings.Contains(response.Body.String(), "/images/88/variants/original") {
 		t.Fatalf("active page status=%d body=%s", response.Code, response.Body.String())
 	}
 	untrusted := httptest.NewRecorder()
@@ -206,7 +220,7 @@ func TestPublicServicePeriodRendersTrustedEntitlementWithoutIdentityFallback(t *
 }
 
 func TestPublicServicePeriodUsesExactCodeAndSeparateCheckoutRoute(t *testing.T) {
-	reader := &servicePeriodPublicStub{product: productport.CheckoutProduct{ID: 71, ProductType: productport.ProductOptionServicePeriod, Code: "term-31", Name: "31 天服务期", PriceMinor: 12800, Currency: "CNY", Version: 4, Images: []string{"https://cdn.example.test/detail.png"}, ServicePeriodDurationDays: 31}}
+	reader := &servicePeriodPublicStub{product: productport.CheckoutProduct{ID: 71, ProductType: productport.ProductOptionServicePeriod, Code: "term-31", Name: "31 天服务期", PriceMinor: 12800, Currency: "CNY", Version: 4, DetailMedia: []productport.PublicDetailMedia{{ImageID: 88}}, ServicePeriodDurationDays: 31}}
 	handler, err := NewServicePeriodPublicHandler(reader)
 	if err != nil {
 		t.Fatal(err)
@@ -227,5 +241,37 @@ func TestPublicServicePeriodUsesExactCodeAndSeparateCheckoutRoute(t *testing.T) 
 		if response.Code != http.StatusNotFound {
 			t.Fatalf("path=%s status=%d", path, response.Code)
 		}
+	}
+}
+
+type servicePeriodMediaStub struct{}
+
+func (servicePeriodMediaStub) LocalImageExists(_ context.Context, id int64) (bool, error) {
+	return id == 88, nil
+}
+func (servicePeriodMediaStub) GetImageVariant(_ context.Context, id int64, key string) (mediaport.ImageVariant, error) {
+	if id != 88 || key != "original" {
+		return mediaport.ImageVariant{}, errors.New("not found")
+	}
+	return mediaport.ImageVariant{Content: []byte("image-88"), MediaType: "image/png", ETag: `"image-88"`}, nil
+}
+func TestPublicServicePeriodMediaIsRestrictedToProductSlices(t *testing.T) {
+	reader := &servicePeriodPublicStub{product: productport.CheckoutProduct{ID: 71, ProductType: productport.ProductOptionServicePeriod, Code: "term-31", Name: "期", PriceMinor: 100, Currency: "CNY", Version: 1, ServicePeriodDurationDays: 31, DetailMedia: []productport.PublicDetailMedia{{ImageID: 88}}}}
+	h, err := NewServicePeriodPublicHandler(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = h.SetPublicMediaReader(servicePeriodMediaStub{}); err != nil {
+		t.Fatal(err)
+	}
+	ok := httptest.NewRecorder()
+	h.ServeHTTP(ok, httptest.NewRequest(http.MethodGet, "/api/h5/service-period-products/term-31/images/88/variants/original", nil))
+	if ok.Code != http.StatusOK || ok.Body.String() != "image-88" || ok.Header().Get("Content-Type") != "image/png" {
+		t.Fatalf("ok=%d body=%q headers=%v", ok.Code, ok.Body.String(), ok.Header())
+	}
+	denied := httptest.NewRecorder()
+	h.ServeHTTP(denied, httptest.NewRequest(http.MethodGet, "/api/h5/service-period-products/term-31/images/89/variants/original", nil))
+	if denied.Code != http.StatusNotFound {
+		t.Fatalf("denied=%d", denied.Code)
 	}
 }

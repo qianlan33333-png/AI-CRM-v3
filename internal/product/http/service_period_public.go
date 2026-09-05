@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	channelport "github.com/qianlan33333-png/AI-CRM-v3/internal/channel/port"
+	mediaport "github.com/qianlan33333-png/AI-CRM-v3/internal/media/port"
 	orderport "github.com/qianlan33333-png/AI-CRM-v3/internal/order/port"
 	paymentport "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/port"
 	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
@@ -18,8 +20,15 @@ import (
 // ServicePeriodPublicHandler owns the old /s/{code} public surface. It is a
 // separate route from ordinary /p and /pay: codes are exact, never numeric
 // aliases, and a standard Product with the same text cannot be selected here.
+type publicServicePeriodMediaReader interface {
+	mediaport.ImageVariantReader
+	LocalImageExists(context.Context, int64) (bool, error)
+}
+
 type ServicePeriodPublicHandler struct {
 	products     productport.ServicePeriodPublicReader
+	media        publicServicePeriodMediaReader
+	leadQR       channelport.PublicLeadQRCodeReader
 	uow          platformport.UnitOfWork
 	sessions     paymentport.SessionReader
 	entitlements orderport.EntitlementService
@@ -44,9 +53,29 @@ func (h *ServicePeriodPublicHandler) SetTrustedPublicState(uow platformport.Unit
 	return nil
 }
 
+func (h *ServicePeriodPublicHandler) SetPublicLeadQRCodeReader(reader channelport.PublicLeadQRCodeReader) error {
+	if h == nil || reader == nil {
+		return errors.New("public lead QR reader is required")
+	}
+	h.leadQR = reader
+	return nil
+}
+
+func (h *ServicePeriodPublicHandler) SetPublicMediaReader(media publicServicePeriodMediaReader) error {
+	if h == nil || media == nil {
+		return errors.New("public media reader is required")
+	}
+	h.media = media
+	return nil
+}
+
 func (h *ServicePeriodPublicHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if h == nil || h.products == nil || r.Method != http.MethodGet || r.URL.RawQuery != "" {
 		http.NotFound(w, r)
+		return
+	}
+	if strings.HasPrefix(r.URL.Path, "/api/h5/service-period-products/") {
+		h.detailMedia(w, r)
 		return
 	}
 	code, payment, ok := servicePeriodPublicCode(r.URL.EscapedPath())
@@ -59,7 +88,7 @@ func (h *ServicePeriodPublicHandler) ServeHTTP(w http.ResponseWriter, r *http.Re
 		http.NotFound(w, r)
 		return
 	}
-	public := publicProduct{ID: product.ID, Name: product.Name, PriceMinor: product.PriceMinor, Currency: product.Currency, PaymentPath: "/s/" + url.PathEscape(product.Code) + "/pay", BuyButtonText: "立即报名", ProductKind: "service_period", CouponTargetRef: "service_period:" + strconv.FormatInt(int64(product.ID), 10), ServicePeriodDurationDays: product.ServicePeriodDurationDays, Images: append([]string(nil), product.Images...)}
+	public := publicProduct{ID: product.ID, Name: product.Name, PriceMinor: product.PriceMinor, Currency: product.Currency, PaymentPath: "/s/" + url.PathEscape(product.Code) + "/pay", BuyButtonText: "立即报名", ProductKind: "service_period", CouponTargetRef: "service_period:" + strconv.FormatInt(int64(product.ID), 10), ServicePeriodDurationDays: product.ServicePeriodDurationDays, Images: publicDetailMedia(product.Code, product.DetailMedia)}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Security-Policy", "default-src 'self'; img-src 'self' https: data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
@@ -72,7 +101,7 @@ func (h *ServicePeriodPublicHandler) ServeHTTP(w http.ResponseWriter, r *http.Re
 		}
 		return
 	}
-	state := servicePeriodPublicState{DonorStyle: servicePeriodDonorStyles(), Available: true, Product: public, Status: "none", CTA: "立即报名"}
+	state := servicePeriodPublicState{DonorStyle: servicePeriodDonorStyles(), LeadQRModal: servicePeriodLeadQRModal(), LeadQRController: servicePeriodLeadQRController(), Available: true, Product: public, Status: "none", CTA: "立即报名"}
 	entitlement, found, entitlementErr := h.trustedEntitlement(r.Context(), r, product.ID)
 	if entitlementErr != nil {
 		http.Error(w, "service state unavailable", http.StatusServiceUnavailable)
@@ -92,9 +121,73 @@ func (h *ServicePeriodPublicHandler) ServeHTTP(w http.ResponseWriter, r *http.Re
 		default:
 			state.Status, state.CTA = "none", "立即报名"
 		}
+		if state.Status == "active" && !product.CompletionBlocksLeadQR && product.LeadChannelID > 0 && h.leadQR != nil {
+			lead, leadErr := h.leadQR.ReadPublicLeadQRCode(r.Context(), product.LeadChannelID)
+			if leadErr == nil && lead.URL != "" {
+				state.LeadQRURL, state.LeadQRTitle, state.LeadQRSubtitle = lead.URL, product.LeadQRTitle, product.LeadQRSubtitle
+			}
+		}
 	}
 	state.DonorScript = servicePeriodDonorScript(state)
 	_ = servicePeriodPublicPage.Execute(w, state)
+}
+
+func (h *ServicePeriodPublicHandler) detailMedia(w http.ResponseWriter, r *http.Request) {
+	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/h5/service-period-products/"), "/")
+	if len(parts) != 5 || parts[1] != "images" || parts[3] != "variants" || parts[4] != "original" {
+		http.NotFound(w, r)
+		return
+	}
+	code, err := url.PathUnescape(parts[0])
+	id, idErr := strconv.ParseInt(parts[2], 10, 64)
+	if err != nil || idErr != nil || id < 1 || h.media == nil {
+		http.NotFound(w, r)
+		return
+	}
+	product, readErr := h.products.ReadPublicServicePeriodByCode(r.Context(), code)
+	if readErr != nil {
+		http.NotFound(w, r)
+		return
+	}
+	allowed := false
+	for _, item := range product.DetailMedia {
+		if item.ImageID == id {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		http.NotFound(w, r)
+		return
+	}
+	exists, existErr := h.media.LocalImageExists(r.Context(), id)
+	if existErr != nil {
+		http.Error(w, "media unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	if !exists {
+		http.NotFound(w, r)
+		return
+	}
+	variant, variantErr := h.media.GetImageVariant(r.Context(), id, "original")
+	if variantErr != nil {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", variant.MediaType)
+	w.Header().Set("ETag", variant.ETag)
+	w.Header().Set("Cache-Control", "public, max-age=300")
+	_, _ = w.Write(variant.Content)
+}
+
+func publicDetailMedia(code string, media []productport.PublicDetailMedia) []string {
+	out := make([]string, 0, len(media))
+	for _, item := range media {
+		if item.ImageID > 0 {
+			out = append(out, "/api/h5/service-period-products/"+url.PathEscape(code)+"/images/"+strconv.FormatInt(item.ImageID, 10)+"/variants/original")
+		}
+	}
+	return out
 }
 
 func servicePeriodPublicCode(path string) (string, bool, bool) {

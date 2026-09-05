@@ -821,6 +821,12 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err = publicServicePeriodHandler.SetTrustedPublicState(uow, paymentSession, entitlements); err != nil {
 		return fail(err)
 	}
+	if err = publicServicePeriodHandler.SetPublicMediaReader(mediaService); err != nil {
+		return fail(err)
+	}
+	if err = publicServicePeriodHandler.SetPublicLeadQRCodeReader(channelPublicLeadQRCodeAdapter{catalog: channelCatalogService}); err != nil {
+		return fail(err)
+	}
 	h5OAuthService, err := paymenth5oauth.NewService(uow, paymenth5oauth.PostgreSQL{}, h5OAuthProvider, paymentSession)
 	if err != nil {
 		return fail(err)
@@ -1329,7 +1335,7 @@ func mountPublicProduct(next, products http.Handler) http.Handler {
 
 func mountPublicServicePeriod(next, products http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/s/") {
+		if strings.HasPrefix(r.URL.Path, "/s/") || strings.HasPrefix(r.URL.Path, "/api/h5/service-period-products/") {
 			products.ServeHTTP(w, r)
 			return
 		}

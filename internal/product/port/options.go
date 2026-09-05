@@ -69,6 +69,12 @@ type ProductTargetReader interface {
 // CheckoutProduct is the immutable minimum required to freeze a sale into an
 // Order. The Within method requires the caller's existing PostgreSQL UoW so a
 // concurrent lifecycle/price change cannot be observed across transactions.
+type PublicDetailMedia struct {
+	ImageID int64
+	Width   int32
+	Height  int32
+}
+
 type CheckoutProduct struct {
 	ID            ID
 	ProductType   ProductOptionType
@@ -80,6 +86,12 @@ type CheckoutProduct struct {
 	RequireMobile bool
 	// Images are public detail media owned by Product; checkout persists none of them.
 	Images []string
+	// DetailMedia is restricted to legacy-admin slices that Product owns.
+	DetailMedia            []PublicDetailMedia
+	LeadChannelID          int64
+	LeadQRTitle            string
+	LeadQRSubtitle         string
+	CompletionBlocksLeadQR bool
 	// ServicePeriodDurationDays is positive only for a service_period item.
 	// It is frozen by the Order checkout snapshot before payment begins.
 	ServicePeriodDurationDays int32

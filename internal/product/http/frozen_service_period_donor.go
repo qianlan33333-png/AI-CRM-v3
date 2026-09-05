@@ -17,7 +17,11 @@ import (
 //go:embed donor/service_period_public.py
 var frozenServicePeriodPublicRenderer string
 
+//go:embed donor/public_product_service.py
+var frozenPublicProductService string
+
 const frozenServicePeriodPublicRendererSHA256 = "1f145da6e4559ce6956d92ba499f2e332cc57a27537fab499c6039ed9132050e"
+const frozenPublicProductServiceSHA256 = "8fc6cb21cd49531b0c14ca25a955ad1fdfe90ca1f8c9a7d138038002b05ff875"
 
 // servicePeriodDonorStyles extracts the old renderer's own style block at
 // runtime.  Host-only QR wiring is substituted where the Python renderer
@@ -37,7 +41,7 @@ func servicePeriodDonorStyles() template.CSS {
 	css := frozenServicePeriodPublicRenderer[from : from+to]
 	css = strings.ReplaceAll(css, "{{", "{")
 	css = strings.ReplaceAll(css, "}}", "}")
-	css = strings.ReplaceAll(css, "{lead_qr_modal_styles()}", `.lead-qr-modal[hidden]{display:none}.lead-qr-modal{position:fixed;inset:0;z-index:30;background:rgba(0,0,0,.55);padding:24px}.lead-qr-modal-card{margin:auto;max-width:320px;background:#fff;border-radius:12px;padding:16px}.lead-qr-modal img{display:block;width:100%}`)
+	css = strings.ReplaceAll(css, "{lead_qr_modal_styles()}", frozenTripleQuoted("def lead_qr_modal_styles", frozenPublicProductService))
 	return template.CSS(css)
 }
 
@@ -65,9 +69,32 @@ func servicePeriodDonorScript(state servicePeriodPublicState) template.JS {
 	if state.RemainingDays > 0 {
 		entitlement["remaining_days"] = state.RemainingDays
 	}
-	payload, _ := json.Marshal(map[string]any{"ok": true, "available": state.Available, "entitlement": entitlement, "cta_text": state.CTA, "checkout_url": state.Product.PaymentPath})
+	payload, _ := json.Marshal(map[string]any{"ok": true, "available": state.Available, "entitlement": entitlement, "lead_qr": map[string]any{"qr_url": state.LeadQRURL, "title": state.LeadQRTitle, "subtitle": state.LeadQRSubtitle}, "cta_text": state.CTA, "checkout_url": state.Product.PaymentPath})
 	script = strings.ReplaceAll(script, "{state_json}", strings.ReplaceAll(string(payload), "</", "<\\/"))
 	script = strings.ReplaceAll(script, "{duration_days}", fmt.Sprintf("%d", state.Product.ServicePeriodDurationDays))
 	script = strings.ReplaceAll(script, "{price_yuan}", fmt.Sprintf("%.2f", float64(state.Product.PriceMinor)/100))
 	return template.JS(script)
+}
+
+func frozenTripleQuoted(marker, source string) string {
+	at := strings.Index(source, marker)
+	if at < 0 {
+		return ""
+	}
+	begin := strings.Index(source[at:], `return """`)
+	if begin < 0 {
+		return ""
+	}
+	begin += at + len(`return """`)
+	end := strings.Index(source[begin:], `"""`)
+	if end < 0 {
+		return ""
+	}
+	return source[begin : begin+end]
+}
+func servicePeriodLeadQRModal() template.HTML {
+	return template.HTML(frozenTripleQuoted("def render_lead_qr_modal", frozenPublicProductService))
+}
+func servicePeriodLeadQRController() template.HTML {
+	return template.HTML(frozenTripleQuoted("def lead_qr_modal_controller_script", frozenPublicProductService))
 }
