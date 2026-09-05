@@ -415,13 +415,51 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 		t.Fatalf("entered events created enrollments=%d intents=%d", enrollments, automaticEffects)
 	}
 
-	preview, err := runtimeService.CreateBroadcastPreview(ctx, packageID, 1)
-	if err != nil || preview.TargetCount != 2 {
-		t.Fatalf("preview=%+v err=%v", preview, err)
+	runtimeHandler, err := automationhttp.NewRuntimeHandler(runtimeService, automationAudienceSecurity{})
+	if err != nil {
+		t.Fatal(err)
 	}
-	manual, err := runtimeService.ConfirmRun(ctx, automationapp.RunConfirmCommand{PackageID: packageID, PackageVersion: preview.PackageVersion, SnapshotID: preview.SnapshotID, AgentID: preview.AgentID, AgentPublishedVersion: preview.AgentPublishedVersion, PreviewDigest: automationapp.PreviewDigestString(preview), Actor: staffID, IdempotencyKey: "audience-runtime-manual-0001"})
-	if err != nil || manual.TargetCount != 2 || manual.State != automationport.RunPendingReview || manual.AIPlanID < 1 {
-		t.Fatalf("manual=%+v err=%v", manual, err)
+	// These are the exact two requests issued by the frozen audience-detail
+	// page after its Preview and Confirm buttons are clicked. They exercise the
+	// real authenticated HTTP boundary and PostgreSQL transaction, rather than
+	// calling the RuntimeService directly.
+	previewRequest := httptest.NewRequest(http.MethodPost, "/api/admin/ai-audience/packages/"+automationAudienceInt(packageID)+"/broadcast-previews", nil)
+	previewResponse := httptest.NewRecorder()
+	runtimeHandler.ServeHTTP(previewResponse, previewRequest)
+	var preview struct {
+		SnapshotID             int64  `json:"snapshot_id"`
+		AgentID                int64  `json:"agent_id"`
+		AgentPublishedVersion  int64  `json:"agent_published_version"`
+		TargetCount            int    `json:"target_count"`
+		PreviewDigest          string `json:"preview_digest"`
+		ExpectedPackageVersion int64  `json:"expected_package_version"`
+	}
+	if previewResponse.Code != http.StatusOK || json.Unmarshal(previewResponse.Body.Bytes(), &preview) != nil || preview.TargetCount != 2 || preview.SnapshotID < 1 || preview.AgentID < 1 || preview.PreviewDigest == "" {
+		t.Fatalf("detail-page broadcast preview status=%d body=%s", previewResponse.Code, previewResponse.Body.String())
+	}
+	confirmBody, err := json.Marshal(map[string]any{"snapshot_id": preview.SnapshotID, "agent_id": preview.AgentID, "agent_published_version": preview.AgentPublishedVersion, "preview_digest": preview.PreviewDigest, "expected_package_version": preview.ExpectedPackageVersion})
+	if err != nil {
+		t.Fatal(err)
+	}
+	confirmRequest := httptest.NewRequest(http.MethodPost, "/api/admin/ai-audience/packages/"+automationAudienceInt(packageID)+"/runs", bytes.NewReader(confirmBody))
+	confirmRequest.Header.Set("Content-Type", "application/json")
+	confirmRequest.Header.Set("Idempotency-Key", "audience-runtime-manual-0001")
+	confirmResponse := httptest.NewRecorder()
+	runtimeHandler.ServeHTTP(confirmResponse, confirmRequest)
+	var confirmed struct {
+		Run struct {
+			ID          int64                   `json:"id"`
+			State       automationport.RunState `json:"state"`
+			AIPlanID    int64                   `json:"ai_plan_id"`
+			TargetCount int64                   `json:"target_count"`
+		} `json:"run"`
+	}
+	if confirmResponse.Code != http.StatusAccepted || json.Unmarshal(confirmResponse.Body.Bytes(), &confirmed) != nil {
+		t.Fatalf("detail-page broadcast confirmation status=%d body=%s", confirmResponse.Code, confirmResponse.Body.String())
+	}
+	manual := confirmed.Run
+	if manual.TargetCount != 2 || manual.State != automationport.RunPendingReview || manual.AIPlanID < 1 {
+		t.Fatalf("manual=%+v", manual)
 	}
 	plan, err := aiService.GetPlan(ctx, aiassistantport.PlanID(manual.AIPlanID))
 	if err != nil || plan.State != aiassistantport.PlanPendingReview || plan.TargetCount != 2 {
@@ -453,15 +491,22 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 		return accepted == 1 && unknown == 1 && wecomServer.Calls() == 4 && wecomServer.Uploads() == 12
 	}, func() string { return automationAudienceRuntimeDiagnostics(ctx, native, provider, frozenPayloads) })
 	stopRuntime()
-	replayed, err := runtimeService.ConfirmRun(ctx, automationapp.RunConfirmCommand{PackageID: packageID, PackageVersion: preview.PackageVersion, SnapshotID: preview.SnapshotID, AgentID: preview.AgentID, AgentPublishedVersion: preview.AgentPublishedVersion, PreviewDigest: automationapp.PreviewDigestString(preview), Actor: staffID, IdempotencyKey: "audience-runtime-manual-0001"})
-	if err != nil || replayed.ID != manual.ID || replayed.AIPlanID != manual.AIPlanID || wecomServer.Calls() != 4 || wecomServer.Uploads() != 12 {
-		t.Fatalf("manual replay=%+v provider calls=%d uploads=%d err=%v", replayed, wecomServer.Calls(), wecomServer.Uploads(), err)
+	replayRequest := httptest.NewRequest(http.MethodPost, "/api/admin/ai-audience/packages/"+automationAudienceInt(packageID)+"/runs", bytes.NewReader(confirmBody))
+	replayRequest.Header.Set("Content-Type", "application/json")
+	replayRequest.Header.Set("Idempotency-Key", "audience-runtime-manual-0001")
+	replayResponse := httptest.NewRecorder()
+	runtimeHandler.ServeHTTP(replayResponse, replayRequest)
+	var replayed struct {
+		Run struct {
+			ID       int64 `json:"id"`
+			AIPlanID int64 `json:"ai_plan_id"`
+		} `json:"run"`
+	}
+	if replayResponse.Code != http.StatusAccepted || json.Unmarshal(replayResponse.Body.Bytes(), &replayed) != nil || replayed.Run.ID != manual.ID || replayed.Run.AIPlanID != manual.AIPlanID || wecomServer.Calls() != 4 || wecomServer.Uploads() != 12 {
+		t.Fatalf("manual HTTP replay status=%d body=%s provider calls=%d uploads=%d", replayResponse.Code, replayResponse.Body.String(), wecomServer.Calls(), wecomServer.Uploads())
 	}
 
-	readHandler, err := automationhttp.NewRuntimeHandler(runtimeService, automationAudienceSecurity{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	readHandler := runtimeHandler
 	var before, after int
 	if err = native.QueryRow(ctx, `SELECT count(*) FROM automation_runtime_audit_events`).Scan(&before); err != nil {
 		t.Fatal(err)
@@ -687,7 +732,7 @@ func (s *automationAudienceWeComServer) handle(w http.ResponseWriter, r *http.Re
 			http.Error(w, "bad message body", http.StatusBadRequest)
 			return
 		}
-		validAttachments := len(body.Attachments) == 4 && body.Attachments[0].MessageType == "image" && body.Attachments[0].Image.MediaID != "" && body.Attachments[1].MessageType == "miniprogram" && body.Attachments[1].MiniProgram.Title == "Runtime card" && body.Attachments[1].MiniProgram.PicMediaID != "" && body.Attachments[1].MiniProgram.AppID == "wx-runtime" && body.Attachments[1].MiniProgram.Page == "pages/runtime" && body.Attachments[2].MessageType == "file" && body.Attachments[2].File.MediaID != "" && body.Attachments[3].MessageType == "link" && body.Attachments[3].Link.Title == "Join runtime group" && body.Attachments[3].Link.Desc == "Runtime group" && body.Attachments[3].Link.URL == "https://work.weixin.qq.com/gm/runtime"
+		validAttachments := len(body.Attachments) == 4 && body.Attachments[0].MessageType == "image" && body.Attachments[0].Image.MediaID != "" && body.Attachments[1].MessageType == "miniprogram" && body.Attachments[1].MiniProgram.Title == "Runtime card revised" && body.Attachments[1].MiniProgram.PicMediaID != "" && body.Attachments[1].MiniProgram.AppID == "wx-runtime" && body.Attachments[1].MiniProgram.Page == "pages/runtime" && body.Attachments[2].MessageType == "file" && body.Attachments[2].File.MediaID != "" && body.Attachments[3].MessageType == "link" && body.Attachments[3].Link.Title == "Join runtime group" && body.Attachments[3].Link.Desc == "Runtime group" && body.Attachments[3].Link.URL == "https://work.weixin.qq.com/gm/runtime"
 		if !strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") || body.ChatType != "single" || len(body.External) != 1 || (body.External[0] != "runtime-external-1" && body.External[0] != "runtime-external-2") || body.Sender != "sender-a" || body.Text.Content != "runtime hello" || !validAttachments {
 			s.record("invalid signed message body")
 			http.Error(w, "bad message body", http.StatusBadRequest)
