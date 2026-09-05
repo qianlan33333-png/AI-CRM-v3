@@ -8,3 +8,4 @@ v3 从新的 Schema 基线开始，不复制 production 或 V2 的完整 migrati
 - `0066_channel_welcome_intents.sql`：Channel 回调欢迎语意图与首次 20 秒发送期限；复用 External Effects/River，并仅扩展既有效果作业队列约束以隔离欢迎语。
 - `0074_survey_external_operation_execution_facts.sql`：Survey 外推回执记录 External Effects sink 已知的调用、结果和尝试事实；旧/历史行保留 NULL（未知），forward-only，不以默认 false 覆盖历史事实。
 - `0081_group_ops_webhook_unconfigured_reference.sql`：Group Ops 未配置 webhook 的空 reference 可由多个本地计划共享；非空 opaque reference 仍全局唯一；forward-only，不变更任何已配置 webhook。
+- `0082_group_ops_history_import.sql`：Group Ops 的四类 V1 只读历史投影导入批次与逐行摘要/隔离收据；保留文本来源员工和群标识，不创建当前计划、任务或外部效果；forward-only。

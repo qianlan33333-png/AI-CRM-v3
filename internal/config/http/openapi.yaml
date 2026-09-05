@@ -4580,8 +4580,8 @@ components:
         name: {type: string}
         status: {const: archived}
         revision: {const: 1}
-        created_by: {$ref: "#/components/schemas/PositiveID"}
-        updated_by: {$ref: "#/components/schemas/PositiveID"}
+        created_by: {type: [integer, "null"], format: int64, minimum: 1}
+        updated_by: {type: [integer, "null"], format: int64, minimum: 1}
         created_at: {type: string, format: date-time}
         updated_at: {type: string, format: date-time}
         source_plan_id: {$ref: "#/components/schemas/PositiveID"}
@@ -4627,7 +4627,7 @@ components:
     GroupOpsHistoryNode:
       type: object
       additionalProperties: false
-      required: [id, source_node_id, source_plan_id, plan_id, day_index, trigger_time, sort_order, original_status, content_package, created_at, updated_at]
+      required: [id, source_node_id, source_plan_id, plan_id, day_index, trigger_time, sort_order, original_status, action_title, text_content, attachments, content_package, created_at, updated_at]
       properties:
         id: {$ref: "#/components/schemas/PositiveID"}
         source_node_id: {$ref: "#/components/schemas/PositiveID"}
@@ -4637,6 +4637,9 @@ components:
         trigger_time: {type: string}
         sort_order: {type: integer, format: int32, minimum: 0}
         original_status: {type: string}
+        action_title: {type: string}
+        text_content: {type: string}
+        attachments: {type: array, items: {type: object, additionalProperties: true}}
         content_package: {type: object, additionalProperties: true}
         created_at: {type: string, format: date-time}
         updated_at: {type: string, format: date-time}
