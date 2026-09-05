@@ -139,7 +139,7 @@ func (r *Repository) SetPolicyLifecycle(ctx context.Context, id, expected, actor
 	if e != nil {
 		return automationdomain.Policy{}, e
 	}
-	p, e := scanPolicy(t.QueryRow(ctx, `UPDATE automation_policies SET lifecycle=$4,version=version+1,updated_by=$3,updated_at=$5,archived_at=CASE WHEN $4='archived' THEN $5 ELSE NULL END WHERE id=$1 AND version=$2 AND lifecycle<>'archived' RETURNING `+policyColumns, id, expected, actor, target, now))
+	p, e := scanPolicy(t.QueryRow(ctx, `UPDATE automation_policies SET lifecycle=$4,version=version+1,updated_by=$3,updated_at=$5::timestamptz,archived_at=CASE WHEN $4='archived' THEN $5::timestamptz ELSE NULL::timestamptz END WHERE id=$1 AND version=$2 AND lifecycle<>'archived' RETURNING `+policyColumns, id, expected, actor, target, now))
 	if errors.Is(e, automationapp.ErrRuntimeNotFound) {
 		return p, automationapp.ErrRuntimeConflict
 	}
