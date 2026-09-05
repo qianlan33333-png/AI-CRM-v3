@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -162,11 +163,16 @@ func reconcile(ctx context.Context, pool *platformpostgres.Pool, manifest orderm
 		}
 		subjectCustomers[subject.SourceKey] = subjectCustomer
 	}
-	var canonicalSubjects, quarantinedIdentities int64
-	if err = pool.Native().QueryRow(ctx, `SELECT count(*) FILTER (WHERE outcome='canonical'),count(*) FILTER (WHERE outcome='quarantined') FROM identity_history_import_receipts WHERE run_key=$1`, manifest.RunKey).Scan(&canonicalSubjects, &quarantinedIdentities); err != nil {
+	identitySubjects, identityQuarantines, err := identityReceiptExpectations(manifest, subjectCustomers)
+	if err != nil {
 		return err
 	}
-	full, err := (ordermigration.PostgreSQLRuns{Pool: pool.Native()}).VerifyFull(ctx, manifest, ordermigration.FullReconciliationInput{SubjectCustomerIDs: subjectCustomers})
+	identityChecks, err := (identitymigration.PostgreSQLReceiptVerifier{Pool: pool.Native()}).Verify(ctx, manifest.RunKey, identitySubjects, identityQuarantines)
+	if err != nil {
+		return err
+	}
+	runs := ordermigration.PostgreSQLRuns{Pool: pool.Native()}
+	full, err := runs.VerifyFull(ctx, manifest, ordermigration.FullReconciliationInput{SubjectCustomerIDs: subjectCustomers})
 	if err != nil {
 		return err
 	}
@@ -179,17 +185,52 @@ func reconcile(ctx context.Context, pool *platformpostgres.Pool, manifest orderm
 		return err
 	}
 	summary := manifest.Summary()
-	if resolvedIdentities != summary.IdentityRows || canonicalSubjects != int64(summary.SubjectRows) || quarantinedIdentities != int64(summary.IdentityQuarantineRows) || full.Orders != int64(summary.OrderRows) || paymentChecks.Payments != int64(summary.PaymentRows) || paymentChecks.Refunds != int64(summary.RefundRows) || full.AmountMinor != summary.AmountMinor || paymentChecks.RefundMinor != summary.RefundMinor {
+	if resolvedIdentities != summary.IdentityRows || identityChecks.Canonical != int64(summary.SubjectRows) || identityChecks.Quarantined != int64(summary.IdentityQuarantineRows) || full.Orders != int64(summary.OrderRows) || paymentChecks.Payments != int64(summary.PaymentRows) || paymentChecks.Refunds != int64(summary.RefundRows) || full.AmountMinor != summary.AmountMinor || paymentChecks.RefundMinor != summary.RefundMinor {
 		return ordermigration.ErrReconciliationMismatch
 	}
-	result, err := pool.Native().Exec(ctx, `UPDATE order_import_runs SET status='reconciled',completed_at=clock_timestamp() WHERE run_key=$1 AND source_manifest_digest=$2 AND status IN ('applied','reconciled')`, manifest.RunKey, manifest.Digest[:])
-	if err != nil || result.RowsAffected() != 1 {
-		if err != nil {
-			return err
-		}
-		return errors.New("commerce reconciliation run state mismatch")
+	if err = runs.MarkReconciled(ctx, manifest); err != nil {
+		return err
 	}
-	return printJSON(map[string]any{"mode": "reconcile", "matched": true, "subjects": canonicalSubjects, "identities": resolvedIdentities, "identity_quarantines": quarantinedIdentities, "orders": full.Orders, "payments": paymentChecks.Payments, "refunds": paymentChecks.Refunds, "amount_minor": full.AmountMinor, "refund_minor": paymentChecks.RefundMinor, "checked_at": time.Now().UTC()})
+	return printJSON(map[string]any{"mode": "reconcile", "matched": true, "subjects": identityChecks.Canonical, "identities": resolvedIdentities, "identity_quarantines": identityChecks.Quarantined, "orders": full.Orders, "payments": paymentChecks.Payments, "refunds": paymentChecks.Refunds, "amount_minor": full.AmountMinor, "refund_minor": paymentChecks.RefundMinor, "checked_at": time.Now().UTC()})
+}
+
+func identityReceiptExpectations(manifest ordermigration.Manifest, subjectCustomers map[string]int64) ([]identitymigration.SubjectReceiptExpectation, []identitymigration.QuarantineReceiptExpectation, error) {
+	identityByKey := make(map[string]ordermigration.IdentityRow, len(manifest.Identities))
+	for _, row := range manifest.Identities {
+		identityByKey[row.SourceKey] = row
+	}
+	subjects := make([]identitymigration.SubjectReceiptExpectation, 0, len(manifest.Subjects))
+	for _, row := range manifest.Subjects {
+		customerID := subjectCustomers[row.SourceKey]
+		if customerID < 1 {
+			return nil, nil, ordermigration.ErrReconciliationMismatch
+		}
+		identityRows := make([]ordermigration.IdentityRow, 0, len(row.IdentityKeys))
+		for _, key := range row.IdentityKeys {
+			identity, ok := identityByKey[key]
+			if !ok {
+				return nil, nil, ordermigration.ErrReconciliationMismatch
+			}
+			identityRows = append(identityRows, identity)
+		}
+		raw, marshalErr := json.Marshal(struct {
+			Subject ordermigration.SubjectRow    `json:"subject"`
+			Rows    []ordermigration.IdentityRow `json:"identities"`
+		}{Subject: row, Rows: identityRows})
+		if marshalErr != nil {
+			return nil, nil, marshalErr
+		}
+		subjects = append(subjects, identitymigration.SubjectReceiptExpectation{SourceKey: row.SourceKey, SourceDigest: sha256.Sum256(raw), CustomerID: customerID, IdentityCount: len(row.IdentityKeys)})
+	}
+	quarantines := make([]identitymigration.QuarantineReceiptExpectation, 0, len(manifest.IdentityQuarantines))
+	for _, row := range manifest.IdentityQuarantines {
+		raw, marshalErr := json.Marshal(row)
+		if marshalErr != nil {
+			return nil, nil, marshalErr
+		}
+		quarantines = append(quarantines, identitymigration.QuarantineReceiptExpectation{SourceKey: row.SourceKey, SourceDigest: sha256.Sum256(raw), ReasonCode: row.ReasonCode, EvidenceDigest: row.EvidenceDigest})
+	}
+	return subjects, quarantines, nil
 }
 
 func paymentHistoryFacts(manifest ordermigration.Manifest, orderIDs map[string]int64, subjectCustomers map[string]int64, identities map[string]historyIdentityResolution) ([]int64, []paymentmigration.HistoricalPaymentFact, []paymentmigration.HistoricalRefundFact, error) {

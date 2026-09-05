@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -73,5 +75,27 @@ func TestPaymentHistoryFactsComposeOnlyVerifiedOwnerResults(t *testing.T) {
 	}
 	if _, _, _, err = paymentHistoryFacts(manifest, orderIDs, map[string]int64{"subject-1": 7}, map[string]historyIdentityResolution{}); !errors.Is(err, ordermigration.ErrReconciliationMismatch) {
 		t.Fatalf("unresolved payment identity err=%v", err)
+	}
+}
+
+func TestIdentityReceiptExpectationsBindFrozenSubjectRowsAndResolvedRoots(t *testing.T) {
+	manifest := ordermigration.Manifest{
+		Identities:          []ordermigration.IdentityRow{{SourceKey: "identity-1", Kind: "mp_openid", Scope: "wechat-app:app", Value: "opaque", Source: "provider-history:commerce"}},
+		Subjects:            []ordermigration.SubjectRow{{SourceKey: "subject-1", IdentityKeys: []string{"identity-1"}}},
+		IdentityQuarantines: []ordermigration.IdentityQuarantineRow{{SourceKey: "quarantine-1", ReasonCode: "scope_missing", EvidenceDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}},
+	}
+	subjects, quarantines, err := identityReceiptExpectations(manifest, map[string]int64{"subject-1": 9})
+	if err != nil || len(subjects) != 1 || len(quarantines) != 1 || subjects[0].CustomerID != 9 || subjects[0].IdentityCount != 1 {
+		t.Fatalf("subjects=%+v quarantines=%+v err=%v", subjects, quarantines, err)
+	}
+	raw, err := json.Marshal(struct {
+		Subject ordermigration.SubjectRow    `json:"subject"`
+		Rows    []ordermigration.IdentityRow `json:"identities"`
+	}{Subject: manifest.Subjects[0], Rows: manifest.Identities})
+	if err != nil || subjects[0].SourceDigest != sha256.Sum256(raw) {
+		t.Fatalf("subject digest=%x expected=%x err=%v", subjects[0].SourceDigest, sha256.Sum256(raw), err)
+	}
+	if _, _, err = identityReceiptExpectations(manifest, map[string]int64{}); !errors.Is(err, ordermigration.ErrReconciliationMismatch) {
+		t.Fatalf("missing resolved root err=%v", err)
 	}
 }

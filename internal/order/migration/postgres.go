@@ -42,12 +42,25 @@ func (store PostgreSQLRuns) ReconcileOrders(ctx context.Context, manifest Manife
 	if err != nil {
 		return result, err
 	}
-	command, err := store.Pool.Exec(ctx, `UPDATE order_import_runs SET status='reconciled',completed_at=clock_timestamp() WHERE run_key=$1 AND source_manifest_digest=$2 AND status IN ('applied','reconciled')`, manifest.RunKey, manifest.Digest[:])
-	if err != nil || command.RowsAffected() != 1 {
-		if err != nil {
-			return result, err
-		}
-		return result, ErrRunConflict
+	if err = store.MarkReconciled(ctx, manifest); err != nil {
+		return result, err
 	}
 	return result, nil
+}
+
+// MarkReconciled changes only the Order-owned run ledger after every Owner's
+// read-only verifier has accepted the approved snapshot. The composition root
+// calls this method rather than writing order_import_runs itself.
+func (store PostgreSQLRuns) MarkReconciled(ctx context.Context, manifest Manifest) error {
+	if store.Pool == nil {
+		return errors.New("order migration store is not configured")
+	}
+	command, err := store.Pool.Exec(ctx, `UPDATE order_import_runs SET status='reconciled',completed_at=clock_timestamp() WHERE run_key=$1 AND source_manifest_digest=$2 AND status IN ('applied','reconciled')`, manifest.RunKey, manifest.Digest[:])
+	if err != nil {
+		return err
+	}
+	if command.RowsAffected() != 1 {
+		return ErrRunConflict
+	}
+	return nil
 }
