@@ -73,7 +73,12 @@ func (h *ServicePeriodPublicHandler) ServeHTTP(w http.ResponseWriter, r *http.Re
 		return
 	}
 	state := servicePeriodPublicState{DonorStyle: servicePeriodDonorStyles(), Available: true, Product: public, Status: "none", CTA: "立即报名"}
-	if entitlement, found := h.trustedEntitlement(r.Context(), r, product.ID); found {
+	entitlement, found, entitlementErr := h.trustedEntitlement(r.Context(), r, product.ID)
+	if entitlementErr != nil {
+		http.Error(w, "service state unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	if found {
 		state.Status, state.EndAt = entitlement.Status, entitlement.EndAt.UTC()
 		if state.Status == "active" && !state.EndAt.After(h.now().UTC()) {
 			state.Status = "expired"
@@ -111,34 +116,29 @@ func servicePeriodPublicCode(path string) (string, bool, bool) {
 	return code, payment, true
 }
 
-func (h *ServicePeriodPublicHandler) trustedEntitlement(ctx context.Context, r *http.Request, productID productport.ID) (orderport.Entitlement, bool) {
+func (h *ServicePeriodPublicHandler) trustedEntitlement(ctx context.Context, r *http.Request, productID productport.ID) (orderport.Entitlement, bool, error) {
 	if h == nil || h.uow == nil || h.sessions == nil || h.entitlements == nil {
-		return orderport.Entitlement{}, false
+		return orderport.Entitlement{}, false, nil
 	}
 	cookie, err := r.Cookie(paymentport.TrustedSessionCookieName)
 	if err != nil || cookie.Value == "" {
-		return orderport.Entitlement{}, false
+		return orderport.Entitlement{}, false, nil
 	}
 	var actor paymentport.SessionActor
-	var page orderport.EntitlementPage
+	var item orderport.Entitlement
+	var found bool
 	err = h.uow.Within(ctx, func(txctx context.Context) error {
-		var lookupErr error
-		actor, lookupErr = h.sessions.LookupWithin(txctx, cookie.Value, h.now().UTC())
-		if lookupErr != nil || actor.PayerCustomerID < 1 {
+		actor, err = h.sessions.LookupWithin(txctx, cookie.Value, h.now().UTC())
+		if err != nil || actor.PayerCustomerID < 1 {
 			return errors.New("trusted session unavailable")
 		}
-		page, lookupErr = h.entitlements.ListCustomerEntitlements(txctx, actor.PayerCustomerID, 100)
-		return lookupErr
+		item, found, err = h.entitlements.GetCustomerServicePeriodEntitlement(txctx, actor.PayerCustomerID, int64(productID))
+		return err
 	})
 	if err != nil {
-		return orderport.Entitlement{}, false
+		return orderport.Entitlement{}, false, err
 	}
-	for _, item := range page.Items {
-		if item.ServiceProductID == int64(productID) {
-			return item, true
-		}
-	}
-	return orderport.Entitlement{}, false
+	return item, found, nil
 }
 
 func remainingServicePeriodDays(now, end time.Time) int32 {

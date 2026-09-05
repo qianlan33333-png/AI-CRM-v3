@@ -14,6 +14,7 @@ import (
 
 type EntitlementStore interface {
 	ListCustomerEntitlements(context.Context, int64, int32) (orderport.EntitlementPage, error)
+	GetCustomerServicePeriodEntitlement(context.Context, int64, int64) (orderport.Entitlement, bool, error)
 	FindEntitlementReceipt(context.Context, [32]byte) (orderport.Entitlement, [32]byte, string, bool, error)
 	UpdateEntitlementRemark(context.Context, orderport.RemarkCommand, [32]byte, [32]byte, time.Time) (orderport.Entitlement, error)
 	RecordEntitlementConflict(context.Context, orderport.RemarkCommand, [32]byte, [32]byte, orderport.Entitlement, time.Time) error
@@ -53,6 +54,20 @@ func (s *EntitlementApplication) ListCustomerEntitlements(ctx context.Context, c
 		return err
 	})
 	return page, err
+}
+
+func (s *EntitlementApplication) GetCustomerServicePeriodEntitlement(ctx context.Context, customerID, serviceProductID int64) (orderport.Entitlement, bool, error) {
+	if s == nil || customerID < 1 || serviceProductID < 1 {
+		return orderport.Entitlement{}, false, orderport.ErrConflict
+	}
+	var item orderport.Entitlement
+	var found bool
+	err := s.uow.Within(ctx, func(txctx context.Context) error {
+		var readErr error
+		item, found, readErr = s.store.GetCustomerServicePeriodEntitlement(txctx, customerID, serviceProductID)
+		return readErr
+	})
+	return item, found, err
 }
 
 func (s *EntitlementApplication) UpdateEntitlementRemark(ctx context.Context, command orderport.RemarkCommand) (orderport.Entitlement, error) {

@@ -35,6 +35,9 @@ type RemarkCommand struct {
 
 type EntitlementService interface {
 	ListCustomerEntitlements(context.Context, int64, int32) (EntitlementPage, error)
+	// GetCustomerServicePeriodEntitlement is an exact, bounded public-state read.
+	// It avoids inferring a product row from a capped customer entitlement list.
+	GetCustomerServicePeriodEntitlement(context.Context, int64, int64) (Entitlement, bool, error)
 	UpdateEntitlementRemark(context.Context, RemarkCommand) (Entitlement, error)
 }
 

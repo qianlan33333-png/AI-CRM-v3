@@ -62,6 +62,25 @@ func (r *Repository) FindEntitlementReceipt(ctx context.Context, key [32]byte) (
 	return item, d, outcome, true, nil
 }
 
+func (r *Repository) GetCustomerServicePeriodEntitlement(ctx context.Context, customerID, serviceProductID int64) (orderport.Entitlement, bool, error) {
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return orderport.Entitlement{}, false, err
+	}
+	var item orderport.Entitlement
+	err = tx.QueryRow(ctx, `SELECT id,customer_id,service_product_id,product_name,last_order_id,status,start_at,end_at,remark,version,updated_at
+		FROM order_service_entitlements WHERE customer_id=$1 AND service_product_id=$2
+		ORDER BY end_at DESC,id DESC LIMIT 1`, customerID, serviceProductID).
+		Scan(&item.ID, &item.CustomerID, &item.ServiceProductID, &item.ProductName, &item.LastOrderID, &item.Status, &item.StartAt, &item.EndAt, &item.Remark, &item.Version, &item.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return orderport.Entitlement{}, false, nil
+	}
+	if err != nil {
+		return orderport.Entitlement{}, false, err
+	}
+	return item, true, nil
+}
+
 func (r *Repository) UpdateEntitlementRemark(ctx context.Context, command orderport.RemarkCommand, key, payload [32]byte, at time.Time) (orderport.Entitlement, error) {
 	tx, err := platformpostgres.RequireTransaction(ctx)
 	if err != nil {

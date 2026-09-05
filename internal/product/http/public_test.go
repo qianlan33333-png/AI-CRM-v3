@@ -150,6 +150,17 @@ func (stub servicePeriodEntitlementStub) ListCustomerEntitlements(_ context.Cont
 	}
 	return stub.page, nil
 }
+func (stub servicePeriodEntitlementStub) GetCustomerServicePeriodEntitlement(_ context.Context, customerID, productID int64) (orderport.Entitlement, bool, error) {
+	if customerID != 11 {
+		return orderport.Entitlement{}, false, errors.New("wrong customer")
+	}
+	for _, item := range stub.page.Items {
+		if item.ServiceProductID == productID {
+			return item, true, nil
+		}
+	}
+	return orderport.Entitlement{}, false, nil
+}
 func (servicePeriodEntitlementStub) UpdateEntitlementRemark(context.Context, orderport.RemarkCommand) (orderport.Entitlement, error) {
 	return orderport.Entitlement{}, errors.New("unused")
 }
