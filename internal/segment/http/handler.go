@@ -62,6 +62,8 @@ type Handler struct {
 	owners          accessport.AudienceOwnerResolver
 	ownerReferences accessport.AudienceOwnerReferenceReader
 	products        AudienceProductReferenceResolver
+	channels        AudienceChannelReferenceResolver
+	radars          AudienceRadarReferenceResolver
 }
 type AudienceProductReferenceResolver interface {
 	ResolveAudienceProduct(context.Context, string) (string, bool, error)
@@ -69,6 +71,22 @@ type AudienceProductReferenceResolver interface {
 
 func (h *Handler) BindAudienceProductReferences(resolver AudienceProductReferenceResolver) {
 	h.products = resolver
+}
+
+type AudienceChannelReferenceResolver interface {
+	ResolveAudienceChannel(context.Context, string) (string, bool, error)
+}
+
+func (h *Handler) BindAudienceChannelReferences(resolver AudienceChannelReferenceResolver) {
+	h.channels = resolver
+}
+
+type AudienceRadarReferenceResolver interface {
+	ResolveAudienceRadar(context.Context, string) (string, bool, error)
+}
+
+func (h *Handler) BindAudienceRadarReferences(resolver AudienceRadarReferenceResolver) {
+	h.radars = resolver
 }
 
 var (
@@ -567,6 +585,14 @@ func (h *Handler) normalizeDefinitionReferences(ctx context.Context, raw json.Ra
 	if err != nil {
 		return nil, err
 	}
+	resolved, err = h.normalizeChannelReferences(ctx, resolved)
+	if err != nil {
+		return nil, err
+	}
+	resolved, err = h.normalizeRadarReferences(ctx, resolved)
+	if err != nil {
+		return nil, err
+	}
 	return h.normalizeOwnerUserIDs(ctx, resolved)
 }
 
@@ -611,6 +637,62 @@ func (h *Handler) normalizeProductReferences(ctx context.Context, raw json.RawMe
 		return nil, errReferenceInvalid
 	}
 	definition.Parameters["product_codes"] = encoded
+	return marshalNormalizedOwnerDefinition(raw, definition.Parameters)
+}
+
+func (h *Handler) normalizeChannelReferences(ctx context.Context, raw json.RawMessage) (json.RawMessage, error) {
+	return normalizeReferenceList(ctx, raw, "channel_entry", "channel_codes", h.channels != nil, func(ctx context.Context, value string) (string, bool, error) {
+		return h.channels.ResolveAudienceChannel(ctx, value)
+	})
+}
+
+func (h *Handler) normalizeRadarReferences(ctx context.Context, raw json.RawMessage) (json.RawMessage, error) {
+	return normalizeReferenceList(ctx, raw, "radar_first_click_elapsed", "radar_ids", h.radars != nil, func(ctx context.Context, value string) (string, bool, error) {
+		return h.radars.ResolveAudienceRadar(ctx, value)
+	})
+}
+
+func normalizeReferenceList(ctx context.Context, raw json.RawMessage, templateKey, parameter string, available bool, resolve func(context.Context, string) (string, bool, error)) (json.RawMessage, error) {
+	var definition struct {
+		TemplateKey string                     `json:"template_key"`
+		Parameters  map[string]json.RawMessage `json:"parameters"`
+	}
+	if err := json.Unmarshal(raw, &definition); err != nil || definition.Parameters == nil {
+		return nil, errReferenceInvalid
+	}
+	if definition.TemplateKey != templateKey {
+		return raw, nil
+	}
+	var values []string
+	if err := json.Unmarshal(definition.Parameters[parameter], &values); err != nil || len(values) == 0 || len(values) > 100 {
+		return nil, errReferenceInvalid
+	}
+	if !available {
+		return nil, errReferenceUnavailable
+	}
+	resolved := make([]string, 0, len(values))
+	seen := map[string]bool{}
+	for _, value := range values {
+		if value == "" || strings.TrimSpace(value) != value {
+			return nil, errReferenceInvalid
+		}
+		canonical, found, err := resolve(ctx, value)
+		if err != nil {
+			return nil, errReferenceUnavailable
+		}
+		if !found || canonical == "" {
+			return nil, errReferenceUnknown
+		}
+		if !seen[canonical] {
+			seen[canonical] = true
+			resolved = append(resolved, canonical)
+		}
+	}
+	encoded, err := json.Marshal(resolved)
+	if err != nil {
+		return nil, errReferenceInvalid
+	}
+	definition.Parameters[parameter] = encoded
 	return marshalNormalizedOwnerDefinition(raw, definition.Parameters)
 }
 

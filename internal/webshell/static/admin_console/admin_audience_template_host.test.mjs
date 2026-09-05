@@ -148,26 +148,26 @@ await saveTemplate("paid_order", () => {
   if (fieldInput("products").value !== "course-v3" || fieldInput("owner_userids").value !== "bob") throw new Error("paid references or owner did not reopen");
 });
 await saveTemplate("channel_entry", () => {
-  fieldInput("channels").value = "channel-v3";
+  fieldInput("channels").value = "渠道标题";
   fieldInput("entered_days_min").value = "2";
   fieldInput("entered_days_max").value = "3";
   setSpecifiedOwner();
 }, (definition) => {
   const parameters = definition.parameters;
-  if (definition.template_key !== "channel_entry" || parameters.channel_codes.join(",") !== "channel-v3" || parameters.entered_days_min !== 2 || parameters.entered_days_max !== 3 || parameters.owner_userids.join(",") !== "bob") throw new Error(`channel parameters=${JSON.stringify(definition)}`);
+  if (definition.template_key !== "channel_entry" || parameters.channel_codes.join(",") !== "渠道标题" || parameters.entered_days_min !== 2 || parameters.entered_days_max !== 3 || parameters.owner_userids.join(",") !== "bob") throw new Error(`channel parameters=${JSON.stringify(definition)}`);
 }, () => {
-  if (fieldInput("channels").value !== "channel-v3" || fieldInput("entered_days_min").value !== "2" || fieldInput("owner_userids").value !== "bob") throw new Error("channel references or owner did not reopen");
+  if (fieldInput("channels").value !== "渠道标题" || fieldInput("entered_days_min").value !== "2" || fieldInput("owner_userids").value !== "bob") throw new Error("channel references or owner did not reopen");
 });
 await saveTemplate("radar_first_click_elapsed", () => {
-  fieldInput("radars").value = "88";
+  fieldInput("radars").value = "雷达标题";
   fieldInput("elapsed_min").value = "3";
   fieldInput("elapsed_max").value = "4";
   setSpecifiedOwner();
 }, (definition) => {
   const parameters = definition.parameters;
-  if (definition.template_key !== "radar_first_click_elapsed" || parameters.radar_ids.join(",") !== "88" || parameters.elapsed_min !== 3 || parameters.elapsed_max !== 4 || parameters.owner_userids.join(",") !== "bob") throw new Error(`radar parameters=${JSON.stringify(definition)}`);
+  if (definition.template_key !== "radar_first_click_elapsed" || parameters.radar_ids.join(",") !== "雷达标题" || parameters.elapsed_min !== 3 || parameters.elapsed_max !== 4 || parameters.owner_userids.join(",") !== "bob") throw new Error(`radar parameters=${JSON.stringify(definition)}`);
 }, () => {
-  if (fieldInput("radars").value !== "88" || fieldInput("elapsed_max").value !== "4" || fieldInput("owner_userids").value !== "bob") throw new Error("radar references or owner did not reopen");
+  if (fieldInput("radars").value !== "雷达标题" || fieldInput("elapsed_max").value !== "4" || fieldInput("owner_userids").value !== "bob") throw new Error("radar references or owner did not reopen");
 });
 await saveTemplate("member_usage_status", () => {
   fieldInput("service_period").value = "expired";

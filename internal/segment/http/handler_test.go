@@ -73,6 +73,20 @@ func (s productReferenceStub) ResolveAudienceProduct(_ context.Context, value st
 	return code, ok, nil
 }
 
+type channelReferenceStub struct{ values map[string]string }
+
+func (s channelReferenceStub) ResolveAudienceChannel(_ context.Context, value string) (string, bool, error) {
+	code, ok := s.values[value]
+	return code, ok, nil
+}
+
+type radarReferenceStub struct{ values map[string]string }
+
+func (s radarReferenceStub) ResolveAudienceRadar(_ context.Context, value string) (string, bool, error) {
+	id, ok := s.values[value]
+	return id, ok, nil
+}
+
 type packageListApplication struct{ fakeApplication }
 
 func (packageListApplication) ListPackages(context.Context, int, int, bool) (segmentapp.PackagePage, error) {
@@ -308,6 +322,71 @@ func TestPaidOrderProductReferenceUnknownFailsClosed(t *testing.T) {
 		handler.ServeHTTP(response, request)
 		if response.Code != http.StatusUnprocessableEntity || !strings.Contains(response.Body.String(), `"error":"reference_unknown"`) {
 			t.Fatalf("%s %s status=%d body=%s", fixture.method, fixture.path, response.Code, response.Body.String())
+		}
+	}
+}
+
+func TestChannelAndRadarReferencesNormalizeForConfigurationAndPreview(t *testing.T) {
+	admin := accessdomain.Principal{InternalID: 1, Kind: accessdomain.KindAdmin, Roles: []accessdomain.Role{accessdomain.RoleAdmin}}
+	channels := channelReferenceStub{values: map[string]string{"渠道标题": "channel-v3", "channel-v3": "channel-v3"}}
+	radars := radarReferenceStub{values: map[string]string{"雷达标题": "88", "88": "88"}}
+	fixtures := []struct {
+		name, method, path, body, expected string
+		bind                               func(*Handler)
+		preview                            bool
+	}{
+		{"channel title configuration", http.MethodPut, "/api/admin/ai-audience/packages/7/configuration", `{"expected_package_version":1,"refresh_cron_utc":"","definition":{"schema_version":1,"template_key":"channel_entry","parameters":{"channel_codes":["渠道标题"],"entered_days_min":0,"owner_scope":"all","owner_userids":[]}}}`, `"channel_codes":["channel-v3"]`, func(h *Handler) { h.BindAudienceChannelReferences(channels) }, false},
+		{"channel code preview", http.MethodPost, "/api/admin/ai-audience/packages/7/preview", `{"reference_time":"2026-09-05T08:00:00Z","definition":{"schema_version":1,"template_key":"channel_entry","parameters":{"channel_codes":["channel-v3"],"entered_days_min":0,"owner_scope":"all","owner_userids":[]}}}`, `"channel_codes":["channel-v3"]`, func(h *Handler) { h.BindAudienceChannelReferences(channels) }, true},
+		{"radar title preview", http.MethodPost, "/api/admin/ai-audience/packages/7/preview", `{"reference_time":"2026-09-05T08:00:00Z","definition":{"schema_version":1,"template_key":"radar_first_click_elapsed","parameters":{"radar_ids":["雷达标题"],"elapsed_min":0,"elapsed_unit":"day","owner_scope":"all","owner_userids":[]}}}`, `"radar_ids":["88"]`, func(h *Handler) { h.BindAudienceRadarReferences(radars) }, true},
+		{"radar id configuration", http.MethodPut, "/api/admin/ai-audience/packages/7/configuration", `{"expected_package_version":1,"refresh_cron_utc":"","definition":{"schema_version":1,"template_key":"radar_first_click_elapsed","parameters":{"radar_ids":["88"],"elapsed_min":0,"elapsed_unit":"day","owner_scope":"all","owner_userids":[]}}}`, `"radar_ids":["88"]`, func(h *Handler) { h.BindAudienceRadarReferences(radars) }, false},
+	}
+	for _, fixture := range fixtures {
+		t.Run(fixture.name, func(t *testing.T) {
+			capture := &configurationCapture{}
+			preview := &previewDefinitionCapture{}
+			handler, err := NewRuntimeHandlerWithOwners(capture, preview, fakeSecurity{principal: admin}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			fixture.bind(handler)
+			request := httptest.NewRequest(fixture.method, fixture.path, strings.NewReader(fixture.body))
+			request.Header.Set("Idempotency-Key", "1234567890abcdef")
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if response.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+			definition := capture.command.Definition
+			if fixture.preview {
+				definition = preview.definition
+			}
+			if !strings.Contains(string(definition), fixture.expected) {
+				t.Fatalf("definition=%s", definition)
+			}
+		})
+	}
+}
+
+func TestChannelAndRadarReferencesRejectUnknown(t *testing.T) {
+	admin := accessdomain.Principal{InternalID: 1, Kind: accessdomain.KindAdmin, Roles: []accessdomain.Role{accessdomain.RoleAdmin}}
+	for _, fixture := range []struct {
+		body string
+		bind func(*Handler)
+	}{
+		{`{"expected_package_version":1,"refresh_cron_utc":"","definition":{"schema_version":1,"template_key":"channel_entry","parameters":{"channel_codes":["同名渠道"],"entered_days_min":0,"owner_scope":"all","owner_userids":[]}}}`, func(h *Handler) { h.BindAudienceChannelReferences(channelReferenceStub{}) }},
+		{`{"expected_package_version":1,"refresh_cron_utc":"","definition":{"schema_version":1,"template_key":"radar_first_click_elapsed","parameters":{"radar_ids":["同名雷达"],"elapsed_min":0,"elapsed_unit":"day","owner_scope":"all","owner_userids":[]}}}`, func(h *Handler) { h.BindAudienceRadarReferences(radarReferenceStub{}) }},
+	} {
+		handler, err := NewRuntimeHandlerWithOwners(&configurationCapture{}, snapshotApplication{}, fakeSecurity{principal: admin}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fixture.bind(handler)
+		request := httptest.NewRequest(http.MethodPut, "/api/admin/ai-audience/packages/7/configuration", strings.NewReader(fixture.body))
+		request.Header.Set("Idempotency-Key", "1234567890abcdef")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusUnprocessableEntity || !strings.Contains(response.Body.String(), `"error":"reference_unknown"`) {
+			t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 		}
 	}
 }

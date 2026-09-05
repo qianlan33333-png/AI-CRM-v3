@@ -41,6 +41,11 @@
     if (text.trim() !== text || !text || text.length > 80) throw new Error(`${label}必须是当前 V3 的稳定 code 或精确商品标题。`);
     return text;
   };
+  const canonicalReference = (value, label) => {
+    const text = String(value || "");
+    if (text.trim() !== text || !text || text.length > 200) throw new Error(`${label}必须是当前 V3 的稳定标识或精确标题。`);
+    return text;
+  };
   const requiredList = (value, label, convert) => {
     const values = Array.isArray(value) ? value : [];
     if (!values.length) throw new Error(`${label}不能为空。`);
@@ -71,10 +76,10 @@
       parameters.paid_at_from = canonicalTimestamp(parameters.paid_at_from, "支付时间起点");
       parameters.paid_at_to = canonicalTimestamp(parameters.paid_at_to, "支付时间终点");
     } else if (templateKey === "channel_entry") {
-      parameters.channel_codes = requiredList(parameters.channels, "渠道", canonicalCode);
+      parameters.channel_codes = requiredList(parameters.channels, "渠道", canonicalReference);
       delete parameters.channels;
     } else if (templateKey === "radar_first_click_elapsed") {
-      parameters.radar_ids = requiredList(parameters.radars, "雷达", canonicalPositiveID);
+      parameters.radar_ids = requiredList(parameters.radars, "雷达", canonicalReference);
       delete parameters.radars;
     }
     delete parameters.owner_staff_ids;

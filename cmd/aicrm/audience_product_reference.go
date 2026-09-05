@@ -36,12 +36,13 @@ func (a audienceProductReferenceAdapter) ResolveAudienceProduct(ctx context.Cont
 	if page.Total > int64(len(page.Items)) {
 		return "", false, nil
 	}
-	exactCode := ""
-	titleCode := ""
 	for _, item := range page.Items {
 		if item.Code == value {
-			exactCode = item.Code
+			return item.Code, true, nil
 		}
+	}
+	titleCode := ""
+	for _, item := range page.Items {
 		if item.Name != value {
 			continue
 		}
@@ -49,9 +50,6 @@ func (a audienceProductReferenceAdapter) ResolveAudienceProduct(ctx context.Cont
 			return "", false, nil
 		}
 		titleCode = item.Code
-	}
-	if exactCode != "" {
-		return exactCode, true, nil
 	}
 	return titleCode, titleCode != "", nil
 }
