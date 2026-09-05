@@ -10,7 +10,7 @@ curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 --retry 
 printf '%s  %s\n' "$tar_sha" "$work/sdk.tgz" | sha256sum -c -
 tar -xzf "$work/sdk.tgz" -C "$work" C_sdk/libWeWorkFinanceSdk_C.so C_sdk/WeWorkFinanceSdk_C.h C_sdk/version.txt
 printf '%s  %s\n' "$lib_sha" "$work/C_sdk/libWeWorkFinanceSdk_C.so" | sha256sum -c -
-go build -trimpath -o "$work/runner" ./cmd/wecom-archive-sdk-runner
+scripts/build-wecom-archive-sdk-runner-linux.sh "$work/runner"
 WORK_LIB="$work/C_sdk/libWeWorkFinanceSdk_C.so" WORK_RUNNER="$work/runner" python3 - <<'PY'
 import json, os, struct, subprocess
 request = json.dumps({"operation":"health","library_path":os.environ["WORK_LIB"]}, separators=(",", ":")).encode()
