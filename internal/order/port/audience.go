@@ -13,7 +13,9 @@ import (
 type PaidAudienceOrder struct {
 	CustomerID  customerdomain.CustomerID
 	ProductCode string
-	PaidAt      time.Time
+	// PaidAt is nil when this historical order has no trustworthy payment-time
+	// evidence. It can match an unbounded paid audience, never a time window.
+	PaidAt *time.Time
 }
 
 type PaidAudienceReader interface {

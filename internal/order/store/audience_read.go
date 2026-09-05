@@ -18,9 +18,9 @@ func (s *Repository) PaidAudienceOrders(ctx context.Context, reference time.Time
 	if err != nil {
 		return nil, err
 	}
-	rows, err := tx.Query(ctx, `SELECT o.payer_customer_id,i.product_code,COALESCE((SELECT MIN(h.occurred_at) FROM order_status_history h WHERE h.order_id=o.id AND h.to_status='paid'),o.created_at)
+	rows, err := tx.Query(ctx, `SELECT o.payer_customer_id,i.product_code,(SELECT MIN(h.occurred_at) FROM order_status_history h WHERE h.order_id=o.id AND h.to_status='paid')
 		FROM orders o JOIN order_items i ON i.order_id=o.id
-		WHERE o.status='paid' AND o.payer_customer_id IS NOT NULL AND COALESCE((SELECT MIN(h.occurred_at) FROM order_status_history h WHERE h.order_id=o.id AND h.to_status='paid'),o.created_at) <= $1
+		WHERE o.status='paid' AND o.payer_customer_id IS NOT NULL
 		ORDER BY o.id,i.line_no`, reference.UTC())
 	if err != nil {
 		return nil, err

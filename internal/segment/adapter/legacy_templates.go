@@ -245,7 +245,7 @@ func (s LegacyTemplateSource) paid(ctx context.Context, p map[string]json.RawMes
 	}
 	out := map[int64]bool{}
 	for _, fact := range orders {
-		if !contains(products, fact.ProductCode) || (!from.IsZero() && fact.PaidAt.Before(from)) || (!to.IsZero() && !fact.PaidAt.Before(to)) {
+		if !contains(products, fact.ProductCode) || ((!from.IsZero() || !to.IsZero()) && fact.PaidAt == nil) || (fact.PaidAt != nil && !from.IsZero() && fact.PaidAt.Before(from)) || (fact.PaidAt != nil && !to.IsZero() && !fact.PaidAt.Before(to)) {
 			continue
 		}
 		id := int64(fact.CustomerID)
