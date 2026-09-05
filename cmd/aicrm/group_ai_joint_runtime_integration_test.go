@@ -23,6 +23,8 @@ import (
 	automationdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/domain"
 	automationport "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/port"
 	automationstore "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/store"
+	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
+	customerstore "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/store"
 	externaleffects "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects"
 	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	groupopsapp "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/app"
@@ -37,6 +39,7 @@ import (
 	platformjobqueue "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/jobqueue"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/segment"
+	segmentadapter "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/adapter"
 	segmentapp "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/app"
 	segmentcompiler "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/compiler"
 	segmentport "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/port"
@@ -329,7 +332,7 @@ func TestAutomationAIAssistantAndGroupOpsShareRiverRuntime(t *testing.T) {
 	ctx := context.Background()
 	native, cleanup := automationAudienceRuntimePool(t)
 	defer cleanup()
-	for _, migration := range []string{"0012_group_ops.sql", "0016_media_content_packages.sql", "0078_group_ops_provider_tasks.sql", "0081_group_ops_webhook_unconfigured_reference.sql"} {
+	for _, migration := range []string{"0004_wecom.sql", "0009_customer_activation.sql", "0012_group_ops.sql", "0016_media_content_packages.sql", "0078_group_ops_provider_tasks.sql", "0081_group_ops_webhook_unconfigured_reference.sql"} {
 		if err := applyAIAssistantHTTPJourneyMigration(ctx, native, migration); err != nil {
 			t.Fatalf("apply %s: %v", migration, err)
 		}
@@ -374,7 +377,12 @@ func TestAutomationAIAssistantAndGroupOpsShareRiverRuntime(t *testing.T) {
 	}
 	accessRepository := accessstore.NewPostgreSQL()
 	identities := identityquery.NewPostgreSQL()
-	aiService, err := aiassistantapp.NewService(uow, aiRepo, automationAudienceAIRecipients{}, automationAudienceAIStaff{}, aiMaterialAdapter{capturer: mediaRepo, references: mediaRepo}, automationAudienceAIIdentities{}, identities)
+	customersRead := customerstore.NewPostgreSQL()
+	aiCustomers := aiCustomerSnapshotAdapter{read: func(ctx context.Context, id customerdomain.CustomerID) (customerdomain.CustomerID, customerdomain.Status, string, string, error) {
+		detail, readErr := customersRead.Detail(ctx, id)
+		return detail.CustomerID, detail.CustomerStatus, detail.DisplayName, detail.OneIDLabel, readErr
+	}}
+	aiService, err := aiassistantapp.NewService(uow, aiRepo, aiCustomers, aiStaffSnapshotAdapter{repository: accessRepository}, aiMaterialAdapter{capturer: mediaRepo, references: mediaRepo}, identityapp.OneIDService{Store: identitystore.NewPostgresStore()}, identities)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -412,8 +420,16 @@ func TestAutomationAIAssistantAndGroupOpsShareRiverRuntime(t *testing.T) {
 		t.Fatal(err)
 	}
 	customers := automationAudienceInsertProviderCustomers(t, ctx, native)
+	for _, customerID := range customers {
+		if _, err = native.Exec(ctx, `INSERT INTO customer_directory_projection(customer_id,customer_status,display_name,oneid_label,activation_status,source,source_version,updated_at) VALUES($1,'active','Joint runtime customer',$2,'active','joint-runtime',1,clock_timestamp())`, customerID, fmt.Sprintf("CID-%d", customerID)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = native.Exec(ctx, `INSERT INTO wecom_follow_relationships(corp_id,employee_id,customer_id,active) VALUES('runtime-corp','sender-a',$1,true)`, customerID); err != nil {
+			t.Fatal(err)
+		}
+	}
 	source := &automationAudienceSource{}
-	evaluator, err := segmentapp.NewEvaluator(segmentcompiler.Compiler{}, source, automationAudienceCanonical{})
+	evaluator, err := segmentapp.NewEvaluator(segmentcompiler.Compiler{}, source, segmentadapter.CanonicalCustomers{UoW: uow, Resolver: canonicalCustomerAdapter{reader: identities}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -469,7 +485,7 @@ func TestAutomationAIAssistantAndGroupOpsShareRiverRuntime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	privateProvider, err := outbound.NewPrivateMessageProvider(true, privateWriter, automationAudiencePrivateTarget{}, aiPrivatePayloadReader{content: aiRepo, images: mediaService, materials: mediaRepo, attachments: mediaService, uow: uow, capturer: mediaRepo}, automationWriter)
+	privateProvider, err := outbound.NewPrivateMessageProvider(true, privateWriter, aiPrivateTargetResolver{uow: uow, identities: identities, access: accessRepository, relationships: wecom.NewPostgreSQLFollowRelationshipStore(), corpID: "runtime-corp"}, aiPrivatePayloadReader{content: aiRepo, images: mediaService, materials: mediaRepo, attachments: mediaService, uow: uow, capturer: mediaRepo}, automationWriter)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -593,6 +609,21 @@ func TestAutomationAIAssistantAndGroupOpsShareRiverRuntime(t *testing.T) {
 	if err != nil || plan.State != aiassistantport.PlanPendingReview {
 		t.Fatalf("manual plan=%+v err=%v", plan, err)
 	}
+	recipients, err := aiService.ListRecipients(ctx, aiassistantport.RecipientPageQuery{PlanID: plan.ID, Limit: 1})
+	if err != nil || len(recipients.Items) != 1 || recipients.Items[0].ReviewState != aiassistantport.ReviewPending {
+		t.Fatalf("manual recipients=%+v err=%v", recipients, err)
+	}
+	if _, err = aiService.ReviewRecipient(ctx, aiassistantport.ReviewRecipientCommand{Actor: aiassistantport.Actor{Kind: aiassistantport.ActorAdmin, ID: staffID}, PlanID: plan.ID, RecipientID: recipients.Items[0].ID, ExpectedVersion: recipients.Items[0].Version, Decision: aiassistantport.ReviewApproved, IdempotencyKey: "joint-runtime-recipient-review-0001"}); err != nil {
+		t.Fatal(err)
+	}
+	if effectsNow := jointEffectCount(t, ctx, native); effectsNow != 0 {
+		t.Fatalf("single AI review accepted effects=%d", effectsNow)
+	}
+	plan, err = aiService.GetPlan(ctx, plan.ID)
+	if err != nil || plan.State != aiassistantport.PlanPartiallyApproved {
+		t.Fatalf("single-review plan=%+v err=%v", plan, err)
+	}
+	const sharedLocalKey = "joint-runtime-shared-local-key-0001"
 	groupPlan := createRiverJourneyPlan(t, ctx, uow, groupStore, groupActor)
 	if groupPlan != int64(plan.ID) {
 		t.Fatalf("fixture must exercise equal local plan IDs across sources: group=%d AI=%d", groupPlan, plan.ID)
@@ -604,7 +635,7 @@ func TestAutomationAIAssistantAndGroupOpsShareRiverRuntime(t *testing.T) {
 	for _, item := range []struct {
 		plan int64
 		key  string
-	}{{groupPlan, "joint-runtime-group-0001"}, {unknownPlan, "joint-runtime-group-unknown-0001"}} {
+	}{{groupPlan, sharedLocalKey}, {unknownPlan, "joint-runtime-group-unknown-0001"}} {
 		if out, e := groupRuntime.AcceptBroadcast(ctx, item.plan, groupActor, item.key); e != nil || out.Accepted != 2 {
 			t.Fatalf("group acceptance=%+v err=%v", out, e)
 		}
@@ -613,7 +644,7 @@ func TestAutomationAIAssistantAndGroupOpsShareRiverRuntime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = aiService.ApprovePlan(ctx, aiassistantport.ApprovePlanCommand{Actor: aiassistantport.Actor{Kind: aiassistantport.ActorAdmin, ID: staffID}, PlanID: plan.ID, ExpectedVersion: plan.Version, PreviewDigest: approval.PreviewDigest, IdempotencyKey: "joint-runtime-manual-approve-0001"}); err != nil {
+	if _, err = aiService.ApprovePlan(ctx, aiassistantport.ApprovePlanCommand{Actor: aiassistantport.Actor{Kind: aiassistantport.ActorAdmin, ID: staffID}, PlanID: plan.ID, ExpectedVersion: plan.Version, PreviewDigest: approval.PreviewDigest, IdempotencyKey: sharedLocalKey}); err != nil {
 		t.Fatal(err)
 	}
 	// This accepted refresh is durable while the only shared runtime is down.
@@ -645,12 +676,20 @@ func TestAutomationAIAssistantAndGroupOpsShareRiverRuntime(t *testing.T) {
 		t.Fatalf("frozen mixed-media uploads=%d want 6", uploads)
 	}
 	waitGroupOpsDelayedSuccessors(t, native, groupPlan, 2)
+	var earliestDelayedDue time.Time
+	if err = native.QueryRow(ctx, `SELECT min(scheduled_for) FROM group_ops_executions WHERE plan_id=$1 AND node_position=3 AND state='accepted'`, groupPlan).Scan(&earliestDelayedDue); err != nil || !earliestDelayedDue.After(time.Now().UTC()) {
+		t.Fatalf("stored delayed GroupOps due=%s err=%v", earliestDelayedDue, err)
+	}
+	unknownBeforeRestart := jointUnknownEffectIDs(t, ctx, native)
+	if unknownBeforeRestart == "" {
+		t.Fatal("response-disconnected GroupOps effects were not retained as unknown")
+	}
 	stopSharedSafely()
 	effectsBeforeReplay := jointEffectCount(t, ctx, native)
-	if replay, e := groupRuntime.AcceptBroadcast(ctx, groupPlan, groupActor, "joint-runtime-group-0001"); e != nil || replay.Run.ID < 1 {
+	if replay, e := groupRuntime.AcceptBroadcast(ctx, groupPlan, groupActor, sharedLocalKey); e != nil || replay.Run.ID < 1 {
 		t.Fatalf("group replay=%+v err=%v", replay, e)
 	}
-	if _, err = aiService.ApprovePlan(ctx, aiassistantport.ApprovePlanCommand{Actor: aiassistantport.Actor{Kind: aiassistantport.ActorAdmin, ID: staffID}, PlanID: plan.ID, ExpectedVersion: plan.Version, PreviewDigest: approval.PreviewDigest, IdempotencyKey: "joint-runtime-manual-approve-0001"}); err != nil {
+	if _, err = aiService.ApprovePlan(ctx, aiassistantport.ApprovePlanCommand{Actor: aiassistantport.Actor{Kind: aiassistantport.ActorAdmin, ID: staffID}, PlanID: plan.ID, ExpectedVersion: plan.Version, PreviewDigest: approval.PreviewDigest, IdempotencyKey: sharedLocalKey}); err != nil {
 		t.Fatal(err)
 	}
 	if effectsAfterReplay := jointEffectCount(t, ctx, native); effectsAfterReplay != effectsBeforeReplay {
@@ -670,6 +709,13 @@ func TestAutomationAIAssistantAndGroupOpsShareRiverRuntime(t *testing.T) {
 		stopRestartSafely()
 		t.Fatalf("restart duplicated calls private=%d group=%d", automationWeCom.Calls(), groupWeCom.callCount())
 	}
+	if unknownAfterRestart := jointUnknownEffectIDs(t, ctx, native); unknownAfterRestart != unknownBeforeRestart {
+		stopRestartSafely()
+		t.Fatalf("restart changed unknown effects=%q want %q", unknownAfterRestart, unknownBeforeRestart)
+	}
+	// The preceding assertion proves the persisted GroupOps due is in the
+	// future and the restarted runtime does not run it early. Advance only this
+	// isolated River job's test clock to exercise its durable successor path.
 	if tag, e := native.Exec(ctx, `UPDATE river_job job SET state='available',scheduled_at=clock_timestamp()-interval '1 second' FROM external_effect_jobs effect_job JOIN group_ops_executions execution ON execution.external_effect_id=effect_job.effect_id WHERE job.id=effect_job.river_job_id AND execution.plan_id=$1 AND execution.node_position=3 AND job.state='scheduled'`, groupPlan); e != nil || tag.RowsAffected() != 2 {
 		stopRestartSafely()
 		t.Fatalf("advance delayed=%d err=%v", tag.RowsAffected(), e)
@@ -680,6 +726,14 @@ func TestAutomationAIAssistantAndGroupOpsShareRiverRuntime(t *testing.T) {
 	if err = native.QueryRow(ctx, `SELECT count(*) FROM external_effects WHERE state='outcome_unknown'`).Scan(&unknown); err != nil || unknown != 2 {
 		t.Fatalf("unknown effects=%d err=%v", unknown, err)
 	}
+	if unknownAfterRestart := jointUnknownEffectIDs(t, ctx, native); unknownAfterRestart != unknownBeforeRestart {
+		t.Fatalf("delayed successor changed unknown effects=%q want %q", unknownAfterRestart, unknownBeforeRestart)
+	}
+	jointAssertCompletionOwnership(t, ctx, native, policy.ID, manual.ID, plan.ID, groupPlan, customers[0], customers[1], staffID)
+	manualRun, err := runtimeService.Run(ctx, manual.ID)
+	if err != nil || manualRun.State != automationport.RunCompleted || manualRun.AIPlanState != string(aiassistantport.PlanCompleted) {
+		t.Fatalf("manual run projection=%+v err=%v", manualRun, err)
+	}
 }
 
 func jointEffectCount(t *testing.T, ctx context.Context, pool *pgxpool.Pool) int {
@@ -689,4 +743,47 @@ func jointEffectCount(t *testing.T, ctx context.Context, pool *pgxpool.Pool) int
 		t.Fatal(err)
 	}
 	return count
+}
+
+func jointUnknownEffectIDs(t *testing.T, ctx context.Context, pool *pgxpool.Pool) string {
+	t.Helper()
+	var ids string
+	if err := pool.QueryRow(ctx, `SELECT coalesce(string_agg(id::text,',' ORDER BY id),'') FROM external_effects WHERE state='outcome_unknown'`).Scan(&ids); err != nil {
+		t.Fatal(err)
+	}
+	return ids
+}
+
+func jointAssertCompletionOwnership(t *testing.T, ctx context.Context, pool *pgxpool.Pool, policyID, manualRunID int64, manualPlanID aiassistantport.PlanID, groupPlanID int64, manualCustomer, automaticCustomer customerdomain.CustomerID, staffID int64) {
+	t.Helper()
+	var automatic, manual, group int
+	if err := pool.QueryRow(ctx, `SELECT count(*)
+		FROM automation_runs run
+		JOIN automation_run_recipients recipient ON recipient.run_id=run.id
+		JOIN outbound_message_intents intent ON intent.run_recipient_id=recipient.id
+		JOIN external_effects effect ON ('eer_'||effect.id::text)=intent.effect_id
+		WHERE run.policy_id=$1 AND recipient.customer_id=$2 AND recipient.sender_staff_id=$3
+		  AND intent.source_kind='automation_enrollment' AND intent.state='provider_accepted'
+		  AND effect.kind='outbound_message' AND effect.state='executed'`, policyID, automaticCustomer, staffID).Scan(&automatic); err != nil || automatic != 1 {
+		t.Fatalf("automatic owner->intent->effect=%d want 1 err=%v", automatic, err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*)
+		FROM automation_runs run
+		JOIN ai_assistant_plans plan ON plan.id=run.ai_plan_id
+		JOIN ai_assistant_plan_recipients recipient ON recipient.plan_id=plan.id
+		JOIN ai_assistant_effect_bindings binding ON binding.recipient_id=recipient.id
+		JOIN outbound_private_message_intents intent ON intent.id=binding.outbound_intent_id AND intent.external_effect_id=binding.external_effect_id
+		JOIN external_effects effect ON ('eer_'||effect.id::text)=binding.external_effect_id
+		WHERE run.id=$1 AND plan.id=$2 AND recipient.customer_id=$3 AND recipient.staff_id=$4
+		  AND recipient.execution_state='provider_accepted' AND binding.state='provider_accepted'
+		  AND intent.state='provider_accepted' AND effect.kind='outbound_message' AND effect.state='executed'`, manualRunID, manualPlanID, manualCustomer, staffID).Scan(&manual); err != nil || manual != 1 {
+		t.Fatalf("manual run->AI plan->intent->effect=%d want 1 err=%v", manual, err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*)
+		FROM group_ops_executions execution
+		JOIN external_effects effect ON effect.id=execution.external_effect_id
+		WHERE execution.plan_id=$1 AND execution.state='provider_accepted' AND execution.provider_receipt_digest IS NOT NULL
+		  AND effect.kind='group_message' AND effect.state='executed'`, groupPlanID).Scan(&group); err != nil || group != 4 {
+		t.Fatalf("GroupOps execution->effect receipts=%d want 4 err=%v", group, err)
+	}
 }
