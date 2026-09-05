@@ -1066,6 +1066,12 @@ func (client *Client) SendPrivateMessage(ctx context.Context, target outboundpor
 				return outboundport.PrivateMessageProviderReceipt{}, false, uploadErr
 			}
 			attachments = append(attachments, map[string]any{"msgtype": "miniprogram", "miniprogram": map[string]string{"title": item.Title, "pic_media_id": mediaID, "appid": item.AppID, "page": item.PagePath}})
+		case "file":
+			mediaID, uploadErr := client.uploadPrivateFile(ctx, token, item.FileName, item.MediaType, item.Content)
+			if uploadErr != nil {
+				return outboundport.PrivateMessageProviderReceipt{}, false, uploadErr
+			}
+			attachments = append(attachments, map[string]any{"msgtype": "file", "file": map[string]string{"media_id": mediaID}})
 		case "link":
 			attachments = append(attachments, map[string]any{"msgtype": "link", "link": map[string]string{"title": item.Title, "picurl": item.PicURL, "desc": item.Description, "url": item.URL}})
 		default:
@@ -1111,6 +1117,36 @@ func (client *Client) uploadPrivateImage(ctx context.Context, token, name, media
 		return "", err
 	}
 	result, _, err := client.privateJSON(ctx, "/cgi-bin/media/upload", url.Values{"access_token": {token}, "type": {"image"}}, body.Bytes(), writer.FormDataContentType())
+	if err != nil {
+		return "", err
+	}
+	result.MediaID = strings.TrimSpace(result.MediaID)
+	if result.MediaID == "" {
+		return "", privateSendError{}
+	}
+	return result.MediaID, nil
+}
+
+func (client *Client) uploadPrivateFile(ctx context.Context, token, name, mediaType string, content []byte) (string, error) {
+	if len(content) <= 5 || len(content) > 20<<20 || mediaType != "application/pdf" || strings.TrimSpace(name) == "" || strings.ContainsAny(name, "\r\n\x00") {
+		return "", privateSendError{}
+	}
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	header := make(textproto.MIMEHeader)
+	header.Set("Content-Disposition", mime.FormatMediaType("form-data", map[string]string{"name": "media", "filename": name}))
+	header.Set("Content-Type", mediaType)
+	part, err := writer.CreatePart(header)
+	if err != nil {
+		return "", err
+	}
+	if _, err = part.Write(content); err != nil {
+		return "", err
+	}
+	if err = writer.Close(); err != nil {
+		return "", err
+	}
+	result, _, err := client.privateJSON(ctx, "/cgi-bin/media/upload", url.Values{"access_token": {token}, "type": {"file"}}, body.Bytes(), writer.FormDataContentType())
 	if err != nil {
 		return "", err
 	}
