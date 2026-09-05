@@ -395,13 +395,20 @@ func TestGroupOpsHistoryExtractSealApplyAndHTTPFromLegacyPostgreSQL(t *testing.T
 	defer cleanup()
 	ctx := context.Background()
 	db := pool.Native()
-	schema := "legacy_history_source"
-	if _, err := db.Exec(ctx, `CREATE SCHEMA legacy_history_source;
+	var schemaSuffix [8]byte
+	if _, err := rand.Read(schemaSuffix[:]); err != nil {
+		t.Fatal(err)
+	}
+	schema := "legacy_history_source_" + hex.EncodeToString(schemaSuffix[:])
+	quotedSchema := pgx.Identifier{schema}.Sanitize()
+	defer func() { _, _ = db.Exec(context.Background(), "DROP SCHEMA "+quotedSchema+" CASCADE") }()
+	ddl := strings.ReplaceAll(`CREATE SCHEMA legacy_history_source;
 CREATE TABLE legacy_history_source.automation_group_ops_plans(id BIGINT,plan_code TEXT,plan_name TEXT,plan_type TEXT,status TEXT,owner_userid TEXT,created_by TEXT,updated_by TEXT,created_at TIMESTAMPTZ,updated_at TIMESTAMPTZ,archived_at TIMESTAMPTZ);
 CREATE TABLE legacy_history_source.group_chats(chat_id TEXT,group_name TEXT,owner_userid TEXT,member_count INTEGER,status TEXT,updated_at TIMESTAMPTZ);
 CREATE TABLE legacy_history_source.wecom_group_chat_snapshots(chat_id TEXT,group_name TEXT,owner_userid TEXT,owner_name TEXT,internal_member_count INTEGER,external_member_count INTEGER,status TEXT,synced_at TIMESTAMPTZ);
 CREATE TABLE legacy_history_source.automation_group_ops_plan_groups(id BIGINT,plan_id BIGINT,chat_id TEXT,group_name_snapshot TEXT,owner_userid_snapshot TEXT,internal_member_count_snapshot INTEGER,external_member_count_snapshot INTEGER,status TEXT,created_at TIMESTAMPTZ,removed_at TIMESTAMPTZ);
-CREATE TABLE legacy_history_source.automation_group_ops_plan_nodes(id BIGINT,plan_id BIGINT,day_index INTEGER,trigger_time_label TEXT,sort_order INTEGER,status TEXT,action_title TEXT,text_content TEXT,content_package_json JSONB,attachments_json JSONB,created_at TIMESTAMPTZ,updated_at TIMESTAMPTZ);`); err != nil {
+CREATE TABLE legacy_history_source.automation_group_ops_plan_nodes(id BIGINT,plan_id BIGINT,day_index INTEGER,trigger_time_label TEXT,sort_order INTEGER,status TEXT,action_title TEXT,text_content TEXT,content_package_json JSONB,attachments_json JSONB,created_at TIMESTAMPTZ,updated_at TIMESTAMPTZ);`, "legacy_history_source", quotedSchema)
+	if _, err := db.Exec(ctx, ddl); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 9, 5, 1, 2, 3, 0, time.UTC)
@@ -415,7 +422,7 @@ CREATE TABLE legacy_history_source.automation_group_ops_plan_nodes(id BIGINT,pla
 		{`INSERT INTO legacy_history_source.automation_group_ops_plan_groups VALUES(902,901,'chat-901','旧群','owner-1',1,1,'active',$1,NULL)`, []any{now}},
 		{`INSERT INTO legacy_history_source.automation_group_ops_plan_nodes VALUES(903,901,1,'',1,'active',$1,$2,'{}','[{"kind":"image","id":"m1"}]',$3,$3)`, []any{"标题\a", "正文\v", now}},
 	} {
-		if _, err := db.Exec(ctx, row.query, row.args...); err != nil {
+		if _, err := db.Exec(ctx, strings.ReplaceAll(row.query, "legacy_history_source", quotedSchema), row.args...); err != nil {
 			t.Fatal(err)
 		}
 	}
