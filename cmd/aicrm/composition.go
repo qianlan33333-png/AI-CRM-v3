@@ -410,7 +410,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return fail(err)
 	}
 	segmentRuntime := segmentapp.NewRuntimeFacade(segmentService, segmentSnapshots, segmentExecution)
-	segmentBindings, err := segmentModule.BindRuntimeWithOwners(segmentRuntime, segmentRuntime, requestSecurity, segmentStaff)
+	segmentBindings, err := segmentModule.BindRuntimeWithOwnerReferences(segmentRuntime, segmentRuntime, requestSecurity, segmentStaff, segmentStaff)
 	if err != nil {
 		return fail(err)
 	}

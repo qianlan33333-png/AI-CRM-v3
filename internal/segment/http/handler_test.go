@@ -54,6 +54,15 @@ func (ownerResolverFailure) ResolveAudienceOwner(context.Context, string) (acces
 	return 0, false, errors.New("access projection unavailable")
 }
 
+type ownerReferenceStub struct{}
+
+func (ownerReferenceStub) AudienceOwnerUserID(_ context.Context, id accessport.StaffID) (string, bool, error) {
+	if id == 9 {
+		return "bob", true, nil
+	}
+	return "", false, nil
+}
+
 type packageListApplication struct{ fakeApplication }
 
 func (packageListApplication) ListPackages(context.Context, int, int, bool) (segmentapp.PackagePage, error) {
@@ -233,5 +242,19 @@ func TestConfigurationOwnerIdentifierFailuresAndAllScopeEmptyCompatibility(t *te
 				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 			}
 		})
+	}
+}
+
+func TestOwnerReferencesRehydrateThroughAccessPort(t *testing.T) {
+	viewer := accessdomain.Principal{InternalID: 1, Kind: accessdomain.KindAdmin, Roles: []accessdomain.Role{accessdomain.RoleViewer}}
+	handler, err := NewRuntimeHandlerWithOwnerReferences(fakeApplication{}, snapshotApplication{}, fakeSecurity{principal: viewer}, nil, ownerReferenceStub{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/api/admin/ai-audience/packages/7/owner-references?staff_id=9", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"owner_userids":["bob"]`) {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 }

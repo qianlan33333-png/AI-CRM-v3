@@ -54,11 +54,12 @@ type ExecutionApplication interface {
 	Precheck(context.Context, int64) (segmentapp.Precheck, error)
 }
 type Handler struct {
-	service   ConfigurationApplication
-	snapshots SnapshotApplication
-	execution ExecutionApplication
-	security  RequestSecurity
-	owners    accessport.AudienceOwnerResolver
+	service         ConfigurationApplication
+	snapshots       SnapshotApplication
+	execution       ExecutionApplication
+	security        RequestSecurity
+	owners          accessport.AudienceOwnerResolver
+	ownerReferences accessport.AudienceOwnerReferenceReader
 }
 
 var (
@@ -77,6 +78,9 @@ func NewRuntimeHandler(service ConfigurationApplication, snapshots SnapshotAppli
 	return NewRuntimeHandlerWithOwners(service, snapshots, security, nil)
 }
 func NewRuntimeHandlerWithOwners(service ConfigurationApplication, snapshots SnapshotApplication, security RequestSecurity, owners accessport.AudienceOwnerResolver) (*Handler, error) {
+	return NewRuntimeHandlerWithOwnerReferences(service, snapshots, security, owners, nil)
+}
+func NewRuntimeHandlerWithOwnerReferences(service ConfigurationApplication, snapshots SnapshotApplication, security RequestSecurity, owners accessport.AudienceOwnerResolver, references accessport.AudienceOwnerReferenceReader) (*Handler, error) {
 	h, err := NewHandler(service, security)
 	if err != nil {
 		return nil, err
@@ -87,6 +91,7 @@ func NewRuntimeHandlerWithOwners(service ConfigurationApplication, snapshots Sna
 	h.snapshots = snapshots
 	h.execution, _ = snapshots.(ExecutionApplication)
 	h.owners = owners
+	h.ownerReferences = references
 	return h, nil
 }
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -321,6 +326,10 @@ func (h *Handler) packageAction(w http.ResponseWriter, r *http.Request, packageI
 		h.configuration(w, r, packageID)
 		return
 	}
+	if action == "owner-references" {
+		h.ownerReferenceList(w, r)
+		return
+	}
 	if action == "preview" || action == "configuration-preview" {
 		h.preview(w, r, packageID)
 		return
@@ -373,6 +382,46 @@ func (h *Handler) packageAction(w http.ResponseWriter, r *http.Request, packageI
 		status = 201
 	}
 	respond(w, status, map[string]any{"package": packageDTO(item)})
+}
+
+// ownerReferenceList rehydrates frozen-form owner_userids from persisted local
+// StaffIDs. It is a read-only Access Port bridge and never persists a userid.
+func (h *Handler) ownerReferenceList(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		method(w, "GET")
+		return
+	}
+	if !h.read(w, r) {
+		return
+	}
+	if h.ownerReferences == nil {
+		fail(w, http.StatusServiceUnavailable, "owner_unavailable")
+		return
+	}
+	ids := r.URL.Query()["staff_id"]
+	if len(ids) > 100 {
+		fail(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	values := make([]string, 0, len(ids))
+	for _, raw := range ids {
+		id, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || id < 1 || strconv.FormatInt(id, 10) != raw {
+			fail(w, http.StatusBadRequest, "invalid_request")
+			return
+		}
+		value, found, err := h.ownerReferences.AudienceOwnerUserID(r.Context(), accessport.StaffID(id))
+		if err != nil {
+			fail(w, http.StatusServiceUnavailable, "owner_unavailable")
+			return
+		}
+		if !found || value == "" {
+			fail(w, http.StatusUnprocessableEntity, "owner_unknown")
+			return
+		}
+		values = append(values, value)
+	}
+	respond(w, http.StatusOK, map[string]any{"owner_userids": values})
 }
 func (h *Handler) configuration(w http.ResponseWriter, r *http.Request, packageID int64) {
 	if r.Method == http.MethodGet {

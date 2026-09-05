@@ -28,10 +28,13 @@ func (m *ModuleRegistration) BindRuntime(service segmenthttp.ConfigurationApplic
 	return m.BindRuntimeWithOwners(service, snapshots, security, nil)
 }
 func (m *ModuleRegistration) BindRuntimeWithOwners(service segmenthttp.ConfigurationApplication, snapshots segmenthttp.SnapshotApplication, security segmenthttp.RequestSecurity, owners accessport.AudienceOwnerResolver) (HTTPBindings, error) {
+	return m.BindRuntimeWithOwnerReferences(service, snapshots, security, owners, nil)
+}
+func (m *ModuleRegistration) BindRuntimeWithOwnerReferences(service segmenthttp.ConfigurationApplication, snapshots segmenthttp.SnapshotApplication, security segmenthttp.RequestSecurity, owners accessport.AudienceOwnerResolver, references accessport.AudienceOwnerReferenceReader) (HTTPBindings, error) {
 	if m == nil {
 		return HTTPBindings{}, errors.New("segment module is required")
 	}
-	handler, err := segmenthttp.NewRuntimeHandlerWithOwners(service, snapshots, security, owners)
+	handler, err := segmenthttp.NewRuntimeHandlerWithOwnerReferences(service, snapshots, security, owners, references)
 	return HTTPBindings{Audience: handler}, err
 }
 

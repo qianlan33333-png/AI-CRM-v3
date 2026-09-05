@@ -13,9 +13,30 @@ import (
 var ErrUnsupportedDefinition = errors.New("audience definition capability is unavailable")
 
 type Template struct {
-	Key               string `json:"key"`
-	Available         bool   `json:"available"`
-	UnavailableReason string `json:"unavailable_reason,omitempty"`
+	Key                string          `json:"key"`
+	Available          bool            `json:"available"`
+	UnavailableReason  string          `json:"unavailable_reason,omitempty"`
+	TemplateVersion    int             `json:"template_version"`
+	Label              string          `json:"label"`
+	Description        string          `json:"description"`
+	DefaultRefreshMode string          `json:"default_refresh_mode"`
+	Fields             []TemplateField `json:"fields"`
+}
+
+// TemplateField is the frozen dd8 template_registry UI contract. Values are
+// converted by the v3 Host to the closed local AST; it is never a SQL schema.
+type TemplateField struct {
+	Name        string            `json:"name"`
+	Label       string            `json:"label"`
+	Type        string            `json:"type"`
+	Required    bool              `json:"required"`
+	Enum        []string          `json:"enum,omitempty"`
+	EnumLabels  map[string]string `json:"enum_labels,omitempty"`
+	Default     any               `json:"default,omitempty"`
+	Reference   string            `json:"reference,omitempty"`
+	Minimum     *int              `json:"minimum,omitempty"`
+	MinItems    *int              `json:"min_items,omitempty"`
+	VisibleWhen map[string]string `json:"visible_when,omitempty"`
 }
 
 type DefinitionInput struct {
@@ -33,12 +54,29 @@ var legacyTemplates = []string{
 // availability independently; a visible template is never treated as a SQL
 // escape hatch.
 func Templates() []Template {
-	items := make([]Template, 0, len(legacyTemplates))
-	for _, key := range legacyTemplates {
-		items = append(items, Template{Key: key, Available: true})
-	}
-	return items
+	return templateCatalog()
 }
+
+func templateCatalog() []Template {
+	minimumOne := 1
+	owner := func() []TemplateField {
+		return []TemplateField{
+			{Name: "owner_scope", Label: "负责人范围", Type: "enum", Required: true, Enum: []string{"specified", "all"}, EnumLabels: map[string]string{"specified": "指定负责人", "all": "全部负责人"}},
+			{Name: "owner_userids", Label: "负责人 UserID", Type: "string_list", Default: []string{}, VisibleWhen: map[string]string{"owner_scope": "specified"}},
+		}
+	}
+	withOwner := func(fields []TemplateField) []TemplateField { return append(fields, owner()...) }
+	return []Template{
+		{Key: "wecom_contact_registration", Available: true, TemplateVersion: 1, Label: "企微联系人与注册状态", Description: "按负责人、企微联系人状态和注册状态圈选。", DefaultRefreshMode: "every_3m", Fields: append(owner(), TemplateField{Name: "contact_statuses", Label: "联系人状态", Type: "enum_list", Required: true, Enum: []string{"active", "deleted"}, Default: []string{"active"}}, TemplateField{Name: "registration_status", Label: "注册状态", Type: "enum", Required: true, Enum: []string{"any", "registered", "unregistered"}, Default: "any"})},
+		{Key: "questionnaire_choice_answers", Available: true, TemplateVersion: 1, Label: "问卷选择题答案", Description: "按首次完整提交的选择题答案圈选；题间 AND、题内选项 OR。", DefaultRefreshMode: "every_3m", Fields: withOwner([]TemplateField{{Name: "questionnaire", Label: "问卷", Type: "reference", Required: true, Reference: "questionnaire"}, {Name: "conditions", Label: "题目条件", Type: "condition_list", Required: true, MinItems: &minimumOne}})},
+		{Key: "paid_order", Available: true, TemplateVersion: 1, Label: "已支付订单", Description: "按商品、支付时间、负责人和有效企微联系人圈选。", DefaultRefreshMode: "every_3m", Fields: append(withOwner([]TemplateField{{Name: "products", Label: "商品", Type: "reference_list", Required: true, Reference: "product", MinItems: &minimumOne}, {Name: "paid_at_from", Label: "支付时间起点", Type: "datetime"}, {Name: "paid_at_to", Label: "支付时间终点（不含）", Type: "datetime"}}), TemplateField{Name: "require_active_wecom_contact", Label: "要求有效企微联系人", Type: "boolean", Required: true, Default: true})},
+		{Key: "channel_entry", Available: true, TemplateVersion: 1, Label: "渠道进入", Description: "按渠道和距进入时间窗口圈选。", DefaultRefreshMode: "every_3m", Fields: append(withOwner([]TemplateField{{Name: "channels", Label: "渠道", Type: "reference_list", Required: true, Reference: "channel", MinItems: &minimumOne}, {Name: "entered_days_min", Label: "距进入最少天数", Type: "integer", Required: true, Default: 0, Minimum: intPointer(0)}, {Name: "entered_days_max", Label: "距进入最大天数（不含）", Type: "integer", Minimum: intPointer(1)}}), TemplateField{Name: "require_active_wecom_contact", Label: "要求有效企微联系人", Type: "boolean", Required: true, Default: true})},
+		{Key: "radar_first_click_elapsed", Available: true, TemplateVersion: 1, Label: "雷达首次点击距今", Description: "多个雷达 OR，以首次可归因点击为时间锚点。", DefaultRefreshMode: "every_3m", Fields: withOwner([]TemplateField{{Name: "radars", Label: "雷达", Type: "reference_list", Required: true, Reference: "radar", MinItems: &minimumOne}, {Name: "elapsed_min", Label: "最小经过时间", Type: "integer", Required: true, Default: 0, Minimum: intPointer(0)}, {Name: "elapsed_max", Label: "最大经过时间（不含）", Type: "integer", Minimum: intPointer(1)}, {Name: "elapsed_unit", Label: "时间单位", Type: "enum", Required: true, Enum: []string{"hour", "day"}, Default: "day"}})},
+		{Key: "member_usage_status", Available: true, TemplateVersion: 1, Label: "会员与真实使用状态", Description: "按负责人、服务期、注册、真实使用和会员层级圈选。", DefaultRefreshMode: "daily_0200", Fields: append(owner(), []TemplateField{{Name: "service_period", Label: "服务期", Type: "enum", Required: true, Enum: []string{"any", "active", "expired"}, Default: "active"}, {Name: "registration_status", Label: "注册状态", Type: "enum", Required: true, Enum: []string{"any", "registered", "unregistered"}, Default: "any"}, {Name: "usage_status", Label: "真实使用状态", Type: "enum", Required: true, Enum: []string{"any", "used", "unused"}, Default: "any"}, {Name: "membership_tiers", Label: "会员层级", Type: "string_list", Default: []string{}}, {Name: "membership_statuses", Label: "会员状态", Type: "string_list", Default: []string{}}}...)},
+	}
+}
+
+func intPointer(value int) *int { return &value }
 
 func DefaultDefinition(templateKey string) (json.RawMessage, error) {
 	var parameters map[string]any

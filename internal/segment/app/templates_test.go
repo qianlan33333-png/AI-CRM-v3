@@ -9,6 +9,12 @@ import (
 func TestSixFrozenDonorTemplatesAndCanonicalDefinition(t *testing.T) {
 	if got := Templates(); len(got) != 6 {
 		t.Fatalf("templates=%d", len(got))
+	} else {
+		for _, item := range got {
+			if item.TemplateVersion != 1 || item.Label == "" || item.Description == "" || len(item.Fields) == 0 {
+				t.Fatalf("missing frozen form metadata: %+v", item)
+			}
+		}
 	}
 	left, err := CanonicalDefinition(json.RawMessage(`{"parameters":{"owner_scope":"all","owner_staff_ids":[],"contact_statuses":["active"],"registration_status":"any"},"template_key":"wecom_contact_registration","schema_version":1}`))
 	if err != nil {
