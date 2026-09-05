@@ -485,6 +485,23 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 		// effect is unknown and must not be retried with a new key.
 		return accepted == 1 && unknown == 1 && wecomServer.Calls() == 4 && wecomServer.Uploads() == 12
 	}, func() string { return automationAudienceRuntimeDiagnostics(ctx, native, provider, frozenPayloads) })
+	// Provider receipt persistence and the AI completion projection are separate
+	// committed steps. Do not read the Automation history until the existing
+	// completion router has updated the plan/recipient facts that its read-only
+	// projection consumes.
+	automationAudienceEventuallyWithDiagnostics(t, "manual AI completion projection", func() bool {
+		var accepted, unknown int
+		if native.QueryRow(ctx, `SELECT
+			count(*) FILTER (WHERE binding.state='provider_accepted' AND recipient.execution_state='provider_accepted'),
+			count(*) FILTER (WHERE binding.state='outcome_unknown' AND recipient.execution_state='outcome_unknown')
+			FROM ai_assistant_plan_recipients recipient
+			JOIN ai_assistant_effect_bindings binding ON binding.recipient_id=recipient.id
+			WHERE recipient.plan_id=$1`, plan.ID).Scan(&accepted, &unknown) != nil || accepted != 1 || unknown != 1 {
+			return false
+		}
+		projected, projectionErr := runtimeService.Run(ctx, manual.ID)
+		return projectionErr == nil && projected.AIPlanState == string(aiassistantport.PlanNeedsAttention) && projected.State == automationport.RunOutcomeUnknown && projected.OutcomeUnknownCount == 1
+	}, func() string { return automationAudienceRuntimeDiagnostics(ctx, native, provider, frozenPayloads) })
 	stopRuntime()
 	readHandler := runtimeHandler
 	var before, after int
