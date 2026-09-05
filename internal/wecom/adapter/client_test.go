@@ -239,6 +239,85 @@ func TestCustomerDirectoryProviderListsStaffAndBatchPage(t *testing.T) {
 	}
 }
 
+func TestCustomerDirectoryProviderClassifiesProviderReadFailures(t *testing.T) {
+	tests := []struct {
+		name          string
+		status        int
+		body          string
+		wantCode      string
+		wantRetryable bool
+	}{
+		{name: "permission", status: http.StatusOK, body: `{"errcode":48001}`, wantCode: "provider_permission_denied"},
+		{name: "rate limited", status: http.StatusTooManyRequests, body: `{"errcode":45009}`, wantCode: "provider_rate_limited", wantRetryable: true},
+		{name: "unavailable", status: http.StatusServiceUnavailable, body: `{"errcode":-1}`, wantCode: "provider_unavailable", wantRetryable: true},
+		{name: "invalid response", status: http.StatusOK, body: `{"errcode":0,"external_contact_list":[{"external_contact":{"external_userid":""}}]}`, wantCode: "provider_response_invalid"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				switch request.URL.Path {
+				case "/cgi-bin/gettoken":
+					_, _ = writer.Write([]byte(`{"errcode":0,"access_token":"contact-token","expires_in":7200}`))
+				case "/cgi-bin/externalcontact/batch/get_by_user":
+					writer.WriteHeader(test.status)
+					_, _ = writer.Write([]byte(test.body))
+				default:
+					t.Fatalf("unexpected path=%s", request.URL.Path)
+				}
+			}))
+			defer server.Close()
+			client := newTestClient(t, server, func() time.Time { return testNow })
+			client.config.ContactSecret = "contact secret"
+			_, err := client.BatchExternalContacts(context.Background(), "staff-1", "", 100)
+			var failure wecomport.DirectoryFailure
+			if err == nil || !errors.As(err, &failure) || failure.DirectoryFailureCode() != test.wantCode || failure.DirectoryFailureRetryable() != test.wantRetryable {
+				t.Fatalf("err=%v failure=%v", err, failure)
+			}
+			if strings.Contains(err.Error(), "contact-token") {
+				t.Fatalf("provider token leaked in error=%q", err)
+			}
+		})
+	}
+}
+
+func TestCustomerDirectoryProviderRefreshesExpiredReadTokenOnce(t *testing.T) {
+	for name, persistent := range map[string]bool{"recovers": false, "persistent": true} {
+		t.Run(name, func(t *testing.T) {
+			tokenCalls, readCalls := 0, 0
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				switch request.URL.Path {
+				case "/cgi-bin/gettoken":
+					tokenCalls++
+					_, _ = writer.Write([]byte(`{"errcode":0,"access_token":"contact-token","expires_in":7200}`))
+				case "/cgi-bin/externalcontact/get_follow_user_list":
+					readCalls++
+					if readCalls == 1 || persistent {
+						_, _ = writer.Write([]byte(`{"errcode":40014}`))
+						return
+					}
+					_, _ = writer.Write([]byte(`{"errcode":0,"follow_user":["staff-1"]}`))
+				default:
+					t.Fatalf("unexpected path=%s", request.URL.Path)
+				}
+			}))
+			defer server.Close()
+			client := newTestClient(t, server, func() time.Time { return testNow })
+			client.config.ContactSecret = "contact secret"
+			staff, err := client.ListContactStaff(context.Background())
+			if !persistent {
+				if err != nil || len(staff) != 1 || tokenCalls != 2 || readCalls != 2 {
+					t.Fatalf("staff=%v err=%v tokens=%d reads=%d", staff, err, tokenCalls, readCalls)
+				}
+				return
+			}
+			var failure wecomport.DirectoryFailure
+			if err == nil || !errors.As(err, &failure) || failure.DirectoryFailureCode() != "provider_credentials_invalid" || failure.DirectoryFailureRetryable() || tokenCalls != 2 || readCalls != 2 {
+				t.Fatalf("err=%v tokens=%d reads=%d", err, tokenCalls, readCalls)
+			}
+		})
+	}
+}
+
 func TestListTagCatalogUsesNarrowPostAndPreservesProviderFacts(t *testing.T) {
 	for name, response := range map[string]string{
 		"missing":   `{"errcode":0}`,

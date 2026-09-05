@@ -33,6 +33,13 @@ var (
 
 type CustomerSyncStatus string
 
+// syncRetryError retains only a safe business failure code for River's final
+// attempt. The original Provider error may contain transport detail and must
+// not be propagated into job logs.
+type syncRetryError struct{ code string }
+
+func (err *syncRetryError) Error() string { return "customer sync step scheduled for retry" }
+
 const (
 	SyncQueued           CustomerSyncStatus = "queued"
 	SyncListingStaff     CustomerSyncStatus = "listing_staff"
@@ -247,6 +254,10 @@ func (service CustomerSyncService) processRunOnce(ctx context.Context, run Custo
 }
 
 func syncRetryCode(err error) string {
+	var retry *syncRetryError
+	if errors.As(err, &retry) && retry.code != "" {
+		return retry.code
+	}
 	if errors.Is(err, ErrSyncCAS) {
 		return "sync_cas"
 	}
@@ -398,17 +409,30 @@ func (service CustomerSyncService) reconcile(ctx context.Context, run CustomerSy
 }
 
 func (service CustomerSyncService) recordFailure(ctx context.Context, run CustomerSyncRun, cause error) error {
-	status, code := SyncFailedRetryable, "provider_unavailable"
-	if errors.Is(cause, wecomport.ErrDirectoryDisabled) {
-		status, code = SyncFailedTerminal, "provider_disabled"
-	}
+	status, code := classifySyncFailure(cause)
 	err := service.UOW.Within(ctx, func(txContext context.Context) error {
 		return service.Store.Fail(txContext, run.ID, run.Version, status, code)
 	})
 	if err != nil {
 		return err
 	}
-	return errors.New("customer sync step scheduled for retry")
+	return &syncRetryError{code: code}
+}
+
+func classifySyncFailure(cause error) (CustomerSyncStatus, string) {
+	status, code := SyncFailedRetryable, "provider_unavailable"
+	if errors.Is(cause, wecomport.ErrDirectoryDisabled) {
+		status, code = SyncFailedTerminal, "provider_disabled"
+	} else {
+		var failure wecomport.DirectoryFailure
+		if errors.As(cause, &failure) {
+			code = failure.DirectoryFailureCode()
+			if !failure.DirectoryFailureRetryable() {
+				status = SyncFailedTerminal
+			}
+		}
+	}
+	return status, code
 }
 
 func (service CustomerSyncService) now() time.Time {
