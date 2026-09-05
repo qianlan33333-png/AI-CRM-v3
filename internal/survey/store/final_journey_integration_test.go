@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 	"time"
 
@@ -63,7 +64,7 @@ func TestPostgreSQLHTTPOAuthOneIDSubmissionResultJourney(t *testing.T) {
 		t.Fatal(err)
 	}
 	defs := surveyapp.NewService(uow, repo)
-	q := surveyport.Questionnaire{Name: "journey", Title: "Journey", Slug: "journey", Status: surveyport.StatusDraft, AnswerDisplayMode: surveyport.DisplayAllInOne, Questions: []surveyport.Question{{Type: surveyport.QuestionSingleChoice, Title: "q", Required: true, SortOrder: 0, Options: []surveyport.Option{{OptionText: "yes", SortOrder: 0}}}}}
+	q := surveyport.Questionnaire{Name: "journey", Title: "Journey", Slug: "journey", Status: surveyport.StatusDraft, AnswerDisplayMode: surveyport.DisplayAllInOne, Questions: []surveyport.Question{{Type: surveyport.QuestionSingleChoice, Title: "q", Required: true, SortOrder: 0, Options: []surveyport.Option{{Text: "yes", SortOrder: 0}}}}}
 	created, err := defs.Create(ctx, surveyport.CreateCommand{Questionnaire: q, ActorID: 1, IdempotencyKey: "survey-final-create-0001"})
 	if err != nil {
 		t.Fatal(err)
@@ -86,7 +87,7 @@ func TestPostgreSQLHTTPOAuthOneIDSubmissionResultJourney(t *testing.T) {
 	if start.Code != http.StatusFound {
 		t.Fatalf("start=%d %s", start.Code, start.Body.String())
 	}
-	state := start.Result().Location.Query().Get("state")
+	state := mustLocation(t, start).Query().Get("state")
 	callback := httptest.NewRecorder()
 	h.ServeHTTP(callback, httptest.NewRequest(http.MethodGet, "/api/h5/surveys/oauth/callback?state="+state+"&code=ok", nil))
 	if callback.Code != http.StatusFound {
@@ -99,4 +100,12 @@ func TestPostgreSQLHTTPOAuthOneIDSubmissionResultJourney(t *testing.T) {
 	if err = native.QueryRow(ctx, "SELECT count(*) FROM customer_identities").Scan(&identities); err != nil || identities != 1 {
 		t.Fatalf("identities=%d err=%v", identities, err)
 	}
+}
+func mustLocation(t *testing.T, r *http.Response) *url.URL {
+	t.Helper()
+	value, err := r.Location()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return value
 }
