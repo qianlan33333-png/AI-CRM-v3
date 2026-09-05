@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/csv"
 	"encoding/json"
@@ -48,6 +49,11 @@ func surveyJourneyDefinition(slug string, mode surveyport.AnswerDisplayMode) sur
 	maximum := 1
 	return surveyport.Questionnaire{Name: "OAuth journey", Title: "OAuth journey", Description: "", Mode: surveyport.ModeSurvey, AnswerDisplayMode: mode, AssessmentConfig: json.RawMessage(`{}`), Slug: slug, Status: surveyport.StatusDraft,
 		Questions: []surveyport.Question{{Type: surveyport.QuestionSingleChoice, Title: "Continue?", Required: true, SortOrder: 0, Validation: surveyport.Validation{MaximumSelections: &maximum}, Options: []surveyport.Option{{Text: "Yes", TagCodes: []string{}, SortOrder: 0}, {Text: "No", TagCodes: []string{}, SortOrder: 1}}}}}
+}
+
+func surveyJourneyPublicKey(seed string) string {
+	digest := sha256.Sum256([]byte(seed))
+	return base64.RawURLEncoding.EncodeToString(digest[:])
 }
 
 type surveyJourneyUnitOfWork struct{}
@@ -224,7 +230,8 @@ func TestSurveyOAuthSubmissionResultJourneyPostgreSQL(t *testing.T) {
 	}
 
 	question := publishResult.Questionnaire.Questions[0]
-	answer := map[string]any{"version": publishResult.Questionnaire.DefinitionVersion, "submission_key": "survey-oauth-submission-0001", "answers": []map[string]any{{"question_id": question.ID, "option_ids": []surveyport.ID{question.Options[0].ID}}}}
+	submissionKey := surveyJourneyPublicKey("oauth-submission")
+	answer := map[string]any{"version": publishResult.Questionnaire.DefinitionVersion, "submission_key": submissionKey, "answers": []map[string]any{{"question_id": question.ID, "option_ids": []surveyport.ID{question.Options[0].ID}}}}
 	submitBody, err := json.Marshal(answer)
 	if err != nil {
 		t.Fatal(err)
@@ -262,7 +269,7 @@ func TestSurveyOAuthSubmissionResultJourneyPostgreSQL(t *testing.T) {
 	if replayedReceipt.Receipt.SubmissionID != submissionResult.Receipt.SubmissionID {
 		t.Fatalf("replayed receipt=%+v original=%+v", replayedReceipt.Receipt, submissionResult.Receipt)
 	}
-	driftBody, err := json.Marshal(map[string]any{"version": publishResult.Questionnaire.DefinitionVersion, "submission_key": "survey-oauth-submission-0001", "answers": []map[string]any{{"question_id": question.ID, "option_ids": []surveyport.ID{question.Options[1].ID}}}})
+	driftBody, err := json.Marshal(map[string]any{"version": publishResult.Questionnaire.DefinitionVersion, "submission_key": submissionKey, "answers": []map[string]any{{"question_id": question.ID, "option_ids": []surveyport.ID{question.Options[1].ID}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -350,7 +357,7 @@ func TestSurveyOAuthSubmissionResultJourneyPostgreSQL(t *testing.T) {
 	if len(oneCookies) != 1 || oneCookies[0].Name != "__Host-aicrm_survey_identity" || !oneCookies[0].HttpOnly {
 		t.Fatalf("one-mode cookie=%+v", oneCookies)
 	}
-	oneSubmitBody, err := json.Marshal(map[string]any{"version": oneOwner.DefinitionVersion, "submission_key": "survey-oauth-one-submission-0001", "answers": []map[string]any{{"question_id": oneOwner.Questions[0].ID, "option_ids": []surveyport.ID{oneOwner.Questions[0].Options[0].ID}}}})
+	oneSubmitBody, err := json.Marshal(map[string]any{"version": oneOwner.DefinitionVersion, "submission_key": surveyJourneyPublicKey("oauth-one-submission"), "answers": []map[string]any{{"question_id": oneOwner.Questions[0].ID, "option_ids": []surveyport.ID{oneOwner.Questions[0].Options[0].ID}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
