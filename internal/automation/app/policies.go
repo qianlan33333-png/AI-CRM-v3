@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	aiassistantport "github.com/qianlan33333-png/AI-CRM-v3/internal/aiassistant/port"
 	automationdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/domain"
 	automationport "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/port"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
@@ -60,6 +61,8 @@ type RuntimeService struct {
 	snapshots      segmentport.SnapshotReader
 	messages       outboundport.TransactionalMessageAccepter
 	effects        effectport.TransactionalReconciler
+	reviewPlans    aiassistantport.TransactionalIntake
+	content        automationport.OutboundPublishedContentReader
 	recipientLimit int64
 	now            func() time.Time
 }
@@ -100,6 +103,18 @@ func (s *RuntimeService) SetEffectReconciler(effects effectport.TransactionalRec
 		return ErrRuntimeNotReady
 	}
 	s.effects = effects
+	return nil
+}
+
+// SetReviewPlanIntake binds the existing AI Assistant review owner for manual
+// audience broadcasts. It is intentionally separate from the automatic
+// outbound accepter: a manual confirmation must create a pending plan and
+// accept no external effect until that plan is approved.
+func (s *RuntimeService) SetReviewPlanIntake(intake aiassistantport.TransactionalIntake, content automationport.OutboundPublishedContentReader) error {
+	if s == nil || intake == nil || content == nil {
+		return ErrRuntimeNotReady
+	}
+	s.reviewPlans, s.content = intake, content
 	return nil
 }
 

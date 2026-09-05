@@ -22,6 +22,9 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
 	accessstore "github.com/qianlan33333-png/AI-CRM-v3/internal/access/store"
+	aiassistantapp "github.com/qianlan33333-png/AI-CRM-v3/internal/aiassistant/app"
+	aiassistantport "github.com/qianlan33333-png/AI-CRM-v3/internal/aiassistant/port"
+	aiassistantstore "github.com/qianlan33333-png/AI-CRM-v3/internal/aiassistant/store"
 	automationapp "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/app"
 	automationdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/domain"
 	automationhttp "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/http"
@@ -30,6 +33,8 @@ import (
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	externaleffects "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects"
 	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
+	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
+	identityport "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/port"
 	identityquery "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/query"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/outbound"
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
@@ -71,6 +76,14 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 		t.Fatal(err)
 	}
 	automationRepo, err := automationstore.NewPostgreSQL(native, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	aiRepo, err := aiassistantstore.NewPostgreSQL(native, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	aiService, err := aiassistantapp.NewService(uow, aiRepo, automationAudienceAIRecipients{}, automationAudienceAIStaff{}, automationAudienceAIMaterials{}, automationAudienceAIIdentities{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,6 +192,9 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 		t.Fatal(err)
 	}
 	if err = runtimeService.SetMessageAccepter(messages); err != nil {
+		t.Fatal(err)
+	}
+	if err = runtimeService.SetReviewPlanIntake(aiService, automationService); err != nil {
 		t.Fatal(err)
 	}
 	if err = runtimeService.SetEffectReconciler(effects); err != nil {
@@ -298,50 +314,22 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 		t.Fatalf("preview=%+v err=%v", preview, err)
 	}
 	manual, err := runtimeService.ConfirmRun(ctx, automationapp.RunConfirmCommand{PackageID: packageID, PackageVersion: preview.PackageVersion, SnapshotID: preview.SnapshotID, AgentID: preview.AgentID, AgentPublishedVersion: preview.AgentPublishedVersion, PreviewDigest: automationapp.PreviewDigestString(preview), Actor: staffID, IdempotencyKey: "audience-runtime-manual-0001"})
-	if err != nil || manual.TargetCount != 2 {
+	if err != nil || manual.TargetCount != 2 || manual.State != automationport.RunPendingReview || manual.AIPlanID < 1 {
 		t.Fatalf("manual=%+v err=%v", manual, err)
 	}
-	// The manual intents were accepted while the first runtime was stopped.
-	// Restarting the shared runtime is what executes their already-committed
-	// EER jobs; it never recreates the entered-policy sends from the first run.
-	stop = automationAudienceStartRuntime(t, runtime)
-	stopOnce = sync.Once{}
-	automationAudienceEventually(t, "manual effects after runtime restart", func() bool {
-		var accepted, unknown int
-		if native.QueryRow(ctx, `SELECT count(*) FROM automation_run_recipients WHERE run_id=$1 AND state='provider_accepted'`, manual.ID).Scan(&accepted) != nil {
-			return false
-		}
-		if native.QueryRow(ctx, `SELECT count(*) FROM automation_run_recipients WHERE run_id=$1 AND state='outcome_unknown'`, manual.ID).Scan(&unknown) != nil {
-			return false
-		}
-		return accepted == 1 && unknown == 1 && wecomServer.Calls() == 4
-	})
-	stopRuntime()
-	var unknownEffect string
-	if err = native.QueryRow(ctx, `SELECT effect_id FROM automation_run_recipients WHERE run_id=$1 AND state='outcome_unknown'`, manual.ID).Scan(&unknownEffect); err != nil {
-		t.Fatal(err)
+	plan, err := aiService.GetPlan(ctx, aiassistantport.PlanID(manual.AIPlanID))
+	if err != nil || plan.State != aiassistantport.PlanPendingReview || plan.TargetCount != 2 {
+		t.Fatalf("manual plan=%+v err=%v", plan, err)
 	}
-	var unknownRun int64
-	if err = native.QueryRow(ctx, `SELECT run_id FROM automation_run_recipients WHERE effect_id=$1`, unknownEffect).Scan(&unknownRun); err != nil {
-		t.Fatal(err)
+	var effectCount, runRecipientCount int
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM external_effects`).Scan(&effectCount); err != nil || effectCount != 2 {
+		t.Fatalf("confirmation effects=%d err=%v", effectCount, err)
 	}
-	var effectID int64
-	if _, err = fmt.Sscanf(unknownEffect, "eer_%d", &effectID); err != nil || effectID < 1 {
-		t.Fatalf("effect ref=%q err=%v", unknownEffect, err)
-	}
-	if _, err = native.Exec(ctx, `UPDATE external_effects SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE id=$1`, effectID); err != nil {
-		t.Fatal(err)
-	}
-	candidate, err := runtimeService.EffectReconciliationCandidate(ctx, unknownRun, unknownEffect)
-	if err != nil {
-		t.Fatal(err)
-	}
-	evidence := string(effectport.Hash("audience-runtime-independent-evidence", unknownEffect))
-	if _, err = runtimeService.ReconcileRunEffect(ctx, automationapp.RunEffectReconcileCommand{RunID: unknownRun, Actor: staffID, Generation: candidate.Generation, Fence: candidate.Fence, EffectID: unknownEffect, LeaseExpiresAt: candidate.LeaseExpiresAt, EvidenceDigest: evidence[len("sha256:"):], Resolution: "provider_accepted", IdempotencyKey: "audience-runtime-reconcile-0001"}); err != nil {
-		t.Fatal(err)
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM automation_run_recipients WHERE run_id=$1`, manual.ID).Scan(&runRecipientCount); err != nil || runRecipientCount != 0 {
+		t.Fatalf("confirmation runtime recipients=%d err=%v", runRecipientCount, err)
 	}
 	replayed, err := runtimeService.ConfirmRun(ctx, automationapp.RunConfirmCommand{PackageID: packageID, PackageVersion: preview.PackageVersion, SnapshotID: preview.SnapshotID, AgentID: preview.AgentID, AgentPublishedVersion: preview.AgentPublishedVersion, PreviewDigest: automationapp.PreviewDigestString(preview), Actor: staffID, IdempotencyKey: "audience-runtime-manual-0001"})
-	if err != nil || replayed.ID != manual.ID || wecomServer.Calls() != 4 {
+	if err != nil || replayed.ID != manual.ID || replayed.AIPlanID != manual.AIPlanID || wecomServer.Calls() != 2 {
 		t.Fatalf("manual replay=%+v provider calls=%d err=%v", replayed, wecomServer.Calls(), err)
 	}
 
@@ -355,7 +343,7 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 	}
 	for _, check := range []struct{ path, contains string }{
 		{"/api/admin/automation-runs?limit=100", automationAudienceInt(manual.ID)},
-		{"/api/admin/automation-runs/" + automationAudienceInt(manual.ID) + "/recipients?limit=100", unknownEffect},
+		{"/api/admin/automation-runs/" + automationAudienceInt(manual.ID) + "/recipients?limit=100", "items"},
 	} {
 		req := httptest.NewRequest(http.MethodGet, check.path, nil)
 		res := httptest.NewRecorder()
@@ -396,7 +384,7 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 		if native.QueryRow(ctx, `SELECT count(*) FROM outbound_message_intents`).Scan(&intents) != nil {
 			return false
 		}
-		return exits == 1 && entered == 0 && intents == 4 && wecomServer.Calls() == 4
+		return exits == 1 && entered == 0 && intents == 2 && wecomServer.Calls() == 2
 	})
 	stopRuntime()
 }
@@ -423,6 +411,36 @@ type automationAudienceCanonical struct{}
 
 func (automationAudienceCanonical) CanonicalCustomers(_ context.Context, ids []customerdomain.CustomerID) ([]customerdomain.CustomerID, error) {
 	return ids, nil
+}
+
+// These fixtures provide only already-canonical Customer and active-staff
+// facts to the real AI Plan service. The plan, receipt, audit and outbox still
+// use its PostgreSQL Owner store in the shared transaction.
+type automationAudienceAIRecipients struct{}
+
+func (automationAudienceAIRecipients) CustomerSnapshot(_ context.Context, id customerdomain.CustomerID) (aiassistantapp.CustomerSnapshot, error) {
+	return aiassistantapp.CustomerSnapshot{CanonicalID: id, Status: customerdomain.StatusActive, DisplayName: "runtime customer", OneIDLabel: "CID"}, nil
+}
+
+type automationAudienceAIStaff struct{}
+
+func (automationAudienceAIStaff) StaffSnapshot(_ context.Context, id int64) (aiassistantapp.StaffSnapshot, error) {
+	return aiassistantapp.StaffSnapshot{ID: id, DisplayName: "runtime staff", Active: true}, nil
+}
+
+type automationAudienceAIMaterials struct{}
+
+func (automationAudienceAIMaterials) ResolveMaterial(_ context.Context, block aiassistantport.ContentBlock) (aiassistantport.ContentBlock, error) {
+	return block, nil
+}
+func (automationAudienceAIMaterials) RegisterMaterialReference(context.Context, aiassistantport.ContentBlock, effectport.Digest) error {
+	return nil
+}
+
+type automationAudienceAIIdentities struct{}
+
+func (automationAudienceAIIdentities) Resolve(context.Context, identitydomain.Reference) (identityport.ResolveResult, error) {
+	return identityport.ResolveResult{Status: identityport.ResolveNotFound}, nil
 }
 
 type automationAudienceEnrollmentSink struct{ runtime *automationapp.RuntimeService }
@@ -736,7 +754,7 @@ func automationAudienceRuntimePool(t *testing.T) (*pgxpool.Pool, func()) {
 	if !ok {
 		t.Fatal("locate automation audience journey")
 	}
-	for _, name := range []string{"0001_platform.sql", "0002_identity.sql", "0003_access.sql", "0005_external_effects.sql", "0013_automation_agents.sql", "0039_segment_audience_configuration.sql", "0040_segment_audience_snapshots.sql", "0041_segment_audience_webhooks.sql", "0042_segment_audience_execution_bindings.sql", "0043_automation_runtime.sql", "0044_outbound_automation_messages.sql", "0045_segment_audience_member_events.sql", "0046_automation_run_reconciliations.sql", "0048_segment_audience_schedule_state.sql", "0053_segment_audience_member_event_fact_kinds.sql", "0083_segment_audience_refresh_modes.sql", "0085_segment_audience_refresh_kind.sql"} {
+	for _, name := range []string{"0001_platform.sql", "0002_identity.sql", "0003_access.sql", "0005_external_effects.sql", "0013_automation_agents.sql", "0036_ai_assistant_review.sql", "0037_outbound_private_messages.sql", "0039_segment_audience_configuration.sql", "0040_segment_audience_snapshots.sql", "0041_segment_audience_webhooks.sql", "0042_segment_audience_execution_bindings.sql", "0043_automation_runtime.sql", "0044_outbound_automation_messages.sql", "0045_segment_audience_member_events.sql", "0046_automation_run_reconciliations.sql", "0048_segment_audience_schedule_state.sql", "0053_segment_audience_member_event_fact_kinds.sql", "0083_segment_audience_refresh_modes.sql", "0085_segment_audience_refresh_kind.sql", "0087_automation_manual_ai_review.sql"} {
 		sql, readErr := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "migrations", name))
 		if readErr != nil {
 			native.Close()

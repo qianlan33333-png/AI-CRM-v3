@@ -270,7 +270,7 @@ func automationIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 
 func automationRuntimeIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 	t.Helper()
-	pool, cleanup := automationIntegrationPoolWithMigrations(t, []string{"0013_automation_agents.sql", "0043_automation_runtime.sql"})
+	pool, cleanup := automationIntegrationPoolWithMigrations(t, []string{"0013_automation_agents.sql", "0043_automation_runtime.sql", "0087_automation_manual_ai_review.sql"})
 	return pool, cleanup
 }
 

@@ -34,6 +34,7 @@ type RunState string
 const (
 	RunPreparing      RunState = "preparing"
 	RunReady          RunState = "ready"
+	RunPendingReview  RunState = "pending_review"
 	RunExecuting      RunState = "executing"
 	RunCompleted      RunState = "completed"
 	RunPartialFailed  RunState = "partial_failed"
@@ -88,6 +89,7 @@ type Run struct {
 	SnapshotID            segmentport.SnapshotID
 	AgentID               AgentID
 	AgentPublishedVersion int64
+	AIPlanID              int64
 	PreviewDigest         [32]byte
 	State                 RunState
 	TargetCount           int64

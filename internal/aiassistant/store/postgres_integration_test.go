@@ -198,6 +198,63 @@ func TestPostgreSQLPlanSizesAndFiftyRecipientPagination(t *testing.T) {
 	}
 }
 
+func TestPostgreSQLCreatePlanWithinRequiresCallerTransactionAndRollsBackWithIt(t *testing.T) {
+	native, cleanup := integrationPool(t)
+	defer cleanup()
+	wrapped, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wrapped.Close()
+	uow, err := platformpostgres.NewUnitOfWork(wrapped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := NewPostgreSQL(native, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := aiassistantapp.NewService(uow, repository, integrationCustomers{}, integrationStaff{}, integrationMaterials{}, integrationIdentities{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := aiassistantport.CreatePlanCommand{Actor: aiassistantport.Actor{Kind: aiassistantport.ActorAdmin, ID: 7}, IdempotencyKey: "within-plan-rollback-0001", Name: "within plan", SourceKind: "automation.manual_audience_run.v1", SourceDigest: effectport.Hash("source", "within"), Recipients: []aiassistantport.RecipientCandidate{{CustomerID: 1, StaffID: 21, Content: []aiassistantport.ContentBlock{{Kind: aiassistantport.ContentText, Text: "hello"}}}}, OccurredAt: time.Date(2026, 9, 5, 1, 2, 3, 0, time.UTC)}
+	if _, err = service.CreatePlanWithin(context.Background(), command); !errors.Is(err, aiassistantapp.ErrUnavailable) {
+		t.Fatalf("unbound CreatePlanWithin err=%v", err)
+	}
+	rollback := errors.New("rollback caller transaction")
+	err = uow.Within(context.Background(), func(tx context.Context) error {
+		created, createErr := service.CreatePlanWithin(tx, command)
+		if createErr != nil || created.Plan.ID < 1 {
+			t.Fatalf("within create=%+v err=%v", created, createErr)
+		}
+		return rollback
+	})
+	if !errors.Is(err, rollback) {
+		t.Fatalf("rollback err=%v", err)
+	}
+	var count int
+	if err = native.QueryRow(context.Background(), `SELECT count(*) FROM ai_assistant_plans`).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("rolled-back plans=%d err=%v", count, err)
+	}
+	var first aiassistantport.CreatePlanResult
+	if err = uow.Within(context.Background(), func(tx context.Context) error {
+		var createErr error
+		first, createErr = service.CreatePlanWithin(tx, command)
+		return createErr
+	}); err != nil || first.Plan.ID < 1 || first.Replayed {
+		t.Fatalf("first=%+v err=%v", first, err)
+	}
+	var replay aiassistantport.CreatePlanResult
+	if err = uow.Within(context.Background(), func(tx context.Context) error {
+		var createErr error
+		replay, createErr = service.CreatePlanWithin(tx, command)
+		return createErr
+	}); err != nil || !replay.Replayed || replay.Plan.ID != first.Plan.ID {
+		t.Fatalf("replay=%+v first=%+v err=%v", replay, first, err)
+	}
+}
+
 func TestPostgreSQLIntegrationNonceAllowsOnlyExactReplay(t *testing.T) {
 	native, cleanup := integrationPool(t)
 	defer cleanup()

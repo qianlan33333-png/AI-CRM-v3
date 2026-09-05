@@ -283,7 +283,7 @@ func (r *Repository) CreateRun(ctx context.Context, run automationdomain.Runtime
 	if e != nil {
 		return run, nil, e
 	}
-	e = t.QueryRow(ctx, `INSERT INTO automation_runs(policy_id,policy_version,package_id,package_version,snapshot_id,agent_id,agent_published_version,binding_version,sender_set_version,preview_digest,state,target_count,skipped_count,created_by,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$15) RETURNING id`, nullablePositive(run.PolicyID), nullablePositive(run.PolicyVersion), run.PackageID, run.PackageVersion, run.SnapshotID, run.AgentID, run.AgentPublishedVersion, run.BindingVersion, run.SenderSetVersion, run.PreviewDigest[:], run.State, run.TargetCount, run.SkippedCount, run.CreatedBy, run.CreatedAt).Scan(&run.ID)
+	e = t.QueryRow(ctx, `INSERT INTO automation_runs(policy_id,policy_version,package_id,package_version,snapshot_id,agent_id,agent_published_version,ai_plan_id,binding_version,sender_set_version,preview_digest,state,target_count,skipped_count,created_by,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$16) RETURNING id`, nullablePositive(run.PolicyID), nullablePositive(run.PolicyVersion), run.PackageID, run.PackageVersion, run.SnapshotID, run.AgentID, run.AgentPublishedVersion, nullablePositive(run.AIPlanID), run.BindingVersion, run.SenderSetVersion, run.PreviewDigest[:], run.State, run.TargetCount, run.SkippedCount, run.CreatedBy, run.CreatedAt).Scan(&run.ID)
 	if e != nil {
 		return run, nil, e
 	}
@@ -353,14 +353,14 @@ func (r *Repository) ProjectMessageCompletion(ctx context.Context, completion ou
 	return e
 }
 
-const runColumns = `id,COALESCE(policy_id,0),COALESCE(policy_version,0),package_id,package_version,snapshot_id,agent_id,agent_published_version,binding_version,sender_set_version,preview_digest,state,target_count,skipped_count,(SELECT count(*) FROM automation_run_recipients unknown_recipient WHERE unknown_recipient.run_id=automation_runs.id AND unknown_recipient.state='outcome_unknown'),created_by,created_at,updated_at,completed_at`
+const runColumns = `id,COALESCE(policy_id,0),COALESCE(policy_version,0),package_id,package_version,snapshot_id,agent_id,agent_published_version,COALESCE(ai_plan_id,0),binding_version,sender_set_version,preview_digest,state,target_count,skipped_count,(SELECT count(*) FROM automation_run_recipients unknown_recipient WHERE unknown_recipient.run_id=automation_runs.id AND unknown_recipient.state='outcome_unknown'),created_by,created_at,updated_at,completed_at`
 
 func scanRun(row pgx.Row) (automationdomain.RuntimeRun, error) {
 	var out automationdomain.RuntimeRun
 	var digest []byte
 	var state string
 	var completed *time.Time
-	e := row.Scan(&out.ID, &out.PolicyID, &out.PolicyVersion, &out.PackageID, &out.PackageVersion, &out.SnapshotID, &out.AgentID, &out.AgentPublishedVersion, &out.BindingVersion, &out.SenderSetVersion, &digest, &state, &out.TargetCount, &out.SkippedCount, &out.OutcomeUnknownCount, &out.CreatedBy, &out.CreatedAt, &out.UpdatedAt, &completed)
+	e := row.Scan(&out.ID, &out.PolicyID, &out.PolicyVersion, &out.PackageID, &out.PackageVersion, &out.SnapshotID, &out.AgentID, &out.AgentPublishedVersion, &out.AIPlanID, &out.BindingVersion, &out.SenderSetVersion, &digest, &state, &out.TargetCount, &out.SkippedCount, &out.OutcomeUnknownCount, &out.CreatedBy, &out.CreatedAt, &out.UpdatedAt, &completed)
 	if errors.Is(e, pgx.ErrNoRows) {
 		return out, automationapp.ErrRuntimeNotFound
 	}

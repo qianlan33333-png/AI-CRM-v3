@@ -6,14 +6,15 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
+	aiassistantport "github.com/qianlan33333-png/AI-CRM-v3/internal/aiassistant/port"
 	automationdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/domain"
 	automationport "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/port"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
-	outboundport "github.com/qianlan33333-png/AI-CRM-v3/internal/outbound/port"
 	segmentport "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/port"
 )
 
@@ -64,7 +65,7 @@ func (s *RuntimeService) CreateBroadcastPreview(ctx context.Context, packageID, 
 	return preview, runtimeClassify(err)
 }
 func (s *RuntimeService) ConfirmRun(ctx context.Context, c RunConfirmCommand) (automationdomain.RuntimeRun, error) {
-	if s == nil || s.messages == nil || c.PackageID < 1 || c.PackageVersion < 1 || c.SnapshotID < 1 || c.AgentID < 1 || c.AgentPublishedVersion < 1 || !validRuntimeMutation(c.Actor, c.IdempotencyKey) {
+	if s == nil || s.reviewPlans == nil || s.content == nil || c.PackageID < 1 || c.PackageVersion < 1 || c.SnapshotID < 1 || c.AgentID < 1 || c.AgentPublishedVersion < 1 || !validRuntimeMutation(c.Actor, c.IdempotencyKey) {
 		return automationdomain.RuntimeRun{}, ErrRuntimeInvalid
 	}
 	rawDigest, err := hex.DecodeString(c.PreviewDigest)
@@ -109,33 +110,62 @@ func (s *RuntimeService) ConfirmRun(ctx context.Context, c RunConfirmCommand) (a
 	if int64(len(members)) != preview.TargetCount || len(members) == 0 || int64(len(members)) > s.recipientLimit {
 		return automationdomain.RuntimeRun{}, ErrRuntimeConflict
 	}
-	recipients := make([]automationdomain.RuntimeRecipient, len(members))
+	recipients := make([]aiassistantport.RecipientCandidate, len(members))
 	for i, item := range members {
-		recipients[i] = automationdomain.RuntimeRecipient{CustomerID: int64(item.CustomerID), SenderStaffID: configuration.SenderStaffIDs[i%len(configuration.SenderStaffIDs)], State: automationport.RecipientAccepted}
+		recipients[i] = aiassistantport.RecipientCandidate{CustomerID: customerdomain.CustomerID(item.CustomerID), StaffID: configuration.SenderStaffIDs[i%len(configuration.SenderStaffIDs)]}
+	}
+	published, found, err := s.content.OutboundPublishedContent(ctx, automationport.AgentID(c.AgentID), c.AgentPublishedVersion)
+	if err != nil || !found || published.ContentDigest != configuration.ContentDigest {
+		return automationdomain.RuntimeRun{}, ErrRuntimeConflict
+	}
+	blocks, err := reviewContentBlocks(published.Content)
+	if err != nil {
+		return automationdomain.RuntimeRun{}, err
+	}
+	for i := range recipients {
+		recipients[i].Content = append([]aiassistantport.ContentBlock(nil), blocks...)
 	}
 	payload, _ := json.Marshal(c)
 	var run automationdomain.RuntimeRun
 	err = s.runtimeMutation(ctx, "confirm_run", c.Actor, c.IdempotencyKey, payload, func(tx context.Context) (any, RuntimeFact, error) {
-		run = automationdomain.RuntimeRun{PackageID: c.PackageID, PackageVersion: c.PackageVersion, SnapshotID: c.SnapshotID, AgentID: c.AgentID, AgentPublishedVersion: c.AgentPublishedVersion, BindingVersion: preview.BindingVersion, SenderSetVersion: preview.SenderSetVersion, PreviewDigest: digest, State: automationport.RunExecuting, TargetCount: int64(len(recipients)), CreatedBy: c.Actor, CreatedAt: now, UpdatedAt: now}
-		created, createdRecipients, e := s.store.CreateRun(tx, run, recipients)
+		plan, e := s.reviewPlans.CreatePlanWithin(tx, aiassistantport.CreatePlanCommand{Actor: aiassistantport.Actor{Kind: aiassistantport.ActorAdmin, ID: c.Actor}, IdempotencyKey: "automation-manual-review-" + c.IdempotencyKey, Name: "Audience broadcast " + strconv.FormatInt(c.PackageID, 10), SourceKind: "automation.manual_audience_run.v1", SourceDigest: effectport.Hash("automation.manual-audience-run", hex.EncodeToString(digest[:])), Recipients: recipients, OccurredAt: now})
+		if e != nil || plan.Plan.ID < 1 {
+			return run, RuntimeFact{}, e
+		}
+		run = automationdomain.RuntimeRun{PackageID: c.PackageID, PackageVersion: c.PackageVersion, SnapshotID: c.SnapshotID, AgentID: c.AgentID, AgentPublishedVersion: c.AgentPublishedVersion, AIPlanID: int64(plan.Plan.ID), BindingVersion: preview.BindingVersion, SenderSetVersion: preview.SenderSetVersion, PreviewDigest: digest, State: automationport.RunPendingReview, TargetCount: int64(len(recipients)), CreatedBy: c.Actor, CreatedAt: now, UpdatedAt: now}
+		created, createdRecipients, e := s.store.CreateRun(tx, run, nil)
 		if e != nil {
 			return created, RuntimeFact{}, e
 		}
-		policyDigest := sha256.Sum256([]byte("automation.manual-run.policy.v1"))
-		for _, recipient := range createdRecipients {
-			sourceDigest := sha256.Sum256([]byte(fmt.Sprintf("automation-run:%d:recipient:%d", created.ID, recipient.ID)))
-			targetDigest := sha256.Sum256([]byte(fmt.Sprintf("customer:%d", recipient.CustomerID)))
-			acceptance, acceptErr := s.messages.AcceptMessageWithin(tx, outboundport.MessageIntent{SourceKind: "automation_run", SourceID: created.ID, RunRecipientID: recipient.ID, CustomerID: customerdomain.CustomerID(recipient.CustomerID), SenderStaffID: recipient.SenderStaffID, AgentID: created.AgentID, AgentPublishedVersion: created.AgentPublishedVersion, ContentReference: fmt.Sprintf("automation-agent:%d:published:%d", created.AgentID, created.AgentPublishedVersion), SourceDigest: sourceDigest, TargetDigest: targetDigest, PayloadDigest: configuration.ContentDigest, PolicyDigest: policyDigest, ReceiptKey: fmt.Sprintf("automation-run-%d-recipient-%d", created.ID, recipient.ID)})
-			if acceptErr != nil {
-				return created, RuntimeFact{}, acceptErr
-			}
-			if bindErr := s.store.BindRecipientEffect(tx, recipient.ID, acceptance.EffectID, now); bindErr != nil {
-				return created, RuntimeFact{}, bindErr
-			}
+		if len(createdRecipients) != 0 {
+			return created, RuntimeFact{}, ErrRuntimeConflict
 		}
-		return created, runtimeFact("run", created.ID, "confirm", "automation.run.queued.v1", c.Actor, c.IdempotencyKey, now), nil
+		return created, runtimeFact("run", created.ID, "confirm", "automation.run.pending_review.v1", c.Actor, c.IdempotencyKey, now), nil
 	}, &run)
 	return run, runtimeClassify(err)
+}
+
+func reviewContentBlocks(content automationport.FixedContentPackage) ([]aiassistantport.ContentBlock, error) {
+	if len(content.AttachmentLibraryIDs) != 0 || len(content.DynamicMiniprogramCard) != 0 {
+		return nil, ErrRuntimeNotReady
+	}
+	blocks := make([]aiassistantport.ContentBlock, 0, 1+len(content.ImageLibraryIDs)+len(content.MiniprogramLibraryIDs)+len(content.GroupInviteLibraryIDs))
+	if text := strings.TrimSpace(content.ContentText); text != "" {
+		blocks = append(blocks, aiassistantport.ContentBlock{Kind: aiassistantport.ContentText, Text: text})
+	}
+	for _, id := range content.ImageLibraryIDs {
+		blocks = append(blocks, aiassistantport.ContentBlock{Kind: aiassistantport.ContentImage, MaterialKind: "image", MaterialID: id})
+	}
+	for _, id := range content.MiniprogramLibraryIDs {
+		blocks = append(blocks, aiassistantport.ContentBlock{Kind: aiassistantport.ContentMiniProgram, MaterialKind: "miniprogram", MaterialID: id})
+	}
+	for _, id := range content.GroupInviteLibraryIDs {
+		blocks = append(blocks, aiassistantport.ContentBlock{Kind: aiassistantport.ContentLink, MaterialKind: "group_invite", MaterialID: id})
+	}
+	if len(blocks) == 0 {
+		return nil, ErrRuntimeNotReady
+	}
+	return blocks, nil
 }
 func PreviewDigestString(p automationdomain.RunPreview) string {
 	return hex.EncodeToString(p.PreviewDigest[:])
