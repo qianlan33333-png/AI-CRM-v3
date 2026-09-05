@@ -47,11 +47,13 @@ type Application interface {
 }
 
 type IntegrationConfig struct {
-	Enabled bool
-	Key     string
-	Secret  string
-	ActorID int64
-	MaxSkew time.Duration
+	Enabled        bool
+	Key            string
+	Secret         string
+	ActorID        int64
+	MaxSkew        time.Duration
+	WeComCorpID    string
+	OpenPlatformID string
 }
 
 type Config struct {
@@ -403,6 +405,22 @@ type integrationRequest struct {
 		StaffID int64                          `json:"staff_id"`
 		Content []aiassistantport.ContentBlock `json:"content"`
 	} `json:"identities"`
+	// Frozen donor compatibility: these fields are only translated at this
+	// authenticated edge. Raw IDs never cross into the domain aggregate.
+	ExternalUserID       string                     `json:"external_userid"`
+	TargetExternalUserID string                     `json:"target_external_userid"`
+	OwnerUserID          string                     `json:"owner_userid"`
+	SenderUserID         string                     `json:"sender_userid"`
+	ContentText          string                     `json:"content_text"`
+	Message              string                     `json:"message"`
+	ContentPackage       map[string]json.RawMessage `json:"content_package"`
+	ExternalEventID      string                     `json:"external_event_id"`
+	DisplayName          string                     `json:"display_name"`
+	Recipients           []struct {
+		UnionID      string `json:"unionid"`
+		OwnerUserID  string `json:"owner_userid"`
+		SenderUserID string `json:"sender_userid"`
+	} `json:"recipients"`
 }
 
 func (h *Handler) integrationPlan(w stdhttp.ResponseWriter, r *stdhttp.Request) {
@@ -422,21 +440,104 @@ func (h *Handler) integrationPlan(w stdhttp.ResponseWriter, r *stdhttp.Request) 
 		h.writeError(w, aiassistantapp.ErrInvalid)
 		return
 	}
-	targets := make([]aiassistantapp.IdentityTarget, 0, len(input.Identities))
-	for _, item := range input.Identities {
-		kind, ok := identityKind(item.Kind)
-		if !ok {
-			h.writeError(w, aiassistantapp.ErrInvalid)
-			return
-		}
-		targets = append(targets, aiassistantapp.IdentityTarget{Reference: identitydomain.Reference{Kind: kind, Scope: item.Scope, Value: item.Value, Assurance: identitydomain.AssuranceVerified, Source: "aiassistant.integration." + key}, StaffID: item.StaffID, Content: item.Content})
+	targets, name, sourceKind, sourceDigest, adaptErr := h.integrationTargets(input, key, r.Header.Get("Idempotency-Key"))
+	if adaptErr != nil {
+		h.writeError(w, aiassistantapp.ErrInvalid)
+		return
 	}
-	result, err := h.app.CreatePlanFromIdentities(r.Context(), aiassistantapp.IdentityPlanCommand{Actor: aiassistantport.Actor{Kind: aiassistantport.ActorService, ID: h.integration.ActorID}, IdempotencyKey: r.Header.Get("Idempotency-Key"), Name: input.Name, SourceKind: input.SourceKind, SourceDigest: input.SourceDigest, Targets: targets, OccurredAt: timestamp, IntegrationKey: key, Nonce: nonce, ExpiresAt: timestamp.Add(h.integration.MaxSkew)})
+	result, err := h.app.CreatePlanFromIdentities(r.Context(), aiassistantapp.IdentityPlanCommand{Actor: aiassistantport.Actor{Kind: aiassistantport.ActorService, ID: h.integration.ActorID}, IdempotencyKey: r.Header.Get("Idempotency-Key"), Name: name, SourceKind: sourceKind, SourceDigest: sourceDigest, Targets: targets, OccurredAt: timestamp, IntegrationKey: key, Nonce: nonce, ExpiresAt: timestamp.Add(h.integration.MaxSkew)})
 	if err != nil {
 		h.writeError(w, err)
 		return
 	}
-	writeJSON(w, stdhttp.StatusAccepted, map[string]any{"ok": true, "plan": result.Plan, "replayed": result.Replayed, "dispatch_ready": h.dispatchReady, "resolution": map[string]int{"found": result.Found, "not_found": result.NotFound, "conflict": result.Conflicted, "invalid": result.Invalid}})
+	var plan any
+	if result.Plan.ID > 0 {
+		plan = result.Plan
+	}
+	writeJSON(w, stdhttp.StatusAccepted, map[string]any{"ok": true, "plan": plan, "replayed": result.Replayed, "dispatch_ready": h.dispatchReady, "resolution": map[string]int{"found": result.Found, "not_found": result.NotFound, "conflict": result.Conflicted, "unverified": result.Unverified, "invalid": result.Invalid}, "dispositions": result.Dispositions})
+}
+
+func (h *Handler) integrationTargets(input integrationRequest, key, idempotencyKey string) ([]aiassistantapp.IdentityTarget, string, string, effectport.Digest, error) {
+	if len(input.Identities) > 0 {
+		if input.ExternalUserID != "" || input.TargetExternalUserID != "" || len(input.Recipients) > 0 {
+			return nil, "", "", "", errors.New("mixed intake contracts")
+		}
+		targets := make([]aiassistantapp.IdentityTarget, 0, len(input.Identities))
+		for _, item := range input.Identities {
+			kind, ok := identityKind(item.Kind)
+			if !ok {
+				return nil, "", "", "", errors.New("invalid identity kind")
+			}
+			targets = append(targets, aiassistantapp.IdentityTarget{Reference: identitydomain.Reference{Kind: kind, Scope: item.Scope, Value: item.Value, Assurance: identitydomain.AssuranceDeclared, Source: "aiassistant.integration." + key}, StaffID: item.StaffID, Content: item.Content})
+		}
+		return targets, input.Name, input.SourceKind, input.SourceDigest, nil
+	}
+	content, err := legacyTextContent(input)
+	if err != nil {
+		return nil, "", "", "", err
+	}
+	name, kind := strings.TrimSpace(input.DisplayName), strings.TrimSpace(input.SourceKind)
+	if name == "" {
+		name = strings.TrimSpace(input.Name)
+	}
+	if name == "" {
+		name = "AI assistant review"
+	}
+	if kind == "" {
+		kind = "legacy_ai_assist_review"
+	}
+	digest := input.SourceDigest
+	if !effectport.ValidDigest(digest) {
+		digest = effectport.Hash("aiassistant.legacy-review", input.ExternalEventID, idempotencyKey, name, content[0].Text)
+	}
+	owner := strings.TrimSpace(input.OwnerUserID)
+	if owner == "" {
+		owner = strings.TrimSpace(input.SenderUserID)
+	}
+	external := strings.TrimSpace(input.ExternalUserID)
+	if external == "" {
+		external = strings.TrimSpace(input.TargetExternalUserID)
+	}
+	if external != "" {
+		if h.integration.WeComCorpID == "" || owner == "" {
+			return nil, "", "", "", errors.New("legacy single configuration")
+		}
+		return []aiassistantapp.IdentityTarget{{Reference: identitydomain.Reference{Kind: identitydomain.KindWeComExternalUserID, Scope: "wecom-corp:" + h.integration.WeComCorpID, Value: external, Assurance: identitydomain.AssuranceDeclared, Source: "aiassistant.integration." + key}, StaffWeComUserID: owner, Content: content}}, name, kind, digest, nil
+	}
+	if len(input.Recipients) == 0 || h.integration.OpenPlatformID == "" {
+		return nil, "", "", "", errors.New("legacy batch configuration")
+	}
+	targets := make([]aiassistantapp.IdentityTarget, 0, len(input.Recipients))
+	for _, item := range input.Recipients {
+		staff := strings.TrimSpace(item.OwnerUserID)
+		if staff == "" {
+			staff = strings.TrimSpace(item.SenderUserID)
+		}
+		targets = append(targets, aiassistantapp.IdentityTarget{Reference: identitydomain.Reference{Kind: identitydomain.KindUnionID, Scope: "wechat-open-platform:" + h.integration.OpenPlatformID, Value: item.UnionID, Assurance: identitydomain.AssuranceDeclared, Source: "aiassistant.integration." + key}, StaffWeComUserID: staff, Content: content})
+	}
+	return targets, name, kind, digest, nil
+}
+
+func legacyTextContent(input integrationRequest) ([]aiassistantport.ContentBlock, error) {
+	text := strings.TrimSpace(input.ContentText)
+	if text == "" {
+		text = strings.TrimSpace(input.Message)
+	}
+	if input.ContentPackage != nil {
+		if raw := input.ContentPackage["content_text"]; len(raw) > 0 && text == "" {
+			_ = json.Unmarshal(raw, &text)
+			text = strings.TrimSpace(text)
+		}
+		for _, key := range []string{"image_library_ids", "miniprogram_library_ids", "attachment_library_ids", "group_invite_library_ids", "dynamic_miniprogram_card"} {
+			if raw := input.ContentPackage[key]; len(raw) > 0 && string(raw) != "null" && string(raw) != "[]" && string(raw) != "{}" {
+				return nil, errors.New("legacy material requires explicit v3 reference")
+			}
+		}
+	}
+	if text == "" {
+		return nil, errors.New("legacy content required")
+	}
+	return []aiassistantport.ContentBlock{{Kind: aiassistantport.ContentText, Text: text}}, nil
 }
 
 func (h *Handler) verifyIntegration(r *stdhttp.Request) ([]byte, time.Time, string, string, error) {

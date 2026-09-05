@@ -38,6 +38,14 @@ func (a aiStaffSnapshotAdapter) StaffSnapshot(ctx context.Context, id int64) (ai
 	return aiassistantapp.StaffSnapshot{ID: user.ID, DisplayName: user.DisplayName, Active: user.Active}, nil
 }
 
+func (a aiStaffSnapshotAdapter) StaffByWeComUserID(ctx context.Context, value string) (aiassistantapp.StaffSnapshot, error) {
+	user, err := a.repository.UserByWeComUserID(ctx, value, false)
+	if err != nil {
+		return aiassistantapp.StaffSnapshot{}, err
+	}
+	return aiassistantapp.StaffSnapshot{ID: user.ID, DisplayName: user.DisplayName, Active: user.Active}, nil
+}
+
 type aiMaterialAdapter struct {
 	capturer   mediaport.GroupOpsMaterialSourceCapturer
 	references mediaport.MaterialReferenceRegistrar

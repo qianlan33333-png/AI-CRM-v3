@@ -94,6 +94,7 @@ type StaffSnapshot struct {
 
 type StaffReader interface {
 	StaffSnapshot(context.Context, int64) (StaffSnapshot, error)
+	StaffByWeComUserID(context.Context, string) (StaffSnapshot, error)
 }
 
 type MaterialResolver interface {
@@ -104,7 +105,10 @@ type MaterialResolver interface {
 type IdentityTarget struct {
 	Reference identitydomain.Reference
 	StaffID   int64
-	Content   []aiassistantport.ContentBlock
+	// StaffWeComUserID is accepted only by the legacy edge adapter. It is
+	// resolved inside the plan UoW through the Access-owned reader.
+	StaffWeComUserID string
+	Content          []aiassistantport.ContentBlock
 }
 
 type IdentityPlanCommand struct {
@@ -121,12 +125,21 @@ type IdentityPlanCommand struct {
 }
 
 type IdentityPlanResult struct {
-	Plan       aiassistantport.Plan
-	Replayed   bool
-	Found      int
-	NotFound   int
-	Conflicted int
-	Invalid    int
+	Plan         aiassistantport.Plan
+	Replayed     bool
+	Found        int
+	NotFound     int
+	Conflicted   int
+	Unverified   int
+	Invalid      int
+	Dispositions []IdentityTargetDisposition
+}
+
+// IdentityTargetDisposition is deliberately free of raw external identity
+// values. Ordinal preserves a caller's input-to-result accounting.
+type IdentityTargetDisposition struct {
+	Ordinal int    `json:"ordinal"`
+	Status  string `json:"status"`
 }
 
 type Service struct {
@@ -136,6 +149,7 @@ type Service struct {
 	staff           StaffReader
 	materials       MaterialResolver
 	identities      identityport.Resolver
+	trustedValues   identityport.ExternalIdentityValueReader
 	outbound        outboundport.PrivateMessageIntentWriter
 	dispatchEnabled bool
 	reconciler      effectport.UnknownReconciler
@@ -158,11 +172,11 @@ func (s *Service) BindOutbound(writer outboundport.PrivateMessageIntentWriter, e
 	return nil
 }
 
-func NewService(uow platformport.UnitOfWork, store Store, customers CustomerReader, staff StaffReader, materials MaterialResolver, identities identityport.Resolver) (*Service, error) {
-	if uow == nil || store == nil || customers == nil || staff == nil || materials == nil || identities == nil {
+func NewService(uow platformport.UnitOfWork, store Store, customers CustomerReader, staff StaffReader, materials MaterialResolver, identities identityport.Resolver, trustedValues identityport.ExternalIdentityValueReader) (*Service, error) {
+	if uow == nil || store == nil || customers == nil || staff == nil || materials == nil || identities == nil || trustedValues == nil {
 		return nil, ErrUnavailable
 	}
-	return &Service{uow: uow, store: store, customers: customers, staff: staff, materials: materials, identities: identities, now: time.Now}, nil
+	return &Service{uow: uow, store: store, customers: customers, staff: staff, materials: materials, identities: identities, trustedValues: trustedValues, now: time.Now}, nil
 }
 
 func (s *Service) CreatePlan(ctx context.Context, command aiassistantport.CreatePlanCommand) (aiassistantport.CreatePlanResult, error) {
@@ -190,31 +204,55 @@ func (s *Service) CreatePlanFromIdentities(ctx context.Context, command Identity
 		if err := s.store.ReserveIntegrationNonce(tx, command.IntegrationKey, command.Nonce, command.IdempotencyKey, requestDigest, command.OccurredAt, command.ExpiresAt); err != nil {
 			return err
 		}
-		receipt, owned, err := s.store.Reserve(tx, reservation("integration_plan_create", command.Actor, command.IdempotencyKey, requestDigest, command.OccurredAt))
+		businessDigest := identityPlanBusinessDigest(command)
+		receipt, owned, err := s.store.Reserve(tx, reservation("integration_plan_create", command.Actor, command.IdempotencyKey, businessDigest, command.OccurredAt))
 		if err != nil {
 			return err
 		}
 		if !owned {
 			var snapshot identityPlanSnapshot
-			if len(receipt.ResultSnapshot) == 0 || json.Unmarshal(receipt.ResultSnapshot, &snapshot) != nil || snapshot.PlanID < 1 {
+			if len(receipt.ResultSnapshot) == 0 || json.Unmarshal(receipt.ResultSnapshot, &snapshot) != nil {
 				return ErrConflict
 			}
-			result.Plan, err = s.store.GetPlan(tx, aiassistantport.PlanID(snapshot.PlanID), false)
-			if err != nil {
-				return err
+			if snapshot.PlanID > 0 {
+				result.Plan, err = s.store.GetPlan(tx, aiassistantport.PlanID(snapshot.PlanID), false)
+				if err != nil {
+					return err
+				}
 			}
 			result.Replayed = true
 			result.Found = snapshot.Found
 			result.NotFound = snapshot.NotFound
 			result.Conflicted = snapshot.Conflicted
+			result.Unverified = snapshot.Unverified
 			result.Invalid = snapshot.Invalid
+			result.Dispositions = snapshot.Dispositions
 			return nil
 		}
 		resolved := make([]aiassistantport.RecipientCandidate, 0, len(command.Targets))
-		for _, target := range command.Targets {
+		seenCustomers := map[customerdomain.CustomerID]struct{}{}
+		for ordinal, target := range command.Targets {
+			disposition := IdentityTargetDisposition{Ordinal: ordinal, Status: "invalid"}
 			normalized, normalizeErr := identitydomain.Normalize(target.Reference)
-			if normalizeErr != nil || target.Reference.Assurance != identitydomain.AssuranceVerified {
+			if normalizeErr != nil || target.Reference.Assurance != identitydomain.AssuranceDeclared {
 				result.Invalid++
+				result.Dispositions = append(result.Dispositions, disposition)
+				continue
+			}
+			staffID := target.StaffID
+			if staffID == 0 && target.StaffWeComUserID != "" {
+				staff, staffErr := s.staff.StaffByWeComUserID(tx, target.StaffWeComUserID)
+				if staffErr != nil || !staff.Active {
+					result.Invalid++
+					result.Dispositions = append(result.Dispositions, disposition)
+					continue
+				}
+				staffID = staff.ID
+			}
+			candidate := aiassistantport.RecipientCandidate{CustomerID: 1, StaffID: staffID, Content: target.Content}
+			if !candidate.Valid() {
+				result.Invalid++
+				result.Dispositions = append(result.Dispositions, disposition)
 				continue
 			}
 			resolution, resolveErr := s.identities.Resolve(tx, identitydomain.Reference{Kind: normalized.Kind, Scope: normalized.Scope, Value: normalized.NormalizedValue, Assurance: normalized.Assurance, Source: normalized.Source})
@@ -223,16 +261,41 @@ func (s *Service) CreatePlanFromIdentities(ctx context.Context, command Identity
 			}
 			switch resolution.Status {
 			case identityport.ResolveFound:
+				value, found, trustedErr := s.trustedValues.VerifiedExternalIdentityValue(tx, resolution.CustomerID, normalized.Kind, normalized.Scope)
+				if trustedErr != nil {
+					return trustedErr
+				}
+				if !found || value != normalized.NormalizedValue {
+					result.Unverified++
+					disposition.Status = "unverified"
+					result.Dispositions = append(result.Dispositions, disposition)
+					continue
+				}
+				if _, duplicate := seenCustomers[resolution.CustomerID]; duplicate {
+					result.Invalid++
+					disposition.Status = "duplicate"
+					result.Dispositions = append(result.Dispositions, disposition)
+					continue
+				}
+				seenCustomers[resolution.CustomerID] = struct{}{}
 				result.Found++
-				resolved = append(resolved, aiassistantport.RecipientCandidate{CustomerID: resolution.CustomerID, StaffID: target.StaffID, Content: target.Content})
+				disposition.Status = "found"
+				result.Dispositions = append(result.Dispositions, disposition)
+				resolved = append(resolved, aiassistantport.RecipientCandidate{CustomerID: resolution.CustomerID, StaffID: staffID, Content: target.Content})
 			case identityport.ResolveConflict:
 				result.Conflicted++
+				disposition.Status = "conflict"
+				result.Dispositions = append(result.Dispositions, disposition)
 			default:
 				result.NotFound++
+				disposition.Status = "not_found"
+				result.Dispositions = append(result.Dispositions, disposition)
 			}
 		}
 		if len(resolved) == 0 {
-			return ErrNoRecipients
+			snapshot, _ := json.Marshal(identityPlanSnapshot{Found: result.Found, NotFound: result.NotFound, Conflicted: result.Conflicted, Unverified: result.Unverified, Invalid: result.Invalid, Dispositions: result.Dispositions})
+			_, err = s.store.Complete(tx, receipt.ID, snapshot, command.OccurredAt)
+			return err
 		}
 		recipients, err := s.validateCanonicalRecipients(tx, resolved)
 		if err != nil {
@@ -245,11 +308,11 @@ func (s *Service) CreatePlanFromIdentities(ctx context.Context, command Identity
 		if err != nil {
 			return err
 		}
-		payload, _ := json.Marshal(map[string]int{"found": result.Found, "not_found": result.NotFound, "conflict": result.Conflicted, "invalid": result.Invalid})
+		payload, _ := json.Marshal(map[string]int{"found": result.Found, "not_found": result.NotFound, "conflict": result.Conflicted, "unverified": result.Unverified, "invalid": result.Invalid})
 		if err = s.store.AppendEvent(tx, aiassistantport.Event{Type: aiassistantport.EventIntegrationResolved, AggregateID: result.Plan.ID, ActorID: command.Actor.ID, IdempotencyKey: command.IdempotencyKey + ":resolution", Payload: payload, OccurredAt: command.OccurredAt}); err != nil {
 			return err
 		}
-		snapshot, _ := json.Marshal(identityPlanSnapshot{PlanID: int64(result.Plan.ID), Found: result.Found, NotFound: result.NotFound, Conflicted: result.Conflicted, Invalid: result.Invalid})
+		snapshot, _ := json.Marshal(identityPlanSnapshot{PlanID: int64(result.Plan.ID), Found: result.Found, NotFound: result.NotFound, Conflicted: result.Conflicted, Unverified: result.Unverified, Invalid: result.Invalid, Dispositions: result.Dispositions})
 		_, err = s.store.Complete(tx, receipt.ID, snapshot, command.OccurredAt)
 		return err
 	})
@@ -257,11 +320,13 @@ func (s *Service) CreatePlanFromIdentities(ctx context.Context, command Identity
 }
 
 type identityPlanSnapshot struct {
-	PlanID     int64 `json:"plan_id"`
-	Found      int   `json:"found"`
-	NotFound   int   `json:"not_found"`
-	Conflicted int   `json:"conflicted"`
-	Invalid    int   `json:"invalid"`
+	PlanID       int64                       `json:"plan_id"`
+	Found        int                         `json:"found"`
+	NotFound     int                         `json:"not_found"`
+	Conflicted   int                         `json:"conflicted"`
+	Unverified   int                         `json:"unverified"`
+	Invalid      int                         `json:"invalid"`
+	Dispositions []IdentityTargetDisposition `json:"dispositions"`
 }
 
 func (s *Service) createWithin(ctx context.Context, command aiassistantport.CreatePlanCommand, recipients []aiassistantport.RecipientCandidate, result *aiassistantport.CreatePlanResult) error {
@@ -823,6 +888,27 @@ func reservation(operation string, actor aiassistantport.Actor, key string, payl
 func digestJSON(value any) [32]byte {
 	payload, _ := json.Marshal(value)
 	return sha256.Sum256(payload)
+}
+
+// identityPlanBusinessDigest deliberately excludes authentication transport
+// fields. A valid retry must present a fresh nonce/timestamp but still map to
+// the original business plan; content drift under the same idempotency key is
+// rejected by the receipt's payload digest.
+func identityPlanBusinessDigest(command IdentityPlanCommand) [32]byte {
+	type target struct {
+		Kind, Scope, Value, StaffWeComUserID string
+		StaffID                              int64
+		Content                              []aiassistantport.ContentBlock
+	}
+	targets := make([]target, 0, len(command.Targets))
+	for _, item := range command.Targets {
+		targets = append(targets, target{Kind: string(item.Reference.Kind), Scope: item.Reference.Scope, Value: item.Reference.Value, StaffID: item.StaffID, StaffWeComUserID: item.StaffWeComUserID, Content: item.Content})
+	}
+	return digestJSON(struct {
+		Name, SourceKind string
+		SourceDigest     effectport.Digest
+		Targets          []target
+	}{Name: command.Name, SourceKind: command.SourceKind, SourceDigest: command.SourceDigest, Targets: targets})
 }
 
 func receiptPlanID(raw json.RawMessage) aiassistantport.PlanID {

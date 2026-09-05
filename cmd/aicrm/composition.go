@@ -275,7 +275,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		detail, readErr := customerStore.Detail(ctx, id)
 		return detail.CustomerID, detail.CustomerStatus, detail.DisplayName, detail.OneIDLabel, readErr
 	}}
-	aiService, err := aiassistantapp.NewService(uow, aiRepository, aiCustomers, aiStaffSnapshotAdapter{repository: accessRepository}, aiMaterialAdapter{capturer: mediaRepository, references: mediaRepository}, oneID)
+	aiService, err := aiassistantapp.NewService(uow, aiRepository, aiCustomers, aiStaffSnapshotAdapter{repository: accessRepository}, aiMaterialAdapter{capturer: mediaRepository, references: mediaRepository}, oneID, queries)
 	if err != nil {
 		return fail(err)
 	}
@@ -289,7 +289,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err = aiService.BindReconciler(effectRepository); err != nil {
 		return fail(err)
 	}
-	aiHandler, err := aiassistanthttp.NewHandler(aiassistanthttp.Config{Application: aiService, Security: requestSecurity, Authorizer: accessapp.AIAssistantAuthorizer{}, Integration: aiassistanthttp.IntegrationConfig{Enabled: cfg.AIAssistant.IntakeEnabled, Key: cfg.AIAssistant.IntegrationKey, Secret: cfg.AIAssistant.IntegrationSecret, ActorID: cfg.AIAssistant.IntegrationActorID}, DispatchReady: cfg.AIAssistant.DispatchEnabled})
+	aiHandler, err := aiassistanthttp.NewHandler(aiassistanthttp.Config{Application: aiService, Security: requestSecurity, Authorizer: accessapp.AIAssistantAuthorizer{}, Integration: aiassistanthttp.IntegrationConfig{Enabled: cfg.AIAssistant.IntakeEnabled, Key: cfg.AIAssistant.IntegrationKey, Secret: cfg.AIAssistant.IntegrationSecret, ActorID: cfg.AIAssistant.IntegrationActorID, WeComCorpID: cfg.WeCom.CorpID, OpenPlatformID: cfg.Survey.OAuthOpenPlatformID}, DispatchReady: cfg.AIAssistant.DispatchEnabled})
 	if err != nil {
 		return fail(err)
 	}
