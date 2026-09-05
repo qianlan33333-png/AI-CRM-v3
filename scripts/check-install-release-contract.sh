@@ -81,6 +81,7 @@ for migration_contract in \
   '0038_survey_oauth_phone_vault.sql:survey OAuth phone vault' \
   '0049_order_history_attribution.sql:order history attribution' \
   '0053_segment_audience_member_event_fact_kinds.sql:Segment audience member event fact kind repair' \
+  '0083_segment_audience_refresh_modes.sql:Segment audience refresh modes' \
   '0061_product_public_purchase.sql:product public purchase' \
   '0063_identity_hxc_source_observations.sql:HXC identity source observations' \
   '0064_hxc_dashboard_identity_v2.sql:HXC dashboard identity v2'; do

@@ -66,6 +66,17 @@ func (m *ModuleRegistration) Readiness(ctx context.Context, pool *pgxpool.Pool) 
 			'segment_audience_schedule_states'
 		]) AS required(name)
 		WHERE to_regclass(current_schema() || '.' || required.name) IS NULL
+	) AND NOT EXISTS (
+		SELECT 1 FROM (VALUES
+			('segment_audience_configuration_versions'::text, 'refresh_mode'::text),
+			('segment_audience_schedule_states'::text, 'schedule_kind'::text)
+		) AS required(table_name,column_name)
+		WHERE NOT EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_schema=current_schema()
+				AND table_name=required.table_name
+				AND column_name=required.column_name
+		)
 	)`).Scan(&ready)
 	if err != nil {
 		return err
