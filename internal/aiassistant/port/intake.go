@@ -44,6 +44,7 @@ const (
 	ContentText        ContentKind = "text"
 	ContentImage       ContentKind = "image"
 	ContentMiniProgram ContentKind = "mini_program"
+	ContentAttachment  ContentKind = "attachment"
 	ContentLink        ContentKind = "link"
 )
 
@@ -53,14 +54,19 @@ type ContentBlock struct {
 	MaterialKind   string            `json:"material_kind,omitempty"`
 	MaterialID     int64             `json:"material_id,omitempty"`
 	MaterialDigest effectport.Digest `json:"material_digest,omitempty"`
+	// LegacySourceSystem and LegacyMaterialID are accepted only at the
+	// authenticated compatibility edge. Media resolves them under the plan UoW
+	// and they must be empty before a content version is frozen.
+	LegacySourceSystem string `json:"legacy_source_system,omitempty"`
+	LegacyMaterialID   string `json:"legacy_material_id,omitempty"`
 }
 
 func (b ContentBlock) Valid() bool {
 	switch b.Kind {
 	case ContentText:
-		return strings.TrimSpace(b.Text) != "" && len(b.Text) <= 8000 && b.MaterialID == 0 && b.MaterialDigest == ""
-	case ContentImage, ContentMiniProgram, ContentLink:
-		return b.MaterialID > 0 && b.MaterialKind != "" && effectport.ValidDigest(b.MaterialDigest) && len(b.Text) <= 2000
+		return strings.TrimSpace(b.Text) != "" && len(b.Text) <= 8000 && b.MaterialKind == "" && b.MaterialID == 0 && b.MaterialDigest == "" && b.LegacySourceSystem == "" && b.LegacyMaterialID == ""
+	case ContentImage, ContentMiniProgram, ContentAttachment, ContentLink:
+		return b.MaterialID > 0 && b.MaterialKind == materialKindForContent(b.Kind) && effectport.ValidDigest(b.MaterialDigest) && len(b.Text) <= 2000 && b.LegacySourceSystem == "" && b.LegacyMaterialID == ""
 	default:
 		return false
 	}
@@ -72,9 +78,31 @@ func (b ContentBlock) ValidInput() bool {
 	if b.Kind == ContentText {
 		return b.Valid()
 	}
+	if b.LegacySourceSystem != "" || b.LegacyMaterialID != "" {
+		return b.MaterialID == 0 && b.MaterialDigest == "" && b.MaterialKind == materialKindForContent(b.Kind) && validLegacyReferencePart(b.LegacySourceSystem, 80) && validLegacyReferencePart(b.LegacyMaterialID, 128) && len(b.Text) <= 2000
+	}
 	provided := b.MaterialDigest
 	b.MaterialDigest = effectport.Hash("aiassistant.input-placeholder")
 	return (provided == "" || effectport.ValidDigest(provided)) && b.Valid()
+}
+
+func materialKindForContent(kind ContentKind) string {
+	switch kind {
+	case ContentImage:
+		return "image"
+	case ContentMiniProgram:
+		return "miniprogram"
+	case ContentAttachment:
+		return "attachment"
+	case ContentLink:
+		return "group_invite"
+	default:
+		return ""
+	}
+}
+
+func validLegacyReferencePart(value string, maximum int) bool {
+	return value != "" && len(value) <= maximum && strings.TrimSpace(value) == value && !strings.ContainsAny(value, "\r\n\t\x00")
 }
 
 type RecipientCandidate struct {

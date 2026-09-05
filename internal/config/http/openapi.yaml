@@ -3262,7 +3262,20 @@ paths:
         - {$ref: "#/components/parameters/AIAssistantIntegrationNonce"}
         - {$ref: "#/components/parameters/AIAssistantIntegrationSignature"}
       requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantIntegrationPlanRequest"}}}}
-      responses: {"202": {description: Scoped identities resolved into a pending review plan; unresolved targets are reported but never persisted as recipients, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantIntegrationPlanResponse"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "413": {$ref: "#/components/responses/Error"}, "422": {$ref: "#/components/responses/Error"}}
+      responses: {"202": {description: Scoped identities resolved into a pending review plan when eligible; every input ordinal receives a safe disposition and zero eligible targets create no empty plan, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantIntegrationPlanResponse"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "413": {$ref: "#/components/responses/Error"}, "422": {$ref: "#/components/responses/Error"}}
+  /api/admin/ai-assist/review-plans:
+    post:
+      operationId: createLegacyAIAssistantReviewPlan
+      deprecated: true
+      tags: [AIAssistant]
+      security: [{aiAssistantIntegration: []}]
+      parameters:
+        - {$ref: "#/components/parameters/RequiredIdempotencyKey"}
+        - {$ref: "#/components/parameters/AIAssistantIntegrationTimestamp"}
+        - {$ref: "#/components/parameters/AIAssistantIntegrationNonce"}
+        - {$ref: "#/components/parameters/AIAssistantIntegrationSignature"}
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantIntegrationPlanRequest"}}}}
+      responses: {"202": {description: Temporary donor-compatible authenticated intake adapter, content: {application/json: {schema: {$ref: "#/components/schemas/AIAssistantIntegrationPlanResponse"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "413": {$ref: "#/components/responses/Error"}, "422": {$ref: "#/components/responses/Error"}}
 components:
   securitySchemes:
     adminSession: {type: apiKey, in: cookie, name: aicrm_admin_session}
@@ -3612,7 +3625,7 @@ components:
     AIAssistantPlanState: {type: string, enum: [pending_review, partially_approved, approved, rejected, dispatching, needs_attention, completed_with_failures, completed]}
     AIAssistantReviewState: {type: string, enum: [pending_review, approved, rejected, ineligible]}
     AIAssistantExecutionState: {type: string, enum: [not_accepted, accepted, queued, attempted, provider_accepted, retryable_failed, outcome_unknown, reconciled, final_failed, delivery_proven]}
-    AIAssistantContentKind: {type: string, enum: [text, image, mini_program, link]}
+    AIAssistantContentKind: {type: string, enum: [text, image, mini_program, attachment, link]}
     AIAssistantContentBlock:
       type: object
       additionalProperties: false
@@ -3817,31 +3830,53 @@ components:
     AIAssistantIntegrationPlanRequest:
       type: object
       additionalProperties: false
-      required: [name, source_kind, source_digest, identities]
       properties:
         name: {type: string, minLength: 1, maxLength: 200}
         source_kind: {type: string, minLength: 1, maxLength: 80}
         source_digest: {$ref: "#/components/schemas/AIAssistantDigest"}
         identities: {type: array, minItems: 1, maxItems: 5000, items: {$ref: "#/components/schemas/AIAssistantIntegrationIdentity"}}
+        external_userid: {type: string, minLength: 1, maxLength: 512, writeOnly: true}
+        target_external_userid: {type: string, minLength: 1, maxLength: 512, writeOnly: true}
+        owner_userid: {type: string, minLength: 1, maxLength: 256, writeOnly: true}
+        sender_userid: {type: string, minLength: 1, maxLength: 256, writeOnly: true}
+        content_text: {type: string, minLength: 1, maxLength: 8000, writeOnly: true}
+        message: {type: string, minLength: 1, maxLength: 8000, writeOnly: true}
+        content_package: {type: object, additionalProperties: true, writeOnly: true}
+        external_event_id: {type: string, minLength: 1, maxLength: 200, writeOnly: true}
+        idempotency_key: {type: string, minLength: 8, maxLength: 200, writeOnly: true, description: Frozen donor business key, used only when external_event_id is absent. The authenticated header remains scoped to request signature and nonce protection.}
+        operator: {type: string, minLength: 1, maxLength: 256, writeOnly: true, description: Frozen donor metadata and never an authenticated actor.}
+        package_key: {type: string, minLength: 1, maxLength: 200, writeOnly: true}
+        recipients: {type: array, minItems: 1, maxItems: 5000, writeOnly: true, items: {type: object, required: [unionid], properties: {unionid: {type: string, minLength: 1, maxLength: 512}, owner_userid: {type: string, maxLength: 256}, sender_userid: {type: string, maxLength: 256}, customer_name: {type: string, maxLength: 200, writeOnly: true}}}}
     AIAssistantIntegrationResolution:
       type: object
       additionalProperties: false
-      required: [found, not_found, conflict, invalid]
+      required: [found, not_found, conflict, unverified, ineligible, invalid, material_unmapped]
       properties:
         found: {type: integer, minimum: 0, maximum: 5000}
         not_found: {type: integer, minimum: 0, maximum: 5000}
         conflict: {type: integer, minimum: 0, maximum: 5000}
+        unverified: {type: integer, minimum: 0, maximum: 5000}
+        ineligible: {type: integer, minimum: 0, maximum: 5000}
         invalid: {type: integer, minimum: 0, maximum: 5000}
+        material_unmapped: {type: integer, minimum: 0, maximum: 5000}
+    AIAssistantIntegrationDisposition:
+      type: object
+      additionalProperties: false
+      required: [ordinal, status]
+      properties:
+        ordinal: {type: integer, minimum: 0, maximum: 4999}
+        status: {type: string, enum: [found, not_found, conflict, unverified, ineligible, invalid, duplicate, material_unmapped]}
     AIAssistantIntegrationPlanResponse:
       type: object
       additionalProperties: false
-      required: [ok, plan, replayed, dispatch_ready, resolution]
+      required: [ok, plan, replayed, dispatch_ready, resolution, dispositions]
       properties:
         ok: {const: true}
-        plan: {$ref: "#/components/schemas/AIAssistantPlan"}
+        plan: {oneOf: [{$ref: "#/components/schemas/AIAssistantPlan"}, {type: "null"}]}
         replayed: {type: boolean}
         dispatch_ready: {type: boolean}
         resolution: {$ref: "#/components/schemas/AIAssistantIntegrationResolution"}
+        dispositions: {type: array, maxItems: 5000, items: {$ref: "#/components/schemas/AIAssistantIntegrationDisposition"}}
     LocalProjection:
       type: object
       required: [ok, items, source_status, local_only]

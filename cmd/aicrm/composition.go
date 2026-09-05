@@ -275,7 +275,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		detail, readErr := customerStore.Detail(ctx, id)
 		return detail.CustomerID, detail.CustomerStatus, detail.DisplayName, detail.OneIDLabel, readErr
 	}}
-	aiService, err := aiassistantapp.NewService(uow, aiRepository, aiCustomers, aiStaffSnapshotAdapter{repository: accessRepository}, aiMaterialAdapter{capturer: mediaRepository, references: mediaRepository}, oneID)
+	aiService, err := aiassistantapp.NewService(uow, aiRepository, aiCustomers, aiStaffSnapshotAdapter{repository: accessRepository}, aiMaterialAdapter{capturer: mediaRepository, references: mediaRepository, legacy: mediaRepository}, oneID, queries)
 	if err != nil {
 		return fail(err)
 	}
@@ -289,7 +289,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err = aiService.BindReconciler(effectRepository); err != nil {
 		return fail(err)
 	}
-	aiHandler, err := aiassistanthttp.NewHandler(aiassistanthttp.Config{Application: aiService, Security: requestSecurity, Authorizer: accessapp.AIAssistantAuthorizer{}, Integration: aiassistanthttp.IntegrationConfig{Enabled: cfg.AIAssistant.IntakeEnabled, Key: cfg.AIAssistant.IntegrationKey, Secret: cfg.AIAssistant.IntegrationSecret, ActorID: cfg.AIAssistant.IntegrationActorID}, DispatchReady: cfg.AIAssistant.DispatchEnabled})
+	aiHandler, err := aiassistanthttp.NewHandler(aiassistanthttp.Config{Application: aiService, Security: requestSecurity, Authorizer: accessapp.AIAssistantAuthorizer{}, Integration: aiassistanthttp.IntegrationConfig{Enabled: cfg.AIAssistant.IntakeEnabled, Key: cfg.AIAssistant.IntegrationKey, Secret: cfg.AIAssistant.IntegrationSecret, ActorID: cfg.AIAssistant.IntegrationActorID, WeComCorpID: cfg.WeCom.CorpID, OpenPlatformID: cfg.Survey.OAuthOpenPlatformID}, DispatchReady: cfg.AIAssistant.DispatchEnabled})
 	if err != nil {
 		return fail(err)
 	}
@@ -908,7 +908,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if cfg.WeCom.ChannelQRProviderEnabled {
 		channelLinkProvider = outbound.NewChannelLinkProvider(channelLinkMutationReaderAdapter{uow: uow, source: channelLinkStore}, providerClient)
 	}
-	privateProvider, err := outbound.NewPrivateMessageProvider(cfg.AIAssistant.DispatchEnabled, privateWriter, aiPrivateTargetResolver{uow: uow, identities: queries, access: accessRepository, relationships: relationships, corpID: cfg.WeCom.CorpID}, aiPrivatePayloadReader{content: aiRepository, images: mediaService, materials: mediaRepository}, providerClient)
+	privateProvider, err := outbound.NewPrivateMessageProvider(cfg.AIAssistant.DispatchEnabled, privateWriter, aiPrivateTargetResolver{uow: uow, identities: queries, access: accessRepository, relationships: relationships, corpID: cfg.WeCom.CorpID}, aiPrivatePayloadReader{content: aiRepository, images: mediaService, materials: mediaRepository, attachments: mediaService}, providerClient)
 	if err != nil {
 		return fail(err)
 	}
@@ -1046,6 +1046,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	adminAPIs.Handle("/api/admin/wecom-customer-acquisition-links", channelLinkHandler)
 	adminAPIs.Handle("/api/admin/wecom-customer-acquisition-links/", channelLinkHandler)
 	adminAPIs.Handle("/api/admin/ai-assistant/", aiHandler.Routes())
+	adminAPIs.Handle("/api/admin/ai-assist/review-plans", aiHandler.Routes())
 	adminAPIs.Handle("/api/sidebar/v2/", sidebarHandler.Routes())
 	mountSurveyAPIs(adminAPIs, surveyBindings.Survey)
 	adminAPIs.Handle("/api/admin/operation-cycles/", operationBindings.API)
@@ -1256,7 +1257,7 @@ func mountHXCUI(next, dashboardUI http.Handler, authentication accessAuthenticat
 func mountAIAssistant(next, api, ui http.Handler, authentication accessAuthentication, uiEnabled bool, publicOrigin string) http.Handler {
 	api = rejectCrossSiteUnsafeRequests(api, canonicalOrigin(publicOrigin))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/api/admin/ai-assistant/") || r.URL.Path == "/api/integrations/ai-assistant/review-plans" {
+		if strings.HasPrefix(r.URL.Path, "/api/admin/ai-assistant/") || r.URL.Path == "/api/admin/ai-assist/review-plans" || r.URL.Path == "/api/integrations/ai-assistant/review-plans" {
 			api.ServeHTTP(w, r)
 			return
 		}
