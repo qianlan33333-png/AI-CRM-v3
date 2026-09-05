@@ -9,7 +9,7 @@
 - 个体 PR 不逐个合并 main。总集成 PR 冻结唯一发布候选后，才提交用户做最终生产上线确认；确认后一次合并、一次部署。
 - 本矩阵后续为每个板块同时记录“个体审核结果”和“已纳入集成 HEAD”。未进入集成或联合验收未通过的项目不得标记整体完成。
 
-当前未合并总集成 PR：[PR #141](https://github.com/qianlan33333-png/AI-CRM-v3/pull/141)。审核通过的实现来源 #133、#135、#136、#137、#138、#139、#142、#144、#145、#146、#147、#148、#149、#150、#151、#153、#154、#155 已纳入，#140 总控文档亦已纳入。最新业务合并提交为 `25a711209840ae5826518237b152ba26da07512f`（PR154@a093751），新组合待检查；包含历史导入的c2cf0efc1a6495c4358413c5d0a2230ebb5b91c6已通过CI33969480007（check SUCCESS、deploy SKIPPED）。此前准确组合79d26e102781d6e9a7accb9f24d36ebbc06f855c通过CI33968561427（check SUCCESS、deploy SKIPPED）。上一完整绿色组合`4e17909bb5b71208836947ff24c0e17476a48ecc` / CI33966346271 SUCCESS、deploy SKIPPED；更早完整绿色组合`6b09ecb1e7e92b2e3439a62af63d8db7032c48f7` / CI33964016441 SUCCESS、deploy SKIPPED，含148/151及153主路径，实际PostgreSQL、SDK ABI、仓库与race检查通过。后续来源HEAD继续单独审核。
+当前未合并总集成 PR：[PR #141](https://github.com/qianlan33333-png/AI-CRM-v3/pull/141)。审核通过的实现来源 #133、#135、#136、#137、#138、#139、#142、#144、#145、#146、#147、#148、#149、#150、#151、#153、#154、#155 已纳入，#140 总控文档亦已纳入。最新业务合并提交为 `4242d30730b6736ff67838bfd05d6432aef6f341`（PR155@3c69142），新组合待检查；包含历史导入的c2cf0efc1a6495c4358413c5d0a2230ebb5b91c6已通过CI33969480007（check SUCCESS、deploy SKIPPED）。此前准确组合79d26e102781d6e9a7accb9f24d36ebbc06f855c通过CI33968561427（check SUCCESS、deploy SKIPPED）。上一完整绿色组合`4e17909bb5b71208836947ff24c0e17476a48ecc` / CI33966346271 SUCCESS、deploy SKIPPED；更早完整绿色组合`6b09ecb1e7e92b2e3439a62af63d8db7032c48f7` / CI33964016441 SUCCESS、deploy SKIPPED，含148/151及153主路径，实际PostgreSQL、SDK ABI、仓库与race检查通过。后续来源HEAD继续单独审核。
 
 | 来源 | 来源 HEAD / 独立 CI | 纳入提交 | 组合 CI | 当前结论 |
 |---|---|---|---|---|
@@ -30,9 +30,8 @@
 | #148 群写叶子、节点意图及送达读取 | 10b40e08aa9b8fc8844a5edd0f35d24a05c6438e / 33961391856 SUCCESS，deploy SKIPPED | 4e9b836a320e671bfbaa78b59e66d0516acc0c53 | 33962020352 SUCCESS，deploy SKIPPED | 本批源码审核与PG16/race通过；实际River顺序、全UI与历史仍待下一批 |
 | #151 AI助手旧调用方与整单执行 | 890444cf29070a6e0a18a757aeda7e54e28ac57e / 33961381169 SUCCESS，deploy SKIPPED | 61b802d3ad4d5d113b93864b978a4c04f97b1ceb | 33962020352 SUCCESS，deploy SKIPPED | 可信身份、签名HTTP、整单审批、River恢复、附件Host与旧素材映射导入已审核；05/06/07组合仍待 |
 | #153 群运行时/旧页/历史导入 | 629e38489d76903b0dd21d6614941e4f2cffeb69 / 33968755244 SUCCESS，deploy SKIPPED；保留014fd7b与4e51b676 | 889144c63426dfd7ead4ca827694037fa4dd94e5 | c2cf0ef / 33969480007 SUCCESS，deploy SKIPPED | 真实River、暂停恢复、多计划、逐行历史导入PG/HTTP通过；同一导入事实的历史浏览器Host补齐中 |
-
 | #154 HXC共用事实 | a093751b15ee2b51b349e01fa42590baf2eb5422 / 33969310749 SUCCESS，deploy SKIPPED | 25a711209840ae5826518237b152ba26da07512f | 本次组合待CI | 真实源EXPLAIN、同源会员、PG固定代与清理并发通过；已放行03/05稳定Port接入 |
-| #155 群真实Access与unknown | 0130e88eaeea4b6a930f27d951a61936f83d09f2 / 33967837266 SUCCESS，deploy SKIPPED | 28149072e70175244fdf7bb5ceb4f521e0cf8e2b | 79d26e1 / 33968561427 SUCCESS，deploy SKIPPED | 真实资格/unknown子批已纳入；后续同库AI/Group单独待审 |
+| #155 群真实Access、unknown与AI同库运行时 | 3c69142ea55a5a40362b5d28042aa64dc5fb5546 / 33969767286 SUCCESS，deploy SKIPPED；保留0130e88 | 4242d30730b6736ff67838bfd05d6432aef6f341 | 本次组合待CI；父批79d26e1 / 33968561427 SUCCESS | 真实Access/unknown及AI和Group共同PG/River/Outbound通过；自动化参与的最终组合仍待 |
 
 | 板块 | PRD | 开发状态 | PR / HEAD | 旧行为/前端 | PostgreSQL/恢复 | 身份/效果协议 | 总控审核 |
 |---|---|---|---|---|---|---|---|
@@ -42,7 +41,7 @@
 | 周期权益与优惠券 | 04 | 独立领域PR通过并已纳入；03/04联合接线待完成 | [#138](https://github.com/qianlan33333-png/AI-CRM-v3/pull/138) / 599b5bf | 券数据页与周期读Port已实现；03联合挂载中 | CI33954299348 PG16/race通过，含不同开通/退款顺序与历史共存 | 仅保留独立历史覆盖；券跨时刻重放通过 | 独立领域已批准并纳入6eab2bd；整体未完成 |
 | 自动化运营 | 05 | automation_sources继续六来源与旧表单接线批次 | [#152](https://github.com/qianlan33333-png/AI-CRM-v3/pull/152)，滚动修复中、未批准 | 六模板原UI/Host验证中 | Owner PG待新批次CI；完整运行时未验收 | §10原生渠道/会员/付款人与负责人语义修复中 | 未完成，后续仍需自动化全链路与历史 |
 | AI 助手 | 06 | #151独立板块增量已纳入且7b5b4f7组合通过 | [#151](https://github.com/qianlan33333-png/AI-CRM-v3/pull/151) / 890444cf29070a6e0a18a757aeda7e54e28ac57e | 冻结单人/批量调用方；素材回读/编辑/审阅Host守恒通过 | 真实Identity/AI Store与签名HTTP→River→实际本地WeCom叶子通过；unknown原键保留 | 0080导入合法缺映射及目标漂移反例通过；intake不自升可信、不建客 | 已批准纳入61b802d；05/06/07联合及最终装配保留 |
-| 群运营 | 07 | 148、153主路径与历史、155真实撤权/unknown已纳入 | #153 / 629e384；#155已审核0130e88，后续联合3c69142待CI | 原主页面操作已覆盖；同批历史导入Host继续接线 | PG16/River两群有序延时/重启、0081/0082及逐行对账通过 | 实际Access撤权与真实River unknown不重发通过 | 已纳入的局部通过；AI/Group同库组合与历史最终页仍开 |
+| 群运营 | 07 | 148、153主路径与历史、155真实撤权/unknown已纳入 | #153 / 629e384；#155已审核3c69142，CI33969767286通过 | 原主页面操作已覆盖；同批历史导入Host继续接线 | PG16/River两群有序延时/重启、0081/0082及逐行对账通过 | 实际Access撤权与真实River unknown不重发通过 | 已纳入的局部通过；AI/Group同库组合已纳入，历史最终页及自动化参与组合仍开 |
 | 渠道欢迎语 | 08 | 独立实现、01/08组合#145及08/09组合#147已纳入 | [#135](https://github.com/qianlan33333-png/AI-CRM-v3/pull/135) / f23dc40；[#145](https://github.com/qianlan33333-png/AI-CRM-v3/pull/145) / e2a3c41；[#147](https://github.com/qianlan33333-png/AI-CRM-v3/pull/147) / 4418771 | 回调、管理、素材和原入客回归通过 | 独立拥堵/重启、01/08同根及08/09阻塞隔离通过 | 过期原因、零期限禁止发送及schema readiness通过 | 三项已批准纳入；整体随最终装配复核 |
 | 会话存档 | 09 | #139/#144/#147/#149/#150均已审核纳入 | [#139](https://github.com/qianlan33333-png/AI-CRM-v3/pull/139) / 3362619；[#144](https://github.com/qianlan33333-png/AI-CRM-v3/pull/144) / 7d558bd；[#147](https://github.com/qianlan33333-png/AI-CRM-v3/pull/147) / 4418771；[#149](https://github.com/qianlan33333-png/AI-CRM-v3/pull/149) / 94fad01；[#150](https://github.com/qianlan33333-png/AI-CRM-v3/pull/150) / 4652583 | #149已复用现有客户搜索结果进入独立归档Host | 员工筛选/1001分批及#147 PG16阻塞隔离通过 | 回调重放/导入对账已修；#150保持默认disabled并补Linux amd64 runner | 独立实现与联合验收已通过；最终组合与生产验收分开记录 |
 
@@ -139,3 +138,5 @@
 - PR153历史准确HEAD629e38489d76903b0dd21d6614941e4f2cffeb69通过CI33968755244（PG16、race、冻结UI，deploy SKIPPED），源码审核通过并作为merge parent纳入889144c63426dfd7ead4ca827694037fa4dd94e5。包含受保护五来源提取、密封快照、逐行导入/重放/隔离/漂移对账、标题正文附件真实PG与HTTP回读、nullable旧员工引用及中文字符长度；只写GroupOps历史Owner，不创建当前计划/客户/效果。独立history浏览器操作和最终同库装配继续回归。
 
 - PR154@a093751已批准并纳入25a7112；安装测试清单冲突仅机械保留0068/0078/0081/0082/0084，完整本地安装契约通过。HXC运行代码仍使用既有OneID与MySQL只读刷新，无新同步器；源查询沿b131的真实只读EXPLAIN通过，未执行生产刷新/应用0084。03/05允许按该准确HEAD接入。
+
+- PR155准确HEAD3c69142ea55a5a40362b5d28042aa64dc5fb5546通过CI33969767286（真实PG16、race、冻结UI、SDK ABI，deploy SKIPPED），源码审核通过并作为merge parent纳入4242d30730b6736ff67838bfd05d6432aef6f341。实际签名AI intake、整单审批与两群执行在同库共享River/EER及实际本地WeCom协议叶子；初始三项效果及两条延时后继持久化，重放及重启不增发、不创建新效果。05自动化参与的最终共同接线仍保留。
