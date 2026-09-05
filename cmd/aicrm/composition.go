@@ -40,6 +40,7 @@ import (
 	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	groupops "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops"
 	groupopsapp "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/app"
+	groupopsport "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/port"
 	groupopsstore "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/store"
 	hxcapp "github.com/qianlan33333-png/AI-CRM-v3/internal/hxcdashboard/app"
 	hxchttp "github.com/qianlan33333-png/AI-CRM-v3/internal/hxcdashboard/http"
@@ -229,7 +230,15 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err = river.AddWorkerSafely[segment.AudienceScheduleScanJobArgs](effectWorkers, audienceScheduleWorker); err != nil {
 		return fail(err)
 	}
+	groupOpsContinuationWorker := groupopsapp.NewContinuationWorker()
+	if err = river.AddWorkerSafely[groupopsapp.ContinuationJobArgs](effectWorkers, groupOpsContinuationWorker); err != nil {
+		return fail(err)
+	}
 	effectClient, err := platformjobqueue.NewInsertClient(pool.Native(), effectWorkers)
+	if err != nil {
+		return fail(err)
+	}
+	groupOpsContinuationEnqueuer, err := groupopsapp.NewRiverContinuationEnqueuer(effectClient)
 	if err != nil {
 		return fail(err)
 	}
@@ -423,13 +432,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
-	groupOpsProvider, err := outbound.NewGroupMessageProvider(outbound.GroupMessageProviderConfig{
-		Enabled:           cfg.Effects.ProviderEnabled && cfg.GroupOps.ProviderEnabled,
-		PreparationWriter: mediaPreparationBindings.Writer,
-	})
-	if err != nil {
-		return fail(err)
-	}
+	var groupOpsProvider *outbound.GroupMessageProvider
 	materialFreezer, err := groupopsmaterial.NewFreezer(mediaPreparedPlanReader{reader: mediaPreparationBindings.Reader})
 	if err != nil {
 		return fail(err)
@@ -475,22 +478,26 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return fail(err)
 	}
 	groupOpsStaff := groupOpsStaffAdapter{access: accessRepository, owners: groupOpsRepository}
-	groupOpsDirectory := providerDisabledGroupOpsDirectory{}
-	groupOpsEvidence := providerDisabledGroupOpsEvidence{}
+	groupOpsDirectory := &wecomGroupOpsDirectory{enabled: cfg.GroupOps.ProviderEnabled, staff: groupOpsStaff}
+	groupOpsEvidence := groupopsport.ReconciliationEvidenceVerifier(providerDisabledGroupOpsEvidence{})
 	groupOpsService := groupopsapp.NewService(uow, groupOpsRepository, groupOpsStaff, groupOpsRepository)
 	groupOpsHistory := groupopsapp.NewHistoryService(uow, groupOpsRepository)
 	groupOpsRuntime := groupopsapp.NewRuntimeService(uow, groupOpsRepository, groupOpsRepository, effectRepository, groupOpsStaff, groupOpsDirectory, groupOpsStaff, groupOpsEvidence, groupOpsExternalReconciler{repository: effectRepository}, groupOpsMaterials)
 	groupOpsRuntime.SetDispatchEnabled(cfg.GroupOps.ProviderEnabled)
+	if err = groupOpsContinuationWorker.Bind(groupOpsRuntime); err != nil {
+		return fail(err)
+	}
 	groupOpsProtocols := &groupOpsProtocolAuthenticator{key: []byte(cfg.GroupOps.WebhookSecret), replay: groupOpsRepository, now: time.Now}
 	groupOpsModule := groupops.NewModuleRegistration()
 	groupOpsBindings, err := groupOpsModule.BindWithHistory(groupOpsService, groupOpsRuntime, groupOpsHistory, requestSecurity, groupOpsProtocols, mediaContentBindings.ContentDelivery)
 	if err != nil {
 		return fail(err)
 	}
-	groupOpsCompletionSink, err := outbound.NewGroupMessageCompletionSink(groupOpsRepository)
+	groupOpsCompletionSink, err := outbound.NewGroupMessageCompletionSink(groupOpsRepository, groupOpsRepository)
 	if err != nil {
 		return fail(err)
 	}
+	groupOpsCompletionSink.WithContinuation(groupOpsContinuationEnqueuer)
 	privateCompletionSink, err := outbound.NewPrivateMessageCompletionSink(privateWriter, aiRepository)
 	if err != nil {
 		return fail(err)
@@ -834,6 +841,22 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	providerClient, err := wecomadapter.New(wecomadapter.Config{
 		Enabled: cfg.WeCom.Enabled, CorpID: cfg.WeCom.CorpID, AgentID: cfg.WeCom.AgentID, Secret: cfg.WeCom.Secret, ContactSecret: cfg.WeCom.ContactSecret,
 		AdminCallbackURI: cfg.PublicOrigin + "/auth/wecom/callback", SidebarCallbackURI: cfg.PublicOrigin + "/api/sidebar/oauth/callback",
+	})
+	if err != nil {
+		return fail(err)
+	}
+	groupOpsDirectory.groups = providerClient
+	groupOpsDirectory.staffs = providerClient
+	if cfg.Effects.ProviderEnabled && cfg.WeCom.Enabled && cfg.GroupOps.ProviderEnabled {
+		groupOpsEvidence = wecomGroupOpsEvidence{uow: uow, receipts: groupOpsRepository, reader: providerClient}
+		groupOpsRuntime.SetEvidenceVerifier(groupOpsEvidence)
+	}
+	groupOpsProvider, err = outbound.NewGroupMessageProvider(outbound.GroupMessageProviderConfig{
+		Enabled:           cfg.Effects.ProviderEnabled && cfg.WeCom.Enabled && cfg.GroupOps.ProviderEnabled,
+		PreparationWriter: mediaPreparationBindings.Writer,
+		Executions:        groupOpsDispatchReader{uow: uow, execution: groupOpsRepository, senders: groupOpsStaff},
+		Materials:         groupOpsMaterialReadinessAdapter{uow: uow, capturer: mediaContentBindings.SourceCapturer, freezer: materialFreezer},
+		Writer:            providerClient,
 	})
 	if err != nil {
 		return fail(err)

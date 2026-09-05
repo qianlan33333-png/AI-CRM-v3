@@ -197,6 +197,10 @@ type ProviderAdapter interface {
 }
 
 type Attempt struct {
+	// EffectID lets a Provider adapter load its owner-owned immutable dispatch
+	// snapshot without placing business payloads in the External Effects tables.
+	// It is supplied only after the attempted fact has committed.
+	EffectID          string
 	Number            int32
 	Generation, Fence int64
 }

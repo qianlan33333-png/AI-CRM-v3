@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -18,6 +19,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	groupopsapp "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/app"
 	groupopsdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/domain"
 	groupopsport "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/port"
@@ -465,7 +467,7 @@ func (r *Repository) InsertExecution(ctx context.Context, draft groupopsport.Exe
 		return groupopsport.Execution{}, err
 	}
 	var id int64
-	err = tx.QueryRow(ctx, `INSERT INTO group_ops_executions(run_id,plan_id,node_id,plan_revision,node_position,target_reference,sender_userid_snapshot,target_digest,content_snapshot,content_digest,material_snapshot,material_digest,execution_key_digest,external_effect_id,state,scheduled_for,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'accepted',$15,$16,$16) RETURNING id`, draft.RunID, draft.PlanID, draft.NodeID, draft.PlanRevision, draft.NodePosition, draft.TargetReference, draft.SenderUserID, draft.TargetDigest, draft.ContentSnapshot, draft.ContentDigest, draft.MaterialSnapshot, draft.MaterialDigest, draft.ExecutionKeyDigest[:], effectID, draft.ScheduledFor, draft.CreatedAt).Scan(&id)
+	err = tx.QueryRow(ctx, `INSERT INTO group_ops_executions(run_id,plan_id,node_id,plan_revision,node_position,target_reference,sender_userid_snapshot,target_digest,content_snapshot,content_digest,material_snapshot,material_digest,material_source_snapshot,material_source_digest,execution_key_digest,external_effect_id,state,scheduled_for,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,'accepted',$17,$18,$18) RETURNING id`, draft.RunID, draft.PlanID, draft.NodeID, draft.PlanRevision, draft.NodePosition, draft.TargetReference, draft.SenderUserID, draft.TargetDigest, draft.ContentSnapshot, draft.ContentDigest, draft.MaterialSnapshot, draft.MaterialDigest, draft.MaterialSourceSnapshot, draft.MaterialSourceDigest, draft.ExecutionKeyDigest[:], effectID, draft.ScheduledFor, draft.CreatedAt).Scan(&id)
 	if err != nil {
 		return groupopsport.Execution{}, err
 	}
@@ -480,11 +482,54 @@ func (r *Repository) GetExecution(ctx context.Context, id int64) (groupopsport.E
 	return r.getExecution(ctx, tx, id)
 }
 
+// LoadDispatchExecution returns the owner-owned immutable payload only while
+// the accepted plan, its version, and the precise group binding remain valid.
+// Outbound calls this through the stable Group Ops port before crossing the
+// Provider boundary; it never exposes a mutable plan or a provider response.
+func (r *Repository) LoadDispatchExecution(ctx context.Context, effectRef string) (groupopsport.DispatchExecution, error) {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return groupopsport.DispatchExecution{}, err
+	}
+	effectID, err := parseEffectID(effectRef)
+	if err != nil {
+		return groupopsport.DispatchExecution{}, err
+	}
+	var item groupopsport.DispatchExecution
+	var runID int64
+	err = tx.QueryRow(ctx, `
+SELECT e.id,e.run_id,e.state,e.delivery_proven,e.target_reference,e.sender_userid_snapshot,
+       e.content_snapshot,e.content_digest,e.material_snapshot,e.material_digest,e.material_source_snapshot,e.material_source_digest,e.target_digest
+FROM group_ops_executions e
+JOIN group_ops_plans p ON p.id=e.plan_id
+JOIN group_ops_plan_group_assets a ON a.plan_id=e.plan_id AND a.asset_reference=e.target_reference
+JOIN group_ops_directory_groups g ON g.chat_reference=e.target_reference
+WHERE e.external_effect_id=$1
+  AND e.state='accepted'
+  AND p.status='active'
+  AND p.revision=e.plan_revision`, effectID).Scan(
+		&item.ExecutionID, &runID, &item.State, &item.DeliveryProven, &item.TargetReference, &item.SenderUserID,
+		&item.ContentSnapshot, &item.ContentDigest, &item.MaterialSnapshot, &item.MaterialDigest, &item.MaterialSourceSnapshot, &item.MaterialSourceDigest, &item.TargetRefDigest,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return groupopsport.DispatchExecution{}, ErrNotFound
+	}
+	if err != nil {
+		return groupopsport.DispatchExecution{}, err
+	}
+	item.ExternalEffectID = effectRef
+	item.SourceRefDigest = string(effectport.Hash("group-ops.run", strconv.FormatInt(runID, 10)))
+	item.PayloadDigest = string(effectport.Hash("group-ops.payload", item.ContentDigest, item.MaterialDigest, item.SenderUserID))
+	item.PolicyVersionHash = string(effectport.Hash("group-ops.policy", "v1"))
+	return item, nil
+}
+
 func (r *Repository) getExecution(ctx context.Context, tx pgx.Tx, id int64) (groupopsport.Execution, error) {
 	var e groupopsport.Execution
 	var effectID int64
 	var receipt, evidence *string
-	err := tx.QueryRow(ctx, `SELECT id,run_id,plan_id,plan_revision,node_id,node_position,target_reference,target_digest,content_digest,material_digest,external_effect_id,state,provider_accepted,delivery_proven,provider_receipt_digest,reconciliation_evidence_digest,attempt_count,scheduled_for,created_at,updated_at FROM group_ops_executions WHERE id=$1`, id).Scan(&e.ID, &e.RunID, &e.PlanID, &e.PlanRevision, &e.NodeID, &e.NodePosition, &e.TargetReference, &e.TargetDigest, &e.ContentDigest, &e.MaterialDigest, &effectID, &e.State, &e.ProviderAccepted, &e.DeliveryProven, &receipt, &evidence, &e.AttemptCount, &e.ScheduledFor, &e.CreatedAt, &e.UpdatedAt)
+	var deliveryStatus pgtype.Int4
+	err := tx.QueryRow(ctx, `SELECT e.id,e.run_id,e.plan_id,e.plan_revision,e.node_id,e.node_position,e.target_reference,e.target_digest,e.content_digest,e.material_digest,e.external_effect_id,e.state,e.provider_accepted,e.delivery_proven,e.provider_receipt_digest,e.reconciliation_evidence_digest,e.attempt_count,e.scheduled_for,e.created_at,e.updated_at,t.delivery_status FROM group_ops_executions e LEFT JOIN group_ops_group_message_tasks t ON t.execution_id=e.id WHERE e.id=$1`, id).Scan(&e.ID, &e.RunID, &e.PlanID, &e.PlanRevision, &e.NodeID, &e.NodePosition, &e.TargetReference, &e.TargetDigest, &e.ContentDigest, &e.MaterialDigest, &effectID, &e.State, &e.ProviderAccepted, &e.DeliveryProven, &receipt, &evidence, &e.AttemptCount, &e.ScheduledFor, &e.CreatedAt, &e.UpdatedAt, &deliveryStatus)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return groupopsport.Execution{}, ErrNotFound
 	}
@@ -494,6 +539,10 @@ func (r *Repository) getExecution(ctx context.Context, tx pgx.Tx, id int64) (gro
 	e.ExternalEffectID = "eer_" + strconv.FormatInt(effectID, 10)
 	e.ProviderReceiptPresent = receipt != nil && *receipt != ""
 	e.ReconciliationEvidencePresent = evidence != nil && *evidence != ""
+	if deliveryStatus.Valid {
+		value := int(deliveryStatus.Int32)
+		e.DeliveryStatus = &value
+	}
 	return e, nil
 }
 
@@ -588,6 +637,25 @@ func (r *Repository) ReadRunSummary(ctx context.Context, runID int64) (groupopsp
 		case groupopsport.ExecutionFinalFailed:
 			summary.FinalFailed++
 		}
+	}
+	intentRows, intentErr := tx.Query(ctx, `SELECT id,node_id,node_position,target_reference,scheduled_for,state,external_effect_id FROM group_ops_execution_intents WHERE run_id=$1 AND state <> 'accepted' ORDER BY target_reference,node_position,id`, runID)
+	if intentErr != nil {
+		return groupopsport.RunSummary{}, intentErr
+	}
+	defer intentRows.Close()
+	for intentRows.Next() {
+		var item groupopsport.ExecutionIntent
+		var effectID *int64
+		if intentErr = intentRows.Scan(&item.ID, &item.NodeID, &item.NodePosition, &item.TargetReference, &item.ScheduledFor, &item.State, &effectID); intentErr != nil {
+			return groupopsport.RunSummary{}, intentErr
+		}
+		if effectID != nil {
+			item.ExternalEffectID = "eer_" + strconv.FormatInt(*effectID, 10)
+		}
+		summary.PendingIntents = append(summary.PendingIntents, item)
+	}
+	if intentErr = intentRows.Err(); intentErr != nil {
+		return groupopsport.RunSummary{}, intentErr
 	}
 	return summary, nil
 }
@@ -779,6 +847,111 @@ func equalDigest(value []byte, expected [sha256.Size]byte) bool {
 		difference |= value[index] ^ expected[index]
 	}
 	return difference == 0
+}
+
+// RecordGroupMessageTask records only validated task acceptance evidence. It
+// is invoked from EER's completion transaction, after the provider network
+// call has returned. A failure rolls that transaction back, leaving EER's
+// already-attempted fact for its no-resend unknown recovery path.
+func (r *Repository) RecordGroupMessageTask(ctx context.Context, task groupopsport.GroupMessageReceipt) error {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return err
+	}
+	if task.ExecutionID < 1 || !effectport.ValidDigest(effectport.Digest(task.TaskEvidenceDigest)) || task.MessageID == "" || !validOpaqueStore(task.SenderUserID) || !validOpaqueStore(task.ChatID) {
+		return ErrInvalid
+	}
+	effectID, err := parseEffectID(task.ExternalEffectID)
+	if err != nil {
+		return err
+	}
+	var storedExecution, storedEffect int64
+	var sender, chat string
+	err = tx.QueryRow(ctx, `SELECT id,external_effect_id,sender_userid_snapshot,target_reference FROM group_ops_executions WHERE id=$1 FOR UPDATE`, task.ExecutionID).Scan(&storedExecution, &storedEffect, &sender, &chat)
+	if err != nil {
+		return err
+	}
+	if storedExecution != task.ExecutionID || storedEffect != effectID || sender != task.SenderUserID || chat != task.ChatID {
+		return ErrConflict
+	}
+	result, err := tx.Exec(ctx, `INSERT INTO group_ops_group_message_tasks(execution_id,external_effect_id,msgid,sender_userid_snapshot,chat_reference,task_evidence_digest,accepted_at) VALUES($1,$2,$3,$4,$5,$6,clock_timestamp()) ON CONFLICT(external_effect_id) DO UPDATE SET msgid=EXCLUDED.msgid,sender_userid_snapshot=EXCLUDED.sender_userid_snapshot,chat_reference=EXCLUDED.chat_reference,task_evidence_digest=EXCLUDED.task_evidence_digest WHERE group_ops_group_message_tasks.execution_id=EXCLUDED.execution_id AND group_ops_group_message_tasks.msgid=EXCLUDED.msgid AND group_ops_group_message_tasks.sender_userid_snapshot=EXCLUDED.sender_userid_snapshot AND group_ops_group_message_tasks.chat_reference=EXCLUDED.chat_reference AND group_ops_group_message_tasks.task_evidence_digest=EXCLUDED.task_evidence_digest`, task.ExecutionID, effectID, task.MessageID, task.SenderUserID, task.ChatID, task.TaskEvidenceDigest)
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() != 1 {
+		return ErrConflict
+	}
+	return nil
+}
+
+// FindGroupMessageReceipt returns the owner-held WeCom task reference only
+// when the reconciliation request names the same execution/effect pair. This
+// is deliberately separate from EER: a msgid proves task acceptance, not
+// member delivery.
+func (r *Repository) FindGroupMessageReceipt(ctx context.Context, evidence groupopsport.ReconciliationEvidence) (groupopsport.GroupMessageReceipt, bool, error) {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return groupopsport.GroupMessageReceipt{}, false, err
+	}
+	if evidence.ExecutionID < 1 {
+		return groupopsport.GroupMessageReceipt{}, false, ErrInvalid
+	}
+	effectID, err := parseEffectID(evidence.ExternalEffectID)
+	if err != nil {
+		return groupopsport.GroupMessageReceipt{}, false, err
+	}
+	var task groupopsport.GroupMessageReceipt
+	var status pgtype.Int4
+	var deliveryDigest pgtype.Text
+	err = tx.QueryRow(ctx, `SELECT execution_id,external_effect_id,msgid,sender_userid_snapshot,chat_reference,task_evidence_digest,delivery_status,delivery_evidence_digest FROM group_ops_group_message_tasks WHERE execution_id=$1 AND external_effect_id=$2`, evidence.ExecutionID, effectID).Scan(&task.ExecutionID, new(int64), &task.MessageID, &task.SenderUserID, &task.ChatID, &task.TaskEvidenceDigest, &status, &deliveryDigest)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return groupopsport.GroupMessageReceipt{}, false, nil
+	}
+	if err != nil {
+		return groupopsport.GroupMessageReceipt{}, false, err
+	}
+	task.ExternalEffectID = evidence.ExternalEffectID
+	if status.Valid {
+		value := int(status.Int32)
+		task.DeliveryStatus = &value
+	}
+	if deliveryDigest.Valid {
+		task.DeliveryEvidenceDigest = deliveryDigest.String
+	}
+	return task, true, nil
+}
+
+func (r *Repository) RecordGroupMessageDelivery(ctx context.Context, task groupopsport.GroupMessageReceipt, evidenceDigest string) error {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return err
+	}
+	if task.ExecutionID < 1 || task.DeliveryStatus == nil || !effectport.ValidDigest(effectport.Digest(evidenceDigest)) {
+		return ErrInvalid
+	}
+	effectID, err := parseEffectID(task.ExternalEffectID)
+	if err != nil {
+		return err
+	}
+	// A delivered task is immutable as a fact: an older status page can refresh
+	// its observation time but cannot overwrite status=1 or its evidence.
+	result, err := tx.Exec(ctx, `UPDATE group_ops_group_message_tasks SET delivery_status=CASE WHEN delivery_status=1 THEN 1 ELSE $3 END,delivery_evidence_digest=CASE WHEN delivery_status=1 THEN delivery_evidence_digest ELSE $4 END,delivery_checked_at=clock_timestamp() WHERE execution_id=$1 AND external_effect_id=$2 AND msgid=$5 AND sender_userid_snapshot=$6 AND chat_reference=$7`, task.ExecutionID, effectID, *task.DeliveryStatus, evidenceDigest, task.MessageID, task.SenderUserID, task.ChatID)
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() != 1 {
+		return ErrConflict
+	}
+	// PostgreSQL row locking plus OR makes delivery_proven monotonic across
+	// concurrent reader transactions (including a later stale status=0 page).
+	updated, err := tx.Exec(ctx, `UPDATE group_ops_executions SET delivery_proven=(delivery_proven OR ($2=1)),updated_at=clock_timestamp() WHERE id=$1 AND state='provider_accepted'`, task.ExecutionID, *task.DeliveryStatus)
+	if err != nil {
+		return err
+	}
+	if updated.RowsAffected() != 1 {
+		return ErrConflict
+	}
+	return nil
 }
 
 // CompleteEffect is called by the External Effects completion sink with a
@@ -1000,6 +1173,7 @@ func nullableTime(value pgtype.Timestamptz) *time.Time {
 }
 
 var _ groupopsport.ExecutionTargetOwnerResolver = (*Repository)(nil)
+var _ groupopsport.GroupMessageReceiptReader = (*Repository)(nil)
 var _ groupopsport.RuntimeStore = (*Repository)(nil)
 var _ groupopsport.WebhookReplayStore = (*Repository)(nil)
 var _ groupopsapp.Store = (*Repository)(nil)
@@ -1013,3 +1187,141 @@ func IsUnique(err error) bool {
 }
 
 var _ = groupopsdomain.ValidatePlan
+
+// CreateExecutionIntents persists every frozen node before any provider effect
+// is accepted. The first message per group is immediately eligible; later
+// nodes wait for the preceding message task acceptance.
+func (r *Repository) CreateExecutionIntents(ctx context.Context, drafts []groupopsport.ExecutionDraft) ([]groupopsport.ExecutionIntent, error) {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return nil, err
+	}
+	ordered := append([]groupopsport.ExecutionDraft(nil), drafts...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		if ordered[i].TargetReference == ordered[j].TargetReference {
+			return ordered[i].NodePosition < ordered[j].NodePosition
+		}
+		return ordered[i].TargetReference < ordered[j].TargetReference
+	})
+	previous := map[string]int64{}
+	items := make([]groupopsport.ExecutionIntent, 0, len(ordered))
+	for _, d := range ordered {
+		state := "waiting"
+		var predecessor any
+		if previous[d.TargetReference] == 0 {
+			state = "ready_to_accept"
+			predecessor = nil
+		} else {
+			predecessor = previous[d.TargetReference]
+		}
+		var id int64
+		err = tx.QueryRow(ctx, `INSERT INTO group_ops_execution_intents(run_id,plan_id,node_id,plan_revision,node_position,target_reference,sender_userid_snapshot,target_digest,content_snapshot,content_digest,material_snapshot,material_digest,material_source_snapshot,material_source_digest,execution_key_digest,predecessor_intent_id,state,scheduled_for,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$19) ON CONFLICT(run_id,node_id,target_reference) DO NOTHING RETURNING id`, d.RunID, d.PlanID, d.NodeID, d.PlanRevision, d.NodePosition, d.TargetReference, d.SenderUserID, d.TargetDigest, d.ContentSnapshot, d.ContentDigest, d.MaterialSnapshot, d.MaterialDigest, d.MaterialSourceSnapshot, d.MaterialSourceDigest, d.ExecutionKeyDigest[:], predecessor, state, d.ScheduledFor, d.CreatedAt).Scan(&id)
+		if errors.Is(err, pgx.ErrNoRows) {
+			err = tx.QueryRow(ctx, `SELECT id FROM group_ops_execution_intents WHERE run_id=$1 AND node_id=$2 AND target_reference=$3`, d.RunID, d.NodeID, d.TargetReference).Scan(&id)
+		}
+		if err != nil {
+			return nil, err
+		}
+		previous[d.TargetReference] = id
+		items = append(items, groupopsport.ExecutionIntent{ID: id, NodeID: d.NodeID, NodePosition: d.NodePosition, TargetReference: d.TargetReference, ScheduledFor: d.ScheduledFor, State: groupopsport.ExecutionIntentState(state)})
+	}
+	return items, nil
+}
+
+func (r *Repository) InitialExecutionIntents(ctx context.Context, runID int64) ([]groupopsport.ExecutionDraft, error) {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := tx.Query(ctx, `SELECT id,run_id,plan_id,plan_revision,node_id,node_position,target_reference,sender_userid_snapshot,target_digest,content_snapshot,content_digest,material_snapshot,material_digest,material_source_snapshot,material_source_digest,execution_key_digest,scheduled_for,created_at FROM group_ops_execution_intents WHERE run_id=$1 AND predecessor_intent_id IS NULL AND state='ready_to_accept' ORDER BY target_reference,node_position,id FOR UPDATE`, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanIntentDrafts(rows)
+}
+
+func (r *Repository) ClaimNextExecutionIntent(ctx context.Context, effectRef string) (groupopsport.ExecutionDraft, bool, error) {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return groupopsport.ExecutionDraft{}, false, err
+	}
+	effectID, err := parseEffectID(effectRef)
+	if err != nil {
+		return groupopsport.ExecutionDraft{}, false, err
+	}
+	rows, err := tx.Query(ctx, `SELECT child.id,child.run_id,child.plan_id,child.plan_revision,child.node_id,child.node_position,child.target_reference,child.sender_userid_snapshot,child.target_digest,child.content_snapshot,child.content_digest,child.material_snapshot,child.material_digest,child.material_source_snapshot,child.material_source_digest,child.execution_key_digest,child.scheduled_for,child.created_at FROM group_ops_execution_intents parent JOIN group_ops_executions execution ON execution.external_effect_id=$1 JOIN group_ops_execution_intents child ON child.predecessor_intent_id=parent.id WHERE parent.run_id=execution.run_id AND parent.target_reference=execution.target_reference AND parent.node_id=execution.node_id AND parent.state='accepted' AND execution.state='provider_accepted' AND child.state='waiting' ORDER BY child.node_position,child.id FOR UPDATE OF child`, effectID)
+	if err != nil {
+		return groupopsport.ExecutionDraft{}, false, err
+	}
+	defer rows.Close()
+	items, err := scanIntentDrafts(rows)
+	if err != nil {
+		return groupopsport.ExecutionDraft{}, false, err
+	}
+	if len(items) == 0 {
+		return groupopsport.ExecutionDraft{}, false, nil
+	}
+	if len(items) != 1 {
+		return groupopsport.ExecutionDraft{}, false, ErrConflict
+	}
+	updated, updateErr := tx.Exec(ctx, `UPDATE group_ops_execution_intents SET state='ready_to_accept',updated_at=clock_timestamp() WHERE id=$1 AND state='waiting'`, items[0].IntentID)
+	if updateErr != nil {
+		return groupopsport.ExecutionDraft{}, false, updateErr
+	}
+	if updated.RowsAffected() != 1 {
+		return groupopsport.ExecutionDraft{}, false, ErrConflict
+	}
+	return items[0], true, nil
+}
+
+func (r *Repository) BindAcceptedExecutionIntent(ctx context.Context, intentID int64, effectRef string) error {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return err
+	}
+	effectID, err := parseEffectID(effectRef)
+	if err != nil {
+		return err
+	}
+	result, err := tx.Exec(ctx, `UPDATE group_ops_execution_intents SET state='accepted',external_effect_id=$2,updated_at=clock_timestamp() WHERE id=$1 AND state='ready_to_accept'`, intentID, effectID)
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() != 1 {
+		return ErrConflict
+	}
+	return nil
+}
+
+func (r *Repository) HaltExecutionIntent(ctx context.Context, intentID int64) error {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return err
+	}
+	result, err := tx.Exec(ctx, `UPDATE group_ops_execution_intents SET state='halted',updated_at=clock_timestamp() WHERE id=$1 AND state='ready_to_accept'`, intentID)
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() != 1 {
+		return ErrConflict
+	}
+	return nil
+}
+
+func scanIntentDrafts(rows pgx.Rows) ([]groupopsport.ExecutionDraft, error) {
+	items := []groupopsport.ExecutionDraft{}
+	for rows.Next() {
+		var d groupopsport.ExecutionDraft
+		var key []byte
+		if err := rows.Scan(&d.IntentID, &d.RunID, &d.PlanID, &d.PlanRevision, &d.NodeID, &d.NodePosition, &d.TargetReference, &d.SenderUserID, &d.TargetDigest, &d.ContentSnapshot, &d.ContentDigest, &d.MaterialSnapshot, &d.MaterialDigest, &d.MaterialSourceSnapshot, &d.MaterialSourceDigest, &key, &d.ScheduledFor, &d.CreatedAt); err != nil {
+			return nil, err
+		}
+		if len(key) != sha256.Size {
+			return nil, ErrInvalid
+		}
+		copy(d.ExecutionKeyDigest[:], key)
+		items = append(items, d)
+	}
+	return items, rows.Err()
+}

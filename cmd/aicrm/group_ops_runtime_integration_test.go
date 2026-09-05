@@ -4,11 +4,13 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -19,6 +21,8 @@ import (
 	groupopsapp "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/app"
 	groupopsport "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/port"
 	groupopsstore "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/store"
+	groupopsmaterial "github.com/qianlan33333-png/AI-CRM-v3/internal/media/groupopsmaterial"
+	mediastore "github.com/qianlan33333-png/AI-CRM-v3/internal/media/store"
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
 	platformjobqueue "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/jobqueue"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
@@ -55,6 +59,26 @@ func TestGroupOpsPostgreSQLJourney(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	mediaStore, err := mediastore.NewPostgreSQL(native, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	invite, err := mediaStore.CreateGroupInvite(ctx, actorID, "groupops-journey-invite-0001", map[string]any{"name": "Journey invite", "title": "Join Journey", "description": "Journey material", "join_url": "https://work.weixin.qq.com/gm/0123456789abcdef0123456789abcdef", "enabled": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inviteID, ok := invite["id"].(int64)
+	if !ok || inviteID < 1 {
+		t.Fatalf("invite=%+v", invite)
+	}
+	freezer, err := groupopsmaterial.NewFreezer(mediaPreparedPlanReader{reader: mediaStore})
+	if err != nil {
+		t.Fatal(err)
+	}
+	materialResolver, err := newGroupOpsMaterialAdapter(mediaStore, freezer)
+	if err != nil {
+		t.Fatal(err)
+	}
 	workers := river.NewWorkers()
 	if err = river.AddWorkerSafely[externaleffects.EffectJobArgs](workers, externaleffects.NewWorker(nil, nil)); err != nil {
 		t.Fatal(err)
@@ -75,7 +99,8 @@ func TestGroupOpsPostgreSQLJourney(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	planID := createJourneyPlan(t, ctx, uow, groupStore, actorID)
+	planID := createJourneyPlan(t, ctx, uow, groupStore, actorID, inviteID)
+	evidence := &journeyEvidence{status: 1}
 	runtimeService := groupopsapp.NewRuntimeService(
 		uow,
 		groupStore,
@@ -84,8 +109,9 @@ func TestGroupOpsPostgreSQLJourney(t *testing.T) {
 		journeyStaff{},
 		nil,
 		journeySender{},
-		journeyEvidence{},
+		evidence,
 		journeyReconciler{repository: effectStore},
+		materialResolver,
 	)
 	runtimeService.SetDispatchEnabled(true)
 
@@ -158,6 +184,104 @@ func TestGroupOpsPostgreSQLJourney(t *testing.T) {
 	if unknown.ID < 1 {
 		t.Fatal("unknown execution was not projected")
 	}
+	var accepted groupopsport.Execution
+	for _, execution := range projected {
+		if execution.State == groupopsport.ExecutionProviderAccepted {
+			accepted = execution
+		}
+	}
+	if accepted.ID < 1 {
+		t.Fatal("provider accepted execution was not projected")
+	}
+	if err = uow.Within(ctx, func(tx context.Context) error {
+		return groupStore.RecordGroupMessageTask(tx, groupopsport.GroupMessageReceipt{ExecutionID: accepted.ID, ExternalEffectID: accepted.ExternalEffectID, MessageID: "journey-msgid", SenderUserID: "journey-sender", ChatID: "chat-journey-1", TaskEvidenceDigest: string(effectport.Hash("journey-task", accepted.ExternalEffectID))})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	read, err := runtimeService.ReadProviderDelivery(ctx, groupopsport.ProviderDeliveryReadCommand{ExecutionID: accepted.ID, ActorID: actorID, IdempotencyKey: "journey-delivery-read-0001"})
+	if err != nil || !read.DeliveryProven || read.DeliveryStatus == nil || *read.DeliveryStatus != 1 || read.State != groupopsport.ExecutionProviderAccepted {
+		t.Fatalf("delivery read=%+v err=%v", read, err)
+	}
+	acceptedEffectID, err := strconv.ParseInt(accepted.ExternalEffectID[len("eer_"):], 10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var acceptedEffectState string
+	if err = native.QueryRow(ctx, `SELECT state FROM external_effects WHERE id=$1`, acceptedEffectID).Scan(&acceptedEffectState); err != nil || acceptedEffectState != string(effectport.StateExecuted) {
+		t.Fatalf("accepted EER state=%q err=%v", acceptedEffectState, err)
+	}
+	var materialJSON, sourceJSON []byte
+	var sourceDigest string
+	if err = native.QueryRow(ctx, `SELECT material_snapshot,material_source_snapshot,material_source_digest FROM group_ops_executions WHERE id=$1`, accepted.ID).Scan(&materialJSON, &sourceJSON, &sourceDigest); err != nil {
+		t.Fatal(err)
+	}
+	var sourceValue any
+	if json.Unmarshal(sourceJSON, &sourceValue) != nil {
+		t.Fatalf("source snapshot=%s", sourceJSON)
+	}
+	canonicalSource, err := json.Marshal(sourceValue)
+	if err != nil || sourceDigest != string(effectport.Hash("group-ops.material.intent.v1", string(canonicalSource))) {
+		t.Fatalf("source digest=%q canonical=%s err=%v", sourceDigest, canonicalSource, err)
+	}
+	// This executes the actual Media SourceCapturer and Preparation Reader
+	// through the Composition adapter against JSONB-read facts. It verifies
+	// semantic equality rather than byte ordering and performs no upload.
+	readiness := groupOpsMaterialReadinessAdapter{uow: uow, capturer: mediaStore, freezer: freezer}
+	if err = readiness.VerifyMaterialReady(ctx, materialJSON, sourceJSON, sourceDigest, time.Now().UTC()); err != nil {
+		t.Fatalf("real Media readiness after JSONB round trip: %v", err)
+	}
+	if evidence.calls != 1 {
+		t.Fatalf("provider delivery calls=%d", evidence.calls)
+	}
+	// A same-key retry performs another safe Provider read, then returns the
+	// persisted completed receipt without a second local mutation.
+	sameKey, err := runtimeService.ReadProviderDelivery(ctx, groupopsport.ProviderDeliveryReadCommand{ExecutionID: accepted.ID, ActorID: actorID, IdempotencyKey: "journey-delivery-read-0001"})
+	if err != nil || !sameKey.DeliveryProven || sameKey.DeliveryStatus == nil || *sameKey.DeliveryStatus != 1 || evidence.calls != 2 {
+		t.Fatalf("same key=%+v err=%v calls=%d", sameKey, err, evidence.calls)
+	}
+	evidence.status = 0 // a stale page must never downgrade an established delivery fact.
+	replayedDelivery, err := runtimeService.ReadProviderDelivery(ctx, groupopsport.ProviderDeliveryReadCommand{ExecutionID: accepted.ID, ActorID: actorID, IdempotencyKey: "journey-delivery-read-0002"})
+	if err != nil || !replayedDelivery.DeliveryProven || replayedDelivery.DeliveryStatus == nil || *replayedDelivery.DeliveryStatus != 1 || evidence.calls != 3 {
+		t.Fatalf("stale delivery=%+v err=%v calls=%d", replayedDelivery, err, evidence.calls)
+	}
+	// Run the two observations in independent real PostgreSQL transactions.
+	// The status=0 writer may run before or after status=1, but the owner SQL
+	// CAS must leave the persisted fact at status=1/delivery_proven=true.
+	if _, err = native.Exec(ctx, `UPDATE group_ops_group_message_tasks SET delivery_status=NULL,delivery_evidence_digest=NULL,delivery_checked_at=NULL WHERE execution_id=$1`, accepted.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = native.Exec(ctx, `UPDATE group_ops_executions SET delivery_proven=FALSE WHERE id=$1`, accepted.ID); err != nil {
+		t.Fatal(err)
+	}
+	concurrentCtx, cancelConcurrent := context.WithTimeout(ctx, 20*time.Second)
+	defer cancelConcurrent()
+	errCh := make(chan error, 2)
+	var wg sync.WaitGroup
+	for _, status := range []int{0, 1} {
+		status := status
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			digest := string(effectport.Hash("journey-delivery-concurrent", accepted.ExternalEffectID, strconv.Itoa(status)))
+			errCh <- uow.Within(concurrentCtx, func(tx context.Context) error {
+				return groupStore.RecordGroupMessageDelivery(tx, groupopsport.GroupMessageReceipt{ExecutionID: accepted.ID, ExternalEffectID: accepted.ExternalEffectID, MessageID: "journey-msgid", SenderUserID: "journey-sender", ChatID: "chat-journey-1", DeliveryStatus: &status, DeliveryEvidenceDigest: digest}, digest)
+			})
+		}()
+	}
+	wg.Wait()
+	close(errCh)
+	for concurrentErr := range errCh {
+		if concurrentErr != nil {
+			t.Fatal(concurrentErr)
+		}
+	}
+	if err = uow.Within(ctx, func(tx context.Context) error {
+		var readErr error
+		accepted, readErr = groupStore.GetExecution(tx, accepted.ID)
+		return readErr
+	}); err != nil || !accepted.DeliveryProven || accepted.DeliveryStatus == nil || *accepted.DeliveryStatus != 1 {
+		t.Fatalf("concurrent monotonic delivery=%+v err=%v", accepted, err)
+	}
 
 	var generation, fence int64
 	var lease time.Time
@@ -211,13 +335,22 @@ func (journeySender) ResolveExecutionSender(_ context.Context, target string) (s
 	return "journey-sender", true, nil
 }
 
-type journeyEvidence struct{}
+type journeyEvidence struct{ status, calls int }
 
-func (journeyEvidence) VerifyReconciliationEvidence(_ context.Context, input groupopsport.ReconciliationEvidence) (groupopsport.ReconciliationEvidenceResult, error) {
+func (*journeyEvidence) VerifyReconciliationEvidence(_ context.Context, input groupopsport.ReconciliationEvidence) (groupopsport.ReconciliationEvidenceResult, error) {
 	if input.ExecutionID < 1 || input.ExternalEffectID == "" || !effectport.ValidDigest(effectport.Digest(input.EvidenceDigest)) {
 		return groupopsport.ReconciliationEvidenceResult{}, errors.New("invalid journey evidence")
 	}
 	return groupopsport.ReconciliationEvidenceResult{EvidenceDigest: input.EvidenceDigest}, nil
+}
+
+func (evidence *journeyEvidence) ReadProviderDelivery(_ context.Context, input groupopsport.ReconciliationEvidence) (groupopsport.GroupMessageReceipt, bool, error) {
+	if input.ExecutionID < 1 || input.ExternalEffectID == "" {
+		return groupopsport.GroupMessageReceipt{}, false, errors.New("invalid journey delivery")
+	}
+	evidence.calls++
+	status := evidence.status
+	return groupopsport.GroupMessageReceipt{ExecutionID: input.ExecutionID, ExternalEffectID: input.ExternalEffectID, MessageID: "journey-msgid", SenderUserID: "journey-sender", ChatID: "chat-journey-1", DeliveryStatus: &status, DeliveryEvidenceDigest: string(effectport.Hash("journey-delivery", input.ExternalEffectID))}, true, nil
 }
 
 type journeyReconciler struct {
@@ -271,7 +404,7 @@ func (sink *journeyCompletionSink) CompleteEffect(ctx context.Context, effectRef
 	return sink.projector.CompleteEffect(ctx, effectRef, state, result.Completion == effectport.StateExecuted, false, string(result.ReceiptDigest), attempt.Number, time.Now().UTC())
 }
 
-func createJourneyPlan(t *testing.T, ctx context.Context, uow *platformpostgres.UnitOfWork, repository *groupopsstore.Repository, actorID int64) int64 {
+func createJourneyPlan(t *testing.T, ctx context.Context, uow *platformpostgres.UnitOfWork, repository *groupopsstore.Repository, actorID, inviteID int64) int64 {
 	t.Helper()
 	now := time.Now().UTC()
 	var planID int64
@@ -288,7 +421,7 @@ func createJourneyPlan(t *testing.T, ctx context.Context, uow *platformpostgres.
 				{AssetRef: "chat-journey-1"},
 				{AssetRef: "chat-journey-2"},
 			},
-			Nodes: []groupopsport.Node{{Position: 1, Kind: groupopsport.NodeMessage, MessageText: "PG journey", MaterialPlan: groupopsport.MaterialPlan{References: []groupopsport.MaterialReference{}}}},
+			Nodes: []groupopsport.Node{{Position: 1, Kind: groupopsport.NodeMessage, MessageText: "PG journey", MaterialPlan: groupopsport.MaterialPlan{References: []groupopsport.MaterialReference{{Kind: "group_invite", ID: inviteID}}}}},
 		})
 	})
 	if err != nil {
@@ -340,7 +473,7 @@ func groupOpsIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 	if !ok {
 		t.Fatal("locate Group Ops Journey test")
 	}
-	for _, migration := range []string{"0003_access.sql", "0005_external_effects.sql", "0012_group_ops.sql"} {
+	for _, migration := range []string{"0003_access.sql", "0005_external_effects.sql", "0007_media.sql", "0012_group_ops.sql", "0016_media_content_packages.sql", "0078_group_ops_provider_tasks.sql"} {
 		sql, readErr := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "migrations", migration))
 		if readErr != nil {
 			native.Close()

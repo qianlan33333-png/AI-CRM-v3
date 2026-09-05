@@ -76,6 +76,7 @@ type RuntimeApplication interface {
 	ListExecutions(context.Context, int64, int32, int32) (groupopsport.ExecutionPage, error)
 	ProjectExecutionOutcome(context.Context, groupopsport.ExecutionOutcomeCommand) (groupopsport.Execution, error)
 	ManualReconcile(context.Context, groupopsport.ManualReconcileCommand) (groupopsport.Execution, error)
+	ReadProviderDelivery(context.Context, groupopsport.ProviderDeliveryReadCommand) (groupopsport.Execution, error)
 	ListOperationMembers(context.Context, int32) (groupopsport.OperationMemberPage, error)
 	RefreshOperationMembers(context.Context, groupopsport.OperationMemberRefreshCommand) (groupopsport.OperationMemberPage, error)
 	ListGroups(context.Context, int64, int32, int32) (groupopsport.GroupDirectoryPage, error)
@@ -503,6 +504,15 @@ func (h *Handler) plans(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		h.reconcileExecution(w, r, executionID)
 		return
 	}
+	if len(parts) == 3 && parts[0] == "executions" && parts[2] == "delivery" {
+		executionID, valid := positiveID(parts[1])
+		if !valid {
+			writeError(w, stdhttp.StatusNotFound, "not_found")
+			return
+		}
+		h.readProviderDelivery(w, r, executionID)
+		return
+	}
 	planID, ok := positiveID(parts[0])
 	if !ok {
 		writeError(w, stdhttp.StatusNotFound, "plan_not_found")
@@ -574,6 +584,15 @@ func (h *Handler) plans(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 			return
 		}
 		h.reconcileExecution(w, r, executionID)
+		return
+	}
+	if parts[1] == "executions" && len(parts) == 4 && parts[3] == "delivery" && h.runtime != nil {
+		executionID, valid := positiveID(parts[2])
+		if !valid {
+			writeError(w, stdhttp.StatusNotFound, "not_found")
+			return
+		}
+		h.readProviderDelivery(w, r, executionID)
 		return
 	}
 	h.planSubresource(w, r, planID, parts[1:])
@@ -1118,6 +1137,28 @@ func (h *Handler) reconcileExecution(w stdhttp.ResponseWriter, r *stdhttp.Reques
 		return
 	}
 	value, err := h.runtime.ManualReconcile(r.Context(), groupopsport.ManualReconcileCommand{ExecutionID: executionID, ActorID: actor.InternalID, IdempotencyKey: key, Generation: body.Generation, Fence: body.Fence, LeaseExpiresAt: lease, EvidenceDigest: body.EvidenceDigest, DeliveryProven: body.DeliveryProven})
+	h.respond(w, value, err)
+}
+
+func (h *Handler) readProviderDelivery(w stdhttp.ResponseWriter, r *stdhttp.Request, executionID int64) {
+	if h.runtime == nil {
+		writeError(w, stdhttp.StatusServiceUnavailable, "group_ops_unavailable")
+		return
+	}
+	if r.Method != stdhttp.MethodPost {
+		methodNotAllowed(w, stdhttp.MethodPost)
+		return
+	}
+	actor, ok := h.mutate(w, r)
+	if !ok {
+		return
+	}
+	key, valid := requiredIdempotencyKey(r)
+	if !valid {
+		writeError(w, stdhttp.StatusBadRequest, "invalid_idempotency_key")
+		return
+	}
+	value, err := h.runtime.ReadProviderDelivery(r.Context(), groupopsport.ProviderDeliveryReadCommand{ExecutionID: executionID, ActorID: actor.InternalID, IdempotencyKey: key})
 	h.respond(w, value, err)
 }
 
