@@ -534,7 +534,7 @@ func (handler *Handler) refund(writer http.ResponseWriter, request *http.Request
 		resultError(writer, err)
 		return
 	}
-	writeJSON(writer, http.StatusAccepted, map[string]any{"refund_id": refund.ID, "status": refund.Status, "effect_id": refund.EffectID})
+	writeJSON(writer, http.StatusAccepted, map[string]any{"refund_id": refund.ID, "out_refund_no": refund.RefundNo, "status": refund.Status, "effect_id": refund.EffectID})
 }
 
 func (handler *Handler) callback(writer http.ResponseWriter, request *http.Request) {
