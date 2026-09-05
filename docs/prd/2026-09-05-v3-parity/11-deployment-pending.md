@@ -50,3 +50,5 @@
 - PR153历史增量已审核：0082随总集成候选发布。现有migrate-v2-config-definitions新增history-extract/inspect/dry-run/apply/verify模式；冻结来源版本与五类历史记录，使用独立受保护密封密钥文件（32字节值的base64、权限0600），逐行结果和源/目标摘要守恒。此处是生产阶段待执行清单，本轮只运行合成PG/HTTP验证，未从生产提取聊天/客户正文或apply历史。
 
 - PR154共享HXC字段已审核：0084需在既有HXC刷新前就绪；复用现有受控只读MySQL连接与OneID配置，不新增凭据或同步角色。部署后先核旧代字段unavailable，再以一次正常授权刷新验证新代、两消费者和实际数据量耗时；本轮EXPLAIN只验证源查询可执行，不代表生产耗时已测量。
+
+- PR143已审核的03/04联合候选增加0076不可变checkout、0077公开券slug、0079原会员表视图/协作/分享；前置0068/0069/0070必须齐备。继续核对实际制品与schema readiness，0088联盟字段仍独立待审。cmd/migrate-commerce-history已用冻结合成快照实跑apply/replay/reconcile，生产仅在冻结源摘要、逐行隔离/对账与零效果要求明确后执行，不以测试替代真实旧快照dry-run。
