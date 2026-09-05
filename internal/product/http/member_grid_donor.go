@@ -221,7 +221,11 @@ func (h *Handler) donorGridRowsAt(ctx context.Context, items []orderport.Entitle
 		if len(c.Groups) == 1 {
 			path = append(path, map[string]any{"field": "remaining_days", "value": remaining, "label": fmt.Sprintf("%d 天", remaining), "count": item.MemberGridGroupCount})
 		}
-		out = append(out, map[string]any{"record_id": memberGridMemberRef(item.ID), "unionid": memberGridMemberRef(item.ID), "version": item.Version, "values": map[string]any{"member": map[string]any{"primary": name, "secondary": ""}, "remaining_days": remaining, "formally_logged_in": "unmatched", "token_usage": "unmatched", "learning_plan_progress": map[string]any{"state": "unmatched"}, "open_count_7d": nil, "last_open_at": nil, "renewal_count": nil, "renewal_count_unavailable": true, "remark": item.Remark, "alliance": nil, "alliance_unavailable": true}, "group_path": path})
+		var renewalCount any
+		if item.RenewalCountAvailable {
+			renewalCount = item.RenewalCount
+		}
+		out = append(out, map[string]any{"record_id": memberGridMemberRef(item.ID), "unionid": memberGridMemberRef(item.ID), "version": item.Version, "values": map[string]any{"member": map[string]any{"primary": name, "secondary": ""}, "remaining_days": remaining, "formally_logged_in": "unmatched", "token_usage": "unmatched", "learning_plan_progress": map[string]any{"state": "unmatched"}, "open_count_7d": nil, "last_open_at": nil, "renewal_count": renewalCount, "renewal_count_unavailable": !item.RenewalCountAvailable, "remark": item.Remark, "alliance": nil, "alliance_unavailable": true}, "group_path": path})
 	}
 	return out, nil
 }

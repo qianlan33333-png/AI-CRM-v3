@@ -448,7 +448,7 @@ func newHandlerForTest(t *testing.T) (*Handler, *testSecurity, *testCatalog, *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	members := &testMemberEntitlements{page: orderport.ServicePeriodMemberPage{Items: []orderport.Entitlement{{ID: 41, CustomerID: 77, ServiceProductID: 7, ProductName: "周期七", Status: "active", StartAt: now.Add(-24 * time.Hour), EndAt: now.Add(7 * 24 * time.Hour), Version: 5, UpdatedAt: now}}}}
+	members := &testMemberEntitlements{page: orderport.ServicePeriodMemberPage{Items: []orderport.Entitlement{{ID: 41, CustomerID: 77, ServiceProductID: 7, ProductName: "周期七", Status: "active", StartAt: now.Add(-24 * time.Hour), EndAt: now.Add(7 * 24 * time.Hour), RenewalCount: 0, RenewalCountAvailable: true, Version: 5, UpdatedAt: now}}}}
 	if err = handler.SetServicePeriodMemberReaders(members, testMemberNames{}); err != nil {
 		t.Fatal(err)
 	}
@@ -589,10 +589,18 @@ func TestFrozenMemberGridHTTPAPISavedViewCollaboratorShareAndRemarkJourney(t *te
 		t.Fatalf("view update=%d %s", updateView.Code, updateView.Body.String())
 	}
 	query := adminRequest(http.MethodPost, "/api/admin/service-period-products/7/member-grid/query", `{"config":`+viewConfig+`,"limit":50}`)
-	if query.Code != http.StatusOK || !strings.Contains(query.Body.String(), `"record_id":"spm_`) || !strings.Contains(query.Body.String(), `"group_path"`) || !strings.Contains(query.Body.String(), " 天") || !strings.Contains(query.Body.String(), `"count":1`) || !strings.Contains(query.Body.String(), `"renewal_count_unavailable":true`) || !strings.Contains(query.Body.String(), `"alliance":null`) || !strings.Contains(query.Body.String(), `"alliance_unavailable":true`) {
+	if query.Code != http.StatusOK || !strings.Contains(query.Body.String(), `"record_id":"spm_`) || !strings.Contains(query.Body.String(), `"group_path"`) || !strings.Contains(query.Body.String(), " 天") || !strings.Contains(query.Body.String(), `"count":1`) || !strings.Contains(query.Body.String(), `"renewal_count":0`) || !strings.Contains(query.Body.String(), `"renewal_count_unavailable":false`) || !strings.Contains(query.Body.String(), `"alliance":null`) || !strings.Contains(query.Body.String(), `"alliance_unavailable":true`) {
 		t.Fatalf("saved view query=%d %s", query.Code, query.Body.String())
 	}
 	members := handler.members.(*testMemberEntitlements)
+	members.mu.Lock()
+	members.page.Items[0].RenewalCountAvailable = false
+	members.page.Items[0].RenewalCount = 0
+	members.mu.Unlock()
+	unavailableRenewal := adminRequest(http.MethodPost, "/api/admin/service-period-products/7/member-grid/query", `{"config":`+viewConfig+`,"limit":50}`)
+	if unavailableRenewal.Code != http.StatusOK || !strings.Contains(unavailableRenewal.Body.String(), `"renewal_count":null`) || !strings.Contains(unavailableRenewal.Body.String(), `"renewal_count_unavailable":true`) || strings.Contains(unavailableRenewal.Body.String(), `"renewal_count":0`) {
+		t.Fatalf("unavailable renewal must not be rendered as zero: %d %s", unavailableRenewal.Code, unavailableRenewal.Body.String())
+	}
 	_, _, _, queries := members.snapshot()
 	if len(queries) == 0 || queries[len(queries)-1].Sort != "remaining_days_asc" || queries[len(queries)-1].RemainingDays == nil {
 		t.Fatalf("saved view config was not applied: %+v", queries)

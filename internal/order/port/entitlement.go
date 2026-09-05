@@ -18,6 +18,12 @@ type Entitlement struct {
 	Version          int64     `json:"version"`
 	UpdatedAt        time.Time `json:"updated_at"`
 	SourceSystem     string    `json:"source_system,omitempty"`
+	// RenewalCount is the number of effective paid service-period source
+	// orders after the first authoritative enrollment. It is available only
+	// when Order has a complete native or mapped-historical source chain; a
+	// legacy aggregate without that source evidence stays explicitly unknown.
+	RenewalCount          int64 `json:"renewal_count,omitempty"`
+	RenewalCountAvailable bool  `json:"renewal_count_available"`
 	// MemberGridGroupCount is populated only for the requested, Order-owned
 	// remaining-days grouping. It is a window count over the complete filtered
 	// result, rather than a count of whichever page reached the Host.

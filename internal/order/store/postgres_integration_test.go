@@ -281,6 +281,117 @@ func TestPostgreSQLMemberGridUsesFrozenCeilDaysForFiltersAndPagination(t *testin
 	}
 }
 
+func TestPostgreSQLMemberGridRenewalCountUsesVerifiedOrderSources(t *testing.T) {
+	native, cleanup := orderIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	wrapper, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wrapper.Close()
+	uow, err := platformpostgres.NewUnitOfWork(wrapper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := NewPostgreSQL(native, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	members, err := orderapp.NewEntitlementApplication(uow, repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fulfillment, err := orderapp.NewEntitlementFulfillmentApplication(repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+	grant := func(orderID, customerID, productID int64, name string, at time.Time) {
+		t.Helper()
+		if err = uow.Within(ctx, func(txctx context.Context) error {
+			_, grantErr := fulfillment.GrantPaidServicePeriodWithin(txctx, orderport.ServicePeriodGrantCommand{SourceOrderID: orderID, BeneficiaryCustomerID: customerID, ServiceProductID: productID, ProductName: name, DurationDays: 31, PaidAt: at, ProcessedAt: at})
+			return grantErr
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	list := func(productID int64) orderport.Entitlement {
+		t.Helper()
+		page, listErr := members.ListServicePeriodMembers(ctx, orderport.ServicePeriodMemberQuery{ServiceProductID: productID, Limit: 10, SnapshotAt: base})
+		if listErr != nil || len(page.Items) != 1 {
+			t.Fatalf("product=%d page=%+v err=%v", productID, page, listErr)
+		}
+		return page.Items[0]
+	}
+
+	var nativeCustomer int64
+	if err = native.QueryRow(ctx, `INSERT INTO customers DEFAULT VALUES RETURNING id`).Scan(&nativeCustomer); err != nil {
+		t.Fatal(err)
+	}
+	first := entitlementTestOrder(t, native, nativeCustomer, "renewal-native-first", base)
+	second := entitlementTestOrder(t, native, nativeCustomer, "renewal-native-second", base.Add(time.Minute))
+	third := entitlementTestOrder(t, native, nativeCustomer, "renewal-native-third", base.Add(2*time.Minute))
+	for index, orderID := range []int64{first, second, third} {
+		grant(orderID, nativeCustomer, 751, "原生续费", base.Add(time.Duration(index)*time.Minute))
+	}
+	item := list(751)
+	if !item.RenewalCountAvailable || item.RenewalCount != 2 {
+		t.Fatalf("three effective paid enrollments should have two renewals: %+v", item)
+	}
+	if err = uow.Within(ctx, func(txctx context.Context) error {
+		_, refundErr := fulfillment.ApplyServicePeriodRefundWithin(txctx, orderport.ServicePeriodRefundCommand{SourceOrderID: second, RefundAmountMinor: 1, ProcessedAt: base.Add(3 * time.Minute)})
+		return refundErr
+	}); err != nil {
+		t.Fatal(err)
+	}
+	item = list(751)
+	if !item.RenewalCountAvailable || item.RenewalCount != 1 {
+		t.Fatalf("refunded source must not count as an effective renewal: %+v", item)
+	}
+
+	// A legacy aggregate without a reconciled historical source has no proof
+	// of its first enrollment. A later native grant therefore remains unknown
+	// instead of being misrepresented as zero or one renewal.
+	var unmatchedCustomer int64
+	if err = native.QueryRow(ctx, `INSERT INTO customers DEFAULT VALUES RETURNING id`).Scan(&unmatchedCustomer); err != nil {
+		t.Fatal(err)
+	}
+	legacyDigest := sha256.Sum256([]byte("renewal-unmapped-legacy"))
+	if _, err = native.Exec(ctx, `INSERT INTO order_service_entitlements(source_system,source_key,customer_id,service_product_id,product_name,status,start_at,end_at,remark,source_digest,created_at,updated_at) VALUES('legacy-import','renewal-unmapped-legacy',$1,752,'未映射历史','active',$2,$3,'',$4,$2,$2)`, unmatchedCustomer, base.Add(-24*time.Hour), base.AddDate(0, 0, 31), legacyDigest[:]); err != nil {
+		t.Fatal(err)
+	}
+	grant(entitlementTestOrder(t, native, unmatchedCustomer, "renewal-unmapped-native", base), unmatchedCustomer, 752, "未映射历史", base)
+	item = list(752)
+	if item.RenewalCountAvailable || item.RenewalCount != 0 {
+		t.Fatalf("unmapped legacy source must remain unavailable: %+v", item)
+	}
+
+	// Once history supplies its exact source order, it forms the first
+	// enrollment and a later native grant is a verifiable first renewal.
+	var mappedCustomer int64
+	if err = native.QueryRow(ctx, `INSERT INTO customers DEFAULT VALUES RETURNING id`).Scan(&mappedCustomer); err != nil {
+		t.Fatal(err)
+	}
+	historyOrder := entitlementTestOrder(t, native, mappedCustomer, "renewal-mapped-history", base)
+	entitlementTestOrderItem(t, native, historyOrder, 1, 753, "mapped-753")
+	mappedDigest := sha256.Sum256([]byte("renewal-mapped-legacy"))
+	var mappedEntitlementID int64
+	if err = native.QueryRow(ctx, `INSERT INTO order_service_entitlements(source_system,source_key,customer_id,service_product_id,product_name,last_order_id,status,start_at,end_at,remark,source_digest,created_at,updated_at) VALUES('legacy-import','renewal-mapped-legacy',$1,753,'已映射历史',$2,'active',$3,$4,'',$5,$3,$3) RETURNING id`, mappedCustomer, historyOrder, base.Add(-24*time.Hour), base.AddDate(0, 0, 31), mappedDigest[:]).Scan(&mappedEntitlementID); err != nil {
+		t.Fatal(err)
+	}
+	if err = uow.Within(ctx, func(txctx context.Context) error {
+		return fulfillment.RecordHistoricalServicePeriodSourceWithin(txctx, orderport.HistoricalServicePeriodSourceCommand{SourceOrderID: historyOrder, SourceLineNo: 1, EntitlementID: mappedEntitlementID, ServiceProductID: 753, ServiceProductCode: "mapped-753", DurationDays: 31, StartAt: base.Add(-24 * time.Hour), EndAt: base.AddDate(0, 0, 31), ImportedAt: base})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	grant(entitlementTestOrder(t, native, mappedCustomer, "renewal-mapped-native", base.Add(time.Minute)), mappedCustomer, 753, "已映射历史", base.Add(time.Minute))
+	item = list(753)
+	if !item.RenewalCountAvailable || item.RenewalCount != 1 {
+		t.Fatalf("mapped historical first order plus native grant should have one renewal: %+v", item)
+	}
+}
+
 func TestPostgreSQLOrderCheckoutSnapshotIsAtomicAndDatabaseFrozen(t *testing.T) {
 	native, cleanup := orderIntegrationPool(t)
 	defer cleanup()

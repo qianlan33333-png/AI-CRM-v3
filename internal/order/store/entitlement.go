@@ -155,11 +155,45 @@ func (r *Repository) ListServicePeriodMembers(ctx context.Context, query orderpo
 		  AND ($2='' OR status=$2)
 		  AND ($3='' OR ($3='paid_order' AND source_system='native-payment') OR ($3='manual' AND source_system<>'native-payment'))
 		  AND (`+memberFilter+`)
+	), member_grid_renewals AS (
+		SELECT member.*,
+		       ((member.source_system='native-payment' AND EXISTS (
+				SELECT 1 FROM order_entitlement_fulfillment_receipts grant_receipt
+				WHERE grant_receipt.operation='grant' AND grant_receipt.entitlement_id=member.id
+			)) OR EXISTS (
+				SELECT 1 FROM order_entitlement_historical_sources historical
+				WHERE historical.entitlement_id=member.id
+			)) AS renewal_count_available,
+		       CASE WHEN (member.source_system='native-payment' AND EXISTS (
+				SELECT 1 FROM order_entitlement_fulfillment_receipts grant_receipt
+				WHERE grant_receipt.operation='grant' AND grant_receipt.entitlement_id=member.id
+			)) OR EXISTS (
+				SELECT 1 FROM order_entitlement_historical_sources historical
+				WHERE historical.entitlement_id=member.id
+			)) THEN GREATEST(0::bigint, COALESCE((
+				SELECT count(*)
+				FROM (
+					SELECT grant_receipt.source_order_id
+					FROM order_entitlement_fulfillment_receipts grant_receipt
+					JOIN orders source_order ON source_order.id=grant_receipt.source_order_id
+					WHERE grant_receipt.operation='grant' AND grant_receipt.entitlement_id=member.id AND source_order.status='paid'
+					UNION
+					SELECT historical.source_order_id
+					FROM order_entitlement_historical_sources historical
+					JOIN orders source_order ON source_order.id=historical.source_order_id
+					WHERE historical.entitlement_id=member.id AND source_order.status='paid'
+				) effective_source
+				WHERE NOT EXISTS (
+					SELECT 1 FROM order_entitlement_fulfillment_receipts refund_receipt
+					WHERE refund_receipt.operation='refund' AND refund_receipt.source_order_id=effective_source.source_order_id
+				)
+			), 0)-1) ELSE 0::bigint END AS renewal_count
+		FROM member_grid_filtered member
 	), member_grid_counted AS (
-		SELECT id,customer_id,service_product_id,product_name,last_order_id,status,start_at,end_at,remark,version,updated_at,source_system,`+groupCount+` AS member_grid_group_count
-		FROM member_grid_filtered
+		SELECT id,customer_id,service_product_id,product_name,last_order_id,status,start_at,end_at,remark,version,updated_at,source_system,renewal_count,renewal_count_available,`+groupCount+` AS member_grid_group_count
+		FROM member_grid_renewals
 	)
-		SELECT id,customer_id,service_product_id,product_name,last_order_id,status,start_at,end_at,remark,version,updated_at,source_system,member_grid_group_count
+	SELECT id,customer_id,service_product_id,product_name,last_order_id,status,start_at,end_at,remark,version,updated_at,source_system,renewal_count,renewal_count_available,member_grid_group_count
 		FROM member_grid_counted
 		WHERE
 		  (($6='updated_at_desc' AND ($4::timestamptz IS NULL OR (updated_at,id)<($4::timestamptz,$7::bigint)))
@@ -175,7 +209,7 @@ func (r *Repository) ListServicePeriodMembers(ctx context.Context, query orderpo
 	page := orderport.ServicePeriodMemberPage{Items: []orderport.Entitlement{}, SnapshotAt: snapshot}
 	for rows.Next() {
 		var item orderport.Entitlement
-		if err = rows.Scan(&item.ID, &item.CustomerID, &item.ServiceProductID, &item.ProductName, &item.LastOrderID, &item.Status, &item.StartAt, &item.EndAt, &item.Remark, &item.Version, &item.UpdatedAt, &item.SourceSystem, &item.MemberGridGroupCount); err != nil {
+		if err = rows.Scan(&item.ID, &item.CustomerID, &item.ServiceProductID, &item.ProductName, &item.LastOrderID, &item.Status, &item.StartAt, &item.EndAt, &item.Remark, &item.Version, &item.UpdatedAt, &item.SourceSystem, &item.RenewalCount, &item.RenewalCountAvailable, &item.MemberGridGroupCount); err != nil {
 			return orderport.ServicePeriodMemberPage{}, err
 		}
 		page.Items = append(page.Items, item)
