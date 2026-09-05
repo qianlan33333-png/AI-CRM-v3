@@ -50,40 +50,6 @@ func (f integrationCatalogReader) ListCatalog(ctx context.Context) (outbound.Cat
 
 type integrationAdapter func(context.Context, effectport.Envelope, effectport.Attempt) (effectport.AdapterResult, error)
 
-type inspectedSurveyCompletionAccepter struct {
-	delegate surveyport.CompletionIntentAccepter
-	called   bool
-	err      error
-}
-
-// inspectedSyntheticCompletionStore is an integration-test-only decorator.
-// It preserves the real PostgreSQL Store and UoW while retaining the exact
-// error from the two Survey facts that must commit with EER acceptance.
-type inspectedSyntheticCompletionStore struct {
-	surveyapp.SubmissionStore
-	snapshotErr     error
-	recordEffectErr error
-	auditOutboxErr  error
-}
-
-func (s *inspectedSyntheticCompletionStore) RecordCompletionTestSnapshot(ctx context.Context, value surveyapp.CompletionTestSnapshot) (surveyapp.CompletionTestSnapshot, bool, error) {
-	snapshot, created, err := s.SubmissionStore.RecordCompletionTestSnapshot(ctx, value)
-	s.snapshotErr = err
-	return snapshot, created, err
-}
-
-func (s *inspectedSyntheticCompletionStore) RecordCompletionTestEffect(ctx context.Context, qid surveyport.ID, testRunID, configurationRef, effectID, state string, digest [32]byte, now time.Time) error {
-	err := s.SubmissionStore.RecordCompletionTestEffect(ctx, qid, testRunID, configurationRef, effectID, state, digest, now)
-	s.recordEffectErr = err
-	return err
-}
-
-func (s *inspectedSyntheticCompletionStore) AppendAuditAndOutbox(ctx context.Context, event string, qid surveyport.ID, actor string, payload json.RawMessage, key string, now time.Time) error {
-	err := s.SubmissionStore.AppendAuditAndOutbox(ctx, event, qid, actor, payload, key, now)
-	s.auditOutboxErr = err
-	return err
-}
-
 // TestPostgreSQLSurveyCompletionKindRegistryAfterWelcomeQueueMigration proves
 // the 0075 External Effects extension against the complete production
 // migration sequence.  0066 belongs to Channel and is intentionally not
@@ -128,13 +94,6 @@ func TestPostgreSQLSurveyCompletionKindRegistryAfterWelcomeQueueMigration(t *tes
 			t.Fatalf("invalid owner/kind %s/%s was accepted", item.owner, item.kind)
 		}
 	}
-}
-
-func (a *inspectedSurveyCompletionAccepter) AcceptCompletionWithin(ctx context.Context, intent surveyport.CompletionIntent) (surveyport.EffectBinding, error) {
-	a.called = true
-	binding, err := a.delegate.AcceptCompletionWithin(ctx, intent)
-	a.err = err
-	return binding, err
 }
 
 func (f integrationAdapter) Execute(ctx context.Context, e effectport.Envelope, a effectport.Attempt) (effectport.AdapterResult, error) {
@@ -389,13 +348,34 @@ func TestPostgreSQLSurveySyntheticPushSurvivesRepositoryRestartAndDoesNotBlindRe
 		t.Fatal(err)
 	}
 	var actor, questionnaire int64
-	now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
 	if err = pool.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name) VALUES('survey-synthetic-effect','$argon2id$test','Survey synthetic effect') RETURNING id`).Scan(&actor); err != nil {
 		t.Fatal(err)
 	}
-	if err = pool.QueryRow(ctx, `INSERT INTO survey_questionnaires(name,title,description,mode,answer_display_mode,slug,status,created_by,updated_by,created_at,updated_at) VALUES('Synthetic effect','Synthetic effect title','','survey','all_in_one','synthetic-effect','disabled',$1,$1,$2,$2) RETURNING id`, actor, now).Scan(&questionnaire); err != nil {
+	// Seed through the normal definition application. QueueCompletionTest reads
+	// the active immutable definition before it accepts an effect; a bare
+	// questionnaire row is intentionally unavailable to production code.
+	definitionService := surveyapp.NewService(uow, surveys)
+	definition, err := definitionService.Create(ctx, surveyport.CreateCommand{
+		Questionnaire: surveyport.Questionnaire{
+			Name:              "Synthetic effect",
+			Title:             "Synthetic effect title",
+			Mode:              surveyport.ModeSurvey,
+			AnswerDisplayMode: "all_in_one",
+			Slug:              "synthetic-effect",
+			Status:            surveyport.StatusDisabled,
+			Questions: []surveyport.Question{{
+				Type:      surveyport.QuestionTextarea,
+				Title:     "测试问题",
+				SortOrder: 0,
+			}},
+		},
+		ActorID:        actor,
+		IdempotencyKey: "survey-synthetic-definition-create-0001",
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
+	questionnaire = int64(definition.ID)
 	var receivedMu sync.Mutex
 	received := make([]string, 0, 1)
 	receivedSignal := make(chan struct{}, 2)
@@ -421,13 +401,11 @@ func TestPostgreSQLSurveySyntheticPushSurvivesRepositoryRestartAndDoesNotBlindRe
 		t.Fatal(err)
 	}
 	effectRepository, runtime := newSurveyEffectRuntime(t, pool, sink, provider)
-	inspectedStore := &inspectedSyntheticCompletionStore{SubmissionStore: surveys}
-	service := surveyapp.NewSubmissionService(uow, inspectedStore, cipher)
+	service := surveyapp.NewSubmissionService(uow, surveys, cipher)
 	if err = service.BindCompletionPolicy(provider); err != nil {
 		t.Fatal(err)
 	}
-	completionAccepter := &inspectedSurveyCompletionAccepter{delegate: surveyCompletionEffectAccepter{effects: effectRepository}}
-	if err = service.BindCompletionIntent(completionAccepter); err != nil {
+	if err = service.BindCompletionIntent(surveyCompletionEffectAccepter{effects: effectRepository}); err != nil {
 		t.Fatal(err)
 	}
 	config, err := service.GetOperationConfiguration(ctx, surveyport.ID(questionnaire))
@@ -440,7 +418,7 @@ func TestPostgreSQLSurveySyntheticPushSurvivesRepositoryRestartAndDoesNotBlindRe
 	key := "survey-synthetic-test-effect-0001"
 	first, err := service.QueueCompletionTest(ctx, surveyport.ID(questionnaire), actor, key)
 	if err != nil || first.EffectID == "" || first.State != "queued" {
-		t.Fatalf("accept=%+v err=%v completion_accept_called=%t completion_accept_err=%v snapshot_err=%v record_effect_err=%v audit_outbox_err=%v", first, err, completionAccepter.called, completionAccepter.err, inspectedStore.snapshotErr, inspectedStore.recordEffectErr, inspectedStore.auditOutboxErr)
+		t.Fatalf("accept=%+v err=%v", first, err)
 	}
 	// Change current metadata before replay. The stored target/body/timestamp
 	// must win, so no new effect or River job is created.
