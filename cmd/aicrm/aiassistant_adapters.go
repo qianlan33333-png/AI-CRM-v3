@@ -14,6 +14,7 @@ import (
 	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	identityport "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/port"
 	mediaport "github.com/qianlan33333-png/AI-CRM-v3/internal/media/port"
+	mediastore "github.com/qianlan33333-png/AI-CRM-v3/internal/media/store"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/outbound"
 	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
 )
@@ -84,8 +85,11 @@ func (a aiMaterialAdapter) ResolveMaterial(ctx context.Context, block aiassistan
 		// A mapping is only usable if the current Media fact still has exactly
 		// the digest verified by the frozen-source import.
 		snapshot, captureErr := a.capture(ctx, kind, block.MaterialID)
-		if captureErr != nil || len(snapshot.References) != 1 || snapshot.References[0].SourceDigest != mapping.SourceDigest {
+		if errors.Is(captureErr, mediastore.ErrNotFound) || errors.Is(captureErr, mediastore.ErrConflict) || len(snapshot.References) != 1 || snapshot.References[0].SourceDigest != mapping.SourceDigest {
 			return aiassistantport.ContentBlock{}, aiassistantapp.ErrLegacyMaterialUnmapped
+		}
+		if captureErr != nil {
+			return aiassistantport.ContentBlock{}, captureErr
 		}
 		block.MaterialDigest = effectport.Digest(mapping.SourceDigest)
 		return block, nil

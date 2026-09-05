@@ -11,6 +11,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strings"
@@ -34,11 +35,12 @@ type snapshot struct {
 }
 
 type material struct {
-	Kind               string `json:"kind"`
-	LegacyID           string `json:"legacy_id"`
-	SourceRecordDigest string `json:"source_record_digest"`
-	MaterialID         int64  `json:"material_id"`
-	SourceDigest       string `json:"source_digest"`
+	Kind               string          `json:"kind"`
+	LegacyID           string          `json:"legacy_id"`
+	SourceRecord       json.RawMessage `json:"source_record"`
+	SourceRecordDigest string          `json:"source_record_digest"`
+	MaterialID         int64           `json:"material_id"`
+	SourceDigest       string          `json:"source_digest"`
 }
 
 type report struct {
@@ -117,7 +119,7 @@ func run(ctx context.Context, args []string) error {
 		return err
 	}
 	for _, item := range source.Materials {
-		mapped, state, verifyErr := verify(ctx, uow, repository, source.Manifest.SourceSystem, item)
+		mapped, state, verifyErr := verify(ctx, uow, repository, source.Manifest.SourceSystem, item, *mode == "verify")
 		if verifyErr != nil {
 			return verifyErr
 		}
@@ -141,7 +143,7 @@ func verify(ctx context.Context, uow interface {
 }, repository interface {
 	mediaport.LegacyMaterialMappingResolver
 	mediaport.GroupOpsMaterialSourceCapturer
-}, sourceSystem string, item material) (bool, string, error) {
+}, sourceSystem string, item material, requireMapped bool) (bool, string, error) {
 	mapped := false
 	state := "new"
 	err := uow.Within(ctx, func(tx context.Context) error {
@@ -155,6 +157,9 @@ func verify(ctx context.Context, uow interface {
 				return errors.New("immutable mapping drift for " + item.Kind + ":" + item.LegacyID)
 			}
 			mapped, state = true, "replayed"
+		}
+		if requireMapped && !mapped {
+			return errors.New("verified mapping is missing for " + item.Kind + ":" + item.LegacyID)
 		}
 		captured, err := repository.CaptureGroupOpsMaterialSources(tx, mediaport.GroupOpsMaterialPlan{References: []mediaport.GroupOpsMaterialReference{{Kind: item.Kind, ID: item.MaterialID}}})
 		if err != nil || len(captured.References) != 1 || captured.References[0].SourceDigest != item.SourceDigest {
@@ -174,7 +179,7 @@ func (s snapshot) validate() error {
 	}
 	seen := make(map[string]struct{}, len(s.Materials))
 	for _, item := range s.Materials {
-		if !validKind(item.Kind) || item.MaterialID < 1 || !validDigest(item.SourceDigest) || !validDigest(item.SourceRecordDigest) || !validLegacyID(item.LegacyID) {
+		if !validKind(item.Kind) || item.MaterialID < 1 || !validDigest(item.SourceDigest) || !validDigest(item.SourceRecordDigest) || !validLegacyID(item.LegacyID) || !validSourceRecord(item.SourceRecord, item.SourceRecordDigest) {
 			return errors.New("invalid frozen Media mapping record")
 		}
 		key := item.Kind + "\x00" + item.LegacyID
@@ -184,6 +189,20 @@ func (s snapshot) validate() error {
 		seen[key] = struct{}{}
 	}
 	return nil
+}
+
+func validSourceRecord(raw json.RawMessage, expected string) bool {
+	decoder := json.NewDecoder(strings.NewReader(string(raw)))
+	decoder.UseNumber()
+	var record map[string]any
+	if err := decoder.Decode(&record); err != nil || len(record) == 0 {
+		return false
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return false
+	}
+	canonical, err := json.Marshal(record)
+	return err == nil && digestHex(canonical) == expected
 }
 
 func validKind(value string) bool {
