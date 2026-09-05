@@ -196,6 +196,10 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 	// Otherwise its maintenance goroutines can outlive the PostgreSQL pool.
 	var stopOnce sync.Once
 	stopRuntime := func() { stopOnce.Do(stop) }
+	// The pool and schema cleanup below are ordinary defers, which run before
+	// t.Cleanup. Register a matching defer here so an early fatal stops River
+	// before either closes its PostgreSQL resources.
+	defer stopRuntime()
 	t.Cleanup(stopRuntime)
 
 	approval := staffID
@@ -221,6 +225,11 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 	precheck, precheckErr := execution.Precheck(ctx, packageID)
 	if precheckErr != nil || !precheck.Ready {
 		t.Fatalf("baseline execution precheck=%+v err=%v", precheck, precheckErr)
+	}
+	configuration, configurationErr := execution.AudienceExecutionConfiguration(ctx, segmentport.PackageID(packageID))
+	if configurationErr != nil || !configuration.Ready {
+		diagnostic, hasDiagnostic := segmentapp.PersistenceFailure(configurationErr)
+		t.Fatalf("baseline execution configuration=%+v err=%v diagnostic=%+v has_diagnostic=%t", configuration, configurationErr, diagnostic, hasDiagnostic)
 	}
 	if _, err = runtimeService.TransitionPolicy(ctx, automationapp.PolicyLifecycleCommand{PolicyID: policy.ID, ExpectedVersion: policy.Version, Actor: staffID, Target: automationdomain.PolicyActive, IdempotencyKey: "audience-runtime-activate-0001"}); err != nil {
 		t.Fatal(err)

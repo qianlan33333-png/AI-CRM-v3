@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"strconv"
+	"strings"
 	"time"
 
 	accessport "github.com/qianlan33333-png/AI-CRM-v3/internal/access/port"
@@ -499,7 +500,10 @@ func (s LegacyTemplateSource) member(ctx context.Context, p map[string]json.RawM
 	out := map[int64]bool{}
 	for id := range eligible {
 		fact, found := facts[customerdomain.CustomerID(id)]
-		if !found || fact.Availability != hxcport.SharedFactsAvailable {
+		// The frozen member template only reads rows with durable membership
+		// provenance. A dashboard row by itself is registration/usage evidence,
+		// not a membership record, so it cannot satisfy an "any" member filter.
+		if !found || fact.Availability != hxcport.SharedFactsAvailable || !fact.MembershipRecordFound || strings.TrimSpace(fact.MembershipSource) == "" {
 			continue
 		}
 		active := fact.ActiveAt(at)

@@ -131,7 +131,7 @@ func TestLegacyTemplateSourcesEvaluateFrozenConditions(t *testing.T) {
 		},
 		channels: []channelport.AudienceEntry{{CustomerID: 1, ChannelID: 7, ChannelCode: "channel-7", OwnerReference: "staff-a", LastEnteredAt: at.Add(-48 * time.Hour)}},
 		radar:    []radarport.AudienceFirstClick{{CustomerID: 1, RadarID: 8, FirstClickedAt: at.Add(-72 * time.Hour), OwnerUserID: "staff-a"}},
-		shared:   map[customerdomain.CustomerID]hxcport.SharedFacts{1: {CustomerID: 1, Availability: hxcport.SharedFactsAvailable, Registered: true, IsMember: true, Tier: "pro", MembershipStatus: "active", ExpiresAt: &expires, HasRealUsage: true, LastUsedAt: &used}},
+		shared:   map[customerdomain.CustomerID]hxcport.SharedFacts{1: {CustomerID: 1, Availability: hxcport.SharedFactsAvailable, Registered: true, MembershipRecordFound: true, MembershipSource: "subscription", IsMember: true, Tier: "pro", MembershipStatus: "active", ExpiresAt: &expires, HasRealUsage: true, LastUsedAt: &used}},
 	}
 	source := CustomerSource{UoW: passthroughUoW{}, Legacy: LegacyTemplateSource{Contacts: facts, Survey: facts, Orders: facts, Channels: facts, Radar: facts, MemberFacts: facts, Owners: facts}}
 	cases := []struct {
@@ -190,6 +190,24 @@ func TestLegacyTemplateSourceDoesNotTurnSharedFactsFailureIntoAnEmptyAudience(t 
 	_, err := source.Evaluate(context.Background(), legacyDefinition(t, segmentdsl.MemberUsageStatus, `{"owner_scope":"specified","owner_staff_ids":["19"],"service_period":"any","registration_status":"any","usage_status":"any","membership_tiers":[],"membership_statuses":[]}`), at)
 	if !errors.Is(err, ErrCustomerReadUnavailable) {
 		t.Fatalf("shared-facts failure must surface, got %v", err)
+	}
+}
+
+func TestLegacyMemberTemplateRequiresDurableMembershipSource(t *testing.T) {
+	at := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+	facts := legacyFacts{
+		contacts: []wecomport.AudienceContact{{CustomerID: 9, OwnerUserID: "staff-a", Status: "active"}},
+		shared: map[customerdomain.CustomerID]hxcport.SharedFacts{9: {
+			CustomerID: 9, Availability: hxcport.SharedFactsAvailable, Registered: true,
+			// A HXC dashboard row can establish registration and usage, but it is
+			// not a membership fact until the Owner supplies its source.
+			MembershipRecordFound: false, MembershipSource: "", HasRealUsage: true,
+		}},
+	}
+	source := LegacyTemplateSource{Contacts: facts, MemberFacts: facts, Owners: facts}
+	result, err := source.Evaluate(context.Background(), legacyDefinition(t, segmentdsl.MemberUsageStatus, `{"owner_scope":"specified","owner_staff_ids":["19"],"service_period":"any","registration_status":"any","usage_status":"any","membership_tiers":[],"membership_statuses":[]}`), at)
+	if err != nil || len(result.CustomerIDs) != 0 {
+		t.Fatalf("membership without provenance result=%+v err=%v", result, err)
 	}
 }
 
