@@ -82,7 +82,7 @@ func TestSurveyOAuthSubmissionResultJourneyPostgreSQL(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	createBody := []byte(`{"name":"OAuth journey","title":"OAuth journey","description":"","answer_display_mode":"all_in_one","assessment_enabled":false,"assessment_config":{},"slug":"oauth-journey","questions":[{"type":"single_choice","title":"Continue?","required":true,"sort_order":0,"options":[{"option_text":"Yes","score":0,"tag_codes":[],"is_other":false,"sort_order":0},{"option_text":"No","score":0,"tag_codes":[],"is_other":false,"sort_order":1}]}],"score_rules":[]}`)
+	createBody := []byte(`{"name":"OAuth journey","title":"OAuth journey","description":"","answer_display_mode":"all_in_one","assessment_enabled":false,"assessment_config":{},"slug":"oauth-journey","questions":[{"type":"single_choice","title":"Continue?","required":true,"sort_order":0,"validation":{"max_selections":1},"options":[{"option_text":"Yes","score":0,"tag_codes":[],"is_other":false,"sort_order":0},{"option_text":"No","score":0,"tag_codes":[],"is_other":false,"sort_order":1}]}],"score_rules":[]}`)
 	created := surveyJourneyServe(t, handler, http.MethodPost, "/api/admin/questionnaires", createBody, "survey-oauth-create-0001", nil, "")
 	if created.Code != http.StatusOK {
 		t.Fatalf("create status=%d body=%s", created.Code, created.Body.String())
