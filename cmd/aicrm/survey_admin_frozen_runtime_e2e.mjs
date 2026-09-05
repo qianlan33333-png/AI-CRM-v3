@@ -39,7 +39,24 @@ function click(element) {
   element.click();
 }
 
-async function openEditor(query) {
+function summarizeCalls(calls) {
+  return JSON.stringify(calls.map(({ path, method, status, response }) => {
+    const questionnaire = response?.questionnaire || response?.data?.questionnaire;
+    return {
+      path,
+      method,
+      status,
+      questionnaire: questionnaire ? {
+        id: questionnaire.id,
+        version: questionnaire.version,
+        status: questionnaire.status,
+        enabled: questionnaire.enabled,
+      } : undefined,
+    };
+  }));
+}
+
+async function openEditor(query, { requestDelayMs = 0 } = {}) {
   const response = await fetch(`${origin}/admin/questionnaireDetail.html${query}`);
   if (!response.ok) throw new Error(`actual Host editor response=${response.status} body=${(await response.text()).slice(0, 240)}`);
   const html = await response.text();
@@ -76,6 +93,9 @@ async function openEditor(query) {
     const target = new URL(String(inputValue), origin);
     const call = { path: target.pathname, method: init.method || "GET", body: typeof init.body === "string" ? init.body : "", status: 0 };
     calls.push(call);
+    // The Host must retain the exact adapter promise even when a browser-side
+    // wrapper delays the request before it reaches the actual Survey HTTP API.
+    if (requestDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, requestDelayMs));
     const response = await globalThis.fetch(target, init);
     call.status = response.status;
     response.clone().json().then((value) => { call.response = value; }).catch(() => {});
@@ -221,7 +241,42 @@ const csv = await normalPublished.dom.window.__surveyRuntimeDownloads[0].blob.te
 if (!csv.includes("submission_id") || !csv.includes("customer_id")) throw new Error(`downloaded CSV did not contain the Survey export contract: ${csv.slice(0, 160)}`);
 normalPublished.dom.window.close();
 
-const assessment = await openEditor("?mode=assessment");
+// A local validation failure never reaches questionnaireEditorV3. Its pending
+// publish gesture must be gone before a later ordinary draft save, otherwise a
+// failed “保存并发布” could publish that unrelated save.
+const validation = await openEditor("?mode=assessment");
+const validationDocument = validation.dom.window.document;
+input(validation.dom.window, validationDocument.querySelector("#v2-basic-name"), "冻结校验草稿");
+input(validation.dom.window, validationDocument.querySelector("#v2-basic-title"), "冻结校验草稿标题");
+input(validation.dom.window, validationDocument.querySelector("#v2-basic-slug"), "frozen-admin-validation-draft");
+click(validationDocument.querySelector('[data-assessment-step="results"]'));
+await waitFor("assessment result tabs", () => validationDocument.querySelector('[data-result-tab="overall"]') !== null);
+click(validationDocument.querySelector('[data-result-tab="overall"]'));
+await waitFor("assessment overall course URL", () => validationDocument.querySelector('[data-overall-field="course_url"]') !== null);
+input(validation.dom.window, validationDocument.querySelector('[data-overall-field="course_url"]'), "not a URL");
+click(validationDocument.querySelector('[data-assessment-step="preview"]'));
+await waitFor("assessment validation publish control", () => validationDocument.querySelector("#v2-publish-save") !== null);
+click(validationDocument.querySelector("#v2-publish-save"));
+await waitFor("assessment validation failure", () => /课程链接格式不正确/.test(validationDocument.querySelector("#toast")?.textContent || ""));
+if (validation.calls.some((call) => /^\/api\/admin\/questionnaires(?:\/\d+)?$/.test(call.path) && ["POST", "PUT"].includes(call.method))) {
+  throw new Error(`local assessment validation unexpectedly started a save: ${summarizeCalls(validation.calls)}`);
+}
+click(validationDocument.querySelector('[data-assessment-step="results"]'));
+await waitFor("assessment validation reset tabs", () => validationDocument.querySelector('[data-result-tab="overall"]') !== null);
+click(validationDocument.querySelector('[data-result-tab="overall"]'));
+await waitFor("assessment validation reset URL", () => validationDocument.querySelector('[data-overall-field="course_url"]') !== null);
+input(validation.dom.window, validationDocument.querySelector('[data-overall-field="course_url"]'), "");
+click(validationDocument.querySelector('[data-assessment-step="preview"]'));
+await waitFor("assessment ordinary draft control", () => validationDocument.querySelector("#v2-save-draft") !== null);
+click(validationDocument.querySelector("#v2-save-draft"));
+await waitFor("assessment ordinary draft save", () => validation.calls.some((call) => call.path === "/api/admin/questionnaires" && call.method === "POST" && call.status === 200));
+await new Promise((resolve) => setTimeout(resolve, 600));
+if (validation.calls.some((call) => /\/public-publish$/.test(call.path))) {
+  throw new Error(`ordinary draft save was incorrectly published after validation failure: ${summarizeCalls(validation.calls)}`);
+}
+validation.dom.window.close();
+
+const assessment = await openEditor("?mode=assessment", { requestDelayMs: 550 });
 const assessmentDocument = assessment.dom.window.document;
 input(assessment.dom.window, assessmentDocument.querySelector("#v2-basic-name"), "冻结排序测评");
 input(assessment.dom.window, assessmentDocument.querySelector("#v2-basic-title"), "冻结排序与预览");
@@ -238,7 +293,7 @@ click(assessmentDocument.querySelector("#v2-publish-save"));
 await waitFor("assessment publish", () => assessmentDocument.querySelector('[data-survey-host-publish-status] a[data-survey-host-published-path]')?.getAttribute("href") === "/q/frozen-admin-assessment").catch((error) => {
   const toast = assessmentDocument.querySelector("#toast")?.textContent || "";
   const publishState = assessmentDocument.querySelector('[data-survey-host-publish-status]')?.textContent || "";
-  throw new Error(`${error.message}; toast=${toast}; publish_state=${publishState}; calls=${JSON.stringify(assessment.calls)}`);
+  throw new Error(`${error.message}; toast=${toast}; publish_state=${publishState}; calls=${summarizeCalls(assessment.calls)}`);
 });
 const publishedPath = assessmentDocument.querySelector('[data-survey-host-publish-status] a[data-survey-host-published-path]')?.getAttribute("href") || "";
 if (publishedPath !== "/q/frozen-admin-assessment") throw new Error(`published Host share path=${publishedPath}`);
@@ -260,7 +315,7 @@ if (!firstAssessmentPublish
   || !Number.isSafeInteger(Number(JSON.parse(firstAssessmentPublish.body || "{}").expected_questionnaire_version))
   || Number(JSON.parse(firstAssessmentPublish.body || "{}").expected_questionnaire_version) < 1
   || assessment.calls.some((call) => call.path === `/api/admin/questionnaires/${assessmentID}/enable`)) {
-  throw new Error(`Host publish bridge did not use the versioned V3 publish contract: ${JSON.stringify(assessment.calls)}`);
+  throw new Error(`Host publish bridge did not use the versioned V3 publish contract: ${summarizeCalls(assessment.calls)}`);
 }
 // Publishing updates the Owner version. Re-enter the frozen editor and save a
 // changed title to prove the bridge reads the fresh save response instead of
@@ -274,7 +329,7 @@ await waitFor("assessment revised preview", () => assessmentDocument.querySelect
 click(assessmentDocument.querySelector("#v2-publish-save"));
 await waitFor("assessment republish", () => assessment.calls.filter((call) => call.path === `/api/admin/questionnaires/${assessmentID}/public-publish` && call.method === "POST" && call.status === 200).length === 2);
 if (!assessment.calls.some((call) => call.path === `/api/admin/questionnaires/${assessmentID}` && call.method === "PUT" && call.status === 200)) {
-  throw new Error(`frozen assessment edit did not save through the current Owner version: ${JSON.stringify(assessment.calls)}`);
+  throw new Error(`frozen assessment edit did not save through the current Owner version: ${summarizeCalls(assessment.calls)}`);
 }
 assessment.dom.window.close();
 

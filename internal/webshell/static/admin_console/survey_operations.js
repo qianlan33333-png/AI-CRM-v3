@@ -69,31 +69,23 @@
       if (!detail || detail.status !== 'active' || detail.enabled !== true || !text(detail.public_path)) throw new Error('published questionnaire was not confirmed');
       showPublishState(button, detail, false);
     }
-    const originalFetch = window.fetch;
-    if (typeof originalFetch !== 'function') return;
-    window.fetch = function (input, options) {
-      const method = text(options && options.method || input && input.method || 'GET').toUpperCase();
-      const rawURL = typeof input === 'string' ? input : input && input.url || '';
-      let pathname = rawURL;
-      try { pathname = new URL(rawURL, window.location.href).pathname; } catch (_error) {}
-      const save = pendingButton && !publishing && (method === 'POST' || method === 'PUT') && /^\/api\/admin\/questionnaires(?:\/[1-9][0-9]*)?$/.test(pathname);
-      const response = originalFetch(input, options);
-      if (!save) return response;
+    window.addEventListener('aicrm:survey-editor-save', function (event) {
+      const detail = event && event.detail;
       const button = pendingButton;
+      if (!button || publishing || !detail || !detail.promise || typeof detail.promise.then !== 'function') return;
       pendingButton = null;
       publishing = true;
-      Promise.resolve(response).then(function (result) {
-        if (!result || !result.ok) throw new Error('save failed');
-        return result.clone().json();
-      }).then(function (saved) {
+      // questionnaireEditorV3 dispatches this event synchronously with the
+      // promise for the save it has just started. Do not infer a publish from
+      // fetch timing: an unrelated regular save must never consume this click.
+      Promise.resolve(detail.promise).then(function (saved) {
         return publishSavedQuestionnaire(saved, button);
       }).catch(function () {
         showPublishState(button, null, true);
       }).finally(function () {
         publishing = false;
       });
-      return response;
-    };
+    });
     document.addEventListener('click', function (event) {
       const button = event.target && event.target.closest && event.target.closest('#v2-publish-save');
       if (!button) return;
@@ -103,12 +95,10 @@
         return;
       }
       pendingButton = button;
-      // The frozen editor validates and serializes in asynchronous work before
-      // it reaches fetch. A microtask expires before that real save request,
-      // leaving a disabled draft. Keep only this button's strictly-matched
-      // create/update request eligible, and clear the gesture after a bounded
-      // window when validation did not produce one.
-      setTimeout(function () { if (pendingButton === button && !publishing) pendingButton = null; }, 500);
+      // Validation failures never call questionnaireEditorV3. Clear this
+      // gesture at the end of the current event; a successful adapter call
+      // synchronously transfers its own promise above before this runs.
+      queueMicrotask(function () { if (pendingButton === button && !publishing) pendingButton = null; });
     }, true);
   }
   function installFrozenEnableBridge() {
