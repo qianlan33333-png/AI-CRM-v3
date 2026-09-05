@@ -2,6 +2,7 @@ package h5oauth
 
 import (
 	"context"
+	"errors"
 	"net/url"
 	"strings"
 	"testing"
@@ -64,20 +65,46 @@ func TestH5OAuthStateIsBoundExpiresAndCannotReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	service.now = func() time.Time { return time.Date(2026, 9, 4, 2, 0, 0, 0, time.UTC) }
-	if _, err = service.Start(context.Background(), "https://evil.example/pay/7"); err == nil {
+	if _, err = service.Start(context.Background(), "https://evil.example/pay/course-7"); err == nil {
 		t.Fatal("accepted open redirect")
 	}
-	authorization, err := service.Start(context.Background(), "/pay/7")
+	authorization, err := service.Start(context.Background(), "/pay/course-7")
 	if err != nil || !strings.HasPrefix(authorization, "https://open.weixin.qq.com/") {
 		t.Fatalf("authorization=%q err=%v", authorization, err)
 	}
 	parsed, _ := url.Parse(authorization)
 	state := parsed.Query().Get("state")
 	issued, redirect, err := service.Complete(context.Background(), state, "trusted-code")
-	if err != nil || redirect != "/pay/7" || issued.Channel != paymentdomain.ChannelH5Official || issuer.fact.Reference().Kind != identitydomain.KindOAOpenID || issuer.fact.Reference().Scope != "wechat-app:wx-oa" {
+	if err != nil || redirect != "/pay/course-7" || issued.Channel != paymentdomain.ChannelH5Official || issuer.fact.Reference().Kind != identitydomain.KindOAOpenID || issuer.fact.Reference().Scope != "wechat-app:wx-oa" {
 		t.Fatalf("issued=%+v redirect=%q fact=%+v err=%v", issued, redirect, issuer.fact.Reference(), err)
 	}
 	if _, _, err = service.Complete(context.Background(), state, "trusted-code"); err == nil {
 		t.Fatal("OAuth state replay succeeded")
+	}
+	legacyAuthorization, err := service.Start(context.Background(), "/pay/7")
+	if err != nil {
+		t.Fatalf("legacy numeric payment path err=%v", err)
+	}
+	legacyURL, _ := url.Parse(legacyAuthorization)
+	legacyState := legacyURL.Query().Get("state")
+	_, legacyRedirect, err := service.Complete(context.Background(), legacyState, "trusted-code")
+	if err != nil || legacyRedirect != "/pay/7" {
+		t.Fatalf("legacy redirect=%q err=%v", legacyRedirect, err)
+	}
+	for _, path := range []string{"/s/term-31", "/s/term-31/pay", "/c/coupon-2026"} {
+		authorization, startErr := service.Start(context.Background(), path)
+		if startErr != nil {
+			t.Fatalf("path=%q err=%v", path, startErr)
+		}
+		parsed, _ := url.Parse(authorization)
+		_, redirect, completeErr := service.Complete(context.Background(), parsed.Query().Get("state"), "trusted-code")
+		if completeErr != nil || redirect != path {
+			t.Fatalf("path=%q redirect=%q err=%v", path, redirect, completeErr)
+		}
+	}
+	for _, path := range []string{"https://evil.example/pay/course-7", "//evil.example/pay/course-7", "/pay/", "/pay/course/7", "/pay/course?x=1", "/pay/%", "/pay/course%2F7", "/pay/course%5C7", "/s/", "/s/course/other", "/s/course/pay/other", "/s/course%2Fother", "/s/course%23fragment", "/c/short", "/c/CAPITAL-2026", "/c/coupon%2F2026"} {
+		if _, err := service.Start(context.Background(), path); !errors.Is(err, ErrInvalid) {
+			t.Fatalf("path=%q err=%v", path, err)
+		}
 	}
 }

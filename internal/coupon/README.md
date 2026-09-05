@@ -1,27 +1,23 @@
-# PR05 coupon rule slice
+# Coupon
 
-This package is the bounded Coupon-domain preparation for PR05. It owns local
-coupon rule definitions and their rule-management behavior: create, edit,
-copy, publish, stop, archive, safe draft deletion, product applicability,
-validity windows, and rule-owned issue counters/statistics projection.
+Coupon owns rule definitions, customer claims, and the local checkout lifecycle:
+claim, reserve, consume and authoritative-close release. It freezes a product
+type/ID/code and price snapshot before an Order is created. The Order and
+Payment integration supplies the trusted holder, payment result and enclosing
+PostgreSQL transaction; this package neither resolves identities nor calls a
+payment provider.
 
-The slice deliberately has no claim execution, redemption, customer-held
-coupon, order, payment, entitlement, membership, or OneID operation. It does
-not copy the v2 coupon history or store layer and has no v2 runtime, database,
-module, migration, or provider dependency.
+`port/target.go` is a narrow compatibility port for checking a Product
+target's price/currency before publication. The composition root adapts it to
+the canonical Product port; Coupon must not import Product app/store/http
+packages or read Product tables.
 
-`port/target.go` is a narrow temporary compatibility port for checking the
-price/currency of a standard-product target before publication. Terra should
-adapt it to the canonical Product port at the composition boundary; Coupon
-must not import Product app/store/http packages or read Product tables.
-
-`port/events.go` is a local event seam that preserves rule mutation facts
-without dispatching work. Terra must adapt it to the v3 versioned event and
-outbox ports in the integration lane.
+Claim, reservation and redemption facts each write their receipt, audit entry
+and local outbox in the caller's transaction. An unknown payment outcome does
+not release a reservation. A close after expiry marks the claim expired.
 
 The raw frontend donor is staged under
 `web/donors/coupons-v2/src/`. Those files are immutable byte-exact evidence,
-outside the build tree, and must not be edited. Some raw shared/controller and
-coupon-data code mentions excluded claim/history behavior; the backend
-compatibility boundary must keep those routes absent or feature-gated rather
-than expanding this PR05 slice.
+outside the build tree, and must not be edited. The coupon data page is adapted
+through Coupon-owned rule and claim-read ports; it never exposes channel
+identifiers or payment-provider data.

@@ -134,8 +134,11 @@ done
 require_text 'routeApplicationWithGroupOps' "$REPO_ROOT/cmd/aicrm/composition.go"
 require_text 'NewProviderRouterWithGroupMessage' "$REPO_ROOT/cmd/aicrm/composition.go"
 require_text 'NewGroupMessageProvider' "$REPO_ROOT/cmd/aicrm/composition.go"
-require_text 'providerDisabledGroupOpsDirectory' "$REPO_ROOT/cmd/aicrm/composition.go"
-require_text 'providerDisabledGroupOpsEvidence' "$REPO_ROOT/cmd/aicrm/composition.go"
+# Provider adapters live in the composition-owned adapter file. Composition
+# wires them and preserves disabled-by-default configuration; it need not
+# duplicate their concrete types.
+require_text 'providerDisabledGroupOpsDirectory' "$REPO_ROOT/cmd/aicrm/group_ops_adapters.go"
+require_text 'providerDisabledGroupOpsEvidence' "$REPO_ROOT/cmd/aicrm/group_ops_adapters.go"
 require_text 'SetCompletionSink' "$REPO_ROOT/cmd/aicrm/composition.go"
 require_text 'BindContentDelivery' "$REPO_ROOT/cmd/aicrm/composition.go"
 require_text 'groupopsmaterial.NewFreezer' "$REPO_ROOT/cmd/aicrm/composition.go"

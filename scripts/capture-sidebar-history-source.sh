@@ -35,6 +35,13 @@ SELECT '__AICRM_SIDEBAR_ENTITLEMENT__|' || encode(convert_to(jsonb_build_object(
   'start_at',e.start_at,
   'end_at',e.end_at,
   'remark',COALESCE(NULLIF(e.metadata_json->>'admin_remark',''),NULLIF(e.metadata_json->>'remark',''),''),
+  'alliance',CASE
+    -- The frozen grid normalizes this value with Python str(...).strip();
+    -- BTRIM captures that exact rendered/editable value, not raw metadata.
+    WHEN e.metadata_json ? 'admin_alliance' AND jsonb_typeof(e.metadata_json->'admin_alliance')='string'
+      THEN btrim(e.metadata_json->>'admin_alliance')
+    ELSE NULL
+  END,
   'created_at',e.created_at,
   'updated_at',e.updated_at
 )::text,'UTF8'),'hex')

@@ -21,14 +21,33 @@ var ErrCustomerReadUnavailable = errors.New("audience customer reader is unavail
 type CustomerSource struct {
 	UoW       platformport.UnitOfWork
 	Customers customerport.AudienceReader
+	Legacy    segmentport.DefinitionSource
 }
 
 func (a CustomerSource) Evaluate(ctx context.Context, definition segmentport.Definition, reference time.Time) (segmentport.Evaluation, error) {
-	if a.UoW == nil || a.Customers == nil || reference.IsZero() {
+	if a.UoW == nil || reference.IsZero() {
 		return segmentport.Evaluation{}, ErrCustomerReadUnavailable
 	}
 	var ast segmentdsl.AST
-	if json.Unmarshal(definition.Expression, &ast) != nil || ast.SchemaVersion != 1 || ast.Template != segmentdsl.ActiveContacts || len(ast.Predicate.Values) != 1 {
+	if json.Unmarshal(definition.Expression, &ast) != nil || ast.SchemaVersion != 1 {
+		return segmentport.Evaluation{}, ErrCustomerReadUnavailable
+	}
+	if ast.Template != segmentdsl.ActiveContacts {
+		if a.Legacy == nil {
+			return segmentport.Evaluation{}, ErrCustomerReadUnavailable
+		}
+		// Owner audience ports deliberately require the caller's UoW. This keeps
+		// one evaluation on a single PostgreSQL snapshot and never holds a
+		// transaction across a Provider operation (there are none on this path).
+		var result segmentport.Evaluation
+		err := a.UoW.Within(ctx, func(tx context.Context) error {
+			var evaluateErr error
+			result, evaluateErr = a.Legacy.Evaluate(tx, definition, reference)
+			return evaluateErr
+		})
+		return result, err
+	}
+	if a.Customers == nil || len(ast.Predicate.Values) != 1 {
 		return segmentport.Evaluation{}, ErrCustomerReadUnavailable
 	}
 	days, err := strconv.Atoi(ast.Predicate.Values[0])

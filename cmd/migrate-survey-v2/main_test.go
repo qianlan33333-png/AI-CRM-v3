@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestHistoricalQuestionnaireAuditParametersHaveConcretePostgreSQLTypes(t *testing.T) {
@@ -52,5 +53,13 @@ func TestReadKeyRequiresOwnerOnlyPermissions(t *testing.T) {
 	}
 	if key, err := readKey(path); err != nil || len(key) != 32 {
 		t.Fatalf("key err=%v", err)
+	}
+}
+
+func TestValidateSnapshotRejectsTypedTableWithoutPanicking(t *testing.T) {
+	snapshot := frozenSurveySnapshot(t, time.Date(2026, 9, 5, 8, 0, 0, 0, time.UTC))
+	setFrozenTable(t, &snapshot, "questionnaire_questions", []map[string]any{{"id": "not-an-integer"}})
+	if err := validateSnapshot(snapshot); err == nil || !strings.Contains(err.Error(), "invalid frozen table questionnaire_questions") {
+		t.Fatalf("typed table validation err=%v", err)
 	}
 }

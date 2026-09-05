@@ -122,7 +122,7 @@ make_release() {
   local release="$test_root/package-${sha}"
   local archive="/tmp/aicrm-${sha}.tar.gz"
   mkdir -p "$release/bin" "$release/migrations" "$release/web/dist/admin" "$release/web/dist/aiassistant" "$release/deploy"
-  for binary in aicrm migrate-platform migrate-river migrate-phone-identities migrate-identity-phone-vault migrate-survey-v2 migrate-order-attribution migrate-automation-operations migrate-v2-config-definitions migrate-channel-history migrate-radar-v2 migrate-sidebar-history bootstrap-automation-operations; do
+  for binary in aicrm wecom-archive-sdk-runner migrate-platform migrate-river migrate-phone-identities migrate-identity-phone-vault migrate-survey-v2 migrate-order-attribution migrate-automation-operations migrate-v2-config-definitions migrate-media-legacy-materials migrate-channel-history migrate-radar-v2 migrate-sidebar-history bootstrap-automation-operations; do
     printf '#!/usr/bin/env bash\nexit 0\n' > "$release/bin/$binary"
     chmod 0755 "$release/bin/$binary"
   done
@@ -144,9 +144,26 @@ make_release() {
     0048_segment_audience_schedule_state.sql 0049_order_history_attribution.sql \
     0050_radar_core.sql 0051_radar_sessions_events.sql 0052_radar_legacy_import.sql \
     0053_segment_audience_member_event_fact_kinds.sql \
+    0083_segment_audience_refresh_modes.sql \
+    0085_segment_audience_refresh_kind.sql \
+    0086_wecom_profile_primary_owner.sql \
+    0087_automation_manual_ai_review.sql \
+    0089_outbound_message_content_snapshots.sql \
     0061_product_public_purchase.sql \
     0063_identity_hxc_source_observations.sql \
-    0064_hxc_dashboard_identity_v2.sql; do
+    0064_hxc_dashboard_identity_v2.sql \
+    0068_payment_session_beneficiary_selection.sql \
+    0069_coupon_claim_redemption_lifecycle.sql \
+    0070_service_period_entitlement_fulfillment.sql \
+    0076_order_checkout_snapshots.sql \
+    0077_coupon_public_slug.sql \
+    0078_group_ops_provider_tasks.sql \
+    0079_service_period_member_grid.sql \
+    0081_group_ops_webhook_unconfigured_reference.sql \
+    0082_group_ops_history_import.sql \
+    0084_hxc_shared_facts.sql \
+    0088_order_service_entitlement_alliance.sql \
+    0090_survey_oauth_state_redirect.sql; do
     : > "$release/migrations/$migration"
   done
   : > "$release/web/dist/asset-manifest.json"
