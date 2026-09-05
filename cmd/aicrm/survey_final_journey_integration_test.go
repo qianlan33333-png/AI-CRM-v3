@@ -519,6 +519,8 @@ func TestSurveyFrozenAdminRuntimeJourneyPostgreSQL(t *testing.T) {
 		return renderer.RenderSurvey(writer, webshell.AdminPageForRequest(request, "问卷编辑", "管理问卷定义、版本、答卷及只读外部效果回执。", "api.admin_questionnaires"), page, donor, webshell.SurveyAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS, EditorJS: assets.EditorJS, EditorCSS: assets.EditorCSS})
 	})
 	mux := http.NewServeMux()
+	mux.Handle("/admin/questionnaires", ui)
+	mux.Handle("/admin/questionnaires.html", ui)
 	mux.Handle("/admin/questionnaireDetail.html", ui)
 	mux.Handle("/api/admin/questionnaires", handler)
 	mux.Handle("/api/admin/questionnaires/", handler)

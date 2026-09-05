@@ -9,6 +9,7 @@ const origin = process.env.AICRM_SURVEY_ADMIN_RUNTIME_ORIGIN;
 if (!origin) throw new Error("AICRM_SURVEY_ADMIN_RUNTIME_ORIGIN is required");
 
 const editorBundle = await buildTestBrowserBundle(path.join(root, "web/src/admin/sections/questionnaireEditor.ts"));
+const adminBundle = await buildTestBrowserBundle(path.join(root, "web/src/admin/main.ts"));
 const hostBridge = await readFile(path.join(root, "internal/webshell/static/admin_console/survey_operations.js"), "utf8");
 let nextKey = 1;
 
@@ -85,6 +86,43 @@ async function openEditor(query) {
   return { dom, calls };
 }
 
+async function openManagement() {
+  const response = await fetch(`${origin}/admin/questionnaires.html`);
+  if (!response.ok) throw new Error(`actual Host management response=${response.status} body=${(await response.text()).slice(0, 240)}`);
+  const html = await response.text();
+  if (!html.includes('data-admin-shell-source="v3_webshell"') || !html.includes('data-page="questionnaires"')) {
+    throw new Error("actual Survey Host did not render the frozen management page inside the v3 shell");
+  }
+  const dom = new JSDOM(html, {
+    url: `${origin}/admin/questionnaires.html`, runScripts: "outside-only", pretendToBeVisual: true,
+    beforeParse(window) {
+      window.Headers = globalThis.Headers;
+      window.Response = globalThis.Response;
+      window.confirm = () => true;
+      Object.defineProperty(window.crypto, "randomUUID", { configurable: true, value: () => `00000000-0000-4000-8000-${String(nextKey++).padStart(12, "0")}` });
+    },
+  });
+  const calls = [];
+  dom.window.fetch = async (inputValue, init = {}) => {
+    const target = new URL(String(inputValue), origin);
+    const call = { path: target.pathname, method: init.method || "GET", body: typeof init.body === "string" ? init.body : "", status: 0 };
+    calls.push(call);
+    const response = await globalThis.fetch(target, init);
+    call.status = response.status;
+    return response;
+  };
+  dom.window.eval(adminBundle);
+  dom.window.eval(hostBridge);
+  dom.window.document.dispatchEvent(new dom.window.Event("DOMContentLoaded"));
+  return { dom, calls };
+}
+
+function managementAction(document, title, label) {
+  const row = [...document.querySelectorAll("tr")].find((item) => item.textContent?.includes(title));
+  if (!row) return null;
+  return [...row.querySelectorAll("a,button")].find((item) => item.textContent?.trim() === label) || null;
+}
+
 const normal = await openEditor("");
 const normalDocument = normal.dom.window.document;
 input(normal.dom.window, normalDocument.querySelector("#field-name"), "冻结后台实际问卷");
@@ -117,19 +155,6 @@ if (!frozenNormalPayload.assessment_config || !frozenNormalPayload.questions?.ev
   throw new Error(`fixture no longer captures the frozen hidden defaults: ${JSON.stringify(frozenNormalPayload)}`);
 }
 
-// A newly saved normal questionnaire is represented as disabled by the
-// compatibility DTO. The frozen list's first “启用” must publish its draft,
-// then a real stop/re-enable must use the Owner lifecycle without re-publishing.
-click(normalDocument.querySelector('[data-action="toggle"]'));
-await waitFor("normal draft publish", () => normal.calls.some((call) => call.path === `/api/admin/questionnaires/${normalID}/public-publish` && call.status === 200));
-await waitFor("normal editor enabled", () => normalDocument.querySelector("#toast")?.textContent.includes("问卷已启用"));
-click(normalDocument.querySelector('[data-action="toggle"]'));
-await waitFor("normal editor disable", () => normal.calls.some((call) => call.path === `/api/admin/questionnaires/${normalID}/disable` && call.status === 200));
-await waitFor("normal editor disabled", () => normalDocument.querySelector("#toast")?.textContent.includes("问卷已停用"));
-click(normalDocument.querySelector('[data-action="toggle"]'));
-await waitFor("normal editor re-enable", () => normal.calls.filter((call) => call.path === `/api/admin/questionnaires/${normalID}/enable` && call.status === 200).length === 1);
-await waitFor("normal editor re-enabled", () => normalDocument.querySelector("#toast")?.textContent.includes("问卷已启用"));
-
 click(normalDocument.querySelector("#editor-export-btn"));
 await waitFor("actual CSV download", () => {
   const downloads = normal.dom.window.__surveyRuntimeDownloads || [];
@@ -149,6 +174,29 @@ if (!normal.calls.some((call) => call.path === `/api/admin/questionnaires/${norm
   throw new Error("frozen duplicate did not use the actual duplicate endpoint");
 }
 normal.dom.window.close();
+
+// The frozen management page owns the actual enable/disable controls. A saved
+// definition is shown there as disabled; the first enable must freeze and
+// publish that exact draft, while stopping and re-enabling use the lifecycle.
+const management = await openManagement();
+const managementDocument = management.dom.window.document;
+await waitFor("normal management action", () => managementAction(managementDocument, "冻结后台实际标题", "启用") !== null);
+click(managementAction(managementDocument, "冻结后台实际标题", "启用"));
+await waitFor("normal list enable conflict", () => management.calls.some((call) => call.path === `/api/admin/questionnaires/${normalID}/enable` && call.status === 409));
+await waitFor("normal draft publish", () => management.calls.some((call) => call.path === `/api/admin/questionnaires/${normalID}/public-publish` && call.status === 200));
+const normalPublish = management.calls.find((call) => call.path === `/api/admin/questionnaires/${normalID}/public-publish` && call.status === 200);
+if (!normalPublish || !Number.isSafeInteger(Number(JSON.parse(normalPublish.body || "{}").expected_questionnaire_version)) || Number(JSON.parse(normalPublish.body || "{}").expected_questionnaire_version) < 1) {
+  throw new Error(`normal draft publish was not a versioned CAS: ${JSON.stringify(normalPublish)}`);
+}
+await waitFor("normal list stop action", () => managementAction(managementDocument, "冻结后台实际标题", "停用") !== null);
+click(managementAction(managementDocument, "冻结后台实际标题", "停用"));
+await waitFor("normal stop confirmation", () => [...managementDocument.querySelectorAll("button")].some((item) => item.textContent?.trim() === "确认停用"));
+click([...managementDocument.querySelectorAll("button")].find((item) => item.textContent?.trim() === "确认停用"));
+await waitFor("normal list disable", () => management.calls.some((call) => call.path === `/api/admin/questionnaires/${normalID}/disable` && call.status === 200));
+await waitFor("normal list re-enable action", () => managementAction(managementDocument, "冻结后台实际标题", "启用") !== null);
+click(managementAction(managementDocument, "冻结后台实际标题", "启用"));
+await waitFor("normal list re-enable", () => management.calls.filter((call) => call.path === `/api/admin/questionnaires/${normalID}/enable` && call.status === 200).length === 1);
+management.dom.window.close();
 
 const assessment = await openEditor("?mode=assessment");
 const assessmentDocument = assessment.dom.window.document;
@@ -172,9 +220,12 @@ const assessmentID = Number(new URLSearchParams(assessment.dom.window.location.s
 if (!assessment.calls.some((call) => call.path === "/api/admin/questionnaires" && call.method === "POST")) {
   throw new Error("frozen assessment save did not use the actual create endpoint");
 }
-if (!assessment.calls.some((call) => call.path === `/api/admin/questionnaires/${assessmentID}/public-publish` && call.method === "POST" && call.status === 200)
+const firstAssessmentPublish = assessment.calls.find((call) => call.path === `/api/admin/questionnaires/${assessmentID}/public-publish` && call.method === "POST" && call.status === 200);
+if (!firstAssessmentPublish
+  || !Number.isSafeInteger(Number(JSON.parse(firstAssessmentPublish.body || "{}").expected_questionnaire_version))
+  || Number(JSON.parse(firstAssessmentPublish.body || "{}").expected_questionnaire_version) < 1
   || assessment.calls.some((call) => call.path === `/api/admin/questionnaires/${assessmentID}/enable`)) {
-  throw new Error(`Host publish bridge did not use the V3 publish contract: ${JSON.stringify(assessment.calls)}`);
+  throw new Error(`Host publish bridge did not use the versioned V3 publish contract: ${JSON.stringify(assessment.calls)}`);
 }
 // Publishing updates the Owner version. Re-enter the frozen editor and save a
 // changed title to prove the bridge reads the fresh save response instead of

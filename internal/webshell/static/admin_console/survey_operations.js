@@ -124,7 +124,25 @@
       // Owner's definition-freezing public-publish operation.
       return Promise.resolve(response).then(function (result) {
         if (!result || result.status !== 409) return result;
-        return platformFetch('/api/admin/questionnaires/' + match[1] + '/public-publish', Object.assign({}, options, { method: 'POST' }));
+        // Do not publish whatever happens to be current after the /enable
+        // conflict. Read the draft once and submit that exact version so a
+        // concurrent edit remains a visible 409 instead of a silent publish.
+        return platformFetch('/api/admin/questionnaires/' + match[1], { method: 'GET', credentials: 'same-origin', headers: { Accept: 'application/json' } }).then(function (detailResponse) {
+          if (!detailResponse || !detailResponse.ok) return result;
+          return detailResponse.json();
+        }).then(function (detail) {
+          const questionnaire = detail && (detail.questionnaire || detail.data && detail.data.questionnaire || detail);
+          if (!questionnaire || !Number.isSafeInteger(Number(questionnaire.version)) || Number(questionnaire.version) < 1) return result;
+          const headers = new Headers((options && options.headers) || {});
+          headers.set('Content-Type', 'application/json');
+          headers.set('Accept', 'application/json');
+          headers.set('X-CSRF-Token', csrfToken());
+          headers.set('Idempotency-Key', requestKey());
+          return platformFetch('/api/admin/questionnaires/' + match[1] + '/public-publish', {
+            method: 'POST', credentials: 'same-origin', headers: headers,
+            body: JSON.stringify({ expected_questionnaire_version: Number(questionnaire.version) }),
+          });
+        }).catch(function () { return result; });
       });
     };
   }

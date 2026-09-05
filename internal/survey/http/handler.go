@@ -99,6 +99,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// publicPublishRequest preserves the frozen empty-body compatibility path while
+// making an explicitly supplied version a real compare-and-swap precondition.
+// An absent field intentionally retains the established /enable-era behavior.
+type publicPublishRequest struct {
+	ExpectedQuestionnaireVersion *int64 `json:"expected_questionnaire_version"`
+}
+
 type definitionRequest struct {
 	Name              string                       `json:"name"`
 	Title             string                       `json:"title"`
@@ -344,9 +351,27 @@ func (h *Handler) setStatus(w http.ResponseWriter, r *http.Request, id int64, st
 		resultError(w, err)
 		return
 	}
+	expected := current.Version
+	if publish && r.Body != nil {
+		var body publicPublishRequest
+		decoder := json.NewDecoder(io.LimitReader(r.Body, maxBody))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+			writeError(w, http.StatusBadRequest, "invalid_request")
+			return
+		} else if err == nil {
+			if decoder.Decode(&struct{}{}) != io.EOF {
+				writeError(w, http.StatusBadRequest, "invalid_request")
+				return
+			}
+			if body.ExpectedQuestionnaireVersion != nil {
+				expected = *body.ExpectedQuestionnaireVersion
+			}
+		}
+	}
 	var q surveyport.Questionnaire
 	if publish {
-		q, err = h.definitions.Publish(r.Context(), surveyport.ID(id), current.Version, p.InternalID, idempotency(r))
+		q, err = h.definitions.Publish(r.Context(), surveyport.ID(id), expected, p.InternalID, idempotency(r))
 	} else {
 		q, err = h.definitions.SetStatus(r.Context(), surveyport.ID(id), current.Version, status, p.InternalID, idempotency(r))
 	}

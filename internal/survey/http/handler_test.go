@@ -19,6 +19,27 @@ type routeDefinitions struct {
 	surveyport.DefinitionApplication
 }
 
+type publishVersionDefinitions struct {
+	surveyport.DefinitionApplication
+	questionnaire     surveyport.Questionnaire
+	publishedExpected int64
+	publishCalls      int
+}
+
+func (d *publishVersionDefinitions) Get(context.Context, surveyport.ID) (surveyport.Questionnaire, error) {
+	return d.questionnaire, nil
+}
+func (d *publishVersionDefinitions) Publish(_ context.Context, _ surveyport.ID, expected, _ int64, _ string) (surveyport.Questionnaire, error) {
+	d.publishCalls++
+	d.publishedExpected = expected
+	if expected != d.questionnaire.Version {
+		return surveyport.Questionnaire{}, surveyport.ErrConflict
+	}
+	d.questionnaire.Status = surveyport.StatusPublished
+	d.questionnaire.Version++
+	return d.questionnaire, nil
+}
+
 type routeSurvey struct {
 	surveyport.PublicApplication
 	surveyport.SubmissionApplication
@@ -101,6 +122,28 @@ func newRouteHandler(t *testing.T, oauth routeOAuth) *Handler {
 		t.Fatal(err)
 	}
 	return handler
+}
+
+func TestPublicPublishUsesExplicitQuestionnaireVersionCAS(t *testing.T) {
+	definitions := &publishVersionDefinitions{questionnaire: surveyport.Questionnaire{ID: 7, Version: 4, Status: surveyport.StatusDraft, Slug: "versioned"}}
+	handler, err := NewHandler(definitions, &routeSurvey{}, operationSecurity{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := httptest.NewRequest(nethttp.MethodPost, "/api/admin/questionnaires/7/public-publish", strings.NewReader(`{"expected_questionnaire_version":3}`))
+	stale.Header.Set("Idempotency-Key", "survey-public-publish-stale-0001")
+	staleResponse := httptest.NewRecorder()
+	handler.ServeHTTP(staleResponse, stale)
+	if staleResponse.Code != nethttp.StatusConflict || definitions.publishedExpected != 3 || definitions.publishCalls != 1 {
+		t.Fatalf("stale public publish response=%d expected=%d calls=%d body=%s", staleResponse.Code, definitions.publishedExpected, definitions.publishCalls, staleResponse.Body.String())
+	}
+	current := httptest.NewRequest(nethttp.MethodPost, "/api/admin/questionnaires/7/public-publish", strings.NewReader(`{"expected_questionnaire_version":4}`))
+	current.Header.Set("Idempotency-Key", "survey-public-publish-current-0002")
+	currentResponse := httptest.NewRecorder()
+	handler.ServeHTTP(currentResponse, current)
+	if currentResponse.Code != nethttp.StatusOK || definitions.publishedExpected != 4 || definitions.questionnaire.Status != surveyport.StatusPublished {
+		t.Fatalf("current public publish response=%d expected=%d questionnaire=%+v body=%s", currentResponse.Code, definitions.publishedExpected, definitions.questionnaire, currentResponse.Body.String())
+	}
 }
 
 func TestDefinitionRequestAppliesFrozenSingleChoiceDefaultOnlyWhenAbsent(t *testing.T) {
