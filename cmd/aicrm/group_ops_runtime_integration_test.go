@@ -609,7 +609,10 @@ func waitGroupOpsProviderCalls(t *testing.T, native *pgxpool.Pool, provider *gro
 func assertGroupOpsInitialEffectsPersisted(t *testing.T, native *pgxpool.Pool, planID int64, expected int) {
 	t.Helper()
 	var persisted int
-	err := native.QueryRow(context.Background(), `SELECT count(*) FROM group_ops_executions execution JOIN external_effects effect ON execution.external_effect_id=effect.id JOIN external_effect_jobs effect_job ON effect_job.effect_id=effect.id AND effect_job.generation=effect.generation JOIN river_job job ON job.id=effect_job.river_job_id WHERE execution.plan_id=$1 AND execution.node_position=1 AND execution.state='accepted' AND effect.state='accepted' AND job.kind='external_effect.execute.v1' AND job.state IN ('available','scheduled')`, planID).Scan(&persisted)
+	// EER acceptance atomically creates a River job and advances the external
+	// effect projection to queued. The Group Ops execution remains accepted
+	// until the Provider result arrives.
+	err := native.QueryRow(context.Background(), `SELECT count(*) FROM group_ops_executions execution JOIN external_effects effect ON execution.external_effect_id=effect.id JOIN external_effect_jobs effect_job ON effect_job.effect_id=effect.id AND effect_job.generation=effect.generation JOIN river_job job ON job.id=effect_job.river_job_id WHERE execution.plan_id=$1 AND execution.node_position=1 AND execution.state='accepted' AND effect.state='queued' AND job.kind='external_effect.execute.v1' AND job.state IN ('available','scheduled')`, planID).Scan(&persisted)
 	if err != nil || persisted != expected {
 		t.Fatalf("persisted initial Group Ops effects=%d want=%d err=%v", persisted, expected, err)
 	}
@@ -620,7 +623,7 @@ func waitGroupOpsDelayedSuccessors(t *testing.T, native *pgxpool.Pool, planID in
 	deadline := time.Now().Add(12 * time.Second)
 	for time.Now().Before(deadline) {
 		var persisted int
-		err := native.QueryRow(context.Background(), `SELECT count(*) FROM group_ops_execution_intents intent JOIN group_ops_executions execution ON execution.external_effect_id=intent.external_effect_id JOIN external_effects effect ON execution.external_effect_id=effect.id JOIN external_effect_jobs effect_job ON effect_job.effect_id=effect.id AND effect_job.generation=effect.generation JOIN river_job job ON job.id=effect_job.river_job_id WHERE intent.plan_id=$1 AND intent.node_position=3 AND intent.state='accepted' AND execution.state='accepted' AND effect.state='accepted' AND job.kind='external_effect.execute.v1' AND job.state='scheduled' AND execution.scheduled_for > clock_timestamp()`, planID).Scan(&persisted)
+		err := native.QueryRow(context.Background(), `SELECT count(*) FROM group_ops_execution_intents intent JOIN group_ops_executions execution ON execution.external_effect_id=intent.external_effect_id JOIN external_effects effect ON execution.external_effect_id=effect.id JOIN external_effect_jobs effect_job ON effect_job.effect_id=effect.id AND effect_job.generation=effect.generation JOIN river_job job ON job.id=effect_job.river_job_id WHERE intent.plan_id=$1 AND intent.node_position=3 AND intent.state='accepted' AND execution.state='accepted' AND effect.state='queued' AND job.kind='external_effect.execute.v1' AND job.state='scheduled' AND execution.scheduled_for > clock_timestamp()`, planID).Scan(&persisted)
 		if err == nil && persisted == expected {
 			return
 		}
