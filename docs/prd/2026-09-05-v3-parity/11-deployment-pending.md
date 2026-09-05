@@ -15,6 +15,24 @@
 
 不回显 Secret、Token、密钥内容或原始用户身份。配置存在并不证明适用于 V3。不得覆盖整份环境文件或直接复用旧 notify URL 造成错误回调归属。
 
+## 已核对的运行时开关与必要配置名
+
+依据本候选 `internal/platform/config/config.go`，未配置时下表布尔开关均为false；Automation mode默认为disabled。AI界面默认显示不等于intake/dispatch已启用。`deploy/aicrm.env.example`尚未逐项列全新增配置，部署准备以运行时校验和本清单为准，不能因示例缺行就跳过配置。
+
+| 板块 | 独立开关或模式 | 需与V3用途核对的配置名 |
+|---|---|---|
+| 共享效果执行 | `AICRM_OUTBOUND_PROVIDER_ENABLED=false` | 对应effects worker角色、已批准的具体领域开关；全局开关不代替领域开关 |
+| 01客户同步 | `AICRM_WECOM_CUSTOMER_SYNC_ENABLED=false` | `AICRM_WECOM_CORP_ID`、`AICRM_WECOM_CONTACT_SECRET`；回调另有`AICRM_WECOM_CALLBACK_ENABLED=false`及TOKEN/AES_KEY |
+| 02问卷 | `AICRM_SURVEY_OAUTH_ENABLED=false`、`AICRM_SURVEY_COMPLETION_PROVIDER_ENABLED=false` | `AICRM_SURVEY_DATA_KEY`、`AICRM_IDENTITY_PHONE_DATA_KEY`、`AICRM_SURVEY_OAUTH_APP_ID`/`SECRET`/`OPEN_PLATFORM_ID`/`SCOPE`、`AICRM_SURVEY_COMPLETION_TARGETS_JSON`；OAuth scope默认snsapi_userinfo，须核实际授权 |
+| 03/04交易与权益 | `AICRM_WECHAT_PAY_PROVIDER_ENABLED=false`、`AICRM_WECHAT_PAY_H5_OAUTH_ENABLED=false`、`AICRM_WECHAT_SHOP_PROVIDER_ENABLED=false` | 微信支付APP_ID/APP_SECRET/APP_SCOPE、MERCHANT_ID/MERCHANT_SERIAL、PRIVATE_KEY_PATH/PLATFORM_CERT_PATH/API_V3_KEY；H5_APP_ID/H5_APP_SECRET/H5_APP_SCOPE；`AICRM_ORDER_CONTACT_DATA_KEY`；小店APP_ID/APP_SECRET/CALLBACK_TOKEN/CALLBACK_AES_KEY，完整前缀见env示例。权益和券由已验证支付/退款事实驱动，无独立支付旁路 |
+| 05自动化 | `AICRM_AUTOMATION_OPS_PROVIDER_MODE=disabled` | `AICRM_AUTOMATION_OPS_MAX_RECIPIENTS`默认1、`AICRM_AUTOMATION_OPS_PROVIDER_PERMISSION`、可选`AICRM_AUTOMATION_OPS_WEBHOOK_SECRET`；probe仅允许准确单人上限，权限值沿既有fixed-script-send-authorized |
+| 06 AI助手 | `AICRM_AI_ASSISTANT_INTAKE_ENABLED=false`、`AICRM_AI_ASSISTANT_DISPATCH_ENABLED=false` | `AICRM_AI_ASSISTANT_INTEGRATION_KEY`/`INTEGRATION_SECRET`/`INTEGRATION_ACTOR_ID`/`PROVIDER_PERMISSION`；旧调用方签名与Corp/OpenPlatform scope不混用 |
+| 07群运营 | `AICRM_GROUP_OPS_PROVIDER_ENABLED=false` | `AICRM_GROUP_OPS_WEBHOOK_SECRET`、实际企微目录/发送/结果读取权限；受理与送达分别核对 |
+| 08渠道欢迎 | `AICRM_CHANNEL_WELCOME_PROVIDER_ENABLED=false` | READ/QR/MEDIA_PREP/TAG分别由`AICRM_CHANNEL_PROVIDER_READ_ENABLED`、`AICRM_CHANNEL_QR_PROVIDER_ENABLED`、`AICRM_CHANNEL_MEDIA_PREP_PROVIDER_ENABLED`、`AICRM_CHANNEL_TAG_PROVIDER_ENABLED`默认false控制；`AICRM_CHANNEL_STATE_HMAC_KEY`与已有回调密钥独立核对 |
+| 09会话存档 | `AICRM_WECOM_MESSAGE_ARCHIVE_ENABLED=false` | 完整SECRET/RUNNER_PATH/LIBRARY_PATH/PRIVATE_KEY_PATHS/PAGE_LIMIT/PAGE_BUDGET清单见下文；版本化私钥映射为JSON对象，不能用无版本的任意路径代替 |
+
+以上仅记录名称和默认值，未读取或应用值。配置及真实Provider验收仍在部署阶段；客户同步等只读能力不需要伪造外部写效果。
+
 ## 部署阶段才执行
 
 - 核对总集成 PR 的唯一发布候选 HEAD、实际制品、数据库迁移顺序与兼容性；取得用户最终上线确认后，只合并该总集成 PR，不逐个合并和发布板块 PR。
