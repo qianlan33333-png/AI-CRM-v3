@@ -31,12 +31,26 @@ func (m *ModuleRegistration) Bind(rules couponport.RuleApplication, products pro
 	return HTTPBindings{Coupons: h}, nil
 }
 
+// BindWithClaims is the additive couponData journey. It keeps the original
+// rule-only Bind stable for staged composition while giving the root a single
+// explicit switch to mount claims once the new migration is present.
+func (m *ModuleRegistration) BindWithClaims(rules couponport.RuleApplication, products productport.ProductOptionReader, claims couponport.CouponClaimAdminReader, security couponhttp.RequestSecurity) (HTTPBindings, error) {
+	if m == nil {
+		return HTTPBindings{}, errors.New("coupon module is required")
+	}
+	h, err := couponhttp.NewHandlerWithClaims(rules, products, claims, security)
+	if err != nil {
+		return HTTPBindings{}, err
+	}
+	return HTTPBindings{Coupons: h}, nil
+}
+
 func (m *ModuleRegistration) Readiness(ctx context.Context, pool *pgxpool.Pool) error {
 	if m == nil || pool == nil {
 		return errors.New("coupon module dependencies are required")
 	}
 	var ready bool
-	err := pool.QueryRow(ctx, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['coupon_rules','coupon_rule_targets','coupon_operation_receipts','coupon_audit_events','coupon_outbox']) AS required(name) WHERE to_regclass(current_schema() || '.' || required.name) IS NULL)`).Scan(&ready)
+	err := pool.QueryRow(ctx, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['coupon_rules','coupon_rule_targets','coupon_operation_receipts','coupon_audit_events','coupon_outbox','coupon_customer_claims','coupon_claim_operation_receipts','coupon_order_redemptions','coupon_redemption_operation_receipts','coupon_claim_audit_events','coupon_claim_outbox']) AS required(name) WHERE to_regclass(current_schema() || '.' || required.name) IS NULL)`).Scan(&ready)
 	if err != nil {
 		return err
 	}

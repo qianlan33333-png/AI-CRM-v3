@@ -497,6 +497,21 @@ func (store *memoryWebhookStore) Complete(_ context.Context, completion webhook.
 	}
 	return webhook.Delivery{}, errors.New("missing delivery")
 }
+func (store *memoryWebhookStore) Retry(_ context.Context, retry webhook.Retry) (webhook.Delivery, error) {
+	for i := range store.deliveries {
+		delivery := &store.deliveries[i]
+		if delivery.ID != retry.ID || delivery.Provider != retry.Provider || delivery.AttemptCount != retry.ExpectedAttempt || delivery.Status != retry.ExpectedStatus {
+			continue
+		}
+		delivery.Status = webhook.StatusRetryable
+		if delivery.MaxAttempts < delivery.AttemptCount+1 {
+			delivery.MaxAttempts = delivery.AttemptCount + 1
+		}
+		delivery.NextAttemptAt = retry.Now
+		return *delivery, nil
+	}
+	return webhook.Delivery{}, webhook.ErrConcurrentUpdate
+}
 
 type memoryRelationships struct{ active map[string]bool }
 

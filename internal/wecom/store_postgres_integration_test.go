@@ -7,10 +7,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -25,6 +28,73 @@ import (
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/platform/webhook"
 )
+
+func TestPostgreSQLArchiveCallbackReplayKeepsFirstReceipt(t *testing.T) {
+	pool, cleanup := wecomIntegrationPool(t)
+	defer cleanup()
+	unit, err := platformpostgres.NewUnitOfWork(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	inbox, err := webhook.NewService(webhook.NewPostgreSQLStore())
+	if err != nil {
+		t.Fatal(err)
+	}
+	crypto, err := NewCallbackCrypto("archive-replay-token", "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG", "wx-archive-replay")
+	if err != nil {
+		t.Fatal(err)
+	}
+	providerNow := time.Unix(1_788_336_000, 0).UTC()
+	crypto.now = func() time.Time { return providerNow }
+	arrival := providerNow.Add(5 * time.Second)
+	handler := CallbackHandler{
+		Enabled: true, Crypto: crypto, Inbox: inbox, UOW: unit,
+		Dispatcher: CallbackEventDispatcher{Archive: ArchiveCallbackDispatcher{Inbox: inbox, UOW: unit, ExpectedAgentID: 1000002}},
+		Now:        func() time.Time { return arrival },
+	}
+	plain := []byte("<xml><ToUserName>wx-archive-replay</ToUserName><FromUserName>sys</FromUserName><CreateTime>1788336000</CreateTime><MsgType>event</MsgType><AgentID>1000002</AgentID><Event>msgaudit_notify</Event></xml>")
+	if status := serveArchiveCallback(t, handler, crypto, plain); status != http.StatusOK {
+		t.Fatalf("first callback status=%d", status)
+	}
+	var firstReceived time.Time
+	var firstPayload []byte
+	if err = pool.Native().QueryRow(ctx, `SELECT received_at,payload FROM webhook_inbox WHERE provider=$1`, archiveCallbackProvider).Scan(&firstReceived, &firstPayload); err != nil {
+		t.Fatal(err)
+	}
+	var canonical map[string]string
+	if err = json.Unmarshal(firstPayload, &canonical); err != nil || canonical["corp_id"] != "wx-archive-replay" || canonical["event"] != "msgaudit_notify" || len(canonical) != 2 {
+		t.Fatalf("canonical payload=%s", firstPayload)
+	}
+	arrival = arrival.Add(3 * time.Second)
+	if status := serveArchiveCallback(t, handler, crypto, plain); status != http.StatusOK {
+		t.Fatalf("replayed callback status=%d", status)
+	}
+	var count int
+	var replayReceived time.Time
+	if err = pool.Native().QueryRow(ctx, `SELECT count(*),min(received_at) FROM webhook_inbox WHERE provider=$1`, archiveCallbackProvider).Scan(&count, &replayReceived); err != nil || count != 1 || !replayReceived.Equal(firstReceived) {
+		t.Fatalf("rows=%d received=%s first=%s err=%v", count, replayReceived, firstReceived, err)
+	}
+	drift := []byte("<xml><ToUserName>wx-archive-replay</ToUserName><FromUserName>sys</FromUserName><CreateTime>1788336000</CreateTime><MsgType>event</MsgType><AgentID>1000003</AgentID><Event>msgaudit_notify</Event></xml>")
+	if status := serveArchiveCallback(t, handler, crypto, drift); status == http.StatusOK {
+		t.Fatal("canonical provider-fact drift was acknowledged")
+	}
+	if err = pool.Native().QueryRow(ctx, `SELECT count(*) FROM webhook_inbox WHERE provider=$1`, archiveCallbackProvider).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("drift inbox rows=%d err=%v", count, err)
+	}
+}
+
+func serveArchiveCallback(t *testing.T, handler CallbackHandler, crypto *CallbackCrypto, plain []byte) int {
+	t.Helper()
+	encrypted := encryptForTest(t, crypto, plain)
+	timestamp := "1788336000"
+	query := "?msg_signature=" + callbackSignature("archive-replay-token", timestamp, "replay-nonce", encrypted) + "&timestamp=" + timestamp + "&nonce=replay-nonce"
+	body := "<xml><ToUserName>wx-archive-replay</ToUserName><Encrypt><![CDATA[" + encrypted + "]]></Encrypt></xml>"
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/wecom/external-contact/callback"+query, strings.NewReader(body)))
+	return response.Code
+}
 
 func TestPostgreSQLWeComStoresIntegration(t *testing.T) {
 	pool, cleanup := wecomIntegrationPool(t)

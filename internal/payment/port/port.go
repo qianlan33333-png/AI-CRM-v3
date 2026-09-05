@@ -19,6 +19,7 @@ type CreateCommand struct {
 	ProductType                string
 	SessionToken               string
 	MobileE164                 string
+	BeneficiarySelection       BeneficiarySelection
 	ActorScope, IdempotencyKey string
 }
 type RefundCommand struct {
@@ -77,10 +78,23 @@ type HistoricalImporter interface {
 	ImportTerminalRefund(context.Context, domain.Refund, [32]byte, string) (domain.Refund, error)
 }
 
+// BeneficiarySelection records how a payment-session recipient was established.
+// The public checkout exposes only PayerSelf; AdminAssisted is a server-only
+// prebound session fact.
+type BeneficiarySelection string
+
+const (
+	BeneficiarySelectionLegacyPrebound BeneficiarySelection = "legacy_prebound"
+	BeneficiarySelectionUnresolved     BeneficiarySelection = "unresolved"
+	BeneficiarySelectionPayerSelf      BeneficiarySelection = "payer_self"
+	BeneficiarySelectionAdminAssisted  BeneficiarySelection = "admin_assisted"
+)
+
 type SessionActor struct {
 	PayerIdentityID       int64
 	PayerCustomerID       int64
 	BeneficiaryCustomerID int64
+	BeneficiarySelection  BeneficiarySelection
 	Channel               domain.Channel
 }
 
@@ -96,12 +110,20 @@ type SessionReader interface {
 	LookupWithin(context.Context, string, time.Time) (SessionActor, error)
 }
 
+// SessionBeneficiarySelector records the only public recipient choice within
+// the caller's existing transaction. It derives the recipient from the trusted
+// payer; callers cannot submit a customer ID.
+type SessionBeneficiarySelector interface {
+	SelectPayerSelfWithin(context.Context, string, time.Time) (SessionActor, error)
+}
+
 // SessionLifecycle supports idempotent checkout replay: callers first read the
 // still-valid actor, then consume only when a new mutation is persisted in the
 // same transaction.
 type SessionLifecycle interface {
 	SessionConsumer
 	SessionReader
+	SessionBeneficiarySelector
 }
 
 // ProviderIntent is a Payment-owned, immutable request projection. It is read

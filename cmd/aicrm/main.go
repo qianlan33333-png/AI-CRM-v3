@@ -39,6 +39,11 @@ func run() error {
 		if cfg.WeCom.CallbackEnabled {
 			processed, processErr = application.weComProcessor.ProcessOnce(ctx, cfg.WorkerOwner, cfg.WorkerLimit)
 		}
+		if processErr == nil && cfg.WeCom.MessageArchiveEnabled {
+			archiveProcessed, archiveErr := application.weComArchiveProcessor.ProcessOnce(ctx, cfg.WorkerOwner, cfg.WorkerLimit)
+			processed += archiveProcessed
+			processErr = archiveErr
+		}
 		if processErr == nil && application.customerSync.Ready() {
 			if cfg.CustomerSyncTrigger != "" {
 				location, _ := time.LoadLocation("Asia/Shanghai")

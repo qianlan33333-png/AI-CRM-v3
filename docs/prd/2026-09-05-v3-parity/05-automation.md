@@ -1,0 +1,67 @@
+# PRD-05 自动化运营旧能力补齐
+
+状态：批准开发；先读 00-control.md；Terra high；沿用“自动化运营”。
+
+## 1. 基线与分类
+
+沿用 `docs/13-PRD-自动化运营-OneID与持久执行.md`，复用 V3 segment、automation、outbound、media 和 frozen UI。旧版参照 ai_audience_ops、automation_agents、已有 send_records 与自动化绑定行为。
+
+OneID：读取 canonical 客户，解析发送资格；不 Provision/合并。持久化：本地事务、受众与调度内部任务、Provider read、outbound 外部写效果。
+
+## 2. 已有与缺口
+
+人群包、计划/策略、话术、发送人、版本和执行内核已存在。当前装配的受众来源覆盖不等于界面全部条件覆盖；现有 ActiveWithin 使用目录 updated_at 不能解释为真实客户互动。生产未执行不等于缺少代码。
+
+## 3. 需求
+
+- 对照旧版实际可用条件，补齐人群定义、预览、刷新、发布、成员列表与入选原因；每个旧条件对应一个已有领域数据源 Port，不能允许任意生产 SQL。
+- “活跃”按旧版已确认的业务事件口径移植；目录同步不能冒充用户活跃。来源缺失返回可解释的不可用，不造人数。
+- 话术、素材、发送人、策略启停、时间及免打扰规则保持旧版；本轮不新做通用流程编辑器。
+- 人群成员进入等旧版实际触发器形成唯一 enrollment，重复事件不重复执行；已有不支持/禁用的旧条件不得凭菜单文案编造能力。
+- 手动群发和自动任务均先形成可预览的不可变目标/内容，沿用既有确认操作；实际执行前复核当前发送资格。
+- Provider 的接受、执行、未知和结果证明分别回到原记录页面，失败可在现有内核恢复。
+
+## 4. Owner、UI 与历史
+
+segment 拥有人群定义/快照，automation 拥有策略/运行/enrollment，outbound 拥有发送意图和企微写；通过稳定 Ports 和既有版本化事件接线。审批/运行事实与效果接受按需要同 UoW。
+
+保留原人群、Agent、策略和发送记录页面；仅改 V3 Adapter。旧配置及可归属历史记录以现有 importer 延续，历史运行强制只读，不因导入重新触发。新策略默认不自动向生产客户执行。
+
+## 5. 测试及验收
+
+- 每个迁入条件至少一组真实 PG 夹具，验证目录更新不扩大活跃集合、过滤交并行为与旧版一致。
+- 预览/发布版本漂移、成员进入重复/乱序、停用、免打扰和发送上限。
+- 事务失败全部回滚，重启继续原任务，unknown 不改键重发；测试 Provider disabled 零网络。
+- 本地完整人群→策略→批准/触发→发送→结果 journey，旧版 UI 操作对照。
+- 历史导入重放及 source 收据对账。输出未合并 PR 与测试证据。
+
+## 6. 非目标
+
+不实现新的指标平台、统一消费者治理、完整 Campaign、AI 生成、短信/邮件/朋友圈或新的身份冲突产品。确实需要补一个旧条件的数据读 Port 可在本板块完成，不扩大成平台重构。
+
+## 7. 总控供体定位与语义冻结
+
+供体 `extensions/ai/ai_audience_ops/template_registry.py` 实际有六种模板，逐项映射现有V3领域数据与Owner Port：
+
+| 旧模板 | 必须保留的关键语义 |
+|---|---|
+| wecom_contact_registration | 负责人、active/deleted 联系状态、any/registered/unregistered 注册状态 |
+| questionnaire_choice_answers | 首次完整提交；题间 AND、题内选项 OR，负责人范围 |
+| paid_order | 商品集合、支付时间左闭右开、负责人、有效企微联系人选项 |
+| channel_entry | 渠道集合、距进入时间上下界、负责人、有效企微联系人选项 |
+| radar_first_click_elapsed | 多雷达 OR，以首次可归因点击为锚点；后续点击不重置；小时/天窗口 |
+| member_usage_status | 负责人、服务期、注册、真实使用、会员层级/状态 |
+
+原刷新选项 every_3m / daily_0200 / manual 已有V3持久调度机制，复用相应映射。受限SQL旧入口只允许供体 allowlist 读视图，不意味着可在V3直接跨领域表跑任意SQL；先核对已有DSL编译和兼容入口，保持旧表单操作并通过Owner只读Port获取事实。
+
+d6 composition 实际只装配 `segmentadapter.CustomerSource`，仅处理 ActiveContacts；其 `customer/store.ActiveWithin` 基于目录 updated_at。执行任务需明确覆盖上述六模板，不能把仅有AST或菜单当作已接线。真实使用/注册若已有业务同步数据经其Owner读取；缺少可信数据时明确不可用，不能临时以目录同步或存档收到消息替代旧口径，也不把修复扩大为新分析系统。
+
+paid_order补充冻结：供体模板只选择status=paid；供体迁移0065的orders_v1来自wechat_pay_orders.unionid，对应付款OAuth身份。因此使用可信PayerCustomerID，不能替换成权益受益人，也不擅自把部分退款加入受众。历史已支付订单先核对Order是否有可信paid_at事实；没有status_history时不加时间窗口仍可按paid状态纳入，有时间窗口但没有可信时间则不匹配并保留原因，不能猜时间。现有TestPostgreSQLPaidProductProjectionUsesHistoryAndExactFallback的fallback是商品ID到精确商品码，不是支付时间回退；不得据其推断source_metadata中存在paid_at。补付款人/受益人不同、部分退款、历史paid无状态历史反例。
+
+本板块获准在WeCom、Survey、Order、Channel、Radar、HXCDashboard各Owner新增独立audience_read/port文件提供必要只读事实，由cmd适配到segment契约；Owner不反向依赖segment。共享商品支付及权益已有实现不重写。HXC无已发布投影时显示来源不可用，不把缺失数据冒充空人群。
+
+## 8. 继续实现检查
+
+现有独立工作区提交6cb9133、faa7149仅为局部实现，尚未装配或提交PR。PaidAudienceOrders目前SQL无占位参数却传入reference.UTC()，需修并用真实PG验证；六种Owner来源均须实际查询及边界夹具，不能以编译通过代替SQL执行。保留已有提交继续开发，不重写已冻结接口。
+
+局部LegacyTemplateSource.paid仅在require_active_wecom_contact=true时过滤owner；false时指定负责人条件被绕过，可能扩大受众。负责人条件与联系人活跃条件独立执行，加入“指定负责人且不要求活跃”的反例。HXC来源尚未检查是否存在published版本，不能把未装载投影当空受众。不要把这些局部实现直接启用或标记可发送。

@@ -38,6 +38,8 @@ type testCatalog struct {
 	product    productport.Product
 	listCalls  int
 	getCalls   int
+	getID      productport.ID
+	getCode    string
 	createCall *productport.CreateCommand
 	updateCall *productport.UpdateCommand
 }
@@ -47,8 +49,17 @@ func (catalog *testCatalog) List(context.Context, string, int32) (productport.Pa
 	return catalog.page, nil
 }
 
-func (catalog *testCatalog) Get(context.Context, productport.ID) (productport.Product, error) {
+func (catalog *testCatalog) Get(_ context.Context, id productport.ID) (productport.Product, error) {
 	catalog.getCalls++
+	catalog.getID = id
+	return catalog.product, nil
+}
+
+func (catalog *testCatalog) GetByCode(_ context.Context, code string) (productport.Product, error) {
+	catalog.getCode = code
+	if code != catalog.product.ProductCode {
+		return productport.Product{}, productapp.ErrNotFound
+	}
 	return catalog.product, nil
 }
 

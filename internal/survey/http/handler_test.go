@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
@@ -37,6 +38,43 @@ func (routeSecurity) Authenticate(context.Context, *nethttp.Request) (accessdoma
 }
 func (routeSecurity) AuthorizeCSRF(context.Context, *nethttp.Request) (accessdomain.Principal, error) {
 	return accessdomain.Principal{}, errors.New("unused")
+}
+
+type operationSecurity struct{ csrfErr error }
+
+func (s operationSecurity) Authenticate(context.Context, *nethttp.Request) (accessdomain.Principal, error) {
+	return accessdomain.Principal{InternalID: 1, Kind: accessdomain.KindAdmin, Roles: []accessdomain.Role{accessdomain.RoleAdmin}}, nil
+}
+func (s operationSecurity) AuthorizeCSRF(context.Context, *nethttp.Request) (accessdomain.Principal, error) {
+	return accessdomain.Principal{}, s.csrfErr
+}
+
+type operationRouteSurvey struct {
+	surveyport.PublicApplication
+	surveyport.SubmissionApplication
+	configuration surveyport.OperationConfiguration
+	saveCalls     int
+	testCalls     int
+	testReceipt   surveyport.CompletionTestReceipt
+	testErr       error
+	receipts      []surveyport.OperationReceipt
+}
+
+func (s *operationRouteSurvey) GetOperationConfiguration(context.Context, surveyport.ID) (surveyport.OperationConfiguration, error) {
+	return s.configuration, nil
+}
+func (s *operationRouteSurvey) ListOperationReceipts(context.Context, surveyport.ID, int32, int32) ([]surveyport.OperationReceipt, int64, error) {
+	return s.receipts, int64(len(s.receipts)), nil
+}
+func (s *operationRouteSurvey) SaveOperationConfiguration(_ context.Context, value surveyport.OperationConfiguration, _ int64, _ string) (surveyport.OperationConfiguration, error) {
+	s.saveCalls++
+	s.configuration = value
+	s.configuration.Version++
+	return s.configuration, nil
+}
+func (s *operationRouteSurvey) QueueCompletionTest(context.Context, surveyport.ID, int64, string) (surveyport.CompletionTestReceipt, error) {
+	s.testCalls++
+	return s.testReceipt, s.testErr
 }
 
 type routeOAuth struct {
@@ -76,6 +114,135 @@ func TestPublicSurveyCannotBypassOAuth(t *testing.T) {
 		if response.Code != nethttp.StatusUnauthorized || !strings.Contains(response.Body.String(), "survey_oauth_required") {
 			t.Fatalf("path=%s status=%d body=%s", path, response.Code, response.Body.String())
 		}
+	}
+}
+
+func TestOperationMetadataPUTRequiresCSRFAndCurrentConfigurationVersion(t *testing.T) {
+	survey := &operationRouteSurvey{configuration: surveyport.OperationConfiguration{QuestionnaireID: 7, ExternalPushEnabled: false, ExternalPushConfigurationRef: "push.v2", ExternalPushMetadata: []byte(`{"remark":"changed-by-b"}`), Version: 2}}
+	handler, err := NewHandler(&routeDefinitions{}, survey, operationSecurity{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(nethttp.MethodPut, "/api/admin/questionnaires/7/operations/external-push", strings.NewReader(`{"enabled":true,"configuration_reference":"push.v1","metadata":{"remark":"stale-a"},"configuration_version":1}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Idempotency-Key", "survey-operation-http-cas-0001")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != nethttp.StatusConflict || !strings.Contains(response.Body.String(), "configuration_conflict") || survey.saveCalls != 0 {
+		t.Fatalf("stale response=%d body=%s saves=%d", response.Code, response.Body.String(), survey.saveCalls)
+	}
+	if survey.configuration.ExternalPushEnabled || survey.configuration.ExternalPushConfigurationRef != "push.v2" {
+		t.Fatalf("stale HTTP request overwrote concurrent config: %+v", survey.configuration)
+	}
+
+	csrfHandler, err := NewHandler(&routeDefinitions{}, survey, operationSecurity{csrfErr: errors.New("csrf rejected")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request = httptest.NewRequest(nethttp.MethodPut, "/api/admin/questionnaires/7/operations/external-push", strings.NewReader(`{"enabled":false,"configuration_reference":"push.v2","metadata":{},"configuration_version":2}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Idempotency-Key", "survey-operation-http-csrf-0002")
+	response = httptest.NewRecorder()
+	csrfHandler.ServeHTTP(response, request)
+	if response.Code != nethttp.StatusForbidden || !strings.Contains(response.Body.String(), "csrf_invalid") || survey.saveCalls != 0 {
+		t.Fatalf("csrf response=%d body=%s saves=%d", response.Code, response.Body.String(), survey.saveCalls)
+	}
+}
+
+func TestLegacyQuestionnaireOpsSaveJourneyPreservesExternalPushMetadata(t *testing.T) {
+	// This is the exact existing web save order: completion PUT, followed by an
+	// external-push PUT that contains only the toggle and opaque reference.
+	survey := &operationRouteSurvey{configuration: surveyport.OperationConfiguration{QuestionnaireID: 7, ExternalPushEnabled: true, ExternalPushConfigurationRef: "push.v1", ExternalPushMetadata: []byte(`{"remark":"keep-me","custom_params":{"campaign":"autumn"}}`), Version: 1}}
+	handler, err := NewHandler(&routeDefinitions{}, survey, operationSecurity{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	completion := httptest.NewRequest(nethttp.MethodPut, "/api/admin/questionnaires/7/operations/completion", strings.NewReader(`{"navigation_target_id":"completion.done","channel_id":19}`))
+	completion.Header.Set("Content-Type", "application/json")
+	completion.Header.Set("Idempotency-Key", "survey-legacy-ops-completion-0001")
+	completionResponse := httptest.NewRecorder()
+	handler.ServeHTTP(completionResponse, completion)
+	if completionResponse.Code != nethttp.StatusOK || survey.configuration.Version != 2 {
+		t.Fatalf("legacy completion response=%d config=%+v", completionResponse.Code, survey.configuration)
+	}
+
+	push := httptest.NewRequest(nethttp.MethodPut, "/api/admin/questionnaires/7/operations/external-push", strings.NewReader(`{"enabled":true,"configuration_reference":"push.v2"}`))
+	push.Header.Set("Content-Type", "application/json")
+	push.Header.Set("Idempotency-Key", "survey-legacy-ops-push-0002")
+	pushResponse := httptest.NewRecorder()
+	handler.ServeHTTP(pushResponse, push)
+	if pushResponse.Code != nethttp.StatusOK || survey.saveCalls != 2 || survey.configuration.Version != 3 || !survey.configuration.ExternalPushEnabled || survey.configuration.ExternalPushConfigurationRef != "push.v2" || string(survey.configuration.ExternalPushMetadata) != `{"remark":"keep-me","custom_params":{"campaign":"autumn"}}` {
+		t.Fatalf("legacy save journey lost operations data: status=%d config=%+v saves=%d", pushResponse.Code, survey.configuration, survey.saveCalls)
+	}
+
+	newMetadataWithoutVersion := httptest.NewRequest(nethttp.MethodPut, "/api/admin/questionnaires/7/operations/external-push", strings.NewReader(`{"enabled":true,"configuration_reference":"push.v2","metadata":{"remark":"must-carry-version"}}`))
+	newMetadataWithoutVersion.Header.Set("Content-Type", "application/json")
+	newMetadataWithoutVersion.Header.Set("Idempotency-Key", "survey-legacy-ops-metadata-0003")
+	metadataResponse := httptest.NewRecorder()
+	handler.ServeHTTP(metadataResponse, newMetadataWithoutVersion)
+	if metadataResponse.Code != nethttp.StatusBadRequest || !strings.Contains(metadataResponse.Body.String(), "configuration_version_required") || survey.saveCalls != 2 {
+		t.Fatalf("metadata without version response=%d body=%s saves=%d", metadataResponse.Code, metadataResponse.Body.String(), survey.saveCalls)
+	}
+}
+
+func boolTestPointer(value bool) *bool    { return &value }
+func int32TestPointer(value int32) *int32 { return &value }
+
+func TestExternalPushLogsPreserveSyntheticRunAndTerminalStatus(t *testing.T) {
+	now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+	survey := &operationRouteSurvey{receipts: []surveyport.OperationReceipt{
+		{ID: 8, QuestionnaireID: 7, SourcePK: "questionnaire-test-0123456789abcdef0123456789abcdef", Status: "queued", OccurrenceCount: 0, OccurredAt: now},
+		{ID: 9, QuestionnaireID: 7, SourcePK: "questionnaire-test-fedcba9876543210fedcba9876543210", Status: "executed", OccurrenceCount: 99, ProviderCallAttempted: boolTestPointer(true), ProviderRealCallExecuted: boolTestPointer(true), ProviderResultReceived: boolTestPointer(true), ProviderAttemptNumber: int32TestPointer(1), RealEffectExecuted: true, OccurredAt: now},
+		{ID: 10, QuestionnaireID: 7, SourcePK: "questionnaire-test-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Status: "outcome_unknown", OccurrenceCount: 99, ProviderCallAttempted: boolTestPointer(true), ProviderRealCallExecuted: boolTestPointer(true), ProviderResultReceived: boolTestPointer(false), ProviderAttemptNumber: int32TestPointer(1), RealEffectExecuted: true, OccurredAt: now},
+		{ID: 11, QuestionnaireID: 7, Status: "disabled", OccurrenceCount: 0, ReadOnlyLegacy: true, OccurredAt: now},
+		{ID: 12, QuestionnaireID: 7, Status: "legacy_success", OccurrenceCount: 4, ReadOnlyLegacy: true, OccurredAt: now},
+		{ID: 13, QuestionnaireID: 7, Status: "legacy_failed", OccurrenceCount: 2, ReadOnlyLegacy: true, OccurredAt: now},
+	}}
+	handler, err := NewHandler(&routeDefinitions{}, survey, operationSecurity{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(nethttp.MethodGet, "/admin/questionnaires/external-push-logs", nil))
+	body := response.Body.String()
+	if response.Code != nethttp.StatusOK || !strings.Contains(body, `"test_run_id":"questionnaire-test-0123456789abcdef0123456789abcdef"`) || !strings.Contains(body, `"status":"executed"`) || !strings.Contains(body, `"status":"outcome_unknown"`) || !strings.Contains(body, `"test_run_id":11`) || !strings.Contains(body, `"status":"disabled"`) || !strings.Contains(body, `"status":"legacy_success"`) || !strings.Contains(body, `"status":"legacy_failed"`) || !strings.Contains(body, `"attempt_count":1`) || !strings.Contains(body, `"provider_result_received":false`) || strings.Contains(body, `"attempt_count":99`) || strings.Contains(body, `"local_only":true`) {
+		t.Fatalf("logs response=%d body=%s", response.Code, body)
+	}
+}
+
+func TestExternalPushTestUsesSyntheticQueueAndFailsClosedWhenDisabled(t *testing.T) {
+	survey := &operationRouteSurvey{testReceipt: surveyport.CompletionTestReceipt{QuestionnaireID: 7, TestRunID: "questionnaire-test-0123456789abcdef0123456789abcdef", EffectID: "eer_7", State: "queued"}}
+	handler, err := NewHandler(&routeDefinitions{}, survey, operationSecurity{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(nethttp.MethodPost, "/api/admin/questionnaires/7/operations/external-push/test", nil)
+	request.Header.Set("Idempotency-Key", "survey-completion-test-http-0001")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != nethttp.StatusAccepted || survey.testCalls != 1 || !strings.Contains(response.Body.String(), "questionnaire-test-") || !strings.Contains(response.Body.String(), "synthetic_data") || !strings.Contains(response.Body.String(), "\"accepted\":true") || strings.Contains(response.Body.String(), "attempt_count") || strings.Contains(response.Body.String(), "provider_result_received") {
+		t.Fatalf("test queue response=%d body=%s calls=%d", response.Code, response.Body.String(), survey.testCalls)
+	}
+	survey.testErr = surveyport.ErrEffectUnavailable
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != nethttp.StatusConflict || !strings.Contains(response.Body.String(), "provider_disabled") || survey.testCalls != 2 {
+		t.Fatalf("disabled test response=%d body=%s calls=%d", response.Code, response.Body.String(), survey.testCalls)
+	}
+}
+
+func TestExternalPushTestRequiresCSRFBeforeAcceptingSyntheticEffect(t *testing.T) {
+	survey := &operationRouteSurvey{testReceipt: surveyport.CompletionTestReceipt{QuestionnaireID: 7, TestRunID: "questionnaire-test-0123456789abcdef0123456789abcdef", EffectID: "eer_7", State: "queued"}}
+	handler, err := NewHandler(&routeDefinitions{}, survey, operationSecurity{csrfErr: errors.New("csrf rejected")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(nethttp.MethodPost, "/api/admin/questionnaires/7/operations/external-push/test", nil)
+	request.Header.Set("Idempotency-Key", "survey-completion-test-http-csrf-0001")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != nethttp.StatusForbidden || !strings.Contains(response.Body.String(), "csrf_invalid") || survey.testCalls != 0 {
+		t.Fatalf("csrf response=%d body=%s calls=%d", response.Code, response.Body.String(), survey.testCalls)
 	}
 }
 

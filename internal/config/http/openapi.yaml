@@ -1131,8 +1131,8 @@ paths:
         "403": {$ref: "#/components/responses/Error"}
         "404": {$ref: "#/components/responses/Error"}
         "409": {$ref: "#/components/responses/Error"}
-  /api/public/products/{product_id}:
-    parameters: [{$ref: "#/components/parameters/ProductID"}]
+  /api/public/products/{product_code}:
+    parameters: [{$ref: "#/components/parameters/ProductCode"}]
     get:
       operationId: getPublicProduct
       tags: [Products]
@@ -1141,8 +1141,8 @@ paths:
       responses:
         "200": {description: Enabled public Product, content: {application/json: {schema: {$ref: "#/components/schemas/PublicProduct"}}}}
         "404": {$ref: "#/components/responses/Error"}
-  /p/{product_id}:
-    parameters: [{$ref: "#/components/parameters/ProductID"}]
+  /p/{product_code}:
+    parameters: [{$ref: "#/components/parameters/ProductCode"}]
     get:
       operationId: openPublicProduct
       tags: [Products]
@@ -1150,8 +1150,8 @@ paths:
       responses:
         "200": {description: Enabled public Product page, content: {text/html: {schema: {type: string}}}}
         "404": {$ref: "#/components/responses/Error"}
-  /pay/{product_id}:
-    parameters: [{$ref: "#/components/parameters/ProductID"}]
+  /pay/{product_code}:
+    parameters: [{$ref: "#/components/parameters/ProductCode"}]
     get:
       operationId: openPublicProductPayment
       tags: [Products, Payments]
@@ -2689,10 +2689,35 @@ paths:
     put: {operationId: saveSurveyCompletionOperation, security: [{adminSession: [], csrfHeader: []}], responses: {"503": {description: Provider disabled by default}}}
   /api/admin/questionnaires/{questionnaire_id}/operations/external-push:
     parameters: [{name: questionnaire_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
-    put: {operationId: saveSurveyExternalPushOperation, security: [{adminSession: [], csrfHeader: []}], responses: {"503": {description: Provider disabled by default}}}
+    put:
+      operationId: saveSurveyExternalPushOperation
+      description: Legacy toggle/reference writers may omit metadata and configuration_version; metadata writers must send the readback configuration_version and receive configuration_conflict on drift.
+      security: [{adminSession: [], csrfHeader: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled]
+              additionalProperties: false
+              properties:
+                enabled: {type: boolean}
+                configuration_reference: {type: string, minLength: 1, maxLength: 128, pattern: '^[A-Za-z0-9._:-]{1,128}$'}
+                metadata: {type: object, additionalProperties: true, description: Non-secret legacy push parameters. Requires configuration_version.}
+                configuration_version: {type: integer, minimum: 0, description: Readback version required whenever metadata is supplied.}
+      responses: {"200": {description: Persisted local configuration readback}, "400": {description: invalid_request or configuration_version_required}, "409": {description: configuration_conflict}, "503": {description: Provider disabled by default}}
   /api/admin/questionnaires/{questionnaire_id}/operations/external-push/test:
     parameters: [{name: questionnaire_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
-    post: {operationId: createSurveyExternalPushTest, security: [{adminSession: [], csrfHeader: []}], responses: {"503": {description: Provider disabled by default}}}
+    post:
+      operationId: createSurveyExternalPushTest
+      security: [{adminSession: [], csrfHeader: []}]
+      responses:
+        "202": {description: Synthetic test snapshot and durable external-effect acceptance; provider execution occurs later.}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "409": {description: provider_disabled or idempotency_conflict}
+        "503": {description: Completion effect integration unavailable}
   /api/admin/questionnaires/{questionnaire_id}/submissions/{submission_id}/external-push:
     parameters: [{name: questionnaire_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}, {name: submission_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
     get: {operationId: getSurveySubmissionExternalPush, security: [{adminSession: []}], responses: {"200": {description: Receipt state}}}
@@ -2887,10 +2912,10 @@ paths:
     get:
       operationId: startWechatPayH5OAuth
       tags: [Transactions]
-      description: Starts one-time Official Account OAuth for a strict same-origin /pay/{product_id} return path.
+      description: Starts one-time Official Account OAuth for a strict same-origin /pay/{product_code} return path.
       security: []
       parameters:
-        - {name: return_url, in: query, required: true, schema: {type: string, pattern: "^/pay/[1-9][0-9]*$"}}
+        - {name: return_url, in: query, required: true, schema: {type: string, pattern: "^/pay/[^/?#]+$"}}
       responses: {"302": {description: Redirect to WeChat OAuth}, "400": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
   /api/h5/wechat-pay/oauth/callback:
     get:
@@ -2931,10 +2956,11 @@ paths:
             schema:
               type: object
               additionalProperties: false
-              required: [product_id, product_kind]
+              required: [product_id, product_kind, beneficiary_selection]
               properties:
                 product_id: {$ref: "#/components/schemas/PositiveID"}
                 product_kind: {type: string, enum: [standard, service_period]}
+                beneficiary_selection: {type: string, enum: [payer_self], description: Confirms that the server-bound trusted payer is also the beneficiary. Customer IDs are never accepted from the browser.}
                 mobile: {type: string, pattern: "^\\+861[3-9][0-9]{9}$", description: Encrypted Order contact snapshot only; never an identity claim.}
       responses: {"202": {description: "Order, Payment and effect accepted atomically", content: {application/json: {schema: {type: object, required: [order_id, merchant_order_no, payment_id, status, effect_id], properties: {order_id: {$ref: "#/components/schemas/PositiveID"}, merchant_order_no: {type: string, minLength: 1, maxLength: 200}, payment_id: {$ref: "#/components/schemas/PositiveID"}, status: {type: string}, effect_id: {$ref: "#/components/schemas/ExternalEffectID"}}}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
   /api/v1/wechat-pay/checkouts/{merchant_order_no}:
@@ -3281,6 +3307,7 @@ components:
     RadarCode: {name: code, in: path, required: true, schema: {type: string, pattern: "^rd_[A-Za-z0-9_-]{16,64}$"}}
     AutomationAgentID: {name: agent_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
     ProductID: {name: product_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
+    ProductCode: {name: product_code, in: path, required: true, schema: {type: string, minLength: 1, maxLength: 200}}
     ServiceProductID: {name: service_product_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
     TagID: {name: tag_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
     TagGroupID: {name: group_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
@@ -4188,7 +4215,7 @@ components:
         lifecycle: {type: string, enum: [draft, disabled, enabled]}
         available: {const: true}
         reason: {type: string}
-        purchase_url: {type: string, pattern: "^/p/[1-9][0-9]*$"}
+        purchase_url: {type: string, pattern: "^/p/[^/]+$"}
         qr_code_url: {type: string}
     ServicePeriodProduct:
       type: object
