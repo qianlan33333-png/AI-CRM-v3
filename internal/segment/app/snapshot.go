@@ -134,19 +134,23 @@ func (s *SnapshotService) PreviewDefinition(ctx context.Context, packageID int64
 	return makePreview(packageID, 0, evaluation), nil
 }
 
-func normalizedRefreshKind(value segmentdomain.RefreshKind) segmentdomain.RefreshKind {
-	if value == "" {
-		return segmentdomain.RefreshManual
+func configuredRefreshKind(value segmentdomain.RefreshKind, refreshMode string) segmentdomain.RefreshKind {
+	if value != "" {
+		return value
 	}
-	return value
+	// Legacy custom schedules historically refresh the complete membership even
+	// when the caller did not name a scheduling kind.
+	if refreshMode == "legacy_custom" {
+		return segmentdomain.RefreshLegacy
+	}
+	return segmentdomain.RefreshManual
 }
 
 func (s *SnapshotService) AcceptRefresh(ctx context.Context, command RefreshCommand) (segmentdomain.RefreshRun, error) {
 	if s == nil || command.PackageID < 1 || command.Actor < 1 || len(command.IdempotencyKey) < 16 || len(command.IdempotencyKey) > 128 || strings.TrimSpace(command.IdempotencyKey) != command.IdempotencyKey {
 		return segmentdomain.RefreshRun{}, ErrInvalid
 	}
-	command.RefreshKind = normalizedRefreshKind(command.RefreshKind)
-	if !segmentdomain.ValidRefreshKind(command.RefreshKind) {
+	if command.RefreshKind != "" && !segmentdomain.ValidRefreshKind(command.RefreshKind) {
 		return segmentdomain.RefreshRun{}, ErrInvalid
 	}
 	if command.ReferenceTime.IsZero() {
@@ -169,7 +173,11 @@ func (s *SnapshotService) AcceptRefresh(ctx context.Context, command RefreshComm
 		if e != nil {
 			return e
 		}
-		run, owned, e := s.store.ReserveRefresh(tx, segmentdomain.RefreshRun{PackageID: command.PackageID, ConfigurationVersionID: config.ID, SourceKeyDigest: source, ReferenceTime: command.ReferenceTime, RefreshKind: command.RefreshKind, CreatedAt: now, UpdatedAt: now})
+		kind := configuredRefreshKind(command.RefreshKind, config.RefreshMode)
+		if !segmentdomain.ValidRefreshKind(kind) {
+			return ErrInvalid
+		}
+		run, owned, e := s.store.ReserveRefresh(tx, segmentdomain.RefreshRun{PackageID: command.PackageID, ConfigurationVersionID: config.ID, SourceKeyDigest: source, ReferenceTime: command.ReferenceTime, RefreshKind: kind, CreatedAt: now, UpdatedAt: now})
 		if e != nil {
 			return e
 		}
@@ -198,8 +206,7 @@ func (s *SnapshotService) AcceptRefreshWithin(ctx context.Context, command Refre
 	if s == nil || command.PackageID < 1 || command.Actor < 1 || len(command.IdempotencyKey) < 16 || len(command.IdempotencyKey) > 128 || strings.TrimSpace(command.IdempotencyKey) != command.IdempotencyKey {
 		return segmentdomain.RefreshRun{}, ErrInvalid
 	}
-	command.RefreshKind = normalizedRefreshKind(command.RefreshKind)
-	if !segmentdomain.ValidRefreshKind(command.RefreshKind) {
+	if command.RefreshKind != "" && !segmentdomain.ValidRefreshKind(command.RefreshKind) {
 		return segmentdomain.RefreshRun{}, ErrInvalid
 	}
 	if command.ReferenceTime.IsZero() {
@@ -220,7 +227,11 @@ func (s *SnapshotService) AcceptRefreshWithin(ctx context.Context, command Refre
 	if err != nil {
 		return segmentdomain.RefreshRun{}, classify(err)
 	}
-	run, owned, err := s.store.ReserveRefresh(ctx, segmentdomain.RefreshRun{PackageID: command.PackageID, ConfigurationVersionID: config.ID, SourceKeyDigest: source, ReferenceTime: command.ReferenceTime, RefreshKind: command.RefreshKind, CreatedAt: now, UpdatedAt: now})
+	kind := configuredRefreshKind(command.RefreshKind, config.RefreshMode)
+	if !segmentdomain.ValidRefreshKind(kind) {
+		return segmentdomain.RefreshRun{}, ErrInvalid
+	}
+	run, owned, err := s.store.ReserveRefresh(ctx, segmentdomain.RefreshRun{PackageID: command.PackageID, ConfigurationVersionID: config.ID, SourceKeyDigest: source, ReferenceTime: command.ReferenceTime, RefreshKind: kind, CreatedAt: now, UpdatedAt: now})
 	if err != nil {
 		return segmentdomain.RefreshRun{}, classify(err)
 	}

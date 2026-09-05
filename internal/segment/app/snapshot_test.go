@@ -109,6 +109,17 @@ func TestRefreshAcceptanceQueuesInTheSameUnitOfWork(t *testing.T) {
 	}
 }
 
+func TestRefreshAcceptanceKeepsLegacyCustomManualRefreshComplete(t *testing.T) {
+	definition := json.RawMessage(`{"schema_version":1,"template_key":"active_contacts","parameters":{"within_days":"30"}}`)
+	store := &refreshStoreStub{config: segmentdomain.ConfigurationVersion{ID: 3, PackageID: 1, Definition: definition, RefreshMode: "legacy_custom", CreatedBy: 4}}
+	evaluator, _ := NewEvaluator(segmentcompiler.Compiler{}, sourceStub{}, passthroughCanonical{})
+	service, _ := NewSnapshotService(directUOW{}, store, evaluator, &enqueueStub{}, &memberEventEnqueueStub{})
+	_, err := service.AcceptRefresh(context.Background(), RefreshCommand{PackageID: 1, Actor: 4, IdempotencyKey: "legacy-refresh-command", ReferenceTime: time.Unix(900, 0).UTC()})
+	if err != nil || store.run.RefreshKind != segmentdomain.RefreshLegacy {
+		t.Fatalf("refresh kind=%q err=%v", store.run.RefreshKind, err)
+	}
+}
+
 func TestRefreshStagesHundredThousandMembersAndPublishesOnce(t *testing.T) {
 	ids := make([]customerdomain.CustomerID, 100000)
 	for i := range ids {

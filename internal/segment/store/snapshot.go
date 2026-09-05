@@ -63,8 +63,11 @@ func (r *Repository) ReserveRefresh(ctx context.Context, run segmentdomain.Refre
 		return run, false, ErrConflict
 	}
 	// A daily request may join an accepted/queued incremental occurrence, but
-	// upgrades it before any worker can publish the partial result.
-	if run.RefreshKind == segmentdomain.RefreshDaily && existing.RefreshKind != segmentdomain.RefreshDaily && (existing.State == segmentdomain.RefreshAccepted || existing.State == segmentdomain.RefreshQueued) {
+	// must never replace a run once its partial result has started.
+	if run.RefreshKind == segmentdomain.RefreshDaily && existing.RefreshKind != segmentdomain.RefreshDaily {
+		if existing.State != segmentdomain.RefreshAccepted && existing.State != segmentdomain.RefreshQueued {
+			return run, false, ErrConflict
+		}
 		existing, err = scanRefresh(t.QueryRow(ctx, `UPDATE segment_audience_refresh_runs SET refresh_kind='daily',updated_at=$2 WHERE id=$1 RETURNING `+refreshColumns, existing.ID, run.UpdatedAt))
 		if err != nil {
 			return run, false, err
@@ -279,6 +282,11 @@ func (r *Repository) PublishRefresh(ctx context.Context, runID int64, expectedCo
 	rows.Close()
 	if err = rows.Err(); err != nil {
 		return segmentdomain.PublishedRefresh{}, err
+	}
+	if len(ids) > segmentport.MaximumEvaluationMembers {
+		// An incremental run may retain the prior snapshot. Enforce the same
+		// bounded audience contract after that merge, not only on its additions.
+		return segmentdomain.PublishedRefresh{}, ErrConflict
 	}
 	memberDigest := segmentdomain.DigestMembers(ids)
 	snapshot, err = scanSnapshot(t.QueryRow(ctx, `UPDATE segment_audience_snapshots SET state='published',member_count=$2,member_digest=$3,source_watermark_digest=$4,published_at=$5 WHERE id=$1 AND state='preparing' RETURNING `+snapshotColumns, snapshot.ID, len(ids), memberDigest[:], watermarkDigest[:], now))

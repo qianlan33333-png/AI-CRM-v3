@@ -435,4 +435,23 @@ func TestPostgreSQLRefreshKindsPreserveIncrementalMembersAndDailyExits(t *testin
 	if err = native.QueryRow(ctx, `SELECT s.member_count FROM segment_audience_packages p JOIN segment_audience_snapshots s ON s.id=p.published_snapshot_id WHERE p.id=$1`, packageID).Scan(&currentCount); err != nil || currentCount != 3 {
 		t.Fatalf("stale overwrite count=%d err=%v", currentCount, err)
 	}
+	if err = uow.Within(ctx, func(tx context.Context) error {
+		run, owned, e := repo.ReserveRefresh(tx, segmentdomain.RefreshRun{PackageID: packageID, ConfigurationVersionID: configurationID, SourceKeyDigest: [32]byte{9}, ReferenceTime: now.Add(5 * time.Minute), RefreshKind: segmentdomain.RefreshIncremental, CreatedAt: now, UpdatedAt: now})
+		if e != nil || !owned {
+			return e
+		}
+		if _, e = repo.AttachRefreshJob(tx, run.ID, 99, now); e != nil {
+			return e
+		}
+		if _, _, e = repo.BeginRefresh(tx, run.ID, now); e != nil {
+			return e
+		}
+		_, _, e = repo.ReserveRefresh(tx, segmentdomain.RefreshRun{PackageID: packageID, ConfigurationVersionID: configurationID, SourceKeyDigest: [32]byte{9}, ReferenceTime: now.Add(5 * time.Minute), RefreshKind: segmentdomain.RefreshDaily, CreatedAt: now, UpdatedAt: now})
+		if !errors.Is(e, ErrConflict) {
+			return errors.New("started incremental accepted a daily upgrade")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 }
