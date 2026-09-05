@@ -587,7 +587,7 @@ func (s *SubmissionService) QueueCompletionTest(ctx context.Context, qid surveyp
 		}
 		policy.ConfigurationReference = configuration.ExternalPushConfigurationRef
 		policy = syntheticTestPolicy(policy)
-		intent := completionTestIntent(qid, testRunID, questionnaire.Title, policy, now)
+		intent := completionTestIntent(qid, testRunID, questionnaire.Title, policy)
 		snapshot, created, err := s.store.RecordCompletionTestSnapshot(tx, CompletionTestSnapshot{QuestionnaireID: qid, TestRunID: testRunID, QuestionnaireTitle: questionnaire.Title, SubmittedAt: now, Policy: policy, SourceDigest: intent.SourceDigest, TargetDigest: intent.TargetDigest, PayloadDigest: intent.PayloadDigest, PolicyDigest: intent.PolicyDigest, IdempotencyKey: key})
 		if err != nil {
 			return err
@@ -601,7 +601,7 @@ func (s *SubmissionService) acceptFrozenCompletionTest(ctx context.Context, qid 
 	if s.completion == nil || receipt == nil {
 		return surveyport.ErrEffectUnavailable
 	}
-	intent := completionTestIntent(snapshot.QuestionnaireID, snapshot.TestRunID, snapshot.QuestionnaireTitle, snapshot.Policy, snapshot.SubmittedAt)
+	intent := completionTestIntent(snapshot.QuestionnaireID, snapshot.TestRunID, snapshot.QuestionnaireTitle, snapshot.Policy)
 	binding, err := s.completion.AcceptCompletionWithin(ctx, intent)
 	if err != nil || binding.EffectID == "" || binding.State == "" {
 		if err != nil {
@@ -628,15 +628,17 @@ func completionTestRunID(key string) string {
 	return "questionnaire-test-" + hex.EncodeToString(digest[:16])
 }
 
-func completionTestIntent(questionnaireID surveyport.ID, testRunID, title string, policy surveyport.CompletionPolicy, submittedAt time.Time) surveyport.CompletionIntent {
-	submittedAt = submittedAt.UTC().Truncate(time.Microsecond)
+func completionTestIntent(questionnaireID surveyport.ID, testRunID, title string, policy surveyport.CompletionPolicy) surveyport.CompletionIntent {
 	policyBytes, _ := json.Marshal(policy)
 	source := surveyDigest("survey.completion.test.source.v1", fmt.Sprint(questionnaireID), testRunID)
 	return surveyport.CompletionIntent{QuestionnaireID: questionnaireID, TestRunID: testRunID, ConfigurationReference: policy.ConfigurationReference,
 		SourceDigest: source, TargetDigest: surveyDigest("survey.completion.target.v1", policy.ConfigurationReference),
-		PayloadDigest:  surveyDigest("survey.completion.test.payload.v1", testRunID, title, policy.ConfigurationDigest, string(policyBytes)),
-		PolicyDigest:   surveyDigest("survey.completion.test.policy.v1", policy.ConfigurationDigest),
-		IdempotencyKey: "survey.completion.test:" + testRunID, ScheduledAt: submittedAt}
+		PayloadDigest: surveyDigest("survey.completion.test.payload.v1", testRunID, title, policy.ConfigurationDigest, string(policyBytes)),
+		PolicyDigest:  surveyDigest("survey.completion.test.policy.v1", policy.ConfigurationDigest),
+		// SubmittedAt is frozen in the Survey snapshot and request body. An
+		// operator test itself is immediately eligible, so it must not turn that
+		// timestamp into a River delay.
+		IdempotencyKey: "survey.completion.test:" + testRunID}
 }
 
 func syntheticTestPolicy(policy surveyport.CompletionPolicy) surveyport.CompletionPolicy {

@@ -185,7 +185,7 @@ func TestQueueCompletionTestFreezesSyntheticRequestAndReplaysSameEffect(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.TestRunID == "" || first != second || accepter.calls != 2 || store.testSnapshot.SubmittedAt != canonical || len(accepter.scheduled) != 2 || accepter.scheduled[0] != canonical || accepter.scheduled[1] != canonical || store.testSnapshot.Policy.CustomParams["campaign"] != "autumn" || store.testSnapshot.Policy.CustomParams["unionid"] != "" {
+	if first.TestRunID == "" || first != second || accepter.calls != 2 || store.testSnapshot.SubmittedAt != canonical || len(accepter.scheduled) != 2 || !accepter.scheduled[0].IsZero() || !accepter.scheduled[1].IsZero() || store.testSnapshot.Policy.CustomParams["campaign"] != "autumn" || store.testSnapshot.Policy.CustomParams["unionid"] != "" {
 		t.Fatalf("synthetic replay=%+v/%+v snapshot=%+v calls=%d", first, second, store.testSnapshot, accepter.calls)
 	}
 	store.configuration.ExternalPushMetadata = json.RawMessage(`{"remark":"changed"}`)
