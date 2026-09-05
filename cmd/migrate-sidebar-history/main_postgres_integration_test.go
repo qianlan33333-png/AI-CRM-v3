@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -60,12 +61,33 @@ func TestPostgreSQLSidebarHistoryAllianceApplyReplayReconcile(t *testing.T) {
 	if failedEntitlements != 0 || failedMaps != 0 {
 		t.Fatalf("failed apply leaked Order target rows entitlements=%d maps=%d", failedEntitlements, failedMaps)
 	}
+	var interruptedStatus string
+	if err := pool.QueryRow(ctx, `SELECT status FROM sidebar_history_migration_batches WHERE run_key='sidebar-alliance-pg-001'`).Scan(&interruptedStatus); err != nil || interruptedStatus != "applying" {
+		t.Fatalf("interrupted apply status=%q err=%v", interruptedStatus, err)
+	}
 	if _, err := pool.Exec(ctx, `DROP TRIGGER sidebar_history_fail_entitlement_insert ON order_service_entitlements; DROP FUNCTION sidebar_history_fail_entitlement_insert()`); err != nil {
 		t.Fatal(err)
 	}
 
+	// The failed command's session lease was released on close, so the exact
+	// frozen snapshot may recover the applying batch. While another command
+	// holds the real PostgreSQL lease, a parallel re-entry must stop before it
+	// can race the receipts or overwrite this batch's counters.
+	m, err := load(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease, err := acquireSidebarHistoryApplyLease(ctx, pool, m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := run(ctx, applyArgs); err == nil || !strings.Contains(err.Error(), "already in progress") {
+		lease.Release()
+		t.Fatalf("parallel sidebar history apply error=%v", err)
+	}
+	lease.Release()
 	if err := run(ctx, applyArgs); err != nil {
-		t.Fatalf("real sidebar history apply: %v", err)
+		t.Fatalf("recover interrupted sidebar history apply: %v", err)
 	}
 	sidebarHistoryAssertAllianceTargets(t, ctx, pool)
 

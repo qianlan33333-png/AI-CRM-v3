@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -20,6 +21,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	couponapp "github.com/qianlan33333-png/AI-CRM-v3/internal/coupon/app"
 	couponport "github.com/qianlan33333-png/AI-CRM-v3/internal/coupon/port"
 	couponstore "github.com/qianlan33333-png/AI-CRM-v3/internal/coupon/store"
@@ -441,6 +443,11 @@ func validate(m manifest) error {
 }
 
 func apply(ctx context.Context, pool *platformpostgres.Pool, m manifest) error {
+	lease, err := acquireSidebarHistoryApplyLease(ctx, pool.Native(), m)
+	if err != nil {
+		return err
+	}
+	defer lease.Release()
 	uow, err := platformpostgres.NewUnitOfWork(pool)
 	if err != nil {
 		return err
@@ -584,10 +591,7 @@ func beginBatch(ctx context.Context, pool *platformpostgres.Pool, m manifest) (i
 		if err != nil {
 			return 0, err
 		}
-		if status == "applying" {
-			return 0, errors.New("migration batch apply is already in progress")
-		}
-		if status != "applied" && status != "reconciled" {
+		if status != "applying" && status != "applied" && status != "reconciled" {
 			return 0, fmt.Errorf("migration batch cannot be applied from status %q", status)
 		}
 		tag, updateErr := pool.Native().Exec(ctx, `UPDATE sidebar_history_migration_batches SET status='applying',completed_at=NULL WHERE id=$1 AND status=$2`, id, status)
@@ -599,6 +603,50 @@ func beginBatch(ctx context.Context, pool *platformpostgres.Pool, m manifest) (i
 		}
 	}
 	return id, err
+}
+
+// sidebarHistoryApplyLease is deliberately held on one PostgreSQL session for
+// the complete command. Batch status records progress but cannot identify a
+// live process: an interrupted command must be replayable from its immutable
+// receipts. PostgreSQL releases this lease when that process/connection dies.
+type sidebarHistoryApplyLease struct {
+	connection *pgxpool.Conn
+	firstKey   int32
+	secondKey  int32
+}
+
+func acquireSidebarHistoryApplyLease(ctx context.Context, pool *pgxpool.Pool, m manifest) (*sidebarHistoryApplyLease, error) {
+	if pool == nil {
+		return nil, errors.New("migration batch apply pool is required")
+	}
+	digest := sha256.Sum256([]byte("aicrm:sidebar-history:apply:" + m.RunKey))
+	firstKey := int32(binary.BigEndian.Uint32(digest[:4]))
+	secondKey := int32(binary.BigEndian.Uint32(digest[4:8]))
+	connection, err := pool.Acquire(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var acquired bool
+	if err = connection.QueryRow(ctx, `SELECT pg_try_advisory_lock($1::integer,$2::integer)`, firstKey, secondKey).Scan(&acquired); err != nil {
+		connection.Release()
+		return nil, err
+	}
+	if !acquired {
+		connection.Release()
+		return nil, errors.New("migration batch apply is already in progress")
+	}
+	return &sidebarHistoryApplyLease{connection: connection, firstKey: firstKey, secondKey: secondKey}, nil
+}
+
+func (lease *sidebarHistoryApplyLease) Release() {
+	if lease == nil || lease.connection == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, _ = lease.connection.Exec(ctx, `SELECT pg_advisory_unlock($1::integer,$2::integer)`, lease.firstKey, lease.secondKey)
+	lease.connection.Release()
+	lease.connection = nil
 }
 func definitionMap(ctx context.Context, pool *platformpostgres.Pool, source, domain, kind string, id int64) (int64, bool, error) {
 	var target int64
