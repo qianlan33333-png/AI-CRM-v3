@@ -47,6 +47,26 @@ func ValidateRefreshCronUTC(expression string) error {
 	return nil
 }
 
+// ValidateRefresh preserves arbitrary historical UTC cron expressions under
+// legacy_custom. New donor modes derive their schedules below and therefore
+// must not smuggle a second cron expression into the configuration version.
+func ValidateRefresh(mode, expression string) error {
+	if mode == "" {
+		mode = "legacy_custom"
+	}
+	switch mode {
+	case "legacy_custom":
+		return ValidateRefreshCronUTC(expression)
+	case "manual", "every_3m", "daily_0200", "every_3m_plus_daily_0200":
+		if expression != "" {
+			return ErrInvalid
+		}
+		return nil
+	default:
+		return ErrInvalid
+	}
+}
+
 func (s *ScheduledRefreshService) ScanScheduled(ctx context.Context) error {
 	if s == nil {
 		return ErrNotReady

@@ -135,7 +135,7 @@ await saveTemplate("wecom_contact_registration", () => {
 }, () => {
   if (fieldInput("owner_scope").value !== "all" || !fieldInput("contact_statuses").options[0].selected) throw new Error("WeCom all-scope values did not reopen");
 });
-if (packageWrites[0]?.name !== "已更新的人群" || writes[0]?.refresh_cron_utc !== "0 2 * * *") throw new Error(`template save bypassed basic configuration: ${JSON.stringify({ packageWrites, writes })}`);
+if (packageWrites[0]?.name !== "已更新的人群" || writes[0]?.refresh_mode !== "daily_0200" || writes[0]?.refresh_cron_utc !== "") throw new Error(`template save bypassed basic configuration or refresh mode: ${JSON.stringify({ packageWrites, writes })}`);
 await saveTemplate("paid_order", () => {
   fieldInput("products").value = "course-v3";
   fieldInput("paid_at_from").value = "2026-09-05T08:00";
@@ -175,6 +175,8 @@ await saveTemplate("member_usage_status", () => {
   fieldInput("usage_status").value = "used";
   fieldInput("membership_tiers").value = "pro";
   fieldInput("membership_statuses").value = "expired";
+  document.querySelector("#incrementalSelect").value = "incremental_3m";
+  document.querySelector("#dailySelect").value = "daily_0200";
   setSpecifiedOwner();
 }, (definition) => {
   const parameters = definition.parameters;
@@ -182,6 +184,7 @@ await saveTemplate("member_usage_status", () => {
 }, () => {
   if (fieldInput("membership_tiers").value !== "pro" || fieldInput("membership_statuses").value !== "expired" || fieldInput("owner_userids").value !== "bob") throw new Error("member facts or owner did not reopen");
 });
+if (writes.find((item) => item.definition.template_key === "member_usage_status")?.refresh_mode !== "every_3m_plus_daily_0200") throw new Error(`combined refresh mode was downgraded: ${JSON.stringify(writes)}`);
 const savedKeys = writes.map((item) => item.definition.template_key);
 for (const key of ["wecom_contact_registration", "paid_order", "channel_entry", "radar_first_click_elapsed", "member_usage_status"]) {
   if (!savedKeys.includes(key)) throw new Error(`save did not use frozen form for ${key}: ${JSON.stringify(savedKeys)}`);

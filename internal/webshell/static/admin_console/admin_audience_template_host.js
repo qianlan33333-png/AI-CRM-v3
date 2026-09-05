@@ -125,6 +125,19 @@
       });
       select.value = fallback;
     }
+    function renderRefreshMode() {
+      const incremental = byID("incrementalSelect");
+      const daily = byID("dailySelect");
+      if (!incremental || !daily) return;
+      switch (state.configuration?.refresh_mode) {
+        case "every_3m": incremental.value = "incremental_3m"; daily.value = "off"; break;
+        case "daily_0200": incremental.value = "off"; daily.value = "daily_0200"; break;
+        case "every_3m_plus_daily_0200": incremental.value = "incremental_3m"; daily.value = "daily_0200"; break;
+        case "manual": incremental.value = "off"; daily.value = "off"; break;
+        // Historical arbitrary UTC cron remains visible through the existing
+        // detail adapter; this Host never rewrites its time semantics.
+      }
+    }
 
     async function rehydrateOwnerUserIDs(parameters) {
       if (parameters?.owner_scope !== "specified") return parameters;
@@ -153,6 +166,7 @@
       state.templates = templates.items || [];
       state.configuration = configuration.configuration;
       state.ready = true;
+      renderRefreshMode();
       renderTemplateOptions();
       await render();
     }
@@ -164,6 +178,24 @@
     function prepareDetailSave() {
       if (!legacyDefinition) throw new Error("基础配置控件不可用。");
       legacyDefinition.value = JSON.stringify(currentDefinition());
+    }
+    function selectedRefreshMode() {
+      const incremental = byID("incrementalSelect")?.value;
+      const daily = byID("dailySelect")?.value;
+      if (incremental === "incremental_3m" && daily === "daily_0200") return "every_3m_plus_daily_0200";
+      if (incremental === "incremental_3m") return "every_3m";
+      if (daily === "daily_0200") return "daily_0200";
+      return "manual";
+    }
+    async function save() {
+      const definition = currentDefinition();
+      const groupValue = byID("packageGroupSelect")?.value || "";
+      const changed = await request(`${api}/packages/${id}`, { method: "PATCH", mutate: true, body: { name: byID("packageNameInput")?.value.trim() || state.package.name, group_id: groupValue ? Number(groupValue) : null, expected_version: state.package.version } });
+      const saved = await request(`${api}/packages/${id}/configuration`, { method: "PUT", mutate: true, body: { expected_package_version: changed.package.version, refresh_cron_utc: "", refresh_mode: selectedRefreshMode(), definition } });
+      state.package = changed.package;
+      state.configuration = saved.configuration;
+      await load();
+      setStatus("基础配置和模板条件已保存为新的不可变版本。", "success");
     }
     async function preview() {
       const definition = currentDefinition();
@@ -183,10 +215,13 @@
         return;
       }
       if (target !== saveButton && target !== byID("savePackageBtn") && target !== byID("saveCurrentDimensionBtn")) return;
+	  if (target === byID("saveCurrentDimensionBtn") && !byID("panel-basic")?.classList.contains("active")) return;
       try {
-        // Let the existing detail controller preserve its package PATCH,
-        // group/name and refresh settings before it writes this definition.
         prepareDetailSave();
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        setStatus("正在保存基础配置和模板条件…");
+        save().catch((error) => setStatus(error.message || "表单操作失败。", "error"));
       } catch (error) {
         event.preventDefault();
         event.stopImmediatePropagation();

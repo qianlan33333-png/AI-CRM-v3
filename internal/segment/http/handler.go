@@ -452,6 +452,7 @@ func (h *Handler) configuration(w http.ResponseWriter, r *http.Request, packageI
 	var in struct {
 		ExpectedPackageVersion int64           `json:"expected_package_version"`
 		RefreshCronUTC         string          `json:"refresh_cron_utc"`
+		RefreshMode            string          `json:"refresh_mode"`
 		Definition             json.RawMessage `json:"definition"`
 	}
 	if !decode(w, r, &in) {
@@ -468,7 +469,7 @@ func (h *Handler) configuration(w http.ResponseWriter, r *http.Request, packageI
 		fail(w, 422, code)
 		return
 	}
-	item, e := h.service.PutConfiguration(r.Context(), segmentapp.ConfigurationCommand{PackageID: packageID, ExpectedPackageVersion: in.ExpectedPackageVersion, Definition: definition, RefreshCronUTC: in.RefreshCronUTC, Actor: p.InternalID, IdempotencyKey: key})
+	item, e := h.service.PutConfiguration(r.Context(), segmentapp.ConfigurationCommand{PackageID: packageID, ExpectedPackageVersion: in.ExpectedPackageVersion, Definition: definition, RefreshCronUTC: in.RefreshCronUTC, RefreshMode: in.RefreshMode, Actor: p.InternalID, IdempotencyKey: key})
 	if e != nil {
 		resultError(w, e)
 		return
@@ -935,7 +936,7 @@ func (h *Handler) packageReadDTO(ctx context.Context, p segmentdomain.Package) (
 	return v, nil
 }
 func configurationDTO(v segmentdomain.ConfigurationVersion) map[string]any {
-	return map[string]any{"id": v.ID, "package_id": v.PackageID, "version": v.Version, "digest": hex.EncodeToString(v.Digest[:]), "definition": json.RawMessage(v.Definition), "refresh_cron_utc": v.RefreshCronUTC}
+	return map[string]any{"id": v.ID, "package_id": v.PackageID, "version": v.Version, "digest": hex.EncodeToString(v.Digest[:]), "definition": json.RawMessage(v.Definition), "refresh_cron_utc": v.RefreshCronUTC, "refresh_mode": v.RefreshMode}
 }
 func resultError(w http.ResponseWriter, e error) {
 	switch {

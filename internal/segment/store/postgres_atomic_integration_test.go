@@ -69,7 +69,7 @@ func TestPostgreSQLAudienceConfigurationAtomicity(t *testing.T) {
 			return e
 		}
 		definition := json.RawMessage(`{"schema_version":1,"expression":{"kind":"all"}}`)
-		configuration, _ := segmentdomain.NewConfigurationVersion(created.ID, 1, definition, "0 1 * * *", 7, now)
+		configuration, _ := segmentdomain.NewConfigurationVersion(created.ID, 1, definition, "0 1 * * *", "legacy_custom", 7, now)
 		configuration, e = repo.CreateConfigurationVersion(tx, configuration)
 		if e != nil {
 			return e
@@ -139,7 +139,7 @@ func TestPostgreSQLAudienceConfigurationEmptyCronRoundTrips(t *testing.T) {
 			return createErr
 		}
 		definition := json.RawMessage(`{"schema_version":1,"expression":{"kind":"all"}}`)
-		configuration, createErr := segmentdomain.NewConfigurationVersion(item.ID, 1, definition, "", 7, now)
+		configuration, createErr := segmentdomain.NewConfigurationVersion(item.ID, 1, definition, "", "manual", 7, now)
 		if createErr != nil {
 			return createErr
 		}
