@@ -77,6 +77,22 @@ func TestGroupMessageProviderKeepsPreparationWriteDisabled(t *testing.T) {
 	}
 }
 
+func TestEnabledGroupMessageProviderWithoutLeafReturnsNotConfigured(t *testing.T) {
+	provider, err := NewGroupMessageProvider(GroupMessageProviderConfig{Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope := groupMessageEnvelope()
+	result, err := provider.Execute(context.Background(), envelope, effect.Attempt{EffectID: "eer_11", Number: 1, Generation: 1, Fence: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := effect.Hash("group-ops.provider.v1", string(envelope.Fingerprint()), "eer_11", "1", "1", "1")
+	if result.Completion != effect.StateFinalFailed || result.ReceiptDigest != effect.Hash(string(base), "not-configured") || result.CallAttempted || result.RealExternalCallExecuted {
+		t.Fatalf("enabled but unconfigured provider=%+v", result)
+	}
+}
+
 type groupDispatchReaderStub struct {
 	value groupopsport.DispatchExecution
 	err   error

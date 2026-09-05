@@ -423,7 +423,16 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
-	var groupOpsProvider *outbound.GroupMessageProvider
+	groupOpsProvider, err := outbound.NewGroupMessageProvider(outbound.GroupMessageProviderConfig{
+		// PRD07 §7 keeps composition deliberately unconfigured: even when the
+		// Group Ops flag is enabled, Execute returns provider-not-configured
+		// until an independently approved production activation wires the leaf.
+		Enabled:           cfg.Effects.ProviderEnabled && cfg.GroupOps.ProviderEnabled,
+		PreparationWriter: mediaPreparationBindings.Writer,
+	})
+	if err != nil {
+		return fail(err)
+	}
 	materialFreezer, err := groupopsmaterial.NewFreezer(mediaPreparedPlanReader{reader: mediaPreparationBindings.Reader})
 	if err != nil {
 		return fail(err)
@@ -469,7 +478,9 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return fail(err)
 	}
 	groupOpsStaff := groupOpsStaffAdapter{access: accessRepository, owners: groupOpsRepository}
-	groupOpsDirectory := &wecomGroupOpsDirectory{enabled: cfg.GroupOps.ProviderEnabled, staff: groupOpsStaff}
+	// providerDisabledGroupOpsDirectory is retained in composition until the
+	// read-only WeCom directory activation has its own reviewed rollout.
+	groupOpsDirectory := providerDisabledGroupOpsDirectory{}
 	groupOpsEvidence := providerDisabledGroupOpsEvidence{}
 	groupOpsService := groupopsapp.NewService(uow, groupOpsRepository, groupOpsStaff, groupOpsRepository)
 	groupOpsHistory := groupopsapp.NewHistoryService(uow, groupOpsRepository)
@@ -828,17 +839,6 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	providerClient, err := wecomadapter.New(wecomadapter.Config{
 		Enabled: cfg.WeCom.Enabled, CorpID: cfg.WeCom.CorpID, AgentID: cfg.WeCom.AgentID, Secret: cfg.WeCom.Secret, ContactSecret: cfg.WeCom.ContactSecret,
 		AdminCallbackURI: cfg.PublicOrigin + "/auth/wecom/callback", SidebarCallbackURI: cfg.PublicOrigin + "/api/sidebar/oauth/callback",
-	})
-	if err != nil {
-		return fail(err)
-	}
-	groupOpsDirectory.groups = providerClient
-	groupOpsDirectory.staffs = providerClient
-	groupOpsProvider, err = outbound.NewGroupMessageProvider(outbound.GroupMessageProviderConfig{
-		Enabled:           cfg.Effects.ProviderEnabled && cfg.WeCom.Enabled && cfg.GroupOps.ProviderEnabled,
-		PreparationWriter: mediaPreparationBindings.Writer,
-		Executions:        groupOpsDispatchReader{uow: uow, execution: groupOpsRepository, senders: groupOpsStaff},
-		Writer:            providerClient,
 	})
 	if err != nil {
 		return fail(err)
