@@ -177,8 +177,15 @@ func (s *RuntimeService) AcceptPlan(ctx context.Context, command groupopsport.Ac
 		if err != nil {
 			return err
 		}
-		for _, draft := range drafts {
-			projection, receipt, acceptErr := s.effects.AcceptAndQueueWithin(tx, effectport.AcceptCommand{ReceiptKey: effectport.Hash("group-ops.accept.v1", strconv.FormatInt(command.PlanID, 10), strconv.FormatInt(run.ID, 10), strconv.FormatInt(draft.NodeID, 10), draft.TargetReference, command.IdempotencyKey), Envelope: effectport.Envelope{Owner: effectport.OwnerOutbound, Kind: effectport.KindGroupMessage, SourceRefDigest: effectport.Hash("group-ops.run", strconv.FormatInt(run.ID, 10)), TargetRefDigest: effectport.Hash("group-ops.target", draft.TargetReference), PayloadDigest: effectport.Hash("group-ops.payload", draft.ContentDigest, draft.MaterialDigest, draft.SenderUserID), PolicyVersionHash: effectport.Hash("group-ops.policy", "v1")}, ScheduledAt: draft.ScheduledFor})
+		if _, err = s.runtime.CreateExecutionIntents(tx, drafts); err != nil {
+			return err
+		}
+		initial, intentErr := s.runtime.InitialExecutionIntents(tx, run.ID)
+		if intentErr != nil {
+			return intentErr
+		}
+		for _, draft := range initial {
+			projection, receipt, acceptErr := s.effects.AcceptAndQueueWithin(tx, groupOpsEffectAcceptCommand(draft, command.IdempotencyKey))
 			if acceptErr != nil {
 				return acceptErr
 			}
@@ -187,6 +194,9 @@ func (s *RuntimeService) AcceptPlan(ctx context.Context, command groupopsport.Ac
 			}
 			draft.ExternalEffectID = projection.ID
 			if _, err = s.runtime.InsertExecution(tx, draft); err != nil {
+				return err
+			}
+			if err = s.runtime.BindAcceptedExecutionIntent(tx, draft.IntentID, projection.ID); err != nil {
 				return err
 			}
 		}
@@ -222,6 +232,10 @@ func (s *RuntimeService) AcceptWebhook(ctx context.Context, webhookReference, ke
 	// The lookup transaction is read-only. AcceptPlan obtains the plan lock and
 	// creates the run/EER intents atomically in its own Unit of Work.
 	return s.AcceptPlan(ctx, command)
+}
+
+func groupOpsEffectAcceptCommand(draft groupopsport.ExecutionDraft, key string) effectport.AcceptCommand {
+	return effectport.AcceptCommand{ReceiptKey: effectport.Hash("group-ops.accept.v1", strconv.FormatInt(draft.PlanID, 10), strconv.FormatInt(draft.RunID, 10), strconv.FormatInt(draft.NodeID, 10), draft.TargetReference, key), Envelope: effectport.Envelope{Owner: effectport.OwnerOutbound, Kind: effectport.KindGroupMessage, SourceRefDigest: effectport.Hash("group-ops.run", strconv.FormatInt(draft.RunID, 10)), TargetRefDigest: effectport.Hash("group-ops.target", draft.TargetReference), PayloadDigest: effectport.Hash("group-ops.payload", draft.ContentDigest, draft.MaterialDigest, draft.SenderUserID), PolicyVersionHash: effectport.Hash("group-ops.policy", "v1")}, ScheduledAt: draft.ScheduledFor}
 }
 
 func (s *RuntimeService) buildDrafts(tx context.Context, detail groupopsport.Detail, run groupopsport.Run, existing map[string]struct{}, now time.Time) ([]groupopsport.ExecutionDraft, error) {

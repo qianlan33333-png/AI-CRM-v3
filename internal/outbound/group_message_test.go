@@ -127,17 +127,19 @@ func TestGroupMessageProviderUsesEffectBoundSnapshotAndExactChat(t *testing.T) {
 	}
 	material := []byte(`{"schema_version":1,"references":[]}`)
 	effectID := "eer_42"
+	envelope := groupMessageEnvelope()
 	reader := groupDispatchReaderStub{value: groupopsport.DispatchExecution{
 		ExecutionID: 42, ExternalEffectID: effectID, State: groupopsport.ExecutionAccepted, TargetReference: "chat-42", SenderUserID: "owner-42",
 		ContentSnapshot: content, ContentDigest: string(effect.Hash("group-ops.content.snapshot.v1", string(content))),
 		MaterialSnapshot: material, MaterialDigest: string(effect.Hash("group-ops.material.snapshot.v1", string(material))),
+		SourceRefDigest: string(envelope.SourceRefDigest), TargetRefDigest: string(envelope.TargetRefDigest), PayloadDigest: string(envelope.PayloadDigest), PolicyVersionHash: string(envelope.PolicyVersionHash),
 	}}
 	sender := &groupMessageSenderStub{attempted: true, receipt: wecomport.GroupMessageReceipt{MessageID: "msg-42"}}
 	provider, err := NewGroupMessageProvider(GroupMessageProviderConfig{Enabled: true, Executions: reader, Writer: sender})
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := provider.Execute(context.Background(), groupMessageEnvelope(), effect.Attempt{EffectID: effectID, Number: 1, Generation: 1, Fence: 9})
+	result, err := provider.Execute(context.Background(), envelope, effect.Attempt{EffectID: effectID, Number: 1, Generation: 1, Fence: 9})
 	if err != nil || result.Completion != effect.StateExecuted || !result.CallAttempted || !result.RealExternalCallExecuted {
 		t.Fatalf("result=%+v err=%v", result, err)
 	}
@@ -186,5 +188,36 @@ func TestGroupMessageCompletionSinkProjectsTerminalAndUnknownStates(t *testing.T
 	}
 	if projector.state != groupopsport.ExecutionOutcomeUnknown || projector.providerAccepted || projector.deliveryProven || projector.attempt != 3 {
 		t.Fatalf("unknown projection=%+v", projector)
+	}
+}
+
+type groupMessageReceiptWriterStub struct {
+	task groupopsport.GroupMessageReceipt
+	err  error
+}
+
+func (s *groupMessageReceiptWriterStub) RecordGroupMessageTask(_ context.Context, task groupopsport.GroupMessageReceipt) error {
+	s.task = task
+	return s.err
+}
+
+func TestGroupMessageCompletionSinkPersistsOnlyValidatedTaskArtifact(t *testing.T) {
+	projector := &groupMessageProjectionStub{}
+	writer := &groupMessageReceiptWriterStub{}
+	sink, err := NewGroupMessageCompletionSink(projector, writer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := []byte(`{"execution_id":"42","effect_id":"eer_42","msgid":"msg-42","sender":"owner-42","chat_id":"chat-42"}`)
+	artifact := effect.ResultArtifact{Kind: "group-ops.wecom-task.v1", Payload: payload}
+	artifact.Digest = effect.Hash("external-effect.artifact.v1", artifact.Kind, string(payload))
+	if err = sink.CompleteEffect(context.Background(), "eer_42", groupMessageEnvelope(), effect.Attempt{Number: 1}, effect.AdapterResult{Completion: effect.StateExecuted, ReceiptDigest: effect.Hash("receipt", "42"), CallAttempted: true, RealExternalCallExecuted: true, Artifact: artifact}); err != nil {
+		t.Fatal(err)
+	}
+	if writer.task.ExecutionID != 42 || writer.task.MessageID != "msg-42" || writer.task.ExternalEffectID != "eer_42" || writer.task.TaskEvidenceDigest != string(artifact.Digest) {
+		t.Fatalf("task=%+v", writer.task)
+	}
+	if projector.state != groupopsport.ExecutionProviderAccepted || !projector.providerAccepted || projector.deliveryProven {
+		t.Fatalf("projection=%+v", projector)
 	}
 }

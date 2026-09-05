@@ -22,6 +22,10 @@ type DispatchExecution struct {
 	MaterialSnapshot       json.RawMessage
 	MaterialDigest         string
 	MaterialSourceSnapshot json.RawMessage
+	SourceRefDigest        string
+	TargetRefDigest        string
+	PayloadDigest          string
+	PolicyVersionHash      string
 }
 
 // AttemptRecoveryLease is populated only when the EER effect is still

@@ -91,20 +91,22 @@ type Execution struct {
 type ExecutionIntentState string
 
 const (
-	ExecutionIntentMaterialPending ExecutionIntentState = "material_pending"
-	ExecutionIntentReadyToAccept   ExecutionIntentState = "ready_to_accept"
-	ExecutionIntentAccepted        ExecutionIntentState = "accepted"
-	ExecutionIntentFinalFailed     ExecutionIntentState = "final_failed"
+	ExecutionIntentWaitingForPredecessor ExecutionIntentState = "waiting"
+	ExecutionIntentMaterialPending       ExecutionIntentState = "material_pending"
+	ExecutionIntentReadyToAccept         ExecutionIntentState = "ready_to_accept"
+	ExecutionIntentAccepted              ExecutionIntentState = "accepted"
+	ExecutionIntentFinalFailed           ExecutionIntentState = "final_failed"
 )
 
 type ExecutionIntent struct {
-	ID              int64                `json:"intent_id,string"`
-	NodeID          int64                `json:"node_id,string"`
-	NodePosition    int32                `json:"node_position"`
-	TargetReference string               `json:"target_reference"`
-	ScheduledFor    time.Time            `json:"scheduled_for"`
-	State           ExecutionIntentState `json:"state"`
-	ManualBlocker   bool                 `json:"manual_blocker"`
+	ID               int64                `json:"intent_id,string"`
+	ExternalEffectID string               `json:"external_effect_id,omitempty"`
+	NodeID           int64                `json:"node_id,string"`
+	NodePosition     int32                `json:"node_position"`
+	TargetReference  string               `json:"target_reference"`
+	ScheduledFor     time.Time            `json:"scheduled_for"`
+	State            ExecutionIntentState `json:"state"`
+	ManualBlocker    bool                 `json:"manual_blocker"`
 }
 
 type RunSummary struct {
@@ -292,6 +294,7 @@ type ExecutionDraft struct {
 	MaterialDigest                      string
 	ExecutionKeyDigest                  [sha256.Size]byte
 	ExternalEffectID                    string
+	IntentID                            int64
 	ScheduledFor, CreatedAt             time.Time
 }
 
@@ -301,6 +304,10 @@ type ExecutionDraft struct {
 type RuntimeStore interface {
 	ListExecutionKeys(context.Context, int64, int64) ([]ExecutionKey, error)
 	ReserveRun(context.Context, RunReservation) (Run, error)
+	CreateExecutionIntents(context.Context, []ExecutionDraft) ([]ExecutionIntent, error)
+	InitialExecutionIntents(context.Context, int64) ([]ExecutionDraft, error)
+	ClaimNextExecutionIntent(context.Context, string) (ExecutionDraft, bool, error)
+	BindAcceptedExecutionIntent(context.Context, int64, string) error
 	InsertExecution(context.Context, ExecutionDraft) (Execution, error)
 	GetExecution(context.Context, int64) (Execution, error)
 	ListExecutions(context.Context, int64, int32, int32) ([]Execution, int64, error)
@@ -318,4 +325,10 @@ type RuntimeStore interface {
 // members picker. It has no customer or external-recipient semantics.
 type EligibleStaffReader interface {
 	ListEligibleStaff(context.Context) ([]OperationMember, error)
+}
+
+// ExecutionContinuationEnqueuer inserts a unique, effect-bound shared River
+// job in the caller's current transaction. It owns no retry or lease state.
+type ExecutionContinuationEnqueuer interface {
+	EnqueueGroupOpsContinuationWithin(context.Context, string) error
 }

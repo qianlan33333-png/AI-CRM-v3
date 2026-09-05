@@ -62,7 +62,8 @@ func (p *GroupMessageProvider) Execute(ctx context.Context, envelope effectport.
 		return effectport.AdapterResult{Completion: effectport.StateFinalFailed, ReceiptDigest: effectport.Hash(string(base), "not-configured")}, nil
 	}
 	execution, err := p.executions.LoadDispatchExecution(ctx, attempt.EffectID)
-	if err != nil || execution.ExternalEffectID != attempt.EffectID || execution.State != groupopsport.ExecutionAccepted || execution.DeliveryProven {
+	if err != nil || execution.ExternalEffectID != attempt.EffectID || execution.State != groupopsport.ExecutionAccepted || execution.DeliveryProven ||
+		execution.SourceRefDigest != string(envelope.SourceRefDigest) || execution.TargetRefDigest != string(envelope.TargetRefDigest) || execution.PayloadDigest != string(envelope.PayloadDigest) || execution.PolicyVersionHash != string(envelope.PolicyVersionHash) {
 		return effectport.AdapterResult{Completion: effectport.StateFinalFailed, ReceiptDigest: effectport.Hash(string(base), "dispatch-unavailable")}, nil
 	}
 	request, err := groupMessageRequest(execution)
@@ -83,7 +84,19 @@ func (p *GroupMessageProvider) Execute(ctx context.Context, envelope effectport.
 	if !attempted || strings.TrimSpace(receipt.MessageID) == "" {
 		return effectport.AdapterResult{Completion: effectport.StateFinalFailed, ReceiptDigest: effectport.Hash(string(base), "provider-rejected")}, nil
 	}
-	return effectport.AdapterResult{Completion: effectport.StateExecuted, ReceiptDigest: effectport.Hash(string(base), "provider-accepted", receipt.MessageID), CallAttempted: true, RealExternalCallExecuted: true}, nil
+	artifactPayload, artifactErr := json.Marshal(struct {
+		ExecutionID string `json:"execution_id"`
+		EffectID    string `json:"effect_id"`
+		MessageID   string `json:"msgid"`
+		Sender      string `json:"sender"`
+		ChatID      string `json:"chat_id"`
+	}{strconv.FormatInt(execution.ExecutionID, 10), attempt.EffectID, receipt.MessageID, request.SenderUserID, request.ChatIDs[0]})
+	if artifactErr != nil {
+		return effectport.AdapterResult{Completion: effectport.StateUnknown, ReceiptDigest: effectport.Hash(string(base), "receipt-artifact-unavailable"), CallAttempted: true, RealExternalCallExecuted: true}, nil
+	}
+	artifact := effectport.ResultArtifact{Kind: "group-ops.wecom-task.v1", Payload: artifactPayload}
+	artifact.Digest = effectport.Hash("external-effect.artifact.v1", artifact.Kind, string(artifact.Payload))
+	return effectport.AdapterResult{Completion: effectport.StateExecuted, ReceiptDigest: effectport.Hash(string(base), "provider-accepted", receipt.MessageID), CallAttempted: true, RealExternalCallExecuted: true, Artifact: artifact}, nil
 }
 
 func groupMessageRequest(execution groupopsport.DispatchExecution) (wecomport.GroupMessageRequest, error) {
@@ -145,14 +158,27 @@ type GroupMessageCompletionProjector interface {
 }
 
 type GroupMessageCompletionSink struct {
-	projector GroupMessageCompletionProjector
+	projector     GroupMessageCompletionProjector
+	receipts      groupopsport.GroupMessageReceiptWriter
+	continuations groupopsport.ExecutionContinuationEnqueuer
 }
 
-func NewGroupMessageCompletionSink(projector GroupMessageCompletionProjector) (*GroupMessageCompletionSink, error) {
-	if projector == nil {
+func NewGroupMessageCompletionSink(projector GroupMessageCompletionProjector, receipts ...groupopsport.GroupMessageReceiptWriter) (*GroupMessageCompletionSink, error) {
+	if projector == nil || len(receipts) > 1 {
 		return nil, errors.New("Group Ops completion projector is required")
 	}
-	return &GroupMessageCompletionSink{projector: projector}, nil
+	sink := &GroupMessageCompletionSink{projector: projector}
+	if len(receipts) == 1 {
+		sink.receipts = receipts[0]
+	}
+	return sink, nil
+}
+
+func (s *GroupMessageCompletionSink) WithContinuation(enqueuer groupopsport.ExecutionContinuationEnqueuer) *GroupMessageCompletionSink {
+	if s != nil {
+		s.continuations = enqueuer
+	}
+	return s
 }
 
 func (s *GroupMessageCompletionSink) CompleteEffect(ctx context.Context, effectRef string, envelope effectport.Envelope, attempt effectport.Attempt, result effectport.AdapterResult) error {
@@ -175,7 +201,35 @@ func (s *GroupMessageCompletionSink) CompleteEffect(ctx context.Context, effectR
 	default:
 		return errors.New("invalid Group Ops completion state")
 	}
-	return s.projector.CompleteEffect(ctx, effectRef, state, providerAccepted, deliveryProven, string(result.ReceiptDigest), attempt.Number, time.Now().UTC())
+	if result.Completion == effectport.StateExecuted {
+		if s.receipts == nil {
+			return errors.New("Group Ops task receipt writer is required")
+		}
+		var artifact struct {
+			ExecutionID string `json:"execution_id"`
+			EffectID    string `json:"effect_id"`
+			MessageID   string `json:"msgid"`
+			Sender      string `json:"sender"`
+			ChatID      string `json:"chat_id"`
+		}
+		if result.Artifact.Kind != "group-ops.wecom-task.v1" || !result.Artifact.Valid() || json.Unmarshal(result.Artifact.Payload, &artifact) != nil || artifact.EffectID != effectRef || artifact.MessageID == "" || artifact.Sender == "" || artifact.ChatID == "" {
+			return errors.New("invalid Group Ops task receipt artifact")
+		}
+		executionID, parseErr := strconv.ParseInt(artifact.ExecutionID, 10, 64)
+		if parseErr != nil || executionID < 1 {
+			return errors.New("invalid Group Ops task receipt execution")
+		}
+		if err := s.receipts.RecordGroupMessageTask(ctx, groupopsport.GroupMessageReceipt{ExecutionID: executionID, ExternalEffectID: effectRef, MessageID: artifact.MessageID, SenderUserID: artifact.Sender, ChatID: artifact.ChatID, TaskEvidenceDigest: string(result.Artifact.Digest)}); err != nil {
+			return err
+		}
+	}
+	if err := s.projector.CompleteEffect(ctx, effectRef, state, providerAccepted, deliveryProven, string(result.ReceiptDigest), attempt.Number, time.Now().UTC()); err != nil {
+		return err
+	}
+	if result.Completion == effectport.StateExecuted && s.continuations != nil {
+		return s.continuations.EnqueueGroupOpsContinuationWithin(ctx, effectRef)
+	}
+	return nil
 }
 
 // CompletionRouter keeps EER's single completion-sink slot while routing
