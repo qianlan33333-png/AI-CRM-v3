@@ -45,6 +45,7 @@ import (
 	mediaapp "github.com/qianlan33333-png/AI-CRM-v3/internal/media/app"
 	mediastore "github.com/qianlan33333-png/AI-CRM-v3/internal/media/store"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/outbound"
+	outboundport "github.com/qianlan33333-png/AI-CRM-v3/internal/outbound/port"
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
 	platformjobqueue "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/jobqueue"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
@@ -247,6 +248,7 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
+	frozenPayloads := &automationAudienceFrozenPayloadRecorder{inner: automationFrozenPayloadReader{preparer: aiPrivatePayloadReader{images: mediaService, materials: mediaRepo, uow: uow, capturer: mediaRepo}}}
 	messageProvider, err := outbound.NewMessageProvider(outbound.MessageProviderConfig{
 		Enabled: true, CorpScope: "wecom-corp:runtime-corp", Executions: messages,
 		// Match the composition root: a Provider reads after its effect
@@ -254,7 +256,7 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 		// to bind its own local transaction.
 		Identities: outboundIdentityAdapter{uow: uow, reader: identityquery.NewPostgreSQL()},
 		Staff:      segmentStaff, Content: automationService,
-		Payloads: automationFrozenPayloadReader{preparer: aiPrivatePayloadReader{images: mediaService, materials: mediaRepo, uow: uow, capturer: mediaRepo}}, Writer: writer,
+		Payloads: frozenPayloads, Writer: writer,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -367,7 +369,7 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 			return false
 		}
 		return complete == 1 && wecomServer.Uploads() == 3
-	}, func() string { return automationAudienceRuntimeDiagnostics(ctx, native, provider) })
+	}, func() string { return automationAudienceRuntimeDiagnostics(ctx, native, provider, frozenPayloads) })
 	// Incremental evaluation contains only the new result. Segment merges it
 	// with the prior snapshot, so the original member remains present.
 	source.Set(customerIDs[1:])
@@ -441,7 +443,7 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 		// The fourth local Provider request is deliberately disconnected. Its
 		// effect is unknown and must not be retried with a new key.
 		return accepted == 1 && unknown == 1 && wecomServer.Calls() == 4 && wecomServer.Uploads() == 12
-	}, func() string { return automationAudienceRuntimeDiagnostics(ctx, native, provider) })
+	}, func() string { return automationAudienceRuntimeDiagnostics(ctx, native, provider, frozenPayloads) })
 	stopRuntime()
 	replayed, err := runtimeService.ConfirmRun(ctx, automationapp.RunConfirmCommand{PackageID: packageID, PackageVersion: preview.PackageVersion, SnapshotID: preview.SnapshotID, AgentID: preview.AgentID, AgentPublishedVersion: preview.AgentPublishedVersion, PreviewDigest: automationapp.PreviewDigestString(preview), Actor: staffID, IdempotencyKey: "audience-runtime-manual-0001"})
 	if err != nil || replayed.ID != manual.ID || replayed.AIPlanID != manual.AIPlanID || wecomServer.Calls() != 4 || wecomServer.Uploads() != 12 {
@@ -574,6 +576,30 @@ type automationAudienceRecordingProvider struct {
 	inner effectport.ProviderAdapter
 	mu    sync.Mutex
 	err   error
+}
+
+// Test-only recorder exposes the fail-closed preparation reason in the
+// fixture diagnostic; production stores no material metadata or error text.
+type automationAudienceFrozenPayloadRecorder struct {
+	inner outboundport.FrozenAutomationMessagePayloadReader
+	mu    sync.Mutex
+	err   error
+}
+
+func (r *automationAudienceFrozenPayloadRecorder) LoadFrozenAutomationMessagePayload(ctx context.Context, raw json.RawMessage, digest [32]byte) (outbound.PrivateMessagePayload, error) {
+	payload, err := r.inner.LoadFrozenAutomationMessagePayload(ctx, raw, digest)
+	r.mu.Lock()
+	r.err = err
+	r.mu.Unlock()
+	return payload, err
+}
+func (r *automationAudienceFrozenPayloadRecorder) Error() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.err == nil {
+		return ""
+	}
+	return r.err.Error()
 }
 
 func (p *automationAudienceRecordingProvider) Execute(ctx context.Context, envelope effectport.Envelope, attempt effectport.Attempt) (effectport.AdapterResult, error) {
@@ -913,7 +939,7 @@ func automationAudienceEventuallyWithDiagnostics(t *testing.T, label string, rea
 // automationAudienceRuntimeDiagnostics retains the failing worker state in the
 // integration-test output. It reads only the fixture schema and is never part
 // of the runtime path.
-func automationAudienceRuntimeDiagnostics(ctx context.Context, pool *pgxpool.Pool, provider *automationAudienceRecordingProvider) string {
+func automationAudienceRuntimeDiagnostics(ctx context.Context, pool *pgxpool.Pool, provider *automationAudienceRecordingProvider, payloads *automationAudienceFrozenPayloadRecorder) string {
 	if pool == nil {
 		return "pool unavailable"
 	}
@@ -929,10 +955,10 @@ func automationAudienceRuntimeDiagnostics(ctx context.Context, pool *pgxpool.Poo
 	if err != nil {
 		return "diagnostics query: " + err.Error()
 	}
-	if provider == nil || provider.Error() == "" {
+	if (provider == nil || provider.Error() == "") && (payloads == nil || payloads.Error() == "") {
 		return string(raw)
 	}
-	return string(raw) + "; provider_error=" + provider.Error()
+	return string(raw) + "; provider_error=" + provider.Error() + "; frozen_payload_error=" + payloads.Error()
 }
 
 func automationAudienceRuntimePool(t *testing.T) (*pgxpool.Pool, func()) {
