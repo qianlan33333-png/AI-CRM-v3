@@ -9,7 +9,7 @@
 - 个体 PR 不逐个合并 main。总集成 PR 冻结唯一发布候选后，才提交用户做最终生产上线确认；确认后一次合并、一次部署。
 - 本矩阵后续为每个板块同时记录“个体审核结果”和“已纳入集成 HEAD”。未进入集成或联合验收未通过的项目不得标记整体完成。
 
-当前未合并总集成 PR：[PR #141](https://github.com/qianlan33333-png/AI-CRM-v3/pull/141)。审核通过的实现来源 #133、#135、#136、#137、#138、#139、#142、#144、#145、#146、#147、#148、#149、#150、#151、#153 已纳入，#140 总控文档亦已纳入。最新业务合并提交为 `a96d5a5392de17e03e37d3435cae3da22e2d8723`（PR153@014fd7b）。新组合待CI；上一完整绿色组合`6b09ecb1e7e92b2e3439a62af63d8db7032c48f7` / CI33964016441 SUCCESS、deploy SKIPPED，含148/151及153主路径，实际PostgreSQL、SDK ABI、仓库与race检查通过。后续来源HEAD继续单独审核。
+当前未合并总集成 PR：[PR #141](https://github.com/qianlan33333-png/AI-CRM-v3/pull/141)。审核通过的实现来源 #133、#135、#136、#137、#138、#139、#142、#144、#145、#146、#147、#148、#149、#150、#151、#153、#155 已纳入，#140 总控文档亦已纳入。最新业务合并提交为 `28149072e70175244fdf7bb5ceb4f521e0cf8e2b`（PR155@0130e88），本次组合检查待推送后验证。当前完整绿色组合`4e17909bb5b71208836947ff24c0e17476a48ecc` / CI33966346271 SUCCESS、deploy SKIPPED；更早完整绿色组合`6b09ecb1e7e92b2e3439a62af63d8db7032c48f7` / CI33964016441 SUCCESS、deploy SKIPPED，含148/151及153主路径，实际PostgreSQL、SDK ABI、仓库与race检查通过。后续来源HEAD继续单独审核。
 
 | 来源 | 来源 HEAD / 独立 CI | 纳入提交 | 组合 CI | 当前结论 |
 |---|---|---|---|---|
@@ -100,7 +100,7 @@
 
 ## 最新协调记录
 
-- 0078 GroupOps业务意图及任务收据语义按PRD07§8批准；0079 Product会员表保存视图/协作/分享元数据按PRD03§9批准。0080随后分配Media旧素材受验证映射，供06通过稳定Port消费；0081分配GroupOps修复未配置Webhook多计划创建，0082分配GroupOps既有历史导入Port收据，0083分配Segment旧四种刷新模式，0084分配HXC共用原字段投影，下一空闲编号0085。
+- 0078 GroupOps业务意图及任务收据语义按PRD07§8批准；0079 Product会员表保存视图/协作/分享元数据按PRD03§9批准。0080随后分配Media旧素材受验证映射，供06通过稳定Port消费；0081分配GroupOps修复未配置Webhook多计划创建，0082分配GroupOps既有历史导入Port收据，0083分配Segment旧四种刷新模式，0084分配HXC共用原字段投影，0085归Segment增量/日刷新事实，0086归WeCom主负责人，下一空闲编号0087。
 - 06首次派发前PRD已完成，严格复用可信Identity Reader、现有机器鉴权与审批/效果内核。
 
 ## 2026-09-05 后续批次复核
@@ -123,3 +123,11 @@
 - PR143@1b148814e47ce0740a41a4f9cda4217366cb264f审核阻断：丢创建响应再换OAuth会话可能重复建单，且笼统409清除恢复键；已要求按PRD03§16修复，未纳入集成。CI33965527717另发现Product测试跨领域import Payment HTTP，须移至Composition Root。
 
 - PR153准确HEAD `014fd7b13b8960b36df0445ebe8215caad4dc58c` 已通过CI33965315786（实际PG16、race和原UI，deploy SKIPPED），总控审核通过并纳入 `a96d5a5392de17e03e37d3435cae3da22e2d8723`。覆盖暂停后恢复、计划/素材变化守卫、0081未配置Webhook多计划创建；资格变化使用可变Access Port夹具，不冒称真实Access数据库撤权。组合发布清单冲突仅机械合并，完整本地安装契约通过。0082历史导入610d133及新HXC共享事实均独立待审。
+
+- #141准确组合4e17909bb5b71208836947ff24c0e17476a48ecc通过CI33966346271（完整PG16、race、官方SDK ABI及仓库检查，deploy SKIPPED）。#153历史当前a2cb58d待CI；#143付款恢复和Order续费事实55ccee7待CI/全量审核；#152刷新语义和主负责人来源仍开；#154 HXC首批源码与真实源检查已退回。当前四个clone分别由三个智能体独占推进，根仅文档/审核/机械集成。
+
+
+- 本轮新增审核：#153@144abcc常规真实PG通过，但CI33967600701在race第二遍因测试使用固定legacy_history_source schema失败，已退回独占测试schema修复；未纳入。#154@2846c79真实源只读EXPLAIN通过，但CI33967755271缺测试必填枚举，选源SQL还有NULL与同源期限语义问题，仍未批准。#152@87e4978 CI33967526099日刷新SQL bigint/text失败，后续修复待审。#143@bf34840补原Order字段全量关系查询，尚待准确HEAD检查。#155@0130e88补真实Access撤权及River首节点unknown，独立联合验收待审。0085归Segment、0086归WeCom，下一空闲0087。
+
+
+- PR155准确HEAD0130e88eaeea4b6a930f27d951a61936f83d09f2通过CI33967837266（PG16、race、官方SDK ABI、冻结UI，deploy SKIPPED），源码审核通过并作为merge parent纳入28149072e70175244fdf7bb5ceb4f521e0cf8e2b。实际Access is_active撤权在Provider调用前阻止执行，真实River/本地WeCom接收后断开响应形成原EER unknown且无后继执行；AI+Group同库组合仍待，不以本子批代替05/06/07全验收。

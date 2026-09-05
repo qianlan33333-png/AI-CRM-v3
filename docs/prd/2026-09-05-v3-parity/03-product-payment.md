@@ -134,3 +134,16 @@ OneID：可信支付身份解析/既有显式建客、付款人和受益人分�
 ## 16. 1b148814付款恢复审核阻断
 
 创建成功但响应丢失时，检查点merchant_order_no仍为空。随后微信授权session变化，重放相同key会因实际Payment.Create用sessionToken+key派生merchant号而创建新订单；检查点仅存payload仍不足。必须由既有可信Payment Session提供非敏感opaque绑定/服务端恢复事实，会话变化在新Create前阻断旧检查点，不自报身份。unknown/事实不完整的409也不能统一清空检查点或称授权变化；只在明确可判定的会话不匹配路径处理，未知保留原键。实际Payment app/store/PostgreSQL覆盖“响应丢失+同客户重授权/另一会话”，自写checkoutJourneyApplication的行为不能替代该验证。跨领域HTTP组合测试位于cmd/aicrm，不在Product测试中import Payment http。
+
+## 17. 原订单恢复与终态读取复审
+
+4d7bfc9补opaque Payment会话绑定，但已知merchant_order_no后仍先比较旧绑定，授权过期后无法查看原单。已知原单应交现有Payment Owner验证当前Provider可信付款身份后只读恢复，不再Create、不换幂等键；同可信付款身份新授权可读取，不同身份拒绝，未知单号仍保存旧键失败关闭。当前GetCheckout对paid终态仍检查过期handoff导致conflict，终态读取应在授权后独立于旧预支付有效期。同步新checkout-session、绑定和coupon_claim_id的OpenAPI与生成契约。实际PG及Host覆盖过期支付凭据、重新授权、原单重读、未知响应键不清除。
+
+
+## 18. 完整会员集合的原字段组合读取
+
+原member全局筛选/排序需要Customer展示名，HXC五字段来自第13号共享合同；不能仅补当前Order页后在浏览器筛选。批准在现有Product读编排中恢复这项原能力：复用Order稳定分页读取完整商品会员候选、Customer.DisplayNames每批不超过200和HXC有界同代Port，在内存组合事实，完整执行原20条件、8排序、2层分组及组计数后分页。Customer/Order/HXC仍各自拥有数据，不在Product落客户副本，不跨领域表查询或新建通用查询平台。
+
+一次最多10,000候选；必须探测第10,001条，超限整次返回明确member_grid_too_large，不以截断集合冒充全量。SnapshotAt只冻结日期计算，不能声称它是数据库快照；HXC分批绑定同一已发布代，分页绑定配置、有效事实摘要和最后规范行ID，源事实改变返回cursor_stale并重新读取。游标不携带仅签名未加密的姓名/备注等个人资料。旧保存视图和公开分享复用相同编排与现有鉴权。
+
+实际测试覆盖匹配行只在来源第二页以后、名字排序跨页、跨Owner的OR、两层分组全量计数、超限明确失败、HXC代或姓名更新使旧游标失效。NULL/unknown与真false/0分开；alliance只读旧权益metadata_json.admin_alliance的已验证历史Owner来源，不伪造字段。03/04真实资金/权益联合及历史逐行对账继续优先推进。

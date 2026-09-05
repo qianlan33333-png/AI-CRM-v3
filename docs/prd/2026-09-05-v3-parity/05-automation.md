@@ -118,3 +118,19 @@ CI33964237463通过不代表新Host已验收。新Host与已有admin_audience_de
 ## 15. HXC共享字段执行边界
 
 会员状态及03原会员表共用HXC事实按13-shared-hxc-facts.md，0084归HXC；不得以dashboard stage代替明确源状态，既有OneID/只读源/发布代复用。由单一执行者维护HXC文件，Segment只作Port消费。
+
+## 16. 刷新种类的旧行为对照
+
+供体dd8的refresh_service.py:_apply_diff中incremental仅upsert新增/变化，daily才将本次未出现的活动成员标为exited。0083独立cursor与同occurrence幂等仅证明调度去重，不证明两种行为一致。执行者须核对当前V3全量快照行为与旧六模板的实际规则，在现有Segment Owner持久事实/任务内补必要兼容，不另造刷新框架。保留原有legacy_custom语义；同一时间daily/incremental重叠需明确完整日刷新优先且不重复触发运营效果，并以真实Owner/任务证明。
+
+
+## 17. 原主负责人事实恢复（0086）
+
+供体dd8 identity_bridge_service.py在完整follow_users替换后调用identity_bridge_repo.refresh_external_contact_identity_owner：非空userid按字典序取首项；空集合不覆盖已有primary。0165 Radar读视图优先当前primary_owner_userid，再取首次可归因事件员工事实，不是任意当前联系关系。
+
+0086归WeCom，只在已有受信profile/owner事实内补必要primary与来源凭据，并由现有同步UoW更新。必须证明输入是同一corp scope的完整Provider follow-user集合；请求中的员工、部分页、失败批次和不可信资料不能选出primary。空集合保留已有可信值，旧存量没有完整来源凭据保持unknown，不猜测回填。稳定批量读Port仅接收规范CustomerID与明确作用域，返回known/unknown/ambiguous；不能按冲突的多个profile随机挑人。Radar按原优先级读取；V3无历史事件员工事实时明确不可匹配指定员工，不借另一条当前关系扩大人群。
+
+真实PG和既有共享运行时验证完整/部分/失败同步、空集合保留、重放和多作用域冲突；原有每员工联系关系不得因恢复primary丢失。本变更仅恢复旧字段，未创建第二套身份匹配或同步框架，生产存量填充留到正常同步部署验收。
+
+
+退出事件范围复核：dd8 outbound_service.py:27/234/244及automation_binding/precheck.py:178只消费entered。日刷新exited保留为不可变变化事实及原回读，不新增退出运营发送触发；0087不为此分配。增量未移除成员、日刷新移除成员与进入发送幂等必须通过实际共享River验证。
