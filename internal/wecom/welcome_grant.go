@@ -14,6 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
+	wecomport "github.com/qianlan33333-png/AI-CRM-v3/internal/wecom/port"
 )
 
 var ErrWelcomeGrantUnavailable = errors.New("welcome grant unavailable")
@@ -73,6 +74,12 @@ func (store *PostgreSQLWelcomeGrantStore) Seal(ctx context.Context, callbackKey,
 	if err != nil {
 		return "", err
 	}
+	// A duplicated Provider delivery may race before its callback intent row is
+	// visible. Serialize grant sealing by the opaque callback key so both paths
+	// reuse the first sealed grant rather than surfacing a unique-key error.
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, "wecom.welcome-grant.v1:"+callbackKey); err != nil {
+		return "", err
+	}
 	callback := sha256.Sum256([]byte(callbackKey))
 	valueDigest := sha256.Sum256([]byte(value))
 	var id int64
@@ -114,6 +121,11 @@ func (store *PostgreSQLWelcomeGrantStore) Redeem(ctx context.Context, reference,
 		err = tx.QueryRow(ctx, `SELECT ciphertext,callback_digest,value_digest FROM wecom_welcome_grants WHERE id=$1 AND consumer_effect_ref=$2 AND expires_at>clock_timestamp()`, id, effectRef).Scan(&encrypted, &callbackDigest, &valueDigest)
 	}
 	if err != nil {
+		var expiresAt time.Time
+		lookupErr := tx.QueryRow(ctx, `SELECT expires_at FROM wecom_welcome_grants WHERE id=$1`, id).Scan(&expiresAt)
+		if lookupErr == nil && !expiresAt.After(time.Now().UTC()) {
+			return "", wecomport.ErrWelcomeGrantExpired
+		}
 		return "", ErrWelcomeGrantUnavailable
 	}
 	plain, err := store.cipher.decrypt(encrypted, callbackDigest)

@@ -17,6 +17,7 @@ import (
 type PostgreSQL struct{}
 
 var _ accessport.Repository = (*PostgreSQL)(nil)
+var _ accessport.MessageArchiveStaffDirectory = (*PostgreSQL)(nil)
 
 func NewPostgreSQL() *PostgreSQL { return &PostgreSQL{} }
 
@@ -78,6 +79,45 @@ func (*PostgreSQL) ListUsers(ctx context.Context) ([]domain.User, error) {
 		}
 	}
 	return users, nil
+}
+
+func (*PostgreSQL) MessageArchiveStaff(ctx context.Context, ids []int64) ([]accessport.MessageArchiveStaff, error) {
+	if len(ids) == 0 {
+		return []accessport.MessageArchiveStaff{}, nil
+	}
+	if len(ids) > 1000 {
+		return nil, domain.ErrInvalidInput
+	}
+	unique := make([]int64, 0, len(ids))
+	seen := make(map[int64]struct{}, len(ids))
+	for _, id := range ids {
+		if id < 1 {
+			return nil, domain.ErrInvalidInput
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		unique = append(unique, id)
+	}
+	database, err := tx(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := database.Query(ctx, `SELECT id,display_name FROM admin_users WHERE id=ANY($1::bigint[]) ORDER BY display_name,id`, unique)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]accessport.MessageArchiveStaff, 0, len(unique))
+	for rows.Next() {
+		var item accessport.MessageArchiveStaff
+		if err = rows.Scan(&item.ID, &item.DisplayName); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
 }
 
 func (*PostgreSQL) user(ctx context.Context, predicate string, argument any, lock bool) (domain.User, error) {
