@@ -309,7 +309,7 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 	stop = automationAudienceStartRuntime(t, runtime)
 	daily, err := snapshots.AcceptRefresh(ctx, segmentapp.RefreshCommand{PackageID: packageID, Actor: 1, IdempotencyKey: "audience-runtime-daily-exit-0001", RefreshKind: segmentdomain.RefreshDaily, ReferenceTime: now.Add(time.Hour)})
 	if err != nil || daily.RiverJobID == nil {
-		t.Fatal(err)
+		t.Fatalf("accept daily=%+v err=%v", daily, err)
 	}
 	var exitSnapshot segmentport.Snapshot
 	automationAudienceEventually(t, "daily exit without entered send", func() bool {
