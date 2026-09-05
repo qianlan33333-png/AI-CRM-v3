@@ -155,15 +155,6 @@ if (!frozenNormalPayload.assessment_config || !frozenNormalPayload.questions?.ev
   throw new Error(`fixture no longer captures the frozen hidden defaults: ${JSON.stringify(frozenNormalPayload)}`);
 }
 
-click(normalDocument.querySelector("#editor-export-btn"));
-await waitFor("actual CSV download", () => {
-  const downloads = normal.dom.window.__surveyRuntimeDownloads || [];
-  return normal.calls.some((call) => call.path === `/api/admin/questionnaires/${normalID}/export` && call.status === 200)
-    && downloads.length === 1 && downloads[0].clicked && downloads[0].blob instanceof normal.dom.window.Blob;
-});
-const csv = await normal.dom.window.__surveyRuntimeDownloads[0].blob.text();
-if (!csv.includes("submission_id") || !csv.includes("customer_id")) throw new Error(`downloaded CSV did not contain the Survey export contract: ${csv.slice(0, 160)}`);
-
 click(normalDocument.querySelector("#editor-duplicate-btn"));
 await waitFor("frozen duplicate", () => {
   const id = Number(new URLSearchParams(normal.dom.window.location.search).get("id"));
@@ -197,6 +188,23 @@ await waitFor("normal list re-enable action", () => managementAction(managementD
 click(managementAction(managementDocument, "冻结后台实际标题", "启用"));
 await waitFor("normal list re-enable", () => management.calls.filter((call) => call.path === `/api/admin/questionnaires/${normalID}/enable` && call.status === 200).length === 1);
 management.dom.window.close();
+
+// Export is a readback operation on the published Owner definition. Re-open
+// the actual frozen detail Host after the lifecycle transition so the browser
+// waits for both the response and the completed Blob/download gesture.
+const normalPublished = await openEditor(`?id=${normalID}`);
+const normalPublishedDocument = normalPublished.dom.window.document;
+click(normalPublishedDocument.querySelector("#editor-export-btn"));
+await waitFor("actual CSV download", () => {
+  const downloads = normalPublished.dom.window.__surveyRuntimeDownloads || [];
+  return normalPublished.calls.some((call) => call.path === `/api/admin/questionnaires/${normalID}/export` && call.status === 200)
+    && downloads.length === 1 && downloads[0].clicked && downloads[0].blob instanceof normalPublished.dom.window.Blob;
+}).catch((error) => {
+  throw new Error(`${error.message}; calls=${JSON.stringify(normalPublished.calls)}; downloads=${JSON.stringify((normalPublished.dom.window.__surveyRuntimeDownloads || []).map((value) => ({ clicked: value.clicked, filename: value.filename })))} `);
+});
+const csv = await normalPublished.dom.window.__surveyRuntimeDownloads[0].blob.text();
+if (!csv.includes("submission_id") || !csv.includes("customer_id")) throw new Error(`downloaded CSV did not contain the Survey export contract: ${csv.slice(0, 160)}`);
+normalPublished.dom.window.close();
 
 const assessment = await openEditor("?mode=assessment");
 const assessmentDocument = assessment.dom.window.document;
