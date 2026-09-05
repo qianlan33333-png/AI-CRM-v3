@@ -278,8 +278,9 @@ validation.dom.window.close();
 
 const assessment = await openEditor("?mode=assessment", { requestDelayMs: 550 });
 const assessmentDocument = assessment.dom.window.document;
+const assessmentTitle = "冻结排序与预览";
 input(assessment.dom.window, assessmentDocument.querySelector("#v2-basic-name"), "冻结排序测评");
-input(assessment.dom.window, assessmentDocument.querySelector("#v2-basic-title"), "冻结排序与预览");
+input(assessment.dom.window, assessmentDocument.querySelector("#v2-basic-title"), assessmentTitle);
 input(assessment.dom.window, assessmentDocument.querySelector("#v2-basic-slug"), "frozen-admin-assessment");
 click(assessmentDocument.querySelector('[data-assessment-step="dimensions"]'));
 await waitFor("assessment question cards", () => assessmentDocument.querySelectorAll("[data-question-key]").length >= 2);
@@ -332,16 +333,26 @@ firstTitle = `${assessmentDocument.querySelector("[data-question-key]")?.querySe
 input(assessment.dom.window, assessmentDocument.querySelector("[data-question-key]")?.querySelector(".question-title-input"), firstTitle);
 click(assessmentDocument.querySelector('[data-assessment-step="preview"]'));
 await waitFor("assessment revised preview", () => assessmentDocument.querySelector(".h5-question-v2 strong")?.textContent === firstTitle);
-const priorPublishConfirmationCount = assessment.calls.filter((call) => call.path === `/api/admin/questionnaires/${assessmentID}` && call.method === "GET" && call.status === 200).length;
+const priorPublishConfirmations = assessment.calls.filter((call) => call.path === `/api/admin/questionnaires/${assessmentID}` && call.method === "GET" && call.status === 200);
+const priorPublishConfirmationCount = priorPublishConfirmations.length;
+const priorPublishedVersion = Number((priorPublishConfirmations.at(-1)?.response?.questionnaire || priorPublishConfirmations.at(-1)?.response?.data?.questionnaire)?.version);
 click(assessmentDocument.querySelector("#v2-publish-save"));
 await waitFor("assessment republish", () => assessment.calls.filter((call) => call.path === `/api/admin/questionnaires/${assessmentID}/public-publish` && call.method === "POST" && call.status === 200).length === 2);
+const revisedSave = assessment.calls.findLast((call) => call.path === `/api/admin/questionnaires/${assessmentID}` && call.method === "PUT" && call.status === 200);
+const revisedQuestionID = Number(JSON.parse(revisedSave?.body || "{}").questions?.find((question) => question.title === firstTitle)?.id);
+if (!Number.isSafeInteger(revisedQuestionID) || revisedQuestionID < 1) throw new Error(`revised frozen question did not retain an Owner id: ${summarizeCalls(assessment.calls)}`);
 await waitFor("assessment republish Owner confirmation", () => {
   const confirmations = assessment.calls.filter((call) => call.path === `/api/admin/questionnaires/${assessmentID}` && call.method === "GET" && call.status === 200);
-  const latest = confirmations.at(-1)?.response?.questionnaire || confirmations.at(-1)?.response?.data?.questionnaire;
+  const latestResponse = confirmations.at(-1)?.response;
+  const latest = latestResponse?.questionnaire || latestResponse?.data?.questionnaire;
+  const latestQuestions = latestResponse?.questions || latest?.questions || [];
+  const latestQuestion = latestQuestions.find((question) => Number(question.id) === revisedQuestionID);
   return confirmations.length === priorPublishConfirmationCount + 1
     && latest?.status === "active" && latest?.enabled === true
-    && latest?.title === firstTitle
-    && assessmentDocument.querySelector('[data-survey-host-publish-status] a[data-survey-host-published-path]')?.getAttribute("href") === "/q/frozen-admin-assessment";
+    && latest?.title === assessmentTitle && Number(latest?.version) > priorPublishedVersion
+    && latestQuestion?.title === firstTitle
+    && assessmentDocument.querySelector('[data-survey-host-publish-status] a[data-survey-host-published-path]')?.getAttribute("href") === "/q/frozen-admin-assessment"
+    && Number(assessmentDocument.querySelector('[data-survey-host-publish-status]')?.dataset.surveyHostPublishedVersion) === Number(latest?.version);
 }).catch((error) => {
   throw new Error(`${error.message}; calls=${summarizeCalls(assessment.calls)}`);
 });

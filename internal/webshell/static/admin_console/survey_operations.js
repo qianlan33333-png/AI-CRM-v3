@@ -47,6 +47,7 @@
       const publicPath = text(questionnaire && questionnaire.public_path);
       status.replaceChildren();
       status.style.color = '#1f7a1f';
+      status.dataset.surveyHostPublishedVersion = text(questionnaire && questionnaire.version);
       status.appendChild(document.createTextNode('已发布 · '));
       const link = document.createElement('a');
       link.href = publicPath;
