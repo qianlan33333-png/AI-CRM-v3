@@ -112,15 +112,22 @@ func (s *MessageService) MessageExecution(ctx context.Context, fingerprint strin
 		return outboundport.MessageExecution{}, false, ErrInvalidMessageIntent
 	}
 	var out outboundport.MessageExecution
+	var payloadDigest []byte
 	err := s.uow.Within(ctx, func(txctx context.Context) error {
 		tx, e := platformpostgres.RequireTransaction(txctx)
 		if e != nil {
 			return e
 		}
-		return tx.QueryRow(txctx, `SELECT id,run_recipient_id,customer_id,sender_staff_id,agent_id,agent_published_version,content_reference,payload_digest FROM outbound_message_intents WHERE envelope_fingerprint=$1 AND state IN ('queued','attempted')`, fingerprint).Scan(&out.MessageIntentID, &out.RunRecipientID, &out.CustomerID, &out.SenderStaffID, &out.AgentID, &out.AgentPublishedVersion, &out.ContentReference, &out.PayloadDigest)
+		return tx.QueryRow(txctx, `SELECT id,run_recipient_id,customer_id,sender_staff_id,agent_id,agent_published_version,content_reference,payload_digest FROM outbound_message_intents WHERE envelope_fingerprint=$1 AND state IN ('queued','attempted')`, fingerprint).Scan(&out.MessageIntentID, &out.RunRecipientID, &out.CustomerID, &out.SenderStaffID, &out.AgentID, &out.AgentPublishedVersion, &out.ContentReference, &payloadDigest)
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return out, false, nil
+	}
+	if err == nil {
+		if len(payloadDigest) != len(out.PayloadDigest) {
+			return outboundport.MessageExecution{}, false, ErrMessageIntentConflict
+		}
+		copy(out.PayloadDigest[:], payloadDigest)
 	}
 	return out, err == nil, err
 }
