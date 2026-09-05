@@ -326,6 +326,13 @@ func (adapter groupOpsMaterialReadinessAdapter) VerifyMaterialReady(ctx context.
 	if adapter.uow == nil || adapter.capturer == nil || adapter.freezer == nil || snapshotErr != nil || factsCanonicalErr != nil || !effectport.ValidDigest(effectport.Digest(factsDigest)) || factsDigest != string(effectport.Hash("group-ops.material.intent.v1", string(canonicalFacts))) || now.IsZero() {
 		return errors.New("Group Ops material readiness unavailable")
 	}
+	// A text-only message has no Media-owned source to recapture or provider
+	// preparation to re-read. RuntimeService persists this canonical empty
+	// intent itself, so accepting it here preserves the same frozen-facts
+	// boundary without inventing a Media record merely to send text.
+	if emptyGroupOpsMaterialIntent(canonicalSnapshot, canonicalFacts) {
+		return nil
+	}
 	var facts struct {
 		SchemaVersion int                                      `json:"schema_version"`
 		Sources       mediaport.GroupOpsMaterialSourceSnapshot `json:"sources"`
@@ -371,6 +378,23 @@ func (adapter groupOpsMaterialReadinessAdapter) VerifyMaterialReady(ctx context.
 		}
 		return nil
 	})
+}
+
+func emptyGroupOpsMaterialIntent(snapshotRaw, factsRaw []byte) bool {
+	var snapshot struct {
+		SchemaVersion int               `json:"schema_version"`
+		References    []json.RawMessage `json:"references"`
+	}
+	var facts struct {
+		SchemaVersion int `json:"schema_version"`
+		Sources       struct {
+			SchemaVersion int               `json:"schema_version"`
+			References    []json.RawMessage `json:"references"`
+		} `json:"sources"`
+		Preparations []json.RawMessage `json:"preparations"`
+	}
+	return json.Unmarshal(snapshotRaw, &snapshot) == nil && snapshot.SchemaVersion == 1 && snapshot.References != nil && len(snapshot.References) == 0 &&
+		json.Unmarshal(factsRaw, &facts) == nil && facts.SchemaVersion == 1 && facts.Sources.SchemaVersion == 1 && facts.Sources.References != nil && len(facts.Sources.References) == 0 && facts.Preparations != nil && len(facts.Preparations) == 0
 }
 
 func canonicalGroupOpsJSON(raw []byte) ([]byte, error) {
