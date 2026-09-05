@@ -138,8 +138,11 @@ func TestCurrentQueryReadsDistinctLegacySharedFacts(t *testing.T) {
 		}
 	}
 	for _, required := range []string{
-		"THEN 'subscription' ELSE 'none' END",
-		"THEN COALESCE(s.expires_at,u.member_expires_at) ELSE NULL END",
+		"THEN 'subscription' WHEN NULLIF(TRIM(u.member_level),'')",
+		"THEN 'user_profile' ELSE 'none' END",
+		"THEN s.expires_at WHEN NULLIF(TRIM(u.member_level),'')",
+		"THEN u.member_expires_at ELSE NULL END",
+		"mc.status COLLATE utf8mb4_general_ci = 'expired'",
 		"mc.status COLLATE utf8mb4_general_ci",
 	} {
 		if !strings.Contains(currentBatchSQL, required) {
