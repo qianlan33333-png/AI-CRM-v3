@@ -670,9 +670,9 @@ func TestAutomationAIAssistantAndGroupOpsShareRiverRuntime(t *testing.T) {
 	var stopSharedOnce sync.Once
 	stopSharedSafely := func() { stopSharedOnce.Do(stopShared) }
 	defer stopSharedSafely()
-	automationAudienceEventually(t, "joint source completions", func() bool {
+	automationAudienceEventuallyWithDiagnostics(t, "joint source completions", func() bool {
 		return automationWeCom.Calls() == 2 && groupWeCom.callCount() == 4 && jointInitialCompletionsPersisted(ctx, native, policy.ID, plan.ID, groupPlan, unknownPlan, customers[1], staffID)
-	})
+	}, func() string { return jointRuntimeDiagnostics(ctx, native) })
 	if uploads := automationWeCom.Uploads(); uploads != 6 {
 		t.Fatalf("frozen mixed-media uploads=%d want 6", uploads)
 	}
@@ -756,6 +756,26 @@ func jointUnknownEffectIDs(t *testing.T, ctx context.Context, pool *pgxpool.Pool
 		t.Fatal(err)
 	}
 	return ids
+}
+
+func jointRuntimeDiagnostics(ctx context.Context, pool *pgxpool.Pool) string {
+	if pool == nil {
+		return "pool unavailable"
+	}
+	var summary []byte
+	err := pool.QueryRow(ctx, `SELECT json_build_object(
+		'automation_runs',(SELECT coalesce(json_agg(json_build_object('id',id,'state',state,'policy_id',policy_id)),'[]'::json) FROM automation_runs),
+		'automation_recipients',(SELECT coalesce(json_agg(json_build_object('run_id',run_id,'state',state,'effect_id',effect_id)),'[]'::json) FROM automation_run_recipients),
+		'automation_intents',(SELECT coalesce(json_agg(json_build_object('state',state,'source_kind',source_kind,'effect_id',effect_id)),'[]'::json) FROM outbound_message_intents),
+		'ai_plans',(SELECT coalesce(json_agg(json_build_object('id',id,'state',state,'needs_attention_count',needs_attention_count)),'[]'::json) FROM ai_assistant_plans),
+		'ai_bindings',(SELECT coalesce(json_agg(json_build_object('state',state,'effect_id',external_effect_id,'provider_accepted',provider_accepted)),'[]'::json) FROM ai_assistant_effect_bindings),
+		'group_executions',(SELECT coalesce(json_agg(json_build_object('plan_id',plan_id,'node_position',node_position,'state',state)),'[]'::json) FROM group_ops_executions),
+		'effects',(SELECT coalesce(json_agg(json_build_object('id',id,'kind',kind,'state',state)),'[]'::json) FROM external_effects)
+	)`).Scan(&summary)
+	if err != nil {
+		return "diagnostics query: " + err.Error()
+	}
+	return string(summary)
 }
 
 func jointInitialCompletionsPersisted(ctx context.Context, pool *pgxpool.Pool, policyID int64, manualPlanID aiassistantport.PlanID, groupPlanID, unknownPlanID int64, automaticCustomer customerdomain.CustomerID, staffID int64) bool {
