@@ -116,6 +116,14 @@ func TestDefinitionRequestAppliesFrozenSingleChoiceDefaultOnlyWhenAbsent(t *test
 	}
 }
 
+func TestDefinitionResponseMarksDraftAsDisabledForFrozenEditor(t *testing.T) {
+	draft := definitionResponse(surveyport.Questionnaire{Status: surveyport.StatusDraft})
+	published := definitionResponse(surveyport.Questionnaire{Status: surveyport.StatusPublished})
+	if draft["is_disabled"] != true || draft["status"] != "disabled" || published["is_disabled"] != false || published["status"] != "active" {
+		t.Fatalf("frozen editor lifecycle DTO draft=%+v published=%+v", draft, published)
+	}
+}
+
 func TestPublicSurveyCannotBypassOAuth(t *testing.T) {
 	handler := newRouteHandler(t, routeOAuth{enabled: true})
 	for _, path := range []string{"/api/public/questionnaires/growth", "/api/public/questionnaires/growth/submissions"} {

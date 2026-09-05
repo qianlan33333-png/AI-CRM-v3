@@ -113,6 +113,19 @@ await waitFor("normal editor create", () => /\?id=[1-9]\d*$/.test(normal.dom.win
 const normalID = Number(new URLSearchParams(normal.dom.window.location.search).get("id"));
 if (!Number.isSafeInteger(normalID) || normalID < 1) throw new Error("created editor did not retain a server questionnaire id");
 
+// A newly saved normal questionnaire is represented as disabled by the
+// compatibility DTO. The frozen list's first “启用” must publish its draft,
+// then a real stop/re-enable must use the Owner lifecycle without re-publishing.
+click(normalDocument.querySelector('[data-action="toggle"]'));
+await waitFor("normal draft publish", () => normal.calls.some((call) => call.path === `/api/admin/questionnaires/${normalID}/public-publish` && call.status === 200));
+await waitFor("normal editor enabled", () => normalDocument.querySelector("#toast")?.textContent.includes("问卷已启用"));
+click(normalDocument.querySelector('[data-action="toggle"]'));
+await waitFor("normal editor disable", () => normal.calls.some((call) => call.path === `/api/admin/questionnaires/${normalID}/disable` && call.status === 200));
+await waitFor("normal editor disabled", () => normalDocument.querySelector("#toast")?.textContent.includes("问卷已停用"));
+click(normalDocument.querySelector('[data-action="toggle"]'));
+await waitFor("normal editor re-enable", () => normal.calls.filter((call) => call.path === `/api/admin/questionnaires/${normalID}/enable` && call.status === 200).length === 1);
+await waitFor("normal editor re-enabled", () => normalDocument.querySelector("#toast")?.textContent.includes("问卷已启用"));
+
 click(normalDocument.querySelector("#editor-export-btn"));
 await waitFor("actual CSV download", () => {
   const downloads = normal.dom.window.__surveyRuntimeDownloads || [];
@@ -122,9 +135,6 @@ await waitFor("actual CSV download", () => {
 const csv = await normal.dom.window.__surveyRuntimeDownloads[0].blob.text();
 if (!csv.includes("submission_id") || !csv.includes("customer_id")) throw new Error(`downloaded CSV did not contain the Survey export contract: ${csv.slice(0, 160)}`);
 
-change(normal.dom.window, normalDocument.querySelector("#field-is-disabled"), true);
-click(normalDocument.querySelector("#save-btn"));
-await waitFor("normal editor disabled save", () => normalDocument.querySelector("#toast")?.textContent.includes("问卷已更新"));
 click(normalDocument.querySelector("#editor-duplicate-btn"));
 await waitFor("frozen duplicate", () => {
   const id = Number(new URLSearchParams(normal.dom.window.location.search).get("id"));
@@ -146,7 +156,7 @@ await waitFor("assessment question cards", () => assessmentDocument.querySelecto
 const before = [...assessmentDocument.querySelectorAll("[data-question-key]")].map((item) => item.querySelector(".question-title-input")?.value || "");
 click(assessmentDocument.querySelectorAll('[data-move-question][data-direction="-1"]')[1]);
 await waitFor("assessment reorder", () => assessmentDocument.querySelector("[data-question-key]")?.querySelector(".question-title-input")?.value === before[1]);
-const firstTitle = assessmentDocument.querySelector("[data-question-key]")?.querySelector(".question-title-input")?.value;
+let firstTitle = assessmentDocument.querySelector("[data-question-key]")?.querySelector(".question-title-input")?.value;
 click(assessmentDocument.querySelector('[data-assessment-step="preview"]'));
 await waitFor("assessment preview", () => assessmentDocument.querySelector(".h5-question-v2 strong")?.textContent === firstTitle);
 click(assessmentDocument.querySelector("#v2-publish-save"));
@@ -161,6 +171,20 @@ if (!assessment.calls.some((call) => call.path === "/api/admin/questionnaires" &
 if (!assessment.calls.some((call) => call.path === `/api/admin/questionnaires/${assessmentID}/public-publish` && call.method === "POST" && call.status === 200)
   || assessment.calls.some((call) => call.path === `/api/admin/questionnaires/${assessmentID}/enable`)) {
   throw new Error(`Host publish bridge did not use the V3 publish contract: ${JSON.stringify(assessment.calls)}`);
+}
+// Publishing updates the Owner version. Re-enter the frozen editor and save a
+// changed title to prove the bridge reads the fresh save response instead of
+// replaying the original version into the next public-publish request.
+click(assessmentDocument.querySelector('[data-assessment-step="dimensions"]'));
+await waitFor("assessment edit after publish", () => assessmentDocument.querySelectorAll("[data-question-key]").length >= 2);
+firstTitle = `${assessmentDocument.querySelector("[data-question-key]")?.querySelector(".question-title-input")?.value || ""} 修订`;
+input(assessment.dom.window, assessmentDocument.querySelector("[data-question-key]")?.querySelector(".question-title-input"), firstTitle);
+click(assessmentDocument.querySelector('[data-assessment-step="preview"]'));
+await waitFor("assessment revised preview", () => assessmentDocument.querySelector(".h5-question-v2 strong")?.textContent === firstTitle);
+click(assessmentDocument.querySelector("#v2-publish-save"));
+await waitFor("assessment republish", () => assessment.calls.filter((call) => call.path === `/api/admin/questionnaires/${assessmentID}/public-publish` && call.method === "POST" && call.status === 200).length === 2);
+if (!assessment.calls.some((call) => call.path === `/api/admin/questionnaires/${assessmentID}` && call.method === "PUT" && call.status === 200)) {
+  throw new Error(`frozen assessment edit did not save through the current Owner version: ${JSON.stringify(assessment.calls)}`);
 }
 assessment.dom.window.close();
 

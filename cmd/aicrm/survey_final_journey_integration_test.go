@@ -549,7 +549,7 @@ func TestSurveyFrozenAdminRuntimeJourneyPostgreSQL(t *testing.T) {
 		t.Fatalf("invalid frozen runtime result=%+v", result)
 	}
 	normal, err := definitions.Get(ctx, surveyport.ID(result.NormalID))
-	if err != nil || normal.Status != surveyport.StatusDisabled || normal.Name != "冻结后台实际问卷" || len(normal.Questions) != 2 || normal.Questions[0].Title != "第一道真实题" || normal.Questions[1].Title != "第二道真实题" {
+	if err != nil || normal.Status != surveyport.StatusPublished || normal.Name != "冻结后台实际问卷" || len(normal.Questions) != 2 || normal.Questions[0].Title != "第一道真实题" || normal.Questions[1].Title != "第二道真实题" {
 		t.Fatalf("frozen normal editor persistence=%+v err=%v", normal, err)
 	}
 	copy, err := definitions.Get(ctx, surveyport.ID(result.CopyID))

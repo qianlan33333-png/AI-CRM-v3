@@ -106,6 +106,28 @@
       queueMicrotask(function () { if (pendingButton === button && !publishing) pendingButton = null; });
     }, true);
   }
+  function installFrozenEnableBridge() {
+    if (!document.body || !['questionnaires', 'questionnaireDetail'].includes(document.body.dataset.page || '')) return;
+    const originalFetch = window.fetch;
+    if (typeof originalFetch !== 'function') return;
+    window.fetch = function (input, options) {
+      const method = text(options && options.method || input && input.method || 'GET').toUpperCase();
+      const rawURL = typeof input === 'string' ? input : input && input.url || '';
+      let pathname = rawURL;
+      try { pathname = new URL(rawURL, window.location.href).pathname; } catch (_error) {}
+      const match = /^\/api\/admin\/questionnaires\/([1-9][0-9]*)\/enable$/.exec(pathname);
+      const response = originalFetch(input, options);
+      if (method !== 'POST' || !match) return response;
+      // A frozen editor calls /enable for a just-saved draft. The Owner correctly
+      // rejects that because a draft has no immutable definition. Keep normal
+      // re-enables on /enable; only its concrete conflict is retried through the
+      // Owner's definition-freezing public-publish operation.
+      return Promise.resolve(response).then(function (result) {
+        if (!result || result.status !== 409) return result;
+        return platformFetch('/api/admin/questionnaires/' + match[1] + '/public-publish', Object.assign({}, options, { method: 'POST' }));
+      });
+    };
+  }
   function installQrFallback() {
     const page = document.body.dataset.page || ''; if (!['questionnaires', 'questionnaireDetail', 'questionnaireOps'].includes(page)) return;
     const pending = new WeakSet();
@@ -170,6 +192,7 @@
     new MutationObserver(ensureHost).observe(stage, { childList: true, subtree: true }); ensureHost(); setTimeout(ensureHost, 50);
   }
   installFrozenPublishBridge();
+  installFrozenEnableBridge();
   installLegacyQuestionnaireOpsGuard();
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, { once: true }); else start();
 }());
