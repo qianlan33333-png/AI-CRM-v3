@@ -35,7 +35,9 @@
 - PR133：核对客户目录读取权限与原有同步任务运行配置，真实全量/增量结果另行验收。错误分类和恢复测试不代表生产已重新同步。
 - PR134：迁移0067先就绪；`AICRM_SURVEY_DATA_KEY` 沿用受保护数据密钥；新增 `AICRM_SURVEY_COMPLETION_PROVIDER_ENABLED` 默认false，受保护 `AICRM_SURVEY_COMPLETION_TARGETS_JSON` 映射引用、端点版本、签名客户端和明确身份kind/scope。它还依赖现有总效果开关。问卷OAuth的 `AICRM_SURVEY_OAUTH_ENABLED`、APP_ID、SECRET、OPEN_PLATFORM_ID和SCOPE分别核对域名与授权作用域，不能从“变量存在”推定可用。
 - PR135：迁移0066包含Channel欢迎意图与原共享效果队列约束变更；先准备既有素材和密封grant所需配置，再考虑开启 `AICRM_CHANNEL_WELCOME_PROVIDER_ENABLED`。既有shared River运行时同时消费普通outbound与outbound_welcome，必须核对实际worker角色在运行。旧无可信首次期限的welcome任务将明确不发送；过期不通过营销补发伪装成功。
-- PR137：除前置0067，需0073合成测试快照、0074安全执行回执事实与0075外推效果kind允许约束，均在启用前核对。0075仍在开发验证中，不能用已有父PR134绿色CI推定整个提交外推已可用。
+- PR137：除前置0067，需0073合成测试快照、0074安全执行回执事实与0075外推效果kind允许约束，均在启用前核对。PR137准确HEAD 807873c的实际PG/River与协议检查已经通过并纳入；部署时仍需应用对应迁移和核验真实配置。
 - PR139：迁移0071/0072及Linux独立SDK Runner须就绪。配置名为 `AICRM_WECOM_MESSAGE_ARCHIVE_ENABLED`（默认false）、`AICRM_WECOM_MESSAGE_ARCHIVE_SECRET`、`AICRM_WECOM_MESSAGE_ARCHIVE_RUNNER_PATH`、`AICRM_WECOM_MESSAGE_ARCHIVE_LIBRARY_PATH`、`AICRM_WECOM_MESSAGE_ARCHIVE_PRIVATE_KEY_PATHS`、`AICRM_WECOM_MESSAGE_ARCHIVE_PAGE_LIMIT`、`AICRM_WECOM_MESSAGE_ARCHIVE_PAGE_BUDGET`。核对既有企微回调开关/Corp/Agent、官方SDK包和库摘要及版本化私钥路径。2026-09-05 已只读核实 V3 主机为 x86_64、Ubuntu 24.04.4 LTS、glibc 2.39；发布runner固定为Linux amd64 cgo构建，与该目标平台匹配，并继续通过固定官方SDK摘要和无凭据ABI health门禁。无凭据health只证明制品/动态库ABI可装载，不代表真实Provider通知、拉取或解密验收。SDK启用前，已导入文本读取与真实通知拉取分别验收；本轮不复制私钥或获取生产正文。
 
 上述变量仅列名称/对应关系，尚未应用。最终集成完成后再以组合提交补全迁移顺序、归档SDK安装和其它板块具体项。
+
+- 群运营生产前置：官方92698指定chat_id_list要求支持该字段的企微终端（4.1.10+）。接口创建成员待操作任务，provider_accepted不代表送达；独立查询核验msgid与冻结发送人/群的实际结果。不得用allow_select作为群目标保证；本轮未创建真实群发任务。

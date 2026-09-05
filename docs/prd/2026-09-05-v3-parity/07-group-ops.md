@@ -63,3 +63,5 @@ d6 `cmd/aicrm/group_ops_runtime_integration_test.go:TestGroupOpsPostgreSQLJourne
 - EER Attempt增加只读EffectID以供既有DispatchExecutionReader取冻结Owner事实可以接受；必须核对返回记录与Envelope的source/target/payload/policy四摘要全匹配。不能只比较记录内部的content/material摘要。不得改变effect标识或重试语义；补兼容测试。
 - 区分发送前读取失败、确定拒绝、已尝试但未知、企微任务已接受及实际送达。补已存在的ProviderResultReceived事实；不能因为缺msgid将已经尝试的网络调用记成未尝试。发送前检查素材有效期、发送资格、群绑定与计划版本。
 - 完成配置装配、原UI、PG真实River即时/延时/重启顺序与回执读取旅程后再申请板块审核。旧版历史配置/节点/只读执行导入仍须逐条对账。
+
+2026-09-05复核[企微官方创建企业群发协议92698](https://developer.work.weixin.qq.com/document/path/92698)：群目标由chat_id_list指定，需企微终端4.1.10及以上正确支持；allow_select不能作为群目标保证。接口创建成员待操作的群发任务，不直接证明群成员收到；后续节点有序接纳与独立送达核验必须分别展示和验收。

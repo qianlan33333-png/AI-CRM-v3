@@ -48,3 +48,5 @@ aiassistant 独占计划、内容、决定和绑定；各外部身份、发送�
 - 现有身份解析只对成功目标建计划并返回汇总计数；未解析目标不能在结果里静默消失。核对旧调用方契约，提供不含裸身份的逐项目标序号/安全状态结果；零可用目标也有明确可回读的结果。沿用已有业务收据存储，不扩展治理台。
 - 旧供体实际入口为 `growth/cloud_orchestrator/review_plans.py` 与 api.py 的 `/api/admin/ai-assist/review-plans`；需要冻结其单人输入及批量包装到V3边缘的兼容映射，而非只验证自造的V3请求。
 - 总控进一步核实 d6 的通用 `Identity.Resolve` 只返回客户与身份ID，未校验数据库中身份的 assurance，也不向调用者返回 assurance。将HTTP输入改为 declared 后直接接受 ResolveFound 仍不足以证明可信归属。复用 Identity 既有受限可信读取 Port，在 composition 的窄Adapter确认同kind/scope/value对应的已验证事实；不得反向伪造VerifiedFact。真实PG需覆盖相同输入仅有declared身份时保持未解析、已有verified身份才可进入审批目标，且两者均不新增客户或身份记录。
+
+首次派发证据定位：冻结供体实际文件为 `aicrm_next/extensions/growth/cloud_orchestrator/review_plans.py`（源码快照位于 `/private/tmp/aicrm-v3-assessment-20260905/donor`）。V3业务入口在 `internal/aiassistant/app/service.go:CreatePlanFromIdentities`；HTTP入口在 `internal/aiassistant/http/handler.go:integrationPlan`。Identity已有 `ExternalIdentityValueReader.VerifiedExternalIdentityValue` 与 `DirectoryIdentityReader.VerifiedWeComCustomer` 可供窄适配组合，不能把通用Resolve返回值当作可信证据。
