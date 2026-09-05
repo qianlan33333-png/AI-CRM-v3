@@ -38,7 +38,7 @@ function click(element) {
 
 async function openEditor(query) {
   const response = await fetch(`${origin}/admin/questionnaireDetail.html${query}`);
-  if (!response.ok) throw new Error(`actual Host editor response=${response.status}`);
+  if (!response.ok) throw new Error(`actual Host editor response=${response.status} body=${(await response.text()).slice(0, 240)}`);
   const html = await response.text();
   if (!html.includes('data-admin-shell-source="v3_webshell"') || !html.includes('id="questionnaire-editor-config"')) {
     throw new Error("actual Survey Host did not render the frozen editor inside the v3 shell");
