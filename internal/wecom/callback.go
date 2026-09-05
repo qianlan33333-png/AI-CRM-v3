@@ -512,6 +512,7 @@ type DecryptedEventDispatcher interface {
 // the external-contact parser or weakening its required fields.
 type CallbackEventDispatcher struct {
 	ExternalContact DecryptedEventDispatcher
+	Archive         DecryptedEventDispatcher
 }
 
 func (dispatcher CallbackEventDispatcher) DispatchDecryptedEvent(ctx context.Context, input DecryptedCallbackEvent) error {
@@ -525,6 +526,11 @@ func (dispatcher CallbackEventDispatcher) DispatchDecryptedEvent(ctx context.Con
 			return ErrMalformedXML
 		}
 		return dispatcher.ExternalContact.DispatchDecryptedEvent(ctx, input)
+	case "msgaudit_notify":
+		if dispatcher.Archive == nil {
+			return ErrMalformedXML
+		}
+		return dispatcher.Archive.DispatchDecryptedEvent(ctx, input)
 	default:
 		return ErrMalformedXML
 	}

@@ -73,6 +73,8 @@ jobs:
           sudo apt-get install --no-install-recommends --yes ripgrep
           command -v rg >/dev/null
           rg --version
+      - name: Verify official WeCom archive SDK ABI in isolation
+        run: scripts/check-wecom-message-archive-sdk.sh
       - name: Pin frozen donor npm
         run: npm install --global npm@11.12.1
       - name: Build and stage frozen External Effects workspace

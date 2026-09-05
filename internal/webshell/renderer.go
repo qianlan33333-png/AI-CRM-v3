@@ -97,6 +97,7 @@ type AdminShellView struct {
 	ChannelResourceID    string
 	ChannelAssets        ChannelAssets
 	AIAssistant          bool
+	MessageArchive       bool
 	AIAssistantAssets    AIAssistantAssets
 }
 
@@ -198,6 +199,7 @@ func (renderer *Renderer) RenderAdminStatus(writer http.ResponseWriter, status i
 	audienceList := data.RequestPath == "/admin/automation-conversion"
 	audienceDetail := strings.HasPrefix(data.RequestPath, "/admin/automation-conversion/packages/")
 	customers := data.RequestPath == "/admin/customers" || strings.HasPrefix(data.RequestPath, "/admin/customers/")
+	archive := strings.HasPrefix(data.RequestPath, "/admin/message-archive/customers/")
 	if audienceList {
 		contentTemplate = "admin_audience"
 	} else if audienceDetail {
@@ -208,6 +210,8 @@ func (renderer *Renderer) RenderAdminStatus(writer http.ResponseWriter, status i
 		contentTemplate = "admin_oneid"
 	} else if customers {
 		contentTemplate = "admin_customers"
+	} else if archive {
+		contentTemplate = "admin_message_archive"
 	}
 	content, err := executeTemplate(renderer.templates, contentTemplate, data)
 	if err != nil {
@@ -219,6 +223,7 @@ func (renderer *Renderer) RenderAdminStatus(writer http.ResponseWriter, status i
 		AudienceList:   audienceList,
 		AudienceDetail: audienceDetail,
 		Customers:      customers,
+		MessageArchive: archive,
 	})
 	if err != nil {
 		return err
