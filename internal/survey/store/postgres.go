@@ -7,12 +7,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
+	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
 	identityport "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/port"
 	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
@@ -845,7 +848,7 @@ func (r *Repository) GetOperationConfiguration(ctx context.Context, id surveypor
 		return surveyport.OperationConfiguration{}, err
 	}
 	var value surveyport.OperationConfiguration
-	err = t.QueryRow(ctx, `SELECT q.id,COALESCE(c.completion_navigation_ref,''),c.completion_channel_id,COALESCE(c.external_push_enabled,FALSE),COALESCE(c.external_push_configuration_ref,''),COALESCE(c.version,0),COALESCE(c.updated_at,q.updated_at) FROM survey_questionnaires q LEFT JOIN survey_operation_configurations c ON c.questionnaire_id=q.id WHERE q.id=$1`, id).Scan(&value.QuestionnaireID, &value.CompletionNavigationRef, &value.CompletionChannelID, &value.ExternalPushEnabled, &value.ExternalPushConfigurationRef, &value.Version, &value.UpdatedAt)
+	err = t.QueryRow(ctx, `SELECT q.id,COALESCE(c.completion_navigation_ref,''),c.completion_channel_id,COALESCE(c.external_push_enabled,FALSE),COALESCE(c.external_push_configuration_ref,''),COALESCE(c.external_push_metadata,'{}'::jsonb),COALESCE(c.version,0),COALESCE(c.updated_at,q.updated_at) FROM survey_questionnaires q LEFT JOIN survey_operation_configurations c ON c.questionnaire_id=q.id WHERE q.id=$1`, id).Scan(&value.QuestionnaireID, &value.CompletionNavigationRef, &value.CompletionChannelID, &value.ExternalPushEnabled, &value.ExternalPushConfigurationRef, &value.ExternalPushMetadata, &value.Version, &value.UpdatedAt)
 	return value, mapError(err)
 }
 
@@ -855,7 +858,10 @@ func (r *Repository) SaveOperationConfiguration(ctx context.Context, value surve
 		return surveyport.OperationConfiguration{}, err
 	}
 	var stored surveyport.OperationConfiguration
-	err = t.QueryRow(ctx, `INSERT INTO survey_operation_configurations(questionnaire_id,completion_navigation_ref,completion_channel_id,external_push_enabled,external_push_configuration_ref,updated_by,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(questionnaire_id) DO UPDATE SET completion_navigation_ref=EXCLUDED.completion_navigation_ref,completion_channel_id=EXCLUDED.completion_channel_id,external_push_enabled=EXCLUDED.external_push_enabled,external_push_configuration_ref=EXCLUDED.external_push_configuration_ref,updated_by=EXCLUDED.updated_by,updated_at=EXCLUDED.updated_at,version=survey_operation_configurations.version+1 RETURNING questionnaire_id,completion_navigation_ref,completion_channel_id,external_push_enabled,external_push_configuration_ref,version,updated_at`, value.QuestionnaireID, value.CompletionNavigationRef, value.CompletionChannelID, value.ExternalPushEnabled, value.ExternalPushConfigurationRef, actor, now).Scan(&stored.QuestionnaireID, &stored.CompletionNavigationRef, &stored.CompletionChannelID, &stored.ExternalPushEnabled, &stored.ExternalPushConfigurationRef, &stored.Version, &stored.UpdatedAt)
+	err = t.QueryRow(ctx, `INSERT INTO survey_operation_configurations(questionnaire_id,completion_navigation_ref,completion_channel_id,external_push_enabled,external_push_configuration_ref,external_push_metadata,updated_by,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(questionnaire_id) DO UPDATE SET completion_navigation_ref=EXCLUDED.completion_navigation_ref,completion_channel_id=EXCLUDED.completion_channel_id,external_push_enabled=EXCLUDED.external_push_enabled,external_push_configuration_ref=EXCLUDED.external_push_configuration_ref,external_push_metadata=EXCLUDED.external_push_metadata,updated_by=EXCLUDED.updated_by,updated_at=EXCLUDED.updated_at,version=survey_operation_configurations.version+1 WHERE survey_operation_configurations.version=$9 RETURNING questionnaire_id,completion_navigation_ref,completion_channel_id,external_push_enabled,external_push_configuration_ref,external_push_metadata,version,updated_at`, value.QuestionnaireID, value.CompletionNavigationRef, value.CompletionChannelID, value.ExternalPushEnabled, value.ExternalPushConfigurationRef, value.ExternalPushMetadata, actor, now, value.Version).Scan(&stored.QuestionnaireID, &stored.CompletionNavigationRef, &stored.CompletionChannelID, &stored.ExternalPushEnabled, &stored.ExternalPushConfigurationRef, &stored.ExternalPushMetadata, &stored.Version, &stored.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return surveyport.OperationConfiguration{}, surveyport.ErrConflict
+	}
 	return stored, mapError(err)
 }
 
@@ -872,6 +878,216 @@ func (r *Repository) RecordDisabledOperation(ctx context.Context, qid surveyport
 		item.SubmissionID = &value
 	}
 	return item, mapError(err)
+}
+
+// RecordCompletionEffect binds the accepted opaque effect to Survey's own
+// operation receipt before the caller's Unit of Work commits. A replay may
+// observe the existing binding only when it is byte-for-byte the same effect.
+func (r *Repository) RecordCompletionEffect(ctx context.Context, qid, sid surveyport.ID, configurationRef, effectID, state string, digest [32]byte, now time.Time) error {
+	t, err := tx(ctx)
+	if err != nil {
+		return err
+	}
+	if effectID == "" || configurationRef == "" || (state != "accepted" && state != "queued") {
+		return surveyport.ErrInvalid
+	}
+	var priorEffectID, priorConfiguration string
+	err = t.QueryRow(ctx, `INSERT INTO survey_external_operation_receipts(questionnaire_id,submission_id,operation_kind,configuration_ref,effect_id,status,occurred_at,read_only_legacy,replayable,idempotency_key_digest,created_at,updated_at) VALUES($1,$2,'external_push',$3,$4,$5,$6,FALSE,TRUE,$7,$6,$6) ON CONFLICT(idempotency_key_digest) DO UPDATE SET updated_at=survey_external_operation_receipts.updated_at RETURNING effect_id,configuration_ref`, qid, sid, configurationRef, effectID, state, now, digest[:]).Scan(&priorEffectID, &priorConfiguration)
+	if err != nil {
+		return mapError(err)
+	}
+	if priorEffectID != effectID || priorConfiguration != configurationRef {
+		return surveyport.ErrConflict
+	}
+	return nil
+}
+
+func (r *Repository) RecordCompletionSnapshot(ctx context.Context, qid, sid surveyport.ID, policy surveyport.CompletionPolicy, evidenceDigest string, identityCiphertext []byte, now time.Time) error {
+	t, err := tx(ctx)
+	if err != nil {
+		return err
+	}
+	if policy.ConfigurationReference == "" || policy.ConfigurationReference != strings.TrimSpace(policy.ConfigurationReference) || len(policy.ConfigurationReference) > 128 || len(evidenceDigest) != 64 {
+		return surveyport.ErrInvalid
+	}
+	configurationDigest, ok := rawCompletionDigest(policy.ConfigurationDigest)
+	if !ok {
+		sum := sha256.Sum256([]byte("survey.completion.unavailable.v1\x00" + policy.ConfigurationReference))
+		configurationDigest = sum[:]
+	}
+	evidence, err := hex.DecodeString(evidenceDigest)
+	if err != nil || len(evidence) != 32 {
+		return surveyport.ErrInvalid
+	}
+	metadata, err := json.Marshal(struct {
+		Day          *int64            `json:"day,omitempty"`
+		Frequency    *int64            `json:"frequency,omitempty"`
+		ExpiresAtTS  *int64            `json:"expires_at_ts,omitempty"`
+		PushType     string            `json:"type,omitempty"`
+		Remark       string            `json:"remark,omitempty"`
+		CustomParams map[string]string `json:"custom_params,omitempty"`
+	}{policy.Day, policy.Frequency, policy.ExpiresAtTS, policy.PushType, policy.Remark, policy.CustomParams})
+	if err != nil {
+		return surveyport.ErrInvalid
+	}
+	_, err = t.Exec(ctx, `INSERT INTO survey_completion_push_snapshots(submission_id,questionnaire_id,configuration_ref,configuration_version,configuration_digest,identity_kind,identity_scope,identity_evidence_digest,external_identity_ciphertext,metadata,definition_version_id,result_snapshot,created_at) SELECT s.id,s.questionnaire_id,$3,$4,$5,$6,$7,$8,$9,$10,s.definition_version_id,s.result_snapshot,$11 FROM survey_submissions s WHERE s.id=$1 AND s.questionnaire_id=$2 ON CONFLICT(submission_id) DO NOTHING`, sid, qid, policy.ConfigurationReference, policy.ConfigurationVersion, configurationDigest, policy.IdentityKind, policy.IdentityScope, evidence, identityCiphertext, metadata, now)
+	return mapError(err)
+}
+
+func (r *Repository) ReadCompletionPayload(ctx context.Context, sourceDigest string) (surveyport.CompletionPayload, error) {
+	t, err := tx(ctx)
+	if err != nil {
+		return surveyport.CompletionPayload{}, err
+	}
+	digest, ok := completionDigestBytes(sourceDigest)
+	if !ok {
+		return surveyport.CompletionPayload{}, surveyport.ErrInvalid
+	}
+	var out surveyport.CompletionPayload
+	var customer *int64
+	var storedDigest []byte
+	var configurationVersion, identityKind, identityScope string
+	var configurationDigest, metadata, resultSnapshot, identityCiphertext []byte
+	err = t.QueryRow(ctx, `SELECT r.questionnaire_id,r.submission_id,r.configuration_ref,s.customer_id,s.title_snapshot,s.submitted_at,s.payload_digest,p.configuration_version,p.configuration_digest,p.identity_kind,p.identity_scope,p.external_identity_ciphertext,p.metadata,p.result_snapshot FROM survey_external_operation_receipts r JOIN survey_submissions s ON s.id=r.submission_id JOIN survey_completion_push_snapshots p ON p.submission_id=s.id WHERE r.operation_kind='external_push' AND r.idempotency_key_digest=$1`, digest).Scan(&out.QuestionnaireID, &out.SubmissionID, &out.ConfigurationReference, &customer, &out.QuestionnaireTitle, &out.SubmittedAt, &storedDigest, &configurationVersion, &configurationDigest, &identityKind, &identityScope, &identityCiphertext, &metadata, &resultSnapshot)
+	if err != nil {
+		return surveyport.CompletionPayload{}, mapError(err)
+	}
+	if customer == nil || *customer < 1 || len(storedDigest) != 32 {
+		return surveyport.CompletionPayload{}, surveyport.ErrUnavailable
+	}
+	out.CustomerID = *customer
+	out.SourceDigest = sourceDigest
+	out.TargetDigest = completionDigest("survey.completion.target.v1", out.ConfigurationReference)
+	out.PayloadDigest = completionDigest("survey.completion.payload.v1", hex.EncodeToString(storedDigest))
+	out.PolicyDigest = completionDigest("survey.completion.policy.v1", "v1")
+	out.IdempotencyKey = "survey.completion:" + strconv.FormatInt(int64(out.SubmissionID), 10)
+	if len(configurationDigest) != 32 || !json.Valid(metadata) || !json.Valid(resultSnapshot) {
+		return surveyport.CompletionPayload{}, surveyport.ErrUnavailable
+	}
+	out.AssessmentResult = append(json.RawMessage(nil), resultSnapshot...)
+	out.Policy.ConfigurationReference, out.Policy.ConfigurationVersion = out.ConfigurationReference, configurationVersion
+	out.Policy.ConfigurationDigest = "sha256:" + hex.EncodeToString(configurationDigest)
+	out.Policy.IdentityKind, out.Policy.IdentityScope = identitydomain.Kind(identityKind), identityScope
+	if err = json.Unmarshal(metadata, &out.Policy); err != nil {
+		return surveyport.CompletionPayload{}, surveyport.ErrUnavailable
+	}
+	if len(identityCiphertext) > 0 {
+		out.ExternalUserID, err = r.cipher.Decrypt(identityCiphertext)
+		if err != nil || out.ExternalUserID == "" {
+			return surveyport.CompletionPayload{}, surveyport.ErrUnavailable
+		}
+	}
+	rows, err := t.Query(ctx, `SELECT question_type,question_title_snapshot,selected_options_snapshot,text_value_ciphertext FROM survey_submission_answers WHERE submission_id=$1 ORDER BY question_sort_order,id`, out.SubmissionID)
+	if err != nil {
+		return surveyport.CompletionPayload{}, mapError(err)
+	}
+	defer rows.Close()
+	out.Answers = []surveyport.CompletionAnswer{}
+	for rows.Next() {
+		var answer surveyport.CompletionAnswer
+		var selected, encrypted []byte
+		if err = rows.Scan(&answer.QuestionType, &answer.QuestionTitle, &selected, &encrypted); err != nil {
+			return surveyport.CompletionPayload{}, mapError(err)
+		}
+		var options []surveyport.SelectedOptionSnapshot
+		if json.Unmarshal(selected, &options) != nil {
+			return surveyport.CompletionPayload{}, surveyport.ErrUnavailable
+		}
+		answer.OptionTexts = make([]string, 0, len(options))
+		for _, option := range options {
+			answer.OptionTexts = append(answer.OptionTexts, option.OptionText)
+		}
+		if len(encrypted) > 0 {
+			answer.TextValue, err = r.cipher.Decrypt(encrypted)
+			if err != nil {
+				return surveyport.CompletionPayload{}, surveyport.ErrUnavailable
+			}
+		}
+		out.Answers = append(out.Answers, answer)
+	}
+	if err = rows.Err(); err != nil {
+		return surveyport.CompletionPayload{}, mapError(err)
+	}
+	return out, nil
+}
+
+func (r *Repository) CompleteCompletionEffect(ctx context.Context, effectID, state string, realCall bool, receiptDigest string, attempt int32, now time.Time) error {
+	t, err := tx(ctx)
+	if err != nil {
+		return err
+	}
+	if effectID == "" || attempt < 1 || !validCompletionState(state) || !validCompletionDigest(receiptDigest) {
+		return surveyport.ErrInvalid
+	}
+	status, category := completionOperationStatus(state, realCall)
+	result, err := t.Exec(ctx, `UPDATE survey_external_operation_receipts SET status=$2,failure_category=$3,occurrence_count=GREATEST(occurrence_count,$4),occurred_at=$5,updated_at=$5 WHERE effect_id=$1 AND operation_kind='external_push' AND read_only_legacy=FALSE`, effectID, status, category, attempt, now)
+	if err != nil {
+		return mapError(err)
+	}
+	if result.RowsAffected() != 1 {
+		return surveyport.ErrNotFound
+	}
+	return nil
+}
+
+func completionDigestBytes(value string) ([]byte, bool) {
+	if len(value) != 71 || !strings.HasPrefix(value, "sha256:") {
+		return nil, false
+	}
+	decoded, err := hex.DecodeString(value[len("sha256:"):])
+	if err != nil || len(decoded) != 32 {
+		return nil, false
+	}
+	// The effect idempotency key stores a digest of the opaque source digest,
+	// just as all other survey operation receipts do. Keep the raw digest out
+	// of the external-effects record while retaining a deterministic lookup.
+	sum := sha256.Sum256([]byte(value))
+	return sum[:], true
+}
+
+func rawCompletionDigest(value string) ([]byte, bool) {
+	if len(value) != 71 || !strings.HasPrefix(value, "sha256:") {
+		return nil, false
+	}
+	decoded, err := hex.DecodeString(value[len("sha256:"):])
+	return decoded, err == nil && len(decoded) == 32
+}
+
+func completionDigest(parts ...string) string {
+	sum := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+func validCompletionDigest(value string) bool {
+	_, ok := completionDigestBytes(value)
+	return ok
+}
+
+func validCompletionState(state string) bool {
+	switch state {
+	case "executed", "outcome_unknown", "retryable_failed", "final_failed", "reconciled":
+		return true
+	default:
+		return false
+	}
+}
+
+func completionOperationStatus(state string, realCall bool) (string, string) {
+	switch state {
+	case "executed":
+		if realCall {
+			return "executed", ""
+		}
+		return "failed", "provider_execution_unproven"
+	case "outcome_unknown":
+		return "outcome_unknown", "provider_outcome_unknown"
+	case "retryable_failed":
+		return "attempted", "retryable_provider_failure"
+	case "reconciled":
+		return "reconciled", ""
+	default:
+		return "failed", "provider_final_failure"
+	}
 }
 
 func (r *Repository) CreateOAuthState(ctx context.Context, digest [32]byte, state surveyapp.OAuthState, now time.Time) error {
@@ -924,3 +1140,5 @@ func (r *Repository) String() string { return fmt.Sprintf("survey.Repository(%p)
 var _ surveyapp.Store = (*Repository)(nil)
 var _ surveyapp.SubmissionStore = (*Repository)(nil)
 var _ surveyapp.OAuthStore = (*Repository)(nil)
+var _ surveyport.CompletionPayloadReader = (*Repository)(nil)
+var _ surveyport.CompletionEffectProjector = (*Repository)(nil)

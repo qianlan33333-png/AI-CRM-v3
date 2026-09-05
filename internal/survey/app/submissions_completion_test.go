@@ -1,0 +1,124 @@
+package app
+
+import (
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"strings"
+	"testing"
+	"time"
+
+	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
+	customerport "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/port"
+	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
+	identityport "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/port"
+	surveyport "github.com/qianlan33333-png/AI-CRM-v3/internal/survey/port"
+	"github.com/qianlan33333-png/AI-CRM-v3/internal/survey/secure"
+)
+
+type completionStore struct {
+	SubmissionStore
+	questionnaire surveyport.Questionnaire
+	configuration surveyport.OperationConfiguration
+	created       bool
+	accepted      int
+	bound         int
+}
+
+func completionIntPointer(value int) *int { return &value }
+
+func (s *completionStore) GetPublishedBySlug(context.Context, string) (surveyport.Questionnaire, error) {
+	return s.questionnaire, nil
+}
+func (s *completionStore) CreateSubmission(_ context.Context, in PersistSubmission) (surveyport.Submission, bool, error) {
+	if s.created {
+		return surveyport.Submission{ID: 9, QuestionnaireID: in.Questionnaire.ID, QuestionnaireSlug: in.Questionnaire.Slug, DefinitionVersion: in.Questionnaire.DefinitionVersion}, false, nil
+	}
+	s.created = true
+	return surveyport.Submission{ID: 9, QuestionnaireID: in.Questionnaire.ID, QuestionnaireSlug: in.Questionnaire.Slug, DefinitionVersion: in.Questionnaire.DefinitionVersion, Answers: in.Answers}, true, nil
+}
+func (s *completionStore) GetOperationConfiguration(context.Context, surveyport.ID) (surveyport.OperationConfiguration, error) {
+	return s.configuration, nil
+}
+func (s *completionStore) RecordCompletionEffect(context.Context, surveyport.ID, surveyport.ID, string, string, string, [32]byte, time.Time) error {
+	s.bound++
+	return nil
+}
+func (s *completionStore) RecordCompletionSnapshot(context.Context, surveyport.ID, surveyport.ID, surveyport.CompletionPolicy, string, []byte, time.Time) error {
+	return nil
+}
+func (s *completionStore) AppendAuditAndOutbox(context.Context, string, surveyport.ID, string, json.RawMessage, string, time.Time) error {
+	return nil
+}
+
+type completionAccepter struct {
+	calls int
+	fail  bool
+}
+
+func (a *completionAccepter) AcceptCompletionWithin(_ context.Context, in surveyport.CompletionIntent) (surveyport.EffectBinding, error) {
+	a.calls++
+	if a.fail {
+		return surveyport.EffectBinding{}, errors.New("effect acceptance failed")
+	}
+	if in.ConfigurationReference != "local-webhook" || in.IdempotencyKey != "survey.completion:9" || !strings.HasPrefix(in.SourceDigest, "sha256:") {
+		return surveyport.EffectBinding{}, errors.New("unexpected completion intent")
+	}
+	return surveyport.EffectBinding{EffectID: "eer_9", State: "queued"}, nil
+}
+
+type completionPhoneAttacher struct{}
+
+func (completionPhoneAttacher) AttachDeclaredPhoneToCustomer(context.Context, identityport.DeclaredPhoneCommand) (identityport.DeclaredAttachResult, error) {
+	return identityport.DeclaredAttachResult{}, nil
+}
+
+type completionProjection struct{}
+
+func (completionProjection) UpsertDirectoryProjection(context.Context, customerport.DirectoryProjection) error {
+	return nil
+}
+func (completionProjection) MarkDirectoryStale(context.Context, []customerdomain.CustomerID, time.Time) (int64, error) {
+	return 0, nil
+}
+func (completionProjection) UpdateDirectoryPhone(context.Context, customerdomain.CustomerID, string, identitydomain.Assurance, int64, time.Time) error {
+	return nil
+}
+func (completionProjection) ClearDirectoryPhone(context.Context, customerdomain.CustomerID, time.Time) error {
+	return nil
+}
+
+func TestSubmissionAcceptsAndBindsConfiguredCompletionOnce(t *testing.T) {
+	q := surveyport.Questionnaire{ID: 4, Slug: "growth", DefinitionVersion: 1, Mode: surveyport.ModeSurvey, Questions: []surveyport.Question{{ID: 1, Type: surveyport.QuestionTextarea, Title: "需求", Required: true, SortOrder: 0, Validation: surveyport.Validation{MinimumLength: completionIntPointer(1)}, Options: []surveyport.Option{}}}}
+	store := &completionStore{questionnaire: q, configuration: surveyport.OperationConfiguration{QuestionnaireID: 4, ExternalPushEnabled: true, ExternalPushConfigurationRef: "local-webhook"}}
+	cipher, err := secure.NewCipher(base64.RawStdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewSubmissionService(oauthUOW{}, store, cipher)
+	service.phoneAttacher, service.phoneProjection = completionPhoneAttacher{}, completionProjection{}
+	accepter := &completionAccepter{}
+	if err = service.BindCompletionIntent(accepter); err != nil {
+		t.Fatal(err)
+	}
+	customer := customerdomain.CustomerID(7)
+	command := surveyport.SubmitCommand{Slug: "growth", DefinitionVersion: 1, SubmissionKey: strings.Repeat("a", 43), Identity: surveyport.SubmissionIdentity{State: surveyport.IdentityResolved, CustomerID: &customer, EvidenceDigest: strings.Repeat("b", 64)}, Answers: []surveyport.SubmissionAnswer{{QuestionID: 1, TextValue: "需要帮助"}}}
+	if _, err = service.Submit(context.Background(), command); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.Submit(context.Background(), command); err != nil {
+		t.Fatal(err)
+	}
+	if accepter.calls != 1 || store.bound != 1 {
+		t.Fatalf("completion calls/bindings=%d/%d", accepter.calls, store.bound)
+	}
+}
+
+func TestOperationConfigurationRejectsNonObjectMetadata(t *testing.T) {
+	service := &SubmissionService{}
+	_, err := service.SaveOperationConfiguration(context.Background(), surveyport.OperationConfiguration{QuestionnaireID: 1, ExternalPushMetadata: []byte(`[]`)}, 1, "survey-config-invalid-metadata-0001")
+	if !errors.Is(err, surveyport.ErrInvalid) {
+		t.Fatalf("non-object metadata error=%v", err)
+	}
+}

@@ -109,13 +109,14 @@ type OperationReceipt struct {
 }
 
 type OperationConfiguration struct {
-	QuestionnaireID              ID        `json:"-"`
-	CompletionNavigationRef      string    `json:"navigation_target_id,omitempty"`
-	CompletionChannelID          *int64    `json:"channel_id,omitempty"`
-	ExternalPushEnabled          bool      `json:"external_push_enabled"`
-	ExternalPushConfigurationRef string    `json:"configuration_reference,omitempty"`
-	Version                      int64     `json:"version"`
-	UpdatedAt                    time.Time `json:"updated_at,omitempty"`
+	QuestionnaireID              ID              `json:"-"`
+	CompletionNavigationRef      string          `json:"navigation_target_id,omitempty"`
+	CompletionChannelID          *int64          `json:"channel_id,omitempty"`
+	ExternalPushEnabled          bool            `json:"external_push_enabled"`
+	ExternalPushConfigurationRef string          `json:"configuration_reference,omitempty"`
+	ExternalPushMetadata         json.RawMessage `json:"metadata,omitempty"`
+	Version                      int64           `json:"version"`
+	UpdatedAt                    time.Time       `json:"updated_at,omitempty"`
 }
 
 type LegacySubmission struct {
