@@ -20,7 +20,6 @@ const dom = new JSDOM(`<!doctype html><html><body>${template}</body></html>`, {
   pretendToBeVisual: true,
   beforeParse(window) {
     window.Headers = globalThis.Headers;
-    window.crypto = globalThis.crypto;
     window.fetch = async (input, init = {}) => {
       const url = new URL(String(input), window.location.origin);
       if (url.pathname === `/api/admin/ai-audience/packages/${packageID}/broadcast-previews` || url.pathname === `/api/admin/ai-audience/packages/${packageID}/runs` || url.pathname === "/api/admin/automation-runs") return globalThis.fetch(url, init);
