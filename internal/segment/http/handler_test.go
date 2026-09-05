@@ -2,6 +2,7 @@ package http
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -75,6 +76,9 @@ type snapshotApplication struct{ snapshot segmentport.Snapshot }
 func (snapshotApplication) Preview(context.Context, int64, time.Time) (segmentapp.Preview, error) {
 	return segmentapp.Preview{}, nil
 }
+func (snapshotApplication) PreviewDefinition(context.Context, int64, json.RawMessage, time.Time) (segmentapp.Preview, error) {
+	return segmentapp.Preview{}, nil
+}
 func (snapshotApplication) AcceptRefresh(context.Context, segmentapp.RefreshCommand) (segmentdomain.RefreshRun, error) {
 	return segmentdomain.RefreshRun{}, nil
 }
@@ -86,6 +90,18 @@ func (s snapshotApplication) PublishedSnapshot(context.Context, segmentport.Pack
 }
 func (snapshotApplication) Members(context.Context, segmentport.SnapshotID, string, int) (segmentport.MemberPage, error) {
 	return segmentport.MemberPage{}, nil
+}
+
+type previewDefinitionCapture struct {
+	snapshotApplication
+	definition json.RawMessage
+	calls      int
+}
+
+func (s *previewDefinitionCapture) PreviewDefinition(_ context.Context, _ int64, definition json.RawMessage, _ time.Time) (segmentapp.Preview, error) {
+	s.calls++
+	s.definition = append(s.definition[:0], definition...)
+	return segmentapp.Preview{}, nil
 }
 
 func (fakeApplication) ListGroups(context.Context) ([]segmentdomain.Group, error) { return nil, nil }
@@ -203,6 +219,22 @@ func TestConfigurationConvertsFrozenOwnerUserIDsThroughAccess(t *testing.T) {
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK || !strings.Contains(string(capture.command.Definition), `"owner_staff_ids":["9"]`) || strings.Contains(string(capture.command.Definition), "owner_userids") {
 		t.Fatalf("status=%d definition=%s", response.Code, capture.command.Definition)
+	}
+}
+
+func TestPreviewDraftDefinitionNormalizesOwnersWithoutSaving(t *testing.T) {
+	viewer := accessdomain.Principal{InternalID: 1, Kind: accessdomain.KindAdmin, Roles: []accessdomain.Role{accessdomain.RoleViewer}}
+	capture := &previewDefinitionCapture{}
+	handler, err := NewRuntimeHandlerWithOwners(fakeApplication{}, capture, fakeSecurity{principal: viewer}, ownerResolverStub{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := `{"reference_time":"2026-09-05T08:00:00Z","definition":{"schema_version":1,"template_key":"paid_order","parameters":{"product_codes":["course-v3"],"paid_at_from":"2026-09-05T08:00:00Z","paid_at_to":"2026-09-05T09:00:00Z","owner_scope":"specified","owner_userids":["wecom-owner"],"require_active_wecom_contact":true}}}`
+	request := httptest.NewRequest(http.MethodPost, "/api/admin/ai-audience/packages/7/preview", strings.NewReader(body))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || capture.calls != 1 || !strings.Contains(string(capture.definition), `"owner_staff_ids":["9"]`) || strings.Contains(string(capture.definition), "owner_userids") {
+		t.Fatalf("status=%d calls=%d definition=%s", response.Code, capture.calls, capture.definition)
 	}
 }
 

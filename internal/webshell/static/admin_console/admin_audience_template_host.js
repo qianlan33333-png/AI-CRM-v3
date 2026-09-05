@@ -41,6 +41,12 @@
     if (!values.length) throw new Error(`${label}不能为空。`);
     return values.map((item) => convert(item, label));
   };
+  const canonicalTimestamp = (value, label) => {
+    if (value === null || value === undefined || value === "") return "";
+    const parsed = new Date(String(value));
+    if (Number.isNaN(parsed.getTime())) throw new Error(`${label}必须是有效日期时间。`);
+    return parsed.toISOString();
+  };
 
   function canonicalDefinition(templateKey, value) {
     const parameters = { ...value };
@@ -57,8 +63,8 @@
     } else if (templateKey === "paid_order") {
       parameters.product_codes = requiredList(parameters.products, "商品", canonicalCode);
       delete parameters.products;
-      parameters.paid_at_from = parameters.paid_at_from || "";
-      parameters.paid_at_to = parameters.paid_at_to || "";
+      parameters.paid_at_from = canonicalTimestamp(parameters.paid_at_from, "支付时间起点");
+      parameters.paid_at_to = canonicalTimestamp(parameters.paid_at_to, "支付时间终点");
     } else if (templateKey === "channel_entry") {
       parameters.channel_codes = requiredList(parameters.channels, "渠道", canonicalCode);
       delete parameters.channels;
@@ -97,11 +103,28 @@
     const status = byID("templateStatusLine");
     const previewBox = byID("templatePreviewBox");
     const form = window.TemplateParameterForm.create(root);
-	const legacyDefinition = byID("packageDefinitionInput");
-	if (legacyDefinition?.closest(".ai-field")) legacyDefinition.closest(".ai-field").hidden = true;
-    const state = { package: null, configuration: null, templates: [] };
+    const legacyDefinition = byID("packageDefinitionInput");
+    if (legacyDefinition?.closest(".ai-field")) legacyDefinition.closest(".ai-field").hidden = true;
+    const state = { package: null, configuration: null, templates: [], selectedTemplate: "", ready: false, restoring: false };
     const setStatus = (message, kind = "") => { status.textContent = message; status.dataset.state = kind; };
-    const templateFor = () => state.templates.find((item) => item.key === select.value);
+    const templateFor = () => state.templates.find((item) => item.key === state.selectedTemplate);
+
+    function renderTemplateOptions() {
+      const stored = state.configuration?.definition?.template_key;
+      const fallback = state.templates.some((template) => template.key === state.selectedTemplate)
+        ? state.selectedTemplate
+        : (state.templates.some((template) => template.key === stored) ? stored : state.templates[0]?.key || "");
+      state.selectedTemplate = fallback;
+      select.replaceChildren();
+      state.templates.forEach((template) => {
+        const option = document.createElement("option");
+        option.value = template.key;
+        option.textContent = `${template.label} · v${template.template_version}`;
+        option.disabled = !template.available;
+        select.appendChild(option);
+      });
+      select.value = fallback;
+    }
 
     async function rehydrateOwnerUserIDs(parameters) {
       if (parameters?.owner_scope !== "specified") return parameters;
@@ -121,8 +144,6 @@
       saveButton.disabled = readOnly || !template;
       byID("templateVersionBadge").textContent = template ? `${template.label} · v${template.template_version}` : "请选择模板";
       byID("templateHistoryNote").hidden = Boolean(template);
-	  const unresolvedReferences = (template?.fields || []).filter((field) => field.reference).map((field) => field.label);
-	  if (unresolvedReferences.length) setStatus(`${unresolvedReferences.join("、")}当前仅接受 V3 稳定 ID/code；精确标题解析尚未由对应 Owner 提供。`, "not-ready");
     }
     async function load() {
       const [pkg, templates, configuration] = await Promise.all([
@@ -131,49 +152,64 @@
       state.package = pkg.package;
       state.templates = templates.items || [];
       state.configuration = configuration.configuration;
-      select.replaceChildren();
-      state.templates.forEach((template) => {
-        const option = document.createElement("option");
-        option.value = template.key;
-        option.textContent = `${template.label} · v${template.template_version}`;
-        option.disabled = !template.available;
-        select.appendChild(option);
-      });
-      const current = state.configuration?.definition?.template_key;
-      select.value = state.templates.some((template) => template.key === current) ? current : state.templates[0]?.key || "";
+      state.ready = true;
+      renderTemplateOptions();
       await render();
     }
-    async function persist(andPreview) {
+    function currentDefinition() {
       const template = templateFor();
       if (!template) throw new Error("请选择模板。");
-      const definition = canonicalDefinition(template.key, form.getValue());
-      setStatus(andPreview ? "正在按当前表单保存并预览…" : "正在保存表单配置…");
-      const saved = await request(`${api}/packages/${id}/configuration`, { method: "PUT", mutate: true, body: { expected_package_version: state.package.version, refresh_cron_utc: state.configuration?.refresh_cron_utc || "", definition } });
-      state.configuration = saved.configuration;
-      state.package = (await request(`${api}/packages/${id}`)).package;
-      await render();
-      if (!andPreview) { setStatus("配置已保存为新的不可变版本。", "success"); return; }
-      const result = await request(`${api}/packages/${id}/preview`, { method: "POST", body: { reference_time: new Date().toISOString() } });
+      return canonicalDefinition(template.key, form.getValue());
+    }
+    function prepareDetailSave() {
+      if (!legacyDefinition) throw new Error("基础配置控件不可用。");
+      legacyDefinition.value = JSON.stringify(currentDefinition());
+    }
+    async function preview() {
+      const definition = currentDefinition();
+      setStatus("正在按当前表单预览，未保存配置…");
+      const result = await request(`${api}/packages/${id}/preview`, { method: "POST", body: { definition, reference_time: new Date().toISOString() } });
       const preview = result.preview;
       previewBox.hidden = false;
       previewBox.textContent = `${preview.member_count} 人 · 成员摘要 ${preview.member_digest} · 水位摘要 ${preview.watermark_digest}`;
-      setStatus("当前表单已按相同规则保存并完成预览。", "success");
+      setStatus("当前表单预览完成，尚未保存配置。", "success");
     }
     document.addEventListener("click", (event) => {
       const target = event.target;
-      if (target !== previewButton && target !== saveButton && target !== byID("savePackageBtn")) return;
-      event.preventDefault();
-      event.stopImmediatePropagation();
-      persist(target === previewButton).catch((error) => setStatus(error.message || "表单操作失败。", "error"));
+      if (target === previewButton) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        preview().catch((error) => setStatus(error.message || "表单操作失败。", "error"));
+        return;
+      }
+      if (target !== saveButton && target !== byID("savePackageBtn") && target !== byID("saveCurrentDimensionBtn")) return;
+      try {
+        // Let the existing detail controller preserve its package PATCH,
+        // group/name and refresh settings before it writes this definition.
+        prepareDetailSave();
+      } catch (error) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        setStatus(error.message || "表单操作失败。", "error");
+      }
     }, true);
-    select.addEventListener("change", () => { previewBox.hidden = true; render().catch((error) => setStatus(error.message, "error")); });
+    select.addEventListener("change", () => {
+      state.selectedTemplate = select.value;
+      previewBox.hidden = true;
+      render().catch((error) => setStatus(error.message, "error"));
+    });
+    const observer = new MutationObserver(() => {
+      if (!state.ready || state.restoring || root.querySelector("[data-field-name]")) return;
+      state.restoring = true;
+      queueMicrotask(() => {
+        load().catch((error) => setStatus(error.message || "模板表单无法重新加载。", "error")).finally(() => { state.restoring = false; });
+      });
+    });
+    observer.observe(root, { childList: true });
     try {
       await load();
-      // The existing detail adapter can finish after this Host during a slow
-      // API response. Reapply the frozen form once without taking over it.
-      window.setTimeout(() => { if (!root.querySelector("[data-field-name]")) render().catch(() => {}); }, 120);
     } catch (error) { setStatus(error.message || "模板表单无法加载。", "error"); }
   }
 
-  document.addEventListener("DOMContentLoaded", () => { window.setTimeout(() => { void start(); }, 0); });
+  document.addEventListener("DOMContentLoaded", () => { void start(); });
 })();

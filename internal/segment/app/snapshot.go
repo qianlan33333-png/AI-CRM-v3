@@ -108,6 +108,31 @@ func (s *SnapshotService) Preview(ctx context.Context, packageID int64, referenc
 	return makePreview(packageID, config.ID, evaluation), nil
 }
 
+// PreviewDefinition evaluates an unsaved, already-canonical definition for an
+// existing package. It deliberately creates no configuration version, refresh
+// run, snapshot, or external effect; the form preview must not mutate state.
+func (s *SnapshotService) PreviewDefinition(ctx context.Context, packageID int64, definition json.RawMessage, reference time.Time) (Preview, error) {
+	if s == nil || packageID < 1 || len(definition) == 0 {
+		return Preview{}, ErrInvalid
+	}
+	if reference.IsZero() {
+		reference = s.now().UTC()
+	} else {
+		reference = reference.UTC()
+	}
+	if err := s.uow.Within(ctx, func(tx context.Context) error {
+		_, err := s.store.GetPackage(tx, packageID)
+		return err
+	}); err != nil {
+		return Preview{}, classify(err)
+	}
+	evaluation, err := s.evaluator.Evaluate(ctx, definition, reference)
+	if err != nil {
+		return Preview{}, classify(err)
+	}
+	return makePreview(packageID, 0, evaluation), nil
+}
+
 func (s *SnapshotService) AcceptRefresh(ctx context.Context, command RefreshCommand) (segmentdomain.RefreshRun, error) {
 	if s == nil || command.PackageID < 1 || command.Actor < 1 || len(command.IdempotencyKey) < 16 || len(command.IdempotencyKey) > 128 || strings.TrimSpace(command.IdempotencyKey) != command.IdempotencyKey {
 		return segmentdomain.RefreshRun{}, ErrInvalid

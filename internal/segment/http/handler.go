@@ -40,6 +40,7 @@ type ConfigurationApplication interface {
 }
 type SnapshotApplication interface {
 	Preview(context.Context, int64, time.Time) (segmentapp.Preview, error)
+	PreviewDefinition(context.Context, int64, json.RawMessage, time.Time) (segmentapp.Preview, error)
 	AcceptRefresh(context.Context, segmentapp.RefreshCommand) (segmentdomain.RefreshRun, error)
 	GetRefresh(context.Context, int64) (segmentdomain.RefreshRun, error)
 	PublishedSnapshot(context.Context, segmentport.PackageID) (segmentport.Snapshot, bool, error)
@@ -681,12 +682,30 @@ func (h *Handler) preview(w http.ResponseWriter, r *http.Request, packageID int6
 		return
 	}
 	var in struct {
-		ReferenceTime time.Time `json:"reference_time"`
+		ReferenceTime time.Time       `json:"reference_time"`
+		Definition    json.RawMessage `json:"definition"`
 	}
 	if !decode(w, r, &in) {
 		return
 	}
-	value, err := h.snapshots.Preview(r.Context(), packageID, in.ReferenceTime)
+	var value segmentapp.Preview
+	var err error
+	if len(in.Definition) == 0 {
+		value, err = h.snapshots.Preview(r.Context(), packageID, in.ReferenceTime)
+	} else {
+		definition, normalizeErr := h.normalizeOwnerUserIDs(r.Context(), in.Definition)
+		if normalizeErr != nil {
+			code := "owner_invalid"
+			if errors.Is(normalizeErr, errOwnerUnknown) {
+				code = "owner_unknown"
+			} else if errors.Is(normalizeErr, errOwnerUnavailable) {
+				code = "owner_unavailable"
+			}
+			fail(w, http.StatusUnprocessableEntity, code)
+			return
+		}
+		value, err = h.snapshots.PreviewDefinition(r.Context(), packageID, definition, in.ReferenceTime)
+	}
 	if err != nil {
 		resultError(w, err)
 		return

@@ -9,6 +9,7 @@ const template = fs.readFileSync(path.join(root, "internal", "webshell", "templa
   .replace(/^\{\{define "admin_audience_detail"\}\}/, "")
   .replace(/\{\{end\}\}\s*$/, "");
 const frozenController = fs.readFileSync(path.join(here, "template_parameter_form.js"), "utf8");
+const detail = fs.readFileSync(path.join(here, "admin_audience_detail.js"), "utf8");
 const host = fs.readFileSync(path.join(here, "admin_audience_template_host.js"), "utf8");
 const wait = (milliseconds = 100) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 const json = (body, status = 200) => ({ ok: status >= 200 && status < 300, status, json: async () => body });
@@ -27,6 +28,9 @@ const templates = [
 let config = { id: 4, package_id: 13, version: 1, refresh_cron_utc: "", definition: { schema_version: 1, template_key: "wecom_contact_registration", parameters: { owner_scope: "all", owner_staff_ids: [], contact_statuses: ["active"], registration_status: "any" } } };
 let packageVersion = 3;
 const writes = [];
+const previewWrites = [];
+const packageWrites = [];
+let templateReads = 0;
 const dom = new JSDOM(`<!doctype html><html><body>${template}</body></html>`, {
   url: "https://test.invalid/admin/automation-conversion/packages/13",
   runScripts: "outside-only",
@@ -36,30 +40,53 @@ const dom = new JSDOM(`<!doctype html><html><body>${template}</body></html>`, {
     window.structuredClone = globalThis.structuredClone;
     window.fetch = async (input, init = {}) => {
       const url = new URL(String(input), window.location.origin);
-      if (url.pathname === "/api/admin/ai-audience/packages/13" && (!init.method || init.method === "GET")) return json({ package: { id: 13, version: packageVersion, lifecycle: "paused" } });
-      if (url.pathname === "/api/admin/ai-audience/templates") return json({ items: templates });
+      if (url.pathname === "/api/admin/ai-audience/packages/13" && (!init.method || init.method === "GET")) return json({ package: { id: 13, name: "原人群", code: "legacy-audience", version: packageVersion, lifecycle: "paused" } });
+      if (url.pathname === "/api/admin/ai-audience/package-groups") return json({ items: [] });
+      if (url.pathname === "/api/admin/ai-audience/templates") {
+        templateReads += 1;
+        // bootDetail starts first. Hold only that request so the Host mounts
+        // before the legacy renderer finishes and the MutationObserver has to
+        // restore the frozen form without relying on a timeout race.
+        if (templateReads === 1) await new Promise((resolve) => window.setTimeout(resolve, 180));
+        return json({ items: templates });
+      }
       if (url.pathname === "/api/admin/ai-audience/packages/13/configuration" && (!init.method || init.method === "GET")) return json({ configuration: config });
       if (url.pathname === "/api/admin/ai-audience/packages/13/owner-references") return json({ owner_userids: ["bob"] });
+      if (url.pathname === "/api/admin/ai-audience/packages/13/automation-binding" || url.pathname === "/api/admin/ai-audience/packages/13/senders" || url.pathname === "/api/admin/ai-audience/packages/13/members") return json({ error: "not_found" }, 404);
+      if (url.pathname === "/api/admin/automation-agents") return json({ items: [] });
+      if (url.pathname === "/api/admin/ai-audience/packages/13/precheck") return json({ precheck: { ready: false, reasons: [] } });
+      if (url.pathname === "/api/admin/ai-audience/packages/13" && init.method === "PATCH") {
+        const body = JSON.parse(init.body);
+        packageWrites.push(body);
+        packageVersion += 1;
+        return json({ package: { id: 13, name: body.name, code: "legacy-audience", version: packageVersion, lifecycle: "paused" } });
+      }
       if (url.pathname === "/api/admin/ai-audience/packages/13/configuration" && init.method === "PUT") {
         const body = JSON.parse(init.body);
         writes.push(body);
-        packageVersion += 1;
-        config = { ...config, version: config.version + 1, definition: { ...body.definition, parameters: { ...body.definition.parameters, owner_staff_ids: ["9"] } } };
-        delete config.definition.parameters.owner_userids;
+        const parameters = { ...body.definition.parameters };
+        parameters.owner_staff_ids = parameters.owner_scope === "specified" ? ["9"] : [];
+        delete parameters.owner_userids;
+        config = { ...config, version: config.version + 1, refresh_cron_utc: body.refresh_cron_utc, definition: { ...body.definition, parameters } };
         return json({ configuration: config });
       }
-      if (url.pathname === "/api/admin/ai-audience/packages/13/preview") return json({ preview: { member_count: 1, member_digest: "member", watermark_digest: "watermark" } });
+      if (url.pathname === "/api/admin/ai-audience/packages/13/preview") {
+        const body = JSON.parse(init.body);
+        previewWrites.push(body);
+        return json({ preview: { member_count: 1, member_digest: "member", watermark_digest: "watermark" } });
+      }
       return json({ error: `unexpected ${url.pathname}` }, 500);
     };
   },
 });
 
+dom.window.eval(detail);
 dom.window.eval(frozenController);
 dom.window.eval(host);
-await wait(180);
+await wait(350);
 const document = dom.window.document;
 const select = document.querySelector("#templateSelect");
-if (select.options.length !== 6 || !document.querySelector("#templateParameterForm [data-field-name]")) throw new Error("six frozen template forms were not mounted");
+if (templateReads < 3 || select.options.length !== 6 || !document.querySelector("#templateParameterForm [data-field-name]")) throw new Error("six frozen template forms were not restored after the delayed detail renderer");
 for (const template of templates) {
   select.value = template.key;
   select.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
@@ -67,56 +94,116 @@ for (const template of templates) {
   if (!document.querySelector("#templateParameterForm [data-field-name]")) throw new Error(`form did not render for ${template.key}`);
 }
 const fieldInput = (name) => document.querySelector(`[data-field-name="${name}"] input, [data-field-name="${name}"] textarea, [data-field-name="${name}"] select`);
-const saveTemplate = async (key, setValues) => {
+const setSpecifiedOwner = () => {
+  const ownerScope = fieldInput("owner_scope");
+  ownerScope.value = "specified";
+  ownerScope.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+  fieldInput("owner_userids").value = "bob";
+};
+const reOpenTemplate = async (key) => {
+  const alternate = templates.find((item) => item.key !== key);
+  select.value = alternate.key;
+  select.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+  await wait(20);
+  select.value = key;
+  select.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+  await wait(20);
+};
+const saveTemplate = async (key, setValues, verifyWrite, verifyReopened) => {
   select.value = key;
   select.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
   await wait(20);
   setValues();
+  document.querySelector("#templatePreviewBtn").click();
+  await wait(180);
+  verifyWrite(previewWrites.at(-1).definition);
+  if (!document.querySelector("#templatePreviewBox").textContent.includes("1 人")) throw new Error(`preview did not use ${key}`);
   document.querySelector("#templateSaveBtn").click();
-  await wait(120);
+  await wait(180);
+  verifyWrite(writes.at(-1).definition);
+  await reOpenTemplate(key);
+  verifyReopened();
 };
 await saveTemplate("wecom_contact_registration", () => {
   const statuses = fieldInput("contact_statuses");
   statuses.options[0].selected = true;
+  document.querySelector("#packageNameInput").value = "已更新的人群";
+  document.querySelector("#dailySelect").value = "daily_0200";
+}, (definition) => {
+  const parameters = definition.parameters;
+  if (definition.template_key !== "wecom_contact_registration" || parameters.owner_scope !== "all" || parameters.owner_userids.length !== 0 || parameters.contact_statuses.join(",") !== "active" || parameters.registration_status !== "any") throw new Error(`WeCom parameters=${JSON.stringify(definition)}`);
+}, () => {
+  if (fieldInput("owner_scope").value !== "all" || !fieldInput("contact_statuses").options[0].selected) throw new Error("WeCom all-scope values did not reopen");
 });
+if (packageWrites[0]?.name !== "已更新的人群" || writes[0]?.refresh_cron_utc !== "0 2 * * *") throw new Error(`template save bypassed basic configuration: ${JSON.stringify({ packageWrites, writes })}`);
 await saveTemplate("paid_order", () => {
   fieldInput("products").value = "course-v3";
   fieldInput("paid_at_from").value = "2026-09-05T08:00";
   fieldInput("paid_at_to").value = "2026-09-05T09:00";
+  setSpecifiedOwner();
+}, (definition) => {
+  const parameters = definition.parameters;
+  if (definition.template_key !== "paid_order" || parameters.product_codes.join(",") !== "course-v3" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[.]\d{3}Z$/.test(parameters.paid_at_from) || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[.]\d{3}Z$/.test(parameters.paid_at_to) || parameters.owner_userids.join(",") !== "bob") throw new Error(`paid parameters=${JSON.stringify(definition)}`);
+}, () => {
+  if (fieldInput("products").value !== "course-v3" || fieldInput("owner_userids").value !== "bob") throw new Error("paid references or owner did not reopen");
 });
 await saveTemplate("channel_entry", () => {
   fieldInput("channels").value = "channel-v3";
   fieldInput("entered_days_min").value = "2";
   fieldInput("entered_days_max").value = "3";
+  setSpecifiedOwner();
+}, (definition) => {
+  const parameters = definition.parameters;
+  if (definition.template_key !== "channel_entry" || parameters.channel_codes.join(",") !== "channel-v3" || parameters.entered_days_min !== 2 || parameters.entered_days_max !== 3 || parameters.owner_userids.join(",") !== "bob") throw new Error(`channel parameters=${JSON.stringify(definition)}`);
+}, () => {
+  if (fieldInput("channels").value !== "channel-v3" || fieldInput("entered_days_min").value !== "2" || fieldInput("owner_userids").value !== "bob") throw new Error("channel references or owner did not reopen");
 });
 await saveTemplate("radar_first_click_elapsed", () => {
   fieldInput("radars").value = "88";
   fieldInput("elapsed_min").value = "3";
   fieldInput("elapsed_max").value = "4";
+  setSpecifiedOwner();
+}, (definition) => {
+  const parameters = definition.parameters;
+  if (definition.template_key !== "radar_first_click_elapsed" || parameters.radar_ids.join(",") !== "88" || parameters.elapsed_min !== 3 || parameters.elapsed_max !== 4 || parameters.owner_userids.join(",") !== "bob") throw new Error(`radar parameters=${JSON.stringify(definition)}`);
+}, () => {
+  if (fieldInput("radars").value !== "88" || fieldInput("elapsed_max").value !== "4" || fieldInput("owner_userids").value !== "bob") throw new Error("radar references or owner did not reopen");
 });
-await saveTemplate("member_usage_status", () => { fieldInput("membership_tiers").value = "pro"; });
+await saveTemplate("member_usage_status", () => {
+  fieldInput("service_period").value = "expired";
+  fieldInput("registration_status").value = "registered";
+  fieldInput("usage_status").value = "used";
+  fieldInput("membership_tiers").value = "pro";
+  fieldInput("membership_statuses").value = "expired";
+  setSpecifiedOwner();
+}, (definition) => {
+  const parameters = definition.parameters;
+  if (definition.template_key !== "member_usage_status" || parameters.service_period !== "expired" || parameters.registration_status !== "registered" || parameters.usage_status !== "used" || parameters.membership_tiers.join(",") !== "pro" || parameters.membership_statuses.join(",") !== "expired" || parameters.owner_userids.join(",") !== "bob") throw new Error(`member parameters=${JSON.stringify(definition)}`);
+}, () => {
+  if (fieldInput("membership_tiers").value !== "pro" || fieldInput("membership_statuses").value !== "expired" || fieldInput("owner_userids").value !== "bob") throw new Error("member facts or owner did not reopen");
+});
 const savedKeys = writes.map((item) => item.definition.template_key);
 for (const key of ["wecom_contact_registration", "paid_order", "channel_entry", "radar_first_click_elapsed", "member_usage_status"]) {
   if (!savedKeys.includes(key)) throw new Error(`save did not use frozen form for ${key}: ${JSON.stringify(savedKeys)}`);
 }
-select.value = "questionnaire_choice_answers";
-select.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
-await wait(20);
-document.querySelector('[data-field-name="questionnaire"] input').value = "101";
-const row = document.querySelector(".template-condition-row");
-row.querySelector("[data-condition-question]").value = "202";
-row.querySelector("[data-condition-options]").value = "303\n304";
-const ownerScope = document.querySelector('[data-field-name="owner_scope"] select');
-ownerScope.value = "specified";
-ownerScope.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
-document.querySelector('[data-field-name="owner_userids"] textarea').value = "bob";
-document.querySelector("#templatePreviewBtn").click();
-await wait(160);
-const questionnaireWrite = writes.at(-1);
-if (questionnaireWrite.definition.template_key !== "questionnaire_choice_answers" || questionnaireWrite.definition.parameters.owner_userids[0] !== "bob" || questionnaireWrite.definition.parameters.questionnaire_id !== "101" || questionnaireWrite.definition.parameters.conditions[0].option_ids.join(",") !== "303,304") throw new Error(`control values were not converted through the Host: ${JSON.stringify(writes)}`);
-if (!document.querySelector("#templatePreviewBox").textContent.includes("1 人") || document.querySelector('[data-field-name="owner_userids"] textarea').value !== "bob") throw new Error("preview or Access-backed owner rehydration failed");
-document.querySelector("#templateSaveBtn").click();
-await wait(120);
-if (writes.at(-1).definition.template_key !== "questionnaire_choice_answers" || !document.querySelector("#templateStatusLine").textContent.includes("已保存")) throw new Error("save did not use the same form conversion path");
+await saveTemplate("questionnaire_choice_answers", () => {
+  fieldInput("questionnaire").value = "101";
+  const conditionField = document.querySelector('[data-field-name="conditions"]');
+  const first = conditionField.querySelector(".template-condition-row");
+  first.querySelector("[data-condition-question]").value = "202";
+  first.querySelector("[data-condition-options]").value = "303\n304";
+  conditionField.querySelector(".template-condition-list > button").click();
+  const second = conditionField.querySelectorAll(".template-condition-row")[1];
+  second.querySelector("[data-condition-question]").value = "203";
+  second.querySelector("[data-condition-options]").value = "305";
+  setSpecifiedOwner();
+}, (definition) => {
+  const parameters = definition.parameters;
+  if (definition.template_key !== "questionnaire_choice_answers" || parameters.owner_userids.join(",") !== "bob" || parameters.questionnaire_id !== "101" || parameters.conditions.length !== 2 || parameters.conditions[0].question_id !== "202" || parameters.conditions[0].option_ids.join(",") !== "303,304" || parameters.conditions[1].question_id !== "203" || parameters.conditions[1].option_ids.join(",") !== "305") throw new Error(`questionnaire parameters=${JSON.stringify(definition)}`);
+}, () => {
+  const rows = document.querySelectorAll('[data-field-name="conditions"] .template-condition-row');
+  if (fieldInput("questionnaire").value !== "101" || rows.length !== 2 || rows[0].querySelector("[data-condition-options]").value !== "303\n304" || fieldInput("owner_userids").value !== "bob") throw new Error("questionnaire conditions or Access-backed owner did not reopen");
+});
+if (writes.length !== 6 || previewWrites.length !== 6 || packageWrites.length !== 6) throw new Error(`six-form save/preview contract incomplete: ${JSON.stringify({ saves: writes.length, previews: previewWrites.length, packages: packageWrites.length })}`);
 dom.window.close();
 console.log("admin-audience-template-host-browser: PASS");

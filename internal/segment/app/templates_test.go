@@ -46,3 +46,14 @@ func TestDefinitionRejectsOpenEndedCapabilities(t *testing.T) {
 		}
 	}
 }
+
+func TestPaidWindowRequiresRFC3339AfterHostDatetimeConversion(t *testing.T) {
+	valid := json.RawMessage(`{"schema_version":1,"template_key":"paid_order","parameters":{"product_codes":["course-v3"],"paid_at_from":"2026-09-05T00:00:00Z","paid_at_to":"2026-09-05T01:00:00Z","owner_scope":"all","owner_staff_ids":[],"require_active_wecom_contact":true}}`)
+	if _, err := CanonicalDefinition(valid); err != nil {
+		t.Fatalf("RFC3339 window rejected: %v", err)
+	}
+	localControlValue := json.RawMessage(`{"schema_version":1,"template_key":"paid_order","parameters":{"product_codes":["course-v3"],"paid_at_from":"2026-09-05T08:00","paid_at_to":"2026-09-05T09:00","owner_scope":"all","owner_staff_ids":[],"require_active_wecom_contact":true}}`)
+	if _, err := CanonicalDefinition(localControlValue); !errors.Is(err, ErrUnsupportedDefinition) {
+		t.Fatalf("datetime-local value bypassed Go AST validation: %v", err)
+	}
+}
