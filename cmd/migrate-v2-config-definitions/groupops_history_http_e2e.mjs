@@ -19,9 +19,9 @@ const bridgeResponse = await fetch(new URL(bridgePath, base));
 if (!readonlyResponse.ok || !bridgeResponse.ok) throw new Error('actual Group Ops Host assets were unavailable');
 const readonly = await readonlyResponse.text();
 const bridge = await bridgeResponse.text();
-html = html.replace(`<script defer src="${readonlyPath}"></script>`, `<script>${readonly}</script>`);
-html = html.replace(`<script defer src="${bridgePath}"></script>`, `<script>${bridge}</script>`);
-html = html.replace(/<script[^>]+src="[^"]*admin-test\.js[^"]*"[^>]*><\/script>/, `<script>${bundle}</script>`);
+html = html.replace(`<script defer src="${readonlyPath}"></script>`, () => `<script>${readonly}</script>`);
+html = html.replace(`<script defer src="${bridgePath}"></script>`, () => `<script>${bridge}</script>`);
+html = html.replace(/<script[^>]+src="[^"]*admin-test\.js[^"]*"[^>]*><\/script>/, () => `<script>${bundle}</script>`);
 if (!html.includes(bundle)) throw new Error('actual Host admin entry was not replaced for the existing JSDOM harness');
 
 async function waitFor(label, predicate) {
