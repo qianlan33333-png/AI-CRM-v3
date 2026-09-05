@@ -35,16 +35,18 @@ SELECT '__AICRM_SIDEBAR_ENTITLEMENT__|' || encode(convert_to(jsonb_build_object(
   'start_at',e.start_at,
   'end_at',e.end_at,
   'remark',COALESCE(NULLIF(e.metadata_json->>'admin_remark',''),NULLIF(e.metadata_json->>'remark',''),''),
-  'alliance',CASE
-    -- The frozen grid normalizes this value with Python str(...).strip();
-    -- BTRIM captures that exact rendered/editable value, not raw metadata.
-    WHEN e.metadata_json ? 'admin_alliance' AND jsonb_typeof(e.metadata_json->'admin_alliance')='string'
-      THEN btrim(e.metadata_json->>'admin_alliance')
-    ELSE NULL
-  END,
   'created_at',e.created_at,
   'updated_at',e.updated_at
-)::text,'UTF8'),'hex')
+) || CASE
+  -- Keep source presence and JSON type. The v2 Go capture normalizes strings
+  -- with the frozen Python str(...).strip() rule; PostgreSQL BTRIM is ASCII
+  -- only and therefore must not be presented as an equivalent conversion.
+  -- A missing key remains absent, JSON null remains unknown, and a non-string
+  -- reaches the protected parser and stops capture rather than being guessed.
+  WHEN e.metadata_json ? 'admin_alliance'
+    THEN jsonb_build_object('alliance', e.metadata_json->'admin_alliance')
+  ELSE '{}'::jsonb
+END)::text,'UTF8'),'hex')
 FROM public.service_period_entitlements e
 JOIN public.wechat_pay_products p ON p.id=e.trade_product_id
 WHERE e.tenant_id='aicrm' AND e.status IN ('active','expired','refunded')
