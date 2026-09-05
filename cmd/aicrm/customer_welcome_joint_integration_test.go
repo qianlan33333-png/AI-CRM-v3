@@ -155,11 +155,13 @@ func applyCustomerWelcomeJointMigration(t *testing.T, fixture *channelWelcomeRun
 	if !ok {
 		t.Fatal("locate customer/welcome joint journey")
 	}
-	sql, err := os.ReadFile(filepath.Join(filepath.Dir(source), "..", "..", "migrations", "0022_customer_profile_sections.sql"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err = fixture.native.Exec(fixture.ctx, string(sql)); err != nil {
-		t.Fatal(err)
+	for _, migration := range []string{"0022_customer_profile_sections.sql", "0086_wecom_profile_primary_owner.sql"} {
+		sql, err := os.ReadFile(filepath.Join(filepath.Dir(source), "..", "..", "migrations", migration))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = fixture.native.Exec(fixture.ctx, string(sql)); err != nil {
+			t.Fatalf("apply %s: %v", migration, err)
+		}
 	}
 }
