@@ -77,3 +77,13 @@ d6 `cmd/aicrm/group_ops_runtime_integration_test.go:TestGroupOpsPostgreSQLJourne
 - 补协议用例：请求userid、分页精确发送人/群、正常provider_accepted可读取、无msgid未知保持未知、过期/未准备素材零写调用。真实PG覆盖结果持久化与漂移回滚。随后完整PRD仍需实际River即时/延时/重启、有序节点、旧UI及历史逐条对账。
 
 6e63659增量复查：新material_source_snapshot同样经过JSONB，摘要和后续比较不能依赖原始字节的键序/空格。统一冻结与读回规范化后校验，实际PG round-trip必须能执行一次正确发送，漂移/过期则零调用。送达读取需保留重放和单调事实：较早pending回包不得覆盖已证实送达；查结果不更改原效果标识、不新发消息。
+
+## 10. 后续运行、页面与历史批次的复用定位
+
+0078收据批次通过后，沿原clone继续实际共享River即时/延时/停启旅程。现有`TestGroupOpsPostgreSQLJourney`仍手动RunAttempt，只证明Owner事务；不能替代真实运行时。独立两事务并发结果写入必须保留，不能以串行覆盖断言代替并发验证。
+
+现有群页面由`internal/groupops/ui.go`挂载冻结`groupops.html`与`groupopsDetail.html`，历史通过`?history=1`进入。先以完整构建产物验证这些实际入口和Host API，不根据缺少单独新适配文件断言页面不存在，也不重新写前端。
+
+历史读取由0017的四个`group_ops_v1_history_*`不可变表提供；目前有读取/页面，但总控搜索现有cmd、scripts和configmigration未发现这些表的实际导入写路径。`cmd/migrate-v2-config-definitions`现有模式只导入暂停的活动配置，成员映射留空、素材引用仅保存在legacy事实中，verify主要核数量/暂停状态。因此须在既有独立导入入口补明确的冻结历史模式及Owner写Port，保留旧窄模式的默认边界；不另建migrate-groupops框架。
+
+先核对冻结供体历史计划、节点、群绑定、目录及旧版实际执行记录来源，区分活动配置与只读历史。每条来源有稳定键、内容摘要、目标或隔离原因；verify须读取实际目标字段与源事实逐条比较，并测试字段漂移、重复、故障回滚。导入后使用现有历史HTTP及冻结页面读取；不创建River任务或Provider效果，不把历史员工ID当当前Access主体。需要新增迁移时先由总控分配编号，现有0017不得重写。

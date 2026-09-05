@@ -41,3 +41,5 @@
 上述变量仅列名称/对应关系，尚未应用。最终集成完成后再以组合提交补全迁移顺序、归档SDK安装和其它板块具体项。
 
 - 群运营生产前置：官方92698指定chat_id_list要求支持该字段的企微终端（4.1.10+）。接口创建成员待操作任务，provider_accepted不代表送达；独立查询核验msgid与冻结发送人/群的实际结果。不得用allow_select作为群目标保证；本轮未创建真实群发任务。
+- PR148：0078需在群运行及读取前就绪；`AICRM_GROUP_OPS_PROVIDER_ENABLED`默认false，群发送、目录及结果读取权限按独立V3环境验证，既有`AICRM_GROUP_OPS_WEBHOOK_SECRET`仅在批准的入口配置。源码与本地协议/PG通过不代表真实群任务已发送。
+- PR151：0080与`migrate-media-legacy-materials`工具随制品发布；先冻结旧素材记录和实际V3素材映射，inspect/dry-run/apply/verify按同一快照摘要执行，未映射的素材不会被intake自动创建。核对`AICRM_AI_ASSISTANT_INTAKE_ENABLED`、`AICRM_AI_ASSISTANT_DISPATCH_ENABLED`（均默认false）、`AICRM_AI_ASSISTANT_INTEGRATION_KEY`、`AICRM_AI_ASSISTANT_INTEGRATION_SECRET`、`AICRM_AI_ASSISTANT_INTEGRATION_ACTOR_ID`与`AICRM_AI_ASSISTANT_PROVIDER_PERMISSION`；Scope沿现有Corp与`AICRM_SURVEY_OAUTH_OPEN_PLATFORM_ID`配置，不能错用旧域或跨平台身份。旧调用方路由为`/api/admin/ai-assist/review-plans`，仍必须走机器签名校验；生产外部调用方及真实Provider验收独立记录，不导入旧AI执行。

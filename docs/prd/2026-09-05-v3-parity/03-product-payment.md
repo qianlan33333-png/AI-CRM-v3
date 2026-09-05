@@ -86,3 +86,17 @@ OneID：可信支付身份解析/既有显式建客、付款人和受益人分�
 当前按map遍历在完整页面不断ReplaceAll，然后对已插入用户内容与普通三引号函数片段再全局折叠大括号，可能改变标题/正文中的占位符或合法JS括号。模板转换应在插入动态事实前完成，动态事实只代入一次；保持原DOM/样式/行为。用含花括号和模板字样的标题、详情及企微模态脚本验证不受二次替换影响。服务中/过期/未开通/不可购买、详情图、二维码、状态刷新、报名/续费跳转均需实际浏览器无脚本错误。
 
 沿现有可信OAuth会话适配旧公开页身份恢复；不得直接删除旧身份引导后默认为所有新打开者都未开通，也不能接受旧签名片段或裸外部ID自报可信。记录必要Host变化和原入口的测试结果。上海日期边界的到期日须在服务端初始页面与刷新后结果一致。
+
+## 11. 会员表旧前端来源与0079交付边界
+
+当前web/src/api/admin.ts冻结DTO仍是较早只读Member Grid合同，不能直接改该文件或更新manifest强行通过。需要的原会员表已有完整供体：AI-CRM@dd8d60dd8ddb983aca2ec88cc9e65a9f7563f79f下 `aicrm_next/extensions/commerce/service_period/templates/service_period_member_grid.html`、`service_period_member_grid_compact_base.html`、`service_period_member_grid_public.html`，以及同领域 `static/admin_console/member_grid.js`、`member_grid_state.js`、`member_grid_share.js`、`member_grid.css`。
+
+先核对旧真实管理入口和调用合同；按必要文件冻结复用，通过现有V3 Host和可信Access/Order/Product Ports接通视图、协作、分享、查询及备注，不重写新会员表页面。既有只读入口可继续兼容；新挂载必须由原商品数据入口实际可达。API已实现而旧界面无法进入/操作时，0079仍未完成。
+
+6074f57预审已要求：备注在Order写事务内先核对ProductID；元数据写在同UoW复核协作授权/撤销，ID/版本成功响应不得因变量遮蔽变零；保存视图实际应用查询，sort/group不能接受后忽略；事件与Outbox不包含share bearer token。冻结HttpApi测试必须走真实API而非仅fake工作区返回成功。
+
+## 12. 后续历史批次复用定位
+
+复用`cmd/migrate-commerce-history`及`internal/order/migration`的既有manifest、receipt、apply/reconcile；现有order-only窄模式保留。全量reconcile当前只比较数量与金额，不能证明付款/退款/商品快照的每个来源与目标一致；本轮须补逐条事实核验及合法但内容漂移的反例，不能只改输入使其在manifest校验阶段提前失败。
+
+已有manifest覆盖订单、支付来源、退款和受控身份归属，但没有周期来源与历史券领取/核销合同。复用已批准04的可信历史周期来源Port及Coupon Owner；先冻结旧表实际字段，再在既有导入工具扩展明确模式，必要迁移向总控申请。历史已执行结果不得通过在线付款、退款、领券或开通流程补造。缺失可信受益人/周期/发生时间保持明确未解析或隔离，每条结果可对账。独立测试快照与真实PG验证属于本轮，生产数据导入仍留上线阶段。
