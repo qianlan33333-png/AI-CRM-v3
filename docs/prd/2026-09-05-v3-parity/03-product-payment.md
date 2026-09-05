@@ -124,3 +124,13 @@ OneID：可信支付身份解析/既有显式建客、付款人和受益人分�
 - `huangyoucan_usage.py`旧归属解析只作为行为参考；V3复用现有HXC/OneID已验证归属，未解析/冲突不猜。现有HXC SourceRow缺上述部分字段，后续在HXC现有Provider读取、快照发布及River刷新中补齐需要的字段与窄Read Port；不重复建Product同步器，不从旧CRM运行时读取。实际来源表与可用权限先只读核验；新字段只在本轮确有旧能力需要时添加，迁移编号向总控统一申请。
 
 内部与公开会员表都必须展示相同事实语义及未知状态，沿原授权/可撤销分享范围读取。筛选、排序、分组及翻页必须作用于完整Owner结果，不得只在当前100行前端过滤冒充全量。无需扩展新指标、AI分析或诊断界面。验收采用冻结原模板和JS的实际交互、真实Owner PG事实（含多页、并列键、过期边界、权限撤销和来源缺失）联合证明。
+
+
+## 15. HXC共享字段执行边界
+
+原会员表HXC缺失事实统一按13-shared-hxc-facts.md，由一个执行者维护HXC Owner。03先保持Order续费/查询与公开支付任务，待已审核Port交付后接线，不复制另一套HXC同步。0084已分配HXC，来源schema已由总控只读核实。
+
+
+## 16. 1b148814付款恢复审核阻断
+
+创建成功但响应丢失时，检查点merchant_order_no仍为空。随后微信授权session变化，重放相同key会因实际Payment.Create用sessionToken+key派生merchant号而创建新订单；检查点仅存payload仍不足。必须由既有可信Payment Session提供非敏感opaque绑定/服务端恢复事实，会话变化在新Create前阻断旧检查点，不自报身份。unknown/事实不完整的409也不能统一清空检查点或称授权变化；只在明确可判定的会话不匹配路径处理，未知保留原键。实际Payment app/store/PostgreSQL覆盖“响应丢失+同客户重授权/另一会话”，自写checkoutJourneyApplication的行为不能替代该验证。跨领域HTTP组合测试位于cmd/aicrm，不在Product测试中import Payment http。

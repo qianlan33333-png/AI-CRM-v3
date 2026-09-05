@@ -91,3 +91,23 @@ d6 `cmd/aicrm/group_ops_runtime_integration_test.go:TestGroupOpsPostgreSQLJourne
 ## 11. 原可见操作范围确认
 
 按现有冻结供体及dd8原group_ops.js复核，计划没有“复制计划”操作；“复制地址”只针对Webhook地址。删除第2节先前泛列的“复制”计划要求，不新增Clone能力。继续验证实际已有的创建、编辑、启用/暂停、归档、删除草稿、群/成员/素材选择、节点编辑及执行记录。本轮新增结果查询仍按Provider已接受任务与独立可信送达事实区分，不能将不可判定状态显示为送达。
+
+## 12. 暂停后的重新启用（4e51后源码复查）
+
+冻结controller对非active计划调用activate；当前Go Activate只允许draft，paused计划会返回state conflict，导致旧启停流程断开。下一增量允许已暂停计划在同一内容、成员及群校验后恢复active，沿用CAS、幂等收据与同UoW事件；archived仍终态。重新启用不得复活已终结/未知的旧效果，旧revision的任务仍被dispatch guard阻断。补实际Service/PG的draft→active→paused→active、重放、旧版本拒绝及无效配置，不能只用浏览器fixture回200模拟成功。
+
+
+## 13. 未配置 Webhook 的多计划创建（0081）
+
+真实 Store.Create 与 PostgreSQL 检查发现0012对 `group_ops_plan_webhook_descriptors.reference` 全局唯一，而新计划默认写入空串，第二个未配置 Webhook 的计划因23505失败。这是旧有多计划能力的阻断缺陷。批准0081归GroupOps：保留0012历史迁移，用 `reference <> ''` 的唯一部分索引替换全局唯一约束；空值代表未配置，非空opaque引用仍唯一，不生成假Webhook地址。沿用现有安装/迁移契约。实际PG覆盖连续创建多个计划、非空重复拒绝、清空后的引用复用；不涉及新身份或外部效果。
+
+
+## 14. 历史导入收据补齐（0082）
+
+0017四类历史事实已存在；HistoricalStore/HistoricalJournal已有稳定Port，PostgreSQL缺少写实现。现有0030配置导入的domain/target_table约束不接受历史，不能改造成另一个Owner或把历史伪装为活动配置。批准0082归GroupOps，仅补实现既有历史Port所必需的导入批次、行收据/映射与隔离记录。每行以来源作用域+种类+稳定键识别，保存源摘要、目标摘要或明确隔离原因，与对应历史事实同一UoW提交；verify必须回读全部事实而非数量。
+
+独立入口仍为cmd/migrate-v2-config-definitions的明确历史模式；保留当前默认配置模式。不存在的历史员工不做当前Access外键或猜测映射；不解析/新建客户，不创建运行计划、内部执行任务、External Effects或外部发送。历史模式输出受保护的逐条核对结果，日志仅安全摘要与计数。真实PG覆盖四类成功/重复、未找到历史父计划、非法行隔离、重跑、目标漂移和事务失败不留下半条映射。无需新导入框架或治理页面。
+
+供体目录的chat_id为文本，而0017对group_chats要求数字source_id；不得hash文本伪装来源数字。0082可前向修正此历史投影约束，原文本稳定键由明确来源字段/受保护行事实保留，source_id只保存真实来源数字。历史userid同理，不hash成owner_staff_id，不用当前Access代替历史；必要的创建/修改人类型适配须基于供体证据保留原值与兼容读取。
+
+已核实供体plans.created_by/updated_by为TEXT，可为空。0082允许历史数值字段NULL，新增source_created_by_reference/source_updated_by_reference/source_owner_reference；当前业务Plan不动。TEXT即使是纯数字也保持来源引用，不因格式猜为StaffID。历史DTO以nullable兼容读取，原有数值历史不重写。

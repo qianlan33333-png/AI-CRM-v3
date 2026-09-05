@@ -93,3 +93,28 @@ paid_order补充冻结：供体模板只选择status=paid；供体迁移0065的o
 - refresh_mode沿原every_3m、daily_0200、every_3m_plus_daily_0200、manual实际选项映射现有River；不能忽略旧增量下拉框或把0200本地时间误作UTC。没有新cron/ticker或自建刷新Worker内核。
 
 本批先保证各Owner查询与字段归属真实可用，再补原表单组合journey。所有PG测试使用真实迁移，不以手造删减约束的表替代；fixtures必须命中需要验证的SQL路径。
+
+
+## 12. 六模板 Host 的实际装配修正（856c421审核）
+
+CI33964237463通过不代表新Host已验收。新Host与已有admin_audience_detail.js同时渲染templateParameterForm，120ms后补画不能确保慢接口或重新加载时稳定；明确唯一表单渲染所有者，保留冻结原控制器。测试必须加载完整实际脚本组合、慢接口和重新加载，不能只执行新增Host。
+
+原“保存基础配置”负责名称、分组及刷新选择，新Host拦截后只保存definition造成回归；维持原保存语义与版本刷新。原预览与保存新版本分别处理，先核供体控制器原语义，不能把预览改成写配置。datetime-local输入须按原业务时区转为后端有效时间并可回填，实际Go AST验证与预览通过，不能依赖无校验fetch fixture。精确标题/别名解析与四种refresh_mode仍按第11节恢复。
+
+
+## 13. 四种旧刷新模式的持久化补齐（0083）
+
+供体scheduler.py明确分别处理incremental与daily，repository_packages.py:710-711为组合模式保存两类定义；正常配置由同一个模板编译，不能将组合模式在新UI静默降级。现有V3只有refresh_cron_utc、单配置的next_due及schedule occurrence。批准0083归Segment，按必要范围扩展既有配置/调度事实以保存manual、every_3m、daily_0200、every_3m_plus_daily_0200及相应kind的下一到期/幂等发生记录，不新建Scheduler或队列框架。复用现有AudienceSchedulePeriodicJob、ScheduledRefreshService、AcceptRefreshWithin和共享River。
+
+每日0200按Asia/Shanghai，3分钟保持原周期；组合模式保留两种触发来源及各自到期事实，重叠时遵循现有刷新接受、发布diff和发送幂等，不因两次扫描重复发送成员。旧refresh_cron_utc已有任意合法表达式必须保持原语义（可明确legacy/custom模式），不能把已有UTC2点静默改时区；只有新旧UI明确选择daily模式时按旧业务0200转换。前端完整回填四模式；配置版本及调度游标同所需UoW，暂停/归档不新接受，停机后使用现有有界恢复。
+
+实际PG/River覆盖四模式、上海跨日、两扫描竞争、重复发生、启停恢复和历史cron兼容。变更仅恢复旧能力，不增加自动化治理产品。
+
+## 14. 首次归因与会员状态语义补充
+
+供体template_registry.py:220-247按首次点击时间与稳定事件序选一行；0165视图中的owner优先identity.primary_owner_userid、再事件staff_id_snapshot、再staff_id，不是一律取事件当时员工，也不得以任意当前企微关系替代。通过对应Owner类型化返回可证实的原优先级事实，缺失明确不匹配，匿名/pending/conflict仍排除。会员expired仅来自显式过期状态或expires_at<=reference；不能把dashboard的registered_no_active_membership当过期，active必须结合原is_member与reference时刻到期事实。HXC最小真实字段共享契约另由总控协调，禁止Segment自行建HXC同步器。
+
+
+## 15. HXC共享字段执行边界
+
+会员状态及03原会员表共用HXC事实按13-shared-hxc-facts.md，0084归HXC；不得以dashboard stage代替明确源状态，既有OneID/只读源/发布代复用。由单一执行者维护HXC文件，Segment只作Port消费。
