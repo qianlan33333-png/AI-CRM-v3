@@ -30,7 +30,7 @@ func TestPostgreSQLReceiptVerifierRejectsSameCountRootAndEvidenceDrift(t *testin
 	if _, err := pool.Exec(ctx, `INSERT INTO identity_history_import_receipts(run_key,source_key,source_digest,outcome,customer_id,identity_count) VALUES($1,'subject-one',$2,'canonical',101,2),($1,'subject-two',$3,'canonical',202,1)`, runKey, subjectOneDigest[:], subjectTwoDigest[:]); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, `INSERT INTO identity_history_import_receipts(run_key,source_key,source_digest,outcome,reason_code,safe_evidence) VALUES($1,'quarantine-one',$2,'quarantined','scope_missing',jsonb_build_object('source_digest',$3))`, runKey, quarantineDigest[:], evidence); err != nil {
+	if _, err := pool.Exec(ctx, `INSERT INTO identity_history_import_receipts(run_key,source_key,source_digest,outcome,reason_code,safe_evidence) VALUES($1,'quarantine-one',$2,'quarantined','scope_missing',jsonb_build_object('source_digest',$3::text))`, runKey, quarantineDigest[:], evidence); err != nil {
 		t.Fatal(err)
 	}
 	verifier := PostgreSQLReceiptVerifier{Pool: pool}
