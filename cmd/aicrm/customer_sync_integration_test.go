@@ -4,8 +4,10 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -41,6 +43,15 @@ type integrationFailingDirectoryProvider struct {
 	batchErr error
 }
 
+// pagedIntegrationDirectoryProvider models the actual get_by_user traversal:
+// one employee spans two pages and a second employee sees the same customer.
+// The second employee may transiently fail, so the journey proves that no
+// primary owner is published from the incomplete traversal.
+type pagedIntegrationDirectoryProvider struct {
+	mu         sync.Mutex
+	failStaffB bool
+}
+
 type integrationSyncEnqueuer struct{ runID int64 }
 
 func (enqueuer *integrationSyncEnqueuer) EnqueueCustomerSync(_ context.Context, runID int64) error {
@@ -63,6 +74,37 @@ func (provider integrationFailingDirectoryProvider) ListContactStaff(context.Con
 }
 func (provider integrationFailingDirectoryProvider) BatchExternalContacts(context.Context, string, string, int) (wecomport.ExternalContactPage, error) {
 	return wecomport.ExternalContactPage{}, provider.batchErr
+}
+
+func (*pagedIntegrationDirectoryProvider) DirectoryReady() bool { return true }
+func (*pagedIntegrationDirectoryProvider) ListContactStaff(context.Context) ([]string, error) {
+	return []string{"staff-a", "staff-b"}, nil
+}
+func (provider *pagedIntegrationDirectoryProvider) BatchExternalContacts(_ context.Context, staffID, cursor string, _ int) (wecomport.ExternalContactPage, error) {
+	contact := func(owner string) wecomport.ExternalContact {
+		return wecomport.ExternalContact{ExternalUserID: "external-paged", Name: "Paged Customer", Gender: 1, Type: 1, CorpName: "Integration Corp", FollowInfo: []wecomport.ExternalContactFollowInfo{{EmployeeID: owner}}}
+	}
+	switch {
+	case staffID == "staff-a" && cursor == "":
+		return wecomport.ExternalContactPage{Contacts: []wecomport.ExternalContact{contact("zara")}, NextCursor: "staff-a-page-2"}, nil
+	case staffID == "staff-a" && cursor == "staff-a-page-2":
+		return wecomport.ExternalContactPage{}, nil
+	case staffID == "staff-b" && cursor == "":
+		provider.mu.Lock()
+		defer provider.mu.Unlock()
+		if provider.failStaffB {
+			return wecomport.ExternalContactPage{}, errors.New("temporary provider failure")
+		}
+		return wecomport.ExternalContactPage{Contacts: []wecomport.ExternalContact{contact("bob")}}, nil
+	default:
+		return wecomport.ExternalContactPage{}, errors.New("unexpected paged directory request")
+	}
+}
+
+func (provider *pagedIntegrationDirectoryProvider) recoverStaffB() {
+	provider.mu.Lock()
+	provider.failStaffB = false
+	provider.mu.Unlock()
 }
 
 func TestCustomerSyncJourneyPostgreSQL(t *testing.T) {
@@ -98,7 +140,7 @@ func TestCustomerSyncJourneyPostgreSQL(t *testing.T) {
 		t.Fatal(err)
 	}
 	root := filepath.Join("..", "..")
-	for _, name := range []string{"0001_platform.sql", "0002_identity.sql", "0003_access.sql", "0004_wecom.sql", "0009_customer_activation.sql", "0022_customer_profile_sections.sql"} {
+	for _, name := range []string{"0001_platform.sql", "0002_identity.sql", "0003_access.sql", "0004_wecom.sql", "0009_customer_activation.sql", "0022_customer_profile_sections.sql", "0086_wecom_profile_primary_owner.sql"} {
 		raw, readErr := os.ReadFile(filepath.Join(root, "migrations", name))
 		if readErr != nil {
 			t.Fatal(readErr)
@@ -153,6 +195,14 @@ func TestCustomerSyncJourneyPostgreSQL(t *testing.T) {
 	}
 	if identities != 1 || projections != 1 || receipts != 1 || pending != 0 || owners != 1 || tags != 1 || timeline != 1 {
 		t.Fatalf("identities=%d projections=%d receipts=%d pending=%d owners=%d tags=%d timeline=%d", identities, projections, receipts, pending, owners, tags, timeline)
+	}
+	var primaryOwner string
+	var primaryRunID int64
+	if err = pool.Native().QueryRow(ctx, `SELECT primary_owner_userid,primary_owner_run_id FROM wecom_external_contact_profiles`).Scan(&primaryOwner, &primaryRunID); err != nil {
+		t.Fatal(err)
+	}
+	if primaryOwner != "staff-integration" || primaryRunID != run.ID {
+		t.Fatalf("primary owner=%q run=%d, want staff-integration/%d", primaryOwner, primaryRunID, run.ID)
 	}
 
 	var recoveryRunID int64
@@ -255,5 +305,55 @@ func TestCustomerSyncJourneyPostgreSQL(t *testing.T) {
 	var successfulProfiles int
 	if err = pool.Native().QueryRow(ctx, `SELECT count(*) FROM wecom_external_contact_profiles WHERE activation_status='active'`).Scan(&successfulProfiles); err != nil || successfulProfiles != 1 {
 		t.Fatalf("successful profile changed after failed rounds: count=%d err=%v", successfulProfiles, err)
+	}
+
+	// Run the real River worker through two pages and two employees. A failure
+	// after the first employee commits must retain that relationship without
+	// publishing a partial primary; retrying the same durable run then derives
+	// the provider's lexicographically first owner from its complete scope.
+	pagedProvider := &pagedIntegrationDirectoryProvider{failStaffB: true}
+	pagedService := service
+	pagedService.Provider = pagedProvider
+	pagedRun, _, err := pagedService.CreateScheduled(ctx, "initial", "initial:integration-paged-sync")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pagedWorker := wecom.NewCustomerSyncWorker()
+	if err = pagedWorker.BindService(pagedService); err != nil {
+		t.Fatal(err)
+	}
+	if err = pagedWorker.Work(ctx, &river.Job[wecom.CustomerSyncJobArgs]{JobRow: &rivertype.JobRow{Attempt: 1, MaxAttempts: 12}, Args: wecom.CustomerSyncJobArgs{RunID: pagedRun.ID}}); err == nil {
+		t.Fatal("paged provider failure did not leave the run retryable")
+	}
+	pagedRun, err = pagedService.Get(ctx, pagedRun.ID)
+	if err != nil || pagedRun.Status != wecom.SyncFailedRetryable || pagedRun.StaffIndex != 1 {
+		t.Fatalf("partial paged run=%+v err=%v", pagedRun, err)
+	}
+	var partialPrimary string
+	var retainedOwners int
+	if err = pool.Native().QueryRow(ctx, `SELECT COALESCE(profile.primary_owner_userid,''),count(observation.employee_id)
+		FROM wecom_external_contact_profiles profile
+		JOIN customer_identities identity ON identity.id=profile.external_identity_id
+		LEFT JOIN wecom_customer_owner_observations observation ON observation.customer_id=profile.customer_id AND observation.corp_scope=profile.corp_scope AND observation.relationship_status='active'
+		WHERE identity.normalized_value='external-paged'
+		GROUP BY profile.primary_owner_userid`).Scan(&partialPrimary, &retainedOwners); err != nil || partialPrimary != "" || retainedOwners != 1 {
+		t.Fatalf("partial primary=%q retained owners=%d err=%v", partialPrimary, retainedOwners, err)
+	}
+	pagedProvider.recoverStaffB()
+	if err = pagedWorker.Work(ctx, &river.Job[wecom.CustomerSyncJobArgs]{JobRow: &rivertype.JobRow{Attempt: 2, MaxAttempts: 12}, Args: wecom.CustomerSyncJobArgs{RunID: pagedRun.ID}}); err != nil {
+		t.Fatal(err)
+	}
+	pagedRun, err = pagedService.Get(ctx, pagedRun.ID)
+	if err != nil || pagedRun.Status != wecom.SyncSucceeded {
+		t.Fatalf("recovered paged run=%+v err=%v", pagedRun, err)
+	}
+	var completedPrimary string
+	if err = pool.Native().QueryRow(ctx, `SELECT COALESCE(profile.primary_owner_userid,''),count(observation.employee_id)
+		FROM wecom_external_contact_profiles profile
+		JOIN customer_identities identity ON identity.id=profile.external_identity_id
+		LEFT JOIN wecom_customer_owner_observations observation ON observation.customer_id=profile.customer_id AND observation.corp_scope=profile.corp_scope AND observation.relationship_status='active'
+		WHERE identity.normalized_value='external-paged'
+		GROUP BY profile.primary_owner_userid`).Scan(&completedPrimary, &retainedOwners); err != nil || completedPrimary != "bob" || retainedOwners != 2 {
+		t.Fatalf("completed primary=%q owners=%d err=%v", completedPrimary, retainedOwners, err)
 	}
 }

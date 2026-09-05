@@ -81,7 +81,7 @@ func optionTypeMatches(query, value productport.ProductOptionType) bool {
 }
 
 func validProductOption(item productport.ProductOption) bool {
-	return item.ID > 0 && len(item.Name) > 0 && len(item.Name) <= 200 && item.PriceMinor >= 0 && item.Currency == "CNY" && (item.ProductType == productport.ProductOptionStandard || item.ProductType == productport.ProductOptionServicePeriod)
+	return item.ID > 0 && len(item.Code) > 0 && len(item.Code) <= 200 && len(item.Name) > 0 && len(item.Name) <= 200 && item.PriceMinor >= 0 && item.Currency == "CNY" && (item.ProductType == productport.ProductOptionStandard || item.ProductType == productport.ProductOptionServicePeriod)
 }
 
 var _ productport.ProductOptionReader = (*Service)(nil)
