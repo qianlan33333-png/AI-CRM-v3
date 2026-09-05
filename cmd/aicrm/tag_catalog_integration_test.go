@@ -52,7 +52,36 @@ type integrationAdapter func(context.Context, effectport.Envelope, effectport.At
 
 type inspectedSurveyCompletionAccepter struct {
 	delegate surveyport.CompletionIntentAccepter
+	called   bool
 	err      error
+}
+
+// inspectedSyntheticCompletionStore is an integration-test-only decorator.
+// It preserves the real PostgreSQL Store and UoW while retaining the exact
+// error from the two Survey facts that must commit with EER acceptance.
+type inspectedSyntheticCompletionStore struct {
+	surveyapp.SubmissionStore
+	snapshotErr     error
+	recordEffectErr error
+	auditOutboxErr  error
+}
+
+func (s *inspectedSyntheticCompletionStore) RecordCompletionTestSnapshot(ctx context.Context, value surveyapp.CompletionTestSnapshot) (surveyapp.CompletionTestSnapshot, bool, error) {
+	snapshot, created, err := s.SubmissionStore.RecordCompletionTestSnapshot(ctx, value)
+	s.snapshotErr = err
+	return snapshot, created, err
+}
+
+func (s *inspectedSyntheticCompletionStore) RecordCompletionTestEffect(ctx context.Context, qid surveyport.ID, testRunID, configurationRef, effectID, state string, digest [32]byte, now time.Time) error {
+	err := s.SubmissionStore.RecordCompletionTestEffect(ctx, qid, testRunID, configurationRef, effectID, state, digest, now)
+	s.recordEffectErr = err
+	return err
+}
+
+func (s *inspectedSyntheticCompletionStore) AppendAuditAndOutbox(ctx context.Context, event string, qid surveyport.ID, actor string, payload json.RawMessage, key string, now time.Time) error {
+	err := s.SubmissionStore.AppendAuditAndOutbox(ctx, event, qid, actor, payload, key, now)
+	s.auditOutboxErr = err
+	return err
 }
 
 // TestPostgreSQLSurveyCompletionKindRegistryAfterWelcomeQueueMigration proves
@@ -102,6 +131,7 @@ func TestPostgreSQLSurveyCompletionKindRegistryAfterWelcomeQueueMigration(t *tes
 }
 
 func (a *inspectedSurveyCompletionAccepter) AcceptCompletionWithin(ctx context.Context, intent surveyport.CompletionIntent) (surveyport.EffectBinding, error) {
+	a.called = true
 	binding, err := a.delegate.AcceptCompletionWithin(ctx, intent)
 	a.err = err
 	return binding, err
@@ -391,7 +421,8 @@ func TestPostgreSQLSurveySyntheticPushSurvivesRepositoryRestartAndDoesNotBlindRe
 		t.Fatal(err)
 	}
 	effectRepository, runtime := newSurveyEffectRuntime(t, pool, sink, provider)
-	service := surveyapp.NewSubmissionService(uow, surveys, cipher)
+	inspectedStore := &inspectedSyntheticCompletionStore{SubmissionStore: surveys}
+	service := surveyapp.NewSubmissionService(uow, inspectedStore, cipher)
 	if err = service.BindCompletionPolicy(provider); err != nil {
 		t.Fatal(err)
 	}
@@ -409,7 +440,7 @@ func TestPostgreSQLSurveySyntheticPushSurvivesRepositoryRestartAndDoesNotBlindRe
 	key := "survey-synthetic-test-effect-0001"
 	first, err := service.QueueCompletionTest(ctx, surveyport.ID(questionnaire), actor, key)
 	if err != nil || first.EffectID == "" || first.State != "queued" {
-		t.Fatalf("accept=%+v err=%v completion_accept_err=%v", first, err, completionAccepter.err)
+		t.Fatalf("accept=%+v err=%v completion_accept_called=%t completion_accept_err=%v snapshot_err=%v record_effect_err=%v audit_outbox_err=%v", first, err, completionAccepter.called, completionAccepter.err, inspectedStore.snapshotErr, inspectedStore.recordEffectErr, inspectedStore.auditOutboxErr)
 	}
 	// Change current metadata before replay. The stored target/body/timestamp
 	// must win, so no new effect or River job is created.
