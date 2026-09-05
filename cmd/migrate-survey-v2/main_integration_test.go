@@ -22,6 +22,22 @@ func TestPostgreSQLFrozenSurveySnapshotImportReplayAndReconcile(t *testing.T) {
 	targetURL, pool, cleanup := surveyMigrationIntegrationTarget(t)
 	defer cleanup()
 	snapshot := frozenSurveySnapshot(t, time.Date(2026, 9, 5, 7, 0, 0, 0, time.UTC))
+	// These local assessment keys were valid legacy business associations. The
+	// encrypted source, import, and reconciliation path must retain them as-is;
+	// they are not generic opaque identifiers.
+	var sourceQuestionnaires []questionnaire
+	decodeTable(snapshot, "questionnaires", &sourceQuestionnaires)
+	sourceQuestionnaires[0].Assessment = true
+	sourceQuestionnaires[0].AssessmentConfig = json.RawMessage(`{"total_score_title":"旧测评","strength_count":1,"weakness_count":1,"overall_levels":[{"minimum_score":0,"maximum_score":10,"title":"完成","enabled":true,"sort_order":1}],"dimensions":[{"key":"维度 1/增长","name":"用户维护","scoring_method":"sum","category_method":"most_selected","enabled":true,"participates_in_total_score":true,"show_in_result":true,"sort_order":1,"type_priority":["暖男/女型"],"types":[{"key":"暖男/女型","name":"暖男/女型","title":"暖男/女型","enabled":true,"show_in_result":true,"sort_order":1}],"levels":[{"minimum_score":0,"maximum_score":10,"title":"完成","enabled":true,"sort_order":1}]}]}`)
+	setFrozenTable(t, &snapshot, "questionnaires", sourceQuestionnaires)
+	var sourceQuestions []question
+	decodeTable(snapshot, "questionnaire_questions", &sourceQuestions)
+	sourceQuestions[0].Dimension = "维度 1/增长"
+	setFrozenTable(t, &snapshot, "questionnaire_questions", sourceQuestions)
+	var sourceOptions []option
+	decodeTable(snapshot, "questionnaire_options", &sourceOptions)
+	sourceOptions[0].TypeKey = "暖男/女型"
+	setFrozenTable(t, &snapshot, "questionnaire_options", sourceOptions)
 	file, snapshotKey, dataKey := writeFrozenSnapshot(t, snapshot)
 	args := []string{"--target-url", targetURL, "--snapshot", file, "--snapshot-key-file", snapshotKey, "--data-key-file", dataKey, "--confirm-import"}
 	if err := importSnapshot(args); err != nil {
@@ -49,6 +65,13 @@ func TestPostgreSQLFrozenSurveySnapshotImportReplayAndReconcile(t *testing.T) {
 	}
 	if questionnaires != 1 || submissions != 2 || unresolved != 1 || missingDefinition != 1 || receipts != 3 || quarantined != 1 || missingToken != 1 || mutableEffects != 0 || customers != 0 {
 		t.Fatalf("questionnaires=%d submissions=%d unresolved=%d missing_definition=%d receipts=%d quarantined=%d missing_token=%d outbox=%d customers=%d", questionnaires, submissions, unresolved, missingDefinition, receipts, quarantined, missingToken, mutableEffects, customers)
+	}
+	var importedDimension, importedType string
+	if err := pool.QueryRow(ctx, `SELECT q.assessment_dimension_key,o.assessment_type_key FROM survey_definition_questions q JOIN survey_definition_options o ON o.question_id=q.id ORDER BY q.id,o.id LIMIT 1`).Scan(&importedDimension, &importedType); err != nil {
+		t.Fatal(err)
+	}
+	if importedDimension != "维度 1/增长" || importedType != "暖男/女型" {
+		t.Fatalf("legacy assessment keys changed during import: dimension=%q type=%q", importedDimension, importedType)
 	}
 
 	clean := func(stage string) {
@@ -357,7 +380,7 @@ func surveyMigrationIntegrationTarget(t *testing.T) (string, *pgxpool.Pool, func
 		t.Fatal(err)
 	}
 	root := filepath.Join("..", "..")
-	for _, name := range []string{"0001_platform.sql", "0002_identity.sql", "0003_access.sql", "0018_survey.sql"} {
+	for _, name := range []string{"0001_platform.sql", "0002_identity.sql", "0003_access.sql", "0018_survey.sql", "0091_survey_assessment_business_keys.sql"} {
 		raw, readErr := os.ReadFile(filepath.Join(root, "migrations", name))
 		if readErr != nil {
 			pool.Close()

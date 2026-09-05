@@ -152,7 +152,8 @@ make_release() {
     0081_group_ops_webhook_unconfigured_reference.sql \
     0082_group_ops_history_import.sql \
     0084_hxc_shared_facts.sql \
-    0090_survey_oauth_state_redirect.sql; do
+    0090_survey_oauth_state_redirect.sql \
+    0091_survey_assessment_business_keys.sql; do
     : > "$release/migrations/$migration"
   done
   : > "$release/web/dist/asset-manifest.json"

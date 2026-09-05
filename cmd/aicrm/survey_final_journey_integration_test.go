@@ -91,6 +91,98 @@ func TestSurveyOAuthRedirectConstraintReadinessPostgreSQL(t *testing.T) {
 	surveyJourneyAssertOAuthRedirect(t, ctx, native, 5, "/h5/all.html?slug=not_valid", false)
 }
 
+// TestSurveyAssessmentBusinessKeyConstraintReadinessPostgreSQL makes the
+// forward-only 0091 repair executable. The old 0018 ASCII checks must fail
+// readiness and reject a real legacy key; after 0091, the same PostgreSQL
+// owner accepts Chinese/internal-space/slash keys while keeping boundary
+// violations out.
+func TestSurveyAssessmentBusinessKeyConstraintReadinessPostgreSQL(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	databaseURL, cleanup := adminAccessCompositionDatabase(t, ctx)
+	defer cleanup()
+	native, err := pgxpool.New(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer native.Close()
+
+	if _, err = native.Exec(ctx, `ALTER TABLE survey_definition_questions DROP CONSTRAINT survey_definition_questions_dimension;
+		ALTER TABLE survey_definition_questions ADD CONSTRAINT survey_definition_questions_dimension
+		CHECK (assessment_dimension_key = '' OR assessment_dimension_key ~ '^[A-Za-z0-9._:-]{1,128}$');
+		ALTER TABLE survey_definition_options DROP CONSTRAINT survey_definition_options_type;
+		ALTER TABLE survey_definition_options ADD CONSTRAINT survey_definition_options_type
+		CHECK (assessment_type_key = '' OR assessment_type_key ~ '^[A-Za-z0-9._:-]{1,128}$');`); err != nil {
+		t.Fatal(err)
+	}
+	module := surveymodule.NewModuleRegistration()
+	if err = module.Readiness(ctx, native); err == nil {
+		t.Fatal("Readiness accepted the known-broken 0018 assessment business key constraints")
+	}
+	fixture := newSurveyJourneyAssessmentKeyFixture(t, ctx, native)
+	surveyJourneyAssertAssessmentQuestionKey(t, ctx, native, fixture.versionID, 0, "维度 1/增长", false)
+
+	if _, err = native.Exec(ctx, surveyJourneyMigrationSQL(t, "0091_survey_assessment_business_keys.sql")); err != nil {
+		t.Fatalf("apply 0091: %v", err)
+	}
+	if err = module.Readiness(ctx, native); err != nil {
+		t.Fatalf("Readiness after 0091: %v", err)
+	}
+	surveyJourneyAssertAssessmentQuestionKey(t, ctx, native, fixture.versionID, 0, "维度 1/增长", true)
+	surveyJourneyAssertAssessmentOptionKey(t, ctx, native, fixture.questionID, fixture.versionID, 0, "暖男/女型", true)
+	for index, key := range []string{" key", "key ", "key\nline", strings.Repeat("字", 129)} {
+		surveyJourneyAssertAssessmentQuestionKey(t, ctx, native, fixture.versionID, index+1, key, false)
+		surveyJourneyAssertAssessmentOptionKey(t, ctx, native, fixture.questionID, fixture.versionID, index+1, key, false)
+	}
+}
+
+type surveyJourneyAssessmentKeyRows struct{ versionID, questionID int64 }
+
+func newSurveyJourneyAssessmentKeyFixture(t *testing.T, ctx context.Context, pool *pgxpool.Pool) surveyJourneyAssessmentKeyRows {
+	t.Helper()
+	now := time.Now().UTC()
+	var actorID, questionnaireID, versionID, questionID int64
+	if err := pool.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name) VALUES('survey-key-ready','$argon2id$test','Survey Key Ready') RETURNING id`).Scan(&actorID); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `INSERT INTO survey_questionnaires(name,title,description,mode,answer_display_mode,slug,status,created_by,updated_by,created_at,updated_at) VALUES('assessment-key-ready','Assessment key ready','','assessment','all_in_one','assessment-key-ready','draft',$1,$1,$2,$2) RETURNING id`, actorID, now).Scan(&questionnaireID); err != nil {
+		t.Fatal(err)
+	}
+	digest := bytes.Repeat([]byte{9}, sha256.Size)
+	if err := pool.QueryRow(ctx, `INSERT INTO survey_definition_versions(questionnaire_id,version_number,mode,answer_display_mode,title_snapshot,description_snapshot,assessment_config,definition_digest,created_by,created_at) VALUES($1,1,'assessment','all_in_one','Assessment key ready','', '{}'::jsonb,$2,$3,$4) RETURNING id`, questionnaireID, digest, actorID, now).Scan(&versionID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE survey_questionnaires SET active_definition_version_id=$2 WHERE id=$1`, questionnaireID, versionID); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `INSERT INTO survey_definition_questions(definition_version_id,question_type,title,assessment_dimension_key,sidebar_profile_field,required,sort_order,placeholder_text,validation) VALUES($1,'single_choice','Key question','','',TRUE,99,'','{}'::jsonb) RETURNING id`, versionID).Scan(&questionID); err != nil {
+		t.Fatal(err)
+	}
+	return surveyJourneyAssessmentKeyRows{versionID: versionID, questionID: questionID}
+}
+
+func surveyJourneyAssertAssessmentQuestionKey(t *testing.T, ctx context.Context, pool *pgxpool.Pool, versionID int64, sortOrder int, key string, accepted bool) {
+	t.Helper()
+	_, err := pool.Exec(ctx, `INSERT INTO survey_definition_questions(definition_version_id,question_type,title,assessment_dimension_key,sidebar_profile_field,required,sort_order,placeholder_text,validation) VALUES($1,'textarea','Key boundary',$2,'',FALSE,$3,'','{}'::jsonb)`, versionID, key, sortOrder)
+	if accepted && err != nil {
+		t.Fatalf("assessment dimension key %q rejected: %v", key, err)
+	}
+	if !accepted && err == nil {
+		t.Fatalf("assessment dimension key %q unexpectedly accepted", key)
+	}
+}
+
+func surveyJourneyAssertAssessmentOptionKey(t *testing.T, ctx context.Context, pool *pgxpool.Pool, questionID, versionID int64, sortOrder int, key string, accepted bool) {
+	t.Helper()
+	_, err := pool.Exec(ctx, `INSERT INTO survey_definition_options(question_id,definition_version_id,option_text,score,assessment_type_key,tag_codes,is_other,other_placeholder,other_max_length,sort_order) VALUES($1,$2,'Key boundary',0,$3,'[]'::jsonb,FALSE,'',0,$4)`, questionID, versionID, key, sortOrder)
+	if accepted && err != nil {
+		t.Fatalf("assessment type key %q rejected: %v", key, err)
+	}
+	if !accepted && err == nil {
+		t.Fatalf("assessment type key %q unexpectedly accepted", key)
+	}
+}
+
 func surveyJourneyMigrationSQL(t *testing.T, name string) string {
 	t.Helper()
 	_, file, _, ok := runtime.Caller(0)
