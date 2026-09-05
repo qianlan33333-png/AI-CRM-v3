@@ -39,6 +39,29 @@ var (
 	ErrResponse    = errors.New("wecom provider response rejected")
 )
 
+// providerResponseError deliberately retains only protocol classification.
+// It never carries a response body, request URL, token, or external identity.
+// Existing callers can continue to match ErrResponse through Unwrap.
+type providerResponseError struct {
+	statusCode int
+	errCode    int64
+	retryable  bool
+}
+
+func (err *providerResponseError) Error() string { return ErrResponse.Error() }
+func (err *providerResponseError) Unwrap() error { return ErrResponse }
+
+type directoryReadError struct {
+	cause     error
+	code      string
+	retryable bool
+}
+
+func (err *directoryReadError) Error() string                   { return err.cause.Error() }
+func (err *directoryReadError) Unwrap() error                   { return err.cause }
+func (err *directoryReadError) DirectoryFailureCode() string    { return err.code }
+func (err *directoryReadError) DirectoryFailureRetryable() bool { return err.retryable }
+
 // Config is injected by the composition root. Secrets are intentionally only
 // held in memory and no method in this package logs request parameters.
 type Config struct {
@@ -127,18 +150,30 @@ func (client *Client) ListContactStaff(ctx context.Context) ([]string, error) {
 	}
 	token, err := client.contactAccessToken(ctx)
 	if err != nil {
-		return nil, err
+		return nil, classifyDirectoryReadError(err)
 	}
-	payload, err := client.request(ctx, "/cgi-bin/externalcontact/get_follow_user_list", url.Values{"access_token": {token}})
+	payload, err := client.listContactStaff(ctx, token)
+	if directoryTokenExpired(err) {
+		token, err = client.refreshDirectoryToken(ctx)
+		if err == nil {
+			payload, err = client.listContactStaff(ctx, token)
+		}
+		if err != nil {
+			return nil, classifyDirectoryRefreshError(err)
+		}
+	}
 	if err != nil || payload.FollowUser == nil {
-		return nil, ErrResponse
+		if err != nil {
+			return nil, classifyDirectoryReadError(err)
+		}
+		return nil, classifyDirectoryReadError(ErrResponse)
 	}
 	seen := map[string]struct{}{}
 	staff := make([]string, 0, len(payload.FollowUser))
 	for _, value := range payload.FollowUser {
 		value = strings.TrimSpace(value)
 		if value == "" || invalid(value) {
-			return nil, ErrResponse
+			return nil, classifyDirectoryReadError(ErrResponse)
 		}
 		if _, exists := seen[value]; exists {
 			continue
@@ -158,34 +193,43 @@ func (client *Client) BatchExternalContacts(ctx context.Context, staffID, cursor
 	}
 	token, err := client.contactAccessToken(ctx)
 	if err != nil {
-		return wecomport.ExternalContactPage{}, err
+		return wecomport.ExternalContactPage{}, classifyDirectoryReadError(err)
 	}
 	body, err := json.Marshal(map[string]any{"userid_list": []string{staffID}, "cursor": cursor, "limit": limit})
 	if err != nil {
 		return wecomport.ExternalContactPage{}, ErrResponse
 	}
-	payload, err := client.requestJSON(ctx, http.MethodPost, "/cgi-bin/externalcontact/batch/get_by_user", url.Values{"access_token": {token}}, body)
+	payload, err := client.batchExternalContacts(ctx, token, body)
+	if directoryTokenExpired(err) {
+		token, err = client.refreshDirectoryToken(ctx)
+		if err == nil {
+			payload, err = client.batchExternalContacts(ctx, token, body)
+		}
+		if err != nil {
+			return wecomport.ExternalContactPage{}, classifyDirectoryRefreshError(err)
+		}
+	}
 	if err != nil {
-		return wecomport.ExternalContactPage{}, err
+		return wecomport.ExternalContactPage{}, classifyDirectoryReadError(err)
 	}
 	page := wecomport.ExternalContactPage{Contacts: make([]wecomport.ExternalContact, 0, len(payload.ExternalContactList)), NextCursor: strings.TrimSpace(payload.NextCursor)}
 	for _, item := range payload.ExternalContactList {
 		contact := item.ExternalContact
 		contact.ExternalUserID = strings.TrimSpace(contact.ExternalUserID)
 		if contact.ExternalUserID == "" || contact.Gender < 0 || contact.Gender > 2 || contact.Type < 0 || contact.Type > 3 {
-			return wecomport.ExternalContactPage{}, ErrResponse
+			return wecomport.ExternalContactPage{}, classifyDirectoryReadError(ErrResponse)
 		}
 		followInfo := make([]wecomport.ExternalContactFollowInfo, 0, len(item.FollowInfo))
 		for _, follow := range item.FollowInfo {
 			follow.UserID = strings.TrimSpace(follow.UserID)
 			if follow.UserID == "" || invalid(follow.UserID) {
-				return wecomport.ExternalContactPage{}, ErrResponse
+				return wecomport.ExternalContactPage{}, classifyDirectoryReadError(ErrResponse)
 			}
 			value := wecomport.ExternalContactFollowInfo{EmployeeID: follow.UserID, Tags: make([]wecomport.ExternalContactTag, 0, len(follow.Tags))}
 			for _, tag := range follow.Tags {
 				tag.ID, tag.Name = strings.TrimSpace(tag.ID), strings.TrimSpace(tag.Name)
 				if tag.ID == "" || invalid(tag.ID) || invalidOptional(tag.Name) || tag.Type < 1 || tag.Type > 2 {
-					return wecomport.ExternalContactPage{}, ErrResponse
+					return wecomport.ExternalContactPage{}, classifyDirectoryReadError(ErrResponse)
 				}
 				value.Tags = append(value.Tags, wecomport.ExternalContactTag{ProviderTagID: tag.ID, Name: tag.Name, Type: tag.Type})
 			}
@@ -196,6 +240,14 @@ func (client *Client) BatchExternalContacts(ctx context.Context, staffID, cursor
 			Type: contact.Type, CorpName: strings.TrimSpace(contact.CorpName), UnionID: strings.TrimSpace(contact.UnionID), FollowInfo: followInfo})
 	}
 	return page, nil
+}
+
+func (client *Client) listContactStaff(ctx context.Context, token string) (response, error) {
+	return client.request(ctx, "/cgi-bin/externalcontact/get_follow_user_list", url.Values{"access_token": {token}})
+}
+
+func (client *Client) batchExternalContacts(ctx context.Context, token string, body []byte) (response, error) {
+	return client.requestJSON(ctx, http.MethodPost, "/cgi-bin/externalcontact/batch/get_by_user", url.Values{"access_token": {token}}, body)
 }
 
 type MessageWriteError struct {
@@ -950,12 +1002,18 @@ func (client *Client) requestJSON(ctx context.Context, method, path string, quer
 	defer resp.Body.Close()
 	limited := io.LimitReader(resp.Body, maxResponseBody+1)
 	responseBody, err := io.ReadAll(limited)
-	if err != nil || len(responseBody) > maxResponseBody || resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return response{}, ErrResponse
+	if err != nil || len(responseBody) > maxResponseBody {
+		return response{}, &providerResponseError{statusCode: resp.StatusCode, retryable: true}
+	}
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return response{}, providerError(resp.StatusCode, responseBody)
 	}
 	var payload response
-	if json.Unmarshal(responseBody, &payload) != nil || !successErrCode(payload.ErrCode) {
-		return response{}, ErrResponse
+	if json.Unmarshal(responseBody, &payload) != nil {
+		return response{}, &providerResponseError{statusCode: resp.StatusCode}
+	}
+	if !successErrCode(payload.ErrCode) {
+		return response{}, &providerResponseError{statusCode: resp.StatusCode, errCode: providerErrCode(payload.ErrCode)}
 	}
 	payload.AccessToken = strings.TrimSpace(payload.AccessToken)
 	payload.UserID = strings.TrimSpace(payload.UserID)
@@ -964,11 +1022,95 @@ func (client *Client) requestJSON(ctx context.Context, method, path string, quer
 	return payload, nil
 }
 
+func providerError(statusCode int, body []byte) error {
+	var payload response
+	if json.Unmarshal(body, &payload) != nil {
+		return &providerResponseError{statusCode: statusCode, retryable: statusCode == http.StatusTooManyRequests || statusCode >= 500}
+	}
+	return &providerResponseError{statusCode: statusCode, errCode: providerErrCode(payload.ErrCode), retryable: statusCode == http.StatusTooManyRequests || statusCode >= 500}
+}
+
+func providerErrCode(raw json.RawMessage) int64 {
+	var value int64
+	if json.Unmarshal(raw, &value) == nil {
+		return value
+	}
+	return 0
+}
+
+func classifyDirectoryReadError(cause error) error {
+	if cause == nil || errors.Is(cause, wecomport.ErrDirectoryDisabled) {
+		return cause
+	}
+	classification := &directoryReadError{cause: cause, code: "provider_response_invalid"}
+	if errors.Is(cause, ErrUnavailable) {
+		classification.code, classification.retryable = "provider_unavailable", true
+		return classification
+	}
+	var providerFailure *providerResponseError
+	if !errors.As(cause, &providerFailure) {
+		return classification
+	}
+	if providerFailure.statusCode == http.StatusUnauthorized || providerFailure.statusCode == http.StatusForbidden || directoryPermissionErrCode(providerFailure.errCode) {
+		classification.code = "provider_permission_denied"
+		return classification
+	}
+	if directoryCredentialErrCode(providerFailure.errCode) || directoryTokenExpired(cause) {
+		classification.code = "provider_credentials_invalid"
+		return classification
+	}
+	if providerFailure.statusCode == http.StatusTooManyRequests || providerFailure.errCode == 45009 {
+		classification.code, classification.retryable = "provider_rate_limited", true
+		return classification
+	}
+	if providerFailure.retryable || providerFailure.statusCode >= 500 {
+		classification.code, classification.retryable = "provider_unavailable", true
+	}
+	return classification
+}
+
+func classifyDirectoryRefreshError(cause error) error {
+	if directoryTokenExpired(cause) {
+		return &directoryReadError{cause: cause, code: "provider_credentials_invalid"}
+	}
+	return classifyDirectoryReadError(cause)
+}
+
+func directoryTokenExpired(cause error) bool {
+	var providerFailure *providerResponseError
+	return errors.As(cause, &providerFailure) && (providerFailure.errCode == 40014 || providerFailure.errCode == 42001)
+}
+
+func directoryPermissionErrCode(code int64) bool {
+	switch code {
+	case 48001, 48002, 48003, 48004, 60011:
+		return true
+	default:
+		return false
+	}
+}
+
+func directoryCredentialErrCode(code int64) bool {
+	switch code {
+	case 40001, 40013:
+		return true
+	default:
+		return false
+	}
+}
+
 func (client *Client) cached(key string) (string, bool) {
 	client.mu.Lock()
 	defer client.mu.Unlock()
 	entry, ok := client.tokens[key]
 	return entry.value, ok && entry.value != "" && entry.expiresAt.After(client.now())
+}
+
+func (client *Client) refreshDirectoryToken(ctx context.Context) (string, error) {
+	client.mu.Lock()
+	delete(client.tokens, "contact_access_token")
+	client.mu.Unlock()
+	return client.contactAccessToken(ctx)
 }
 
 func (client *Client) store(key, value string, expiresIn int64) {
