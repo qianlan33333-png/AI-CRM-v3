@@ -594,6 +594,9 @@ func TestAutomationAIAssistantAndGroupOpsShareRiverRuntime(t *testing.T) {
 		t.Fatalf("manual plan=%+v err=%v", plan, err)
 	}
 	groupPlan := createRiverJourneyPlan(t, ctx, uow, groupStore, groupActor)
+	if groupPlan != int64(plan.ID) {
+		t.Fatalf("fixture must exercise equal local plan IDs across sources: group=%d AI=%d", groupPlan, plan.ID)
+	}
 	unknownPlan := createRiverJourneyPlanWithMessages(t, ctx, uow, groupStore, groupActor, "provider result intentionally unknown", "blocked")
 	if _, err = native.Exec(ctx, `INSERT INTO group_ops_directory_groups(chat_reference,owner_staff_id,display_name,member_count,source_digest,refreshed_at) VALUES ('chat-river-1',$1,'Joint one',1,$2,clock_timestamp()),('chat-river-2',$1,'Joint two',1,$3,clock_timestamp())`, groupActor, string(effectport.Hash("joint-directory", "1")), string(effectport.Hash("joint-directory", "2"))); err != nil {
 		t.Fatal(err)
