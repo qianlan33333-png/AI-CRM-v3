@@ -875,9 +875,12 @@ func loadReport(ctx context.Context, tx pgx.Tx, batchID int64, batchKey string, 
 	return report, rows.Err()
 }
 
-func Reconcile(ctx context.Context, pool *pgxpool.Pool, batchKey string) (Report, error) {
+func Reconcile(ctx context.Context, pool *pgxpool.Pool, batchKey string, snapshot segmentmigration.Snapshot) (Report, error) {
 	if pool == nil || batchKey == "" {
 		return Report{}, errors.New("target and batch-key are required")
+	}
+	if err := segmentmigration.ValidateSnapshot(snapshot); err != nil {
+		return Report{}, err
 	}
 	tx, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
 	if err != nil {
@@ -888,6 +891,13 @@ func Reconcile(ctx context.Context, pool *pgxpool.Pool, batchKey string) (Report
 	var manifestRaw []byte
 	if err = tx.QueryRow(ctx, `SELECT id,manifest,provider_effect_count_before,provider_effect_count_after,river_job_count_before,river_job_count_after FROM automation_operations_migration_batches WHERE batch_key=$1 AND status IN ('imported','reconciled') FOR UPDATE`, batchKey).Scan(&batchID, &manifestRaw, &effectsBefore, &effectsAfter, &jobsBefore, &jobsAfter); err != nil {
 		return Report{}, err
+	}
+	shadow, err := shadowInTx(ctx, tx, batchKey, snapshot)
+	if err != nil {
+		return Report{}, err
+	}
+	if !shadow.ReadyForReconcile {
+		return Report{}, errors.New("frozen snapshot comparison is not ready for reconciliation")
 	}
 	var manifest segmentmigration.Manifest
 	if json.Unmarshal(manifestRaw, &manifest) != nil {

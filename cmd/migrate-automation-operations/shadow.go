@@ -29,6 +29,7 @@ type ShadowPackage struct {
 	ReferenceTimeMatches bool   `json:"reference_time_matches"`
 	SourceMemberRows     int    `json:"source_member_rows"`
 	MappedMemberRows     int    `json:"mapped_member_rows"`
+	IsolatedMemberRows   int    `json:"isolated_member_rows"`
 	CanonicalMemberCount int    `json:"canonical_member_count"`
 	TargetMemberCount    int64  `json:"target_member_count"`
 	MemberDigestMatches  bool   `json:"member_digest_matches"`
@@ -36,16 +37,31 @@ type ShadowPackage struct {
 	Ready                bool   `json:"ready"`
 }
 
+// ShadowQuarantine proves that a source row intentionally isolated during
+// import still has its immutable receipt and original digest. It carries no
+// source payload.
+type ShadowQuarantine struct {
+	SourceTable         string `json:"source_table"`
+	SourcePK            string `json:"source_pk"`
+	Disposition         string `json:"disposition"`
+	ReasonCodeMatches   bool   `json:"reason_code_matches"`
+	RecordDigestMatches bool   `json:"record_digest_matches"`
+	Ready               bool   `json:"ready"`
+}
+
 type ShadowReport struct {
-	BatchKey               string          `json:"batch_key"`
-	BatchStatus            string          `json:"batch_status"`
-	ReferenceTime          time.Time       `json:"reference_time"`
-	Packages               []ShadowPackage `json:"packages"`
-	ProviderEffectsCreated int64           `json:"provider_effects_created"`
-	RiverJobsCreated       int64           `json:"river_jobs_created"`
-	OutcomeUnknownCount    int64           `json:"outcome_unknown_count"`
-	History                []ShadowHistory `json:"history"`
-	ReadyForProbe          bool            `json:"ready_for_probe"`
+	BatchKey                string             `json:"batch_key"`
+	BatchStatus             string             `json:"batch_status"`
+	ReferenceTime           time.Time          `json:"reference_time"`
+	Packages                []ShadowPackage    `json:"packages"`
+	ProviderEffectsCreated  int64              `json:"provider_effects_created"`
+	RiverJobsCreated        int64              `json:"river_jobs_created"`
+	OutcomeUnknownCount     int64              `json:"outcome_unknown_count"`
+	History                 []ShadowHistory    `json:"history"`
+	Quarantines             []ShadowQuarantine `json:"quarantines"`
+	SnapshotManifestMatches bool               `json:"snapshot_manifest_matches"`
+	ReadyForReconcile       bool               `json:"ready_for_reconcile"`
+	ReadyForProbe           bool               `json:"ready_for_probe"`
 }
 
 // ShadowHistory is a safe, read-only comparison of one frozen legacy runtime
@@ -59,9 +75,116 @@ type ShadowHistory struct {
 	OccurredAtMatches         bool      `json:"occurred_at_matches"`
 	RecordDigestMatches       bool      `json:"record_digest_matches"`
 	SourceEffectDigestMatches bool      `json:"source_effect_digest_matches"`
+	SourceReceiptMatches      bool      `json:"source_receipt_matches"`
 	ReadOnly                  bool      `json:"read_only"`
 	Replayable                bool      `json:"replayable"`
 	Ready                     bool      `json:"ready"`
+}
+
+type frozenSourceRow struct {
+	table  string
+	pk     string
+	digest [32]byte
+}
+
+type sourceReceipt struct {
+	targetTable string
+	targetPK    *int64
+	disposition string
+}
+
+func receiptKey(table, pk string) string { return table + "\x00" + pk }
+
+// frozenSourceRows derives every source receipt key from the protected,
+// canonical snapshot. This is deliberately shared by target and quarantine
+// checks so a count-only reconciliation cannot hide a missing or changed row.
+func frozenSourceRows(snapshot segmentmigration.Snapshot) ([]frozenSourceRow, error) {
+	rows := make([]frozenSourceRow, 0)
+	for _, table := range segmentmigration.LogicalTables {
+		var rawRows []json.RawMessage
+		if err := json.Unmarshal(snapshot.Tables[table], &rawRows); err != nil {
+			return nil, fmt.Errorf("decode source table %s", table)
+		}
+		for index, raw := range rawRows {
+			var object map[string]json.RawMessage
+			if json.Unmarshal(raw, &object) != nil {
+				return nil, fmt.Errorf("decode source row %s", table)
+			}
+			var id, packageID, version, segmentID, customerID, sortOrder int64
+			_ = json.Unmarshal(object["id"], &id)
+			_ = json.Unmarshal(object["package_id"], &packageID)
+			_ = json.Unmarshal(object["automation_id"], &packageID)
+			_ = json.Unmarshal(object["version"], &version)
+			_ = json.Unmarshal(object["segment_id"], &segmentID)
+			_ = json.Unmarshal(object["customer_id"], &customerID)
+			_ = json.Unmarshal(object["sort_order"], &sortOrder)
+			var pk string
+			switch table {
+			case "audience_groups", "audience_packages", "automation_agents":
+				pk = strconv.FormatInt(id, 10)
+			case "audience_configuration_versions":
+				pk = fmt.Sprintf("%d:%d", packageID, version)
+			case "audience_bindings":
+				pk = strconv.FormatInt(packageID, 10)
+			case "audience_senders":
+				pk = fmt.Sprintf("%d:%d", packageID, sortOrder)
+			case "audience_members":
+				pk = fmt.Sprintf("%d:%d", segmentID, customerID)
+			default:
+				pk = historyPK(table, object, index)
+			}
+			if pk == "" || pk == "0" || pk == "0:0" {
+				return nil, fmt.Errorf("invalid source key %s", table)
+			}
+			rows = append(rows, frozenSourceRow{table: table, pk: pk, digest: recordDigest(raw)})
+		}
+	}
+	return rows, nil
+}
+
+func sourceReceipts(ctx context.Context, tx pgx.Tx, batchID int64, snapshot segmentmigration.Snapshot) (map[string]sourceReceipt, []ShadowQuarantine, error) {
+	rows, err := frozenSourceRows(snapshot)
+	if err != nil {
+		return nil, nil, err
+	}
+	receipts := make(map[string]sourceReceipt, len(rows))
+	quarantines := make([]ShadowQuarantine, 0)
+	for _, source := range rows {
+		receiptSourcePK := sourcePK(snapshot, source.pk)
+		var receipt sourceReceipt
+		var digest []byte
+		if err = tx.QueryRow(ctx, `SELECT target_table,target_pk,disposition,record_digest FROM automation_operations_migration_source_map WHERE batch_id=$1 AND source_table=$2 AND source_pk=$3`, batchID, source.table, receiptSourcePK).Scan(&receipt.targetTable, &receipt.targetPK, &receipt.disposition, &digest); err != nil {
+			return nil, nil, fmt.Errorf("source receipt %s/%s: %w", source.table, source.pk, err)
+		}
+		if !bytes.Equal(digest, source.digest[:]) {
+			return nil, nil, fmt.Errorf("source receipt digest %s/%s", source.table, source.pk)
+		}
+		if receipt.disposition == "unresolved" || receipt.disposition == "conflict" || receipt.disposition == "invalid" || receipt.disposition == "quarantine" {
+			var reason string
+			var quarantinedDigest []byte
+			if err = tx.QueryRow(ctx, `SELECT reason_code,record_digest FROM automation_operations_migration_quarantine WHERE batch_id=$1 AND source_table=$2 AND source_pk=$3`, batchID, source.table, receiptSourcePK).Scan(&reason, &quarantinedDigest); err != nil {
+				return nil, nil, fmt.Errorf("quarantine receipt %s/%s: %w", source.table, source.pk, err)
+			}
+			item := ShadowQuarantine{SourceTable: source.table, SourcePK: receiptSourcePK, Disposition: receipt.disposition, ReasonCodeMatches: true, RecordDigestMatches: bytes.Equal(quarantinedDigest, source.digest[:])}
+			if source.table == "audience_members" {
+				item.ReasonCodeMatches = reason == "oneid_"+receipt.disposition
+			}
+			item.Ready = item.ReasonCodeMatches && item.RecordDigestMatches
+			if !item.Ready {
+				return nil, nil, fmt.Errorf("quarantine receipt drift %s/%s", source.table, source.pk)
+			}
+			quarantines = append(quarantines, item)
+		}
+		receipts[receiptKey(source.table, source.pk)] = receipt
+	}
+	var persisted int
+	if err = tx.QueryRow(ctx, `SELECT count(*) FROM automation_operations_migration_quarantine WHERE batch_id=$1`, batchID).Scan(&persisted); err != nil {
+		return nil, nil, err
+	}
+	if persisted != len(quarantines) {
+		return nil, nil, errors.New("migration quarantine receipt count drift")
+	}
+	return receipts, quarantines, nil
 }
 
 func Shadow(ctx context.Context, pool *pgxpool.Pool, batchKey string, snapshot segmentmigration.Snapshot) (ShadowReport, error) {
@@ -77,17 +200,46 @@ func Shadow(ctx context.Context, pool *pgxpool.Pool, batchKey string, snapshot s
 	}
 	defer tx.Rollback(ctx)
 
+	report, err := shadowInTx(ctx, tx, batchKey, snapshot)
+	if err != nil {
+		return report, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return report, err
+	}
+	return report, nil
+}
+
+// shadowInTx is shared by the read-only operator report and Reconcile. The
+// latter uses it inside its SERIALIZABLE transaction so a batch is never
+// marked reconciled after a separately observed, stale comparison.
+func shadowInTx(ctx context.Context, tx pgx.Tx, batchKey string, snapshot segmentmigration.Snapshot) (ShadowReport, error) {
 	report := ShadowReport{BatchKey: batchKey, ReferenceTime: snapshot.Manifest.SnapshotAt.UTC()}
 	var batchID, effectsBefore, effectsAfter, jobsBefore, jobsAfter int64
 	var donorCommit, sourceWatermark string
-	if err = tx.QueryRow(ctx, `SELECT id,status,donor_commit,encode(source_watermark_digest,'hex'),provider_effect_count_before,provider_effect_count_after,river_job_count_before,river_job_count_after FROM automation_operations_migration_batches WHERE batch_key=$1`, batchKey).Scan(&batchID, &report.BatchStatus, &donorCommit, &sourceWatermark, &effectsBefore, &effectsAfter, &jobsBefore, &jobsAfter); err != nil {
+	var manifestDigest []byte
+	if err := tx.QueryRow(ctx, `SELECT id,status,donor_commit,encode(source_watermark_digest,'hex'),manifest_digest,provider_effect_count_before,provider_effect_count_after,river_job_count_before,river_job_count_after FROM automation_operations_migration_batches WHERE batch_key=$1`, batchKey).Scan(&batchID, &report.BatchStatus, &donorCommit, &sourceWatermark, &manifestDigest, &effectsBefore, &effectsAfter, &jobsBefore, &jobsAfter); err != nil {
 		return report, err
 	}
 	if donorCommit != snapshot.Manifest.DonorCommit || sourceWatermark != snapshot.Manifest.SourceWatermarkDigest {
 		return report, errors.New("stored batch does not belong to supplied frozen snapshot")
 	}
+	manifestRaw, err := json.Marshal(snapshot.Manifest)
+	if err != nil {
+		return report, errors.New("encode supplied frozen manifest")
+	}
+	expectedManifestDigest := sha256.Sum256(manifestRaw)
+	report.SnapshotManifestMatches = bytes.Equal(manifestDigest, expectedManifestDigest[:])
+	if !report.SnapshotManifestMatches {
+		return report, errors.New("stored batch manifest does not match supplied frozen snapshot")
+	}
 	report.ProviderEffectsCreated = effectsAfter - effectsBefore
 	report.RiverJobsCreated = jobsAfter - jobsBefore
+	receipts, quarantines, err := sourceReceipts(ctx, tx, batchID, snapshot)
+	if err != nil {
+		return report, err
+	}
+	report.Quarantines = quarantines
 
 	packages, _, err := decodeRows[packageRow](snapshot, "audience_packages")
 	if err != nil {
@@ -113,17 +265,21 @@ func Shadow(ctx context.Context, pool *pgxpool.Pool, batchKey string, snapshot s
 	}
 	sort.Slice(packages, func(a, b int) bool { return packages[a].ID < packages[b].ID })
 
-	allReady := report.BatchStatus == "reconciled" && report.ProviderEffectsCreated == 0 && report.RiverJobsCreated == 0
+	allReady := report.ProviderEffectsCreated == 0 && report.RiverJobsCreated == 0
 	for _, source := range packages {
 		item := ShadowPackage{SourcePackageID: source.ID, SourceMemberRows: len(membersByPackage[source.ID])}
-		if err = tx.QueryRow(ctx, `SELECT target_pk FROM automation_operations_migration_source_map WHERE batch_id=$1 AND source_table='audience_packages' AND source_pk=$2 AND disposition IN ('imported','mapped')`, batchID, sourcePK(snapshot, strconv.FormatInt(source.ID, 10))).Scan(&item.TargetPackageID); err != nil {
-			return report, fmt.Errorf("package %d source map: %w", source.ID, err)
+		packageReceipt, ok := receipts[receiptKey("audience_packages", strconv.FormatInt(source.ID, 10))]
+		if !ok || packageReceipt.targetPK == nil || (packageReceipt.disposition != "imported" && packageReceipt.disposition != "mapped") || packageReceipt.targetTable != "segment_audience_packages" {
+			return report, fmt.Errorf("package %d source receipt", source.ID)
 		}
+		item.TargetPackageID = *packageReceipt.targetPK
 		var targetDefinition []byte
 		var targetCron *string
+		var targetSnapshotID int64
+		var targetSnapshotState string
 		var targetReference time.Time
 		var targetDigest []byte
-		if err = tx.QueryRow(ctx, `SELECT p.lifecycle,c.definition::text,c.refresh_cron_utc,s.reference_time,s.member_count,s.member_digest FROM segment_audience_packages p JOIN segment_audience_configuration_versions c ON c.id=p.current_configuration_version_id AND c.package_id=p.id JOIN segment_audience_snapshots s ON s.id=p.published_snapshot_id AND s.package_id=p.id WHERE p.id=$1`, item.TargetPackageID).Scan(&item.Lifecycle, &targetDefinition, &targetCron, &targetReference, &item.TargetMemberCount, &targetDigest); err != nil {
+		if err = tx.QueryRow(ctx, `SELECT p.lifecycle,c.definition::text,c.refresh_cron_utc,s.id,s.state,s.reference_time,s.member_count,s.member_digest FROM segment_audience_packages p JOIN segment_audience_configuration_versions c ON c.id=p.current_configuration_version_id AND c.package_id=p.id JOIN segment_audience_snapshots s ON s.id=p.published_snapshot_id AND s.package_id=p.id WHERE p.id=$1`, item.TargetPackageID).Scan(&item.Lifecycle, &targetDefinition, &targetCron, &targetSnapshotID, &targetSnapshotState, &targetReference, &item.TargetMemberCount, &targetDigest); err != nil {
 			return report, fmt.Errorf("package %d target projection: %w", source.ID, err)
 		}
 		sourceConfiguration, ok := latestConfig[source.ID]
@@ -144,16 +300,20 @@ func Shadow(ctx context.Context, pool *pgxpool.Pool, batchKey string, snapshot s
 
 		canonical := make([]int64, 0, item.SourceMemberRows)
 		for _, sourceMember := range membersByPackage[source.ID] {
-			var targetCustomer *int64
-			var disposition, targetTable string
-			mapErr := tx.QueryRow(ctx, `SELECT target_pk,disposition,target_table FROM automation_operations_migration_source_map WHERE batch_id=$1 AND source_table='audience_members' AND source_pk=$2`, batchID, sourcePK(snapshot, fmt.Sprintf("%d:%d", sourceMember.SegmentID, sourceMember.CustomerID))).Scan(&targetCustomer, &disposition, &targetTable)
-			if mapErr != nil && !errors.Is(mapErr, pgx.ErrNoRows) {
-				return report, mapErr
+			memberKey := fmt.Sprintf("%d:%d", sourceMember.SegmentID, sourceMember.CustomerID)
+			memberReceipt, ok := receipts[receiptKey("audience_members", memberKey)]
+			if !ok {
+				return report, fmt.Errorf("member source receipt %s", memberKey)
 			}
-			if mapErr == nil && disposition == "mapped" && targetCustomer != nil && *targetCustomer > 0 && targetTable == "segment_audience_snapshot_members.customer_id" {
+			if memberReceipt.disposition == "mapped" && memberReceipt.targetPK != nil && *memberReceipt.targetPK > 0 && memberReceipt.targetTable == "segment_audience_snapshot_members.customer_id" {
 				item.MappedMemberRows++
-				canonical = append(canonical, *targetCustomer)
+				canonical = append(canonical, *memberReceipt.targetPK)
+				continue
 			}
+			if memberReceipt.disposition != "unresolved" && memberReceipt.disposition != "conflict" && memberReceipt.disposition != "invalid" && memberReceipt.disposition != "quarantine" {
+				return report, fmt.Errorf("member source receipt disposition %q", memberReceipt.disposition)
+			}
+			item.IsolatedMemberRows++
 		}
 		sort.Slice(canonical, func(a, b int) bool { return canonical[a] < canonical[b] })
 		unique := canonical[:0]
@@ -168,7 +328,30 @@ func Shadow(ctx context.Context, pool *pgxpool.Pool, batchKey string, snapshot s
 			customerIDs[index] = customerdomain.CustomerID(id)
 		}
 		expectedDigest := segmentdomain.DigestMembers(customerIDs)
-		item.MemberDigestMatches = item.MappedMemberRows == item.SourceMemberRows && int64(len(unique)) == item.TargetMemberCount && bytes.Equal(expectedDigest[:], targetDigest)
+		actualCustomerIDs := make([]customerdomain.CustomerID, 0, item.TargetMemberCount)
+		rows, queryErr := tx.Query(ctx, `SELECT customer_id,entered_at,identity_disposition FROM segment_audience_snapshot_members WHERE snapshot_id=$1 ORDER BY customer_id`, targetSnapshotID)
+		if queryErr != nil {
+			return report, queryErr
+		}
+		enteredAtMatches := true
+		for rows.Next() {
+			var customerID int64
+			var enteredAt time.Time
+			var disposition string
+			if queryErr = rows.Scan(&customerID, &enteredAt, &disposition); queryErr != nil {
+				rows.Close()
+				return report, queryErr
+			}
+			actualCustomerIDs = append(actualCustomerIDs, customerdomain.CustomerID(customerID))
+			enteredAtMatches = enteredAtMatches && enteredAt.UTC().Equal(snapshot.Manifest.SnapshotAt.UTC()) && disposition == "resolved"
+		}
+		if queryErr = rows.Err(); queryErr != nil {
+			rows.Close()
+			return report, queryErr
+		}
+		rows.Close()
+		actualDigest := segmentdomain.DigestMembers(actualCustomerIDs)
+		item.MemberDigestMatches = targetSnapshotState == "published" && item.MappedMemberRows+item.IsolatedMemberRows == item.SourceMemberRows && int64(len(unique)) == item.TargetMemberCount && int64(len(actualCustomerIDs)) == item.TargetMemberCount && bytes.Equal(expectedDigest[:], targetDigest) && bytes.Equal(expectedDigest[:], actualDigest[:]) && enteredAtMatches
 		item.Ready = item.ConfigurationMatches && item.ReferenceTimeMatches && item.PausedOrArchived && item.MemberDigestMatches
 		allReady = allReady && item.Ready
 		report.Packages = append(report.Packages, item)
@@ -188,30 +371,35 @@ func Shadow(ctx context.Context, pool *pgxpool.Pool, batchKey string, snapshot s
 			}
 			pk := historyPK(name, object, index)
 			item := ShadowHistory{SourceTable: name, SourcePK: pk, SourceState: historyString(object, "state", historyString(object, "status", "unknown")), OccurredAt: historyTime(object)}
-			var storedDigest, storedEffect []byte
+			var historyID int64
+			var storedDigest, storedEffect, sourceReceiptDigest []byte
 			var storedState string
 			var storedOccurred time.Time
-			if err = tx.QueryRow(ctx, `SELECT source_state,occurred_at,record_digest,source_effect_digest,read_only,replayable FROM automation_operations_legacy_history WHERE batch_id=$1 AND source_table=$2 AND source_pk=$3`, batchID, name, sourcePK(snapshot, pk)).Scan(&storedState, &storedOccurred, &storedDigest, &storedEffect, &item.ReadOnly, &item.Replayable); err != nil {
+			if err = tx.QueryRow(ctx, `SELECT id,source_state,occurred_at,record_digest,source_effect_digest,read_only,replayable FROM automation_operations_legacy_history WHERE batch_id=$1 AND source_table=$2 AND source_pk=$3`, batchID, name, sourcePK(snapshot, pk)).Scan(&historyID, &storedState, &storedOccurred, &storedDigest, &storedEffect, &item.ReadOnly, &item.Replayable); err != nil {
 				return report, fmt.Errorf("history %s/%s: %w", name, pk, err)
 			}
 			item.StateMatches = storedState == item.SourceState
 			item.OccurredAtMatches = storedOccurred.UTC().Equal(item.OccurredAt.UTC())
 			expected := recordDigest(raw)
 			item.RecordDigestMatches = bytes.Equal(storedDigest, expected[:])
+			var mappedID *int64
+			var mappedTarget, mappedDisposition string
+			if err = tx.QueryRow(ctx, `SELECT target_pk,target_table,disposition,record_digest FROM automation_operations_migration_source_map WHERE batch_id=$1 AND source_table=$2 AND source_pk=$3`, batchID, name, sourcePK(snapshot, pk)).Scan(&mappedID, &mappedTarget, &mappedDisposition, &sourceReceiptDigest); err != nil {
+				return report, fmt.Errorf("history source receipt %s/%s: %w", name, pk, err)
+			}
+			item.SourceReceiptMatches = mappedID != nil && *mappedID == historyID && mappedTarget == "automation_operations_legacy_history" && mappedDisposition == "imported" && bytes.Equal(sourceReceiptDigest, expected[:])
 			expectedEffect := []byte(nil)
 			if effectID := historyString(object, "external_effect_id", ""); effectID != "" {
 				sum := sha256.Sum256([]byte(effectID))
 				expectedEffect = sum[:]
 			}
 			item.SourceEffectDigestMatches = bytes.Equal(storedEffect, expectedEffect)
-			item.Ready = item.StateMatches && item.OccurredAtMatches && item.RecordDigestMatches && item.SourceEffectDigestMatches && item.ReadOnly && !item.Replayable
+			item.Ready = item.StateMatches && item.OccurredAtMatches && item.RecordDigestMatches && item.SourceEffectDigestMatches && item.SourceReceiptMatches && item.ReadOnly && !item.Replayable
 			allReady = allReady && item.Ready
 			report.History = append(report.History, item)
 		}
 	}
-	report.ReadyForProbe = allReady && report.OutcomeUnknownCount == 0 && len(report.Packages) > 0
-	if err = tx.Commit(ctx); err != nil {
-		return report, err
-	}
+	report.ReadyForReconcile = (report.BatchStatus == "imported" || report.BatchStatus == "reconciled") && allReady && report.OutcomeUnknownCount == 0 && len(report.Packages) > 0
+	report.ReadyForProbe = report.BatchStatus == "reconciled" && report.ReadyForReconcile
 	return report, nil
 }
