@@ -44,6 +44,8 @@ type SubmissionStore interface {
 	GetOperationConfiguration(context.Context, surveyport.ID) (surveyport.OperationConfiguration, error)
 	SaveOperationConfiguration(context.Context, surveyport.OperationConfiguration, int64, time.Time) (surveyport.OperationConfiguration, error)
 	RecordDisabledOperation(context.Context, surveyport.ID, *surveyport.ID, string, [32]byte, time.Time) (surveyport.OperationReceipt, error)
+	RecordCompletionEffect(context.Context, surveyport.ID, surveyport.ID, string, string, string, [32]byte, time.Time) error
+	RecordCompletionSnapshot(context.Context, surveyport.ID, surveyport.ID, surveyport.CompletionPolicy, string, []byte, time.Time) error
 	AppendAuditAndOutbox(context.Context, string, surveyport.ID, string, json.RawMessage, string, time.Time) error
 	RecordPhoneBinding(context.Context, surveyport.ID, surveyport.ID, int64, int64, identityport.DeclaredAttachStatus, [32]byte, time.Time) error
 }
@@ -53,13 +55,42 @@ type customerHistoryWindowStore interface {
 }
 
 type SubmissionService struct {
-	uow             platformport.UnitOfWork
-	store           SubmissionStore
-	cipher          *secure.Cipher
-	timeline        customerport.TimelineWriter
-	phoneAttacher   identityport.DeclaredPhoneAttacher
-	phoneProjection customerport.ProjectionWriter
-	now             func() time.Time
+	uow                platformport.UnitOfWork
+	store              SubmissionStore
+	cipher             *secure.Cipher
+	timeline           customerport.TimelineWriter
+	phoneAttacher      identityport.DeclaredPhoneAttacher
+	phoneProjection    customerport.ProjectionWriter
+	completion         surveyport.CompletionIntentAccepter
+	completionPolicy   surveyport.CompletionPolicyResolver
+	completionIdentity surveyport.CompletionIdentitySnapshotter
+	now                func() time.Time
+}
+
+func (s *SubmissionService) BindCompletionPolicy(resolver surveyport.CompletionPolicyResolver) error {
+	if s == nil || resolver == nil {
+		return surveyport.ErrInvalid
+	}
+	s.completionPolicy = resolver
+	return nil
+}
+func (s *SubmissionService) BindCompletionIdentity(snapshotter surveyport.CompletionIdentitySnapshotter) error {
+	if s == nil || snapshotter == nil {
+		return surveyport.ErrInvalid
+	}
+	s.completionIdentity = snapshotter
+	return nil
+}
+
+// BindCompletionIntent installs the composition-owned transaction-bound
+// external-effect accepter. Survey retains its own binding receipt; the
+// adapter owns no Survey tables and Provider execution remains outside UoW.
+func (s *SubmissionService) BindCompletionIntent(accepter surveyport.CompletionIntentAccepter) error {
+	if s == nil || accepter == nil {
+		return surveyport.ErrInvalid
+	}
+	s.completion = accepter
+	return nil
 }
 
 func (s *SubmissionService) BindDeclaredPhone(attacher identityport.DeclaredPhoneAttacher, projection customerport.ProjectionWriter) error {
@@ -181,6 +212,54 @@ func (s *SubmissionService) Submit(ctx context.Context, command surveyport.Submi
 		if e = s.store.AppendAuditAndOutbox(tx, "submission_created", questionnaire.ID, "public", payload, outboxKey, now); e != nil {
 			return e
 		}
+		configuration, e := s.store.GetOperationConfiguration(tx, questionnaire.ID)
+		if e != nil {
+			return e
+		}
+		if configuration.ExternalPushEnabled {
+			if s.completion == nil {
+				return surveyport.ErrEffectUnavailable
+			}
+			intent := completionIntent(questionnaire.ID, stored.ID, configuration.ExternalPushConfigurationRef, payloadDigest, now)
+			policy := surveyport.CompletionPolicy{ConfigurationReference: configuration.ExternalPushConfigurationRef}
+			if s.completionPolicy != nil {
+				resolved, found, policyErr := s.completionPolicy.CompletionPolicy(tx, configuration.ExternalPushConfigurationRef)
+				if policyErr != nil {
+					return policyErr
+				}
+				if found {
+					policy = resolved
+				}
+			}
+			if len(configuration.ExternalPushMetadata) > 0 && json.Unmarshal(configuration.ExternalPushMetadata, &policy) != nil {
+				return surveyport.ErrInvalid
+			}
+			policy.ConfigurationReference = configuration.ExternalPushConfigurationRef
+			binding, acceptErr := s.completion.AcceptCompletionWithin(tx, intent)
+			if acceptErr != nil || binding.EffectID == "" || binding.State == "" {
+				if acceptErr != nil {
+					return acceptErr
+				}
+				return surveyport.ErrEffectUnavailable
+			}
+			keyDigest := sha256.Sum256([]byte(intent.SourceDigest))
+			if e = s.store.RecordCompletionEffect(tx, questionnaire.ID, stored.ID, configuration.ExternalPushConfigurationRef, binding.EffectID, binding.State, keyDigest, now); e != nil {
+				return e
+			}
+			var identityCiphertext []byte
+			if s.completionIdentity != nil && command.Identity.CustomerID != nil {
+				value, found, snapshotErr := s.completionIdentity.SnapshotCompletionIdentity(tx, int64(*command.Identity.CustomerID), policy)
+				if snapshotErr != nil {
+					return snapshotErr
+				}
+				if found && value != "" {
+					identityCiphertext, _ = s.cipher.Encrypt(value)
+				}
+			}
+			if e = s.store.RecordCompletionSnapshot(tx, questionnaire.ID, stored.ID, policy, command.Identity.EvidenceDigest, identityCiphertext, now); e != nil {
+				return e
+			}
+		}
 		if command.Identity.CustomerID != nil && s.timeline != nil {
 			return s.timeline.AppendTimeline(tx, customerport.TimelineEvent{CustomerID: *command.Identity.CustomerID,
 				SourceDomain: "survey", SourceEventID: "submission:" + fmt.Sprint(stored.ID), EventType: "customer.survey_submitted",
@@ -192,6 +271,23 @@ func (s *SubmissionService) Submit(ctx context.Context, command surveyport.Submi
 		return surveyport.SubmissionReceipt{}, classify(err)
 	}
 	return surveyport.SubmissionReceipt{QuestionnaireID: stored.QuestionnaireID, QuestionnaireSlug: stored.QuestionnaireSlug, DefinitionVersion: stored.DefinitionVersion, SubmissionID: stored.ID, ResultToken: token}, nil
+}
+
+func completionIntent(questionnaireID, submissionID surveyport.ID, configurationRef string, submissionPayloadDigest [32]byte, now time.Time) surveyport.CompletionIntent {
+	source := surveyDigest("survey.completion.source.v1", fmt.Sprint(questionnaireID), fmt.Sprint(submissionID))
+	return surveyport.CompletionIntent{
+		QuestionnaireID: questionnaireID, SubmissionID: submissionID, ConfigurationReference: configurationRef,
+		SourceDigest:   source,
+		TargetDigest:   surveyDigest("survey.completion.target.v1", configurationRef),
+		PayloadDigest:  surveyDigest("survey.completion.payload.v1", hex.EncodeToString(submissionPayloadDigest[:])),
+		PolicyDigest:   surveyDigest("survey.completion.policy.v1", "v1"),
+		IdempotencyKey: "survey.completion:" + fmt.Sprint(submissionID), ScheduledAt: now,
+	}
+}
+
+func surveyDigest(parts ...string) string {
+	sum := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
+	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
 func snapshotAnswers(q surveyport.Questionnaire, values []surveyport.SubmissionAnswer) ([]surveyport.AnswerSnapshot, float64, error) {
@@ -385,6 +481,13 @@ func (s *SubmissionService) GetOperationConfiguration(ctx context.Context, id su
 	return value, classify(err)
 }
 func (s *SubmissionService) SaveOperationConfiguration(ctx context.Context, value surveyport.OperationConfiguration, actor int64, key string) (surveyport.OperationConfiguration, error) {
+	if len(value.ExternalPushMetadata) == 0 {
+		value.ExternalPushMetadata = json.RawMessage(`{}`)
+	}
+	var metadata map[string]json.RawMessage
+	if !json.Valid(value.ExternalPushMetadata) || json.Unmarshal(value.ExternalPushMetadata, &metadata) != nil || metadata == nil {
+		return surveyport.OperationConfiguration{}, surveyport.ErrInvalid
+	}
 	if s == nil || s.uow == nil || s.store == nil || value.QuestionnaireID < 1 || actor < 1 || !validPublicKeyish(key) || !validOpaque(value.CompletionNavigationRef) || !validOpaque(value.ExternalPushConfigurationRef) || value.CompletionChannelID != nil && *value.CompletionChannelID < 1 || value.ExternalPushEnabled && value.ExternalPushConfigurationRef == "" {
 		return surveyport.OperationConfiguration{}, surveyport.ErrInvalid
 	}

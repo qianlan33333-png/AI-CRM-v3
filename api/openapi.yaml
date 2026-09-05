@@ -2689,7 +2689,24 @@ paths:
     put: {operationId: saveSurveyCompletionOperation, security: [{adminSession: [], csrfHeader: []}], responses: {"503": {description: Provider disabled by default}}}
   /api/admin/questionnaires/{questionnaire_id}/operations/external-push:
     parameters: [{name: questionnaire_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
-    put: {operationId: saveSurveyExternalPushOperation, security: [{adminSession: [], csrfHeader: []}], responses: {"503": {description: Provider disabled by default}}}
+    put:
+      operationId: saveSurveyExternalPushOperation
+      description: Legacy toggle/reference writers may omit metadata and configuration_version; metadata writers must send the readback configuration_version and receive configuration_conflict on drift.
+      security: [{adminSession: [], csrfHeader: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled]
+              additionalProperties: false
+              properties:
+                enabled: {type: boolean}
+                configuration_reference: {type: string, minLength: 1, maxLength: 128, pattern: '^[A-Za-z0-9._:-]{1,128}$'}
+                metadata: {type: object, additionalProperties: true, description: Non-secret legacy push parameters. Requires configuration_version.}
+                configuration_version: {type: integer, minimum: 0, description: Readback version required whenever metadata is supplied.}
+      responses: {"200": {description: Persisted local configuration readback}, "400": {description: invalid_request or configuration_version_required}, "409": {description: configuration_conflict}, "503": {description: Provider disabled by default}}
   /api/admin/questionnaires/{questionnaire_id}/operations/external-push/test:
     parameters: [{name: questionnaire_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}]
     post: {operationId: createSurveyExternalPushTest, security: [{adminSession: [], csrfHeader: []}], responses: {"503": {description: Provider disabled by default}}}

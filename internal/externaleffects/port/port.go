@@ -47,6 +47,7 @@ const (
 	KindChannelEntryTag   Kind  = "channel_entry_tag"
 	KindChannelLink       Kind  = "channel_acquisition_link_mutation"
 	KindSidebarJSSDKSend  Kind  = "sidebar_jssdk_send"
+	KindSurveyCompletion  Kind  = "survey_completion"
 	KindWeChatPayPrepay   Kind  = "wechat_pay_prepay_v1"
 	KindWeChatPayRefund   Kind  = "wechat_pay_refund_v1"
 	KindWeChatShopRefund  Kind  = "wechat_shop_refund_v1"
@@ -73,7 +74,7 @@ type Envelope struct {
 }
 
 func (value Envelope) Valid() bool {
-	kindValid := value.Owner == OwnerOutbound && (value.Kind == KindOutboundMessage || value.Kind == KindAutomationMessage || value.Kind == KindOutboundMedia || value.Kind == KindWeComTagCatalog || value.Kind == KindGroupMessage || value.Kind == KindChannelAsset || value.Kind == KindChannelWelcome || value.Kind == KindChannelEntryTag || value.Kind == KindChannelLink || value.Kind == KindSidebarJSSDKSend) ||
+	kindValid := value.Owner == OwnerOutbound && (value.Kind == KindOutboundMessage || value.Kind == KindAutomationMessage || value.Kind == KindOutboundMedia || value.Kind == KindWeComTagCatalog || value.Kind == KindGroupMessage || value.Kind == KindChannelAsset || value.Kind == KindChannelWelcome || value.Kind == KindChannelEntryTag || value.Kind == KindChannelLink || value.Kind == KindSidebarJSSDKSend || value.Kind == KindSurveyCompletion) ||
 		value.Owner == OwnerPayment && (value.Kind == KindWeChatPayPrepay || value.Kind == KindWeChatPayRefund || value.Kind == KindWeChatShopRefund)
 	return kindValid && ValidDigest(value.SourceRefDigest) && ValidDigest(value.TargetRefDigest) && ValidDigest(value.PayloadDigest) && ValidDigest(value.PolicyVersionHash)
 }

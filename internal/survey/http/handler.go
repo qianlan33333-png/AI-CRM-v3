@@ -35,8 +35,15 @@ type Handler struct {
 		surveyport.PublicApplication
 		surveyport.SubmissionApplication
 	}
-	security RequestSecurity
-	oauth    OAuthApplication
+	security                  RequestSecurity
+	oauth                     OAuthApplication
+	completionProviderEnabled bool
+}
+
+func (h *Handler) SetCompletionProviderEnabled(enabled bool) {
+	if h != nil {
+		h.completionProviderEnabled = enabled
+	}
 }
 
 func NewHandler(definitions surveyport.DefinitionApplication, submissions interface {
@@ -794,7 +801,7 @@ func (h *Handler) operationsDisabled(w http.ResponseWriter, r *http.Request, id 
 			resultError(w, err)
 			return
 		}
-		writeJSON(w, 200, map[string]any{"questionnaire_id": id, "completion": map[string]any{"navigation_target_id": config.CompletionNavigationRef, "channel_id": config.CompletionChannelID}, "external_push": map[string]any{"enabled": config.ExternalPushEnabled, "configuration_reference": config.ExternalPushConfigurationRef}, "configuration_version": config.Version, "provider_enabled": false, "local_only": true, "items": items, "total": total, "real_external_call_executed": false})
+		writeJSON(w, 200, map[string]any{"questionnaire_id": id, "completion": map[string]any{"navigation_target_id": config.CompletionNavigationRef, "channel_id": config.CompletionChannelID}, "external_push": map[string]any{"enabled": config.ExternalPushEnabled, "configuration_reference": config.ExternalPushConfigurationRef, "metadata": config.ExternalPushMetadata}, "configuration_version": config.Version, "operation_enabled": config.ExternalPushEnabled, "provider_enabled": h.completionProviderEnabled, "local_only": !h.completionProviderEnabled, "items": items, "total": total, "real_external_call_executed": false})
 		return
 	}
 	principal, ok := h.write(w, r)
@@ -819,21 +826,38 @@ func (h *Handler) operationsDisabled(w http.ResponseWriter, r *http.Request, id 
 			config.CompletionNavigationRef, config.CompletionChannelID = body.NavigationTargetID, body.ChannelID
 		} else {
 			var body struct {
-				Enabled                bool   `json:"enabled"`
-				ConfigurationReference string `json:"configuration_reference"`
+				Enabled                bool             `json:"enabled"`
+				ConfigurationReference string           `json:"configuration_reference"`
+				Metadata               *json.RawMessage `json:"metadata"`
+				ConfigurationVersion   *int64           `json:"configuration_version"`
 			}
 			if decode(r, &body) != nil {
 				writeError(w, 400, "invalid_request")
 				return
 			}
+			// The established questionnaire operations page saves completion
+			// first and then external-push without the newer metadata fields.
+			// Preserve its metadata and use the just-read server revision as the
+			// CAS value. New metadata writers must explicitly carry a revision.
+			if body.ConfigurationVersion != nil && *body.ConfigurationVersion != config.Version {
+				writeError(w, http.StatusConflict, "configuration_conflict")
+				return
+			}
+			if body.Metadata != nil && body.ConfigurationVersion == nil {
+				writeError(w, 400, "configuration_version_required")
+				return
+			}
 			config.ExternalPushEnabled, config.ExternalPushConfigurationRef = body.Enabled, body.ConfigurationReference
+			if body.Metadata != nil {
+				config.ExternalPushMetadata = *body.Metadata
+			}
 		}
 		stored, err := h.submissions.SaveOperationConfiguration(r.Context(), config, principal.InternalID, idempotency(r))
 		if err != nil {
 			resultError(w, err)
 			return
 		}
-		writeJSON(w, 200, map[string]any{"questionnaire_id": id, "completion": map[string]any{"navigation_target_id": stored.CompletionNavigationRef, "channel_id": stored.CompletionChannelID}, "external_push": map[string]any{"enabled": stored.ExternalPushEnabled, "configuration_reference": stored.ExternalPushConfigurationRef}, "configuration_version": stored.Version, "local_only": true, "provider_enabled": false, "real_external_call_executed": false})
+		writeJSON(w, 200, map[string]any{"questionnaire_id": id, "completion": map[string]any{"navigation_target_id": stored.CompletionNavigationRef, "channel_id": stored.CompletionChannelID}, "external_push": map[string]any{"enabled": stored.ExternalPushEnabled, "configuration_reference": stored.ExternalPushConfigurationRef, "metadata": stored.ExternalPushMetadata}, "configuration_version": stored.Version, "operation_enabled": stored.ExternalPushEnabled, "local_only": !h.completionProviderEnabled, "provider_enabled": h.completionProviderEnabled, "real_external_call_executed": false})
 		return
 	}
 	if r.Method == http.MethodPost && !strings.HasSuffix(r.URL.Path, "/reconcile") {
