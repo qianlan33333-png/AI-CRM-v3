@@ -9,7 +9,7 @@
 - 个体 PR 不逐个合并 main。总集成 PR 冻结唯一发布候选后，才提交用户做最终生产上线确认；确认后一次合并、一次部署。
 - 本矩阵后续为每个板块同时记录“个体审核结果”和“已纳入集成 HEAD”。未进入集成或联合验收未通过的项目不得标记整体完成。
 
-当前未合并总集成 PR：[PR #141](https://github.com/qianlan33333-png/AI-CRM-v3/pull/141)。最新已推组合 `597115462e789866621ddd6992643264ac52c7cd` 的CI33982372650失败，仍为两个旧客户同步/欢迎语fixture漏载0086；修正PR161准确03713dc本身又被PR152旧历史回读竞态挡住。PR152新b0c369增加等待真实AI完成投影，已通过CI33982622908（PG16/race，deploy跳过）并经源码审核纳入16e09ba5b07740fae3be2203703e13ef879d484c，组合继续验证。上一完全通过组合 `6ca8dc0e87a498761679dbbbb3df32dde257535e` / CI33978425968是真实PG16、race、SDK ABI及仓库检查成功，deploy跳过。
+当前未合并总集成 PR：[PR #141](https://github.com/qianlan33333-png/AI-CRM-v3/pull/141)。最新审核纳入f536d7ca87b658f3a3372f8cbdaf8182cd8b0067：PR161准确300784b10e396be5121b28cf4d2805d1efc6450e通过CI33983285774（PG16/race，deploy跳过），修复两旧客户同步/欢迎语fixture漏载0086；原成功断言不变。此前PR152回执时序修正b0c369通过CI33982622908，PR159历史逐条对账6cb1701通过CI33983006257，均已审核纳入。新组合等待CI，上一个完全通过组合仍为6ca8dc0 / CI33978425968；不以各源绿灯冒称新组合已绿。
 
 已审纳入的最新业务源为PR143 `e9e62809a569be09771e6107039e64c934201e37` / CI33981662058（完整历史目标及部分中断恢复），PR152 `950164b00d8a19e41fde605f507fec4746223232` / CI33980221396，PR160 `4982e4fb05c5e5c1b00990d463a42dd1248e8ccf` / CI33980816276。对应合并提交分别b0b20281、1bcb8fcb、7b8a1dc3，均保留准确来源祖先。PR158原后台UI/中文测评键、PR162的05/06/07共同运行及上述fixture修正仍待准确CI与审核，尚未冻结最终发布候选。
 
@@ -40,6 +40,7 @@
 | #152 自动化六来源、原表单、人工待审与固定素材运行时 | b0c3694c9a85bbfe5de05574d90188df9f83fc94 / 33982622908 SUCCESS，deploy SKIPPED；保留950164b及其CI33980221396 | 16e09ba5b07740fae3be2203703e13ef879d484c | 本批推送后验证 | 原页面JSDOM→实际Runtime HTTP/PG→AI待审/整单审批/回执；自动混合素材/冻结漂移/unknown/重启与分页50+通过；历史及最终共用运行仍待 |
 | #160 存档历史导入工具随包交付 | 4982e4fb05c5e5c1b00990d463a42dd1248e8ccf / 33980816276 SUCCESS，deploy SKIPPED | 7b8a1dc37bcdbefed98536ef453ae2ff684671fe | 本批推送后验证 | 既有release构建加入archive importer；真实合成installer缺commerce/archive binary均拒绝，不改变workflow触发与部署权限 |
 | #159 自动化完整历史及刷新配置对账 | 6cb1701313fbd33a1e0ee3031f08ed3d1c6d4acb / 33983006257 SUCCESS，deploy SKIPPED | a52269d12ebdb04b588c9e067d3b196cbd264b54 | 本批推送后验证 | 四种旧刷新模式/cron与版本不折叠；源收据、配置、绑定、成员及四类历史目标逐条核验，篡改拒绝，真实CLI PG/race通过 |
+| #161 客户同步/欢迎语fixture迁移装配 | 300784b10e396be5121b28cf4d2805d1efc6450e / 33983285774 SUCCESS，deploy SKIPPED | f536d7ca87b658f3a3372f8cbdaf8182cd8b0067 | 本批推送后验证 | 两个既有fixture加载0086，全部原成功断言保留；准确依赖b0c369共同PG16/race通过 |
 
 | 板块 | PRD | 开发状态 | PR / HEAD | 旧行为/前端 | PostgreSQL/恢复 | 身份/效果协议 | 总控审核 |
 |---|---|---|---|---|---|---|---|
@@ -172,3 +173,5 @@
 - 2026-09-06：PR152 b0c369完整CI33982622908与源码审查通过，纳入16e09ba5。原测试提前读取历史存在时序竞争，现等待真实recipient/binding完成回执及实际RuntimeService只读投影，保留原历史断言。#159/#161/#162依赖此准确修正并行验证，未以重跑旧HEAD代替修正。
 
 - 2026-09-06：PR159准确6cb1701313fbd33a1e0ee3031f08ed3d1c6d4acb通过CI33983006257（PG16/race，deploy SKIPPED），经根完整源码审核纳入a52269d1。reconcile以同一SERIALIZABLE事务核验冻结源及实际Owner目标并标记批次，旧刷新模式/cron/相同定义的不同配置版本保持；历史终态导入零Provider/EER/River副作用。
+
+- 2026-09-06：PR161 300784b10e396be5121b28cf4d2805d1efc6450e已通过CI33983285774并纳入f536d7ca；仅两fixture迁移清单变化，未改成功条件、重试/超时或业务实现，关闭此前0086装配缺口。
