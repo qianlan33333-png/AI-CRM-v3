@@ -97,6 +97,7 @@ type AdminShellView struct {
 	ChannelResourceID    string
 	ChannelAssets        ChannelAssets
 	AIAssistant          bool
+	MessageArchive       bool
 	AIAssistantAssets    AIAssistantAssets
 }
 
@@ -135,7 +136,7 @@ type RadarAssets struct{ TokensCSS, LabsCSS, AdminJS string }
 // GroupOpsAssets are manifest-derived URLs for the immutable donor Group Ops
 // bundle. The v3 shell owns the sidebar; the donor supplies only its stage
 // template and runtime assets.
-type GroupOpsAssets struct{ TokensCSS, LabsCSS, AdminJS string }
+type GroupOpsAssets struct{ TokensCSS, LabsCSS, AdminJS, ReadonlyCSS, ReadonlyJS string }
 
 // AutomationAssets are manifest-derived frozen Agent bundle paths. The v3
 // shell supplies only URLs; donor markup remains the extracted template.
@@ -198,6 +199,7 @@ func (renderer *Renderer) RenderAdminStatus(writer http.ResponseWriter, status i
 	audienceList := data.RequestPath == "/admin/automation-conversion"
 	audienceDetail := strings.HasPrefix(data.RequestPath, "/admin/automation-conversion/packages/")
 	customers := data.RequestPath == "/admin/customers" || strings.HasPrefix(data.RequestPath, "/admin/customers/")
+	archive := data.RequestPath == "/admin/message-archive" || strings.HasPrefix(data.RequestPath, "/admin/message-archive/customers/")
 	if audienceList {
 		contentTemplate = "admin_audience"
 	} else if audienceDetail {
@@ -208,6 +210,8 @@ func (renderer *Renderer) RenderAdminStatus(writer http.ResponseWriter, status i
 		contentTemplate = "admin_oneid"
 	} else if customers {
 		contentTemplate = "admin_customers"
+	} else if archive {
+		contentTemplate = "admin_message_archive"
 	}
 	content, err := executeTemplate(renderer.templates, contentTemplate, data)
 	if err != nil {
@@ -219,6 +223,7 @@ func (renderer *Renderer) RenderAdminStatus(writer http.ResponseWriter, status i
 		AudienceList:   audienceList,
 		AudienceDetail: audienceDetail,
 		Customers:      customers,
+		MessageArchive: archive,
 	})
 	if err != nil {
 		return err
@@ -405,7 +410,7 @@ func (renderer *Renderer) RenderChannels(writer http.ResponseWriter, data AdminP
 // single v3 admin_base sidebar. It accepts only the page names selected by
 // the Group Ops UI adapter and never receives request-controlled HTML.
 func (renderer *Renderer) RenderGroupOps(writer http.ResponseWriter, data AdminPageData, page, donorTemplate string, assets GroupOpsAssets) error {
-	if renderer == nil || renderer.templates == nil || donorTemplate == "" || assets.TokensCSS == "" || assets.LabsCSS == "" || assets.AdminJS == "" || (page != "groupops" && page != "groupopsDetail") {
+	if renderer == nil || renderer.templates == nil || donorTemplate == "" || assets.TokensCSS == "" || assets.LabsCSS == "" || assets.AdminJS == "" || assets.ReadonlyCSS == "" || assets.ReadonlyJS == "" || (page != "groupops" && page != "groupopsDetail") {
 		return errors.New("Group Ops shell assets are required")
 	}
 	normalizeAdminPage(&data)

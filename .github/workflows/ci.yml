@@ -66,6 +66,15 @@ jobs:
           cache: true
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
         with: {node-version: '24.18.0', cache: npm}
+      - name: Install required repository tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes ripgrep
+          command -v rg >/dev/null
+          rg --version
+      - name: Verify official WeCom archive SDK ABI in isolation
+        run: scripts/check-wecom-message-archive-sdk.sh
       - name: Pin frozen donor npm
         run: npm install --global npm@11.12.1
       - name: Build and stage frozen External Effects workspace
@@ -127,7 +136,7 @@ jobs:
         # service's lock table or race its catalog tuples.
         run: GOFLAGS=-p=1 make check
       - name: Race-check security and identity boundaries
-        run: go test -p 1 -race ./cmd/aicrm ./cmd/bootstrap-automation-operations ./cmd/migrate-commerce-history ./cmd/migrate-order-attribution ./cmd/migrate-automation-operations ./cmd/migrate-v2-config-definitions ./cmd/migrate-channel-history ./cmd/migrate-radar-v2 ./cmd/migrate-sidebar-history ./internal/radar/... ./internal/access/... ./internal/identity/... ./internal/wecom/... ./internal/externaleffects/... ./internal/platform/jobqueue/... ./internal/media/... ./internal/tag/... ./internal/product/... ./internal/coupon/... ./internal/groupops/... ./internal/automation/... ./internal/segment/... ./internal/operationcycle/... ./internal/outbound ./internal/order/... ./internal/payment/... ./internal/config/... ./internal/adminops/... ./internal/release/... ./internal/configmigration/...
+        run: go test -p 1 -race ./cmd/aicrm ./cmd/bootstrap-automation-operations ./cmd/migrate-commerce-history ./cmd/migrate-order-attribution ./cmd/migrate-automation-operations ./cmd/migrate-v2-config-definitions ./cmd/migrate-media-legacy-materials ./cmd/migrate-channel-history ./cmd/migrate-radar-v2 ./cmd/migrate-sidebar-history ./internal/radar/... ./internal/access/... ./internal/identity/... ./internal/wecom/... ./internal/externaleffects/... ./internal/platform/jobqueue/... ./internal/media/... ./internal/tag/... ./internal/product/... ./internal/coupon/... ./internal/groupops/... ./internal/automation/... ./internal/segment/... ./internal/operationcycle/... ./internal/outbound ./internal/order/... ./internal/payment/... ./internal/config/... ./internal/adminops/... ./internal/release/... ./internal/configmigration/...
 
   deploy:
     if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
@@ -169,6 +178,13 @@ jobs:
           cache: true
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
         with: {node-version: '24.18.0', cache: npm}
+      - name: Install required repository tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes ripgrep
+          command -v rg >/dev/null
+          rg --version
       - name: Pin frozen donor npm
         run: npm install --global npm@11.12.1
       - name: Build release artifact
@@ -181,6 +197,7 @@ jobs:
           set -euo pipefail
           mkdir -p release/bin
           go build -trimpath -ldflags "-s -w" -o release/bin/aicrm ./cmd/aicrm
+          scripts/build-wecom-archive-sdk-runner-linux.sh release/bin/wecom-archive-sdk-runner
           go build -trimpath -ldflags "-s -w" -o release/bin/migrate-platform ./cmd/migrate-platform
           go build -trimpath -ldflags "-s -w" -o release/bin/migrate-river ./cmd/migrate-river
           go build -trimpath -ldflags "-s -w" -o release/bin/migrate-phone-identities ./cmd/migrate-phone-identities
@@ -190,6 +207,7 @@ jobs:
           go build -trimpath -ldflags "-s -w" -o release/bin/migrate-order-attribution ./cmd/migrate-order-attribution
           go build -trimpath -ldflags "-s -w" -o release/bin/migrate-automation-operations ./cmd/migrate-automation-operations
           go build -trimpath -ldflags "-s -w" -o release/bin/migrate-v2-config-definitions ./cmd/migrate-v2-config-definitions
+          go build -trimpath -ldflags "-s -w" -o release/bin/migrate-media-legacy-materials ./cmd/migrate-media-legacy-materials
           go build -trimpath -ldflags "-s -w" -o release/bin/migrate-channel-history ./cmd/migrate-channel-history
           go build -trimpath -ldflags "-s -w" -o release/bin/migrate-radar-v2 ./cmd/migrate-radar-v2
           go build -trimpath -ldflags "-s -w" -o release/bin/migrate-sidebar-history ./cmd/migrate-sidebar-history

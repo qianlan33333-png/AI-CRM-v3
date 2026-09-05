@@ -56,6 +56,24 @@ func (store *memoryStore) Lookup(_ context.Context, digest [32]byte, now time.Ti
 	return record, nil
 }
 
+func (store *memoryStore) SelectPayerSelf(_ context.Context, digest [32]byte, now time.Time) (Record, error) {
+	record, ok := store.records[digest]
+	if !ok || !record.ExpiresAt.After(now) {
+		return Record{}, ErrExpired
+	}
+	if record.BeneficiarySelection == "payer_self" && record.BeneficiaryCustomerID == record.PayerCustomerID {
+		return record, nil
+	}
+	if record.BeneficiarySelection != "unresolved" || record.BeneficiaryCustomerID != 0 || record.ConsumedAt != nil {
+		return Record{}, ErrInvalid
+	}
+	record.BeneficiaryCustomerID = record.PayerCustomerID
+	record.BeneficiarySelection = "payer_self"
+	record.BeneficiarySelectedAt = &now
+	store.records[digest] = record
+	return record, nil
+}
+
 func verifiedFact(t *testing.T) identitydomain.VerifiedFact {
 	t.Helper()
 	fact, err := identitydomain.NewVerifiedFact(identitydomain.ProviderVerifiedIdentityInput{
@@ -77,8 +95,12 @@ func TestTrustedSessionUsesOneIDAndIsSingleUse(t *testing.T) {
 	now := time.Date(2026, 9, 3, 2, 0, 0, 0, time.UTC)
 	service.now = func() time.Time { return now }
 	issued, err := service.IssueTrusted(context.Background(), IssueCommand{Fact: verifiedFact(t), IdempotencyKey: "oauth-callback-0001"})
-	if err != nil || issued.Token == "" || issued.PayerIdentityID != 8 || issued.PayerCustomerID != 21 || issued.BeneficiaryCustomerID != 21 || provisioner.calls != 1 {
+	if err != nil || issued.Token == "" || issued.PayerIdentityID != 8 || issued.PayerCustomerID != 21 || issued.BeneficiaryCustomerID != 0 || issued.BeneficiarySelection != "unresolved" || provisioner.calls != 1 {
 		t.Fatalf("issued=%+v calls=%d err=%v", issued, provisioner.calls, err)
+	}
+	actor, err := service.SelectPayerSelfWithin(context.Background(), issued.Token, now)
+	if err != nil || actor.PayerCustomerID != 21 || actor.BeneficiaryCustomerID != 21 || actor.BeneficiarySelection != "payer_self" {
+		t.Fatalf("actor=%+v err=%v", actor, err)
 	}
 	record, err := service.Consume(context.Background(), issued.Token)
 	if err != nil || record.PayerIdentityID != 8 || record.ConsumedAt == nil {
@@ -87,7 +109,7 @@ func TestTrustedSessionUsesOneIDAndIsSingleUse(t *testing.T) {
 	if _, err = service.Consume(context.Background(), issued.Token); !errors.Is(err, ErrExpired) {
 		t.Fatalf("replay err=%v", err)
 	}
-	actor, err := service.LookupWithin(context.Background(), issued.Token, now)
+	actor, err = service.LookupWithin(context.Background(), issued.Token, now)
 	if err != nil || actor.PayerIdentityID != 8 || actor.PayerCustomerID != 21 {
 		t.Fatalf("lookup actor=%+v err=%v", actor, err)
 	}
@@ -104,6 +126,18 @@ func TestTrustedSessionRejectsUnverifiedOrUnauthorizedBeneficiary(t *testing.T) 
 	}
 	if _, err := service.IssueTrusted(context.Background(), IssueCommand{IdempotencyKey: "oauth-callback-0004"}); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("unverified err=%v", err)
+	}
+}
+
+func TestTrustedSessionKeepsAdminAssistedBeneficiaryServerPrebound(t *testing.T) {
+	provisioner := &provisionerStub{result: identityport.ProvisionResult{IdentityID: 8, CustomerID: 21}}
+	service, _ := NewService(testUOW{}, provisioner, &memoryStore{}, 5*time.Minute)
+	issued, err := service.IssueTrusted(context.Background(), IssueCommand{BeneficiaryCustomerID: 42, AdminAssisted: true, Fact: verifiedFact(t), IdempotencyKey: "oauth-callback-0006"})
+	if err != nil || issued.BeneficiaryCustomerID != 42 || issued.BeneficiarySelection != "admin_assisted" {
+		t.Fatalf("issued=%+v err=%v", issued, err)
+	}
+	if _, err := service.IssueTrusted(context.Background(), IssueCommand{AdminAssisted: true, Fact: verifiedFact(t), IdempotencyKey: "oauth-callback-0007"}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("missing prebound beneficiary err=%v", err)
 	}
 }
 

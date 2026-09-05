@@ -18,7 +18,8 @@ fi
 for required in \
   "$current_release/bin/aicrm" \
   "$current_release/migrations/0063_identity_hxc_source_observations.sql" \
-  "$current_release/migrations/0064_hxc_dashboard_identity_v2.sql"; do
+  "$current_release/migrations/0064_hxc_dashboard_identity_v2.sql" \
+  "$current_release/migrations/0084_hxc_shared_facts.sql"; do
   [[ -f "$required" ]] || { echo "HXC rollout artifact incomplete" >&2; exit 3; }
 done
 grep -qx 'AICRM_HXC_SYNC_ENABLED=true' "$runtime_env"

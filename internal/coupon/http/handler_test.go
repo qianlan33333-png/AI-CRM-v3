@@ -41,6 +41,18 @@ type fakeRules struct {
 	item    couponport.Coupon
 }
 
+type fakeClaims struct {
+	page couponport.AdminCouponClaimPage
+}
+
+func (f fakeClaims) ListCouponClaims(_ context.Context, couponID couponport.ID, limit, offset int32) (couponport.AdminCouponClaimPage, error) {
+	if couponID != 3 {
+		return couponport.AdminCouponClaimPage{}, errors.New("unexpected coupon")
+	}
+	f.page.Limit, f.page.Offset = limit, offset
+	return f.page, nil
+}
+
 func (f *fakeRules) List(context.Context, int32, int32, string, string) (couponport.Page, error) {
 	return f.page, nil
 }
@@ -134,5 +146,18 @@ func TestCouponProductOptionsAndExcludedClaims(t *testing.T) {
 	h.ServeHTTP(r, httptest.NewRequest(http.MethodGet, "/api/admin/coupons/product-options?product_type=service_period", nil))
 	if r.Code != 200 || !strings.Contains(r.Body.String(), "service_period:8") {
 		t.Fatalf("service-period options %d %s", r.Code, r.Body.String())
+	}
+}
+
+func TestCouponClaimListUsesDedicatedMaskedReadPort(t *testing.T) {
+	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	h, err := NewHandlerWithClaims(&fakeRules{item: couponFixture()}, fakeOptions{}, fakeClaims{page: couponport.AdminCouponClaimPage{Items: []couponport.AdminCouponClaim{{ClaimID: 9, CustomerID: 11, CouponID: 3, Status: "available", ClaimNoMasked: "***7", ClaimedAt: now}}, Total: 1}}, fakeSecurity{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := httptest.NewRecorder()
+	h.ServeHTTP(r, httptest.NewRequest(http.MethodGet, "/api/admin/coupons/3/claims?limit=10&offset=0", nil))
+	if r.Code != http.StatusOK || !strings.Contains(r.Body.String(), `"claim_no_masked":"***7"`) || strings.Contains(r.Body.String(), "unionid") {
+		t.Fatalf("claims status=%d body=%s", r.Code, r.Body.String())
 	}
 }

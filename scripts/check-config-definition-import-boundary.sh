@@ -229,6 +229,18 @@ forbidden_imports = re.compile(
 
 migration_files = code_files()
 migration_text = ""
+# PRD07 §14 authorizes a separate, explicitly named history mode in this one
+# command. Its source fields must remain confined to these files; the ordinary
+# definition mode and its immutable allowlist stay under the checks above.
+history_mode_files = {
+    "cmd/migrate-v2-config-definitions/main.go",
+    "cmd/migrate-v2-config-definitions/integration_test.go",
+    "internal/configmigration/source/history.go",
+    "internal/configmigration/source/history_test.go",
+    "internal/configmigration/target/groupops_history.go",
+    "internal/configmigration/target/groupops_history_test.go",
+}
+history_mode_tokens = {"history", "historical", "owner_userid"}
 for path in migration_files:
     try:
         raw = path.read_text(encoding="utf-8")
@@ -241,6 +253,8 @@ for path in migration_files:
     for regex, pattern in compiled_forbidden:
         match = regex.search(clean)
         if match:
+            if relative.as_posix() in history_mode_files and match.group(0).lower() in history_mode_tokens:
+                continue
             line = clean.count("\n", 0, match.start()) + 1
             fail(f"forbidden source field/table token {match.group(0)!r} in {relative}:{line}")
     if forbidden_imports.search(clean):

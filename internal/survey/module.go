@@ -9,10 +9,16 @@ import (
 	"net/http"
 )
 
-type ModuleRegistration struct{}
+type ModuleRegistration struct{ completionProviderEnabled bool }
 type HTTPBindings struct{ Survey http.Handler }
 
 func NewModuleRegistration() *ModuleRegistration { return &ModuleRegistration{} }
+func (m *ModuleRegistration) SetCompletionProviderEnabled(enabled bool) *ModuleRegistration {
+	if m != nil {
+		m.completionProviderEnabled = enabled
+	}
+	return m
+}
 func (m *ModuleRegistration) Bind(definitions surveyport.DefinitionApplication, submissions interface {
 	surveyport.PublicApplication
 	surveyport.SubmissionApplication
@@ -24,6 +30,7 @@ func (m *ModuleRegistration) Bind(definitions surveyport.DefinitionApplication, 
 	if err != nil {
 		return HTTPBindings{}, err
 	}
+	handler.SetCompletionProviderEnabled(m.completionProviderEnabled)
 	return HTTPBindings{Survey: handler}, nil
 }
 func (m *ModuleRegistration) Readiness(ctx context.Context, pool *pgxpool.Pool) error {
@@ -31,7 +38,7 @@ func (m *ModuleRegistration) Readiness(ctx context.Context, pool *pgxpool.Pool) 
 		return errors.New("survey module dependencies required")
 	}
 	var ready bool
-	err := pool.QueryRow(ctx, `SELECT NOT EXISTS(SELECT 1 FROM unnest(ARRAY['survey_questionnaires','survey_definition_versions','survey_definition_questions','survey_definition_options','survey_score_rules','survey_submissions','survey_submission_answers','survey_result_tokens','survey_oauth_states','survey_identity_sessions','survey_phone_binding_receipts','survey_operation_configurations','survey_external_operation_receipts','survey_audit_events','survey_outbox','survey_migration_batches','survey_migration_source_map','survey_migration_quarantine']) required(name) WHERE to_regclass(current_schema()||'.'||required.name) IS NULL)`).Scan(&ready)
+	err := pool.QueryRow(ctx, `SELECT NOT EXISTS(SELECT 1 FROM unnest(ARRAY['survey_questionnaires','survey_definition_versions','survey_definition_questions','survey_definition_options','survey_score_rules','survey_submissions','survey_submission_answers','survey_result_tokens','survey_oauth_states','survey_identity_sessions','survey_phone_binding_receipts','survey_operation_configurations','survey_external_operation_receipts','survey_completion_test_push_snapshots','survey_audit_events','survey_outbox','survey_migration_batches','survey_migration_source_map','survey_migration_quarantine']) required(name) WHERE to_regclass(current_schema()||'.'||required.name) IS NULL)`).Scan(&ready)
 	if err != nil {
 		return err
 	}

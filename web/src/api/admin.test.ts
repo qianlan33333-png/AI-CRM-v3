@@ -1112,7 +1112,8 @@ export async function runAdminAdapterTests(): Promise<void> {
     await saveQuestionnaireOpsDto(4, opsMapped);
     assert(opsCalls.length === 2 && opsCalls.every((item) => item.init?.method === 'PUT'), 'questionnaire operations write methods');
     assert(JSON.parse(String(opsCalls[0].init?.body)).navigation_target_id === 'completion.done' && JSON.parse(String(opsCalls[0].init?.body)).channel_id === 19, 'completion operations request mapping');
-    assert(JSON.parse(String(opsCalls[1].init?.body)).configuration_reference === 'push.crm', 'external push reference request mapping');
+    const legacyPushBody = JSON.parse(String(opsCalls[1].init?.body));
+    assert(legacyPushBody.configuration_reference === 'push.crm' && legacyPushBody.metadata === undefined && legacyPushBody.configuration_version === undefined, 'legacy external push request keeps its narrow DTO');
   } finally { globalThis.fetch = savedFetch; }
   let invalidOpsCalled = false;
   globalThis.fetch = async () => { invalidOpsCalled = true; return new Response('{}', { status: 200 }); };

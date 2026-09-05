@@ -44,6 +44,10 @@
   <link rel="stylesheet" href="/static/admin_console/admin_customers.css?v=customer-profile-v2">
   <script defer src="/static/admin_console/admin_customers.js?v=customer-profile-v2"></script>
   {{end}}
+  {{if .MessageArchive}}
+  <link rel="stylesheet" href="/static/admin_console/message_archive.css?v=message-archive-v1">
+  <script defer src="/static/admin_console/message_archive.js?v=message-archive-v1"></script>
+  {{end}}
   {{if .Tags}}
   <link rel="stylesheet" href="{{.TagsAssets.TokensCSS}}">
   <link rel="stylesheet" href="{{.TagsAssets.LabsCSS}}">
@@ -76,6 +80,9 @@
   {{if .GroupOps}}
   <link rel="stylesheet" href="{{.GroupOpsAssets.TokensCSS}}">
   <link rel="stylesheet" href="{{.GroupOpsAssets.LabsCSS}}">
+  <link rel="stylesheet" href="{{.GroupOpsAssets.ReadonlyCSS}}">
+  <script defer src="{{.GroupOpsAssets.ReadonlyJS}}"></script>
+  <script defer src="/static/admin_console/groupops_history_readonly_bridge.js"></script>
   <script type="module" src="{{.GroupOpsAssets.AdminJS}}"></script>
   {{end}}
   {{if .Automation}}
