@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	accessport "github.com/qianlan33333-png/AI-CRM-v3/internal/access/port"
 	channelport "github.com/qianlan33333-png/AI-CRM-v3/internal/channel/port"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	hxcport "github.com/qianlan33333-png/AI-CRM-v3/internal/hxcdashboard/port"
@@ -24,6 +25,13 @@ type legacyFacts struct {
 	channels []channelport.AudienceEntry
 	radar    []radarport.AudienceFirstClick
 	members  []hxcport.AudienceMemberFact
+}
+
+func (legacyFacts) AudienceOwnerUserID(_ context.Context, id accessport.StaffID) (string, bool, error) {
+	if id == 9 {
+		return "bob", true, nil
+	}
+	return "", false, nil
 }
 
 func (f legacyFacts) AudienceContacts(context.Context, time.Time) ([]wecomport.AudienceContact, error) {
@@ -99,7 +107,7 @@ func TestLegacyTemplateSourcesEvaluateFrozenConditions(t *testing.T) {
 		radar:    []radarport.AudienceFirstClick{{CustomerID: 1, RadarID: 8, FirstClickedAt: at.Add(-72 * time.Hour)}},
 		members:  []hxcport.AudienceMemberFact{{CustomerID: 1, Registered: true, IsMember: true, Tier: "pro", Status: "active", ExpiresAt: &expires, LastUsedAt: &used}},
 	}
-	source := CustomerSource{UoW: passthroughUoW{}, Legacy: LegacyTemplateSource{Contacts: facts, Survey: facts, Orders: facts, Channels: facts, Radar: facts, Members: facts}}
+	source := CustomerSource{UoW: passthroughUoW{}, Legacy: LegacyTemplateSource{Contacts: facts, Survey: facts, Orders: facts, Channels: facts, Radar: facts, Members: facts, Owners: facts}}
 	cases := []struct {
 		name, parameters string
 		template         segmentdsl.Template
@@ -130,7 +138,8 @@ func TestLegacyTemplateSourcesEvaluateFrozenConditions(t *testing.T) {
 
 func TestLegacyTemplateSourceDoesNotBorrowCurrentContactOwnerOrExpireMembershipByGuess(t *testing.T) {
 	at := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
-	source := LegacyTemplateSource{Contacts: legacyFacts{contacts: []wecomport.AudienceContact{{CustomerID: 9, OwnerUserID: "staff-a", Status: "active"}}}, Orders: legacyFacts{orders: []orderport.PaidAudienceOrder{{CustomerID: 9, ProductCode: "course"}}}, Members: legacyFacts{members: []hxcport.AudienceMemberFact{{CustomerID: 9, Registered: true, IsMember: false, Tier: "pro", Status: "expired"}}}}
+	facts := legacyFacts{contacts: []wecomport.AudienceContact{{CustomerID: 9, OwnerUserID: "staff-a", Status: "active"}}, orders: []orderport.PaidAudienceOrder{{CustomerID: 9, ProductCode: "course"}}, members: []hxcport.AudienceMemberFact{{CustomerID: 9, Registered: true, IsMember: false, Tier: "pro", Status: "expired"}}}
+	source := LegacyTemplateSource{Contacts: facts, Orders: facts, Members: facts, Owners: facts}
 	paid, err := source.Evaluate(context.Background(), legacyDefinition(t, segmentdsl.PaidOrder, `{"product_codes":["course"],"paid_at_from":"","paid_at_to":"","owner_scope":"specified","owner_staff_ids":["staff-a"],"require_active_wecom_contact":false}`), at)
 	if err != nil || len(paid.CustomerIDs) != 0 {
 		t.Fatalf("paid=%+v err=%v", paid, err)
@@ -138,5 +147,16 @@ func TestLegacyTemplateSourceDoesNotBorrowCurrentContactOwnerOrExpireMembershipB
 	active, err := source.Evaluate(context.Background(), legacyDefinition(t, segmentdsl.MemberUsageStatus, `{"owner_scope":"specified","owner_staff_ids":["staff-a"],"service_period":"active","registration_status":"registered","usage_status":"any","membership_tiers":[],"membership_statuses":[]}`), at)
 	if err != nil || len(active.CustomerIDs) != 0 {
 		t.Fatalf("active=%+v err=%v", active, err)
+	}
+}
+
+func TestChannelOwnerStaffIDDoesNotCollideWithProviderUserID(t *testing.T) {
+	at := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+	nine := int64(9)
+	facts := legacyFacts{channels: []channelport.AudienceEntry{{CustomerID: 1, ChannelCode: "c", OwnerStaffID: &nine, LastEnteredAt: at.Add(-24 * time.Hour)}, {CustomerID: 2, ChannelCode: "c", OwnerReference: "9", LastEnteredAt: at.Add(-24 * time.Hour)}}}
+	s := LegacyTemplateSource{Channels: facts, Owners: facts}
+	r, err := s.Evaluate(context.Background(), legacyDefinition(t, segmentdsl.ChannelEntry, `{"channel_codes":["c"],"entered_days_min":1,"entered_days_max":2,"owner_scope":"specified","owner_staff_ids":["9"],"require_active_wecom_contact":false}`), at)
+	if err != nil || len(r.CustomerIDs) != 1 || r.CustomerIDs[0] != 1 {
+		t.Fatalf("result=%+v err=%v", r, err)
 	}
 }

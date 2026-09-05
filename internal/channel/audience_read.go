@@ -25,9 +25,9 @@ func (store *PostgreSQLStore) AudienceEntries(ctx context.Context, reference tim
 		WHERE r.state IN ('completed','reconciled') AND h.last_entered_at <= $1
 		ORDER BY h.channel_id,h.source_contact_id,r.snapshot_timestamp DESC,h.import_run_id DESC
 	), facts AS (
-		SELECT h.customer_id,h.channel_id,c.code AS channel_code,h.owner_reference,NULL::bigint,h.first_entered_at,h.last_entered_at FROM history_latest h JOIN channels c ON c.id=h.channel_id WHERE h.customer_id IS NOT NULL
+		SELECT h.customer_id,h.channel_id,c.code AS channel_code,h.owner_reference,NULL::bigint AS owner_staff_id,h.first_entered_at,h.last_entered_at FROM history_latest h JOIN channels c ON c.id=h.channel_id WHERE h.customer_id IS NOT NULL
 		UNION ALL
-		SELECT e.customer_id,b.channel_id,c.code AS channel_code,''::text,a.staff_id,e.occurred_at,e.occurred_at
+		SELECT e.customer_id,b.channel_id,c.code AS channel_code,''::text AS owner_reference,a.staff_id AS owner_staff_id,e.occurred_at,e.occurred_at
 		FROM channel_acquisition_entrant_receipts e
 		JOIN channel_acquisition_state_bindings b ON b.id=e.binding_id
 		JOIN channels c ON c.id=b.channel_id

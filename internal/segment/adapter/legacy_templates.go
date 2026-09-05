@@ -89,6 +89,9 @@ func (s LegacyTemplateSource) ownerReferences(ctx context.Context, params map[st
 	if s.Owners == nil && scope == "specified" && needsResolver {
 		return nil, ErrCustomerReadUnavailable
 	}
+	if !needsResolver {
+		return params, nil
+	}
 	if s.Owners == nil {
 		return params, nil
 	}
