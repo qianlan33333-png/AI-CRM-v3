@@ -414,15 +414,16 @@ func (handler *Handler) checkout(writer http.ResponseWriter, request *http.Reque
 		return
 	}
 	var body struct {
-		ProductID   int64  `json:"product_id,omitempty"`
-		ProductType string `json:"product_kind,omitempty"`
-		MobileE164  string `json:"mobile,omitempty"`
+		ProductID            int64                            `json:"product_id,omitempty"`
+		ProductType          string                           `json:"product_kind,omitempty"`
+		MobileE164           string                           `json:"mobile,omitempty"`
+		BeneficiarySelection paymentport.BeneficiarySelection `json:"beneficiary_selection,omitempty"`
 	}
 	if !decodeJSON(writer, request, &body) {
 		return
 	}
 	idempotency := request.Header.Get("Idempotency-Key")
-	payment, err := handler.app.Create(request.Context(), paymentport.CreateCommand{ProductID: body.ProductID, ProductType: body.ProductType, MobileE164: body.MobileE164, SessionToken: cookie.Value, ActorScope: "public-checkout", IdempotencyKey: idempotency})
+	payment, err := handler.app.Create(request.Context(), paymentport.CreateCommand{ProductID: body.ProductID, ProductType: body.ProductType, MobileE164: body.MobileE164, BeneficiarySelection: body.BeneficiarySelection, SessionToken: cookie.Value, ActorScope: "public-checkout", IdempotencyKey: idempotency})
 	if err != nil {
 		resultError(writer, err)
 		return

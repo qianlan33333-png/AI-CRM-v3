@@ -3,18 +3,23 @@ package store_test
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/payment/domain"
 	paymentport "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/port"
+	paymentsession "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/session"
 	paymentstore "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/store"
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
@@ -120,6 +125,154 @@ func TestPostgreSQLRefundExposureExcludesOnlyFinalFailed(t *testing.T) {
 	var _ paymentport.RefundExposureReader = repository
 }
 
+func TestPostgreSQLPaymentSessionBeneficiaryFactsCASAndCheckoutRollback(t *testing.T) {
+	pool, cleanup := paymentIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	wrapper, err := platformpostgres.Wrap(pool, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uow, err := platformpostgres.NewUnitOfWork(wrapper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := paymentsession.NewPostgreSQL()
+	now := time.Date(2026, 9, 5, 2, 0, 0, 0, time.UTC)
+	expires := now.Add(10 * time.Minute)
+	legacyDigest := sha256.Sum256([]byte("legacy-payment-session"))
+	newDigest := sha256.Sum256([]byte("new-payment-session"))
+	insert := func(digest [32]byte, beneficiary customerdomain.CustomerID, selection paymentport.BeneficiarySelection, selectedAt *time.Time) {
+		t.Helper()
+		err := uow.Within(ctx, func(tx context.Context) error {
+			_, err := repository.Insert(tx, paymentsession.Record{TokenDigest: digest, PayerIdentityID: 9, PayerCustomerID: 11, BeneficiaryCustomerID: beneficiary, BeneficiarySelection: selection, BeneficiarySelectedAt: selectedAt, AppScopeDigest: sha256.Sum256([]byte("scope")), Channel: domain.ChannelH5Official, ExpiresAt: expires, CreatedAt: now})
+			return err
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	insert(legacyDigest, 44, paymentport.BeneficiarySelectionLegacyPrebound, nil)
+	insert(newDigest, 0, paymentport.BeneficiarySelectionUnresolved, nil)
+
+	var legacy paymentsession.Record
+	err = uow.Within(ctx, func(tx context.Context) error {
+		var inner error
+		legacy, inner = repository.Lookup(tx, legacyDigest, now)
+		return inner
+	})
+	if err != nil || legacy.BeneficiaryCustomerID != 44 || legacy.BeneficiarySelection != paymentport.BeneficiarySelectionLegacyPrebound || legacy.BeneficiarySelectedAt != nil {
+		t.Fatalf("legacy=%+v err=%v", legacy, err)
+	}
+	err = uow.Within(ctx, func(tx context.Context) error {
+		_, inner := repository.SelectPayerSelf(tx, legacyDigest, now)
+		return inner
+	})
+	if !errors.Is(err, paymentsession.ErrInvalid) {
+		t.Fatalf("legacy selection err=%v", err)
+	}
+
+	checkoutFailure := errors.New("order creation failed")
+	err = uow.Within(ctx, func(tx context.Context) error {
+		selected, inner := repository.SelectPayerSelf(tx, newDigest, now)
+		if inner != nil || selected.BeneficiaryCustomerID != 11 || selected.BeneficiarySelection != paymentport.BeneficiarySelectionPayerSelf {
+			t.Fatalf("selected=%+v err=%v", selected, inner)
+		}
+		return checkoutFailure // A later order/payment write fails: the selection must roll back too.
+	})
+	if !errors.Is(err, checkoutFailure) {
+		t.Fatalf("rollback err=%v", err)
+	}
+	var unresolved paymentsession.Record
+	err = uow.Within(ctx, func(tx context.Context) error {
+		var inner error
+		unresolved, inner = repository.Lookup(tx, newDigest, now)
+		return inner
+	})
+	if err != nil || unresolved.BeneficiaryCustomerID != 0 || unresolved.BeneficiarySelection != paymentport.BeneficiarySelectionUnresolved || unresolved.BeneficiarySelectedAt != nil {
+		t.Fatalf("rollback left session=%+v err=%v", unresolved, err)
+	}
+
+	start := make(chan struct{})
+	errorsByAttempt := make(chan error, 2)
+	var wait sync.WaitGroup
+	for _, at := range []time.Time{now.Add(time.Second), now.Add(2 * time.Second)} {
+		wait.Add(1)
+		go func(at time.Time) {
+			defer wait.Done()
+			<-start
+			errorsByAttempt <- uow.Within(ctx, func(tx context.Context) error {
+				selected, inner := repository.SelectPayerSelf(tx, newDigest, at)
+				if inner != nil {
+					return inner
+				}
+				if selected.PayerCustomerID != 11 || selected.BeneficiaryCustomerID != 11 || selected.BeneficiarySelection != paymentport.BeneficiarySelectionPayerSelf {
+					return errors.New("payer self selection drift")
+				}
+				return nil
+			})
+		}(at)
+	}
+	close(start)
+	wait.Wait()
+	close(errorsByAttempt)
+	for attemptErr := range errorsByAttempt {
+		if attemptErr != nil {
+			t.Fatalf("concurrent selection err=%v", attemptErr)
+		}
+	}
+	err = uow.Within(ctx, func(tx context.Context) error {
+		var inner error
+		unresolved, inner = repository.Lookup(tx, newDigest, now.Add(3*time.Second))
+		return inner
+	})
+	if err != nil || unresolved.BeneficiaryCustomerID != 11 || unresolved.BeneficiarySelection != paymentport.BeneficiarySelectionPayerSelf || unresolved.BeneficiarySelectedAt == nil {
+		t.Fatalf("concurrent selected=%+v err=%v", unresolved, err)
+	}
+}
+
+func TestPostgreSQLPaymentSessionBeneficiaryFactConstraintRejectsMutualExclusion(t *testing.T) {
+	pool, cleanup := paymentIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	now := time.Date(2026, 9, 5, 3, 0, 0, 0, time.UTC)
+	expires := now.Add(10 * time.Minute)
+	selected := now.Add(time.Second)
+	scopeDigest := sha256.Sum256([]byte("scope"))
+
+	type invalidFact struct {
+		name        string
+		beneficiary any
+		selection   string
+		selectedAt  any
+	}
+	for _, row := range []invalidFact{
+		{name: "legacy recipient cannot claim a fresh selection", beneficiary: int64(44), selection: "legacy_prebound", selectedAt: selected},
+		{name: "legacy requires preserved recipient", beneficiary: nil, selection: "legacy_prebound", selectedAt: nil},
+		{name: "unresolved cannot have recipient", beneficiary: int64(44), selection: "unresolved", selectedAt: nil},
+		{name: "unresolved cannot have selected time", beneficiary: nil, selection: "unresolved", selectedAt: selected},
+		{name: "payer self requires recipient", beneficiary: nil, selection: "payer_self", selectedAt: selected},
+		{name: "payer self must equal payer", beneficiary: int64(44), selection: "payer_self", selectedAt: selected},
+		{name: "payer self requires selected time", beneficiary: int64(11), selection: "payer_self", selectedAt: nil},
+		{name: "admin assisted requires recipient", beneficiary: nil, selection: "admin_assisted", selectedAt: selected},
+		{name: "admin assisted requires selected time", beneficiary: int64(44), selection: "admin_assisted", selectedAt: nil},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			digest := sha256.Sum256([]byte("invalid-payment-session-fact:" + row.name))
+			_, err := pool.Exec(ctx, `
+				INSERT INTO payment_sessions(
+					token_digest,payer_identity_id,payer_customer_id,beneficiary_customer_id,
+					beneficiary_selection,beneficiary_selected_at,app_scope_digest,payment_channel,expires_at,created_at
+				) VALUES($1,9,11,$2,$3,$4,$5,'h5_official',$6,$7)`,
+				digest[:], row.beneficiary, row.selection, row.selectedAt, scopeDigest[:], expires, now,
+			)
+			if err == nil {
+				t.Fatal("invalid beneficiary fact was accepted")
+			}
+		})
+	}
+}
+
 func paymentIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 	t.Helper()
 	url, err := platformconfig.DatabaseURL()
@@ -152,7 +305,7 @@ func paymentIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 	}
 	_, file, _, _ := runtime.Caller(0)
 	root := filepath.Join(filepath.Dir(file), "..", "..", "..")
-	for _, name := range []string{"0001_platform.sql", "0002_identity.sql", "0005_external_effects.sql", "0020_order.sql", "0021_payment.sql", "0024_order_product_version.sql", "0025_payment_reconciliation.sql", "0061_product_public_purchase.sql"} {
+	for _, name := range []string{"0001_platform.sql", "0002_identity.sql", "0005_external_effects.sql", "0020_order.sql", "0021_payment.sql", "0024_order_product_version.sql", "0025_payment_reconciliation.sql", "0061_product_public_purchase.sql", "0068_payment_session_beneficiary_selection.sql"} {
 		raw, readErr := os.ReadFile(filepath.Join(root, "migrations", name))
 		if readErr != nil {
 			t.Fatal(readErr)

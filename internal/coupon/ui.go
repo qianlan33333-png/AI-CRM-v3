@@ -70,6 +70,14 @@ func pageFor(r *http.Request) (string, bool) {
 		}
 		id, e := strconv.ParseInt(ids[0], 10, 64)
 		return "couponForm", e == nil && id > 0 && strconv.FormatInt(id, 10) == ids[0]
+	case "/admin/couponData.html":
+		values := r.URL.Query()
+		ids, ok := values["id"]
+		if !ok || len(values) != 1 || len(ids) != 1 {
+			return "", false
+		}
+		id, e := strconv.ParseInt(ids[0], 10, 64)
+		return "couponData", e == nil && id > 0 && strconv.FormatInt(id, 10) == ids[0]
 	default:
 		return "", false
 	}

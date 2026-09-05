@@ -54,6 +54,55 @@ type HistoricalEntitlement struct {
 	UpdatedAt        time.Time
 }
 
+// HistoricalServicePeriodSourceCommand records an already-reconciled link
+// from a historical paid order to its imported entitlement. It does not grant
+// access and is deliberately separate from native payment fulfillment.
+type HistoricalServicePeriodSourceCommand struct {
+	SourceOrderID      int64
+	SourceLineNo       int32
+	EntitlementID      int64
+	ServiceProductID   int64
+	ServiceProductCode string
+	DurationDays       int32
+	StartAt            time.Time
+	EndAt              time.Time
+	ImportedAt         time.Time
+}
+
+type HistoricalServicePeriodSourceCoordinator interface {
+	RecordHistoricalServicePeriodSourceWithin(context.Context, HistoricalServicePeriodSourceCommand) error
+}
+
 type HistoricalEntitlementImporter interface {
 	ImportHistoricalEntitlement(context.Context, HistoricalEntitlement) (Entitlement, bool, error)
+}
+
+// ServicePeriodGrantCommand is built from the payment-owner's authoritative
+// paid order fact. BeneficiaryCustomerID must already be a canonical Customer;
+// an unresolved beneficiary is deliberately not eligible for fulfillment.
+type ServicePeriodGrantCommand struct {
+	SourceOrderID         int64
+	BeneficiaryCustomerID int64
+	ServiceProductID      int64
+	ProductName           string
+	DurationDays          int32
+	PaidAt                time.Time
+	ProcessedAt           time.Time
+}
+
+// ServicePeriodRefundCommand models any first successful positive refund for
+// a source order. RefundAmountMinor is kept as an immutable fact, but the
+// donor's rule revokes the complete original period once, not pro rata.
+type ServicePeriodRefundCommand struct {
+	SourceOrderID     int64
+	RefundAmountMinor int64
+	ProcessedAt       time.Time
+}
+
+// ServicePeriodEntitlementCoordinator is the Order-owned fulfillment seam
+// consumed after Payment has established a trusted terminal fact. Calls need a
+// transaction-carrying context and are idempotent by source order and event.
+type ServicePeriodEntitlementCoordinator interface {
+	GrantPaidServicePeriodWithin(context.Context, ServicePeriodGrantCommand) (Entitlement, error)
+	ApplyServicePeriodRefundWithin(context.Context, ServicePeriodRefundCommand) (Entitlement, error)
 }
