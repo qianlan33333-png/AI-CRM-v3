@@ -22,9 +22,11 @@ import (
 var ErrUnavailable = errors.New("payment H5 OAuth unavailable")
 var ErrInvalid = errors.New("invalid payment H5 OAuth request")
 
-// The public product URL is keyed by the stable product code. This permits one
-// escaped path segment only and keeps the OAuth return same-origin.
-var returnPathPattern = regexp.MustCompile(`^/pay/[^/?#]+$`)
+// Public commerce routes use one escaped code/slug segment only and keep the
+// OAuth return same-origin. /p is intentionally absent because it contains no
+// authenticated action; /pay, /s/{code}, /s/{code}/pay and /c/{slug} reuse
+// the same trusted payment session without accepting browser identity input.
+var returnPathPattern = regexp.MustCompile(`^/(?:pay/[^/?#]+|s/[^/?#]+(?:/pay)?|c/[a-z][a-z0-9-]{5,119})$`)
 
 type Provider interface {
 	Enabled() bool
@@ -139,6 +141,13 @@ func validReturnPath(value string) bool {
 	if !returnPathPattern.MatchString(value) {
 		return false
 	}
-	productCode, err := url.PathUnescape(strings.TrimPrefix(value, "/pay/"))
-	return err == nil && safe(productCode, 200)
+	parts := strings.Split(strings.TrimPrefix(value, "/"), "/")
+	if len(parts) < 2 || len(parts) > 3 || (parts[0] != "pay" && parts[0] != "s" && parts[0] != "c") || (len(parts) == 3 && (parts[0] != "s" || parts[2] != "pay")) {
+		return false
+	}
+	code, err := url.PathUnescape(parts[1])
+	// PathUnescape happens after the raw one-segment regex. Reject separators
+	// introduced by percent encoding as well; otherwise /s/a%2Fb would pass the
+	// regex and later redirect to a different multi-segment route.
+	return err == nil && safe(code, 200) && !strings.ContainsAny(code, "/\\?#")
 }

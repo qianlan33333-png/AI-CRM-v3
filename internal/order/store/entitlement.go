@@ -3,9 +3,12 @@ package store
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -13,6 +16,19 @@ import (
 	orderport "github.com/qianlan33333-png/AI-CRM-v3/internal/order/port"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 )
+
+type servicePeriodMemberCursor struct {
+	SnapshotAt string `json:"snapshot_at"`
+	PlanHash   string `json:"plan_hash"`
+	Keys       []any  `json:"keys"`
+}
+
+type memberGridOrderElement struct {
+	Alias     string
+	Direction string
+	Cast      string
+	Nullable  bool
+}
 
 func (r *Repository) ListCustomerEntitlements(ctx context.Context, customerID int64, limit int32) (orderport.EntitlementPage, error) {
 	tx, err := platformpostgres.RequireTransaction(ctx)
@@ -39,6 +55,441 @@ func (r *Repository) ListCustomerEntitlements(ctx context.Context, customerID in
 	return page, err
 }
 
+func (r *Repository) ListServicePeriodMembers(ctx context.Context, query orderport.ServicePeriodMemberQuery) (orderport.ServicePeriodMemberPage, error) {
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return orderport.ServicePeriodMemberPage{}, err
+	}
+	snapshot := query.SnapshotAt.UTC()
+	state := strings.TrimSpace(query.State)
+	if state == "all" {
+		state = ""
+	}
+	if state == "removed" {
+		state = "refunded"
+	}
+	source := strings.TrimSpace(query.Source)
+	if snapshot.IsZero() {
+		snapshot = time.Now().UTC()
+	}
+	filters, sorts, groups := normalizedMemberGridQuery(query)
+	elements := memberGridExpandedOrderElements(memberGridOrderElements(sorts, groups))
+	planHash := memberGridPlanHash(state, source, query.FilterLogic, filters, sorts, groups)
+	cursorValues := []any(nil)
+	if query.Cursor != "" {
+		decoded, decodeErr := base64.RawURLEncoding.DecodeString(query.Cursor)
+		var cursor servicePeriodMemberCursor
+		if decodeErr != nil || json.Unmarshal(decoded, &cursor) != nil || cursor.PlanHash != planHash || len(cursor.Keys) != len(elements) {
+			return orderport.ServicePeriodMemberPage{}, orderport.ErrConflict
+		}
+		parsed, parseErr := time.Parse(time.RFC3339Nano, cursor.SnapshotAt)
+		if parseErr != nil {
+			return orderport.ServicePeriodMemberPage{}, orderport.ErrConflict
+		}
+		snapshot = parsed.UTC()
+		cursorValues, decodeErr = decodeMemberGridCursorValues(cursor.Keys, elements)
+		if decodeErr != nil {
+			return orderport.ServicePeriodMemberPage{}, orderport.ErrConflict
+		}
+	}
+
+	// Keep the frozen snapshot as a typed parameter in every query. This avoids
+	// an unconsumed extended-protocol argument while making partial-day values
+	// identical in SQL filtering, ordering and Product rendering.
+	args := []any{query.ServiceProductID, state, source, snapshot}
+	memberFilter := memberGridFilterClause(filters, query.FilterLogic, &args)
+	groupCounts := memberGridGroupCounts(groups)
+	keyset := memberGridKeysetClause(elements, cursorValues, &args)
+	args = append(args, query.Limit+1)
+
+	// Window counts are deliberately calculated in member_grid_counted before
+	// keyset pagination. A later page therefore reports the full count for each
+	// group prefix, matching the frozen dd8 relation rather than a page suffix.
+	rows, err := tx.Query(ctx, `WITH member_grid_base AS (
+		SELECT id,customer_id,service_product_id,product_name,last_order_id,status,start_at,end_at,remark,version,updated_at,source_system,
+		       GREATEST(0, CEIL(EXTRACT(EPOCH FROM (end_at-$4::timestamptz))/86400))::bigint AS remaining_days
+		FROM order_service_entitlements
+		WHERE service_product_id=$1
+		  AND ($2='' OR status=$2)
+		  AND ($3='' OR ($3='paid_order' AND source_system='native-payment') OR ($3='manual' AND source_system<>'native-payment'))
+	), member_grid_renewal_availability AS (
+		SELECT member.*,
+		       CASE WHEN member.source_system='native-payment' AND EXISTS (
+				SELECT 1 FROM order_entitlement_fulfillment_receipts grant_receipt
+				WHERE grant_receipt.operation='grant' AND grant_receipt.entitlement_id=member.id
+			) OR EXISTS (
+				SELECT 1 FROM order_entitlement_historical_sources historical
+				WHERE historical.entitlement_id=member.id
+			) THEN true ELSE false END AS renewal_count_available
+		FROM member_grid_base member
+	), member_grid_renewals AS (
+		SELECT member.*,
+		       CASE WHEN member.renewal_count_available THEN GREATEST(0::bigint, (
+				SELECT count(*)
+				FROM (
+					SELECT grant_receipt.source_order_id
+					FROM order_entitlement_fulfillment_receipts grant_receipt
+					JOIN orders source_order ON source_order.id=grant_receipt.source_order_id
+					WHERE grant_receipt.operation='grant' AND grant_receipt.entitlement_id=member.id AND source_order.status='paid'
+					UNION
+					SELECT historical.source_order_id
+					FROM order_entitlement_historical_sources historical
+					JOIN orders source_order ON source_order.id=historical.source_order_id
+					WHERE historical.entitlement_id=member.id AND source_order.status='paid'
+				) effective_source
+				WHERE NOT EXISTS (
+					SELECT 1 FROM order_entitlement_fulfillment_receipts refund_receipt
+					WHERE refund_receipt.operation='refund' AND refund_receipt.source_order_id=effective_source.source_order_id
+				)
+			) - 1) ELSE 0::bigint END AS renewal_count
+		FROM member_grid_renewal_availability member
+	), member_grid_values AS (
+		SELECT member.*,
+		       CASE WHEN renewal_count_available THEN renewal_count ELSE NULL::bigint END AS renewal_count_value,
+		       NULLIF(LOWER(BTRIM(remark)), '') AS remark_sort
+		FROM member_grid_renewals member
+	), member_grid_filtered AS (
+		SELECT * FROM member_grid_values WHERE `+memberFilter+`
+	), member_grid_counted AS (
+		SELECT member.*, `+groupCounts+` AS member_grid_group_counts
+		FROM member_grid_filtered member
+	)
+	SELECT id,customer_id,service_product_id,product_name,last_order_id,status,start_at,end_at,remark,version,updated_at,source_system,renewal_count,renewal_count_available,remaining_days,renewal_count_value,remark_sort,member_grid_group_counts
+		FROM member_grid_counted
+		WHERE `+keyset+`
+		ORDER BY `+memberGridOrderClause(elements)+` LIMIT $`+strconv.Itoa(len(args)), args...)
+	if err != nil {
+		return orderport.ServicePeriodMemberPage{}, err
+	}
+	defer rows.Close()
+	page := orderport.ServicePeriodMemberPage{Items: []orderport.Entitlement{}, SnapshotAt: snapshot}
+	for rows.Next() {
+		var item orderport.Entitlement
+		var remaining int64
+		var renewalValue *int64
+		var remarkSort *string
+		if err = rows.Scan(&item.ID, &item.CustomerID, &item.ServiceProductID, &item.ProductName, &item.LastOrderID, &item.Status, &item.StartAt, &item.EndAt, &item.Remark, &item.Version, &item.UpdatedAt, &item.SourceSystem, &item.RenewalCount, &item.RenewalCountAvailable, &remaining, &renewalValue, &remarkSort, &item.MemberGridGroupCounts); err != nil {
+			return orderport.ServicePeriodMemberPage{}, err
+		}
+		if len(item.MemberGridGroupCounts) > 0 {
+			item.MemberGridGroupCount = item.MemberGridGroupCounts[0]
+		}
+		item.MemberGridOrderValues = memberGridOrderValues(item, remaining, renewalValue, remarkSort, elements)
+		page.Items = append(page.Items, item)
+	}
+	if err = rows.Err(); err != nil {
+		return orderport.ServicePeriodMemberPage{}, err
+	}
+	if len(page.Items) <= int(query.Limit) {
+		return page, nil
+	}
+	last := page.Items[query.Limit-1]
+	encoded, marshalErr := json.Marshal(servicePeriodMemberCursor{SnapshotAt: snapshot.Format(time.RFC3339Nano), PlanHash: planHash, Keys: last.MemberGridOrderValues})
+	if marshalErr != nil {
+		return orderport.ServicePeriodMemberPage{}, marshalErr
+	}
+	page.NextCursor = base64.RawURLEncoding.EncodeToString(encoded)
+	page.Items = page.Items[:query.Limit]
+	return page, nil
+}
+
+func normalizedMemberGridQuery(query orderport.ServicePeriodMemberQuery) ([]orderport.MemberGridFilter, []orderport.MemberGridOrder, []orderport.MemberGridOrder) {
+	filters := append([]orderport.MemberGridFilter(nil), query.GridFilters...)
+	if query.RemainingDays != nil {
+		values := make([]float64, 0, len(query.RemainingDays.Values))
+		for _, value := range query.RemainingDays.Values {
+			values = append(values, float64(value))
+		}
+		filters = append(filters, orderport.MemberGridFilter{Field: "remaining_days", Operator: query.RemainingDays.Operator, Numbers: values})
+	}
+	if query.Remark != nil {
+		filters = append(filters, orderport.MemberGridFilter{Field: "remark", Operator: query.Remark.Operator, Text: query.Remark.Value})
+	}
+	sorts := append([]orderport.MemberGridOrder(nil), query.GridSorts...)
+	if len(sorts) == 0 && len(query.GridGroups) == 0 {
+		switch query.Sort {
+		case "updated_at_desc":
+			sorts = []orderport.MemberGridOrder{{Field: "updated_at", Direction: "desc"}}
+		case "starts_at_desc":
+			sorts = []orderport.MemberGridOrder{{Field: "starts_at", Direction: "desc"}}
+		case "remaining_days_desc":
+			sorts = []orderport.MemberGridOrder{{Field: "remaining_days", Direction: "desc"}}
+		case "remaining_days_asc":
+			sorts = []orderport.MemberGridOrder{{Field: "remaining_days", Direction: "asc"}}
+		}
+	}
+	groups := append([]orderport.MemberGridOrder(nil), query.GridGroups...)
+	if len(groups) == 0 && query.GroupByRemainingDays {
+		groups = []orderport.MemberGridOrder{{Field: "remaining_days", Direction: "asc"}}
+	}
+	return filters, sorts, groups
+}
+
+func memberGridPlanHash(state, source, logic string, filters []orderport.MemberGridFilter, sorts, groups []orderport.MemberGridOrder) string {
+	raw, _ := json.Marshal(struct {
+		State, Source, Logic string
+		Filters              []orderport.MemberGridFilter
+		Sorts                []orderport.MemberGridOrder
+		Groups               []orderport.MemberGridOrder
+	}{state, source, logic, filters, sorts, groups})
+	digest := sha256.Sum256(raw)
+	return fmt.Sprintf("%x", digest[:])
+}
+
+func memberGridOrderElements(sorts, groups []orderport.MemberGridOrder) []memberGridOrderElement {
+	result := make([]memberGridOrderElement, 0, len(sorts)+len(groups)+3)
+	appendField := func(field, direction string) {
+		switch field {
+		case "remaining_days":
+			result = append(result, memberGridOrderElement{Alias: "remaining_days", Direction: direction, Cast: "bigint"})
+		case "renewal_count":
+			result = append(result, memberGridOrderElement{Alias: "renewal_count_value", Direction: direction, Cast: "bigint", Nullable: true})
+		case "remark":
+			result = append(result, memberGridOrderElement{Alias: "remark_sort", Direction: direction, Cast: "text", Nullable: true})
+		case "updated_at":
+			result = append(result, memberGridOrderElement{Alias: "updated_at", Direction: direction, Cast: "timestamptz"})
+		case "starts_at":
+			result = append(result, memberGridOrderElement{Alias: "start_at", Direction: direction, Cast: "timestamptz"})
+		}
+	}
+	for _, group := range groups {
+		appendField(group.Field, group.Direction)
+	}
+	for _, sort := range sorts {
+		appendField(sort.Field, sort.Direction)
+	}
+	if len(sorts) == 0 {
+		result = append(result, memberGridOrderElement{Alias: "end_at", Direction: "desc", Cast: "timestamptz"})
+	}
+	return append(result, memberGridOrderElement{Alias: "id", Direction: "desc", Cast: "bigint"})
+}
+
+func memberGridExpandedOrderElements(elements []memberGridOrderElement) []memberGridOrderElement {
+	result := make([]memberGridOrderElement, 0, len(elements)*2)
+	for _, element := range elements {
+		if element.Nullable {
+			result = append(result, memberGridOrderElement{Alias: element.Alias, Direction: "asc", Cast: "bigint", Nullable: true})
+		}
+		element.Nullable = false
+		result = append(result, element)
+	}
+	return result
+}
+
+func memberGridOrderExpression(element memberGridOrderElement) string {
+	if element.Nullable {
+		return "(" + element.Alias + " IS NULL)::integer"
+	}
+	return element.Alias
+}
+
+func memberGridFilterClause(filters []orderport.MemberGridFilter, logic string, args *[]any) string {
+	clauses := make([]string, 0, len(filters))
+	for _, filter := range filters {
+		alias := map[string]string{"remaining_days": "remaining_days", "renewal_count": "renewal_count_value", "remark": "remark_sort"}[filter.Field]
+		switch filter.Field {
+		case "remaining_days", "renewal_count":
+			if filter.Operator == "is_empty" {
+				clauses = append(clauses, alias+" IS NULL")
+				continue
+			}
+			if filter.Operator == "is_not_empty" {
+				clauses = append(clauses, alias+" IS NOT NULL")
+				continue
+			}
+			if filter.Operator == "between" {
+				clauses = append(clauses, alias+" BETWEEN "+memberGridBind(args, filter.Numbers[0], "numeric")+" AND "+memberGridBind(args, filter.Numbers[1], "numeric"))
+				continue
+			}
+			op := map[string]string{"equals": "=", "not_equals": "<>", "gt": ">", "gte": ">=", "lt": "<", "lte": "<="}[filter.Operator]
+			clauses = append(clauses, alias+" "+op+" "+memberGridBind(args, filter.Numbers[0], "numeric"))
+		case "remark":
+			switch filter.Operator {
+			case "is_empty":
+				clauses = append(clauses, "remark_sort IS NULL")
+			case "is_not_empty":
+				clauses = append(clauses, "remark_sort IS NOT NULL")
+			case "contains", "not_contains":
+				clause := "COALESCE(remark_sort, '') LIKE " + memberGridBind(args, "%"+escapeServicePeriodLike(strings.ToLower(filter.Text))+"%", "text") + " ESCAPE E'\\\\'"
+				if filter.Operator == "not_contains" {
+					clause = "NOT (" + clause + ")"
+				}
+				clauses = append(clauses, clause)
+			case "equals", "not_equals":
+				clause := "COALESCE(remark_sort, '') = " + memberGridBind(args, strings.ToLower(filter.Text), "text")
+				if filter.Operator == "not_equals" {
+					clause = "NOT (" + clause + ")"
+				}
+				clauses = append(clauses, clause)
+			}
+		}
+	}
+	if len(clauses) == 0 {
+		return "TRUE"
+	}
+	joiner := " AND "
+	if logic == "or" {
+		joiner = " OR "
+	}
+	return "(" + strings.Join(clauses, joiner) + ")"
+}
+
+func memberGridGroupCounts(groups []orderport.MemberGridOrder) string {
+	if len(groups) == 0 {
+		return "ARRAY[]::bigint[]"
+	}
+	parts := make([]string, 0, len(groups))
+	prefix := make([]string, 0, len(groups))
+	for _, group := range groups {
+		alias := map[string]string{"remaining_days": "remaining_days", "renewal_count": "renewal_count_value", "remark": "remark_sort"}[group.Field]
+		prefix = append(prefix, alias)
+		parts = append(parts, "COUNT(*) OVER (PARTITION BY "+strings.Join(prefix, ",")+")")
+	}
+	return "ARRAY[" + strings.Join(parts, ",") + "]::bigint[]"
+}
+
+func memberGridOrderClause(elements []memberGridOrderElement) string {
+	parts := make([]string, 0, len(elements))
+	for _, element := range elements {
+		parts = append(parts, memberGridOrderExpression(element)+" "+strings.ToUpper(element.Direction))
+	}
+	return strings.Join(parts, ",")
+}
+
+func memberGridKeysetClause(elements []memberGridOrderElement, values []any, args *[]any) string {
+	if len(values) == 0 {
+		return "TRUE"
+	}
+	branches := make([]string, 0, len(elements))
+	for index, element := range elements {
+		value := values[index]
+		if value == nil {
+			continue
+		}
+		prefix := make([]string, 0, index+1)
+		for prior, priorValue := range values[:index] {
+			priorElement := elements[prior]
+			if priorValue == nil {
+				prefix = append(prefix, memberGridOrderExpression(priorElement)+" IS NULL")
+			} else {
+				prefix = append(prefix, memberGridOrderExpression(priorElement)+" = "+memberGridBind(args, priorValue, priorElement.Cast))
+			}
+		}
+		operator := ">"
+		if element.Direction == "desc" {
+			operator = "<"
+		}
+		prefix = append(prefix, memberGridOrderExpression(element)+" "+operator+" "+memberGridBind(args, value, element.Cast))
+		branches = append(branches, "("+strings.Join(prefix, " AND ")+")")
+	}
+	if len(branches) == 0 {
+		return "FALSE"
+	}
+	return "(" + strings.Join(branches, " OR ") + ")"
+}
+
+func memberGridBind(args *[]any, value any, cast string) string {
+	*args = append(*args, value)
+	return "$" + strconv.Itoa(len(*args)) + "::" + cast
+}
+
+func decodeMemberGridCursorValues(values []any, elements []memberGridOrderElement) ([]any, error) {
+	decoded := make([]any, len(values))
+	for index, value := range values {
+		if value == nil {
+			decoded[index] = nil
+			continue
+		}
+		switch elements[index].Cast {
+		case "bigint":
+			number, ok := value.(float64)
+			if !ok || number != float64(int64(number)) {
+				return nil, errors.New("invalid member-grid cursor")
+			}
+			decoded[index] = int64(number)
+		case "text":
+			text, ok := value.(string)
+			if !ok {
+				return nil, errors.New("invalid member-grid cursor")
+			}
+			decoded[index] = text
+		case "timestamptz":
+			text, ok := value.(string)
+			if !ok {
+				return nil, errors.New("invalid member-grid cursor")
+			}
+			at, err := time.Parse(time.RFC3339Nano, text)
+			if err != nil {
+				return nil, err
+			}
+			decoded[index] = at.UTC()
+		default:
+			return nil, errors.New("invalid member-grid cursor")
+		}
+	}
+	return decoded, nil
+}
+
+func memberGridOrderValues(item orderport.Entitlement, remaining int64, renewalValue *int64, remarkSort *string, elements []memberGridOrderElement) []any {
+	values := make([]any, 0, len(elements))
+	for _, element := range elements {
+		var value any
+		if element.Nullable {
+			switch element.Alias {
+			case "renewal_count_value":
+				if renewalValue == nil {
+					values = append(values, int64(1))
+				} else {
+					values = append(values, int64(0))
+				}
+			case "remark_sort":
+				if remarkSort == nil {
+					values = append(values, int64(1))
+				} else {
+					values = append(values, int64(0))
+				}
+			}
+			continue
+		}
+		switch element.Alias {
+		case "remaining_days":
+			value = remaining
+		case "renewal_count_value":
+			value = renewalValue
+		case "remark_sort":
+			value = remarkSort
+		case "updated_at":
+			value = item.UpdatedAt.UTC()
+		case "start_at":
+			value = item.StartAt.UTC()
+		case "end_at":
+			value = item.EndAt.UTC()
+		case "id":
+			value = item.ID
+		}
+		if pointer, ok := value.(*int64); ok {
+			if pointer == nil {
+				value = nil
+			} else {
+				value = *pointer
+			}
+		}
+		if pointer, ok := value.(*string); ok {
+			if pointer == nil {
+				value = nil
+			} else {
+				value = *pointer
+			}
+		}
+		values = append(values, value)
+	}
+	return values
+}
+
+func escapeServicePeriodLike(value string) string {
+	return strings.NewReplacer("\\", "\\\\", "%", "\\%", "_", "\\_").Replace(value)
+}
+
 func (r *Repository) FindEntitlementReceipt(ctx context.Context, key [32]byte) (orderport.Entitlement, [32]byte, string, bool, error) {
 	tx, err := platformpostgres.RequireTransaction(ctx)
 	if err != nil {
@@ -62,13 +513,32 @@ func (r *Repository) FindEntitlementReceipt(ctx context.Context, key [32]byte) (
 	return item, d, outcome, true, nil
 }
 
+func (r *Repository) GetCustomerServicePeriodEntitlement(ctx context.Context, customerID, serviceProductID int64) (orderport.Entitlement, bool, error) {
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return orderport.Entitlement{}, false, err
+	}
+	var item orderport.Entitlement
+	err = tx.QueryRow(ctx, `SELECT id,customer_id,service_product_id,product_name,last_order_id,status,start_at,end_at,remark,version,updated_at
+		FROM order_service_entitlements WHERE customer_id=$1 AND service_product_id=$2
+		ORDER BY end_at DESC,id DESC LIMIT 1`, customerID, serviceProductID).
+		Scan(&item.ID, &item.CustomerID, &item.ServiceProductID, &item.ProductName, &item.LastOrderID, &item.Status, &item.StartAt, &item.EndAt, &item.Remark, &item.Version, &item.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return orderport.Entitlement{}, false, nil
+	}
+	if err != nil {
+		return orderport.Entitlement{}, false, err
+	}
+	return item, true, nil
+}
+
 func (r *Repository) UpdateEntitlementRemark(ctx context.Context, command orderport.RemarkCommand, key, payload [32]byte, at time.Time) (orderport.Entitlement, error) {
 	tx, err := platformpostgres.RequireTransaction(ctx)
 	if err != nil {
 		return orderport.Entitlement{}, err
 	}
 	var item orderport.Entitlement
-	err = tx.QueryRow(ctx, `UPDATE order_service_entitlements SET remark=$4,version=version+1,updated_at=$5 WHERE id=$1 AND customer_id=$2 AND version=$3 AND status IN ('active','expired') RETURNING id,customer_id,service_product_id,product_name,last_order_id,status,start_at,end_at,remark,version,updated_at`, command.EntitlementID, command.CustomerID, command.ExpectedVersion, command.Remark, at).Scan(&item.ID, &item.CustomerID, &item.ServiceProductID, &item.ProductName, &item.LastOrderID, &item.Status, &item.StartAt, &item.EndAt, &item.Remark, &item.Version, &item.UpdatedAt)
+	err = tx.QueryRow(ctx, `UPDATE order_service_entitlements SET remark=$5,version=version+1,updated_at=$6 WHERE id=$1 AND ($2=0 OR customer_id=$2) AND service_product_id=$3 AND version=$4 AND status IN ('active','expired') RETURNING id,customer_id,service_product_id,product_name,last_order_id,status,start_at,end_at,remark,version,updated_at`, command.EntitlementID, command.CustomerID, command.ServiceProductID, command.ExpectedVersion, command.Remark, at).Scan(&item.ID, &item.CustomerID, &item.ServiceProductID, &item.ProductName, &item.LastOrderID, &item.Status, &item.StartAt, &item.EndAt, &item.Remark, &item.Version, &item.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return item, orderport.ErrConflict
 	}

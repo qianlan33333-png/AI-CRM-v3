@@ -45,6 +45,28 @@ type fakeClaims struct {
 	page couponport.AdminCouponClaimPage
 }
 
+type fakePublic struct {
+	share couponport.PublicCouponShare
+	actor int64
+}
+
+func (f *fakePublic) GetPublicCoupon(context.Context, string) (couponport.PublicCoupon, error) {
+	return couponport.PublicCoupon{}, errors.New("not used")
+}
+func (f *fakePublic) PublicClaimState(context.Context, int64, couponport.ID) (couponport.PublicCouponClaimState, error) {
+	return couponport.PublicCouponClaimState{}, errors.New("not used")
+}
+func (f *fakePublic) ListAvailableClaims(context.Context, int64, string, time.Time) ([]couponport.CustomerCoupon, error) {
+	return nil, errors.New("not used")
+}
+func (f *fakePublic) EnsurePublicShare(_ context.Context, couponID couponport.ID, actorID int64) (couponport.PublicCouponShare, error) {
+	f.actor = actorID
+	if f.share.CouponID != couponID {
+		return couponport.PublicCouponShare{}, errors.New("unexpected coupon")
+	}
+	return f.share, nil
+}
+
 func (f fakeClaims) ListCouponClaims(_ context.Context, couponID couponport.ID, limit, offset int32) (couponport.AdminCouponClaimPage, error) {
 	if couponID != 3 {
 		return couponport.AdminCouponClaimPage{}, errors.New("unexpected coupon")
@@ -159,5 +181,24 @@ func TestCouponClaimListUsesDedicatedMaskedReadPort(t *testing.T) {
 	h.ServeHTTP(r, httptest.NewRequest(http.MethodGet, "/api/admin/coupons/3/claims?limit=10&offset=0", nil))
 	if r.Code != http.StatusOK || !strings.Contains(r.Body.String(), `"claim_no_masked":"***7"`) || strings.Contains(r.Body.String(), "unionid") {
 		t.Fatalf("claims status=%d body=%s", r.Code, r.Body.String())
+	}
+}
+
+func TestCouponShareUsesFrozenGETWithAdminAndCSRF(t *testing.T) {
+	public := &fakePublic{share: couponport.PublicCouponShare{CouponID: 3, PublicSlug: "cp-a1b2c3", URL: "/c/cp-a1b2c3"}}
+	h, err := NewHandlerWithClaimsAndPublic(&fakeRules{item: couponFixture()}, fakeOptions{}, fakeClaims{}, public, fakeSecurity{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := httptest.NewRecorder()
+	h.ServeHTTP(r, httptest.NewRequest(http.MethodGet, "/api/admin/coupons/3/share", nil))
+	if r.Code != http.StatusOK || public.actor != 7 || !strings.Contains(r.Body.String(), `"url":"/c/cp-a1b2c3"`) || r.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("share status=%d actor=%d headers=%v body=%s", r.Code, public.actor, r.Header(), r.Body.String())
+	}
+	h, _ = NewHandlerWithClaimsAndPublic(&fakeRules{item: couponFixture()}, fakeOptions{}, fakeClaims{}, public, fakeSecurity{csrf: errors.New("missing")})
+	r = httptest.NewRecorder()
+	h.ServeHTTP(r, httptest.NewRequest(http.MethodGet, "/api/admin/coupons/3/share", nil))
+	if r.Code != http.StatusForbidden {
+		t.Fatalf("share csrf=%d", r.Code)
 	}
 }

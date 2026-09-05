@@ -31,6 +31,7 @@ import (
 	configstore "github.com/qianlan33333-png/AI-CRM-v3/internal/config/store"
 	coupon "github.com/qianlan33333-png/AI-CRM-v3/internal/coupon"
 	couponapp "github.com/qianlan33333-png/AI-CRM-v3/internal/coupon/app"
+	couponhttp "github.com/qianlan33333-png/AI-CRM-v3/internal/coupon/http"
 	couponstore "github.com/qianlan33333-png/AI-CRM-v3/internal/coupon/store"
 	customerapp "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/app"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
@@ -589,6 +590,11 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	productCatalog := productapp.NewService(uow, productRepository, productEvents)
 	productLifecycle := productapp.NewLocalProductLifecycleService(uow, productRepository, productEvents)
 	productServicePeriod := productapp.NewServicePeriodService(uow, productRepository, productEvents)
+	// 0079 is Product-owned workspace metadata.  The HTTP host still reads
+	// members through the Order port and display names through the Customer
+	// port; it does not receive either store here.
+	productMemberGridStaff := productMemberGridStaffDirectory{users: accessRepository}
+	productMemberGrid := productapp.NewMemberGridWorkspaceService(uow, productRepository, productMemberGridStaff, productEvents)
 	productExternalPush, err := productapp.NewCommerceExternalPushService(uow, productRepository, productstore.NewLocalExternalPushEffectAccepter(), productEvents)
 	if err != nil {
 		return fail(err)
@@ -597,7 +603,17 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
+	if err = productBindings.ProductHandler.SetServicePeriodMemberWorkspace(productMemberGrid); err != nil {
+		return fail(err)
+	}
+	if err = productBindings.ProductHandler.SetServicePeriodMemberStaffDirectory(productMemberGridStaff); err != nil {
+		return fail(err)
+	}
 	publicProductHandler, err := producthttp.NewPublicHandler(productCatalog)
+	if err != nil {
+		return fail(err)
+	}
+	publicServicePeriodHandler, err := producthttp.NewServicePeriodPublicHandler(productServicePeriod)
 	if err != nil {
 		return fail(err)
 	}
@@ -615,7 +631,15 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
-	couponBindings, err := couponModule.Bind(couponService, productCatalog, requestSecurity)
+	couponCheckout, err := couponapp.NewCheckoutService(uow, couponRepository)
+	if err != nil {
+		return fail(err)
+	}
+	couponPublic, err := couponapp.NewPublicCouponService(uow, couponRepository)
+	if err != nil {
+		return fail(err)
+	}
+	couponBindings, err := couponModule.BindWithClaimsAndPublic(couponService, productCatalog, couponRepository, couponPublic, requestSecurity)
 	if err != nil {
 		return fail(err)
 	}
@@ -705,6 +729,9 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return fail(err)
 	}
 	orderService := orderapp.NewService(uow, orderRepository)
+	if err = orderService.SetCheckoutCouponCoordinator(couponCheckout); err != nil {
+		return fail(err)
+	}
 	if cfg.WeChatPay.H5OAuthEnabled {
 		contactCipher, cipherErr := ordersecure.NewContactCipher(cfg.WeChatPay.OrderContactDataKey)
 		if cipherErr != nil {
@@ -731,6 +758,16 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return fail(err)
 	}
 
+	if err = productBindings.ProductHandler.SetServicePeriodMemberReaders(entitlements, orderCustomerDisplayNameAdapter{uow: uow, reader: customerStore}); err != nil {
+		return fail(err)
+	}
+	entitlementFulfillment, err := orderapp.NewEntitlementFulfillmentApplication(orderRepository)
+	if err != nil {
+		return fail(err)
+	}
+	if err = orderService.SetServicePeriodEntitlementCoordinator(entitlementFulfillment); err != nil {
+		return fail(err)
+	}
 	customerProfileStore := wecom.NewPostgreSQLCustomerSyncStore()
 	customerHandler, err := customerhttp.NewHandler(customerhttp.Config{UnitOfWork: uow, Auth: requestSecurity, CSRF: requestSecurity,
 		Directory: customerapp.Directory{Store: customerStore, SigningKey: cursorSigningKey}, Store: customerStore, Identities: queries, Audit: auditService,
@@ -839,11 +876,24 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
+	if err = publicServicePeriodHandler.SetTrustedPublicState(uow, paymentSession, entitlements); err != nil {
+		return fail(err)
+	}
+	if err = publicServicePeriodHandler.SetPublicMediaReader(mediaService); err != nil {
+		return fail(err)
+	}
+	if err = publicServicePeriodHandler.SetPublicLeadQRCodeReader(channelPublicLeadQRCodeAdapter{catalog: channelCatalogService}); err != nil {
+		return fail(err)
+	}
 	h5OAuthService, err := paymenth5oauth.NewService(uow, paymenth5oauth.PostgreSQL{}, h5OAuthProvider, paymentSession)
 	if err != nil {
 		return fail(err)
 	}
 	if err = paymentHandler.SetH5OAuth(h5OAuthService); err != nil {
+		return fail(err)
+	}
+	couponPublicHandler, err := couponhttp.NewPublicHandler(couponPublic, couponCheckout, paymentSession, productTargets, uow)
+	if err != nil {
 		return fail(err)
 	}
 	if cfg.WeChatShop.Enabled {
@@ -1017,6 +1067,11 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	}
 	hxcModule := hxc.NewModuleRegistration()
 	hxcRepository := hxcstore.NewPostgreSQL(pool.Native())
+	// Product receives only HXC's versioned shared-facts Port. It never opens
+	// an HXC store or reads dashboard tables while composing the member grid.
+	if err = productBindings.ProductHandler.SetServicePeriodMemberSharedFacts(hxcRepository); err != nil {
+		return fail(err)
+	}
 	hxcDashboard := hxcapp.Service{Enabled: cfg.HXCDashboard.Enabled, Scope: cfg.HXCDashboard.UnionIDScope, SubjectKey: []byte(cfg.HXCDashboard.SubjectHMACKey), Source: hxcSource, Identity: hxcIdentity, IdentityWriteEnabled: cfg.HXCDashboard.IdentityWriteEnabled, UnionIDVerified: cfg.HXCDashboard.UnionIDVerified, Store: hxcRepository, Enqueuer: hxcEnqueuer, Audit: auditService, UOW: uow}
 	hxcDashboardWorker.Service = &hxcDashboard
 	hxcHandler := hxchttp.Handler{Service: hxcDashboard, Store: hxcRepository, Auth: requestSecurity, Key: []byte(cfg.HXCDashboard.SubjectHMACKey)}
@@ -1091,6 +1146,8 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	adminAPIs.Handle("/api/h5/wechat-pay/oauth/", paymentHandler)
 	adminAPIs.Handle("/api/public/wechat-pay/", paymentHandler)
 	adminAPIs.Handle("/api/public/wechat-shop/", paymentHandler)
+	adminAPIs.Handle("/api/public/service-period-member-grid/bootstrap", productBindings.Products)
+	adminAPIs.Handle("/api/public/service-period-member-grid/query", productBindings.Products)
 	adminAPIs.Handle("/api/v1/products", productBindings.Products)
 	adminAPIs.Handle("/api/v1/products/", productBindings.Products)
 	adminAPIs.Handle("/api/admin/wechat-pay/products", productBindings.Products)
@@ -1197,19 +1254,23 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	tagUI := tagModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, donorTemplate string, assets tag.TagsAssets) error {
 		return renderer.RenderTags(writer, webshell.AdminPageForRequest(request, "企微标签管理", "管理标签目录与本地同步意图。", "api.admin_wecom_tags_page"), donorTemplate, webshell.TagsAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS})
 	})
+	memberGridUI := producthttp.NewMemberGridUI()
 	productUI := productModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, page, donorTemplate string, assets productmodule.ProductAssets) error {
-		titles := map[string]string{"products": "普通商品", "productForm": "普通商品", "spProducts": "周期商品", "spProductForm": "周期商品"}
-		endpoints := map[string]string{"products": "api.admin_products_page", "productForm": "api.admin_product_form_page", "spProducts": "api.admin_service_period_products_page", "spProductForm": "api.admin_service_period_product_form_page"}
-		return renderer.RenderProducts(writer, webshell.AdminPageForRequest(request, titles[page], "仅管理本地商品定义、生命周期与受控配置。", endpoints[page]), page, donorTemplate, webshell.ProductAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, HostJS: assets.HostJS})
+		if page == "spProductData" {
+			return producthttp.RenderMemberGridInternal(writer, request, request.URL.Query().Get("id"))
+		}
+		titles := map[string]string{"products": "普通商品", "productForm": "普通商品", "spProducts": "周期商品", "spProductForm": "周期商品", "spProductData": "周期商品 · 会员数据"}
+		endpoints := map[string]string{"products": "api.admin_products_page", "productForm": "api.admin_product_form_page", "spProducts": "api.admin_service_period_products_page", "spProductForm": "api.admin_service_period_product_form_page", "spProductData": "api.admin_service_period_member_grid"}
+		return renderer.RenderProducts(writer, webshell.AdminPageForRequest(request, titles[page], "管理本地商品、周期会员数据与受控配置。", endpoints[page]), page, donorTemplate, webshell.ProductAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, HostJS: assets.HostJS})
 	})
 	orderUI := orderui.NewUIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, page, donorTemplate string, assets orderui.PageAssets) error {
 		title := map[string]string{"orders": "交易管理", "orderDetail": "订单详情"}[page]
 		return renderer.RenderOrders(writer, webshell.AdminPageForRequest(request, title, "历史订单默认只读；未验证身份不归属 OneID。", "api.admin_orders_page"), page, donorTemplate, webshell.OrderAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS})
 	})
 	couponUI := couponModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, page, donorTemplate string, assets coupon.Assets) error {
-		titles := map[string]string{"coupons": "优惠券", "couponForm": "优惠券"}
-		endpoints := map[string]string{"coupons": "api.admin_coupons_page", "couponForm": "api.admin_coupon_form_page"}
-		return renderer.RenderCoupons(writer, webshell.AdminPageForRequest(request, titles[page], "仅管理本地优惠券规则，不含领取、核销、客户持券或订单。", endpoints[page]), page, donorTemplate, webshell.CouponAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS})
+		titles := map[string]string{"coupons": "优惠券", "couponForm": "优惠券", "couponData": "优惠券 · 领取数据"}
+		endpoints := map[string]string{"coupons": "api.admin_coupons_page", "couponForm": "api.admin_coupon_form_page", "couponData": "api.admin_coupon_claims"}
+		return renderer.RenderCoupons(writer, webshell.AdminPageForRequest(request, titles[page], "管理本地优惠券规则、领取事实与核销快照。", endpoints[page]), page, donorTemplate, webshell.CouponAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS})
 	})
 	radarUI := radarModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, page string, assets radarmodule.UIAssets) error {
 		titles := map[string]string{"radar": "内容雷达", "radarDetail": "雷达详情", "radarForm": "雷达配置"}
@@ -1250,6 +1311,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
+	handler = mountMemberGridUI(handler, memberGridUI)
 	handler, err = mountSegmentAPI(handler, segmentBindings.Audience)
 	if err != nil {
 		return fail(err)
@@ -1263,7 +1325,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return fail(err)
 	}
 	handler = mountAIAssistant(handler, aiHandler.Routes(), aiUI, authentication, cfg.AIAssistant.UIEnabled, cfg.PublicOrigin)
-	handler = securityHeaders(mountPublicProduct(mountRadar(mountChannelUI(mountHXCUI(mountOrderUI(mountSurveyUI(handler, surveyUI, surveyPublicUI, authentication), orderUI, authentication), hxcUI, authentication), channelUI, authentication), radarBindings.Radar, radarUI, authentication), publicProductHandler))
+	handler = securityHeaders(mountPublicCoupon(mountPublicServicePeriod(mountPublicProduct(mountRadar(mountChannelUI(mountHXCUI(mountOrderUI(mountSurveyUI(handler, surveyUI, surveyPublicUI, authentication), orderUI, authentication), hxcUI, authentication), channelUI, authentication), radarBindings.Radar, radarUI, authentication), publicProductHandler), publicServicePeriodHandler), couponPublicHandler))
 	handler, err = mountMessageArchive(handler, archiveHandler.Routes())
 	if err != nil {
 		return fail(err)
@@ -1381,6 +1443,26 @@ func mountPublicProduct(next, products http.Handler) http.Handler {
 	})
 }
 
+func mountPublicServicePeriod(next, products http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/s/") || strings.HasPrefix(r.URL.Path, "/api/h5/service-period-products/") {
+			products.ServeHTTP(w, r)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func mountPublicCoupon(next, coupons http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/c/") || r.URL.Path == "/api/h5/coupons/available" || strings.HasPrefix(r.URL.Path, "/api/h5/coupons/") {
+			coupons.ServeHTTP(w, r)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 func mountSurveyUI(next, adminUI, publicUI http.Handler, authentication accessAuthentication) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -1446,6 +1528,17 @@ func routeApplicationWithEffects(health, access, identity, effects, pushCenter, 
 
 func routeApplicationWithMedia(health, access, identity, effects, pushCenter, effectsUI, mediaHandler, mediaUI, weCom, shell http.Handler, authentication accessAuthentication, publicOrigin string) (http.Handler, error) {
 	return routeApplicationWithMediaTags(health, access, identity, effects, pushCenter, effectsUI, mediaHandler, mediaUI, http.NotFoundHandler(), http.NotFoundHandler(), weCom, shell, authentication, publicOrigin)
+}
+
+func mountMemberGridUI(next, ui http.Handler) http.Handler {
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		path := request.URL.Path
+		if path == "/shared/service-period-member-grid" || strings.HasPrefix(path, "/service-period-member-grid-assets/") || strings.HasPrefix(path, "/static/service-period/icons/") {
+			ui.ServeHTTP(writer, request)
+			return
+		}
+		next.ServeHTTP(writer, request)
+	})
 }
 
 func routeApplicationWithMediaTags(health, access, identity, effects, pushCenter, effectsUI, mediaHandler, mediaUI, tagHandler, tagUI, weCom, shell http.Handler, authentication accessAuthentication, publicOrigin string) (http.Handler, error) {
@@ -1561,6 +1654,8 @@ func routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, acce
 	mux.Handle("/api/admin/wechat-pay/products/", productHandler)
 	mux.Handle("/api/admin/service-period-products", productHandler)
 	mux.Handle("/api/admin/service-period-products/", productHandler)
+	mux.Handle("/api/public/service-period-member-grid/bootstrap", productHandler)
+	mux.Handle("/api/public/service-period-member-grid/query", productHandler)
 	mux.Handle("/api/admin/coupons", couponHandler)
 	mux.Handle("/api/admin/coupons/", couponHandler)
 	mux.Handle("/api/admin/config/", configHandler)
@@ -1597,9 +1692,9 @@ func routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, acce
 	mux.Handle("/admin/image-library", requireAdminSession(authentication, mediaUI))
 	mux.Handle("/admin/miniprogram-library", requireAdminSession(authentication, mediaUI))
 	mux.Handle("/admin/attachment-library", requireAdminSession(authentication, mediaUI))
-	// PR04 canonical/nested Product aliases all mount the donor template#tpl
-	// fragment in admin_base. Exact spProductData paths are denied before the
-	// generic admin shell so the excluded member-grid page cannot boot.
+	// Canonical/nested Product aliases mount the frozen donor fragment through
+	// the existing V3 Host. The member-grid data page receives the same session
+	// and asset boundary as the lifecycle pages.
 	for _, path := range []string{
 		"/admin/wechat-pay/products", "/admin/wechat-pay/products/",
 		"/admin/wechat-pay/products.html", "/admin/products.html",
@@ -1611,18 +1706,14 @@ func routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, acce
 	} {
 		mux.Handle(path, requireAdminSession(authentication, productUI))
 	}
-	// The coupon donor documents are private template carriers. The two exact
-	// v2 routes below are the only public mounts; claim/redeem and public-link
-	// routes remain absent rather than receiving a shell placeholder.
-	for _, path := range []string{"/admin/coupons", "/admin/coupons.html", "/admin/couponForm.html"} {
+	for _, path := range []string{"/admin/coupons", "/admin/coupons.html", "/admin/couponForm.html", "/admin/couponData.html"} {
 		mux.Handle(path, requireAdminSession(authentication, couponUI))
 	}
-	mux.Handle("/admin/couponData.html", requireAdminSession(authentication, http.NotFoundHandler()))
 	for _, path := range []string{
 		"/admin/spProductData.html", "/admin/wechat-pay/spProductData.html",
 		"/admin/wechat-pay/products/spProductData.html", "/admin/service-period-products/spProductData.html",
 	} {
-		mux.Handle(path, requireAdminSession(authentication, http.NotFoundHandler()))
+		mux.Handle(path, requireAdminSession(authentication, productUI))
 	}
 	mux.Handle("/admin/automation-conversion/group-ops/ui", requireAdminSession(authentication, groupOpsUI))
 	mux.Handle("/admin/automation-conversion/group-ops/groups/ui", requireAdminSession(authentication, groupOpsUI))

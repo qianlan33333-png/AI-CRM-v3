@@ -318,7 +318,7 @@ func (renderer *Renderer) RenderTags(writer http.ResponseWriter, data AdminPageD
 // PR10 shell. The donor template is the release-built template#tpl fragment;
 // this method never renders the donor document or a second sidebar.
 func (renderer *Renderer) RenderProducts(writer http.ResponseWriter, data AdminPageData, page, donorTemplate string, assets ProductAssets) error {
-	if renderer == nil || renderer.templates == nil || donorTemplate == "" || assets.TokensCSS == "" || assets.LabsCSS == "" || assets.HostJS == "" || (page != "products" && page != "productForm" && page != "spProducts" && page != "spProductForm") {
+	if renderer == nil || renderer.templates == nil || donorTemplate == "" || assets.TokensCSS == "" || assets.LabsCSS == "" || assets.HostJS == "" || (page != "products" && page != "productForm" && page != "spProducts" && page != "spProductForm" && page != "spProductData") {
 		return errors.New("product shell assets are required")
 	}
 	normalizeAdminPage(&data)
@@ -355,7 +355,7 @@ func (renderer *Renderer) RenderOrders(writer http.ResponseWriter, data AdminPag
 // RenderCoupons mounts a verified coupons/couponForm donor template inside
 // the only v3 admin shell; it never serves the donor's outer HTML document.
 func (renderer *Renderer) RenderCoupons(writer http.ResponseWriter, data AdminPageData, page, donorTemplate string, assets CouponAssets) error {
-	if renderer == nil || renderer.templates == nil || donorTemplate == "" || assets.TokensCSS == "" || assets.LabsCSS == "" || assets.AdminJS == "" || (page != "coupons" && page != "couponForm") {
+	if renderer == nil || renderer.templates == nil || donorTemplate == "" || assets.TokensCSS == "" || assets.LabsCSS == "" || assets.AdminJS == "" || (page != "coupons" && page != "couponForm" && page != "couponData") {
 		return errors.New("coupon shell assets are required")
 	}
 	normalizeAdminPage(&data)

@@ -183,9 +183,17 @@ func (service *ServicePeriodService) GetServicePeriodProduct(ctx context.Context
 // period-product public route. The ordinary public catalog intentionally never
 // calls it. Code comparison is exact and has no legacy numeric-ID fallback.
 func (service *ServicePeriodService) ReadPublicServicePeriodByCode(ctx context.Context, code string) (productport.CheckoutProduct, error) {
+	presentation, available, err := service.ReadServicePeriodPublicPresentationByCode(ctx, code)
+	if err != nil || !available {
+		return productport.CheckoutProduct{}, ErrNotFound
+	}
+	return presentation, nil
+}
+
+func (service *ServicePeriodService) ReadServicePeriodPublicPresentationByCode(ctx context.Context, code string) (productport.CheckoutProduct, bool, error) {
 	code = strings.TrimSpace(code)
 	if !servicePeriodReady(service) || code == "" || len(code) > 200 {
-		return productport.CheckoutProduct{}, ErrNotFound
+		return productport.CheckoutProduct{}, false, ErrNotFound
 	}
 	var row productport.Product
 	var duration int32
@@ -198,13 +206,18 @@ func (service *ServicePeriodService) ReadPublicServicePeriodByCode(ctx context.C
 		duration, err = service.store.ReadServicePeriodDuration(tx, row.ID)
 		return err
 	}); err != nil {
-		return productport.CheckoutProduct{}, classify(err)
+		return productport.CheckoutProduct{}, false, classify(err)
 	}
 	projected, err := projectServicePeriodProduct(row, duration)
-	if err != nil || !projected.Enabled || projected.Lifecycle != productport.ServicePeriodEnabled {
-		return productport.CheckoutProduct{}, ErrNotFound
+	if err != nil {
+		return productport.CheckoutProduct{}, false, ErrNotFound
 	}
-	return productport.CheckoutProduct{ID: projected.ServiceProductID, ProductType: productport.ProductOptionServicePeriod, Code: projected.ProductCode, Name: projected.Name, PriceMinor: projected.PriceMinor, Currency: projected.Currency, Version: projected.Version, ServicePeriodDurationDays: duration}, nil
+	presentation, presentationErr := publicServicePeriodPresentation(projected.AdminProjection)
+	if presentationErr != nil {
+		return productport.CheckoutProduct{}, false, ErrUnavailable
+	}
+	checkout := productport.CheckoutProduct{ID: projected.ServiceProductID, ProductType: productport.ProductOptionServicePeriod, Code: projected.ProductCode, Name: projected.Name, PriceMinor: projected.PriceMinor, Currency: projected.Currency, Version: projected.Version, Images: append([]string(nil), projected.Images...), DetailMedia: presentation.Media, LeadChannelID: presentation.LeadChannelID, LeadQRTitle: presentation.LeadQRTitle, LeadQRSubtitle: presentation.LeadQRSubtitle, CompletionBlocksLeadQR: presentation.CompletionBlocksLeadQR, ServicePeriodDurationDays: duration}
+	return checkout, projected.Enabled && projected.Lifecycle == productport.ServicePeriodEnabled, nil
 }
 
 func (service *ServicePeriodService) CreateServicePeriodProduct(ctx context.Context, command productport.CreateServicePeriodProductCommand) (productport.ServicePeriodProduct, error) {
@@ -934,4 +947,54 @@ func nilServicePeriodDependency(value any) bool {
 	default:
 		return false
 	}
+}
+
+type servicePeriodPublicPresentation struct {
+	Media                       []productport.PublicDetailMedia
+	LeadChannelID               int64
+	LeadQRTitle, LeadQRSubtitle string
+	CompletionBlocksLeadQR      bool
+}
+
+func publicServicePeriodPresentation(raw json.RawMessage) (servicePeriodPublicPresentation, error) {
+	canonical, err := CanonicalLegacyAdminProjection(raw)
+	if err != nil || !jsonEquivalent(canonical, raw) {
+		return servicePeriodPublicPresentation{}, ErrUnavailable
+	}
+	var projection struct {
+		Slices                    []map[string]any `json:"slices"`
+		LeadChannelID             *int64           `json:"lead_channel_id"`
+		LeadQRTitle               string           `json:"lead_qr_title"`
+		LeadQRSubtitle            string           `json:"lead_qr_subtitle"`
+		CompletionRedirectEnabled bool             `json:"completion_redirect_enabled"`
+		CompletionTarget          map[string]any   `json:"completion_target"`
+	}
+	if json.Unmarshal(canonical, &projection) != nil {
+		return servicePeriodPublicPresentation{}, ErrUnavailable
+	}
+	value := servicePeriodPublicPresentation{LeadQRTitle: projection.LeadQRTitle, LeadQRSubtitle: projection.LeadQRSubtitle, CompletionBlocksLeadQR: projection.CompletionRedirectEnabled || len(projection.CompletionTarget) > 0}
+	if projection.LeadChannelID != nil {
+		value.LeadChannelID = *projection.LeadChannelID
+	}
+	for _, slice := range projection.Slices {
+		var id int64
+		for _, key := range []string{"image_library_id", "library_image_id", "asset_id", "image_id"} {
+			if number, ok := slice[key].(float64); ok && number >= 1 && number == float64(int64(number)) {
+				id = int64(number)
+				break
+			}
+		}
+		if id < 1 {
+			continue
+		}
+		media := productport.PublicDetailMedia{ImageID: id}
+		if n, ok := slice["width"].(float64); ok && n > 0 && n <= 10000 {
+			media.Width = int32(n)
+		}
+		if n, ok := slice["height"].(float64); ok && n > 0 && n <= 10000 {
+			media.Height = int32(n)
+		}
+		value.Media = append(value.Media, media)
+	}
+	return value, nil
 }

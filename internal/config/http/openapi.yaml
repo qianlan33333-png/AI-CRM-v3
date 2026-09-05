@@ -2959,6 +2959,12 @@ paths:
               properties:
                 code: {type: string, minLength: 1, maxLength: 256}
       responses: {"201": {description: Provider-verified scoped OneID payment session issued; opaque cookie only}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/v1/wechat-pay/checkout-session:
+    get:
+      operationId: getWechatPayCheckoutSession
+      tags: [Transactions]
+      security: [{paymentSession: []}]
+      responses: {"200": {description: Current trusted-payment-session marker for a browser recovery checkpoint, content: {application/json: {schema: {type: object, additionalProperties: false, required: [checkout_session_binding], properties: {checkout_session_binding: {type: string, pattern: "^[A-Za-z0-9_-]{43}$", description: Opaque marker only; it is neither a session token nor an identity claim.}}}}}}, "401": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
   /api/v1/wechat-pay/checkouts:
     post:
       operationId: createWechatPayCheckout
@@ -2972,11 +2978,13 @@ paths:
             schema:
               type: object
               additionalProperties: false
-              required: [product_id, product_kind, beneficiary_selection]
+              required: [product_id, product_kind, beneficiary_selection, checkout_session_binding]
               properties:
                 product_id: {$ref: "#/components/schemas/PositiveID"}
                 product_kind: {type: string, enum: [standard, service_period]}
                 beneficiary_selection: {type: string, enum: [payer_self], description: Confirms that the server-bound trusted payer is also the beneficiary. Customer IDs are never accepted from the browser.}
+                coupon_claim_id: {type: integer, minimum: 0, description: Payment-owned coupon claim reference; zero means no claim.}
+                checkout_session_binding: {type: string, pattern: "^[A-Za-z0-9_-]{43}$", description: Opaque marker issued for the current trusted payment session; it prevents a response-lost checkpoint from creating a new order after session renewal.}
                 mobile: {type: string, pattern: "^\\+861[3-9][0-9]{9}$", description: Encrypted Order contact snapshot only; never an identity claim.}
       responses: {"202": {description: "Order, Payment and effect accepted atomically", content: {application/json: {schema: {type: object, required: [order_id, merchant_order_no, payment_id, status, effect_id], properties: {order_id: {$ref: "#/components/schemas/PositiveID"}, merchant_order_no: {type: string, minLength: 1, maxLength: 200}, payment_id: {$ref: "#/components/schemas/PositiveID"}, status: {type: string}, effect_id: {$ref: "#/components/schemas/ExternalEffectID"}}}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
   /api/v1/wechat-pay/checkouts/{merchant_order_no}:

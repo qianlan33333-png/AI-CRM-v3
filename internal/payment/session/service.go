@@ -132,6 +132,9 @@ func (s *Service) ConsumeWithin(ctx context.Context, token string, now time.Time
 	digest := sha256.Sum256([]byte(token))
 	record, err := s.store.Consume(ctx, digest, now.UTC())
 	if err != nil {
+		if errors.Is(err, ErrExpired) {
+			return paymentport.SessionActor{}, paymentport.ErrSessionRequired
+		}
 		return paymentport.SessionActor{}, err
 	}
 	return actor(record), nil
@@ -144,6 +147,9 @@ func (s *Service) LookupWithin(ctx context.Context, token string, now time.Time)
 	digest := sha256.Sum256([]byte(token))
 	record, err := s.store.Lookup(ctx, digest, now.UTC())
 	if err != nil {
+		if errors.Is(err, ErrExpired) {
+			return paymentport.SessionActor{}, paymentport.ErrSessionRequired
+		}
 		return paymentport.SessionActor{}, err
 	}
 	return actor(record), nil
@@ -159,6 +165,9 @@ func (s *Service) SelectPayerSelfWithin(ctx context.Context, token string, now t
 	digest := sha256.Sum256([]byte(token))
 	record, err := s.store.SelectPayerSelf(ctx, digest, now.UTC())
 	if err != nil {
+		if errors.Is(err, ErrExpired) {
+			return paymentport.SessionActor{}, paymentport.ErrSessionRequired
+		}
 		return paymentport.SessionActor{}, err
 	}
 	return actor(record), nil

@@ -124,6 +124,422 @@ func TestPostgreSQLOrderAtomicReplayCursorAndConstraints(t *testing.T) {
 	}
 }
 
+func TestEntitlementRemarkRejectsCrossProductBeforeMutation(t *testing.T) {
+	native, cleanup := orderIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	wrapper, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wrapper.Close()
+	uow, err := platformpostgres.NewUnitOfWork(wrapper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := NewPostgreSQL(native, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app, err := orderapp.NewEntitlementApplication(uow, repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := time.Date(2026, 9, 5, 0, 0, 0, 0, time.UTC)
+	digest := sha256.Sum256([]byte("cross-product-entitlement"))
+	var customerID int64
+	if err = native.QueryRow(ctx, `INSERT INTO customers DEFAULT VALUES RETURNING id`).Scan(&customerID); err != nil {
+		t.Fatal(err)
+	}
+	var id int64
+	if err = native.QueryRow(ctx, `INSERT INTO order_service_entitlements(source_system,source_key,customer_id,service_product_id,product_name,status,start_at,end_at,remark,source_digest,created_at,updated_at) VALUES('test','cross-product',$1,81,'B商品','active',$2,$3,'原备注',$4,$2,$2) RETURNING id`, customerID, base, base.AddDate(0, 0, 30), digest[:]).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	_, err = app.UpdateEntitlementRemark(ctx, orderport.RemarkCommand{EntitlementID: id, CustomerID: customerID, ServiceProductID: 80, EmployeeID: "admin:1", Remark: "越权修改", ExpectedVersion: 1, IdempotencyKey: "cross-product-remark-key"})
+	if !errors.Is(err, orderport.ErrNotFound) && !errors.Is(err, orderport.ErrConflict) {
+		t.Fatalf("cross-product err=%v", err)
+	}
+	var remark string
+	var version int64
+	var receipts, audits, outbox int
+	if err = native.QueryRow(ctx, `SELECT remark,version,(SELECT count(*) FROM order_entitlement_operation_receipts),(SELECT count(*) FROM order_entitlement_audit_events),(SELECT count(*) FROM order_entitlement_outbox) FROM order_service_entitlements WHERE id=$1`, id).Scan(&remark, &version, &receipts, &audits, &outbox); err != nil {
+		t.Fatal(err)
+	}
+	if remark != "原备注" || version != 1 || receipts != 0 || audits != 0 || outbox != 0 {
+		t.Fatalf("cross-product changed remark=%q version=%d receipts=%d audits=%d outbox=%d", remark, version, receipts, audits, outbox)
+	}
+	updated, err := app.UpdateEntitlementRemark(ctx, orderport.RemarkCommand{EntitlementID: id, CustomerID: 0, ServiceProductID: 81, EmployeeID: "admin:1", Remark: "不公开客户ID的备注", ExpectedVersion: 1, IdempotencyKey: "opaque-member-remark-key"})
+	if err != nil {
+		t.Fatalf("opaque product-scoped remark: %v", err)
+	}
+	if updated.ID != id || updated.CustomerID != customerID || updated.ServiceProductID != 81 || updated.Remark != "不公开客户ID的备注" || updated.Version != 2 {
+		t.Fatalf("opaque product-scoped result=%+v", updated)
+	}
+}
+
+func TestPostgreSQLMemberGridUsesFrozenCeilDaysForFiltersAndPagination(t *testing.T) {
+	native, cleanup := orderIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	wrapper, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wrapper.Close()
+	uow, err := platformpostgres.NewUnitOfWork(wrapper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := NewPostgreSQL(native, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app, err := orderapp.NewEntitlementApplication(uow, repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	snapshot := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+	type seeded struct {
+		key string
+		end time.Time
+		id  int64
+	}
+	items := []seeded{
+		{key: "just-under-one-day", end: snapshot.Add(24*time.Hour - time.Second)},
+		{key: "exactly-one-day", end: snapshot.Add(24 * time.Hour)},
+		{key: "just-over-one-day", end: snapshot.Add(24*time.Hour + time.Second)},
+		{key: "expired", end: snapshot.Add(-time.Second)},
+	}
+	for index := range items {
+		var customerID int64
+		if err = native.QueryRow(ctx, `INSERT INTO customers DEFAULT VALUES RETURNING id`).Scan(&customerID); err != nil {
+			t.Fatal(err)
+		}
+		digest := sha256.Sum256([]byte("member-grid-days-" + items[index].key))
+		if err = native.QueryRow(ctx, `INSERT INTO order_service_entitlements(source_system,source_key,customer_id,service_product_id,product_name,status,start_at,end_at,remark,source_digest,created_at,updated_at) VALUES('test',$1,$2,739,'Member grid','active',$3,$4,'',$5,$3,$3) RETURNING id`, items[index].key, customerID, snapshot.Add(-time.Hour), items[index].end, digest[:]).Scan(&items[index].id); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	base := orderport.ServicePeriodMemberQuery{ServiceProductID: 739, Limit: 50, Sort: "remaining_days_asc", SnapshotAt: snapshot}
+	// Product supplies a frozen render instant even to its ordinary default
+	// list. The repository must not bind it when no SQL predicate consumes it.
+	plain, err := app.ListServicePeriodMembers(ctx, base)
+	if err != nil || len(plain.Items) != 4 || !plain.SnapshotAt.Equal(snapshot) {
+		t.Fatalf("plain member list=%+v err=%v", plain, err)
+	}
+	oneDay := base
+	oneDay.RemainingDays = &orderport.MemberGridNumberFilter{Operator: "equals", Values: []int64{1}}
+	page, err := app.ListServicePeriodMembers(ctx, oneDay)
+	if err != nil || len(page.Items) != 2 || page.Items[0].ID != items[1].id || page.Items[1].ID != items[0].id {
+		t.Fatalf("one-day ceil filter page=%+v err=%v", page, err)
+	}
+	grouped := oneDay
+	grouped.GroupByRemainingDays = true
+	page, err = app.ListServicePeriodMembers(ctx, grouped)
+	if err != nil || len(page.Items) != 2 || page.Items[0].MemberGridGroupCount != 2 || page.Items[1].MemberGridGroupCount != 2 {
+		t.Fatalf("one-day group counts page=%+v err=%v", page, err)
+	}
+	groupedPage := grouped
+	groupedPage.Limit = 1
+	firstGroup, err := app.ListServicePeriodMembers(ctx, groupedPage)
+	if err != nil || len(firstGroup.Items) != 1 || firstGroup.NextCursor == "" || firstGroup.Items[0].MemberGridGroupCount != 2 {
+		t.Fatalf("first grouped cursor page=%+v err=%v", firstGroup, err)
+	}
+	// The cursor's static snapshot is retained, but its count remains the
+	// complete filtered one-day group rather than the one remaining row.
+	groupedPage.Cursor = firstGroup.NextCursor
+	groupedPage.SnapshotAt = snapshot.Add(48 * time.Hour)
+	secondGroup, err := app.ListServicePeriodMembers(ctx, groupedPage)
+	if err != nil || len(secondGroup.Items) != 1 || secondGroup.NextCursor != "" || !secondGroup.SnapshotAt.Equal(snapshot) || secondGroup.Items[0].MemberGridGroupCount != 2 {
+		t.Fatalf("second grouped cursor page=%+v err=%v", secondGroup, err)
+	}
+
+	expired := base
+	expired.RemainingDays = &orderport.MemberGridNumberFilter{Operator: "lte", Values: []int64{0}}
+	page, err = app.ListServicePeriodMembers(ctx, expired)
+	if err != nil || len(page.Items) != 1 || page.Items[0].ID != items[3].id {
+		t.Fatalf("expired clamp filter page=%+v err=%v", page, err)
+	}
+
+	paged := base
+	paged.Limit = 2
+	paged.RemainingDays = &orderport.MemberGridNumberFilter{Operator: "gte", Values: []int64{1}}
+	first, err := app.ListServicePeriodMembers(ctx, paged)
+	if err != nil || len(first.Items) != 2 || first.NextCursor == "" || !first.SnapshotAt.Equal(snapshot) || first.Items[0].ID != items[1].id || first.Items[1].ID != items[0].id {
+		t.Fatalf("first filtered page=%+v err=%v", first, err)
+	}
+	paged.Cursor = first.NextCursor
+	// A subsequent browser request inevitably has a newer wall clock. The
+	// opaque Order cursor, rather than the Product Host, owns the retained
+	// snapshot so the second page uses the same filter/display instant.
+	paged.SnapshotAt = snapshot.Add(48 * time.Hour)
+	second, err := app.ListServicePeriodMembers(ctx, paged)
+	if err != nil || len(second.Items) != 1 || second.NextCursor != "" || !second.SnapshotAt.Equal(snapshot) || second.Items[0].ID != items[2].id {
+		t.Fatalf("second filtered page=%+v err=%v", second, err)
+	}
+}
+
+func TestPostgreSQLMemberGridAppliesMultipleOrderFactsBeforeStablePaging(t *testing.T) {
+	native, cleanup := orderIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	wrapper, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wrapper.Close()
+	uow, err := platformpostgres.NewUnitOfWork(wrapper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := NewPostgreSQL(native, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	members, err := orderapp.NewEntitlementApplication(uow, repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	snapshot := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+	type seeded struct {
+		remark string
+		end    time.Time
+		id     int64
+	}
+	seed := []seeded{
+		{remark: " beta ", end: snapshot.Add(24 * time.Hour)},
+		{remark: "Alpha", end: snapshot.Add(48 * time.Hour)},
+		{remark: "alpha", end: snapshot.Add(24 * time.Hour)},
+	}
+	for index := range seed {
+		var customerID int64
+		if err = native.QueryRow(ctx, `INSERT INTO customers DEFAULT VALUES RETURNING id`).Scan(&customerID); err != nil {
+			t.Fatal(err)
+		}
+		digest := sha256.Sum256([]byte("member-grid-facts-" + strconv.Itoa(index)))
+		if err = native.QueryRow(ctx, `INSERT INTO order_service_entitlements(source_system,source_key,customer_id,service_product_id,product_name,status,start_at,end_at,remark,source_digest,created_at,updated_at) VALUES('legacy-import',$1,$2,740,'Member grid facts','active',$3,$4,$5,$6,$3,$3) RETURNING id`, "member-grid-facts-"+strconv.Itoa(index), customerID, snapshot.Add(-time.Hour), seed[index].end, seed[index].remark, digest[:]).Scan(&seed[index].id); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	base := orderport.ServicePeriodMemberQuery{
+		ServiceProductID: 740,
+		Limit:            1,
+		FilterLogic:      "and",
+		SnapshotAt:       snapshot,
+		GridFilters: []orderport.MemberGridFilter{
+			{Field: "remaining_days", Operator: "gte", Numbers: []float64{0.5}},
+			{Field: "remark", Operator: "contains", Text: "a"},
+			{Field: "renewal_count", Operator: "is_empty"},
+		},
+		GridSorts: []orderport.MemberGridOrder{
+			{Field: "remark", Direction: "asc"},
+			{Field: "remaining_days", Direction: "desc"},
+		},
+	}
+	first, err := members.ListServicePeriodMembers(ctx, base)
+	if err != nil || len(first.Items) != 1 || first.Items[0].ID != seed[1].id || first.NextCursor == "" {
+		t.Fatalf("first multi-sort page=%+v err=%v", first, err)
+	}
+	base.Cursor, base.SnapshotAt = first.NextCursor, snapshot.AddDate(0, 0, 1)
+	second, err := members.ListServicePeriodMembers(ctx, base)
+	if err != nil || len(second.Items) != 1 || second.Items[0].ID != seed[2].id || second.NextCursor == "" || !second.SnapshotAt.Equal(snapshot) {
+		t.Fatalf("second multi-sort page=%+v err=%v", second, err)
+	}
+	base.Cursor = second.NextCursor
+	third, err := members.ListServicePeriodMembers(ctx, base)
+	if err != nil || len(third.Items) != 1 || third.Items[0].ID != seed[0].id || third.NextCursor != "" || !third.SnapshotAt.Equal(snapshot) {
+		t.Fatalf("third multi-sort page=%+v err=%v", third, err)
+	}
+
+	// Two group levels are counted in the complete filtered relation before the
+	// cursor. remaining_days=1 contains beta and alpha; each second-level
+	// remark partition contains one record.
+	grouped := base
+	grouped.Cursor, grouped.SnapshotAt = "", snapshot
+	grouped.GridSorts = nil
+	grouped.GridGroups = []orderport.MemberGridOrder{{Field: "remaining_days", Direction: "asc"}, {Field: "remark", Direction: "asc"}}
+	seen := map[int64][]int64{}
+	for {
+		page, pageErr := members.ListServicePeriodMembers(ctx, grouped)
+		if pageErr != nil {
+			t.Fatal(pageErr)
+		}
+		for _, item := range page.Items {
+			seen[item.ID] = append([]int64(nil), item.MemberGridGroupCounts...)
+		}
+		if page.NextCursor == "" {
+			break
+		}
+		grouped.Cursor = page.NextCursor
+		grouped.SnapshotAt = snapshot.AddDate(0, 0, 2)
+	}
+	if len(seen) != 3 || len(seen[seed[0].id]) != 2 || len(seen[seed[1].id]) != 2 || len(seen[seed[2].id]) != 2 || seen[seed[0].id][0] != 2 || seen[seed[2].id][0] != 2 || seen[seed[1].id][0] != 1 || seen[seed[0].id][1] != 1 || seen[seed[1].id][1] != 1 || seen[seed[2].id][1] != 1 {
+		t.Fatalf("complete two-level group counts=%+v", seen)
+	}
+}
+
+func TestPostgreSQLMemberGridRenewalCountUsesVerifiedOrderSources(t *testing.T) {
+	native, cleanup := orderIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	wrapper, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wrapper.Close()
+	uow, err := platformpostgres.NewUnitOfWork(wrapper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := NewPostgreSQL(native, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	members, err := orderapp.NewEntitlementApplication(uow, repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fulfillment, err := orderapp.NewEntitlementFulfillmentApplication(repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+	grant := func(orderID, customerID, productID int64, name string, at time.Time) {
+		t.Helper()
+		if err = uow.Within(ctx, func(txctx context.Context) error {
+			_, grantErr := fulfillment.GrantPaidServicePeriodWithin(txctx, orderport.ServicePeriodGrantCommand{SourceOrderID: orderID, BeneficiaryCustomerID: customerID, ServiceProductID: productID, ProductName: name, DurationDays: 31, PaidAt: at, ProcessedAt: at})
+			return grantErr
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	list := func(productID int64) orderport.Entitlement {
+		t.Helper()
+		page, listErr := members.ListServicePeriodMembers(ctx, orderport.ServicePeriodMemberQuery{ServiceProductID: productID, Limit: 10, SnapshotAt: base})
+		if listErr != nil || len(page.Items) != 1 {
+			t.Fatalf("product=%d page=%+v err=%v", productID, page, listErr)
+		}
+		return page.Items[0]
+	}
+
+	var nativeCustomer int64
+	if err = native.QueryRow(ctx, `INSERT INTO customers DEFAULT VALUES RETURNING id`).Scan(&nativeCustomer); err != nil {
+		t.Fatal(err)
+	}
+	first := entitlementTestOrder(t, native, nativeCustomer, "renewal-native-first", base)
+	second := entitlementTestOrder(t, native, nativeCustomer, "renewal-native-second", base.Add(time.Minute))
+	third := entitlementTestOrder(t, native, nativeCustomer, "renewal-native-third", base.Add(2*time.Minute))
+	for index, orderID := range []int64{first, second, third} {
+		grant(orderID, nativeCustomer, 751, "原生续费", base.Add(time.Duration(index)*time.Minute))
+	}
+	item := list(751)
+	if !item.RenewalCountAvailable || item.RenewalCount != 2 {
+		t.Fatalf("three effective paid enrollments should have two renewals: %+v", item)
+	}
+	if err = uow.Within(ctx, func(txctx context.Context) error {
+		_, refundErr := fulfillment.ApplyServicePeriodRefundWithin(txctx, orderport.ServicePeriodRefundCommand{SourceOrderID: second, RefundAmountMinor: 1, ProcessedAt: base.Add(3 * time.Minute)})
+		return refundErr
+	}); err != nil {
+		t.Fatal(err)
+	}
+	item = list(751)
+	if !item.RenewalCountAvailable || item.RenewalCount != 1 {
+		t.Fatalf("refunded source must not count as an effective renewal: %+v", item)
+	}
+
+	// A legacy aggregate without a reconciled historical source has no proof
+	// of its first enrollment. A later native grant therefore remains unknown
+	// instead of being misrepresented as zero or one renewal.
+	var unmatchedCustomer int64
+	if err = native.QueryRow(ctx, `INSERT INTO customers DEFAULT VALUES RETURNING id`).Scan(&unmatchedCustomer); err != nil {
+		t.Fatal(err)
+	}
+	legacyDigest := sha256.Sum256([]byte("renewal-unmapped-legacy"))
+	if _, err = native.Exec(ctx, `INSERT INTO order_service_entitlements(source_system,source_key,customer_id,service_product_id,product_name,status,start_at,end_at,remark,source_digest,created_at,updated_at) VALUES('legacy-import','renewal-unmapped-legacy',$1,752,'未映射历史','active',$2,$3,'',$4,$2,$2)`, unmatchedCustomer, base.Add(-24*time.Hour), base.AddDate(0, 0, 31), legacyDigest[:]); err != nil {
+		t.Fatal(err)
+	}
+	grant(entitlementTestOrder(t, native, unmatchedCustomer, "renewal-unmapped-native", base), unmatchedCustomer, 752, "未映射历史", base)
+	item = list(752)
+	if item.RenewalCountAvailable || item.RenewalCount != 0 {
+		t.Fatalf("unmapped legacy source must remain unavailable: %+v", item)
+	}
+
+	// Once history supplies its exact source order, it forms the first
+	// enrollment and a later native grant is a verifiable first renewal.
+	var mappedCustomer int64
+	if err = native.QueryRow(ctx, `INSERT INTO customers DEFAULT VALUES RETURNING id`).Scan(&mappedCustomer); err != nil {
+		t.Fatal(err)
+	}
+	historyOrder := entitlementTestOrder(t, native, mappedCustomer, "renewal-mapped-history", base)
+	entitlementTestOrderItem(t, native, historyOrder, 1, 753, "mapped-753")
+	mappedDigest := sha256.Sum256([]byte("renewal-mapped-legacy"))
+	var mappedEntitlementID int64
+	if err = native.QueryRow(ctx, `INSERT INTO order_service_entitlements(source_system,source_key,customer_id,service_product_id,product_name,last_order_id,status,start_at,end_at,remark,source_digest,created_at,updated_at) VALUES('legacy-import','renewal-mapped-legacy',$1,753,'已映射历史',$2,'active',$3,$4,'',$5,$3,$3) RETURNING id`, mappedCustomer, historyOrder, base.Add(-24*time.Hour), base.AddDate(0, 0, 31), mappedDigest[:]).Scan(&mappedEntitlementID); err != nil {
+		t.Fatal(err)
+	}
+	if err = uow.Within(ctx, func(txctx context.Context) error {
+		return fulfillment.RecordHistoricalServicePeriodSourceWithin(txctx, orderport.HistoricalServicePeriodSourceCommand{SourceOrderID: historyOrder, SourceLineNo: 1, EntitlementID: mappedEntitlementID, ServiceProductID: 753, ServiceProductCode: "mapped-753", DurationDays: 31, StartAt: base.Add(-24 * time.Hour), EndAt: base.AddDate(0, 0, 31), ImportedAt: base})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	grant(entitlementTestOrder(t, native, mappedCustomer, "renewal-mapped-native", base.Add(time.Minute)), mappedCustomer, 753, "已映射历史", base.Add(time.Minute))
+	item = list(753)
+	if !item.RenewalCountAvailable || item.RenewalCount != 1 {
+		t.Fatalf("mapped historical first order plus native grant should have one renewal: %+v", item)
+	}
+}
+
+func TestPostgreSQLOrderCheckoutSnapshotIsAtomicAndDatabaseFrozen(t *testing.T) {
+	native, cleanup := orderIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	wrapper, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uow, err := platformpostgres.NewUnitOfWork(wrapper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := NewPostgreSQL(native, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := orderapp.NewService(uow, repository)
+	command := orderport.PaymentOrderCommand{Provider: domain.ProviderWeChatPay, MerchantOrderNo: "checkout-snapshot-pg-001", PayerCustomerID: 11, BeneficiaryCustomerID: 22, ProductID: 9, ProductCode: "standard-9", ProductName: "标准商品", ProductVersion: 3, ProductType: "standard_product", UnitAmountMinor: 8800, Currency: "CNY", ActorScope: "payment-session:snapshot", IdempotencyKey: "checkout-snapshot-pg-key-0001"}
+	var created domain.Snapshot
+	if err = uow.Within(ctx, func(txctx context.Context) error {
+		var createErr error
+		created, createErr = service.CreatePaymentOrderWithin(txctx, command)
+		return createErr
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var productType, productCode, currency, reservationRef string
+	var duration int32
+	var gross, discount, payable int64
+	var couponApplied bool
+	if err = native.QueryRow(ctx, `SELECT product_type,product_code,service_period_duration_days,gross_amount_minor,discount_amount_minor,payable_amount_minor,currency,coupon_applied,coupon_reservation_ref FROM order_checkout_snapshots WHERE order_id=$1`, created.ID).Scan(&productType, &productCode, &duration, &gross, &discount, &payable, &currency, &couponApplied, &reservationRef); err != nil || productType != "standard_product" || productCode != "standard-9" || duration != 0 || gross != 8800 || discount != 0 || payable != 8800 || currency != "CNY" || couponApplied || reservationRef != "" {
+		t.Fatalf("checkout snapshot type=%q code=%q duration=%d gross=%d discount=%d payable=%d currency=%q applied=%t ref=%q err=%v", productType, productCode, duration, gross, discount, payable, currency, couponApplied, reservationRef, err)
+	}
+	if _, err = native.Exec(ctx, `UPDATE order_checkout_snapshots SET coupon_applied=TRUE WHERE order_id=$1`, created.ID); err == nil {
+		t.Fatal("database accepted coupon state without immutable reservation facts")
+	}
+	if _, err = native.Exec(ctx, `UPDATE order_checkout_snapshots SET service_period_duration_days=31 WHERE order_id=$1`, created.ID); err == nil {
+		t.Fatal("database accepted a service period on standard-product checkout")
+	}
+	if _, err = native.Exec(ctx, `UPDATE order_checkout_snapshots SET product_code='replacement-code' WHERE order_id=$1`, created.ID); err == nil {
+		t.Fatal("database accepted a valid-looking immutable checkout rewrite")
+	}
+	if _, err = native.Exec(ctx, `DELETE FROM order_checkout_snapshots WHERE order_id=$1`, created.ID); err == nil {
+		t.Fatal("database accepted checkout snapshot deletion")
+	}
+}
+
 func TestPostgreSQLServicePeriodFulfillmentKeepsLegacyCoverageAndRevokesOnce(t *testing.T) {
 	native, cleanup := orderIntegrationPool(t)
 	defer cleanup()
@@ -770,7 +1186,7 @@ func orderIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 	if !ok {
 		t.Fatal("locate integration test")
 	}
-	for _, name := range []string{"0002_identity.sql", "0020_order.sql", "0024_order_product_version.sql", "0049_order_history_attribution.sql", "0055_order_service_entitlements.sql", "0070_service_period_entitlement_fulfillment.sql"} {
+	for _, name := range []string{"0002_identity.sql", "0020_order.sql", "0024_order_product_version.sql", "0049_order_history_attribution.sql", "0055_order_service_entitlements.sql", "0070_service_period_entitlement_fulfillment.sql", "0076_order_checkout_snapshots.sql"} {
 		migration, readErr := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "..", "migrations", name))
 		if readErr != nil {
 			t.Fatal(readErr)

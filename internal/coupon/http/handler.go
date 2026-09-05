@@ -30,6 +30,7 @@ type Handler struct {
 	rules    couponport.RuleApplication
 	options  productport.ProductOptionReader
 	claims   couponport.CouponClaimAdminReader
+	public   couponport.PublicCouponApplication
 	security RequestSecurity
 }
 
@@ -52,6 +53,21 @@ func NewHandlerWithClaims(rules couponport.RuleApplication, options productport.
 		return nil, errors.New("coupon claim reader is required")
 	}
 	h.claims = claims
+	return h, nil
+}
+
+// NewHandlerWithClaimsAndPublic preserves the frozen admin GET share
+// interaction. The host authenticates and CSRF-checks that user gesture before
+// the Coupon application atomically creates its first stable public slug.
+func NewHandlerWithClaimsAndPublic(rules couponport.RuleApplication, options productport.ProductOptionReader, claims couponport.CouponClaimAdminReader, public couponport.PublicCouponApplication, security RequestSecurity) (*Handler, error) {
+	h, err := NewHandlerWithClaims(rules, options, claims, security)
+	if err != nil || public == nil {
+		if err != nil {
+			return nil, err
+		}
+		return nil, errors.New("coupon public application is required")
+	}
+	h.public = public
 	return h, nil
 }
 
@@ -106,6 +122,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch parts[1] {
+	case "share":
+		if r.Method != http.MethodGet {
+			method(w, "GET")
+			return
+		}
+		p, ok := h.mutate(w, r)
+		if ok {
+			h.share(w, r, p, couponport.ID(id))
+		}
 	case "claims":
 		if r.Method != http.MethodGet {
 			method(w, "GET")
@@ -127,6 +152,24 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeError(w, 404, "not_found")
 	}
+}
+
+func (h *Handler) share(w http.ResponseWriter, r *http.Request, principal accessdomain.Principal, couponID couponport.ID) {
+	if h.public == nil {
+		writeError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	if len(r.URL.Query()) != 0 {
+		writeError(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	share, err := h.public.EnsurePublicShare(r.Context(), couponID, principal.InternalID)
+	if err != nil {
+		resultError(w, err)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "coupon_id": share.CouponID, "public_slug": share.PublicSlug, "url": share.URL, "available": true, "public_route_ready": true, "real_external_call_executed": false})
 }
 
 func (h *Handler) claimList(w http.ResponseWriter, r *http.Request, couponID couponport.ID) {

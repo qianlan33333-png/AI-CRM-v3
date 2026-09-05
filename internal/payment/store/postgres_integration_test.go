@@ -273,6 +273,25 @@ func TestPostgreSQLPaymentSessionBeneficiaryFactConstraintRejectsMutualExclusion
 	}
 }
 
+func TestPostgreSQLH5OAuthReturnPathAcceptsOnlyPublicCommerceSegments(t *testing.T) {
+	pool, cleanup := paymentIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	now := time.Date(2026, 9, 5, 3, 0, 0, 0, time.UTC)
+	for index, path := range []string{"/pay/course-7", "/s/term-31", "/s/term-31/pay", "/c/cp-a1b2c3"} {
+		digest := sha256.Sum256([]byte("valid-return-path:" + path))
+		if _, err := pool.Exec(ctx, `INSERT INTO payment_h5_oauth_states(state_digest,return_path,expires_at,created_at) VALUES($1,$2,$3,$4)`, digest[:], path, now.Add(time.Hour), now.Add(time.Duration(index)*time.Second)); err != nil {
+			t.Fatalf("valid return path %q: %v", path, err)
+		}
+	}
+	for _, path := range []string{"https://evil.example/pay/course-7", "//evil.example/pay/course-7", "/p/course-7", "/pay/course/7", "/s/term%2F31", "/s/term%5C31", "/s/term%23fragment", "/c/CAPITAL-2026", "/s/term\\31"} {
+		digest := sha256.Sum256([]byte("invalid-return-path:" + path))
+		if _, err := pool.Exec(ctx, `INSERT INTO payment_h5_oauth_states(state_digest,return_path,expires_at,created_at) VALUES($1,$2,$3,$4)`, digest[:], path, now.Add(time.Hour), now); err == nil {
+			t.Fatalf("invalid return path accepted: %q", path)
+		}
+	}
+}
+
 func paymentIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 	t.Helper()
 	url, err := platformconfig.DatabaseURL()

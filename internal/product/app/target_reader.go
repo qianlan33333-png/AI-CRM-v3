@@ -65,7 +65,7 @@ func (reader *TargetReader) ReadCheckoutProductWithin(ctx context.Context, kind 
 		if json.Unmarshal(item.LegacyAdminProjection, &projection) != nil {
 			return productport.CheckoutProduct{}, ErrUnavailable
 		}
-		return productport.CheckoutProduct{ID: item.ID, ProductType: kind, Code: item.ProductCode, Name: item.Name, PriceMinor: item.PriceMinor, Currency: item.Currency, Version: item.Version, RequireMobile: projection.RequireMobile}, nil
+		return productport.CheckoutProduct{ID: item.ID, ProductType: kind, Code: item.ProductCode, Name: item.Name, PriceMinor: item.PriceMinor, Currency: item.Currency, Version: item.Version, RequireMobile: projection.RequireMobile, Images: append([]string(nil), item.Images...)}, nil
 	case productport.ProductOptionServicePeriod:
 		item, err := reader.period.store.GetServicePeriodProductForUpdate(ctx, id)
 		if err != nil {
@@ -79,7 +79,7 @@ func (reader *TargetReader) ReadCheckoutProductWithin(ctx context.Context, kind 
 		if err != nil || !projected.Enabled || projected.Lifecycle != productport.ServicePeriodEnabled {
 			return productport.CheckoutProduct{}, ErrNotFound
 		}
-		return productport.CheckoutProduct{ID: projected.ServiceProductID, ProductType: kind, Code: projected.ProductCode, Name: projected.Name, PriceMinor: projected.PriceMinor, Currency: projected.Currency, Version: projected.Version, ServicePeriodDurationDays: duration}, nil
+		return productport.CheckoutProduct{ID: projected.ServiceProductID, ProductType: kind, Code: projected.ProductCode, Name: projected.Name, PriceMinor: projected.PriceMinor, Currency: projected.Currency, Version: projected.Version, Images: append([]string(nil), projected.Images...), ServicePeriodDurationDays: duration}, nil
 	default:
 		return productport.CheckoutProduct{}, ErrInvalidProduct
 	}

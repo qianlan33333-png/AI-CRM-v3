@@ -18,7 +18,8 @@ import (
 type ModuleRegistration struct{}
 
 type HTTPBindings struct {
-	Products http.Handler
+	Products       http.Handler
+	ProductHandler *producthttp.Handler
 }
 
 func NewModuleRegistration() *ModuleRegistration { return &ModuleRegistration{} }
@@ -31,7 +32,7 @@ func (m *ModuleRegistration) Bind(catalog producthttp.CatalogApplication, lifecy
 	if err != nil {
 		return HTTPBindings{}, err
 	}
-	return HTTPBindings{Products: handler}, nil
+	return HTTPBindings{Products: handler, ProductHandler: handler}, nil
 }
 
 func (m *ModuleRegistration) Readiness(ctx context.Context, pool *pgxpool.Pool) error {
@@ -39,7 +40,7 @@ func (m *ModuleRegistration) Readiness(ctx context.Context, pool *pgxpool.Pool) 
 		return errors.New("product module dependencies are required")
 	}
 	var ready bool
-	err := pool.QueryRow(ctx, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['products','product_operation_receipts','product_external_push_configurations','product_external_push_tests','product_imported_service_period_definitions']) AS required(name) WHERE to_regclass(current_schema() || '.' || required.name) IS NULL)`).Scan(&ready)
+	err := pool.QueryRow(ctx, `SELECT NOT EXISTS (SELECT 1 FROM unnest(ARRAY['products','product_operation_receipts','product_external_push_configurations','product_external_push_tests','product_imported_service_period_definitions','product_service_period_member_views','product_service_period_member_collaborators','product_service_period_member_shares']) AS required(name) WHERE to_regclass(current_schema() || '.' || required.name) IS NULL)`).Scan(&ready)
 	if err != nil {
 		return err
 	}

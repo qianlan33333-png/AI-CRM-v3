@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -101,6 +102,53 @@ func TestPostgreSQLCouponRulesAtomicReceiptAuditAndOutbox(t *testing.T) {
 	}
 	// Outbox delivery bookkeeping deliberately remains mutable by its future
 	// owner; only the audit ledger is database-append-only.
+}
+
+func TestPostgreSQLCouponPublicSlugIsStableAuditedAndNeverNumeric(t *testing.T) {
+	native, cleanup := couponIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	wrapped, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uow, err := platformpostgres.NewUnitOfWork(wrapped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := NewPostgreSQL(native, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 5, 9, 0, 0, 0, time.UTC)
+	rule := checkoutPublishedRule(t, ctx, uow, repository, now, 2, "public-slug")
+	second := checkoutPublishedRule(t, ctx, uow, repository, now, 2, "public-slug-second")
+	public, err := couponapp.NewPublicCouponService(uow, repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := public.EnsurePublicShare(ctx, rule.ID, 7)
+	if err != nil || first.CouponID != rule.ID || !strings.HasPrefix(first.PublicSlug, "cp-") || first.URL != "/c/"+first.PublicSlug {
+		t.Fatalf("first share=%+v err=%v", first, err)
+	}
+	replayed, err := public.EnsurePublicShare(ctx, rule.ID, 7)
+	if err != nil || replayed != first {
+		t.Fatalf("share replay=%+v err=%v", replayed, err)
+	}
+	lookedUp, err := public.GetPublicCoupon(ctx, first.PublicSlug)
+	if err != nil || lookedUp.ID != rule.ID || lookedUp.PublicSlug != first.PublicSlug || len(lookedUp.TargetRefs) != 1 || lookedUp.TargetRefs[0] != "standard_product:9" {
+		t.Fatalf("public lookup=%+v err=%v", lookedUp, err)
+	}
+	if _, err = native.Exec(ctx, `UPDATE coupon_rules SET public_slug=$2 WHERE id=$1`, second.ID, first.PublicSlug); err == nil {
+		t.Fatal("database accepted duplicate public slug")
+	}
+	if _, err = native.Exec(ctx, `UPDATE coupon_rules SET public_slug='cp-z9y8x7' WHERE id=$1`, rule.ID); err == nil {
+		t.Fatal("database accepted public slug mutation")
+	}
+	var auditCount, outboxCount int
+	if err = native.QueryRow(ctx, `SELECT (SELECT count(*) FROM coupon_audit_events WHERE event_type='coupon.public_shared'),(SELECT count(*) FROM coupon_outbox WHERE event_type='coupon.public_shared')`).Scan(&auditCount, &outboxCount); err != nil || auditCount != 1 || outboxCount != 1 {
+		t.Fatalf("share audit=%d outbox=%d err=%v", auditCount, outboxCount, err)
+	}
 }
 
 func TestPostgreSQLCouponCheckoutConcurrentClaimReservationAndSettlement(t *testing.T) {
@@ -461,7 +509,7 @@ func couponIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 	if !ok {
 		t.Fatal("locate test")
 	}
-	for _, name := range []string{"0002_identity.sql", "0011_coupon_rules.sql", "0056_coupon_customer_claims.sql", "0069_coupon_claim_redemption_lifecycle.sql"} {
+	for _, name := range []string{"0002_identity.sql", "0011_coupon_rules.sql", "0056_coupon_customer_claims.sql", "0069_coupon_claim_redemption_lifecycle.sql", "0077_coupon_public_slug.sql"} {
 		migration, readErr := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "..", "migrations", name))
 		if readErr != nil {
 			t.Fatal(readErr)

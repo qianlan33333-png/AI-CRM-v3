@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"math"
 	"strings"
 	"time"
 
@@ -14,6 +15,8 @@ import (
 
 type EntitlementStore interface {
 	ListCustomerEntitlements(context.Context, int64, int32) (orderport.EntitlementPage, error)
+	ListServicePeriodMembers(context.Context, orderport.ServicePeriodMemberQuery) (orderport.ServicePeriodMemberPage, error)
+	GetCustomerServicePeriodEntitlement(context.Context, int64, int64) (orderport.Entitlement, bool, error)
 	FindEntitlementReceipt(context.Context, [32]byte) (orderport.Entitlement, [32]byte, string, bool, error)
 	UpdateEntitlementRemark(context.Context, orderport.RemarkCommand, [32]byte, [32]byte, time.Time) (orderport.Entitlement, error)
 	RecordEntitlementConflict(context.Context, orderport.RemarkCommand, [32]byte, [32]byte, orderport.Entitlement, time.Time) error
@@ -55,12 +58,108 @@ func (s *EntitlementApplication) ListCustomerEntitlements(ctx context.Context, c
 	return page, err
 }
 
+func (s *EntitlementApplication) ListServicePeriodMembers(ctx context.Context, query orderport.ServicePeriodMemberQuery) (orderport.ServicePeriodMemberPage, error) {
+	if s == nil || query.ServiceProductID < 1 || query.Limit < 1 || query.Limit > 200 || (query.State != "" && query.State != "all" && query.State != "active" && query.State != "expired" && query.State != "removed") || (query.Source != "" && query.Source != "paid_order" && query.Source != "manual") || (query.Sort != "" && query.Sort != "updated_at_desc" && query.Sort != "starts_at_desc" && query.Sort != "remaining_days_desc" && query.Sort != "remaining_days_asc") || (query.FilterLogic != "" && query.FilterLogic != "and" && query.FilterLogic != "or") || !validMemberGridFilters(query) || len(query.Cursor) > 4096 {
+		return orderport.ServicePeriodMemberPage{}, orderport.ErrConflict
+	}
+	var page orderport.ServicePeriodMemberPage
+	err := s.uow.Within(ctx, func(txctx context.Context) error {
+		var readErr error
+		page, readErr = s.store.ListServicePeriodMembers(txctx, query)
+		return readErr
+	})
+	return page, err
+}
+
+func validMemberGridFilters(query orderport.ServicePeriodMemberQuery) bool {
+	if len(query.GridFilters) > 20 || len(query.GridSorts) > 8 || len(query.GridGroups) > 2 {
+		return false
+	}
+	sortFields, groupFields := map[string]bool{}, map[string]bool{}
+	for _, item := range query.GridSorts {
+		if !validMemberGridOrder(item) || sortFields[item.Field] {
+			return false
+		}
+		sortFields[item.Field] = true
+	}
+	for _, item := range query.GridGroups {
+		if !validMemberGridOrder(item) || groupFields[item.Field] || sortFields[item.Field] {
+			return false
+		}
+		groupFields[item.Field] = true
+	}
+	for _, filter := range query.GridFilters {
+		if !validMemberGridFilter(filter) {
+			return false
+		}
+	}
+	if query.RemainingDays != nil {
+		f := query.RemainingDays
+		if (f.Operator != "equals" && f.Operator != "not_equals" && f.Operator != "gt" && f.Operator != "gte" && f.Operator != "lt" && f.Operator != "lte" && f.Operator != "between") || len(f.Values) == 0 || len(f.Values) > 2 || (f.Operator == "between" && len(f.Values) != 2) || (f.Operator != "between" && len(f.Values) != 1) {
+			return false
+		}
+	}
+	if query.Remark != nil {
+		f := query.Remark
+		if (f.Operator != "contains" && f.Operator != "not_contains" && f.Operator != "equals" && f.Operator != "not_equals" && f.Operator != "is_empty" && f.Operator != "is_not_empty") || len(f.Value) > 200 {
+			return false
+		}
+	}
+	return true
+}
+
+func validMemberGridOrder(item orderport.MemberGridOrder) bool {
+	return (item.Field == "remaining_days" || item.Field == "renewal_count" || item.Field == "remark") && (item.Direction == "asc" || item.Direction == "desc")
+}
+
+func validMemberGridFilter(filter orderport.MemberGridFilter) bool {
+	switch filter.Field {
+	case "remaining_days", "renewal_count":
+		if (filter.Operator != "equals" && filter.Operator != "not_equals" && filter.Operator != "gt" && filter.Operator != "gte" && filter.Operator != "lt" && filter.Operator != "lte" && filter.Operator != "between" && filter.Operator != "is_empty" && filter.Operator != "is_not_empty") || len(filter.Numbers) > 2 {
+			return false
+		}
+		if filter.Operator == "is_empty" || filter.Operator == "is_not_empty" {
+			return len(filter.Numbers) == 0
+		}
+		if !((filter.Operator == "between" && len(filter.Numbers) == 2) || (filter.Operator != "between" && len(filter.Numbers) == 1)) {
+			return false
+		}
+		for _, value := range filter.Numbers {
+			if math.IsNaN(value) || math.IsInf(value, 0) {
+				return false
+			}
+		}
+		return true
+	case "remark":
+		if (filter.Operator != "contains" && filter.Operator != "not_contains" && filter.Operator != "equals" && filter.Operator != "not_equals" && filter.Operator != "is_empty" && filter.Operator != "is_not_empty") || len(filter.Text) > 200 {
+			return false
+		}
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *EntitlementApplication) GetCustomerServicePeriodEntitlement(ctx context.Context, customerID, serviceProductID int64) (orderport.Entitlement, bool, error) {
+	if s == nil || customerID < 1 || serviceProductID < 1 {
+		return orderport.Entitlement{}, false, orderport.ErrConflict
+	}
+	var item orderport.Entitlement
+	var found bool
+	err := s.uow.Within(ctx, func(txctx context.Context) error {
+		var readErr error
+		item, found, readErr = s.store.GetCustomerServicePeriodEntitlement(txctx, customerID, serviceProductID)
+		return readErr
+	})
+	return item, found, err
+}
+
 func (s *EntitlementApplication) UpdateEntitlementRemark(ctx context.Context, command orderport.RemarkCommand) (orderport.Entitlement, error) {
 	command.Remark = strings.TrimSpace(command.Remark)
-	if command.EntitlementID < 1 || command.CustomerID < 1 || command.EmployeeID == "" || len(command.EmployeeID) > 1024 || len(command.Remark) > 500 || command.ExpectedVersion < 1 || len(command.IdempotencyKey) < 8 || len(command.IdempotencyKey) > 200 {
+	if command.EntitlementID < 1 || command.CustomerID < 0 || command.ServiceProductID < 1 || command.EmployeeID == "" || len(command.EmployeeID) > 1024 || len(command.Remark) > 500 || command.ExpectedVersion < 1 || len(command.IdempotencyKey) < 8 || len(command.IdempotencyKey) > 200 {
 		return orderport.Entitlement{}, orderport.ErrConflict
 	}
-	payload, _ := json.Marshal([]any{command.EntitlementID, command.CustomerID, command.EmployeeID, command.Remark, command.ExpectedVersion})
+	payload, _ := json.Marshal([]any{command.EntitlementID, command.CustomerID, command.ServiceProductID, command.EmployeeID, command.Remark, command.ExpectedVersion})
 	keyDigest, payloadDigest := sha256.Sum256([]byte(command.IdempotencyKey)), sha256.Sum256(payload)
 	var result orderport.Entitlement
 	conflicted := false
@@ -79,12 +178,18 @@ func (s *EntitlementApplication) UpdateEntitlementRemark(ctx context.Context, co
 		}
 		result, err = s.store.UpdateEntitlementRemark(txctx, command, keyDigest, payloadDigest, s.now().UTC())
 		if errors.Is(err, orderport.ErrConflict) {
+			// The frozen grid sends an opaque member reference and relies on the
+			// required Product scope. Without a customer ID we must not perform
+			// a broad customer lookup merely to manufacture a conflict snapshot.
+			if command.CustomerID == 0 {
+				return orderport.ErrConflict
+			}
 			page, readErr := s.store.ListCustomerEntitlements(txctx, command.CustomerID, 100)
 			if readErr != nil {
 				return readErr
 			}
 			for _, item := range page.Items {
-				if item.ID == command.EntitlementID {
+				if item.ID == command.EntitlementID && (command.ServiceProductID == 0 || item.ServiceProductID == command.ServiceProductID) {
 					result = item
 					break
 				}
