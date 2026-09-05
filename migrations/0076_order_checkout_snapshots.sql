@@ -47,3 +47,19 @@ CREATE TABLE order_checkout_snapshots (
 
 CREATE INDEX order_checkout_snapshots_product_idx
     ON order_checkout_snapshots(product_type, product_id, order_id);
+
+-- A checkout snapshot is historical evidence, not an editable projection.
+-- Reject even a syntactically valid rewrite so later catalog/coupon changes
+-- cannot alter the amount, period, or reservation recorded for this order.
+CREATE FUNCTION order_checkout_snapshots_reject_mutation()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    RAISE EXCEPTION 'order checkout snapshots are immutable';
+END;
+$$;
+
+CREATE TRIGGER order_checkout_snapshots_reject_mutation
+BEFORE UPDATE OR DELETE ON order_checkout_snapshots
+FOR EACH ROW EXECUTE FUNCTION order_checkout_snapshots_reject_mutation();

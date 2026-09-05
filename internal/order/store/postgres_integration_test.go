@@ -163,6 +163,12 @@ func TestPostgreSQLOrderCheckoutSnapshotIsAtomicAndDatabaseFrozen(t *testing.T) 
 	if _, err = native.Exec(ctx, `UPDATE order_checkout_snapshots SET service_period_duration_days=31 WHERE order_id=$1`, created.ID); err == nil {
 		t.Fatal("database accepted a service period on standard-product checkout")
 	}
+	if _, err = native.Exec(ctx, `UPDATE order_checkout_snapshots SET product_code='replacement-code' WHERE order_id=$1`, created.ID); err == nil {
+		t.Fatal("database accepted a valid-looking immutable checkout rewrite")
+	}
+	if _, err = native.Exec(ctx, `DELETE FROM order_checkout_snapshots WHERE order_id=$1`, created.ID); err == nil {
+		t.Fatal("database accepted checkout snapshot deletion")
+	}
 }
 
 func TestPostgreSQLServicePeriodFulfillmentKeepsLegacyCoverageAndRevokesOnce(t *testing.T) {
