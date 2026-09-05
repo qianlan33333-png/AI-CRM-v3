@@ -148,9 +148,15 @@ func TestImportDryRunApplyReplayAndReconcilePostgreSQL(t *testing.T) {
 	if report.ProviderEffectsCreated != 0 || report.RiverJobsCreated != 0 {
 		t.Fatalf("side effects=%+v", report)
 	}
-	replay, err := Import(ctx, pool, snapshot, dependencies, true)
+	// Re-applying the same frozen snapshot is the operator's recovery path.
+	// It must only load the prior source receipts: no history row may be
+	// rewritten and it must not create River work or a Provider effect.
+	replay, err := Import(ctx, pool, snapshot, dependencies, false)
 	if err != nil || replay.Tables["audience_members"].Mapped != 1 {
 		t.Fatalf("replay=%+v err=%v", replay, err)
+	}
+	if replay.ProviderEffectsCreated != 0 || replay.RiverJobsCreated != 0 {
+		t.Fatalf("replay side effects=%+v", replay)
 	}
 	var lifecycle string
 	var member int64
