@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -239,6 +240,36 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 	if policyConfigurationErr != nil || !policyConfiguration.Ready {
 		diagnostic, hasDiagnostic := segmentapp.PersistenceFailure(policyConfigurationErr)
 		t.Fatalf("stored policy execution configuration=%+v err=%v diagnostic=%+v has_diagnostic=%t", policyConfiguration, policyConfigurationErr, diagnostic, hasDiagnostic)
+	}
+	// Exercise the exact policy transition write set in a transaction which is
+	// deliberately rolled back. This keeps PostgreSQL failures attributable to
+	// a Store operation rather than flattening them into RuntimeUnavailable.
+	probeRollback := errors.New("rollback policy transition probe")
+	probeErr := uow.Within(ctx, func(tx context.Context) error {
+		receipt, owned, e := automationRepo.ReserveRuntime(tx, automationapp.RuntimeReservation{Operation: "transition_policy_probe", ActorScope: fmt.Sprintf("admin:%d", staffID), KeyDigest: sha256.Sum256([]byte("audience-runtime-activate-probe")), PayloadDigest: sha256.Sum256([]byte("audience-runtime-activate-probe-payload")), CreatedAt: now})
+		if e != nil || !owned {
+			return fmt.Errorf("reserve: owned=%t err=%w", owned, e)
+		}
+		stored, e := automationRepo.LockPolicy(tx, policy.ID)
+		if e != nil {
+			return fmt.Errorf("lock policy: %w", e)
+		}
+		if _, e = automationRepo.CurrentPolicyVersion(tx, stored.ID); e != nil {
+			return fmt.Errorf("current policy version: %w", e)
+		}
+		if _, e = automationRepo.SetPolicyLifecycle(tx, stored.ID, stored.Version, staffID, automationdomain.PolicyActive, now); e != nil {
+			return fmt.Errorf("set lifecycle: %w", e)
+		}
+		if e = automationRepo.AppendRuntimeFact(tx, automationapp.RuntimeFact{Kind: "policy", ID: stored.ID, Operation: "transition", EventType: "automation.policy.transitioned.v1", Actor: staffID, Payload: json.RawMessage(`{"resource_id":1}`), Key: "transition:probe", At: now}); e != nil {
+			return fmt.Errorf("append runtime fact: %w", e)
+		}
+		if e = automationRepo.CompleteRuntime(tx, receipt.ID, json.RawMessage(`{"ok":true}`), now); e != nil {
+			return fmt.Errorf("complete receipt: %w", e)
+		}
+		return probeRollback
+	})
+	if !errors.Is(probeErr, probeRollback) {
+		t.Fatalf("policy transition persistence probe: %v", probeErr)
 	}
 	if _, err = runtimeService.TransitionPolicy(ctx, automationapp.PolicyLifecycleCommand{PolicyID: policy.ID, ExpectedVersion: policy.Version, Actor: staffID, Target: automationdomain.PolicyActive, IdempotencyKey: "audience-runtime-activate-0001"}); err != nil {
 		t.Fatal(err)
