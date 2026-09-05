@@ -173,7 +173,10 @@ const management = await openManagement();
 const managementDocument = management.dom.window.document;
 await waitFor("normal management action", () => managementAction(managementDocument, "冻结后台实际标题", "启用") !== null);
 click(managementAction(managementDocument, "冻结后台实际标题", "启用"));
-await waitFor("normal list enable conflict", () => management.calls.some((call) => call.path === `/api/admin/questionnaires/${normalID}/enable` && call.status === 409));
+await waitFor("normal list enable conflict", () => management.calls.some((call) => call.path === `/api/admin/questionnaires/${normalID}/enable` && call.status === 409)).catch((error) => {
+  const row = [...managementDocument.querySelectorAll("tr")].find((item) => item.textContent?.includes("冻结后台实际标题"));
+  throw new Error(`${error.message}; row=${row?.textContent || "missing"}; calls=${JSON.stringify(management.calls)}`);
+});
 await waitFor("normal draft publish", () => management.calls.some((call) => call.path === `/api/admin/questionnaires/${normalID}/public-publish` && call.status === 200));
 const normalPublish = management.calls.find((call) => call.path === `/api/admin/questionnaires/${normalID}/public-publish` && call.status === 200);
 if (!normalPublish || !Number.isSafeInteger(Number(JSON.parse(normalPublish.body || "{}").expected_questionnaire_version)) || Number(JSON.parse(normalPublish.body || "{}").expected_questionnaire_version) < 1) {
