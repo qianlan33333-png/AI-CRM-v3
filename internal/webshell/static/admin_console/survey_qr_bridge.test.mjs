@@ -72,3 +72,4 @@ if (!conflictForm.querySelector('button[type="submit"]').textContent.includes('é
 conflict.window.close();
 
 console.log('survey-operations-preserved-shell-journey: PASS');
+console.log('survey-qr-bridge-browser: PASS');
