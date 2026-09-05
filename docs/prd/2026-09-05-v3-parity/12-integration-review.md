@@ -54,7 +54,7 @@ Provider HTTP200 中 errcode=-1 为系统繁忙，按官方错误说明建议稍
 
 全部开发与联合验收完成后冻结唯一发布候选 HEAD，补齐制品摘要、迁移顺序、配置变化、历史导入 dry-run、风险与回滚步骤。取得用户针对该候选的最终上线确认后，才允许一次合并 main 并执行一次生产部署。
 
-- 0085分配Segment：PRD05§16旧增量/日刷新差异与种类持久事实；复用现有RefreshRun/snapshot/UoW/River。0084仍HXC独占，0086分配WeCom主负责人恢复（PRD05§17），0087分配Automation人工群发与既有AI待审计划关联（PRD05§18），0088分配Order原联盟字段及历史恢复（PRD03§20），0089分配Outbound既有自动意图不可变内容与素材快照（PRD05§20），0090分配Survey OAuth状态redirect约束前向修正（PRD02），下一可用0091。
+- 0085分配Segment：PRD05§16旧增量/日刷新差异与种类持久事实；复用现有RefreshRun/snapshot/UoW/River。0084仍HXC独占，0086分配WeCom主负责人恢复（PRD05§17），0087分配Automation人工群发与既有AI待审计划关联（PRD05§18），0088分配Order原联盟字段及历史恢复（PRD03§20），0089分配Outbound既有自动意图不可变内容与素材快照（PRD05§20），0090分配Survey OAuth状态redirect约束前向修正（PRD02），0091分配Survey原测评业务键的前向CHECK兼容，下一可用0092。
 
 ## 最后一项共同运行验证的执行合同
 

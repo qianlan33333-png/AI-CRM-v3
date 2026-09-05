@@ -95,4 +95,6 @@ V3 本轮初次外推 PR 的该路由仍固定调用 `RecordDisabledOperation`�
 
 按旧能力优先，仅Question.AssessmentDimensionKey、Option.AssessmentTypeKey、AssessmentDimension.Key、AssessmentType.Key改用Survey专用业务键validator：有效UTF-8、非空且无首尾空白、最多128字符、无控制字符，原值原样持久化。维度/类型唯一性、priority成员和题目选项引用校验保持；通用validOpaque、标签、sidebar字段、template/asset及任何外部身份/完成参数不放宽。不添加中文到英文/摘要的映射机制。
 
-验证旧中文、内部空格、斜线键保存与重读不变，重复/错配引用继续拒绝；实际冻结管理页保存发布、修改后再发布及真实PG结果维度/类型关联回读。Owner仍Survey本地UoW，无新迁移/队列/外部效果。
+验证旧中文、内部空格、斜线键保存与重读不变，重复/错配引用继续拒绝；实际冻结管理页保存发布、修改后再发布及真实PG结果维度/类型关联回读。Owner仍Survey本地UoW，无新队列或外部效果。
+
+真实PG随后证实0018的两个dimension/type CHECK仍只允许ASCII。总控分配0091_survey_assessment_business_keys.sql，仅以前向迁移替换这两条Survey约束，保留已有0018不变。数据库与领域允许原中文/内部空格/斜线键，保留非空、128字符上限和控制字符/首尾空白边界；禁止用永久NOT VALID绕过历史校验。Readiness必须识别旧约束不满足交付，新迁移进入现有安装清单。真实PG覆盖旧库前向迁移、原键保存重读和非法键拒绝；不新增映射。
