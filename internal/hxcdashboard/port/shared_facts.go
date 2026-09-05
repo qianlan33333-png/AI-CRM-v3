@@ -3,6 +3,7 @@ package port
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
@@ -11,6 +12,7 @@ import (
 const MaxSharedFactsCustomerIDs = 500
 
 var ErrSharedFactsBatchTooLarge = errors.New("too many customer IDs for HXC shared facts")
+var ErrSharedFactsVersionUnavailable = errors.New("HXC shared facts version is unavailable")
 
 // SharedFactsAvailability prevents pre-0084 generations and identity conflicts
 // from being presented as known false or zero values.
@@ -73,7 +75,7 @@ func (facts SharedFacts) ExpiredAt(reference time.Time) bool {
 	if facts.Availability != SharedFactsAvailable {
 		return false
 	}
-	if facts.MembershipStatus == "expired" {
+	if strings.EqualFold(strings.TrimSpace(facts.MembershipStatus), "expired") {
 		return true
 	}
 	return facts.MembershipRecordFound && facts.ExpiresAt != nil && !facts.ExpiresAt.After(reference)
