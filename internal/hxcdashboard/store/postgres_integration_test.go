@@ -159,6 +159,9 @@ func TestSharedFactsPublishedGenerationAndLegacyAvailability(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 	store := NewPostgreSQL(native)
+	if _, err := store.SharedFactsAtVersion(ctx, 99999, []domainCustomerID{77}); !errors.Is(err, hxcport.ErrSharedFactsVersionUnavailable) {
+		t.Fatalf("unknown projection must return the stable Port error, got %v", err)
+	}
 	if _, err := native.Exec(ctx, `INSERT INTO customers(id) VALUES(77),(78)`); err != nil {
 		t.Fatal(err)
 	}
