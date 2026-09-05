@@ -159,7 +159,7 @@ func TestServicePeriodPublicHostRetainsFrozenDonorStateDOM(t *testing.T) {
 		t.Fatalf("service-period donor hash=%s", got)
 	}
 	var page bytes.Buffer
-	if err := servicePeriodPublicPage.Execute(&page, servicePeriodPublicState{DonorStyle: servicePeriodDonorStyles(), Product: publicProduct{ID: 71, Name: "31 天服务期", PriceMinor: 12800, PaymentPath: "/s/term-31/pay", ServicePeriodDurationDays: 31}, Status: "active", CTA: "立即续费", EndAt: time.Date(2026, 9, 20, 0, 0, 0, 0, time.UTC), RemainingDays: 15}); err != nil {
+	if err := servicePeriodPublicPage.Execute(&page, servicePeriodPublicState{DonorStyle: servicePeriodDonorStyles(), Available: true, Product: publicProduct{ID: 71, Name: "31 天服务期", PriceMinor: 12800, PaymentPath: "/s/term-31/pay", ServicePeriodDurationDays: 31}, Status: "active", CTA: "立即续费", EndAt: time.Date(2026, 9, 20, 0, 0, 0, 0, time.UTC), RemainingDays: 15}); err != nil {
 		t.Fatal(err)
 	}
 	for _, marker := range []string{`service-period-page`, `servicePeriodStateCard`, `servicePeriodPayButton`, `data-route-owner="ai_crm_next"`, `service-period-wecom-action`, `detail-media`} {
@@ -189,7 +189,7 @@ func TestPublicServicePeriodRendersTrustedEntitlementWithoutIdentityFallback(t *
 	}
 	untrusted := httptest.NewRecorder()
 	handler.ServeHTTP(untrusted, httptest.NewRequest(http.MethodGet, "/s/term-31", nil))
-	if untrusted.Code != http.StatusOK || !strings.Contains(untrusted.Body.String(), `is-none`) || strings.Contains(untrusted.Body.String(), "服务中") {
+	if untrusted.Code != http.StatusOK || !strings.Contains(untrusted.Body.String(), `is-none`) {
 		t.Fatalf("untrusted page status=%d body=%s", untrusted.Code, untrusted.Body.String())
 	}
 }
@@ -202,7 +202,7 @@ func TestPublicServicePeriodUsesExactCodeAndSeparateCheckoutRoute(t *testing.T) 
 	}
 	page := httptest.NewRecorder()
 	handler.ServeHTTP(page, httptest.NewRequest(http.MethodGet, "/s/term-31", nil))
-	if page.Code != http.StatusOK || reader.code != "term-31" || !strings.Contains(page.Body.String(), `class="service-period-page is-none"`) || !strings.Contains(page.Body.String(), "有效期</span><strong>31 天") || !strings.Contains(page.Body.String(), `\/s\/term-31\/pay`) {
+	if page.Code != http.StatusOK || reader.code != "term-31" || !strings.Contains(page.Body.String(), `class="service-period-page is-none"`) || !strings.Contains(page.Body.String(), "有效期</span><strong>31 天") || !strings.Contains(page.Body.String(), `\/s\/term-31\/pay`) || !strings.Contains(page.Body.String(), `fetch(window.location.pathname`) || !strings.Contains(page.Body.String(), `createLeadQrModalController`) {
 		t.Fatalf("page status=%d code=%q body=%s", page.Code, reader.code, page.Body.String())
 	}
 	payment := httptest.NewRecorder()

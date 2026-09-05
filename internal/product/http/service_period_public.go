@@ -72,7 +72,7 @@ func (h *ServicePeriodPublicHandler) ServeHTTP(w http.ResponseWriter, r *http.Re
 		}
 		return
 	}
-	state := servicePeriodPublicState{DonorStyle: servicePeriodDonorStyles(), Product: public, Status: "none", CTA: "立即报名"}
+	state := servicePeriodPublicState{DonorStyle: servicePeriodDonorStyles(), Available: true, Product: public, Status: "none", CTA: "立即报名"}
 	if entitlement, found := h.trustedEntitlement(r.Context(), r, product.ID); found {
 		state.Status, state.EndAt = entitlement.Status, entitlement.EndAt.UTC()
 		if state.Status == "active" && !state.EndAt.After(h.now().UTC()) {
@@ -88,6 +88,7 @@ func (h *ServicePeriodPublicHandler) ServeHTTP(w http.ResponseWriter, r *http.Re
 			state.Status, state.CTA = "none", "立即报名"
 		}
 	}
+	state.DonorScript = servicePeriodDonorScript(state)
 	_ = servicePeriodPublicPage.Execute(w, state)
 }
 
