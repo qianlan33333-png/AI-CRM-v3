@@ -65,3 +65,13 @@ d6 `cmd/aicrm/group_ops_runtime_integration_test.go:TestGroupOpsPostgreSQLJourne
 - 完成配置装配、原UI、PG真实River即时/延时/重启顺序与回执读取旅程后再申请板块审核。旧版历史配置/节点/只读执行导入仍须逐条对账。
 
 2026-09-05复核[企微官方创建企业群发协议92698](https://developer.work.weixin.qq.com/document/path/92698)：群目标由chat_id_list指定，需企微终端4.1.10及以上正确支持；allow_select不能作为群目标保证。接口创建成员待操作的群发任务，不直接证明群成员收到；后续节点有序接纳与独立送达核验必须分别展示和验收。
+
+## 9. PR148@299617b 送达读取审核与下一交付批次
+
+本批次先完成可用的送达读取和冻结素材有效期，再交准确提交及测试证据；完成本批不代表整个板块通过。旧任务已结束，接手者独占同一干净clone，不与其他开发者同时写。
+
+- [官方发送结果93338](https://developer.work.weixin.qq.com/document/path/93338)要求请求同时带msgid和userid；当前GetGroupMessageSendResult缺userid，必须使用Owner任务收据冻结的发送人，不能接受调用者覆盖。
+- 当前仅unknown可ManualReconcile，而有msgid的正常记录是provider_accepted；未知网络结果又没有msgid。补现有结果/读取操作，使正常已接纳任务可查实际送达，不把EER已执行事实回退为unknown。没有msgid的未知结果如实保留，禁止假装查到或重发。
+- Provider分页读取在UoW外；按冻结msgid/sender/chat验证证据，在新UoW核对原绑定并保存GroupOps送达事实。调用者无需知道受保护msgid或自行构造Provider证据摘要；摘要由可信读取Adapter产生。无独立证据保持pending/unknown，创建任务成功不能当送达成功。
+- 复用Media的GroupOpsMaterialSourceCapturer、PreparationReader和既有准备凭据。必要的source/preparation digest与ReadyUntil随不可变业务意图持久化（仍用未部署0078）；实际调用前确认有效期及冻结附件匹配。不得临时上传、换用后来修改的内容包或新增媒体工作框架。
+- 补协议用例：请求userid、分页精确发送人/群、正常provider_accepted可读取、无msgid未知保持未知、过期/未准备素材零写调用。真实PG覆盖结果持久化与漂移回滚。随后完整PRD仍需实际River即时/延时/重启、有序节点、旧UI及历史逐条对账。
