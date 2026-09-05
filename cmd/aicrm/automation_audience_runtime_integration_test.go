@@ -355,11 +355,13 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 	stop = automationAudienceStartRuntime(t, runtime)
 	stopOnce = sync.Once{}
 	automationAudienceEventuallyWithDiagnostics(t, "approved manual effects", func() bool {
-		var accepted int
-		if native.QueryRow(ctx, `SELECT count(*) FROM outbound_private_message_intents WHERE state='provider_accepted'`).Scan(&accepted) != nil {
+		var accepted, unknown int
+		if native.QueryRow(ctx, `SELECT count(*) FILTER (WHERE state='provider_accepted'),count(*) FILTER (WHERE state='outcome_unknown') FROM outbound_private_message_intents`).Scan(&accepted, &unknown) != nil {
 			return false
 		}
-		return accepted == 2 && wecomServer.Calls() == 4
+		// The fourth local Provider request is deliberately disconnected. Its
+		// effect is unknown and must not be retried with a new key.
+		return accepted == 1 && unknown == 1 && wecomServer.Calls() == 4
 	}, func() string { return automationAudienceRuntimeDiagnostics(ctx, native, provider) })
 	stopRuntime()
 	replayed, err := runtimeService.ConfirmRun(ctx, automationapp.RunConfirmCommand{PackageID: packageID, PackageVersion: preview.PackageVersion, SnapshotID: preview.SnapshotID, AgentID: preview.AgentID, AgentPublishedVersion: preview.AgentPublishedVersion, PreviewDigest: automationapp.PreviewDigestString(preview), Actor: staffID, IdempotencyKey: "audience-runtime-manual-0001"})

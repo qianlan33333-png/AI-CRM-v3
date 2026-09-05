@@ -148,6 +148,7 @@ make_release() {
     0085_segment_audience_refresh_kind.sql \
     0086_wecom_profile_primary_owner.sql \
     0087_automation_manual_ai_review.sql \
+    0089_outbound_message_content_snapshots.sql \
     0061_product_public_purchase.sql \
     0063_identity_hxc_source_observations.sql \
     0064_hxc_dashboard_identity_v2.sql \

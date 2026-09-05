@@ -3,6 +3,7 @@ package port
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
@@ -21,6 +22,8 @@ type MessageIntent struct {
 	SourceDigest          [32]byte
 	TargetDigest          [32]byte
 	PayloadDigest         [32]byte
+	ContentSnapshot       json.RawMessage
+	ContentSnapshotDigest [32]byte
 	PolicyDigest          [32]byte
 	ReceiptKey            string
 	ScheduledAt           time.Time
@@ -35,6 +38,8 @@ type MessageExecution struct {
 	AgentPublishedVersion int64
 	ContentReference      string
 	PayloadDigest         [32]byte
+	ContentSnapshot       json.RawMessage
+	ContentSnapshotDigest [32]byte
 }
 
 type MessageExecutionReader interface {
