@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -276,6 +277,19 @@ func TestSurveyOAuthSubmissionResultJourneyPostgreSQL(t *testing.T) {
 	if anonymous.Code != http.StatusUnauthorized {
 		t.Fatalf("anonymous result status=%d body=%s", anonymous.Code, anonymous.Body.String())
 	}
+	editedDefinition := ownerPublished
+	editedDefinition.Title = "OAuth journey revised"
+	edited, err := definitions.Update(ctx, surveyport.UpdateCommand{Questionnaire: editedDefinition, ExpectedVersion: ownerPublished.Version, ActorID: actorID, IdempotencyKey: "survey-oauth-edit-0001"})
+	if err != nil || edited.Status != surveyport.StatusDraft || edited.DefinitionVersion != 2 {
+		t.Fatalf("definition edit=%+v err=%v", edited, err)
+	}
+	if _, err = definitions.Publish(ctx, edited.ID, edited.Version, actorID, "survey-oauth-republish-0001"); err != nil {
+		t.Fatal(err)
+	}
+	historical, err := submissions.GetSubmission(ctx, submissionResult.Receipt.SubmissionID)
+	if err != nil || historical.DefinitionVersion != 1 || historical.QuestionnaireTitle != "OAuth journey" || len(historical.Answers) != 1 || len(historical.Answers[0].SelectedOptions) != 1 || historical.Answers[0].SelectedOptions[0].OptionText != "Yes" {
+		t.Fatalf("historical submission=%+v err=%v", historical, err)
+	}
 	analytics := surveyJourneyServe(t, handler, http.MethodGet, fmt.Sprintf("/api/admin/questionnaires/%d/results", publishResult.Questionnaire.ID), nil, "", nil, "")
 	if analytics.Code != http.StatusOK {
 		t.Fatalf("analytics status=%d body=%s", analytics.Code, analytics.Body.String())
@@ -290,8 +304,12 @@ func TestSurveyOAuthSubmissionResultJourneyPostgreSQL(t *testing.T) {
 		t.Fatalf("analytics=%+v", analyticsResult)
 	}
 	export := surveyJourneyServe(t, handler, http.MethodGet, fmt.Sprintf("/api/admin/questionnaires/%d/export", publishResult.Questionnaire.ID), nil, "survey-oauth-export-0001", nil, "")
-	if export.Code != http.StatusOK || export.Header().Get("Content-Type") != "text/csv; charset=utf-8" || !bytes.Contains(export.Body.Bytes(), []byte(fmt.Sprint(submissionResult.Receipt.SubmissionID))) {
+	if export.Code != http.StatusOK || export.Header().Get("Content-Type") != "text/csv; charset=utf-8" {
 		t.Fatalf("export status=%d content_type=%q body=%s", export.Code, export.Header().Get("Content-Type"), export.Body.String())
+	}
+	csvRows, err := csv.NewReader(bytes.NewReader(export.Body.Bytes())).ReadAll()
+	if err != nil || len(csvRows) != 2 || len(csvRows[1]) != 5 || csvRows[1][0] != fmt.Sprint(submissionResult.Receipt.SubmissionID) || csvRows[1][2] != string(surveyport.IdentityResolved) || csvRows[1][3] == "" || csvRows[1][4] != "0" {
+		t.Fatalf("export rows=%q err=%v", csvRows, err)
 	}
 
 	oneDefinition, err := definitions.Create(ctx, surveyport.CreateCommand{Questionnaire: surveyJourneyDefinition("oauth-journey-one", surveyport.DisplayOneByOne), ActorID: actorID, IdempotencyKey: "survey-oauth-one-create-0001"})
@@ -301,6 +319,10 @@ func TestSurveyOAuthSubmissionResultJourneyPostgreSQL(t *testing.T) {
 	if _, err = definitions.Publish(ctx, oneDefinition.ID, oneDefinition.Version, actorID, "survey-oauth-one-publish-0001"); err != nil {
 		t.Fatal(err)
 	}
+	oneOwner, err := definitions.Get(ctx, oneDefinition.ID)
+	if err != nil || oneOwner.Status != surveyport.StatusPublished || len(oneOwner.Questions) != 1 || len(oneOwner.Questions[0].Options) != 2 {
+		t.Fatalf("one-mode Owner=%+v err=%v", oneOwner, err)
+	}
 	oneStart := surveyJourneyServe(t, handler, http.MethodGet, "/api/h5/surveys/oauth/start?slug=oauth-journey-one", nil, "", nil, "MicroMessenger Survey Journey")
 	if oneStart.Code != http.StatusSeeOther {
 		t.Fatalf("one-mode OAuth start status=%d body=%s", oneStart.Code, oneStart.Body.String())
@@ -309,6 +331,30 @@ func TestSurveyOAuthSubmissionResultJourneyPostgreSQL(t *testing.T) {
 	oneCallback := surveyJourneyServe(t, handler, http.MethodGet, "/api/h5/surveys/oauth/callback?state="+url.QueryEscape(oneState)+"&code=journey-code-one", nil, "", nil, "")
 	if oneCallback.Code != http.StatusSeeOther || oneCallback.Header().Get("Location") != "/h5/one.html?slug=oauth-journey-one" || transport.calls != 2 {
 		t.Fatalf("one-mode callback status=%d location=%q calls=%d", oneCallback.Code, oneCallback.Header().Get("Location"), transport.calls)
+	}
+	oneCookies := oneCallback.Result().Cookies()
+	if len(oneCookies) != 1 || oneCookies[0].Name != "__Host-aicrm_survey_identity" || !oneCookies[0].HttpOnly {
+		t.Fatalf("one-mode cookie=%+v", oneCookies)
+	}
+	oneSubmitBody, err := json.Marshal(map[string]any{"version": oneOwner.DefinitionVersion, "submission_key": "survey-oauth-one-submission-0001", "answers": []map[string]any{{"question_id": oneOwner.Questions[0].ID, "option_ids": []surveyport.ID{oneOwner.Questions[0].Options[0].ID}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	oneSubmitted := surveyJourneyServe(t, handler, http.MethodPost, "/api/public/questionnaires/oauth-journey-one/submissions", oneSubmitBody, "", oneCookies, "")
+	if oneSubmitted.Code != http.StatusCreated {
+		t.Fatalf("one-mode submit status=%d body=%s", oneSubmitted.Code, oneSubmitted.Body.String())
+	}
+	var oneReceipt struct {
+		Receipt surveyport.SubmissionReceipt `json:"receipt"`
+	}
+	mustSurveyJourneyJSON(t, oneSubmitted, &oneReceipt)
+	oneResultBody, err := json.Marshal(map[string]string{"result_token": oneReceipt.Receipt.ResultToken})
+	if err != nil {
+		t.Fatal(err)
+	}
+	oneResult := surveyJourneyServe(t, handler, http.MethodPost, "/api/public/survey-submission-results/query", oneResultBody, "", oneCookies, "")
+	if oneResult.Code != http.StatusOK {
+		t.Fatalf("one-mode result status=%d body=%s", oneResult.Code, oneResult.Body.String())
 	}
 
 	var customers, identities, storedSubmissions, storedTokens, customerBoundSubmissions, exports int
@@ -321,7 +367,7 @@ func TestSurveyOAuthSubmissionResultJourneyPostgreSQL(t *testing.T) {
 		(SELECT count(*) FROM survey_audit_events WHERE event_type='survey_export_requested')`).Scan(&customers, &identities, &storedSubmissions, &storedTokens, &customerBoundSubmissions, &exports); err != nil {
 		t.Fatal(err)
 	}
-	if customers != 1 || identities != 1 || storedSubmissions != 1 || storedTokens != 1 || customerBoundSubmissions != 1 || exports != 1 {
+	if customers != 1 || identities != 1 || storedSubmissions != 2 || storedTokens != 2 || customerBoundSubmissions != 2 || exports != 1 {
 		t.Fatalf("customers=%d identities=%d submissions=%d result_tokens=%d customer_bound_submissions=%d exports=%d", customers, identities, storedSubmissions, storedTokens, customerBoundSubmissions, exports)
 	}
 }
