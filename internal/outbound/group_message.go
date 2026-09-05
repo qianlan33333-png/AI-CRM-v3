@@ -2,13 +2,17 @@ package outbound
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"strconv"
+	"strings"
 	"time"
 
 	aiassistantport "github.com/qianlan33333-png/AI-CRM-v3/internal/aiassistant/port"
 	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	groupopsport "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/port"
 	mediaport "github.com/qianlan33333-png/AI-CRM-v3/internal/media/port"
+	wecomport "github.com/qianlan33333-png/AI-CRM-v3/internal/wecom/port"
 )
 
 var ErrGroupMessageProviderDisabled = errors.New("Group Ops message provider is disabled")
@@ -21,15 +25,21 @@ var ErrGroupMessageProviderDisabled = errors.New("Group Ops message provider is 
 type GroupMessageProvider struct {
 	enabled           bool
 	preparationWriter mediaport.GroupOpsMaterialPreparationWriter
+	executions        groupopsport.DispatchExecutionReader
+	materials         groupopsport.MaterialReadinessVerifier
+	writer            wecomport.GroupMessageSender
 }
 
 type GroupMessageProviderConfig struct {
 	Enabled           bool
 	PreparationWriter mediaport.GroupOpsMaterialPreparationWriter
+	Executions        groupopsport.DispatchExecutionReader
+	Materials         groupopsport.MaterialReadinessVerifier
+	Writer            wecomport.GroupMessageSender
 }
 
 func NewGroupMessageProvider(config GroupMessageProviderConfig) (*GroupMessageProvider, error) {
-	return &GroupMessageProvider{enabled: config.Enabled, preparationWriter: config.PreparationWriter}, nil
+	return &GroupMessageProvider{enabled: config.Enabled, preparationWriter: config.PreparationWriter, executions: config.Executions, materials: config.Materials, writer: config.Writer}, nil
 }
 
 // RecordPreparedMaterials is the only preparation write seam exposed to a
@@ -42,17 +52,109 @@ func (p *GroupMessageProvider) RecordPreparedMaterials(ctx context.Context, comm
 	return p.preparationWriter.RecordPreparedGroupOpsMaterials(ctx, command)
 }
 
-func (p *GroupMessageProvider) Execute(_ context.Context, envelope effectport.Envelope, _ effectport.Attempt) (effectport.AdapterResult, error) {
+func (p *GroupMessageProvider) Execute(ctx context.Context, envelope effectport.Envelope, attempt effectport.Attempt) (effectport.AdapterResult, error) {
 	if p == nil || envelope.Kind != effectport.KindGroupMessage || !envelope.Valid() {
 		return effectport.AdapterResult{Completion: effectport.StateFinalFailed, ReceiptDigest: effectport.Hash("group-ops-provider-disabled", "invalid-envelope")}, nil
 	}
 	if !p.enabled {
 		return effectport.AdapterResult{Completion: effectport.StateFinalFailed, ReceiptDigest: effectport.Hash("group-ops-provider-disabled", string(envelope.Fingerprint())), CallAttempted: false, RealExternalCallExecuted: false}, nil
 	}
-	// No live Group Message protocol adapter is registered in this repository;
-	// an accidentally enabled carrier still fails closed rather than claiming a
-	// Provider call or delivery.
-	return effectport.AdapterResult{Completion: effectport.StateFinalFailed, ReceiptDigest: effectport.Hash("group-ops-provider-not-configured", string(envelope.Fingerprint())), CallAttempted: false, RealExternalCallExecuted: false}, nil
+	base := effectport.Hash("group-ops.provider.v1", string(envelope.Fingerprint()), attempt.EffectID, strconv.Itoa(int(attempt.Number)), strconv.FormatInt(attempt.Generation, 10), strconv.FormatInt(attempt.Fence, 10))
+	if p.executions == nil || p.materials == nil || p.writer == nil || attempt.EffectID == "" {
+		return effectport.AdapterResult{Completion: effectport.StateFinalFailed, ReceiptDigest: effectport.Hash(string(base), "not-configured")}, nil
+	}
+	execution, err := p.executions.LoadDispatchExecution(ctx, attempt.EffectID)
+	if err != nil || execution.ExternalEffectID != attempt.EffectID || execution.State != groupopsport.ExecutionAccepted || execution.DeliveryProven ||
+		execution.SourceRefDigest != string(envelope.SourceRefDigest) || execution.TargetRefDigest != string(envelope.TargetRefDigest) || execution.PayloadDigest != string(envelope.PayloadDigest) || execution.PolicyVersionHash != string(envelope.PolicyVersionHash) {
+		return effectport.AdapterResult{Completion: effectport.StateFinalFailed, ReceiptDigest: effectport.Hash(string(base), "dispatch-unavailable")}, nil
+	}
+	if err = p.materials.VerifyMaterialReady(ctx, execution.MaterialSnapshot, execution.MaterialSourceSnapshot, execution.MaterialSourceDigest, time.Now().UTC()); err != nil {
+		return effectport.AdapterResult{Completion: effectport.StateFinalFailed, ReceiptDigest: effectport.Hash(string(base), "material-not-ready"), CallAttempted: false, RealExternalCallExecuted: false}, nil
+	}
+	request, err := groupMessageRequest(execution)
+	if err != nil {
+		return effectport.AdapterResult{Completion: effectport.StateFinalFailed, ReceiptDigest: effectport.Hash(string(base), "snapshot-invalid")}, nil
+	}
+	receipt, attempted, err := p.writer.SendGroupMessage(ctx, request)
+	if err != nil {
+		state := effectport.StateRetryable
+		if attempted {
+			state = effectport.StateUnknown
+			if rejected, ok := err.(wecomport.GroupMessageSendError); ok && !rejected.OutcomeUnknown() {
+				state = effectport.StateFinalFailed
+			}
+		}
+		return effectport.AdapterResult{Completion: state, ReceiptDigest: effectport.Hash(string(base), "provider-error"), CallAttempted: attempted, RealExternalCallExecuted: attempted}, nil
+	}
+	if !attempted || strings.TrimSpace(receipt.MessageID) == "" {
+		return effectport.AdapterResult{Completion: effectport.StateFinalFailed, ReceiptDigest: effectport.Hash(string(base), "provider-rejected")}, nil
+	}
+	artifactPayload, artifactErr := json.Marshal(struct {
+		ExecutionID string `json:"execution_id"`
+		EffectID    string `json:"effect_id"`
+		MessageID   string `json:"msgid"`
+		Sender      string `json:"sender"`
+		ChatID      string `json:"chat_id"`
+	}{strconv.FormatInt(execution.ExecutionID, 10), attempt.EffectID, receipt.MessageID, request.SenderUserID, request.ChatIDs[0]})
+	if artifactErr != nil {
+		return effectport.AdapterResult{Completion: effectport.StateUnknown, ReceiptDigest: effectport.Hash(string(base), "receipt-artifact-unavailable"), CallAttempted: true, RealExternalCallExecuted: true}, nil
+	}
+	artifact := effectport.ResultArtifact{Kind: "group-ops.wecom-task.v1", Payload: artifactPayload}
+	artifact.Digest = effectport.Hash("external-effect.artifact.v1", artifact.Kind, string(artifact.Payload))
+	return effectport.AdapterResult{Completion: effectport.StateExecuted, ReceiptDigest: effectport.Hash(string(base), "provider-accepted", receipt.MessageID), CallAttempted: true, RealExternalCallExecuted: true, Artifact: artifact}, nil
+}
+
+func canonicalGroupMessageJSON(raw []byte) ([]byte, error) {
+	var value any
+	if len(raw) == 0 || json.Unmarshal(raw, &value) != nil {
+		return nil, errors.New("invalid Group Ops snapshot JSON")
+	}
+	return json.Marshal(value)
+}
+
+func emptyGroupMessageMaterial(raw []byte) bool {
+	var value struct {
+		SchemaVersion int               `json:"schema_version"`
+		References    []json.RawMessage `json:"references"`
+	}
+	return json.Unmarshal(raw, &value) == nil && value.SchemaVersion == 1 && len(value.References) == 0
+}
+
+func groupMessageRequest(execution groupopsport.DispatchExecution) (wecomport.GroupMessageRequest, error) {
+	if execution.ExecutionID < 1 || execution.TargetReference == "" || strings.TrimSpace(execution.SenderUserID) != execution.SenderUserID || execution.SenderUserID == "" || !effectport.ValidDigest(effectport.Digest(execution.ContentDigest)) || !effectport.ValidDigest(effectport.Digest(execution.MaterialDigest)) {
+		return wecomport.GroupMessageRequest{}, errors.New("invalid Group Ops dispatch execution")
+	}
+	var content struct {
+		SchemaVersion int    `json:"schema_version"`
+		Kind          string `json:"kind"`
+		MessageText   string `json:"message_text"`
+	}
+	if json.Unmarshal(execution.ContentSnapshot, &content) != nil || content.SchemaVersion != 1 || content.Kind != "message" || strings.TrimSpace(content.MessageText) != content.MessageText {
+		return wecomport.GroupMessageRequest{}, errors.New("invalid Group Ops content snapshot")
+	}
+	canonicalContent, canonicalErr := canonicalGroupMessageJSON(execution.ContentSnapshot)
+	if canonicalErr != nil || string(effectport.Hash("group-ops.content.snapshot.v1", string(canonicalContent))) != execution.ContentDigest {
+		return wecomport.GroupMessageRequest{}, errors.New("Group Ops content digest mismatch")
+	}
+	canonicalMaterial, canonicalErr := canonicalGroupMessageJSON(execution.MaterialSnapshot)
+	if canonicalErr != nil || string(effectport.Hash("group-ops.material.snapshot.v1", string(canonicalMaterial))) != execution.MaterialDigest {
+		return wecomport.GroupMessageRequest{}, errors.New("invalid Group Ops material snapshot")
+	}
+	attachments := []wecomport.GroupMessageAttachment{}
+	if !emptyGroupMessageMaterial(canonicalMaterial) {
+		var materials mediaport.GroupOpsMaterialSnapshot
+		if json.Unmarshal(canonicalMaterial, &materials) != nil || mediaport.ValidateGroupOpsMaterialSnapshot(materials) != nil {
+			return wecomport.GroupMessageRequest{}, errors.New("invalid Group Ops material snapshot")
+		}
+		attachments = make([]wecomport.GroupMessageAttachment, len(materials.Attachments))
+		for index, attachment := range materials.Attachments {
+			attachments[index] = wecomport.GroupMessageAttachment{MsgType: attachment.MsgType, MediaID: attachment.MediaID, AppID: attachment.AppID, PagePath: attachment.PagePath, Title: attachment.Title, URL: attachment.URL, Description: attachment.Description, PicURL: attachment.PicURL}
+		}
+	}
+	if content.MessageText == "" && len(attachments) == 0 {
+		return wecomport.GroupMessageRequest{}, errors.New("Group Ops message is empty")
+	}
+	return wecomport.GroupMessageRequest{SenderUserID: execution.SenderUserID, ChatIDs: []string{execution.TargetReference}, Text: content.MessageText, Attachments: attachments}, nil
 }
 
 // DisabledGroupMessageProvider is the deterministic default adapter for the
@@ -79,14 +181,27 @@ type GroupMessageCompletionProjector interface {
 }
 
 type GroupMessageCompletionSink struct {
-	projector GroupMessageCompletionProjector
+	projector     GroupMessageCompletionProjector
+	receipts      groupopsport.GroupMessageReceiptWriter
+	continuations groupopsport.ExecutionContinuationEnqueuer
 }
 
-func NewGroupMessageCompletionSink(projector GroupMessageCompletionProjector) (*GroupMessageCompletionSink, error) {
-	if projector == nil {
+func NewGroupMessageCompletionSink(projector GroupMessageCompletionProjector, receipts ...groupopsport.GroupMessageReceiptWriter) (*GroupMessageCompletionSink, error) {
+	if projector == nil || len(receipts) > 1 {
 		return nil, errors.New("Group Ops completion projector is required")
 	}
-	return &GroupMessageCompletionSink{projector: projector}, nil
+	sink := &GroupMessageCompletionSink{projector: projector}
+	if len(receipts) == 1 {
+		sink.receipts = receipts[0]
+	}
+	return sink, nil
+}
+
+func (s *GroupMessageCompletionSink) WithContinuation(enqueuer groupopsport.ExecutionContinuationEnqueuer) *GroupMessageCompletionSink {
+	if s != nil {
+		s.continuations = enqueuer
+	}
+	return s
 }
 
 func (s *GroupMessageCompletionSink) CompleteEffect(ctx context.Context, effectRef string, envelope effectport.Envelope, attempt effectport.Attempt, result effectport.AdapterResult) error {
@@ -109,7 +224,35 @@ func (s *GroupMessageCompletionSink) CompleteEffect(ctx context.Context, effectR
 	default:
 		return errors.New("invalid Group Ops completion state")
 	}
-	return s.projector.CompleteEffect(ctx, effectRef, state, providerAccepted, deliveryProven, string(result.ReceiptDigest), attempt.Number, time.Now().UTC())
+	if result.Completion == effectport.StateExecuted {
+		if s.receipts == nil {
+			return errors.New("Group Ops task receipt writer is required")
+		}
+		var artifact struct {
+			ExecutionID string `json:"execution_id"`
+			EffectID    string `json:"effect_id"`
+			MessageID   string `json:"msgid"`
+			Sender      string `json:"sender"`
+			ChatID      string `json:"chat_id"`
+		}
+		if result.Artifact.Kind != "group-ops.wecom-task.v1" || !result.Artifact.Valid() || json.Unmarshal(result.Artifact.Payload, &artifact) != nil || artifact.EffectID != effectRef || artifact.MessageID == "" || artifact.Sender == "" || artifact.ChatID == "" {
+			return errors.New("invalid Group Ops task receipt artifact")
+		}
+		executionID, parseErr := strconv.ParseInt(artifact.ExecutionID, 10, 64)
+		if parseErr != nil || executionID < 1 {
+			return errors.New("invalid Group Ops task receipt execution")
+		}
+		if err := s.receipts.RecordGroupMessageTask(ctx, groupopsport.GroupMessageReceipt{ExecutionID: executionID, ExternalEffectID: effectRef, MessageID: artifact.MessageID, SenderUserID: artifact.Sender, ChatID: artifact.ChatID, TaskEvidenceDigest: string(result.Artifact.Digest)}); err != nil {
+			return err
+		}
+	}
+	if err := s.projector.CompleteEffect(ctx, effectRef, state, providerAccepted, deliveryProven, string(result.ReceiptDigest), attempt.Number, time.Now().UTC()); err != nil {
+		return err
+	}
+	if result.Completion == effectport.StateExecuted && s.continuations != nil {
+		return s.continuations.EnqueueGroupOpsContinuationWithin(ctx, effectRef)
+	}
+	return nil
 }
 
 // CompletionRouter keeps EER's single completion-sink slot while routing

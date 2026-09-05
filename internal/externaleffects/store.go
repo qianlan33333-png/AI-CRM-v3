@@ -658,7 +658,7 @@ func (r *Repository) RunAttempt(ctx context.Context, id, generation, riverJobID 
 		next = StateFinalFailed // Provider disabled: no call was attempted.
 		receipt = Hash("provider-disabled", strconv.FormatInt(id, 10), strconv.Itoa(int(attempts)))
 	} else {
-		adapterResult, callErr = adapter.Execute(ctx, envelope, Attempt{Number: attempts, Generation: generation, Fence: fence})
+		adapterResult, callErr = adapter.Execute(ctx, envelope, Attempt{EffectID: effectID(id), Number: attempts, Generation: generation, Fence: fence})
 		result := adapterResult
 		callAttempted, realExternalCallExecuted = result.CallAttempted, result.RealExternalCallExecuted
 		if callErr != nil {
