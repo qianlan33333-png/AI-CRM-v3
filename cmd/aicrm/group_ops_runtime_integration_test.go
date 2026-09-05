@@ -440,7 +440,7 @@ func TestGroupOpsSharedRiverRuntimeJourney(t *testing.T) {
 	if err != nil || first.Accepted != 2 || len(first.Executions) != 2 {
 		t.Fatalf("first acceptance=%+v err=%v", first, err)
 	}
-	waitGroupOpsProviderCalls(t, provider, 2)
+	waitGroupOpsProviderCalls(t, native, provider, 2)
 	stop()
 
 	var scheduled int
@@ -463,7 +463,7 @@ func TestGroupOpsSharedRiverRuntimeJourney(t *testing.T) {
 		stop()
 		t.Fatalf("advance scheduled fixture rows=%d err=%v", tag.RowsAffected(), err)
 	}
-	waitGroupOpsProviderCalls(t, provider, 4)
+	waitGroupOpsProviderCalls(t, native, provider, 4)
 	stop()
 
 	if got := provider.callsByChat(); got["chat-river-1"] == nil || got["chat-river-2"] == nil || len(got["chat-river-1"]) != 2 || len(got["chat-river-2"]) != 2 || got["chat-river-1"][0] != "first" || got["chat-river-1"][1] != "second" || got["chat-river-2"][0] != "first" || got["chat-river-2"][1] != "second" {
@@ -583,7 +583,7 @@ func (fixture *groupOpsRuntimeWeCom) callsByChat() map[string][]string {
 	return items
 }
 
-func waitGroupOpsProviderCalls(t *testing.T, provider *groupOpsRuntimeWeCom, expected int) {
+func waitGroupOpsProviderCalls(t *testing.T, native *pgxpool.Pool, provider *groupOpsRuntimeWeCom, expected int) {
 	t.Helper()
 	deadline := time.Now().Add(12 * time.Second)
 	for time.Now().Before(deadline) {
@@ -592,7 +592,12 @@ func waitGroupOpsProviderCalls(t *testing.T, provider *groupOpsRuntimeWeCom, exp
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
-	t.Fatalf("provider calls=%d, want %d", provider.callCount(), expected)
+	var effects, jobs string
+	if native != nil {
+		_ = native.QueryRow(context.Background(), `SELECT coalesce(string_agg(id::text || ':' || state, ','),'') FROM external_effects`).Scan(&effects)
+		_ = native.QueryRow(context.Background(), `SELECT coalesce(string_agg(id::text || ':' || kind || ':' || state || ':' || attempt::text, ','),'') FROM river_job`).Scan(&jobs)
+	}
+	t.Fatalf("provider calls=%d, want %d; effects=%s river=%s", provider.callCount(), expected, effects, jobs)
 }
 
 func startGroupOpsRiver(t *testing.T, runtime *platformjobqueue.Runtime) (func(), func()) {
