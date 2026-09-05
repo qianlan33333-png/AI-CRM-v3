@@ -338,6 +338,38 @@ func TestWeComRegistrationUsesDirectoryPhonePresenceInsteadOfHXC(t *testing.T) {
 	}
 }
 
+func TestMemberRegistrationCombinesHXCAndDirectoryPhoneFacts(t *testing.T) {
+	at := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+	expires := at.Add(time.Hour)
+	facts := legacyFacts{
+		contacts: []wecomport.AudienceContact{{CustomerID: 1, Status: "active"}, {CustomerID: 2, Status: "active"}, {CustomerID: 3, Status: "active"}},
+		shared: map[customerdomain.CustomerID]hxcport.SharedFacts{
+			// This member is not registered in HXC, but the frozen old view also
+			// includes people.mobile, which makes it registered.
+			1: {CustomerID: 1, Availability: hxcport.SharedFactsAvailable, MembershipRecordFound: true, MembershipSource: "snapshot", IsMember: true, MembershipStatus: "active", ExpiresAt: &expires},
+			2: {CustomerID: 2, Availability: hxcport.SharedFactsAvailable, MembershipRecordFound: true, MembershipSource: "snapshot", IsMember: true, MembershipStatus: "active", ExpiresAt: &expires},
+			3: {CustomerID: 3, Availability: hxcport.SharedFactsAvailable, Registered: true, MembershipRecordFound: true, MembershipSource: "snapshot", IsMember: true, MembershipStatus: "active", ExpiresAt: &expires},
+		},
+		registration: map[customerdomain.CustomerID]customerport.AudienceRegistrationFact{
+			1: {CustomerID: 1, Known: true, Registered: true, Source: "people.mobile", UpdatedAt: at},
+			2: {CustomerID: 2, Known: true, Registered: false, Source: "people.mobile", UpdatedAt: at},
+			// No directory row for 3: HXC's positive fact remains sufficient for
+			// registered, but no absent directory row is invented for customer 2.
+		},
+	}
+	source := LegacyTemplateSource{Contacts: facts, MemberFacts: facts, RegistrationFacts: facts}
+	registered, err := source.Evaluate(context.Background(), legacyDefinition(t, segmentdsl.MemberUsageStatus, `{"owner_scope":"all","owner_staff_ids":[],"service_period":"active","registration_status":"registered","usage_status":"any","membership_tiers":[],"membership_statuses":[]}`), at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertAudienceIDs(t, registered, 1, 3)
+	unregistered, err := source.Evaluate(context.Background(), legacyDefinition(t, segmentdsl.MemberUsageStatus, `{"owner_scope":"all","owner_staff_ids":[],"service_period":"active","registration_status":"unregistered","usage_status":"any","membership_tiers":[],"membership_statuses":[]}`), at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertAudienceIDs(t, unregistered, 2)
+}
+
 type batchedRegistrationFacts struct {
 	facts  map[customerdomain.CustomerID]customerport.AudienceRegistrationFact
 	failAt int

@@ -533,6 +533,17 @@ func (s LegacyTemplateSource) member(ctx context.Context, p map[string]json.RawM
 	if e != nil {
 		return nil, e
 	}
+	// The old member projection unions its HXC registration fact with the
+	// canonical directory phone-presence fact. They are independent sources:
+	// a phone may make a member registered even when HXC has no registration,
+	// while a missing directory projection never becomes a false phone fact.
+	registrationFacts := map[customerdomain.CustomerID]customerport.AudienceRegistrationFact{}
+	if registration != "any" && s.RegistrationFacts != nil {
+		registrationFacts, e = s.registrationFacts(ctx, customerIDs)
+		if e != nil {
+			return nil, e
+		}
+	}
 	out := map[int64]bool{}
 	for id := range eligible {
 		fact, found := facts[customerdomain.CustomerID(id)]
@@ -544,7 +555,21 @@ func (s LegacyTemplateSource) member(ctx context.Context, p map[string]json.RawM
 		}
 		active := fact.ActiveAt(at)
 		expired := fact.ExpiredAt(at)
-		if (period == "active" && !active) || (period == "expired" && !expired) || (registration == "registered" && !fact.Registered) || (registration == "unregistered" && fact.Registered) || (usage == "used" && !fact.HasRealUsage) || (usage == "unused" && fact.HasRealUsage) || (len(tiers) > 0 && !contains(tiers, fact.Tier)) || (len(statuses) > 0 && !contains(statuses, fact.MembershipStatus)) {
+		registered := fact.Registered
+		if registration != "any" {
+			if directory, found := registrationFacts[customerdomain.CustomerID(id)]; found {
+				if !directory.Known {
+					continue
+				}
+				registered = registered || directory.Registered
+			} else if !fact.Registered {
+				// There is no phone-presence result to combine and HXC does not
+				// establish registration. Preserve the old unknown rather than
+				// treating an absent directory row as "unregistered".
+				continue
+			}
+		}
+		if (period == "active" && !active) || (period == "expired" && !expired) || (registration == "registered" && !registered) || (registration == "unregistered" && registered) || (usage == "used" && !fact.HasRealUsage) || (usage == "unused" && fact.HasRealUsage) || (len(tiers) > 0 && !contains(tiers, fact.Tier)) || (len(statuses) > 0 && !contains(statuses, fact.MembershipStatus)) {
 			continue
 		}
 		out[id] = true
