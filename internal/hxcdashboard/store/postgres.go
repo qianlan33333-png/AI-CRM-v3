@@ -11,7 +11,9 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/hxcdashboard/domain"
+	hxcport "github.com/qianlan33333-png/AI-CRM-v3/internal/hxcdashboard/port"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 )
 
@@ -116,7 +118,7 @@ func (store *PostgreSQL) Publish(ctx context.Context, runID int64, projection do
 	}
 	var id int64
 	c := projection.Counts
-	err = tx.QueryRow(ctx, `INSERT INTO hxc_dashboard_versions(rule_version,status,projection_as_of,source_watermark,source_digest,projection_digest,total_count,active_used_count,active_unused_count,registered_no_active_membership_count,matched_count,unmatched_count,conflict_count,matched_by_unionid_count,matched_by_phone_count,matched_by_both_count,pending_observation_count,invalid_identity_count) VALUES($1,'published',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING id`, domain.RuleVersion, projection.AsOf, projection.Watermark, projection.SourceDigest[:], projection.ProjectionDigest[:], c.Total, c.ActiveUsed, c.ActiveUnused, c.RegisteredNoActiveMembership, c.Matched, c.Unmatched, c.Conflict, c.MatchedByUnionID, c.MatchedByPhone, c.MatchedByBoth, c.PendingObservation, c.InvalidIdentity).Scan(&id)
+	err = tx.QueryRow(ctx, `INSERT INTO hxc_dashboard_versions(rule_version,status,projection_as_of,source_watermark,source_digest,projection_digest,total_count,active_used_count,active_unused_count,registered_no_active_membership_count,matched_count,unmatched_count,conflict_count,matched_by_unionid_count,matched_by_phone_count,matched_by_both_count,pending_observation_count,invalid_identity_count,shared_facts_available) VALUES($1,'published',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) RETURNING id`, domain.RuleVersion, projection.AsOf, projection.Watermark, projection.SourceDigest[:], projection.ProjectionDigest[:], c.Total, c.ActiveUsed, c.ActiveUnused, c.RegisteredNoActiveMembership, c.Matched, c.Unmatched, c.Conflict, c.MatchedByUnionID, c.MatchedByPhone, c.MatchedByBoth, c.PendingObservation, c.InvalidIdentity, projection.SharedFactsAvailable).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("insert projection: %w", err)
 	}
@@ -126,9 +128,9 @@ func (store *PostgreSQL) Publish(ctx context.Context, runID int64, projection do
 		if r.CustomerID > 0 {
 			customer = int64(r.CustomerID)
 		}
-		rows = append(rows, []any{id, r.SubjectDigest[:], r.UserRef, r.Stage, r.SubscriptionTier, r.SubscriptionExpiresAt, r.MonthlyChatQuota, r.CurrentPeriodUsed, r.ConsultationLimit, r.ConsultationUsed, r.MembershipAttribution, r.Sessions7D, r.Sessions30D, r.SessionsTotal, r.UserMessages7D, r.UserMessages30D, r.UserMessagesTotal, r.CapabilityUsage, r.LastUsedAt, nullString(r.LastCapability), nullString(r.BusinessStage), nullString(r.MainLineType), nullString(r.UserSegment), r.FocusTopics, nullString(r.PainTag), customer, r.IdentityState, r.MatchedBy, r.IdentityReasonCode, nullableInt64(r.IdentityCaseID), nullableInt64(r.MergeCandidateID), r.SourceUpdatedAt})
+		rows = append(rows, []any{id, r.SubjectDigest[:], r.UserRef, r.Stage, r.SubscriptionTier, r.SubscriptionExpiresAt, r.MonthlyChatQuota, r.CurrentPeriodUsed, r.ConsultationLimit, r.ConsultationUsed, r.MembershipAttribution, r.Sessions7D, r.Sessions30D, r.SessionsTotal, r.UserMessages7D, r.UserMessages30D, r.UserMessagesTotal, r.CapabilityUsage, r.LastUsedAt, nullString(r.LastCapability), nullString(r.BusinessStage), nullString(r.MainLineType), nullString(r.UserSegment), r.FocusTopics, nullString(r.PainTag), customer, r.IdentityState, r.MatchedBy, r.IdentityReasonCode, nullableInt64(r.IdentityCaseID), nullableInt64(r.MergeCandidateID), r.FormallyLoggedIn, r.FormalLoginAt, r.HasTokenUsage, r.LearningPlanFound, nullString(r.LearningPlanStatus), r.LearningPlanCurrent, r.LearningPlanTotal, r.CardOpenCount7D, r.CardLastOpenedAt, r.MembershipRecordFound, r.IsMember, nullString(r.MembershipSource), nullString(r.MembershipStatus), r.MembershipExpiresAt, r.SourceUpdatedAt})
 	}
-	columns := []string{"projection_id", "subject_digest", "user_ref", "stage", "subscription_tier", "subscription_expires_at", "monthly_chat_quota", "current_period_used", "consultation_limit", "consultation_used", "membership_attribution", "sessions_7d", "sessions_30d", "sessions_total", "user_messages_7d", "user_messages_30d", "user_messages_total", "capability_usage", "last_used_at", "last_capability", "business_stage", "main_line_type", "user_segment", "focus_topics", "pain_tag", "customer_id", "identity_state", "matched_by", "identity_reason_code", "identity_case_id", "merge_candidate_id", "source_updated_at"}
+	columns := []string{"projection_id", "subject_digest", "user_ref", "stage", "subscription_tier", "subscription_expires_at", "monthly_chat_quota", "current_period_used", "consultation_limit", "consultation_used", "membership_attribution", "sessions_7d", "sessions_30d", "sessions_total", "user_messages_7d", "user_messages_30d", "user_messages_total", "capability_usage", "last_used_at", "last_capability", "business_stage", "main_line_type", "user_segment", "focus_topics", "pain_tag", "customer_id", "identity_state", "matched_by", "identity_reason_code", "identity_case_id", "merge_candidate_id", "formally_logged_in", "formal_login_at", "has_token_usage", "learning_plan_found", "learning_plan_status", "learning_plan_current", "learning_plan_total", "card_open_count_7d", "card_last_opened_at", "membership_record_found", "is_member", "membership_source", "membership_status", "membership_expires_at", "source_updated_at"}
 	if len(rows) > 0 {
 		if n, copyErr := tx.CopyFrom(ctx, pgx.Identifier{"hxc_dashboard_rows"}, columns, pgx.CopyFromRows(rows)); copyErr != nil || n != int64(len(rows)) {
 			return 0, fmt.Errorf("copy projection rows: %w", copyErr)
@@ -145,6 +147,132 @@ func (store *PostgreSQL) Publish(ctx context.Context, runID int64, projection do
 	}
 	return id, nil
 }
+
+// CurrentSharedFactsVersion returns the immutable projection currently exposed
+// to consumers. Callers that need more than one bounded read keep this ID.
+func (store *PostgreSQL) CurrentSharedFactsVersion(ctx context.Context) (int64, error) {
+	var id int64
+	if err := store.pool.QueryRow(ctx, `SELECT id FROM hxc_dashboard_versions WHERE status='published'`).Scan(&id); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, ErrNotFound
+		}
+		return 0, fmt.Errorf("read current HXC shared facts version: %w", err)
+	}
+	return id, nil
+}
+
+// SharedFacts implements a bounded read from the currently published immutable
+// generation. Consumers with several batches should pin a version first.
+func (store *PostgreSQL) SharedFacts(ctx context.Context, customerIDs []customerdomain.CustomerID) (map[customerdomain.CustomerID]hxcport.SharedFacts, error) {
+	ids, err := sharedFactsIDs(customerIDs)
+	if err != nil {
+		return nil, err
+	}
+	if len(ids) == 0 {
+		return map[customerdomain.CustomerID]hxcport.SharedFacts{}, nil
+	}
+	version, err := store.CurrentSharedFactsVersion(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return store.SharedFactsAtVersion(ctx, version, customerIDs)
+}
+
+// SharedFactsAtVersion reads a retained immutable generation. It deliberately
+// accepts a superseded version: a consumer that pinned it can finish its
+// bounded batches without changing generations beneath the same evaluation.
+func (store *PostgreSQL) SharedFactsAtVersion(ctx context.Context, version int64, customerIDs []customerdomain.CustomerID) (map[customerdomain.CustomerID]hxcport.SharedFacts, error) {
+	out := make(map[customerdomain.CustomerID]hxcport.SharedFacts)
+	if version <= 0 {
+		return nil, ErrNotFound
+	}
+	ids, err := sharedFactsIDs(customerIDs)
+	if err != nil {
+		return nil, err
+	}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return nil, fmt.Errorf("begin HXC shared facts snapshot: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	var available bool
+	var expectedRows, retainedRows int64
+	if err := tx.QueryRow(ctx, `SELECT v.shared_facts_available,v.total_count,(SELECT count(*) FROM hxc_dashboard_rows r WHERE r.projection_id=v.id) FROM hxc_dashboard_versions v WHERE v.id=$1`, version).Scan(&available, &expectedRows, &retainedRows); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, hxcport.ErrSharedFactsVersionUnavailable
+		}
+		return nil, fmt.Errorf("read HXC shared facts version: %w", err)
+	}
+	if expectedRows != retainedRows {
+		return nil, hxcport.ErrSharedFactsVersionUnavailable
+	}
+	rows, err := tx.Query(ctx, `SELECT r.customer_id,v.projection_as_of,r.source_updated_at,
+		r.formally_logged_in,r.formal_login_at,r.has_token_usage,r.learning_plan_found,COALESCE(r.learning_plan_status,''),r.learning_plan_current,r.learning_plan_total,COALESCE(r.card_open_count_7d,0),r.card_last_opened_at,
+		r.membership_record_found,r.is_member,COALESCE(r.membership_source,''),COALESCE(r.membership_status,''),r.subscription_tier,r.membership_expires_at,r.last_used_at
+		FROM hxc_dashboard_versions v JOIN hxc_dashboard_rows r ON r.projection_id=v.id
+		WHERE v.id=$1 AND r.identity_state='matched' AND r.customer_id=ANY($2)`, version, ids)
+	if err != nil {
+		return nil, fmt.Errorf("read HXC shared facts: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var item hxcport.SharedFacts
+		var customerID int64
+		var formalLogin, cardOpened, expires, lastUsed *time.Time
+		var formallyLogged, tokenUsed, learningFound, membershipFound, isMember *bool
+		if err = rows.Scan(&customerID, &item.SourceAsOf, &item.SourceUpdatedAt, &formallyLogged, &formalLogin, &tokenUsed, &learningFound, &item.LearningPlanStatus, &item.LearningPlanCurrent, &item.LearningPlanTotal, &item.CardOpenCount7D, &cardOpened, &membershipFound, &isMember, &item.MembershipSource, &item.MembershipStatus, &item.Tier, &expires, &lastUsed); err != nil {
+			return nil, fmt.Errorf("scan HXC shared facts: %w", err)
+		}
+		item.CustomerID = customerdomain.CustomerID(customerID)
+		if _, duplicate := out[item.CustomerID]; duplicate {
+			out[item.CustomerID] = hxcport.SharedFacts{CustomerID: item.CustomerID, Availability: hxcport.SharedFactsAmbiguous}
+			continue
+		}
+		if !available {
+			item.Availability = hxcport.SharedFactsUnavailable
+			out[item.CustomerID] = item
+			continue
+		}
+		item.Availability = hxcport.SharedFactsAvailable
+		item.FormalLoginAt, item.CardLastOpenedAt, item.ExpiresAt, item.LastUsedAt = formalLogin, cardOpened, expires, lastUsed
+		item.FormallyLoggedIn = formallyLogged != nil && *formallyLogged
+		item.HasTokenUsage = tokenUsed != nil && *tokenUsed
+		item.LearningPlanFound = learningFound != nil && *learningFound
+		item.MembershipRecordFound = membershipFound != nil && *membershipFound
+		item.IsMember = isMember != nil && *isMember
+		item.Registered = true // a row exists only for an undeleted legacy HXC user.
+		item.HasRealUsage = lastUsed != nil
+		out[item.CustomerID] = item
+	}
+	if err = rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate HXC shared facts: %w", err)
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit HXC shared facts snapshot: %w", err)
+	}
+	return out, nil
+}
+
+func sharedFactsIDs(customerIDs []customerdomain.CustomerID) ([]int64, error) {
+	ids := make([]int64, 0, len(customerIDs))
+	seen := map[customerdomain.CustomerID]bool{}
+	for _, id := range customerIDs {
+		if id > 0 && !seen[id] {
+			seen[id] = true
+			ids = append(ids, int64(id))
+		}
+	}
+	if len(ids) > hxcport.MaxSharedFactsCustomerIDs {
+		return nil, hxcport.ErrSharedFactsBatchTooLarge
+	}
+	return ids, nil
+}
+
+var _ hxcport.SharedFactsReader = (*PostgreSQL)(nil)
+var _ hxcport.VersionedSharedFactsReader = (*PostgreSQL)(nil)
 
 func nullString(value string) any {
 	if value == "" {

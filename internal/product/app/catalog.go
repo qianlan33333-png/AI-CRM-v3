@@ -55,6 +55,7 @@ type Store interface {
 	ListOffset(context.Context, int32, int32) ([]productport.Product, error)
 	Count(context.Context) (int64, error)
 	Get(context.Context, productport.ID) (productport.Product, error)
+	GetByCode(context.Context, string) (productport.Product, error)
 	GetForUpdate(context.Context, productport.ID) (productport.Product, error)
 	Create(context.Context, productport.CreateCommand, time.Time) (productport.Product, error)
 	Update(context.Context, productport.UpdateCommand, time.Time) (productport.Product, error)
@@ -191,6 +192,38 @@ func (s *Service) Get(ctx context.Context, id productport.ID) (productport.Produ
 		values := []productport.Product{p}
 		if e = s.attachSales(tx, values); e != nil {
 			return e
+		}
+		p = values[0]
+		return nil
+	})
+	if err != nil {
+		return productport.Product{}, classify(err)
+	}
+	if IsServicePeriodProjection(p.LegacyAdminProjection) {
+		return productport.Product{}, ErrNotFound
+	}
+	if !validProduct(p) {
+		return productport.Product{}, ErrUnavailable
+	}
+	return p, nil
+}
+
+// GetByCode resolves the stable public product identifier. Callers must still
+// apply their own lifecycle visibility rule before exposing the result.
+func (s *Service) GetByCode(ctx context.Context, code string) (productport.Product, error) {
+	if !ready(s) || code == "" || code != strings.TrimSpace(code) || len(code) > 200 {
+		return productport.Product{}, ErrNotFound
+	}
+	var p productport.Product
+	err := s.uow.Within(ctx, func(tx context.Context) error {
+		var err error
+		p, err = s.store.GetByCode(tx, code)
+		if err != nil {
+			return err
+		}
+		values := []productport.Product{p}
+		if err = s.attachSales(tx, values); err != nil {
+			return err
 		}
 		p = values[0]
 		return nil

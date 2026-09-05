@@ -66,6 +66,13 @@ jobs:
           cache: true
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
         with: {node-version: '24.18.0', cache: npm}
+      - name: Install required repository tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes ripgrep
+          command -v rg >/dev/null
+          rg --version
       - name: Pin frozen donor npm
         run: npm install --global npm@11.12.1
       - name: Build and stage frozen External Effects workspace
@@ -78,6 +85,7 @@ jobs:
           scripts/check-pr01-donor-manifest.sh
           scripts/check-pr02-donor-manifest.sh
           scripts/check-pr03-frontend-donor-manifest.sh
+          AICRM_SERVICE_PERIOD_MEMBER_GRID_DONOR_DIR="${{ github.workspace }}/.ci-donor-sidebar" scripts/check-service-period-member-grid-donor.sh
           scripts/check-automationops-donor-manifest.sh
           scripts/check-channel-donor-manifest.sh
           donor_dir="$(mktemp -d)"
@@ -169,6 +177,13 @@ jobs:
           cache: true
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
         with: {node-version: '24.18.0', cache: npm}
+      - name: Install required repository tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes ripgrep
+          command -v rg >/dev/null
+          rg --version
       - name: Pin frozen donor npm
         run: npm install --global npm@11.12.1
       - name: Build release artifact
@@ -200,6 +215,7 @@ jobs:
           scripts/check-pr01-donor-manifest.sh
           scripts/check-pr02-donor-manifest.sh
           scripts/check-pr03-frontend-donor-manifest.sh
+          AICRM_SERVICE_PERIOD_MEMBER_GRID_DONOR_DIR="${{ github.workspace }}/.ci-donor-sidebar" scripts/check-service-period-member-grid-donor.sh
           scripts/check-automationops-donor-manifest.sh
           scripts/check-channel-donor-manifest.sh
           scripts/check-survey-donor-manifest.sh

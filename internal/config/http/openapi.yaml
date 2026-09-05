@@ -1131,8 +1131,8 @@ paths:
         "403": {$ref: "#/components/responses/Error"}
         "404": {$ref: "#/components/responses/Error"}
         "409": {$ref: "#/components/responses/Error"}
-  /api/public/products/{product_id}:
-    parameters: [{$ref: "#/components/parameters/ProductID"}]
+  /api/public/products/{product_code}:
+    parameters: [{$ref: "#/components/parameters/ProductCode"}]
     get:
       operationId: getPublicProduct
       tags: [Products]
@@ -1141,8 +1141,8 @@ paths:
       responses:
         "200": {description: Enabled public Product, content: {application/json: {schema: {$ref: "#/components/schemas/PublicProduct"}}}}
         "404": {$ref: "#/components/responses/Error"}
-  /p/{product_id}:
-    parameters: [{$ref: "#/components/parameters/ProductID"}]
+  /p/{product_code}:
+    parameters: [{$ref: "#/components/parameters/ProductCode"}]
     get:
       operationId: openPublicProduct
       tags: [Products]
@@ -1150,8 +1150,8 @@ paths:
       responses:
         "200": {description: Enabled public Product page, content: {text/html: {schema: {type: string}}}}
         "404": {$ref: "#/components/responses/Error"}
-  /pay/{product_id}:
-    parameters: [{$ref: "#/components/parameters/ProductID"}]
+  /pay/{product_code}:
+    parameters: [{$ref: "#/components/parameters/ProductCode"}]
     get:
       operationId: openPublicProductPayment
       tags: [Products, Payments]
@@ -1365,7 +1365,7 @@ paths:
     get:
       operationId: listServicePeriodMembersCompatibility
       tags: [Products]
-      description: Truthful empty compatibility projection. Member, customer, and entitlement data are outside PR04.
+      description: Authorized compatibility projection of Order-owned service-period members. Customer display names are read through the Customer directory port.
       security: [{adminSession: []}]
       parameters:
         - {name: state, in: query, schema: {type: string, enum: [active, expired, removed, all]}}
@@ -1373,10 +1373,38 @@ paths:
         - {$ref: "#/components/parameters/ProductLimit"}
         - {name: cursor, in: query, schema: {type: string, maxLength: 1024}}
       responses:
-        "200": {description: Empty member compatibility projection, content: {application/json: {schema: {$ref: "#/components/schemas/ServicePeriodMemberPage"}}}}
+        "200": {description: Service-period member compatibility projection, content: {application/json: {schema: {$ref: "#/components/schemas/ServicePeriodMemberPage"}}}}
         "401": {$ref: "#/components/responses/Error"}
         "403": {$ref: "#/components/responses/Error"}
         "404": {$ref: "#/components/responses/Error"}
+  /api/admin/service-period-products/{service_product_id}/members/{member_ref}/alliance:
+    parameters:
+      - {$ref: "#/components/parameters/ServiceProductID"}
+      - {name: member_ref, in: path, required: true, schema: {type: string, pattern: '^spm_[A-Za-z0-9_-]{22}$'}}
+    put:
+      operationId: updateServicePeriodMemberAlliance
+      tags: [Products]
+      description: Atomically updates the Order-owned legacy alliance fact with a product-scoped opaque member reference and row-version CAS. An empty alliance is a confirmed clear; historical unknown remains null until edited.
+      security: [{adminSession: [], csrfHeader: []}]
+      parameters: [{$ref: "#/components/parameters/RequiredIdempotencyKey"}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [alliance, version]
+              properties:
+                alliance: {type: string, maxLength: 500}
+                version: {$ref: "#/components/schemas/PositiveID"}
+      responses:
+        "200": {description: Order receipt acknowledged alliance update, content: {application/json: {schema: {$ref: "#/components/schemas/ServicePeriodMemberAllianceMutation"}}}}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
   /api/admin/service-period-products/{service_product_id}/member-grid/access:
     parameters: [{$ref: "#/components/parameters/ServiceProductID"}]
     get:
@@ -2887,10 +2915,10 @@ paths:
     get:
       operationId: startWechatPayH5OAuth
       tags: [Transactions]
-      description: Starts one-time Official Account OAuth for a strict same-origin /pay/{product_id} return path.
+      description: Starts one-time Official Account OAuth for a strict same-origin /pay/{product_code} return path.
       security: []
       parameters:
-        - {name: return_url, in: query, required: true, schema: {type: string, pattern: "^/pay/[1-9][0-9]*$"}}
+        - {name: return_url, in: query, required: true, schema: {type: string, pattern: "^/pay/[^/?#]+$"}}
       responses: {"302": {description: Redirect to WeChat OAuth}, "400": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
   /api/h5/wechat-pay/oauth/callback:
     get:
@@ -2918,6 +2946,12 @@ paths:
               properties:
                 code: {type: string, minLength: 1, maxLength: 256}
       responses: {"201": {description: Provider-verified scoped OneID payment session issued; opaque cookie only}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+  /api/v1/wechat-pay/checkout-session:
+    get:
+      operationId: getWechatPayCheckoutSession
+      tags: [Transactions]
+      security: [{paymentSession: []}]
+      responses: {"200": {description: Current trusted-payment-session marker for a browser recovery checkpoint, content: {application/json: {schema: {type: object, additionalProperties: false, required: [checkout_session_binding], properties: {checkout_session_binding: {type: string, pattern: "^[A-Za-z0-9_-]{43}$", description: Opaque marker only; it is neither a session token nor an identity claim.}}}}}}, "401": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
   /api/v1/wechat-pay/checkouts:
     post:
       operationId: createWechatPayCheckout
@@ -2931,10 +2965,13 @@ paths:
             schema:
               type: object
               additionalProperties: false
-              required: [product_id, product_kind]
+              required: [product_id, product_kind, beneficiary_selection, checkout_session_binding]
               properties:
                 product_id: {$ref: "#/components/schemas/PositiveID"}
                 product_kind: {type: string, enum: [standard, service_period]}
+                beneficiary_selection: {type: string, enum: [payer_self], description: Confirms that the server-bound trusted payer is also the beneficiary. Customer IDs are never accepted from the browser.}
+                coupon_claim_id: {type: integer, minimum: 0, description: Payment-owned coupon claim reference; zero means no claim.}
+                checkout_session_binding: {type: string, pattern: "^[A-Za-z0-9_-]{43}$", description: Opaque marker issued for the current trusted payment session; it prevents a response-lost checkpoint from creating a new order after session renewal.}
                 mobile: {type: string, pattern: "^\\+861[3-9][0-9]{9}$", description: Encrypted Order contact snapshot only; never an identity claim.}
       responses: {"202": {description: "Order, Payment and effect accepted atomically", content: {application/json: {schema: {type: object, required: [order_id, merchant_order_no, payment_id, status, effect_id], properties: {order_id: {$ref: "#/components/schemas/PositiveID"}, merchant_order_no: {type: string, minLength: 1, maxLength: 200}, payment_id: {$ref: "#/components/schemas/PositiveID"}, status: {type: string}, effect_id: {$ref: "#/components/schemas/ExternalEffectID"}}}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
   /api/v1/wechat-pay/checkouts/{merchant_order_no}:
@@ -2962,7 +2999,7 @@ paths:
               additionalProperties: false
               required: [amount_minor, refund_no, reason]
               properties: {amount_minor: {type: integer, minimum: 1}, refund_no: {type: string, minLength: 1, maxLength: 200}, reason: {type: string, minLength: 1, maxLength: 500}}
-      responses: {"202": {description: Refund effect accepted atomically}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
+      responses: {"202": {description: Refund effect accepted atomically, content: {application/json: {schema: {$ref: "#/components/schemas/PaymentRefundEffectAccepted"}}}}, "400": {$ref: "#/components/responses/Error"}, "401": {$ref: "#/components/responses/Error"}, "403": {$ref: "#/components/responses/Error"}, "404": {$ref: "#/components/responses/Error"}, "409": {$ref: "#/components/responses/Error"}, "503": {$ref: "#/components/responses/Unavailable"}}
   /api/public/wechat-pay/callbacks/payment:
     post:
       operationId: receiveWechatPayPaymentCallback
@@ -3281,6 +3318,7 @@ components:
     RadarCode: {name: code, in: path, required: true, schema: {type: string, pattern: "^rd_[A-Za-z0-9_-]{16,64}$"}}
     AutomationAgentID: {name: agent_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
     ProductID: {name: product_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
+    ProductCode: {name: product_code, in: path, required: true, schema: {type: string, minLength: 1, maxLength: 200}}
     ServiceProductID: {name: service_product_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
     TagID: {name: tag_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
     TagGroupID: {name: group_id, in: path, required: true, schema: {$ref: "#/components/schemas/PositiveID"}}
@@ -4188,7 +4226,7 @@ components:
         lifecycle: {type: string, enum: [draft, disabled, enabled]}
         available: {const: true}
         reason: {type: string}
-        purchase_url: {type: string, pattern: "^/p/[1-9][0-9]*$"}
+        purchase_url: {type: string, pattern: "^/p/[^/]+$"}
         qr_code_url: {type: string}
     ServicePeriodProduct:
       type: object
@@ -4309,6 +4347,25 @@ components:
         limit: {type: integer, minimum: 1, maximum: 100}
         next_cursor: {type: string}
         has_more: {const: false}
+    ServicePeriodMemberAllianceMutation:
+      type: object
+      additionalProperties: false
+      required: [ok, member_ref, alliance, version, updated_at]
+      properties:
+        ok: {const: true}
+        member_ref: {type: string, pattern: '^spm_[A-Za-z0-9_-]{22}$'}
+        alliance: {type: string, maxLength: 500}
+        version: {$ref: "#/components/schemas/PositiveID"}
+        updated_at: {type: string, format: date-time}
+    PaymentRefundEffectAccepted:
+      type: object
+      additionalProperties: false
+      required: [refund_id, out_refund_no, status, effect_id]
+      properties:
+        refund_id: {$ref: "#/components/schemas/PositiveID"}
+        out_refund_no: {type: string, minLength: 1, maxLength: 200}
+        status: {type: string, minLength: 1, maxLength: 80}
+        effect_id: {type: string, minLength: 1, maxLength: 200}
     ServicePeriodMemberGridAccess:
       type: object
       additionalProperties: false

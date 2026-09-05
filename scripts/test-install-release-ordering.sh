@@ -146,7 +146,15 @@ make_release() {
     0053_segment_audience_member_event_fact_kinds.sql \
     0061_product_public_purchase.sql \
     0063_identity_hxc_source_observations.sql \
-    0064_hxc_dashboard_identity_v2.sql; do
+    0064_hxc_dashboard_identity_v2.sql \
+    0084_hxc_shared_facts.sql \
+    0068_payment_session_beneficiary_selection.sql \
+    0069_coupon_claim_redemption_lifecycle.sql \
+    0070_service_period_entitlement_fulfillment.sql \
+    0076_order_checkout_snapshots.sql \
+    0077_coupon_public_slug.sql \
+    0079_service_period_member_grid.sql \
+    0088_order_service_entitlement_alliance.sql; do
     : > "$release/migrations/$migration"
   done
   : > "$release/web/dist/asset-manifest.json"
