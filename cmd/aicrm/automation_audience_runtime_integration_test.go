@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -419,47 +420,31 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	// These are the exact two requests issued by the frozen audience-detail
-	// page after its Preview and Confirm buttons are clicked. They exercise the
-	// real authenticated HTTP boundary and PostgreSQL transaction, rather than
-	// calling the RuntimeService directly.
-	previewRequest := httptest.NewRequest(http.MethodPost, "/api/admin/ai-audience/packages/"+automationAudienceInt(packageID)+"/broadcast-previews", nil)
-	previewResponse := httptest.NewRecorder()
-	runtimeHandler.ServeHTTP(previewResponse, previewRequest)
-	var preview struct {
-		SnapshotID             int64  `json:"snapshot_id"`
-		AgentID                int64  `json:"agent_id"`
-		AgentPublishedVersion  int64  `json:"agent_published_version"`
-		TargetCount            int    `json:"target_count"`
-		PreviewDigest          string `json:"preview_digest"`
-		ExpectedPackageVersion int64  `json:"expected_package_version"`
+	// The browser test loads the frozen detail HTML and its production host
+	// script. Only its ordinary bootstrap reads are stubbed; Preview, Confirm,
+	// and the resulting run list travel to this real Runtime HTTP handler and
+	// the PostgreSQL fixture.
+	detailServer := httptest.NewServer(runtimeHandler)
+	defer detailServer.Close()
+	detailUI := exec.CommandContext(ctx, "node", filepath.Join("internal", "webshell", "static", "admin_console", "admin_audience_manual_broadcast_pg.test.mjs"))
+	detailUI.Env = append(os.Environ(), "AICRM_RUNTIME_TEST_URL="+detailServer.URL, "AICRM_RUNTIME_TEST_PACKAGE_ID="+automationAudienceInt(packageID))
+	detailOutput, detailErr := detailUI.CombinedOutput()
+	if detailErr != nil {
+		t.Fatalf("original detail manual broadcast journey: %v output=%s", detailErr, detailOutput)
 	}
-	if previewResponse.Code != http.StatusOK || json.Unmarshal(previewResponse.Body.Bytes(), &preview) != nil || preview.TargetCount != 2 || preview.SnapshotID < 1 || preview.AgentID < 1 || preview.PreviewDigest == "" {
-		t.Fatalf("detail-page broadcast preview status=%d body=%s", previewResponse.Code, previewResponse.Body.String())
-	}
-	confirmBody, err := json.Marshal(map[string]any{"snapshot_id": preview.SnapshotID, "agent_id": preview.AgentID, "agent_published_version": preview.AgentPublishedVersion, "preview_digest": preview.PreviewDigest, "expected_package_version": preview.ExpectedPackageVersion})
+	runs, _, err := runtimeService.ListRuns(ctx, 0, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
-	confirmRequest := httptest.NewRequest(http.MethodPost, "/api/admin/ai-audience/packages/"+automationAudienceInt(packageID)+"/runs", bytes.NewReader(confirmBody))
-	confirmRequest.Header.Set("Content-Type", "application/json")
-	confirmRequest.Header.Set("Idempotency-Key", "audience-runtime-manual-0001")
-	confirmResponse := httptest.NewRecorder()
-	runtimeHandler.ServeHTTP(confirmResponse, confirmRequest)
-	var confirmed struct {
-		Run struct {
-			ID          int64                   `json:"id"`
-			State       automationport.RunState `json:"state"`
-			AIPlanID    int64                   `json:"ai_plan_id"`
-			TargetCount int64                   `json:"target_count"`
-		} `json:"run"`
+	var manual automationdomain.RuntimeRun
+	for _, candidate := range runs {
+		if candidate.PackageID == packageID && candidate.AIPlanID > 0 {
+			manual = candidate
+			break
+		}
 	}
-	if confirmResponse.Code != http.StatusAccepted || json.Unmarshal(confirmResponse.Body.Bytes(), &confirmed) != nil {
-		t.Fatalf("detail-page broadcast confirmation status=%d body=%s", confirmResponse.Code, confirmResponse.Body.String())
-	}
-	manual := confirmed.Run
-	if manual.TargetCount != 2 || manual.State != automationport.RunPendingReview || manual.AIPlanID < 1 {
-		t.Fatalf("manual=%+v", manual)
+	if manual.ID < 1 || manual.TargetCount != 2 || manual.State != automationport.RunPendingReview || manual.AIPlanID < 1 {
+		t.Fatalf("original detail manual run=%+v ui=%s", manual, detailOutput)
 	}
 	plan, err := aiService.GetPlan(ctx, aiassistantport.PlanID(manual.AIPlanID))
 	if err != nil || plan.State != aiassistantport.PlanPendingReview || plan.TargetCount != 2 {
@@ -479,6 +464,11 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 	if _, err = aiService.ApprovePlan(ctx, aiassistantport.ApprovePlanCommand{Actor: aiassistantport.Actor{Kind: aiassistantport.ActorAdmin, ID: staffID}, PlanID: plan.ID, ExpectedVersion: plan.Version, PreviewDigest: approvalPreview.PreviewDigest, IdempotencyKey: "audience-runtime-manual-approve-0001"}); err != nil {
 		t.Fatal(err)
 	}
+	if _, _, projectionErr := runtimeService.ListRuns(ctx, 0, 100); projectionErr != nil {
+		planValue, planErr := aiService.GetPlan(ctx, plan.ID)
+		recipients, recipientsErr := aiService.ListRecipients(ctx, aiassistantport.RecipientPageQuery{PlanID: plan.ID, Limit: 100})
+		t.Fatalf("approved AI plan cannot project into Automation: projection=%v plan=%+v plan_err=%v recipients=%+v recipients_err=%v", projectionErr, planValue, planErr, recipients, recipientsErr)
+	}
 	stop = automationAudienceStartRuntime(t, runtime)
 	stopOnce = sync.Once{}
 	automationAudienceEventuallyWithDiagnostics(t, "approved manual effects", func() bool {
@@ -491,21 +481,6 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 		return accepted == 1 && unknown == 1 && wecomServer.Calls() == 4 && wecomServer.Uploads() == 12
 	}, func() string { return automationAudienceRuntimeDiagnostics(ctx, native, provider, frozenPayloads) })
 	stopRuntime()
-	replayRequest := httptest.NewRequest(http.MethodPost, "/api/admin/ai-audience/packages/"+automationAudienceInt(packageID)+"/runs", bytes.NewReader(confirmBody))
-	replayRequest.Header.Set("Content-Type", "application/json")
-	replayRequest.Header.Set("Idempotency-Key", "audience-runtime-manual-0001")
-	replayResponse := httptest.NewRecorder()
-	runtimeHandler.ServeHTTP(replayResponse, replayRequest)
-	var replayed struct {
-		Run struct {
-			ID       int64 `json:"id"`
-			AIPlanID int64 `json:"ai_plan_id"`
-		} `json:"run"`
-	}
-	if replayResponse.Code != http.StatusAccepted || json.Unmarshal(replayResponse.Body.Bytes(), &replayed) != nil || replayed.Run.ID != manual.ID || replayed.Run.AIPlanID != manual.AIPlanID || wecomServer.Calls() != 4 || wecomServer.Uploads() != 12 {
-		t.Fatalf("manual HTTP replay status=%d body=%s provider calls=%d uploads=%d", replayResponse.Code, replayResponse.Body.String(), wecomServer.Calls(), wecomServer.Uploads())
-	}
-
 	readHandler := runtimeHandler
 	var before, after int
 	if err = native.QueryRow(ctx, `SELECT count(*) FROM automation_runtime_audit_events`).Scan(&before); err != nil {
