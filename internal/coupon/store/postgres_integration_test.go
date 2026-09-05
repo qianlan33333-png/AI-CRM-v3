@@ -187,7 +187,15 @@ func TestPostgreSQLCouponCheckoutConcurrentClaimReservationAndSettlement(t *test
 	if claims[0].ClaimID == 0 || claims[0].ClaimID != claims[1].ClaimID {
 		t.Fatalf("same-key claims=%+v", claims)
 	}
-	if _, err = checkout.Claim(ctx, couponport.ClaimCommand{CouponID: rule.ID, HolderCustomerID: second, ActorScope: claimCommand.ActorScope, IdempotencyKey: claimCommand.IdempotencyKey, ClaimedAt: now}); !errors.Is(err, couponapp.ErrConflict) {
+	// The replay is deliberately after both the original claim window and the
+	// relative validity boundary. Its frozen receipt must win before a fresh
+	// eligibility check, while a changed holder remains a true conflict.
+	laterClaim := claimCommand
+	laterClaim.ClaimedAt = now.AddDate(0, 0, 4)
+	if replayed, replayErr := checkout.Claim(ctx, laterClaim); replayErr != nil || replayed.ClaimID != claims[0].ClaimID {
+		t.Fatalf("same-key later claim replay=%+v err=%v", replayed, replayErr)
+	}
+	if _, err = checkout.Claim(ctx, couponport.ClaimCommand{CouponID: rule.ID, HolderCustomerID: second, ActorScope: claimCommand.ActorScope, IdempotencyKey: claimCommand.IdempotencyKey, ClaimedAt: laterClaim.ClaimedAt}); !errors.Is(err, couponapp.ErrConflict) {
 		t.Fatalf("same key changed payload error=%v", err)
 	}
 	for _, command := range []couponport.ClaimCommand{
@@ -227,6 +235,31 @@ func TestPostgreSQLCouponCheckoutConcurrentClaimReservationAndSettlement(t *test
 	}
 	if !reservations[0].CouponApplied || reservations[0].ReservationRef == "" || reservations[0] != reservations[1] || reservations[0].ProductType != "standard_product" || reservations[0].DiscountAmountMinor != 100 || reservations[0].PayableAmountMinor != 900 {
 		t.Fatalf("frozen reservation=%+v / %+v", reservations[0], reservations[1])
+	}
+	laterReserve := reserve
+	laterReserve.ReservedAt = now.AddDate(0, 0, 4)
+	if err = uow.Within(ctx, func(txctx context.Context) error {
+		replayed, reserveErr := checkout.ReserveWithin(txctx, laterReserve)
+		if reserveErr != nil {
+			return reserveErr
+		}
+		if replayed != reservations[0] {
+			return fmt.Errorf("same-key later reserve replay=%+v", replayed)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	changedReserve := laterReserve
+	changedReserve.GrossAmountMinor++
+	if err = uow.Within(ctx, func(txctx context.Context) error {
+		_, reserveErr := checkout.ReserveWithin(txctx, changedReserve)
+		if !errors.Is(reserveErr, couponapp.ErrConflict) {
+			return fmt.Errorf("same key changed reserve payload error=%v", reserveErr)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 
 	// An enclosing order UoW failure must leave neither an order reservation nor
@@ -277,9 +310,35 @@ func TestPostgreSQLCouponCheckoutConcurrentClaimReservationAndSettlement(t *test
 	}); err != nil {
 		t.Fatal(err)
 	}
+	consume := couponport.ConsumeCommand{ReservationRef: reservations[0].ReservationRef, OrderReference: reserve.OrderReference, SettledAmountMinor: 900, SettledCurrency: "CNY", ActorScope: "payment:settlement", IdempotencyKey: "checkout-settlement-0001", SettledAt: now.Add(2 * time.Minute)}
 	if err = uow.Within(ctx, func(txctx context.Context) error {
-		_, consumeErr := checkout.ConsumeWithin(txctx, couponport.ConsumeCommand{ReservationRef: reservations[0].ReservationRef, OrderReference: reserve.OrderReference, SettledAmountMinor: 900, SettledCurrency: "CNY", ActorScope: "payment:settlement", IdempotencyKey: "checkout-settlement-0001", SettledAt: now.Add(2 * time.Minute)})
+		_, consumeErr := checkout.ConsumeWithin(txctx, consume)
 		return consumeErr
+	}); err != nil {
+		t.Fatal(err)
+	}
+	laterConsume := consume
+	laterConsume.SettledAt = now.AddDate(0, 0, 4)
+	if err = uow.Within(ctx, func(txctx context.Context) error {
+		replayed, consumeErr := checkout.ConsumeWithin(txctx, laterConsume)
+		if consumeErr != nil {
+			return consumeErr
+		}
+		if replayed != reservations[0] {
+			return fmt.Errorf("same-key later settlement replay=%+v", replayed)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	changedConsume := laterConsume
+	changedConsume.SettledAmountMinor++
+	if err = uow.Within(ctx, func(txctx context.Context) error {
+		_, consumeErr := checkout.ConsumeWithin(txctx, changedConsume)
+		if !errors.Is(consumeErr, couponapp.ErrConflict) {
+			return fmt.Errorf("same key changed settlement payload error=%v", consumeErr)
+		}
+		return nil
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -313,11 +372,30 @@ func TestPostgreSQLCouponCheckoutConcurrentClaimReservationAndSettlement(t *test
 	}); err != nil {
 		t.Fatal(err)
 	}
+	laterRelease := releaseCommand
+	laterRelease.ClosedAt = releaseCommand.ClosedAt.Add(time.Hour)
 	if err = uow.Within(ctx, func(txctx context.Context) error {
-		_, releaseErr := checkout.ReleaseWithin(txctx, releaseCommand)
-		return releaseErr
+		replayed, releaseErr := checkout.ReleaseWithin(txctx, laterRelease)
+		if releaseErr != nil {
+			return releaseErr
+		}
+		if replayed != releaseSnapshot {
+			return fmt.Errorf("same-key later release replay=%+v", replayed)
+		}
+		return nil
 	}); err != nil {
 		t.Fatalf("idempotent close release: %v", err)
+	}
+	changedRelease := laterRelease
+	changedRelease.CloseReason = "payment_failed"
+	if err = uow.Within(ctx, func(txctx context.Context) error {
+		_, releaseErr := checkout.ReleaseWithin(txctx, changedRelease)
+		if !errors.Is(releaseErr, couponapp.ErrConflict) {
+			return fmt.Errorf("same key changed close payload error=%v", releaseErr)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 	var released, expired string
 	if err = native.QueryRow(ctx, `SELECT redemption.status,claim.status FROM coupon_order_redemptions redemption JOIN coupon_customer_claims claim ON claim.id=redemption.claim_id WHERE redemption.order_reference=$1`, releaseReserve.OrderReference).Scan(&released, &expired); err != nil || released != "released" || expired != "expired" {

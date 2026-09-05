@@ -47,12 +47,15 @@ func (s *CheckoutService) Claim(ctx context.Context, c couponport.ClaimCommand) 
 	if c.CouponID < 1 || c.HolderCustomerID < 1 || !validScope(c.ActorScope) || !validKey(c.IdempotencyKey) || c.ClaimedAt.IsZero() {
 		return couponport.CustomerCoupon{}, ErrInvalidCoupon
 	}
+	// ClaimedAt records this process's execution time. It is intentionally not
+	// part of the client operation's immutable business payload: an HTTP retry
+	// must replay the first claim snapshot even when it reaches another server
+	// after the coupon itself has expired.
 	payload, e := json.Marshal(struct {
 		CouponID couponport.ID
 		Holder   int64
 		Scope    string
-		At       time.Time
-	}{c.CouponID, c.HolderCustomerID, c.ActorScope, c.ClaimedAt})
+	}{c.CouponID, c.HolderCustomerID, c.ActorScope})
 	if e != nil {
 		return couponport.CustomerCoupon{}, ErrUnavailable
 	}
@@ -76,12 +79,13 @@ func (s *CheckoutService) ReserveWithin(ctx context.Context, c couponport.Reserv
 	if !validReserve(c) {
 		return couponport.ReservationSnapshot{}, ErrInvalidCoupon
 	}
+	// ReservedAt is local execution evidence, frozen with the first reservation
+	// result rather than treated as a changed checkout request on a retry.
 	payload, e := json.Marshal(struct {
 		Holder, Claim, Product             int64
 		Code, Type, Currency, Order, Scope string
 		Gross                              int64
-		At                                 time.Time
-	}{c.HolderCustomerID, c.ClaimID, c.ProductID, c.ProductCode, c.ProductType, c.Currency, c.OrderReference, c.ActorScope, c.GrossAmountMinor, c.ReservedAt})
+	}{c.HolderCustomerID, c.ClaimID, c.ProductID, c.ProductCode, c.ProductType, c.Currency, c.OrderReference, c.ActorScope, c.GrossAmountMinor})
 	if e != nil {
 		return couponport.ReservationSnapshot{}, ErrUnavailable
 	}
@@ -99,11 +103,14 @@ func (s *CheckoutService) ConsumeWithin(ctx context.Context, c couponport.Consum
 	if !validConsume(c) {
 		return couponport.ReservationSnapshot{}, ErrInvalidCoupon
 	}
+	// Amount, currency, reservation and order reference are the payment-owner's
+	// authoritative settlement facts. SettledAt is delivery/execution evidence;
+	// this Port has no separate settlement-event identity, so a replay with a
+	// later processing time must retain the first verified settlement snapshot.
 	payload, e := json.Marshal(struct {
 		Ref, Order, Currency, Scope string
 		Amount                      int64
-		At                          time.Time
-	}{c.ReservationRef, c.OrderReference, c.SettledCurrency, c.ActorScope, c.SettledAmountMinor, c.SettledAt})
+	}{c.ReservationRef, c.OrderReference, c.SettledCurrency, c.ActorScope, c.SettledAmountMinor})
 	if e != nil {
 		return couponport.ReservationSnapshot{}, ErrUnavailable
 	}
@@ -122,10 +129,11 @@ func (s *CheckoutService) ReleaseWithin(ctx context.Context, c couponport.Releas
 	if !validRelease(c) {
 		return couponport.ReservationSnapshot{}, ErrInvalidCoupon
 	}
+	// ClosedAt is likewise execution evidence. The close reason and authority
+	// references remain in the payload that detects a changed close request.
 	payload, e := json.Marshal(struct {
 		Ref, Order, Reason, Scope string
-		At                        time.Time
-	}{c.ReservationRef, c.OrderReference, c.CloseReason, c.ActorScope, c.ClosedAt})
+	}{c.ReservationRef, c.OrderReference, c.CloseReason, c.ActorScope})
 	if e != nil {
 		return couponport.ReservationSnapshot{}, ErrUnavailable
 	}
