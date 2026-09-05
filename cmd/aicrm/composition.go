@@ -907,6 +907,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		welcomeGrantStore = wecom.NewPostgreSQLWelcomeGrantStore(welcomeGrantCipher)
 	}
 	relationships := wecom.NewPostgreSQLFollowRelationshipStore()
+	legacyAudienceSource.RegistrationFacts = customerStore
 	legacyAudienceSource.Contacts = relationships
 	var channelAssetProvider effectport.ProviderAdapter
 	var channelEntrantProvider effectport.ProviderAdapter

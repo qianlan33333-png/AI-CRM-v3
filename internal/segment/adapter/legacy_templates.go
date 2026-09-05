@@ -11,6 +11,7 @@ import (
 	accessport "github.com/qianlan33333-png/AI-CRM-v3/internal/access/port"
 	channelport "github.com/qianlan33333-png/AI-CRM-v3/internal/channel/port"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
+	customerport "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/port"
 	hxcport "github.com/qianlan33333-png/AI-CRM-v3/internal/hxcdashboard/port"
 	orderport "github.com/qianlan33333-png/AI-CRM-v3/internal/order/port"
 	radarport "github.com/qianlan33333-png/AI-CRM-v3/internal/radar/port"
@@ -24,14 +25,15 @@ import (
 // matching, Provider call, or customer write. Each condition fails closed when
 // its factual Owner is unavailable.
 type LegacyTemplateSource struct {
-	Contacts      wecomport.AudienceContactReader
-	Survey        surveyport.AudienceChoiceAnswerReader
-	Orders        orderport.PaidAudienceReader
-	Channels      channelport.AudienceEntryReader
-	Radar         radarport.AudienceFirstClickReader
-	MemberFacts   hxcport.VersionedSharedFactsReader
-	Owners        accessport.AudienceOwnerReferenceReader
-	PrimaryOwners wecomport.AudiencePrimaryOwnerReader
+	Contacts          wecomport.AudienceContactReader
+	Survey            surveyport.AudienceChoiceAnswerReader
+	Orders            orderport.PaidAudienceReader
+	Channels          channelport.AudienceEntryReader
+	Radar             radarport.AudienceFirstClickReader
+	MemberFacts       hxcport.VersionedSharedFactsReader
+	RegistrationFacts customerport.AudienceRegistrationReader
+	Owners            accessport.AudienceOwnerReferenceReader
+	PrimaryOwners     wecomport.AudiencePrimaryOwnerReader
 	// PrimaryOwnerCorpScope is the composition-owned active WeCom provider
 	// scope. A primary from another scope cannot be compared to this audience's
 	// provider userid, even when the strings happen to match.
@@ -250,13 +252,18 @@ func (s LegacyTemplateSource) wecom(ctx context.Context, p map[string]json.RawMe
 	for id := range set {
 		customerIDs = append(customerIDs, customerdomain.CustomerID(id))
 	}
-	members, e := s.memberFacts(ctx, customerIDs)
+	if s.RegistrationFacts == nil {
+		return nil, ErrCustomerReadUnavailable
+	}
+	facts, e := s.RegistrationFacts.AudienceRegistrationFacts(ctx, customerIDs)
 	if e != nil {
-		return nil, e
+		return nil, ErrCustomerReadUnavailable
 	}
 	for id := range set {
-		fact, found := members[customerdomain.CustomerID(id)]
-		if !found || fact.Availability != hxcport.SharedFactsAvailable || fact.Registered != (registration == "registered") {
+		fact, found := facts[customerdomain.CustomerID(id)]
+		// A missing directory projection is unknown. It must not become an
+		// unregistered match merely because another Owner has no HXC fact.
+		if !found || !fact.Known || fact.Registered != (registration == "registered") {
 			delete(set, id)
 		}
 	}

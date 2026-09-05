@@ -10,6 +10,7 @@ import (
 	accessport "github.com/qianlan33333-png/AI-CRM-v3/internal/access/port"
 	channelport "github.com/qianlan33333-png/AI-CRM-v3/internal/channel/port"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
+	customerport "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/port"
 	hxcport "github.com/qianlan33333-png/AI-CRM-v3/internal/hxcdashboard/port"
 	orderport "github.com/qianlan33333-png/AI-CRM-v3/internal/order/port"
 	radarport "github.com/qianlan33333-png/AI-CRM-v3/internal/radar/port"
@@ -20,13 +21,14 @@ import (
 )
 
 type legacyFacts struct {
-	contacts  []wecomport.AudienceContact
-	survey    []surveyport.AudienceChoiceAnswer
-	orders    []orderport.PaidAudienceOrder
-	channels  []channelport.AudienceEntry
-	radar     []radarport.AudienceFirstClick
-	shared    map[customerdomain.CustomerID]hxcport.SharedFacts
-	sharedErr error
+	contacts     []wecomport.AudienceContact
+	survey       []surveyport.AudienceChoiceAnswer
+	orders       []orderport.PaidAudienceOrder
+	channels     []channelport.AudienceEntry
+	radar        []radarport.AudienceFirstClick
+	shared       map[customerdomain.CustomerID]hxcport.SharedFacts
+	registration map[customerdomain.CustomerID]customerport.AudienceRegistrationFact
+	sharedErr    error
 }
 
 func (legacyFacts) AudienceOwnerUserID(_ context.Context, id accessport.StaffID) (string, bool, error) {
@@ -56,6 +58,16 @@ func (f legacyFacts) AudienceEntries(context.Context, time.Time) ([]channelport.
 func (f legacyFacts) AudienceFirstClicks(context.Context, time.Time) ([]radarport.AudienceFirstClick, error) {
 	return f.radar, nil
 }
+func (f legacyFacts) AudienceRegistrationFacts(_ context.Context, customerIDs []customerdomain.CustomerID) (map[customerdomain.CustomerID]customerport.AudienceRegistrationFact, error) {
+	out := make(map[customerdomain.CustomerID]customerport.AudienceRegistrationFact, len(customerIDs))
+	for _, customerID := range customerIDs {
+		if fact, found := f.registration[customerID]; found {
+			out[customerID] = fact
+		}
+	}
+	return out, nil
+}
+
 func (legacyFacts) CurrentSharedFactsVersion(context.Context) (int64, error) { return 1, nil }
 func (f legacyFacts) SharedFactsAtVersion(_ context.Context, version int64, customerIDs []customerdomain.CustomerID) (map[customerdomain.CustomerID]hxcport.SharedFacts, error) {
 	if f.sharedErr != nil {
@@ -129,11 +141,12 @@ func TestLegacyTemplateSourcesEvaluateFrozenConditions(t *testing.T) {
 			{CustomerID: 2, ProductCode: "paid-course", OwnerReference: "staff-b", PaidAt: &paidInside},
 			{CustomerID: 3, ProductCode: "paid-course"},
 		},
-		channels: []channelport.AudienceEntry{{CustomerID: 1, ChannelID: 7, ChannelCode: "channel-7", OwnerReference: "staff-a", LastEnteredAt: at.Add(-48 * time.Hour)}},
-		radar:    []radarport.AudienceFirstClick{{CustomerID: 1, RadarID: 8, FirstClickedAt: at.Add(-72 * time.Hour), OwnerUserID: "staff-a"}},
-		shared:   map[customerdomain.CustomerID]hxcport.SharedFacts{1: {CustomerID: 1, Availability: hxcport.SharedFactsAvailable, Registered: true, MembershipRecordFound: true, MembershipSource: "subscription", IsMember: true, Tier: "pro", MembershipStatus: "active", ExpiresAt: &expires, HasRealUsage: true, LastUsedAt: &used}},
+		channels:     []channelport.AudienceEntry{{CustomerID: 1, ChannelID: 7, ChannelCode: "channel-7", OwnerReference: "staff-a", LastEnteredAt: at.Add(-48 * time.Hour)}},
+		radar:        []radarport.AudienceFirstClick{{CustomerID: 1, RadarID: 8, FirstClickedAt: at.Add(-72 * time.Hour), OwnerUserID: "staff-a"}},
+		shared:       map[customerdomain.CustomerID]hxcport.SharedFacts{1: {CustomerID: 1, Availability: hxcport.SharedFactsAvailable, Registered: true, MembershipRecordFound: true, MembershipSource: "subscription", IsMember: true, Tier: "pro", MembershipStatus: "active", ExpiresAt: &expires, HasRealUsage: true, LastUsedAt: &used}},
+		registration: map[customerdomain.CustomerID]customerport.AudienceRegistrationFact{1: {CustomerID: 1, Known: true, Registered: true, Source: "people.mobile", UpdatedAt: at}},
 	}
-	source := CustomerSource{UoW: passthroughUoW{}, Legacy: LegacyTemplateSource{Contacts: facts, Survey: facts, Orders: facts, Channels: facts, Radar: facts, MemberFacts: facts, Owners: facts}}
+	source := CustomerSource{UoW: passthroughUoW{}, Legacy: LegacyTemplateSource{Contacts: facts, Survey: facts, Orders: facts, Channels: facts, Radar: facts, MemberFacts: facts, RegistrationFacts: facts, Owners: facts}}
 	cases := []struct {
 		name, parameters string
 		template         segmentdsl.Template
@@ -299,4 +312,28 @@ func TestLegacyTemplateOwnerReferencesRejectNonCanonicalIDsAndNeedAccess(t *test
 		t.Fatal(err)
 	}
 	assertAudienceIDs(t, result, 1)
+}
+
+func TestWeComRegistrationUsesDirectoryPhonePresenceInsteadOfHXC(t *testing.T) {
+	at := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+	facts := legacyFacts{
+		contacts: []wecomport.AudienceContact{{CustomerID: 1, Status: "active"}, {CustomerID: 2, Status: "active"}, {CustomerID: 3, Status: "active"}, {CustomerID: 4, Status: "active"}},
+		// Deliberately disagree with the directory projection. HXC cannot make
+		// a WeCom registration match, and absence of a directory row is unknown.
+		shared: map[customerdomain.CustomerID]hxcport.SharedFacts{1: {CustomerID: 1, Availability: hxcport.SharedFactsAvailable, Registered: true}, 2: {CustomerID: 2, Availability: hxcport.SharedFactsAvailable, Registered: false}},
+		registration: map[customerdomain.CustomerID]customerport.AudienceRegistrationFact{
+			1: {CustomerID: 1, Known: true, Registered: false, Source: "people.mobile", UpdatedAt: at},
+			2: {CustomerID: 2, Known: true, Registered: true, Source: "people.mobile", UpdatedAt: at},
+			3: {CustomerID: 3, Known: true, Registered: false, Source: "people.mobile", UpdatedAt: at},
+		},
+	}
+	source := LegacyTemplateSource{Contacts: facts, RegistrationFacts: facts, MemberFacts: facts, Owners: facts}
+	registered, err := source.Evaluate(context.Background(), legacyDefinition(t, segmentdsl.WeComContactRegistration, `{"owner_scope":"all","owner_staff_ids":[],"contact_statuses":["active"],"registration_status":"registered"}`), at)
+	if err != nil || len(registered.CustomerIDs) != 1 || registered.CustomerIDs[0] != 2 {
+		t.Fatalf("registered=%+v err=%v", registered, err)
+	}
+	unregistered, err := source.Evaluate(context.Background(), legacyDefinition(t, segmentdsl.WeComContactRegistration, `{"owner_scope":"all","owner_staff_ids":[],"contact_statuses":["active"],"registration_status":"unregistered"}`), at)
+	if err != nil || len(unregistered.CustomerIDs) != 2 || unregistered.CustomerIDs[0] != 1 || unregistered.CustomerIDs[1] != 3 {
+		t.Fatalf("unregistered=%+v err=%v", unregistered, err)
+	}
 }
