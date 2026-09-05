@@ -30,7 +30,7 @@
 | 板块 | PRD | 开发状态 | PR / HEAD | 旧行为/前端 | PostgreSQL/恢复 | 身份/效果协议 | 总控审核 |
 |---|---|---|---|---|---|---|---|
 | 客户同步 | 01 | #133与恢复缺陷#142、01/08组合#145均已纳入 | [#133](https://github.com/qianlan33333-png/AI-CRM-v3/pull/133) / c3195e2；[#142](https://github.com/qianlan33333-png/AI-CRM-v3/pull/142) / 5242e17；[#145](https://github.com/qianlan33333-png/AI-CRM-v3/pull/145) / e2a3c41 | Host列表通过；welcome先执行且发送标识不变 | #142真实PG16恢复；#145真实Inbox→同根双关系→River重启通过 | HTTP 200/-1限定三次，其他临时失败保留12次预算 | 独立恢复及01/08组合通过；整体随最终装配复核 |
-| 问卷 | 02 | 独立外推运行时已批准纳入；历史导入验证为另一个未完成任务 | [#134](https://github.com/qianlan33333-png/AI-CRM-v3/pull/134) / b26ea89；[#137](https://github.com/qianlan33333-png/AI-CRM-v3/pull/137) / 807873c；[#146](https://github.com/qianlan33333-png/AI-CRM-v3/pull/146) / 2cca78c | 冻结Host QR当前/全局两分支恢复并通过 | 外推CI33955879884通过；#146此前真实PG answer target fact drift已修后重跑CI33957944040 | 0075注册kind；不可变快照/回执事实已补 | 外推增量已批准纳入；历史#146新提交未审核，板块整体未完成 |
+| 问卷 | 02 | 独立外推运行时已批准纳入；历史导入验证为另一个未完成任务 | [#134](https://github.com/qianlan33333-png/AI-CRM-v3/pull/134) / b26ea89；[#137](https://github.com/qianlan33333-png/AI-CRM-v3/pull/137) / 807873c；[#146](https://github.com/qianlan33333-png/AI-CRM-v3/pull/146) / 98f0c67 | 冻结Host QR当前/全局两分支恢复并通过 | 外推CI33955879884通过；#146此前真实PG answer target fact drift已修；测试夹具摘要保持合法32字节后由CI33958099242重跑 | 0075注册kind；不可变快照/回执事实已补 | 外推增量已批准纳入；历史#146新提交未审核，板块整体未完成 |
 | 商品与支付 | 03 | 独立缺陷PR开发测试通过；联合接线待完成 | [#136](https://github.com/qianlan33333-png/AI-CRM-v3/pull/136) / 1329c1e | 商品码新链接、数字历史别名、自购确认测试通过 | CI33949608992 PG16/race通过，含NULL约束反例 | 新会话受益人未确定；旧会话仅精确重放 | 独立PR通过；03/04闭环未完成 |
 | 周期权益与优惠券 | 04 | 独立领域PR通过并已纳入；03/04联合接线待完成 | [#138](https://github.com/qianlan33333-png/AI-CRM-v3/pull/138) / 599b5bf | 券数据页与周期读Port已实现；03联合挂载中 | CI33954299348 PG16/race通过，含不同开通/退款顺序与历史共存 | 仅保留独立历史覆盖；券跨时刻重放通过 | 独立领域已批准并纳入6eab2bd；整体未完成 |
 | 自动化运营 | 05 | 已有局部实现；为即时集成保留名额暂缓 | 本地 faa7149；未PR | 未验收 | PG/运行时未验收 | Owner只读Port已开发；composition未交付 | 不算完成；原上下文待继续 |
@@ -53,7 +53,7 @@
 | 任务 | 执行智能体 | 模型 | 工作区/分支 | 状态 |
 |---|---|---|---|---|
 | 01 | /root/customer_sync | Terra high | /Users/qianlan/Downloads/新CRM/.codex-worktrees/customer-sync / codex/customer-sync-parity | 已交回；PR133 CI通过，总控保留板块联合验收 |
-| 02 | /root/survey | Terra high | /Users/qianlan/Downloads/新CRM/.survey-prd02-worktree / codex/survey-prd02-history-import | #137外推已纳入；当前#146@2cca78c补历史逐条目标事实/密文/错误归属与隔离事实，CI33957944040运行中 |
+| 02 | /root/survey | Terra high | /Users/qianlan/Downloads/新CRM/.survey-prd02-worktree / codex/survey-prd02-history-import | #137外推已纳入；当前#146@98f0c67补历史逐条目标事实/密文/错误归属与隔离事实，CI33958099242等待执行 |
 | 08 | /root/channel_welcome | Terra xhigh | /Users/qianlan/Downloads/新CRM/.codex-worktrees/channel-welcome-prd08 / codex/channel-welcome-20s | 已交回，当前HEAD实际PG/River及race通过；09已基于它堆叠 |
 | 03 | /root/product_payment | Terra xhigh | /Users/qianlan/Downloads/新CRM/.codex-worktrees/product-payment-prd03 / codex/product-payment-parity | PR136已纳入；03/04联合任务保留未批准本地checkpoint，当前未占活动名额 |
 | 04 | /root/entitlement_coupon | Terra xhigh | /Users/qianlan/Downloads/新CRM/.codex-worktrees/entitlement-coupon-prd04 / codex/entitlement-coupon-parity | PR138独立领域已纳入；03/04联合闭环仍待恢复 |
