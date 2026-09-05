@@ -231,6 +231,15 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 		diagnostic, hasDiagnostic := segmentapp.PersistenceFailure(configurationErr)
 		t.Fatalf("baseline execution configuration=%+v err=%v diagnostic=%+v has_diagnostic=%t", configuration, configurationErr, diagnostic, hasDiagnostic)
 	}
+	_, storedVersion, storedPolicyErr := runtimeService.Policy(ctx, policy.ID)
+	if storedPolicyErr != nil || storedVersion.PackageID != segmentport.PackageID(packageID) {
+		t.Fatalf("stored policy version=%+v err=%v want_package_id=%d", storedVersion, storedPolicyErr, packageID)
+	}
+	policyConfiguration, policyConfigurationErr := execution.AudienceExecutionConfiguration(ctx, storedVersion.PackageID)
+	if policyConfigurationErr != nil || !policyConfiguration.Ready {
+		diagnostic, hasDiagnostic := segmentapp.PersistenceFailure(policyConfigurationErr)
+		t.Fatalf("stored policy execution configuration=%+v err=%v diagnostic=%+v has_diagnostic=%t", policyConfiguration, policyConfigurationErr, diagnostic, hasDiagnostic)
+	}
 	if _, err = runtimeService.TransitionPolicy(ctx, automationapp.PolicyLifecycleCommand{PolicyID: policy.ID, ExpectedVersion: policy.Version, Actor: staffID, Target: automationdomain.PolicyActive, IdempotencyKey: "audience-runtime-activate-0001"}); err != nil {
 		t.Fatal(err)
 	}
