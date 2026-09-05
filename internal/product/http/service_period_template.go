@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // servicePeriodPublicState is the small Host-owned fact set substituted into
@@ -33,6 +34,11 @@ func renderServicePeriodPublicPage(w io.Writer, state servicePeriodPublicState) 
 	if page == "" {
 		return fmt.Errorf("frozen service-period renderer body unavailable")
 	}
+	// This is an explicitly bounded Host adaptation to the frozen static
+	// script. The server already renders dates in Asia/Shanghai; use the same
+	// zone after the script refreshes its state so an evening UTC expiry cannot
+	// display two different calendar dates on one page.
+	page = strings.Replace(page, frozenServicePeriodEndDateFunction, servicePeriodShanghaiEndDateFunction, 1)
 
 	status := state.Status
 	if status == "" {
@@ -80,37 +86,187 @@ func renderServicePeriodPublicPage(w io.Writer, state servicePeriodPublicState) 
 		card = servicePeriodNoneCard(price, state.Product.ServicePeriodDurationDays)
 	}
 
-	// These replacement keys are the dynamic Python f-string expressions in
-	// the donor source. Values generated here are escaped or are Host-built
-	// route/markup fragments. The final brace normalization reproduces Python
-	// f-string escaping for CSS and JavaScript.
-	replacements := map[string]string{
-		"{title}":                             title,
-		"{escape(status)}":                    html.EscapeString(status),
-		"{tag_hidden}":                        tagHidden,
-		"{escape(tag_text)}":                  html.EscapeString(tagText),
-		"{hero_text_hidden}":                  heroHidden,
-		"{escape(hero_text)}":                 html.EscapeString(heroText),
-		"{card_html}":                         card,
-		"{wecom_action_hidden}":               wecomHidden,
-		"{media}":                             servicePeriodDetailMedia(state.Product.Images),
-		"{escape(bar_meta)}":                  html.EscapeString(barMeta),
-		"{cta_text}":                          cta,
-		"{render_lead_qr_modal()}":            servicePeriodLeadQRModal(),
-		"{lead_qr_modal_controller_script()}": servicePeriodLeadQRController(),
-		"{lead_qr_modal_styles()}":            servicePeriodLeadQRStyles(),
-		"{state_json}":                        servicePeriodStateJSON(state, status),
-		"{duration_days}":                     strconv.FormatInt(int64(state.Product.ServicePeriodDurationDays), 10),
-		"{price_yuan}":                        price,
-		"{product_context_fragment_bootstrap_script()}": "",
+	// Decode only static Python f-string segments before inserting trusted Host
+	// facts. The frozen source contains both doubled f-string braces and Python
+	// escapes (notably `\\\\` in JavaScript regexes). A whole-page replacement
+	// after substitution would also rewrite legitimate braces/backslashes in a
+	// product title, QR text, or JSON value.
+	page, err := renderFrozenPythonFString(page, []frozenFStringReplacement{
+		{expression: "{title}", value: title},
+		{expression: "{escape(status)}", value: html.EscapeString(status)},
+		{expression: "{tag_hidden}", value: tagHidden},
+		{expression: "{escape(tag_text)}", value: html.EscapeString(tagText)},
+		{expression: "{hero_text_hidden}", value: heroHidden},
+		{expression: "{escape(hero_text)}", value: html.EscapeString(heroText)},
+		{expression: "{card_html}", value: card},
+		{expression: "{wecom_action_hidden}", value: wecomHidden},
+		{expression: "{media}", value: servicePeriodDetailMedia(state.Product.Images)},
+		{expression: "{escape(bar_meta)}", value: html.EscapeString(barMeta)},
+		{expression: "{cta_text}", value: cta},
+		{expression: "{render_lead_qr_modal()}", value: servicePeriodLeadQRModal()},
+		{expression: "{lead_qr_modal_controller_script()}", value: servicePeriodLeadQRController()},
+		{expression: "{lead_qr_modal_styles()}", value: servicePeriodLeadQRStyles()},
+		{expression: "{state_json}", value: servicePeriodStateJSON(state, status)},
+		{expression: "{duration_days}", value: strconv.FormatInt(int64(state.Product.ServicePeriodDurationDays), 10)},
+		{expression: "{price_yuan}", value: price},
+		// V2 exchanged a fragment credential. V3 deliberately omits it: the
+		// existing Payment H5 OAuth callback issues the only trusted HttpOnly
+		// session that this public page subsequently reads server-side.
+		{expression: "{product_context_fragment_bootstrap_script()}", value: ""},
+	})
+	if err != nil {
+		return err
 	}
-	for source, value := range replacements {
-		page = strings.ReplaceAll(page, source, value)
-	}
-	page = strings.ReplaceAll(page, "{{", "{")
-	page = strings.ReplaceAll(page, "}}", "}")
-	_, err := io.WriteString(w, page)
+	_, err = io.WriteString(w, page)
 	return err
+}
+
+const frozenServicePeriodEndDateFunction = `      function endDate(value) {{
+        return value ? String(value).slice(0, 10) : "-";
+      }`
+
+const servicePeriodShanghaiEndDateFunction = `      function endDate(value) {{
+        if (!value) return "-";
+        const parsed = new Date(value);
+        if (Number.isNaN(parsed.getTime())) return "-";
+        const parts = new Intl.DateTimeFormat("zh-CN", {{
+          timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit"
+        }}).formatToParts(parsed);
+        const pick = function (type) {{
+          const item = parts.find(function (part) {{ return part.type === type; }});
+          return item ? item.value : "";
+        }};
+        return pick("year") + "-" + pick("month") + "-" + pick("day");
+      }`
+
+type frozenFStringReplacement struct {
+	expression string
+	value      string
+}
+
+// renderFrozenPythonFString implements the small, explicit subset of the
+// frozen f-string used by the donor. Expressions are enumerated by the Host;
+// all text between them is decoded as a Python triple-quoted f-string literal.
+// It intentionally has no evaluator for donor expressions or user content.
+func renderFrozenPythonFString(source string, replacements []frozenFStringReplacement) (string, error) {
+	var out strings.Builder
+	staticStart := 0
+	for index := 0; index < len(source); {
+		matched := frozenFStringReplacement{}
+		for _, candidate := range replacements {
+			if strings.HasPrefix(source[index:], candidate.expression) {
+				matched = candidate
+				break
+			}
+		}
+		if matched.expression == "" {
+			_, size := utf8.DecodeRuneInString(source[index:])
+			index += size
+			continue
+		}
+		literal, err := decodeFrozenPythonLiteral(source[staticStart:index], true)
+		if err != nil {
+			return "", err
+		}
+		out.WriteString(literal)
+		out.WriteString(matched.value)
+		index += len(matched.expression)
+		staticStart = index
+	}
+	literal, err := decodeFrozenPythonLiteral(source[staticStart:], true)
+	if err != nil {
+		return "", err
+	}
+	out.WriteString(literal)
+	return out.String(), nil
+}
+
+// decodeFrozenPythonLiteral keeps only Python's static literal rules. Unknown
+// escapes are retained as Python does for a non-raw literal, instead of being
+// interpreted by Go or JavaScript.
+func decodeFrozenPythonLiteral(source string, fString bool) (string, error) {
+	var out strings.Builder
+	for index := 0; index < len(source); {
+		switch source[index] {
+		case '{':
+			if fString && index+1 < len(source) && source[index+1] == '{' {
+				out.WriteByte('{')
+				index += 2
+				continue
+			}
+		case '}':
+			if fString && index+1 < len(source) && source[index+1] == '}' {
+				out.WriteByte('}')
+				index += 2
+				continue
+			}
+		case '\\':
+			if index+1 == len(source) {
+				return "", fmt.Errorf("frozen Python literal ends with an escape")
+			}
+			next := source[index+1]
+			switch next {
+			case '\\', '\'', '"':
+				out.WriteByte(next)
+				index += 2
+				continue
+			case 'a':
+				out.WriteByte('\a')
+			case 'b':
+				out.WriteByte('\b')
+			case 'f':
+				out.WriteByte('\f')
+			case 'n':
+				out.WriteByte('\n')
+			case 'r':
+				out.WriteByte('\r')
+			case 't':
+				out.WriteByte('\t')
+			case 'v':
+				out.WriteByte('\v')
+			case '\n':
+				index += 2
+				continue
+			case 'x', 'u', 'U':
+				digits := map[byte]int{'x': 2, 'u': 4, 'U': 8}[next]
+				if index+2+digits > len(source) {
+					return "", fmt.Errorf("invalid frozen Python %c escape", next)
+				}
+				value, err := strconv.ParseUint(source[index+2:index+2+digits], 16, 32)
+				if err != nil || value > utf8.MaxRune || (value >= 0xD800 && value <= 0xDFFF) {
+					return "", fmt.Errorf("invalid frozen Python %c escape", next)
+				}
+				out.WriteRune(rune(value))
+				index += 2 + digits
+				continue
+			default:
+				if next >= '0' && next <= '7' {
+					end := index + 2
+					for end < len(source) && end < index+4 && source[end] >= '0' && source[end] <= '7' {
+						end++
+					}
+					value, err := strconv.ParseUint(source[index+1:end], 8, 8)
+					if err != nil {
+						return "", fmt.Errorf("invalid frozen Python octal escape")
+					}
+					out.WriteByte(byte(value))
+					index = end
+					continue
+				}
+				// Python preserves an unrecognised escape (and emits a warning).
+				out.WriteByte('\\')
+				out.WriteByte(next)
+				index += 2
+				continue
+			}
+			index += 2
+			continue
+		}
+		_, size := utf8.DecodeRuneInString(source[index:])
+		out.WriteString(source[index : index+size])
+		index += size
+	}
+	return out.String(), nil
 }
 
 func frozenServicePeriodPageBody() string {

@@ -58,9 +58,11 @@ func frozenTripleQuoted(marker, source string) string {
 
 func renderedDonorFragment(marker string) string {
 	fragment := frozenTripleQuoted(marker, frozenPublicProductService)
-	fragment = strings.ReplaceAll(fragment, "{{", "{")
-	fragment = strings.ReplaceAll(fragment, "}}", "}")
-	return fragment
+	decoded, err := decodeFrozenPythonLiteral(fragment, false)
+	if err != nil {
+		return ""
+	}
+	return decoded
 }
 
 func servicePeriodLeadQRStyles() string {

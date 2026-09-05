@@ -9,6 +9,10 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -191,6 +195,58 @@ func TestServicePeriodPublicHostRetainsFrozenDonorStateDOM(t *testing.T) {
 		if !strings.Contains(page.String(), marker) {
 			t.Fatalf("adapted donor state DOM missing %q", marker)
 		}
+	}
+}
+
+func TestFrozenServicePeriodFStringDecodesOnlyStaticLiteralSegments(t *testing.T) {
+	dynamic := `客户 {{state_json}} \\ 保持`
+	rendered, err := renderFrozenPythonFString(`const route = /^\\/s\\//; const literal = {{ok: true}}; const title = {title};`, []frozenFStringReplacement{{expression: "{title}", value: dynamic}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rendered != `const route = /^\/s\//; const literal = {ok: true}; const title = 客户 {{state_json}} \\ 保持;` {
+		t.Fatalf("f-string render=%q", rendered)
+	}
+}
+
+// This runs the frozen public-page script in JSDOM against the actual V3
+// ServicePeriodPublicHandler. It covers static literal decoding, the state
+// refresh request, trusted OAuth-cookie recovery, the QR modal, CTA binding,
+// Shanghai date rendering, and rejection of the retired fragment bootstrap.
+func TestFrozenServicePeriodPublicBrowserJourney(t *testing.T) {
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Fatal("node is required for frozen service-period browser journey")
+	}
+	reader := &servicePeriodPublicStub{product: productport.CheckoutProduct{
+		ID: 71, ProductType: productport.ProductOptionServicePeriod, Code: "term-31", Name: `服务 {{state_json}} \ 标题`, PriceMinor: 12800, Currency: "CNY", Version: 4,
+		LeadChannelID: 44, LeadQRTitle: `二维码 {{keep}} \ 标题`, LeadQRSubtitle: `扫码 {{keep}} \ 领取资料`, ServicePeriodDurationDays: 31,
+	}}
+	handler, err := NewServicePeriodPublicHandler(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	endAt := time.Date(2026, 9, 20, 16, 0, 0, 0, time.UTC) // 2026-09-21 in Shanghai.
+	if err = handler.SetTrustedPublicState(servicePeriodTestUOW{}, servicePeriodSessionStub{}, servicePeriodEntitlementStub{page: orderport.EntitlementPage{Items: []orderport.Entitlement{{CustomerID: 11, ServiceProductID: 71, Status: "active", EndAt: endAt}}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err = handler.SetPublicLeadQRCodeReader(servicePeriodLeadQRStub{value: channelport.PublicLeadQRCode{URL: "https://work.weixin.qq.com/q/term"}}); err != nil {
+		t.Fatal(err)
+	}
+	handler.now = func() time.Time { return time.Date(2026, 9, 5, 9, 0, 0, 0, time.UTC) }
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	_, source, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("locate service-period journey")
+	}
+	root := filepath.Clean(filepath.Join(filepath.Dir(source), "..", "..", ".."))
+	journey := filepath.Join(root, "internal", "product", "http", "service_period_public_journey.mjs")
+	command := exec.Command("node", journey)
+	command.Dir = root
+	command.Env = append(os.Environ(), "AICRM_SERVICE_PERIOD_JOURNEY_BASE_URL="+server.URL, "AICRM_SERVICE_PERIOD_JOURNEY_COOKIE="+paymentport.TrustedSessionCookieName+"=service-period-trusted")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("frozen service-period browser journey: %v\n%s", err, output)
 	}
 }
 
