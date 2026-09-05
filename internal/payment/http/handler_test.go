@@ -73,13 +73,13 @@ type h5OAuthStub struct {
 func (stub *h5OAuthStub) Enabled() bool { return stub.enabled }
 func (stub *h5OAuthStub) Start(_ context.Context, returnPath string) (string, error) {
 	stub.starts++
-	if returnPath != "/pay/7" {
+	if returnPath != "/pay/course-7" {
 		return "", errors.New("invalid")
 	}
 	return "https://open.weixin.qq.com/oauth", nil
 }
 func (stub *h5OAuthStub) Complete(context.Context, string, string) (paymentsession.Issued, string, error) {
-	return stub.issued, "/pay/7", nil
+	return stub.issued, "/pay/course-7", nil
 }
 
 type sessionVerifierStub struct{ fact identitydomain.VerifiedFact }
@@ -125,17 +125,17 @@ func (securityStub) AuthorizeCSRF(context.Context, *http.Request) (accessdomain.
 func TestCheckoutAcceptsOnlyOpaqueCookieIdentity(t *testing.T) {
 	application := &appStub{}
 	handler, _ := NewHandler(application, nil, securityStub{}, true)
-	request := httptest.NewRequest(http.MethodPost, "/api/v1/wechat-pay/checkouts", strings.NewReader(`{"product_id":3,"product_kind":"standard"}`))
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/wechat-pay/checkouts", strings.NewReader(`{"product_id":3,"product_kind":"standard","beneficiary_selection":"payer_self"}`))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Idempotency-Key", "checkout-key-0000001")
 	request.AddCookie(&http.Cookie{Name: SessionCookieName, Value: "pays_session_token_0000000001"})
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusAccepted || application.createCalls != 1 || application.create.ProductID != 3 || application.create.ProductType != "standard" || application.create.SessionToken == "" || response.Header().Get("Cache-Control") != "no-store" {
+	if response.Code != http.StatusAccepted || application.createCalls != 1 || application.create.ProductID != 3 || application.create.ProductType != "standard" || application.create.BeneficiarySelection != paymentport.BeneficiarySelectionPayerSelf || application.create.SessionToken == "" || response.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("code=%d command=%+v body=%s", response.Code, application.create, response.Body.String())
 	}
-	for _, rawField := range []string{"customer_id", "openid", "unionid", "assurance"} {
-		request = httptest.NewRequest(http.MethodPost, "/api/v1/wechat-pay/checkouts", strings.NewReader(`{"product_id":3,"product_kind":"standard","`+rawField+`":"attacker"}`))
+	for _, rawField := range []string{"customer_id", "beneficiary_customer_id", "openid", "unionid", "assurance"} {
+		request = httptest.NewRequest(http.MethodPost, "/api/v1/wechat-pay/checkouts", strings.NewReader(`{"product_id":3,"product_kind":"standard","beneficiary_selection":"payer_self","`+rawField+`":"attacker"}`))
 		request.Header.Set("Content-Type", "application/json")
 		request.AddCookie(&http.Cookie{Name: SessionCookieName, Value: "pays_session_token_0000000001"})
 		response = httptest.NewRecorder()
@@ -152,7 +152,7 @@ func TestH5OAuthStartRequiresWeChatAndDisabledMakesZeroCalls(t *testing.T) {
 	if err := handler.SetH5OAuth(disabled); err != nil {
 		t.Fatal(err)
 	}
-	request := httptest.NewRequest(http.MethodGet, "/api/h5/wechat-pay/oauth/start?return_url=%2Fpay%2F7", nil)
+	request := httptest.NewRequest(http.MethodGet, "/api/h5/wechat-pay/oauth/start?return_url=%2Fpay%2Fcourse-7", nil)
 	request.Header.Set("User-Agent", "MicroMessenger")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
@@ -161,14 +161,14 @@ func TestH5OAuthStartRequiresWeChatAndDisabledMakesZeroCalls(t *testing.T) {
 	}
 	enabled := &h5OAuthStub{enabled: true}
 	_ = handler.SetH5OAuth(enabled)
-	request = httptest.NewRequest(http.MethodGet, "/api/h5/wechat-pay/oauth/start?return_url=https%3A%2F%2Fevil.test%2Fpay%2F7", nil)
+	request = httptest.NewRequest(http.MethodGet, "/api/h5/wechat-pay/oauth/start?return_url=https%3A%2F%2Fevil.test%2Fpay%2Fcourse-7", nil)
 	request.Header.Set("User-Agent", "MicroMessenger")
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusBadRequest || enabled.starts != 1 {
 		t.Fatalf("code=%d starts=%d", response.Code, enabled.starts)
 	}
-	request = httptest.NewRequest(http.MethodGet, "/api/h5/wechat-pay/oauth/start?return_url=%2Fpay%2F7", nil)
+	request = httptest.NewRequest(http.MethodGet, "/api/h5/wechat-pay/oauth/start?return_url=%2Fpay%2Fcourse-7", nil)
 	request.Header.Set("User-Agent", "MicroMessenger")
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
