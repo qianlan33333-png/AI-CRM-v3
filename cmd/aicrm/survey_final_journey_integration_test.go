@@ -163,6 +163,19 @@ func TestSurveyOAuthSubmissionResultJourneyPostgreSQL(t *testing.T) {
 	if err != nil || ownerPublished.Status != surveyport.StatusPublished || ownerPublished.DefinitionVersion != 1 {
 		t.Fatalf("Owner published=%+v err=%v", ownerPublished, err)
 	}
+	// OAuth Start reads through the same published-by-slug Store method in its
+	// own Unit of Work. Keep that read explicit so a migration or projection
+	// failure is reported as its underlying Owner error, rather than only as the
+	// public 503 mapping used by the HTTP boundary.
+	var oauthPublished surveyport.Questionnaire
+	err = uow.Within(ctx, func(tx context.Context) error {
+		var readErr error
+		oauthPublished, readErr = repository.GetPublishedBySlug(tx, "oauth-journey")
+		return readErr
+	})
+	if err != nil || oauthPublished.ID != createResult.Questionnaire.ID || oauthPublished.Status != surveyport.StatusPublished {
+		t.Fatalf("OAuth published-by-slug=%+v err=%v", oauthPublished, err)
+	}
 
 	start := surveyJourneyServe(t, handler, http.MethodGet, "/api/h5/surveys/oauth/start?slug=oauth-journey", nil, "", nil, "MicroMessenger Survey Journey")
 	if start.Code != http.StatusSeeOther {
