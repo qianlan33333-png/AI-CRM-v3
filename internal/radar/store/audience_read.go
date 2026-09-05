@@ -9,8 +9,9 @@ import (
 	radarport "github.com/qianlan33333-png/AI-CRM-v3/internal/radar/port"
 )
 
-// AudienceFirstClicks uses resolved content-open facts. It aggregates the
-// immutable event stream, so later reads never reset the first-click anchor.
+// AudienceFirstClicks uses the first resolved authorization or content fact.
+// A successful authorization is already an attributable click even when later
+// content delivery fails, and later events never reset its anchor.
 func (Postgres) AudienceFirstClicks(ctx context.Context, reference time.Time) ([]radarport.AudienceFirstClick, error) {
 	if reference.IsZero() {
 		return nil, radar.ErrInvalidArgument
@@ -19,7 +20,7 @@ func (Postgres) AudienceFirstClicks(ctx context.Context, reference time.Time) ([
 	if err != nil {
 		return nil, err
 	}
-	rows, err := tx.Query(ctx, `SELECT customer_id,radar_id,MIN(occurred_at) FROM radar_events WHERE attribution_status='resolved' AND customer_id IS NOT NULL AND stage IN ('content_opened','redirected','image_loaded','pdf_opened') AND occurred_at <= $1 GROUP BY customer_id,radar_id ORDER BY radar_id,customer_id`, reference.UTC())
+	rows, err := tx.Query(ctx, `SELECT customer_id,radar_id,MIN(occurred_at) FROM radar_events WHERE attribution_status='resolved' AND customer_id IS NOT NULL AND stage IN ('oauth_verified','identity_resolved','content_opened','redirected','image_loaded','pdf_opened') AND occurred_at <= $1 GROUP BY customer_id,radar_id ORDER BY radar_id,customer_id`, reference.UTC())
 	if err != nil {
 		return nil, err
 	}

@@ -59,7 +59,7 @@ func TestAudienceMemberFactsRequirePublishedProjection(t *testing.T) {
 		var err error
 		facts, err = store.AudienceMemberFacts(tx, reference)
 		return err
-	}); err != nil || len(facts) != 1 || facts[0].CustomerID != 91 || !facts[0].Registered || facts[0].LastUsedAt == nil {
+	}); err != nil || len(facts) != 1 || facts[0].CustomerID != 91 || !facts[0].Registered || !facts[0].IsMember || facts[0].LastUsedAt == nil {
 		t.Fatalf("facts=%+v err=%v", facts, err)
 	}
 }

@@ -7,8 +7,11 @@ import (
 )
 
 type AudienceEntry struct {
-	CustomerID                    customerdomain.CustomerID
-	ChannelID                     int64
+	CustomerID customerdomain.CustomerID
+	ChannelID  int64
+	// ChannelCode is the immutable business code selected by the legacy form;
+	// ChannelID is retained only as an Owner-local lookup key.
+	ChannelCode                   string
 	OwnerReference                string
 	FirstEnteredAt, LastEnteredAt time.Time
 }

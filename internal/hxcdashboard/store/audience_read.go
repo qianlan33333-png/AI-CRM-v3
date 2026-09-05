@@ -28,7 +28,7 @@ func (store *PostgreSQL) AudienceMemberFacts(ctx context.Context, reference time
 		// audience. Fail closed so callers expose source-unavailable instead.
 		return nil, ErrNotFound
 	}
-	rows, err := tx.Query(ctx, `SELECT r.customer_id,r.subscription_tier,CASE WHEN r.stage='registered_no_active_membership' THEN 'expired' ELSE 'active' END,r.subscription_expires_at,r.last_used_at,r.source_updated_at FROM hxc_dashboard_rows r JOIN hxc_dashboard_versions v ON v.id=r.projection_id AND v.status='published' WHERE r.identity_state='matched' AND r.customer_id IS NOT NULL AND r.source_updated_at <= $1 ORDER BY r.customer_id`, reference.UTC())
+	rows, err := tx.Query(ctx, `SELECT r.customer_id,r.subscription_tier,CASE WHEN r.stage='registered_no_active_membership' THEN 'expired' ELSE 'active' END,(r.stage IN ('active_used','active_unused')),r.subscription_expires_at,r.last_used_at,r.source_updated_at FROM hxc_dashboard_rows r JOIN hxc_dashboard_versions v ON v.id=r.projection_id AND v.status='published' WHERE r.identity_state='matched' AND r.customer_id IS NOT NULL AND r.source_updated_at <= $1 ORDER BY r.customer_id`, reference.UTC())
 	if err != nil {
 		return nil, err
 	}
@@ -36,7 +36,7 @@ func (store *PostgreSQL) AudienceMemberFacts(ctx context.Context, reference time
 	out := []hxcport.AudienceMemberFact{}
 	for rows.Next() {
 		var item hxcport.AudienceMemberFact
-		if err = rows.Scan(&item.CustomerID, &item.Tier, &item.Status, &item.ExpiresAt, &item.LastUsedAt, &item.SourceUpdatedAt); err != nil {
+		if err = rows.Scan(&item.CustomerID, &item.Tier, &item.Status, &item.IsMember, &item.ExpiresAt, &item.LastUsedAt, &item.SourceUpdatedAt); err != nil {
 			return nil, err
 		}
 		item.Registered = true

@@ -247,7 +247,7 @@ func (s LegacyTemplateSource) paid(ctx context.Context, p map[string]json.RawMes
 		return nil, e
 	}
 	eligible := map[int64]bool{}
-	if require || scoped {
+	if require {
 		contacts, e := s.contacts(ctx, at)
 		if e != nil {
 			return nil, e
@@ -264,7 +264,10 @@ func (s LegacyTemplateSource) paid(ctx context.Context, p map[string]json.RawMes
 			continue
 		}
 		id := int64(fact.CustomerID)
-		if (!require && !scoped) || eligible[id] {
+		if scoped && !owner(p, fact.OwnerReference) {
+			continue
+		}
+		if !require || eligible[id] {
 			out[id] = true
 		}
 	}
@@ -302,7 +305,7 @@ func (s LegacyTemplateSource) channel(ctx context.Context, p map[string]json.Raw
 	out := map[int64]bool{}
 	for _, fact := range facts {
 		age := int(at.Sub(fact.LastEnteredAt).Hours() / 24)
-		if !contains(channels, strconv.FormatInt(fact.ChannelID, 10)) || age < minimum || (maximum != nil && age >= *maximum) || !owner(p, fact.OwnerReference) {
+		if !contains(channels, fact.ChannelCode) || age < minimum || (maximum != nil && age >= *maximum) || !owner(p, fact.OwnerReference) {
 			continue
 		}
 		id := int64(fact.CustomerID)
@@ -326,11 +329,18 @@ func (s LegacyTemplateSource) radar(ctx context.Context, p map[string]json.RawMe
 	if json.Unmarshal(p["elapsed_min"], &minimum) != nil || json.Unmarshal(p["elapsed_max"], &maximum) != nil || json.Unmarshal(p["elapsed_unit"], &unit) != nil {
 		return nil, ErrCustomerReadUnavailable
 	}
-	contacts, e := s.contacts(ctx, at)
+	scoped, e := ownerScoped(p)
 	if e != nil {
 		return nil, e
 	}
-	eligible := contactsFor(contacts, []string{"active", "deleted"}, p)
+	eligible := map[int64]bool{}
+	if scoped {
+		contacts, e := s.contacts(ctx, at)
+		if e != nil {
+			return nil, e
+		}
+		eligible = contactsFor(contacts, []string{"active", "deleted"}, p)
+	}
 	facts, e := s.Radar.AudienceFirstClicks(ctx, at)
 	if e != nil {
 		return nil, e
@@ -343,7 +353,7 @@ func (s LegacyTemplateSource) radar(ctx context.Context, p map[string]json.RawMe
 	for _, fact := range facts {
 		elapsed := int(at.Sub(fact.FirstClickedAt) / scale)
 		id := int64(fact.CustomerID)
-		if contains(radars, strconv.FormatInt(fact.RadarID, 10)) && elapsed >= minimum && (maximum == nil || elapsed < *maximum) && eligible[id] {
+		if contains(radars, strconv.FormatInt(fact.RadarID, 10)) && elapsed >= minimum && (maximum == nil || elapsed < *maximum) && (!scoped || eligible[id]) {
 			out[id] = true
 		}
 	}
@@ -367,7 +377,7 @@ func (s LegacyTemplateSource) member(ctx context.Context, p map[string]json.RawM
 	out := map[int64]bool{}
 	for _, fact := range facts {
 		id := int64(fact.CustomerID)
-		active := fact.ExpiresAt == nil || fact.ExpiresAt.After(at)
+		active := fact.IsMember && fact.Status == "active"
 		used := fact.LastUsedAt != nil
 		if !eligible[id] || (period == "active" && !active) || (period == "expired" && active) || (registration == "registered" && !fact.Registered) || (registration == "unregistered" && fact.Registered) || (usage == "used" && !used) || (usage == "unused" && used) || (len(tiers) > 0 && !contains(tiers, fact.Tier)) || (len(statuses) > 0 && !contains(statuses, fact.Status)) {
 			continue

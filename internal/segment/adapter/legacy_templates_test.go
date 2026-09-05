@@ -91,13 +91,13 @@ func TestLegacyTemplateSourcesEvaluateFrozenConditions(t *testing.T) {
 			{CustomerID: 2, QuestionnaireID: 9, StaffID: "staff-b", QuestionID: 11, OptionIDs: []surveyport.ID{102}},
 		},
 		orders: []orderport.PaidAudienceOrder{
-			{CustomerID: 1, ProductCode: "paid-course", PaidAt: &paidInside},
-			{CustomerID: 2, ProductCode: "paid-course", PaidAt: &paidInside},
+			{CustomerID: 1, ProductCode: "paid-course", OwnerReference: "staff-a", PaidAt: &paidInside},
+			{CustomerID: 2, ProductCode: "paid-course", OwnerReference: "staff-b", PaidAt: &paidInside},
 			{CustomerID: 3, ProductCode: "paid-course"},
 		},
-		channels: []channelport.AudienceEntry{{CustomerID: 1, ChannelID: 7, OwnerReference: "staff-a", LastEnteredAt: at.Add(-48 * time.Hour)}},
+		channels: []channelport.AudienceEntry{{CustomerID: 1, ChannelID: 7, ChannelCode: "channel-7", OwnerReference: "staff-a", LastEnteredAt: at.Add(-48 * time.Hour)}},
 		radar:    []radarport.AudienceFirstClick{{CustomerID: 1, RadarID: 8, FirstClickedAt: at.Add(-72 * time.Hour)}},
-		members:  []hxcport.AudienceMemberFact{{CustomerID: 1, Registered: true, Tier: "pro", Status: "active", ExpiresAt: &expires, LastUsedAt: &used}},
+		members:  []hxcport.AudienceMemberFact{{CustomerID: 1, Registered: true, IsMember: true, Tier: "pro", Status: "active", ExpiresAt: &expires, LastUsedAt: &used}},
 	}
 	source := CustomerSource{UoW: passthroughUoW{}, Legacy: LegacyTemplateSource{Contacts: facts, Survey: facts, Orders: facts, Channels: facts, Radar: facts, Members: facts}}
 	cases := []struct {
@@ -111,7 +111,7 @@ func TestLegacyTemplateSourcesEvaluateFrozenConditions(t *testing.T) {
 		// A time window is [from,to); unknown PaidAt cannot enter it. Owner scope
 		// remains effective even when the active-contact switch is false.
 		{"paid-payer-window-owner", `{"product_codes":["paid-course"],"paid_at_from":"2026-09-05T09:00:00Z","paid_at_to":"2026-09-05T12:00:00Z","owner_scope":"specified","owner_staff_ids":["staff-a"],"require_active_wecom_contact":false}`, segmentdsl.PaidOrder, []customerdomain.CustomerID{1}},
-		{"channel-entry", `{"channel_codes":["7"],"entered_days_min":2,"entered_days_max":3,"owner_scope":"specified","owner_staff_ids":["staff-a"],"require_active_wecom_contact":true}`, segmentdsl.ChannelEntry, []customerdomain.CustomerID{1}},
+		{"channel-entry", `{"channel_codes":["channel-7"],"entered_days_min":2,"entered_days_max":3,"owner_scope":"specified","owner_staff_ids":["staff-a"],"require_active_wecom_contact":true}`, segmentdsl.ChannelEntry, []customerdomain.CustomerID{1}},
 		// The source supplies the immutable first click, so a later click cannot
 		// reset this three-day elapsed result.
 		{"radar-first-click", `{"radar_ids":["8"],"elapsed_min":3,"elapsed_max":4,"elapsed_unit":"day","owner_scope":"specified","owner_staff_ids":["staff-a"]}`, segmentdsl.RadarFirstClickElapsed, []customerdomain.CustomerID{1}},
@@ -125,5 +125,18 @@ func TestLegacyTemplateSourcesEvaluateFrozenConditions(t *testing.T) {
 			}
 			assertAudienceIDs(t, result, tt.want...)
 		})
+	}
+}
+
+func TestLegacyTemplateSourceDoesNotBorrowCurrentContactOwnerOrExpireMembershipByGuess(t *testing.T) {
+	at := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+	source := LegacyTemplateSource{Contacts: legacyFacts{contacts: []wecomport.AudienceContact{{CustomerID: 9, OwnerUserID: "staff-a", Status: "active"}}}, Orders: legacyFacts{orders: []orderport.PaidAudienceOrder{{CustomerID: 9, ProductCode: "course"}}}, Members: legacyFacts{members: []hxcport.AudienceMemberFact{{CustomerID: 9, Registered: true, IsMember: false, Tier: "pro", Status: "expired"}}}}
+	paid, err := source.Evaluate(context.Background(), legacyDefinition(t, segmentdsl.PaidOrder, `{"product_codes":["course"],"paid_at_from":"","paid_at_to":"","owner_scope":"specified","owner_staff_ids":["staff-a"],"require_active_wecom_contact":false}`), at)
+	if err != nil || len(paid.CustomerIDs) != 0 {
+		t.Fatalf("paid=%+v err=%v", paid, err)
+	}
+	active, err := source.Evaluate(context.Background(), legacyDefinition(t, segmentdsl.MemberUsageStatus, `{"owner_scope":"specified","owner_staff_ids":["staff-a"],"service_period":"active","registration_status":"registered","usage_status":"any","membership_tiers":[],"membership_statuses":[]}`), at)
+	if err != nil || len(active.CustomerIDs) != 0 {
+		t.Fatalf("active=%+v err=%v", active, err)
 	}
 }

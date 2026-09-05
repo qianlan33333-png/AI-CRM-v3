@@ -10,7 +10,7 @@ import (
 // canonical customer. It is not a raw HXC identity or chat archive record.
 type AudienceMemberFact struct {
 	CustomerID            customerdomain.CustomerID
-	Registered            bool
+	Registered, IsMember  bool
 	Tier, Status          string
 	ExpiresAt, LastUsedAt *time.Time
 	SourceUpdatedAt       time.Time

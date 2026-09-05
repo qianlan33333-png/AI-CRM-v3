@@ -13,6 +13,10 @@ import (
 type PaidAudienceOrder struct {
 	CustomerID  customerdomain.CustomerID
 	ProductCode string
+	// OwnerReference is the immutable owner recorded by the order source.  It
+	// is deliberately empty when that source did not preserve ownership; the
+	// audience adapter must not substitute a current WeCom relationship.
+	OwnerReference string
 	// PaidAt is nil when this historical order has no trustworthy payment-time
 	// evidence. It can match an unbounded paid audience, never a time window.
 	PaidAt *time.Time

@@ -233,7 +233,7 @@ func TestPostgreSQLPaidAudienceOrdersUsePayerAndPaymentEvidence(t *testing.T) {
 	for _, fact := range facts {
 		byCustomer[int64(fact.CustomerID)] = fact
 	}
-	if got := byCustomer[101]; got.ProductCode != "course" || got.PaidAt == nil || !got.PaidAt.Equal(paidOutside) {
+	if got := byCustomer[101]; got.ProductCode != "course" || got.OwnerReference != "" || got.PaidAt == nil || !got.PaidAt.Equal(paidOutside) {
 		t.Fatalf("payer fact=%+v", got)
 	}
 	if got := byCustomer[404]; got.PaidAt != nil {
