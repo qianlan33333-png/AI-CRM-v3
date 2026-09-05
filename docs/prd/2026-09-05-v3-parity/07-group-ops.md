@@ -51,3 +51,5 @@ d6 `cmd/aicrm/group_ops_runtime_integration_test.go:TestGroupOpsPostgreSQLJourne
 - 接受后暂停/取消、计划版本、群绑定及发送资格变化必须在实际发送前经既有 Owner Port 再核验；不只验证接受时状态。Provider 网络不得持有业务事务。
 - 目录 RefreshOperationMembers/RefreshGroups 当前把Source读取放在UoW内，接真实网络时须先事务外拉取再原子保存完整快照；读取失败或分页不完整不能清空现有目录。
 - 复用 `cmd/migrate-v2-config-definitions` 与现有历史导入工具，核对计划、节点、素材引用及历史只读记录的逐条结果；不要另造migrate-groupops框架。现有历史页有读取服务，不代表所有历史来源已导入验收。
+
+已定位供体叶子：`aicrm_next/channels/integration_gateway/wecom_group_adapter.py`、`wecom_customer_group_client.py`，外层接纳在 `platform/platform_foundation/external_effects/adapters.py:WeComGroupMessageExternalEffectAdapter`，计划物化在 `automation/automation_engine/group_ops/scheduler.py`。旧写协议为 `/cgi-bin/externalcontact/add_msg_template`，目标字段 `chat_id_list` 必须精确包含冻结群；读取为 `groupchat/list` 与 `groupchat/get`。缺msgid、非空fail_list不能报全部成功，返回msgid仅表示企微任务已接受，不能宣称成员已收到。复用叶子协议时以V3未知结果原键恢复规则覆盖旧层将所有网络异常都标retryable的行为，不复制不确定写入的盲重试。
