@@ -459,9 +459,6 @@ func TestPostgreSQLAudienceContactsUseRelationshipFacts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Native().Exec(ctx, `CREATE TABLE wecom_external_contact_profiles(customer_id BIGINT PRIMARY KEY, activation_status TEXT NOT NULL, updated_at TIMESTAMPTZ NOT NULL)`); err != nil {
-		t.Fatal(err)
-	}
 	var first, second int64
 	if err := pool.Native().QueryRow(ctx, `INSERT INTO customers(status) VALUES('active') RETURNING id`).Scan(&first); err != nil {
 		t.Fatal(err)
@@ -470,7 +467,34 @@ func TestPostgreSQLAudienceContactsUseRelationshipFacts(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
-	if _, err := pool.Native().Exec(ctx, `INSERT INTO wecom_external_contact_profiles VALUES($1,'active',$2),($3,'stale',$2)`, first, now, second); err != nil {
+	var runID, firstIdentityID, secondIdentityID int64
+	if err := pool.Native().QueryRow(ctx, `
+		INSERT INTO wecom_customer_sync_runs(run_key,trigger_type,status,corp_scope,completed_at)
+		VALUES('audience-contact-fixture','manual','succeeded','wecom-corp:test',$1)
+		RETURNING id`, now).Scan(&runID); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.Native().QueryRow(ctx, `
+		INSERT INTO customer_identities(customer_id,kind,scope_key,normalized_value,assurance,source,normalizer_version,verified_at)
+		VALUES($1,'wecom_external_userid','wecom-corp:test','external-first','verified','test-fixture',1,$2)
+		RETURNING id`, first, now).Scan(&firstIdentityID); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.Native().QueryRow(ctx, `
+		INSERT INTO customer_identities(customer_id,kind,scope_key,normalized_value,assurance,source,normalizer_version,verified_at)
+		VALUES($1,'wecom_external_userid','wecom-corp:test','external-second','verified','test-fixture',1,$2)
+		RETURNING id`, second, now).Scan(&secondIdentityID); err != nil {
+		t.Fatal(err)
+	}
+	profileDigest := sha256.Sum256([]byte("audience-contact-profile"))
+	if _, err := pool.Native().Exec(ctx, `
+		INSERT INTO wecom_external_contact_profiles(
+			customer_id,corp_scope,external_identity_id,activation_status,profile_digest,
+			last_seen_run_id,fetched_at,stale_at,updated_at
+		) VALUES
+			($1,'wecom-corp:test',$2,'active',$3,$4,$5,NULL,$5),
+			($6,'wecom-corp:test',$7,'stale',$3,$4,$5,$5,$5)`,
+		first, firstIdentityID, profileDigest[:], runID, now, second, secondIdentityID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := pool.Native().Exec(ctx, `INSERT INTO wecom_follow_relationships(corp_id,employee_id,customer_id,active,created_at,updated_at) VALUES('wx','owner-a',$1,true,$2,$3),('wx','owner-b',$4,true,$2,$3)`, first, now.Add(-48*time.Hour), now, second); err != nil {
@@ -602,5 +626,6 @@ func wecomMigrationPaths(t *testing.T) []string {
 		filepath.Join(root, "migrations", "0004_wecom.sql"),
 		filepath.Join(root, "migrations", "0005_external_effects.sql"),
 		filepath.Join(root, "migrations", "0006_wecom_callback_channel_acquisition.sql"),
+		filepath.Join(root, "migrations", "0009_customer_activation.sql"),
 	}
 }
