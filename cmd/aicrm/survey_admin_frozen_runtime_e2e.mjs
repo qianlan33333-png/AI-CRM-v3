@@ -198,7 +198,8 @@ click(normalPublishedDocument.querySelector("#editor-export-btn"));
 await waitFor("actual CSV download", () => {
   const downloads = normalPublished.dom.window.__surveyRuntimeDownloads || [];
   return normalPublished.calls.some((call) => call.path === `/api/admin/questionnaires/${normalID}/export` && call.status === 200)
-    && downloads.length === 1 && downloads[0].clicked && downloads[0].blob instanceof normalPublished.dom.window.Blob;
+    && downloads.length === 1 && downloads[0].clicked
+    && typeof downloads[0].blob?.arrayBuffer === "function" && typeof downloads[0].blob?.text === "function";
 }).catch((error) => {
   throw new Error(`${error.message}; calls=${JSON.stringify(normalPublished.calls)}; downloads=${JSON.stringify((normalPublished.dom.window.__surveyRuntimeDownloads || []).map((value) => ({ clicked: value.clicked, filename: value.filename })))} `);
 });
