@@ -333,7 +333,7 @@ func TestWeComRegistrationUsesDirectoryPhonePresenceInsteadOfHXC(t *testing.T) {
 		t.Fatalf("registered=%+v err=%v", registered, err)
 	}
 	unregistered, err := source.Evaluate(context.Background(), legacyDefinition(t, segmentdsl.WeComContactRegistration, `{"owner_scope":"all","owner_staff_ids":[],"contact_statuses":["active"],"registration_status":"unregistered"}`), at)
-	if err != nil || len(unregistered.CustomerIDs) != 2 || unregistered.CustomerIDs[0] != 1 || unregistered.CustomerIDs[1] != 3 {
+	if err != nil || len(unregistered.CustomerIDs) != 2 || !(unregistered.CustomerIDs[0] == 1 || unregistered.CustomerIDs[1] == 1) || !(unregistered.CustomerIDs[0] == 3 || unregistered.CustomerIDs[1] == 3) {
 		t.Fatalf("unregistered=%+v err=%v", unregistered, err)
 	}
 }

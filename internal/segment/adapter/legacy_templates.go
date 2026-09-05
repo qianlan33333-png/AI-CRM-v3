@@ -134,6 +134,38 @@ func (s LegacyTemplateSource) contacts(ctx context.Context, reference time.Time)
 	}
 	return s.Contacts.AudienceContacts(ctx, reference)
 }
+func (s LegacyTemplateSource) registrationFacts(ctx context.Context, customerIDs []customerdomain.CustomerID) (map[customerdomain.CustomerID]customerport.AudienceRegistrationFact, error) {
+	if s.RegistrationFacts == nil {
+		return nil, ErrCustomerReadUnavailable
+	}
+	seen := make(map[customerdomain.CustomerID]bool, len(customerIDs))
+	ids := make([]customerdomain.CustomerID, 0, len(customerIDs))
+	for _, id := range customerIDs {
+		if id < 1 || seen[id] {
+			continue
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	out := make(map[customerdomain.CustomerID]customerport.AudienceRegistrationFact, len(ids))
+	for start := 0; start < len(ids); start += customerport.MaxAudienceRegistrationCustomerIDs {
+		end := start + customerport.MaxAudienceRegistrationCustomerIDs
+		if end > len(ids) {
+			end = len(ids)
+		}
+		facts, err := s.RegistrationFacts.AudienceRegistrationFacts(ctx, ids[start:end])
+		if err != nil {
+			return nil, ErrCustomerReadUnavailable
+		}
+		for id, fact := range facts {
+			if id == fact.CustomerID && seen[id] {
+				out[id] = fact
+			}
+		}
+	}
+	return out, nil
+}
+
 func (s LegacyTemplateSource) memberFacts(ctx context.Context, customerIDs []customerdomain.CustomerID) (map[customerdomain.CustomerID]hxcport.SharedFacts, error) {
 	if s.MemberFacts == nil {
 		return nil, ErrCustomerReadUnavailable
@@ -252,12 +284,9 @@ func (s LegacyTemplateSource) wecom(ctx context.Context, p map[string]json.RawMe
 	for id := range set {
 		customerIDs = append(customerIDs, customerdomain.CustomerID(id))
 	}
-	if s.RegistrationFacts == nil {
-		return nil, ErrCustomerReadUnavailable
-	}
-	facts, e := s.RegistrationFacts.AudienceRegistrationFacts(ctx, customerIDs)
+	facts, e := s.registrationFacts(ctx, customerIDs)
 	if e != nil {
-		return nil, ErrCustomerReadUnavailable
+		return nil, e
 	}
 	for id := range set {
 		fact, found := facts[customerdomain.CustomerID(id)]
