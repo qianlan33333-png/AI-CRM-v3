@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -16,12 +18,14 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
 	automationport "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/port"
 	automationstore "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/store"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/configmigration/source"
 	configtarget "github.com/qianlan33333-png/AI-CRM-v3/internal/configmigration/target"
 	couponstore "github.com/qianlan33333-png/AI-CRM-v3/internal/coupon/store"
 	groupopsapp "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/app"
+	groupopshttp "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/http"
 	groupopsport "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/port"
 	groupopsstore "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/store"
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
@@ -335,6 +339,29 @@ func assertImportedHistoryReadable(t *testing.T, ctx context.Context, pool *plat
 	if err != nil || nodes.Total != 1 || !strings.Contains(string(nodes.Items[0].ContentPackage), "source_attachments") {
 		t.Fatalf("history node page=%#v err=%v", nodes, err)
 	}
+	handler, err := groupopshttp.NewHandlerWithRuntimeAndHistory(historyHTTPApplication{}, historyHTTPRuntime{}, service, historyHTTPSecurity{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, groupopshttp.HistoryPath+"/plans?limit=20&offset=0", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), "source_owner_reference") || !strings.Contains(response.Body.String(), `"plan_id":"101"`) {
+		t.Fatalf("history HTTP response status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+type historyHTTPApplication struct{ groupopshttp.Application }
+type historyHTTPRuntime struct {
+	groupopshttp.RuntimeApplication
+}
+type historyHTTPSecurity struct{}
+
+func (historyHTTPSecurity) Authenticate(context.Context, *http.Request) (accessdomain.Principal, error) {
+	return accessdomain.Principal{Kind: accessdomain.KindAdmin, InternalID: 7, Roles: []accessdomain.Role{accessdomain.RoleAdmin}}, nil
+}
+func (historyHTTPSecurity) AuthorizeCSRF(context.Context, *http.Request) (accessdomain.Principal, error) {
+	return historyHTTPSecurity{}.Authenticate(context.Background(), nil)
 }
 
 func configMigrationActor(t *testing.T, ctx context.Context, pool *platformpostgres.Pool) int64 {
