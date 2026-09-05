@@ -11,7 +11,7 @@ import (
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 )
 
-const RuleVersion = "hxc-current-v2"
+const RuleVersion = "hxc-current-v3"
 
 var ErrInvalidRow = errors.New("invalid hxc dashboard row")
 
@@ -47,7 +47,15 @@ type SourceRow struct {
 	LastCapability, BusinessStage, MainLineType, UserSegment string
 	FocusTopics                                              []byte
 	PainTag                                                  string
-	SourceUpdatedAt                                          time.Time
+	// Shared facts are read from the same immutable source snapshot. They are
+	// deliberately separate from dashboard display-stage fields.
+	FormallyLoggedIn, HasTokenUsage                         bool
+	FormalLoginAt, CardLastOpenedAt                         *time.Time
+	LearningPlanStatus                                      string
+	LearningPlanCurrent, LearningPlanTotal, CardOpenCount7D int64
+	MembershipRecordFound, IsMember                         bool
+	MembershipStatus                                        string
+	SourceUpdatedAt                                         time.Time
 }
 
 type ProjectionRow struct {
@@ -77,6 +85,7 @@ type Projection struct {
 	SourceDigest, ProjectionDigest [32]byte
 	Counts                         Counts
 	IdentityReplayVerified         int64
+	SharedFactsAvailable           bool
 	PublishedAt                    time.Time
 	Rows                           []ProjectionRow
 }

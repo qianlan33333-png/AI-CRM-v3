@@ -156,6 +156,7 @@ test -f "$release_dir/migrations/0053_segment_audience_member_event_fact_kinds.s
 test -f "$release_dir/migrations/0061_product_public_purchase.sql"
 test -f "$release_dir/migrations/0063_identity_hxc_source_observations.sql"
 test -f "$release_dir/migrations/0064_hxc_dashboard_identity_v2.sql"
+test -f "$release_dir/migrations/0084_hxc_shared_facts.sql"
 test -f "$release_dir/migrations/0068_payment_session_beneficiary_selection.sql"
 test -f "$release_dir/deploy/aicrm-hxc-dashboard-rollout.service"
 test -f "$release_dir/deploy/rollout-hxc-identity-v2.sh"
