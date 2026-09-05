@@ -47,3 +47,4 @@ aiassistant 独占计划、内容、决定和绑定；各外部身份、发送�
 - `CreatePlanFromIdentities` 目前用包含 Nonce、OccurredAt、ExpiresAt 的整条 command 作为业务幂等摘要。需真实测试：相同来源和业务键、同内容，用新的合法签名时间及 nonce 重试应返回原计划；改内容应冲突。认证重放收据与业务内容摘要分别核验，不能为了重试去关闭 nonce 校验。
 - 现有身份解析只对成功目标建计划并返回汇总计数；未解析目标不能在结果里静默消失。核对旧调用方契约，提供不含裸身份的逐项目标序号/安全状态结果；零可用目标也有明确可回读的结果。沿用已有业务收据存储，不扩展治理台。
 - 旧供体实际入口为 `growth/cloud_orchestrator/review_plans.py` 与 api.py 的 `/api/admin/ai-assist/review-plans`；需要冻结其单人输入及批量包装到V3边缘的兼容映射，而非只验证自造的V3请求。
+- 总控进一步核实 d6 的通用 `Identity.Resolve` 只返回客户与身份ID，未校验数据库中身份的 assurance，也不向调用者返回 assurance。将HTTP输入改为 declared 后直接接受 ResolveFound 仍不足以证明可信归属。复用 Identity 既有受限可信读取 Port，在 composition 的窄Adapter确认同kind/scope/value对应的已验证事实；不得反向伪造VerifiedFact。真实PG需覆盖相同输入仅有declared身份时保持未解析、已有verified身份才可进入审批目标，且两者均不新增客户或身份记录。
