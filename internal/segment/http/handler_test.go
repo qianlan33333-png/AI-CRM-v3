@@ -64,6 +64,15 @@ func (ownerReferenceStub) AudienceOwnerUserID(_ context.Context, id accessport.S
 	return "", false, nil
 }
 
+type productReferenceStub struct {
+	values map[string]string
+}
+
+func (s productReferenceStub) ResolveAudienceProduct(_ context.Context, value string) (string, bool, error) {
+	code, ok := s.values[value]
+	return code, ok, nil
+}
+
 type packageListApplication struct{ fakeApplication }
 
 func (packageListApplication) ListPackages(context.Context, int, int, bool) (segmentapp.PackagePage, error) {
@@ -229,12 +238,77 @@ func TestPreviewDraftDefinitionNormalizesOwnersWithoutSaving(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	handler.BindAudienceProductReferences(productReferenceStub{values: map[string]string{"course-v3": "course-v3"}})
 	body := `{"reference_time":"2026-09-05T08:00:00Z","definition":{"schema_version":1,"template_key":"paid_order","parameters":{"product_codes":["course-v3"],"paid_at_from":"2026-09-05T08:00:00Z","paid_at_to":"2026-09-05T09:00:00Z","owner_scope":"specified","owner_userids":["wecom-owner"],"require_active_wecom_contact":true}}}`
 	request := httptest.NewRequest(http.MethodPost, "/api/admin/ai-audience/packages/7/preview", strings.NewReader(body))
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK || capture.calls != 1 || !strings.Contains(string(capture.definition), `"owner_staff_ids":["9"]`) || strings.Contains(string(capture.definition), "owner_userids") {
 		t.Fatalf("status=%d calls=%d definition=%s", response.Code, capture.calls, capture.definition)
+	}
+}
+
+func TestPaidOrderProductReferencesNormalizeForConfigurationAndPreview(t *testing.T) {
+	admin := accessdomain.Principal{InternalID: 1, Kind: accessdomain.KindAdmin, Roles: []accessdomain.Role{accessdomain.RoleAdmin}}
+	definition := `{"schema_version":1,"template_key":"paid_order","parameters":{"product_codes":["中文商品"],"owner_scope":"all","owner_userids":[],"require_active_wecom_contact":true}}`
+	resolver := productReferenceStub{values: map[string]string{"中文商品": "course-v3", "course-v3": "course-v3"}}
+
+	t.Run("configuration persists canonical code", func(t *testing.T) {
+		capture := &configurationCapture{}
+		handler, err := NewRuntimeHandlerWithOwners(capture, snapshotApplication{}, fakeSecurity{principal: admin}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		handler.BindAudienceProductReferences(resolver)
+		request := httptest.NewRequest(http.MethodPut, "/api/admin/ai-audience/packages/7/configuration", strings.NewReader(`{"expected_package_version":1,"refresh_cron_utc":"","definition":`+definition+`}`))
+		request.Header.Set("Idempotency-Key", "1234567890abcdef")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusOK || !strings.Contains(string(capture.command.Definition), `"product_codes":["course-v3"]`) {
+			t.Fatalf("status=%d definition=%s", response.Code, capture.command.Definition)
+		}
+	})
+
+	t.Run("preview uses canonical code", func(t *testing.T) {
+		capture := &previewDefinitionCapture{}
+		handler, err := NewRuntimeHandlerWithOwners(fakeApplication{}, capture, fakeSecurity{principal: admin}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		handler.BindAudienceProductReferences(resolver)
+		request := httptest.NewRequest(http.MethodPost, "/api/admin/ai-audience/packages/7/preview", strings.NewReader(`{"reference_time":"2026-09-05T08:00:00Z","definition":`+definition+`}`))
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusOK || capture.calls != 1 || !strings.Contains(string(capture.definition), `"product_codes":["course-v3"]`) {
+			t.Fatalf("status=%d calls=%d definition=%s", response.Code, capture.calls, capture.definition)
+		}
+	})
+}
+
+func TestPaidOrderProductReferenceUnknownFailsClosed(t *testing.T) {
+	admin := accessdomain.Principal{InternalID: 1, Kind: accessdomain.KindAdmin, Roles: []accessdomain.Role{accessdomain.RoleAdmin}}
+	fixtures := []struct {
+		method string
+		path   string
+		body   string
+	}{
+		{http.MethodPut, "/api/admin/ai-audience/packages/7/configuration", `{"expected_package_version":1,"refresh_cron_utc":"","definition":{"schema_version":1,"template_key":"paid_order","parameters":{"product_codes":["同名商品"],"owner_scope":"all","owner_userids":[]}}}`},
+		{http.MethodPost, "/api/admin/ai-audience/packages/7/preview", `{"reference_time":"2026-09-05T08:00:00Z","definition":{"schema_version":1,"template_key":"paid_order","parameters":{"product_codes":["不存在商品"],"owner_scope":"all","owner_userids":[]}}}`},
+	}
+	for _, fixture := range fixtures {
+		capture := &configurationCapture{}
+		handler, err := NewRuntimeHandlerWithOwners(capture, snapshotApplication{}, fakeSecurity{principal: admin}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		handler.BindAudienceProductReferences(productReferenceStub{values: map[string]string{}})
+		request := httptest.NewRequest(fixture.method, fixture.path, strings.NewReader(fixture.body))
+		request.Header.Set("Idempotency-Key", "1234567890abcdef")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusUnprocessableEntity || !strings.Contains(response.Body.String(), `"error":"reference_unknown"`) {
+			t.Fatalf("%s %s status=%d body=%s", fixture.method, fixture.path, response.Code, response.Body.String())
+		}
 	}
 }
 

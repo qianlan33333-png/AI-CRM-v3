@@ -36,6 +36,11 @@
     if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/.test(text)) throw new Error(`${label}只接受当前 V3 的稳定 code；精确标题解析尚未由对应 Owner 提供。`);
     return text;
   };
+  const canonicalProductReference = (value, label) => {
+    const text = String(value || "");
+    if (text.trim() !== text || !text || text.length > 80) throw new Error(`${label}必须是当前 V3 的稳定 code 或精确商品标题。`);
+    return text;
+  };
   const requiredList = (value, label, convert) => {
     const values = Array.isArray(value) ? value : [];
     if (!values.length) throw new Error(`${label}不能为空。`);
@@ -61,7 +66,7 @@
         option_ids: requiredList(item.options, "选项", canonicalPositiveID),
       }));
     } else if (templateKey === "paid_order") {
-      parameters.product_codes = requiredList(parameters.products, "商品", canonicalCode);
+      parameters.product_codes = requiredList(parameters.products, "商品", canonicalProductReference);
       delete parameters.products;
       parameters.paid_at_from = canonicalTimestamp(parameters.paid_at_from, "支付时间起点");
       parameters.paid_at_to = canonicalTimestamp(parameters.paid_at_to, "支付时间终点");

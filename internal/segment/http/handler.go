@@ -61,13 +61,41 @@ type Handler struct {
 	security        RequestSecurity
 	owners          accessport.AudienceOwnerResolver
 	ownerReferences accessport.AudienceOwnerReferenceReader
+	products        AudienceProductReferenceResolver
+}
+type AudienceProductReferenceResolver interface {
+	ResolveAudienceProduct(context.Context, string) (string, bool, error)
+}
+
+func (h *Handler) BindAudienceProductReferences(resolver AudienceProductReferenceResolver) {
+	h.products = resolver
 }
 
 var (
-	errOwnerInvalid     = errors.New("invalid owner selection")
-	errOwnerUnknown     = errors.New("unknown owner")
-	errOwnerUnavailable = errors.New("owner resolver unavailable")
+	errOwnerInvalid         = errors.New("invalid owner selection")
+	errOwnerUnknown         = errors.New("unknown owner")
+	errOwnerUnavailable     = errors.New("owner resolver unavailable")
+	errReferenceInvalid     = errors.New("invalid audience reference")
+	errReferenceUnknown     = errors.New("unknown audience reference")
+	errReferenceUnavailable = errors.New("audience reference resolver unavailable")
 )
+
+func definitionReferenceErrorCode(err error) string {
+	switch {
+	case errors.Is(err, errOwnerUnknown):
+		return "owner_unknown"
+	case errors.Is(err, errOwnerUnavailable):
+		return "owner_unavailable"
+	case errors.Is(err, errReferenceUnknown):
+		return "reference_unknown"
+	case errors.Is(err, errReferenceUnavailable):
+		return "reference_unavailable"
+	case errors.Is(err, errReferenceInvalid):
+		return "reference_invalid"
+	default:
+		return "owner_invalid"
+	}
+}
 
 func NewHandler(service ConfigurationApplication, security RequestSecurity) (*Handler, error) {
 	if service == nil || security == nil {
@@ -458,15 +486,9 @@ func (h *Handler) configuration(w http.ResponseWriter, r *http.Request, packageI
 	if !decode(w, r, &in) {
 		return
 	}
-	definition, e := h.normalizeOwnerUserIDs(r.Context(), in.Definition)
+	definition, e := h.normalizeDefinitionReferences(r.Context(), in.Definition)
 	if e != nil {
-		code := "owner_invalid"
-		if errors.Is(e, errOwnerUnknown) {
-			code = "owner_unknown"
-		} else if errors.Is(e, errOwnerUnavailable) {
-			code = "owner_unavailable"
-		}
-		fail(w, 422, code)
+		fail(w, http.StatusUnprocessableEntity, definitionReferenceErrorCode(e))
 		return
 	}
 	item, e := h.service.PutConfiguration(r.Context(), segmentapp.ConfigurationCommand{PackageID: packageID, ExpectedPackageVersion: in.ExpectedPackageVersion, Definition: definition, RefreshCronUTC: in.RefreshCronUTC, RefreshMode: in.RefreshMode, Actor: p.InternalID, IdempotencyKey: key})
@@ -538,6 +560,57 @@ func (h *Handler) normalizeOwnerUserIDs(ctx context.Context, raw json.RawMessage
 	encoded, _ := json.Marshal(staff)
 	definition.Parameters["owner_staff_ids"] = encoded
 	delete(definition.Parameters, "owner_userids")
+	return marshalNormalizedOwnerDefinition(raw, definition.Parameters)
+}
+func (h *Handler) normalizeDefinitionReferences(ctx context.Context, raw json.RawMessage) (json.RawMessage, error) {
+	resolved, err := h.normalizeProductReferences(ctx, raw)
+	if err != nil {
+		return nil, err
+	}
+	return h.normalizeOwnerUserIDs(ctx, resolved)
+}
+
+func (h *Handler) normalizeProductReferences(ctx context.Context, raw json.RawMessage) (json.RawMessage, error) {
+	var definition struct {
+		TemplateKey string                     `json:"template_key"`
+		Parameters  map[string]json.RawMessage `json:"parameters"`
+	}
+	if err := json.Unmarshal(raw, &definition); err != nil || definition.Parameters == nil {
+		return nil, errReferenceInvalid
+	}
+	if definition.TemplateKey != "paid_order" {
+		return raw, nil
+	}
+	var values []string
+	if err := json.Unmarshal(definition.Parameters["product_codes"], &values); err != nil || len(values) == 0 || len(values) > 100 {
+		return nil, errReferenceInvalid
+	}
+	if h.products == nil {
+		return nil, errReferenceUnavailable
+	}
+	resolved := make([]string, 0, len(values))
+	seen := map[string]bool{}
+	for _, value := range values {
+		if value == "" || strings.TrimSpace(value) != value {
+			return nil, errReferenceInvalid
+		}
+		code, found, err := h.products.ResolveAudienceProduct(ctx, value)
+		if err != nil {
+			return nil, errReferenceUnavailable
+		}
+		if !found || code == "" {
+			return nil, errReferenceUnknown
+		}
+		if !seen[code] {
+			seen[code] = true
+			resolved = append(resolved, code)
+		}
+	}
+	encoded, err := json.Marshal(resolved)
+	if err != nil {
+		return nil, errReferenceInvalid
+	}
+	definition.Parameters["product_codes"] = encoded
 	return marshalNormalizedOwnerDefinition(raw, definition.Parameters)
 }
 
@@ -694,15 +767,9 @@ func (h *Handler) preview(w http.ResponseWriter, r *http.Request, packageID int6
 	if len(in.Definition) == 0 {
 		value, err = h.snapshots.Preview(r.Context(), packageID, in.ReferenceTime)
 	} else {
-		definition, normalizeErr := h.normalizeOwnerUserIDs(r.Context(), in.Definition)
+		definition, normalizeErr := h.normalizeDefinitionReferences(r.Context(), in.Definition)
 		if normalizeErr != nil {
-			code := "owner_invalid"
-			if errors.Is(normalizeErr, errOwnerUnknown) {
-				code = "owner_unknown"
-			} else if errors.Is(normalizeErr, errOwnerUnavailable) {
-				code = "owner_unavailable"
-			}
-			fail(w, http.StatusUnprocessableEntity, code)
+			fail(w, http.StatusUnprocessableEntity, definitionReferenceErrorCode(normalizeErr))
 			return
 		}
 		value, err = h.snapshots.PreviewDefinition(r.Context(), packageID, definition, in.ReferenceTime)

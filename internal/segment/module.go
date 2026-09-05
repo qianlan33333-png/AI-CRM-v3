@@ -12,7 +12,10 @@ import (
 )
 
 type ModuleRegistration struct{}
-type HTTPBindings struct{ Audience http.Handler }
+type HTTPBindings struct {
+	Audience http.Handler
+	Handler  *segmenthttp.Handler
+}
 
 func NewModuleRegistration() *ModuleRegistration { return &ModuleRegistration{} }
 
@@ -21,7 +24,7 @@ func (m *ModuleRegistration) Bind(service segmenthttp.ConfigurationApplication, 
 		return HTTPBindings{}, errors.New("segment module is required")
 	}
 	handler, err := segmenthttp.NewHandler(service, security)
-	return HTTPBindings{Audience: handler}, err
+	return HTTPBindings{Audience: handler, Handler: handler}, err
 }
 
 func (m *ModuleRegistration) BindRuntime(service segmenthttp.ConfigurationApplication, snapshots segmenthttp.SnapshotApplication, security segmenthttp.RequestSecurity) (HTTPBindings, error) {
@@ -35,7 +38,7 @@ func (m *ModuleRegistration) BindRuntimeWithOwnerReferences(service segmenthttp.
 		return HTTPBindings{}, errors.New("segment module is required")
 	}
 	handler, err := segmenthttp.NewRuntimeHandlerWithOwnerReferences(service, snapshots, security, owners, references)
-	return HTTPBindings{Audience: handler}, err
+	return HTTPBindings{Audience: handler, Handler: handler}, err
 }
 
 func (m *ModuleRegistration) Readiness(ctx context.Context, pool *pgxpool.Pool) error {

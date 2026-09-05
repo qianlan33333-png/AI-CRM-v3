@@ -1,0 +1,57 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"strings"
+
+	productport "github.com/qianlan33333-png/AI-CRM-v3/internal/product/port"
+)
+
+// audienceProductReferenceAdapter keeps audience configuration on the
+// Product-owned selection projection. A value is accepted only when it is an
+// exact stable code or identifies exactly one Product display name.
+type audienceProductReferenceAdapter struct {
+	products productport.ProductOptionReader
+}
+
+func (a audienceProductReferenceAdapter) ResolveAudienceProduct(ctx context.Context, value string) (string, bool, error) {
+	if a.products == nil {
+		return "", false, errors.New("product option reader is required")
+	}
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", false, nil
+	}
+	page, err := a.products.ListProductOptions(ctx, productport.ProductOptionQuery{
+		Q:           value,
+		ProductType: productport.ProductOptionAll,
+		Limit:       productport.ProductOptionMaximumLimit,
+	})
+	if err != nil {
+		return "", false, err
+	}
+	// A bounded Product option page cannot prove title uniqueness if additional
+	// matching rows were omitted. Fail closed rather than guessing a title.
+	if page.Total > int64(len(page.Items)) {
+		return "", false, nil
+	}
+	exactCode := ""
+	titleCode := ""
+	for _, item := range page.Items {
+		if item.Code == value {
+			exactCode = item.Code
+		}
+		if item.Name != value {
+			continue
+		}
+		if titleCode != "" && titleCode != item.Code {
+			return "", false, nil
+		}
+		titleCode = item.Code
+	}
+	if exactCode != "" {
+		return exactCode, true, nil
+	}
+	return titleCode, titleCode != "", nil
+}
