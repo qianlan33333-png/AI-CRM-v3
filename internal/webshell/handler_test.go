@@ -731,6 +731,27 @@ func TestSurveyQRBridgeBrowserFallback(t *testing.T) {
 	}
 }
 
+func TestMessageArchiveBrowserPrivateImageContract(t *testing.T) {
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node is unavailable")
+	}
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("cannot locate repository")
+	}
+	repo := filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
+	command := exec.Command("node", "internal/webshell/static/admin_console/message_archive.test.mjs")
+	command.Dir = repo
+	var output bytes.Buffer
+	command.Stdout, command.Stderr = &output, &output
+	if err := command.Run(); err != nil {
+		t.Fatalf("message archive browser contract failed: %v\n%s", err, output.String())
+	}
+	if !strings.Contains(output.String(), "message-archive-browser: PASS") {
+		t.Fatalf("message archive browser contract did not report success: %q", output.String())
+	}
+}
+
 func TestLoginPostNeverIssuesSession(t *testing.T) {
 	handler := MustHandler()
 	response := httptest.NewRecorder()
@@ -744,5 +765,20 @@ func TestLoginPostNeverIssuesSession(t *testing.T) {
 	}
 	if strings.Contains(response.Body.String(), "secret") {
 		t.Fatal("login shell echoed credential input")
+	}
+}
+func TestMessageArchiveRendersAsSeparateArchiveHost(t *testing.T) {
+	renderer, err := NewRenderer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/admin/message-archive/customers/7", nil)
+	if err = renderer.RenderAdminStatus(response, http.StatusOK, AdminPageForRequest(request, "会话存档", "", "")); err != nil {
+		t.Fatal(err)
+	}
+	body := response.Body.String()
+	if response.Code != http.StatusOK || !strings.Contains(body, `data-message-archive-root`) || !strings.Contains(body, `admin-profile-message-list`) || strings.Contains(body, `customer-profile-root`) || strings.Contains(body, `customer-chat-activity`) {
+		t.Fatalf("archive host boundary mismatch: %s", body)
 	}
 }

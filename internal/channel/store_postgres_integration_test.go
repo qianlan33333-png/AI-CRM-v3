@@ -763,5 +763,6 @@ func channelMigrationPaths(t *testing.T) []string {
 		filepath.Join(root, "migrations", "0035_channel_acquisition_links.sql"),
 		filepath.Join(root, "migrations", "0059_channel_v1_semantic_repair.sql"),
 		filepath.Join(root, "migrations", "0065_channel_legacy_asset_retirement.sql"),
+		filepath.Join(root, "migrations", "0066_channel_welcome_intents.sql"),
 	}
 }
