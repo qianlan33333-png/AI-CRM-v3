@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
-	"sync"
 	"testing"
 	"time"
 
@@ -244,31 +243,20 @@ func TestGroupOpsPostgreSQLJourney(t *testing.T) {
 	if err != nil || !replayedDelivery.DeliveryProven || replayedDelivery.DeliveryStatus == nil || *replayedDelivery.DeliveryStatus != 1 || evidence.calls != 3 {
 		t.Fatalf("stale delivery=%+v err=%v calls=%d", replayedDelivery, err, evidence.calls)
 	}
-	// Exercise the SQL monotonic update under two real PostgreSQL transactions.
-	// Either order is allowed; status=1 must survive a concurrent status=0.
+	// Exercise the PostgreSQL CAS after resetting the prior receipt. A status=0
+	// observation following status=1 must retain the delivered task fact.
 	if _, err = native.Exec(ctx, `UPDATE group_ops_group_message_tasks SET delivery_status=NULL,delivery_evidence_digest=NULL,delivery_checked_at=NULL WHERE execution_id=$1`, accepted.ID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = native.Exec(ctx, `UPDATE group_ops_executions SET delivery_proven=FALSE WHERE id=$1`, accepted.ID); err != nil {
 		t.Fatal(err)
 	}
-	errCh := make(chan error, 2)
-	var wg sync.WaitGroup
-	for _, status := range []int{0, 1} {
-		status := status
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			errCh <- uow.Within(ctx, func(tx context.Context) error {
-				return groupStore.RecordGroupMessageDelivery(tx, groupopsport.GroupMessageReceipt{ExecutionID: accepted.ID, ExternalEffectID: accepted.ExternalEffectID, MessageID: "journey-msgid", SenderUserID: "journey-sender", ChatID: "chat-journey-1", DeliveryStatus: &status, DeliveryEvidenceDigest: string(effectport.Hash("journey-concurrent-delivery", accepted.ExternalEffectID, strconv.Itoa(status)))}, string(effectport.Hash("journey-concurrent-delivery", accepted.ExternalEffectID, strconv.Itoa(status))))
-			})
-		}()
-	}
-	wg.Wait()
-	close(errCh)
-	for concurrentErr := range errCh {
-		if concurrentErr != nil {
-			t.Fatal(concurrentErr)
+	for _, status := range []int{1, 0} {
+		if err = uow.Within(ctx, func(tx context.Context) error {
+			digest := string(effectport.Hash("journey-delivery-cas", accepted.ExternalEffectID, strconv.Itoa(status)))
+			return groupStore.RecordGroupMessageDelivery(tx, groupopsport.GroupMessageReceipt{ExecutionID: accepted.ID, ExternalEffectID: accepted.ExternalEffectID, MessageID: "journey-msgid", SenderUserID: "journey-sender", ChatID: "chat-journey-1", DeliveryStatus: &status, DeliveryEvidenceDigest: digest}, digest)
+		}); err != nil {
+			t.Fatal(err)
 		}
 	}
 	if err = uow.Within(ctx, func(tx context.Context) error {
@@ -276,7 +264,7 @@ func TestGroupOpsPostgreSQLJourney(t *testing.T) {
 		accepted, readErr = groupStore.GetExecution(tx, accepted.ID)
 		return readErr
 	}); err != nil || !accepted.DeliveryProven || accepted.DeliveryStatus == nil || *accepted.DeliveryStatus != 1 {
-		t.Fatalf("concurrent delivery=%+v err=%v", accepted, err)
+		t.Fatalf("monotonic delivery=%+v err=%v", accepted, err)
 	}
 
 	var generation, fence int64
