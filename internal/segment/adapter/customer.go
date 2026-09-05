@@ -21,14 +21,24 @@ var ErrCustomerReadUnavailable = errors.New("audience customer reader is unavail
 type CustomerSource struct {
 	UoW       platformport.UnitOfWork
 	Customers customerport.AudienceReader
+	Legacy    segmentport.DefinitionSource
 }
 
 func (a CustomerSource) Evaluate(ctx context.Context, definition segmentport.Definition, reference time.Time) (segmentport.Evaluation, error) {
-	if a.UoW == nil || a.Customers == nil || reference.IsZero() {
+	if a.UoW == nil || reference.IsZero() {
 		return segmentport.Evaluation{}, ErrCustomerReadUnavailable
 	}
 	var ast segmentdsl.AST
-	if json.Unmarshal(definition.Expression, &ast) != nil || ast.SchemaVersion != 1 || ast.Template != segmentdsl.ActiveContacts || len(ast.Predicate.Values) != 1 {
+	if json.Unmarshal(definition.Expression, &ast) != nil || ast.SchemaVersion != 1 {
+		return segmentport.Evaluation{}, ErrCustomerReadUnavailable
+	}
+	if ast.Template != segmentdsl.ActiveContacts {
+		if a.Legacy == nil {
+			return segmentport.Evaluation{}, ErrCustomerReadUnavailable
+		}
+		return a.Legacy.Evaluate(ctx, definition, reference)
+	}
+	if a.Customers == nil || len(ast.Predicate.Values) != 1 {
 		return segmentport.Evaluation{}, ErrCustomerReadUnavailable
 	}
 	days, err := strconv.Atoi(ast.Predicate.Values[0])

@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"strconv"
-	"strings"
 )
 
 var ErrInvalid = errors.New("invalid closed audience definition")
@@ -25,51 +23,53 @@ func Parse(raw json.RawMessage) (AST, error) {
 		return AST{}, ErrInvalid
 	}
 	var trailing any
-	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) || wire.SchemaVersion != 1 || len(wire.Parameters) != 1 {
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) || wire.SchemaVersion != 1 {
 		return AST{}, ErrInvalid
 	}
-	field, parameter, op := "", "", "in"
+	field, op := "", "in"
 	switch wire.TemplateKey {
 	case ActiveContacts:
-		field, parameter, op = "customer.active_within_days", "within_days", "lte"
+		field, op = "customer.active_within_days", "lte"
 	case StageAny:
-		field, parameter = "customer.stage", "stages"
+		field = "customer.stage"
 	case TagAny:
-		field, parameter = "tag.code", "tag_codes"
+		field = "tag.code"
 	case OwnerAny:
-		field, parameter = "owner.staff_id", "staff_ids"
+		field = "owner.staff_id"
 	case ChannelAny:
-		field, parameter = "channel.code", "channels"
+		field = "channel.code"
+	case WeComContactRegistration:
+		field = "wecom.contact_registration"
+	case QuestionnaireChoiceAnswers:
+		field = "survey.first_complete_choice_answers"
+	case PaidOrder:
+		field = "order.paid"
+	case ChannelEntry:
+		field = "channel.entry"
+	case RadarFirstClickElapsed:
+		field = "radar.first_click_elapsed"
+	case MemberUsageStatus:
+		field = "hxc.member_usage_status"
 	default:
 		return AST{}, ErrInvalid
 	}
-	value, ok := wire.Parameters[parameter]
-	if !ok {
+	if len(wire.Parameters) == 0 {
 		return AST{}, ErrInvalid
 	}
-	values := []string{}
 	if wire.TemplateKey == ActiveContacts {
 		var days string
-		if json.Unmarshal(value, &days) != nil {
+		if len(wire.Parameters) != 1 || json.Unmarshal(wire.Parameters["within_days"], &days) != nil || days == "" {
 			return AST{}, ErrInvalid
 		}
-		n, err := strconv.Atoi(days)
-		if err != nil || n < 1 || n > 999 {
-			return AST{}, ErrInvalid
-		}
-		values = []string{days}
-	} else if json.Unmarshal(value, &values) != nil || len(values) == 0 || len(values) > 100 {
-		return AST{}, ErrInvalid
+		return AST{SchemaVersion: 1, Template: wire.TemplateKey, Predicate: Predicate{Field: field, Op: op, Values: []string{days}}, Parameters: wire.Parameters}, nil
 	}
-	seen := map[string]struct{}{}
-	for _, value := range values {
-		if value == "" || value != strings.TrimSpace(value) || len(value) > 200 {
+	if wire.TemplateKey == StageAny || wire.TemplateKey == TagAny || wire.TemplateKey == OwnerAny || wire.TemplateKey == ChannelAny {
+		parameter := map[Template]string{StageAny: "stages", TagAny: "tag_codes", OwnerAny: "staff_ids", ChannelAny: "channels"}[wire.TemplateKey]
+		var values []string
+		if len(wire.Parameters) != 1 || json.Unmarshal(wire.Parameters[parameter], &values) != nil || len(values) == 0 {
 			return AST{}, ErrInvalid
 		}
-		if _, duplicate := seen[value]; duplicate {
-			return AST{}, ErrInvalid
-		}
-		seen[value] = struct{}{}
+		return AST{SchemaVersion: 1, Template: wire.TemplateKey, Predicate: Predicate{Field: field, Op: op, Values: values}, Parameters: wire.Parameters}, nil
 	}
-	return AST{SchemaVersion: 1, Template: wire.TemplateKey, Predicate: Predicate{Field: field, Op: op, Values: values}}, nil
+	return AST{SchemaVersion: 1, Template: wire.TemplateKey, Predicate: Predicate{Field: field, Op: op}, Parameters: wire.Parameters}, nil
 }

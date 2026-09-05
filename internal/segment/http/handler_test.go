@@ -110,7 +110,7 @@ func TestHandlerAuthRBACCSRFAndClosedTemplates(t *testing.T) {
 			if response.Code != test.want {
 				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 			}
-			if test.name == "viewer templates" && !strings.Contains(response.Body.String(), `"active_contacts"`) {
+			if test.name == "viewer templates" && !strings.Contains(response.Body.String(), `"wecom_contact_registration"`) {
 				t.Fatalf("body=%s", response.Body.String())
 			}
 		})
