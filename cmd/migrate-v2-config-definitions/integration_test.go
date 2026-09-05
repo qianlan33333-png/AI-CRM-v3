@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -340,7 +341,7 @@ func assertImportedHistoryReadable(t *testing.T, ctx context.Context, pool *plat
 		t.Fatalf("history group page=%#v err=%v", groups, err)
 	}
 	nodes, err := service.ListHistoricalNodes(ctx, 101, 20, 0)
-	if err != nil || nodes.Total != 1 || nodes.Items[0].ActionTitle != "历史标题" || nodes.Items[0].TextContent != "历史正文" || string(nodes.Items[0].Attachments) != `[{"kind":"image","id":"m1"}]` || !strings.Contains(string(nodes.Items[0].ContentPackage), "source_attachments") {
+	if err != nil || nodes.Total != 1 || nodes.Items[0].ActionTitle != "历史标题" || nodes.Items[0].TextContent != "历史正文" || !historyAttachmentIsImageM1(nodes.Items[0].Attachments) || !strings.Contains(string(nodes.Items[0].ContentPackage), "source_attachments") {
 		t.Fatalf("history node page=%#v err=%v", nodes, err)
 	}
 	handler, err := groupopshttp.NewHandlerWithRuntimeAndHistory(historyHTTPApplication{}, historyHTTPRuntime{}, service, historyHTTPSecurity{}, nil)
@@ -356,9 +357,24 @@ func assertImportedHistoryReadable(t *testing.T, ctx context.Context, pool *plat
 	request = httptest.NewRequest(http.MethodGet, groupopshttp.HistoryPath+"/plans/101/nodes?limit=20&offset=0", nil)
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"action_title":"历史标题"`) || !strings.Contains(response.Body.String(), `"text_content":"历史正文"`) || !strings.Contains(response.Body.String(), `"attachments":[{"kind":"image","id":"m1"}]`) {
+	var nodePage struct {
+		Items []struct {
+			ActionTitle string          `json:"action_title"`
+			TextContent string          `json:"text_content"`
+			Attachments json.RawMessage `json:"attachments"`
+		} `json:"items"`
+	}
+	if decodeErr := json.Unmarshal(response.Body.Bytes(), &nodePage); response.Code != http.StatusOK || decodeErr != nil || len(nodePage.Items) != 1 || nodePage.Items[0].ActionTitle != "历史标题" || nodePage.Items[0].TextContent != "历史正文" || !historyAttachmentIsImageM1(nodePage.Items[0].Attachments) {
 		t.Fatalf("history node HTTP response status=%d body=%s", response.Code, response.Body.String())
 	}
+}
+
+func historyAttachmentIsImageM1(raw json.RawMessage) bool {
+	var attachments []struct {
+		Kind string `json:"kind"`
+		ID   string `json:"id"`
+	}
+	return json.Unmarshal(raw, &attachments) == nil && len(attachments) == 1 && attachments[0].Kind == "image" && attachments[0].ID == "m1"
 }
 
 type historyHTTPApplication struct{ groupopshttp.Application }
@@ -413,7 +429,11 @@ CREATE TABLE legacy_history_source.automation_group_ops_plan_nodes(id BIGINT,pla
 	dir := t.TempDir()
 	key := filepath.Join(dir, "key")
 	sealed := filepath.Join(dir, "sealed")
-	if err = os.WriteFile(key, []byte(strings.Repeat("k", 32)), 0600); err != nil {
+	keyMaterial := make([]byte, 32)
+	for index := range keyMaterial {
+		keyMaterial[index] = 'k'
+	}
+	if err = os.WriteFile(key, []byte(base64.RawStdEncoding.EncodeToString(keyMaterial)), 0600); err != nil {
 		t.Fatal(err)
 	}
 	digest, err := source.SealHistoryToFile(snapshot, sealed, key)
@@ -450,7 +470,15 @@ CREATE TABLE legacy_history_source.automation_group_ops_plan_nodes(id BIGINT,pla
 	req := httptest.NewRequest(http.MethodGet, groupopshttp.HistoryPath+"/plans/901/nodes?limit=20&offset=0", nil)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, req)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"action_title":"标题\u0007"`) || !strings.Contains(response.Body.String(), `"text_content":"正文\u000b"`) || !strings.Contains(response.Body.String(), `"trigger_time":""`) || !strings.Contains(response.Body.String(), `"attachments":[{"kind":"image","id":"m1"}]`) {
+	var nodePage struct {
+		Items []struct {
+			ActionTitle string          `json:"action_title"`
+			TextContent string          `json:"text_content"`
+			TriggerTime string          `json:"trigger_time"`
+			Attachments json.RawMessage `json:"attachments"`
+		} `json:"items"`
+	}
+	if decodeErr := json.Unmarshal(response.Body.Bytes(), &nodePage); response.Code != http.StatusOK || decodeErr != nil || len(nodePage.Items) != 1 || nodePage.Items[0].ActionTitle != "标题\a" || nodePage.Items[0].TextContent != "正文\v" || nodePage.Items[0].TriggerTime != "" || !historyAttachmentIsImageM1(nodePage.Items[0].Attachments) {
 		t.Fatalf("node HTTP=%d %s", response.Code, response.Body.String())
 	}
 }

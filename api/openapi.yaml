@@ -4518,8 +4518,8 @@ components:
         name: {type: string}
         status: {const: archived}
         revision: {const: 1}
-        created_by: {$ref: "#/components/schemas/PositiveID"}
-        updated_by: {$ref: "#/components/schemas/PositiveID"}
+        created_by: {type: [integer, "null"], format: int64, minimum: 1}
+        updated_by: {type: [integer, "null"], format: int64, minimum: 1}
         created_at: {type: string, format: date-time}
         updated_at: {type: string, format: date-time}
         source_plan_id: {$ref: "#/components/schemas/PositiveID"}
