@@ -58,7 +58,7 @@ func (s *EntitlementApplication) ListCustomerEntitlements(ctx context.Context, c
 }
 
 func (s *EntitlementApplication) ListServicePeriodMembers(ctx context.Context, query orderport.ServicePeriodMemberQuery) (orderport.ServicePeriodMemberPage, error) {
-	if s == nil || query.ServiceProductID < 1 || query.Limit < 1 || query.Limit > 100 || (query.State != "" && query.State != "all" && query.State != "active" && query.State != "expired" && query.State != "removed") || (query.Source != "" && query.Source != "paid_order" && query.Source != "manual") || len(query.Cursor) > 1024 {
+	if s == nil || query.ServiceProductID < 1 || query.Limit < 1 || query.Limit > 100 || (query.State != "" && query.State != "all" && query.State != "active" && query.State != "expired" && query.State != "removed") || (query.Source != "" && query.Source != "paid_order" && query.Source != "manual") || (query.Sort != "" && query.Sort != "updated_at_desc" && query.Sort != "starts_at_desc") || len(query.Cursor) > 1024 {
 		return orderport.ServicePeriodMemberPage{}, orderport.ErrConflict
 	}
 	var page orderport.ServicePeriodMemberPage
@@ -86,10 +86,10 @@ func (s *EntitlementApplication) GetCustomerServicePeriodEntitlement(ctx context
 
 func (s *EntitlementApplication) UpdateEntitlementRemark(ctx context.Context, command orderport.RemarkCommand) (orderport.Entitlement, error) {
 	command.Remark = strings.TrimSpace(command.Remark)
-	if command.EntitlementID < 1 || command.CustomerID < 1 || command.EmployeeID == "" || len(command.EmployeeID) > 1024 || len(command.Remark) > 500 || command.ExpectedVersion < 1 || len(command.IdempotencyKey) < 8 || len(command.IdempotencyKey) > 200 {
+	if command.EntitlementID < 1 || command.CustomerID < 1 || command.ServiceProductID < 0 || command.EmployeeID == "" || len(command.EmployeeID) > 1024 || len(command.Remark) > 500 || command.ExpectedVersion < 1 || len(command.IdempotencyKey) < 8 || len(command.IdempotencyKey) > 200 {
 		return orderport.Entitlement{}, orderport.ErrConflict
 	}
-	payload, _ := json.Marshal([]any{command.EntitlementID, command.CustomerID, command.EmployeeID, command.Remark, command.ExpectedVersion})
+	payload, _ := json.Marshal([]any{command.EntitlementID, command.CustomerID, command.ServiceProductID, command.EmployeeID, command.Remark, command.ExpectedVersion})
 	keyDigest, payloadDigest := sha256.Sum256([]byte(command.IdempotencyKey)), sha256.Sum256(payload)
 	var result orderport.Entitlement
 	conflicted := false
@@ -113,7 +113,7 @@ func (s *EntitlementApplication) UpdateEntitlementRemark(ctx context.Context, co
 				return readErr
 			}
 			for _, item := range page.Items {
-				if item.ID == command.EntitlementID {
+				if item.ID == command.EntitlementID && (command.ServiceProductID == 0 || item.ServiceProductID == command.ServiceProductID) {
 					result = item
 					break
 				}

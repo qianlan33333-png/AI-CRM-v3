@@ -17,8 +17,11 @@ import (
 )
 
 type servicePeriodMemberCursor struct {
-	EndAt string `json:"end_at"`
-	ID    int64  `json:"id"`
+	EndAt     string `json:"end_at"`
+	UpdatedAt string `json:"updated_at,omitempty"`
+	StartAt   string `json:"start_at,omitempty"`
+	Sort      string `json:"sort,omitempty"`
+	ID        int64  `json:"id"`
 }
 
 func (r *Repository) ListCustomerEntitlements(ctx context.Context, customerID int64, limit int32) (orderport.EntitlementPage, error) {
@@ -51,12 +54,15 @@ func (r *Repository) ListServicePeriodMembers(ctx context.Context, query orderpo
 	if err != nil {
 		return orderport.ServicePeriodMemberPage{}, err
 	}
-	var cursorEnd *time.Time
+	var cursorEnd, cursorUpdated, cursorStart *time.Time
 	var cursorID int64
 	if query.Cursor != "" {
 		decoded, decodeErr := base64.RawURLEncoding.DecodeString(query.Cursor)
 		var cursor servicePeriodMemberCursor
 		if decodeErr != nil || json.Unmarshal(decoded, &cursor) != nil || cursor.ID < 1 {
+			return orderport.ServicePeriodMemberPage{}, orderport.ErrConflict
+		}
+		if cursor.Sort != "" && cursor.Sort != query.Sort {
 			return orderport.ServicePeriodMemberPage{}, orderport.ErrConflict
 		}
 		parsed, parseErr := time.Parse(time.RFC3339Nano, cursor.EndAt)
@@ -65,6 +71,22 @@ func (r *Repository) ListServicePeriodMembers(ctx context.Context, query orderpo
 		}
 		parsed = parsed.UTC()
 		cursorEnd, cursorID = &parsed, cursor.ID
+		if cursor.UpdatedAt != "" {
+			parsed, e := time.Parse(time.RFC3339Nano, cursor.UpdatedAt)
+			if e != nil {
+				return orderport.ServicePeriodMemberPage{}, orderport.ErrConflict
+			}
+			parsed = parsed.UTC()
+			cursorUpdated = &parsed
+		}
+		if cursor.StartAt != "" {
+			parsed, e := time.Parse(time.RFC3339Nano, cursor.StartAt)
+			if e != nil {
+				return orderport.ServicePeriodMemberPage{}, orderport.ErrConflict
+			}
+			parsed = parsed.UTC()
+			cursorStart = &parsed
+		}
 	}
 	state := strings.TrimSpace(query.State)
 	if state == "all" {
@@ -79,8 +101,10 @@ func (r *Repository) ListServicePeriodMembers(ctx context.Context, query orderpo
 		WHERE service_product_id=$1
 		  AND ($2='' OR status=$2)
 		  AND ($3='' OR ($3='paid_order' AND source_system='native-payment') OR ($3='manual' AND source_system<>'native-payment'))
-		  AND ($4::timestamptz IS NULL OR (end_at,id)<($4::timestamptz,$5::bigint))
-		ORDER BY end_at DESC,id DESC LIMIT $6`, query.ServiceProductID, state, source, cursorEnd, cursorID, query.Limit+1)
+		  AND (($6='updated_at_desc' AND ($4::timestamptz IS NULL OR (updated_at,id)<($4::timestamptz,$7::bigint)))
+		    OR ($6='starts_at_desc' AND ($5::timestamptz IS NULL OR (start_at,id)<($5::timestamptz,$7::bigint)))
+		    OR ($6='' AND ($8::timestamptz IS NULL OR (end_at,id)<($8::timestamptz,$7::bigint))))
+		ORDER BY CASE WHEN $6='updated_at_desc' THEN updated_at WHEN $6='starts_at_desc' THEN start_at ELSE end_at END DESC,id DESC LIMIT $9`, query.ServiceProductID, state, source, cursorUpdated, cursorStart, query.Sort, cursorID, cursorEnd, query.Limit+1)
 	if err != nil {
 		return orderport.ServicePeriodMemberPage{}, err
 	}
@@ -100,7 +124,7 @@ func (r *Repository) ListServicePeriodMembers(ctx context.Context, query orderpo
 		return page, nil
 	}
 	last := page.Items[query.Limit-1]
-	encoded, marshalErr := json.Marshal(servicePeriodMemberCursor{EndAt: last.EndAt.UTC().Format(time.RFC3339Nano), ID: last.ID})
+	encoded, marshalErr := json.Marshal(servicePeriodMemberCursor{EndAt: last.EndAt.UTC().Format(time.RFC3339Nano), UpdatedAt: last.UpdatedAt.UTC().Format(time.RFC3339Nano), StartAt: last.StartAt.UTC().Format(time.RFC3339Nano), Sort: query.Sort, ID: last.ID})
 	if marshalErr != nil {
 		return orderport.ServicePeriodMemberPage{}, marshalErr
 	}
@@ -157,7 +181,7 @@ func (r *Repository) UpdateEntitlementRemark(ctx context.Context, command orderp
 		return orderport.Entitlement{}, err
 	}
 	var item orderport.Entitlement
-	err = tx.QueryRow(ctx, `UPDATE order_service_entitlements SET remark=$4,version=version+1,updated_at=$5 WHERE id=$1 AND customer_id=$2 AND version=$3 AND status IN ('active','expired') RETURNING id,customer_id,service_product_id,product_name,last_order_id,status,start_at,end_at,remark,version,updated_at`, command.EntitlementID, command.CustomerID, command.ExpectedVersion, command.Remark, at).Scan(&item.ID, &item.CustomerID, &item.ServiceProductID, &item.ProductName, &item.LastOrderID, &item.Status, &item.StartAt, &item.EndAt, &item.Remark, &item.Version, &item.UpdatedAt)
+	err = tx.QueryRow(ctx, `UPDATE order_service_entitlements SET remark=$5,version=version+1,updated_at=$6 WHERE id=$1 AND customer_id=$2 AND ($3=0 OR service_product_id=$3) AND version=$4 AND status IN ('active','expired') RETURNING id,customer_id,service_product_id,product_name,last_order_id,status,start_at,end_at,remark,version,updated_at`, command.EntitlementID, command.CustomerID, command.ServiceProductID, command.ExpectedVersion, command.Remark, at).Scan(&item.ID, &item.CustomerID, &item.ServiceProductID, &item.ProductName, &item.LastOrderID, &item.Status, &item.StartAt, &item.EndAt, &item.Remark, &item.Version, &item.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return item, orderport.ErrConflict
 	}

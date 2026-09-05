@@ -124,6 +124,48 @@ func TestPostgreSQLOrderAtomicReplayCursorAndConstraints(t *testing.T) {
 	}
 }
 
+func TestEntitlementRemarkRejectsCrossProductBeforeMutation(t *testing.T) {
+	native, cleanup := orderIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	wrapper, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wrapper.Close()
+	uow, err := platformpostgres.NewUnitOfWork(wrapper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := NewPostgreSQL(native, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app, err := orderapp.NewEntitlementApplication(uow, repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := time.Date(2026, 9, 5, 0, 0, 0, 0, time.UTC)
+	digest := sha256.Sum256([]byte("cross-product-entitlement"))
+	var id int64
+	if err = native.QueryRow(ctx, `INSERT INTO order_service_entitlements(source_system,source_key,customer_id,service_product_id,product_name,status,start_at,end_at,remark,source_digest,created_at,updated_at) VALUES('test','cross-product',811,81,'B商品','active',$1,$2,'原备注',$3,$1,$1) RETURNING id`, base, base.AddDate(0, 0, 30), digest[:]).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	_, err = app.UpdateEntitlementRemark(ctx, orderport.RemarkCommand{EntitlementID: id, CustomerID: 811, ServiceProductID: 80, EmployeeID: "admin:1", Remark: "越权修改", ExpectedVersion: 1, IdempotencyKey: "cross-product-remark-key"})
+	if !errors.Is(err, orderport.ErrNotFound) && !errors.Is(err, orderport.ErrConflict) {
+		t.Fatalf("cross-product err=%v", err)
+	}
+	var remark string
+	var version int64
+	var receipts, audits, outbox int
+	if err = native.QueryRow(ctx, `SELECT remark,version,(SELECT count(*) FROM order_entitlement_operation_receipts),(SELECT count(*) FROM order_entitlement_audit_events),(SELECT count(*) FROM order_entitlement_outbox) FROM order_service_entitlements WHERE id=$1`, id).Scan(&remark, &version, &receipts, &audits, &outbox); err != nil {
+		t.Fatal(err)
+	}
+	if remark != "原备注" || version != 1 || receipts != 0 || audits != 0 || outbox != 0 {
+		t.Fatalf("cross-product changed remark=%q version=%d receipts=%d audits=%d outbox=%d", remark, version, receipts, audits, outbox)
+	}
+}
+
 func TestPostgreSQLOrderCheckoutSnapshotIsAtomicAndDatabaseFrozen(t *testing.T) {
 	native, cleanup := orderIntegrationPool(t)
 	defer cleanup()

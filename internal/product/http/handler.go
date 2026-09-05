@@ -7,6 +7,8 @@ package http
 import (
 	"context"
 	"crypto/rand"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -54,6 +56,18 @@ type Handler struct {
 	security  RequestSecurity
 	members   orderport.EntitlementService
 	names     customerport.DirectoryDisplayNameReader
+	workspace productport.MemberGridWorkspace
+}
+
+// SetServicePeriodMemberWorkspace binds Product-owned local view,
+// collaborator, and revocable-share metadata.  Authentication remains the
+// existing Access boundary; this is not a second staff directory.
+func (h *Handler) SetServicePeriodMemberWorkspace(workspace productport.MemberGridWorkspace) error {
+	if h == nil || workspace == nil {
+		return errors.New("service-period member workspace is required")
+	}
+	h.workspace = workspace
+	return nil
 }
 
 // SetServicePeriodMemberReaders connects the Product-owned grid Host to the
@@ -528,6 +542,14 @@ func (h *Handler) serviceTail(w http.ResponseWriter, r *http.Request, tail strin
 		h.memberGridSchema(w, r, id)
 	case suffix == "member-views":
 		h.memberViews(w, r, id)
+	case strings.HasPrefix(suffix, "member-views/"):
+		h.memberView(w, r, id, strings.TrimPrefix(suffix, "member-views/"))
+	case suffix == "member-grid/query":
+		h.memberGridQuery(w, r, id)
+	case suffix == "member-grid/collaborators":
+		h.memberGridCollaborators(w, r, id)
+	case strings.HasPrefix(suffix, "member-grid/collaborators/"):
+		h.memberGridCollaborator(w, r, id, strings.TrimPrefix(suffix, "member-grid/collaborators/"))
 	case suffix == "member-grid/share-settings":
 		h.memberGridShareSettings(w, r, id)
 	default:
@@ -768,7 +790,8 @@ func (h *Handler) serviceMembers(w http.ResponseWriter, r *http.Request, id int6
 		methodNotAllowed(w, http.MethodGet)
 		return
 	}
-	if !h.read(w, r) {
+	access, _, ok := h.memberGridAuthorize(w, r, id, false)
+	if !ok || !access.CanView {
 		return
 	}
 	if !onlyQuery(r, "state", "source", "limit", "cursor") {
@@ -829,7 +852,7 @@ func (h *Handler) serviceMembers(w http.ResponseWriter, r *http.Request, id int6
 		if name == "" {
 			name = "客户 #" + strconv.FormatInt(item.CustomerID, 10)
 		}
-		items = append(items, map[string]any{"member_ref": strconv.FormatInt(item.ID, 10), "entitlement_id": item.ID, "service_product_id": item.ServiceProductID, "customer_id": item.CustomerID, "display_name": name, "state": state, "source": source, "starts_at": item.StartAt.UTC(), "expires_at": item.EndAt.UTC(), "remark": item.Remark, "version": item.Version, "updated_at": item.UpdatedAt.UTC()})
+		items = append(items, map[string]any{"member_ref": memberGridMemberRef(item.ID), "entitlement_id": item.ID, "service_product_id": item.ServiceProductID, "customer_id": item.CustomerID, "display_name": name, "state": state, "source": source, "starts_at": item.StartAt.UTC(), "expires_at": item.EndAt.UTC(), "remark": item.Remark, "version": item.Version, "updated_at": item.UpdatedAt.UTC()})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items, "limit": limit, "next_cursor": page.NextCursor, "has_more": page.NextCursor != ""})
 }
@@ -839,14 +862,14 @@ func (h *Handler) memberRemark(w http.ResponseWriter, r *http.Request, productID
 		methodNotAllowed(w, http.MethodPut)
 		return
 	}
-	principal, ok := h.write(w, r)
-	if !ok || h.members == nil {
+	access, actor, ok := h.memberGridAuthorize(w, r, productID, true)
+	if !ok || !access.CanEdit || h.members == nil {
 		if ok {
 			writeError(w, http.StatusServiceUnavailable, "unavailable")
 		}
 		return
 	}
-	entitlementID, err := parseID(rawEntitlementID)
+	entitlementID, err := parseMemberGridMemberRef(rawEntitlementID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "not_found")
 		return
@@ -865,15 +888,12 @@ func (h *Handler) memberRemark(w http.ResponseWriter, r *http.Request, productID
 		writeError(w, http.StatusBadRequest, "invalid_request")
 		return
 	}
-	result, err := h.members.UpdateEntitlementRemark(r.Context(), orderport.RemarkCommand{EntitlementID: entitlementID, CustomerID: body.CustomerID, EmployeeID: strconv.FormatInt(principal.InternalID, 10), Remark: body.Remark, ExpectedVersion: body.Version, IdempotencyKey: key})
-	if err != nil || result.ServiceProductID != productID {
-		if err == nil {
-			err = orderport.ErrNotFound
-		}
+	result, err := h.members.UpdateEntitlementRemark(r.Context(), orderport.RemarkCommand{EntitlementID: entitlementID, CustomerID: body.CustomerID, ServiceProductID: productID, EmployeeID: strconv.FormatInt(actor.AdminUserID, 10), Remark: body.Remark, ExpectedVersion: body.Version, IdempotencyKey: key})
+	if err != nil {
 		resultError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "member_ref": strconv.FormatInt(result.ID, 10), "remark": result.Remark, "version": result.Version, "updated_at": result.UpdatedAt.UTC()})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "member_ref": memberGridMemberRef(result.ID), "remark": result.Remark, "version": result.Version, "updated_at": result.UpdatedAt.UTC()})
 }
 
 func (h *Handler) memberGridAccess(w http.ResponseWriter, r *http.Request, id int64) {
@@ -881,18 +901,20 @@ func (h *Handler) memberGridAccess(w http.ResponseWriter, r *http.Request, id in
 		methodNotAllowed(w, http.MethodGet)
 		return
 	}
-	if !h.read(w, r) {
-		return
-	}
 	if r.URL.RawQuery != "" {
 		writeError(w, http.StatusBadRequest, "invalid_request")
 		return
 	}
-	if _, err := h.service.GetServicePeriodProduct(r.Context(), productport.ID(id)); err != nil {
-		resultError(w, err)
+	_, actor, ok := h.memberGridAuthorize(w, r, id, false)
+	if !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"product_id": id, "can_view": true, "can_query": true, "can_edit": true, "can_manage_views": true, "can_share": false})
+	access, err := h.workspace.Access(r.Context(), productport.ID(id), actor)
+	if err != nil {
+		writeError(w, http.StatusForbidden, "permission_denied")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"product_id": id, "can_view": access.CanView, "can_query": access.CanView, "can_edit": access.CanEdit, "can_manage_views": access.CanManageViews, "can_share": access.CanShare})
 }
 
 func (h *Handler) memberGridSchema(w http.ResponseWriter, r *http.Request, id int64) {
@@ -900,15 +922,12 @@ func (h *Handler) memberGridSchema(w http.ResponseWriter, r *http.Request, id in
 		methodNotAllowed(w, http.MethodGet)
 		return
 	}
-	if !h.read(w, r) {
-		return
-	}
 	if r.URL.RawQuery != "" {
 		writeError(w, http.StatusBadRequest, "invalid_request")
 		return
 	}
-	if _, err := h.service.GetServicePeriodProduct(r.Context(), productport.ID(id)); err != nil {
-		resultError(w, err)
+	access, _, ok := h.memberGridAuthorize(w, r, id, false)
+	if !ok || !access.CanView {
 		return
 	}
 	columns := []map[string]any{
@@ -930,47 +949,509 @@ func (h *Handler) memberGridSchema(w http.ResponseWriter, r *http.Request, id in
 }
 
 func (h *Handler) memberViews(w http.ResponseWriter, r *http.Request, id int64) {
-	if r.Method != http.MethodGet {
-		methodNotAllowed(w, http.MethodGet)
-		return
-	}
-	if !h.read(w, r) {
-		return
-	}
 	if r.URL.RawQuery != "" {
 		writeError(w, http.StatusBadRequest, "invalid_request")
 		return
 	}
-	if _, err := h.service.GetServicePeriodProduct(r.Context(), productport.ID(id)); err != nil {
-		resultError(w, err)
-		return
+	switch r.Method {
+	case http.MethodGet:
+		access, _, ok := h.memberGridAuthorize(w, r, id, false)
+		if !ok || !access.CanView {
+			return
+		}
+		views, err := h.workspace.ListViews(r.Context(), productport.ID(id))
+		if err != nil {
+			resultError(w, err)
+			return
+		}
+		out := []any{map[string]any{"id": "default", "name": "默认视图", "source": "built_in", "read_only": true}}
+		for _, v := range views {
+			out = append(out, map[string]any{"id": strconv.FormatInt(int64(v.ID), 10), "name": v.Name, "source": "local", "read_only": false})
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"product_id": id, "views": out, "items": out})
+	case http.MethodPost:
+		access, actor, ok := h.memberGridAuthorize(w, r, id, true)
+		if !ok || !access.CanManageViews {
+			return
+		}
+		var body struct {
+			Name            string   `json:"name"`
+			State           string   `json:"state"`
+			Sort            string   `json:"sort"`
+			GroupBy         string   `json:"group_by"`
+			Columns         []string `json:"columns"`
+			SourceViewID    int64    `json:"source_view_id"`
+			ExpectedVersion int64    `json:"expected_version"`
+		}
+		if decodeJSON(r, &body) != nil || body.ExpectedVersion != 0 {
+			writeError(w, http.StatusBadRequest, "invalid_request")
+			return
+		}
+		body.State, body.Sort = legacyMemberViewSelection(body.State, body.Sort)
+		config, _ := json.Marshal(map[string]any{"state": body.State, "sort": body.Sort, "group_by": body.GroupBy, "columns": body.Columns, "source_view_id": body.SourceViewID})
+		key, e := requestIdempotencyKey(r)
+		if e != nil {
+			writeError(w, http.StatusBadRequest, "invalid_request")
+			return
+		}
+		v, e := h.workspace.CreateView(r.Context(), productport.CreateMemberGridViewCommand{ProductID: productport.ID(id), Name: body.Name, Config: config, Actor: actor, IdempotencyKey: key})
+		if e != nil {
+			resultError(w, e)
+			return
+		}
+		writeJSON(w, http.StatusCreated, map[string]any{"ok": true, "view": memberGridViewResponse(v)})
+	default:
+		methodNotAllowed(w, http.MethodGet+", "+http.MethodPost)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"product_id": id, "views": []map[string]any{{"id": "default", "name": "默认视图", "source": "built_in", "read_only": true}}})
 }
 
 func (h *Handler) memberGridShareSettings(w http.ResponseWriter, r *http.Request, id int64) {
-	if r.Method != http.MethodGet {
-		methodNotAllowed(w, http.MethodGet)
+	if r.URL.RawQuery != "" {
+		writeError(w, http.StatusBadRequest, "invalid_request")
 		return
 	}
-	if !h.read(w, r) {
+	switch r.Method {
+	case http.MethodGet:
+		access, _, ok := h.memberGridAuthorize(w, r, id, false)
+		if !ok || !access.CanView {
+			return
+		}
+		views, e := h.workspace.ListViews(r.Context(), productport.ID(id))
+		if e != nil {
+			resultError(w, e)
+			return
+		}
+		collaborators, e := h.workspace.ListCollaborators(r.Context(), productport.ID(id))
+		if e != nil {
+			resultError(w, e)
+			return
+		}
+		share, e := h.workspace.Share(r.Context(), productport.ID(id))
+		if e != nil {
+			resultError(w, e)
+			return
+		}
+		vs := make([]any, 0, len(views))
+		for _, v := range views {
+			vs = append(vs, memberGridViewResponse(v))
+		}
+		cs := make([]any, 0, len(collaborators))
+		for _, c := range collaborators {
+			cs = append(cs, memberGridCollaboratorResponse(c))
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"service_product_id": id, "saved_views": vs, "collaborators": cs, "external_share_supported": true, "external_share_enabled": share.Enabled, "external_share_version": share.Version, "real_external_call_executed": false, "collaborator_edit_is_local_metadata_only": true, "collaborator_edit_grants_central_permission": false})
+	case http.MethodPut:
+		access, actor, ok := h.memberGridAuthorize(w, r, id, true)
+		if !ok || !access.CanShare {
+			return
+		}
+		var body struct {
+			Enabled         bool  `json:"enabled"`
+			ExpectedVersion int64 `json:"expected_version"`
+		}
+		if decodeJSON(r, &body) != nil || body.ExpectedVersion < 0 {
+			writeError(w, http.StatusBadRequest, "invalid_request")
+			return
+		}
+		key, e := requestIdempotencyKey(r)
+		if e != nil {
+			writeError(w, http.StatusBadRequest, "invalid_request")
+			return
+		}
+		share, issued, e := h.workspace.SetShare(r.Context(), productport.SetMemberGridShareCommand{ProductID: productport.ID(id), Enabled: body.Enabled, ExpectedVersion: body.ExpectedVersion, Actor: actor, IdempotencyKey: key})
+		if e != nil {
+			resultError(w, e)
+			return
+		}
+		response := map[string]any{"ok": true, "external_share_enabled": share.Enabled, "external_share_version": share.Version, "token_issued": issued, "real_external_call_executed": false}
+		if issued {
+			response["public_path"] = "/member-grid-share/index.html#" + share.PublicID
+		}
+		writeJSON(w, http.StatusOK, response)
+	default:
+		methodNotAllowed(w, http.MethodGet+", "+http.MethodPut)
+	}
+}
+
+func (h *Handler) memberGridAuthorize(w http.ResponseWriter, r *http.Request, id int64, mutate bool) (productport.MemberGridAccess, productport.MemberGridActor, bool) {
+	if h.workspace == nil {
+		writeError(w, http.StatusServiceUnavailable, "unavailable")
+		return productport.MemberGridAccess{}, productport.MemberGridActor{}, false
+	}
+	principal, err := h.security.Authenticate(r.Context(), r)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return productport.MemberGridAccess{}, productport.MemberGridActor{}, false
+	}
+	if !canRead(principal) {
+		writeError(w, http.StatusForbidden, "permission_denied")
+		return productport.MemberGridAccess{}, productport.MemberGridActor{}, false
+	}
+	if mutate {
+		if _, err = h.security.AuthorizeCSRF(r.Context(), r); err != nil {
+			writeError(w, http.StatusForbidden, "csrf_required")
+			return productport.MemberGridAccess{}, productport.MemberGridActor{}, false
+		}
+	}
+	actor := productport.MemberGridActor{AdminUserID: principal.InternalID, IsSuperAdmin: principal.IsSuperAdmin()}
+	actor.IsAdmin = canWrite(principal)
+	access, err := h.workspace.Access(r.Context(), productport.ID(id), actor)
+	if err != nil {
+		writeError(w, http.StatusForbidden, "permission_denied")
+		return productport.MemberGridAccess{}, productport.MemberGridActor{}, false
+	}
+	return access, actor, true
+}
+
+func memberGridViewResponse(v productport.MemberGridView) map[string]any {
+	return map[string]any{"view_id": v.ID, "id": strconv.FormatInt(int64(v.ID), 10), "service_product_id": v.ProductID, "name": v.Name, "version": v.Version, "created_by": v.CreatedBy, "created_at": v.CreatedAt.UTC(), "updated_at": v.UpdatedAt.UTC(), "config": json.RawMessage(v.Config)}
+}
+func memberGridCollaboratorResponse(v productport.MemberGridCollaborator) map[string]any {
+	permission := v.Permission
+	if permission == "read" {
+		permission = "view"
+	}
+	return map[string]any{"collaborator_id": v.ID, "service_product_id": v.ProductID, "staff_id": v.AdminUserID, "permission": permission, "version": v.Version, "invited_by": v.CreatedBy, "created_at": v.CreatedAt.UTC(), "updated_at": v.UpdatedAt.UTC()}
+}
+
+func (h *Handler) memberView(w http.ResponseWriter, r *http.Request, productID int64, rawID string) {
+	viewID, err := parseID(rawID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "not_found")
 		return
 	}
 	if r.URL.RawQuery != "" {
 		writeError(w, http.StatusBadRequest, "invalid_request")
 		return
 	}
-	if _, err := h.service.GetServicePeriodProduct(r.Context(), productport.ID(id)); err != nil {
-		resultError(w, err)
+	switch r.Method {
+	case http.MethodPut:
+		access, actor, ok := h.memberGridAuthorize(w, r, productID, true)
+		if !ok || !access.CanManageViews {
+			return
+		}
+		var body struct {
+			ExpectedVersion int64    `json:"expected_version"`
+			Name            string   `json:"name"`
+			State           string   `json:"state"`
+			Sort            string   `json:"sort"`
+			GroupBy         string   `json:"group_by"`
+			Columns         []string `json:"columns"`
+		}
+		if decodeJSON(r, &body) != nil || body.ExpectedVersion < 1 {
+			writeError(w, http.StatusBadRequest, "invalid_request")
+			return
+		}
+		body.State, body.Sort = legacyMemberViewSelection(body.State, body.Sort)
+		config, _ := json.Marshal(map[string]any{"state": body.State, "sort": body.Sort, "group_by": body.GroupBy, "columns": body.Columns})
+		key, e := requestIdempotencyKey(r)
+		if e != nil {
+			writeError(w, http.StatusBadRequest, "invalid_request")
+			return
+		}
+		v, e := h.workspace.UpdateView(r.Context(), productport.UpdateMemberGridViewCommand{ProductID: productport.ID(productID), ViewID: productport.ID(viewID), ExpectedVersion: body.ExpectedVersion, Name: body.Name, Config: config, Actor: actor, IdempotencyKey: key})
+		if e != nil {
+			resultError(w, e)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "view": memberGridViewResponse(v)})
+	case http.MethodDelete:
+		access, actor, ok := h.memberGridAuthorize(w, r, productID, true)
+		if !ok || !access.CanManageViews {
+			return
+		}
+		var body struct {
+			ExpectedVersion int64 `json:"expected_version"`
+		}
+		if decodeJSON(r, &body) != nil || body.ExpectedVersion < 1 {
+			writeError(w, http.StatusBadRequest, "invalid_request")
+			return
+		}
+		key, e := requestIdempotencyKey(r)
+		if e != nil {
+			writeError(w, http.StatusBadRequest, "invalid_request")
+			return
+		}
+		v, e := h.workspace.DeleteView(r.Context(), productport.DeleteMemberGridViewCommand{ProductID: productport.ID(productID), ViewID: productport.ID(viewID), ExpectedVersion: body.ExpectedVersion, Actor: actor, IdempotencyKey: key})
+		if e != nil {
+			resultError(w, e)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": true, "view": memberGridViewResponse(v)})
+	default:
+		methodNotAllowed(w, http.MethodPut+", "+http.MethodDelete)
+	}
+}
+
+func (h *Handler) memberGridCollaborators(w http.ResponseWriter, r *http.Request, id int64) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w, http.MethodPost)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"service_product_id": id, "saved_views": []any{}, "collaborators": []any{},
-		"external_share_supported": false, "external_share_enabled": false,
-		"external_share_version": 0, "real_external_call_executed": false,
-		"collaborator_edit_is_local_metadata_only":    true,
-		"collaborator_edit_grants_central_permission": false,
-	})
+	if r.URL.RawQuery != "" {
+		writeError(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	access, actor, ok := h.memberGridAuthorize(w, r, id, true)
+	if !ok || !access.CanShare {
+		return
+	}
+	var body struct {
+		ExpectedVersion int64  `json:"expected_version"`
+		StaffID         int64  `json:"staff_id"`
+		Permission      string `json:"permission"`
+	}
+	if decodeJSON(r, &body) != nil || body.ExpectedVersion != 0 || body.StaffID < 1 {
+		writeError(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	if body.Permission == "view" {
+		body.Permission = "read"
+	}
+	key, e := requestIdempotencyKey(r)
+	if e != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	c, e := h.workspace.CreateCollaborator(r.Context(), productport.CreateMemberGridCollaboratorCommand{ProductID: productport.ID(id), AdminUserID: body.StaffID, Permission: body.Permission, Actor: actor, IdempotencyKey: key})
+	if e != nil {
+		resultError(w, e)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"ok": true, "collaborator": memberGridCollaboratorResponse(c), "edit_permission_is_local_metadata_only": true, "grants_central_products_permission": false})
+}
+func (h *Handler) memberGridCollaborator(w http.ResponseWriter, r *http.Request, id int64, rawID string) {
+	cid, e := parseID(rawID)
+	if e != nil {
+		writeError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	if r.URL.RawQuery != "" {
+		writeError(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	access, actor, ok := h.memberGridAuthorize(w, r, id, true)
+	if !ok || !access.CanShare {
+		return
+	}
+	switch r.Method {
+	case http.MethodPut:
+		var body struct {
+			ExpectedVersion int64  `json:"expected_version"`
+			Permission      string `json:"permission"`
+		}
+		if decodeJSON(r, &body) != nil || body.ExpectedVersion < 1 {
+			writeError(w, http.StatusBadRequest, "invalid_request")
+			return
+		}
+		if body.Permission == "view" {
+			body.Permission = "read"
+		}
+		key, e := requestIdempotencyKey(r)
+		if e != nil {
+			writeError(w, http.StatusBadRequest, "invalid_request")
+			return
+		}
+		c, e := h.workspace.UpdateCollaborator(r.Context(), productport.UpdateMemberGridCollaboratorCommand{ProductID: productport.ID(id), CollaboratorID: productport.ID(cid), ExpectedVersion: body.ExpectedVersion, Permission: body.Permission, Actor: actor, IdempotencyKey: key})
+		if e != nil {
+			resultError(w, e)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "collaborator": memberGridCollaboratorResponse(c), "edit_permission_is_local_metadata_only": true, "grants_central_products_permission": false})
+	case http.MethodDelete:
+		var body struct {
+			ExpectedVersion int64 `json:"expected_version"`
+		}
+		if decodeJSON(r, &body) != nil || body.ExpectedVersion < 1 {
+			writeError(w, http.StatusBadRequest, "invalid_request")
+			return
+		}
+		key, e := requestIdempotencyKey(r)
+		if e != nil {
+			writeError(w, http.StatusBadRequest, "invalid_request")
+			return
+		}
+		c, e := h.workspace.DeleteCollaborator(r.Context(), productport.DeleteMemberGridCollaboratorCommand{ProductID: productport.ID(id), CollaboratorID: productport.ID(cid), ExpectedVersion: body.ExpectedVersion, Actor: actor, IdempotencyKey: key})
+		if e != nil {
+			resultError(w, e)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": true, "collaborator": memberGridCollaboratorResponse(c), "edit_permission_is_local_metadata_only": true, "grants_central_products_permission": false})
+	default:
+		methodNotAllowed(w, http.MethodPut+", "+http.MethodDelete)
+	}
+}
+
+func (h *Handler) memberGridQuery(w http.ResponseWriter, r *http.Request, id int64) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w, http.MethodPost)
+		return
+	}
+	access, _, ok := h.memberGridAuthorize(w, r, id, false)
+	if !ok || !access.CanView {
+		return
+	}
+	if h.members == nil || h.names == nil {
+		writeError(w, http.StatusServiceUnavailable, "unavailable")
+		return
+	}
+	var body struct {
+		State   string `json:"state"`
+		Source  string `json:"source"`
+		Limit   int32  `json:"limit"`
+		Cursor  string `json:"cursor"`
+		Sort    string `json:"sort"`
+		GroupBy string `json:"group_by"`
+		ViewID  string `json:"view_id"`
+	}
+	if decodeJSON(r, &body) != nil || !validMemberGridQuery(body.State, body.Source, body.Limit, body.Cursor, body.Sort, body.GroupBy, body.ViewID) {
+		writeError(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	if body.ViewID != "" && body.ViewID != "default" {
+		viewID, parseErr := parseID(body.ViewID)
+		if parseErr != nil {
+			writeError(w, http.StatusBadRequest, "invalid_request")
+			return
+		}
+		views, viewErr := h.workspace.ListViews(r.Context(), productport.ID(id))
+		if viewErr != nil {
+			resultError(w, viewErr)
+			return
+		}
+		found := false
+		for _, view := range views {
+			if view.ID == productport.ID(viewID) {
+				found = true
+				var config struct {
+					State   string `json:"state"`
+					Source  string `json:"source"`
+					Sort    string `json:"sort"`
+					GroupBy string `json:"group_by"`
+				}
+				if json.Unmarshal(view.Config, &config) != nil {
+					writeError(w, http.StatusServiceUnavailable, "unavailable")
+					return
+				}
+				if body.State == "" {
+					body.State = config.State
+				}
+				if body.Source == "" {
+					body.Source = config.Source
+				}
+				if body.Sort == "" {
+					body.Sort = config.Sort
+				}
+				if body.GroupBy == "" {
+					body.GroupBy = config.GroupBy
+				}
+				break
+			}
+		}
+		if !found || !validMemberGridQuery(body.State, body.Source, body.Limit, body.Cursor, body.Sort, body.GroupBy, "") {
+			writeError(w, http.StatusBadRequest, "invalid_request")
+			return
+		}
+	}
+	if body.Limit == 0 {
+		body.Limit = 50
+	}
+	page, e := h.members.ListServicePeriodMembers(r.Context(), orderport.ServicePeriodMemberQuery{ServiceProductID: id, State: body.State, Source: body.Source, Cursor: body.Cursor, Limit: body.Limit, Sort: body.Sort})
+	if e != nil {
+		resultError(w, e)
+		return
+	}
+	rows, e := h.memberGridRows(r.Context(), page.Items)
+	if e != nil {
+		writeError(w, http.StatusServiceUnavailable, "unavailable")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"rows": rows, "limit": body.Limit, "next_cursor": page.NextCursor, "has_more": page.NextCursor != ""})
+}
+func validMemberGridQuery(state, source string, limit int32, cursor, sort, group, view string) bool {
+	if state != "" && state != "active" && state != "expired" && state != "removed" && state != "all" {
+		return false
+	}
+	if source != "" && source != "manual" && source != "paid_order" {
+		return false
+	}
+	if limit < 0 || limit > 50 || len(cursor) > 256 {
+		return false
+	}
+	if sort != "" && sort != "updated_at_desc" && sort != "starts_at_desc" {
+		return false
+	}
+	if group != "" && group != "state" {
+		return false
+	}
+	if view == "" || view == "default" {
+		return true
+	}
+	_, err := parseID(view)
+	return err == nil
+}
+
+// The frozen donor calls removed members "revoked" and its only saved-view
+// sort "granted_at_desc".  The Host translates those labels to the bounded
+// Order projection without changing donor business files.
+func legacyMemberViewSelection(state, sort string) (string, string) {
+	if state == "revoked" {
+		state = "removed"
+	}
+	if sort == "granted_at_desc" {
+		sort = "updated_at_desc"
+	}
+	return state, sort
+}
+func (h *Handler) memberGridRows(ctx context.Context, items []orderport.Entitlement) ([]map[string]any, error) {
+	ids := make([]customerdomain.CustomerID, 0, len(items))
+	for _, item := range items {
+		ids = append(ids, customerdomain.CustomerID(item.CustomerID))
+	}
+	names, e := h.names.DisplayNames(ctx, ids)
+	if e != nil {
+		return nil, e
+	}
+	out := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		state := item.Status
+		if state == "refunded" {
+			state = "removed"
+		}
+		source := "manual"
+		if item.SourceSystem == "native-payment" {
+			source = "paid_order"
+		}
+		name := names[customerdomain.CustomerID(item.CustomerID)]
+		if name == "" {
+			name = "客户"
+		}
+		out = append(out, map[string]any{"member_ref": memberGridMemberRef(item.ID), "service_product_id": item.ServiceProductID, "customer_id": item.CustomerID, "display_name": name, "state": state, "source": source, "starts_at": item.StartAt.UTC(), "expires_at": item.EndAt.UTC(), "version": item.Version, "updated_at": item.UpdatedAt.UTC()})
+	}
+	return out, nil
+}
+
+func memberGridMemberRef(id int64) string {
+	var raw [16]byte
+	binary.BigEndian.PutUint64(raw[8:], uint64(id))
+	return "spm_" + base64.RawURLEncoding.EncodeToString(raw[:])
+}
+func parseMemberGridMemberRef(value string) (int64, error) {
+	if !strings.HasPrefix(value, "spm_") {
+		return parseID(value)
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(value, "spm_"))
+	if err != nil || len(raw) != 16 {
+		return 0, errors.New("invalid member ref")
+	}
+	if binary.BigEndian.Uint64(raw[:8]) != 0 {
+		return 0, errors.New("invalid member ref")
+	}
+	id := int64(binary.BigEndian.Uint64(raw[8:]))
+	if id < 1 || memberGridMemberRef(id) != value {
+		return 0, errors.New("invalid member ref")
+	}
+	return id, nil
 }
 
 type createRequest struct {

@@ -160,6 +160,65 @@ func (testMemberNames) DisplayNames(context.Context, []customerdomain.CustomerID
 	return map[customerdomain.CustomerID]string{}, nil
 }
 
+// The HTTP fixture models the Product-owned workspace port.  It keeps the
+// handler test on the real HttpApi surface and deliberately has no Order or
+// Customer store access.
+type testMemberWorkspace struct {
+	access        productport.MemberGridAccess
+	deniedID      int64
+	views         []productport.MemberGridView
+	collaborators []productport.MemberGridCollaborator
+	share         productport.MemberGridShare
+}
+
+func (s *testMemberWorkspace) Access(_ context.Context, _ productport.ID, actor productport.MemberGridActor) (productport.MemberGridAccess, error) {
+	if actor.AdminUserID == s.deniedID {
+		return productport.MemberGridAccess{}, productapp.ErrNotFound
+	}
+	return s.access, nil
+}
+func (s *testMemberWorkspace) ListViews(context.Context, productport.ID) ([]productport.MemberGridView, error) {
+	return s.views, nil
+}
+func (s *testMemberWorkspace) CreateView(_ context.Context, c productport.CreateMemberGridViewCommand) (productport.MemberGridView, error) {
+	v := productport.MemberGridView{ID: 13, ProductID: c.ProductID, Name: c.Name, Config: c.Config, Version: 1, CreatedBy: c.Actor.AdminUserID, UpdatedBy: c.Actor.AdminUserID, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	s.views = append(s.views, v)
+	return v, nil
+}
+func (s *testMemberWorkspace) UpdateView(_ context.Context, c productport.UpdateMemberGridViewCommand) (productport.MemberGridView, error) {
+	return productport.MemberGridView{ID: c.ViewID, ProductID: c.ProductID, Name: c.Name, Config: c.Config, Version: c.ExpectedVersion + 1, UpdatedBy: c.Actor.AdminUserID, UpdatedAt: time.Now()}, nil
+}
+func (s *testMemberWorkspace) DeleteView(_ context.Context, c productport.DeleteMemberGridViewCommand) (productport.MemberGridView, error) {
+	return productport.MemberGridView{ID: c.ViewID, ProductID: c.ProductID, Version: c.ExpectedVersion}, nil
+}
+func (s *testMemberWorkspace) ListCollaborators(context.Context, productport.ID) ([]productport.MemberGridCollaborator, error) {
+	return s.collaborators, nil
+}
+func (s *testMemberWorkspace) CreateCollaborator(_ context.Context, c productport.CreateMemberGridCollaboratorCommand) (productport.MemberGridCollaborator, error) {
+	v := productport.MemberGridCollaborator{ID: 14, ProductID: c.ProductID, AdminUserID: c.AdminUserID, Permission: c.Permission, Version: 1, CreatedBy: c.Actor.AdminUserID, UpdatedBy: c.Actor.AdminUserID, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	s.collaborators = append(s.collaborators, v)
+	return v, nil
+}
+func (s *testMemberWorkspace) UpdateCollaborator(_ context.Context, c productport.UpdateMemberGridCollaboratorCommand) (productport.MemberGridCollaborator, error) {
+	return productport.MemberGridCollaborator{ID: c.CollaboratorID, ProductID: c.ProductID, Permission: c.Permission, Version: c.ExpectedVersion + 1, UpdatedBy: c.Actor.AdminUserID, UpdatedAt: time.Now()}, nil
+}
+func (s *testMemberWorkspace) DeleteCollaborator(_ context.Context, c productport.DeleteMemberGridCollaboratorCommand) (productport.MemberGridCollaborator, error) {
+	return productport.MemberGridCollaborator{ID: c.CollaboratorID, ProductID: c.ProductID, Version: c.ExpectedVersion}, nil
+}
+func (s *testMemberWorkspace) Share(context.Context, productport.ID) (productport.MemberGridShare, error) {
+	return s.share, nil
+}
+func (s *testMemberWorkspace) SetShare(_ context.Context, c productport.SetMemberGridShareCommand) (productport.MemberGridShare, bool, error) {
+	s.share = productport.MemberGridShare{ProductID: c.ProductID, Enabled: c.Enabled, Version: c.ExpectedVersion + 1}
+	if c.Enabled {
+		s.share.PublicID = "mgshare1.abcdefghijklmnopqrstuv.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	}
+	return s.share, c.Enabled, nil
+}
+func (s *testMemberWorkspace) ResolveShare(context.Context, string) (productport.MemberGridShare, error) {
+	return s.share, nil
+}
+
 func (external *testExternalPush) GetExternalPushConfiguration(context.Context, productport.ID, productport.ExternalPushProductKind) (productport.ExternalPushConfiguration, error) {
 	return external.configuration, nil
 }
@@ -187,6 +246,9 @@ func newHandlerForTest(t *testing.T) (*Handler, *testSecurity, *testCatalog, *te
 		t.Fatal(err)
 	}
 	if err = handler.SetServicePeriodMemberReaders(testMemberEntitlements{}, testMemberNames{}); err != nil {
+		t.Fatal(err)
+	}
+	if err = handler.SetServicePeriodMemberWorkspace(&testMemberWorkspace{access: productport.MemberGridAccess{CanView: true, CanEdit: true, CanManageViews: true, CanShare: true}, deniedID: 22}); err != nil {
 		t.Fatal(err)
 	}
 	return handler, security, catalog, lifecycle
@@ -282,8 +344,46 @@ func TestHandlerReturnsTruthfulCompatibilityReads(t *testing.T) {
 	}
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/admin/service-period-products/7/member-grid/query", nil))
-	if recorder.Code != http.StatusNotFound {
-		t.Fatalf("excluded grid query status=%d body=%s", recorder.Code, recorder.Body.String())
+	if recorder.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("grid query method gate status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestMemberGridHttpAPICRUDAndPermissionGate(t *testing.T) {
+	handler, security, _, _ := newHandlerForTest(t)
+	post := func(path, body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+		r.Header.Set("Idempotency-Key", "grid-http-api-key-0001")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		return w
+	}
+	if got := post("/api/admin/service-period-products/7/member-views", `{"expected_version":0,"name":"本周","state":"all","sort":"granted_at_desc","columns":["state"]}`); got.Code != http.StatusCreated || !strings.Contains(got.Body.String(), `"view_id":13`) || !strings.Contains(got.Body.String(), `"version":1`) {
+		t.Fatalf("view create=%d %s", got.Code, got.Body.String())
+	}
+	if got := post("/api/admin/service-period-products/7/member-grid/collaborators", `{"expected_version":0,"staff_id":5,"permission":"edit"}`); got.Code != http.StatusCreated || !strings.Contains(got.Body.String(), `"collaborator_id":14`) || !strings.Contains(got.Body.String(), `"version":1`) {
+		t.Fatalf("collaborator create=%d %s", got.Code, got.Body.String())
+	}
+	put := httptest.NewRequest(http.MethodPut, "/api/admin/service-period-products/7/member-grid/share-settings", strings.NewReader(`{"enabled":true,"expected_version":0}`))
+	put.Header.Set("Idempotency-Key", "grid-share-key-0001")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, put)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "mgshare1.") {
+		t.Fatalf("share=%d %s", w.Code, w.Body.String())
+	}
+	query := httptest.NewRequest(http.MethodPost, "/api/admin/service-period-products/7/member-grid/query", strings.NewReader(`{"view_id":"13","limit":50}`))
+	queryW := httptest.NewRecorder()
+	handler.ServeHTTP(queryW, query)
+	if queryW.Code != http.StatusOK {
+		t.Fatalf("saved view query=%d %s", queryW.Code, queryW.Body.String())
+	}
+	// A Viewer without Product workspace metadata cannot enumerate members or
+	// collaborator/share settings, even though the normal admin shell read is valid.
+	security.principal = accessdomain.Principal{Kind: accessdomain.KindAdmin, InternalID: 22, Roles: []accessdomain.Role{accessdomain.RoleViewer}}
+	denied := httptest.NewRecorder()
+	handler.ServeHTTP(denied, httptest.NewRequest(http.MethodGet, "/api/admin/service-period-products/7/members", nil))
+	if denied.Code != http.StatusForbidden {
+		t.Fatalf("revoked/no workspace read=%d %s", denied.Code, denied.Body.String())
 	}
 }
 

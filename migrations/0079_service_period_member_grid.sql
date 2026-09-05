@@ -16,8 +16,11 @@ CREATE TABLE product_service_period_member_views (
     updated_by BIGINT NOT NULL REFERENCES admin_users(id) ON DELETE RESTRICT,
     created_at TIMESTAMPTZ NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL,
-    UNIQUE(product_id, lower(name))
 );
+-- PostgreSQL permits an expression uniqueness rule only as an index, not as a
+-- table constraint.  Names therefore remain case-insensitively unique.
+CREATE UNIQUE INDEX product_service_period_member_views_name_ci_idx
+    ON product_service_period_member_views(product_id, lower(name));
 CREATE UNIQUE INDEX product_service_period_member_views_default_idx
     ON product_service_period_member_views(product_id) WHERE is_default;
 CREATE INDEX product_service_period_member_views_position_idx

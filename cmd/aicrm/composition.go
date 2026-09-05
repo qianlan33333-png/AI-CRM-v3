@@ -556,12 +556,19 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	productCatalog := productapp.NewService(uow, productRepository, productEvents)
 	productLifecycle := productapp.NewLocalProductLifecycleService(uow, productRepository, productEvents)
 	productServicePeriod := productapp.NewServicePeriodService(uow, productRepository, productEvents)
+	// 0079 is Product-owned workspace metadata.  The HTTP host still reads
+	// members through the Order port and display names through the Customer
+	// port; it does not receive either store here.
+	productMemberGrid := productapp.NewMemberGridWorkspaceService(uow, productRepository, productMemberGridStaffDirectory{users: accessRepository}, productEvents)
 	productExternalPush, err := productapp.NewCommerceExternalPushService(uow, productRepository, productstore.NewLocalExternalPushEffectAccepter(), productEvents)
 	if err != nil {
 		return fail(err)
 	}
 	productBindings, err := productModule.Bind(productCatalog, productLifecycle, productServicePeriod, productExternalPush, requestSecurity)
 	if err != nil {
+		return fail(err)
+	}
+	if err = productBindings.ProductHandler.SetServicePeriodMemberWorkspace(productMemberGrid); err != nil {
 		return fail(err)
 	}
 	publicProductHandler, err := producthttp.NewPublicHandler(productCatalog)

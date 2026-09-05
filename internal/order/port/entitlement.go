@@ -35,6 +35,9 @@ type ServicePeriodMemberQuery struct {
 	Source           string
 	Cursor           string
 	Limit            int32
+	// Sort is intentionally bounded to the member-grid's two donor choices.
+	// Empty preserves the legacy end-at order used by the list endpoint.
+	Sort string
 }
 
 type ServicePeriodMemberPage struct {
@@ -43,12 +46,16 @@ type ServicePeriodMemberPage struct {
 }
 
 type RemarkCommand struct {
-	EntitlementID   int64
-	CustomerID      int64
-	EmployeeID      string
-	Remark          string
-	ExpectedVersion int64
-	IdempotencyKey  string
+	EntitlementID int64
+	CustomerID    int64
+	// ServiceProductID is a required scope proof supplied by the Product host.
+	// Order uses it in the UPDATE predicate so a URL for one product cannot
+	// mutate an entitlement belonging to another product.
+	ServiceProductID int64
+	EmployeeID       string
+	Remark           string
+	ExpectedVersion  int64
+	IdempotencyKey   string
 }
 
 type EntitlementService interface {

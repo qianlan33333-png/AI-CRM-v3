@@ -653,16 +653,16 @@ export async function runAdminAdapterTests(): Promise<void> {
     gridCalls.push({ input: String(input), init });
     const path = new URL('http://localhost' + String(input)).pathname;
     const product = { service_product_id: 8, product_code: 'SP-8', name: '季度', description: '说明', price_minor: 398000, currency: 'CNY', stock_quantity: 5, images: [], admin_projection: servicePeriodAdminProjection(), lifecycle: 'draft', enabled: false, archived: false, version: 3, created_at: '', updated_at: '' };
-    const body = path.endsWith('/member-grid/access') ? { product_id: 8, can_view: true, can_query: true, can_manage_views: false, can_share: false }
+    const body = path.endsWith('/member-grid/access') ? { product_id: 8, can_view: true, can_query: true, can_manage_views: true, can_share: false }
       : path.endsWith('/member-grid/schema') ? { service_product_id: 8, columns: gridColumns }
-        : path.endsWith('/member-views') ? { product_id: 8, views: [{ id: 'all-members', name: '全部成员', source: 'built_in', read_only: true }] }
+        : path.endsWith('/member-views') ? { product_id: 8, views: [{ id: 'all-members', name: '全部成员', source: 'built_in', read_only: true }, { id: '13', name: '本周', source: 'local', read_only: false }] }
           : path.endsWith('/member-grid/share-settings') ? { service_product_id: 8, saved_views: [], collaborators: [{ collaborator_id: 6, service_product_id: 8, staff_id: 5, permission: 'view', version: 1, invited_by: 1, created_at: '2026-08-26T00:00:00Z', updated_at: '2026-08-26T00:00:00Z' }], external_share_supported: true, external_share_enabled: false, external_share_version: 0, real_external_call_executed: unsafeGridShare, collaborator_edit_is_local_metadata_only: true, collaborator_edit_grants_central_permission: false, public_url: 'https://untrusted.invalid/member-grid' }
             : { ok: true, product };
     return new Response(JSON.stringify(body), { status: 200 });
   };
   try {
     const grid = await getServicePeriodMemberGridMetaDto(8);
-    assert(grid.product.resourceId === 8 && grid.columns.length === 12 && grid.views[0].readOnly && grid.collaborators === 1 && grid.externalShareEnabled === false && grid.externalShareVersion === 0 && !('publicShareUrl' in grid), 'Member Grid initializes public-share state and discards undeclared public URLs');
+    assert(grid.product.resourceId === 8 && grid.columns.length === 12 && grid.views[0].readOnly && grid.views[1]?.id === '13' && !grid.views[1]?.readOnly && grid.canManageViews && grid.collaborators === 1 && grid.externalShareEnabled === false && grid.externalShareVersion === 0 && !('publicShareUrl' in grid), 'Member Grid initializes saved-view capability and discards undeclared public URLs');
     assert(gridCalls.length === 5 && gridCalls.every((call) => call.init?.method === 'GET'), 'Member Grid initialization uses five generated GET reads');
     unsafeGridShare = true;
     try { await getServicePeriodMemberGridMetaDto(8); assert(false, 'Member Grid external effect flag must fail closed'); }
@@ -727,6 +727,10 @@ export async function runAdminAdapterTests(): Promise<void> {
     const customQuery = customQueries[customQueries.length - 1];
     const customBody = JSON.parse(String(customQuery?.init?.body));
     assert(customPage.rows.length === 1 && customBody.sort === 'starts_at_desc' && customBody.group_by === 'state' && customBody.view_id === undefined, 'Member Grid custom query sends the restricted sort and group selection');
+    await queryServicePeriodMemberGridDto(8, { viewId: '13', limit: 50 });
+    const savedViewQueries = memberCalls.filter((call) => call.input.endsWith('/member-grid/query'));
+    const savedViewQuery = savedViewQueries[savedViewQueries.length - 1];
+    assert(JSON.parse(String(savedViewQuery?.init?.body)).view_id === '13', 'Member Grid saved view selection uses the persisted Product metadata ID');
     const queryCountBeforeInvalid = memberCalls.filter((call) => call.input.endsWith('/member-grid/query')).length;
     try { await queryServicePeriodMemberGridDto(8, { viewId: 'default', state: 'active' }); assert(false, 'Member Grid accepted an invalid default-view combination'); }
     catch (error) { assert(error instanceof Error && error.message.includes('查询条件'), 'Member Grid rejects invalid default-view combinations before fetch'); }
