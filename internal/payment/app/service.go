@@ -414,10 +414,16 @@ func (s *Service) GetCheckout(ctx context.Context, merchantOrderNo, sessionToken
 		if err != nil {
 			return err
 		}
-		if payment.PayerIdentityID != actor.PayerIdentityID || payment.PayerCustomerID != actor.PayerCustomerID || payment.BeneficiaryCustomerID != actor.BeneficiaryCustomerID {
+		if !checkoutReadAuthorized(payment, actor) {
 			return paymentport.ErrConflict
 		}
 		out = paymentport.Handoff{PaymentID: payment.ID, MerchantOrder: payment.MerchantOrderNo, Status: payment.Status}
+		// A terminal outcome is an immutable Payment fact. It remains readable to
+		// the original trusted payer after the short-lived JSAPI handoff expires;
+		// handoff material is neither needed nor safe to revive at this point.
+		if payment.Status == domain.StatusPaid || payment.Status == domain.StatusFailed || payment.Status == domain.StatusCancelled {
+			return nil
+		}
 		if payment.Status == domain.StatusAwaitingPrepay {
 			return nil
 		}
@@ -856,6 +862,27 @@ func validShopRefundCommand(command paymentport.RefundCommand) bool {
 }
 func validKey(v string) bool   { return v == strings.TrimSpace(v) && len(v) >= 16 && len(v) <= 200 }
 func validScope(v string) bool { return v == strings.TrimSpace(v) && len(v) > 0 && len(v) <= 200 }
+
+// checkoutReadAuthorized permits a fresh trusted session to read a prior order
+// only when the same Payment-owned payer identity and canonical customer match.
+// A newly issued OAuth session is intentionally unresolved until a new checkout
+// selects a recipient, but that browser state must not hide an already persisted
+// payment whose beneficiary was selected in the original transaction.
+func checkoutReadAuthorized(payment domain.Payment, actor paymentport.SessionActor) bool {
+	if payment.PayerIdentityID != actor.PayerIdentityID || payment.PayerCustomerID != actor.PayerCustomerID || payment.Channel != actor.Channel {
+		return false
+	}
+	switch actor.BeneficiarySelection {
+	case paymentport.BeneficiarySelectionUnresolved:
+		return actor.BeneficiaryCustomerID == 0
+	case paymentport.BeneficiarySelectionPayerSelf:
+		return actor.BeneficiaryCustomerID == actor.PayerCustomerID && payment.BeneficiaryCustomerID == actor.BeneficiaryCustomerID
+	case paymentport.BeneficiarySelectionAdminAssisted:
+		return actor.BeneficiaryCustomerID > 0 && payment.BeneficiaryCustomerID == actor.BeneficiaryCustomerID
+	default:
+		return false
+	}
+}
 
 func selectedBeneficiary(actor paymentport.SessionActor) bool {
 	switch actor.BeneficiarySelection {

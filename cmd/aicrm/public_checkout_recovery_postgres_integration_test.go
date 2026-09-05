@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -22,6 +23,7 @@ import (
 	paymentapp "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/app"
 	paymenthttp "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/http"
 	paymentport "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/port"
+	paymentprovider "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/provider"
 	paymentsession "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/session"
 	paymentstore "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/store"
 	platformjobqueue "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/jobqueue"
@@ -185,6 +187,78 @@ func TestPostgreSQLPublicCheckoutResponseLossRejectsRenewedSessionReplay(t *test
 	paymentHandler.ServeHTTP(forgedMarker, checkoutRecoveryRequest(t, second.Token, key, bindingBody.Binding))
 	if forgedMarker.Code != http.StatusConflict || !strings.Contains(forgedMarker.Body.String(), `"conflict"`) {
 		t.Fatalf("forged current marker status=%d body=%s", forgedMarker.Code, forgedMarker.Body.String())
+	}
+	assertCheckoutRecoveryCounts(t, ctx, pool, 1)
+
+	// A callback settles the real Payment/Order aggregate. Its JSAPI handoff is
+	// deliberately expired afterward: terminal checkout reads must return the
+	// persisted paid fact rather than reject the payer for an old prepay expiry.
+	eventDigest := sha256.Sum256([]byte("checkout-recovery-terminal-event-0001"))
+	bodyDigest := sha256.Sum256([]byte("checkout-recovery-terminal-body-0001"))
+	if err = paymentService.ApplyVerifiedCallback(ctx, paymentprovider.CallbackResult{
+		Kind:                      "payment",
+		MerchantOrderNo:           replayBody.MerchantOrderNo,
+		AmountMinor:               990,
+		Currency:                  "CNY",
+		OccurredAt:                time.Now().UTC(),
+		ProviderTransactionDigest: "sha256:" + strings.Repeat("b", 64),
+		EventDigest:               eventDigest,
+		BodyDigest:                bodyDigest,
+	}); err != nil {
+		t.Fatalf("settle response-lost payment: %v", err)
+	}
+	var paymentID, effectID int64
+	if err = pool.QueryRow(ctx, `SELECT id,external_effect_id FROM payments WHERE merchant_order_no=$1`, replayBody.MerchantOrderNo).Scan(&paymentID, &effectID); err != nil {
+		t.Fatal(err)
+	}
+	expiresAt := time.Now().UTC().Add(-time.Minute)
+	if _, err = pool.Exec(ctx, `INSERT INTO payment_handoffs(payment_id,effect_id,payload,payload_digest,expires_at,created_at) VALUES($1,$2,'{"expired":true}'::jsonb,$3,$4,$5)`, paymentID, effectID, "sha256:"+strings.Repeat("a", 64), expiresAt, expiresAt.Add(-time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+
+	// The second OAuth session is newly issued and consequently unresolved. Its
+	// verified payer identity/customer nevertheless authorizes an exact read of
+	// the original merchant order; no browser beneficiary value is involved.
+	if second.BeneficiarySelection != paymentport.BeneficiarySelectionUnresolved || second.BeneficiaryCustomerID != 0 {
+		t.Fatalf("renewed session must begin unresolved: %+v", second)
+	}
+	terminal := httptest.NewRecorder()
+	terminalRequest := httptest.NewRequest(http.MethodGet, "/api/v1/wechat-pay/checkouts/"+replayBody.MerchantOrderNo, nil)
+	terminalRequest.AddCookie(&http.Cookie{Name: paymentport.TrustedSessionCookieName, Value: second.Token})
+	paymentHandler.ServeHTTP(terminal, terminalRequest)
+	if terminal.Code != http.StatusAccepted || !strings.Contains(terminal.Body.String(), `"status":"paid"`) || strings.Contains(terminal.Body.String(), `"handoff"`) {
+		t.Fatalf("renewed same-payer terminal recovery status=%d body=%s", terminal.Code, terminal.Body.String())
+	}
+	if cookies := terminal.Result().Cookies(); len(cookies) != 1 || cookies[0].Name != paymentport.TrustedSessionCookieName || cookies[0].MaxAge >= 0 {
+		t.Fatalf("terminal recovery must clear its current trusted cookie: %+v", cookies)
+	}
+	assertCheckoutRecoveryCounts(t, ctx, pool, 1)
+
+	// Another authoritative customer, even with a valid Payment session, cannot
+	// read the merchant order. This also verifies the allow-read exception does
+	// not become a canonical-customer or browser-claim bypass.
+	var otherCustomerID int64
+	if err = pool.QueryRow(ctx, `INSERT INTO customers DEFAULT VALUES RETURNING id`).Scan(&otherCustomerID); err != nil {
+		t.Fatal(err)
+	}
+	otherSessions, err := paymentsession.NewService(uow, checkoutRecoveryProvisioner{identityID: 72, customerID: customerdomain.CustomerID(otherCustomerID)}, paymentsession.NewPostgreSQL(), 10*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherFact, err := identitydomain.NewVerifiedFact(identitydomain.ProviderVerifiedIdentityInput{Kind: identitydomain.KindOAOpenID, Scope: "wechat-app:wx-h5", Value: "opaque-other-openid", Source: "payment-h5-oauth"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := otherSessions.IssueTrusted(ctx, paymentsession.IssueCommand{Fact: otherFact, IdempotencyKey: "checkout-recovery-oauth-other-0001"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	forbidden := httptest.NewRecorder()
+	forbiddenRequest := httptest.NewRequest(http.MethodGet, "/api/v1/wechat-pay/checkouts/"+replayBody.MerchantOrderNo, nil)
+	forbiddenRequest.AddCookie(&http.Cookie{Name: paymentport.TrustedSessionCookieName, Value: other.Token})
+	paymentHandler.ServeHTTP(forbidden, forbiddenRequest)
+	if forbidden.Code != http.StatusConflict || !strings.Contains(forbidden.Body.String(), `"conflict"`) || strings.Contains(forbidden.Body.String(), replayBody.MerchantOrderNo) {
+		t.Fatalf("other payer terminal read status=%d body=%s", forbidden.Code, forbidden.Body.String())
 	}
 	assertCheckoutRecoveryCounts(t, ctx, pool, 1)
 }

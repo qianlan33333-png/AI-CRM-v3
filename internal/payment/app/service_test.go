@@ -101,6 +101,30 @@ func (stub sessionStub) SelectPayerSelfWithin(ctx context.Context, token string,
 	return stub.actor, nil
 }
 
+type checkoutReadSessionStub struct {
+	actors map[string]paymentport.SessionActor
+}
+
+func (stub checkoutReadSessionStub) actor(ctx context.Context, token string) (paymentport.SessionActor, error) {
+	if ctx.Value(txKey{}) != true || token == "" {
+		return paymentport.SessionActor{}, errors.New("not in tx")
+	}
+	actor, ok := stub.actors[token]
+	if !ok {
+		return paymentport.SessionActor{}, paymentport.ErrSessionRequired
+	}
+	return actor, nil
+}
+func (stub checkoutReadSessionStub) ConsumeWithin(ctx context.Context, token string, _ time.Time) (paymentport.SessionActor, error) {
+	return stub.actor(ctx, token)
+}
+func (stub checkoutReadSessionStub) LookupWithin(ctx context.Context, token string, _ time.Time) (paymentport.SessionActor, error) {
+	return stub.actor(ctx, token)
+}
+func (stub checkoutReadSessionStub) SelectPayerSelfWithin(ctx context.Context, token string, _ time.Time) (paymentport.SessionActor, error) {
+	return stub.actor(ctx, token)
+}
+
 type oneShotSessionStub struct {
 	actor    paymentport.SessionActor
 	consumed bool
@@ -159,6 +183,7 @@ type storeStub struct {
 	refundReconciliationID  int64
 	paymentReconciliationID int64
 	callbackOutcome         string
+	handoffCalls            int
 }
 
 func (s *storeStub) CreatePayment(_ context.Context, p domain.Payment, _, _ [32]byte, _ string) (domain.Payment, bool, error) {
@@ -184,6 +209,7 @@ func (s *storeStub) GetPayment(context.Context, int64, bool) (domain.Payment, er
 	return s.payment, nil
 }
 func (s *storeStub) GetHandoff(context.Context, int64) (paymentport.Handoff, error) {
+	s.handoffCalls++
 	return paymentport.Handoff{PaymentID: s.payment.ID, Payload: []byte(`{"appId":"app"}`), ExpiresAt: time.Now().Add(time.Hour)}, nil
 }
 func (s *storeStub) ReservedRefundMinor(context.Context, int64) (int64, error) {
@@ -332,6 +358,22 @@ func TestRefundReplayReturnsExistingBeforeReservedAmountCheck(t *testing.T) {
 	replay, err := service.RequestRefund(context.Background(), paymentport.RefundCommand{PaymentID: 7, AmountMinor: 1000, RefundNo: "R-7", Reason: "customer request", ActorScope: "admin:1", IdempotencyKey: "refund-key-000000001"})
 	if err != nil || replay.ID != 9 {
 		t.Fatalf("refund=%+v err=%v", replay, err)
+	}
+}
+
+func TestGetCheckoutAllowsRenewedSamePayerToReadTerminalWithoutHandoff(t *testing.T) {
+	store := &storeStub{payment: domain.Payment{ID: 7, OrderID: 3, Provider: domain.ProviderWeChatPay, Channel: domain.ChannelH5Official, MerchantOrderNo: "M-terminal-7", PayerIdentityID: 4, PayerCustomerID: 11, BeneficiaryCustomerID: 11, AmountMinor: 990, Currency: "CNY", Status: domain.StatusPaid, Version: 3, CreatedAt: time.Now().Add(-time.Hour), UpdatedAt: time.Now()}}
+	sessions := checkoutReadSessionStub{actors: map[string]paymentport.SessionActor{
+		"renewed-payment-session-token": {PayerIdentityID: 4, PayerCustomerID: 11, BeneficiarySelection: paymentport.BeneficiarySelectionUnresolved, Channel: domain.ChannelH5Official},
+		"other-payment-session-token":   {PayerIdentityID: 5, PayerCustomerID: 12, BeneficiarySelection: paymentport.BeneficiarySelectionUnresolved, Channel: domain.ChannelH5Official},
+	}}
+	service := NewService(uowStub{}, store, orderStub{}, sessions, &effectStub{})
+	result, err := service.GetCheckout(context.Background(), "M-terminal-7", "renewed-payment-session-token")
+	if err != nil || result.Status != domain.StatusPaid || len(result.Payload) != 0 || store.handoffCalls != 0 {
+		t.Fatalf("renewed terminal checkout=%+v handoff_calls=%d err=%v", result, store.handoffCalls, err)
+	}
+	if _, err = service.GetCheckout(context.Background(), "M-terminal-7", "other-payment-session-token"); !errors.Is(err, paymentport.ErrConflict) || store.handoffCalls != 0 {
+		t.Fatalf("other trusted payer err=%v handoff_calls=%d", err, store.handoffCalls)
 	}
 }
 

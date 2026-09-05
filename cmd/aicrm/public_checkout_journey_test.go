@@ -88,6 +88,15 @@ func (*checkoutJourneyApplication) CheckoutSessionBinding(_ context.Context, tok
 	return binding, nil
 }
 
+func checkoutJourneyTrustedPayer(token string) int {
+	switch token {
+	case "trusted-payment-session-one", "trusted-payment-session-two":
+		return 1 // renewed OAuth for the same verified Payment identity
+	default:
+		return 0
+	}
+}
+
 func (app *checkoutJourneyApplication) GetCheckout(_ context.Context, merchantOrderNo, sessionToken string) (paymentport.Handoff, error) {
 	app.mu.Lock()
 	defer app.mu.Unlock()
@@ -95,7 +104,7 @@ func (app *checkoutJourneyApplication) GetCheckout(_ context.Context, merchantOr
 		if record.merchant != merchantOrderNo {
 			continue
 		}
-		if record.command.SessionToken != sessionToken {
+		if checkoutJourneyTrustedPayer(record.command.SessionToken) == 0 || checkoutJourneyTrustedPayer(record.command.SessionToken) != checkoutJourneyTrustedPayer(sessionToken) {
 			return paymentport.Handoff{}, paymentport.ErrConflict
 		}
 		record.statusCalls++
@@ -107,6 +116,13 @@ func (app *checkoutJourneyApplication) GetCheckout(_ context.Context, merchantOr
 				return paymentport.Handoff{MerchantOrder: merchantOrderNo, Status: paymentdomain.StatusPaid}, nil
 			}
 			return paymentport.Handoff{MerchantOrder: merchantOrderNo, Status: paymentdomain.StatusAwaitingPayment, Payload: []byte(`{"appId":"wx-test","package":"prepay_id=checkout"}`), ExpiresAt: time.Now().Add(time.Minute)}, nil
+		case 13:
+			// A known merchant order can be recovered by a renewed trusted session
+			// for the same payer. It must never call Create or mint another key.
+			if sessionToken == "trusted-payment-session-two" {
+				return paymentport.Handoff{MerchantOrder: merchantOrderNo, Status: paymentdomain.StatusPaid}, nil
+			}
+			return paymentport.Handoff{MerchantOrder: merchantOrderNo, Status: paymentdomain.StatusAwaitingPrepay}, nil
 		default:
 			return paymentport.Handoff{MerchantOrder: merchantOrderNo, Status: paymentdomain.StatusAwaitingPrepay}, nil
 		}

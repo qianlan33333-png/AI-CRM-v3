@@ -148,9 +148,10 @@ await waitFor(unknown.window.document, "支付结果确认超时，请稍后刷�
 assert.equal(unknownStorage.values.size, 1, "unknown result keeps checkpoint for later status recovery");
 closePage(unknown);
 
-// A saved merchant order cannot be used under another opaque payment session.
-// The browser detects the trusted-session binding mismatch before it polls or
-// creates anything, and retains the recovery marker to prohibit a new order.
+// A known merchant order may be read after OAuth renews the same trusted
+// payer. The Host does not compare a stale browser binding or issue Create; the
+// Payment HTTP owner authorizes the original persisted order and returns its
+// terminal fact.
 const switchStorage = new SharedStorage();
 const originalSession = await runPage(switchStorage, firstSession, normalBridge);
 setPurchase(originalSession, 13, "13800138000");
@@ -160,8 +161,8 @@ closePage(originalSession);
 const switchedSession = await runPage(switchStorage, secondSession, normalBridge);
 setPurchase(switchedSession, 13, "13800138000");
 switchedSession.window.document.getElementById("buy").click();
-await waitFor(switchedSession.window.document, "付款授权已变化，原订单标识已保留；请恢复原授权后继续", "session switch");
-assert.equal(switchStorage.values.size, 1, "session switch must retain the old checkpoint and prohibit a new order");
+await waitFor(switchedSession.window.document, "支付成功", "renewed same-payer session reads known merchant order");
+assert.equal(switchStorage.values.size, 0, "terminal known-order recovery clears the old checkpoint without a new checkout");
 closePage(switchedSession);
 
 // Failing browser storage blocks the very first payment request, so an
