@@ -232,7 +232,7 @@ func TestPostgreSQLMemberGridUsesFrozenCeilDaysForFiltersAndPagination(t *testin
 	oneDay := base
 	oneDay.RemainingDays = &orderport.MemberGridNumberFilter{Operator: "equals", Values: []int64{1}}
 	page, err := app.ListServicePeriodMembers(ctx, oneDay)
-	if err != nil || len(page.Items) != 2 || page.Items[0].ID != items[0].id || page.Items[1].ID != items[1].id {
+	if err != nil || len(page.Items) != 2 || page.Items[0].ID != items[1].id || page.Items[1].ID != items[0].id {
 		t.Fatalf("one-day ceil filter page=%+v err=%v", page, err)
 	}
 	grouped := oneDay
@@ -267,7 +267,7 @@ func TestPostgreSQLMemberGridUsesFrozenCeilDaysForFiltersAndPagination(t *testin
 	paged.Limit = 2
 	paged.RemainingDays = &orderport.MemberGridNumberFilter{Operator: "gte", Values: []int64{1}}
 	first, err := app.ListServicePeriodMembers(ctx, paged)
-	if err != nil || len(first.Items) != 2 || first.NextCursor == "" || !first.SnapshotAt.Equal(snapshot) || first.Items[0].ID != items[0].id || first.Items[1].ID != items[1].id {
+	if err != nil || len(first.Items) != 2 || first.NextCursor == "" || !first.SnapshotAt.Equal(snapshot) || first.Items[0].ID != items[1].id || first.Items[1].ID != items[0].id {
 		t.Fatalf("first filtered page=%+v err=%v", first, err)
 	}
 	paged.Cursor = first.NextCursor

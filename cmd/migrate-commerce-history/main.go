@@ -20,6 +20,8 @@ import (
 	ordermigration "github.com/qianlan33333-png/AI-CRM-v3/internal/order/migration"
 	orderstore "github.com/qianlan33333-png/AI-CRM-v3/internal/order/store"
 	paymentapp "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/app"
+	paymentdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/domain"
+	paymentmigration "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/migration"
 	paymentstore "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/store"
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
@@ -28,6 +30,11 @@ import (
 type options struct {
 	mode, snapshot, digest string
 	confirm, orderOnly     bool
+}
+
+type historyIdentityResolution struct {
+	CustomerID int64
+	IdentityID int64
 }
 
 func main() {
@@ -124,38 +131,6 @@ func run(ctx context.Context, args []string) error {
 }
 
 func reconcile(ctx context.Context, pool *platformpostgres.Pool, manifest ordermigration.Manifest) error {
-	var orders, payments, refunds, runInput, runImported, canonicalSubjects, quarantinedIdentities int64
-	var amount, refundAmount int64
-	err := pool.Native().QueryRow(ctx, `
-		SELECT count(*),COALESCE(sum(o.amount_minor),0)
-		FROM order_import_runs run
-		JOIN order_import_receipts receipt ON receipt.run_id=run.id
-		JOIN orders o ON o.id=receipt.order_id
-		WHERE run.run_key=$1 AND receipt.outcome IN ('imported','replayed')`, manifest.RunKey).Scan(&orders, &amount)
-	if err != nil {
-		return err
-	}
-	err = pool.Native().QueryRow(ctx, `
-		SELECT count(*) FROM order_import_runs run
-		JOIN order_import_receipts receipt ON receipt.run_id=run.id
-		JOIN payments p ON p.order_id=receipt.order_id
-		WHERE run.run_key=$1 AND receipt.outcome IN ('imported','replayed')`, manifest.RunKey).Scan(&payments)
-	if err != nil {
-		return err
-	}
-	err = pool.Native().QueryRow(ctx, `
-		SELECT count(*),COALESCE(sum(refund.amount_minor),0)
-		FROM order_import_runs run
-		JOIN order_import_receipts receipt ON receipt.run_id=run.id
-		JOIN payments p ON p.order_id=receipt.order_id
-		JOIN payment_refunds refund ON refund.payment_id=p.id
-		WHERE run.run_key=$1 AND receipt.outcome IN ('imported','replayed')`, manifest.RunKey).Scan(&refunds, &refundAmount)
-	if err != nil {
-		return err
-	}
-	if err = pool.Native().QueryRow(ctx, `SELECT input_count,imported_count FROM order_import_runs WHERE run_key=$1 AND status IN ('applied','reconciled')`, manifest.RunKey).Scan(&runInput, &runImported); err != nil {
-		return err
-	}
 	uow, err := platformpostgres.NewUnitOfWork(pool)
 	if err != nil {
 		return err
@@ -166,6 +141,8 @@ func reconcile(ctx context.Context, pool *platformpostgres.Pool, manifest orderm
 		identityByKey[row.SourceKey] = row
 	}
 	resolvedIdentities := 0
+	subjectCustomers := make(map[string]int64, len(manifest.Subjects))
+	identityResolutions := make(map[string]historyIdentityResolution, len(manifest.Identities))
 	for _, subject := range manifest.Subjects {
 		var subjectCustomer int64
 		for _, identityKey := range subject.IdentityKeys {
@@ -180,26 +157,84 @@ func reconcile(ctx context.Context, pool *platformpostgres.Pool, manifest orderm
 				return errors.New("commerce identity reconciliation mismatch")
 			}
 			subjectCustomer = int64(resolved.CustomerID)
+			identityResolutions[identityKey] = historyIdentityResolution{CustomerID: int64(resolved.CustomerID), IdentityID: int64(resolved.IdentityID)}
 			resolvedIdentities++
 		}
+		subjectCustomers[subject.SourceKey] = subjectCustomer
 	}
+	var canonicalSubjects, quarantinedIdentities int64
 	if err = pool.Native().QueryRow(ctx, `SELECT count(*) FILTER (WHERE outcome='canonical'),count(*) FILTER (WHERE outcome='quarantined') FROM identity_history_import_receipts WHERE run_key=$1`, manifest.RunKey).Scan(&canonicalSubjects, &quarantinedIdentities); err != nil {
 		return err
 	}
-	summary := manifest.Summary()
-	expectedInput := int64(summary.SubjectRows + summary.IdentityQuarantineRows + summary.OrderRows + summary.RefundRows)
-	match := resolvedIdentities == summary.IdentityRows && canonicalSubjects == int64(summary.SubjectRows) && quarantinedIdentities == int64(summary.IdentityQuarantineRows) && runInput == expectedInput && runImported == expectedInput && orders == int64(summary.OrderRows) && amount == summary.AmountMinor && payments == int64(summary.PaymentRows) && refunds == int64(summary.RefundRows) && refundAmount == summary.RefundMinor
-	if !match {
-		return errors.New("commerce reconciliation mismatch")
+	full, err := (ordermigration.PostgreSQLRuns{Pool: pool.Native()}).VerifyFull(ctx, manifest, ordermigration.FullReconciliationInput{SubjectCustomerIDs: subjectCustomers})
+	if err != nil {
+		return err
 	}
-	result, err := pool.Native().Exec(ctx, `UPDATE order_import_runs SET status='reconciled',completed_at=clock_timestamp() WHERE run_key=$1 AND status IN ('applied','reconciled')`, manifest.RunKey)
+	orderIDs, paymentFacts, refundFacts, err := paymentHistoryFacts(manifest, full.OrderIDs, subjectCustomers, identityResolutions)
+	if err != nil {
+		return err
+	}
+	paymentChecks, err := (paymentmigration.PostgreSQLVerifier{Pool: pool.Native()}).VerifyHistorical(ctx, manifest.RunKey, orderIDs, paymentFacts, refundFacts)
+	if err != nil {
+		return err
+	}
+	summary := manifest.Summary()
+	if resolvedIdentities != summary.IdentityRows || canonicalSubjects != int64(summary.SubjectRows) || quarantinedIdentities != int64(summary.IdentityQuarantineRows) || full.Orders != int64(summary.OrderRows) || paymentChecks.Payments != int64(summary.PaymentRows) || paymentChecks.Refunds != int64(summary.RefundRows) || full.AmountMinor != summary.AmountMinor || paymentChecks.RefundMinor != summary.RefundMinor {
+		return ordermigration.ErrReconciliationMismatch
+	}
+	result, err := pool.Native().Exec(ctx, `UPDATE order_import_runs SET status='reconciled',completed_at=clock_timestamp() WHERE run_key=$1 AND source_manifest_digest=$2 AND status IN ('applied','reconciled')`, manifest.RunKey, manifest.Digest[:])
 	if err != nil || result.RowsAffected() != 1 {
 		if err != nil {
 			return err
 		}
 		return errors.New("commerce reconciliation run state mismatch")
 	}
-	return printJSON(map[string]any{"mode": "reconcile", "matched": true, "subjects": canonicalSubjects, "identities": resolvedIdentities, "identity_quarantines": quarantinedIdentities, "orders": orders, "payments": payments, "refunds": refunds, "amount_minor": amount, "refund_minor": refundAmount, "checked_at": time.Now().UTC()})
+	return printJSON(map[string]any{"mode": "reconcile", "matched": true, "subjects": canonicalSubjects, "identities": resolvedIdentities, "identity_quarantines": quarantinedIdentities, "orders": full.Orders, "payments": paymentChecks.Payments, "refunds": paymentChecks.Refunds, "amount_minor": full.AmountMinor, "refund_minor": paymentChecks.RefundMinor, "checked_at": time.Now().UTC()})
+}
+
+func paymentHistoryFacts(manifest ordermigration.Manifest, orderIDs map[string]int64, subjectCustomers map[string]int64, identities map[string]historyIdentityResolution) ([]int64, []paymentmigration.HistoricalPaymentFact, []paymentmigration.HistoricalRefundFact, error) {
+	allOrderIDs := make([]int64, 0, len(manifest.Orders))
+	payments := make([]paymentmigration.HistoricalPaymentFact, 0, len(manifest.Orders))
+	for _, row := range manifest.Orders {
+		key := ordermigration.HistoricalMerchantKey(row.Provider, row.MerchantOrderNo)
+		orderID := orderIDs[key]
+		if orderID < 1 {
+			return nil, nil, nil, ordermigration.ErrReconciliationMismatch
+		}
+		allOrderIDs = append(allOrderIDs, orderID)
+		status, terminal := historicalPaymentStatus(row.Status)
+		if !terminal || row.PayerIdentityKey == "" || row.Provider == "alipay" {
+			continue
+		}
+		identity := identities[row.PayerIdentityKey]
+		beneficiary := subjectCustomers[row.BeneficiarySubjectKey]
+		if identity.CustomerID < 1 || identity.IdentityID < 1 || beneficiary < 1 {
+			return nil, nil, nil, ordermigration.ErrReconciliationMismatch
+		}
+		payments = append(payments, paymentmigration.HistoricalPaymentFact{OrderID: orderID, Provider: paymentdomain.Provider(row.Provider), MerchantOrderNo: row.MerchantOrderNo, PayerIdentityID: identity.IdentityID, PayerCustomerID: identity.CustomerID, BeneficiaryCustomerID: beneficiary, AmountMinor: row.AmountMinor, Currency: row.Currency, Status: status, ProviderTransactionReference: row.ProviderTransactionNo, SourceDigest: ordermigration.HistoricalOrderDigest(row), CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt})
+	}
+	refunds := make([]paymentmigration.HistoricalRefundFact, 0, len(manifest.Refunds))
+	for _, row := range manifest.Refunds {
+		orderID := orderIDs[ordermigration.HistoricalMerchantKey(row.Provider, row.MerchantOrderNo)]
+		if orderID < 1 {
+			return nil, nil, nil, ordermigration.ErrReconciliationMismatch
+		}
+		refunds = append(refunds, paymentmigration.HistoricalRefundFact{OrderID: orderID, Provider: paymentdomain.Provider(row.Provider), MerchantOrderNo: row.MerchantOrderNo, RefundNo: row.RefundNo, Reason: row.Reason, AmountMinor: row.AmountMinor, ProviderRefundReference: row.ProviderRefundNo, SourceDigest: ordermigration.HistoricalRefundDigest(row), OccurredAt: row.OccurredAt})
+	}
+	return allOrderIDs, payments, refunds, nil
+}
+
+func historicalPaymentStatus(orderStatus string) (paymentdomain.Status, bool) {
+	switch orderStatus {
+	case "paid", "partially_refunded", "refunded":
+		return paymentdomain.StatusPaid, true
+	case "payment_failed":
+		return paymentdomain.StatusFailed, true
+	case "cancelled", "closed":
+		return paymentdomain.StatusCancelled, true
+	default:
+		return "", false
+	}
 }
 
 func printJSON(value any) error { return json.NewEncoder(os.Stdout).Encode(value) }

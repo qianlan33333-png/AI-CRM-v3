@@ -2,9 +2,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
+
+	ordermigration "github.com/qianlan33333-png/AI-CRM-v3/internal/order/migration"
 )
 
 func TestInspectAllowsIncompleteButDryRunFailsClosed(t *testing.T) {
@@ -46,5 +50,28 @@ func TestOrderOnlyRejectsIdentityCoverage(t *testing.T) {
 	}
 	if err := run(context.Background(), []string{"--order-only", "--mode=inspect", "--snapshot=" + path}); err == nil {
 		t.Fatal("order-only mode accepted identity coverage")
+	}
+}
+
+func TestPaymentHistoryFactsComposeOnlyVerifiedOwnerResults(t *testing.T) {
+	manifest := ordermigration.Manifest{
+		Orders: []ordermigration.OrderRow{
+			{Provider: "wechat_pay", SourceKey: "paid", MerchantOrderNo: "merchant-paid", ProviderTransactionNo: "transaction-paid", PayerIdentityKey: "identity-1", PayerSubjectKey: "subject-1", BeneficiarySubjectKey: "subject-1", AmountMinor: 100, Currency: "CNY", Status: "paid", Items: []ordermigration.ItemRow{{LineNo: 1, ProductCode: "p", ProductName: "P", UnitAmountMinor: 100, Quantity: 1, LineAmountMinor: 100}}, CreatedAt: time.Date(2026, 9, 5, 0, 0, 0, 0, time.UTC), UpdatedAt: time.Date(2026, 9, 5, 0, 0, 0, 0, time.UTC)},
+			{Provider: "wechat_pay", SourceKey: "pending", MerchantOrderNo: "merchant-pending", PayerIdentityKey: "identity-1", PayerSubjectKey: "subject-1", BeneficiarySubjectKey: "subject-1", AmountMinor: 200, Currency: "CNY", Status: "pending_payment", Items: []ordermigration.ItemRow{{LineNo: 1, ProductCode: "p2", ProductName: "P2", UnitAmountMinor: 200, Quantity: 1, LineAmountMinor: 200}}, CreatedAt: time.Date(2026, 9, 5, 0, 0, 0, 0, time.UTC), UpdatedAt: time.Date(2026, 9, 5, 0, 0, 0, 0, time.UTC)},
+			{Provider: "alipay", SourceKey: "alipay", MerchantOrderNo: "merchant-alipay", PayerIdentityKey: "identity-1", PayerSubjectKey: "subject-1", BeneficiarySubjectKey: "subject-1", AmountMinor: 300, Currency: "CNY", Status: "paid", Items: []ordermigration.ItemRow{{LineNo: 1, ProductCode: "p3", ProductName: "P3", UnitAmountMinor: 300, Quantity: 1, LineAmountMinor: 300}}, CreatedAt: time.Date(2026, 9, 5, 0, 0, 0, 0, time.UTC), UpdatedAt: time.Date(2026, 9, 5, 0, 0, 0, 0, time.UTC)},
+		},
+		Refunds: []ordermigration.RefundRow{{Provider: "wechat_pay", SourceKey: "refund", MerchantOrderNo: "merchant-paid", RefundNo: "refund-paid", AmountMinor: 40, Reason: "历史退款", OccurredAt: time.Date(2026, 9, 5, 1, 0, 0, 0, time.UTC)}},
+	}
+	orderIDs := map[string]int64{
+		ordermigration.HistoricalMerchantKey("wechat_pay", "merchant-paid"):    11,
+		ordermigration.HistoricalMerchantKey("wechat_pay", "merchant-pending"): 12,
+		ordermigration.HistoricalMerchantKey("alipay", "merchant-alipay"):      13,
+	}
+	all, payments, refunds, err := paymentHistoryFacts(manifest, orderIDs, map[string]int64{"subject-1": 7}, map[string]historyIdentityResolution{"identity-1": {CustomerID: 7, IdentityID: 9}})
+	if err != nil || len(all) != 3 || len(payments) != 1 || len(refunds) != 1 || payments[0].OrderID != 11 || payments[0].PayerIdentityID != 9 || refunds[0].OrderID != 11 {
+		t.Fatalf("all=%v payments=%+v refunds=%+v err=%v", all, payments, refunds, err)
+	}
+	if _, _, _, err = paymentHistoryFacts(manifest, orderIDs, map[string]int64{"subject-1": 7}, map[string]historyIdentityResolution{}); !errors.Is(err, ordermigration.ErrReconciliationMismatch) {
+		t.Fatalf("unresolved payment identity err=%v", err)
 	}
 }

@@ -3,7 +3,6 @@ package migration
 import (
 	"context"
 	"crypto/sha256"
-	"crypto/subtle"
 	"errors"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -39,34 +38,9 @@ func (store PostgreSQLRuns) CompleteOrders(ctx context.Context, runKey string, p
 }
 
 func (store PostgreSQLRuns) ReconcileOrders(ctx context.Context, manifest Manifest) (OrderOnlyReconciliation, error) {
-	if store.Pool == nil {
-		return OrderOnlyReconciliation{}, errors.New("order migration store is not configured")
-	}
-	if err := ValidateOrderOnly(manifest); err != nil {
-		return OrderOnlyReconciliation{}, err
-	}
-	var result OrderOnlyReconciliation
-	var persistedDigest []byte
-	err := store.Pool.QueryRow(ctx, `
-		SELECT run.source_manifest_digest,
-		       count(*) FILTER (WHERE receipt.outcome IN ('imported','replayed')),
-		       COALESCE(sum(o.amount_minor) FILTER (WHERE receipt.outcome IN ('imported','replayed')),0),
-		       count(*) FILTER (WHERE receipt.outcome='imported'),
-		       count(*) FILTER (WHERE receipt.outcome='replayed'),
-		       count(*) FILTER (WHERE receipt.outcome IN ('imported','replayed') AND o.payer_customer_id IS NULL AND o.beneficiary_customer_id IS NULL),
-		       count(*) FILTER (WHERE receipt.outcome IN ('imported','replayed') AND o.effect_eligible)
-		FROM order_import_runs run
-		LEFT JOIN order_import_receipts receipt ON receipt.run_id=run.id
-		LEFT JOIN orders o ON o.id=receipt.order_id
-		WHERE run.run_key=$1 AND run.status IN ('applied','reconciled')
-		GROUP BY run.id`, manifest.RunKey).Scan(&persistedDigest, &result.Orders, &result.AmountMinor, &result.Imported, &result.Replayed, &result.Floating, &result.EffectEligible)
+	result, err := store.VerifyOrderOnly(ctx, manifest)
 	if err != nil {
-		return OrderOnlyReconciliation{}, err
-	}
-	summary := manifest.Summary()
-	result.Matched = len(persistedDigest) == sha256.Size && subtle.ConstantTimeCompare(persistedDigest, manifest.Digest[:]) == 1 && result.Orders == int64(summary.OrderRows) && result.AmountMinor == summary.AmountMinor && result.Floating == result.Orders && result.EffectEligible == 0
-	if !result.Matched {
-		return result, errors.New("order-only reconciliation mismatch")
+		return result, err
 	}
 	command, err := store.Pool.Exec(ctx, `UPDATE order_import_runs SET status='reconciled',completed_at=clock_timestamp() WHERE run_key=$1 AND source_manifest_digest=$2 AND status IN ('applied','reconciled')`, manifest.RunKey, manifest.Digest[:])
 	if err != nil || command.RowsAffected() != 1 {
