@@ -131,14 +131,16 @@ func TestFrozenCouponPublicTemplateRetainsDonorDOMAndRejectsClaimFields(t *testi
 			t.Fatalf("frozen donor DOM missing %q: %s", want, page.Body.String())
 		}
 	}
-	bad := trustedCouponRequest(http.MethodPost, "/api/h5/coupons/cp-a1b2c3/claim")
-	bad.Header.Set("Idempotency-Key", "coupon-public-claim-key-0002")
-	bad.Body = io.NopCloser(strings.NewReader(`{"customer_id":123}`))
-	bad.ContentLength = int64(len(`{"customer_id":123}`))
-	response := httptest.NewRecorder()
-	h.ServeHTTP(response, bad)
-	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "invalid_request") {
-		t.Fatalf("fielded claim=%d body=%s", response.Code, response.Body.String())
+	for _, body := range []string{`{"customer_id":123}`, `{}x`} {
+		bad := trustedCouponRequest(http.MethodPost, "/api/h5/coupons/cp-a1b2c3/claim")
+		bad.Header.Set("Idempotency-Key", "coupon-public-claim-key-0002")
+		bad.Body = io.NopCloser(strings.NewReader(body))
+		bad.ContentLength = -1 // exercise the unknown-length streaming path.
+		response := httptest.NewRecorder()
+		h.ServeHTTP(response, bad)
+		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "invalid_request") {
+			t.Fatalf("fielded claim body=%q status=%d response=%s", body, response.Code, response.Body.String())
+		}
 	}
 }
 

@@ -176,8 +176,11 @@ func (h *PublicHandler) claim(w http.ResponseWriter, r *http.Request, rawSlug st
 		return
 	}
 	if r.Body != nil {
+		// The accepted frozen body is exactly `{}`. Read one extra byte for a
+		// chunked request so a trailing field cannot hide behind an unknown
+		// Content-Length.
 		raw, readErr := io.ReadAll(io.LimitReader(r.Body, 3))
-		if readErr != nil || (len(strings.TrimSpace(string(raw))) > 0 && strings.TrimSpace(string(raw)) != "{}") {
+		if readErr != nil || (len(raw) != 0 && (len(raw) != 2 || string(raw) != "{}")) {
 			writeError(w, http.StatusBadRequest, "invalid_request")
 			return
 		}
