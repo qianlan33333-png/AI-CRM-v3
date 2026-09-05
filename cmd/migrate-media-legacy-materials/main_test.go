@@ -82,10 +82,12 @@ func TestFrozenMappingCommandDryRunApplyReplayAndVerify(t *testing.T) {
 	if _, err = pool.Exec(ctx, `INSERT INTO media_blobs(digest,mime_type,byte_size,content) VALUES($1,'image/png',1,$2)`, sourceDigest, []byte("x")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = pool.Exec(ctx, `INSERT INTO media_images(blob_digest,file_name,name,mime_type,byte_size,width,height,created_by,updated_by) VALUES($1,'image.png','image','image/png',1,1,1,7,7)`, sourceDigest); err != nil {
+	var imageID int64
+	if err = pool.QueryRow(ctx, `INSERT INTO media_images(blob_digest,file_name,name,mime_type,byte_size,width,height,created_by,updated_by) VALUES($1,'image.png','image','image/png',1,1,1,7,7) RETURNING id`, sourceDigest).Scan(&imageID); err != nil {
 		t.Fatal(err)
 	}
 	s := validSnapshot()
+	s.Materials[0].MaterialID = imageID
 	s.Materials[0].SourceDigest = sourceDigest
 	snapshotPath := filepath.Join(t.TempDir(), "mapping.json")
 	body, err := json.Marshal(s)
