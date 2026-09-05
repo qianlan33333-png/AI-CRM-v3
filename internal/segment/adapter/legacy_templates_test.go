@@ -337,3 +337,46 @@ func TestWeComRegistrationUsesDirectoryPhonePresenceInsteadOfHXC(t *testing.T) {
 		t.Fatalf("unregistered=%+v err=%v", unregistered, err)
 	}
 }
+
+type batchedRegistrationFacts struct {
+	facts  map[customerdomain.CustomerID]customerport.AudienceRegistrationFact
+	failAt int
+	calls  int
+	sizes  []int
+}
+
+func (f *batchedRegistrationFacts) AudienceRegistrationFacts(_ context.Context, ids []customerdomain.CustomerID) (map[customerdomain.CustomerID]customerport.AudienceRegistrationFact, error) {
+	f.calls++
+	f.sizes = append(f.sizes, len(ids))
+	if f.failAt == f.calls {
+		return nil, errors.New("directory unavailable")
+	}
+	out := make(map[customerdomain.CustomerID]customerport.AudienceRegistrationFact, len(ids))
+	for _, id := range ids {
+		out[id] = f.facts[id]
+	}
+	return out, nil
+}
+
+func TestWeComRegistrationBatchesCustomerFactsWithoutPartialResult(t *testing.T) {
+	at := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+	contacts := make([]wecomport.AudienceContact, 0, customerport.MaxAudienceRegistrationCustomerIDs+1)
+	facts := make(map[customerdomain.CustomerID]customerport.AudienceRegistrationFact, customerport.MaxAudienceRegistrationCustomerIDs+1)
+	for id := 1; id <= customerport.MaxAudienceRegistrationCustomerIDs+1; id++ {
+		customerID := customerdomain.CustomerID(id)
+		contacts = append(contacts, wecomport.AudienceContact{CustomerID: customerID, Status: "active"})
+		facts[customerID] = customerport.AudienceRegistrationFact{CustomerID: customerID, Known: true, Registered: true, Source: "people.mobile", UpdatedAt: at}
+	}
+	reader := &batchedRegistrationFacts{facts: facts}
+	source := LegacyTemplateSource{Contacts: legacyFacts{contacts: contacts}, RegistrationFacts: reader}
+	definition := legacyDefinition(t, segmentdsl.WeComContactRegistration, `{"owner_scope":"all","owner_staff_ids":[],"contact_statuses":["active"],"registration_status":"registered"}`)
+	result, err := source.Evaluate(context.Background(), definition, at)
+	if err != nil || len(result.CustomerIDs) != customerport.MaxAudienceRegistrationCustomerIDs+1 || reader.calls != 2 || reader.sizes[0] != customerport.MaxAudienceRegistrationCustomerIDs || reader.sizes[1] != 1 {
+		t.Fatalf("result=%d calls=%d sizes=%v err=%v", len(result.CustomerIDs), reader.calls, reader.sizes, err)
+	}
+	reader = &batchedRegistrationFacts{facts: facts, failAt: 2}
+	source.RegistrationFacts = reader
+	if partial, err := source.Evaluate(context.Background(), definition, at); err == nil || len(partial.CustomerIDs) != 0 || reader.calls != 2 {
+		t.Fatalf("partial=%+v calls=%d err=%v", partial, reader.calls, err)
+	}
+}
