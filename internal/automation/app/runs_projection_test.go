@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"strconv"
 	"testing"
 
 	aiassistantport "github.com/qianlan33333-png/AI-CRM-v3/internal/aiassistant/port"
@@ -27,7 +28,26 @@ func (p runProjectionPlans) GetRecipient(context.Context, aiassistantport.PlanID
 	return aiassistantport.Recipient{}, aiassistantport.ContentVersion{}, nil
 }
 func (p runProjectionPlans) ListRecipients(_ context.Context, query aiassistantport.RecipientPageQuery) (aiassistantport.RecipientPage, error) {
-	return aiassistantport.RecipientPage{Items: append([]aiassistantport.Recipient(nil), p.recipients...)}, nil
+	if query.Limit != 0 {
+		return aiassistantport.RecipientPage{}, strconv.ErrSyntax
+	}
+	start := 0
+	if query.Cursor != "" {
+		var err error
+		start, err = strconv.Atoi(query.Cursor)
+		if err != nil {
+			return aiassistantport.RecipientPage{}, err
+		}
+	}
+	end := start + 50
+	if end > len(p.recipients) {
+		end = len(p.recipients)
+	}
+	page := aiassistantport.RecipientPage{Items: append([]aiassistantport.Recipient(nil), p.recipients[start:end]...)}
+	if end < len(p.recipients) {
+		page.NextCursor = strconv.Itoa(end)
+	}
+	return page, nil
 }
 
 func TestProjectAIPlanNeedsAttentionDistinguishesRetryableAndUnknown(t *testing.T) {
@@ -39,6 +59,13 @@ func TestProjectAIPlanNeedsAttentionDistinguishesRetryableAndUnknown(t *testing.
 	}{
 		{name: "retryable", recipients: []aiassistantport.Recipient{{ID: 1, ExecutionState: aiassistantport.ExecutionRetryableFailed}}, wantState: automationport.RunPartialFailed},
 		{name: "unknown", recipients: []aiassistantport.Recipient{{ID: 1, ExecutionState: aiassistantport.ExecutionOutcomeUnknown}, {ID: 2, ExecutionState: aiassistantport.ExecutionRetryableFailed}}, wantState: automationport.RunOutcomeUnknown, wantUnknown: 1},
+		{name: "second page unknown", recipients: append(func() []aiassistantport.Recipient {
+			out := make([]aiassistantport.Recipient, 50)
+			for index := range out {
+				out[index] = aiassistantport.Recipient{ID: aiassistantport.RecipientID(index + 1), ExecutionState: aiassistantport.ExecutionRetryableFailed}
+			}
+			return out
+		}(), aiassistantport.Recipient{ID: 51, ExecutionState: aiassistantport.ExecutionOutcomeUnknown}), wantState: automationport.RunOutcomeUnknown, wantUnknown: 1},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			service := &RuntimeService{reviewPlans: runProjectionPlans{plan: aiassistantport.Plan{ID: 7, State: aiassistantport.PlanNeedsAttention}, recipients: test.recipients}}

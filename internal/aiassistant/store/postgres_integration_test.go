@@ -177,7 +177,16 @@ func TestPostgreSQLPlanSizesAndFiftyRecipientPagination(t *testing.T) {
 		if createErr != nil {
 			t.Fatalf("size=%d create: %v", size, createErr)
 		}
-		seen, cursor := 0, ""
+		if size == 51 {
+			// Exercise the real owner reader across its 50-row boundary with
+			// mixed terminal facts. Automation consumes only this stable Port.
+			if _, err = native.Exec(context.Background(), `UPDATE ai_assistant_plan_recipients
+				SET execution_state=CASE WHEN id=(SELECT max(id) FROM ai_assistant_plan_recipients WHERE plan_id=$1) THEN 'outcome_unknown' ELSE 'retryable_failed' END
+				WHERE plan_id=$1`, created.Plan.ID); err != nil {
+				t.Fatalf("size=%d set mixed execution states: %v", size, err)
+			}
+		}
+		seen, unknown, retryable, cursor := 0, 0, 0, ""
 		for {
 			page, pageErr := service.ListRecipients(context.Background(), aiassistantport.RecipientPageQuery{PlanID: created.Plan.ID, Limit: 50, Cursor: cursor})
 			if pageErr != nil {
@@ -187,6 +196,14 @@ func TestPostgreSQLPlanSizesAndFiftyRecipientPagination(t *testing.T) {
 				t.Fatalf("size=%d invalid page length=%d", size, len(page.Items))
 			}
 			seen += len(page.Items)
+			for _, recipient := range page.Items {
+				switch recipient.ExecutionState {
+				case aiassistantport.ExecutionOutcomeUnknown:
+					unknown++
+				case aiassistantport.ExecutionRetryableFailed:
+					retryable++
+				}
+			}
 			if page.NextCursor == "" {
 				break
 			}
@@ -194,6 +211,9 @@ func TestPostgreSQLPlanSizesAndFiftyRecipientPagination(t *testing.T) {
 		}
 		if seen != size || created.Plan.TargetCount != size || created.Plan.PendingCount != size {
 			t.Fatalf("size=%d seen=%d plan=%+v", size, seen, created.Plan)
+		}
+		if size == 51 && (unknown != 1 || retryable != 50) {
+			t.Fatalf("mixed second-page states unknown=%d retryable=%d", unknown, retryable)
 		}
 	}
 }

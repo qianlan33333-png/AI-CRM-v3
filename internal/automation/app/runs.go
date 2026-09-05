@@ -281,7 +281,9 @@ func (s *RuntimeService) projectAIPlanState(ctx context.Context, run *automation
 func (s *RuntimeService) aiAttentionCounts(ctx context.Context, planID aiassistantport.PlanID) (unknown, retryable int, err error) {
 	cursor := ""
 	for {
-		page, readErr := s.reviewPlans.ListRecipients(ctx, aiassistantport.RecipientPageQuery{PlanID: planID, Cursor: cursor, Limit: 100})
+		// Leave Limit at the stable AI Reader default. That boundary owns its
+		// page cap (currently 50), while this consumer follows its opaque cursor.
+		page, readErr := s.reviewPlans.ListRecipients(ctx, aiassistantport.RecipientPageQuery{PlanID: planID, Cursor: cursor})
 		if readErr != nil {
 			return 0, 0, readErr
 		}
