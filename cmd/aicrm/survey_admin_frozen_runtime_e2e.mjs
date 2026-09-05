@@ -247,6 +247,14 @@ const assessmentID = Number(new URLSearchParams(assessment.dom.window.location.s
 if (!assessment.calls.some((call) => call.path === "/api/admin/questionnaires" && call.method === "POST")) {
   throw new Error("frozen assessment save did not use the actual create endpoint");
 }
+const frozenAssessmentPayload = JSON.parse(assessment.calls.find((call) => call.path === "/api/admin/questionnaires" && call.method === "POST")?.body || "{}");
+const frozenDimension = frozenAssessmentPayload.assessment_config?.dimensions?.find((dimension) => dimension.key === "用户维护");
+const frozenQuestion = frozenAssessmentPayload.questions?.find((question) => question.assessment_dimension_key === "用户维护");
+if (!frozenDimension || !frozenDimension.type_priority?.includes("暖男/女型")
+  || !frozenDimension.types?.some((type) => type.key === "暖男/女型")
+  || !frozenQuestion?.options?.some((option) => option.assessment_type_key === "暖男/女型")) {
+  throw new Error(`frozen assessment did not preserve its legacy Chinese/slash association keys: ${JSON.stringify(frozenAssessmentPayload)}`);
+}
 const firstAssessmentPublish = assessment.calls.find((call) => call.path === `/api/admin/questionnaires/${assessmentID}/public-publish` && call.method === "POST" && call.status === 200);
 if (!firstAssessmentPublish
   || !Number.isSafeInteger(Number(JSON.parse(firstAssessmentPublish.body || "{}").expected_questionnaire_version))

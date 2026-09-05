@@ -562,9 +562,58 @@ func TestSurveyFrozenAdminRuntimeJourneyPostgreSQL(t *testing.T) {
 	if err != nil || assessment.Mode != surveyport.ModeAssessment || assessment.Status != surveyport.StatusPublished || len(assessment.Questions) < 2 || assessment.Questions[0].Title != result.FirstTitle || result.PublishedPath != "/q/"+assessment.Slug {
 		t.Fatalf("frozen assessment persistence=%+v first=%q path=%q err=%v", assessment, result.FirstTitle, result.PublishedPath, err)
 	}
+	var assessmentConfig surveyport.AssessmentConfig
+	if err = json.Unmarshal(assessment.AssessmentConfig, &assessmentConfig); err != nil {
+		t.Fatal(err)
+	}
+	var maintenance surveyport.AssessmentDimension
+	for _, dimension := range assessmentConfig.Dimensions {
+		if dimension.Key == "用户维护" {
+			maintenance = dimension
+			break
+		}
+	}
+	if maintenance.Key != "用户维护" || !surveyJourneyAssessmentHasType(maintenance, "暖男/女型") {
+		t.Fatalf("frozen assessment lost legacy dimension/type keys: %+v", assessmentConfig.Dimensions)
+	}
+	answers := make([]surveyport.SubmissionAnswer, 0, len(assessment.Questions))
+	for _, question := range assessment.Questions {
+		selected := question.Options[0].ID
+		if question.AssessmentDimensionKey == "用户维护" {
+			for _, option := range question.Options {
+				if option.AssessmentTypeKey == "暖男/女型" {
+					selected = option.ID
+					break
+				}
+			}
+		}
+		answers = append(answers, surveyport.SubmissionAnswer{QuestionID: question.ID, OptionIDs: []surveyport.ID{selected}})
+	}
+	assessmentResult, err := surveydomain.EvaluateAssessment(assessment, answers)
+	if err != nil || !surveyJourneyAssessmentResultHasType(assessmentResult, "用户维护", "暖男/女型") {
+		t.Fatalf("frozen assessment association result=%+v err=%v", assessmentResult, err)
+	}
 	if shared, readErr := submissions.ReadPublic(ctx, assessment.Slug); readErr != nil || shared.ID != assessment.ID || shared.Status != surveyport.StatusPublished {
 		t.Fatalf("published assessment was not shareable through the Survey Owner: %+v err=%v", shared, readErr)
 	}
+}
+
+func surveyJourneyAssessmentHasType(dimension surveyport.AssessmentDimension, key string) bool {
+	for _, assessmentType := range dimension.Types {
+		if assessmentType.Key == key {
+			return true
+		}
+	}
+	return false
+}
+
+func surveyJourneyAssessmentResultHasType(result surveyport.AssessmentResult, dimensionKey, typeKey string) bool {
+	for _, dimension := range result.Dimensions {
+		if dimension.Key == dimensionKey {
+			return dimension.DominantType != nil && dimension.DominantType.Key == typeKey
+		}
+	}
+	return false
 }
 
 func surveyJourneyRepositoryRoot(t *testing.T) string {

@@ -3,6 +3,7 @@ package domain
 import (
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	surveyport "github.com/qianlan33333-png/AI-CRM-v3/internal/survey/port"
@@ -66,6 +67,84 @@ func TestAssessmentRejectsOverlapsAndUnknownReferences(t *testing.T) {
 	questionnaire.Questions[0].Options[0].AssessmentTypeKey = "missing"
 	if err := ValidateQuestionnaire(questionnaire); !errors.Is(err, ErrInvalidQuestionnaire) {
 		t.Fatalf("unknown type error=%v", err)
+	}
+}
+
+func TestAssessmentBusinessKeysPreserveLegacyUnicodeReferences(t *testing.T) {
+	questionnaire := assessmentQuestionnaire(t)
+	var config surveyport.AssessmentConfig
+	if err := json.Unmarshal(questionnaire.AssessmentConfig, &config); err != nil {
+		t.Fatal(err)
+	}
+	const dimensionKey = "维度 1/增长"
+	const typeKey = "暖男/女型"
+	config.Dimensions[0].Key = dimensionKey
+	config.Dimensions[0].Types[0].Key = typeKey
+	config.Dimensions[0].TypePriority = []string{typeKey, "paid"}
+	questionnaire.Questions[0].AssessmentDimensionKey = dimensionKey
+	questionnaire.Questions[0].Options[0].AssessmentTypeKey = typeKey
+	questionnaire.AssessmentConfig, _ = json.Marshal(config)
+
+	if err := ValidateQuestionnaire(questionnaire); err != nil {
+		t.Fatalf("legacy Chinese/slash assessment keys rejected: %v", err)
+	}
+	result, err := EvaluateAssessment(questionnaire, []surveyport.SubmissionAnswer{{QuestionID: 1, OptionIDs: []surveyport.ID{11}}, {QuestionID: 2, OptionIDs: []surveyport.ID{21}}})
+	if err != nil || len(result.Dimensions) != 2 || result.Dimensions[0].Key != dimensionKey || result.Dimensions[0].DominantType == nil || result.Dimensions[0].DominantType.Key != typeKey {
+		t.Fatalf("legacy key result=%+v err=%v", result, err)
+	}
+}
+
+func TestAssessmentBusinessKeysRejectMalformedValues(t *testing.T) {
+	for _, key := range []string{"", " key", "key ", "key\nline", strings.Repeat("字", 129)} {
+		if validAssessmentBusinessKey(key) {
+			t.Fatalf("accepted malformed assessment key %q", key)
+		}
+	}
+}
+
+func TestAssessmentStillRejectsDuplicateAndBrokenKeyReferences(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*surveyport.Questionnaire, *surveyport.AssessmentConfig)
+	}{
+		{
+			name: "duplicate dimension key",
+			mutate: func(questionnaire *surveyport.Questionnaire, config *surveyport.AssessmentConfig) {
+				config.Dimensions[1].Key = config.Dimensions[0].Key
+			},
+		},
+		{
+			name: "type priority missing type",
+			mutate: func(questionnaire *surveyport.Questionnaire, config *surveyport.AssessmentConfig) {
+				config.Dimensions[0].TypePriority = []string{"organic", "missing"}
+			},
+		},
+		{
+			name: "question missing dimension",
+			mutate: func(questionnaire *surveyport.Questionnaire, config *surveyport.AssessmentConfig) {
+				questionnaire.Questions[0].AssessmentDimensionKey = "missing"
+			},
+		},
+		{
+			name: "option missing type",
+			mutate: func(questionnaire *surveyport.Questionnaire, config *surveyport.AssessmentConfig) {
+				questionnaire.Questions[0].Options[0].AssessmentTypeKey = "missing"
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			questionnaire := assessmentQuestionnaire(t)
+			var config surveyport.AssessmentConfig
+			if err := json.Unmarshal(questionnaire.AssessmentConfig, &config); err != nil {
+				t.Fatal(err)
+			}
+			test.mutate(&questionnaire, &config)
+			questionnaire.AssessmentConfig, _ = json.Marshal(config)
+			if err := ValidateQuestionnaire(questionnaire); !errors.Is(err, ErrInvalidQuestionnaire) {
+				t.Fatalf("error=%v", err)
+			}
+		})
 	}
 }
 
