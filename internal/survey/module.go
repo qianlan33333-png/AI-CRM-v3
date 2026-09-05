@@ -45,5 +45,22 @@ func (m *ModuleRegistration) Readiness(ctx context.Context, pool *pgxpool.Pool) 
 	if !ready {
 		return errors.New("survey schema is not ready")
 	}
+	var redirectConstraintReady bool
+	err = pool.QueryRow(ctx, `SELECT EXISTS(
+		SELECT 1
+		FROM pg_constraint c
+		JOIN pg_class rel ON rel.oid=c.conrelid
+		JOIN pg_namespace ns ON ns.oid=rel.relnamespace
+		WHERE ns.nspname=current_schema()
+		  AND rel.relname='survey_oauth_states'
+		  AND c.conname='survey_oauth_states_redirect'
+		  AND pg_get_constraintdef(c.oid) LIKE '%/h5/(all|one)\.html\?slug=%' ESCAPE ''
+	)`).Scan(&redirectConstraintReady)
+	if err != nil {
+		return err
+	}
+	if !redirectConstraintReady {
+		return errors.New("survey OAuth state redirect constraint is not ready")
+	}
 	return nil
 }
