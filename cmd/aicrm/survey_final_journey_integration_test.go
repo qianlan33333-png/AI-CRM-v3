@@ -19,12 +19,61 @@ import (
 	identitystore "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/store"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 	surveyapp "github.com/qianlan33333-png/AI-CRM-v3/internal/survey/app"
+	surveydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/survey/domain"
 	surveyhttp "github.com/qianlan33333-png/AI-CRM-v3/internal/survey/http"
 	surveyport "github.com/qianlan33333-png/AI-CRM-v3/internal/survey/port"
 	surveyprovider "github.com/qianlan33333-png/AI-CRM-v3/internal/survey/provider"
 	surveysecure "github.com/qianlan33333-png/AI-CRM-v3/internal/survey/secure"
 	surveystore "github.com/qianlan33333-png/AI-CRM-v3/internal/survey/store"
 )
+
+// TestSurveyOAuthJourneyDefinitionFixtureIsAcceptedByApplication makes the
+// exact draft shape used by the PG/HTTP journey executable without a database.
+// In particular a single-choice question must have two choices and an explicit
+// maximum of one selection; this catches fixture drift before the PG lane.
+func TestSurveyOAuthJourneyDefinitionFixtureIsAcceptedByApplication(t *testing.T) {
+	definition := surveyJourneyDefinition("oauth-journey", surveyport.DisplayAllInOne)
+	if err := surveydomain.ValidateQuestionnaire(definition); err != nil {
+		t.Fatalf("journey fixture violates survey validation: %v", err)
+	}
+	store := &surveyJourneyDefinitionStore{}
+	created, err := surveyapp.NewService(surveyJourneyUnitOfWork{}, store).Create(context.Background(), surveyport.CreateCommand{Questionnaire: definition, ActorID: 1, IdempotencyKey: "survey-oauth-fixture-create-0001"})
+	if err != nil || created.ID != 1 || len(store.created.Questions) != 1 || len(store.created.Questions[0].Options) != 2 {
+		t.Fatalf("application create=%+v stored=%+v err=%v", created, store.created, err)
+	}
+}
+
+func surveyJourneyDefinition(slug string, mode surveyport.AnswerDisplayMode) surveyport.Questionnaire {
+	maximum := 1
+	return surveyport.Questionnaire{Name: "OAuth journey", Title: "OAuth journey", Description: "", Mode: surveyport.ModeSurvey, AnswerDisplayMode: mode, AssessmentConfig: json.RawMessage(`{}`), Slug: slug, Status: surveyport.StatusDraft,
+		Questions: []surveyport.Question{{Type: surveyport.QuestionSingleChoice, Title: "Continue?", Required: true, SortOrder: 0, Validation: surveyport.Validation{MaximumSelections: &maximum}, Options: []surveyport.Option{{Text: "Yes", TagCodes: []string{}, SortOrder: 0}, {Text: "No", TagCodes: []string{}, SortOrder: 1}}}}}
+}
+
+type surveyJourneyUnitOfWork struct{}
+
+func (surveyJourneyUnitOfWork) Within(ctx context.Context, work func(context.Context) error) error {
+	return work(ctx)
+}
+
+type surveyJourneyDefinitionStore struct {
+	surveyapp.Store
+	created surveyport.Questionnaire
+}
+
+func (s *surveyJourneyDefinitionStore) Reserve(_ context.Context, value surveyapp.Reservation) (surveyapp.Receipt, bool, error) {
+	return surveyapp.Receipt{ID: 1, Operation: value.Operation, ActorScope: value.ActorScope, KeyDigest: value.KeyDigest, PayloadDigest: value.PayloadDigest, State: "in_progress"}, true, nil
+}
+func (s *surveyJourneyDefinitionStore) Create(_ context.Context, value surveyport.Questionnaire, _ int64, _ time.Time) (surveyport.Questionnaire, error) {
+	value.ID = 1
+	s.created = value
+	return value, nil
+}
+func (*surveyJourneyDefinitionStore) AppendAuditAndOutbox(context.Context, string, surveyport.ID, string, json.RawMessage, string, time.Time) error {
+	return nil
+}
+func (*surveyJourneyDefinitionStore) Complete(_ context.Context, id int64, result json.RawMessage, _ time.Time) (surveyapp.Receipt, error) {
+	return surveyapp.Receipt{ID: id, State: "completed", Result: result}, nil
+}
 
 // TestSurveyOAuthSubmissionResultJourneyPostgreSQL exercises the composition
 // boundary with actual Survey and OneID PostgreSQL owners. The OAuth adapter
@@ -118,7 +167,7 @@ func TestSurveyOAuthSubmissionResultJourneyPostgreSQL(t *testing.T) {
 	}
 
 	weChat := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet || r.URL.Path != "/sns/oauth2/access_token" || r.URL.Query().Get("grant_type") != "authorization_code" || r.URL.Query().Get("code") != "journey-code" {
+		if r.Method != http.MethodGet || r.URL.Path != "/sns/oauth2/access_token" || r.URL.Query().Get("grant_type") != "authorization_code" || (r.URL.Query().Get("code") != "journey-code" && r.URL.Query().Get("code") != "journey-code-one") {
 			http.Error(w, "unexpected OAuth exchange", http.StatusBadRequest)
 			return
 		}
@@ -135,6 +184,10 @@ func TestSurveyOAuthSubmissionResultJourneyPostgreSQL(t *testing.T) {
 	http.DefaultTransport = transport
 	t.Cleanup(func() { http.DefaultTransport = originalTransport })
 
+	wrongState := surveyJourneyServe(t, handler, http.MethodGet, "/api/h5/surveys/oauth/callback?state="+url.QueryEscape("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")+"&code=journey-code", nil, "", nil, "")
+	if wrongState.Code != http.StatusSeeOther || wrongState.Header().Get("Location") != "/h5/error.html?code=survey_oauth_failed" || transport.calls != 0 {
+		t.Fatalf("wrong OAuth state status=%d location=%q calls=%d", wrongState.Code, wrongState.Header().Get("Location"), transport.calls)
+	}
 	callback := surveyJourneyServe(t, handler, http.MethodGet, "/api/h5/surveys/oauth/callback?state="+url.QueryEscape(state)+"&code=journey-code", nil, "", nil, "")
 	if callback.Code != http.StatusSeeOther || transport.calls != 1 {
 		t.Fatalf("OAuth callback status=%d calls=%d body=%s", callback.Code, transport.calls, callback.Body.String())
@@ -143,6 +196,10 @@ func TestSurveyOAuthSubmissionResultJourneyPostgreSQL(t *testing.T) {
 	if len(cookies) != 1 || cookies[0].Name != "__Host-aicrm_survey_identity" || !cookies[0].HttpOnly {
 		t.Fatalf("OAuth callback cookie=%+v", cookies)
 	}
+	replayedCallback := surveyJourneyServe(t, handler, http.MethodGet, "/api/h5/surveys/oauth/callback?state="+url.QueryEscape(state)+"&code=journey-code", nil, "", nil, "")
+	if replayedCallback.Code != http.StatusSeeOther || replayedCallback.Header().Get("Location") != "/h5/error.html?code=survey_oauth_failed" || transport.calls != 1 {
+		t.Fatalf("replayed OAuth callback status=%d location=%q calls=%d", replayedCallback.Code, replayedCallback.Header().Get("Location"), transport.calls)
+	}
 
 	question := publishResult.Questionnaire.Questions[0]
 	answer := map[string]any{"version": publishResult.Questionnaire.DefinitionVersion, "submission_key": "survey-oauth-submission-0001", "answers": []map[string]any{{"question_id": question.ID, "option_ids": []surveyport.ID{question.Options[0].ID}}}}
@@ -150,10 +207,13 @@ func TestSurveyOAuthSubmissionResultJourneyPostgreSQL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	submitted := surveyJourneyServe(t, handler, http.MethodPost, "/api/public/questionnaires/oauth-journey/submissions", submitBody, "", cookies, "")
-	if submitted.Code != http.StatusCreated {
-		t.Fatalf("submit status=%d body=%s", submitted.Code, submitted.Body.String())
+	concurrentSubmissions := surveyJourneyConcurrentSubmit(handler, "/api/public/questionnaires/oauth-journey/submissions", submitBody, cookies)
+	for _, submitted := range concurrentSubmissions {
+		if submitted.Code != http.StatusCreated {
+			t.Fatalf("concurrent submit status=%d body=%s", submitted.Code, submitted.Body.String())
+		}
 	}
+	submitted := concurrentSubmissions[0]
 	var submissionResult struct {
 		Receipt     surveyport.SubmissionReceipt `json:"receipt"`
 		ResultToken string                       `json:"result_token"`
@@ -161,6 +221,32 @@ func TestSurveyOAuthSubmissionResultJourneyPostgreSQL(t *testing.T) {
 	mustSurveyJourneyJSON(t, submitted, &submissionResult)
 	if submissionResult.Receipt.SubmissionID < 1 || submissionResult.ResultToken == "" || submissionResult.Receipt.ResultToken != submissionResult.ResultToken {
 		t.Fatalf("submission receipt=%+v token=%q", submissionResult.Receipt, submissionResult.ResultToken)
+	}
+	var concurrentResult struct {
+		Receipt surveyport.SubmissionReceipt `json:"receipt"`
+	}
+	mustSurveyJourneyJSON(t, concurrentSubmissions[1], &concurrentResult)
+	if concurrentResult.Receipt.SubmissionID != submissionResult.Receipt.SubmissionID {
+		t.Fatalf("concurrent receipts diverged first=%+v second=%+v", submissionResult.Receipt, concurrentResult.Receipt)
+	}
+	replayedSubmission := surveyJourneyServe(t, handler, http.MethodPost, "/api/public/questionnaires/oauth-journey/submissions", submitBody, "", cookies, "")
+	if replayedSubmission.Code != http.StatusCreated {
+		t.Fatalf("replayed submit status=%d body=%s", replayedSubmission.Code, replayedSubmission.Body.String())
+	}
+	var replayedReceipt struct {
+		Receipt surveyport.SubmissionReceipt `json:"receipt"`
+	}
+	mustSurveyJourneyJSON(t, replayedSubmission, &replayedReceipt)
+	if replayedReceipt.Receipt.SubmissionID != submissionResult.Receipt.SubmissionID {
+		t.Fatalf("replayed receipt=%+v original=%+v", replayedReceipt.Receipt, submissionResult.Receipt)
+	}
+	driftBody, err := json.Marshal(map[string]any{"version": publishResult.Questionnaire.DefinitionVersion, "submission_key": "survey-oauth-submission-0001", "answers": []map[string]any{{"question_id": question.ID, "option_ids": []surveyport.ID{question.Options[1].ID}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	driftedSubmission := surveyJourneyServe(t, handler, http.MethodPost, "/api/public/questionnaires/oauth-journey/submissions", driftBody, "", cookies, "")
+	if driftedSubmission.Code != http.StatusConflict {
+		t.Fatalf("submission payload drift status=%d body=%s", driftedSubmission.Code, driftedSubmission.Body.String())
 	}
 
 	resultBody, err := json.Marshal(map[string]string{"result_token": submissionResult.ResultToken})
@@ -183,18 +269,53 @@ func TestSurveyOAuthSubmissionResultJourneyPostgreSQL(t *testing.T) {
 	if anonymous.Code != http.StatusUnauthorized {
 		t.Fatalf("anonymous result status=%d body=%s", anonymous.Code, anonymous.Body.String())
 	}
+	analytics := surveyJourneyServe(t, handler, http.MethodGet, fmt.Sprintf("/api/admin/questionnaires/%d/results", publishResult.Questionnaire.ID), nil, "", nil, "")
+	if analytics.Code != http.StatusOK {
+		t.Fatalf("analytics status=%d body=%s", analytics.Code, analytics.Body.String())
+	}
+	var analyticsResult struct {
+		Results struct {
+			SubmissionCount int64 `json:"submission_count"`
+		} `json:"results"`
+	}
+	mustSurveyJourneyJSON(t, analytics, &analyticsResult)
+	if analyticsResult.Results.SubmissionCount != 1 {
+		t.Fatalf("analytics=%+v", analyticsResult)
+	}
+	export := surveyJourneyServe(t, handler, http.MethodGet, fmt.Sprintf("/api/admin/questionnaires/%d/export", publishResult.Questionnaire.ID), nil, "survey-oauth-export-0001", nil, "")
+	if export.Code != http.StatusOK || export.Header().Get("Content-Type") != "text/csv; charset=utf-8" || !bytes.Contains(export.Body.Bytes(), []byte(fmt.Sprint(submissionResult.Receipt.SubmissionID))) {
+		t.Fatalf("export status=%d content_type=%q body=%s", export.Code, export.Header().Get("Content-Type"), export.Body.String())
+	}
 
-	var customers, identities, storedSubmissions, storedTokens, customerBoundSubmissions int
+	oneDefinition, err := definitions.Create(ctx, surveyport.CreateCommand{Questionnaire: surveyJourneyDefinition("oauth-journey-one", surveyport.DisplayOneByOne), ActorID: actorID, IdempotencyKey: "survey-oauth-one-create-0001"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = definitions.Publish(ctx, oneDefinition.ID, oneDefinition.Version, actorID, "survey-oauth-one-publish-0001"); err != nil {
+		t.Fatal(err)
+	}
+	oneStart := surveyJourneyServe(t, handler, http.MethodGet, "/api/h5/surveys/oauth/start?slug=oauth-journey-one", nil, "", nil, "MicroMessenger Survey Journey")
+	if oneStart.Code != http.StatusSeeOther {
+		t.Fatalf("one-mode OAuth start status=%d body=%s", oneStart.Code, oneStart.Body.String())
+	}
+	oneState := surveyFinalJourneyLocation(t, oneStart).Query().Get("state")
+	oneCallback := surveyJourneyServe(t, handler, http.MethodGet, "/api/h5/surveys/oauth/callback?state="+url.QueryEscape(oneState)+"&code=journey-code-one", nil, "", nil, "")
+	if oneCallback.Code != http.StatusSeeOther || oneCallback.Header().Get("Location") != "/h5/one.html?slug=oauth-journey-one" || transport.calls != 2 {
+		t.Fatalf("one-mode callback status=%d location=%q calls=%d", oneCallback.Code, oneCallback.Header().Get("Location"), transport.calls)
+	}
+
+	var customers, identities, storedSubmissions, storedTokens, customerBoundSubmissions, exports int
 	if err = native.QueryRow(ctx, `SELECT
 		(SELECT count(*) FROM customers),
 		(SELECT count(*) FROM customer_identities WHERE assurance='verified'),
 		(SELECT count(*) FROM survey_submissions),
 		(SELECT count(*) FROM survey_result_tokens),
-		(SELECT count(*) FROM survey_submissions WHERE customer_id=(SELECT id FROM customers))`).Scan(&customers, &identities, &storedSubmissions, &storedTokens, &customerBoundSubmissions); err != nil {
+		(SELECT count(*) FROM survey_submissions WHERE customer_id=(SELECT id FROM customers)),
+		(SELECT count(*) FROM survey_audit_events WHERE event_type='survey_export_requested')`).Scan(&customers, &identities, &storedSubmissions, &storedTokens, &customerBoundSubmissions, &exports); err != nil {
 		t.Fatal(err)
 	}
-	if customers != 1 || identities != 1 || storedSubmissions != 1 || storedTokens != 1 || customerBoundSubmissions != 1 {
-		t.Fatalf("customers=%d identities=%d submissions=%d result_tokens=%d customer_bound_submissions=%d", customers, identities, storedSubmissions, storedTokens, customerBoundSubmissions)
+	if customers != 1 || identities != 1 || storedSubmissions != 1 || storedTokens != 1 || customerBoundSubmissions != 1 || exports != 1 {
+		t.Fatalf("customers=%d identities=%d submissions=%d result_tokens=%d customer_bound_submissions=%d exports=%d", customers, identities, storedSubmissions, storedTokens, customerBoundSubmissions, exports)
 	}
 }
 
@@ -246,6 +367,25 @@ func surveyJourneyServe(t *testing.T, handler http.Handler, method, path string,
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	return response
+}
+
+func surveyJourneyConcurrentSubmit(handler http.Handler, path string, body []byte, cookies []*http.Cookie) []*httptest.ResponseRecorder {
+	start := make(chan struct{})
+	responses := make(chan *httptest.ResponseRecorder, 2)
+	for range 2 {
+		go func() {
+			<-start
+			request := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
+			for _, cookie := range cookies {
+				request.AddCookie(cookie)
+			}
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			responses <- response
+		}()
+	}
+	close(start)
+	return []*httptest.ResponseRecorder{<-responses, <-responses}
 }
 
 func surveyFinalJourneyLocation(t *testing.T, recorder *httptest.ResponseRecorder) *url.URL {
