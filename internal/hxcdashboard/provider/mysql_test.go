@@ -137,6 +137,15 @@ func TestCurrentQueryReadsDistinctLegacySharedFacts(t *testing.T) {
 			t.Fatalf("shared fact query missing %q", required)
 		}
 	}
+	for _, required := range []string{
+		"THEN 'subscription' ELSE 'none' END",
+		"THEN COALESCE(s.expires_at,u.member_expires_at) ELSE NULL END",
+		"mc.status COLLATE utf8mb4_general_ci",
+	} {
+		if !strings.Contains(currentBatchSQL, required) {
+			t.Fatalf("shared membership source rule missing %q", required)
+		}
+	}
 	if strings.Contains(currentBatchSQL, "sessions_7d AS has_token_usage") || strings.Contains(currentBatchSQL, "last_used AS formally_logged_in") {
 		t.Fatal("dashboard counters must not stand in for legacy shared facts")
 	}

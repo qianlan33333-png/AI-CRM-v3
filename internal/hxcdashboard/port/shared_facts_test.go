@@ -14,6 +14,7 @@ func TestMembershipWindowKeepsFreeAndUnknownFactsOutOfExpired(t *testing.T) {
 		active, expired bool
 	}{
 		{"active without expiry", SharedFacts{Availability: SharedFactsAvailable, MembershipRecordFound: true, IsMember: true}, true, false},
+		{"active subscription source", SharedFacts{Availability: SharedFactsAvailable, MembershipRecordFound: true, MembershipSource: "subscription", MembershipStatus: "standard", IsMember: true, ExpiresAt: &future}, true, false},
 		{"membership expiry equality", SharedFacts{Availability: SharedFactsAvailable, MembershipRecordFound: true, IsMember: true, ExpiresAt: &past}, false, true},
 		{"free no member", SharedFacts{Availability: SharedFactsAvailable, Tier: "free", ExpiresAt: &past}, false, false},
 		{"explicit expired no date", SharedFacts{Availability: SharedFactsAvailable, MembershipRecordFound: true, MembershipStatus: "expired"}, false, true},
