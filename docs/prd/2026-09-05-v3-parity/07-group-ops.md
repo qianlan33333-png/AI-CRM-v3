@@ -115,3 +115,10 @@ d6 `cmd/aicrm/group_ops_runtime_integration_test.go:TestGroupOpsPostgreSQLJourne
 ## 15. 0082真实来源与历史读取复核
 
 供体0015的action_title/text_content独立于content_package_json；只提内容包会丢旧正文。完整受保护源快照须包含标题、正文、附件和真实空trigger_time_label；合法空标签不能伪造时间，0017非空CHECK须由0082前向适配。所有JSON字符串使用标准JSON编码，不用Go引号转义冒充JSON。历史列表和详情统一恢复字段，并在既有Host看到实际内容；OpenAPI同步nullable来源与新增读取事实。Preflight也经GroupOps Owner Port。验收必须真实源PG旧DDL→ExtractHistory→加密冻结文件→Apply/Verify→HTTP与历史Host读回，手写Snapshot只能作为附加测试。
+
+
+## 16. 历史内容原页面验收
+
+PR153@629e384已交付真实旧PG提取、密封、Apply/Verify及历史HTTP回读。web已有历史Host四GET的独立模拟，不足以证明同一导入记录在发布前端可读。执行者应复用既有构建Host/JSDOM与PG HTTP夹具，把同一批计划、群、节点事实带到实际Host中读取；同时验证原目录/计划进入节点的操作。
+
+历史节点须沿旧只读内容组件显示标题、正文和原附件引用/可用状态，不让用户依赖原始content_package JSON辨认正文。优先复用冻结只读内容渲染器，仅在Host定义必要兼容DTO；冻结generated health schema、原业务JS/CSS哈希不修改。缺失或暂不可读取附件明确保留原事实，不因展示而创建发送、素材或客户。此次是旧历史读取能力接通，无新增诊断/编辑/导出产品。
