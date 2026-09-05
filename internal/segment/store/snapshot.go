@@ -288,7 +288,7 @@ func (r *Repository) PublishRefresh(ctx context.Context, runID int64, expectedCo
 	var exited int64
 	if run.RefreshKind == segmentdomain.RefreshDaily && previousID != nil {
 		command, execErr := t.Exec(ctx, `INSERT INTO segment_audience_member_exit_events(event_id,package_id,snapshot_id,configuration_version_id,customer_id,occurred_at)
-			SELECT 'audexit_' || $1::text || '_' || prior.customer_id::text,$2,$1,$3,prior.customer_id,$4
+			SELECT 'audexit_' || ($1::bigint)::text || '_' || prior.customer_id::text,$2,$1,$3,prior.customer_id,$4
 			FROM segment_audience_snapshot_members prior WHERE prior.snapshot_id=$5
 			AND NOT EXISTS (SELECT 1 FROM segment_audience_snapshot_members current WHERE current.snapshot_id=$1 AND current.customer_id=prior.customer_id)
 			ON CONFLICT(snapshot_id,customer_id) DO NOTHING`, snapshot.ID, run.PackageID, run.ConfigurationVersionID, now, *previousID)
