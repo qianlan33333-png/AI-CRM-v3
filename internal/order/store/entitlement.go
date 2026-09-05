@@ -137,6 +137,7 @@ func (r *Repository) GrantPaidServicePeriod(ctx context.Context, command orderpo
 	}
 	operation := "grant"
 	var priorActiveEnd *time.Time
+	var priorHistoricalEnd *time.Time
 	if !found {
 		sourceKey := fmt.Sprintf("native-service-period:%d:%d", command.BeneficiaryCustomerID, command.ServiceProductID)
 		sourceDigest := sha256.Sum256([]byte(sourceKey))
@@ -150,6 +151,10 @@ func (r *Repository) GrantPaidServicePeriod(ctx context.Context, command orderpo
 		if item.Status == "active" && item.EndAt.After(command.ProcessedAt) {
 			frozen := item.EndAt
 			priorActiveEnd = &frozen
+			priorHistoricalEnd, err = independentHistoricalBaselineEnd(ctx, tx, item.ID, item.EndAt, command.ProcessedAt)
+			if err != nil {
+				return orderport.Entitlement{}, err
+			}
 			operation, start, end = "renew", item.StartAt, item.EndAt.AddDate(0, 0, int(command.DurationDays))
 		}
 		err = tx.QueryRow(ctx, `UPDATE order_service_entitlements SET product_name=$2,last_order_id=$3,status='active',start_at=$4,end_at=$5,version=version+1,updated_at=$6 WHERE id=$1
@@ -159,7 +164,7 @@ func (r *Repository) GrantPaidServicePeriod(ctx context.Context, command orderpo
 	if err != nil {
 		return orderport.Entitlement{}, err
 	}
-	if err = recordEntitlementFulfillment(ctx, tx, "grant", command.SourceOrderID, payload, item, command.DurationDays, priorActiveEnd, 0, operation, command.ProcessedAt); err != nil {
+	if err = recordEntitlementFulfillment(ctx, tx, "grant", command.SourceOrderID, payload, item, command.DurationDays, priorActiveEnd, priorHistoricalEnd, 0, operation, command.ProcessedAt); err != nil {
 		return orderport.Entitlement{}, err
 	}
 	return item, nil
@@ -178,8 +183,7 @@ func (r *Repository) ApplyServicePeriodRefund(ctx context.Context, command order
 	}
 	var entitlementID int64
 	var duration int32
-	var priorActiveEnd *time.Time
-	err = tx.QueryRow(ctx, `SELECT entitlement_id,duration_days,prior_active_end_at FROM order_entitlement_fulfillment_receipts WHERE operation='grant' AND source_order_id=$1 FOR UPDATE`, command.SourceOrderID).Scan(&entitlementID, &duration, &priorActiveEnd)
+	err = tx.QueryRow(ctx, `SELECT entitlement_id,duration_days FROM order_entitlement_fulfillment_receipts WHERE operation='grant' AND source_order_id=$1 FOR UPDATE`, command.SourceOrderID).Scan(&entitlementID, &duration)
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = tx.QueryRow(ctx, `SELECT entitlement_id,issued_duration_days FROM order_entitlement_historical_sources WHERE source_order_id=$1 FOR UPDATE`, command.SourceOrderID).Scan(&entitlementID, &duration)
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -206,9 +210,23 @@ func (r *Repository) ApplyServicePeriodRefund(ctx context.Context, command order
 	if err != nil {
 		return orderport.Entitlement{}, err
 	}
+	baselineEnd, err := independentHistoricalBaselineEnd(ctx, tx, item.ID, item.EndAt, command.ProcessedAt)
+	if err != nil {
+		return orderport.Entitlement{}, err
+	}
+	mappedEnd, err := activeMappedHistoricalEnd(ctx, tx, item.ID, command.SourceOrderID)
+	if err != nil {
+		return orderport.Entitlement{}, err
+	}
 	status, end := "refunded", command.ProcessedAt
-	if otherUnrefunded > 0 || (priorActiveEnd != nil && priorActiveEnd.After(command.ProcessedAt)) {
+	if otherUnrefunded > 0 {
 		end = item.EndAt.AddDate(0, 0, -int(duration))
+		if baselineEnd != nil && baselineEnd.After(end) {
+			end = *baselineEnd
+		}
+		if mappedEnd != nil && mappedEnd.After(end) {
+			end = *mappedEnd
+		}
 		if end.Before(command.ProcessedAt) {
 			end = command.ProcessedAt
 		}
@@ -217,6 +235,10 @@ func (r *Repository) ApplyServicePeriodRefund(ctx context.Context, command order
 		} else {
 			status = "expired"
 		}
+	} else if baselineEnd != nil && baselineEnd.After(command.ProcessedAt) {
+		end, status = *baselineEnd, "active"
+	} else if mappedEnd != nil && mappedEnd.After(command.ProcessedAt) {
+		end, status = *mappedEnd, "active"
 	}
 	err = tx.QueryRow(ctx, `UPDATE order_service_entitlements SET status=$2,end_at=$3,version=version+1,updated_at=$4 WHERE id=$1
 		RETURNING id,customer_id,service_product_id,product_name,last_order_id,status,start_at,end_at,remark,version,updated_at`, item.ID, status, end, command.ProcessedAt).
@@ -226,7 +248,7 @@ func (r *Repository) ApplyServicePeriodRefund(ctx context.Context, command order
 	if err != nil {
 		return orderport.Entitlement{}, err
 	}
-	if err = recordEntitlementFulfillment(ctx, tx, "refund", command.SourceOrderID, payload, item, duration, nil, command.RefundAmountMinor, "refund", command.ProcessedAt); err != nil {
+	if err = recordEntitlementFulfillment(ctx, tx, "refund", command.SourceOrderID, payload, item, duration, nil, nil, command.RefundAmountMinor, "refund", command.ProcessedAt); err != nil {
 		return orderport.Entitlement{}, err
 	}
 	return item, nil
@@ -321,12 +343,67 @@ func servicePeriodEntitlementByID(ctx context.Context, tx pgx.Tx, id int64) (ord
 	return item, err
 }
 
-func recordEntitlementFulfillment(ctx context.Context, tx pgx.Tx, receiptOperation string, sourceOrderID int64, payload [32]byte, item orderport.Entitlement, duration int32, priorActiveEnd *time.Time, refundAmountMinor int64, eventOperation string, at time.Time) error {
+// independentHistoricalBaselineEnd returns only a baseline that has no
+// source-order mapping. A mapped historical order remains dynamically
+// revocable; copying it into every later grant receipt would let it survive
+// its own refund. Once any native grant exists, a nil baseline stays nil: the
+// aggregate's current end may already contain native days and cannot be
+// reclassified as history on a later renewal.
+func independentHistoricalBaselineEnd(ctx context.Context, tx pgx.Tx, entitlementID int64, currentEnd, processedAt time.Time) (*time.Time, error) {
+	var sourceSystem string
+	if err := tx.QueryRow(ctx, `SELECT source_system FROM order_service_entitlements WHERE id=$1 FOR KEY SHARE`, entitlementID).Scan(&sourceSystem); err != nil {
+		return nil, err
+	}
+	if sourceSystem == "native-payment" {
+		return nil, nil
+	}
+	var mapped bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM order_entitlement_historical_sources WHERE entitlement_id=$1)`, entitlementID).Scan(&mapped); err != nil {
+		return nil, err
+	}
+	if mapped {
+		return nil, nil
+	}
+	var grants int64
+	var prior *time.Time
+	if err := tx.QueryRow(ctx, `SELECT count(*),max(prior_historical_end_at) FROM order_entitlement_fulfillment_receipts WHERE operation='grant' AND entitlement_id=$1`, entitlementID).Scan(&grants, &prior); err != nil {
+		return nil, err
+	}
+	if grants > 0 {
+		if prior == nil || !prior.After(processedAt) {
+			return nil, nil
+		}
+		return prior, nil
+	}
+	if !currentEnd.After(processedAt) {
+		return nil, nil
+	}
+	frozen := currentEnd
+	return &frozen, nil
+}
+
+// activeMappedHistoricalEnd computes the coverage left after the current
+// source order has been revoked. It deliberately excludes that source before
+// the refund receipt is written, so a single mapped historical source does
+// not keep itself alive through the in-flight refund transaction.
+func activeMappedHistoricalEnd(ctx context.Context, tx pgx.Tx, entitlementID, excludingSourceOrderID int64) (*time.Time, error) {
+	var end *time.Time
+	err := tx.QueryRow(ctx, `SELECT max(source_end_at)
+		FROM order_entitlement_historical_sources source
+		WHERE source.entitlement_id=$1 AND source.source_order_id<>$2
+		  AND NOT EXISTS (SELECT 1 FROM order_entitlement_fulfillment_receipts refund_receipt WHERE refund_receipt.operation='refund' AND refund_receipt.source_order_id=source.source_order_id)`, entitlementID, excludingSourceOrderID).Scan(&end)
+	if err != nil {
+		return nil, err
+	}
+	return end, nil
+}
+
+func recordEntitlementFulfillment(ctx context.Context, tx pgx.Tx, receiptOperation string, sourceOrderID int64, payload [32]byte, item orderport.Entitlement, duration int32, priorActiveEnd, priorHistoricalEnd *time.Time, refundAmountMinor int64, eventOperation string, at time.Time) error {
 	raw, err := json.Marshal(item)
 	if err != nil {
 		return err
 	}
-	if _, err = tx.Exec(ctx, `INSERT INTO order_entitlement_fulfillment_receipts(operation,source_order_id,payload_digest,entitlement_id,result_snapshot,duration_days,prior_active_end_at,refund_amount_minor,created_at) VALUES($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9)`, receiptOperation, sourceOrderID, payload[:], item.ID, raw, duration, priorActiveEnd, refundAmountMinor, at); err != nil {
+	if _, err = tx.Exec(ctx, `INSERT INTO order_entitlement_fulfillment_receipts(operation,source_order_id,payload_digest,entitlement_id,result_snapshot,duration_days,prior_active_end_at,prior_historical_end_at,refund_amount_minor,created_at) VALUES($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9,$10)`, receiptOperation, sourceOrderID, payload[:], item.ID, raw, duration, priorActiveEnd, priorHistoricalEnd, refundAmountMinor, at); err != nil {
 		return err
 	}
 	actor := sha256.Sum256([]byte("payment:service-period"))

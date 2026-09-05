@@ -13,9 +13,14 @@ CREATE TABLE order_entitlement_fulfillment_receipts (
     result_snapshot JSONB NOT NULL CHECK (jsonb_typeof(result_snapshot)='object'),
     duration_days INTEGER NOT NULL CHECK (duration_days>0),
     -- Frozen only on grant. It preserves active imported/legacy coverage that
-    -- predates native per-order receipts, so a later refund removes this
-    -- order's days without erasing that prior unrefunded period.
+    -- predates native per-order receipts, so a later refund can remove this
+    -- order's days without erasing that prior unrefunded period. This is an
+    -- aggregate edge and is not itself proof of independent history.
     prior_active_end_at TIMESTAMPTZ,
+    -- Only independent, non-native legacy coverage is recorded here. A prior
+    -- end made solely by another native grant must never be retained after
+    -- that grant has also been refunded.
+    prior_historical_end_at TIMESTAMPTZ,
     -- The first positive refund is the immutable revocation fact. Further
     -- refunds of this same order are deliberate successful no-ops.
     refund_amount_minor BIGINT NOT NULL DEFAULT 0 CHECK (refund_amount_minor>=0),
