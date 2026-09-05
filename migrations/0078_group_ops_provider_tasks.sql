@@ -55,7 +55,7 @@ CREATE TABLE group_ops_group_message_tasks (
     id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     execution_id BIGINT NOT NULL UNIQUE REFERENCES group_ops_executions(id) ON DELETE RESTRICT,
     external_effect_id BIGINT NOT NULL UNIQUE REFERENCES external_effects(id) ON DELETE RESTRICT,
-    msgid TEXT NOT NULL CHECK (msgid ~ '^[^[:space:]]{1,256}$'),
+    msgid TEXT NOT NULL CHECK (length(msgid) BETWEEN 1 AND 256 AND msgid ~ '^[^[:space:]]+$'),
     sender_userid_snapshot TEXT NOT NULL CHECK (sender_userid_snapshot ~ '^[^[:space:]]{1,128}$'),
     chat_reference TEXT NOT NULL CHECK (chat_reference ~ '^[A-Za-z0-9._:-]{1,128}$'),
     task_evidence_digest TEXT NOT NULL CHECK (task_evidence_digest ~ '^sha256:[0-9a-f]{64}$'),
