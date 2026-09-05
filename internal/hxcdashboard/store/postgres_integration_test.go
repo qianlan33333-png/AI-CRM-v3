@@ -166,11 +166,13 @@ func TestSharedFactsPublishedGenerationAndLegacyAvailability(t *testing.T) {
 	}
 	now := time.Date(2026, 9, 5, 0, 0, 0, 0, time.UTC)
 	future := now.Add(time.Hour)
+	pastMembership := now.Add(-time.Second)
 	login := now.Add(-48 * time.Hour)
 	opened := now.Add(-time.Hour)
 	used := now.Add(-2 * time.Hour)
 	base := func(customer int64, available bool) domain.Projection {
-		return domain.Projection{AsOf: now, SharedFactsAvailable: available, Counts: domain.Counts{Total: 1, Matched: 1, MatchedByUnionID: 1}, Rows: []domain.ProjectionRow{{SubjectDigest: [32]byte{byte(customer)}, UserRef: "HXC-000000000077", SourceRow: domain.SourceRow{SubscriptionTier: "standard", SubscriptionExpiresAt: &future, FormallyLoggedIn: true, FormalLoginAt: &login, HasTokenUsage: true, LearningPlanStatus: "active", LearningPlanCurrent: 3, LearningPlanTotal: 4, CardOpenCount7D: 0, CardLastOpenedAt: &opened, MembershipRecordFound: true, IsMember: true, MembershipStatus: "active", LastUsedAt: &used, SourceUpdatedAt: now, CapabilityUsage: []byte(`{}`), FocusTopics: []byte(`[]`)}, CustomerID: domainCustomer(customer), IdentityState: domain.Matched, MatchedBy: "unionid", IdentityReasonCode: "matched_unionid"}}}
+		current, total := int64(3), int64(4)
+		return domain.Projection{AsOf: now, SharedFactsAvailable: available, Counts: domain.Counts{Total: 1, Matched: 1, MatchedByUnionID: 1}, Rows: []domain.ProjectionRow{{SubjectDigest: [32]byte{byte(customer)}, UserRef: "HXC-000000000077", SourceRow: domain.SourceRow{SubscriptionTier: "standard", SubscriptionExpiresAt: &future, FormallyLoggedIn: true, FormalLoginAt: &login, HasTokenUsage: true, LearningPlanFound: true, LearningPlanStatus: "active", LearningPlanCurrent: &current, LearningPlanTotal: &total, CardOpenCount7D: 0, CardLastOpenedAt: &opened, MembershipRecordFound: true, IsMember: true, MembershipSource: "user_id", MembershipStatus: "active", MembershipExpiresAt: &pastMembership, LastUsedAt: &used, SourceUpdatedAt: now, CapabilityUsage: []byte(`{}`), FocusTopics: []byte(`[]`)}, CustomerID: domainCustomer(customer), IdentityState: domain.Matched, MatchedBy: "unionid", IdentityReasonCode: "matched_unionid"}}}
 	}
 	publish("shared-facts-available", base(77, true))
 	facts, err := store.SharedFacts(ctx, []domainCustomerID{77, 78})
@@ -178,8 +180,11 @@ func TestSharedFactsPublishedGenerationAndLegacyAvailability(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, ok := facts[77]
-	if !ok || got.Availability != "available" || !got.FormallyLoggedIn || !got.HasTokenUsage || got.LearningPlanCurrent != 3 || got.LearningPlanTotal != 4 || got.CardOpenCount7D != 0 || !got.IsMember || got.MembershipStatus != "active" || !got.Registered || !got.HasRealUsage {
+	if !ok || got.Availability != "available" || !got.FormallyLoggedIn || !got.HasTokenUsage || !got.LearningPlanFound || got.LearningPlanCurrent == nil || *got.LearningPlanCurrent != 3 || got.LearningPlanTotal == nil || *got.LearningPlanTotal != 4 || got.CardOpenCount7D != 0 || !got.IsMember || got.MembershipSource != "user_id" || got.MembershipStatus != "active" || !got.Registered || !got.HasRealUsage {
 		t.Fatalf("available facts=%+v", got)
+	}
+	if got.ExpiresAt == nil || !got.ExpiresAt.Equal(pastMembership) || got.ActiveAt(now) || !got.ExpiredAt(now) {
+		t.Fatalf("membership expiry must come from membership source, not subscription: %+v", got)
 	}
 	publish("shared-facts-legacy", base(78, false))
 	facts, err = store.SharedFacts(ctx, []domainCustomerID{78})
