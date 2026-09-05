@@ -86,10 +86,55 @@ func TestPostgreSQLSidebarHistoryAllianceApplyReplayReconcile(t *testing.T) {
 		t.Fatalf("parallel sidebar history apply error=%v", err)
 	}
 	lease.Release()
+
+	// An interruption can happen after the historical owner has committed some
+	// rows and their source receipts, rather than only before the first write.
+	// Make the second entitlement write fail: the first source must survive,
+	// and recovery must replay it before importing the remaining sources.
+	if _, err := pool.Exec(ctx, `
+		CREATE FUNCTION sidebar_history_fail_second_entitlement_insert() RETURNS trigger LANGUAGE plpgsql AS $$
+		BEGIN
+			IF (SELECT count(*) FROM order_service_entitlements WHERE source_system='ai-crm-production:150.158.82.186/openclaw_wecom') >= 1 THEN
+				RAISE EXCEPTION 'sidebar history second entitlement failpoint';
+			END IF;
+			RETURN NEW;
+		END;
+		$$;
+		CREATE TRIGGER sidebar_history_fail_second_entitlement_insert
+		BEFORE INSERT ON order_service_entitlements
+		FOR EACH ROW EXECUTE FUNCTION sidebar_history_fail_second_entitlement_insert();`); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(ctx, applyArgs); err == nil {
+		t.Fatal("second entitlement failpoint allowed sidebar history apply")
+	}
+	var partialEntitlements, partialMaps, partialQuarantines, partialImported, partialReplayed, partialBatchQuarantines int64
+	if err := pool.QueryRow(ctx, `
+		SELECT
+			(SELECT count(*) FROM order_service_entitlements WHERE source_system=$1),
+			(SELECT count(*) FROM sidebar_history_migration_source_map WHERE source_kind='service_period_entitlement'),
+			(SELECT count(*) FROM sidebar_history_migration_quarantine WHERE source_kind='service_period_entitlement'),
+			imported_count,replayed_count,quarantined_count
+		FROM sidebar_history_migration_batches
+		WHERE run_key='sidebar-alliance-pg-001'`, productionSourceSystem).Scan(&partialEntitlements, &partialMaps, &partialQuarantines, &partialImported, &partialReplayed, &partialBatchQuarantines); err != nil {
+		t.Fatal(err)
+	}
+	if partialEntitlements != 1 || partialMaps != 1 || partialQuarantines != 0 || partialImported != 0 || partialReplayed != 0 || partialBatchQuarantines != 0 {
+		t.Fatalf("partial apply conservation entitlements=%d maps=%d quarantines=%d batch=%d/%d/%d", partialEntitlements, partialMaps, partialQuarantines, partialImported, partialReplayed, partialBatchQuarantines)
+	}
+	if _, err := pool.Exec(ctx, `DROP TRIGGER sidebar_history_fail_second_entitlement_insert ON order_service_entitlements; DROP FUNCTION sidebar_history_fail_second_entitlement_insert()`); err != nil {
+		t.Fatal(err)
+	}
 	if err := run(ctx, applyArgs); err != nil {
-		t.Fatalf("recover interrupted sidebar history apply: %v", err)
+		t.Fatalf("recover partially interrupted sidebar history apply: %v", err)
 	}
 	sidebarHistoryAssertAllianceTargets(t, ctx, pool)
+	if err := pool.QueryRow(ctx, `SELECT imported_count,replayed_count,quarantined_count FROM sidebar_history_migration_batches WHERE run_key='sidebar-alliance-pg-001'`).Scan(&partialImported, &partialReplayed, &partialBatchQuarantines); err != nil {
+		t.Fatal(err)
+	}
+	if partialImported != 2 || partialReplayed != 1 || partialBatchQuarantines != 1 {
+		t.Fatalf("recovered partial apply outcome imported=%d replayed=%d quarantined=%d", partialImported, partialReplayed, partialBatchQuarantines)
+	}
 
 	// Re-running the exact protected file exercises the production replay path.
 	if err := run(ctx, applyArgs); err != nil {
