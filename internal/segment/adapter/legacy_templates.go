@@ -23,13 +23,14 @@ import (
 // matching, Provider call, or customer write. Each condition fails closed when
 // its factual Owner is unavailable.
 type LegacyTemplateSource struct {
-	Contacts wecomport.AudienceContactReader
-	Survey   surveyport.AudienceChoiceAnswerReader
-	Orders   orderport.PaidAudienceReader
-	Channels channelport.AudienceEntryReader
-	Radar    radarport.AudienceFirstClickReader
-	Members  hxcport.AudienceMemberReader
-	Owners   accessport.AudienceOwnerReferenceReader
+	Contacts      wecomport.AudienceContactReader
+	Survey        surveyport.AudienceChoiceAnswerReader
+	Orders        orderport.PaidAudienceReader
+	Channels      channelport.AudienceEntryReader
+	Radar         radarport.AudienceFirstClickReader
+	Members       hxcport.AudienceMemberReader
+	Owners        accessport.AudienceOwnerReferenceReader
+	PrimaryOwners wecomport.AudiencePrimaryOwnerReader
 }
 
 func (s LegacyTemplateSource) Evaluate(ctx context.Context, definition segmentport.Definition, reference time.Time) (segmentport.Evaluation, error) {
@@ -400,6 +401,20 @@ func (s LegacyTemplateSource) radar(ctx context.Context, p map[string]json.RawMe
 	if e != nil {
 		return nil, e
 	}
+	primaryByCustomer := map[customerdomain.CustomerID]wecomport.AudiencePrimaryOwner{}
+	if scoped && s.PrimaryOwners != nil {
+		customerIDs := make([]customerdomain.CustomerID, 0, len(facts))
+		for _, fact := range facts {
+			customerIDs = append(customerIDs, fact.CustomerID)
+		}
+		primaries, primaryErr := s.PrimaryOwners.AudiencePrimaryOwners(ctx, customerIDs)
+		if primaryErr != nil {
+			return nil, ErrCustomerReadUnavailable
+		}
+		for _, primary := range primaries {
+			primaryByCustomer[primary.CustomerID] = primary
+		}
+	}
 	scale := time.Hour
 	if unit == "day" {
 		scale = 24 * time.Hour
@@ -408,10 +423,15 @@ func (s LegacyTemplateSource) radar(ctx context.Context, p map[string]json.RawMe
 	for _, fact := range facts {
 		elapsed := int(at.Sub(fact.FirstClickedAt) / scale)
 		id := int64(fact.CustomerID)
-		// Radar Owner supplies the historical first-click owner. Do not use a
-		// current contact relationship: a reassignment after the click must not
-		// alter this cohort. An absent historical owner fails specified scope.
-		ownerMatch := !scoped || (fact.OwnerUserID != "" && owner(p, fact.OwnerUserID))
+		// dd8 selects a trusted identity primary owner before historical click
+		// staff facts. Current relationship rows are never substituted here. A
+		// conflicting or unavailable primary may only fall back to a historical
+		// fact that the Radar Owner actually supplied.
+		ownerUserID := fact.OwnerUserID
+		if primary, exists := primaryByCustomer[fact.CustomerID]; exists && primary.Status == "known" {
+			ownerUserID = primary.OwnerUserID
+		}
+		ownerMatch := !scoped || (ownerUserID != "" && owner(p, ownerUserID))
 		if contains(radars, strconv.FormatInt(fact.RadarID, 10)) && elapsed >= minimum && (maximum == nil || elapsed < *maximum) && ownerMatch {
 			out[id] = true
 		}

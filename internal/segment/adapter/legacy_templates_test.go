@@ -58,6 +58,12 @@ func (f legacyFacts) AudienceMemberFacts(context.Context, time.Time) ([]hxcport.
 	return f.members, nil
 }
 
+type primaryOwnerFacts []wecomport.AudiencePrimaryOwner
+
+func (f primaryOwnerFacts) AudiencePrimaryOwners(context.Context, []customerdomain.CustomerID) ([]wecomport.AudiencePrimaryOwner, error) {
+	return f, nil
+}
+
 func legacyDefinition(t *testing.T, template segmentdsl.Template, params string) segmentport.Definition {
 	t.Helper()
 	var raw map[string]json.RawMessage
@@ -181,6 +187,27 @@ func TestRadarFirstClickUsesHistoricalOwnerAndFailsClosedWhenAbsent(t *testing.T
 		t.Fatal(err)
 	}
 	assertAudienceIDs(t, staffB, 1)
+}
+
+func TestRadarFirstClickPrefersTrustedPrimaryOwnerOverHistoricalFallback(t *testing.T) {
+	at := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+	facts := legacyFacts{radar: []radarport.AudienceFirstClick{
+		{CustomerID: 1, RadarID: 8, FirstClickedAt: at.Add(-72 * time.Hour), OwnerUserID: "staff-b"},
+		{CustomerID: 2, RadarID: 8, FirstClickedAt: at.Add(-72 * time.Hour)},
+	}}
+	source := LegacyTemplateSource{Radar: facts, Owners: facts, PrimaryOwners: primaryOwnerFacts{
+		{CustomerID: 1, CorpScope: "wecom-corp:test", OwnerUserID: "staff-a", Status: "known"},
+		{CustomerID: 2, CorpScope: "wecom-corp:test", Status: "ambiguous"},
+	}}
+	staffA, err := source.Evaluate(context.Background(), legacyDefinition(t, segmentdsl.RadarFirstClickElapsed, `{"radar_ids":["8"],"elapsed_min":3,"elapsed_max":4,"elapsed_unit":"day","owner_scope":"specified","owner_staff_ids":["19"]}`), at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertAudienceIDs(t, staffA, 1)
+	staffB, err := source.Evaluate(context.Background(), legacyDefinition(t, segmentdsl.RadarFirstClickElapsed, `{"radar_ids":["8"],"elapsed_min":3,"elapsed_max":4,"elapsed_unit":"day","owner_scope":"specified","owner_staff_ids":["20"]}`), at)
+	if err != nil || len(staffB.CustomerIDs) != 0 {
+		t.Fatalf("staff-b result=%+v err=%v", staffB, err)
+	}
 }
 
 func TestChannelOwnerStaffIDDoesNotCollideWithProviderUserID(t *testing.T) {

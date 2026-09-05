@@ -76,7 +76,7 @@ func TestCustomerSyncJourneyPostgreSQL(t *testing.T) {
 		t.Fatal(err)
 	}
 	root := filepath.Join("..", "..")
-	for _, name := range []string{"0001_platform.sql", "0002_identity.sql", "0003_access.sql", "0004_wecom.sql", "0009_customer_activation.sql", "0022_customer_profile_sections.sql"} {
+	for _, name := range []string{"0001_platform.sql", "0002_identity.sql", "0003_access.sql", "0004_wecom.sql", "0009_customer_activation.sql", "0022_customer_profile_sections.sql", "0086_wecom_profile_primary_owner.sql"} {
 		raw, readErr := os.ReadFile(filepath.Join(root, "migrations", name))
 		if readErr != nil {
 			t.Fatal(readErr)
@@ -131,6 +131,14 @@ func TestCustomerSyncJourneyPostgreSQL(t *testing.T) {
 	}
 	if identities != 1 || projections != 1 || receipts != 1 || pending != 0 || owners != 1 || tags != 1 || timeline != 1 {
 		t.Fatalf("identities=%d projections=%d receipts=%d pending=%d owners=%d tags=%d timeline=%d", identities, projections, receipts, pending, owners, tags, timeline)
+	}
+	var primaryOwner string
+	var primaryRunID int64
+	if err = pool.Native().QueryRow(ctx, `SELECT primary_owner_userid,primary_owner_run_id FROM wecom_external_contact_profiles`).Scan(&primaryOwner, &primaryRunID); err != nil {
+		t.Fatal(err)
+	}
+	if primaryOwner != "staff-integration" || primaryRunID != run.ID {
+		t.Fatalf("primary owner=%q run=%d, want staff-integration/%d", primaryOwner, primaryRunID, run.ID)
 	}
 
 	var recoveryRunID int64
