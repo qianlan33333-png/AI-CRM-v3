@@ -76,7 +76,12 @@ func (s *MemberGridWorkspaceService) Access(ctx context.Context, id productport.
 			return e
 		}
 		if a.IsAdmin || a.IsSuperAdmin {
-			out = productport.MemberGridAccess{true, true, true, a.IsSuperAdmin}
+			out = productport.MemberGridAccess{
+				CanView:        true,
+				CanEdit:        true,
+				CanManageViews: true,
+				CanShare:       a.IsSuperAdmin,
+			}
 			return nil
 		}
 		c, e := s.store.FindMemberGridCollaborator(tx, id, a.AdminUserID)
