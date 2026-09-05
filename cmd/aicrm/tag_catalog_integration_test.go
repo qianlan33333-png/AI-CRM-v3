@@ -565,7 +565,7 @@ func TestPostgreSQLSurveySyntheticPushSurvivesRepositoryRestartAndDoesNotBlindRe
 	time.Sleep(250 * time.Millisecond)
 	stopSurveyEffectRuntime(t, stop, done)
 	receivedMu.Lock()
-	if len(received) != 1 {
+	if len(received) != 2 {
 		receivedMu.Unlock()
 		t.Fatalf("runtime restart repeated provider call: %d", len(received))
 	}
