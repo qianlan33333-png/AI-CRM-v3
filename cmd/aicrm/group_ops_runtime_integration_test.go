@@ -513,6 +513,25 @@ func TestGroupOpsSharedRiverRuntimeJourney(t *testing.T) {
 		t.Fatalf("separate delivery proof=%+v err=%v", delivery, err)
 	}
 
+	// This interruption happens after the actual local WeCom leaf receives the
+	// first-node request. River records outcome_unknown on its original EER;
+	// the frozen successor remains waiting and neither a new EER nor a retry
+	// key is minted on restart.
+	unknownPlanID := createRiverJourneyPlanWithMessages(t, ctx, uow, groupStore, actorID, "provider result intentionally unknown", "must stay blocked")
+	unknownRun, acceptUnknownErr := runtimeService.AcceptBroadcast(ctx, unknownPlanID, actorID, "river-runtime-unknown-0001")
+	if acceptUnknownErr != nil || unknownRun.Accepted != 2 {
+		t.Fatalf("unknown acceptance=%+v err=%v", unknownRun, acceptUnknownErr)
+	}
+	unknownRuntime, runtimeErr := platformjobqueue.NewRuntime(native, workers)
+	if runtimeErr != nil {
+		t.Fatal(runtimeErr)
+	}
+	unknownStart, unknownStop := startGroupOpsRiver(t, unknownRuntime)
+	unknownStart()
+	waitGroupOpsProviderCalls(t, native, provider, 6)
+	waitGroupOpsUnknownFirstNode(t, native, unknownPlanID)
+	unknownStop()
+
 	// Each case accepts against an active plan first, then changes one current
 	// authorization/binding fact while River is down. Starting the real shared
 	// runtime must finalize the EER effects without ever reaching the local
@@ -754,6 +773,15 @@ func newGroupOpsRuntimeWeCom(t *testing.T) *groupOpsRuntimeWeCom {
 			messageID := "runtime-task-" + strconv.Itoa(len(fixture.calls)+1)
 			fixture.calls = append(fixture.calls, groupOpsRuntimeWeComCall{chat: body.ChatIDs[0], text: body.Text.Content, messageID: messageID})
 			fixture.mu.Unlock()
+			if body.Text.Content == "provider result intentionally unknown" {
+				connection, _, hijackErr := writer.(http.Hijacker).Hijack()
+				if hijackErr != nil {
+					t.Errorf("hijack unknown group response: %v", hijackErr)
+				} else {
+					_ = connection.Close()
+				}
+				return
+			}
 			_, _ = fmt.Fprintf(writer, `{"errcode":0,"msgid":%q}`, messageID)
 		case "/cgi-bin/externalcontact/get_groupmsg_send_result":
 			var body struct {
@@ -853,6 +881,25 @@ func waitGroupOpsDelayedSuccessors(t *testing.T, native *pgxpool.Pool, planID in
 	t.Fatalf("delayed Group Ops successors did not persist; intents=%s executions=%s effects=%s river=%s", intents, executions, effects, jobs)
 }
 
+func waitGroupOpsUnknownFirstNode(t *testing.T, native *pgxpool.Pool, planID int64) {
+	t.Helper()
+	deadline := time.Now().Add(12 * time.Second)
+	for time.Now().Before(deadline) {
+		var unknown, successors, effects int
+		err := native.QueryRow(context.Background(), `SELECT
+			(SELECT count(*) FROM group_ops_executions execution JOIN external_effects effect ON effect.id=execution.external_effect_id WHERE execution.plan_id=$1 AND execution.node_position=1 AND execution.state='outcome_unknown' AND effect.state='outcome_unknown'),
+			(SELECT count(*) FROM group_ops_executions WHERE plan_id=$1 AND node_position=3),
+			(SELECT count(*) FROM external_effects effect JOIN group_ops_executions execution ON execution.external_effect_id=effect.id WHERE execution.plan_id=$1)`, planID).Scan(&unknown, &successors, &effects)
+		if err == nil && unknown == 2 && successors == 0 && effects == 2 {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	var states string
+	_ = native.QueryRow(context.Background(), `SELECT coalesce(string_agg(node_position::text || ':' || state || ':' || external_effect_id, ','),'') FROM group_ops_executions WHERE plan_id=$1`, planID).Scan(&states)
+	t.Fatalf("unknown first node did not block frozen successors: %s", states)
+}
+
 func waitGroupOpsPreCallFailures(t *testing.T, native *pgxpool.Pool, planID int64, expected int) {
 	t.Helper()
 	deadline := time.Now().Add(12 * time.Second)
@@ -890,6 +937,10 @@ func startGroupOpsRiver(t *testing.T, runtime *platformjobqueue.Runtime) (func()
 }
 
 func createRiverJourneyPlan(t *testing.T, ctx context.Context, uow *platformpostgres.UnitOfWork, repository *groupopsstore.Repository, actorID int64) int64 {
+	return createRiverJourneyPlanWithMessages(t, ctx, uow, repository, actorID, "first", "second")
+}
+
+func createRiverJourneyPlanWithMessages(t *testing.T, ctx context.Context, uow *platformpostgres.UnitOfWork, repository *groupopsstore.Repository, actorID int64, firstMessage, secondMessage string) int64 {
 	t.Helper()
 	now := time.Now().UTC()
 	var planID int64
@@ -900,7 +951,7 @@ func createRiverJourneyPlan(t *testing.T, ctx context.Context, uow *platformpost
 			return err
 		}
 		emptyMaterials := groupopsport.MaterialPlan{References: []groupopsport.MaterialReference{}}
-		return repository.Save(tx, groupopsport.Detail{Plan: groupopsport.Plan{ID: planID, Name: "River runtime journey", Status: groupopsport.PlanActive, Revision: 1, CreatedBy: actorID, UpdatedBy: actorID, CreatedAt: now, UpdatedAt: now}, Members: []groupopsport.Member{{StaffID: actorID}}, GroupAssets: []groupopsport.GroupAsset{{AssetRef: "chat-river-1"}, {AssetRef: "chat-river-2"}}, Nodes: []groupopsport.Node{{Position: 1, Kind: groupopsport.NodeMessage, MessageText: "first", MaterialPlan: emptyMaterials}, {Position: 2, Kind: groupopsport.NodeDelay, DelayMinutes: 1, MaterialPlan: emptyMaterials}, {Position: 3, Kind: groupopsport.NodeMessage, MessageText: "second", MaterialPlan: emptyMaterials}}})
+		return repository.Save(tx, groupopsport.Detail{Plan: groupopsport.Plan{ID: planID, Name: "River runtime journey", Status: groupopsport.PlanActive, Revision: 1, CreatedBy: actorID, UpdatedBy: actorID, CreatedAt: now, UpdatedAt: now}, Members: []groupopsport.Member{{StaffID: actorID}}, GroupAssets: []groupopsport.GroupAsset{{AssetRef: "chat-river-1"}, {AssetRef: "chat-river-2"}}, Nodes: []groupopsport.Node{{Position: 1, Kind: groupopsport.NodeMessage, MessageText: firstMessage, MaterialPlan: emptyMaterials}, {Position: 2, Kind: groupopsport.NodeDelay, DelayMinutes: 1, MaterialPlan: emptyMaterials}, {Position: 3, Kind: groupopsport.NodeMessage, MessageText: secondMessage, MaterialPlan: emptyMaterials}}})
 	})
 	if err != nil {
 		t.Fatal(err)
