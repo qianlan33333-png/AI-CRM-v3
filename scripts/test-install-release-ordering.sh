@@ -144,9 +144,15 @@ make_release() {
     0048_segment_audience_schedule_state.sql 0049_order_history_attribution.sql \
     0050_radar_core.sql 0051_radar_sessions_events.sql 0052_radar_legacy_import.sql \
     0053_segment_audience_member_event_fact_kinds.sql \
+    0083_segment_audience_refresh_modes.sql \
+    0085_segment_audience_refresh_kind.sql \
+    0086_wecom_profile_primary_owner.sql \
+    0087_automation_manual_ai_review.sql \
+    0089_outbound_message_content_snapshots.sql \
     0061_product_public_purchase.sql \
     0063_identity_hxc_source_observations.sql \
-    0064_hxc_dashboard_identity_v2.sql; do
+    0064_hxc_dashboard_identity_v2.sql \
+    0084_hxc_shared_facts.sql; do
     : > "$release/migrations/$migration"
   done
   : > "$release/web/dist/asset-manifest.json"

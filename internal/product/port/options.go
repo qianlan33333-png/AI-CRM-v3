@@ -37,6 +37,7 @@ type ProductOptionQuery struct {
 // projection and are omitted by the Product-owned implementation.
 type ProductOption struct {
 	ID          ID                `json:"id"`
+	Code        string            `json:"code"`
 	ProductType ProductOptionType `json:"product_type"`
 	Name        string            `json:"name"`
 	PriceMinor  int64             `json:"price_minor"`

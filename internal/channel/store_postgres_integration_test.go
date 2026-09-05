@@ -576,6 +576,65 @@ func TestPostgreSQLChannelCallbackPersistenceIntegration(t *testing.T) {
 	})
 }
 
+func TestPostgreSQLAudienceEntriesCombineNativeHistoryByExactCodeAndLatestTime(t *testing.T) {
+	pool, cleanup := channelIntegrationPool(t)
+	defer cleanup()
+	unit, err := platformpostgres.NewUnitOfWork(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	actorID := insertChannelAdmin(t, ctx, pool)
+	catalog := NewPostgreSQLCatalogStore()
+	events, err := NewChannelCatalogEventAppender(mustChannelAuditService(t), platformoutbox.NewPostgreSQL())
+	if err != nil {
+		t.Fatal(err)
+	}
+	create := validCatalogCreate()
+	create.Code = "audience-native-history"
+	create.Config.Assignment.Assignees[0].StaffID = actorID
+	channel, err := NewCatalogService(unit, catalog, catalog, events, nil, nil, fixedCatalogStaffReader{actorID: actorID}).Create(ctx, CatalogMutation{ActorID: actorID, IdempotencyKey: "audience-channel-entries", Create: create})
+	if err != nil {
+		t.Fatal(err)
+	}
+	customer := insertChannelCustomer(t, ctx, pool)
+	store := NewPostgreSQLStore()
+	now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+	binding := StateBinding{CorpID: "wx-audience", DigestKeyVersion: 1, StateDigest: channelStateDigest("audience-native"), ChannelID: channel.ID, AssetKind: AcquisitionAssetQRCode, AssetVersion: 1, BindingDigest: sha256.Sum256([]byte("audience-binding")), ActiveFrom: now.Add(-48 * time.Hour)}
+	var resolution channeldomain.StateResolution
+	if err := unit.Within(ctx, func(tx context.Context) error { _, _, e := store.PutBinding(tx, binding); return e }); err != nil {
+		t.Fatal(err)
+	}
+	if err := unit.Within(ctx, func(tx context.Context) error {
+		var e error
+		resolution, e = store.ResolveStateDigest(tx, binding.CorpID, binding.StateDigest, now.Add(-time.Hour))
+		return e
+	}); err != nil {
+		t.Fatal(err)
+	}
+	callbackID := "wecom:external-contact:audience-native"
+	if err := unit.Within(ctx, func(tx context.Context) error {
+		return store.RecordEntrantReceipt(tx, channelport.EntrantReceipt{CallbackID: callbackID, InboxID: insertChannelInbox(t, ctx, pool, callbackID), CorpID: binding.CorpID, ChangeType: "add_external_contact", CustomerID: customer, Status: channelport.EntrantReceiptAttributed, OccurredAt: now.Add(-24 * time.Hour), Resolution: resolution})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	digest := make([]byte, sha256.Size)
+	var runID int64
+	if err := pool.Native().QueryRow(ctx, `INSERT INTO channel_history_import_runs(snapshot_id,source_host_digest,snapshot_timestamp,manifest_digest,state,completed_at) VALUES('audience-history',$1,$2,$1,'reconciled',$2) RETURNING id`, digest, now).Scan(&runID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Native().Exec(ctx, `INSERT INTO channel_history_contacts(import_run_id,channel_id,source_contact_id,customer_id,owner_reference,first_entered_at,last_entered_at,enter_count) VALUES($1,$2,1,$3,'history-owner',$4,$5,2)`, runID, channel.ID, customer, now.Add(-72*time.Hour), now.Add(-2*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	var facts []channelport.AudienceEntry
+	if err := unit.Within(ctx, func(tx context.Context) error { var e error; facts, e = store.AudienceEntries(tx, now); return e }); err != nil {
+		t.Fatal(err)
+	}
+	if len(facts) != 1 || facts[0].CustomerID != customer || facts[0].ChannelCode != channel.Code || !facts[0].LastEnteredAt.Equal(now.Add(-2*time.Hour)) || facts[0].OwnerReference != "history-owner" {
+		t.Fatalf("facts=%+v", facts)
+	}
+}
+
 func platformpostgresRow(ctx context.Context, query string, arguments ...any) pgx.Row {
 	tx, err := platformpostgres.RequireTransaction(ctx)
 	if err != nil {

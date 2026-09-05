@@ -152,7 +152,7 @@ func (s Service) Refresh(ctx context.Context, runID int64) error {
 }
 
 func (s Service) project(ctx context.Context, snapshot hxcport.Snapshot, applyIdentities bool) (domain.Projection, error) {
-	projection := domain.Projection{AsOf: snapshot.AsOf, Watermark: snapshot.Watermark, SourceDigest: snapshot.Digest, Rows: make([]domain.ProjectionRow, len(snapshot.Rows))}
+	projection := domain.Projection{AsOf: snapshot.AsOf, Watermark: snapshot.Watermark, SourceDigest: snapshot.Digest, SharedFactsAvailable: true, Rows: make([]domain.ProjectionRow, len(snapshot.Rows))}
 	subjects := make([]identityport.HXCSubject, len(snapshot.Rows))
 	unionOwners := make(map[string][]int)
 	phoneOwners := make(map[string][]int)

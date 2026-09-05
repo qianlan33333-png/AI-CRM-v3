@@ -81,9 +81,15 @@ for migration_contract in \
   '0038_survey_oauth_phone_vault.sql:survey OAuth phone vault' \
   '0049_order_history_attribution.sql:order history attribution' \
   '0053_segment_audience_member_event_fact_kinds.sql:Segment audience member event fact kind repair' \
+  '0083_segment_audience_refresh_modes.sql:Segment audience refresh modes' \
+  '0085_segment_audience_refresh_kind.sql:Segment audience refresh kind' \
+  '0086_wecom_profile_primary_owner.sql:WeCom profile primary owner' \
+  '0087_automation_manual_ai_review.sql:Automation manual AI review' \
+  '0089_outbound_message_content_snapshots.sql:Outbound message content snapshots' \
   '0061_product_public_purchase.sql:product public purchase' \
   '0063_identity_hxc_source_observations.sql:HXC identity source observations' \
-  '0064_hxc_dashboard_identity_v2.sql:HXC dashboard identity v2'; do
+   '0064_hxc_dashboard_identity_v2.sql:HXC dashboard identity v2' \
+  '0084_hxc_shared_facts.sql:HXC shared legacy facts'; do
   migration="${migration_contract%%:*}"
   label="${migration_contract#*:}"
   test -f "migrations/${migration}" || {
