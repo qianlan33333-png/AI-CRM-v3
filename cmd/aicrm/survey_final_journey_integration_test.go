@@ -11,6 +11,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -20,6 +23,7 @@ import (
 	identityapp "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/app"
 	identitystore "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/store"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
+	surveymodule "github.com/qianlan33333-png/AI-CRM-v3/internal/survey"
 	surveyapp "github.com/qianlan33333-png/AI-CRM-v3/internal/survey/app"
 	surveydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/survey/domain"
 	surveyhttp "github.com/qianlan33333-png/AI-CRM-v3/internal/survey/http"
@@ -42,6 +46,71 @@ func TestSurveyOAuthJourneyDefinitionFixtureIsAcceptedByApplication(t *testing.T
 	created, err := surveyapp.NewService(surveyJourneyUnitOfWork{}, store).Create(context.Background(), surveyport.CreateCommand{Questionnaire: definition, ActorID: 1, IdempotencyKey: "survey-oauth-fixture-create-0001"})
 	if err != nil || created.ID != 1 || len(store.created.Questions) != 1 || len(store.created.Questions[0].Options) != 2 {
 		t.Fatalf("application create=%+v stored=%+v err=%v", created, store.created, err)
+	}
+}
+
+// TestSurveyOAuthRedirectConstraintReadinessPostgreSQL proves the 0018
+// regular-expression defect is fail-closed and that the real 0090 migration
+// restores both Host callback paths without widening the redirect boundary.
+func TestSurveyOAuthRedirectConstraintReadinessPostgreSQL(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	databaseURL, cleanup := adminAccessCompositionDatabase(t, ctx)
+	defer cleanup()
+	native, err := pgxpool.New(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer native.Close()
+
+	// This is the exact 0018 definition. In standard-conforming PostgreSQL
+	// literals its doubled backslashes reject the legitimate Host redirect.
+	if _, err = native.Exec(ctx, `ALTER TABLE survey_oauth_states DROP CONSTRAINT survey_oauth_states_redirect;
+		ALTER TABLE survey_oauth_states ADD CONSTRAINT survey_oauth_states_redirect
+		CHECK (redirect_path ~ '^/h5/(all|one)\\.html\\?slug=[a-z0-9][a-z0-9-]{0,127}$');`); err != nil {
+		t.Fatal(err)
+	}
+	module := surveymodule.NewModuleRegistration()
+	if err = module.Readiness(ctx, native); err == nil {
+		t.Fatal("Readiness accepted the known-broken 0018 OAuth redirect constraint")
+	}
+	surveyJourneyAssertOAuthRedirect(t, ctx, native, 1, "/h5/all.html?slug=oauth-ready", false)
+
+	if _, err = native.Exec(ctx, surveyJourneyMigrationSQL(t, "0090_survey_oauth_state_redirect.sql")); err != nil {
+		t.Fatalf("apply 0090: %v", err)
+	}
+	if err = module.Readiness(ctx, native); err != nil {
+		t.Fatalf("Readiness after 0090: %v", err)
+	}
+	surveyJourneyAssertOAuthRedirect(t, ctx, native, 2, "/h5/all.html?slug=oauth-ready", true)
+	surveyJourneyAssertOAuthRedirect(t, ctx, native, 3, "/h5/one.html?slug=oauth-ready-one", true)
+	surveyJourneyAssertOAuthRedirect(t, ctx, native, 4, "https://outside.invalid/h5/all.html?slug=oauth-ready", false)
+	surveyJourneyAssertOAuthRedirect(t, ctx, native, 5, "/h5/all.html?slug=not_valid", false)
+}
+
+func surveyJourneyMigrationSQL(t *testing.T, name string) string {
+	t.Helper()
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("locate survey journey migration")
+	}
+	sql, err := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "migrations", name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(sql)
+}
+
+func surveyJourneyAssertOAuthRedirect(t *testing.T, ctx context.Context, pool *pgxpool.Pool, marker byte, redirect string, accepted bool) {
+	t.Helper()
+	digest := bytes.Repeat([]byte{marker}, sha256.Size)
+	now := time.Now().UTC()
+	_, err := pool.Exec(ctx, `INSERT INTO survey_oauth_states(state_digest,questionnaire_slug,redirect_path,expires_at,created_at) VALUES($1,$2,$3,$4,$5)`, digest, "oauth-ready", redirect, now.Add(time.Minute), now)
+	if accepted && err != nil {
+		t.Fatalf("redirect %q rejected: %v", redirect, err)
+	}
+	if !accepted && err == nil {
+		t.Fatalf("redirect %q unexpectedly accepted", redirect)
 	}
 }
 

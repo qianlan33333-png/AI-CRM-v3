@@ -54,7 +54,7 @@ func (m *ModuleRegistration) Readiness(ctx context.Context, pool *pgxpool.Pool) 
 		WHERE namespace.nspname=current_schema()
 		  AND relation.relname='survey_oauth_states'
 		  AND constraint.conname='survey_oauth_states_redirect'
-		  AND pg_get_constraintdef(constraint.oid) LIKE '%/h5/(all|one)\.html\?slug=%'
+		  AND pg_get_constraintdef(constraint.oid) LIKE '%/h5/(all|one)\.html\?slug=%' ESCAPE ''
 	)`).Scan(&redirectConstraintReady)
 	if err != nil {
 		return err
