@@ -265,6 +265,7 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
         const test = window.__groupDirectoryTest = { calls: [], fail: false, syncFail: false, empty: false, ownersFail: false };
         const safety = { provider_execution_eligible: false, real_external_call_executed: false, provider_accepted: false, delivery_proven: false };
         const detail = { ...safety, plan: { plan_id: '10', name: '目录测试计划', revision: 1, status: 'draft', queue_count: 0, created_at: '', updated_at: '' }, members: [{ staff_id: 7 }], nodes: [], group_assets: [{ group_asset_id: '1', asset_reference: 'group-old' }, { group_asset_id: '2', asset_reference: 'unknown-old' }], webhook_descriptor: { configured: false } };
+        const provenExecution = groupDirectoryHttp.deliveryProven ? { execution_id: '71', run_id: '61', plan_id: '10', plan_revision: 1, node_id: '51', node_position: 1, target_reference: 'group-opaque-1', target_digest: 'sha256:' + 'a'.repeat(64), content_digest: 'sha256:' + 'b'.repeat(64), material_digest: 'sha256:' + 'c'.repeat(64), external_effect_id: 'eer_71', state: 'delivery_proven', runtime_state: 'provider_accepted', provider_accepted: true, delivery_proven: true, attempt_count: 1, provider_receipt_present: true, reconciliation_evidence_present: false, created_at: '2026-09-05T00:00:00Z', updated_at: '2026-09-05T00:01:00Z' } : null;
         test.detail = detail;
         const json = (body, status = 200) => ({ status, headers: new Headers(), text: async () => JSON.stringify(body) });
         window.fetch = async (input, init = {}) => {
@@ -283,7 +284,7 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
           if (url.pathname.endsWith('/plans')) return json({ ...safety, items: [detail.plan], total: 1, limit: 100, offset: 0, has_more: false });
           if (url.pathname.endsWith('/content/preview')) return json({ preview_lines: [], issue_codes: [] });
           if (url.pathname.endsWith('/run-due/preview')) return json({ ...safety, plan_id: '10', snapshot_revision: detail.plan.revision, due_execution_count: 0, blockers: [] });
-          if (url.pathname.endsWith('/executions')) return json({ ...safety, items: [] });
+          if (url.pathname.endsWith('/executions')) return json({ ...safety, items: provenExecution ? [provenExecution] : [], total: provenExecution ? 1 : 0, limit: 100, offset: 0, has_more: false });
           if (url.pathname.endsWith('/webhook-descriptor')) return json({ ...safety, configured: false });
           if (url.pathname.includes('/group-assets')) {
             if (!new Headers(init.headers).get('Idempotency-Key') || body.expected_revision !== detail.plan.revision) return json({ code: 'conflict' }, 409);
@@ -1962,6 +1963,13 @@ console.log('admin/groupopsDetail.html（真实 HTTP 群目录选择）');
   action('close'); test.ownersFail = true;
   click(dom, [...d.querySelectorAll('button')].find((b) => b.textContent.trim() === '查看群目录')); await sleep(30);
   ok('成员读取失败不使用种子候选且禁用刷新', d.querySelector('#group-directory').textContent.includes('运营成员读取失败') && d.querySelectorAll('[data-gd="owner"] option').length === 1 && d.querySelector('[data-gd="refresh"]').disabled);
+  dom.window.close();
+}
+{
+  const dom = await loadPage('admin/groupopsDetail.html', { id: 10, groupDirectoryHttp: { deliveryProven: true } });
+  await sleep(30);
+  const d = dom.window.document, test = dom.window.__groupDirectoryTest;
+  ok('旧群运营执行记录读取经 Host 投影的已验证送达，且保留真实 Provider 回执', d.querySelector('#stage').textContent.includes('已由已验证 Provider 回执证明送达') && d.querySelector('#stage').textContent.includes('Provider receipt=present') && test.calls.some((call) => call.path.endsWith('/plans/10/executions') && call.method === 'GET'));
   dom.window.close();
 }
 
