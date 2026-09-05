@@ -11,9 +11,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -25,6 +28,7 @@ import (
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/configmigration/source"
 	configtarget "github.com/qianlan33333-png/AI-CRM-v3/internal/configmigration/target"
 	couponstore "github.com/qianlan33333-png/AI-CRM-v3/internal/coupon/store"
+	"github.com/qianlan33333-png/AI-CRM-v3/internal/groupops"
 	groupopsapp "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/app"
 	groupopshttp "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/http"
 	groupopsport "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/port"
@@ -32,6 +36,7 @@ import (
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 	productstore "github.com/qianlan33333-png/AI-CRM-v3/internal/product/store"
+	"github.com/qianlan33333-png/AI-CRM-v3/internal/webshell"
 )
 
 // OneID decision: not involved. This fixture contains only local business
@@ -420,7 +425,7 @@ CREATE TABLE legacy_history_source.automation_group_ops_plan_nodes(id BIGINT,pla
 		{`INSERT INTO legacy_history_source.group_chats VALUES('chat-901','旧群','owner-1',2,'active',$1)`, []any{now}},
 		{`INSERT INTO legacy_history_source.wecom_group_chat_snapshots VALUES('chat-901','旧群','owner-1','',1,1,'active',$1)`, []any{now}},
 		{`INSERT INTO legacy_history_source.automation_group_ops_plan_groups VALUES(902,901,'chat-901','旧群','owner-1',1,1,'active',$1,NULL)`, []any{now}},
-		{`INSERT INTO legacy_history_source.automation_group_ops_plan_nodes VALUES(903,901,1,'',1,'active',$1,$2,'{}','[{"kind":"image","id":"m1"}]',$3,$3)`, []any{"标题\a", "正文\v", now}},
+		{`INSERT INTO legacy_history_source.automation_group_ops_plan_nodes VALUES(903,901,1,'',1,'active',$1,$2,'{}','[{"kind":"image","id":"m1"}]',$3,$3)`, []any{"标题 <img src=x onerror=alert(1)>\a", "正文 <script>window.__groupopsHistoryXSS=1</script>\v", now}},
 	} {
 		if _, err := db.Exec(ctx, strings.ReplaceAll(row.query, "legacy_history_source", quotedSchema), row.args...); err != nil {
 			t.Fatal(err)
@@ -430,7 +435,7 @@ CREATE TABLE legacy_history_source.automation_group_ops_plan_nodes(id BIGINT,pla
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(snapshot.Nodes) != 1 || snapshot.Nodes[0].TriggerTime != "" || snapshot.Nodes[0].ActionTitle != "标题\a" || snapshot.Nodes[0].TextContent != "正文\v" {
+	if len(snapshot.Nodes) != 1 || snapshot.Nodes[0].TriggerTime != "" || snapshot.Nodes[0].ActionTitle != "标题 <img src=x onerror=alert(1)>\a" || snapshot.Nodes[0].TextContent != "正文 <script>window.__groupopsHistoryXSS=1</script>\v" {
 		t.Fatalf("extracted node=%#v", snapshot.Nodes)
 	}
 	dir := t.TempDir()
@@ -485,8 +490,106 @@ CREATE TABLE legacy_history_source.automation_group_ops_plan_nodes(id BIGINT,pla
 			Attachments json.RawMessage `json:"attachments"`
 		} `json:"items"`
 	}
-	if decodeErr := json.Unmarshal(response.Body.Bytes(), &nodePage); response.Code != http.StatusOK || decodeErr != nil || len(nodePage.Items) != 1 || nodePage.Items[0].ActionTitle != "标题\a" || nodePage.Items[0].TextContent != "正文\v" || nodePage.Items[0].TriggerTime != "" || !historyAttachmentIsImageM1(nodePage.Items[0].Attachments) {
+	if decodeErr := json.Unmarshal(response.Body.Bytes(), &nodePage); response.Code != http.StatusOK || decodeErr != nil || len(nodePage.Items) != 1 || nodePage.Items[0].ActionTitle != "标题 <img src=x onerror=alert(1)>\a" || nodePage.Items[0].TextContent != "正文 <script>window.__groupopsHistoryXSS=1</script>\v" || nodePage.Items[0].TriggerTime != "" || !historyAttachmentIsImageM1(nodePage.Items[0].Attachments) {
 		t.Fatalf("node HTTP=%d %s", response.Code, response.Body.String())
+	}
+	assertImportedGroupOpsHistoryHostJourney(t, handler)
+}
+
+func assertImportedGroupOpsHistoryHostJourney(t *testing.T, historyHandler http.Handler) {
+	t.Helper()
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node is unavailable")
+	}
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("cannot locate repository")
+	}
+	repository := filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
+	donorTemplate, err := os.ReadFile(filepath.Join(repository, "web", "src", "admin", "templates", "groupopsDetail.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	readonlyCSS, err := os.ReadFile(filepath.Join(repository, "web", "donors", "ai-assistant-production", "static", "send_content_readonly_detail.css"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	readonlyJS, err := os.ReadFile(filepath.Join(repository, "web", "donors", "ai-assistant-production", "static", "send_content_readonly_detail.js"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dist := t.TempDir()
+	for relative, body := range map[string][]byte{
+		"admin/groupopsDetail.html":                    []byte(`<template id="tpl">` + string(donorTemplate) + `</template>`),
+		"assets/tokens-test.css":                       []byte("body{}"),
+		"assets/labs-test.css":                         []byte("#stage{}"),
+		"assets/admin-test.js":                         []byte("export {}"),
+		"aiassistant/send_content_readonly_detail.css": readonlyCSS,
+		"aiassistant/send_content_readonly_detail.js":  readonlyJS,
+		"asset-manifest.json":                          []byte(`{"entries":{"tokens":"assets/tokens-test.css","labs":"assets/labs-test.css","admin":"assets/admin-test.js"},"files":{"assets/tokens-test.css":{},"assets/labs-test.css":{},"assets/admin-test.js":{},"aiassistant/send_content_readonly_detail.css":{},"aiassistant/send_content_readonly_detail.js":{}}}`),
+	} {
+		path := filepath.Join(dist, filepath.FromSlash(relative))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, body, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	renderer, err := webshell.NewRenderer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ui := groupops.NewModuleRegistration().UIBinding(dist, func(writer http.ResponseWriter, request *http.Request, page, donor string, assets groupops.GroupOpsAssets) error {
+		return renderer.RenderGroupOps(writer, webshell.AdminPageForRequest(request, "群运营计划", "", "api.admin_group_ops_plan_detail"), page, donor, webshell.GroupOpsAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS, ReadonlyCSS: assets.ReadonlyCSS, ReadonlyJS: assets.ReadonlyJS})
+	})
+	shell, err := webshell.NewHandler(webshell.HandlerOptions{Renderer: renderer})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lock sync.Mutex
+	var historyCalls []string
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if strings.HasPrefix(request.URL.Path, "/static/") {
+			shell.ServeHTTP(writer, request)
+			return
+		}
+		if strings.HasPrefix(request.URL.Path, "/groupops-assets/") {
+			ui.ServeHTTP(writer, request)
+			return
+		}
+		if strings.HasPrefix(request.URL.Path, groupopshttp.HistoryPath) {
+			lock.Lock()
+			historyCalls = append(historyCalls, request.Method+" "+request.URL.RequestURI())
+			lock.Unlock()
+			historyHandler.ServeHTTP(writer, request)
+			return
+		}
+		ui.ServeHTTP(writer, request)
+	}))
+	defer server.Close()
+	command := exec.Command("node", "cmd/migrate-v2-config-definitions/groupops_history_http_e2e.mjs", server.URL)
+	command.Dir = repository
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("imported Group Ops history Host browser journey failed: %v\n%s", err, output)
+	}
+	if !strings.Contains(string(output), "groupops-history HTTP Host e2e: PASS") {
+		t.Fatalf("imported Group Ops history Host browser journey did not report success: %q", output)
+	}
+	lock.Lock()
+	defer lock.Unlock()
+	expected := map[string]int{
+		"GET /api/admin/automation-conversion/group-ops/history/plans/901/groups?limit=20&offset=0": 1,
+		"GET /api/admin/automation-conversion/group-ops/history/plans/901/nodes?limit=20&offset=0":  2,
+		"GET /api/admin/automation-conversion/group-ops/history/plans/901/nodes?limit=20&offset=20": 1,
+	}
+	actual := make(map[string]int, len(historyCalls))
+	for _, call := range historyCalls {
+		actual[call]++
+	}
+	if !reflect.DeepEqual(actual, expected) {
+		t.Fatalf("history Host journey calls=%v", historyCalls)
 	}
 }
 

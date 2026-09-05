@@ -136,7 +136,7 @@ type RadarAssets struct{ TokensCSS, LabsCSS, AdminJS string }
 // GroupOpsAssets are manifest-derived URLs for the immutable donor Group Ops
 // bundle. The v3 shell owns the sidebar; the donor supplies only its stage
 // template and runtime assets.
-type GroupOpsAssets struct{ TokensCSS, LabsCSS, AdminJS string }
+type GroupOpsAssets struct{ TokensCSS, LabsCSS, AdminJS, ReadonlyCSS, ReadonlyJS string }
 
 // AutomationAssets are manifest-derived frozen Agent bundle paths. The v3
 // shell supplies only URLs; donor markup remains the extracted template.
@@ -410,7 +410,7 @@ func (renderer *Renderer) RenderChannels(writer http.ResponseWriter, data AdminP
 // single v3 admin_base sidebar. It accepts only the page names selected by
 // the Group Ops UI adapter and never receives request-controlled HTML.
 func (renderer *Renderer) RenderGroupOps(writer http.ResponseWriter, data AdminPageData, page, donorTemplate string, assets GroupOpsAssets) error {
-	if renderer == nil || renderer.templates == nil || donorTemplate == "" || assets.TokensCSS == "" || assets.LabsCSS == "" || assets.AdminJS == "" || (page != "groupops" && page != "groupopsDetail") {
+	if renderer == nil || renderer.templates == nil || donorTemplate == "" || assets.TokensCSS == "" || assets.LabsCSS == "" || assets.AdminJS == "" || assets.ReadonlyCSS == "" || assets.ReadonlyJS == "" || (page != "groupops" && page != "groupopsDetail") {
 		return errors.New("Group Ops shell assets are required")
 	}
 	normalizeAdminPage(&data)

@@ -387,9 +387,9 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
           plans: { plan_id: planID, name: '历史计划 <img src=x onerror=alert(1)>', status: 'archived', revision: 1, source_plan_id: 8, source_code: 'legacy-code', plan_type: 'normal', original_status: 'active', owner_staff_id: null, created_at: date, updated_at: date, archived_at: null },
           directory: { id: 1, source_kind: 'group_chats', source_id: 9, chat_reference: 'historical-chat', display_name: null, owner_staff_id: null, owner_name: null, member_count: 0, internal_member_count: null, external_member_count: null, original_status: '', recorded_at: date },
           groups: { id: 2, source_group_id: 10, source_plan_id: 8, plan_id: planID, chat_reference: 'plan-chat', display_name: '历史群', owner_staff_id: null, internal_member_count: 0, external_member_count: 2, original_status: 'removed', created_at: date, removed_at: null },
-          nodes: { id: 3, source_node_id: 11, source_plan_id: 8, plan_id: planID, day_index: 0, trigger_time: '  入群后  ', sort_order: 0, original_status: 'legacy_disabled', content_package: { text: '<script>历史消息</script>' }, created_at: date, updated_at: date },
+          nodes: { id: 3, source_node_id: 11, source_plan_id: 8, plan_id: planID, day_index: 0, trigger_time: '  入群后  ', sort_order: 0, original_status: 'legacy_disabled', action_title: '历史标题 <img src=x onerror=alert(1)>', text_content: '<script>历史消息</script>', attachments: [{ kind: 'image', id: 'm1' }], content_package: { text: '<script>历史消息</script>' }, created_at: date, updated_at: date },
         };
-        const json = (data, status = 200) => ({ ok: status >= 200 && status < 300, status, headers: new Headers(), text: async () => JSON.stringify(data) });
+        const json = (data, status = 200) => ({ ok: status >= 200 && status < 300, status, headers: new Headers(), text: async () => JSON.stringify(data), json: async () => data, clone() { return this; } });
         window.Headers = Headers;
         window.__groupOpsHistoryHttpTest = { calls, failures };
         window.fetch = async (input, init = {}) => {
@@ -404,6 +404,9 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
           const items = Array.from({ length: Math.min(limit, Math.max(0, total - offset)) }, (_, index) => kind === 'directory' && (offset + index) % 2 ? { ...rows[kind], source_kind: 'wecom_group_chat_snapshots', source_id: null, member_count: null, internal_member_count: 0, external_member_count: 2 } : rows[kind]);
           return json({ source: 'v1_history', read_only: true, real_external_call_executed: false, items, total, limit, offset, ...(kind === 'groups' || kind === 'nodes' ? { plan_id: planID } : {}) });
         };
+        // The actual Host loads these two immutable/owned scripts in this order before the frozen admin module.
+        window.eval(fs.readFileSync(path.join(ROOT, 'donors/ai-assistant-production/static/send_content_readonly_detail.js'), 'utf8'));
+        window.eval(fs.readFileSync(path.join(ROOT, '..', 'internal/webshell/static/admin_console/groupops_history_readonly_bridge.js'), 'utf8'));
         return;
       }
       if (automationHistoryHttp) {
@@ -1917,7 +1920,7 @@ console.log('admin/groupops 历史（真实四 GET，只读独立分页）');
   const primary = d.querySelector('#group-history-primary');
   const secondary = d.querySelector('#group-history-secondary');
   ok('历史详情只读计划下群与节点，字符串 ID 无精度损失', test.calls.length === 2 && test.calls.every((c) => c.path.includes('/history/plans/9007199254740993/')));
-  ok('源节点 day=0、触发标签空格、排序与原状态原样展示，内容不执行', secondary.textContent.includes('源 day_index：0') && secondary.textContent.includes('源触发标签：  入群后  ') && secondary.textContent.includes('源排序：0') && secondary.textContent.includes('legacy_disabled') && secondary.textContent.includes('<script>历史消息</script>') && !secondary.querySelector('script'));
+  ok('源节点 day=0、触发标签空格、排序与原状态原样展示，正文和附件经冻结只读组件呈现且不执行', secondary.textContent.includes('源 day_index：0') && secondary.textContent.includes('源触发标签：  入群后  ') && secondary.textContent.includes('源排序：0') && secondary.textContent.includes('legacy_disabled') && secondary.textContent.includes('历史标题 <img') && secondary.textContent.includes('<script>历史消息</script>') && secondary.textContent.includes('image #m1') && !!secondary.querySelector('.send-readonly-detail') && !secondary.querySelector('script') && !secondary.querySelector('img'));
   ok('历史群保留 removed 原状态及空 removed_at，不推测当前群状态', primary.textContent.includes('源状态：removed') && primary.textContent.includes('移除时间：NULL'));
   click(dom, primary.querySelector('[data-next]'));
   await sleep(30);
