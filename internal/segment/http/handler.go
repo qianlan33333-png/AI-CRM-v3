@@ -13,6 +13,7 @@ import (
 	"time"
 
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
+	accessport "github.com/qianlan33333-png/AI-CRM-v3/internal/access/port"
 	automationport "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/port"
 	segmentapp "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/app"
 	segmentdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/domain"
@@ -39,6 +40,7 @@ type ConfigurationApplication interface {
 }
 type SnapshotApplication interface {
 	Preview(context.Context, int64, time.Time) (segmentapp.Preview, error)
+	PreviewDefinition(context.Context, int64, json.RawMessage, time.Time) (segmentapp.Preview, error)
 	AcceptRefresh(context.Context, segmentapp.RefreshCommand) (segmentdomain.RefreshRun, error)
 	GetRefresh(context.Context, int64) (segmentdomain.RefreshRun, error)
 	PublishedSnapshot(context.Context, segmentport.PackageID) (segmentport.Snapshot, bool, error)
@@ -53,10 +55,75 @@ type ExecutionApplication interface {
 	Precheck(context.Context, int64) (segmentapp.Precheck, error)
 }
 type Handler struct {
-	service   ConfigurationApplication
-	snapshots SnapshotApplication
-	execution ExecutionApplication
-	security  RequestSecurity
+	service         ConfigurationApplication
+	snapshots       SnapshotApplication
+	execution       ExecutionApplication
+	security        RequestSecurity
+	owners          accessport.AudienceOwnerResolver
+	ownerReferences accessport.AudienceOwnerReferenceReader
+	products        AudienceProductReferenceResolver
+	channels        AudienceChannelReferenceResolver
+	radars          AudienceRadarReferenceResolver
+	surveys         AudienceSurveyReferenceResolver
+}
+type AudienceProductReferenceResolver interface {
+	ResolveAudienceProduct(context.Context, string) (string, bool, error)
+}
+
+func (h *Handler) BindAudienceProductReferences(resolver AudienceProductReferenceResolver) {
+	h.products = resolver
+}
+
+type AudienceChannelReferenceResolver interface {
+	ResolveAudienceChannel(context.Context, string) (string, bool, error)
+}
+
+func (h *Handler) BindAudienceChannelReferences(resolver AudienceChannelReferenceResolver) {
+	h.channels = resolver
+}
+
+type AudienceRadarReferenceResolver interface {
+	ResolveAudienceRadar(context.Context, string) (string, bool, error)
+}
+
+func (h *Handler) BindAudienceRadarReferences(resolver AudienceRadarReferenceResolver) {
+	h.radars = resolver
+}
+
+type AudienceSurveyReferenceResolver interface {
+	ResolveAudienceQuestionnaire(context.Context, string) (string, bool, error)
+	ResolveAudienceQuestion(context.Context, string, string) (string, bool, error)
+	ResolveAudienceOption(context.Context, string, string, string) (string, bool, error)
+}
+
+func (h *Handler) BindAudienceSurveyReferences(resolver AudienceSurveyReferenceResolver) {
+	h.surveys = resolver
+}
+
+var (
+	errOwnerInvalid         = errors.New("invalid owner selection")
+	errOwnerUnknown         = errors.New("unknown owner")
+	errOwnerUnavailable     = errors.New("owner resolver unavailable")
+	errReferenceInvalid     = errors.New("invalid audience reference")
+	errReferenceUnknown     = errors.New("unknown audience reference")
+	errReferenceUnavailable = errors.New("audience reference resolver unavailable")
+)
+
+func definitionReferenceErrorCode(err error) string {
+	switch {
+	case errors.Is(err, errOwnerUnknown):
+		return "owner_unknown"
+	case errors.Is(err, errOwnerUnavailable):
+		return "owner_unavailable"
+	case errors.Is(err, errReferenceUnknown):
+		return "reference_unknown"
+	case errors.Is(err, errReferenceUnavailable):
+		return "reference_unavailable"
+	case errors.Is(err, errReferenceInvalid):
+		return "reference_invalid"
+	default:
+		return "owner_invalid"
+	}
 }
 
 func NewHandler(service ConfigurationApplication, security RequestSecurity) (*Handler, error) {
@@ -66,6 +133,12 @@ func NewHandler(service ConfigurationApplication, security RequestSecurity) (*Ha
 	return &Handler{service: service, security: security}, nil
 }
 func NewRuntimeHandler(service ConfigurationApplication, snapshots SnapshotApplication, security RequestSecurity) (*Handler, error) {
+	return NewRuntimeHandlerWithOwners(service, snapshots, security, nil)
+}
+func NewRuntimeHandlerWithOwners(service ConfigurationApplication, snapshots SnapshotApplication, security RequestSecurity, owners accessport.AudienceOwnerResolver) (*Handler, error) {
+	return NewRuntimeHandlerWithOwnerReferences(service, snapshots, security, owners, nil)
+}
+func NewRuntimeHandlerWithOwnerReferences(service ConfigurationApplication, snapshots SnapshotApplication, security RequestSecurity, owners accessport.AudienceOwnerResolver, references accessport.AudienceOwnerReferenceReader) (*Handler, error) {
 	h, err := NewHandler(service, security)
 	if err != nil {
 		return nil, err
@@ -75,6 +148,8 @@ func NewRuntimeHandler(service ConfigurationApplication, snapshots SnapshotAppli
 	}
 	h.snapshots = snapshots
 	h.execution, _ = snapshots.(ExecutionApplication)
+	h.owners = owners
+	h.ownerReferences = references
 	return h, nil
 }
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -309,6 +384,10 @@ func (h *Handler) packageAction(w http.ResponseWriter, r *http.Request, packageI
 		h.configuration(w, r, packageID)
 		return
 	}
+	if action == "owner-references" {
+		h.ownerReferenceList(w, r)
+		return
+	}
 	if action == "preview" || action == "configuration-preview" {
 		h.preview(w, r, packageID)
 		return
@@ -362,6 +441,46 @@ func (h *Handler) packageAction(w http.ResponseWriter, r *http.Request, packageI
 	}
 	respond(w, status, map[string]any{"package": packageDTO(item)})
 }
+
+// ownerReferenceList rehydrates frozen-form owner_userids from persisted local
+// StaffIDs. It is a read-only Access Port bridge and never persists a userid.
+func (h *Handler) ownerReferenceList(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		method(w, "GET")
+		return
+	}
+	if !h.read(w, r) {
+		return
+	}
+	if h.ownerReferences == nil {
+		fail(w, http.StatusServiceUnavailable, "owner_unavailable")
+		return
+	}
+	ids := r.URL.Query()["staff_id"]
+	if len(ids) > 100 {
+		fail(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	values := make([]string, 0, len(ids))
+	for _, raw := range ids {
+		id, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || id < 1 || strconv.FormatInt(id, 10) != raw {
+			fail(w, http.StatusBadRequest, "invalid_request")
+			return
+		}
+		value, found, err := h.ownerReferences.AudienceOwnerUserID(r.Context(), accessport.StaffID(id))
+		if err != nil {
+			fail(w, http.StatusServiceUnavailable, "owner_unavailable")
+			return
+		}
+		if !found || value == "" {
+			fail(w, http.StatusUnprocessableEntity, "owner_unknown")
+			return
+		}
+		values = append(values, value)
+	}
+	respond(w, http.StatusOK, map[string]any{"owner_userids": values})
+}
 func (h *Handler) configuration(w http.ResponseWriter, r *http.Request, packageID int64) {
 	if r.Method == http.MethodGet {
 		if !h.read(w, r) {
@@ -390,17 +509,301 @@ func (h *Handler) configuration(w http.ResponseWriter, r *http.Request, packageI
 	var in struct {
 		ExpectedPackageVersion int64           `json:"expected_package_version"`
 		RefreshCronUTC         string          `json:"refresh_cron_utc"`
+		RefreshMode            string          `json:"refresh_mode"`
 		Definition             json.RawMessage `json:"definition"`
 	}
 	if !decode(w, r, &in) {
 		return
 	}
-	item, e := h.service.PutConfiguration(r.Context(), segmentapp.ConfigurationCommand{PackageID: packageID, ExpectedPackageVersion: in.ExpectedPackageVersion, Definition: in.Definition, RefreshCronUTC: in.RefreshCronUTC, Actor: p.InternalID, IdempotencyKey: key})
+	definition, e := h.normalizeDefinitionReferences(r.Context(), in.Definition)
+	if e != nil {
+		fail(w, http.StatusUnprocessableEntity, definitionReferenceErrorCode(e))
+		return
+	}
+	item, e := h.service.PutConfiguration(r.Context(), segmentapp.ConfigurationCommand{PackageID: packageID, ExpectedPackageVersion: in.ExpectedPackageVersion, Definition: definition, RefreshCronUTC: in.RefreshCronUTC, RefreshMode: in.RefreshMode, Actor: p.InternalID, IdempotencyKey: key})
 	if e != nil {
 		resultError(w, e)
 		return
 	}
 	respond(w, 200, map[string]any{"configuration": configurationDTO(item)})
+}
+
+// normalizeOwnerUserIDs is the frozen-form compatibility seam. Old forms send
+// owner_userids; the persisted closed AST holds only Access-resolved local
+// owner_staff_ids. Mixed or unknown input fails instead of widening a cohort.
+func (h *Handler) normalizeOwnerUserIDs(ctx context.Context, raw json.RawMessage) (json.RawMessage, error) {
+	var definition struct {
+		Parameters map[string]json.RawMessage `json:"parameters"`
+	}
+	if err := json.Unmarshal(raw, &definition); err != nil || definition.Parameters == nil {
+		return nil, errOwnerInvalid
+	}
+	legacy, exists := definition.Parameters["owner_userids"]
+	if !exists {
+		var scope string
+		if json.Unmarshal(definition.Parameters["owner_scope"], &scope) == nil && scope == "specified" && h.owners == nil {
+			return nil, errOwnerUnavailable
+		}
+		return raw, nil
+	}
+	if _, mixed := definition.Parameters["owner_staff_ids"]; mixed {
+		return nil, errOwnerInvalid
+	}
+	var scope string
+	if err := json.Unmarshal(definition.Parameters["owner_scope"], &scope); err != nil || (scope != "all" && scope != "specified") {
+		return nil, errOwnerInvalid
+	}
+	var values []string
+	if err := json.Unmarshal(legacy, &values); err != nil || len(values) > 100 || (scope == "specified" && len(values) == 0) {
+		return nil, errOwnerInvalid
+	}
+	// The frozen form sends an empty owner_userids list for all scope. It is a
+	// valid no-filter selection and must not require a live Access projection.
+	if scope == "all" && len(values) == 0 {
+		definition.Parameters["owner_staff_ids"] = json.RawMessage("[]")
+		delete(definition.Parameters, "owner_userids")
+		return marshalNormalizedOwnerDefinition(raw, definition.Parameters)
+	}
+	if h.owners == nil {
+		return nil, errOwnerUnavailable
+	}
+	staff := make([]string, 0, len(values))
+	seen := map[string]bool{}
+	for _, value := range values {
+		if value == "" || strings.TrimSpace(value) != value {
+			return nil, errOwnerInvalid
+		}
+		resolved, found, err := h.owners.ResolveAudienceOwner(ctx, value)
+		if err != nil {
+			return nil, errOwnerUnavailable
+		}
+		if !found || resolved < 1 {
+			return nil, errOwnerUnknown
+		}
+		id := strconv.FormatInt(int64(resolved), 10)
+		if !seen[id] {
+			seen[id] = true
+			staff = append(staff, id)
+		}
+	}
+	encoded, _ := json.Marshal(staff)
+	definition.Parameters["owner_staff_ids"] = encoded
+	delete(definition.Parameters, "owner_userids")
+	return marshalNormalizedOwnerDefinition(raw, definition.Parameters)
+}
+func (h *Handler) normalizeDefinitionReferences(ctx context.Context, raw json.RawMessage) (json.RawMessage, error) {
+	resolved, err := h.normalizeProductReferences(ctx, raw)
+	if err != nil {
+		return nil, err
+	}
+	resolved, err = h.normalizeChannelReferences(ctx, resolved)
+	if err != nil {
+		return nil, err
+	}
+	resolved, err = h.normalizeRadarReferences(ctx, resolved)
+	if err != nil {
+		return nil, err
+	}
+	resolved, err = h.normalizeSurveyReferences(ctx, resolved)
+	if err != nil {
+		return nil, err
+	}
+	return h.normalizeOwnerUserIDs(ctx, resolved)
+}
+
+func (h *Handler) normalizeProductReferences(ctx context.Context, raw json.RawMessage) (json.RawMessage, error) {
+	var definition struct {
+		TemplateKey string                     `json:"template_key"`
+		Parameters  map[string]json.RawMessage `json:"parameters"`
+	}
+	if err := json.Unmarshal(raw, &definition); err != nil || definition.Parameters == nil {
+		return nil, errReferenceInvalid
+	}
+	if definition.TemplateKey != "paid_order" {
+		return raw, nil
+	}
+	var values []string
+	if err := json.Unmarshal(definition.Parameters["product_codes"], &values); err != nil || len(values) == 0 || len(values) > 100 {
+		return nil, errReferenceInvalid
+	}
+	if h.products == nil {
+		return nil, errReferenceUnavailable
+	}
+	resolved := make([]string, 0, len(values))
+	seen := map[string]bool{}
+	for _, value := range values {
+		if value == "" || strings.TrimSpace(value) != value {
+			return nil, errReferenceInvalid
+		}
+		code, found, err := h.products.ResolveAudienceProduct(ctx, value)
+		if err != nil {
+			return nil, errReferenceUnavailable
+		}
+		if !found || code == "" {
+			return nil, errReferenceUnknown
+		}
+		if !seen[code] {
+			seen[code] = true
+			resolved = append(resolved, code)
+		}
+	}
+	encoded, err := json.Marshal(resolved)
+	if err != nil {
+		return nil, errReferenceInvalid
+	}
+	definition.Parameters["product_codes"] = encoded
+	return marshalNormalizedOwnerDefinition(raw, definition.Parameters)
+}
+
+func (h *Handler) normalizeChannelReferences(ctx context.Context, raw json.RawMessage) (json.RawMessage, error) {
+	return normalizeReferenceList(ctx, raw, "channel_entry", "channel_codes", h.channels != nil, func(ctx context.Context, value string) (string, bool, error) {
+		return h.channels.ResolveAudienceChannel(ctx, value)
+	})
+}
+
+func (h *Handler) normalizeRadarReferences(ctx context.Context, raw json.RawMessage) (json.RawMessage, error) {
+	return normalizeReferenceList(ctx, raw, "radar_first_click_elapsed", "radar_ids", h.radars != nil, func(ctx context.Context, value string) (string, bool, error) {
+		return h.radars.ResolveAudienceRadar(ctx, value)
+	})
+}
+
+func normalizeReferenceList(ctx context.Context, raw json.RawMessage, templateKey, parameter string, available bool, resolve func(context.Context, string) (string, bool, error)) (json.RawMessage, error) {
+	var definition struct {
+		TemplateKey string                     `json:"template_key"`
+		Parameters  map[string]json.RawMessage `json:"parameters"`
+	}
+	if err := json.Unmarshal(raw, &definition); err != nil || definition.Parameters == nil {
+		return nil, errReferenceInvalid
+	}
+	if definition.TemplateKey != templateKey {
+		return raw, nil
+	}
+	var values []string
+	if err := json.Unmarshal(definition.Parameters[parameter], &values); err != nil || len(values) == 0 || len(values) > 100 {
+		return nil, errReferenceInvalid
+	}
+	if !available {
+		return nil, errReferenceUnavailable
+	}
+	resolved := make([]string, 0, len(values))
+	seen := map[string]bool{}
+	for _, value := range values {
+		if value == "" || strings.TrimSpace(value) != value {
+			return nil, errReferenceInvalid
+		}
+		canonical, found, err := resolve(ctx, value)
+		if err != nil {
+			return nil, errReferenceUnavailable
+		}
+		if !found || canonical == "" {
+			return nil, errReferenceUnknown
+		}
+		if !seen[canonical] {
+			seen[canonical] = true
+			resolved = append(resolved, canonical)
+		}
+	}
+	encoded, err := json.Marshal(resolved)
+	if err != nil {
+		return nil, errReferenceInvalid
+	}
+	definition.Parameters[parameter] = encoded
+	return marshalNormalizedOwnerDefinition(raw, definition.Parameters)
+}
+
+func (h *Handler) normalizeSurveyReferences(ctx context.Context, raw json.RawMessage) (json.RawMessage, error) {
+	var definition struct {
+		TemplateKey string                     `json:"template_key"`
+		Parameters  map[string]json.RawMessage `json:"parameters"`
+	}
+	if err := json.Unmarshal(raw, &definition); err != nil || definition.Parameters == nil {
+		return nil, errReferenceInvalid
+	}
+	if definition.TemplateKey != "questionnaire_choice_answers" {
+		return raw, nil
+	}
+	if h.surveys == nil {
+		return nil, errReferenceUnavailable
+	}
+	var questionnaire string
+	if err := json.Unmarshal(definition.Parameters["questionnaire_id"], &questionnaire); err != nil || !validReferenceValue(questionnaire) {
+		return nil, errReferenceInvalid
+	}
+	questionnaireID, found, err := h.surveys.ResolveAudienceQuestionnaire(ctx, questionnaire)
+	if err != nil {
+		return nil, errReferenceUnavailable
+	}
+	if !found || questionnaireID == "" {
+		return nil, errReferenceUnknown
+	}
+	var conditions []struct {
+		QuestionID string   `json:"question_id"`
+		OptionIDs  []string `json:"option_ids"`
+	}
+	if err := json.Unmarshal(definition.Parameters["conditions"], &conditions); err != nil || len(conditions) == 0 || len(conditions) > 100 {
+		return nil, errReferenceInvalid
+	}
+	for index := range conditions {
+		condition := &conditions[index]
+		if !validReferenceValue(condition.QuestionID) || len(condition.OptionIDs) == 0 || len(condition.OptionIDs) > 100 {
+			return nil, errReferenceInvalid
+		}
+		questionID, questionFound, questionErr := h.surveys.ResolveAudienceQuestion(ctx, questionnaireID, condition.QuestionID)
+		if questionErr != nil {
+			return nil, errReferenceUnavailable
+		}
+		if !questionFound || questionID == "" {
+			return nil, errReferenceUnknown
+		}
+		condition.QuestionID = questionID
+		options := make([]string, 0, len(condition.OptionIDs))
+		seen := map[string]bool{}
+		for _, value := range condition.OptionIDs {
+			if !validReferenceValue(value) {
+				return nil, errReferenceInvalid
+			}
+			optionID, optionFound, optionErr := h.surveys.ResolveAudienceOption(ctx, questionnaireID, questionID, value)
+			if optionErr != nil {
+				return nil, errReferenceUnavailable
+			}
+			if !optionFound || optionID == "" {
+				return nil, errReferenceUnknown
+			}
+			if !seen[optionID] {
+				seen[optionID] = true
+				options = append(options, optionID)
+			}
+		}
+		condition.OptionIDs = options
+	}
+	questionnaireRaw, err := json.Marshal(questionnaireID)
+	if err != nil {
+		return nil, errReferenceInvalid
+	}
+	conditionsRaw, err := json.Marshal(conditions)
+	if err != nil {
+		return nil, errReferenceInvalid
+	}
+	definition.Parameters["questionnaire_id"] = questionnaireRaw
+	definition.Parameters["conditions"] = conditionsRaw
+	return marshalNormalizedOwnerDefinition(raw, definition.Parameters)
+}
+
+func validReferenceValue(value string) bool {
+	return value != "" && strings.TrimSpace(value) == value && len([]rune(value)) <= 200
+}
+
+func marshalNormalizedOwnerDefinition(raw json.RawMessage, parameters map[string]json.RawMessage) (json.RawMessage, error) {
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return nil, err
+	}
+	encoded, err := json.Marshal(parameters)
+	if err != nil {
+		return nil, err
+	}
+	envelope["parameters"] = encoded
+	return json.Marshal(envelope)
 }
 
 func (h *Handler) binding(w http.ResponseWriter, r *http.Request, packageID int64) {
@@ -532,12 +935,24 @@ func (h *Handler) preview(w http.ResponseWriter, r *http.Request, packageID int6
 		return
 	}
 	var in struct {
-		ReferenceTime time.Time `json:"reference_time"`
+		ReferenceTime time.Time       `json:"reference_time"`
+		Definition    json.RawMessage `json:"definition"`
 	}
 	if !decode(w, r, &in) {
 		return
 	}
-	value, err := h.snapshots.Preview(r.Context(), packageID, in.ReferenceTime)
+	var value segmentapp.Preview
+	var err error
+	if len(in.Definition) == 0 {
+		value, err = h.snapshots.Preview(r.Context(), packageID, in.ReferenceTime)
+	} else {
+		definition, normalizeErr := h.normalizeDefinitionReferences(r.Context(), in.Definition)
+		if normalizeErr != nil {
+			fail(w, http.StatusUnprocessableEntity, definitionReferenceErrorCode(normalizeErr))
+			return
+		}
+		value, err = h.snapshots.PreviewDefinition(r.Context(), packageID, definition, in.ReferenceTime)
+	}
 	if err != nil {
 		resultError(w, err)
 		return
@@ -767,7 +1182,7 @@ func (h *Handler) packageReadDTO(ctx context.Context, p segmentdomain.Package) (
 	return v, nil
 }
 func configurationDTO(v segmentdomain.ConfigurationVersion) map[string]any {
-	return map[string]any{"id": v.ID, "package_id": v.PackageID, "version": v.Version, "digest": hex.EncodeToString(v.Digest[:]), "definition": json.RawMessage(v.Definition), "refresh_cron_utc": v.RefreshCronUTC}
+	return map[string]any{"id": v.ID, "package_id": v.PackageID, "version": v.Version, "digest": hex.EncodeToString(v.Digest[:]), "definition": json.RawMessage(v.Definition), "refresh_cron_utc": v.RefreshCronUTC, "refresh_mode": v.RefreshMode}
 }
 func resultError(w http.ResponseWriter, e error) {
 	switch {

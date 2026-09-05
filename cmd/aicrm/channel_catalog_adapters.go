@@ -6,6 +6,7 @@ import (
 
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
 	channelstore "github.com/qianlan33333-png/AI-CRM-v3/internal/channel"
+	channeldomain "github.com/qianlan33333-png/AI-CRM-v3/internal/channel/domain"
 	channelport "github.com/qianlan33333-png/AI-CRM-v3/internal/channel/port"
 	mediasport "github.com/qianlan33333-png/AI-CRM-v3/internal/media/port"
 	tagdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/tag/domain"
@@ -104,3 +105,21 @@ func (adapter channelTagReferenceAdapter) ReadChannelTag(ctx context.Context, id
 var _ channelport.StaffReferenceReader = channelStaffReferenceAdapter{}
 var _ channelport.MaterialReferenceValidator = channelMaterialReferenceAdapter{}
 var _ channelport.TagReferenceReader = channelTagReferenceAdapter{}
+
+type channelPublicLeadCatalog interface {
+	Get(context.Context, int64) (channeldomain.Channel, error)
+}
+type channelPublicLeadQRCodeAdapter struct{ catalog channelPublicLeadCatalog }
+
+func (a channelPublicLeadQRCodeAdapter) ReadPublicLeadQRCode(ctx context.Context, id int64) (channelport.PublicLeadQRCode, error) {
+	if a.catalog == nil || id < 1 {
+		return channelport.PublicLeadQRCode{}, errors.New("public lead channel unavailable")
+	}
+	value, err := a.catalog.Get(ctx, id)
+	if err != nil || value.Status != channeldomain.StatusActive || value.Config.QRCodeURL == "" {
+		return channelport.PublicLeadQRCode{}, errors.New("public lead channel unavailable")
+	}
+	return channelport.PublicLeadQRCode{URL: value.Config.QRCodeURL}, nil
+}
+
+var _ channelport.PublicLeadQRCodeReader = channelPublicLeadQRCodeAdapter{}

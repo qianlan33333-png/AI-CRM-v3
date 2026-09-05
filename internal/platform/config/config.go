@@ -3,6 +3,7 @@ package config
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -69,6 +70,13 @@ type WeCom struct {
 	ChannelWelcomeProviderEnabled   bool
 	ChannelTagProviderEnabled       bool
 	StaffDirectoryRefreshInterval   time.Duration
+	MessageArchiveEnabled           bool
+	MessageArchiveSecret            string
+	MessageArchiveRunnerPath        string
+	MessageArchiveLibraryPath       string
+	MessageArchivePrivateKeyPaths   map[uint32]string
+	MessageArchivePageLimit         uint32
+	MessageArchivePageBudget        int
 }
 
 // GroupOps contains only the inbound protocol secret for the local Group Ops
@@ -167,13 +175,15 @@ type AIAssistant struct {
 	ProviderPermission                        string
 }
 type Survey struct {
-	DataKey              string
-	IdentityPhoneDataKey string
-	OAuthEnabled         bool
-	OAuthAppID           string
-	OAuthSecret          string
-	OAuthOpenPlatformID  string
-	OAuthScope           string
+	DataKey                   string
+	IdentityPhoneDataKey      string
+	CompletionProviderEnabled bool
+	CompletionTargetsJSON     string
+	OAuthEnabled              bool
+	OAuthAppID                string
+	OAuthSecret               string
+	OAuthOpenPlatformID       string
+	OAuthScope                string
 }
 
 // TagCatalogProvider is intentionally separate from outbound message/write
@@ -224,6 +234,7 @@ func Load() (Runtime, error) {
 		},
 		WeCom: WeCom{
 			CorpID: os.Getenv("AICRM_WECOM_CORP_ID"), AgentID: os.Getenv("AICRM_WECOM_AGENT_ID"),
+			MessageArchiveSecret: os.Getenv("AICRM_WECOM_MESSAGE_ARCHIVE_SECRET"), MessageArchiveRunnerPath: os.Getenv("AICRM_WECOM_MESSAGE_ARCHIVE_RUNNER_PATH"), MessageArchiveLibraryPath: os.Getenv("AICRM_WECOM_MESSAGE_ARCHIVE_LIBRARY_PATH"), MessageArchivePageLimit: 100, MessageArchivePageBudget: 10,
 			Secret: os.Getenv("AICRM_WECOM_SECRET"), ContactSecret: os.Getenv("AICRM_WECOM_CONTACT_SECRET"), CallbackToken: os.Getenv("AICRM_WECOM_CALLBACK_TOKEN"),
 			CallbackAESKey: os.Getenv("AICRM_WECOM_CALLBACK_AES_KEY"), ContextSigningKey: os.Getenv("AICRM_WECOM_CONTEXT_SIGNING_KEY"),
 			ChannelStateHMACKey:           os.Getenv("AICRM_CHANNEL_STATE_HMAC_KEY"),
@@ -236,9 +247,12 @@ func Load() (Runtime, error) {
 			ProviderPermission:  os.Getenv("AICRM_AUTOMATION_OPS_PROVIDER_PERMISSION"),
 			MaxRecipientsPerRun: 1,
 		},
-		Survey: Survey{DataKey: os.Getenv("AICRM_SURVEY_DATA_KEY"), IdentityPhoneDataKey: os.Getenv("AICRM_IDENTITY_PHONE_DATA_KEY"), OAuthAppID: os.Getenv("AICRM_SURVEY_OAUTH_APP_ID"), OAuthSecret: os.Getenv("AICRM_SURVEY_OAUTH_SECRET"), OAuthOpenPlatformID: os.Getenv("AICRM_SURVEY_OAUTH_OPEN_PLATFORM_ID"), OAuthScope: valueOrDefault("AICRM_SURVEY_OAUTH_SCOPE", "snsapi_userinfo")},
+		Survey: Survey{DataKey: os.Getenv("AICRM_SURVEY_DATA_KEY"), IdentityPhoneDataKey: os.Getenv("AICRM_IDENTITY_PHONE_DATA_KEY"), CompletionTargetsJSON: os.Getenv("AICRM_SURVEY_COMPLETION_TARGETS_JSON"), OAuthAppID: os.Getenv("AICRM_SURVEY_OAUTH_APP_ID"), OAuthSecret: os.Getenv("AICRM_SURVEY_OAUTH_SECRET"), OAuthOpenPlatformID: os.Getenv("AICRM_SURVEY_OAUTH_OPEN_PLATFORM_ID"), OAuthScope: valueOrDefault("AICRM_SURVEY_OAUTH_SCOPE", "snsapi_userinfo")},
 	}
 	if cfg.Survey.OAuthEnabled, err = strictBool("AICRM_SURVEY_OAUTH_ENABLED", false); err != nil {
+		return Runtime{}, err
+	}
+	if cfg.Survey.CompletionProviderEnabled, err = strictBool("AICRM_SURVEY_COMPLETION_PROVIDER_ENABLED", false); err != nil {
 		return Runtime{}, err
 	}
 	if cfg.Effects.ProviderEnabled, err = strictBool("AICRM_OUTBOUND_PROVIDER_ENABLED", false); err != nil {
@@ -305,6 +319,37 @@ func Load() (Runtime, error) {
 	}
 	if cfg.WeCom.CustomerSyncEnabled, err = strictBool("AICRM_WECOM_CUSTOMER_SYNC_ENABLED", false); err != nil {
 		return Runtime{}, err
+	}
+	if cfg.WeCom.MessageArchiveEnabled, err = strictBool("AICRM_WECOM_MESSAGE_ARCHIVE_ENABLED", false); err != nil {
+		return Runtime{}, err
+	}
+	if raw := os.Getenv("AICRM_WECOM_MESSAGE_ARCHIVE_PAGE_LIMIT"); raw != "" {
+		value, parseErr := strconv.ParseUint(raw, 10, 32)
+		if parseErr != nil || value < 1 || value > 1000 {
+			return Runtime{}, errors.New("invalid AICRM_WECOM_MESSAGE_ARCHIVE_PAGE_LIMIT")
+		}
+		cfg.WeCom.MessageArchivePageLimit = uint32(value)
+	}
+	if raw := os.Getenv("AICRM_WECOM_MESSAGE_ARCHIVE_PAGE_BUDGET"); raw != "" {
+		value, parseErr := strconv.Atoi(raw)
+		if parseErr != nil || value < 1 || value > 1000 {
+			return Runtime{}, errors.New("invalid AICRM_WECOM_MESSAGE_ARCHIVE_PAGE_BUDGET")
+		}
+		cfg.WeCom.MessageArchivePageBudget = value
+	}
+	if raw := os.Getenv("AICRM_WECOM_MESSAGE_ARCHIVE_PRIVATE_KEY_PATHS"); raw != "" {
+		var paths map[string]string
+		if json.Unmarshal([]byte(raw), &paths) != nil || len(paths) == 0 {
+			return Runtime{}, errors.New("invalid AICRM_WECOM_MESSAGE_ARCHIVE_PRIVATE_KEY_PATHS")
+		}
+		cfg.WeCom.MessageArchivePrivateKeyPaths = map[uint32]string{}
+		for version, path := range paths {
+			parsed, parseErr := strconv.ParseUint(version, 10, 32)
+			if parseErr != nil || parsed == 0 || path == "" || strings.TrimSpace(path) != path {
+				return Runtime{}, errors.New("invalid AICRM_WECOM_MESSAGE_ARCHIVE_PRIVATE_KEY_PATHS")
+			}
+			cfg.WeCom.MessageArchivePrivateKeyPaths[uint32(parsed)] = path
+		}
 	}
 	if cfg.WeCom.ChannelProviderReadEnabled, err = strictBool("AICRM_CHANNEL_PROVIDER_READ_ENABLED", false); err != nil {
 		return Runtime{}, err
@@ -425,6 +470,17 @@ func Load() (Runtime, error) {
 	if cfg.WeCom.CustomerSyncEnabled && (!cfg.WeCom.Enabled || strings.TrimSpace(cfg.WeCom.ContactSecret) != cfg.WeCom.ContactSecret || cfg.WeCom.ContactSecret == "") {
 		return Runtime{}, errors.New("enabled WeCom customer sync configuration is incomplete")
 	}
+	if cfg.WeCom.MessageArchiveEnabled {
+		values := []string{cfg.WeCom.CorpID, cfg.WeCom.MessageArchiveSecret, cfg.WeCom.MessageArchiveRunnerPath, cfg.WeCom.MessageArchiveLibraryPath}
+		if !cfg.WeCom.CallbackEnabled || nonEmptyCount(values) != len(values) || len(cfg.WeCom.MessageArchivePrivateKeyPaths) == 0 || cfg.WeCom.MessageArchivePageLimit < 1 || cfg.WeCom.MessageArchivePageBudget < 1 {
+			return Runtime{}, errors.New("enabled WeCom message archive configuration is incomplete")
+		}
+		for _, value := range values {
+			if strings.TrimSpace(value) != value || strings.ContainsAny(value, "\r\n\x00") {
+				return Runtime{}, errors.New("invalid enabled WeCom message archive configuration")
+			}
+		}
+	}
 	channelProviderEnabled := cfg.WeCom.ChannelProviderReadEnabled || cfg.WeCom.ChannelQRProviderEnabled || cfg.WeCom.ChannelMediaPrepProviderEnabled || cfg.WeCom.ChannelWelcomeProviderEnabled || cfg.WeCom.ChannelTagProviderEnabled
 	if channelProviderEnabled && (!cfg.Effects.ProviderEnabled || !cfg.WeCom.Enabled || strings.TrimSpace(cfg.WeCom.ContactSecret) != cfg.WeCom.ContactSecret || cfg.WeCom.ContactSecret == "") {
 		return Runtime{}, errors.New("enabled channel provider capability requires External Effects, WeCom, and contact credentials")
@@ -526,6 +582,9 @@ func Load() (Runtime, error) {
 		if cfg.Survey.OAuthScope != "snsapi_userinfo" {
 			return Runtime{}, errors.New("survey OAuth scope must be snsapi_userinfo")
 		}
+	}
+	if cfg.Survey.CompletionProviderEnabled && (!cfg.Effects.ProviderEnabled || strings.TrimSpace(cfg.Survey.CompletionTargetsJSON) != cfg.Survey.CompletionTargetsJSON || cfg.Survey.CompletionTargetsJSON == "") {
+		return Runtime{}, errors.New("enabled survey completion provider requires External Effects and target configuration")
 	}
 	return cfg, nil
 }

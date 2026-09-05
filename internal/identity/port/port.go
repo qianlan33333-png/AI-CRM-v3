@@ -27,6 +27,14 @@ type Resolver interface {
 	Resolve(context.Context, identitydomain.Reference) (ResolveResult, error)
 }
 
+// CanonicalLineageReader is the narrow, read-only OneID bridge for domains
+// that retain immutable customer IDs at ingestion.  It returns the current
+// canonical root and only the historical roots which currently resolve to it;
+// callers must not copy merge rules or rewrite their historical facts.
+type CanonicalLineageReader interface {
+	CanonicalLineage(context.Context, customerdomain.CustomerID) ([]customerdomain.CustomerID, error)
+}
+
 // OutboundWeComIdentityReader is consumed only by the composition-owned
 // private-message target resolver. It may reveal a verified channel identity
 // to Outbound in memory, never to an HTTP response or structured log.

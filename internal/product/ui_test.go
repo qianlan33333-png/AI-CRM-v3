@@ -11,7 +11,7 @@ import (
 	"testing"
 )
 
-func TestProductUIAllowlistUsesDonorTemplateAndDeniesDataPage(t *testing.T) {
+func TestProductUIAllowlistUsesDonorTemplateAndMountsDataPage(t *testing.T) {
 	dist := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dist, "admin"), 0o755); err != nil {
 		t.Fatal(err)
@@ -19,7 +19,7 @@ func TestProductUIAllowlistUsesDonorTemplateAndDeniesDataPage(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(dist, "assets"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for _, page := range []string{"products", "productForm", "spProducts", "spProductForm"} {
+	for _, page := range []string{"products", "productForm", "spProducts", "spProductForm", "spProductData"} {
 		raw := "<!doctype html><body><div class=\"shell\"><template id=\"tpl\"><section data-page=\"" + page + "\">donor body</section></template></div></body>"
 		if err := os.WriteFile(filepath.Join(dist, "admin", page+".html"), []byte(raw), 0o644); err != nil {
 			t.Fatal(err)
@@ -61,9 +61,9 @@ func TestProductUIAllowlistUsesDonorTemplateAndDeniesDataPage(t *testing.T) {
 
 	rendered.page = ""
 	recorder = httptest.NewRecorder()
-	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/admin/service-period-products/spProductData.html", nil))
-	if recorder.Code != http.StatusNotFound || rendered.page != "" {
-		t.Fatalf("excluded data page status=%d page=%q", recorder.Code, rendered.page)
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/admin/service-period-products/spProductData.html?id=7", nil))
+	if recorder.Code != http.StatusOK || rendered.page != "spProductData" || !strings.Contains(rendered.body, "donor body") {
+		t.Fatalf("data page status=%d page=%q body=%q", recorder.Code, rendered.page, rendered.body)
 	}
 
 	recorder = httptest.NewRecorder()
@@ -74,8 +74,8 @@ func TestProductUIAllowlistUsesDonorTemplateAndDeniesDataPage(t *testing.T) {
 
 	for _, alias := range []string{"/admin/spProductData.html", "/admin/wechat-pay/spProductData.html", "/admin/wechat-pay/products/spProductData.html"} {
 		recorder = httptest.NewRecorder()
-		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, alias, nil))
-		if recorder.Code != http.StatusNotFound {
+		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, alias+"?id=7", nil))
+		if recorder.Code != http.StatusOK || rendered.page != "spProductData" {
 			t.Fatalf("alias=%s status=%d", alias, recorder.Code)
 		}
 	}

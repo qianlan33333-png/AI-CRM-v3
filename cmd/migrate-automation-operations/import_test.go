@@ -148,9 +148,15 @@ func TestImportDryRunApplyReplayAndReconcilePostgreSQL(t *testing.T) {
 	if report.ProviderEffectsCreated != 0 || report.RiverJobsCreated != 0 {
 		t.Fatalf("side effects=%+v", report)
 	}
-	replay, err := Import(ctx, pool, snapshot, dependencies, true)
+	// Re-applying the same frozen snapshot is the operator's recovery path.
+	// It must only load the prior source receipts: no history row may be
+	// rewritten and it must not create River work or a Provider effect.
+	replay, err := Import(ctx, pool, snapshot, dependencies, false)
 	if err != nil || replay.Tables["audience_members"].Mapped != 1 {
 		t.Fatalf("replay=%+v err=%v", replay, err)
+	}
+	if replay.ProviderEffectsCreated != 0 || replay.RiverJobsCreated != 0 {
+		t.Fatalf("replay side effects=%+v", replay)
 	}
 	var lifecycle string
 	var member int64
@@ -160,6 +166,19 @@ func TestImportDryRunApplyReplayAndReconcilePostgreSQL(t *testing.T) {
 	if lifecycle != "paused" || member != customerID {
 		t.Fatalf("lifecycle=%s member=%d want=%d", lifecycle, member, customerID)
 	}
+	var historyRows, readOnlyRows, replayableRows, effectDigests, effects, riverJobs int
+	if err = pool.QueryRow(ctx, `SELECT count(*),count(*) FILTER (WHERE read_only),count(*) FILTER (WHERE replayable),count(*) FILTER (WHERE source_effect_digest IS NOT NULL) FROM automation_operations_legacy_history`).Scan(&historyRows, &readOnlyRows, &replayableRows, &effectDigests); err != nil {
+		t.Fatal(err)
+	}
+	if err = pool.QueryRow(ctx, `SELECT count(*) FROM external_effects`).Scan(&effects); err != nil {
+		t.Fatal(err)
+	}
+	if err = pool.QueryRow(ctx, `SELECT count(*) FROM river_job`).Scan(&riverJobs); err != nil {
+		t.Fatal(err)
+	}
+	if historyRows != 4 || readOnlyRows != 4 || replayableRows != 0 || effectDigests != 1 || effects != 0 || riverJobs != 0 {
+		t.Fatalf("legacy history rows=%d readonly=%d replayable=%d effects=%d external=%d river=%d", historyRows, readOnlyRows, replayableRows, effectDigests, effects, riverJobs)
+	}
 	if _, err = Reconcile(ctx, pool, report.BatchKey); err != nil {
 		t.Fatal(err)
 	}
@@ -167,8 +186,13 @@ func TestImportDryRunApplyReplayAndReconcilePostgreSQL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !shadow.ReadyForProbe || len(shadow.Packages) != 1 || !shadow.Packages[0].MemberDigestMatches {
+	if !shadow.ReadyForProbe || len(shadow.Packages) != 1 || !shadow.Packages[0].MemberDigestMatches || len(shadow.History) != 4 {
 		t.Fatalf("shadow=%+v", shadow)
+	}
+	for _, item := range shadow.History {
+		if !item.Ready || !item.StateMatches || !item.OccurredAtMatches || !item.ReadOnly || item.Replayable {
+			t.Fatalf("history shadow=%+v", item)
+		}
 	}
 }
 
@@ -209,7 +233,10 @@ func migrationFixture(t *testing.T) segmentmigration.Snapshot {
 		"audience_bindings":               []any{map[string]any{"package_id": 10, "automation_agent_id": 20, "version": 1, "created_at": at, "updated_at": at}},
 		"audience_senders":                []any{map[string]any{"package_id": 10, "sender_userid": "staff-provider-1", "sort_order": 1, "is_enabled": true, "created_at": at, "updated_at": at}},
 		"audience_members":                []any{map[string]any{"segment_id": 10, "customer_id": 999999, "computed_at": at, "identities": []any{map[string]any{"kind": "unionid", "scope": "wechat-open-platform:fixture", "value": "union-fixture", "assurance": "verified", "source": "fixture"}}}},
-		"automation_policies":             []any{}, "automation_policy_versions": []any{}, "automation_enrollments": []any{}, "automation_actions": []any{},
+		"automation_policies":             []any{map[string]any{"id": 30, "status": "active", "created_at": at}},
+		"automation_policy_versions":      []any{map[string]any{"automation_id": 30, "version": 2, "status": "published", "published_at": at.Add(time.Minute)}},
+		"automation_enrollments":          []any{map[string]any{"id": 40, "state": "sent", "external_effect_id": "legacy-effect-40", "enrolled_at": at.Add(2 * time.Minute)}},
+		"automation_actions":              []any{map[string]any{"id": 50, "status": "failed", "completed_at": at.Add(3 * time.Minute)}},
 	}
 	snapshot := segmentmigration.Snapshot{Manifest: segmentmigration.Manifest{SourceSystem: "fixture", DonorCommit: segmentmigration.DonorCommit, SnapshotAt: at, SchemaDigest: strings.Repeat("1", 64), Counts: map[string]int{}, Digests: map[string]string{}}, Tables: map[string]json.RawMessage{}}
 	for _, name := range segmentmigration.LogicalTables {

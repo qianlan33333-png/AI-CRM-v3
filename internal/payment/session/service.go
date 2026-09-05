@@ -24,6 +24,8 @@ type Record struct {
 	TokenDigest                            [32]byte
 	PayerIdentityID                        int64
 	PayerCustomerID, BeneficiaryCustomerID customerdomain.CustomerID
+	BeneficiarySelection                   paymentport.BeneficiarySelection
+	BeneficiarySelectedAt                  *time.Time
 	AppScopeDigest                         [32]byte
 	Channel                                paymentdomain.Channel
 	ExpiresAt                              time.Time
@@ -34,6 +36,7 @@ type Store interface {
 	Insert(context.Context, Record) (Record, error)
 	Consume(context.Context, [32]byte, time.Time) (Record, error)
 	Lookup(context.Context, [32]byte, time.Time) (Record, error)
+	SelectPayerSelf(context.Context, [32]byte, time.Time) (Record, error)
 }
 type IssueCommand struct {
 	Fact                  identitydomain.VerifiedFact
@@ -46,6 +49,7 @@ type Issued struct {
 	ExpiresAt                              time.Time
 	PayerIdentityID                        int64
 	PayerCustomerID, BeneficiaryCustomerID customerdomain.CustomerID
+	BeneficiarySelection                   paymentport.BeneficiarySelection
 	Channel                                paymentdomain.Channel
 }
 type Service struct {
@@ -87,18 +91,25 @@ func (s *Service) IssueTrusted(ctx context.Context, c IssueCommand) (Issued, err
 		if e != nil {
 			return e
 		}
-		beneficiary := p.CustomerID
+		beneficiary := customerdomain.CustomerID(0)
+		selection := paymentport.BeneficiarySelectionUnresolved
+		var selectedAt *time.Time
 		if c.BeneficiaryCustomerID > 0 {
-			if c.BeneficiaryCustomerID != p.CustomerID && !c.AdminAssisted {
+			if !c.AdminAssisted {
 				return ErrInvalid
 			}
 			beneficiary = c.BeneficiaryCustomerID
+			selection = paymentport.BeneficiarySelectionAdminAssisted
+			selected := now
+			selectedAt = &selected
+		} else if c.AdminAssisted {
+			return ErrInvalid
 		}
-		record, e := s.store.Insert(tx, Record{TokenDigest: digest, PayerIdentityID: p.IdentityID, PayerCustomerID: p.CustomerID, BeneficiaryCustomerID: beneficiary, AppScopeDigest: scopeDigest, Channel: channel, ExpiresAt: now.Add(s.ttl), CreatedAt: now})
+		record, e := s.store.Insert(tx, Record{TokenDigest: digest, PayerIdentityID: p.IdentityID, PayerCustomerID: p.CustomerID, BeneficiaryCustomerID: beneficiary, BeneficiarySelection: selection, BeneficiarySelectedAt: selectedAt, AppScopeDigest: scopeDigest, Channel: channel, ExpiresAt: now.Add(s.ttl), CreatedAt: now})
 		if e != nil {
 			return e
 		}
-		out = Issued{Token: token, ExpiresAt: record.ExpiresAt, PayerIdentityID: record.PayerIdentityID, PayerCustomerID: record.PayerCustomerID, BeneficiaryCustomerID: record.BeneficiaryCustomerID, Channel: record.Channel}
+		out = Issued{Token: token, ExpiresAt: record.ExpiresAt, PayerIdentityID: record.PayerIdentityID, PayerCustomerID: record.PayerCustomerID, BeneficiaryCustomerID: record.BeneficiaryCustomerID, BeneficiarySelection: record.BeneficiarySelection, Channel: record.Channel}
 		return nil
 	})
 	return out, e
@@ -121,9 +132,12 @@ func (s *Service) ConsumeWithin(ctx context.Context, token string, now time.Time
 	digest := sha256.Sum256([]byte(token))
 	record, err := s.store.Consume(ctx, digest, now.UTC())
 	if err != nil {
+		if errors.Is(err, ErrExpired) {
+			return paymentport.SessionActor{}, paymentport.ErrSessionRequired
+		}
 		return paymentport.SessionActor{}, err
 	}
-	return paymentport.SessionActor{PayerIdentityID: record.PayerIdentityID, PayerCustomerID: int64(record.PayerCustomerID), BeneficiaryCustomerID: int64(record.BeneficiaryCustomerID), Channel: record.Channel}, nil
+	return actor(record), nil
 }
 
 func (s *Service) LookupWithin(ctx context.Context, token string, now time.Time) (paymentport.SessionActor, error) {
@@ -133,7 +147,32 @@ func (s *Service) LookupWithin(ctx context.Context, token string, now time.Time)
 	digest := sha256.Sum256([]byte(token))
 	record, err := s.store.Lookup(ctx, digest, now.UTC())
 	if err != nil {
+		if errors.Is(err, ErrExpired) {
+			return paymentport.SessionActor{}, paymentport.ErrSessionRequired
+		}
 		return paymentport.SessionActor{}, err
 	}
-	return paymentport.SessionActor{PayerIdentityID: record.PayerIdentityID, PayerCustomerID: int64(record.PayerCustomerID), BeneficiaryCustomerID: int64(record.BeneficiaryCustomerID), Channel: record.Channel}, nil
+	return actor(record), nil
+}
+
+// SelectPayerSelfWithin is the public, server-derived recipient choice. Its
+// Store implementation uses a conditional update so two checkout requests
+// cannot replace a selected recipient with a different one.
+func (s *Service) SelectPayerSelfWithin(ctx context.Context, token string, now time.Time) (paymentport.SessionActor, error) {
+	if s == nil || s.store == nil || len(token) < 20 || len(token) > 100 || now.IsZero() {
+		return paymentport.SessionActor{}, ErrInvalid
+	}
+	digest := sha256.Sum256([]byte(token))
+	record, err := s.store.SelectPayerSelf(ctx, digest, now.UTC())
+	if err != nil {
+		if errors.Is(err, ErrExpired) {
+			return paymentport.SessionActor{}, paymentport.ErrSessionRequired
+		}
+		return paymentport.SessionActor{}, err
+	}
+	return actor(record), nil
+}
+
+func actor(record Record) paymentport.SessionActor {
+	return paymentport.SessionActor{PayerIdentityID: record.PayerIdentityID, PayerCustomerID: int64(record.PayerCustomerID), BeneficiaryCustomerID: int64(record.BeneficiaryCustomerID), BeneficiarySelection: record.BeneficiarySelection, Channel: record.Channel}
 }

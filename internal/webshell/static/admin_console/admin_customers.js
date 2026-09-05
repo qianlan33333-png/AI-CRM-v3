@@ -90,6 +90,20 @@
     })[value] || value || "—";
   }
 
+  function syncFailureDetail(code) {
+    if (String(code || "").startsWith("retry_exhausted:")) {
+      return "自动恢复次数已用尽；已保留已提交进度，等待管理员处理。";
+    }
+    return ({
+      provider_disabled: "企微目录读取未启用。",
+      provider_permission_denied: "企微目录读取权限不足。",
+      provider_credentials_invalid: "企微目录凭据无效或持续失效。",
+      provider_rate_limited: "企微接口限流，系统将按原轮次恢复。",
+      provider_unavailable: "企微服务暂时不可用，系统将按原轮次恢复。",
+      provider_response_invalid: "企微返回资料无效，已保留已提交进度。",
+    })[code] || "同步未完成，已保留已提交进度。";
+  }
+
   function localPhone(value) {
     const phone = String(value || "");
     return phone.startsWith("+86") ? phone.slice(3) : phone;
@@ -115,7 +129,8 @@
         el.syncSummary.textContent = "尚无企微全量同步轮次。";
         return;
       }
-      el.syncSummary.textContent = "最近轮次 #" + run.run_id + "：" + syncLabel(run.status) + "，开始 " + date(run.started_at || run.created_at) + (run.completed_at ? "，完成 " + date(run.completed_at) : "");
+      const failure = run.status === "failed_retryable" || run.status === "failed_terminal";
+      el.syncSummary.textContent = "最近轮次 #" + run.run_id + "：" + syncLabel(run.status) + "，开始 " + date(run.started_at || run.created_at) + (run.completed_at ? "，完成 " + date(run.completed_at) : "") + (failure ? "。" + syncFailureDetail(run.last_error_code) : "");
       el.syncMetrics.append(
         syncMetric("发现", run.discovered),
         syncMetric("新激活", run.activated),
@@ -173,11 +188,18 @@
       row.append(td);
     }
     const action = document.createElement("td");
+    const actions = document.createElement("div");
+    actions.className = "admin-toolbar";
     const link = document.createElement("a");
     link.className = "admin-button admin-button--secondary";
     link.href = "/admin/customers/" + item.customer_id;
     link.textContent = "查看档案";
-    action.append(link);
+    const archive = document.createElement("a");
+    archive.className = "admin-button admin-button--ghost";
+    archive.href = "/admin/message-archive/customers/" + item.customer_id;
+    archive.textContent = "会话存档";
+    actions.append(link, archive);
+    action.append(actions);
     row.append(action);
     return row;
   }

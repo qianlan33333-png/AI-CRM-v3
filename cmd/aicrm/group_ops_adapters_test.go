@@ -30,6 +30,39 @@ func TestCompositionProviderDisabledAdaptersFailClosed(t *testing.T) {
 	}
 }
 
+func TestGroupOpsDispatchReaderRejectsChangedSenderBeforeProviderCall(t *testing.T) {
+	value := groupopsport.DispatchExecution{ExecutionID: 9, ExternalEffectID: "eer_9", State: groupopsport.ExecutionAccepted, TargetReference: "chat-9", SenderUserID: "owner-9"}
+	reader := groupOpsDispatchReader{uow: preparationUOWStub{}, execution: dispatchExecutionStub{value: value}, senders: dispatchSenderStub{sender: "owner-9", found: true}}
+	loaded, err := reader.LoadDispatchExecution(context.Background(), "eer_9")
+	if err != nil || loaded.ExecutionID != 9 {
+		t.Fatalf("loaded=%+v err=%v", loaded, err)
+	}
+	reader.senders = dispatchSenderStub{sender: "replacement-owner", found: true}
+	if _, err = reader.LoadDispatchExecution(context.Background(), "eer_9"); err == nil {
+		t.Fatal("changed group sender reached outbound provider boundary")
+	}
+}
+
+type dispatchExecutionStub struct {
+	value groupopsport.DispatchExecution
+}
+
+func (stub dispatchExecutionStub) LoadDispatchExecution(_ context.Context, effectID string) (groupopsport.DispatchExecution, error) {
+	if effectID != stub.value.ExternalEffectID {
+		return groupopsport.DispatchExecution{}, errors.New("unexpected effect")
+	}
+	return stub.value, nil
+}
+
+type dispatchSenderStub struct {
+	sender string
+	found  bool
+}
+
+func (stub dispatchSenderStub) ResolveExecutionSender(context.Context, string) (string, bool, error) {
+	return stub.sender, stub.found, nil
+}
+
 func TestGroupOpsMaterialCompositionBindsMediaPortsAndFailsClosedWithoutPreparedReceipt(t *testing.T) {
 	cap := materialCapturerStub{capture: func(_ context.Context, plan mediaport.GroupOpsMaterialPlan) (mediaport.GroupOpsMaterialSourceSnapshot, error) {
 		return mediaport.GroupOpsMaterialSourceSnapshot{SchemaVersion: 1, References: []mediaport.GroupOpsMaterialSourceReference{{

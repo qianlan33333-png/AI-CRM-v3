@@ -125,6 +125,7 @@ type ConfigurationCommand struct {
 	PackageID, ExpectedPackageVersion int64
 	Definition                        json.RawMessage
 	RefreshCronUTC                    string
+	RefreshMode                       string
 	Actor                             int64
 	IdempotencyKey                    string
 }
@@ -266,7 +267,7 @@ func (s *Service) CreatePackage(ctx context.Context, command PackageCreateComman
 			createErr = atPersistenceStage("create_package_record", createErr)
 		}
 		if createErr == nil {
-			configuration, configErr := segmentdomain.NewConfigurationVersion(item.ID, 1, definition, "", command.Actor, now)
+			configuration, configErr := segmentdomain.NewConfigurationVersion(item.ID, 1, definition, "", "manual", command.Actor, now)
 			if configErr == nil {
 				configuration, configErr = s.store.CreateConfigurationVersion(tx, configuration)
 				configErr = atPersistenceStage("create_configuration_version", configErr)
@@ -329,7 +330,7 @@ func (s *Service) CopyPackage(ctx context.Context, command VersionCommand) (segm
 			if codeErr == nil {
 				sourceConfiguration, configErr := s.store.CurrentConfiguration(tx, source.ID)
 				if configErr == nil {
-					configuration, createErr := segmentdomain.NewConfigurationVersion(copied.ID, 1, sourceConfiguration.Definition, sourceConfiguration.RefreshCronUTC, command.Actor, now)
+					configuration, createErr := segmentdomain.NewConfigurationVersion(copied.ID, 1, sourceConfiguration.Definition, sourceConfiguration.RefreshCronUTC, sourceConfiguration.RefreshMode, command.Actor, now)
 					if createErr == nil {
 						configuration, createErr = s.store.CreateConfigurationVersion(tx, configuration)
 					}
@@ -374,11 +375,18 @@ func (s *Service) TransitionPackage(ctx context.Context, command VersionCommand,
 }
 
 func (s *Service) PutConfiguration(ctx context.Context, command ConfigurationCommand) (segmentdomain.ConfigurationVersion, error) {
+	if command.RefreshMode == "" {
+		if command.RefreshCronUTC != "" {
+			command.RefreshMode = "legacy_custom"
+		} else {
+			command.RefreshMode = "manual"
+		}
+	}
 	canonical, err := CanonicalDefinition(command.Definition)
 	if err != nil {
 		return segmentdomain.ConfigurationVersion{}, err
 	}
-	if err = ValidateRefreshCronUTC(command.RefreshCronUTC); err != nil {
+	if err = ValidateRefresh(command.RefreshMode, command.RefreshCronUTC); err != nil {
 		return segmentdomain.ConfigurationVersion{}, err
 	}
 	now := s.now().UTC()
@@ -394,7 +402,7 @@ func (s *Service) PutConfiguration(ctx context.Context, command ConfigurationCom
 		if putErr == nil {
 			version, nextErr := s.store.NextConfigurationVersion(tx, item.ID)
 			if nextErr == nil {
-				configuration, nextErr = segmentdomain.NewConfigurationVersion(item.ID, version, canonical, command.RefreshCronUTC, command.Actor, now)
+				configuration, nextErr = segmentdomain.NewConfigurationVersion(item.ID, version, canonical, command.RefreshCronUTC, command.RefreshMode, command.Actor, now)
 			}
 			if nextErr == nil {
 				configuration, nextErr = s.store.CreateConfigurationVersion(tx, configuration)
