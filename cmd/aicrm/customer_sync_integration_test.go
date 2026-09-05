@@ -27,6 +27,20 @@ import (
 
 type integrationDirectoryProvider struct{}
 
+type integrationDirectoryFailure struct {
+	code      string
+	retryable bool
+}
+
+func (failure integrationDirectoryFailure) Error() string                   { return failure.code }
+func (failure integrationDirectoryFailure) DirectoryFailureCode() string    { return failure.code }
+func (failure integrationDirectoryFailure) DirectoryFailureRetryable() bool { return failure.retryable }
+
+type integrationFailingDirectoryProvider struct {
+	listErr  error
+	batchErr error
+}
+
 type integrationSyncEnqueuer struct{ runID int64 }
 
 func (enqueuer *integrationSyncEnqueuer) EnqueueCustomerSync(_ context.Context, runID int64) error {
@@ -41,6 +55,14 @@ func (integrationDirectoryProvider) ListContactStaff(context.Context) ([]string,
 func (integrationDirectoryProvider) BatchExternalContacts(context.Context, string, string, int) (wecomport.ExternalContactPage, error) {
 	return wecomport.ExternalContactPage{Contacts: []wecomport.ExternalContact{{ExternalUserID: "external-integration", Name: "Integration Customer", Gender: 1, Type: 1, CorpName: "Integration Corp",
 		FollowInfo: []wecomport.ExternalContactFollowInfo{{EmployeeID: "staff-integration", Tags: []wecomport.ExternalContactTag{{ProviderTagID: "provider-tag", Name: "重点客户", Type: 1}}}}}}}, nil
+}
+
+func (provider integrationFailingDirectoryProvider) DirectoryReady() bool { return true }
+func (provider integrationFailingDirectoryProvider) ListContactStaff(context.Context) ([]string, error) {
+	return nil, provider.listErr
+}
+func (provider integrationFailingDirectoryProvider) BatchExternalContacts(context.Context, string, string, int) (wecomport.ExternalContactPage, error) {
+	return wecomport.ExternalContactPage{}, provider.batchErr
 }
 
 func TestCustomerSyncJourneyPostgreSQL(t *testing.T) {
@@ -169,5 +191,69 @@ func TestCustomerSyncJourneyPostgreSQL(t *testing.T) {
 	}
 	if recovery.Status != wecom.SyncFetchingProfiles || recovery.ProviderCursor != "cursor-committed" || recovery.StaffIndex != 0 {
 		t.Fatalf("recovery did not preserve cursor: %+v", recovery)
+	}
+	// The recovery assertion intentionally leaves the persisted cursor in an
+	// active state. End that isolated run before creating independent failure
+	// journeys: production permits only one active run per corporation.
+	if err = uow.Within(ctx, func(txContext context.Context) error {
+		return syncStore.Terminate(txContext, recovery.ID, "test_recovery_complete")
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	assertFailureRun := func(name string, provider wecomport.DirectoryProvider, attempt, maxAttempts int, wantStatus wecom.CustomerSyncStatus, wantCode string) {
+		t.Helper()
+		failureService := service
+		failureService.Provider = provider
+		failureRun, _, createErr := failureService.CreateScheduled(ctx, "initial", "initial:integration-failure-"+name)
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		failureWorker := wecom.NewCustomerSyncWorker()
+		if bindErr := failureWorker.BindService(failureService); bindErr != nil {
+			t.Fatal(bindErr)
+		}
+		if workErr := failureWorker.Work(ctx, &river.Job[wecom.CustomerSyncJobArgs]{JobRow: &rivertype.JobRow{Attempt: attempt, MaxAttempts: maxAttempts}, Args: wecom.CustomerSyncJobArgs{RunID: failureRun.ID}}); workErr != nil && wantStatus == wecom.SyncFailedTerminal {
+			t.Fatalf("name=%s terminal work err=%v", name, workErr)
+		}
+		failureRun, getErr := failureService.Get(ctx, failureRun.ID)
+		if getErr != nil || failureRun.Status != wantStatus || failureRun.LastErrorCode != wantCode {
+			t.Fatalf("name=%s get=%v run=%+v", name, getErr, failureRun)
+		}
+	}
+	assertFailureRun("disabled", integrationFailingDirectoryProvider{listErr: wecomport.ErrDirectoryDisabled}, 1, 12, wecom.SyncFailedTerminal, "provider_disabled")
+	assertFailureRun("permission", integrationFailingDirectoryProvider{listErr: integrationDirectoryFailure{code: "provider_permission_denied"}}, 1, 12, wecom.SyncFailedTerminal, "provider_permission_denied")
+
+	var retryRunID int64
+	if _, err = pool.Native().Exec(ctx, `INSERT INTO wecom_customer_sync_runs(run_key,trigger_type,status,corp_scope,staff_ids,staff_index,provider_cursor,started_at)
+		VALUES('initial:integration-rate-limited','initial','fetching_profiles','wecom-corp:integration-corp','["staff-integration"]',0,'cursor-preserved',clock_timestamp())`); err != nil {
+		t.Fatal(err)
+	}
+	if err = pool.Native().QueryRow(ctx, `SELECT id FROM wecom_customer_sync_runs WHERE run_key='initial:integration-rate-limited'`).Scan(&retryRunID); err != nil {
+		t.Fatal(err)
+	}
+	retryService := service
+	retryService.Provider = integrationFailingDirectoryProvider{batchErr: integrationDirectoryFailure{code: "provider_rate_limited", retryable: true}}
+	retryWorker := wecom.NewCustomerSyncWorker()
+	if err = retryWorker.BindService(retryService); err != nil {
+		t.Fatal(err)
+	}
+	if err = retryWorker.Work(ctx, &river.Job[wecom.CustomerSyncJobArgs]{JobRow: &rivertype.JobRow{Attempt: 1, MaxAttempts: 12}, Args: wecom.CustomerSyncJobArgs{RunID: retryRunID}}); err == nil {
+		t.Fatal("rate-limited worker must return a retryable River error")
+	}
+	retryRun, err := retryService.Get(ctx, retryRunID)
+	if err != nil || retryRun.Status != wecom.SyncFailedRetryable || retryRun.LastErrorCode != "provider_rate_limited" || retryRun.ProviderCursor != "cursor-preserved" {
+		t.Fatalf("retryable get=%v run=%+v", err, retryRun)
+	}
+	if err = retryWorker.Work(ctx, &river.Job[wecom.CustomerSyncJobArgs]{JobRow: &rivertype.JobRow{Attempt: 12, MaxAttempts: 12}, Args: wecom.CustomerSyncJobArgs{RunID: retryRunID}}); err != nil {
+		t.Fatalf("exhausted worker err=%v", err)
+	}
+	retryRun, err = retryService.Get(ctx, retryRunID)
+	if err != nil || retryRun.Status != wecom.SyncFailedTerminal || retryRun.LastErrorCode != "retry_exhausted:provider_rate_limited" || retryRun.ProviderCursor != "cursor-preserved" {
+		t.Fatalf("exhausted get=%v run=%+v", err, retryRun)
+	}
+	var successfulProfiles int
+	if err = pool.Native().QueryRow(ctx, `SELECT count(*) FROM wecom_external_contact_profiles WHERE activation_status='active'`).Scan(&successfulProfiles); err != nil || successfulProfiles != 1 {
+		t.Fatalf("successful profile changed after failed rounds: count=%d err=%v", successfulProfiles, err)
 	}
 }

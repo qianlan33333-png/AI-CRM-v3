@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	surveyport "github.com/qianlan33333-png/AI-CRM-v3/internal/survey/port"
@@ -119,7 +120,7 @@ func ValidateQuestion(value surveyport.Question, mode surveyport.QuestionnaireMo
 		return ErrInvalidQuestion
 	}
 	if mode == surveyport.ModeAssessment {
-		if !validOpaque(value.AssessmentDimensionKey) {
+		if !validAssessmentBusinessKey(value.AssessmentDimensionKey) {
 			return ErrInvalidQuestion
 		}
 	} else if value.AssessmentDimensionKey != "" {
@@ -140,7 +141,7 @@ func ValidateOption(value surveyport.Option, mode surveyport.QuestionnaireMode) 
 		return ErrInvalidOption
 	}
 	if mode == surveyport.ModeAssessment {
-		if !validOpaque(value.AssessmentTypeKey) {
+		if !validAssessmentBusinessKey(value.AssessmentTypeKey) {
 			return ErrInvalidOption
 		}
 	} else if value.AssessmentTypeKey != "" {
@@ -279,6 +280,23 @@ func validText(value string, maximum int) bool {
 func validOptionalText(value string, maximum int) bool {
 	return value == strings.TrimSpace(value) && utf8.ValidString(value) && utf8.RuneCountInString(value) <= maximum
 }
+
+// validAssessmentBusinessKey preserves the frozen editor's legacy local keys.
+// They identify a dimension or type only within one assessment definition;
+// they are not security-sensitive opaque references such as tags, profile
+// fields, template IDs, or completion parameters.
+func validAssessmentBusinessKey(value string) bool {
+	if !validText(value, 128) {
+		return false
+	}
+	for _, character := range value {
+		if unicode.IsControl(character) {
+			return false
+		}
+	}
+	return true
+}
+
 func validOpaque(value string) bool {
 	return opaquePattern.MatchString(value) && !strings.Contains(value, "://")
 }

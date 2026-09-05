@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestHistoricalQuestionnaireAuditParametersHaveConcretePostgreSQLTypes(t *testing.T) {
@@ -52,5 +53,58 @@ func TestReadKeyRequiresOwnerOnlyPermissions(t *testing.T) {
 	}
 	if key, err := readKey(path); err != nil || len(key) != 32 {
 		t.Fatalf("key err=%v", err)
+	}
+}
+
+func TestValidateSnapshotRejectsTypedTableWithoutPanicking(t *testing.T) {
+	snapshot := frozenSurveySnapshot(t, time.Date(2026, 9, 5, 8, 0, 0, 0, time.UTC))
+	setFrozenTable(t, &snapshot, "questionnaire_questions", []map[string]any{{"id": "not-an-integer"}})
+	if err := validateSnapshot(snapshot); err == nil || !strings.Contains(err.Error(), "invalid frozen table questionnaire_questions") {
+		t.Fatalf("typed table validation err=%v", err)
+	}
+}
+
+func TestAssessmentBusinessKeyPreservesLegacyValuesOnlyInItsLocalScope(t *testing.T) {
+	for _, key := range []string{"维度 1/增长", "暖男/女型", "dimension key"} {
+		if !validAssessmentBusinessKey(key) {
+			t.Fatalf("valid legacy key rejected: %q", key)
+		}
+	}
+	for _, key := range []string{" key", "key ", "key\nline", strings.Repeat("字", 129)} {
+		if validAssessmentBusinessKey(key) {
+			t.Fatalf("unsafe key accepted: %q", key)
+		}
+	}
+	if !validAssessmentBusinessKey("") {
+		t.Fatal("legacy empty key rejected")
+	}
+	if validAssessmentBusinessKey(string([]byte{0xff})) {
+		t.Fatal("invalid UTF-8 key accepted")
+	}
+	if got := safeOpaque("暖男/女型"); got != "" {
+		t.Fatalf("generic opaque contract widened: %q", got)
+	}
+}
+
+func TestValidateSnapshotRejectsInvalidAssessmentBusinessKeyWithoutChangingIt(t *testing.T) {
+	snapshot := frozenSurveySnapshot(t, time.Date(2026, 9, 5, 8, 30, 0, 0, time.UTC))
+	var questions []question
+	decodeTable(snapshot, "questionnaire_questions", &questions)
+	questions[0].Dimension = " bad"
+	setFrozenTable(t, &snapshot, "questionnaire_questions", questions)
+	if err := validateSnapshot(snapshot); err == nil || !strings.Contains(err.Error(), "invalid assessment business key questionnaire_questions/10") {
+		t.Fatalf("invalid assessment key snapshot err=%v", err)
+	}
+	var options []option
+	decodeTable(snapshot, "questionnaire_options", &options)
+	options[0].TypeKey = "bad\nkey"
+	setFrozenTable(t, &snapshot, "questionnaire_options", options)
+	if err := validateSnapshot(snapshot); err == nil || !strings.Contains(err.Error(), "invalid assessment business key questionnaire_questions/10") {
+		t.Fatalf("question key validation should remain first err=%v", err)
+	}
+	questions[0].Dimension = ""
+	setFrozenTable(t, &snapshot, "questionnaire_questions", questions)
+	if err := validateSnapshot(snapshot); err == nil || !strings.Contains(err.Error(), "invalid assessment business key questionnaire_options/20") {
+		t.Fatalf("invalid assessment type snapshot err=%v", err)
 	}
 }

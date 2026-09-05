@@ -29,12 +29,73 @@ type ReferenceReader interface {
 }
 
 var _ mediaport.MaterialReferenceRegistrar = (*Repository)(nil)
+var _ mediaport.LegacyMaterialMappingResolver = (*Repository)(nil)
+var _ mediaport.LegacyMaterialMappingImporter = (*Repository)(nil)
 var _ mediaport.ImageMetadataReader = (*Repository)(nil)
 var _ mediaport.AttachmentMetadataReader = (*Repository)(nil)
 var _ mediaport.MiniProgramMetadataReader = (*Repository)(nil)
 var _ mediaport.GroupInviteMetadataReader = (*Repository)(nil)
 
 const maxMaterialReferences = 100
+
+func (r *Repository) ResolveLegacyMaterialMapping(ctx context.Context, reference mediaport.LegacyMaterialReference) (mediaport.LegacyMaterialMapping, bool, error) {
+	if r == nil || !validLegacyMaterialReference(reference) {
+		return mediaport.LegacyMaterialMapping{}, false, ErrInvalid
+	}
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return mediaport.LegacyMaterialMapping{}, false, err
+	}
+	var mapping mediaport.LegacyMaterialMapping
+	mapping.Reference = reference
+	err = tx.QueryRow(ctx, `SELECT material_kind,material_id,source_digest,source_record_digest
+		FROM media_legacy_material_mappings
+		WHERE source_system=$1 AND legacy_material_kind=$2 AND legacy_material_id=$3`, reference.SourceSystem, reference.MaterialKind, reference.LegacyID).Scan(
+		&mapping.MaterialKind, &mapping.MaterialID, &mapping.SourceDigest, &mapping.SourceRecordDigest,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return mediaport.LegacyMaterialMapping{}, false, nil
+	}
+	if err != nil {
+		return mediaport.LegacyMaterialMapping{}, false, err
+	}
+	if !mediaKind(mapping.MaterialKind) || mapping.MaterialID < 1 || !validDigest(mapping.SourceDigest) || !validDigest(mapping.SourceRecordDigest) {
+		return mediaport.LegacyMaterialMapping{}, false, ErrConflict
+	}
+	return mapping, true, nil
+}
+
+func (r *Repository) ImportLegacyMaterialMapping(ctx context.Context, mapping mediaport.LegacyMaterialMapping, importedBy string) error {
+	if r == nil || !validLegacyMaterialReference(mapping.Reference) || !mediaKind(mapping.MaterialKind) || mapping.MaterialID < 1 || !validDigest(mapping.SourceDigest) || !validDigest(mapping.SourceRecordDigest) || strings.TrimSpace(importedBy) != importedBy || importedBy == "" || len(importedBy) > 120 {
+		return ErrInvalid
+	}
+	return r.withReferenceTransaction(ctx, func(txctx context.Context) error {
+		captured, err := r.captureOne(txctx, mediaport.GroupOpsMaterialReference{Kind: mapping.MaterialKind, ID: mapping.MaterialID}, true)
+		if err != nil {
+			return err
+		}
+		if captured.SourceDigest != mapping.SourceDigest {
+			return ErrConflict
+		}
+		tx, _ := platformpostgres.RequireTransaction(txctx)
+		command, err := tx.Exec(txctx, `INSERT INTO media_legacy_material_mappings(source_system,legacy_material_kind,legacy_material_id,material_kind,material_id,source_digest,source_record_digest,imported_by)
+			VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(source_system,legacy_material_kind,legacy_material_id) DO NOTHING`, mapping.Reference.SourceSystem, mapping.Reference.MaterialKind, mapping.Reference.LegacyID, mapping.MaterialKind, mapping.MaterialID, mapping.SourceDigest, mapping.SourceRecordDigest, importedBy)
+		if err != nil {
+			return err
+		}
+		if command.RowsAffected() == 1 {
+			return nil
+		}
+		current, found, err := r.ResolveLegacyMaterialMapping(txctx, mapping.Reference)
+		if err != nil || !found {
+			return ErrConflict
+		}
+		if current.MaterialKind != mapping.MaterialKind || current.MaterialID != mapping.MaterialID || current.SourceDigest != mapping.SourceDigest || current.SourceRecordDigest != mapping.SourceRecordDigest {
+			return ErrConflict
+		}
+		return nil
+	})
+}
 
 func referenceDigest(owner string, id int64) string {
 	sum := sha256.Sum256([]byte(fmt.Sprintf("%s:%d", owner, id)))
@@ -125,6 +186,10 @@ func (r *Repository) withReferenceTransaction(ctx context.Context, callback func
 
 func validMaterialReference(reference mediaport.MaterialReference) bool {
 	return mediaKind(reference.MaterialKind) && reference.MaterialID > 0 && strings.TrimSpace(reference.Owner) == reference.Owner && len(reference.Owner) <= 120 && reference.Owner != "" && validDigest(reference.ReferenceDigest)
+}
+
+func validLegacyMaterialReference(reference mediaport.LegacyMaterialReference) bool {
+	return mediaKind(reference.MaterialKind) && strings.TrimSpace(reference.SourceSystem) == reference.SourceSystem && reference.SourceSystem != "" && len(reference.SourceSystem) <= 80 && strings.TrimSpace(reference.LegacyID) == reference.LegacyID && reference.LegacyID != "" && len(reference.LegacyID) <= 128
 }
 
 func lockMaterial(ctx context.Context, kind string, id int64) (bool, error) {

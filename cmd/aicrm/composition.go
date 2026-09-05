@@ -40,7 +40,9 @@ import (
 	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	groupops "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops"
 	groupopsapp "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/app"
+	groupopsport "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/port"
 	groupopsstore "github.com/qianlan33333-png/AI-CRM-v3/internal/groupops/store"
+	hxc "github.com/qianlan33333-png/AI-CRM-v3/internal/hxcdashboard"
 	hxcapp "github.com/qianlan33333-png/AI-CRM-v3/internal/hxcdashboard/app"
 	hxchttp "github.com/qianlan33333-png/AI-CRM-v3/internal/hxcdashboard/http"
 	hxcprovider "github.com/qianlan33333-png/AI-CRM-v3/internal/hxcdashboard/provider"
@@ -57,6 +59,9 @@ import (
 	mediaapp "github.com/qianlan33333-png/AI-CRM-v3/internal/media/app"
 	groupopsmaterial "github.com/qianlan33333-png/AI-CRM-v3/internal/media/groupopsmaterial"
 	mediastore "github.com/qianlan33333-png/AI-CRM-v3/internal/media/store"
+	archiveapp "github.com/qianlan33333-png/AI-CRM-v3/internal/messagearchive/app"
+	archivehttp "github.com/qianlan33333-png/AI-CRM-v3/internal/messagearchive/http"
+	archivestore "github.com/qianlan33333-png/AI-CRM-v3/internal/messagearchive/store"
 	operationcycle "github.com/qianlan33333-png/AI-CRM-v3/internal/operationcycle"
 	operationapp "github.com/qianlan33333-png/AI-CRM-v3/internal/operationcycle/app"
 	operationstore "github.com/qianlan33333-png/AI-CRM-v3/internal/operationcycle/store"
@@ -113,17 +118,18 @@ import (
 )
 
 type composedApplication struct {
-	pool           *platformpostgres.Pool
-	handler        http.Handler
-	management     *accessapp.Management
-	weComProcessor wecom.InboxProcessor
-	effectsRuntime *platformjobqueue.Runtime
-	customerSync   wecom.CustomerSyncService
-	adminOps       *adminopsapp.ProjectionService
-	release        *releaseapp.ObservationService
-	diagnostics    *adminopsapp.DiagnosticsService
-	hxcDashboard   hxcapp.Service
-	hxcSource      *hxcprovider.MySQL
+	pool                  *platformpostgres.Pool
+	handler               http.Handler
+	management            *accessapp.Management
+	weComProcessor        wecom.InboxProcessor
+	weComArchiveProcessor wecom.ArchiveInboxProcessor
+	effectsRuntime        *platformjobqueue.Runtime
+	customerSync          wecom.CustomerSyncService
+	adminOps              *adminopsapp.ProjectionService
+	release               *releaseapp.ObservationService
+	diagnostics           *adminopsapp.DiagnosticsService
+	hxcDashboard          hxcapp.Service
+	hxcSource             *hxcprovider.MySQL
 }
 
 func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplication, error) {
@@ -229,7 +235,15 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err = river.AddWorkerSafely[segment.AudienceScheduleScanJobArgs](effectWorkers, audienceScheduleWorker); err != nil {
 		return fail(err)
 	}
+	groupOpsContinuationWorker := groupopsapp.NewContinuationWorker()
+	if err = river.AddWorkerSafely[groupopsapp.ContinuationJobArgs](effectWorkers, groupOpsContinuationWorker); err != nil {
+		return fail(err)
+	}
 	effectClient, err := platformjobqueue.NewInsertClient(pool.Native(), effectWorkers)
+	if err != nil {
+		return fail(err)
+	}
+	groupOpsContinuationEnqueuer, err := groupopsapp.NewRiverContinuationEnqueuer(effectClient)
 	if err != nil {
 		return fail(err)
 	}
@@ -253,7 +267,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if cfg.WeCom.ChannelProviderReadEnabled {
 		periodicJobs = append(periodicJobs, wecom.StaffDirectoryPeriodicJob(cfg.WeCom.StaffDirectoryRefreshInterval, nil))
 	}
-	effectsRuntime, err := platformjobqueue.NewRuntimeWithPeriodic(pool.Native(), effectWorkers, periodicJobs, platformjobqueue.OutboundQueue, wecom.CustomerSyncQueue, wecom.StaffDirectoryRefreshQueue, payment.ReconciliationQueue, hxcworker.Queue, segment.AudienceRefreshQueue)
+	effectsRuntime, err := platformjobqueue.NewRuntimeWithPeriodic(pool.Native(), effectWorkers, periodicJobs, platformjobqueue.OutboundQueue, platformjobqueue.OutboundWelcomeQueue, wecom.CustomerSyncQueue, wecom.StaffDirectoryRefreshQueue, payment.ReconciliationQueue, hxcworker.Queue, segment.AudienceRefreshQueue)
 	if err != nil {
 		return fail(err)
 	}
@@ -275,7 +289,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		detail, readErr := customerStore.Detail(ctx, id)
 		return detail.CustomerID, detail.CustomerStatus, detail.DisplayName, detail.OneIDLabel, readErr
 	}}
-	aiService, err := aiassistantapp.NewService(uow, aiRepository, aiCustomers, aiStaffSnapshotAdapter{repository: accessRepository}, aiMaterialAdapter{capturer: mediaRepository, references: mediaRepository}, oneID)
+	aiService, err := aiassistantapp.NewService(uow, aiRepository, aiCustomers, aiStaffSnapshotAdapter{repository: accessRepository}, aiMaterialAdapter{capturer: mediaRepository, references: mediaRepository, legacy: mediaRepository}, oneID, queries)
 	if err != nil {
 		return fail(err)
 	}
@@ -289,7 +303,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err = aiService.BindReconciler(effectRepository); err != nil {
 		return fail(err)
 	}
-	aiHandler, err := aiassistanthttp.NewHandler(aiassistanthttp.Config{Application: aiService, Security: requestSecurity, Authorizer: accessapp.AIAssistantAuthorizer{}, Integration: aiassistanthttp.IntegrationConfig{Enabled: cfg.AIAssistant.IntakeEnabled, Key: cfg.AIAssistant.IntegrationKey, Secret: cfg.AIAssistant.IntegrationSecret, ActorID: cfg.AIAssistant.IntegrationActorID}, DispatchReady: cfg.AIAssistant.DispatchEnabled})
+	aiHandler, err := aiassistanthttp.NewHandler(aiassistanthttp.Config{Application: aiService, Security: requestSecurity, Authorizer: accessapp.AIAssistantAuthorizer{}, Integration: aiassistanthttp.IntegrationConfig{Enabled: cfg.AIAssistant.IntakeEnabled, Key: cfg.AIAssistant.IntegrationKey, Secret: cfg.AIAssistant.IntegrationSecret, ActorID: cfg.AIAssistant.IntegrationActorID, WeComCorpID: cfg.WeCom.CorpID, OpenPlatformID: cfg.Survey.OAuthOpenPlatformID}, DispatchReady: cfg.AIAssistant.DispatchEnabled})
 	if err != nil {
 		return fail(err)
 	}
@@ -423,13 +437,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
-	groupOpsProvider, err := outbound.NewGroupMessageProvider(outbound.GroupMessageProviderConfig{
-		Enabled:           cfg.Effects.ProviderEnabled && cfg.GroupOps.ProviderEnabled,
-		PreparationWriter: mediaPreparationBindings.Writer,
-	})
-	if err != nil {
-		return fail(err)
-	}
+	var groupOpsProvider *outbound.GroupMessageProvider
 	materialFreezer, err := groupopsmaterial.NewFreezer(mediaPreparedPlanReader{reader: mediaPreparationBindings.Reader})
 	if err != nil {
 		return fail(err)
@@ -475,22 +483,26 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return fail(err)
 	}
 	groupOpsStaff := groupOpsStaffAdapter{access: accessRepository, owners: groupOpsRepository}
-	groupOpsDirectory := providerDisabledGroupOpsDirectory{}
-	groupOpsEvidence := providerDisabledGroupOpsEvidence{}
+	groupOpsDirectory := &wecomGroupOpsDirectory{enabled: cfg.GroupOps.ProviderEnabled, staff: groupOpsStaff}
+	groupOpsEvidence := groupopsport.ReconciliationEvidenceVerifier(providerDisabledGroupOpsEvidence{})
 	groupOpsService := groupopsapp.NewService(uow, groupOpsRepository, groupOpsStaff, groupOpsRepository)
 	groupOpsHistory := groupopsapp.NewHistoryService(uow, groupOpsRepository)
 	groupOpsRuntime := groupopsapp.NewRuntimeService(uow, groupOpsRepository, groupOpsRepository, effectRepository, groupOpsStaff, groupOpsDirectory, groupOpsStaff, groupOpsEvidence, groupOpsExternalReconciler{repository: effectRepository}, groupOpsMaterials)
 	groupOpsRuntime.SetDispatchEnabled(cfg.GroupOps.ProviderEnabled)
+	if err = groupOpsContinuationWorker.Bind(groupOpsRuntime); err != nil {
+		return fail(err)
+	}
 	groupOpsProtocols := &groupOpsProtocolAuthenticator{key: []byte(cfg.GroupOps.WebhookSecret), replay: groupOpsRepository, now: time.Now}
 	groupOpsModule := groupops.NewModuleRegistration()
 	groupOpsBindings, err := groupOpsModule.BindWithHistory(groupOpsService, groupOpsRuntime, groupOpsHistory, requestSecurity, groupOpsProtocols, mediaContentBindings.ContentDelivery)
 	if err != nil {
 		return fail(err)
 	}
-	groupOpsCompletionSink, err := outbound.NewGroupMessageCompletionSink(groupOpsRepository)
+	groupOpsCompletionSink, err := outbound.NewGroupMessageCompletionSink(groupOpsRepository, groupOpsRepository)
 	if err != nil {
 		return fail(err)
 	}
+	groupOpsCompletionSink.WithContinuation(groupOpsContinuationEnqueuer)
 	privateCompletionSink, err := outbound.NewPrivateMessageCompletionSink(privateWriter, aiRepository)
 	if err != nil {
 		return fail(err)
@@ -516,18 +528,40 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	}
 	surveyDefinitions := surveyapp.NewService(uow, surveyRepository)
 	surveySubmissions := surveyapp.NewSubmissionService(uow, surveyRepository, surveyCipher)
+	surveyCompletionTargets, err := surveyCompletionTargets(cfg.Survey.CompletionTargetsJSON)
+	if err != nil {
+		return fail(err)
+	}
+	surveyCompletionProvider, err := outbound.NewSurveyCompletionProvider(outbound.SurveyCompletionProviderConfig{Enabled: cfg.Survey.CompletionProviderEnabled, Targets: surveyCompletionTargets, Reader: surveyRepository, Identities: queries})
+	if err != nil {
+		return fail(err)
+	}
+	surveyCompletionSink, err := outbound.NewSurveyCompletionSink(surveyRepository)
+	if err != nil {
+		return fail(err)
+	}
+	if err = surveySubmissions.BindCompletionIntent(surveyCompletionEffectAccepter{effects: effectRepository}); err != nil {
+		return fail(err)
+	}
+	if err = surveySubmissions.BindCompletionPolicy(surveyCompletionProvider); err != nil {
+		return fail(err)
+	}
+	if err = surveySubmissions.BindCompletionIdentity(surveyCompletionProvider); err != nil {
+		return fail(err)
+	}
 	if err = surveySubmissions.BindCustomerTimeline(customerStore); err != nil {
 		return fail(err)
 	}
 	if err = surveySubmissions.BindDeclaredPhone(oneID, customerStore); err != nil {
 		return fail(err)
 	}
+	outboundCompletionSink.WithSurveyCompletion(surveyCompletionSink)
 	surveyOAuthProvider, err := surveyprovider.NewWeChatOAuth(cfg.Survey.OAuthEnabled, cfg.Survey.OAuthAppID, cfg.Survey.OAuthSecret, cfg.Survey.OAuthOpenPlatformID, cfg.PublicOrigin+"/api/h5/surveys/oauth/callback", cfg.Survey.OAuthScope)
 	if err != nil {
 		return fail(err)
 	}
 	surveyOAuth := surveyapp.NewOAuthService(uow, surveyRepository, surveyOAuthProvider, oneID)
-	surveyModule := surveymodule.NewModuleRegistration()
+	surveyModule := surveymodule.NewModuleRegistration().SetCompletionProviderEnabled(cfg.Survey.CompletionProviderEnabled)
 	surveyBindings, err := surveyModule.Bind(surveyDefinitions, surveySubmissions, requestSecurity, surveyOAuth)
 	if err != nil {
 		return fail(err)
@@ -687,6 +721,16 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
+	archiveReader, err := wecomadapter.NewMessageArchiveReader(wecomadapter.MessageArchiveConfig{Enabled: cfg.WeCom.MessageArchiveEnabled, CorpID: cfg.WeCom.CorpID, Secret: cfg.WeCom.MessageArchiveSecret, RunnerPath: cfg.WeCom.MessageArchiveRunnerPath, LibraryPath: cfg.WeCom.MessageArchiveLibraryPath, PrivateKeyPaths: cfg.WeCom.MessageArchivePrivateKeyPaths, Timeout: 15 * time.Second})
+	if err != nil {
+		return fail(err)
+	}
+	archiveService := archiveapp.Service{Enabled: cfg.WeCom.MessageArchiveEnabled, ReadEnabled: true, CorpScope: "wecom-corp:" + cfg.WeCom.CorpID, Reader: archiveReader, Identity: oneID, Lineage: queries, Staff: accessRepository, StaffDirectory: accessRepository, Store: archivestore.NewPostgreSQL(), UOW: uow, PageLimit: cfg.WeCom.MessageArchivePageLimit, PageBudget: cfg.WeCom.MessageArchivePageBudget}
+	archiveHandler, err := archivehttp.NewHandler(requestSecurity, archiveService, auditService, uow)
+	if err != nil {
+		return fail(err)
+	}
+
 	customerProfileStore := wecom.NewPostgreSQLCustomerSyncStore()
 	customerHandler, err := customerhttp.NewHandler(customerhttp.Config{UnitOfWork: uow, Auth: requestSecurity, CSRF: requestSecurity,
 		Directory: customerapp.Directory{Store: customerStore, SigningKey: cursorSigningKey}, Store: customerStore, Identities: queries, Audit: auditService,
@@ -838,6 +882,22 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
+	groupOpsDirectory.groups = providerClient
+	groupOpsDirectory.staffs = providerClient
+	if cfg.Effects.ProviderEnabled && cfg.WeCom.Enabled && cfg.GroupOps.ProviderEnabled {
+		groupOpsEvidence = wecomGroupOpsEvidence{uow: uow, receipts: groupOpsRepository, reader: providerClient}
+		groupOpsRuntime.SetEvidenceVerifier(groupOpsEvidence)
+	}
+	groupOpsProvider, err = outbound.NewGroupMessageProvider(outbound.GroupMessageProviderConfig{
+		Enabled:           cfg.Effects.ProviderEnabled && cfg.WeCom.Enabled && cfg.GroupOps.ProviderEnabled,
+		PreparationWriter: mediaPreparationBindings.Writer,
+		Executions:        groupOpsDispatchReader{uow: uow, execution: groupOpsRepository, senders: groupOpsStaff},
+		Materials:         groupOpsMaterialReadinessAdapter{uow: uow, capturer: mediaContentBindings.SourceCapturer, freezer: materialFreezer},
+		Writer:            providerClient,
+	})
+	if err != nil {
+		return fail(err)
+	}
 	staffDirectoryRefresh := wecom.StaffDirectoryRefreshService{
 		Enabled: cfg.WeCom.ChannelProviderReadEnabled, Provider: providerClient, Projector: staffProjector,
 		Store: wecom.NewPostgreSQLStaffDirectoryRefreshStore(), Audit: auditService, UOW: uow,
@@ -908,7 +968,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if cfg.WeCom.ChannelQRProviderEnabled {
 		channelLinkProvider = outbound.NewChannelLinkProvider(channelLinkMutationReaderAdapter{uow: uow, source: channelLinkStore}, providerClient)
 	}
-	privateProvider, err := outbound.NewPrivateMessageProvider(cfg.AIAssistant.DispatchEnabled, privateWriter, aiPrivateTargetResolver{uow: uow, identities: queries, access: accessRepository, relationships: relationships, corpID: cfg.WeCom.CorpID}, aiPrivatePayloadReader{content: aiRepository, images: mediaService, materials: mediaRepository}, providerClient)
+	privateProvider, err := outbound.NewPrivateMessageProvider(cfg.AIAssistant.DispatchEnabled, privateWriter, aiPrivateTargetResolver{uow: uow, identities: queries, access: accessRepository, relationships: relationships, corpID: cfg.WeCom.CorpID}, aiPrivatePayloadReader{content: aiRepository, images: mediaService, materials: mediaRepository, attachments: mediaService}, providerClient)
 	if err != nil {
 		return fail(err)
 	}
@@ -928,7 +988,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if providerErr != nil {
 		return fail(providerErr)
 	}
-	providerRouter := outbound.NewProviderRouterWithGroupMessageAndChannels(tagCatalogProvider, groupOpsProvider, channelAssetProvider, channelEntrantProvider, channelLinkProvider).WithPrivateMessage(privateProvider).WithAutomationMessage(messageProvider).WithSidebarJSSDK(sidebarExpiry)
+	providerRouter := outbound.NewProviderRouterWithGroupMessageAndChannels(tagCatalogProvider, groupOpsProvider, channelAssetProvider, channelEntrantProvider, channelLinkProvider).WithPrivateMessage(privateProvider).WithAutomationMessage(messageProvider).WithSidebarJSSDK(sidebarExpiry).WithSurveyCompletion(surveyCompletionProvider)
 	if err = effectsModule.SetProviderAdapter(composedProviderRouter{outbound: providerRouter, payment: paymentAdapter}); err != nil {
 		return fail(err)
 	}
@@ -942,6 +1002,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		},
 		Receipts: callbackReceipts, Audit: auditService,
 	}
+	weComArchiveProcessor := wecom.ArchiveInboxProcessor{Enabled: cfg.WeCom.MessageArchiveEnabled, Inbox: inboxService, UOW: uow, Archive: archiveService}
 	customerSync := wecom.CustomerSyncService{Enabled: cfg.WeCom.CustomerSyncEnabled, CorpID: cfg.WeCom.CorpID, Provider: providerClient,
 		Identity: oneID, Projection: customerStore, Timeline: customerStore, Store: customerProfileStore, Outbox: platformoutbox.NewPostgreSQL(),
 		Enqueuer: customerSyncEnqueuer, Audit: auditService, UOW: uow}
@@ -954,14 +1015,19 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 			return fail(err)
 		}
 	}
+	hxcModule := hxc.NewModuleRegistration()
 	hxcRepository := hxcstore.NewPostgreSQL(pool.Native())
 	hxcDashboard := hxcapp.Service{Enabled: cfg.HXCDashboard.Enabled, Scope: cfg.HXCDashboard.UnionIDScope, SubjectKey: []byte(cfg.HXCDashboard.SubjectHMACKey), Source: hxcSource, Identity: hxcIdentity, IdentityWriteEnabled: cfg.HXCDashboard.IdentityWriteEnabled, UnionIDVerified: cfg.HXCDashboard.UnionIDVerified, Store: hxcRepository, Enqueuer: hxcEnqueuer, Audit: auditService, UOW: uow}
 	hxcDashboardWorker.Service = &hxcDashboard
 	hxcHandler := hxchttp.Handler{Service: hxcDashboard, Store: hxcRepository, Auth: requestSecurity, Key: []byte(cfg.HXCDashboard.SubjectHMACKey)}
 	syncHandler := wecom.CustomerSyncHTTPHandler{Service: customerSync, Auth: requestSecurity, CSRF: requestSecurity}
 	sidebarContextTokens := wecom.ContextTokenService{CorpID: cfg.WeCom.CorpID, SigningKey: []byte(cfg.WeCom.ContextSigningKey), TTL: 5 * time.Minute}
+	callbackDispatcher := wecom.CallbackEventDispatcher{ExternalContact: wecom.ExternalContactCallbackDispatcher{StateDigester: callbackStateDigester, Inbox: inboxService, UOW: uow, WelcomeGrants: welcomeGrantStore, WelcomeActions: channelEntrantActions, States: channelAcquisition}}
+	if cfg.WeCom.MessageArchiveEnabled {
+		callbackDispatcher.Archive = wecom.ArchiveCallbackDispatcher{Inbox: inboxService, UOW: uow}
+	}
 	weComHandler, err := wecom.NewHTTPHandler(wecom.HTTPHandlerOptions{
-		Callback: wecom.CallbackHandler{Enabled: cfg.WeCom.CallbackEnabled, Crypto: callbackCrypto, StateDigester: callbackStateDigester, Inbox: inboxService, UOW: uow, WelcomeGrants: welcomeGrantStore},
+		Callback: wecom.CallbackHandler{Enabled: cfg.WeCom.CallbackEnabled, Crypto: callbackCrypto, StateDigester: callbackStateDigester, Inbox: inboxService, UOW: uow, WelcomeGrants: welcomeGrantStore, WelcomeActions: channelEntrantActions, States: channelAcquisition, Dispatcher: callbackDispatcher},
 		OAuth: wecom.OAuthService{Enabled: cfg.WeCom.Enabled, CorpID: cfg.WeCom.CorpID, StateStore: oauthStates, UOW: uow,
 			Client: providerClient, AllowedPaths: allowedOAuthRedirects(), StateTTL: 10 * time.Minute},
 		ContextTokens: sidebarContextTokens,
@@ -1046,6 +1112,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	adminAPIs.Handle("/api/admin/wecom-customer-acquisition-links", channelLinkHandler)
 	adminAPIs.Handle("/api/admin/wecom-customer-acquisition-links/", channelLinkHandler)
 	adminAPIs.Handle("/api/admin/ai-assistant/", aiHandler.Routes())
+	adminAPIs.Handle("/api/admin/ai-assist/review-plans", aiHandler.Routes())
 	adminAPIs.Handle("/api/sidebar/v2/", sidebarHandler.Routes())
 	mountSurveyAPIs(adminAPIs, surveyBindings.Survey)
 	adminAPIs.Handle("/api/admin/operation-cycles/", operationBindings.API)
@@ -1096,6 +1163,9 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 			return checkErr
 		}
 		if checkErr = groupOpsModule.Readiness(readinessContext, pool.Native()); checkErr != nil {
+			return checkErr
+		}
+		if checkErr = hxcModule.Readiness(readinessContext, pool.Native()); checkErr != nil {
 			return checkErr
 		}
 		if checkErr = surveyModule.Readiness(readinessContext, pool.Native()); checkErr != nil {
@@ -1194,6 +1264,10 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	}
 	handler = mountAIAssistant(handler, aiHandler.Routes(), aiUI, authentication, cfg.AIAssistant.UIEnabled, cfg.PublicOrigin)
 	handler = securityHeaders(mountPublicProduct(mountRadar(mountChannelUI(mountHXCUI(mountOrderUI(mountSurveyUI(handler, surveyUI, surveyPublicUI, authentication), orderUI, authentication), hxcUI, authentication), channelUI, authentication), radarBindings.Radar, radarUI, authentication), publicProductHandler))
+	handler, err = mountMessageArchive(handler, archiveHandler.Routes())
+	if err != nil {
+		return fail(err)
+	}
 	// These are local observations only: they make the release and diagnostics
 	// projections truthful and readable after startup, without claiming deploy,
 	// cutover, provider execution, or runtime-secret application.
@@ -1224,7 +1298,17 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 			return fail(err)
 		}
 	}
-	return &composedApplication{pool: pool, handler: handler, management: management, weComProcessor: weComProcessor, effectsRuntime: effectsRuntime, customerSync: customerSync, hxcDashboard: hxcDashboard, hxcSource: hxcSource, adminOps: adminOpsProjection, release: releaseObservation, diagnostics: diagnostics}, nil
+	return &composedApplication{pool: pool, handler: handler, management: management, weComProcessor: weComProcessor, weComArchiveProcessor: weComArchiveProcessor, effectsRuntime: effectsRuntime, customerSync: customerSync, hxcDashboard: hxcDashboard, hxcSource: hxcSource, adminOps: adminOpsProjection, release: releaseObservation, diagnostics: diagnostics}, nil
+}
+
+func mountMessageArchive(next, archive http.Handler) (http.Handler, error) {
+	if next == nil || archive == nil {
+		return nil, errors.New("message archive HTTP routes are required")
+	}
+	mux := http.NewServeMux()
+	mux.Handle("/api/admin/message-archive/", archive)
+	mux.Handle("/", next)
+	return mux, nil
 }
 
 func mountSurveyAPIs(mux *http.ServeMux, survey http.Handler) {
@@ -1256,7 +1340,7 @@ func mountHXCUI(next, dashboardUI http.Handler, authentication accessAuthenticat
 func mountAIAssistant(next, api, ui http.Handler, authentication accessAuthentication, uiEnabled bool, publicOrigin string) http.Handler {
 	api = rejectCrossSiteUnsafeRequests(api, canonicalOrigin(publicOrigin))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/api/admin/ai-assistant/") || r.URL.Path == "/api/integrations/ai-assistant/review-plans" {
+		if strings.HasPrefix(r.URL.Path, "/api/admin/ai-assistant/") || r.URL.Path == "/api/admin/ai-assist/review-plans" || r.URL.Path == "/api/integrations/ai-assistant/review-plans" {
 			api.ServeHTTP(w, r)
 			return
 		}

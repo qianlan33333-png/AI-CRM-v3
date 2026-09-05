@@ -95,27 +95,33 @@ type Analytics struct {
 }
 
 type OperationReceipt struct {
-	ID                 ID        `json:"id"`
-	QuestionnaireID    ID        `json:"questionnaire_id"`
-	SubmissionID       *ID       `json:"submission_id,omitempty"`
-	OperationKind      string    `json:"operation_kind"`
-	Status             string    `json:"status"`
-	FailureCategory    string    `json:"failure_category,omitempty"`
-	OccurrenceCount    int64     `json:"occurrence_count"`
-	OccurredAt         time.Time `json:"occurred_at"`
-	ReadOnlyLegacy     bool      `json:"read_only_legacy"`
-	Replayable         bool      `json:"replayable"`
-	RealEffectExecuted bool      `json:"real_external_call_executed"`
+	ID                       ID        `json:"id"`
+	QuestionnaireID          ID        `json:"questionnaire_id"`
+	SubmissionID             *ID       `json:"submission_id,omitempty"`
+	OperationKind            string    `json:"operation_kind"`
+	Status                   string    `json:"status"`
+	FailureCategory          string    `json:"failure_category,omitempty"`
+	OccurrenceCount          int64     `json:"occurrence_count"`
+	OccurredAt               time.Time `json:"occurred_at"`
+	ReadOnlyLegacy           bool      `json:"read_only_legacy"`
+	Replayable               bool      `json:"replayable"`
+	SourcePK                 string    `json:"source_pk,omitempty"`
+	ProviderCallAttempted    *bool     `json:"provider_call_attempted,omitempty"`
+	ProviderRealCallExecuted *bool     `json:"provider_real_call_executed,omitempty"`
+	ProviderResultReceived   *bool     `json:"provider_result_received,omitempty"`
+	ProviderAttemptNumber    *int32    `json:"provider_attempt_number,omitempty"`
+	RealEffectExecuted       bool      `json:"real_external_call_executed"`
 }
 
 type OperationConfiguration struct {
-	QuestionnaireID              ID        `json:"-"`
-	CompletionNavigationRef      string    `json:"navigation_target_id,omitempty"`
-	CompletionChannelID          *int64    `json:"channel_id,omitempty"`
-	ExternalPushEnabled          bool      `json:"external_push_enabled"`
-	ExternalPushConfigurationRef string    `json:"configuration_reference,omitempty"`
-	Version                      int64     `json:"version"`
-	UpdatedAt                    time.Time `json:"updated_at,omitempty"`
+	QuestionnaireID              ID              `json:"-"`
+	CompletionNavigationRef      string          `json:"navigation_target_id,omitempty"`
+	CompletionChannelID          *int64          `json:"channel_id,omitempty"`
+	ExternalPushEnabled          bool            `json:"external_push_enabled"`
+	ExternalPushConfigurationRef string          `json:"configuration_reference,omitempty"`
+	ExternalPushMetadata         json.RawMessage `json:"metadata,omitempty"`
+	Version                      int64           `json:"version"`
+	UpdatedAt                    time.Time       `json:"updated_at,omitempty"`
 }
 
 type LegacySubmission struct {
@@ -154,6 +160,7 @@ type SubmissionApplication interface {
 	GetOperationConfiguration(context.Context, ID) (OperationConfiguration, error)
 	SaveOperationConfiguration(context.Context, OperationConfiguration, int64, string) (OperationConfiguration, error)
 	RecordDisabledOperation(context.Context, ID, *ID, string, int64, string) (OperationReceipt, error)
+	QueueCompletionTest(context.Context, ID, int64, string) (CompletionTestReceipt, error)
 }
 
 type MigrationRecord struct {
