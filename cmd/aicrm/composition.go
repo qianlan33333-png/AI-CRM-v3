@@ -1390,6 +1390,15 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	operationUI := operationModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, page, donorTemplate string, assets operationcycle.UIAssets) error {
 		return renderer.RenderOperationCycles(writer, webshell.AdminPageForRequest(request, "运营闭环", "运营周期、执行事实与复盘记录。", "api.admin_operation_cycles_page"), page, donorTemplate, webshell.OperationCycleAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, HostJS: assets.HostJS})
 	})
+	ownerHandoffUI := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/admin/owner-migration" {
+			http.NotFound(writer, request)
+			return
+		}
+		if renderErr := renderer.RenderOwnerHandoff(writer, webshell.AdminPageForRequest(request, "负责人迁移", "冻结预览后按本地或企微受理模式执行；企微最终接替单独回查。", "api.admin_owner_migration_page")); renderErr != nil {
+			http.Error(writer, "owner handoff page unavailable", http.StatusInternalServerError)
+		}
+	})
 	configUI := configModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, page, donorTemplate string, assets configmodule.UIAssets) error {
 		if page == "runtimeReleaseList" || page == "runtimeReleaseNew" || page == "runtimeReleaseDetail" {
 			// Runtime releases are a V3-owned Host rather than a frozen AdminOps
@@ -1414,6 +1423,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return fail(err)
 	}
 	handler = mountMemberGridUI(handler, memberGridUI)
+	handler = mountOwnerHandoffUI(handler, requireAdminSession(authentication, ownerHandoffUI))
 	handler, err = mountSegmentAPI(handler, segmentBindings.Audience)
 	if err != nil {
 		return fail(err)
@@ -1644,6 +1654,16 @@ func routeApplicationWithEffects(health, access, identity, effects, pushCenter, 
 
 func routeApplicationWithMedia(health, access, identity, effects, pushCenter, effectsUI, mediaHandler, mediaUI, weCom, shell http.Handler, authentication accessAuthentication, publicOrigin string) (http.Handler, error) {
 	return routeApplicationWithMediaTags(health, access, identity, effects, pushCenter, effectsUI, mediaHandler, mediaUI, http.NotFoundHandler(), http.NotFoundHandler(), weCom, shell, authentication, publicOrigin)
+}
+
+func mountOwnerHandoffUI(next, ui http.Handler) http.Handler {
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/admin/owner-migration" {
+			ui.ServeHTTP(writer, request)
+			return
+		}
+		next.ServeHTTP(writer, request)
+	})
 }
 
 func mountMemberGridUI(next, ui http.Handler) http.Handler {

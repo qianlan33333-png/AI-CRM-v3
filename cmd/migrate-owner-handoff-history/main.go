@@ -327,8 +327,7 @@ func resolveRow(ctx context.Context, oneID identityport.Resolver, users interfac
 	UserByWeComUserID(context.Context, string, bool) (accessdomain.User, error)
 }, row sourceRow) (resolution, error) {
 	if row.SourceState == "invalid_source" {
-		raw, _ := json.Marshal(struct{ State string }{"invalid"})
-		return resolution{state: "invalid", digest: sha256.Sum256(raw)}, nil
+		return resolution{state: "invalid", digest: resolutionDigest("invalid", 0, 0, 0)}, nil
 	}
 	resolved, err := oneID.Resolve(ctx, identitydomain.Reference{Kind: identitydomain.KindWeComExternalUserID, Scope: row.CorpScope, Value: row.ExternalUserID, Assurance: identitydomain.AssuranceVerified, Source: "owner_handoff_history"})
 	if err != nil {
@@ -363,12 +362,16 @@ func resolveRow(ctx context.Context, oneID identityport.Resolver, users interfac
 	if out.state == "" {
 		out.state = "observed"
 	}
+	out.digest = resolutionDigest(out.state, out.customerID, out.sourceStaffID, out.targetStaffID)
+	return out, nil
+}
+
+func resolutionDigest(state string, customerID, sourceStaffID, targetStaffID int64) [32]byte {
 	raw, _ := json.Marshal(struct {
 		State                    string
 		Customer, Source, Target int64
-	}{out.state, out.customerID, out.sourceStaffID, out.targetStaffID})
-	out.digest = sha256.Sum256(raw)
-	return out, nil
+	}{state, customerID, sourceStaffID, targetStaffID})
+	return sha256.Sum256(raw)
 }
 
 func apply(ctx context.Context, pool *platformpostgres.Pool, m manifest, snapshotDigest [32]byte) (result, error) {
@@ -460,14 +463,26 @@ func verify(ctx context.Context, pool *platformpostgres.Pool, m manifest, snapsh
 	for _, row := range m.Rows {
 		digest := rowDigest(row)
 		subject, sourceRef, targetRef, resultFact := stringDigest(row.ExternalUserID), stringDigest(row.SourceOwnerUserID), stringDigest(row.TargetOwnerUserID), resultDigest(row)
-		var sourceDigest, subjectDigest, sourceStaffDigest, targetStaffDigest, savedResult []byte
+		var sourceDigest, subjectDigest, sourceStaffDigest, targetStaffDigest, savedResult, savedResolution []byte
 		var state, mode, sourceState string
 		var occurredAt time.Time
-		err = tx.QueryRow(ctx, `SELECT source_digest,source_subject_digest,source_staff_ref_digest,target_staff_ref_digest,source_result_digest,imported_state,mode,source_state,source_occurred_at FROM customer_owner_handoff_history_imports WHERE source_batch_id=$1 AND source_line_id=$2`, row.SourceBatchID, row.SourceLineID).Scan(&sourceDigest, &subjectDigest, &sourceStaffDigest, &targetStaffDigest, &savedResult, &state, &mode, &sourceState, &occurredAt)
+		var customerID, sourceStaffID, targetStaffID *int64
+		err = tx.QueryRow(ctx, `SELECT source_digest,source_subject_digest,source_staff_ref_digest,target_staff_ref_digest,source_result_digest,resolution_digest,imported_state,mode,source_state,source_occurred_at,customer_id,source_staff_id,target_staff_id FROM customer_owner_handoff_history_imports WHERE source_batch_id=$1 AND source_line_id=$2`, row.SourceBatchID, row.SourceLineID).Scan(&sourceDigest, &subjectDigest, &sourceStaffDigest, &targetStaffDigest, &savedResult, &savedResolution, &state, &mode, &sourceState, &occurredAt, &customerID, &sourceStaffID, &targetStaffID)
 		if err != nil {
 			return result{}, err
 		}
-		if string(sourceDigest) != string(digest[:]) || string(subjectDigest) != string(subject[:]) || string(sourceStaffDigest) != string(sourceRef[:]) || string(targetStaffDigest) != string(targetRef[:]) || string(savedResult) != string(resultFact[:]) || mode != row.Mode || sourceState != row.SourceState || !occurredAt.Equal(row.OccurredAt) {
+		var customerValue, sourceValue, targetValue int64
+		if customerID != nil {
+			customerValue = *customerID
+		}
+		if sourceStaffID != nil {
+			sourceValue = *sourceStaffID
+		}
+		if targetStaffID != nil {
+			targetValue = *targetStaffID
+		}
+		wantResolution := resolutionDigest(state, customerValue, sourceValue, targetValue)
+		if string(sourceDigest) != string(digest[:]) || string(subjectDigest) != string(subject[:]) || string(sourceStaffDigest) != string(sourceRef[:]) || string(targetStaffDigest) != string(targetRef[:]) || string(savedResult) != string(resultFact[:]) || string(savedResolution) != string(wantResolution[:]) || mode != row.Mode || sourceState != row.SourceState || !occurredAt.Equal(row.OccurredAt) {
 			return result{}, errors.New("history ledger drift")
 		}
 		switch state {

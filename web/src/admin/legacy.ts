@@ -86,9 +86,6 @@ const mountMemberGridHistory = deferredModule<
 const mountContactHistory = deferredModule<
   (typeof import("./sections/contactHistory"))["mountContactHistory"]
 >(() => import("./sections/contactHistory"), "mountContactHistory");
-const mountOwnerHandoff = deferredModule<
-  (typeof import("./sections/ownerHandoff"))["mountOwnerHandoff"]
->(() => import("./sections/ownerHandoff"), "mountOwnerHandoff");
 const mountSurveyUnresolvedHistory = deferredModule<
   (typeof import("./sections/surveyUnresolvedHistory"))["mountSurveyUnresolvedHistory"]
 >(
@@ -272,10 +269,6 @@ function boot(): void {
       historyID: historyParams.get("history_id") ?? undefined,
       customerID: historyParams.get("customer_id") ?? undefined,
     }).catch((error) => showLoadError(stage, error));
-    return;
-  }
-  if (page === "ownerMig") {
-    void mountOwnerHandoff(stage).catch((error) => showLoadError(stage, error));
     return;
   }
 

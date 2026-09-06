@@ -624,6 +624,22 @@ func TestRenderCouponsKeepsPR10AsTheOnlyAdminShell(t *testing.T) {
 	}
 }
 
+func TestRenderOwnerHandoffUsesV3StaticHostOnly(t *testing.T) {
+	renderer, err := NewRenderer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	err = renderer.RenderOwnerHandoff(response, AdminPageForRequest(httptest.NewRequest(http.MethodGet, "/admin/owner-migration", nil), "负责人迁移", "", "api.admin_owner_migration_page"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := response.Body.String()
+	if response.Code != http.StatusOK || strings.Count(body, `class="admin-sidebar"`) != 1 || !strings.Contains(body, `data-owner-handoff-host`) || !strings.Contains(body, `data-page="owner-handoff"`) || !strings.Contains(body, `/static/admin_console/owner_handoff_host.js`) || strings.Contains(body, `web/src/admin/`) {
+		t.Fatalf("owner handoff shell mismatch status=%d body=%q", response.Code, body)
+	}
+}
+
 func TestRenderAutomationUsesOnlyV3CreateCodeHostBinding(t *testing.T) {
 	renderer, err := NewRenderer()
 	if err != nil {
