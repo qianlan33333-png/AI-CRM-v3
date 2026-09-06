@@ -67,7 +67,7 @@ func TestCommercePaidPayloadDoesNotSplitProtocolByProductKind(t *testing.T) {
 	item := orderdomain.ItemSnapshot{LineNo: 1, ProductID: &productID, ProductCode: "course-9", ProductName: "课程九", UnitAmountMinor: 8900}
 	target := CommercePushTarget{
 		BuyerID: CommercePushIdentity{Kind: identitydomain.KindWeComExternalUserID, Scope: "wecom-corp:main"}, BuyerOpenID: CommercePushIdentity{Kind: identitydomain.KindMPOpenID, Scope: "wechat-app:mpmain"}, BuyerUnionID: CommercePushIdentity{Kind: identitydomain.KindUnionID, Scope: "wechat-open-platform:main"}, BuyerPhone: CommercePushIdentity{Kind: identitydomain.KindPhone, Scope: "phone:cn11"}, BeneficiaryPhone: CommercePushIdentity{Kind: identitydomain.KindPhone, Scope: "phone:cn11"},
-		CustomParams: map[string]string{"campaign": "fall", "source": "product"},
+		CustomParams: map[string]any{"campaign": "fall", "source": "product"},
 	}
 	body, missing, err := service.paidPayload(context.Background(), event, item, target, "commerce_standard")
 	if err != nil || missing {
@@ -97,7 +97,7 @@ func TestCommerceSyntheticPayloadUsesFrozenLegacyFieldNames(t *testing.T) {
 	body, err := commerceSyntheticPayload(7, "Test", CommercePushTarget{
 		Reference: "test-target", Slot: "paid", Endpoint: "http://127.0.0.1", Version: "v1", TenantID: "aicrm", AllowLoopbackHTTP: true,
 		BuyerID: CommercePushIdentity{Kind: identitydomain.KindWeComExternalUserID, Scope: "wecom-corp:main"}, BuyerOpenID: CommercePushIdentity{Kind: identitydomain.KindMPOpenID, Scope: "wechat-app:mpmain"}, BuyerUnionID: CommercePushIdentity{Kind: identitydomain.KindUnionID, Scope: "wechat-open-platform:main"}, BuyerPhone: CommercePushIdentity{Kind: identitydomain.KindPhone, Scope: "phone:cn11"}, BeneficiaryPhone: CommercePushIdentity{Kind: identitydomain.KindPhone, Scope: "phone:cn11"},
-		CustomParams: map[string]string{"campaign": "control"},
+		CustomParams: map[string]any{"campaign": "control"},
 	}, "commerce_test_1", at)
 	if err != nil {
 		t.Fatal(err)
@@ -108,5 +108,20 @@ func TestCommerceSyntheticPayloadUsesFrozenLegacyFieldNames(t *testing.T) {
 	}
 	if got := commercePushSignature([]byte("fixture-secret"), "1788570123", body); got == "" {
 		t.Fatal("synthetic signature was not built")
+	}
+}
+
+func TestCommerceEndpointPreservesFrozenQueryRequestTarget(t *testing.T) {
+	if !validCommerceEndpoint("https://push.example.test/legacy/callback?source=commerce&mode=v1", false) {
+		t.Fatal("frozen HTTPS endpoint query was rejected")
+	}
+	for _, raw := range []string{
+		"https://user:pass@push.example.test/callback?x=1",
+		"https://push.example.test/callback?x=1#fragment",
+		"https://push.example.test:444/callback?x=1",
+	} {
+		if validCommerceEndpoint(raw, false) {
+			t.Fatalf("unsafe endpoint accepted: %s", raw)
+		}
 	}
 }

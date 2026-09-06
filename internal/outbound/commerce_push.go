@@ -67,7 +67,7 @@ type CommercePushTarget struct {
 	BuyerID, BuyerOpenID, BuyerUnionID, BuyerPhone, BeneficiaryPhone CommercePushIdentity
 	PushType, Remark                                                 string
 	Day, Frequency                                                   *int64
-	CustomParams                                                     map[string]string
+	CustomParams                                                     map[string]any
 	AllowLoopbackHTTP                                                bool // fixture-only
 }
 
@@ -78,7 +78,7 @@ func (t CommercePushTarget) policyDigest() [32]byte {
 		BuyerID, BuyerOpenID, BuyerUnionID, BuyerPhone, BeneficiaryPhone CommercePushIdentity
 		PushType, Remark                                                 string
 		Day, Frequency                                                   *int64
-		CustomParams                                                     map[string]string
+		CustomParams                                                     map[string]any
 	}{t.Reference, t.Slot, t.Endpoint, t.Version, t.TenantID, t.BuyerID, t.BuyerOpenID, t.BuyerUnionID, t.BuyerPhone, t.BeneficiaryPhone, t.PushType, t.Remark, t.Day, t.Frequency, params}
 	raw, _ := json.Marshal(value)
 	return sha256.Sum256(raw)
@@ -105,19 +105,30 @@ func (t CommercePushTarget) valid() bool {
 	return validCommerceEndpoint(t.Endpoint, t.AllowLoopbackHTTP)
 }
 
-func cloneCommercePushParams(source map[string]string) map[string]string {
-	out := make(map[string]string, len(source))
-	for key, value := range source {
-		out[key] = value
+func cloneCommercePushParams(source map[string]any) map[string]any {
+	if source == nil {
+		return map[string]any{}
+	}
+	raw, err := json.Marshal(source)
+	if err != nil {
+		return nil
+	}
+	var out map[string]any
+	if json.Unmarshal(raw, &out) != nil {
+		return nil
 	}
 	return out
 }
-func validCommerceParams(values map[string]string) bool {
+func validCommerceParams(values map[string]any) bool {
 	if len(values) > 64 {
 		return false
 	}
 	for key, value := range values {
-		if !validCommerceText(key, 128) || len(value) > 4096 || !utf8.ValidString(value) || strings.TrimSpace(value) != value || reservedCommercePayloadField(key) {
+		if !validCommerceText(key, 128) {
+			return false
+		}
+		raw, err := json.Marshal(value)
+		if err != nil || !json.Valid(raw) || len(raw) > 4096 {
 			return false
 		}
 	}
@@ -253,6 +264,7 @@ func (s *CommercePushService) consumeOrderItemWithin(ctx context.Context, event 
 	if err != nil {
 		return err
 	}
+	target = commercePushTargetWithProductBusiness(target, configuration)
 	if !found || !target.valid() {
 		return s.planCommercePushWithin(ctx, commercePlannedIntent{sourceKind: "order_paid", sourceReference: sourceReference, orderEventID: event.ID, productID: *item.ProductID, productKind: configuration.ProductKind, targetReference: configuration.ConfigurationReference, targetSlot: targetSlot, revision: configuration.Revision, sourceDigest: event.SourceDigest, state: "planned_target_unavailable"})
 	}
@@ -286,6 +298,7 @@ func (s *CommercePushService) AcceptExternalPushTestWithin(ctx context.Context, 
 	if err != nil {
 		return productport.ExternalPushTest{}, err
 	}
+	target = commercePushTargetWithProductBusiness(target, configuration)
 	if !found || !target.valid() || !s.targets.CommercePushProviderEnabled() || s.cipher == nil {
 		return productport.ExternalPushTest{}, ErrCommercePushConflict
 	}
@@ -331,6 +344,12 @@ func commerceTargetReference(configuration productport.ExternalPushConfiguration
 		return configuration.ConfigurationReference
 	}
 	return "unconfigured"
+}
+
+func commercePushTargetWithProductBusiness(target CommercePushTarget, configuration productport.ExternalPushConfiguration) CommercePushTarget {
+	target.PushType, target.Day, target.Frequency, target.Remark = configuration.PushType, configuration.Day, configuration.Frequency, configuration.Remark
+	target.CustomParams = cloneCommercePushParams(configuration.CustomParams)
+	return target
 }
 func commerceDeliveryID(eventID int64, lineNo int32, slot string) string {
 	d := sha256.Sum256([]byte("commerce-push-delivery.v1\x00" + strconv.FormatInt(eventID, 10) + "\x00" + strconv.FormatInt(int64(lineNo), 10) + "\x00" + slot))
@@ -645,10 +664,10 @@ func commerceSyntheticPayload(productID productport.ID, productName string, targ
 			ID   string `json:"id"`
 			Name string `json:"name"`
 		} `json:"product"`
-		CustomParams map[string]string `json:"custom_params"`
+		CustomParams map[string]any `json:"custom_params"`
 	}{Event: "external_push.test", DeliveryID: deliveryID, OccurredAt: commerceUTC(occurredAt), CustomParams: cloneCommercePushParams(target.CustomParams)}
 	if body.CustomParams == nil {
-		body.CustomParams = map[string]string{}
+		body.CustomParams = map[string]any{}
 	}
 	body.Tenant.ID = target.TenantID
 	if body.Tenant.ID == "" {
@@ -658,17 +677,9 @@ func commerceSyntheticPayload(productID productport.ID, productName string, targ
 	return json.Marshal(body)
 }
 
-func reservedCommercePayloadField(key string) bool {
-	switch key {
-	case "phone_number", "type", "day", "frequency", "remark", "submitted_at", "questionnaire_title", "delivery_id", "event", "order", "product", "buyer", "transaction", "domain_event_outbox_id", "tenant", "occurred_at":
-		return true
-	}
-	return false
-}
-
 func validCommerceEndpoint(raw string, allowLoopback bool) bool {
 	parsed, err := url.Parse(raw)
-	if err != nil || parsed.User != nil || parsed.Host == "" || parsed.Fragment != "" || parsed.RawQuery != "" || raw != strings.TrimSpace(raw) {
+	if err != nil || parsed.User != nil || parsed.Host == "" || parsed.Fragment != "" || raw != strings.TrimSpace(raw) {
 		return false
 	}
 	port := parsed.Port()

@@ -645,7 +645,7 @@ func (r *Repository) readExternalPushConfiguration(ctx context.Context, id produ
 	if id < 1 || !validExternalKind(kind) {
 		return productport.ExternalPushConfiguration{}, ErrInvalid
 	}
-	query := `SELECT p.id,COALESCE(c.enabled,FALSE),COALESCE(c.configuration_reference,''),COALESCE(c.version,1),COALESCE(c.updated_at,p.updated_at)
+	query := `SELECT p.id,COALESCE(c.enabled,FALSE),COALESCE(c.configuration_reference,''),COALESCE(c.push_type,''),c.day,c.frequency,COALESCE(c.remark,''),COALESCE(c.custom_params,'{}'::jsonb),COALESCE(c.version,1),COALESCE(c.updated_at,p.updated_at)
 FROM products p LEFT JOIN product_external_push_configurations c ON c.product_id=p.id AND c.product_kind=$2
 WHERE p.id=$1 AND ` + serviceKindStatus(kind)
 	if forUpdate {
@@ -653,7 +653,8 @@ WHERE p.id=$1 AND ` + serviceKindStatus(kind)
 	}
 	var result productport.ExternalPushConfiguration
 	var enabled bool
-	err = tx.QueryRow(ctx, query, int64(id), string(kind)).Scan(&result.ProductID, &enabled, &result.ConfigurationReference, &result.Revision, &result.UpdatedAt)
+	var customRaw []byte
+	err = tx.QueryRow(ctx, query, int64(id), string(kind)).Scan(&result.ProductID, &enabled, &result.ConfigurationReference, &result.PushType, &result.Day, &result.Frequency, &result.Remark, &customRaw, &result.Revision, &result.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return productport.ExternalPushConfiguration{}, productport.ErrProductReadNotFound
 	}
@@ -661,6 +662,9 @@ WHERE p.id=$1 AND ` + serviceKindStatus(kind)
 		return productport.ExternalPushConfiguration{}, mapDatabaseError(err)
 	}
 	result.ProductKind, result.Enabled = kind, enabled
+	if result.CustomParams, err = decodeCommerceExternalPushParams(customRaw); err != nil {
+		return productport.ExternalPushConfiguration{}, productport.ErrProductReadUnavailable
+	}
 	return result, nil
 }
 
@@ -673,17 +677,21 @@ func (r *Repository) ReadCommerceExternalPushConfigurationForOrder(ctx context.C
 		return productport.ExternalPushConfiguration{}, ErrInvalid
 	}
 	query := `SELECT p.id,
-  CASE WHEN p.legacy_admin_projection ->> 'status'='service_period' THEN 'service_period' ELSE 'wechat_pay' END,
-  COALESCE(c.enabled,FALSE),COALESCE(c.configuration_reference,''),COALESCE(c.version,1),p.name,COALESCE(c.updated_at,p.updated_at)
+  CASE WHEN p.legacy_admin_projection ->> 'status' IN ('service_period_draft','service_period_enabled','service_period_disabled','service_period_archived') THEN 'service_period' ELSE 'wechat_pay' END,
+  COALESCE(c.enabled,FALSE),COALESCE(c.configuration_reference,''),COALESCE(c.push_type,''),c.day,c.frequency,COALESCE(c.remark,''),COALESCE(c.custom_params,'{}'::jsonb),COALESCE(c.version,1),p.name,COALESCE(c.updated_at,p.updated_at)
 FROM products p
-LEFT JOIN product_external_push_configurations c ON c.product_id=p.id AND c.product_kind=CASE WHEN p.legacy_admin_projection ->> 'status'='service_period' THEN 'service_period' ELSE 'wechat_pay' END
+LEFT JOIN product_external_push_configurations c ON c.product_id=p.id AND c.product_kind=CASE WHEN p.legacy_admin_projection ->> 'status' IN ('service_period_draft','service_period_enabled','service_period_disabled','service_period_archived') THEN 'service_period' ELSE 'wechat_pay' END
 WHERE p.id=$1
 FOR UPDATE OF p`
 	var result productport.ExternalPushConfiguration
-	if err = tx.QueryRow(ctx, query, int64(id)).Scan(&result.ProductID, &result.ProductKind, &result.Enabled, &result.ConfigurationReference, &result.Revision, &result.ProductName, &result.UpdatedAt); errors.Is(err, pgx.ErrNoRows) {
+	var customRaw []byte
+	if err = tx.QueryRow(ctx, query, int64(id)).Scan(&result.ProductID, &result.ProductKind, &result.Enabled, &result.ConfigurationReference, &result.PushType, &result.Day, &result.Frequency, &result.Remark, &customRaw, &result.Revision, &result.ProductName, &result.UpdatedAt); errors.Is(err, pgx.ErrNoRows) {
 		return productport.ExternalPushConfiguration{}, productport.ErrProductReadNotFound
 	} else if err != nil {
 		return productport.ExternalPushConfiguration{}, mapDatabaseError(err)
+	}
+	if result.CustomParams, err = decodeCommerceExternalPushParams(customRaw); err != nil {
+		return productport.ExternalPushConfiguration{}, productport.ErrProductReadUnavailable
 	}
 	return result, nil
 }
@@ -704,15 +712,45 @@ func (r *Repository) SaveCommerceExternalPushConfiguration(ctx context.Context, 
 	if err != nil {
 		return productport.ExternalPushConfiguration{}, mapDatabaseError(err)
 	}
+	customParams, err := encodeCommerceExternalPushParams(value.CustomParams)
+	if err != nil {
+		return productport.ExternalPushConfiguration{}, ErrInvalid
+	}
 	var result productport.ExternalPushConfiguration
-	err = tx.QueryRow(ctx, `INSERT INTO product_external_push_configurations(product_id,product_kind,enabled,configuration_reference,version,updated_at)
-VALUES($1,$2,$3,$4,1,$5)
-ON CONFLICT(product_id,product_kind) DO UPDATE SET enabled=EXCLUDED.enabled,configuration_reference=EXCLUDED.configuration_reference,version=product_external_push_configurations.version+1,updated_at=EXCLUDED.updated_at
-RETURNING product_id,product_kind,enabled,configuration_reference,version,updated_at`, productID, string(value.ProductKind), value.Enabled, value.ConfigurationReference, now.UTC()).Scan(&result.ProductID, &result.ProductKind, &result.Enabled, &result.ConfigurationReference, &result.Revision, &result.UpdatedAt)
+	var customRaw []byte
+	err = tx.QueryRow(ctx, `INSERT INTO product_external_push_configurations(product_id,product_kind,enabled,configuration_reference,push_type,day,frequency,remark,custom_params,version,updated_at)
+VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,1,$10)
+ON CONFLICT(product_id,product_kind) DO UPDATE SET enabled=EXCLUDED.enabled,configuration_reference=EXCLUDED.configuration_reference,push_type=EXCLUDED.push_type,day=EXCLUDED.day,frequency=EXCLUDED.frequency,remark=EXCLUDED.remark,custom_params=EXCLUDED.custom_params,version=product_external_push_configurations.version+1,updated_at=EXCLUDED.updated_at
+RETURNING product_id,product_kind,enabled,configuration_reference,push_type,day,frequency,remark,custom_params,version,updated_at`, productID, string(value.ProductKind), value.Enabled, value.ConfigurationReference, value.PushType, value.Day, value.Frequency, value.Remark, customParams, now.UTC()).Scan(&result.ProductID, &result.ProductKind, &result.Enabled, &result.ConfigurationReference, &result.PushType, &result.Day, &result.Frequency, &result.Remark, &customRaw, &result.Revision, &result.UpdatedAt)
 	if err != nil {
 		return productport.ExternalPushConfiguration{}, mapDatabaseError(err)
 	}
+	if result.CustomParams, err = decodeCommerceExternalPushParams(customRaw); err != nil {
+		return productport.ExternalPushConfiguration{}, productport.ErrProductReadUnavailable
+	}
 	return result, nil
+}
+
+func encodeCommerceExternalPushParams(value map[string]any) ([]byte, error) {
+	if value == nil {
+		value = map[string]any{}
+	}
+	raw, err := json.Marshal(value)
+	if err != nil || !json.Valid(raw) {
+		return nil, ErrInvalid
+	}
+	return raw, nil
+}
+
+func decodeCommerceExternalPushParams(raw []byte) (map[string]any, error) {
+	if len(raw) == 0 {
+		return map[string]any{}, nil
+	}
+	var value map[string]any
+	if json.Unmarshal(raw, &value) != nil || value == nil {
+		return nil, ErrInvalid
+	}
+	return value, nil
 }
 
 func (r *Repository) CommerceExternalPushTestExists(ctx context.Context, id productport.ID, kind productport.ExternalPushProductKind, configurationDigest [32]byte) (bool, error) {

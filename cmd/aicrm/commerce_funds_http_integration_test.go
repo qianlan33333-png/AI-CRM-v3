@@ -17,6 +17,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strconv"
 	"sync"
 	"testing"
@@ -47,6 +48,7 @@ import (
 	platformjobqueue "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/jobqueue"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 	productport "github.com/qianlan33333-png/AI-CRM-v3/internal/product/port"
+	productstore "github.com/qianlan33333-png/AI-CRM-v3/internal/product/store"
 )
 
 type commerceFundsSecurity struct{}
@@ -127,7 +129,100 @@ var _ outbound.CommercePushTargetResolver = commerceFundsPushTargets{}
 
 type commerceFundsPushDelivery struct {
 	event, deliveryID, timestamp, signature string
+	requestTarget                           string
 	body                                    []byte
+}
+
+func TestPostgreSQLProductExternalPushBusinessParametersRoundTrip(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	databaseURL, cleanup := adminAccessCompositionDatabase(t, ctx)
+	defer cleanup()
+	config, err := pgxpool.ParseConfig(databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool, err := pgxpool.NewWithConfig(ctx, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	wrapped, err := platformpostgres.Wrap(pool, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wrapped.Close()
+	uow, err := platformpostgres.NewUnitOfWork(wrapped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := productstore.NewPostgreSQL(pool, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ordinaryID, serviceID int64
+	ordinaryProjection := `{"schema_version":1,"status":"enabled","enabled":true}`
+	serviceProjection := `{"schema_version":1,"status":"service_period_enabled","enabled":true}`
+	if err = pool.QueryRow(ctx, `INSERT INTO products(product_code,name,price_minor,currency,stock_quantity,created_by,legacy_admin_projection) VALUES('push-product','外推商品',1200,'CNY',1,1,$1::jsonb) RETURNING id`, ordinaryProjection).Scan(&ordinaryID); err != nil {
+		t.Fatal(err)
+	}
+	if err = pool.QueryRow(ctx, `INSERT INTO products(product_code,name,price_minor,currency,stock_quantity,created_by,legacy_admin_projection) VALUES('push-service','外推周期商品',1200,'CNY',1,1,$1::jsonb) RETURNING id`, serviceProjection).Scan(&serviceID); err != nil {
+		t.Fatal(err)
+	}
+	day, frequency := int64(30), int64(1)
+	value := productport.ExternalPushConfiguration{
+		ProductID: productport.ID(ordinaryID), ProductKind: productport.ExternalPushWeChatPay, Enabled: true, ConfigurationReference: "product-push-roundtrip",
+		PushType: "member_open", Day: &day, Frequency: &frequency, Remark: "保留业务备注", CustomParams: map[string]any{"number": float64(2), "flag": false, "nil": nil, "nested": []any{" 空白 ", map[string]any{"k": true}}},
+	}
+	now := time.Date(2026, 9, 6, 5, 0, 0, 0, time.UTC)
+	var saved, read, orderRead productport.ExternalPushConfiguration
+	if err = uow.Within(ctx, func(tx context.Context) error {
+		var saveErr error
+		saved, saveErr = repository.SaveCommerceExternalPushConfiguration(tx, value, now)
+		return saveErr
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err = uow.Within(ctx, func(tx context.Context) error {
+		var readErr error
+		read, readErr = repository.ReadCommerceExternalPushConfiguration(tx, productport.ID(ordinaryID), productport.ExternalPushWeChatPay)
+		if readErr != nil {
+			return readErr
+		}
+		orderRead, readErr = repository.ReadCommerceExternalPushConfigurationForOrder(tx, productport.ID(ordinaryID))
+		return readErr
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if saved.Revision != 1 || read.Revision != 1 || orderRead.ProductKind != productport.ExternalPushWeChatPay || orderRead.PushType != "member_open" || orderRead.Day == nil || *orderRead.Day != 30 || orderRead.Frequency == nil || *orderRead.Frequency != 1 || orderRead.Remark != "保留业务备注" || !commerceFundsJSONEquivalent(t, orderRead.CustomParams, value.CustomParams) {
+		t.Fatalf("saved=%#v read=%#v order=%#v", saved, read, orderRead)
+	}
+	if err = uow.Within(ctx, func(tx context.Context) error {
+		service, readErr := repository.ReadCommerceExternalPushConfigurationForOrder(tx, productport.ID(serviceID))
+		if readErr != nil {
+			return readErr
+		}
+		if service.ProductKind != productport.ExternalPushServicePeriod {
+			return errors.New("service-period product classified as ordinary")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pool.Exec(ctx, `UPDATE product_external_push_configurations SET custom_params='[]'::jsonb WHERE product_id=$1`, ordinaryID); err == nil {
+		t.Fatal("database accepted a non-object custom_params shape")
+	}
+}
+
+func commerceFundsJSONEquivalent(t *testing.T, left, right any) bool {
+	t.Helper()
+	leftRaw, leftErr := json.Marshal(left)
+	rightRaw, rightErr := json.Marshal(right)
+	if leftErr != nil || rightErr != nil {
+		t.Fatalf("marshal values %v/%v", leftErr, rightErr)
+	}
+	var leftValue, rightValue any
+	return json.Unmarshal(leftRaw, &leftValue) == nil && json.Unmarshal(rightRaw, &rightValue) == nil && reflect.DeepEqual(leftValue, rightValue)
 }
 
 // TestPostgreSQLCommerceFundsHTTPJourney validates the actual composition-root
@@ -241,20 +336,19 @@ func TestPostgreSQLCommerceFundsHTTPJourney(t *testing.T) {
 		deliveryLock.Lock()
 		deliveries = append(deliveries, commerceFundsPushDelivery{
 			event: request.Header.Get("X-AICRM-Event"), deliveryID: request.Header.Get("X-AICRM-Delivery-Id"),
-			timestamp: request.Header.Get("X-AICRM-Timestamp"), signature: request.Header.Get("X-AICRM-Signature"), body: append([]byte(nil), body...),
+			timestamp: request.Header.Get("X-AICRM-Timestamp"), signature: request.Header.Get("X-AICRM-Signature"), requestTarget: request.URL.RequestURI(), body: append([]byte(nil), body...),
 		})
 		deliveryLock.Unlock()
 		writer.WriteHeader(http.StatusNoContent)
 	}))
 	defer receiver.Close()
 	commerceTarget := outbound.CommercePushTarget{
-		Reference: "commerce-funds-target", Slot: "commerce-funds-slot", Endpoint: receiver.URL, SigningKey: []byte("commerce-funds-signing-key"), Version: "legacy-v1", TenantID: "aicrm", AllowLoopbackHTTP: true,
+		Reference: "commerce-funds-target", Slot: "commerce-funds-slot", Endpoint: receiver.URL + "/legacy/push?tenant=commerce&mode=paid", SigningKey: []byte("commerce-funds-signing-key"), Version: "legacy-v1", TenantID: "aicrm", AllowLoopbackHTTP: true,
 		BuyerID:          outbound.CommercePushIdentity{Kind: identitydomain.KindWeComExternalUserID, Scope: "wecom-corp:commerce-fixture"},
 		BuyerOpenID:      outbound.CommercePushIdentity{Kind: identitydomain.KindMPOpenID, Scope: "wechat-app:commerce-fixture"},
 		BuyerUnionID:     outbound.CommercePushIdentity{Kind: identitydomain.KindUnionID, Scope: "wechat-open-platform:commerce-fixture"},
 		BuyerPhone:       outbound.CommercePushIdentity{Kind: identitydomain.KindPhone, Scope: "phone:cn11"},
 		BeneficiaryPhone: outbound.CommercePushIdentity{Kind: identitydomain.KindPhone, Scope: "phone:cn11"},
-		PushType:         "service_period", Remark: "commerce-funds-fixture",
 	}
 	if err = outbound.ValidateCommercePushTarget(commerceTarget); err != nil {
 		t.Fatal(err)
@@ -263,7 +357,7 @@ func TestPostgreSQLCommerceFundsHTTPJourney(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	commercePush, err := outbound.NewCommercePushService(pool, uow, effectStore, commerceFundsPushConfiguration{value: productport.ExternalPushConfiguration{ProductID: product.ID, ProductKind: productport.ExternalPushServicePeriod, Enabled: true, ConfigurationReference: commerceTarget.Reference, Revision: 1, ProductName: product.Name, UpdatedAt: now}}, commerceFundsPushIdentityReader{customerID: customerID}, commerceFundsPushTargets{target: commerceTarget}, commerceCipher)
+	commercePush, err := outbound.NewCommercePushService(pool, uow, effectStore, commerceFundsPushConfiguration{value: productport.ExternalPushConfiguration{ProductID: product.ID, ProductKind: productport.ExternalPushServicePeriod, Enabled: true, ConfigurationReference: commerceTarget.Reference, PushType: "service_period", Day: commerceFundsInt64(30), Frequency: commerceFundsInt64(1), Remark: "commerce-funds-fixture", CustomParams: map[string]any{"nested": map[string]any{"not": "paid payload"}}, Revision: 1, ProductName: product.Name, UpdatedAt: now}}, commerceFundsPushIdentityReader{customerID: customerID}, commerceFundsPushTargets{target: commerceTarget}, commerceCipher)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -454,6 +548,8 @@ func TestPostgreSQLCommerceFundsHTTPJourney(t *testing.T) {
 	commerceFundsAssertFinal(t, ctx, pool, orderID, paymentID, merchant, firstEnd, firstUpdated)
 }
 
+func commerceFundsInt64(value int64) *int64 { return &value }
+
 func commerceFundsJSON(t *testing.T, value any) []byte {
 	t.Helper()
 	body, err := json.Marshal(value)
@@ -581,11 +677,15 @@ func commerceFundsAssertPushDelivered(t *testing.T, ctx context.Context, pool *p
 	_, _ = mac.Write([]byte("."))
 	_, _ = mac.Write(delivery.body)
 	expectedSignature := "sha256=" + hex.EncodeToString(mac.Sum(nil))
-	if delivery.event != "transaction.paid" || delivery.deliveryID == "" || delivery.timestamp == "" || !hmac.Equal([]byte(delivery.signature), []byte(expectedSignature)) {
-		t.Fatalf("legacy signed delivery contract event=%q delivery_present=%t timestamp_present=%t signature_match=%t", delivery.event, delivery.deliveryID != "", delivery.timestamp != "", hmac.Equal([]byte(delivery.signature), []byte(expectedSignature)))
+	if delivery.event != "transaction.paid" || delivery.deliveryID == "" || delivery.timestamp == "" || delivery.requestTarget != "/legacy/push?tenant=commerce&mode=paid" || !hmac.Equal([]byte(delivery.signature), []byte(expectedSignature)) {
+		t.Fatalf("legacy signed delivery contract event=%q delivery_present=%t timestamp_present=%t request_target=%q signature_match=%t", delivery.event, delivery.deliveryID != "", delivery.timestamp != "", delivery.requestTarget, hmac.Equal([]byte(delivery.signature), []byte(expectedSignature)))
 	}
 	var body struct {
 		PhoneNumber string `json:"phone_number"`
+		PushType    string `json:"type"`
+		Day         *int64 `json:"day"`
+		Frequency   *int64 `json:"frequency"`
+		Remark      string `json:"remark"`
 		Event       string `json:"event"`
 		DeliveryID  string `json:"delivery_id"`
 		Order       struct {
@@ -604,7 +704,7 @@ func commerceFundsAssertPushDelivered(t *testing.T, ctx context.Context, pool *p
 		DomainEventOutboxID int64 `json:"domain_event_outbox_id"`
 	}
 	var raw map[string]json.RawMessage
-	if json.Unmarshal(delivery.body, &body) != nil || json.Unmarshal(delivery.body, &raw) != nil || body.PhoneNumber != "13800138000" || body.Event != "transaction.paid" || body.DeliveryID != delivery.deliveryID || body.Order.Status != "paid" || body.Order.PaidAmount != 1000 || body.Product.Price != 1200 || body.Buyer.ID != "fixture-buyer" || body.Buyer.OpenID != "fixt***enid" || body.Buyer.UnionID != "fixture-unionid" || body.Buyer.Phone != "13800138000" || body.Transaction.TransactionID != "tx-commerce-funds" || body.Transaction.TradeState != "SUCCESS" || body.Transaction.SuccessTime == "" || body.DomainEventOutboxID < 1 {
+	if json.Unmarshal(delivery.body, &body) != nil || json.Unmarshal(delivery.body, &raw) != nil || body.PhoneNumber != "13800138000" || body.PushType != "service_period" || body.Day == nil || *body.Day != 30 || body.Frequency == nil || *body.Frequency != 1 || body.Remark != "commerce-funds-fixture" || body.Event != "transaction.paid" || body.DeliveryID != delivery.deliveryID || body.Order.Status != "paid" || body.Order.PaidAmount != 1000 || body.Product.Price != 1200 || body.Buyer.ID != "fixture-buyer" || body.Buyer.OpenID != "fixt***enid" || body.Buyer.UnionID != "fixture-unionid" || body.Buyer.Phone != "13800138000" || body.Transaction.TransactionID != "tx-commerce-funds" || body.Transaction.TradeState != "SUCCESS" || body.Transaction.SuccessTime == "" || body.DomainEventOutboxID < 1 {
 		t.Fatalf("legacy paid payload did not preserve frozen member, transaction, and payer facts")
 	}
 	if _, found := raw["custom_params"]; found {

@@ -19,11 +19,13 @@ func TestCommercePushTargetsAreProtectedTypedWhitelist(t *testing.T) {
 	if err != nil || !found || string(first.SigningKey) != "fixture-signing-key" || first.Endpoint != "https://push.example.test" {
 		t.Fatalf("target=%+v found=%t err=%v", first, found, err)
 	}
+	if first.PushType != "" || first.Remark != "" || first.Day != nil || first.Frequency != nil || len(first.CustomParams) != 0 {
+		t.Fatalf("runtime target retained Product-owned business parameters: %+v", first)
+	}
 	first.SigningKey[0] = 'X'
-	first.CustomParams["campaign"] = "mutated"
 	second, found, err := resolver.CommercePushTarget(context.Background(), "product-paid")
-	if err != nil || !found || string(second.SigningKey) != "fixture-signing-key" || second.CustomParams["campaign"] != "control" {
-		t.Fatalf("target leaked mutable target data=%+v found=%t err=%v", second, found, err)
+	if err != nil || !found || string(second.SigningKey) != "fixture-signing-key" {
+		t.Fatalf("target leaked mutable protected data=%+v found=%t err=%v", second, found, err)
 	}
 	if _, found, err = resolver.CommercePushTarget(context.Background(), "unknown"); err != nil || found {
 		t.Fatalf("unknown target found=%t err=%v", found, err)

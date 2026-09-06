@@ -23,6 +23,11 @@ type ExternalPushConfiguration struct {
 	ProductKind            ExternalPushProductKind `json:"product_kind"`
 	Enabled                bool                    `json:"enabled"`
 	ConfigurationReference string                  `json:"configuration_reference,omitempty"`
+	PushType               string                  `json:"type"`
+	Day                    *int64                  `json:"day"`
+	Frequency              *int64                  `json:"frequency"`
+	Remark                 string                  `json:"remark"`
+	CustomParams           map[string]any          `json:"custom_params"`
 	Revision               int64                   `json:"revision"`
 	ProductName            string                  `json:"-"`
 	UpdatedAt              time.Time               `json:"updated_at"`
@@ -33,8 +38,17 @@ type SaveExternalPushConfigurationCommand struct {
 	ProductKind            ExternalPushProductKind
 	Enabled                bool
 	ConfigurationReference string
-	Actor                  int64
-	IdempotencyKey         string
+	// When false, old frozen hosts update only the opaque binding and retain
+	// Product-owned business parameters. The V3 host submits a complete set.
+	BusinessParametersSet bool
+	PushType              string
+	Day                   *int64
+	Frequency             *int64
+	Remark                string
+	CustomParams          map[string]any
+	ExpectedRevision      int64
+	Actor                 int64
+	IdempotencyKey        string
 }
 
 type QueueExternalPushTestCommand struct {

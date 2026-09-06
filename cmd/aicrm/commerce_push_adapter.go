@@ -26,11 +26,6 @@ type commercePushTargetConfig struct {
 	BuyerUnionID     outbound.CommercePushIdentity `json:"buyer_unionid"`
 	BuyerPhone       outbound.CommercePushIdentity `json:"buyer_phone"`
 	BeneficiaryPhone outbound.CommercePushIdentity `json:"beneficiary_phone"`
-	PushType         string                        `json:"type"`
-	Remark           string                        `json:"remark"`
-	Day              *int64                        `json:"day"`
-	Frequency        *int64                        `json:"frequency"`
-	CustomParams     map[string]string             `json:"custom_params"`
 }
 
 // commercePushTargets is the composition-owned whitelist. It returns copies
@@ -51,16 +46,7 @@ func (c commercePushTargets) CommercePushTarget(_ context.Context, reference str
 		return outbound.CommercePushTarget{}, false, nil
 	}
 	value.SigningKey = append([]byte(nil), value.SigningKey...)
-	value.CustomParams = cloneCommercePushTargetParams(value.CustomParams)
 	return value, true, nil
-}
-
-func cloneCommercePushTargetParams(source map[string]string) map[string]string {
-	out := make(map[string]string, len(source))
-	for key, value := range source {
-		out[key] = value
-	}
-	return out
 }
 
 func commercePushTargetsFromRuntime(value platformconfig.CommercePush) (commercePushTargets, error) {
@@ -88,8 +74,7 @@ func commercePushTargetsFromRuntime(value platformconfig.CommercePush) (commerce
 			Reference: reference, Slot: source.Slot, Endpoint: source.Endpoint, SigningKey: signingKey,
 			Version: source.Version, TenantID: source.TenantID, BuyerID: source.BuyerID,
 			BuyerOpenID: source.BuyerOpenID, BuyerUnionID: source.BuyerUnionID, BuyerPhone: source.BuyerPhone,
-			BeneficiaryPhone: source.BeneficiaryPhone, PushType: source.PushType, Remark: source.Remark,
-			Day: source.Day, Frequency: source.Frequency, CustomParams: cloneCommercePushTargetParams(source.CustomParams),
+			BeneficiaryPhone: source.BeneficiaryPhone,
 		}
 		if err := outbound.ValidateCommercePushTarget(target); err != nil {
 			return commercePushTargets{}, errors.New("invalid commerce push target configuration")

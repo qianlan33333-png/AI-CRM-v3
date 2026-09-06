@@ -207,6 +207,40 @@ func TestCommerceExternalPushSavesReadsAndReplaysLocally(t *testing.T) {
 	}
 }
 
+func TestCommerceExternalPushBusinessParametersFreezeJSONTypesAndLegacyBindingPreservesThem(t *testing.T) {
+	day, frequency := int64(45), int64(2)
+	updated := time.Date(2026, 9, 6, 4, 0, 0, 0, time.UTC)
+	store := &commerceExternalPushTestStore{
+		products: map[productport.ID]productport.ExternalPushProductKind{81: productport.ExternalPushWeChatPay},
+		configs: map[productport.ID]productport.ExternalPushConfiguration{81: {
+			ProductID: 81, ProductKind: productport.ExternalPushWeChatPay, Enabled: true, ConfigurationReference: "product-push-81",
+			PushType: "member_open", Day: &day, Frequency: &frequency, Remark: "旧备注", CustomParams: map[string]any{"old": true}, Revision: 3, UpdatedAt: updated,
+		}},
+		receipts: map[string]Receipt{},
+	}
+	service, _ := newCommerceExternalPushTestService(store, &commerceExternalPushTestEffects{})
+	command := productport.SaveExternalPushConfigurationCommand{
+		ProductID: 81, ProductKind: productport.ExternalPushWeChatPay, Enabled: true, ConfigurationReference: "product-push-81",
+		BusinessParametersSet: true, PushType: "member_renew", Day: &day, Frequency: &frequency, Remark: "保留业务备注",
+		CustomParams:     map[string]any{"count": float64(2), "flag": false, "nil": nil, "nested": []any{" 空白 ", map[string]any{"k": true}}},
+		ExpectedRevision: 3, Actor: 7, IdempotencyKey: "commerce-push-business-0001",
+	}
+	first, err := service.SaveExternalPushConfiguration(context.Background(), command)
+	if err != nil || first.Revision != 4 || !sameCommerceExternalPushBusiness(first, productport.ExternalPushConfiguration{PushType: command.PushType, Day: command.Day, Frequency: command.Frequency, Remark: command.Remark, CustomParams: command.CustomParams}) {
+		t.Fatalf("first=%#v err=%v", first, err)
+	}
+	legacy := productport.SaveExternalPushConfigurationCommand{ProductID: 81, ProductKind: productport.ExternalPushWeChatPay, Enabled: false, ConfigurationReference: "", Actor: 7, IdempotencyKey: "commerce-push-business-0002", ExpectedRevision: first.Revision}
+	second, err := service.SaveExternalPushConfiguration(context.Background(), legacy)
+	if err != nil || second.Enabled || second.Revision != 5 || !sameCommerceExternalPushBusiness(second, first) {
+		t.Fatalf("legacy=%#v err=%v", second, err)
+	}
+	stale := command
+	stale.IdempotencyKey, stale.ExpectedRevision = "commerce-push-business-0003", first.Revision
+	if _, err = service.SaveExternalPushConfiguration(context.Background(), stale); !errors.Is(err, ErrConflict) {
+		t.Fatalf("stale CAS err=%v", err)
+	}
+}
+
 func TestCommerceExternalPushTestCreatesOnlyAcceptedLocalEERFactAndReplays(t *testing.T) {
 	updated := time.Date(2026, 8, 25, 11, 0, 0, 0, time.UTC)
 	store := &commerceExternalPushTestStore{

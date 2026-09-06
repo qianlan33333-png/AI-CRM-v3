@@ -8,6 +8,26 @@
 ALTER TABLE product_external_push_configurations
     ADD COLUMN IF NOT EXISTS version BIGINT NOT NULL DEFAULT 1 CHECK (version > 0);
 
+
+-- Product owns the non-sensitive business fields from the frozen commerce
+-- configuration. The protected runtime target remains responsible only for
+-- endpoint, signing material and identity selectors.
+ALTER TABLE product_external_push_configurations
+    ADD COLUMN IF NOT EXISTS push_type TEXT NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS day BIGINT NULL,
+    ADD COLUMN IF NOT EXISTS frequency BIGINT NULL,
+    ADD COLUMN IF NOT EXISTS remark TEXT NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS custom_params JSONB NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE product_external_push_configurations
+    ADD CONSTRAINT product_external_push_business_shape CHECK (
+      push_type = btrim(push_type) AND char_length(push_type) <= 200
+      AND remark = btrim(remark) AND char_length(remark) <= 2000
+      AND (day IS NULL OR day >= 0)
+      AND (frequency IS NULL OR frequency >= 0)
+      AND jsonb_typeof(custom_params) = 'object'
+      AND pg_column_size(custom_params) <= 32768
+    );
+
 -- Old 0010 intentionally admitted only one local placeholder test per
 -- configuration digest. A real explicit test operation is keyed by its
 -- Product receipt instead, so an administrator can make a second deliberate

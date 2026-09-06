@@ -146,16 +146,25 @@ func (service *CommerceExternalPushService) SaveExternalPushConfiguration(
 		if !owned {
 			return decodeCommerceExternalPushSnapshot(receipt.ResultSnapshot, &result, command.ProductID, command.ProductKind)
 		}
-		value := productport.ExternalPushConfiguration{
-			ProductID: command.ProductID, ProductKind: command.ProductKind,
-			Enabled: command.Enabled, ConfigurationReference: command.ConfigurationReference,
+		value, readErr := service.store.LockCommerceExternalPushConfiguration(tx, command.ProductID, command.ProductKind)
+		if readErr != nil {
+			return readErr
+		}
+		if command.ExpectedRevision > 0 && value.Revision != command.ExpectedRevision {
+			return ErrConflict
+		}
+		value.Enabled, value.ConfigurationReference = command.Enabled, command.ConfigurationReference
+		if command.BusinessParametersSet {
+			value.PushType, value.Day, value.Frequency, value.Remark = command.PushType, command.Day, command.Frequency, command.Remark
+			value.CustomParams = cloneCommerceExternalPushParams(command.CustomParams)
 		}
 		result, reserveErr = service.store.SaveCommerceExternalPushConfiguration(tx, value, now)
 		if reserveErr != nil {
 			return reserveErr
 		}
 		if !validExternalPushConfiguration(result, command.ProductID, command.ProductKind) ||
-			result.Enabled != command.Enabled || result.ConfigurationReference != command.ConfigurationReference {
+			result.Enabled != command.Enabled || result.ConfigurationReference != command.ConfigurationReference ||
+			(command.BusinessParametersSet && !sameCommerceExternalPushBusiness(result, value)) {
 			return ErrUnavailable
 		}
 		if eventErr := service.appendEvent(tx, productport.EventExternalPushConfigurationSaved, command.ProductID, command.ProductKind, command.Actor, reservation.KeyDigest, map[string]any{
@@ -336,7 +345,14 @@ func commerceExternalPushSaveDigest(command productport.SaveExternalPushConfigur
 		ProductKind            productport.ExternalPushProductKind `json:"product_kind"`
 		Enabled                bool                                `json:"enabled"`
 		ConfigurationReference string                              `json:"configuration_reference"`
-	}{command.ProductID, command.ProductKind, command.Enabled, command.ConfigurationReference})
+		BusinessParametersSet  bool                                `json:"business_parameters_set"`
+		PushType               string                              `json:"type"`
+		Day                    *int64                              `json:"day"`
+		Frequency              *int64                              `json:"frequency"`
+		Remark                 string                              `json:"remark"`
+		CustomParams           map[string]any                      `json:"custom_params"`
+		ExpectedRevision       int64                               `json:"expected_revision"`
+	}{command.ProductID, command.ProductKind, command.Enabled, command.ConfigurationReference, command.BusinessParametersSet, command.PushType, command.Day, command.Frequency, command.Remark, command.CustomParams, command.ExpectedRevision})
 	return sha256.Sum256(payload)
 }
 
@@ -354,14 +370,26 @@ func commerceExternalPushConfigurationDigest(value productport.ExternalPushConfi
 		ProductKind            productport.ExternalPushProductKind `json:"product_kind"`
 		Enabled                bool                                `json:"enabled"`
 		ConfigurationReference string                              `json:"configuration_reference"`
+		PushType               string                              `json:"type"`
+		Day                    *int64                              `json:"day"`
+		Frequency              *int64                              `json:"frequency"`
+		Remark                 string                              `json:"remark"`
+		CustomParams           map[string]any                      `json:"custom_params"`
 		Revision               int64                               `json:"revision"`
-	}{value.ProductID, value.ProductKind, value.Enabled, value.ConfigurationReference, value.Revision})
+	}{value.ProductID, value.ProductKind, value.Enabled, value.ConfigurationReference, value.PushType, value.Day, value.Frequency, value.Remark, value.CustomParams, value.Revision})
 	return sha256.Sum256(payload)
 }
 
 func validSaveCommerceExternalPush(command productport.SaveExternalPushConfigurationCommand) bool {
-	return command.ProductID > 0 && validExternalPushKind(command.ProductKind) && command.Actor > 0 && validIdempotencyKey(command.IdempotencyKey) &&
-		validExternalPushConfiguration(productport.ExternalPushConfiguration{ProductID: command.ProductID, ProductKind: command.ProductKind, Enabled: command.Enabled, ConfigurationReference: command.ConfigurationReference, Revision: 1, UpdatedAt: time.Unix(1, 0)}, command.ProductID, command.ProductKind)
+	if command.ProductID < 1 || !validExternalPushKind(command.ProductKind) || command.Actor < 1 || !validIdempotencyKey(command.IdempotencyKey) || command.ExpectedRevision < 0 {
+		return false
+	}
+	value := productport.ExternalPushConfiguration{ProductID: command.ProductID, ProductKind: command.ProductKind, Enabled: command.Enabled, ConfigurationReference: command.ConfigurationReference, Revision: 1, UpdatedAt: time.Unix(1, 0)}
+	if command.BusinessParametersSet {
+		value.PushType, value.Day, value.Frequency, value.Remark = command.PushType, command.Day, command.Frequency, command.Remark
+		value.CustomParams = command.CustomParams
+	}
+	return validExternalPushConfiguration(value, command.ProductID, command.ProductKind)
 }
 
 func validQueueCommerceExternalPushTest(command productport.QueueExternalPushTestCommand) bool {
@@ -376,10 +404,64 @@ func validExternalPushConfiguration(value productport.ExternalPushConfiguration,
 	if value.ProductID != productID || value.ProductKind != kind || productID < 1 || !validExternalPushKind(kind) || value.Revision < 1 || value.UpdatedAt.IsZero() {
 		return false
 	}
+	if !validCommerceExternalPushBusiness(value) {
+		return false
+	}
 	if !value.Enabled {
 		return value.ConfigurationReference == ""
 	}
 	return validCommerceExternalPushReference(value.ConfigurationReference)
+}
+
+func validCommerceExternalPushBusiness(value productport.ExternalPushConfiguration) bool {
+	if !utf8.ValidString(value.PushType) || !utf8.ValidString(value.Remark) || strings.TrimSpace(value.PushType) != value.PushType || strings.TrimSpace(value.Remark) != value.Remark || utf8.RuneCountInString(value.PushType) > 200 || utf8.RuneCountInString(value.Remark) > 2000 || (value.Day != nil && *value.Day < 0) || (value.Frequency != nil && *value.Frequency < 0) || len(value.CustomParams) > 64 {
+		return false
+	}
+	raw, err := json.Marshal(value.CustomParams)
+	if err != nil || len(raw) > 32768 {
+		return false
+	}
+	for key, custom := range value.CustomParams {
+		if !utf8.ValidString(key) || strings.TrimSpace(key) != key || key == "" || utf8.RuneCountInString(key) > 128 || strings.ContainsFunc(key, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
+			return false
+		}
+		raw, err := json.Marshal(custom)
+		if err != nil || !json.Valid(raw) || len(raw) > 4096 {
+			return false
+		}
+	}
+	return true
+}
+
+func cloneCommerceExternalPushParams(source map[string]any) map[string]any {
+	if source == nil {
+		return map[string]any{}
+	}
+	raw, err := json.Marshal(source)
+	if err != nil {
+		return nil
+	}
+	var out map[string]any
+	if json.Unmarshal(raw, &out) != nil {
+		return nil
+	}
+	return out
+}
+
+func sameCommerceExternalPushBusiness(left, right productport.ExternalPushConfiguration) bool {
+	if left.PushType != right.PushType || left.Remark != right.Remark || !sameCommerceExternalPushInteger(left.Day, right.Day) || !sameCommerceExternalPushInteger(left.Frequency, right.Frequency) {
+		return false
+	}
+	leftRaw, leftErr := json.Marshal(left.CustomParams)
+	rightRaw, rightErr := json.Marshal(right.CustomParams)
+	return leftErr == nil && rightErr == nil && jsonEquivalent(leftRaw, rightRaw)
+}
+
+func sameCommerceExternalPushInteger(left, right *int64) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
 }
 
 func validCommerceExternalPushReference(value string) bool {

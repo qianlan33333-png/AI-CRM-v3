@@ -32,6 +32,14 @@ const ok = (name, cond) => {
 };
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const waitFor = async (predicate, timeout = 1000) => {
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    if (predicate()) return true;
+    await sleep(10);
+  }
+  return predicate();
+};
 
 async function loadMemberGridShare({ token, response, responses, status = 200 } = {}) {
   const trace = [];
@@ -737,6 +745,7 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
         const calls = [], downloads = [], opened = [];
         const projection = { schema_version: 1, status: 'active', enabled: true, buy_button_text: '立即购买', require_mobile: false, lead_program_id: null, lead_channel_id: null, lead_qr_title: '', lead_qr_subtitle: '', completion_redirect_enabled: false, completion_redirect_url: '', completion_target: null, wecom_tagging: {}, slices: [] };
         const product = { id: 7, product_code: 'P-7', name: '真实商品', description: '公开商品', price_minor: 990, currency: 'CNY', stock_quantity: 5, images: [], admin_projection: projection, lifecycle: 'enabled', enabled: true, paid_order_count: 3, refund_order_count: 1, sold_count: 2, created_by: 9, version: 3, created_at: '2026-09-04T00:00:00Z', updated_at: '2026-09-04T00:00:00Z' };
+        let externalConfiguration = { product_id: 7, product_kind: 'wechat_pay', enabled: true, configuration_reference: 'product-paid-notify', type: 'member_open', day: 30, frequency: 1, remark: '旧备注', custom_params: { campaign: 'control', enabled: true, nested: { keep: ' 空白 ' } }, revision: 3, updated_at: '2026-09-04T00:00:00Z' };
         let externalTests = [{ product_id: 7, product_kind: 'wechat_pay', effect_id: 'eer_7', state: 'outcome_unknown', attempt_count: 1, provider_accepted: false, delivery_proven: false, real_external_call_executed: true, auto_retry_allowed: false, created_at: '2026-09-04T00:00:00Z', updated_at: '2026-09-04T00:01:00Z' }];
         const json = (data, status = 200) => ({ ok: status >= 200 && status < 300, status, headers: new Headers({ 'Content-Type': 'application/json' }), text: async () => JSON.stringify(data), json: async () => data, clone() { return this; } });
         window.__productHttpTest = { calls, downloads, opened };
@@ -752,7 +761,12 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
           if (url.pathname === '/api/admin/channels') return json({ ok: false, code: 'MALFORMED_REQUEST' }, 400);
           if (url.pathname === '/api/admin/image-library') return json({ items: [] });
           if (url.pathname === '/api/admin/wecom/tag-groups' || url.pathname === '/api/admin/wecom/tags') return json({ items: [] });
-          if (url.pathname === '/api/admin/wechat-pay/products/7/external-push') return json({ product_id: 7, product_kind: 'wechat_pay', enabled: true, configuration_reference: 'product-paid-notify', updated_at: '2026-09-04T00:00:00Z' });
+          if (url.pathname === '/api/admin/wechat-pay/products/7/external-push' && method === 'GET') return json(externalConfiguration);
+          if (url.pathname === '/api/admin/wechat-pay/products/7/external-push' && method === 'PUT') {
+            const update = JSON.parse(String(init.body || '{}'));
+            externalConfiguration = { ...externalConfiguration, ...update, revision: externalConfiguration.revision + 1, updated_at: '2026-09-04T00:03:00Z' };
+            return json(externalConfiguration);
+          }
           if (url.pathname === '/api/admin/wechat-pay/products/7/external-push/test' && method === 'GET') return json({ items: externalTests });
           if (url.pathname === '/api/admin/wechat-pay/products/7/external-push/test' && method === 'POST') {
             const accepted = { product_id: 7, product_kind: 'wechat_pay', effect_id: 'eer_new_7', state: 'accepted', attempt_count: 0, provider_accepted: false, delivery_proven: false, real_external_call_executed: false, auto_retry_allowed: false, created_at: '2026-09-04T00:02:00Z', updated_at: '2026-09-04T00:02:00Z' };
@@ -2180,10 +2194,15 @@ console.log('admin/spProductData.html（V1 Member Grid 历史只读 GET）');
 console.log('admin/products.html（真实状态、销量与分享）');
 {
   const dom = await loadPage('admin/products.html', { productHttp: true });
-  const d = dom.window.document, test = dom.window.__productHttpTest;
+  const test = dom.window.__productHttpTest;
+  let d = dom.window.document;
   ok('普通商品显示服务端生命周期与非零销量', d.querySelector('#stage')?.textContent.includes('已启用') && d.querySelector('#stage')?.textContent.includes('2') && !d.querySelector('#stage')?.textContent.includes('未投影'));
   click(dom, [...d.querySelectorAll('button')].find((button) => button.textContent.trim() === '分享'));
   await sleep(40);
+  // The frozen renderer may replace documentElement during its bootstrap. Read
+  // the live document after the asynchronous share response, just as a browser
+  // user sees the overlay rather than retaining a detached test node.
+  d = dom.window.document;
   const expected = 'http://localhost/p/7', svg = d.querySelector('#shareQrBox svg');
   ok('普通商品分享调用真实后端接口', test.calls.some((call) => call.path === '/api/admin/wechat-pay/products/7/share' && call.method === 'GET'));
   ok('分享弹窗使用同源商品链接生成二维码', d.querySelector('input[readonly]')?.value === expected && svg?.getAttribute('data-qr-payload') === expected && svg?.querySelector('path'));
@@ -2196,23 +2215,48 @@ console.log('admin/products.html（真实状态、销量与分享）');
 console.log('admin/productForm.html（渠道存量异常隔离）');
 {
   const dom = await loadPage('admin/productForm.html', { id: 7, productHttp: true });
-  const d = dom.window.document, test = dom.window.__productHttpTest;
+  const test = dom.window.__productHttpTest;
+  let d = dom.window.document;
   ok('渠道目录 400 不再中断商品编辑页', d.body.textContent.includes('编辑普通商品') && d.querySelector('#pfName')?.value === '真实商品' && !d.body.textContent.includes('请求失败'));
   ok('编辑页仍读取权威商品与外推配置', test.calls.some((call) => call.path === '/api/v1/products/7') && test.calls.some((call) => call.path === '/api/admin/wechat-pay/products/7/external-push'));
-  await sleep(80);
+  const mounted = await waitFor(() => {
+    d = dom.window.document;
+    const panel = d.querySelector('#product-v3-external-push-test');
+    return !!d.querySelector('[data-external-push-test="run"]') && panel?.textContent.includes('结果未知，需按原投递 ID 对账') === true;
+  });
+  d = dom.window.document;
   const run = d.querySelector('[data-external-push-test="run"]');
-  ok('冻结商品页由 V3 Host 挂载受控测试与未知状态', !!run && d.querySelector('#product-v3-external-push-test')?.textContent.includes('结果未知，需按原投递 ID 对账') && !d.querySelector('#product-v3-external-push-test')?.textContent.includes('业务送达'));
-  click(dom, run);
-  await sleep(60);
-  ok('商品外推测试经实际 HTTP 受理并回读，不把受理称为送达', test.calls.some((call) => call.path === '/api/admin/wechat-pay/products/7/external-push/test' && call.method === 'POST' && call.body === '{}') && test.calls.filter((call) => call.path === '/api/admin/wechat-pay/products/7/external-push/test' && call.method === 'GET').length >= 2 && d.querySelector('#product-v3-toast')?.textContent.includes('已受理，等待受控投递') && !d.querySelector('#product-v3-external-push-test')?.textContent.includes('业务送达'));
+  const configSave = d.querySelector('[data-external-push-configuration-save]');
+  ok('冻结商品页由 V3 Host 挂载受控测试与未知状态', mounted && !!run && !!configSave && !d.querySelector('#product-v3-external-push-test')?.textContent.includes('业务已送达'));
+  input(dom, d.querySelector('#product-v3-external-push-type'), 'member_renew');
+  input(dom, d.querySelector('#product-v3-external-push-day'), '45');
+  input(dom, d.querySelector('#product-v3-external-push-frequency'), '2');
+  input(dom, d.querySelector('#product-v3-external-push-remark'), '保留业务备注');
+  input(dom, d.querySelector('#product-v3-external-push-custom-params'), '{"count":2,"flag":false,"nil":null,"nested":[" 空白 ",{"k":true}]}');
+  if (configSave) click(dom, configSave);
+  const savedBusiness = await waitFor(() => {
+    d = dom.window.document;
+    return test.calls.some((call) => call.path === '/api/admin/wechat-pay/products/7/external-push' && call.method === 'PUT' && call.body === '{"enabled":true,"configuration_reference":"product-paid-notify","type":"member_renew","day":45,"frequency":2,"remark":"保留业务备注","custom_params":{"count":2,"flag":false,"nil":null,"nested":[" 空白 ",{"k":true}]},"expected_revision":3}') && d.querySelector('#product-v3-external-push-test')?.textContent.includes('配置版本 4') === true;
+  });
+  ok('商品外推业务参数以真实 HTTP 保存 JSON 类型与配置版本', savedBusiness);
+  d = dom.window.document;
+  const currentRun = d.querySelector('[data-external-push-test="run"]');
+  if (currentRun) click(dom, currentRun);
+  const acceptedAndReloaded = await waitFor(() => {
+    d = dom.window.document;
+    return test.calls.some((call) => call.path === '/api/admin/wechat-pay/products/7/external-push/test' && call.method === 'POST' && call.body === '{}') && test.calls.filter((call) => call.path === '/api/admin/wechat-pay/products/7/external-push/test' && call.method === 'GET').length >= 2 && d.querySelector('#product-v3-toast')?.textContent.includes('已受理，等待受控投递') === true;
+  });
+  ok('商品外推测试经实际 HTTP 受理并回读，不把受理称为送达', acceptedAndReloaded && !d.querySelector('#product-v3-external-push-test')?.textContent.includes('业务已送达'));
+  dom.window.dispatchEvent(new dom.window.Event('pagehide'));
   dom.window.close();
 }
 console.log('admin/spProducts.html（真实周期商品分享）');
 {
   const dom = await loadPage('admin/spProducts.html', { serviceProductHttp: true });
-  const d = dom.window.document;
+  let d = dom.window.document;
   click(dom, [...d.querySelectorAll('button')].find((button) => button.textContent.trim() === '分享'));
   await sleep(40);
+  d = dom.window.document;
   const test = dom.window.__serviceProductHttpTest;
   ok('当前周期商品列表不把迁移历史暴露为主壳入口', !d.querySelector('a[href="spProducts.html?history=1"]'));
   const expected = 'http://localhost/p/service_period/8';
