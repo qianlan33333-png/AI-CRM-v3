@@ -1325,6 +1325,12 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return renderer.RenderOperationCycles(writer, webshell.AdminPageForRequest(request, "运营闭环", "运营周期、执行事实与复盘记录。", "api.admin_operation_cycles_page"), page, donorTemplate, webshell.OperationCycleAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, HostJS: assets.HostJS})
 	})
 	configUI := configModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, page, donorTemplate string, assets configmodule.UIAssets) error {
+		if page == "runtimeReleaseList" || page == "runtimeReleaseNew" || page == "runtimeReleaseDetail" {
+			// Runtime releases are a V3-owned Host rather than a frozen AdminOps
+			// document. The Config module sends its small host template through
+			// this renderer callback, so preserve that page class here.
+			return renderer.RenderRuntimeConfig(writer, webshell.AdminPageForRequest(request, "配置发布", "发布受控运行时配置。", "api.admin_runtime_config_releases"), page, donorTemplate)
+		}
 		title := map[string]string{"config": "配置", "configDetail": "配置", "apidocs": "API 文档"}[page]
 		endpoint := map[string]string{"config": "api.admin_config", "configDetail": "api.admin_config", "apidocs": "api.admin_api_docs"}[page]
 		return renderer.RenderConfig(writer, webshell.AdminPageForRequest(request, title, "", endpoint), page, donorTemplate, webshell.ConfigAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS})
