@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -40,15 +41,25 @@ type openPlatformIdentityScopes struct {
 	OpenIDScopes []string
 }
 
+// openPlatformExternalUserIDReader is the small composition bridge used only
+// after API-client authorization and OneID resolution. It returns a verified
+// current WeCom identity transiently for the frozen machine-read response; the
+// Host must neither log nor persist it.
+type openPlatformExternalUserIDReader interface {
+	VerifiedExternalUserID(context.Context, customerdomain.CustomerID, string) (string, bool, error)
+}
+
 type openPlatformExecutor struct {
-	identity     identityport.Resolver
-	orders       orderport.Query
-	scopedOrders orderport.CustomerScopedQuery
-	profiles     customerport.SidebarProfileService
-	archive      archiveport.CustomerMessageReader
-	timeline     customerport.CustomerTimelineReader
-	owners       wecomport.AudiencePrimaryOwnerReader
-	scopes       openPlatformIdentityScopes
+	identity      identityport.Resolver
+	externalUsers openPlatformExternalUserIDReader
+	orders        orderport.Query
+	scopedOrders  orderport.CustomerScopedQuery
+	profiles      customerport.SidebarProfileService
+	archive       archiveport.CustomerMessageReader
+	externalChat  archiveport.ExternalChatRecordReader
+	timeline      customerport.CustomerTimelineReader
+	owners        wecomport.AudiencePrimaryOwnerReader
+	scopes        openPlatformIdentityScopes
 }
 
 func newOpenPlatformExecutor(identity identityport.Resolver, orders orderport.Query, profiles customerport.SidebarProfileService, archive archiveport.CustomerMessageReader, timeline customerport.CustomerTimelineReader, owners wecomport.AudiencePrimaryOwnerReader, scopes openPlatformIdentityScopes) (*openPlatformExecutor, error) {
@@ -59,10 +70,18 @@ func newOpenPlatformExecutor(identity identityport.Resolver, orders orderport.Qu
 	if !ok || scopedOrders == nil {
 		return nil, errors.New("open platform customer-scoped order Port is required")
 	}
+	externalChat, ok := archive.(archiveport.ExternalChatRecordReader)
+	if !ok || externalChat == nil {
+		return nil, errors.New("open platform external chat Port is required")
+	}
+	externalUsers, ok := identity.(openPlatformExternalUserIDReader)
+	if !ok || externalUsers == nil {
+		return nil, errors.New("open platform verified external identity Port is required")
+	}
 	scopes.WeComScope = strings.TrimSpace(scopes.WeComScope)
 	scopes.UnionScopes = distinctScopes(scopes.UnionScopes, "wechat-open-platform:")
 	scopes.OpenIDScopes = distinctScopes(scopes.OpenIDScopes, "wechat-app:")
-	return &openPlatformExecutor{identity: identity, orders: orders, scopedOrders: scopedOrders, profiles: profiles, archive: archive, timeline: timeline, owners: owners, scopes: scopes}, nil
+	return &openPlatformExecutor{identity: identity, externalUsers: externalUsers, orders: orders, scopedOrders: scopedOrders, profiles: profiles, archive: archive, externalChat: externalChat, timeline: timeline, owners: owners, scopes: scopes}, nil
 }
 
 func configuredOpenPlatformScopes(corpID string, unionScopes, appIDs []string) openPlatformIdentityScopes {
@@ -102,6 +121,8 @@ func (executor *openPlatformExecutor) Execute(ctx context.Context, request openp
 		return executor.resolveIdentity(ctx, request.Query, request.Principal)
 	case "GET /api/external/users/resolve":
 		return executor.resolveExternalUser(ctx, request.Query, request.Principal)
+	case "GET /api/external/chat-records":
+		return executor.listExternalChatRecords(ctx, request.Query, request.Principal)
 	case "GET /api/external/orders":
 		return executor.listOrders(ctx, request.Query, request.Principal)
 	case "GET /api/external/orders/{order_no}":
@@ -254,6 +275,199 @@ func (executor *openPlatformExecutor) allowsUnboundScope(principal accessdomain.
 		return true
 	}
 	return principal.OwnerScope.Allows(map[string]string{"corp_id": principal.CorpID})
+}
+
+func (executor *openPlatformExecutor) listExternalChatRecords(ctx context.Context, values url.Values, principal accessdomain.MachinePrincipal) (openplatformport.Response, error) {
+	query, references, matchedBy, startText, err := executor.externalChatQuery(values)
+	if err != nil {
+		return externalChatError(400, "invalid_request"), nil
+	}
+	resolved, err := executor.resolveReferences(ctx, references)
+	if err != nil {
+		return externalChatIdentityError(err), nil
+	}
+	if executor.scopes.WeComScope == "" {
+		return externalChatIdentityError(errOpenPlatformIdentityScopeDenied), nil
+	}
+	externalUserID, found, identityErr := executor.externalUsers.VerifiedExternalUserID(ctx, resolved.CustomerID, executor.scopes.WeComScope)
+	if identityErr != nil {
+		return externalChatUnavailable(), nil
+	}
+	if !found || externalUserID == "" {
+		return externalChatError(404, "not_found"), nil
+	}
+	trustedExternal, trustedErr := executor.trustedReference(identitydomain.KindWeComExternalUserID, executor.scopes.WeComScope, externalUserID, "open_platform.chat_read")
+	if trustedErr != nil {
+		return externalChatIdentityError(trustedErr), nil
+	}
+	scopeReferences := append(append([]identitydomain.Reference(nil), references...), trustedExternal)
+	if err := executor.ensureCustomerScope(ctx, principal, resolved.CustomerID, scopeReferences); err != nil {
+		return externalChatError(404, "not_found"), nil
+	}
+	query.CustomerID, query.ExternalUserID = resolved.CustomerID, trustedExternal.Value
+	page, err := executor.externalChat.ExternalCustomerMessages(ctx, query)
+	if err != nil {
+		return externalChatUnavailable(), nil
+	}
+	items := make([]map[string]any, 0, len(page.Items))
+	for _, item := range page.Items {
+		items = append(items, map[string]any{
+			"msgid":           item.MessageID,
+			"chat_scene":      item.ChatScene,
+			"chat_type":       item.ChatType,
+			"unionid":         item.UnionID,
+			"external_userid": item.ExternalUserID,
+			"with_userid":     item.WithUserID,
+			"sender":          item.Sender,
+			"receiver":        item.Receiver,
+			"chat_id":         item.ChatID,
+			"roomid":          item.RoomID,
+			"group_name":      item.GroupName,
+			"msgtype":         item.MessageType,
+			"content":         item.Content,
+			"media_id":        item.MediaID,
+			"send_time":       item.OccurredAt.UTC().Format("2006-01-02 15:04:05"),
+			"source_id":       item.SourceID,
+		})
+	}
+	nextOffset := query.Offset + len(items)
+	nextCursor := ""
+	if int64(nextOffset) < page.Total {
+		nextCursor = encodeExternalChatCursor(nextOffset)
+	}
+	return responseOK(map[string]any{
+		"ok":              true,
+		"items":           items,
+		"messages":        items,
+		"total":           page.Total,
+		"count":           len(items),
+		"limit":           query.Limit,
+		"next_cursor":     nextCursor,
+		"has_more":        nextCursor != "",
+		"external_userid": externalUserID,
+		"matched_by":      matchedBy,
+		"filters": map[string]string{
+			"chat_scene":  query.ChatScene,
+			"start_time":  startText,
+			"with_userid": query.WithUserID,
+		},
+		"route_owner":       "ai_crm_next",
+		"source_status":     "external_chat_records",
+		"read_model_status": "primary",
+		"fallback_used":     false,
+	}), nil
+}
+
+// externalChatQuery preserves the donor's declared HTTP shape. FastAPI ignores
+// unrelated query values, takes the final value of repeated scalar parameters,
+// and uses a fixed page size rather than accepting a caller-provided limit.
+func (executor *openPlatformExecutor) externalChatQuery(values url.Values) (archiveport.ExternalChatRecordQuery, []identitydomain.Reference, string, string, error) {
+	one := func(key string) (string, error) {
+		items, exists := values[key]
+		if !exists || len(items) == 0 {
+			return "", nil
+		}
+		return strings.TrimSpace(items[len(items)-1]), nil
+	}
+	scene, err := one("chat_scene")
+	if err != nil {
+		return archiveport.ExternalChatRecordQuery{}, nil, "", "", err
+	}
+	switch strings.ToLower(scene) {
+	case "private", "single", "私信":
+		scene = "private"
+	case "group", "群聊":
+		scene = "group"
+	default:
+		return archiveport.ExternalChatRecordQuery{}, nil, "", "", errors.New("invalid chat scene")
+	}
+	startRaw, err := one("start_time")
+	if err != nil || startRaw == "" {
+		return archiveport.ExternalChatRecordQuery{}, nil, "", "", errors.New("start time required")
+	}
+	seconds, err := strconv.ParseInt(startRaw, 10, 64)
+	if err != nil || seconds < 0 || seconds > 9_999_999_999 {
+		return archiveport.ExternalChatRecordQuery{}, nil, "", "", errors.New("invalid start time")
+	}
+	withUserID, err := one("with_userid")
+	if err != nil {
+		return archiveport.ExternalChatRecordQuery{}, nil, "", "", err
+	}
+	if scene == "private" && withUserID == "" {
+		withUserID = "HuangYouCan"
+	}
+	if scene == "group" {
+		withUserID = ""
+	}
+	cursor, err := one("cursor")
+	if err != nil {
+		return archiveport.ExternalChatRecordQuery{}, nil, "", "", err
+	}
+	offset, err := decodeExternalChatCursor(cursor)
+	if err != nil {
+		return archiveport.ExternalChatRecordQuery{}, nil, "", "", err
+	}
+	identityValues := url.Values{}
+	for _, key := range []string{"mobile", "unionid", "external_userid"} {
+		if items, exists := values[key]; exists && len(items) > 0 {
+			identityValues[key] = []string{items[len(items)-1]}
+		}
+	}
+	references, err := executor.referencesFromValues(identityValues)
+	if err != nil {
+		return archiveport.ExternalChatRecordQuery{}, nil, "", "", err
+	}
+	matchedBy := "mobile"
+	if value, _ := one("unionid"); value != "" {
+		matchedBy = "unionid"
+	}
+	if value, _ := one("external_userid"); value != "" {
+		matchedBy = "external_userid"
+	}
+	start := time.Unix(seconds, 0).UTC()
+	return archiveport.ExternalChatRecordQuery{ChatScene: scene, StartAt: start, WithUserID: withUserID, Limit: 20, Offset: offset}, references, matchedBy, start.Format("2006-01-02 15:04:05"), nil
+}
+
+func encodeExternalChatCursor(offset int) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(`{"offset":` + strconv.Itoa(offset) + `}`))
+}
+
+func decodeExternalChatCursor(cursor string) (int, error) {
+	if cursor == "" {
+		return 0, nil
+	}
+	padded := cursor + strings.Repeat("=", (4-len(cursor)%4)%4)
+	raw, err := base64.URLEncoding.DecodeString(padded)
+	if err != nil {
+		return 0, errors.New("invalid cursor")
+	}
+	var payload struct {
+		Offset int `json:"offset"`
+	}
+	if err = json.Unmarshal(raw, &payload); err != nil || payload.Offset < 0 {
+		return 0, errors.New("invalid cursor")
+	}
+	return payload.Offset, nil
+}
+
+func externalChatError(status int, code string) openplatformport.Response {
+	return openplatformport.Response{Status: status, Body: map[string]any{
+		"ok": false, "error_code": code, "route_owner": "ai_crm_next", "source_status": "external_chat_records", "fallback_used": false,
+	}}
+}
+
+func externalChatIdentityError(err error) openplatformport.Response {
+	response := responseForIdentityError(err)
+	code, _ := response.Body.(map[string]any)["error_code"].(string)
+	return externalChatError(response.Status, code)
+}
+
+func externalChatUnavailable() openplatformport.Response {
+	return openplatformport.Response{Status: 503, Body: map[string]any{
+		"ok": false, "degraded": true, "messages": []any{}, "items": []any{}, "count": 0,
+		"source_status": "production_unavailable", "read_model_status": "unavailable", "fallback_used": false,
+		"route_owner": "ai_crm_next", "error_code": "message_archive_read_unavailable", "page_error": "message archive read model unavailable",
+	}}
 }
 
 func (executor *openPlatformExecutor) listOrders(ctx context.Context, values url.Values, principal accessdomain.MachinePrincipal) (openplatformport.Response, error) {
@@ -887,3 +1101,35 @@ func (adapter openPlatformOwnerAdapter) AudiencePrimaryOwners(ctx context.Contex
 }
 
 var _ wecomport.AudiencePrimaryOwnerReader = openPlatformOwnerAdapter{}
+
+// openPlatformIdentityAdapter combines stable Identity Ports at Composition.
+// The machine executor receives no store and cannot issue a cross-domain query.
+type openPlatformIdentityAdapter struct {
+	resolver identityport.Resolver
+	values   identityport.ExternalIdentityValueReader
+	uow      platformport.UnitOfWork
+}
+
+func (adapter openPlatformIdentityAdapter) Resolve(ctx context.Context, reference identitydomain.Reference) (identityport.ResolveResult, error) {
+	if adapter.resolver == nil {
+		return identityport.ResolveResult{}, errors.New("open platform identity resolver is unavailable")
+	}
+	return adapter.resolver.Resolve(ctx, reference)
+}
+
+func (adapter openPlatformIdentityAdapter) VerifiedExternalUserID(ctx context.Context, customerID customerdomain.CustomerID, scope string) (string, bool, error) {
+	if adapter.values == nil || adapter.uow == nil || customerID < 1 || strings.TrimSpace(scope) != scope || scope == "" {
+		return "", false, errors.New("open platform verified external identity is unavailable")
+	}
+	var value string
+	var found bool
+	err := adapter.uow.Within(ctx, func(tx context.Context) error {
+		var readErr error
+		value, found, readErr = adapter.values.VerifiedExternalIdentityValue(tx, customerID, identitydomain.KindWeComExternalUserID, scope)
+		return readErr
+	})
+	return value, found, err
+}
+
+var _ identityport.Resolver = openPlatformIdentityAdapter{}
+var _ openPlatformExternalUserIDReader = openPlatformIdentityAdapter{}

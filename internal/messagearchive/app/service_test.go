@@ -78,6 +78,8 @@ type storeStub struct {
 	issue            IngestIssue
 	mediaRef         MediaReference
 	page             archiveport.CustomerPage
+	externalPage     archiveport.ExternalChatRecordPage
+	externalQuery    archiveport.ExternalChatRecordQuery
 	staffIDs         []int64
 }
 
@@ -100,6 +102,10 @@ func (s *storeStub) RecordBlockedIssue(_ context.Context, _ string, issue Ingest
 func (s *storeStub) FinishRun(context.Context, int64, SyncRunFinish) error { return nil }
 func (s *storeStub) CustomerMessages(context.Context, archiveport.CustomerQuery) (archiveport.CustomerPage, error) {
 	return s.page, nil
+}
+func (s *storeStub) ExternalCustomerMessages(_ context.Context, query archiveport.ExternalChatRecordQuery) (archiveport.ExternalChatRecordPage, error) {
+	s.externalQuery = query
+	return s.externalPage, nil
 }
 func (s *storeStub) CustomerStaffIDs(context.Context, []customerdomain.CustomerID) ([]int64, error) {
 	if s.staffIDs != nil {
@@ -191,6 +197,23 @@ func TestLocalReadWorksWhenProviderIngestionIsDisabled(t *testing.T) {
 	}
 	if _, err = service.ReadPrivateMedia(context.Background(), 1, 7); !errors.Is(err, archiveport.ErrNotReady) {
 		t.Fatalf("private media should remain SDK-disabled: %v", err)
+	}
+}
+
+func TestExternalCustomerMessagesUsesCanonicalLineageAndTrustedIdentity(t *testing.T) {
+	store := &storeStub{externalPage: archiveport.ExternalChatRecordPage{Items: []archiveport.ExternalChatRecord{{MessageID: "msg-1", ExternalUserID: "external-1"}}, Total: 1}}
+	service := serviceFor(&readerStub{}, store)
+	page, err := service.ExternalCustomerMessages(context.Background(), archiveport.ExternalChatRecordQuery{
+		CustomerID: 1, ExternalUserID: "external-1", ChatScene: "private", StartAt: time.Unix(1, 0).UTC(), WithUserID: "HuangYouCan", Limit: 20,
+	})
+	if err != nil || len(page.Items) != 1 || page.Items[0].ExternalUserID != "external-1" {
+		t.Fatalf("page=%+v err=%v", page, err)
+	}
+	if len(store.externalQuery.CustomerIDs) != 1 || store.externalQuery.CustomerIDs[0] != 1 || store.externalQuery.ExternalUserID != "external-1" {
+		t.Fatalf("owner query=%+v", store.externalQuery)
+	}
+	if _, err = service.ExternalCustomerMessages(context.Background(), archiveport.ExternalChatRecordQuery{CustomerID: 1, ChatScene: "private", StartAt: time.Unix(1, 0).UTC(), Limit: 20}); !errors.Is(err, archiveport.ErrNotReady) {
+		t.Fatalf("missing trusted external identity err=%v", err)
 	}
 }
 
