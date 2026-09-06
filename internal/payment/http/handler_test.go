@@ -275,7 +275,8 @@ func TestOrderExternalPushDeliveriesUsesOrderAndOutboundPorts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	reader := &commerceDeliveryReaderStub{rows: []outboundport.CommercePushDelivery{{ID: "current:19", Source: "current", EffectID: "eer_19", State: "outcome_unknown", AttemptCount: 2, ProviderCallAttempted: true, RealExternalCallExecuted: true, UpdatedAt: time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC)}}}
+	attempted, executed := true, true
+	reader := &commerceDeliveryReaderStub{rows: []outboundport.CommercePushDelivery{{ID: "current:19", Source: "current", EffectID: "eer_19", State: "outcome_unknown", AttemptCount: 2, ProviderCallAttempted: &attempted, RealExternalCallExecuted: &executed, UpdatedAt: time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC)}}}
 	if err = handler.SetCommercePushDeliveryReaders(commerceOrderReaderStub{value: orderport.CommercePushDeliveryReference{OrderID: 7, PaidEventID: 11, HistoricalMappingState: "current"}}, reader); err != nil {
 		t.Fatal(err)
 	}
@@ -283,6 +284,24 @@ func TestOrderExternalPushDeliveriesUsesOrderAndOutboundPorts(t *testing.T) {
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK || reader.query.PaidEventID != 11 || reader.query.HistoricalSourceKey != "" || !strings.Contains(response.Body.String(), `"outcome_unknown"`) || !strings.Contains(response.Body.String(), `"real_external_call_executed":true`) || strings.Contains(response.Body.String(), "payment") {
+		t.Fatalf("code=%d query=%+v body=%s", response.Code, reader.query, response.Body.String())
+	}
+}
+
+func TestOrderExternalPushDeliveriesLeavesUnpaidNativeOrderEmpty(t *testing.T) {
+	application := &appStub{}
+	handler, err := NewHandler(application, nil, securityStub{}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := &commerceDeliveryReaderStub{rows: []outboundport.CommercePushDelivery{{ID: "must-not-read"}}}
+	if err = handler.SetCommercePushDeliveryReaders(commerceOrderReaderStub{value: orderport.CommercePushDeliveryReference{OrderID: 99, HistoricalMappingState: "current"}}, reader); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/api/admin/wechat-pay/orders/legacy-order-1/external-push-deliveries", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || reader.query.PaidEventID != 0 || reader.query.HistoricalSourceKey != "" || !strings.Contains(response.Body.String(), `"history_mapping_state":"current"`) || !strings.Contains(response.Body.String(), `"total":0`) || strings.Contains(response.Body.String(), "must-not-read") {
 		t.Fatalf("code=%d query=%+v body=%s", response.Code, reader.query, response.Body.String())
 	}
 }

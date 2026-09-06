@@ -9,6 +9,7 @@ import (
 	"time"
 
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
+	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
 	orderdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/order/domain"
 	orderport "github.com/qianlan33333-png/AI-CRM-v3/internal/order/port"
@@ -172,5 +173,34 @@ func TestCommercePushPolicyDigestSeparatesFrozenProductBusinessFromProtectedTarg
 	identityChanged.BeneficiaryPhone.Scope = "phone:cn11:replacement"
 	if identityChanged.policyDigest() == frozen {
 		t.Fatal("identity selection policy was not protected")
+	}
+}
+
+func TestCommercePushHTTPResponseArtifactKeepsOnlyVerifiedSafeFacts(t *testing.T) {
+	for _, want := range []struct {
+		status  int
+		outcome string
+	}{
+		{status: 204, outcome: "provider_accepted"},
+		{status: 302, outcome: "provider_rejected"},
+		{status: 400, outcome: "provider_rejected"},
+		{status: 502, outcome: "response_unknown"},
+	} {
+		artifact := commercePushHTTPResponseArtifact(want.status)
+		gotStatus, gotOutcome, ok := commercePushResponseArtifactFacts(artifact)
+		if !artifact.Valid() || !ok || gotStatus != want.status || gotOutcome != want.outcome || strings.Contains(string(artifact.Payload), "body") {
+			t.Fatalf("status=%d artifact=%+v facts=%d/%q/%t", want.status, artifact, gotStatus, gotOutcome, ok)
+		}
+	}
+	if artifact := commercePushHTTPResponseArtifact(99); artifact.Valid() {
+		t.Fatalf("invalid HTTP status produced artifact=%+v", artifact)
+	}
+	// A valid digest alone is not enough: the status's fixed interpretation is
+	// part of the artifact contract, so a forged transition never reaches the
+	// completion projection.
+	forgedPayload := []byte(`{"outcome":"provider_accepted","status":502}`)
+	forged := effectport.ResultArtifact{Kind: commercePushHTTPResponseArtifactKind, Payload: forgedPayload, Digest: effectport.Hash("external-effect.artifact.v1", commercePushHTTPResponseArtifactKind, string(forgedPayload))}
+	if _, _, ok := commercePushResponseArtifactFacts(forged); ok {
+		t.Fatal("status/outcome mismatch was accepted")
 	}
 }

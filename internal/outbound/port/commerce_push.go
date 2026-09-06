@@ -17,13 +17,21 @@ type CommercePushDeliveryQuery struct {
 // page. Endpoint, signing material, raw payload/response bodies and customer
 // identity values are deliberately absent.
 type CommercePushDelivery struct {
-	ID, Source, EffectID, State, ErrorMessage       string
-	AttemptCount                                    int32
-	ProviderCallAttempted, RealExternalCallExecuted bool
-	ProviderResultReceived                          *bool
-	ResponseStatus                                  *int
-	ResponseBodyProtected                           bool
-	CreatedAt, UpdatedAt                            time.Time
+	ID, Source, EffectID, State, ErrorMessage string
+	// ResultCode is a fixed, safe Provider result code for a current delivery.
+	// It is nil where no Provider response is known, including legacy rows.
+	ResultCode *string
+	// HistoricalDeliveryID and LegacyEffectJobID are source evidence only. They
+	// are deliberately separate from EffectID, which names a V3 EER only.
+	HistoricalDeliveryID string
+	LegacyEffectJobID    *int64
+	AttemptCount         int32
+	// nil denotes that frozen history provides no evidence for this fact. It is
+	// never serialized as false simply because an old source omitted it.
+	ProviderCallAttempted, RealExternalCallExecuted, ProviderResultReceived *bool
+	ResponseStatus                                                          *int
+	ResponseBodyProtected                                                   bool
+	CreatedAt, UpdatedAt                                                    time.Time
 }
 
 // CommercePushDeliveryReader is implemented by Outbound. It exposes no retry

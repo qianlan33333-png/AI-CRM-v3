@@ -111,6 +111,15 @@ CREATE TABLE outbound_commerce_push_intents (
     provider_call_attempted BOOLEAN NOT NULL DEFAULT FALSE,
     provider_real_call_executed BOOLEAN NOT NULL DEFAULT FALSE,
     provider_result_received BOOLEAN NULL,
+    -- P06 safe response projection: never persist a Provider body or dynamic
+    -- error. The fixed code plus status only distinguish a response from an
+    -- unknown transport outcome on the legacy order-detail page.
+    provider_response_status INTEGER NULL CHECK (provider_response_status BETWEEN 100 AND 599),
+    provider_result_code TEXT NULL CHECK (provider_result_code IN ('provider_accepted','provider_rejected','response_unknown')),
+    CONSTRAINT outbound_commerce_push_response_shape CHECK (
+      (provider_response_status IS NULL AND provider_result_code IS NULL)
+      OR (provider_response_status IS NOT NULL AND provider_result_code IS NOT NULL)
+    ),
     receipt_digest BYTEA NULL CHECK (receipt_digest IS NULL OR octet_length(receipt_digest)=32),
     created_at TIMESTAMPTZ NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL,

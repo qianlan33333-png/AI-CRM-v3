@@ -52,3 +52,7 @@ go run ./cmd/migrate-v2-commerce-external-push-history \
 ```
 
 `apply` requires the exact sealed-snapshot digest and writes one receipt for that immutable snapshot. A re-run with the same snapshot returns the prior receipt. A later snapshot from the same V2 code revision may add source rows; an overlapping source row retains one global history identity and any changed source-row digest fails closed. `verify` recomputes each protected row digest and checks target state, timestamps, terminal effect relation, mapping, outcome and read-only fact before marking the batch reconciled.
+
+## 订单来源坐标
+
+旧 external_push_delivery.order_id 是 V2 wechat_pay_orders.id：供体在创建投递时把该 V2 ID 写入 delivery，且读取/投递都经 get_order_by_id 查询同一张 V2 订单表。提取器因此保存 wechat_pay_order / commerce-history / decimal(V2 order_id)，从不把它当作 V3 orders.id。只有另一个已冻结 commerce-history manifest 的 source_key 恰好等于这个十进制 V2 ID 时，Order 的稳定读 Port 才会显示该投递；否则历史订单页保持 pending。例如仓库测试用完整 manifest 的 source_key 是 wechat-pay-order-001，不能从该字符串推断数值 V2 ID。

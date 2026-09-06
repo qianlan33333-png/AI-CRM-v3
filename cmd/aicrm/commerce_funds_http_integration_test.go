@@ -640,6 +640,7 @@ func TestPostgreSQLCommerceFundsHTTPJourney(t *testing.T) {
 	paymentID := commerceFundsInt(t, checkout, "payment_id")
 	merchant := commerceFundsString(t, checkout, "merchant_order_no")
 	commerceFundsAssertReserved(t, ctx, pool, orderID, paymentID, claim.ClaimID)
+	commerceFundsAssertUnpaidOrderHasNoCommerceDeliveries(t, handler, merchant)
 
 	unknownBody, unknownHeaders := commerceFundsSignedCallback(t, platformKey, apiKey, "commerce-funds-unknown", "TRANSACTION.SUCCESS", map[string]any{"appid": "app", "mchid": "mch", "out_trade_no": "v3pay_unknown_funds", "transaction_id": "tx-unknown", "trade_state": "SUCCESS", "success_time": now.Format(time.RFC3339Nano), "amount": map[string]any{"total": 1000, "currency": "CNY"}})
 	unknown := httptest.NewRecorder()
@@ -887,11 +888,20 @@ func commerceFundsAssertPushRollback(t *testing.T, ctx context.Context, pool *pg
 // Ports. The historical fixture deliberately reuses a V2 numeric order ID as
 // an unrelated V3 native orders.id; only the distinct historical
 // source_system/source_key can read the preserved row.
+func commerceFundsAssertUnpaidOrderHasNoCommerceDeliveries(t *testing.T, handler http.Handler, merchant string) {
+	t.Helper()
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/admin/wechat-pay/orders/"+merchant+"/external-push-deliveries", nil))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"history_mapping_state":"current"`) || !strings.Contains(response.Body.String(), `"total":0`) || strings.Contains(response.Body.String(), `"unavailable"`) {
+		t.Fatalf("unpaid native order delivery route status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
 func commerceFundsAssertOrderDeliveryHistoryRoute(t *testing.T, ctx context.Context, pool *pgxpool.Pool, handler http.Handler, merchant string, now time.Time) {
 	t.Helper()
 	current := httptest.NewRecorder()
 	handler.ServeHTTP(current, httptest.NewRequest(http.MethodGet, "/api/admin/wechat-pay/orders/"+merchant+"/external-push-deliveries", nil))
-	if current.Code != http.StatusOK || !strings.Contains(current.Body.String(), `"source":"current"`) || !strings.Contains(current.Body.String(), `"provider_accepted"`) || strings.Contains(current.Body.String(), `"history_mapping_state":"pending"`) {
+	if current.Code != http.StatusOK || !strings.Contains(current.Body.String(), "\"source\":\"current\"") || !strings.Contains(current.Body.String(), "\"provider_accepted\"") || !strings.Contains(current.Body.String(), "\"response_status\":204") || !strings.Contains(current.Body.String(), "\"result_code\":\"provider_accepted\"") || strings.Contains(current.Body.String(), "\"history_mapping_state\":\"pending\"") {
 		t.Fatalf("current delivery route status=%d body=%s", current.Code, current.Body.String())
 	}
 
@@ -919,8 +929,8 @@ VALUES('wechat_pay','another-history-scope','909001','history-scope-miss-909001'
 	}
 	rowDigest := sha256.Sum256([]byte("legacy-delivery-909001"))
 	var historyRowID, batchID int64
-	if err := pool.QueryRow(ctx, `INSERT INTO outbound_commerce_push_history_rows(source_system,source_kind,source_id,source_digest,source_delivery_id,source_event_type,source_target_type,source_target_id,source_order_kind,source_order_scope,source_order_key,source_order_id,source_state,source_attempt_count,source_response_status,source_error_message,source_response_body_protected,source_created_at,source_updated_at,outcome,reason_code,read_only)
-VALUES($1,'delivery',909001,$2,'legacy-delivery-909001','transaction.paid','product','101','wechat_pay_order','commerce-history','909001',909001,'failed',3,502,'legacy upstream timeout',TRUE,$3,$3,'pending','product_mapping_unavailable',TRUE) RETURNING id`, historySourceSystem, rowDigest[:], now.UTC()).Scan(&historyRowID); err != nil {
+	if err := pool.QueryRow(ctx, `INSERT INTO outbound_commerce_push_history_rows(source_system,source_kind,source_id,source_digest,source_delivery_id,source_event_type,source_target_type,source_target_id,source_order_kind,source_order_scope,source_order_key,source_order_id,source_state,source_attempt_count,source_effect_job_id,source_response_status,source_error_message,source_response_body_protected,source_created_at,source_updated_at,outcome,reason_code,read_only)
+VALUES($1,'delivery',909001,$2,'legacy-delivery-909001','transaction.paid','product','101','wechat_pay_order','commerce-history','909001',909001,'failed',3,77,502,'legacy upstream timeout',TRUE,$3,$3,'pending','product_mapping_unavailable',TRUE) RETURNING id`, historySourceSystem, rowDigest[:], now.UTC()).Scan(&historyRowID); err != nil {
 		t.Fatal(err)
 	}
 	manifestDigest := sha256.Sum256([]byte("legacy-delivery-batch-909001"))
@@ -951,7 +961,7 @@ VALUES($1,'delivery',909002,$2,'legacy-delivery-wrong-kind','transaction.paid','
 	}
 	history := httptest.NewRecorder()
 	handler.ServeHTTP(history, httptest.NewRequest(http.MethodGet, "/api/admin/wechat-pay/orders/history-collision-909001/external-push-deliveries", nil))
-	if history.Code != http.StatusOK || !strings.Contains(history.Body.String(), `"source":"history"`) || !strings.Contains(history.Body.String(), `"response_status":502`) || !strings.Contains(history.Body.String(), "legacy upstream timeout") || !strings.Contains(history.Body.String(), `"response_body_protected":true`) || !strings.Contains(history.Body.String(), `"total":1`) || strings.Contains(history.Body.String(), "legacy-delivery-wrong-kind") {
+	if history.Code != http.StatusOK || !strings.Contains(history.Body.String(), `"source":"history"`) || !strings.Contains(history.Body.String(), `"legacy_delivery_id":"legacy-delivery-909001"`) || !strings.Contains(history.Body.String(), `"legacy_effect_job_id":77`) || !strings.Contains(history.Body.String(), `"external_effect_id":null`) || !strings.Contains(history.Body.String(), `"provider_call_attempted":true`) || !strings.Contains(history.Body.String(), `"real_external_call_executed":true`) || !strings.Contains(history.Body.String(), `"provider_result_received":true`) || !strings.Contains(history.Body.String(), `"response_status":502`) || !strings.Contains(history.Body.String(), "legacy upstream timeout") || !strings.Contains(history.Body.String(), `"response_body_protected":true`) || !strings.Contains(history.Body.String(), `"total":1`) || strings.Contains(history.Body.String(), "legacy-delivery-wrong-kind") {
 		t.Fatalf("mapped history delivery route status=%d body=%s", history.Code, history.Body.String())
 	}
 	wrongScope := httptest.NewRecorder()
@@ -1080,14 +1090,16 @@ WHERE intent.effect_id=$1`, "eer_"+strconv.FormatInt(effectID, 10)).Scan(&expect
 	}
 	var intentState, effectState string
 	var calls int
-	var attempted, executed bool
-	err = pool.QueryRow(ctx, `SELECT intent.state,effect.state,effect.attempt_count,attempt.call_attempted,attempt.real_external_call_executed
-FROM outbound_commerce_push_intents intent
-JOIN external_effects effect ON effect.id=substring(intent.effect_id FROM 5)::bigint
-JOIN external_effect_attempts attempt ON attempt.effect_id=effect.id AND attempt.number=1
-WHERE effect.id=$1`, effectID).Scan(&intentState, &effectState, &calls, &attempted, &executed)
-	if err != nil || intentState != "provider_accepted" || effectState != string(effectport.StateExecuted) || calls != 1 || !attempted || !executed {
-		t.Fatalf("commerce effect completion intent/effect/calls/attempted/executed=%q/%q/%d/%t/%t err=%v", intentState, effectState, calls, attempted, executed, err)
+	var attempted, executed, received bool
+	var responseStatus *int
+	var resultCode *string
+	err = pool.QueryRow(ctx, "SELECT intent.state,effect.state,effect.attempt_count,attempt.call_attempted,attempt.real_external_call_executed,intent.provider_result_received,intent.provider_response_status,intent.provider_result_code "+
+		"FROM outbound_commerce_push_intents intent "+
+		"JOIN external_effects effect ON effect.id=substring(intent.effect_id FROM 5)::bigint "+
+		"JOIN external_effect_attempts attempt ON attempt.effect_id=effect.id AND attempt.number=1 "+
+		"WHERE effect.id=$1", effectID).Scan(&intentState, &effectState, &calls, &attempted, &executed, &received, &responseStatus, &resultCode)
+	if err != nil || intentState != "provider_accepted" || effectState != string(effectport.StateExecuted) || calls != 1 || !attempted || !executed || !received || responseStatus == nil || *responseStatus != http.StatusNoContent || resultCode == nil || *resultCode != "provider_accepted" {
+		t.Fatalf("commerce effect completion state/effect/calls/attempted/executed/received/response/code=%q/%q/%d/%t/%t/%t/%v/%v err=%v", intentState, effectState, calls, attempted, executed, received, responseStatus, resultCode, err)
 	}
 }
 

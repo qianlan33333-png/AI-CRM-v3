@@ -427,6 +427,13 @@ func (handler *Handler) orderEffects(writer http.ResponseWriter, request *http.R
 		writeJSON(writer, http.StatusOK, map[string]any{"items": []any{}, "effects": []any{}, "total": 0, "history_mapping_state": "pending"})
 		return
 	}
+	// A native checkout is a valid order-detail record before its first paid
+	// fact exists. No paid event means no eligible commerce delivery, rather
+	// than a failed Outbound read or a fabricated event ID.
+	if reference.HistoricalMappingState == "current" && reference.PaidEventID == 0 {
+		writeJSON(writer, http.StatusOK, map[string]any{"items": []any{}, "effects": []any{}, "total": 0, "history_mapping_state": "current"})
+		return
+	}
 	query := outboundport.CommercePushDeliveryQuery{PaidEventID: reference.PaidEventID}
 	if reference.HistoricalMappingState == "mapped" {
 		query = outboundport.CommercePushDeliveryQuery{HistoricalSourceKind: reference.HistoricalSourceKind, HistoricalSourceSystem: reference.HistoricalSourceSystem, HistoricalSourceKey: reference.HistoricalSourceKey}
@@ -438,12 +445,18 @@ func (handler *Handler) orderEffects(writer http.ResponseWriter, request *http.R
 	}
 	out := make([]map[string]any, 0, len(items))
 	for _, item := range items {
+		var externalEffectID, legacyDeliveryID, legacyEffectJobID any
+		if item.Source == "current" {
+			externalEffectID = item.EffectID
+		} else {
+			legacyDeliveryID, legacyEffectJobID = item.HistoricalDeliveryID, item.LegacyEffectJobID
+		}
 		out = append(out, map[string]any{
-			"id": item.ID, "external_effect_id": item.EffectID, "source": item.Source,
+			"id": item.ID, "external_effect_id": externalEffectID, "legacy_delivery_id": legacyDeliveryID, "legacy_effect_job_id": legacyEffectJobID, "source": item.Source,
 			"kind": "commerce_product_push", "status": item.State, "state": item.State,
 			"attempt_count": item.AttemptCount, "provider_call_attempted": item.ProviderCallAttempted,
 			"real_external_call_executed": item.RealExternalCallExecuted, "provider_result_received": item.ProviderResultReceived,
-			"response_status": item.ResponseStatus, "error_message": item.ErrorMessage,
+			"response_status": item.ResponseStatus, "result_code": item.ResultCode, "error_message": item.ErrorMessage,
 			"response_body_protected": item.ResponseBodyProtected, "created_at": item.CreatedAt, "updated_at": item.UpdatedAt,
 		})
 	}

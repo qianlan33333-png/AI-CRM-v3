@@ -794,6 +794,62 @@ type CommercePushProvider struct {
 	now        func() time.Time
 }
 
+// commercePushHTTPResponseArtifactKind is a bounded, integrity-checked
+// projection of a response that actually reached the legacy receiver. It
+// deliberately excludes the response body and all dynamic error text.
+const commercePushHTTPResponseArtifactKind = "commerce.push.http_response.v1"
+
+type commercePushHTTPResponseFact struct {
+	Status  int
+	Outcome string
+}
+
+func commercePushResponseOutcome(status int) (string, bool) {
+	switch {
+	case status >= http.StatusOK && status < http.StatusMultipleChoices:
+		return "provider_accepted", true
+	case status >= http.StatusMultipleChoices && status < http.StatusInternalServerError:
+		return "provider_rejected", true
+	case status >= http.StatusInternalServerError && status <= 599:
+		return "response_unknown", true
+	default:
+		return "", false
+	}
+}
+
+func commercePushHTTPResponseArtifact(status int) effectport.ResultArtifact {
+	outcome, ok := commercePushResponseOutcome(status)
+	if !ok {
+		return effectport.ResultArtifact{}
+	}
+	payload, err := json.Marshal(map[string]any{"status": status, "outcome": outcome})
+	if err != nil {
+		return effectport.ResultArtifact{}
+	}
+	return effectport.ResultArtifact{
+		Kind:    commercePushHTTPResponseArtifactKind,
+		Payload: payload,
+		Digest:  effectport.Hash("external-effect.artifact.v1", commercePushHTTPResponseArtifactKind, string(payload)),
+	}
+}
+
+func commercePushResponseArtifactFacts(artifact effectport.ResultArtifact) (status int, outcome string, ok bool) {
+	if artifact.Kind != commercePushHTTPResponseArtifactKind || !artifact.Valid() {
+		return 0, "", false
+	}
+	decoder := json.NewDecoder(bytes.NewReader(artifact.Payload))
+	decoder.DisallowUnknownFields()
+	var value commercePushHTTPResponseFact
+	if err := decoder.Decode(&value); err != nil || decoder.Decode(&struct{}{}) != io.EOF {
+		return 0, "", false
+	}
+	expected, valid := commercePushResponseOutcome(value.Status)
+	if !valid || value.Outcome != expected {
+		return 0, "", false
+	}
+	return value.Status, value.Outcome, true
+}
+
 func NewCommercePushProvider(enabled bool, executions *CommercePushService, targets CommercePushTargetResolver, cipher CommercePayloadCipher) (*CommercePushProvider, error) {
 	if executions == nil || targets == nil {
 		return nil, ErrCommercePushInvalid
@@ -851,13 +907,17 @@ func (p *CommercePushProvider) Execute(ctx context.Context, envelope effectport.
 	}
 	defer response.Body.Close()
 	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
+	artifact := commercePushHTTPResponseArtifact(response.StatusCode)
+	if !artifact.Valid() {
+		return effectport.AdapterResult{Completion: effectport.StateUnknown, ReceiptDigest: effectport.Hash(string(base), "response-invalid"), CallAttempted: true, RealExternalCallExecuted: true}, nil
+	}
 	if response.StatusCode >= 500 {
-		return effectport.AdapterResult{Completion: effectport.StateUnknown, ReceiptDigest: effectport.Hash(string(base), "response-unknown", strconv.Itoa(response.StatusCode)), CallAttempted: true, RealExternalCallExecuted: true}, nil
+		return effectport.AdapterResult{Completion: effectport.StateUnknown, ReceiptDigest: effectport.Hash(string(base), "response-unknown", strconv.Itoa(response.StatusCode)), CallAttempted: true, RealExternalCallExecuted: true, Artifact: artifact}, nil
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return effectport.AdapterResult{Completion: effectport.StateFinalFailed, ReceiptDigest: effectport.Hash(string(base), "provider-rejected", strconv.Itoa(response.StatusCode)), CallAttempted: true, RealExternalCallExecuted: true}, nil
+		return effectport.AdapterResult{Completion: effectport.StateFinalFailed, ReceiptDigest: effectport.Hash(string(base), "provider-rejected", strconv.Itoa(response.StatusCode)), CallAttempted: true, RealExternalCallExecuted: true, Artifact: artifact}, nil
 	}
-	return effectport.AdapterResult{Completion: effectport.StateExecuted, ReceiptDigest: effectport.Hash(string(base), "provider-accepted", strconv.Itoa(response.StatusCode), string(envelope.Fingerprint())), CallAttempted: true, RealExternalCallExecuted: true}, nil
+	return effectport.AdapterResult{Completion: effectport.StateExecuted, ReceiptDigest: effectport.Hash(string(base), "provider-accepted", strconv.Itoa(response.StatusCode), string(envelope.Fingerprint())), CallAttempted: true, RealExternalCallExecuted: true, Artifact: artifact}, nil
 }
 
 func commercePayloadHeaderValues(body []byte) (string, string, bool) {
@@ -923,7 +983,7 @@ func (s *CommercePushCompletionSink) CompleteEffect(ctx context.Context, effectI
 		return ErrCommercePushInvalid
 	}
 	state := "final_failed"
-	var received any
+	var received, responseStatus, resultCode any
 	switch result.Completion {
 	case effectport.StateExecuted:
 		state, received = "provider_accepted", result.CallAttempted && result.RealExternalCallExecuted
@@ -938,6 +998,20 @@ func (s *CommercePushCompletionSink) CompleteEffect(ctx context.Context, effectI
 	default:
 		return ErrCommercePushInvalid
 	}
+	if result.Artifact.Kind != "" || len(result.Artifact.Payload) != 0 || result.Artifact.Digest != "" {
+		status, outcome, valid := commercePushResponseArtifactFacts(result.Artifact)
+		if !valid {
+			return ErrCommercePushInvalid
+		}
+		switch {
+		case outcome == "provider_accepted" && result.Completion == effectport.StateExecuted:
+		case outcome == "provider_rejected" && result.Completion == effectport.StateFinalFailed:
+		case outcome == "response_unknown" && result.Completion == effectport.StateUnknown:
+		default:
+			return ErrCommercePushInvalid
+		}
+		received, responseStatus, resultCode = true, status, outcome
+	}
 	raw, err := effectDigestBytes(result.ReceiptDigest)
 	if err != nil {
 		return err
@@ -948,7 +1022,7 @@ func (s *CommercePushCompletionSink) CompleteEffect(ctx context.Context, effectI
 	}
 	now := s.service.now().UTC()
 	var intentID int64
-	err = tx.QueryRow(ctx, `UPDATE outbound_commerce_push_intents SET state=$2,attempt_count=$3,provider_call_attempted=$4,provider_real_call_executed=$5,provider_result_received=$6,receipt_digest=$7,updated_at=$8 WHERE effect_id=$1 RETURNING id`, effectID, state, attempt.Number, result.CallAttempted, result.RealExternalCallExecuted, received, raw, now).Scan(&intentID)
+	err = tx.QueryRow(ctx, `UPDATE outbound_commerce_push_intents SET state=$2,attempt_count=$3,provider_call_attempted=$4,provider_real_call_executed=$5,provider_result_received=$6,provider_response_status=$7,provider_result_code=$8,receipt_digest=$9,updated_at=$10 WHERE effect_id=$1 RETURNING id`, effectID, state, attempt.Number, result.CallAttempted, result.RealExternalCallExecuted, received, responseStatus, resultCode, raw, now).Scan(&intentID)
 	if err != nil {
 		return err
 	}
@@ -982,7 +1056,7 @@ func (s *CommercePushService) ListCommercePushDeliveries(ctx context.Context, qu
 			return err
 		}
 		if query.PaidEventID > 0 {
-			rows, readErr := tx.Query(txctx, `SELECT id,COALESCE(effect_id,''),state,attempt_count,provider_call_attempted,provider_real_call_executed,provider_result_received,created_at,updated_at
+			rows, readErr := tx.Query(txctx, `SELECT id,COALESCE(effect_id,''),state,attempt_count,provider_call_attempted,provider_real_call_executed,provider_result_received,provider_response_status,provider_result_code,created_at,updated_at
 FROM outbound_commerce_push_intents WHERE order_paid_event_id=$1 ORDER BY created_at,id`, query.PaidEventID)
 			if readErr != nil {
 				return readErr
@@ -991,15 +1065,17 @@ FROM outbound_commerce_push_intents WHERE order_paid_event_id=$1 ORDER BY create
 			for rows.Next() {
 				var row outboundport.CommercePushDelivery
 				var id int64
-				if err = rows.Scan(&id, &row.EffectID, &row.State, &row.AttemptCount, &row.ProviderCallAttempted, &row.RealExternalCallExecuted, &row.ProviderResultReceived, &row.CreatedAt, &row.UpdatedAt); err != nil {
+				var callAttempted, realExternalCallExecuted bool
+				if err = rows.Scan(&id, &row.EffectID, &row.State, &row.AttemptCount, &callAttempted, &realExternalCallExecuted, &row.ProviderResultReceived, &row.ResponseStatus, &row.ResultCode, &row.CreatedAt, &row.UpdatedAt); err != nil {
 					return err
 				}
+				row.ProviderCallAttempted, row.RealExternalCallExecuted = &callAttempted, &realExternalCallExecuted
 				row.ID, row.Source = "current:"+strconv.FormatInt(id, 10), "current"
 				out = append(out, row)
 			}
 			return rows.Err()
 		}
-		rows, readErr := tx.Query(txctx, `SELECT r.id,r.source_delivery_id,r.source_state,r.source_attempt_count,r.source_response_status,r.source_error_message,r.source_response_body_protected,r.source_created_at,r.source_updated_at
+		rows, readErr := tx.Query(txctx, `SELECT r.id,r.source_delivery_id,r.source_effect_job_id,r.source_state,r.source_attempt_count,r.source_response_status,r.source_error_message,r.source_response_body_protected,r.source_created_at,r.source_updated_at
 FROM outbound_commerce_push_history_rows r
 WHERE r.source_kind='delivery' AND r.source_order_kind=$1 AND r.source_order_scope=$2 AND r.source_order_key=$3
   AND EXISTS (SELECT 1 FROM outbound_commerce_push_history_batch_rows membership
@@ -1013,8 +1089,16 @@ ORDER BY r.source_created_at,r.id`, query.HistoricalSourceKind, query.Historical
 		for rows.Next() {
 			var row outboundport.CommercePushDelivery
 			var id int64
-			if err = rows.Scan(&id, &row.EffectID, &row.State, &row.AttemptCount, &row.ResponseStatus, &row.ErrorMessage, &row.ResponseBodyProtected, &row.CreatedAt, &row.UpdatedAt); err != nil {
+			if err = rows.Scan(&id, &row.HistoricalDeliveryID, &row.LegacyEffectJobID, &row.State, &row.AttemptCount, &row.ResponseStatus, &row.ErrorMessage, &row.ResponseBodyProtected, &row.CreatedAt, &row.UpdatedAt); err != nil {
 				return err
+			}
+			if row.AttemptCount > 0 {
+				attempted := true
+				row.ProviderCallAttempted = &attempted
+			}
+			if row.ResponseStatus != nil {
+				received := true
+				row.RealExternalCallExecuted, row.ProviderResultReceived = &received, &received
 			}
 			row.ID, row.Source = "history:"+strconv.FormatInt(id, 10), "history"
 			out = append(out, row)
