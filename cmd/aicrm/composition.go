@@ -837,6 +837,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		MachineAuthentication: machineService,
 		AdminAuthentication:   authentication,
 		Management:            machineService,
+		Operations:            openPlatformExecutor,
 		Executor:              openPlatformExecutor,
 		SessionCookieName:     accesshttp.SessionCookieName,
 		CSRFCookieName:        accesshttp.CSRFCookieName,
@@ -1440,7 +1441,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
-	handler = openplatformhttp.MountWithLegacyProtocols(handler, openPlatformHandler.Routes(), cfg.OperationCycleServiceToken)
+	handler = openplatformhttp.Mount(handler, openPlatformHandler.Routes())
 	handler = mountMemberGridUI(handler, memberGridUI)
 	handler, err = mountSegmentAPI(handler, segmentBindings.Audience)
 	if err != nil {

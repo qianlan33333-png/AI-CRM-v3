@@ -1,9 +1,11 @@
 package port
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"sort"
 
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
@@ -180,4 +182,68 @@ func ErrorCodeOf(err error) ErrorCode {
 type OperationService interface {
 	Available(context.Context, accessdomain.MachinePrincipal) ([]Descriptor, error)
 	Invoke(context.Context, Invocation) (Result, error)
+}
+
+// ValidJSONObject accepts exactly one JSON object and rejects duplicate member
+// names at every nesting level. The same check is used before REST and MCP
+// hand an input to an operation, so a later duplicate cannot produce a
+// different semantic request or idempotency digest by transport.
+func ValidJSONObject(raw []byte) bool {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	if err := scanJSONValue(decoder, true); err != nil {
+		return false
+	}
+	var trailing any
+	return errors.Is(decoder.Decode(&trailing), io.EOF)
+}
+
+func scanJSONValue(decoder *json.Decoder, requireObject bool) error {
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	delimiter, isDelimiter := token.(json.Delim)
+	if !isDelimiter {
+		if requireObject {
+			return errors.New("JSON input must be an object")
+		}
+		return nil
+	}
+	switch delimiter {
+	case '{':
+		seen := map[string]struct{}{}
+		for decoder.More() {
+			key, err := decoder.Token()
+			if err != nil {
+				return err
+			}
+			name, ok := key.(string)
+			if !ok {
+				return errors.New("JSON object key is invalid")
+			}
+			if _, duplicate := seen[name]; duplicate {
+				return errors.New("duplicate JSON member")
+			}
+			seen[name] = struct{}{}
+			if err = scanJSONValue(decoder, false); err != nil {
+				return err
+			}
+		}
+		_, err = decoder.Token()
+		return err
+	case '[':
+		if requireObject {
+			return errors.New("JSON input must be an object")
+		}
+		for decoder.More() {
+			if err := scanJSONValue(decoder, false); err != nil {
+				return err
+			}
+		}
+		_, err = decoder.Token()
+		return err
+	default:
+		return errors.New("unexpected JSON delimiter")
+	}
 }

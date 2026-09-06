@@ -59,3 +59,19 @@ func TestDescriptorForMCPToolOnlyReturnsCatalogTools(t *testing.T) {
 		t.Fatal("retired donor MCP tool must not be published")
 	}
 }
+
+func TestValidJSONObjectRejectsDuplicateMembersAtEveryLevel(t *testing.T) {
+	for _, input := range [][]byte{
+		[]byte(`{"references":[],"references":[]}`),
+		[]byte(`{"reference":{"kind":"unionid","kind":"phone"}}`),
+		[]byte(`[]`),
+		[]byte(`{"ok":true} trailing`),
+	} {
+		if ValidJSONObject(input) {
+			t.Fatalf("accepted invalid JSON input %s", input)
+		}
+	}
+	if !ValidJSONObject([]byte(`{"references":[{"kind":"unionid","scope":"s","value":"v"}]}`)) {
+		t.Fatal("rejected unique JSON object")
+	}
+}

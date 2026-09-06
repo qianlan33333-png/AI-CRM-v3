@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -106,28 +107,25 @@ func TestOpenPlatformMachineManagementPostgreSQLJourney(t *testing.T) {
 	machineExecutor := &openPlatformMachineExecutor{}
 	handler, err := openplatformhttp.NewHandler(openplatformhttp.Config{
 		MachineAuthentication: service, AdminAuthentication: openPlatformMachineAdmin{}, Management: service,
-		Executor: machineExecutor, SessionCookieName: "session", CSRFCookieName: "csrf", PublicOrigin: "https://crm.example.test",
+		Operations: machineExecutor, Executor: machineExecutor, SessionCookieName: "session", CSRFCookieName: "csrf", PublicOrigin: "https://crm.example.test",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := httptest.NewRequest(http.MethodGet, "https://crm.example.test/api/admin/config/api-clients", nil)
+	request := httptest.NewRequest(http.MethodGet, "https://crm.example.test/api/admin/open-platform/clients", nil)
 	response := httptest.NewRecorder()
 	handler.Routes().ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
-		t.Fatalf("legacy management list status=%d body=%s", response.Code, response.Body.String())
+		t.Fatalf("V1 management list status=%d body=%s", response.Code, response.Body.String())
 	}
 	var page struct {
-		OK         bool `json:"ok"`
-		APIClients struct {
-			Rows []struct {
-				ClientID     string   `json:"client_id"`
-				Capabilities []string `json:"capabilities"`
-			} `json:"rows"`
-		} `json:"api_clients"`
+		Items []struct {
+			ClientID     string   `json:"client_id"`
+			Capabilities []string `json:"capabilities"`
+		} `json:"items"`
 	}
-	if err = json.Unmarshal(response.Body.Bytes(), &page); err != nil || !page.OK || len(page.APIClients.Rows) != 2 {
-		t.Fatalf("legacy management page=%s err=%v", response.Body.String(), err)
+	if err = json.Unmarshal(response.Body.Bytes(), &page); err != nil || len(page.Items) != 2 {
+		t.Fatalf("V1 management page=%s err=%v", response.Body.String(), err)
 	}
 
 	if _, err = service.Activate(ctx, admin, external.Client.ClientID, external.Secret, true); err != nil {
@@ -139,29 +137,26 @@ func TestOpenPlatformMachineManagementPostgreSQLJourney(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// This crosses the real PostgreSQL Access service, a freshly signed machine
-	// JWT, the frozen external route and the composition executor. The executor
-	// remains a read-model stub here; its owner-specific Survey journey is
-	// covered separately and this assertion closes the actual auth/HTTP seam.
-	externalRequest := httptest.NewRequest(http.MethodGet, "https://crm.example.test/api/external/questionnaire-submissions?unionid=union-1", nil)
+	// This crosses the real PostgreSQL Access service and a freshly signed
+	// machine JWT through a retained V1 transport endpoint. Retired /api
+	// routes are not a compatibility surface.
+	externalRequest := httptest.NewRequest(http.MethodGet, "https://crm.example.test/mcp", nil)
 	externalRequest.RemoteAddr = "203.0.113.5:443"
 	externalRequest.TLS = &tls.ConnectionState{}
 	externalRequest.Header.Set("Authorization", "Bearer "+issued.AccessToken)
 	externalResponse := httptest.NewRecorder()
 	handler.Routes().ServeHTTP(externalResponse, externalRequest)
-	if externalResponse.Code != http.StatusOK || len(machineExecutor.requests) != 1 || machineExecutor.requests[0].Path != "/api/external/questionnaire-submissions" || machineExecutor.requests[0].Principal.ClientID != external.Client.ClientID || !machineExecutor.requests[0].Principal.HasScope("read") || !machineExecutor.requests[0].Principal.HasCapability("external_read") {
-		t.Fatalf("authenticated external route status=%d requests=%+v body=%s", externalResponse.Code, machineExecutor.requests, externalResponse.Body.String())
+	if externalResponse.Code != http.StatusOK || !strings.Contains(externalResponse.Body.String(), `"transport":"jsonrpc"`) {
+		t.Fatalf("authenticated V1 MCP metadata status=%d body=%s", externalResponse.Code, externalResponse.Body.String())
 	}
-	// The same JWT must not obtain an external write simply because the client
-	// itself also has the external_write capability.
-	writeRequest := httptest.NewRequest(http.MethodPost, "https://crm.example.test/api/ai/audience/packages", nil)
-	writeRequest.RemoteAddr = "203.0.113.5:443"
-	writeRequest.TLS = &tls.ConnectionState{}
-	writeRequest.Header.Set("Authorization", "Bearer "+issued.AccessToken)
-	writeResponse := httptest.NewRecorder()
-	handler.Routes().ServeHTTP(writeResponse, writeRequest)
-	if writeResponse.Code != http.StatusForbidden || len(machineExecutor.requests) != 1 {
-		t.Fatalf("read token write route status=%d requests=%+v body=%s", writeResponse.Code, machineExecutor.requests, writeResponse.Body.String())
+	retiredRequest := httptest.NewRequest(http.MethodPost, "https://crm.example.test/api/ai/audience/packages", nil)
+	retiredRequest.RemoteAddr = "203.0.113.5:443"
+	retiredRequest.TLS = &tls.ConnectionState{}
+	retiredRequest.Header.Set("Authorization", "Bearer "+issued.AccessToken)
+	retiredResponse := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(retiredResponse, retiredRequest)
+	if retiredResponse.Code != http.StatusNotFound {
+		t.Fatalf("retired machine route status=%d body=%s", retiredResponse.Code, retiredResponse.Body.String())
 	}
 
 	// Both operations lock the same client. Whichever wins, rotation leaves a
@@ -220,21 +215,27 @@ func TestOpenPlatformMachineManagementPostgreSQLJourney(t *testing.T) {
 	if err != nil || directImported.Outcome != "reissue_required" || directImported.Client.Enabled || !directImported.Client.ReissueRequired || directImported.Client.ClientID != accessapp.DirectExternalAPIKeyClientID {
 		t.Fatalf("historical direct import=%+v err=%v", directImported, err)
 	}
+	clients, err = service.List(ctx, admin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var directSummary *accessapp.MachineClientSummary
+	for index := range clients {
+		if clients[index].ClientID == accessapp.DirectExternalAPIKeyClientID {
+			directSummary = &clients[index]
+			break
+		}
+	}
+	if directSummary == nil || directSummary.Enabled || !directSummary.ReissueRequired || directSummary.CredentialHint == "" {
+		t.Fatalf("historical direct summary=%+v", directSummary)
+	}
 	directRequest := httptest.NewRequest(http.MethodGet, "https://crm.example.test/api/admin/config/api-key", nil)
 	directResponse := httptest.NewRecorder()
 	handler.Routes().ServeHTTP(directResponse, directRequest)
-	var directPage struct {
-		OK     bool `json:"ok"`
-		Status struct {
-			Configured     bool   `json:"configured"`
-			Enabled        bool   `json:"enabled"`
-			Status         string `json:"status"`
-			CredentialHint string `json:"credential_hint"`
-		} `json:"api_key_status"`
+	if directResponse.Code != http.StatusNotFound {
+		t.Fatalf("retired direct-key page status=%d body=%s", directResponse.Code, directResponse.Body.String())
 	}
-	if err = json.Unmarshal(directResponse.Body.Bytes(), &directPage); err != nil || directResponse.Code != http.StatusOK || !directPage.OK || !directPage.Status.Configured || directPage.Status.Enabled || directPage.Status.Status != "disabled" || directPage.Status.CredentialHint == "" {
-		t.Fatalf("historical direct page status=%d body=%s parsed=%+v err=%v", directResponse.Code, directResponse.Body.String(), directPage, err)
-	}
+
 	// A pre-existing normal V3 caller with the same target client_id is not
 	// overwritten. Its exact donor row receives a durable, verifiable exclusion.
 	conflictedHistorical := historical
@@ -345,6 +346,14 @@ type openPlatformMachineExecutor struct {
 func (executor *openPlatformMachineExecutor) Execute(_ context.Context, request openplatformport.Request) (openplatformport.Response, error) {
 	executor.requests = append(executor.requests, request)
 	return openplatformport.Response{Status: http.StatusOK, Body: map[string]any{"ok": true}}, nil
+}
+
+func (*openPlatformMachineExecutor) Available(context.Context, accessdomain.MachinePrincipal) ([]openplatformport.Descriptor, error) {
+	return []openplatformport.Descriptor{}, nil
+}
+
+func (*openPlatformMachineExecutor) Invoke(context.Context, openplatformport.Invocation) (openplatformport.Result, error) {
+	return openplatformport.Result{}, openplatformport.NewError(openplatformport.ErrorDependencyUnavailable, "test operation service is not composed")
 }
 
 func assertMachineCapabilities(t *testing.T, clients []accessapp.MachineClientSummary, clientID string, want []string) {

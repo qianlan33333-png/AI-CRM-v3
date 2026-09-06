@@ -3,8 +3,10 @@
 package http
 
 import (
+	"bytes"
 	"context"
-	"crypto/subtle"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -31,17 +33,21 @@ type Config struct {
 	MachineAuthentication accessport.MachineTokenIssuer
 	AdminAuthentication   AdminAuthentication
 	Management            accessport.MachineManagement
-	Executor              openplatformport.Executor
-	SessionCookieName     string
-	CSRFCookieName        string
-	TrustedProxyCIDRs     []string
-	PublicOrigin          string
+	Operations            openplatformport.OperationService
+	// Executor remains only as a source-compatible field while stale callers
+	// are removed. V1 never dispatches through the retired route executor.
+	Executor          openplatformport.Executor
+	SessionCookieName string
+	CSRFCookieName    string
+	TrustedProxyCIDRs []string
+	PublicOrigin      string
 }
 
 type Handler struct {
 	machine        accessport.MachineTokenIssuer
 	admin          AdminAuthentication
 	management     accessport.MachineManagement
+	operations     openplatformport.OperationService
 	executor       openplatformport.Executor
 	sessionCookie  string
 	csrfCookie     string
@@ -50,7 +56,7 @@ type Handler struct {
 }
 
 func NewHandler(config Config) (*Handler, error) {
-	if config.MachineAuthentication == nil || config.AdminAuthentication == nil || config.Management == nil || config.Executor == nil || config.SessionCookieName == "" || config.CSRFCookieName == "" {
+	if config.MachineAuthentication == nil || config.AdminAuthentication == nil || config.Management == nil || config.Operations == nil || config.SessionCookieName == "" || config.CSRFCookieName == "" {
 		return nil, errors.New("open platform HTTP dependencies are required")
 	}
 	proxies := make([]netip.Prefix, 0, len(config.TrustedProxyCIDRs))
@@ -62,7 +68,7 @@ func NewHandler(config Config) (*Handler, error) {
 		proxies = append(proxies, prefix.Masked())
 	}
 	return &Handler{machine: config.MachineAuthentication, admin: config.AdminAuthentication, management: config.Management,
-		executor: config.Executor, sessionCookie: config.SessionCookieName, csrfCookie: config.CSRFCookieName, trustedProxies: proxies, publicOrigin: strings.TrimRight(strings.TrimSpace(config.PublicOrigin), "/")}, nil
+		operations: config.Operations, executor: config.Executor, sessionCookie: config.SessionCookieName, csrfCookie: config.CSRFCookieName, trustedProxies: proxies, publicOrigin: strings.TrimRight(strings.TrimSpace(config.PublicOrigin), "/")}, nil
 }
 
 func (handler *Handler) Routes() http.Handler {
@@ -70,128 +76,58 @@ func (handler *Handler) Routes() http.Handler {
 	mux.HandleFunc("POST /oauth/token", handler.token)
 	mux.HandleFunc("GET /mcp", handler.mcpMetadata)
 	mux.HandleFunc("POST /mcp", handler.mcp)
+	mux.HandleFunc("GET /open/v1/capabilities", handler.v1Capabilities)
+	mux.HandleFunc("POST /open/v1/customers:resolve", handler.v1ResolveCustomer)
+	mux.HandleFunc("GET /open/v1/customers/{customer_id}", handler.v1CustomerContext)
+	mux.HandleFunc("GET /open/v1/customers/{customer_id}/activities", handler.v1CustomerActivities)
+	mux.HandleFunc("POST /open/v1/ai/review-plans", handler.v1AIReviewPlan)
+	mux.HandleFunc("GET /open/v1/operations/{operation_id}", handler.v1OperationStatus)
+	// These V3 management endpoints are the control plane used by PR #164.
+	// The obsolete donor-shaped config endpoints are intentionally not mounted.
 	mux.HandleFunc("GET /api/admin/open-platform/clients", handler.listClients)
 	mux.HandleFunc("POST /api/admin/open-platform/clients", handler.createClient)
 	mux.HandleFunc("POST /api/admin/open-platform/clients/{client_id}/rotate", handler.rotateClient)
 	mux.HandleFunc("POST /api/admin/open-platform/clients/{client_id}/enable", handler.enableClient)
 	mux.HandleFunc("POST /api/admin/open-platform/clients/{client_id}/disable", handler.disableClient)
 	mux.HandleFunc("GET /api/admin/open-platform/routes", handler.routes)
-	mux.HandleFunc("GET /api/admin/config/api-clients", handler.legacyListClients)
-	mux.HandleFunc("GET /api/admin/config/api-clients/{client_id}", handler.legacyGetClient)
-	mux.HandleFunc("POST /api/admin/config/api-clients", handler.legacyCreateClient)
-	mux.HandleFunc("PUT /api/admin/config/api-clients/{client_id}", handler.legacyUpdateClient)
-	mux.HandleFunc("POST /api/admin/config/api-clients/{client_id}/activate", handler.legacyActivateClient)
-	mux.HandleFunc("POST /api/admin/config/api-clients/{client_id}/rotate-secret", handler.legacyRotateClient)
-	mux.HandleFunc("PUT /api/admin/config/api-clients/{client_id}/enabled", handler.legacyDisableClient)
-	mux.HandleFunc("GET /api/admin/config/api-key", handler.legacyDirectKeyStatus)
-	mux.HandleFunc("POST /api/admin/config/api-key/generate", handler.legacyGenerateDirectKey)
-	mux.HandleFunc("POST /api/admin/config/api-key/rotate", handler.legacyRotateDirectKey)
-	mux.HandleFunc("PUT /api/admin/config/api-key/enabled", handler.legacyDisableDirectKey)
-	for _, route := range Inventory {
-		if route.Path == "/mcp" {
-			continue
-		}
-		mux.HandleFunc(route.Method+" "+route.Path, handler.external(route))
-	}
 	return noStore(mux)
 }
 
-// Mount installs only the frozen machine protocol paths ahead of next. It
-// deliberately does not use a broad /api/ prefix: ordinary browser/session
-// routes retain their existing owner and never become machine endpoints.
+// Mount installs the V1 machine protocol ahead of the main application.
+// It claims only explicit catalog and management paths, never an /api prefix.
 func Mount(next, machine http.Handler) http.Handler {
-	return mount(next, machine, false)
-}
-
-// MountWithLegacyProtocols is used by Composition for frozen paths which had
-// a dedicated V3 authentication protocol before the machine platform. A
-// exact configured dedicated bearer is dispatched to its existing owner.
-// Signed legacy requests use their established proof headers. Every other
-// bearer, including malformed or signature-invalid JWTs, remains machine
-// owned and cannot fall through to the legacy protocol.
-func MountWithLegacyProtocols(next, machine http.Handler, operationCycleServiceToken string) http.Handler {
-	return mount(next, machine, true, operationCycleServiceToken)
-}
-
-func mount(next, machine http.Handler, preserveLegacyProtocols bool, operationCycleServiceToken ...string) http.Handler {
 	if next == nil || machine == nil {
 		return http.NotFoundHandler()
 	}
 	mux := http.NewServeMux()
-	mux.Handle("POST /oauth/token", machine)
-	mux.Handle("GET /mcp", machine)
-	mux.Handle("POST /mcp", machine)
-	mux.Handle("GET /api/admin/open-platform/clients", machine)
-	mux.Handle("POST /api/admin/open-platform/clients", machine)
-	mux.Handle("POST /api/admin/open-platform/clients/{client_id}/rotate", machine)
-	mux.Handle("POST /api/admin/open-platform/clients/{client_id}/enable", machine)
-	mux.Handle("POST /api/admin/open-platform/clients/{client_id}/disable", machine)
-	mux.Handle("GET /api/admin/open-platform/routes", machine)
-	mux.Handle("GET /api/admin/config/api-clients", machine)
-	mux.Handle("GET /api/admin/config/api-clients/{client_id}", machine)
-	mux.Handle("POST /api/admin/config/api-clients", machine)
-	mux.Handle("PUT /api/admin/config/api-clients/{client_id}", machine)
-	mux.Handle("POST /api/admin/config/api-clients/{client_id}/activate", machine)
-	mux.Handle("POST /api/admin/config/api-clients/{client_id}/rotate-secret", machine)
-	mux.Handle("PUT /api/admin/config/api-clients/{client_id}/enabled", machine)
-	mux.Handle("GET /api/admin/config/api-key", machine)
-	mux.Handle("POST /api/admin/config/api-key/generate", machine)
-	mux.Handle("POST /api/admin/config/api-key/rotate", machine)
-	mux.Handle("PUT /api/admin/config/api-key/enabled", machine)
-	for _, route := range Inventory {
-		if route.Path == "/mcp" {
+	for _, route := range []string{
+		"POST /oauth/token", "GET /mcp", "POST /mcp",
+		"GET /open/v1/capabilities", "POST /open/v1/customers:resolve",
+		"GET /open/v1/customers/{customer_id}", "GET /open/v1/customers/{customer_id}/activities",
+		"POST /open/v1/ai/review-plans", "GET /open/v1/operations/{operation_id}",
+		"GET /api/admin/open-platform/clients", "POST /api/admin/open-platform/clients",
+		"POST /api/admin/open-platform/clients/{client_id}/rotate", "POST /api/admin/open-platform/clients/{client_id}/enable", "POST /api/admin/open-platform/clients/{client_id}/disable",
+		"GET /api/admin/open-platform/routes",
+	} {
+		mux.Handle(route, machine)
+	}
+	// Inventory is historical evidence only. Explicit 404 handlers prevent an
+	// old machine path from reaching an unrelated V3 owner through next.
+	for _, retired := range Inventory {
+		if retired.Path == "/mcp" {
 			continue
 		}
-		if preserveLegacyProtocols && legacyProtocolRoute(route) {
-			token := ""
-			if len(operationCycleServiceToken) == 1 {
-				token = operationCycleServiceToken[0]
-			}
-			mux.Handle(route.Method+" "+route.Path, preserveLegacyMachineRoute(next, machine, token))
-			continue
-		}
-		mux.Handle(route.Method+" "+route.Path, machine)
+		mux.Handle(retired.Method+" "+retired.Path, http.NotFoundHandler())
 	}
 	mux.Handle("/", next)
 	return mux
 }
 
-func legacyProtocolRoute(route Route) bool {
-	return strings.HasPrefix(route.Path, "/api/operation-cycles/")
-}
-
-func preserveLegacyMachineRoute(legacy, machine http.Handler, operationCycleServiceToken string) http.Handler {
-	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-		bearer := strings.TrimSpace(strings.TrimPrefix(request.Header.Get("Authorization"), "Bearer "))
-		hasLegacyProof := false
-		for _, header := range []string{"X-AICRM-Integration-Key", "X-AICRM-Signature", "X-AICRM-Nonce", "X-AICRM-Timestamp"} {
-			if strings.TrimSpace(request.Header.Get(header)) != "" {
-				hasLegacyProof = true
-				break
-			}
-		}
-		// A request must select one authenticated protocol. This check happens
-		// before either handler observes it, so a combined proof cannot become a
-		// fallback path for an invalid machine bearer.
-		if bearer != "" && hasLegacyProof {
-			writeJSON(response, http.StatusBadRequest, map[string]string{"error": "ambiguous_authentication"})
-			return
-		}
-		if hasLegacyProof || constantTimeTokenMatch(bearer, operationCycleServiceToken) {
-			legacy.ServeHTTP(response, request)
-			return
-		}
-		// Everything else, including malformed and signature-invalid JWTs, stays
-		// machine-owned and is rejected by the machine authentication chain.
-		machine.ServeHTTP(response, request)
-	})
-}
-
-func constantTimeTokenMatch(got, want string) bool {
-	if got == "" || want == "" || len(got) != len(want) {
-		return false
-	}
-	return subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
+// MountWithLegacyProtocols is retained only to avoid a source break for old
+// local test callers. V1 never dispatches retired paths or falls back from an
+// invalid machine bearer to a legacy authentication protocol.
+func MountWithLegacyProtocols(next, machine http.Handler, _ string) http.Handler {
+	return Mount(next, machine)
 }
 
 func (handler *Handler) token(response http.ResponseWriter, request *http.Request) {
@@ -229,17 +165,25 @@ func (handler *Handler) token(response http.ResponseWriter, request *http.Reques
 }
 
 func (handler *Handler) mcpMetadata(response http.ResponseWriter, request *http.Request) {
-	principal, ok := handler.machinePrincipal(response, request, "external_integration", "read", "mcp_read")
-	if !ok {
+	principal, err := handler.authenticateMachine(request)
+	requestID := requestID(request)
+	if err != nil {
+		writeV1Error(response, http.StatusUnauthorized, openplatformport.ErrorAuthentication, requestID)
 		return
 	}
-	writeJSON(response, http.StatusOK, map[string]any{"ok": true, "transport": "jsonrpc", "methods": []string{"initialize", "tools/list", "tools/call"}, "client_id": principal.ClientID})
+	writeV1Data(response, http.StatusOK, map[string]any{"transport": "jsonrpc", "methods": []string{"initialize", "tools/list", "tools/call"}, "client_id": principal.ClientID}, requestID)
 }
 
 func (handler *Handler) mcp(response http.ResponseWriter, request *http.Request) {
+	requestID := requestID(request)
+	response.Header().Set("X-Request-ID", requestID)
+	if !isJSONContent(request) {
+		writeJSONRPCOperationError(response, nil, openplatformport.ErrorValidation)
+		return
+	}
 	body, err := readBody(request)
-	if err != nil {
-		writeJSONRPCError(response, nil, -32600, "invalid request")
+	if err != nil || !openplatformport.ValidJSONObject(body) {
+		writeJSONRPCOperationError(response, nil, openplatformport.ErrorValidation)
 		return
 	}
 	var rpc struct {
@@ -248,82 +192,242 @@ func (handler *Handler) mcp(response http.ResponseWriter, request *http.Request)
 		Method  string          `json:"method"`
 		Params  json.RawMessage `json:"params"`
 	}
-	if err := json.Unmarshal(body, &rpc); err != nil || rpc.JSONRPC != "2.0" || !validRPCID(rpc.ID) || strings.TrimSpace(rpc.Method) == "" {
+	if err = json.Unmarshal(body, &rpc); err != nil || rpc.JSONRPC != "2.0" || !validRPCID(rpc.ID) || strings.TrimSpace(rpc.Method) == "" {
 		writeJSONRPCError(response, nil, -32600, "invalid request")
 		return
 	}
-	id := json.RawMessage(rpc.ID)
-	capability := "mcp_read"
-	if rpc.Method == "tools/call" {
-		capability = "mcp_execute"
-	}
-	source, sourceErr := handler.source(request)
-	if sourceErr != nil {
-		writeJSONRPCError(response, id, -32001, "authentication failed")
-		return
-	}
-	bearer := strings.TrimSpace(strings.TrimPrefix(request.Header.Get("Authorization"), "Bearer "))
-	principal, authErr := handler.machine.AuthenticateBearer(request.Context(), bearer, "external_integration", source)
-	if authErr != nil || !principal.HasScope("write") || !principal.HasCapability(capability) {
-		writeJSONRPCError(response, id, -32001, "authentication failed")
+	principal, err := handler.authenticateMachine(request)
+	if err != nil {
+		writeJSONRPCOperationError(response, rpc.ID, openplatformport.ErrorAuthentication)
 		return
 	}
 	switch rpc.Method {
 	case "initialize":
-		writeJSONRPCResult(response, id, map[string]any{"protocolVersion": "2024-11-05", "serverInfo": map[string]string{"name": "aicrm-v3", "version": "1"}, "capabilities": map[string]any{"tools": map[string]any{}}})
+		writeJSONRPCResult(response, rpc.ID, map[string]any{"protocolVersion": "2024-11-05", "serverInfo": map[string]string{"name": "aicrm-v3", "version": openplatformport.SchemaVersion}, "capabilities": map[string]any{"tools": map[string]any{}}})
 	case "tools/list":
-		if !principal.HasScope("write") || !principal.HasCapability("mcp_read") {
-			writeJSONRPCError(response, id, -32001, "permission denied")
+		items, catalogErr := handler.operations.Available(request.Context(), principal)
+		if catalogErr != nil {
+			writeJSONRPCOperationError(response, rpc.ID, openplatformport.ErrorCodeOf(catalogErr))
 			return
 		}
-		writeJSONRPCResult(response, id, map[string]any{"tools": mcpTools(principal)})
+		writeJSONRPCResult(response, rpc.ID, map[string]any{"tools": mcpTools(items)})
 	case "tools/call":
-		if !principal.HasScope("write") || !principal.HasCapability("mcp_execute") {
-			writeJSONRPCError(response, id, -32001, "permission denied")
+		var params struct {
+			Name      string          `json:"name"`
+			Arguments json.RawMessage `json:"arguments"`
+		}
+		if err := decodeMCPParams(rpc.Params, &params); err != nil || strings.TrimSpace(params.Name) == "" {
+			writeJSONRPCError(response, rpc.ID, -32602, "invalid params")
 			return
 		}
-		result, invokeErr := handler.executor.Execute(request.Context(), openplatformport.Request{Method: http.MethodPost, Path: "/mcp", Query: request.URL.Query(), Body: body, Principal: principal})
+		descriptor, known := openplatformport.DescriptorForMCPTool(params.Name)
+		if !known {
+			writeJSONRPCError(response, rpc.ID, -32602, "unknown tool")
+			return
+		}
+		if len(params.Arguments) == 0 {
+			params.Arguments = json.RawMessage(`{}`)
+		}
+		if descriptor.OperationID == openplatformport.OperationAIReviewPlanCreate && strings.TrimSpace(request.Header.Get("Idempotency-Key")) == "" {
+			writeJSONRPCOperationError(response, rpc.ID, openplatformport.ErrorValidation)
+			return
+		}
+		result, invokeErr := handler.operations.Invoke(request.Context(), openplatformport.Invocation{
+			Operation: descriptor.OperationID, Principal: principal, RequestID: requestID,
+			IdempotencyKey: strings.TrimSpace(request.Header.Get("Idempotency-Key")), Input: params.Arguments,
+		})
 		if invokeErr != nil {
-			writeJSONRPCError(response, id, -32000, "tool execution failed")
+			writeJSONRPCOperationError(response, rpc.ID, openplatformport.ErrorCodeOf(invokeErr))
 			return
 		}
-		writeJSONRPCResult(response, id, result.Body)
+		writeJSONRPCResult(response, rpc.ID, map[string]any{"content": []any{}, "structuredContent": result.Data})
 	default:
-		writeJSONRPCError(response, id, -32601, "method not found")
+		writeJSONRPCError(response, rpc.ID, -32601, "method not found")
 	}
 }
 
-func (handler *Handler) external(route Route) http.HandlerFunc {
-	return func(response http.ResponseWriter, request *http.Request) {
-		principal, ok := handler.machinePrincipal(response, request, audienceFor(route), scopeFor(route), route.Capability)
-		if !ok {
-			return
+func (handler *Handler) v1Capabilities(response http.ResponseWriter, request *http.Request) {
+	handler.invokeV1(response, request, openplatformport.OperationCapabilitiesList, func(*http.Request) (json.RawMessage, error) { return json.RawMessage(`{}`), nil })
+}
+
+func (handler *Handler) v1ResolveCustomer(response http.ResponseWriter, request *http.Request) {
+	handler.invokeV1(response, request, openplatformport.OperationCustomerResolve, requestJSONInput)
+}
+
+func (handler *Handler) v1CustomerContext(response http.ResponseWriter, request *http.Request) {
+	handler.invokeV1(response, request, openplatformport.OperationCustomerContext, pathJSONInput("customer_id"))
+}
+
+func (handler *Handler) v1CustomerActivities(response http.ResponseWriter, request *http.Request) {
+	handler.invokeV1(response, request, openplatformport.OperationCustomerActivities, pathJSONInput("customer_id"))
+}
+
+func (handler *Handler) v1AIReviewPlan(response http.ResponseWriter, request *http.Request) {
+	handler.invokeV1(response, request, openplatformport.OperationAIReviewPlanCreate, requestJSONInput)
+}
+
+func (handler *Handler) v1OperationStatus(response http.ResponseWriter, request *http.Request) {
+	handler.invokeV1(response, request, openplatformport.OperationGet, pathJSONInput("operation_id"))
+}
+
+func (handler *Handler) invokeV1(response http.ResponseWriter, request *http.Request, operation openplatformport.OperationID, normalize func(*http.Request) (json.RawMessage, error)) {
+	id := requestID(request)
+	principal, err := handler.authenticateMachine(request)
+	if err != nil {
+		writeV1Error(response, http.StatusUnauthorized, openplatformport.ErrorAuthentication, id)
+		return
+	}
+	input, err := normalize(request)
+	if err != nil {
+		writeV1Error(response, http.StatusBadRequest, openplatformport.ErrorValidation, id)
+		return
+	}
+	if operation == openplatformport.OperationAIReviewPlanCreate && strings.TrimSpace(request.Header.Get("Idempotency-Key")) == "" {
+		writeV1Error(response, http.StatusBadRequest, openplatformport.ErrorValidation, id)
+		return
+	}
+	result, err := handler.operations.Invoke(request.Context(), openplatformport.Invocation{
+		Operation: operation, Principal: principal, RequestID: id,
+		IdempotencyKey: strings.TrimSpace(request.Header.Get("Idempotency-Key")), Input: input,
+	})
+	if err != nil {
+		writeV1Error(response, statusForOperationError(openplatformport.ErrorCodeOf(err)), openplatformport.ErrorCodeOf(err), id)
+		return
+	}
+	status := http.StatusOK
+	if operation == openplatformport.OperationAIReviewPlanCreate {
+		status = http.StatusCreated
+	}
+	writeV1Data(response, status, result.Data, id)
+}
+
+func (handler *Handler) authenticateMachine(request *http.Request) (accessdomain.MachinePrincipal, error) {
+	source, err := handler.source(request)
+	if err != nil {
+		return accessdomain.MachinePrincipal{}, err
+	}
+	authorization := request.Header.Get("Authorization")
+	if !strings.HasPrefix(authorization, "Bearer ") {
+		return accessdomain.MachinePrincipal{}, errors.New("machine bearer is required")
+	}
+	bearer := strings.TrimSpace(strings.TrimPrefix(authorization, "Bearer "))
+	if bearer == "" {
+		return accessdomain.MachinePrincipal{}, errors.New("machine bearer is required")
+	}
+	return handler.machine.AuthenticateBearer(request.Context(), bearer, "external_integration", source)
+}
+
+func requestJSONInput(request *http.Request) (json.RawMessage, error) {
+	if !isJSONContent(request) {
+		return nil, errors.New("JSON content type is required")
+	}
+	body, err := readBody(request)
+	if err != nil || len(strings.TrimSpace(string(body))) == 0 {
+		return nil, errors.New("JSON body is required")
+	}
+	if !openplatformport.ValidJSONObject(body) {
+		return nil, errors.New("invalid JSON")
+	}
+	return json.RawMessage(body), nil
+}
+
+// pathJSONInput rejects query and body aliases so REST cannot smuggle a second
+// customer_id/operation_id that diverges from the normalized MCP DTO.
+func pathJSONInput(name string) func(*http.Request) (json.RawMessage, error) {
+	return func(request *http.Request) (json.RawMessage, error) {
+		if request.URL.RawQuery != "" {
+			return nil, errors.New("path operation does not accept query or body")
 		}
+		// A chunked request has ContentLength -1. Read every GET body so it
+		// cannot smuggle a conflicting identifier past the normalized path DTO.
 		body, err := readBody(request)
-		if err != nil {
-			writeJSON(response, http.StatusBadRequest, map[string]string{"error": "invalid_request"})
-			return
+		if err != nil || len(bytes.TrimSpace(body)) != 0 {
+			return nil, errors.New("path operation does not accept query or body")
 		}
-		parts := make(map[string]string)
-		for _, placeholder := range routePlaceholders(route.Path) {
-			parts[placeholder] = request.PathValue(placeholder)
+		value := strings.TrimSpace(request.PathValue(name))
+		if value == "" {
+			return nil, errors.New("path value is required")
 		}
-		result, err := handler.executor.Execute(request.Context(), openplatformport.Request{Method: request.Method, Path: route.Path, PathParts: parts, Query: request.URL.Query(), Body: body, Principal: principal})
-		if err != nil {
-			writeJSON(response, http.StatusServiceUnavailable, map[string]string{"error": "operation_unavailable"})
-			return
+		if name == "customer_id" {
+			parsed, err := strconv.ParseInt(value, 10, 64)
+			if err != nil || parsed < 1 {
+				return nil, errors.New("invalid customer_id")
+			}
+			return json.Marshal(map[string]int64{name: parsed})
 		}
-		for key, values := range result.Header {
-			response.Header()[key] = append([]string(nil), values...)
-		}
-		status := result.Status
-		if status < 100 || status > 599 {
-			status = http.StatusOK
-		}
-		writeJSON(response, status, result.Body)
+		return json.Marshal(map[string]string{name: value})
 	}
 }
 
+func decodeMCPParams(raw json.RawMessage, target any) error {
+	if !openplatformport.ValidJSONObject(raw) {
+		return errors.New("invalid params")
+	}
+	decoder := json.NewDecoder(strings.NewReader(string(raw)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		return errors.New("trailing params")
+	}
+	return nil
+}
+
+func isJSONContent(request *http.Request) bool {
+	contentType := strings.TrimSpace(strings.Split(request.Header.Get("Content-Type"), ";")[0])
+	return contentType == "application/json"
+}
+
+func requestID(request *http.Request) string {
+	if value := strings.TrimSpace(request.Header.Get("X-Request-ID")); value != "" && len(value) <= 128 && !strings.ContainsAny(value, "\r\n\x00") {
+		return value
+	}
+	bytes := make([]byte, 12)
+	if _, err := rand.Read(bytes); err == nil {
+		return hex.EncodeToString(bytes)
+	}
+	return "open-v1-request"
+}
+
+func statusForOperationError(code openplatformport.ErrorCode) int {
+	switch code {
+	case openplatformport.ErrorAuthentication:
+		return http.StatusUnauthorized
+	case openplatformport.ErrorPermission:
+		return http.StatusForbidden
+	case openplatformport.ErrorValidation:
+		return http.StatusBadRequest
+	case openplatformport.ErrorNotFound:
+		return http.StatusNotFound
+	case openplatformport.ErrorIdentityPending, openplatformport.ErrorIdentityConflict, openplatformport.ErrorConflict:
+		return http.StatusConflict
+	case openplatformport.ErrorRateLimited:
+		return http.StatusTooManyRequests
+	case openplatformport.ErrorOutcomeUnknown:
+		return http.StatusConflict
+	default:
+		return http.StatusServiceUnavailable
+	}
+}
+
+func writeV1Data(response http.ResponseWriter, status int, data any, requestID string) {
+	response.Header().Set("X-Request-ID", requestID)
+	writeJSON(response, status, map[string]any{"data": data, "error": nil, "request_id": requestID})
+}
+
+func writeV1Error(response http.ResponseWriter, status int, code openplatformport.ErrorCode, requestID string) {
+	response.Header().Set("X-Request-ID", requestID)
+	writeJSON(response, status, map[string]any{"data": nil, "error": map[string]string{"code": string(code)}, "request_id": requestID})
+}
+
+func writeJSONRPCOperationError(response http.ResponseWriter, id json.RawMessage, category openplatformport.ErrorCode) {
+	if len(id) == 0 {
+		id = json.RawMessage("null")
+	}
+	writeJSON(response, http.StatusOK, map[string]any{"jsonrpc": "2.0", "id": id, "error": map[string]any{"code": -32000, "message": string(category), "data": map[string]string{"category": string(category)}}})
+}
 func (handler *Handler) listClients(response http.ResponseWriter, request *http.Request) {
 	actor, ok := handler.adminPrincipal(response, request, false)
 	if !ok {
@@ -616,7 +720,8 @@ func (handler *Handler) routes(response http.ResponseWriter, request *http.Reque
 	if _, ok := handler.adminPrincipal(response, request, false); !ok {
 		return
 	}
-	writeJSON(response, http.StatusOK, map[string]any{"items": Inventory, "count": len(Inventory)})
+	items := openplatformport.OperationCatalog()
+	writeJSON(response, http.StatusOK, map[string]any{"items": items, "count": len(items), "schema_version": openplatformport.SchemaVersion})
 }
 
 func (handler *Handler) machinePrincipal(response http.ResponseWriter, request *http.Request, audience, scope, capability string) (accessdomain.MachinePrincipal, bool) {
@@ -1013,14 +1118,42 @@ func validRPCID(id json.RawMessage) bool {
 	return decoder.Decode(&numberID) == nil && numberID.String() != ""
 }
 
-func mcpTools(principal accessdomain.MachinePrincipal) []map[string]any {
-	if !principal.HasCapability("mcp_execute") {
-		return []map[string]any{}
+func mcpTools(descriptors []openplatformport.Descriptor) []map[string]any {
+	tools := make([]map[string]any, 0, len(descriptors))
+	for _, descriptor := range descriptors {
+		tools = append(tools, map[string]any{
+			"name":        descriptor.MCPTool,
+			"description": string(descriptor.OperationID),
+			"inputSchema": mcpInputSchema(descriptor.OperationID),
+		})
 	}
-	return []map[string]any{
-		{"name": "resolve_customer", "description": "Resolve a customer by customer_ref, mobile, or external_userid.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"customer_ref": map[string]string{"type": "string"}, "external_userid": map[string]string{"type": "string"}, "include_context": map[string]string{"type": "boolean"}, "recent_message_limit": map[string]string{"type": "integer"}, "timeline_limit": map[string]string{"type": "integer"}}}},
-		{"name": "get_customer_context", "description": "Return customer detail, recent messages, and timeline context.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"customer_ref": map[string]string{"type": "string"}, "external_userid": map[string]string{"type": "string"}, "recent_message_limit": map[string]string{"type": "integer"}, "timeline_limit": map[string]string{"type": "integer"}}}},
-		{"name": "get_recent_messages", "description": "Return recent single-customer archived messages.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"customer_ref": map[string]string{"type": "string"}, "external_userid": map[string]string{"type": "string"}, "limit": map[string]string{"type": "integer"}}}},
+	return tools
+}
+
+func mcpInputSchema(operation openplatformport.OperationID) map[string]any {
+	stringValue := map[string]any{"type": "string"}
+	switch operation {
+	case openplatformport.OperationCapabilitiesList:
+		return map[string]any{"type": "object", "additionalProperties": false}
+	case openplatformport.OperationCustomerResolve:
+		return map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{
+			"references": map[string]any{"type": "array", "minItems": 1, "maxItems": 8, "items": map[string]any{"type": "object", "additionalProperties": false, "required": []string{"kind", "scope", "value"}, "properties": map[string]any{"kind": stringValue, "scope": stringValue, "value": stringValue}}},
+		}, "required": []string{"references"}}
+	case openplatformport.OperationCustomerContext:
+		return map[string]any{"type": "object", "additionalProperties": false, "required": []string{"customer_id"}, "properties": map[string]any{"customer_id": map[string]any{"type": "integer", "minimum": 1}}}
+	case openplatformport.OperationCustomerActivities:
+		return map[string]any{"type": "object", "additionalProperties": false, "required": []string{"customer_id"}, "properties": map[string]any{
+			"customer_id": map[string]any{"type": "integer", "minimum": 1}, "types": map[string]any{"type": "array", "items": stringValue}, "cursor": stringValue, "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 100},
+		}}
+	case openplatformport.OperationAIReviewPlanCreate:
+		return map[string]any{"type": "object", "additionalProperties": false, "required": []string{"name", "source_kind", "source_digest", "recipients"}, "properties": map[string]any{
+			"name": stringValue, "source_kind": stringValue, "source_digest": stringValue,
+			"recipients": map[string]any{"type": "array", "minItems": 1, "maxItems": 5000, "items": map[string]any{"type": "object", "additionalProperties": false, "required": []string{"customer_id", "staff_id", "content"}, "properties": map[string]any{"customer_id": map[string]any{"type": "integer", "minimum": 1}, "staff_id": map[string]any{"type": "integer", "minimum": 1}, "content": map[string]any{"type": "array", "minItems": 1, "maxItems": 20}}}},
+		}}
+	case openplatformport.OperationGet:
+		return map[string]any{"type": "object", "additionalProperties": false, "required": []string{"operation_id"}, "properties": map[string]any{"operation_id": stringValue}}
+	default:
+		return map[string]any{"type": "object", "additionalProperties": false}
 	}
 }
 

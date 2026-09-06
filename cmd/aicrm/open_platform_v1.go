@@ -158,6 +158,9 @@ func decodeV1JSON(raw json.RawMessage, target any) error {
 	if len(raw) == 0 {
 		raw = []byte(`{}`)
 	}
+	if !openplatformport.ValidJSONObject(raw) {
+		return fmt.Errorf("invalid JSON object")
+	}
 	decoder := json.NewDecoder(strings.NewReader(string(raw)))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
