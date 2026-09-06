@@ -150,3 +150,52 @@ BEGIN RAISE EXCEPTION 'outbound commerce push evidence is append-only'; END;
 $$;
 CREATE TRIGGER outbound_commerce_push_audit_append_only BEFORE UPDATE OR DELETE OR TRUNCATE ON outbound_commerce_push_audit_events FOR EACH STATEMENT EXECUTE FUNCTION outbound_commerce_push_append_only();
 CREATE TRIGGER outbound_commerce_push_outbox_append_only BEFORE UPDATE OR DELETE OR TRUNCATE ON outbound_commerce_push_outbox FOR EACH STATEMENT EXECUTE FUNCTION outbound_commerce_push_append_only();
+
+-- The old external-push configuration, delivery, and transaction-paid outbox
+-- rows are historical evidence only. Outbound owns this ledger because it is
+-- the sole owner of current commerce delivery intents. Importing a frozen V2
+-- record never creates an intent, an External Effect, an Order event, or a
+-- River job.
+CREATE TABLE outbound_commerce_push_history_batches (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    source_system TEXT NOT NULL CHECK (source_system = btrim(source_system) AND char_length(source_system) BETWEEN 1 AND 160),
+    source_revision TEXT NOT NULL CHECK (source_revision ~ '^[a-f0-9]{40}$'),
+    manifest_digest BYTEA NOT NULL CHECK (octet_length(manifest_digest)=32),
+    snapshot_at TIMESTAMPTZ NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('applied','reconciled')),
+    input_count INTEGER NOT NULL CHECK (input_count >= 0),
+    imported_count INTEGER NOT NULL CHECK (imported_count >= 0),
+    pending_count INTEGER NOT NULL CHECK (pending_count >= 0),
+    excluded_count INTEGER NOT NULL CHECK (excluded_count >= 0),
+    applied_at TIMESTAMPTZ NOT NULL,
+    reconciled_at TIMESTAMPTZ NULL,
+    UNIQUE(source_system, source_revision),
+    CONSTRAINT outbound_commerce_push_history_batch_conservation CHECK (input_count=imported_count+pending_count+excluded_count)
+);
+CREATE TABLE outbound_commerce_push_history_rows (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    batch_id BIGINT NOT NULL REFERENCES outbound_commerce_push_history_batches(id) ON DELETE RESTRICT,
+    source_kind TEXT NOT NULL CHECK (source_kind IN ('config','delivery','domain_event_outbox')),
+    source_id BIGINT NOT NULL CHECK (source_id > 0),
+    source_digest BYTEA NOT NULL CHECK (octet_length(source_digest)=32),
+    source_config_id BIGINT NULL CHECK (source_config_id IS NULL OR source_config_id > 0),
+    source_delivery_id TEXT NOT NULL DEFAULT '' CHECK (char_length(source_delivery_id) <= 200),
+    source_event_type TEXT NOT NULL DEFAULT '' CHECK (char_length(source_event_type) <= 160),
+    source_target_type TEXT NOT NULL DEFAULT '' CHECK (char_length(source_target_type) <= 120),
+    source_target_id TEXT NOT NULL DEFAULT '' CHECK (char_length(source_target_id) <= 240),
+    source_order_id BIGINT NULL CHECK (source_order_id IS NULL OR source_order_id >= 0),
+    source_product_id BIGINT NULL CHECK (source_product_id IS NULL OR source_product_id >= 0),
+    source_state TEXT NOT NULL CHECK (char_length(source_state) <= 80),
+    source_attempt_count INTEGER NOT NULL CHECK (source_attempt_count >= 0),
+    source_effect_job_id BIGINT NULL CHECK (source_effect_job_id IS NULL OR source_effect_job_id > 0),
+    source_effect_state TEXT NULL CHECK (source_effect_state IS NULL OR char_length(source_effect_state) <= 80),
+    source_created_at TIMESTAMPTZ NOT NULL,
+    source_updated_at TIMESTAMPTZ NOT NULL,
+    target_product_id BIGINT NULL CHECK (target_product_id IS NULL OR target_product_id > 0),
+    outcome TEXT NOT NULL CHECK (outcome IN ('imported','pending','excluded')),
+    reason_code TEXT NOT NULL CHECK (reason_code ~ '^[a-z0-9_]{1,80}$'),
+    read_only BOOLEAN NOT NULL DEFAULT TRUE CHECK (read_only=TRUE),
+    UNIQUE(batch_id, source_kind, source_id)
+);
+CREATE INDEX outbound_commerce_push_history_rows_product_idx
+    ON outbound_commerce_push_history_rows(target_product_id, source_created_at DESC, id DESC);
