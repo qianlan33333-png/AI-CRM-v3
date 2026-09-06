@@ -161,6 +161,7 @@ type ProviderRouter struct {
 	sidebarJSSDK      effect.ProviderAdapter
 	surveyCompletion  effect.ProviderAdapter
 	customerTag       effect.ProviderAdapter
+	ownerHandoff      effect.ProviderAdapter
 }
 
 func NewProviderRouterWithPrivate(tagCatalog, groupMessage, privateMessage effect.ProviderAdapter) *ProviderRouter {
@@ -272,6 +273,11 @@ func (r *ProviderRouter) Execute(ctx context.Context, envelope effect.Envelope, 
 		case effect.KindCustomerTagCommand:
 			if r.customerTag != nil {
 				return r.customerTag.Execute(ctx, envelope, attempt)
+			}
+
+		case effect.KindCustomerOwnerHandoff:
+			if r.ownerHandoff != nil {
+				return r.ownerHandoff.Execute(ctx, envelope, attempt)
 			}
 		}
 	}

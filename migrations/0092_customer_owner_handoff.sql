@@ -1,0 +1,115 @@
+-- Customer-owned local assignee and handoff command ledger. WeCom directory
+-- observations remain read-only facts in their existing owner tables.
+CREATE TABLE customer_local_owners (
+    customer_id BIGINT PRIMARY KEY REFERENCES customers(id),
+    staff_id BIGINT NOT NULL REFERENCES admin_users(id),
+    version BIGINT NOT NULL DEFAULT 1 CHECK (version > 0),
+    source TEXT NOT NULL CHECK (source IN ('owner_handoff_local_only','owner_handoff_wecom_then_crm')),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+);
+
+CREATE TABLE customer_owner_handoff_previews (
+    id TEXT PRIMARY KEY,
+    actor_admin_user_id BIGINT NOT NULL REFERENCES admin_users(id),
+    mode TEXT NOT NULL CHECK (mode IN ('local_only','wecom_then_crm')),
+    source_staff_id BIGINT NOT NULL REFERENCES admin_users(id),
+    target_staff_id BIGINT NOT NULL REFERENCES admin_users(id),
+    corp_scope TEXT NOT NULL,
+    request_digest BYTEA NOT NULL CHECK (octet_length(request_digest)=32),
+    confirmation_phrase TEXT NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL,
+    executed_batch_id TEXT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    CHECK (source_staff_id <> target_staff_id)
+);
+
+CREATE TABLE customer_owner_handoff_preview_rows (
+    preview_id TEXT NOT NULL REFERENCES customer_owner_handoff_previews(id) ON DELETE CASCADE,
+    line_no INTEGER NOT NULL CHECK (line_no > 0),
+    customer_id BIGINT NOT NULL REFERENCES customers(id),
+    expected_local_owner_staff_id BIGINT NULL REFERENCES admin_users(id),
+    expected_local_owner_version BIGINT NULL CHECK (expected_local_owner_version > 0),
+    relation_digest BYTEA NOT NULL CHECK (octet_length(relation_digest)=32),
+    -- Provider identifiers are frozen encrypted in the Customer-owned command
+    -- record. The effects envelope keeps only matching digests.
+    source_userid_ciphertext BYTEA NULL,
+    target_userid_ciphertext BYTEA NULL,
+    external_identity_ciphertext BYTEA NULL,
+    welcome_message_ciphertext BYTEA NULL,
+    state TEXT NOT NULL CHECK (state IN ('ready','excluded','conflict','unresolved')),
+    reason TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (preview_id,line_no),
+    UNIQUE (preview_id,customer_id)
+);
+
+CREATE TABLE customer_owner_handoff_batches (
+    id TEXT PRIMARY KEY,
+    preview_id TEXT NOT NULL UNIQUE REFERENCES customer_owner_handoff_previews(id),
+    actor_admin_user_id BIGINT NOT NULL REFERENCES admin_users(id),
+    idempotency_key TEXT NOT NULL,
+    request_digest BYTEA NOT NULL CHECK (octet_length(request_digest)=32),
+    mode TEXT NOT NULL CHECK (mode IN ('local_only','wecom_then_crm')),
+    source_staff_id BIGINT NOT NULL REFERENCES admin_users(id),
+    target_staff_id BIGINT NOT NULL REFERENCES admin_users(id),
+    corp_scope TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ('accepted','executing','completed','needs_attention','failed')),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    UNIQUE (actor_admin_user_id,idempotency_key)
+);
+
+CREATE TABLE customer_owner_handoff_lines (
+    batch_id TEXT NOT NULL REFERENCES customer_owner_handoff_batches(id) ON DELETE CASCADE,
+    line_no INTEGER NOT NULL CHECK (line_no > 0),
+    customer_id BIGINT NOT NULL REFERENCES customers(id),
+    mode TEXT NOT NULL CHECK (mode IN ('local_only','wecom_then_crm')),
+    source_staff_id BIGINT NOT NULL REFERENCES admin_users(id),
+    target_staff_id BIGINT NOT NULL REFERENCES admin_users(id),
+    expected_local_owner_version BIGINT NULL CHECK (expected_local_owner_version > 0),
+    relation_digest BYTEA NOT NULL CHECK (octet_length(relation_digest)=32),
+    source_userid_ciphertext BYTEA NULL,
+    target_userid_ciphertext BYTEA NULL,
+    external_identity_ciphertext BYTEA NULL,
+    welcome_message_ciphertext BYTEA NULL,
+    effect_id TEXT NULL,
+    effect_receipt_id TEXT NULL,
+    state TEXT NOT NULL CHECK (state IN ('local_updated','queued','provider_accepted','outcome_unknown','retryable_failed','final_failed','cas_conflict','observed')),
+    result_digest BYTEA NULL CHECK (result_digest IS NULL OR octet_length(result_digest)=32),
+    observed_at TIMESTAMPTZ NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY (batch_id,line_no),
+    UNIQUE (batch_id,customer_id),
+    UNIQUE (effect_id)
+);
+
+ALTER TABLE customer_owner_handoff_previews
+    ADD CONSTRAINT customer_owner_handoff_previews_batch_fk
+    FOREIGN KEY (executed_batch_id) REFERENCES customer_owner_handoff_batches(id);
+
+CREATE TABLE customer_owner_handoff_history_imports (
+    source_batch_id TEXT NOT NULL,
+    source_line_id TEXT NOT NULL,
+    mode TEXT NOT NULL CHECK (mode IN ('local_only','wecom_then_crm')),
+    source_state TEXT NOT NULL,
+    source_occurred_at TIMESTAMPTZ NOT NULL,
+    source_digest BYTEA NOT NULL CHECK (octet_length(source_digest)=32),
+    customer_id BIGINT NULL REFERENCES customers(id),
+    source_staff_ref_digest BYTEA NULL CHECK (source_staff_ref_digest IS NULL OR octet_length(source_staff_ref_digest)=32),
+    target_staff_ref_digest BYTEA NULL CHECK (target_staff_ref_digest IS NULL OR octet_length(target_staff_ref_digest)=32),
+    source_result_digest BYTEA NOT NULL CHECK (octet_length(source_result_digest)=32),
+    imported_state TEXT NOT NULL CHECK (imported_state IN ('observed','pending_mapping','conflict','invalid')),
+    imported_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY (source_batch_id,source_line_id)
+);
+ALTER TABLE customer_owner_handoff_preview_rows
+    ADD COLUMN source_userid_digest BYTEA NULL CHECK (source_userid_digest IS NULL OR octet_length(source_userid_digest)=32),
+    ADD COLUMN target_userid_digest BYTEA NULL CHECK (target_userid_digest IS NULL OR octet_length(target_userid_digest)=32),
+    ADD COLUMN external_identity_digest BYTEA NULL CHECK (external_identity_digest IS NULL OR octet_length(external_identity_digest)=32);
+
+ALTER TABLE customer_owner_handoff_lines
+    ADD COLUMN source_userid_digest BYTEA NULL CHECK (source_userid_digest IS NULL OR octet_length(source_userid_digest)=32),
+    ADD COLUMN target_userid_digest BYTEA NULL CHECK (target_userid_digest IS NULL OR octet_length(target_userid_digest)=32),
+    ADD COLUMN external_identity_digest BYTEA NULL CHECK (external_identity_digest IS NULL OR octet_length(external_identity_digest)=32),
+    ADD COLUMN payload_digest BYTEA NULL CHECK (payload_digest IS NULL OR octet_length(payload_digest)=32),
+    ADD COLUMN policy_digest BYTEA NULL CHECK (policy_digest IS NULL OR octet_length(policy_digest)=32),
+    ADD COLUMN transfer_success_message TEXT NOT NULL DEFAULT '';

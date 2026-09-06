@@ -793,3 +793,60 @@ func TestClientReadExternalContactUsesDirectoryReadCredentialAndReturnsFollowTag
 		t.Fatalf("contact=%+v err=%v", contact, err)
 	}
 }
+func TestClientCustomerTransferUsesExactFrozenIDsAndRejectsOmittedRows(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/cgi-bin/gettoken":
+			if request.URL.Query().Get("corpsecret") != "contact-secret" {
+				t.Fatal("wrong contact secret endpoint")
+			}
+			_, _ = writer.Write([]byte(`{"errcode":0,"access_token":"contact-token","expires_in":7200}`))
+		case "/cgi-bin/externalcontact/transfer_customer":
+			calls++
+			var body map[string]any
+			if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if body["handover_userid"] != "source-user" || body["takeover_userid"] != "target-user" || body["transfer_success_msg"] != "您好" {
+				t.Fatalf("transfer body=%v", body)
+			}
+			ids, ok := body["external_userid"].([]any)
+			if !ok || len(ids) != 1 || ids[0] != "external-1" {
+				t.Fatalf("transfer ids=%v", body)
+			}
+			if calls == 1 {
+				_, _ = writer.Write([]byte(`{"errcode":0,"customer":[{"external_userid":"external-1","errcode":0}]}`))
+				return
+			}
+			_, _ = writer.Write([]byte(`{"errcode":0,"customer":[{"external_userid":"external-1"}]}`))
+		case "/cgi-bin/externalcontact/transfer_result":
+			var body map[string]any
+			if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if body["handover_userid"] != "source-user" || body["takeover_userid"] != "target-user" || body["cursor"] != "cursor-1" {
+				t.Fatalf("result body=%v", body)
+			}
+			_, _ = writer.Write([]byte(`{"errcode":0,"customer":[{"external_userid":"external-2","status":1,"takeover_time":1588262400},{"external_userid":"external-3","status":2,"takeover_time":1588482400},{"external_userid":"external-4","status":3,"takeover_time":0}],"next_cursor":"cursor-2"}`))
+		default:
+			t.Fatalf("unexpected endpoint=%s", request.URL.Path)
+		}
+	}))
+	defer server.Close()
+	client, err := NewDirectory(Config{Enabled: true, CorpID: "corp", ContactSecret: "contact-secret", APIBase: server.URL, HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	accepted, err := client.TransferCustomer(context.Background(), "source-user", "target-user", []string{"external-1"}, "您好")
+	if err != nil || len(accepted.AcceptedExternalUserIDs) != 1 || accepted.AcceptedExternalUserIDs[0] != "external-1" || accepted.FailedCount != 0 {
+		t.Fatalf("transfer=%+v err=%v", accepted, err)
+	}
+	if _, err = client.TransferCustomer(context.Background(), "source-user", "target-user", []string{"external-1"}, "您好"); err == nil {
+		t.Fatal("omitted provider result was accepted")
+	}
+	observed, err := client.TransferResult(context.Background(), "source-user", "target-user", "cursor-1")
+	if err != nil || observed.Cursor != "cursor-2" || len(observed.AcceptedExternalUserIDs) != 0 || len(observed.Observations) != 3 || observed.Observations[0].Status != 1 || observed.Observations[1].Status != 2 || observed.Observations[2].Status != 3 {
+		t.Fatalf("result=%+v err=%v", observed, err)
+	}
+}
