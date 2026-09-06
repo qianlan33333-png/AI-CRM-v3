@@ -68,9 +68,17 @@ try {
     };
   })()`);
   if (hostDiagnostic.init !== 'ready' || !hostDiagnostic.page || hostDiagnostic.has_curly_marker || hostDiagnostic.has_block_marker || !hostDiagnostic.operator_ready || !hostDiagnostic.welcome_ready || !hostDiagnostic.wecom_checked) throw new Error(`owner handoff Host initialization mismatch ${JSON.stringify(hostDiagnostic)}`);
+  const pageStyle = await evaluate(`(() => {
+    const root=document.querySelector('[data-owner-handoff-host] [data-owner-migration-page]');
+    const header=root?.querySelector('.owner-migration-header');
+    return { page_max_width: root ? getComputedStyle(root).maxWidth : '', header_display: header ? getComputedStyle(header).display : '' };
+  })()`);
+  if (pageStyle.page_max_width !== '1440px' || pageStyle.header_display !== 'flex') throw new Error(`owner handoff frozen-page styles were blocked ${JSON.stringify(pageStyle)}`);
   const run=async (mode, scope=requestedScope)=>{
     await evaluate(`(() => { const root=document.querySelector('[data-owner-handoff-host] [data-owner-migration-page]'); root.querySelector('[data-owner-picker="source"]').click(); return true; })()`);
     await waitFor(`Boolean(document.querySelector('[data-operation-member-row][data-user-id="${sourceUserID}"]'))`,"source picker did not include inactive source");
+    const pickerStyle = await evaluate(`(() => { const picker=document.querySelector('[data-operation-member-picker]'); return { hidden: Boolean(picker?.hidden), display: picker ? getComputedStyle(picker).display : '', visibility: picker ? getComputedStyle(picker).visibility : '' }; })()`);
+    if (pickerStyle.hidden || pickerStyle.display !== 'flex' || pickerStyle.visibility !== 'visible') throw new Error(`owner handoff shared picker styles were blocked ${JSON.stringify(pickerStyle)}`);
     await evaluate(`document.querySelector('[data-operation-member-row][data-user-id="${sourceUserID}"] [data-operation-member-row-select]').click(); true`);
     await evaluate("document.querySelector('[data-operation-member-confirm]').click(); true");
     await waitFor(`document.querySelector('[data-owner-handoff-host] [data-owner-userid="source"]').value === ${JSON.stringify(source)}`, "source picker did not persist the selected Access staff");

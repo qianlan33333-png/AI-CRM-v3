@@ -116,6 +116,7 @@ func (handler *Handler) Routes() nethttp.Handler {
 	mux.HandleFunc("GET /api/admin/common/operation-members", handler.ownerHandoffOperationMembers)
 	mux.HandleFunc("GET /api/admin/customers/{customer_id}/chat-activity", handler.chatSection)
 	if handler.ownerHandoff != nil && handler.ownerHandoffReader != nil {
+		mux.HandleFunc("GET /api/admin/customers/owner-handoffs/context", handler.ownerHandoffContext)
 		mux.HandleFunc("POST /api/admin/customers/owner-handoffs/previews", handler.ownerHandoffPreview)
 		mux.HandleFunc("GET /api/admin/customers/owner-handoffs/previews/{preview_id}", handler.ownerHandoffPreviewRead)
 		mux.HandleFunc("POST /api/admin/customers/owner-handoffs/confirm", handler.ownerHandoffConfirm)
