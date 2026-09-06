@@ -117,10 +117,11 @@ func (executor *openPlatformExecutor) v1CustomerActivities(ctx context.Context, 
 	resultItems := make([]map[string]any, 0, len(items))
 	for _, item := range items {
 		resultItems = append(resultItems, map[string]any{
+			"activity_id": item.Type + ":" + item.ID,
 			"type":        item.Type,
-			"id":          item.ID,
 			"occurred_at": item.OccurredAt.UTC(),
-			"data":        item.Data,
+			"source":      v1ActivitySource(item.Type),
+			"payload":     item.Data,
 		})
 	}
 	result := map[string]any{"customer_id": input.CustomerID, "types": types, "items": resultItems, "as_of": cursor.Watermark.UTC()}
@@ -217,6 +218,17 @@ func (executor *openPlatformExecutor) readV1Activities(ctx context.Context, cust
 		return items[left].position.ID > items[right].position.ID
 	})
 	return items, nil
+}
+
+func v1ActivitySource(activityType string) string {
+	switch activityType {
+	case "message":
+		return "message_archive"
+	case "survey", "radar", "order":
+		return activityType
+	default:
+		return ""
+	}
 }
 
 func normalizeV1ActivityTypes(values []string) ([]string, error) {

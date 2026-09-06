@@ -244,7 +244,7 @@ func v1ActivityIDs(t *testing.T, data map[string]any) []string {
 	}
 	result := make([]string, 0, len(items))
 	for _, item := range items {
-		result = append(result, item["type"].(string)+":"+item["id"].(string))
+		result = append(result, item["activity_id"].(string))
 	}
 	return result
 }
