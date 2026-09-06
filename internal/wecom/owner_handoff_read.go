@@ -47,3 +47,31 @@ func ownerHandoffCorpID(scope string) (string, bool) {
 }
 
 var _ wecomport.OwnerHandoffRelationshipReader = PostgreSQLFollowRelationshipStore{}
+var _ wecomport.OwnerHandoffRelationshipLister = PostgreSQLFollowRelationshipStore{}
+
+// ListOwnerHandoffCustomerIDs reads only current source follow relations for
+// the explicit all-range operation. It never infers a source employee.
+func (PostgreSQLFollowRelationshipStore) ListOwnerHandoffCustomerIDs(ctx context.Context, corpScope, employeeUserID string, limit int) ([]customerdomain.CustomerID, error) {
+	corpID, ok := ownerHandoffCorpID(corpScope)
+	if !ok || !validFollowText(employeeUserID, 1024) || limit < 1 || limit > 20001 {
+		return nil, ErrInvalidFollowRelationship
+	}
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := tx.Query(ctx, `SELECT customer_id FROM wecom_follow_relationships WHERE corp_id=$1 AND employee_id=$2 AND active=true ORDER BY customer_id LIMIT $3`, corpID, employeeUserID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ids := make([]customerdomain.CustomerID, 0)
+	for rows.Next() {
+		var id customerdomain.CustomerID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}

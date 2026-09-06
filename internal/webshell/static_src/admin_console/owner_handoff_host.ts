@@ -1,138 +1,374 @@
-// Runtime Host for the frozen ownerMig page. The legacy template, controller,
-// CSV/XLSX guard and donor behavior remain byte-frozen; this Host only binds
-// the approved V3 two-mode API and never calls a Provider itself.
-type Mode = 'local_only' | 'wecom_then_crm';
-type Preview = { ID: string; Mode: Mode; SourceStaffID: number; TargetStaffID: number; CorpScope: string; Hash: string; ConfirmationPhrase: string; ExpiresAt: string; Rows: Array<{ Line: number; CustomerID: number; State: string; Reason?: string }> };
-type Batch = { ID: string; Mode: Mode; State: string; Lines: Array<{ Line: number; CustomerID: number; State: string; TransferStatus?: number; TakeoverAt?: string | null }> };
-type FileRange = { customerIDs: number[]; sourceStaffID: number; targetStaffID: number };
+import { ownerMigrationRowsFromFile, ownerMigrationTemplateXLSX, ownerMigrationWorkbookXLSX } from "./owner_migration_file";
 
-const base = '/api/admin/customers/owner-handoffs';
-const key = () => `owner-handoff-${crypto.getRandomValues(new Uint32Array(2)).join('-')}`;
-const esc = (x: unknown) => String(x ?? '').replace(/[&<>'"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[c] || c));
+type Staff = { ID: number; UserID: string; DisplayName: string; Active: boolean };
+type Context = { staff: Staff[]; operator: string };
+type Row = { Line: number; CustomerID: number; ExpectedOwnerID: number; ExternalUserID: string; CustomerDisplayName: string; CurrentOwnerUserID: string; State: string; Reason: string };
+type Preview = { ID: string; Hash: string; ConfirmationPhrase: string; Rows: Row[]; Mode: string };
+type BatchLine = { Line: number; CustomerID: number; State: string; TransferStatus: number };
+type Batch = { ID: string; State: string; Mode: string; Lines?: BatchLine[] };
+type ImportedRow = { Line: number; ExternalUserID: string; MoveFlag: string; CurrentOwnerUserID: string; CustomerDisplayName: string; Remark: string; ParseStatus: string; ParseReason: string };
+type DisplayRow = { Line: number; ExternalUserID: string; CustomerDisplayName: string; MoveFlag: string; CurrentOwnerUserID: string; Remark: string; State: string; Reason: string; CustomerID?: number };
+type OperationMember = { user_id: string; display_name?: string };
+type SharedPicker = { open(options: { scope: string; pageSize: number; includeInactive: boolean; allowRefresh: boolean; title: string; onSelect(member: OperationMember): void }): Promise<void> };
+
+declare global { interface Window { OperationMemberPicker?: SharedPicker } }
+
+const donorURL = "/static/admin_console/owner_migration_dd8d60d.html";
+const pickerURL = "/static/admin_console/operation_member_picker_dd8d60d.js";
+const key = () => `owner-handoff-${crypto.getRandomValues(new Uint32Array(2)).join("-")}`;
+const text = (value: unknown) => String(value ?? "").trim();
+const esc = (value: unknown) => text(value).replace(/[&<>'"]/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[char] || char));
+let pickerLoad: Promise<SharedPicker> | undefined;
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, { credentials: 'same-origin', ...init, headers: { 'Content-Type': 'application/json', ...(init?.headers || {}) } });
+  const headers = new Headers(init?.headers);
+  if ((init?.method || "GET").toUpperCase() !== "GET") {
+    if (!headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+    if (!headers.has("X-CSRF-Token")) {
+      const cookie = document.cookie.split(";").map(part => part.trim()).find(part => part.startsWith("aicrm_admin_csrf="));
+      if (cookie) headers.set("X-CSRF-Token", decodeURIComponent(cookie.slice("aicrm_admin_csrf=".length)));
+    }
+  }
+  const response = await fetch(path, { credentials: "same-origin", ...init, headers });
   const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(body.error || `请求失败（${response.status}）`);
+  if (!response.ok) throw new Error(text(body.error) || `请求失败（${response.status}）`);
   return body as T;
 }
 
-function positiveID(value: unknown, label: string): number {
-  const id = typeof value === 'number' ? value : Number(String(value).trim());
-  if (!Number.isSafeInteger(id) || id < 1) throw new Error(`${label}必须是正整数`);
-  return id;
+function scrubFrozenServerPlaceholders(page: HTMLElement): void {
+  const marker = /\{\{|\{%/;
+  const replacement = /\{\{[\s\S]*?\}\}|\{%[\s\S]*?%\}/g;
+  [page, ...page.querySelectorAll<HTMLElement>("*")].forEach(element => {
+    [...element.attributes].forEach(attribute => {
+      if (marker.test(attribute.value)) element.setAttribute(attribute.name, attribute.value.replace(replacement, ""));
+    });
+  });
+  const walker = document.createTreeWalker(page, NodeFilter.SHOW_TEXT);
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) node.nodeValue = (node.nodeValue || "").replace(replacement, "");
 }
 
-function enteredIDs(raw: string): number[] {
-  const out = raw.split(/[\s,，;；]+/).filter(Boolean).map(value => positiveID(value, '客户 ID'));
-  if (!out.length || out.length > 20000 || new Set(out).size !== out.length) throw new Error('客户 ID 必须是 1 至 20000 个唯一正整数');
-  return out;
+async function mountFrozenDonor(stage: HTMLElement): Promise<HTMLElement> {
+  const response = await fetch(donorURL, { credentials: "same-origin" });
+  if (!response.ok) throw new Error(`冻结页面资源不可用（${response.status}）`);
+  const source = new DOMParser().parseFromString(await response.text(), "text/html");
+  const page = source.querySelector<HTMLElement>("[data-owner-migration-page]");
+  const style = source.querySelector("style");
+  if (!page || !style) throw new Error("冻结页面不含迁移工作台");
+  // dd8d60d supplies the page, field order, copy and hooks. The Host only
+  // mounts it, removes unrendered Jinja tokens, and connects stable V3 ports.
+  const cloned = page.cloneNode(true) as HTMLElement;
+  scrubFrozenServerPlaceholders(cloned);
+  stage.replaceChildren(style.cloneNode(true), cloned);
+  const mounted = stage.querySelector<HTMLElement>("[data-owner-migration-page]");
+  if (!mounted) throw new Error("冻结迁移页面未挂载");
+  return mounted;
 }
 
-// The pre-existing XLSX guard turns the first sheet into CSV. This parser then
-// accepts only its frozen four columns; V3 uses the file only to select one
-// source/target range and does not accept per-row target changes silently.
-function csvRows(input: string): string[][] {
-  const rows: string[][] = [[]];
-  let cell = '', quoted = false;
-  for (let index = 0; index < input.length; index++) {
-    const char = input[index];
-    if (quoted) {
-      if (char === '"' && input[index + 1] === '"') { cell += '"'; index++; continue; }
-      if (char === '"') { quoted = false; continue; }
-      cell += char;
-      continue;
-    }
-    if (char === '"') {
-      if (cell !== '') throw new Error('CSV 引号格式无效');
-      quoted = true;
-    } else if (char === ',') {
-      rows.at(-1)!.push(cell); cell = '';
-    } else if (char === '\n' || char === '\r') {
-      if (char === '\r' && input[index + 1] === '\n') index++;
-      rows.at(-1)!.push(cell); cell = '';
-      rows.push([]);
-    } else {
-      cell += char;
-    }
+function query<T extends Element>(root: ParentNode, selector: string): T {
+  const node = root.querySelector<T>(selector);
+  if (!node) throw new Error(`冻结页面缺少 ${selector}`);
+  return node;
+}
+
+function sharedPicker(): Promise<SharedPicker> {
+  if (window.OperationMemberPicker) return Promise.resolve(window.OperationMemberPicker);
+  if (!pickerLoad) {
+    pickerLoad = new Promise<SharedPicker>((resolve, reject) => {
+      const existing = document.querySelector<HTMLScriptElement>('script[data-owner-handoff-shared-picker]');
+      const finish = () => window.OperationMemberPicker ? resolve(window.OperationMemberPicker) : reject(new Error("冻结员工选择器未注册"));
+      if (existing) { existing.addEventListener("load", finish, { once: true }); existing.addEventListener("error", () => reject(new Error("冻结员工选择器不可用")), { once: true }); return; }
+      const script = document.createElement("script");
+      script.src = pickerURL;
+      script.async = true;
+      script.dataset.ownerHandoffSharedPicker = "dd8d60d";
+      script.addEventListener("load", finish, { once: true });
+      script.addEventListener("error", () => reject(new Error("冻结员工选择器不可用")), { once: true });
+      document.head.append(script);
+    });
   }
-  if (quoted) throw new Error('CSV 引号格式无效');
-  rows.at(-1)!.push(cell);
-  return rows.filter(row => row.some(value => value.trim() !== ''));
+  return pickerLoad;
 }
 
-async function rangeFromFile(file: File): Promise<FileRange> {
-  const { ownerReassignmentCsvFromFile } = await import('../../../../web/src/admin/ownerReassignmentFile');
-  const rows = csvRows(await ownerReassignmentCsvFromFile(file));
-  const header = ['customer_id', 'expected_owner_staff_id', 'expected_updated_at', 'target_owner_staff_id'];
-  if (!rows.length || rows[0].length !== header.length || rows[0].some((value, index) => value !== header[index])) throw new Error(`文件第一行必须且只能是：${header.join(',')}`);
-  const customerIDs: number[] = [];
-  let sourceStaffID = 0;
-  let targetStaffID = 0;
-  for (const [offset, row] of rows.slice(1).entries()) {
-    if (row.length !== 4 || !row[2].trim()) throw new Error(`第 ${offset + 2} 行格式无效`);
-    const customerID = positiveID(row[0], `第 ${offset + 2} 行客户 ID`);
-    const source = positiveID(row[1], `第 ${offset + 2} 行原负责人 ID`);
-    const target = positiveID(row[3], `第 ${offset + 2} 行目标负责人 ID`);
-    if (!sourceStaffID) { sourceStaffID = source; targetStaffID = target; }
-    if (source !== sourceStaffID || target !== targetStaffID) throw new Error('一次迁移文件只能包含同一源负责人和目标负责人');
-    customerIDs.push(customerID);
-  }
-  if (!customerIDs.length || customerIDs.length > 20000 || new Set(customerIDs).size !== customerIDs.length) throw new Error('文件必须包含 1 至 20000 个唯一客户 ID');
-  return { customerIDs, sourceStaffID, targetStaffID };
+async function installPicker(root: HTMLElement, staff: Staff[]): Promise<void> {
+  const picker = await sharedPicker();
+  const choose = async (kind: "source" | "target") => {
+    await picker.open({
+      scope: "owner_migration",
+      pageSize: 100,
+      includeInactive: kind === "source",
+      allowRefresh: false,
+      title: kind === "source" ? "选择原负责人" : "选择目标负责人",
+      onSelect(member) {
+        const memberID = text(member.user_id);
+        const selected = staff.find(value => value.UserID === memberID);
+        if (!selected || (kind === "target" && !selected.Active)) return;
+        query<HTMLInputElement>(root, `[data-owner-userid="${kind}"]`).value = String(selected.ID);
+        query<HTMLInputElement>(root, `[data-owner-label="${kind}"]`).value = selected.DisplayName || selected.UserID;
+        root.dispatchEvent(new Event("owner-handoff-change"));
+      },
+    });
+  };
+  root.querySelectorAll<HTMLButtonElement>("[data-owner-picker]").forEach(button => button.addEventListener("click", () => { void choose(button.dataset.ownerPicker as "source" | "target"); }));
 }
 
-function saveCSV(filename: string, rows: Array<Array<string | number>>) {
-  const quote = (value: string | number) => `"${String(value).replaceAll('"', '""')}"`;
-  const blob = new Blob([rows.map(row => row.map(quote).join(',')).join('\r\n') + '\r\n'], { type: 'text/csv;charset=utf-8' });
-  const href = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = href; link.download = filename; link.click();
-  setTimeout(() => URL.revokeObjectURL(href), 0);
+function currentMode(root: ParentNode): string { return query<HTMLInputElement>(root, "[data-include-wecom-transfer]").checked ? "wecom_then_crm" : "local_only"; }
+function ownerID(root: ParentNode, kind: "source" | "target"): number { return Number(query<HTMLInputElement>(root, `[data-owner-userid="${kind}"]`).value); }
+function ownerUserID(root: ParentNode, kind: "source" | "target", staff: Staff[]): string {
+  const selected = staff.find(member => member.ID === ownerID(root, kind));
+  return text(selected?.UserID);
+}
+function selectedScope(root: ParentNode): string { return query<HTMLInputElement>(root, 'input[name="scope_type"]:checked').value; }
+function transferStatusLabel(status: number): string {
+  return ({ 0: "本地迁移", 1: "企微转接已完成", 2: "企微转接处理中", 3: "客户拒绝接替", 4: "目标成员客户上限", 5: "未找到企微转接记录" } as Record<number, string>)[status] || `企微状态 ${status}`;
+}
+function downloadWorkbook(filename: string, headers: string[], rows: string[][]): void {
+  const blob = new Blob([ownerMigrationWorkbookXLSX(headers, rows)], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob); link.download = filename; link.click(); URL.revokeObjectURL(link.href);
 }
 
-function previewRows(items: Preview['Rows'] | Batch['Lines']) {
-  return `<table><thead><tr><th>行</th><th>客户 ID</th><th>状态</th><th>企微回查</th></tr></thead><tbody>${items.map(item => `<tr><td>${esc(item.Line)}</td><td>${esc(item.CustomerID)}</td><td>${esc(item.State)}</td><td>${'TransferStatus' in item && item.TransferStatus ? esc(item.TransferStatus) : '—'}</td></tr>`).join('')}</tbody></table>`;
+function normalizeMoveFlag(value: string): [string, boolean] {
+  const normalized = text(value).toLowerCase();
+  if (new Set(["", "是", "y", "yes", "true", "1", "迁移"]).has(normalized)) return ["是", true];
+  if (new Set(["否", "n", "no", "false", "0", "不迁移"]).has(normalized)) return ["否", true];
+  return [text(value), false];
 }
 
-function render(stage: HTMLElement, preview?: Preview, batch?: Batch, error = '') {
-  const mode = preview?.Mode || batch?.Mode || 'wecom_then_crm';
-  stage.innerHTML = `<section data-owner-handoff-host style="padding:20px;max-width:960px;display:grid;gap:14px"><header><h1>负责人迁移</h1><p>本地负责人和企微跟进关系分开保存。企微模式仅在每位客户明确受理后更新本地；最终接替需单独回查。</p></header><section><label>模式 <select data-mode><option value="wecom_then_crm" ${mode === 'wecom_then_crm' ? 'selected' : ''}>先企微转接，再更新 CRM</option><option value="local_only" ${mode === 'local_only' ? 'selected' : ''}>只更新本地 CRM</option></select></label><label>Corp scope <input data-scope value="${esc(preview?.CorpScope || 'wecom-corp:')}"/></label><label>源负责人 ID <input data-source value="${esc(preview?.SourceStaffID || '')}"/></label><label>目标负责人 ID <input data-target value="${esc(preview?.TargetStaffID || '')}"/></label><label>客户 ID <textarea data-customers rows="5">${esc(preview?.Rows.map(row => row.CustomerID).join('\n') || '')}</textarea></label><label>CSV/XLSX 范围文件 <input data-file type="file" accept=".csv,text/csv,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"/></label><button data-template>下载 CSV 模板</button><label>转接提示语 <textarea data-welcome rows="2"></textarea></label><button data-preview>生成预览</button><output data-error>${esc(error)}</output></section>${preview ? `<section data-preview-result><h2>冻结预览</h2><p>${esc(preview.ID)} · ${esc(preview.ExpiresAt)}</p>${previewRows(preview.Rows)}<button data-export-preview>导出预览</button><label>确认语 <input data-phrase value="${esc(preview.ConfirmationPhrase)}"/></label><button data-confirm>确认执行</button></section>` : ''}${batch ? `<section data-batch-result><h2>执行结果</h2><p>${esc(batch.ID)} · ${esc(batch.State)}</p>${previewRows(batch.Lines)}<button data-export-results>导出结果</button>${batch.Mode === 'wecom_then_crm' ? '<button data-refresh>回查企微转接结果</button>' : ''}</section>` : ''}</section>`;
-  bind(stage, preview, batch);
+function normalizeImportedRows(rawRows: string[][], sourceUserID: string): ImportedRow[] {
+  const seen = new Set<string>();
+  return rawRows.map((row, index) => {
+    const external = text(row[0]);
+    const [moveFlag, validFlag] = normalizeMoveFlag(text(row[1]));
+    const current = text(row[2]);
+    let parseStatus = "parsed";
+    let parseReason = "";
+    if (!external) { parseStatus = "missing_external_userid"; parseReason = "external_userid is required"; }
+    else if (!validFlag) { parseStatus = "invalid_move_flag"; parseReason = "是否迁移字段非法"; }
+    else if (seen.has(external)) { parseStatus = "duplicate"; parseReason = "duplicate external_userid; first row is kept"; }
+    else {
+      seen.add(external);
+      if (current && current !== sourceUserID) parseReason = "当前负责人userid与选择的原负责人不一致，预览阶段将不可执行";
+    }
+    return { Line: index + 2, ExternalUserID: external, MoveFlag: moveFlag, CurrentOwnerUserID: current, CustomerDisplayName: text(row[3]), Remark: text(row[4]), ParseStatus: parseStatus, ParseReason: parseReason };
+  });
 }
 
-function bind(stage: HTMLElement, preview?: Preview, batch?: Batch) {
-  const fail = (error: unknown) => { const node = stage.querySelector<HTMLOutputElement>('[data-error]'); if (node) node.textContent = error instanceof Error ? error.message : '请求失败'; };
-  stage.querySelector('[data-template]')?.addEventListener('click', () => saveCSV('负责人迁移模板.csv', [['customer_id', 'expected_owner_staff_id', 'expected_updated_at', 'target_owner_staff_id']]));
-  stage.querySelector('[data-export-preview]')?.addEventListener('click', () => { if (preview) saveCSV(`负责人迁移预览-${preview.ID}.csv`, [['line', 'customer_id', 'state', 'reason'], ...preview.Rows.map(row => [row.Line, row.CustomerID, row.State, row.Reason || ''])]); });
-  stage.querySelector('[data-export-results]')?.addEventListener('click', () => { if (batch) saveCSV(`负责人迁移结果-${batch.ID}.csv`, [['line', 'customer_id', 'state', 'transfer_status', 'takeover_at'], ...batch.Lines.map(row => [row.Line, row.CustomerID, row.State, row.TransferStatus || '', row.TakeoverAt || ''])]); });
-  stage.querySelector('[data-preview]')?.addEventListener('click', () => void (async () => {
-    try {
-      const file = stage.querySelector<HTMLInputElement>('[data-file]')?.files?.[0];
-      const range = file ? await rangeFromFile(file) : { customerIDs: enteredIDs(stage.querySelector<HTMLTextAreaElement>('[data-customers]')!.value), sourceStaffID: positiveID(stage.querySelector<HTMLInputElement>('[data-source]')!.value, '源负责人 ID'), targetStaffID: positiveID(stage.querySelector<HTMLInputElement>('[data-target]')!.value, '目标负责人 ID') };
-      const result = await api<Preview>(`${base}/previews`, { method: 'POST', body: JSON.stringify({ mode: stage.querySelector<HTMLSelectElement>('[data-mode]')!.value as Mode, source_staff_id: range.sourceStaffID, target_staff_id: range.targetStaffID, corp_scope: stage.querySelector<HTMLInputElement>('[data-scope]')!.value.trim(), customer_ids: range.customerIDs, welcome_message: stage.querySelector<HTMLTextAreaElement>('[data-welcome]')!.value, confirmation_phrase: 'CONFIRM', idempotency_key: key() }) });
-      history.replaceState(null, '', `?handoff_preview=${encodeURIComponent(result.ID)}`); render(stage, result);
-    } catch (caught) { fail(caught); }
-  })());
-  stage.querySelector('[data-confirm]')?.addEventListener('click', () => void (async () => {
-    if (!preview) return;
-    try {
-      const result = await api<Batch>(`${base}/confirm`, { method: 'POST', body: JSON.stringify({ preview_id: preview.ID, preview_hash: preview.Hash, confirmation_phrase: stage.querySelector<HTMLInputElement>('[data-phrase]')!.value, idempotency_key: key() }) });
-      history.replaceState(null, '', `?handoff_batch=${encodeURIComponent(result.ID)}`); render(stage, preview, result);
-    } catch (caught) { fail(caught); }
-  })());
-  stage.querySelector('[data-refresh]')?.addEventListener('click', () => void (async () => {
-    if (!batch) return;
-    try { render(stage, preview, await api<Batch>(`${base}/batches/${encodeURIComponent(batch.ID)}/transfer-result`, { method: 'POST', body: JSON.stringify({ idempotency_key: key() }) })); } catch (caught) { fail(caught); }
-  })());
+function importStats(rows: ImportedRow[]): Record<string, number> {
+  const unique = new Set(rows.filter(row => row.ExternalUserID && row.ParseStatus !== "duplicate").map(row => row.ExternalUserID));
+  return {
+    total_rows: rows.length,
+    unique_external_userids: unique.size,
+    marked_move: rows.filter(row => row.ParseStatus === "parsed" && row.MoveFlag === "是").length,
+    marked_skip: rows.filter(row => row.ParseStatus === "parsed" && row.MoveFlag === "否").length,
+    duplicate_rows: rows.filter(row => row.ParseStatus === "duplicate").length,
+    invalid_rows: rows.filter(row => row.ParseStatus === "missing_external_userid" || row.ParseStatus === "invalid_move_flag").length,
+  };
 }
 
-export async function mountOwnerHandoff(stage: HTMLElement): Promise<void> {
-  const query = new URLSearchParams(location.search);
+function displayFromServer(row: Row, item: ImportedRow): DisplayRow {
+  const mappedState = row.State === "conflict" ? "not_under_source_owner" : row.State === "unresolved" ? "not_found" : row.State;
+  return { Line: item.Line, ExternalUserID: row.ExternalUserID || item.ExternalUserID, CustomerDisplayName: row.CustomerDisplayName || item.CustomerDisplayName, MoveFlag: item.MoveFlag, CurrentOwnerUserID: row.CurrentOwnerUserID || item.CurrentOwnerUserID, Remark: item.Remark, State: mappedState, Reason: row.Reason || "已通过预览校验", CustomerID: row.CustomerID };
+}
+
+function previewDisplayRows(preview: Preview, scope: string, imported: ImportedRow[], sourceUserID: string): DisplayRow[] {
+  if (scope !== "excel_include") return preview.Rows.map(row => ({ Line: row.Line, ExternalUserID: row.ExternalUserID, CustomerDisplayName: row.CustomerDisplayName, MoveFlag: "是", CurrentOwnerUserID: row.CurrentOwnerUserID, Remark: "", State: row.State, Reason: row.Reason || "已通过预览校验", CustomerID: row.CustomerID }));
+  const serverRows = new Map(preview.Rows.map(row => [row.ExternalUserID, row]));
+  return imported.map(item => {
+    if (item.ParseStatus !== "parsed") return { ...item, State: item.ParseStatus, Reason: item.ParseReason };
+    if (item.MoveFlag === "否") return { ...item, State: "skipped_by_file", Reason: "Excel marked skip" };
+    if (item.CurrentOwnerUserID && item.CurrentOwnerUserID !== sourceUserID) return { ...item, State: "not_under_source_owner", Reason: "当前负责人userid与选择的原负责人不一致" };
+    const server = serverRows.get(item.ExternalUserID);
+    if (!server) return { ...item, State: "not_found", Reason: "未得到该行的安全预览结果" };
+    return displayFromServer(server, item);
+  });
+}
+
+function renderRows(root: HTMLElement, rows: DisplayRow[], scope: string, source: number, target: number): void {
+  const ready = rows.filter(row => row.State === "ready").length;
+  const skipped = rows.filter(row => row.State === "skipped_by_file").length;
+  const blocked = rows.length - ready - skipped;
+  query<HTMLElement>(root, "[data-preview-basic]").textContent = `${scope === "excel_include" ? "Excel 指定名单" : "全部客户"} · 原负责人 #${source} → 目标负责人 #${target} · ${ready} 个可迁移客户；${blocked} 个不可迁移。`;
+  const values: Record<string, number> = { total_rows: rows.length, unique_external_userids: new Set(rows.map(row => row.ExternalUserID).filter(Boolean)).size, ready, skipped_by_file: skipped, blocked, crm_updates: ready };
+  Object.entries(values).forEach(([name, value]) => { const node = root.querySelector<HTMLElement>(`[data-preview-stat="${name}"]`); if (node) node.textContent = String(value); });
+  query<HTMLElement>(root, "[data-preview-rows]").innerHTML = rows.map(row => `<tr><td>${row.Line}</td><td><code>${esc(row.ExternalUserID)}</code></td><td>${esc(row.CustomerDisplayName)}</td><td>${esc(row.MoveFlag)}</td><td>${esc(row.CurrentOwnerUserID)}</td><td><span class="owner-migration-status owner-migration-status--${row.State === "ready" ? "ready" : row.State === "skipped_by_file" ? "skip" : "block"}">${esc(row.State)}</span></td><td>${esc(row.Reason)}</td></tr>`).join("") || '<tr><td colspan="7" class="owner-migration-empty">当前范围没有候选客户。</td></tr>';
+  query<HTMLButtonElement>(root, "[data-download-errors]").disabled = blocked === 0;
+  query<HTMLButtonElement>(root, "[data-execute]").disabled = ready === 0;
+}
+
+function renderPreview(root: HTMLElement, preview: Preview, scope: string, imported: ImportedRow[], sourceUserID: string): DisplayRow[] {
+  query<HTMLElement>(root, "[data-preview-empty]").hidden = true;
+  query<HTMLElement>(root, "[data-preview-content]").hidden = false;
+  const rows = previewDisplayRows(preview, scope, imported, sourceUserID);
+  renderRows(root, rows, scope, ownerID(root, "source"), ownerID(root, "target"));
+  query<HTMLElement>(root, "[data-confirm-phrase-display]").textContent = preview.ConfirmationPhrase;
+  return rows;
+}
+
+function renderBatch(root: HTMLElement, batch: Batch): void {
+  query<HTMLElement>(root, "[data-execution-log]").textContent = [
+    `batch_id=${batch.ID}`,
+    `mode=${batch.Mode}`,
+    `batch_state=${batch.State}`,
+    ...(batch.Lines || []).map(line => `line_no=${line.Line} customer_id=${line.CustomerID} state=${line.State} transfer_status=${line.TransferStatus} (${transferStatusLabel(line.TransferStatus)})`),
+  ].join("\n");
+}
+
+async function boot(): Promise<void> {
+  const stage = document.querySelector<HTMLElement>("[data-owner-handoff-host]");
+  if (!stage) return;
   try {
-    const previewID = query.get('handoff_preview');
-    const batchID = query.get('handoff_batch');
-    const [preview, batch] = await Promise.all([previewID ? api<Preview>(`${base}/previews/${encodeURIComponent(previewID)}`) : Promise.resolve(undefined), batchID ? api<Batch>(`${base}/batches/${encodeURIComponent(batchID)}`) : Promise.resolve(undefined)]);
-    render(stage, preview, batch);
-  } catch (caught) { render(stage, undefined, undefined, caught instanceof Error ? caught.message : '页面加载失败'); }
+    const root = await mountFrozenDonor(stage);
+    const context = await api<Context>("/api/admin/customers/owner-handoffs/context");
+    await installPicker(root, context.staff || []);
+    query<HTMLInputElement>(root, '[data-owner-label="source"]').value = "";
+    query<HTMLInputElement>(root, '[data-owner-label="target"]').value = "";
+    query<HTMLInputElement>(root, '[data-owner-userid="source"]').value = "";
+    query<HTMLInputElement>(root, '[data-owner-userid="target"]').value = "";
+    query<HTMLInputElement>(root, "#operator").value = context.operator || "当前登录管理员";
+    query<HTMLTextAreaElement>(root, "[data-transfer-welcome-msg]").value = "您好，后续将由新的服务同事继续为您服务。";
+    query<HTMLInputElement>(root, "[data-include-wecom-transfer]").checked = true;
+    query<HTMLElement>(root, "[data-wecom-pill]").textContent = "企微转接：默认开启";
+    query<HTMLElement>(root, "[data-local-only-warning]").hidden = true;
+    query<HTMLInputElement>(root, "[data-import-file]").setAttribute("accept", ".xlsx,.xls,.csv");
+    const updateWelcomeCount = () => { query<HTMLElement>(root, "[data-welcome-count]").textContent = `${text(query<HTMLTextAreaElement>(root, "[data-transfer-welcome-msg]").value).length} 字`; };
+    updateWelcomeCount();
+    let preview: Preview | undefined;
+    let batch: Batch | undefined;
+    let fileExternalIDs: string[] = [];
+    let importedRows: ImportedRow[] = [];
+    let displayedRows: DisplayRow[] = [];
+    const notice = query<HTMLElement>(root, "[data-workbench-notice]");
+    const setNotice = (value: string, kind = "") => { notice.textContent = value; notice.className = `owner-migration-hint ${kind}`; };
+    const reset = () => {
+      preview = undefined; batch = undefined; displayedRows = [];
+      query<HTMLElement>(root, "[data-preview-empty]").hidden = false;
+      query<HTMLElement>(root, "[data-preview-content]").hidden = true;
+      query<HTMLInputElement>(root, "[data-confirm-phrase-input]").value = "";
+      query<HTMLButtonElement>(root, "[data-execute]").disabled = true;
+      query<HTMLButtonElement>(root, "[data-download-errors]").disabled = true;
+      query<HTMLButtonElement>(root, "[data-download-result]").disabled = true;
+      const transferReader = root.querySelector<HTMLButtonElement>("[data-read-transfer-result]");
+      if (transferReader) transferReader.disabled = true;
+      query<HTMLElement>(root, "[data-execution-log]").textContent = "尚未执行。";
+    };
+    const updateWeComPresentation = () => {
+      const enabled = query<HTMLInputElement>(root, "[data-include-wecom-transfer]").checked;
+      const pill = query<HTMLElement>(root, "[data-wecom-pill]");
+      pill.textContent = enabled ? "企微转接：默认开启" : "企微转接：已关闭";
+      pill.classList.toggle("owner-migration-pill--success", enabled);
+      pill.classList.toggle("owner-migration-pill--warn", !enabled);
+      query<HTMLElement>(root, "[data-local-only-warning]").hidden = enabled;
+    };
+    root.addEventListener("owner-handoff-change", reset);
+    root.querySelectorAll<HTMLElement>("[data-scope-segment]").forEach(segment => segment.addEventListener("click", () => {
+      const scope = segment.dataset.scopeSegment || "all";
+      root.querySelectorAll<HTMLElement>("[data-scope-segment]").forEach(value => value.classList.toggle("is-active", value === segment));
+      query<HTMLElement>(root, "[data-mode-pill]").textContent = scope === "excel_include" ? "模式：Excel 指定名单" : "模式：全量迁移";
+      query<HTMLInputElement>(root, `input[name="scope_type"][value="${scope}"]`).checked = true;
+      query<HTMLElement>(root, "[data-excel-panel]").hidden = scope !== "excel_include";
+      reset();
+    }));
+    query<HTMLButtonElement>(root, "[data-upload-file]").addEventListener("click", async () => {
+      try {
+        const source = ownerID(root, "source"); const target = ownerID(root, "target");
+        const sourceUserID = ownerUserID(root, "source", context.staff || []);
+        if (!source || !target || source === target || !sourceUserID) throw new Error("请先选择不同的原负责人和目标负责人");
+        const file = query<HTMLInputElement>(root, "[data-import-file]").files?.[0];
+        if (!file) throw new Error("请选择包含旧模板五列的 XLSX、XLS 或 CSV 文件");
+        const rawRows = await ownerMigrationRowsFromFile(file);
+        const headers = rawRows.shift() || [];
+        const expectedHeaders = ["external_userid", "是否迁移", "当前负责人userid", "客户备注名", "备注"];
+        if (headers.length !== expectedHeaders.length || headers.some((header, index) => text(header) !== expectedHeaders[index])) throw new Error(`第一行必须且只能是：${expectedHeaders.join("、")}`);
+        if (rawRows.some(row => row.length !== expectedHeaders.length)) throw new Error("每一行必须包含旧模板的五列");
+        importedRows = normalizeImportedRows(rawRows, sourceUserID);
+        fileExternalIDs = importedRows.filter(row => row.ParseStatus === "parsed" && row.MoveFlag === "是" && row.ExternalUserID && (!row.CurrentOwnerUserID || row.CurrentOwnerUserID === sourceUserID)).map(row => row.ExternalUserID);
+        const stats = importStats(importedRows);
+        query<HTMLElement>(root, "[data-import-summary]").hidden = false;
+        query<HTMLElement>(root, "[data-import-filename]").textContent = file.name;
+        Object.entries(stats).forEach(([name, value]) => { const node = root.querySelector<HTMLElement>(`[data-import-stat="${name}"]`); if (node) node.textContent = String(value); });
+        reset();
+        setNotice("旧模板名单已解析；预览会保留每一行的标记、重复和负责人校验结果。", "ok");
+      } catch (error) { setNotice(error instanceof Error ? error.message : "文件解析失败", "error"); }
+    });
+    root.querySelectorAll<HTMLInputElement>('input[name="scope_type"]').forEach(input => input.addEventListener("change", reset));
+    query<HTMLInputElement>(root, "[data-include-wecom-transfer]").addEventListener("change", () => { updateWeComPresentation(); reset(); });
+    query<HTMLTextAreaElement>(root, "[data-transfer-welcome-msg]").addEventListener("input", () => { updateWelcomeCount(); reset(); });
+    query<HTMLButtonElement>(root, "[data-download-template]").addEventListener("click", () => {
+      const blob = new Blob([ownerMigrationTemplateXLSX()], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+      const link = document.createElement("a"); link.href = URL.createObjectURL(blob); link.download = "owner_migration_template.xlsx"; link.click(); URL.revokeObjectURL(link.href);
+    });
+    query<HTMLButtonElement>(root, "[data-preview]").addEventListener("click", async () => {
+      try {
+        const source = ownerID(root, "source"); const target = ownerID(root, "target");
+        const sourceUserID = ownerUserID(root, "source", context.staff || []);
+        if (!source || !target || source === target || !sourceUserID) throw new Error("请先选择不同的原负责人和目标负责人");
+        const scope = selectedScope(root);
+        if (scope === "excel_include" && !importedRows.length) throw new Error("请先上传旧模板名单");
+        if (scope === "excel_include" && !fileExternalIDs.length) {
+          displayedRows = importedRows.map(row => row.ParseStatus === "parsed" && row.MoveFlag === "否" ? { ...row, State: "skipped_by_file", Reason: "Excel marked skip" } : { ...row, State: row.ParseStatus, Reason: row.ParseReason || "没有可执行迁移行" });
+          query<HTMLElement>(root, "[data-preview-empty]").hidden = true;
+          query<HTMLElement>(root, "[data-preview-content]").hidden = false;
+          renderRows(root, displayedRows, scope, source, target);
+          setNotice("文件没有可执行迁移行，已保留逐行校验结果，不能确认执行。", "ok");
+          return;
+        }
+        preview = await api<Preview>("/api/admin/customers/owner-handoffs/previews", { method: "POST", body: JSON.stringify({ mode: currentMode(root), scope, source_staff_id: source, target_staff_id: target, customer_ids: [], external_userids: scope === "excel_include" ? fileExternalIDs : [], welcome_message: query<HTMLTextAreaElement>(root, "[data-transfer-welcome-msg]").value, confirmation_phrase: `确认将当前候选客户迁移到 ${target}`, idempotency_key: key() }) });
+        displayedRows = renderPreview(root, preview, scope, importedRows, sourceUserID);
+        setNotice("预览已生成，请逐字输入确认短语。", "ok");
+      } catch (error) { setNotice(error instanceof Error ? error.message : "预览失败", "error"); }
+    });
+    query<HTMLButtonElement>(root, "[data-execute]").addEventListener("click", async () => {
+      try {
+        if (!preview) throw new Error("请先生成预览");
+        const phrase = query<HTMLInputElement>(root, "[data-confirm-phrase-input]").value;
+        if (phrase !== preview.ConfirmationPhrase) throw new Error("确认短语不匹配");
+        batch = await api<Batch>("/api/admin/customers/owner-handoffs/confirm", { method: "POST", body: JSON.stringify({ preview_id: preview.ID, preview_hash: preview.Hash, confirmation_phrase: phrase, idempotency_key: key() }) });
+        renderBatch(root, batch);
+        query<HTMLButtonElement>(root, "[data-download-result]").disabled = false;
+        readTransfer.disabled = false;
+        setNotice("迁移已受理；结果导出和企微结果读取会显示每一行实际状态。", "ok");
+      } catch (error) { setNotice(error instanceof Error ? error.message : "执行失败", "error"); }
+    });
+    query<HTMLButtonElement>(root, "[data-reset-workbench]").addEventListener("click", reset);
+    query<HTMLButtonElement>(root, "[data-download-errors]").addEventListener("click", () => {
+      const blocked = displayedRows.filter(row => row.State !== "ready" && row.State !== "skipped_by_file");
+      if (!blocked.length) return;
+      downloadWorkbook("owner_migration_blocked_rows.xlsx", ["行号", "external_userid", "客户备注名", "Excel 标记", "当前负责人userid", "备注", "状态", "原因"], blocked.map(row => [String(row.Line), row.ExternalUserID, row.CustomerDisplayName, row.MoveFlag, row.CurrentOwnerUserID, row.Remark, row.State, row.Reason]));
+    });
+    query<HTMLButtonElement>(root, "[data-download-result]").addEventListener("click", async () => {
+      if (!batch) { setNotice("请先执行迁移，再导出结果明细。", "error"); return; }
+      try {
+        batch = await api<Batch>(`/api/admin/customers/owner-handoffs/batches/${encodeURIComponent(batch.ID)}`);
+        renderBatch(root, batch);
+        const rowsByCustomer = new Map(displayedRows.filter(row => row.CustomerID).map(row => [row.CustomerID as number, row]));
+        downloadWorkbook("owner_migration_result.xlsx", ["行号", "external_userid", "客户备注名", "当前负责人userid", "备注", "迁移状态", "企微转接状态"], (batch.Lines || []).map(line => {
+          const row = rowsByCustomer.get(line.CustomerID);
+          return [String(row?.Line || line.Line), row?.ExternalUserID || "", row?.CustomerDisplayName || "", row?.CurrentOwnerUserID || "", row?.Remark || "", line.State, transferStatusLabel(line.TransferStatus)];
+        }));
+        setNotice("已导出当前批次结果明细。", "ok");
+      } catch (error) { setNotice(error instanceof Error ? error.message : "结果导出失败", "error"); }
+    });
+    query<HTMLButtonElement>(root, "[data-download-result]").textContent = "下载结果明细";
+    const readTransfer = document.createElement("button");
+    readTransfer.type = "button"; readTransfer.className = "owner-migration-btn"; readTransfer.dataset.readTransferResult = ""; readTransfer.textContent = "读取企微转接结果"; readTransfer.disabled = true;
+    query<HTMLElement>(root, "[data-download-result]").parentElement?.append(readTransfer);
+    readTransfer.addEventListener("click", async () => {
+      if (!batch) return;
+      try {
+        batch = await api<Batch>(`/api/admin/customers/owner-handoffs/batches/${encodeURIComponent(batch.ID)}/transfer-result`, { method: "POST", body: JSON.stringify({ idempotency_key: key() }) });
+        renderBatch(root, batch); setNotice("已读取企微转接结果。", "ok");
+      } catch (error) { setNotice(error instanceof Error ? error.message : "读取失败", "error"); }
+    });
+    query<HTMLInputElement>(root, 'input[name="scope_type"][value="all"]').checked = true;
+    root.querySelector<HTMLElement>('[data-scope-segment="all"]')?.classList.add("is-active");
+    root.querySelector<HTMLElement>('[data-scope-segment="excel_include"]')?.classList.remove("is-active");
+    query<HTMLElement>(root, "[data-excel-panel]").hidden = true;
+    query<HTMLElement>(root, "[data-mode-pill]").textContent = "模式：全量迁移";
+    updateWeComPresentation(); reset();
+    setNotice("冻结旧页已由 V3 Host 挂载；原负责人可含停用员工，目标负责人只列在职员工。");
+  } catch (error) {
+    stage.textContent = `负责人迁移页面不可用：${error instanceof Error ? error.message : "未知错误"}`;
+  }
 }
+
+if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", () => { void boot(); }); else void boot();

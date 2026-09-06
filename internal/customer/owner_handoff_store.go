@@ -1107,3 +1107,29 @@ func (store *PostgreSQLOwnerHandoffStore) OwnerHandoffBatch(ctx context.Context,
 
 var _ customerport.OwnerHandoffReader = (*PostgreSQLOwnerHandoffStore)(nil)
 var _ customerport.OwnerHandoffCompletionWriter = (*PostgreSQLOwnerHandoffStore)(nil)
+
+// ListOwnerHandoffCustomerIDs is a bounded Customer-owned lookup for the
+// all-range page action. It is separate from point reads used during preview.
+func (store *PostgreSQLOwnerHandoffStore) ListOwnerHandoffCustomerIDs(ctx context.Context, staffID int64, limit int) ([]customerdomain.CustomerID, error) {
+	if staffID < 1 || limit < 1 || limit > 20001 {
+		return nil, errors.New("invalid owner handoff range")
+	}
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := tx.Query(ctx, `SELECT customer_id FROM customer_local_owners WHERE staff_id=$1 ORDER BY customer_id LIMIT $2`, staffID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ids := make([]customerdomain.CustomerID, 0)
+	for rows.Next() {
+		var id customerdomain.CustomerID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}

@@ -64,6 +64,10 @@ type ownerHandoffBatchEnqueuer interface {
 	EnqueueOwnerHandoffBatchWithin(context.Context, string, int64) error
 }
 
+type ownerHandoffCandidateDiscoverer interface {
+	DiscoverOwnerHandoffCustomerIDs(context.Context, customerport.OwnerHandoffMode, int64, string, int) ([]customerdomain.CustomerID, error)
+}
+
 const ownerHandoffBatchSegmentSize = 100
 
 type OwnerHandoffService struct {
@@ -131,6 +135,26 @@ func (service *OwnerHandoffService) SetTransferResultReader(reader ownerHandoffT
 	return nil
 }
 
+// PreviewAllOwnerHandoff derives the all-range from Customer and WeCom owned
+// read ports, then freezes it through the same preview path as Excel selection.
+func (service *OwnerHandoffService) PreviewAllOwnerHandoff(ctx context.Context, command customerport.OwnerHandoffPreviewCommand) (customerport.OwnerHandoffPreview, error) {
+	discoverer, ok := service.resolver.(ownerHandoffCandidateDiscoverer)
+	if !ok {
+		return customerport.OwnerHandoffPreview{}, ErrOwnerHandoffForbidden
+	}
+	var ids []customerdomain.CustomerID
+	err := service.uow.Within(ctx, func(tx context.Context) error {
+		var err error
+		ids, err = discoverer.DiscoverOwnerHandoffCustomerIDs(tx, command.Mode, command.SourceStaffID, command.CorpScope, 20000)
+		return err
+	})
+	if err != nil {
+		return customerport.OwnerHandoffPreview{}, err
+	}
+	command.CustomerIDs = ids
+	return service.PreviewOwnerHandoff(ctx, command)
+}
+
 func (service *OwnerHandoffService) PreviewOwnerHandoff(ctx context.Context, command customerport.OwnerHandoffPreviewCommand) (customerport.OwnerHandoffPreview, error) {
 	if err := validOwnerHandoffPreview(command); err != nil {
 		return customerport.OwnerHandoffPreview{}, err
@@ -156,6 +180,16 @@ func (service *OwnerHandoffService) PreviewOwnerHandoff(ctx context.Context, com
 		}
 		if len(candidates) != len(command.CustomerIDs) {
 			return ErrOwnerHandoffDrift
+		}
+		ready := false
+		for _, candidate := range candidates {
+			if candidate.State == "ready" {
+				ready = true
+				break
+			}
+		}
+		if !ready {
+			return ErrOwnerHandoffForbidden
 		}
 		for index, candidate := range candidates {
 			if candidate.CustomerID != command.CustomerIDs[index] {

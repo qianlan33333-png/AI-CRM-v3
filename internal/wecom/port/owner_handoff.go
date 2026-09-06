@@ -43,3 +43,7 @@ type CustomerTransferResult struct {
 	Cursor                  string
 	Observations            []CustomerTransferObservation
 }
+
+type OwnerHandoffRelationshipLister interface {
+	ListOwnerHandoffCustomerIDs(context.Context, string, string, int) ([]customerdomain.CustomerID, error)
+}

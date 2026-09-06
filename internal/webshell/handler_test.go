@@ -517,6 +517,9 @@ func TestStaticAssetsUseBrowserApplicableContentType(t *testing.T) {
 		{"/static/admin_console/template_parameter_form.js", "text/javascript"},
 		{"/static/admin_console/admin_audience_template_host.js", "text/javascript"},
 		{"/static/admin_console/nav-icons/automation_conversion.svg", "image/svg+xml"},
+		{"/static/admin_console/owner_handoff_host.js", "text/javascript"},
+		{"/static/admin_console/owner_migration_dd8d60d.html", "text/html"},
+		{"/static/admin_console/operation_member_picker_dd8d60d.js", "text/javascript"},
 	} {
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, test.path, nil))
@@ -640,6 +643,35 @@ func TestRenderOwnerHandoffUsesV3StaticHostOnly(t *testing.T) {
 	}
 }
 
+func TestOwnerHandoffFrozenDonorAssetAndHostBinding(t *testing.T) {
+	frozen, err := os.ReadFile("static/admin_console/owner_migration_dd8d60d.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(frozen)
+	if got := hex.EncodeToString(sum[:]); got != "7491be60ed89b84fcbe4b9b37f27f5a95dd270cd4915d459449a74349f74138f" {
+		t.Fatalf("owner migration frozen asset hash=%s", got)
+	}
+	if !bytes.Contains(frozen, []byte("data-owner-migration-page")) || !bytes.Contains(frozen, []byte("OperationMemberPicker.open")) || !bytes.Contains(frozen, []byte("/api/admin/owner-migration/template.xlsx")) {
+		t.Fatal("frozen owner migration asset no longer contains the verified page/controller contract")
+	}
+	host, err := os.ReadFile("static/admin_console/owner_handoff_host.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	picker, err := os.ReadFile("static/admin_console/operation_member_picker_dd8d60d.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pickerSum := sha256.Sum256(picker)
+	if got := hex.EncodeToString(pickerSum[:]); got != "bd84ce78ccb834f170548dea76cb99f6434978bc21211a9ec843dd2bf7ebabea" || !bytes.Contains(picker, []byte("OperationMemberPicker")) || !bytes.Contains(picker, []byte("/api/admin/common/operation-members")) {
+		t.Fatalf("shared frozen picker contract changed hash=%s", got)
+	}
+	if !bytes.Contains(host, []byte("owner_migration_dd8d60d.html")) || !bytes.Contains(host, []byte("operation_member_picker_dd8d60d.js")) || !bytes.Contains(host, []byte("OperationMemberPicker")) || bytes.Contains(host, []byte("data-owner-picker-options")) {
+		t.Fatal("Host did not mount the frozen donor and shared picker contract")
+	}
+}
+
 func TestRenderAutomationUsesOnlyV3CreateCodeHostBinding(t *testing.T) {
 	renderer, err := NewRenderer()
 	if err != nil {
@@ -685,8 +717,30 @@ func TestAutomationCreateCodeAdapterBrowserTiming(t *testing.T) {
 	if err := command.Run(); err != nil {
 		t.Fatalf("browser timing contract failed: %v\n%s", err, output.String())
 	}
+
 	if !strings.Contains(output.String(), "automation-create-code-adapter-browser: PASS") {
 		t.Fatalf("browser timing contract did not report success: %q", output.String())
+	}
+}
+
+func TestOwnerMigrationFileRetainsDonorXLSNameContract(t *testing.T) {
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node is not installed")
+	}
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("locate webshell test")
+	}
+	repo := filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
+	command := exec.Command("node", "internal/webshell/static/admin_console/owner_migration_file_contract.test.mjs")
+	command.Dir = repo
+	var output bytes.Buffer
+	command.Stdout, command.Stderr = &output, &output
+	if err := command.Run(); err != nil {
+		t.Fatalf("owner migration import contract failed: %v\\n%s", err, output.String())
+	}
+	if !strings.Contains(output.String(), "owner-migration-file-contract: PASS") {
+		t.Fatalf("owner migration import contract did not report success: %q", output.String())
 	}
 }
 

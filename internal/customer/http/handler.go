@@ -35,49 +35,57 @@ type Auditor interface {
 }
 
 type Config struct {
-	UnitOfWork            platformport.UnitOfWork
-	Auth                  Authenticator
-	CSRF                  CSRFAuthorizer
-	Directory             customerapp.Directory
-	Store                 customerapp.Store
-	Identities            identityport.DirectoryIdentityReader
-	Audit                 Auditor
-	Canonical             customerport.CanonicalCustomerResolver
-	Owners                customerport.CustomerOwnerReader
-	Tags                  customerport.CustomerTagReader
-	Surveys               customerport.CustomerSurveyReader
-	Timeline              customerport.CustomerTimelineReader
-	Chat                  customerport.CustomerChatActivityReader
-	Orders                orderport.CustomerOrderSummaryReader
-	TagCommands           customerport.TagCommandSubmitter
-	TagHistory            customerport.TagCommandHistoryReader
-	OwnerHandoff          customerport.OwnerHandoffService
-	OwnerHandoffReader    customerport.OwnerHandoffReader
-	OwnerHandoffTransfers customerport.OwnerHandoffTransferResultService
-	ProfileSigningKey     []byte
+	UnitOfWork               platformport.UnitOfWork
+	Auth                     Authenticator
+	CSRF                     CSRFAuthorizer
+	Directory                customerapp.Directory
+	Store                    customerapp.Store
+	Identities               identityport.DirectoryIdentityReader
+	Audit                    Auditor
+	Canonical                customerport.CanonicalCustomerResolver
+	Owners                   customerport.CustomerOwnerReader
+	Tags                     customerport.CustomerTagReader
+	Surveys                  customerport.CustomerSurveyReader
+	Timeline                 customerport.CustomerTimelineReader
+	Chat                     customerport.CustomerChatActivityReader
+	Orders                   orderport.CustomerOrderSummaryReader
+	TagCommands              customerport.TagCommandSubmitter
+	TagHistory               customerport.TagCommandHistoryReader
+	OwnerHandoff             customerport.OwnerHandoffService
+	OwnerHandoffReader       customerport.OwnerHandoffReader
+	OwnerHandoffTransfers    customerport.OwnerHandoffTransferResultService
+	OwnerHandoffStaff        customerport.OwnerHandoffStaffDirectory
+	OwnerHandoffCorpScope    string
+	OwnerHandoffIdentity     identityport.Resolver
+	OwnerHandoffPresentation customerport.OwnerHandoffPreviewPresenter
+	ProfileSigningKey        []byte
 }
 
 type Handler struct {
-	uow                   platformport.UnitOfWork
-	auth                  Authenticator
-	csrf                  CSRFAuthorizer
-	directory             customerapp.Directory
-	store                 customerapp.Store
-	identities            identityport.DirectoryIdentityReader
-	audit                 Auditor
-	canonical             customerport.CanonicalCustomerResolver
-	owners                customerport.CustomerOwnerReader
-	tags                  customerport.CustomerTagReader
-	surveys               customerport.CustomerSurveyReader
-	timeline              customerport.CustomerTimelineReader
-	chat                  customerport.CustomerChatActivityReader
-	orders                orderport.CustomerOrderSummaryReader
-	tagCommands           customerport.TagCommandSubmitter
-	tagHistory            customerport.TagCommandHistoryReader
-	ownerHandoff          customerport.OwnerHandoffService
-	ownerHandoffReader    customerport.OwnerHandoffReader
-	ownerHandoffTransfers customerport.OwnerHandoffTransferResultService
-	profileSigningKey     []byte
+	uow                      platformport.UnitOfWork
+	auth                     Authenticator
+	csrf                     CSRFAuthorizer
+	directory                customerapp.Directory
+	store                    customerapp.Store
+	identities               identityport.DirectoryIdentityReader
+	audit                    Auditor
+	canonical                customerport.CanonicalCustomerResolver
+	owners                   customerport.CustomerOwnerReader
+	tags                     customerport.CustomerTagReader
+	surveys                  customerport.CustomerSurveyReader
+	timeline                 customerport.CustomerTimelineReader
+	chat                     customerport.CustomerChatActivityReader
+	orders                   orderport.CustomerOrderSummaryReader
+	tagCommands              customerport.TagCommandSubmitter
+	tagHistory               customerport.TagCommandHistoryReader
+	ownerHandoff             customerport.OwnerHandoffService
+	ownerHandoffReader       customerport.OwnerHandoffReader
+	ownerHandoffTransfers    customerport.OwnerHandoffTransferResultService
+	ownerHandoffStaff        customerport.OwnerHandoffStaffDirectory
+	ownerHandoffCorpScope    string
+	ownerHandoffIdentity     identityport.Resolver
+	ownerHandoffPresentation customerport.OwnerHandoffPreviewPresenter
+	profileSigningKey        []byte
 }
 
 func NewHandler(config Config) (*Handler, error) {
@@ -85,10 +93,13 @@ func NewHandler(config Config) (*Handler, error) {
 		config.Canonical == nil || config.Owners == nil || config.Tags == nil || config.Surveys == nil || config.Timeline == nil || config.Chat == nil || len(config.ProfileSigningKey) < 32 {
 		return nil, errors.New("customer HTTP dependencies are required")
 	}
+	if config.OwnerHandoff != nil && (config.OwnerHandoffStaff == nil || strings.TrimSpace(config.OwnerHandoffCorpScope) == "") {
+		return nil, errors.New("owner handoff context dependencies are required")
+	}
 	return &Handler{uow: config.UnitOfWork, auth: config.Auth, csrf: config.CSRF, directory: config.Directory,
 		store: config.Store, identities: config.Identities, audit: config.Audit, canonical: config.Canonical,
 		owners: config.Owners, tags: config.Tags, tagCommands: config.TagCommands, tagHistory: config.TagHistory, surveys: config.Surveys, timeline: config.Timeline, chat: config.Chat, orders: config.Orders,
-		profileSigningKey: append([]byte(nil), config.ProfileSigningKey...), ownerHandoff: config.OwnerHandoff, ownerHandoffReader: config.OwnerHandoffReader, ownerHandoffTransfers: config.OwnerHandoffTransfers}, nil
+		profileSigningKey: append([]byte(nil), config.ProfileSigningKey...), ownerHandoff: config.OwnerHandoff, ownerHandoffReader: config.OwnerHandoffReader, ownerHandoffTransfers: config.OwnerHandoffTransfers, ownerHandoffStaff: config.OwnerHandoffStaff, ownerHandoffCorpScope: config.OwnerHandoffCorpScope, ownerHandoffIdentity: config.OwnerHandoffIdentity, ownerHandoffPresentation: config.OwnerHandoffPresentation}, nil
 }
 
 func (handler *Handler) Routes() nethttp.Handler {
@@ -101,6 +112,8 @@ func (handler *Handler) Routes() nethttp.Handler {
 	mux.HandleFunc("GET /api/admin/customers/{customer_id}/tags", handler.tagSection)
 	mux.HandleFunc("GET /api/admin/customers/{customer_id}/survey-answers", handler.surveySection)
 	mux.HandleFunc("GET /api/admin/customers/{customer_id}/timeline", handler.timelineSection)
+	mux.HandleFunc("GET /api/admin/common/operation-members", handler.ownerHandoffOperationMembers)
+	mux.HandleFunc("GET /api/admin/customers/{customer_id}/chat-activity", handler.chatSection)
 	if handler.ownerHandoff != nil && handler.ownerHandoffReader != nil {
 		mux.HandleFunc("POST /api/admin/customers/owner-handoffs/previews", handler.ownerHandoffPreview)
 		mux.HandleFunc("GET /api/admin/customers/owner-handoffs/previews/{preview_id}", handler.ownerHandoffPreviewRead)

@@ -56,3 +56,11 @@ type AudiencePrimaryOwner struct {
 type AudiencePrimaryOwnerReader interface {
 	AudiencePrimaryOwners(context.Context, []customerdomain.CustomerID) ([]AudiencePrimaryOwner, error)
 }
+
+// OwnerHandoffPrimaryOwnerLister enumerates canonical customers whose current
+// completed WeCom profile has one unambiguous primary owner in the requested
+// corp scope. It is read-only: Customer applies its own local-owner precedence
+// after this discovery and this Port never creates or changes an observation.
+type OwnerHandoffPrimaryOwnerLister interface {
+	ListOwnerHandoffPrimaryOwnerCustomerIDs(context.Context, string, string, int) ([]customerdomain.CustomerID, error)
+}

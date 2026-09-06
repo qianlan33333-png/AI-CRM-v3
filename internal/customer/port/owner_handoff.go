@@ -29,9 +29,14 @@ type OwnerHandoffPreviewRow struct {
 	Line            int64
 	CustomerID      customerdomain.CustomerID
 	ExpectedOwnerID int64
-	ExpectedVersion int64
-	State           string
-	Reason          string
+	// Presentation fields are injected only at the authorized HTTP boundary by
+	// OwnerHandoffPreviewPresenter; they are not persisted or used for writes.
+	ExternalUserID      string
+	CustomerDisplayName string
+	CurrentOwnerUserID  string
+	ExpectedVersion     int64
+	State               string
+	Reason              string
 }
 
 type OwnerHandoffPreview struct {
@@ -260,4 +265,43 @@ type OwnerHandoffEffectBinding struct {
 	TargetRefDigest  string
 	PayloadRefDigest string
 	PolicyRefDigest  string
+}
+
+// OwnerHandoffStaff is the safe Access projection used by the administrator
+// picker. It has no credential or role; UserID is the existing Access-held
+// WeCom staff identifier needed for the frozen owner-migration contract.
+type OwnerHandoffStaff struct {
+	ID          int64
+	UserID      string
+	DisplayName string
+	Active      bool
+}
+
+// OwnerHandoffStaffDirectory is the narrow Customer-facing Access port. It
+// lists current staff for a super-admin-controlled handoff page; source staff
+// may be inactive while a target must still be active at Preview and Confirm.
+type OwnerHandoffStaffDirectory interface {
+	ListOwnerHandoffStaff(context.Context) ([]OwnerHandoffStaff, error)
+}
+
+// OwnerHandoffCandidateDiscoverer enumerates a bounded server-side all-range.
+// It receives only trusted staff and scope values from Customer application.
+type OwnerHandoffCandidateDiscoverer interface {
+	DiscoverOwnerHandoffCustomerIDs(context.Context, OwnerHandoffMode, int64, string, int) ([]customerdomain.CustomerID, error)
+}
+
+// OwnerHandoffPreviewPresentation is the authorized-admin display projection
+// for a frozen migration preview. It is read after Customer has selected and
+// persisted canonical rows; it does not participate in candidate selection.
+type OwnerHandoffPreviewPresentation struct {
+	ExternalUserID      string
+	CustomerDisplayName string
+	CurrentOwnerUserID  string
+}
+
+// OwnerHandoffPreviewPresenter composes existing Customer, Identity and Access
+// read ports for the authorized admin page. It never resolves or provisions a
+// Customer from the display values.
+type OwnerHandoffPreviewPresenter interface {
+	PresentOwnerHandoffPreview(context.Context, string, int64, []OwnerHandoffPreviewRow) (map[customerdomain.CustomerID]OwnerHandoffPreviewPresentation, error)
 }

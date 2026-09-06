@@ -821,7 +821,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return fail(cipherErr)
 	}
 	ownerHandoffStore := customer.NewPostgreSQLOwnerHandoffStoreWithCipher(ownerHandoffCipher)
-	ownerHandoffService, ownerServiceErr := customerapp.NewOwnerHandoffService(uow, ownerHandoffStore, accessRepository, customerOwnerHandoffCandidates{staff: accessRepository, relationships: relationships, primaries: customerProfileStore, identities: queries, owners: ownerHandoffStore}, auditService, platformoutbox.NewPostgreSQL())
+	ownerHandoffService, ownerServiceErr := customerapp.NewOwnerHandoffService(uow, ownerHandoffStore, accessRepository, customerOwnerHandoffCandidates{staff: accessRepository, relationships: relationships, relationshipLister: relationships, primaries: customerProfileStore, primaryLister: customerProfileStore, identities: queries, owners: ownerHandoffStore}, auditService, platformoutbox.NewPostgreSQL())
 	if ownerServiceErr != nil {
 		return fail(ownerServiceErr)
 	}
@@ -849,7 +849,8 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		TagHistory:  customerstore.TagCommandPostgreSQL{},
 		Surveys:     customerSurveyAdapter{reader: surveySubmissions},
 		Timeline:    customerTimelineAdapter{uow: uow, reader: customerStore}, Chat: disabledCustomerChatActivity{}, Orders: orderService, ProfileSigningKey: cursorSigningKey,
-		OwnerHandoff: ownerHandoffService, OwnerHandoffReader: ownerHandoffStore, OwnerHandoffTransfers: ownerHandoffService})
+		OwnerHandoff: ownerHandoffService, OwnerHandoffReader: ownerHandoffStore, OwnerHandoffTransfers: ownerHandoffService,
+		OwnerHandoffStaff: customerOwnerHandoffStaffDirectory{uow: uow, staff: accessRepository}, OwnerHandoffCorpScope: "wecom-corp:" + cfg.WeCom.CorpID, OwnerHandoffIdentity: oneID, OwnerHandoffPresentation: customerOwnerHandoffPreviewPresenter{uow: uow, display: customerStore, identities: queries, staff: accessRepository}})
 	if err != nil {
 		return fail(err)
 	}
@@ -1265,6 +1266,13 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	adminAPIs.Handle("/api/admin/ai-assistant/", aiHandler.Routes())
 	adminAPIs.Handle("/api/admin/ai-assist/review-plans", aiHandler.Routes())
 	adminAPIs.Handle("/api/sidebar/v2/", sidebarHandler.Routes())
+	adminAPIs.Handle("/api/admin/common/operation-members", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("scope") == "owner_migration" {
+			customerHandler.OwnerHandoffOperationMembersHandler().ServeHTTP(w, r)
+			return
+		}
+		groupOpsHandler.ServeHTTP(w, r)
+	}))
 	mountSurveyAPIs(adminAPIs, surveyBindings.Survey, customerHandler.TagCommandRoutes())
 	adminAPIs.Handle("/api/admin/operation-cycles/", operationBindings.API)
 	adminAPIs.Handle("/api/operation-cycles/", operationBindings.API)

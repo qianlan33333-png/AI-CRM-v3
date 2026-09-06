@@ -625,3 +625,64 @@ func replaceCustomerTagObservation(ctx context.Context, tx pgx.Tx, customerID cu
 }
 
 var _ CustomerTagObservationStore = PostgreSQLCustomerSyncStore{}
+
+// ListOwnerHandoffPrimaryOwnerCustomerIDs returns only customers whose exact
+// requested corp/profile fact is from a completed sync and is not contradicted
+// by another active completed owner observation. It deliberately exposes IDs
+// only; Customer retains local-owner precedence and performs no WeCom write.
+func (PostgreSQLCustomerSyncStore) ListOwnerHandoffPrimaryOwnerCustomerIDs(ctx context.Context, corpScope, ownerUserID string, limit int) ([]customerdomain.CustomerID, error) {
+	if !validFollowText(corpScope, 512) || !validFollowText(ownerUserID, 1024) || limit < 1 || limit > 20001 {
+		return nil, ErrSyncCAS
+	}
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := tx.Query(ctx, `WITH candidate_profiles AS (
+		SELECT profile.customer_id
+		FROM wecom_external_contact_profiles profile
+		JOIN wecom_customer_sync_runs primary_run
+			ON primary_run.id=profile.primary_owner_run_id AND primary_run.status='succeeded'
+		WHERE profile.activation_status='active'
+			AND profile.corp_scope=$1 AND profile.primary_owner_userid=$2
+	), all_profiles AS (
+		SELECT profile.customer_id,profile.primary_owner_userid
+		FROM wecom_external_contact_profiles profile
+		JOIN candidate_profiles candidate ON candidate.customer_id=profile.customer_id
+		JOIN wecom_customer_sync_runs primary_run
+			ON primary_run.id=profile.primary_owner_run_id AND primary_run.status='succeeded'
+		WHERE profile.activation_status='active' AND profile.primary_owner_userid<>''
+	), owner_values AS (
+		SELECT customer_id,primary_owner_userid AS owner_userid FROM all_profiles
+		UNION
+		SELECT observation.customer_id,observation.primary_owner_userid
+		FROM wecom_customer_owner_observations observation
+		JOIN candidate_profiles candidate ON candidate.customer_id=observation.customer_id
+		JOIN wecom_customer_sync_runs run
+			ON run.id=observation.last_seen_run_id AND run.status='succeeded'
+		WHERE observation.relationship_status='active' AND observation.primary_owner_userid<>''
+	), conflicts AS (
+		SELECT customer_id,count(DISTINCT owner_userid) AS owner_count
+		FROM owner_values GROUP BY customer_id
+	)
+	SELECT candidate.customer_id
+	FROM candidate_profiles candidate
+	JOIN conflicts ON conflicts.customer_id=candidate.customer_id AND conflicts.owner_count=1
+	ORDER BY candidate.customer_id
+	LIMIT $3`, corpScope, ownerUserID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ids := make([]customerdomain.CustomerID, 0)
+	for rows.Next() {
+		var id customerdomain.CustomerID
+		if err = rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+var _ wecomport.OwnerHandoffPrimaryOwnerLister = PostgreSQLCustomerSyncStore{}
