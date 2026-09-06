@@ -209,7 +209,7 @@ try {
 
   const historicalOrderPath = "/admin/orderDetail.html?id=" + encodeURIComponent(historicalOrderReference);
   await cdp.call("Page.navigate", { url: baseURL + historicalOrderPath });
-  await waitFor(cdp, "location.pathname === '/admin/orderDetail.html' && document.body.textContent.includes('外推回执') && document.body.textContent.includes('provider_accepted')", "outer order-detail route did not render its mapped historical delivery");
+  await waitFor(cdp, "location.pathname === '/admin/orderDetail.html' && document.body.textContent.includes('外推回执') && document.body.textContent.includes('succeeded')", "outer order-detail route did not render its mapped historical delivery");
   const orderEffects = await evaluate(cdp, "fetch('/api/admin/wechat-pay/orders/" + historicalOrderReference + "/external-push-deliveries',{credentials:'same-origin'}).then((response)=>response.ok?response.json():null).then((body)=>({source:body?.items?.[0]?.source,delivery:body?.items?.[0]?.legacy_delivery_id,status:body?.items?.[0]?.status}))");
   if (orderEffects?.source !== "history" || orderEffects?.delivery !== "browser-history-delivery-1" || orderEffects?.status !== "succeeded") throw new Error("outer order delivery route did not return mapped frozen history");
   console.log("product_external_push_chromium: PASS");
