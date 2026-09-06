@@ -158,7 +158,7 @@ func (executor *openPlatformExecutor) v1ResolveCustomer(ctx context.Context, pri
 		return openplatformport.Result{}, v1IdentityError(err)
 	}
 	if err := executor.ensureCustomerScope(ctx, principal, resolved.CustomerID, references); err != nil {
-		return openplatformport.Result{}, openplatformport.NewError(openplatformport.ErrorNotFound, "customer is outside the granted scope")
+		return openplatformport.Result{}, v1CustomerScopeError(err)
 	}
 	return openplatformport.Result{Data: map[string]any{
 		"customer_id": resolved.CustomerID,
@@ -174,7 +174,7 @@ func (executor *openPlatformExecutor) v1CustomerContext(ctx context.Context, pri
 	}
 	customerID := customerdomain.CustomerID(input.CustomerID)
 	if err := executor.ensureCustomerScope(ctx, principal, customerID, nil); err != nil {
-		return openplatformport.Result{}, openplatformport.NewError(openplatformport.ErrorNotFound, "customer is outside the granted scope")
+		return openplatformport.Result{}, v1CustomerScopeError(err)
 	}
 	profile, err := executor.profiles.ReadSidebarProfile(ctx, customerID)
 	if err != nil {
@@ -203,6 +203,13 @@ func decodeV1JSON(raw json.RawMessage, target any) error {
 		return fmt.Errorf("trailing JSON")
 	}
 	return nil
+}
+
+func v1CustomerScopeError(err error) error {
+	if errors.Is(err, errOpenPlatformOwnerUnavailable) {
+		return openplatformport.NewError(openplatformport.ErrorDependencyUnavailable, "customer ownership projection is unavailable")
+	}
+	return openplatformport.NewError(openplatformport.ErrorNotFound, "customer is outside the granted scope")
 }
 
 func v1IdentityError(err error) error {

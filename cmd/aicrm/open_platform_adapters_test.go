@@ -160,12 +160,13 @@ func (*openPlatformProfileStub) BindSidebarPhone(context.Context, customerport.S
 
 type openPlatformOwnerStub struct {
 	items []wecomport.AudiencePrimaryOwner
+	err   error
 	calls int
 }
 
 func (stub *openPlatformOwnerStub) AudiencePrimaryOwners(_ context.Context, _ []customerdomain.CustomerID) ([]wecomport.AudiencePrimaryOwner, error) {
 	stub.calls++
-	return stub.items, nil
+	return stub.items, stub.err
 }
 
 type openPlatformTimelineStub struct {

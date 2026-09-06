@@ -95,7 +95,7 @@ func (executor *openPlatformExecutor) v1CustomerActivities(ctx context.Context, 
 	}
 	customerID := customerdomain.CustomerID(input.CustomerID)
 	if err := executor.ensureCustomerScope(ctx, principal, customerID, nil); err != nil {
-		return openplatformport.Result{}, openplatformport.NewError(openplatformport.ErrorNotFound, "customer is outside the granted scope")
+		return openplatformport.Result{}, v1CustomerScopeError(err)
 	}
 	grant := v1ActivityGrantDigest(principal)
 	cursor, err := executor.v1ActivityCursor(input, types, grant)

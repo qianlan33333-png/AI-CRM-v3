@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -336,5 +337,28 @@ func TestV1OperationAuditMustBeComposedForMachinePrincipal(t *testing.T) {
 	_, err := executor.Invoke(context.Background(), openplatformport.Invocation{Operation: openplatformport.OperationCapabilitiesList, Principal: accessdomain.MachinePrincipal{ClientRecord: 1, Scopes: []string{"read"}, Capabilities: []string{string(openplatformport.CapabilityPlatformCapabilitiesRead)}}})
 	if openplatformport.ErrorCodeOf(err) != openplatformport.ErrorDependencyUnavailable {
 		t.Fatalf("missing auditor err=%v", err)
+	}
+}
+
+func TestV1CustomerScopeOwnerFailureIsUnavailableBeforeContextOrActivities(t *testing.T) {
+	owners := &openPlatformOwnerStub{err: errors.New("owner store unavailable")}
+	profiles := &openPlatformProfileStub{}
+	archive := &openPlatformArchiveStub{}
+	orders := &openPlatformOrderStub{}
+	executor, err := newOpenPlatformExecutor(&openPlatformIdentityStub{}, orders, profiles, archive, &openPlatformTimelineStub{}, owners, configuredOpenPlatformScopes("corp-main", nil, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	principal := accessdomain.MachinePrincipal{Scopes: []string{"read"}, Capabilities: []string{string(openplatformport.CapabilityCustomerRead), string(openplatformport.CapabilityCustomerActivityRead)}, OwnerScope: accessdomain.OwnerScope{"owner_userid": {"owner-a"}}}
+	_, err = executor.Invoke(context.Background(), openplatformport.Invocation{Operation: openplatformport.OperationCustomerContext, Principal: principal, Input: json.RawMessage(`{"customer_id":42}`)})
+	if openplatformport.ErrorCodeOf(err) != openplatformport.ErrorDependencyUnavailable || profiles.calls != 0 {
+		t.Fatalf("context error=%v profile_calls=%d", err, profiles.calls)
+	}
+	if err = executor.BindV1CustomerActivities(&openPlatformSurveyStub{}, &openPlatformRadarLinksStub{}, bytes.Repeat([]byte{6}, 32)); err != nil {
+		t.Fatal(err)
+	}
+	_, err = executor.Invoke(context.Background(), openplatformport.Invocation{Operation: openplatformport.OperationCustomerActivities, Principal: principal, Input: json.RawMessage(`{"customer_id":42}`)})
+	if openplatformport.ErrorCodeOf(err) != openplatformport.ErrorDependencyUnavailable || archive.calls != 0 || orders.activityCalls != 0 {
+		t.Fatalf("activities error=%v archive_calls=%d order_calls=%d", err, archive.calls, orders.activityCalls)
 	}
 }

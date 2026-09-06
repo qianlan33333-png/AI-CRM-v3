@@ -35,6 +35,7 @@ var (
 	errOpenPlatformIdentityNotFound    = errors.New("identity reference not found")
 	errOpenPlatformIdentityPending     = errors.New("identity reference is pending")
 	errOpenPlatformIdentityScopeDenied = errors.New("identity scope is not configured for this platform")
+	errOpenPlatformOwnerUnavailable    = errors.New("customer owner projection is unavailable")
 )
 
 type openPlatformIdentityScopes struct {
@@ -336,7 +337,10 @@ func (executor *openPlatformExecutor) ensureCustomerScope(ctx context.Context, p
 			return errOpenPlatformResourceOutOfScope
 		}
 		owners, err := executor.owners.AudiencePrimaryOwners(ctx, []customerdomain.CustomerID{customerID})
-		if err != nil || len(owners) != 1 || owners[0].CustomerID != customerID || owners[0].Status != "known" || owners[0].OwnerUserID == "" || owners[0].CorpScope != executor.scopes.WeComScope {
+		if err != nil {
+			return errOpenPlatformOwnerUnavailable
+		}
+		if len(owners) != 1 || owners[0].CustomerID != customerID || owners[0].Status != "known" || owners[0].OwnerUserID == "" || owners[0].CorpScope != executor.scopes.WeComScope {
 			return errOpenPlatformResourceOutOfScope
 		}
 		resources["owner_userid"] = owners[0].OwnerUserID
