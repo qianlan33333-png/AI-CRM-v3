@@ -606,6 +606,18 @@ func TestExternalPushConfigurationHTTPPreservesLegacyBusinessJSONAndCAS(t *testi
 	if err := decoder.Decode(&response); err != nil || response.Revision != 4 || !reflect.DeepEqual(response.CustomParams, want) {
 		t.Fatalf("response=%s decoded=%#v err=%v", write.Body.String(), response, err)
 	}
+	var rawResponse struct {
+		CustomParamsJSON string `json:"custom_params_json"`
+	}
+	if err := json.Unmarshal(write.Body.Bytes(), &rawResponse); err != nil || rawResponse.CustomParamsJSON == "" {
+		t.Fatalf("custom_params_json response=%s err=%v", write.Body.String(), err)
+	}
+	var rawParams map[string]any
+	rawDecoder := json.NewDecoder(strings.NewReader(rawResponse.CustomParamsJSON))
+	rawDecoder.UseNumber()
+	if err := rawDecoder.Decode(&rawParams); err != nil || !reflect.DeepEqual(rawParams, want) {
+		t.Fatalf("custom_params_json=%q decoded=%#v err=%v", rawResponse.CustomParamsJSON, rawParams, err)
+	}
 
 	legacy := httptest.NewRecorder()
 	legacyRequest := httptest.NewRequest(http.MethodPut, "/api/admin/wechat-pay/products/7/external-push", strings.NewReader(`{"enabled":false,"configuration_reference":""}`))

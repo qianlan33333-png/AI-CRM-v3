@@ -745,7 +745,7 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
         const calls = [], downloads = [], opened = [];
         const projection = { schema_version: 1, status: 'active', enabled: true, buy_button_text: '立即购买', require_mobile: false, lead_program_id: null, lead_channel_id: null, lead_qr_title: '', lead_qr_subtitle: '', completion_redirect_enabled: false, completion_redirect_url: '', completion_target: null, wecom_tagging: {}, slices: [] };
         const product = { id: 7, product_code: 'P-7', name: '真实商品', description: '公开商品', price_minor: 990, currency: 'CNY', stock_quantity: 5, images: [], admin_projection: projection, lifecycle: 'enabled', enabled: true, paid_order_count: 3, refund_order_count: 1, sold_count: 2, created_by: 9, version: 3, created_at: '2026-09-04T00:00:00Z', updated_at: '2026-09-04T00:00:00Z' };
-        let externalConfiguration = { product_id: 7, product_kind: 'wechat_pay', enabled: true, configuration_reference: 'product-paid-notify', type: 'member_open', day: 30, frequency: 1, remark: '旧备注', custom_params: { campaign: 'control', enabled: true, nested: { keep: ' 空白 ' } }, revision: 3, updated_at: '2026-09-04T00:00:00Z' };
+        let externalConfiguration = { product_id: 7, product_kind: 'wechat_pay', enabled: true, configuration_reference: 'product-paid-notify', type: 'member_open', day: 30, frequency: 1, remark: '旧备注', custom_params: { campaign: 'control', enabled: true, nested: { keep: ' 空白 ' } }, custom_params_json: '{"campaign":"control","enabled":true,"nested":{"keep":" 空白 "}}', revision: 3, updated_at: '2026-09-04T00:00:00Z' };
         let externalTests = [{ product_id: 7, product_kind: 'wechat_pay', effect_id: 'eer_7', state: 'outcome_unknown', attempt_count: 1, provider_accepted: false, delivery_proven: false, real_external_call_executed: true, auto_retry_allowed: false, created_at: '2026-09-04T00:00:00Z', updated_at: '2026-09-04T00:01:00Z' }];
         const json = (data, status = 200) => ({ ok: status >= 200 && status < 300, status, headers: new Headers({ 'Content-Type': 'application/json' }), text: async () => JSON.stringify(data), json: async () => data, clone() { return this; } });
         window.__productHttpTest = { calls, downloads, opened };
@@ -764,7 +764,8 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
           if (url.pathname === '/api/admin/wechat-pay/products/7/external-push' && method === 'GET') return json(externalConfiguration);
           if (url.pathname === '/api/admin/wechat-pay/products/7/external-push' && method === 'PUT') {
             const update = JSON.parse(String(init.body || '{}'));
-            externalConfiguration = { ...externalConfiguration, ...update, revision: externalConfiguration.revision + 1, updated_at: '2026-09-04T00:03:00Z' };
+            const customParamsText = typeof update.custom_params === 'string' ? update.custom_params : JSON.stringify(update.custom_params);
+            externalConfiguration = { ...externalConfiguration, ...update, custom_params: JSON.parse(customParamsText), custom_params_json: customParamsText, revision: externalConfiguration.revision + 1, updated_at: '2026-09-04T00:03:00Z' };
             return json(externalConfiguration);
           }
           if (url.pathname === '/api/admin/wechat-pay/products/7/external-push/test' && method === 'GET') return json({ items: externalTests });
@@ -2232,13 +2233,15 @@ console.log('admin/productForm.html（渠道存量异常隔离）');
   input(dom, d.querySelector('#product-v3-external-push-day'), '45');
   input(dom, d.querySelector('#product-v3-external-push-frequency'), '2');
   input(dom, d.querySelector('#product-v3-external-push-remark'), '保留业务备注');
-  input(dom, d.querySelector('#product-v3-external-push-custom-params'), '{"count":2,"flag":false,"nil":null,"nested":[" 空白 ",{"k":true}]}');
+  const exactCustomParams = '{"count":9007199254740993,"flag":false,"nil":null,"nested":[" 空白 ",{"k":true}]}';
+  input(dom, d.querySelector('#product-v3-external-push-custom-params'), exactCustomParams);
   if (configSave) click(dom, configSave);
+  const expectedConfigBody = JSON.stringify({ enabled: true, configuration_reference: 'product-paid-notify', type: 'member_renew', day: 45, frequency: 2, remark: '保留业务备注', custom_params: exactCustomParams, expected_revision: 3 });
   const savedBusiness = await waitFor(() => {
     d = dom.window.document;
-    return test.calls.some((call) => call.path === '/api/admin/wechat-pay/products/7/external-push' && call.method === 'PUT' && call.body === '{"enabled":true,"configuration_reference":"product-paid-notify","type":"member_renew","day":45,"frequency":2,"remark":"保留业务备注","custom_params":{"count":2,"flag":false,"nil":null,"nested":[" 空白 ",{"k":true}]},"expected_revision":3}') && d.querySelector('#product-v3-external-push-test')?.textContent.includes('配置版本 4') === true;
+    return test.calls.some((call) => call.path === '/api/admin/wechat-pay/products/7/external-push' && call.method === 'PUT' && call.body === expectedConfigBody) && d.querySelector('#product-v3-external-push-test')?.textContent.includes('配置版本 4') === true;
   });
-  ok('商品外推业务参数以真实 HTTP 保存 JSON 类型与配置版本', savedBusiness);
+  ok('商品外推业务参数以真实 HTTP 无损保存 JSON 类型与配置版本', savedBusiness && d.querySelector('#product-v3-external-push-custom-params')?.value === exactCustomParams);
   d = dom.window.document;
   const currentRun = d.querySelector('[data-external-push-test="run"]');
   if (currentRun) click(dom, currentRun);

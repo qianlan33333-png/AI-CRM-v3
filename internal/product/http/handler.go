@@ -769,7 +769,7 @@ func (h *Handler) externalRoute(w http.ResponseWriter, r *http.Request, id int64
 			resultError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, configuration)
+		writeJSON(w, http.StatusOK, externalConfigurationJSONResponse(configuration))
 	case http.MethodPut:
 		principal, ok := h.write(w, r)
 		if !ok {
@@ -803,7 +803,7 @@ func (h *Handler) externalRoute(w http.ResponseWriter, r *http.Request, id int64
 			resultError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, configuration)
+		writeJSON(w, http.StatusOK, externalConfigurationJSONResponse(configuration))
 	default:
 		methodNotAllowed(w, http.MethodGet+", "+http.MethodPut)
 	}
@@ -1573,6 +1573,25 @@ type externalConfigurationRequest struct {
 	Frequency              json.RawMessage `json:"frequency"`
 	Remark                 *string         `json:"remark"`
 	CustomParams           json.RawMessage `json:"custom_params"`
+}
+
+// externalConfigurationResponse keeps the canonical JSON text alongside the
+// legacy decoded value. The Host returns this exact text to the frozen textarea
+// so JavaScript never rounds a valid JSON integer before it is saved again.
+type externalConfigurationResponse struct {
+	productport.ExternalPushConfiguration
+	CustomParamsJSON string `json:"custom_params_json"`
+}
+
+func externalConfigurationJSONResponse(value productport.ExternalPushConfiguration) externalConfigurationResponse {
+	raw, err := json.Marshal(value.CustomParams)
+	if err != nil {
+		// The Product application validates this field before persistence. Keep a
+		// valid response shape for the disabled legacy configuration as a
+		// defensive fallback; no request data is reflected here.
+		raw = []byte("{}")
+	}
+	return externalConfigurationResponse{ExternalPushConfiguration: value, CustomParamsJSON: string(raw)}
 }
 
 type externalConfigurationBusinessValue struct {
