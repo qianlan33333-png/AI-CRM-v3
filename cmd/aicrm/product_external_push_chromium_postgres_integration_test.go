@@ -208,28 +208,41 @@ func TestPostgreSQLProductExternalPushChromiumJourney(t *testing.T) {
 		t.Fatalf("product external push Chromium journey did not report success: %q", output)
 	}
 
+	assertProductExternalPushSyntheticDurableFacts(t, ctx, application, productID, dataKey)
+	var serviceRevision, serviceStoredExpiry int64
+	var serviceStored json.RawMessage
+	if err = application.pool.Native().QueryRow(ctx, "SELECT version,expires_at_ts,custom_params FROM product_external_push_configurations WHERE product_id=$1 AND product_kind='service_period'", serviceProductID).Scan(&serviceRevision, &serviceStoredExpiry, &serviceStored); err != nil {
+		t.Fatal(err)
+	}
+	if serviceRevision != 1 || serviceStoredExpiry != 2147483647 || !externalPushStoredJSONHasExactBigInteger(serviceStored) {
+		t.Fatalf("service-period browser configuration revision=%d params=%s", serviceRevision, serviceStored)
+	}
+}
+
+// assertProductExternalPushSyntheticDurableFacts deliberately uses only the
+// durable Product/Outbound PostgreSQL rows.  The Chromium journey invokes it
+// after the real browser flow, and the HTTP-only companion test below invokes
+// the same assertion so a browser-launch failure cannot conceal a bad column,
+// encrypted payload binding, or JSON precision regression.
+func assertProductExternalPushSyntheticDurableFacts(t *testing.T, ctx context.Context, application *composedApplication, productID int64, dataKey []byte) {
+	t.Helper()
 	var revision, storedExpiry int64
 	var stored json.RawMessage
 	var ciphertext []byte
 	var keyVersion int16
 	var sourceReference, targetSlot, effectID, state string
-	err = application.pool.Native().QueryRow(ctx, "SELECT configuration_revision,expires_at_ts,custom_params FROM product_external_push_configurations WHERE product_id=$1 AND product_kind='wechat_pay'", productID).Scan(&revision, &storedExpiry, &stored)
+	err := application.pool.Native().QueryRow(ctx, "SELECT version,expires_at_ts,custom_params FROM product_external_push_configurations WHERE product_id=$1 AND product_kind='wechat_pay'", productID).Scan(&revision, &storedExpiry, &stored)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err = application.pool.Native().QueryRow(ctx, "SELECT payload_ciphertext,payload_key_version,source_reference,target_slot,effect_id,state FROM outbound_commerce_push_intents WHERE product_id=$1 AND source_kind='synthetic_test'", productID).Scan(&ciphertext, &keyVersion, &sourceReference, &targetSlot, &effectID, &state); err != nil {
 		t.Fatal(err)
 	}
-	if revision != 1 || storedExpiry != 2147483647 || string(stored) != "{\"count\": 9007199254740993, \"flag\": false, \"nested\": [{\"inner\": 9007199254740993}]}" || !strings.HasPrefix(sourceReference, "synthetic:") || targetSlot != "product:"+strconv.FormatInt(productID, 10) || effectID == "" || state != "outcome_unknown" {
+	if !externalPushStoredJSONHasExactBigInteger(stored) {
+		t.Fatalf("browser configuration stored JSON lost required typed facts: %s", stored)
+	}
+	if revision != 1 || storedExpiry != 2147483647 || !strings.HasPrefix(sourceReference, "synthetic:") || targetSlot != "product:"+strconv.FormatInt(productID, 10) || effectID == "" || state != "outcome_unknown" {
 		t.Fatalf("browser configuration/intent revision=%d params=%s source=%q slot=%q effect=%q state=%q", revision, stored, sourceReference, targetSlot, effectID, state)
-	}
-	var serviceRevision, serviceStoredExpiry int64
-	var serviceStored json.RawMessage
-	if err = application.pool.Native().QueryRow(ctx, "SELECT version,expires_at_ts,custom_params FROM product_external_push_configurations WHERE product_id=$1 AND product_kind='service_period'", serviceProductID).Scan(&serviceRevision, &serviceStoredExpiry, &serviceStored); err != nil {
-		t.Fatal(err)
-	}
-	if serviceRevision != 1 || serviceStoredExpiry != 2147483647 || string(serviceStored) != "{\"count\": 9007199254740993, \"flag\": false, \"nested\": [{\"inner\": 9007199254740993}]}" {
-		t.Fatalf("service-period browser configuration revision=%d params=%s", serviceRevision, serviceStored)
 	}
 	cipher, err := outbound.NewCommercePayloadAESGCM(base64.RawStdEncoding.EncodeToString(dataKey))
 	if err != nil {
@@ -252,6 +265,125 @@ func TestPostgreSQLProductExternalPushChromiumJourney(t *testing.T) {
 	if !ok || payload["event"] != "external_push.test" || params["count"] != json.Number("9007199254740993") {
 		t.Fatalf("browser synthetic payload facts=%#v", payload)
 	}
+}
+
+func externalPushStoredJSONHasExactBigInteger(raw json.RawMessage) bool {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var value map[string]any
+	if decoder.Decode(&value) != nil {
+		return false
+	}
+	count, countOK := value["count"].(json.Number)
+	flag, flagOK := value["flag"].(bool)
+	nested, nestedOK := value["nested"].([]any)
+	if !countOK || count.String() != "9007199254740993" || !flagOK || flag || !nestedOK || len(nested) != 1 {
+		return false
+	}
+	first, firstOK := nested[0].(map[string]any)
+	inner, innerOK := first["inner"].(json.Number)
+	return firstOK && innerOK && inner.String() == "9007199254740993"
+}
+
+// TestPostgreSQLProductExternalPushDurableHTTPFacts executes the same save and
+// controlled synthetic action through the authenticated Product HTTP handler,
+// then runs the durable-row assertion without launching Chromium. It keeps the
+// browser journey focused on DOM/Host behavior while making later PostgreSQL
+// columns and envelope failures local, deterministic regression failures.
+func TestPostgreSQLProductExternalPushDurableHTTPFacts(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	databaseURL, cleanup := adminAccessCompositionDatabase(t, ctx)
+	defer cleanup()
+	dataKey := make([]byte, 32)
+	if _, err := rand.Read(dataKey); err != nil {
+		t.Fatal(err)
+	}
+	targetsJSON, err := json.Marshal(map[string]any{
+		"browser-push-target": map[string]any{
+			"slot": "browser-product-slot", "endpoint": "https://commerce-browser.invalid",
+			"signing_key": base64.RawStdEncoding.EncodeToString([]byte("browser-fixture-signing-key")),
+			"version":     "legacy-v1", "tenant_id": "aicrm-browser",
+			"buyer_id":          map[string]any{"kind": "wecom_external_userid", "scope": "wecom-corp:browser"},
+			"buyer_openid":      map[string]any{"kind": "mp_openid", "scope": "wechat-app:browser"},
+			"buyer_unionid":     map[string]any{"kind": "unionid", "scope": "wechat-open-platform:browser"},
+			"buyer_phone":       map[string]any{"kind": "phone", "scope": "phone:cn11"},
+			"beneficiary_phone": map[string]any{"kind": "phone", "scope": "phone:cn11"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	application, err := compose(ctx, platformconfig.Runtime{
+		Role: platformconfig.RoleAPI, DatabaseURL: databaseURL, PublicOrigin: "https://push-durable.test",
+		ReleaseSHA: "product-external-push-durable-http", WorkerOwner: "product-external-push-durable-http", WorkerLimit: 1,
+		GroupOps:     platformconfig.GroupOps{WebhookSecret: "product-external-push-durable-webhook-secret"},
+		Survey:       platformconfig.Survey{DataKey: base64.RawStdEncoding.EncodeToString(dataKey), IdentityPhoneDataKey: base64.RawStdEncoding.EncodeToString(dataKey)},
+		Effects:      platformconfig.Effects{ProviderEnabled: true},
+		CommercePush: platformconfig.CommercePush{ProviderEnabled: true, TargetsJSON: string(targetsJSON), PayloadDataKey: base64.RawStdEncoding.EncodeToString(dataKey)},
+		Bootstrap:    platformconfig.Bootstrap{Enabled: true, Username: "product-durable-owner", Password: "product-durable-owner-password", DisplayName: "Product Durable Owner"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer application.Close()
+	if err = application.bootstrap(ctx, platformconfig.Bootstrap{Enabled: true, Username: "product-durable-owner", Password: "product-durable-owner-password", DisplayName: "Product Durable Owner"}); err != nil {
+		t.Fatal(err)
+	}
+	productID, _, _, err := seedProductExternalPushChromiumJourney(ctx, application)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workerCtx, stopWorker := context.WithCancel(ctx)
+	workerDone := make(chan error, 1)
+	go func() { workerDone <- application.effectsRuntime.Run(workerCtx) }()
+	defer func() {
+		stopWorker()
+		select {
+		case runErr := <-workerDone:
+			if runErr != nil && !errors.Is(runErr, context.Canceled) {
+				t.Errorf("effects runtime: %v", runErr)
+			}
+		case <-time.After(20 * time.Second):
+			t.Error("effects runtime did not stop")
+		}
+	}()
+	session, csrf := adminAccessLogin(t, application.handler, "product-durable-owner", "product-durable-owner-password")
+	configuration := `{"enabled":true,"configuration_reference":"browser-push-target","type":"member_open","day":30,"frequency":1,"expires_at_ts":2147483647,"remark":"HTTP durable contract","custom_params":{"count":9007199254740993,"nested":[{"inner":9007199254740993}],"flag":false},"expected_revision":0}`
+	configurationResponse := productExternalPushAdminMutation(t, application.handler, http.MethodPut, "/api/admin/wechat-pay/products/"+strconv.FormatInt(productID, 10)+"/external-push", configuration, session, csrf, "product-durable-configuration-0001")
+	if configurationResponse.Code != http.StatusOK {
+		t.Fatalf("save product configuration status=%d", configurationResponse.Code)
+	}
+	testResponse := productExternalPushAdminMutation(t, application.handler, http.MethodPost, "/api/admin/wechat-pay/products/"+strconv.FormatInt(productID, 10)+"/external-push/test", `{}`, session, csrf, "product-durable-synthetic-0001")
+	if testResponse.Code != http.StatusAccepted {
+		t.Fatalf("queue synthetic product push status=%d", testResponse.Code)
+	}
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		var state string
+		err = application.pool.Native().QueryRow(ctx, "SELECT state FROM outbound_commerce_push_intents WHERE product_id=$1 AND source_kind='synthetic_test'", productID).Scan(&state)
+		if err == nil && state == "outcome_unknown" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("synthetic Product push did not reach durable unknown state: %v", err)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	assertProductExternalPushSyntheticDurableFacts(t, ctx, application, productID, dataKey)
+}
+
+func productExternalPushAdminMutation(t *testing.T, handler http.Handler, method, path, body, session, csrf, key string) *httptest.ResponseRecorder {
+	t.Helper()
+	request := httptest.NewRequest(method, path, strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Idempotency-Key", key)
+	request.Header.Set("X-CSRF-Token", csrf)
+	request.AddCookie(&http.Cookie{Name: accesshttp.SessionCookieName, Value: session})
+	request.AddCookie(&http.Cookie{Name: accesshttp.CSRFCookieName, Value: csrf})
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	return response
 }
 
 // prepareProductExternalPushChromiumArtifacts constructs the same hashed browser
