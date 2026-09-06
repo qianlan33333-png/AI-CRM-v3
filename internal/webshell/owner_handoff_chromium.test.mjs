@@ -190,6 +190,7 @@ try {
   const operationCyclesNav=cdp.next("Page.frameNavigated",params=>Boolean(params.frame&&!params.frame.parentId)&&new URL(params.frame.url).pathname==="/admin/operation-cycles","Operation Cycles menu navigation did not complete");
   await evaluate(`document.querySelector('a[href="/admin/operation-cycles"]').click(); true`, "operation_cycles_menu_click");
   await operationCyclesNav;
+  await waitFor(`location.pathname === "/admin/operation-cycles" && document.readyState !== "loading" && ["cycles","cyclesDetail"].includes(document.body?.dataset.page || "") && Array.from(document.scripts).some(script => String(script.src || '').includes('operationCyclesHost-'))`, "new-shell Operation Cycles Host document did not finish parsing");
   const operationCyclesPage=await evaluate(`(() => ({ path: location.pathname, page: document.body?.dataset.page || '', host_asset: Array.from(document.scripts).some(script => String(script.src || '').includes('operationCyclesHost-')) }))()`, "operation_cycles_menu_page");
   if(operationCyclesPage.path!=="/admin/operation-cycles" || !["cycles","cyclesDetail"].includes(operationCyclesPage.page) || !operationCyclesPage.host_asset) throw new Error(`new-shell Operation Cycles menu did not resolve the V3 Host ${JSON.stringify(operationCyclesPage)}`);
   const menuBackNav=cdp.next("Page.frameNavigated",params=>Boolean(params.frame&&!params.frame.parentId)&&new URL(params.frame.url).pathname===menuEntryPath,"new-shell menu return did not complete");
@@ -199,6 +200,7 @@ try {
   const ownerMenuNav=cdp.next("Page.frameNavigated",params=>Boolean(params.frame&&!params.frame.parentId)&&new URL(params.frame.url).pathname==="/admin/ownerMig.html","owner handoff menu navigation did not complete");
   await evaluate(`document.querySelector('a[href="ownerMig.html"]').click(); true`, "owner_handoff_menu_click");
   await ownerMenuNav;
+  await waitFor(`location.pathname === "/admin/ownerMig.html" && document.readyState !== "loading" && Boolean(document.querySelector('[data-owner-handoff-host]')) && Array.from(document.scripts).some(script => String(script.src || '').includes('/static/admin_console/owner_handoff_host.js'))`, "new-shell owner handoff Host document did not finish parsing");
   const ownerMenuPage=await evaluate(`(() => ({ path: location.pathname, host: Boolean(document.querySelector('[data-owner-handoff-host]')), asset: Array.from(document.scripts).some(script => String(script.src || '').includes('/static/admin_console/owner_handoff_host.js')), retired_template: Boolean(document.querySelector('#ownerMigCsv')) }))()`, "owner_handoff_menu_page");
   if (ownerMenuPage.path !== "/admin/ownerMig.html" || !ownerMenuPage.host || !ownerMenuPage.asset || ownerMenuPage.retired_template) throw new Error(`new-shell owner menu did not resolve the V3 Host ${JSON.stringify(ownerMenuPage)}`);
   await waitFor("(() => { const stage=document.querySelector('[data-owner-handoff-host]'); return ['ready','donor_error','context_error','host_error'].includes(stage?.dataset.ownerHandoffInit || ''); })()", "owner handoff Host did not complete initialization");
