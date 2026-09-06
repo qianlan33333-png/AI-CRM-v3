@@ -46,14 +46,14 @@ type BindingCommand struct {
 	ExpectedPublishedVersion          int64
 	ExpectedAgentDigest               string
 	Actor                             int64
-	MutationActor                     segmentport.MutationActor
+	MutationActor                     segmentport.MutationActor `json:"-"`
 	IdempotencyKey                    string
 }
 type SendersCommand struct {
 	PackageID, ExpectedPackageVersion int64
 	ProviderMemberIDs                 []string
 	Actor                             int64
-	MutationActor                     segmentport.MutationActor
+	MutationActor                     segmentport.MutationActor `json:"-"`
 	IdempotencyKey                    string
 }
 type Precheck struct {
@@ -88,7 +88,7 @@ func (s *ExecutionService) PutBinding(ctx context.Context, command BindingComman
 		return segmentdomain.AutomationBinding{}, ErrConflict
 	}
 	now := s.now().UTC()
-	payload, _ := json.Marshal(command)
+	payload := mutationCommandPayload(actor, command)
 	var output segmentdomain.AutomationBinding
 	err = s.uow.Within(ctx, func(tx context.Context) error {
 		receipt, owned, e := s.store.Reserve(tx, segmentstore.Reservation{Operation: "put_binding", ActorScope: actorScope(actor), ActorKind: string(actor.Kind), ActorRef: actor.Reference, KeyDigest: sha256.Sum256([]byte(command.IdempotencyKey)), PayloadDigest: sha256.Sum256(payload), CreatedAt: now})
@@ -132,7 +132,7 @@ func (s *ExecutionService) DeleteBinding(ctx context.Context, command VersionCom
 		return ErrInvalid
 	}
 	now := s.now().UTC()
-	payload, _ := json.Marshal(command)
+	payload := mutationCommandPayload(actor, command)
 	err = s.uow.Within(ctx, func(tx context.Context) error {
 		receipt, owned, e := s.store.Reserve(tx, segmentstore.Reservation{Operation: "delete_binding", ActorScope: actorScope(actor), ActorKind: string(actor.Kind), ActorRef: actor.Reference, KeyDigest: sha256.Sum256([]byte(command.IdempotencyKey)), PayloadDigest: sha256.Sum256(payload), CreatedAt: now})
 		if e != nil {
@@ -185,7 +185,7 @@ func (s *ExecutionService) ReplaceSenders(ctx context.Context, command SendersCo
 		members = append(members, segmentdomain.Sender{StaffID: eligibility.StaffID, EligibilityVersion: eligibility.EligibilityVersion, EligibilityRefreshedAt: eligibility.RefreshedAt})
 	}
 	now := s.now().UTC()
-	payload, _ := json.Marshal(struct {
+	payload := mutationCommandPayload(actor, struct {
 		PackageID int64
 		Expected  int64
 		StaffIDs  []segmentdomain.Sender

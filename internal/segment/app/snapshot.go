@@ -161,7 +161,7 @@ func (s *SnapshotService) AcceptRefresh(ctx context.Context, command RefreshComm
 		command.ReferenceTime = command.ReferenceTime.UTC()
 	}
 	now := s.now().UTC()
-	source := sha256.Sum256([]byte(command.IdempotencyKey))
+	source := sha256.Sum256([]byte(actorScopedIdempotencyMaterial(actor, command.IdempotencyKey)))
 	var result segmentdomain.RefreshRun
 	err = s.uow.Within(ctx, func(tx context.Context) error {
 		pkg, e := s.store.GetPackage(tx, command.PackageID)
@@ -218,7 +218,7 @@ func (s *SnapshotService) AcceptRefreshWithin(ctx context.Context, command Refre
 		command.ReferenceTime = command.ReferenceTime.UTC()
 	}
 	now := s.now().UTC()
-	source := sha256.Sum256([]byte(command.IdempotencyKey))
+	source := sha256.Sum256([]byte(actorScopedIdempotencyMaterial(actor, command.IdempotencyKey)))
 	pkg, err := s.store.GetPackage(ctx, command.PackageID)
 	if err != nil {
 		return segmentdomain.RefreshRun{}, classify(err)
