@@ -155,8 +155,19 @@ func (service *MachineService) VerifyHistorical(ctx context.Context, input acces
 	if err != nil {
 		return accessport.HistoricalMachineImportResult{}, err
 	}
-	if expectedReason := service.historicalMachineExclusionReason(input); expectedReason != "" {
-		if outcome != "excluded" || reason != expectedReason {
+	if outcome == "excluded" {
+		expectedReason := service.historicalMachineExclusionReason(input)
+		if expectedReason == "" {
+			// These two reasons are produced only after this exact source row has
+			// passed frozen-grant validation. They preserve a collision or a V3
+			// validation incompatibility without treating an arbitrary receipt
+			// mutation as a successful reconciliation.
+			switch reason {
+			case "target_client_id_conflict", "unsupported_source_grant":
+				expectedReason = reason
+			}
+		}
+		if expectedReason == "" || reason != expectedReason {
 			return accessport.HistoricalMachineImportResult{}, domain.ErrConflict
 		}
 		return accessport.HistoricalMachineImportResult{Outcome: "excluded", ReasonCode: reason}, nil

@@ -228,7 +228,8 @@ func TestMountWithLegacyProtocolsPreservesDedicatedAuthenticationOwners(t *testi
 		{"operation service bearer with dots", http.MethodPost, "/api/operation-cycles/reports", "legacy.token.with.dots", "", "legacy"},
 		{"machine jwt", http.MethodPost, "/api/operation-cycles/reports", "header.payload.signature", "", "machine"},
 		{"invalid jwt shaped bearer remains machine-owned", http.MethodPost, "/api/operation-cycles/reports", "broken.payload.signature", "", "machine"},
-		{"ai signed protocol", http.MethodPost, "/api/ai-assist/external/campaigns", "", "signed", "legacy"},
+		// AI Assistant has its own actual signed endpoints outside the frozen
+		// machine inventory; do not use an invented campaign route as a protocol proxy.
 	} {
 		t.Run(item.name, func(t *testing.T) {
 			request := httptest.NewRequest(item.method, "https://crm.example.com"+item.path, nil)

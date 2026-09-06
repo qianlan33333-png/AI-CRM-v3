@@ -168,7 +168,7 @@ func TestOpenPlatformMachineManagementPostgreSQLJourney(t *testing.T) {
 		t.Fatal("old bearer remained valid after concurrent lifecycle changes")
 	}
 
-	historicalBatch := accessport.HistoricalMachineImportBatch{ImportRunID: "open-platform:11111111111111111111111111111111", SourceSystem: "ai-crm", SourceRevision: "dd8d60dd8ddb983aca2ec88cc9e65a9f7563f79f", ManifestDigest: [32]byte{1, 9}, SnapshotAt: time.Date(2026, 9, 6, 1, 2, 3, 0, time.UTC), ClientCount: 2, AuditCount: 1}
+	historicalBatch := accessport.HistoricalMachineImportBatch{ImportRunID: "open-platform:11111111111111111111111111111111", SourceSystem: "ai-crm", SourceRevision: "dd8d60dd8ddb983aca2ec88cc9e65a9f7563f79f", ManifestDigest: [32]byte{1, 9}, SnapshotAt: time.Date(2026, 9, 6, 1, 2, 3, 0, time.UTC), ClientCount: 3, AuditCount: 1}
 	if _, err = service.BeginHistoricalImport(ctx, historicalBatch); err != nil {
 		t.Fatalf("begin historical batch=%v", err)
 	}
@@ -208,6 +208,42 @@ func TestOpenPlatformMachineManagementPostgreSQLJourney(t *testing.T) {
 	}
 	if err = json.Unmarshal(directResponse.Body.Bytes(), &directPage); err != nil || directResponse.Code != http.StatusOK || !directPage.OK || !directPage.Status.Configured || directPage.Status.Enabled || directPage.Status.Status != "disabled" || directPage.Status.CredentialHint == "" {
 		t.Fatalf("historical direct page status=%d body=%s parsed=%+v err=%v", directResponse.Code, directResponse.Body.String(), directPage, err)
+	}
+	// A pre-existing normal V3 caller with the same target client_id is not
+	// overwritten. Its exact donor row receives a durable, verifiable exclusion.
+	conflictedHistorical := historical
+	conflictedHistorical.SourceRowID = "legacy-existing-external"
+	conflictedHistorical.SourceClientID = "historic.external"
+	conflictedHistorical.SourceRowDigest = [32]byte{9, 10}
+	conflictedHistorical.SourceOwnerScopeDigest = [32]byte{9, 11}
+	conflictedHistorical.ClientID = external.Client.ClientID
+	conflictedHistorical.PrincipalID = "api_client:historic.external"
+	conflictedHistorical.DisplayName = "Historic external"
+	conflictedHistorical.Purpose = "external_agent"
+	conflictedHistorical.Scopes = []string{"read", "write"}
+	conflictedHistorical.Capabilities = []string{"external_read", "external_write"}
+	conflictOutcome, err := service.ImportHistorical(ctx, conflictedHistorical)
+	if err != nil || conflictOutcome.Outcome != "excluded" || conflictOutcome.ReasonCode != "target_client_id_conflict" {
+		t.Fatalf("target client conflict outcome=%+v err=%v", conflictOutcome, err)
+	}
+	verifiedConflict, err := service.VerifyHistorical(ctx, conflictedHistorical)
+	if err != nil || verifiedConflict.Outcome != "excluded" || verifiedConflict.ReasonCode != "target_client_id_conflict" {
+		t.Fatalf("target client conflict verify=%+v err=%v", verifiedConflict, err)
+	}
+	var existingTargetCount int
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM access_machine_clients WHERE client_id=$1 AND display_name='PostgreSQL external'`, external.Client.ClientID).Scan(&existingTargetCount); err != nil || existingTargetCount != 1 {
+		t.Fatalf("target client overwritten count=%d err=%v", existingTargetCount, err)
+	}
+	driftedConflict := conflictedHistorical
+	driftedConflict.SourceRowDigest = [32]byte{9, 12}
+	if _, err = service.VerifyHistorical(ctx, driftedConflict); !errors.Is(err, accessdomain.ErrConflict) {
+		t.Fatalf("conflict receipt source drift=%v", err)
+	}
+	if _, err = native.Exec(ctx, `UPDATE access_machine_import_receipts SET reason_code='tampered_reason' WHERE source_system='ai-crm' AND source_scope='auth_api_clients' AND source_row_id='legacy-existing-external'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.VerifyHistorical(ctx, conflictedHistorical); !errors.Is(err, accessdomain.ErrConflict) {
+		t.Fatalf("conflict receipt reason mutation=%v", err)
 	}
 	verified, err := service.VerifyHistorical(ctx, historical)
 	if err != nil || verified.Outcome != "reissue_required" || verified.Client.Enabled || !verified.Client.ReissueRequired {

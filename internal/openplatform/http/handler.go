@@ -157,7 +157,7 @@ func mount(next, machine http.Handler, preserveLegacyProtocols bool, operationCy
 }
 
 func legacyProtocolRoute(route Route) bool {
-	return strings.HasPrefix(route.Path, "/api/operation-cycles/") || strings.HasPrefix(route.Path, "/api/ai-assist/external/")
+	return strings.HasPrefix(route.Path, "/api/operation-cycles/")
 }
 
 func preserveLegacyMachineRoute(legacy, machine http.Handler, operationCycleServiceToken string) http.Handler {
