@@ -35,12 +35,12 @@ func (provider *CustomerOwnerHandoffProvider) Execute(ctx context.Context, envel
 	result, err := provider.writer.TransferCustomer(ctx, execution.SourceUserID, execution.TargetUserID, []string{execution.ExternalUserID}, execution.WelcomeMessage)
 	if err != nil {
 		attempted := wecomport.ProviderCallAttempted(err)
-		state := effectport.StateRetryable
+		state := effectport.StateFinalFailed
 		if attempted && wecomport.ProviderOutcomeUnknown(err) {
 			state = effectport.StateUnknown
 		}
-		if attempted && !wecomport.ProviderOutcomeUnknown(err) {
-			state = effectport.StateFinalFailed
+		if !attempted && wecomport.ProviderRetryable(err) {
+			state = effectport.StateRetryable
 		}
 		return effectport.AdapterResult{Completion: state, ReceiptDigest: effectport.Hash("owner-handoff.provider-error", attempt.EffectID), CallAttempted: attempted, RealExternalCallExecuted: attempted}, err
 	}

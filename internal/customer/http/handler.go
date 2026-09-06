@@ -35,43 +35,47 @@ type Auditor interface {
 }
 
 type Config struct {
-	UnitOfWork        platformport.UnitOfWork
-	Auth              Authenticator
-	CSRF              CSRFAuthorizer
-	Directory         customerapp.Directory
-	Store             customerapp.Store
-	Identities        identityport.DirectoryIdentityReader
-	Audit             Auditor
-	Canonical         customerport.CanonicalCustomerResolver
-	Owners            customerport.CustomerOwnerReader
-	Tags              customerport.CustomerTagReader
-	Surveys           customerport.CustomerSurveyReader
-	Timeline          customerport.CustomerTimelineReader
-	Chat              customerport.CustomerChatActivityReader
-	Orders            orderport.CustomerOrderSummaryReader
-	TagCommands       customerport.TagCommandSubmitter
-	TagHistory        customerport.TagCommandHistoryReader
-	ProfileSigningKey []byte
+	UnitOfWork         platformport.UnitOfWork
+	Auth               Authenticator
+	CSRF               CSRFAuthorizer
+	Directory          customerapp.Directory
+	Store              customerapp.Store
+	Identities         identityport.DirectoryIdentityReader
+	Audit              Auditor
+	Canonical          customerport.CanonicalCustomerResolver
+	Owners             customerport.CustomerOwnerReader
+	Tags               customerport.CustomerTagReader
+	Surveys            customerport.CustomerSurveyReader
+	Timeline           customerport.CustomerTimelineReader
+	Chat               customerport.CustomerChatActivityReader
+	Orders             orderport.CustomerOrderSummaryReader
+	TagCommands        customerport.TagCommandSubmitter
+	TagHistory         customerport.TagCommandHistoryReader
+	OwnerHandoff       customerport.OwnerHandoffService
+	OwnerHandoffReader customerport.OwnerHandoffReader
+	ProfileSigningKey  []byte
 }
 
 type Handler struct {
-	uow               platformport.UnitOfWork
-	auth              Authenticator
-	csrf              CSRFAuthorizer
-	directory         customerapp.Directory
-	store             customerapp.Store
-	identities        identityport.DirectoryIdentityReader
-	audit             Auditor
-	canonical         customerport.CanonicalCustomerResolver
-	owners            customerport.CustomerOwnerReader
-	tags              customerport.CustomerTagReader
-	surveys           customerport.CustomerSurveyReader
-	timeline          customerport.CustomerTimelineReader
-	chat              customerport.CustomerChatActivityReader
-	orders            orderport.CustomerOrderSummaryReader
-	tagCommands       customerport.TagCommandSubmitter
-	tagHistory        customerport.TagCommandHistoryReader
-	profileSigningKey []byte
+	uow                platformport.UnitOfWork
+	auth               Authenticator
+	csrf               CSRFAuthorizer
+	directory          customerapp.Directory
+	store              customerapp.Store
+	identities         identityport.DirectoryIdentityReader
+	audit              Auditor
+	canonical          customerport.CanonicalCustomerResolver
+	owners             customerport.CustomerOwnerReader
+	tags               customerport.CustomerTagReader
+	surveys            customerport.CustomerSurveyReader
+	timeline           customerport.CustomerTimelineReader
+	chat               customerport.CustomerChatActivityReader
+	orders             orderport.CustomerOrderSummaryReader
+	tagCommands        customerport.TagCommandSubmitter
+	tagHistory         customerport.TagCommandHistoryReader
+	ownerHandoff       customerport.OwnerHandoffService
+	ownerHandoffReader customerport.OwnerHandoffReader
+	profileSigningKey  []byte
 }
 
 func NewHandler(config Config) (*Handler, error) {
@@ -82,7 +86,7 @@ func NewHandler(config Config) (*Handler, error) {
 	return &Handler{uow: config.UnitOfWork, auth: config.Auth, csrf: config.CSRF, directory: config.Directory,
 		store: config.Store, identities: config.Identities, audit: config.Audit, canonical: config.Canonical,
 		owners: config.Owners, tags: config.Tags, tagCommands: config.TagCommands, tagHistory: config.TagHistory, surveys: config.Surveys, timeline: config.Timeline, chat: config.Chat, orders: config.Orders,
-		profileSigningKey: append([]byte(nil), config.ProfileSigningKey...)}, nil
+		profileSigningKey: append([]byte(nil), config.ProfileSigningKey...), ownerHandoff: config.OwnerHandoff, ownerHandoffReader: config.OwnerHandoffReader}, nil
 }
 
 func (handler *Handler) Routes() nethttp.Handler {
@@ -95,6 +99,12 @@ func (handler *Handler) Routes() nethttp.Handler {
 	mux.HandleFunc("GET /api/admin/customers/{customer_id}/tags", handler.tagSection)
 	mux.HandleFunc("GET /api/admin/customers/{customer_id}/survey-answers", handler.surveySection)
 	mux.HandleFunc("GET /api/admin/customers/{customer_id}/timeline", handler.timelineSection)
+	if handler.ownerHandoff != nil && handler.ownerHandoffReader != nil {
+		mux.HandleFunc("POST /api/admin/customers/owner-handoffs/previews", handler.ownerHandoffPreview)
+		mux.HandleFunc("GET /api/admin/customers/owner-handoffs/previews/{preview_id}", handler.ownerHandoffPreviewRead)
+		mux.HandleFunc("POST /api/admin/customers/owner-handoffs/confirm", handler.ownerHandoffConfirm)
+		mux.HandleFunc("GET /api/admin/customers/owner-handoffs/batches/{batch_id}", handler.ownerHandoffBatchRead)
+	}
 	mux.HandleFunc("GET /api/admin/customers/{customer_id}/chat-activity", handler.chatSection)
 	return mux
 }

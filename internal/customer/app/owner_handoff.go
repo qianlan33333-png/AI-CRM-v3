@@ -51,10 +51,11 @@ type OwnerHandoffService struct {
 	audit    interface {
 		Append(context.Context, platformaudit.Event) (platformaudit.Event, error)
 	}
-	outbox  platformoutbox.Appender
-	effects effectport.TransactionalAccepter
-	now     func() time.Time
-	newID   func() (string, error)
+	outbox               platformoutbox.Appender
+	effects              effectport.TransactionalAccepter
+	wecomProviderEnabled bool
+	now                  func() time.Time
+	newID                func() (string, error)
 }
 
 func NewOwnerHandoffService(uow platformport.UnitOfWork, store OwnerHandoffStore, staff ownerHandoffStaffReader, resolver customerport.OwnerHandoffCandidateResolver, audit interface {
@@ -75,6 +76,12 @@ func (service *OwnerHandoffService) SetExternalEffectAccepter(accepter effectpor
 	}
 	service.effects = accepter
 	return nil
+}
+
+func (service *OwnerHandoffService) SetWeComProviderEnabled(enabled bool) {
+	if service != nil {
+		service.wecomProviderEnabled = enabled
+	}
 }
 
 func (service *OwnerHandoffService) PreviewOwnerHandoff(ctx context.Context, command customerport.OwnerHandoffPreviewCommand) (customerport.OwnerHandoffPreview, error) {
@@ -159,7 +166,7 @@ func (service *OwnerHandoffService) ConfirmOwnerHandoff(ctx context.Context, com
 			return ErrOwnerHandoffDrift
 		}
 		if draft.Preview.Mode == customerport.OwnerHandoffWeComThenCRM {
-			if service.effects == nil {
+			if service.effects == nil || !service.wecomProviderEnabled {
 				return ErrOwnerHandoffForbidden
 			}
 			lines := make([]customerport.OwnerHandoffLine, 0, len(draft.Candidates))

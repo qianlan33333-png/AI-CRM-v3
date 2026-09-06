@@ -502,3 +502,47 @@ func (store *PostgreSQLOwnerHandoffStore) OwnerHandoffBatchByIdempotency(ctx con
 	}
 	return batch, copied, true, nil
 }
+
+// OwnerHandoffPreview is the digest-safe operator projection. Provider IDs
+// remain encrypted and are intentionally absent from the returned DTO.
+func (store *PostgreSQLOwnerHandoffStore) OwnerHandoffPreview(ctx context.Context, id string) (customerport.OwnerHandoffPreview, error) {
+	record, err := store.LoadOwnerHandoffPreview(ctx, id, false)
+	if err != nil {
+		return customerport.OwnerHandoffPreview{}, err
+	}
+	return record.Preview, nil
+}
+
+func (store *PostgreSQLOwnerHandoffStore) OwnerHandoffBatch(ctx context.Context, id string) (customerport.OwnerHandoffBatch, error) {
+	if id == "" {
+		return customerport.OwnerHandoffBatch{}, ErrOwnerHandoffConflict
+	}
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return customerport.OwnerHandoffBatch{}, err
+	}
+	var batch customerport.OwnerHandoffBatch
+	err = tx.QueryRow(ctx, `SELECT id,mode,state,created_at,updated_at FROM customer_owner_handoff_batches WHERE id=$1`, id).Scan(&batch.ID, &batch.Mode, &batch.State, &batch.CreatedAt, &batch.UpdatedAt)
+	if err != nil {
+		return customerport.OwnerHandoffBatch{}, err
+	}
+	rows, err := tx.Query(ctx, `SELECT line_no,customer_id,state,COALESCE(effect_id,''),observed_at FROM customer_owner_handoff_lines WHERE batch_id=$1 ORDER BY line_no`, id)
+	if err != nil {
+		return customerport.OwnerHandoffBatch{}, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var line customerport.OwnerHandoffLine
+		if err = rows.Scan(&line.Line, &line.CustomerID, &line.State, &line.EffectID, &line.ObservedAt); err != nil {
+			return customerport.OwnerHandoffBatch{}, err
+		}
+		batch.Lines = append(batch.Lines, line)
+	}
+	if err = rows.Err(); err != nil {
+		return customerport.OwnerHandoffBatch{}, err
+	}
+	return batch, nil
+}
+
+var _ customerport.OwnerHandoffReader = (*PostgreSQLOwnerHandoffStore)(nil)
+var _ customerport.OwnerHandoffCompletionWriter = (*PostgreSQLOwnerHandoffStore)(nil)
