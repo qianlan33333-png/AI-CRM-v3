@@ -216,6 +216,28 @@ func TestPostgreSQLPolicyCreateVersionLifecycleAndReplayJourney(t *testing.T) {
 	}
 }
 
+func TestPostgreSQLRuntimeConfigObservedShapeRejectsIncompleteSnapshot(t *testing.T) {
+	native, cleanup := automationRuntimeIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	preview := `INSERT INTO automation_run_previews(
+		package_id,package_version,snapshot_id,configuration_version_id,agent_id,agent_published_version,binding_version,sender_set_version,
+		target_count,skipped_count,preview_digest,created_by,created_at,expires_at,
+		runtime_config_observed,runtime_config_revision,max_recipients_per_run
+	) VALUES(1,1,1,1,1,1,1,1,0,0,decode(repeat('00',32),'hex'),1,clock_timestamp(),clock_timestamp()+interval '5 minutes',TRUE,NULL,NULL)`
+	if _, err := native.Exec(ctx, preview); err == nil {
+		t.Fatal("observed preview without a complete runtime snapshot was accepted")
+	}
+	run := `INSERT INTO automation_runs(
+		policy_id,policy_version,package_id,package_version,snapshot_id,agent_id,agent_published_version,binding_version,sender_set_version,
+		preview_digest,state,target_count,skipped_count,created_by,created_at,updated_at,
+		runtime_config_observed,runtime_config_revision,max_recipients_per_run
+	) VALUES(NULL,NULL,1,1,1,1,1,1,1,decode(repeat('00',32),'hex'),'ready',0,0,1,clock_timestamp(),clock_timestamp(),TRUE,NULL,NULL)`
+	if _, err := native.Exec(ctx, run); err == nil {
+		t.Fatal("observed run without a complete runtime snapshot was accepted")
+	}
+}
+
 func automationIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 	t.Helper()
 	url, err := platformconfig.DatabaseURL()
@@ -270,7 +292,7 @@ func automationIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 
 func automationRuntimeIntegrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 	t.Helper()
-	pool, cleanup := automationIntegrationPoolWithMigrations(t, []string{"0013_automation_agents.sql", "0043_automation_runtime.sql", "0087_automation_manual_ai_review.sql"})
+	pool, cleanup := automationIntegrationPoolWithMigrations(t, []string{"0013_automation_agents.sql", "0043_automation_runtime.sql", "0087_automation_manual_ai_review.sql", "0015_config_adminops.sql", "0094_runtime_config_releases.sql"})
 	return pool, cleanup
 }
 

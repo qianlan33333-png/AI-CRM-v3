@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/platform/donortemplate"
@@ -37,6 +38,12 @@ func (h *ui) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	if isRuntimeReleasePage(page) {
+		if e := h.render(w, r, page, runtimeReleaseHostTemplate, UIAssets{}); e != nil {
+			http.Error(w, "config UI unavailable", http.StatusInternalServerError)
+		}
+		return
+	}
 	raw, e := os.ReadFile(filepath.Join(h.dist, "admin", page+".html"))
 	if e != nil {
 		http.Error(w, "config UI unavailable", 503)
@@ -58,6 +65,10 @@ func (h *ui) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 func configPage(r *http.Request) (string, bool) {
 	switch r.URL.Path {
+	case "/admin/config/releases":
+		return "runtimeReleaseList", len(r.URL.Query()) == 0
+	case "/admin/config/releases/new":
+		return "runtimeReleaseNew", len(r.URL.Query()) == 0
 	case "/admin/config", "/admin/config/", "/admin/config.html":
 		return "config", len(r.URL.Query()) == 0
 	case "/admin/configDetail.html":
@@ -75,9 +86,20 @@ func configPage(r *http.Request) (string, bool) {
 	case "/admin/api-docs", "/admin/apidocs.html":
 		return "apidocs", len(r.URL.Query()) == 0
 	default:
+		if strings.HasPrefix(r.URL.Path, "/admin/config/releases/") && len(r.URL.Query()) == 0 {
+			id, err := strconv.ParseInt(strings.TrimPrefix(r.URL.Path, "/admin/config/releases/"), 10, 64)
+			if err == nil && id > 0 {
+				return "runtimeReleaseDetail", true
+			}
+		}
 		return "", false
 	}
 }
+
+func isRuntimeReleasePage(page string) bool {
+	return page == "runtimeReleaseList" || page == "runtimeReleaseNew" || page == "runtimeReleaseDetail"
+}
+
 func configAssets(dist string) (UIAssets, error) {
 	raw, e := os.ReadFile(filepath.Join(dist, "asset-manifest.json"))
 	if e != nil {

@@ -13,6 +13,7 @@ import (
 	aiassistantport "github.com/qianlan33333-png/AI-CRM-v3/internal/aiassistant/port"
 	automationdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/domain"
 	automationport "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/port"
+	configport "github.com/qianlan33333-png/AI-CRM-v3/internal/config/port"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	outboundport "github.com/qianlan33333-png/AI-CRM-v3/internal/outbound/port"
@@ -39,6 +40,7 @@ type RuntimeStore interface {
 	CurrentPolicyVersion(context.Context, int64) (automationdomain.PolicyVersion, error)
 	SetPolicyLifecycle(context.Context, int64, int64, int64, automationdomain.PolicyLifecycle, time.Time) (automationdomain.Policy, error)
 	ActivePoliciesForPackage(context.Context, int64) ([]automationdomain.PolicyVersion, error)
+	EnrollmentForSource(context.Context, int64, [32]byte, int64) (automationdomain.Enrollment, bool, error)
 	CreateEnrollment(context.Context, automationdomain.Enrollment) (automationdomain.Enrollment, bool, error)
 	RuntimeReceipt(context.Context, string, string, [32]byte, [32]byte) (RuntimeReceipt, bool, error)
 	ReserveRuntime(context.Context, RuntimeReservation) (RuntimeReceipt, bool, error)
@@ -70,7 +72,8 @@ type RuntimeService struct {
 	reviewPlans    reviewPlanGateway
 	content        automationport.OutboundPublishedContentReader
 	contentFreezer automationport.OutboundContentFreezer
-	recipientLimit int64
+	runtimeConfig  configport.EffectiveReader
+	runtimeUsage   configport.UsageRecorder
 	now            func() time.Time
 }
 type PolicyCommand struct {
@@ -91,12 +94,74 @@ type PolicyLifecycleCommand struct {
 	IdempotencyKey                   string
 }
 
+// NewRuntimeService keeps the pre-release construction contract for focused
+// tests and legacy composition callers. Production composition uses
+// NewRuntimeServiceWithRuntimeConfig so Config owns the effective value.
 func NewRuntimeService(uow platformport.UnitOfWork, store RuntimeStore, audiences segmentport.ExecutionConfigurationReader, snapshots segmentport.SnapshotReader, recipientLimit int) (*RuntimeService, error) {
-	if uow == nil || store == nil || audiences == nil || snapshots == nil || recipientLimit < 1 || recipientLimit > aiassistantport.MaxRecipients {
+	if recipientLimit < 1 || recipientLimit > aiassistantport.MaxRecipients {
 		return nil, ErrRuntimeNotReady
 	}
-	return &RuntimeService{uow: uow, store: store, audiences: audiences, snapshots: snapshots, recipientLimit: int64(recipientLimit), now: time.Now}, nil
+	return newRuntimeService(uow, store, audiences, snapshots, fixedRuntimeConfig{snapshot: configport.EffectiveSnapshot{Revision: 0, Source: configport.RuntimeSourceEnvironmentDefault, AutomationMaxRecipients: recipientLimit}}, nil)
 }
+
+// NewRuntimeServiceWithRuntimeConfig is the production seam: the same typed
+// Config snapshot is frozen into manual previews and existing River-dispatched
+// member-event runs. Usage rows are written only at those real boundaries.
+func NewRuntimeServiceWithRuntimeConfig(uow platformport.UnitOfWork, store RuntimeStore, audiences segmentport.ExecutionConfigurationReader, snapshots segmentport.SnapshotReader, reader configport.EffectiveReader, usage configport.UsageRecorder) (*RuntimeService, error) {
+	return newRuntimeService(uow, store, audiences, snapshots, reader, usage)
+}
+
+func newRuntimeService(uow platformport.UnitOfWork, store RuntimeStore, audiences segmentport.ExecutionConfigurationReader, snapshots segmentport.SnapshotReader, reader configport.EffectiveReader, usage configport.UsageRecorder) (*RuntimeService, error) {
+	if uow == nil || store == nil || audiences == nil || snapshots == nil || reader == nil {
+		return nil, ErrRuntimeNotReady
+	}
+	return &RuntimeService{uow: uow, store: store, audiences: audiences, snapshots: snapshots, runtimeConfig: reader, runtimeUsage: usage, now: time.Now}, nil
+}
+
+type fixedRuntimeConfig struct{ snapshot configport.EffectiveSnapshot }
+
+func (f fixedRuntimeConfig) EffectiveSnapshot(context.Context) (configport.EffectiveSnapshot, error) {
+	return f.snapshot, nil
+}
+func (f fixedRuntimeConfig) EffectiveSnapshotWithin(context.Context) (configport.EffectiveSnapshot, error) {
+	return f.snapshot, nil
+}
+
+func validRuntimeConfigSnapshot(snapshot configport.EffectiveSnapshot) bool {
+	return (snapshot.Source == configport.RuntimeSourceEnvironmentDefault || snapshot.Source == configport.RuntimeSourcePublished) && snapshot.Revision >= 0 && snapshot.AutomationMaxRecipients >= 1 && snapshot.AutomationMaxRecipients <= aiassistantport.MaxRecipients
+}
+
+func (s *RuntimeService) runtimeConfigWithin(ctx context.Context) (configport.EffectiveSnapshot, error) {
+	if s == nil || s.runtimeConfig == nil {
+		return configport.EffectiveSnapshot{}, ErrRuntimeNotReady
+	}
+	snapshot, err := s.runtimeConfig.EffectiveSnapshotWithin(ctx)
+	if err != nil || !validRuntimeConfigSnapshot(snapshot) {
+		return configport.EffectiveSnapshot{}, ErrRuntimeUnavailable
+	}
+	return snapshot, nil
+}
+
+func (s *RuntimeService) recordRuntimeConfigUsage(ctx context.Context, snapshot configport.EffectiveSnapshot, role, operation, subjectKind string, subjectID int64, now time.Time) error {
+	if s.runtimeUsage == nil {
+		return nil
+	}
+	if err := s.runtimeUsage.RecordRuntimeUsage(ctx, configport.RuntimeUsage{Snapshot: snapshot, Consumer: string(configport.AutomationOperationsMaxRecipientsPerRun), Role: role, Operation: operation, SubjectKind: subjectKind, SubjectID: subjectID, UsedAt: now.UTC()}); err != nil {
+		return ErrRuntimeUnavailable
+	}
+	return nil
+}
+
+// SetRuntimeConfig is composition-time wiring only. The service is not
+// exposed until cmd/aicrm has bound the Config-owned reader and usage writer.
+func (s *RuntimeService) SetRuntimeConfig(reader configport.EffectiveReader, usage configport.UsageRecorder) error {
+	if s == nil || reader == nil || usage == nil {
+		return ErrRuntimeNotReady
+	}
+	s.runtimeConfig, s.runtimeUsage = reader, usage
+	return nil
+}
+
 func (s *RuntimeService) SetMessageAccepter(messages outboundport.TransactionalMessageAccepter) error {
 	if s == nil || messages == nil {
 		return ErrRuntimeNotReady
@@ -273,9 +338,32 @@ func (s *RuntimeService) EnrollAudienceMember(ctx context.Context, event segment
 	if err != nil || len(observed) == 0 {
 		return nil, runtimeClassify(err)
 	}
+	// Check the immutable source receipt before reading current execution
+	// configuration. A replay of the same member-entered fact must return its
+	// already-frozen enrollment even if a later Config release is active.
+	existingByVersion := make(map[int64]automationdomain.Enrollment, len(observed))
+	err = s.uow.Within(ctx, func(tx context.Context) error {
+		for _, version := range observed {
+			existing, found, e := s.store.EnrollmentForSource(tx, version.ID, eventDigest, int64(event.CustomerID))
+			if e != nil {
+				return e
+			}
+			if found {
+				if !enrollmentMatchesMemberEnteredEvent(existing, version, event) {
+					return ErrRuntimeConflict
+				}
+				existingByVersion[version.ID] = existing
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, runtimeClassify(err)
+	}
 	needsOutbound := false
 	for _, version := range observed {
-		needsOutbound = needsOutbound || version.ActionKind == automationport.ActionOutboundMessage
+		_, replay := existingByVersion[version.ID]
+		needsOutbound = needsOutbound || (!replay && version.ActionKind == automationport.ActionOutboundMessage)
 	}
 	var configuration segmentport.ExecutionConfiguration
 	var published automationport.OutboundPublishedContent
@@ -310,9 +398,29 @@ func (s *RuntimeService) EnrollAudienceMember(ctx context.Context, event segment
 		if e != nil {
 			return e
 		}
+		var runtimeConfig configport.EffectiveSnapshot
+		if needsOutbound {
+			runtimeConfig, e = s.runtimeConfigWithin(tx)
+			if e != nil {
+				return e
+			}
+		}
 		for _, v := range versions {
 			prior, wasObserved := observedByID[v.ID]
 			if !wasObserved || prior.Digest != v.Digest {
+				continue
+			}
+			// Re-read in the write transaction to close the check/create race. A
+			// stored enrollment is a replay only when its immutable source facts
+			// still match; a reused EventID may never change package, snapshot,
+			// configuration, or customer merely because Config has advanced.
+			if existing, found, lookupErr := s.store.EnrollmentForSource(tx, v.ID, eventDigest, int64(event.CustomerID)); lookupErr != nil {
+				return lookupErr
+			} else if found {
+				if !enrollmentMatchesMemberEnteredEvent(existing, v, event) {
+					return ErrRuntimeConflict
+				}
+				output = append(output, existing)
 				continue
 			}
 			if v.ActionKind == automationport.ActionOutboundMessage && !policyExecutionConfigurationMatches(v, configuration) {
@@ -320,11 +428,16 @@ func (s *RuntimeService) EnrollAudienceMember(ctx context.Context, event segment
 			}
 			snapshotFields := map[string]any{"action_kind": v.ActionKind, "action_config": json.RawMessage(v.ActionConfig), "package_id": event.PackageID, "snapshot_id": event.SnapshotID, "configuration_version_id": event.ConfigurationVersionID, "customer_id": event.CustomerID, "policy_version_id": v.ID, "policy_digest": hex.EncodeToString(v.Digest[:])}
 			if v.ActionKind == automationport.ActionOutboundMessage {
+				if runtimeConfig.AutomationMaxRecipients < 1 {
+					return ErrRuntimeNotReady
+				}
 				snapshotFields["agent_id"] = configuration.AgentID
 				snapshotFields["agent_published_version"] = configuration.AgentPublishedVersion
 				snapshotFields["binding_version"] = configuration.BindingVersion
 				snapshotFields["sender_set_version"] = configuration.SenderSetVersion
 				snapshotFields["content_digest"] = hex.EncodeToString(configuration.ContentDigest[:])
+				snapshotFields["runtime_config_revision"] = runtimeConfig.Revision
+				snapshotFields["max_recipients_per_run"] = runtimeConfig.AutomationMaxRecipients
 			}
 			snapshot, _ := json.Marshal(snapshotFields)
 			actionDigest := sha256.Sum256(snapshot)
@@ -335,6 +448,12 @@ func (s *RuntimeService) EnrollAudienceMember(ctx context.Context, event segment
 			enrollment, owned, e := s.store.CreateEnrollment(tx, automationdomain.Enrollment{PolicyID: v.PolicyID, PolicyVersionID: v.ID, SourceEventDigest: eventDigest, CustomerID: int64(event.CustomerID), ActionKind: v.ActionKind, ActionSnapshot: snapshot, ActionDigest: actionDigest, State: state, CreatedAt: now})
 			if e != nil {
 				return e
+			}
+			// A concurrent writer can win the unique tuple after the re-read above.
+			// Its stored snapshot must satisfy the same source-fact check, without
+			// comparing the current runtime Config revision or limit.
+			if !enrollmentMatchesMemberEnteredEvent(enrollment, v, event) {
+				return ErrRuntimeConflict
 			}
 			output = append(output, enrollment)
 			if owned {
@@ -347,7 +466,7 @@ func (s *RuntimeService) EnrollAudienceMember(ctx context.Context, event segment
 					return e
 				}
 				if v.ActionKind == automationport.ActionOutboundMessage {
-					if e = s.acceptEnrollmentMessage(tx, event, v, configuration, published, enrollment, actionDigest, actor, now); e != nil {
+					if e = s.acceptEnrollmentMessage(tx, event, v, configuration, published, enrollment, actionDigest, runtimeConfig, actor, now); e != nil {
 						return e
 					}
 				}
@@ -358,7 +477,34 @@ func (s *RuntimeService) EnrollAudienceMember(ctx context.Context, event segment
 	return output, runtimeClassify(err)
 }
 
-func (s *RuntimeService) acceptEnrollmentMessage(ctx context.Context, event segmentport.MemberEnteredV1, version automationdomain.PolicyVersion, configuration segmentport.ExecutionConfiguration, published automationport.OutboundPublishedContent, enrollment automationdomain.Enrollment, actionDigest [32]byte, actor int64, now time.Time) error {
+// enrollmentMatchesMemberEnteredEvent validates only immutable Segment facts
+// captured in an enrollment. Runtime Config values deliberately remain outside
+// this comparison: the historical snapshot retains them for execution, while a
+// replay of the same source event may occur after a later release is active.
+func enrollmentMatchesMemberEnteredEvent(enrollment automationdomain.Enrollment, version automationdomain.PolicyVersion, event segmentport.MemberEnteredV1) bool {
+	if enrollment.PolicyID != version.PolicyID || enrollment.PolicyVersionID != version.ID || enrollment.CustomerID != int64(event.CustomerID) || enrollment.ActionKind != version.ActionKind {
+		return false
+	}
+	var frozen struct {
+		ActionKind             automationport.ActionKind `json:"action_kind"`
+		PackageID              int64                     `json:"package_id"`
+		SnapshotID             int64                     `json:"snapshot_id"`
+		ConfigurationVersionID int64                     `json:"configuration_version_id"`
+		CustomerID             int64                     `json:"customer_id"`
+		PolicyVersionID        int64                     `json:"policy_version_id"`
+	}
+	if json.Unmarshal(enrollment.ActionSnapshot, &frozen) != nil {
+		return false
+	}
+	return frozen.ActionKind == version.ActionKind &&
+		frozen.PackageID == int64(event.PackageID) &&
+		frozen.SnapshotID == int64(event.SnapshotID) &&
+		frozen.ConfigurationVersionID == int64(event.ConfigurationVersionID) &&
+		frozen.CustomerID == int64(event.CustomerID) &&
+		frozen.PolicyVersionID == version.ID
+}
+
+func (s *RuntimeService) acceptEnrollmentMessage(ctx context.Context, event segmentport.MemberEnteredV1, version automationdomain.PolicyVersion, configuration segmentport.ExecutionConfiguration, published automationport.OutboundPublishedContent, enrollment automationdomain.Enrollment, actionDigest [32]byte, runtimeConfig configport.EffectiveSnapshot, actor int64, now time.Time) error {
 	if s.messages == nil || len(configuration.SenderStaffIDs) == 0 {
 		return ErrRuntimeNotReady
 	}
@@ -368,7 +514,10 @@ func (s *RuntimeService) acceptEnrollmentMessage(ctx context.Context, event segm
 	}
 	eventDigest := sha256.Sum256([]byte(event.EventID))
 	previewDigest := sha256.Sum256(append(append(append([]byte{}, eventDigest[:]...), version.Digest[:]...), actionDigest[:]...))
-	run := automationdomain.RuntimeRun{PolicyID: version.PolicyID, PolicyVersion: version.Version, PackageID: int64(event.PackageID), PackageVersion: configuration.PackageVersion, SnapshotID: int64(event.SnapshotID), AgentID: configuration.AgentID, AgentPublishedVersion: configuration.AgentPublishedVersion, BindingVersion: configuration.BindingVersion, SenderSetVersion: configuration.SenderSetVersion, PreviewDigest: previewDigest, State: automationport.RunExecuting, TargetCount: 1, CreatedBy: actor, CreatedAt: now, UpdatedAt: now}
+	if !validRuntimeConfigSnapshot(runtimeConfig) || runtimeConfig.AutomationMaxRecipients < 1 {
+		return ErrRuntimeNotReady
+	}
+	run := automationdomain.RuntimeRun{PolicyID: version.PolicyID, PolicyVersion: version.Version, PackageID: int64(event.PackageID), PackageVersion: configuration.PackageVersion, SnapshotID: int64(event.SnapshotID), AgentID: configuration.AgentID, AgentPublishedVersion: configuration.AgentPublishedVersion, BindingVersion: configuration.BindingVersion, SenderSetVersion: configuration.SenderSetVersion, RuntimeConfigObserved: true, RuntimeConfigRevision: runtimeConfig.Revision, MaxRecipientsPerRun: runtimeConfig.AutomationMaxRecipients, PreviewDigest: previewDigest, State: automationport.RunExecuting, TargetCount: 1, CreatedBy: actor, CreatedAt: now, UpdatedAt: now}
 	senderIndex := int((int64(event.CustomerID) - 1) % int64(len(configuration.SenderStaffIDs)))
 	recipients := []automationdomain.RuntimeRecipient{{CustomerID: int64(event.CustomerID), SenderStaffID: configuration.SenderStaffIDs[senderIndex], State: automationport.RecipientAccepted}}
 	created, createdRecipients, err := s.store.CreateRun(ctx, run, recipients)
@@ -388,7 +537,10 @@ func (s *RuntimeService) acceptEnrollmentMessage(ctx context.Context, event segm
 	if err = s.store.BindRecipientEffect(ctx, recipient.ID, acceptance.EffectID, now); err != nil {
 		return err
 	}
-	payload, _ := json.Marshal(map[string]any{"run_id": created.ID, "enrollment_id": enrollment.ID, "policy_id": version.PolicyID, "policy_version": version.Version, "recipient_id": recipient.ID, "effect_id": acceptance.EffectID})
+	if err = s.recordRuntimeConfigUsage(ctx, runtimeConfig, "worker", "execution", "automation_run", created.ID, now); err != nil {
+		return err
+	}
+	payload, _ := json.Marshal(map[string]any{"run_id": created.ID, "enrollment_id": enrollment.ID, "policy_id": version.PolicyID, "policy_version": version.Version, "recipient_id": recipient.ID, "effect_id": acceptance.EffectID, "runtime_config_revision": runtimeConfig.Revision})
 	return s.store.AppendRuntimeFact(ctx, runtimeFact("run", created.ID, "enroll", "automation.run.queued.v1", actor, fmt.Sprintf("%x", previewDigest), now, payload))
 }
 
