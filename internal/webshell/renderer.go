@@ -99,6 +99,7 @@ type AdminShellView struct {
 	ChannelResourceID    string
 	ChannelAssets        ChannelAssets
 	AIAssistant          bool
+	OwnerHandoff         bool
 	MessageArchive       bool
 	AIAssistantAssets    AIAssistantAssets
 }
@@ -432,6 +433,22 @@ func (renderer *Renderer) RenderAIAssistant(writer http.ResponseWriter, data Adm
 	normalizeAdminPage(&data)
 	data.ShowPageHeader = false
 	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: template.HTML(`<main id="stage" class="stage rich">` + donorTemplate + `</main>`), AIAssistant: true, AIAssistantAssets: assets})
+	if err != nil {
+		return err
+	}
+	return writeHTML(writer, http.StatusOK, body)
+}
+
+// RenderOwnerHandoff mounts the V3-owned Host for the byte-frozen owner-migration
+// route. The Host owns only HTTP adaptation; it never calls a Provider itself.
+func (renderer *Renderer) RenderOwnerHandoff(writer http.ResponseWriter, data AdminPageData) error {
+	if renderer == nil || renderer.templates == nil {
+		return errors.New("owner handoff shell is unavailable")
+	}
+	normalizeAdminPage(&data)
+	data.ShowPageHeader = false
+	content := `<main id="stage" class="stage rich" data-owner-handoff-host></main>`
+	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: template.HTML(content), OwnerHandoff: true})
 	if err != nil {
 		return err
 	}

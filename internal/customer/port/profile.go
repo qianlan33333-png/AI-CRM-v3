@@ -48,6 +48,7 @@ type PageQuery struct {
 type OwnerItem struct {
 	DisplayName string    `json:"display_name"`
 	Status      string    `json:"status"`
+	Source      string    `json:"source,omitempty"`
 	ObservedAt  time.Time `json:"observed_at"`
 }
 

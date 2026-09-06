@@ -33,6 +33,7 @@ import (
 	couponapp "github.com/qianlan33333-png/AI-CRM-v3/internal/coupon/app"
 	couponhttp "github.com/qianlan33333-png/AI-CRM-v3/internal/coupon/http"
 	couponstore "github.com/qianlan33333-png/AI-CRM-v3/internal/coupon/store"
+	customer "github.com/qianlan33333-png/AI-CRM-v3/internal/customer"
 	customerapp "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/app"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	customerhttp "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/http"
@@ -136,6 +137,13 @@ type composedApplication struct {
 }
 
 func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplication, error) {
+	return composeWithWeComClientFactory(ctx, cfg, wecomadapter.New)
+}
+
+func composeWithWeComClientFactory(ctx context.Context, cfg platformconfig.Runtime, providerFactory func(wecomadapter.Config) (*wecomadapter.Client, error)) (*composedApplication, error) {
+	if providerFactory == nil {
+		return nil, errors.New("WeCom client factory is required")
+	}
 	var hxcSource *hxcprovider.MySQL
 	pool, err := platformpostgres.Open(ctx, platformpostgres.Config{URL: cfg.DatabaseURL, MaxConnections: 20, MinConnections: 1})
 	if err != nil {
@@ -250,11 +258,19 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err = river.AddWorkerSafely[groupopsapp.ContinuationJobArgs](effectWorkers, groupOpsContinuationWorker); err != nil {
 		return fail(err)
 	}
+	ownerHandoffBatchWorker := customer.NewOwnerHandoffBatchWorker()
+	if err = river.AddWorkerSafely[customer.OwnerHandoffBatchJobArgs](effectWorkers, ownerHandoffBatchWorker); err != nil {
+		return fail(err)
+	}
 	effectClient, err := platformjobqueue.NewInsertClient(pool.Native(), effectWorkers)
 	if err != nil {
 		return fail(err)
 	}
 	groupOpsContinuationEnqueuer, err := groupopsapp.NewRiverContinuationEnqueuer(effectClient)
+	if err != nil {
+		return fail(err)
+	}
+	ownerHandoffBatchEnqueuer, err := customer.NewRiverOwnerHandoffEnqueuer(effectClient)
 	if err != nil {
 		return fail(err)
 	}
@@ -278,7 +294,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if cfg.WeCom.ChannelProviderReadEnabled {
 		periodicJobs = append(periodicJobs, wecom.StaffDirectoryPeriodicJob(cfg.WeCom.StaffDirectoryRefreshInterval, nil))
 	}
-	effectsRuntime, err := platformjobqueue.NewRuntimeWithPeriodic(pool.Native(), effectWorkers, periodicJobs, platformjobqueue.OutboundQueue, platformjobqueue.OutboundWelcomeQueue, wecom.CustomerSyncQueue, wecom.StaffDirectoryRefreshQueue, payment.ReconciliationQueue, hxcworker.Queue, segment.AudienceRefreshQueue)
+	effectsRuntime, err := platformjobqueue.NewRuntimeWithPeriodic(pool.Native(), effectWorkers, periodicJobs, platformjobqueue.OutboundQueue, platformjobqueue.OutboundWelcomeQueue, wecom.CustomerSyncQueue, wecom.StaffDirectoryRefreshQueue, payment.ReconciliationQueue, hxcworker.Queue, segment.AudienceRefreshQueue, customer.OwnerHandoffQueue)
 	if err != nil {
 		return fail(err)
 	}
@@ -819,6 +835,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
+
 	customerProfileStore := wecom.NewPostgreSQLCustomerSyncStore()
 	legacyAudienceSource.PrimaryOwners = customerProfileStore
 	openPlatformTimeline := customerTimelineAdapter{uow: uow, reader: customerStore}
@@ -881,15 +898,41 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return fail(err)
 	}
 	legacyAudienceSource.PrimaryOwners = customerProfileStore
+	ownerHandoffCipher, cipherErr := customer.NewOwnerHandoffCipher(cfg.Survey.DataKey)
+	if cipherErr != nil {
+		return fail(cipherErr)
+	}
+	ownerHandoffStore := customer.NewPostgreSQLOwnerHandoffStoreWithCipher(ownerHandoffCipher)
+	ownerHandoffService, ownerServiceErr := customerapp.NewOwnerHandoffService(uow, ownerHandoffStore, accessRepository, customerOwnerHandoffCandidates{staff: accessRepository, relationships: relationships, relationshipLister: relationships, primaries: customerProfileStore, primaryLister: customerProfileStore, identities: queries, owners: ownerHandoffStore}, auditService, platformoutbox.NewPostgreSQL())
+	if ownerServiceErr != nil {
+		return fail(ownerServiceErr)
+	}
+	if ownerServiceErr = ownerHandoffService.SetExternalEffectAccepter(effectRepository); ownerServiceErr != nil {
+		return fail(ownerServiceErr)
+	}
+	if ownerServiceErr = ownerHandoffService.SetBatchEnqueuer(ownerHandoffBatchEnqueuer); ownerServiceErr != nil {
+		return fail(ownerServiceErr)
+	}
+	if ownerServiceErr = ownerHandoffBatchWorker.Bind(ownerHandoffService); ownerServiceErr != nil {
+		return fail(ownerServiceErr)
+	}
+	ownerHandoffService.SetWeComProviderEnabled(cfg.Effects.ProviderEnabled && cfg.WeCom.Enabled && cfg.WeCom.ContactSecret != "")
+	ownerHandoffCompletion, ownerCompletionErr := outbound.NewCustomerOwnerHandoffCompletionSink(ownerHandoffStore)
+	if ownerCompletionErr != nil {
+		return fail(ownerCompletionErr)
+	}
+	outboundCompletionSink.WithCustomerOwnerHandoff(ownerHandoffCompletion)
 	customerHandler, err := customerhttp.NewHandler(customerhttp.Config{UnitOfWork: uow, Auth: requestSecurity, CSRF: requestSecurity,
 		Directory: customerapp.Directory{Store: customerStore, SigningKey: cursorSigningKey}, Store: customerStore, Identities: queries, Audit: auditService,
 		Canonical:   canonicalCustomerAdapter{reader: queries},
-		Owners:      customerOwnerAdapter{uow: uow, observations: customerProfileStore, users: accessRepository},
+		Owners:      customerOwnerAdapter{uow: uow, observations: customerProfileStore, users: accessRepository, owners: ownerHandoffStore},
 		Tags:        customerTagAdapter{uow: uow, observations: customerProfileStore, names: tagRepository},
 		TagCommands: customerTagCommands,
 		TagHistory:  customerstore.TagCommandPostgreSQL{},
 		Surveys:     customerSurveyAdapter{reader: surveySubmissions},
-		Timeline:    openPlatformTimeline, Chat: disabledCustomerChatActivity{}, Orders: orderService, ProfileSigningKey: cursorSigningKey})
+		Timeline:    openPlatformTimeline, Chat: disabledCustomerChatActivity{}, Orders: orderService, ProfileSigningKey: cursorSigningKey,
+		OwnerHandoff: ownerHandoffService, OwnerHandoffReader: ownerHandoffStore, OwnerHandoffTransfers: ownerHandoffService,
+		OwnerHandoffStaff: customerOwnerHandoffStaffDirectory{uow: uow, staff: accessRepository}, OwnerHandoffCorpScope: "wecom-corp:" + cfg.WeCom.CorpID, OwnerHandoffIdentity: oneID, OwnerHandoffPresentation: customerOwnerHandoffPreviewPresenter{uow: uow, display: customerStore, identities: queries, staff: accessRepository}})
 	if err != nil {
 		return fail(err)
 	}
@@ -1042,12 +1085,18 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return fail(err)
 	}
 
-	providerClient, err := wecomadapter.New(wecomadapter.Config{
+	providerClient, err := providerFactory(wecomadapter.Config{
 		Enabled: cfg.WeCom.Enabled, CorpID: cfg.WeCom.CorpID, AgentID: cfg.WeCom.AgentID, Secret: cfg.WeCom.Secret, ContactSecret: cfg.WeCom.ContactSecret,
 		AdminCallbackURI: cfg.PublicOrigin + "/auth/wecom/callback", SidebarCallbackURI: cfg.PublicOrigin + "/api/sidebar/oauth/callback",
 		APIBase: cfg.WeCom.APIBase, HTTPClient: cfg.WeCom.HTTPClient,
 	})
 	if err != nil {
+		return fail(err)
+	}
+	// The transfer-result endpoint is a read-only WeCom protocol leaf. Keep the
+	// Customer UoW separate from this Provider call; its service persists the
+	// returned status projection only after the read finishes.
+	if err = ownerHandoffService.SetTransferResultReader(providerClient); err != nil {
 		return fail(err)
 	}
 	groupOpsDirectory.groups = providerClient
@@ -1168,11 +1217,15 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if providerErr != nil {
 		return fail(providerErr)
 	}
+	ownerHandoffProvider, ownerProviderErr := outbound.NewCustomerOwnerHandoffProvider(customerOwnerHandoffExecutionAdapter{uow: uow, executions: ownerHandoffStore, staff: accessRepository}, providerClient)
+	if ownerProviderErr != nil {
+		return fail(ownerProviderErr)
+	}
 	commercePushProvider, err := outbound.NewCommercePushProvider(cfg.CommercePush.ProviderEnabled, commercePushService, commercePushTargetResolver, commercePushCipher)
 	if err != nil {
 		return fail(err)
 	}
-	providerRouter := outbound.NewProviderRouterWithGroupMessageAndChannels(tagCatalogProvider, groupOpsProvider, channelAssetProvider, channelEntrantProvider, channelLinkProvider).WithCustomerTag(customerTagProvider).WithPrivateMessage(privateProvider).WithAutomationMessage(messageProvider).WithSidebarJSSDK(sidebarExpiry).WithSurveyCompletion(surveyCompletionProvider).WithCommercePush(commercePushProvider)
+	providerRouter := outbound.NewProviderRouterWithGroupMessageAndChannels(tagCatalogProvider, groupOpsProvider, channelAssetProvider, channelEntrantProvider, channelLinkProvider).WithCustomerTag(customerTagProvider).WithPrivateMessage(privateProvider).WithAutomationMessage(messageProvider).WithSidebarJSSDK(sidebarExpiry).WithSurveyCompletion(surveyCompletionProvider).WithCommercePush(commercePushProvider).WithCustomerOwnerHandoff(ownerHandoffProvider)
 	if err = effectsModule.SetProviderAdapter(composedProviderRouter{outbound: providerRouter, payment: paymentAdapter}); err != nil {
 		return fail(err)
 	}
@@ -1308,6 +1361,13 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	adminAPIs.Handle("/api/admin/ai-assistant/", aiHandler.Routes())
 	adminAPIs.Handle("/api/admin/ai-assist/review-plans", aiHandler.Routes())
 	adminAPIs.Handle("/api/sidebar/v2/", sidebarHandler.Routes())
+	adminAPIs.Handle("/api/admin/common/operation-members", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("scope") == "owner_migration" {
+			customerHandler.OwnerHandoffOperationMembersHandler().ServeHTTP(w, r)
+			return
+		}
+		groupOpsBindings.GroupOps.ServeHTTP(w, r)
+	}))
 	mountSurveyAPIs(adminAPIs, surveyBindings.Survey, customerHandler.TagCommandRoutes())
 	adminAPIs.Handle("/api/admin/operation-cycles/", operationBindings.API)
 	adminAPIs.Handle("/api/operation-cycles/", operationBindings.API)
@@ -1317,7 +1377,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		}
 		var complete bool
 		checkErr := pool.Native().QueryRow(readinessContext, `SELECT
-			NOT EXISTS (SELECT 1 FROM unnest(ARRAY['0001','0002','0003','0004','0005','0006','0007','0008','0009','0010','0011','0012','0013','0014','0015','0016','0017','0018','0019','0020','0021','0022','0023','0024','0025','0026','0027','0028','0029','0030','0031','0032','0033','0034','0035','0036','0037','0038','0039','0040','0041','0042','0043','0044','0045','0046','0047','0048','0049','0050','0051','0052','0053','0054','0055','0056','0057','0058','0059','0060','0061','0062','0063','0064','0068','0069','0070','0076','0077','0079','0083','0084','0085','0086','0087','0088','0089','0093','0094']) AS required(version) WHERE NOT EXISTS (SELECT 1 FROM platform_schema_migrations applied WHERE applied.version=required.version))
+			NOT EXISTS (SELECT 1 FROM unnest(ARRAY['0001','0002','0003','0004','0005','0006','0007','0008','0009','0010','0011','0012','0013','0014','0015','0016','0017','0018','0019','0020','0021','0022','0023','0024','0025','0026','0027','0028','0029','0030','0031','0032','0033','0034','0035','0036','0037','0038','0039','0040','0041','0042','0043','0044','0045','0046','0047','0048','0049','0050','0051','0052','0053','0054','0055','0056','0057','0058','0059','0060','0061','0062','0063','0064','0068','0069','0070','0076','0077','0079','0083','0084','0085','0086','0087','0088','0089','0092','0093','0094']) AS required(version) WHERE NOT EXISTS (SELECT 1 FROM platform_schema_migrations applied WHERE applied.version=required.version))
 			AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='order_service_entitlements' AND column_name='alliance')`).Scan(&complete)
 		if checkErr != nil || !complete {
 			return errors.New("database schema is not ready")
@@ -1433,6 +1493,15 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	operationUI := operationModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, page, donorTemplate string, assets operationcycle.UIAssets) error {
 		return renderer.RenderOperationCycles(writer, webshell.AdminPageForRequest(request, "运营闭环", "运营周期、执行事实与复盘记录。", "api.admin_operation_cycles_page"), page, donorTemplate, webshell.OperationCycleAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, HostJS: assets.HostJS})
 	})
+	ownerHandoffUI := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/admin/owner-migration" {
+			http.NotFound(writer, request)
+			return
+		}
+		if renderErr := renderer.RenderOwnerHandoff(writer, webshell.AdminPageForRequest(request, "负责人迁移", "冻结预览后按本地或企微受理模式执行；企微最终接替单独回查。", "api.admin_owner_migration_page")); renderErr != nil {
+			http.Error(writer, "owner handoff page unavailable", http.StatusInternalServerError)
+		}
+	})
 	configUI := configModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, page, donorTemplate string, assets configmodule.UIAssets) error {
 		if page == "runtimeReleaseList" || page == "runtimeReleaseNew" || page == "runtimeReleaseDetail" {
 			// Runtime releases are a V3-owned Host rather than a frozen AdminOps
@@ -1458,6 +1527,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	}
 	handler = openplatformhttp.Mount(handler, openPlatformHandler.Routes())
 	handler = mountMemberGridUI(handler, memberGridUI)
+	handler = mountOwnerHandoffUI(handler, requireAdminSession(authentication, ownerHandoffUI))
 	handler, err = mountSegmentAPI(handler, segmentBindings.Audience)
 	if err != nil {
 		return fail(err)
@@ -1690,6 +1760,16 @@ func routeApplicationWithMedia(health, access, identity, effects, pushCenter, ef
 	return routeApplicationWithMediaTags(health, access, identity, effects, pushCenter, effectsUI, mediaHandler, mediaUI, http.NotFoundHandler(), http.NotFoundHandler(), weCom, shell, authentication, publicOrigin)
 }
 
+func mountOwnerHandoffUI(next, ui http.Handler) http.Handler {
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/admin/owner-migration" {
+			ui.ServeHTTP(writer, request)
+			return
+		}
+		next.ServeHTTP(writer, request)
+	})
+}
+
 func mountMemberGridUI(next, ui http.Handler) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		path := request.URL.Path
@@ -1832,7 +1912,10 @@ func routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, acce
 	mux.Handle("/api/admin/automation-conversion/group-ops/", groupOpsHandler)
 	mux.Handle("/api/admin/automation-agents", automationHandler)
 	mux.Handle("/api/admin/automation-agents/", automationHandler)
-	mux.Handle("/api/admin/common/operation-members", groupOpsHandler)
+	// The exact shared-picker URL has one scope decision in adminAPIs: owner
+	// migration reaches Customer's Access projection while Group Ops retains its
+	// existing scope. Keep the sub-tree on Group Ops for its owned /sync route.
+	mux.Handle("/api/admin/common/operation-members", identity)
 	mux.Handle("/api/admin/common/operation-members/", groupOpsHandler)
 	mux.Handle("/api/automation/group-ops/", groupOpsHandler)
 	mux.Handle("/assets/", requireAdminSession(authentication, effectsUI))
@@ -1978,7 +2061,8 @@ func securityHeaders(next http.Handler) http.Handler {
 		configPage := request.URL.Path == "/admin/config" || request.URL.Path == "/admin/config.html" || request.URL.Path == "/admin/configDetail.html" || request.URL.Path == "/admin/api-docs" || request.URL.Path == "/admin/apidocs.html"
 		hxcPage := request.URL.Path == "/admin/hxc-dashboard"
 		aiAssistantPage := request.URL.Path == "/admin/ai.html" || request.URL.Path == "/admin/aiDetail.html" || request.URL.Path == "/admin/cloud-orchestrator/plans" || strings.HasPrefix(request.URL.Path, "/admin/cloud-orchestrator/plans/")
-		if (request.URL.Path == "/admin/campaigns.html" && externaleffects.ValidUIQuery(request.URL.Query())) || hxcPage || mediaPage || tagsPage || productPage || orderPage || couponPage || groupOpsPage || automationPage || surveyPage || operationCyclesPage || configPage || aiAssistantPage {
+		ownerHandoffPage := request.URL.Path == "/admin/owner-migration"
+		if (request.URL.Path == "/admin/campaigns.html" && externaleffects.ValidUIQuery(request.URL.Query())) || hxcPage || mediaPage || tagsPage || productPage || orderPage || couponPage || groupOpsPage || automationPage || surveyPage || operationCyclesPage || configPage || aiAssistantPage || ownerHandoffPage {
 			styleSource = "'self' 'unsafe-inline'"
 		}
 		imageSource := "'self' data:"
