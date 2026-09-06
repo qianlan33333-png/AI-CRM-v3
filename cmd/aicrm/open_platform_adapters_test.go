@@ -303,7 +303,9 @@ func TestOpenPlatformExternalSurveySubmissionsUseOneIDAndFrozenProjectionEnvelop
 		{Legacy: false, QuestionnaireSourceID: 41, QuestionnaireTitle: "Native questionnaire", SubmittedAt: time.Date(2026, 9, 6, 8, 0, 0, 0, time.UTC), FinalTags: json.RawMessage(`["native"]`), AssessmentResult: json.RawMessage(`{"tag_codes":["native"]}`), Answers: []surveyport.ExternalSubmissionAnswer{{QuestionTitle: "Need", SelectedOptionTexts: []string{"Consulting"}, TextValue: "native answer", ScoreContribution: 3}}},
 		{Legacy: true, HistoricalUnionID: "union-history", QuestionnaireSourceID: 41, QuestionnaireTitle: "Legacy questionnaire", SubmittedAt: time.Date(2026, 9, 6, 7, 0, 0, 0, time.UTC), FinalTags: json.RawMessage(`["legacy"]`), AssessmentResult: json.RawMessage(`{"summary":"legacy"}`), Answers: []surveyport.ExternalSubmissionAnswer{}},
 	}, Total: 3, Limit: 2, Offset: 0}}
-	executor, err := newOpenPlatformExecutor(identity, &openPlatformOrderStub{}, &openPlatformProfileStub{}, &openPlatformArchiveStub{}, &openPlatformTimelineStub{}, &openPlatformOwnerStub{}, configuredOpenPlatformScopes("corp-main", []string{"wechat-open-platform:survey"}, nil))
+	scopes := configuredOpenPlatformScopes("corp-main", []string{"wechat-open-platform:survey"}, nil)
+	scopes.SurveyUnionScopes = []string{"wechat-open-platform:survey"}
+	executor, err := newOpenPlatformExecutor(identity, &openPlatformOrderStub{}, &openPlatformProfileStub{}, &openPlatformArchiveStub{}, &openPlatformTimelineStub{}, &openPlatformOwnerStub{}, scopes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -328,6 +330,18 @@ func TestOpenPlatformExternalSurveySubmissionsUseOneIDAndFrozenProjectionEnvelop
 	items, ok := body["items"].([]map[string]any)
 	if !ok || len(items) != 2 || items[0]["mobile"] != "13800000000" || items[0]["unionid"] != "union-current" || items[0]["external_userid"] != "external-current" || items[0]["submitted_at"] != "2026-09-06T08:00:00+00:00" || items[1]["unionid"] != "union-history" {
 		t.Fatalf("items=%#v", body["items"])
+	}
+}
+
+func TestOpenPlatformSurveyHistoryNeverInfersAcrossGenericUnionScopes(t *testing.T) {
+	identity := &openPlatformIdentityStub{unionValue: "hxc-union", unionFound: true}
+	executor, err := newOpenPlatformExecutor(identity, &openPlatformOrderStub{}, &openPlatformProfileStub{}, &openPlatformArchiveStub{}, &openPlatformTimelineStub{}, &openPlatformOwnerStub{}, configuredOpenPlatformScopes("corp-main", []string{"wechat-open-platform:hxc"}, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	unionIDs, references, err := executor.surveyHistoricalUnionIDs(context.Background(), 42, nil)
+	if err != nil || len(unionIDs) != 0 || len(references) != 0 || identity.unionCalls != 0 {
+		t.Fatalf("union_ids=%v references=%v calls=%d err=%v", unionIDs, references, identity.unionCalls, err)
 	}
 }
 

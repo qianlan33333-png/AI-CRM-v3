@@ -94,10 +94,11 @@ func newOpenPlatformExecutor(identity identityport.Resolver, orders orderport.Qu
 	}
 	scopes.WeComScope = strings.TrimSpace(scopes.WeComScope)
 	scopes.UnionScopes = distinctScopes(scopes.UnionScopes, "wechat-open-platform:")
+	// Survey's historical UnionID projection is tied to one declared donor
+	// Open Platform scope. Do not fall back to the broad UnionID set here:
+	// an HXC or another integration scope can resolve the same customer but
+	// must never authorize release of questionnaire history.
 	scopes.SurveyUnionScopes = distinctScopes(scopes.SurveyUnionScopes, "wechat-open-platform:")
-	if len(scopes.SurveyUnionScopes) == 0 {
-		scopes.SurveyUnionScopes = append([]string(nil), scopes.UnionScopes...)
-	}
 	scopes.OpenIDScopes = distinctScopes(scopes.OpenIDScopes, "wechat-app:")
 	return &openPlatformExecutor{identity: identity, externalUsers: externalUsers, orders: orders, scopedOrders: scopedOrders, profiles: profiles, archive: archive, externalChat: externalChat, timeline: timeline, owners: owners, scopes: scopes}, nil
 }

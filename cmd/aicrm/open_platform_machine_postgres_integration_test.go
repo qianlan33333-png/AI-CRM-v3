@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -102,9 +103,10 @@ func TestOpenPlatformMachineManagementPostgreSQLJourney(t *testing.T) {
 	assertMachineCapabilities(t, clients, external.Client.ClientID, []string{"external_read", "external_write"})
 	assertMachineCapabilities(t, clients, mcp.Client.ClientID, []string{"mcp_execute", "mcp_read"})
 
+	machineExecutor := &openPlatformMachineExecutor{}
 	handler, err := openplatformhttp.NewHandler(openplatformhttp.Config{
 		MachineAuthentication: service, AdminAuthentication: openPlatformMachineAdmin{}, Management: service,
-		Executor: openPlatformMachineExecutor{}, SessionCookieName: "session", CSRFCookieName: "csrf", PublicOrigin: "https://crm.example.test",
+		Executor: machineExecutor, SessionCookieName: "session", CSRFCookieName: "csrf", PublicOrigin: "https://crm.example.test",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -136,6 +138,30 @@ func TestOpenPlatformMachineManagementPostgreSQLJourney(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	// This crosses the real PostgreSQL Access service, a freshly signed machine
+	// JWT, the frozen external route and the composition executor. The executor
+	// remains a read-model stub here; its owner-specific Survey journey is
+	// covered separately and this assertion closes the actual auth/HTTP seam.
+	externalRequest := httptest.NewRequest(http.MethodGet, "https://crm.example.test/api/external/questionnaire-submissions?unionid=union-1", nil)
+	externalRequest.RemoteAddr = "203.0.113.5:443"
+	externalRequest.TLS = &tls.ConnectionState{}
+	externalRequest.Header.Set("Authorization", "Bearer "+issued.AccessToken)
+	externalResponse := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(externalResponse, externalRequest)
+	if externalResponse.Code != http.StatusOK || len(machineExecutor.requests) != 1 || machineExecutor.requests[0].Path != "/api/external/questionnaire-submissions" || machineExecutor.requests[0].Principal.ClientID != external.Client.ClientID || !machineExecutor.requests[0].Principal.HasScope("read") || !machineExecutor.requests[0].Principal.HasCapability("external_read") {
+		t.Fatalf("authenticated external route status=%d requests=%+v body=%s", externalResponse.Code, machineExecutor.requests, externalResponse.Body.String())
+	}
+	// The same JWT must not obtain an external write simply because the client
+	// itself also has the external_write capability.
+	writeRequest := httptest.NewRequest(http.MethodPost, "https://crm.example.test/api/ai/audience/packages", nil)
+	writeRequest.RemoteAddr = "203.0.113.5:443"
+	writeRequest.TLS = &tls.ConnectionState{}
+	writeRequest.Header.Set("Authorization", "Bearer "+issued.AccessToken)
+	writeResponse := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(writeResponse, writeRequest)
+	if writeResponse.Code != http.StatusForbidden || len(machineExecutor.requests) != 1 {
+		t.Fatalf("read token write route status=%d requests=%+v body=%s", writeResponse.Code, machineExecutor.requests, writeResponse.Body.String())
 	}
 
 	// Both operations lock the same client. Whichever wins, rotation leaves a
@@ -312,9 +338,12 @@ func (openPlatformMachineAdmin) AuthorizeCSRF(context.Context, string, string, s
 	return openPlatformMachineAdmin{}.Authenticate(context.Background(), "")
 }
 
-type openPlatformMachineExecutor struct{}
+type openPlatformMachineExecutor struct {
+	requests []openplatformport.Request
+}
 
-func (openPlatformMachineExecutor) Execute(context.Context, openplatformport.Request) (openplatformport.Response, error) {
+func (executor *openPlatformMachineExecutor) Execute(_ context.Context, request openplatformport.Request) (openplatformport.Response, error) {
+	executor.requests = append(executor.requests, request)
 	return openplatformport.Response{Status: http.StatusOK, Body: map[string]any{"ok": true}}, nil
 }
 
