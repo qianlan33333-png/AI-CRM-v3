@@ -829,6 +829,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		SessionCookieName:     accesshttp.SessionCookieName,
 		CSRFCookieName:        accesshttp.CSRFCookieName,
 		TrustedProxyCIDRs:     cfg.OpenPlatform.TrustedProxyCIDRs,
+		PublicOrigin:          cfg.PublicOrigin,
 	})
 	if err != nil {
 		return fail(err)

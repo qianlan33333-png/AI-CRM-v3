@@ -181,6 +181,7 @@ func TestMountClaimsOnlyFrozenMachineRoutes(t *testing.T) {
 		{http.MethodGet, "/api/external/orders", "machine"},
 		{http.MethodPost, "/api/operation-cycles/reports", "machine"},
 		{http.MethodGet, "/api/admin/open-platform/clients", "machine"},
+		{http.MethodGet, "/api/admin/config/api-clients", "machine"},
 		{http.MethodGet, "/api/admin/orders", "legacy"},
 		{http.MethodGet, "/api/external/not-in-inventory", "legacy"},
 	} {
@@ -195,4 +196,60 @@ func TestMountClaimsOnlyFrozenMachineRoutes(t *testing.T) {
 
 func markerHandler(value string) http.Handler {
 	return http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) { _, _ = response.Write([]byte(value)) })
+}
+
+type legacyManagementStub struct {
+	created accessport.CreateMachineClientInput
+	list    []accessport.MachineClientSummary
+}
+
+func (stub *legacyManagementStub) Create(_ context.Context, _ accessdomain.Principal, input accessport.CreateMachineClientInput) (accessport.IssuedMachineClient, error) {
+	stub.created = input
+	return accessport.IssuedMachineClient{Client: accessport.MachineClientSummary{ClientID: input.ClientID, DisplayName: input.DisplayName, Purpose: input.Purpose, Audiences: input.Audiences, Scopes: input.Scopes, Capabilities: input.Capabilities, AllowedCIDRs: input.AllowedCIDRs, TokenTTLSeconds: input.TokenTTLSeconds, AuthVersion: 1}, Secret: "mc_visible_once"}, nil
+}
+func (stub *legacyManagementStub) List(context.Context, accessdomain.Principal) ([]accessport.MachineClientSummary, error) {
+	return append([]accessport.MachineClientSummary(nil), stub.list...), nil
+}
+func (*legacyManagementStub) Rotate(context.Context, accessdomain.Principal, string) (accessport.IssuedMachineClient, error) {
+	return accessport.IssuedMachineClient{}, nil
+}
+func (*legacyManagementStub) Update(context.Context, accessdomain.Principal, string, accessport.UpdateMachineClientInput) (accessport.MachineClientSummary, error) {
+	return accessport.MachineClientSummary{}, nil
+}
+func (*legacyManagementStub) Activate(context.Context, accessdomain.Principal, string, string, bool) (accessport.MachineClientSummary, error) {
+	return accessport.MachineClientSummary{}, nil
+}
+func (*legacyManagementStub) SetEnabled(context.Context, accessdomain.Principal, string, bool) (accessport.MachineClientSummary, error) {
+	return accessport.MachineClientSummary{}, nil
+}
+
+func TestLegacyAPIClientCreateUsesFrozenPayloadAndResponseFields(t *testing.T) {
+	management := &legacyManagementStub{}
+	handler, err := NewHandler(Config{MachineAuthentication: handlerMachineStub{}, AdminAuthentication: handlerAdminStub{}, Management: management, Executor: &handlerExecutorStub{}, SessionCookieName: "session", CSRFCookieName: "csrf", PublicOrigin: "https://crm.example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := `{"display_name":"Partner Analytics","client_id":"partner.analytics","client_type":"external_api","token_ttl_minutes":30,"allowed_cidrs":["203.0.113.0/24"],"confirm":true}`
+	request := httptest.NewRequest(http.MethodPost, "https://crm.example.com/api/admin/config/api-clients", strings.NewReader(body))
+	request.TLS = &tls.ConnectionState{}
+	response := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(response, request)
+	if response.Code != http.StatusCreated || management.created.Purpose != "external_agent" || management.created.TokenTTLSeconds != 1800 || strings.Join(management.created.Capabilities, ",") != "external_read,external_write" || !strings.Contains(response.Body.String(), `"client_secret":"mc_visible_once"`) || !strings.Contains(response.Body.String(), `"client_type":"external_api"`) {
+		t.Fatalf("code=%d input=%+v body=%s", response.Code, management.created, response.Body.String())
+	}
+}
+
+func TestLegacyAPIClientListPreservesClientTypeAndTTLMinutes(t *testing.T) {
+	management := &legacyManagementStub{list: []accessport.MachineClientSummary{{ClientID: "partner.mcp", DisplayName: "Partner MCP", Purpose: "mcp", Scopes: []string{"read", "write"}, Capabilities: []string{"mcp_read", "mcp_execute"}, TokenTTLSeconds: 3600, AuthVersion: 3}}}
+	handler, err := NewHandler(Config{MachineAuthentication: handlerMachineStub{}, AdminAuthentication: handlerAdminStub{}, Management: management, Executor: &handlerExecutorStub{}, SessionCookieName: "session", CSRFCookieName: "csrf", PublicOrigin: "https://crm.example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "https://crm.example.com/api/admin/config/api-clients", nil)
+	request.TLS = &tls.ConnectionState{}
+	response := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"client_type":"mcp"`) || !strings.Contains(response.Body.String(), `"token_ttl_minutes":60`) || !strings.Contains(response.Body.String(), `"configured_count":1`) {
+		t.Fatalf("code=%d body=%s", response.Code, response.Body.String())
+	}
 }

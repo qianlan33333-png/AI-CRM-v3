@@ -10,6 +10,8 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"sort"
+	"strconv"
 	"strings"
 
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
@@ -32,6 +34,7 @@ type Config struct {
 	SessionCookieName     string
 	CSRFCookieName        string
 	TrustedProxyCIDRs     []string
+	PublicOrigin          string
 }
 
 type Handler struct {
@@ -42,6 +45,7 @@ type Handler struct {
 	sessionCookie  string
 	csrfCookie     string
 	trustedProxies []netip.Prefix
+	publicOrigin   string
 }
 
 func NewHandler(config Config) (*Handler, error) {
@@ -57,7 +61,7 @@ func NewHandler(config Config) (*Handler, error) {
 		proxies = append(proxies, prefix.Masked())
 	}
 	return &Handler{machine: config.MachineAuthentication, admin: config.AdminAuthentication, management: config.Management,
-		executor: config.Executor, sessionCookie: config.SessionCookieName, csrfCookie: config.CSRFCookieName, trustedProxies: proxies}, nil
+		executor: config.Executor, sessionCookie: config.SessionCookieName, csrfCookie: config.CSRFCookieName, trustedProxies: proxies, publicOrigin: strings.TrimRight(strings.TrimSpace(config.PublicOrigin), "/")}, nil
 }
 
 func (handler *Handler) Routes() http.Handler {
@@ -71,6 +75,17 @@ func (handler *Handler) Routes() http.Handler {
 	mux.HandleFunc("POST /api/admin/open-platform/clients/{client_id}/enable", handler.enableClient)
 	mux.HandleFunc("POST /api/admin/open-platform/clients/{client_id}/disable", handler.disableClient)
 	mux.HandleFunc("GET /api/admin/open-platform/routes", handler.routes)
+	mux.HandleFunc("GET /api/admin/config/api-clients", handler.legacyListClients)
+	mux.HandleFunc("GET /api/admin/config/api-clients/{client_id}", handler.legacyGetClient)
+	mux.HandleFunc("POST /api/admin/config/api-clients", handler.legacyCreateClient)
+	mux.HandleFunc("PUT /api/admin/config/api-clients/{client_id}", handler.legacyUpdateClient)
+	mux.HandleFunc("POST /api/admin/config/api-clients/{client_id}/activate", handler.legacyActivateClient)
+	mux.HandleFunc("POST /api/admin/config/api-clients/{client_id}/rotate-secret", handler.legacyRotateClient)
+	mux.HandleFunc("PUT /api/admin/config/api-clients/{client_id}/enabled", handler.legacyDisableClient)
+	mux.HandleFunc("GET /api/admin/config/api-key", handler.legacyDirectKeyStatus)
+	mux.HandleFunc("POST /api/admin/config/api-key/generate", handler.legacyGenerateDirectKey)
+	mux.HandleFunc("POST /api/admin/config/api-key/rotate", handler.legacyRotateDirectKey)
+	mux.HandleFunc("PUT /api/admin/config/api-key/enabled", handler.legacyDisableDirectKey)
 	for _, route := range Inventory {
 		if route.Path == "/mcp" {
 			continue
@@ -97,6 +112,17 @@ func Mount(next, machine http.Handler) http.Handler {
 	mux.Handle("POST /api/admin/open-platform/clients/{client_id}/enable", machine)
 	mux.Handle("POST /api/admin/open-platform/clients/{client_id}/disable", machine)
 	mux.Handle("GET /api/admin/open-platform/routes", machine)
+	mux.Handle("GET /api/admin/config/api-clients", machine)
+	mux.Handle("GET /api/admin/config/api-clients/{client_id}", machine)
+	mux.Handle("POST /api/admin/config/api-clients", machine)
+	mux.Handle("PUT /api/admin/config/api-clients/{client_id}", machine)
+	mux.Handle("POST /api/admin/config/api-clients/{client_id}/activate", machine)
+	mux.Handle("POST /api/admin/config/api-clients/{client_id}/rotate-secret", machine)
+	mux.Handle("PUT /api/admin/config/api-clients/{client_id}/enabled", machine)
+	mux.Handle("GET /api/admin/config/api-key", machine)
+	mux.Handle("POST /api/admin/config/api-key/generate", machine)
+	mux.Handle("POST /api/admin/config/api-key/rotate", machine)
+	mux.Handle("PUT /api/admin/config/api-key/enabled", machine)
 	for _, route := range Inventory {
 		if route.Path == "/mcp" {
 			continue
@@ -300,6 +326,231 @@ func (handler *Handler) setEnabled(response http.ResponseWriter, request *http.R
 	writeJSON(response, http.StatusOK, client)
 }
 
+// The following handlers keep the frozen v2 admin endpoint and payload
+// contract. They only adapt it to the stable Access management Port; no old
+// runtime component is imported.
+func (handler *Handler) legacyListClients(response http.ResponseWriter, request *http.Request) {
+	actor, ok := handler.adminPrincipal(response, request, false)
+	if !ok {
+		return
+	}
+	clients, err := handler.management.List(request.Context(), actor)
+	if err != nil {
+		writeLegacyAdminError(response, err)
+		return
+	}
+	query := strings.ToLower(strings.TrimSpace(request.URL.Query().Get("q")))
+	status := strings.TrimSpace(request.URL.Query().Get("status"))
+	if status != "" && status != "enabled" && status != "disabled" {
+		writeJSON(response, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid_status_filter"})
+		return
+	}
+	rows := make([]map[string]any, 0, len(clients))
+	configured, enabled := 0, 0
+	for _, client := range clients {
+		if client.ClientID == accessDirectKeyID || legacyClientType(client) == "" {
+			continue
+		}
+		configured++
+		if client.Enabled {
+			enabled++
+		}
+		item := handler.legacyClientItem(client)
+		if status != "" && item["status"] != status {
+			continue
+		}
+		if query != "" && !strings.Contains(strings.ToLower(client.ClientID+" "+client.DisplayName+" "+item["type_label"].(string)+" "+item["permission_label"].(string)), query) {
+			continue
+		}
+		rows = append(rows, item)
+	}
+	sort.Slice(rows, func(left, right int) bool {
+		return rows[left]["client_id"].(string) < rows[right]["client_id"].(string)
+	})
+	payload := map[string]any{"rows": rows, "summary": map[string]any{
+		"configured_count": configured, "enabled_count": enabled, "disabled_count": configured - enabled,
+		"system_managed_count": 0, "status_label": legacyConfiguredLabel(configured),
+	}, "templates": legacyClientTemplates(handler.baseURL(request))}
+	writeJSON(response, http.StatusOK, map[string]any{"ok": true, "api_clients": payload, "source_status": "auth_platform_read_model", "fallback_used": false})
+}
+
+func (handler *Handler) legacyGetClient(response http.ResponseWriter, request *http.Request) {
+	actor, ok := handler.adminPrincipal(response, request, false)
+	if !ok {
+		return
+	}
+	clients, err := handler.management.List(request.Context(), actor)
+	if err != nil {
+		writeLegacyAdminError(response, err)
+		return
+	}
+	clientID := request.PathValue("client_id")
+	for _, client := range clients {
+		if client.ClientID == clientID && legacyClientType(client) != "" && client.ClientID != accessDirectKeyID {
+			writeJSON(response, http.StatusOK, map[string]any{"ok": true, "client": handler.legacyClientItem(client), "source_status": "auth_platform_read_model", "fallback_used": false})
+			return
+		}
+	}
+	writeJSON(response, http.StatusNotFound, map[string]any{"ok": false, "error": "api_client_not_found"})
+}
+
+func (handler *Handler) legacyCreateClient(response http.ResponseWriter, request *http.Request) {
+	actor, payload, ok := handler.legacyWritePayload(response, request, map[string]struct{}{"display_name": {}, "client_id": {}, "client_type": {}, "token_ttl_minutes": {}, "allowed_cidrs": {}, "confirm": {}, "admin_action_token": {}})
+	if !ok {
+		return
+	}
+	if !legacyConfirmed(response, payload) {
+		return
+	}
+	clientType, valid := legacyText(payload, "client_type")
+	input, err := legacyCreateInput(clientType, payload)
+	if !valid || err != nil {
+		writeJSON(response, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid_api_client_type"})
+		return
+	}
+	issued, err := handler.management.Create(request.Context(), actor, input)
+	if err != nil {
+		writeLegacyAdminError(response, err)
+		return
+	}
+	writeJSON(response, http.StatusCreated, map[string]any{"ok": true, "client": handler.legacyClientItem(issued.Client), "client_secret": issued.Secret, "source_status": "auth_platform_command", "fallback_used": false, "real_external_call_executed": false})
+}
+
+func (handler *Handler) legacyUpdateClient(response http.ResponseWriter, request *http.Request) {
+	actor, payload, ok := handler.legacyWritePayload(response, request, map[string]struct{}{"display_name": {}, "token_ttl_minutes": {}, "allowed_cidrs": {}, "confirm": {}, "admin_action_token": {}})
+	if !ok || !legacyConfirmed(response, payload) {
+		return
+	}
+	input, err := legacyUpdateInput(payload)
+	if err != nil {
+		writeJSON(response, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid_token_ttl"})
+		return
+	}
+	client, err := handler.management.Update(request.Context(), actor, request.PathValue("client_id"), input)
+	if err != nil {
+		writeLegacyAdminError(response, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, map[string]any{"ok": true, "client": handler.legacyClientItem(client), "source_status": "auth_platform_command", "fallback_used": false})
+}
+
+func (handler *Handler) legacyActivateClient(response http.ResponseWriter, request *http.Request) {
+	actor, payload, ok := handler.legacyWritePayload(response, request, map[string]struct{}{"client_secret": {}, "copied_confirmed": {}, "confirm": {}, "admin_action_token": {}})
+	if !ok || !legacyConfirmed(response, payload) {
+		return
+	}
+	secret, secretOK := legacyText(payload, "client_secret")
+	copied, copiedOK := legacyBool(payload, "copied_confirmed")
+	if !secretOK || !copiedOK {
+		writeJSON(response, http.StatusBadRequest, map[string]any{"ok": false, "error": "secret_copy_confirmation_required"})
+		return
+	}
+	client, err := handler.management.Activate(request.Context(), actor, request.PathValue("client_id"), secret, copied)
+	if err != nil {
+		writeLegacyAdminError(response, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, map[string]any{"ok": true, "client": handler.legacyClientItem(client), "source_status": "auth_platform_command", "fallback_used": false})
+}
+
+func (handler *Handler) legacyRotateClient(response http.ResponseWriter, request *http.Request) {
+	actor, payload, ok := handler.legacyWritePayload(response, request, map[string]struct{}{"confirm": {}, "admin_action_token": {}})
+	if !ok || !legacyConfirmed(response, payload) {
+		return
+	}
+	issued, err := handler.management.Rotate(request.Context(), actor, request.PathValue("client_id"))
+	if err != nil {
+		writeLegacyAdminError(response, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, map[string]any{"ok": true, "client": handler.legacyClientItem(issued.Client), "client_secret": issued.Secret, "source_status": "auth_platform_command", "fallback_used": false})
+}
+
+func (handler *Handler) legacyDisableClient(response http.ResponseWriter, request *http.Request) {
+	actor, payload, ok := handler.legacyWritePayload(response, request, map[string]struct{}{"enabled": {}, "confirm": {}, "admin_action_token": {}})
+	if !ok || !legacyConfirmed(response, payload) {
+		return
+	}
+	enabled, valid := legacyBool(payload, "enabled")
+	if !valid || enabled {
+		writeJSON(response, http.StatusConflict, map[string]any{"ok": false, "error": "activation_requires_secret_self_check"})
+		return
+	}
+	client, err := handler.management.SetEnabled(request.Context(), actor, request.PathValue("client_id"), false)
+	if err != nil {
+		writeLegacyAdminError(response, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, map[string]any{"ok": true, "client": handler.legacyClientItem(client), "source_status": "auth_platform_command", "fallback_used": false})
+}
+
+func (handler *Handler) legacyDirectKeyStatus(response http.ResponseWriter, request *http.Request) {
+	actor, ok := handler.adminPrincipal(response, request, false)
+	if !ok {
+		return
+	}
+	clients, err := handler.management.List(request.Context(), actor)
+	if err != nil {
+		writeLegacyAdminError(response, err)
+		return
+	}
+	status := handler.legacyDirectStatus(request, directClient(clients))
+	writeJSON(response, http.StatusOK, map[string]any{"ok": true, "api_key_status": status, "source_status": "auth_platform_read_model", "fallback_used": false})
+}
+
+func (handler *Handler) legacyGenerateDirectKey(response http.ResponseWriter, request *http.Request) {
+	actor, payload, ok := handler.legacyWritePayload(response, request, map[string]struct{}{"confirm": {}, "admin_action_token": {}})
+	if !ok || !legacyConfirmed(response, payload) {
+		return
+	}
+	clients, err := handler.management.List(request.Context(), actor)
+	if err != nil {
+		writeLegacyAdminError(response, err)
+		return
+	}
+	if directClient(clients) != nil {
+		writeJSON(response, http.StatusConflict, map[string]any{"ok": false, "error": "direct_api_key_already_configured"})
+		return
+	}
+	issued, err := handler.management.Create(request.Context(), actor, accessport.CreateMachineClientInput{ClientID: accessDirectKeyID, DisplayName: "CRM 开放 API Key", Purpose: "direct_api_key", Audiences: []string{"external_integration"}, Scopes: []string{"read"}, Capabilities: []string{"external_read"}, TokenTTLSeconds: 1800})
+	if err != nil {
+		writeLegacyAdminError(response, err)
+		return
+	}
+	writeJSON(response, http.StatusCreated, map[string]any{"ok": true, "api_key": issued.Secret, "api_key_status": handler.legacyDirectStatus(request, &issued.Client), "source_status": "auth_platform_command", "fallback_used": false})
+}
+
+func (handler *Handler) legacyRotateDirectKey(response http.ResponseWriter, request *http.Request) {
+	actor, payload, ok := handler.legacyWritePayload(response, request, map[string]struct{}{"confirm": {}, "admin_action_token": {}})
+	if !ok || !legacyConfirmed(response, payload) {
+		return
+	}
+	issued, err := handler.management.Rotate(request.Context(), actor, accessDirectKeyID)
+	if err != nil {
+		writeLegacyAdminError(response, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, map[string]any{"ok": true, "api_key": issued.Secret, "api_key_status": handler.legacyDirectStatus(request, &issued.Client), "source_status": "auth_platform_command", "fallback_used": false})
+}
+
+func (handler *Handler) legacyDisableDirectKey(response http.ResponseWriter, request *http.Request) {
+	actor, payload, ok := handler.legacyWritePayload(response, request, map[string]struct{}{"enabled": {}, "confirm": {}, "admin_action_token": {}})
+	if !ok || !legacyConfirmed(response, payload) {
+		return
+	}
+	enabled, valid := legacyBool(payload, "enabled")
+	if !valid || enabled {
+		writeJSON(response, http.StatusConflict, map[string]any{"ok": false, "error": "direct_api_key_reactivation_requires_rotation"})
+		return
+	}
+	client, err := handler.management.SetEnabled(request.Context(), actor, accessDirectKeyID, false)
+	if err != nil {
+		writeLegacyAdminError(response, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, map[string]any{"ok": true, "api_key_status": handler.legacyDirectStatus(request, &client), "source_status": "auth_platform_command", "fallback_used": false})
+}
+
 func (handler *Handler) routes(response http.ResponseWriter, request *http.Request) {
 	if _, ok := handler.adminPrincipal(response, request, false); !ok {
 		return
@@ -416,6 +667,224 @@ func noStore(next http.Handler) http.Handler {
 		response.Header().Set("Cache-Control", "no-store")
 		next.ServeHTTP(response, request)
 	})
+}
+
+const accessDirectKeyID = "direct_external_api_key"
+
+func (handler *Handler) legacyWritePayload(response http.ResponseWriter, request *http.Request, allowed map[string]struct{}) (accessdomain.Principal, map[string]json.RawMessage, bool) {
+	actor, ok := handler.adminPrincipal(response, request, true)
+	if !ok {
+		return accessdomain.Principal{}, nil, false
+	}
+	body, err := readBody(request)
+	if err != nil {
+		writeJSON(response, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid_request"})
+		return accessdomain.Principal{}, nil, false
+	}
+	payload := map[string]json.RawMessage{}
+	if json.Unmarshal(body, &payload) != nil {
+		writeJSON(response, http.StatusBadRequest, map[string]any{"ok": false, "error": "payload_must_be_object"})
+		return accessdomain.Principal{}, nil, false
+	}
+	for key := range payload {
+		if _, known := allowed[key]; !known {
+			writeJSON(response, http.StatusBadRequest, map[string]any{"ok": false, "error": "unknown_fields:" + key})
+			return accessdomain.Principal{}, nil, false
+		}
+	}
+	if raw, exists := payload["admin_action_token"]; exists {
+		var token string
+		if json.Unmarshal(raw, &token) != nil || strings.TrimSpace(token) == "" {
+			writeJSON(response, http.StatusUnauthorized, map[string]any{"ok": false, "error": "invalid_admin_action_token"})
+			return accessdomain.Principal{}, nil, false
+		}
+	}
+	return actor, payload, true
+}
+
+func legacyConfirmed(response http.ResponseWriter, payload map[string]json.RawMessage) bool {
+	confirmed, valid := legacyBool(payload, "confirm")
+	if !valid || !confirmed {
+		writeJSON(response, http.StatusBadRequest, map[string]any{"ok": false, "error": "operation_confirmation_required"})
+		return false
+	}
+	return true
+}
+
+func legacyText(payload map[string]json.RawMessage, key string) (string, bool) {
+	raw, found := payload[key]
+	if !found {
+		return "", false
+	}
+	var value string
+	if json.Unmarshal(raw, &value) != nil {
+		return "", false
+	}
+	return strings.TrimSpace(value), true
+}
+
+func legacyBool(payload map[string]json.RawMessage, key string) (bool, bool) {
+	raw, found := payload[key]
+	if !found {
+		return false, false
+	}
+	var value bool
+	return value, json.Unmarshal(raw, &value) == nil
+}
+
+func legacyTTL(payload map[string]json.RawMessage) (int, error) {
+	raw, found := payload["token_ttl_minutes"]
+	if !found {
+		return 0, errors.New("missing ttl")
+	}
+	var minutes int
+	if json.Unmarshal(raw, &minutes) != nil || (minutes != 15 && minutes != 30 && minutes != 60) {
+		return 0, errors.New("invalid ttl")
+	}
+	return minutes * 60, nil
+}
+
+func legacyCIDRs(payload map[string]json.RawMessage) ([]string, error) {
+	raw, found := payload["allowed_cidrs"]
+	if !found || string(raw) == "null" {
+		return []string{}, nil
+	}
+	var values []string
+	if json.Unmarshal(raw, &values) == nil {
+		return values, nil
+	}
+	var value string
+	if json.Unmarshal(raw, &value) != nil {
+		return nil, errors.New("invalid cidrs")
+	}
+	return strings.FieldsFunc(value, func(character rune) bool { return character == ',' || character == '\n' }), nil
+}
+
+func legacyCreateInput(clientType string, payload map[string]json.RawMessage) (accessport.CreateMachineClientInput, error) {
+	clientID, clientIDOK := legacyText(payload, "client_id")
+	displayName, displayNameOK := legacyText(payload, "display_name")
+	ttl, err := legacyTTL(payload)
+	if !clientIDOK || !displayNameOK || err != nil {
+		return accessport.CreateMachineClientInput{}, errors.New("invalid api client")
+	}
+	cidrs, err := legacyCIDRs(payload)
+	if err != nil {
+		return accessport.CreateMachineClientInput{}, err
+	}
+	input := accessport.CreateMachineClientInput{ClientID: clientID, DisplayName: displayName, Audiences: []string{"external_integration"}, Scopes: []string{"read", "write"}, AllowedCIDRs: cidrs, TokenTTLSeconds: ttl}
+	switch clientType {
+	case "external_api":
+		input.Purpose, input.Capabilities = "external_agent", []string{"external_read", "external_write"}
+	case "mcp":
+		input.Purpose, input.Capabilities = "mcp", []string{"mcp_read", "mcp_execute"}
+	default:
+		return accessport.CreateMachineClientInput{}, errors.New("invalid type")
+	}
+	return input, nil
+}
+
+func legacyUpdateInput(payload map[string]json.RawMessage) (accessport.UpdateMachineClientInput, error) {
+	displayName, valid := legacyText(payload, "display_name")
+	ttl, err := legacyTTL(payload)
+	if !valid || err != nil {
+		return accessport.UpdateMachineClientInput{}, errors.New("invalid update")
+	}
+	cidrs, err := legacyCIDRs(payload)
+	if err != nil {
+		return accessport.UpdateMachineClientInput{}, err
+	}
+	return accessport.UpdateMachineClientInput{DisplayName: displayName, TokenTTLSeconds: ttl, AllowedCIDRs: cidrs}, nil
+}
+
+func legacyClientType(client accessport.MachineClientSummary) string {
+	switch client.Purpose {
+	case "external_agent":
+		return "external_api"
+	case "mcp":
+		return "mcp"
+	default:
+		return ""
+	}
+}
+
+func (handler *Handler) legacyClientItem(client accessport.MachineClientSummary) map[string]any {
+	clientType := legacyClientType(client)
+	label, resource := "External API", "/api/external"
+	if clientType == "mcp" {
+		label, resource = "MCP", "/mcp"
+	}
+	return map[string]any{"client_id": client.ClientID, "display_name": client.DisplayName, "client_type": clientType, "type_label": label,
+		"purpose": client.Purpose, "audience": "external_integration", "scopes": client.Scopes, "capabilities": client.Capabilities,
+		"permission_label": label, "allowed_cidrs": client.AllowedCIDRs, "token_ttl_minutes": client.TokenTTLSeconds / 60,
+		"enabled": client.Enabled, "status": map[bool]string{true: "enabled", false: "disabled"}[client.Enabled], "status_label": map[bool]string{true: "已启用", false: "已停用"}[client.Enabled],
+		"auth_version": client.AuthVersion, "credential_hint": client.CredentialHint, "credential_hint_available": client.CredentialHint != "", "last_rotated_at": "", "created_at": client.CreatedAt, "updated_at": "",
+		"system_managed": false, "mutable": true, "base_url": handler.publicOrigin, "token_url": handler.publicOrigin + "/oauth/token", "resource_url": handler.publicOrigin + resource, "grant_type": "client_credentials"}
+}
+
+func legacyClientTemplates(baseURL string) []map[string]any {
+	return []map[string]any{
+		{"key": "external_api", "label": "External API", "purpose": "external_agent", "audience": "external_integration", "scopes": []string{"read", "write"}, "capabilities": []string{"external_read", "external_write"}, "base_url": baseURL, "token_url": baseURL + "/oauth/token", "resource_url": baseURL + "/api/external", "grant_type": "client_credentials"},
+		{"key": "mcp", "label": "MCP", "purpose": "mcp", "audience": "external_integration", "scopes": []string{"read", "write"}, "capabilities": []string{"mcp_read", "mcp_execute"}, "base_url": baseURL, "token_url": baseURL + "/oauth/token", "resource_url": baseURL + "/mcp", "grant_type": "client_credentials"},
+	}
+}
+
+func legacyConfiguredLabel(count int) string {
+	if count == 0 {
+		return "未配置"
+	}
+	return "已配置 " + strconv.Itoa(count) + " 个"
+}
+
+func directClient(clients []accessport.MachineClientSummary) *accessport.MachineClientSummary {
+	for index := range clients {
+		if clients[index].ClientID == accessDirectKeyID {
+			return &clients[index]
+		}
+	}
+	return nil
+}
+
+func (handler *Handler) legacyDirectStatus(request *http.Request, client *accessport.MachineClientSummary) map[string]any {
+	configured := client != nil
+	enabled := configured && client.Enabled
+	status, label := "unconfigured", "未配置"
+	if configured && enabled {
+		status, label = "enabled", "已启用"
+	} else if configured {
+		status, label = "disabled", "已停用"
+	}
+	hint, authVersion := "aics_••••••••••••••••••", int64(0)
+	if client != nil {
+		hint, authVersion = client.CredentialHint, client.AuthVersion
+	}
+	baseURL := handler.baseURL(request)
+	return map[string]any{"configured": configured, "enabled": enabled, "status": status, "status_label": label, "auth_version": authVersion, "credential_hint": hint, "credential_hint_available": client != nil && client.CredentialHint != "", "last_rotated_at": "", "created_at": "", "base_url": baseURL, "resource_url": baseURL + "/api/external", "authorization_header": "Authorization: Bearer <CRM_API_KEY>", "permission_label": "CRM 开放 API 只读"}
+}
+
+func (handler *Handler) baseURL(request *http.Request) string {
+	if handler.publicOrigin != "" {
+		return handler.publicOrigin
+	}
+	scheme := "https"
+	if request.TLS == nil {
+		scheme = "http"
+	}
+	return scheme + "://" + request.Host
+}
+
+func writeLegacyAdminError(response http.ResponseWriter, err error) {
+	status, code := http.StatusBadRequest, "api_client_operation_failed"
+	switch {
+	case errors.Is(err, accessdomain.ErrNotFound):
+		status, code = http.StatusNotFound, "api_client_not_found"
+	case errors.Is(err, accessdomain.ErrMachineClientActive):
+		status, code = http.StatusConflict, "active_client_update_requires_disable"
+	case errors.Is(err, accessdomain.ErrMachineActivation):
+		status, code = http.StatusBadRequest, "client_secret_self_check_failed"
+	case errors.Is(err, accessdomain.ErrPermissionDenied):
+		status, code = http.StatusForbidden, "manage_api_clients_required"
+	}
+	writeJSON(response, status, map[string]any{"ok": false, "error": code})
 }
 
 func remoteAddr(value string) (netip.Addr, error) {
