@@ -80,6 +80,33 @@ func (handler *Handler) Routes() http.Handler {
 	return noStore(mux)
 }
 
+// Mount installs only the frozen machine protocol paths ahead of next. It
+// deliberately does not use a broad /api/ prefix: ordinary browser/session
+// routes retain their existing owner and never become machine endpoints.
+func Mount(next, machine http.Handler) http.Handler {
+	if next == nil || machine == nil {
+		return http.NotFoundHandler()
+	}
+	mux := http.NewServeMux()
+	mux.Handle("POST /oauth/token", machine)
+	mux.Handle("GET /mcp", machine)
+	mux.Handle("POST /mcp", machine)
+	mux.Handle("GET /api/admin/open-platform/clients", machine)
+	mux.Handle("POST /api/admin/open-platform/clients", machine)
+	mux.Handle("POST /api/admin/open-platform/clients/{client_id}/rotate", machine)
+	mux.Handle("POST /api/admin/open-platform/clients/{client_id}/enable", machine)
+	mux.Handle("POST /api/admin/open-platform/clients/{client_id}/disable", machine)
+	mux.Handle("GET /api/admin/open-platform/routes", machine)
+	for _, route := range Inventory {
+		if route.Path == "/mcp" {
+			continue
+		}
+		mux.Handle(route.Method+" "+route.Path, machine)
+	}
+	mux.Handle("/", next)
+	return mux
+}
+
 func (handler *Handler) token(response http.ResponseWriter, request *http.Request) {
 	source, ok := handler.secureSource(response, request)
 	if !ok {

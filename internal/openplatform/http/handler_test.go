@@ -163,3 +163,30 @@ func TestCreateMachineClientUsesFrozenSnakeCaseJSONFields(t *testing.T) {
 		t.Fatalf("frozen create DTO decoded as %+v", input)
 	}
 }
+
+func TestMountClaimsOnlyFrozenMachineRoutes(t *testing.T) {
+	machine := markerHandler("machine")
+	legacy := markerHandler("legacy")
+	mounted := Mount(legacy, machine)
+	for _, item := range []struct {
+		method, path, expected string
+	}{
+		{http.MethodPost, "/oauth/token", "machine"},
+		{http.MethodGet, "/api/external/orders", "machine"},
+		{http.MethodPost, "/api/operation-cycles/reports", "machine"},
+		{http.MethodGet, "/api/admin/open-platform/clients", "machine"},
+		{http.MethodGet, "/api/admin/orders", "legacy"},
+		{http.MethodGet, "/api/external/not-in-inventory", "legacy"},
+	} {
+		request := httptest.NewRequest(item.method, "https://crm.example.com"+item.path, nil)
+		response := httptest.NewRecorder()
+		mounted.ServeHTTP(response, request)
+		if body := strings.TrimSpace(response.Body.String()); body != item.expected {
+			t.Fatalf("%s %s mounted to %q, want %q", item.method, item.path, body, item.expected)
+		}
+	}
+}
+
+func markerHandler(value string) http.Handler {
+	return http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) { _, _ = response.Write([]byte(value)) })
+}
