@@ -538,7 +538,18 @@ func (executor *openPlatformExecutor) listExternalSurveySubmissions(ctx context.
 	query.CustomerID, query.HistoricalUnionIDs = int64(resolved.CustomerID), unionIDs
 	page, err := executor.survey.ExternalSubmissions(ctx, query)
 	if err != nil {
-		return externalSurveyUnavailable(), nil
+		switch {
+		case errors.Is(err, surveyport.ErrConflict):
+			// A mapped legacy questionnaire ID and an unrelated native numeric
+			// ID are ambiguous. The Survey owner reports this deterministically;
+			// keep it visible to the machine caller rather than disguising it as
+			// transient read-model unavailability.
+			return externalSurveyError(409, "conflict"), nil
+		case errors.Is(err, surveyport.ErrInvalid):
+			return externalSurveyError(400, "invalid_request"), nil
+		default:
+			return externalSurveyUnavailable(), nil
+		}
 	}
 
 	mobile := surveyRequestAlias(references, identitydomain.KindPhone)
@@ -683,8 +694,20 @@ func (executor *openPlatformExecutor) surveyHistoricalUnionIDs(ctx context.Conte
 	ids := make([]string, 0, len(references)+len(executor.scopes.SurveyUnionScopes))
 	trusted := make([]identitydomain.Reference, 0, len(references)+len(executor.scopes.SurveyUnionScopes))
 	seen := map[string]struct{}{}
+	allowedSurveyScope := make(map[string]struct{}, len(executor.scopes.SurveyUnionScopes))
+	for _, scope := range executor.scopes.SurveyUnionScopes {
+		allowedSurveyScope[scope] = struct{}{}
+	}
 	appendUnion := func(reference identitydomain.Reference) {
 		if reference.Kind != identitydomain.KindUnionID {
+			return
+		}
+		// Historical questionnaire rows are keyed only by the donor UnionID
+		// string. A same-looking value from an HXC or other configured Open
+		// Platform scope may resolve to a different root, so never use it as a
+		// historical selector. It still remains in the initial OneID resolution
+		// and may authorize V3-native customer-scoped submissions.
+		if _, allowed := allowedSurveyScope[reference.Scope]; !allowed {
 			return
 		}
 		if _, exists := seen[reference.Value]; exists {

@@ -34,9 +34,11 @@ type openPlatformIdentityStub struct {
 	externalErr   error
 	externalCalls int
 	unionValue    string
+	unionValues   map[string]string
 	unionFound    bool
 	unionErr      error
 	unionCalls    int
+	unionScopes   []string
 	phoneValue    string
 	phoneFound    bool
 	phoneErr      error
@@ -55,8 +57,13 @@ func (stub *openPlatformIdentityStub) VerifiedExternalUserID(context.Context, cu
 	stub.externalCalls++
 	return stub.externalValue, stub.externalFound, stub.externalErr
 }
-func (stub *openPlatformIdentityStub) VerifiedUnionID(context.Context, customerdomain.CustomerID, string) (string, bool, error) {
+func (stub *openPlatformIdentityStub) VerifiedUnionID(_ context.Context, _ customerdomain.CustomerID, scope string) (string, bool, error) {
 	stub.unionCalls++
+	stub.unionScopes = append(stub.unionScopes, scope)
+	if stub.unionValues != nil {
+		value, found := stub.unionValues[scope]
+		return value, found, stub.unionErr
+	}
 	return stub.unionValue, stub.unionFound, stub.unionErr
 }
 func (stub *openPlatformIdentityStub) RevealPhoneForMachine(context.Context, customerdomain.CustomerID, accessdomain.MachinePrincipal) (string, bool, error) {
@@ -342,6 +349,82 @@ func TestOpenPlatformSurveyHistoryNeverInfersAcrossGenericUnionScopes(t *testing
 	unionIDs, references, err := executor.surveyHistoricalUnionIDs(context.Background(), 42, nil)
 	if err != nil || len(unionIDs) != 0 || len(references) != 0 || identity.unionCalls != 0 {
 		t.Fatalf("union_ids=%v references=%v calls=%d err=%v", unionIDs, references, identity.unionCalls, err)
+	}
+}
+
+func TestOpenPlatformSurveyHistoryRejectsSameUnionFromAnotherOpenPlatformScope(t *testing.T) {
+	identity := &openPlatformIdentityStub{unionValues: map[string]string{}}
+	scopes := configuredOpenPlatformScopes("corp-main", []string{"wechat-open-platform:hxc", "wechat-open-platform:survey"}, nil)
+	scopes.SurveyUnionScopes = []string{"wechat-open-platform:survey"}
+	executor, err := newOpenPlatformExecutor(identity, &openPlatformOrderStub{}, &openPlatformProfileStub{}, &openPlatformArchiveStub{}, &openPlatformTimelineStub{}, &openPlatformOwnerStub{}, scopes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = executor.BindExternalSurveySubmissions(&openPlatformSurveyStub{}, identity); err != nil {
+		t.Fatal(err)
+	}
+	// The HXC reference may have resolved a different customer root even when
+	// the raw UnionID string happens to equal a historical questionnaire value.
+	references := []identitydomain.Reference{{Kind: identitydomain.KindUnionID, Scope: "wechat-open-platform:hxc", Value: "shared-union"}}
+	unionIDs, trusted, err := executor.surveyHistoricalUnionIDs(context.Background(), 42, references)
+	if err != nil || len(unionIDs) != 0 || len(trusted) != 0 || len(identity.unionScopes) != 1 || identity.unionScopes[0] != "wechat-open-platform:survey" {
+		t.Fatalf("union_ids=%v trusted=%v lookup_scopes=%v err=%v", unionIDs, trusted, identity.unionScopes, err)
+	}
+}
+
+func TestOpenPlatformExternalSurveyUsesOtherScopeForNativeRootButNotHistoricalSelector(t *testing.T) {
+	identity := &openPlatformIdentityStub{results: map[string]identityport.ResolveResult{
+		"unionid|wechat-open-platform:hxc|shared-union": {Status: identityport.ResolveFound, CustomerID: 42},
+		// The same raw string is a separate Survey identity rooted at another
+		// customer. The HXC request must never select that customer's legacy rows.
+		"unionid|wechat-open-platform:survey|shared-union": {Status: identityport.ResolveFound, CustomerID: 43},
+	}, unionValues: map[string]string{}}
+	survey := &openPlatformSurveyStub{}
+	scopes := configuredOpenPlatformScopes("corp-main", []string{"wechat-open-platform:hxc", "wechat-open-platform:survey"}, nil)
+	scopes.SurveyUnionScopes = []string{"wechat-open-platform:survey"}
+	executor, err := newOpenPlatformExecutor(identity, &openPlatformOrderStub{}, &openPlatformProfileStub{}, &openPlatformArchiveStub{}, &openPlatformTimelineStub{}, &openPlatformOwnerStub{}, scopes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = executor.BindExternalSurveySubmissions(survey, identity); err != nil {
+		t.Fatal(err)
+	}
+	response, err := executor.Execute(context.Background(), openplatformport.Request{Method: "GET", Path: "/api/external/questionnaire-submissions", Query: url.Values{"unionid": {"shared-union"}, "scope": {"wechat-open-platform:hxc"}}})
+	if err != nil || response.Status != 200 || survey.calls != 1 || survey.query.CustomerID != 42 || len(survey.query.HistoricalUnionIDs) != 0 || len(identity.unionScopes) != 1 || identity.unionScopes[0] != "wechat-open-platform:survey" {
+		t.Fatalf("response=%+v query=%+v lookup_scopes=%v err=%v", response, survey.query, identity.unionScopes, err)
+	}
+}
+
+func TestOpenPlatformSurveyHistoryFailsClosedWhenSurveyScopeIsNotConfigured(t *testing.T) {
+	identity := &openPlatformIdentityStub{}
+	executor, err := newOpenPlatformExecutor(identity, &openPlatformOrderStub{}, &openPlatformProfileStub{}, &openPlatformArchiveStub{}, &openPlatformTimelineStub{}, &openPlatformOwnerStub{}, configuredOpenPlatformScopes("corp-main", []string{"wechat-open-platform:hxc"}, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = executor.BindExternalSurveySubmissions(&openPlatformSurveyStub{}, identity); err != nil {
+		t.Fatal(err)
+	}
+	references := []identitydomain.Reference{{Kind: identitydomain.KindUnionID, Scope: "wechat-open-platform:hxc", Value: "shared-union"}}
+	unionIDs, trusted, err := executor.surveyHistoricalUnionIDs(context.Background(), 42, references)
+	if err != nil || len(unionIDs) != 0 || len(trusted) != 0 || identity.unionCalls != 0 {
+		t.Fatalf("union_ids=%v trusted=%v calls=%d err=%v", unionIDs, trusted, identity.unionCalls, err)
+	}
+}
+
+func TestOpenPlatformExternalSurveyReportsOwnerConflict(t *testing.T) {
+	identity := &openPlatformIdentityStub{result: identityport.ResolveResult{Status: identityport.ResolveFound, CustomerID: 42}}
+	survey := &openPlatformSurveyStub{err: surveyport.ErrConflict}
+	executor, err := newOpenPlatformExecutor(identity, &openPlatformOrderStub{}, &openPlatformProfileStub{}, &openPlatformArchiveStub{}, &openPlatformTimelineStub{}, &openPlatformOwnerStub{}, configuredOpenPlatformScopes("corp-main", nil, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = executor.BindExternalSurveySubmissions(survey, identity); err != nil {
+		t.Fatal(err)
+	}
+	response, err := executor.Execute(context.Background(), openplatformport.Request{Method: "GET", Path: "/api/external/questionnaire-submissions", Query: url.Values{"external_userid": {"external-1"}}})
+	body, ok := response.Body.(map[string]any)
+	if err != nil || !ok || response.Status != 409 || body["error_code"] != "conflict" || survey.calls != 1 {
+		t.Fatalf("response=%+v survey_calls=%d err=%v", response, survey.calls, err)
 	}
 }
 
