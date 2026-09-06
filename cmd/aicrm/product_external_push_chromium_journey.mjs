@@ -144,20 +144,48 @@ try {
   await cdp.call("Runtime.enable");
   await cdp.call("Network.enable");
   const runtimeExceptions = [];
-  const responses = new Map();
+  // Keep only route, method and status. A browser journey failure needs enough
+  // evidence to distinguish Host wiring, session/CSRF and HTTP rejection, but
+  // never serializes request bodies, cookies, bearer values or receiver data.
+  const requests = new Map();
+  const responses = [];
   cdp.on("Runtime.exceptionThrown", (params) => {
     const details = params.exceptionDetails || {};
     const name = String(details.exception?.className || details.text || "runtime_exception").replace(/[^A-Za-z0-9_.-]/g, "_").slice(0, 96);
     if (runtimeExceptions.length < 8) runtimeExceptions.push(name);
   });
-  cdp.on("Network.responseReceived", (params) => {
+  cdp.on("Network.requestWillBeSent", (params) => {
     try {
-      const pathname = new URL(String(params.response?.url || "")).pathname;
+      const pathname = new URL(String(params.request?.url || "")).pathname;
       if (pathname.includes("productForm") || pathname.includes("orderDetail") || pathname.includes("external-push") || pathname.startsWith("/assets/")) {
-        responses.set(pathname, Number(params.response?.status) || 0);
+        requests.set(params.requestId, { pathname, method: String(params.request?.method || "GET") });
       }
     } catch (_) {}
   });
+  cdp.on("Network.responseReceived", (params) => {
+    const request = requests.get(params.requestId);
+    if (!request || responses.length >= 32) return;
+    responses.push(`${request.method} ${request.pathname}:${Number(params.response?.status) || 0}`);
+  });
+  const browserSaveDiagnostic = async () => {
+    const page = await evaluate(cdp, `(() => {
+      const panel = document.querySelector('[data-external-push-configuration]');
+      const save = document.querySelector('[data-external-push-configuration-save]');
+      const toast = document.querySelector('#product-v3-toast');
+      const status = panel?.querySelector('span')?.textContent || '';
+      const csrf = document.cookie;
+      return {
+        path: location.pathname,
+        status: String(status).replace(/[^A-Za-z0-9_\-\u4e00-\u9fff（）()：:，,。 ]/g, '_').slice(0, 160),
+        toast: String(toast?.textContent || '').replace(/[^A-Za-z0-9_\-\u4e00-\u9fff（）()：:，,。 ]/g, '_').slice(0, 160),
+        saveDisabled: Boolean(save && save.disabled),
+        adminCSRF: /(?:^|;\s*)aicrm_admin_csrf=/.test(csrf),
+        compatCSRF: /(?:^|;\s*)aicrm_csrf=/.test(csrf),
+      };
+    })()`);
+    const routes = responses.join(',') || 'none';
+    return `path=${page?.path || 'unknown'} status=${page?.status || 'none'} toast=${page?.toast || 'none'} save_disabled=${page?.saveDisabled === true} csrf_admin=${page?.adminCSRF === true} csrf_compat=${page?.compatCSRF === true} exceptions=${runtimeExceptions.join(',') || 'none'} responses=${routes}`;
+  };
 
   const productPath = "/admin/productForm.html?id=" + productID;
   await cdp.call("Page.navigate", { url: baseURL + "/login?next=" + encodeURIComponent(productPath) });
@@ -169,11 +197,25 @@ try {
   try {
     await waitFor(cdp, hostReady, "product Host did not render");
   } catch (_) {
-    const paths = Array.from(responses.entries()).map((entry) => entry[0] + ":" + entry[1]).join(",");
-    throw new Error("product Host did not render path=" + (await evaluate(cdp, "location.pathname")) + " exceptions=" + (runtimeExceptions.join(",") || "none") + " responses=" + (paths || "none"));
+    throw new Error("product Host did not render " + await browserSaveDiagnostic());
+  }
+  if (!await evaluate(cdp, `/(?:^|;\s*)aicrm_admin_csrf=/.test(document.cookie) && /(?:^|;\s*)aicrm_csrf=/.test(document.cookie)`)) {
+    throw new Error("product Host did not receive CSRF session bridge " + await browserSaveDiagnostic());
+  }
+  // Host mounting creates the editor before its configuration GET resolves.
+  // Wait for the first revision rather than racing the closure that owns the
+  // configuration snapshot used for CAS in the save handler.
+  try {
+    await waitFor(cdp, "document.querySelector('[data-external-push-configuration] span')?.textContent === '配置版本 0'", "product configuration did not load");
+  } catch (_) {
+    throw new Error("product configuration did not load " + await browserSaveDiagnostic());
   }
   await evaluate(cdp, "(() => { const enabled=document.querySelector('#pfExternalPushEnabled'); const reference=document.querySelector('#pfExternalPushReference'); enabled.value='true'; enabled.dispatchEvent(new Event('change',{bubbles:true})); reference.value='browser-push-target'; reference.dispatchEvent(new Event('input',{bubbles:true})); document.querySelector('#product-v3-external-push-type').value='member_open'; document.querySelector('#product-v3-external-push-day').value='30'; document.querySelector('#product-v3-external-push-frequency').value='1'; document.querySelector('#product-v3-external-push-remark').value='browser preserves JSON'; document.querySelector('#product-v3-external-push-custom-params').value=" + JSON.stringify(exactParams) + "; document.querySelector('[data-external-push-configuration-save]').click(); return true; })()");
-  await waitFor(cdp, "document.querySelector('[data-external-push-configuration]')?.textContent.includes('配置版本 1')", "browser configuration save did not finish");
+  try {
+    await waitFor(cdp, "document.querySelector('[data-external-push-configuration]')?.textContent.includes('配置版本 1')", "browser configuration save did not finish");
+  } catch (_) {
+    throw new Error("browser configuration save did not finish " + await browserSaveDiagnostic());
+  }
   await waitFor(cdp, "document.querySelector('#product-v3-external-push-custom-params')?.value === " + JSON.stringify(exactParams), "browser save changed custom JSON before readback");
 
   await cdp.call("Page.navigate", { url: baseURL + productPath });
@@ -198,11 +240,19 @@ try {
   try {
     await waitFor(cdp, serviceHostReady, "service-period product Host did not render");
   } catch (_) {
-    const paths = Array.from(responses.entries()).map((entry) => entry[0] + ":" + entry[1]).join(",");
-    throw new Error("service-period product Host did not render path=" + (await evaluate(cdp, "location.pathname")) + " exceptions=" + (runtimeExceptions.join(",") || "none") + " responses=" + (paths || "none"));
+    throw new Error("service-period product Host did not render " + await browserSaveDiagnostic());
+  }
+  try {
+    await waitFor(cdp, "document.querySelector('[data-external-push-configuration] span')?.textContent === '配置版本 0'", "service-period product configuration did not load");
+  } catch (_) {
+    throw new Error("service-period product configuration did not load " + await browserSaveDiagnostic());
   }
   await evaluate(cdp, "(() => { const enabled=document.querySelector('#spfExternalPushEnabled'); const reference=document.querySelector('#spfExternalPushReference'); enabled.value='true'; enabled.dispatchEvent(new Event('change',{bubbles:true})); reference.value='browser-push-target'; reference.dispatchEvent(new Event('input',{bubbles:true})); document.querySelector('#product-v3-external-push-type').value='member_renew'; document.querySelector('#product-v3-external-push-day').value='30'; document.querySelector('#product-v3-external-push-frequency').value='1'; document.querySelector('#product-v3-external-push-remark').value='service browser preserves JSON'; document.querySelector('#product-v3-external-push-custom-params').value=" + JSON.stringify(exactParams) + "; document.querySelector('[data-external-push-configuration-save]').click(); return true; })()");
-  await waitFor(cdp, "document.querySelector('[data-external-push-configuration]')?.textContent.includes('配置版本 1')", "service-period browser configuration save did not finish");
+  try {
+    await waitFor(cdp, "document.querySelector('[data-external-push-configuration]')?.textContent.includes('配置版本 1')", "service-period browser configuration save did not finish");
+  } catch (_) {
+    throw new Error("service-period browser configuration save did not finish " + await browserSaveDiagnostic());
+  }
   await waitFor(cdp, "document.querySelector('#product-v3-external-push-custom-params')?.value === " + JSON.stringify(exactParams), "service-period browser save changed custom JSON before readback");
   await cdp.call("Page.navigate", { url: baseURL + serviceProductPath });
   await waitFor(cdp, "location.pathname === '/admin/spProductForm.html' && " + serviceHostReady + " && document.querySelector('#product-v3-external-push-custom-params')?.value === " + JSON.stringify(exactParams), "reloaded service-period Host did not preserve exact JSON text");
