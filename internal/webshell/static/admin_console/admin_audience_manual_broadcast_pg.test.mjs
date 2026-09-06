@@ -12,7 +12,17 @@ const template = fs.readFileSync(path.join(root, "internal", "webshell", "templa
   .replace(/^\{\{define "admin_audience_detail"\}\}/, "")
   .replace(/\{\{end\}\}\s*$/, "");
 const detail = fs.readFileSync(path.join(here, "admin_audience_detail.js"), "utf8");
-const wait = (milliseconds = 100) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+const wait = (milliseconds = 25) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+const waitFor = async (label, ready, failed) => {
+  const deadline = Date.now() + 8000;
+  for (;;) {
+    const failure = failed?.();
+    if (failure) throw new Error(`${label} failed: ${failure}`);
+    if (ready()) return;
+    if (Date.now() >= deadline) throw new Error(`${label} did not become ready`);
+    await wait();
+  }
+};
 const json = (body, status = 200) => ({ ok: status >= 200 && status < 300, status, json: async () => body });
 const dom = new JSDOM(`<!doctype html><html><body>${template}</body></html>`, {
   url: `${baseURL}/admin/automation-conversion/packages/${packageID}`,
@@ -34,15 +44,23 @@ const dom = new JSDOM(`<!doctype html><html><body>${template}</body></html>`, {
   },
 });
 dom.window.eval(detail);
-await wait(250);
 const document = dom.window.document;
+const statusFailure = (node) => node?.dataset.state === "error" ? node.textContent.trim() || "the page reported an error" : "";
+const capability = document.querySelector("#capabilityStatus");
+await waitFor("original detail bootstrap", () => capability?.dataset.capabilityState === "ready", () => {
+  const state = capability?.dataset.capabilityState;
+  return state && state !== "loading" && state !== "ready" ? capability.textContent.trim() || `capability state ${state}` : "";
+});
+const previewState = document.querySelector("#broadcastPreviewState");
+const confirm = document.querySelector("#broadcastConfirmBtn");
 document.querySelector("#broadcastPreviewBtn").click();
-await wait(250);
-if (document.querySelector("#broadcastConfirmBtn").disabled) throw new Error("original detail page did not enable broadcast confirmation after the PostgreSQL preview");
-document.querySelector("#broadcastConfirmBtn").click();
-await wait(250);
+await waitFor("PostgreSQL broadcast preview", () => previewState?.dataset.state === "success" && !confirm.disabled, () => statusFailure(previewState));
+confirm.click();
+await waitFor("persisted AI review handoff", () => {
+  const review = document.querySelector('#sendRecordRows a[href^="/admin/cloud-orchestrator/plans/"]');
+  return Boolean(review?.textContent.includes("AI 审阅与收件人"));
+}, () => statusFailure(previewState) || statusFailure(document.querySelector("#sendRecordStatusLine")));
 const review = document.querySelector('#sendRecordRows a[href^="/admin/cloud-orchestrator/plans/"]');
-if (!review || !review.textContent.includes("AI 审阅与收件人")) throw new Error("original detail page did not render the persisted AI review handoff");
 const planID = Number(review.getAttribute("href").split("/").at(-1));
 if (!Number.isSafeInteger(planID) || planID < 1) throw new Error("original detail page returned an invalid AI plan ID");
 console.log(JSON.stringify({ ai_plan_id: planID }));
