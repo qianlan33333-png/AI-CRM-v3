@@ -3,10 +3,15 @@ set -euo pipefail
 
 source_config="${1:-}"
 expected_release_sha="${2:-}"
+provider_mode="${3:-apply}"
 runtime_env="${AICRM_RUNTIME_ENV_FILE:-/etc/aicrm/aicrm.env}"
 
 if [[ ! "$expected_release_sha" =~ ^[0-9a-f]{40}$ ]]; then
   echo "invalid expected release sha" >&2
+  exit 2
+fi
+if [[ "$provider_mode" != "apply" && "$provider_mode" != "skip-if-provider-disabled" ]]; then
+  echo "invalid WeChat Pay provider mode" >&2
   exit 2
 fi
 if [[ ! -f "$source_config" || -L "$source_config" ]]; then
@@ -71,8 +76,16 @@ if ((enabled_count != 1 || app_id_count != 1 || secret_count != 1 || scope_count
   exit 2
 fi
 
+provider_setting_count="$(awk -F= '$1 == "AICRM_WECHAT_PAY_PROVIDER_ENABLED" { count += 1 } END { print count + 0 }' "$runtime_env")"
 provider_enabled_count="$(awk '$0 == "AICRM_WECHAT_PAY_PROVIDER_ENABLED=true" { count += 1 } END { print count + 0 }' "$runtime_env")"
-if [[ "$provider_enabled_count" != 1 ]]; then
+provider_disabled_count="$(awk '$0 == "AICRM_WECHAT_PAY_PROVIDER_ENABLED=false" { count += 1 } END { print count + 0 }' "$runtime_env")"
+if [[ "$provider_enabled_count" == 1 && "$provider_setting_count" == 1 ]]; then
+  :
+elif [[ "$provider_mode" == "skip-if-provider-disabled" && "$provider_disabled_count" == 1 && "$provider_setting_count" == 1 ]]; then
+  rm -f -- "$source_config"
+  echo "WeChat Pay H5 OAuth runtime configuration skipped: provider disabled"
+  exit 0
+else
   echo "WeChat Pay H5 OAuth requires the existing WeChat Pay provider to be enabled" >&2
   exit 3
 fi

@@ -601,7 +601,7 @@ func TestAutomationAIAssistantAndGroupOpsShareRiverRuntime(t *testing.T) {
 		return native.QueryRow(ctx, `SELECT count(*) FROM external_effects`).Scan(&effectsNow) == nil && effectsNow == 0
 	})
 	stopBootstrapSafely()
-	policy, err := runtimeService.CreatePolicy(ctx, automationapp.PolicyCommand{Code: "joint-runtime-entry", Name: "Joint runtime entry", PackageID: segmentport.PackageID(packageID), TriggerKind: automationport.TriggerAudienceMemberEnteredV1, ActionKind: automationport.ActionOutboundMessage, ActionConfig: json.RawMessage(fmt.Sprintf(`{"agent_id":%d}`, agent.ID)), QuietHours: json.RawMessage(`{"timezone":"UTC","start":"22:00","end":"08:00"}`), SingleRunLimit: 100, ApprovalStaffID: &staffID, Actor: staffID, IdempotencyKey: "joint-runtime-policy-0001"})
+	policy, err := runtimeService.CreatePolicy(ctx, automationapp.PolicyCommand{Code: "joint-runtime-entry", Name: "Joint runtime entry", PackageID: segmentport.PackageID(packageID), TriggerKind: automationport.TriggerAudienceMemberEnteredV1, ActionKind: automationport.ActionOutboundMessage, ActionConfig: json.RawMessage(fmt.Sprintf(`{"agent_id":%d}`, agent.ID)), QuietHours: automationAudienceNonBlockingQuietHours(time.Now()), SingleRunLimit: 100, ApprovalStaffID: &staffID, Actor: staffID, IdempotencyKey: "joint-runtime-policy-0001"})
 	if err != nil {
 		t.Fatal(err)
 	}

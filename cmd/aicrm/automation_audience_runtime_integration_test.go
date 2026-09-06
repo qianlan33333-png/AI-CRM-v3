@@ -334,7 +334,7 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	policy, err := runtimeService.CreatePolicy(ctx, automationapp.PolicyCommand{Code: "audience-entry", Name: "Audience entry", PackageID: segmentport.PackageID(packageID), TriggerKind: automationport.TriggerAudienceMemberEnteredV1, ActionKind: automationport.ActionOutboundMessage, ActionConfig: actionConfig, QuietHours: json.RawMessage(`{"timezone":"UTC","start":"22:00","end":"08:00"}`), SingleRunLimit: 100, ApprovalStaffID: &approval, Actor: staffID, IdempotencyKey: "audience-runtime-policy-0001"})
+	policy, err := runtimeService.CreatePolicy(ctx, automationapp.PolicyCommand{Code: "audience-entry", Name: "Audience entry", PackageID: segmentport.PackageID(packageID), TriggerKind: automationport.TriggerAudienceMemberEnteredV1, ActionKind: automationport.ActionOutboundMessage, ActionConfig: actionConfig, QuietHours: automationAudienceNonBlockingQuietHours(time.Now()), SingleRunLimit: 100, ApprovalStaffID: &approval, Actor: staffID, IdempotencyKey: "audience-runtime-policy-0001"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1015,6 +1015,18 @@ func automationAudienceRuntimeDiagnostics(ctx context.Context, pool *pgxpool.Poo
 		return string(raw)
 	}
 	return string(raw) + "; provider_error=" + provider.Error() + "; frozen_payload_error=" + payloads.Error()
+}
+
+// automationAudienceNonBlockingQuietHours keeps the real River journey away
+// from its own quiet period. Runtime enrollment intentionally uses the wall
+// clock, so a fixed 22:00-08:00 UTC policy made this fixture wait until 08:00
+// whenever CI happened to run overnight. Scheduling semantics, including the
+// cross-midnight case, are asserted with fixed clocks in automation/app.
+func automationAudienceNonBlockingQuietHours(now time.Time) json.RawMessage {
+	start := now.UTC().Add(12 * time.Hour).Truncate(time.Minute)
+	end := start.Add(time.Minute)
+	return json.RawMessage(fmt.Sprintf(`{"timezone":"UTC","start":"%02d:%02d","end":"%02d:%02d"}`,
+		start.Hour(), start.Minute(), end.Hour(), end.Minute()))
 }
 
 func automationAudienceRuntimePool(t *testing.T) (*pgxpool.Pool, func()) {
