@@ -174,3 +174,13 @@
 - #164 f129 发布闭包根独立构建/缺文件拒绝验证通过，41 管理页、73 运行资产。d1f95c1 的侧边栏 Survey 实际 Total 源码方向正确，但根真实 PostgreSQL 发现新增 fixture 时间参数被推断为 interval，已退回显式类型修复。此前执行任务的通过声明不能覆盖准确 HEAD 的失败；当前不标记完成。
 
 本检查点没有新增合并、部署或真实 Provider 业务验收。
+
+
+## 2026-09-06 16:06 UTC 根审核检查点
+
+- #172 `c031ca5604e13f58d71038f8adee6b3bd7e44ac8` 完整 CI34042310198 成功，包含 Linux Chromium；根确认最终树与已审历史修复一致后合并为 main `65d9b0dde12244b9ca21a73bacbb49008e24713e`。该 main CI34043258907 被既有人工群发浏览器测试的固定250ms等待阻断，部署未执行，不能称为已上线。独立小 PR #174 `abbfb4b6c16ec0cd32dd12e0b787f3c5f2970c49` 改为有界实际页面就绪等待，并在真实 HTTP fixture 加600ms延迟；根真实 PostgreSQL/race 0跳过通过6.147s，完整CI待完成。
+- #173 `090889a891614dcb6da726ea6d073b39cc9411ec` 是当前准确审核 HEAD。根已核对基于 main65d 的完整 rebase range-diff，原审核的 OneID/四类活动/AI/控制面与0095外推均保留。88459181 全迁移实际 Composition + Management 真实 PostgreSQL/race 0跳过通过16.185s。090889a8 修复合法未知 client ID 轮换绕过 OAuth 预认证配额，只按来源共享 Access 既有持久 bucket；根专项与真实 HTTP/PG 0跳过通过。完整CI及与 PR164 组合的真实管理浏览器旅程仍待完成。
+- #171 `2eb9c3f0e4f23e6fd41388518e42aac780679065` 修复结果导出调用遗漏 trigger，源码已审，准确 SHA 的 Linux CI34043950115 正在执行；与 main65d 有冲突，须保留双方装配后再跑最终 HEAD。旧4b失败不能归给2eb，也不能把2eb当前无 PR check 显示当作通过。
+- #164 `2b591d80e9ba88a7ea9d479af2f6b8ff1d581258` 已合入 main65d。81fecb5 用真实 Media Reader 装配修复侧边栏503；根真实 PostgreSQL/race 校验 bootstrap、102条问卷总数和侧边栏完整读取均通过2.63s。原生V1 Host已修复TTL60..3600、时区漂移、凭据复制失败与激活结果未知处理。仍须组合173实际浏览器与最终CI。
+
+实现、专项测试、审核、合并、部署和真实 Provider 业务验收分别记录。本检查点仅172新增合并；生产仍使用先前已核实的8ec版本。
