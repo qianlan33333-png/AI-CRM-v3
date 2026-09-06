@@ -136,8 +136,10 @@ try {
     return true;
   })()`);
 
+  const snapshot = () => evaluate(cdp, "fetch('/api/admin/config/runtime-releases', {credentials:'same-origin'}).then((response) => response.ok ? response.json() : null).then((body) => ({revision: body?.runtime_releases?.active_revision, limit: body?.runtime_releases?.effective?.automation_max_recipients_per_run}))");
+  const releasePath = (id) => `/admin/config/releases/${id}`;
   const publish = async (limit, ordinal) => {
-    await waitFor(cdp, "Boolean(document.querySelector('[data-runtime-release-create] button[type=submit]:not([disabled])'))", `authenticated Config shell and Host did not render release ${ordinal}`);
+    await waitFor(cdp, "location.pathname === '/admin/config/releases/new' && Boolean(document.querySelector('[data-runtime-release-create] button[type=submit]:not([disabled])'))", `authenticated Config shell and Host did not render release ${ordinal}`);
     await evaluate(cdp, `(() => {
       const form = document.querySelector('[data-runtime-release-create]');
       form.querySelector('[name="max_recipients"]').value = ${JSON.stringify(String(limit))};
@@ -150,17 +152,23 @@ try {
     await waitFor(cdp, "Boolean(document.querySelector('[data-runtime-release-publish]'))", `validation ${ordinal} was not persisted through actual HTTP API`);
     await evaluate(cdp, "document.querySelector('[data-runtime-release-publish]').click(); true");
     await waitFor(cdp, "Boolean(document.querySelector('[data-runtime-release-rollback]'))", `publication ${ordinal} was not persisted through actual HTTP API`);
+    const current = await snapshot();
+    if (!Number.isSafeInteger(current?.revision) || current.limit !== limit) throw new Error(`publication ${ordinal} did not change the actual effective value`);
+    return current.revision;
+  };
+  const navigateToRelease = async (id) => {
+    await cdp.call("Page.navigate", { url: `${baseURL}${releasePath(id)}` });
+    await waitFor(cdp, `location.pathname === ${JSON.stringify(releasePath(id))} && document.querySelector('[data-runtime-release-rollback]')?.dataset.runtimeReleaseRollback === ${JSON.stringify(String(id))}`, `release ${id} detail did not render after navigation`);
   };
 
-  await publish(2, 1);
+  const firstReleaseID = await publish(2, 1);
   await cdp.call("Page.navigate", { url: `${baseURL}/admin/config/releases/new` });
-  await publish(3, 2);
-  await cdp.call("Page.navigate", { url: `${baseURL}/admin/config/releases/1` });
-  await waitFor(cdp, "document.body.textContent.includes('用此版本回滚')", "superseded release did not expose the explicit rollback action");
+  const secondReleaseID = await publish(3, 2);
+  await navigateToRelease(firstReleaseID);
   await evaluate(cdp, "document.querySelector('[data-runtime-release-rollback]').click(); true");
   await waitFor(cdp, "document.body.textContent.includes('已创建并发布回滚记录') && document.body.textContent.includes('实际使用回读')", "rollback and actual-use readback were not rendered");
-  const effective = await evaluate(cdp, "fetch('/api/admin/config/runtime-releases', {credentials:'same-origin'}).then((response) => response.ok ? response.json() : null).then((body) => body?.runtime_releases?.effective?.automation_max_recipients_per_run)");
-  if (effective !== 2) throw new Error("rollback did not restore the older runtime value through the actual API");
+  const restored = await snapshot();
+  if (restored.limit !== 2 || restored.revision === firstReleaseID || restored.revision === secondReleaseID) throw new Error("rollback did not publish a new revision with the older runtime value");
   console.log("runtime_config_releases_chromium: PASS");
 } catch (error) {
   journeyFailed = true;
