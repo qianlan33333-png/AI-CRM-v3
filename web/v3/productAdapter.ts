@@ -273,6 +273,7 @@ type ExternalPushConfigurationDetails = {
   pushType: string;
   day: number | null;
   frequency: number | null;
+  expiresAtTS: number | null;
   remark: string;
   customParamsText: string;
 };
@@ -286,7 +287,7 @@ function parseExternalPushConfiguration(value: unknown, page: ExternalPushPage):
   const remark = item.remark;
   const customParams = item.custom_params;
   const customParamsJSON = item.custom_params_json;
-  const optionalInteger = (field: 'day' | 'frequency'): number | null => {
+  const optionalInteger = (field: 'day' | 'frequency' | 'expires_at_ts'): number | null => {
     const raw = item[field];
     if (raw === null) return null;
     const parsed = Number(raw);
@@ -306,7 +307,7 @@ function parseExternalPushConfiguration(value: unknown, page: ExternalPushPage):
   } catch {
     throw new Error('外推配置响应不完整');
   }
-  return { enabled, configurationReference: reference, revision, pushType, day: optionalInteger('day'), frequency: optionalInteger('frequency'), remark, customParamsText: customParamsJSON };
+  return { enabled, configurationReference: reference, revision, pushType, day: optionalInteger('day'), frequency: optionalInteger('frequency'), expiresAtTS: optionalInteger('expires_at_ts'), remark, customParamsText: customParamsJSON };
 }
 
 function configurationBinding(page: ExternalPushPage, ownerDocument: Document): { enabled: boolean; reference: string } {
@@ -357,6 +358,7 @@ function mountExternalPushConfiguration(page: ExternalPushPage, ownerDocument: D
   const pushType = field('类型', 'product-v3-external-push-type');
   const day = field('服务天数', 'product-v3-external-push-day', 'text');
   const frequency = field('频次', 'product-v3-external-push-frequency', 'text');
+  const expiresAtTS = field('到期时间戳', 'product-v3-external-push-expires-at-ts', 'text');
   const remark = field('备注', 'product-v3-external-push-remark');
   const paramsLabel = ownerDocument.createElement('label');
   paramsLabel.style.cssText = 'display:grid;gap:5px;color:#646A73;font-size:12px';
@@ -386,6 +388,7 @@ function mountExternalPushConfiguration(page: ExternalPushPage, ownerDocument: D
     pushType.value = value.pushType;
     day.value = value.day == null ? '' : String(value.day);
     frequency.value = value.frequency == null ? '' : String(value.frequency);
+    expiresAtTS.value = value.expiresAtTS == null ? '' : String(value.expiresAtTS);
     remark.value = value.remark;
     params.value = value.customParamsText;
     status.textContent = `配置版本 ${value.revision}`;
@@ -396,6 +399,7 @@ function mountExternalPushConfiguration(page: ExternalPushPage, ownerDocument: D
     let binding: { enabled: boolean; reference: string };
     let configuredDay: number | null;
     let configuredFrequency: number | null;
+    let configuredExpiresAtTS: number | null;
     try {
       customParamsText = params.value.trim() || '{}';
       const customParams = JSON.parse(customParamsText);
@@ -403,6 +407,7 @@ function mountExternalPushConfiguration(page: ExternalPushPage, ownerDocument: D
       binding = configurationBinding(page, ownerDocument);
       configuredDay = externalPushOptionalInteger(day);
       configuredFrequency = externalPushOptionalInteger(frequency);
+      configuredExpiresAtTS = externalPushOptionalInteger(expiresAtTS);
     } catch (error) {
       showMessage(error instanceof Error ? error.message : '外推参数无效');
       return;
@@ -411,7 +416,7 @@ function mountExternalPushConfiguration(page: ExternalPushPage, ownerDocument: D
     void externalPushRequest(page.configurationEndpoint, {
       method: 'PUT',
       headers: { Accept: 'application/json', 'Content-Type': 'application/json', 'Idempotency-Key': externalPushConfigurationIdempotencyKey() },
-      body: JSON.stringify({ enabled: binding.enabled, configuration_reference: binding.enabled ? binding.reference : '', type: pushType.value, day: configuredDay, frequency: configuredFrequency, remark: remark.value, custom_params: customParamsText, expected_revision: configuration.revision }),
+      body: JSON.stringify({ enabled: binding.enabled, configuration_reference: binding.enabled ? binding.reference : '', type: pushType.value, day: configuredDay, frequency: configuredFrequency, expires_at_ts: configuredExpiresAtTS, remark: remark.value, custom_params: customParamsText, expected_revision: configuration.revision }),
     }).then((saved) => {
       configuration = parseExternalPushConfiguration(saved, page);
       status.textContent = `配置版本 ${configuration.revision}`;

@@ -266,6 +266,12 @@ func (s *CommercePushService) consumeOrderItemWithin(ctx context.Context, event 
 	if !configuration.Enabled || !s.targets.CommercePushProviderEnabled() {
 		return s.planCommercePushWithin(ctx, commercePlannedIntent{sourceKind: "order_paid", sourceReference: sourceReference, orderEventID: event.ID, productID: *item.ProductID, productKind: configuration.ProductKind, targetReference: commerceTargetReference(configuration), targetSlot: targetSlot, revision: configuration.Revision, sourceDigest: event.SourceDigest, state: "planned_disabled"})
 	}
+	// This is the frozen V2 paid-order behavior: a locally enabled product
+	// configuration may expire. Synthetic admin tests remain available for
+	// inspection and do not pass through this paid-event-only gate.
+	if configuration.ExpiresAtTS != nil && *configuration.ExpiresAtTS <= s.now().UTC().Unix() {
+		return s.planCommercePushWithin(ctx, commercePlannedIntent{sourceKind: "order_paid", sourceReference: sourceReference, orderEventID: event.ID, productID: *item.ProductID, productKind: configuration.ProductKind, targetReference: commerceTargetReference(configuration), targetSlot: targetSlot, revision: configuration.Revision, sourceDigest: event.SourceDigest, state: "planned_config_expired"})
+	}
 	target, found, err := s.targets.CommercePushTarget(ctx, configuration.ConfigurationReference)
 	if err != nil {
 		return err
@@ -459,7 +465,7 @@ func zeroCommerceDigest() []byte    { return make([]byte, 32) }
 func sha256Bytes(raw []byte) []byte { d := sha256.Sum256(raw); return d[:] }
 func validCommercePlannedState(v string) bool {
 	switch v {
-	case "planned_disabled", "planned_target_unavailable", "planned_identity_unavailable", "planned_payload_protection_unavailable":
+	case "planned_disabled", "planned_config_expired", "planned_target_unavailable", "planned_identity_unavailable", "planned_payload_protection_unavailable":
 		return true
 	}
 	return false

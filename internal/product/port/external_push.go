@@ -26,11 +26,15 @@ type ExternalPushConfiguration struct {
 	PushType               string                  `json:"type"`
 	Day                    *int64                  `json:"day"`
 	Frequency              *int64                  `json:"frequency"`
-	Remark                 string                  `json:"remark"`
-	CustomParams           map[string]any          `json:"custom_params"`
-	Revision               int64                   `json:"revision"`
-	ProductName            string                  `json:"-"`
-	UpdatedAt              time.Time               `json:"updated_at"`
+	// ExpiresAtTS is the frozen V2 config expiry in Unix seconds. Nil means the
+	// legacy configuration had no expiry; it is a Product business fact, not a
+	// protected deployment-target policy.
+	ExpiresAtTS  *int64         `json:"expires_at_ts"`
+	Remark       string         `json:"remark"`
+	CustomParams map[string]any `json:"custom_params"`
+	Revision     int64          `json:"revision"`
+	ProductName  string         `json:"-"`
+	UpdatedAt    time.Time      `json:"updated_at"`
 }
 
 type SaveExternalPushConfigurationCommand struct {
@@ -44,6 +48,7 @@ type SaveExternalPushConfigurationCommand struct {
 	PushType              string
 	Day                   *int64
 	Frequency             *int64
+	ExpiresAtTS           *int64
 	Remark                string
 	CustomParams          map[string]any
 	ExpectedRevision      int64

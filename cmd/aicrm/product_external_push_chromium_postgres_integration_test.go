@@ -163,27 +163,27 @@ func TestPostgreSQLProductExternalPushChromiumJourney(t *testing.T) {
 		t.Fatalf("product external push Chromium journey did not report success: %q", output)
 	}
 
-	var revision int64
+	var revision, storedExpiry int64
 	var stored json.RawMessage
 	var ciphertext []byte
 	var keyVersion int16
 	var sourceReference, targetSlot, effectID, state string
-	err = application.pool.Native().QueryRow(ctx, "SELECT configuration_revision,custom_params FROM product_external_push_configurations WHERE product_id=$1 AND product_kind='wechat_pay'", productID).Scan(&revision, &stored)
+	err = application.pool.Native().QueryRow(ctx, "SELECT configuration_revision,expires_at_ts,custom_params FROM product_external_push_configurations WHERE product_id=$1 AND product_kind='wechat_pay'", productID).Scan(&revision, &storedExpiry, &stored)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err = application.pool.Native().QueryRow(ctx, "SELECT payload_ciphertext,payload_key_version,source_reference,target_slot,effect_id,state FROM outbound_commerce_push_intents WHERE product_id=$1 AND source_kind='synthetic_test'", productID).Scan(&ciphertext, &keyVersion, &sourceReference, &targetSlot, &effectID, &state); err != nil {
 		t.Fatal(err)
 	}
-	if revision != 1 || string(stored) != "{\"count\": 9007199254740993, \"flag\": false, \"nested\": [{\"inner\": 9007199254740993}]}" || !strings.HasPrefix(sourceReference, "synthetic:") || targetSlot != "product:"+strconv.FormatInt(productID, 10) || effectID == "" || state != "outcome_unknown" {
+	if revision != 1 || storedExpiry != 2147483647 || string(stored) != "{\"count\": 9007199254740993, \"flag\": false, \"nested\": [{\"inner\": 9007199254740993}]}" || !strings.HasPrefix(sourceReference, "synthetic:") || targetSlot != "product:"+strconv.FormatInt(productID, 10) || effectID == "" || state != "outcome_unknown" {
 		t.Fatalf("browser configuration/intent revision=%d params=%s source=%q slot=%q effect=%q state=%q", revision, stored, sourceReference, targetSlot, effectID, state)
 	}
-	var serviceRevision int64
+	var serviceRevision, serviceStoredExpiry int64
 	var serviceStored json.RawMessage
-	if err = application.pool.Native().QueryRow(ctx, "SELECT version,custom_params FROM product_external_push_configurations WHERE product_id=$1 AND product_kind='service_period'", serviceProductID).Scan(&serviceRevision, &serviceStored); err != nil {
+	if err = application.pool.Native().QueryRow(ctx, "SELECT version,expires_at_ts,custom_params FROM product_external_push_configurations WHERE product_id=$1 AND product_kind='service_period'", serviceProductID).Scan(&serviceRevision, &serviceStoredExpiry, &serviceStored); err != nil {
 		t.Fatal(err)
 	}
-	if serviceRevision != 1 || string(serviceStored) != "{\"count\": 9007199254740993, \"flag\": false, \"nested\": [{\"inner\": 9007199254740993}]}" {
+	if serviceRevision != 1 || serviceStoredExpiry != 2147483647 || string(serviceStored) != "{\"count\": 9007199254740993, \"flag\": false, \"nested\": [{\"inner\": 9007199254740993}]}" {
 		t.Fatalf("service-period browser configuration revision=%d params=%s", serviceRevision, serviceStored)
 	}
 	cipher, err := outbound.NewCommercePayloadAESGCM(base64.RawStdEncoding.EncodeToString(dataKey))

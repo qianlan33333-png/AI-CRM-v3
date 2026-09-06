@@ -156,7 +156,7 @@ func (service *CommerceExternalPushService) SaveExternalPushConfiguration(
 		}
 		value.Enabled, value.ConfigurationReference = command.Enabled, command.ConfigurationReference
 		if command.BusinessParametersSet {
-			value.PushType, value.Day, value.Frequency, value.Remark = command.PushType, command.Day, command.Frequency, command.Remark
+			value.PushType, value.Day, value.Frequency, value.ExpiresAtTS, value.Remark = command.PushType, command.Day, command.Frequency, command.ExpiresAtTS, command.Remark
 			value.CustomParams = cloneCommerceExternalPushParams(command.CustomParams)
 		}
 		result, reserveErr = service.store.SaveCommerceExternalPushConfiguration(tx, value, now)
@@ -350,10 +350,11 @@ func commerceExternalPushSaveDigest(command productport.SaveExternalPushConfigur
 		PushType               string                              `json:"type"`
 		Day                    *int64                              `json:"day"`
 		Frequency              *int64                              `json:"frequency"`
+		ExpiresAtTS            *int64                              `json:"expires_at_ts"`
 		Remark                 string                              `json:"remark"`
 		CustomParams           map[string]any                      `json:"custom_params"`
 		ExpectedRevision       int64                               `json:"expected_revision"`
-	}{command.ProductID, command.ProductKind, command.Enabled, command.ConfigurationReference, command.BusinessParametersSet, command.PushType, command.Day, command.Frequency, command.Remark, command.CustomParams, command.ExpectedRevision})
+	}{command.ProductID, command.ProductKind, command.Enabled, command.ConfigurationReference, command.BusinessParametersSet, command.PushType, command.Day, command.Frequency, command.ExpiresAtTS, command.Remark, command.CustomParams, command.ExpectedRevision})
 	return sha256.Sum256(payload)
 }
 
@@ -374,10 +375,11 @@ func commerceExternalPushConfigurationDigest(value productport.ExternalPushConfi
 		PushType               string                              `json:"type"`
 		Day                    *int64                              `json:"day"`
 		Frequency              *int64                              `json:"frequency"`
+		ExpiresAtTS            *int64                              `json:"expires_at_ts"`
 		Remark                 string                              `json:"remark"`
 		CustomParams           map[string]any                      `json:"custom_params"`
 		Revision               int64                               `json:"revision"`
-	}{value.ProductID, value.ProductKind, value.Enabled, value.ConfigurationReference, value.PushType, value.Day, value.Frequency, value.Remark, value.CustomParams, value.Revision})
+	}{value.ProductID, value.ProductKind, value.Enabled, value.ConfigurationReference, value.PushType, value.Day, value.Frequency, value.ExpiresAtTS, value.Remark, value.CustomParams, value.Revision})
 	return sha256.Sum256(payload)
 }
 
@@ -387,7 +389,7 @@ func validSaveCommerceExternalPush(command productport.SaveExternalPushConfigura
 	}
 	value := productport.ExternalPushConfiguration{ProductID: command.ProductID, ProductKind: command.ProductKind, Enabled: command.Enabled, ConfigurationReference: command.ConfigurationReference, Revision: 1, UpdatedAt: time.Unix(1, 0)}
 	if command.BusinessParametersSet {
-		value.PushType, value.Day, value.Frequency, value.Remark = command.PushType, command.Day, command.Frequency, command.Remark
+		value.PushType, value.Day, value.Frequency, value.ExpiresAtTS, value.Remark = command.PushType, command.Day, command.Frequency, command.ExpiresAtTS, command.Remark
 		value.CustomParams = command.CustomParams
 	}
 	return validExternalPushConfiguration(value, command.ProductID, command.ProductKind)
@@ -415,7 +417,7 @@ func validExternalPushConfiguration(value productport.ExternalPushConfiguration,
 }
 
 func validCommerceExternalPushBusiness(value productport.ExternalPushConfiguration) bool {
-	if !utf8.ValidString(value.PushType) || !utf8.ValidString(value.Remark) || strings.TrimSpace(value.PushType) != value.PushType || strings.TrimSpace(value.Remark) != value.Remark || utf8.RuneCountInString(value.PushType) > 200 || utf8.RuneCountInString(value.Remark) > 2000 || (value.Day != nil && *value.Day < 0) || (value.Frequency != nil && *value.Frequency < 0) || len(value.CustomParams) > 64 {
+	if !utf8.ValidString(value.PushType) || !utf8.ValidString(value.Remark) || strings.TrimSpace(value.PushType) != value.PushType || strings.TrimSpace(value.Remark) != value.Remark || utf8.RuneCountInString(value.PushType) > 200 || utf8.RuneCountInString(value.Remark) > 2000 || (value.Day != nil && *value.Day < 0) || (value.Frequency != nil && *value.Frequency < 0) || (value.ExpiresAtTS != nil && *value.ExpiresAtTS < 0) || len(value.CustomParams) > 64 {
 		return false
 	}
 	raw, err := json.Marshal(value.CustomParams)
@@ -452,7 +454,7 @@ func cloneCommerceExternalPushParams(source map[string]any) map[string]any {
 }
 
 func sameCommerceExternalPushBusiness(left, right productport.ExternalPushConfiguration) bool {
-	if left.PushType != right.PushType || left.Remark != right.Remark || !sameCommerceExternalPushInteger(left.Day, right.Day) || !sameCommerceExternalPushInteger(left.Frequency, right.Frequency) {
+	if left.PushType != right.PushType || left.Remark != right.Remark || !sameCommerceExternalPushInteger(left.Day, right.Day) || !sameCommerceExternalPushInteger(left.Frequency, right.Frequency) || !sameCommerceExternalPushInteger(left.ExpiresAtTS, right.ExpiresAtTS) {
 		return false
 	}
 	leftRaw, leftErr := json.Marshal(left.CustomParams)

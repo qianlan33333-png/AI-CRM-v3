@@ -586,7 +586,7 @@ func TestExternalPushConfigurationHTTPPreservesLegacyBusinessJSONAndCAS(t *testi
 		PushType: "member_open", Day: pointerInt64(30), Frequency: pointerInt64(1), Remark: "旧备注", CustomParams: map[string]any{"old": true}, Revision: 3,
 		UpdatedAt: time.Date(2026, 9, 6, 4, 0, 0, 0, time.UTC),
 	}
-	body := `{"enabled":true,"configuration_reference":"product-push-7","type":"member_renew","day":45,"frequency":2,"remark":"保留业务备注","custom_params":{"count":9007199254740993,"flag":false,"nil":null,"nested":[" 空白 ",{"k":true}]},"expected_revision":3}`
+	body := `{"enabled":true,"configuration_reference":"product-push-7","type":"member_renew","day":45,"frequency":2,"expires_at_ts":2147483647,"remark":"保留业务备注","custom_params":{"count":9007199254740993,"flag":false,"nil":null,"nested":[" 空白 ",{"k":true}]},"expected_revision":3}`
 	write := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPut, "/api/admin/wechat-pay/products/7/external-push", strings.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
@@ -597,7 +597,7 @@ func TestExternalPushConfigurationHTTPPreservesLegacyBusinessJSONAndCAS(t *testi
 	}
 	command := *external.save
 	want := map[string]any{"count": json.Number("9007199254740993"), "flag": false, "nil": nil, "nested": []any{" 空白 ", map[string]any{"k": true}}}
-	if !command.BusinessParametersSet || command.ExpectedRevision != 3 || command.PushType != "member_renew" || command.Day == nil || *command.Day != 45 || command.Frequency == nil || *command.Frequency != 2 || command.Remark != "保留业务备注" || !reflect.DeepEqual(command.CustomParams, want) {
+	if !command.BusinessParametersSet || command.ExpectedRevision != 3 || command.PushType != "member_renew" || command.Day == nil || *command.Day != 45 || command.Frequency == nil || *command.Frequency != 2 || command.ExpiresAtTS == nil || *command.ExpiresAtTS != 2147483647 || command.Remark != "保留业务备注" || !reflect.DeepEqual(command.CustomParams, want) {
 		t.Fatalf("business command=%#v", command)
 	}
 	var response productport.ExternalPushConfiguration
@@ -632,7 +632,7 @@ func TestExternalPushConfigurationHTTPPreservesLegacyBusinessJSONAndCAS(t *testi
 	// a number beyond IEEE-754's safe integer range and accept revision 0 for
 	// the first persisted business configuration.
 	first := httptest.NewRecorder()
-	firstRequest := httptest.NewRequest(http.MethodPut, "/api/admin/wechat-pay/products/7/external-push", strings.NewReader(`{"enabled":true,"configuration_reference":"product-push-7","type":"member_open","day":null,"frequency":null,"remark":"","custom_params":[{"key":"big","value":9007199254740993},{"key":"nested","value":[1,{"inner":9007199254740993}]}],"expected_revision":0}`))
+	firstRequest := httptest.NewRequest(http.MethodPut, "/api/admin/wechat-pay/products/7/external-push", strings.NewReader(`{"enabled":true,"configuration_reference":"product-push-7","type":"member_open","day":null,"frequency":null,"expires_at_ts":null,"remark":"","custom_params":[{"key":"big","value":9007199254740993},{"key":"nested","value":[1,{"inner":9007199254740993}]}],"expected_revision":0}`))
 	firstRequest.Header.Set("Content-Type", "application/json")
 	firstRequest.Header.Set("Idempotency-Key", "product-external-push-http-0003")
 	handler.ServeHTTP(first, firstRequest)
@@ -643,7 +643,7 @@ func TestExternalPushConfigurationHTTPPreservesLegacyBusinessJSONAndCAS(t *testi
 
 	external.saveErr = productapp.ErrConflict
 	stale := httptest.NewRecorder()
-	staleRequest := httptest.NewRequest(http.MethodPut, "/api/admin/wechat-pay/products/7/external-push", strings.NewReader(`{"enabled":true,"configuration_reference":"product-push-7","type":"member_open","day":null,"frequency":null,"remark":"","custom_params":{},"expected_revision":0}`))
+	staleRequest := httptest.NewRequest(http.MethodPut, "/api/admin/wechat-pay/products/7/external-push", strings.NewReader(`{"enabled":true,"configuration_reference":"product-push-7","type":"member_open","day":null,"frequency":null,"expires_at_ts":null,"remark":"","custom_params":{},"expected_revision":0}`))
 	staleRequest.Header.Set("Content-Type", "application/json")
 	staleRequest.Header.Set("Idempotency-Key", "product-external-push-http-0004")
 	handler.ServeHTTP(stale, staleRequest)
@@ -653,7 +653,7 @@ func TestExternalPushConfigurationHTTPPreservesLegacyBusinessJSONAndCAS(t *testi
 	}
 
 	invalid := httptest.NewRecorder()
-	invalidRequest := httptest.NewRequest(http.MethodPut, "/api/admin/wechat-pay/products/7/external-push", strings.NewReader(`{"enabled":true,"configuration_reference":"product-push-7","type":"member_open","day":null,"frequency":null,"remark":"","custom_params":"not json","expected_revision":4}`))
+	invalidRequest := httptest.NewRequest(http.MethodPut, "/api/admin/wechat-pay/products/7/external-push", strings.NewReader(`{"enabled":true,"configuration_reference":"product-push-7","type":"member_open","day":null,"frequency":null,"expires_at_ts":null,"remark":"","custom_params":"not json","expected_revision":4}`))
 	invalidRequest.Header.Set("Content-Type", "application/json")
 	invalidRequest.Header.Set("Idempotency-Key", "product-external-push-http-0005")
 	handler.ServeHTTP(invalid, invalidRequest)
@@ -1080,7 +1080,7 @@ func TestExternalPushConfigurationHTTPReadsDisabledBindingWithCompleteFrozenShap
 	if err := json.Unmarshal(response.Body.Bytes(), &raw); err != nil {
 		t.Fatal(err)
 	}
-	if string(raw["configuration_reference"]) != `""` || string(raw["custom_params"]) != `{}` || string(raw["custom_params_json"]) != `"{}"` {
+	if string(raw["configuration_reference"]) != `""` || string(raw["expires_at_ts"]) != `null` || string(raw["custom_params"]) != `{}` || string(raw["custom_params_json"]) != `"{}"` {
 		t.Fatalf("incomplete disabled frozen configuration response=%s", response.Body.String())
 	}
 }

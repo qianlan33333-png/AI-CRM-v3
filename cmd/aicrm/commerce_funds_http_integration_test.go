@@ -220,10 +220,10 @@ func TestPostgreSQLProductExternalPushBusinessParametersRoundTrip(t *testing.T) 
 	if err = pool.QueryRow(ctx, `INSERT INTO products(product_code,name,price_minor,currency,stock_quantity,created_by,legacy_admin_projection) VALUES('push-service','外推周期商品',1200,'CNY',1,1,$1::jsonb) RETURNING id`, serviceProjection).Scan(&serviceID); err != nil {
 		t.Fatal(err)
 	}
-	day, frequency := int64(30), int64(1)
+	day, frequency, expiresAtTS := int64(30), int64(1), int64(2147483647)
 	value := productport.ExternalPushConfiguration{
 		ProductID: productport.ID(ordinaryID), ProductKind: productport.ExternalPushWeChatPay, Enabled: true, ConfigurationReference: "product-push-roundtrip",
-		PushType: "member_open", Day: &day, Frequency: &frequency, Remark: "保留业务备注", CustomParams: map[string]any{"number": json.Number("9007199254740993"), "flag": false, "nil": nil, "nested": []any{" 空白 ", map[string]any{"k": true}}},
+		PushType: "member_open", Day: &day, Frequency: &frequency, ExpiresAtTS: &expiresAtTS, Remark: "保留业务备注", CustomParams: map[string]any{"number": json.Number("9007199254740993"), "flag": false, "nil": nil, "nested": []any{" 空白 ", map[string]any{"k": true}}},
 	}
 	now := time.Date(2026, 9, 6, 5, 0, 0, 0, time.UTC)
 	var saved, read, orderRead productport.ExternalPushConfiguration
@@ -245,7 +245,7 @@ func TestPostgreSQLProductExternalPushBusinessParametersRoundTrip(t *testing.T) 
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if saved.Revision != 1 || read.Revision != 1 || orderRead.ProductKind != productport.ExternalPushWeChatPay || orderRead.PushType != "member_open" || orderRead.Day == nil || *orderRead.Day != 30 || orderRead.Frequency == nil || *orderRead.Frequency != 1 || orderRead.Remark != "保留业务备注" || !commerceFundsJSONEquivalent(t, orderRead.CustomParams, value.CustomParams) {
+	if saved.Revision != 1 || read.Revision != 1 || orderRead.ProductKind != productport.ExternalPushWeChatPay || orderRead.PushType != "member_open" || orderRead.Day == nil || *orderRead.Day != 30 || orderRead.Frequency == nil || *orderRead.Frequency != 1 || orderRead.ExpiresAtTS == nil || *orderRead.ExpiresAtTS != expiresAtTS || orderRead.Remark != "保留业务备注" || !commerceFundsJSONEquivalent(t, orderRead.CustomParams, value.CustomParams) {
 		t.Fatalf("saved=%#v read=%#v order=%#v", saved, read, orderRead)
 	}
 	if got, ok := orderRead.CustomParams["number"].(json.Number); !ok || got.String() != "9007199254740993" {
@@ -265,6 +265,9 @@ func TestPostgreSQLProductExternalPushBusinessParametersRoundTrip(t *testing.T) 
 	}
 	if _, err = pool.Exec(ctx, `UPDATE product_external_push_configurations SET custom_params='[]'::jsonb WHERE product_id=$1`, ordinaryID); err == nil {
 		t.Fatal("database accepted a non-object custom_params shape")
+	}
+	if _, err = pool.Exec(ctx, `UPDATE product_external_push_configurations SET expires_at_ts=-1 WHERE product_id=$1`, ordinaryID); err == nil {
+		t.Fatal("database accepted a negative external-push expiry")
 	}
 }
 
@@ -422,6 +425,91 @@ func TestPostgreSQLUnconfiguredPaidOrderPlansDisabledCommercePushOnce(t *testing
 FROM outbound_commerce_push_intents intent WHERE intent.order_paid_event_id=$1`, paidEventID, effectport.KindCommerceProductPush).Scan(&state, &targetReference, &revision, &effects, &audits, &outbox)
 	if err != nil || state != "planned_disabled" || targetReference != "unconfigured" || revision != 0 || effects != 0 || audits != 1 || outbox != 1 {
 		t.Fatalf("unconfigured paid intent state/ref/revision/effects/audits/outbox=%q/%q/%d/%d/%d/%d err=%v", state, targetReference, revision, effects, audits, outbox, err)
+	}
+}
+
+func TestPostgreSQLExpiredPaidOrderPlansConfigExpiredCommercePushOnce(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	databaseURL, cleanup := adminAccessCompositionDatabase(t, ctx)
+	defer cleanup()
+	config, err := pgxpool.ParseConfig(databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool, err := pgxpool.NewWithConfig(ctx, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	wrapped, err := platformpostgres.Wrap(pool, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wrapped.Close()
+	uow, err := platformpostgres.NewUnitOfWork(wrapped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	products, err := productstore.NewPostgreSQL(pool, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 6, 7, 0, 0, 0, time.UTC)
+	var customerID, productID, orderID, outboxID, paidEventID int64
+	if err = pool.QueryRow(ctx, `INSERT INTO customers DEFAULT VALUES RETURNING id`).Scan(&customerID); err != nil {
+		t.Fatal(err)
+	}
+	if err = pool.QueryRow(ctx, `INSERT INTO products(product_code,name,price_minor,currency,stock_quantity,created_by,legacy_admin_projection) VALUES('push-expired','已到期外推商品',1200,'CNY',1,1,'{"schema_version":1,"status":"enabled","enabled":true}'::jsonb) RETURNING id`).Scan(&productID); err != nil {
+		t.Fatal(err)
+	}
+	expiresAtTS := time.Now().UTC().Add(-time.Second).Unix()
+	if err = uow.Within(ctx, func(tx context.Context) error {
+		_, saveErr := products.SaveCommerceExternalPushConfiguration(tx, productport.ExternalPushConfiguration{
+			ProductID: productport.ID(productID), ProductKind: productport.ExternalPushWeChatPay, Enabled: true, ConfigurationReference: "push-expired-reference",
+			ExpiresAtTS: &expiresAtTS, CustomParams: map[string]any{},
+		}, now)
+		return saveErr
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err = pool.QueryRow(ctx, `INSERT INTO orders(provider,source_system,source_key,merchant_order_no,payer_customer_id,beneficiary_customer_id,amount_minor,currency,status,record_origin,effect_eligible,version,created_at,updated_at) VALUES('wechat_pay','native-checkout','push-expired-source','push-expired-merchant',$1,$1,1200,'CNY','paid','native',TRUE,2,$2,$2) RETURNING id`, customerID, now).Scan(&orderID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pool.Exec(ctx, `INSERT INTO order_items(order_id,line_no,product_id,product_code,product_name,unit_amount_minor,quantity,line_amount_minor) VALUES($1,1,$2,'push-expired','已到期外推商品',1200,1,1200)`, orderID, productID); err != nil {
+		t.Fatal(err)
+	}
+	if err = pool.QueryRow(ctx, `INSERT INTO order_outbox(event_type,idempotency_key,aggregate_id,payload,occurred_at) VALUES('order.paid.v1',$1,$2,'{}'::jsonb,$3) RETURNING id`, "order.paid.v1:"+strconv.FormatInt(orderID, 10), orderID, now).Scan(&outboxID); err != nil {
+		t.Fatal(err)
+	}
+	sourceDigest := orderport.NewPaidEventSourceDigest(orderID, 2)
+	if err = pool.QueryRow(ctx, `INSERT INTO order_paid_events(order_id,order_version,source_digest,occurred_at) VALUES($1,2,$2,$3) RETURNING id`, orderID, sourceDigest[:], now).Scan(&paidEventID); err != nil {
+		t.Fatal(err)
+	}
+	service, err := outbound.NewCommercePushService(pool, uow, commerceFundsDisabledCommerceEffects{}, commerceFundsProductConfigurationReader{repository: products}, commerceFundsPushIdentityReader{customerID: customerID}, &commerceFundsPushTargets{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	productRef := productID
+	event := orderport.PaidEvent{ID: paidEventID, OrderID: orderID, OrderVersion: 2, DomainEventOutboxID: outboxID, OccurredAt: now, SourceDigest: sourceDigest, Order: orderdomain.Snapshot{
+		ID: orderID, Provider: orderdomain.ProviderWeChatPay, SourceSystem: "native-checkout", SourceKey: "push-expired-source", MerchantOrderNo: "push-expired-merchant", PayerCustomerID: &customerID, BeneficiaryCustomerID: &customerID,
+		Amount: orderdomain.Money{AmountMinor: 1200, Currency: "CNY"}, Status: orderdomain.StatusPaid, Items: []orderdomain.ItemSnapshot{{LineNo: 1, ProductID: &productRef, ProductCode: "push-expired", ProductName: "已到期外推商品", UnitAmountMinor: 1200, Quantity: 1, LineAmountMinor: 1200}}, RecordOrigin: orderdomain.RecordOriginNative, EffectEligible: true, Version: 2, CreatedAt: now, UpdatedAt: now,
+	}}
+	for attempt := 0; attempt < 2; attempt++ {
+		if err = uow.Within(ctx, func(tx context.Context) error { return service.ConsumePaidEventWithin(tx, event) }); err != nil {
+			t.Fatalf("expired paid consume attempt=%d err=%v", attempt, err)
+		}
+	}
+	var state, targetReference string
+	var revision int64
+	var effects, audits, outbox int
+	err = pool.QueryRow(ctx, `SELECT intent.state,intent.target_reference,intent.product_configuration_revision,
+  (SELECT count(*) FROM external_effects WHERE kind=$2),
+  (SELECT count(*) FROM outbound_commerce_push_audit_events audit WHERE audit.intent_id=intent.id),
+  (SELECT count(*) FROM outbound_commerce_push_outbox outbox WHERE outbox.intent_id=intent.id)
+FROM outbound_commerce_push_intents intent WHERE intent.order_paid_event_id=$1`, paidEventID, effectport.KindCommerceProductPush).Scan(&state, &targetReference, &revision, &effects, &audits, &outbox)
+	if err != nil || state != "planned_config_expired" || targetReference != "push-expired-reference" || revision != 1 || effects != 0 || audits != 1 || outbox != 1 {
+		t.Fatalf("expired paid intent state/ref/revision/effects/audits/outbox=%q/%q/%d/%d/%d/%d err=%v", state, targetReference, revision, effects, audits, outbox, err)
 	}
 }
 

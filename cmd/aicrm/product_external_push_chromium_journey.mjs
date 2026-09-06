@@ -10,6 +10,10 @@ const productID = process.env.AICRM_PRODUCT_PUSH_TEST_PRODUCT_ID;
 const serviceProductID = process.env.AICRM_PRODUCT_PUSH_TEST_SERVICE_PRODUCT_ID;
 const historicalOrderReference = process.env.AICRM_PRODUCT_PUSH_TEST_HISTORICAL_ORDER;
 const exactParams = process.env.AICRM_PRODUCT_PUSH_TEST_PARAMS;
+// The fixture input intentionally has a different key order. Go persists an
+// object and returns its canonical map text. Keep this as literal JSON rather
+// than parsing it in JavaScript: JSON.parse would round the 64-bit integer.
+const canonicalParams = '{"count":9007199254740993,"flag":false,"nested":[{"inner":9007199254740993}]}';
 if (!/^https:\/\//.test(baseURL || "") || !username || !password || !/^[1-9][0-9]*$/.test(productID || "") || !/^[1-9][0-9]*$/.test(serviceProductID || "") || !/^[A-Za-z0-9._:-]{1,200}$/.test(historicalOrderReference || "") || !exactParams) {
   throw new Error("product external push Chromium journey requires HTTPS URL, credentials, ordinary and service-period product ids, historical order, and JSON");
 }
@@ -229,16 +233,16 @@ try {
   } catch (_) {
     throw new Error("product configuration did not load " + await browserSaveDiagnostic());
   }
-  await evaluate(cdp, "(() => { const enabled=document.querySelector('#pfExternalPushEnabled'); const reference=document.querySelector('#pfExternalPushReference'); enabled.value='true'; enabled.dispatchEvent(new Event('change',{bubbles:true})); reference.value='browser-push-target'; reference.dispatchEvent(new Event('input',{bubbles:true})); document.querySelector('#product-v3-external-push-type').value='member_open'; document.querySelector('#product-v3-external-push-day').value='30'; document.querySelector('#product-v3-external-push-frequency').value='1'; document.querySelector('#product-v3-external-push-remark').value='browser preserves JSON'; document.querySelector('#product-v3-external-push-custom-params').value=" + JSON.stringify(exactParams) + "; document.querySelector('[data-external-push-configuration-save]').click(); return true; })()");
+  await evaluate(cdp, "(() => { const enabled=document.querySelector('#pfExternalPushEnabled'); const reference=document.querySelector('#pfExternalPushReference'); enabled.value='true'; enabled.dispatchEvent(new Event('change',{bubbles:true})); reference.value='browser-push-target'; reference.dispatchEvent(new Event('input',{bubbles:true})); document.querySelector('#product-v3-external-push-type').value='member_open'; document.querySelector('#product-v3-external-push-day').value='30'; document.querySelector('#product-v3-external-push-frequency').value='1'; document.querySelector('#product-v3-external-push-expires-at-ts').value='2147483647'; document.querySelector('#product-v3-external-push-remark').value='browser preserves JSON'; document.querySelector('#product-v3-external-push-custom-params').value=" + JSON.stringify(exactParams) + "; document.querySelector('[data-external-push-configuration-save]').click(); return true; })()");
   try {
     await waitFor(cdp, "document.querySelector('[data-external-push-configuration]')?.textContent.includes('配置版本 1')", "browser configuration save did not finish");
   } catch (_) {
     throw new Error("browser configuration save did not finish " + await browserSaveDiagnostic());
   }
-  await waitFor(cdp, "document.querySelector('#product-v3-external-push-custom-params')?.value === " + JSON.stringify(exactParams), "browser save changed custom JSON before readback");
+  await waitFor(cdp, "document.querySelector('#product-v3-external-push-custom-params')?.value === " + JSON.stringify(canonicalParams), "browser save changed canonical custom JSON before readback");
 
   await cdp.call("Page.navigate", { url: baseURL + productPath });
-  await waitFor(cdp, "location.pathname === '/admin/productForm.html' && " + hostReady + " && document.querySelector('#product-v3-external-push-custom-params')?.value === " + JSON.stringify(exactParams), "reloaded product Host did not preserve exact JSON text");
+  await waitFor(cdp, "location.pathname === '/admin/productForm.html' && " + hostReady + " && document.querySelector('#product-v3-external-push-custom-params')?.value === " + JSON.stringify(canonicalParams) + " && document.querySelector('#product-v3-external-push-expires-at-ts')?.value === '2147483647'", "reloaded product Host did not preserve exact JSON text or expiry");
   await evaluate(cdp, "document.querySelector('[data-external-push-test=\"run\"]').click(); true");
   await waitFor(cdp, "document.querySelector('#product-v3-toast')?.textContent.includes('测试已受理，等待受控投递')", "synthetic test was not accepted through Product HTTP");
   const terminalTimeline = "document.querySelector('[data-external-push-timeline]')?.textContent.includes('结果未知，需按原投递 ID 对账')";
@@ -266,15 +270,15 @@ try {
   } catch (_) {
     throw new Error("service-period product configuration did not load " + await browserSaveDiagnostic());
   }
-  await evaluate(cdp, "(() => { const enabled=document.querySelector('#spfExternalPushEnabled'); const reference=document.querySelector('#spfExternalPushReference'); enabled.value='true'; enabled.dispatchEvent(new Event('change',{bubbles:true})); reference.value='browser-push-target'; reference.dispatchEvent(new Event('input',{bubbles:true})); document.querySelector('#product-v3-external-push-type').value='member_renew'; document.querySelector('#product-v3-external-push-day').value='30'; document.querySelector('#product-v3-external-push-frequency').value='1'; document.querySelector('#product-v3-external-push-remark').value='service browser preserves JSON'; document.querySelector('#product-v3-external-push-custom-params').value=" + JSON.stringify(exactParams) + "; document.querySelector('[data-external-push-configuration-save]').click(); return true; })()");
+  await evaluate(cdp, "(() => { const enabled=document.querySelector('#spfExternalPushEnabled'); const reference=document.querySelector('#spfExternalPushReference'); enabled.value='true'; enabled.dispatchEvent(new Event('change',{bubbles:true})); reference.value='browser-push-target'; reference.dispatchEvent(new Event('input',{bubbles:true})); document.querySelector('#product-v3-external-push-type').value='member_renew'; document.querySelector('#product-v3-external-push-day').value='30'; document.querySelector('#product-v3-external-push-frequency').value='1'; document.querySelector('#product-v3-external-push-expires-at-ts').value='2147483647'; document.querySelector('#product-v3-external-push-remark').value='service browser preserves JSON'; document.querySelector('#product-v3-external-push-custom-params').value=" + JSON.stringify(exactParams) + "; document.querySelector('[data-external-push-configuration-save]').click(); return true; })()");
   try {
     await waitFor(cdp, "document.querySelector('[data-external-push-configuration]')?.textContent.includes('配置版本 1')", "service-period browser configuration save did not finish");
   } catch (_) {
     throw new Error("service-period browser configuration save did not finish " + await browserSaveDiagnostic());
   }
-  await waitFor(cdp, "document.querySelector('#product-v3-external-push-custom-params')?.value === " + JSON.stringify(exactParams), "service-period browser save changed custom JSON before readback");
+  await waitFor(cdp, "document.querySelector('#product-v3-external-push-custom-params')?.value === " + JSON.stringify(canonicalParams), "service-period browser save changed canonical custom JSON before readback");
   await cdp.call("Page.navigate", { url: baseURL + serviceProductPath });
-  await waitFor(cdp, "location.pathname === '/admin/spProductForm.html' && " + serviceHostReady + " && document.querySelector('#product-v3-external-push-custom-params')?.value === " + JSON.stringify(exactParams), "reloaded service-period Host did not preserve exact JSON text");
+  await waitFor(cdp, "location.pathname === '/admin/spProductForm.html' && " + serviceHostReady + " && document.querySelector('#product-v3-external-push-custom-params')?.value === " + JSON.stringify(canonicalParams) + " && document.querySelector('#product-v3-external-push-expires-at-ts')?.value === '2147483647'", "reloaded service-period Host did not preserve exact JSON text or expiry");
 
   const historicalOrderPath = "/admin/orderDetail.html?id=" + encodeURIComponent(historicalOrderReference);
   await cdp.call("Page.navigate", { url: baseURL + historicalOrderPath });
