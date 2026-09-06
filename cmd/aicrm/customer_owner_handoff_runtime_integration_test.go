@@ -50,8 +50,9 @@ func (resolver ownerHandoffRuntimeResolver) ResolveOwnerHandoffCandidates(_ cont
 }
 
 type stopAfterOwnerHandoffSegment struct {
-	service *customerapp.OwnerHandoffService
-	stop    func()
+	service              *customerapp.OwnerHandoffService
+	stop                 func()
+	segmentZeroCommitted chan<- struct{}
 }
 
 func (worker stopAfterOwnerHandoffSegment) ProcessOwnerHandoffBatch(ctx context.Context, batchID string, segment int64) error {
@@ -63,8 +64,18 @@ func (worker stopAfterOwnerHandoffSegment) ProcessOwnerHandoffBatch(ctx context.
 		return ctx.Err()
 	}
 	err := worker.service.ProcessOwnerHandoffBatch(ctx, batchID, segment)
-	if err == nil && worker.stop != nil {
-		worker.stop()
+	if err == nil {
+		// ProcessOwnerHandoffBatch returns only after the Customer UoW has
+		// committed the local rows and the following durable job. Tell the
+		// interruption fixture that exact boundary has occurred before asking
+		// River to stop; a runtime-start timeout is not evidence of this
+		// business boundary under -race load.
+		if worker.segmentZeroCommitted != nil {
+			worker.segmentZeroCommitted <- struct{}{}
+		}
+		if worker.stop != nil {
+			worker.stop()
+		}
 	}
 	return err
 }
@@ -444,8 +455,9 @@ func TestCustomerOwnerHandoffRiverSegmentsLocalOnly20000(t *testing.T) {
 	// Stop immediately after segment zero commits. The interruption wrapper
 	// holds any concurrent later claim until River cancels it, so exactly one
 	// 100-line segment is committed before the fresh runtime resumes the rest.
+	firstSegmentCommitted := make(chan struct{}, 1)
 	firstWorker := customer.NewOwnerHandoffBatchWorker()
-	if err = firstWorker.Bind(stopAfterOwnerHandoffSegment{service: service, stop: stopRun}); err != nil {
+	if err = firstWorker.Bind(stopAfterOwnerHandoffSegment{service: service, stop: stopRun, segmentZeroCommitted: firstSegmentCommitted}); err != nil {
 		t.Fatal(err)
 	}
 	workers = river.NewWorkers()
@@ -459,12 +471,30 @@ func TestCustomerOwnerHandoffRiverSegmentsLocalOnly20000(t *testing.T) {
 	firstDone := make(chan error, 1)
 	go func() { firstDone <- firstRuntime.Run(runCtx) }()
 	select {
+	case <-firstSegmentCommitted:
+		// The explicit boundary above distinguishes a slow River claim from a
+		// failed first Customer segment. Runtime shutdown is checked below.
+	case <-time.After(30 * time.Second):
+		var updated, queued, jobs int
+		queryErr := native.QueryRow(ctx, `SELECT
+			(SELECT count(*) FROM customer_owner_handoff_lines WHERE batch_id=$1 AND state='local_updated'),
+			(SELECT count(*) FROM customer_owner_handoff_lines WHERE batch_id=$1 AND state='queued'),
+			(SELECT count(*) FROM river_job WHERE kind='customer.owner-handoff.v1')`, batch.ID).Scan(&updated, &queued, &jobs)
+		stopRun()
+		select {
+		case <-firstDone:
+		case <-time.After(20 * time.Second):
+		}
+		t.Fatalf("first owner-handoff segment did not commit within bounded start window: updated=%d queued=%d jobs=%d query_err=%v", updated, queued, jobs, queryErr)
+	}
+	select {
 	case runErr := <-firstDone:
 		if runErr != nil && runErr != context.Canceled {
 			t.Fatalf("first runtime stop: %v", runErr)
 		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("first owner-handoff segment did not stop")
+	case <-time.After(20 * time.Second):
+		stopRun()
+		t.Fatal("first owner-handoff runtime did not stop after segment zero committed")
 	}
 	var firstUpdated, firstQueued int
 	if err = native.QueryRow(ctx, `SELECT count(*) FILTER (WHERE state='local_updated'),count(*) FILTER (WHERE state='queued') FROM customer_owner_handoff_lines WHERE batch_id=$1`, batch.ID).Scan(&firstUpdated, &firstQueued); err != nil || firstUpdated != 100 || firstQueued != handoffRows-100 {
