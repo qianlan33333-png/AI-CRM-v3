@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -282,4 +283,23 @@ func afterRadarPosition(values []radarport.CustomerActivity, at time.Time, id in
 		}
 	}
 	return result
+}
+
+func TestV1OperationsAuditSuccessAndDeniedWithoutRequestPayload(t *testing.T) {
+	executor := v1ExecutorForTest(t, &openPlatformIdentityStub{}, &openPlatformProfileStub{})
+	audit := &openPlatformMachineAuditStub{}
+	if err := executor.BindV1OperationAudit(audit, directUnitOfWork{}); err != nil {
+		t.Fatal(err)
+	}
+	principal := accessdomain.MachinePrincipal{ClientID: "machine-a", ClientRecord: 19, Scopes: []string{"read"}, Capabilities: []string{string(openplatformport.CapabilityPlatformCapabilitiesRead)}}
+	if _, err := executor.Invoke(context.Background(), openplatformport.Invocation{Operation: openplatformport.OperationCapabilitiesList, Principal: principal, RequestID: "request-contains-user-value"}); err != nil {
+		t.Fatal(err)
+	}
+	if audit.calls != 1 || audit.audit.MachineClientID != 19 || audit.audit.Action != "open_platform_operation" || audit.audit.Outcome != "succeeded" || string(audit.audit.Details) != `{"operation":"platform.capabilities.list"}` || strings.Contains(string(audit.audit.Details), "request-") {
+		t.Fatalf("success audit=%+v", audit.audit)
+	}
+	_, err := executor.Invoke(context.Background(), openplatformport.Invocation{Operation: openplatformport.OperationCustomerContext, Principal: principal, Input: json.RawMessage(`{"customer_id":42}`)})
+	if openplatformport.ErrorCodeOf(err) != openplatformport.ErrorPermission || audit.calls != 2 || audit.audit.Outcome != "permission" {
+		t.Fatalf("denied err=%v audit=%+v", err, audit.audit)
+	}
 }

@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
 	identityport "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/port"
 	openplatformport "github.com/qianlan33333-png/AI-CRM-v3/internal/openplatform/port"
+	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
 )
 
 // v1IdentityReference intentionally has no assurance field. A machine request
@@ -59,9 +61,12 @@ func (executor *openPlatformExecutor) Invoke(ctx context.Context, invocation ope
 	if !known {
 		return openplatformport.Result{}, openplatformport.NewError(openplatformport.ErrorNotFound, "operation not found")
 	}
+	if !descriptor.Allows(invocation.Principal) {
+		return executor.v1AuditedError(ctx, invocation, openplatformport.NewError(openplatformport.ErrorPermission, "operation is not granted"))
+	}
 	available, err := executor.Available(ctx, invocation.Principal)
 	if err != nil {
-		return openplatformport.Result{}, err
+		return executor.v1AuditedError(ctx, invocation, err)
 	}
 	composed := false
 	for _, item := range available {
@@ -70,24 +75,44 @@ func (executor *openPlatformExecutor) Invoke(ctx context.Context, invocation ope
 			break
 		}
 	}
-	if !descriptor.Allows(invocation.Principal) {
-		return openplatformport.Result{}, openplatformport.NewError(openplatformport.ErrorPermission, "operation is not granted")
-	}
 	if !composed {
-		return openplatformport.Result{}, openplatformport.NewError(openplatformport.ErrorDependencyUnavailable, "operation is not composed")
+		return executor.v1AuditedError(ctx, invocation, openplatformport.NewError(openplatformport.ErrorDependencyUnavailable, "operation is not composed"))
 	}
+	var result openplatformport.Result
 	switch invocation.Operation {
 	case openplatformport.OperationCapabilitiesList:
-		return executor.v1Capabilities(ctx, invocation.Principal)
+		result, err = executor.v1Capabilities(ctx, invocation.Principal)
 	case openplatformport.OperationCustomerResolve:
-		return executor.v1ResolveCustomer(ctx, invocation.Principal, invocation.Input)
+		result, err = executor.v1ResolveCustomer(ctx, invocation.Principal, invocation.Input)
 	case openplatformport.OperationCustomerContext:
-		return executor.v1CustomerContext(ctx, invocation.Principal, invocation.Input)
+		result, err = executor.v1CustomerContext(ctx, invocation.Principal, invocation.Input)
 	case openplatformport.OperationCustomerActivities:
-		return executor.v1CustomerActivities(ctx, invocation.Principal, invocation.Input)
+		result, err = executor.v1CustomerActivities(ctx, invocation.Principal, invocation.Input)
 	default:
-		return openplatformport.Result{}, openplatformport.NewError(openplatformport.ErrorDependencyUnavailable, "operation is not composed")
+		err = openplatformport.NewError(openplatformport.ErrorDependencyUnavailable, "operation is not composed")
 	}
+	if err != nil {
+		return executor.v1AuditedError(ctx, invocation, err)
+	}
+	if auditErr := executor.recordV1Operation(ctx, invocation, "succeeded"); auditErr != nil {
+		return openplatformport.Result{}, openplatformport.NewError(openplatformport.ErrorDependencyUnavailable, "operation audit is unavailable")
+	}
+	return result, nil
+}
+
+func (executor *openPlatformExecutor) v1AuditedError(ctx context.Context, invocation openplatformport.Invocation, operationErr error) (openplatformport.Result, error) {
+	outcome := string(openplatformport.ErrorCodeOf(operationErr))
+	if auditErr := executor.recordV1Operation(ctx, invocation, outcome); auditErr != nil {
+		return openplatformport.Result{}, openplatformport.NewError(openplatformport.ErrorDependencyUnavailable, "operation audit is unavailable")
+	}
+	return openplatformport.Result{}, operationErr
+}
+
+func (executor *openPlatformExecutor) recordV1Operation(ctx context.Context, invocation openplatformport.Invocation, outcome string) error {
+	if executor == nil || executor.operationAudit == nil {
+		return nil
+	}
+	return executor.operationAudit.Record(ctx, invocation.Principal, invocation.Operation, outcome)
 }
 
 func (executor *openPlatformExecutor) v1Capabilities(ctx context.Context, principal accessdomain.MachinePrincipal) (openplatformport.Result, error) {
@@ -190,3 +215,21 @@ func v1IdentityError(err error) error {
 
 var _ openplatformport.OperationService = (*openPlatformExecutor)(nil)
 var _ = identityport.ResolveFound
+
+type openPlatformOperationAuditor struct {
+	writer openPlatformMachineAuditWriter
+	uow    platformport.UnitOfWork
+}
+
+// Record stores only the operation name and terminal category. Request bodies,
+// cursors, bearer tokens, identity values, and user-supplied request IDs are
+// never retained in this audit fact.
+func (auditor *openPlatformOperationAuditor) Record(ctx context.Context, principal accessdomain.MachinePrincipal, operation openplatformport.OperationID, outcome string) error {
+	if auditor == nil || auditor.writer == nil || auditor.uow == nil || principal.ClientRecord < 1 {
+		return nil
+	}
+	payload, _ := json.Marshal(map[string]string{"operation": string(operation)})
+	return auditor.uow.Within(ctx, func(tx context.Context) error {
+		return auditor.writer.AppendMachineAudit(tx, accessdomain.MachineAudit{MachineClientID: principal.ClientRecord, Action: "open_platform_operation", Outcome: outcome, Details: payload, CreatedAt: time.Now().UTC()})
+	})
+}

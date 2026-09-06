@@ -61,21 +61,22 @@ type openPlatformSurveyIdentityReader interface {
 }
 
 type openPlatformExecutor struct {
-	identity      identityport.Resolver
-	externalUsers openPlatformExternalUserIDReader
-	orders        orderport.Query
-	scopedOrders  orderport.CustomerScopedQuery
-	profiles      customerport.SidebarProfileService
-	archive       archiveport.CustomerMessageReader
-	externalChat  archiveport.ExternalChatRecordReader
-	radarLinks    radarport.ExternalLinkMappingReader
-	survey        surveyport.ExternalSubmissionReader
-	surveyAliases openPlatformSurveyIdentityReader
-	timeline      customerport.CustomerTimelineReader
-	owners        wecomport.AudiencePrimaryOwnerReader
-	scopes        openPlatformIdentityScopes
-	activities    *openPlatformActivityReaders
-	activityNow   func() time.Time
+	identity       identityport.Resolver
+	externalUsers  openPlatformExternalUserIDReader
+	orders         orderport.Query
+	scopedOrders   orderport.CustomerScopedQuery
+	profiles       customerport.SidebarProfileService
+	archive        archiveport.CustomerMessageReader
+	externalChat   archiveport.ExternalChatRecordReader
+	radarLinks     radarport.ExternalLinkMappingReader
+	survey         surveyport.ExternalSubmissionReader
+	surveyAliases  openPlatformSurveyIdentityReader
+	timeline       customerport.CustomerTimelineReader
+	owners         wecomport.AudiencePrimaryOwnerReader
+	scopes         openPlatformIdentityScopes
+	activities     *openPlatformActivityReaders
+	activityNow    func() time.Time
+	operationAudit *openPlatformOperationAuditor
 }
 
 func newOpenPlatformExecutor(identity identityport.Resolver, orders orderport.Query, profiles customerport.SidebarProfileService, archive archiveport.CustomerMessageReader, timeline customerport.CustomerTimelineReader, owners wecomport.AudiencePrimaryOwnerReader, scopes openPlatformIdentityScopes) (*openPlatformExecutor, error) {
@@ -103,6 +104,17 @@ func newOpenPlatformExecutor(identity identityport.Resolver, orders orderport.Qu
 	scopes.SurveyUnionScopes = distinctScopes(scopes.SurveyUnionScopes, "wechat-open-platform:")
 	scopes.OpenIDScopes = distinctScopes(scopes.OpenIDScopes, "wechat-app:")
 	return &openPlatformExecutor{identity: identity, externalUsers: externalUsers, orders: orders, scopedOrders: scopedOrders, profiles: profiles, archive: archive, externalChat: externalChat, timeline: timeline, owners: owners, scopes: scopes, activityNow: time.Now}, nil
+}
+
+// BindV1OperationAudit installs the Access-owned audit writer used for each
+// V1 invocation. Composition passes the same PostgreSQL Unit of Work that
+// owns Access, so no cross-domain table access is introduced.
+func (executor *openPlatformExecutor) BindV1OperationAudit(writer openPlatformMachineAuditWriter, uow platformport.UnitOfWork) error {
+	if executor == nil || writer == nil || uow == nil {
+		return errOpenPlatformRouteUnavailable
+	}
+	executor.operationAudit = &openPlatformOperationAuditor{writer: writer, uow: uow}
+	return nil
 }
 
 // BindV1CustomerActivities installs the four owner-owned projections needed
