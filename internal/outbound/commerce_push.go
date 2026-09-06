@@ -114,7 +114,9 @@ func cloneCommercePushParams(source map[string]any) map[string]any {
 		return nil
 	}
 	var out map[string]any
-	if json.Unmarshal(raw, &out) != nil {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	if decoder.Decode(&out) != nil {
 		return nil
 	}
 	return out

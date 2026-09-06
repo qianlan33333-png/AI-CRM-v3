@@ -1,6 +1,7 @@
 package http
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -591,12 +592,14 @@ func TestExternalPushConfigurationHTTPPreservesLegacyBusinessJSONAndCAS(t *testi
 		t.Fatalf("status=%d csrf=%d command=%#v body=%s", write.Code, security.csrfCalls, external.save, write.Body.String())
 	}
 	command := *external.save
-	want := map[string]any{"count": float64(2), "flag": false, "nil": nil, "nested": []any{" 空白 ", map[string]any{"k": true}}}
+	want := map[string]any{"count": json.Number("2"), "flag": false, "nil": nil, "nested": []any{" 空白 ", map[string]any{"k": true}}}
 	if !command.BusinessParametersSet || command.ExpectedRevision != 3 || command.PushType != "member_renew" || command.Day == nil || *command.Day != 45 || command.Frequency == nil || *command.Frequency != 2 || command.Remark != "保留业务备注" || !reflect.DeepEqual(command.CustomParams, want) {
 		t.Fatalf("business command=%#v", command)
 	}
 	var response productport.ExternalPushConfiguration
-	if err := json.Unmarshal(write.Body.Bytes(), &response); err != nil || response.Revision != 4 || !reflect.DeepEqual(response.CustomParams, want) {
+	decoder := json.NewDecoder(bytes.NewReader(write.Body.Bytes()))
+	decoder.UseNumber()
+	if err := decoder.Decode(&response); err != nil || response.Revision != 4 || !reflect.DeepEqual(response.CustomParams, want) {
 		t.Fatalf("response=%s decoded=%#v err=%v", write.Body.String(), response, err)
 	}
 

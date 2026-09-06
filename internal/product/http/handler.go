@@ -5,6 +5,7 @@
 package http
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
@@ -1647,7 +1648,9 @@ func externalConfigurationCustomParams(raw json.RawMessage) (map[string]any, boo
 	}
 	if strings.HasPrefix(value, "{") {
 		var object map[string]any
-		if json.Unmarshal(raw, &object) != nil {
+		decoder := json.NewDecoder(bytes.NewReader(raw))
+		decoder.UseNumber()
+		if decoder.Decode(&object) != nil {
 			return nil, false
 		}
 		return normalizeExternalConfigurationCustomParams(object)

@@ -36,7 +36,7 @@ func (store *commerceExternalPushTestStore) ReadCommerceExternalPushConfiguratio
 	if value, ok := store.configs[id]; ok {
 		return value, nil
 	}
-	return productport.ExternalPushConfiguration{ProductID: id, ProductKind: kind, Revision: 1, UpdatedAt: time.Date(2026, 8, 25, 1, 0, 0, 0, time.UTC)}, nil
+	return productport.ExternalPushConfiguration{ProductID: id, ProductKind: kind, Revision: 0, UpdatedAt: time.Date(2026, 8, 25, 1, 0, 0, 0, time.UTC)}, nil
 }
 
 func (store *commerceExternalPushTestStore) LockCommerceExternalPushConfiguration(ctx context.Context, id productport.ID, kind productport.ExternalPushProductKind) (productport.ExternalPushConfiguration, error) {
@@ -238,6 +238,20 @@ func TestCommerceExternalPushBusinessParametersFreezeJSONTypesAndLegacyBindingPr
 	stale.IdempotencyKey, stale.ExpectedRevision = "commerce-push-business-0003", first.Revision
 	if _, err = service.SaveExternalPushConfiguration(context.Background(), stale); !errors.Is(err, ErrConflict) {
 		t.Fatalf("stale CAS err=%v", err)
+	}
+}
+
+func TestCommerceExternalPushFirstBusinessSaveRejectsStaleUnpersistedRevision(t *testing.T) {
+	store := &commerceExternalPushTestStore{products: map[productport.ID]productport.ExternalPushProductKind{82: productport.ExternalPushWeChatPay}, configs: map[productport.ID]productport.ExternalPushConfiguration{}, receipts: map[string]Receipt{}}
+	service, _ := newCommerceExternalPushTestService(store, &commerceExternalPushTestEffects{})
+	command := productport.SaveExternalPushConfigurationCommand{ProductID: 82, ProductKind: productport.ExternalPushWeChatPay, Enabled: true, ConfigurationReference: "product-push-82", BusinessParametersSet: true, PushType: "member_open", CustomParams: map[string]any{"n": json.Number("9007199254740993")}, ExpectedRevision: 0, Actor: 7, IdempotencyKey: "commerce-push-first-0001"}
+	first, err := service.SaveExternalPushConfiguration(context.Background(), command)
+	if err != nil || first.Revision != 1 {
+		t.Fatalf("first=%#v err=%v", first, err)
+	}
+	command.IdempotencyKey = "commerce-push-first-0002"
+	if _, err = service.SaveExternalPushConfiguration(context.Background(), command); !errors.Is(err, ErrConflict) {
+		t.Fatalf("stale first-save err=%v", err)
 	}
 }
 

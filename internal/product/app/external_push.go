@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -150,7 +151,7 @@ func (service *CommerceExternalPushService) SaveExternalPushConfiguration(
 		if readErr != nil {
 			return readErr
 		}
-		if command.ExpectedRevision > 0 && value.Revision != command.ExpectedRevision {
+		if (command.BusinessParametersSet && value.Revision != command.ExpectedRevision) || (!command.BusinessParametersSet && command.ExpectedRevision > 0 && value.Revision != command.ExpectedRevision) {
 			return ErrConflict
 		}
 		value.Enabled, value.ConfigurationReference = command.Enabled, command.ConfigurationReference
@@ -401,7 +402,7 @@ func validExternalPushKind(value productport.ExternalPushProductKind) bool {
 }
 
 func validExternalPushConfiguration(value productport.ExternalPushConfiguration, productID productport.ID, kind productport.ExternalPushProductKind) bool {
-	if value.ProductID != productID || value.ProductKind != kind || productID < 1 || !validExternalPushKind(kind) || value.Revision < 1 || value.UpdatedAt.IsZero() {
+	if value.ProductID != productID || value.ProductKind != kind || productID < 1 || !validExternalPushKind(kind) || value.Revision < 0 || value.UpdatedAt.IsZero() {
 		return false
 	}
 	if !validCommerceExternalPushBusiness(value) {
@@ -442,7 +443,9 @@ func cloneCommerceExternalPushParams(source map[string]any) map[string]any {
 		return nil
 	}
 	var out map[string]any
-	if json.Unmarshal(raw, &out) != nil {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	if decoder.Decode(&out) != nil {
 		return nil
 	}
 	return out

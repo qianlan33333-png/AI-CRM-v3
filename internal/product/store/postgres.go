@@ -5,6 +5,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -645,7 +646,7 @@ func (r *Repository) readExternalPushConfiguration(ctx context.Context, id produ
 	if id < 1 || !validExternalKind(kind) {
 		return productport.ExternalPushConfiguration{}, ErrInvalid
 	}
-	query := `SELECT p.id,COALESCE(c.enabled,FALSE),COALESCE(c.configuration_reference,''),COALESCE(c.push_type,''),c.day,c.frequency,COALESCE(c.remark,''),COALESCE(c.custom_params,'{}'::jsonb),COALESCE(c.version,1),COALESCE(c.updated_at,p.updated_at)
+	query := `SELECT p.id,COALESCE(c.enabled,FALSE),COALESCE(c.configuration_reference,''),COALESCE(c.push_type,''),c.day,c.frequency,COALESCE(c.remark,''),COALESCE(c.custom_params,'{}'::jsonb),COALESCE(c.version,0),COALESCE(c.updated_at,p.updated_at)
 FROM products p LEFT JOIN product_external_push_configurations c ON c.product_id=p.id AND c.product_kind=$2
 WHERE p.id=$1 AND ` + serviceKindStatus(kind)
 	if forUpdate {
@@ -678,7 +679,7 @@ func (r *Repository) ReadCommerceExternalPushConfigurationForOrder(ctx context.C
 	}
 	query := `SELECT p.id,
   CASE WHEN p.legacy_admin_projection ->> 'status' IN ('service_period_draft','service_period_enabled','service_period_disabled','service_period_archived') THEN 'service_period' ELSE 'wechat_pay' END,
-  COALESCE(c.enabled,FALSE),COALESCE(c.configuration_reference,''),COALESCE(c.push_type,''),c.day,c.frequency,COALESCE(c.remark,''),COALESCE(c.custom_params,'{}'::jsonb),COALESCE(c.version,1),p.name,COALESCE(c.updated_at,p.updated_at)
+  COALESCE(c.enabled,FALSE),COALESCE(c.configuration_reference,''),COALESCE(c.push_type,''),c.day,c.frequency,COALESCE(c.remark,''),COALESCE(c.custom_params,'{}'::jsonb),COALESCE(c.version,0),p.name,COALESCE(c.updated_at,p.updated_at)
 FROM products p
 LEFT JOIN product_external_push_configurations c ON c.product_id=p.id AND c.product_kind=CASE WHEN p.legacy_admin_projection ->> 'status' IN ('service_period_draft','service_period_enabled','service_period_disabled','service_period_archived') THEN 'service_period' ELSE 'wechat_pay' END
 WHERE p.id=$1
@@ -747,7 +748,9 @@ func decodeCommerceExternalPushParams(raw []byte) (map[string]any, error) {
 		return map[string]any{}, nil
 	}
 	var value map[string]any
-	if json.Unmarshal(raw, &value) != nil || value == nil {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	if decoder.Decode(&value) != nil || value == nil {
 		return nil, ErrInvalid
 	}
 	return value, nil
