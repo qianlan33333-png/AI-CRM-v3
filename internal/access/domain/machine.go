@@ -1,12 +1,17 @@
 package domain
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"net/netip"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
 )
+
+var ownerScopeKey = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
 
 var (
 	ErrMachineClientDisabled  = errors.New("machine client disabled")
@@ -34,6 +39,8 @@ type MachineClient struct {
 	Scopes          []string
 	Capabilities    []string
 	AllowedCIDRs    []string
+	CorpID          string
+	OwnerScope      OwnerScope
 	TokenTTLSeconds int
 	ExpiresAt       *time.Time
 	Enabled         bool
@@ -50,8 +57,100 @@ type MachinePrincipal struct {
 	Audience     string
 	Scopes       []string
 	Capabilities []string
+	CorpID       string
+	OwnerScope   OwnerScope
 	AuthVersion  int64
 	DirectKey    bool
+}
+
+// OwnerScope is the frozen auth-platform resource constraint. Empty means
+// unrestricted for that client; a non-empty scope requires every named
+// resource to be present and to match. It is deliberately a value object,
+// not a new RBAC or tenancy system.
+type OwnerScope map[string][]string
+
+func NormalizeOwnerScope(raw []byte) (OwnerScope, error) {
+	if len(bytes.TrimSpace(raw)) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return OwnerScope{}, nil
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var source map[string]any
+	if err := decoder.Decode(&source); err != nil || len(source) > 20 {
+		return nil, ErrInvalidInput
+	}
+	result := make(OwnerScope, len(source))
+	for key, rawValue := range source {
+		if !ownerScopeKey.MatchString(key) {
+			return nil, ErrInvalidInput
+		}
+		values, err := ownerScopeValues(rawValue)
+		if err != nil || len(values) == 0 || len(values) > 100 {
+			return nil, ErrInvalidInput
+		}
+		result[key] = values
+	}
+	return result, nil
+}
+
+func (scope OwnerScope) JSON() []byte {
+	if len(scope) == 0 {
+		return []byte(`{}`)
+	}
+	payload, err := json.Marshal(scope)
+	if err != nil {
+		return []byte(`{}`)
+	}
+	return payload
+}
+
+func (scope OwnerScope) Allows(resources map[string]string) bool {
+	for key, allowed := range scope {
+		actual, ok := resources[key]
+		if !ok {
+			return false
+		}
+		matched := false
+		for _, candidate := range allowed {
+			if candidate == actual {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
+	return true
+}
+
+func ownerScopeValues(raw any) ([]string, error) {
+	items := []any{raw}
+	if list, ok := raw.([]any); ok {
+		items = list
+	}
+	seen := make(map[string]struct{}, len(items))
+	values := make([]string, 0, len(items))
+	for _, item := range items {
+		var value string
+		switch typed := item.(type) {
+		case string:
+			value = strings.TrimSpace(typed)
+		case json.Number:
+			value = typed.String()
+		default:
+			return nil, ErrInvalidInput
+		}
+		if value == "" || len(value) > 256 {
+			return nil, ErrInvalidInput
+		}
+		if _, exists := seen[value]; !exists {
+			seen[value] = struct{}{}
+			values = append(values, value)
+		}
+	}
+	sort.Strings(values)
+	return values, nil
 }
 
 func (principal MachinePrincipal) HasCapability(capability string) bool {

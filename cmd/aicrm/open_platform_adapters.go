@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	customerport "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/port"
 	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
@@ -18,45 +19,51 @@ import (
 	openplatformport "github.com/qianlan33333-png/AI-CRM-v3/internal/openplatform/port"
 	orderdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/order/domain"
 	orderport "github.com/qianlan33333-png/AI-CRM-v3/internal/order/port"
+	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
+	wecomport "github.com/qianlan33333-png/AI-CRM-v3/internal/wecom/port"
 )
 
-var errOpenPlatformRouteUnavailable = errors.New("open platform route is not composed")
+var (
+	errOpenPlatformRouteUnavailable   = errors.New("open platform route is not composed")
+	errOpenPlatformResourceOutOfScope = errors.New("machine client cannot access this resource")
+)
 
 type openPlatformExecutor struct {
 	identity   identityport.Resolver
 	orders     orderport.Query
 	profiles   customerport.SidebarProfileService
 	archive    archiveport.CustomerMessageReader
+	owners     wecomport.AudiencePrimaryOwnerReader
 	weComScope string
 }
 
-func newOpenPlatformExecutor(identity identityport.Resolver, orders orderport.Query, profiles customerport.SidebarProfileService, archive archiveport.CustomerMessageReader, weComCorpID string) (*openPlatformExecutor, error) {
-	if identity == nil || orders == nil || profiles == nil || archive == nil {
+func newOpenPlatformExecutor(identity identityport.Resolver, orders orderport.Query, profiles customerport.SidebarProfileService, archive archiveport.CustomerMessageReader, owners wecomport.AudiencePrimaryOwnerReader, weComCorpID string) (*openPlatformExecutor, error) {
+	if identity == nil || orders == nil || profiles == nil || archive == nil || owners == nil {
 		return nil, errors.New("open platform core Port dependencies are required")
 	}
 	scope := ""
 	if corpID := strings.TrimSpace(weComCorpID); corpID != "" {
 		scope = "wecom-corp:" + corpID
 	}
-	return &openPlatformExecutor{identity: identity, orders: orders, profiles: profiles, archive: archive, weComScope: scope}, nil
+	return &openPlatformExecutor{identity: identity, orders: orders, profiles: profiles, archive: archive, owners: owners, weComScope: scope}, nil
 }
 
 func (executor *openPlatformExecutor) Execute(ctx context.Context, request openplatformport.Request) (openplatformport.Response, error) {
 	switch request.Method + " " + request.Path {
 	case "GET /api/identity/resolve", "GET /api/external/users/resolve":
-		return executor.resolveIdentity(ctx, request.Query)
+		return executor.resolveIdentity(ctx, request.Query, request.Principal)
 	case "GET /api/external/orders":
-		return executor.listOrders(ctx, request.Query)
+		return executor.listOrders(ctx, request.Query, request.Principal)
 	case "GET /api/external/orders/{order_no}":
-		return executor.getOrder(ctx, request.PathParts["order_no"])
+		return executor.getOrder(ctx, request.PathParts["order_no"], request.Principal)
 	case "POST /mcp":
-		return executor.callMCP(ctx, request.Body)
+		return executor.callMCP(ctx, request.Body, request.Principal)
 	default:
 		return openplatformport.Response{}, errOpenPlatformRouteUnavailable
 	}
 }
 
-func (executor *openPlatformExecutor) resolveIdentity(ctx context.Context, query url.Values) (openplatformport.Response, error) {
+func (executor *openPlatformExecutor) resolveIdentity(ctx context.Context, query url.Values, principal accessdomain.MachinePrincipal) (openplatformport.Response, error) {
 	reference, err := executor.referenceFromValues(query)
 	if err != nil {
 		return responseError(400, "invalid_request"), nil
@@ -74,6 +81,9 @@ func (executor *openPlatformExecutor) resolveIdentity(ctx context.Context, query
 	if result.Status != identityport.ResolveFound || result.CustomerID < 1 {
 		return responseError(409, "identity_pending"), nil
 	}
+	if err := executor.ensureCustomerScope(ctx, principal, result.CustomerID, &reference); err != nil {
+		return responseError(404, "not_found"), nil
+	}
 	profile, profileErr := executor.profiles.ReadSidebarProfile(ctx, result.CustomerID)
 	if profileErr != nil {
 		return responseError(503, "customer_profile_unavailable"), nil
@@ -81,10 +91,59 @@ func (executor *openPlatformExecutor) resolveIdentity(ctx context.Context, query
 	return responseOK(map[string]any{"ok": true, "identity": map[string]any{"customer_id": result.CustomerID, "identity_id": result.IdentityID, "status": result.Status}, "customer": profile}), nil
 }
 
-func (executor *openPlatformExecutor) listOrders(ctx context.Context, values url.Values) (openplatformport.Response, error) {
-	query, err := executor.orderQuery(ctx, values)
+// ensureCustomerScope resolves all scope keys from trusted machine state and
+// canonical/WeCom read ports. Request query values are never used as scope
+// evidence. This check happens before a customer profile, archive, or order
+// Port can read the resource.
+func (executor *openPlatformExecutor) ensureCustomerScope(ctx context.Context, principal accessdomain.MachinePrincipal, customerID customerdomain.CustomerID, reference *identitydomain.Reference) error {
+	if len(principal.OwnerScope) == 0 {
+		return nil
+	}
+	resources := map[string]string{"customer_id": strconv.FormatInt(int64(customerID), 10)}
+	if principal.CorpID != "" {
+		resources["corp_id"] = principal.CorpID
+	}
+	if reference != nil {
+		resources[string(reference.Kind)] = reference.Value
+		if reference.Kind == identitydomain.KindWeComExternalUserID {
+			resources["external_userid"] = reference.Value
+		}
+	}
+	if _, requiresOwner := principal.OwnerScope["owner_userid"]; requiresOwner {
+		owners, err := executor.owners.AudiencePrimaryOwners(ctx, []customerdomain.CustomerID{customerID})
+		if err != nil || len(owners) != 1 || owners[0].CustomerID != customerID || owners[0].Status != "known" || owners[0].OwnerUserID == "" || owners[0].CorpScope != executor.weComScope {
+			return errOpenPlatformResourceOutOfScope
+		}
+		resources["owner_userid"] = owners[0].OwnerUserID
+	}
+	if !principal.OwnerScope.Allows(resources) {
+		return errOpenPlatformResourceOutOfScope
+	}
+	return nil
+}
+
+// allowsUnboundScope is only safe for routes whose owning Query Port has no
+// resource scope input. The V3 service is single-corporation, so corp_id can
+// be checked from the credential record; every customer or owner scope is
+// denied before the broad query starts.
+func (executor *openPlatformExecutor) allowsUnboundScope(principal accessdomain.MachinePrincipal) bool {
+	if len(principal.OwnerScope) == 0 {
+		return true
+	}
+	return principal.OwnerScope.Allows(map[string]string{"corp_id": principal.CorpID})
+}
+
+func (executor *openPlatformExecutor) listOrders(ctx context.Context, values url.Values, principal accessdomain.MachinePrincipal) (openplatformport.Response, error) {
+	query, reference, err := executor.orderQuery(ctx, values)
 	if err != nil {
 		return responseError(400, "invalid_request"), nil
+	}
+	if query.CustomerID > 0 {
+		if err := executor.ensureCustomerScope(ctx, principal, customerdomain.CustomerID(query.CustomerID), reference); err != nil {
+			return responseError(404, "not_found"), nil
+		}
+	} else if !executor.allowsUnboundScope(principal) {
+		return responseError(404, "not_found"), nil
 	}
 	page, err := executor.orders.List(ctx, query)
 	if err != nil {
@@ -97,9 +156,14 @@ func (executor *openPlatformExecutor) listOrders(ctx context.Context, values url
 	return responseOK(map[string]any{"ok": true, "items": items, "total": page.Total, "limit": query.Limit, "next_cursor": page.NextCursor, "has_more": page.NextCursor != ""}), nil
 }
 
-func (executor *openPlatformExecutor) getOrder(ctx context.Context, reference string) (openplatformport.Response, error) {
+func (executor *openPlatformExecutor) getOrder(ctx context.Context, reference string, principal accessdomain.MachinePrincipal) (openplatformport.Response, error) {
 	if strings.TrimSpace(reference) == "" {
 		return responseError(400, "invalid_request"), nil
+	}
+	// Order.Query does not offer a customer/owner constrained single-record
+	// lookup. Never fetch a broad order and filter after the fact.
+	if !executor.allowsUnboundScope(principal) {
+		return responseError(404, "not_found"), nil
 	}
 	order, err := executor.orders.GetByReference(ctx, reference)
 	if err != nil {
@@ -108,7 +172,7 @@ func (executor *openPlatformExecutor) getOrder(ctx context.Context, reference st
 	return responseOK(map[string]any{"ok": true, "order": publicOrder(order)}), nil
 }
 
-func (executor *openPlatformExecutor) callMCP(ctx context.Context, body []byte) (openplatformport.Response, error) {
+func (executor *openPlatformExecutor) callMCP(ctx context.Context, body []byte, principal accessdomain.MachinePrincipal) (openplatformport.Response, error) {
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.UseNumber()
 	var call struct {
@@ -124,9 +188,12 @@ func (executor *openPlatformExecutor) callMCP(ctx context.Context, body []byte) 
 	if call.Params.Arguments == nil {
 		call.Params.Arguments = map[string]any{}
 	}
-	customerID, err := executor.mcpCustomerID(ctx, call.Params.Arguments)
+	customerID, reference, err := executor.mcpCustomerID(ctx, call.Params.Arguments)
 	if err != nil {
 		return openplatformport.Response{}, err
+	}
+	if err := executor.ensureCustomerScope(ctx, principal, customerID, reference); err != nil {
+		return openplatformport.Response{}, errOpenPlatformResourceOutOfScope
 	}
 	profile, err := executor.profiles.ReadSidebarProfile(ctx, customerID)
 	if err != nil {
@@ -189,29 +256,35 @@ func (executor *openPlatformExecutor) recentMessages(ctx context.Context, custom
 	return page.Items, nil
 }
 
-func (executor *openPlatformExecutor) mcpCustomerID(ctx context.Context, arguments map[string]any) (customerdomain.CustomerID, error) {
+func (executor *openPlatformExecutor) mcpCustomerID(ctx context.Context, arguments map[string]any) (customerdomain.CustomerID, *identitydomain.Reference, error) {
 	if raw, ok := arguments["customer_ref"]; ok {
 		value, ok := raw.(string)
 		if !ok || strings.TrimSpace(value) == "" {
-			return 0, errors.New("invalid customer_ref")
+			return 0, nil, errors.New("invalid customer_ref")
 		}
 		if strings.HasPrefix(value, "customer:") {
 			id, err := strconv.ParseInt(strings.TrimPrefix(value, "customer:"), 10, 64)
 			if err != nil || id < 1 {
-				return 0, errors.New("invalid customer_ref")
+				return 0, nil, errors.New("invalid customer_ref")
 			}
-			return customerdomain.CustomerID(id), nil
+			return customerdomain.CustomerID(id), nil, nil
 		}
 		if isCN11(value) {
-			return executor.resolveReference(ctx, identitydomain.Reference{Kind: identitydomain.KindPhone, Scope: "phone:cn11", Value: value, Assurance: identitydomain.AssuranceDeclared, Source: "open_platform.mcp"})
+			reference := identitydomain.Reference{Kind: identitydomain.KindPhone, Scope: "phone:cn11", Value: value, Assurance: identitydomain.AssuranceDeclared, Source: "open_platform.mcp"}
+			customerID, err := executor.resolveReference(ctx, reference)
+			return customerID, &reference, err
 		}
-		return executor.resolveReference(ctx, identitydomain.Reference{Kind: identitydomain.KindWeComExternalUserID, Scope: executor.weComScope, Value: value, Assurance: identitydomain.AssuranceDeclared, Source: "open_platform.mcp"})
+		reference := identitydomain.Reference{Kind: identitydomain.KindWeComExternalUserID, Scope: executor.weComScope, Value: value, Assurance: identitydomain.AssuranceDeclared, Source: "open_platform.mcp"}
+		customerID, err := executor.resolveReference(ctx, reference)
+		return customerID, &reference, err
 	}
 	value, ok := arguments["external_userid"].(string)
 	if !ok || strings.TrimSpace(value) == "" {
-		return 0, errors.New("customer_ref or external_userid is required")
+		return 0, nil, errors.New("customer_ref or external_userid is required")
 	}
-	return executor.resolveReference(ctx, identitydomain.Reference{Kind: identitydomain.KindWeComExternalUserID, Scope: executor.weComScope, Value: value, Assurance: identitydomain.AssuranceDeclared, Source: "open_platform.mcp"})
+	reference := identitydomain.Reference{Kind: identitydomain.KindWeComExternalUserID, Scope: executor.weComScope, Value: value, Assurance: identitydomain.AssuranceDeclared, Source: "open_platform.mcp"}
+	customerID, err := executor.resolveReference(ctx, reference)
+	return customerID, &reference, err
 }
 
 func (executor *openPlatformExecutor) resolveReference(ctx context.Context, reference identitydomain.Reference) (customerdomain.CustomerID, error) {
@@ -248,22 +321,22 @@ func (executor *openPlatformExecutor) referenceFromValues(values url.Values) (id
 	return identitydomain.Reference{}, errors.New("identity query missing")
 }
 
-func (executor *openPlatformExecutor) orderQuery(ctx context.Context, values url.Values) (orderport.ListQuery, error) {
+func (executor *openPlatformExecutor) orderQuery(ctx context.Context, values url.Values) (orderport.ListQuery, *identitydomain.Reference, error) {
 	for key, value := range values {
 		if len(value) != 1 {
-			return orderport.ListQuery{}, errors.New("duplicate query value")
+			return orderport.ListQuery{}, nil, errors.New("duplicate query value")
 		}
 		switch key {
 		case "provider", "limit", "cursor", "order_no", "transaction_id", "product_code", "payment_status", "created_from", "created_to", "external_userid", "mobile", "unionid", "scope":
 		default:
-			return orderport.ListQuery{}, errors.New("unsupported query parameter")
+			return orderport.ListQuery{}, nil, errors.New("unsupported query parameter")
 		}
 	}
 	query := orderport.ListQuery{Cursor: values.Get("cursor"), Limit: 50, OrderRef: firstNonEmpty(values.Get("order_no"), values.Get("transaction_id")), Product: values.Get("product_code")}
 	if value := values.Get("limit"); value != "" {
 		limit, err := strconv.ParseInt(value, 10, 32)
 		if err != nil || limit < 1 || limit > 100 {
-			return query, errors.New("invalid limit")
+			return query, nil, errors.New("invalid limit")
 		}
 		query.Limit = int32(limit)
 	}
@@ -276,7 +349,7 @@ func (executor *openPlatformExecutor) orderQuery(ctx context.Context, values url
 		case "alipay":
 			query.Provider = orderdomain.ProviderAlipay
 		default:
-			return query, errors.New("invalid provider")
+			return query, nil, errors.New("invalid provider")
 		}
 	}
 	if status := values.Get("payment_status"); status != "" {
@@ -290,23 +363,24 @@ func (executor *openPlatformExecutor) orderQuery(ctx context.Context, values url
 	}
 	var err error
 	if query.CreatedFrom, err = unixSeconds(values.Get("created_from")); err != nil {
-		return query, err
+		return query, nil, err
 	}
 	if query.CreatedTo, err = unixSeconds(values.Get("created_to")); err != nil {
-		return query, err
+		return query, nil, err
 	}
 	if anyIdentityValue(values) {
 		reference, referenceErr := executor.referenceFromValues(values)
 		if referenceErr != nil {
-			return query, referenceErr
+			return query, nil, referenceErr
 		}
 		customer, resolveErr := executor.resolveReference(ctx, reference)
 		if resolveErr != nil {
-			return query, resolveErr
+			return query, nil, resolveErr
 		}
 		query.CustomerID = int64(customer)
+		return query, &reference, nil
 	}
-	return query, nil
+	return query, nil, nil
 }
 
 func publicOrder(order orderdomain.Snapshot) map[string]any {
@@ -394,3 +468,22 @@ func firstNonEmpty(values ...string) string {
 }
 
 var _ openplatformport.Executor = (*openPlatformExecutor)(nil)
+
+// openPlatformOwnerAdapter gives the read-only WeCom owner fact the same UoW
+// boundary as every other composed customer projection.
+type openPlatformOwnerAdapter struct {
+	uow    platformport.UnitOfWork
+	reader wecomport.AudiencePrimaryOwnerReader
+}
+
+func (adapter openPlatformOwnerAdapter) AudiencePrimaryOwners(ctx context.Context, customerIDs []customerdomain.CustomerID) ([]wecomport.AudiencePrimaryOwner, error) {
+	var owners []wecomport.AudiencePrimaryOwner
+	err := adapter.uow.Within(ctx, func(tx context.Context) error {
+		var err error
+		owners, err = adapter.reader.AudiencePrimaryOwners(tx, customerIDs)
+		return err
+	})
+	return owners, err
+}
+
+var _ wecomport.AudiencePrimaryOwnerReader = openPlatformOwnerAdapter{}

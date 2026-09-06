@@ -175,7 +175,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
-	machineService, err := accessapp.NewMachineService(accessRepository, uow, passwords, accessapp.MachineConfig{SigningKey: []byte(cfg.OpenPlatform.JWTSigningKey)})
+	machineService, err := accessapp.NewMachineService(accessRepository, uow, passwords, accessapp.MachineConfig{SigningKey: []byte(cfg.OpenPlatform.JWTSigningKey), CorpID: cfg.WeCom.CorpID})
 	if err != nil {
 		return fail(err)
 	}
@@ -815,7 +815,9 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
-	openPlatformExecutor, err := newOpenPlatformExecutor(oneID, orderService, sidebarProfiles, archiveService, cfg.WeCom.CorpID)
+	customerProfileStore := wecom.NewPostgreSQLCustomerSyncStore()
+	legacyAudienceSource.PrimaryOwners = customerProfileStore
+	openPlatformExecutor, err := newOpenPlatformExecutor(oneID, orderService, sidebarProfiles, archiveService, openPlatformOwnerAdapter{uow: uow, reader: customerProfileStore}, cfg.WeCom.CorpID)
 	if err != nil {
 		return fail(err)
 	}
@@ -831,7 +833,6 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
-
 	if err = productBindings.ProductHandler.SetServicePeriodMemberReaders(entitlements, orderCustomerDisplayNameAdapter{uow: uow, reader: customerStore}); err != nil {
 		return fail(err)
 	}
@@ -842,7 +843,6 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err = orderService.SetServicePeriodEntitlementCoordinator(entitlementFulfillment); err != nil {
 		return fail(err)
 	}
-	customerProfileStore := wecom.NewPostgreSQLCustomerSyncStore()
 	relationships := wecom.NewPostgreSQLFollowRelationshipStore()
 	customerTagCommands, err := customerapp.NewTagCommandService(uow, customerstore.TagCommandPostgreSQL{}, effectRepository, customerTagCommandGate{uow: uow, corpID: cfg.WeCom.CorpID, owners: customerProfileStore, staff: accessRepository, relationships: relationships, tags: tagRepository, identities: queries}, auditService, platformoutbox.NewPostgreSQL())
 	if err != nil {

@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/access/credential"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
@@ -54,6 +55,7 @@ var machineCapabilities = map[string]struct{}{
 type MachineConfig struct {
 	SigningKey []byte
 	Issuer     string
+	CorpID     string
 	Now        func() time.Time
 }
 
@@ -451,9 +453,17 @@ func (service *MachineService) newMachineClient(input CreateMachineClientInput) 
 	if purpose != "external_agent" && purpose != "mcp" && purpose != "direct_api_key" {
 		return domain.MachineClient{}, domain.ErrInvalidInput
 	}
+	ownerScope, err := domain.NormalizeOwnerScope(input.OwnerScope.JSON())
+	if err != nil {
+		return domain.MachineClient{}, err
+	}
+	corpID := strings.TrimSpace(service.config.CorpID)
+	if len(corpID) > 256 || strings.IndexFunc(corpID, unicode.IsControl) >= 0 {
+		return domain.MachineClient{}, domain.ErrInvalidInput
+	}
 	client := domain.MachineClient{ClientID: clientID, DisplayName: strings.TrimSpace(input.DisplayName), Purpose: purpose,
 		Audiences: audiences, Scopes: scopes, Capabilities: capabilities, AllowedCIDRs: cidrs,
-		TokenTTLSeconds: input.TokenTTLSeconds, ExpiresAt: input.ExpiresAt, Enabled: purpose == "direct_api_key", AuthVersion: 1}
+		CorpID: corpID, OwnerScope: ownerScope, TokenTTLSeconds: input.TokenTTLSeconds, ExpiresAt: input.ExpiresAt, Enabled: purpose == "direct_api_key", AuthVersion: 1}
 	if purpose == "direct_api_key" && (clientID != DirectExternalAPIKeyClientID || !equalMachineStrings(audiences, []string{"external_integration"}) || !equalMachineStrings(scopes, []string{"read"}) || !equalMachineStrings(capabilities, []string{"external_read"})) {
 		return domain.MachineClient{}, domain.ErrInvalidInput
 	}
@@ -541,7 +551,7 @@ type machineJWTClaims struct {
 
 func principalFrom(client domain.MachineClient, audience string, scopes []string, direct bool) domain.MachinePrincipal {
 	return domain.MachinePrincipal{ClientID: client.ClientID, ClientRecord: client.ID, Audience: audience,
-		Scopes: append([]string(nil), scopes...), Capabilities: append([]string(nil), client.Capabilities...), AuthVersion: client.AuthVersion, DirectKey: direct}
+		Scopes: append([]string(nil), scopes...), Capabilities: append([]string(nil), client.Capabilities...), CorpID: client.CorpID, OwnerScope: cloneOwnerScope(client.OwnerScope), AuthVersion: client.AuthVersion, DirectKey: direct}
 }
 
 func summarizeMachineClient(client domain.MachineClient) MachineClientSummary {
@@ -549,8 +559,17 @@ func summarizeMachineClient(client domain.MachineClient) MachineClientSummary {
 		CredentialHint: client.CredentialHint, Audiences: append([]string(nil), client.Audiences...),
 		Scopes: append([]string(nil), client.Scopes...), Capabilities: append([]string(nil), client.Capabilities...),
 		AllowedCIDRs: append([]string(nil), client.AllowedCIDRs...), TokenTTLSeconds: client.TokenTTLSeconds,
+		CorpID: client.CorpID, OwnerScope: cloneOwnerScope(client.OwnerScope),
 		ExpiresAt: client.ExpiresAt, Enabled: client.Enabled, ReissueRequired: client.ReissueRequired,
 		AuthVersion: client.AuthVersion, LastUsedAt: client.LastUsedAt, CreatedAt: client.CreatedAt}
+}
+
+func cloneOwnerScope(scope domain.OwnerScope) domain.OwnerScope {
+	result := make(domain.OwnerScope, len(scope))
+	for key, values := range scope {
+		result[key] = append([]string(nil), values...)
+	}
+	return result
 }
 
 func (service *MachineService) audit(ctx context.Context, client domain.MachineClient, actor *int64, action, outcome string) error {

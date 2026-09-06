@@ -66,11 +66,11 @@ func (*PostgreSQL) CreateMachineClient(ctx context.Context, client domain.Machin
 	err = database.QueryRow(ctx, `
 		INSERT INTO access_machine_clients
 			(client_id, display_name, purpose, secret_hash, credential_hint, audiences, scopes,
-			 allowed_cidrs, token_ttl_seconds, expires_at, enabled, reissue_required, auth_version)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8::cidr[],$9,$10,$11,$12,$13)
+			 allowed_cidrs, corp_id, owner_scope, token_ttl_seconds, expires_at, enabled, reissue_required, auth_version)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8::cidr[],$9,$10::jsonb,$11,$12,$13,$14,$15)
 		RETURNING id, created_at, updated_at`,
 		client.ClientID, client.DisplayName, client.Purpose, client.SecretHash, client.CredentialHint,
-		client.Audiences, client.Scopes, client.AllowedCIDRs, client.TokenTTLSeconds, client.ExpiresAt,
+		client.Audiences, client.Scopes, client.AllowedCIDRs, client.CorpID, client.OwnerScope.JSON(), client.TokenTTLSeconds, client.ExpiresAt,
 		client.Enabled, client.ReissueRequired, client.AuthVersion,
 	).Scan(&client.ID, &client.CreatedAt, &client.UpdatedAt)
 	if err != nil {
@@ -89,12 +89,12 @@ func (*PostgreSQL) ReplaceMachineClient(ctx context.Context, client domain.Machi
 	}
 	tag, err := database.Exec(ctx, `
 		UPDATE access_machine_clients SET display_name=$2, purpose=$3, secret_hash=$4,
-			credential_hint=$5, audiences=$6, scopes=$7, allowed_cidrs=$8::cidr[],
-			token_ttl_seconds=$9, expires_at=$10, enabled=$11, reissue_required=$12,
-			auth_version=$13, updated_at=clock_timestamp()
+			credential_hint=$5, audiences=$6, scopes=$7, allowed_cidrs=$8::cidr[], corp_id=$9, owner_scope=$10::jsonb,
+			token_ttl_seconds=$11, expires_at=$12, enabled=$13, reissue_required=$14,
+			auth_version=$15, updated_at=clock_timestamp()
 		WHERE id=$1`,
 		client.ID, client.DisplayName, client.Purpose, client.SecretHash, client.CredentialHint,
-		client.Audiences, client.Scopes, client.AllowedCIDRs, client.TokenTTLSeconds, client.ExpiresAt,
+		client.Audiences, client.Scopes, client.AllowedCIDRs, client.CorpID, client.OwnerScope.JSON(), client.TokenTTLSeconds, client.ExpiresAt,
 		client.Enabled, client.ReissueRequired, client.AuthVersion,
 	)
 	if err != nil {
@@ -128,7 +128,7 @@ func (*PostgreSQL) AppendMachineAudit(ctx context.Context, audit domain.MachineA
 }
 
 const machineClientSelect = `SELECT c.id, c.client_id, c.display_name, c.purpose, c.secret_hash,
-	c.credential_hint, c.audiences, c.scopes, COALESCE(c.allowed_cidrs::text[], '{}'),
+	c.credential_hint, c.audiences, c.scopes, COALESCE(c.allowed_cidrs::text[], '{}'), c.corp_id, c.owner_scope,
 	c.token_ttl_seconds, c.expires_at, c.enabled, c.reissue_required, c.auth_version,
 	c.last_used_at, c.created_at, c.updated_at
 	FROM access_machine_clients c`
@@ -139,10 +139,15 @@ type machineRow interface {
 
 func scanMachineClient(row machineRow) (domain.MachineClient, error) {
 	var client domain.MachineClient
+	var ownerScope []byte
 	err := row.Scan(&client.ID, &client.ClientID, &client.DisplayName, &client.Purpose, &client.SecretHash,
-		&client.CredentialHint, &client.Audiences, &client.Scopes, &client.AllowedCIDRs,
+		&client.CredentialHint, &client.Audiences, &client.Scopes, &client.AllowedCIDRs, &client.CorpID, &ownerScope,
 		&client.TokenTTLSeconds, &client.ExpiresAt, &client.Enabled, &client.ReissueRequired,
 		&client.AuthVersion, &client.LastUsedAt, &client.CreatedAt, &client.UpdatedAt)
+	if err != nil {
+		return client, err
+	}
+	client.OwnerScope, err = domain.NormalizeOwnerScope(ownerScope)
 	return client, err
 }
 
