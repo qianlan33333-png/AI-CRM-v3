@@ -124,6 +124,34 @@ func TestOpenPlatformV1AIReviewPlanPostgreSQLJourney(t *testing.T) {
 	}
 	assertOpenPlatformV1AICounts(t, native, 1, 1, 1, 1, 1, 1)
 
+	// The REST and MCP transports share AI's client-scoped idempotency receipt.
+	// Replaying the same payload from the same machine must return the original
+	// operation, while a changed payload with that key is a conflict.
+	mcpReplay := httptest.NewRequest(http.MethodPost, "https://crm.example.test/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":"replay-1","method":"tools/call","params":{"name":"create_ai_review_plan","arguments":`+requestBody+`}}`))
+	mcpReplay.Header.Set("Authorization", "Bearer "+writeToken.AccessToken)
+	mcpReplay.Header.Set("Content-Type", "application/json")
+	mcpReplay.Header.Set("Idempotency-Key", "v1-ai-rest-key-0001")
+	mcpReplay.RemoteAddr = "203.0.113.50:443"
+	mcpReplay.TLS = &tlsState
+	mcpReplayResponse := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(mcpReplayResponse, mcpReplay)
+	if mcpReplayResponse.Code != http.StatusOK || !strings.Contains(mcpReplayResponse.Body.String(), `"operation_id":"`+created.Data.OperationID+`"`) || !strings.Contains(mcpReplayResponse.Body.String(), `"replayed":true`) {
+		t.Fatalf("MCP replay status=%d body=%s", mcpReplayResponse.Code, mcpReplayResponse.Body.String())
+	}
+	changedBody := strings.Replace(requestBody, "V1 review plan", "V1 review plan changed", 1)
+	mcpConflict := httptest.NewRequest(http.MethodPost, "https://crm.example.test/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":"replay-conflict","method":"tools/call","params":{"name":"create_ai_review_plan","arguments":`+changedBody+`}}`))
+	mcpConflict.Header.Set("Authorization", "Bearer "+writeToken.AccessToken)
+	mcpConflict.Header.Set("Content-Type", "application/json")
+	mcpConflict.Header.Set("Idempotency-Key", "v1-ai-rest-key-0001")
+	mcpConflict.RemoteAddr = "203.0.113.50:443"
+	mcpConflict.TLS = &tlsState
+	mcpConflictResponse := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(mcpConflictResponse, mcpConflict)
+	if mcpConflictResponse.Code != http.StatusOK || !strings.Contains(mcpConflictResponse.Body.String(), `"category":"conflict"`) {
+		t.Fatalf("MCP replay conflict status=%d body=%s", mcpConflictResponse.Code, mcpConflictResponse.Body.String())
+	}
+	assertOpenPlatformV1AICounts(t, native, 1, 1, 1, 1, 1, 3)
+
 	// Reconstruct Access, AI and the V1 handler over a new pool. MCP must read
 	// the durable AI state and preserve the creator-scoped machine boundary.
 	restartedNative, err := pgxpool.New(ctx, databaseURL)
@@ -193,9 +221,44 @@ func TestOpenPlatformV1AIReviewPlanPostgreSQLJourney(t *testing.T) {
 	if failedResponse.Code != http.StatusServiceUnavailable || !strings.Contains(failedResponse.Body.String(), `"dependency_unavailable"`) {
 		t.Fatalf("audit failure create status=%d body=%s", failedResponse.Code, failedResponse.Body.String())
 	}
-	// REST create, restarted MCP status and the denied cross-machine status
-	// each append one operation audit. The failed create appends no fourth row.
-	assertOpenPlatformV1AICounts(t, native, 1, 1, 1, 1, 1, 3)
+	// A grant update must invalidate the old bearer, and a freshly issued token
+	// without this capability cannot replay an existing receipt. The receipt is
+	// never an authorization bypass.
+	noAI := []string{"operation.read"}
+	if _, err = restartedMachine.PatchV1(ctx, admin, issuedClient.Client.ClientID, accessapp.PatchMachineClientInput{Capabilities: &noAI}); err != nil {
+		t.Fatal(err)
+	}
+	staleReplay := httptest.NewRequest(http.MethodPost, "https://crm.example.test/open/v1/ai/review-plans", strings.NewReader(requestBody))
+	staleReplay.Header.Set("Authorization", "Bearer "+writeToken.AccessToken)
+	staleReplay.Header.Set("Content-Type", "application/json")
+	staleReplay.Header.Set("Idempotency-Key", "v1-ai-rest-key-0001")
+	staleReplay.RemoteAddr = "203.0.113.50:443"
+	staleReplay.TLS = &tlsState
+	staleReplayResponse := httptest.NewRecorder()
+	restartedHandler.Routes().ServeHTTP(staleReplayResponse, staleReplay)
+	if staleReplayResponse.Code != http.StatusUnauthorized || !strings.Contains(staleReplayResponse.Body.String(), `"authentication"`) {
+		t.Fatalf("stale grant replay status=%d body=%s", staleReplayResponse.Code, staleReplayResponse.Body.String())
+	}
+	narrowedToken, err := restartedMachine.IssueClientCredentialsToken(ctx, accessapp.ClientCredentialsInput{ClientID: issuedClient.Client.ClientID, ClientSecret: issuedClient.Secret, Audience: "external_integration", RequestedScopes: []string{"write"}, SourceIP: netip.MustParseAddr("203.0.113.50")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	narrowedReplay := httptest.NewRequest(http.MethodPost, "https://crm.example.test/open/v1/ai/review-plans", strings.NewReader(requestBody))
+	narrowedReplay.Header.Set("Authorization", "Bearer "+narrowedToken.AccessToken)
+	narrowedReplay.Header.Set("Content-Type", "application/json")
+	narrowedReplay.Header.Set("Idempotency-Key", "v1-ai-rest-key-0001")
+	narrowedReplay.RemoteAddr = "203.0.113.50:443"
+	narrowedReplay.TLS = &tlsState
+	narrowedReplayResponse := httptest.NewRecorder()
+	restartedHandler.Routes().ServeHTTP(narrowedReplayResponse, narrowedReplay)
+	if narrowedReplayResponse.Code != http.StatusForbidden || !strings.Contains(narrowedReplayResponse.Body.String(), `"permission"`) {
+		t.Fatalf("narrowed grant replay status=%d body=%s", narrowedReplayResponse.Code, narrowedReplayResponse.Body.String())
+	}
+
+	// REST create, MCP replay/conflict, restarted MCP status, denied status and
+	// the narrowed-grant denial append six operation audits. The failed create
+	// and stale-token attempt append none.
+	assertOpenPlatformV1AICounts(t, native, 1, 1, 1, 1, 1, 6)
 }
 
 var tlsState = tls.ConnectionState{}
