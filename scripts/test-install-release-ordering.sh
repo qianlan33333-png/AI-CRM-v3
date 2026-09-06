@@ -144,7 +144,7 @@ make_release() {
   local missing_release_file="${2:-}"
   local release="$test_root/package-${sha}"
   local archive="/tmp/aicrm-${sha}.tar.gz"
-  mkdir -p "$release/bin" "$release/migrations" "$release/web/dist/admin" "$release/web/dist/aiassistant" "$release/deploy"
+  mkdir -p "$release/bin" "$release/migrations" "$release/web/dist/admin" "$release/web/dist/sidebar" "$release/web/dist/aiassistant" "$release/deploy"
   for binary in aicrm wecom-archive-sdk-runner migrate-platform migrate-river migrate-phone-identities migrate-identity-phone-vault migrate-survey-v2 migrate-commerce-history migrate-message-archive migrate-order-attribution migrate-automation-operations migrate-v2-config-definitions migrate-v2-runtime-config-releases migrate-v2-commerce-external-push-history migrate-open-platform migrate-media-legacy-materials migrate-channel-history migrate-v2-customer-tag-history migrate-radar-v2 migrate-sidebar-history migrate-owner-handoff-history bootstrap-automation-operations; do
     printf '#!/usr/bin/env bash\nexit 0\n' > "$release/bin/$binary"
     chmod 0755 "$release/bin/$binary"
@@ -208,9 +208,52 @@ make_release() {
     : > "$release/migrations/$migration"
   done
   : > "$release/web/dist/asset-manifest.json"
-  for radar_page in radar radarDetail radarForm; do
-    : > "$release/web/dist/admin/$radar_page.html"
+  for new_shell_page in \
+    agentEdit \
+    agents \
+    ai \
+    aiDetail \
+    apidocs \
+    attach \
+    audienceEdit \
+    automation \
+    campaigns \
+    channelForm \
+    channels \
+    config \
+    configDetail \
+    couponData \
+    couponForm \
+    coupons \
+    customerDetail \
+    customers \
+    cycles \
+    cyclesDetail \
+    funnel \
+    groupops \
+    groupopsDetail \
+    images \
+    index \
+    mpLib \
+    orderDetail \
+    orders \
+    ownerMig \
+    productForm \
+    products \
+    questionnaireDetail \
+    questionnaireOps \
+    questionnaires \
+    radar \
+    radarDetail \
+    radarForm \
+    spProductData \
+    spProductForm \
+    spProducts \
+    tags \
+    wecom-tags; do
+    : > "$release/web/dist/admin/$new_shell_page.html"
   done
+  : > "$release/web/dist/sidebar/index.html"
   for ai_assistant_asset in \
     list.html detail.html \
     group_chat_picker.css group_chat_picker.js \

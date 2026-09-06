@@ -175,11 +175,34 @@ try {
     for (const value of expectedValues) if (!cells.includes(xmlText(value))) throw new Error(`downloaded ${filename} omitted expected result field`);
     await fs.rm(destination,{force:true});
   };
-  await cdp.call("Page.navigate",{url:`${baseURL}/login?next=%2Fadmin%2Fowner-migration`});
+  // Start on the outer Composition document that the Go fixture has already
+  // verified contains the frozen menu. ownerMig.html is a legacy document
+  // name, but must be intercepted by the V3 owner-handoff Host instead of
+  // serving its retired local-only page.
+  const menuEntryPath=process.env.AICRM_OWNER_HANDOFF_TEST_MENU_ENTRY||"/admin/customers.html";
+  if(!/^\/admin\/[a-zA-Z0-9_-]+\.html$/.test(menuEntryPath)) throw new Error("owner handoff menu entry is invalid");
+  await cdp.call("Page.navigate",{url:`${baseURL}/login?next=${encodeURIComponent(menuEntryPath)}`});
   await waitFor("Boolean(document.querySelector('form[action=\"/login\"] input[name=\"login_csrf_token\"]'))","login shell did not render");
   const loginNav=cdp.next("Page.frameNavigated",params=>Boolean(params.frame&&!params.frame.parentId),"login form did not navigate");
   await evaluate(`(() => { document.querySelector('input[name="username"]').value=${JSON.stringify(username)}; document.querySelector('input[name="password"]').value=${JSON.stringify(password)}; document.querySelector('form[action="/login"]').requestSubmit(); return true; })()`);
-  const loginFrame=await loginNav; if(new URL(loginFrame.frame.url).pathname!=="/admin/owner-migration") throw new Error("login did not reach owner migration");
+  const loginFrame=await loginNav; if(new URL(loginFrame.frame.url).pathname!==menuEntryPath) throw new Error("login did not reach the verified new-shell menu page");
+  await waitFor(`Array.from(document.querySelectorAll('a[href="/admin/operation-cycles"]')).some(link => String(link.textContent || '').includes('运营闭环'))`, "new-shell Operation Cycles menu did not receive the canonical Host route");
+  const operationCyclesNav=cdp.next("Page.frameNavigated",params=>Boolean(params.frame&&!params.frame.parentId)&&new URL(params.frame.url).pathname==="/admin/operation-cycles","Operation Cycles menu navigation did not complete");
+  await evaluate(`document.querySelector('a[href="/admin/operation-cycles"]').click(); true`, "operation_cycles_menu_click");
+  await operationCyclesNav;
+  await waitFor(`location.pathname === "/admin/operation-cycles" && document.readyState !== "loading" && ["cycles","cyclesDetail"].includes(document.body?.dataset.page || "") && Array.from(document.scripts).some(script => String(script.src || '').includes('operationCyclesHost-'))`, "new-shell Operation Cycles Host document did not finish parsing");
+  const operationCyclesPage=await evaluate(`(() => ({ path: location.pathname, page: document.body?.dataset.page || '', host_asset: Array.from(document.scripts).some(script => String(script.src || '').includes('operationCyclesHost-')) }))()`, "operation_cycles_menu_page");
+  if(operationCyclesPage.path!=="/admin/operation-cycles" || !["cycles","cyclesDetail"].includes(operationCyclesPage.page) || !operationCyclesPage.host_asset) throw new Error(`new-shell Operation Cycles menu did not resolve the V3 Host ${JSON.stringify(operationCyclesPage)}`);
+  const menuBackNav=cdp.next("Page.frameNavigated",params=>Boolean(params.frame&&!params.frame.parentId)&&new URL(params.frame.url).pathname===menuEntryPath,"new-shell menu return did not complete");
+  await cdp.call("Page.navigate",{url:`${baseURL}${menuEntryPath}`});
+  await menuBackNav;
+  await waitFor(`Array.from(document.querySelectorAll('a[href="ownerMig.html"]')).some(link => String(link.textContent || '').includes('负责人迁移'))`, "new-shell owner handoff menu link did not render");
+  const ownerMenuNav=cdp.next("Page.frameNavigated",params=>Boolean(params.frame&&!params.frame.parentId)&&new URL(params.frame.url).pathname==="/admin/ownerMig.html","owner handoff menu navigation did not complete");
+  await evaluate(`document.querySelector('a[href="ownerMig.html"]').click(); true`, "owner_handoff_menu_click");
+  await ownerMenuNav;
+  await waitFor(`location.pathname === "/admin/ownerMig.html" && document.readyState !== "loading" && Boolean(document.querySelector('[data-owner-handoff-host]')) && Array.from(document.scripts).some(script => String(script.src || '').includes('/static/admin_console/owner_handoff_host.js'))`, "new-shell owner handoff Host document did not finish parsing");
+  const ownerMenuPage=await evaluate(`(() => ({ path: location.pathname, host: Boolean(document.querySelector('[data-owner-handoff-host]')), asset: Array.from(document.scripts).some(script => String(script.src || '').includes('/static/admin_console/owner_handoff_host.js')), retired_template: Boolean(document.querySelector('#ownerMigCsv')) }))()`, "owner_handoff_menu_page");
+  if (ownerMenuPage.path !== "/admin/ownerMig.html" || !ownerMenuPage.host || !ownerMenuPage.asset || ownerMenuPage.retired_template) throw new Error(`new-shell owner menu did not resolve the V3 Host ${JSON.stringify(ownerMenuPage)}`);
   await waitFor("(() => { const stage=document.querySelector('[data-owner-handoff-host]'); return ['ready','donor_error','context_error','host_error'].includes(stage?.dataset.ownerHandoffInit || ''); })()", "owner handoff Host did not complete initialization");
   const hostDiagnostic = await evaluate(`(() => {
     const stage=document.querySelector('[data-owner-handoff-host]');

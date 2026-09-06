@@ -16,6 +16,16 @@ const entryPoints = {
   productHost: path.join(repository, 'web', 'v3', 'productAdapter.ts'),
   channelCenterHost: path.join(repository, 'web', 'v3', 'channelCenterAdapter.ts'),
   aiAssistantHost: path.join(repository, 'web', 'v3', 'aiAssistantAdapter.ts'),
+  // Customer pages retain their frozen templates and generated V2 client; this
+  // adapter is injected before that client to map only its safe read DTOs.
+  customerHost: path.join(repository, 'web', 'v3', 'customerAdapter.ts'),
+  // The frozen sidebar template and stylesheet remain byte-exact. Its live
+  // protocol adapter is V3-owned because the current Sidebar Owner exposes
+  // narrower trusted DTOs than the donor-generated client.
+  sidebarHost: path.join(repository, 'web', 'v3', 'sidebar', 'main.ts'),
+  // The Open Platform catalog and caller lifecycle are V3-owned. The frozen
+  // document only provides the authenticated admin shell around this Host.
+  openPlatformHost: path.join(repository, 'web', 'v3', 'openPlatformAdapter.ts'),
 };
 const result = await build({
   entryPoints,
@@ -69,11 +79,69 @@ for (const name of Object.keys(entryPoints)) {
   const entry = entries.get(name);
   if (!entry) throw new Error(`${name} adapter entry was not emitted`);
   manifest.entries[name] = entry;
-  if (name === 'aiAssistantHost') continue;
+  if (name === 'aiAssistantHost' || name === 'sidebarHost' || name === 'customerHost' || name === 'openPlatformHost') continue;
   const donorMain = manifest.files[entry].imports.find((item) => item.kind === 'dynamic-import' && manifest.files[item.path]?.inputs?.includes('web/src/admin/main.ts'))?.path;
   const donorLegacy = donorMain && manifest.files[donorMain].imports.find((item) => item.kind === 'dynamic-import' && manifest.files[item.path]?.inputs?.includes('web/src/admin/legacy.ts'))?.path;
   if (!donorMain || !donorLegacy) throw new Error(`${name} must start the frozen donor main -> legacy runtime`);
 }
+
+const customerHost = manifest.entries.customerHost;
+const frozenAdmin = manifest.entries.admin;
+if (typeof customerHost !== 'string' || typeof frozenAdmin !== 'string') throw new Error('customer Host or frozen admin entry is absent from manifest');
+const customerHostReference = `../${customerHost}`;
+const frozenAdminReference = `<script type="module" src="../${frozenAdmin}"></script>`;
+for (const documentName of ['customers.html', 'customerDetail.html']) {
+  const documentPath = path.join(dist, 'admin', documentName);
+  let documentHTML = fs.readFileSync(documentPath, 'utf8');
+  if (!documentHTML.includes(frozenAdminReference)) throw new Error(`${documentName} does not reference the declared frozen admin entry`);
+  if (documentHTML.includes(customerHostReference)) throw new Error(`${documentName} already contains the customer Host`);
+  documentHTML = documentHTML.replace(frozenAdminReference, `<script type="module" src="${customerHostReference}"></script>\n${frozenAdminReference}`);
+  fs.writeFileSync(documentPath, documentHTML);
+  manifest.release_files[`admin/${documentName}`] = metadataFor(Buffer.from(documentHTML));
+}
+
+const openPlatformHost = manifest.entries.openPlatformHost;
+if (typeof openPlatformHost !== 'string') throw new Error('Open Platform Host entry is absent from manifest');
+const openPlatformReference = `../${openPlatformHost}`;
+const openPlatformDocument = path.join(dist, 'admin', 'apidocs.html');
+let openPlatformHTML = fs.readFileSync(openPlatformDocument, 'utf8');
+if (!openPlatformHTML.includes(frozenAdminReference)) throw new Error('apidocs.html does not reference the declared frozen admin entry');
+if (openPlatformHTML.includes(openPlatformReference)) throw new Error('apidocs.html already contains the Open Platform Host');
+// This page formerly mounted the retired 56-route document. Keep its frozen
+// static shell but replace that runtime with the V3 Host, so the legacy module
+// cannot race the Host or render an obsolete API catalog before access control
+// data arrives.
+openPlatformHTML = openPlatformHTML.replace(frozenAdminReference, `<script type="module" src="${openPlatformReference}"></script>`);
+fs.writeFileSync(openPlatformDocument, openPlatformHTML);
+manifest.release_files['admin/apidocs.html'] = metadataFor(Buffer.from(openPlatformHTML));
+
+// The frozen shell keeps its navigation markup byte-for-byte in the donor
+// source. Adapt its generated release documents instead: Operation Cycles is
+// V3-hosted at the canonical route, while /admin/cycles.html intentionally
+// remains an unavailable retired document in the Composition Root.
+const operationCyclesHref = '/admin/operation-cycles';
+const adminOutput = path.join(dist, 'admin');
+for (const documentName of fs.readdirSync(adminOutput).filter((name) => name.endsWith('.html'))) {
+  const documentPath = path.join(adminOutput, documentName);
+  let documentHTML = fs.readFileSync(documentPath, 'utf8');
+  if (!documentHTML.includes('href="cycles.html"')) continue;
+  documentHTML = documentHTML.replaceAll('href="cycles.html"', `href="${operationCyclesHref}"`);
+  if (documentHTML.includes('href="cycles.html"') || !documentHTML.includes(`href="${operationCyclesHref}"`)) throw new Error(`${documentName} did not receive the canonical Operation Cycles navigation link`);
+  fs.writeFileSync(documentPath, documentHTML);
+  manifest.release_files[`admin/${documentName}`] = metadataFor(Buffer.from(documentHTML));
+}
+
+const sidebarHost = manifest.entries.sidebarHost;
+const frozenSidebar = manifest.entries.sidebar;
+if (typeof sidebarHost !== 'string' || typeof frozenSidebar !== 'string') throw new Error('sidebar Host or frozen entry is absent from manifest');
+const sidebarDocument = path.join(dist, 'sidebar', 'index.html');
+let sidebarHTML = fs.readFileSync(sidebarDocument, 'utf8');
+const frozenSidebarReference = `../${frozenSidebar}`;
+if (!sidebarHTML.includes(frozenSidebarReference)) throw new Error('frozen sidebar document does not reference its declared entry');
+sidebarHTML = sidebarHTML.replace(frozenSidebarReference, `../${sidebarHost}`);
+fs.writeFileSync(sidebarDocument, sidebarHTML);
+const sidebarBytes = Buffer.from(sidebarHTML);
+manifest.release_files['sidebar/index.html'] = metadataFor(sidebarBytes);
 
 const donor = path.join(repository, 'web', 'donors', 'ai-assistant-production');
 const donorOut = path.join(dist, 'aiassistant');

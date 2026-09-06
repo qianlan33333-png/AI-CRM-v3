@@ -27,6 +27,7 @@ type ImageVariantRow struct {
 	ID                          int64
 	FileName, MimeType          string
 	FileSize, Width, Height     int32
+	Enabled                     bool
 	ImageChecksum, BlobChecksum []byte
 	Content                     []byte
 }
@@ -55,6 +56,17 @@ var imageVariantSpecs = map[string]imageVariantSpec{
 }
 
 func (service *Service) GetImageVariant(ctx context.Context, imageID int64, key string) (ImageVariant, error) {
+	return service.getImageVariant(ctx, imageID, key, false)
+}
+
+// GetEnabledImageVariant serves a variant only when the Media-owned image is
+// enabled. It is used by viewer surfaces whose list contract already excludes
+// disabled images, so a guessed identifier cannot reveal hidden media.
+func (service *Service) GetEnabledImageVariant(ctx context.Context, imageID int64, key string) (ImageVariant, error) {
+	return service.getImageVariant(ctx, imageID, key, true)
+}
+
+func (service *Service) getImageVariant(ctx context.Context, imageID int64, key string, enabledOnly bool) (ImageVariant, error) {
 	if imageID < 1 || !ValidImageVariantKey(key) {
 		return ImageVariant{}, ErrInvalidImageVariant
 	}
@@ -79,6 +91,9 @@ func (service *Service) GetImageVariant(ctx context.Context, imageID int64, key 
 			return ImageVariant{}, ErrImageVariantNotFound
 		}
 		return ImageVariant{}, ErrImageVariantUnavailable
+	}
+	if enabledOnly && !row.Enabled {
+		return ImageVariant{}, ErrImageVariantNotFound
 	}
 
 	inspection, err := inspectImageVariantRow(row, imageID)

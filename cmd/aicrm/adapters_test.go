@@ -15,7 +15,6 @@ import (
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
 	accesshttp "github.com/qianlan33333-png/AI-CRM-v3/internal/access/http"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects"
-	"github.com/qianlan33333-png/AI-CRM-v3/internal/tag"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/webshell"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/wecom"
 )
@@ -48,6 +47,36 @@ type directUnitOfWork struct{}
 
 func (directUnitOfWork) Within(ctx context.Context, callback func(context.Context) error) error {
 	return callback(ctx)
+}
+
+func TestMountOpenPlatformUIUsesAuthenticatedV3Host(t *testing.T) {
+	authentication := &fakeAccessAuthentication{principal: accessdomain.Principal{Kind: accessdomain.KindAdmin, InternalID: 7, Roles: []accessdomain.Role{accessdomain.RoleSuperAdmin}}, err: accessdomain.ErrAuthentication}
+	fallback := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) { _, _ = writer.Write([]byte("fallback")) })
+	host := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) { _, _ = writer.Write([]byte("open-platform-host")) })
+	handler := mountOpenPlatformUI(fallback, host, authentication)
+
+	request := httptest.NewRequest(http.MethodGet, "/admin/api-docs", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/login?next=%2Fadmin%2Fapi-docs" {
+		t.Fatalf("unauthenticated status=%d location=%q", response.Code, response.Header().Get("Location"))
+	}
+
+	authentication.err = nil
+	request = httptest.NewRequest(http.MethodGet, "/admin/apidocs.html?client=fixture", nil)
+	request.AddCookie(&http.Cookie{Name: accesshttp.SessionCookieName, Value: "valid"})
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || response.Body.String() != "open-platform-host" || authentication.session != "valid" {
+		t.Fatalf("v3 host status=%d body=%q session=%q", response.Code, response.Body.String(), authentication.session)
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/admin/config", nil)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || response.Body.String() != "fallback" {
+		t.Fatalf("unrelated route status=%d body=%q", response.Code, response.Body.String())
+	}
 }
 
 func TestAllowedOAuthRedirectsIncludesHiddenExternalEffectsPage(t *testing.T) {
@@ -310,12 +339,13 @@ func TestTransactionRouteKeepsShellButReportsBackendUnavailable(t *testing.T) {
 	}
 }
 
-func TestSecurityHeadersAllowBlobImagesOnlyOnMediaPages(t *testing.T) {
+func TestSecurityHeadersAllowBlobImagesOnlyOnMediaAndSidebarPages(t *testing.T) {
 	handler := securityHeaders(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	for path, allowsBlob := range map[string]bool{
 		"/admin/image-library":                        true,
 		"/admin/miniprogram-library":                  true,
 		"/admin/attachment-library":                   true,
+		webshell.SidebarPagePath:                      true,
 		"/admin/campaigns.html?view=external-effects": false,
 		"/admin/orders":                               false,
 		"/api/admin/image-library":                    false,
@@ -324,10 +354,10 @@ func TestSecurityHeadersAllowBlobImagesOnlyOnMediaPages(t *testing.T) {
 		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
 		policy := response.Header().Get("Content-Security-Policy")
 		if allowsBlob && !strings.Contains(policy, "img-src 'self' data: blob:") {
-			t.Fatalf("Media page CSP lacks blob image source for %s: %q", path, policy)
+			t.Fatalf("Media/sidebar page CSP lacks blob image source for %s: %q", path, policy)
 		}
 		if !allowsBlob && strings.Contains(policy, "blob:") {
-			t.Fatalf("non-Media page CSP unexpectedly permits blob images for %s: %q", path, policy)
+			t.Fatalf("unrelated page CSP unexpectedly permits blob images for %s: %q", path, policy)
 		}
 	}
 }
@@ -365,10 +395,42 @@ func TestSecurityHeadersAllowFrozenOperationCycleInlineStylesOnBothPagesOnly(t *
 	}
 }
 
+func TestOwnerHandoffUIMountRetainsContactHistoryReadOnlyEntry(t *testing.T) {
+	var hostCalls, historyCalls int
+	host := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		hostCalls++
+		writer.Header().Set("X-Owner-Handoff", "host")
+	})
+	history := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Query().Get("contact_history") != "1" {
+			t.Fatalf("history fallback query=%q", request.URL.RawQuery)
+		}
+		historyCalls++
+		writer.Header().Set("X-Owner-Handoff", "history-read-only")
+	})
+	handler := mountOwnerHandoffUI(history, host)
+
+	for path, want := range map[string]string{
+		"/admin/ownerMig.html":                   "host",
+		"/admin/owner-migration":                 "host",
+		"/admin/ownerMig.html?contact_history=1": "history-read-only",
+	} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		if got := response.Header().Get("X-Owner-Handoff"); got != want {
+			t.Fatalf("path=%s owner=%q want=%q", path, got, want)
+		}
+	}
+	if hostCalls != 2 || historyCalls != 1 {
+		t.Fatalf("host=%d history=%d", hostCalls, historyCalls)
+	}
+}
+
 func TestSecurityHeadersAllowFrozenOwnerHandoffInlineStylesOnlyOnOwnerPage(t *testing.T) {
 	handler := securityHeaders(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	for path, allowed := range map[string]bool{
 		"/admin/owner-migration":                      true,
+		"/admin/ownerMig.html":                        true,
 		"/admin/owner-migration/unsafe":               false,
 		"/api/admin/customers/owner-handoffs":         false,
 		"/static/admin_console/owner_handoff_host.js": false,
@@ -533,48 +595,36 @@ func TestExternalEffectsUIRequiresAdminAndExposesOnlyItsFrozenSurface(t *testing
 	}
 }
 
-func TestStagedTagsReleaseMountsFrozenWorkspaceInOnlyPR10Shell(t *testing.T) {
-	dist := filepath.Join("..", "..", "release", "web", "dist")
-	if _, err := os.Stat(filepath.Join(dist, "admin", "tags.html")); errors.Is(err, os.ErrNotExist) {
-		t.Skip("real release stage is built by the CI frontend step")
-	} else if err != nil {
-		t.Fatal(err)
-	}
-	renderer, err := webshell.NewRenderer()
-	if err != nil {
-		t.Fatal(err)
-	}
-	tagUI := tag.NewModuleRegistration().UIBinding(dist, func(writer http.ResponseWriter, request *http.Request, donorTemplate string, assets tag.TagsAssets) error {
-		return renderer.RenderTags(writer, webshell.AdminPageForRequest(request, "企微标签管理", "", "api.admin_wecom_tags_page"), donorTemplate, webshell.TagsAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS})
+func TestTagsPageUsesItsBoundV3UIInsteadOfTheGenericShell(t *testing.T) {
+	marker := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("X-Tag-UI", "bound")
+		writer.WriteHeader(http.StatusNoContent)
 	})
-	marker := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) { writer.WriteHeader(http.StatusNoContent) })
 	authentication := &fakeAccessAuthentication{principal: accessdomain.Principal{Kind: accessdomain.KindAdmin, InternalID: 7, Roles: []accessdomain.Role{accessdomain.RoleAdmin}}}
-	handler, err := routeApplicationWithMediaTags(marker, marker, marker, marker, marker, marker, marker, marker, marker, tagUI, marker, webshell.MustHandler(), authentication, "https://crm.example")
+	handler, err := routeApplicationWithMediaTags(marker, marker, marker, marker, marker, marker, marker, marker, marker, marker, marker, webshell.MustHandler(), authentication, "https://crm.example")
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	// The canonical tags page must reach the V3-owned tag UI binding. A
+	// generic shell would render successfully while dropping the real tag
+	// operations, so the marker proves the precise handler remains mounted.
 	request := httptest.NewRequest(http.MethodGet, "/admin/wecom-tags", nil)
 	request.AddCookie(&http.Cookie{Name: "aicrm_admin_session", Value: "valid"})
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
-	body := response.Body.String()
-	for _, required := range []string{"新增标签组", "新增标签", "同步企微标签", "搜索标签组 / 标签 / tag_id", `data-page="tags"`} {
-		if !strings.Contains(body, required) {
-			t.Fatalf("staged tags response missing %q", required)
-		}
-	}
-	if response.Code != http.StatusOK || strings.Count(body, `class="admin-sidebar"`) != 1 || strings.Count(body, `<main`) != 1 || strings.Count(body, `<aside`) != 1 || strings.Contains(body, `class="side"`) || strings.Contains(body, `class="shell"`) {
-		t.Fatalf("staged tags shell mismatch status=%d body=%q", response.Code, body)
+	if response.Code != http.StatusNoContent || response.Header().Get("X-Tag-UI") != "bound" {
+		t.Fatalf("tags page did not reach the bound UI status=%d marker=%q", response.Code, response.Header().Get("X-Tag-UI"))
 	}
 
-	for _, privatePath := range []string{"/admin/tags.html", "/admin/wecom-tags.html"} {
-		request = httptest.NewRequest(http.MethodGet, privatePath, nil)
-		request.AddCookie(&http.Cookie{Name: "aicrm_admin_session", Value: "valid"})
-		response = httptest.NewRecorder()
-		handler.ServeHTTP(response, request)
-		if response.Code != http.StatusNotFound {
-			t.Fatalf("private donor input %s became routable: status=%d", privatePath, response.Code)
-		}
+	// The donor staging name stays private; the built document name is an
+	// ordinary shell page (placeholder in this harness, built page in release).
+	request = httptest.NewRequest(http.MethodGet, "/admin/tags.html", nil)
+	request.AddCookie(&http.Cookie{Name: "aicrm_admin_session", Value: "valid"})
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("private donor staging /admin/tags.html became routable: status=%d", response.Code)
 	}
 }
 

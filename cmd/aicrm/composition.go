@@ -123,6 +123,7 @@ import (
 type composedApplication struct {
 	pool                  *platformpostgres.Pool
 	handler               http.Handler
+	authentication        accessAuthentication
 	management            *accessapp.Management
 	weComProcessor        wecom.InboxProcessor
 	weComArchiveProcessor wecom.ArchiveInboxProcessor
@@ -339,7 +340,7 @@ func composeWithWeComClientFactory(ctx context.Context, cfg platformconfig.Runti
 	if err != nil {
 		return fail(err)
 	}
-	mediaLibrary := mediaapp.NewReadService(uow, mediaRepository)
+	mediaLibrary := sidebarMediaLibrary{library: mediaService, sender: mediaapp.NewReadService(uow, mediaRepository)}
 	radarModule := radarmodule.NewModuleRegistration()
 	radarRepository := radarstore.NewPostgres()
 	radarManager, err := radarapp.NewService(uow, radarRepository, radarRepository)
@@ -1080,7 +1081,7 @@ func composeWithWeComClientFactory(ctx context.Context, cfg platformconfig.Runti
 	if err != nil {
 		return fail(err)
 	}
-	shellHandler, err := webshell.NewHandler(webshell.HandlerOptions{Renderer: renderer})
+	shellHandler, err := webshell.NewHandler(webshell.HandlerOptions{Renderer: renderer, DistDir: "web/dist"})
 	if err != nil {
 		return fail(err)
 	}
@@ -1288,9 +1289,14 @@ func composeWithWeComClientFactory(ctx context.Context, cfg platformconfig.Runti
 	}
 	sidebarHandler, err := sidebar.NewHandler(sidebar.Config{
 		Contexts: sidebarContextAdapter{tokens: sidebarContextTokens}, Profiles: sidebarProfiles,
+		Viewer: sidebarViewerBootstrapper{
+			principals: sidebarPrincipalResolver{authentication: authentication, users: accessRepository, uow: uow, corpID: cfg.WeCom.CorpID},
+			identity:   existingWeComIdentityResolver{service: oneID, uow: uow, corpID: cfg.WeCom.CorpID},
+			tokens:     sidebarContextTokens,
+		},
 		Surveys: customerSurveyAdapter{reader: surveySubmissions}, Timeline: customerTimelineAdapter{uow: uow, reader: customerStore},
 		Products: productCatalog, ProductByID: productTargets, Orders: orderService, Entitlements: entitlements,
-		Coupons: customerCoupons, Materials: mediaLibrary, MaterialSend: mediaLibrary, Radar: radarManager, Sends: sidebarSends, PublicOrigin: cfg.PublicOrigin,
+		Coupons: customerCoupons, Materials: mediaLibrary, MaterialSend: mediaLibrary, ImageVariants: mediaService, Radar: radarManager, Sends: sidebarSends, PublicOrigin: cfg.PublicOrigin,
 	})
 	if err != nil {
 		return fail(err)
@@ -1494,7 +1500,7 @@ func composeWithWeComClientFactory(ctx context.Context, cfg platformconfig.Runti
 		return renderer.RenderOperationCycles(writer, webshell.AdminPageForRequest(request, "运营闭环", "运营周期、执行事实与复盘记录。", "api.admin_operation_cycles_page"), page, donorTemplate, webshell.OperationCycleAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, HostJS: assets.HostJS})
 	})
 	ownerHandoffUI := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/admin/owner-migration" {
+		if !isOwnerHandoffUIRequest(request) {
 			http.NotFound(writer, request)
 			return
 		}
@@ -1526,6 +1532,7 @@ func composeWithWeComClientFactory(ctx context.Context, cfg platformconfig.Runti
 		return fail(err)
 	}
 	handler = openplatformhttp.Mount(handler, openPlatformHandler.Routes())
+	handler = mountOpenPlatformUI(handler, shellHandler, authentication)
 	handler = mountMemberGridUI(handler, memberGridUI)
 	handler = mountOwnerHandoffUI(handler, requireAdminSession(authentication, ownerHandoffUI))
 	handler, err = mountSegmentAPI(handler, segmentBindings.Audience)
@@ -1576,7 +1583,7 @@ func composeWithWeComClientFactory(ctx context.Context, cfg platformconfig.Runti
 			return fail(err)
 		}
 	}
-	return &composedApplication{pool: pool, handler: handler, management: management, weComProcessor: weComProcessor, weComArchiveProcessor: weComArchiveProcessor, effectsRuntime: effectsRuntime, channelEntrantActions: channelEntrantActions, customerSync: customerSync, hxcDashboard: hxcDashboard, hxcSource: hxcSource, adminOps: adminOpsProjection, release: releaseObservation, diagnostics: diagnostics}, nil
+	return &composedApplication{pool: pool, handler: handler, authentication: authentication, management: management, weComProcessor: weComProcessor, weComArchiveProcessor: weComArchiveProcessor, effectsRuntime: effectsRuntime, channelEntrantActions: channelEntrantActions, customerSync: customerSync, hxcDashboard: hxcDashboard, hxcSource: hxcSource, adminOps: adminOpsProjection, release: releaseObservation, diagnostics: diagnostics}, nil
 }
 
 func mountMessageArchive(next, archive http.Handler) (http.Handler, error) {
@@ -1617,6 +1624,27 @@ func mountSurveyAPIs(mux *http.ServeMux, survey http.Handler, tagHandlers ...htt
 	// legacy page-shaped path. Keep it inside the authenticated admin mux so the
 	// response is JSON from Survey instead of the outer mux's plain-text 404.
 	mux.Handle("/admin/questionnaires/", survey)
+}
+
+// mountOpenPlatformUI replaces only the retired API-docs presentation with the
+// V3-owned caller-management Host. The Access-owned Open Platform APIs stay
+// mounted by their own module; this shell adapter neither grants permissions
+// nor stores credentials. Keeping the outer route here prevents Config's
+// frozen document binding from claiming the page before the Host is loaded.
+func mountOpenPlatformUI(next, ui http.Handler, authentication accessAuthentication) http.Handler {
+	if next == nil || ui == nil || authentication == nil {
+		return http.NotFoundHandler()
+	}
+	protected := requireAdminSession(authentication, ui)
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/admin/api-docs", "/admin/apidocs.html":
+			protected.ServeHTTP(writer, request)
+			return
+		default:
+			next.ServeHTTP(writer, request)
+		}
+	})
 }
 
 func mountHXCUI(next, dashboardUI http.Handler, authentication accessAuthentication) http.Handler {
@@ -1762,12 +1790,25 @@ func routeApplicationWithMedia(health, access, identity, effects, pushCenter, ef
 
 func mountOwnerHandoffUI(next, ui http.Handler) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path == "/admin/owner-migration" {
+		if isOwnerHandoffUIRequest(request) {
 			ui.ServeHTTP(writer, request)
 			return
 		}
 		next.ServeHTTP(writer, request)
 	})
+}
+
+// isOwnerHandoffUIPath identifies the canonical owner-handoff Host route and
+// the frozen new-shell navigation's ownerMig.html alias.
+func isOwnerHandoffUIPath(path string) bool {
+	return path == "/admin/owner-migration" || path == "/admin/ownerMig.html"
+}
+
+// isOwnerHandoffUIRequest reserves the menu alias for the V3 Host while
+// retaining the existing V1 contact-history read-only entry on ownerMig.html.
+// That history entry never mounts the mutation-capable Host.
+func isOwnerHandoffUIRequest(request *http.Request) bool {
+	return isOwnerHandoffUIPath(request.URL.Path) && request.URL.Query().Get("contact_history") != "1"
 }
 
 func mountMemberGridUI(next, ui http.Handler) http.Handler {
@@ -1929,6 +1970,10 @@ func routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, acce
 	mux.Handle("/admin/operation-cycles", requireAdminSession(authentication, operationUI))
 	mux.Handle("/admin/config/releases/", requireAdminSession(authentication, configUI))
 	mux.Handle("/admin/operation-cycles/", requireAdminSession(authentication, operationUI))
+	// The new login page is a V3-owned webshell document. Keep each mounted
+	// module Host above: the new shell must not replace approved product, tag,
+	// operation-cycle or configuration workflows with a generic document.
+	mux.Handle(webshell.LoginAccessPath, requireAdminSession(authentication, shell))
 	// The staged Tags donor document is a private template carrier. Only the
 	// canonical PR10-mounted route above is public; neither its private staging
 	// name nor the donor document name may fall through to a generic 200 shell.
@@ -1941,9 +1986,9 @@ func routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, acce
 	mux.Handle("/admin/image-library", requireAdminSession(authentication, mediaUI))
 	mux.Handle("/admin/miniprogram-library", requireAdminSession(authentication, mediaUI))
 	mux.Handle("/admin/attachment-library", requireAdminSession(authentication, mediaUI))
-	// Canonical/nested Product aliases mount the frozen donor fragment through
-	// the existing V3 Host. The member-grid data page receives the same session
-	// and asset boundary as the lifecycle pages.
+	// Product aliases mount the existing V3 Host. This retains the frozen
+	// workspace fields and all currently-approved Product actions beneath the
+	// new shell rather than letting a generic dist document mask them.
 	for _, path := range []string{
 		"/admin/wechat-pay/products", "/admin/wechat-pay/products/",
 		"/admin/wechat-pay/products.html", "/admin/products.html",
@@ -1954,9 +1999,6 @@ func routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, acce
 		"/admin/wechat-pay/products/new", "/admin/service-period-products/new",
 	} {
 		mux.Handle(path, requireAdminSession(authentication, productUI))
-	}
-	for _, path := range []string{"/admin/coupons", "/admin/coupons.html", "/admin/couponForm.html", "/admin/couponData.html"} {
-		mux.Handle(path, requireAdminSession(authentication, couponUI))
 	}
 	for _, path := range []string{
 		"/admin/spProductData.html", "/admin/wechat-pay/spProductData.html",
@@ -1969,6 +2011,9 @@ func routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, acce
 	mux.Handle("/admin/automation-conversion/group-ops/plans/", requireAdminSession(authentication, groupOpsUI))
 	mux.Handle("/admin/groupops.html", requireAdminSession(authentication, groupOpsUI))
 	mux.Handle("/admin/groupopsDetail.html", requireAdminSession(authentication, groupOpsUI))
+	for _, path := range []string{"/admin/coupons", "/admin/coupons.html", "/admin/couponForm.html", "/admin/couponData.html"} {
+		mux.Handle(path, requireAdminSession(authentication, couponUI))
+	}
 	for _, path := range []string{"/admin/automation-agents", "/admin/automation-agents/", "/admin/agents.html", "/admin/agentEdit.html"} {
 		mux.Handle(path, requireAdminSession(authentication, automationUI))
 	}
@@ -1981,6 +2026,7 @@ func routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, acce
 	mux.Handle("/auth/wecom/callback", weCom)
 	mux.Handle("/api/sidebar/", weCom)
 	mux.Handle("/static/", shell)
+	mux.Handle("/sidebar-assets/", shell)
 	mux.Handle(webshell.SidebarPagePath, shell)
 	mux.Handle("/admin", requireAdminSession(authentication, shell))
 	mux.Handle("/admin/", requireAdminSession(authentication, shell))
@@ -2050,6 +2096,7 @@ func securityHeaders(next http.Handler) http.Handler {
 		writer.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
 		styleSource := "'self'"
 		mediaPage := request.URL.Path == "/admin/image-library" || request.URL.Path == "/admin/miniprogram-library" || request.URL.Path == "/admin/attachment-library"
+		sidebarPage := request.URL.Path == webshell.SidebarPagePath
 		tagsPage := request.URL.Path == "/admin/wecom-tags"
 		productPage := isProductShellPath(request.URL.Path)
 		orderPage := request.URL.Path == "/admin/orders" || request.URL.Path == "/admin/orders.html" || request.URL.Path == "/admin/orderDetail.html"
@@ -2061,14 +2108,19 @@ func securityHeaders(next http.Handler) http.Handler {
 		configPage := request.URL.Path == "/admin/config" || request.URL.Path == "/admin/config.html" || request.URL.Path == "/admin/configDetail.html" || request.URL.Path == "/admin/api-docs" || request.URL.Path == "/admin/apidocs.html"
 		hxcPage := request.URL.Path == "/admin/hxc-dashboard"
 		aiAssistantPage := request.URL.Path == "/admin/ai.html" || request.URL.Path == "/admin/aiDetail.html" || request.URL.Path == "/admin/cloud-orchestrator/plans" || strings.HasPrefix(request.URL.Path, "/admin/cloud-orchestrator/plans/")
-		ownerHandoffPage := request.URL.Path == "/admin/owner-migration"
-		if (request.URL.Path == "/admin/campaigns.html" && externaleffects.ValidUIQuery(request.URL.Query())) || hxcPage || mediaPage || tagsPage || productPage || orderPage || couponPage || groupOpsPage || automationPage || surveyPage || operationCyclesPage || configPage || aiAssistantPage || ownerHandoffPage {
+		// Built new-shell documents embed presentational inline style attributes
+		// (icon layout) and therefore share the donor pages' style relaxation.
+		_, distAdminPage := webshell.DistAdminPageFile("web/dist", request.URL.Path)
+		ownerHandoffPage := isOwnerHandoffUIPath(request.URL.Path)
+		if (request.URL.Path == "/admin/campaigns.html" && externaleffects.ValidUIQuery(request.URL.Query())) || hxcPage || mediaPage || tagsPage || productPage || orderPage || couponPage || groupOpsPage || automationPage || surveyPage || operationCyclesPage || configPage || aiAssistantPage || ownerHandoffPage || distAdminPage {
 			styleSource = "'self' 'unsafe-inline'"
 		}
 		imageSource := "'self' data:"
-		if mediaPage {
-			// The frozen Media controller creates private thumbnail object URLs;
-			// keep blob: limited to the three v3-owned Media shell routes.
+		if mediaPage || sidebarPage {
+			// Both the Media Host and the V3 sidebar create private thumbnail
+			// object URLs from a scoped Media read. Keep blob: limited to these
+			// presentation routes; API responses and unrelated admin pages stay
+			// under the stricter image policy.
 			imageSource += " blob:"
 		}
 		contentPolicy := "default-src 'self'; script-src 'self' https://res.wx.qq.com; style-src " + styleSource + "; img-src " + imageSource + "; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'"

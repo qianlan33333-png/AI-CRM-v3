@@ -38,10 +38,75 @@ import (
 // Persistence decision: Product receipt/configuration, Outbound intent, EER
 // acceptance and River enqueue use their normal shared PostgreSQL UoW. The
 // fixture's terminal outcome is read back through Product, never retried.
+type productExternalPushChromiumFixture struct {
+	ctx                      context.Context
+	application              *composedApplication
+	server                   *httptest.Server
+	script                   string
+	productID                int64
+	serviceProductID         int64
+	historicalOrderReference string
+	dataKey                  []byte
+}
+
+// TestPostgreSQLProductExternalPushCompositionPreflight runs in every real
+// PostgreSQL check. It builds the release artifact and proves the authenticated
+// outer ordinary-product, service-period and historical-order routes before the
+// dedicated Linux Chromium gate opens either frozen donor page.
+func TestPostgreSQLProductExternalPushCompositionPreflight(t *testing.T) {
+	_ = newProductExternalPushChromiumFixture(t)
+}
+
 func TestPostgreSQLProductExternalPushChromiumJourney(t *testing.T) {
+	// The independently named preflight above always covers the release artifact
+	// and real Composition Root. Chromium is an explicit Linux CI gate, rather
+	// than a developer-machine substitute for that contract.
+	if goruntime.GOOS == "darwin" {
+		t.Skip("Chromium CDP journey requires Linux CI; the PostgreSQL Composition preflight runs separately")
+	}
+	if !platformconfig.ChromiumJourneyRequired() {
+		t.Skip("set AICRM_REQUIRE_CHROMIUM_JOURNEY=1 to run the required Chromium journey")
+	}
+
+	fixture := newProductExternalPushChromiumFixture(t)
+	exactParams := "{\"count\":9007199254740993,\"nested\":[{\"inner\":9007199254740993}],\"flag\":false}"
+	command := exec.CommandContext(fixture.ctx, "node", fixture.script)
+	command.Env = append(os.Environ(),
+		"AICRM_PRODUCT_PUSH_TEST_URL="+fixture.server.URL,
+		"AICRM_PRODUCT_PUSH_TEST_USERNAME=product-browser-owner",
+		"AICRM_PRODUCT_PUSH_TEST_PASSWORD=product-browser-owner-password",
+		"AICRM_PRODUCT_PUSH_TEST_PRODUCT_ID="+strconv.FormatInt(fixture.productID, 10),
+		"AICRM_PRODUCT_PUSH_TEST_SERVICE_PRODUCT_ID="+strconv.FormatInt(fixture.serviceProductID, 10),
+		"AICRM_PRODUCT_PUSH_TEST_HISTORICAL_ORDER="+fixture.historicalOrderReference,
+		"AICRM_PRODUCT_PUSH_TEST_PARAMS="+exactParams,
+	)
+	output, err := command.CombinedOutput()
+	if strings.Contains(string(output), "product_external_push_chromium: SKIP_DEVTOOLS") {
+		t.Fatalf("product external push Chromium DevTools unexpectedly unavailable on required platform: %s", strings.TrimSpace(string(output)))
+	}
+	if err != nil {
+		t.Fatalf("product external push Chromium journey: %v output=%s", err, strings.TrimSpace(string(output)))
+	}
+	if !strings.Contains(string(output), "product_external_push_chromium: PASS") {
+		t.Fatalf("product external push Chromium journey did not report success: %q", output)
+	}
+
+	assertProductExternalPushSyntheticDurableFacts(t, fixture.ctx, fixture.application, fixture.productID, fixture.dataKey)
+	var serviceRevision, serviceStoredExpiry int64
+	var serviceStored json.RawMessage
+	if err = fixture.application.pool.Native().QueryRow(fixture.ctx, "SELECT version,expires_at_ts,custom_params FROM product_external_push_configurations WHERE product_id=$1 AND product_kind='service_period'", fixture.serviceProductID).Scan(&serviceRevision, &serviceStoredExpiry, &serviceStored); err != nil {
+		t.Fatal(err)
+	}
+	if serviceRevision != 1 || serviceStoredExpiry != 2147483647 || !externalPushStoredJSONHasExactBigInteger(serviceStored) {
+		t.Fatalf("service-period browser configuration revision=%d params=%s", serviceRevision, serviceStored)
+	}
+}
+
+func newProductExternalPushChromiumFixture(t *testing.T) *productExternalPushChromiumFixture {
+	t.Helper()
 	// Go executes this package with cmd/aicrm as its working directory, while
 	// composition deliberately resolves the release artifact at web/dist. Use
-	// the repository root just as the release binary does, so this journey
+	// the repository root just as the release binary does, so this fixture
 	// exercises the full outer route with its built Product Host rather than a
 	// package-local missing-artifact 503.
 	_, source, _, ok := goruntime.Caller(0)
@@ -53,9 +118,9 @@ func TestPostgreSQLProductExternalPushChromiumJourney(t *testing.T) {
 	prepareProductExternalPushChromiumArtifacts(t, repository)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 	databaseURL, cleanup := adminAccessCompositionDatabase(t, ctx)
-	defer cleanup()
+	t.Cleanup(cleanup)
 
 	dataKey := make([]byte, 32)
 	if _, err := rand.Read(dataKey); err != nil {
@@ -77,7 +142,7 @@ func TestPostgreSQLProductExternalPushChromiumJourney(t *testing.T) {
 		t.Fatal(err)
 	}
 	server := httptest.NewUnstartedServer(http.NotFoundHandler())
-	defer server.Close()
+	t.Cleanup(server.Close)
 	origin := "https://" + server.Listener.Addr().String()
 	application, err := compose(ctx, platformconfig.Runtime{
 		Role: platformconfig.RoleAPI, DatabaseURL: databaseURL, PublicOrigin: origin,
@@ -91,7 +156,7 @@ func TestPostgreSQLProductExternalPushChromiumJourney(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer application.Close()
+	t.Cleanup(application.Close)
 	if err = application.bootstrap(ctx, platformconfig.Bootstrap{Enabled: true, Username: "product-browser-owner", Password: "product-browser-owner-password", DisplayName: "Product Browser Owner"}); err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +167,7 @@ func TestPostgreSQLProductExternalPushChromiumJourney(t *testing.T) {
 	workerCtx, stopWorker := context.WithCancel(ctx)
 	workerDone := make(chan error, 1)
 	go func() { workerDone <- application.effectsRuntime.Run(workerCtx) }()
-	defer func() {
+	t.Cleanup(func() {
 		stopWorker()
 		select {
 		case runErr := <-workerDone:
@@ -112,16 +177,15 @@ func TestPostgreSQLProductExternalPushChromiumJourney(t *testing.T) {
 		case <-time.After(20 * time.Second):
 			t.Error("effects runtime did not stop")
 		}
-	}()
+	})
 	server.Config.Handler = application.handler
 	server.StartTLS()
-	// This direct outer-handler preflight catches a route shadow before Chrome
-	// opens the frozen order-detail page. The browser then renders the same
-	// authenticated URL and asserts its visible compatibility timeline.
+
+	// This direct outer-handler preflight catches route shadows before Chrome
+	// opens the frozen pages. It runs in ordinary PostgreSQL CI as well, so a
+	// missing release artifact or Host binding cannot be reclassified as a
+	// browser-only timing failure.
 	outerSession, _ := adminAccessLogin(t, application.handler, "product-browser-owner", "product-browser-owner-password")
-	// Assert the same outer route Chrome navigates before launching Chromium.
-	// This makes a missing release artifact or an inner Host error explicit
-	// instead of reporting a generic UI timeout.
 	outerProduct := httptest.NewRecorder()
 	outerProductRequest := httptest.NewRequest(http.MethodGet, "/admin/productForm.html?id="+strconv.FormatInt(productID, 10), nil)
 	outerProductRequest.AddCookie(&http.Cookie{Name: accesshttp.SessionCookieName, Value: outerSession})
@@ -129,9 +193,6 @@ func TestPostgreSQLProductExternalPushChromiumJourney(t *testing.T) {
 	if outerProduct.Code != http.StatusOK || !bytes.Contains(outerProduct.Body.Bytes(), []byte(`/product-assets/`)) || !bytes.Contains(outerProduct.Body.Bytes(), []byte(`data-page="productForm"`)) {
 		t.Fatalf("outer composed product Host status=%d product_assets=%t product_form=%t", outerProduct.Code, bytes.Contains(outerProduct.Body.Bytes(), []byte(`/product-assets/`)), bytes.Contains(outerProduct.Body.Bytes(), []byte(`data-page="productForm"`)))
 	}
-	// The service-period form is separately routed and carries distinct frozen
-	// donor bindings. Check the outer Composition Root before Chromium opens it;
-	// otherwise a generic shell can look like a Host timing failure.
 	outerServiceProduct := httptest.NewRecorder()
 	outerServiceProductRequest := httptest.NewRequest(http.MethodGet, "/admin/spProductForm.html?id="+strconv.FormatInt(serviceProductID, 10), nil)
 	outerServiceProductRequest.AddCookie(&http.Cookie{Name: accesshttp.SessionCookieName, Value: outerSession})
@@ -139,10 +200,6 @@ func TestPostgreSQLProductExternalPushChromiumJourney(t *testing.T) {
 	if outerServiceProduct.Code != http.StatusOK || !bytes.Contains(outerServiceProduct.Body.Bytes(), []byte(`/product-assets/`)) || !bytes.Contains(outerServiceProduct.Body.Bytes(), []byte(`data-page="spProductForm"`)) || !bytes.Contains(outerServiceProduct.Body.Bytes(), []byte(`id="sp-push"`)) {
 		t.Fatalf("outer composed service-period product Host status=%d product_assets=%t service_form=%t service_anchor=%t", outerServiceProduct.Code, bytes.Contains(outerServiceProduct.Body.Bytes(), []byte(`/product-assets/`)), bytes.Contains(outerServiceProduct.Body.Bytes(), []byte(`data-page="spProductForm"`)), bytes.Contains(outerServiceProduct.Body.Bytes(), []byte(`id="sp-push"`)))
 	}
-	// The frozen service-period form's loadDb reads all seven resources in
-	// parallel. Verify each outer API response before launching Chromium, with
-	// only status and structural markers in failures so an absent composition
-	// binding cannot be mistaken for a Host lifecycle race.
 	for _, read := range []struct {
 		path   string
 		marker string
@@ -161,9 +218,6 @@ func TestPostgreSQLProductExternalPushChromiumJourney(t *testing.T) {
 		application.handler.ServeHTTP(response, request)
 		body := response.Body.Bytes()
 		if response.Code != http.StatusOK || !json.Valid(body) || !bytes.Contains(body, []byte(read.marker)) {
-			// Do not print any response content. These mutually exclusive protocol
-			// codes make a composition gap inspectable without leaking a member,
-			// session, or rendered donor payload into CI output.
 			failure := "other"
 			for _, candidate := range []string{"permission_denied", "unauthorized", "unavailable", "not_found", "invalid_request"} {
 				if bytes.Contains(body, []byte(candidate)) {
@@ -174,48 +228,21 @@ func TestPostgreSQLProductExternalPushChromiumJourney(t *testing.T) {
 			t.Fatalf("outer composed service-period loadDb resource path=%s status=%d json=%t contract=%t failure=%s", read.path, response.Code, json.Valid(body), bytes.Contains(body, []byte(read.marker)), failure)
 		}
 	}
-
 	outerDelivery := httptest.NewRecorder()
 	outerRequest := httptest.NewRequest(http.MethodGet, "/api/admin/wechat-pay/orders/"+historicalOrderReference+"/external-push-deliveries", nil)
 	outerRequest.AddCookie(&http.Cookie{Name: accesshttp.SessionCookieName, Value: outerSession})
 	application.handler.ServeHTTP(outerDelivery, outerRequest)
 	if outerDelivery.Code != http.StatusOK || !bytes.Contains(outerDelivery.Body.Bytes(), []byte(`"source":"history"`)) || !bytes.Contains(outerDelivery.Body.Bytes(), []byte(`"legacy_delivery_id":"browser-history-delivery-1"`)) {
-		t.Fatalf("outer composed historical delivery route status=%d body=%s", outerDelivery.Code, outerDelivery.Body.String())
+		// Keep the failure non-sensitive: this only reports route and fixture
+		// contract booleans, not the protected historical result payload.
+		t.Fatalf("outer composed historical delivery route status=%d history=%t legacy_id=%t", outerDelivery.Code, bytes.Contains(outerDelivery.Body.Bytes(), []byte(`"source":"history"`)), bytes.Contains(outerDelivery.Body.Bytes(), []byte(`"legacy_delivery_id":"browser-history-delivery-1"`)))
 	}
 
-	exactParams := "{\"count\":9007199254740993,\"nested\":[{\"inner\":9007199254740993}],\"flag\":false}"
-	command := exec.CommandContext(ctx, "node", filepath.Join(filepath.Dir(source), "product_external_push_chromium_journey.mjs"))
-	command.Env = append(os.Environ(),
-		"AICRM_PRODUCT_PUSH_TEST_URL="+server.URL,
-		"AICRM_PRODUCT_PUSH_TEST_USERNAME=product-browser-owner",
-		"AICRM_PRODUCT_PUSH_TEST_PASSWORD=product-browser-owner-password",
-		"AICRM_PRODUCT_PUSH_TEST_PRODUCT_ID="+strconv.FormatInt(productID, 10),
-		"AICRM_PRODUCT_PUSH_TEST_SERVICE_PRODUCT_ID="+strconv.FormatInt(serviceProductID, 10),
-		"AICRM_PRODUCT_PUSH_TEST_HISTORICAL_ORDER="+historicalOrderReference,
-		"AICRM_PRODUCT_PUSH_TEST_PARAMS="+exactParams,
-	)
-	output, err := command.CombinedOutput()
-	if strings.Contains(string(output), "product_external_push_chromium: SKIP_DEVTOOLS") {
-		if goruntime.GOOS == "darwin" {
-			t.Skip("Darwin Chromium DevTools unavailable; Linux CI must execute this journey")
-		}
-		t.Fatalf("product external push Chromium DevTools unexpectedly unavailable on required platform: %s", strings.TrimSpace(string(output)))
-	}
-	if err != nil {
-		t.Fatalf("product external push Chromium journey: %v output=%s", err, strings.TrimSpace(string(output)))
-	}
-	if !strings.Contains(string(output), "product_external_push_chromium: PASS") {
-		t.Fatalf("product external push Chromium journey did not report success: %q", output)
-	}
-
-	assertProductExternalPushSyntheticDurableFacts(t, ctx, application, productID, dataKey)
-	var serviceRevision, serviceStoredExpiry int64
-	var serviceStored json.RawMessage
-	if err = application.pool.Native().QueryRow(ctx, "SELECT version,expires_at_ts,custom_params FROM product_external_push_configurations WHERE product_id=$1 AND product_kind='service_period'", serviceProductID).Scan(&serviceRevision, &serviceStoredExpiry, &serviceStored); err != nil {
-		t.Fatal(err)
-	}
-	if serviceRevision != 1 || serviceStoredExpiry != 2147483647 || !externalPushStoredJSONHasExactBigInteger(serviceStored) {
-		t.Fatalf("service-period browser configuration revision=%d params=%s", serviceRevision, serviceStored)
+	return &productExternalPushChromiumFixture{
+		ctx: ctx, application: application, server: server,
+		script:    filepath.Join(filepath.Dir(source), "product_external_push_chromium_journey.mjs"),
+		productID: productID, serviceProductID: serviceProductID,
+		historicalOrderReference: historicalOrderReference, dataKey: dataKey,
 	}
 }
 

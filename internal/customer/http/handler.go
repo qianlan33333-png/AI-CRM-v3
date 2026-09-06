@@ -182,7 +182,7 @@ func (handler *Handler) customer360(response nethttp.ResponseWriter, request *ne
 
 	surveys, surveyErr := handler.surveys.CustomerSurveys(request.Context(), canonicalID, customerport.PageQuery{Limit: 20, Watermark: time.Now().UTC()})
 	if surveyErr == nil {
-		surveySection = section{Status: string(surveys.Status.State), Data: map[string]any{"total": len(surveys.Items), "recent": surveys.Items}}
+		surveySection = section{Status: string(surveys.Status.State), Data: map[string]any{"total": surveys.Total, "recent": surveys.Items}}
 		if surveySection.Status == "" {
 			surveySection.Status = "ready"
 		}

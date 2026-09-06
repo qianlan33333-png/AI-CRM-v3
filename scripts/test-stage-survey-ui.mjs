@@ -31,6 +31,7 @@ assert.equal(qrChunks.length, 1, 'build must contain exactly one Survey QR dynam
 includeStatic(qrChunks[0]);
 for (const relative of required) {
   assert.deepEqual(stagedManifest.files?.[relative], sourceManifest.files?.[relative], `staged manifest metadata drifted for ${relative}`);
+  assert.deepEqual(stagedManifest.release_files?.[relative], sourceManifest.release_files?.[relative], `staged release metadata drifted for ${relative}`);
   assert.ok(fs.readFileSync(path.join(stage, relative)).equals(fs.readFileSync(path.join(source, relative))), `staged asset drifted for ${relative}`);
 }
 assert.ok(stagedManifest.files?.[qrChunks[0]], 'staged manifest omits Survey QR dynamic chunk');
@@ -38,6 +39,7 @@ assert.ok(stagedManifest.files?.[qrChunks[0]], 'staged manifest omits Survey QR 
 const adminPages = ['questionnaires.html', 'questionnaireDetail.html', 'questionnaireOps.html'];
 for (const page of adminPages) {
   const relative = path.join('admin', page);
+  assert.deepEqual(stagedManifest.release_files?.[relative], sourceManifest.release_files?.[relative], `staged release metadata drifted for ${relative}`);
   assert.ok(fs.readFileSync(path.join(stage, relative)).equals(fs.readFileSync(path.join(source, relative))), `staged private template drifted for ${relative}`);
 }
 
@@ -45,6 +47,7 @@ const expectedH5 = ['active.html', 'all.html', 'auth.html', 'done.html', 'error.
 assert.deepEqual(fs.readdirSync(path.join(stage, 'h5')).sort(), expectedH5, 'release contains a missing or unapproved Survey H5 page');
 for (const page of expectedH5) {
   const relative = path.join('h5', page);
+  assert.deepEqual(stagedManifest.release_files?.[relative], sourceManifest.release_files?.[relative], `staged release metadata drifted for ${relative}`);
   assert.ok(fs.readFileSync(path.join(stage, relative)).equals(fs.readFileSync(path.join(source, relative))), `staged H5 page drifted for ${relative}`);
 }
 assert.equal(stagedManifest.entries?.sidebar, undefined, 'Survey stage exposed the donor sidebar entry');

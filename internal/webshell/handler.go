@@ -11,6 +11,10 @@ import (
 type HandlerOptions struct {
 	Renderer    *Renderer
 	SidebarData SidebarPageData
+	// DistDir optionally points at the built frontend (web/dist).  When set,
+	// built admin documents are served directly in place of the placeholder
+	// shell and the sidebar serves the built workbench.
+	DistDir string
 }
 
 // Handler serves the shell pages and embedded static assets.  Reserved data
@@ -19,6 +23,7 @@ type HandlerOptions struct {
 type Handler struct {
 	renderer    *Renderer
 	sidebarData SidebarPageData
+	distDir     string
 }
 
 // NewHandler builds an independent httptest-friendly shell handler.  The
@@ -40,7 +45,7 @@ func NewHandler(options ...HandlerOptions) (http.Handler, error) {
 			return nil, err
 		}
 	}
-	return &Handler{renderer: renderer, sidebarData: option.SidebarData}, nil
+	return &Handler{renderer: renderer, sidebarData: option.SidebarData, distDir: option.DistDir}, nil
 }
 
 // MustHandler is a convenience for small local previews and tests.
@@ -75,6 +80,8 @@ func (handler *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 	switch {
 	case strings.HasPrefix(requestPath, "/static/"):
 		handler.renderer.ServeStatic(writer, request)
+	case strings.HasPrefix(requestPath, "/sidebar-assets/"):
+		handler.serveSidebarAsset(writer, request)
 	case requestPath == LoginPath:
 		handler.serveLogin(writer, request)
 	case requestPath == WeComAuthStartPath:
@@ -123,6 +130,34 @@ func (handler *Handler) serveAdmin(writer http.ResponseWriter, request *http.Req
 		methodNotAllowed(writer, http.MethodGet+", "+http.MethodHead)
 		return
 	}
+	// The built frontend declares customers.html as the admin home through its
+	// index redirect document.  Canonicalize the shell root onto it directly so
+	// the meta refresh never resolves against a slash-less base URL.
+	switch request.URL.Path {
+	case "/admin", "/admin/":
+		if _, ok := DistAdminPageFile(handler.distDir, "/admin/customers.html"); ok {
+			http.Redirect(writer, request, "/admin/customers.html", http.StatusSeeOther)
+			return
+		}
+	}
+	// Built documents reference their runtime assets and sibling pages with
+	// root-relative depth-1 URLs ("../assets/…", "customers.html").  Vanity
+	// aliases nested deeper than /admin/<name>.html would resolve those
+	// against the wrong base, so canonicalize onto the flat document path
+	// before serving; the query string carries any detail-page parameters.
+	if file, ok := DistAdminPageFile(handler.distDir, request.URL.Path); ok {
+		name, _ := DistAdminPageName(request.URL.Path)
+		if canonical := "/admin/" + name; request.URL.Path != canonical {
+			target := canonical
+			if request.URL.RawQuery != "" {
+				target += "?" + request.URL.RawQuery
+			}
+			http.Redirect(writer, request, target, http.StatusSeeOther)
+			return
+		}
+		serveDistAdminPage(writer, request, file)
+		return
+	}
 	spec := adminSpecForPath(request.URL.Path)
 	data := AdminPageForRequest(request, spec.title, spec.summary, spec.activeEndpoint)
 	if err := handler.renderer.RenderAdmin(writer, data); err != nil {
@@ -133,6 +168,13 @@ func (handler *Handler) serveAdmin(writer http.ResponseWriter, request *http.Req
 func (handler *Handler) serveSidebar(writer http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodGet && request.Method != http.MethodHead {
 		methodNotAllowed(writer, http.MethodGet+", "+http.MethodHead)
+		return
+	}
+	if body, err := distSidebarDocument(handler.distDir); err == nil {
+		writer.Header().Set("Content-Type", "text/html; charset=utf-8")
+		writer.Header().Set("Cache-Control", "private, no-store")
+		writer.WriteHeader(http.StatusOK)
+		_, _ = writer.Write(body)
 		return
 	}
 	if err := handler.renderer.RenderSidebar(writer, handler.sidebarData); err != nil {

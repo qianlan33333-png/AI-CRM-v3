@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
@@ -18,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	accesshttp "github.com/qianlan33333-png/AI-CRM-v3/internal/access/http"
 	customer "github.com/qianlan33333-png/AI-CRM-v3/internal/customer"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	customerport "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/port"
@@ -373,6 +375,16 @@ func TestPostgreSQLOwnerHandoffChromiumJourney(t *testing.T) {
 	if !platformconfig.ChromiumJourneyRequired() {
 		t.Skip("set AICRM_REQUIRE_CHROMIUM_JOURNEY=1 to run the required Chromium journey")
 	}
+	_, sourceFile, _, ok := goruntime.Caller(0)
+	if !ok {
+		t.Fatal("locate owner handoff Chromium journey")
+	}
+	repository := filepath.Clean(filepath.Join(filepath.Dir(sourceFile), "..", ".."))
+	// The frozen new-shell menu is a release artifact. Build it and compose
+	// from the repository root so the browser follows its actual ownerMig.html
+	// link instead of a package-local fallback.
+	t.Chdir(repository)
+	prepareProductExternalPushChromiumArtifacts(t, repository)
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	databaseURL, cleanup := adminAccessCompositionDatabase(t, ctx)
@@ -491,6 +503,52 @@ func TestPostgreSQLOwnerHandoffChromiumJourney(t *testing.T) {
 	// Customer scope dispatcher. Group Ops retains its normal exact read through
 	// that same dispatcher, while its /sync subtree remains separately owned.
 	session, _ := adminAccessLogin(t, application.handler, "owner-browser", "owner-browser-password")
+	// The browser must start from an actual Composition response, rather than
+	// reading web/dist directly: module mounts and production asset serving are
+	// part of the route contract.
+	const menuEntryPath = "/admin/customers.html"
+	menuEntryPage := httptest.NewRecorder()
+	menuEntryRequest := httptest.NewRequest(http.MethodGet, menuEntryPath, nil)
+	menuEntryRequest.AddCookie(&http.Cookie{Name: accesshttp.SessionCookieName, Value: session})
+	application.handler.ServeHTTP(menuEntryPage, menuEntryRequest)
+	menuEntryHTML := menuEntryPage.Body.Bytes()
+	if menuEntryPage.Code != http.StatusOK || !bytes.Contains(menuEntryHTML, []byte(`href="ownerMig.html"`)) || !bytes.Contains(menuEntryHTML, []byte(`href="/admin/operation-cycles"`)) {
+		t.Fatalf("outer new-shell menu routes status=%d owner_alias=%t canonical_cycles=%t", menuEntryPage.Code, bytes.Contains(menuEntryHTML, []byte(`href="ownerMig.html"`)), bytes.Contains(menuEntryHTML, []byte(`href="/admin/operation-cycles"`)))
+	}
+	operationCyclesPage := httptest.NewRecorder()
+	operationCyclesRequest := httptest.NewRequest(http.MethodGet, "/admin/operation-cycles", nil)
+	operationCyclesRequest.AddCookie(&http.Cookie{Name: accesshttp.SessionCookieName, Value: session})
+	application.handler.ServeHTTP(operationCyclesPage, operationCyclesRequest)
+	operationCyclesHTML := operationCyclesPage.Body.Bytes()
+	if operationCyclesPage.Code != http.StatusOK || !bytes.Contains(operationCyclesHTML, []byte(`data-page="cycles"`)) || !bytes.Contains(operationCyclesHTML, []byte(`operationCyclesHost-`)) {
+		t.Fatalf("canonical Operation Cycles Host status=%d page=%t host_asset=%t", operationCyclesPage.Code, bytes.Contains(operationCyclesHTML, []byte(`data-page="cycles"`)), bytes.Contains(operationCyclesHTML, []byte(`operationCyclesHost-`)))
+	}
+	retiredCyclesPage := httptest.NewRecorder()
+	retiredCyclesRequest := httptest.NewRequest(http.MethodGet, "/admin/cycles.html", nil)
+	retiredCyclesRequest.AddCookie(&http.Cookie{Name: accesshttp.SessionCookieName, Value: session})
+	application.handler.ServeHTTP(retiredCyclesPage, retiredCyclesRequest)
+	if retiredCyclesPage.Code != http.StatusNotFound {
+		t.Fatalf("retired cycles document status=%d, want 404", retiredCyclesPage.Code)
+	}
+	menuOwnerPage := httptest.NewRecorder()
+	menuOwnerRequest := httptest.NewRequest(http.MethodGet, "/admin/ownerMig.html", nil)
+	menuOwnerRequest.AddCookie(&http.Cookie{Name: accesshttp.SessionCookieName, Value: session})
+	application.handler.ServeHTTP(menuOwnerPage, menuOwnerRequest)
+	menuOwnerHTML := menuOwnerPage.Body.Bytes()
+	if menuOwnerPage.Code != http.StatusOK || !bytes.Contains(menuOwnerHTML, []byte(`data-owner-handoff-host`)) || !bytes.Contains(menuOwnerHTML, []byte(`/static/admin_console/owner_handoff_host.js`)) || bytes.Contains(menuOwnerHTML, []byte(`id="ownerMigCsv"`)) {
+		t.Fatalf("new-shell menu alias did not mount V3 owner Host status=%d host=%t asset=%t retired_template=%t", menuOwnerPage.Code, bytes.Contains(menuOwnerHTML, []byte(`data-owner-handoff-host`)), bytes.Contains(menuOwnerHTML, []byte(`/static/admin_console/owner_handoff_host.js`)), bytes.Contains(menuOwnerHTML, []byte(`id="ownerMigCsv"`)))
+	}
+	contactHistoryPage := httptest.NewRecorder()
+	contactHistoryRequest := httptest.NewRequest(http.MethodGet, "/admin/ownerMig.html?contact_history=1", nil)
+	contactHistoryRequest.AddCookie(&http.Cookie{Name: accesshttp.SessionCookieName, Value: session})
+	application.handler.ServeHTTP(contactHistoryPage, contactHistoryRequest)
+	contactHistoryHTML := contactHistoryPage.Body.Bytes()
+	// contact_history remains on the frozen V1 document and its read-only
+	// contact-history adapter. It must bypass the mutation-capable V3 Host;
+	// the full DOM/read-only request behavior is covered by web/scripts/e2e.mjs.
+	if contactHistoryPage.Code != http.StatusOK || bytes.Contains(contactHistoryHTML, []byte(`data-owner-handoff-host`)) || !bytes.Contains(contactHistoryHTML, []byte(`data-page="ownerMig"`)) || !bytes.Contains(contactHistoryHTML, []byte(`src="../assets/admin-`)) {
+		t.Fatalf("owner contact-history entry did not retain its frozen read-only document status=%d host=%t page=%t admin_runtime=%t", contactHistoryPage.Code, bytes.Contains(contactHistoryHTML, []byte(`data-owner-handoff-host`)), bytes.Contains(contactHistoryHTML, []byte(`data-page="ownerMig"`)), bytes.Contains(contactHistoryHTML, []byte(`src="../assets/admin-`)))
+	}
 	operationMembers := func(rawQuery string) []struct {
 		UserID string `json:"user_id"`
 		Active bool   `json:"active"`
@@ -544,16 +602,12 @@ func TestPostgreSQLOwnerHandoffChromiumJourney(t *testing.T) {
 	if decodeErr := json.NewDecoder(groupResponse.Body).Decode(&groupPayload); decodeErr != nil || groupPayload.Scope != "group_ops" {
 		t.Fatalf("fully composed Group Ops operation-member response scope=%q err=%v", groupPayload.Scope, decodeErr)
 	}
-	_, sourceFile, _, ok := goruntime.Caller(0)
-	if !ok {
-		t.Fatal("locate owner handoff Chromium journey")
-	}
 	runJourney := func(mode string, readback bool, scope string) {
 		command := exec.CommandContext(ctx, "node", filepath.Join(filepath.Dir(sourceFile), "..", "..", "internal", "webshell", "owner_handoff_chromium.test.mjs"))
-		command.Env = append(os.Environ(), "AICRM_OWNER_HANDOFF_TEST_URL="+server.URL, "AICRM_OWNER_HANDOFF_TEST_USERNAME=owner-browser", "AICRM_OWNER_HANDOFF_TEST_PASSWORD=owner-browser-password", "AICRM_OWNER_HANDOFF_TEST_SOURCE="+strconv.FormatInt(source, 10), "AICRM_OWNER_HANDOFF_TEST_TARGET="+strconv.FormatInt(target, 10), "AICRM_OWNER_HANDOFF_TEST_SOURCE_USERID=browser-source", "AICRM_OWNER_HANDOFF_TEST_TARGET_USERID=browser-target", "AICRM_OWNER_HANDOFF_TEST_MODE="+mode, "AICRM_OWNER_HANDOFF_TEST_SCOPE="+scope, "AICRM_OWNER_HANDOFF_TEST_READ_TRANSFER="+strconv.FormatBool(readback))
+		command.Env = append(os.Environ(), "AICRM_OWNER_HANDOFF_TEST_URL="+server.URL, "AICRM_OWNER_HANDOFF_TEST_USERNAME=owner-browser", "AICRM_OWNER_HANDOFF_TEST_PASSWORD=owner-browser-password", "AICRM_OWNER_HANDOFF_TEST_MENU_ENTRY="+menuEntryPath, "AICRM_OWNER_HANDOFF_TEST_SOURCE="+strconv.FormatInt(source, 10), "AICRM_OWNER_HANDOFF_TEST_TARGET="+strconv.FormatInt(target, 10), "AICRM_OWNER_HANDOFF_TEST_SOURCE_USERID=browser-source", "AICRM_OWNER_HANDOFF_TEST_TARGET_USERID=browser-target", "AICRM_OWNER_HANDOFF_TEST_MODE="+mode, "AICRM_OWNER_HANDOFF_TEST_SCOPE="+scope, "AICRM_OWNER_HANDOFF_TEST_READ_TRANSFER="+strconv.FormatBool(readback))
 		output, runErr := command.CombinedOutput()
 		if runErr != nil {
-			if goruntime.GOOS == "darwin" && strings.Contains(string(output), "Chromium remote debugging did not become ready") {
+			if goruntime.GOOS == "darwin" && (strings.Contains(string(output), "Chromium remote debugging did not become ready") || strings.Contains(string(output), "Chromium exited before remote debugging")) {
 				t.Skipf("Chromium cannot start in this local sandbox: %s", strings.TrimSpace(string(output)))
 			}
 			t.Fatalf("owner handoff Chromium %s journey: %v output=%s", mode, runErr, strings.TrimSpace(string(output)))
