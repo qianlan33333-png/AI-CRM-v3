@@ -4,11 +4,11 @@
 
 | 板块 | PRD | 当前实现证据 | 完整板块 PR / 最新已知 HEAD | 根审核与剩余项 |
 |---|---|---|---|---|
-| 负责人迁移 | 01 已批准 | 两模式、真实 River/Provider fixture、并发互斥已有测试 | #171 `7d84b1577a5833874dc2085f57096953041284ab` | 未通过整板块：20k本地恢复与101人仅2次Provider/重启、partial/missing已独立PG验证；组合测试边界已修；已对齐main8ec5072；根新增PG/race与安装/文件契约通过；准确7d84 Linux Chrome在Host上下文/模板初始化失败，待修 |
+| 负责人迁移 | 01 已批准 | 两模式、真实 River/Provider fixture、并发互斥已有测试 | #171 `4688bad2f0d803eeabf5df05e07c325662cde7c5` | 未通过整板块：20k本地恢复与101人仅2次Provider/重启、partial/missing已独立PG验证；组合测试边界已修；已对齐main8ec5072；根新增PG/race与安装/文件契约通过；旧Chrome失败已定位并修复模板标记、context路由漏注册和页面CSP；根复核context/CSP专项通过，准确4688bad的Linux完整Chrome/CI待结果 |
 | 通用客户标签 | 02 已批准 | 根独立 PG/race、历史/101恢复/来源门禁、真实 Chromium 与全量 CI 通过 | #169 `6f4b63c53c000cbc1c523ece78a9fec37147b735` 已合并 | 整板块代码验收通过；main 8ec5072d169c25abd25f80e29cb9f6222834b320自动部署成功，12:07 UTC线上ready核实；真实业务验收未进行 |
 | 配置中心运行生效 | 05 已批准 | 根独立PG/race、实际消费者/历史/制品及真实Chrome完整CI通过 | #170 `07b0af371db7a97620924a34ee5975a74c775d39` 已合并 | 整板块代码验收通过；main 5494537fb4d95a916c2754a3c1387335905d2861，部署及生产发布另记 |
-| 商品／订单外推 | 04 已批准 | Terra xhigh 开发中，实际paid/测试投递首checkpoint已提交 | #172 `c90a7c2b60adb5a624e06d362cb88810b4327e1e` | 已对齐main8ec5072；新参数改造后完整付款旅程出现投递0次，准确原因为业务参数进入目标policy摘要但运行配置未包含；修复后须重新验证完整付款到投递。历史/订单结果读取/Chromium继续 |
-| 通用开放平台 | 03及03a 已批准 | 冻结56条method/path；Terra xhigh已派发 | #173 `ba0155a16d366889573697a12dbd05e50e12d776`（开发checkpoint） | 鉴权管理根PG/race增量通过；缺身份scope阻断普通后台启动已修，最新CI进行中。56路由装配、原协议兼容、历史跨快照幂等及旧客户授权scope映射、浏览器仍未闭环 |
+| 商品／订单外推 | 04 已批准 | Terra xhigh 开发中，实际paid/测试投递首checkpoint已提交 | #172 `c90a7c2b60adb5a624e06d362cb88810b4327e1e` | 已对齐main8ec5072；远端c90失败的目标policy摘要已在本地9b2d903修复，根独立真实PG/race完整付款和历史CLI通过；本地fbb7132/1202d1a补订单回读/响应事实/历史投递证据，尚待最终审核与推送；真实Chromium继续 |
+| 通用开放平台 | 03及03a 已批准 | 冻结56条method/path；Terra xhigh已派发 | #173 `ba0155a16d366889573697a12dbd05e50e12d776`（开发checkpoint） | 远端ba0155安装fixture失败已在本地2077752修复；根独立PG/race历史CLI、鉴权管理及ede9c42导入排除核验通过。56项中3接通、3部分、50待迁移；c79ac2e仅冻结机器actor Port，存储/运行写与完整浏览器未闭环 |
 
 共用验收：完整路由/Composition、冻结供体复用、PG原子性/并发/重启、身份权限、未知结果、历史零新效果。各PR需链接实际日志/测试/浏览器证据，跳过与Mock明确标识。
 
@@ -109,3 +109,13 @@
 - 负责人c7aaade根真实PG/race通过全量范围本地Owner优先、仅企微观察客户、截断拒绝、无企微ID本地Owner、CustomerSync/Welcome；标签HTTP最初因根review环境缺jsdom未执行，补测试依赖后独立通过。日志aicrm-five-owner-c7-root-review.log及aicrm-five-owner-c7-tag-recheck.log。
 - 负责人准确7d84b1577a5833874dc2085f57096953041284ab仅补安装路径/正负例及Chrome布尔参数解析；根完整安装契约、旧.xls兼容、冻结HTML/选择器哈希通过。不能使用曾误报的7d84b152...完整SHA。Linux CI34031927510仍失败，准确为Owner Chromium local_only初始化错误，未到完整执行/回读；本机Chrome因Darwin启动限制明确SKIP，不能算浏览器通过。
 - 开放平台本地207775212458603a482b94d3e9e990affba6a40f根独立真实PG/race通过历史CLI与管理Journey，无skip。覆盖跨快照幂等、同号客户限制隔离、旧group_broadcast/Direct映射和管理回读。该证据仅为历史/授权增量；目标已存在client的排除回执verify仍有具体修正要求，56条业务路由未齐，未通过整板块。
+
+## 审核检查点（2026-09-06 12:40 UTC）
+
+用户再次确认旧仓为 https://github.com/qianlan33333-png/AI-CRM；根核验只读供体 remote 与固定 SHA dd8d60dd8ddb983aca2ec88cc9e65a9f7563f79f 一致。继续沿用已有五 PR，不重建总集成。
+
+- 负责人 #171 已推准确4688bad，CI34033617529进行中。根独立通过真实context路由授权投影与仅负责人页允许旧内联样式的CSP测试。Linux测试新增实际computedStyle和员工选择器可见性断言；Darwin Chrome启动失败明确SKIP，不当作浏览器PASS。
+- 外推 #172 的9b2d903已由根独立通过真实PG/race完整CommerceFunds HTTP Journey及历史CLI。新fbb7132响应事实回读/1202d1a历史修正尚未全板块验收；根进一步要求cancelled/blocked无响应证据时保持unknown，因为旧系统允许已failed_retryable任务取消，终态不能证明从未调用。
+- 开放平台 #173 根独立通过2077752历史提取/重放/核验及管理，ede9c42已有目标排除核验。a6a4404将订单customer约束与reference放在同一Owner查询，c79ac2e冻结机器actor而不伪装管理员；仍是局部实现。开放平台完整路由、页面、历史和运行装配继续同一PR收口。
+
+本检查点没有新增合并或生产操作。标签8ec5072、配置5494537既有代码部署证据有效；三项未合并，五项真实业务验收均未进行。
