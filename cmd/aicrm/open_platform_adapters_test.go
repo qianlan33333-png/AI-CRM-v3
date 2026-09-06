@@ -20,6 +20,7 @@ import (
 	orderdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/order/domain"
 	orderport "github.com/qianlan33333-png/AI-CRM-v3/internal/order/port"
 	radarport "github.com/qianlan33333-png/AI-CRM-v3/internal/radar/port"
+	surveyport "github.com/qianlan33333-png/AI-CRM-v3/internal/survey/port"
 	wecomport "github.com/qianlan33333-png/AI-CRM-v3/internal/wecom/port"
 )
 
@@ -32,6 +33,14 @@ type openPlatformIdentityStub struct {
 	externalFound bool
 	externalErr   error
 	externalCalls int
+	unionValue    string
+	unionFound    bool
+	unionErr      error
+	unionCalls    int
+	phoneValue    string
+	phoneFound    bool
+	phoneErr      error
+	phoneCalls    int
 }
 
 func (stub *openPlatformIdentityStub) Resolve(_ context.Context, reference identitydomain.Reference) (identityport.ResolveResult, error) {
@@ -45,6 +54,45 @@ func (stub *openPlatformIdentityStub) Resolve(_ context.Context, reference ident
 func (stub *openPlatformIdentityStub) VerifiedExternalUserID(context.Context, customerdomain.CustomerID, string) (string, bool, error) {
 	stub.externalCalls++
 	return stub.externalValue, stub.externalFound, stub.externalErr
+}
+func (stub *openPlatformIdentityStub) VerifiedUnionID(context.Context, customerdomain.CustomerID, string) (string, bool, error) {
+	stub.unionCalls++
+	return stub.unionValue, stub.unionFound, stub.unionErr
+}
+func (stub *openPlatformIdentityStub) RevealPhoneForMachine(context.Context, customerdomain.CustomerID, accessdomain.MachinePrincipal) (string, bool, error) {
+	stub.phoneCalls++
+	return stub.phoneValue, stub.phoneFound, stub.phoneErr
+}
+
+type openPlatformDirectoryStub struct {
+	phone string
+	found bool
+	err   error
+}
+
+func (stub *openPlatformDirectoryStub) VerifiedWeComCustomer(context.Context, string, string) (customerdomain.CustomerID, bool, error) {
+	return 0, false, nil
+}
+func (stub *openPlatformDirectoryStub) CustomerForPhone(context.Context, string) (customerdomain.CustomerID, bool, error) {
+	return 0, false, nil
+}
+func (stub *openPlatformDirectoryStub) DirectoryIdentities(context.Context, customerdomain.CustomerID) ([]identityport.DirectoryIdentitySummary, []identityport.MaskedPhone, error) {
+	return nil, nil, nil
+}
+func (stub *openPlatformDirectoryStub) RevealPhone(context.Context, customerdomain.CustomerID) (string, bool, error) {
+	return stub.phone, stub.found, stub.err
+}
+
+type openPlatformMachineAuditStub struct {
+	calls int
+	audit accessdomain.MachineAudit
+	err   error
+}
+
+func (stub *openPlatformMachineAuditStub) AppendMachineAudit(_ context.Context, audit accessdomain.MachineAudit) error {
+	stub.calls++
+	stub.audit = audit
+	return stub.err
 }
 
 type openPlatformOrderStub struct {
@@ -136,6 +184,19 @@ func (*openPlatformArchiveStub) CustomerStaff(context.Context, customerdomain.Cu
 	return nil, nil
 }
 
+type openPlatformSurveyStub struct {
+	page  surveyport.ExternalSubmissionPage
+	err   error
+	calls int
+	query surveyport.ExternalSubmissionQuery
+}
+
+func (stub *openPlatformSurveyStub) ExternalSubmissions(_ context.Context, query surveyport.ExternalSubmissionQuery) (surveyport.ExternalSubmissionPage, error) {
+	stub.calls++
+	stub.query = query
+	return stub.page, stub.err
+}
+
 type openPlatformRadarLinksStub struct {
 	page  radarport.ExternalLinkMappingPage
 	err   error
@@ -147,6 +208,16 @@ func (stub *openPlatformRadarLinksStub) ExternalLinkMappings(_ context.Context, 
 	stub.calls++
 	stub.query = query
 	return stub.page, stub.err
+}
+
+func TestOpenPlatformIdentityAdapterAuditsRawPhoneWithoutPersistingItInDetails(t *testing.T) {
+	directory := &openPlatformDirectoryStub{phone: "13800000000", found: true}
+	audit := &openPlatformMachineAuditStub{}
+	adapter := openPlatformIdentityAdapter{directory: directory, machineAudit: audit, uow: directUnitOfWork{}}
+	phone, found, err := adapter.RevealPhoneForMachine(context.Background(), 42, accessdomain.MachinePrincipal{ClientRecord: 7, ClientID: "external-reader"})
+	if err != nil || !found || phone != "13800000000" || audit.calls != 1 || audit.audit.MachineClientID != 7 || audit.audit.Action != "machine_sensitive_read" || audit.audit.Outcome != "external_questionnaire_submissions" || strings.Contains(string(audit.audit.Details), phone) {
+		t.Fatalf("phone=%q found=%v err=%v audit=%+v", phone, found, err, audit.audit)
+	}
 }
 
 func TestOpenPlatformStartsWithoutWeComScopeAndDefersIdentityRejection(t *testing.T) {
@@ -223,6 +294,59 @@ func TestOpenPlatformOrdersMapScopedIdentityBeforeCallingOrderPort(t *testing.T)
 	response, err := executor.Execute(context.Background(), openplatformport.Request{Method: "GET", Path: "/api/external/orders", Query: url.Values{"external_userid": {"external-1"}, "limit": {"20"}}})
 	if err != nil || response.Status != 200 || orders.last.CustomerID != 42 || orders.last.Limit != 20 {
 		t.Fatalf("response=%+v query=%+v err=%v", response, orders.last, err)
+	}
+}
+
+func TestOpenPlatformExternalSurveySubmissionsUseOneIDAndFrozenProjectionEnvelope(t *testing.T) {
+	identity := &openPlatformIdentityStub{result: identityport.ResolveResult{Status: identityport.ResolveFound, CustomerID: 42}, unionValue: "union-current", unionFound: true, externalValue: "external-current", externalFound: true}
+	survey := &openPlatformSurveyStub{page: surveyport.ExternalSubmissionPage{Items: []surveyport.ExternalSubmission{
+		{Legacy: false, QuestionnaireSourceID: 41, QuestionnaireTitle: "Native questionnaire", SubmittedAt: time.Date(2026, 9, 6, 8, 0, 0, 0, time.UTC), FinalTags: json.RawMessage(`["native"]`), AssessmentResult: json.RawMessage(`{"tag_codes":["native"]}`), Answers: []surveyport.ExternalSubmissionAnswer{{QuestionTitle: "Need", SelectedOptionTexts: []string{"Consulting"}, TextValue: "native answer", ScoreContribution: 3}}},
+		{Legacy: true, HistoricalUnionID: "union-history", QuestionnaireSourceID: 41, QuestionnaireTitle: "Legacy questionnaire", SubmittedAt: time.Date(2026, 9, 6, 7, 0, 0, 0, time.UTC), FinalTags: json.RawMessage(`["legacy"]`), AssessmentResult: json.RawMessage(`{"summary":"legacy"}`), Answers: []surveyport.ExternalSubmissionAnswer{}},
+	}, Total: 3, Limit: 2, Offset: 0}}
+	executor, err := newOpenPlatformExecutor(identity, &openPlatformOrderStub{}, &openPlatformProfileStub{}, &openPlatformArchiveStub{}, &openPlatformTimelineStub{}, &openPlatformOwnerStub{}, configuredOpenPlatformScopes("corp-main", []string{"wechat-open-platform:survey"}, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = executor.BindExternalSurveySubmissions(survey, identity); err != nil {
+		t.Fatal(err)
+	}
+	response, err := executor.Execute(context.Background(), openplatformport.Request{Method: "GET", Path: "/api/external/questionnaire-submissions", Query: url.Values{"mobile": {"13800000000"}, "questionnaire_id": {"41"}, "submitted_from": {"10"}, "submitted_to": {"20"}, "limit": {"2"}}})
+	if err != nil || response.Status != 200 || survey.calls != 1 || survey.query.CustomerID != 42 || survey.query.QuestionnaireSourceID != 41 || survey.query.Limit != 2 || len(survey.query.HistoricalUnionIDs) != 1 || survey.query.HistoricalUnionIDs[0] != "union-current" || !survey.query.SubmittedFrom.Equal(time.Unix(10, 0).UTC()) || !survey.query.SubmittedTo.Equal(time.Unix(20, 0).UTC()) {
+		t.Fatalf("response=%+v query=%+v err=%v", response, survey.query, err)
+	}
+	if identity.unionCalls != 1 || identity.phoneCalls != 0 || identity.externalCalls != 1 {
+		t.Fatalf("identity calls union=%d phone=%d external=%d", identity.unionCalls, identity.phoneCalls, identity.externalCalls)
+	}
+	body, ok := response.Body.(map[string]any)
+	if !ok || body["source_status"] != "external_questionnaire_submissions" || body["route_owner"] != "ai_crm_next" || body["fallback_used"] != false || body["has_more"] != true || body["next_cursor"] == "" {
+		t.Fatalf("envelope=%#v", response.Body)
+	}
+	filters, ok := body["filters"].(map[string]any)
+	if !ok || filters["mobile"] != "13800000000" || filters["questionnaire_id"] != int64(41) || filters["submitted_from"] != "1970-01-01T00:00:10+00:00" {
+		t.Fatalf("filters=%#v", body["filters"])
+	}
+	items, ok := body["items"].([]map[string]any)
+	if !ok || len(items) != 2 || items[0]["mobile"] != "13800000000" || items[0]["unionid"] != "union-current" || items[0]["external_userid"] != "external-current" || items[0]["submitted_at"] != "2026-09-06T08:00:00+00:00" || items[1]["unionid"] != "union-history" {
+		t.Fatalf("items=%#v", body["items"])
+	}
+}
+
+func TestOpenPlatformExternalSurveySubmissionsRejectConflictingIdentityBeforeSurveyRead(t *testing.T) {
+	identity := &openPlatformIdentityStub{results: map[string]identityport.ResolveResult{
+		"wecom_external_userid|wecom-corp:corp-main|external-a": {Status: identityport.ResolveFound, CustomerID: 42},
+		"unionid|wechat-open-platform:survey|union-b":           {Status: identityport.ResolveFound, CustomerID: 43},
+	}, unionValue: "union-current", unionFound: true}
+	survey := &openPlatformSurveyStub{}
+	executor, err := newOpenPlatformExecutor(identity, &openPlatformOrderStub{}, &openPlatformProfileStub{}, &openPlatformArchiveStub{}, &openPlatformTimelineStub{}, &openPlatformOwnerStub{}, configuredOpenPlatformScopes("corp-main", []string{"wechat-open-platform:survey"}, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = executor.BindExternalSurveySubmissions(survey, identity); err != nil {
+		t.Fatal(err)
+	}
+	response, err := executor.Execute(context.Background(), openplatformport.Request{Method: "GET", Path: "/api/external/questionnaire-submissions", Query: url.Values{"external_userid": {"external-a"}, "unionid": {"union-b"}}})
+	if err != nil || response.Status != 409 || survey.calls != 0 || identity.unionCalls != 0 {
+		t.Fatalf("response=%+v survey_calls=%d union_calls=%d err=%v", response, survey.calls, identity.unionCalls, err)
 	}
 }
 

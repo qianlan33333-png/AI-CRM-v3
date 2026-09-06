@@ -420,7 +420,7 @@ func (s *SubmissionService) ExternalSubmissions(ctx context.Context, query surve
 }
 
 func validExternalSubmissionQuery(query surveyport.ExternalSubmissionQuery) bool {
-	if len(query.HistoricalUnionIDs) == 0 || len(query.HistoricalUnionIDs) > 32 || query.QuestionnaireSourceID < 0 || query.Limit < 1 || query.Limit > 500 || query.Offset < 0 || (!query.SubmittedFrom.IsZero() && !query.SubmittedTo.IsZero() && query.SubmittedFrom.After(query.SubmittedTo)) {
+	if query.CustomerID < 1 || len(query.HistoricalUnionIDs) > 32 || query.QuestionnaireSourceID < 0 || query.Limit < 1 || query.Limit > 500 || query.Offset < 0 || (!query.SubmittedFrom.IsZero() && !query.SubmittedTo.IsZero() && query.SubmittedFrom.After(query.SubmittedTo)) {
 		return false
 	}
 	seen := make(map[string]struct{}, len(query.HistoricalUnionIDs))

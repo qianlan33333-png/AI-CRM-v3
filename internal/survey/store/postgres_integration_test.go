@@ -276,7 +276,7 @@ func TestPostgreSQLExternalSubmissionProjectionKeepsHistoricUnionBoundaryAndLoad
 		t.Fatal(err)
 	}
 	service := surveyapp.NewSubmissionService(uow, repository, cipher)
-	page, err := service.ExternalSubmissions(ctx, surveyport.ExternalSubmissionQuery{HistoricalUnionIDs: []string{"union-history"}, QuestionnaireSourceID: 41, Limit: 100})
+	page, err := service.ExternalSubmissions(ctx, surveyport.ExternalSubmissionQuery{CustomerID: 1, HistoricalUnionIDs: []string{"union-history"}, QuestionnaireSourceID: 41, Limit: 100})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -291,16 +291,101 @@ func TestPostgreSQLExternalSubmissionProjectionKeepsHistoricUnionBoundaryAndLoad
 	if err := json.Unmarshal(first.AssessmentResult, &assessment); err != nil || len(assessment) != 1 || assessment["summary"] != "new" {
 		t.Fatalf("assessment=%s err=%v", first.AssessmentResult, err)
 	}
-	paged, err := service.ExternalSubmissions(ctx, surveyport.ExternalSubmissionQuery{HistoricalUnionIDs: []string{"union-history"}, SubmittedFrom: now.Add(-90 * time.Minute), Limit: 1, Offset: 0})
+	paged, err := service.ExternalSubmissions(ctx, surveyport.ExternalSubmissionQuery{CustomerID: 1, HistoricalUnionIDs: []string{"union-history"}, SubmittedFrom: now.Add(-90 * time.Minute), Limit: 1, Offset: 0})
 	if err != nil || paged.Total != 1 || len(paged.Items) != 1 || !paged.Items[0].SubmittedAt.Equal(now.Add(-time.Hour)) {
 		t.Fatalf("time filtered page=%+v err=%v", paged, err)
 	}
-	empty, err := service.ExternalSubmissions(ctx, surveyport.ExternalSubmissionQuery{HistoricalUnionIDs: []string{"union-history"}, QuestionnaireSourceID: 42, Limit: 100})
+	empty, err := service.ExternalSubmissions(ctx, surveyport.ExternalSubmissionQuery{CustomerID: 1, HistoricalUnionIDs: []string{"union-history"}, QuestionnaireSourceID: 42, Limit: 100})
 	if err != nil || empty.Total != 0 || len(empty.Items) != 0 {
 		t.Fatalf("questionnaire filter page=%+v err=%v", empty, err)
 	}
-	if _, err = service.ExternalSubmissions(ctx, surveyport.ExternalSubmissionQuery{HistoricalUnionIDs: []string{" union-history"}, Limit: 100}); !errors.Is(err, surveyport.ErrInvalid) {
+	if _, err = service.ExternalSubmissions(ctx, surveyport.ExternalSubmissionQuery{CustomerID: 1, HistoricalUnionIDs: []string{" union-history"}, Limit: 100}); !errors.Is(err, surveyport.ErrInvalid) {
 		t.Fatalf("invalid historic union error=%v", err)
+	}
+
+	// A newly submitted V3 record has no migration source row or historic
+	// union projection. It remains visible through the resolved canonical
+	// customer while the two legacy records remain union-scoped.
+	var nativeCustomerID, otherCustomerID, nativeSubmissionID int64
+	if err := native.QueryRow(ctx, `INSERT INTO customers DEFAULT VALUES RETURNING id`).Scan(&nativeCustomerID); err != nil {
+		t.Fatal(err)
+	}
+	if err := native.QueryRow(ctx, `INSERT INTO customers DEFAULT VALUES RETURNING id`).Scan(&otherCustomerID); err != nil {
+		t.Fatal(err)
+	}
+	nativeAt := now.Add(-30 * time.Minute)
+	if err := native.QueryRow(ctx, `INSERT INTO survey_submissions(questionnaire_id,definition_version_id,definition_version_number,customer_id,identity_state,evidence_digest,submission_key_digest,payload_digest,questionnaire_slug_snapshot,title_snapshot,mode_snapshot,result_snapshot,submitted_at,created_at) VALUES($1,$2,1,$3,'resolved',$4,$5,$6,'external-projection','External projection','survey','{"tag_codes":["native-tag"],"summary":"native"}',$7,$7) RETURNING id`, questionnaireID, versionID, nativeCustomerID, bytes32(101), bytes32(102), bytes32(103), nativeAt).Scan(&nativeSubmissionID); err != nil {
+		t.Fatal(err)
+	}
+	nativeText, err := cipher.Encrypt("native protected answer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := native.Exec(ctx, `INSERT INTO survey_submission_answers(submission_id,question_type,question_title_snapshot,selected_options_snapshot,text_value_ciphertext,answer_digest,score_snapshot,created_at) VALUES($1,'textarea','What do you need?',$2,$3,$4,3.5,$5)`, nativeSubmissionID, `[{"option_text":"Native consulting"}]`, nativeText, bytes32(104), nativeAt); err != nil {
+		t.Fatal(err)
+	}
+	mixed, err := service.ExternalSubmissions(ctx, surveyport.ExternalSubmissionQuery{CustomerID: nativeCustomerID, HistoricalUnionIDs: []string{"union-history"}, QuestionnaireSourceID: 41, Limit: 2})
+	if err != nil || mixed.Total != 3 || len(mixed.Items) != 2 || mixed.Items[0].Legacy || mixed.Items[0].HistoricalUnionID != "" || mixed.Items[0].QuestionnaireSourceID != 41 || !mixed.Items[0].SubmittedAt.Equal(nativeAt) || string(mixed.Items[0].FinalTags) != `["native-tag"]` || mixed.Items[0].Answers[0].TextValue != "native protected answer" {
+		t.Fatalf("mixed first page=%+v err=%v", mixed, err)
+	}
+	mixedNext, err := service.ExternalSubmissions(ctx, surveyport.ExternalSubmissionQuery{CustomerID: nativeCustomerID, HistoricalUnionIDs: []string{"union-history"}, QuestionnaireSourceID: 41, Limit: 2, Offset: 2})
+	if err != nil || mixedNext.Total != 3 || len(mixedNext.Items) != 1 || !mixedNext.Items[0].Legacy || !mixedNext.Items[0].SubmittedAt.Equal(now.Add(-2*time.Hour)) {
+		t.Fatalf("mixed second page=%+v err=%v", mixedNext, err)
+	}
+	foreign, err := service.ExternalSubmissions(ctx, surveyport.ExternalSubmissionQuery{CustomerID: otherCustomerID, Limit: 100})
+	if err != nil || foreign.Total != 0 || len(foreign.Items) != 0 {
+		t.Fatalf("foreign customer native page=%+v err=%v", foreign, err)
+	}
+}
+
+func TestPostgreSQLExternalSubmissionSourceQuestionnaireIDCollisionFailsClosed(t *testing.T) {
+	native, cleanup := surveyIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	now := time.Date(2026, 9, 6, 9, 0, 0, 0, time.UTC)
+	var actorID, mappedQuestionnaireID, versionID, batchID int64
+	if err := native.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name) VALUES('survey-external-collision','$argon2id$test','Survey External Collision') RETURNING id`).Scan(&actorID); err != nil {
+		t.Fatal(err)
+	}
+	if err := native.QueryRow(ctx, `INSERT INTO survey_questionnaires(name,title,description,mode,answer_display_mode,slug,status,created_by,updated_by,created_at,updated_at) VALUES('Mapped questionnaire','Mapped questionnaire','','survey','all_in_one','mapped-questionnaire','disabled',$1,$1,$2,$2) RETURNING id`, actorID, now).Scan(&mappedQuestionnaireID); err != nil {
+		t.Fatal(err)
+	}
+	if err := native.QueryRow(ctx, `INSERT INTO survey_definition_versions(questionnaire_id,version_number,mode,answer_display_mode,title_snapshot,description_snapshot,assessment_config,definition_digest,is_immutable,published_at,created_by,created_at) VALUES($1,1,'survey','all_in_one','Mapped questionnaire','', '{}'::jsonb,$2,TRUE,$3,$4,$3) RETURNING id`, mappedQuestionnaireID, bytes32(111), now, actorID).Scan(&versionID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := native.Exec(ctx, `UPDATE survey_questionnaires SET active_definition_version_id=$1 WHERE id=$2`, versionID, mappedQuestionnaireID); err != nil {
+		t.Fatal(err)
+	}
+	// id=41 is an unrelated V3-native questionnaire while donor source id 41
+	// maps to mappedQuestionnaireID. The legacy integer cannot choose either.
+	if _, err := native.Exec(ctx, `INSERT INTO survey_questionnaires(id,name,title,description,mode,answer_display_mode,slug,status,created_by,updated_by,created_at,updated_at) OVERRIDING SYSTEM VALUE VALUES(41,'Native collision','Native collision','','survey','all_in_one','native-collision','disabled',$1,$1,$2,$2)`, actorID, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := native.QueryRow(ctx, `INSERT INTO survey_migration_batches(batch_key,source_system,snapshot_at,manifest,manifest_digest,status,created_at,updated_at) VALUES('external-projection-collision','ai-crm-v2',$1,'{}'::jsonb,$2,'reconciled',$1,$1) RETURNING id`, now, bytes32(112)).Scan(&batchID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := native.Exec(ctx, `INSERT INTO survey_migration_source_map(migration_batch_id,source_system,source_table,source_pk,target_table,target_pk,record_digest,import_state,created_at) VALUES($1,'ai-crm-v2','questionnaires','41','survey_questionnaires',$2,$3,'imported',$4)`, batchID, mappedQuestionnaireID, bytes32(113), now); err != nil {
+		t.Fatal(err)
+	}
+	cipher, err := secure.NewCipher(base64.RawStdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrapper, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uow, err := platformpostgres.NewUnitOfWork(wrapper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := NewPostgreSQL(native, uow, cipher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := surveyapp.NewSubmissionService(uow, repository, cipher)
+	if _, err = service.ExternalSubmissions(ctx, surveyport.ExternalSubmissionQuery{CustomerID: 1, HistoricalUnionIDs: []string{"union-history"}, QuestionnaireSourceID: 41, Limit: 100}); !errors.Is(err, surveyport.ErrConflict) {
+		t.Fatalf("source/V3 questionnaire collision error=%v", err)
 	}
 }
 

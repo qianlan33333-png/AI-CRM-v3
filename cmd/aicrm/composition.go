@@ -818,11 +818,19 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	customerProfileStore := wecom.NewPostgreSQLCustomerSyncStore()
 	legacyAudienceSource.PrimaryOwners = customerProfileStore
 	openPlatformTimeline := customerTimelineAdapter{uow: uow, reader: customerStore}
-	openPlatformExecutor, err := newOpenPlatformExecutor(openPlatformIdentityAdapter{resolver: oneID, values: queries, uow: uow}, orderService, sidebarProfiles, archiveService, openPlatformTimeline, openPlatformOwnerAdapter{uow: uow, reader: customerProfileStore}, configuredOpenPlatformScopes(cfg.WeCom.CorpID, []string{cfg.HXCDashboard.UnionIDScope, "wechat-open-platform:" + cfg.Survey.OAuthOpenPlatformID}, []string{cfg.Survey.OAuthAppID, cfg.WeChatPay.AppID, cfg.WeChatPay.H5AppID, cfg.WeChatShop.AppID}))
+	openPlatformScopes := configuredOpenPlatformScopes(cfg.WeCom.CorpID, []string{cfg.HXCDashboard.UnionIDScope, "wechat-open-platform:" + cfg.Survey.OAuthOpenPlatformID}, []string{cfg.Survey.OAuthAppID, cfg.WeChatPay.AppID, cfg.WeChatPay.H5AppID, cfg.WeChatShop.AppID})
+	// Questionnaire history has one frozen donor Open Platform scope. Do not
+	// infer it from the broader set of configured UnionID integrations.
+	openPlatformScopes.SurveyUnionScopes = distinctScopes([]string{"wechat-open-platform:" + cfg.Survey.OAuthOpenPlatformID}, "wechat-open-platform:")
+	openPlatformIdentities := openPlatformIdentityAdapter{resolver: oneID, values: queries, directory: queries, machineAudit: accessRepository, uow: uow}
+	openPlatformExecutor, err := newOpenPlatformExecutor(openPlatformIdentities, orderService, sidebarProfiles, archiveService, openPlatformTimeline, openPlatformOwnerAdapter{uow: uow, reader: customerProfileStore}, openPlatformScopes)
 	if err != nil {
 		return fail(err)
 	}
 	if err = openPlatformExecutor.BindExternalRadarLinkMappings(radarManager); err != nil {
+		return fail(err)
+	}
+	if err = openPlatformExecutor.BindExternalSurveySubmissions(surveySubmissions, openPlatformIdentities); err != nil {
 		return fail(err)
 	}
 	openPlatformHandler, err := openplatformhttp.NewHandler(openplatformhttp.Config{

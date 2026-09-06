@@ -24,6 +24,7 @@ import (
 	orderport "github.com/qianlan33333-png/AI-CRM-v3/internal/order/port"
 	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
 	radarport "github.com/qianlan33333-png/AI-CRM-v3/internal/radar/port"
+	surveyport "github.com/qianlan33333-png/AI-CRM-v3/internal/survey/port"
 	wecomport "github.com/qianlan33333-png/AI-CRM-v3/internal/wecom/port"
 )
 
@@ -37,9 +38,10 @@ var (
 )
 
 type openPlatformIdentityScopes struct {
-	WeComScope   string
-	UnionScopes  []string
-	OpenIDScopes []string
+	WeComScope        string
+	UnionScopes       []string
+	SurveyUnionScopes []string
+	OpenIDScopes      []string
 }
 
 // openPlatformExternalUserIDReader is the small composition bridge used only
@@ -48,6 +50,14 @@ type openPlatformIdentityScopes struct {
 // Host must neither log nor persist it.
 type openPlatformExternalUserIDReader interface {
 	VerifiedExternalUserID(context.Context, customerdomain.CustomerID, string) (string, bool, error)
+}
+
+// openPlatformSurveyIdentityReader supplies only current, already-verified
+// aliases for the external Survey compatibility response. Historical union
+// data stays in Survey; this reader never resolves or links identities.
+type openPlatformSurveyIdentityReader interface {
+	VerifiedUnionID(context.Context, customerdomain.CustomerID, string) (string, bool, error)
+	RevealPhoneForMachine(context.Context, customerdomain.CustomerID, accessdomain.MachinePrincipal) (string, bool, error)
 }
 
 type openPlatformExecutor struct {
@@ -59,6 +69,8 @@ type openPlatformExecutor struct {
 	archive       archiveport.CustomerMessageReader
 	externalChat  archiveport.ExternalChatRecordReader
 	radarLinks    radarport.ExternalLinkMappingReader
+	survey        surveyport.ExternalSubmissionReader
+	surveyAliases openPlatformSurveyIdentityReader
 	timeline      customerport.CustomerTimelineReader
 	owners        wecomport.AudiencePrimaryOwnerReader
 	scopes        openPlatformIdentityScopes
@@ -82,6 +94,10 @@ func newOpenPlatformExecutor(identity identityport.Resolver, orders orderport.Qu
 	}
 	scopes.WeComScope = strings.TrimSpace(scopes.WeComScope)
 	scopes.UnionScopes = distinctScopes(scopes.UnionScopes, "wechat-open-platform:")
+	scopes.SurveyUnionScopes = distinctScopes(scopes.SurveyUnionScopes, "wechat-open-platform:")
+	if len(scopes.SurveyUnionScopes) == 0 {
+		scopes.SurveyUnionScopes = append([]string(nil), scopes.UnionScopes...)
+	}
 	scopes.OpenIDScopes = distinctScopes(scopes.OpenIDScopes, "wechat-app:")
 	return &openPlatformExecutor{identity: identity, externalUsers: externalUsers, orders: orders, scopedOrders: scopedOrders, profiles: profiles, archive: archive, externalChat: externalChat, timeline: timeline, owners: owners, scopes: scopes}, nil
 }
@@ -94,6 +110,18 @@ func (executor *openPlatformExecutor) BindExternalRadarLinkMappings(reader radar
 		return radarport.ErrUnavailable
 	}
 	executor.radarLinks = reader
+	return nil
+}
+
+// BindExternalSurveySubmissions installs the Survey-owned compatibility
+// projection and the minimal Identity alias reader used only after OneID has
+// resolved the request. Binding remains optional for configurations that do
+// not expose the external Survey route; an unbound route reports unavailable.
+func (executor *openPlatformExecutor) BindExternalSurveySubmissions(reader surveyport.ExternalSubmissionReader, aliases openPlatformSurveyIdentityReader) error {
+	if executor == nil || reader == nil || aliases == nil {
+		return surveyport.ErrUnavailable
+	}
+	executor.survey, executor.surveyAliases = reader, aliases
 	return nil
 }
 
@@ -136,6 +164,8 @@ func (executor *openPlatformExecutor) Execute(ctx context.Context, request openp
 		return executor.resolveExternalUser(ctx, request.Query, request.Principal)
 	case "GET /api/external/chat-records":
 		return executor.listExternalChatRecords(ctx, request.Query, request.Principal)
+	case "GET /api/external/questionnaire-submissions":
+		return executor.listExternalSurveySubmissions(ctx, request.Query, request.Principal)
 	case "GET /api/external/radar-links":
 		return executor.listExternalRadarLinks(ctx, request.Query, request.Principal)
 	case "GET /api/external/orders":
@@ -482,6 +512,285 @@ func externalChatUnavailable() openplatformport.Response {
 		"ok": false, "degraded": true, "messages": []any{}, "items": []any{}, "count": 0,
 		"source_status": "production_unavailable", "read_model_status": "unavailable", "fallback_used": false,
 		"route_owner": "ai_crm_next", "error_code": "message_archive_read_unavailable", "page_error": "message archive read model unavailable",
+	}}
+}
+
+func (executor *openPlatformExecutor) listExternalSurveySubmissions(ctx context.Context, values url.Values, principal accessdomain.MachinePrincipal) (openplatformport.Response, error) {
+	query, references, filters, err := executor.externalSurveyQuery(values)
+	if err != nil {
+		return externalSurveyError(400, "invalid_request"), nil
+	}
+	resolved, err := executor.resolveReferences(ctx, references)
+	if err != nil {
+		return externalSurveyIdentityError(err), nil
+	}
+	if executor.survey == nil || executor.surveyAliases == nil {
+		return externalSurveyUnavailable(), nil
+	}
+	unionIDs, unionReferences, err := executor.surveyHistoricalUnionIDs(ctx, resolved.CustomerID, references)
+	if err != nil {
+		return externalSurveyUnavailable(), nil
+	}
+	if err = executor.ensureCustomerScope(ctx, principal, resolved.CustomerID, append(append([]identitydomain.Reference(nil), references...), unionReferences...)); err != nil {
+		return externalSurveyError(404, "not_found"), nil
+	}
+	query.CustomerID, query.HistoricalUnionIDs = int64(resolved.CustomerID), unionIDs
+	page, err := executor.survey.ExternalSubmissions(ctx, query)
+	if err != nil {
+		return externalSurveyUnavailable(), nil
+	}
+
+	mobile := surveyRequestAlias(references, identitydomain.KindPhone)
+	if mobile == "" {
+		mobile, _, err = executor.surveyAliases.RevealPhoneForMachine(ctx, resolved.CustomerID, principal)
+		if err != nil {
+			return externalSurveyUnavailable(), nil
+		}
+	}
+	externalUserID := ""
+	if executor.scopes.WeComScope != "" {
+		externalUserID, _, err = executor.externalUsers.VerifiedExternalUserID(ctx, resolved.CustomerID, executor.scopes.WeComScope)
+		if err != nil {
+			return externalSurveyUnavailable(), nil
+		}
+	}
+	nativeUnionID := ""
+	if len(unionIDs) == 1 {
+		nativeUnionID = unionIDs[0]
+	}
+	return externalSurveyResponse(page, filters, mobile, nativeUnionID, externalUserID), nil
+}
+
+// externalSurveyQuery freezes the donor's scalar request contract. Unrelated
+// query fields are ignored by the donor router; known scalar inputs take their
+// last supplied value, and all present identity/filter values are ANDed later.
+func (executor *openPlatformExecutor) externalSurveyQuery(values url.Values) (surveyport.ExternalSubmissionQuery, []identitydomain.Reference, map[string]any, error) {
+	one := func(key string) string {
+		items := values[key]
+		if len(items) == 0 {
+			return ""
+		}
+		return strings.TrimSpace(items[len(items)-1])
+	}
+	identityValues := url.Values{}
+	for _, key := range []string{"mobile", "unionid", "external_userid", "scope", "external_userid_scope"} {
+		if value := one(key); value != "" {
+			identityValues.Set(key, value)
+		}
+	}
+	references, err := executor.referencesFromValues(identityValues)
+	if err != nil {
+		return surveyport.ExternalSubmissionQuery{}, nil, nil, err
+	}
+	query := surveyport.ExternalSubmissionQuery{Limit: 100}
+	filters := map[string]any{}
+	for _, key := range []string{"mobile", "unionid", "external_userid"} {
+		if value := one(key); value != "" {
+			filters[key] = value
+		}
+	}
+	if raw := one("questionnaire_id"); raw != "" {
+		id, parseErr := strconv.ParseInt(raw, 10, 64)
+		if parseErr != nil || id < 1 {
+			return surveyport.ExternalSubmissionQuery{}, nil, nil, errors.New("invalid questionnaire id")
+		}
+		query.QuestionnaireSourceID, filters["questionnaire_id"] = id, id
+	}
+	if raw := one("limit"); raw != "" {
+		limit, parseErr := strconv.ParseInt(raw, 10, 32)
+		if parseErr != nil || limit < 1 || limit > 500 {
+			return surveyport.ExternalSubmissionQuery{}, nil, nil, errors.New("invalid limit")
+		}
+		query.Limit = int32(limit)
+	}
+	if raw := one("cursor"); raw != "" {
+		offset, cursorErr := decodeExternalSurveyCursor(raw)
+		if cursorErr != nil {
+			return surveyport.ExternalSubmissionQuery{}, nil, nil, cursorErr
+		}
+		query.Offset = offset
+	}
+	if raw := one("submitted_from"); raw != "" {
+		from, parseErr := unixSeconds(raw)
+		if parseErr != nil {
+			return surveyport.ExternalSubmissionQuery{}, nil, nil, parseErr
+		}
+		query.SubmittedFrom = *from
+		filters["submitted_from"] = legacyExternalTimestamp(*from)
+	}
+	if raw := one("submitted_to"); raw != "" {
+		to, parseErr := unixSeconds(raw)
+		if parseErr != nil {
+			return surveyport.ExternalSubmissionQuery{}, nil, nil, parseErr
+		}
+		query.SubmittedTo = *to
+		filters["submitted_to"] = legacyExternalTimestamp(*to)
+	}
+	if !query.SubmittedFrom.IsZero() && !query.SubmittedTo.IsZero() && query.SubmittedFrom.After(query.SubmittedTo) {
+		return surveyport.ExternalSubmissionQuery{}, nil, nil, errors.New("invalid submitted range")
+	}
+	return query, references, filters, nil
+}
+
+func decodeExternalSurveyCursor(cursor string) (int64, error) {
+	padded := cursor + strings.Repeat("=", (4-len(cursor)%4)%4)
+	raw, err := base64.URLEncoding.DecodeString(padded)
+	if err != nil {
+		return 0, errors.New("invalid cursor")
+	}
+	var payload struct {
+		Offset json.RawMessage `json:"offset"`
+	}
+	if err = json.Unmarshal(raw, &payload); err != nil {
+		return 0, errors.New("invalid cursor")
+	}
+	if len(payload.Offset) == 0 || string(payload.Offset) == "null" {
+		return 0, nil
+	}
+	var offset int64
+	if err = json.Unmarshal(payload.Offset, &offset); err != nil {
+		var encoded string
+		if json.Unmarshal(payload.Offset, &encoded) != nil || encoded == "" {
+			return 0, errors.New("invalid cursor")
+		}
+		offset, err = strconv.ParseInt(encoded, 10, 64)
+		if err != nil {
+			return 0, errors.New("invalid cursor")
+		}
+	}
+	if offset < 0 {
+		return 0, nil
+	}
+	return offset, nil
+}
+
+func encodeExternalSurveyCursor(offset int64) string {
+	if offset < 0 {
+		offset = 0
+	}
+	encoded, err := json.Marshal(map[string]int64{"offset": offset})
+	if err != nil {
+		return ""
+	}
+	return base64.RawURLEncoding.EncodeToString(encoded)
+}
+
+// surveyHistoricalUnionIDs collects only direct trusted union inputs and
+// verified values from explicitly configured Survey Open Platform scopes. It
+// cannot infer a UnionID from a phone/external user across an unrelated scope.
+func (executor *openPlatformExecutor) surveyHistoricalUnionIDs(ctx context.Context, customerID customerdomain.CustomerID, references []identitydomain.Reference) ([]string, []identitydomain.Reference, error) {
+	ids := make([]string, 0, len(references)+len(executor.scopes.SurveyUnionScopes))
+	trusted := make([]identitydomain.Reference, 0, len(references)+len(executor.scopes.SurveyUnionScopes))
+	seen := map[string]struct{}{}
+	appendUnion := func(reference identitydomain.Reference) {
+		if reference.Kind != identitydomain.KindUnionID {
+			return
+		}
+		if _, exists := seen[reference.Value]; exists {
+			return
+		}
+		seen[reference.Value] = struct{}{}
+		ids, trusted = append(ids, reference.Value), append(trusted, reference)
+	}
+	for _, reference := range references {
+		appendUnion(reference)
+	}
+	for _, scope := range executor.scopes.SurveyUnionScopes {
+		unionID, found, readErr := executor.surveyAliases.VerifiedUnionID(ctx, customerID, scope)
+		if readErr != nil {
+			return nil, nil, readErr
+		}
+		if !found || unionID == "" {
+			continue
+		}
+		reference, referenceErr := executor.trustedReference(identitydomain.KindUnionID, scope, unionID, "open_platform.survey_read")
+		if referenceErr != nil {
+			return nil, nil, referenceErr
+		}
+		appendUnion(reference)
+	}
+	return ids, trusted, nil
+}
+
+func surveyRequestAlias(references []identitydomain.Reference, kind identitydomain.Kind) string {
+	for _, reference := range references {
+		if reference.Kind == kind {
+			return reference.Value
+		}
+	}
+	return ""
+}
+
+func externalSurveyResponse(page surveyport.ExternalSubmissionPage, filters map[string]any, mobile, nativeUnionID, externalUserID string) openplatformport.Response {
+	items := make([]map[string]any, 0, len(page.Items))
+	for _, item := range page.Items {
+		answers := make([]map[string]any, 0, len(item.Answers))
+		for _, answer := range item.Answers {
+			answers = append(answers, map[string]any{
+				"question_title_snapshot":        answer.QuestionTitle,
+				"selected_option_texts_snapshot": answer.SelectedOptionTexts,
+				"text_value":                     answer.TextValue,
+				"score_contribution":             answer.ScoreContribution,
+			})
+		}
+		unionID := item.HistoricalUnionID
+		if unionID == "" {
+			unionID = nativeUnionID
+		}
+		items = append(items, map[string]any{
+			"mobile":                     mobile,
+			"unionid":                    unionID,
+			"external_userid":            externalUserID,
+			"submitted_at":               legacyExternalTimestamp(item.SubmittedAt),
+			"questionnaire_id":           item.QuestionnaireSourceID,
+			"questionnaire_title":        item.QuestionnaireTitle,
+			"final_tags":                 item.FinalTags,
+			"assessment_result_snapshot": item.AssessmentResult,
+			"answers":                    answers,
+		})
+	}
+	nextCursor := ""
+	if page.Offset+int64(len(items)) < page.Total {
+		nextCursor = encodeExternalSurveyCursor(page.Offset + int64(len(items)))
+	}
+	return responseOK(map[string]any{
+		"ok":                true,
+		"items":             items,
+		"total":             page.Total,
+		"limit":             page.Limit,
+		"next_cursor":       nextCursor,
+		"has_more":          nextCursor != "",
+		"filters":           filters,
+		"route_owner":       "ai_crm_next",
+		"source_status":     "external_questionnaire_submissions",
+		"read_model_status": "primary",
+		"fallback_used":     false,
+	})
+}
+
+func legacyExternalTimestamp(value time.Time) string {
+	value = value.UTC()
+	if value.Nanosecond() == 0 {
+		return value.Format("2006-01-02T15:04:05-07:00")
+	}
+	return value.Format("2006-01-02T15:04:05.999999-07:00")
+}
+
+func externalSurveyError(status int, code string) openplatformport.Response {
+	return openplatformport.Response{Status: status, Body: map[string]any{
+		"ok": false, "error_code": code, "route_owner": "ai_crm_next", "source_status": "external_questionnaire_submissions", "fallback_used": false,
+	}}
+}
+
+func externalSurveyIdentityError(err error) openplatformport.Response {
+	response := responseForIdentityError(err)
+	code, _ := response.Body.(map[string]any)["error_code"].(string)
+	return externalSurveyError(response.Status, code)
+}
+
+func externalSurveyUnavailable() openplatformport.Response {
+	return openplatformport.Response{Status: 503, Body: map[string]any{
+		"ok": false, "error_code": "production_unavailable", "route_owner": "ai_crm_next", "source_status": "production_unavailable", "fallback_used": false,
 	}}
 }
 
@@ -1253,10 +1562,16 @@ var _ wecomport.AudiencePrimaryOwnerReader = openPlatformOwnerAdapter{}
 
 // openPlatformIdentityAdapter combines stable Identity Ports at Composition.
 // The machine executor receives no store and cannot issue a cross-domain query.
+type openPlatformMachineAuditWriter interface {
+	AppendMachineAudit(context.Context, accessdomain.MachineAudit) error
+}
+
 type openPlatformIdentityAdapter struct {
-	resolver identityport.Resolver
-	values   identityport.ExternalIdentityValueReader
-	uow      platformport.UnitOfWork
+	resolver     identityport.Resolver
+	values       identityport.ExternalIdentityValueReader
+	directory    identityport.DirectoryIdentityReader
+	machineAudit openPlatformMachineAuditWriter
+	uow          platformport.UnitOfWork
 }
 
 func (adapter openPlatformIdentityAdapter) Resolve(ctx context.Context, reference identitydomain.Reference) (identityport.ResolveResult, error) {
@@ -1267,6 +1582,14 @@ func (adapter openPlatformIdentityAdapter) Resolve(ctx context.Context, referenc
 }
 
 func (adapter openPlatformIdentityAdapter) VerifiedExternalUserID(ctx context.Context, customerID customerdomain.CustomerID, scope string) (string, bool, error) {
+	return adapter.verifiedExternalIdentity(ctx, customerID, identitydomain.KindWeComExternalUserID, scope)
+}
+
+func (adapter openPlatformIdentityAdapter) VerifiedUnionID(ctx context.Context, customerID customerdomain.CustomerID, scope string) (string, bool, error) {
+	return adapter.verifiedExternalIdentity(ctx, customerID, identitydomain.KindUnionID, scope)
+}
+
+func (adapter openPlatformIdentityAdapter) verifiedExternalIdentity(ctx context.Context, customerID customerdomain.CustomerID, kind identitydomain.Kind, scope string) (string, bool, error) {
 	if adapter.values == nil || adapter.uow == nil || customerID < 1 || strings.TrimSpace(scope) != scope || scope == "" {
 		return "", false, errors.New("open platform verified external identity is unavailable")
 	}
@@ -1274,11 +1597,39 @@ func (adapter openPlatformIdentityAdapter) VerifiedExternalUserID(ctx context.Co
 	var found bool
 	err := adapter.uow.Within(ctx, func(tx context.Context) error {
 		var readErr error
-		value, found, readErr = adapter.values.VerifiedExternalIdentityValue(tx, customerID, identitydomain.KindWeComExternalUserID, scope)
+		value, found, readErr = adapter.values.VerifiedExternalIdentityValue(tx, customerID, kind, scope)
 		return readErr
 	})
 	return value, found, err
 }
 
+// RevealPhoneForMachine follows Identity's DirectoryIdentityReader boundary:
+// raw phone leaves Identity only for an authenticated compatibility response,
+// and the existing Access machine-audit record is written in the same UoW
+// without placing the phone itself in audit data.
+func (adapter openPlatformIdentityAdapter) RevealPhoneForMachine(ctx context.Context, customerID customerdomain.CustomerID, principal accessdomain.MachinePrincipal) (string, bool, error) {
+	if adapter.directory == nil || adapter.machineAudit == nil || adapter.uow == nil || customerID < 1 || principal.ClientRecord < 1 || principal.ClientID == "" {
+		return "", false, errors.New("open platform phone reader is unavailable")
+	}
+	var phone string
+	var found bool
+	err := adapter.uow.Within(ctx, func(tx context.Context) error {
+		var readErr error
+		phone, found, readErr = adapter.directory.RevealPhone(tx, customerID)
+		if readErr != nil || !found {
+			return readErr
+		}
+		return adapter.machineAudit.AppendMachineAudit(tx, accessdomain.MachineAudit{
+			MachineClientID: principal.ClientRecord,
+			Action:          "machine_sensitive_read",
+			Outcome:         "external_questionnaire_submissions",
+			Details:         []byte(`{"field":"phone"}`),
+			CreatedAt:       time.Now().UTC(),
+		})
+	})
+	return phone, found, err
+}
+
 var _ identityport.Resolver = openPlatformIdentityAdapter{}
 var _ openPlatformExternalUserIDReader = openPlatformIdentityAdapter{}
+var _ openPlatformSurveyIdentityReader = openPlatformIdentityAdapter{}

@@ -91,6 +91,10 @@ type CustomerHistoryReader interface {
 // facts, not Identity inputs: Survey never resolves, provisions, or links a
 // customer from them.
 type ExternalSubmissionQuery struct {
+	// CustomerID is supplied only after the Host's scoped OneID resolution. It
+	// selects V3-native submissions; historical rows remain filtered by their
+	// separate source union projection.
+	CustomerID            int64
 	HistoricalUnionIDs    []string
 	QuestionnaireSourceID int64
 	SubmittedFrom         time.Time
@@ -104,6 +108,7 @@ type ExternalSubmissionQuery struct {
 // Identity fields; the API Host supplies current identity aliases separately.
 type ExternalSubmission struct {
 	HistoricalUnionID     string                     `json:"unionid"`
+	Legacy                bool                       `json:"-"`
 	QuestionnaireSourceID int64                      `json:"questionnaire_id"`
 	QuestionnaireTitle    string                     `json:"questionnaire_title"`
 	SubmittedAt           time.Time                  `json:"submitted_at"`

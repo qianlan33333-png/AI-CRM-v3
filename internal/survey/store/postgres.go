@@ -686,22 +686,36 @@ func (r *Repository) ExternalSubmissions(ctx context.Context, query surveyport.E
 	if err != nil {
 		return surveyport.ExternalSubmissionPage{}, err
 	}
-	clauses := []string{"projection.historical_unionid = ANY($1::text[])"}
-	args := []any{query.HistoricalUnionIDs}
-	if query.QuestionnaireSourceID > 0 {
-		args = append(args, strconv.FormatInt(query.QuestionnaireSourceID, 10))
-		clauses = append(clauses, "questionnaire_map.source_pk=$"+strconv.Itoa(len(args)))
+	questionnaireIDs, err := externalQuestionnaireTargets(ctx, t, query.QuestionnaireSourceID)
+	if err != nil {
+		return surveyport.ExternalSubmissionPage{}, err
+	}
+	// $1 is always the OneID-resolved V3 customer. $2 is a set of historical
+	// source facts. The union branches are deliberately disjoint: a legacy
+	// source row can only match its preserved historic union, while a native
+	// V3 row can only match its canonical customer_id.
+	args := []any{query.CustomerID, query.HistoricalUnionIDs}
+	legacyWhere := []string{"projection.historical_unionid = ANY($2::text[])"}
+	nativeWhere := []string{"submission.customer_id=$1", `NOT EXISTS (SELECT 1 FROM survey_legacy_external_projections legacy_projection WHERE legacy_projection.submission_id=submission.id)`}
+	if len(questionnaireIDs) > 0 {
+		args = append(args, questionnaireIDs)
+		condition := "submission.questionnaire_id=ANY($" + strconv.Itoa(len(args)) + "::bigint[])"
+		legacyWhere, nativeWhere = append(legacyWhere, condition), append(nativeWhere, condition)
 	}
 	if !query.SubmittedFrom.IsZero() {
 		args = append(args, query.SubmittedFrom.UTC())
-		clauses = append(clauses, "submission.submitted_at >= $"+strconv.Itoa(len(args)))
+		condition := "submission.submitted_at >= $" + strconv.Itoa(len(args))
+		legacyWhere, nativeWhere = append(legacyWhere, condition), append(nativeWhere, condition)
 	}
 	if !query.SubmittedTo.IsZero() {
 		args = append(args, query.SubmittedTo.UTC())
-		clauses = append(clauses, "submission.submitted_at <= $"+strconv.Itoa(len(args)))
+		condition := "submission.submitted_at <= $" + strconv.Itoa(len(args))
+		legacyWhere, nativeWhere = append(legacyWhere, condition), append(nativeWhere, condition)
 	}
-	where := strings.Join(clauses, " AND ")
-	from := ` FROM survey_submissions submission
+	eligible := `WITH eligible AS (
+		SELECT submission.id AS submission_id,projection.historical_unionid,questionnaire_map.source_pk AS questionnaire_source_id,
+			submission.title_snapshot AS questionnaire_title,submission.submitted_at,submission.result_snapshot,TRUE AS legacy
+		FROM survey_submissions submission
 		JOIN survey_legacy_external_projections projection ON projection.submission_id=submission.id
 		JOIN survey_migration_source_map submission_map ON submission_map.target_table='survey_submissions'
 			AND submission_map.target_pk=submission.id
@@ -711,15 +725,29 @@ func (r *Repository) ExternalSubmissions(ctx context.Context, query surveyport.E
 			AND questionnaire_map.source_table='questionnaires'
 			AND questionnaire_map.target_table='survey_questionnaires'
 			AND questionnaire_map.target_pk=submission.questionnaire_id
-			AND questionnaire_map.import_state='imported'`
+			AND questionnaire_map.import_state='imported'
+		WHERE ` + strings.Join(legacyWhere, " AND ") + `
+		UNION ALL
+		SELECT submission.id AS submission_id,''::text AS historical_unionid,
+			COALESCE(native_questionnaire_map.source_pk,submission.questionnaire_id::text) AS questionnaire_source_id,
+			submission.title_snapshot AS questionnaire_title,submission.submitted_at,submission.result_snapshot,FALSE AS legacy
+		FROM survey_submissions submission
+		LEFT JOIN LATERAL (
+			SELECT source_pk FROM survey_migration_source_map
+			WHERE target_table='survey_questionnaires' AND target_pk=submission.questionnaire_id
+				AND source_table='questionnaires' AND import_state='imported'
+			ORDER BY id LIMIT 1
+		) native_questionnaire_map ON TRUE
+		WHERE ` + strings.Join(nativeWhere, " AND ") + `
+	)`
 	var total int64
-	if err = t.QueryRow(ctx, `SELECT count(*)`+from+` WHERE `+where, args...).Scan(&total); err != nil {
+	if err = t.QueryRow(ctx, eligible+` SELECT count(*) FROM eligible`, args...).Scan(&total); err != nil {
 		return surveyport.ExternalSubmissionPage{}, mapError(err)
 	}
 	limitPosition := len(args) + 1
 	offsetPosition := len(args) + 2
 	args = append(args, query.Limit, query.Offset)
-	rows, err := t.Query(ctx, `SELECT submission.id,projection.historical_unionid,questionnaire_map.source_pk,submission.title_snapshot,submission.submitted_at,submission.result_snapshot`+from+` WHERE `+where+` ORDER BY submission.submitted_at DESC,submission.id DESC LIMIT $`+strconv.Itoa(limitPosition)+` OFFSET $`+strconv.Itoa(offsetPosition), args...)
+	rows, err := t.Query(ctx, eligible+` SELECT submission_id,historical_unionid,questionnaire_source_id,questionnaire_title,submitted_at,result_snapshot,legacy FROM eligible ORDER BY submitted_at DESC,submission_id DESC LIMIT $`+strconv.Itoa(limitPosition)+` OFFSET $`+strconv.Itoa(offsetPosition), args...)
 	if err != nil {
 		return surveyport.ExternalSubmissionPage{}, mapError(err)
 	}
@@ -732,7 +760,7 @@ func (r *Repository) ExternalSubmissions(ctx context.Context, query surveyport.E
 		var row externalSubmissionRow
 		var questionnaireSource string
 		var result []byte
-		if err = rows.Scan(&row.id, &row.item.HistoricalUnionID, &questionnaireSource, &row.item.QuestionnaireTitle, &row.item.SubmittedAt, &result); err != nil {
+		if err = rows.Scan(&row.id, &row.item.HistoricalUnionID, &questionnaireSource, &row.item.QuestionnaireTitle, &row.item.SubmittedAt, &result, &row.item.Legacy); err != nil {
 			rows.Close()
 			return surveyport.ExternalSubmissionPage{}, mapError(err)
 		}
@@ -813,6 +841,45 @@ func (r *Repository) ExternalSubmissions(ctx context.Context, query surveyport.E
 	return page, nil
 }
 
+// externalQuestionnaireTargets gives a frozen donor questionnaire ID an
+// explicit meaning. A mapped source ID selects its mapped V3 questionnaire.
+// If an unrelated native questionnaire has the same numeric ID, the request
+// is ambiguous and fails closed rather than guessing which collection to read.
+func externalQuestionnaireTargets(ctx context.Context, t pgx.Tx, sourceID int64) ([]int64, error) {
+	if sourceID == 0 {
+		return nil, nil
+	}
+	rows, err := t.Query(ctx, `SELECT DISTINCT target_pk FROM survey_migration_source_map WHERE source_table='questionnaires' AND target_table='survey_questionnaires' AND source_pk=$1 AND import_state='imported' AND target_pk IS NOT NULL ORDER BY target_pk`, strconv.FormatInt(sourceID, 10))
+	if err != nil {
+		return nil, mapError(err)
+	}
+	mapped := []int64{}
+	for rows.Next() {
+		var target int64
+		if err = rows.Scan(&target); err != nil {
+			rows.Close()
+			return nil, mapError(err)
+		}
+		mapped = append(mapped, target)
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return nil, mapError(err)
+	}
+	rows.Close()
+	if len(mapped) == 0 {
+		return []int64{sourceID}, nil
+	}
+	var collides bool
+	if err = t.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM survey_questionnaires WHERE id=$1 AND NOT (id=ANY($2::bigint[])))`, sourceID, mapped).Scan(&collides); err != nil {
+		return nil, mapError(err)
+	}
+	if collides {
+		return nil, surveyport.ErrConflict
+	}
+	return mapped, nil
+}
+
 func externalAssessmentProjection(raw []byte) (json.RawMessage, json.RawMessage, error) {
 	var snapshot map[string]json.RawMessage
 	if json.Unmarshal(raw, &snapshot) != nil || snapshot == nil {
@@ -825,6 +892,15 @@ func externalAssessmentProjection(raw []byte) (json.RawMessage, json.RawMessage,
 			return nil, nil, surveyport.ErrUnavailable
 		}
 		finalTags = append(json.RawMessage(nil), sourceTags...)
+	} else if nativeTags, found := snapshot["tag_codes"]; found {
+		// Native V3 assessments retain their computed tag_codes in the
+		// AssessmentResult snapshot. This is the native equivalent of the
+		// donor's final_tags field; no historical identity fact is inferred.
+		var array []json.RawMessage
+		if json.Unmarshal(nativeTags, &array) != nil {
+			return nil, nil, surveyport.ErrUnavailable
+		}
+		finalTags = append(json.RawMessage(nil), nativeTags...)
 	}
 	delete(snapshot, "_legacy_final_tags")
 	delete(snapshot, "_legacy_matched_by")
