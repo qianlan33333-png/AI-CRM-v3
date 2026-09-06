@@ -12434,13 +12434,21 @@
   function transferStatusLabel(status) {
     return { 0: "\u672C\u5730\u8FC1\u79FB", 1: "\u4F01\u5FAE\u8F6C\u63A5\u5DF2\u5B8C\u6210", 2: "\u4F01\u5FAE\u8F6C\u63A5\u5904\u7406\u4E2D", 3: "\u5BA2\u6237\u62D2\u7EDD\u63A5\u66FF", 4: "\u76EE\u6807\u6210\u5458\u5BA2\u6237\u4E0A\u9650", 5: "\u672A\u627E\u5230\u4F01\u5FAE\u8F6C\u63A5\u8BB0\u5F55" }[status] || `\u4F01\u5FAE\u72B6\u6001 ${status}`;
   }
-  function downloadWorkbook(filename, headers, rows) {
-    const blob = new Blob([ownerMigrationWorkbookXLSX(headers, rows)], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+  function downloadBlob(filename, blob) {
+    const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
-    link.href = URL.createObjectURL(blob);
+    link.href = url;
     link.download = filename;
+    link.hidden = true;
+    document.body.append(link);
     link.click();
-    URL.revokeObjectURL(link.href);
+    window.setTimeout(() => {
+      link.remove();
+      URL.revokeObjectURL(url);
+    }, 1e3);
+  }
+  function downloadWorkbook(filename, headers, rows) {
+    downloadBlob(filename, new Blob([ownerMigrationWorkbookXLSX(headers, rows)], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }));
   }
   function normalizeMoveFlag(value) {
     const normalized = text(value).toLowerCase();
@@ -12632,12 +12640,7 @@
         reset();
       });
       query(root, "[data-download-template]").addEventListener("click", () => {
-        const blob = new Blob([ownerMigrationTemplateXLSX()], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
-        const link = document.createElement("a");
-        link.href = URL.createObjectURL(blob);
-        link.download = "owner_migration_template.xlsx";
-        link.click();
-        URL.revokeObjectURL(link.href);
+        downloadBlob("owner_migration_template.xlsx", new Blob([ownerMigrationTemplateXLSX()], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }));
       });
       query(root, "[data-preview]").addEventListener("click", async () => {
         try {

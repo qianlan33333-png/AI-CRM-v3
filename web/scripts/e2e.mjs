@@ -2600,12 +2600,15 @@ console.log('admin/ownerMig.html（冻结负责人迁移页 Host → Picker → 
   const readback = ownerCalls().find((call) => call.path.endsWith('/transfer-result'));
   ok('企微回查是独立 POST，不从页面直接写 Provider，并回填逐行状态', readback?.method === 'POST' && root.querySelector('[data-execution-log]')?.textContent.includes('observed') && root.querySelector('[data-execution-log]')?.textContent.includes('transfer_status=1'));
   dom.window.__aicrmDownload = null;
+  dom.window.__aicrmDownloadRevocations = [];
   dom.window.URL.createObjectURL = () => 'blob:owner-handoff';
-  dom.window.URL.revokeObjectURL = () => {};
+  dom.window.URL.revokeObjectURL = (url) => { dom.window.__aicrmDownloadRevocations.push(url); };
   dom.window.HTMLAnchorElement.prototype.click = function () { dom.window.__aicrmDownload = { filename: this.download, href: this.href }; };
   click(dom, root.querySelector('[data-download-result]'));
   await sleep(100);
-  ok('结果导出重新读取批次，产出旧流程要求的 XLSX 明细', ownerCalls().some((call) => call.path.endsWith('/batches/batch-owner-host') && call.method === 'GET') && dom.window.__aicrmDownload?.filename === 'owner_migration_result.xlsx');
+  const completedDownload = dom.window.__aicrmDownload;
+  const completedRevocations = dom.window.__aicrmDownloadRevocations.length;
+  ok('结果导出重新读取批次，产出旧流程要求的 XLSX 明细，并在下载交接后再释放 blob URL', ownerCalls().some((call) => call.path.endsWith('/batches/batch-owner-host') && call.method === 'GET') && completedDownload?.filename === 'owner_migration_result.xlsx' && completedRevocations === 0);
   dom.window.close();
 }
 {

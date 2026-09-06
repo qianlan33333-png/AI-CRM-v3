@@ -129,10 +129,21 @@ function selectedScope(root: ParentNode): string { return query<HTMLInputElement
 function transferStatusLabel(status: number): string {
   return ({ 0: "本地迁移", 1: "企微转接已完成", 2: "企微转接处理中", 3: "客户拒绝接替", 4: "目标成员客户上限", 5: "未找到企微转接记录" } as Record<number, string>)[status] || `企微状态 ${status}`;
 }
-function downloadWorkbook(filename: string, headers: string[], rows: string[][]): void {
-  const blob = new Blob([ownerMigrationWorkbookXLSX(headers, rows)], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+function downloadBlob(filename: string, blob: Blob): void {
+  const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
-  link.href = URL.createObjectURL(blob); link.download = filename; link.click(); URL.revokeObjectURL(link.href);
+  link.href = url;
+  link.download = filename;
+  link.hidden = true;
+  document.body.append(link);
+  link.click();
+  // Chromium resolves blob: downloads asynchronously. Keep the URL alive until
+  // that hand-off completes instead of revoking it in the click stack.
+  window.setTimeout(() => { link.remove(); URL.revokeObjectURL(url); }, 1000);
+}
+
+function downloadWorkbook(filename: string, headers: string[], rows: string[][]): void {
+  downloadBlob(filename, new Blob([ownerMigrationWorkbookXLSX(headers, rows)], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }));
 }
 
 function normalizeMoveFlag(value: string): [string, boolean] {
@@ -305,8 +316,7 @@ async function boot(): Promise<void> {
     query<HTMLInputElement>(root, "[data-include-wecom-transfer]").addEventListener("change", () => { updateWeComPresentation(); reset(); });
     query<HTMLTextAreaElement>(root, "[data-transfer-welcome-msg]").addEventListener("input", () => { updateWelcomeCount(); reset(); });
     query<HTMLButtonElement>(root, "[data-download-template]").addEventListener("click", () => {
-      const blob = new Blob([ownerMigrationTemplateXLSX()], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
-      const link = document.createElement("a"); link.href = URL.createObjectURL(blob); link.download = "owner_migration_template.xlsx"; link.click(); URL.revokeObjectURL(link.href);
+      downloadBlob("owner_migration_template.xlsx", new Blob([ownerMigrationTemplateXLSX()], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }));
     });
     query<HTMLButtonElement>(root, "[data-preview]").addEventListener("click", async () => {
       try {

@@ -148,18 +148,21 @@ try {
   const waitFor=async(expression,message)=>{for(let attempt=0;attempt<160;attempt++){if(await evaluate(expression))return;await sleep(50);}throw new Error(message);};
   const readDownloadedWorkbook=async (filename, expectedValues) => {
     const destination=path.join(downloads,filename);
-    let bytes;
+    let bytes; let observedBytes=0; let observedPrefix=""; let partial=false;
     for (let attempt=0;attempt<160;attempt++) {
       try {
         bytes=await fs.readFile(destination);
+        observedBytes=bytes.length;
+        observedPrefix=Buffer.from(bytes.subarray(0,8)).toString("hex");
         await fs.access(`${destination}.crdownload`);
+        partial=true;
       } catch (error) {
-        if (bytes && error?.code === "ENOENT") break;
+        if (bytes && error?.code === "ENOENT") { partial=false; break; }
         bytes=undefined;
       }
       await sleep(50);
     }
-    if (!bytes || bytes.length < 4 || bytes[0] !== 0x50 || bytes[1] !== 0x4b) throw new Error(`downloaded ${filename} was not a readable XLSX file`);
+    if (!bytes || bytes.length < 4 || bytes[0] !== 0x50 || bytes[1] !== 0x4b) throw new Error(`downloaded ${filename} was not a readable XLSX file (bytes=${observedBytes},prefix=${observedPrefix || "none"},partial=${partial})`);
     let workbook;
     try { workbook=unzipSync(bytes); } catch (_) { throw new Error(`downloaded ${filename} could not be opened as XLSX`); }
     const sheet=workbook["xl/worksheets/sheet1.xml"];
