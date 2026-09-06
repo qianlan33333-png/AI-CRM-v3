@@ -221,6 +221,48 @@ func TestFullApplicationRouterExposesOrderImportAPI(t *testing.T) {
 	}
 }
 
+func TestFullApplicationRouterDelegatesExactOperationMemberScopeToAdminAPIs(t *testing.T) {
+	marker := func(name string) http.Handler {
+		return http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+			writer.Header().Set("X-Owner", name)
+			writer.WriteHeader(http.StatusNoContent)
+		})
+	}
+	adminAPIs := http.NewServeMux()
+	adminAPIs.Handle("/api/admin/common/operation-members", http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Query().Get("scope") == "owner_migration" {
+			writer.Header().Set("X-Owner", "owner-handoff")
+		} else {
+			writer.Header().Set("X-Owner", "group-ops-through-admin-apis")
+		}
+		writer.WriteHeader(http.StatusNoContent)
+	}))
+	other := marker("other")
+	groupOps := marker("group-ops-subtree")
+	handler, err := routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(
+		other, other, adminAPIs, other, other, other,
+		other, other, other, other, other, other, other, other,
+		other, groupOps, other, other, other, other, other, other,
+		other, other, &fakeAccessAuthentication{}, "https://crm.example",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		path, owner string
+	}{
+		{"/api/admin/common/operation-members?scope=owner_migration&include_inactive=true", "owner-handoff"},
+		{"/api/admin/common/operation-members?scope=group_ops", "group-ops-through-admin-apis"},
+		{"/api/admin/common/operation-members/sync", "group-ops-subtree"},
+	} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, test.path, nil))
+		if response.Code != http.StatusNoContent || response.Header().Get("X-Owner") != test.owner {
+			t.Fatalf("path=%s status=%d owner=%q", test.path, response.Code, response.Header().Get("X-Owner"))
+		}
+	}
+}
+
 func TestMountHXCUIReplacesPlaceholderAndProtectsAssets(t *testing.T) {
 	dashboard := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("X-Owner", "hxc-ui")

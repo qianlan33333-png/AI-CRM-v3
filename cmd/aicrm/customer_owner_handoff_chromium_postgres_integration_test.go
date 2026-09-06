@@ -137,6 +137,65 @@ func TestPostgreSQLOwnerHandoffChromiumJourney(t *testing.T) {
 	}
 	server.Config.Handler = application.handler
 	server.StartTLS()
+	// Exercise the fully composed outer router before Chromium. The frozen
+	// shared picker asks for an inactive source and an active target on the
+	// exact compatibility URL; a second outer registration must not shadow the
+	// Customer scope dispatcher. Group Ops retains its normal exact read through
+	// that same dispatcher, while its /sync subtree remains separately owned.
+	session, _ := adminAccessLogin(t, application.handler, "owner-browser", "owner-browser-password")
+	operationMembers := func(rawQuery string) []struct {
+		UserID string `json:"user_id"`
+		Active bool   `json:"active"`
+	} {
+		t.Helper()
+		request := httptest.NewRequest(http.MethodGet, "/api/admin/common/operation-members?"+rawQuery, nil)
+		request.AddCookie(&http.Cookie{Name: "aicrm_admin_session", Value: session})
+		response := httptest.NewRecorder()
+		application.handler.ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("operation members query=%q status=%d body=%s", rawQuery, response.Code, response.Body.String())
+		}
+		var payload struct {
+			Items []struct {
+				UserID string `json:"user_id"`
+				Active bool   `json:"active"`
+			} `json:"items"`
+		}
+		if decodeErr := json.NewDecoder(response.Body).Decode(&payload); decodeErr != nil {
+			t.Fatalf("operation members query=%q decode: %v", rawQuery, decodeErr)
+		}
+		return payload.Items
+	}
+	containsMember := func(items []struct {
+		UserID string `json:"user_id"`
+		Active bool   `json:"active"`
+	}, userID string, active bool) bool {
+		for _, item := range items {
+			if item.UserID == userID && item.Active == active {
+				return true
+			}
+		}
+		return false
+	}
+	if !containsMember(operationMembers("scope=owner_migration&include_inactive=true"), "browser-source", false) {
+		t.Fatal("fully composed owner-migration picker did not return the inactive source")
+	}
+	if containsMember(operationMembers("scope=owner_migration&include_inactive=false"), "browser-source", false) || !containsMember(operationMembers("scope=owner_migration&include_inactive=false"), "browser-target", true) {
+		t.Fatal("fully composed owner-migration picker did not enforce source/target active visibility")
+	}
+	groupRequest := httptest.NewRequest(http.MethodGet, "/api/admin/common/operation-members?scope=group_ops", nil)
+	groupRequest.AddCookie(&http.Cookie{Name: "aicrm_admin_session", Value: session})
+	groupResponse := httptest.NewRecorder()
+	application.handler.ServeHTTP(groupResponse, groupRequest)
+	if groupResponse.Code != http.StatusOK {
+		t.Fatalf("fully composed Group Ops operation-member query status=%d body=%s", groupResponse.Code, groupResponse.Body.String())
+	}
+	var groupPayload struct {
+		Scope string `json:"scope"`
+	}
+	if decodeErr := json.NewDecoder(groupResponse.Body).Decode(&groupPayload); decodeErr != nil || groupPayload.Scope != "group_ops" {
+		t.Fatalf("fully composed Group Ops operation-member response scope=%q err=%v", groupPayload.Scope, decodeErr)
+	}
 	_, sourceFile, _, ok := goruntime.Caller(0)
 	if !ok {
 		t.Fatal("locate owner handoff Chromium journey")

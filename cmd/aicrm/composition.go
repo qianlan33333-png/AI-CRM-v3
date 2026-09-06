@@ -1824,7 +1824,10 @@ func routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, acce
 	mux.Handle("/api/admin/automation-conversion/group-ops/", groupOpsHandler)
 	mux.Handle("/api/admin/automation-agents", automationHandler)
 	mux.Handle("/api/admin/automation-agents/", automationHandler)
-	mux.Handle("/api/admin/common/operation-members", groupOpsHandler)
+	// The exact shared-picker URL has one scope decision in adminAPIs: owner
+	// migration reaches Customer's Access projection while Group Ops retains its
+	// existing scope. Keep the sub-tree on Group Ops for its owned /sync route.
+	mux.Handle("/api/admin/common/operation-members", identity)
 	mux.Handle("/api/admin/common/operation-members/", groupOpsHandler)
 	mux.Handle("/api/automation/group-ops/", groupOpsHandler)
 	mux.Handle("/assets/", requireAdminSession(authentication, effectsUI))

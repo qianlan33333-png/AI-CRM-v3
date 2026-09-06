@@ -12,13 +12,18 @@ const host = output.outputFiles[0].text;
 const wait = () => new Promise(resolve => setTimeout(resolve, 40));
 const response = (body, status = 200) => ({ ok: status >= 200 && status < 300, status, json: async () => body, text: async () => body });
 
-async function mountFixture(contextBody, contextStatus = 200) {
+async function mountFixture(contextBody, contextStatus = 200, exercisePicker = false) {
   const requests = [];
+  const pickerOpens = [];
   const dom = new JSDOM('<!doctype html><html><body><main data-owner-handoff-host></main></body></html>', {
     url: "https://owner-host.fixture/admin/owner-migration", runScripts: "outside-only", pretendToBeVisual: true,
     beforeParse(window) {
       window.Headers = Headers;
-      window.OperationMemberPicker = { open: async () => {} };
+      window.OperationMemberPicker = { open: async (options) => {
+        pickerOpens.push({ scope: options.scope, pageSize: options.pageSize, includeInactive: options.includeInactive, allowRefresh: options.allowRefresh, title: options.title });
+        const selected = (contextBody.staff || []).find((staff) => Boolean(staff.Active) !== options.includeInactive);
+        if (selected) options.onSelect({ user_id: selected.UserID });
+      } };
       window.fetch = async (input, init = {}) => {
         const url = new URL(String(input), window.location.origin);
         const method = init.method || "GET";
@@ -33,6 +38,12 @@ async function mountFixture(contextBody, contextStatus = 200) {
   await wait(); await wait();
   const stage = dom.window.document.querySelector("[data-owner-handoff-host]");
   const page = stage?.querySelector("[data-owner-migration-page]");
+  if (exercisePicker && page) {
+    page.querySelector('[data-owner-picker="source"]')?.click();
+    await wait();
+    page.querySelector('[data-owner-picker="target"]')?.click();
+    await wait();
+  }
   const diagnostic = {
     init: stage?.dataset.ownerHandoffInit || "missing",
     http_status: stage?.dataset.ownerHandoffInitStatus || "",
@@ -45,6 +56,9 @@ async function mountFixture(contextBody, contextStatus = 200) {
     donor_gets: requests.filter(request => request.path === "/static/admin_console/owner_migration_dd8d60d.html" && request.method === "GET").length,
     context_gets: requests.filter(request => request.path === "/api/admin/customers/owner-handoffs/context" && request.method === "GET").length,
     user_message: stage?.textContent || "",
+    picker_opens: pickerOpens,
+    source_id: page?.querySelector('[data-owner-userid="source"]')?.value || "",
+    target_id: page?.querySelector('[data-owner-userid="target"]')?.value || "",
   };
   dom.window.close();
   return diagnostic;
@@ -55,5 +69,18 @@ if (ready.init !== "ready" || !ready.page || ready.has_curly_marker || ready.has
 
 const denied = await mountFixture({ error: "forbidden fixture" }, 403);
 if (denied.init !== "context_error" || denied.page || denied.http_status !== "403" || denied.donor_gets !== 1 || denied.context_gets !== 1 || denied.user_message !== "负责人迁移页面不可用。") throw new Error(`owner handoff Host context failure fixture mismatch ${JSON.stringify(denied)}`);
+
+
+const picker = await mountFixture({
+  staff: [
+    { ID: 11, UserID: "inactive-source", DisplayName: "Inactive source", Active: false },
+    { ID: 12, UserID: "active-target", DisplayName: "Active target", Active: true },
+  ],
+  operator: "管理员 #42",
+}, 200, true);
+if (picker.init !== "ready" || picker.source_id !== "11" || picker.target_id !== "12" || JSON.stringify(picker.picker_opens) !== JSON.stringify([
+  { scope: "owner_migration", pageSize: 100, includeInactive: true, allowRefresh: false, title: "选择原负责人" },
+  { scope: "owner_migration", pageSize: 100, includeInactive: false, allowRefresh: false, title: "选择目标负责人" },
+])) throw new Error(`owner handoff Host picker contract mismatch ${JSON.stringify(picker)}`);
 
 console.log("owner_handoff_host: PASS");
