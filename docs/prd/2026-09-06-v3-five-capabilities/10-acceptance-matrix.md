@@ -5,7 +5,7 @@
 | 板块 | PRD | 当前实现证据 | 完整板块 PR / 最新已知 HEAD | 根审核与剩余项 |
 |---|---|---|---|---|
 | 负责人迁移 | 01 已批准 | 两模式、真实 River/Provider fixture、并发互斥已有测试 | #171 `f711900f5383845c29689f60595abb97731bf5a4` | 未通过整板块：20k本地恢复与101人仅2次Provider/重启、partial/missing已独立PG验证；组合测试边界已修；当前Chrome local_only预览未保存，旧页面复用/执行结果旅程及最终CI待收口 |
-| 通用客户标签 | 02 已批准 | 根独立 PG/race 通过74f560e；后续网关unknown、Channel冲突及观察刷新已修 | #169 `7ce98693f1c714d46d290b047a771e10e86d0ecf` | 未通过整板块：历史/观察PG根复核通过；101真实重启/source gate根复核通过；真实Chrome最终CI34027299426进行中 |
+| 通用客户标签 | 02 已批准 | 根独立 PG/race、历史/101恢复/来源门禁、真实 Chromium 与全量 CI 通过 | #169 `6f4b63c53c000cbc1c523ece78a9fec37147b735` 已合并 | 整板块代码验收通过；main 8ec5072d169c25abd25f80e29cb9f6222834b320；部署及真实业务验收另记 |
 | 配置中心运行生效 | 05 已批准 | 根独立PG/race、实际消费者/历史/制品及真实Chrome完整CI通过 | #170 `07b0af371db7a97620924a34ee5975a74c775d39` 已合并 | 整板块代码验收通过；main 5494537fb4d95a916c2754a3c1387335905d2861，部署及生产发布另记 |
 | 商品／订单外推 | 04 已批准 | Terra xhigh 开发中，实际paid/测试投递首checkpoint已提交 | #172 `687f4cc8faec79bff1e140f2d0f749034c637520` | 分支已吸收main5494537（本PR未合并）；paid协议已纠正且根PG/race通过，当前Host两断言失败，业务参数编辑/历史/浏览器继续 |
 | 通用开放平台 | 03及03a 已批准 | 冻结56条method/path；Terra xhigh已派发 | #173 `ecf86c2d2445091cb7567a9eed48e84553790f7d`（开发checkpoint） | 跨域import/scope收窄/代理来源已修；旧MCP模板与生命周期、业务装配/UI/历史仍在同PR继续 |
@@ -17,7 +17,7 @@
 按用户最新要求，整板块验收通过后独立合并；不再以总集成 PR 为交付单位。#168 停止接收业务 HEAD，已关闭并保留阶段记录。它此前只纳入文档及共用修复，没有五项业务实现需撤回。
 
 - 共用修复 #167，准确 HEAD `cbac1f6bdb2b868985c577ba0cff11482430a19e`：完整 CI、根独立真实 PostgreSQL race 测试与审核通过。已独立 squash 合并 main：`53c1c62e7db7924b979aa11fd8345d969fadf4ec`，既有自动部署已成功，生产readyz核对到53c1c62；不代表五板块生产业务验收。
-- 配置中心 #170 整板块代码验收已完成并独立合并；其余四项仍未完成，单项证据通过不填为整板块完成。
+- 配置中心 #170、客户标签 #169 整板块代码验收已完成并独立合并；其余三项仍未完成，单项证据通过不填为整板块完成。
 - 每个板块合并前记录最终准确 HEAD、真实 PG/浏览器/协议/历史证据、CI及 review 结论；合并与既有部署流水线结果另外记录。
 - 配置发布、凭据启用、真实转接/打标/外推、生产历史导入均未执行，不能由合并状态推导。
 
@@ -53,7 +53,7 @@
 
 负责人94e895a7d1768fa57d48ada17994afd7139861f2根独立PG/race通过：101人真实River两批、冻结身份摘要、过期Owner版本拒绝、unknown artifact保留明确成功行CAS及重放、严格叶子partial101协议；历史capture正负scope脚本通过。db6470a并入5494537后CI发现组合测试在outbound import wecom/adapter违反跨域边界，已要求原测试移cmd/aicrm，不能放宽gate或删协议断言。
 
-## 当前修正清单（取代较早快照，2026-09-06 10:10 UTC）
+## 历史修正快照（2026-09-06 10:10 UTC；最终状态以上表及下文最新记录为准）
 
 - #171 f711900：架构跨域测试已修。CI34026096663在真实Chrome失败 `local_only preview was not persisted`。另需修正测试企业scope不一致、LinuxCI启动失败不能skip、第二次导航不能使用旧DOM、两模式不能只验accepted。页面目前手填scope/数字员工ID，尚未符合旧员工选择与范围操作复用要求。已通过的94e895a真实101/River/部分结果等证据不重复处理。
 - #169 fee4025：当前CI阻断是浏览器测试直接读环境；执行者正在修复真实路由/ProviderRouter/UoW及来源开关矩阵，并补实际101恢复，需新HEAD根复核。
@@ -71,3 +71,19 @@
 根复核更新（2026-09-06 10:25 UTC）：标签rebase后的编译/Provider/Completion装配遗漏均已具体定位，97b1ea835b370817f535736dfb781c158b5851cc在根独立PG/race通过真实101人停/重建与两向来源门禁，日志 aicrm-five-tag-97b-root-review.log。执行者继续最终路由/浏览器门禁后提交GitHub新HEAD；不能把本地HEAD当已推送。商品687f4cc根独立PG/race支付完整旅程和checkout响应丢失/会话重放通过；CI34026945723失败在商品Host两条DOM断言（452通过/2失败），另有document关闭后observer错误。TS2550已修，不重复派。开放平台#173首checkpoint已建；CI34027083142准确失败为openplatform/http跨域import access/app，根同时提出请求read scope不能继承client全部write权限、可信proxy链须防伪造前缀的具体授权修正。均未整板块批准。
 
 标签7ce9869的后续路由/迁移装配根独立PG/race验证通过：CustomerTagCommandCompositionHTTP、CustomerSyncJourney、ChannelWelcomeAcceptance，日志 aicrm-five-tag-7ce-root-review.log；没有因新增通用标签把同步/欢迎语路径破坏。7ce9869已核实推到GitHub。MCP真实旧scope/audience模板与默认停用/轮换停用规则见03新增节，取代开发checkpoint引入的新mcp词汇。
+
+## 最新交付状态（2026-09-06 10:58 UTC）
+
+客户标签 #169 准确 HEAD `6f4b63c53c000cbc1c523ece78a9fec37147b735` 已通过根审核，完整 CI 34028056519/job 101472459611 全绿。Linux 专门 Chromium 步骤设置 AICRM_REQUIRE_CHROMIUM_JOURNEY=1，实际登录、两客户加/去标签、确认和手动刷新完成；DOM 验证目录映射名称，PG 验证 Provider 原始 ID/名称/状态及两次写入。随后全量 race 通过。该 HEAD 最后仅修正测试对“目录显示名称”和“Provider 原始名称”的不同语义，保留并加强两侧断言，未放松门禁。根此前独立历史/观察/101同库停重建/双向来源开关/HTTP及同步欢迎语回归证据继续有效。
+
+2026-09-06 10:57:42 UTC 独立 squash 合并 #169，main `8ec5072d169c25abd25f80e29cb9f6222834b320`。未向 #168 集成。标签新版本的自动部署尚待核实，未启用 Provider 开关、生产导入或真实企微写入。
+
+配置 #170 的 main 流水线 34025458810 已于 10:46:24 UTC 全部成功。根于 10:56 UTC GET 生产 /readyz，得到 release_sha=`5494537fb4d95a916c2754a3c1387335905d2861`、status=ready。此为代码部署证据，不代表管理员已发布生产业务配置或完成真实消费者业务验收。
+
+| 板块 | 实现 | 测试 | 审核 | 合并 | 部署 | 真实业务验收 |
+|---|---|---|---|---|---|---|
+| 负责人 | 旧页面/Excel/选择器/执行结果收口中 | 后端专项通过，完整浏览器待交 | 未通过整板块 | 未合并 | 未部署 | 未进行 |
+| 标签 | 本轮代码范围完成 | PG/恢复/协议/历史/Chromium/CI通过 | 通过准确6f4b63c | #169已合并 | 自动流程待核实 | 未进行 |
+| 配置 | 本轮代码范围完成 | PG/消费者/历史/Chromium/CI通过 | 通过准确07b0af3 | #170已合并 | 5494537线上ready已核实 | 未进行 |
+| 商品外推 | 业务配置/旧协议/Host/历史闭环收口中 | paid根PG/race通过；新Host/完整验收待交 | 未通过整板块 | 未合并 | 未部署 | 未进行 |
+| 开放平台 | 旧授权模板与数据范围/接口装配进行中 | 部分权限专项通过；56接口完整流程未齐 | 未通过整板块 | 未合并 | 未部署 | 未进行 |
