@@ -1580,10 +1580,17 @@ type externalConfigurationRequest struct {
 // so JavaScript never rounds a valid JSON integer before it is saved again.
 type externalConfigurationResponse struct {
 	productport.ExternalPushConfiguration
-	CustomParamsJSON string `json:"custom_params_json"`
+	// ConfigurationReference is intentionally repeated without omitempty.
+	// The frozen Product Host reads the disabled binding too and needs an
+	// explicit empty string rather than an absent field.
+	ConfigurationReference string `json:"configuration_reference"`
+	CustomParamsJSON       string `json:"custom_params_json"`
 }
 
 func externalConfigurationJSONResponse(value productport.ExternalPushConfiguration) externalConfigurationResponse {
+	if value.CustomParams == nil {
+		value.CustomParams = map[string]any{}
+	}
 	raw, err := json.Marshal(value.CustomParams)
 	if err != nil {
 		// The Product application validates this field before persistence. Keep a
@@ -1591,7 +1598,7 @@ func externalConfigurationJSONResponse(value productport.ExternalPushConfigurati
 		// defensive fallback; no request data is reflected here.
 		raw = []byte("{}")
 	}
-	return externalConfigurationResponse{ExternalPushConfiguration: value, CustomParamsJSON: string(raw)}
+	return externalConfigurationResponse{ExternalPushConfiguration: value, ConfigurationReference: value.ConfigurationReference, CustomParamsJSON: string(raw)}
 }
 
 type externalConfigurationBusinessValue struct {

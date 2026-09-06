@@ -371,6 +371,7 @@ function mountExternalPushConfiguration(page: ExternalPushPage, ownerDocument: D
   const save = button('保存外推参数', ownerDocument);
   save.dataset.externalPushConfigurationSave = '';
   const status = ownerDocument.createElement('span');
+  status.dataset.externalPushConfigurationStatus = '';
   status.style.cssText = 'font-size:12px;color:#646A73';
   actions.append(save, status);
   editor.append(title, note, grid, paramsLabel, actions);

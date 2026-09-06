@@ -1059,3 +1059,28 @@ func TestCompatibilityIdempotencyKeyFailsClosedWhenRandomReadFails(t *testing.T)
 		t.Fatalf("key=%q err=%v, want empty key and entropy error", key, err)
 	}
 }
+
+func TestExternalPushConfigurationHTTPReadsDisabledBindingWithCompleteFrozenShape(t *testing.T) {
+	handler, _, _, _ := newHandlerForTest(t)
+	external, ok := handler.external.(*testExternalPush)
+	if !ok {
+		t.Fatal("unexpected external fixture")
+	}
+	external.configuration = productport.ExternalPushConfiguration{
+		ProductID: 7, ProductKind: productport.ExternalPushWeChatPay,
+		Enabled: false, ConfigurationReference: "", PushType: "", Remark: "", Revision: 0,
+		UpdatedAt: time.Date(2026, 9, 6, 4, 0, 0, 0, time.UTC),
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/admin/wechat-pay/products/7/external-push", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("disabled configuration status=%d body=%s", response.Code, response.Body.String())
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(response.Body.Bytes(), &raw); err != nil {
+		t.Fatal(err)
+	}
+	if string(raw["configuration_reference"]) != `""` || string(raw["custom_params"]) != `{}` || string(raw["custom_params_json"]) != `"{}"` {
+		t.Fatalf("incomplete disabled frozen configuration response=%s", response.Body.String())
+	}
+}

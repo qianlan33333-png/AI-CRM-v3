@@ -182,12 +182,21 @@ try {
       const panel = document.querySelector('[data-external-push-configuration]');
       const save = document.querySelector('[data-external-push-configuration-save]');
       const toast = document.querySelector('#product-v3-toast');
-      const status = panel?.querySelector('span')?.textContent || '';
+      const status = panel?.querySelector('[data-external-push-configuration-status]')?.textContent || '';
       const hasCookie = (name) => String(document.cookie || '').split(';').some((part) => part.trim().startsWith(name + '='));
+      const knownStatus = status === '正在读取配置…' ? 'configuration_loading'
+        : /^配置版本 \d+$/.test(status) ? 'configuration_loaded'
+        : status === '外推配置响应不完整' ? 'configuration_response_invalid'
+        : /^外推请求失败（HTTP \d+）$/.test(status) ? 'configuration_http_error'
+        : status ? 'configuration_status_other' : 'configuration_status_empty';
+      const toastText = String(toast?.textContent || '');
+      const knownToast = toastText === '外推配置尚未读取完成' ? 'configuration_not_loaded'
+        : toastText === '外推业务参数已保存；未发送外部请求。' ? 'configuration_saved'
+        : toastText ? 'toast_other' : 'toast_empty';
       return {
         path: location.pathname,
-        status: String(status).replace(/[^A-Za-z0-9_\-\u4e00-\u9fff（）()：:，,。 ]/g, '_').slice(0, 160),
-        toast: String(toast?.textContent || '').replace(/[^A-Za-z0-9_\-\u4e00-\u9fff（）()：:，,。 ]/g, '_').slice(0, 160),
+        status: knownStatus,
+        toast: knownToast,
         saveDisabled: Boolean(save && save.disabled),
         adminCSRF: hasCookie('aicrm_admin_csrf'),
         compatCSRF: hasCookie('aicrm_csrf'),
@@ -216,7 +225,7 @@ try {
   // Wait for the first revision rather than racing the closure that owns the
   // configuration snapshot used for CAS in the save handler.
   try {
-    await waitFor(cdp, "document.querySelector('[data-external-push-configuration] span')?.textContent === '配置版本 0'", "product configuration did not load");
+    await waitFor(cdp, "document.querySelector('[data-external-push-configuration-status]')?.textContent === '配置版本 0'", "product configuration did not load");
   } catch (_) {
     throw new Error("product configuration did not load " + await browserSaveDiagnostic());
   }
@@ -253,7 +262,7 @@ try {
     throw new Error("service-period product Host did not render " + await browserSaveDiagnostic());
   }
   try {
-    await waitFor(cdp, "document.querySelector('[data-external-push-configuration] span')?.textContent === '配置版本 0'", "service-period product configuration did not load");
+    await waitFor(cdp, "document.querySelector('[data-external-push-configuration-status]')?.textContent === '配置版本 0'", "service-period product configuration did not load");
   } catch (_) {
     throw new Error("service-period product configuration did not load " + await browserSaveDiagnostic());
   }
