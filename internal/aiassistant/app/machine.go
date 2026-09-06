@@ -18,6 +18,10 @@ type machineStore interface {
 	AppendMachineEvent(context.Context, aiassistantport.MachineEvent) error
 }
 
+type machineStatusStore interface {
+	MachineExecutionSummary(context.Context, aiassistantport.PlanID) (aiassistantport.MachineExecutionSummary, error)
+}
+
 func (s *Service) machineStore() (machineStore, bool) {
 	if s == nil || s.store == nil {
 		return nil, false
@@ -160,6 +164,36 @@ func machineCreatePayload(command aiassistantport.MachineCreatePlanCommand) [32]
 	return sha256.Sum256(payload)
 }
 
+// GetMachineOperationStatus returns only a plan owned by actor. It derives the
+// operation phase from existing plan and recipient execution facts in one
+// read UoW, so a review approval is never represented as delivery completion.
+func (s *Service) GetMachineOperationStatus(ctx context.Context, actor aiassistantport.MachineActor, id aiassistantport.PlanID) (aiassistantport.MachineOperationStatus, error) {
+	if s == nil || !actor.Valid() || id < 1 {
+		return aiassistantport.MachineOperationStatus{}, ErrInvalid
+	}
+	statusStore, ok := s.store.(machineStatusStore)
+	if !ok {
+		return aiassistantport.MachineOperationStatus{}, ErrUnavailable
+	}
+	var result aiassistantport.MachineOperationStatus
+	err := s.uow.Within(ctx, func(tx context.Context) error {
+		plan, err := s.store.GetPlan(tx, id, false)
+		if err != nil {
+			return err
+		}
+		if plan.CreatedActorKind != aiassistantport.MachineActorKind || plan.CreatedActorRef != actor.Reference {
+			return ErrNotFound
+		}
+		summary, err := statusStore.MachineExecutionSummary(tx, id)
+		if err != nil {
+			return err
+		}
+		result = machineOperationStatus(plan, summary)
+		return nil
+	})
+	return result, classify(err)
+}
+
 func machinePlanStatus(plan aiassistantport.Plan) aiassistantport.MachinePlan {
 	review := aiassistantport.ReviewPending
 	switch plan.State {
@@ -173,6 +207,35 @@ func machinePlanStatus(plan aiassistantport.Plan) aiassistantport.MachinePlan {
 		TargetCount: plan.TargetCount, PendingCount: plan.PendingCount,
 		ApprovedCount: plan.ApprovedCount, RejectedCount: plan.RejectedCount,
 		IneligibleCount: plan.IneligibleCount, CreatedAt: plan.CreatedAt, UpdatedAt: plan.UpdatedAt,
+	}
+}
+
+func machineOperationStatus(plan aiassistantport.Plan, summary aiassistantport.MachineExecutionSummary) aiassistantport.MachineOperationStatus {
+	state := aiassistantport.MachineOperationPendingReview
+	switch plan.State {
+	case aiassistantport.PlanPartiallyApproved:
+		state = aiassistantport.MachineOperationPartiallyApproved
+	case aiassistantport.PlanApproved:
+		state = aiassistantport.MachineOperationApproved
+	case aiassistantport.PlanRejected:
+		state = aiassistantport.MachineOperationRejected
+	case aiassistantport.PlanDispatching:
+		state = aiassistantport.MachineOperationDispatching
+	case aiassistantport.PlanNeedsAttention:
+		state = aiassistantport.MachineOperationNeedsAttention
+		if summary.OutcomeUnknownCount > 0 {
+			state = aiassistantport.MachineOperationOutcomeUnknown
+		}
+	case aiassistantport.PlanCompletedWithFailures:
+		state = aiassistantport.MachineOperationCompletedFailures
+	case aiassistantport.PlanCompleted:
+		state = aiassistantport.MachineOperationCompleted
+	}
+	return aiassistantport.MachineOperationStatus{
+		PlanID: plan.ID, ReviewState: machinePlanStatus(plan).ReviewState, OperationState: state,
+		Version: plan.Version, TargetCount: plan.TargetCount,
+		OutcomeUnknownCount: summary.OutcomeUnknownCount, RetryableFailureCount: summary.RetryableFailureCount,
+		CreatedAt: plan.CreatedAt, UpdatedAt: plan.UpdatedAt,
 	}
 }
 

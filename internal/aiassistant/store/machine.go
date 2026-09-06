@@ -92,3 +92,22 @@ func (r *Repository) AppendMachineEvent(ctx context.Context, event aiassistantpo
 		VALUES($1,$2,$3::jsonb,$4,$5)`, event.Type, event.AggregateID, event.Payload, digest[:], event.OccurredAt.UTC())
 	return err
 }
+
+// MachineExecutionSummary reads immutable recipient execution facts under the
+// caller's transaction. Creator authorization remains in the app layer, where
+// it is checked before this summary is loaded.
+func (r *Repository) MachineExecutionSummary(ctx context.Context, planID aiassistantport.PlanID) (aiassistantport.MachineExecutionSummary, error) {
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return aiassistantport.MachineExecutionSummary{}, err
+	}
+	if planID < 1 {
+		return aiassistantport.MachineExecutionSummary{}, ErrNotFound
+	}
+	var summary aiassistantport.MachineExecutionSummary
+	err = tx.QueryRow(ctx, `SELECT
+		count(*) FILTER (WHERE execution_state='outcome_unknown'),
+		count(*) FILTER (WHERE execution_state='retryable_failed')
+		FROM ai_assistant_plan_recipients WHERE plan_id=$1`, planID).Scan(&summary.OutcomeUnknownCount, &summary.RetryableFailureCount)
+	return summary, err
+}

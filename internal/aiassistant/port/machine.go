@@ -94,6 +94,46 @@ type MachinePlan struct {
 	UpdatedAt       time.Time   `json:"updated_at"`
 }
 
+// MachineOperationState describes the plan's actual review or execution
+// phase. It does not claim Provider delivery proof: that remains a
+// recipient-level External Effects fact.
+type MachineOperationState string
+
+const (
+	MachineOperationPendingReview     MachineOperationState = "pending_review"
+	MachineOperationPartiallyApproved MachineOperationState = "partially_approved"
+	MachineOperationApproved          MachineOperationState = "approved"
+	MachineOperationRejected          MachineOperationState = "rejected"
+	MachineOperationDispatching       MachineOperationState = "dispatching"
+	MachineOperationNeedsAttention    MachineOperationState = "needs_attention"
+	MachineOperationOutcomeUnknown    MachineOperationState = "outcome_unknown"
+	MachineOperationCompletedFailures MachineOperationState = "completed_with_failures"
+	MachineOperationCompleted         MachineOperationState = "completed"
+)
+
+// MachineExecutionSummary retains the only execution facts needed to avoid
+// collapsing an unknown Provider outcome into a generic attention state.
+// It is read inside the same UoW as the creator-scoped plan projection.
+type MachineExecutionSummary struct {
+	OutcomeUnknownCount   int
+	RetryableFailureCount int
+}
+
+// MachineOperationStatus keeps review approval distinct from execution. For
+// example, an approved plan with no queued recipient remains "approved", not
+// "completed"; an outcome_unknown recipient is surfaced explicitly.
+type MachineOperationStatus struct {
+	PlanID                PlanID                `json:"plan_id"`
+	ReviewState           ReviewState           `json:"review_state"`
+	OperationState        MachineOperationState `json:"operation_state"`
+	Version               int64                 `json:"version"`
+	TargetCount           int                   `json:"target_count"`
+	OutcomeUnknownCount   int                   `json:"outcome_unknown_count"`
+	RetryableFailureCount int                   `json:"retryable_failure_count"`
+	CreatedAt             time.Time             `json:"created_at"`
+	UpdatedAt             time.Time             `json:"updated_at"`
+}
+
 type MachineCreatePlanResult struct {
 	Plan     MachinePlan `json:"plan"`
 	Replayed bool        `json:"replayed"`
@@ -111,6 +151,7 @@ type MachineTransactionalIntake interface {
 
 type MachineReader interface {
 	GetMachinePlan(context.Context, MachineActor, PlanID) (MachinePlan, error)
+	GetMachineOperationStatus(context.Context, MachineActor, PlanID) (MachineOperationStatus, error)
 }
 
 // MachineEvent is persisted through the same atomic audit/outbox boundary as

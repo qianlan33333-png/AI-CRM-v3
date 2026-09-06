@@ -464,8 +464,38 @@ func TestPostgreSQLMachinePlanActorScopesReceiptsFactsAndStatus(t *testing.T) {
 	if _, err = service.GetMachinePlan(context.Background(), machineB, first.Plan.ID); !errors.Is(err, aiassistantapp.ErrNotFound) {
 		t.Fatalf("cross-machine read err=%v", err)
 	}
-	if status, getErr := service.GetMachinePlan(context.Background(), machineA, first.Plan.ID); getErr != nil || status.ReviewState != aiassistantport.ReviewPending {
-		t.Fatalf("machine status=%+v err=%v", status, getErr)
+	if _, err = service.GetMachineOperationStatus(context.Background(), machineB, first.Plan.ID); !errors.Is(err, aiassistantapp.ErrNotFound) {
+		t.Fatalf("cross-machine operation status err=%v", err)
+	}
+	if status, getErr := service.GetMachineOperationStatus(context.Background(), machineA, first.Plan.ID); getErr != nil || status.ReviewState != aiassistantport.ReviewPending || status.OperationState != aiassistantport.MachineOperationPendingReview || status.OutcomeUnknownCount != 0 {
+		t.Fatalf("pending operation status=%+v err=%v", status, getErr)
+	}
+	if _, err = native.Exec(context.Background(), `UPDATE ai_assistant_plans SET state='approved',pending_count=0,approved_count=1 WHERE id=$1`, first.Plan.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = native.Exec(context.Background(), `UPDATE ai_assistant_plan_recipients SET review_state='approved',execution_state='not_accepted' WHERE plan_id=$1`, first.Plan.ID); err != nil {
+		t.Fatal(err)
+	}
+	if status, getErr := service.GetMachineOperationStatus(context.Background(), machineA, first.Plan.ID); getErr != nil || status.ReviewState != aiassistantport.ReviewApproved || status.OperationState != aiassistantport.MachineOperationApproved || status.OutcomeUnknownCount != 0 {
+		t.Fatalf("approved but unexecuted operation status=%+v err=%v", status, getErr)
+	}
+	if _, err = native.Exec(context.Background(), `UPDATE ai_assistant_plans SET state='needs_attention',needs_attention_count=1 WHERE id=$1`, first.Plan.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = native.Exec(context.Background(), `UPDATE ai_assistant_plan_recipients SET execution_state='outcome_unknown' WHERE plan_id=$1`, first.Plan.ID); err != nil {
+		t.Fatal(err)
+	}
+	if status, getErr := service.GetMachineOperationStatus(context.Background(), machineA, first.Plan.ID); getErr != nil || status.ReviewState != aiassistantport.ReviewApproved || status.OperationState != aiassistantport.MachineOperationOutcomeUnknown || status.OutcomeUnknownCount != 1 {
+		t.Fatalf("outcome-unknown operation status=%+v err=%v", status, getErr)
+	}
+	if _, err = native.Exec(context.Background(), `UPDATE ai_assistant_plan_recipients SET execution_state='retryable_failed' WHERE plan_id=$1`, first.Plan.ID); err != nil {
+		t.Fatal(err)
+	}
+	if status, getErr := service.GetMachineOperationStatus(context.Background(), machineA, first.Plan.ID); getErr != nil || status.OperationState != aiassistantport.MachineOperationNeedsAttention || status.OutcomeUnknownCount != 0 || status.RetryableFailureCount != 1 {
+		t.Fatalf("retryable operation status=%+v err=%v", status, getErr)
+	}
+	if status, getErr := service.GetMachinePlan(context.Background(), machineA, first.Plan.ID); getErr != nil || status.ReviewState != aiassistantport.ReviewApproved {
+		t.Fatalf("machine review state=%+v err=%v", status, getErr)
 	}
 	if _, err = native.Exec(context.Background(), `UPDATE ai_assistant_plans SET state='completed',pending_count=0,approved_count=1 WHERE id=$1`, first.Plan.ID); err != nil {
 		t.Fatal(err)
