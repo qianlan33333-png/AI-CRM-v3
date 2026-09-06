@@ -4,9 +4,9 @@
 
 | 板块 | PRD | 当前实现证据 | 完整板块 PR / 最新已知 HEAD | 根审核与剩余项 |
 |---|---|---|---|---|
-| 负责人迁移 | 01 已批准 | 两模式、真实 River/Provider fixture、并发互斥已有测试 | #171 `4ad20c1b182d4a67e2f57fb078d73cce2e1ed180` | 未通过整板块：20,000 条恢复、真实Provider批量协议、历史导出及完整浏览器旅程待收口 |
-| 通用客户标签 | 02 已批准 | 根独立 PG/race 通过74f560e；后续网关unknown、Channel冲突及观察刷新已修 | #169 `1d7a71d813ebf1abe3c9a0b05db28b523678cf76` | 未通过整板块：观察与全量同步并发、历史导入、最终CI及复核待完成 |
-| 配置中心运行生效 | 05 已批准 | 根独立 PG/race/HTTP/JSDOM Host/history及installer测试通过 | #170 `1a29022841770406d96c82cadf77c794dcabc850` | 业务及最后导入边界门禁修正独立复核通过；真实Chromium旅程及制品登记已提交；待最终CI验证浏览器及整板块 |
+| 负责人迁移 | 01 已批准 | 两模式、真实 River/Provider fixture、并发互斥已有测试 | #171 `1c6dd1767ec9f63602c10dec253872a7e1b4eea5` | 未通过整板块：20,000 条本地分段恢复已验证；真实Provider批量协议、历史导出脚本测试及完整浏览器旅程待收口 |
+| 通用客户标签 | 02 已批准 | 根独立 PG/race 通过74f560e；后续网关unknown、Channel冲突及观察刷新已修 | #169 `1d7a71d813ebf1abe3c9a0b05db28b523678cf76` | 未通过整板块：本地55369d8历史与观察PG/race根复核通过；361f2e0修复同步交错，真实浏览器和最终推送/CI待完成 |
+| 配置中心运行生效 | 05 已批准 | 根独立 PG/race/HTTP/JSDOM Host/history及installer测试通过 | #170 `07b0af371db7a97620924a34ee5975a74c775d39` | 业务及最后导入边界门禁修正独立复核通过；真实Chromium定位到Composition错误renderer，07b0af3已修；待最终CI验证首次登录直达与整板块 |
 | 商品／订单外推 | 04 已批准 | Terra xhigh 开发中 | 新建单一完整板块 PR，尚未提交 | 等待完整交付 |
 | 通用开放平台 | 03及03a 已批准 | 冻结56条method/path；待标签执行者接续 | 新建单一完整板块 PR，尚未提交 | 等待完整交付 |
 
@@ -36,3 +36,9 @@
 浏览器证据澄清：JSDOM可证明DOM与实际HTTP/PG交互，不等于真实Chromium页面。所有板块最终浏览器项须另有真实页面/Host资源/操作链路证据；原有JSDOM用例继续保留。新历史CLI必须纳入既有release制品清单，部署不自动执行历史导入。
 
 根审核新增：负责人已恢复供体文件字节冻结，并独立通过严格转接协议测试；实际Provider仍逐客户调用，与旧100客户一批不符，未准予整板块完成。标签历史CLI 5fdf180已交初稿，根发现actor与企微follow员工混淆、真实源导出未闭合，已要求修正；观察并发后续修正453ce60待根复核。所有新迁移仍未部署。
+
+根复核补充（2026-09-06 09:30 UTC）：标签55369d82af616ab6f3ba669740e4a96da7838182在独立PG中串行包执行历史CLI、WeCom和Customer Store全量race测试均通过，无跳过。最初多包并行共库在旧0005 public trigger函数DDL发生tuple concurrently updated；串行复测排除了该测试环境竞争，不作为业务缺陷。历史源实际提取、actor/follow员工区分、来源漂移和重叠快照幂等已覆盖。
+
+独立复核：负责人1c6dd1767ec9f63602c10dec253872a7e1b4eea5历史源SQL实表fixture与导入/重放/核验真实PG race通过；捕获shell的负例env拼写使测试未触达scope校验，已要求修正。标签361f2e0e7cc2c6c6139d221c364d877e1c2e422c对账等待刷新后保留最新观察的真实PG race专测通过。
+
+部署只读快照：#167 main流水线仍处于制品分块上传；生产/opt/aicrm/current仍为ed8b6d333051300bff473bc3e3bd6d68e9dfe9a2。仅发现该53c1c62上传目录存在分块，尚未确认该版本安装，未重复上传或执行安装。
