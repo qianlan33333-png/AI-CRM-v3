@@ -365,10 +365,16 @@ async function boot(): Promise<void> {
     query<HTMLElement>(root, "[data-download-result]").parentElement?.append(readTransfer);
     readTransfer.addEventListener("click", async () => {
       if (!batch) return;
+      stage.dataset.ownerHandoffTransferResultStatus = "pending";
       try {
         batch = await api<Batch>(`/api/admin/customers/owner-handoffs/batches/${encodeURIComponent(batch.ID)}/transfer-result`, { method: "POST", body: JSON.stringify({ idempotency_key: key() }) });
+        stage.dataset.ownerHandoffTransferResultStatus = "ok";
         renderBatch(root, batch); setNotice("已读取企微转接结果。", "ok");
-      } catch (error) { setNotice(error instanceof Error ? error.message : "读取失败", "error"); }
+      } catch (error) {
+        const status = error && typeof error === "object" && "httpStatus" in error && typeof error.httpStatus === "number" ? error.httpStatus : 0;
+        stage.dataset.ownerHandoffTransferResultStatus = status > 0 ? `http_${status}` : "error";
+        setNotice(error instanceof Error ? error.message : "读取失败", "error");
+      }
     });
     query<HTMLInputElement>(root, 'input[name="scope_type"][value="all"]').checked = true;
     root.querySelector<HTMLElement>('[data-scope-segment="all"]')?.classList.add("is-active");

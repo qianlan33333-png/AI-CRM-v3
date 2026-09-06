@@ -35,6 +35,20 @@ const selectExcelScopeExpression = () => `(() => { document.querySelector('[data
 const operationMemberSelector = userID => `[data-operation-member-row][data-user-id=${JSON.stringify(userID)}]`;
 const operationMemberPresentExpression = userID => `Boolean(document.querySelector(${JSON.stringify(operationMemberSelector(userID))}))`;
 const operationMemberChooseExpression = userID => `document.querySelector(${JSON.stringify(`${operationMemberSelector(userID)} [data-operation-member-row-select]`)}).click(); true`;
+const ownerHandoffBatchStateExpression = () => String.raw`(async () => {
+  const root=document.querySelector('[data-owner-handoff-host] [data-owner-migration-page]');
+  const log=root?.querySelector('[data-execution-log]')?.textContent || '';
+  const match=/\bbatch_id=([^\s]+)/.exec(log);
+  if (!match) return { category:'missing_batch' };
+  const response=await fetch('/api/admin/customers/owner-handoffs/batches/'+encodeURIComponent(match[1]),{credentials:'same-origin'});
+  const payload=await response.json().catch(()=>({}));
+  return {
+    category: response.ok ? 'ok' : 'http_'+response.status,
+    lines: response.ok && Array.isArray(payload.Lines) ? payload.Lines.map(line=>({state:String(line.State||''),transfer_status:Number(line.TransferStatus||0)})) : [],
+    transfer_read: document.querySelector('[data-owner-handoff-host]')?.dataset.ownerHandoffTransferResultStatus || 'idle',
+    notice_error: getComputedStyle(root?.querySelector('[data-workbench-notice]') || document.body).color === 'rgb(153, 27, 27)',
+  };
+})()`;
 const compileRuntimeExpression = (expression, step) => {
   try { new Function(expression); } catch (error) {
     const category = String(error?.name || "SyntaxError").replace(/[^a-zA-Z0-9_.-]/g, "_").slice(0, 96);
@@ -70,6 +84,7 @@ const preflightRuntimeExpressions = () => [
   `document.querySelector('[data-owner-handoff-host] [data-confirm-phrase-display]').textContent`,
   `(() => { const root=document.querySelector('[data-owner-handoff-host] [data-owner-migration-page]'); const input=root.querySelector('[data-confirm-phrase-input]'); input.value=${JSON.stringify("确认迁移")}; input.dispatchEvent(new Event('input',{bubbles:true})); root.querySelector('[data-execute]').click(); return true; })()`,
   `document.querySelector('[data-owner-handoff-host] [data-execution-log]').textContent.includes('batch_id=')`,
+  ownerHandoffBatchStateExpression(),
   `document.querySelector('[data-owner-handoff-host] [data-read-transfer-result]').click(); true`,
   `document.querySelector('[data-owner-handoff-host] [data-execution-log]').textContent.includes('transfer_status=1')`,
   `document.querySelector('[data-owner-handoff-host] [data-download-result]').click(); true`,
@@ -193,7 +208,26 @@ try {
     const phrase=await evaluate("document.querySelector('[data-owner-handoff-host] [data-confirm-phrase-display]').textContent");
     await evaluate(`(() => { const root=document.querySelector('[data-owner-handoff-host] [data-owner-migration-page]'); const input=root.querySelector('[data-confirm-phrase-input]'); input.value=${JSON.stringify(phrase)}; input.dispatchEvent(new Event('input',{bubbles:true})); root.querySelector('[data-execute]').click(); return true; })()`);
     await waitFor("document.querySelector('[data-owner-handoff-host] [data-execution-log]').textContent.includes('batch_id=')",`${mode} confirmation was not persisted through actual HTTP API`);
-    if (mode === "wecom_then_crm" && readTransfer) { let read = false; for (let attempt = 0; attempt < 80; attempt += 1) { await sleep(100); await evaluate("document.querySelector('[data-owner-handoff-host] [data-read-transfer-result]').click(); true"); if (await evaluate("document.querySelector('[data-owner-handoff-host] [data-execution-log]').textContent.includes('transfer_status=1')")) { read = true; break; } } if (!read) throw new Error("transfer-result readback did not render final status"); }
+    if (mode === "wecom_then_crm" && readTransfer) {
+      let batchState = { category: "missing_batch", lines: [] };
+      let accepted = false;
+      for (let attempt = 0; attempt < 160; attempt += 1) {
+        batchState = await evaluate(ownerHandoffBatchStateExpression(), "provider_batch_read");
+        if (batchState.category === "ok" && batchState.lines.some(line => line.state === "provider_accepted" || (line.state === "observed" && line.transfer_status > 0))) { accepted = true; break; }
+        await sleep(50);
+      }
+      if (!accepted) throw new Error(`provider transfer did not reach an accepted line ${JSON.stringify(batchState)}`);
+      let read = false;
+      for (let attempt = 0; attempt < 80; attempt += 1) {
+        await evaluate("document.querySelector('[data-owner-handoff-host] [data-read-transfer-result]').click(); true", "transfer_result_click");
+        await sleep(100);
+        if (await evaluate("document.querySelector('[data-owner-handoff-host] [data-execution-log]').textContent.includes('transfer_status=1')", "transfer_result_render")) { read = true; break; }
+      }
+      if (!read) {
+        const diagnostic = await evaluate(ownerHandoffBatchStateExpression(), "transfer_result_diagnostic");
+        throw new Error(`transfer-result readback did not render final status ${JSON.stringify(diagnostic)}`);
+      }
+    }
     await evaluate(`document.querySelector("[data-owner-handoff-host] [data-download-result]").click(); true`);
     await readDownloadedWorkbook("owner_migration_result.xlsx", ["行号", "external_userid", "迁移状态", "企微转接状态", mode === "wecom_then_crm" ? "browser-external" : "本地迁移", mode === "wecom_then_crm" ? "企微转接已完成" : "本地迁移"]);
   };
