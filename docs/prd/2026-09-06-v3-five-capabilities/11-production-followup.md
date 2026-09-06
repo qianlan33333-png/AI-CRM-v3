@@ -28,3 +28,12 @@
 已在V3临时目录 `/var/tmp/aicrm-owner-history-20260906T140303Z/owner.snapshot` 使用现有Survey数据密钥生成0600 AEAD快照，源流/审核过的离线导入器均经SHA-256校验传输。快照SHA-256：`282d2b230cc0d4b4dbeb372148b78555f5cda81d393ad95c1ab2714e2a36cb38`；run_key：`owner-handoff-history-588ca152f03b9084e990ad58`。inspect-stream和dry-run均验证34批次/32,411行，原始明文流已从本地与目标临时目录删除。
 
 这里的dry-run只验证离线快照结构，未解析目标数据库身份，输出pending/conflict/invalid为0不代表全部可映射。尚未apply/verify，未写入V3业务表；Provider调用、EER、新建/关联OneID、负责人更新均为0。待#171准确HEAD整板块审核并部署0092后，用发布包导入器按上述精确快照摘要apply并verify，只写历史账本，实际映射结果另记。离线inspect不等于#171已部署。
+
+
+## 商品外推历史与运行配置准备（2026-09-06 15:28 UTC）
+
+根使用审过的 514068d 历史工具，对旧生产实际 HEAD `41f80a11835445c034fdd39f69a6b6712722bb98` 做 REPEATABLE READ READ ONLY 提取：31 配置、385 投递、384 Outbox。多执行关系保留完整数组，不选最新任务代替归属。源数据库写入 0。
+
+V3 受保护文件为 `/var/tmp/aicrm-push-history-20260906T150000Z/history.sealed` 和同目录 `history.key`（均0600）。canonical manifest SHA256 是 `c8c20c8c1ef30bb19296eb01a7274a39c8997fb4b27375d3818d9bb8b784fbce`；加密文件传输 SHA256 是 `68ce63b90028288d6a6c97b329714723c4206275b4f9d2cc6a733f7961e4d7b9`，两者用途不同。源临时文件和本地敏感副本已删除，尚未应用目标数据库。
+
+根只读核实 V3 商品外推运行配置为 0 行；既有 config_definition_import_source_maps 有31普通商品与2周期商品映射。历史账本导入不能代替运行配置启用。部署 #172 后须用真实管理员认证/CSRF，通过现有 Product HTTP + UoW/CAS/receipt 保存旧业务字段，URL/密钥只写受保护目标配置。旧12启用项在唯一稳定映射与受控目标核实后方可启用；不得伪造 actor、直接写 Product 表或补推历史支付。

@@ -163,3 +163,14 @@
 - #164 继续将冻结供体恢复、最小接线移至 V3 Host；开放平台管理展示原生 V1 capability catalog，不再展示旧 56 接口。
 
 本检查点没有新增合并或部署。负责人历史加密快照已准备，尚未应用；生产标签 Provider 启用沿用先前核实证据。
+
+
+## 2026-09-06 15:28 UTC 根审核检查点
+
+- #173 a173f50928177021d5a887e4e5cb7aa7e04fb516：服务端仅允许 V1 capability、presence PATCH、同事务授权版本撤销与审计，根真实 PostgreSQL/race 控制面旅程通过，0 跳过（aicrm-open-a173-root-pg.log）。该接口检查点可供 PR164 接入，整板块尚未验收。
+- #173 99e3aa01fa8299e72a7e318ca32fc7eda26d4059：根真实 PostgreSQL/race 验证 REST 创建待审计划、重建连接/服务后 MCP 状态、跨调用方 404、AI 与 Access 审计故障同事务回滚，0 跳过（aicrm-open-ai-99e-root-review.log）。55a8e5c 后续跨协议重放/权限撤销待根核验；客户与四类活动真实 Port 组合旅程、管理 UI 和最终 CI 待完成。
+- #171 b0939dc4fa893abb3b041e15fe567281433ce3cb：根独立真实 PostgreSQL/race 两项通过，含恰 100 条首次提交、19,900 条等待及重启完成 20,000 条（aicrm-owner-b093-root-review.log）。修复只在测试第一 Runtime 阻止后续段提前执行，不放宽断言、不修改生产分段规则；完整 CI 仍运行。
+- #172 73cdaa35293ca2976811f72dae548db5c5722951 完整 CI34040894501 成功，包含 Linux Chromium。随后真实源提取发现多执行任务关系；01f1+514 修复 0/1/多关联的完整密封事实，并保持真实旧 V1 wire 与摘要。根全包真实 PostgreSQL/race 通过（aicrm-push-history-514-root-review.log），已批准纳入 c031ca5604e13f58d71038f8adee6b3bd7e44ac8；需该最终 HEAD 完整 CI。
+- #164 f129 发布闭包根独立构建/缺文件拒绝验证通过，41 管理页、73 运行资产。d1f95c1 的侧边栏 Survey 实际 Total 源码方向正确，但根真实 PostgreSQL 发现新增 fixture 时间参数被推断为 interval，已退回显式类型修复。此前执行任务的通过声明不能覆盖准确 HEAD 的失败；当前不标记完成。
+
+本检查点没有新增合并、部署或真实 Provider 业务验收。
