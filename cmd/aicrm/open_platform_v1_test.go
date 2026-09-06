@@ -330,3 +330,11 @@ func TestV1CustomerActivitiesDefaultLimitIsFiftyForRESTAndMCPDTO(t *testing.T) {
 		}
 	}
 }
+
+func TestV1OperationAuditMustBeComposedForMachinePrincipal(t *testing.T) {
+	executor := v1ExecutorForTest(t, &openPlatformIdentityStub{}, &openPlatformProfileStub{})
+	_, err := executor.Invoke(context.Background(), openplatformport.Invocation{Operation: openplatformport.OperationCapabilitiesList, Principal: accessdomain.MachinePrincipal{ClientRecord: 1, Scopes: []string{"read"}, Capabilities: []string{string(openplatformport.CapabilityPlatformCapabilitiesRead)}}})
+	if openplatformport.ErrorCodeOf(err) != openplatformport.ErrorDependencyUnavailable {
+		t.Fatalf("missing auditor err=%v", err)
+	}
+}
