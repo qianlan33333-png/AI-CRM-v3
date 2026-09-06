@@ -405,20 +405,20 @@ function mountExternalPushConfiguration(page: ExternalPushPage, ownerDocument: D
   const load = async (): Promise<void> => {
     status.textContent = '正在读取配置…';
     if (!state.pending && !state.value) {
-      let pending: Promise<ExternalPushConfigurationDetails>;
-      pending = (async () => {
-        try {
-          const response = await externalPushRequest(page.configurationEndpoint, { method: 'GET', headers: { Accept: 'application/json' } });
-          const value = parseExternalPushConfiguration(response, page);
-          state.value = value;
-          return value;
-        } finally {
-          if (state.pending === pending) state.pending = undefined;
-        }
+      state.pending = (async () => {
+        const response = await externalPushRequest(page.configurationEndpoint, { method: 'GET', headers: { Accept: 'application/json' } });
+        const value = parseExternalPushConfiguration(response, page);
+        state.value = value;
+        return value;
       })();
-      state.pending = pending;
     }
-    const value = state.value || await state.pending!;
+    const pending = state.pending;
+    let value: ExternalPushConfigurationDetails;
+    try {
+      value = state.value || await pending!;
+    } finally {
+      if (pending && state.pending === pending) state.pending = undefined;
+    }
     if (!panel.isConnected) return;
     configuration = value;
     pushType.value = value.pushType;
