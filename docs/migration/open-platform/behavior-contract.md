@@ -32,3 +32,66 @@ External Effects: no new effect writer. Every business command reaches its exist
 - The direct key only accepts the fixed readonly template. A machine principal has capabilities; it cannot become an Access `super_admin` or use a payload `operator` value as authority.
 - Untrusted `X-Forwarded-*` headers are ignored. TLS is required unless the remote address belongs to an explicitly configured trusted-proxy CIDR and asserts HTTPS.
 - Historical import receipts have no secret/token fields. A sealed source snapshot has its own batch identifier; the frozen donor revision is provenance only. Source records replay across batches only when their source scope, identity, and digest agree; drift is rejected. Local legacy customer-id scope is pending/excluded until trusted Identity evidence maps it, so reissue and activation cannot turn coincident numeric IDs into authorization. Non-verifiable source credentials are recorded `inactive` or `reissue_required`; they never become live credentials.
+
+## 56-route implementation evidence
+
+This matrix records the current executable state rather than treating a registered mux route as complete. `Not migrated` means the machine executor returns no business success for that route and it remains delivery work in this PR.
+
+| Route | Capability | Current state | Evidence or remaining work |
+| --- | --- | --- | --- |
+| `GET /mcp` | `mcp_read` | 已真实接通 | Open Platform HTTP 的 JSON-RPC tools/list；冻结三工具 schema。 |
+| `POST /mcp` | `mcp_execute` | 已真实接通 | 三工具调用经 OneID、Customer/Archive/Timeline Port；机器 scope/capability 均验证。 |
+| `GET /api/identity/resolve` | `identity_resolve` | 已真实接通 | 受可信配置 scope 限定的 OneID Resolve；不建客、不合并。 |
+| `GET /api/external/chat-records` | `external_read` | Not migrated | Frozen machine route is registered and authenticated, but its owner Port adapter and behavior journey remain to be implemented. |
+| `GET /api/external/questionnaire-submissions` | `external_read` | Not migrated | Frozen machine route is registered and authenticated, but its owner Port adapter and behavior journey remain to be implemented. |
+| `GET /api/external/radar-clicks` | `external_read` | Not migrated | Frozen machine route is registered and authenticated, but its owner Port adapter and behavior journey remain to be implemented. |
+| `GET /api/external/radar-links` | `external_read` | Not migrated | Frozen machine route is registered and authenticated, but its owner Port adapter and behavior journey remain to be implemented. |
+| `POST /api/external/ai-audience/spec/dry-run` | `external_write` | Not migrated | Frozen machine route is registered and authenticated, but its owner Port adapter and behavior journey remain to be implemented. |
+| `POST /api/external/ai-audience/spec/apply` | `external_write` | Not migrated | Frozen machine route is registered and authenticated, but its owner Port adapter and behavior journey remain to be implemented. |
+| `POST /api/external/ai-audience/spec/publish` | `external_write` | Not migrated | Frozen machine route is registered and authenticated, but its owner Port adapter and behavior journey remain to be implemented. |
+| `POST /api/external/ai-audience/packages/{package_key}/archive` | `external_write` | Not migrated | Frozen machine route is registered and authenticated, but its owner Port adapter and behavior journey remain to be implemented. |
+| `POST /api/external/ai-audience/templates/preview` | `external_write` | Not migrated | Frozen machine route is registered and authenticated, but its owner Port adapter and behavior journey remain to be implemented. |
+| `POST /api/external/ai-audience/templates/apply` | `external_write` | Not migrated | Frozen machine route is registered and authenticated, but its owner Port adapter and behavior journey remain to be implemented. |
+| `POST /api/external/ai-audience/simple/preview` | `external_write` | Not migrated | Frozen machine route is registered and authenticated, but its owner Port adapter and behavior journey remain to be implemented. |
+| `POST /api/external/ai-audience/simple/apply` | `external_write` | Not migrated | Frozen machine route is registered and authenticated, but its owner Port adapter and behavior journey remain to be implemented. |
+| `POST /api/external/ai-audience/simple/{package_key}/activate` | `external_write` | Not migrated | Frozen machine route is registered and authenticated, but its owner Port adapter and behavior journey remain to be implemented. |
+| `POST /api/external/ai-audience/simple/{package_key}/archive` | `external_write` | Not migrated | Frozen machine route is registered and authenticated, but its owner Port adapter and behavior journey remain to be implemented. |
+| `POST /api/external/ai-audience/e2e/run` | `external_write` | Not migrated | Frozen machine route is registered and authenticated, but its owner Port adapter and behavior journey remain to be implemented. |
+| `POST /api/automation/group-ops/broadcast` | `group_broadcast_execute` | Not migrated | Frozen machine route is registered and authenticated, but its owner Port adapter and behavior journey remain to be implemented. |
+| `GET /api/external/orders` | `external_read` | 部分接通 | V3 已持久化查询与旧列表 envelope 已接通；付款时间/paid filter 与 provider 选择仍需 Order owner Query Port，owner_userid、多客户 owner_scope 需 #171 LocalOwner 鉴权 Adapter。 |
+| `GET /api/external/orders/{order_no}` | `external_read` | 部分接通 | 单 customer_id + corp_id 走 SQL CustomerID+OrderRef Port；provider 选择、owner_userid、多客户范围仍待相应 Order Port 与 #171 LocalOwner Adapter。 |
+| `GET /api/external/users/resolve` | `external_read` | 部分接通 | 旧 user envelope 与 OneID/customer 投影已接通；owner 字段的 LocalOwner 优先语义待 #171 Adapter。 |
+| `POST /api/ai-assist/external/campaigns` | `campaign_draft_create` | Not migrated | Frozen machine route is registered and authenticated, but its owner Port adapter and behavior journey remain to be implemented. |
+| `GET /api/ai-assist/external/campaigns/{campaign_code}` | `campaign_status_read` | Not migrated | Frozen machine route is registered and authenticated, but its owner Port adapter and behavior journey remain to be implemented. |
+| `POST /api/ai-assist/external/campaign-preparations` | `campaign_preparation_create` | Not migrated | Frozen machine route is registered and authenticated, but its owner Port adapter and behavior journey remain to be implemented. |
+| `GET /api/ai-assist/external/campaign-preparations/{preparation_id}` | `campaign_preparation_read` | Not migrated | Frozen machine route is registered and authenticated, but its owner Port adapter and behavior journey remain to be implemented. |
+| `POST /api/ai-assist/external/campaign-preparations/{preparation_id}/commit` | `campaign_preparation_commit` | Not migrated | Frozen machine route is registered and authenticated, but its owner Port adapter and behavior journey remain to be implemented. |
+| `GET /api/ai/audience/schema-catalog` | `external_read` | Not migrated | Frozen machine route is registered and authenticated, but its owner Port adapter and behavior journey remain to be implemented. |
+| `GET /api/ai/audience/packages` | `external_read` | Not migrated | Frozen machine route is registered and authenticated, but its owner Port adapter and behavior journey remain to be implemented. |
+| `POST /api/ai/audience/packages` | `external_write` | Not migrated | Frozen machine route is registered and authenticated, but its owner Port adapter and behavior journey remain to be implemented. |
+| `GET /api/ai/audience/packages/{package_id}` | `external_read` | Not migrated | Frozen machine route is registered and authenticated, but its owner Port adapter and behavior journey remain to be implemented. |
+| `POST /api/ai/audience/packages/{package_id}/versions` | `external_write` | Not migrated | Frozen machine route is registered and authenticated, but its owner Port adapter and behavior journey remain to be implemented. |
+| `POST /api/ai/audience/packages/{package_id}/preview` | `external_write` | Not migrated | Frozen machine route is registered and authenticated, but its owner Port adapter and behavior journey remain to be implemented. |
+| `POST /api/ai/audience/packages/{package_id}/publish` | `external_write` | Not migrated | Frozen machine route is registered and authenticated, but its owner Port adapter and behavior journey remain to be implemented. |
+| `POST /api/ai/audience/packages/{package_id}/pause` | `external_write` | Not migrated | Frozen machine route is registered and authenticated, but its owner Port adapter and behavior journey remain to be implemented. |
+| `POST /api/ai/audience/packages/{package_id}/archive` | `external_write` | Not migrated | Frozen machine route is registered and authenticated, but its owner Port adapter and behavior journey remain to be implemented. |
+| `POST /api/ai/audience/packages/{package_id}/refresh` | `external_write` | Not migrated | Frozen machine route is registered and authenticated, but its owner Port adapter and behavior journey remain to be implemented. |
+| `POST /api/ai/audience/ticks/incremental` | `external_write` | Not migrated | Frozen machine route is registered and authenticated, but its owner Port adapter and behavior journey remain to be implemented. |
+| `POST /api/ai/audience/ticks/daily` | `external_write` | Not migrated | Frozen machine route is registered and authenticated, but its owner Port adapter and behavior journey remain to be implemented. |
+| `POST /api/ai/audience/source-dirty` | `external_write` | Not migrated | Frozen machine route is registered and authenticated, but its owner Port adapter and behavior journey remain to be implemented. |
+| `GET /api/ai/audience/packages/{package_id}/outbound-subscriptions` | `external_read` | Not migrated | Frozen machine route is registered and authenticated, but its owner Port adapter and behavior journey remain to be implemented. |
+| `POST /api/ai/audience/packages/{package_id}/outbound-subscriptions` | `external_write` | Not migrated | Frozen machine route is registered and authenticated, but its owner Port adapter and behavior journey remain to be implemented. |
+| `PATCH /api/ai/audience/outbound-subscriptions/{subscription_id}` | `external_write` | Not migrated | Frozen machine route is registered and authenticated, but its owner Port adapter and behavior journey remain to be implemented. |
+| `POST /api/ai/audience/outbound-subscriptions/{subscription_id}/pause` | `external_write` | Not migrated | Frozen machine route is registered and authenticated, but its owner Port adapter and behavior journey remain to be implemented. |
+| `GET /api/ai/audience/packages/{package_id}/runs` | `external_read` | Not migrated | Frozen machine route is registered and authenticated, but its owner Port adapter and behavior journey remain to be implemented. |
+| `GET /api/ai/audience/packages/{package_id}/members` | `external_read` | Not migrated | Frozen machine route is registered and authenticated, but its owner Port adapter and behavior journey remain to be implemented. |
+| `GET /api/ai/audience/packages/{package_id}/events` | `external_read` | Not migrated | Frozen machine route is registered and authenticated, but its owner Port adapter and behavior journey remain to be implemented. |
+| `GET /api/ai/audience/packages/{package_id}/external-effects` | `external_read` | Not migrated | Frozen machine route is registered and authenticated, but its owner Port adapter and behavior journey remain to be implemented. |
+| `GET /api/ai/audience/health` | `external_read` | Not migrated | Frozen machine route is registered and authenticated, but its owner Port adapter and behavior journey remain to be implemented. |
+| `POST /api/operation-cycles/reports` | `operation_cycle_report_write` | Not migrated | Frozen machine route is registered and authenticated, but its owner Port adapter and behavior journey remain to be implemented. |
+| `POST /api/operation-cycles/runner/heartbeat` | `operation_cycle_runner_heartbeat` | Not migrated | Frozen machine route is registered and authenticated, but its owner Port adapter and behavior journey remain to be implemented. |
+| `POST /api/operation-cycles/action-requests/claim` | `operation_cycle_action_claim` | Not migrated | Frozen machine route is registered and authenticated, but its owner Port adapter and behavior journey remain to be implemented. |
+| `POST /api/operation-cycles/action-requests/{request_id}/events` | `operation_cycle_action_event_write` | Not migrated | Frozen machine route is registered and authenticated, but its owner Port adapter and behavior journey remain to be implemented. |
+| `GET /api/operation-cycles/context-index` | `operation_cycle_context_read` | Not migrated | Frozen machine route is registered and authenticated, but its owner Port adapter and behavior journey remain to be implemented. |
+| `GET /api/operation-cycles/strategies/{strategy_key}/context` | `operation_cycle_context_read` | Not migrated | Frozen machine route is registered and authenticated, but its owner Port adapter and behavior journey remain to be implemented. |
+| `POST /api/operation-cycles/strategy-change-proposals` | `operation_cycle_strategy_propose` | Not migrated | Frozen machine route is registered and authenticated, but its owner Port adapter and behavior journey remain to be implemented. |

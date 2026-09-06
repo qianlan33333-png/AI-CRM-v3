@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/url"
 	"sort"
 	"strconv"
@@ -97,8 +98,10 @@ func distinctScopes(values []string, prefix string) []string {
 
 func (executor *openPlatformExecutor) Execute(ctx context.Context, request openplatformport.Request) (openplatformport.Response, error) {
 	switch request.Method + " " + request.Path {
-	case "GET /api/identity/resolve", "GET /api/external/users/resolve":
+	case "GET /api/identity/resolve":
 		return executor.resolveIdentity(ctx, request.Query, request.Principal)
+	case "GET /api/external/users/resolve":
+		return executor.resolveExternalUser(ctx, request.Query, request.Principal)
 	case "GET /api/external/orders":
 		return executor.listOrders(ctx, request.Query, request.Principal)
 	case "GET /api/external/orders/{order_no}":
@@ -127,6 +130,85 @@ func (executor *openPlatformExecutor) resolveIdentity(ctx context.Context, query
 		return responseError(503, "customer_profile_unavailable"), nil
 	}
 	return responseOK(map[string]any{"ok": true, "identity": map[string]any{"customer_id": result.CustomerID, "identity_id": result.IdentityID, "status": result.Status}, "customer": profile}), nil
+}
+
+func (executor *openPlatformExecutor) resolveExternalUser(ctx context.Context, query url.Values, principal accessdomain.MachinePrincipal) (openplatformport.Response, error) {
+	references, err := executor.referencesFromValues(query)
+	if err != nil {
+		return responseForIdentityError(err), nil
+	}
+	result, err := executor.resolveReferences(ctx, references)
+	if err != nil {
+		return responseForIdentityError(err), nil
+	}
+	if err := executor.ensureCustomerScope(ctx, principal, result.CustomerID, references); err != nil {
+		return responseError(404, "not_found"), nil
+	}
+	profile, profileErr := executor.profiles.ReadSidebarProfile(ctx, result.CustomerID)
+	if profileErr != nil {
+		return responseError(503, "customer_profile_unavailable"), nil
+	}
+	return responseOK(map[string]any{
+		"ok":            true,
+		"user":          externalUser(result, references, profile),
+		"route_owner":   "ai_crm_next",
+		"source_status": "external_user_basic",
+		"fallback_used": false,
+	}), nil
+}
+
+// externalUser preserves the frozen external-user envelope while keeping OneID
+// as the source of truth. customer_id is the V3 canonical replacement for the
+// donor's person record. Identifiers are returned only when supplied in a
+// successfully resolved scoped request; the adapter never reconstructs them.
+func externalUser(result identityport.ResolveResult, references []identitydomain.Reference, profile customerport.SidebarProfile) map[string]any {
+	externalUserID, mobile, unionID, openID, matchedBy := "", "", "", "", ""
+	for _, reference := range references {
+		switch reference.Kind {
+		case identitydomain.KindWeComExternalUserID:
+			externalUserID = reference.Value
+			if matchedBy == "" {
+				matchedBy = "external_userid"
+			}
+		case identitydomain.KindPhone:
+			mobile = reference.Value
+			if matchedBy == "" {
+				matchedBy = "mobile"
+			}
+		case identitydomain.KindUnionID:
+			unionID = reference.Value
+			if matchedBy == "" {
+				matchedBy = "unionid"
+			}
+		case identitydomain.KindMPOpenID, identitydomain.KindOAOpenID:
+			openID = reference.Value
+			if matchedBy == "" {
+				matchedBy = "openid"
+			}
+		}
+	}
+	detailURL := ""
+	if externalUserID != "" {
+		detailURL = "/api/customers/" + url.PathEscape(externalUserID)
+	}
+	return map[string]any{
+		"person_id":           strconv.FormatInt(int64(result.CustomerID), 10),
+		"external_userid":     externalUserID,
+		"mobile":              mobile,
+		"customer_name":       profile.DisplayName,
+		"unionid":             unionID,
+		"openid":              openID,
+		"owner_userid":        "",
+		"owner_display_name":  "",
+		"remark":              "",
+		"follow_user_userid":  "",
+		"follow_user_userids": []string{},
+		"binding_status":      profile.Status,
+		"is_bound":            profile.PhoneMasked != "" || mobile != "",
+		"matched_by":          matchedBy,
+		"identity_map_id":     result.IdentityID,
+		"detail_url":          detailURL,
+	}
 }
 
 // ensureCustomerScope resolves all scope keys from trusted machine state and
@@ -194,7 +276,19 @@ func (executor *openPlatformExecutor) listOrders(ctx context.Context, values url
 	for _, order := range page.Items {
 		items = append(items, publicOrder(order))
 	}
-	return responseOK(map[string]any{"ok": true, "items": items, "total": page.Total, "limit": query.Limit, "next_cursor": page.NextCursor, "has_more": page.NextCursor != ""}), nil
+	return responseOK(map[string]any{
+		"ok":            true,
+		"items":         items,
+		"total":         page.Total,
+		"limit":         query.Limit,
+		"next_cursor":   page.NextCursor,
+		"has_more":      page.NextCursor != "",
+		"filters":       externalOrderFilters(values),
+		"providers":     externalOrderProviders(query.Provider),
+		"route_owner":   "ai_crm_next",
+		"source_status": "external_orders",
+		"fallback_used": false,
+	}), nil
 }
 
 func (executor *openPlatformExecutor) getOrder(ctx context.Context, reference string, principal accessdomain.MachinePrincipal) (openplatformport.Response, error) {
@@ -206,7 +300,7 @@ func (executor *openPlatformExecutor) getOrder(ctx context.Context, reference st
 		if err != nil {
 			return responseForOrderError(err), nil
 		}
-		return responseOK(map[string]any{"ok": true, "order": publicOrder(order)}), nil
+		return externalOrderDetailResponse(order), nil
 	}
 	if !executor.allowsUnboundScope(principal) {
 		// Owner scopes and multi-customer constraints do not have an Order
@@ -218,7 +312,11 @@ func (executor *openPlatformExecutor) getOrder(ctx context.Context, reference st
 	if err != nil {
 		return responseForOrderError(err), nil
 	}
-	return responseOK(map[string]any{"ok": true, "order": publicOrder(order)}), nil
+	return externalOrderDetailResponse(order), nil
+}
+
+func externalOrderDetailResponse(order orderdomain.Snapshot) openplatformport.Response {
+	return responseOK(map[string]any{"ok": true, "order": publicOrder(order), "route_owner": "ai_crm_next", "source_status": "external_order_detail", "fallback_used": false})
 }
 
 // scopedOrderCustomerID accepts only the owner-scope shape that the Order
@@ -621,11 +719,68 @@ func publicOrder(order orderdomain.Snapshot) map[string]any {
 	if len(order.Items) > 0 {
 		productCode = order.Items[0].ProductCode
 	}
-	provider := string(order.Provider)
-	if order.Provider == orderdomain.ProviderWeChatPay {
-		provider = "wechat"
+	provider := externalOrderProvider(order.Provider)
+	status := externalOrderStatus(order.Status)
+	refundStatus := ""
+	if order.RefundedMinor > 0 {
+		refundStatus = status
 	}
-	return map[string]any{"provider": provider, "order_no": order.MerchantOrderNo, "transaction_id": order.ProviderTransactionNo, "created_at": order.CreatedAt, "product_code": productCode, "payment_status": order.Status, "amount_total": order.Amount.AmountMinor, "currency": order.Amount.Currency, "is_paid": order.Status == orderdomain.StatusPaid || order.Status == orderdomain.StatusPartiallyRefunded || order.Status == orderdomain.StatusRefunded, "is_refunded": order.RefundedMinor > 0, "refunded_amount_total": order.RefundedMinor, "detail_url": "/api/external/orders/" + url.PathEscape(order.MerchantOrderNo) + "?provider=" + url.QueryEscape(provider)}
+	return map[string]any{
+		"provider":              provider,
+		"order_no":              order.MerchantOrderNo,
+		"transaction_id":        order.ProviderTransactionNo,
+		"paid_at":               "",
+		"created_at":            order.CreatedAt,
+		"product_code":          productCode,
+		"payment_status":        status,
+		"status_label":          status,
+		"amount_total":          order.Amount.AmountMinor,
+		"amount_yuan":           fmt.Sprintf("%d.%02d", order.Amount.AmountMinor/100, order.Amount.AmountMinor%100),
+		"currency":              order.Amount.Currency,
+		"is_paid":               order.Status == orderdomain.StatusPaid || order.Status == orderdomain.StatusPartiallyRefunded || order.Status == orderdomain.StatusRefunded,
+		"is_refunded":           order.RefundedMinor > 0,
+		"refund_status":         refundStatus,
+		"refunded_amount_total": order.RefundedMinor,
+		"mobile":                "",
+		"unionid":               "",
+		"external_userid":       "",
+		"detail_url":            "/api/external/orders/" + url.PathEscape(order.MerchantOrderNo) + "?provider=" + url.QueryEscape(provider),
+	}
+}
+
+func externalOrderProvider(provider orderdomain.Provider) string {
+	if provider == orderdomain.ProviderWeChatPay {
+		return "wechat"
+	}
+	return string(provider)
+}
+
+func externalOrderStatus(status orderdomain.Status) string {
+	switch status {
+	case orderdomain.StatusPendingPayment:
+		return "unpaid"
+	case orderdomain.StatusPartiallyRefunded:
+		return "partial_refunded"
+	case orderdomain.StatusRefunded:
+		return "full_refunded"
+	default:
+		return string(status)
+	}
+}
+
+func externalOrderFilters(values url.Values) map[string]string {
+	filters := map[string]string{}
+	for _, key := range []string{"payment_status", "product_code", "mobile", "external_userid", "unionid", "transaction_id", "order_no", "created_from", "created_to", "paid_from", "paid_to", "is_paid", "is_refunded"} {
+		filters[key] = values.Get(key)
+	}
+	return filters
+}
+
+func externalOrderProviders(provider orderdomain.Provider) []string {
+	if provider == "" {
+		return []string{"wechat", "alipay", "wechat_shop"}
+	}
+	return []string{externalOrderProvider(provider)}
 }
 
 func responseOK(body any) openplatformport.Response {

@@ -145,6 +145,26 @@ func TestOpenPlatformIdentityUsesDeclaredScopedReferenceAndDoesNotProvision(t *t
 	}
 }
 
+func TestOpenPlatformExternalUserRetainsFrozenUserEnvelope(t *testing.T) {
+	identity := &openPlatformIdentityStub{result: identityport.ResolveResult{Status: identityport.ResolveFound, CustomerID: 42, IdentityID: 7}}
+	executor, err := newOpenPlatformExecutor(identity, &openPlatformOrderStub{}, &openPlatformProfileStub{}, &openPlatformArchiveStub{}, &openPlatformTimelineStub{}, &openPlatformOwnerStub{}, configuredOpenPlatformScopes("corp-main", nil, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := executor.Execute(context.Background(), openplatformport.Request{Method: "GET", Path: "/api/external/users/resolve", Query: url.Values{"external_userid": {"external-1"}}})
+	if err != nil || response.Status != 200 {
+		t.Fatalf("response=%+v err=%v", response, err)
+	}
+	body, ok := response.Body.(map[string]any)
+	if !ok || body["source_status"] != "external_user_basic" || body["route_owner"] != "ai_crm_next" || body["fallback_used"] != false {
+		t.Fatalf("envelope=%#v", response.Body)
+	}
+	user, ok := body["user"].(map[string]any)
+	if !ok || user["person_id"] != "42" || user["external_userid"] != "external-1" || user["customer_name"] != "Customer" || user["matched_by"] != "external_userid" || user["detail_url"] != "/api/customers/external-1" {
+		t.Fatalf("user=%#v", body["user"])
+	}
+}
+
 func TestOpenPlatformMCPReturnsArchiveNotReadyAsAnExplicitFact(t *testing.T) {
 	identity := &openPlatformIdentityStub{result: identityport.ResolveResult{Status: identityport.ResolveFound, CustomerID: 42}}
 	executor, err := newOpenPlatformExecutor(identity, &openPlatformOrderStub{}, &openPlatformProfileStub{}, &openPlatformArchiveStub{err: archiveport.ErrNotReady}, &openPlatformTimelineStub{}, &openPlatformOwnerStub{}, configuredOpenPlatformScopes("corp-main", nil, nil))
@@ -172,6 +192,38 @@ func TestOpenPlatformOrdersMapScopedIdentityBeforeCallingOrderPort(t *testing.T)
 	response, err := executor.Execute(context.Background(), openplatformport.Request{Method: "GET", Path: "/api/external/orders", Query: url.Values{"external_userid": {"external-1"}, "limit": {"20"}}})
 	if err != nil || response.Status != 200 || orders.last.CustomerID != 42 || orders.last.Limit != 20 {
 		t.Fatalf("response=%+v query=%+v err=%v", response, orders.last, err)
+	}
+}
+
+func TestOpenPlatformExternalOrdersRetainFrozenEnvelopeAndStatus(t *testing.T) {
+	orders := &openPlatformOrderStub{page: orderport.Page{Items: []orderdomain.Snapshot{{ID: 9, MerchantOrderNo: "order-9", Provider: orderdomain.ProviderWeChatPay, Amount: orderdomain.Money{AmountMinor: 1234, Currency: "CNY"}, Status: orderdomain.StatusPartiallyRefunded, RefundedMinor: 200, CreatedAt: time.Date(2026, 9, 6, 0, 0, 0, 0, time.UTC), Items: []orderdomain.ItemSnapshot{{ProductCode: "course"}}}}}}
+	executor, err := newOpenPlatformExecutor(&openPlatformIdentityStub{}, orders, &openPlatformProfileStub{}, &openPlatformArchiveStub{}, &openPlatformTimelineStub{}, &openPlatformOwnerStub{}, configuredOpenPlatformScopes("corp-main", nil, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := executor.Execute(context.Background(), openplatformport.Request{Method: "GET", Path: "/api/external/orders", Query: url.Values{"provider": {"all"}, "payment_status": {"partial_refunded"}}})
+	if err != nil || response.Status != 200 {
+		t.Fatalf("response=%+v err=%v", response, err)
+	}
+	body, ok := response.Body.(map[string]any)
+	if !ok || body["source_status"] != "external_orders" || body["route_owner"] != "ai_crm_next" || body["fallback_used"] != false {
+		t.Fatalf("envelope=%#v", response.Body)
+	}
+	items, ok := body["items"].([]map[string]any)
+	if !ok || len(items) != 1 {
+		t.Fatalf("items=%#v", body["items"])
+	}
+	item := items[0]
+	if item["provider"] != "wechat" || item["payment_status"] != "partial_refunded" || item["status_label"] != "partial_refunded" || item["amount_yuan"] != "12.34" || item["refund_status"] != "partial_refunded" || item["detail_url"] != "/api/external/orders/order-9?provider=wechat" {
+		t.Fatalf("item=%#v", item)
+	}
+	filters, ok := body["filters"].(map[string]string)
+	if !ok || filters["payment_status"] != "partial_refunded" {
+		t.Fatalf("filters=%#v", body["filters"])
+	}
+	providers, ok := body["providers"].([]string)
+	if !ok || len(providers) != 3 || providers[0] != "wechat" || providers[2] != "wechat_shop" {
+		t.Fatalf("providers=%#v", body["providers"])
 	}
 }
 
