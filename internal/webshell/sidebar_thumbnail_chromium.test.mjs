@@ -79,19 +79,29 @@ try {
   await new Promise((resolve, reject) => { socket.addEventListener("open", resolve, { once: true }); socket.addEventListener("error", () => reject(new Error("Chromium page connection failed")), { once: true }); });
   cdp = new CDP(socket);
   await cdp.call("Page.enable"); await cdp.call("Runtime.enable"); await cdp.call("Network.enable");
-  const resources = new Map(); const exceptions = []; let sidebarCSP = "";
+  const resources = new Map(); const exceptions = []; const loginResponses = new Map(); let sidebarCSP = "";
   cdp.on("Runtime.exceptionThrown", (params) => { const detail = params.exceptionDetails || {}; const kind = String(detail.exception?.className || detail.text || "runtime_exception").replace(/[^a-zA-Z0-9_.-]/g, "_").slice(0, 96); if (exceptions.length < 8) exceptions.push(kind); });
   cdp.on("Network.responseReceived", (params) => {
     try {
       const pathname = new URL(String(params.response?.url || "")).pathname;
+      const status = Number(params.response?.status) || 0;
       if (pathname === "/sidebar/bind-mobile") sidebarCSP = String(params.response?.headers?.["content-security-policy"] || params.response?.headers?.["Content-Security-Policy"] || "");
-      if (pathname === "/api/sidebar/v2/bootstrap" || pathname === "/api/sidebar/v2/materials" || /^\/api\/sidebar\/v2\/materials\/\d+\/variants\/thumb_320$/.test(pathname) || /^\/sidebar-assets\/sidebarHost-[A-Za-z0-9_-]+\.js$/.test(pathname)) resources.set(pathname, Number(params.response?.status) || 0);
+      if (pathname === "/login" || pathname === "/admin" || pathname === "/admin/customers.html") loginResponses.set(pathname, status);
+      if (pathname === "/api/sidebar/v2/bootstrap" || pathname === "/api/sidebar/v2/materials" || /^\/api\/sidebar\/v2\/materials\/\d+\/variants\/thumb_320$/.test(pathname) || /^\/sidebar-assets\/sidebarHost-[A-Za-z0-9_-]+\.js$/.test(pathname)) resources.set(pathname, status);
     } catch (_) {}
   });
   await cdp.call("Page.navigate", { url: `${baseURL}/login?next=%2Fadmin` });
   await waitFor(cdp, "Boolean(document.querySelector('form[action=\"/login\"] input[name=\"login_csrf_token\"]'))", "login shell did not render");
   await evaluate(cdp, `(() => { document.querySelector('input[name="username"]').value=${JSON.stringify(username)}; document.querySelector('input[name="password"]').value=${JSON.stringify(password)}; document.querySelector('form[action="/login"]').requestSubmit(); return true; })()`);
-  await waitFor(cdp, "location.pathname === '/admin'", "login did not establish the Access session");
+  // The new shell canonicalizes the post-login /admin target to its customer
+  // document. Require that actual final document instead of treating its
+  // intentional redirect as a failed Access session.
+  try {
+    await waitFor(cdp, "location.pathname === '/admin/customers.html' && !document.querySelector('form[action=\"/login\"]')", "login did not reach the authenticated shell document");
+  } catch (_) {
+    const diagnostic = JSON.stringify({ path: await evaluate(cdp, "location.pathname"), login: loginResponses.get("/login") || 0, admin: loginResponses.get("/admin") || 0, customers: loginResponses.get("/admin/customers.html") || 0, exceptions });
+    throw new Error(`login did not establish the Access session: ${diagnostic}`);
+  }
   const cookies = await cdp.call("Network.getAllCookies");
   const session = (cookies.cookies || []).find((cookie) => cookie.name === "aicrm_admin_session" && cookie.value);
   if (!session) throw new Error("Access session cookie was not issued");

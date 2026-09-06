@@ -6,7 +6,7 @@ type ClientSummary = {
   audiences: string[];
   scopes: string[];
   capabilities: string[];
-  allowed_cidrs: string[];
+  allowed_cidrs: string[] | null;
   owner_scope?: Record<string, string[]>;
   token_ttl_seconds: number;
   expires_at?: string;
@@ -129,6 +129,10 @@ function checkedValues(container: ParentNode, name: string): string[] {
 
 function cidrs(value: string): string[] {
   return value.split(/[\n,]/).map((item) => item.trim()).filter(Boolean);
+}
+
+function nullableStrings(value: string[] | null | undefined): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
 }
 
 function validTTL(value: string): number | undefined {
@@ -398,7 +402,7 @@ async function boot(): Promise<void> {
     const form = element('form'); form.className = 'open-platform-form';
     const displayName = textInput(client.display_name); displayName.dataset.openPlatformEdit = 'display_name';
     const ttl = textInput(String(client.token_ttl_seconds), 'number'); ttl.min = '60'; ttl.max = '3600'; ttl.dataset.openPlatformEdit = 'token_ttl_seconds';
-    const ips = textArea(client.allowed_cidrs.join('\n')); ips.dataset.openPlatformEdit = 'allowed_cidrs';
+    const ips = textArea(nullableStrings(client.allowed_cidrs).join('\n')); ips.dataset.openPlatformEdit = 'allowed_cidrs';
     const capabilityValues = exactV1Capabilities(catalog);
     const initialExpiresAt = client.expires_at;
     const initialExpiresLocal = dateTimeLocalValue(initialExpiresAt);
