@@ -517,6 +517,10 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return fail(err)
 	}
 	groupOpsCompletionSink.WithContinuation(groupOpsContinuationEnqueuer)
+	customerTagCompletionSink, err := outbound.NewCustomerTagCompletionSink(customerstore.TagCommandPostgreSQL{}, customerTagCommandReaderAdapter{uow: uow, source: customerstore.TagCommandPostgreSQL{}}, channelEntrantActions)
+	if err != nil {
+		return fail(err)
+	}
 	privateCompletionSink, err := outbound.NewPrivateMessageCompletionSink(privateWriter, aiRepository)
 	if err != nil {
 		return fail(err)
@@ -525,6 +529,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
+	outboundCompletionSink.WithCustomerTag(customerTagCompletionSink)
 	outboundCompletionSink.WithPrivateMessage(privateCompletionSink)
 	outboundCompletionSink.WithAutomationMessage(outboundMessages)
 	sidebarExpiry := outbound.SidebarJSSDKExpiry{}
