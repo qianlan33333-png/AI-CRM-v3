@@ -20,8 +20,9 @@ columns `id`, `release_key`, `profile_id`, `status`, `changes_json`,
 `migrations/versions/0144_config_release_control_plane.py`. The caller must
 name the immutable 40-character source revision.
 
-The command writes an AES-256-GCM protected snapshot and a separate 0600 base64
-key file. Both the key and snapshot must be regular 0600 files for every mode.
+The operator supplies a pre-created 0600 base64 AES-256 key file; the command
+uses it to write an AES-256-GCM protected snapshot. Both the supplied key and
+snapshot must be regular 0600 files for every mode.
 The command prints only source counts, classification counts, and the snapshot
 digest; it never prints release values.
 
