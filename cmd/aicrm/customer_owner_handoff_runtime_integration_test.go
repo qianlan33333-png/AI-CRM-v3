@@ -55,8 +55,15 @@ type stopAfterOwnerHandoffSegment struct {
 }
 
 func (worker stopAfterOwnerHandoffSegment) ProcessOwnerHandoffBatch(ctx context.Context, batchID string, segment int64) error {
+	if segment > 0 {
+		// River may claim later segments concurrently. The interruption runtime
+		// must not give them to the business service before it stops; returning
+		// its cancellation leaves each durable job for the fresh runtime.
+		<-ctx.Done()
+		return ctx.Err()
+	}
 	err := worker.service.ProcessOwnerHandoffBatch(ctx, batchID, segment)
-	if err == nil && segment == 0 && worker.stop != nil {
+	if err == nil && worker.stop != nil {
 		worker.stop()
 	}
 	return err
@@ -434,8 +441,9 @@ func TestCustomerOwnerHandoffRiverSegmentsLocalOnly20000(t *testing.T) {
 		t.Fatalf("accept batch=%+v err=%v", batch, err)
 	}
 	runCtx, stopRun := context.WithCancel(ctx)
-	// Stop immediately after the first committed segment. The second durable
-	// River job already exists at that point, so a fresh runtime must resume it.
+	// Stop immediately after segment zero commits. The interruption wrapper
+	// holds any concurrent later claim until River cancels it, so exactly one
+	// 100-line segment is committed before the fresh runtime resumes the rest.
 	firstWorker := customer.NewOwnerHandoffBatchWorker()
 	if err = firstWorker.Bind(stopAfterOwnerHandoffSegment{service: service, stop: stopRun}); err != nil {
 		t.Fatal(err)
