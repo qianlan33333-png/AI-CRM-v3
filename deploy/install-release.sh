@@ -194,6 +194,56 @@ test -f "$release_dir/deploy/aicrm-hxc-dashboard-rollout.service"
 test -f "$release_dir/deploy/rollout-hxc-identity-v2.sh"
 test -f "$release_dir/migrations/0015_config_adminops.sql"
 test -f "$release_dir/web/dist/asset-manifest.json"
+# The new shell is only release-complete when every private admin document and
+# its sidebar workbench are present alongside the manifest-verified hashed
+# closure.  Each document is still served behind the existing admin session;
+# this check does not create an additional public donor surface.
+for new_shell_page in \
+  agentEdit \
+  agents \
+  ai \
+  aiDetail \
+  apidocs \
+  attach \
+  audienceEdit \
+  automation \
+  campaigns \
+  channelForm \
+  channels \
+  config \
+  configDetail \
+  couponData \
+  couponForm \
+  coupons \
+  customerDetail \
+  customers \
+  cycles \
+  cyclesDetail \
+  funnel \
+  groupops \
+  groupopsDetail \
+  images \
+  index \
+  mpLib \
+  orderDetail \
+  orders \
+  ownerMig \
+  productForm \
+  products \
+  questionnaireDetail \
+  questionnaireOps \
+  questionnaires \
+  radar \
+  radarDetail \
+  radarForm \
+  spProductData \
+  spProductForm \
+  spProducts \
+  tags \
+  wecom-tags; do
+  test -f "$release_dir/web/dist/admin/${new_shell_page}.html"
+done
+test -f "$release_dir/web/dist/sidebar/index.html"
 for ai_assistant_asset in \
   list.html detail.html \
   group_chat_picker.css group_chat_picker.js \

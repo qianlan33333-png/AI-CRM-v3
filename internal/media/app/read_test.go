@@ -23,6 +23,7 @@ func (uow *readTestUOW) Within(ctx context.Context, fn func(context.Context) err
 type readTestStore struct {
 	row     ImageListRow
 	content []byte
+	enabled bool
 }
 
 func (store *readTestStore) ListImageRows(context.Context, ImageListFilter, int64, int64) (ImageListRead, error) {
@@ -38,7 +39,7 @@ func (store *readTestStore) ImageExists(context.Context, int64) (bool, error) { 
 func (store *readTestStore) ReadImageVariant(context.Context, int64) (ImageVariantRow, error) {
 	digest := sha256.Sum256(store.content)
 	return ImageVariantRow{
-		ID: 7, FileName: "cover.png", MimeType: "image/png", FileSize: int32(len(store.content)), Width: 2, Height: 1,
+		ID: 7, FileName: "cover.png", MimeType: "image/png", FileSize: int32(len(store.content)), Width: 2, Height: 1, Enabled: store.enabled,
 		ImageChecksum: digest[:], BlobChecksum: digest[:], Content: append([]byte(nil), store.content...),
 	}, nil
 }
@@ -46,7 +47,7 @@ func (store *readTestStore) ReadImageVariant(context.Context, int64) (ImageVaria
 func TestReadServiceProjectsLibraryReadsWithoutProviderEffects(t *testing.T) {
 	content := testPNG(t)
 	now := time.Date(2026, 8, 20, 1, 2, 3, 0, time.UTC)
-	store := &readTestStore{content: content, row: ImageListRow{
+	store := &readTestStore{content: content, enabled: true, row: ImageListRow{
 		ID: 7, Name: " Cover ", FileName: "cover.png", MimeType: "image/png", FileSize: int32(len(content)), Enabled: true,
 		Tags: " hero,hero ", Category: "cover", Width: 2, Height: 1, CreatedAt: now, UpdatedAt: now,
 	}}
@@ -72,6 +73,17 @@ func TestReadServiceProjectsLibraryReadsWithoutProviderEffects(t *testing.T) {
 	}
 	if !bytes.Equal(variant.Content, content) {
 		t.Fatal("variant content changed")
+	}
+	enabledVariant, err := service.GetEnabledImageVariant(context.Background(), 7, "original")
+	if err != nil || !bytes.Equal(enabledVariant.Content, content) {
+		t.Fatalf("enabled variant=%#v err=%v", enabledVariant, err)
+	}
+	store.enabled = false
+	if _, err = service.GetEnabledImageVariant(context.Background(), 7, "original"); err != ErrImageVariantNotFound {
+		t.Fatalf("disabled viewer variant err=%v", err)
+	}
+	if _, err = service.GetImageVariant(context.Background(), 7, "original"); err != nil {
+		t.Fatalf("administrator variant must preserve disabled-image inspection: %v", err)
 	}
 }
 

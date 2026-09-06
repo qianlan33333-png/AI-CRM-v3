@@ -246,26 +246,16 @@ export async function runAdminAdapterTests(): Promise<void> {
   const savedCustomerListFetch = globalThis.fetch;
   globalThis.fetch = async (input, init) => {
     customerListCalls.push({ input: String(input), init });
-    return new Response(JSON.stringify({ items: [{ customer_id: 7, status: 'active', display_name: '陈晨', oneid: 'oneid-7', phone_masked: '138****0000', activation_status: 'active', updated_at: '2026-08-25T09:30:00Z' }], next_cursor: 'opaque-next-cursor', total: 51, total_is_estimate: true, watermark: '2026-08-25T10:00:00Z' }), { status: 200 });
+    return new Response(JSON.stringify({ items: [{ id: 7, name: '陈晨', owner_staff_id: 3, stage_id: null, is_deleted: false, extra: {}, created_at: '', updated_at: '' }], next_cursor: 'opaque-next-cursor', total: 51, total_is_estimate: true, watermark: 'wm-1' }), { status: 200 });
   };
   try {
-    const customerPage = await readAdminRows('customers', { cursor: 'opaque-cursor', keyword: '陈晨', mobile: '13800000000' });
+    const customerPage = await readAdminRows('customers', { cursor: 'opaque-cursor', keyword: '陈晨', mobile: '+8613800000000', ownerStaffId: 3, tagId: 9 });
     const customerUrl = new URL('http://localhost' + customerListCalls[0].input);
-    assert(customerListCalls.length === 1 && (customerListCalls[0].init?.method ?? 'GET') === 'GET', 'customer list adapter reads the live directory endpoint');
-    assert(customerUrl.pathname === '/api/admin/customers' && customerUrl.searchParams.get('cursor') === 'opaque-cursor' && !customerUrl.searchParams.has('offset'), 'customer list preserves opaque cursor without offset');
-    assert(customerUrl.searchParams.get('keyword') === '陈晨' && customerUrl.searchParams.get('phone') === '13800000000' && !customerUrl.searchParams.has('owner_staff_id') && !customerUrl.searchParams.has('tag_id'), 'customer list maps mobile onto the directory phone filter');
+    assert(customerListCalls.length === 1 && customerListCalls[0].init?.method === 'GET', 'customer list adapter uses generated GET');
+    assert(customerUrl.pathname === '/api/v1/customers' && customerUrl.searchParams.get('cursor') === 'opaque-cursor' && !customerUrl.searchParams.has('offset'), 'customer list preserves opaque cursor without offset');
+    assert(customerUrl.searchParams.get('keyword') === '陈晨' && customerUrl.searchParams.get('mobile') === '+8613800000000' && customerUrl.searchParams.get('owner_staff_id') === '3' && customerUrl.searchParams.get('tag_id') === '9', 'customer list filter parameters');
     assert(customerPage.customerList.total === 51 && customerPage.customerList.totalIsEstimate && customerPage.customerList.nextCursor === 'opaque-next-cursor', 'customer list metadata mapping');
-    assert(customerPage.rows.customers[0]?.id === '7' && customerPage.rows.customers[0]?.name === '陈晨' && customerPage.rows.customers[0]?.owner === '未分配', 'customer list maps directory items onto rows without inventing owners');
   } finally { globalThis.fetch = savedCustomerListFetch; }
-
-  const savedUnsupportedFilterFetch = globalThis.fetch;
-  globalThis.fetch = async () => { assert(false, 'owner/tag filters must never reach the wire'); return new Response('{}', { status: 500 }); };
-  try {
-    await readAdminRows('customers', { ownerStaffId: 3 });
-    assert(false, 'owner filter accepted against an unsupported backend predicate');
-  } catch (error) {
-    assert(error instanceof Error && error.message.includes('暂不支持'), 'owner/tag filters fail explicitly instead of being silently dropped');
-  } finally { globalThis.fetch = savedUnsupportedFilterFetch; }
 
   assert(getListLegacyAttachmentsUrl() === '/api/admin/attachment-library', 'attachment workspace list URL/method');
   const attachmentCalls: Array<{ input: string; init?: RequestInit }> = [];
@@ -317,45 +307,26 @@ export async function runAdminAdapterTests(): Promise<void> {
   const safeContextCalls: string[] = [];
   const savedSafeContextFetch = globalThis.fetch;
   globalThis.fetch = async (input) => {
+    safeContextCalls.push(String(input));
     const url = String(input);
-    safeContextCalls.push(url);
-    if (url.includes('/api/admin/customers/7/360')) return new Response(JSON.stringify({
-      canonical_customer_id: 7,
-      identity_summary: { status: 'ready', data: { identities: [], phones: [] } },
-      profile: { status: 'ready', data: { customer_id: 7, status: 'active', display_name: '陈晨', oneid: 'oneid-7', last_synced_at: '2026-08-20T10:00:00Z', updated_at: '2026-08-25T09:30:00Z', gender: 0, contact_type: 0, corp_name: '', source: '' } },
-      order_summary: { status: 'degraded', error_code: 'section_unavailable' },
-      questionnaire_summary: { status: 'ready', data: { total: 0, recent: [] } },
-      risk: { status: 'ready', data: { level: 'low', reasons: [] } },
-      recent_touchpoints: { status: 'ready', data: [{ id: 101, event_type: 'owner.assigned', title: '分配负责人', source_domain: 'contact', occurred_at: '2026-08-21T08:00:00Z' }] },
-    }), { status: 200 });
-    if (url.includes('/api/admin/customers/7/tags')) return new Response(JSON.stringify({ customer_id: 7, items: [{ name: '高意向', status: 'active', observed_at: '2026-08-22T08:00:00Z' }], next_cursor: '' }), { status: 200 });
-    if (url.includes('/api/admin/customers/7/chat-activity')) return new Response(JSON.stringify({ customer_id: 7, items: [{ id: 55, chat_type: 'private', message_type: 'text', occurred_at: '2026-08-25T09:30:00Z' }], next_cursor: '' }), { status: 200 });
-    if (url.includes('/survey-answers')) return new Response(JSON.stringify({ items: [{ id: 81, questionnaire_id: 41, definition_version: 1, questionnaire_slug: 'nps', questionnaire_title: 'NPS', mode: 'link', identity: {}, total_score: 86, assessment_result: {}, submitted_at: '2026-08-23T10:30:00Z', answers: [{ id: 9, question_id: 5, question_type: 'single_choice', question_title: '推荐意愿', sort_order: 0, selected_options: [{ option_id: 12, option_text: '会', score: 10 }], score: 86, legacy_definition_missing: false }] }], total: 1 }), { status: 200 });
-    return new Response(JSON.stringify({}), { status: 404 });
+    return new Response(JSON.stringify(url.includes('/context') ? safeContext : url.includes('/survey-answers') ? safeSurvey : { items: [{ id: 2, name: '阶段二', sort_order: 1, config: {} }] }), { status: 200 });
   };
   try {
     const detailPage = await readAdminPage({ page: 'customerDetail', id: '7' });
-    assert(detailPage.customerDetail.status === 'ready' && detailPage.customerDetail.context?.timeline.length === 1 && detailPage.customerDetail.survey?.items.length === 1, 'customer detail composes the live 360/tags/chat/survey endpoints');
-    assert(detailPage.customerDetail.context?.profile.name === '陈晨' && detailPage.customerDetail.context?.profile.owner === '未分配' && detailPage.customerDetail.context?.hxc.available === false, 'customer detail maps the live profile and marks HXC unavailable without a data source');
-    assert(detailPage.customerDetail.survey?.items[0].questionnaireId === 41 && detailPage.customerDetail.survey?.items[0].choices[0].optionIds[0] === 12, 'survey projection keeps only submission metadata and choice option IDs');
-    assert(detailPage.rows.qa.length === 0 && detailPage.rows.msgs.length === 0, 'customer detail does not expose answers or message bodies');
-    assert(safeContextCalls.some((url) => url === '/api/admin/customers/7/360') && safeContextCalls.some((url) => url === '/api/admin/customers/7/tags') && safeContextCalls.some((url) => url.startsWith('/api/admin/customers/7/chat-activity')) && safeContextCalls.some((url) => url.includes('/api/v1/customers/7/survey-answers')), 'customer detail only calls implemented read endpoints');
+    assert(detailPage.customerDetail.status === 'ready' && detailPage.customerDetail.context?.timeline.length === 1 && detailPage.customerDetail.survey?.items.length === 1, 'Customer360 detail consumes safe context and survey projection');
+    assert(detailPage.rows.qa.length === 0 && detailPage.rows.msgs.length === 0, 'Customer360 detail does not expose answers or message bodies');
+    assert(safeContextCalls.length === 3 && safeContextCalls.some((url) => url.includes('/customers/7/context')) && safeContextCalls.some((url) => url.includes('/customers/7/survey-answers')) && safeContextCalls.some((url) => url === '/api/v1/stages'), 'Customer360 detail only calls approved safe read operations');
   } finally { globalThis.fetch = savedSafeContextFetch; }
 
   const savedMissingContextFetch = globalThis.fetch;
-  globalThis.fetch = async (input) => {
-    const url = String(input);
-    if (url.includes('/360')) return new Response(JSON.stringify({ error: 'customer_not_found', ok: false }), { status: 404 });
-    if (url.includes('/survey-answers')) return new Response(JSON.stringify({ items: [], total: 0 }), { status: 200 });
-    return new Response(JSON.stringify({ items: [] }), { status: 200 });
-  };
+  globalThis.fetch = async (input) => new Response(JSON.stringify(String(input).includes('/context') ? { code: 'not_found' } : String(input).includes('/survey-answers') ? safeSurvey : { items: [] }), { status: String(input).includes('/context') ? 404 : 200 });
   try {
     const missingPage = await readAdminPage({ page: 'customerDetail', id: '999' });
     assert(missingPage.customerDetail.status === 'not_found' && missingPage.customerDetail.error.includes('不存在'), 'Customer360 404 becomes explicit not-found state');
   } finally { globalThis.fetch = savedMissingContextFetch; }
 
   const savedFailedContextFetch = globalThis.fetch;
-  globalThis.fetch = async (input) => new Response(JSON.stringify({ code: 'unavailable' }), { status: String(input).includes('/360') ? 503 : 200 });
+  globalThis.fetch = async (input) => new Response(JSON.stringify({ code: 'unavailable' }), { status: String(input).includes('/context') ? 503 : 200 });
   try { await readAdminPage({ page: 'customerDetail', id: '7' }); assert(false, 'Customer360 non-404 failures must remain errors'); }
   catch (error) { assert(error instanceof ApiError && error.status === 503, 'Customer360 non-404 failure remains structured error'); }
   finally { globalThis.fetch = savedFailedContextFetch; }

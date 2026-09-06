@@ -224,3 +224,17 @@ grep -qF 'sudo /usr/bin/bash ${remote_configurer} ${remote_config} ${GITHUB_SHA}
 scripts/test-configure-hxc-runtime.sh
 scripts/test-configure-payment-h5-oauth-runtime.sh
 scripts/test-install-release-ordering.sh
+
+# PR164 ships the private new-shell document set as a release artifact. The
+# installer must reject a partial stage before it can select current.
+grep -qx 'test -f "$release_dir/web/dist/sidebar/index.html"' "$installer" || { echo "release must include the new shell sidebar document" >&2; exit 1; }
+grep -qx '  test -f "$release_dir/web/dist/admin/${new_shell_page}.html"' "$installer" || { echo "release must verify each new shell admin document" >&2; exit 1; }
+for new_shell_page in \
+  agentEdit agents ai aiDetail apidocs attach audienceEdit automation campaigns \
+  channelForm channels config configDetail couponData couponForm coupons customerDetail \
+  customers cycles cyclesDetail funnel groupops groupopsDetail images index mpLib \
+  orderDetail orders ownerMig productForm products questionnaireDetail questionnaireOps \
+  questionnaires radar radarDetail radarForm spProductData spProductForm spProducts tags \
+  wecom-tags; do
+  grep -qE "^[[:space:]]*${new_shell_page}( \\\\|; do)$" "$installer" || { echo "release must enumerate new shell document ${new_shell_page}" >&2; exit 1; }
+done

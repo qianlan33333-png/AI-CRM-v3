@@ -16,6 +16,13 @@ const entryPoints = {
   productHost: path.join(repository, 'web', 'v3', 'productAdapter.ts'),
   channelCenterHost: path.join(repository, 'web', 'v3', 'channelCenterAdapter.ts'),
   aiAssistantHost: path.join(repository, 'web', 'v3', 'aiAssistantAdapter.ts'),
+  // Customer pages retain their frozen templates and generated V2 client; this
+  // adapter is injected before that client to map only its safe read DTOs.
+  customerHost: path.join(repository, 'web', 'v3', 'customerAdapter.ts'),
+  // The frozen sidebar template and stylesheet remain byte-exact. Its live
+  // protocol adapter is V3-owned because the current Sidebar Owner exposes
+  // narrower trusted DTOs than the donor-generated client.
+  sidebarHost: path.join(repository, 'web', 'v3', 'sidebar', 'main.ts'),
 };
 const result = await build({
   entryPoints,
@@ -69,11 +76,38 @@ for (const name of Object.keys(entryPoints)) {
   const entry = entries.get(name);
   if (!entry) throw new Error(`${name} adapter entry was not emitted`);
   manifest.entries[name] = entry;
-  if (name === 'aiAssistantHost') continue;
+  if (name === 'aiAssistantHost' || name === 'sidebarHost' || name === 'customerHost') continue;
   const donorMain = manifest.files[entry].imports.find((item) => item.kind === 'dynamic-import' && manifest.files[item.path]?.inputs?.includes('web/src/admin/main.ts'))?.path;
   const donorLegacy = donorMain && manifest.files[donorMain].imports.find((item) => item.kind === 'dynamic-import' && manifest.files[item.path]?.inputs?.includes('web/src/admin/legacy.ts'))?.path;
   if (!donorMain || !donorLegacy) throw new Error(`${name} must start the frozen donor main -> legacy runtime`);
 }
+
+const customerHost = manifest.entries.customerHost;
+const frozenAdmin = manifest.entries.admin;
+if (typeof customerHost !== 'string' || typeof frozenAdmin !== 'string') throw new Error('customer Host or frozen admin entry is absent from manifest');
+const customerHostReference = `../${customerHost}`;
+const frozenAdminReference = `<script type="module" src="../${frozenAdmin}"></script>`;
+for (const documentName of ['customers.html', 'customerDetail.html']) {
+  const documentPath = path.join(dist, 'admin', documentName);
+  let documentHTML = fs.readFileSync(documentPath, 'utf8');
+  if (!documentHTML.includes(frozenAdminReference)) throw new Error(`${documentName} does not reference the declared frozen admin entry`);
+  if (documentHTML.includes(customerHostReference)) throw new Error(`${documentName} already contains the customer Host`);
+  documentHTML = documentHTML.replace(frozenAdminReference, `<script type="module" src="${customerHostReference}"></script>\n${frozenAdminReference}`);
+  fs.writeFileSync(documentPath, documentHTML);
+  manifest.release_files[`admin/${documentName}`] = metadataFor(Buffer.from(documentHTML));
+}
+
+const sidebarHost = manifest.entries.sidebarHost;
+const frozenSidebar = manifest.entries.sidebar;
+if (typeof sidebarHost !== 'string' || typeof frozenSidebar !== 'string') throw new Error('sidebar Host or frozen entry is absent from manifest');
+const sidebarDocument = path.join(dist, 'sidebar', 'index.html');
+let sidebarHTML = fs.readFileSync(sidebarDocument, 'utf8');
+const frozenSidebarReference = `../${frozenSidebar}`;
+if (!sidebarHTML.includes(frozenSidebarReference)) throw new Error('frozen sidebar document does not reference its declared entry');
+sidebarHTML = sidebarHTML.replace(frozenSidebarReference, `../${sidebarHost}`);
+fs.writeFileSync(sidebarDocument, sidebarHTML);
+const sidebarBytes = Buffer.from(sidebarHTML);
+manifest.release_files['sidebar/index.html'] = metadataFor(sidebarBytes);
 
 const donor = path.join(repository, 'web', 'donors', 'ai-assistant-production');
 const donorOut = path.join(dist, 'aiassistant');

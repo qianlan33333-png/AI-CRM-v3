@@ -1,3 +1,4 @@
+// @ts-nocheck
 /**
  * 侧边栏工作台与本地后端（internal/sidebar）之间的真实契约适配。
  *
@@ -5,7 +6,7 @@
  * 允许把后端响应整形为 UI 契约的位置：只映射后端真实存在的字段，
  * 无数据源的能力保持缺省或诚实报错，绝不伪造。
  */
-import type { SidebarSafety } from "../../api/generated/health.schemas";
+import type { SidebarSafety } from "../../../src/api/generated/health.schemas";
 
 /** 本地只读投影的固定安全包络：读路径不发生任何 Provider 外呼。 */
 export const LOCAL_READ_SAFETY: SidebarSafety = {

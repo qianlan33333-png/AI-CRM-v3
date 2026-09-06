@@ -142,6 +142,7 @@ type StoredImageVariant struct {
 	ID                          int64
 	FileName, MimeType          string
 	FileSize, Width, Height     int32
+	Enabled                     bool
 	ImageChecksum, BlobChecksum []byte
 	Content                     []byte
 }
@@ -158,9 +159,9 @@ func (r *Repository) ReadImageVariant(ctx context.Context, id int64) (StoredImag
 	}
 	var row StoredImageVariant
 	var imageDigest, blobDigest string
-	err = tx.QueryRow(ctx, `SELECT i.id,i.file_name,i.mime_type,i.byte_size,i.width,i.height,i.blob_digest,b.digest,b.content
+	err = tx.QueryRow(ctx, `SELECT i.id,i.file_name,i.mime_type,i.byte_size,i.width,i.height,i.enabled,i.blob_digest,b.digest,b.content
 FROM media_images i JOIN media_blobs b ON b.digest=i.blob_digest WHERE i.id=$1`, id).
-		Scan(&row.ID, &row.FileName, &row.MimeType, &row.FileSize, &row.Width, &row.Height, &imageDigest, &blobDigest, &row.Content)
+		Scan(&row.ID, &row.FileName, &row.MimeType, &row.FileSize, &row.Width, &row.Height, &row.Enabled, &imageDigest, &blobDigest, &row.Content)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return StoredImageVariant{}, ErrNotFound
 	}

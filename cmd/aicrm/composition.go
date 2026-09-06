@@ -1484,16 +1484,18 @@ func mountHXCUI(next, dashboardUI http.Handler, authentication accessAuthenticat
 }
 
 func mountAIAssistant(next, api, ui http.Handler, authentication accessAuthentication, uiEnabled bool, publicOrigin string) http.Handler {
-	_ = ui        // frozen donor workspace retired; the shell serves the built ai.html documents
-	_ = uiEnabled // capability gating lives at the API layer
 	api = rejectCrossSiteUnsafeRequests(api, canonicalOrigin(publicOrigin))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/api/admin/ai-assistant/") || r.URL.Path == "/api/admin/ai-assist/review-plans" || r.URL.Path == "/api/integrations/ai-assistant/review-plans" {
 			api.ServeHTTP(w, r)
 			return
 		}
-		if strings.HasPrefix(r.URL.Path, "/admin/cloud-orchestrator/plans/") {
-			requireAdminSession(authentication, legacyIDRedirect("/admin/cloud-orchestrator/plans/", "", "/admin/aiDetail.html", "/admin/ai.html")).ServeHTTP(w, r)
+		if strings.HasPrefix(r.URL.Path, "/ai-assistant-assets/") || r.URL.Path == "/admin/ai.html" || r.URL.Path == "/admin/aiDetail.html" || r.URL.Path == "/admin/cloud-orchestrator/plans" || strings.HasPrefix(r.URL.Path, "/admin/cloud-orchestrator/plans/") {
+			if !uiEnabled {
+				http.NotFound(w, r)
+				return
+			}
+			requireAdminSession(authentication, ui).ServeHTTP(w, r)
 			return
 		}
 		next.ServeHTTP(w, r)
@@ -1559,14 +1561,15 @@ func mountSurveyUI(next, adminUI, publicUI http.Handler, authentication accessAu
 }
 
 func mountChannelUI(next, adminUI http.Handler, authentication accessAuthentication) http.Handler {
-	_ = adminUI // frozen donor host bundle retired; the shell serves the built channel documents
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimSuffix(r.URL.Path, "/")
-		if strings.HasPrefix(path, "/admin/channels/") && strings.HasSuffix(path, "/edit") {
-			requireAdminSession(authentication, legacyIDRedirect("/admin/channels/", "/edit", "/admin/channelForm.html", "/admin/channels.html")).ServeHTTP(w, r)
-			return
+		isCanonicalEdit := strings.HasPrefix(path, "/admin/channels/") && strings.HasSuffix(path, "/edit")
+		switch {
+		case path == "/admin/channels", path == "/admin/channels.html", path == "/admin/channels/new", path == "/admin/channelForm.html", isCanonicalEdit:
+			requireAdminSession(authentication, adminUI).ServeHTTP(w, r)
+		default:
+			next.ServeHTTP(w, r)
 		}
-		next.ServeHTTP(w, r)
 	})
 }
 
@@ -1775,14 +1778,39 @@ func routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, acce
 	// canonical PR10-mounted route above is public; neither its private staging
 	// name nor the donor document name may fall through to a generic 200 shell.
 	mux.Handle("/admin/tags.html", http.NotFoundHandler())
+	mux.Handle("/admin/wecom-tags.html", http.NotFoundHandler())
+	mux.Handle("/admin/cycles.html", http.NotFoundHandler())
+	mux.Handle("/admin/cyclesDetail.html", http.NotFoundHandler())
 	mux.Handle("/admin/external-effects", requireAdminSession(authentication, effectsUI))
 	mux.Handle("/admin/campaigns.html", requireAdminSession(authentication, effectsUI))
 	mux.Handle("/admin/image-library", requireAdminSession(authentication, mediaUI))
 	mux.Handle("/admin/miniprogram-library", requireAdminSession(authentication, mediaUI))
 	mux.Handle("/admin/attachment-library", requireAdminSession(authentication, mediaUI))
-	// Legacy group-ops plan detail URLs keep working as redirects onto the
-	// built detail document, which reads the plan id from the query string.
-	mux.Handle("/admin/automation-conversion/group-ops/plans/", requireAdminSession(authentication, legacyIDRedirect("/admin/automation-conversion/group-ops/plans/", "", "/admin/groupopsDetail.html", "/admin/groupops.html")))
+	// Product aliases mount the existing V3 Host. This retains the frozen
+	// workspace fields and all currently-approved Product actions beneath the
+	// new shell rather than letting a generic dist document mask them.
+	for _, path := range []string{
+		"/admin/wechat-pay/products", "/admin/wechat-pay/products/",
+		"/admin/wechat-pay/products.html", "/admin/products.html",
+		"/admin/wechat-pay/productForm.html", "/admin/productForm.html",
+		"/admin/wechat-pay/spProducts.html", "/admin/spProducts.html",
+		"/admin/wechat-pay/spProductForm.html", "/admin/spProductForm.html",
+		"/admin/service-period-products", "/admin/service-period-products/",
+		"/admin/wechat-pay/products/new", "/admin/service-period-products/new",
+	} {
+		mux.Handle(path, requireAdminSession(authentication, productUI))
+	}
+	for _, path := range []string{
+		"/admin/spProductData.html", "/admin/wechat-pay/spProductData.html",
+		"/admin/wechat-pay/products/spProductData.html", "/admin/service-period-products/spProductData.html",
+	} {
+		mux.Handle(path, requireAdminSession(authentication, productUI))
+	}
+	mux.Handle("/admin/automation-conversion/group-ops/ui", requireAdminSession(authentication, groupOpsUI))
+	mux.Handle("/admin/automation-conversion/group-ops/groups/ui", requireAdminSession(authentication, groupOpsUI))
+	mux.Handle("/admin/automation-conversion/group-ops/plans/", requireAdminSession(authentication, groupOpsUI))
+	mux.Handle("/admin/groupops.html", requireAdminSession(authentication, groupOpsUI))
+	mux.Handle("/admin/groupopsDetail.html", requireAdminSession(authentication, groupOpsUI))
 	for _, path := range []string{"/admin/coupons", "/admin/coupons.html", "/admin/couponForm.html", "/admin/couponData.html"} {
 		mux.Handle(path, requireAdminSession(authentication, couponUI))
 	}
@@ -1810,29 +1838,6 @@ func routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, acce
 		http.Redirect(writer, request, "/admin", http.StatusSeeOther)
 	})
 	return securityHeaders(rejectCrossSiteUnsafeRequests(mux, canonicalOrigin(publicOrigin))), nil
-}
-
-// legacyIDRedirect maps a donor-era detail URL (<prefix><id><suffix>) onto
-// the built new-shell detail document, which reads the id from the query
-// string.  Paths without a usable id land on the built list document.
-func legacyIDRedirect(prefix, suffix, detailTarget, listTarget string) http.Handler {
-	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.Method != http.MethodGet && request.Method != http.MethodHead {
-			writer.Header().Set("Allow", "GET, HEAD")
-			http.Error(writer, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		rest := strings.TrimPrefix(request.URL.Path, prefix)
-		id := strings.Trim(strings.TrimSuffix(rest, suffix), "/")
-		target := listTarget
-		if id != "" && !strings.Contains(id, "/") {
-			target = detailTarget + "?id=" + url.QueryEscape(id)
-		}
-		if request.URL.RawQuery != "" && target == listTarget {
-			target += "?" + request.URL.RawQuery
-		}
-		http.Redirect(writer, request, target, http.StatusSeeOther)
-	})
 }
 
 func rejectCrossSiteUnsafeRequests(next http.Handler, publicOrigin string) http.Handler {
@@ -1891,6 +1896,7 @@ func securityHeaders(next http.Handler) http.Handler {
 		writer.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
 		styleSource := "'self'"
 		mediaPage := request.URL.Path == "/admin/image-library" || request.URL.Path == "/admin/miniprogram-library" || request.URL.Path == "/admin/attachment-library"
+		sidebarPage := request.URL.Path == webshell.SidebarPagePath
 		tagsPage := request.URL.Path == "/admin/wecom-tags"
 		productPage := isProductShellPath(request.URL.Path)
 		orderPage := request.URL.Path == "/admin/orders" || request.URL.Path == "/admin/orders.html" || request.URL.Path == "/admin/orderDetail.html"
@@ -1909,9 +1915,11 @@ func securityHeaders(next http.Handler) http.Handler {
 			styleSource = "'self' 'unsafe-inline'"
 		}
 		imageSource := "'self' data:"
-		if mediaPage {
-			// The frozen Media controller creates private thumbnail object URLs;
-			// keep blob: limited to the three v3-owned Media shell routes.
+		if mediaPage || sidebarPage {
+			// Both the Media Host and the V3 sidebar create private thumbnail
+			// object URLs from a scoped Media read. Keep blob: limited to these
+			// presentation routes; API responses and unrelated admin pages stay
+			// under the stricter image policy.
 			imageSource += " blob:"
 		}
 		contentPolicy := "default-src 'self'; script-src 'self' https://res.wx.qq.com; style-src " + styleSource + "; img-src " + imageSource + "; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'"

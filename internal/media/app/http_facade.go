@@ -15,6 +15,7 @@ type HTTPFacade interface {
 	// not maintain a second variant allow-list.
 	ValidImageVariant(string) bool
 	GetImageVariant(context.Context, int64, string) (ImageVariant, error)
+	GetEnabledImageVariant(context.Context, int64, string) (ImageVariant, error)
 	LocalImageExists(context.Context, int64) (bool, error)
 	ReferenceConflict(error) (map[string][]int64, bool)
 }
@@ -69,7 +70,7 @@ func (s variantStore) ReadImageVariant(ctx context.Context, id int64) (ImageVari
 	if err != nil {
 		return ImageVariantRow{}, err
 	}
-	return ImageVariantRow{ID: row.ID, FileName: row.FileName, MimeType: row.MimeType, FileSize: row.FileSize, Width: row.Width, Height: row.Height, ImageChecksum: row.ImageChecksum, BlobChecksum: row.BlobChecksum, Content: row.Content}, nil
+	return ImageVariantRow{ID: row.ID, FileName: row.FileName, MimeType: row.MimeType, FileSize: row.FileSize, Width: row.Width, Height: row.Height, Enabled: row.Enabled, ImageChecksum: row.ImageChecksum, BlobChecksum: row.BlobChecksum, Content: row.Content}, nil
 }
 
 type httpFacade struct {
@@ -110,6 +111,12 @@ func (f *httpFacade) GetImageVariant(ctx context.Context, imageID int64, key str
 		return ImageVariant{}, ErrImageVariantUnavailable
 	}
 	return f.variants.GetImageVariant(ctx, imageID, key)
+}
+func (f *httpFacade) GetEnabledImageVariant(ctx context.Context, imageID int64, key string) (ImageVariant, error) {
+	if f == nil || f.variants == nil {
+		return ImageVariant{}, ErrImageVariantUnavailable
+	}
+	return f.variants.GetEnabledImageVariant(ctx, imageID, key)
 }
 func (f *httpFacade) LocalImageExists(ctx context.Context, imageID int64) (bool, error) {
 	if f == nil || imageID < 1 {

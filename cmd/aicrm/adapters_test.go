@@ -267,12 +267,13 @@ func TestTransactionRouteKeepsShellButReportsBackendUnavailable(t *testing.T) {
 	}
 }
 
-func TestSecurityHeadersAllowBlobImagesOnlyOnMediaPages(t *testing.T) {
+func TestSecurityHeadersAllowBlobImagesOnlyOnMediaAndSidebarPages(t *testing.T) {
 	handler := securityHeaders(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	for path, allowsBlob := range map[string]bool{
 		"/admin/image-library":                        true,
 		"/admin/miniprogram-library":                  true,
 		"/admin/attachment-library":                   true,
+		webshell.SidebarPagePath:                      true,
 		"/admin/campaigns.html?view=external-effects": false,
 		"/admin/orders":                               false,
 		"/api/admin/image-library":                    false,
@@ -281,10 +282,10 @@ func TestSecurityHeadersAllowBlobImagesOnlyOnMediaPages(t *testing.T) {
 		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
 		policy := response.Header().Get("Content-Security-Policy")
 		if allowsBlob && !strings.Contains(policy, "img-src 'self' data: blob:") {
-			t.Fatalf("Media page CSP lacks blob image source for %s: %q", path, policy)
+			t.Fatalf("Media/sidebar page CSP lacks blob image source for %s: %q", path, policy)
 		}
 		if !allowsBlob && strings.Contains(policy, "blob:") {
-			t.Fatalf("non-Media page CSP unexpectedly permits blob images for %s: %q", path, policy)
+			t.Fatalf("unrelated page CSP unexpectedly permits blob images for %s: %q", path, policy)
 		}
 	}
 }
@@ -469,27 +470,26 @@ func TestExternalEffectsUIRequiresAdminAndExposesOnlyItsFrozenSurface(t *testing
 	}
 }
 
-func TestTagsPageIsServedByTheShellFromBuiltDocuments(t *testing.T) {
-	marker := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) { writer.WriteHeader(http.StatusNoContent) })
+func TestTagsPageUsesItsBoundV3UIInsteadOfTheGenericShell(t *testing.T) {
+	marker := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("X-Tag-UI", "bound")
+		writer.WriteHeader(http.StatusNoContent)
+	})
 	authentication := &fakeAccessAuthentication{principal: accessdomain.Principal{Kind: accessdomain.KindAdmin, InternalID: 7, Roles: []accessdomain.Role{accessdomain.RoleAdmin}}}
 	handler, err := routeApplicationWithMediaTags(marker, marker, marker, marker, marker, marker, marker, marker, marker, marker, marker, webshell.MustHandler(), authentication, "https://crm.example")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// The canonical tags page is a shell page now: it requires a session and
-	// never mounts the frozen donor workspace (which needed a build entry the
-	// current frontend no longer emits).
+	// The canonical tags page must reach the V3-owned tag UI binding. A
+	// generic shell would render successfully while dropping the real tag
+	// operations, so the marker proves the precise handler remains mounted.
 	request := httptest.NewRequest(http.MethodGet, "/admin/wecom-tags", nil)
 	request.AddCookie(&http.Cookie{Name: "aicrm_admin_session", Value: "valid"})
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
-	body := response.Body.String()
-	if response.Code != http.StatusOK || !strings.Contains(body, `data-admin-shell-source="v3_webshell"`) {
-		t.Fatalf("tags page status=%d body=%q", response.Code, body)
-	}
-	if strings.Contains(body, "新增标签组") || strings.Contains(body, `data-page="tags"`) {
-		t.Fatalf("tags page unexpectedly mounted the retired frozen workspace: %q", body)
+	if response.Code != http.StatusNoContent || response.Header().Get("X-Tag-UI") != "bound" {
+		t.Fatalf("tags page did not reach the bound UI status=%d marker=%q", response.Code, response.Header().Get("X-Tag-UI"))
 	}
 
 	// The donor staging name stays private; the built document name is an

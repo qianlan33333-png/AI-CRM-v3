@@ -80,6 +80,14 @@ type ImageVariantReader interface {
 	GetImageVariant(context.Context, int64, string) (ImageVariant, error)
 }
 
+// EnabledImageVariantReader is the bounded Media projection for a viewer that
+// can only discover enabled library items. It deliberately differs from the
+// administrator variant reader: an administrator may inspect a disabled image
+// while a sidebar viewer must not recover it by guessing an image ID.
+type EnabledImageVariantReader interface {
+	GetEnabledImageVariant(context.Context, int64, string) (ImageVariant, error)
+}
+
 // ImageLibraryReader is the narrow Media-owned local projection consumed by
 // sidebar workbench reads. Implementations must not invoke a provider or create
 // image variants while serving these methods.

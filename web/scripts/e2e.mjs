@@ -12,10 +12,11 @@ const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const DIST = path.join(ROOT, 'dist');
 const TEST_BUNDLES = {
   admin: await buildTestBrowserBundle(path.join(ROOT, 'src/admin/main.ts')),
+  customerHost: await buildTestBrowserBundle(path.join(ROOT, 'v3/customerAdapter.ts')),
   productHost: await buildTestBrowserBundle(path.join(ROOT, 'v3/productAdapter.ts')),
   questionnaireEditor: await buildTestBrowserBundle(path.join(ROOT, 'src/admin/sections/questionnaireEditor.ts')),
   h5: await buildTestBrowserBundle(path.join(ROOT, 'src/h5/main.ts')),
-  sidebar: await buildTestBrowserBundle(path.join(ROOT, 'src/sidebar/main.ts')),
+  sidebar: await buildTestBrowserBundle(path.join(ROOT, 'v3/sidebar/main.ts')),
   memberGridShare: await buildTestBrowserBundle(path.join(ROOT, 'src/public/main.ts')),
 };
 
@@ -130,11 +131,15 @@ async function loadQuestionnaireEditor({ q = '', questionnaire } = {}) {
   return { dom, trace };
 }
 
-async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHistoryHttp, campaignHttp = false, memberGridHistoryHttp, contactHistoryHttp, hxcHistoryHttp, messageHistoryHttp = false, customerListHttp = false, groupDirectoryHttp = false, channelHttp = false, channelHttpFailure = false, channelHistoryHttpFailure = false, channelHistoryEmpty = false, channelQrUrl = false, opsGuardHttp = false, couponHistoryHttp, couponHttp = false, couponHttpFailure = false, audienceHttp = false, audienceEmpty = false, audienceActive = false, audienceHistoryHttp = false, radarHttp = false, productHttp = false, serviceProductHttp = false, orderHistoryHttp = false, h5Http, h5WeChat = false, serviceHistoryHttp = false, serviceHistoryEmpty = false, serviceHistoryFailure = '', groupOpsHistoryHttp, miniProgramHttp = false } = {}) {
+async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHistoryHttp, campaignHttp = false, memberGridHistoryHttp, contactHistoryHttp, hxcHistoryHttp, messageHistoryHttp = false, customerListHttp = false, customerDetailHttp = false, groupDirectoryHttp = false, channelHttp = false, channelHttpFailure = false, channelHistoryHttpFailure = false, channelHistoryEmpty = false, channelQrUrl = false, opsGuardHttp = false, couponHistoryHttp, couponHttp = false, couponHttpFailure = false, audienceHttp = false, audienceEmpty = false, audienceActive = false, audienceHistoryHttp = false, radarHttp = false, productHttp = false, serviceProductHttp = false, orderHistoryHttp = false, h5Http, h5WeChat = false, serviceHistoryHttp = false, serviceHistoryEmpty = false, serviceHistoryFailure = '', groupOpsHistoryHttp, miniProgramHttp = false } = {}) {
   const file = path.join(DIST, rel);
   let html = fs.readFileSync(file, 'utf8');
   // 用 jsdom 执行内联脚本：把 bundle 内联进去，避免资源加载配置
-  html = html.replace(/<script type="module" src="[^"]*assets\/(admin|h5|sidebar)-[^"]+\.js"><\/script>/, (_m, name) => `<script>${productHttp ? TEST_BUNDLES.productHost : TEST_BUNDLES[name]}</script>`);
+  html = html.replace(/<script type="module" src="[^"]*assets\/(admin|h5|sidebar(?:Host)?)-[^"]+\.js"><\/script>/, (_m, name) => {
+    if (customerListHttp || customerDetailHttp) return `<script>${TEST_BUNDLES.customerHost}</script><script>${TEST_BUNDLES.admin}</script>`;
+    const bundle = name.startsWith('sidebar') ? TEST_BUNDLES.sidebar : TEST_BUNDLES[name];
+    return `<script>${productHttp ? TEST_BUNDLES.productHost : bundle}</script>`;
+  });
   const qs = q || (id != null ? 'id=' + id : '');
   const dom = new JSDOM(html, {
     url: 'http://localhost/' + rel + (qs ? '?' + qs : ''),
@@ -143,7 +148,7 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
     beforeParse(window) {
       if (h5WeChat) Object.defineProperty(window.navigator, 'userAgent', { value: 'MicroMessenger/8.0', configurable: true });
       // Mock 仅由 DOM 回归测试显式注入；浏览器默认运行态不会走此路径。
-      window.__AICRM_TEST_MOCK__ = !(automationHistoryHttp || campaignHistoryHttp || campaignHttp || memberGridHistoryHttp || contactHistoryHttp || hxcHistoryHttp || messageHistoryHttp || customerListHttp || groupDirectoryHttp || channelHttp || couponHistoryHttp || couponHttp || audienceHttp || audienceHistoryHttp || radarHttp || productHttp || serviceProductHttp || orderHistoryHttp || h5Http || serviceHistoryHttp || groupOpsHistoryHttp || miniProgramHttp);
+      window.__AICRM_TEST_MOCK__ = !(automationHistoryHttp || campaignHistoryHttp || campaignHttp || memberGridHistoryHttp || contactHistoryHttp || hxcHistoryHttp || messageHistoryHttp || customerListHttp || customerDetailHttp || groupDirectoryHttp || channelHttp || couponHistoryHttp || couponHttp || audienceHttp || audienceHistoryHttp || radarHttp || productHttp || serviceProductHttp || orderHistoryHttp || h5Http || serviceHistoryHttp || groupOpsHistoryHttp || miniProgramHttp);
       if (hxcHistoryHttp) {
         window.Headers = Headers;
         const test = window.__hxcHistoryHttpTest = { calls: [], fail: hxcHistoryHttp.fail || false };
@@ -990,6 +995,7 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
         return;
       }
       if (customerListHttp) {
+        window.Response = Response;
         const json = (data, status = 200) => ({ ok: status >= 200 && status < 300, status, headers: new Headers({ 'Content-Type': 'application/json' }), text: async () => JSON.stringify(data), json: async () => data });
         const customers = Array.from({ length: 55 }, (_, index) => ({ customer_id: index + 1, status: 'active', display_name: index < 10 ? `李思远${index + 1}` : `客户${index + 1}`, oneid: `oneid-${index + 1}`, phone_masked: `138****${String(index).padStart(4, '0')}`, activation_status: 'active', updated_at: '2026-08-26T00:00:00Z' }));
         window.__customerListRequests = [];
@@ -1001,6 +1007,24 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
           if (url.searchParams.get('keyword')) rows = rows.slice(0, 10);
           const offset = url.searchParams.get('cursor') === 'customer-page-2' ? 50 : 0;
           return json({ items: rows.slice(offset, offset + 50), next_cursor: offset === 0 && rows.length > 50 ? 'customer-page-2' : undefined, total: rows.length, total_is_estimate: false, watermark: 'customer-test-watermark' });
+        };
+        return;
+      }
+      if (customerDetailHttp) {
+        window.Response = Response;
+        const json = (data, status = 200) => ({ ok: status >= 200 && status < 300, status, headers: new Headers({ 'Content-Type': 'application/json' }), text: async () => JSON.stringify(data), json: async () => data });
+        window.__customerDetailRequests = [];
+        window.fetch = async (input) => {
+          const url = new URL(String(input), window.location.origin);
+          window.__customerDetailRequests.push(url.pathname + url.search);
+          if (url.pathname === '/api/admin/customers/7/360') return json({
+            profile: { status: 'ready', data: { display_name: '李思远', last_synced_at: '2026-08-20T10:00:00Z', updated_at: '2026-08-25T09:30:00Z' } },
+            recent_touchpoints: { status: 'ready', data: [{ id: 101, event_type: 'owner.assigned', occurred_at: '2026-08-21T08:00:00Z' }] },
+          });
+          if (url.pathname === '/api/admin/customers/7/tags') return json({ items: [{ id: 11, name: '高意向', group_sort_order: 1, sort_order: 1 }] });
+          if (url.pathname === '/api/admin/customers/7/chat-activity') return json({ items: [{ chat_type: 'private', message_type: 'text', occurred_at: '2026-08-25T09:30:00Z' }] });
+          if (url.pathname === '/api/v1/customers/7/survey-answers') return json({ items: [{ id: 7001, questionnaire_id: 41, total_score: 86, submitted_at: '2026-08-23T10:30:00Z', answers: [{ question_id: 5, question_type: 'single_choice', sort_order: 0, selected_options: [{ option_id: 12, option_text: '会', score: 10 }] }] }], total: 1 });
+          return json({ code: 'unexpected_customer_detail_request' }, 500);
         };
         return;
       }
@@ -1508,7 +1532,7 @@ console.log('admin/customers.html（筛选、opaque cursor 翻页与详情导航
   input(dom, d.querySelector('#fCustomerOwner'), '101');
   click(dom, [...d.querySelectorAll('button')].find((b) => b.textContent.trim() === '查询'));
   await sleep(300);
-  ok('负责人筛选在后端无谓词时明确报错且不发请求', d.querySelector('[data-customer-error]')?.textContent.includes('暂不支持') === true && dom.window.__customerListRequests.length === requestsBeforeOwnerFilter && d.querySelectorAll('tbody tr').length === 50);
+  ok('负责人筛选在后端无谓词时明确拒绝、清除旧页且不读取目录', Boolean(d.querySelector('[data-customer-error]')?.textContent.trim()) && dom.window.__customerListRequests.length === requestsBeforeOwnerFilter && d.querySelectorAll('tbody tr').length === 0);
 
   click(dom, [...d.querySelectorAll('button')].find((b) => b.textContent.trim() === '清空'));
   await sleep(300);
@@ -1516,7 +1540,7 @@ console.log('admin/customers.html（筛选、opaque cursor 翻页与详情导航
   input(dom, d.querySelector('#fCustomerTag'), '2');
   click(dom, [...d.querySelectorAll('button')].find((b) => b.textContent.trim() === '查询'));
   await sleep(300);
-  ok('标签筛选在后端无谓词时明确报错且不发请求', d.querySelector('[data-customer-error]')?.textContent.includes('暂不支持') === true && dom.window.__customerListRequests.length === requestsBeforeTagFilter);
+  ok('标签筛选在后端无谓词时明确拒绝且不读取目录', Boolean(d.querySelector('[data-customer-error]')?.textContent.trim()) && dom.window.__customerListRequests.length === requestsBeforeTagFilter);
 
   input(dom, d.querySelector('#fCustomerMobile'), '138000000000');
   click(dom, [...d.querySelectorAll('button')].find((b) => b.textContent.trim() === '查询'));
@@ -1587,6 +1611,25 @@ console.log('admin/customerDetail.html（安全 Customer360）');
   ok('Customer360 不展示手机号与外部身份', !rendered.includes('手机号') && !rendered.includes('external_userid') && !rendered.includes('unionid') && !rendered.includes('这个周期服务能开发票吗？'));
   ok('Customer360 渲染安全问卷 ID 投影', d.querySelector('[data-customer-survey]')?.textContent.includes('提交 7001') && d.body.textContent.includes('题目 5') && d.body.textContent.includes('选项 12'));
   ok('Customer360 明确隐藏自由文本与评测', d.querySelector('[data-customer-answer-policy]')?.textContent.includes('不展示自由文本') && d.body.textContent.includes('当前 V2 契约不可用'));
+  dom.window.close();
+}
+
+console.log('admin/customerDetail.html（V3 Customer Host 安全投影）');
+{
+  const dom = await loadPage('admin/customerDetail.html', { id: 7, customerDetailHttp: true });
+  const d = dom.window.document;
+  await sleep(80);
+  const requests = dom.window.__customerDetailRequests;
+  ok('Customer Host 将冻结 V1 context/survey 读取映射到现有 Customer 投影',
+    requests.includes('/api/admin/customers/7/360') &&
+    requests.includes('/api/admin/customers/7/tags') &&
+    requests.includes('/api/admin/customers/7/chat-activity?limit=20') &&
+    requests.includes('/api/v1/customers/7/survey-answers'));
+  ok('Customer Host 保留安全 360 页面与选择题 ID，不混入自由文本或身份',
+    d.querySelector('#stage')?.textContent.includes('李思远') &&
+    d.querySelector('[data-customer-survey]')?.textContent.includes('提交 7001') &&
+    d.querySelector('#stage')?.textContent.includes('选项 12') &&
+    !d.querySelector('#stage')?.textContent.includes('option_text'));
   dom.window.close();
 }
 

@@ -65,10 +65,10 @@ type Config struct {
 	Coupons      couponport.CustomerCouponReader
 	Materials    mediaport.ImageLibraryReader
 	MaterialSend mediaport.SidebarImageSendReader
-	// ImageVariants serves bounded image previews to the scoped sidebar
+	// ImageVariants serves bounded enabled-image previews to the scoped sidebar
 	// viewer. It is optional so existing contract tests keep constructing
 	// Config without it; a nil reader answers 503 capability_not_ready.
-	ImageVariants mediaport.ImageVariantReader
+	ImageVariants mediaport.EnabledImageVariantReader
 	Radar         radarport.Manager
 	Sends         outboundport.SidebarSendAccepter
 	PublicOrigin  string
@@ -455,7 +455,7 @@ func (h *Handler) materialVariant(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "resource_not_available")
 		return
 	}
-	variant, err := h.config.ImageVariants.GetImageVariant(r.Context(), imageID, key)
+	variant, err := h.config.ImageVariants.GetEnabledImageVariant(r.Context(), imageID, key)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "resource_not_available")
 		return

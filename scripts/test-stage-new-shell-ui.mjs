@@ -15,7 +15,7 @@ const stagedManifest = readManifest(stage);
 const entryKeys = [
   'admin', 'tokens', 'labs',
   'operationCyclesHost', 'productHost', 'channelCenterHost', 'aiAssistantHost',
-  'sidebarHost', 'sidebarStyles',
+  'customerHost', 'sidebarHost', 'sidebarStyles',
 ];
 const selected = new Set();
 const includeClosure = (relative) => {
@@ -73,10 +73,12 @@ try {
   execFileSync(process.execPath, [path.join(repository, 'scripts/stage-pr01-effects-ui.mjs'), fixtureSource, fixtureStage], { stdio: 'pipe' });
   execFileSync(process.execPath, [path.join(repository, 'scripts/stage-survey-ui.mjs'), fixtureSource, fixtureStage], { stdio: 'pipe' });
   const before = fs.readFileSync(path.join(fixtureStage, 'asset-manifest.json'));
-  const missing = [...selected].sort()[0];
+  const missing = sourceManifest.entries?.customerHost;
+  assert.equal(typeof missing, 'string', 'customer Host entry must be declared before staging');
+  assert.ok(selected.has(missing), 'customer Host must be included in the staged recursive closure');
   fs.rmSync(path.join(fixtureSource, missing));
   const rejected = spawnSync(process.execPath, [path.join(repository, 'scripts/stage-new-shell-ui.mjs'), fixtureSource, fixtureStage], { encoding: 'utf8' });
-  assert.notEqual(rejected.status, 0, 'new shell stage accepted a missing recursive asset');
+  assert.notEqual(rejected.status, 0, 'new shell stage accepted a missing customer Host asset');
   assert.match(`${rejected.stdout}\n${rejected.stderr}`, /expected source release file is absent/, 'new shell stage did not report the missing artifact safely');
   assert.ok(fs.readFileSync(path.join(fixtureStage, 'asset-manifest.json')).equals(before), 'missing source asset mutated the existing release stage');
 } finally {

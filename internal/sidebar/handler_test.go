@@ -3,6 +3,7 @@ package sidebar
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -114,6 +115,17 @@ func (testMaterials) ReadSidebarImageForSend(context.Context, int64, time.Time) 
 	return mediaport.SidebarImageSendMaterial{ImageID: 1, MediaID: "media-1", ReadyUntil: time.Now().Add(time.Hour)}, nil
 }
 
+type testImageVariants struct {
+	variant mediaport.ImageVariant
+	err     error
+	calls   int
+}
+
+func (reader *testImageVariants) GetEnabledImageVariant(context.Context, int64, string) (mediaport.ImageVariant, error) {
+	reader.calls++
+	return reader.variant, reader.err
+}
+
 type unreadyMaterials struct{ testMaterials }
 
 func (unreadyMaterials) ReadSidebarImageForSend(context.Context, int64, time.Time) (mediaport.SidebarImageSendMaterial, error) {
@@ -202,5 +214,29 @@ func TestMaterialSendFailsClosedWithoutProviderReadyMediaID(t *testing.T) {
 	handler.Routes().ServeHTTP(response, request)
 	if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), `"code":"capability_not_ready"`) {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestMaterialVariantUsesEnabledViewerProjection(t *testing.T) {
+	products := testProducts{}
+	variants := &testImageVariants{variant: mediaport.ImageVariant{Content: []byte("png"), MediaType: "image/png", ETag: `"fixture"`}}
+	handler, err := NewHandler(Config{Contexts: testContext{}, Profiles: testProfile{}, Surveys: testSurveys{}, Timeline: testTimeline{}, Products: products, ProductByID: products, Orders: testOrders{}, Entitlements: testEntitlements{}, Coupons: testCoupons{}, Materials: testMaterials{}, MaterialSend: testMaterials{}, ImageVariants: variants, Radar: testRadar{}, Sends: testSends{}, PublicOrigin: "https://crm.example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/api/sidebar/v2/materials/7/variants/thumb_320", nil)
+	request.Header.Set("Authorization", "Bearer signed")
+	response := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(response, request)
+	if response.Code != http.StatusOK || response.Header().Get("Content-Type") != "image/png" || variants.calls != 1 {
+		t.Fatalf("enabled variant status=%d content_type=%q calls=%d", response.Code, response.Header().Get("Content-Type"), variants.calls)
+	}
+	variants.err = errors.New("disabled")
+	request = httptest.NewRequest(http.MethodGet, "/api/sidebar/v2/materials/8/variants/thumb_320", nil)
+	request.Header.Set("Authorization", "Bearer signed")
+	response = httptest.NewRecorder()
+	handler.Routes().ServeHTTP(response, request)
+	if response.Code != http.StatusNotFound || !strings.Contains(response.Body.String(), `"code":"resource_not_available"`) {
+		t.Fatalf("unavailable variant status=%d body=%s", response.Code, response.Body.String())
 	}
 }
