@@ -3,7 +3,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
@@ -20,6 +19,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
 	accessport "github.com/qianlan33333-png/AI-CRM-v3/internal/access/port"
 	accessstore "github.com/qianlan33333-png/AI-CRM-v3/internal/access/store"
 	customerapp "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/app"
@@ -38,13 +38,11 @@ import (
 
 const (
 	sourceSystem = "v2_external_effect_job"
-	streamMarker = "__AICRM_V2_EXTERNAL_EFFECT_JOB__|"
-	timeMarker   = "__AICRM_V2_EXTERNAL_EFFECT_SNAPSHOT__|"
 )
 
 type options struct {
-	mode, snapshot, sourceStream, digest, corpID string
-	confirm                                      bool
+	mode, snapshot, sourceDatabaseURLFile, digest, corpID string
+	confirm                                               bool
 }
 type manifest struct {
 	SchemaVersion int         `json:"schema_version"`
@@ -93,7 +91,7 @@ func run(ctx context.Context, args []string) error {
 	var o options
 	flags.StringVar(&o.mode, "mode", "inspect", "extract|inspect|dry-run|apply|verify")
 	flags.StringVar(&o.snapshot, "snapshot", "", "protected snapshot path")
-	flags.StringVar(&o.sourceStream, "source-stream", "", "read-only v2 external_effect_job stream")
+	flags.StringVar(&o.sourceDatabaseURLFile, "source-database-url-file", "", "0600 file containing v2 read-only PostgreSQL URL")
 	flags.StringVar(&o.digest, "manifest-sha256", "", "exact protected snapshot SHA-256")
 	flags.StringVar(&o.corpID, "wecom-corp-id", "", "WeCom corp ID scope for target_id")
 	flags.BoolVar(&o.confirm, "confirm-apply", false, "confirm immutable receipt apply")
@@ -101,10 +99,10 @@ func run(ctx context.Context, args []string) error {
 		return err
 	}
 	if o.mode == "extract" {
-		if o.snapshot == "" || o.sourceStream == "" || o.corpID == "" {
-			return errors.New("extract requires --snapshot, --source-stream and --wecom-corp-id")
+		if o.snapshot == "" || o.sourceDatabaseURLFile == "" || o.corpID == "" {
+			return errors.New("extract requires --snapshot, --source-database-url-file and --wecom-corp-id")
 		}
-		m, err := extract(o.sourceStream, o.corpID)
+		m, err := extract(ctx, o.sourceDatabaseURLFile, o.corpID)
 		if err != nil {
 			return err
 		}
@@ -188,62 +186,81 @@ func run(ctx context.Context, args []string) error {
 	return printResultWithCounters("apply", m, out)
 }
 
-func extract(path, corpID string) (manifest, error) {
-	f, err := os.Open(path)
+func extract(ctx context.Context, sourceDatabaseURLFile, corpID string) (manifest, error) {
+	dsn, err := protectedDatabaseURL(sourceDatabaseURLFile)
 	if err != nil {
 		return manifest{}, err
 	}
-	defer f.Close()
-	m := manifest{SchemaVersion: 1, SourceSystem: sourceSystem, CorpID: corpID, Jobs: []sourceJob{}}
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 64<<10), 4<<20)
-	seen := map[int64]bool{}
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if strings.HasPrefix(line, timeMarker) {
-			if !m.CapturedAt.IsZero() {
-				return manifest{}, errors.New("duplicate source snapshot timestamp")
-			}
-			value := strings.TrimPrefix(line, timeMarker)
-			m.CapturedAt, err = time.Parse(time.RFC3339Nano, value)
-			if err != nil {
-				return manifest{}, errors.New("invalid source snapshot timestamp")
-			}
-			m.CapturedAt = m.CapturedAt.UTC()
-			continue
-		}
-		if !strings.HasPrefix(line, streamMarker) {
-			continue
-		}
-		raw, decodeErr := hex.DecodeString(strings.TrimPrefix(line, streamMarker))
-		if decodeErr != nil {
-			return manifest{}, errors.New("invalid external_effect_job source row")
-		}
-		var job sourceJob
-		decoder := json.NewDecoder(strings.NewReader(string(raw)))
-		decoder.DisallowUnknownFields()
-		if decoder.Decode(&job) != nil {
-			return manifest{}, errors.New("source field drift or invalid external_effect_job row")
-		}
-		if err = validJob(job); err != nil {
-			return manifest{}, err
-		}
-		if seen[job.ID] {
-			return manifest{}, errors.New("duplicate external_effect_job source id")
-		}
-		seen[job.ID] = true
-		m.Jobs = append(m.Jobs, job)
+	config, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		return manifest{}, errors.New("invalid protected source database URL")
 	}
-	if err = scanner.Err(); err != nil {
+	conn, err := pgx.ConnectConfig(ctx, config)
+	if err != nil {
 		return manifest{}, err
 	}
-	if m.CapturedAt.IsZero() {
-		return manifest{}, errors.New("source snapshot timestamp unavailable")
+	defer conn.Close(ctx)
+	tx, err := conn.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return manifest{}, err
+	}
+	defer tx.Rollback(ctx)
+	m := manifest{SchemaVersion: 1, SourceSystem: sourceSystem, CorpID: corpID, Jobs: []sourceJob{}}
+	if err = tx.QueryRow(ctx, `SELECT transaction_timestamp()`).Scan(&m.CapturedAt); err != nil {
+		return manifest{}, err
+	}
+	rows, err := tx.Query(ctx, `SELECT id,effect_type,operation,target_id,actor_id,payload_json,status,created_at,executed_at AS completed_at
+		FROM external_effect_job
+		WHERE effect_type IN ('wecom.contact.tag.mark','wecom.contact.tag.unmark')
+		  AND operation IN ('tag_mark','tag_unmark')
+		ORDER BY id`)
+	if err != nil {
+		return manifest{}, errors.New("source external_effect_job contract unavailable")
+	}
+	for rows.Next() {
+		var job sourceJob
+		if err = rows.Scan(&job.ID, &job.EffectType, &job.Operation, &job.TargetID, &job.ActorID, &job.Payload, &job.Status, &job.CreatedAt, &job.CompletedAt); err != nil {
+			rows.Close()
+			return manifest{}, errors.New("source external_effect_job contract drift")
+		}
+		if err = validJob(job); err != nil {
+			rows.Close()
+			return manifest{}, err
+		}
+		m.Jobs = append(m.Jobs, job)
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return manifest{}, err
+	}
+	rows.Close()
+	m.CapturedAt = m.CapturedAt.UTC()
+	if err = tx.Commit(ctx); err != nil {
+		return manifest{}, err
 	}
 	if err = validManifest(m); err != nil {
 		return manifest{}, err
 	}
 	return m, nil
+}
+
+func protectedDatabaseURL(path string) (string, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return "", err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Mode().Perm() != 0600 {
+		return "", errors.New("source database URL file must be a non-symlink 0600 file")
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	value := strings.TrimSpace(string(raw))
+	if value == "" || strings.Contains(value, "\x00") {
+		return "", errors.New("source database URL file is invalid")
+	}
+	return value, nil
 }
 func save(path string, m manifest) error {
 	if filepath.Clean(path) != path {
@@ -311,7 +328,10 @@ func validManifest(m manifest) error {
 	return nil
 }
 func validJob(j sourceJob) error {
-	if j.ID < 1 || j.EffectType != "wecom.contact.tag.mark" && j.EffectType != "wecom.contact.tag.unmark" || j.Operation != "tag_mark" && j.Operation != "tag_unmark" || strings.TrimSpace(j.TargetID) != j.TargetID || j.TargetID == "" || strings.TrimSpace(j.ActorID) != j.ActorID || j.ActorID == "" || strings.TrimSpace(j.Status) != j.Status || j.Status == "" || j.CreatedAt.IsZero() || !json.Valid(j.Payload) {
+	// actor_id is a v2 caller/admin field and may be legitimately empty. It is
+	// retained only in the immutable source digest; attribution comes from the
+	// payload's follow_user_userid below.
+	if j.ID < 1 || j.EffectType != "wecom.contact.tag.mark" && j.EffectType != "wecom.contact.tag.unmark" || j.Operation != "tag_mark" && j.Operation != "tag_unmark" || strings.TrimSpace(j.TargetID) != j.TargetID || j.TargetID == "" || strings.TrimSpace(j.ActorID) != j.ActorID || strings.TrimSpace(j.Status) != j.Status || j.Status == "" || j.CreatedAt.IsZero() || !json.Valid(j.Payload) {
 		return errors.New("source field drift or invalid external_effect_job row")
 	}
 	return nil
@@ -366,12 +386,27 @@ func (r resolver) record(ctx context.Context, j sourceJob) (customerport.Histori
 		rec.Reason = "source_operation_mismatch"
 		return rec, nil
 	}
-	providerTags, ok := payloadTags(j.Payload)
+	payload, ok := parsePayload(j.Payload)
 	if !ok {
 		rec.Reason = "payload_tags_invalid"
 		return rec, nil
 	}
-	if len(providerTags) == 0 {
+	if payload.ExternalUserID == "" {
+		rec.Resolution = "pending"
+		rec.Reason = "payload_external_userid_missing"
+		return rec, nil
+	}
+	if payload.ExternalUserID != j.TargetID {
+		rec.Resolution = "conflict"
+		rec.Reason = "payload_target_conflict"
+		return rec, nil
+	}
+	if payload.FollowUserUserID == "" {
+		rec.Resolution = "pending"
+		rec.Reason = "follow_user_unresolved"
+		return rec, nil
+	}
+	if len(payload.TagIDs) == 0 {
 		rec.Resolution = "excluded"
 		rec.Reason = "payload_tags_missing"
 		return rec, nil
@@ -392,8 +427,8 @@ func (r resolver) record(ctx context.Context, j sourceJob) (customerport.Histori
 			return nil
 		}
 		rec.CustomerID = customerdomain.CustomerID(result.CustomerID)
-		staff, e := r.staff.UserByWeComUserID(tx, j.ActorID, false)
-		if errors.Is(e, pgx.ErrNoRows) {
+		staff, e := r.staff.UserByWeComUserID(tx, payload.FollowUserUserID, false)
+		if errors.Is(e, accessdomain.ErrNotFound) || errors.Is(e, pgx.ErrNoRows) {
 			rec.Resolution = "pending"
 			rec.Reason = "staff_unresolved"
 			return nil
@@ -401,14 +436,11 @@ func (r resolver) record(ctx context.Context, j sourceJob) (customerport.Histori
 		if e != nil {
 			return e
 		}
-		if !staff.Active {
-			rec.Resolution = "pending"
-			rec.Reason = "staff_inactive"
-			return nil
-		}
+		// This is immutable historical attribution, not a present tag write.
+		// A staff member disabled after the v2 action remains valid provenance.
 		rec.StaffID = staff.ID
-		mapped := make([]int64, 0, len(providerTags))
-		for _, id := range providerTags {
+		mapped := make([]int64, 0, len(payload.TagIDs))
+		for _, id := range payload.TagIDs {
 			local, found, e := r.tags.LocalTagID(tx, id)
 			if e != nil {
 				return e
@@ -442,24 +474,31 @@ func (r resolver) record(ctx context.Context, j sourceJob) (customerport.Histori
 	}
 	return rec, nil
 }
-func payloadTags(raw json.RawMessage) ([]string, bool) {
-	var p struct {
-		TagIDs []string `json:"tag_ids"`
-	}
+
+type sourcePayload struct {
+	ExternalUserID   string   `json:"external_userid"`
+	FollowUserUserID string   `json:"follow_user_userid"`
+	TagIDs           []string `json:"tag_ids"`
+}
+
+func parsePayload(raw json.RawMessage) (sourcePayload, bool) {
+	var p sourcePayload
 	d := json.NewDecoder(strings.NewReader(string(raw)))
 	if d.Decode(&p) != nil {
-		return nil, false
+		return sourcePayload{}, false
+	}
+	if strings.TrimSpace(p.ExternalUserID) != p.ExternalUserID || strings.TrimSpace(p.FollowUserUserID) != p.FollowUserUserID {
+		return sourcePayload{}, false
 	}
 	seen := map[string]bool{}
-	out := make([]string, 0, len(p.TagIDs))
+	p.TagIDs = append([]string(nil), p.TagIDs...)
 	for _, id := range p.TagIDs {
 		if strings.TrimSpace(id) != id || id == "" || seen[id] {
-			return nil, false
+			return sourcePayload{}, false
 		}
 		seen[id] = true
-		out = append(out, id)
 	}
-	return out, true
+	return p, true
 }
 func canonicalJob(j sourceJob) (string, error) {
 	payload, err := compact(j.Payload)

@@ -75,14 +75,14 @@ ALTER TABLE external_effects DROP CONSTRAINT IF EXISTS external_effects_kind_che
 ALTER TABLE external_effects ADD CONSTRAINT external_effects_kind_check CHECK (kind IN (
   'outbound_message','automation_message','outbound_media','wecom_tag_catalog','group_message',
   'channel_acquisition_asset','channel_welcome_message','channel_entry_tag',
-  'channel_acquisition_link_mutation','sidebar_jssdk_send','survey_completion','customer_owner_handoff','customer_tag_command',
+  'channel_acquisition_link_mutation','sidebar_jssdk_send','survey_completion','customer_owner_handoff','customer_tag_command','commerce_product_push',
   'wechat_pay_prepay_v1','wechat_pay_refund_v1','wechat_shop_refund_v1'
 ));
 ALTER TABLE external_effects ADD CONSTRAINT external_effects_owner_kind_shape CHECK (
   (owner='outbound' AND kind IN (
     'outbound_message','automation_message','outbound_media','wecom_tag_catalog','group_message',
     'channel_acquisition_asset','channel_welcome_message','channel_entry_tag',
-    'channel_acquisition_link_mutation','sidebar_jssdk_send','survey_completion','customer_owner_handoff','customer_tag_command'
+    'channel_acquisition_link_mutation','sidebar_jssdk_send','survey_completion','customer_owner_handoff','customer_tag_command','commerce_product_push'
   )) OR
   (owner='payment' AND kind IN ('wechat_pay_prepay_v1','wechat_pay_refund_v1','wechat_shop_refund_v1'))
 );
@@ -136,6 +136,8 @@ CREATE TABLE customer_tag_history_receipts (
     CONSTRAINT customer_tag_history_receipts_mutation_shape CHECK (
        (effect_type='wecom.contact.tag.mark' AND operation='tag_mark' AND cardinality(remove_tag_ids)=0)
        OR (effect_type='wecom.contact.tag.unmark' AND operation='tag_unmark' AND cardinality(add_tag_ids)=0)
+       OR (effect_type='wecom.contact.tag.mark' AND operation='tag_unmark' AND cardinality(add_tag_ids)=0 AND cardinality(remove_tag_ids)=0)
+       OR (effect_type='wecom.contact.tag.unmark' AND operation='tag_mark' AND cardinality(add_tag_ids)=0 AND cardinality(remove_tag_ids)=0)
     ),
     CONSTRAINT customer_tag_history_receipts_resolution_shape CHECK (
        (resolution='imported' AND customer_id IS NOT NULL AND cardinality(add_tag_ids)+cardinality(remove_tag_ids)>0)

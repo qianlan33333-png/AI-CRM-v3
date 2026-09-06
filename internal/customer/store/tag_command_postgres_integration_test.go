@@ -16,10 +16,55 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 )
+
+func TestTagCommandMigration0093RetainsHigherVersionCommerceEffectFacts(t *testing.T) {
+	url, err := platformconfig.DatabaseURL()
+	if err != nil {
+		t.Skip("AICRM_DATABASE_URL is not configured")
+	}
+	ctx := context.Background()
+	pool, clean := tagCommandPGPool(t, ctx, url)
+	defer clean()
+	native := pool.Native()
+	insertEffect := func(owner, kind, fingerprint string) error {
+		_, insertErr := native.Exec(ctx, `INSERT INTO external_effects(owner,kind,source_ref_digest,target_ref_digest,payload_digest,policy_version_hash,envelope_fingerprint,state)
+			VALUES($1,$2,'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb','sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc','sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',$3,'accepted')`, owner, kind, fingerprint)
+		return insertErr
+	}
+	// Simulate an already-applied higher migration's commerce effect fact.
+	if err = insertEffect("outbound", "commerce_product_push", "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"); err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Clean(filepath.Join("..", "..", ".."))
+	sql, err := os.ReadFile(filepath.Join(root, "migrations", "0093_customer_tag_commands.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := strings.Index(string(sql), "ALTER TABLE external_effects DROP CONSTRAINT")
+	end := strings.Index(string(sql), "ALTER TABLE IF EXISTS channel_entrant_actions")
+	if start < 0 || end <= start {
+		t.Fatal("locate 0093 external_effects compatibility constraints")
+	}
+	// Apply the exact lower-numbered migration fragment after the fact exists.
+	if _, err = native.Exec(ctx, string(sql)[start:end]); err != nil {
+		t.Fatalf("0093 narrowed a higher-version commerce effect fact: %v", err)
+	}
+	var count int
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM external_effects WHERE kind='commerce_product_push'`).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("commerce effect facts=%d err=%v", count, err)
+	}
+	if err = insertEffect("outbound", "not_a_registered_kind", "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"); err == nil {
+		t.Fatal("unregistered effect kind was accepted")
+	}
+	if err = insertEffect("payment", "commerce_product_push", "sha256:1111111111111111111111111111111111111111111111111111111111111111"); err == nil {
+		t.Fatal("invalid owner/kind pairing was accepted")
+	}
+}
 
 func TestTagCommandPostgreSQLCompletionFenceAndReplay(t *testing.T) {
 	url, err := platformconfig.DatabaseURL()
