@@ -40,6 +40,9 @@ type handlerManagementStub struct{}
 func (handlerManagementStub) Create(context.Context, accessdomain.Principal, accessport.CreateMachineClientInput) (accessport.IssuedMachineClient, error) {
 	return accessport.IssuedMachineClient{}, nil
 }
+func (handlerManagementStub) CreateV1(context.Context, accessdomain.Principal, accessport.CreateMachineClientInput) (accessport.IssuedMachineClient, error) {
+	return accessport.IssuedMachineClient{}, nil
+}
 func (handlerManagementStub) List(context.Context, accessdomain.Principal) ([]accessport.MachineClientSummary, error) {
 	return []accessport.MachineClientSummary{}, nil
 }
@@ -48,6 +51,15 @@ func (handlerManagementStub) Rotate(context.Context, accessdomain.Principal, str
 }
 func (handlerManagementStub) Update(context.Context, accessdomain.Principal, string, accessport.UpdateMachineClientInput) (accessport.MachineClientSummary, error) {
 	return accessport.MachineClientSummary{}, nil
+}
+func (handlerManagementStub) Get(context.Context, accessdomain.Principal, string) (accessport.MachineClientSummary, error) {
+	return accessport.MachineClientSummary{}, nil
+}
+func (handlerManagementStub) PatchV1(context.Context, accessdomain.Principal, string, accessport.PatchMachineClientInput) (accessport.MachineClientSummary, error) {
+	return accessport.MachineClientSummary{}, nil
+}
+func (handlerManagementStub) ListAudit(context.Context, accessdomain.Principal, string, int) ([]accessport.MachineAuditEntry, error) {
+	return []accessport.MachineAuditEntry{}, nil
 }
 func (handlerManagementStub) Activate(context.Context, accessdomain.Principal, string, string, bool) (accessport.MachineClientSummary, error) {
 	return accessport.MachineClientSummary{}, nil
@@ -233,6 +245,9 @@ func TestMountClaimsOnlyV1MachinePaths(t *testing.T) {
 		{http.MethodGet, "/open/v1/capabilities", "machine"},
 		{http.MethodPost, "/open/v1/ai/review-plans", "machine"},
 		{http.MethodGet, "/api/admin/open-platform/clients", "machine"},
+		{http.MethodPatch, "/api/admin/open-platform/clients/client-a", "machine"},
+		{http.MethodGet, "/api/admin/open-platform/clients/client-a/audit", "machine"},
+		{http.MethodPost, "/api/admin/open-platform/clients/client-a/activate", "machine"},
 		{http.MethodGet, "/api/external/orders", "404 page not found"},
 		{http.MethodPost, "/api/operation-cycles/reports", "404 page not found"},
 	} {
@@ -326,5 +341,28 @@ func TestRESTActivityQueryUsesCanonicalDTOAndRejectsAliases(t *testing.T) {
 	handler.Routes().ServeHTTP(response, request)
 	if response.Code != http.StatusBadRequest || len(operations.invocations) != 1 {
 		t.Fatalf("chunked activity body code=%d invocations=%+v", response.Code, operations.invocations)
+	}
+}
+
+func TestV1MachinePatchInputUsesExplicitPresenceForClears(t *testing.T) {
+	request := httptest.NewRequest(http.MethodPatch, "https://crm.example.test/api/admin/open-platform/clients/client-a", strings.NewReader(`{"capabilities":["customer.read"],"owner_scope":null,"expires_at":null}`))
+	request.Header.Set("Content-Type", "application/json")
+	input, err := v1MachinePatchInput(request)
+	if err != nil || input.Capabilities == nil || len(*input.Capabilities) != 1 || (*input.Capabilities)[0] != "customer.read" || !input.OwnerScopeSet || len(input.OwnerScope) != 0 || !input.ExpiresAtSet || input.ExpiresAt != nil {
+		t.Fatalf("patch input=%+v err=%v", input, err)
+	}
+}
+
+func TestV1MachinePatchInputRejectsDuplicateAndEmptyGrantAmbiguity(t *testing.T) {
+	for _, body := range []string{
+		`{"capabilities":["customer.read"],"capabilities":["customer.resolve"]}`,
+		`{}`,
+		`{"capabilities":null}`,
+	} {
+		request := httptest.NewRequest(http.MethodPatch, "https://crm.example.test/api/admin/open-platform/clients/client-a", strings.NewReader(body))
+		request.Header.Set("Content-Type", "application/json")
+		if _, err := v1MachinePatchInput(request); err == nil {
+			t.Fatalf("patch body %s was accepted", body)
+		}
 	}
 }

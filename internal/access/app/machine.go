@@ -57,6 +57,29 @@ var machineCapabilities = map[string]struct{}{
 	"customer_resolve_read": {},
 	"material_create":       {},
 	"material_read":         {},
+	// V1 native open-platform operation grants. They use the same external
+	// integration audience and read/write token scopes as the retained client
+	// credentials protocol; they do not introduce a human role or another
+	// authorization system.
+	"platform.capabilities.read": {},
+	"customer.resolve":           {},
+	"customer.read":              {},
+	"customer.activity.read":     {},
+	"ai.review_plan.create":      {},
+	"operation.read":             {},
+}
+
+// v1ManagedMachineCapabilities is the only capability vocabulary that the
+// current administrator control plane may grant. Frozen historical profiles
+// are imported through their explicit offline path and retain their source
+// facts there; a browser cannot turn those retained facts into a new V1 grant.
+var v1ManagedMachineCapabilities = map[string]struct{}{
+	"platform.capabilities.read": {},
+	"customer.resolve":           {},
+	"customer.read":              {},
+	"customer.activity.read":     {},
+	"ai.review_plan.create":      {},
+	"operation.read":             {},
 }
 
 type MachineConfig struct {
@@ -81,6 +104,8 @@ type MachineClientSummary = accessport.MachineClientSummary
 type ClientCredentialsInput = accessport.ClientCredentialsInput
 type IssuedAccessToken = accessport.IssuedAccessToken
 type UpdateMachineClientInput = accessport.UpdateMachineClientInput
+type PatchMachineClientInput = accessport.PatchMachineClientInput
+type MachineAuditEntry = accessport.MachineAuditEntry
 type HistoricalMachineImportInput = accessport.HistoricalMachineImportInput
 type HistoricalMachineImportResult = accessport.HistoricalMachineImportResult
 
@@ -134,6 +159,24 @@ func (service *MachineService) Create(ctx context.Context, actor domain.Principa
 	return IssuedMachineClient{Client: summarizeMachineClient(created), Secret: secret}, nil
 }
 
+// CreateV1 applies the narrow V1 management allowlist before issuing the
+// one-time credential. Generic Create remains available for the offline
+// historical importer and retained compatibility tests; it is not the V1
+// browser control-plane entry point.
+func (service *MachineService) CreateV1(ctx context.Context, actor domain.Principal, input CreateMachineClientInput) (IssuedMachineClient, error) {
+	if err := requireSuperAdmin(actor); err != nil {
+		return IssuedMachineClient{}, err
+	}
+	candidate, err := service.newMachineClient(input)
+	if err != nil {
+		return IssuedMachineClient{}, err
+	}
+	if err = validateV1ManagedMachineClient(candidate); err != nil {
+		return IssuedMachineClient{}, err
+	}
+	return service.Create(ctx, actor, input)
+}
+
 func (service *MachineService) List(ctx context.Context, actor domain.Principal) ([]MachineClientSummary, error) {
 	if err := requireSuperAdmin(actor); err != nil {
 		return nil, err
@@ -152,6 +195,51 @@ func (service *MachineService) List(ctx context.Context, actor domain.Principal)
 		result = append(result, summarizeMachineClient(client))
 	}
 	return result, nil
+}
+
+// Get returns the current non-secret control-plane view of one caller.
+func (service *MachineService) Get(ctx context.Context, actor domain.Principal, clientID string) (MachineClientSummary, error) {
+	if err := requireSuperAdmin(actor); err != nil {
+		return MachineClientSummary{}, err
+	}
+	clientID, err := domain.NormalizeMachineClientID(clientID)
+	if err != nil {
+		return MachineClientSummary{}, err
+	}
+	var client domain.MachineClient
+	err = service.uow.Within(ctx, func(txContext context.Context) error {
+		var lookupErr error
+		client, lookupErr = service.repository.MachineClientByID(txContext, clientID, false)
+		return lookupErr
+	})
+	if err != nil {
+		return MachineClientSummary{}, err
+	}
+	return summarizeMachineClient(client), nil
+}
+
+// ListAudit reads the Access-owned, client-scoped audit history. The lookup
+// deliberately happens in the same transaction so a missing caller cannot be
+// indistinguishable from an empty audit stream.
+func (service *MachineService) ListAudit(ctx context.Context, actor domain.Principal, clientID string, limit int) ([]MachineAuditEntry, error) {
+	if err := requireSuperAdmin(actor); err != nil {
+		return nil, err
+	}
+	clientID, err := domain.NormalizeMachineClientID(clientID)
+	if err != nil || limit < 1 || limit > 100 {
+		return nil, domain.ErrInvalidInput
+	}
+	var entries []MachineAuditEntry
+	err = service.uow.Within(ctx, func(txContext context.Context) error {
+		client, lookupErr := service.repository.MachineClientByID(txContext, clientID, false)
+		if lookupErr != nil {
+			return lookupErr
+		}
+		var listErr error
+		entries, listErr = service.repository.ListMachineAudit(txContext, client.ID, limit)
+		return listErr
+	})
+	return entries, err
 }
 
 // Rotate returns a newly generated secret exactly once and advances
@@ -264,6 +352,128 @@ func (service *MachineService) Update(ctx context.Context, actor domain.Principa
 		return MachineClientSummary{}, err
 	}
 	return summarizeMachineClient(updated), nil
+}
+
+// PatchV1 applies a presence-aware partial update to a V1-managed caller.
+// It permits enabled callers to change grants because incrementing auth_version
+// in the same transaction invalidates all prior bearer tokens immediately.
+func (service *MachineService) PatchV1(ctx context.Context, actor domain.Principal, clientID string, input PatchMachineClientInput) (MachineClientSummary, error) {
+	if err := requireSuperAdmin(actor); err != nil {
+		return MachineClientSummary{}, err
+	}
+	clientID, err := domain.NormalizeMachineClientID(clientID)
+	if err != nil {
+		return MachineClientSummary{}, err
+	}
+	var updated domain.MachineClient
+	err = service.uow.Within(ctx, func(txContext context.Context) error {
+		client, lookupErr := service.repository.MachineClientByID(txContext, clientID, true)
+		if lookupErr != nil {
+			return lookupErr
+		}
+		next, changed, patchErr := service.patchV1ManagedMachineClient(client, input)
+		if patchErr != nil {
+			return patchErr
+		}
+		if changed {
+			next.AuthVersion++
+			if replaceErr := service.repository.ReplaceMachineClient(txContext, next); replaceErr != nil {
+				return replaceErr
+			}
+			updated = next
+			return service.audit(txContext, updated, &actor.InternalID, "machine_client_grants_updated", "revoked_prior_bearers")
+		}
+		updated = client
+		return service.audit(txContext, updated, &actor.InternalID, "machine_client_grants_updated", "unchanged")
+	})
+	if err != nil {
+		return MachineClientSummary{}, err
+	}
+	return summarizeMachineClient(updated), nil
+}
+
+func (service *MachineService) patchV1ManagedMachineClient(client domain.MachineClient, input PatchMachineClientInput) (domain.MachineClient, bool, error) {
+	next := client
+	if input.DisplayName != nil {
+		next.DisplayName = strings.TrimSpace(*input.DisplayName)
+	}
+	if input.Audiences != nil {
+		audiences, err := domain.NormalizeMachineStrings(*input.Audiences, machineAudiences)
+		if err != nil {
+			return domain.MachineClient{}, false, err
+		}
+		next.Audiences = audiences
+	}
+	if input.Scopes != nil {
+		scopes, err := domain.NormalizeMachineStrings(*input.Scopes, machineScopes)
+		if err != nil {
+			return domain.MachineClient{}, false, err
+		}
+		next.Scopes = scopes
+	}
+	if input.Capabilities != nil {
+		capabilities, err := domain.NormalizeMachineStrings(*input.Capabilities, v1ManagedMachineCapabilities)
+		if err != nil {
+			return domain.MachineClient{}, false, err
+		}
+		next.Capabilities = capabilities
+	}
+	if input.AllowedCIDRs != nil {
+		cidrs, err := domain.NormalizeCIDRs(*input.AllowedCIDRs)
+		if err != nil {
+			return domain.MachineClient{}, false, err
+		}
+		next.AllowedCIDRs = cidrs
+	}
+	if input.TokenTTLSeconds != nil {
+		next.TokenTTLSeconds = *input.TokenTTLSeconds
+	}
+	if input.OwnerScopeSet {
+		ownerScope, err := domain.NormalizeOwnerScope(input.OwnerScope.JSON())
+		if err != nil {
+			return domain.MachineClient{}, false, err
+		}
+		next.OwnerScope = ownerScope
+	}
+	if input.ExpiresAtSet {
+		if input.ExpiresAt != nil && !input.ExpiresAt.After(service.config.Now().UTC()) {
+			return domain.MachineClient{}, false, domain.ErrInvalidInput
+		}
+		if input.ExpiresAt == nil {
+			next.ExpiresAt = nil
+		} else {
+			expiresAt := input.ExpiresAt.UTC()
+			next.ExpiresAt = &expiresAt
+		}
+	}
+	if err := validateV1ManagedMachineClient(next); err != nil {
+		return domain.MachineClient{}, false, err
+	}
+	changed := next.DisplayName != client.DisplayName || !equalMachineStrings(next.Audiences, client.Audiences) || !equalMachineStrings(next.Scopes, client.Scopes) || !equalMachineStrings(next.Capabilities, client.Capabilities) || !equalMachineStrings(next.AllowedCIDRs, client.AllowedCIDRs) || string(next.OwnerScope.JSON()) != string(client.OwnerScope.JSON()) || next.TokenTTLSeconds != client.TokenTTLSeconds || !sameOptionalMachineTime(next.ExpiresAt, client.ExpiresAt)
+	return next, changed, nil
+}
+
+func validateV1ManagedMachineClient(client domain.MachineClient) error {
+	if client.Purpose != "external_agent" || strings.TrimSpace(client.DisplayName) == "" || len(client.DisplayName) > 160 || client.TokenTTLSeconds < 60 || client.TokenTTLSeconds > 3600 {
+		return domain.ErrInvalidInput
+	}
+	if !equalMachineStrings(client.Audiences, []string{"external_integration"}) {
+		return domain.ErrInvalidInput
+	}
+	if _, err := domain.NormalizeMachineStrings(client.Scopes, machineScopes); err != nil {
+		return err
+	}
+	if _, err := domain.NormalizeMachineStrings(client.Capabilities, v1ManagedMachineCapabilities); err != nil {
+		return err
+	}
+	return nil
+}
+
+func sameOptionalMachineTime(left, right *time.Time) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return left.Equal(*right)
 }
 
 // Activate verifies the just-copied one-time secret before moving a regular

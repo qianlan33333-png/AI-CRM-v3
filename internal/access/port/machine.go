@@ -2,6 +2,7 @@ package port
 
 import (
 	"context"
+	"encoding/json"
 	"net/netip"
 	"time"
 
@@ -17,6 +18,7 @@ type MachineRepository interface {
 	ReplaceMachineClient(context.Context, domain.MachineClient) error
 	SetMachineClientLastUsed(context.Context, int64, time.Time) error
 	AppendMachineAudit(context.Context, domain.MachineAudit) error
+	ListMachineAudit(context.Context, int64, int) ([]MachineAuditEntry, error)
 }
 
 // The following DTOs are the stable Access boundary consumed by the machine
@@ -68,6 +70,35 @@ type UpdateMachineClientInput struct {
 	AllowedCIDRs    []string `json:"allowed_cidrs"`
 }
 
+// PatchMachineClientInput is the V1 administrator control-plane edit. Nil
+// fields preserve the stored value. OwnerScopeSet and ExpiresAtSet distinguish
+// an omitted field from an explicit JSON null, so clearing either boundary is
+// deliberate and reviewable. A changed grant advances auth_version atomically.
+type PatchMachineClientInput struct {
+	DisplayName     *string
+	Audiences       *[]string
+	Scopes          *[]string
+	Capabilities    *[]string
+	AllowedCIDRs    *[]string
+	TokenTTLSeconds *int
+	OwnerScope      domain.OwnerScope
+	OwnerScopeSet   bool
+	ExpiresAt       *time.Time
+	ExpiresAtSet    bool
+}
+
+// MachineAuditEntry is the safe, client-scoped audit read model for the
+// administrator control plane. Details are written by Access-owned code only;
+// credentials, tokens, source addresses and customer identifiers are never
+// retained in this table.
+type MachineAuditEntry struct {
+	ActorAdminUserID *int64          `json:"actor_admin_user_id,omitempty"`
+	Action           string          `json:"action"`
+	Outcome          string          `json:"outcome"`
+	Details          json.RawMessage `json:"details"`
+	CreatedAt        time.Time       `json:"created_at"`
+}
+
 type ClientCredentialsInput struct {
 	ClientID        string
 	ClientSecret    string
@@ -90,9 +121,13 @@ type MachineTokenIssuer interface {
 
 type MachineManagement interface {
 	Create(context.Context, domain.Principal, CreateMachineClientInput) (IssuedMachineClient, error)
+	CreateV1(context.Context, domain.Principal, CreateMachineClientInput) (IssuedMachineClient, error)
 	List(context.Context, domain.Principal) ([]MachineClientSummary, error)
 	Rotate(context.Context, domain.Principal, string) (IssuedMachineClient, error)
 	Update(context.Context, domain.Principal, string, UpdateMachineClientInput) (MachineClientSummary, error)
+	Get(context.Context, domain.Principal, string) (MachineClientSummary, error)
+	PatchV1(context.Context, domain.Principal, string, PatchMachineClientInput) (MachineClientSummary, error)
+	ListAudit(context.Context, domain.Principal, string, int) ([]MachineAuditEntry, error)
 	Activate(context.Context, domain.Principal, string, string, bool) (MachineClientSummary, error)
 	SetEnabled(context.Context, domain.Principal, string, bool) (MachineClientSummary, error)
 }

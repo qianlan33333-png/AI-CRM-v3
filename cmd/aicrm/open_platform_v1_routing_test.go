@@ -194,4 +194,16 @@ func (repository *v1RouteMachineRepository) AppendMachineAudit(_ context.Context
 	return nil
 }
 
+func (repository *v1RouteMachineRepository) ListMachineAudit(_ context.Context, clientID int64, limit int) ([]accessport.MachineAuditEntry, error) {
+	items := make([]accessport.MachineAuditEntry, 0)
+	for index := len(repository.audits) - 1; index >= 0 && len(items) < limit; index-- {
+		audit := repository.audits[index]
+		if audit.MachineClientID != clientID {
+			continue
+		}
+		items = append(items, accessport.MachineAuditEntry{ActorAdminUserID: audit.ActorAdminID, Action: audit.Action, Outcome: audit.Outcome, Details: append([]byte(nil), audit.Details...), CreatedAt: audit.CreatedAt})
+	}
+	return items, nil
+}
+
 var _ accessport.MachineRepository = (*v1RouteMachineRepository)(nil)

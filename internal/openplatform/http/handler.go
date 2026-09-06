@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
 	accessport "github.com/qianlan33333-png/AI-CRM-v3/internal/access/port"
@@ -86,6 +87,10 @@ func (handler *Handler) Routes() http.Handler {
 	// The obsolete donor-shaped config endpoints are intentionally not mounted.
 	mux.HandleFunc("GET /api/admin/open-platform/clients", handler.listClients)
 	mux.HandleFunc("POST /api/admin/open-platform/clients", handler.createClient)
+	mux.HandleFunc("GET /api/admin/open-platform/clients/{client_id}", handler.getClient)
+	mux.HandleFunc("PATCH /api/admin/open-platform/clients/{client_id}", handler.patchClient)
+	mux.HandleFunc("GET /api/admin/open-platform/clients/{client_id}/audit", handler.listClientAudit)
+	mux.HandleFunc("POST /api/admin/open-platform/clients/{client_id}/activate", handler.activateClient)
 	mux.HandleFunc("POST /api/admin/open-platform/clients/{client_id}/rotate", handler.rotateClient)
 	mux.HandleFunc("POST /api/admin/open-platform/clients/{client_id}/enable", handler.enableClient)
 	mux.HandleFunc("POST /api/admin/open-platform/clients/{client_id}/disable", handler.disableClient)
@@ -106,7 +111,8 @@ func Mount(next, machine http.Handler) http.Handler {
 		"GET /open/v1/customers/{customer_id}", "GET /open/v1/customers/{customer_id}/activities",
 		"POST /open/v1/ai/review-plans", "GET /open/v1/operations/{operation_id}",
 		"GET /api/admin/open-platform/clients", "POST /api/admin/open-platform/clients",
-		"POST /api/admin/open-platform/clients/{client_id}/rotate", "POST /api/admin/open-platform/clients/{client_id}/enable", "POST /api/admin/open-platform/clients/{client_id}/disable",
+		"GET /api/admin/open-platform/clients/{client_id}", "PATCH /api/admin/open-platform/clients/{client_id}", "GET /api/admin/open-platform/clients/{client_id}/audit",
+		"POST /api/admin/open-platform/clients/{client_id}/activate", "POST /api/admin/open-platform/clients/{client_id}/rotate", "POST /api/admin/open-platform/clients/{client_id}/enable", "POST /api/admin/open-platform/clients/{client_id}/disable",
 		"GET /api/admin/open-platform/routes",
 	} {
 		mux.Handle(route, machine)
@@ -494,6 +500,59 @@ func (handler *Handler) listClients(response http.ResponseWriter, request *http.
 	writeJSON(response, http.StatusOK, map[string]any{"items": clients})
 }
 
+func (handler *Handler) getClient(response http.ResponseWriter, request *http.Request) {
+	actor, ok := handler.adminPrincipal(response, request, false)
+	if !ok {
+		return
+	}
+	client, err := handler.management.Get(request.Context(), actor, request.PathValue("client_id"))
+	if err != nil {
+		writeAdminError(response, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, map[string]any{"client": client})
+}
+
+func (handler *Handler) patchClient(response http.ResponseWriter, request *http.Request) {
+	actor, ok := handler.adminPrincipal(response, request, true)
+	if !ok {
+		return
+	}
+	input, err := v1MachinePatchInput(request)
+	if err != nil {
+		writeJSON(response, http.StatusBadRequest, map[string]string{"error": "invalid_request"})
+		return
+	}
+	client, err := handler.management.PatchV1(request.Context(), actor, request.PathValue("client_id"), input)
+	if err != nil {
+		writeAdminError(response, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, map[string]any{"client": client})
+}
+
+func (handler *Handler) listClientAudit(response http.ResponseWriter, request *http.Request) {
+	actor, ok := handler.adminPrincipal(response, request, false)
+	if !ok {
+		return
+	}
+	limit := 50
+	if raw := request.URL.Query().Get("limit"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 1 || parsed > 100 {
+			writeJSON(response, http.StatusBadRequest, map[string]string{"error": "invalid_request"})
+			return
+		}
+		limit = parsed
+	}
+	entries, err := handler.management.ListAudit(request.Context(), actor, request.PathValue("client_id"), limit)
+	if err != nil {
+		writeAdminError(response, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, map[string]any{"items": entries})
+}
+
 func (handler *Handler) createClient(response http.ResponseWriter, request *http.Request) {
 	actor, ok := handler.adminPrincipal(response, request, true)
 	if !ok {
@@ -504,12 +563,33 @@ func (handler *Handler) createClient(response http.ResponseWriter, request *http
 		writeJSON(response, http.StatusBadRequest, map[string]string{"error": "invalid_request"})
 		return
 	}
-	issued, err := handler.management.Create(request.Context(), actor, input)
+	issued, err := handler.management.CreateV1(request.Context(), actor, input)
 	if err != nil {
 		writeAdminError(response, err)
 		return
 	}
 	writeJSON(response, http.StatusCreated, issued)
+}
+
+func (handler *Handler) activateClient(response http.ResponseWriter, request *http.Request) {
+	actor, ok := handler.adminPrincipal(response, request, true)
+	if !ok {
+		return
+	}
+	var input struct {
+		ClientSecret    string `json:"client_secret"`
+		CopiedConfirmed bool   `json:"copied_confirmed"`
+	}
+	if err := decodeJSON(request, &input); err != nil {
+		writeJSON(response, http.StatusBadRequest, map[string]string{"error": "invalid_request"})
+		return
+	}
+	client, err := handler.management.Activate(request.Context(), actor, request.PathValue("client_id"), input.ClientSecret, input.CopiedConfirmed)
+	if err != nil {
+		writeAdminError(response, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, map[string]any{"client": client})
 }
 
 func (handler *Handler) rotateClient(response http.ResponseWriter, request *http.Request) {
@@ -1116,6 +1196,96 @@ func remoteAddr(value string) (netip.Addr, error) {
 
 func readBody(request *http.Request) ([]byte, error) {
 	return io.ReadAll(http.MaxBytesReader(nil, request.Body, maxBodyBytes))
+}
+
+// v1MachinePatchInput deliberately parses presence before handing a stable
+// value object to Access. This keeps omitted fields distinct from JSON null:
+// only explicit null clears owner_scope or expires_at; an empty grant list is
+// still rejected by Access rather than becoming an accidental broad grant.
+func v1MachinePatchInput(request *http.Request) (accessport.PatchMachineClientInput, error) {
+	if !isJSONContent(request) {
+		return accessport.PatchMachineClientInput{}, errors.New("patch content type")
+	}
+	body, err := readBody(request)
+	if err != nil || !openplatformport.ValidJSONObject(body) {
+		return accessport.PatchMachineClientInput{}, errors.New("invalid patch JSON")
+	}
+	payload := map[string]json.RawMessage{}
+	if err = json.Unmarshal(body, &payload); err != nil || len(payload) == 0 {
+		return accessport.PatchMachineClientInput{}, errors.New("invalid patch JSON")
+	}
+	allowed := map[string]struct{}{
+		"display_name": {}, "audiences": {}, "scopes": {}, "capabilities": {}, "allowed_cidrs": {}, "token_ttl_seconds": {}, "owner_scope": {}, "expires_at": {},
+	}
+	for key := range payload {
+		if _, ok := allowed[key]; !ok {
+			return accessport.PatchMachineClientInput{}, errors.New("unknown patch field")
+		}
+	}
+	var input accessport.PatchMachineClientInput
+	if raw, ok := payload["display_name"]; ok {
+		var value string
+		if json.Unmarshal(raw, &value) != nil || string(raw) == "null" {
+			return input, errors.New("invalid display_name")
+		}
+		input.DisplayName = &value
+	}
+	if raw, ok := payload["audiences"]; ok {
+		var value []string
+		if json.Unmarshal(raw, &value) != nil || value == nil {
+			return input, errors.New("invalid audiences")
+		}
+		input.Audiences = &value
+	}
+	if raw, ok := payload["scopes"]; ok {
+		var value []string
+		if json.Unmarshal(raw, &value) != nil || value == nil {
+			return input, errors.New("invalid scopes")
+		}
+		input.Scopes = &value
+	}
+	if raw, ok := payload["capabilities"]; ok {
+		var value []string
+		if json.Unmarshal(raw, &value) != nil || value == nil {
+			return input, errors.New("invalid capabilities")
+		}
+		input.Capabilities = &value
+	}
+	if raw, ok := payload["allowed_cidrs"]; ok {
+		var value []string
+		if json.Unmarshal(raw, &value) != nil || value == nil {
+			return input, errors.New("invalid allowed_cidrs")
+		}
+		input.AllowedCIDRs = &value
+	}
+	if raw, ok := payload["token_ttl_seconds"]; ok {
+		var value int
+		if json.Unmarshal(raw, &value) != nil || string(raw) == "null" {
+			return input, errors.New("invalid token_ttl_seconds")
+		}
+		input.TokenTTLSeconds = &value
+	}
+	if raw, ok := payload["owner_scope"]; ok {
+		input.OwnerScopeSet = true
+		if string(raw) != "null" {
+			value, normalizeErr := accessdomain.NormalizeOwnerScope(raw)
+			if normalizeErr != nil {
+				return input, errors.New("invalid owner_scope")
+			}
+			input.OwnerScope = value
+		}
+	}
+	if raw, ok := payload["expires_at"]; ok {
+		input.ExpiresAtSet = true
+		if string(raw) != "null" {
+			var value time.Time
+			if json.Unmarshal(raw, &value) != nil {
+				return input, errors.New("invalid expires_at")
+			}
+			input.ExpiresAt = &value
+		}
+	}
+	return input, nil
 }
 
 func decodeJSON(request *http.Request, target any) error {

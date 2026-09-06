@@ -128,6 +128,63 @@ func TestOpenPlatformMachineManagementPostgreSQLJourney(t *testing.T) {
 		t.Fatalf("V1 management page=%s err=%v", response.Body.String(), err)
 	}
 
+	// The browser control plane rejects frozen donor route capabilities even if
+	// a caller bypasses the UI catalog. Historical import remains a separate,
+	// protected process and is not exercised through this HTTP endpoint.
+	legacyGrantRequest := httptest.NewRequest(http.MethodPost, "https://crm.example.test/api/admin/open-platform/clients", strings.NewReader(`{"client_id":"postgres.legacy-grant","display_name":"Legacy grant","purpose":"external_agent","audiences":["external_integration"],"scopes":["read"],"capabilities":["external_read"],"token_ttl_seconds":1800}`))
+	legacyGrantRequest.Header.Set("Content-Type", "application/json")
+	legacyGrantResponse := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(legacyGrantResponse, legacyGrantRequest)
+	if legacyGrantResponse.Code != http.StatusBadRequest {
+		t.Fatalf("V1 management accepted historical capability status=%d body=%s", legacyGrantResponse.Code, legacyGrantResponse.Body.String())
+	}
+
+	// The V1 management transport must persist a complete grant replacement,
+	// distinguish explicit null clearing from omission, and invalidate a bearer
+	// issued before the changed authorization boundary.
+	expiresAt := time.Now().UTC().Add(time.Hour)
+	v1Client, err := service.CreateV1(ctx, admin, accessapp.CreateMachineClientInput{
+		ClientID: "postgres.v1-control", DisplayName: "PostgreSQL V1 control", Purpose: "external_agent",
+		Audiences: []string{"external_integration"}, Scopes: []string{"read", "write"},
+		Capabilities: []string{"customer.read", "customer.resolve"}, OwnerScope: accessdomain.OwnerScope{"customer_id": {"42"}}, ExpiresAt: &expiresAt,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	activateRequest := httptest.NewRequest(http.MethodPost, "https://crm.example.test/api/admin/open-platform/clients/"+v1Client.Client.ClientID+"/activate", strings.NewReader(`{"client_secret":"`+v1Client.Secret+`","copied_confirmed":true}`))
+	activateRequest.Header.Set("Content-Type", "application/json")
+	activateResponse := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(activateResponse, activateRequest)
+	if activateResponse.Code != http.StatusOK || !strings.Contains(activateResponse.Body.String(), `"enabled":true`) {
+		t.Fatalf("V1 management activate status=%d body=%s", activateResponse.Code, activateResponse.Body.String())
+	}
+	v1Bearer, err := service.IssueClientCredentialsToken(ctx, accessapp.ClientCredentialsInput{ClientID: v1Client.Client.ClientID, ClientSecret: v1Client.Secret, Audience: "external_integration", RequestedScopes: []string{"read"}, SourceIP: mustOpenPlatformAddr(t, "203.0.113.5")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	patchRequest := httptest.NewRequest(http.MethodPatch, "https://crm.example.test/api/admin/open-platform/clients/"+v1Client.Client.ClientID, strings.NewReader(`{"capabilities":["customer.resolve"],"owner_scope":null,"expires_at":null}`))
+	patchRequest.Header.Set("Content-Type", "application/json")
+	patchResponse := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(patchResponse, patchRequest)
+	if patchResponse.Code != http.StatusOK || !strings.Contains(patchResponse.Body.String(), `"customer.resolve"`) {
+		t.Fatalf("V1 management patch status=%d body=%s", patchResponse.Code, patchResponse.Body.String())
+	}
+	if _, err = service.AuthenticateBearer(ctx, v1Bearer.AccessToken, "external_integration", mustOpenPlatformAddr(t, "203.0.113.5")); err == nil {
+		t.Fatal("V1 grant PATCH left the prior bearer valid")
+	}
+	detailRequest := httptest.NewRequest(http.MethodGet, "https://crm.example.test/api/admin/open-platform/clients/"+v1Client.Client.ClientID, nil)
+	detailResponse := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(detailResponse, detailRequest)
+	if detailResponse.Code != http.StatusOK || strings.Contains(detailResponse.Body.String(), `"owner_scope":{"customer_id"`) || strings.Contains(detailResponse.Body.String(), `"expires_at"`) {
+		t.Fatalf("V1 management detail status=%d body=%s", detailResponse.Code, detailResponse.Body.String())
+	}
+	auditRequest := httptest.NewRequest(http.MethodGet, "https://crm.example.test/api/admin/open-platform/clients/"+v1Client.Client.ClientID+"/audit?limit=10", nil)
+	auditResponse := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(auditResponse, auditRequest)
+	if auditResponse.Code != http.StatusOK || !strings.Contains(auditResponse.Body.String(), `"machine_client_grants_updated"`) || !strings.Contains(auditResponse.Body.String(), `"revoked_prior_bearers"`) {
+		t.Fatalf("V1 management audit status=%d body=%s", auditResponse.Code, auditResponse.Body.String())
+	}
+
 	if _, err = service.Activate(ctx, admin, external.Client.ClientID, external.Secret, true); err != nil {
 		t.Fatal(err)
 	}

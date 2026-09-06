@@ -9,6 +9,7 @@ import (
 
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/access/credential"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
+	accessport "github.com/qianlan33333-png/AI-CRM-v3/internal/access/port"
 )
 
 type machineRepositoryStub struct {
@@ -59,6 +60,18 @@ func (stub *machineRepositoryStub) SetMachineClientLastUsed(_ context.Context, i
 func (stub *machineRepositoryStub) AppendMachineAudit(_ context.Context, audit domain.MachineAudit) error {
 	stub.audits = append(stub.audits, audit)
 	return nil
+}
+
+func (stub *machineRepositoryStub) ListMachineAudit(_ context.Context, clientID int64, limit int) ([]accessport.MachineAuditEntry, error) {
+	items := make([]accessport.MachineAuditEntry, 0)
+	for index := len(stub.audits) - 1; index >= 0 && len(items) < limit; index-- {
+		audit := stub.audits[index]
+		if audit.MachineClientID != clientID {
+			continue
+		}
+		items = append(items, accessport.MachineAuditEntry{ActorAdminUserID: audit.ActorAdminID, Action: audit.Action, Outcome: audit.Outcome, Details: append([]byte(nil), audit.Details...), CreatedAt: audit.CreatedAt})
+	}
+	return items, nil
 }
 
 func TestMachineTokenRotateAndDisableImmediatelyInvalidateBearer(t *testing.T) {
@@ -331,5 +344,73 @@ func TestHistoricalMachineImportExcludesUnsupportedSourceGrantWithoutCreatingCli
 	verified, err := service.VerifyHistorical(context.Background(), input)
 	if err != nil || verified.Outcome != "excluded" || verified.ReasonCode != "unsupported_capability" {
 		t.Fatalf("verified=%+v err=%v", verified, err)
+	}
+}
+
+func TestMachineV1GrantPatchRevokesBearerAndRecordsControlAudit(t *testing.T) {
+	now := time.Date(2026, 9, 6, 2, 3, 4, 0, time.UTC)
+	repository := &machineRepositoryStub{clients: map[string]domain.MachineClient{}}
+	service, err := NewMachineService(repository, testUOW{}, credential.PasswordHasher{}, MachineConfig{SigningKey: []byte("01234567890123456789012345678901"), Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	admin := domain.Principal{Kind: domain.KindAdmin, InternalID: 9, Roles: []domain.Role{domain.RoleSuperAdmin}}
+	expiresAt := now.Add(2 * time.Hour)
+	created, err := service.CreateV1(context.Background(), admin, CreateMachineClientInput{
+		ClientID: "v1.control", DisplayName: "V1 control", Purpose: "external_agent",
+		Audiences: []string{"external_integration"}, Scopes: []string{"read", "write"},
+		Capabilities: []string{"customer.read", "customer.resolve"}, OwnerScope: domain.OwnerScope{"customer_id": {"42"}},
+		ExpiresAt: &expiresAt,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.Activate(context.Background(), admin, created.Client.ClientID, created.Secret, true); err != nil {
+		t.Fatal(err)
+	}
+	issued, err := service.IssueClientCredentialsToken(context.Background(), ClientCredentialsInput{ClientID: created.Client.ClientID, ClientSecret: created.Secret, Audience: "external_integration", RequestedScopes: []string{"read"}, SourceIP: netip.MustParseAddr("203.0.113.9")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	capabilities := []string{"customer.resolve"}
+	updated, err := service.PatchV1(context.Background(), admin, created.Client.ClientID, PatchMachineClientInput{Capabilities: &capabilities, OwnerScopeSet: true, ExpiresAtSet: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.AuthVersion != created.Client.AuthVersion+2 { // activation then grant replacement
+		t.Fatalf("auth version=%d, want activation plus patch", updated.AuthVersion)
+	}
+	if len(updated.OwnerScope) != 0 || updated.ExpiresAt != nil || len(updated.Capabilities) != 1 || updated.Capabilities[0] != "customer.resolve" {
+		t.Fatalf("updated grant=%+v", updated)
+	}
+	if _, err = service.AuthenticateBearer(context.Background(), issued.AccessToken, "external_integration", netip.MustParseAddr("203.0.113.9")); err == nil {
+		t.Fatal("grant change left a pre-change bearer valid")
+	}
+	got, err := service.Get(context.Background(), admin, created.Client.ClientID)
+	if err != nil || got.AuthVersion != updated.AuthVersion || len(got.OwnerScope) != 0 || got.ExpiresAt != nil {
+		t.Fatalf("detail=%+v err=%v", got, err)
+	}
+	audit, err := service.ListAudit(context.Background(), admin, created.Client.ClientID, 20)
+	if err != nil || len(audit) == 0 || audit[0].Action != "machine_client_grants_updated" || audit[0].Outcome != "revoked_prior_bearers" {
+		t.Fatalf("audit=%+v err=%v", audit, err)
+	}
+	empty := []string{}
+	if _, err = service.PatchV1(context.Background(), admin, created.Client.ClientID, PatchMachineClientInput{Capabilities: &empty}); !errors.Is(err, domain.ErrInvalidInput) {
+		t.Fatalf("empty V1 capability grant = %v", err)
+	}
+}
+
+func TestMachineV1ManagementRejectsFrozenLegacyCapabilities(t *testing.T) {
+	repository := &machineRepositoryStub{clients: map[string]domain.MachineClient{}}
+	service, err := NewMachineService(repository, testUOW{}, credential.PasswordHasher{}, MachineConfig{SigningKey: []byte("01234567890123456789012345678901")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	admin := domain.Principal{Kind: domain.KindAdmin, InternalID: 9, Roles: []domain.Role{domain.RoleSuperAdmin}}
+	if _, err = service.CreateV1(context.Background(), admin, CreateMachineClientInput{ClientID: "legacy.denied", DisplayName: "Legacy denied", Purpose: "external_agent", Audiences: []string{"external_integration"}, Scopes: []string{"read"}, Capabilities: []string{"external_read"}}); !errors.Is(err, domain.ErrInvalidInput) {
+		t.Fatalf("V1 create accepted historical capability: %v", err)
+	}
+	if _, err = service.CreateV1(context.Background(), admin, CreateMachineClientInput{ClientID: "wrong.audience", DisplayName: "Wrong audience", Purpose: "external_agent", Audiences: []string{"other"}, Scopes: []string{"read"}, Capabilities: []string{"customer.read"}}); !errors.Is(err, domain.ErrInvalidInput) {
+		t.Fatalf("V1 create accepted non-V1 audience: %v", err)
 	}
 }

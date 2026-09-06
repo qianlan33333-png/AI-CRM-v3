@@ -522,6 +522,36 @@ func (*PostgreSQL) AppendMachineAudit(ctx context.Context, audit domain.MachineA
 	return err
 }
 
+// ListMachineAudit returns only safe, Access-owned audit facts for one caller.
+// The calling app verifies the client ID before this read so an empty page never
+// hides an invalid identifier.
+func (*PostgreSQL) ListMachineAudit(ctx context.Context, clientID int64, limit int) ([]accessport.MachineAuditEntry, error) {
+	database, err := tx(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := database.Query(ctx, `SELECT actor_admin_user_id, action, outcome, details, created_at
+		FROM access_machine_audit
+		WHERE machine_client_id=$1
+		ORDER BY created_at DESC, id DESC
+		LIMIT $2`, clientID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	entries := make([]accessport.MachineAuditEntry, 0)
+	for rows.Next() {
+		var entry accessport.MachineAuditEntry
+		var details []byte
+		if err := rows.Scan(&entry.ActorAdminUserID, &entry.Action, &entry.Outcome, &details, &entry.CreatedAt); err != nil {
+			return nil, err
+		}
+		entry.Details = append(entry.Details[:0], details...)
+		entries = append(entries, entry)
+	}
+	return entries, rows.Err()
+}
+
 const machineClientSelect = `SELECT c.id, c.client_id, c.display_name, c.purpose, c.secret_hash,
 	c.credential_hint, c.audiences, c.scopes, COALESCE(c.allowed_cidrs::text[], '{}'), c.corp_id, c.owner_scope,
 	c.token_ttl_seconds, c.expires_at, c.enabled, c.reissue_required, c.auth_version,
