@@ -811,7 +811,14 @@ func (client *Client) TransferCustomer(ctx context.Context, sourceUserID, target
 	}
 	payload, err := client.requestJSON(ctx, http.MethodPost, "/cgi-bin/externalcontact/transfer_customer", url.Values{"access_token": {token}}, raw)
 	if err != nil {
-		return wecomport.CustomerTransferResult{}, wecomport.WrapProviderWriteError(err, true)
+		// A parsed top-level Provider error is a definitive rejection (for
+		// example permission/invalid request). A lost or malformed response is
+		// still ambiguous after the write boundary and must retain the key.
+		var responseErr *providerResponseError
+		if errors.As(err, &responseErr) {
+			return wecomport.CustomerTransferResult{}, wecomport.WrapProviderWriteOutcome(err, true, false)
+		}
+		return wecomport.CustomerTransferResult{}, wecomport.WrapProviderWriteOutcome(err, true, true)
 	}
 	if len(payload.Customer) != len(externalUserIDs) {
 		return wecomport.CustomerTransferResult{}, wecomport.WrapProviderWriteError(ErrResponse, true)

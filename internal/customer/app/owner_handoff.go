@@ -14,6 +14,7 @@ import (
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	customerport "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/port"
+	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	platformaudit "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/audit"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/platform/idempotency"
 	platformoutbox "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/outbox"
@@ -31,6 +32,8 @@ type OwnerHandoffStore interface {
 	CreateOwnerHandoffPreview(context.Context, customerport.OwnerHandoffPreviewRecord) (customerport.OwnerHandoffPreview, error)
 	LoadOwnerHandoffPreview(context.Context, string, bool) (customerport.OwnerHandoffPreviewRecord, error)
 	CreateLocalOnlyOwnerHandoffBatch(context.Context, customerport.OwnerHandoffBatchRecord) (customerport.OwnerHandoffBatch, error)
+	CreateWeComOwnerHandoffBatch(context.Context, customerport.OwnerHandoffBatchRecord) (customerport.OwnerHandoffBatch, error)
+	BindOwnerHandoffEffect(context.Context, customerport.OwnerHandoffEffectBinding) error
 	OwnerHandoffBatchByIdempotency(context.Context, int64, string) (customerport.OwnerHandoffBatch, [32]byte, bool, error)
 	LocalOwner(context.Context, customerdomain.CustomerID, bool) (customerport.LocalOwner, bool, error)
 	AssignLocalOwner(context.Context, customerdomain.CustomerID, int64, int64, string, time.Time) (customerport.LocalOwner, error)
@@ -48,9 +51,10 @@ type OwnerHandoffService struct {
 	audit    interface {
 		Append(context.Context, platformaudit.Event) (platformaudit.Event, error)
 	}
-	outbox platformoutbox.Appender
-	now    func() time.Time
-	newID  func() (string, error)
+	outbox  platformoutbox.Appender
+	effects effectport.TransactionalAccepter
+	now     func() time.Time
+	newID   func() (string, error)
 }
 
 func NewOwnerHandoffService(uow platformport.UnitOfWork, store OwnerHandoffStore, staff ownerHandoffStaffReader, resolver customerport.OwnerHandoffCandidateResolver, audit interface {
@@ -60,6 +64,17 @@ func NewOwnerHandoffService(uow platformport.UnitOfWork, store OwnerHandoffStore
 		return nil, errors.New("owner handoff dependencies are required")
 	}
 	return &OwnerHandoffService{uow: uow, store: store, staff: staff, resolver: resolver, audit: audit, outbox: outbox, now: time.Now, newID: ownerHandoffID}, nil
+}
+
+// SetExternalEffectAccepter installs the established EER transactional port.
+// Provider mode fails closed until composition supplies this dependency; it
+// never silently degrades to local_only.
+func (service *OwnerHandoffService) SetExternalEffectAccepter(accepter effectport.TransactionalAccepter) error {
+	if service == nil || accepter == nil {
+		return errors.New("owner handoff external-effects accepter is required")
+	}
+	service.effects = accepter
+	return nil
 }
 
 func (service *OwnerHandoffService) PreviewOwnerHandoff(ctx context.Context, command customerport.OwnerHandoffPreviewCommand) (customerport.OwnerHandoffPreview, error) {
@@ -143,9 +158,51 @@ func (service *OwnerHandoffService) ConfirmOwnerHandoff(ctx context.Context, com
 		if resolveErr != nil || !sameOwnerHandoffCandidates(draft.Candidates, current) {
 			return ErrOwnerHandoffDrift
 		}
+		if draft.Preview.Mode == customerport.OwnerHandoffWeComThenCRM {
+			if service.effects == nil {
+				return ErrOwnerHandoffForbidden
+			}
+			lines := make([]customerport.OwnerHandoffLine, 0, len(draft.Candidates))
+			for _, candidate := range draft.Candidates {
+				state := candidate.State
+				if state == "ready" {
+					state = "queued"
+				}
+				lines = append(lines, customerport.OwnerHandoffLine{Line: int64(len(lines) + 1), CustomerID: candidate.CustomerID, State: state})
+			}
+			batch, createErr := service.store.CreateWeComOwnerHandoffBatch(txctx, customerport.OwnerHandoffBatchRecord{Preview: draft, ActorID: command.ActorAdminUserID, Idempotency: command.IdempotencyKey, RequestDigest: confirmDigest, Lines: lines})
+			if createErr != nil {
+				return createErr
+			}
+			for _, line := range batch.Lines {
+				if line.State != "queued" {
+					continue
+				}
+				accept := effectport.AcceptCommand{ReceiptKey: effectport.Hash("customer-owner-handoff.accept.v1", batch.ID, strconv.FormatInt(line.Line, 10)), Envelope: effectport.Envelope{Owner: effectport.OwnerOutbound, Kind: effectport.KindCustomerOwnerHandoff, SourceRefDigest: effectport.Hash("customer-owner-handoff.v1", "source-ref", batch.ID, strconv.FormatInt(line.Line, 10)), TargetRefDigest: effectport.Hash("customer-owner-handoff.v1", "target-ref", batch.ID, strconv.FormatInt(line.Line, 10)), PayloadDigest: effectport.Hash("customer-owner-handoff.v1", "payload-ref", batch.ID, strconv.FormatInt(line.Line, 10)), PolicyVersionHash: effectport.Hash("customer-owner-handoff.v1", "policy-ref", batch.ID, strconv.FormatInt(line.Line, 10))}}
+				// The opaque payload/policy EER digests are checked against the frozen
+				// Customer snapshot by the Outbound provider immediately before call.
+				projection, receipt, acceptErr := service.effects.AcceptAndQueueWithin(txctx, accept)
+				if acceptErr != nil {
+					return acceptErr
+				}
+				if bindErr := service.store.BindOwnerHandoffEffect(txctx, customerport.OwnerHandoffEffectBinding{BatchID: batch.ID, Line: line.Line, EffectID: projection.ID, ReceiptID: receipt.ID}); bindErr != nil {
+					return bindErr
+				}
+				if factErr := service.appendProviderAcceptedFacts(txctx, command.ActorAdminUserID, draft.Preview.ID, line, service.now().UTC()); factErr != nil {
+					return factErr
+				}
+			}
+			loaded, _, found, readErr := service.store.OwnerHandoffBatchByIdempotency(txctx, command.ActorAdminUserID, command.IdempotencyKey)
+			if readErr != nil {
+				return readErr
+			}
+			if !found {
+				return ErrOwnerHandoffDrift
+			}
+			out = loaded
+			return nil
+		}
 		if draft.Preview.Mode != customerport.OwnerHandoffLocalOnly {
-			// Provider mode is intentionally not downgraded. Its EER acceptance
-			// path is supplied by the composition-specific service extension.
 			return ErrOwnerHandoffDrift
 		}
 		lines := make([]customerport.OwnerHandoffLine, 0, len(draft.Candidates))
@@ -178,6 +235,19 @@ func (service *OwnerHandoffService) ConfirmOwnerHandoff(ctx context.Context, com
 		return err
 	})
 	return out, err
+}
+
+func (service *OwnerHandoffService) appendProviderAcceptedFacts(ctx context.Context, actorID int64, previewID string, line customerport.OwnerHandoffLine, at time.Time) error {
+	key, err := idempotency.Parse("customer-owner-handoff-provider:" + previewID + ":" + int64String(line.Line))
+	if err != nil {
+		return err
+	}
+	payload, _ := json.Marshal(map[string]any{"mode": "wecom_then_crm", "result": "queued"})
+	if _, err = service.audit.Append(ctx, platformaudit.Event{IdempotencyKey: key, Action: "customer.owner_handoff.wecom_accepted", ActorType: "admin", ActorID: int64String(actorID), ResourceType: "customer", ResourceID: int64String(int64(line.CustomerID)), Payload: payload, OccurredAt: at}); err != nil && !errors.Is(err, platformaudit.ErrDuplicateEvent) {
+		return err
+	}
+	_, err = service.outbox.Append(ctx, platformoutbox.Event{AggregateType: "customer", AggregateID: int64String(int64(line.CustomerID)), Type: "customer.owner_handoff.wecom_accepted.v1", Version: 1, IdempotencyKey: string(key), Payload: payload, OccurredAt: at})
+	return err
 }
 
 func (service *OwnerHandoffService) appendLocalOnlyFacts(ctx context.Context, actorID int64, previewID string, line customerport.OwnerHandoffLine, at time.Time) error {

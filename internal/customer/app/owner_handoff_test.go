@@ -89,6 +89,19 @@ func (s *ownerHandoffStoreStub) AssignLocalOwner(_ context.Context, id customerd
 	s.owners[id] = v
 	return v, nil
 }
+func (s *ownerHandoffStoreStub) CreateWeComOwnerHandoffBatch(_ context.Context, draft customerport.OwnerHandoffBatchRecord) (customerport.OwnerHandoffBatch, error) {
+	s.batch = customerport.OwnerHandoffBatch{ID: "batch-1", Mode: draft.Preview.Preview.Mode, State: "accepted", Lines: draft.Lines}
+	return s.batch, nil
+}
+func (s *ownerHandoffStoreStub) BindOwnerHandoffEffect(_ context.Context, binding customerport.OwnerHandoffEffectBinding) error {
+	for i := range s.batch.Lines {
+		if s.batch.Lines[i].Line == binding.Line {
+			s.batch.Lines[i].EffectID = binding.EffectID
+		}
+	}
+	return nil
+}
+
 func (s *ownerHandoffStoreStub) CreateLocalOnlyOwnerHandoffBatch(_ context.Context, draft customerport.OwnerHandoffBatchRecord) (customerport.OwnerHandoffBatch, error) {
 	s.batch = customerport.OwnerHandoffBatch{ID: "batch-1", Mode: draft.Preview.Preview.Mode, State: "completed", Lines: draft.Lines}
 	return s.batch, nil

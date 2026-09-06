@@ -29,15 +29,18 @@ func (provider *CustomerOwnerHandoffProvider) Execute(ctx context.Context, envel
 	if err != nil {
 		return effectport.AdapterResult{Completion: effectport.StateRetryable, ReceiptDigest: effectport.Hash("owner-handoff.intent-unavailable", attempt.EffectID)}, nil
 	}
-	if execution.EffectID != attempt.EffectID || execution.SourceDigest != string(envelope.SourceRefDigest) || execution.TargetDigest != string(envelope.TargetRefDigest) || execution.PayloadDigest != string(envelope.PayloadDigest) || execution.PolicyDigest != string(envelope.PolicyVersionHash) {
+	if execution.EffectID != attempt.EffectID || execution.SourceRefDigest != string(envelope.SourceRefDigest) || execution.TargetRefDigest != string(envelope.TargetRefDigest) || execution.PayloadRefDigest != string(envelope.PayloadDigest) || execution.PolicyRefDigest != string(envelope.PolicyVersionHash) {
 		return effectport.AdapterResult{Completion: effectport.StateFinalFailed, ReceiptDigest: effectport.Hash("owner-handoff.snapshot-mismatch", attempt.EffectID)}, nil
 	}
 	result, err := provider.writer.TransferCustomer(ctx, execution.SourceUserID, execution.TargetUserID, []string{execution.ExternalUserID}, execution.WelcomeMessage)
 	if err != nil {
 		attempted := wecomport.ProviderCallAttempted(err)
 		state := effectport.StateRetryable
-		if attempted {
+		if attempted && wecomport.ProviderOutcomeUnknown(err) {
 			state = effectport.StateUnknown
+		}
+		if attempted && !wecomport.ProviderOutcomeUnknown(err) {
+			state = effectport.StateFinalFailed
 		}
 		return effectport.AdapterResult{Completion: state, ReceiptDigest: effectport.Hash("owner-handoff.provider-error", attempt.EffectID), CallAttempted: attempted, RealExternalCallExecuted: attempted}, err
 	}

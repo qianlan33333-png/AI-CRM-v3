@@ -7,12 +7,14 @@ import (
 	"encoding/hex"
 	"errors"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	customerport "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/port"
+	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 )
 
@@ -102,32 +104,32 @@ func (store *PostgreSQLOwnerHandoffStore) ReadOwnerHandoffExecution(ctx context.
 	if err != nil {
 		return customerport.OwnerHandoffExecution{}, err
 	}
-	var batchID, mode, scope string
+	var batchID, previewID, mode, scope string
 	var sourceStaffID, targetStaffID int64
 	var line int64
 	var sourceCipher, targetCipher, externalCipher, welcomeCipher []byte
 	var sourceDigest, targetDigest, payloadDigest, policyDigest []byte
-	err = tx.QueryRow(ctx, `SELECT line.batch_id,line.line_no,b.mode,b.corp_scope,b.source_staff_id,b.target_staff_id,line.source_userid_ciphertext,line.target_userid_ciphertext,line.external_identity_ciphertext,line.welcome_message_ciphertext,line.source_userid_digest,line.target_userid_digest,line.payload_digest,line.policy_digest
+	err = tx.QueryRow(ctx, `SELECT line.batch_id,b.preview_id,line.line_no,b.mode,b.corp_scope,b.source_staff_id,b.target_staff_id,line.source_userid_ciphertext,line.target_userid_ciphertext,line.external_identity_ciphertext,line.welcome_message_ciphertext,line.source_userid_digest,line.target_userid_digest,line.payload_digest,line.policy_digest
 		FROM customer_owner_handoff_lines line JOIN customer_owner_handoff_batches b ON b.id=line.batch_id
-		WHERE line.effect_id=$1 AND line.mode='wecom_then_crm' FOR UPDATE`, effectID).Scan(&batchID, &line, &mode, &scope, &sourceStaffID, &targetStaffID, &sourceCipher, &targetCipher, &externalCipher, &welcomeCipher, &sourceDigest, &targetDigest, &payloadDigest, &policyDigest)
+		WHERE line.effect_id=$1 AND line.mode='wecom_then_crm' FOR UPDATE`, effectID).Scan(&batchID, &previewID, &line, &mode, &scope, &sourceStaffID, &targetStaffID, &sourceCipher, &targetCipher, &externalCipher, &welcomeCipher, &sourceDigest, &targetDigest, &payloadDigest, &policyDigest)
 	if err != nil {
 		return customerport.OwnerHandoffExecution{}, err
 	}
-	source, err := store.cipher.Open(batchID, line, "source_userid", sourceCipher)
+	source, err := store.cipher.Open(previewID, line, "source_userid", sourceCipher)
 	if err != nil {
 		return customerport.OwnerHandoffExecution{}, err
 	}
-	target, err := store.cipher.Open(batchID, line, "target_userid", targetCipher)
+	target, err := store.cipher.Open(previewID, line, "target_userid", targetCipher)
 	if err != nil {
 		return customerport.OwnerHandoffExecution{}, err
 	}
-	external, err := store.cipher.Open(batchID, line, "external_userid", externalCipher)
+	external, err := store.cipher.Open(previewID, line, "external_userid", externalCipher)
 	if err != nil {
 		return customerport.OwnerHandoffExecution{}, err
 	}
 	welcome := ""
 	if len(welcomeCipher) > 0 {
-		welcome, err = store.cipher.Open(batchID, line, "welcome_message", welcomeCipher)
+		welcome, err = store.cipher.Open(previewID, line, "welcome_message", welcomeCipher)
 		if err != nil {
 			return customerport.OwnerHandoffExecution{}, err
 		}
@@ -138,7 +140,7 @@ func (store *PostgreSQLOwnerHandoffStore) ReadOwnerHandoffExecution(ctx context.
 		!sameSnapshotDigest(policyDigest, "policy", mode, scope, strconv.FormatInt(sourceStaffID, 10), strconv.FormatInt(targetStaffID, 10)) {
 		return customerport.OwnerHandoffExecution{}, ErrOwnerHandoffConflict
 	}
-	return customerport.OwnerHandoffExecution{EffectID: effectID, SourceUserID: source, TargetUserID: target, ExternalUserID: external, WelcomeMessage: welcome,
+	return customerport.OwnerHandoffExecution{EffectID: effectID, SourceRefDigest: string(effectDigestForLine("source-ref", batchID, line)), TargetRefDigest: string(effectDigestForLine("target-ref", batchID, line)), PayloadRefDigest: string(effectDigestForLine("payload-ref", batchID, line)), PolicyRefDigest: string(effectDigestForLine("policy-ref", batchID, line)), SourceUserID: source, TargetUserID: target, ExternalUserID: external, WelcomeMessage: welcome,
 		SourceDigest: effectDigestString(sourceDigest), TargetDigest: effectDigestString(targetDigest), PayloadDigest: effectDigestString(payloadDigest), PolicyDigest: effectDigestString(policyDigest)}, nil
 }
 
@@ -311,6 +313,127 @@ func (store *PostgreSQLOwnerHandoffStore) CreateLocalOnlyOwnerHandoffBatch(ctx c
 		return customerport.OwnerHandoffBatch{}, err
 	}
 	return customerport.OwnerHandoffBatch{ID: batchID, Mode: customerport.OwnerHandoffLocalOnly, State: "completed", Lines: append([]customerport.OwnerHandoffLine(nil), record.Lines...), CreatedAt: created.UTC(), UpdatedAt: created.UTC()}, nil
+}
+
+// CreateWeComOwnerHandoffBatch copies the already encrypted, preview-bound
+// snapshots.  It intentionally does not decrypt or re-encrypt identifiers;
+// the preview ID remains the AEAD binding throughout execution.
+func (store *PostgreSQLOwnerHandoffStore) CreateWeComOwnerHandoffBatch(ctx context.Context, record customerport.OwnerHandoffBatchRecord) (customerport.OwnerHandoffBatch, error) {
+	if record.Preview.Preview.Mode != customerport.OwnerHandoffWeComThenCRM || record.ActorID < 1 || record.Idempotency == "" || len(record.Lines) != len(record.Preview.Candidates) {
+		return customerport.OwnerHandoffBatch{}, ErrOwnerHandoffConflict
+	}
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return customerport.OwnerHandoffBatch{}, err
+	}
+	batchID, err := ownerHandoffStoreID()
+	if err != nil {
+		return customerport.OwnerHandoffBatch{}, err
+	}
+	var created time.Time
+	err = tx.QueryRow(ctx, `INSERT INTO customer_owner_handoff_batches(id,preview_id,actor_admin_user_id,idempotency_key,request_digest,mode,source_staff_id,target_staff_id,corp_scope,state)
+		VALUES($1,$2,$3,$4,$5,'wecom_then_crm',$6,$7,$8,'accepted') ON CONFLICT (actor_admin_user_id,idempotency_key) DO NOTHING RETURNING created_at`, batchID, record.Preview.Preview.ID, record.ActorID, record.Idempotency, record.RequestDigest[:], record.Preview.Preview.SourceStaffID, record.Preview.Preview.TargetStaffID, record.Preview.Preview.CorpScope).Scan(&created)
+	if errors.Is(err, pgx.ErrNoRows) {
+		prior, digest, found, readErr := store.OwnerHandoffBatchByIdempotency(ctx, record.ActorID, record.Idempotency)
+		if readErr != nil {
+			return customerport.OwnerHandoffBatch{}, readErr
+		}
+		if !found || digest != record.RequestDigest {
+			return customerport.OwnerHandoffBatch{}, ErrOwnerHandoffConflict
+		}
+		return prior, nil
+	}
+	if err != nil {
+		return customerport.OwnerHandoffBatch{}, err
+	}
+	for index, line := range record.Lines {
+		candidate := record.Preview.Candidates[index]
+		if line.Line != int64(index+1) || line.CustomerID != candidate.CustomerID {
+			return customerport.OwnerHandoffBatch{}, ErrOwnerHandoffConflict
+		}
+		if _, err = tx.Exec(ctx, `INSERT INTO customer_owner_handoff_lines(batch_id,line_no,customer_id,mode,source_staff_id,target_staff_id,expected_local_owner_version,relation_digest,source_userid_ciphertext,target_userid_ciphertext,external_identity_ciphertext,welcome_message_ciphertext,source_userid_digest,target_userid_digest,external_identity_digest,payload_digest,policy_digest,state)
+			SELECT $1,line_no,customer_id,'wecom_then_crm',$2,$3,expected_local_owner_version,relation_digest,source_userid_ciphertext,target_userid_ciphertext,external_identity_ciphertext,welcome_message_ciphertext,source_userid_digest,target_userid_digest,external_identity_digest,payload_digest,policy_digest,$4
+			FROM customer_owner_handoff_preview_rows WHERE preview_id=$5 AND line_no=$6`, batchID, record.Preview.Preview.SourceStaffID, record.Preview.Preview.TargetStaffID, line.State, record.Preview.Preview.ID, line.Line); err != nil {
+			return customerport.OwnerHandoffBatch{}, err
+		}
+	}
+	if _, err = tx.Exec(ctx, `UPDATE customer_owner_handoff_previews SET executed_batch_id=$2 WHERE id=$1 AND executed_batch_id IS NULL`, record.Preview.Preview.ID, batchID); err != nil {
+		return customerport.OwnerHandoffBatch{}, err
+	}
+	return customerport.OwnerHandoffBatch{ID: batchID, Mode: customerport.OwnerHandoffWeComThenCRM, State: "accepted", Lines: append([]customerport.OwnerHandoffLine(nil), record.Lines...), CreatedAt: created.UTC(), UpdatedAt: created.UTC()}, nil
+}
+
+func (store *PostgreSQLOwnerHandoffStore) BindOwnerHandoffEffect(ctx context.Context, binding customerport.OwnerHandoffEffectBinding) error {
+	if binding.BatchID == "" || binding.Line < 1 || binding.EffectID == "" || binding.ReceiptID == "" {
+		return ErrOwnerHandoffConflict
+	}
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return err
+	}
+	command, err := tx.Exec(ctx, `UPDATE customer_owner_handoff_lines SET effect_id=$3,effect_receipt_id=$4,state='queued',updated_at=clock_timestamp() WHERE batch_id=$1 AND line_no=$2 AND mode='wecom_then_crm' AND state='queued' AND effect_id IS NULL`, binding.BatchID, binding.Line, binding.EffectID, binding.ReceiptID)
+	if err != nil {
+		return err
+	}
+	if command.RowsAffected() != 1 {
+		return ErrOwnerHandoffConflict
+	}
+	return nil
+}
+
+// CompleteOwnerHandoffEffect projects only EER's terminal transport fact.
+// A successful transfer_customer response is provider acceptance, never a
+// local owner change; the explicit transfer-result reader owns final CAS.
+func (store *PostgreSQLOwnerHandoffStore) CompleteOwnerHandoffEffect(ctx context.Context, completion customerport.OwnerHandoffCompletion) error {
+	if completion.EffectID == "" || completion.Attempt < 1 {
+		return ErrOwnerHandoffConflict
+	}
+	digest, err := parseOwnerHandoffDigest(completion.ResultDigest)
+	if err != nil {
+		return ErrOwnerHandoffConflict
+	}
+	lineState, batchState := "", ""
+	switch completion.State {
+	case string(effectport.StateExecuted):
+		lineState, batchState = "provider_accepted", "executing"
+	case string(effectport.StateUnknown):
+		lineState, batchState = "outcome_unknown", "needs_attention"
+	case string(effectport.StateRetryable):
+		lineState, batchState = "retryable_failed", "executing"
+	case string(effectport.StateFinalFailed):
+		lineState, batchState = "final_failed", "failed"
+	default:
+		return ErrOwnerHandoffConflict
+	}
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return err
+	}
+	var batchID string
+	err = tx.QueryRow(ctx, `UPDATE customer_owner_handoff_lines SET state=$2,result_digest=$3,updated_at=clock_timestamp() WHERE effect_id=$1 AND mode='wecom_then_crm' AND state IN ('queued','retryable_failed') RETURNING batch_id`, completion.EffectID, lineState, digest).Scan(&batchID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrOwnerHandoffConflict
+	}
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `UPDATE customer_owner_handoff_batches SET state=$2,updated_at=clock_timestamp() WHERE id=$1 AND state IN ('accepted','executing','needs_attention','failed')`, batchID, batchState)
+	return err
+}
+
+func parseOwnerHandoffDigest(value string) ([]byte, error) {
+	if !strings.HasPrefix(value, "sha256:") || len(value) != 71 {
+		return nil, ErrOwnerHandoffConflict
+	}
+	raw, err := hex.DecodeString(strings.TrimPrefix(value, "sha256:"))
+	if err != nil || len(raw) != 32 {
+		return nil, ErrOwnerHandoffConflict
+	}
+	return raw, nil
+}
+
+func effectDigestForLine(label, batchID string, line int64) effectport.Digest {
+	return effectport.Hash("customer-owner-handoff.v1", label, batchID, strconv.FormatInt(line, 10))
 }
 
 func ownerHandoffStoreID() (string, error) {

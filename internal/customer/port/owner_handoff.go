@@ -69,15 +69,21 @@ type OwnerHandoffReader interface {
 }
 
 type OwnerHandoffExecution struct {
-	EffectID       string
-	SourceUserID   string
-	TargetUserID   string
-	ExternalUserID string
-	WelcomeMessage string
-	SourceDigest   string
-	TargetDigest   string
-	PayloadDigest  string
-	PolicyDigest   string
+	EffectID string
+	// SourceRefDigest and TargetRefDigest bind this exact frozen batch line to
+	// its opaque EER envelope. They are deliberately distinct from provider IDs.
+	SourceRefDigest  string
+	TargetRefDigest  string
+	PayloadRefDigest string
+	PolicyRefDigest  string
+	SourceUserID     string
+	TargetUserID     string
+	ExternalUserID   string
+	WelcomeMessage   string
+	SourceDigest     string
+	TargetDigest     string
+	PayloadDigest    string
+	PolicyDigest     string
 }
 
 type OwnerHandoffExecutionReader interface {
@@ -155,4 +161,13 @@ type OwnerHandoffBatchRecord struct {
 	Idempotency   string
 	RequestDigest [32]byte
 	Lines         []OwnerHandoffLine
+}
+
+// OwnerHandoffEffectBinding binds a Customer-owned frozen line to the single
+// opaque EER receipt accepted in the same PostgreSQL Unit of Work.
+type OwnerHandoffEffectBinding struct {
+	BatchID   string
+	Line      int64
+	EffectID  string
+	ReceiptID string
 }

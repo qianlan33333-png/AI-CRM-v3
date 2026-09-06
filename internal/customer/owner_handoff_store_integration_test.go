@@ -14,6 +14,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
+	customerport "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/port"
+	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 )
@@ -198,15 +200,15 @@ func TestPostgreSQLOwnerHandoffExecutionUsesFrozenCiphertextAndFourDigests(t *te
 		if _, transactionErr = tx.Exec(ctx, `INSERT INTO customer_owner_handoff_batches(id,preview_id,actor_admin_user_id,idempotency_key,request_digest,mode,source_staff_id,target_staff_id,corp_scope,state) VALUES($1,'preview-001',$2,'owner-handoff-fixture-key',$3,'wecom_then_crm',$2,$4,'wecom-corp:fixture','accepted')`, batchID, sourceStaff, digest, targetStaff); transactionErr != nil {
 			return transactionErr
 		}
-		sourceCipher, cipherErr := cipher.Seal(batchID, 1, "source_userid", "source-user")
+		sourceCipher, cipherErr := cipher.Seal("preview-001", 1, "source_userid", "source-user")
 		if cipherErr != nil {
 			return cipherErr
 		}
-		targetCipher, cipherErr := cipher.Seal(batchID, 1, "target_userid", "target-user")
+		targetCipher, cipherErr := cipher.Seal("preview-001", 1, "target_userid", "target-user")
 		if cipherErr != nil {
 			return cipherErr
 		}
-		externalCipher, cipherErr := cipher.Seal(batchID, 1, "external_userid", "external-1")
+		externalCipher, cipherErr := cipher.Seal("preview-001", 1, "external_userid", "external-1")
 		if cipherErr != nil {
 			return cipherErr
 		}
@@ -216,6 +218,29 @@ func TestPostgreSQLOwnerHandoffExecutionUsesFrozenCiphertextAndFourDigests(t *te
 		policyDigest := ownerHandoffSnapshotDigest("policy", "wecom_then_crm", "wecom-corp:fixture", int64Text(sourceStaff), int64Text(targetStaff))
 		_, transactionErr = tx.Exec(ctx, `INSERT INTO customer_owner_handoff_lines(batch_id,line_no,customer_id,mode,source_staff_id,target_staff_id,relation_digest,source_userid_ciphertext,target_userid_ciphertext,external_identity_ciphertext,source_userid_digest,target_userid_digest,external_identity_digest,payload_digest,policy_digest,effect_id,state) VALUES($1,1,$2,'wecom_then_crm',$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'queued')`, batchID, customerID, sourceStaff, targetStaff, digest, sourceCipher, targetCipher, externalCipher, sourceDigest[:], targetDigest[:], digest, payloadDigest[:], policyDigest[:], effectID)
 		return transactionErr
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err = uow.Within(ctx, func(txctx context.Context) error {
+		if completeErr := store.CompleteOwnerHandoffEffect(txctx, customerport.OwnerHandoffCompletion{EffectID: effectID, State: string(effectport.StateExecuted), ResultDigest: string(effectport.Hash("owner-handoff.fixture.accepted")), Attempt: 1}); completeErr != nil {
+			return completeErr
+		}
+		var lineState string
+		var localCount int
+		tx, txErr := platformpostgres.RequireTransaction(txctx)
+		if txErr != nil {
+			return txErr
+		}
+		if txErr = tx.QueryRow(txctx, `SELECT state FROM customer_owner_handoff_lines WHERE effect_id=$1`, effectID).Scan(&lineState); txErr != nil {
+			return txErr
+		}
+		if txErr = tx.QueryRow(txctx, `SELECT count(*) FROM customer_local_owners WHERE customer_id=$1`, customerID).Scan(&localCount); txErr != nil {
+			return txErr
+		}
+		if lineState != "provider_accepted" || localCount != 0 {
+			t.Fatalf("acceptance became local handoff state=%s owners=%d", lineState, localCount)
+		}
+		return nil
 	}); err != nil {
 		t.Fatal(err)
 	}

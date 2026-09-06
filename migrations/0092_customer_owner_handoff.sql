@@ -73,7 +73,7 @@ CREATE TABLE customer_owner_handoff_lines (
     welcome_message_ciphertext BYTEA NULL,
     effect_id TEXT NULL,
     effect_receipt_id TEXT NULL,
-    state TEXT NOT NULL CHECK (state IN ('local_updated','queued','provider_accepted','outcome_unknown','retryable_failed','final_failed','cas_conflict','observed')),
+    state TEXT NOT NULL CHECK (state IN ('local_updated','queued','provider_accepted','outcome_unknown','retryable_failed','final_failed','cas_conflict','observed','excluded','conflict','unresolved')),
     result_digest BYTEA NULL CHECK (result_digest IS NULL OR octet_length(result_digest)=32),
     observed_at TIMESTAMPTZ NULL,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),

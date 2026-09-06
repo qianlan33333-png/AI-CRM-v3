@@ -40,7 +40,7 @@ func ownerHandoffEnvelope() effectport.Envelope {
 
 func ownerHandoffExecution() customerport.OwnerHandoffExecution {
 	envelope := ownerHandoffEnvelope()
-	return customerport.OwnerHandoffExecution{EffectID: "eer_9", SourceUserID: "source", TargetUserID: "target", ExternalUserID: "external", SourceDigest: string(envelope.SourceRefDigest), TargetDigest: string(envelope.TargetRefDigest), PayloadDigest: string(envelope.PayloadDigest), PolicyDigest: string(envelope.PolicyVersionHash)}
+	return customerport.OwnerHandoffExecution{EffectID: "eer_9", SourceRefDigest: string(envelope.SourceRefDigest), TargetRefDigest: string(envelope.TargetRefDigest), PayloadRefDigest: string(envelope.PayloadDigest), PolicyRefDigest: string(envelope.PolicyVersionHash), SourceUserID: "source", TargetUserID: "target", ExternalUserID: "external", SourceDigest: "sha256:source-snapshot", TargetDigest: "sha256:target-snapshot", PayloadDigest: string(envelope.PayloadDigest), PolicyDigest: string(envelope.PolicyVersionHash)}
 }
 
 func TestCustomerOwnerHandoffProviderDoesNotRetryAttemptedFailure(t *testing.T) {
@@ -69,5 +69,17 @@ func TestCustomerOwnerHandoffProviderAcceptsOnlyExactFrozenTarget(t *testing.T) 
 	result, err = provider.Execute(context.Background(), ownerHandoffEnvelope(), effectport.Attempt{EffectID: "eer_9"})
 	if err != nil || result.Completion != effectport.StateFinalFailed {
 		t.Fatalf("cross-target result=%+v err=%v", result, err)
+	}
+}
+
+func TestCustomerOwnerHandoffProviderTreatsDefinitiveProviderRejectionAsFinal(t *testing.T) {
+	writer := &ownerHandoffWriterStub{err: wecomport.WrapProviderWriteOutcome(errors.New("provider rejected request"), true, false)}
+	provider, err := NewCustomerOwnerHandoffProvider(ownerHandoffReaderStub{value: ownerHandoffExecution()}, writer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, callErr := provider.Execute(context.Background(), ownerHandoffEnvelope(), effectport.Attempt{EffectID: "eer_9"})
+	if callErr == nil || result.Completion != effectport.StateFinalFailed || !result.CallAttempted || writer.calls != 1 {
+		t.Fatalf("result=%+v calls=%d err=%v", result, writer.calls, callErr)
 	}
 }
