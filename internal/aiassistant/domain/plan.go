@@ -33,6 +33,21 @@ func NewPlan(name, sourceKind string, sourceDigest effectport.Digest, targetCoun
 	}}, nil
 }
 
+// NewMachinePlan preserves a machine subject as an opaque reference. It never
+// substitutes a positive administrator ID for that caller.
+func NewMachinePlan(name, sourceKind string, sourceDigest effectport.Digest, targetCount int, actor aiassistantport.MachineActor, now time.Time) (Plan, error) {
+	if !actor.Valid() || strings.TrimSpace(name) == "" || len(name) > 200 || strings.TrimSpace(sourceKind) == "" || len(sourceKind) > 80 || !effectport.ValidDigest(sourceDigest) || targetCount < 1 || targetCount > aiassistantport.MaxRecipients || now.IsZero() {
+		return Plan{}, ErrInvalidPlan
+	}
+	return Plan{Projection: aiassistantport.Plan{
+		Name: name, SourceKind: sourceKind, SourceDigest: sourceDigest,
+		State: aiassistantport.PlanPendingReview, Version: 1,
+		TargetCount: targetCount, PendingCount: targetCount,
+		CreatedActorKind: actor.Kind, CreatedActorRef: actor.Reference,
+		CreatedAt: now.UTC(), UpdatedAt: now.UTC(),
+	}}, nil
+}
+
 func Restore(projection aiassistantport.Plan) (Plan, error) {
 	plan := Plan{Projection: projection}
 	if !plan.Valid() {
@@ -43,7 +58,14 @@ func Restore(projection aiassistantport.Plan) (Plan, error) {
 
 func (p Plan) Valid() bool {
 	v := p.Projection
-	if strings.TrimSpace(v.Name) == "" || len(v.Name) > 200 || strings.TrimSpace(v.SourceKind) == "" || len(v.SourceKind) > 80 || !effectport.ValidDigest(v.SourceDigest) || v.CreatedBy < 1 || v.CreatedAt.IsZero() || v.UpdatedAt.IsZero() || v.Version < 1 || v.TargetCount < 1 || v.TargetCount > aiassistantport.MaxRecipients || v.PendingCount < 0 || v.ApprovedCount < 0 || v.RejectedCount < 0 || v.IneligibleCount < 0 || v.NeedsAttentionCount < 0 || v.NeedsAttentionCount > v.TargetCount || v.PendingCount+v.ApprovedCount+v.RejectedCount+v.IneligibleCount != v.TargetCount {
+	if strings.TrimSpace(v.Name) == "" || len(v.Name) > 200 || strings.TrimSpace(v.SourceKind) == "" || len(v.SourceKind) > 80 || !effectport.ValidDigest(v.SourceDigest) || v.CreatedAt.IsZero() || v.UpdatedAt.IsZero() || v.Version < 1 || v.TargetCount < 1 || v.TargetCount > aiassistantport.MaxRecipients || v.PendingCount < 0 || v.ApprovedCount < 0 || v.RejectedCount < 0 || v.IneligibleCount < 0 || v.NeedsAttentionCount < 0 || v.NeedsAttentionCount > v.TargetCount || v.PendingCount+v.ApprovedCount+v.RejectedCount+v.IneligibleCount != v.TargetCount {
+		return false
+	}
+	if v.CreatedActorKind == aiassistantport.MachineActorKind {
+		if v.CreatedBy != 0 || !(aiassistantport.MachineActor{Kind: v.CreatedActorKind, Reference: v.CreatedActorRef}).Valid() {
+			return false
+		}
+	} else if v.CreatedBy < 1 {
 		return false
 	}
 	switch v.State {

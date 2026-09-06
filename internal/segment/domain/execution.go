@@ -17,15 +17,19 @@ type AutomationBinding struct {
 	ContentDigest         [32]byte                      `json:"-"`
 	MaterialsDigest       [32]byte                      `json:"-"`
 	CreatedBy             int64                         `json:"created_by"`
+	CreatedActorKind      string                        `json:"created_actor_kind"`
+	CreatedActorRef       string                        `json:"created_actor_ref"`
 	CreatedAt             time.Time                     `json:"created_at"`
 }
 type SenderSet struct {
-	ID        int64     `json:"id"`
-	PackageID int64     `json:"package_id"`
-	Version   int64     `json:"version"`
-	Members   []Sender  `json:"members"`
-	CreatedBy int64     `json:"created_by"`
-	CreatedAt time.Time `json:"created_at"`
+	ID               int64     `json:"id"`
+	PackageID        int64     `json:"package_id"`
+	Version          int64     `json:"version"`
+	Members          []Sender  `json:"members"`
+	CreatedBy        int64     `json:"created_by"`
+	CreatedActorKind string    `json:"created_actor_kind"`
+	CreatedActorRef  string    `json:"created_actor_ref"`
+	CreatedAt        time.Time `json:"created_at"`
 }
 type Sender struct {
 	SortOrder              int                `json:"sort_order"`

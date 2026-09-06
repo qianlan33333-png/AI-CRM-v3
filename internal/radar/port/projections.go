@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/radar"
 )
 
@@ -119,4 +120,40 @@ type EventPage struct {
 type QueryService interface {
 	Stats(context.Context, radar.RadarID) (Stats, error)
 	Events(context.Context, EventQuery) (EventPage, error)
+}
+
+// CustomerActivityQuery is the Radar-owned, canonical-customer projection
+// used by the V1 activity stream. It exposes no raw identity, device, network
+// or provider payload data. The Host supplies a signed aggregate cursor while
+// Radar owns the per-type descending keyset.
+type CustomerActivityQuery struct {
+	CustomerID customerdomain.CustomerID
+	Limit      int32
+	Watermark  time.Time
+	AfterAt    time.Time
+	AfterID    int64
+}
+
+type CustomerActivity struct {
+	EventID    int64         `json:"event_id"`
+	RadarID    radar.RadarID `json:"radar_id"`
+	Stage      EventStage    `json:"stage"`
+	OccurredAt time.Time     `json:"occurred_at"`
+}
+
+type CustomerActivityPage struct {
+	Items []CustomerActivity `json:"items"`
+}
+
+// CustomerActivityReader is the only cross-domain Radar read seam for a
+// canonical customer's activity timeline. Consumers never receive a Radar
+// store or query radar_events themselves.
+type CustomerActivityReader interface {
+	CustomerActivities(context.Context, CustomerActivityQuery) (CustomerActivityPage, error)
+}
+
+// CustomerActivityStore remains inside Radar's application boundary and
+// requires the caller's transaction-bound context.
+type CustomerActivityStore interface {
+	CustomerActivities(context.Context, CustomerActivityQuery) (CustomerActivityPage, error)
 }

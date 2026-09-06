@@ -704,7 +704,7 @@ func TestPostgreSQLAudiencePrimaryOwnersUseCompletedTrustedFollowScopes(t *testi
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if len(facts) != 3 || facts[0].CustomerID != customerdomain.CustomerID(primaryCustomer) || facts[0].CorpScope != scope || facts[0].OwnerUserID != "bob" || facts[0].Status != "known" || facts[1].CustomerID != customerdomain.CustomerID(unknownCustomer) || facts[1].Status != "unknown" || facts[2].CustomerID != customerdomain.CustomerID(conflictingCustomer) || facts[2].OwnerUserID != "" || facts[2].Status != "ambiguous" {
+	if len(facts) != 3 || facts[0].CustomerID != customerdomain.CustomerID(primaryCustomer) || facts[0].CorpScope != scope || facts[0].OwnerUserID != "bob" || facts[0].Status != "known" || facts[0].VersionDigest == ([32]byte{}) || facts[1].CustomerID != customerdomain.CustomerID(unknownCustomer) || facts[1].Status != "unknown" || facts[1].VersionDigest != ([32]byte{}) || facts[2].CustomerID != customerdomain.CustomerID(conflictingCustomer) || facts[2].OwnerUserID != "" || facts[2].Status != "ambiguous" || facts[2].VersionDigest != ([32]byte{}) {
 		t.Fatalf("primary facts=%+v", facts)
 	}
 }

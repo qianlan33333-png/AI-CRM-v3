@@ -161,6 +161,7 @@ type ProviderRouter struct {
 	sidebarJSSDK      effect.ProviderAdapter
 	surveyCompletion  effect.ProviderAdapter
 	customerTag       effect.ProviderAdapter
+	ownerHandoff      effect.ProviderAdapter
 	commercePush      effect.ProviderAdapter
 }
 
@@ -197,6 +198,13 @@ func (r *ProviderRouter) WithSidebarJSSDK(provider effect.ProviderAdapter) *Prov
 func (r *ProviderRouter) WithCustomerTag(provider effect.ProviderAdapter) *ProviderRouter {
 	if r != nil {
 		r.customerTag = provider
+	}
+	return r
+}
+
+func (r *ProviderRouter) WithCustomerOwnerHandoff(provider effect.ProviderAdapter) *ProviderRouter {
+	if r != nil {
+		r.ownerHandoff = provider
 	}
 	return r
 }
@@ -282,6 +290,10 @@ func (r *ProviderRouter) Execute(ctx context.Context, envelope effect.Envelope, 
 		case effect.KindCustomerTagCommand:
 			if r.customerTag != nil {
 				return r.customerTag.Execute(ctx, envelope, attempt)
+			}
+		case effect.KindCustomerOwnerHandoff:
+			if r.ownerHandoff != nil {
+				return r.ownerHandoff.Execute(ctx, envelope, attempt)
 			}
 		case effect.KindCommerceProductPush:
 			if r.commercePush != nil {

@@ -18,15 +18,16 @@ type directUOW struct{}
 func (directUOW) Within(ctx context.Context, fn func(context.Context) error) error { return fn(ctx) }
 
 type memoryStore struct {
-	nextID   int64
-	orders   map[int64]domain.Snapshot
-	receipts map[string]Receipt
-	imports  map[string]ImportReceipt
-	failSave bool
-	exports  map[string]ExportReceipt
-	contacts map[int64][]byte
-	checkout map[int64]orderport.CheckoutSnapshot
-	paid     map[int64]orderport.PaidEvent
+	nextID               int64
+	orders               map[int64]domain.Snapshot
+	receipts             map[string]Receipt
+	imports              map[string]ImportReceipt
+	failSave             bool
+	exports              map[string]ExportReceipt
+	contacts             map[int64][]byte
+	checkout             map[int64]orderport.CheckoutSnapshot
+	paid                 map[int64]orderport.PaidEvent
+	findByReferenceCalls int
 }
 
 func newMemoryStore() *memoryStore {
@@ -138,11 +139,20 @@ func (s *memoryStore) Get(_ context.Context, id int64, _ bool) (domain.Order, er
 	return domain.Restore(snapshot)
 }
 
-func (s *memoryStore) List(_ context.Context, before *Cursor, limit int32, _ ListFilter) ([]domain.Order, error) {
+func (s *memoryStore) List(_ context.Context, before *Cursor, limit int32, filter ListFilter) ([]domain.Order, error) {
 	rows := make([]domain.Order, 0)
 	for id := s.nextID - 1; id >= 1 && len(rows) < int(limit); id-- {
 		snapshot := s.orders[id]
 		if before != nil && (snapshot.CreatedAt.After(before.CreatedAt) || snapshot.CreatedAt.Equal(before.CreatedAt) && snapshot.ID >= before.ID) {
+			continue
+		}
+		if filter.OrderRef != "" && snapshot.MerchantOrderNo != filter.OrderRef && snapshot.ProviderTransactionNo != filter.OrderRef && snapshot.SourceKey != filter.OrderRef {
+			continue
+		}
+		if filter.CustomerID > 0 && (snapshot.PayerCustomerID == nil || *snapshot.PayerCustomerID != filter.CustomerID) && (snapshot.BeneficiaryCustomerID == nil || *snapshot.BeneficiaryCustomerID != filter.CustomerID) {
+			continue
+		}
+		if filter.CreatedThrough != nil && snapshot.CreatedAt.After(*filter.CreatedThrough) {
 			continue
 		}
 		order, _ := domain.Restore(snapshot)
@@ -156,6 +166,7 @@ func (s *memoryStore) Count(context.Context, ListFilter) (int64, error) {
 }
 
 func (s *memoryStore) FindByReference(_ context.Context, reference string) ([]domain.Order, error) {
+	s.findByReferenceCalls++
 	rows := []domain.Order{}
 	for _, snapshot := range s.orders {
 		if snapshot.MerchantOrderNo == reference || snapshot.ProviderTransactionNo == reference || snapshot.SourceKey == reference {
@@ -391,6 +402,38 @@ func TestPaymentCheckoutFinalFailureReleasesCouponAndServicePeriodRefundsOnce(t 
 	}
 }
 
+func TestGetByReferenceForCustomerUsesCustomerBoundStoreQuery(t *testing.T) {
+	store := newMemoryStore()
+	service := NewService(directUOW{}, store)
+	firstInput := orderInput("scoped-a")
+	firstCustomer := int64(42)
+	firstInput.PayerCustomerID = &firstCustomer
+	first, err := service.Create(context.Background(), orderport.CreateCommand{Input: firstInput, Actor: 7, IdempotencyKey: "order-customer-scope-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondInput := orderInput("scoped-b")
+	secondCustomer := int64(43)
+	secondInput.PayerCustomerID = &secondCustomer
+	secondInput.MerchantOrderNo = first.MerchantOrderNo
+	second, err := service.Create(context.Background(), orderport.CreateCommand{Input: secondInput, Actor: 7, IdempotencyKey: "order-customer-scope-b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resolved, err := service.GetByReferenceForCustomer(context.Background(), first.MerchantOrderNo, firstCustomer)
+	if err != nil || resolved.ID != first.ID || store.findByReferenceCalls != 0 {
+		t.Fatalf("resolved=%+v err=%v broad_calls=%d", resolved, err, store.findByReferenceCalls)
+	}
+	other, err := service.GetByReferenceForCustomer(context.Background(), first.MerchantOrderNo, secondCustomer)
+	if err != nil || other.ID != second.ID || store.findByReferenceCalls != 0 {
+		t.Fatalf("other=%+v err=%v broad_calls=%d", other, err, store.findByReferenceCalls)
+	}
+	if _, err = service.GetByReferenceForCustomer(context.Background(), first.MerchantOrderNo, 44); !errors.Is(err, orderport.ErrNotFound) || store.findByReferenceCalls != 0 {
+		t.Fatalf("out-of-scope err=%v broad_calls=%d", err, store.findByReferenceCalls)
+	}
+}
+
 func TestListUsesStableCreatedAtIDCursor(t *testing.T) {
 	store := newMemoryStore()
 	service := NewService(directUOW{}, store)
@@ -486,4 +529,43 @@ func (s *memoryStore) CommercePushDeliveryReference(_ context.Context, provider 
 		return out, nil
 	}
 	return orderport.CommercePushDeliveryReference{}, orderport.ErrConflict
+}
+
+func TestCustomerActivitiesUseCustomerScopedWatermarkedKeysetAndRelationship(t *testing.T) {
+	store := newMemoryStore()
+	service := NewService(directUOW{}, store)
+	watermark := time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC)
+	create := func(key string, payer, beneficiary int64, occurredAt time.Time) domain.Snapshot {
+		t.Helper()
+		input := orderInput(key)
+		input.PayerCustomerID, input.BeneficiaryCustomerID = &payer, &beneficiary
+		service.now = func() time.Time { return occurredAt }
+		created, err := service.Create(context.Background(), orderport.CreateCommand{Input: input, Actor: 7, IdempotencyKey: "customer-activity-key-" + key})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return created
+	}
+	payerOrder := create("payer", 11, 22, watermark.Add(-2*time.Hour))
+	beneficiaryOrder := create("beneficiary", 33, 11, watermark.Add(-time.Hour))
+	_ = create("future", 11, 44, watermark.Add(time.Hour))
+
+	first, err := service.CustomerActivities(context.Background(), orderport.CustomerActivityQuery{CustomerID: 11, Limit: 1, Watermark: watermark})
+	if err != nil || len(first.Items) != 1 || first.Items[0].OrderID != beneficiaryOrder.ID || first.Items[0].Relationship != "beneficiary" {
+		t.Fatalf("first=%+v err=%v", first, err)
+	}
+	second, err := service.CustomerActivities(context.Background(), orderport.CustomerActivityQuery{CustomerID: 11, Limit: 10, Watermark: watermark, AfterAt: first.Items[0].OccurredAt, AfterID: first.Items[0].OrderID})
+	if err != nil || len(second.Items) != 1 || second.Items[0].OrderID != payerOrder.ID || second.Items[0].Relationship != "payer" {
+		t.Fatalf("second=%+v err=%v", second, err)
+	}
+	for customerID, expectedRelationship := range map[int64]string{22: "beneficiary", 33: "payer"} {
+		page, readErr := service.CustomerActivities(context.Background(), orderport.CustomerActivityQuery{CustomerID: customerID, Limit: 10, Watermark: watermark})
+		if readErr != nil || len(page.Items) != 1 || page.Items[0].Relationship != expectedRelationship {
+			t.Fatalf("customer=%d page=%+v err=%v", customerID, page, readErr)
+		}
+	}
+	missing, err := service.CustomerActivities(context.Background(), orderport.CustomerActivityQuery{CustomerID: 44, Limit: 10, Watermark: watermark})
+	if err != nil || len(missing.Items) != 0 {
+		t.Fatalf("future-only relationship must not leak before watermark page=%+v err=%v", missing, err)
+	}
 }

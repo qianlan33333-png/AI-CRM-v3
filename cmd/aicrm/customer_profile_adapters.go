@@ -60,7 +60,11 @@ type customerOwnerAdapter struct {
 	uow          platformport.UnitOfWork
 	observations wecomport.CustomerProfileObservationReader
 	users        interface {
+		UserByID(context.Context, int64, bool) (accessdomain.User, error)
 		UserByWeComUserID(context.Context, string, bool) (accessdomain.User, error)
+	}
+	owners interface {
+		LocalOwner(context.Context, customerdomain.CustomerID, bool) (customerport.LocalOwner, bool, error)
 	}
 }
 
@@ -71,6 +75,26 @@ func (customerOwnerAdapter) CapabilityStatus() customerport.SectionStatus {
 func (adapter customerOwnerAdapter) CustomerOwners(ctx context.Context, id customerdomain.CustomerID) (customerport.OwnerPage, error) {
 	page := customerport.OwnerPage{Items: []customerport.OwnerItem{}, Status: customerport.SectionStatus{State: customerport.SectionReady}}
 	err := adapter.uow.Within(ctx, func(tx context.Context) error {
+		// The explicit CRM owner is authoritative after a local-only or
+		// accepted WeCom handoff. Follow observations remain useful context but
+		// cannot overwrite this Customer-owned projection.
+		if adapter.owners != nil {
+			local, found, localErr := adapter.owners.LocalOwner(tx, id, false)
+			if localErr != nil {
+				return localErr
+			}
+			if found {
+				user, lookupErr := adapter.users.UserByID(tx, local.StaffID, false)
+				if lookupErr != nil {
+					page.Status.State, page.Status.ErrorCode = customerport.SectionDegraded, "local_owner_staff_unavailable"
+					page.Items = append(page.Items, customerport.OwnerItem{DisplayName: "本地负责人待同步", Status: "local_owner", Source: local.Source, ObservedAt: local.UpdatedAt})
+				} else {
+					page.Items = append(page.Items, customerport.OwnerItem{DisplayName: user.DisplayName, Status: "local_owner", Source: local.Source, ObservedAt: local.UpdatedAt})
+				}
+				updated := local.UpdatedAt
+				page.Status.AsOf = &updated
+			}
+		}
 		observations, err := adapter.observations.CustomerOwnerObservations(tx, id)
 		if err != nil {
 			return err
@@ -88,7 +112,7 @@ func (adapter customerOwnerAdapter) CustomerOwners(ctx context.Context, id custo
 			if lookupErr != nil {
 				return lookupErr
 			}
-			page.Items = append(page.Items, customerport.OwnerItem{DisplayName: user.DisplayName, Status: observation.Status, ObservedAt: observation.ObservedAt})
+			page.Items = append(page.Items, customerport.OwnerItem{DisplayName: user.DisplayName, Status: observation.Status, Source: "wecom_follow", ObservedAt: observation.ObservedAt})
 		}
 		if page.UnmatchedCount > 0 {
 			page.Status.State, page.Status.ErrorCode = customerport.SectionDegraded, "wecom_staff_name_unmatched"

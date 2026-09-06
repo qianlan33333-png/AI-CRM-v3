@@ -35,6 +35,7 @@ type Store interface {
 	RecordBlockedIssue(context.Context, string, IngestIssue, time.Time) error
 	FinishRun(context.Context, int64, SyncRunFinish) error
 	CustomerMessages(context.Context, archiveport.CustomerQuery) (archiveport.CustomerPage, error)
+	ExternalCustomerMessages(context.Context, archiveport.ExternalChatRecordQuery) (archiveport.ExternalChatRecordPage, error)
 	CustomerStaffIDs(context.Context, []customerdomain.CustomerID) ([]int64, error)
 	MediaAccess(context.Context, MediaQuery) (MediaReference, error)
 }
@@ -425,6 +426,30 @@ func (service Service) CustomerMessages(ctx context.Context, query archiveport.C
 			return readErr
 		}
 		return service.populateStaffNames(tx, &page)
+	})
+	return page, err
+}
+
+// ExternalCustomerMessages serves only the frozen machine-read projection. It
+// shares the CustomerMessages readiness and canonical-lineage gates but keeps
+// its provider identifiers out of the ordinary customer UI projection.
+func (service Service) ExternalCustomerMessages(ctx context.Context, query archiveport.ExternalChatRecordQuery) (archiveport.ExternalChatRecordPage, error) {
+	if !service.ReadEnabled || service.Lineage == nil || service.Store == nil || service.UOW == nil || query.CustomerID < 1 ||
+		strings.TrimSpace(query.ExternalUserID) != query.ExternalUserID || query.ExternalUserID == "" || len(query.ExternalUserID) > 1024 ||
+		(query.ChatScene != "private" && query.ChatScene != "group") || query.Limit < 1 || query.Limit > 20 || query.Offset < 0 ||
+		(!query.StartAt.IsZero() && query.StartAt.Location() != time.UTC) || strings.TrimSpace(query.WithUserID) != query.WithUserID || len(query.WithUserID) > 1024 {
+		return archiveport.ExternalChatRecordPage{}, archiveport.ErrNotReady
+	}
+	var page archiveport.ExternalChatRecordPage
+	err := service.UOW.Within(ctx, func(tx context.Context) error {
+		lineage, err := service.Lineage.CanonicalLineage(tx, query.CustomerID)
+		if err != nil {
+			return err
+		}
+		query.CustomerIDs = lineage
+		var readErr error
+		page, readErr = service.Store.ExternalCustomerMessages(tx, query)
+		return readErr
 	})
 	return page, err
 }

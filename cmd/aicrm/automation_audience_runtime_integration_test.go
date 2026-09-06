@@ -560,7 +560,16 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 	// script. Only its ordinary bootstrap reads are stubbed; Preview, Confirm,
 	// and the resulting run list travel to this real Runtime HTTP handler and
 	// the PostgreSQL fixture.
-	detailServer := httptest.NewServer(runtimeHandler)
+	// The frozen page receives the actual PostgreSQL preview response only
+	// after this bounded fixture delay.  Its journey must wait for the rendered
+	// success or error state rather than assume a fixed browser idle interval.
+	const manualBroadcastPreviewResponseDelay = 600 * time.Millisecond
+	detailServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/api/admin/ai-audience/packages/"+automationAudienceInt(packageID)+"/broadcast-previews" {
+			time.Sleep(manualBroadcastPreviewResponseDelay)
+		}
+		runtimeHandler.ServeHTTP(w, r)
+	}))
 	defer detailServer.Close()
 	_, testFile, _, callerOK := goruntime.Caller(0)
 	if !callerOK {
@@ -1224,7 +1233,7 @@ func automationAudienceRuntimePool(t *testing.T) (*pgxpool.Pool, func()) {
 	if !ok {
 		t.Fatal("locate automation audience journey")
 	}
-	for _, name := range []string{"0001_platform.sql", "0002_identity.sql", "0003_access.sql", "0005_external_effects.sql", "0007_media.sql", "0013_automation_agents.sql", "0015_config_adminops.sql", "0036_ai_assistant_review.sql", "0037_outbound_private_messages.sql", "0039_segment_audience_configuration.sql", "0040_segment_audience_snapshots.sql", "0041_segment_audience_webhooks.sql", "0042_segment_audience_execution_bindings.sql", "0043_automation_runtime.sql", "0044_outbound_automation_messages.sql", "0045_segment_audience_member_events.sql", "0046_automation_run_reconciliations.sql", "0048_segment_audience_schedule_state.sql", "0053_segment_audience_member_event_fact_kinds.sql", "0083_segment_audience_refresh_modes.sql", "0085_segment_audience_refresh_kind.sql", "0087_automation_manual_ai_review.sql", "0089_outbound_message_content_snapshots.sql", "0094_runtime_config_releases.sql"} {
+	for _, name := range []string{"0001_platform.sql", "0002_identity.sql", "0003_access.sql", "0005_external_effects.sql", "0007_media.sql", "0013_automation_agents.sql", "0015_config_adminops.sql", "0036_ai_assistant_review.sql", "0037_outbound_private_messages.sql", "0039_segment_audience_configuration.sql", "0040_segment_audience_snapshots.sql", "0041_segment_audience_webhooks.sql", "0042_segment_audience_execution_bindings.sql", "0043_automation_runtime.sql", "0044_outbound_automation_messages.sql", "0045_segment_audience_member_events.sql", "0046_automation_run_reconciliations.sql", "0048_segment_audience_schedule_state.sql", "0053_segment_audience_member_event_fact_kinds.sql", "0083_segment_audience_refresh_modes.sql", "0085_segment_audience_refresh_kind.sql", "0087_automation_manual_ai_review.sql", "0089_outbound_message_content_snapshots.sql", "0094_runtime_config_releases.sql", "0097_segment_audience_mutation_actor.sql", "0100_ai_assistant_machine_actor.sql"} {
 		sql, readErr := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "migrations", name))
 		if readErr != nil {
 			native.Close()

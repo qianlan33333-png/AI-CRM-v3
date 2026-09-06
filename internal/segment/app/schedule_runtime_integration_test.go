@@ -196,6 +196,10 @@ func TestPostgreSQLCombinedScheduleConcurrentScannersDeduplicateRefresh(t *testi
 }
 
 func scheduleRuntimeDatabase(t *testing.T, ctx context.Context) (*pgxpool.Pool, func()) {
+	return scheduleRuntimeDatabaseWithMutationActor(t, ctx, true)
+}
+
+func scheduleRuntimeDatabaseWithMutationActor(t *testing.T, ctx context.Context, includeMutationActor bool) (*pgxpool.Pool, func()) {
 	t.Helper()
 	url, err := platformconfig.DatabaseURL()
 	if err != nil {
@@ -222,22 +226,39 @@ func scheduleRuntimeDatabase(t *testing.T, ctx context.Context) (*pgxpool.Pool, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, file, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("locate schedule runtime integration test")
-	}
-	for _, name := range []string{"0039_segment_audience_configuration.sql", "0040_segment_audience_snapshots.sql", "0041_segment_audience_webhooks.sql", "0042_segment_audience_execution_bindings.sql", "0045_segment_audience_member_events.sql", "0048_segment_audience_schedule_state.sql", "0053_segment_audience_member_event_fact_kinds.sql", "0083_segment_audience_refresh_modes.sql", "0085_segment_audience_refresh_kind.sql"} {
-		migration, readErr := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "..", "migrations", name))
-		if readErr != nil {
-			t.Fatal(readErr)
-		}
-		if _, err = native.Exec(ctx, string(migration)); err != nil {
-			t.Fatalf("apply %s: %v", name, err)
-		}
+	for _, name := range segmentRuntimeMigrationNames(includeMutationActor) {
+		applySegmentRuntimeMigration(t, native, name)
 	}
 	return native, func() {
 		native.Close()
 		_, _ = admin.Exec(context.Background(), "DROP SCHEMA "+schema+" CASCADE")
 		admin.Close()
+	}
+}
+
+func segmentRuntimeMigrationNames(includeMutationActor bool) []string {
+	names := []string{
+		"0039_segment_audience_configuration.sql", "0040_segment_audience_snapshots.sql", "0041_segment_audience_webhooks.sql",
+		"0042_segment_audience_execution_bindings.sql", "0045_segment_audience_member_events.sql", "0048_segment_audience_schedule_state.sql",
+		"0053_segment_audience_member_event_fact_kinds.sql", "0083_segment_audience_refresh_modes.sql", "0085_segment_audience_refresh_kind.sql",
+	}
+	if includeMutationActor {
+		names = append(names, "0097_segment_audience_mutation_actor.sql")
+	}
+	return names
+}
+
+func applySegmentRuntimeMigration(t *testing.T, native *pgxpool.Pool, name string) {
+	t.Helper()
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("locate schedule runtime integration test")
+	}
+	migration, err := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "..", "migrations", name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = native.Exec(context.Background(), string(migration)); err != nil {
+		t.Fatalf("apply %s: %v", name, err)
 	}
 }

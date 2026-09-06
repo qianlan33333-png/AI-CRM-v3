@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -126,6 +127,44 @@ func (store *Postgres) Stats(ctx context.Context, id radar.RadarID) (radarport.S
 	}
 	return stats, nil
 }
+
+func (store *Postgres) CustomerActivities(ctx context.Context, query radarport.CustomerActivityQuery) (radarport.CustomerActivityPage, error) {
+	if query.CustomerID < 1 || query.Limit < 1 || query.Limit > 101 || query.Watermark.IsZero() || query.AfterID < 0 ||
+		(query.AfterAt.IsZero() && query.AfterID != 0) || (!query.AfterAt.IsZero() && query.AfterAt.After(query.Watermark)) {
+		return radarport.CustomerActivityPage{}, radar.ErrInvalidArgument
+	}
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return radarport.CustomerActivityPage{}, err
+	}
+	afterAt, afterID := query.AfterAt, query.AfterID
+	if afterAt.IsZero() {
+		afterAt, afterID = query.Watermark.UTC(), math.MaxInt64
+	}
+	rows, err := tx.Query(ctx, `SELECT id,radar_id,stage,occurred_at
+		FROM radar_events
+		WHERE customer_id=$1 AND attribution_status='resolved' AND occurred_at <= $2
+		AND (occurred_at,id) < ($3,$4)
+		ORDER BY occurred_at DESC,id DESC LIMIT $5`, int64(query.CustomerID), query.Watermark.UTC(), afterAt.UTC(), afterID, query.Limit)
+	if err != nil {
+		return radarport.CustomerActivityPage{}, mapError(err)
+	}
+	defer rows.Close()
+	page := radarport.CustomerActivityPage{Items: []radarport.CustomerActivity{}}
+	for rows.Next() {
+		var item radarport.CustomerActivity
+		if err = rows.Scan(&item.EventID, &item.RadarID, &item.Stage, &item.OccurredAt); err != nil {
+			return radarport.CustomerActivityPage{}, mapError(err)
+		}
+		page.Items = append(page.Items, item)
+	}
+	if err = rows.Err(); err != nil {
+		return radarport.CustomerActivityPage{}, mapError(err)
+	}
+	return page, nil
+}
+
+var _ radarport.CustomerActivityStore = (*Postgres)(nil)
 
 func (store *Postgres) Events(ctx context.Context, query radarport.EventQuery) (radarport.EventPage, error) {
 	tx, err := platformpostgres.RequireTransaction(ctx)

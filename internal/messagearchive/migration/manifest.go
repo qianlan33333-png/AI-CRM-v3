@@ -6,6 +6,7 @@ package migration
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -23,10 +24,13 @@ const SchemaVersion = "aicrm-message-archive-history-v1"
 var ErrInvalidManifest = errors.New("invalid message archive migration manifest")
 
 type SourceRow struct {
-	SourceRowKey string          `json:"source_row_key"`
-	Seq          uint64          `json:"seq"`
-	MsgID        string          `json:"msgid"`
-	Payload      json.RawMessage `json:"payload"`
+	SourceRowKey        string          `json:"source_row_key"`
+	Seq                 uint64          `json:"seq"`
+	MsgID               string          `json:"msgid"`
+	Payload             json.RawMessage `json:"payload"`
+	SourcePayloadDigest string          `json:"source_payload_digest,omitempty"`
+	HistoricalUnionID   string          `json:"historical_unionid,omitempty"`
+	HistoricalGroupName string          `json:"historical_group_name,omitempty"`
 }
 
 type Manifest struct {
@@ -70,7 +74,7 @@ func (manifest Manifest) Validate() error {
 	}
 	keys, messages, sequences := map[string]struct{}{}, map[string]struct{}{}, map[uint64]struct{}{}
 	for _, row := range manifest.Records {
-		if !label(row.SourceRowKey, 512) || row.Seq == 0 || !label(row.MsgID, 512) || !json.Valid(row.Payload) {
+		if !label(row.SourceRowKey, 512) || row.Seq == 0 || !label(row.MsgID, 512) || !json.Valid(row.Payload) || !validSourcePayloadDigest(row.SourcePayloadDigest) {
 			return ErrInvalidManifest
 		}
 		if _, found := keys[row.SourceRowKey]; found {
@@ -82,6 +86,9 @@ func (manifest Manifest) Validate() error {
 		if _, found := sequences[row.Seq]; found {
 			return ErrInvalidManifest
 		}
+		if _, err := manifest.HistoricalProjection(row); err != nil {
+			return ErrInvalidManifest
+		}
 		message, err := archiveapp.NormalizeArchiveRecord(manifest.CorpScope, wecomport.PlainArchiveRecord{Seq: row.Seq, MsgID: row.MsgID, Payload: row.Payload})
 		if err != nil || !message.Valid() {
 			return ErrInvalidManifest
@@ -89,6 +96,36 @@ func (manifest Manifest) Validate() error {
 		keys[row.SourceRowKey], messages[row.MsgID], sequences[row.Seq] = struct{}{}, struct{}{}, struct{}{}
 	}
 	return nil
+}
+
+// HistoricalProjection returns the two values that the frozen legacy external
+// archive projection took from each archived row. They stay Archive-owned facts
+// and never become current OneID evidence or a group-directory lookup.
+type HistoricalProjection struct {
+	UnionID   string
+	GroupName string
+}
+
+// validSourcePayloadDigest permits older normalized operator manifests, while
+// snapshots extracted from archived_messages must preserve a digest of the
+// complete protected source wrapper. The wrapper is not copied to V3.
+func validSourcePayloadDigest(value string) bool {
+	if value == "" {
+		return true
+	}
+	if len(value) != sha256.Size*2 || strings.ToLower(value) != value {
+		return false
+	}
+	decoded, err := hex.DecodeString(value)
+	return err == nil && len(decoded) == sha256.Size
+}
+
+func (manifest Manifest) HistoricalProjection(row SourceRow) (HistoricalProjection, error) {
+	projection := HistoricalProjection{UnionID: strings.TrimSpace(row.HistoricalUnionID), GroupName: strings.TrimSpace(row.HistoricalGroupName)}
+	if len(projection.UnionID) > 1024 || len(projection.GroupName) > 512 {
+		return HistoricalProjection{}, ErrInvalidManifest
+	}
+	return projection, nil
 }
 
 // Normalized keeps the parser's participant categories but never promotes an
