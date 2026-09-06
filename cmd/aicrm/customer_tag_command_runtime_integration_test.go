@@ -4,14 +4,17 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -19,6 +22,9 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
+	accesshttp "github.com/qianlan33333-png/AI-CRM-v3/internal/access/http"
+	channelstore "github.com/qianlan33333-png/AI-CRM-v3/internal/channel"
+	channelport "github.com/qianlan33333-png/AI-CRM-v3/internal/channel/port"
 	customerapp "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/app"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	customerhttp "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/http"
@@ -394,56 +400,493 @@ func TestCustomerTagCommandCompositionAcceptanceAtomicConcurrentReplay(t *testin
 }
 
 func TestCustomerTagCommandCompositionBatchOver100QueuesIndependentRiverEffects(t *testing.T) {
-	url, err := platformconfig.DatabaseURL()
-	if err != nil {
-		t.Skip("AICRM_DATABASE_URL is not configured")
-	}
-	ctx := context.Background()
-	pool, clean := customerTagRuntimePool(t, ctx, url)
-	defer clean()
-	native := pool.Native()
-	if _, err = native.Exec(ctx, `INSERT INTO admin_users(username,password_hash,display_name,is_active,session_version) VALUES('tag-admin-batch','$argon2id$test','Tag batch admin',true,1); INSERT INTO customers(id,status) OVERRIDING SYSTEM VALUE SELECT value,'active' FROM generate_series(1,101) value`); err != nil {
-		t.Fatal(err)
-	}
-	uow, err := platformpostgres.NewUnitOfWork(pool)
-	if err != nil {
-		t.Fatal(err)
-	}
-	workers := river.NewWorkers()
-	if err = river.AddWorkerSafely[externaleffects.EffectJobArgs](workers, externaleffects.NewWorker(nil, nil)); err != nil {
-		t.Fatal(err)
-	}
-	insert, err := platformjobqueue.NewInsertClient(native, workers)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	databaseURL, cleanup := adminAccessCompositionDatabase(t, ctx)
+	defer cleanup()
+
+	// This is intentionally a Composition journey instead of an insert-only
+	// receipt check. It exercises the real session/CSRF command acceptance,
+	// River runtime, outbound provider adapter and completion sink across an
+	// actual stop/rebuild on the same PostgreSQL schema.
+	provider := newCustomerTagRestartProvider(8)
+	defer provider.Close()
+	config := customerTagRestartRuntimeConfig(databaseURL, provider)
+	first, err := compose(ctx, config)
 	if err != nil {
 		t.Fatal(err)
 	}
-	effects, err := externaleffects.NewRepository(native, insert)
+	defer func() {
+		if first != nil {
+			first.Close()
+		}
+	}()
+	if err = first.bootstrap(ctx, config.Bootstrap); err != nil {
+		t.Fatal(err)
+	}
+	if err = seedCustomerTagRestartJourney(ctx, first, 101); err != nil {
+		t.Fatal(err)
+	}
+
+	session, csrf := adminAccessLogin(t, first.handler, "tag-restart-owner", "tag-restart-owner-password")
+	targets := make([]int64, 0, 101)
+	for customerID := int64(1); customerID <= 101; customerID++ {
+		targets = append(targets, customerID)
+	}
+	body, err := json.Marshal(map[string]any{
+		"customer_ids":    targets,
+		"add_tag_ids":     []int64{1},
+		"idempotency_key": "0b9c708d-3e4f-4475-a695-54dc17d1198b",
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	service, err := customerapp.NewTagCommandService(uow, customerstore.TagCommandPostgreSQL{}, effects, customerTagCompositionGate{}, platformaudit.NewPostgreSQLStore(), platformoutbox.NewPostgreSQL())
-	if err != nil {
-		t.Fatal(err)
-	}
-	targets := make([]customerport.TagCommandTarget, 0, 101)
-	for customerID := 1; customerID <= 101; customerID++ {
-		targets = append(targets, customerport.TagCommandTarget{CustomerID: customerdomain.CustomerID(customerID), AddTagIDs: []int64{1}})
-	}
-	result, err := service.SubmitTagCommand(ctx, customerport.TagCommand{ActorAdminUserID: 1, Source: "admin_customer_ui", SourceRef: "batch-over-100", IdempotencyKey: "batch-over-100", OccurredAt: time.Now(), Targets: targets})
-	if err != nil || result.ID < 1 || len(result.Lines) != 101 || result.State != "queued" {
-		t.Fatalf("result=%+v err=%v", result, err)
+	request := httptest.NewRequestWithContext(ctx, http.MethodPost, "/api/v1/customer-tag-commands", bytes.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-CSRF-Token", csrf)
+	request.AddCookie(&http.Cookie{Name: accesshttp.SessionCookieName, Value: session})
+	request.AddCookie(&http.Cookie{Name: accesshttp.CSRFCookieName, Value: csrf})
+	acceptedResponse := httptest.NewRecorder()
+	first.handler.ServeHTTP(acceptedResponse, request)
+	var accepted customerport.TagCommandResult
+	if err = json.NewDecoder(acceptedResponse.Body).Decode(&accepted); err != nil || acceptedResponse.Code != http.StatusAccepted || accepted.ID < 1 || len(accepted.Lines) != 101 || accepted.State != "queued" {
+		t.Fatalf("accept status=%d result=%+v err=%v body=%s", acceptedResponse.Code, accepted, err, acceptedResponse.Body.String())
 	}
 	for table, want := range map[string]int{"customer_tag_commands": 1, "customer_tag_command_lines": 101, "external_effects": 101, "river_job": 101} {
 		var got int
-		if err = native.QueryRow(ctx, "SELECT count(*) FROM "+table).Scan(&got); err != nil || got != want {
+		if err = first.pool.Native().QueryRow(ctx, "SELECT count(*) FROM "+table).Scan(&got); err != nil || got != want {
 			t.Fatalf("%s=%d want=%d err=%v", table, got, want, err)
 		}
 	}
-	// River holds one stable customer effect per job. Restarting between jobs can
-	// never merge two customer mutations or cause a batch-wide resend.
-	var duplicateArgs int
-	if err = native.QueryRow(ctx, `SELECT count(*) FROM (SELECT args->>'effect_id' effect_id,count(*) FROM river_job GROUP BY args->>'effect_id' HAVING count(*) > 1) duplicates`).Scan(&duplicateArgs); err != nil || duplicateArgs != 0 {
-		t.Fatalf("duplicate river effects=%d err=%v", duplicateArgs, err)
+
+	firstRun, stopFirst := startCustomerTagRestartRuntime(first, ctx)
+	if !provider.WaitForBlocked(ctx, 1) {
+		stopCustomerTagRestartRuntime(t, stopFirst, firstRun)
+		t.Fatalf("first runtime did not reach an in-flight provider call; calls=%v", provider.Calls())
+	}
+	stopCustomerTagRestartRuntime(t, stopFirst, firstRun)
+
+	var beforeExecuted, beforeUnknown, beforePending int
+	if err = first.pool.Native().QueryRow(ctx, `SELECT
+		count(*) FILTER (WHERE state='executed'),
+		count(*) FILTER (WHERE state='outcome_unknown'),
+		count(*) FILTER (WHERE state IN ('accepted','queued','attempted','retryable_failed'))
+		FROM customer_tag_command_lines`).Scan(&beforeExecuted, &beforeUnknown, &beforePending); err != nil {
+		t.Fatal(err)
+	}
+	if beforeExecuted < 1 || beforeUnknown < 1 || beforePending < 1 {
+		t.Fatalf("first runtime must leave executed, unknown and pending lines: executed=%d unknown=%d pending=%d", beforeExecuted, beforeUnknown, beforePending)
+	}
+	first.Close()
+	first = nil
+
+	// Recompose from the same database after the first runtime has stopped. The
+	// fixture releases only now, so any second provider call for terminal work
+	// would be visible as a duplicate rather than hidden by a test helper.
+	second, err := compose(ctx, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	secondRun, stopSecond := startCustomerTagRestartRuntime(second, ctx)
+	provider.Resume()
+	defer stopCustomerTagRestartRuntime(t, stopSecond, secondRun)
+	if !waitForCustomerTagRestartTerminal(ctx, second.pool.Native(), accepted.ID, 101) {
+		t.Fatal("second runtime did not finish the queued batch")
+	}
+
+	var commandState string
+	var executed, unknown, pending int
+	if err = second.pool.Native().QueryRow(ctx, `SELECT state FROM customer_tag_commands WHERE id=$1`, accepted.ID).Scan(&commandState); err != nil {
+		t.Fatal(err)
+	}
+	if err = second.pool.Native().QueryRow(ctx, `SELECT
+		count(*) FILTER (WHERE state='executed'),
+		count(*) FILTER (WHERE state='outcome_unknown'),
+		count(*) FILTER (WHERE state IN ('accepted','queued','attempted','retryable_failed'))
+		FROM customer_tag_command_lines WHERE command_id=$1`, accepted.ID).Scan(&executed, &unknown, &pending); err != nil {
+		t.Fatal(err)
+	}
+	if commandState != "outcome_unknown" || executed < beforeExecuted || unknown < beforeUnknown || executed+unknown != 101 || pending != 0 {
+		t.Fatalf("restart aggregate state=%q executed=%d unknown=%d pending=%d; first executed=%d unknown=%d", commandState, executed, unknown, pending, beforeExecuted, beforeUnknown)
+	}
+	calls := provider.Calls()
+	if len(calls) != 101 {
+		t.Fatalf("provider targets=%d want=101", len(calls))
+	}
+	for externalUserID, count := range calls {
+		if count != 1 {
+			t.Fatalf("provider call duplicated for %q: %d", externalUserID, count)
+		}
+	}
+}
+
+func customerTagRestartRuntimeConfig(databaseURL string, provider *customerTagRestartProvider) platformconfig.Runtime {
+	key := base64.RawStdEncoding.EncodeToString(bytes.Repeat([]byte{'r'}, 32))
+	return platformconfig.Runtime{
+		Role: platformconfig.RoleAPI, DatabaseURL: databaseURL, PublicOrigin: "https://customer-tag-restart.example.test",
+		ReleaseSHA: "customer-tag-restart", WorkerOwner: "customer-tag-restart", WorkerLimit: 1,
+		GroupOps:  platformconfig.GroupOps{WebhookSecret: "customer-tag-restart-webhook-secret"},
+		Survey:    platformconfig.Survey{DataKey: key, IdentityPhoneDataKey: key},
+		Bootstrap: platformconfig.Bootstrap{Enabled: true, Username: "tag-restart-owner", Password: "tag-restart-owner-password", DisplayName: "Tag Restart Owner"},
+		Effects:   platformconfig.Effects{ProviderEnabled: true},
+		WeCom:     platformconfig.WeCom{Enabled: true, CorpID: "fixture-corp", AgentID: "fixture-agent", Secret: "fixture-secret", ContactSecret: "fixture-contact-secret", ContextSigningKey: "customer-tag-restart-context-key-32", CustomerTagProviderEnabled: true, APIBase: provider.URL(), HTTPClient: provider.Client()},
+	}
+}
+
+func startCustomerTagRestartRuntime(application *composedApplication, parent context.Context) (<-chan error, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(parent)
+	done := make(chan error, 1)
+	go func() { done <- application.effectsRuntime.Run(ctx) }()
+	return done, cancel
+}
+
+func stopCustomerTagRestartRuntime(t *testing.T, stop context.CancelFunc, done <-chan error) {
+	t.Helper()
+	stop()
+	select {
+	case err := <-done:
+		if err != nil && !errors.Is(err, context.Canceled) {
+			t.Fatalf("effects runtime stop: %v", err)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("effects runtime did not stop")
+	}
+}
+
+func waitForCustomerTagRestartTerminal(ctx context.Context, pool *pgxpool.Pool, commandID int64, count int) bool {
+	deadline := time.NewTimer(30 * time.Second)
+	defer deadline.Stop()
+	tick := time.NewTicker(50 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		var terminal int
+		err := pool.QueryRow(ctx, `SELECT count(*) FROM customer_tag_command_lines WHERE command_id=$1 AND state IN ('executed','outcome_unknown','final_failed','reconciled','cancelled','rejected')`, commandID).Scan(&terminal)
+		if err == nil && terminal == count {
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-deadline.C:
+			return false
+		case <-tick.C:
+		}
+	}
+}
+
+type customerTagRestartProvider struct {
+	server           *httptest.Server
+	mu               sync.Mutex
+	calls            map[string]int
+	firstPassSuccess int
+	successes        int
+	unknownIssued    bool
+	blocked          chan struct{}
+	resume           chan struct{}
+	resumeOnce       sync.Once
+}
+
+func newCustomerTagRestartProvider(firstPassSuccess int) *customerTagRestartProvider {
+	fixture := &customerTagRestartProvider{
+		calls:            make(map[string]int),
+		firstPassSuccess: firstPassSuccess,
+		blocked:          make(chan struct{}, 4),
+		resume:           make(chan struct{}),
+	}
+	fixture.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/cgi-bin/gettoken":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"errcode":0,"access_token":"fixture-token","expires_in":7200}`))
+		case "/cgi-bin/externalcontact/mark_tag":
+			var request struct {
+				ExternalUserID string   `json:"external_userid"`
+				UserID         string   `json:"userid"`
+				AddTag         []string `json:"add_tag"`
+				RemoveTag      []string `json:"remove_tag"`
+			}
+			if json.NewDecoder(r.Body).Decode(&request) != nil || request.UserID != "fixture-staff" || len(request.AddTag) != 1 || request.AddTag[0] != "fixture-provider-add" || len(request.RemoveTag) != 0 || request.ExternalUserID == "" {
+				http.Error(w, "unexpected tag mutation", http.StatusBadRequest)
+				return
+			}
+			fixture.mu.Lock()
+			fixture.calls[request.ExternalUserID]++
+			unknown := !fixture.unknownIssued
+			if unknown {
+				fixture.unknownIssued = true
+			}
+			block := !unknown && fixture.successes >= fixture.firstPassSuccess
+			if !unknown && !block {
+				fixture.successes++
+			}
+			fixture.mu.Unlock()
+			if unknown {
+				// A plain HTTP 500 has no trusted Provider errcode. The real adapter
+				// therefore records outcome_unknown and must never resend it.
+				http.Error(w, "fixture plain response failure", http.StatusInternalServerError)
+				return
+			}
+			if block {
+				select {
+				case fixture.blocked <- struct{}{}:
+				default:
+				}
+				select {
+				case <-fixture.resume:
+				case <-r.Context().Done():
+					return
+				}
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"errcode":0}`))
+		case "/cgi-bin/externalcontact/get":
+			externalUserID := r.URL.Query().Get("external_userid")
+			if externalUserID == "" {
+				http.Error(w, "missing external user", http.StatusBadRequest)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"errcode":          0,
+				"external_contact": map[string]any{"external_userid": externalUserID, "name": "fixture", "type": 1, "gender": 0},
+				"follow_user":      []any{map[string]any{"userid": "fixture-staff", "tags": []any{map[string]any{"tag_id": "fixture-provider-add", "name": "fixture observed", "type": 1}}}},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	return fixture
+}
+
+func (fixture *customerTagRestartProvider) URL() string          { return fixture.server.URL }
+func (fixture *customerTagRestartProvider) Client() *http.Client { return fixture.server.Client() }
+func (fixture *customerTagRestartProvider) Close()               { fixture.server.Close() }
+func (fixture *customerTagRestartProvider) Resume() {
+	fixture.resumeOnce.Do(func() { close(fixture.resume) })
+}
+func (fixture *customerTagRestartProvider) WaitForBlocked(ctx context.Context, want int) bool {
+	for received := 0; received < want; received++ {
+		select {
+		case <-fixture.blocked:
+		case <-ctx.Done():
+			return false
+		case <-time.After(20 * time.Second):
+			return false
+		}
+	}
+	return true
+}
+func (fixture *customerTagRestartProvider) Calls() map[string]int {
+	fixture.mu.Lock()
+	defer fixture.mu.Unlock()
+	copy := make(map[string]int, len(fixture.calls))
+	for externalUserID, count := range fixture.calls {
+		copy[externalUserID] = count
+	}
+	return copy
+}
+
+func seedCustomerTagRestartJourney(ctx context.Context, application *composedApplication, count int) error {
+	if application == nil || application.pool == nil || count < 1 {
+		return errors.New("customer tag restart fixture is unavailable")
+	}
+	pool := application.pool.Native()
+	if _, err := pool.Exec(ctx, `UPDATE admin_users SET wecom_userid='fixture-staff' WHERE id=1`); err != nil {
+		return err
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO customers(id,status) OVERRIDING SYSTEM VALUE SELECT value,'active' FROM generate_series(1,$1) value`, count); err != nil {
+		return err
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO customer_identities(customer_id,kind,scope_key,normalized_value,assurance,source,normalizer_version,verified_at)
+		SELECT value,'wecom_external_userid','wecom-corp:fixture-corp','fixture-restart-' || lpad(value::text,3,'0'),'verified','restart_fixture',1,clock_timestamp() FROM generate_series(1,$1) value`, count); err != nil {
+		return err
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO wecom_customer_sync_runs(run_key,trigger_type,status,corp_scope,staff_ids,started_at,completed_at) VALUES('customer-tag-restart-seed','manual','succeeded','wecom-corp:fixture-corp',jsonb_build_array('fixture-staff'),clock_timestamp(),clock_timestamp())`); err != nil {
+		return err
+	}
+	var err error
+	var runID int64
+	if err = pool.QueryRow(ctx, `SELECT id FROM wecom_customer_sync_runs WHERE run_key='customer-tag-restart-seed'`).Scan(&runID); err != nil {
+		return err
+	}
+	if _, err = pool.Exec(ctx, `INSERT INTO wecom_external_contact_profiles(customer_id,corp_scope,external_identity_id,display_name,activation_status,profile_digest,last_seen_run_id,fetched_at,primary_owner_userid,primary_owner_run_id)
+		SELECT value,'wecom-corp:fixture-corp',identity.id,'fixture restart ' || value::text,'active',decode(repeat('00',32),'hex'),$1,clock_timestamp(),'fixture-staff',$1
+		FROM generate_series(1,$2) value JOIN customer_identities identity ON identity.customer_id=value AND identity.kind='wecom_external_userid'`, runID, count); err != nil {
+		return err
+	}
+	if _, err = pool.Exec(ctx, `INSERT INTO wecom_follow_relationships(corp_id,employee_id,customer_id,active) SELECT 'fixture-corp','fixture-staff',value,true FROM generate_series(1,$1) value`, count); err != nil {
+		return err
+	}
+	if _, err = pool.Exec(ctx, `INSERT INTO customer_directory_projection(customer_id,customer_status,display_name,oneid_label,activation_status,source,last_synced_at,updated_at)
+		SELECT value,'active','fixture restart ' || value::text,'customer #' || value::text,'active','restart_fixture',clock_timestamp(),clock_timestamp() FROM generate_series(1,$1) value`, count); err != nil {
+		return err
+	}
+	if _, err = pool.Exec(ctx, `INSERT INTO tag_groups(group_name,sort_order) VALUES('fixture restart group',0)`); err != nil {
+		return err
+	}
+	if _, err = pool.Exec(ctx, `INSERT INTO tag_catalog_tags(group_id,tag_name,sort_order) VALUES((SELECT id FROM tag_groups WHERE group_name='fixture restart group'),'fixture restart add',0)`); err != nil {
+		return err
+	}
+	if _, err = pool.Exec(ctx, `INSERT INTO tag_provider_tag_bindings(provider_tag_id,tag_id) VALUES('fixture-provider-add',(SELECT id FROM tag_catalog_tags WHERE tag_name='fixture restart add'))`); err != nil {
+		return err
+	}
+	var staff, profiles, relationships, identities, bindings, localTagID int
+	if err = pool.QueryRow(ctx, `SELECT
+		(SELECT count(*) FROM admin_users WHERE wecom_userid='fixture-staff' AND is_active),
+		(SELECT count(*) FROM wecom_external_contact_profiles profile JOIN wecom_customer_sync_runs run ON run.id=profile.primary_owner_run_id AND run.status='succeeded' WHERE profile.corp_scope='wecom-corp:fixture-corp' AND profile.primary_owner_userid='fixture-staff' AND profile.activation_status='active'),
+		(SELECT count(*) FROM wecom_follow_relationships WHERE corp_id='fixture-corp' AND employee_id='fixture-staff' AND active),
+		(SELECT count(*) FROM customer_identities WHERE kind='wecom_external_userid' AND scope_key='wecom-corp:fixture-corp' AND assurance='verified' AND status='active'),
+		(SELECT count(*) FROM tag_provider_tag_bindings WHERE provider_tag_id='fixture-provider-add'),
+		(SELECT id FROM tag_catalog_tags WHERE tag_name='fixture restart add')`).Scan(&staff, &profiles, &relationships, &identities, &bindings, &localTagID); err != nil {
+		return err
+	}
+	if staff != 1 || profiles != count || relationships != count || identities != count || bindings != 1 || localTagID != 1 {
+		return fmt.Errorf("customer tag restart fixture facts staff=%d profiles=%d relationships=%d identities=%d bindings=%d local_tag_id=%d count=%d", staff, profiles, relationships, identities, bindings, localTagID, count)
+	}
+	return nil
+}
+
+func TestCustomerTagProviderCompositionKeepsChannelAndGenericFlagsIndependent(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	for _, test := range []struct {
+		name, wantChannel, wantGeneric string
+		channelEnabled, genericEnabled bool
+		wantExternalUserID             string
+	}{
+		{
+			name: "legacy channel tag remains authorized when generic flag is off", channelEnabled: true, genericEnabled: false,
+			wantChannel: "executed", wantGeneric: "final_failed", wantExternalUserID: "fixture-restart-001",
+		},
+		{
+			name: "generic tag cannot authorize disabled channel entry tag", channelEnabled: false, genericEnabled: true,
+			wantChannel: "final_failed", wantGeneric: "executed", wantExternalUserID: "fixture-restart-002",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			databaseURL, cleanup := adminAccessCompositionDatabase(t, ctx)
+			defer cleanup()
+			provider := newCustomerTagRestartProvider(100)
+			// This matrix isolates capability routing. T04 above covers the
+			// outcome_unknown/restart path with the same real Provider adapter.
+			provider.unknownIssued = true
+			provider.Resume()
+			defer provider.Close()
+			config := customerTagRestartRuntimeConfig(databaseURL, provider)
+			config.WeCom.CustomerTagProviderEnabled = test.genericEnabled
+			config.WeCom.ChannelTagProviderEnabled = test.channelEnabled
+			config.WeCom.CallbackEnabled = true
+			config.WeCom.CallbackToken = "customer-tag-flag-matrix-token"
+			config.WeCom.CallbackAESKey = strings.Repeat("a", 43)
+			config.WeCom.ChannelStateHMACKey = strings.Repeat("h", 32)
+			application, err := compose(ctx, config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer application.Close()
+			if err = application.bootstrap(ctx, config.Bootstrap); err != nil {
+				t.Fatal(err)
+			}
+			if err = seedCustomerTagRestartJourney(ctx, application, 2); err != nil {
+				t.Fatal(err)
+			}
+			// Accept through the real Channel EntrantAction store. It creates the
+			// linked entrant action and Customer command in one transaction, so the
+			// completion sink exercises the real channel contract rather than a
+			// synthetic source string.
+			if application.channelEntrantActions == nil {
+				t.Fatal("composition did not retain Channel entrant actions")
+			}
+			uow, err := platformpostgres.NewUnitOfWork(application.pool)
+			if err != nil {
+				t.Fatal(err)
+			}
+			digester, err := wecom.NewHMACStateDigester([]byte(config.WeCom.ChannelStateHMACKey))
+			if err != nil {
+				t.Fatal(err)
+			}
+			channelFixture := seedChannelWelcomeFixture(t, ctx, uow, channelstore.NewPostgreSQLStore(), digester, 1, "customer-tag-flag-matrix", "customer-tag-flag-matrix-state", false, 1, 1)
+			if err = uow.Within(ctx, func(tx context.Context) error {
+				return application.channelEntrantActions.AcceptEntrantActions(tx, channelport.EntrantActionCommand{
+					CallbackID: "customer-tag-flag-matrix-channel", CustomerID: 1, Resolution: channelFixture.resolution, OccurredAt: time.Now().UTC(),
+				})
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			// The generic command follows the actual authenticated HTTP route. Its
+			// source is independent from the Channel callback source above.
+			session, csrf := adminAccessLogin(t, application.handler, "tag-restart-owner", "tag-restart-owner-password")
+			body, err := json.Marshal(map[string]any{"customer_ids": []int64{2}, "add_tag_ids": []int64{1}, "idempotency_key": "7ebfa1d1-8a94-4b4c-8c1f-6980e4aa8b8e"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := httptest.NewRequestWithContext(ctx, http.MethodPost, "/api/v1/customer-tag-commands", bytes.NewReader(body))
+			request.Header.Set("Content-Type", "application/json")
+			request.Header.Set("X-CSRF-Token", csrf)
+			request.AddCookie(&http.Cookie{Name: accesshttp.SessionCookieName, Value: session})
+			request.AddCookie(&http.Cookie{Name: accesshttp.CSRFCookieName, Value: csrf})
+			acceptedResponse := httptest.NewRecorder()
+			application.handler.ServeHTTP(acceptedResponse, request)
+			var generic customerport.TagCommandResult
+			if err = json.NewDecoder(acceptedResponse.Body).Decode(&generic); err != nil || acceptedResponse.Code != http.StatusAccepted || generic.ID < 1 || len(generic.Lines) != 1 || generic.State != "queued" {
+				t.Fatalf("generic status=%d command=%+v err=%v body=%s", acceptedResponse.Code, generic, err, acceptedResponse.Body.String())
+			}
+			runtimeDone, stopRuntime := startCustomerTagRestartRuntime(application, ctx)
+			defer stopCustomerTagRestartRuntime(t, stopRuntime, runtimeDone)
+			if !waitForCustomerTagSourceTerminal(ctx, application.pool.Native(), 2) {
+				t.Fatal("composition runtime did not reach terminal tag lines")
+			}
+			states := map[string]string{}
+			rows, err := application.pool.Native().Query(ctx, `SELECT command.source,line.state FROM customer_tag_command_lines line JOIN customer_tag_commands command ON command.id=line.command_id ORDER BY command.id`)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer rows.Close()
+			for rows.Next() {
+				var source, state string
+				if err = rows.Scan(&source, &state); err != nil {
+					t.Fatal(err)
+				}
+				states[source] = state
+			}
+			if err = rows.Err(); err != nil {
+				t.Fatal(err)
+			}
+			if states["channel_entry_tag"] != test.wantChannel || states["admin_customer_ui"] != test.wantGeneric {
+				t.Fatalf("source states=%v want channel=%q generic=%q", states, test.wantChannel, test.wantGeneric)
+			}
+			var entrantState string
+			if err = application.pool.Native().QueryRow(ctx, `SELECT state FROM channel_entrant_actions WHERE callback_id='customer-tag-flag-matrix-channel' AND action_kind='entry_tag'`).Scan(&entrantState); err != nil || entrantState != test.wantChannel {
+				t.Fatalf("channel entrant state=%q want=%q err=%v", entrantState, test.wantChannel, err)
+			}
+			calls := provider.Calls()
+			if len(calls) != 1 || calls[test.wantExternalUserID] != 1 {
+				t.Fatalf("provider calls=%v want only %q once", calls, test.wantExternalUserID)
+			}
+		})
+	}
+}
+
+func waitForCustomerTagSourceTerminal(ctx context.Context, pool *pgxpool.Pool, count int) bool {
+	deadline := time.NewTimer(20 * time.Second)
+	defer deadline.Stop()
+	tick := time.NewTicker(50 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		var terminal int
+		err := pool.QueryRow(ctx, `SELECT count(*) FROM customer_tag_command_lines WHERE state IN ('executed','outcome_unknown','final_failed','reconciled','cancelled','rejected')`).Scan(&terminal)
+		if err == nil && terminal == count {
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-deadline.C:
+			return false
+		case <-tick.C:
+		}
 	}
 }
 

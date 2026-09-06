@@ -33,7 +33,7 @@ import (
 // Persistence decision: command, EER receipt, River job and completion share
 // PostgreSQL transactions; mark_tag/readback are controlled external fixture calls.
 func TestPostgreSQLCustomerTagCommandChromiumJourney(t *testing.T) {
-	if os.Getenv("AICRM_REQUIRE_CHROMIUM_JOURNEY") != "1" {
+	if !platformconfig.ChromiumJourneyRequired() {
 		t.Skip("set AICRM_REQUIRE_CHROMIUM_JOURNEY=1 to run the required Chromium journey")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
@@ -144,7 +144,7 @@ func newCustomerTagChromiumProvider() *customerTagChromiumProvider {
 			fixture.writes++
 			fixture.mu.Unlock()
 			if request.ExternalUserID == "fixture-external-two" {
-				http.Error(w, "fixture disconnect", http.StatusInternalServerError)
+				http.Error(w, "fixture plain response failure", http.StatusInternalServerError)
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")

@@ -662,6 +662,13 @@ func DatabaseURL() (string, error) {
 	return "", errors.New("database URL is not configured")
 }
 
+// ChromiumJourneyRequired is the configuration boundary for opt-in local
+// Chromium journeys. CI sets it explicitly for required browser acceptance.
+func ChromiumJourneyRequired() bool {
+	value, ok := os.LookupEnv("AICRM_REQUIRE_CHROMIUM_JOURNEY")
+	return ok && value == "1"
+}
+
 // NamedDatabaseURL is restricted to the two database roles used by the
 // controlled Automation Operations migration. Keeping this allowlist in the
 // configuration package prevents commands from treating arbitrary environment

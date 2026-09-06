@@ -17,19 +17,28 @@ import (
 // the following relationship and local-tag binding immediately before the call,
 // and refuses changed facts instead of retargeting a pending command.
 type CustomerTagProvider struct {
-	enabled  bool
-	reader   customerport.TagCommandDispatchReader
-	contacts wecomport.CurrentExternalContactReader
-	tags     tagport.ProviderTagBindingReader
-	writer   wecomport.CustomerTagWriter
-	observer wecomport.CustomerTagObservationRefresher
+	genericEnabled         bool
+	channelEntryTagEnabled bool
+	reader                 customerport.TagCommandDispatchReader
+	contacts               wecomport.CurrentExternalContactReader
+	tags                   tagport.ProviderTagBindingReader
+	writer                 wecomport.CustomerTagWriter
+	observer               wecomport.CustomerTagObservationRefresher
 }
 
-func NewCustomerTagProvider(enabled bool, reader customerport.TagCommandDispatchReader, contacts wecomport.CurrentExternalContactReader, tags tagport.ProviderTagBindingReader, writer wecomport.CustomerTagWriter, observers ...wecomport.CustomerTagObservationRefresher) (*CustomerTagProvider, error) {
+// CustomerTagProviderConfig separates a normal Customer-originated command
+// from a channel_entry_tag command. The latter keeps the existing Channel Tag
+// capability/callback gate when its persisted intent is handled by Customer.
+type CustomerTagProviderConfig struct {
+	GenericEnabled         bool
+	ChannelEntryTagEnabled bool
+}
+
+func NewCustomerTagProvider(config CustomerTagProviderConfig, reader customerport.TagCommandDispatchReader, contacts wecomport.CurrentExternalContactReader, tags tagport.ProviderTagBindingReader, writer wecomport.CustomerTagWriter, observers ...wecomport.CustomerTagObservationRefresher) (*CustomerTagProvider, error) {
 	if reader == nil || contacts == nil || tags == nil || writer == nil {
 		return nil, errors.New("customer tag provider dependencies are required")
 	}
-	provider := &CustomerTagProvider{enabled: enabled, reader: reader, contacts: contacts, tags: tags, writer: writer}
+	provider := &CustomerTagProvider{genericEnabled: config.GenericEnabled, channelEntryTagEnabled: config.ChannelEntryTagEnabled, reader: reader, contacts: contacts, tags: tags, writer: writer}
 	if len(observers) > 0 {
 		provider.observer = observers[0]
 	}
@@ -39,12 +48,12 @@ func (p *CustomerTagProvider) Execute(ctx context.Context, e effectport.Envelope
 	if p == nil || !e.Valid() || e.Kind != effectport.KindCustomerTagCommand || e.PolicyVersionHash != effectport.Hash("customer.tag.command.policy.v1") {
 		return customerTagFinal("invalid_command", effectport.Hash("customer.tag.invalid")), nil
 	}
-	if !p.enabled {
-		return customerTagFinal("provider_disabled", effectport.Hash("customer.tag.disabled", string(e.Fingerprint()))), nil
-	}
 	d, err := p.reader.ReadTagCommandDispatch(ctx, string(e.SourceRefDigest))
 	if err != nil {
 		return customerTagFinal("command_unavailable", effectport.Hash("customer.tag.command-unavailable", string(e.Fingerprint()))), nil
+	}
+	if !p.sourceEnabled(d.Source) {
+		return customerTagFinal("provider_disabled", effectport.Hash("customer.tag.disabled", d.Source, string(e.Fingerprint()))), nil
 	}
 	if attempt.EffectID == "" || d.EffectRef != attempt.EffectID {
 		return customerTagFinal("effect_mismatch", effectport.Hash("customer.tag.effect-mismatch", d.EffectRef)), nil
@@ -90,6 +99,16 @@ func (p *CustomerTagProvider) Execute(ctx context.Context, e effectport.Envelope
 		_ = p.observer.RefreshCustomerTagObservation(ctx, d.EffectRef, d.CustomerID, contact.EmployeeUserID, contact.ExternalUserID)
 	}
 	return effectport.AdapterResult{Completion: effectport.StateExecuted, ReceiptDigest: effectport.Hash("customer.tag.executed", d.EffectRef, strconv.Itoa(int(attempt.Number))), CallAttempted: true, RealExternalCallExecuted: true}, nil
+}
+
+func (p *CustomerTagProvider) sourceEnabled(source string) bool {
+	if p == nil {
+		return false
+	}
+	if source == "channel_entry_tag" {
+		return p.channelEntryTagEnabled
+	}
+	return p.genericEnabled
 }
 func (p *CustomerTagProvider) providerTags(ctx context.Context, ids []int64) ([]string, bool) {
 	out := make([]string, 0, len(ids))

@@ -247,7 +247,11 @@ func seedChannelWelcomeFixture(t *testing.T, ctx context.Context, unit *platform
 		if material {
 			images = []int64{1}
 		}
-		if _, transactionErr = transaction.Exec(tx, `INSERT INTO channel_config_versions(channel_id,config_version,channel_type,carrier_type,name,welcome_message,welcome_image_ids,entry_tag_id,assignment_mode,assignment_strategy,config_digest,created_by,created_at) VALUES($1,1,'qrcode','qrcode',$2,'welcome',$3,NULLIF($4,0),'single_owner','ratio',$5,$6,clock_timestamp())`, channelID, "Welcome "+name, images, entryTagID, digest[:], adminID); transactionErr != nil {
+		entryTagName, entryTagGroupName := "", ""
+		if entryTagID > 0 {
+			entryTagName, entryTagGroupName = "fixture entry tag", "fixture entry tag group"
+		}
+		if _, transactionErr = transaction.Exec(tx, `INSERT INTO channel_config_versions(channel_id,config_version,channel_type,carrier_type,name,welcome_message,welcome_image_ids,entry_tag_id,entry_tag_name,entry_tag_group_name,assignment_mode,assignment_strategy,config_digest,created_by,created_at) VALUES($1,1,'qrcode','qrcode',$2,'welcome',$3,NULLIF($4,0),$5,$6,'single_owner','ratio',$7,$8,clock_timestamp())`, channelID, "Welcome "+name, images, entryTagID, entryTagName, entryTagGroupName, digest[:], adminID); transactionErr != nil {
 			return transactionErr
 		}
 		if _, transactionErr = transaction.Exec(tx, `INSERT INTO channel_assignees(channel_id,config_version,staff_id,priority,ratio_percent,created_at) VALUES($1,1,$2,1,100,clock_timestamp())`, channelID, adminID); transactionErr != nil {

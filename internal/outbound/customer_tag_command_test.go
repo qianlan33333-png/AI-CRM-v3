@@ -68,7 +68,7 @@ func customerTagDispatch() customerport.TagCommandDispatch {
 }
 func customerTagProviderFixture(t *testing.T, enabled bool, d customerport.TagCommandDispatch, contact wecomport.CurrentExternalContact, w *customerTagWriterStub) *CustomerTagProvider {
 	t.Helper()
-	p, err := NewCustomerTagProvider(enabled, customerTagDispatchStub{d}, customerTagContactStub{value: contact}, customerTagBindingStub{values: map[int64]string{1: "provider-a", 2: "provider-b", 3: "provider-c"}}, w)
+	p, err := NewCustomerTagProvider(CustomerTagProviderConfig{GenericEnabled: enabled, ChannelEntryTagEnabled: enabled}, customerTagDispatchStub{d}, customerTagContactStub{value: contact}, customerTagBindingStub{values: map[int64]string{1: "provider-a", 2: "provider-b", 3: "provider-c"}}, w)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,7 +187,7 @@ func TestCustomerTagProviderKeepsExecutedWhenObservationReadFails(t *testing.T) 
 	d := customerTagDispatch()
 	writer := &customerTagWriterStub{}
 	observer := &customerTagObservationStub{err: errors.New("readback unavailable")}
-	provider, err := NewCustomerTagProvider(true, customerTagDispatchStub{d}, customerTagContactStub{value: wecomport.CurrentExternalContact{EmployeeUserID: "staff-9", ExternalUserID: "external-42"}}, customerTagBindingStub{values: map[int64]string{1: "provider-a", 2: "provider-b", 3: "provider-c"}}, writer, observer)
+	provider, err := NewCustomerTagProvider(CustomerTagProviderConfig{GenericEnabled: true}, customerTagDispatchStub{d}, customerTagContactStub{value: wecomport.CurrentExternalContact{EmployeeUserID: "staff-9", ExternalUserID: "external-42"}}, customerTagBindingStub{values: map[int64]string{1: "provider-a", 2: "provider-b", 3: "provider-c"}}, writer, observer)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -125,6 +125,7 @@ type composedApplication struct {
 	weComProcessor        wecom.InboxProcessor
 	weComArchiveProcessor wecom.ArchiveInboxProcessor
 	effectsRuntime        *platformjobqueue.Runtime
+	channelEntrantActions *channelstore.EntrantActionStore
 	customerSync          wecom.CustomerSyncService
 	adminOps              *adminopsapp.ProjectionService
 	release               *releaseapp.ObservationService
@@ -1046,8 +1047,14 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if cfg.WeCom.ChannelQRProviderEnabled {
 		channelLinkProvider = outbound.NewChannelLinkProvider(channelLinkMutationReaderAdapter{uow: uow, source: channelLinkStore}, providerClient)
 	}
-	customerTagObservationRefresh := wecom.CustomerTagObservationService{Enabled: cfg.Effects.ProviderEnabled && cfg.WeCom.Enabled && cfg.WeCom.CustomerTagProviderEnabled, CorpID: cfg.WeCom.CorpID, Provider: providerClient, Store: customerProfileStore, UOW: uow}
-	customerTagProvider, err := outbound.NewCustomerTagProvider(cfg.Effects.ProviderEnabled && cfg.WeCom.Enabled && cfg.WeCom.CustomerTagProviderEnabled, customerTagCommandReaderAdapter{uow: uow, source: customerstore.TagCommandPostgreSQL{}}, channelCurrentContactAdapter{uow: uow, corpID: cfg.WeCom.CorpID, staff: accessRepository, relationships: relationships, identities: queries}, channelProviderTagAdapter{uow: uow, tags: tagRepository}, providerClient, customerTagObservationRefresh)
+	genericCustomerTagEnabled := cfg.Effects.ProviderEnabled && cfg.WeCom.Enabled && cfg.WeCom.CustomerTagProviderEnabled
+	channelEntryTagEnabled := cfg.Effects.ProviderEnabled && cfg.WeCom.Enabled && cfg.WeCom.CallbackEnabled && cfg.WeCom.ChannelTagProviderEnabled
+	// Channel entry tags now share Customer's command ownership, but keep the
+	// legacy Channel Tag/callback capability boundary by persisted source.
+	// Readback is enabled only after one of those write paths was authorized;
+	// CustomerTagProvider calls it only after a confirmed mark_tag success.
+	customerTagObservationRefresh := wecom.CustomerTagObservationService{Enabled: genericCustomerTagEnabled || channelEntryTagEnabled, CorpID: cfg.WeCom.CorpID, Provider: providerClient, Store: customerProfileStore, UOW: uow}
+	customerTagProvider, err := outbound.NewCustomerTagProvider(outbound.CustomerTagProviderConfig{GenericEnabled: genericCustomerTagEnabled, ChannelEntryTagEnabled: channelEntryTagEnabled}, customerTagCommandReaderAdapter{uow: uow, source: customerstore.TagCommandPostgreSQL{}}, channelCurrentContactAdapter{uow: uow, corpID: cfg.WeCom.CorpID, staff: accessRepository, relationships: relationships, identities: queries}, channelProviderTagAdapter{uow: uow, tags: tagRepository}, providerClient, customerTagObservationRefresh)
 	if err != nil {
 		return fail(err)
 	}
@@ -1402,7 +1409,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 			return fail(err)
 		}
 	}
-	return &composedApplication{pool: pool, handler: handler, management: management, weComProcessor: weComProcessor, weComArchiveProcessor: weComArchiveProcessor, effectsRuntime: effectsRuntime, customerSync: customerSync, hxcDashboard: hxcDashboard, hxcSource: hxcSource, adminOps: adminOpsProjection, release: releaseObservation, diagnostics: diagnostics}, nil
+	return &composedApplication{pool: pool, handler: handler, management: management, weComProcessor: weComProcessor, weComArchiveProcessor: weComArchiveProcessor, effectsRuntime: effectsRuntime, channelEntrantActions: channelEntrantActions, customerSync: customerSync, hxcDashboard: hxcDashboard, hxcSource: hxcSource, adminOps: adminOpsProjection, release: releaseObservation, diagnostics: diagnostics}, nil
 }
 
 func mountMessageArchive(next, archive http.Handler) (http.Handler, error) {
@@ -1653,6 +1660,11 @@ func routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, acce
 	// context-token and JSSDK protocol routes.
 	mux.Handle("/api/sidebar/v2/", identity)
 	mux.Handle("/api/v1/customers/", identity)
+	// Customer owns the batch tag command routes. Keep the exact batch prefix
+	// alongside the historical per-customer subtree so the rendered Host and
+	// its durable refresh readback reach the same Customer handler.
+	mux.Handle("/api/v1/customer-tag-commands", identity)
+	mux.Handle("/api/v1/customer-tag-commands/", identity)
 	mux.Handle("/admin/questionnaires/", identity)
 	mux.Handle("/api/admin/orders", identity)
 	mux.Handle("/api/admin/orders/", identity)

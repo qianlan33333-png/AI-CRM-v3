@@ -269,6 +269,10 @@ func (r *ProviderRouter) Execute(ctx context.Context, envelope effect.Envelope, 
 			if r.surveyCompletion != nil {
 				return r.surveyCompletion.Execute(ctx, envelope, attempt)
 			}
+		case effect.KindCustomerTagCommand:
+			if r.customerTag != nil {
+				return r.customerTag.Execute(ctx, envelope, attempt)
+			}
 		}
 	}
 	return effect.AdapterResult{Completion: effect.StateFinalFailed, ReceiptDigest: effect.Hash("outbound.provider.not-configured", string(envelope.Kind))}, nil

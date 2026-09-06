@@ -11,6 +11,7 @@ import (
 	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
 	identityport "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/port"
 	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
+	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 	tagport "github.com/qianlan33333-png/AI-CRM-v3/internal/tag/port"
 	wecomport "github.com/qianlan33333-png/AI-CRM-v3/internal/wecom/port"
 )
@@ -29,7 +30,7 @@ type customerTagCommandGate struct {
 
 func (g customerTagCommandGate) FreezeTagCommandTarget(ctx context.Context, t customerport.TagCommandTarget) (customerport.FrozenTagCommandTarget, error) {
 	var out customerport.FrozenTagCommandTarget
-	err := g.uow.Within(ctx, func(tx context.Context) error {
+	err := withinCustomerTagCommandUOW(ctx, g.uow, func(tx context.Context) error {
 		var user accessdomain.User
 		var err error
 		if t.StaffID > 0 {
@@ -104,12 +105,27 @@ type customerTagCommandReaderAdapter struct {
 
 func (a customerTagCommandReaderAdapter) ReadTagCommandDispatch(ctx context.Context, source string) (customerport.TagCommandDispatch, error) {
 	var result customerport.TagCommandDispatch
-	err := a.uow.Within(ctx, func(tx context.Context) error {
+	err := withinCustomerTagCommandUOW(ctx, a.uow, func(tx context.Context) error {
 		var e error
 		result, e = a.source.ReadTagCommandDispatch(tx, source)
 		return e
 	})
 	return result, err
+}
+
+// Customer accepts a command inside its own UoW. Composition read adapters
+// must join that transaction when freezing targets, but may open one when an
+// effects worker later performs its independent dispatch read.
+func withinCustomerTagCommandUOW(ctx context.Context, uow platformport.UnitOfWork, callback func(context.Context) error) error {
+	if callback == nil || uow == nil {
+		return errors.New("customer tag command transaction is unavailable")
+	}
+	if _, err := platformpostgres.RequireTransaction(ctx); err == nil {
+		return callback(ctx)
+	} else if !errors.Is(err, platformpostgres.ErrTransactionNeeded) {
+		return err
+	}
+	return uow.Within(ctx, callback)
 }
 
 var _ customerport.TagCommandTargetGate = customerTagCommandGate{}
