@@ -7,7 +7,7 @@
 | 负责人迁移 | 01 已批准 | 两模式、真实 River/Provider fixture、并发互斥已有测试 | #171 `f711900f5383845c29689f60595abb97731bf5a4` | 未通过整板块：20k本地恢复与101人仅2次Provider/重启、partial/missing已独立PG验证；组合测试边界已修；当前Chrome local_only预览未保存，旧页面复用/执行结果旅程及最终CI待收口 |
 | 通用客户标签 | 02 已批准 | 根独立 PG/race、历史/101恢复/来源门禁、真实 Chromium 与全量 CI 通过 | #169 `6f4b63c53c000cbc1c523ece78a9fec37147b735` 已合并 | 整板块代码验收通过；main 8ec5072d169c25abd25f80e29cb9f6222834b320；部署及真实业务验收另记 |
 | 配置中心运行生效 | 05 已批准 | 根独立PG/race、实际消费者/历史/制品及真实Chrome完整CI通过 | #170 `07b0af371db7a97620924a34ee5975a74c775d39` 已合并 | 整板块代码验收通过；main 5494537fb4d95a916c2754a3c1387335905d2861，部署及生产发布另记 |
-| 商品／订单外推 | 04 已批准 | Terra xhigh 开发中，实际paid/测试投递首checkpoint已提交 | #172 `687f4cc8faec79bff1e140f2d0f749034c637520` | 分支已吸收main5494537（本PR未合并）；paid协议已纠正且根PG/race通过，当前Host两断言失败，业务参数编辑/历史/浏览器继续 |
+| 商品／订单外推 | 04 已批准 | Terra xhigh 开发中，实际paid/测试投递首checkpoint已提交 | #172 `424b805277765744ba9b121ac5c3fa30d54f16bf` | 分支已吸收main5494537（本PR未合并）；paid协议/业务参数/CAS/未配置订单路径根PG/race通过；浏览器JSON无损编辑、历史/Chromium/制品继续 |
 | 通用开放平台 | 03及03a 已批准 | 冻结56条method/path；Terra xhigh已派发 | #173 `ecf86c2d2445091cb7567a9eed48e84553790f7d`（开发checkpoint） | 跨域import/scope收窄/代理来源已修；旧MCP模板与生命周期、业务装配/UI/历史仍在同PR继续 |
 
 共用验收：完整路由/Composition、冻结供体复用、PG原子性/并发/重启、身份权限、未知结果、历史零新效果。各PR需链接实际日志/测试/浏览器证据，跳过与Mock明确标识。
@@ -87,3 +87,9 @@
 | 配置 | 本轮代码范围完成 | PG/消费者/历史/Chromium/CI通过 | 通过准确07b0af3 | #170已合并 | 5494537线上ready已核实 | 未进行 |
 | 商品外推 | 业务配置/旧协议/Host/历史闭环收口中 | paid根PG/race通过；新Host/完整验收待交 | 未通过整板块 | 未合并 | 未部署 | 未进行 |
 | 开放平台 | 旧授权模板与数据范围/接口装配进行中 | 部分权限专项通过；56接口完整流程未齐 | 未通过整板块 | 未合并 | 未部署 | 未进行 |
+
+## 根独立增量复核（2026-09-06 11:19 UTC）
+
+- 开放平台本地 checkpoint `5f2b3b6628ac8f77a5277ba9f8bc5453da58c0fa`：根独立 clone/随机真实PG数据库运行 TestOpenPlatformMachineManagementPostgreSQLJourney -race -count=1 通过，无skip。覆盖两个调用方完整 grants、管理列表、并发轮换/停用和 audit 失败回滚；修复未关闭外层 rows 又查询 grants 的 pgx conn busy。日志 aicrm-five-open-auth-5f2-root-review.log。该证据仅覆盖授权管理增量，不等于完整56路由、历史和浏览器验收；本地checkpoint不冒充GitHub已推HEAD。
+- 商品外推 PR #172 准确 `424b805277765744ba9b121ac5c3fa30d54f16bf`：根独立PG/race通过 BusinessParametersRoundTrip、FirstBusinessSaveCAS、UnconfiguredPaidOrderPlansDisabledCommercePushOnce。首次无配置revision0，两管理员保存只有一个成功；无配置paid事件保持planned_disabled/replay幂等且无EER。日志 aicrm-five-push-424-root-review.log，根临时数据库已清理。HTTP/Store/receipt使用无损数字后，浏览器textarea仍须修复JSON.parse导致的数值损失；历史、真实Chromium和制品闭环继续，未准予整板块。
+- 标签 main8ec5072 流水线34028859329的check已通过，自动deploy进行中，尚未核对新版本线上ready。此前配置main5494537上线核实仍有效，不以当前部署开始作为标签已上线证据。
