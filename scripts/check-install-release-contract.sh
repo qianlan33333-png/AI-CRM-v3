@@ -113,7 +113,9 @@ for migration_contract in \
   '0093_customer_tag_commands.sql:Customer tag command runtime' \
   '0094_runtime_config_releases.sql:runtime Config releases' \
   '0095_product_external_push.sql:product external push' \
-  '0096_open_platform.sql:Open Platform machine credentials'; do
+  '0096_open_platform.sql:Open Platform machine credentials' \
+  '0098_message_archive_historical_projection.sql:Archive historical external projection' \
+  '0099_survey_historical_external_projection.sql:Survey historical external projection'; do
   migration="${migration_contract%%:*}"
   label="${migration_contract#*:}"
   test -f "migrations/${migration}" || {

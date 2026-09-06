@@ -286,6 +286,11 @@ func validateSnapshot(s Snapshot) error {
 			return fmt.Errorf("invalid assessment business key questionnaire_options/%d", row.ID)
 		}
 	}
+	for _, row := range submissions {
+		if _, err := legacyHistoricalUnionID(row.UnionID); err != nil {
+			return fmt.Errorf("invalid historical unionid questionnaire_submissions/%d", row.ID)
+		}
+	}
 	return nil
 }
 
@@ -518,6 +523,9 @@ func importSnapshot(args []string) error {
 		if found, pk, e := mapped(ctx, tx, snap.Manifest.SourceSystem, "questionnaire_submissions", fmt.Sprint(s.ID), digest); e != nil {
 			return e
 		} else if found {
+			if err = ensureLegacyExternalProjection(ctx, tx, pk, s); err != nil {
+				return err
+			}
 			submissionTarget[s.ID] = pk
 			continue
 		}
@@ -551,6 +559,9 @@ func importSnapshot(args []string) error {
 			return err
 		}
 		submissionTarget[s.ID] = targetID
+		if err = ensureLegacyExternalProjection(ctx, tx, targetID, s); err != nil {
+			return err
+		}
 		if strings.TrimSpace(s.Token) != "" {
 			tokenDigest := sha256.Sum256([]byte(s.Token))
 			var tokenSubmissionID int64
@@ -1201,6 +1212,69 @@ func verifyDefinitionFact(ctx context.Context, tx pgx.Tx, source, table string, 
 	return errors.New("migration reconciliation failed: definition source type mismatch")
 }
 
+func legacyHistoricalUnionID(value string) (string, error) {
+	if strings.TrimSpace(value) != value || len(value) > 1024 {
+		return "", errors.New("invalid historical unionid")
+	}
+	return value, nil
+}
+
+func historicalSurveyProjectionDigest(unionID string) [32]byte {
+	return sha256.Sum256([]byte("survey-legacy-unionid-v1\x00" + unionID))
+}
+
+// ensureLegacyExternalProjection backfills pre-0099 imports during an exact
+// snapshot replay. The field remains a Survey-owned historical read fact; it
+// never changes the submission's unresolved OneID status or customer_id.
+func ensureLegacyExternalProjection(ctx context.Context, tx pgx.Tx, submissionID int64, source submission) error {
+	unionID, err := legacyHistoricalUnionID(source.UnionID)
+	if err != nil {
+		return err
+	}
+	var actual string
+	var storedDigest []byte
+	err = tx.QueryRow(ctx, `SELECT historical_unionid,source_projection_digest FROM survey_legacy_external_projections WHERE submission_id=$1 FOR UPDATE`, submissionID).Scan(&actual, &storedDigest)
+	if unionID == "" {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		return errors.New("historical survey projection drift")
+	}
+	digest := historicalSurveyProjectionDigest(unionID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		_, err = tx.Exec(ctx, `INSERT INTO survey_legacy_external_projections(submission_id,historical_unionid,source_projection_digest) VALUES($1,$2,$3)`, submissionID, unionID, digest[:])
+		return err
+	}
+	if err != nil || actual != unionID || !bytes.Equal(storedDigest, digest[:]) {
+		return errors.New("historical survey projection drift")
+	}
+	return nil
+}
+
+func verifyLegacyExternalProjection(ctx context.Context, tx pgx.Tx, submissionID int64, source submission) error {
+	unionID, err := legacyHistoricalUnionID(source.UnionID)
+	if err != nil {
+		return err
+	}
+	var actual string
+	var storedDigest []byte
+	err = tx.QueryRow(ctx, `SELECT historical_unionid,source_projection_digest FROM survey_legacy_external_projections WHERE submission_id=$1`, submissionID).Scan(&actual, &storedDigest)
+	if unionID == "" {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		return errors.New("historical survey projection drift")
+	}
+	expected := historicalSurveyProjectionDigest(unionID)
+	if err != nil || actual != unionID || !bytes.Equal(storedDigest, expected[:]) {
+		return errors.New("historical survey projection drift")
+	}
+	return nil
+}
+
 func verifySubmissionFact(ctx context.Context, tx pgx.Tx, source string, targetPK int64, value submission, sourceIndex *frozenSourceIndex, surveyCipher *secure.Cipher) error {
 	questionnaireID, err := sourceTargetPK(ctx, tx, source, "questionnaires", value.QuestionnaireID)
 	if err != nil {
@@ -1249,6 +1323,9 @@ func verifySubmissionFact(ctx context.Context, tx pgx.Tx, source string, targetP
 	expectedMode := map[bool]string{true: "assessment", false: "survey"}[questionnaireSource.Assessment]
 	if actualQuestionnaire != questionnaireID || actualDefinitionVersion != activeDefinition || customer != nil || identityState != identity || identityReason != reason || !bytes.Equal(evidence, expectedEvidence) || !bytes.Equal(payload, payloadDigest[:]) || slug != safeSlug(questionnaireSource.Slug, questionnaireSource.ID) || title != trimNonEmpty(questionnaireSource.Title, 500) || mode != expectedMode || total != value.Total || !jsonEquivalent(result, expectedResult) || channel != trim(value.SourceChannel, 100) || campaign != trim(value.CampaignID, 200) || staff != trim(value.StaffID, 200) || !submitted.Equal(value.SubmittedAt) || !created.Equal(value.CreatedAt) {
 		return errors.New("migration reconciliation failed: submission target fact drift")
+	}
+	if err = verifyLegacyExternalProjection(ctx, tx, targetPK, value); err != nil {
+		return errors.New("migration reconciliation failed: historical survey projection drift")
 	}
 	if strings.TrimSpace(value.Token) != "" {
 		d := sha256.Sum256([]byte(value.Token))
