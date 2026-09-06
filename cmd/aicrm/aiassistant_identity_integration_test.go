@@ -176,7 +176,7 @@ func aiAssistantIdentityPool(t *testing.T) (*pgxpool.Pool, func()) {
 		admin.Close(ctx)
 		t.Fatal(err)
 	}
-	for _, name := range []string{"0002_identity.sql", "0036_ai_assistant_review.sql"} {
+	for _, name := range []string{"0002_identity.sql", "0036_ai_assistant_review.sql", "0100_ai_assistant_machine_actor.sql"} {
 		if err = applyAIAssistantIdentityMigration(ctx, pool, name); err != nil {
 			pool.Close()
 			admin.Close(ctx)

@@ -1653,10 +1653,16 @@ type openPlatformIdentityAdapter struct {
 }
 
 func (adapter openPlatformIdentityAdapter) Resolve(ctx context.Context, reference identitydomain.Reference) (identityport.ResolveResult, error) {
-	if adapter.resolver == nil {
+	if adapter.resolver == nil || adapter.uow == nil {
 		return identityport.ResolveResult{}, errors.New("open platform identity resolver is unavailable")
 	}
-	return adapter.resolver.Resolve(ctx, reference)
+	var result identityport.ResolveResult
+	err := adapter.uow.Within(ctx, func(tx context.Context) error {
+		var resolveErr error
+		result, resolveErr = adapter.resolver.Resolve(tx, reference)
+		return resolveErr
+	})
+	return result, err
 }
 
 func (adapter openPlatformIdentityAdapter) VerifiedExternalUserID(ctx context.Context, customerID customerdomain.CustomerID, scope string) (string, bool, error) {
