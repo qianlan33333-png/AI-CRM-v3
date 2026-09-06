@@ -513,6 +513,7 @@ func TestStaticAssetsUseBrowserApplicableContentType(t *testing.T) {
 		{"/static/admin_console/automation_create_code_adapter.js", "text/javascript"},
 		{"/static/admin_console/survey_operations.js", "text/javascript"},
 		{"/static/admin_console/config_adminops_bridge.js", "text/javascript"},
+		{"/static/admin_console/runtime_config_releases_host.js", "text/javascript"},
 		{"/static/admin_console/template_parameter_form.js", "text/javascript"},
 		{"/static/admin_console/admin_audience_template_host.js", "text/javascript"},
 		{"/static/admin_console/nav-icons/automation_conversion.svg", "image/svg+xml"},
@@ -731,6 +732,22 @@ func TestOperationCyclesHostShellJourney(t *testing.T) {
 	body := response.Body.String()
 	if response.Code != http.StatusOK || strings.Count(body, `class="admin-sidebar"`) != 1 || strings.Count(body, `<aside`) != 1 || strings.Contains(body, `class="side"`) || strings.Contains(body, `class="shell"`) || !strings.Contains(body, `<base href="/admin/operation-cycles/">`) || !strings.Contains(body, `data-page="cyclesDetail"`) || !strings.Contains(body, `src="/assets/operationCyclesHost.js"`) || !strings.Contains(body, `<template id="tpl"><section data-proof="frozen">原版页面</section></template>`) {
 		t.Fatalf("operation-cycle host shell mismatch status=%d body=%q", response.Code, body)
+	}
+}
+
+func TestRuntimeConfigHostShellJourney(t *testing.T) {
+	renderer, err := NewRenderer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	err = renderer.RenderRuntimeConfig(response, AdminPageForRequest(httptest.NewRequest(http.MethodGet, "/admin/config/releases/7", nil), "配置发布详情", "", "api.admin_runtime_config_releases"), "runtimeReleaseDetail", `<section data-proof="runtime-config">加载</section>`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := response.Body.String()
+	if response.Code != http.StatusOK || strings.Count(body, `class="admin-sidebar"`) != 1 || !strings.Contains(body, `data-runtime-config-page="runtimeReleaseDetail"`) || !strings.Contains(body, `data-runtime-release-host`) || !strings.Contains(body, `src="/static/admin_console/runtime_config_releases_host.js`) || strings.Contains(body, `config_adminops_bridge.js`) || strings.Contains(body, `type="module" src="/assets/admin.js"`) {
+		t.Fatalf("runtime config host shell mismatch status=%d body=%q", response.Code, body)
 	}
 }
 

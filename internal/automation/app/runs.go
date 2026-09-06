@@ -13,6 +13,7 @@ import (
 	aiassistantport "github.com/qianlan33333-png/AI-CRM-v3/internal/aiassistant/port"
 	automationdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/domain"
 	automationport "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/port"
+	configport "github.com/qianlan33333-png/AI-CRM-v3/internal/config/port"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	segmentport "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/port"
@@ -47,19 +48,29 @@ func (s *RuntimeService) CreateBroadcastPreview(ctx context.Context, packageID, 
 	if !configuration.Ready || configuration.Snapshot.ID < 1 || len(configuration.SenderStaffIDs) < 1 {
 		return automationdomain.RunPreview{}, ErrRuntimeNotReady
 	}
-	if configuration.Snapshot.MemberCount < 1 || configuration.Snapshot.MemberCount > s.recipientLimit {
+	if configuration.Snapshot.MemberCount < 1 {
 		return automationdomain.RunPreview{}, ErrRuntimeNotReady
 	}
 	now := s.now().UTC()
-	digestInput, _ := json.Marshal([]any{configuration.PackageID, configuration.PackageVersion, configuration.Snapshot.ID, configuration.ConfigurationVersionID, configuration.AgentID, configuration.AgentPublishedVersion, configuration.BindingVersion, configuration.SenderSetVersion, configuration.Snapshot.MemberCount, now.UnixNano()})
-	preview := automationdomain.RunPreview{PackageID: packageID, PackageVersion: configuration.PackageVersion, SnapshotID: int64(configuration.Snapshot.ID), ConfigurationVersionID: int64(configuration.ConfigurationVersionID), AgentID: configuration.AgentID, AgentPublishedVersion: configuration.AgentPublishedVersion, BindingVersion: configuration.BindingVersion, SenderSetVersion: configuration.SenderSetVersion, TargetCount: configuration.Snapshot.MemberCount, PreviewDigest: sha256.Sum256(digestInput), CreatedBy: actor, CreatedAt: now, ExpiresAt: now.Add(15 * time.Minute)}
+	var preview automationdomain.RunPreview
 	err = s.uow.Within(ctx, func(tx context.Context) error {
-		var e error
+		runtimeConfig, e := s.runtimeConfigWithin(tx)
+		if e != nil {
+			return e
+		}
+		if configuration.Snapshot.MemberCount > int64(runtimeConfig.AutomationMaxRecipients) {
+			return ErrRuntimeNotReady
+		}
+		digestInput, _ := json.Marshal([]any{configuration.PackageID, configuration.PackageVersion, configuration.Snapshot.ID, configuration.ConfigurationVersionID, configuration.AgentID, configuration.AgentPublishedVersion, configuration.BindingVersion, configuration.SenderSetVersion, configuration.Snapshot.MemberCount, runtimeConfig.Revision, runtimeConfig.AutomationMaxRecipients, now.UnixNano()})
+		preview = automationdomain.RunPreview{PackageID: packageID, PackageVersion: configuration.PackageVersion, SnapshotID: int64(configuration.Snapshot.ID), ConfigurationVersionID: int64(configuration.ConfigurationVersionID), AgentID: configuration.AgentID, AgentPublishedVersion: configuration.AgentPublishedVersion, BindingVersion: configuration.BindingVersion, SenderSetVersion: configuration.SenderSetVersion, TargetCount: configuration.Snapshot.MemberCount, RuntimeConfigObserved: true, RuntimeConfigRevision: runtimeConfig.Revision, MaxRecipientsPerRun: runtimeConfig.AutomationMaxRecipients, PreviewDigest: sha256.Sum256(digestInput), CreatedBy: actor, CreatedAt: now, ExpiresAt: now.Add(15 * time.Minute)}
 		preview, e = s.store.CreatePreview(tx, preview)
 		if e != nil {
 			return e
 		}
-		payload, _ := json.Marshal(map[string]any{"preview_id": preview.ID, "package_id": packageID, "snapshot_id": preview.SnapshotID, "target_count": preview.TargetCount})
+		if e = s.recordRuntimeConfigUsage(tx, runtimeConfig, "api", "preview", "automation_preview", preview.ID, now); e != nil {
+			return e
+		}
+		payload, _ := json.Marshal(map[string]any{"preview_id": preview.ID, "package_id": packageID, "snapshot_id": preview.SnapshotID, "target_count": preview.TargetCount, "runtime_config_revision": preview.RuntimeConfigRevision})
 		return s.store.AppendRuntimeFact(tx, runtimeFact("preview", preview.ID, "create", "automation.run.previewed.v1", actor, hex.EncodeToString(preview.PreviewDigest[:]), now, payload))
 	})
 	return preview, runtimeClassify(err)
@@ -126,7 +137,10 @@ func (s *RuntimeService) ConfirmRun(ctx context.Context, c RunConfirmCommand) (a
 		}
 		cursor = page.NextCursor
 	}
-	if int64(len(members)) != preview.TargetCount || len(members) == 0 || int64(len(members)) > s.recipientLimit || len(members) > aiassistantport.MaxRecipients {
+	if int64(len(members)) != preview.TargetCount || len(members) == 0 || len(members) > aiassistantport.MaxRecipients {
+		return automationdomain.RuntimeRun{}, ErrRuntimeConflict
+	}
+	if preview.RuntimeConfigObserved && (preview.RuntimeConfigRevision < 0 || preview.MaxRecipientsPerRun < 1 || preview.MaxRecipientsPerRun > aiassistantport.MaxRecipients || len(members) > preview.MaxRecipientsPerRun) {
 		return automationdomain.RuntimeRun{}, ErrRuntimeConflict
 	}
 	recipients := make([]aiassistantport.RecipientCandidate, len(members))
@@ -153,13 +167,22 @@ func (s *RuntimeService) ConfirmRun(ctx context.Context, c RunConfirmCommand) (a
 		if plan.Plan.ID < 1 {
 			return run, RuntimeFact{}, ErrRuntimeUnavailable
 		}
-		run = automationdomain.RuntimeRun{PackageID: c.PackageID, PackageVersion: c.PackageVersion, SnapshotID: c.SnapshotID, AgentID: c.AgentID, AgentPublishedVersion: c.AgentPublishedVersion, AIPlanID: int64(plan.Plan.ID), BindingVersion: preview.BindingVersion, SenderSetVersion: preview.SenderSetVersion, PreviewDigest: digest, State: automationport.RunPendingReview, TargetCount: int64(len(recipients)), CreatedBy: c.Actor, CreatedAt: now, UpdatedAt: now}
+		run = automationdomain.RuntimeRun{PackageID: c.PackageID, PackageVersion: c.PackageVersion, SnapshotID: c.SnapshotID, AgentID: c.AgentID, AgentPublishedVersion: c.AgentPublishedVersion, AIPlanID: int64(plan.Plan.ID), BindingVersion: preview.BindingVersion, SenderSetVersion: preview.SenderSetVersion, RuntimeConfigObserved: preview.RuntimeConfigObserved, RuntimeConfigRevision: preview.RuntimeConfigRevision, MaxRecipientsPerRun: preview.MaxRecipientsPerRun, PreviewDigest: digest, State: automationport.RunPendingReview, TargetCount: int64(len(recipients)), CreatedBy: c.Actor, CreatedAt: now, UpdatedAt: now}
 		created, createdRecipients, e := s.store.CreateRun(tx, run, nil)
 		if e != nil {
 			return created, RuntimeFact{}, e
 		}
 		if len(createdRecipients) != 0 {
 			return created, RuntimeFact{}, ErrRuntimeConflict
+		}
+		if preview.RuntimeConfigObserved {
+			frozen := configport.EffectiveSnapshot{Revision: preview.RuntimeConfigRevision, Source: configport.RuntimeSourceEnvironmentDefault, AutomationMaxRecipients: preview.MaxRecipientsPerRun}
+			if preview.RuntimeConfigRevision > 0 {
+				frozen.Source = configport.RuntimeSourcePublished
+			}
+			if e = s.recordRuntimeConfigUsage(tx, frozen, "api", "confirm", "automation_run", created.ID, now); e != nil {
+				return created, RuntimeFact{}, e
+			}
 		}
 		return created, runtimeFact("run", created.ID, "confirm", "automation.run.pending_review.v1", c.Actor, c.IdempotencyKey, now), nil
 	}, &run)
