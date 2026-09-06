@@ -12,13 +12,13 @@ V3 Access已有session/RBAC和service principal类型，AdminOps direct_api_key/
 
 管理员复用旧客户端/Direct Key页面：登记调用方、用途、owner数据范围、audience、scopes/capabilities、CIDR、到期、Token TTL；创建一次展示secret、轮换、启停/吊销、查看掩码/最近使用/审计。只存安全摘要，不再次回读secret。旧固定权限模板等价承接，不能API key→super_admin。
 
-恢复 /oauth/token client_credentials，支持旧Basic/form凭据语义、请求scope只能收窄、audience严格验证、HTTPS/可信proxy/CIDR、no-store。短JWT默认旧30分钟、上限60分钟（先核实旧配置并冻结测试），不引入refresh token或授权码OAuth产品。每次机器调用校验enabled/expiry/auth_version，轮换停用即时使旧secret/旧token失效；禁只验JWT签名直到过期。
+恢复 /oauth/token client_credentials，支持旧Basic/form凭据语义、请求scope只能收窄、audience严格验证、HTTPS/可信proxy/CIDR、no-store。短JWT默认旧30分钟、上限60分钟（已核实profiles.py默认1800、service.py允许60..3600秒），不引入refresh token或授权码OAuth产品。每次机器调用校验enabled/expiry/auth_version，轮换停用即时使旧secret/旧token失效；禁只验JWT签名直到过期。
 
 Direct API Key保持旧只读权限模板，不可调用写接口。机器principal与后台用户分开，写命令身份/审计来自认证结果，不能从payload.operator提权。机器和后台各自鉴权后进同一领域Port。
 
 ## 实际旧接口清单（本轮全部登记承接）
 
-固定旧router_registry注册的路径，包括7项GET和11项POST；不是只恢复订单/雷达示例：
+以下列出/api/external前缀下7项GET和11项POST；完整机器接口另见03a-machine-route-inventory.md，亦属于本板块验收，不得因路径前缀不同遗漏。
 
 | 方法/路径 | 旧文件 | V3 Owner与要求 |
 |---|---|---|
@@ -35,13 +35,13 @@ Direct API Key保持旧只读权限模板，不可调用写接口。机器princi
 | POST /api/external/ai-audience/spec/apply | 同上 | 既有定义保存；publish gate保持 |
 | POST /api/external/ai-audience/spec/publish | 同上 | 既有定义发布与版本/权限 |
 | POST /api/external/ai-audience/packages/{package_key}/archive | 同上 | 归档幂等 |
-| POST /api/external/ai-audience/e2e/run | 同上 | 现有受控演练编排；旧composition不可用如实返回，不新建发送旁路 |
+| POST /api/external/ai-audience/e2e/run | 同上 | 现有受控演练编排；旧main实际装配runner；恢复其受控业务编排与gate，不新建发送旁路 |
 | POST /api/external/ai-audience/simple/preview | 同上 | 旧受限simple语义转现有声明式定义 |
 | POST /api/external/ai-audience/simple/apply | 同上 | 同上保存；保留retired webhook配置410 |
 | POST /api/external/ai-audience/simple/{package_key}/activate | 同上 | 既有人群激活/刷新，River和业务gate |
 | POST /api/external/ai-audience/simple/{package_key}/archive | 同上 | 既有归档 |
 
-首次实施冻结每路由请求/响应/错误/权限/数据范围和旧实际注册证据；表中7+11计数正确性以fixture路由清单为准。旧业务prefix gate、publish gate、废弃参数拒绝不能省。受限SQL输入只接受可证明等价翻译的旧允许子集，转换现有声明式规则；绝不将外部SQL直接执行，也不为兼容创建新数据库查询平台。若现有领域缺必要语义，提交具体缺口由根拆小PR补领域Port，禁止用501/伪200充作全项完成。
+首次实施冻结每路由请求/响应/错误/权限/数据范围和旧实际注册证据；表中7+11计数正确性以fixture路由清单为准；还须覆盖03a登记的其他真实机器路由。旧业务prefix gate、publish gate、废弃参数拒绝不能省。受限SQL输入只接受可证明等价翻译的旧允许子集，转换现有声明式规则；绝不将外部SQL直接执行，也不为兼容创建新数据库查询平台。若现有领域缺必要语义，提交具体缺口由根拆小PR补领域Port，禁止用501/伪200充作全项完成。
 
 可以拆PR：机器鉴权+三MCP工具；7GET适配；11POST已有业务适配，但本板块只有全部清单有实际等价结果或有证据的旧本来不可用边界才完成。不能擅自缩成只读平台。
 
@@ -71,3 +71,7 @@ Client管理同事务状态/版本/审计/幂等；轮换安全返回一次凭�
 - A06 UI/API docs真实凭据状态与工具发现；历史导入不启用旧token、不泄密且可对账。
 
 测试Provider和真实业务验收分开。仅有认证、metadata、空工具或排队不能标本板块完成。
+
+## 补充核查（首次派发前冻结）
+
+旧main.py:120确实注入ai_audience_e2e_runner_factory，不能援引fallback503声称旧能力不存在。其默认gate关闭、指定测试对象、显式确认与最大真实发送次数约束必须保留；本轮仅在隔离测试Provider验证，不使用旧硬编码真实对象进行发送。运营周期/AI计划/群广播/完整人群包机器接口按03a清单逐项承接现有业务，不扩展新产品。
