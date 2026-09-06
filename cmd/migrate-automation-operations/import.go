@@ -26,6 +26,7 @@ import (
 	segmentapp "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/app"
 	segmentdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/domain"
 	segmentmigration "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/migration"
+	segmentport "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/port"
 )
 
 type Buckets struct {
@@ -210,6 +211,7 @@ type importer struct {
 	tx                             pgx.Tx
 	snapshot                       segmentmigration.Snapshot
 	batchID, actor                 int64
+	segmentActor                   segmentport.MutationActor
 	report                         Report
 	groupMap, packageMap, agentMap map[int64]int64
 	identity                       identityport.Resolver
@@ -262,7 +264,13 @@ func Import(ctx context.Context, pool *pgxpool.Pool, snapshot segmentmigration.S
 	if err != nil || !actor.Active {
 		return Report{}, errors.New("migration actor is not an active administrator")
 	}
-	i := &importer{ctx: txContext, tx: tx, snapshot: snapshot, batchID: batchID, actor: dependencies.ActorID, report: Report{BatchKey: batchKey, DryRun: dryRun, Tables: map[string]Buckets{}}, groupMap: map[int64]int64{}, packageMap: map[int64]int64{}, agentMap: map[int64]int64{}, identity: dependencies.Identity, access: dependencies.Access}
+	// Attribute imported V3 configuration to the verified target administrator
+	// running this command, never to an invented legacy or machine principal.
+	segmentActor, err := segmentport.AdminMutationActor(dependencies.ActorID)
+	if err != nil {
+		return Report{}, err
+	}
+	i := &importer{ctx: txContext, tx: tx, snapshot: snapshot, batchID: batchID, actor: dependencies.ActorID, segmentActor: segmentActor, report: Report{BatchKey: batchKey, DryRun: dryRun, Tables: map[string]Buckets{}}, groupMap: map[int64]int64{}, packageMap: map[int64]int64{}, agentMap: map[int64]int64{}, identity: dependencies.Identity, access: dependencies.Access}
 	for _, step := range []func() error{i.agents, i.groups, i.packagesAndConfigurations, i.bindings, i.senders, i.snapshots, i.history} {
 		if err = step(); err != nil {
 			return Report{}, err
@@ -434,7 +442,7 @@ func (i *importer) groups() error {
 		e := i.tx.QueryRow(i.ctx, `SELECT id FROM segment_audience_groups WHERE lower(btrim(name))=lower(btrim($1))`, row.Name).Scan(&targetID)
 		disposition := "imported"
 		if errors.Is(e, pgx.ErrNoRows) {
-			e = i.tx.QueryRow(i.ctx, `INSERT INTO segment_audience_groups(name,sort_order,version,created_by,updated_by,created_at,updated_at) VALUES($1,$2,1,$3,$3,$4,$5) RETURNING id`, row.Name, row.SortOrder, i.actor, row.CreatedAt, row.UpdatedAt).Scan(&targetID)
+			e = i.tx.QueryRow(i.ctx, `INSERT INTO segment_audience_groups(name,sort_order,version,created_by,updated_by,created_at,updated_at,created_actor_kind,created_actor_ref,updated_actor_kind,updated_actor_ref) VALUES($1,$2,1,$3,$3,$4,$5,$6,$7,$6,$7) RETURNING id`, row.Name, row.SortOrder, i.actor, row.CreatedAt, row.UpdatedAt, i.segmentActor.Kind, i.segmentActor.Reference).Scan(&targetID)
 		} else if e == nil {
 			disposition = "mapped"
 		}
@@ -477,7 +485,7 @@ func (i *importer) packagesAndConfigurations() error {
 		disposition := "imported"
 		if errors.Is(e, pgx.ErrNoRows) {
 			archived := row.Lifecycle == "archived"
-			e = i.tx.QueryRow(i.ctx, `INSERT INTO segment_audience_packages(group_id,code,name,lifecycle,version,created_by,updated_by,created_at,updated_at,archived_at) VALUES($1,$2,$3,$4,1,$5,$5,$6::timestamptz,$7::timestamptz,CASE WHEN $4='archived' THEN $7::timestamptz ELSE NULL::timestamptz END) RETURNING id`, groupID, code, row.Name, map[bool]string{true: "archived", false: "paused"}[archived], i.actor, row.CreatedAt, row.UpdatedAt).Scan(&targetID)
+			e = i.tx.QueryRow(i.ctx, `INSERT INTO segment_audience_packages(group_id,code,name,lifecycle,version,created_by,updated_by,created_at,updated_at,archived_at,created_actor_kind,created_actor_ref,updated_actor_kind,updated_actor_ref) VALUES($1,$2,$3,$4,1,$5,$5,$6::timestamptz,$7::timestamptz,CASE WHEN $4='archived' THEN $7::timestamptz ELSE NULL::timestamptz END,$8,$9,$8,$9) RETURNING id`, groupID, code, row.Name, map[bool]string{true: "archived", false: "paused"}[archived], i.actor, row.CreatedAt, row.UpdatedAt, i.segmentActor.Kind, i.segmentActor.Reference).Scan(&targetID)
 		} else if e == nil {
 			disposition = "mapped"
 		}
@@ -518,7 +526,7 @@ func (i *importer) packagesAndConfigurations() error {
 			if errors.Is(e, pgx.ErrNoRows) {
 				var next int64
 				if e = i.tx.QueryRow(i.ctx, `SELECT COALESCE(max(version),0)+1 FROM segment_audience_configuration_versions WHERE package_id=$1`, targetID).Scan(&next); e == nil {
-					e = i.tx.QueryRow(i.ctx, `INSERT INTO segment_audience_configuration_versions(package_id,version,schema_version,definition,refresh_cron_utc,refresh_mode,digest,created_by,created_at) VALUES($1,$2,1,$3::jsonb,NULLIF($4,''),$5,$6,$7,$8::timestamptz) RETURNING id`, targetID, next, definition, refresh.Cron, refresh.Mode, definitionDigest[:], i.actor, c.CreatedAt).Scan(&existingID)
+					e = i.tx.QueryRow(i.ctx, `INSERT INTO segment_audience_configuration_versions(package_id,version,schema_version,definition,refresh_cron_utc,refresh_mode,digest,created_by,created_at,created_actor_kind,created_actor_ref) VALUES($1,$2,1,$3::jsonb,NULLIF($4,''),$5,$6,$7,$8::timestamptz,$9,$10) RETURNING id`, targetID, next, definition, refresh.Cron, refresh.Mode, definitionDigest[:], i.actor, c.CreatedAt, i.segmentActor.Kind, i.segmentActor.Reference).Scan(&existingID)
 				}
 			} else if e == nil {
 				cdisp = "duplicate"
@@ -567,7 +575,7 @@ func (i *importer) bindings() error {
 		if errors.Is(err, pgx.ErrNoRows) {
 			var next int64
 			if err = i.tx.QueryRow(i.ctx, `SELECT COALESCE(max(version),0)+1 FROM segment_audience_automation_binding_versions WHERE package_id=$1`, packageID).Scan(&next); err == nil {
-				err = i.tx.QueryRow(i.ctx, `INSERT INTO segment_audience_automation_binding_versions(package_id,version,agent_id,automation_type,agent_published_version,content_digest,materials_digest,created_by,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`, packageID, next, agentID, agent.kind, agent.version, agent.content[:], agent.materials[:], i.actor, row.CreatedAt).Scan(&id)
+				err = i.tx.QueryRow(i.ctx, `INSERT INTO segment_audience_automation_binding_versions(package_id,version,agent_id,automation_type,agent_published_version,content_digest,materials_digest,created_by,created_at,created_actor_kind,created_actor_ref) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`, packageID, next, agentID, agent.kind, agent.version, agent.content[:], agent.materials[:], i.actor, row.CreatedAt, i.segmentActor.Kind, i.segmentActor.Reference).Scan(&id)
 			}
 		} else if err == nil {
 			disp = "duplicate"
@@ -648,7 +656,7 @@ func (i *importer) senders() error {
 		if err = i.tx.QueryRow(i.ctx, `SELECT COALESCE(max(version),0)+1 FROM segment_audience_sender_sets WHERE package_id=$1`, packageID).Scan(&next); err != nil {
 			return err
 		}
-		if err = i.tx.QueryRow(i.ctx, `INSERT INTO segment_audience_sender_sets(package_id,version,created_by,created_at) VALUES($1,$2,$3,$4) RETURNING id`, packageID, next, i.actor, i.snapshot.Manifest.SnapshotAt).Scan(&setID); err != nil {
+		if err = i.tx.QueryRow(i.ctx, `INSERT INTO segment_audience_sender_sets(package_id,version,created_by,created_at,created_actor_kind,created_actor_ref) VALUES($1,$2,$3,$4,$5,$6) RETURNING id`, packageID, next, i.actor, i.snapshot.Manifest.SnapshotAt, i.segmentActor.Kind, i.segmentActor.Reference).Scan(&setID); err != nil {
 			return err
 		}
 		sort.Slice(mapped, func(a, b int) bool { return rows[mapped[a].index].SortOrder < rows[mapped[b].index].SortOrder })

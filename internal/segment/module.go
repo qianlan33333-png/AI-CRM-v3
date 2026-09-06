@@ -70,7 +70,16 @@ func (m *ModuleRegistration) Readiness(ctx context.Context, pool *pgxpool.Pool) 
 		SELECT 1 FROM (VALUES
 			('segment_audience_configuration_versions'::text, 'refresh_mode'::text),
 			('segment_audience_schedule_states'::text, 'schedule_kind'::text),
-			('segment_audience_refresh_runs'::text, 'refresh_kind'::text)
+			('segment_audience_refresh_runs'::text, 'refresh_kind'::text),
+			('segment_audience_groups'::text, 'created_actor_kind'::text),
+			('segment_audience_groups'::text, 'updated_actor_kind'::text),
+			('segment_audience_packages'::text, 'created_actor_kind'::text),
+			('segment_audience_packages'::text, 'updated_actor_kind'::text),
+			('segment_audience_configuration_versions'::text, 'created_actor_kind'::text),
+			('segment_audience_automation_binding_versions'::text, 'created_actor_kind'::text),
+			('segment_audience_sender_sets'::text, 'created_actor_kind'::text),
+			('segment_audience_operation_receipts'::text, 'actor_kind'::text),
+			('segment_audience_audit_events'::text, 'actor_kind'::text)
 		) AS required(table_name,column_name)
 		WHERE NOT EXISTS (
 			SELECT 1 FROM information_schema.columns

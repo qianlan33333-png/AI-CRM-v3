@@ -321,6 +321,9 @@ func orderFilterSQL(filter orderapp.ListFilter) (string, []any) {
 	if filter.CreatedTo != nil {
 		add(`created_at<?`, filter.CreatedTo.UTC())
 	}
+	if filter.CreatedThrough != nil {
+		add(`created_at<=?`, filter.CreatedThrough.UTC())
+	}
 	if len(conditions) == 0 {
 		return "", args
 	}

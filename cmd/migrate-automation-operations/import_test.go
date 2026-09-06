@@ -235,7 +235,7 @@ func TestImportDryRunApplyReplayAndReconcilePostgreSQL(t *testing.T) {
 	applyPlatformSQL(t, ctx, pool)
 	applyRiverSchema(t, ctx, pool)
 	var actorID, customerID, otherCustomerID int64
-	if err = pool.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active,created_at,updated_at) VALUES('migration-admin','$argon2id$fixture','Migration Admin','staff-provider-1',true,clock_timestamp(),clock_timestamp()) RETURNING id`).Scan(&actorID); err != nil {
+	if err = pool.QueryRow(ctx, `INSERT INTO admin_users(id,username,password_hash,display_name,wecom_userid,is_active,created_at,updated_at) OVERRIDING SYSTEM VALUE VALUES(42,'migration-admin','$argon2id$fixture','Migration Admin','staff-provider-1',true,clock_timestamp(),clock_timestamp()) RETURNING id`).Scan(&actorID); err != nil {
 		t.Fatal(err)
 	}
 	if err = pool.QueryRow(ctx, `INSERT INTO customers(status,created_at,updated_at) VALUES('active',clock_timestamp(),clock_timestamp()) RETURNING id`).Scan(&customerID); err != nil {
@@ -271,7 +271,9 @@ func TestImportDryRunApplyReplayAndReconcilePostgreSQL(t *testing.T) {
 	if err = pool.QueryRow(ctx, `SELECT count(*) FROM automation_operations_migration_batches`).Scan(&batches); err != nil || batches != 0 {
 		t.Fatalf("dry-run batches=%d err=%v", batches, err)
 	}
+	assertImportedSegmentActors(t, ctx, pool, actorID, 0)
 	report = executeImportCommand(t, "apply", append(commandArgs, "--confirm-import")...)
+	assertImportedSegmentActors(t, ctx, pool, actorID, 1)
 	if report.ProviderEffectsCreated != 0 || report.RiverJobsCreated != 0 {
 		t.Fatalf("side effects=%+v", report)
 	}
@@ -279,6 +281,7 @@ func TestImportDryRunApplyReplayAndReconcilePostgreSQL(t *testing.T) {
 	// It must only load the prior source receipts: no history row may be
 	// rewritten and it must not create River work or a Provider effect.
 	replay := executeImportCommand(t, "replay-check", commandArgs...)
+	assertImportedSegmentActors(t, ctx, pool, actorID, 1)
 	if replay.Tables["audience_members"].Mapped != 1 || replay.Tables["audience_members"].Unresolved != 1 {
 		t.Fatalf("replay=%+v", replay)
 	}
@@ -547,6 +550,36 @@ func TestImportDryRunApplyReplayAndReconcilePostgreSQL(t *testing.T) {
 	}
 	if _, err = Reconcile(ctx, pool, refreshReport.BatchKey, refreshModes); err != nil {
 		t.Fatalf("reconcile refresh modes: %v", err)
+	}
+}
+
+// Verify the existing import command retains the real target admin attribution
+// across all five actor-bearing tables, rolls it back on dry-run, and preserves
+// it on replay. An admin is deliberately not represented as a machine caller.
+func assertImportedSegmentActors(t *testing.T, ctx context.Context, pool *pgxpool.Pool, actorID int64, wantRows int) {
+	t.Helper()
+	for _, table := range []struct {
+		name    string
+		mutable bool
+	}{
+		{"segment_audience_groups", true},
+		{"segment_audience_packages", true},
+		{"segment_audience_configuration_versions", false},
+		{"segment_audience_automation_binding_versions", false},
+		{"segment_audience_sender_sets", false},
+	} {
+		predicate := "created_by=$1 AND created_actor_kind='admin' AND created_actor_ref=$2"
+		if table.mutable {
+			predicate += " AND updated_by=$1 AND updated_actor_kind='admin' AND updated_actor_ref=$2"
+		}
+		var total, attributed int
+		query := "SELECT count(*),count(*) FILTER (WHERE " + predicate + ") FROM " + table.name
+		if err := pool.QueryRow(ctx, query, actorID, fmt.Sprintf("admin:%d", actorID)).Scan(&total, &attributed); err != nil {
+			t.Fatalf("%s actor readback: %v", table.name, err)
+		}
+		if total != wantRows || attributed != wantRows {
+			t.Fatalf("%s rows=%d admin-attributed=%d want=%d", table.name, total, attributed, wantRows)
+		}
 	}
 }
 

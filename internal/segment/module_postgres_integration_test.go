@@ -14,7 +14,7 @@ import (
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
 )
 
-func TestPostgreSQLReadinessRequiresRefreshModeSchema(t *testing.T) {
+func TestPostgreSQLReadinessRequiresCurrentSegmentSchema(t *testing.T) {
 	ctx := context.Background()
 	native, apply, cleanup := segmentReadinessDatabase(t, ctx)
 	defer cleanup()
@@ -25,6 +25,10 @@ func TestPostgreSQLReadinessRequiresRefreshModeSchema(t *testing.T) {
 	}
 	apply("0083_segment_audience_refresh_modes.sql")
 	apply("0085_segment_audience_refresh_kind.sql")
+	if err := module.Readiness(ctx, native); err == nil {
+		t.Fatal("readiness succeeded before mutation actor schema was installed")
+	}
+	apply("0097_segment_audience_mutation_actor.sql")
 	if err := module.Readiness(ctx, native); err != nil {
 		t.Fatalf("readiness after refresh-mode schema: %v", err)
 	}

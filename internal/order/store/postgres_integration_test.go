@@ -42,6 +42,90 @@ func nativeCommand(key string) orderport.CreateCommand {
 	}}
 }
 
+func TestPostgreSQLCustomerScopedReferenceReadDoesNotLeak(t *testing.T) {
+	native, cleanup := orderIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	wrapper, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uow, err := platformpostgres.NewUnitOfWork(wrapper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := NewPostgreSQL(native, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := orderapp.NewService(uow, repository)
+
+	allowedInput := nativeCommand("scoped-allowed")
+	allowedCustomer := int64(42)
+	allowedInput.Input.PayerCustomerID = &allowedCustomer
+	allowedInput.Input.MerchantOrderNo = "M-customer-scoped-reference"
+	allowed, err := service.Create(ctx, allowedInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := service.GetByReferenceForCustomer(ctx, allowed.MerchantOrderNo, allowedCustomer)
+	if err != nil || resolved.ID != allowed.ID {
+		t.Fatalf("allowed scoped detail=%+v err=%v", resolved, err)
+	}
+	if _, err = service.GetByReferenceForCustomer(ctx, allowed.MerchantOrderNo, 43); !errors.Is(err, orderport.ErrNotFound) {
+		t.Fatalf("unrelated customer read err=%v", err)
+	}
+}
+
+func TestPostgreSQLCustomerActivitiesKeepPartyScopeAndKeyset(t *testing.T) {
+	native, cleanup := orderIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	wrapper, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uow, err := platformpostgres.NewUnitOfWork(wrapper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := NewPostgreSQL(native, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := orderapp.NewService(uow, repository)
+	create := func(key string, payer, beneficiary int64) domain.Snapshot {
+		t.Helper()
+		command := nativeCommand("customer-activity-" + key)
+		command.Input.PayerCustomerID, command.Input.BeneficiaryCustomerID = &payer, &beneficiary
+		created, createErr := service.Create(ctx, command)
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		return created
+	}
+	payerOrder := create("payer", 101, 202)
+	beneficiaryOrder := create("beneficiary", 303, 101)
+	_ = create("unrelated", 404, 505)
+	watermark := time.Now().UTC().Add(time.Second)
+
+	first, err := service.CustomerActivities(ctx, orderport.CustomerActivityQuery{CustomerID: 101, Limit: 1, Watermark: watermark})
+	if err != nil || len(first.Items) != 1 || first.Items[0].OrderID != beneficiaryOrder.ID || first.Items[0].Relationship != "beneficiary" {
+		t.Fatalf("first=%+v err=%v", first, err)
+	}
+	second, err := service.CustomerActivities(ctx, orderport.CustomerActivityQuery{CustomerID: 101, Limit: 10, Watermark: watermark, AfterAt: first.Items[0].OccurredAt, AfterID: first.Items[0].OrderID})
+	if err != nil || len(second.Items) != 1 || second.Items[0].OrderID != payerOrder.ID || second.Items[0].Relationship != "payer" {
+		t.Fatalf("second=%+v err=%v", second, err)
+	}
+	beneficiary, err := service.CustomerActivities(ctx, orderport.CustomerActivityQuery{CustomerID: 202, Limit: 10, Watermark: watermark})
+	if err != nil || len(beneficiary.Items) != 1 || beneficiary.Items[0].OrderID != payerOrder.ID || beneficiary.Items[0].Relationship != "beneficiary" {
+		t.Fatalf("beneficiary=%+v err=%v", beneficiary, err)
+	}
+	if page, readErr := service.CustomerActivities(ctx, orderport.CustomerActivityQuery{CustomerID: 404, Limit: 10, Watermark: watermark}); readErr != nil || len(page.Items) != 1 || page.Items[0].OrderID == payerOrder.ID || page.Items[0].OrderID == beneficiaryOrder.ID {
+		t.Fatalf("unrelated=%+v err=%v", page, readErr)
+	}
+}
+
 func TestPostgreSQLOrderAtomicReplayCursorAndConstraints(t *testing.T) {
 	native, cleanup := orderIntegrationPool(t)
 	defer cleanup()

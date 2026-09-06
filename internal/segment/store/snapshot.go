@@ -199,7 +199,11 @@ func (r *Repository) StageRefreshBatch(ctx context.Context, runID int64, ordinal
 }
 
 func (r *Repository) PublishRefresh(ctx context.Context, runID int64, expectedCount int64, expectedMemberDigest, watermarkDigest [32]byte, actor int64, now time.Time) (segmentdomain.PublishedRefresh, error) {
-	if runID < 1 || expectedCount < 0 || expectedCount > segmentport.MaximumEvaluationMembers || actor < 1 {
+	return r.PublishRefreshWithActor(ctx, runID, expectedCount, expectedMemberDigest, watermarkDigest, adminActor(actor), now)
+}
+
+func (r *Repository) PublishRefreshWithActor(ctx context.Context, runID int64, expectedCount int64, expectedMemberDigest, watermarkDigest [32]byte, actor Actor, now time.Time) (segmentdomain.PublishedRefresh, error) {
+	if runID < 1 || expectedCount < 0 || expectedCount > segmentport.MaximumEvaluationMembers || !actor.Valid() {
 		return segmentdomain.PublishedRefresh{}, ErrInvalid
 	}
 	t, err := tx(ctx)
@@ -306,7 +310,7 @@ func (r *Repository) PublishRefresh(ctx context.Context, runID int64, expectedCo
 		exited = command.RowsAffected()
 		if exited > 0 {
 			payload := []byte(`{"snapshot_id":` + strconv.FormatInt(snapshot.ID, 10) + `,"package_id":` + strconv.FormatInt(snapshot.PackageID, 10) + `,"exited_count":` + strconv.FormatInt(exited, 10) + `}`)
-			if _, err = r.AppendMutationFacts(ctx, MutationFact{ResourceKind: "member_exit_batch", ResourceID: snapshot.ID, Operation: "create", EventType: "audience.member_exited.batch.v1", ActorID: actor, Payload: payload, IdempotencyKey: "member-exits:" + strconv.FormatInt(snapshot.ID, 10), OccurredAt: now}); err != nil {
+			if _, err = r.AppendMutationFacts(ctx, MutationFact{ResourceKind: "member_exit_batch", ResourceID: snapshot.ID, Operation: "create", EventType: "audience.member_exited.batch.v1", ActorID: actor.StaffID, ActorKind: actor.Kind, ActorRef: actor.Reference, Payload: payload, IdempotencyKey: "member-exits:" + strconv.FormatInt(snapshot.ID, 10), OccurredAt: now}); err != nil {
 				return segmentdomain.PublishedRefresh{}, err
 			}
 		}
@@ -318,7 +322,7 @@ func (r *Repository) PublishRefresh(ctx context.Context, runID int64, expectedCo
 		return segmentdomain.PublishedRefresh{}, err
 	}
 	payload := []byte(`{"snapshot_id":` + strconv.FormatInt(snapshot.ID, 10) + `,"package_id":` + strconv.FormatInt(snapshot.PackageID, 10) + `,"member_count":` + strconv.FormatInt(snapshot.MemberCount, 10) + `,"refresh_kind":"` + string(run.RefreshKind) + `"}`)
-	if _, err = r.AppendMutationFacts(ctx, MutationFact{ResourceKind: "snapshot", ResourceID: snapshot.ID, Operation: "publish", EventType: "audience.snapshot.published.v1", ActorID: actor, Payload: payload, IdempotencyKey: "snapshot-publish:" + strconv.FormatInt(runID, 10), OccurredAt: now}); err != nil {
+	if _, err = r.AppendMutationFacts(ctx, MutationFact{ResourceKind: "snapshot", ResourceID: snapshot.ID, Operation: "publish", EventType: "audience.snapshot.published.v1", ActorID: actor.StaffID, ActorKind: actor.Kind, ActorRef: actor.Reference, Payload: payload, IdempotencyKey: "snapshot-publish:" + strconv.FormatInt(runID, 10), OccurredAt: now}); err != nil {
 		return segmentdomain.PublishedRefresh{}, err
 	}
 	return segmentdomain.PublishedRefresh{Snapshot: snapshot, PreviousSnapshotID: previousID, ExitedMemberCount: exited}, nil
@@ -422,7 +426,11 @@ func (r *Repository) Members(ctx context.Context, snapshotID segmentport.Snapsho
 }
 
 func (r *Repository) CreateMemberEnteredEvents(ctx context.Context, snapshot segmentdomain.Snapshot, previousSnapshotID *int64, actor int64, occurredAt time.Time) (int64, error) {
-	if snapshot.ID < 1 || snapshot.PackageID < 1 || snapshot.ConfigurationVersionID < 1 || snapshot.State != "published" || actor < 1 || occurredAt.IsZero() || (previousSnapshotID != nil && *previousSnapshotID < 1) {
+	return r.CreateMemberEnteredEventsWithActor(ctx, snapshot, previousSnapshotID, adminActor(actor), occurredAt)
+}
+
+func (r *Repository) CreateMemberEnteredEventsWithActor(ctx context.Context, snapshot segmentdomain.Snapshot, previousSnapshotID *int64, actor Actor, occurredAt time.Time) (int64, error) {
+	if snapshot.ID < 1 || snapshot.PackageID < 1 || snapshot.ConfigurationVersionID < 1 || snapshot.State != "published" || !actor.Valid() || occurredAt.IsZero() || (previousSnapshotID != nil && *previousSnapshotID < 1) {
 		return 0, ErrInvalid
 	}
 	t, err := tx(ctx)
@@ -443,7 +451,7 @@ func (r *Repository) CreateMemberEnteredEvents(ctx context.Context, snapshot seg
 		return 0, nil
 	}
 	payload := []byte(`{"snapshot_id":` + strconv.FormatInt(snapshot.ID, 10) + `,"package_id":` + strconv.FormatInt(snapshot.PackageID, 10) + `,"event_count":` + strconv.FormatInt(created, 10) + `}`)
-	_, err = r.AppendMutationFacts(ctx, MutationFact{ResourceKind: "member_event_batch", ResourceID: snapshot.ID, Operation: "create", EventType: "audience.member_entered.batch.v1", ActorID: actor, Payload: payload, IdempotencyKey: "member-events:" + strconv.FormatInt(snapshot.ID, 10), OccurredAt: occurredAt.UTC()})
+	_, err = r.AppendMutationFacts(ctx, MutationFact{ResourceKind: "member_event_batch", ResourceID: snapshot.ID, Operation: "create", EventType: "audience.member_entered.batch.v1", ActorID: actor.StaffID, ActorKind: actor.Kind, ActorRef: actor.Reference, Payload: payload, IdempotencyKey: "member-events:" + strconv.FormatInt(snapshot.ID, 10), OccurredAt: occurredAt.UTC()})
 	return created, err
 }
 

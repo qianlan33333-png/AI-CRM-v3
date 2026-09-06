@@ -21,7 +21,7 @@ func (r *Repository) ListPlans(ctx context.Context, query aiassistantport.PlanLi
 	if err != nil {
 		return nil, err
 	}
-	rows, err := tx.Query(ctx, `SELECT id,name,source_kind,source_digest,state,version,target_count,pending_count,approved_count,rejected_count,ineligible_count,needs_attention_count,created_by,created_at,updated_at
+	rows, err := tx.Query(ctx, `SELECT `+planColumns+`
 		FROM ai_assistant_plans
 		WHERE ($1::text='' OR name ILIKE '%'||$1||'%') AND ($2::text='' OR state=$2)
 		AND ($3::timestamptz IS NULL OR (updated_at,id)<($3,$4))
@@ -32,14 +32,9 @@ func (r *Repository) ListPlans(ctx context.Context, query aiassistantport.PlanLi
 	defer rows.Close()
 	items := make([]aiassistantport.Plan, 0, query.Limit+1)
 	for rows.Next() {
-		var plan aiassistantport.Plan
-		var digest []byte
-		if err = rows.Scan(&plan.ID, &plan.Name, &plan.SourceKind, &digest, &plan.State, &plan.Version, &plan.TargetCount, &plan.PendingCount, &plan.ApprovedCount, &plan.RejectedCount, &plan.IneligibleCount, &plan.NeedsAttentionCount, &plan.CreatedBy, &plan.CreatedAt, &plan.UpdatedAt); err != nil {
-			return nil, err
-		}
-		plan.SourceDigest, err = digestFromBytes(digest)
-		if err != nil {
-			return nil, err
+		plan, scanErr := scanPlan(rows)
+		if scanErr != nil {
+			return nil, scanErr
 		}
 		items = append(items, plan)
 	}

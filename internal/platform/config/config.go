@@ -45,6 +45,7 @@ type Runtime struct {
 	HXCDashboard               HXCDashboard
 	OperationCycleServiceToken string
 	AIAssistant                AIAssistant
+	OpenPlatform               OpenPlatform
 }
 
 type Bootstrap struct {
@@ -152,6 +153,19 @@ type ChannelHistoryMigration struct {
 
 type RadarMigration struct{ SourceDatabaseURL string }
 
+// OpenPlatformMigration holds only the trusted corporate boundary needed to
+// decide whether a donor owner_userid/external_userid scope may be retained.
+// It deliberately has no source credential and no provider side effect.
+type OpenPlatformMigration struct{ WeComCorpID string }
+
+func LoadOpenPlatformMigration() (OpenPlatformMigration, error) {
+	value := OpenPlatformMigration{WeComCorpID: os.Getenv("AICRM_WECOM_CORP_ID")}
+	if strings.TrimSpace(value.WeComCorpID) != value.WeComCorpID {
+		return OpenPlatformMigration{}, errors.New("invalid open platform migration configuration")
+	}
+	return value, nil
+}
+
 func LoadRadarMigration() (RadarMigration, error) {
 	value := RadarMigration{SourceDatabaseURL: os.Getenv("AICRM_RADAR_SOURCE_DATABASE_URL")}
 	if strings.TrimSpace(value.SourceDatabaseURL) != value.SourceDatabaseURL {
@@ -191,6 +205,14 @@ type AIAssistant struct {
 	IntegrationKey, IntegrationSecret         string
 	IntegrationActorID                        int64
 	ProviderPermission                        string
+}
+
+// OpenPlatform contains only the signing and proxy trust boundary for Access
+// machine credentials. It is deliberately separate from AI Assistant HMAC and
+// from ordinary Config/AdminOps secret projections.
+type OpenPlatform struct {
+	JWTSigningKey     string
+	TrustedProxyCIDRs []string
 }
 type Survey struct {
 	DataKey                   string
@@ -246,6 +268,7 @@ func Load() (Runtime, error) {
 		HXCDashboard:               HXCDashboard{SourceDSN: os.Getenv("AICRM_HXC_SOURCE_DSN"), UnionIDScope: os.Getenv("AICRM_HXC_UNIONID_SCOPE"), SubjectHMACKey: os.Getenv("AICRM_HXC_SUBJECT_HMAC_KEY"), IdentityObservationVaultKey: os.Getenv("AICRM_IDENTITY_OBSERVATION_VAULT_KEY"), SyncTrigger: os.Getenv("AICRM_HXC_SYNC_TRIGGER")},
 		OperationCycleServiceToken: os.Getenv("AICRM_OPERATION_CYCLE_SERVICE_TOKEN"),
 		AIAssistant:                AIAssistant{UIEnabled: true, IntegrationKey: os.Getenv("AICRM_AI_ASSISTANT_INTEGRATION_KEY"), IntegrationSecret: os.Getenv("AICRM_AI_ASSISTANT_INTEGRATION_SECRET"), ProviderPermission: os.Getenv("AICRM_AI_ASSISTANT_PROVIDER_PERMISSION")},
+		OpenPlatform:               OpenPlatform{JWTSigningKey: os.Getenv("AICRM_OPEN_PLATFORM_JWT_SIGNING_KEY"), TrustedProxyCIDRs: splitCommaSeparated("AICRM_OPEN_PLATFORM_TRUSTED_PROXY_CIDRS")},
 		Bootstrap: Bootstrap{
 			Username: os.Getenv("AICRM_BOOTSTRAP_USERNAME"), Password: os.Getenv("AICRM_BOOTSTRAP_PASSWORD"),
 			DisplayName: os.Getenv("AICRM_BOOTSTRAP_DISPLAY_NAME"),
@@ -589,6 +612,14 @@ func Load() (Runtime, error) {
 			return Runtime{}, errors.New("invalid AICRM_SURVEY_DATA_KEY")
 		}
 	}
+	if cfg.OpenPlatform.JWTSigningKey != "" && (len(cfg.OpenPlatform.JWTSigningKey) < 32 || strings.TrimSpace(cfg.OpenPlatform.JWTSigningKey) != cfg.OpenPlatform.JWTSigningKey || strings.ContainsAny(cfg.OpenPlatform.JWTSigningKey, "\r\n\x00")) {
+		return Runtime{}, errors.New("invalid AICRM_OPEN_PLATFORM_JWT_SIGNING_KEY")
+	}
+	for _, raw := range cfg.OpenPlatform.TrustedProxyCIDRs {
+		if _, _, parseErr := net.ParseCIDR(raw); parseErr != nil {
+			return Runtime{}, errors.New("invalid AICRM_OPEN_PLATFORM_TRUSTED_PROXY_CIDRS")
+		}
+	}
 	if cfg.Survey.IdentityPhoneDataKey != "" {
 		if decoded, decodeErr := base64.RawStdEncoding.DecodeString(cfg.Survey.IdentityPhoneDataKey); decodeErr != nil || len(decoded) != 32 {
 			return Runtime{}, errors.New("invalid AICRM_IDENTITY_PHONE_DATA_KEY")
@@ -620,6 +651,18 @@ func Load() (Runtime, error) {
 		return Runtime{}, errors.New("enabled commerce push provider requires External Effects, target configuration, and payload key")
 	}
 	return cfg, nil
+}
+
+func splitCommaSeparated(key string) []string {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return []string{}
+	}
+	values := strings.Split(raw, ",")
+	for index := range values {
+		values[index] = strings.TrimSpace(values[index])
+	}
+	return values
 }
 
 // IdentityPhoneDataKey returns the dedicated phone-vault master key without

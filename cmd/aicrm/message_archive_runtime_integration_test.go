@@ -255,6 +255,76 @@ func TestMessageArchivePostgreSQLCustomerStaffAndFilter(t *testing.T) {
 	}
 }
 
+func TestMessageArchivePostgreSQLExternalChatMachineProjectionJourney(t *testing.T) {
+	native, cleanup := channelWelcomeIntegrationPool(t)
+	defer cleanup()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	applyMessageArchiveJourneyMigrations(t, ctx, native)
+	pool, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	uow, err := platformpostgres.NewUnitOfWork(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var customerID, staffID int64
+	if err = native.QueryRow(ctx, `INSERT INTO customers DEFAULT VALUES RETURNING id`).Scan(&customerID); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active) VALUES('archive-external','$argon2id$external','外部读取员工','HuangYouCan',true) RETURNING id`).Scan(&staffID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = native.Exec(ctx, `INSERT INTO message_archive_sync_state(corp_scope) VALUES('wecom-corp:wx-archive-external')`); err != nil {
+		t.Fatal(err)
+	}
+	insertMessage := func(seq int64, msgID, scene, roomID, content string, occurredAt time.Time) int64 {
+		t.Helper()
+		var id int64
+		if queryErr := native.QueryRow(ctx, `INSERT INTO message_archive_messages(corp_scope,seq,msgid,msgtype,conversation_type,roomid,msgtime_ms,occurred_at,content_text) VALUES('wecom-corp:wx-archive-external',$1,$2,'text',$3,$4,$5,$6,$7) RETURNING id`, seq, msgID, scene, roomID, occurredAt.UnixMilli(), occurredAt, content).Scan(&id); queryErr != nil {
+			t.Fatal(queryErr)
+		}
+		return id
+	}
+	insertParticipants := func(messageID int64, externalUserID, staffUserID string) {
+		t.Helper()
+		if _, execErr := native.Exec(ctx, `INSERT INTO message_archive_participants(message_id,participant_role,actor_type,provider_value,provider_value_digest,staff_user_id,customer_id_at_ingest,resolution_status)
+			VALUES($1,'recipient','external_customer',$2,decode(repeat('01',32),'hex'),NULL,$3,'found'),($1,'sender','staff',$4,decode(repeat('02',32),'hex'),$5,NULL,'not_applicable')`, messageID, externalUserID, customerID, staffUserID, staffID); execErr != nil {
+			t.Fatal(execErr)
+		}
+	}
+	privateTarget := insertMessage(1, "machine-private-target", "private", "", "target private", time.Unix(10, 0).UTC())
+	insertParticipants(privateTarget, "external-target", "HuangYouCan")
+	privateOther := insertMessage(2, "machine-private-other", "private", "", "other external identity", time.Unix(11, 0).UTC())
+	insertParticipants(privateOther, "external-other", "HuangYouCan")
+	groupTarget := insertMessage(3, "machine-group-target", "group", "room-target", "target group", time.Unix(12, 0).UTC())
+	insertParticipants(groupTarget, "external-target", "other-staff")
+	if _, err = native.Exec(ctx, `INSERT INTO message_archive_legacy_projections(message_id,historical_unionid,historical_group_name,source_projection_digest) VALUES($1,'union-historical','历史体验群',decode(repeat('ab',32),'hex'))`, groupTarget); err != nil {
+		t.Fatal(err)
+	}
+
+	service := archiveapp.Service{ReadEnabled: true, Lineage: archiveJourneyLineage{}, Store: archivestore.NewPostgreSQL(), UOW: uow}
+	private, err := service.ExternalCustomerMessages(ctx, archiveport.ExternalChatRecordQuery{
+		CustomerID: customerdomain.CustomerID(customerID), ExternalUserID: "external-target", ChatScene: "private", StartAt: time.Unix(10, 0).UTC(), WithUserID: "HuangYouCan", Limit: 20,
+	})
+	if err != nil || private.Total != 1 || len(private.Items) != 1 {
+		t.Fatalf("private page=%+v err=%v", private, err)
+	}
+	item := private.Items[0]
+	if item.MessageID != "machine-private-target" || item.ExternalUserID != "external-target" || item.WithUserID != "HuangYouCan" || item.Sender != "HuangYouCan" || item.Receiver != "external-target" || item.Content != "target private" || item.SourceID == "" {
+		t.Fatalf("private record=%+v", item)
+	}
+	group, err := service.ExternalCustomerMessages(ctx, archiveport.ExternalChatRecordQuery{
+		CustomerID: customerdomain.CustomerID(customerID), ExternalUserID: "external-target", ChatScene: "group", StartAt: time.Unix(10, 0).UTC(), Limit: 20,
+	})
+	if err != nil || group.Total != 1 || len(group.Items) != 1 || group.Items[0].MessageID != "machine-group-target" || group.Items[0].RoomID != "room-target" || group.Items[0].UnionID != "union-historical" || group.Items[0].GroupName != "历史体验群" {
+		t.Fatalf("group page=%+v err=%v", group, err)
+	}
+}
+
 var errArchiveCommitInjected = errors.New("archive commit injected failure")
 
 type archiveFailOnceStore struct {
@@ -377,7 +447,7 @@ func applyMessageArchiveJourneyMigrations(t *testing.T, ctx context.Context, nat
 		t.Fatal("locate message archive journey")
 	}
 	base := filepath.Join(filepath.Dir(source), "..", "..", "migrations")
-	for _, name := range []string{"0071_message_archive_core.sql", "0072_message_archive_migration_receipts.sql"} {
+	for _, name := range []string{"0071_message_archive_core.sql", "0072_message_archive_migration_receipts.sql", "0098_message_archive_historical_projection.sql"} {
 		sql, err := os.ReadFile(filepath.Join(base, name))
 		if err != nil {
 			t.Fatal(err)

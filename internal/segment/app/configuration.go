@@ -6,12 +6,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"strings"
 	"time"
 
 	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
 	segmentdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/domain"
+	segmentport "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/port"
 	segmentstore "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/store"
 )
 
@@ -97,6 +97,7 @@ type GroupCommand struct {
 	Name                string
 	SortOrder           int
 	Actor               int64
+	MutationActor       segmentport.MutationActor `json:"-"`
 	IdempotencyKey      string
 }
 
@@ -104,6 +105,7 @@ type PackageCreateCommand struct {
 	Name, TemplateKey string
 	GroupID           *int64
 	Actor             int64
+	MutationActor     segmentport.MutationActor `json:"-"`
 	IdempotencyKey    string
 }
 
@@ -112,12 +114,14 @@ type PackageUpdateCommand struct {
 	Name                string
 	GroupID             *int64
 	Actor               int64
+	MutationActor       segmentport.MutationActor `json:"-"`
 	IdempotencyKey      string
 }
 
 type VersionCommand struct {
 	ID, ExpectedVersion int64
 	Actor               int64
+	MutationActor       segmentport.MutationActor `json:"-"`
 	IdempotencyKey      string
 }
 
@@ -127,6 +131,7 @@ type ConfigurationCommand struct {
 	RefreshCronUTC                    string
 	RefreshMode                       string
 	Actor                             int64
+	MutationActor                     segmentport.MutationActor `json:"-"`
 	IdempotencyKey                    string
 }
 
@@ -151,15 +156,19 @@ func (s *Service) ListGroups(ctx context.Context) ([]segmentdomain.Group, error)
 }
 
 func (s *Service) CreateGroup(ctx context.Context, command GroupCommand) (segmentdomain.Group, error) {
-	now := s.now().UTC()
-	group, err := segmentdomain.NewGroup(command.Name, command.SortOrder, command.Actor, now)
+	actor, err := mutationActor(command.Actor, command.MutationActor)
 	if err != nil {
 		return segmentdomain.Group{}, ErrInvalid
 	}
-	payload := mutationPayload("create_group", command)
-	result, err := s.mutate(ctx, "create_group", command.Actor, command.IdempotencyKey, payload, func(tx context.Context) (any, segmentstore.MutationFact, error) {
+	now := s.now().UTC()
+	group, err := segmentdomain.NewGroupWithActor(command.Name, command.SortOrder, actor.StaffID, string(actor.Kind), actor.Reference, now)
+	if err != nil {
+		return segmentdomain.Group{}, ErrInvalid
+	}
+	payload := mutationPayload("create_group", actor, command)
+	result, err := s.mutate(ctx, "create_group", actor, command.IdempotencyKey, payload, func(tx context.Context) (any, segmentstore.MutationFact, error) {
 		created, createErr := s.store.CreateGroup(tx, group)
-		return created, fact("group", created.ID, "create", "audience.group.created.v1", command.Actor, command.IdempotencyKey, now), createErr
+		return created, fact("group", created.ID, "create", "audience.group.created.v1", actor, command.IdempotencyKey, now), createErr
 	})
 	var created segmentdomain.Group
 	if err == nil {
@@ -172,16 +181,20 @@ func (s *Service) UpdateGroup(ctx context.Context, command GroupCommand) (segmen
 	if command.ID < 1 || command.ExpectedVersion < 1 {
 		return segmentdomain.Group{}, ErrInvalid
 	}
+	actor, err := mutationActor(command.Actor, command.MutationActor)
+	if err != nil {
+		return segmentdomain.Group{}, ErrInvalid
+	}
 	now := s.now().UTC()
-	result, err := s.mutate(ctx, "update_group", command.Actor, command.IdempotencyKey, mutationPayload("update_group", command), func(tx context.Context) (any, segmentstore.MutationFact, error) {
+	result, err := s.mutate(ctx, "update_group", actor, command.IdempotencyKey, mutationPayload("update_group", actor, command), func(tx context.Context) (any, segmentstore.MutationFact, error) {
 		group, updateErr := s.store.LockGroup(tx, command.ID)
 		if updateErr == nil {
-			updateErr = group.Update(command.Name, command.SortOrder, command.ExpectedVersion, command.Actor, now)
+			updateErr = group.UpdateWithActor(command.Name, command.SortOrder, command.ExpectedVersion, actor.StaffID, string(actor.Kind), actor.Reference, now)
 		}
 		if updateErr == nil {
 			group, updateErr = s.store.UpdateGroup(tx, group, command.ExpectedVersion)
 		}
-		return group, fact("group", command.ID, "update", "audience.group.updated.v1", command.Actor, command.IdempotencyKey, now), updateErr
+		return group, fact("group", command.ID, "update", "audience.group.updated.v1", actor, command.IdempotencyKey, now), updateErr
 	})
 	var updated segmentdomain.Group
 	if err == nil {
@@ -191,9 +204,13 @@ func (s *Service) UpdateGroup(ctx context.Context, command GroupCommand) (segmen
 }
 
 func (s *Service) DeleteGroup(ctx context.Context, command VersionCommand) error {
-	_, err := s.mutate(ctx, "delete_group", command.Actor, command.IdempotencyKey, mutationPayload("delete_group", command), func(tx context.Context) (any, segmentstore.MutationFact, error) {
+	actor, err := mutationActor(command.Actor, command.MutationActor)
+	if err != nil {
+		return ErrInvalid
+	}
+	_, err = s.mutate(ctx, "delete_group", actor, command.IdempotencyKey, mutationPayload("delete_group", actor, command), func(tx context.Context) (any, segmentstore.MutationFact, error) {
 		deleteErr := s.store.DeleteEmptyGroup(tx, command.ID, command.ExpectedVersion)
-		return map[string]any{"id": command.ID, "deleted": deleteErr == nil}, fact("group", command.ID, "delete", "audience.group.deleted.v1", command.Actor, command.IdempotencyKey, s.now().UTC()), deleteErr
+		return map[string]any{"id": command.ID, "deleted": deleteErr == nil}, fact("group", command.ID, "delete", "audience.group.deleted.v1", actor, command.IdempotencyKey, s.now().UTC()), deleteErr
 	})
 	return classify(err)
 }
@@ -240,49 +257,70 @@ func (s *Service) GetPackageByCode(ctx context.Context, code string) (segmentdom
 	return result, classify(err)
 }
 
-// PackageCodeForIdempotencyKey is the single stable derivation used by package
-// creation and by semantic bootstrap reconciliation.
+// PackageCodeForIdempotencyKey preserves the established human-administrator
+// package-code derivation used by bootstrap reconciliation and existing data.
 func PackageCodeForIdempotencyKey(key string) (string, error) {
-	if len(key) < 16 || len(key) > 128 || strings.TrimSpace(key) != key {
+	if !validIdempotencyKey(key) {
 		return "", ErrInvalid
 	}
-	digest := sha256.Sum256([]byte(key))
-	return "audience-" + hex.EncodeToString(digest[:8]), nil
+	return packageCodeForMaterial(key), nil
+}
+
+// packageCodeForMutationActor gives a machine caller its own deterministic code
+// namespace while retaining the historical administrator code byte-for-byte.
+func packageCodeForMutationActor(actor segmentport.MutationActor, key string) (string, error) {
+	if !actor.Valid() || !validIdempotencyKey(key) {
+		return "", ErrInvalid
+	}
+	return packageCodeForMaterial(actorScopedIdempotencyMaterial(actor, key)), nil
+}
+
+func packageCodeForMaterial(material string) string {
+	digest := sha256.Sum256([]byte(material))
+	return "audience-" + hex.EncodeToString(digest[:8])
+}
+
+func validIdempotencyKey(key string) bool {
+	return len(key) >= 16 && len(key) <= 128 && strings.TrimSpace(key) == key
 }
 
 func (s *Service) CreatePackage(ctx context.Context, command PackageCreateCommand) (segmentdomain.Package, error) {
+	actor, actorErr := mutationActor(command.Actor, command.MutationActor)
+	if actorErr != nil {
+		return segmentdomain.Package{}, ErrInvalid
+	}
 	definition, err := DefaultDefinition(command.TemplateKey)
 	if err != nil {
 		return segmentdomain.Package{}, ErrInvalid
 	}
 	now := s.now().UTC()
-	code, err := PackageCodeForIdempotencyKey(command.IdempotencyKey)
+	code, err := packageCodeForMutationActor(actor, command.IdempotencyKey)
 	if err != nil {
 		return segmentdomain.Package{}, err
 	}
-	result, err := s.mutate(ctx, "create_package", command.Actor, command.IdempotencyKey, mutationPayload("create_package", command), func(tx context.Context) (any, segmentstore.MutationFact, error) {
-		item, createErr := segmentdomain.NewPackage(code, command.Name, command.GroupID, command.Actor, now)
+	result, err := s.mutate(ctx, "create_package", actor, command.IdempotencyKey, mutationPayload("create_package", actor, command), func(tx context.Context) (any, segmentstore.MutationFact, error) {
+		item, createErr := segmentdomain.NewPackageWithActor(code, command.Name, command.GroupID, actor.StaffID, string(actor.Kind), actor.Reference, now)
 		if createErr == nil {
 			item, createErr = s.store.CreatePackage(tx, item)
 			createErr = atPersistenceStage("create_package_record", createErr)
 		}
 		if createErr == nil {
-			configuration, configErr := segmentdomain.NewConfigurationVersion(item.ID, 1, definition, "", "manual", command.Actor, now)
+			configuration, configErr := segmentdomain.NewConfigurationVersionWithActor(item.ID, 1, definition, "", "manual", actor.StaffID, string(actor.Kind), actor.Reference, now)
 			if configErr == nil {
 				configuration, configErr = s.store.CreateConfigurationVersion(tx, configuration)
 				configErr = atPersistenceStage("create_configuration_version", configErr)
 			}
 			if configErr == nil {
-				item, configErr = s.store.SetCurrentConfiguration(tx, item.ID, configuration.ID, item.Version, command.Actor, now)
+				item, configErr = s.setCurrentConfiguration(tx, item.ID, configuration.ID, item.Version, actor, now)
 				configErr = atPersistenceStage("set_current_configuration", configErr)
 			}
 			if configErr == nil {
-				_, configErr = s.store.AppendMutationFacts(tx, fact("configuration", configuration.ID, "create", "audience.configuration.created.v1", command.Actor, "configuration:"+command.IdempotencyKey, now))
+				_, configErr = s.store.AppendMutationFacts(tx, fact("configuration", configuration.ID, "create", "audience.configuration.created.v1", actor, "configuration:"+command.IdempotencyKey, now))
 				configErr = atPersistenceStage("append_configuration_facts", configErr)
 			}
 			createErr = configErr
 		}
-		return item, fact("package", item.ID, "create", "audience.package.created.v1", command.Actor, command.IdempotencyKey, now), createErr
+		return item, fact("package", item.ID, "create", "audience.package.created.v1", actor, command.IdempotencyKey, now), createErr
 	})
 	var created segmentdomain.Package
 	if err == nil {
@@ -292,20 +330,24 @@ func (s *Service) CreatePackage(ctx context.Context, command PackageCreateComman
 }
 
 func (s *Service) UpdatePackage(ctx context.Context, command PackageUpdateCommand) (segmentdomain.Package, error) {
+	actor, err := mutationActor(command.Actor, command.MutationActor)
+	if err != nil {
+		return segmentdomain.Package{}, ErrInvalid
+	}
 	now := s.now().UTC()
-	result, err := s.mutate(ctx, "update_package", command.Actor, command.IdempotencyKey, mutationPayload("update_package", command), func(tx context.Context) (any, segmentstore.MutationFact, error) {
+	result, err := s.mutate(ctx, "update_package", actor, command.IdempotencyKey, mutationPayload("update_package", actor, command), func(tx context.Context) (any, segmentstore.MutationFact, error) {
 		item, updateErr := s.store.LockPackage(tx, command.ID)
 		name := command.Name
 		if name == "" {
 			name = item.Name
 		}
 		if updateErr == nil {
-			updateErr = item.UpdateDetails(name, command.GroupID, command.ExpectedVersion, command.Actor, now)
+			updateErr = item.UpdateDetailsWithActor(name, command.GroupID, command.ExpectedVersion, actor.StaffID, string(actor.Kind), actor.Reference, now)
 		}
 		if updateErr == nil {
 			item, updateErr = s.store.UpdatePackage(tx, item, command.ExpectedVersion)
 		}
-		return item, fact("package", command.ID, "update", "audience.package.updated.v1", command.Actor, command.IdempotencyKey, now), updateErr
+		return item, fact("package", command.ID, "update", "audience.package.updated.v1", actor, command.IdempotencyKey, now), updateErr
 	})
 	var updated segmentdomain.Package
 	if err == nil {
@@ -315,14 +357,18 @@ func (s *Service) UpdatePackage(ctx context.Context, command PackageUpdateComman
 }
 
 func (s *Service) CopyPackage(ctx context.Context, command VersionCommand) (segmentdomain.Package, error) {
+	actor, err := mutationActor(command.Actor, command.MutationActor)
+	if err != nil {
+		return segmentdomain.Package{}, ErrInvalid
+	}
 	now := s.now().UTC()
-	result, err := s.mutate(ctx, "copy_package", command.Actor, command.IdempotencyKey, mutationPayload("copy_package", command), func(tx context.Context) (any, segmentstore.MutationFact, error) {
+	result, err := s.mutate(ctx, "copy_package", actor, command.IdempotencyKey, mutationPayload("copy_package", actor, command), func(tx context.Context) (any, segmentstore.MutationFact, error) {
 		source, copyErr := s.store.LockPackage(tx, command.ID)
 		var copied segmentdomain.Package
 		if copyErr == nil {
 			code, codeErr := s.store.NextCopyCode(tx, source.Code)
 			if codeErr == nil {
-				copied, codeErr = source.Copy(code, source.Name+" 副本", command.Actor, now)
+				copied, codeErr = source.CopyWithActor(code, source.Name+" 副本", actor.StaffID, string(actor.Kind), actor.Reference, now)
 			}
 			if codeErr == nil {
 				copied, codeErr = s.store.CreatePackage(tx, copied)
@@ -330,12 +376,12 @@ func (s *Service) CopyPackage(ctx context.Context, command VersionCommand) (segm
 			if codeErr == nil {
 				sourceConfiguration, configErr := s.store.CurrentConfiguration(tx, source.ID)
 				if configErr == nil {
-					configuration, createErr := segmentdomain.NewConfigurationVersion(copied.ID, 1, sourceConfiguration.Definition, sourceConfiguration.RefreshCronUTC, sourceConfiguration.RefreshMode, command.Actor, now)
+					configuration, createErr := segmentdomain.NewConfigurationVersionWithActor(copied.ID, 1, sourceConfiguration.Definition, sourceConfiguration.RefreshCronUTC, sourceConfiguration.RefreshMode, actor.StaffID, string(actor.Kind), actor.Reference, now)
 					if createErr == nil {
 						configuration, createErr = s.store.CreateConfigurationVersion(tx, configuration)
 					}
 					if createErr == nil {
-						copied, createErr = s.store.SetCurrentConfiguration(tx, copied.ID, configuration.ID, copied.Version, command.Actor, now)
+						copied, createErr = s.setCurrentConfiguration(tx, copied.ID, configuration.ID, copied.Version, actor, now)
 					}
 					configErr = createErr
 				}
@@ -343,7 +389,7 @@ func (s *Service) CopyPackage(ctx context.Context, command VersionCommand) (segm
 			}
 			copyErr = codeErr
 		}
-		return copied, fact("package", copied.ID, "copy", "audience.package.copied.v1", command.Actor, command.IdempotencyKey, now), copyErr
+		return copied, fact("package", copied.ID, "copy", "audience.package.copied.v1", actor, command.IdempotencyKey, now), copyErr
 	})
 	var copied segmentdomain.Package
 	if err == nil {
@@ -356,16 +402,20 @@ func (s *Service) TransitionPackage(ctx context.Context, command VersionCommand,
 	if target == segmentdomain.Active && !s.allowActivation {
 		return segmentdomain.Package{}, ErrNotReady
 	}
+	actor, err := mutationActor(command.Actor, command.MutationActor)
+	if err != nil {
+		return segmentdomain.Package{}, ErrInvalid
+	}
 	now := s.now().UTC()
-	result, err := s.mutate(ctx, string(target)+"_package", command.Actor, command.IdempotencyKey, mutationPayload(string(target)+"_package", command), func(tx context.Context) (any, segmentstore.MutationFact, error) {
+	result, err := s.mutate(ctx, string(target)+"_package", actor, command.IdempotencyKey, mutationPayload(string(target)+"_package", actor, command), func(tx context.Context) (any, segmentstore.MutationFact, error) {
 		item, transitionErr := s.store.LockPackage(tx, command.ID)
 		if transitionErr == nil {
-			transitionErr = item.Transition(target, command.ExpectedVersion, command.Actor, now)
+			transitionErr = item.TransitionWithActor(target, command.ExpectedVersion, actor.StaffID, string(actor.Kind), actor.Reference, now)
 		}
 		if transitionErr == nil {
 			item, transitionErr = s.store.UpdatePackage(tx, item, command.ExpectedVersion)
 		}
-		return item, fact("package", command.ID, string(target), "audience.package."+string(target)+".v1", command.Actor, command.IdempotencyKey, now), transitionErr
+		return item, fact("package", command.ID, string(target), "audience.package."+string(target)+".v1", actor, command.IdempotencyKey, now), transitionErr
 	})
 	var item segmentdomain.Package
 	if err == nil {
@@ -375,6 +425,10 @@ func (s *Service) TransitionPackage(ctx context.Context, command VersionCommand,
 }
 
 func (s *Service) PutConfiguration(ctx context.Context, command ConfigurationCommand) (segmentdomain.ConfigurationVersion, error) {
+	actor, actorErr := mutationActor(command.Actor, command.MutationActor)
+	if actorErr != nil {
+		return segmentdomain.ConfigurationVersion{}, ErrInvalid
+	}
 	if command.RefreshMode == "" {
 		if command.RefreshCronUTC != "" {
 			command.RefreshMode = "legacy_custom"
@@ -390,7 +444,7 @@ func (s *Service) PutConfiguration(ctx context.Context, command ConfigurationCom
 		return segmentdomain.ConfigurationVersion{}, err
 	}
 	now := s.now().UTC()
-	result, err := s.mutate(ctx, "put_configuration", command.Actor, command.IdempotencyKey, mutationPayload("put_configuration", command), func(tx context.Context) (any, segmentstore.MutationFact, error) {
+	result, err := s.mutate(ctx, "put_configuration", actor, command.IdempotencyKey, mutationPayload("put_configuration", actor, command), func(tx context.Context) (any, segmentstore.MutationFact, error) {
 		item, putErr := s.store.LockPackage(tx, command.PackageID)
 		if putErr == nil && item.Lifecycle != segmentdomain.Paused {
 			putErr = segmentdomain.ErrActiveEdit
@@ -402,17 +456,17 @@ func (s *Service) PutConfiguration(ctx context.Context, command ConfigurationCom
 		if putErr == nil {
 			version, nextErr := s.store.NextConfigurationVersion(tx, item.ID)
 			if nextErr == nil {
-				configuration, nextErr = segmentdomain.NewConfigurationVersion(item.ID, version, canonical, command.RefreshCronUTC, command.RefreshMode, command.Actor, now)
+				configuration, nextErr = segmentdomain.NewConfigurationVersionWithActor(item.ID, version, canonical, command.RefreshCronUTC, command.RefreshMode, actor.StaffID, string(actor.Kind), actor.Reference, now)
 			}
 			if nextErr == nil {
 				configuration, nextErr = s.store.CreateConfigurationVersion(tx, configuration)
 			}
 			if nextErr == nil {
-				_, nextErr = s.store.SetCurrentConfiguration(tx, item.ID, configuration.ID, item.Version, command.Actor, now)
+				_, nextErr = s.setCurrentConfiguration(tx, item.ID, configuration.ID, item.Version, actor, now)
 			}
 			putErr = nextErr
 		}
-		return configuration, fact("configuration", configuration.ID, "put", "audience.configuration.created.v1", command.Actor, command.IdempotencyKey, now), putErr
+		return configuration, fact("configuration", configuration.ID, "put", "audience.configuration.created.v1", actor, command.IdempotencyKey, now), putErr
 	})
 	var configuration segmentdomain.ConfigurationVersion
 	if err == nil {
@@ -434,12 +488,12 @@ func (s *Service) CurrentConfiguration(ctx context.Context, packageID int64) (se
 	return result, classify(err)
 }
 
-func (s *Service) mutate(ctx context.Context, operation string, actor int64, key string, payload json.RawMessage, apply func(context.Context) (any, segmentstore.MutationFact, error)) (json.RawMessage, error) {
-	if !s.ready() || actor < 1 || len(key) < 16 || len(key) > 128 || strings.TrimSpace(key) != key || apply == nil {
+func (s *Service) mutate(ctx context.Context, operation string, actor segmentport.MutationActor, key string, payload json.RawMessage, apply func(context.Context) (any, segmentstore.MutationFact, error)) (json.RawMessage, error) {
+	if !s.ready() || !actor.Valid() || len(key) < 16 || len(key) > 128 || strings.TrimSpace(key) != key || apply == nil {
 		return nil, ErrInvalid
 	}
 	now := s.now().UTC()
-	reservation := segmentstore.Reservation{Operation: operation, ActorScope: fmt.Sprintf("admin:%d", actor), KeyDigest: sha256.Sum256([]byte(key)), PayloadDigest: sha256.Sum256(payload), CreatedAt: now}
+	reservation := segmentstore.Reservation{Operation: operation, ActorScope: actorScope(actor), ActorKind: string(actor.Kind), ActorRef: actor.Reference, KeyDigest: sha256.Sum256([]byte(key)), PayloadDigest: sha256.Sum256(payload), CreatedAt: now}
 	var result json.RawMessage
 	err := s.uow.Within(ctx, func(tx context.Context) error {
 		receipt, owned, err := s.store.Reserve(tx, reservation)
@@ -470,17 +524,66 @@ func (s *Service) mutate(ctx context.Context, operation string, actor int64, key
 	return result, err
 }
 
+type actorConfigurationStore interface {
+	SetCurrentConfigurationWithActor(context.Context, int64, int64, int64, segmentstore.Actor, time.Time) (segmentdomain.Package, error)
+}
+
+func (s *Service) setCurrentConfiguration(ctx context.Context, packageID, configurationID, expectedVersion int64, actor segmentport.MutationActor, now time.Time) (segmentdomain.Package, error) {
+	if withActor, ok := s.store.(actorConfigurationStore); ok {
+		return withActor.SetCurrentConfigurationWithActor(ctx, packageID, configurationID, expectedVersion, storeActor(actor), now)
+	}
+	if actor.Kind != segmentport.MutationActorAdmin {
+		return segmentdomain.Package{}, ErrInvalid
+	}
+	return s.store.SetCurrentConfiguration(ctx, packageID, configurationID, expectedVersion, actor.StaffID, now)
+}
+
 func (s *Service) ready() bool { return s != nil && s.uow != nil && s.store != nil && s.now != nil }
-func mutationPayload(operation string, command any) json.RawMessage {
+
+// mutationPayload retains the historical administrator receipt digest. A
+// machine has no legacy receipt namespace, so its canonical authenticated scope
+// becomes part of the payload being reserved.
+func mutationPayload(operation string, actor segmentport.MutationActor, command any) json.RawMessage {
+	if actor.Kind == segmentport.MutationActorAdmin {
+		raw, _ := json.Marshal(struct {
+			Operation string `json:"operation"`
+			Command   any    `json:"command"`
+		}{operation, command})
+		return raw
+	}
 	raw, _ := json.Marshal(struct {
-		Operation string `json:"operation"`
-		Command   any    `json:"command"`
-	}{operation, command})
+		Operation  string `json:"operation"`
+		ActorScope string `json:"actor_scope"`
+		Command    any    `json:"command"`
+	}{operation, actor.Reference, command})
 	return raw
 }
-func fact(kind string, id int64, operation, event string, actor int64, key string, now time.Time) segmentstore.MutationFact {
+
+// mutationCommandPayload is the corresponding legacy-preserving serialization
+// for execution commands, whose administrator receipts historically stored the
+// command object without the configuration-operation wrapper.
+func mutationCommandPayload(actor segmentport.MutationActor, command any) json.RawMessage {
+	if actor.Kind == segmentport.MutationActorAdmin {
+		raw, _ := json.Marshal(command)
+		return raw
+	}
+	raw, _ := json.Marshal(struct {
+		ActorScope string `json:"actor_scope"`
+		Command    any    `json:"command"`
+	}{actor.Reference, command})
+	return raw
+}
+
+func actorScopedIdempotencyMaterial(actor segmentport.MutationActor, key string) string {
+	if actor.Kind == segmentport.MutationActorAdmin {
+		return key
+	}
+	return actor.Reference + ":" + key
+}
+
+func fact(kind string, id int64, operation, event string, actor segmentport.MutationActor, key string, now time.Time) segmentstore.MutationFact {
 	payload, _ := json.Marshal(map[string]any{"resource_id": id, "resource_kind": kind})
-	return segmentstore.MutationFact{ResourceKind: kind, ResourceID: id, Operation: operation, EventType: event, ActorID: actor, Payload: payload, IdempotencyKey: operation + ":" + key, OccurredAt: now}
+	return segmentstore.MutationFact{ResourceKind: kind, ResourceID: id, Operation: operation, EventType: event, ActorID: actor.StaffID, ActorKind: string(actor.Kind), ActorRef: actor.Reference, Payload: payload, IdempotencyKey: operation + ":" + actorScopedIdempotencyMaterial(actor, key), OccurredAt: now}
 }
 func classify(err error) error {
 	switch {

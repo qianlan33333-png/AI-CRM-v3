@@ -64,6 +64,7 @@ import (
 	archiveapp "github.com/qianlan33333-png/AI-CRM-v3/internal/messagearchive/app"
 	archivehttp "github.com/qianlan33333-png/AI-CRM-v3/internal/messagearchive/http"
 	archivestore "github.com/qianlan33333-png/AI-CRM-v3/internal/messagearchive/store"
+	openplatformhttp "github.com/qianlan33333-png/AI-CRM-v3/internal/openplatform/http"
 	operationcycle "github.com/qianlan33333-png/AI-CRM-v3/internal/operationcycle"
 	operationapp "github.com/qianlan33333-png/AI-CRM-v3/internal/operationcycle/app"
 	operationstore "github.com/qianlan33333-png/AI-CRM-v3/internal/operationcycle/store"
@@ -179,6 +180,14 @@ func composeWithWeComClientFactory(ctx context.Context, cfg platformconfig.Runti
 		return fail(err)
 	}
 	management, err := accessapp.NewManagement(accessRepository, uow, passwords, nil)
+	if err != nil {
+		return fail(err)
+	}
+	machineService, err := accessapp.NewMachineService(accessRepository, uow, passwords, accessapp.MachineConfig{SigningKey: []byte(cfg.OpenPlatform.JWTSigningKey), CorpID: cfg.WeCom.CorpID})
+	if err != nil {
+		return fail(err)
+	}
+	machineRateLimiter, err := accessapp.NewMachineRequestRateLimiter(accessRepository, uow, accessapp.MachineRequestRateLimitConfig{})
 	if err != nil {
 		return fail(err)
 	}
@@ -827,6 +836,49 @@ func composeWithWeComClientFactory(ctx context.Context, cfg platformconfig.Runti
 		return fail(err)
 	}
 
+	customerProfileStore := wecom.NewPostgreSQLCustomerSyncStore()
+	legacyAudienceSource.PrimaryOwners = customerProfileStore
+	openPlatformTimeline := customerTimelineAdapter{uow: uow, reader: customerStore}
+	openPlatformScopes := configuredOpenPlatformScopes(cfg.WeCom.CorpID, []string{cfg.HXCDashboard.UnionIDScope, "wechat-open-platform:" + cfg.Survey.OAuthOpenPlatformID}, []string{cfg.Survey.OAuthAppID, cfg.WeChatPay.AppID, cfg.WeChatPay.H5AppID, cfg.WeChatShop.AppID})
+	// Questionnaire history has one frozen donor Open Platform scope. Do not
+	// infer it from the broader set of configured UnionID integrations.
+	openPlatformScopes.SurveyUnionScopes = distinctScopes([]string{"wechat-open-platform:" + cfg.Survey.OAuthOpenPlatformID}, "wechat-open-platform:")
+	openPlatformIdentities := openPlatformIdentityAdapter{resolver: oneID, values: queries, directory: queries, machineAudit: accessRepository, uow: uow}
+	openPlatformExecutor, err := newOpenPlatformExecutor(openPlatformIdentities, orderService, sidebarProfiles, archiveService, openPlatformTimeline, openPlatformOwnerAdapter{uow: uow, reader: customerProfileStore}, openPlatformScopes)
+	if err != nil {
+		return fail(err)
+	}
+	if err = openPlatformExecutor.BindExternalRadarLinkMappings(radarManager); err != nil {
+		return fail(err)
+	}
+	if err = openPlatformExecutor.BindExternalSurveySubmissions(surveySubmissions, openPlatformIdentities); err != nil {
+		return fail(err)
+	}
+	if err = openPlatformExecutor.BindV1CustomerActivities(surveySubmissions, radarQuery, cursorSigningKey); err != nil {
+		return fail(err)
+	}
+	if err = openPlatformExecutor.BindV1OperationAudit(accessRepository, uow); err != nil {
+		return fail(err)
+	}
+	if err = openPlatformExecutor.BindV1AI(aiService, aiService, uow); err != nil {
+		return fail(err)
+	}
+	openPlatformHandler, err := openplatformhttp.NewHandler(openplatformhttp.Config{
+		MachineAuthentication: machineService,
+		RateLimiter:           machineRateLimiter,
+		AdminAuthentication:   authentication,
+		Management:            machineService,
+		Operations:            openPlatformExecutor,
+		Executor:              openPlatformExecutor,
+		SessionCookieName:     accesshttp.SessionCookieName,
+		CSRFCookieName:        accesshttp.CSRFCookieName,
+		TrustedProxyCIDRs:     cfg.OpenPlatform.TrustedProxyCIDRs,
+		PublicOrigin:          cfg.PublicOrigin,
+		RequestTimeout:        10 * time.Second,
+	})
+	if err != nil {
+		return fail(err)
+	}
 	if err = productBindings.ProductHandler.SetServicePeriodMemberReaders(entitlements, orderCustomerDisplayNameAdapter{uow: uow, reader: customerStore}); err != nil {
 		return fail(err)
 	}
@@ -837,7 +889,6 @@ func composeWithWeComClientFactory(ctx context.Context, cfg platformconfig.Runti
 	if err = orderService.SetServicePeriodEntitlementCoordinator(entitlementFulfillment); err != nil {
 		return fail(err)
 	}
-	customerProfileStore := wecom.NewPostgreSQLCustomerSyncStore()
 	relationships := wecom.NewPostgreSQLFollowRelationshipStore()
 	customerTagCommands, err := customerapp.NewTagCommandService(uow, customerstore.TagCommandPostgreSQL{}, effectRepository, customerTagCommandGate{uow: uow, corpID: cfg.WeCom.CorpID, owners: customerProfileStore, staff: accessRepository, relationships: relationships, tags: tagRepository, identities: queries}, auditService, platformoutbox.NewPostgreSQL())
 	if err != nil {
@@ -879,7 +930,7 @@ func composeWithWeComClientFactory(ctx context.Context, cfg platformconfig.Runti
 		TagCommands: customerTagCommands,
 		TagHistory:  customerstore.TagCommandPostgreSQL{},
 		Surveys:     customerSurveyAdapter{reader: surveySubmissions},
-		Timeline:    customerTimelineAdapter{uow: uow, reader: customerStore}, Chat: disabledCustomerChatActivity{}, Orders: orderService, ProfileSigningKey: cursorSigningKey,
+		Timeline:    openPlatformTimeline, Chat: disabledCustomerChatActivity{}, Orders: orderService, ProfileSigningKey: cursorSigningKey,
 		OwnerHandoff: ownerHandoffService, OwnerHandoffReader: ownerHandoffStore, OwnerHandoffTransfers: ownerHandoffService,
 		OwnerHandoffStaff: customerOwnerHandoffStaffDirectory{uow: uow, staff: accessRepository}, OwnerHandoffCorpScope: "wecom-corp:" + cfg.WeCom.CorpID, OwnerHandoffIdentity: oneID, OwnerHandoffPresentation: customerOwnerHandoffPreviewPresenter{uow: uow, display: customerStore, identities: queries, staff: accessRepository}})
 	if err != nil {
@@ -1474,6 +1525,7 @@ func composeWithWeComClientFactory(ctx context.Context, cfg platformconfig.Runti
 	if err != nil {
 		return fail(err)
 	}
+	handler = openplatformhttp.Mount(handler, openPlatformHandler.Routes())
 	handler = mountMemberGridUI(handler, memberGridUI)
 	handler = mountOwnerHandoffUI(handler, requireAdminSession(authentication, ownerHandoffUI))
 	handler, err = mountSegmentAPI(handler, segmentBindings.Audience)

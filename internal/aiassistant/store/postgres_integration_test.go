@@ -5,11 +5,13 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -407,6 +409,278 @@ func TestPostgreSQLIntegrationNonceAllowsOnlyExactReplay(t *testing.T) {
 	}
 }
 
+func TestPostgreSQLMachinePlanActorScopesReceiptsFactsAndStatus(t *testing.T) {
+	native, cleanup := integrationPool(t)
+	defer cleanup()
+	wrapped, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wrapped.Close()
+	uow, err := platformpostgres.NewUnitOfWork(wrapped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := NewPostgreSQL(native, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := aiassistantapp.NewService(uow, repository, integrationCustomers{}, integrationStaff{}, integrationMaterials{}, integrationIdentities{}, integrationIdentities{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC)
+	machineA, err := aiassistantport.MachineActorFromAuthenticatedPrincipal("machine:review-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	machineB, err := aiassistantport.MachineActorFromAuthenticatedPrincipal("machine:review-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := func(actor aiassistantport.MachineActor, name string) aiassistantport.MachineCreatePlanCommand {
+		return aiassistantport.MachineCreatePlanCommand{
+			Actor: actor, IdempotencyKey: "machine-review-same-key-0001", Name: name, SourceKind: "open.review_plan.v1",
+			SourceDigest: effectport.Hash("machine-review-source", name),
+			Recipients:   []aiassistantport.RecipientCandidate{{CustomerID: 11, StaffID: 21, Content: []aiassistantport.ContentBlock{{Kind: aiassistantport.ContentText, Text: "review copy"}}}},
+			OccurredAt:   at,
+		}
+	}
+	first, err := service.CreateMachinePlan(context.Background(), command(machineA, "client A review"))
+	if err != nil || first.Replayed || first.Plan.ID < 1 || first.Plan.ReviewState != aiassistantport.ReviewPending {
+		t.Fatalf("first=%+v err=%v", first, err)
+	}
+	replay, err := service.CreateMachinePlan(context.Background(), command(machineA, "client A review"))
+	if err != nil || !replay.Replayed || replay.Plan.ID != first.Plan.ID {
+		t.Fatalf("replay=%+v first=%+v err=%v", replay, first, err)
+	}
+	if _, err = service.CreateMachinePlan(context.Background(), command(machineA, "changed request")); !errors.Is(err, aiassistantapp.ErrConflict) {
+		t.Fatalf("same-machine drift err=%v", err)
+	}
+	second, err := service.CreateMachinePlan(context.Background(), command(machineB, "client B review"))
+	if err != nil || second.Replayed || second.Plan.ID == first.Plan.ID {
+		t.Fatalf("cross-machine=%+v first=%+v err=%v", second, first, err)
+	}
+	if _, err = service.GetMachinePlan(context.Background(), machineB, first.Plan.ID); !errors.Is(err, aiassistantapp.ErrNotFound) {
+		t.Fatalf("cross-machine read err=%v", err)
+	}
+	if _, err = service.GetMachineOperationStatus(context.Background(), machineB, first.Plan.ID); !errors.Is(err, aiassistantapp.ErrNotFound) {
+		t.Fatalf("cross-machine operation status err=%v", err)
+	}
+	if status, getErr := service.GetMachineOperationStatus(context.Background(), machineA, first.Plan.ID); getErr != nil || status.ReviewState != aiassistantport.ReviewPending || status.OperationState != aiassistantport.MachineOperationPendingReview || status.OutcomeUnknownCount != 0 {
+		t.Fatalf("pending operation status=%+v err=%v", status, getErr)
+	}
+	if _, err = native.Exec(context.Background(), `UPDATE ai_assistant_plans SET state='approved',pending_count=0,approved_count=1 WHERE id=$1`, first.Plan.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = native.Exec(context.Background(), `UPDATE ai_assistant_plan_recipients SET review_state='approved',execution_state='not_accepted' WHERE plan_id=$1`, first.Plan.ID); err != nil {
+		t.Fatal(err)
+	}
+	if status, getErr := service.GetMachineOperationStatus(context.Background(), machineA, first.Plan.ID); getErr != nil || status.ReviewState != aiassistantport.ReviewApproved || status.OperationState != aiassistantport.MachineOperationApproved || status.OutcomeUnknownCount != 0 {
+		t.Fatalf("approved but unexecuted operation status=%+v err=%v", status, getErr)
+	}
+	if _, err = native.Exec(context.Background(), `UPDATE ai_assistant_plans SET state='needs_attention',needs_attention_count=1 WHERE id=$1`, first.Plan.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = native.Exec(context.Background(), `UPDATE ai_assistant_plan_recipients SET execution_state='outcome_unknown' WHERE plan_id=$1`, first.Plan.ID); err != nil {
+		t.Fatal(err)
+	}
+	if status, getErr := service.GetMachineOperationStatus(context.Background(), machineA, first.Plan.ID); getErr != nil || status.ReviewState != aiassistantport.ReviewApproved || status.OperationState != aiassistantport.MachineOperationOutcomeUnknown || status.OutcomeUnknownCount != 1 {
+		t.Fatalf("outcome-unknown operation status=%+v err=%v", status, getErr)
+	}
+	if _, err = native.Exec(context.Background(), `UPDATE ai_assistant_plan_recipients SET execution_state='retryable_failed' WHERE plan_id=$1`, first.Plan.ID); err != nil {
+		t.Fatal(err)
+	}
+	if status, getErr := service.GetMachineOperationStatus(context.Background(), machineA, first.Plan.ID); getErr != nil || status.OperationState != aiassistantport.MachineOperationNeedsAttention || status.OutcomeUnknownCount != 0 || status.RetryableFailureCount != 1 {
+		t.Fatalf("retryable operation status=%+v err=%v", status, getErr)
+	}
+	if status, getErr := service.GetMachinePlan(context.Background(), machineA, first.Plan.ID); getErr != nil || status.ReviewState != aiassistantport.ReviewApproved {
+		t.Fatalf("machine review state=%+v err=%v", status, getErr)
+	}
+	if _, err = native.Exec(context.Background(), `UPDATE ai_assistant_plans SET state='completed',pending_count=0,approved_count=1 WHERE id=$1`, first.Plan.ID); err != nil {
+		t.Fatal(err)
+	}
+	if status, getErr := service.GetMachinePlan(context.Background(), machineA, first.Plan.ID); getErr != nil || status.ReviewState != aiassistantport.ReviewApproved {
+		t.Fatalf("execution state leaked into machine status=%+v err=%v", status, getErr)
+	}
+	if _, err = native.Exec(context.Background(), `UPDATE ai_assistant_plans SET state='rejected',approved_count=0,rejected_count=1 WHERE id=$1`, first.Plan.ID); err != nil {
+		t.Fatal(err)
+	}
+	if status, getErr := service.GetMachinePlan(context.Background(), machineA, first.Plan.ID); getErr != nil || status.ReviewState != aiassistantport.ReviewRejected {
+		t.Fatalf("rejected status=%+v err=%v", status, getErr)
+	}
+
+	var planActorID, contentActorID, auditActorID *int64
+	var planKind, planRef, contentKind, contentRef, auditKind, auditRef string
+	if err = native.QueryRow(context.Background(), `SELECT created_by,created_actor_kind,created_actor_ref FROM ai_assistant_plans WHERE id=$1`, first.Plan.ID).Scan(&planActorID, &planKind, &planRef); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(context.Background(), `SELECT created_by,created_actor_kind,created_actor_ref FROM ai_assistant_content_versions WHERE recipient_id=(SELECT id FROM ai_assistant_plan_recipients WHERE plan_id=$1)`, first.Plan.ID).Scan(&contentActorID, &contentKind, &contentRef); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(context.Background(), `SELECT actor_id,actor_kind,actor_ref FROM ai_assistant_audit_events WHERE plan_id=$1`, first.Plan.ID).Scan(&auditActorID, &auditKind, &auditRef); err != nil {
+		t.Fatal(err)
+	}
+	if planActorID != nil || contentActorID != nil || auditActorID != nil || planKind != aiassistantport.MachineActorKind || contentKind != aiassistantport.MachineActorKind || auditKind != aiassistantport.MachineActorKind || planRef != machineA.Reference || contentRef != machineA.Reference || auditRef != machineA.Reference {
+		t.Fatalf("machine attribution plan=(%v,%q,%q) content=(%v,%q,%q) audit=(%v,%q,%q)", planActorID, planKind, planRef, contentActorID, contentKind, contentRef, auditActorID, auditKind, auditRef)
+	}
+	var recipientID int64
+	if err = native.QueryRow(context.Background(), `SELECT id FROM ai_assistant_plan_recipients WHERE plan_id=$1`, first.Plan.ID).Scan(&recipientID); err != nil {
+		t.Fatal(err)
+	}
+	assertActorProjectionRejected(t, native, "ck_ai_assistant_plan_machine_actor", `INSERT INTO ai_assistant_plans(name,source_kind,source_digest,state,version,target_count,pending_count,approved_count,rejected_count,ineligible_count,needs_attention_count,created_by,created_actor_kind,created_actor_ref,created_at,updated_at)
+		VALUES('missing actor','test',decode(repeat('01',32),'hex'),'pending_review',1,1,1,0,0,0,0,NULL,NULL,NULL,$1,$1)`, at)
+	assertActorProjectionRejected(t, native, "ck_ai_assistant_plan_machine_actor", `INSERT INTO ai_assistant_plans(name,source_kind,source_digest,state,version,target_count,pending_count,approved_count,rejected_count,ineligible_count,needs_attention_count,created_by,created_actor_kind,created_actor_ref,created_at,updated_at)
+		VALUES('mixed actor','test',decode(repeat('02',32),'hex'),'pending_review',1,1,1,0,0,0,0,7,'machine','machine:review-a',$1,$1)`, at)
+	assertActorProjectionRejected(t, native, "ck_ai_assistant_plan_machine_actor", `INSERT INTO ai_assistant_plans(name,source_kind,source_digest,state,version,target_count,pending_count,approved_count,rejected_count,ineligible_count,needs_attention_count,created_by,created_actor_kind,created_actor_ref,created_at,updated_at)
+		VALUES('null kind','test',decode(repeat('07',32),'hex'),'pending_review',1,1,1,0,0,0,0,NULL,NULL,'machine:review-a',$1,$1)`, at)
+	assertActorProjectionRejected(t, native, "ck_ai_assistant_content_machine_actor", `INSERT INTO ai_assistant_content_versions(recipient_id,version,content_digest,content_payload,created_by,created_actor_kind,created_actor_ref,created_at)
+		VALUES($1,2,decode(repeat('03',32),'hex'),'[{"kind":"text","text":"missing actor"}]'::jsonb,NULL,NULL,NULL,$2)`, recipientID, at)
+	assertActorProjectionRejected(t, native, "ck_ai_assistant_content_machine_actor", `INSERT INTO ai_assistant_content_versions(recipient_id,version,content_digest,content_payload,created_by,created_actor_kind,created_actor_ref,created_at)
+		VALUES($1,2,decode(repeat('04',32),'hex'),'[{"kind":"text","text":"mixed actor"}]'::jsonb,7,'machine','machine:review-a',$2)`, recipientID, at)
+	assertActorProjectionRejected(t, native, "ck_ai_assistant_content_machine_actor", `INSERT INTO ai_assistant_content_versions(recipient_id,version,content_digest,content_payload,created_by,created_actor_kind,created_actor_ref,created_at)
+		VALUES($1,2,decode(repeat('08',32),'hex'),'[{"kind":"text","text":"null kind"}]'::jsonb,NULL,NULL,'machine:review-a',$2)`, recipientID, at)
+	assertActorProjectionRejected(t, native, "ck_ai_assistant_audit_machine_actor", `INSERT INTO ai_assistant_audit_events(plan_id,operation,actor_id,actor_kind,actor_ref,payload_digest,occurred_at)
+		VALUES($1,'missing actor',NULL,NULL,NULL,decode(repeat('05',32),'hex'),$2)`, first.Plan.ID, at)
+	assertActorProjectionRejected(t, native, "ck_ai_assistant_audit_machine_actor", `INSERT INTO ai_assistant_audit_events(plan_id,operation,actor_id,actor_kind,actor_ref,payload_digest,occurred_at)
+		VALUES($1,'mixed actor',7,'machine','machine:review-a',decode(repeat('06',32),'hex'),$2)`, first.Plan.ID, at)
+	assertActorProjectionRejected(t, native, "ck_ai_assistant_audit_machine_actor", `INSERT INTO ai_assistant_audit_events(plan_id,operation,actor_id,actor_kind,actor_ref,payload_digest,occurred_at)
+		VALUES($1,'null kind',NULL,NULL,'machine:review-a',decode(repeat('09',32),'hex'),$2)`, first.Plan.ID, at)
+	var receiptCount int
+	if err = native.QueryRow(context.Background(), `SELECT count(*) FROM ai_assistant_operation_receipts WHERE operation='machine_plan_create' AND actor_scope IN ($1,$2)`, machineA.Reference, machineB.Reference).Scan(&receiptCount); err != nil || receiptCount != 2 {
+		t.Fatalf("machine receipts=%d err=%v", receiptCount, err)
+	}
+
+	human := aiassistantport.CreatePlanCommand{Actor: aiassistantport.Actor{Kind: aiassistantport.ActorAdmin, ID: 7}, IdempotencyKey: "human-receipt-legacy-0001", Name: "human compatibility", SourceKind: "manual", SourceDigest: effectport.Hash("human-source"), Recipients: []aiassistantport.RecipientCandidate{{CustomerID: 19, StaffID: 21, Content: []aiassistantport.ContentBlock{{Kind: aiassistantport.ContentText, Text: "human copy"}}}}, OccurredAt: at}
+	if _, err = service.CreatePlan(context.Background(), human); err != nil {
+		t.Fatalf("human create after 0100: %v", err)
+	}
+	expectedPayload, marshalErr := json.Marshal(human)
+	if marshalErr != nil {
+		t.Fatal(marshalErr)
+	}
+	expectedDigest := sha256.Sum256(expectedPayload)
+	var actualDigest []byte
+	var scope string
+	if err = native.QueryRow(context.Background(), `SELECT actor_scope,payload_digest FROM ai_assistant_operation_receipts WHERE operation='plan_create' AND actor_scope='admin:7'`).Scan(&scope, &actualDigest); err != nil {
+		t.Fatal(err)
+	}
+	if scope != "admin:7" || string(actualDigest) != string(expectedDigest[:]) {
+		t.Fatalf("human receipt changed scope=%q digest=%x want=%x", scope, actualDigest, expectedDigest)
+	}
+
+	rollback := errors.New("machine plan caller rollback")
+	within := command(machineA, "rolled back")
+	within.IdempotencyKey = "machine-plan-within-rollback-0001"
+	if _, err = service.CreateMachinePlanWithin(context.Background(), within); !errors.Is(err, aiassistantapp.ErrUnavailable) {
+		t.Fatalf("unbound machine transactional create err=%v", err)
+	}
+	err = uow.Within(context.Background(), func(tx context.Context) error {
+		created, createErr := service.CreateMachinePlanWithin(tx, within)
+		if createErr != nil || created.Plan.ID < 1 {
+			t.Fatalf("transactional machine create=%+v err=%v", created, createErr)
+		}
+		return rollback
+	})
+	if !errors.Is(err, rollback) {
+		t.Fatalf("rollback err=%v", err)
+	}
+	var rolledBack int
+	if err = native.QueryRow(context.Background(), `SELECT count(*) FROM ai_assistant_operation_receipts WHERE actor_scope=$1 AND operation='machine_plan_create' AND key_digest=$2`, machineA.Reference, machineKeyDigest(within.IdempotencyKey)).Scan(&rolledBack); err != nil {
+		t.Fatal(err)
+	}
+	if rolledBack != 0 {
+		t.Fatalf("rolled-back machine receipt remained=%d", rolledBack)
+	}
+}
+
+func TestPostgreSQLMachinePlanSameClientRaceReplaysOneReceipt(t *testing.T) {
+	native, cleanup := integrationPool(t)
+	defer cleanup()
+	wrapped, err := platformpostgres.Wrap(native, 10*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wrapped.Close()
+	uow, err := platformpostgres.NewUnitOfWork(wrapped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := NewPostgreSQL(native, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := aiassistantapp.NewService(uow, repository, integrationCustomers{}, integrationStaff{}, integrationMaterials{}, integrationIdentities{}, integrationIdentities{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	actor, err := aiassistantport.MachineActorFromAuthenticatedPrincipal("machine:review-race")
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := aiassistantport.MachineCreatePlanCommand{Actor: actor, IdempotencyKey: "machine-plan-race-replay-0001", Name: "race review", SourceKind: "open.review_plan.v1", SourceDigest: effectport.Hash("machine-race"), Recipients: []aiassistantport.RecipientCandidate{{CustomerID: 31, StaffID: 21, Content: []aiassistantport.ContentBlock{{Kind: aiassistantport.ContentText, Text: "race copy"}}}}, OccurredAt: time.Date(2026, 9, 6, 13, 0, 0, 0, time.UTC)}
+	const callers = 8
+	start := make(chan struct{})
+	results := make(chan aiassistantport.MachineCreatePlanResult, callers)
+	errs := make(chan error, callers)
+	var wait sync.WaitGroup
+	for range callers {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			<-start
+			result, createErr := service.CreateMachinePlan(context.Background(), command)
+			if createErr != nil {
+				errs <- createErr
+				return
+			}
+			results <- result
+		}()
+	}
+	close(start)
+	wait.Wait()
+	close(results)
+	close(errs)
+	for createErr := range errs {
+		t.Fatalf("concurrent machine create: %v", createErr)
+	}
+	var id aiassistantport.PlanID
+	created, replayed := 0, 0
+	for result := range results {
+		if id == 0 {
+			id = result.Plan.ID
+		}
+		if result.Plan.ID != id {
+			t.Fatalf("different plan IDs under same-client replay: got=%d want=%d", result.Plan.ID, id)
+		}
+		if result.Replayed {
+			replayed++
+		} else {
+			created++
+		}
+	}
+	if id < 1 || created != 1 || replayed != callers-1 {
+		t.Fatalf("race id=%d created=%d replayed=%d", id, created, replayed)
+	}
+	var plans, receipts int
+	if err = native.QueryRow(context.Background(), `SELECT (SELECT count(*) FROM ai_assistant_plans),(SELECT count(*) FROM ai_assistant_operation_receipts WHERE actor_scope=$1 AND operation='machine_plan_create')`, actor.Reference).Scan(&plans, &receipts); err != nil || plans != 1 || receipts != 1 {
+		t.Fatalf("race persistence plans=%d receipts=%d err=%v", plans, receipts, err)
+	}
+}
+
+func assertActorProjectionRejected(t *testing.T, pool *pgxpool.Pool, constraint, query string, args ...any) {
+	t.Helper()
+	_, err := pool.Exec(context.Background(), query, args...)
+	if err == nil || !strings.Contains(err.Error(), constraint) {
+		t.Fatalf("constraint %s accepted invalid actor projection: %v", constraint, err)
+	}
+}
+
+func machineKeyDigest(value string) []byte {
+	digest := sha256.Sum256([]byte(value))
+	return digest[:]
+}
+
 func integrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 	t.Helper()
 	url, err := platformconfig.DatabaseURL()
@@ -441,12 +715,14 @@ func integrationPool(t *testing.T) (*pgxpool.Pool, func()) {
 	if !ok {
 		t.Fatal("locate test")
 	}
-	migration, err := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "..", "migrations", "0036_ai_assistant_review.sql"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err = pool.Exec(ctx, string(migration)); err != nil {
-		t.Fatalf("apply migration: %v", err)
+	for _, name := range []string{"0036_ai_assistant_review.sql", "0100_ai_assistant_machine_actor.sql"} {
+		migration, readErr := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "..", "migrations", name))
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if _, execErr := pool.Exec(ctx, string(migration)); execErr != nil {
+			t.Fatalf("apply migration %s: %v", name, execErr)
+		}
 	}
 	return pool, func() {
 		pool.Close()

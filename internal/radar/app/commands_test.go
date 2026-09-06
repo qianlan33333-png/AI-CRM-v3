@@ -86,13 +86,16 @@ func (allowMedia) ValidateRadarMedia(context.Context, radar.ContentType, radar.M
 }
 
 type memoryPersistence struct {
-	links     map[radar.RadarID]radar.Link
-	receipts  map[string]radarport.OperationReceipt
-	audits    []radarport.AuditRecord
-	outbox    []radarport.OutboxRecord
-	nextID    radar.RadarID
-	nextRecID int64
-	failAudit bool
+	links         map[radar.RadarID]radar.Link
+	receipts      map[string]radarport.OperationReceipt
+	audits        []radarport.AuditRecord
+	outbox        []radarport.OutboxRecord
+	nextID        radar.RadarID
+	nextRecID     int64
+	failAudit     bool
+	externalPage  radarport.ExternalLinkMappingPage
+	externalQuery radarport.ExternalLinkMappingQuery
+	externalErr   error
 }
 
 func newMemoryPersistence() *memoryPersistence {
@@ -141,6 +144,11 @@ func (memory *memoryPersistence) Create(_ context.Context, record radarport.Crea
 	memory.links[link.ID] = link
 	memory.nextID++
 	return link, nil
+}
+
+func (memory *memoryPersistence) ExternalLinkMappings(_ context.Context, query radarport.ExternalLinkMappingQuery) (radarport.ExternalLinkMappingPage, error) {
+	memory.externalQuery = query
+	return memory.externalPage, memory.externalErr
 }
 
 func (memory *memoryPersistence) Save(_ context.Context, link radar.Link, expected radar.LinkVersion, _ int64, _ time.Time) (radar.Link, error) {
@@ -203,4 +211,23 @@ func (memory *memoryPersistence) clone() *memoryPersistence {
 	copy.audits = append([]radarport.AuditRecord(nil), memory.audits...)
 	copy.outbox = append([]radarport.OutboxRecord(nil), memory.outbox...)
 	return &copy
+}
+
+func TestExternalLinkMappingsUseRadarOwnedKeysetProjection(t *testing.T) {
+	memory := newMemoryPersistence()
+	memory.externalPage = radarport.ExternalLinkMappingPage{Items: []radarport.ExternalLinkMapping{{RadarID: 9, RadarCode: "rd_1234567890abcdef", Title: "Disabled historical mapping"}}, Total: 3, HasMore: true}
+	service := newTestService(t, memory)
+	page, err := service.ExternalLinkMappings(context.Background(), radarport.ExternalLinkMappingQuery{RadarCode: "  rd_1234567890abcdef  ", BeforeRadarID: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if memory.externalQuery.RadarCode != "rd_1234567890abcdef" || memory.externalQuery.BeforeRadarID != 10 || memory.externalQuery.Limit != 100 || page.Total != 3 || !page.HasMore || len(page.Items) != 1 || page.Items[0].RadarID != 9 {
+		t.Fatalf("query=%+v page=%+v", memory.externalQuery, page)
+	}
+	if _, err = service.ExternalLinkMappings(context.Background(), radarport.ExternalLinkMappingQuery{Limit: 501}); !errors.Is(err, radar.ErrInvalidArgument) {
+		t.Fatalf("limit error=%v", err)
+	}
+	if _, err = service.ExternalLinkMappings(context.Background(), radarport.ExternalLinkMappingQuery{BeforeRadarID: -1}); !errors.Is(err, radar.ErrInvalidArgument) {
+		t.Fatalf("cursor error=%v", err)
+	}
 }
