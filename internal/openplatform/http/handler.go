@@ -559,7 +559,7 @@ func (handler *Handler) createClient(response http.ResponseWriter, request *http
 		return
 	}
 	var input accessport.CreateMachineClientInput
-	if err := decodeJSON(request, &input); err != nil || !accessdomain.IsLegacyAdminManagedMachinePurpose(input.Purpose) {
+	if err := decodeJSON(request, &input); err != nil || input.Purpose != "external_agent" {
 		writeJSON(response, http.StatusBadRequest, map[string]string{"error": "invalid_request"})
 		return
 	}
