@@ -202,6 +202,10 @@ try {
   await waitFor(cdp, "document.querySelector('[data-open-platform-client=\"browser-open-agent\"]')?.textContent.includes('已启用')", "rotated activation succeeded but the caller Host did not refresh as enabled");
   const secondOAuth = await oauth(secondSecret); const secondToken = secondOAuth?.body?.access_token;
   if (secondOAuth?.status !== 200 || typeof secondToken !== "string") throw new Error("rotated credential did not issue an OAuth token");
+  const rotatedCatalog = await restCatalog(secondToken);
+  if (rotatedCatalog?.status !== 200 || !sameStrings(operationIDs(rotatedCatalog), ["customer.resolve", "platform.capabilities.list"])) throw new Error("rotation did not preserve the approved restricted REST grant");
+  const rotatedMCP = await mcpCatalog(secondToken);
+  if (rotatedMCP?.status !== 200 || !sameStrings(toolNames(rotatedMCP), ["list_capabilities", "resolve_customer"])) throw new Error("rotation did not preserve the approved restricted MCP grant");
 
   if (!await click("停用调用方")) throw new Error("disable action was unavailable");
   await waitFor(cdp, "document.querySelector('[data-open-platform-client=\"browser-open-agent\"]')?.textContent.includes('待启用或已停用')", "disable did not update the caller detail");
