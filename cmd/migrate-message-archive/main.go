@@ -1,5 +1,6 @@
-// Command migrate-message-archive imports one explicit offline archive snapshot.
-// It never connects to a legacy source, starts sync, or invokes the WeCom SDK.
+// Command migrate-message-archive extracts one explicit, read-only legacy archive
+// snapshot or imports a previously extracted snapshot. It never starts sync or
+// invokes the WeCom SDK.
 package main
 
 import (
@@ -36,10 +37,10 @@ var (
 )
 
 type options struct {
-	mode, snapshot, digest string
-	confirm                bool
-	limit                  int
-	afterParticipantID     int64
+	mode, snapshot, digest, sourceDatabaseURLFile, sourceRevision, corpID string
+	confirm                                                               bool
+	limit                                                                 int
+	afterParticipantID                                                    int64
 }
 
 type rowResult struct {
@@ -80,13 +81,33 @@ func run(ctx context.Context, args []string) error {
 	flags := flag.NewFlagSet("migrate-message-archive", flag.ContinueOnError)
 	flags.SetOutput(ioDiscard{})
 	var cfg options
-	flags.StringVar(&cfg.mode, "mode", "inspect", "inspect|dry-run|apply|reconcile|re-resolve")
-	flags.StringVar(&cfg.snapshot, "snapshot", "", "path to an offline normalized archive snapshot")
+	flags.StringVar(&cfg.mode, "mode", "inspect", "extract|inspect|dry-run|apply|reconcile|re-resolve")
+	flags.StringVar(&cfg.snapshot, "snapshot", "", "0600 path to an offline normalized archive snapshot")
+	flags.StringVar(&cfg.sourceDatabaseURLFile, "source-database-url-file", "", "0600 file containing the read-only legacy PostgreSQL URL for extract")
+	flags.StringVar(&cfg.sourceRevision, "source-revision", "", "40-character frozen legacy source revision for extract")
+	flags.StringVar(&cfg.corpID, "wecom-corp-id", "", "WeCom corp ID for extract")
 	flags.StringVar(&cfg.digest, "manifest-sha256", "", "exact snapshot SHA-256 required for apply and reconcile")
 	flags.BoolVar(&cfg.confirm, "confirm-apply", false, "confirm the exact snapshot for apply")
 	flags.IntVar(&cfg.limit, "limit", 500, "bounded re-resolve participant count")
 	flags.Int64Var(&cfg.afterParticipantID, "after-participant-id", 0, "exclusive participant ID cursor for re-resolve")
-	if err := flags.Parse(args); err != nil || cfg.snapshot == "" || cfg.limit < 1 || cfg.limit > 5000 || cfg.afterParticipantID < 0 {
+	if err := flags.Parse(args); err != nil || cfg.limit < 1 || cfg.limit > 5000 || cfg.afterParticipantID < 0 {
+		return errInvalidArguments
+	}
+	if cfg.mode == "extract" {
+		manifest, err := extractLegacyArchiveSnapshot(ctx, cfg)
+		if err != nil {
+			return err
+		}
+		if err = saveArchiveSnapshot(cfg.snapshot, manifest); err != nil {
+			return err
+		}
+		persisted, err := archivemigration.Load(cfg.snapshot)
+		if err != nil {
+			return err
+		}
+		return printJSON(map[string]any{"mode": "extract", "manifest_sha256": hex.EncodeToString(persisted.Digest[:]), "source_name": persisted.SourceName, "summary": persisted.Summary(), "source_behavior": "read_only_legacy_snapshot"})
+	}
+	if cfg.snapshot == "" {
 		return errInvalidArguments
 	}
 	manifest, err := archivemigration.Load(cfg.snapshot)

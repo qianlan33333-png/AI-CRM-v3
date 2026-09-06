@@ -28,8 +28,8 @@ External Effects: no new effect writer. Every business command reaches its exist
 ## Archive historical compatibility facts
 
 - Donor chat reads used the archived row's `unionid` and its row/raw-payload `group_name`; neither is reconstructed from current Identity or a group directory.
-- 0098 adds one Archive-owned row per retained message when the imported source contains either fact. It carries no second message stream and is read only by the already authorized external chat projection.
-- `migrate-message-archive` includes those values in the source-row digest, receipt/replay comparison, target equivalence check, and reconcile path. A source conflict is quarantined; a stored projection mutation makes reconcile fail. Source rows without either field intentionally return empty fields.
+- 0098 adds one Archive-owned row per retained message when the imported source contains either fact. Its `TEXT` columns are protected by Archive table ownership and the existing authorized Archive read boundary; they are not represented as field-level ciphertext. It carries no second message stream.
+- `migrate-message-archive extract` reads donor `archived_messages` only in an explicit repeatable-read, read-only transaction, maps row `unionid` and row/raw-payload `group_name`, then writes a `0600` offline manifest. Import includes those values in the source-row digest, receipt/replay comparison, target equivalence check, and reconcile path. A source conflict is quarantined; a stored projection mutation makes reconcile fail. Source rows without either field intentionally return empty fields.
 
 ## Security invariants
 

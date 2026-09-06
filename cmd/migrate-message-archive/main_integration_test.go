@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -113,6 +114,156 @@ func TestMessageArchiveMigrationDryRunApplyReplayResolveAndReconcilePostgreSQL(t
 	if _, reconcileErr := reconcile(ctx, native, manifest); !errors.Is(reconcileErr, errReconcileDrift) {
 		t.Fatalf("content drift reconcile=%v", reconcileErr)
 	}
+}
+
+func TestMessageArchiveExtractLegacyRowsPreservesHistoricalProjectionAndReplaysPostgreSQL(t *testing.T) {
+	target, cleanupTarget := archiveMigrationIntegrationPool(t)
+	defer cleanupTarget()
+	source, cleanupSource, sourceURL := archiveLegacySourcePool(t)
+	defer cleanupSource()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := source.Exec(ctx, `
+		CREATE TABLE archived_messages (
+			id BIGINT PRIMARY KEY,
+			seq BIGINT NOT NULL,
+			msgid TEXT NOT NULL,
+			unionid TEXT,
+			group_name TEXT,
+			raw_payload TEXT NOT NULL
+		)`); err != nil {
+		t.Fatal(err)
+	}
+	rawFallback := `{"msgid":"legacy-raw-group","from":"staff-one","tolist":["wm_known"],"roomid":"room-raw","msgtype":"text","msgtime":1788336000,"text":{"content":"raw group"},"group_name":"Raw payload group"}`
+	rowPreferred := `{"msgid":"legacy-row-group","from":"staff-one","tolist":["wm_known"],"roomid":"room-row","msgtype":"text","msgtime":1788336060,"text":{"content":"row group"},"group_name":"Raw group must not win"}`
+	if _, err := source.Exec(ctx, `INSERT INTO archived_messages(id,seq,msgid,unionid,group_name,raw_payload) VALUES
+		(11,1,'legacy-raw-group','union-raw','',$1),
+		(12,2,'legacy-row-group','union-row','Row column group',$2)`, rawFallback, rowPreferred); err != nil {
+		t.Fatal(err)
+	}
+
+	directory := t.TempDir()
+	sourceURLPath, snapshotPath := filepath.Join(directory, "legacy-source.url"), filepath.Join(directory, "archive-snapshot.json")
+	if err := os.WriteFile(sourceURLPath, []byte(sourceURL+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	revision := "dd8d60dd8ddb983aca2ec88cc9e65a9f7563f79f"
+	if err := run(ctx, []string{"-mode", "extract", "-snapshot", snapshotPath, "-source-database-url-file", sourceURLPath, "-source-revision", revision, "-wecom-corp-id", "wx-archive-integration"}); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Lstat(snapshotPath)
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0o600 {
+		t.Fatalf("snapshot info=%v err=%v", info, err)
+	}
+	manifest, err := archivemigration.Load(snapshotPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.SourceName != "ai-crm:archived_messages:"+revision || len(manifest.Records) != 2 || manifest.Records[0].HistoricalUnionID != "union-raw" || manifest.Records[0].HistoricalGroupName != "Raw payload group" || manifest.Records[1].HistoricalUnionID != "union-row" || manifest.Records[1].HistoricalGroupName != "Row column group" {
+		t.Fatalf("extracted manifest=%+v", manifest)
+	}
+	var sourceRows int
+	if err = source.QueryRow(ctx, `SELECT count(*) FROM archived_messages`).Scan(&sourceRows); err != nil || sourceRows != 2 {
+		t.Fatalf("source rows=%d err=%v", sourceRows, err)
+	}
+
+	native := target.Native()
+	if err = seedArchiveMigrationIdentity(ctx, native, "wm_known"); err != nil {
+		t.Fatal(err)
+	}
+	resolver := newHistoricalResolver(manifest)
+	dry, err := dryRun(ctx, native, manifest, resolver)
+	if err != nil || dry.Inserted != 2 || dry.Unresolved != 0 {
+		t.Fatalf("dry run=%+v err=%v", dry, err)
+	}
+	assertArchiveMigrationCounts(t, ctx, native, 0, 0, 0)
+	applied, err := apply(ctx, native, manifest, resolver)
+	if err != nil || applied.Inserted != 2 || applied.Duplicates != 0 {
+		t.Fatalf("apply=%+v err=%v", applied, err)
+	}
+	replayed, err := apply(ctx, native, manifest, resolver)
+	if err != nil || replayed.Duplicates != 2 || replayed.Inserted != 0 {
+		t.Fatalf("replay=%+v err=%v", replayed, err)
+	}
+	if matched, reconcileErr := reconcile(ctx, native, manifest); reconcileErr != nil || !matched {
+		t.Fatalf("verify/reconcile matched=%t err=%v", matched, reconcileErr)
+	}
+	for msgID, expected := range map[string][2]string{
+		"legacy-raw-group": {"union-raw", "Raw payload group"},
+		"legacy-row-group": {"union-row", "Row column group"},
+	} {
+		var gotUnion, gotGroup string
+		if err = native.QueryRow(ctx, `SELECT legacy.historical_unionid,legacy.historical_group_name FROM message_archive_legacy_projections legacy JOIN message_archive_messages message ON message.id=legacy.message_id WHERE message.msgid=$1`, msgID).Scan(&gotUnion, &gotGroup); err != nil || gotUnion != expected[0] || gotGroup != expected[1] {
+			t.Fatalf("projection msgid=%s union=%q group=%q err=%v", msgID, gotUnion, gotGroup, err)
+		}
+	}
+}
+
+func archiveLegacySourcePool(t *testing.T) (*pgxpool.Pool, func(), string) {
+	t.Helper()
+	databaseURL, err := platformconfig.DatabaseURL()
+	if err != nil {
+		t.Skip("AICRM_DATABASE_URL is not configured; skipping PostgreSQL integration test")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	config, err := pgxpool.ParseConfig(databaseURL)
+	if err != nil {
+		t.Fatal("parse AICRM_DATABASE_URL")
+	}
+	admin, err := pgxpool.NewWithConfig(ctx, config.Copy())
+	if err != nil {
+		t.Fatal("open PostgreSQL integration database")
+	}
+	random := make([]byte, 8)
+	if _, err = rand.Read(random); err != nil {
+		admin.Close()
+		t.Fatal(err)
+	}
+	schema := "aicrm_legacy_archive_source_" + hex.EncodeToString(random)
+	if _, err = admin.Exec(ctx, "CREATE SCHEMA "+pgx.Identifier{schema}.Sanitize()); err != nil {
+		admin.Close()
+		t.Fatal("create legacy archive source schema")
+	}
+	sourceURL := sourceURLForSchema(t, databaseURL, schema)
+	sourceConfig, err := pgxpool.ParseConfig(sourceURL)
+	if err != nil {
+		_, _ = admin.Exec(ctx, "DROP SCHEMA "+pgx.Identifier{schema}.Sanitize()+" CASCADE")
+		admin.Close()
+		t.Fatal(err)
+	}
+	source, err := pgxpool.NewWithConfig(ctx, sourceConfig)
+	if err != nil {
+		_, _ = admin.Exec(ctx, "DROP SCHEMA "+pgx.Identifier{schema}.Sanitize()+" CASCADE")
+		admin.Close()
+		t.Fatal("open legacy archive source schema")
+	}
+	var currentSchema string
+	if err = source.QueryRow(ctx, "SELECT current_schema()").Scan(&currentSchema); err != nil || currentSchema != schema {
+		source.Close()
+		_, _ = admin.Exec(ctx, "DROP SCHEMA "+pgx.Identifier{schema}.Sanitize()+" CASCADE")
+		admin.Close()
+		t.Fatalf("source search_path=%q err=%v", currentSchema, err)
+	}
+	return source, func() {
+		source.Close()
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, _ = admin.Exec(cleanupCtx, "DROP SCHEMA "+pgx.Identifier{schema}.Sanitize()+" CASCADE")
+		admin.Close()
+	}, sourceURL
+}
+
+func sourceURLForSchema(t *testing.T, databaseURL, schema string) string {
+	t.Helper()
+	parsed, err := url.Parse(databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	query := parsed.Query()
+	query.Set("options", "-c search_path="+schema)
+	parsed.RawQuery = query.Encode()
+	return parsed.String()
 }
 
 func archiveMigrationManifest(t *testing.T) archivemigration.Manifest {

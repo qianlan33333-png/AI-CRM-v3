@@ -18,6 +18,8 @@ SDK 不提交仓库。Linux CI 从企业微信官方 [91774 文档所列下载�
 
 ## 历史导入
 
-`cmd/migrate-message-archive` 只接受显式离线快照（`aicrm-message-archive-history-v1`），不会连接旧库、启动 SDK 拉取或推进正常通知 cursor。它提供 `inspect`、`dry-run`、`apply`、`reconcile` 与受操作员显式调用、有限额的 `re-resolve`；`apply` 要求快照 SHA-256 和 `--confirm-apply`。`dry-run` 会在隔离 PostgreSQL 事务执行与 `apply` 相同的目标冲突、OneID/Access 只读查询、消息与 receipt 写入逻辑，再整体回滚并返回逐源行预计结果。
+`cmd/migrate-message-archive` 的 `extract` 只能由操作员显式执行：它从非符号链接、权限 `0600` 的 `--source-database-url-file` 打开旧 PostgreSQL，在 `REPEATABLE READ READ ONLY` 事务内读取 `archived_messages(id, seq, msgid, unionid, raw_payload)`。它将 `unionid` 原样映射为 `historical_unionid`，先取可选行字段 `group_name`，缺失时取 `raw_payload.group_name`；不会启动 SDK、推进正常通知 cursor 或调用 Provider。提取要求冻结的 `--source-revision` 与 `--wecom-corp-id`，并以独占创建的 `0600` 文件写出显式离线快照（`aicrm-message-archive-history-v1`）。
+
+其余模式只读取该离线快照：`inspect`、`dry-run`、`apply`、`reconcile` 与受操作员显式调用、有限额的 `re-resolve`；`apply` 要求快照 SHA-256 和 `--confirm-apply`。`dry-run` 会在隔离 PostgreSQL 事务执行与 `apply` 相同的目标冲突、OneID/Access 只读查询、消息与 receipt 写入逻辑，再整体回滚并返回逐源行预计结果。
 
 历史行从不构造 `VerifiedFact`，不会 Provision Customer、写 OneID 身份或合并根。导入及后续 `re-resolve` 仅以参与者已归档的原始值查询 Identity 的既有 `VerifiedWeComCustomer` 和 Access 的既有员工读取 Port；唯一已验证事实可关联至已有 Customer，未找到保持 unresolved，既有 conflict 不被此工具猜测或覆盖。每次后续尝试记为 archive-owned `message_archive_resolution_attempts`，没有后台轮询。每个源行都有独立 receipt；`reconcile` 逐项校验源行 digest、msgid、seq、receipt 结果桶、目标消息、参与者和媒体事实，缺 receipt、内容篡改或冲突都会失败。
