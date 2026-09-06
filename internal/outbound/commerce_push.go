@@ -1126,10 +1126,14 @@ func legacyCommercePushProviderFacts(effectState *string, responseStatus *int) (
 		// The legacy kernel explicitly records that dispatch began but leaves the
 		// call/result outcome unresolved.
 		return &trueValue, nil, nil
-	case "simulated", "blocked", "cancelled":
-		// These terminal states are explicit no-call outcomes in the old effect
-		// adapter; preserving false is safe and more precise than unknown.
+	case "simulated":
+		// V2 records simulated work without entering its Provider adapter.
 		return &falseValue, &falseValue, &falseValue
+	case "blocked", "cancelled":
+		// A blocked policy may follow a prior retryable send and V2 permits
+		// cancellation from failed_retryable. Their final state therefore cannot
+		// prove that no Provider call happened.
+		return nil, nil, nil
 	default:
 		return nil, nil, nil
 	}

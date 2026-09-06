@@ -48,7 +48,7 @@ func TestCommerceExternalPushHistoryCLIExtractApplyReplayVerifyAndDriftPostgreSQ
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(s.Configs) != 1 || len(s.Deliveries) != 2 || len(s.Outbox) != 1 || s.Configs[0].Secret != "legacy-secret" || s.Deliveries[0].EffectState == nil || *s.Deliveries[0].EffectState != "succeeded" || s.Deliveries[1].EffectState == nil || *s.Deliveries[1].EffectState != "simulated" || s.Deliveries[1].ResponseStatus != nil || s.Deliveries[1].AttemptCount != 1 {
+	if len(s.Configs) != 1 || len(s.Deliveries) != 3 || len(s.Outbox) != 1 || s.Configs[0].Secret != "legacy-secret" || s.Deliveries[0].EffectState == nil || *s.Deliveries[0].EffectState != "succeeded" || s.Deliveries[1].EffectState == nil || *s.Deliveries[1].EffectState != "simulated" || s.Deliveries[1].ResponseStatus != nil || s.Deliveries[1].AttemptCount != 1 || s.Deliveries[2].EffectState == nil || *s.Deliveries[2].EffectState != "cancelled" || s.Deliveries[2].ResponseStatus != nil || s.Deliveries[2].AttemptCount != 1 {
 		t.Fatalf("sealed source extraction did not preserve source facts: %#v", s)
 	}
 	want := hex.EncodeToString(digest[:])
@@ -154,13 +154,13 @@ func TestCommerceExternalPushHistoryCLIExtractApplyReplayVerifyAndDriftPostgreSQ
 		t.Fatalf("second snapshot apply: %v", err)
 	}
 	var allBatches, sourceRows, members int
-	if err = target.QueryRow(ctx, `SELECT (SELECT count(*) FROM outbound_commerce_push_history_batches),(SELECT count(*) FROM outbound_commerce_push_history_rows),(SELECT count(*) FROM outbound_commerce_push_history_batch_rows)`).Scan(&allBatches, &sourceRows, &members); err != nil || allBatches != 2 || sourceRows != 7 || members != 11 {
+	if err = target.QueryRow(ctx, `SELECT (SELECT count(*) FROM outbound_commerce_push_history_batches),(SELECT count(*) FROM outbound_commerce_push_history_rows),(SELECT count(*) FROM outbound_commerce_push_history_batch_rows)`).Scan(&allBatches, &sourceRows, &members); err != nil || allBatches != 2 || sourceRows != 8 || members != 13 {
 		t.Fatalf("overlap batches/source_rows/members=%d/%d/%d err=%v", allBatches, sourceRows, members, err)
 	}
 	if err = run(ctx, apply2); err != nil {
 		t.Fatalf("second snapshot replay: %v", err)
 	}
-	if err = target.QueryRow(ctx, `SELECT count(*) FROM outbound_commerce_push_history_rows`).Scan(&sourceRows); err != nil || sourceRows != 7 {
+	if err = target.QueryRow(ctx, `SELECT count(*) FROM outbound_commerce_push_history_rows`).Scan(&sourceRows); err != nil || sourceRows != 8 {
 		t.Fatalf("second replay duplicated source rows=%d err=%v", sourceRows, err)
 	}
 	assertCommercePushHistoryNoEffects(t, ctx, target)
@@ -270,6 +270,9 @@ func seedCommercePushHistorySource(t *testing.T, ctx context.Context, source *pg
 	t.Helper()
 	at := time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC)
 	_, err := source.Exec(ctx, `INSERT INTO external_push_config VALUES(1,'product','101','transaction.paid',TRUE,'https://legacy.example/push?source=v2','member_open',NULL,30,1,'old remark','{"count":9007199254740993}'::jsonb,'legacy-secret','old-admin','new-admin',$1,$2); INSERT INTO external_push_delivery VALUES(2,1,'transaction.paid','delivery-old-2','product','101',44,101,'success',2,'https://legacy.example/push?source=v2','{"X-AICRM-Signature":"redacted"}'::jsonb,'{"phone_number":"sensitive"}'::jsonb,200,'accepted','',NULL,$1,$2); INSERT INTO external_push_delivery VALUES(5,1,'transaction.paid','delivery-old-simulated-5','product','101',46,101,'skipped',1,'https://legacy.example/push?source=v2','{}'::jsonb,'{}'::jsonb,NULL,'','',NULL,$1,$2); INSERT INTO domain_event_outbox VALUES(3,'transaction.paid','wechat_pay_order','44','{"order":"sensitive"}'::jsonb,'success',1,NULL,$1,$2); INSERT INTO external_effect_job VALUES(4,'external_push_delivery','delivery-old-2','webhook.order_paid.push','succeeded'); INSERT INTO external_effect_job VALUES(6,'external_push_delivery','delivery-old-simulated-5','webhook.order_paid.push','simulated')`, at, at.Add(2*time.Minute))
+	if _, err = source.Exec(ctx, `INSERT INTO external_push_delivery VALUES(7,1,'transaction.paid','delivery-old-retryable-cancelled-7','product','101',47,101,'skipped',1,'https://legacy.example/push?source=v2','{}'::jsonb,'{}'::jsonb,NULL,'','',NULL,$1,$2); INSERT INTO external_effect_job VALUES(8,'external_push_delivery','delivery-old-retryable-cancelled-7','webhook.order_paid.push','cancelled')`, at, at.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -290,7 +293,7 @@ func assertCommercePushHistoryLedger(t *testing.T, ctx context.Context, pool *pg
 	if err := pool.QueryRow(ctx, `SELECT input_count,imported_count,pending_count,excluded_count,status FROM outbound_commerce_push_history_batches`).Scan(&input, &imported, &pending, &excluded, &status); err != nil {
 		t.Fatal(err)
 	}
-	if input != 4 || imported != 3 || pending != 0 || excluded != 1 || status != want {
+	if input != 5 || imported != 4 || pending != 0 || excluded != 1 || status != want {
 		t.Fatalf("history conservation input/imported/pending/excluded/status=%d/%d/%d/%d/%s", input, imported, pending, excluded, status)
 	}
 	var configTarget, deliveryTarget *int64
@@ -315,6 +318,18 @@ func assertCommercePushHistoryLedger(t *testing.T, ctx context.Context, pool *pg
 	}
 	if simulatedAttempts != 1 || simulatedEffectState != "simulated" || simulatedStatus != nil {
 		t.Fatalf("simulated delivery source evidence attempts/state/status=%d/%q/%v", simulatedAttempts, simulatedEffectState, simulatedStatus)
+	}
+	// The old effect runtime permits failed_retryable -> cancelled. Retaining
+	// that terminal record preserves a real ambiguity instead of inventing a
+	// no-call fact from the final state or attempt counter.
+	var cancelledAttempts int
+	var cancelledEffectState string
+	var cancelledStatus *int
+	if err := pool.QueryRow(ctx, `SELECT source_attempt_count,COALESCE(source_effect_state,''),source_response_status FROM outbound_commerce_push_history_rows WHERE source_kind='delivery' AND source_delivery_id='delivery-old-retryable-cancelled-7'`).Scan(&cancelledAttempts, &cancelledEffectState, &cancelledStatus); err != nil {
+		t.Fatal(err)
+	}
+	if cancelledAttempts != 1 || cancelledEffectState != "cancelled" || cancelledStatus != nil {
+		t.Fatalf("cancelled retryable source evidence attempts/state/status=%d/%q/%v", cancelledAttempts, cancelledEffectState, cancelledStatus)
 	}
 }
 
