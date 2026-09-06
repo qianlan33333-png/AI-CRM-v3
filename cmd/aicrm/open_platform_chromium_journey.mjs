@@ -80,6 +80,15 @@ async function waitForResource(resources, pathname, message) {
   }
   throw new Error(message);
 }
+async function waitForRequestFinished(finishedRequests, requestID, message) {
+  for (let attempt = 0; attempt < 180; attempt += 1) {
+    const result = finishedRequests.get(requestID);
+    if (result === "finished") return;
+    if (result === "failed") throw new Error(message);
+    await delay(50);
+  }
+  throw new Error(message);
+}
 async function activationFailureCategory(cdp, response) {
   const known = new Set(["authentication_required", "invalid_request", "open_platform_request_failed"]);
   try {
@@ -135,17 +144,23 @@ try {
   });
   await cdp.call("Fetch.enable", { handleAuthRequests: true });
   progress("browser_ready");
-  const resources = new Map(); const requests = new Map(); const exceptions = [];
+  const resources = new Map(); const requests = new Map(); const finishedRequests = new Map(); const exceptions = [];
+  let selectedDetailRequests = 0;
   cdp.on("Network.requestWillBeSent", (params) => {
     try {
       const requestID=String(params.requestId || "");
       const method=String(params.request?.method || "");
       const pathname=new URL(String(params.request?.url || "")).pathname;
       requests.set(requestID, { method, pathname });
-      if (method === "GET" && pathname === "/api/admin/open-platform/clients/browser-open-empty-cidr-probe") resources.set(`GET:${pathname}`, { requestID, status: 0 });
+      if (method === "GET" && pathname === "/api/admin/open-platform/clients/browser-open-empty-cidr-probe") {
+        selectedDetailRequests += 1;
+        resources.set(`GET:${pathname}:${selectedDetailRequests}`, { requestID, status: 0 });
+      }
     } catch (_) {}
   });
   cdp.on("Runtime.exceptionThrown", (params) => { const detail = params.exceptionDetails || {}; const kind = String(detail.exception?.className || detail.text || "runtime_exception").replace(/[^a-zA-Z0-9_.-]/g, "_").slice(0, 96); if (exceptions.length < 8) exceptions.push(kind); });
+  cdp.on("Network.loadingFinished", (params) => { finishedRequests.set(String(params.requestId || ""), "finished"); });
+  cdp.on("Network.loadingFailed", (params) => { finishedRequests.set(String(params.requestId || ""), "failed"); });
   cdp.on("Network.responseReceived", (params) => { try {
     const pathname = new URL(String(params.response?.url || "")).pathname;
     const status = Number(params.response?.status) || 0;
@@ -167,9 +182,15 @@ try {
   // create form during that gap would let a real administrator type into a DOM
   // node that the eventual detail render replaces.
   const delayedDetailPath = "GET:/api/admin/open-platform/clients/browser-open-empty-cidr-probe";
-  await waitForResource(resources, delayedDetailPath, "selected caller detail request did not begin");
+  const firstDetailRequest = await waitForResource(resources, `${delayedDetailPath}:1`, "selected caller detail request did not begin");
   const createDuringDetail = await evaluate(cdp, "Boolean(document.querySelector('[data-open-platform-create=\"client_id\"]'))");
   if (createDuringDetail) throw new Error("Open Platform create form was writable before selected detail completed");
+  // Re-read the same selected caller while its first response is delayed. The
+  // fixture returns the second response first, exercising an actual stale
+  // completion rather than a different-client selection path.
+  if (!await evaluate(cdp, "Boolean([...document.querySelectorAll('[data-open-platform-action]')].find(node => node.dataset.openPlatformAction === '刷新'))")) throw new Error("Open Platform refresh action was unavailable during detail load");
+  await evaluate(cdp, "[...document.querySelectorAll('[data-open-platform-action]')].find(node => node.dataset.openPlatformAction === '刷新').click(); true");
+  await waitForResource(resources, `${delayedDetailPath}:2`, "same caller detail refresh did not begin");
   // Wait for the settled detail and catalog controls together; a later render
   // must never replace a form between filling it and its create action.
   const authenticatedHostReady = `(() => {
@@ -196,6 +217,16 @@ try {
     document.querySelector('input[name="create-capability"][value="platform.capabilities.read"]').checked=true;
     return true;
   })()`);
+  const releaseFirstDetail = await evaluate(cdp, "Promise.race([fetch('/__test__/release-open-platform-first-detail',{method:'POST'}).then(response=>({status:response.status})),new Promise(resolve=>setTimeout(()=>resolve({timeout:true,status:0}),8000))])");
+  if (releaseFirstDetail?.timeout || releaseFirstDetail?.status !== 204) throw new Error(`first selected detail release status=${releaseFirstDetail?.status || 0}`);
+  await waitForRequestFinished(finishedRequests, firstDetailRequest.requestID, "first selected detail did not finish after its explicit release");
+  // A pair of animation frames ensures the Host receives the completed fetch
+  // continuation and has a render opportunity. This is event-driven rather
+  // than a fixed delay: the assertion is only meaningful after the stale
+  // response actually arrived.
+  await evaluate(cdp, "new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+  const preservedCreateForm = await evaluate(cdp, "(() => ({client_id:document.querySelector('[data-open-platform-create=\"client_id\"]')?.value || '',display_name:document.querySelector('[data-open-platform-create=\"display_name\"]')?.value || ''}))()");
+  if (preservedCreateForm.client_id !== "browser-open-agent" || preservedCreateForm.display_name !== "Browser Open Agent") throw new Error("stale selected detail replaced a ready create form");
   const createPath = "POST:/api/admin/open-platform/clients";
   resources.delete(createPath);
   if (!await click("创建并显示一次密钥")) throw new Error("create action was unavailable");

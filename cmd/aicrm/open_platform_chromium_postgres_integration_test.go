@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	goruntime "runtime"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -181,9 +183,30 @@ func newOpenPlatformChromiumFixture(t *testing.T) *openPlatformChromiumFixture {
 	// request is outstanding. Delay only the browser server's probe detail read;
 	// the direct preflight above remains the ordinary Composition contract.
 	const selectedDetailPath = "/api/admin/open-platform/clients/browser-open-empty-cidr-probe"
+	const releaseFirstDetailPath = "/__test__/release-open-platform-first-detail"
+	var selectedDetailReads atomic.Int32
+	firstDetailRelease := make(chan struct{})
+	var releaseFirstDetail sync.Once
+	// This must run before the earlier server.Close cleanup: an interrupted
+	// browser journey may leave the first delayed request waiting on the test
+	// control channel, and httptest.Server.Close waits for that handler.
+	t.Cleanup(func() { releaseFirstDetail.Do(func() { close(firstDetailRelease) }) })
 	server.Config.Handler = http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.Method == http.MethodGet && request.URL.Path == selectedDetailPath {
-			time.Sleep(250 * time.Millisecond)
+		if request.Method == http.MethodPost && request.URL.Path == releaseFirstDetailPath {
+			releaseFirstDetail.Do(func() { close(firstDetailRelease) })
+			writer.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if request.Method == http.MethodGet && request.URL.Path == selectedDetailPath && selectedDetailReads.Add(1) == 1 {
+			// The browser deliberately refreshes this same selected caller.
+			// Keep only the first detail request pending until the script has
+			// filled the settled second form, then explicitly release it. This
+			// makes the stale response ordering deterministic without delays.
+			select {
+			case <-firstDetailRelease:
+			case <-request.Context().Done():
+				return
+			}
 		}
 		application.handler.ServeHTTP(writer, request)
 	})

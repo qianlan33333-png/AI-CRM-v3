@@ -278,6 +278,7 @@ async function boot(): Promise<void> {
   // create controls out of the DOM until it settles so a refresh cannot erase
   // values an administrator has already entered.
   let selectedClientLoading = false;
+  let selectedLoadEpoch = 0;
   let clients: ClientSummary[] = [];
   let catalog: OperationDescriptor[] = [];
   let issued: IssuedSecret | null = null;
@@ -291,6 +292,7 @@ async function boot(): Promise<void> {
 
   const loadSelected = async (): Promise<void> => {
     const clientID = selectedID;
+    const loadEpoch = ++selectedLoadEpoch;
     selectedClient = undefined;
     if (!clientID) {
       selectedClientLoading = false;
@@ -301,12 +303,13 @@ async function boot(): Promise<void> {
     render();
     try {
       const detail = await request<{ client: ClientSummary }>(`/api/admin/open-platform/clients/${encodeURIComponent(clientID)}`);
-      if (selectedID !== clientID) return;
+      if (loadEpoch !== selectedLoadEpoch || selectedID !== clientID) return;
       selectedClient = detail.client;
     } catch {
-      if (selectedID !== clientID) return;
+      if (loadEpoch !== selectedLoadEpoch || selectedID !== clientID) return;
       selectedClient = undefined;
     }
+    if (loadEpoch !== selectedLoadEpoch || selectedID !== clientID) return;
     selectedClientLoading = false;
     render();
   };
