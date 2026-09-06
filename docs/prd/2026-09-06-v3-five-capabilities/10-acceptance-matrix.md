@@ -5,7 +5,7 @@
 | 板块 | PRD | 当前实现证据 | 完整板块 PR / 最新已知 HEAD | 根审核与剩余项 |
 |---|---|---|---|---|
 | 负责人迁移 | 01 已批准 | 旧流程/真实PG/恢复/协议/历史专项通过，Linux Chrome收口中 | #171 `96b79b8b2182a93b9ce0f52b82d4dbb01f9bef8a` | 9ee88d1实际失败为excel_scope_select动态JS语法；新HEAD加入所有动态表达式编译预检及真实文件导入，待该HEAD完整Linux CI，不标为通过 |
-| 通用客户标签 | 02 已批准 | 根PG/race、历史/101恢复/协议、真实Chromium与全CI通过 | #169 `6f4b63c53c000cbc1c523ece78a9fec37147b735` 已合并 | main8ec5072于13:01 UTC再次核实线上ready；代码已部署，客户通用标签Provider开关未启用，真实业务验收未进行 |
+| 通用客户标签 | 02 已批准 | 根PG/race、历史/101恢复/协议、真实Chromium与全CI通过 | #169 `6f4b63c53c000cbc1c523ece78a9fec37147b735` 已合并 | main8ec5072于13:01 UTC再次核实线上ready；代码已部署，13:23 UTC通用标签开关已启用并核实API/Worker实际加载；真实业务验收未进行 |
 | 配置中心运行生效 | 05 已批准 | 根PG/race、实际消费者/历史/制品、真实Chrome及CI通过 | #170 `07b0af371db7a97620924a34ee5975a74c775d39` 已合并 | 已随5494537及后续main8ec上线；生产业务配置发布与真实消费者业务验收另记 |
 | 商品／订单外推 | 04 已批准 | paid完整链路、历史CLI、协议已根PG/race验证，真实Chrome收口中 | #172 `0fd897ea5b84482055338673850134cab21cb377` | 0fd修复缺构建制品导致503；Linux CI34035483933继续发现browser configuration save did not finish，已派定点修复；未批准整板块 |
 | 通用开放平台 | 03及03a 已批准 | 冻结56条method/path，逐个接现有领域Port | #173 远端`ba0155a16d366889573697a12dbd05e50e12d776`，本地`d7e9ba28402191bed1a2d9e5dfb0722d87c10c74` | 4接通/4部分/48待迁移；根发现旧存档raw_payload wrapper与新extract不兼容，已退回修复并要求真实旧样例；Segment机器actor、Survey历史投影及其余路由继续 |
