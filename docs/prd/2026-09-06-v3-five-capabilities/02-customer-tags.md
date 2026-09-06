@@ -44,3 +44,14 @@ Provider默认disabled，测试Provider与真实企微验收分开，local accep
 ## 首次派发后的接口细化（2026-09-06 根审核批准）
 
 第二真实调用方固定为Channel entry_tag（现有Automation无可用标签动作）。只迁新接受命令，旧KindChannelEntryTag任务继续原路径；欢迎语快路径不改。以旧callback/action稳定source检查旧新幂等，不能同一入客双发。Channel行动行、Customer命令与EER必须同一个transaction；tag_id由Tag Port验证，不由Channel自报。
+
+## 冻结供体复用清单（本次确认收口）
+
+旧仓 https://github.com/qianlan33333-png/AI-CRM，提交 `dd8d60dd8ddb983aca2ec88cc9e65a9f7563f79f`。下表与总控最新规则共同生效；已有V3实现优先复用，实际完成状态以验收矩阵当前HEAD为准。
+
+| 分类 | 冻结依据/复用对象 | 收口要求 |
+|---|---|---|
+| 原样复用 | crm/customer_tags 的mark/unmark字段与载荷样例；既有客户详情/标签选择/失败提示 | 保留原用户语义，不重新设计标签产品 |
+| Go 等价迁移 | 授权、合法跟进员工、客户标签赋值/移除、结果与旧历史 | 当前Customer命令和outbound链继续收口 |
+| V3 已有 | 标签目录、Identity/Access/WeCom Port、客户列表Host、River/EER和渠道入客链 | 客户页与渠道调用同一受控命令，分别保留来源启用开关 |
+| 待补齐 | 真实装配的来源开关矩阵、101客户停止/恢复、真实浏览器结果回读及完整CI | 批量操作为用户明确要求；最小范围选择/确认/结果适配，不另造新目录 |

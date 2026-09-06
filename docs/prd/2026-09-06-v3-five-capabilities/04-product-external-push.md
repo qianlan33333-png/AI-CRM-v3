@@ -54,3 +54,20 @@ HTTPS仅受控登记目标：禁止credentials/fragment/非HTTPS/非法端口、
 - P06 页面真实accepted/attempted/响应/unknown显示，disabled不伪成功；真实Provider验收单列生产待办。
 
 付款人/受益人字段映射细化：复用Order现有PayerCustomerID和BeneficiaryCustomerID。旧支付开通会员业务的顶层phone_number从受益人可信电话快照产生（与Order服务权益开通对象一致）；buyer对象从付款人可信scoped身份产生，不将两人拼成一个身份。旧自购场景二者相同，字段兼容；代付fixture明确断言顶层服务对象不因付款人不同而错开权益。缺可信所需字段按已定pending/拒绝规则，不从metadata猜测。
+
+## 实际装配协议再核对（2026-09-06）
+
+供体 `platform/external_push/service.py:212-274` 仅按事件区分协议：`external_push.test` 才使用 synthetic + custom_params；所有 `transaction.paid` 保持同一顶层phone_number/type/day/frequency/questionnaire_title以及order/product/buyer结构，不因ordinary/service_period另创支付推送协议。根曾按商品类型推断不同paid协议，已由实际源码纠正；实现不得采用该推断。
+
+实际支付调用链 `extensions/commerce/commerce/external_push_admin.py:329-346` 在shared helper结果追加 `transaction`（transaction_id/trade_state/success_time），有outbox时追加 `domain_event_outbox_id`；须对照实际装配冻结完整字段fixture。V3使用自身已验证支付事实和原生outbox标识，不伪造旧ID。paid_amount按旧payer_total优先、amount_total回退的实有事实承接；禁止将商品标价冒充折后/实付订单金额。
+
+## 冻结供体复用清单（本次确认收口）
+
+旧仓 https://github.com/qianlan33333-png/AI-CRM，提交 `dd8d60dd8ddb983aca2ec88cc9e65a9f7563f79f`。下表与总控最新规则共同生效；已有V3实现优先复用，实际完成状态以验收矩阵当前HEAD为准。
+
+| 分类 | 冻结依据/复用对象 | 收口要求 |
+|---|---|---|
+| 原样复用 | external_push_outbox.py、external_push_admin.py、platform/external_push/的实际组合载荷/HMAC样例；商品配置/测试/投递记录页面 | 普通和周期商品paid形状相同；synthetic才使用custom_params |
+| Go 等价迁移 | 已支付事实规划、冻结投递、实际HTTPS、结果/失败处理及历史记录 | 沿用#172现有实现；保留实际transaction与domain_event_outbox_id字段语义 |
+| V3 已有 | Product配置、Payment验签/Order结算、OneID稳定Port、现有EER/River/安全HTTPS | 支付只补现有已验证事实的必要Port传递，不重建支付或优惠券 |
+| 待补齐 | 协议纠正、既有TS目标兼容、历史导入/投递记录/真实浏览器完整链和审核 | 密钥URL以受控引用适配是必要差异；不得以新paid协议代替旧协议 |

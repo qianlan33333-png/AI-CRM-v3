@@ -52,3 +52,14 @@ local_only 分段 UoW 同时 CAS关系/结果/收据/审计/Outbox。Provider �
 受理与本地交接的精确语义：旧application.py:985-1056以transfer_customer逐客户明确errcode=0作为更新本地CRM的条件，不等待24小时最终接替。V3以经过精确客户/冻结摘要核验的Provider受理证据触发一次本地CAS，显示“本地已交接、企微已受理、最终接替待回查”。transfer_result和后续关系观察单独回读，不能把本地更新拖延到最终接替，也不能把最终观察伪称即时成功。
 
 批量协议必须等价：旧 application.py:1014-1016 默认每100个客户一次transfer_customer。River每段100条但仍每客户一次Provider调用不构成这项恢复。冻结协议子批范围及逻辑效果ID，逐客户明确结果分别落账，丢行/未知不重发整个已可能执行的批次；不增加新执行框架。
+
+## 冻结供体复用清单（本次确认收口）
+
+旧仓 https://github.com/qianlan33333-png/AI-CRM，提交 `dd8d60dd8ddb983aca2ec88cc9e65a9f7563f79f`。下表与总控最新规则共同生效；已有V3实现优先复用，实际完成状态以验收矩阵当前HEAD为准。
+
+| 分类 | 冻结依据/复用对象 | 收口要求 |
+|---|---|---|
+| 原样复用 | dd8d60d 的 owner_migration.html：原/目标负责人选择、话术、企微转接开关、全部/Excel范围、预览、确认、逐行结果和导出 | 当前 Host 是新的数字 ID/作用域表单，不能标为旧页面已复用；应接回旧字段和操作顺序 |
+| Go 等价迁移 | crm/owner_migration 的预览冻结、两模式、100人子批转接、结果读取和历史；稳定身份/UoW通过V3适配 | 已有后端继续收口，不推翻批处理/历史成果 |
+| V3 已有 | Access员工映射、OneID解析、jobqueue/EER/outbound、冻结前端文件解析器及现有客户入口 | 复用对应稳定 Port；作用域由可信配置提供 |
+| 待补齐 | 当前准确HEAD真实Chrome失败、完整员工选择/文件范围旧旅程、执行后页面结果 | O01以实际本地负责人改变及Provider fixture结果回读验收，不能只检查accepted |

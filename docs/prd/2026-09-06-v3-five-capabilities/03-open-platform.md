@@ -75,3 +75,14 @@ Client管理同事务状态/版本/审计/幂等；轮换安全返回一次凭�
 ## 补充核查（首次派发前冻结）
 
 旧main.py:120确实注入ai_audience_e2e_runner_factory，不能援引fallback503声称旧能力不存在。其默认gate关闭、指定测试对象、显式确认与最大真实发送次数约束必须保留；本轮仅在隔离测试Provider验证，不使用旧硬编码真实对象进行发送。运营周期/AI计划/群广播/完整人群包机器接口按03a清单逐项承接现有业务，不扩展新产品。
+
+## 冻结供体复用清单（本次确认收口）
+
+旧仓 https://github.com/qianlan33333-png/AI-CRM，提交 `dd8d60dd8ddb983aca2ec88cc9e65a9f7563f79f`。下表与总控最新规则共同生效；已有V3实现优先复用，实际完成状态以验收矩阵当前HEAD为准。
+
+| 分类 | 冻结依据/复用对象 | 收口要求 |
+|---|---|---|
+| 原样复用 | integration_gateway/mcp.py、mcp_tool_catalog.py 的协议/工具样例；admin_config/api_clients.py、Direct API Key相关页面的字段与顺序 | 复用实际旧契约，前端经Host/Adapter接入 |
+| Go 等价迁移 | 调用方/Key/Token生命周期、授权、MCP发现/调用和03a冻结56条method/path | 同一个完整板块PR；不能以只读工具或少数API代替全部约定 |
+| V3 已有 | Access会话/RBAC、客户/会话/AI等业务稳定Port、现有Go路由和OneID | 机器主体不伪装超级管理员，业务写复用既有事务和执行链 |
+| 待补齐 | 通用机器凭据实际校验、运行装配、旧页面适配、历史停用导入和完整协议/PG/浏览器证据 | 不新增任意SQL查询平台，不迁旧运行依赖；尚未有完整PR |

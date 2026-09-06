@@ -60,3 +60,14 @@ Config拥有草稿/不可变版本/active指针/校验与使用观测/发布收�
 ## 必要基线修复：并发 AI 回执聚合（2026-09-06）
 
 文档PR166的基线CI与独立PG均复现：同一AI计划的两条effect completion并发时，旧聚合快照可将存在outcome_unknown的计划覆盖回dispatching。属于配置消费者联合回归的既有正确性缺陷，不是新功能。由当前Config执行者在AI Owner内提交独立修复commit：按既有一致锁顺序锁plan后更新/汇总recipient与binding，同一UoW保存；不得延长超时代替修复或把unknown视作成功。新增并发PG反例，原TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL必须通过。根已按独立准确HEAD审核并合并#167，共用修复继续与五板块PR分开记录；自动部署结果见验收矩阵。
+
+## 冻结供体复用清单（本次确认收口）
+
+旧仓 https://github.com/qianlan33333-png/AI-CRM，提交 `dd8d60dd8ddb983aca2ec88cc9e65a9f7563f79f`。下表与总控最新规则共同生效；已有V3实现优先复用，实际完成状态以验收矩阵当前HEAD为准。
+
+| 分类 | 冻结依据/复用对象 | 收口要求 |
+|---|---|---|
+| 原样复用 | admin_config/config_releases.py及发布列表/新建/详情页面的字段和操作顺序 | 发布/回滚交互对应旧流程；已交付Host必要差异按下述范围记录，不声称所有旧键可激活 |
+| Go 等价迁移 | 草稿/校验/不可变发布版本/CAS/回滚/历史 | #170已完成代码验收并合并；不为本次规则重写已验收实现 |
+| V3 已有 | Config事务/收据/审计，Automation真实消费者和任务冻结配置语义 | 只接实际存在的max_recipients_per_run消费者 |
+| 待补齐 | 生产业务配置发布、实际运行观测和历史生产导入 | 属生产待办；旧键无等价消费者保留excluded/no_v3_runtime_equivalence，不称开发已覆盖运行生效 |
