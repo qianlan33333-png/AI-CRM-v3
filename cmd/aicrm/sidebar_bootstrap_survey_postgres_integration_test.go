@@ -117,7 +117,7 @@ func seedSidebarBootstrapSurveySubmissions(ctx context.Context, application *com
 		result_snapshot,submitted_at,created_at
 	) SELECT $1,$2,1,1,'resolved',
 		decode(lpad(to_hex(series),64,'0'),'hex'),decode(lpad(to_hex(series + 1024),64,'0'),'hex'),
-		'sidebar-bootstrap-count','Sidebar bootstrap count','survey','{}'::jsonb,$3 - make_interval(secs => series),$3
+		'sidebar-bootstrap-count','Sidebar bootstrap count','survey','{}'::jsonb,$3::timestamptz - make_interval(secs => series),$3::timestamptz
 	FROM generate_series(1,102) AS series`, questionnaireID, versionID, now)
 	return err
 }

@@ -23,6 +23,9 @@ const entryPoints = {
   // protocol adapter is V3-owned because the current Sidebar Owner exposes
   // narrower trusted DTOs than the donor-generated client.
   sidebarHost: path.join(repository, 'web', 'v3', 'sidebar', 'main.ts'),
+  // The Open Platform catalog and caller lifecycle are V3-owned. The frozen
+  // document only provides the authenticated admin shell around this Host.
+  openPlatformHost: path.join(repository, 'web', 'v3', 'openPlatformAdapter.ts'),
 };
 const result = await build({
   entryPoints,
@@ -76,7 +79,7 @@ for (const name of Object.keys(entryPoints)) {
   const entry = entries.get(name);
   if (!entry) throw new Error(`${name} adapter entry was not emitted`);
   manifest.entries[name] = entry;
-  if (name === 'aiAssistantHost' || name === 'sidebarHost' || name === 'customerHost') continue;
+  if (name === 'aiAssistantHost' || name === 'sidebarHost' || name === 'customerHost' || name === 'openPlatformHost') continue;
   const donorMain = manifest.files[entry].imports.find((item) => item.kind === 'dynamic-import' && manifest.files[item.path]?.inputs?.includes('web/src/admin/main.ts'))?.path;
   const donorLegacy = donorMain && manifest.files[donorMain].imports.find((item) => item.kind === 'dynamic-import' && manifest.files[item.path]?.inputs?.includes('web/src/admin/legacy.ts'))?.path;
   if (!donorMain || !donorLegacy) throw new Error(`${name} must start the frozen donor main -> legacy runtime`);
@@ -96,6 +99,21 @@ for (const documentName of ['customers.html', 'customerDetail.html']) {
   fs.writeFileSync(documentPath, documentHTML);
   manifest.release_files[`admin/${documentName}`] = metadataFor(Buffer.from(documentHTML));
 }
+
+const openPlatformHost = manifest.entries.openPlatformHost;
+if (typeof openPlatformHost !== 'string') throw new Error('Open Platform Host entry is absent from manifest');
+const openPlatformReference = `../${openPlatformHost}`;
+const openPlatformDocument = path.join(dist, 'admin', 'apidocs.html');
+let openPlatformHTML = fs.readFileSync(openPlatformDocument, 'utf8');
+if (!openPlatformHTML.includes(frozenAdminReference)) throw new Error('apidocs.html does not reference the declared frozen admin entry');
+if (openPlatformHTML.includes(openPlatformReference)) throw new Error('apidocs.html already contains the Open Platform Host');
+// This page formerly mounted the retired 56-route document. Keep its frozen
+// static shell but replace that runtime with the V3 Host, so the legacy module
+// cannot race the Host or render an obsolete API catalog before access control
+// data arrives.
+openPlatformHTML = openPlatformHTML.replace(frozenAdminReference, `<script type="module" src="${openPlatformReference}"></script>`);
+fs.writeFileSync(openPlatformDocument, openPlatformHTML);
+manifest.release_files['admin/apidocs.html'] = metadataFor(Buffer.from(openPlatformHTML));
 
 const sidebarHost = manifest.entries.sidebarHost;
 const frozenSidebar = manifest.entries.sidebar;

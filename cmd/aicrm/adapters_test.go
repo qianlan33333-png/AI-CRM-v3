@@ -49,6 +49,36 @@ func (directUnitOfWork) Within(ctx context.Context, callback func(context.Contex
 	return callback(ctx)
 }
 
+func TestMountOpenPlatformUIUsesAuthenticatedV3Host(t *testing.T) {
+	authentication := &fakeAccessAuthentication{principal: accessdomain.Principal{Kind: accessdomain.KindAdmin, InternalID: 7, Roles: []accessdomain.Role{accessdomain.RoleSuperAdmin}}, err: accessdomain.ErrAuthentication}
+	fallback := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) { _, _ = writer.Write([]byte("fallback")) })
+	host := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) { _, _ = writer.Write([]byte("open-platform-host")) })
+	handler := mountOpenPlatformUI(fallback, host, authentication)
+
+	request := httptest.NewRequest(http.MethodGet, "/admin/api-docs", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/login?next=%2Fadmin%2Fapi-docs" {
+		t.Fatalf("unauthenticated status=%d location=%q", response.Code, response.Header().Get("Location"))
+	}
+
+	authentication.err = nil
+	request = httptest.NewRequest(http.MethodGet, "/admin/apidocs.html?client=fixture", nil)
+	request.AddCookie(&http.Cookie{Name: accesshttp.SessionCookieName, Value: "valid"})
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || response.Body.String() != "open-platform-host" || authentication.session != "valid" {
+		t.Fatalf("v3 host status=%d body=%q session=%q", response.Code, response.Body.String(), authentication.session)
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/admin/config", nil)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || response.Body.String() != "fallback" {
+		t.Fatalf("unrelated route status=%d body=%q", response.Code, response.Body.String())
+	}
+}
+
 func TestAllowedOAuthRedirectsIncludesHiddenExternalEffectsPage(t *testing.T) {
 	if _, ok := allowedOAuthRedirects()["/admin/external-effects"]; !ok {
 		t.Fatal("external effects page is not an allowed OAuth redirect")

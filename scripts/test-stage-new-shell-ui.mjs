@@ -15,7 +15,7 @@ const stagedManifest = readManifest(stage);
 const entryKeys = [
   'admin', 'tokens', 'labs',
   'operationCyclesHost', 'productHost', 'channelCenterHost', 'aiAssistantHost',
-  'customerHost', 'sidebarHost', 'sidebarStyles',
+  'customerHost', 'sidebarHost', 'openPlatformHost', 'sidebarStyles',
 ];
 const selected = new Set();
 const includeClosure = (relative) => {
@@ -43,6 +43,15 @@ for (const page of adminPages) {
   assert.deepEqual(stagedManifest.release_files?.[relative], sourceManifest.release_files?.[relative], `staged release metadata drifted for ${relative}`);
   assert.ok(fs.readFileSync(path.join(stage, relative)).equals(fs.readFileSync(path.join(source, relative))), `staged admin document drifted for ${relative}`);
 }
+
+const openPlatformEntry = sourceManifest.entries?.openPlatformHost;
+const frozenAdminEntry = sourceManifest.entries?.admin;
+assert.equal(typeof openPlatformEntry, 'string', 'Open Platform Host entry is absent from the source manifest');
+assert.equal(typeof frozenAdminEntry, 'string', 'frozen admin entry is absent from the source manifest');
+const openPlatformHTML = fs.readFileSync(path.join(stage, 'admin', 'apidocs.html'), 'utf8');
+assert.match(openPlatformHTML, new RegExp(`<script type=\"module\" src=\"\.\./${openPlatformEntry.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\"></script>`), 'Open Platform document does not load the V3 Host');
+assert.ok(!openPlatformHTML.includes(`../${frozenAdminEntry}`), 'Open Platform document still starts the retired frozen API-document runtime');
+
 assert.deepEqual(stagedManifest.release_files?.['sidebar/index.html'], sourceManifest.release_files?.['sidebar/index.html'], 'staged release metadata omits sidebar/index.html');
 assert.ok(fs.readFileSync(path.join(stage, 'sidebar', 'index.html')).equals(fs.readFileSync(path.join(source, 'sidebar', 'index.html'))), 'staged sidebar document drifted');
 assert.equal(stagedManifest.entries?.h5, sourceManifest.entries?.h5, 'previous Survey stage was removed');
@@ -73,14 +82,17 @@ try {
   execFileSync(process.execPath, [path.join(repository, 'scripts/stage-pr01-effects-ui.mjs'), fixtureSource, fixtureStage], { stdio: 'pipe' });
   execFileSync(process.execPath, [path.join(repository, 'scripts/stage-survey-ui.mjs'), fixtureSource, fixtureStage], { stdio: 'pipe' });
   const before = fs.readFileSync(path.join(fixtureStage, 'asset-manifest.json'));
-  const missing = sourceManifest.entries?.customerHost;
-  assert.equal(typeof missing, 'string', 'customer Host entry must be declared before staging');
-  assert.ok(selected.has(missing), 'customer Host must be included in the staged recursive closure');
-  fs.rmSync(path.join(fixtureSource, missing));
-  const rejected = spawnSync(process.execPath, [path.join(repository, 'scripts/stage-new-shell-ui.mjs'), fixtureSource, fixtureStage], { encoding: 'utf8' });
-  assert.notEqual(rejected.status, 0, 'new shell stage accepted a missing customer Host asset');
-  assert.match(`${rejected.stdout}\n${rejected.stderr}`, /expected source release file is absent/, 'new shell stage did not report the missing artifact safely');
-  assert.ok(fs.readFileSync(path.join(fixtureStage, 'asset-manifest.json')).equals(before), 'missing source asset mutated the existing release stage');
+  for (const [entryKey, label] of [['customerHost', 'customer Host'], ['openPlatformHost', 'Open Platform Host']]) {
+    const missing = sourceManifest.entries?.[entryKey];
+    assert.equal(typeof missing, 'string', `${label} entry must be declared before staging`);
+    assert.ok(selected.has(missing), `${label} must be included in the staged recursive closure`);
+    fs.rmSync(path.join(fixtureSource, missing));
+    const rejected = spawnSync(process.execPath, [path.join(repository, 'scripts/stage-new-shell-ui.mjs'), fixtureSource, fixtureStage], { encoding: 'utf8' });
+    assert.notEqual(rejected.status, 0, `new shell stage accepted a missing ${label} asset`);
+    assert.match(`${rejected.stdout}\n${rejected.stderr}`, /expected source release file is absent/, `new shell stage did not report the missing ${label} artifact safely`);
+    assert.ok(fs.readFileSync(path.join(fixtureStage, 'asset-manifest.json')).equals(before), `missing ${label} asset mutated the existing release stage`);
+    fs.copyFileSync(path.join(source, missing), path.join(fixtureSource, missing));
+  }
 } finally {
   fs.rmSync(sandbox, { recursive: true, force: true });
 }

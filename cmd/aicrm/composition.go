@@ -1382,6 +1382,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
+	handler = mountOpenPlatformUI(handler, shellHandler, authentication)
 	handler = mountMemberGridUI(handler, memberGridUI)
 	handler, err = mountSegmentAPI(handler, segmentBindings.Audience)
 	if err != nil {
@@ -1472,6 +1473,27 @@ func mountSurveyAPIs(mux *http.ServeMux, survey http.Handler, tagHandlers ...htt
 	// legacy page-shaped path. Keep it inside the authenticated admin mux so the
 	// response is JSON from Survey instead of the outer mux's plain-text 404.
 	mux.Handle("/admin/questionnaires/", survey)
+}
+
+// mountOpenPlatformUI replaces only the retired API-docs presentation with the
+// V3-owned caller-management Host. The Access-owned Open Platform APIs stay
+// mounted by their own module; this shell adapter neither grants permissions
+// nor stores credentials. Keeping the outer route here prevents Config's
+// frozen document binding from claiming the page before the Host is loaded.
+func mountOpenPlatformUI(next, ui http.Handler, authentication accessAuthentication) http.Handler {
+	if next == nil || ui == nil || authentication == nil {
+		return http.NotFoundHandler()
+	}
+	protected := requireAdminSession(authentication, ui)
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/admin/api-docs", "/admin/apidocs.html":
+			protected.ServeHTTP(writer, request)
+			return
+		default:
+			next.ServeHTTP(writer, request)
+		}
+	})
 }
 
 func mountHXCUI(next, dashboardUI http.Handler, authentication accessAuthentication) http.Handler {

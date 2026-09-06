@@ -27,6 +27,8 @@ import (
 var distAdminAliases = map[string]string{
 	"/admin/index.html":      "index.html",
 	"/admin/owner-migration": "ownerMig.html",
+	// The V3 Open Platform Host mounts inside this frozen admin document.
+	"/admin/api-docs": "apidocs.html",
 	// Operation cycles (frozen host bundle retired).
 	"/admin/operation-cycles":                   "cycles.html",
 	"/admin/operation-cycles/cycles.html":       "cycles.html",

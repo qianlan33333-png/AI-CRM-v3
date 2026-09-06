@@ -141,6 +141,7 @@ func TestDistSidebarReplacesLegacyWorkbench(t *testing.T) {
 func TestDistAdminPageNameMapping(t *testing.T) {
 	for path, expected := range map[string]string{
 		"/admin/owner-migration":                    "ownerMig.html",
+		"/admin/api-docs":                           "apidocs.html",
 		"/admin/funnel.html":                        "funnel.html",
 		"/admin/operation-cycles":                   "cycles.html",
 		"/admin/channels/new":                       "channelForm.html",
