@@ -33,6 +33,8 @@ const legacyOwnerFileCSV = [
 ].join("\n");
 const uploadLegacyFileExpression = () => `(() => { const root=document.querySelector("[data-owner-handoff-host] [data-owner-migration-page]"); const input=root.querySelector("[data-import-file]"); const csv=${JSON.stringify(legacyOwnerFileCSV)}; const files=new DataTransfer(); files.items.add(new File([csv], "legacy-owner-list.xls", {type:"text/csv"})); Object.defineProperty(input,"files",{configurable:true,value:files.files}); root.querySelector("[data-upload-file]").click(); return true; })()`;
 const selectExcelScopeExpression = () => `(() => { document.querySelector('[data-owner-handoff-host] [data-scope-segment="excel_include"]').click(); return true; })()`;
+const downloadBlockedRowsExpression = () => `document.querySelector("[data-owner-handoff-host] [data-download-errors]").click(); true`;
+const downloadResultRowsExpression = () => `document.querySelector("[data-owner-handoff-host] [data-download-result]").click(); true`;
 const operationMemberSelector = userID => `[data-operation-member-row][data-user-id=${JSON.stringify(userID)}]`;
 const operationMemberPresentExpression = userID => `Boolean(document.querySelector(${JSON.stringify(operationMemberSelector(userID))}))`;
 const operationMemberChooseExpression = userID => `document.querySelector(${JSON.stringify(`${operationMemberSelector(userID)} [data-operation-member-row-select]`)}).click(); true`;
@@ -81,14 +83,14 @@ const preflightRuntimeExpressions = () => [
   `(() => { const root=document.querySelector('[data-owner-handoff-host] [data-owner-migration-page]'); const wecom=root.querySelector('[data-include-wecom-transfer]'); wecom.checked=true; wecom.dispatchEvent(new Event('change',{bubbles:true})); root.querySelector('[data-preview]').click(); return true; })()`,
   `Boolean(document.querySelector('[data-owner-handoff-host] [data-preview-content]:not([hidden])'))`,
   `(() => { const text=document.querySelector('[data-owner-handoff-host] [data-preview-rows]').textContent; return ["browser-external","duplicate","missing_external_userid","invalid_move_flag","skipped_by_file","not_under_source_owner"].every(value => text.includes(value)); })()`,
-  `document.querySelector('[data-owner-handoff-host] [data-download-errors]').click(); true`,
+  downloadBlockedRowsExpression(),
   `document.querySelector('[data-owner-handoff-host] [data-confirm-phrase-display]').textContent`,
   `(() => { const root=document.querySelector('[data-owner-handoff-host] [data-owner-migration-page]'); const input=root.querySelector('[data-confirm-phrase-input]'); input.value=${JSON.stringify("确认迁移")}; input.dispatchEvent(new Event('input',{bubbles:true})); root.querySelector('[data-execute]').click(); return true; })()`,
   `document.querySelector('[data-owner-handoff-host] [data-execution-log]').textContent.includes('batch_id=')`,
   ownerHandoffBatchStateExpression(),
   `document.querySelector('[data-owner-handoff-host] [data-read-transfer-result]').click(); true`,
   `document.querySelector('[data-owner-handoff-host] [data-execution-log]').textContent.includes('transfer_status=1')`,
-  `document.querySelector('[data-owner-handoff-host] [data-download-result]').click(); true`,
+  downloadResultRowsExpression(),
   `Boolean(document.querySelector('[data-owner-handoff-host] [data-owner-migration-page]'))`,
 ];
 if (process.env.AICRM_OWNER_HANDOFF_TEST_COMPILE_ONLY === "1") {
@@ -222,7 +224,7 @@ try {
     await waitFor("Boolean(document.querySelector('[data-owner-handoff-host] [data-preview-content]:not([hidden])'))",`${mode} preview was not persisted through actual HTTP API`);
     if (scope === "excel_include") {
       await waitFor(`(() => { const text=document.querySelector("[data-owner-handoff-host] [data-preview-rows]").textContent; return ["browser-external","duplicate","missing_external_userid","invalid_move_flag","skipped_by_file","not_under_source_owner"].every(value => text.includes(value)); })()`, "Excel preview lost donor row states or fields");
-      await readDownloadedWorkbook("owner_migration_blocked_rows.xlsx", ["行号", "external_userid", "状态", "原因", "duplicate", "missing_external_userid", "invalid_move_flag", "not_under_source_owner"], () => evaluate(`document.querySelector("[data-owner-handoff-host] [data-download-errors]").click(); true`, "blocked_rows_download"));
+      await readDownloadedWorkbook("owner_migration_blocked_rows.xlsx", ["行号", "external_userid", "状态", "原因", "duplicate", "missing_external_userid", "invalid_move_flag", "not_under_source_owner"], () => evaluate(downloadBlockedRowsExpression(), "blocked_rows_download"));
     }
     const phrase=await evaluate("document.querySelector('[data-owner-handoff-host] [data-confirm-phrase-display]').textContent");
     await evaluate(`(() => { const root=document.querySelector('[data-owner-handoff-host] [data-owner-migration-page]'); const input=root.querySelector('[data-confirm-phrase-input]'); input.value=${JSON.stringify(phrase)}; input.dispatchEvent(new Event('input',{bubbles:true})); root.querySelector('[data-execute]').click(); return true; })()`);
@@ -247,8 +249,8 @@ try {
         throw new Error(`transfer-result readback did not render final status ${JSON.stringify(diagnostic)}`);
       }
     }
-    await evaluate(`document.querySelector("[data-owner-handoff-host] [data-download-result]").click(); true`);
-    await readDownloadedWorkbook("owner_migration_result.xlsx", ["行号", "external_userid", "迁移状态", "企微转接状态", mode === "wecom_then_crm" ? "browser-external" : "本地迁移", mode === "wecom_then_crm" ? "企微转接已完成" : "本地迁移"]);
+    await readDownloadedWorkbook("owner_migration_result.xlsx", ["行号", "external_userid", "迁移状态", "企微转接状态", mode === "wecom_then_crm" ? "browser-external" : "本地迁移", mode === "wecom_then_crm" ? "企微转接已完成" : "本地迁移"], () =>
+      evaluate(downloadResultRowsExpression(), "result_rows_download"));
   };
   if (requestedMode === "local_only") {
     await run("local_only");
