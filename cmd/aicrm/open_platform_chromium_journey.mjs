@@ -62,6 +62,13 @@ async function waitFor(cdp, expression, message) {
   }
   throw new Error(message);
 }
+async function waitForResource(resources, pathname, message) {
+  for (let attempt = 0; attempt < 180; attempt += 1) {
+    if (resources.has(pathname)) return resources.get(pathname);
+    await delay(50);
+  }
+  throw new Error(message);
+}
 const navigation = (cdp, message) => cdp.nextEvent("Page.frameNavigated", (params) => Boolean(params.frame && !params.frame.parentId), 8000, message);
 async function browserExit(child) {
   if (!child || child.exitCode !== null || child.signalCode !== null) return;
@@ -87,7 +94,13 @@ try {
   await cdp.call("Page.enable"); await cdp.call("Runtime.enable"); await cdp.call("Network.enable");
   const resources = new Map(); const exceptions = [];
   cdp.on("Runtime.exceptionThrown", (params) => { const detail = params.exceptionDetails || {}; const kind = String(detail.exception?.className || detail.text || "runtime_exception").replace(/[^a-zA-Z0-9_.-]/g, "_").slice(0, 96); if (exceptions.length < 8) exceptions.push(kind); });
-  cdp.on("Network.responseReceived", (params) => { try { const pathname = new URL(String(params.response?.url || "")).pathname; if (pathname.startsWith("/assets/")) resources.set("/assets/", Number(params.response?.status) || 0); if (pathname === "/api/admin/open-platform/clients" || pathname === "/api/admin/open-platform/routes") resources.set(pathname, Number(params.response?.status) || 0); } catch (_) {} });
+  cdp.on("Network.responseReceived", (params) => { try {
+    const pathname = new URL(String(params.response?.url || "")).pathname;
+    const status = Number(params.response?.status) || 0;
+    if (pathname.startsWith("/assets/")) resources.set("/assets/", status);
+    if (pathname === "/api/admin/open-platform/clients" || pathname === "/api/admin/open-platform/routes") resources.set(pathname, status);
+    if (pathname.startsWith("/api/admin/open-platform/clients/browser-open-agent/")) resources.set(pathname, status);
+  } catch (_) {} });
 
   await cdp.call("Page.navigate", { url: `${baseURL}/login?next=%2Fadmin%2Fapidocs.html` });
   await waitFor(cdp, "Boolean(document.querySelector('form[action=\"/login\"] input[name=\"login_csrf_token\"]'))", "login shell did not render");
@@ -118,8 +131,12 @@ try {
   const restCatalog = (token) => evaluate(cdp, `fetch('/open/v1/capabilities',{headers:{Authorization:'Bearer '+${JSON.stringify(token)}}}).then(async(response)=>({status:response.status,body:await response.json().catch(()=>null)}))`);
   const mcpCatalog = (token) => evaluate(cdp, `fetch('/mcp',{method:'POST',headers:{Authorization:'Bearer '+${JSON.stringify(token)},'Content-Type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:'browser-catalog',method:'tools/list',params:{}})}).then(async(response)=>({status:response.status,body:await response.json().catch(()=>null)}))`);
 
+  const firstActivationPath = "/api/admin/open-platform/clients/browser-open-agent/activate";
+  resources.delete(firstActivationPath);
   if (!await click("我已手动复制并确认启用")) throw new Error("manual credential confirmation was unavailable");
-  await waitFor(cdp, "document.querySelector('[data-open-platform-client=\"browser-open-agent\"]')?.textContent.includes('已启用')", "manual confirmation did not activate the caller");
+  const firstActivationStatus = await waitForResource(resources, firstActivationPath, "manual confirmation did not issue an activation request");
+  if (firstActivationStatus !== 200) throw new Error(`manual confirmation activation status=${firstActivationStatus}`);
+  await waitFor(cdp, "document.querySelector('[data-open-platform-client=\"browser-open-agent\"]')?.textContent.includes('已启用')", "activation succeeded but the caller Host did not refresh as enabled");
   const firstOAuth = await oauth(firstSecret); const firstToken = firstOAuth?.body?.access_token;
   if (firstOAuth?.status !== 200 || typeof firstToken !== "string" || !firstToken) throw new Error("OAuth did not issue an activated token");
   const firstCatalog = await restCatalog(firstToken); const firstOperations = firstCatalog?.body?.data?.operations;
@@ -142,8 +159,12 @@ try {
   if ((await oauth(firstSecret))?.status === 200) throw new Error("rotation left the old credential usable");
   const rotated = await evaluate(cdp, "fetch('/api/admin/open-platform/clients/browser-open-agent',{credentials:'same-origin'}).then(async(response)=>({status:response.status,body:await response.json().catch(()=>null)}))");
   if (rotated?.status !== 200 || rotated?.body?.client?.enabled !== false) throw new Error("rotation did not return the caller to disabled handoff state");
+  const secondActivationPath = "/api/admin/open-platform/clients/browser-open-agent/activate";
+  resources.delete(secondActivationPath);
   if (!await click("我已手动复制并确认启用")) throw new Error("rotated credential confirmation was unavailable");
-  await waitFor(cdp, "document.querySelector('[data-open-platform-client=\"browser-open-agent\"]')?.textContent.includes('已启用')", "rotated credential confirmation did not activate the caller");
+  const secondActivationStatus = await waitForResource(resources, secondActivationPath, "rotated credential confirmation did not issue an activation request");
+  if (secondActivationStatus !== 200) throw new Error(`rotated credential confirmation activation status=${secondActivationStatus}`);
+  await waitFor(cdp, "document.querySelector('[data-open-platform-client=\"browser-open-agent\"]')?.textContent.includes('已启用')", "rotated activation succeeded but the caller Host did not refresh as enabled");
   const secondOAuth = await oauth(secondSecret); const secondToken = secondOAuth?.body?.access_token;
   if (secondOAuth?.status !== 200 || typeof secondToken !== "string") throw new Error("rotated credential did not issue an OAuth token");
 
