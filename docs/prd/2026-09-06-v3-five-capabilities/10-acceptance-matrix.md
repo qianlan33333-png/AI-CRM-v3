@@ -1,17 +1,17 @@
 # 五项验收与审核矩阵
 
-基线50b86c8，更新2026-09-06。只按证据更新，不把计划/派发当完成。
+最新状态：2026-09-06 20:24 UTC。主线与生产均为 5291366b9742030957f48ebf7464a040a3ab46db；下表为当前状态，下文带时间记录为历史证据。实现、测试、审核、合并、部署和真实业务验收分别记录。
 
 开放平台权威范围更新（用户最新明确指令）：#173采用03-open-platform.md与ADR0010定义的V3原生最小方案。旧56路由清单只保留历史，不再作为开发、审核、上线条件；未列V1旧路径不挂载并返回标准404。保留已验证Access/OAuth2/grant/CIDR/audit/MCP/OneID/history/machine actor基础，REST /open/v1与MCP /mcp共享六个Operation处理器。
 
-| 板块 | PRD | 当前实现证据 | 完整板块 PR / 最新已知 HEAD | 根审核与剩余项 |
-|---|---|---|---|---|
-| 负责人迁移 | 01 已批准 | 旧流程/PG/恢复/协议/历史通过，实际Composition修正后Linux Chrome收口 | #171 `7772d013398c36a92b7cb684a536ea4b34cfb882` | 88b实际失败为provider line retryable_failed，已定位Provider直连需事务的Store；c95改现有Customer UoW Adapter，777新增真实HTTP→River→Provider→Owner更新测试；等待准确HEAD完整CI |
-| 通用客户标签 | 02 已批准 | 根PG/race、历史/101恢复/协议、真实Chromium与全CI通过 | #169 `6f4b63c53c000cbc1c523ece78a9fec37147b735` 已合并 | main8ec5072于13:01 UTC再次核实线上ready；代码已部署，13:23 UTC通用标签开关已启用并核实API/Worker实际加载；真实业务验收未进行 |
-| 配置中心运行生效 | 05 已批准 | 根PG/race、实际消费者/历史/制品、真实Chrome及CI通过 | #170 `07b0af371db7a97620924a34ee5975a74c775d39` 已合并 | 已随5494537及后续main8ec上线；生产业务配置发布与真实消费者业务验收另记 |
-| 商品／订单外推 | 04 已批准 | paid、expiry、配置CAS、历史与协议根PG/race通过，真实Chrome收口 | #172 `ff8e51a1b19de83d3e78b8986e38ece150e2c8ad` | 普通商品保存/重载/测试投递已推进，当前周期商品Host未呈现；另已发现main旧保存收据摘要升级兼容缺陷，要求真实PG升级重放修复；未批准整板块 |
-| 通用开放平台 | 03原生V1及ADR0010已批准；03a仅历史 | 保留现有API Client/OAuth2/grant/CIDR/audit/MCP/OneID/history/machine actor | #173远端ba0155a（已刷新核实），本地e221801e55b206dac89ad0324cad4d4d7a3a2cf7；执行者正在推送当前成果 | 仅审6Operation；活动message/survey/radar/order稳定Port、AI待审阅计划/状态、REST/MCP一致、旧path404和PR164管理Journey；56旧路由停止派工和验收 |
-| 新前端壳 | 12 已批准 | 沿用原PR164工作，在独立clone合入main8ec | #164 远端`c8819d7a9b837c00116682e860310717e5f94b20`，本地a96b162 | 现有远端CI在donor manifest失败；待修正确V3适配归属、完整制品、模块Host路由、侧边栏CSP/素材可见性，最终组合浏览器和部署待验收 |
+| 板块 | PRD | 准确实现 HEAD / PR | 测试与审核 | 合并 / 部署 / 运行状态 | 仍需区分的验收 |
+|---|---|---|---|---|---|
+| 负责人迁移 | 01 | #171 `1077d3a9e570d35dbfa5700a96cff33da6b6c69a` | 完整 CI、真实 PG/race、Linux Chromium及根审核通过 | 已合并并部署5291366；32,411条历史已对账 | 4,084历史待映射；真实企微转接未执行 |
+| 通用客户标签 | 02 | #169 `6f4b63c53c000cbc1c523ece78a9fec37147b735` | 完整板块验收及根审核通过 | 已合并部署，通用Provider已启用；305历史已对账 | 115历史待映射；真实客户mark/unmark未执行 |
+| 配置运行生效 | 05 | #170 `07b0af371db7a97620924a34ee5975a74c775d39` | 真实消费者、PG/race、Chrome、CI及根审核通过 | 已合并部署；运行值仍revision0/environment_default/max_recipients1 | 8旧历史因无等价关系保留excluded；未发布新的生产业务值 |
+| 商品／订单外推 | 04 | #172 `c031ca5604e13f58d71038f8adee6b3bd7e44ac8` | 真实PG/并发/恢复/协议/Chrome、完整CI及根审核通过 | 已合并部署；800历史已对账；24配置保存、9启用、Provider已生效 | 7配置/3投递历史待映射；真实新订单投递未触发验收；#175已撤回关闭 |
+| 通用开放平台 | 03及ADR0010 | #173 `f8c2a0f2bd59695210e530e2f7a516c90fb40591` | 六项V1真实PG/REST/MCP/race、完整CI34049122474及根审核通过；与新壳组合四Browser/全CI34050470805通过 | 已合并部署5291366，运行参数生效；真实HTTPS OAuth/REST/MCP生命周期通过；17客户端/14审计已导入对账 | 12客户端disabled/reissue_required、5因授权不适用排除；未恢复旧凭据 |
+| 新前端壳 | 12 | #164 `cf0130536c5160fe5929cd592f343b09a88942c9` | 完整CI34054695213/check101544336738、全部Linux Chromium及race通过，根审核通过 | 19:45:32 UTC squash合并为main5291366b；原installer/run1018部署通过；main check101547594868成功 | 生产30页面/284资源及六操作目录通过；CI Chromium与生产HTTP资源证据分开，真实企微WebView业务另验 |
 
 共用验收：完整路由/Composition、冻结供体复用、PG原子性/并发/重启、身份权限、未知结果、历史零新效果。各PR需链接实际日志/测试/浏览器证据，跳过与Mock明确标识。
 
@@ -20,9 +20,9 @@
 按用户最新要求，整板块验收通过后独立合并；不再以总集成 PR 为交付单位。#168 停止接收业务 HEAD，已关闭并保留阶段记录。它此前只纳入文档及共用修复，没有五项业务实现需撤回。
 
 - 共用修复 #167，准确 HEAD `cbac1f6bdb2b868985c577ba0cff11482430a19e`：完整 CI、根独立真实 PostgreSQL race 测试与审核通过。已独立 squash 合并 main：`53c1c62e7db7924b979aa11fd8345d969fadf4ec`，既有自动部署已成功，生产readyz核对到53c1c62；不代表五板块生产业务验收。
-- 配置中心 #170、客户标签 #169 整板块代码验收已完成并独立合并；其余三项仍未完成，单项证据通过不填为整板块完成。
+- 五个板块现均已独立合并；各自部署、运行配置和真实业务验收以上表为准。PR164已独立审核合并并随最终5291366制品上线。
 - 每个板块合并前记录最终准确 HEAD、真实 PG/浏览器/协议/历史证据、CI及 review 结论；合并与既有部署流水线结果另外记录。
-- 生产状态分别记录：标签通用Provider开关已于13:23 UTC启用并核实加载；配置发布、真实转接/打标/外推、生产历史导入尚未执行，不能由合并状态推导。
+- 生产状态分别记录：标签与外推Provider已启用；五板块历史已对账；Open运行参数及正常HTTPS协议验收通过。未执行真实转接/打标/新订单外推，也未发布新配置值。
 
 历史导入、真实消费者、浏览器操作、Provider协议及整体CI必须分别验收；局部通过不覆盖待办。
 
@@ -210,3 +210,27 @@ main05045c645f95d269b624771ceb215713e3300f59的Linux check job101518074524已成
 外推旧源manifest c8c20c8c1ef30bb19296eb01a7274a39c8997fb4b27375d3818d9bb8b784fbce已用当前发布的迁移器apply并verify：800输入=406 imported+10 pending+384 excluded。生产SQL逐项回读：24配置/382投递已关联，7配置/3投递product_mapping_unavailable，384旧domain_event_outbox以legacy_domain_event_not_replayed保留排除事实；live commerce intent及commerce_product_push effect均0。
 
 运行配置受保护准备文件为 `/var/tmp/aicrm-push-history-20260906T150000Z/runtime-prepared.json`，24配置、9原启用、7排除项、9受控目标；payload key已生成并封存，尚未应用runtime或保存业务配置。PR175已关闭且未合并/部署/apply，明确撤回不适用的追加方案。
+
+
+## 2026-09-06 17:56 UTC 负责人迁移已部署及历史对账
+
+#171 准确 HEAD `1077d3a9e570d35dbfa5700a96cff33da6b6c69a` 完整 CI34047642141 成功，根独立 PostgreSQL/race 分段恢复测试通过，已 squash 合入 main `cf663388baf993f9a821e2cc4d261bfa26e7e765`。该主线 check job101528567036 成功。
+
+根使用精确 cf663 构建的 21 个 Linux 二进制、95 项迁移及前端制品发布，归档 80,912,757 字节，SHA256 `bf34d208c28f7caf3e02b69a054881055ecc081d7699fd009bb6cfec28fe1918`。自动 deploy 在 check 成功且直传归档校验完成后取消；原版本 installer/run1008 执行成功，取消的 workflow34048802326 不记全绿。公网 readyz、两个实际服务 exe 均为 cf663，普通管理员登录、配置读取及退出通过。
+
+负责人历史已用发布版迁移器 apply、verify：34 批次、32,411 条输入，28,327 observed、4,084 pending_mapping、0 invalid/conflict/replayed。当前负责人变更、OneID 新关联、External Effects 和 Provider 调用均为 0。待映射历史未丢弃；未执行真实企微转接验收。
+
+开放平台 #173 更新到 `f8c2a0f2bd59695210e530e2f7a516c90fb40591`，保留六项 V1、管理员 actor 导入修复及负责人装配，CI34049122474 待完成。新壳 #164 尚未上线；组合验证保留真实 PostgreSQL，将 Product/Tag/Sidebar/Open 浏览器旅程统一纳入强制 Linux 阶段。
+
+外推运行配置首次应用在第 12 项管理员 GET 返回 404 时停止，24 项预检未全部通过，因此零 PUT、未创建运行配置收据；环境已回滚，公网健康仍为 cf663。继续定位映射与商品读取契约，Commerce Push Provider 尚未启用。
+
+
+## 2026-09-06 18:13 UTC 外推配置运行启用与开放平台合并
+
+此前外推第12项404已定位并验证为准备文件路由错误，不是商品源映射错误。正式导入器通过旧 ServicePeriod.TradeProductID 将同一商品投影为 V3 service_period，并保留两个源映射；受保护只读核对确认源关联、导入batch、商品code/price/currency及duration均一致。历史表不依赖ProductKind，该商品1条配置和19条投递历史仍可读取。
+
+原准备bundle SHA256 `969f00b04b94baa61b9d82b026ad4684e15e97fec289fdfd3404840a31b24ef3` 仅将第12项改为正式service-period-products路由，其余字节不变。新SHA256 `ca1c7ae1bc8fe36a758683c1a6db23d35065ed92e045e79249fe20a05aae6358`；原bundle保留0600备份。正常管理员登录后的24项GET均验证了正确product_id/kind和revision0。
+
+根审核过的运维脚本随后在cf663生产版本成功完成：23项普通商品+1项周期商品全部保存并回读revision1，9项沿用启用状态；24次PUT带原幂等键与CSRF。完成受保护收据后启用Commerce Push Provider，并验证双服务环境与原全局开关。零测试调用、零历史paid重放；真实新订单Provider投递仍为独立验收项，不以配置启用冒充投递成功。
+
+开放平台#173准确f8c2a0f完整CI34049122474成功并已合并main `f1ea84caa0070bbd4cc06d6d0628999d31567dc7`（18:05:27 UTC）。主线检查34050611621与新壳验证并行，开放平台运行参数与历史尚未应用，PR164尚未上线。

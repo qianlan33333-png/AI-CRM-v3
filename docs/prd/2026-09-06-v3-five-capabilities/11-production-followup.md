@@ -1,5 +1,11 @@
 # 各板块独立合并与生产验收待办
 
+## 当前部署状态（2026-09-06 20:24 UTC）
+
+五个业务 PR #169/#170/#171/#172/#173 与新前端壳 #164 均已合并并部署，生产准确版本为 `5291366b9742030957f48ebf7464a040a3ab46db`。PR 与实际 main 的完整检查均通过；原 installer/run1018 安装完成，双服务实际程序、本机及公网 readyz 一致。生产30页面、284资源及新壳/业务Host检查通过。开放平台两个运行参数生效，正常HTTPS OAuth/REST/MCP生命周期通过；17客户端与14审计已导入并核验。外推24配置/9启用、标签Provider及原有全局开关在最终版本保持生效。
+
+本轮开发、审核、合并、代码部署、必要运行配置和冻结历史导入已完成。仍须另行处理：负责人4,084条、标签115条、外推7配置/3投递的历史待映射；12旧开放客户端需重新签发，5项旧授权无V1等价关系已排除。配置仍revision0/environment_default/max_recipients1，未发布新业务值。真实企微转接/mark-unmark、新订单外推和企微WebView业务场景未执行现场验收，不将协议测试或代码上线冒充这些真实业务结果。以下日期段落是历史记录，最终事实以本节及末尾上线核验为准。
+
 用户已允许整板块验收后独立合并。每个板块分别记录代码合并及既有自动部署的实际结果；以下配置、历史导入和真实业务操作保持独立验收，不混写成代码开发已完成：
 
 - 每个板块核对准确 HEAD、完整 PG/前端/协议/历史/架构门禁及回滚方案，通过后独立合并；#167共用修复单独处理。main既有自动部署按实际流水线结果记录，不等待五项汇总，不使用#168发布。
@@ -53,9 +59,9 @@ V3 受保护文件为 `/var/tmp/aicrm-push-history-20260906T150000Z/history.seal
 
 inspect/dry-run审核后，root以准确摘要apply并verify均通过：标签190条imported，115条pending（106 tag_unmapped、8 follow_user_unresolved、1 staff_unresolved），0conflict/failed；未猜测或自动创建身份。8条配置发布历史均以no_v3_runtime_equivalence保留排除事实，不应用旧值。实际生产回读customer_tag_commands仍0条、published runtime releases仍0条；Provider/effect/River计数全部0。能力上线与历史待映射保持分开报告。
 
-## Open 历史准备（尚未应用）
+## Open 历史准备（历史检查点；最终应用见末尾）
 
-090889a已审工具从同一旧revision只读提取17个API Client、14条调用方审计。V3 `/var/tmp/aicrm-v3-open-platform-history-090889a/open-platform.snapshot` 与同目录snapshot.key，父目录0700、文件0600。manifest `6d01d492fb6f4fb5bc450cfa9e65d175ddb56fa836a73efa852e2455d791cfcb`，密封文件SHA256 `911da5d065cc4d4ae50f22306bbd0635fb62eda93fc455a42273b8803590e1b4`。extract/inspect/dry-run通过，旧源及本地敏感临时文件已删除。未应用目标数据库，所有旧client仅允许disabled/reissue_required或带原因excluded，不恢复secret/token。
+090889a已审工具从同一旧revision只读提取17个API Client、14条调用方审计。材料当时仍在旧主机 `/var/tmp/aicrm-v3-open-platform-history-090889a/open-platform.snapshot` 与同目录snapshot.key；最终部署后才传入V3，原先记为已在V3不准确，父目录0700、文件0600。manifest `6d01d492fb6f4fb5bc450cfa9e65d175ddb56fa836a73efa852e2455d791cfcb`，密封文件SHA256 `911da5d065cc4d4ae50f22306bbd0635fb62eda93fc455a42273b8803590e1b4`。extract/inspect/dry-run通过，旧源及本地敏感临时文件已删除。未应用目标数据库，所有旧client仅允许disabled/reissue_required或带原因excluded，不恢复secret/token。
 
 ## 2026-09-06 17:18 UTC 商品外推代码已部署、历史已对账
 
@@ -66,3 +72,37 @@ main05045c645f95d269b624771ceb215713e3300f59的Linux check job101518074524已成
 外推旧源manifest c8c20c8c1ef30bb19296eb01a7274a39c8997fb4b27375d3818d9bb8b784fbce已用当前发布的迁移器apply并verify：800输入=406 imported+10 pending+384 excluded。生产SQL逐项回读：24配置/382投递已关联，7配置/3投递product_mapping_unavailable，384旧domain_event_outbox以legacy_domain_event_not_replayed保留排除事实；live commerce intent及commerce_product_push effect均0。
 
 运行配置受保护准备文件为 `/var/tmp/aicrm-push-history-20260906T150000Z/runtime-prepared.json`，24配置、9原启用、7排除项、9受控目标；payload key已生成并封存，尚未应用runtime或保存业务配置。PR175已关闭且未合并/部署/apply，明确撤回不适用的追加方案。
+
+
+## 2026-09-06 18:13 UTC 外推配置运行启用与开放平台合并
+
+此前外推第12项404已定位并验证为准备文件路由错误，不是商品源映射错误。正式导入器通过旧 ServicePeriod.TradeProductID 将同一商品投影为 V3 service_period，并保留两个源映射；受保护只读核对确认源关联、导入batch、商品code/price/currency及duration均一致。历史表不依赖ProductKind，该商品1条配置和19条投递历史仍可读取。
+
+原准备bundle SHA256 `969f00b04b94baa61b9d82b026ad4684e15e97fec289fdfd3404840a31b24ef3` 仅将第12项改为正式service-period-products路由，其余字节不变。新SHA256 `ca1c7ae1bc8fe36a758683c1a6db23d35065ed92e045e79249fe20a05aae6358`；原bundle保留0600备份。正常管理员登录后的24项GET均验证了正确product_id/kind和revision0。
+
+根审核过的运维脚本随后在cf663生产版本成功完成：23项普通商品+1项周期商品全部保存并回读revision1，9项沿用启用状态；24次PUT带原幂等键与CSRF。完成受保护收据后启用Commerce Push Provider，并验证双服务环境与原全局开关。零测试调用、零历史paid重放；真实新订单Provider投递仍为独立验收项，不以配置启用冒充投递成功。
+
+开放平台#173准确f8c2a0f完整CI34049122474成功并已合并main `f1ea84caa0070bbd4cc06d6d0628999d31567dc7`（18:05:27 UTC）。主线检查34050611621与新壳验证并行，开放平台运行参数与历史尚未应用，PR164尚未上线。
+
+## 2026-09-06 最终代码发布：5291366
+
+#164准确cf0130536c5160fe5929cd592f343b09a88942c9完整CI34054695213通过，已squash合并main5291366b9742030957f48ebf7464a040a3ab46db。PR/main Git tree一致。实际main CI34055889032/check101547594868于20:07:41 UTC成功（仓库、所有Chromium、race）；随后取消重复自动部署，deploy101550645752的SSH与安装步骤均skipped，不将整条cancelled workflow称为成功。
+
+根对独立exact main制品逐文件审核：归档SHA256 `10d47a9c875baab1b6164b891610226fc7ae434f800e1f3d57e3c3bc428722ec`，84,984,686 bytes，291常规文件=290 manifest条目+manifest自身；22个Linux amd64程序、100迁移、145 web/dist文件。22个Go程序均revision=5291366且modified=false。无AppleDouble、额外文件、链接或逃逸路径。源码与index干净，运行资源及供体检查通过；CGO runner用Zig0.13交叉编译，不声称与CI GCC字节相同。
+
+服务器归档及原installer再次验SHA；installer `f1c3fac230b86be4a42920a668aedc82e6ace62b79ff6c57db53fc93fd933e70`，按实际run1018执行exit0，日志 `/var/tmp/aicrm-release-529136-local-install.log` 保持0600。current、双服务实际exe、本机与公网readyz均精确5291366，last-successful-run-number=1018。
+
+Open两个受保护运行参数已应用，正常HTTPS管理员登录、OAuth client_credentials、REST/MCP按grant过滤、轮换撤销旧JWT、新凭据激活、停用撤销token/credential及audit回读全部通过。验证调用方最终disabled，session正常退出；Provider/customer/payment写入均0。旧Open历史首次apply包装器在inspect前因受保护快照目录缺失停止，目标manifest所有batch/receipt/linked-client/audit计数为0，无部分导入；材料查找与恢复继续单列。
+
+发布后外推只读复核通过：24配置/9启用（23普通+1周期）、revision/receipt、双进程三个owned配置及既有全局flag均保持一致。真实新外推intent/effect/job/attempt/test均0，不声明真实投递完成。生产登录页已用实际浏览器验证布局；后台HTML/资源检查正在修正Owner脚本合法版本query造成的验证器误判。
+
+
+## 最终上线核验（2026-09-06 20:24 UTC / 北京时间09-07 04:24）
+
+Open首次受保护材料缺失在任何导入前中止，无部分写入。随后在旧主机找到原冻结材料，源文件摘要仍为911da5d065cc4d4ae50f22306bbd0635fb62eda93fc455a42273b8803590e1b4；通过两端已验证SSH直传至V3的0700目录，snapshot与key均0600，本地不落密钥。当前发布CLI inspect/apply/verify均成功：17客户端=12 imported/reissue_required+5 excluded，14审计imported。根另用强制只读PostgreSQL聚合核实1个batch、17客户端收据、12关联客户端全部disabled且reissue_required、5排除、14审计收据，replayed均0。旧secret/token不恢复，不触发业务效果。
+
+生产页面验收最终通过30页/14组、3条精确规范重定向、负责人/Open/周期运营Host标识；284同源资源（263JS/21CSS）均HTTP200、MIME正确且不是HTML，包含62个哈希新壳资源。开放平台目录恰六个V1操作，5个退休路径实际GET返回404；正常管理员登录/退出通过。此前两次失败分别为Owner脚本合法版本query、AI别名精确302到/admin/cloud-orchestrator/plans未登记，均只修复本地验收器；保留原路径、状态、同源及资源断言，没有更改生产业务代码。
+
+最终验收器SHA256 d6f13edb63cbeae0e9e94bfd8021c7f083ace58745812705a3d41ba51f17d60a；根独立审查改动并运行合同测试通过，执行者生产全量只读运行exit0。业务写入与Provider调用均0。实际浏览器验证生产登录页布局；后台业务真实Chromium证据来自完整Linux CI，生产上述30页为HTTP/资源验证，不冒充浏览器业务操作。
+
+所有实现PR维持各板块独立闭环；#166仅提交本记录，不再次汇总业务实现或触发多余代码发布。#168与#175保持关闭。旧系统未停机、未切流。
