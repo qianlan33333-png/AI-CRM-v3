@@ -84,3 +84,26 @@ func TestLegacyAssetRetirementMigrationContract(t *testing.T) {
 		t.Fatal("retirement must not overwrite provider verification status")
 	}
 }
+
+func TestChannelWelcomeIntentMigrationContract(t *testing.T) {
+	contents, err := os.ReadFile("../../migrations/0066_channel_welcome_intents.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(contents)
+	for _, required := range []string{
+		"Owner: internal/channel", "channel_welcome_intents", "send_deadline_at=first_received_at+interval '20 seconds'",
+		"welcome_not_configured", "welcome_material_unavailable", "channel_welcome_intent_guard",
+		"result_reason", "deadline_missing", "deadline_expired", "grant_expired",
+		"external_effect_jobs_queue_check", "outbound_welcome",
+	} {
+		if !strings.Contains(source, required) {
+			t.Fatalf("welcome migration missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{" external_userid ", " raw_state ", " welcome_code text", " phone text"} {
+		if strings.Contains(strings.ToLower(source), forbidden) {
+			t.Fatalf("welcome migration persists forbidden field %q", forbidden)
+		}
+	}
+}

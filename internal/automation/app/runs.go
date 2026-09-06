@@ -6,14 +6,15 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
+	aiassistantport "github.com/qianlan33333-png/AI-CRM-v3/internal/aiassistant/port"
 	automationdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/domain"
 	automationport "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/port"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
-	outboundport "github.com/qianlan33333-png/AI-CRM-v3/internal/outbound/port"
 	segmentport "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/port"
 )
 
@@ -64,7 +65,7 @@ func (s *RuntimeService) CreateBroadcastPreview(ctx context.Context, packageID, 
 	return preview, runtimeClassify(err)
 }
 func (s *RuntimeService) ConfirmRun(ctx context.Context, c RunConfirmCommand) (automationdomain.RuntimeRun, error) {
-	if s == nil || s.messages == nil || c.PackageID < 1 || c.PackageVersion < 1 || c.SnapshotID < 1 || c.AgentID < 1 || c.AgentPublishedVersion < 1 || !validRuntimeMutation(c.Actor, c.IdempotencyKey) {
+	if s == nil || s.reviewPlans == nil || s.content == nil || c.PackageID < 1 || c.PackageVersion < 1 || c.SnapshotID < 1 || c.AgentID < 1 || c.AgentPublishedVersion < 1 || !validRuntimeMutation(c.Actor, c.IdempotencyKey) {
 		return automationdomain.RuntimeRun{}, ErrRuntimeInvalid
 	}
 	rawDigest, err := hex.DecodeString(c.PreviewDigest)
@@ -73,6 +74,25 @@ func (s *RuntimeService) ConfirmRun(ctx context.Context, c RunConfirmCommand) (a
 	}
 	var digest [32]byte
 	copy(digest[:], rawDigest)
+	payload, _ := json.Marshal(c)
+	keyDigest, payloadDigest := sha256.Sum256([]byte(c.IdempotencyKey)), sha256.Sum256(payload)
+	var receipt RuntimeReceipt
+	var found bool
+	err = s.uow.Within(ctx, func(tx context.Context) error {
+		var e error
+		receipt, found, e = s.store.RuntimeReceipt(tx, "confirm_run", fmt.Sprintf("admin:%d", c.Actor), keyDigest, payloadDigest)
+		return e
+	})
+	if err != nil {
+		return automationdomain.RuntimeRun{}, runtimeClassify(err)
+	}
+	if found {
+		var replay automationdomain.RuntimeRun
+		if receipt.State != "completed" || len(receipt.Result) == 0 || json.Unmarshal(receipt.Result, &replay) != nil {
+			return automationdomain.RuntimeRun{}, ErrRuntimeConflict
+		}
+		return replay, nil
+	}
 	var preview automationdomain.RunPreview
 	err = s.uow.Within(ctx, func(tx context.Context) error {
 		var e error
@@ -106,36 +126,69 @@ func (s *RuntimeService) ConfirmRun(ctx context.Context, c RunConfirmCommand) (a
 		}
 		cursor = page.NextCursor
 	}
-	if int64(len(members)) != preview.TargetCount || len(members) == 0 || int64(len(members)) > s.recipientLimit {
+	if int64(len(members)) != preview.TargetCount || len(members) == 0 || int64(len(members)) > s.recipientLimit || len(members) > aiassistantport.MaxRecipients {
 		return automationdomain.RuntimeRun{}, ErrRuntimeConflict
 	}
-	recipients := make([]automationdomain.RuntimeRecipient, len(members))
+	recipients := make([]aiassistantport.RecipientCandidate, len(members))
 	for i, item := range members {
-		recipients[i] = automationdomain.RuntimeRecipient{CustomerID: int64(item.CustomerID), SenderStaffID: configuration.SenderStaffIDs[i%len(configuration.SenderStaffIDs)], State: automationport.RecipientAccepted}
+		recipients[i] = aiassistantport.RecipientCandidate{CustomerID: customerdomain.CustomerID(item.CustomerID), StaffID: configuration.SenderStaffIDs[i%len(configuration.SenderStaffIDs)]}
 	}
-	payload, _ := json.Marshal(c)
+	published, contentFound, err := s.content.OutboundPublishedContent(ctx, automationport.AgentID(c.AgentID), c.AgentPublishedVersion)
+	if err != nil || !contentFound || published.ContentDigest != configuration.ContentDigest {
+		return automationdomain.RuntimeRun{}, ErrRuntimeConflict
+	}
+	blocks, err := reviewContentBlocks(published.Content)
+	if err != nil {
+		return automationdomain.RuntimeRun{}, err
+	}
+	for i := range recipients {
+		recipients[i].Content = append([]aiassistantport.ContentBlock(nil), blocks...)
+	}
 	var run automationdomain.RuntimeRun
 	err = s.runtimeMutation(ctx, "confirm_run", c.Actor, c.IdempotencyKey, payload, func(tx context.Context) (any, RuntimeFact, error) {
-		run = automationdomain.RuntimeRun{PackageID: c.PackageID, PackageVersion: c.PackageVersion, SnapshotID: c.SnapshotID, AgentID: c.AgentID, AgentPublishedVersion: c.AgentPublishedVersion, BindingVersion: preview.BindingVersion, SenderSetVersion: preview.SenderSetVersion, PreviewDigest: digest, State: automationport.RunExecuting, TargetCount: int64(len(recipients)), CreatedBy: c.Actor, CreatedAt: now, UpdatedAt: now}
-		created, createdRecipients, e := s.store.CreateRun(tx, run, recipients)
+		plan, e := s.reviewPlans.CreatePlanWithin(tx, aiassistantport.CreatePlanCommand{Actor: aiassistantport.Actor{Kind: aiassistantport.ActorAdmin, ID: c.Actor}, IdempotencyKey: "automation-manual-review-" + c.IdempotencyKey, Name: "Audience broadcast " + strconv.FormatInt(c.PackageID, 10), SourceKind: "automation.manual_audience_run.v1", SourceDigest: effectport.Hash("automation.manual-audience-run", hex.EncodeToString(digest[:])), Recipients: recipients, OccurredAt: now})
+		if e != nil {
+			return run, RuntimeFact{}, e
+		}
+		if plan.Plan.ID < 1 {
+			return run, RuntimeFact{}, ErrRuntimeUnavailable
+		}
+		run = automationdomain.RuntimeRun{PackageID: c.PackageID, PackageVersion: c.PackageVersion, SnapshotID: c.SnapshotID, AgentID: c.AgentID, AgentPublishedVersion: c.AgentPublishedVersion, AIPlanID: int64(plan.Plan.ID), BindingVersion: preview.BindingVersion, SenderSetVersion: preview.SenderSetVersion, PreviewDigest: digest, State: automationport.RunPendingReview, TargetCount: int64(len(recipients)), CreatedBy: c.Actor, CreatedAt: now, UpdatedAt: now}
+		created, createdRecipients, e := s.store.CreateRun(tx, run, nil)
 		if e != nil {
 			return created, RuntimeFact{}, e
 		}
-		policyDigest := sha256.Sum256([]byte("automation.manual-run.policy.v1"))
-		for _, recipient := range createdRecipients {
-			sourceDigest := sha256.Sum256([]byte(fmt.Sprintf("automation-run:%d:recipient:%d", created.ID, recipient.ID)))
-			targetDigest := sha256.Sum256([]byte(fmt.Sprintf("customer:%d", recipient.CustomerID)))
-			acceptance, acceptErr := s.messages.AcceptMessageWithin(tx, outboundport.MessageIntent{SourceKind: "automation_run", SourceID: created.ID, RunRecipientID: recipient.ID, CustomerID: customerdomain.CustomerID(recipient.CustomerID), SenderStaffID: recipient.SenderStaffID, AgentID: created.AgentID, AgentPublishedVersion: created.AgentPublishedVersion, ContentReference: fmt.Sprintf("automation-agent:%d:published:%d", created.AgentID, created.AgentPublishedVersion), SourceDigest: sourceDigest, TargetDigest: targetDigest, PayloadDigest: configuration.ContentDigest, PolicyDigest: policyDigest, ReceiptKey: fmt.Sprintf("automation-run-%d-recipient-%d", created.ID, recipient.ID)})
-			if acceptErr != nil {
-				return created, RuntimeFact{}, acceptErr
-			}
-			if bindErr := s.store.BindRecipientEffect(tx, recipient.ID, acceptance.EffectID, now); bindErr != nil {
-				return created, RuntimeFact{}, bindErr
-			}
+		if len(createdRecipients) != 0 {
+			return created, RuntimeFact{}, ErrRuntimeConflict
 		}
-		return created, runtimeFact("run", created.ID, "confirm", "automation.run.queued.v1", c.Actor, c.IdempotencyKey, now), nil
+		return created, runtimeFact("run", created.ID, "confirm", "automation.run.pending_review.v1", c.Actor, c.IdempotencyKey, now), nil
 	}, &run)
 	return run, runtimeClassify(err)
+}
+func reviewContentBlocks(content automationport.FixedContentPackage) ([]aiassistantport.ContentBlock, error) {
+	if len(content.DynamicMiniprogramCard) != 0 {
+		return nil, ErrRuntimeNotReady
+	}
+	blocks := make([]aiassistantport.ContentBlock, 0, 1+len(content.ImageLibraryIDs)+len(content.MiniprogramLibraryIDs)+len(content.AttachmentLibraryIDs)+len(content.GroupInviteLibraryIDs))
+	if text := strings.TrimSpace(content.ContentText); text != "" {
+		blocks = append(blocks, aiassistantport.ContentBlock{Kind: aiassistantport.ContentText, Text: text})
+	}
+	for _, id := range content.ImageLibraryIDs {
+		blocks = append(blocks, aiassistantport.ContentBlock{Kind: aiassistantport.ContentImage, MaterialKind: "image", MaterialID: id})
+	}
+	for _, id := range content.MiniprogramLibraryIDs {
+		blocks = append(blocks, aiassistantport.ContentBlock{Kind: aiassistantport.ContentMiniProgram, MaterialKind: "miniprogram", MaterialID: id})
+	}
+	for _, id := range content.AttachmentLibraryIDs {
+		blocks = append(blocks, aiassistantport.ContentBlock{Kind: aiassistantport.ContentAttachment, MaterialKind: "attachment", MaterialID: id})
+	}
+	for _, id := range content.GroupInviteLibraryIDs {
+		blocks = append(blocks, aiassistantport.ContentBlock{Kind: aiassistantport.ContentLink, MaterialKind: "group_invite", MaterialID: id})
+	}
+	if len(blocks) == 0 {
+		return nil, ErrRuntimeNotReady
+	}
+	return blocks, nil
 }
 func PreviewDigestString(p automationdomain.RunPreview) string {
 	return hex.EncodeToString(p.PreviewDigest[:])
@@ -151,7 +204,15 @@ func (s *RuntimeService) ListRuns(ctx context.Context, cursor int64, limit int) 
 		out, next, e = s.store.ListRuns(tx, cursor, limit)
 		return e
 	})
-	return out, next, runtimeClassify(err)
+	if err != nil {
+		return out, next, runtimeClassify(err)
+	}
+	for index := range out {
+		if err = s.projectAIPlanState(ctx, &out[index]); err != nil {
+			return nil, "", err
+		}
+	}
+	return out, next, nil
 }
 func (s *RuntimeService) Run(ctx context.Context, id int64) (automationdomain.RuntimeRun, error) {
 	if id < 1 {
@@ -159,7 +220,86 @@ func (s *RuntimeService) Run(ctx context.Context, id int64) (automationdomain.Ru
 	}
 	var out automationdomain.RuntimeRun
 	err := s.uow.Within(ctx, func(tx context.Context) error { var e error; out, e = s.store.Run(tx, id); return e })
-	return out, runtimeClassify(err)
+	if err != nil {
+		return out, runtimeClassify(err)
+	}
+	if err = s.projectAIPlanState(ctx, &out); err != nil {
+		return automationdomain.RuntimeRun{}, err
+	}
+	return out, nil
+}
+
+// projectAIPlanState is a read-only projection of the existing AI Assistant
+// plan. Automation never writes the plan lifecycle or invents a second
+// dispatch state machine; a pending review remains pending only while its
+// actual plan is reviewable.
+func (s *RuntimeService) projectAIPlanState(ctx context.Context, run *automationdomain.RuntimeRun) error {
+	if run == nil || run.AIPlanID < 1 {
+		return nil
+	}
+	if s.reviewPlans == nil {
+		return ErrRuntimeNotReady
+	}
+	plan, err := s.reviewPlans.GetPlan(ctx, aiassistantport.PlanID(run.AIPlanID))
+	if err != nil {
+		return ErrRuntimeUnavailable
+	}
+	run.AIPlanState = string(plan.State)
+	switch plan.State {
+	case aiassistantport.PlanPendingReview, aiassistantport.PlanPartiallyApproved:
+		run.State = automationport.RunPendingReview
+	case aiassistantport.PlanApproved, aiassistantport.PlanDispatching:
+		run.State = automationport.RunExecuting
+	case aiassistantport.PlanCompleted:
+		run.State = automationport.RunCompleted
+	case aiassistantport.PlanCompletedWithFailures:
+		run.State = automationport.RunPartialFailed
+	case aiassistantport.PlanNeedsAttention:
+		unknown, retryable, readErr := s.aiAttentionCounts(ctx, aiassistantport.PlanID(run.AIPlanID))
+		if readErr != nil {
+			return ErrRuntimeUnavailable
+		}
+		run.OutcomeUnknownCount = int64(unknown)
+		// AI marks both retryable failures and uncertain Provider outcomes as
+		// needing attention. Preserve that distinction in the Automation read
+		// model: only an actual uncertain recipient makes the run unknown.
+		if unknown > 0 {
+			run.State = automationport.RunOutcomeUnknown
+		} else if retryable > 0 {
+			run.State = automationport.RunPartialFailed
+		} else {
+			return ErrRuntimeUnavailable
+		}
+	case aiassistantport.PlanRejected:
+		run.State = automationport.RunCancelled
+	default:
+		return ErrRuntimeUnavailable
+	}
+	return nil
+}
+
+func (s *RuntimeService) aiAttentionCounts(ctx context.Context, planID aiassistantport.PlanID) (unknown, retryable int, err error) {
+	cursor := ""
+	for {
+		// Leave Limit at the stable AI Reader default. That boundary owns its
+		// page cap (currently 50), while this consumer follows its opaque cursor.
+		page, readErr := s.reviewPlans.ListRecipients(ctx, aiassistantport.RecipientPageQuery{PlanID: planID, Cursor: cursor})
+		if readErr != nil {
+			return 0, 0, readErr
+		}
+		for _, recipient := range page.Items {
+			switch recipient.ExecutionState {
+			case aiassistantport.ExecutionOutcomeUnknown:
+				unknown++
+			case aiassistantport.ExecutionRetryableFailed:
+				retryable++
+			}
+		}
+		if page.NextCursor == "" {
+			return unknown, retryable, nil
+		}
+		cursor = page.NextCursor
+	}
 }
 func (s *RuntimeService) RunRecipients(ctx context.Context, id, cursor int64, limit int) ([]automationdomain.RuntimeRecipient, string, error) {
 	if id < 1 || cursor < 0 || limit < 1 || limit > 100 {

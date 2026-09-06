@@ -8,6 +8,23 @@ type directoryError string
 
 func (err directoryError) Error() string { return string(err) }
 
+// DirectoryFailure exposes a stable, non-PII classification for a failed
+// read from the WeCom customer directory. Callers must not infer a provider
+// write from this interface: DirectoryProvider remains read-only.
+type DirectoryFailure interface {
+	error
+	DirectoryFailureCode() string
+	DirectoryFailureRetryable() bool
+}
+
+// DirectoryFailureAttemptLimit optionally narrows River's normal attempt
+// budget for one specific Provider classification. Zero keeps the job's
+// configured limit. Callers must not infer a limit from the failure code.
+type DirectoryFailureAttemptLimit interface {
+	DirectoryFailure
+	DirectoryFailureMaxAttempts() int
+}
+
 type ExternalContact struct {
 	ExternalUserID string
 	Name           string

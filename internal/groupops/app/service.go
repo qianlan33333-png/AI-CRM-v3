@@ -137,7 +137,22 @@ func (s *Service) Update(ctx context.Context, command groupopsport.UpdatePlanCom
 }
 
 func (s *Service) Activate(ctx context.Context, command groupopsport.TransitionCommand) (groupopsport.Detail, error) {
-	return s.transition(ctx, "plan_activate", command, groupopsport.PlanDraft, groupopsport.PlanActive, true)
+	// The frozen Group Ops list uses the same enable action for a draft and a
+	// previously paused plan. Both transitions re-run the complete local
+	// definition validation. Archived plans remain terminal.
+	if !ready(s) || !validTransition(command) {
+		return groupopsport.Detail{}, invalidOrUnavailable(s)
+	}
+	return s.mutate(ctx, "plan_activate", command.PlanID, command.ExpectedRevision, command.Actor, command.IdempotencyKey, command, func(_ context.Context, detail *groupopsport.Detail, _ time.Time) error {
+		if detail.Plan.Status != groupopsport.PlanDraft && detail.Plan.Status != groupopsport.PlanPaused {
+			return ErrStateConflict
+		}
+		if !contentValidation(*detail).Valid {
+			return ErrStateConflict
+		}
+		detail.Plan.Status = groupopsport.PlanActive
+		return nil
+	})
 }
 func (s *Service) Pause(ctx context.Context, command groupopsport.TransitionCommand) (groupopsport.Detail, error) {
 	return s.transition(ctx, "plan_pause", command, groupopsport.PlanActive, groupopsport.PlanPaused, false)
@@ -381,7 +396,7 @@ func (s *Service) mutate(ctx context.Context, operation string, planID, expected
 		if detail.Plan.Revision != expectedRevision {
 			return groupopsport.Detail{}, ErrConflict
 		}
-		if detail.Plan.Status != groupopsport.PlanDraft && operation != "plan_pause" && operation != "plan_archive" {
+		if detail.Plan.Status != groupopsport.PlanDraft && operation != "plan_pause" && operation != "plan_archive" && !(operation == "plan_activate" && detail.Plan.Status == groupopsport.PlanPaused) {
 			return groupopsport.Detail{}, ErrStateConflict
 		}
 		if err := change(tx, &detail, now); err != nil {
@@ -739,7 +754,9 @@ func classify(err error) error {
 	case errors.Is(err, ErrInvalid), errors.Is(err, ErrNotFound), errors.Is(err, ErrConflict), errors.Is(err, ErrStateConflict):
 		return err
 	default:
-		return ErrUnavailable
+		// Preserve the owner-side cause for operators and integration journeys;
+		// HTTP still maps errors.Is(ErrUnavailable) to its stable public code.
+		return fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
 }
 func clonePlanPage(value groupopsport.PlanPage) groupopsport.PlanPage {

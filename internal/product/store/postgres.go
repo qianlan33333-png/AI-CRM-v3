@@ -227,7 +227,7 @@ func (r *Repository) ListProductOptions(ctx context.Context, query productport.P
 	limitPlaceholder := len(args) + 1
 	offsetPlaceholder := len(args) + 2
 	args = append(args, query.Limit, query.Offset)
-	rows, err := tx.Query(ctx, `SELECT id,name,price_minor,currency,CASE WHEN `+servicePeriodStatusSQL()+` THEN 'service_period' ELSE 'standard' END FROM products WHERE `+whereSQL+` ORDER BY id LIMIT $`+itoa(limitPlaceholder)+` OFFSET $`+itoa(offsetPlaceholder), args...)
+	rows, err := tx.Query(ctx, `SELECT id,product_code,name,price_minor,currency,CASE WHEN `+servicePeriodStatusSQL()+` THEN 'service_period' ELSE 'standard' END FROM products WHERE `+whereSQL+` ORDER BY id LIMIT $`+itoa(limitPlaceholder)+` OFFSET $`+itoa(offsetPlaceholder), args...)
 	if err != nil {
 		return productport.ProductOptionPage{}, mapDatabaseError(err)
 	}
@@ -235,7 +235,7 @@ func (r *Repository) ListProductOptions(ctx context.Context, query productport.P
 	items := make([]productport.ProductOption, 0)
 	for rows.Next() {
 		var item productport.ProductOption
-		if err := rows.Scan(&item.ID, &item.Name, &item.PriceMinor, &item.Currency, &item.ProductType); err != nil {
+		if err := rows.Scan(&item.ID, &item.Code, &item.Name, &item.PriceMinor, &item.Currency, &item.ProductType); err != nil {
 			return productport.ProductOptionPage{}, mapDatabaseError(err)
 		}
 		items = append(items, item)
@@ -254,6 +254,17 @@ func escapeProductOptionSearch(value string) string {
 
 func (r *Repository) Get(ctx context.Context, id productport.ID) (productport.Product, error) {
 	return r.get(ctx, id, false, "")
+}
+
+func (r *Repository) GetByCode(ctx context.Context, code string) (productport.Product, error) {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return productport.Product{}, err
+	}
+	if code == "" || code != strings.TrimSpace(code) || len(code) > 200 {
+		return productport.Product{}, productport.ErrProductReadNotFound
+	}
+	return scanProduct(tx.QueryRow(ctx, `SELECT `+productColumns+` FROM products WHERE product_code=$1`, code))
 }
 
 func (r *Repository) GetForUpdate(ctx context.Context, id productport.ID) (productport.Product, error) {
@@ -450,8 +461,57 @@ func (r *Repository) GetServicePeriodProduct(ctx context.Context, id productport
 	return r.get(ctx, id, false, servicePeriodStatusSQL())
 }
 
+func (r *Repository) GetServicePeriodProductByCode(ctx context.Context, code string) (productport.Product, error) {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return productport.Product{}, err
+	}
+	if code == "" || len(code) > 200 {
+		return productport.Product{}, ErrInvalid
+	}
+	return scanProduct(tx.QueryRow(ctx, `SELECT `+productColumns+` FROM products WHERE product_code=$1 AND `+servicePeriodStatusSQL(), code))
+}
+
 func (r *Repository) GetServicePeriodProductForUpdate(ctx context.Context, id productport.ID) (productport.Product, error) {
 	return r.get(ctx, id, true, servicePeriodStatusSQL())
+}
+
+// ReadServicePeriodDuration intentionally reuses the original Product-owned
+// imported-term table. It is now a trusted lifecycle read as well as an import
+// preservation projection; no duplicate service-period aggregate is created.
+func (r *Repository) ReadServicePeriodDuration(ctx context.Context, id productport.ID) (int32, error) {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return 0, err
+	}
+	if id < 1 {
+		return 0, ErrInvalid
+	}
+	var duration int32
+	err = tx.QueryRow(ctx, `SELECT duration_days FROM product_imported_service_period_definitions WHERE product_id=$1`, id).Scan(&duration)
+	if err != nil {
+		return 0, mapDatabaseError(err)
+	}
+	if duration < 1 {
+		return 0, ErrInvalid
+	}
+	return duration, nil
+}
+
+// SetServicePeriodDuration is reachable only from Product's local lifecycle
+// UoW. Upsert keeps imported definitions readable while allowing a newly
+// created or edited service-period product to persist its duration atomically
+// with Product receipts, audit and outbox facts.
+func (r *Repository) SetServicePeriodDuration(ctx context.Context, id productport.ID, duration int32) error {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return err
+	}
+	if id < 1 || duration < 1 {
+		return ErrInvalid
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO product_imported_service_period_definitions(product_id,duration_days) VALUES($1,$2) ON CONFLICT(product_id) DO UPDATE SET duration_days=EXCLUDED.duration_days`, id, duration)
+	return mapDatabaseError(err)
 }
 
 func (r *Repository) UpdateServicePeriodProduct(ctx context.Context, update productapp.ServicePeriodStoreUpdate, now time.Time) (productport.Product, error) {

@@ -37,6 +37,7 @@ func TestServicePeriodCreateReplayAndPayloadConflict(t *testing.T) {
 		Description:    "local only",
 		PriceMinor:     19900,
 		Currency:       "cny",
+		DurationDays:   31,
 		StockQuantity:  8,
 		Actor:          41,
 		IdempotencyKey: "period-create-key-0001",
@@ -78,6 +79,7 @@ func TestServicePeriodCASCopyEnableDisableArchiveAndReferenceRetention(t *testin
 		Description:     "stale",
 		PriceMinor:      1,
 		Currency:        "CNY",
+		DurationDays:    31,
 		StockQuantity:   1,
 		Actor:           52,
 		IdempotencyKey:  "period-update-stale-01",
@@ -93,6 +95,7 @@ func TestServicePeriodCASCopyEnableDisableArchiveAndReferenceRetention(t *testin
 		Description:     "still local only",
 		PriceMinor:      29900,
 		Currency:        "cny",
+		DurationDays:    62,
 		StockQuantity:   9,
 		Images:          []string{"https://cdn.example.test/service-period.png"},
 		AdminProjection: json.RawMessage(`{"schema_version":1,"status":"service_period_draft","enabled":false,"buy_button_text":"立即订阅","require_mobile":true}`),
@@ -234,6 +237,7 @@ func TestServicePeriodDatabaseUnknownOutcomeIsNotRetried(t *testing.T) {
 		Name:           "unknown",
 		PriceMinor:     100,
 		Currency:       "CNY",
+		DurationDays:   31,
 		StockQuantity:  1,
 		Actor:          85,
 		IdempotencyKey: "period-unknown-key-01",
@@ -276,17 +280,40 @@ func TestServicePeriodArchivedProductCannotBeEditedOrEnabled(t *testing.T) {
 	_, err = service.UpdateServicePeriodProduct(context.Background(), productport.UpdateServicePeriodProductCommand{
 		ID: archived.ServiceProductID, ExpectedVersion: archived.Version, Name: archived.Name, Description: archived.Description,
 		PriceMinor: archived.PriceMinor, Currency: archived.Currency, StockQuantity: archived.StockQuantity,
-		Actor: 96, IdempotencyKey: "period-terminal-update-1",
+		DurationDays: archived.DurationDays,
+		Actor:        96, IdempotencyKey: "period-terminal-update-1",
 	})
 	if !errors.Is(err, ErrConflict) {
 		t.Fatalf("update archived error=%v", err)
 	}
 }
 
+func TestServicePeriodPublicReaderUsesExactEnabledCode(t *testing.T) {
+	service, store, _ := newServicePeriodFixture()
+	created := mustCreateServicePeriod(t, service, "period-public-exact", 75, "period-public-create-0001")
+	if _, err := service.ReadPublicServicePeriodByCode(context.Background(), created.ProductCode); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("draft public reader err=%v", err)
+	}
+	enabled, err := service.SetServicePeriodProductEnabled(context.Background(), productport.SetServicePeriodProductEnabledCommand{ID: created.ServiceProductID, ExpectedVersion: created.Version, Enabled: true, Actor: 75, IdempotencyKey: "period-public-enable-0001"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	public, err := service.ReadPublicServicePeriodByCode(context.Background(), enabled.ProductCode)
+	if err != nil || public.ID != enabled.ServiceProductID || public.ProductType != productport.ProductOptionServicePeriod || public.ServicePeriodDurationDays < 1 {
+		t.Fatalf("public reader=%+v err=%v", public, err)
+	}
+	if _, err = service.ReadPublicServicePeriodByCode(context.Background(), "1"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("numeric alias selected a service period err=%v", err)
+	}
+	if _, ok := store.products[created.ServiceProductID]; !ok {
+		t.Fatal("fixture unexpectedly changed")
+	}
+}
+
 func mustCreateServicePeriod(t *testing.T, service *ServicePeriodService, code string, actor int64, key string) productport.ServicePeriodProduct {
 	t.Helper()
 	product, err := service.CreateServicePeriodProduct(context.Background(), productport.CreateServicePeriodProductCommand{
-		ProductCode: code, Name: code, Description: "local", PriceMinor: 8800, Currency: "CNY", StockQuantity: 5,
+		ProductCode: code, Name: code, Description: "local", PriceMinor: 8800, Currency: "CNY", DurationDays: 31, StockQuantity: 5,
 		Actor: actor, IdempotencyKey: key,
 	})
 	if err != nil {
@@ -306,6 +333,7 @@ func (uow *servicePeriodTestUoW) Within(ctx context.Context, callback func(conte
 
 type servicePeriodTestStore struct {
 	products      map[productport.ID]productport.Product
+	durations     map[productport.ID]int32
 	receipts      map[string]Receipt
 	references    map[productport.ID]int
 	nextProductID productport.ID
@@ -321,6 +349,7 @@ type servicePeriodTestStore struct {
 func newServicePeriodTestStore() *servicePeriodTestStore {
 	return &servicePeriodTestStore{
 		products:      map[productport.ID]productport.Product{},
+		durations:     map[productport.ID]int32{},
 		receipts:      map[string]Receipt{},
 		references:    map[productport.ID]int{},
 		nextProductID: 1,
@@ -364,8 +393,33 @@ func (store *servicePeriodTestStore) GetServicePeriodProduct(_ context.Context, 
 	return cloneServicePeriodTestProduct(product), nil
 }
 
+func (store *servicePeriodTestStore) GetServicePeriodProductByCode(ctx context.Context, code string) (productport.Product, error) {
+	for _, product := range store.products {
+		if product.ProductCode == code {
+			return store.GetServicePeriodProduct(ctx, product.ID)
+		}
+	}
+	return productport.Product{}, ErrNotFound
+}
+
 func (store *servicePeriodTestStore) GetServicePeriodProductForUpdate(ctx context.Context, id productport.ID) (productport.Product, error) {
 	return store.GetServicePeriodProduct(ctx, id)
+}
+
+func (store *servicePeriodTestStore) ReadServicePeriodDuration(_ context.Context, id productport.ID) (int32, error) {
+	duration, ok := store.durations[id]
+	if !ok || duration < 1 {
+		return 0, ErrNotFound
+	}
+	return duration, nil
+}
+
+func (store *servicePeriodTestStore) SetServicePeriodDuration(_ context.Context, id productport.ID, duration int32) error {
+	if _, ok := store.products[id]; !ok || duration < 1 {
+		return ErrNotFound
+	}
+	store.durations[id] = duration
+	return nil
 }
 
 func (store *servicePeriodTestStore) Create(_ context.Context, command productport.CreateCommand, now time.Time) (productport.Product, error) {

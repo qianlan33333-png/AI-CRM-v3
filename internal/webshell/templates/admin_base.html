@@ -18,6 +18,8 @@
   <link rel="stylesheet" href="/static/admin_console/ai_audience_send_records.css?v=production-shell-41f80a11-mime2">
   <link rel="stylesheet" href="/static/admin_console/admin_audience_detail.css?v=production-shell-41f80a11-mime2">
   <script defer src="/static/admin_console/admin_audience_detail.js?v=automation-operations-v5"></script>
+  <script defer src="/static/admin_console/template_parameter_form.js?v=dd8-frozen-ab63c644"></script>
+  <script defer src="/static/admin_console/admin_audience_template_host.js?v=prd05-template-host-v1"></script>
   {{end}}
   {{if eq .RequestPath "/admin/config/login-access"}}
   <link rel="stylesheet" href="/static/admin_console/admin_access.css?v=static-mime2">
@@ -43,6 +45,10 @@
   {{if .Customers}}
   <link rel="stylesheet" href="/static/admin_console/admin_customers.css?v=customer-profile-v2">
   <script defer src="/static/admin_console/admin_customers.js?v=customer-profile-v2"></script>
+  {{end}}
+  {{if .MessageArchive}}
+  <link rel="stylesheet" href="/static/admin_console/message_archive.css?v=message-archive-v1">
+  <script defer src="/static/admin_console/message_archive.js?v=message-archive-v1"></script>
   {{end}}
   {{if .Tags}}
   <link rel="stylesheet" href="{{.TagsAssets.TokensCSS}}">
@@ -76,6 +82,9 @@
   {{if .GroupOps}}
   <link rel="stylesheet" href="{{.GroupOpsAssets.TokensCSS}}">
   <link rel="stylesheet" href="{{.GroupOpsAssets.LabsCSS}}">
+  <link rel="stylesheet" href="{{.GroupOpsAssets.ReadonlyCSS}}">
+  <script defer src="{{.GroupOpsAssets.ReadonlyJS}}"></script>
+  <script defer src="/static/admin_console/groupops_history_readonly_bridge.js"></script>
   <script type="module" src="{{.GroupOpsAssets.AdminJS}}"></script>
   {{end}}
   {{if .Automation}}

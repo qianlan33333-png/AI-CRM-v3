@@ -183,15 +183,19 @@ func (PostgreSQLCustomerSyncStore) UpsertProfile(ctx context.Context, runID int6
 	return err
 }
 
-func (PostgreSQLCustomerSyncStore) UpsertProfileObservations(ctx context.Context, runID int64, corpScope string, customerID customerdomain.CustomerID, staffID string, followInfo []wecomport.ExternalContactFollowInfo, observedAt time.Time) error {
-	if runID < 1 || customerID < 1 || corpScope == "" || staffID == "" || observedAt.IsZero() {
+func (PostgreSQLCustomerSyncStore) UpsertProfileObservations(ctx context.Context, runID int64, corpScope string, customerID customerdomain.CustomerID, followInfo []wecomport.ExternalContactFollowInfo, observedAt time.Time) error {
+	if runID < 1 || customerID < 1 || corpScope == "" || observedAt.IsZero() {
 		return ErrSyncCAS
 	}
 	tx, err := platformpostgres.RequireTransaction(ctx)
 	if err != nil {
 		return err
 	}
-	owners := map[string]wecomport.ExternalContactFollowInfo{staffID: {EmployeeID: staffID, Tags: []wecomport.ExternalContactTag{}}}
+	// FollowInfo is a provider observation returned for this page, not a claim
+	// that this page is the customer's complete follow-user set. The request
+	// employee is intentionally not injected: only the reconciled, completed
+	// run may derive a primary from these page observations.
+	owners := map[string]wecomport.ExternalContactFollowInfo{}
 	for _, follow := range followInfo {
 		if follow.EmployeeID == "" {
 			return ErrSyncCAS
@@ -286,6 +290,52 @@ func (PostgreSQLCustomerSyncStore) ReconcileProfileObservations(ctx context.Cont
 	return err
 }
 
+// RefreshProfilePrimaryOwners derives the old bridge's primary-owner rule only
+// after ReconcileProfileObservations has consumed the complete directory run.
+// A scope without any trusted follow users is intentionally absent from the
+// candidates CTE, so its existing primary owner remains untouched.
+func (PostgreSQLCustomerSyncStore) RefreshProfilePrimaryOwners(ctx context.Context, runID int64, at time.Time) error {
+	if runID < 1 || at.IsZero() {
+		return ErrSyncCAS
+	}
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `WITH candidates AS (
+		SELECT profile.customer_id,profile.corp_scope,min(observation.employee_id) AS primary_owner_userid
+		FROM wecom_external_contact_profiles profile
+		JOIN wecom_customer_owner_observations observation
+			ON observation.customer_id=profile.customer_id AND observation.corp_scope=profile.corp_scope
+		WHERE profile.last_seen_run_id=$1 AND profile.activation_status='active'
+			AND observation.last_seen_run_id=$1 AND observation.relationship_status='active'
+		GROUP BY profile.customer_id,profile.corp_scope
+	)
+	UPDATE wecom_external_contact_profiles profile
+	SET primary_owner_userid=candidate.primary_owner_userid,primary_owner_run_id=$1,version=profile.version+1,updated_at=$2
+	FROM candidates candidate
+	WHERE profile.customer_id=candidate.customer_id AND profile.corp_scope=candidate.corp_scope
+		AND (profile.primary_owner_userid IS DISTINCT FROM candidate.primary_owner_userid OR profile.primary_owner_run_id IS DISTINCT FROM $1)`, runID, at.UTC()); err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `WITH candidates AS (
+		SELECT profile.customer_id,profile.corp_scope,min(observation.employee_id) AS primary_owner_userid
+		FROM wecom_external_contact_profiles profile
+		JOIN wecom_customer_owner_observations observation
+			ON observation.customer_id=profile.customer_id AND observation.corp_scope=profile.corp_scope
+		WHERE profile.last_seen_run_id=$1 AND profile.activation_status='active'
+			AND observation.last_seen_run_id=$1 AND observation.relationship_status='active'
+		GROUP BY profile.customer_id,profile.corp_scope
+	)
+	UPDATE wecom_customer_owner_observations observation
+	SET primary_owner_userid=candidate.primary_owner_userid,updated_at=$2
+	FROM candidates candidate
+	WHERE observation.customer_id=candidate.customer_id AND observation.corp_scope=candidate.corp_scope
+		AND observation.last_seen_run_id=$1 AND observation.relationship_status='active'
+		AND observation.primary_owner_userid IS DISTINCT FROM candidate.primary_owner_userid`, runID, at.UTC())
+	return err
+}
+
 func (PostgreSQLCustomerSyncStore) CustomerOwnerObservations(ctx context.Context, customerID customerdomain.CustomerID) ([]wecomport.OwnerObservation, error) {
 	if customerID < 1 {
 		return nil, ErrSyncNotFound
@@ -304,6 +354,74 @@ func (PostgreSQLCustomerSyncStore) CustomerOwnerObservations(ctx context.Context
 	for rows.Next() {
 		var item wecomport.OwnerObservation
 		if err = rows.Scan(&item.EmployeeID, &item.Status, &item.ObservedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (PostgreSQLCustomerSyncStore) AudiencePrimaryOwners(ctx context.Context, customerIDs []customerdomain.CustomerID) ([]wecomport.AudiencePrimaryOwner, error) {
+	if len(customerIDs) > maximumAudiencePrimaryOwnerBatch {
+		return nil, ErrSyncCAS
+	}
+	ids := make([]int64, 0, len(customerIDs))
+	seen := map[customerdomain.CustomerID]struct{}{}
+	for _, customerID := range customerIDs {
+		if customerID < 1 {
+			return nil, ErrSyncNotFound
+		}
+		if _, exists := seen[customerID]; exists {
+			continue
+		}
+		seen[customerID] = struct{}{}
+		ids = append(ids, int64(customerID))
+	}
+	if len(ids) == 0 {
+		return []wecomport.AudiencePrimaryOwner{}, nil
+	}
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := tx.Query(ctx, `WITH requested AS (
+		SELECT unnest($1::bigint[]) AS customer_id
+	), profiles AS (
+		SELECT profile.customer_id,profile.corp_scope,profile.primary_owner_userid,profile.primary_owner_run_id
+		FROM wecom_external_contact_profiles profile
+		JOIN requested ON requested.customer_id=profile.customer_id
+		JOIN wecom_customer_sync_runs primary_run ON primary_run.id=profile.primary_owner_run_id AND primary_run.status='succeeded'
+		WHERE profile.activation_status='active' AND profile.primary_owner_userid<>''
+	), owner_values AS (
+		SELECT customer_id,primary_owner_userid AS owner_userid
+		FROM profiles WHERE primary_owner_userid<>''
+		UNION
+		SELECT observation.customer_id,observation.primary_owner_userid
+		FROM wecom_customer_owner_observations observation
+		JOIN profiles ON profiles.customer_id=observation.customer_id
+		JOIN wecom_customer_sync_runs run ON run.id=observation.last_seen_run_id AND run.status='succeeded'
+		WHERE observation.relationship_status='active' AND observation.primary_owner_userid<>''
+	), conflicts AS (
+		SELECT customer_id,count(DISTINCT owner_userid) AS owner_count
+		FROM owner_values GROUP BY customer_id
+	)
+		SELECT requested.customer_id,COALESCE(profiles.corp_scope,''),
+		CASE WHEN COALESCE(conflicts.owner_count,0)>1 THEN '' ELSE COALESCE(profiles.primary_owner_userid,'') END,
+		CASE WHEN COALESCE(conflicts.owner_count,0)>1 THEN 'ambiguous'
+			WHEN COALESCE(profiles.primary_owner_userid,'')<>'' THEN 'known'
+			ELSE 'unknown' END
+	FROM requested
+	LEFT JOIN profiles ON profiles.customer_id=requested.customer_id
+	LEFT JOIN conflicts ON conflicts.customer_id=requested.customer_id
+	ORDER BY requested.customer_id`, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]wecomport.AudiencePrimaryOwner, 0, len(ids))
+	for rows.Next() {
+		var item wecomport.AudiencePrimaryOwner
+		if err = rows.Scan(&item.CustomerID, &item.CorpScope, &item.OwnerUserID, &item.Status); err != nil {
 			return nil, err
 		}
 		items = append(items, item)

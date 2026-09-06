@@ -115,8 +115,15 @@ func NewService(uow platformport.UnitOfWork, store Store, orders orderport.Payme
 func (s *Service) Create(ctx context.Context, c paymentport.CreateCommand) (domain.Payment, error) {
 	fromExistingOrder := c.OrderID > 0 && c.ProductID == 0 && c.ProductType == ""
 	fromProduct := c.OrderID == 0 && c.ProductID > 0 && (c.ProductType == string(productport.ProductOptionStandard) || c.ProductType == string(productport.ProductOptionServicePeriod))
-	if !s.ready() || (!fromExistingOrder && !fromProduct) || fromProduct && s.products == nil || len(c.SessionToken) < 20 || len(c.SessionToken) > 100 || !validScope(c.ActorScope) || !validKey(c.IdempotencyKey) {
+	if !s.ready() || (!fromExistingOrder && !fromProduct) || fromProduct && s.products == nil || c.CouponClaimID < 0 || fromExistingOrder && c.CouponClaimID != 0 || len(c.SessionToken) < 20 || len(c.SessionToken) > 100 || !validScope(c.ActorScope) || !validKey(c.IdempotencyKey) {
 		return domain.Payment{}, paymentport.ErrInvalid
+	}
+	// A response-lost browser recovery checkpoint is valid for precisely the
+	// trusted session that created it. Check before opening the mutation UoW so
+	// a renewed OAuth session cannot turn the old idempotency key into a second
+	// merchant order.
+	if !paymentport.MatchesCheckoutSessionBinding(c.SessionToken, c.CheckoutSessionBinding) {
+		return domain.Payment{}, paymentport.ErrSessionMismatch
 	}
 	now := s.now().UTC()
 	sessionDigest := sha256.Sum256([]byte(c.SessionToken))
@@ -130,6 +137,32 @@ func (s *Service) Create(ctx context.Context, c paymentport.CreateCommand) (doma
 		actor, err := s.sessions.LookupWithin(tx, c.SessionToken, now)
 		if err != nil {
 			return err
+		}
+		if fromProduct {
+			switch actor.BeneficiarySelection {
+			case paymentport.BeneficiarySelectionUnresolved:
+				if c.BeneficiarySelection != paymentport.BeneficiarySelectionPayerSelf {
+					return paymentport.ErrConflict
+				}
+				actor, err = s.sessions.SelectPayerSelfWithin(tx, c.SessionToken, now)
+				if err != nil {
+					return err
+				}
+			case paymentport.BeneficiarySelectionPayerSelf:
+				if c.BeneficiarySelection != paymentport.BeneficiarySelectionPayerSelf || actor.BeneficiaryCustomerID != actor.PayerCustomerID {
+					return paymentport.ErrConflict
+				}
+			case paymentport.BeneficiarySelectionAdminAssisted:
+				// This state is set only by the trusted server-side session issuer.
+				// A public browser cannot select or replace its prebound recipient.
+				if c.BeneficiarySelection != "" || actor.BeneficiaryCustomerID < 1 {
+					return paymentport.ErrConflict
+				}
+			default:
+				// Legacy rows retain their original value but are never re-labelled as
+				// a fresh user confirmation by the public purchase path.
+				return paymentport.ErrConflict
+			}
 		}
 		channel := actor.Channel
 		if channel == "" {
@@ -149,12 +182,18 @@ func (s *Service) Create(ctx context.Context, c paymentport.CreateCommand) (doma
 			result = replay
 			return nil
 		}
+		if !selectedBeneficiary(actor) {
+			// Pre-migration sessions retain their recipient value only to authorize
+			// an exact payment replay above. They cannot create a new command or
+			// silently turn an inferred recipient into a fresh confirmation.
+			return paymentport.ErrConflict
+		}
 		var order orderdomain.Snapshot
 		if fromExistingOrder {
 			order, err = s.orders.ReservePaymentWithin(tx, c.OrderID)
 		} else {
 			product, productErr := s.products.ReadCheckoutProductWithin(tx, productport.ProductOptionType(c.ProductType), productport.ID(c.ProductID))
-			if productErr != nil || int64(product.ID) != c.ProductID || product.ProductType != productport.ProductOptionType(c.ProductType) || product.PriceMinor < 1 || product.Currency != "CNY" || product.Version < 1 {
+			if productErr != nil || int64(product.ID) != c.ProductID || product.ProductType != productport.ProductOptionType(c.ProductType) || product.PriceMinor < 1 || product.Currency != "CNY" || product.Version < 1 || product.ProductType == productport.ProductOptionServicePeriod && product.ServicePeriodDurationDays < 1 {
 				if productErr != nil {
 					return productErr
 				}
@@ -170,8 +209,8 @@ func (s *Service) Create(ctx context.Context, c paymentport.CreateCommand) (doma
 			order, err = s.orders.CreatePaymentOrderWithin(tx, orderport.PaymentOrderCommand{
 				Provider: orderdomain.ProviderWeChatPay, MerchantOrderNo: merchantOrderNo,
 				PayerCustomerID: actor.PayerCustomerID, BeneficiaryCustomerID: actor.BeneficiaryCustomerID,
-				ProductID: int64(product.ID), ProductCode: product.Code, ProductName: product.Name,
-				ProductVersion: product.Version, UnitAmountMinor: product.PriceMinor, Currency: product.Currency,
+				ProductID: int64(product.ID), CouponClaimID: c.CouponClaimID, ProductCode: product.Code, ProductName: product.Name,
+				ProductVersion: product.Version, ProductType: orderCheckoutProductType(product.ProductType), ServicePeriodDurationDays: product.ServicePeriodDurationDays, UnitAmountMinor: product.PriceMinor, Currency: product.Currency,
 				MobileE164: c.MobileE164,
 				ActorScope: "payment-session:" + hex.EncodeToString(sessionDigest[:]), IdempotencyKey: c.IdempotencyKey,
 			})
@@ -233,6 +272,13 @@ func (s *Service) Create(ctx context.Context, c paymentport.CreateCommand) (doma
 		return domain.Payment{}, classify(err)
 	}
 	return result, nil
+}
+
+func orderCheckoutProductType(kind productport.ProductOptionType) string {
+	if kind == productport.ProductOptionServicePeriod {
+		return "service_period"
+	}
+	return "standard_product"
 }
 
 func (s *Service) RequestRefund(ctx context.Context, c paymentport.RefundCommand) (domain.Refund, error) {
@@ -368,10 +414,16 @@ func (s *Service) GetCheckout(ctx context.Context, merchantOrderNo, sessionToken
 		if err != nil {
 			return err
 		}
-		if payment.PayerIdentityID != actor.PayerIdentityID || payment.PayerCustomerID != actor.PayerCustomerID || payment.BeneficiaryCustomerID != actor.BeneficiaryCustomerID {
+		if !checkoutReadAuthorized(payment, actor) {
 			return paymentport.ErrConflict
 		}
 		out = paymentport.Handoff{PaymentID: payment.ID, MerchantOrder: payment.MerchantOrderNo, Status: payment.Status}
+		// A terminal outcome is an immutable Payment fact. It remains readable to
+		// the original trusted payer after the short-lived JSAPI handoff expires;
+		// handoff material is neither needed nor safe to revive at this point.
+		if payment.Status == domain.StatusPaid || payment.Status == domain.StatusFailed || payment.Status == domain.StatusCancelled {
+			return nil
+		}
 		if payment.Status == domain.StatusAwaitingPrepay {
 			return nil
 		}
@@ -389,6 +441,28 @@ func (s *Service) GetCheckout(ctx context.Context, merchantOrderNo, sessionToken
 		return nil
 	})
 	return out, classify(err)
+}
+
+// CheckoutSessionBinding proves only that the caller still holds a valid
+// trusted Payment session. It exposes an opaque marker, never an identity or
+// session cookie value, for the public Host's browser recovery checkpoint.
+func (s *Service) CheckoutSessionBinding(ctx context.Context, sessionToken string) (string, error) {
+	if s == nil || s.uow == nil || s.sessions == nil || len(sessionToken) < 20 || len(sessionToken) > 100 {
+		return "", paymentport.ErrInvalid
+	}
+	binding := paymentport.CheckoutSessionBinding(sessionToken)
+	if binding == "" {
+		return "", paymentport.ErrInvalid
+	}
+	now := s.now().UTC()
+	err := s.uow.Within(ctx, func(tx context.Context) error {
+		_, err := s.sessions.LookupWithin(tx, sessionToken, now)
+		return err
+	})
+	if err != nil {
+		return "", classify(err)
+	}
+	return binding, nil
 }
 func (s *Service) GetRefund(ctx context.Context, id int64) (domain.Refund, error) {
 	var out domain.Refund
@@ -788,6 +862,39 @@ func validShopRefundCommand(command paymentport.RefundCommand) bool {
 }
 func validKey(v string) bool   { return v == strings.TrimSpace(v) && len(v) >= 16 && len(v) <= 200 }
 func validScope(v string) bool { return v == strings.TrimSpace(v) && len(v) > 0 && len(v) <= 200 }
+
+// checkoutReadAuthorized permits a fresh trusted session to read a prior order
+// only when the same Payment-owned payer identity and canonical customer match.
+// A newly issued OAuth session is intentionally unresolved until a new checkout
+// selects a recipient, but that browser state must not hide an already persisted
+// payment whose beneficiary was selected in the original transaction.
+func checkoutReadAuthorized(payment domain.Payment, actor paymentport.SessionActor) bool {
+	if payment.PayerIdentityID != actor.PayerIdentityID || payment.PayerCustomerID != actor.PayerCustomerID || payment.Channel != actor.Channel {
+		return false
+	}
+	switch actor.BeneficiarySelection {
+	case paymentport.BeneficiarySelectionUnresolved:
+		return actor.BeneficiaryCustomerID == 0
+	case paymentport.BeneficiarySelectionPayerSelf:
+		return actor.BeneficiaryCustomerID == actor.PayerCustomerID && payment.BeneficiaryCustomerID == actor.BeneficiaryCustomerID
+	case paymentport.BeneficiarySelectionAdminAssisted:
+		return actor.BeneficiaryCustomerID > 0 && payment.BeneficiaryCustomerID == actor.BeneficiaryCustomerID
+	default:
+		return false
+	}
+}
+
+func selectedBeneficiary(actor paymentport.SessionActor) bool {
+	switch actor.BeneficiarySelection {
+	case paymentport.BeneficiarySelectionPayerSelf:
+		return actor.PayerCustomerID > 0 && actor.BeneficiaryCustomerID == actor.PayerCustomerID
+	case paymentport.BeneficiarySelectionAdminAssisted:
+		return actor.BeneficiaryCustomerID > 0
+	default:
+		return false
+	}
+}
+
 func validMainlandMobileE164(v string) bool {
 	if len(v) != 14 || !strings.HasPrefix(v, "+861") || v[4] < '3' || v[4] > '9' {
 		return false
@@ -800,6 +907,10 @@ func classify(err error) error {
 		return nil
 	case errors.Is(err, paymentport.ErrNotFound), errors.Is(err, orderport.ErrNotFound):
 		return paymentport.ErrNotFound
+	case errors.Is(err, paymentport.ErrSessionRequired):
+		return paymentport.ErrSessionRequired
+	case errors.Is(err, paymentport.ErrSessionMismatch):
+		return paymentport.ErrSessionMismatch
 	case errors.Is(err, paymentport.ErrConflict), errors.Is(err, orderport.ErrConflict), errors.Is(err, domain.ErrInvalid), errors.Is(err, domain.ErrTransition), errors.Is(err, domain.ErrVersion):
 		return paymentport.ErrConflict
 	default:

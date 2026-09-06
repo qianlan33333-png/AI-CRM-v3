@@ -241,7 +241,8 @@ func (r *Repository) acceptAndQueueTx(ctx context.Context, tx pgx.Tx, command Ac
 	if _, err = tx.Exec(ctx, `INSERT INTO external_effect_generations(effect_id,generation) VALUES ($1,1)`, id); err != nil {
 		return Projection{}, Receipt{}, err
 	}
-	inserted, err := platformjobqueue.InsertTxAt(ctx, r.river, tx, EffectJobArgs{EffectID: id, Generation: 1}, command.ScheduledAt)
+	queue := effectQueue(command.Envelope.Kind)
+	inserted, err := platformjobqueue.InsertTxWithOptions(ctx, r.river, tx, EffectJobArgs{EffectID: id, Generation: 1}, river.InsertOpts{Queue: queue, ScheduledAt: command.ScheduledAt.UTC()})
 	if err != nil {
 		return Projection{}, Receipt{}, err
 	}
@@ -250,7 +251,7 @@ func (r *Repository) acceptAndQueueTx(ctx context.Context, tx pgx.Tx, command Ac
 	if _, err = tx.Exec(ctx, `UPDATE external_effects SET state='queued',updated_at=clock_timestamp() WHERE id=$1`, id); err != nil {
 		return Projection{}, Receipt{}, err
 	}
-	if _, err = tx.Exec(ctx, `INSERT INTO external_effect_jobs(effect_id,generation,river_job_id,queue,args_digest,scheduled_at) VALUES ($1,1,$2,'outbound',$3,$4)`, id, inserted.Job.ID, Hash("river-args", effectID(id), "1"), inserted.Job.ScheduledAt); err != nil {
+	if _, err = tx.Exec(ctx, `INSERT INTO external_effect_jobs(effect_id,generation,river_job_id,queue,args_digest,scheduled_at) VALUES ($1,1,$2,$3,$4,$5)`, id, inserted.Job.ID, queue, Hash("river-args", effectID(id), "1"), inserted.Job.ScheduledAt); err != nil {
 		return Projection{}, Receipt{}, err
 	}
 	// The queue receipt is a distinct audit fact. The caller always receives
@@ -500,11 +501,12 @@ func (r *Repository) controlWithin(ctx context.Context, tx pgx.Tx, command Contr
 		if _, err = tx.Exec(ctx, `INSERT INTO external_effect_generations(effect_id,generation) VALUES($1,$2)`, id, generation); err != nil {
 			return Projection{}, Receipt{}, err
 		}
-		inserted, insertErr := platformjobqueue.InsertTx(ctx, r.river, tx, EffectJobArgs{EffectID: id, Generation: generation})
+		queue := effectQueue(Kind(kind))
+		inserted, insertErr := platformjobqueue.InsertTxWithOptions(ctx, r.river, tx, EffectJobArgs{EffectID: id, Generation: generation}, river.InsertOpts{Queue: queue})
 		if insertErr != nil {
 			return Projection{}, Receipt{}, insertErr
 		}
-		if _, err = tx.Exec(ctx, `INSERT INTO external_effect_jobs(effect_id,generation,river_job_id,queue,args_digest,scheduled_at) VALUES ($1,$2,$3,'outbound',$4,clock_timestamp())`, id, generation, inserted.Job.ID, Hash("river-args", command.EffectID, strconv.FormatInt(generation, 10))); err != nil {
+		if _, err = tx.Exec(ctx, `INSERT INTO external_effect_jobs(effect_id,generation,river_job_id,queue,args_digest,scheduled_at) VALUES ($1,$2,$3,$4,$5,clock_timestamp())`, id, generation, inserted.Job.ID, queue, Hash("river-args", command.EffectID, strconv.FormatInt(generation, 10))); err != nil {
 			return Projection{}, Receipt{}, err
 		}
 	}
@@ -546,6 +548,17 @@ func (r *Repository) controlWithin(ctx context.Context, tx pgx.Tx, command Contr
 	}
 	actor := command.ActorAdminUserID
 	return projection(id, Owner(owner), Kind(kind), next, attempts, generation, updated), Receipt{ID: "eerop_" + strconv.FormatInt(rid, 10), EffectID: command.EffectID, CommandDigest: digest, ActorAdminUserID: &actor, State: next, CompletedAt: completed}, nil
+}
+
+// effectQueue keeps dispatch ownership in the shared External Effects kernel.
+// Welcome intents get a registered queue so ordinary outbound backlog cannot
+// consume their short provider-call window; worker, claim, receipt, retry and
+// reconciliation semantics remain exactly the same.
+func effectQueue(kind Kind) string {
+	if kind == KindChannelWelcome {
+		return platformjobqueue.OutboundWelcomeQueue
+	}
+	return platformjobqueue.OutboundQueue
 }
 func (r *Repository) Cancel(ctx context.Context, c ControlCommand) (Projection, Receipt, error) {
 	return r.control(ctx, c, "cancel")
@@ -645,7 +658,7 @@ func (r *Repository) RunAttempt(ctx context.Context, id, generation, riverJobID 
 		next = StateFinalFailed // Provider disabled: no call was attempted.
 		receipt = Hash("provider-disabled", strconv.FormatInt(id, 10), strconv.Itoa(int(attempts)))
 	} else {
-		adapterResult, callErr = adapter.Execute(ctx, envelope, Attempt{Number: attempts, Generation: generation, Fence: fence})
+		adapterResult, callErr = adapter.Execute(ctx, envelope, Attempt{EffectID: effectID(id), Number: attempts, Generation: generation, Fence: fence})
 		result := adapterResult
 		callAttempted, realExternalCallExecuted = result.CallAttempted, result.RealExternalCallExecuted
 		if callErr != nil {
@@ -704,7 +717,7 @@ func (r *Repository) RunAttempt(ctx context.Context, id, generation, riverJobID 
 		return ErrTransition
 	}
 	terminal := next == StateExecuted || next == StateUnknown || next == StateRetryable || next == StateFinalFailed
-	shouldComplete := r.sink != nil && terminal && (envelope.Kind == KindGroupMessage || envelope.Kind == KindWeComTagCatalog || envelope.Kind == KindChannelAsset || envelope.Kind == KindChannelWelcome || envelope.Kind == KindChannelEntryTag || envelope.Kind == KindChannelLink || envelope.Kind == KindOutboundMessage || envelope.Kind == KindAutomationMessage || envelope.Owner == OwnerPayment)
+	shouldComplete := r.sink != nil && terminal && (envelope.Kind == KindGroupMessage || envelope.Kind == KindWeComTagCatalog || envelope.Kind == KindChannelAsset || envelope.Kind == KindChannelWelcome || envelope.Kind == KindChannelEntryTag || envelope.Kind == KindChannelLink || envelope.Kind == KindOutboundMessage || envelope.Kind == KindAutomationMessage || envelope.Kind == KindSurveyCompletion || envelope.Owner == OwnerPayment)
 	if shouldComplete {
 		completionResult := adapterResult
 		completionResult.Completion = next
@@ -720,7 +733,7 @@ func (r *Repository) RunAttempt(ctx context.Context, id, generation, riverJobID 
 
 func projectsStaleAttempt(kind Kind) bool {
 	switch kind {
-	case KindWeComTagCatalog, KindGroupMessage, KindChannelAsset, KindOutboundMessage, KindAutomationMessage:
+	case KindWeComTagCatalog, KindGroupMessage, KindChannelAsset, KindOutboundMessage, KindAutomationMessage, KindSurveyCompletion:
 		return true
 	default:
 		return false

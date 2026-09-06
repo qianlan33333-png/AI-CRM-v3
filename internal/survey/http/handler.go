@@ -35,8 +35,15 @@ type Handler struct {
 		surveyport.PublicApplication
 		surveyport.SubmissionApplication
 	}
-	security RequestSecurity
-	oauth    OAuthApplication
+	security                  RequestSecurity
+	oauth                     OAuthApplication
+	completionProviderEnabled bool
+}
+
+func (h *Handler) SetCompletionProviderEnabled(enabled bool) {
+	if h != nil {
+		h.completionProviderEnabled = enabled
+	}
 }
 
 func NewHandler(definitions surveyport.DefinitionApplication, submissions interface {
@@ -92,6 +99,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// publicPublishRequest preserves the frozen empty-body compatibility path while
+// making an explicitly supplied version a real compare-and-swap precondition.
+// An absent field intentionally retains the established /enable-era behavior.
+type publicPublishRequest struct {
+	ExpectedQuestionnaireVersion *int64 `json:"expected_questionnaire_version"`
+}
+
 type definitionRequest struct {
 	Name              string                       `json:"name"`
 	Title             string                       `json:"title"`
@@ -114,7 +128,38 @@ func (r definitionRequest) questionnaire() surveyport.Questionnaire {
 	if r.IsDisabled {
 		status = surveyport.StatusDisabled
 	}
-	return surveyport.Questionnaire{Name: r.Name, Title: r.Title, Description: r.Description, Mode: mode, AnswerDisplayMode: r.AnswerDisplayMode, AssessmentConfig: r.AssessmentConfig, Slug: r.Slug, Status: status, Questions: r.Questions, ScoreRules: r.ScoreRules}
+	questions := append([]surveyport.Question(nil), r.Questions...)
+	for index := range questions {
+		// The frozen editor omits validation for ordinary single-choice
+		// questions. Its established behavior is exactly one answer, while the
+		// domain's generic omitted maximum means every option. Normalize only
+		// that absent legacy default at the Host DTO boundary; explicit values
+		// still reach the Owner unchanged for validation.
+		if questions[index].Type == surveyport.QuestionSingleChoice && questions[index].Validation.MaximumSelections == nil {
+			maximum := 1
+			questions[index].Validation.MaximumSelections = &maximum
+		}
+		options := append([]surveyport.Option(nil), questions[index].Options...)
+		for optionIndex := range options {
+			// Hidden “other” controls in the frozen editor serialize their 80
+			// character default even when the option is not an other option.
+			// It is not enabled business configuration, so omit it before the
+			// strict Owner validation; enabled other-option values are retained.
+			if !options[optionIndex].IsOther {
+				options[optionIndex].OtherPlaceholder = ""
+				options[optionIndex].OtherMaximumLength = 0
+			}
+		}
+		questions[index].Options = options
+	}
+	assessmentConfig := r.AssessmentConfig
+	if mode == surveyport.ModeSurvey {
+		// The same frozen editor serializes its hidden assessment builder for
+		// ordinary questionnaires. Survey-owned definitions do not enable that
+		// product surface, so retain the canonical empty object instead.
+		assessmentConfig = json.RawMessage(`{}`)
+	}
+	return surveyport.Questionnaire{Name: r.Name, Title: r.Title, Description: r.Description, Mode: mode, AnswerDisplayMode: r.AnswerDisplayMode, AssessmentConfig: assessmentConfig, Slug: r.Slug, Status: status, Questions: questions, ScoreRules: r.ScoreRules}
 }
 
 func (h *Handler) adminRoot(w http.ResponseWriter, r *http.Request) {
@@ -306,9 +351,27 @@ func (h *Handler) setStatus(w http.ResponseWriter, r *http.Request, id int64, st
 		resultError(w, err)
 		return
 	}
+	expected := current.Version
+	if publish && r.Body != nil {
+		var body publicPublishRequest
+		decoder := json.NewDecoder(io.LimitReader(r.Body, maxBody))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+			writeError(w, http.StatusBadRequest, "invalid_request")
+			return
+		} else if err == nil {
+			if decoder.Decode(&struct{}{}) != io.EOF {
+				writeError(w, http.StatusBadRequest, "invalid_request")
+				return
+			}
+			if body.ExpectedQuestionnaireVersion != nil {
+				expected = *body.ExpectedQuestionnaireVersion
+			}
+		}
+	}
 	var q surveyport.Questionnaire
 	if publish {
-		q, err = h.definitions.Publish(r.Context(), surveyport.ID(id), current.Version, p.InternalID, idempotency(r))
+		q, err = h.definitions.Publish(r.Context(), surveyport.ID(id), expected, p.InternalID, idempotency(r))
 	} else {
 		q, err = h.definitions.SetStatus(r.Context(), surveyport.ID(id), current.Version, status, p.InternalID, idempotency(r))
 	}
@@ -794,7 +857,7 @@ func (h *Handler) operationsDisabled(w http.ResponseWriter, r *http.Request, id 
 			resultError(w, err)
 			return
 		}
-		writeJSON(w, 200, map[string]any{"questionnaire_id": id, "completion": map[string]any{"navigation_target_id": config.CompletionNavigationRef, "channel_id": config.CompletionChannelID}, "external_push": map[string]any{"enabled": config.ExternalPushEnabled, "configuration_reference": config.ExternalPushConfigurationRef}, "configuration_version": config.Version, "provider_enabled": false, "local_only": true, "items": items, "total": total, "real_external_call_executed": false})
+		writeJSON(w, 200, map[string]any{"questionnaire_id": id, "completion": map[string]any{"navigation_target_id": config.CompletionNavigationRef, "channel_id": config.CompletionChannelID}, "external_push": map[string]any{"enabled": config.ExternalPushEnabled, "configuration_reference": config.ExternalPushConfigurationRef, "metadata": config.ExternalPushMetadata}, "configuration_version": config.Version, "operation_enabled": config.ExternalPushEnabled, "provider_enabled": h.completionProviderEnabled, "local_only": !h.completionProviderEnabled, "items": items, "total": total, "real_external_call_executed": false})
 		return
 	}
 	principal, ok := h.write(w, r)
@@ -819,21 +882,58 @@ func (h *Handler) operationsDisabled(w http.ResponseWriter, r *http.Request, id 
 			config.CompletionNavigationRef, config.CompletionChannelID = body.NavigationTargetID, body.ChannelID
 		} else {
 			var body struct {
-				Enabled                bool   `json:"enabled"`
-				ConfigurationReference string `json:"configuration_reference"`
+				Enabled                bool             `json:"enabled"`
+				ConfigurationReference string           `json:"configuration_reference"`
+				Metadata               *json.RawMessage `json:"metadata"`
+				ConfigurationVersion   *int64           `json:"configuration_version"`
 			}
 			if decode(r, &body) != nil {
 				writeError(w, 400, "invalid_request")
 				return
 			}
+			// The established questionnaire operations page saves completion
+			// first and then external-push without the newer metadata fields.
+			// Preserve its metadata and use the just-read server revision as the
+			// CAS value. New metadata writers must explicitly carry a revision.
+			if body.ConfigurationVersion != nil && *body.ConfigurationVersion != config.Version {
+				writeError(w, http.StatusConflict, "configuration_conflict")
+				return
+			}
+			if body.Metadata != nil && body.ConfigurationVersion == nil {
+				writeError(w, 400, "configuration_version_required")
+				return
+			}
 			config.ExternalPushEnabled, config.ExternalPushConfigurationRef = body.Enabled, body.ConfigurationReference
+			if body.Metadata != nil {
+				config.ExternalPushMetadata = *body.Metadata
+			}
 		}
 		stored, err := h.submissions.SaveOperationConfiguration(r.Context(), config, principal.InternalID, idempotency(r))
 		if err != nil {
 			resultError(w, err)
 			return
 		}
-		writeJSON(w, 200, map[string]any{"questionnaire_id": id, "completion": map[string]any{"navigation_target_id": stored.CompletionNavigationRef, "channel_id": stored.CompletionChannelID}, "external_push": map[string]any{"enabled": stored.ExternalPushEnabled, "configuration_reference": stored.ExternalPushConfigurationRef}, "configuration_version": stored.Version, "local_only": true, "provider_enabled": false, "real_external_call_executed": false})
+		writeJSON(w, 200, map[string]any{"questionnaire_id": id, "completion": map[string]any{"navigation_target_id": stored.CompletionNavigationRef, "channel_id": stored.CompletionChannelID}, "external_push": map[string]any{"enabled": stored.ExternalPushEnabled, "configuration_reference": stored.ExternalPushConfigurationRef, "metadata": stored.ExternalPushMetadata}, "configuration_version": stored.Version, "operation_enabled": stored.ExternalPushEnabled, "local_only": !h.completionProviderEnabled, "provider_enabled": h.completionProviderEnabled, "real_external_call_executed": false})
+		return
+	}
+	if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/operations/external-push/test") {
+		queuer, supported := h.submissions.(interface {
+			QueueCompletionTest(context.Context, surveyport.ID, int64, string) (surveyport.CompletionTestReceipt, error)
+		})
+		if !supported {
+			writeError(w, http.StatusServiceUnavailable, "provider_disabled")
+			return
+		}
+		receipt, err := queuer.QueueCompletionTest(r.Context(), surveyport.ID(id), principal.InternalID, idempotency(r))
+		if errors.Is(err, surveyport.ErrEffectUnavailable) {
+			writeError(w, http.StatusConflict, "provider_disabled")
+			return
+		}
+		if err != nil {
+			resultError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusAccepted, map[string]any{"questionnaire_id": id, "test_run_id": receipt.TestRunID, "effect_id": receipt.EffectID, "status": receipt.State, "synthetic_data": true, "accepted": true})
 		return
 	}
 	if r.Method == http.MethodPost && !strings.HasSuffix(r.URL.Path, "/reconcile") {
@@ -894,22 +994,31 @@ func (h *Handler) legacyOperationLogs(w http.ResponseWriter, r *http.Request, id
 		resultError(w, err)
 		return
 	}
-	// Keep the frozen donor log reader on its original local-queued contract.
-	// The v3 extension reads the canonical receipt states from /operations.
 	compatible := make([]map[string]any, 0, len(items))
+	anyExternalCall := false
 	for _, item := range items {
+		// Synthetic runs retain their immutable textual test_run_id. Older
+		// donor-compatible receipts have no source_pk and continue to expose
+		// their numeric receipt id.
+		runID := any(item.ID)
+		if item.SourcePK != "" {
+			runID = item.SourcePK
+		}
+		sideEffectExecuted := item.Status == "executed" && item.ProviderRealCallExecuted != nil && *item.ProviderRealCallExecuted && item.ProviderResultReceived != nil && *item.ProviderResultReceived
+		unknown := item.Status == "outcome_unknown"
+		anyExternalCall = anyExternalCall || item.RealEffectExecuted
 		compatible = append(compatible, map[string]any{
-			"test_run_id": item.ID, "questionnaire_id": item.QuestionnaireID,
-			"created_at": item.OccurredAt, "status": "queued", "attempt_count": 0,
-			"side_effect_executed": false, "provider_result_received": false,
-			"unknown_after_dispatch": false, "auto_retry_allowed": false,
+			"test_run_id": runID, "questionnaire_id": item.QuestionnaireID,
+			"created_at": item.OccurredAt, "updated_at": item.OccurredAt, "status": item.Status, "attempt_count": item.ProviderAttemptNumber,
+			"side_effect_executed": sideEffectExecuted, "provider_call_attempted": item.ProviderCallAttempted, "provider_result_received": item.ProviderResultReceived,
+			"unknown_after_dispatch": unknown, "auto_retry_allowed": item.Status == "attempted", "real_external_call_executed": item.ProviderRealCallExecuted,
 		})
 	}
-	writeJSON(w, 200, map[string]any{"items": compatible, "total": total, "limit": limit, "offset": offset, "has_more": int64(offset)+int64(len(items)) < total, "local_only": true, "real_external_call_executed": false, "canonical_receipts_path": "/api/admin/questionnaires/{questionnaire_id}/operations"})
+	writeJSON(w, 200, map[string]any{"items": compatible, "total": total, "limit": limit, "offset": offset, "has_more": int64(offset)+int64(len(items)) < total, "provider_enabled": h.completionProviderEnabled, "real_external_call_executed": anyExternalCall})
 }
 
 func definitionResponse(q surveyport.Questionnaire) map[string]any {
-	return map[string]any{"id": q.ID, "name": q.Name, "title": q.Title, "description": q.Description, "answer_display_mode": q.AnswerDisplayMode, "assessment_enabled": q.Mode == surveyport.ModeAssessment, "assessment_config": json.RawMessage(q.AssessmentConfig), "slug": q.Slug, "is_disabled": q.Status == surveyport.StatusDisabled, "enabled": q.Status == surveyport.StatusPublished, "status": map[surveyport.QuestionnaireStatus]string{surveyport.StatusPublished: "active", surveyport.StatusDisabled: "disabled", surveyport.StatusDraft: "disabled"}[q.Status], "version": q.Version, "definition_version": q.DefinitionVersion, "question_count": len(q.Questions), "submission_count": q.SubmissionCount, "created_at": q.CreatedAt, "updated_at": q.UpdatedAt, "public_path": "/q/" + q.Slug, "submitted_path": "/h5/result.html", "questions": q.Questions, "score_rules": q.ScoreRules}
+	return map[string]any{"id": q.ID, "name": q.Name, "title": q.Title, "description": q.Description, "answer_display_mode": q.AnswerDisplayMode, "assessment_enabled": q.Mode == surveyport.ModeAssessment, "assessment_config": json.RawMessage(q.AssessmentConfig), "slug": q.Slug, "is_disabled": q.Status != surveyport.StatusPublished, "enabled": q.Status == surveyport.StatusPublished, "status": map[surveyport.QuestionnaireStatus]string{surveyport.StatusPublished: "active", surveyport.StatusDisabled: "disabled", surveyport.StatusDraft: "disabled"}[q.Status], "version": q.Version, "definition_version": q.DefinitionVersion, "question_count": len(q.Questions), "submission_count": q.SubmissionCount, "created_at": q.CreatedAt, "updated_at": q.UpdatedAt, "public_path": "/q/" + q.Slug, "submitted_path": "/h5/result.html", "questions": q.Questions, "score_rules": q.ScoreRules}
 }
 func definitionEnvelope(q surveyport.Questionnaire, status string, source int64) map[string]any {
 	value := definitionResponse(q)

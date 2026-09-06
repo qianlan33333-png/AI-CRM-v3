@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	couponport "github.com/qianlan33333-png/AI-CRM-v3/internal/coupon/port"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/order/domain"
 	orderport "github.com/qianlan33333-png/AI-CRM-v3/internal/order/port"
 	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
@@ -88,6 +89,8 @@ type Store interface {
 	RecordExport(context.Context, ExportReceipt) (ExportReceipt, bool, error)
 	UpdateSettlement(context.Context, domain.Order, domain.StatusEvent, string) (domain.Order, error)
 	Import(context.Context, string, [32]byte, domain.Order) (domain.Order, bool, error)
+	InsertCheckoutSnapshot(context.Context, orderport.CheckoutSnapshot) error
+	ReadCheckoutSnapshot(context.Context, int64) (orderport.CheckoutSnapshot, error)
 }
 
 type Service struct {
@@ -97,7 +100,30 @@ type Service struct {
 		Encrypt(string) ([]byte, error)
 		KeyVersion() int16
 	}
-	now func() time.Time
+	coupons      couponport.OrderCouponCoordinator
+	entitlements orderport.ServicePeriodEntitlementCoordinator
+	now          func() time.Time
+}
+
+// SetCheckoutCouponCoordinator injects Coupon's transaction-bound reserve /
+// consume / release seam. It never grants Order access to Coupon tables.
+func (s *Service) SetCheckoutCouponCoordinator(coordinator couponport.OrderCouponCoordinator) error {
+	if s == nil || coordinator == nil {
+		return orderport.ErrConflict
+	}
+	s.coupons = coordinator
+	return nil
+}
+
+// SetServicePeriodEntitlementCoordinator injects the Order-owned fulfillment
+// leaf for paid service periods. The coordinator receives only frozen Order
+// facts after the authoritative payment transition.
+func (s *Service) SetServicePeriodEntitlementCoordinator(coordinator orderport.ServicePeriodEntitlementCoordinator) error {
+	if s == nil || coordinator == nil {
+		return orderport.ErrConflict
+	}
+	s.entitlements = coordinator
+	return nil
 }
 
 func NewService(uow platformport.UnitOfWork, store Store) *Service {
@@ -131,7 +157,7 @@ func (s *Service) ReservePaymentWithin(ctx context.Context, id int64) (domain.Sn
 }
 
 func (s *Service) CreatePaymentOrderWithin(ctx context.Context, command orderport.PaymentOrderCommand) (domain.Snapshot, error) {
-	if !ready(s) || command.Provider != domain.ProviderWeChatPay || command.PayerCustomerID < 1 || command.BeneficiaryCustomerID < 1 || command.ProductID < 1 || command.ProductVersion < 1 || command.UnitAmountMinor < 1 || command.Currency != "CNY" || !validKey(command.IdempotencyKey) || !validKey(command.ActorScope) {
+	if !ready(s) || command.Provider != domain.ProviderWeChatPay || command.PayerCustomerID < 1 || command.BeneficiaryCustomerID < 1 || command.ProductID < 1 || command.ProductVersion < 1 || command.UnitAmountMinor < 1 || command.Currency != "CNY" || command.CouponClaimID < 0 || !validPaymentProductType(command.ProductType, command.ServicePeriodDurationDays) || !validKey(command.IdempotencyKey) || !validKey(command.ActorScope) {
 		return domain.Snapshot{}, orderport.ErrConflict
 	}
 	productID := command.ProductID
@@ -151,29 +177,16 @@ func (s *Service) CreatePaymentOrderWithin(ctx context.Context, command orderpor
 		}
 		phoneKeyVersion = s.contactCipher.KeyVersion()
 	}
-	input := domain.NewOrderInput{
-		Provider: command.Provider, SourceSystem: "v3-checkout", SourceKey: command.MerchantOrderNo,
-		MerchantOrderNo: command.MerchantOrderNo, PayerCustomerID: &command.PayerCustomerID,
-		BeneficiaryCustomerID: &command.BeneficiaryCustomerID,
-		Amount:                domain.Money{AmountMinor: command.UnitAmountMinor, Currency: command.Currency},
-		Items:                 []domain.ItemSnapshot{{LineNo: 1, ProductID: &productID, ProductVersion: &productVersion, ProductCode: command.ProductCode, ProductName: command.ProductName, UnitAmountMinor: command.UnitAmountMinor, Quantity: 1, LineAmountMinor: command.UnitAmountMinor}},
-		RecordOrigin:          domain.RecordOriginNative, EffectEligible: true, CreatedAt: s.now().UTC(),
-	}
-	order, err := domain.NewOrder(input)
-	if err != nil {
-		return domain.Snapshot{}, orderport.ErrConflict
-	}
+	createdAt := s.now().UTC()
 	digestInput := struct {
-		Input          domain.NewOrderInput
-		ProductVersion int64
-		PhoneDigest    [32]byte
-	}{Input: input, ProductVersion: command.ProductVersion, PhoneDigest: phoneDigest}
-	digestInput.Input.CreatedAt = time.Time{}
+		Command     orderport.PaymentOrderCommand
+		PhoneDigest [32]byte
+	}{Command: command, PhoneDigest: phoneDigest}
 	payload, err := json.Marshal(digestInput)
 	if err != nil {
 		return domain.Snapshot{}, orderport.ErrUnavailable
 	}
-	reservation := Reservation{Operation: "create", ActorScope: command.ActorScope, KeyDigest: sha256.Sum256([]byte(command.IdempotencyKey)), PayloadDigest: sha256.Sum256(payload), CreatedAt: input.CreatedAt}
+	reservation := Reservation{Operation: "create", ActorScope: command.ActorScope, KeyDigest: sha256.Sum256([]byte(command.IdempotencyKey)), PayloadDigest: sha256.Sum256(payload), CreatedAt: createdAt}
 	receipt, owned, err := s.store.Reserve(ctx, reservation)
 	if err != nil || !validReceipt(receipt, reservation) || subtle.ConstantTimeCompare(receipt.PayloadDigest[:], reservation.PayloadDigest[:]) != 1 {
 		if err != nil {
@@ -191,8 +204,28 @@ func (s *Service) CreatePaymentOrderWithin(ctx context.Context, command orderpor
 		}
 		return result, nil
 	}
+	checkout, err := s.reserveCheckout(ctx, command, createdAt)
+	if err != nil {
+		return domain.Snapshot{}, err
+	}
+	input := domain.NewOrderInput{
+		Provider: command.Provider, SourceSystem: "v3-checkout", SourceKey: command.MerchantOrderNo,
+		MerchantOrderNo: command.MerchantOrderNo, PayerCustomerID: &command.PayerCustomerID,
+		BeneficiaryCustomerID: &command.BeneficiaryCustomerID,
+		Amount:                domain.Money{AmountMinor: checkout.PayableAmountMinor, Currency: command.Currency},
+		Items:                 []domain.ItemSnapshot{{LineNo: 1, ProductID: &productID, ProductVersion: &productVersion, ProductCode: command.ProductCode, ProductName: command.ProductName, UnitAmountMinor: checkout.PayableAmountMinor, Quantity: 1, LineAmountMinor: checkout.PayableAmountMinor}},
+		RecordOrigin:          domain.RecordOriginNative, EffectEligible: true, CreatedAt: createdAt,
+	}
+	order, err := domain.NewOrder(input)
+	if err != nil {
+		return domain.Snapshot{}, orderport.ErrConflict
+	}
 	persisted, err := s.store.InsertScoped(ctx, order, command.ActorScope, input.CreatedAt)
 	if err != nil {
+		return domain.Snapshot{}, classify(err)
+	}
+	checkout.OrderID = persisted.Snapshot().ID
+	if err = s.store.InsertCheckoutSnapshot(ctx, checkout); err != nil {
 		return domain.Snapshot{}, classify(err)
 	}
 	if len(phoneCiphertext) > 0 {
@@ -252,7 +285,81 @@ func (s *Service) SettlePaymentWithin(ctx context.Context, command orderport.Pay
 	if err != nil {
 		return domain.Snapshot{}, classify(err)
 	}
+	if err = s.applyCheckoutSettlement(ctx, updated.Snapshot(), command); err != nil {
+		return domain.Snapshot{}, err
+	}
 	return updated.Snapshot(), nil
+}
+
+func validPaymentProductType(kind string, durationDays int32) bool {
+	return (kind == "standard_product" && durationDays == 0) || (kind == "service_period" && durationDays > 0)
+}
+
+func (s *Service) reserveCheckout(ctx context.Context, command orderport.PaymentOrderCommand, at time.Time) (orderport.CheckoutSnapshot, error) {
+	snapshot := orderport.CheckoutSnapshot{ProductType: command.ProductType, ProductID: command.ProductID, ProductCode: command.ProductCode, ProductName: command.ProductName, ProductVersion: command.ProductVersion, ServicePeriodDurationDays: command.ServicePeriodDurationDays, GrossAmountMinor: command.UnitAmountMinor, PayableAmountMinor: command.UnitAmountMinor, Currency: command.Currency, ReservedAt: at}
+	if s.coupons == nil {
+		return snapshot, nil
+	}
+	reserved, err := s.coupons.ReserveWithin(ctx, couponport.ReserveCommand{HolderCustomerID: command.PayerCustomerID, ClaimID: command.CouponClaimID, ProductID: command.ProductID, ProductCode: command.ProductCode, ProductType: command.ProductType, GrossAmountMinor: command.UnitAmountMinor, Currency: command.Currency, OrderReference: command.MerchantOrderNo, ActorScope: command.ActorScope, IdempotencyKey: command.IdempotencyKey, ReservedAt: at})
+	if err != nil {
+		return orderport.CheckoutSnapshot{}, err
+	}
+	if reserved.ProductID != command.ProductID || reserved.ProductType != command.ProductType || reserved.ProductCode != command.ProductCode || reserved.GrossAmountMinor != command.UnitAmountMinor || reserved.Currency != command.Currency || reserved.DiscountAmountMinor < 0 || reserved.PayableAmountMinor < 1 || reserved.PayableAmountMinor != reserved.GrossAmountMinor-reserved.DiscountAmountMinor {
+		return orderport.CheckoutSnapshot{}, orderport.ErrConflict
+	}
+	if !reserved.CouponApplied {
+		if reserved.ReservationRef != "" || reserved.ClaimID != 0 || reserved.CouponID != 0 || reserved.RuleVersion != 0 || reserved.DiscountAmountMinor != 0 || reserved.PayableAmountMinor != command.UnitAmountMinor {
+			return orderport.CheckoutSnapshot{}, orderport.ErrConflict
+		}
+		return snapshot, nil
+	}
+	if reserved.ReservationRef == "" || len(reserved.ReservationRef) > 240 || reserved.ClaimID < 1 || reserved.CouponID < 1 || reserved.RuleVersion < 1 || reserved.DiscountAmountMinor < 1 || reserved.DiscountAmountMinor >= reserved.GrossAmountMinor {
+		return orderport.CheckoutSnapshot{}, orderport.ErrConflict
+	}
+	snapshot.CouponApplied, snapshot.CouponReservationRef, snapshot.CouponClaimID, snapshot.CouponID, snapshot.CouponRuleVersion = true, reserved.ReservationRef, reserved.ClaimID, int64(reserved.CouponID), reserved.RuleVersion
+	snapshot.DiscountAmountMinor, snapshot.PayableAmountMinor = reserved.DiscountAmountMinor, reserved.PayableAmountMinor
+	return snapshot, nil
+}
+
+func (s *Service) applyCheckoutSettlement(ctx context.Context, order domain.Snapshot, command orderport.PaymentSettlementCommand) error {
+	checkout, err := s.store.ReadCheckoutSnapshot(ctx, order.ID)
+	if errors.Is(err, orderport.ErrNotFound) {
+		// Existing orders predate the immutable checkout table. Their missing
+		// evidence must remain unknown; no coupon or entitlement is inferred.
+		return nil
+	}
+	if err != nil {
+		return classify(err)
+	}
+	if checkout.OrderID != order.ID || checkout.PayableAmountMinor != order.Amount.AmountMinor || checkout.Currency != order.Amount.Currency || !validPaymentProductType(checkout.ProductType, checkout.ServicePeriodDurationDays) {
+		return orderport.ErrConflict
+	}
+	actorScope := "payment:order:" + strconv.FormatInt(order.ID, 10)
+	if command.Failed {
+		if checkout.CouponApplied && s.coupons != nil {
+			_, err = s.coupons.ReleaseWithin(ctx, couponport.ReleaseCommand{ReservationRef: checkout.CouponReservationRef, OrderReference: order.MerchantOrderNo, CloseReason: "payment_final_failed", ActorScope: actorScope, IdempotencyKey: "payment.release:" + command.ReceiptKey, ClosedAt: command.OccurredAt.UTC()})
+		}
+		return err
+	}
+	if command.RefundedDelta > 0 {
+		if checkout.ProductType == "service_period" && s.entitlements != nil {
+			_, err = s.entitlements.ApplyServicePeriodRefundWithin(ctx, orderport.ServicePeriodRefundCommand{SourceOrderID: order.ID, RefundAmountMinor: command.RefundedDelta, ProcessedAt: command.OccurredAt.UTC()})
+		}
+		return err
+	}
+	if checkout.CouponApplied && s.coupons != nil {
+		_, err = s.coupons.ConsumeWithin(ctx, couponport.ConsumeCommand{ReservationRef: checkout.CouponReservationRef, OrderReference: order.MerchantOrderNo, SettledAmountMinor: checkout.PayableAmountMinor, SettledCurrency: checkout.Currency, ActorScope: actorScope, IdempotencyKey: "payment.consume:" + command.ReceiptKey, SettledAt: command.OccurredAt.UTC()})
+		if err != nil {
+			return err
+		}
+	}
+	if checkout.ProductType == "service_period" && s.entitlements != nil {
+		if order.BeneficiaryCustomerID == nil || *order.BeneficiaryCustomerID < 1 {
+			return orderport.ErrConflict
+		}
+		_, err = s.entitlements.GrantPaidServicePeriodWithin(ctx, orderport.ServicePeriodGrantCommand{SourceOrderID: order.ID, BeneficiaryCustomerID: int64(*order.BeneficiaryCustomerID), ServiceProductID: checkout.ProductID, ProductName: checkout.ProductName, DurationDays: checkout.ServicePeriodDurationDays, PaidAt: command.OccurredAt.UTC(), ProcessedAt: s.now().UTC()})
+	}
+	return err
 }
 
 func (s *Service) Create(ctx context.Context, command orderport.CreateCommand) (domain.Snapshot, error) {

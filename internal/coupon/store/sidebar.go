@@ -34,6 +34,34 @@ func (r *Repository) ListCustomerCoupons(ctx context.Context, customerID int64, 
 	return page, err
 }
 
+func (r *Repository) ListCouponClaims(ctx context.Context, couponID couponport.ID, limit, offset int32) (couponport.AdminCouponClaimPage, error) {
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return couponport.AdminCouponClaimPage{}, err
+	}
+	if couponID < 1 || limit < 1 || limit > 100 || offset < 0 || offset > 1_000_000 {
+		return couponport.AdminCouponClaimPage{}, couponapp.ErrInvalidCoupon
+	}
+	page := couponport.AdminCouponClaimPage{Items: []couponport.AdminCouponClaim{}, Limit: limit, Offset: offset}
+	rows, err := tx.Query(ctx, `SELECT id,customer_id,coupon_id,status,claim_no_masked,claimed_at,valid_from,valid_until,redeemed_at FROM coupon_customer_claims WHERE coupon_id=$1 ORDER BY claimed_at DESC,id DESC LIMIT $2 OFFSET $3`, couponID, limit, offset)
+	if err != nil {
+		return page, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var item couponport.AdminCouponClaim
+		if err = rows.Scan(&item.ClaimID, &item.CustomerID, &item.CouponID, &item.Status, &item.ClaimNoMasked, &item.ClaimedAt, &item.ValidFrom, &item.ValidUntil, &item.RedeemedAt); err != nil {
+			return page, err
+		}
+		page.Items = append(page.Items, item)
+	}
+	if err = rows.Err(); err != nil {
+		return page, err
+	}
+	err = tx.QueryRow(ctx, `SELECT count(*) FROM coupon_customer_claims WHERE coupon_id=$1`, couponID).Scan(&page.Total)
+	return page, err
+}
+
 func (r *Repository) ImportHistoricalCustomerCoupon(ctx context.Context, input couponport.HistoricalCustomerCoupon) (couponport.CustomerCoupon, bool, error) {
 	tx, err := platformpostgres.RequireTransaction(ctx)
 	if err != nil {
@@ -62,3 +90,4 @@ func (r *Repository) ImportHistoricalCustomerCoupon(ctx context.Context, input c
 }
 
 var _ couponapp.CustomerCouponStore = (*Repository)(nil)
+var _ couponapp.CouponClaimAdminStore = (*Repository)(nil)

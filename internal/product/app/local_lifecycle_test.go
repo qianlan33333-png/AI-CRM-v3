@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"reflect"
 	"sort"
-	"strconv"
 	"testing"
 	"time"
 
@@ -154,7 +154,7 @@ func TestLocalProductLifecycleShareUsesCanonicalPublicRouteOnlyWhenEnabled(t *te
 	product := seedLocalProduct(t, store, 31, productport.LocalProductEnabled, true, nil)
 	share, err := service.ShareLocalProduct(context.Background(), product.ID)
 	if err != nil || share.ProductID != product.ID || share.ProductCode != product.ProductCode || share.Lifecycle != productport.LocalProductEnabled ||
-		!share.Available || share.Reason != "" || share.PurchaseURL != "/p/"+strconv.FormatInt(int64(product.ID), 10) || share.QRCodeURL != "" {
+		!share.Available || share.Reason != "" || share.PurchaseURL != "/p/"+url.PathEscape(product.ProductCode) || share.QRCodeURL != "" {
 		t.Fatalf("share=%+v err=%v", share, err)
 	}
 	disabled := seedLocalProduct(t, store, 32, productport.LocalProductDisabled, false, nil)

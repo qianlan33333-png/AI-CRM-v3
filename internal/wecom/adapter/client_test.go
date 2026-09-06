@@ -115,6 +115,103 @@ func TestClientSignsBothTicketsCachesAndRefreshes(t *testing.T) {
 	}
 }
 
+func TestClientGroupMessageUsesExactChatIDListAndRejectsPartialReceipt(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/cgi-bin/gettoken":
+			if request.URL.Query().Get("corpsecret") != "contact-secret" {
+				t.Fatalf("wrong token secret")
+			}
+			_, _ = writer.Write([]byte(`{"errcode":0,"access_token":"contact-token","expires_in":7200}`))
+		case "/cgi-bin/externalcontact/add_msg_template":
+			calls++
+			var body map[string]any
+			if json.NewDecoder(request.Body).Decode(&body) != nil {
+				t.Fatal("invalid JSON request")
+			}
+			if body["chat_type"] != "group" || body["sender"] != "owner-1" || body["allow_select"] != false {
+				t.Fatalf("body=%v", body)
+			}
+			ids, ok := body["chat_id_list"].([]any)
+			if !ok || len(ids) != 1 || ids[0] != "chat-1" || body["chat_ids"] != nil {
+				t.Fatalf("exact target body=%v", body)
+			}
+			if calls == 1 {
+				_, _ = writer.Write([]byte(`{"errcode":0,"msgid":"task-1"}`))
+				return
+			}
+			_, _ = writer.Write([]byte(`{"errcode":0,"msgid":"task-2","fail_list":["chat-1"]}`))
+		default:
+			t.Fatalf("unexpected endpoint=%s", request.URL.Path)
+		}
+	}))
+	defer server.Close()
+	client, err := NewDirectory(Config{Enabled: true, CorpID: "corp", ContactSecret: "contact-secret", APIBase: server.URL, HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := wecomport.GroupMessageRequest{SenderUserID: "owner-1", ChatIDs: []string{"chat-1"}, Text: "hello"}
+	receipt, attempted, err := client.SendGroupMessage(context.Background(), request)
+	if err != nil || !attempted || receipt.MessageID != "task-1" {
+		t.Fatalf("receipt=%+v attempted=%t err=%v", receipt, attempted, err)
+	}
+	_, attempted, err = client.SendGroupMessage(context.Background(), request)
+	if !attempted || err == nil {
+		t.Fatalf("partial receipt attempted=%t err=%v", attempted, err)
+	}
+	if rejected, ok := err.(wecomport.GroupMessageSendError); !ok || rejected.OutcomeUnknown() {
+		t.Fatalf("partial receipt classification=%T %v", err, err)
+	}
+}
+
+func TestClientGroupDirectoryReadsUseScopedListThenDetail(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/cgi-bin/gettoken":
+			if request.URL.Query().Get("corpsecret") != "contact-secret" {
+				t.Fatalf("wrong token secret")
+			}
+			_, _ = writer.Write([]byte(`{"errcode":0,"access_token":"contact-token","expires_in":7200}`))
+		case "/cgi-bin/externalcontact/groupchat/list":
+			var body map[string]any
+			if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			filter, ok := body["owner_filter"].(map[string]any)
+			ids, idsOK := filter["userid_list"].([]any)
+			if !ok || !idsOK || len(ids) != 1 || ids[0] != "owner-1" || body["status_filter"] != float64(0) || body["cursor"] != "" || body["limit"] != float64(100) {
+				t.Fatalf("list request=%v", body)
+			}
+			_, _ = writer.Write([]byte(`{"errcode":0,"group_chat_list":[{"chat_id":"chat-1","status":0}],"next_cursor":"cursor-2"}`))
+		case "/cgi-bin/externalcontact/groupchat/get":
+			var body map[string]any
+			if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if body["chat_id"] != "chat-1" || body["need_name"] != float64(1) {
+				t.Fatalf("detail request=%v", body)
+			}
+			_, _ = writer.Write([]byte(`{"errcode":0,"group_chat":{"chat_id":"chat-1","owner":"owner-1","name":"Group one","member_list":[{"userid":"u-1"}]}}`))
+		default:
+			t.Fatalf("unexpected endpoint=%s", request.URL.Path)
+		}
+	}))
+	defer server.Close()
+	client, err := NewDirectory(Config{Enabled: true, CorpID: "corp", ContactSecret: "contact-secret", APIBase: server.URL, HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := client.ListGroupChats(context.Background(), "owner-1", "", 100)
+	if err != nil || len(page.Items) != 1 || page.Items[0].ChatID != "chat-1" || page.NextCursor != "cursor-2" {
+		t.Fatalf("page=%+v err=%v", page, err)
+	}
+	detail, err := client.GetGroupChat(context.Background(), "chat-1")
+	if err != nil || detail.ChatID != "chat-1" || detail.OwnerUserID != "owner-1" || detail.Name != "Group one" || detail.MemberCount != 1 {
+		t.Fatalf("detail=%+v err=%v", detail, err)
+	}
+}
+
 func TestClientRejectsProviderErrorsOversizeAndDoesNotExposeSecrets(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.URL.Path == "/cgi-bin/gettoken" {
@@ -239,6 +336,91 @@ func TestCustomerDirectoryProviderListsStaffAndBatchPage(t *testing.T) {
 	}
 }
 
+func TestCustomerDirectoryProviderClassifiesProviderReadFailures(t *testing.T) {
+	tests := []struct {
+		name          string
+		status        int
+		body          string
+		wantCode      string
+		wantRetryable bool
+		wantMax       int
+	}{
+		{name: "permission", status: http.StatusOK, body: `{"errcode":48001}`, wantCode: "provider_permission_denied"},
+		{name: "rate limited", status: http.StatusTooManyRequests, body: `{"errcode":45009}`, wantCode: "provider_rate_limited", wantRetryable: true},
+		{name: "unavailable", status: http.StatusServiceUnavailable, body: `{"errcode":-1}`, wantCode: "provider_unavailable", wantRetryable: true},
+		{name: "http 200 system busy", status: http.StatusOK, body: `{"errcode":-1}`, wantCode: "provider_unavailable", wantRetryable: true, wantMax: 3},
+		{name: "invalid response", status: http.StatusOK, body: `{"errcode":0,"external_contact_list":[{"external_contact":{"external_userid":""}}]}`, wantCode: "provider_response_invalid"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				switch request.URL.Path {
+				case "/cgi-bin/gettoken":
+					_, _ = writer.Write([]byte(`{"errcode":0,"access_token":"contact-token","expires_in":7200}`))
+				case "/cgi-bin/externalcontact/batch/get_by_user":
+					writer.WriteHeader(test.status)
+					_, _ = writer.Write([]byte(test.body))
+				default:
+					t.Fatalf("unexpected path=%s", request.URL.Path)
+				}
+			}))
+			defer server.Close()
+			client := newTestClient(t, server, func() time.Time { return testNow })
+			client.config.ContactSecret = "contact secret"
+			_, err := client.BatchExternalContacts(context.Background(), "staff-1", "", 100)
+			var failure wecomport.DirectoryFailure
+			if err == nil || !errors.As(err, &failure) || failure.DirectoryFailureCode() != test.wantCode || failure.DirectoryFailureRetryable() != test.wantRetryable {
+				t.Fatalf("err=%v failure=%v", err, failure)
+			}
+			var limited wecomport.DirectoryFailureAttemptLimit
+			if !errors.As(err, &limited) || limited.DirectoryFailureMaxAttempts() != test.wantMax {
+				t.Fatalf("attempt limit=%v; want %d", limited, test.wantMax)
+			}
+			if strings.Contains(err.Error(), "contact-token") {
+				t.Fatalf("provider token leaked in error=%q", err)
+			}
+		})
+	}
+}
+
+func TestCustomerDirectoryProviderRefreshesExpiredReadTokenOnce(t *testing.T) {
+	for name, persistent := range map[string]bool{"recovers": false, "persistent": true} {
+		t.Run(name, func(t *testing.T) {
+			tokenCalls, readCalls := 0, 0
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				switch request.URL.Path {
+				case "/cgi-bin/gettoken":
+					tokenCalls++
+					_, _ = writer.Write([]byte(`{"errcode":0,"access_token":"contact-token","expires_in":7200}`))
+				case "/cgi-bin/externalcontact/get_follow_user_list":
+					readCalls++
+					if readCalls == 1 || persistent {
+						_, _ = writer.Write([]byte(`{"errcode":40014}`))
+						return
+					}
+					_, _ = writer.Write([]byte(`{"errcode":0,"follow_user":["staff-1"]}`))
+				default:
+					t.Fatalf("unexpected path=%s", request.URL.Path)
+				}
+			}))
+			defer server.Close()
+			client := newTestClient(t, server, func() time.Time { return testNow })
+			client.config.ContactSecret = "contact secret"
+			staff, err := client.ListContactStaff(context.Background())
+			if !persistent {
+				if err != nil || len(staff) != 1 || tokenCalls != 2 || readCalls != 2 {
+					t.Fatalf("staff=%v err=%v tokens=%d reads=%d", staff, err, tokenCalls, readCalls)
+				}
+				return
+			}
+			var failure wecomport.DirectoryFailure
+			if err == nil || !errors.As(err, &failure) || failure.DirectoryFailureCode() != "provider_credentials_invalid" || failure.DirectoryFailureRetryable() || tokenCalls != 2 || readCalls != 2 {
+				t.Fatalf("err=%v tokens=%d reads=%d", err, tokenCalls, readCalls)
+			}
+		})
+	}
+}
+
 func TestListTagCatalogUsesNarrowPostAndPreservesProviderFacts(t *testing.T) {
 	for name, response := range map[string]string{
 		"missing":   `{"errcode":0}`,
@@ -294,6 +476,38 @@ func TestListTagCatalogUsesNarrowPostAndPreservesProviderFacts(t *testing.T) {
 				t.Fatalf("groups=%#v", groups)
 			}
 		})
+	}
+}
+
+func TestGetGroupMessageSendResultSendsFrozenUserID(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/cgi-bin/gettoken":
+			if r.URL.Query().Get("corpsecret") != "contact-secret" {
+				t.Fatalf("token query=%s", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(`{"errcode":0,"access_token":"token","expires_in":7200}`))
+		case "/cgi-bin/externalcontact/get_groupmsg_send_result":
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if body["msgid"] != "msg-1" || body["userid"] != "frozen-sender" || body["cursor"] != "cursor-1" {
+				t.Fatalf("result body=%+v", body)
+			}
+			_, _ = w.Write([]byte(`{"errcode":0,"next_cursor":"cursor-2","send_list":[{"userid":"frozen-sender","chat_id":"chat-1","status":1}]}`))
+		default:
+			t.Fatalf("path=%s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	client, err := NewDirectory(Config{Enabled: true, CorpID: "corp", ContactSecret: "contact-secret", APIBase: server.URL, HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := client.GetGroupMessageSendResult(context.Background(), "msg-1", "frozen-sender", "cursor-1", 100)
+	if err != nil || page.NextCursor != "cursor-2" || len(page.Items) != 1 || page.Items[0].SenderUserID != "frozen-sender" || page.Items[0].ChatID != "chat-1" || page.Items[0].Status != 1 {
+		t.Fatalf("page=%+v err=%v", page, err)
 	}
 }
 
@@ -417,6 +631,43 @@ func TestPrivateMessageUsesSingleCustomerContractAndRejectsFailList(t *testing.T
 				t.Fatalf("known target rejection err=%v", err)
 			}
 		})
+	}
+}
+
+func TestPrivateMessageUploadsPDFAsFile(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/cgi-bin/gettoken":
+			_, _ = w.Write([]byte(`{"errcode":0,"access_token":"contact-token","expires_in":7200}`))
+		case "/cgi-bin/media/upload":
+			if r.URL.Query().Get("type") != "file" || !strings.Contains(r.Header.Get("Content-Type"), "multipart/form-data") {
+				t.Fatalf("file upload request=%s", r.URL.String())
+			}
+			raw, _ := io.ReadAll(r.Body)
+			if !strings.Contains(string(raw), "Content-Type: application/pdf") || !strings.Contains(string(raw), "filename=guide.pdf") {
+				t.Fatalf("file multipart=%q", raw)
+			}
+			_, _ = w.Write([]byte(`{"errcode":0,"media_id":"file-media-1"}`))
+		case "/cgi-bin/externalcontact/add_msg_template":
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			attachments, _ := body["attachments"].([]any)
+			if len(attachments) != 1 {
+				t.Fatalf("attachments=%v", attachments)
+			}
+			_, _ = w.Write([]byte(`{"errcode":0,"msgid":"msg-file-1","fail_list":[]}`))
+		default:
+			t.Fatalf("unexpected path=%s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	client := newTestClient(t, server, func() time.Time { return testNow })
+	client.config.ContactSecret = "contact secret"
+	receipt, attempted, err := client.SendPrivateMessage(context.Background(), outboundport.PrivateMessageTarget{ExternalUserID: "external-secret-id", StaffUserID: "staff-secret-id"}, outboundport.PrivateMessagePayload{Attachments: []outboundport.PrivateMessageAttachment{{Kind: "file", Content: []byte("%PDF-1.7 test"), FileName: "guide.pdf", MediaType: "application/pdf"}}})
+	if err != nil || !attempted || receipt.MessageID != "msg-file-1" {
+		t.Fatalf("receipt=%+v attempted=%t err=%v", receipt, attempted, err)
 	}
 }
 

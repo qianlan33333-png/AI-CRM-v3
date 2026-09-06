@@ -69,4 +69,26 @@ func TestScheduledRefreshSkipsFutureAndRejectsInvalidCron(t *testing.T) {
 	if ValidateRefreshCronUTC("bad") == nil || ValidateRefreshCronUTC("0 2 * * *") != nil || ValidateRefreshCronUTC("") != nil {
 		t.Fatal("cron validation mismatch")
 	}
+	for _, mode := range []string{"manual", "every_3m", "daily_0200", "every_3m_plus_daily_0200"} {
+		if err := ValidateRefresh(mode, ""); err != nil {
+			t.Fatalf("mode=%s err=%v", mode, err)
+		}
+	}
+	if ValidateRefresh("daily_0200", "0 2 * * *") == nil || ValidateRefresh("legacy_custom", "0 2 * * *") != nil {
+		t.Fatal("new and legacy refresh mode validation mismatch")
+	}
+}
+
+func TestScheduledRefreshKeepsKindsIndependent(t *testing.T) {
+	now := time.Date(2026, 9, 4, 18, 1, 0, 0, time.UTC) // Shanghai 02:01 on Sep 5.
+	store := &scheduleStoreStub{items: []segmentdomain.ScheduledConfiguration{
+		{PackageID: 8, ConfigurationVersionID: 9, Kind: "incremental", CronUTC: "*/3 * * * *", Actor: 4, ConfigurationCreatedAt: now.Add(-5 * time.Minute)},
+		{PackageID: 8, ConfigurationVersionID: 9, Kind: "daily", CronUTC: "0 18 * * *", Actor: 4, ConfigurationCreatedAt: now.Add(1 * time.Minute)},
+	}}
+	accepter := &scheduledAccepterStub{}
+	service, _ := NewScheduledRefreshService(directUOW{}, store, accepter)
+	service.now = func() time.Time { return now }
+	if err := service.ScanScheduled(context.Background()); err != nil || store.claimed != 1 || len(accepter.commands) != 1 {
+		t.Fatalf("claimed=%d commands=%d err=%v", store.claimed, len(accepter.commands), err)
+	}
 }

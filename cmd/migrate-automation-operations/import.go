@@ -23,6 +23,7 @@ import (
 	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
 	identityport "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/port"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
+	segmentapp "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/app"
 	segmentdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/domain"
 	segmentmigration "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/migration"
 )
@@ -80,6 +81,7 @@ type configRow struct {
 	RefreshMode        string          `json:"refresh_mode"`
 	RefreshCron        *string         `json:"refresh_cron"`
 	CreatedAt          time.Time       `json:"created_at"`
+	refreshModePresent bool
 }
 
 func (r *configRow) UnmarshalJSON(raw []byte) error {
@@ -95,7 +97,57 @@ func (r *configRow) UnmarshalJSON(raw []byte) error {
 		return err
 	}
 	r.PackageID, r.Version, r.Definition, r.RefreshMode, r.RefreshCron, r.CreatedAt = x.PackageID, x.Version, x.Definition, x.RefreshMode, x.RefreshCron, x.CreatedAt
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return err
+	}
+	_, r.refreshModePresent = fields["refresh_mode"]
 	return nil
+}
+
+// importedRefresh is the closed v3 schedule fact carried by an immutable
+// configuration source row. The donor's four durable modes are mapped exactly;
+// unknown source values never become a guessed manual configuration.
+type importedRefresh struct {
+	Mode string
+	Cron string
+}
+
+func frozenRefreshConfiguration(row configRow) (importedRefresh, error) {
+	cron := ""
+	if row.RefreshCron != nil {
+		cron = *row.RefreshCron
+	}
+	mode := row.RefreshMode
+	if !row.refreshModePresent {
+		// Frozen snapshots predating the explicit donor mode have no authority
+		// to call the configuration manual. Preserve their historical schedule
+		// shape as legacy_custom instead; this is also how prior imports stored
+		// an absent source mode.
+		mode = "legacy_custom"
+	}
+	var result importedRefresh
+	switch mode {
+	case "manual":
+		result = importedRefresh{Mode: "manual"}
+	case "incremental_3m":
+		result = importedRefresh{Mode: "every_3m"}
+	case "daily_0200":
+		result = importedRefresh{Mode: "daily_0200"}
+	case "incremental_3m_plus_daily_0200":
+		result = importedRefresh{Mode: "every_3m_plus_daily_0200"}
+	case "scheduled", "legacy_custom":
+		result = importedRefresh{Mode: "legacy_custom", Cron: cron}
+	default:
+		return importedRefresh{}, fmt.Errorf("unknown frozen refresh mode %q", row.RefreshMode)
+	}
+	if result.Mode != "legacy_custom" && cron != "" {
+		return importedRefresh{}, fmt.Errorf("frozen refresh mode %q has an unexpected cron", row.RefreshMode)
+	}
+	if err := segmentapp.ValidateRefresh(result.Mode, result.Cron); err != nil {
+		return importedRefresh{}, fmt.Errorf("frozen refresh mode %q: %w", row.RefreshMode, err)
+	}
+	return result, nil
 }
 
 type agentRow struct {
@@ -456,17 +508,17 @@ func (i *importer) packagesAndConfigurations() error {
 			}
 			definition := compactJSON(c.Definition)
 			definitionDigest := sha256.Sum256(definition)
-			cron := ""
-			if c.RefreshMode == "scheduled" && c.RefreshCron != nil {
-				cron = *c.RefreshCron
+			refresh, refreshErr := frozenRefreshConfiguration(c)
+			if refreshErr != nil {
+				return fmt.Errorf("source configuration %s refresh: %w", cpk, refreshErr)
 			}
 			var existingID int64
-			e = i.tx.QueryRow(i.ctx, `SELECT id FROM segment_audience_configuration_versions WHERE package_id=$1 AND digest=$2 ORDER BY version DESC LIMIT 1`, targetID, definitionDigest[:]).Scan(&existingID)
+			e = i.tx.QueryRow(i.ctx, `SELECT id FROM segment_audience_configuration_versions WHERE package_id=$1 AND digest=$2 AND refresh_mode=$3 AND COALESCE(refresh_cron_utc,'')=$4 ORDER BY version DESC LIMIT 1`, targetID, definitionDigest[:], refresh.Mode, refresh.Cron).Scan(&existingID)
 			cdisp := "imported"
 			if errors.Is(e, pgx.ErrNoRows) {
 				var next int64
 				if e = i.tx.QueryRow(i.ctx, `SELECT COALESCE(max(version),0)+1 FROM segment_audience_configuration_versions WHERE package_id=$1`, targetID).Scan(&next); e == nil {
-					e = i.tx.QueryRow(i.ctx, `INSERT INTO segment_audience_configuration_versions(package_id,version,schema_version,definition,refresh_cron_utc,digest,created_by,created_at) VALUES($1,$2,1,$3::jsonb,NULLIF($4,''),$5,$6,$7::timestamptz) RETURNING id`, targetID, next, definition, cron, definitionDigest[:], i.actor, c.CreatedAt).Scan(&existingID)
+					e = i.tx.QueryRow(i.ctx, `INSERT INTO segment_audience_configuration_versions(package_id,version,schema_version,definition,refresh_cron_utc,refresh_mode,digest,created_by,created_at) VALUES($1,$2,1,$3::jsonb,NULLIF($4,''),$5,$6,$7,$8::timestamptz) RETURNING id`, targetID, next, definition, refresh.Cron, refresh.Mode, definitionDigest[:], i.actor, c.CreatedAt).Scan(&existingID)
 				}
 			} else if e == nil {
 				cdisp = "duplicate"
@@ -875,9 +927,12 @@ func loadReport(ctx context.Context, tx pgx.Tx, batchID int64, batchKey string, 
 	return report, rows.Err()
 }
 
-func Reconcile(ctx context.Context, pool *pgxpool.Pool, batchKey string) (Report, error) {
+func Reconcile(ctx context.Context, pool *pgxpool.Pool, batchKey string, snapshot segmentmigration.Snapshot) (Report, error) {
 	if pool == nil || batchKey == "" {
 		return Report{}, errors.New("target and batch-key are required")
+	}
+	if err := segmentmigration.ValidateSnapshot(snapshot); err != nil {
+		return Report{}, err
 	}
 	tx, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
 	if err != nil {
@@ -888,6 +943,13 @@ func Reconcile(ctx context.Context, pool *pgxpool.Pool, batchKey string) (Report
 	var manifestRaw []byte
 	if err = tx.QueryRow(ctx, `SELECT id,manifest,provider_effect_count_before,provider_effect_count_after,river_job_count_before,river_job_count_after FROM automation_operations_migration_batches WHERE batch_key=$1 AND status IN ('imported','reconciled') FOR UPDATE`, batchKey).Scan(&batchID, &manifestRaw, &effectsBefore, &effectsAfter, &jobsBefore, &jobsAfter); err != nil {
 		return Report{}, err
+	}
+	shadow, err := shadowInTx(ctx, tx, batchKey, snapshot)
+	if err != nil {
+		return Report{}, err
+	}
+	if !shadow.ReadyForReconcile {
+		return Report{}, errors.New("frozen snapshot comparison is not ready for reconciliation")
 	}
 	var manifest segmentmigration.Manifest
 	if json.Unmarshal(manifestRaw, &manifest) != nil {

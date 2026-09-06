@@ -24,7 +24,7 @@ func TestCouponUIBindingExtractsFrozenTemplateAndVerifiedAssets(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dist, "asset-manifest.json"), []byte(`{"entries":{"tokens":"assets/tokens.css","labs":"assets/labs.css","admin":"assets/admin.js"}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	for _, page := range []string{"coupons", "couponForm"} {
+	for _, page := range []string{"coupons", "couponForm", "couponData"} {
 		if err := os.WriteFile(filepath.Join(dist, "admin", page+".html"), []byte(`<html><template id="tpl"><section data-page="`+page+`">frozen</section></template></html>`), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -48,11 +48,16 @@ func TestCouponUIBindingExtractsFrozenTemplateAndVerifiedAssets(t *testing.T) {
 	if r.Code != 200 || gotPage != "couponForm" {
 		t.Fatalf("form code=%d page=%q", r.Code, gotPage)
 	}
+	r = httptest.NewRecorder()
+	h.ServeHTTP(r, httptest.NewRequest(http.MethodGet, "/admin/couponData.html?id=12", nil))
+	if r.Code != 200 || gotPage != "couponData" {
+		t.Fatalf("data code=%d page=%q", r.Code, gotPage)
+	}
 }
 
 func TestCouponUIBindingFailsClosedOnNonDonorRoutesAndQueries(t *testing.T) {
 	h := NewModuleRegistration().UIBinding(t.TempDir(), func(http.ResponseWriter, *http.Request, string, string, Assets) error { return nil })
-	for _, path := range []string{"/admin/coupons/new", "/admin/coupons?id=1", "/admin/couponForm.html?id=01", "/admin/couponForm.html?id=1&x=1", "/admin/couponData.html"} {
+	for _, path := range []string{"/admin/coupons/new", "/admin/coupons?id=1", "/admin/couponForm.html?id=01", "/admin/couponForm.html?id=1&x=1", "/admin/couponData.html", "/admin/couponData.html?id=01", "/admin/couponData.html?id=1&x=1"} {
 		r := httptest.NewRecorder()
 		h.ServeHTTP(r, httptest.NewRequest(http.MethodGet, path, nil))
 		if r.Code != 404 {

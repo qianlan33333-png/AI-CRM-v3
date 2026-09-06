@@ -93,7 +93,7 @@ function contentPackage(blocks: JsonRecord[]): JsonRecord {
   return { content_text: blocks.filter((b) => b.kind === 'text').map((b) => b.text).join('\n'),
     image_library_ids: blocks.filter((b) => b.kind === 'image').map((b) => b.material_id),
     miniprogram_library_ids: blocks.filter((b) => b.kind === 'mini_program').map((b) => b.material_id),
-    attachment_library_ids: [], group_invite_library_ids: blocks.filter((b) => b.kind === 'link').map((b) => b.material_id),
+    attachment_library_ids: blocks.filter((b) => b.kind === 'attachment').map((b) => b.material_id), group_invite_library_ids: blocks.filter((b) => b.kind === 'link').map((b) => b.material_id),
   };
 }
 
@@ -104,8 +104,8 @@ function blocks(input: JsonRecord): JsonRecord[] {
   if (text) result.push({ kind: 'text', text });
   for (const id of pkg.image_library_ids || []) result.push({ kind: 'image', material_kind: 'image', material_id: Number(id) });
   for (const id of pkg.miniprogram_library_ids || []) result.push({ kind: 'mini_program', material_kind: 'miniprogram', material_id: Number(id) });
+  for (const id of pkg.attachment_library_ids || []) result.push({ kind: 'attachment', material_kind: 'attachment', material_id: Number(id) });
   for (const id of pkg.group_invite_library_ids || []) result.push({ kind: 'link', material_kind: 'group_invite', material_id: Number(id) });
-  if ((pkg.attachment_library_ids || []).length) throw new Error('当前计划仅支持文本、图片、小程序和链接');
   return result;
 }
 

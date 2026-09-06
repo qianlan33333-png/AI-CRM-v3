@@ -39,12 +39,6 @@ func (h *productUI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	path := strings.TrimSuffix(r.URL.Path, "/")
-	if isProductDataPath(path) {
-		// This is the excluded member-grid data page. Deny before touching the
-		// donor release so it cannot accidentally activate the wide bundle path.
-		http.NotFound(w, r)
-		return
-	}
 	if strings.HasPrefix(path, "/product-assets/") {
 		h.asset(w, r)
 		return
@@ -96,6 +90,8 @@ func productPage(path string) (page, id string, ok bool) {
 		return "spProducts", "", true
 	case "/admin/wechat-pay/spProductForm.html", "/admin/spProductForm.html":
 		return "spProductForm", "", true
+	case "/admin/spProductData.html", "/admin/wechat-pay/spProductData.html", "/admin/wechat-pay/products/spProductData.html", "/admin/service-period-products/spProductData.html":
+		return "spProductData", "", true
 	case "/admin/wechat-pay/products/new":
 		return "productForm", "", true
 	case "/admin/service-period-products":
@@ -124,6 +120,8 @@ func productAliasForPage(page string) string {
 		return "/admin/wechat-pay/productForm.html"
 	case "spProductForm":
 		return "/admin/spProductForm.html"
+	case "spProductData":
+		return "/admin/spProductData.html"
 	default:
 		return "/admin/wechat-pay/products.html"
 	}
@@ -137,7 +135,7 @@ func validProductUIQuery(r *http.Request, page, canonicalID string) bool {
 	if len(values) == 0 {
 		return true
 	}
-	if page != "productForm" && page != "spProductForm" {
+	if page != "productForm" && page != "spProductForm" && page != "spProductData" {
 		return false
 	}
 	ids, ok := values["id"]
@@ -162,13 +160,6 @@ func urlQueryEscape(value string) string {
 	// IDs are validated decimal strings. Avoid importing a broad URL builder
 	// merely to escape a value that has already passed this invariant.
 	return value
-}
-
-func isProductDataPath(path string) bool {
-	if !strings.HasPrefix(path, "/admin/") || !strings.HasSuffix(path, "/spProductData.html") {
-		return false
-	}
-	return true
 }
 
 func (h *productUI) template(page string) (string, error) {

@@ -71,6 +71,14 @@ func (s *productTestStore) Get(_ context.Context, id productport.ID) (productpor
 	}
 	return productport.Product{}, ErrNotFound
 }
+func (s *productTestStore) GetByCode(_ context.Context, code string) (productport.Product, error) {
+	for _, product := range s.products {
+		if product.ProductCode == code {
+			return product, nil
+		}
+	}
+	return productport.Product{}, ErrNotFound
+}
 func (s *productTestStore) GetForUpdate(ctx context.Context, id productport.ID) (productport.Product, error) {
 	return s.Get(ctx, id)
 }
@@ -264,7 +272,7 @@ func TestUpdateUsesProductVersionCASAndOperationScopedReceipt(t *testing.T) {
 	command := productport.UpdateCommand{ID: 1, ExpectedVersion: 1, Name: "更新商品", Description: "更新说明", PriceMinor: 2999, Currency: "cny", StockQuantity: 3, Images: []string{"https://cdn.example.test/product.png"}, LegacyAdminProjection: json.RawMessage(`{"schema_version":1,"status":"draft","enabled":false,"buy_button_text":"立即购买","require_mobile":true}`), Actor: 7, IdempotencyKey: "product-update-idempotency-001"}
 
 	first, err := service.Update(context.Background(), command)
-	if err != nil || first.Version != 2 || first.Name != "更新商品" || len(first.Images) != 1 || first.Images[0] != "https://cdn.example.test/product.png" || !strings.Contains(string(first.LegacyAdminProjection), `"buy_button_text":"立即购买"`) || len(events.events) != 1 {
+	if err != nil || first.Version != 2 || first.ProductCode != validTestProduct(1).ProductCode || first.Name != "更新商品" || len(first.Images) != 1 || first.Images[0] != "https://cdn.example.test/product.png" || !strings.Contains(string(first.LegacyAdminProjection), `"buy_button_text":"立即购买"`) || len(events.events) != 1 {
 		t.Fatalf("first Update() product=%+v error=%v events=%d", first, err, len(events.events))
 	}
 	replayed, err := service.Update(context.Background(), command)

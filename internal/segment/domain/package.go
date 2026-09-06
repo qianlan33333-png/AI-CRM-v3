@@ -61,6 +61,7 @@ type ConfigurationVersion struct {
 	SchemaVersion  int             `json:"schema_version"`
 	Definition     json.RawMessage `json:"definition"`
 	RefreshCronUTC string          `json:"refresh_cron_utc,omitempty"`
+	RefreshMode    string          `json:"refresh_mode"`
 	Digest         [32]byte        `json:"digest"`
 	CreatedBy      int64           `json:"created_by"`
 	CreatedAt      time.Time       `json:"created_at"`
@@ -132,14 +133,18 @@ func (p *Package) Transition(target Lifecycle, expectedVersion, actor int64, now
 	return nil
 }
 
-func NewConfigurationVersion(packageID, version int64, definition json.RawMessage, refreshCronUTC string, actor int64, now time.Time) (ConfigurationVersion, error) {
+func NewConfigurationVersion(packageID, version int64, definition json.RawMessage, refreshCronUTC, refreshMode string, actor int64, now time.Time) (ConfigurationVersion, error) {
 	definition = append(json.RawMessage(nil), definition...)
 	refreshCronUTC = strings.TrimSpace(refreshCronUTC)
 	var object map[string]json.RawMessage
-	if packageID < 1 || version < 1 || actor < 1 || now.IsZero() || json.Unmarshal(definition, &object) != nil || object == nil || len(refreshCronUTC) > 100 {
+	if packageID < 1 || version < 1 || actor < 1 || now.IsZero() || json.Unmarshal(definition, &object) != nil || object == nil || len(refreshCronUTC) > 100 || !validRefreshMode(refreshMode) {
 		return ConfigurationVersion{}, ErrInvalid
 	}
-	return ConfigurationVersion{PackageID: packageID, Version: version, SchemaVersion: 1, Definition: definition, RefreshCronUTC: refreshCronUTC, Digest: sha256.Sum256(definition), CreatedBy: actor, CreatedAt: now}, nil
+	return ConfigurationVersion{PackageID: packageID, Version: version, SchemaVersion: 1, Definition: definition, RefreshCronUTC: refreshCronUTC, RefreshMode: refreshMode, Digest: sha256.Sum256(definition), CreatedBy: actor, CreatedAt: now}, nil
+}
+
+func validRefreshMode(mode string) bool {
+	return mode == "manual" || mode == "every_3m" || mode == "daily_0200" || mode == "every_3m_plus_daily_0200" || mode == "legacy_custom"
 }
 
 func invalidOptionalID(id *int64) bool { return id != nil && *id < 1 }

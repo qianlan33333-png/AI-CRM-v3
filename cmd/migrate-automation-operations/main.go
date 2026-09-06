@@ -125,11 +125,17 @@ func execute(args []string, output io.Writer) error {
 	case "reconcile":
 		flags, targetEnv, timeout := targetFlags("reconcile")
 		batchKey := flags.String("batch-key", "", "migration batch key")
+		snapshotFile := flags.String("snapshot-file", "", "encrypted snapshot file originally used for import")
+		keyFile := flags.String("key-file", "", "0600 AES-256 key file")
 		if err := flags.Parse(args[1:]); err != nil {
 			return err
 		}
+		snapshot, err := readEncryptedSnapshot(*snapshotFile, *keyFile)
+		if err != nil {
+			return err
+		}
 		return withPool(*targetEnv, *timeout, func(ctx context.Context, pool *pgxpool.Pool) error {
-			report, err := Reconcile(ctx, pool, *batchKey)
+			report, err := Reconcile(ctx, pool, *batchKey, snapshot)
 			if err != nil {
 				return err
 			}

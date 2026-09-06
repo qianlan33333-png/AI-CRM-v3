@@ -133,7 +133,7 @@
   }
 
   function runStateLabel(value) {
-    return ({ accepted: "已接受", queued: "已排队", executing: "执行中", completed: "已完成", partial: "部分完成", failed: "失败", cancelled: "已取消", outcome_unknown: "结果未知", reconciled: "已对账", provider_accepted: "Provider 已接受", delivery_proven: "已证明送达", retryable_failed: "可重试失败", final_failed: "最终失败" })[value] || text(value);
+    return ({ accepted: "已接受", queued: "已排队", pending_review: "等待 AI 审阅", executing: "执行中", completed: "已完成", partial: "部分完成", partial_failed: "部分失败", failed: "失败", cancelled: "已取消", outcome_unknown: "结果未知", reconciled: "已对账", provider_accepted: "Provider 已接受", delivery_proven: "已证明送达", retryable_failed: "可重试失败", final_failed: "最终失败" })[value] || text(value);
   }
 
   async function bootList() {
@@ -483,7 +483,7 @@
         const result = await request(`${API}/automation-runs?limit=100`);
         state.runs = (result.items || []).filter((run) => run.package_id === packageID);
         byID("sendRecordTotal").textContent = `${state.runs.length} 次运行`;
-        byID("sendRecordRows").innerHTML = state.runs.length ? state.runs.map((run) => `<tr><td>#${run.id}</td><td><span class="ai-pill${run.state === "outcome_unknown" ? " gray" : ""}">${runStateLabel(run.state)}</span></td><td>${run.target_count} / ${run.skipped_count}</td><td>${formatTime(run.created_at)}</td><td>${run.outcome_unknown_count || 0}</td><td><button class="ai-btn soft" data-run-id="${run.id}">查看收件人</button></td></tr>`).join("") : `<tr><td class="ai-empty" colspan="7">尚无真实运行记录</td></tr>`;
+        byID("sendRecordRows").innerHTML = state.runs.length ? state.runs.map((run) => `<tr><td>#${run.id}</td><td><span class="ai-pill${run.state === "outcome_unknown" ? " gray" : ""}">${runStateLabel(run.state)}</span>${run.ai_plan_state ? `<div class="ai-label">AI：${escapeHTML(run.ai_plan_state)}</div>` : ""}</td><td>${run.target_count} / ${run.skipped_count}</td><td>${formatTime(run.created_at)}</td><td>${run.outcome_unknown_count || 0}</td><td>${run.ai_plan_id ? `<a class="ai-btn soft" href="/admin/cloud-orchestrator/plans/${encodeURIComponent(run.ai_plan_id)}">进入 AI 审阅与收件人</a>` : `<button class="ai-btn soft" data-run-id="${run.id}">查看收件人</button>`}</td></tr>`).join("") : `<tr><td class="ai-empty" colspan="7">尚无真实运行记录</td></tr>`;
         byID("sendRecordRows").querySelectorAll("[data-run-id]").forEach((node) => node.addEventListener("click", () => loadRecipients(Number(node.dataset.runId))));
         setStatus(byID("sendRecordStatusLine"), "accepted / queued / Provider 接受 / 送达证明 / 未知结果分别展示。", "success");
       } catch (error) { const detail = errorState(error); setStatus(byID("sendRecordStatusLine"), detail.message, "error"); }
@@ -569,7 +569,7 @@
       const action = byID("policyActionSelect").value;
       const agentID = Number(byID("automationAgentSelect")?.value || state.binding?.agent_id || 0);
       if (!quiet || (action === "outbound_message" && !agentID)) return setStatus(byID("policyStatusLine"), "请提供有效安静时段，并为发送动作选择固定话术。", "error");
-      const body = { code: byID("policyCodeInput").value.trim(), name: byID("policyNameInput").value.trim(), package_id: packageID, trigger: byID("policyTriggerSelect").value, action, action_config: action === "outbound_message" ? { agent_id: agentID } : { record_type: "audience_member_entered" }, quiet_hours: { timezone: byID("policyTimezoneInput").value.trim(), start: quiet[1], end: quiet[2] }, single_run_limit: Number(byID("policyLimitInput").value), approval_staff_id: Number(byID("policyApprovalInput").value), expected_version: 0 };
+      const body = { code: byID("policyCodeInput").value.trim(), name: byID("policyNameInput").value.trim(), package_id: packageID, trigger: byID("policyTriggerSelect").value, action, action_config: action === "outbound_message" ? { agent_id: agentID } : { record_type: "audience_member_entered" }, quiet_hours: { timezone: byID("policyTimezoneInput").value.trim(), start: quiet[1], end: quiet[2] }, single_run_limit: Number(byID("policyLimitInput").value), expected_version: 0 };
       try { await request(`${API}/automations`, { method: "POST", mutate: true, scope: "automation-policy-create", body }); setStatus(byID("policyStatusLine"), "暂停策略及不可变版本已创建。", "success"); await loadPolicies(); }
       catch (error) { const detail = errorState(error); setStatus(byID("policyStatusLine"), detail.message, "error"); }
     }

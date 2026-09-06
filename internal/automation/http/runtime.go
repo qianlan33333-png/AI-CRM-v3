@@ -79,7 +79,6 @@ type policyInput struct {
 	ActionConfig    json.RawMessage            `json:"action_config"`
 	QuietHours      json.RawMessage            `json:"quiet_hours"`
 	SingleRunLimit  int                        `json:"single_run_limit"`
-	ApprovalStaffID *int64                     `json:"approval_staff_id"`
 	ExpectedVersion int64                      `json:"expected_version"`
 }
 
@@ -207,7 +206,12 @@ func (h *RuntimeHandler) policies(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"data": out})
 }
 func policyCommand(in policyInput, actor int64, key string) automationapp.PolicyCommand {
-	return automationapp.PolicyCommand{Code: in.Code, Name: in.Name, ExpectedVersion: in.ExpectedVersion, PackageID: segmentport.PackageID(in.PackageID), TriggerKind: in.Trigger, ActionKind: in.Action, ActionConfig: in.ActionConfig, QuietHours: in.QuietHours, SingleRunLimit: in.SingleRunLimit, ApprovalStaffID: in.ApprovalStaffID, Actor: actor, IdempotencyKey: key}
+	// The frozen automation contract only has a requires-approval gate. It
+	// never lets the policy editor nominate an arbitrary staff member as an
+	// approver. The existing immutable policy record still requires a trusted
+	// local actor, so bind it to the authenticated caller only.
+	approval := actor
+	return automationapp.PolicyCommand{Code: in.Code, Name: in.Name, ExpectedVersion: in.ExpectedVersion, PackageID: segmentport.PackageID(in.PackageID), TriggerKind: in.Trigger, ActionKind: in.Action, ActionConfig: in.ActionConfig, QuietHours: in.QuietHours, SingleRunLimit: in.SingleRunLimit, ApprovalStaffID: &approval, Actor: actor, IdempotencyKey: key}
 }
 func (h *RuntimeHandler) packageRun(w http.ResponseWriter, r *http.Request) {
 	tail := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/admin/ai-audience/packages/"), "/")
@@ -391,7 +395,7 @@ func (h *RuntimeHandler) runs(w http.ResponseWriter, r *http.Request) {
 	errorJSON(w, 404, "automation_run_not_found")
 }
 func runDTO(r automationdomain.RuntimeRun) map[string]any {
-	return map[string]any{"id": r.ID, "policy_id": r.PolicyID, "policy_version": r.PolicyVersion, "state": r.State, "target_count": r.TargetCount, "skipped_count": r.SkippedCount, "outcome_unknown_count": r.OutcomeUnknownCount, "package_id": r.PackageID, "snapshot_id": r.SnapshotID, "agent_id": r.AgentID, "agent_published_version": r.AgentPublishedVersion, "created_at": r.CreatedAt}
+	return map[string]any{"id": r.ID, "policy_id": r.PolicyID, "policy_version": r.PolicyVersion, "state": r.State, "ai_plan_id": r.AIPlanID, "ai_plan_state": r.AIPlanState, "target_count": r.TargetCount, "skipped_count": r.SkippedCount, "outcome_unknown_count": r.OutcomeUnknownCount, "package_id": r.PackageID, "snapshot_id": r.SnapshotID, "agent_id": r.AgentID, "agent_published_version": r.AgentPublishedVersion, "created_at": r.CreatedAt}
 }
 func strictInt(v string) (int64, bool) {
 	n, e := strconv.ParseInt(v, 10, 64)

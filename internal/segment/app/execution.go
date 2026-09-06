@@ -402,18 +402,18 @@ func (s *ExecutionService) AudienceExecutionConfiguration(ctx context.Context, p
 		var e error
 		pkg, e = s.store.LockPackage(tx, int64(packageID))
 		if e != nil {
-			return e
+			return atPersistenceStage("execution_configuration_package", e)
 		}
 		binding, e = s.store.CurrentBinding(tx, int64(packageID))
 		if e != nil {
-			return e
+			return atPersistenceStage("execution_configuration_binding", e)
 		}
 		senders, e = s.store.CurrentSenderSet(tx, int64(packageID))
 		if e != nil {
-			return e
+			return atPersistenceStage("execution_configuration_senders", e)
 		}
 		snapshot, _, e = s.store.PublishedSnapshot(tx, packageID)
-		return e
+		return atPersistenceStage("execution_configuration_snapshot", e)
 	})
 	if err != nil {
 		return segmentport.ExecutionConfiguration{}, classify(err)

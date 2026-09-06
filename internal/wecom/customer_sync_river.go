@@ -96,7 +96,12 @@ func (worker *CustomerSyncWorker) Work(ctx context.Context, job *river.Job[Custo
 		if latest.Status == SyncFailedTerminal {
 			return nil
 		}
-		if job.MaxAttempts > 0 && job.Attempt >= job.MaxAttempts {
+		maxAttempts := job.MaxAttempts
+		var retry *syncRetryError
+		if errors.As(err, &retry) && retry.maxAttempts > 0 && (maxAttempts < 1 || retry.maxAttempts < maxAttempts) {
+			maxAttempts = retry.maxAttempts
+		}
+		if maxAttempts > 0 && job.Attempt >= maxAttempts {
 			return worker.service.UOW.Within(ctx, func(txContext context.Context) error {
 				return worker.service.Store.Terminate(txContext, job.Args.RunID, "retry_exhausted:"+syncRetryCode(err))
 			})

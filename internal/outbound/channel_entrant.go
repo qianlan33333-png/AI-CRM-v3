@@ -23,6 +23,7 @@ type ChannelEntrantProvider struct {
 	relationships wecomport.CurrentExternalContactReader
 	tags          tagport.ProviderTagBindingReader
 	writer        wecomport.EntrantActionWriter
+	Now           func() time.Time
 }
 
 func NewChannelEntrantProvider(reader channelport.PublishedEntrantActionReader, uow platformport.UnitOfWork, grants wecomport.WelcomeGrantRedeemer, relationships wecomport.CurrentExternalContactReader, tags tagport.ProviderTagBindingReader, writer wecomport.EntrantActionWriter) *ChannelEntrantProvider {
@@ -35,11 +36,27 @@ func (provider *ChannelEntrantProvider) Execute(ctx context.Context, envelope ef
 	}
 	action, err := provider.reader.ReadPublishedEntrantAction(ctx, string(envelope.SourceRefDigest))
 	if err != nil {
+		if envelope.Kind == effectport.KindChannelWelcome {
+			return welcomeAdapterResult(effectport.StateRetryable, effectport.Hash("channel.entrant.read-unavailable", string(envelope.Fingerprint())), "provider_unavailable", false), nil
+		}
 		return effectport.AdapterResult{Completion: effectport.StateRetryable, ReceiptDigest: effectport.Hash("channel.entrant.read-unavailable", string(envelope.Fingerprint()))}, nil
 	}
 	if envelope.Kind == effectport.KindChannelWelcome {
 		if action.Kind != "welcome" || provider.grants == nil {
-			return effectport.AdapterResult{Completion: effectport.StateFinalFailed, ReceiptDigest: effectport.Hash("channel.welcome.not-configured")}, nil
+			return welcomeAdapterResult(effectport.StateFinalFailed, effectport.Hash("channel.welcome.not-configured"), "welcome_not_configured", false), nil
+		}
+		// Pre-0066 entrant records did not carry a first receipt deadline. Their
+		// ten-minute encrypted grant retention is not permission to send, so they
+		// are a durable no-send rather than a fresh execution window.
+		if action.SendDeadlineAt.IsZero() {
+			return welcomeAdapterResult(effectport.StateFinalFailed, effectport.Hash("channel.welcome.deadline-missing-not-attempted", action.EffectRef), "deadline_missing", false), nil
+		}
+		if !provider.now().Before(action.SendDeadlineAt) {
+			return welcomeAdapterResult(effectport.StateFinalFailed, effectport.Hash("channel.welcome.expired-not-attempted", action.EffectRef), "deadline_expired", false), nil
+		}
+		attachments, materialErr := welcomeAttachments(action.WelcomeMaterialSnapshot)
+		if materialErr != nil {
+			return welcomeAdapterResult(effectport.StateFinalFailed, effectport.Hash("channel.welcome.material-invalid", action.EffectRef), "material_invalid", false), nil
 		}
 		var welcomeCode string
 		err = provider.uow.Within(ctx, func(tx context.Context) error {
@@ -48,14 +65,27 @@ func (provider *ChannelEntrantProvider) Execute(ctx context.Context, envelope ef
 			return redeemErr
 		})
 		if err != nil {
-			return effectport.AdapterResult{Completion: effectport.StateUnknown, ReceiptDigest: effectport.Hash("channel.welcome.grant-unavailable", action.EffectRef, strconv.Itoa(int(attempt.Number)))}, nil
+			if errors.Is(err, wecomport.ErrWelcomeGrantExpired) {
+				return welcomeAdapterResult(effectport.StateFinalFailed, effectport.Hash("channel.welcome.grant-expired-not-attempted", action.EffectRef), "grant_expired", false), nil
+			}
+			return welcomeAdapterResult(effectport.StateRetryable, effectport.Hash("channel.welcome.grant-unavailable-not-attempted", action.EffectRef, strconv.Itoa(int(attempt.Number))), "provider_unavailable", false), nil
 		}
-		attachments, materialErr := welcomeAttachments(action.WelcomeMaterialSnapshot)
-		if materialErr != nil {
+		if !provider.now().Before(action.SendDeadlineAt) {
 			welcomeCode = ""
-			return effectport.AdapterResult{Completion: effectport.StateFinalFailed, ReceiptDigest: effectport.Hash("channel.welcome.material-invalid", action.EffectRef)}, nil
+			return welcomeAdapterResult(effectport.StateFinalFailed, effectport.Hash("channel.welcome.expired-not-attempted", action.EffectRef), "deadline_expired", false), nil
 		}
-		err = provider.writer.SendWelcomeMessage(ctx, welcomeCode, action.WelcomeMessage, attachments)
+		// Keep the Provider HTTP budget within the frozen business deadline. A
+		// writer that honors context therefore cannot start a normal timeout
+		// after the welcome window has already elapsed.
+		callContext, cancel := ctx, func() {}
+		callContext, cancel = context.WithDeadline(ctx, action.SendDeadlineAt)
+		if callContext.Err() != nil {
+			cancel()
+			welcomeCode = ""
+			return welcomeAdapterResult(effectport.StateFinalFailed, effectport.Hash("channel.welcome.expired-not-attempted", action.EffectRef), "deadline_expired", false), nil
+		}
+		err = provider.writer.SendWelcomeMessage(callContext, welcomeCode, action.WelcomeMessage, attachments)
+		cancel()
 		welcomeCode = ""
 	} else {
 		if action.Kind != "entry_tag" || provider.relationships == nil || provider.tags == nil {
@@ -77,9 +107,38 @@ func (provider *ChannelEntrantProvider) Execute(ctx context.Context, envelope ef
 		if attempted {
 			state = effectport.StateUnknown
 		}
+		if envelope.Kind == effectport.KindChannelWelcome {
+			reason := "provider_unavailable"
+			if attempted {
+				reason = "outcome_unknown"
+			}
+			return welcomeAdapterResult(state, effectport.Hash("channel.entrant.provider-error", action.EffectRef, strconv.Itoa(int(attempt.Number))), reason, attempted), err
+		}
 		return effectport.AdapterResult{Completion: state, ReceiptDigest: effectport.Hash("channel.entrant.provider-error", action.EffectRef, strconv.Itoa(int(attempt.Number))), CallAttempted: attempted, RealExternalCallExecuted: attempted}, err
 	}
+	if envelope.Kind == effectport.KindChannelWelcome {
+		return welcomeAdapterResult(effectport.StateExecuted, effectport.Hash("channel.entrant.executed", action.EffectRef, strconv.Itoa(int(attempt.Number))), "sent", true), nil
+	}
 	return effectport.AdapterResult{Completion: effectport.StateExecuted, ReceiptDigest: effectport.Hash("channel.entrant.executed", action.EffectRef, strconv.Itoa(int(attempt.Number))), CallAttempted: true, RealExternalCallExecuted: true}, nil
+}
+
+func (provider *ChannelEntrantProvider) now() time.Time {
+	if provider != nil && provider.Now != nil {
+		return provider.Now().UTC()
+	}
+	return time.Now().UTC()
+}
+
+const channelWelcomeOutcomeArtifactKind = "channel.welcome.outcome.v1"
+
+// welcomeAdapterResult carries only a closed safe reason into Channel's
+// completion receipt. It never includes a decrypted welcome code, raw
+// callback body, or Provider response.
+func welcomeAdapterResult(state effectport.State, receipt effectport.Digest, reason string, attempted bool) effectport.AdapterResult {
+	payload := []byte(`{"reason":"` + reason + `"}`)
+	artifact := effectport.ResultArtifact{Kind: channelWelcomeOutcomeArtifactKind, Payload: payload}
+	artifact.Digest = effectport.Hash("external-effect.artifact.v1", artifact.Kind, string(payload))
+	return effectport.AdapterResult{Completion: state, ReceiptDigest: receipt, CallAttempted: attempted, RealExternalCallExecuted: attempted, Artifact: artifact}
 }
 
 func welcomeAttachments(raw json.RawMessage) ([]wecomport.WelcomeAttachment, error) {
@@ -112,7 +171,41 @@ func (sink *ChannelEntrantCompletionSink) CompleteEffect(ctx context.Context, ef
 	if sink == nil || sink.writer == nil || (envelope.Kind != effectport.KindChannelWelcome && envelope.Kind != effectport.KindChannelEntryTag) || !effectport.ValidDigest(result.ReceiptDigest) {
 		return errors.New("invalid channel entrant completion")
 	}
-	return sink.writer.CompleteEntrantAction(ctx, channelport.EntrantActionCompletion{EffectRef: effectRef, State: string(result.Completion), ResultDigest: string(result.ReceiptDigest), Attempt: attempt.Number, CompletedAt: time.Now().UTC()})
+	completion := channelport.EntrantActionCompletion{EffectRef: effectRef, State: string(result.Completion), ResultDigest: string(result.ReceiptDigest), Attempt: attempt.Number, CompletedAt: time.Now().UTC()}
+	if envelope.Kind == effectport.KindChannelWelcome {
+		completion.ResultReason = channelWelcomeCompletionReason(result)
+	}
+	return sink.writer.CompleteEntrantAction(ctx, completion)
+}
+
+func channelWelcomeCompletionReason(result effectport.AdapterResult) string {
+	if result.Artifact.Valid() && result.Artifact.Kind == channelWelcomeOutcomeArtifactKind {
+		var artifact struct {
+			Reason string `json:"reason"`
+		}
+		if json.Unmarshal(result.Artifact.Payload, &artifact) == nil && validChannelWelcomeResultReason(artifact.Reason) {
+			return artifact.Reason
+		}
+	}
+	switch result.Completion {
+	case effectport.StateExecuted:
+		return "sent"
+	case effectport.StateUnknown:
+		return "outcome_unknown"
+	case effectport.StateRetryable:
+		return "provider_unavailable"
+	default:
+		return "final_failed"
+	}
+}
+
+func validChannelWelcomeResultReason(reason string) bool {
+	switch reason {
+	case "welcome_not_configured", "deadline_missing", "deadline_expired", "grant_expired", "material_invalid", "provider_unavailable", "outcome_unknown", "sent", "final_failed":
+		return true
+	default:
+		return false
+	}
 }
 
 var _ effectport.ProviderAdapter = (*ChannelEntrantProvider)(nil)

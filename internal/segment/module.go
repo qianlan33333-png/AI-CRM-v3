@@ -7,11 +7,15 @@ import (
 	"net/http"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	accessport "github.com/qianlan33333-png/AI-CRM-v3/internal/access/port"
 	segmenthttp "github.com/qianlan33333-png/AI-CRM-v3/internal/segment/http"
 )
 
 type ModuleRegistration struct{}
-type HTTPBindings struct{ Audience http.Handler }
+type HTTPBindings struct {
+	Audience http.Handler
+	Handler  *segmenthttp.Handler
+}
 
 func NewModuleRegistration() *ModuleRegistration { return &ModuleRegistration{} }
 
@@ -20,15 +24,21 @@ func (m *ModuleRegistration) Bind(service segmenthttp.ConfigurationApplication, 
 		return HTTPBindings{}, errors.New("segment module is required")
 	}
 	handler, err := segmenthttp.NewHandler(service, security)
-	return HTTPBindings{Audience: handler}, err
+	return HTTPBindings{Audience: handler, Handler: handler}, err
 }
 
 func (m *ModuleRegistration) BindRuntime(service segmenthttp.ConfigurationApplication, snapshots segmenthttp.SnapshotApplication, security segmenthttp.RequestSecurity) (HTTPBindings, error) {
+	return m.BindRuntimeWithOwners(service, snapshots, security, nil)
+}
+func (m *ModuleRegistration) BindRuntimeWithOwners(service segmenthttp.ConfigurationApplication, snapshots segmenthttp.SnapshotApplication, security segmenthttp.RequestSecurity, owners accessport.AudienceOwnerResolver) (HTTPBindings, error) {
+	return m.BindRuntimeWithOwnerReferences(service, snapshots, security, owners, nil)
+}
+func (m *ModuleRegistration) BindRuntimeWithOwnerReferences(service segmenthttp.ConfigurationApplication, snapshots segmenthttp.SnapshotApplication, security segmenthttp.RequestSecurity, owners accessport.AudienceOwnerResolver, references accessport.AudienceOwnerReferenceReader) (HTTPBindings, error) {
 	if m == nil {
 		return HTTPBindings{}, errors.New("segment module is required")
 	}
-	handler, err := segmenthttp.NewRuntimeHandler(service, snapshots, security)
-	return HTTPBindings{Audience: handler}, err
+	handler, err := segmenthttp.NewRuntimeHandlerWithOwnerReferences(service, snapshots, security, owners, references)
+	return HTTPBindings{Audience: handler, Handler: handler}, err
 }
 
 func (m *ModuleRegistration) Readiness(ctx context.Context, pool *pgxpool.Pool) error {
@@ -56,6 +66,18 @@ func (m *ModuleRegistration) Readiness(ctx context.Context, pool *pgxpool.Pool) 
 			'segment_audience_schedule_states'
 		]) AS required(name)
 		WHERE to_regclass(current_schema() || '.' || required.name) IS NULL
+	) AND NOT EXISTS (
+		SELECT 1 FROM (VALUES
+			('segment_audience_configuration_versions'::text, 'refresh_mode'::text),
+			('segment_audience_schedule_states'::text, 'schedule_kind'::text),
+			('segment_audience_refresh_runs'::text, 'refresh_kind'::text)
+		) AS required(table_name,column_name)
+		WHERE NOT EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_schema=current_schema()
+				AND table_name=required.table_name
+				AND column_name=required.column_name
+		)
 	)`).Scan(&ready)
 	if err != nil {
 		return err

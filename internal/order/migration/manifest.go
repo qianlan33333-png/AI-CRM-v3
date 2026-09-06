@@ -194,6 +194,7 @@ func (manifest Manifest) Validate(requireComplete bool) error {
 	}
 	orderKeys := make(map[string]struct{}, len(manifest.Orders))
 	merchantKeys := make(map[string]int64, len(manifest.Orders))
+	merchantOrderNos := make(map[string]struct{}, len(manifest.Orders))
 	merchantStatuses := make(map[string]string, len(manifest.Orders))
 	merchantResolved := make(map[string]bool, len(manifest.Orders))
 	for _, row := range manifest.Orders {
@@ -248,11 +249,19 @@ func (manifest Manifest) Validate(requireComplete bool) error {
 		if _, exists := merchantKeys[merchantKey]; exists {
 			return ErrInvalidManifest
 		}
+		// Payment history receipts are keyed by the merchant order number, so
+		// a cross-provider duplicate would fail only after partially applying
+		// the snapshot. Reject it with the manifest before any write begins.
+		if _, exists := merchantOrderNos[row.MerchantOrderNo]; exists {
+			return ErrInvalidManifest
+		}
+		merchantOrderNos[row.MerchantOrderNo] = struct{}{}
 		merchantKeys[merchantKey] = row.AmountMinor
 		merchantStatuses[merchantKey] = row.Status
 		merchantResolved[merchantKey] = resolved
 	}
 	refundKeys := make(map[string]struct{}, len(manifest.Refunds))
+	refundNumbers := make(map[string]struct{}, len(manifest.Refunds))
 	refunded := make(map[string]int64, len(manifest.Refunds))
 	for _, row := range manifest.Refunds {
 		merchantKey := string(row.Provider) + "\x00" + row.MerchantOrderNo
@@ -264,7 +273,11 @@ func (manifest Manifest) Validate(requireComplete bool) error {
 		if _, exists := refundKeys[refundKey]; exists {
 			return ErrInvalidManifest
 		}
+		if _, exists := refundNumbers[row.RefundNo]; exists {
+			return ErrInvalidManifest
+		}
 		refundKeys[refundKey] = struct{}{}
+		refundNumbers[row.RefundNo] = struct{}{}
 		refunded[merchantKey] += row.AmountMinor
 		if refunded[merchantKey] > amount {
 			return ErrInvalidManifest

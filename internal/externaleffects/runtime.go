@@ -40,6 +40,7 @@ const (
 	KindChannelWelcome    = port.KindChannelWelcome
 	KindChannelEntryTag   = port.KindChannelEntryTag
 	KindChannelLink       = port.KindChannelLink
+	KindSurveyCompletion  = port.KindSurveyCompletion
 	KindWeChatPayPrepay   = port.KindWeChatPayPrepay
 	KindWeChatPayRefund   = port.KindWeChatPayRefund
 	KindWeChatShopRefund  = port.KindWeChatShopRefund

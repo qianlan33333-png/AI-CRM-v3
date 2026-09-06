@@ -27,6 +27,7 @@ var _ identityport.OutboundIdentityReader = PostgreSQL{}
 var _ identityport.HXCUnionIDBatchResolver = PostgreSQL{}
 var _ identityport.ExternalIdentityValueReader = PostgreSQL{}
 var _ identityport.OutboundWeComIdentityReader = PostgreSQL{}
+var _ identityport.CanonicalLineageReader = PostgreSQL{}
 
 func (PostgreSQL) VerifiedWeComIdentityForCustomer(ctx context.Context, customerID customerdomain.CustomerID, corpID string) (string, bool, error) {
 	if customerID < 1 || strings.TrimSpace(corpID) != corpID || corpID == "" {
@@ -66,6 +67,81 @@ func NewPostgreSQL(phoneVault ...*identitysecure.PhoneVault) PostgreSQL {
 	return store
 }
 
+// CanonicalLineage returns the canonical root and records which are currently
+// merged into it. It reads only Identity-owned customer merge state and is
+// intentionally a stable read Port rather than an Archive-side table join.
+func (PostgreSQL) CanonicalLineage(ctx context.Context, customerID customerdomain.CustomerID) ([]customerdomain.CustomerID, error) {
+	if customerID < 1 {
+		return nil, ErrInvalidQuery
+	}
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return nil, err
+	}
+	// Follow the same persisted canonical pointer used by the existing
+	// Customer query. An unexpected cycle or a merged row without a target is
+	// corrupt identity state, never a reason to pick an arbitrary deepest row.
+	current := int64(customerID)
+	seen := map[int64]struct{}{}
+	for hops := 0; hops < 128; hops++ {
+		if _, duplicate := seen[current]; duplicate {
+			return nil, fmt.Errorf("canonical lineage cycle: %w", ErrInvalidQuery)
+		}
+		seen[current] = struct{}{}
+		var status string
+		var mergedInto *int64
+		err = tx.QueryRow(ctx, `SELECT status,merged_into_customer_id FROM customers WHERE id=$1`, current).Scan(&status, &mergedInto)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		if err != nil {
+			return nil, fmt.Errorf("read canonical customer: %w", err)
+		}
+		if status != "merged" {
+			if mergedInto != nil {
+				return nil, fmt.Errorf("invalid canonical customer: %w", ErrInvalidQuery)
+			}
+			break
+		}
+		if mergedInto == nil || *mergedInto < 1 {
+			return nil, fmt.Errorf("invalid merged customer: %w", ErrInvalidQuery)
+		}
+		current = *mergedInto
+		if hops == 127 {
+			return nil, fmt.Errorf("canonical lineage too deep: %w", ErrInvalidQuery)
+		}
+	}
+	rows, err := tx.Query(ctx, `WITH RECURSIVE descendants(id,visited,cycle) AS (
+		SELECT $1::bigint, ARRAY[$1::bigint], false
+		UNION ALL
+		SELECT customer.id, descendants.visited||customer.id, customer.id=ANY(descendants.visited)
+		FROM descendants JOIN customers customer ON customer.merged_into_customer_id=descendants.id
+		WHERE customer.status='merged' AND NOT descendants.cycle
+	) SELECT id,cycle FROM descendants ORDER BY id`, current)
+	if err != nil {
+		return nil, fmt.Errorf("query canonical descendants: %w", err)
+	}
+	defer rows.Close()
+	result := []customerdomain.CustomerID{}
+	for rows.Next() {
+		var id customerdomain.CustomerID
+		var cycle bool
+		if err = rows.Scan(&id, &cycle); err != nil {
+			return nil, err
+		}
+		if cycle {
+			return nil, fmt.Errorf("canonical descendant cycle: %w", ErrInvalidQuery)
+		}
+		result = append(result, id)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(result) == 0 {
+		return nil, ErrNotFound
+	}
+	return result, nil
+}
 func (PostgreSQL) ResolveHXCUnionIDs(ctx context.Context, references []identityport.ScopedUnionID) ([]identityport.ScopedUnionIDResult, error) {
 	if len(references) == 0 {
 		return []identityport.ScopedUnionIDResult{}, nil

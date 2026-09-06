@@ -18,6 +18,7 @@ func TestOpenAPIFreezesAIAssistantRoutesAndSecurity(t *testing.T) {
 		"/api/admin/ai-assistant/plans/{plan_id}/approve:",
 		"/api/admin/ai-assistant/effects/{effect_id}/reconcile:",
 		"/api/integrations/ai-assistant/review-plans:",
+		"/api/admin/ai-assist/review-plans:",
 		"RequiredIdempotencyKey",
 		"expected_version",
 		"aiAssistantIntegration",

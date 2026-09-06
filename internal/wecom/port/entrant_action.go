@@ -2,9 +2,12 @@ package port
 
 import (
 	"context"
+	"errors"
 
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 )
+
+var ErrWelcomeGrantExpired = errors.New("welcome grant expired")
 
 type CurrentExternalContact struct {
 	EmployeeUserID, ExternalUserID string

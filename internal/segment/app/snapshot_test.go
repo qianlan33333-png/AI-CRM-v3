@@ -74,10 +74,10 @@ func (s *refreshStoreStub) StageRefreshBatch(_ context.Context, _ int64, _ int, 
 	s.batches++
 	return nil
 }
-func (s *refreshStoreStub) PublishRefresh(_ context.Context, _ int64, count int64, _ [32]byte, _ [32]byte, _ int64, _ time.Time) (segmentdomain.Snapshot, error) {
+func (s *refreshStoreStub) PublishRefresh(_ context.Context, _ int64, count int64, _ [32]byte, _ [32]byte, _ int64, _ time.Time) (segmentdomain.PublishedRefresh, error) {
 	s.published = count
 	s.run.State = segmentdomain.RefreshPublished
-	return segmentdomain.Snapshot{ID: 9, PackageID: 1, ConfigurationVersionID: 3, State: "published", ReferenceTime: s.run.ReferenceTime, MemberCount: count}, nil
+	return segmentdomain.PublishedRefresh{Snapshot: segmentdomain.Snapshot{ID: 9, PackageID: 1, ConfigurationVersionID: 3, State: "published", ReferenceTime: s.run.ReferenceTime, MemberCount: count}}, nil
 }
 func (s *refreshStoreStub) PublishedSnapshot(context.Context, segmentport.PackageID) (segmentport.Snapshot, bool, error) {
 	return segmentport.Snapshot{}, false, nil
@@ -106,6 +106,17 @@ func TestRefreshAcceptanceQueuesInTheSameUnitOfWork(t *testing.T) {
 	run, err := service.AcceptRefresh(context.Background(), RefreshCommand{PackageID: 1, Actor: 4, IdempotencyKey: "refresh-command-0001", ReferenceTime: time.Unix(900, 0).UTC()})
 	if err != nil || run.State != segmentdomain.RefreshQueued || enqueue.calls != 1 || store.facts != 1 || run.RiverJobID == nil || *run.RiverJobID != 88 {
 		t.Fatalf("run=%+v enqueue=%d facts=%d err=%v", run, enqueue.calls, store.facts, err)
+	}
+}
+
+func TestRefreshAcceptanceKeepsLegacyCustomManualRefreshComplete(t *testing.T) {
+	definition := json.RawMessage(`{"schema_version":1,"template_key":"active_contacts","parameters":{"within_days":"30"}}`)
+	store := &refreshStoreStub{config: segmentdomain.ConfigurationVersion{ID: 3, PackageID: 1, Definition: definition, RefreshMode: "legacy_custom", CreatedBy: 4}}
+	evaluator, _ := NewEvaluator(segmentcompiler.Compiler{}, sourceStub{}, passthroughCanonical{})
+	service, _ := NewSnapshotService(directUOW{}, store, evaluator, &enqueueStub{}, &memberEventEnqueueStub{})
+	_, err := service.AcceptRefresh(context.Background(), RefreshCommand{PackageID: 1, Actor: 4, IdempotencyKey: "legacy-refresh-command", ReferenceTime: time.Unix(900, 0).UTC()})
+	if err != nil || store.run.RefreshKind != segmentdomain.RefreshLegacy {
+		t.Fatalf("refresh kind=%q err=%v", store.run.RefreshKind, err)
 	}
 }
 

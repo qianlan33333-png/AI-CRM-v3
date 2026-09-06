@@ -15,6 +15,7 @@ type HTTPFacade interface {
 	// not maintain a second variant allow-list.
 	ValidImageVariant(string) bool
 	GetImageVariant(context.Context, int64, string) (ImageVariant, error)
+	LocalImageExists(context.Context, int64) (bool, error)
 	ReferenceConflict(error) (map[string][]int64, bool)
 }
 
@@ -109,6 +110,19 @@ func (f *httpFacade) GetImageVariant(ctx context.Context, imageID int64, key str
 		return ImageVariant{}, ErrImageVariantUnavailable
 	}
 	return f.variants.GetImageVariant(ctx, imageID, key)
+}
+func (f *httpFacade) LocalImageExists(ctx context.Context, imageID int64) (bool, error) {
+	if f == nil || imageID < 1 {
+		return false, ErrHTTPNotFound
+	}
+	_, _, _, err := f.store.Image(ctx, imageID)
+	if errors.Is(err, ErrHTTPNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
 }
 func (f *httpFacade) ReferenceConflict(err error) (map[string][]int64, bool) {
 	var conflict *mediastore.ReferenceConflict

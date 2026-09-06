@@ -49,12 +49,17 @@ func NewFreezer(reader PreparedPlanReader) (*Freezer, error) {
 }
 
 func (freezer *Freezer) FreezeGroupOpsMaterial(ctx context.Context, sources mediaport.GroupOpsMaterialSourceSnapshot, requiredThrough time.Time) (mediaport.GroupOpsMaterialSnapshot, error) {
+	snapshot, _, err := freezer.FreezeGroupOpsMaterialWithFacts(ctx, sources, requiredThrough)
+	return snapshot, err
+}
+
+func (freezer *Freezer) FreezeGroupOpsMaterialWithFacts(ctx context.Context, sources mediaport.GroupOpsMaterialSourceSnapshot, requiredThrough time.Time) (mediaport.GroupOpsMaterialSnapshot, []PreparedMaterial, error) {
 	if freezer == nil || freezer.reader == nil || ctx == nil || requiredThrough.IsZero() || mediaport.ValidateGroupOpsMaterialSourceSnapshot(sources) != nil {
-		return mediaport.GroupOpsMaterialSnapshot{}, ErrUnavailable
+		return mediaport.GroupOpsMaterialSnapshot{}, nil, ErrUnavailable
 	}
 	pkg, err := freezer.reader.ReadPreparedGroupOpsPlan(ctx, sources, requiredThrough)
 	if err != nil || !matchesSources(sources, requiredThrough, pkg.Items) {
-		return mediaport.GroupOpsMaterialSnapshot{}, ErrUnavailable
+		return mediaport.GroupOpsMaterialSnapshot{}, nil, ErrUnavailable
 	}
 	attachments := make([]mediaport.GroupOpsProviderReadyAttachment, len(pkg.Items))
 	for index, item := range pkg.Items {
@@ -65,9 +70,9 @@ func (freezer *Freezer) FreezeGroupOpsMaterial(ctx context.Context, sources medi
 		Attachments: attachments,
 	}
 	if err := mediaport.ValidateGroupOpsMaterialSnapshot(snapshot); err != nil {
-		return mediaport.GroupOpsMaterialSnapshot{}, ErrUnavailable
+		return mediaport.GroupOpsMaterialSnapshot{}, nil, ErrUnavailable
 	}
-	return snapshot, nil
+	return snapshot, append([]PreparedMaterial(nil), pkg.Items...), nil
 }
 
 func matchesSources(sources mediaport.GroupOpsMaterialSourceSnapshot, requiredThrough time.Time, items []PreparedMaterial) bool {

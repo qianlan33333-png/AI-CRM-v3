@@ -9,10 +9,16 @@ import (
 	"net/http"
 )
 
-type ModuleRegistration struct{}
+type ModuleRegistration struct{ completionProviderEnabled bool }
 type HTTPBindings struct{ Survey http.Handler }
 
 func NewModuleRegistration() *ModuleRegistration { return &ModuleRegistration{} }
+func (m *ModuleRegistration) SetCompletionProviderEnabled(enabled bool) *ModuleRegistration {
+	if m != nil {
+		m.completionProviderEnabled = enabled
+	}
+	return m
+}
 func (m *ModuleRegistration) Bind(definitions surveyport.DefinitionApplication, submissions interface {
 	surveyport.PublicApplication
 	surveyport.SubmissionApplication
@@ -24,6 +30,7 @@ func (m *ModuleRegistration) Bind(definitions surveyport.DefinitionApplication, 
 	if err != nil {
 		return HTTPBindings{}, err
 	}
+	handler.SetCompletionProviderEnabled(m.completionProviderEnabled)
 	return HTTPBindings{Survey: handler}, nil
 }
 func (m *ModuleRegistration) Readiness(ctx context.Context, pool *pgxpool.Pool) error {
@@ -31,12 +38,54 @@ func (m *ModuleRegistration) Readiness(ctx context.Context, pool *pgxpool.Pool) 
 		return errors.New("survey module dependencies required")
 	}
 	var ready bool
-	err := pool.QueryRow(ctx, `SELECT NOT EXISTS(SELECT 1 FROM unnest(ARRAY['survey_questionnaires','survey_definition_versions','survey_definition_questions','survey_definition_options','survey_score_rules','survey_submissions','survey_submission_answers','survey_result_tokens','survey_oauth_states','survey_identity_sessions','survey_phone_binding_receipts','survey_operation_configurations','survey_external_operation_receipts','survey_audit_events','survey_outbox','survey_migration_batches','survey_migration_source_map','survey_migration_quarantine']) required(name) WHERE to_regclass(current_schema()||'.'||required.name) IS NULL)`).Scan(&ready)
+	err := pool.QueryRow(ctx, `SELECT NOT EXISTS(SELECT 1 FROM unnest(ARRAY['survey_questionnaires','survey_definition_versions','survey_definition_questions','survey_definition_options','survey_score_rules','survey_submissions','survey_submission_answers','survey_result_tokens','survey_oauth_states','survey_identity_sessions','survey_phone_binding_receipts','survey_operation_configurations','survey_external_operation_receipts','survey_completion_test_push_snapshots','survey_audit_events','survey_outbox','survey_migration_batches','survey_migration_source_map','survey_migration_quarantine']) required(name) WHERE to_regclass(current_schema()||'.'||required.name) IS NULL)`).Scan(&ready)
 	if err != nil {
 		return err
 	}
 	if !ready {
 		return errors.New("survey schema is not ready")
+	}
+	var redirectConstraintReady bool
+	err = pool.QueryRow(ctx, `SELECT EXISTS(
+		SELECT 1
+		FROM pg_constraint c
+		JOIN pg_class rel ON rel.oid=c.conrelid
+		JOIN pg_namespace ns ON ns.oid=rel.relnamespace
+		WHERE ns.nspname=current_schema()
+		  AND rel.relname='survey_oauth_states'
+		  AND c.conname='survey_oauth_states_redirect'
+		  AND pg_get_constraintdef(c.oid) LIKE '%/h5/(all|one)\.html\?slug=%' ESCAPE ''
+	)`).Scan(&redirectConstraintReady)
+	if err != nil {
+		return err
+	}
+	if !redirectConstraintReady {
+		return errors.New("survey OAuth state redirect constraint is not ready")
+	}
+	var assessmentBusinessKeyConstraintsReady bool
+	err = pool.QueryRow(ctx, `SELECT count(*) = 2
+		FROM pg_constraint c
+		JOIN pg_class rel ON rel.oid=c.conrelid
+		JOIN pg_namespace ns ON ns.oid=rel.relnamespace
+		WHERE ns.nspname=current_schema()
+		  AND (
+			(c.conname='survey_definition_questions_dimension'
+			 AND rel.relname='survey_definition_questions'
+			 AND strpos(pg_get_constraintdef(c.oid), 'char_length(assessment_dimension_key)') > 0
+			 AND strpos(pg_get_constraintdef(c.oid), '[[:space:]]') > 0
+			 AND strpos(pg_get_constraintdef(c.oid), '[[:cntrl:]]') > 0)
+			OR
+			(c.conname='survey_definition_options_type'
+			 AND rel.relname='survey_definition_options'
+			 AND strpos(pg_get_constraintdef(c.oid), 'char_length(assessment_type_key)') > 0
+			 AND strpos(pg_get_constraintdef(c.oid), '[[:space:]]') > 0
+			 AND strpos(pg_get_constraintdef(c.oid), '[[:cntrl:]]') > 0)
+		  )`).Scan(&assessmentBusinessKeyConstraintsReady)
+	if err != nil {
+		return err
+	}
+	if !assessmentBusinessKeyConstraintsReady {
+		return errors.New("survey assessment business key constraints are not ready")
 	}
 	return nil
 }

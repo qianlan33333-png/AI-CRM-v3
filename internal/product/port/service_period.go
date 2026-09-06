@@ -28,6 +28,7 @@ type ServicePeriodProduct struct {
 	Description      string                 `json:"description"`
 	PriceMinor       int64                  `json:"price_minor"`
 	Currency         string                 `json:"currency"`
+	DurationDays     int32                  `json:"duration_days"`
 	StockQuantity    int32                  `json:"stock_quantity"`
 	Images           []string               `json:"images"`
 	AdminProjection  json.RawMessage        `json:"admin_projection"`
@@ -53,6 +54,7 @@ type CreateServicePeriodProductCommand struct {
 	Description     string
 	PriceMinor      int64
 	Currency        string
+	DurationDays    int32
 	StockQuantity   int32
 	Images          []string
 	AdminProjection json.RawMessage
@@ -67,6 +69,7 @@ type UpdateServicePeriodProductCommand struct {
 	Description     string
 	PriceMinor      int64
 	Currency        string
+	DurationDays    int32
 	StockQuantity   int32
 	Images          []string
 	AdminProjection json.RawMessage
@@ -106,4 +109,21 @@ type ServicePeriodApplication interface {
 	SetServicePeriodProductEnabled(context.Context, SetServicePeriodProductEnabledCommand) (ServicePeriodProduct, error)
 	CopyServicePeriodProduct(context.Context, CopyServicePeriodProductCommand) (ServicePeriodProduct, error)
 	ArchiveServicePeriodProduct(context.Context, ArchiveServicePeriodProductCommand) (ServicePeriodProduct, error)
+}
+
+// ServicePeriodPublicReader resolves only an enabled service-period product by
+// its exact public code. It deliberately has no numeric-ID fallback, so an
+// ordinary Product alias can never select a service-period Product.
+// Payment uses the returned immutable checkout facts in its own transaction.
+type ServicePeriodPublicReader interface {
+	ReadPublicServicePeriodByCode(context.Context, string) (CheckoutProduct, error)
+}
+
+// ServicePeriodPublicPresentationReader returns a strict-code public
+// presentation for an existing service-period item even when it is disabled.
+// Its availability boolean is the only lifecycle fact exposed to the public
+// Host so it can render the donor's unavailable card while keeping checkout
+// closed. It has no numeric fallback and never reads ordinary products.
+type ServicePeriodPublicPresentationReader interface {
+	ReadServicePeriodPublicPresentationByCode(context.Context, string) (CheckoutProduct, bool, error)
 }

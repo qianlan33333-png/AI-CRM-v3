@@ -26,7 +26,7 @@ cat > "$sql_file" <<'SQL'
 BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;
 SET LOCAL statement_timeout='15min';
 SELECT '__AICRM_SIDEBAR_SNAPSHOT__|' || to_char(transaction_timestamp() AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"');
-SELECT '__AICRM_SIDEBAR_ENTITLEMENT__|' || encode(convert_to(jsonb_build_object(
+SELECT '__AICRM_SIDEBAR_ENTITLEMENT__|' || encode(convert_to((jsonb_build_object(
   'source_id',e.id,
   'unionid',e.unionid,
   'service_product_id',e.service_product_id,
@@ -37,7 +37,16 @@ SELECT '__AICRM_SIDEBAR_ENTITLEMENT__|' || encode(convert_to(jsonb_build_object(
   'remark',COALESCE(NULLIF(e.metadata_json->>'admin_remark',''),NULLIF(e.metadata_json->>'remark',''),''),
   'created_at',e.created_at,
   'updated_at',e.updated_at
-)::text,'UTF8'),'hex')
+) || CASE
+  -- Keep source presence and JSON type. The v2 Go capture normalizes strings
+  -- with the frozen Python str(...).strip() rule; PostgreSQL BTRIM is ASCII
+  -- only and therefore must not be presented as an equivalent conversion.
+  -- A missing key remains absent, JSON null remains unknown, and a non-string
+  -- reaches the protected parser and stops capture rather than being guessed.
+  WHEN e.metadata_json ? 'admin_alliance'
+    THEN jsonb_build_object('alliance', e.metadata_json->'admin_alliance')
+  ELSE '{}'::jsonb
+END)::text,'UTF8'),'hex')
 FROM public.service_period_entitlements e
 JOIN public.wechat_pay_products p ON p.id=e.trade_product_id
 WHERE e.tenant_id='aicrm' AND e.status IN ('active','expired','refunded')

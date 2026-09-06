@@ -23,8 +23,8 @@ func TestListProductOptionsUsesCanonicalBoundedProjection(t *testing.T) {
 	store := &productOptionTestStore{
 		productTestStore: &productTestStore{},
 		page: productport.ProductOptionPage{Items: []productport.ProductOption{
-			{ID: 4, ProductType: productport.ProductOptionStandard, Name: "标准商品", PriceMinor: 9900, Currency: "CNY"},
-			{ID: 9, ProductType: productport.ProductOptionServicePeriod, Name: "周期商品", PriceMinor: 19900, Currency: "CNY"},
+			{ID: 4, Code: "standard-v3", ProductType: productport.ProductOptionStandard, Name: "标准商品", PriceMinor: 9900, Currency: "CNY"},
+			{ID: 9, Code: "period-v3", ProductType: productport.ProductOptionServicePeriod, Name: "周期商品", PriceMinor: 19900, Currency: "CNY"},
 		}, Total: 12, Limit: 20, Offset: 10},
 	}
 	service := NewService(&productTestUoW{}, store, &productTestEvents{})

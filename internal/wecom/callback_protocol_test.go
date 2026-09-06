@@ -13,6 +13,9 @@ import (
 	"testing"
 	"time"
 
+	channeldomain "github.com/qianlan33333-png/AI-CRM-v3/internal/channel/domain"
+	channelport "github.com/qianlan33333-png/AI-CRM-v3/internal/channel/port"
+	"github.com/qianlan33333-png/AI-CRM-v3/internal/platform/idempotency"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/platform/webhook"
 )
 
@@ -267,6 +270,8 @@ func TestCallbackHandlerRequiresStateDigesterBeforeDurablePayload(t *testing.T) 
 	}
 	handler.StateDigester = digester
 	handler.WelcomeGrants = callbackWelcomeGrantStub{}
+	handler.WelcomeActions = callbackWelcomeAccepterStub{}
+	handler.States = callbackWelcomeStateResolverStub{}
 	withDigester := httptest.NewRecorder()
 	handler.ServeHTTP(withDigester, httptest.NewRequest(http.MethodPost, "/wecom/external-contact/callback?"+query.Encode(), strings.NewReader(body)))
 	if withDigester.Code != http.StatusOK || len(store.deliveries) != 1 {
@@ -290,11 +295,101 @@ func TestCallbackHandlerRequiresStateDigesterBeforeDurablePayload(t *testing.T) 
 
 type callbackWelcomeGrantStub struct{}
 
+type callbackWelcomeAccepterStub struct{}
+
+func (callbackWelcomeAccepterStub) AcceptCallbackWelcome(_ context.Context, command channelport.CallbackWelcomeCommand) error {
+	if command.CallbackID == "" || command.WelcomeGrantRef == "" || !command.Resolution.Valid() {
+		return ErrWelcomeGrantUnavailable
+	}
+	return nil
+}
+
+type callbackWelcomeStateResolverStub struct{}
+
+func (callbackWelcomeStateResolverStub) ResolveStateDigest(context.Context, string, [32]byte, time.Time) (channeldomain.StateResolution, error) {
+	return channeldomain.StateResolution{Status: channeldomain.StateUnmatched}, nil
+}
+
 func (callbackWelcomeGrantStub) Seal(_ context.Context, _ string, value string, _ time.Time) (string, error) {
 	if value == "" {
 		return "", ErrWelcomeGrantUnavailable
 	}
 	return "wgrant_1", nil
+}
+
+func TestExternalContactCallbackDispatcherAcceptsWelcomeWithoutCustomerAndRollsBackOnRequiredFailure(t *testing.T) {
+	key, err := idempotency.Parse("wecom:external-contact:welcome-callback-unit-0001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	receivedAt := fixedNow.Add(2 * time.Minute)
+	plain := []byte(`<xml><ToUserName>wx-corp</ToUserName><CreateTime>1788336000</CreateTime><MsgType>event</MsgType><Event>change_external_contact</Event><ChangeType>add_external_contact</ChangeType><ExternalUserID>external-1</ExternalUserID><UserID>employee-1</UserID><WelcomeCode><![CDATA[welcome-secret]]></WelcomeCode></xml>`)
+	for _, item := range []struct {
+		name       string
+		accepter   channelport.CallbackWelcomeAccepter
+		wantErr    bool
+		wantIngest int
+	}{
+		{name: "accepted without OneID customer", accepter: &recordingCallbackWelcomeAccepter{}, wantIngest: 1},
+		{name: "required welcome acceptance failure has no acknowledgement receipt", accepter: failingCallbackWelcomeAccepter{}, wantErr: true, wantIngest: 0},
+	} {
+		t.Run(item.name, func(t *testing.T) {
+			inboxStore := &memoryWebhookStore{}
+			inbox, serviceErr := webhook.NewService(inboxStore)
+			if serviceErr != nil {
+				t.Fatal(serviceErr)
+			}
+			dispatcher := ExternalContactCallbackDispatcher{Inbox: inbox, UOW: directUOW{}, WelcomeGrants: callbackWelcomeGrantStub{}, WelcomeActions: item.accepter}
+			err := dispatcher.DispatchDecryptedEvent(context.Background(), DecryptedCallbackEvent{CorpID: "wx-corp", CallbackKey: key, Plaintext: plain, ReceivedAt: receivedAt})
+			if (err != nil) != item.wantErr || len(inboxStore.deliveries) != item.wantIngest {
+				t.Fatalf("err=%v inbox=%d", err, len(inboxStore.deliveries))
+			}
+			if accepted, ok := item.accepter.(*recordingCallbackWelcomeAccepter); ok {
+				if accepted.command.CallbackID != string(key) || accepted.command.CorpID != "wx-corp" || accepted.command.Resolution.Status != channeldomain.StateUnmatched || accepted.command.SendDeadlineAt != receivedAt.Add(20*time.Second) || accepted.command.FirstReceivedAt != receivedAt {
+					t.Fatalf("callback welcome command=%+v", accepted.command)
+				}
+			}
+		})
+	}
+}
+
+func TestCallbackHandlerRecordsWelcomeDeadlineAtHTTPArrival(t *testing.T) {
+	crypto, err := NewCallbackCryptoWithOptions("callback-token", "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG", "wx-corp", CallbackCryptoOptions{Now: func() time.Time { return fixedNow }, Nonce: func() string { return "reply-nonce" }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain := []byte(`<xml><ToUserName>wx-corp</ToUserName><CreateTime>1788336000</CreateTime><MsgType>event</MsgType><Event>change_external_contact</Event><ChangeType>add_external_contact</ChangeType><ExternalUserID>external-1</ExternalUserID><UserID>employee-1</UserID><WelcomeCode><![CDATA[welcome-secret]]></WelcomeCode></xml>`)
+	encrypted := encryptForTest(t, crypto, plain)
+	timestamp, nonce := "1788336000", "nonce"
+	query := url.Values{"msg_signature": {callbackSignature("callback-token", timestamp, nonce, encrypted)}, "timestamp": {timestamp}, "nonce": {nonce}}
+	inboxStore := &memoryWebhookStore{}
+	inbox, err := webhook.NewService(inboxStore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	accepted := &recordingCallbackWelcomeAccepter{}
+	arrival := fixedNow.Add(3 * time.Minute)
+	handler := CallbackHandler{Enabled: true, Crypto: crypto, Inbox: inbox, UOW: directUOW{}, WelcomeGrants: callbackWelcomeGrantStub{}, WelcomeActions: accepted, Now: func() time.Time { return arrival }}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/wecom/external-contact/callback?"+query.Encode(), strings.NewReader("<xml><ToUserName>wx-corp</ToUserName><Encrypt><![CDATA["+encrypted+"]]></Encrypt></xml>")))
+	if response.Code != http.StatusOK || accepted.command.FirstReceivedAt != arrival || accepted.command.SendDeadlineAt != arrival.Add(20*time.Second) || len(inboxStore.deliveries) != 1 {
+		t.Fatalf("response=%d command=%+v inbox=%d", response.Code, accepted.command, len(inboxStore.deliveries))
+	}
+}
+
+type recordingCallbackWelcomeAccepter struct {
+	command channelport.CallbackWelcomeCommand
+}
+
+func (stub *recordingCallbackWelcomeAccepter) AcceptCallbackWelcome(_ context.Context, command channelport.CallbackWelcomeCommand) error {
+	stub.command = command
+	return nil
+}
+
+type failingCallbackWelcomeAccepter struct{}
+
+func (failingCallbackWelcomeAccepter) AcceptCallbackWelcome(context.Context, channelport.CallbackWelcomeCommand) error {
+	return errors.New("welcome intent storage failed")
 }
 
 func TestCallbackHandlerRejectsDuplicateQueryAndTrailingOuterXML(t *testing.T) {

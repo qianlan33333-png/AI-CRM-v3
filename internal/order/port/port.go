@@ -141,12 +141,36 @@ type PaymentOrderCommand struct {
 	MerchantOrderNo                 string
 	PayerCustomerID                 int64
 	BeneficiaryCustomerID           int64
-	ProductID                       int64
+	ProductID, CouponClaimID        int64
 	ProductCode, ProductName        string
 	ProductVersion, UnitAmountMinor int64
+	ProductType                     string
+	ServicePeriodDurationDays       int32
 	Currency                        string
 	MobileE164                      string
 	ActorScope, IdempotencyKey      string
+}
+
+// CheckoutSnapshot is an Order-owned, immutable record of a native checkout.
+// It freezes the gross price, coupon reservation and service-period term. It
+// deliberately contains IDs as historical references only; Product and Coupon
+// may later change without rewriting this sale fact.
+type CheckoutSnapshot struct {
+	OrderID                   int64
+	ProductType               string
+	ProductID                 int64
+	ProductCode, ProductName  string
+	ProductVersion            int64
+	ServicePeriodDurationDays int32
+	GrossAmountMinor          int64
+	DiscountAmountMinor       int64
+	PayableAmountMinor        int64
+	Currency                  string
+	CouponApplied             bool
+	CouponReservationRef      string
+	CouponClaimID, CouponID   int64
+	CouponRuleVersion         int64
+	ReservedAt                time.Time
 }
 
 // PaymentCoordinator is the only cross-domain write seam from Payment to

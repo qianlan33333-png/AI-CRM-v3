@@ -1,7 +1,6 @@
 package store
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"time"
@@ -25,12 +24,8 @@ func (r *Repository) ReserveIntegrationNonce(ctx context.Context, key, nonce, id
 	if tag.RowsAffected() == 1 {
 		return nil
 	}
-	var storedID, storedPayload []byte
-	if err = tx.QueryRow(ctx, `SELECT idempotency_digest,payload_digest FROM ai_assistant_integration_nonces WHERE key_digest=$1 AND nonce_digest=$2 FOR UPDATE`, keyDigest[:], nonceDigest[:]).Scan(&storedID, &storedPayload); err != nil {
-		return err
-	}
-	if !bytes.Equal(storedID, idempotencyDigest[:]) || !bytes.Equal(storedPayload, payloadDigest[:]) {
-		return ErrConflict
-	}
-	return nil
+	// Nonces are authentication replay protection, not business idempotency.
+	// A caller retrying a command must mint a new signed nonce; the separate
+	// operation receipt resolves that fresh authenticated retry safely.
+	return ErrConflict
 }

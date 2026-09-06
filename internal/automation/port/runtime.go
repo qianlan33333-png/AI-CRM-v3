@@ -2,6 +2,7 @@ package port
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
@@ -34,6 +35,7 @@ type RunState string
 const (
 	RunPreparing      RunState = "preparing"
 	RunReady          RunState = "ready"
+	RunPendingReview  RunState = "pending_review"
 	RunExecuting      RunState = "executing"
 	RunCompleted      RunState = "completed"
 	RunPartialFailed  RunState = "partial_failed"
@@ -76,6 +78,13 @@ type OutboundPublishedContentReader interface {
 	OutboundPublishedContent(context.Context, AgentID, int64) (OutboundPublishedContent, bool, error)
 }
 
+// OutboundContentFreezer captures immutable fixed-content and Media source
+// facts inside the accepting Automation transaction. It returns opaque JSON
+// for the Outbound owner; it never performs Provider preparation or writing.
+type OutboundContentFreezer interface {
+	FreezeOutboundContent(context.Context, OutboundPublishedContent) (json.RawMessage, [32]byte, error)
+}
+
 type PublishedAgentReader interface {
 	PublishedAgent(context.Context, AgentID) (PublishedAgent, bool, error)
 }
@@ -88,6 +97,7 @@ type Run struct {
 	SnapshotID            segmentport.SnapshotID
 	AgentID               AgentID
 	AgentPublishedVersion int64
+	AIPlanID              int64
 	PreviewDigest         [32]byte
 	State                 RunState
 	TargetCount           int64

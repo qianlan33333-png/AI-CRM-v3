@@ -79,5 +79,30 @@ func (a automationOpsStaffAdapter) OutboundProviderStaffID(ctx context.Context, 
 	return user.WeComUserID, true, nil
 }
 
+func (a automationOpsStaffAdapter) ResolveAudienceOwner(ctx context.Context, providerUserID string) (accessport.StaffID, bool, error) {
+	item, found, err := a.ResolveAutomationSender(ctx, providerUserID)
+	return item.StaffID, found, err
+}
+func (a automationOpsStaffAdapter) AudienceOwnerUserID(ctx context.Context, id accessport.StaffID) (string, bool, error) {
+	if a.uow == nil || a.users == nil || id < 1 {
+		return "", false, errors.New("staff projection unavailable")
+	}
+	var user accessdomain.User
+	err := a.uow.Within(ctx, func(tx context.Context) error {
+		var e error
+		user, e = a.users.UserByID(tx, int64(id), false)
+		return e
+	})
+	if errors.Is(err, accessdomain.ErrNotFound) {
+		return "", false, nil
+	}
+	if err != nil || user.WeComUserID == "" {
+		return "", false, err
+	}
+	return user.WeComUserID, true, nil
+}
+
 var _ accessport.AutomationOpsStaffReader = automationOpsStaffAdapter{}
 var _ accessport.OutboundStaffIdentityReader = automationOpsStaffAdapter{}
+var _ accessport.AudienceOwnerResolver = automationOpsStaffAdapter{}
+var _ accessport.AudienceOwnerReferenceReader = automationOpsStaffAdapter{}

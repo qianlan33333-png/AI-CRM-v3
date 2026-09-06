@@ -23,6 +23,7 @@ var _ customerapp.Store = PostgreSQL{}
 var _ customerport.ProjectionWriter = PostgreSQL{}
 var _ customerport.CallbackProjectionWriter = PostgreSQL{}
 var _ customerport.AudienceReader = PostgreSQL{}
+var _ customerport.AudienceRegistrationReader = PostgreSQL{}
 var _ customerport.DirectoryDisplayNameReader = PostgreSQL{}
 
 func (PostgreSQL) DisplayNames(ctx context.Context, customerIDs []customerdomain.CustomerID) (map[customerdomain.CustomerID]string, error) {
@@ -65,6 +66,51 @@ func (PostgreSQL) DisplayNames(ctx context.Context, customerIDs []customerdomain
 		}
 	}
 	return result, rows.Err()
+}
+
+func (PostgreSQL) AudienceRegistrationFacts(ctx context.Context, customerIDs []customerdomain.CustomerID) (map[customerdomain.CustomerID]customerport.AudienceRegistrationFact, error) {
+	if len(customerIDs) > customerport.MaxAudienceRegistrationCustomerIDs {
+		return nil, customerapp.ErrInvalidQuery
+	}
+	facts := make(map[customerdomain.CustomerID]customerport.AudienceRegistrationFact, len(customerIDs))
+	ids := make([]int64, 0, len(customerIDs))
+	seen := make(map[customerdomain.CustomerID]struct{}, len(customerIDs))
+	for _, id := range customerIDs {
+		if id < 1 {
+			return nil, customerapp.ErrInvalidQuery
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, int64(id))
+		facts[id] = customerport.AudienceRegistrationFact{CustomerID: id}
+	}
+	if len(ids) == 0 {
+		return facts, nil
+	}
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := tx.Query(ctx, `SELECT customer_id,phone_masked,source,updated_at FROM customer_directory_projection WHERE customer_id=ANY($1)`, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id customerdomain.CustomerID
+		var masked, source string
+		var updated time.Time
+		if err = rows.Scan(&id, &masked, &source, &updated); err != nil {
+			return nil, err
+		}
+		facts[id] = customerport.AudienceRegistrationFact{CustomerID: id, Known: true, Registered: masked != "", Source: source, UpdatedAt: updated.UTC()}
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	return facts, nil
 }
 
 func (PostgreSQL) ActiveWithin(ctx context.Context, reference time.Time, days int) ([]customerdomain.CustomerID, time.Time, error) {

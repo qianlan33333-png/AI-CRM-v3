@@ -128,9 +128,15 @@ type Page struct {
 	Offset int32           `json:"offset"`
 }
 
-type DefinitionApplication interface {
+// DefinitionReader is the Survey-owned, read-only definition projection for
+// consumers that need to validate questionnaire, question, and option refs.
+type DefinitionReader interface {
 	List(context.Context, int32, int32, string, QuestionnaireStatus) (Page, error)
 	Get(context.Context, ID) (Questionnaire, error)
+}
+
+type DefinitionApplication interface {
+	DefinitionReader
 	Create(context.Context, CreateCommand) (Questionnaire, error)
 	Update(context.Context, UpdateCommand) (Questionnaire, error)
 	Duplicate(context.Context, ID, int64, string) (Questionnaire, error)

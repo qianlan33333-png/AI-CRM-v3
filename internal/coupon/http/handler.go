@@ -1,6 +1,6 @@
-// Package http adapts the frozen coupon-rule browser contract to the v3
-// rule-only application.  It deliberately exposes no claim, redemption,
-// holder, order, payment, entitlement, or public-link operation.
+// Package http adapts frozen coupon admin pages to narrow Coupon-owned ports.
+// Claim reads contain only local Customer IDs and masked claim display values;
+// it exposes no channel identity, redemption, order or payment operation.
 package http
 
 import (
@@ -29,6 +29,8 @@ type RequestSecurity interface {
 type Handler struct {
 	rules    couponport.RuleApplication
 	options  productport.ProductOptionReader
+	claims   couponport.CouponClaimAdminReader
+	public   couponport.PublicCouponApplication
 	security RequestSecurity
 }
 
@@ -37,6 +39,36 @@ func NewHandler(rules couponport.RuleApplication, options productport.ProductOpt
 		return nil, errors.New("coupon HTTP dependencies are required")
 	}
 	return &Handler{rules: rules, options: options, security: security}, nil
+}
+
+// NewHandlerWithClaims enables the couponData read journey. Kept separate
+// from NewHandler so composition can adopt the additive page without changing
+// the established rule-management HTTP contract atomically with this domain.
+func NewHandlerWithClaims(rules couponport.RuleApplication, options productport.ProductOptionReader, claims couponport.CouponClaimAdminReader, security RequestSecurity) (*Handler, error) {
+	h, err := NewHandler(rules, options, security)
+	if err != nil || claims == nil {
+		if err != nil {
+			return nil, err
+		}
+		return nil, errors.New("coupon claim reader is required")
+	}
+	h.claims = claims
+	return h, nil
+}
+
+// NewHandlerWithClaimsAndPublic preserves the frozen admin GET share
+// interaction. The host authenticates and CSRF-checks that user gesture before
+// the Coupon application atomically creates its first stable public slug.
+func NewHandlerWithClaimsAndPublic(rules couponport.RuleApplication, options productport.ProductOptionReader, claims couponport.CouponClaimAdminReader, public couponport.PublicCouponApplication, security RequestSecurity) (*Handler, error) {
+	h, err := NewHandlerWithClaims(rules, options, claims, security)
+	if err != nil || public == nil {
+		if err != nil {
+			return nil, err
+		}
+		return nil, errors.New("coupon public application is required")
+	}
+	h.public = public
+	return h, nil
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -90,6 +122,23 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch parts[1] {
+	case "share":
+		if r.Method != http.MethodGet {
+			method(w, "GET")
+			return
+		}
+		p, ok := h.mutate(w, r)
+		if ok {
+			h.share(w, r, p, couponport.ID(id))
+		}
+	case "claims":
+		if r.Method != http.MethodGet {
+			method(w, "GET")
+			return
+		}
+		if h.read(w, r) {
+			h.claimList(w, r, couponport.ID(id))
+		}
 	case "publish", "stop", "archive", "copy":
 		if r.Method != http.MethodPost {
 			method(w, "POST")
@@ -103,6 +152,56 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeError(w, 404, "not_found")
 	}
+}
+
+func (h *Handler) share(w http.ResponseWriter, r *http.Request, principal accessdomain.Principal, couponID couponport.ID) {
+	if h.public == nil {
+		writeError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	if len(r.URL.Query()) != 0 {
+		writeError(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	share, err := h.public.EnsurePublicShare(r.Context(), couponID, principal.InternalID)
+	if err != nil {
+		resultError(w, err)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "coupon_id": share.CouponID, "public_slug": share.PublicSlug, "url": share.URL, "available": true, "public_route_ready": true, "real_external_call_executed": false})
+}
+
+func (h *Handler) claimList(w http.ResponseWriter, r *http.Request, couponID couponport.ID) {
+	if h.claims == nil {
+		writeError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	q := r.URL.Query()
+	if !only(q, "limit", "offset") {
+		writeError(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	limit, ok := intQuery(q.Get("limit"), 100, 1, 100)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	offset, ok := intQuery(q.Get("offset"), 0, 0, couponapp.MaximumOffset)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	page, err := h.claims.ListCouponClaims(r.Context(), couponID, int32(limit), int32(offset))
+	if err != nil {
+		resultError(w, err)
+		return
+	}
+	items := make([]any, 0, len(page.Items))
+	for _, item := range page.Items {
+		items = append(items, map[string]any{"claim_id": item.ClaimID, "customer_id": item.CustomerID, "coupon_id": item.CouponID, "status": item.Status, "claim_no_masked": item.ClaimNoMasked, "claimed_at": item.ClaimedAt.Format(time.RFC3339), "valid_from": nullableTime(item.ValidFrom), "valid_until": nullableTime(item.ValidUntil), "redeemed_at": nullableTime(item.RedeemedAt)})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "coupon_id": couponID, "claims": items, "items": items, "total": page.Total, "limit": page.Limit, "offset": page.Offset})
 }
 
 func (h *Handler) read(w http.ResponseWriter, r *http.Request) bool {

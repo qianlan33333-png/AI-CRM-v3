@@ -33,11 +33,30 @@ type EntrantActionAccepter interface {
 	AcceptEntrantActions(context.Context, EntrantActionCommand) error
 }
 
+// CallbackWelcomeCommand is accepted at the authenticated callback boundary.
+// It intentionally has no customer_id: customer provisioning and assignment
+// continue through the normal Inbox lifecycle and may only link the immutable
+// intent afterwards.
+type CallbackWelcomeCommand struct {
+	CallbackID      string
+	CorpID          string
+	Resolution      channeldomain.StateResolution
+	WelcomeGrantRef string
+	OccurredAt      time.Time
+	FirstReceivedAt time.Time
+	SendDeadlineAt  time.Time
+}
+
+type CallbackWelcomeAccepter interface {
+	AcceptCallbackWelcome(context.Context, CallbackWelcomeCommand) error
+}
+
 type PublishedEntrantAction struct {
 	ActionID, ChannelID, ConfigVersion, CustomerID, StaffID int64
 	Kind, EffectRef, WelcomeGrantRef, WelcomeMessage        string
 	WelcomeMaterialSnapshot                                 json.RawMessage
 	LocalTagID                                              int64
+	FirstReceivedAt, SendDeadlineAt                         time.Time
 }
 
 type PublishedEntrantActionReader interface {
@@ -45,9 +64,9 @@ type PublishedEntrantActionReader interface {
 }
 
 type EntrantActionCompletion struct {
-	EffectRef, State, ResultDigest string
-	Attempt                        int32
-	CompletedAt                    time.Time
+	EffectRef, State, ResultDigest, ResultReason string
+	Attempt                                      int32
+	CompletedAt                                  time.Time
 }
 
 type EntrantActionCompletionWriter interface {

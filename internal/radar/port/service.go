@@ -49,9 +49,15 @@ type SetStatusCommand struct {
 	IdempotencyKey string
 }
 
-type Manager interface {
+// LinkReader is the Radar-owned directory projection for consumers that need
+// to validate a persisted radar reference.
+type LinkReader interface {
 	List(context.Context, ListQuery) (LinkPage, error)
 	Get(context.Context, radar.RadarID) (LinkDetail, error)
+}
+
+type Manager interface {
+	LinkReader
 	Create(context.Context, CreateCommand) (LinkDetail, error)
 	Update(context.Context, UpdateCommand) (LinkDetail, error)
 	SetStatus(context.Context, SetStatusCommand) (LinkDetail, error)

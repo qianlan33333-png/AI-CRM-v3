@@ -27,6 +27,13 @@ func (stub *appStub) Create(_ context.Context, command paymentport.CreateCommand
 	stub.create = command
 	return domain.Payment{ID: 7, OrderID: 3, MerchantOrderNo: "M-7", Status: domain.StatusAwaitingPrepay, EffectID: "eer_8"}, nil
 }
+func (*appStub) CheckoutSessionBinding(_ context.Context, token string) (string, error) {
+	binding := paymentport.CheckoutSessionBinding(token)
+	if binding == "" {
+		return "", paymentport.ErrSessionRequired
+	}
+	return binding, nil
+}
 func (*appStub) GetCheckout(context.Context, string, string) (paymentport.Handoff, error) {
 	return paymentport.Handoff{PaymentID: 7, MerchantOrder: "M-7", Status: domain.StatusAwaitingPayment, Payload: []byte(`{"appId":"wx-test","package":"prepay_id=safe"}`), ExpiresAt: time.Now().Add(time.Minute)}, nil
 }
@@ -73,13 +80,13 @@ type h5OAuthStub struct {
 func (stub *h5OAuthStub) Enabled() bool { return stub.enabled }
 func (stub *h5OAuthStub) Start(_ context.Context, returnPath string) (string, error) {
 	stub.starts++
-	if returnPath != "/pay/7" {
+	if returnPath != "/pay/course-7" {
 		return "", errors.New("invalid")
 	}
 	return "https://open.weixin.qq.com/oauth", nil
 }
 func (stub *h5OAuthStub) Complete(context.Context, string, string) (paymentsession.Issued, string, error) {
-	return stub.issued, "/pay/7", nil
+	return stub.issued, "/pay/course-7", nil
 }
 
 type sessionVerifierStub struct{ fact identitydomain.VerifiedFact }
@@ -125,24 +132,59 @@ func (securityStub) AuthorizeCSRF(context.Context, *http.Request) (accessdomain.
 func TestCheckoutAcceptsOnlyOpaqueCookieIdentity(t *testing.T) {
 	application := &appStub{}
 	handler, _ := NewHandler(application, nil, securityStub{}, true)
-	request := httptest.NewRequest(http.MethodPost, "/api/v1/wechat-pay/checkouts", strings.NewReader(`{"product_id":3,"product_kind":"standard"}`))
+	token := "pays_session_token_0000000001"
+	binding := paymentport.CheckoutSessionBinding(token)
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/wechat-pay/checkouts", strings.NewReader(`{"product_id":3,"product_kind":"standard","beneficiary_selection":"payer_self","checkout_session_binding":"`+binding+`"}`))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Idempotency-Key", "checkout-key-0000001")
-	request.AddCookie(&http.Cookie{Name: SessionCookieName, Value: "pays_session_token_0000000001"})
+	request.AddCookie(&http.Cookie{Name: SessionCookieName, Value: token})
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusAccepted || application.createCalls != 1 || application.create.ProductID != 3 || application.create.ProductType != "standard" || application.create.SessionToken == "" || response.Header().Get("Cache-Control") != "no-store" {
+	if response.Code != http.StatusAccepted || application.createCalls != 1 || application.create.ProductID != 3 || application.create.CouponClaimID != 0 || application.create.ProductType != "standard" || application.create.BeneficiarySelection != paymentport.BeneficiarySelectionPayerSelf || application.create.SessionToken == "" || response.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("code=%d command=%+v body=%s", response.Code, application.create, response.Body.String())
 	}
-	for _, rawField := range []string{"customer_id", "openid", "unionid", "assurance"} {
-		request = httptest.NewRequest(http.MethodPost, "/api/v1/wechat-pay/checkouts", strings.NewReader(`{"product_id":3,"product_kind":"standard","`+rawField+`":"attacker"}`))
+	for _, rawField := range []string{"customer_id", "beneficiary_customer_id", "openid", "unionid", "assurance"} {
+		request = httptest.NewRequest(http.MethodPost, "/api/v1/wechat-pay/checkouts", strings.NewReader(`{"product_id":3,"product_kind":"standard","beneficiary_selection":"payer_self","checkout_session_binding":"`+binding+`","`+rawField+`":"attacker"}`))
 		request.Header.Set("Content-Type", "application/json")
-		request.AddCookie(&http.Cookie{Name: SessionCookieName, Value: "pays_session_token_0000000001"})
+		request.AddCookie(&http.Cookie{Name: SessionCookieName, Value: token})
 		response = httptest.NewRecorder()
 		handler.ServeHTTP(response, request)
 		if response.Code != http.StatusBadRequest {
 			t.Fatalf("field=%s code=%d", rawField, response.Code)
 		}
+	}
+}
+
+func TestCheckoutRejectsSessionBindingBeforeCallingApplication(t *testing.T) {
+	application := &appStub{}
+	handler, _ := NewHandler(application, nil, securityStub{}, true)
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/wechat-pay/checkouts", strings.NewReader(`{"product_id":3,"product_kind":"standard","beneficiary_selection":"payer_self","checkout_session_binding":"wrong"}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Idempotency-Key", "checkout-key-0000002")
+	request.AddCookie(&http.Cookie{Name: SessionCookieName, Value: "pays_session_token_0000000002"})
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), `"session_mismatch"`) || application.createCalls != 0 {
+		t.Fatalf("code=%d calls=%d body=%s", response.Code, application.createCalls, response.Body.String())
+	}
+}
+
+func TestCheckoutSessionBindingIsOpaqueAndRequiresTrustedCookie(t *testing.T) {
+	application := &appStub{}
+	handler, _ := NewHandler(application, nil, securityStub{}, true)
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/wechat-pay/checkout-session", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized || !strings.Contains(response.Body.String(), "payment_session_required") {
+		t.Fatalf("missing cookie code=%d body=%s", response.Code, response.Body.String())
+	}
+	token := "pays_session_token_0000000001"
+	request = httptest.NewRequest(http.MethodGet, "/api/v1/wechat-pay/checkout-session", nil)
+	request.AddCookie(&http.Cookie{Name: SessionCookieName, Value: token})
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), token) || !strings.Contains(response.Body.String(), paymentport.CheckoutSessionBinding(token)) {
+		t.Fatalf("code=%d body=%s", response.Code, response.Body.String())
 	}
 }
 
@@ -152,7 +194,7 @@ func TestH5OAuthStartRequiresWeChatAndDisabledMakesZeroCalls(t *testing.T) {
 	if err := handler.SetH5OAuth(disabled); err != nil {
 		t.Fatal(err)
 	}
-	request := httptest.NewRequest(http.MethodGet, "/api/h5/wechat-pay/oauth/start?return_url=%2Fpay%2F7", nil)
+	request := httptest.NewRequest(http.MethodGet, "/api/h5/wechat-pay/oauth/start?return_url=%2Fpay%2Fcourse-7", nil)
 	request.Header.Set("User-Agent", "MicroMessenger")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
@@ -161,14 +203,14 @@ func TestH5OAuthStartRequiresWeChatAndDisabledMakesZeroCalls(t *testing.T) {
 	}
 	enabled := &h5OAuthStub{enabled: true}
 	_ = handler.SetH5OAuth(enabled)
-	request = httptest.NewRequest(http.MethodGet, "/api/h5/wechat-pay/oauth/start?return_url=https%3A%2F%2Fevil.test%2Fpay%2F7", nil)
+	request = httptest.NewRequest(http.MethodGet, "/api/h5/wechat-pay/oauth/start?return_url=https%3A%2F%2Fevil.test%2Fpay%2Fcourse-7", nil)
 	request.Header.Set("User-Agent", "MicroMessenger")
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusBadRequest || enabled.starts != 1 {
 		t.Fatalf("code=%d starts=%d", response.Code, enabled.starts)
 	}
-	request = httptest.NewRequest(http.MethodGet, "/api/h5/wechat-pay/oauth/start?return_url=%2Fpay%2F7", nil)
+	request = httptest.NewRequest(http.MethodGet, "/api/h5/wechat-pay/oauth/start?return_url=%2Fpay%2Fcourse-7", nil)
 	request.Header.Set("User-Agent", "MicroMessenger")
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
@@ -181,7 +223,7 @@ func TestTrustedCookieSecurityAttributes(t *testing.T) {
 	response := httptest.NewRecorder()
 	err := WriteTrustedSessionCookie(response, paymentsession.Issued{Token: "pays_session_token_0000000001", ExpiresAt: time.Now().Add(time.Minute)})
 	cookies := response.Result().Cookies()
-	if err != nil || len(cookies) != 1 || !cookies[0].Secure || !cookies[0].HttpOnly || cookies[0].SameSite != http.SameSiteStrictMode || cookies[0].Path != "/api/v1/wechat-pay/" {
+	if err != nil || len(cookies) != 1 || !cookies[0].Secure || !cookies[0].HttpOnly || cookies[0].SameSite != http.SameSiteStrictMode || cookies[0].Path != "/" {
 		t.Fatalf("cookies=%+v err=%v", cookies, err)
 	}
 }

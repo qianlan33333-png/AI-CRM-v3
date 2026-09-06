@@ -515,7 +515,7 @@ func TestStagedTagsReleaseMountsFrozenWorkspaceInOnlyPR10Shell(t *testing.T) {
 	}
 }
 
-func TestCouponRoutesAreExplicitAndClaimPageFailsClosed(t *testing.T) {
+func TestCouponRoutesAreExplicitAndClaimPageMounts(t *testing.T) {
 	marker := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("X-Coupon", "yes")
 		w.WriteHeader(http.StatusNoContent)
@@ -534,12 +534,12 @@ func TestCouponRoutesAreExplicitAndClaimPageFailsClosed(t *testing.T) {
 			t.Fatalf("coupon route %s status=%d owner=%q", path, res.Code, res.Header().Get("X-Coupon"))
 		}
 	}
-	req := httptest.NewRequest(http.MethodGet, "/admin/couponData.html", nil)
+	req := httptest.NewRequest(http.MethodGet, "/admin/couponData.html?id=7", nil)
 	req.AddCookie(&http.Cookie{Name: "aicrm_admin_session", Value: "valid"})
 	res := httptest.NewRecorder()
 	handler.ServeHTTP(res, req)
-	if res.Code != http.StatusNotFound {
-		t.Fatalf("couponData=%d", res.Code)
+	if res.Code != http.StatusNoContent || res.Header().Get("X-Coupon") != "yes" {
+		t.Fatalf("couponData=%d owner=%q", res.Code, res.Header().Get("X-Coupon"))
 	}
 }
 

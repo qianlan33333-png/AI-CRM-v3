@@ -264,7 +264,8 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
         window.document.cookie = 'aicrm_csrf=group-directory-csrf';
         const test = window.__groupDirectoryTest = { calls: [], fail: false, syncFail: false, empty: false, ownersFail: false };
         const safety = { provider_execution_eligible: false, real_external_call_executed: false, provider_accepted: false, delivery_proven: false };
-        const detail = { ...safety, plan: { plan_id: '10', name: '目录测试计划', revision: 1, status: 'draft', queue_count: 0, created_at: '', updated_at: '' }, members: [{ staff_id: 7 }], nodes: [], group_assets: [{ group_asset_id: '1', asset_reference: 'group-old' }, { group_asset_id: '2', asset_reference: 'unknown-old' }], webhook_descriptor: { configured: false } };
+        const detail = { ...safety, plan: { plan_id: '10', name: '目录测试计划', revision: 1, status: groupDirectoryHttp.status || 'draft', queue_count: 0, created_at: '', updated_at: '' }, members: [{ staff_id: 7 }], nodes: [], group_assets: [{ group_asset_id: '1', asset_reference: 'group-old' }, { group_asset_id: '2', asset_reference: 'unknown-old' }], webhook_descriptor: { configured: false } };
+        const provenExecution = groupDirectoryHttp.deliveryProven ? { execution_id: '71', run_id: '61', plan_id: '10', plan_revision: 1, node_id: '51', node_position: 1, target_reference: 'group-opaque-1', target_digest: 'sha256:' + 'a'.repeat(64), content_digest: 'sha256:' + 'b'.repeat(64), material_digest: 'sha256:' + 'c'.repeat(64), external_effect_id: 'eer_71', state: 'delivery_proven', runtime_state: 'provider_accepted', provider_accepted: true, delivery_proven: true, attempt_count: 1, provider_receipt_present: true, reconciliation_evidence_present: false, created_at: '2026-09-05T00:00:00Z', updated_at: '2026-09-05T00:01:00Z' } : null;
         test.detail = detail;
         const json = (body, status = 200) => ({ status, headers: new Headers(), text: async () => JSON.stringify(body) });
         window.fetch = async (input, init = {}) => {
@@ -280,13 +281,43 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
             const rows = test.empty ? [] : Array.from({ length: owner === 7 ? 51 : 1 }, (_, i) => ({ chat_reference: 'group-' + owner + '-' + i, owner_staff_id: owner, display_name: i === 0 ? '<群' + owner + '>' : '群' + i, member_count: i, refreshed_at: '2026-08-28T00:00:00Z' }));
             return json({ ...safety, items: rows.slice(offset, offset + 50), total: rows.length, offset, limit: 50, has_more: offset + 50 < rows.length });
           }
-          if (url.pathname.endsWith('/plans')) return json({ ...safety, items: [detail.plan], total: 1, limit: 100, offset: 0, has_more: false });
-          if (url.pathname.endsWith('/content/preview')) return json({ preview_lines: [], issue_codes: [] });
+          const requireMutation = () => new Headers(init.headers).get('Idempotency-Key') && body.expected_revision === detail.plan.revision;
+          const revise = () => { detail.plan.revision++; return json(detail); };
+          if (url.pathname.endsWith('/plans')) {
+            if (method === 'GET') return json({ ...safety, items: [detail.plan], total: 1, limit: 100, offset: 0, has_more: false });
+            if (method !== 'POST' || !new Headers(init.headers).get('Idempotency-Key') || typeof body.name !== 'string') return json({ code: 'conflict' }, 409);
+            detail.plan = { ...detail.plan, name: body.name, revision: 1, status: 'draft' }; detail.members = []; detail.group_assets = []; detail.nodes = [];
+            return json(detail, 201);
+          }
+          if (url.pathname.endsWith('/content/preview')) return json({ ...safety, preview_lines: ['本地预览：' + detail.plan.name], issue_codes: [] });
           if (url.pathname.endsWith('/run-due/preview')) return json({ ...safety, plan_id: '10', snapshot_revision: detail.plan.revision, due_execution_count: 0, blockers: [] });
-          if (url.pathname.endsWith('/executions')) return json({ ...safety, items: [] });
+          if (url.pathname.endsWith('/executions')) return json({ ...safety, items: provenExecution ? [provenExecution] : [], total: provenExecution ? 1 : 0, limit: 100, offset: 0, has_more: false });
           if (url.pathname.endsWith('/webhook-descriptor')) return json({ ...safety, configured: false });
+          if (/\/plans\/10\/(activate|pause|archive)$/.test(url.pathname)) {
+            if (method !== 'POST' || !requireMutation()) return json({ code: 'conflict' }, 409);
+            const action = url.pathname.split('/').pop();
+            if (action === 'activate' && !['draft', 'paused'].includes(detail.plan.status)) return json({ code: 'conflict' }, 409);
+            if (action === 'pause' && detail.plan.status !== 'active') return json({ code: 'conflict' }, 409);
+            if (action === 'archive' && detail.plan.status === 'archived') return json({ code: 'conflict' }, 409);
+            detail.plan.status = action === 'activate' ? 'active' : action === 'pause' ? 'paused' : 'archived'; return revise();
+          }
+          if (url.pathname.endsWith('/plans/10') && method === 'DELETE') {
+            if (!requireMutation()) return json({ code: 'conflict' }, 409);
+            detail.plan.status = 'archived'; return json({ ...safety });
+          }
+          if (url.pathname.endsWith('/plans/10') && method === 'PATCH') {
+            if (!requireMutation() || typeof body.name !== 'string') return json({ code: 'conflict' }, 409);
+            detail.plan.name = body.name; return revise();
+          }
+          if (url.pathname.includes('/members')) {
+            if (!requireMutation()) return json({ code: 'conflict' }, 409);
+            if (method === 'POST') detail.members.push({ staff_id: body.staff_id });
+            else if (method === 'DELETE') detail.members = detail.members.filter((item) => String(item.staff_id) !== url.pathname.split('/').pop());
+            else return json({ code: 'unexpected' }, 400);
+            return revise();
+          }
           if (url.pathname.includes('/group-assets')) {
-            if (!new Headers(init.headers).get('Idempotency-Key') || body.expected_revision !== detail.plan.revision) return json({ code: 'conflict' }, 409);
+            if (!requireMutation()) return json({ code: 'conflict' }, 409);
             if (method === 'DELETE') {
               const reference = url.pathname.split('/').pop();
               if (!detail.group_assets.some((item) => item.asset_reference === reference)) return json({ code: 'not_found' }, 404);
@@ -295,6 +326,11 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
             else return json({ code: 'unexpected' }, 400);
             detail.plan.revision++;
             return json(detail);
+          }
+          if (url.pathname.endsWith('/nodes')) {
+            if (method !== 'POST' || !requireMutation()) return json({ code: 'conflict' }, 409);
+            detail.nodes.push({ node_id: String(detail.nodes.length + 1), position: body.position, kind: body.kind, message_text: body.message_text, delay_minutes: body.delay_minutes, material_plan: body.material_plan });
+            return revise();
           }
           if (url.pathname.endsWith('/plans/10')) return json(detail);
           return json({ code: 'unexpected_test_route' }, 404);
@@ -351,9 +387,9 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
           plans: { plan_id: planID, name: '历史计划 <img src=x onerror=alert(1)>', status: 'archived', revision: 1, source_plan_id: 8, source_code: 'legacy-code', plan_type: 'normal', original_status: 'active', owner_staff_id: null, created_at: date, updated_at: date, archived_at: null },
           directory: { id: 1, source_kind: 'group_chats', source_id: 9, chat_reference: 'historical-chat', display_name: null, owner_staff_id: null, owner_name: null, member_count: 0, internal_member_count: null, external_member_count: null, original_status: '', recorded_at: date },
           groups: { id: 2, source_group_id: 10, source_plan_id: 8, plan_id: planID, chat_reference: 'plan-chat', display_name: '历史群', owner_staff_id: null, internal_member_count: 0, external_member_count: 2, original_status: 'removed', created_at: date, removed_at: null },
-          nodes: { id: 3, source_node_id: 11, source_plan_id: 8, plan_id: planID, day_index: 0, trigger_time: '  入群后  ', sort_order: 0, original_status: 'legacy_disabled', content_package: { text: '<script>历史消息</script>' }, created_at: date, updated_at: date },
+          nodes: { id: 3, source_node_id: 11, source_plan_id: 8, plan_id: planID, day_index: 0, trigger_time: '  入群后  ', sort_order: 0, original_status: 'legacy_disabled', action_title: '历史标题 <img src=x onerror=alert(1)>', text_content: '<script>历史消息</script>', attachments: [{ kind: 'image', id: 'm1' }], content_package: { text: '<script>历史消息</script>' }, created_at: date, updated_at: date },
         };
-        const json = (data, status = 200) => ({ ok: status >= 200 && status < 300, status, headers: new Headers(), text: async () => JSON.stringify(data) });
+        const json = (data, status = 200) => ({ ok: status >= 200 && status < 300, status, headers: new Headers(), text: async () => JSON.stringify(data), json: async () => data, clone() { return this; } });
         window.Headers = Headers;
         window.__groupOpsHistoryHttpTest = { calls, failures };
         window.fetch = async (input, init = {}) => {
@@ -368,6 +404,9 @@ async function loadPage(rel, { id, q, automationHistoryHttp = false, campaignHis
           const items = Array.from({ length: Math.min(limit, Math.max(0, total - offset)) }, (_, index) => kind === 'directory' && (offset + index) % 2 ? { ...rows[kind], source_kind: 'wecom_group_chat_snapshots', source_id: null, member_count: null, internal_member_count: 0, external_member_count: 2 } : rows[kind]);
           return json({ source: 'v1_history', read_only: true, real_external_call_executed: false, items, total, limit, offset, ...(kind === 'groups' || kind === 'nodes' ? { plan_id: planID } : {}) });
         };
+        // The actual Host loads these two immutable/owned scripts in this order before the frozen admin module.
+        window.eval(fs.readFileSync(path.join(ROOT, 'donors/ai-assistant-production/static/send_content_readonly_detail.js'), 'utf8'));
+        window.eval(fs.readFileSync(path.join(ROOT, '..', 'internal/webshell/static/admin_console/groupops_history_readonly_bridge.js'), 'utf8'));
         return;
       }
       if (automationHistoryHttp) {
@@ -1881,7 +1920,7 @@ console.log('admin/groupops 历史（真实四 GET，只读独立分页）');
   const primary = d.querySelector('#group-history-primary');
   const secondary = d.querySelector('#group-history-secondary');
   ok('历史详情只读计划下群与节点，字符串 ID 无精度损失', test.calls.length === 2 && test.calls.every((c) => c.path.includes('/history/plans/9007199254740993/')));
-  ok('源节点 day=0、触发标签空格、排序与原状态原样展示，内容不执行', secondary.textContent.includes('源 day_index：0') && secondary.textContent.includes('源触发标签：  入群后  ') && secondary.textContent.includes('源排序：0') && secondary.textContent.includes('legacy_disabled') && secondary.textContent.includes('<script>历史消息</script>') && !secondary.querySelector('script'));
+  ok('源节点 day=0、触发标签空格、排序与原状态原样展示，正文和附件经冻结只读组件呈现且不执行', secondary.textContent.includes('源 day_index：0') && secondary.textContent.includes('源触发标签：  入群后  ') && secondary.textContent.includes('源排序：0') && secondary.textContent.includes('legacy_disabled') && secondary.textContent.includes('历史标题 <img') && secondary.textContent.includes('<script>历史消息</script>') && secondary.textContent.includes('image #m1') && !!secondary.querySelector('.send-readonly-detail') && !secondary.querySelector('script') && !secondary.querySelector('img'));
   ok('历史群保留 removed 原状态及空 removed_at，不推测当前群状态', primary.textContent.includes('源状态：removed') && primary.textContent.includes('移除时间：NULL'));
   click(dom, primary.querySelector('[data-next]'));
   await sleep(30);
@@ -1962,6 +2001,56 @@ console.log('admin/groupopsDetail.html（真实 HTTP 群目录选择）');
   action('close'); test.ownersFail = true;
   click(dom, [...d.querySelectorAll('button')].find((b) => b.textContent.trim() === '查看群目录')); await sleep(30);
   ok('成员读取失败不使用种子候选且禁用刷新', d.querySelector('#group-directory').textContent.includes('运营成员读取失败') && d.querySelectorAll('[data-gd="owner"] option').length === 1 && d.querySelector('[data-gd="refresh"]').disabled);
+  dom.window.close();
+}
+{
+  const dom = await loadPage('admin/groupopsDetail.html', { id: 10, groupDirectoryHttp: { deliveryProven: true } });
+  await sleep(30);
+  const d = dom.window.document, test = dom.window.__groupDirectoryTest;
+  ok('旧群运营执行记录读取经 Host 投影的已验证送达，且保留真实 Provider 回执', d.querySelector('#stage').textContent.includes('已由已验证 Provider 回执证明送达') && d.querySelector('#stage').textContent.includes('Provider receipt=present') && test.calls.some((call) => call.path.endsWith('/plans/10/executions') && call.method === 'GET'));
+  dom.window.close();
+}
+console.log('admin/groupopsDetail.html（真实 HTTP 保存与预览契约）');
+{
+  const dom = await loadPage('admin/groupopsDetail.html', { groupDirectoryHttp: true });
+  const d = dom.window.document, test = dom.window.__groupDirectoryTest;
+  d.querySelector('#groupOpsName').value = '新建的延时计划';
+  d.querySelector('#groupOpsAssets').value = 'group-7-0';
+  const staff = d.querySelector('#groupOpsStaff'); staff.options[0].selected = true;
+  d.querySelector('#groupOpsNodes').value = JSON.stringify([
+    { position: 1, kind: 'message', messageText: '第一条', materialPlan: { references: [{ kind: 'image', id: 17 }] } },
+    { position: 2, kind: 'delay', delayMinutes: 5, materialPlan: { references: [] } },
+    { position: 3, kind: 'message', messageText: '第二条', materialPlan: { references: [{ kind: 'attachment', id: 18 }] } },
+  ]);
+  click(dom, [...d.querySelectorAll('button')].find((button) => button.textContent.trim() === '保存计划'));
+  await sleep(120);
+  const mutations = test.calls.filter((call) => call.method !== 'GET');
+  const idempotentWrites = mutations.filter((call) => !call.path.endsWith('/content/preview'));
+  const create = mutations.find((call) => call.path.endsWith('/plans') && call.method === 'POST');
+  const delay = mutations.find((call) => call.path.endsWith('/nodes') && call.body.kind === 'delay');
+  ok('新建计划以真实 HTTP 契约写入成员、群、即时/延时节点并读取本地预览', create?.body.name === '新建的延时计划' && create.headers.get('Idempotency-Key') && mutations.some((call) => call.path.endsWith('/members') && call.body.staff_id === 7) && mutations.some((call) => call.path.endsWith('/group-assets') && call.body.asset_reference === 'group-7-0') && delay?.body.delay_minutes === 5 && !('message_text' in delay.body) && delay.body.material_plan.references.length === 0 && test.calls.some((call) => call.path.endsWith('/content/preview') && call.method === 'POST') && idempotentWrites.every((call) => call.headers.get('Idempotency-Key')));
+  dom.window.close();
+}
+{
+  const dom = await loadPage('admin/groupopsDetail.html', { id: 10, groupDirectoryHttp: true });
+  const d = dom.window.document, test = dom.window.__groupDirectoryTest;
+  d.querySelector('#groupOpsName').value = '已编辑计划';
+  d.querySelector('#groupOpsAssets').value = 'group-7-0';
+  d.querySelector('#groupOpsNodes').value = JSON.stringify([{ position: 1, kind: 'message', messageText: '编辑后的消息', materialPlan: { references: [] } }, { position: 2, kind: 'delay', delayMinutes: 3, materialPlan: { references: [] } }]);
+  click(dom, [...d.querySelectorAll('button')].find((button) => button.textContent.trim() === '保存计划'));
+  await sleep(120);
+  const rename = test.calls.find((call) => call.path.endsWith('/plans/10') && call.method === 'PATCH');
+  ok('编辑计划采用逐次 revision 与幂等键，替换群和节点后重新读取预览', rename?.body.name === '已编辑计划' && Number.isInteger(rename?.body.expected_revision) && rename.headers.get('Idempotency-Key') && test.calls.some((call) => call.path.endsWith('/group-assets/group-old') && call.method === 'DELETE') && test.calls.some((call) => call.path.endsWith('/nodes') && call.method === 'POST' && call.body.kind === 'delay' && call.body.delay_minutes === 3) && test.calls.filter((call) => call.path.endsWith('/plans/10')).some((call) => call.method === 'GET') && test.calls.some((call) => call.path.endsWith('/content/preview') && call.method === 'POST'));
+  dom.window.close();
+}
+for (const [status, label, route] of [['active', '暂停', '/pause'], ['draft', '启用', '/activate'], ['paused', '启用', '/activate'], ['active', '归档', '/archive'], ['draft', '删除草稿', '/plans/10']]) {
+  const dom = await loadPage('admin/groupops.html', { groupDirectoryHttp: { status } });
+  const d = dom.window.document, test = dom.window.__groupDirectoryTest;
+  click(dom, [...d.querySelectorAll('button')].find((button) => button.textContent.trim() === label));
+  if (label !== '启用') click(dom, d.querySelector('#fb-ok'));
+  await sleep(80);
+  const request = test.calls.find((call) => call.path.endsWith(route) && (label === '删除草稿' ? call.method === 'DELETE' : call.method === 'POST'));
+  ok(`原群运营列表${label}走真实生命周期 HTTP 契约`, Boolean(request?.headers.get('Idempotency-Key')) && Number.isInteger(request?.body.expected_revision));
   dom.window.close();
 }
 

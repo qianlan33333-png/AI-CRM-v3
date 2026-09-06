@@ -2,6 +2,7 @@ package http_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -20,6 +21,15 @@ import (
 type applicationStub struct{ groupopshttp.Application }
 type runtimeStub struct {
 	groupopshttp.RuntimeApplication
+}
+
+type executionRuntimeStub struct {
+	runtimeStub
+	page groupopsport.ExecutionPage
+}
+
+func (stub executionRuntimeStub) ListExecutions(context.Context, int64, int32, int32) (groupopsport.ExecutionPage, error) {
+	return stub.page, nil
 }
 
 type historyStub struct {
@@ -188,6 +198,33 @@ func TestGroupOpsWebhookWithoutProtocolAdapterFailsClosed(t *testing.T) {
 	newBoundaryHandler(t, adminSecurity(nil), nil).ServeHTTP(response, request)
 	if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), `"protocol_auth_unavailable"`) {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestGroupOpsExecutionPageAdaptsVerifiedDeliveryForFrozenDetailDTO(t *testing.T) {
+	runtime := executionRuntimeStub{page: groupopsport.ExecutionPage{Items: []groupopsport.Execution{{
+		ID: 71, PlanID: 9, State: groupopsport.ExecutionProviderAccepted,
+		ProviderAccepted: true, DeliveryProven: true, ProviderReceiptPresent: true,
+	}}}}
+	handler, err := groupopshttp.NewHandlerWithRuntime(applicationStub{}, runtime, adminSecurity(nil), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, groupopshttp.PlansPath+"/9/executions?limit=100&offset=0", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var payload struct {
+		Items []struct {
+			State        string `json:"state"`
+			RuntimeState string `json:"runtime_state"`
+			Delivery     bool   `json:"delivery_proven"`
+			Receipt      bool   `json:"provider_receipt_present"`
+		} `json:"items"`
+	}
+	if err = json.Unmarshal(response.Body.Bytes(), &payload); err != nil || len(payload.Items) != 1 || payload.Items[0].State != "delivery_proven" || payload.Items[0].RuntimeState != "provider_accepted" || !payload.Items[0].Delivery || !payload.Items[0].Receipt {
+		t.Fatalf("payload=%s decoded=%+v err=%v", response.Body.String(), payload, err)
 	}
 }
 

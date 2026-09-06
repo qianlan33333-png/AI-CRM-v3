@@ -21,6 +21,12 @@ type CatalogPage struct {
 	Total      int64
 }
 
+// CatalogReader is the Channel-owned, read-only catalog projection for
+// consumers that need to validate a persisted channel reference.
+type CatalogReader interface {
+	List(context.Context, CatalogFilter) (CatalogPage, error)
+}
+
 type CatalogStore interface {
 	Get(context.Context, int64) (channeldomain.Channel, error)
 	List(context.Context, CatalogFilter) ([]channeldomain.Channel, int64, error)

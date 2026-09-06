@@ -13,6 +13,10 @@ type CustomerCouponStore interface {
 	ImportHistoricalCustomerCoupon(context.Context, couponport.HistoricalCustomerCoupon) (couponport.CustomerCoupon, bool, error)
 }
 
+type CouponClaimAdminStore interface {
+	ListCouponClaims(context.Context, couponport.ID, int32, int32) (couponport.AdminCouponClaimPage, error)
+}
+
 type CustomerCouponApplication struct {
 	uow   platformport.UnitOfWork
 	store CustomerCouponStore
@@ -54,3 +58,41 @@ func (s *CustomerCouponApplication) ImportHistoricalCustomerCoupon(ctx context.C
 
 var _ couponport.CustomerCouponReader = (*CustomerCouponApplication)(nil)
 var _ couponport.HistoricalCustomerCouponImporter = (*CustomerCouponApplication)(nil)
+
+// CouponClaimAdminApplication owns bounded admin reads for the legacy coupon
+// data page. It does not resolve or expose external identities.
+type CouponClaimAdminApplication struct {
+	uow   platformport.UnitOfWork
+	store CouponClaimAdminStore
+}
+
+func NewCouponClaimAdminApplication(uow platformport.UnitOfWork, store CouponClaimAdminStore) (*CouponClaimAdminApplication, error) {
+	if uow == nil || store == nil {
+		return nil, errors.New("coupon claim admin dependencies are required")
+	}
+	return &CouponClaimAdminApplication{uow: uow, store: store}, nil
+}
+
+func (s *CouponClaimAdminApplication) ListCouponClaims(ctx context.Context, couponID couponport.ID, limit, offset int32) (couponport.AdminCouponClaimPage, error) {
+	if s == nil || s.uow == nil || s.store == nil || couponID < 1 || limit < 1 || limit > 100 || offset < 0 || offset > 1_000_000 {
+		return couponport.AdminCouponClaimPage{}, ErrInvalidCoupon
+	}
+	var page couponport.AdminCouponClaimPage
+	err := s.uow.Within(ctx, func(txctx context.Context) error {
+		var err error
+		page, err = s.store.ListCouponClaims(txctx, couponID, limit, offset)
+		return err
+	})
+	if err != nil {
+		return couponport.AdminCouponClaimPage{}, err
+	}
+	if page.Items == nil {
+		page.Items = []couponport.AdminCouponClaim{}
+	}
+	if page.Total < 0 || page.Limit != limit || page.Offset != offset || len(page.Items) > int(limit) {
+		return couponport.AdminCouponClaimPage{}, ErrUnavailable
+	}
+	return page, nil
+}
+
+var _ couponport.CouponClaimAdminReader = (*CouponClaimAdminApplication)(nil)
