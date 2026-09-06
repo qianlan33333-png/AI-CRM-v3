@@ -83,9 +83,31 @@ const evaluate = async (cdp, expression) => {
   return result.result?.value;
 };
 
+const waitForBrowserExit = async (child, timeoutMilliseconds) => {
+  if (!child || child.exitCode !== null || child.signalCode !== null) return true;
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(false), timeoutMilliseconds);
+    child.once("exit", () => { clearTimeout(timer); resolve(true); });
+  });
+};
+
+const removeProfile = async (profile) => {
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    try {
+      await fs.rm(profile, { recursive: true, force: true, maxRetries: 0 });
+      return true;
+    } catch (error) {
+      if (!error || !["ENOTEMPTY", "EBUSY", "EPERM"].includes(error.code)) return false;
+      await delay(100);
+    }
+  }
+  return false;
+};
+
 const profile = await fs.mkdtemp(path.join(os.tmpdir(), "aicrm-runtime-config-chromium-"));
 let browser;
 let cdp;
+let journeyFailed = false;
 try {
   const binary = browserBinary();
   browser = spawn(binary, [
@@ -140,8 +162,20 @@ try {
   const effective = await evaluate(cdp, "fetch('/api/admin/config/runtime-releases', {credentials:'same-origin'}).then((response) => response.ok ? response.json() : null).then((body) => body?.runtime_releases?.effective?.automation_max_recipients_per_run)");
   if (effective !== 2) throw new Error("rollback did not restore the older runtime value through the actual API");
   console.log("runtime_config_releases_chromium: PASS");
+} catch (error) {
+  journeyFailed = true;
+  throw error;
 } finally {
   if (cdp) cdp.close();
-  if (browser && !browser.killed) browser.kill("SIGTERM");
-  await fs.rm(profile, { recursive: true, force: true });
+  if (browser && browser.exitCode === null && browser.signalCode === null) {
+    browser.kill("SIGTERM");
+    if (!await waitForBrowserExit(browser, 3000) && browser.exitCode === null && browser.signalCode === null) {
+      browser.kill("SIGKILL");
+      await waitForBrowserExit(browser, 1000);
+    }
+  }
+  // The profile belongs only to this test process. Cleanup is bounded so a
+  // late Chromium child cannot hide a journey assertion or leave CI hanging.
+  const removed = await removeProfile(profile);
+  if (!removed && !journeyFailed) throw new Error("Chromium test profile cleanup did not complete");
 }
