@@ -12,7 +12,14 @@ const sourceUserID = process.env.AICRM_OWNER_HANDOFF_TEST_SOURCE_USERID;
 const targetUserID = process.env.AICRM_OWNER_HANDOFF_TEST_TARGET_USERID;
 const requestedMode = process.env.AICRM_OWNER_HANDOFF_TEST_MODE || "both";
 const requestedScope = process.env.AICRM_OWNER_HANDOFF_TEST_SCOPE || "all";
-const readTransfer = process.env.AICRM_OWNER_HANDOFF_TEST_READ_TRANSFER === "1";
+const parseOptionalBoolean = name => {
+  const value = process.env[name];
+  if (value === undefined || value === "") return false;
+  if (value === "true") return true;
+  if (value === "false") return false;
+  throw new Error(`${name} must be true or false`);
+};
+const readTransfer = parseOptionalBoolean("AICRM_OWNER_HANDOFF_TEST_READ_TRANSFER");
 if (!/^https:\/\//.test(baseURL || "") || !username || !password || !source || !target || !sourceUserID || !targetUserID) throw new Error("owner handoff Chromium journey requires HTTPS URL, credentials, and fixture IDs");
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 const chrome = () => {
