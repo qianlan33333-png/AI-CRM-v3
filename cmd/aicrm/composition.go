@@ -1429,7 +1429,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
-	handler = openplatformhttp.Mount(handler, openPlatformHandler.Routes())
+	handler = openplatformhttp.MountWithLegacyProtocols(handler, openPlatformHandler.Routes(), cfg.OperationCycleServiceToken)
 	handler = mountMemberGridUI(handler, memberGridUI)
 	handler, err = mountSegmentAPI(handler, segmentBindings.Audience)
 	if err != nil {

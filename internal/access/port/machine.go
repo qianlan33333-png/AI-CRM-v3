@@ -100,23 +100,69 @@ type MachineManagement interface {
 // HistoricalMachineImportInput contains only non-secret source facts. A
 // migration never accepts old secret hashes, keys, or access tokens.
 type HistoricalMachineImportInput struct {
-	ImportRunID     string
-	SourceRowID     string
-	SourceRowDigest [32]byte
-	ClientID        string
-	DisplayName     string
-	Purpose         string
-	AllowedCIDRs    []string
-	OwnerScope      domain.OwnerScope
-	TokenTTLSeconds int
-	ExpiresAt       *time.Time
+	ImportRunID       string
+	SourceRowID       string
+	SourceRowDigest   [32]byte
+	ClientID          string
+	PrincipalID       string
+	PrincipalType     string
+	DisplayName       string
+	Purpose           string
+	Audiences         []string
+	Scopes            []string
+	Capabilities      []string
+	AllowedCIDRs      []string
+	CorpID            string
+	OwnerScope        domain.OwnerScope
+	SourceEnabled     bool
+	SourceAuthVersion int64
+	TokenTTLSeconds   int
+	ExpiresAt         *time.Time
 }
 
 type HistoricalMachineImportResult struct {
-	Client   MachineClientSummary
+	Client     MachineClientSummary
+	Outcome    string
+	ReasonCode string
+	Replayed   bool
+}
+
+// HistoricalMachineAuditInput carries a redacted historical audit fact. The
+// source before/after payloads never leave the protected source snapshot: the
+// target stores their digests together with the original action, target and
+// occurrence time so import audit is never confused with a legacy action.
+type HistoricalMachineAuditInput struct {
+	ImportRunID     string
+	SourceAuditID   int64
+	SourceRowDigest [32]byte
+	Operator        string
+	Action          string
+	TargetType      string
+	TargetID        string
+	BeforeDigest    [32]byte
+	AfterDigest     [32]byte
+	OccurredAt      time.Time
+}
+
+type HistoricalMachineAuditResult struct {
 	Outcome  string
 	Replayed bool
 }
+
+// HistoricalMachineImportBatch seals one protected source snapshot. A source
+// revision may have only one digest, which prevents overlap or source drift
+// from being treated as a second historical import.
+type HistoricalMachineImportBatch struct {
+	ImportRunID    string
+	SourceSystem   string
+	SourceRevision string
+	ManifestDigest [32]byte
+	SnapshotAt     time.Time
+	ClientCount    int
+	AuditCount     int
+}
+
+type HistoricalMachineImportBatchResult struct{ Replayed bool }
 
 // MachineHistoricalImporter is for an explicit offline migration command. It
 // has no secret-returning method and always records disabled/reissue-required
@@ -129,10 +175,33 @@ type MachineHistoricalImporter interface {
 // idempotent source-row receipts. The command never writes these tables.
 type MachineHistoricalRepository interface {
 	ImportHistoricalMachineClient(context.Context, HistoricalMachineImportInput, domain.MachineClient) (domain.MachineClient, bool, error)
+	RecordHistoricalMachineExclusion(context.Context, HistoricalMachineImportInput, string) (bool, error)
 }
 
 // MachineHistoricalVerificationRepository reads an already-written receipt
 // without making an import side effect.
 type MachineHistoricalVerificationRepository interface {
-	VerifyHistoricalMachineClient(context.Context, HistoricalMachineImportInput) (domain.MachineClient, error)
+	VerifyHistoricalMachineClient(context.Context, HistoricalMachineImportInput) (domain.MachineClient, string, string, error)
+}
+
+// MachineHistoricalAuditRepository owns immutable legacy-audit mappings. It
+// has no write path for a live credential or a provider effect.
+type MachineHistoricalAuditRepository interface {
+	ImportHistoricalMachineAudit(context.Context, HistoricalMachineAuditInput) (bool, error)
+	VerifyHistoricalMachineAudit(context.Context, HistoricalMachineAuditInput) error
+}
+
+type MachineHistoricalAuditImporter interface {
+	ImportHistoricalAudit(context.Context, HistoricalMachineAuditInput) (HistoricalMachineAuditResult, error)
+	VerifyHistoricalAudit(context.Context, HistoricalMachineAuditInput) error
+}
+
+type MachineHistoricalBatchRepository interface {
+	BeginHistoricalMachineImport(context.Context, HistoricalMachineImportBatch) (bool, error)
+	VerifyHistoricalMachineImport(context.Context, HistoricalMachineImportBatch) error
+}
+
+type MachineHistoricalBatcher interface {
+	BeginHistoricalImport(context.Context, HistoricalMachineImportBatch) (HistoricalMachineImportBatchResult, error)
+	VerifyHistoricalImport(context.Context, HistoricalMachineImportBatch) error
 }

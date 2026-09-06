@@ -50,7 +50,7 @@ type openPlatformExecutor struct {
 }
 
 func newOpenPlatformExecutor(identity identityport.Resolver, orders orderport.Query, profiles customerport.SidebarProfileService, archive archiveport.CustomerMessageReader, timeline customerport.CustomerTimelineReader, owners wecomport.AudiencePrimaryOwnerReader, scopes openPlatformIdentityScopes) (*openPlatformExecutor, error) {
-	if identity == nil || orders == nil || profiles == nil || archive == nil || timeline == nil || owners == nil || strings.TrimSpace(scopes.WeComScope) == "" {
+	if identity == nil || orders == nil || profiles == nil || archive == nil || timeline == nil || owners == nil {
 		return nil, errors.New("open platform core Port dependencies are required")
 	}
 	scopes.WeComScope = strings.TrimSpace(scopes.WeComScope)
@@ -143,6 +143,9 @@ func (executor *openPlatformExecutor) ensureCustomerScope(ctx context.Context, p
 		}
 	}
 	if _, requiresOwner := principal.OwnerScope["owner_userid"]; requiresOwner {
+		if executor.scopes.WeComScope == "" {
+			return errOpenPlatformResourceOutOfScope
+		}
 		owners, err := executor.owners.AudiencePrimaryOwners(ctx, []customerdomain.CustomerID{customerID})
 		if err != nil || len(owners) != 1 || owners[0].CustomerID != customerID || owners[0].Status != "known" || owners[0].OwnerUserID == "" || owners[0].CorpScope != executor.scopes.WeComScope {
 			return errOpenPlatformResourceOutOfScope
@@ -314,7 +317,11 @@ func (executor *openPlatformExecutor) mcpCustomerID(ctx context.Context, argumen
 		} else if isCN11(value) {
 			references = append(references, identitydomain.Reference{Kind: identitydomain.KindPhone, Scope: "phone:cn11", Value: value, Assurance: identitydomain.AssuranceDeclared, Source: "open_platform.mcp"})
 		} else {
-			references = append(references, identitydomain.Reference{Kind: identitydomain.KindWeComExternalUserID, Scope: executor.scopes.WeComScope, Value: value, Assurance: identitydomain.AssuranceDeclared, Source: "open_platform.mcp"})
+			reference, referenceErr := executor.trustedReference(identitydomain.KindWeComExternalUserID, "", value, "open_platform.mcp")
+			if referenceErr != nil {
+				return 0, nil, referenceErr
+			}
+			references = append(references, reference)
 		}
 	}
 	if raw, exists := arguments["external_userid"]; exists {
@@ -322,7 +329,11 @@ func (executor *openPlatformExecutor) mcpCustomerID(ctx context.Context, argumen
 		if !ok || strings.TrimSpace(value) == "" {
 			return 0, nil, errors.New("invalid external_userid")
 		}
-		references = append(references, identitydomain.Reference{Kind: identitydomain.KindWeComExternalUserID, Scope: executor.scopes.WeComScope, Value: strings.TrimSpace(value), Assurance: identitydomain.AssuranceDeclared, Source: "open_platform.mcp"})
+		reference, referenceErr := executor.trustedReference(identitydomain.KindWeComExternalUserID, "", strings.TrimSpace(value), "open_platform.mcp")
+		if referenceErr != nil {
+			return 0, nil, referenceErr
+		}
+		references = append(references, reference)
 	}
 	if directCustomer == 0 && len(references) == 0 {
 		return 0, nil, errors.New("customer_ref or external_userid is required")
@@ -429,6 +440,9 @@ func (executor *openPlatformExecutor) trustedReference(kind identitydomain.Kind,
 	scope := requestedScope
 	switch kind {
 	case identitydomain.KindWeComExternalUserID:
+		if executor.scopes.WeComScope == "" {
+			return identitydomain.Reference{}, errOpenPlatformIdentityScopeDenied
+		}
 		if scope == "" {
 			scope = executor.scopes.WeComScope
 		}

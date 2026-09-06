@@ -4,6 +4,7 @@ package http
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"io"
@@ -99,6 +100,20 @@ func (handler *Handler) Routes() http.Handler {
 // deliberately does not use a broad /api/ prefix: ordinary browser/session
 // routes retain their existing owner and never become machine endpoints.
 func Mount(next, machine http.Handler) http.Handler {
+	return mount(next, machine, false)
+}
+
+// MountWithLegacyProtocols is used by Composition for frozen paths which had
+// a dedicated V3 authentication protocol before the machine platform. A
+// syntactically JWT-shaped bearer is deliberately claimed by the machine
+// handler (and rejected there if invalid); an opaque bearer remains with its
+// existing owner. This never falls an invalid machine token through to a
+// legacy protocol.
+func MountWithLegacyProtocols(next, machine http.Handler, operationCycleServiceToken string) http.Handler {
+	return mount(next, machine, true, operationCycleServiceToken)
+}
+
+func mount(next, machine http.Handler, preserveLegacyProtocols bool, operationCycleServiceToken ...string) http.Handler {
 	if next == nil || machine == nil {
 		return http.NotFoundHandler()
 	}
@@ -127,10 +142,56 @@ func Mount(next, machine http.Handler) http.Handler {
 		if route.Path == "/mcp" {
 			continue
 		}
+		if preserveLegacyProtocols && legacyProtocolRoute(route) {
+			token := ""
+			if len(operationCycleServiceToken) == 1 {
+				token = operationCycleServiceToken[0]
+			}
+			mux.Handle(route.Method+" "+route.Path, preserveLegacyMachineRoute(next, machine, token))
+			continue
+		}
 		mux.Handle(route.Method+" "+route.Path, machine)
 	}
 	mux.Handle("/", next)
 	return mux
+}
+
+func legacyProtocolRoute(route Route) bool {
+	return strings.HasPrefix(route.Path, "/api/operation-cycles/") || strings.HasPrefix(route.Path, "/api/ai-assist/external/")
+}
+
+func preserveLegacyMachineRoute(legacy, machine http.Handler, operationCycleServiceToken string) http.Handler {
+	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		bearer := strings.TrimSpace(strings.TrimPrefix(request.Header.Get("Authorization"), "Bearer "))
+		hasLegacyProof := false
+		for _, header := range []string{"X-AICRM-Integration-Key", "X-AICRM-Signature", "X-AICRM-Nonce", "X-AICRM-Timestamp"} {
+			if strings.TrimSpace(request.Header.Get(header)) != "" {
+				hasLegacyProof = true
+				break
+			}
+		}
+		// A request must select one authenticated protocol. This check happens
+		// before either handler observes it, so a combined proof cannot become a
+		// fallback path for an invalid machine bearer.
+		if bearer != "" && hasLegacyProof {
+			writeJSON(response, http.StatusBadRequest, map[string]string{"error": "ambiguous_authentication"})
+			return
+		}
+		if hasLegacyProof || constantTimeTokenMatch(bearer, operationCycleServiceToken) {
+			legacy.ServeHTTP(response, request)
+			return
+		}
+		// Everything else, including malformed and signature-invalid JWTs, stays
+		// machine-owned and is rejected by the machine authentication chain.
+		machine.ServeHTTP(response, request)
+	})
+}
+
+func constantTimeTokenMatch(got, want string) bool {
+	if got == "" || want == "" || len(got) != len(want) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
 }
 
 func (handler *Handler) token(response http.ResponseWriter, request *http.Request) {

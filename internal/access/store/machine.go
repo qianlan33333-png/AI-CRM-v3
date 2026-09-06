@@ -15,6 +15,8 @@ import (
 var _ accessport.MachineRepository = (*PostgreSQL)(nil)
 var _ accessport.MachineHistoricalRepository = (*PostgreSQL)(nil)
 var _ accessport.MachineHistoricalVerificationRepository = (*PostgreSQL)(nil)
+var _ accessport.MachineHistoricalAuditRepository = (*PostgreSQL)(nil)
+var _ accessport.MachineHistoricalBatchRepository = (*PostgreSQL)(nil)
 
 func (*PostgreSQL) MachineClientByID(ctx context.Context, clientID string, lock bool) (domain.MachineClient, error) {
 	database, err := tx(ctx)
@@ -71,6 +73,53 @@ func (*PostgreSQL) ListMachineClients(ctx context.Context) ([]domain.MachineClie
 	return clients, nil
 }
 
+func (*PostgreSQL) BeginHistoricalMachineImport(ctx context.Context, batch accessport.HistoricalMachineImportBatch) (bool, error) {
+	database, err := tx(ctx)
+	if err != nil {
+		return false, err
+	}
+	var digest []byte
+	var sourceSystem, sourceRevision string
+	var snapshotAt time.Time
+	var clientCount, auditCount int
+	err = database.QueryRow(ctx, `SELECT manifest_digest,source_system,source_revision,snapshot_at,client_count,audit_count FROM access_machine_import_batches WHERE import_run_id=$1 FOR UPDATE`, batch.ImportRunID).Scan(&digest, &sourceSystem, &sourceRevision, &snapshotAt, &clientCount, &auditCount)
+	if err == nil {
+		if !bytes.Equal(digest, batch.ManifestDigest[:]) || sourceSystem != batch.SourceSystem || sourceRevision != batch.SourceRevision || !snapshotAt.Equal(batch.SnapshotAt.UTC()) || clientCount != batch.ClientCount || auditCount != batch.AuditCount {
+			return false, domain.ErrConflict
+		}
+		return true, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return false, err
+	}
+	if _, err = database.Exec(ctx, `INSERT INTO access_machine_import_batches(import_run_id,source_system,source_revision,manifest_digest,snapshot_at,client_count,audit_count) VALUES($1,$2,$3,$4,$5,$6,$7)`, batch.ImportRunID, batch.SourceSystem, batch.SourceRevision, batch.ManifestDigest[:], batch.SnapshotAt.UTC(), batch.ClientCount, batch.AuditCount); err != nil {
+		return false, mapDatabaseError(err)
+	}
+	return false, nil
+}
+
+func (*PostgreSQL) VerifyHistoricalMachineImport(ctx context.Context, batch accessport.HistoricalMachineImportBatch) error {
+	database, err := tx(ctx)
+	if err != nil {
+		return err
+	}
+	var digest []byte
+	var sourceSystem, sourceRevision string
+	var snapshotAt time.Time
+	var clientCount, auditCount int
+	err = database.QueryRow(ctx, `SELECT manifest_digest,source_system,source_revision,snapshot_at,client_count,audit_count FROM access_machine_import_batches WHERE import_run_id=$1`, batch.ImportRunID).Scan(&digest, &sourceSystem, &sourceRevision, &snapshotAt, &clientCount, &auditCount)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(digest, batch.ManifestDigest[:]) || sourceSystem != batch.SourceSystem || sourceRevision != batch.SourceRevision || !snapshotAt.Equal(batch.SnapshotAt.UTC()) || clientCount != batch.ClientCount || auditCount != batch.AuditCount {
+		return domain.ErrConflict
+	}
+	return nil
+}
+
 // ImportHistoricalMachineClient writes a source-row receipt and an inert
 // replacement credential together. A replay with the same source digest reads
 // the original result; a changed source row cannot silently alter it.
@@ -81,13 +130,11 @@ func (*PostgreSQL) ImportHistoricalMachineClient(ctx context.Context, input acce
 	}
 	var storedDigest []byte
 	var storedClientID *int64
-	err = database.QueryRow(ctx, `SELECT source_row_digest,machine_client_id FROM access_machine_import_receipts WHERE import_run_id=$1 AND source_row_id=$2 FOR UPDATE`, input.ImportRunID, input.SourceRowID).Scan(&storedDigest, &storedClientID)
+	var outcome, reason string
+	err = database.QueryRow(ctx, `SELECT source_row_digest,machine_client_id,outcome,reason_code FROM access_machine_import_receipts WHERE import_run_id=$1 AND source_row_id=$2 FOR UPDATE`, input.ImportRunID, input.SourceRowID).Scan(&storedDigest, &storedClientID, &outcome, &reason)
 	switch {
 	case err == nil:
-		if !bytes.Equal(storedDigest, input.SourceRowDigest[:]) {
-			return domain.MachineClient{}, false, domain.ErrConflict
-		}
-		if storedClientID == nil {
+		if !bytes.Equal(storedDigest, input.SourceRowDigest[:]) || outcome != "reissue_required" || reason != "" || storedClientID == nil {
 			return domain.MachineClient{}, false, domain.ErrConflict
 		}
 		result, readErr := scanMachineClient(database.QueryRow(ctx, machineClientSelect+` WHERE c.id=$1`, *storedClientID))
@@ -104,38 +151,118 @@ func (*PostgreSQL) ImportHistoricalMachineClient(ctx context.Context, input acce
 		return domain.MachineClient{}, false, err
 	}
 	if _, err = database.Exec(ctx, `INSERT INTO access_machine_import_receipts
-		(import_run_id,source_row_id,source_row_digest,machine_client_id,outcome)
-		VALUES($1,$2,$3,$4,'reissue_required')`, input.ImportRunID, input.SourceRowID, input.SourceRowDigest[:], created.ID); err != nil {
+		(import_run_id,source_row_id,source_row_digest,source_client_id,source_principal_id,source_principal_type,source_enabled,source_auth_version,machine_client_id,outcome,reason_code)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'reissue_required','')`, input.ImportRunID, input.SourceRowID, input.SourceRowDigest[:], input.ClientID, input.PrincipalID, input.PrincipalType, input.SourceEnabled, input.SourceAuthVersion, created.ID); err != nil {
 		return domain.MachineClient{}, false, err
 	}
 	return created, false, nil
 }
 
-// VerifyHistoricalMachineClient reads the receipt without creating a row.
-func (*PostgreSQL) VerifyHistoricalMachineClient(ctx context.Context, input accessport.HistoricalMachineImportInput) (domain.MachineClient, error) {
+// RecordHistoricalMachineExclusion preserves a source row that V3 cannot host
+// without broadening its authority. Repeating its exact digest is harmless;
+// a changed row remains a hard conflict for operator review.
+func (*PostgreSQL) RecordHistoricalMachineExclusion(ctx context.Context, input accessport.HistoricalMachineImportInput, reason string) (bool, error) {
 	database, err := tx(ctx)
 	if err != nil {
-		return domain.MachineClient{}, err
+		return false, err
+	}
+	var storedDigest []byte
+	var outcome, storedReason string
+	err = database.QueryRow(ctx, `SELECT source_row_digest,outcome,reason_code FROM access_machine_import_receipts WHERE import_run_id=$1 AND source_row_id=$2 FOR UPDATE`, input.ImportRunID, input.SourceRowID).Scan(&storedDigest, &outcome, &storedReason)
+	if err == nil {
+		if !bytes.Equal(storedDigest, input.SourceRowDigest[:]) || outcome != "excluded" || storedReason != reason {
+			return false, domain.ErrConflict
+		}
+		return true, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return false, err
+	}
+	_, err = database.Exec(ctx, `INSERT INTO access_machine_import_receipts
+		(import_run_id,source_row_id,source_row_digest,source_client_id,source_principal_id,source_principal_type,source_enabled,source_auth_version,machine_client_id,outcome,reason_code)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,NULL,'excluded',$9)`, input.ImportRunID, input.SourceRowID, input.SourceRowDigest[:], input.ClientID, input.PrincipalID, input.PrincipalType, input.SourceEnabled, input.SourceAuthVersion, reason)
+	return false, err
+}
+
+// VerifyHistoricalMachineClient reads a receipt without creating a row. An
+// excluded fact deliberately has no client; its outcome and reason remain the
+// evidence that a future rotation cannot expand an unsupported old grant.
+func (*PostgreSQL) VerifyHistoricalMachineClient(ctx context.Context, input accessport.HistoricalMachineImportInput) (domain.MachineClient, string, string, error) {
+	database, err := tx(ctx)
+	if err != nil {
+		return domain.MachineClient{}, "", "", err
 	}
 	var storedDigest []byte
 	var clientID *int64
-	if err = database.QueryRow(ctx, `SELECT source_row_digest,machine_client_id FROM access_machine_import_receipts WHERE import_run_id=$1 AND source_row_id=$2`, input.ImportRunID, input.SourceRowID).Scan(&storedDigest, &clientID); errors.Is(err, pgx.ErrNoRows) {
-		return domain.MachineClient{}, domain.ErrNotFound
+	var outcome, reason string
+	if err = database.QueryRow(ctx, `SELECT source_row_digest,machine_client_id,outcome,reason_code FROM access_machine_import_receipts WHERE import_run_id=$1 AND source_row_id=$2`, input.ImportRunID, input.SourceRowID).Scan(&storedDigest, &clientID, &outcome, &reason); errors.Is(err, pgx.ErrNoRows) {
+		return domain.MachineClient{}, "", "", domain.ErrNotFound
 	} else if err != nil {
-		return domain.MachineClient{}, err
+		return domain.MachineClient{}, "", "", err
 	}
-	if !bytes.Equal(storedDigest, input.SourceRowDigest[:]) || clientID == nil {
-		return domain.MachineClient{}, domain.ErrConflict
+	if !bytes.Equal(storedDigest, input.SourceRowDigest[:]) {
+		return domain.MachineClient{}, "", "", domain.ErrConflict
+	}
+	if outcome == "excluded" && clientID == nil {
+		return domain.MachineClient{}, outcome, reason, nil
+	}
+	if outcome != "reissue_required" || reason != "" || clientID == nil {
+		return domain.MachineClient{}, "", "", domain.ErrConflict
 	}
 	result, err := scanMachineClient(database.QueryRow(ctx, machineClientSelect+` WHERE c.id=$1`, *clientID))
 	if errors.Is(err, pgx.ErrNoRows) {
-		return domain.MachineClient{}, domain.ErrNotFound
+		return domain.MachineClient{}, "", "", domain.ErrNotFound
 	}
 	if err != nil {
-		return domain.MachineClient{}, err
+		return domain.MachineClient{}, "", "", err
 	}
 	result.Capabilities, err = machineCapabilities(ctx, database, result.ID)
-	return result, err
+	return result, outcome, reason, err
+}
+
+func (*PostgreSQL) ImportHistoricalMachineAudit(ctx context.Context, input accessport.HistoricalMachineAuditInput) (bool, error) {
+	database, err := tx(ctx)
+	if err != nil {
+		return false, err
+	}
+	var digest, before, after []byte
+	var operator, action, targetType, targetID string
+	var occurred time.Time
+	err = database.QueryRow(ctx, `SELECT source_row_digest,before_payload_digest,after_payload_digest,source_operator,source_action,source_target_type,source_target_id,occurred_at FROM access_machine_historical_audit_facts WHERE import_run_id=$1 AND source_audit_id=$2 FOR UPDATE`, input.ImportRunID, input.SourceAuditID).Scan(&digest, &before, &after, &operator, &action, &targetType, &targetID, &occurred)
+	if err == nil {
+		if !bytes.Equal(digest, input.SourceRowDigest[:]) || !bytes.Equal(before, input.BeforeDigest[:]) || !bytes.Equal(after, input.AfterDigest[:]) || operator != input.Operator || action != input.Action || targetType != input.TargetType || targetID != input.TargetID || !occurred.Equal(input.OccurredAt.UTC()) {
+			return false, domain.ErrConflict
+		}
+		return true, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return false, err
+	}
+	_, err = database.Exec(ctx, `INSERT INTO access_machine_historical_audit_facts
+		(import_run_id,source_audit_id,source_row_digest,source_operator,source_action,source_target_type,source_target_id,before_payload_digest,after_payload_digest,occurred_at)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, input.ImportRunID, input.SourceAuditID, input.SourceRowDigest[:], input.Operator, input.Action, input.TargetType, input.TargetID, input.BeforeDigest[:], input.AfterDigest[:], input.OccurredAt.UTC())
+	return false, err
+}
+
+func (repository *PostgreSQL) VerifyHistoricalMachineAudit(ctx context.Context, input accessport.HistoricalMachineAuditInput) error {
+	database, err := tx(ctx)
+	if err != nil {
+		return err
+	}
+	var digest, before, after []byte
+	var operator, action, targetType, targetID string
+	var occurred time.Time
+	err = database.QueryRow(ctx, `SELECT source_row_digest,before_payload_digest,after_payload_digest,source_operator,source_action,source_target_type,source_target_id,occurred_at FROM access_machine_historical_audit_facts WHERE import_run_id=$1 AND source_audit_id=$2`, input.ImportRunID, input.SourceAuditID).Scan(&digest, &before, &after, &operator, &action, &targetType, &targetID, &occurred)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(digest, input.SourceRowDigest[:]) || !bytes.Equal(before, input.BeforeDigest[:]) || !bytes.Equal(after, input.AfterDigest[:]) || operator != input.Operator || action != input.Action || targetType != input.TargetType || targetID != input.TargetID || !occurred.Equal(input.OccurredAt.UTC()) {
+		return domain.ErrConflict
+	}
+	return nil
 }
 
 func (*PostgreSQL) CreateMachineClient(ctx context.Context, client domain.MachineClient) (domain.MachineClient, error) {

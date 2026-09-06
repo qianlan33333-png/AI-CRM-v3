@@ -6,24 +6,65 @@ import (
 	"errors"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
 	accessport "github.com/qianlan33333-png/AI-CRM-v3/internal/access/port"
 )
 
 var _ accessport.MachineHistoricalImporter = (*MachineService)(nil)
+var _ accessport.MachineHistoricalAuditImporter = (*MachineService)(nil)
+var _ accessport.MachineHistoricalBatcher = (*MachineService)(nil)
+
+// BeginHistoricalImport creates or replays the sealed source-snapshot receipt.
+// It has no credential side effect and must run before individual source rows.
+func (service *MachineService) BeginHistoricalImport(ctx context.Context, batch accessport.HistoricalMachineImportBatch) (accessport.HistoricalMachineImportBatchResult, error) {
+	if err := validateHistoricalMachineBatch(batch); err != nil {
+		return accessport.HistoricalMachineImportBatchResult{}, err
+	}
+	repository, ok := service.repository.(accessport.MachineHistoricalBatchRepository)
+	if !ok {
+		return accessport.HistoricalMachineImportBatchResult{}, errors.New("machine historical batch repository is not configured")
+	}
+	var replayed bool
+	err := service.uow.Within(ctx, func(txContext context.Context) error {
+		var beginErr error
+		replayed, beginErr = repository.BeginHistoricalMachineImport(txContext, batch)
+		return beginErr
+	})
+	if err != nil {
+		return accessport.HistoricalMachineImportBatchResult{}, err
+	}
+	return accessport.HistoricalMachineImportBatchResult{Replayed: replayed}, nil
+}
+
+func (service *MachineService) VerifyHistoricalImport(ctx context.Context, batch accessport.HistoricalMachineImportBatch) error {
+	if err := validateHistoricalMachineBatch(batch); err != nil {
+		return err
+	}
+	repository, ok := service.repository.(accessport.MachineHistoricalBatchRepository)
+	if !ok {
+		return errors.New("machine historical batch repository is not configured")
+	}
+	return service.uow.Within(ctx, func(txContext context.Context) error {
+		return repository.VerifyHistoricalMachineImport(txContext, batch)
+	})
+}
 
 // ImportHistorical creates an intentionally unusable replacement record for a
-// legacy caller. The generated entropy is immediately hashed and discarded:
-// no old or new usable credential is emitted by this path. Rotation is the
-// only way to obtain a fresh secret afterwards.
+// legacy caller. Its source grants are preserved exactly when V3 supports the
+// same subset. There is never a purpose-template expansion: unsupported source
+// records receive a durable excluded receipt instead of a broader client.
 func (service *MachineService) ImportHistorical(ctx context.Context, input accessport.HistoricalMachineImportInput) (accessport.HistoricalMachineImportResult, error) {
 	if err := validateHistoricalMachineImport(input); err != nil {
 		return accessport.HistoricalMachineImportResult{}, err
 	}
-	profile, exists := domain.MachineProfileForPurpose(strings.TrimSpace(input.Purpose))
-	if !exists {
-		return accessport.HistoricalMachineImportResult{}, domain.ErrInvalidInput
+	repository, ok := service.repository.(accessport.MachineHistoricalRepository)
+	if !ok {
+		return accessport.HistoricalMachineImportResult{}, errors.New("machine historical repository is not configured")
+	}
+	if reason := historicalMachineExclusionReason(input); reason != "" {
+		return service.excludeHistoricalMachine(ctx, repository, input, reason)
 	}
 	// Active client creation rejects past expiry, while history must retain an
 	// already-expired caller as an inert reissue-required record.
@@ -33,13 +74,14 @@ func (service *MachineService) ImportHistorical(ctx context.Context, input acces
 		createExpiresAt = nil
 	}
 	client, err := service.newMachineClient(accessport.CreateMachineClientInput{
-		ClientID: input.ClientID, DisplayName: input.DisplayName, Purpose: profile.Purpose,
-		Audiences: profile.Audiences, Scopes: profile.Scopes, Capabilities: profile.Capabilities,
+		ClientID: input.ClientID, DisplayName: input.DisplayName, Purpose: input.Purpose,
+		Audiences: input.Audiences, Scopes: input.Scopes, Capabilities: input.Capabilities,
 		AllowedCIDRs: input.AllowedCIDRs, OwnerScope: input.OwnerScope, TokenTTLSeconds: input.TokenTTLSeconds, ExpiresAt: createExpiresAt,
 	})
 	if err != nil {
-		return accessport.HistoricalMachineImportResult{}, err
+		return service.excludeHistoricalMachine(ctx, repository, input, "unsupported_source_grant")
 	}
+	client.CorpID = strings.TrimSpace(input.CorpID)
 	entropy := make([]byte, 32)
 	if _, err = rand.Read(entropy); err != nil {
 		return accessport.HistoricalMachineImportResult{}, err
@@ -54,10 +96,6 @@ func (service *MachineService) ImportHistorical(ctx context.Context, input acces
 	client.ReissueRequired = true
 	client.AuthVersion = 1
 
-	repository, ok := service.repository.(accessport.MachineHistoricalRepository)
-	if !ok {
-		return accessport.HistoricalMachineImportResult{}, errors.New("machine historical repository is not configured")
-	}
 	var imported domain.MachineClient
 	var replayed bool
 	err = service.uow.Within(ctx, func(txContext context.Context) error {
@@ -68,43 +106,102 @@ func (service *MachineService) ImportHistorical(ctx context.Context, input acces
 		}
 		return service.audit(txContext, imported, nil, "machine_client_imported", "reissue_required")
 	})
+	if errors.Is(err, domain.ErrConflict) {
+		// A target client established outside this source snapshot must never be
+		// overwritten or silently treated as the historical record.
+		return service.excludeHistoricalMachine(ctx, repository, input, "target_client_id_conflict")
+	}
 	if err != nil {
 		return accessport.HistoricalMachineImportResult{}, err
 	}
 	return accessport.HistoricalMachineImportResult{Client: summarizeMachineClient(imported), Outcome: map[bool]string{true: "replayed", false: "reissue_required"}[replayed], Replayed: replayed}, nil
 }
 
+func (service *MachineService) excludeHistoricalMachine(ctx context.Context, repository accessport.MachineHistoricalRepository, input accessport.HistoricalMachineImportInput, reason string) (accessport.HistoricalMachineImportResult, error) {
+	var replayed bool
+	err := service.uow.Within(ctx, func(txContext context.Context) error {
+		var excludeErr error
+		replayed, excludeErr = repository.RecordHistoricalMachineExclusion(txContext, input, reason)
+		return excludeErr
+	})
+	if err != nil {
+		return accessport.HistoricalMachineImportResult{}, err
+	}
+	outcome := "excluded"
+	if replayed {
+		outcome = "replayed"
+	}
+	return accessport.HistoricalMachineImportResult{Outcome: outcome, ReasonCode: reason, Replayed: replayed}, nil
+}
+
 // VerifyHistorical confirms a prior receipt without inserting a client or
-// audit record. It is safe for release-time and operator verification.
+// audit record. It also verifies excluded records, so a source row cannot
+// disappear from reconciliation merely because V3 cannot safely host it.
 func (service *MachineService) VerifyHistorical(ctx context.Context, input accessport.HistoricalMachineImportInput) (accessport.HistoricalMachineImportResult, error) {
 	if err := validateHistoricalMachineImport(input); err != nil {
 		return accessport.HistoricalMachineImportResult{}, err
-	}
-	expected, exists := domain.MachineProfileForPurpose(strings.TrimSpace(input.Purpose))
-	if !exists {
-		return accessport.HistoricalMachineImportResult{}, domain.ErrInvalidInput
 	}
 	repository, ok := service.repository.(accessport.MachineHistoricalVerificationRepository)
 	if !ok {
 		return accessport.HistoricalMachineImportResult{}, errors.New("machine historical verification repository is not configured")
 	}
 	var stored domain.MachineClient
+	var outcome, reason string
 	err := service.uow.Within(ctx, func(txContext context.Context) error {
 		var verifyErr error
-		stored, verifyErr = repository.VerifyHistoricalMachineClient(txContext, input)
+		stored, outcome, reason, verifyErr = repository.VerifyHistoricalMachineClient(txContext, input)
 		return verifyErr
 	})
 	if err != nil {
 		return accessport.HistoricalMachineImportResult{}, err
 	}
-	expectedCIDRs, normalizeErr := domain.NormalizeCIDRs(input.AllowedCIDRs)
-	if normalizeErr != nil {
-		return accessport.HistoricalMachineImportResult{}, domain.ErrInvalidInput
+	if expectedReason := historicalMachineExclusionReason(input); expectedReason != "" {
+		if outcome != "excluded" || reason != expectedReason {
+			return accessport.HistoricalMachineImportResult{}, domain.ErrConflict
+		}
+		return accessport.HistoricalMachineImportResult{Outcome: "excluded", ReasonCode: reason}, nil
 	}
-	if stored.ClientID != input.ClientID || stored.DisplayName != strings.TrimSpace(input.DisplayName) || stored.Purpose != expected.Purpose || stored.Enabled || !stored.ReissueRequired || stored.TokenTTLSeconds != input.TokenTTLSeconds || !equalMachineStrings(stored.Audiences, expected.Audiences) || !equalMachineStrings(stored.Scopes, expected.Scopes) || !equalMachineStrings(stored.Capabilities, expected.Capabilities) || !equalMachineStrings(stored.AllowedCIDRs, expectedCIDRs) || string(stored.OwnerScope.JSON()) != string(input.OwnerScope.JSON()) || !equalMachineExpiry(stored.ExpiresAt, input.ExpiresAt) {
+	if outcome != "reissue_required" || reason != "" || stored.ClientID != input.ClientID || stored.DisplayName != strings.TrimSpace(input.DisplayName) || stored.Purpose != strings.TrimSpace(input.Purpose) || stored.Enabled || !stored.ReissueRequired || stored.TokenTTLSeconds != input.TokenTTLSeconds || stored.CorpID != strings.TrimSpace(input.CorpID) || !equalMachineStrings(stored.Audiences, input.Audiences) || !equalMachineStrings(stored.Scopes, input.Scopes) || !equalMachineStrings(stored.Capabilities, input.Capabilities) || !equalHistoricalCIDRs(stored.AllowedCIDRs, input.AllowedCIDRs) || string(stored.OwnerScope.JSON()) != string(input.OwnerScope.JSON()) || !equalMachineExpiry(stored.ExpiresAt, input.ExpiresAt) {
 		return accessport.HistoricalMachineImportResult{}, domain.ErrConflict
 	}
 	return accessport.HistoricalMachineImportResult{Client: summarizeMachineClient(stored), Outcome: "reissue_required"}, nil
+}
+
+// ImportHistoricalAudit persists a source audit fact separately from the V3
+// import audit. The only payload retained is the source before/after digest;
+// protected source contents such as owner scope never become a new audit data
+// store or a credential recovery channel.
+func (service *MachineService) ImportHistoricalAudit(ctx context.Context, input accessport.HistoricalMachineAuditInput) (accessport.HistoricalMachineAuditResult, error) {
+	if err := validateHistoricalMachineAudit(input); err != nil {
+		return accessport.HistoricalMachineAuditResult{}, err
+	}
+	repository, ok := service.repository.(accessport.MachineHistoricalAuditRepository)
+	if !ok {
+		return accessport.HistoricalMachineAuditResult{}, errors.New("machine historical audit repository is not configured")
+	}
+	var replayed bool
+	err := service.uow.Within(ctx, func(txContext context.Context) error {
+		var importErr error
+		replayed, importErr = repository.ImportHistoricalMachineAudit(txContext, input)
+		return importErr
+	})
+	if err != nil {
+		return accessport.HistoricalMachineAuditResult{}, err
+	}
+	return accessport.HistoricalMachineAuditResult{Outcome: map[bool]string{true: "replayed", false: "imported"}[replayed], Replayed: replayed}, nil
+}
+
+func (service *MachineService) VerifyHistoricalAudit(ctx context.Context, input accessport.HistoricalMachineAuditInput) error {
+	if err := validateHistoricalMachineAudit(input); err != nil {
+		return err
+	}
+	repository, ok := service.repository.(accessport.MachineHistoricalAuditRepository)
+	if !ok {
+		return errors.New("machine historical audit repository is not configured")
+	}
+	return service.uow.Within(ctx, func(txContext context.Context) error {
+		return repository.VerifyHistoricalMachineAudit(txContext, input)
+	})
 }
 
 func equalMachineExpiry(left, right *time.Time) bool {
@@ -114,21 +211,116 @@ func equalMachineExpiry(left, right *time.Time) bool {
 	return left.UTC().Equal(right.UTC())
 }
 
+func equalHistoricalCIDRs(left, right []string) bool {
+	normalized, err := domain.NormalizeCIDRs(right)
+	return err == nil && equalMachineStrings(left, normalized)
+}
+
+func validateHistoricalMachineBatch(batch accessport.HistoricalMachineImportBatch) error {
+	if len(strings.TrimSpace(batch.ImportRunID)) < 1 || len(strings.TrimSpace(batch.ImportRunID)) > 160 || batch.SourceSystem != "ai-crm" || len(batch.SourceRevision) != 40 || batch.SnapshotAt.IsZero() || batch.ClientCount < 0 || batch.AuditCount < 0 || allZeroDigest(batch.ManifestDigest) {
+		return domain.ErrInvalidInput
+	}
+	for _, value := range batch.SourceRevision {
+		if !(value >= 'a' && value <= 'f') && !(value >= '0' && value <= '9') {
+			return domain.ErrInvalidInput
+		}
+	}
+	return nil
+}
+
 func validateHistoricalMachineImport(input accessport.HistoricalMachineImportInput) error {
 	if len(strings.TrimSpace(input.ImportRunID)) < 1 || len(strings.TrimSpace(input.ImportRunID)) > 160 || len(strings.TrimSpace(input.SourceRowID)) < 1 || len(strings.TrimSpace(input.SourceRowID)) > 240 {
 		return domain.ErrInvalidInput
 	}
-	allZero := true
-	for _, value := range input.SourceRowDigest {
-		if value != 0 {
-			allZero = false
-			break
-		}
-	}
-	if allZero {
+	if allZeroDigest(input.SourceRowDigest) {
 		return domain.ErrInvalidInput
 	}
 	return nil
+}
+
+func historicalMachineExclusionReason(input accessport.HistoricalMachineImportInput) string {
+	if strings.TrimSpace(input.PrincipalType) != "api_client" {
+		return "unsupported_principal_type"
+	}
+	if len(strings.TrimSpace(input.PrincipalID)) == 0 || len(strings.TrimSpace(input.PrincipalID)) > 240 || strings.IndexFunc(input.PrincipalID, unicode.IsControl) >= 0 {
+		return "invalid_source_principal"
+	}
+	if input.SourceAuthVersion < 1 {
+		return "invalid_source_auth_version"
+	}
+	if len(strings.TrimSpace(input.CorpID)) > 256 || strings.IndexFunc(input.CorpID, unicode.IsControl) >= 0 {
+		return "invalid_source_corp_id"
+	}
+	profile, exists := domain.MachineProfileForPurpose(strings.TrimSpace(input.Purpose))
+	if !exists {
+		return "unsupported_purpose"
+	}
+	audiences, err := domain.NormalizeMachineStrings(input.Audiences, machineAudiences)
+	if err != nil || !machineSubset(audiences, profile.Audiences) {
+		return "unsupported_audience"
+	}
+	scopes, err := domain.NormalizeMachineStrings(input.Scopes, machineScopes)
+	if err != nil || !machineSubset(scopes, profile.Scopes) {
+		return "unsupported_scope"
+	}
+	capabilities, err := domain.NormalizeMachineStrings(input.Capabilities, machineCapabilities)
+	if err != nil || !machineSubset(capabilities, profile.Capabilities) {
+		return "unsupported_capability"
+	}
+	if _, err = domain.NormalizeCIDRs(input.AllowedCIDRs); err != nil {
+		return "invalid_source_cidr"
+	}
+	if _, err = domain.NormalizeOwnerScope(input.OwnerScope.JSON()); err != nil {
+		return "invalid_source_owner_scope"
+	}
+	if input.TokenTTLSeconds < 60 || input.TokenTTLSeconds > 3600 || strings.TrimSpace(input.ClientID) == "" || strings.TrimSpace(input.DisplayName) == "" {
+		return "invalid_source_client"
+	}
+	// The donor system profiles are immutable service registrations. A subset
+	// has no V3 route-equivalent registration, so it is retained as excluded
+	// rather than widened to that profile's full grant set.
+	if _, system := domain.SystemMachineProfileForPurpose(profile.Purpose); system &&
+		(!equalMachineStrings(audiences, profile.Audiences) || !equalMachineStrings(scopes, profile.Scopes) || !equalMachineStrings(capabilities, profile.Capabilities)) {
+		return "unsupported_system_profile_subset"
+	}
+	return ""
+}
+
+func machineSubset(actual, allowed []string) bool {
+	allowedSet := make(map[string]struct{}, len(allowed))
+	for _, value := range allowed {
+		allowedSet[value] = struct{}{}
+	}
+	for _, value := range actual {
+		if _, ok := allowedSet[value]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func validateHistoricalMachineAudit(input accessport.HistoricalMachineAuditInput) error {
+	if len(strings.TrimSpace(input.ImportRunID)) < 1 || len(strings.TrimSpace(input.ImportRunID)) > 160 || input.SourceAuditID < 1 || allZeroDigest(input.SourceRowDigest) || allZeroDigest(input.BeforeDigest) || allZeroDigest(input.AfterDigest) || input.OccurredAt.IsZero() {
+		return domain.ErrInvalidInput
+	}
+	for _, value := range []string{input.Operator, input.Action, input.TargetType, input.TargetID} {
+		if len(value) > 240 || strings.IndexFunc(value, unicode.IsControl) >= 0 {
+			return domain.ErrInvalidInput
+		}
+	}
+	if strings.TrimSpace(input.TargetType) != "api_client" {
+		return domain.ErrInvalidInput
+	}
+	return nil
+}
+
+func allZeroDigest(digest [32]byte) bool {
+	for _, value := range digest {
+		if value != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 func credentialOpaqueImportInput(entropy []byte) string {

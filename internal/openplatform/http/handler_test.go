@@ -218,6 +218,41 @@ func TestMountClaimsOnlyFrozenMachineRoutes(t *testing.T) {
 	}
 }
 
+func TestMountWithLegacyProtocolsPreservesDedicatedAuthenticationOwners(t *testing.T) {
+	machine := markerHandler("machine")
+	legacy := markerHandler("legacy")
+	mounted := MountWithLegacyProtocols(legacy, machine, "legacy.token.with.dots")
+	for _, item := range []struct {
+		name, method, path, bearer, signature, expected string
+	}{
+		{"operation service bearer with dots", http.MethodPost, "/api/operation-cycles/reports", "legacy.token.with.dots", "", "legacy"},
+		{"machine jwt", http.MethodPost, "/api/operation-cycles/reports", "header.payload.signature", "", "machine"},
+		{"invalid jwt shaped bearer remains machine-owned", http.MethodPost, "/api/operation-cycles/reports", "broken.payload.signature", "", "machine"},
+		{"ai signed protocol", http.MethodPost, "/api/ai-assist/external/campaigns", "", "signed", "legacy"},
+	} {
+		t.Run(item.name, func(t *testing.T) {
+			request := httptest.NewRequest(item.method, "https://crm.example.com"+item.path, nil)
+			request.Header.Set("Authorization", "Bearer "+item.bearer)
+			if item.signature != "" {
+				request.Header.Set("X-AICRM-Signature", item.signature)
+			}
+			response := httptest.NewRecorder()
+			mounted.ServeHTTP(response, request)
+			if body := strings.TrimSpace(response.Body.String()); body != item.expected {
+				t.Fatalf("response=%d body=%q want=%q", response.Code, body, item.expected)
+			}
+		})
+	}
+	request := httptest.NewRequest(http.MethodPost, "https://crm.example.com/api/operation-cycles/reports", nil)
+	request.Header.Set("Authorization", "Bearer header.payload.signature")
+	request.Header.Set("X-AICRM-Signature", "legacy-proof")
+	response := httptest.NewRecorder()
+	mounted.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "ambiguous_authentication") {
+		t.Fatalf("ambiguous auth response=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
 func markerHandler(value string) http.Handler {
 	return http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) { _, _ = response.Write([]byte(value)) })
 }

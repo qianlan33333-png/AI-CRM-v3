@@ -232,6 +232,8 @@ func TestMachineSystemProfilesPreserveExternalIntegrationPurposes(t *testing.T) 
 type historicalMachineReceiptStub struct {
 	clientID string
 	digest   [32]byte
+	outcome  string
+	reason   string
 }
 
 type machineHistoricalRepositoryStub struct {
@@ -245,14 +247,44 @@ func (stub *machineHistoricalRepositoryStub) ImportHistoricalMachineClient(_ con
 		if receipt.digest != input.SourceRowDigest {
 			return domain.MachineClient{}, false, domain.ErrConflict
 		}
+		if receipt.outcome != "reissue_required" {
+			return domain.MachineClient{}, false, domain.ErrConflict
+		}
 		return stub.clients[receipt.clientID], true, nil
 	}
 	created, err := stub.CreateMachineClient(context.Background(), client)
 	if err != nil {
 		return domain.MachineClient{}, false, err
 	}
-	stub.receipts[key] = historicalMachineReceiptStub{clientID: created.ClientID, digest: input.SourceRowDigest}
+	stub.receipts[key] = historicalMachineReceiptStub{clientID: created.ClientID, digest: input.SourceRowDigest, outcome: "reissue_required"}
 	return created, false, nil
+}
+
+func (stub *machineHistoricalRepositoryStub) RecordHistoricalMachineExclusion(_ context.Context, input HistoricalMachineImportInput, reason string) (bool, error) {
+	key := input.ImportRunID + "\x00" + input.SourceRowID
+	if receipt, exists := stub.receipts[key]; exists {
+		if receipt.digest != input.SourceRowDigest || receipt.outcome != "excluded" || receipt.reason != reason {
+			return false, domain.ErrConflict
+		}
+		return true, nil
+	}
+	stub.receipts[key] = historicalMachineReceiptStub{digest: input.SourceRowDigest, outcome: "excluded", reason: reason}
+	return false, nil
+}
+
+func (stub *machineHistoricalRepositoryStub) VerifyHistoricalMachineClient(_ context.Context, input HistoricalMachineImportInput) (domain.MachineClient, string, string, error) {
+	key := input.ImportRunID + "\x00" + input.SourceRowID
+	receipt, exists := stub.receipts[key]
+	if !exists {
+		return domain.MachineClient{}, "", "", domain.ErrNotFound
+	}
+	if receipt.digest != input.SourceRowDigest {
+		return domain.MachineClient{}, "", "", domain.ErrConflict
+	}
+	if receipt.outcome == "excluded" {
+		return domain.MachineClient{}, receipt.outcome, receipt.reason, nil
+	}
+	return stub.clients[receipt.clientID], receipt.outcome, receipt.reason, nil
 }
 
 func TestHistoricalMachineImportNeverRestoresAUsableCredential(t *testing.T) {
@@ -262,7 +294,7 @@ func TestHistoricalMachineImportNeverRestoresAUsableCredential(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	input := HistoricalMachineImportInput{ImportRunID: "old-auth-export-20260906", SourceRowID: "client-42", SourceRowDigest: [32]byte{4, 2}, ClientID: "historic.identity", DisplayName: "Historic Identity", Purpose: "identity", TokenTTLSeconds: 1800}
+	input := HistoricalMachineImportInput{ImportRunID: "old-auth-export-20260906", SourceRowID: "client-42", SourceRowDigest: [32]byte{4, 2}, ClientID: "historic.identity", PrincipalID: "api_client:historic.identity", PrincipalType: "api_client", DisplayName: "Historic Identity", Purpose: "identity", Audiences: []string{"external_integration"}, Scopes: []string{"read"}, Capabilities: []string{"identity_resolve"}, CorpID: "historic-corp", SourceEnabled: true, SourceAuthVersion: 7, TokenTTLSeconds: 1800}
 	imported, err := service.ImportHistorical(context.Background(), input)
 	if err != nil || imported.Replayed || imported.Outcome != "reissue_required" || imported.Client.Enabled || !imported.Client.ReissueRequired {
 		t.Fatalf("historical import=%+v err=%v", imported, err)
@@ -281,5 +313,23 @@ func TestHistoricalMachineImportNeverRestoresAUsableCredential(t *testing.T) {
 	input.SourceRowDigest = [32]byte{4, 3}
 	if _, err = service.ImportHistorical(context.Background(), input); !errors.Is(err, domain.ErrConflict) {
 		t.Fatalf("historical digest drift=%v", err)
+	}
+}
+
+func TestHistoricalMachineImportExcludesUnsupportedSourceGrantWithoutCreatingClient(t *testing.T) {
+	base := &machineRepositoryStub{clients: map[string]domain.MachineClient{}}
+	repository := &machineHistoricalRepositoryStub{machineRepositoryStub: base, receipts: map[string]historicalMachineReceiptStub{}}
+	service, err := NewMachineService(repository, testUOW{}, credential.PasswordHasher{}, MachineConfig{SigningKey: []byte("01234567890123456789012345678901")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := HistoricalMachineImportInput{ImportRunID: "old-auth-export-20260906", SourceRowID: "client-unsupported", SourceRowDigest: [32]byte{6, 2}, ClientID: "historic.unsupported", PrincipalID: "api_client:historic.unsupported", PrincipalType: "api_client", DisplayName: "Historic unsupported", Purpose: "mcp", Audiences: []string{"external_integration"}, Scopes: []string{"read"}, Capabilities: []string{"external_write"}, SourceAuthVersion: 1, TokenTTLSeconds: 1800}
+	out, err := service.ImportHistorical(context.Background(), input)
+	if err != nil || out.Outcome != "excluded" || out.ReasonCode != "unsupported_capability" || len(base.clients) != 0 {
+		t.Fatalf("out=%+v clients=%+v err=%v", out, base.clients, err)
+	}
+	verified, err := service.VerifyHistorical(context.Background(), input)
+	if err != nil || verified.Outcome != "excluded" || verified.ReasonCode != "unsupported_capability" {
+		t.Fatalf("verified=%+v err=%v", verified, err)
 	}
 }

@@ -108,6 +108,18 @@ func (*openPlatformArchiveStub) CustomerStaff(context.Context, customerdomain.Cu
 	return nil, nil
 }
 
+func TestOpenPlatformStartsWithoutWeComScopeAndDefersIdentityRejection(t *testing.T) {
+	identity := &openPlatformIdentityStub{result: identityport.ResolveResult{Status: identityport.ResolveFound, CustomerID: 42}}
+	executor, err := newOpenPlatformExecutor(identity, &openPlatformOrderStub{}, &openPlatformProfileStub{}, &openPlatformArchiveStub{}, &openPlatformTimelineStub{}, &openPlatformOwnerStub{}, configuredOpenPlatformScopes("", nil, nil))
+	if err != nil {
+		t.Fatalf("unconfigured platform failed composition: %v", err)
+	}
+	response, err := executor.Execute(context.Background(), openplatformport.Request{Method: "GET", Path: "/api/external/users/resolve", Query: url.Values{"external_userid": {"external-1"}}})
+	if err != nil || response.Status != 409 || len(identity.calls) != 0 {
+		t.Fatalf("response=%+v calls=%d err=%v", response, len(identity.calls), err)
+	}
+}
+
 func TestOpenPlatformIdentityUsesDeclaredScopedReferenceAndDoesNotProvision(t *testing.T) {
 	identity := &openPlatformIdentityStub{result: identityport.ResolveResult{Status: identityport.ResolveFound, CustomerID: 42, IdentityID: 7}}
 	executor, err := newOpenPlatformExecutor(identity, &openPlatformOrderStub{}, &openPlatformProfileStub{}, &openPlatformArchiveStub{}, &openPlatformTimelineStub{}, &openPlatformOwnerStub{}, configuredOpenPlatformScopes("corp-main", nil, nil))
