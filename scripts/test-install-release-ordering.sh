@@ -50,6 +50,7 @@ sha_missing_0095=7070707070707070707070707070707070707070
 sha_missing_commerce_push_history=8080808080808080808080808080808080808080
 sha_missing_open_platform_history=9090909090909090909090909090909090909090
 sha_missing_0096=abababababababababababababababababababab
+sha_missing_0097=9797979797979797979797979797979797979797
 sha_missing_0098=8282828282828282828282828282828282828282
 sha_missing_0099=8383838383838383838383838383838383838383
 
@@ -196,6 +197,7 @@ make_release() {
     0094_runtime_config_releases.sql \
     0095_product_external_push.sql \
     0096_open_platform.sql \
+    0097_segment_audience_mutation_actor.sql \
     0098_message_archive_historical_projection.sql \
     0099_survey_historical_external_projection.sql; do
     : > "$release/migrations/$migration"
@@ -264,6 +266,7 @@ for missing_release in \
   "$sha_missing_0095:migrations/0095_product_external_push.sql" \
   "$sha_missing_commerce_push_history:bin/migrate-v2-commerce-external-push-history" \
   "$sha_missing_0096:migrations/0096_open_platform.sql" \
+  "$sha_missing_0097:migrations/0097_segment_audience_mutation_actor.sql" \
   "$sha_missing_0098:migrations/0098_message_archive_historical_projection.sql" \
   "$sha_missing_0099:migrations/0099_survey_historical_external_projection.sql" \
   "$sha_missing_open_platform_history:bin/migrate-open-platform"; do

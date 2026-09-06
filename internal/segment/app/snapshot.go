@@ -56,6 +56,7 @@ type SnapshotService struct {
 type RefreshCommand struct {
 	PackageID      int64                     `json:"package_id"`
 	Actor          int64                     `json:"actor"`
+	MutationActor  segmentport.MutationActor `json:"-"`
 	IdempotencyKey string                    `json:"-"`
 	ReferenceTime  time.Time                 `json:"reference_time"`
 	RefreshKind    segmentdomain.RefreshKind `json:"refresh_kind"`
@@ -147,7 +148,8 @@ func configuredRefreshKind(value segmentdomain.RefreshKind, refreshMode string) 
 }
 
 func (s *SnapshotService) AcceptRefresh(ctx context.Context, command RefreshCommand) (segmentdomain.RefreshRun, error) {
-	if s == nil || command.PackageID < 1 || command.Actor < 1 || len(command.IdempotencyKey) < 16 || len(command.IdempotencyKey) > 128 || strings.TrimSpace(command.IdempotencyKey) != command.IdempotencyKey {
+	actor, err := mutationActor(command.Actor, command.MutationActor)
+	if s == nil || err != nil || command.PackageID < 1 || len(command.IdempotencyKey) < 16 || len(command.IdempotencyKey) > 128 || strings.TrimSpace(command.IdempotencyKey) != command.IdempotencyKey {
 		return segmentdomain.RefreshRun{}, ErrInvalid
 	}
 	if command.RefreshKind != "" && !segmentdomain.ValidRefreshKind(command.RefreshKind) {
@@ -161,7 +163,7 @@ func (s *SnapshotService) AcceptRefresh(ctx context.Context, command RefreshComm
 	now := s.now().UTC()
 	source := sha256.Sum256([]byte(command.IdempotencyKey))
 	var result segmentdomain.RefreshRun
-	err := s.uow.Within(ctx, func(tx context.Context) error {
+	err = s.uow.Within(ctx, func(tx context.Context) error {
 		pkg, e := s.store.GetPackage(tx, command.PackageID)
 		if e != nil {
 			return e
@@ -193,7 +195,7 @@ func (s *SnapshotService) AcceptRefresh(ctx context.Context, command RefreshComm
 		if e != nil {
 			return e
 		}
-		_, e = s.store.AppendMutationFacts(tx, fact("refresh_run", run.ID, "accept", "audience.refresh.accepted.v1", command.Actor, command.IdempotencyKey, now))
+		_, e = s.store.AppendMutationFacts(tx, fact("refresh_run", run.ID, "accept", "audience.refresh.accepted.v1", actor, command.IdempotencyKey, now))
 		result = run
 		return e
 	})
@@ -203,7 +205,8 @@ func (s *SnapshotService) AcceptRefresh(ctx context.Context, command RefreshComm
 // AcceptRefreshWithin is the same-domain atomic seam used by a verified
 // inbound fact while its receipt, outbox fact and River job share one UoW.
 func (s *SnapshotService) AcceptRefreshWithin(ctx context.Context, command RefreshCommand) (segmentdomain.RefreshRun, error) {
-	if s == nil || command.PackageID < 1 || command.Actor < 1 || len(command.IdempotencyKey) < 16 || len(command.IdempotencyKey) > 128 || strings.TrimSpace(command.IdempotencyKey) != command.IdempotencyKey {
+	actor, err := mutationActor(command.Actor, command.MutationActor)
+	if s == nil || err != nil || command.PackageID < 1 || len(command.IdempotencyKey) < 16 || len(command.IdempotencyKey) > 128 || strings.TrimSpace(command.IdempotencyKey) != command.IdempotencyKey {
 		return segmentdomain.RefreshRun{}, ErrInvalid
 	}
 	if command.RefreshKind != "" && !segmentdomain.ValidRefreshKind(command.RefreshKind) {
@@ -246,7 +249,7 @@ func (s *SnapshotService) AcceptRefreshWithin(ctx context.Context, command Refre
 	if err != nil {
 		return segmentdomain.RefreshRun{}, classify(err)
 	}
-	_, err = s.store.AppendMutationFacts(ctx, fact("refresh_run", run.ID, "accept", "audience.refresh.accepted.v1", command.Actor, command.IdempotencyKey, now))
+	_, err = s.store.AppendMutationFacts(ctx, fact("refresh_run", run.ID, "accept", "audience.refresh.accepted.v1", actor, command.IdempotencyKey, now))
 	return run, classify(err)
 }
 func (s *SnapshotService) GetRefresh(ctx context.Context, runID int64) (segmentdomain.RefreshRun, error) {
@@ -300,14 +303,18 @@ func (s *SnapshotService) ProcessRefresh(ctx context.Context, runID int64) error
 			return classify(err)
 		}
 	}
+	actor, actorErr := storedMutationActor(config.CreatedBy, config.CreatedActorKind, config.CreatedActorRef)
+	if actorErr != nil {
+		return ErrInvalid
+	}
 	memberDigest := segmentdomain.DigestMembers(evaluation.CustomerIDs)
 	watermarkDigest := digestWatermarks(evaluation.Watermarks)
 	err = s.uow.Within(ctx, func(tx context.Context) error {
-		published, e := s.store.PublishRefresh(tx, runID, int64(len(evaluation.CustomerIDs)), memberDigest, watermarkDigest, config.CreatedBy, s.now().UTC())
+		published, e := s.publishRefresh(tx, runID, int64(len(evaluation.CustomerIDs)), memberDigest, watermarkDigest, actor, s.now().UTC())
 		if e != nil {
 			return e
 		}
-		created, e := s.store.CreateMemberEnteredEvents(tx, published.Snapshot, published.PreviousSnapshotID, config.CreatedBy, published.Snapshot.ReferenceTime)
+		created, e := s.createMemberEnteredEvents(tx, published.Snapshot, published.PreviousSnapshotID, actor, published.Snapshot.ReferenceTime)
 		if e != nil || created == 0 {
 			return e
 		}
@@ -315,6 +322,31 @@ func (s *SnapshotService) ProcessRefresh(ctx context.Context, runID int64) error
 		return e
 	})
 	return classify(err)
+}
+
+type actorRefreshStore interface {
+	PublishRefreshWithActor(context.Context, int64, int64, [32]byte, [32]byte, segmentstore.Actor, time.Time) (segmentdomain.PublishedRefresh, error)
+	CreateMemberEnteredEventsWithActor(context.Context, segmentdomain.Snapshot, *int64, segmentstore.Actor, time.Time) (int64, error)
+}
+
+func (s *SnapshotService) publishRefresh(ctx context.Context, runID, expectedCount int64, expectedMemberDigest, watermarkDigest [32]byte, actor segmentport.MutationActor, now time.Time) (segmentdomain.PublishedRefresh, error) {
+	if withActor, ok := s.store.(actorRefreshStore); ok {
+		return withActor.PublishRefreshWithActor(ctx, runID, expectedCount, expectedMemberDigest, watermarkDigest, storeActor(actor), now)
+	}
+	if actor.Kind != segmentport.MutationActorAdmin {
+		return segmentdomain.PublishedRefresh{}, ErrInvalid
+	}
+	return s.store.PublishRefresh(ctx, runID, expectedCount, expectedMemberDigest, watermarkDigest, actor.StaffID, now)
+}
+
+func (s *SnapshotService) createMemberEnteredEvents(ctx context.Context, snapshot segmentdomain.Snapshot, previousSnapshotID *int64, actor segmentport.MutationActor, now time.Time) (int64, error) {
+	if withActor, ok := s.store.(actorRefreshStore); ok {
+		return withActor.CreateMemberEnteredEventsWithActor(ctx, snapshot, previousSnapshotID, storeActor(actor), now)
+	}
+	if actor.Kind != segmentport.MutationActorAdmin {
+		return 0, ErrInvalid
+	}
+	return s.store.CreateMemberEnteredEvents(ctx, snapshot, previousSnapshotID, actor.StaffID, now)
 }
 
 func (s *SnapshotService) FailRefresh(ctx context.Context, runID int64, code string) error {

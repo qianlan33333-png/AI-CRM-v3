@@ -132,8 +132,12 @@ func (s *ScheduledRefreshService) ScanScheduled(ctx context.Context) error {
 				return nil
 			}
 			first := group[0]
+			actor, actorErr := storedMutationActor(first.item.Actor, first.item.ActorKind, first.item.ActorReference)
+			if actorErr != nil {
+				return ErrInvalid
+			}
 			digest := sha256.Sum256([]byte(fmt.Sprintf("audience.schedule.v1:%d:%d:%s", first.item.PackageID, first.item.ConfigurationVersionID, first.occurrence.Format(time.RFC3339))))
-			_, claimErr := s.refresh.AcceptRefreshWithin(tx, RefreshCommand{PackageID: first.item.PackageID, Actor: first.item.Actor, IdempotencyKey: "schedule-" + hex.EncodeToString(digest[:]), ReferenceTime: first.occurrence, RefreshKind: kind})
+			_, claimErr := s.refresh.AcceptRefreshWithin(tx, RefreshCommand{PackageID: first.item.PackageID, Actor: actor.StaffID, MutationActor: actor, IdempotencyKey: "schedule-" + hex.EncodeToString(digest[:]), ReferenceTime: first.occurrence, RefreshKind: kind})
 			return claimErr
 		})
 		if err != nil {

@@ -54,6 +54,7 @@ func segmentDatabase(t *testing.T, ctx context.Context) (*pgxpool.Pool, func()) 
 		"0053_segment_audience_member_event_fact_kinds.sql",
 		"0083_segment_audience_refresh_modes.sql",
 		"0085_segment_audience_refresh_kind.sql",
+		"0097_segment_audience_mutation_actor.sql",
 	} {
 		sql, readErr := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "..", "migrations", name))
 		if readErr != nil {
@@ -90,7 +91,7 @@ func assertSegmentCounts(t *testing.T, ctx context.Context, pool *pgxpool.Pool, 
 
 func reservationFor(key string, payload json.RawMessage, now time.Time) Reservation {
 	return Reservation{
-		Operation: "create", ActorScope: "staff:7",
+		Operation: "create", ActorScope: "admin:7", ActorKind: "admin", ActorRef: "admin:7",
 		KeyDigest: sha256.Sum256([]byte(key)), PayloadDigest: sha256.Sum256(payload), CreatedAt: now,
 	}
 }
