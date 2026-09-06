@@ -800,33 +800,48 @@ func (h *Handler) externalRoute(w http.ResponseWriter, r *http.Request, id int64
 }
 
 func (h *Handler) externalTest(w http.ResponseWriter, r *http.Request, id int64, kind productport.ExternalPushProductKind) {
-	if r.Method != http.MethodPost {
-		methodNotAllowed(w, http.MethodPost)
-		return
+	switch r.Method {
+	case http.MethodGet:
+		if !h.read(w, r) {
+			return
+		}
+		if r.URL.RawQuery != "" {
+			writeError(w, http.StatusBadRequest, "invalid_request")
+			return
+		}
+		items, err := h.external.ListExternalPushTests(r.Context(), productport.ID(id), kind)
+		if err != nil {
+			resultError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	case http.MethodPost:
+		principal, ok := h.write(w, r)
+		if !ok {
+			return
+		}
+		if r.URL.RawQuery != "" {
+			writeError(w, http.StatusBadRequest, "invalid_request")
+			return
+		}
+		if err := decodeEmptyJSON(r); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_request")
+			return
+		}
+		key, err := requestIdempotencyKey(r)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_request")
+			return
+		}
+		test, err := h.external.QueueExternalPushTest(r.Context(), productport.QueueExternalPushTestCommand{ProductID: productport.ID(id), ProductKind: kind, Actor: principal.InternalID, IdempotencyKey: key})
+		if err != nil {
+			resultError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusAccepted, test)
+	default:
+		methodNotAllowed(w, http.MethodGet+", "+http.MethodPost)
 	}
-	principal, ok := h.write(w, r)
-	if !ok {
-		return
-	}
-	if r.URL.RawQuery != "" {
-		writeError(w, http.StatusBadRequest, "invalid_request")
-		return
-	}
-	if err := decodeEmptyJSON(r); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request")
-		return
-	}
-	key, err := requestIdempotencyKey(r)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request")
-		return
-	}
-	test, err := h.external.QueueExternalPushTest(r.Context(), productport.QueueExternalPushTestCommand{ProductID: productport.ID(id), ProductKind: kind, Actor: principal.InternalID, IdempotencyKey: key})
-	if err != nil {
-		resultError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusAccepted, test)
 }
 
 func (h *Handler) serviceMembers(w http.ResponseWriter, r *http.Request, id int64) {

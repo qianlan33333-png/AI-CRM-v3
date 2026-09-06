@@ -267,6 +267,7 @@ type CompletionRouter struct {
 	automation effectport.CompletionSink
 	sidebar    effectport.CompletionSink
 	survey     effectport.CompletionSink
+	commerce   effectport.CompletionSink
 }
 
 func NewCompletionRouterWithChannels(tag *TagCatalogCompletionSink, group *GroupMessageCompletionSink, channel *ChannelAssetCompletionSink) (*CompletionRouter, error) {
@@ -364,6 +365,13 @@ func (r *CompletionRouter) WithSurveyCompletion(sink effectport.CompletionSink) 
 	return r
 }
 
+func (r *CompletionRouter) WithCommercePush(sink effectport.CompletionSink) *CompletionRouter {
+	if r != nil {
+		r.commerce = sink
+	}
+	return r
+}
+
 func NewCompletionRouter(tag *TagCatalogCompletionSink, group *GroupMessageCompletionSink) (*CompletionRouter, error) {
 	if tag == nil && group == nil {
 		return nil, errors.New("at least one completion sink is required")
@@ -428,6 +436,11 @@ func (r *CompletionRouter) CompleteEffect(ctx context.Context, effectRef string,
 			return errors.New("survey completion sink is unavailable")
 		}
 		return r.survey.CompleteEffect(ctx, effectRef, envelope, attempt, result)
+	case effectport.KindCommerceProductPush:
+		if r.commerce == nil {
+			return errors.New("commerce push completion sink is unavailable")
+		}
+		return r.commerce.CompleteEffect(ctx, effectRef, envelope, attempt, result)
 	default:
 		return errors.New("unsupported completion kind")
 	}

@@ -83,7 +83,7 @@ CREATE TABLE outbound_commerce_push_intents (
     payload_key_version SMALLINT NULL CHECK (payload_key_version IN (1)),
     effect_id TEXT NULL UNIQUE CHECK (effect_id IS NULL OR effect_id ~ '^eer_[1-9][0-9]*$'),
     queue_receipt_id TEXT NULL CHECK (queue_receipt_id IS NULL OR queue_receipt_id ~ '^eerop_[1-9][0-9]*$'),
-    state TEXT NOT NULL CHECK (state IN ('planned_disabled','planned_target_unavailable','planned_payload_protection_unavailable','accepted','queued','attempted','provider_accepted','final_failed','outcome_unknown','reconciled')),
+    state TEXT NOT NULL CHECK (state IN ('planned_disabled','planned_target_unavailable','planned_identity_unavailable','planned_payload_protection_unavailable','accepted','queued','attempted','provider_accepted','final_failed','outcome_unknown','reconciled')),
     attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
     provider_call_attempted BOOLEAN NOT NULL DEFAULT FALSE,
     provider_real_call_executed BOOLEAN NOT NULL DEFAULT FALSE,
@@ -98,8 +98,8 @@ CREATE TABLE outbound_commerce_push_intents (
       OR (source_kind IN ('synthetic_test','history_paid') AND order_paid_event_id IS NULL)
     ),
     CONSTRAINT outbound_commerce_push_payload_shape CHECK (
-      (state IN ('planned_disabled','planned_target_unavailable','planned_payload_protection_unavailable') AND payload_ciphertext IS NULL AND payload_key_version IS NULL AND effect_id IS NULL AND queue_receipt_id IS NULL AND envelope_fingerprint IS NULL)
-      OR (state NOT IN ('planned_disabled','planned_target_unavailable','planned_payload_protection_unavailable') AND payload_ciphertext IS NOT NULL AND payload_key_version IS NOT NULL AND effect_id IS NOT NULL AND queue_receipt_id IS NOT NULL AND envelope_fingerprint IS NOT NULL)
+      (state IN ('planned_disabled','planned_target_unavailable','planned_identity_unavailable','planned_payload_protection_unavailable') AND payload_ciphertext IS NULL AND payload_key_version IS NULL AND effect_id IS NULL AND queue_receipt_id IS NULL AND envelope_fingerprint IS NULL)
+      OR (state NOT IN ('planned_disabled','planned_target_unavailable','planned_identity_unavailable','planned_payload_protection_unavailable') AND payload_ciphertext IS NOT NULL AND payload_key_version IS NOT NULL AND effect_id IS NOT NULL AND queue_receipt_id IS NOT NULL AND envelope_fingerprint IS NOT NULL)
     ),
     CONSTRAINT outbound_commerce_push_call_shape CHECK (NOT provider_real_call_executed OR provider_call_attempted)
 );

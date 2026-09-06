@@ -33,6 +33,7 @@ type CommerceExternalPushStore interface {
 	ReserveCommerceExternalPush(context.Context, Reservation) (Receipt, bool, error)
 	CompleteCommerceExternalPush(context.Context, int64, json.RawMessage, time.Time) (Receipt, error)
 	CreateCommerceExternalPushTest(context.Context, productport.ExternalPushTest, [32]byte, int64) (productport.ExternalPushTest, error)
+	ListCommerceExternalPushTests(context.Context, productport.ID, productport.ExternalPushProductKind, int32) ([]productport.ExternalPushTest, error)
 }
 
 // Product uses this Port-only seam so its HTTP/application layer never
@@ -42,11 +43,12 @@ type ProductExternalPushEffectAccepter = productport.ExternalPushTestAccepter
 type ProductExternalPushEffectCommand = productport.ExternalPushTestIntent
 
 type CommerceExternalPushService struct {
-	uow     platformport.UnitOfWork
-	store   CommerceExternalPushStore
-	effects ProductExternalPushEffectAccepter
-	events  productport.EventAppender
-	now     func() time.Time
+	uow      platformport.UnitOfWork
+	store    CommerceExternalPushStore
+	effects  ProductExternalPushEffectAccepter
+	statuses productport.ExternalPushTestStatusReader
+	events   productport.EventAppender
+	now      func() time.Time
 }
 
 var _ productport.CommerceExternalPushApplication = (*CommerceExternalPushService)(nil)
@@ -55,12 +57,13 @@ func NewCommerceExternalPushService(
 	uow platformport.UnitOfWork,
 	store CommerceExternalPushStore,
 	effects ProductExternalPushEffectAccepter,
+	statuses productport.ExternalPushTestStatusReader,
 	events productport.EventAppender,
 ) (*CommerceExternalPushService, error) {
-	if events == nil {
-		return nil, errors.New("product external push event appender is required")
+	if events == nil || statuses == nil {
+		return nil, errors.New("product external push dependencies are required")
 	}
-	return &CommerceExternalPushService{uow: uow, store: store, effects: effects, events: events, now: time.Now}, nil
+	return &CommerceExternalPushService{uow: uow, store: store, effects: effects, statuses: statuses, events: events, now: time.Now}, nil
 }
 
 func (service *CommerceExternalPushService) GetExternalPushConfiguration(
@@ -245,6 +248,51 @@ func (service *CommerceExternalPushService) QueueExternalPushTest(
 	return result, nil
 }
 
+// ListExternalPushTests returns Product-owned bindings enriched only with the
+// Outbound-owned, digest-safe status projection. A completed HTTP request is
+// still not claimed as delivery proof.
+func (service *CommerceExternalPushService) ListExternalPushTests(
+	ctx context.Context, productID productport.ID, kind productport.ExternalPushProductKind,
+) ([]productport.ExternalPushTest, error) {
+	if !commerceExternalPushReady(service) || service.statuses == nil || ctx == nil || ctx.Err() != nil {
+		return nil, ErrUnavailable
+	}
+	if productID < 1 || !validExternalPushKind(kind) {
+		return nil, ErrInvalidProduct
+	}
+	var values []productport.ExternalPushTest
+	err := service.uow.Within(ctx, func(tx context.Context) error {
+		var readErr error
+		values, readErr = service.store.ListCommerceExternalPushTests(tx, productID, kind, 20)
+		return readErr
+	})
+	if err != nil {
+		return nil, classifyCommerceExternalPush(err)
+	}
+	if len(values) > 20 {
+		return nil, ErrUnavailable
+	}
+	for index := range values {
+		value := &values[index]
+		if !validStoredCommerceExternalPushTest(*value, productID, kind) {
+			return nil, ErrUnavailable
+		}
+		status, readErr := service.statuses.ReadExternalPushTestStatus(ctx, productID, value.EffectID)
+		if readErr != nil || !validCommerceExternalPushTestStatus(status, value.EffectID) {
+			return nil, ErrUnavailable
+		}
+		value.State = status.State
+		value.AttemptCount = status.AttemptCount
+		value.RealExternalCallExecuted = status.RealExternalCallExecuted
+		value.ProviderAccepted = status.State == "provider_accepted" && status.ProviderCallAttempted && status.RealExternalCallExecuted && status.ProviderResultReceived != nil && *status.ProviderResultReceived
+		value.UpdatedAt = status.UpdatedAt
+		// Delivery is intentionally never inferred from a transport response.
+		value.DeliveryProven = false
+		value.AutoRetryAllowed = false
+	}
+	return values, nil
+}
+
 func (service *CommerceExternalPushService) completeCommerceExternalPush(ctx context.Context, receiptID int64, result any, now time.Time) error {
 	snapshot, err := json.Marshal(result)
 	if err != nil {
@@ -348,8 +396,24 @@ func validCommerceExternalPushReference(value string) bool {
 }
 
 func validExternalPushTest(value productport.ExternalPushTest, productID productport.ID, kind productport.ExternalPushProductKind) bool {
-	return value.ProductID == productID && value.ProductKind == kind && validExternalPushKind(kind) && validCommerceExternalPushEffectID(value.EffectID) &&
-		(value.State == "accepted" || value.State == "queued") && !value.ProviderAccepted && !value.DeliveryProven && !value.RealExternalCallExecuted && !value.AutoRetryAllowed && !value.CreatedAt.IsZero()
+	return validStoredCommerceExternalPushTest(value, productID, kind) &&
+		(value.State == "accepted" || value.State == "queued") && value.AttemptCount == 0 && !value.ProviderAccepted && !value.DeliveryProven && !value.RealExternalCallExecuted && !value.AutoRetryAllowed
+}
+
+func validStoredCommerceExternalPushTest(value productport.ExternalPushTest, productID productport.ID, kind productport.ExternalPushProductKind) bool {
+	return value.ProductID == productID && value.ProductKind == kind && validExternalPushKind(kind) && validCommerceExternalPushEffectID(value.EffectID) && !value.CreatedAt.IsZero()
+}
+
+func validCommerceExternalPushTestStatus(value productport.ExternalPushTestStatus, effectID string) bool {
+	if value.EffectID != effectID || !validCommerceExternalPushEffectID(value.EffectID) || value.AttemptCount < 0 || value.UpdatedAt.IsZero() {
+		return false
+	}
+	switch value.State {
+	case "accepted", "queued", "attempted", "provider_accepted", "final_failed", "outcome_unknown", "reconciled":
+		return !value.RealExternalCallExecuted || value.ProviderCallAttempted
+	default:
+		return false
+	}
 }
 
 func validCommerceExternalPushEffectID(value string) bool {

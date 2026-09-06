@@ -25,6 +25,7 @@ type commerceExternalPushTestStore struct {
 	receipts    map[string]Receipt
 	tests       []productport.ExternalPushTest
 	testDigests map[string]bool
+	statuses    map[string]productport.ExternalPushTestStatus
 	saves       int
 }
 
@@ -90,6 +91,22 @@ func (store *commerceExternalPushTestStore) CommerceExternalPushTestExists(_ con
 	return store.testDigests[commerceExternalPushTestDigestKey(productID, kind, digest)], nil
 }
 
+func (store *commerceExternalPushTestStore) ListCommerceExternalPushTests(_ context.Context, productID productport.ID, kind productport.ExternalPushProductKind, limit int32) ([]productport.ExternalPushTest, error) {
+	if store.products[productID] != kind || limit < 1 {
+		return nil, ErrNotFound
+	}
+	out := make([]productport.ExternalPushTest, 0, len(store.tests))
+	for _, value := range store.tests {
+		if value.ProductID == productID && value.ProductKind == kind {
+			out = append(out, value)
+		}
+	}
+	if int32(len(out)) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
 func (store *commerceExternalPushTestStore) CreateCommerceExternalPushTest(_ context.Context, value productport.ExternalPushTest, digest [32]byte, _ int64) (productport.ExternalPushTest, error) {
 	store.tests = append(store.tests, value)
 	if store.testDigests == nil {
@@ -99,12 +116,34 @@ func (store *commerceExternalPushTestStore) CreateCommerceExternalPushTest(_ con
 	return value, nil
 }
 
+func (store *commerceExternalPushTestStore) ReadExternalPushTestStatus(_ context.Context, productID productport.ID, effectID string) (productport.ExternalPushTestStatus, error) {
+	if store.products[productID] == "" {
+		return productport.ExternalPushTestStatus{}, ErrNotFound
+	}
+	value, found := store.statuses[effectID]
+	if !found {
+		return productport.ExternalPushTestStatus{}, ErrNotFound
+	}
+	return value, nil
+}
+
 func commerceExternalPushTestDigestKey(productID productport.ID, kind productport.ExternalPushProductKind, digest [32]byte) string {
 	return fmt.Sprintf("%d\x00%s\x00%x", productID, kind, digest)
 }
 
 func commerceExternalPushTestReceiptKey(reservation Reservation) string {
 	return reservation.Operation + "\x00" + reservation.ActorScope + "\x00" + string(reservation.KeyDigest[:])
+}
+
+type commerceExternalPushTestStatuses struct {
+	values map[string]productport.ExternalPushTestStatus
+}
+
+func (statuses commerceExternalPushTestStatuses) ReadExternalPushTestStatus(_ context.Context, _ productport.ID, effectID string) (productport.ExternalPushTestStatus, error) {
+	if value, found := statuses.values[effectID]; found {
+		return value, nil
+	}
+	return productport.ExternalPushTestStatus{}, ErrNotFound
 }
 
 type commerceExternalPushTestEffects struct {
@@ -130,7 +169,7 @@ func (events *commerceExternalPushTestEvents) Append(_ context.Context, event pr
 
 func newCommerceExternalPushTestService(store *commerceExternalPushTestStore, effects *commerceExternalPushTestEffects) (*CommerceExternalPushService, *commerceExternalPushTestUoW) {
 	uow := &commerceExternalPushTestUoW{}
-	service, err := NewCommerceExternalPushService(uow, store, effects, &commerceExternalPushTestEvents{})
+	service, err := NewCommerceExternalPushService(uow, store, effects, store, &commerceExternalPushTestEvents{})
 	if err != nil {
 		panic(err)
 	}
@@ -139,7 +178,7 @@ func newCommerceExternalPushTestService(store *commerceExternalPushTestStore, ef
 }
 
 func TestCommerceExternalPushRequiresEventAppender(t *testing.T) {
-	_, err := NewCommerceExternalPushService(&commerceExternalPushTestUoW{}, &commerceExternalPushTestStore{}, &commerceExternalPushTestEffects{}, nil)
+	_, err := NewCommerceExternalPushService(&commerceExternalPushTestUoW{}, &commerceExternalPushTestStore{}, &commerceExternalPushTestEffects{}, commerceExternalPushTestStatuses{}, nil)
 	if err == nil {
 		t.Fatal("constructor must reject a missing event appender")
 	}
@@ -212,5 +251,31 @@ func TestCommerceExternalPushTestFailsClosedWithoutConfigurationOrWithDeliveryCl
 	}
 }
 
+func TestCommerceExternalPushTimelineUsesOutboundStatusWithoutClaimingDelivery(t *testing.T) {
+	updated := time.Date(2026, 9, 6, 4, 5, 6, 0, time.UTC)
+	received := true
+	store := &commerceExternalPushTestStore{
+		products: map[productport.ID]productport.ExternalPushProductKind{71: productport.ExternalPushWeChatPay},
+		tests:    []productport.ExternalPushTest{{ProductID: 71, ProductKind: productport.ExternalPushWeChatPay, EffectID: "eer_71", State: "accepted", CreatedAt: updated}},
+		statuses: map[string]productport.ExternalPushTestStatus{"eer_71": {EffectID: "eer_71", State: "provider_accepted", AttemptCount: 1, ProviderCallAttempted: true, RealExternalCallExecuted: true, ProviderResultReceived: &received, UpdatedAt: updated.Add(time.Minute)}},
+	}
+	service, _ := newCommerceExternalPushTestService(store, &commerceExternalPushTestEffects{})
+	items, err := service.ListExternalPushTests(context.Background(), 71, productport.ExternalPushWeChatPay)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("items=%#v err=%v", items, err)
+	}
+	item := items[0]
+	if item.State != "provider_accepted" || item.AttemptCount != 1 || !item.ProviderAccepted || !item.RealExternalCallExecuted || item.DeliveryProven || item.AutoRetryAllowed || !item.UpdatedAt.Equal(updated.Add(time.Minute)) {
+		t.Fatalf("unsafe status projection=%#v", item)
+	}
+	store.statuses["eer_71"] = productport.ExternalPushTestStatus{EffectID: "eer_71", State: "outcome_unknown", AttemptCount: 1, ProviderCallAttempted: true, RealExternalCallExecuted: true, UpdatedAt: updated.Add(2 * time.Minute)}
+	items, err = service.ListExternalPushTests(context.Background(), 71, productport.ExternalPushWeChatPay)
+	if err != nil || len(items) != 1 || items[0].ProviderAccepted || items[0].DeliveryProven || items[0].AutoRetryAllowed || items[0].State != "outcome_unknown" {
+		t.Fatalf("unknown status must require reconciliation items=%#v err=%v", items, err)
+	}
+}
+
 var _ CommerceExternalPushStore = (*commerceExternalPushTestStore)(nil)
 var _ ProductExternalPushEffectAccepter = (*commerceExternalPushTestEffects)(nil)
+var _ productport.ExternalPushTestStatusReader = (*commerceExternalPushTestStore)(nil)
+var _ productport.ExternalPushTestStatusReader = commerceExternalPushTestStatuses{}

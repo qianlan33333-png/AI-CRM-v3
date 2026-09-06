@@ -24,6 +24,7 @@ type ExternalPushConfiguration struct {
 	Enabled                bool                    `json:"enabled"`
 	ConfigurationReference string                  `json:"configuration_reference,omitempty"`
 	Revision               int64                   `json:"revision"`
+	ProductName            string                  `json:"-"`
 	UpdatedAt              time.Time               `json:"updated_at"`
 }
 
@@ -50,23 +51,41 @@ type ExternalPushTest struct {
 	ProductKind              ExternalPushProductKind `json:"product_kind"`
 	EffectID                 string                  `json:"effect_id"`
 	State                    string                  `json:"state"`
+	AttemptCount             int32                   `json:"attempt_count"`
 	ProviderAccepted         bool                    `json:"provider_accepted"`
 	DeliveryProven           bool                    `json:"delivery_proven"`
 	RealExternalCallExecuted bool                    `json:"real_external_call_executed"`
 	AutoRetryAllowed         bool                    `json:"auto_retry_allowed"`
 	CreatedAt                time.Time               `json:"created_at"`
+	UpdatedAt                time.Time               `json:"updated_at"`
+}
+
+// ExternalPushTestStatus is an Outbound-owned, digest-safe delivery
+// projection for a Product-owned test binding. It carries no endpoint, signed
+// body, identity value, Provider response, or retry control. An executed call
+// is never presented as delivery proof.
+type ExternalPushTestStatus struct {
+	EffectID                 string    `json:"effect_id"`
+	State                    string    `json:"state"`
+	AttemptCount             int32     `json:"attempt_count"`
+	ProviderCallAttempted    bool      `json:"provider_call_attempted"`
+	RealExternalCallExecuted bool      `json:"real_external_call_executed"`
+	ProviderResultReceived   *bool     `json:"provider_result_received"`
+	UpdatedAt                time.Time `json:"updated_at"`
 }
 
 type CommerceExternalPushApplication interface {
 	GetExternalPushConfiguration(context.Context, ID, ExternalPushProductKind) (ExternalPushConfiguration, error)
 	SaveExternalPushConfiguration(context.Context, SaveExternalPushConfigurationCommand) (ExternalPushConfiguration, error)
 	QueueExternalPushTest(context.Context, QueueExternalPushTestCommand) (ExternalPushTest, error)
+	ListExternalPushTests(context.Context, ID, ExternalPushProductKind) ([]ExternalPushTest, error)
 }
 
 // ExternalPushConfigurationReader is the Product-owned read boundary used by
-// Outbound for a frozen Order item. It exposes only the opaque target choice
-// and its local revision; Product URLs, credentials, and mutable product rows
-// do not cross the boundary.
+// Outbound for a frozen Order item. The read locks the Product row used by
+// configuration writes for the caller's Unit of Work, so the first paid event freezes one
+// revision before a concurrent administrator update can take effect. Product
+// URLs, credentials, and mutable product rows do not cross the boundary.
 type ExternalPushConfigurationReader interface {
 	ReadExternalPushConfigurationForOrder(context.Context, ID) (ExternalPushConfiguration, error)
 }
@@ -88,4 +107,11 @@ type ExternalPushTestIntent struct {
 // receipt or delivery claim.
 type ExternalPushTestAccepter interface {
 	AcceptExternalPushTestWithin(context.Context, ExternalPushTestIntent) (ExternalPushTest, error)
+}
+
+// ExternalPushTestStatusReader is implemented by Outbound. Product reads this
+// only after loading its own immutable test binding; it never reads Outbound
+// tables or controls retry or reconciliation.
+type ExternalPushTestStatusReader interface {
+	ReadExternalPushTestStatus(context.Context, ID, string) (ExternalPushTestStatus, error)
 }

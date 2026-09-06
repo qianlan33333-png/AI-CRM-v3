@@ -160,6 +160,7 @@ type ProviderRouter struct {
 	automationMessage effect.ProviderAdapter
 	sidebarJSSDK      effect.ProviderAdapter
 	surveyCompletion  effect.ProviderAdapter
+	commercePush      effect.ProviderAdapter
 }
 
 func NewProviderRouterWithPrivate(tagCatalog, groupMessage, privateMessage effect.ProviderAdapter) *ProviderRouter {
@@ -195,6 +196,15 @@ func (r *ProviderRouter) WithSidebarJSSDK(provider effect.ProviderAdapter) *Prov
 func (r *ProviderRouter) WithSurveyCompletion(provider effect.ProviderAdapter) *ProviderRouter {
 	if r != nil {
 		r.surveyCompletion = provider
+	}
+	return r
+}
+
+// WithCommercePush installs the explicit Product/Order webhook route. It has
+// no fallback because each frozen commerce envelope must use its own protocol.
+func (r *ProviderRouter) WithCommercePush(provider effect.ProviderAdapter) *ProviderRouter {
+	if r != nil {
+		r.commercePush = provider
 	}
 	return r
 }
@@ -260,6 +270,10 @@ func (r *ProviderRouter) Execute(ctx context.Context, envelope effect.Envelope, 
 		case effect.KindSurveyCompletion:
 			if r.surveyCompletion != nil {
 				return r.surveyCompletion.Execute(ctx, envelope, attempt)
+			}
+		case effect.KindCommerceProductPush:
+			if r.commercePush != nil {
+				return r.commercePush.Execute(ctx, envelope, attempt)
 			}
 		}
 	}

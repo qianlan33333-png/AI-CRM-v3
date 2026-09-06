@@ -49,7 +49,7 @@ func TestClosedDigestOnlyEnvelopeAndStates(t *testing.T) {
 }
 
 func TestStaleAttemptCompletionProjectionKinds(t *testing.T) {
-	for _, kind := range []Kind{KindWeComTagCatalog, KindGroupMessage, KindChannelAsset, KindOutboundMessage, KindAutomationMessage} {
+	for _, kind := range []Kind{KindWeComTagCatalog, KindGroupMessage, KindChannelAsset, KindOutboundMessage, KindAutomationMessage, KindCommerceProductPush} {
 		if !projectsStaleAttempt(kind) {
 			t.Fatalf("stale attempted effect kind %q must project outcome_unknown to its owner", kind)
 		}

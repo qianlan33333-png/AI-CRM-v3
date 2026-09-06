@@ -12,7 +12,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -46,24 +45,39 @@ var (
 // value. The value is used only in memory while building or sending a frozen
 // payload and never enters EER, an audit row, or a log.
 type CommercePushIdentity struct {
-	Kind  identitydomain.Kind
-	Scope string
+	Kind  identitydomain.Kind `json:"kind"`
+	Scope string              `json:"scope"`
 }
 
 func (v CommercePushIdentity) valid() bool {
 	return identitydomain.ValidateNamespace(v.Kind, v.Scope) == nil
 }
 
+// CommercePushPayloadProfile freezes the two existing commerce receiver
+// shapes. A standard product preserves its independent custom parameters; a
+// service-period product uses the legacy member-opening fields.
+type CommercePushPayloadProfile string
+
+const (
+	CommercePushStandardProduct CommercePushPayloadProfile = "standard_product"
+	CommercePushServiceMember   CommercePushPayloadProfile = "service_period_member"
+)
+
+func (v CommercePushPayloadProfile) valid() bool {
+	return v == CommercePushStandardProduct || v == CommercePushServiceMember
+}
+
 // CommercePushTarget is deployment configuration resolved from the opaque
 // Product reference. Its target Slot survives endpoint/secret rotation, so it
 // rather than a mutable policy digest participates in paid-event idempotency.
 type CommercePushTarget struct {
-	Reference  string
-	Slot       string
-	Endpoint   string
-	SigningKey []byte
-	Version    string
-	TenantID   string
+	Reference      string
+	Slot           string
+	Endpoint       string
+	SigningKey     []byte
+	Version        string
+	TenantID       string
+	PayloadProfile CommercePushPayloadProfile
 
 	BuyerID, BuyerOpenID, BuyerUnionID, BuyerPhone, BeneficiaryPhone CommercePushIdentity
 	PushType, Remark                                                 string
@@ -76,20 +90,44 @@ func (t CommercePushTarget) policyDigest() [32]byte {
 	params := cloneCommercePushParams(t.CustomParams)
 	value := struct {
 		Reference, Slot, Endpoint, Version, TenantID                     string
+		PayloadProfile                                                   CommercePushPayloadProfile
 		BuyerID, BuyerOpenID, BuyerUnionID, BuyerPhone, BeneficiaryPhone CommercePushIdentity
 		PushType, Remark                                                 string
 		Day, Frequency                                                   *int64
 		CustomParams                                                     map[string]string
-	}{t.Reference, t.Slot, t.Endpoint, t.Version, t.TenantID, t.BuyerID, t.BuyerOpenID, t.BuyerUnionID, t.BuyerPhone, t.BeneficiaryPhone, t.PushType, t.Remark, t.Day, t.Frequency, params}
+	}{t.Reference, t.Slot, t.Endpoint, t.Version, t.TenantID, t.PayloadProfile, t.BuyerID, t.BuyerOpenID, t.BuyerUnionID, t.BuyerPhone, t.BeneficiaryPhone, t.PushType, t.Remark, t.Day, t.Frequency, params}
 	raw, _ := json.Marshal(value)
 	return sha256.Sum256(raw)
 }
 
+// ValidateCommercePushTarget is intentionally narrow: Composition validates
+// its protected deployment targets before any Product reference can select one.
+func ValidateCommercePushTarget(value CommercePushTarget) error {
+	if !value.valid() {
+		return ErrCommercePushInvalid
+	}
+	return nil
+}
+
 func (t CommercePushTarget) valid() bool {
-	if !validCommerceText(t.Reference, 128) || !validCommerceText(t.Slot, 128) || !validCommerceText(t.Version, 128) ||
-		!t.BuyerID.valid() || !t.BuyerOpenID.valid() || !t.BuyerUnionID.valid() || !t.BuyerPhone.valid() || !t.BeneficiaryPhone.valid() ||
+	if !validCommerceText(t.Reference, 128) || !validCommerceText(t.Slot, 128) || !validCommerceText(t.Version, 128) || !t.PayloadProfile.valid() ||
+		!t.BuyerID.valid() || !t.BuyerOpenID.valid() || !t.BuyerUnionID.valid() || !t.BuyerPhone.valid() ||
 		len(t.SigningKey) > 4096 || strings.TrimSpace(t.PushType) != t.PushType || strings.TrimSpace(t.Remark) != t.Remark || len(t.PushType) > 200 || len(t.Remark) > 2000 ||
 		(t.Day != nil && *t.Day < 0) || (t.Frequency != nil && *t.Frequency < 0) || !validCommerceParams(t.CustomParams) {
+		return false
+	}
+	switch t.PayloadProfile {
+	case CommercePushStandardProduct:
+		// Standard product receivers own their custom parameters and do not
+		// receive member-opening fields or a beneficiary identity.
+		if t.BeneficiaryPhone.Kind != "" || t.BeneficiaryPhone.Scope != "" || t.Day != nil || t.Frequency != nil || t.PushType != "" || t.Remark != "" {
+			return false
+		}
+	case CommercePushServiceMember:
+		if !t.BeneficiaryPhone.valid() {
+			return false
+		}
+	default:
 		return false
 	}
 	return validCommerceEndpoint(t.Endpoint, t.AllowLoopbackHTTP)
@@ -222,23 +260,29 @@ func (s *CommercePushService) ConsumePaidEventWithin(ctx context.Context, event 
 func (s *CommercePushService) consumeOrderItemWithin(ctx context.Context, event orderport.PaidEvent, item orderdomain.ItemSnapshot) error {
 	sourceReference := commerceOrderSourceReference(event, item.LineNo)
 	targetSlot := commerceProductSlot(*item.ProductID)
-	if existing, found, err := commerceIntentExists(ctx, sourceReference, targetSlot, event.SourceDigest, *item.ProductID); err != nil || found {
+	if _, found, err := commerceIntentExists(ctx, sourceReference, targetSlot, event.SourceDigest, *item.ProductID); err != nil || found {
 		return err
 	}
 	configuration, err := s.products.ReadExternalPushConfigurationForOrder(ctx, productport.ID(*item.ProductID))
-	if err != nil || !configuration.Enabled {
+	if err != nil {
+		return err
+	}
+	// Product's Port holds its row lock for this transaction. Re-check after
+	// that lock: a concurrent first consumer may have committed the immutable
+	// dispatch while this consumer waited, and a later configuration revision
+	// must never create a competing EER envelope for the same paid event.
+	if _, found, err := commerceIntentExists(ctx, sourceReference, targetSlot, event.SourceDigest, *item.ProductID); err != nil || found {
+		return err
+	}
+	if !configuration.Enabled || !s.targets.CommercePushProviderEnabled() {
 		return s.planCommercePushWithin(ctx, commercePlannedIntent{sourceKind: "order_paid", sourceReference: sourceReference, orderEventID: event.ID, productID: *item.ProductID, productKind: configuration.ProductKind, targetReference: commerceTargetReference(configuration), targetSlot: targetSlot, revision: configuration.Revision, sourceDigest: event.SourceDigest, state: "planned_disabled"})
 	}
 	target, found, err := s.targets.CommercePushTarget(ctx, configuration.ConfigurationReference)
 	if err != nil {
 		return err
 	}
-	if !found || !target.valid() || !s.targets.CommercePushProviderEnabled() {
-		state := "planned_target_unavailable"
-		if found && target.valid() && !s.targets.CommercePushProviderEnabled() {
-			state = "planned_disabled"
-		}
-		return s.planCommercePushWithin(ctx, commercePlannedIntent{sourceKind: "order_paid", sourceReference: sourceReference, orderEventID: event.ID, productID: *item.ProductID, productKind: configuration.ProductKind, targetReference: configuration.ConfigurationReference, targetSlot: targetSlot, revision: configuration.Revision, sourceDigest: event.SourceDigest, state: state})
+	if !found || !target.valid() {
+		return s.planCommercePushWithin(ctx, commercePlannedIntent{sourceKind: "order_paid", sourceReference: sourceReference, orderEventID: event.ID, productID: *item.ProductID, productKind: configuration.ProductKind, targetReference: configuration.ConfigurationReference, targetSlot: targetSlot, revision: configuration.Revision, sourceDigest: event.SourceDigest, state: "planned_target_unavailable"})
 	}
 	body, missing, err := s.paidPayload(ctx, event, item, target, commerceDeliveryID(event.ID, item.LineNo, targetSlot))
 	if err != nil {
@@ -251,7 +295,8 @@ func (s *CommercePushService) consumeOrderItemWithin(ctx context.Context, event 
 		}
 		return s.planCommercePushWithin(ctx, commercePlannedIntent{sourceKind: "order_paid", sourceReference: sourceReference, orderEventID: event.ID, productID: *item.ProductID, productKind: configuration.ProductKind, targetReference: configuration.ConfigurationReference, targetSlot: targetSlot, revision: configuration.Revision, sourceDigest: event.SourceDigest, state: state})
 	}
-	return s.acceptCommercePushWithin(ctx, commerceAcceptedIntent{sourceKind: "order_paid", sourceReference: sourceReference, orderEventID: event.ID, productID: *item.ProductID, productKind: configuration.ProductKind, targetReference: configuration.ConfigurationReference, targetSlot: targetSlot, revision: configuration.Revision, sourceDigest: event.SourceDigest, target: target, body: body})
+	_, err = s.acceptCommercePushWithin(ctx, commerceAcceptedIntent{sourceKind: "order_paid", sourceReference: sourceReference, orderEventID: event.ID, productID: *item.ProductID, productKind: configuration.ProductKind, targetReference: configuration.ConfigurationReference, targetSlot: targetSlot, revision: configuration.Revision, sourceDigest: event.SourceDigest, target: target, body: body})
+	return err
 }
 
 func (s *CommercePushService) AcceptExternalPushTestWithin(ctx context.Context, in productport.ExternalPushTestIntent) (productport.ExternalPushTest, error) {
@@ -294,6 +339,18 @@ func (s *CommercePushService) AcceptExternalPushTestWithin(ctx context.Context, 
 func commerceOrderSourceReference(event orderport.PaidEvent, lineNo int32) string {
 	return "order-paid:" + strconv.FormatInt(event.ID, 10) + ":line:" + strconv.FormatInt(int64(lineNo), 10)
 }
+func validCommercePushEffectID(value string) bool {
+	if !strings.HasPrefix(value, "eer_") || len(value) < 5 {
+		return false
+	}
+	for index, character := range value[4:] {
+		if character < '0' || character > '9' || index == 0 && character == '0' {
+			return false
+		}
+	}
+	return true
+}
+
 func commerceProductSlot(productID int64) string {
 	return "product:" + strconv.FormatInt(productID, 10)
 }
@@ -327,23 +384,32 @@ type commerceIntentRecord struct {
 
 func commerceIntentExists(ctx context.Context, sourceReference, targetSlot string, sourceDigest [32]byte, productID int64) (commerceIntentRecord, bool, error) {
 	tx, err := platformpostgres.RequireTransaction(ctx)
-	if err != nil { return commerceIntentRecord{}, false, err }
+	if err != nil {
+		return commerceIntentRecord{}, false, err
+	}
 	var out commerceIntentRecord
 	var stored []byte
-	err = tx.QueryRow(ctx, `SELECT id,source_digest,product_id,COALESCE(effect_id,''),state,created_at FROM outbound_commerce_push_intents WHERE source_reference=$1 AND target_slot=$2 FOR UPDATE`, sourceReference, targetSlot).Scan(&out.id, &stored, &productID, &out.effectID, &out.state, &out.createdAt)
-	if errors.Is(err, pgx.ErrNoRows) { return commerceIntentRecord{}, false, nil }
-	if err != nil { return commerceIntentRecord{}, false, err }
-	if len(stored) != 32 || !hmac.Equal(stored, sourceDigest[:]) || productID < 1 { return commerceIntentRecord{}, false, ErrCommercePushConflict }
+	var storedProductID int64
+	err = tx.QueryRow(ctx, `SELECT id,source_digest,product_id,COALESCE(effect_id,''),state,created_at FROM outbound_commerce_push_intents WHERE source_reference=$1 AND target_slot=$2 FOR UPDATE`, sourceReference, targetSlot).Scan(&out.id, &stored, &storedProductID, &out.effectID, &out.state, &out.createdAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return commerceIntentRecord{}, false, nil
+	}
+	if err != nil {
+		return commerceIntentRecord{}, false, err
+	}
+	if len(stored) != 32 || !hmac.Equal(stored, sourceDigest[:]) || storedProductID != productID || productID < 1 {
+		return commerceIntentRecord{}, false, ErrCommercePushConflict
+	}
 	return out, true, nil
 }
 
 type commercePlannedIntent struct {
 	sourceKind, sourceReference, targetReference, targetSlot, state string
-	orderEventID                                              int64
-	productID                                                 int64
-	productKind                                               productport.ExternalPushProductKind
-	revision                                                  int64
-	sourceDigest                                              [32]byte
+	orderEventID                                                    int64
+	productID                                                       int64
+	productKind                                                     productport.ExternalPushProductKind
+	revision                                                        int64
+	sourceDigest                                                    [32]byte
 }
 
 func (s *CommercePushService) planCommercePushWithin(ctx context.Context, in commercePlannedIntent) error {
@@ -352,33 +418,47 @@ func (s *CommercePushService) planCommercePushWithin(ctx context.Context, in com
 		!validCommercePlannedState(in.state) {
 		return ErrCommercePushInvalid
 	}
-	if existing, found, err := commerceIntentExists(ctx, in.sourceReference, in.targetSlot, in.sourceDigest, in.productID); err != nil || found {
+	if _, found, err := commerceIntentExists(ctx, in.sourceReference, in.targetSlot, in.sourceDigest, in.productID); err != nil || found {
 		return err
 	}
 	tx, err := platformpostgres.RequireTransaction(ctx)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	now := s.now().UTC()
-	if now.IsZero() { return ErrCommercePushInvalid }
+	if now.IsZero() {
+		return ErrCommercePushInvalid
+	}
 	var eventID any
-	if in.orderEventID > 0 { eventID = in.orderEventID }
+	if in.orderEventID > 0 {
+		eventID = in.orderEventID
+	}
 	intentDigest := commerceIntentDigest(in.sourceKind, in.sourceReference, in.productID, in.targetSlot, in.revision, in.sourceDigest, [32]byte{}, [32]byte{}, [32]byte{})
 	keyDigest := sha256.Sum256([]byte("commerce-push.intent.v1\x00" + in.sourceReference + "\x00" + in.targetSlot))
 	var id int64
 	err = tx.QueryRow(ctx, `INSERT INTO outbound_commerce_push_intents(source_kind,source_reference,order_paid_event_id,product_id,product_kind,target_reference,target_slot,product_configuration_revision,source_digest,target_digest,payload_digest,policy_digest,receipt_key_digest,intent_digest,state,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$16) ON CONFLICT(source_reference,target_slot) DO NOTHING RETURNING id`, in.sourceKind, in.sourceReference, eventID, in.productID, string(in.productKind), in.targetReference, in.targetSlot, in.revision, in.sourceDigest[:], zeroCommerceDigest(), zeroCommerceDigest(), zeroCommerceDigest(), keyDigest[:], intentDigest[:], in.state, now).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		_, found, readErr := commerceIntentExists(ctx, in.sourceReference, in.targetSlot, in.sourceDigest, in.productID)
-		if readErr != nil || !found { return readErr }
+		if readErr != nil || !found {
+			return readErr
+		}
 		return nil
 	}
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	payload, _ := json.Marshal(map[string]any{"commerce_push_intent_id": id, "source_reference": in.sourceReference, "state": in.state})
 	key := sha256.Sum256([]byte("planned:" + strconv.FormatInt(id, 10)))
-	if _, err = tx.Exec(ctx, `INSERT INTO outbound_commerce_push_audit_events(intent_id,operation,payload_digest,occurred_at) VALUES($1,'planned',$2,$3)`, id, sha256Bytes(payload), now); err != nil { return err }
-	if _, err = tx.Exec(ctx, `INSERT INTO outbound_commerce_push_outbox(event_type,intent_id,payload,idempotency_digest,occurred_at) VALUES('outbound.commerce_push.planned.v1',$1,$2::jsonb,$3,$4)`, id, payload, key[:], now); err != nil { return err }
+	if _, err = tx.Exec(ctx, `INSERT INTO outbound_commerce_push_audit_events(intent_id,operation,payload_digest,occurred_at) VALUES($1,'planned',$2,$3)`, id, sha256Bytes(payload), now); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO outbound_commerce_push_outbox(event_type,intent_id,payload,idempotency_digest,occurred_at) VALUES('outbound.commerce_push.planned.v1',$1,$2::jsonb,$3,$4)`, id, payload, key[:], now); err != nil {
+		return err
+	}
 	return nil
 }
 
-func zeroCommerceDigest() []byte { return make([]byte, 32) }
+func zeroCommerceDigest() []byte    { return make([]byte, 32) }
 func sha256Bytes(raw []byte) []byte { d := sha256.Sum256(raw); return d[:] }
 func validCommercePlannedState(v string) bool {
 	switch v {
@@ -390,13 +470,13 @@ func validCommercePlannedState(v string) bool {
 
 type commerceAcceptedIntent struct {
 	sourceKind, sourceReference, targetReference, targetSlot string
-	orderEventID                                              int64
-	productID                                                 int64
-	productKind                                               productport.ExternalPushProductKind
-	revision                                                  int64
-	sourceDigest                                              [32]byte
-	target                                                    CommercePushTarget
-	body                                                      []byte
+	orderEventID                                             int64
+	productID                                                int64
+	productKind                                              productport.ExternalPushProductKind
+	revision                                                 int64
+	sourceDigest                                             [32]byte
+	target                                                   CommercePushTarget
+	body                                                     []byte
 }
 
 func (s *CommercePushService) acceptCommercePushWithin(ctx context.Context, in commerceAcceptedIntent) (commerceIntentRecord, error) {
@@ -410,31 +490,51 @@ func (s *CommercePushService) acceptCommercePushWithin(ctx context.Context, in c
 	targetDigest := sha256.Sum256([]byte("commerce-push.target.v1\x00" + in.target.Reference + "\x00" + in.target.Slot))
 	policyDigest := in.target.policyDigest()
 	ciphertext, keyVersion, err := s.cipher.EncryptCommercePayload(in.body, commercePayloadAAD(in.sourceReference, in.targetSlot))
-	if err != nil || keyVersion != 1 || len(ciphertext) < 29 { return commerceIntentRecord{}, ErrCommercePushInvalid }
+	if err != nil || keyVersion != 1 || len(ciphertext) < 29 {
+		return commerceIntentRecord{}, ErrCommercePushInvalid
+	}
 	envelope := commerceEnvelope(in.sourceDigest, targetDigest, payloadDigest, policyDigest)
-	if !envelope.Valid() { return commerceIntentRecord{}, ErrCommercePushInvalid }
+	if !envelope.Valid() {
+		return commerceIntentRecord{}, ErrCommercePushInvalid
+	}
 	projection, receipt, err := s.effects.AcceptAndQueueWithin(ctx, effectport.AcceptCommand{ReceiptKey: effectport.Hash("outbound.commerce_push.accept.v1", in.sourceReference, in.targetSlot), Envelope: envelope})
-	if err != nil { return commerceIntentRecord{}, err }
-	if projection.ID == "" || receipt.QueueReceiptID == "" || (projection.State != effectport.StateAccepted && projection.State != effectport.StateQueued) { return commerceIntentRecord{}, ErrCommercePushConflict }
+	if err != nil {
+		return commerceIntentRecord{}, err
+	}
+	if projection.ID == "" || receipt.QueueReceiptID == "" || (projection.State != effectport.StateAccepted && projection.State != effectport.StateQueued) {
+		return commerceIntentRecord{}, ErrCommercePushConflict
+	}
 	tx, err := platformpostgres.RequireTransaction(ctx)
-	if err != nil { return commerceIntentRecord{}, err }
+	if err != nil {
+		return commerceIntentRecord{}, err
+	}
 	now := s.now().UTC()
 	var eventID any
-	if in.orderEventID > 0 { eventID = in.orderEventID }
+	if in.orderEventID > 0 {
+		eventID = in.orderEventID
+	}
 	keyDigest := sha256.Sum256([]byte("commerce-push.intent.v1\x00" + in.sourceReference + "\x00" + in.targetSlot))
 	intentDigest := commerceIntentDigest(in.sourceKind, in.sourceReference, in.productID, in.targetSlot, in.revision, in.sourceDigest, targetDigest, payloadDigest, policyDigest)
 	var out commerceIntentRecord
 	err = tx.QueryRow(ctx, `INSERT INTO outbound_commerce_push_intents(source_kind,source_reference,order_paid_event_id,product_id,product_kind,target_reference,target_slot,product_configuration_revision,source_digest,target_digest,payload_digest,policy_digest,receipt_key_digest,intent_digest,envelope_fingerprint,payload_ciphertext,payload_key_version,effect_id,queue_receipt_id,state,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,'queued',$20,$20) ON CONFLICT(source_reference,target_slot) DO NOTHING RETURNING id,effect_id,state,created_at`, in.sourceKind, in.sourceReference, eventID, in.productID, string(in.productKind), in.targetReference, in.targetSlot, in.revision, in.sourceDigest[:], targetDigest[:], payloadDigest[:], policyDigest[:], keyDigest[:], intentDigest[:], string(envelope.Fingerprint()), ciphertext, keyVersion, projection.ID, receipt.QueueReceiptID, now).Scan(&out.id, &out.effectID, &out.state, &out.createdAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		stored, found, readErr := commerceIntentExists(ctx, in.sourceReference, in.targetSlot, in.sourceDigest, in.productID)
-		if readErr != nil || !found { return commerceIntentRecord{}, readErr }
+		if readErr != nil || !found {
+			return commerceIntentRecord{}, readErr
+		}
 		return stored, nil
 	}
-	if err != nil { return commerceIntentRecord{}, err }
+	if err != nil {
+		return commerceIntentRecord{}, err
+	}
 	payload, _ := json.Marshal(map[string]any{"commerce_push_intent_id": out.id, "source_reference": in.sourceReference, "effect_id": out.effectID, "state": out.state})
 	key := sha256.Sum256([]byte("queued:" + strconv.FormatInt(out.id, 10)))
-	if _, err = tx.Exec(ctx, `INSERT INTO outbound_commerce_push_audit_events(intent_id,operation,payload_digest,occurred_at) VALUES($1,'accepted',$2,$3)`, out.id, sha256Bytes(payload), now); err != nil { return commerceIntentRecord{}, err }
-	if _, err = tx.Exec(ctx, `INSERT INTO outbound_commerce_push_outbox(event_type,intent_id,payload,idempotency_digest,occurred_at) VALUES('outbound.commerce_push.queued.v1',$1,$2::jsonb,$3,$4)`, out.id, payload, key[:], now); err != nil { return commerceIntentRecord{}, err }
+	if _, err = tx.Exec(ctx, `INSERT INTO outbound_commerce_push_audit_events(intent_id,operation,payload_digest,occurred_at) VALUES($1,'accepted',$2,$3)`, out.id, sha256Bytes(payload), now); err != nil {
+		return commerceIntentRecord{}, err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO outbound_commerce_push_outbox(event_type,intent_id,payload,idempotency_digest,occurred_at) VALUES('outbound.commerce_push.queued.v1',$1,$2::jsonb,$3,$4)`, out.id, payload, key[:], now); err != nil {
+		return commerceIntentRecord{}, err
+	}
 	return out, nil
 }
 
@@ -445,3 +545,446 @@ func commerceIntentDigest(sourceKind, sourceReference string, productID int64, s
 func commerceEnvelope(source, target, payload, policy [32]byte) effectport.Envelope {
 	return effectport.Envelope{Owner: effectport.OwnerOutbound, Kind: effectport.KindCommerceProductPush, SourceRefDigest: effectport.Hash("commerce.push.source.v1", hex.EncodeToString(source[:])), TargetRefDigest: effectport.Hash("commerce.push.target.v1", hex.EncodeToString(target[:])), PayloadDigest: effectport.Hash("commerce.push.payload.v1", hex.EncodeToString(payload[:])), PolicyVersionHash: effectport.Hash("commerce.push.policy.v1", hex.EncodeToString(policy[:]))}
 }
+
+func (s *CommercePushService) paidPayload(ctx context.Context, event orderport.PaidEvent, item orderdomain.ItemSnapshot, target CommercePushTarget, deliveryID string) ([]byte, bool, error) {
+	buyerID, err := s.optionalIdentity(ctx, event.Order.PayerCustomerID, target.BuyerID)
+	if err != nil {
+		return nil, false, err
+	}
+	openID, err := s.optionalIdentity(ctx, event.Order.PayerCustomerID, target.BuyerOpenID)
+	if err != nil {
+		return nil, false, err
+	}
+	unionID, err := s.optionalIdentity(ctx, event.Order.PayerCustomerID, target.BuyerUnionID)
+	if err != nil {
+		return nil, false, err
+	}
+	buyerPhone, err := s.optionalIdentity(ctx, event.Order.PayerCustomerID, target.BuyerPhone)
+	if err != nil {
+		return nil, false, err
+	}
+	order := struct {
+		ID         string `json:"id"`
+		OrderNo    string `json:"order_no"`
+		OutTradeNo string `json:"out_trade_no"`
+		Status     string `json:"status"`
+		PaidAmount int64  `json:"paid_amount"`
+		PaidAt     string `json:"paid_at"`
+		PayChannel string `json:"pay_channel"`
+	}{
+		ID: strconv.FormatInt(event.OrderID, 10), OrderNo: event.Order.MerchantOrderNo, OutTradeNo: event.Order.MerchantOrderNo,
+		Status:     "paid", // Order.Amount is the checkout's frozen payable (after coupon) amount, verified on settlement.
+		PaidAmount: event.Order.Amount.AmountMinor, PaidAt: commerceUTC(event.OccurredAt), PayChannel: "wechat",
+	}
+	product := struct {
+		ID    string `json:"id"`
+		Code  string `json:"code"`
+		Name  string `json:"name"`
+		Price int64  `json:"price"`
+	}{ID: strconv.FormatInt(*item.ProductID, 10), Code: item.ProductCode, Name: item.ProductName, Price: item.UnitAmountMinor}
+	buyer := struct {
+		ID      string `json:"id"`
+		OpenID  string `json:"openid"`
+		UnionID string `json:"unionid"`
+		Phone   string `json:"phone"`
+	}{ID: buyerID, OpenID: maskCommerceOpenID(openID), UnionID: unionID, Phone: buyerPhone}
+
+	switch target.PayloadProfile {
+	case CommercePushStandardProduct:
+		params := cloneCommercePushParams(target.CustomParams)
+		if params == nil {
+			params = map[string]string{}
+		}
+		body := struct {
+			DeliveryID   string            `json:"delivery_id"`
+			Event        string            `json:"event"`
+			Order        any               `json:"order"`
+			Product      any               `json:"product"`
+			Buyer        any               `json:"buyer"`
+			CustomParams map[string]string `json:"custom_params"`
+		}{DeliveryID: deliveryID, Event: "transaction.paid", Order: order, Product: product, Buyer: buyer, CustomParams: params}
+		raw, marshalErr := json.Marshal(body)
+		return raw, false, marshalErr
+	case CommercePushServiceMember:
+		beneficiaryPhone, found, readErr := s.requiredIdentity(ctx, event.Order.BeneficiaryCustomerID, target.BeneficiaryPhone)
+		if readErr != nil {
+			return nil, false, readErr
+		}
+		if !found {
+			return nil, true, nil
+		}
+		body := struct {
+			PhoneNumber        string `json:"phone_number"`
+			PushType           string `json:"type"`
+			Day                *int64 `json:"day"`
+			Frequency          *int64 `json:"frequency"`
+			Remark             string `json:"remark"`
+			SubmittedAt        string `json:"submitted_at"`
+			QuestionnaireTitle string `json:"questionnaire_title"`
+			DeliveryID         string `json:"delivery_id"`
+			Event              string `json:"event"`
+			Order              any    `json:"order"`
+			Product            any    `json:"product"`
+			Buyer              any    `json:"buyer"`
+		}{PhoneNumber: beneficiaryPhone, PushType: target.PushType, Day: target.Day, Frequency: target.Frequency, Remark: target.Remark, SubmittedAt: commerceShanghai(event.OccurredAt), QuestionnaireTitle: "微信支付开通黄小璨会员", DeliveryID: deliveryID, Event: "transaction.paid", Order: order, Product: product, Buyer: buyer}
+		raw, marshalErr := json.Marshal(body)
+		return raw, false, marshalErr
+	default:
+		return nil, false, ErrCommercePushInvalid
+	}
+}
+
+func (s *CommercePushService) requiredIdentity(ctx context.Context, customerID *int64, selector CommercePushIdentity) (string, bool, error) {
+	if customerID == nil || *customerID < 1 {
+		return "", false, nil
+	}
+	value, found, err := s.identities.VerifiedExternalIdentityValue(ctx, customerdomain.CustomerID(*customerID), selector.Kind, selector.Scope)
+	if err != nil {
+		return "", false, err
+	}
+	return value, found && value != "", nil
+}
+func (s *CommercePushService) optionalIdentity(ctx context.Context, customerID *int64, selector CommercePushIdentity) (string, error) {
+	if customerID == nil || *customerID < 1 {
+		return "", nil
+	}
+	value, _, err := s.identities.VerifiedExternalIdentityValue(ctx, customerdomain.CustomerID(*customerID), selector.Kind, selector.Scope)
+	return value, err
+}
+func commerceUTC(at time.Time) string { return at.UTC().Format(time.RFC3339) }
+func commerceShanghai(at time.Time) string {
+	return at.UTC().In(time.FixedZone("CST", 8*60*60)).Format(time.RFC3339)
+}
+func maskCommerceOpenID(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) <= 8 {
+		if value == "" {
+			return ""
+		}
+		if len(value) < 2 {
+			return value + "***"
+		}
+		return value[:2] + "***"
+	}
+	return value[:4] + "***" + value[len(value)-4:]
+}
+
+func commerceSyntheticPayload(productID productport.ID, productName string, target CommercePushTarget, deliveryID string, occurredAt time.Time) ([]byte, error) {
+	if productID < 1 || !target.valid() || deliveryID == "" || occurredAt.IsZero() {
+		return nil, ErrCommercePushInvalid
+	}
+	body := struct {
+		Event      string `json:"event"`
+		DeliveryID string `json:"delivery_id"`
+		OccurredAt string `json:"occurred_at"`
+		Tenant     struct {
+			ID string `json:"id"`
+		} `json:"tenant"`
+		Product struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"product"`
+		CustomParams map[string]string `json:"custom_params"`
+	}{Event: "external_push.test", DeliveryID: deliveryID, OccurredAt: commerceUTC(occurredAt), CustomParams: cloneCommercePushParams(target.CustomParams)}
+	if body.CustomParams == nil {
+		body.CustomParams = map[string]string{}
+	}
+	body.Tenant.ID = target.TenantID
+	if body.Tenant.ID == "" {
+		body.Tenant.ID = "aicrm"
+	}
+	body.Product.ID, body.Product.Name = strconv.FormatInt(int64(productID), 10), productName
+	return json.Marshal(body)
+}
+
+func reservedCommercePayloadField(key string) bool {
+	switch key {
+	case "phone_number", "type", "day", "frequency", "remark", "submitted_at", "questionnaire_title", "delivery_id", "event", "order", "product", "buyer", "tenant", "occurred_at":
+		return true
+	}
+	return false
+}
+
+func validCommerceEndpoint(raw string, allowLoopback bool) bool {
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.User != nil || parsed.Host == "" || parsed.Fragment != "" || parsed.RawQuery != "" || raw != strings.TrimSpace(raw) {
+		return false
+	}
+	port := parsed.Port()
+	if parsed.Scheme == "https" && (port == "" || port == "443") && !isDisallowedCommerceHost(parsed.Hostname(), false) {
+		return true
+	}
+	return allowLoopback && parsed.Scheme == "http" && isLoopbackCommerceHost(parsed.Hostname()) && (port == "" || validCommercePort(port))
+}
+func validCommercePort(value string) bool {
+	p, err := strconv.Atoi(value)
+	return err == nil && p >= 1 && p <= 65535
+}
+func isLoopbackCommerceHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip, err := netip.ParseAddr(host)
+	return err == nil && ip.IsLoopback()
+}
+func isDisallowedCommerceHost(host string, allowLoopback bool) bool {
+	ip, err := netip.ParseAddr(host)
+	if err != nil {
+		return false
+	}
+	return disallowedCommerceIP(ip, allowLoopback)
+}
+func disallowedCommerceIP(ip netip.Addr, allowLoopback bool) bool {
+	if allowLoopback && ip.IsLoopback() {
+		return false
+	}
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() || ip.Is6() && ip.Is4In6() && disallowedCommerceIP(ip.Unmap(), allowLoopback)
+}
+
+// CommercePushExecution is the minimum encrypted, frozen dispatch read needed
+// by the Provider adapter after EER marks an attempt. It intentionally has no
+// decoded identity or provider credential fields.
+type CommercePushExecution struct {
+	IntentID, ProductID                                     int64
+	SourceReference, TargetSlot                             string
+	TargetReference                                         string
+	Ciphertext                                              []byte
+	KeyVersion                                              int16
+	SourceDigest, TargetDigest, PayloadDigest, PolicyDigest [32]byte
+}
+
+func (s *CommercePushService) CommercePushExecution(ctx context.Context, fingerprint string) (CommercePushExecution, bool, error) {
+	if s == nil || !effectport.ValidDigest(effectport.Digest(fingerprint)) {
+		return CommercePushExecution{}, false, ErrCommercePushInvalid
+	}
+	var out CommercePushExecution
+	var source, target, payload, policy []byte
+	err := s.uow.Within(ctx, func(txctx context.Context) error {
+		tx, err := platformpostgres.RequireTransaction(txctx)
+		if err != nil {
+			return err
+		}
+		return tx.QueryRow(txctx, `SELECT id,product_id,source_reference,target_slot,target_reference,payload_ciphertext,payload_key_version,source_digest,target_digest,payload_digest,policy_digest FROM outbound_commerce_push_intents WHERE envelope_fingerprint=$1 AND state IN ('queued','attempted')`, fingerprint).Scan(&out.IntentID, &out.ProductID, &out.SourceReference, &out.TargetSlot, &out.TargetReference, &out.Ciphertext, &out.KeyVersion, &source, &target, &payload, &policy)
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return CommercePushExecution{}, false, nil
+	}
+	if err != nil {
+		return CommercePushExecution{}, false, err
+	}
+	if out.IntentID < 1 || out.ProductID < 1 || !validCommerceText(out.SourceReference, 200) || !validCommerceText(out.TargetSlot, 128) || !validCommerceText(out.TargetReference, 128) || len(out.Ciphertext) < 29 || out.KeyVersion != 1 || len(source) != 32 || len(target) != 32 || len(payload) != 32 || len(policy) != 32 {
+		return CommercePushExecution{}, false, ErrCommercePushConflict
+	}
+	copy(out.SourceDigest[:], source)
+	copy(out.TargetDigest[:], target)
+	copy(out.PayloadDigest[:], payload)
+	copy(out.PolicyDigest[:], policy)
+	return out, true, nil
+}
+
+// ReadExternalPushTestStatus is the Product-facing read Port. It has a fixed
+// Product/effect binding and returns only safe result-state facts from the
+// Outbound-owned immutable intent.
+func (s *CommercePushService) ReadExternalPushTestStatus(ctx context.Context, productID productport.ID, effectID string) (productport.ExternalPushTestStatus, error) {
+	if s == nil || s.uow == nil || productID < 1 || !validCommercePushEffectID(effectID) {
+		return productport.ExternalPushTestStatus{}, ErrCommercePushInvalid
+	}
+	var result productport.ExternalPushTestStatus
+	var received *bool
+	err := s.uow.Within(ctx, func(txctx context.Context) error {
+		tx, txErr := platformpostgres.RequireTransaction(txctx)
+		if txErr != nil {
+			return txErr
+		}
+		return tx.QueryRow(txctx, `SELECT effect_id,state,attempt_count,provider_call_attempted,provider_real_call_executed,provider_result_received,updated_at
+FROM outbound_commerce_push_intents WHERE product_id=$1 AND effect_id=$2`, int64(productID), effectID).Scan(
+			&result.EffectID, &result.State, &result.AttemptCount, &result.ProviderCallAttempted, &result.RealExternalCallExecuted, &received, &result.UpdatedAt,
+		)
+	})
+	if err != nil {
+		return productport.ExternalPushTestStatus{}, err
+	}
+	result.ProviderResultReceived = received
+	return result, nil
+}
+
+type CommercePushProvider struct {
+	enabled    bool
+	executions *CommercePushService
+	targets    CommercePushTargetResolver
+	cipher     CommercePayloadCipher
+	now        func() time.Time
+}
+
+func NewCommercePushProvider(enabled bool, executions *CommercePushService, targets CommercePushTargetResolver, cipher CommercePayloadCipher) (*CommercePushProvider, error) {
+	if executions == nil || targets == nil {
+		return nil, ErrCommercePushInvalid
+	}
+	return &CommercePushProvider{enabled: enabled, executions: executions, targets: targets, cipher: cipher, now: time.Now}, nil
+}
+
+func (p *CommercePushProvider) Execute(ctx context.Context, envelope effectport.Envelope, attempt effectport.Attempt) (effectport.AdapterResult, error) {
+	base := effectport.Hash("commerce.push.provider.v1", string(envelope.Fingerprint()))
+	if p == nil || p.executions == nil || p.targets == nil || p.cipher == nil || envelope.Kind != effectport.KindCommerceProductPush || !envelope.Valid() || attempt.EffectID == "" || attempt.Number < 1 {
+		return effectport.AdapterResult{Completion: effectport.StateFinalFailed, ReceiptDigest: effectport.Hash(string(base), "invalid")}, nil
+	}
+	if !p.enabled || !p.targets.CommercePushProviderEnabled() {
+		return effectport.AdapterResult{Completion: effectport.StateFinalFailed, ReceiptDigest: effectport.Hash(string(base), "provider-disabled")}, nil
+	}
+	execution, found, err := p.executions.CommercePushExecution(ctx, string(envelope.Fingerprint()))
+	if err != nil {
+		return effectport.AdapterResult{Completion: effectport.StateRetryable, ReceiptDigest: effectport.Hash(string(base), "intent-unavailable")}, errors.New("commerce push intent unavailable")
+	}
+	if !found {
+		return effectport.AdapterResult{Completion: effectport.StateFinalFailed, ReceiptDigest: effectport.Hash(string(base), "intent-missing")}, nil
+	}
+	if expected := commerceEnvelope(execution.SourceDigest, execution.TargetDigest, execution.PayloadDigest, execution.PolicyDigest); expected.Fingerprint() != envelope.Fingerprint() {
+		return effectport.AdapterResult{Completion: effectport.StateFinalFailed, ReceiptDigest: effectport.Hash(string(base), "intent-drift")}, nil
+	}
+	target, found, err := p.targets.CommercePushTarget(ctx, execution.TargetReference)
+	if err != nil {
+		return effectport.AdapterResult{Completion: effectport.StateRetryable, ReceiptDigest: effectport.Hash(string(base), "target-unavailable")}, errors.New("commerce push target unavailable")
+	}
+	if !found || !target.valid() || target.policyDigest() != execution.PolicyDigest {
+		return effectport.AdapterResult{Completion: effectport.StateFinalFailed, ReceiptDigest: effectport.Hash(string(base), "target-revoked")}, nil
+	}
+	body, err := p.cipher.DecryptCommercePayload(execution.Ciphertext, execution.KeyVersion, commercePayloadAAD(execution.SourceReference, execution.TargetSlot))
+	if err != nil || !json.Valid(body) || sha256.Sum256(body) != execution.PayloadDigest {
+		return effectport.AdapterResult{Completion: effectport.StateFinalFailed, ReceiptDigest: effectport.Hash(string(base), "payload-unavailable")}, nil
+	}
+	event, deliveryID, ok := commercePayloadHeaderValues(body)
+	if !ok {
+		return effectport.AdapterResult{Completion: effectport.StateFinalFailed, ReceiptDigest: effectport.Hash(string(base), "payload-invalid")}, nil
+	}
+	timestamp := strconv.FormatInt(p.now().UTC().Unix(), 10)
+	signature := commercePushSignature(target.SigningKey, timestamp, body)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target.Endpoint, bytes.NewReader(body))
+	if err != nil {
+		return effectport.AdapterResult{Completion: effectport.StateFinalFailed, ReceiptDigest: effectport.Hash(string(base), "request-invalid")}, nil
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-AICRM-Event", event)
+	req.Header.Set("X-AICRM-Delivery-Id", deliveryID)
+	req.Header.Set("X-AICRM-Timestamp", timestamp)
+	req.Header.Set("X-AICRM-Signature", signature)
+	response, err := commerceHTTPClient(target.AllowLoopbackHTTP).Do(req)
+	if err != nil {
+		return effectport.AdapterResult{Completion: effectport.StateUnknown, ReceiptDigest: effectport.Hash(string(base), "request-unknown"), CallAttempted: true, RealExternalCallExecuted: true}, errors.New("commerce push request outcome unknown")
+	}
+	defer response.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
+	if response.StatusCode >= 500 {
+		return effectport.AdapterResult{Completion: effectport.StateUnknown, ReceiptDigest: effectport.Hash(string(base), "response-unknown", strconv.Itoa(response.StatusCode)), CallAttempted: true, RealExternalCallExecuted: true}, nil
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return effectport.AdapterResult{Completion: effectport.StateFinalFailed, ReceiptDigest: effectport.Hash(string(base), "provider-rejected", strconv.Itoa(response.StatusCode)), CallAttempted: true, RealExternalCallExecuted: true}, nil
+	}
+	return effectport.AdapterResult{Completion: effectport.StateExecuted, ReceiptDigest: effectport.Hash(string(base), "provider-accepted", strconv.Itoa(response.StatusCode), string(envelope.Fingerprint())), CallAttempted: true, RealExternalCallExecuted: true}, nil
+}
+
+func commercePayloadHeaderValues(body []byte) (string, string, bool) {
+	var value struct {
+		Event      string `json:"event"`
+		DeliveryID string `json:"delivery_id"`
+	}
+	if json.Unmarshal(body, &value) != nil || !validCommerceText(value.Event, 120) || !validCommerceText(value.DeliveryID, 200) {
+		return "", "", false
+	}
+	return value.Event, value.DeliveryID, true
+}
+func commercePushSignature(key []byte, timestamp string, body []byte) string {
+	if strings.TrimSpace(string(key)) == "" {
+		return ""
+	}
+	mac := hmac.New(sha256.New, []byte(strings.TrimSpace(string(key))))
+	_, _ = mac.Write([]byte(strings.TrimSpace(timestamp)))
+	_, _ = mac.Write([]byte("."))
+	_, _ = mac.Write(body)
+	return "sha256=" + hex.EncodeToString(mac.Sum(nil))
+}
+
+func commerceHTTPClient(allowLoopback bool) *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = nil
+	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(address)
+		if err != nil || !validCommercePort(port) {
+			return nil, errors.New("commerce target dial rejected")
+		}
+		if isDisallowedCommerceHost(host, allowLoopback) {
+			return nil, errors.New("commerce target dial rejected")
+		}
+		addresses, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
+		if err != nil || len(addresses) == 0 {
+			return nil, errors.New("commerce target resolution unavailable")
+		}
+		for _, ip := range addresses {
+			if disallowedCommerceIP(ip, allowLoopback) {
+				return nil, errors.New("commerce target dial rejected")
+			}
+		}
+		dialer := &net.Dialer{Timeout: 10 * time.Second}
+		return dialer.DialContext(ctx, network, net.JoinHostPort(addresses[0].String(), port))
+	}
+	return &http.Client{Timeout: 10 * time.Second, Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+}
+
+// CommercePushCompletionSink owns no Provider behavior. It projects the
+// terminal EER result into the encrypted outbound intent in that same EER
+// completion transaction, keeping response facts separate from acceptance.
+type CommercePushCompletionSink struct{ service *CommercePushService }
+
+func NewCommercePushCompletionSink(service *CommercePushService) (*CommercePushCompletionSink, error) {
+	if service == nil {
+		return nil, ErrCommercePushInvalid
+	}
+	return &CommercePushCompletionSink{service: service}, nil
+}
+func (s *CommercePushCompletionSink) CompleteEffect(ctx context.Context, effectID string, envelope effectport.Envelope, attempt effectport.Attempt, result effectport.AdapterResult) error {
+	if s == nil || s.service == nil || effectID == "" || envelope.Kind != effectport.KindCommerceProductPush || attempt.Number < 1 || !effectport.ValidDigest(result.ReceiptDigest) {
+		return ErrCommercePushInvalid
+	}
+	state := "final_failed"
+	var received any
+	switch result.Completion {
+	case effectport.StateExecuted:
+		state, received = "provider_accepted", result.CallAttempted && result.RealExternalCallExecuted
+	case effectport.StateUnknown:
+		state = "outcome_unknown"
+	case effectport.StateRetryable:
+		state = "attempted"
+	case effectport.StateFinalFailed:
+		state, received = "final_failed", result.CallAttempted
+	case effectport.StateReconciled:
+		state = "reconciled"
+	default:
+		return ErrCommercePushInvalid
+	}
+	raw, err := effectDigestBytes(result.ReceiptDigest)
+	if err != nil {
+		return err
+	}
+	tx, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return err
+	}
+	now := s.service.now().UTC()
+	var intentID int64
+	err = tx.QueryRow(ctx, `UPDATE outbound_commerce_push_intents SET state=$2,attempt_count=$3,provider_call_attempted=$4,provider_real_call_executed=$5,provider_result_received=$6,receipt_digest=$7,updated_at=$8 WHERE effect_id=$1 RETURNING id`, effectID, state, attempt.Number, result.CallAttempted, result.RealExternalCallExecuted, received, raw, now).Scan(&intentID)
+	if err != nil {
+		return err
+	}
+	payload, _ := json.Marshal(map[string]any{"commerce_push_intent_id": intentID, "effect_id": effectID, "state": state, "attempt_count": attempt.Number})
+	key := sha256.Sum256([]byte("complete:" + effectID + ":" + strconv.FormatInt(attempt.Generation, 10)))
+	if _, err = tx.Exec(ctx, `INSERT INTO outbound_commerce_push_audit_events(intent_id,operation,payload_digest,occurred_at) VALUES($1,'completed',$2,$3)`, intentID, sha256Bytes(payload), now); err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO outbound_commerce_push_outbox(event_type,intent_id,payload,idempotency_digest,occurred_at) VALUES('outbound.commerce_push.completed.v1',$1,$2::jsonb,$3,$4) ON CONFLICT(event_type,idempotency_digest) DO NOTHING`, intentID, payload, key[:], now)
+	return err
+}
+
+var _ orderport.PaidEventConsumer = (*CommercePushService)(nil)
+var _ productport.ExternalPushTestAccepter = (*CommercePushService)(nil)
+var _ productport.ExternalPushTestStatusReader = (*CommercePushService)(nil)
+var _ effectport.ProviderAdapter = (*CommercePushProvider)(nil)
+var _ effectport.CompletionSink = (*CommercePushCompletionSink)(nil)

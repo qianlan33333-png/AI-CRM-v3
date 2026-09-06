@@ -672,11 +672,15 @@ func (r *Repository) ReadCommerceExternalPushConfigurationForOrder(ctx context.C
 	if id < 1 {
 		return productport.ExternalPushConfiguration{}, ErrInvalid
 	}
-	query := `SELECT p.id,c.product_kind,c.enabled,c.configuration_reference,c.version,c.updated_at
-FROM products p JOIN product_external_push_configurations c ON c.product_id=p.id
-WHERE p.id=$1 AND ((c.product_kind='service_period' AND p.legacy_admin_projection ->> 'status'='service_period') OR (c.product_kind='wechat_pay' AND COALESCE(p.legacy_admin_projection ->> 'status','') <> 'service_period'))`
+	query := `SELECT p.id,
+  CASE WHEN p.legacy_admin_projection ->> 'status'='service_period' THEN 'service_period' ELSE 'wechat_pay' END,
+  COALESCE(c.enabled,FALSE),COALESCE(c.configuration_reference,''),COALESCE(c.version,1),p.name,COALESCE(c.updated_at,p.updated_at)
+FROM products p
+LEFT JOIN product_external_push_configurations c ON c.product_id=p.id AND c.product_kind=CASE WHEN p.legacy_admin_projection ->> 'status'='service_period' THEN 'service_period' ELSE 'wechat_pay' END
+WHERE p.id=$1
+FOR UPDATE OF p`
 	var result productport.ExternalPushConfiguration
-	if err = tx.QueryRow(ctx, query, int64(id)).Scan(&result.ProductID, &result.ProductKind, &result.Enabled, &result.ConfigurationReference, &result.Revision, &result.UpdatedAt); errors.Is(err, pgx.ErrNoRows) {
+	if err = tx.QueryRow(ctx, query, int64(id)).Scan(&result.ProductID, &result.ProductKind, &result.Enabled, &result.ConfigurationReference, &result.Revision, &result.ProductName, &result.UpdatedAt); errors.Is(err, pgx.ErrNoRows) {
 		return productport.ExternalPushConfiguration{}, productport.ErrProductReadNotFound
 	} else if err != nil {
 		return productport.ExternalPushConfiguration{}, mapDatabaseError(err)
@@ -722,6 +726,36 @@ func (r *Repository) CommerceExternalPushTestExists(ctx context.Context, id prod
 	var exists bool
 	err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM product_external_push_tests WHERE product_id=$1 AND product_kind=$2 AND configuration_digest=$3)`, int64(id), string(kind), configurationDigest[:]).Scan(&exists)
 	return exists, mapDatabaseError(err)
+}
+
+func (r *Repository) ListCommerceExternalPushTests(ctx context.Context, id productport.ID, kind productport.ExternalPushProductKind, limit int32) ([]productport.ExternalPushTest, error) {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if id < 1 || !validExternalKind(kind) || limit < 1 || limit > 20 {
+		return nil, ErrInvalid
+	}
+	rows, err := tx.Query(ctx, `SELECT product_id,product_kind,effect_id,state,provider_accepted,delivery_proven,real_external_call_executed,auto_retry_allowed,created_at
+FROM product_external_push_tests WHERE product_id=$1 AND product_kind=$2
+ORDER BY created_at DESC,id DESC LIMIT $3`, int64(id), string(kind), limit)
+	if err != nil {
+		return nil, mapDatabaseError(err)
+	}
+	defer rows.Close()
+	values := make([]productport.ExternalPushTest, 0, limit)
+	for rows.Next() {
+		var value productport.ExternalPushTest
+		if err = rows.Scan(&value.ProductID, &value.ProductKind, &value.EffectID, &value.State, &value.ProviderAccepted, &value.DeliveryProven, &value.RealExternalCallExecuted, &value.AutoRetryAllowed, &value.CreatedAt); err != nil {
+			return nil, mapDatabaseError(err)
+		}
+		value.UpdatedAt = value.CreatedAt
+		values = append(values, value)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, mapDatabaseError(err)
+	}
+	return values, nil
 }
 
 func (r *Repository) CreateCommerceExternalPushTest(ctx context.Context, value productport.ExternalPushTest, configurationDigest [32]byte, receiptID int64) (productport.ExternalPushTest, error) {

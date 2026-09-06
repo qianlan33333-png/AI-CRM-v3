@@ -146,6 +146,10 @@ func (service *testServicePeriod) ArchiveServicePeriodProduct(context.Context, p
 type testExternalPush struct {
 	configuration productport.ExternalPushConfiguration
 	test          productport.ExternalPushTest
+	listCalls     int
+	listProductID productport.ID
+	listKind      productport.ExternalPushProductKind
+	queue         *productport.QueueExternalPushTestCommand
 }
 
 type testMemberEntitlements struct {
@@ -478,8 +482,14 @@ func (external *testExternalPush) SaveExternalPushConfiguration(context.Context,
 	return external.configuration, nil
 }
 
-func (external *testExternalPush) QueueExternalPushTest(context.Context, productport.QueueExternalPushTestCommand) (productport.ExternalPushTest, error) {
+func (external *testExternalPush) QueueExternalPushTest(_ context.Context, command productport.QueueExternalPushTestCommand) (productport.ExternalPushTest, error) {
+	external.queue = &command
 	return external.test, nil
+}
+func (external *testExternalPush) ListExternalPushTests(_ context.Context, id productport.ID, kind productport.ExternalPushProductKind) ([]productport.ExternalPushTest, error) {
+	external.listCalls++
+	external.listProductID, external.listKind = id, kind
+	return []productport.ExternalPushTest{external.test}, nil
 }
 
 func newHandlerForTest(t *testing.T) (*Handler, *testSecurity, *testCatalog, *testLifecycle) {
@@ -507,6 +517,43 @@ func newHandlerForTest(t *testing.T) (*Handler, *testSecurity, *testCatalog, *te
 		t.Fatal(err)
 	}
 	return handler, security, catalog, lifecycle
+}
+
+func TestExternalPushTestTimelineReadsStatusAndDoesNotClaimDelivery(t *testing.T) {
+	handler, security, _, _ := newHandlerForTest(t)
+	external, ok := handler.external.(*testExternalPush)
+	if !ok {
+		t.Fatal("unexpected external test fixture")
+	}
+	external.test = productport.ExternalPushTest{
+		ProductID: 7, ProductKind: productport.ExternalPushWeChatPay, EffectID: "eer_7", State: "outcome_unknown",
+		AttemptCount: 1, ProviderAccepted: false, DeliveryProven: false, RealExternalCallExecuted: true, AutoRetryAllowed: false,
+		CreatedAt: time.Date(2026, 9, 6, 4, 0, 0, 0, time.UTC), UpdatedAt: time.Date(2026, 9, 6, 4, 1, 0, 0, time.UTC),
+	}
+	read := httptest.NewRecorder()
+	handler.ServeHTTP(read, httptest.NewRequest(http.MethodGet, "/api/admin/wechat-pay/products/7/external-push/test", nil))
+	if read.Code != http.StatusOK || security.authCalls != 1 || security.csrfCalls != 0 || external.listCalls != 1 || external.listProductID != 7 || external.listKind != productport.ExternalPushWeChatPay {
+		t.Fatalf("read status=%d auth=%d csrf=%d list=%d product=%d kind=%s body=%s", read.Code, security.authCalls, security.csrfCalls, external.listCalls, external.listProductID, external.listKind, read.Body.String())
+	}
+	var response struct {
+		Items []productport.ExternalPushTest `json:"items"`
+	}
+	if err := json.Unmarshal(read.Body.Bytes(), &response); err != nil || len(response.Items) != 1 {
+		t.Fatalf("decode=%v body=%s", err, read.Body.String())
+	}
+	item := response.Items[0]
+	if item.State != "outcome_unknown" || item.AttemptCount != 1 || item.ProviderAccepted || item.DeliveryProven || !item.RealExternalCallExecuted || item.AutoRetryAllowed {
+		t.Fatalf("unsafe timeline item=%#v", item)
+	}
+
+	write := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/admin/wechat-pay/products/7/external-push/test", strings.NewReader(`{}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Idempotency-Key", "external-push-test-http-0001")
+	handler.ServeHTTP(write, request)
+	if write.Code != http.StatusAccepted || security.csrfCalls != 1 || external.queue == nil || external.queue.ProductID != 7 || external.queue.ProductKind != productport.ExternalPushWeChatPay || external.queue.Actor != 9 || external.queue.IdempotencyKey != "external-push-test-http-0001" {
+		t.Fatalf("write status=%d csrf=%d command=%#v body=%s", write.Code, security.csrfCalls, external.queue, write.Body.String())
+	}
 }
 
 // Keep the test fixture independent from the application package's internal

@@ -35,6 +35,7 @@ type Runtime struct {
 	Effects                    Effects
 	TagCatalog                 TagCatalogProvider
 	Survey                     Survey
+	CommercePush               CommercePush
 	WeChatPay                  WeChatPay
 	WeChatShop                 WeChatShop
 	WorkerOwner                string
@@ -110,6 +111,16 @@ func (c AutomationOperations) ProviderEnabled() bool {
 }
 
 type Effects struct{ ProviderEnabled bool }
+
+// CommercePush keeps only deployment-owned opaque target configuration. Product
+// stores references, while this runtime section keeps endpoints and signing
+// material out of Product rows and HTTP responses.
+type CommercePush struct {
+	ProviderEnabled bool
+	TargetsJSON     string
+	PayloadDataKey  string
+}
+
 type HXCDashboard struct {
 	Enabled                     bool
 	IdentityWriteEnabled        bool
@@ -247,12 +258,16 @@ func Load() (Runtime, error) {
 			ProviderPermission:  os.Getenv("AICRM_AUTOMATION_OPS_PROVIDER_PERMISSION"),
 			MaxRecipientsPerRun: 1,
 		},
-		Survey: Survey{DataKey: os.Getenv("AICRM_SURVEY_DATA_KEY"), IdentityPhoneDataKey: os.Getenv("AICRM_IDENTITY_PHONE_DATA_KEY"), CompletionTargetsJSON: os.Getenv("AICRM_SURVEY_COMPLETION_TARGETS_JSON"), OAuthAppID: os.Getenv("AICRM_SURVEY_OAUTH_APP_ID"), OAuthSecret: os.Getenv("AICRM_SURVEY_OAUTH_SECRET"), OAuthOpenPlatformID: os.Getenv("AICRM_SURVEY_OAUTH_OPEN_PLATFORM_ID"), OAuthScope: valueOrDefault("AICRM_SURVEY_OAUTH_SCOPE", "snsapi_userinfo")},
+		Survey:       Survey{DataKey: os.Getenv("AICRM_SURVEY_DATA_KEY"), IdentityPhoneDataKey: os.Getenv("AICRM_IDENTITY_PHONE_DATA_KEY"), CompletionTargetsJSON: os.Getenv("AICRM_SURVEY_COMPLETION_TARGETS_JSON"), OAuthAppID: os.Getenv("AICRM_SURVEY_OAUTH_APP_ID"), OAuthSecret: os.Getenv("AICRM_SURVEY_OAUTH_SECRET"), OAuthOpenPlatformID: os.Getenv("AICRM_SURVEY_OAUTH_OPEN_PLATFORM_ID"), OAuthScope: valueOrDefault("AICRM_SURVEY_OAUTH_SCOPE", "snsapi_userinfo")},
+		CommercePush: CommercePush{TargetsJSON: os.Getenv("AICRM_COMMERCE_PUSH_TARGETS_JSON"), PayloadDataKey: os.Getenv("AICRM_COMMERCE_PUSH_PAYLOAD_DATA_KEY")},
 	}
 	if cfg.Survey.OAuthEnabled, err = strictBool("AICRM_SURVEY_OAUTH_ENABLED", false); err != nil {
 		return Runtime{}, err
 	}
 	if cfg.Survey.CompletionProviderEnabled, err = strictBool("AICRM_SURVEY_COMPLETION_PROVIDER_ENABLED", false); err != nil {
+		return Runtime{}, err
+	}
+	if cfg.CommercePush.ProviderEnabled, err = strictBool("AICRM_COMMERCE_PUSH_PROVIDER_ENABLED", false); err != nil {
 		return Runtime{}, err
 	}
 	if cfg.Effects.ProviderEnabled, err = strictBool("AICRM_OUTBOUND_PROVIDER_ENABLED", false); err != nil {
@@ -585,6 +600,14 @@ func Load() (Runtime, error) {
 	}
 	if cfg.Survey.CompletionProviderEnabled && (!cfg.Effects.ProviderEnabled || strings.TrimSpace(cfg.Survey.CompletionTargetsJSON) != cfg.Survey.CompletionTargetsJSON || cfg.Survey.CompletionTargetsJSON == "") {
 		return Runtime{}, errors.New("enabled survey completion provider requires External Effects and target configuration")
+	}
+	if cfg.CommercePush.PayloadDataKey != "" {
+		if decoded, decodeErr := base64.RawStdEncoding.DecodeString(cfg.CommercePush.PayloadDataKey); decodeErr != nil || len(decoded) != 32 {
+			return Runtime{}, errors.New("invalid AICRM_COMMERCE_PUSH_PAYLOAD_DATA_KEY")
+		}
+	}
+	if cfg.CommercePush.ProviderEnabled && (!cfg.Effects.ProviderEnabled || strings.TrimSpace(cfg.CommercePush.TargetsJSON) != cfg.CommercePush.TargetsJSON || cfg.CommercePush.TargetsJSON == "" || cfg.CommercePush.PayloadDataKey == "") {
+		return Runtime{}, errors.New("enabled commerce push provider requires External Effects, target configuration, and payload key")
 	}
 	return cfg, nil
 }
