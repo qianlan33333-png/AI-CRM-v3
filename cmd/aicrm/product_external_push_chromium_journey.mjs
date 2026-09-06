@@ -171,7 +171,7 @@ try {
   cdp.on("Network.requestWillBeSent", (params) => {
     try {
       const pathname = new URL(String(params.request?.url || "")).pathname;
-      if (pathname.includes("productForm") || pathname.includes("orderDetail") || pathname.includes("external-push") || pathname.startsWith("/assets/")) {
+      if (pathname.includes("productForm") || pathname.includes("orderDetail") || pathname.includes("external-push") || pathname.includes("service-period-products") || pathname.startsWith("/assets/")) {
         requests.set(params.requestId, { pathname, method: String(params.request?.method || "GET") });
       }
     } catch (_) {}
@@ -204,10 +204,15 @@ try {
         saveDisabled: Boolean(save && save.disabled),
         adminCSRF: hasCookie('aicrm_admin_csrf'),
         compatCSRF: hasCookie('aicrm_csrf'),
+        anchor: Boolean(document.querySelector(location.pathname.endsWith('/admin/spProductForm.html') ? '#sp-push' : '#product-push')),
+        hostPanel: Boolean(document.querySelector('#product-v3-external-push-test')),
+        businessBinding: Boolean(document.querySelector(location.pathname.endsWith('/admin/spProductForm.html') ? '#spfExternalPushEnabled' : '#pfExternalPushEnabled')),
+        productHostAsset: Array.from(document.scripts).some((script) => String(script.src || '').includes('/product-assets/')),
+        frozenAdminEntry: Array.from(document.scripts).some((script) => String(script.src || '').includes('/assets/')),
       };
     })()`);
     const routes = responses.join(',') || 'none';
-    return `path=${page?.path || 'unknown'} status=${page?.status || 'none'} toast=${page?.toast || 'none'} save_disabled=${page?.saveDisabled === true} csrf_admin=${page?.adminCSRF === true} csrf_compat=${page?.compatCSRF === true} exceptions=${runtimeExceptions.join(',') || 'none'} responses=${routes}`;
+    return `path=${page?.path || 'unknown'} status=${page?.status || 'none'} toast=${page?.toast || 'none'} save_disabled=${page?.saveDisabled === true} csrf_admin=${page?.adminCSRF === true} csrf_compat=${page?.compatCSRF === true} anchor=${page?.anchor === true} host_panel=${page?.hostPanel === true} binding=${page?.businessBinding === true} product_host_asset=${page?.productHostAsset === true} frozen_admin_entry=${page?.frozenAdminEntry === true} exceptions=${runtimeExceptions.join(',') || 'none'} responses=${routes}`;
   };
 
   const productPath = "/admin/productForm.html?id=" + productID;

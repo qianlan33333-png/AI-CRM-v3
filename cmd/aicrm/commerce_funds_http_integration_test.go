@@ -394,6 +394,25 @@ func TestPostgreSQLProductExternalPushFirstBusinessSaveCAS(t *testing.T) {
 		{ProductID: productport.ID(productID), ProductKind: productport.ExternalPushWeChatPay, Enabled: true, ConfigurationReference: "product-push-first-cas", BusinessParametersSet: true, PushType: "member_open", CustomParams: map[string]any{"big": json.Number("9007199254740993")}, ExpectedRevision: 0, Actor: 41, IdempotencyKey: "commerce-push-pg-first-cas-a"},
 		{ProductID: productport.ID(productID), ProductKind: productport.ExternalPushWeChatPay, Enabled: true, ConfigurationReference: "product-push-first-cas", BusinessParametersSet: true, PushType: "member_open", CustomParams: map[string]any{"big": json.Number("9007199254740993")}, ExpectedRevision: 0, Actor: 42, IdempotencyKey: "commerce-push-pg-first-cas-b"},
 	}
+	// Hold the parent Product row until both commands have begun their locking
+	// read.  The old LEFT JOIN ... FOR UPDATE implementation captured an empty
+	// configuration snapshot before this wait and deterministically allowed
+	// both default-revision commands to write.  Do not reduce this to a timing
+	// race: the waiter check proves the intended stale-snapshot interleaving.
+	blocked, err := pool.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer blocked.Release()
+	blocker, err := blocked.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = blocker.Rollback(ctx) }()
+	if _, err = blocker.Exec(ctx, `SELECT id FROM products WHERE id=$1 FOR UPDATE`, productID); err != nil {
+		t.Fatal(err)
+	}
+
 	start := make(chan struct{})
 	results := make(chan error, len(commands))
 	var group sync.WaitGroup
@@ -408,6 +427,10 @@ func TestPostgreSQLProductExternalPushFirstBusinessSaveCAS(t *testing.T) {
 		}()
 	}
 	close(start)
+	waitForPostgreSQLLockWaiters(t, ctx, pool, len(commands))
+	if err = blocker.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
 	group.Wait()
 	close(results)
 	var successes, conflicts int
@@ -430,6 +453,27 @@ func TestPostgreSQLProductExternalPushFirstBusinessSaveCAS(t *testing.T) {
 	}
 	if err = pool.QueryRow(ctx, `SELECT count(*) FROM product_operation_receipts WHERE operation='external_push_save'`).Scan(&receipts); err != nil || receipts != 1 {
 		t.Fatalf("first-save receipts=%d err=%v", receipts, err)
+	}
+}
+
+func waitForPostgreSQLLockWaiters(t *testing.T, ctx context.Context, pool *pgxpool.Pool, want int) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		var waiters int
+		err := pool.QueryRow(ctx, `SELECT count(*)
+FROM pg_stat_activity
+WHERE datname=current_database() AND wait_event_type='Lock' AND state='active'`).Scan(&waiters)
+		if err != nil {
+			t.Fatalf("read PostgreSQL lock waiters: %v", err)
+		}
+		if waiters >= want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("expected %d blocked external-push saves, observed %d", want, waiters)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

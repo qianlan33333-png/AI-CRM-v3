@@ -127,7 +127,52 @@ func TestPostgreSQLProductExternalPushChromiumJourney(t *testing.T) {
 	outerProductRequest.AddCookie(&http.Cookie{Name: accesshttp.SessionCookieName, Value: outerSession})
 	application.handler.ServeHTTP(outerProduct, outerProductRequest)
 	if outerProduct.Code != http.StatusOK || !bytes.Contains(outerProduct.Body.Bytes(), []byte(`/product-assets/`)) || !bytes.Contains(outerProduct.Body.Bytes(), []byte(`data-page="productForm"`)) {
-		t.Fatalf("outer composed product Host status=%d body=%s", outerProduct.Code, outerProduct.Body.String())
+		t.Fatalf("outer composed product Host status=%d product_assets=%t product_form=%t", outerProduct.Code, bytes.Contains(outerProduct.Body.Bytes(), []byte(`/product-assets/`)), bytes.Contains(outerProduct.Body.Bytes(), []byte(`data-page="productForm"`)))
+	}
+	// The service-period form is separately routed and carries distinct frozen
+	// donor bindings. Check the outer Composition Root before Chromium opens it;
+	// otherwise a generic shell can look like a Host timing failure.
+	outerServiceProduct := httptest.NewRecorder()
+	outerServiceProductRequest := httptest.NewRequest(http.MethodGet, "/admin/spProductForm.html?id="+strconv.FormatInt(serviceProductID, 10), nil)
+	outerServiceProductRequest.AddCookie(&http.Cookie{Name: accesshttp.SessionCookieName, Value: outerSession})
+	application.handler.ServeHTTP(outerServiceProduct, outerServiceProductRequest)
+	if outerServiceProduct.Code != http.StatusOK || !bytes.Contains(outerServiceProduct.Body.Bytes(), []byte(`/product-assets/`)) || !bytes.Contains(outerServiceProduct.Body.Bytes(), []byte(`data-page="spProductForm"`)) || !bytes.Contains(outerServiceProduct.Body.Bytes(), []byte(`id="sp-push"`)) {
+		t.Fatalf("outer composed service-period product Host status=%d product_assets=%t service_form=%t service_anchor=%t", outerServiceProduct.Code, bytes.Contains(outerServiceProduct.Body.Bytes(), []byte(`/product-assets/`)), bytes.Contains(outerServiceProduct.Body.Bytes(), []byte(`data-page="spProductForm"`)), bytes.Contains(outerServiceProduct.Body.Bytes(), []byte(`id="sp-push"`)))
+	}
+	// The frozen service-period form's loadDb reads all seven resources in
+	// parallel. Verify each outer API response before launching Chromium, with
+	// only status and structural markers in failures so an absent composition
+	// binding cannot be mistaken for a Host lifecycle race.
+	for _, read := range []struct {
+		path   string
+		marker string
+	}{
+		{path: "/api/admin/service-period-products/" + strconv.FormatInt(serviceProductID, 10), marker: `"product"`},
+		{path: "/api/admin/service-period-products/" + strconv.FormatInt(serviceProductID, 10) + "/members?limit=50", marker: `"items"`},
+		{path: "/api/admin/service-period-products/" + strconv.FormatInt(serviceProductID, 10) + "/member-grid/access", marker: `"can_view"`},
+		{path: "/api/admin/service-period-products/" + strconv.FormatInt(serviceProductID, 10) + "/member-grid/schema", marker: `"schema"`},
+		{path: "/api/admin/service-period-products/" + strconv.FormatInt(serviceProductID, 10) + "/member-views", marker: `"items"`},
+		{path: "/api/admin/service-period-products/" + strconv.FormatInt(serviceProductID, 10) + "/member-grid/share-settings", marker: `"external_share_supported"`},
+		{path: "/api/admin/service-period-products/" + strconv.FormatInt(serviceProductID, 10) + "/external-push", marker: `"custom_params_json"`},
+	} {
+		response := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodGet, read.path, nil)
+		request.AddCookie(&http.Cookie{Name: accesshttp.SessionCookieName, Value: outerSession})
+		application.handler.ServeHTTP(response, request)
+		body := response.Body.Bytes()
+		if response.Code != http.StatusOK || !json.Valid(body) || !bytes.Contains(body, []byte(read.marker)) {
+			// Do not print any response content. These mutually exclusive protocol
+			// codes make a composition gap inspectable without leaking a member,
+			// session, or rendered donor payload into CI output.
+			failure := "other"
+			for _, candidate := range []string{"permission_denied", "unauthorized", "unavailable", "not_found", "invalid_request"} {
+				if bytes.Contains(body, []byte(candidate)) {
+					failure = candidate
+					break
+				}
+			}
+			t.Fatalf("outer composed service-period loadDb resource path=%s status=%d json=%t contract=%t failure=%s", read.path, response.Code, json.Valid(body), bytes.Contains(body, []byte(read.marker)), failure)
+		}
 	}
 
 	outerDelivery := httptest.NewRecorder()
