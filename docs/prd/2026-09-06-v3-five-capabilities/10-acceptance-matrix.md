@@ -136,3 +136,5 @@
 - #172 4505根独立真实PG/race通过HTTP disabled完整形状、BusinessParametersRoundTrip、FirstBusinessSaveCAS、ExpiredPaidOrderPlansConfigExpiredCommercePushOnce、CommerceFundsHTTPJourney，0跳过，日志aicrm-push-4505-root-review.log。expires_at_ts沿用旧版，过期paid只保留planned_config_expired事实且不产生EER。ff8e真实Chrome已推进普通商品流程，周期商品Host失败尚未关闭。
 - #173 Segment a2a1da0+d0b2621两提交经根全包真实PG/race审核0跳过，覆盖升级前旧收据重放与两个机器调用方相同key隔离，现由Openlead合入92b4aef/9df5adb。Archive48fe真实旧wrapper的全历史CLI PG/race通过；Survey35f旧Union投影导入PG/race通过；19351ec Survey原生/历史混合读及实际PG Access/JWT→Executor spy测试通过，spy不代表端到端Survey验收。根发现直接请求Union scope未限定Survey来源，退回修正后才能接入历史查询。
 - 生产只读源事实：旧负责人迁移结果34行；商品外推配置31条，其中12启用且均HTTPS、均未到期。源配置历史导入不等于V3运行配置启用，仍需稳定产品映射与受保护target槽位。
+
+2026-09-06 14:10 UTC增量：#171 97f70428限定最终PG断言的b/l列名，CI已越过实际Go/Chrome流程，后续web/scripts/e2e.mjs仍引用旧临时data-scope表单而失败，正改为冻结Picker/文件实际流程并要求本地完整前端回归。#172 469914a精确main8ec旧binding收据重放根PG通过；根并发专项实际出现successes=2/conflicts=0/events=2，已定位Product LEFT JOIN配置和行锁处于同一statement导致等待前快照，要求分开锁与读并加写入CAS，不以偶尔通过抹除竞态。469真实Chrome周期页面仍未挂载Host，要求优先核对实际Composition路径及脚本入口。#173 e221801已限定Survey历史Union selector到明确Survey scope并返回稳定409，源审核通过，完整路由旅程继续。

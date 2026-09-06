@@ -20,3 +20,11 @@
 2026-09-06 用户最新明确要求继续直到完全上线并包含PR164新壳，开发后发布已有授权。根13:01 UTC只读复核V3：ubuntu SSH可用，current及readyz均为8ec5072，aicrm.service和aicrm-effects-worker.service active。后续以实际最终准确HEAD、制品及业务流程验收推进；旧root SSH账号不可用，不属于密钥整体失效。新壳release制品缺页及CSP兼容列入12文档。
 
 2026-09-06 13:23 UTC：根按最新上线授权启用已验收并部署的通用客户标签运行开关。启用前只读PostgreSQL核实customer_tag_commands为空，不存在遗留执行任务；确认AICRM_OUTBOUND_PROVIDER_ENABLED与CHANNEL_TAG已有true。对/etc/aicrm/aicrm.env创建0600受保护备份，仅新增AICRM_CUSTOMER_TAG_PROVIDER_ENABLED=true，原子保留文件Owner/权限，重启aicrm.service与aicrm-effects-worker.service。核实两服务active，/proc实际进程环境该布尔均true，公开readyz仍准确8ec5072d169c25abd25f80e29cb9f6222834b320且ready。没有发送真实mark/unmark，没有历史导入；配置生效与真实业务验收保持区别。
+
+## 负责人历史上线准备（2026-09-06 14:10 UTC）
+
+根以旧环境运行进程的受保护数据库配置执行单次 REPEATABLE READ READ ONLY 导出；旧/V3的企微企业ID一致，未把旧数字客户ID直接用作V3客户主键。旧34个结果批次展开为32,411条明细（0空批次）。未修改旧环境服务、配置或数据库。
+
+已在V3临时目录 `/var/tmp/aicrm-owner-history-20260906T140303Z/owner.snapshot` 使用现有Survey数据密钥生成0600 AEAD快照，源流/审核过的离线导入器均经SHA-256校验传输。快照SHA-256：`282d2b230cc0d4b4dbeb372148b78555f5cda81d393ad95c1ab2714e2a36cb38`；run_key：`owner-handoff-history-588ca152f03b9084e990ad58`。inspect-stream和dry-run均验证34批次/32,411行，原始明文流已从本地与目标临时目录删除。
+
+这里的dry-run只验证离线快照结构，未解析目标数据库身份，输出pending/conflict/invalid为0不代表全部可映射。尚未apply/verify，未写入V3业务表；Provider调用、EER、新建/关联OneID、负责人更新均为0。待#171准确HEAD整板块审核并部署0092后，用发布包导入器按上述精确快照摘要apply并verify，只写历史账本，实际映射结果另记。离线inspect不等于#171已部署。
