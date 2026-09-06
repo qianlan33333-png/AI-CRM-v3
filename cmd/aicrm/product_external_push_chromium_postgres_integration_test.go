@@ -39,6 +39,19 @@ import (
 // acceptance and River enqueue use their normal shared PostgreSQL UoW. The
 // fixture's terminal outcome is read back through Product, never retried.
 func TestPostgreSQLProductExternalPushChromiumJourney(t *testing.T) {
+	// Go executes this package with cmd/aicrm as its working directory, while
+	// composition deliberately resolves the release artifact at web/dist. Use
+	// the repository root just as the release binary does, so this journey
+	// exercises the full outer route with its built Product Host rather than a
+	// package-local missing-artifact 503.
+	_, source, _, ok := goruntime.Caller(0)
+	if !ok {
+		t.Fatal("locate Chromium product journey")
+	}
+	repository := filepath.Clean(filepath.Join(filepath.Dir(source), "..", ".."))
+	t.Chdir(repository)
+	prepareProductExternalPushChromiumArtifacts(t, repository)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	databaseURL, cleanup := adminAccessCompositionDatabase(t, ctx)
@@ -106,6 +119,17 @@ func TestPostgreSQLProductExternalPushChromiumJourney(t *testing.T) {
 	// opens the frozen order-detail page. The browser then renders the same
 	// authenticated URL and asserts its visible compatibility timeline.
 	outerSession, _ := adminAccessLogin(t, application.handler, "product-browser-owner", "product-browser-owner-password")
+	// Assert the same outer route Chrome navigates before launching Chromium.
+	// This makes a missing release artifact or an inner Host error explicit
+	// instead of reporting a generic UI timeout.
+	outerProduct := httptest.NewRecorder()
+	outerProductRequest := httptest.NewRequest(http.MethodGet, "/admin/productForm.html?id="+strconv.FormatInt(productID, 10), nil)
+	outerProductRequest.AddCookie(&http.Cookie{Name: accesshttp.SessionCookieName, Value: outerSession})
+	application.handler.ServeHTTP(outerProduct, outerProductRequest)
+	if outerProduct.Code != http.StatusOK || !bytes.Contains(outerProduct.Body.Bytes(), []byte(`/product-assets/`)) || !bytes.Contains(outerProduct.Body.Bytes(), []byte(`data-page="productForm"`)) {
+		t.Fatalf("outer composed product Host status=%d body=%s", outerProduct.Code, outerProduct.Body.String())
+	}
+
 	outerDelivery := httptest.NewRecorder()
 	outerRequest := httptest.NewRequest(http.MethodGet, "/api/admin/wechat-pay/orders/"+historicalOrderReference+"/external-push-deliveries", nil)
 	outerRequest.AddCookie(&http.Cookie{Name: accesshttp.SessionCookieName, Value: outerSession})
@@ -115,10 +139,6 @@ func TestPostgreSQLProductExternalPushChromiumJourney(t *testing.T) {
 	}
 
 	exactParams := "{\"count\":9007199254740993,\"nested\":[{\"inner\":9007199254740993}],\"flag\":false}"
-	_, source, _, ok := goruntime.Caller(0)
-	if !ok {
-		t.Fatal("locate Chromium product journey")
-	}
 	command := exec.CommandContext(ctx, "node", filepath.Join(filepath.Dir(source), "product_external_push_chromium_journey.mjs"))
 	command.Env = append(os.Environ(),
 		"AICRM_PRODUCT_PUSH_TEST_URL="+server.URL,
@@ -186,6 +206,26 @@ func TestPostgreSQLProductExternalPushChromiumJourney(t *testing.T) {
 	params, ok := payload["custom_params"].(map[string]any)
 	if !ok || payload["event"] != "external_push.test" || params["count"] != json.Number("9007199254740993") {
 		t.Fatalf("browser synthetic payload facts=%#v", payload)
+	}
+}
+
+// prepareProductExternalPushChromiumArtifacts constructs the same hashed browser
+// artifact and V3 Host bundle required by the release before composing the
+// server. The Go package test runs before CI's later release-artifact stage,
+// so relying on a developer's pre-existing web/dist would make the outer-route
+// journey non-reproducible and turn an absent Host into a misleading 503.
+func prepareProductExternalPushChromiumArtifacts(t *testing.T, repository string) {
+	t.Helper()
+	for _, invocation := range [][]string{
+		{"npm", "run", "build", "--silent"},
+		{"node", "scripts/build-v3-host-adapters.mjs"},
+	} {
+		command := exec.Command(invocation[0], invocation[1:]...)
+		command.Dir = repository
+		output, err := command.CombinedOutput()
+		if err != nil {
+			t.Fatalf("prepare Product Chromium release artifact %s: %v output=%s", strings.Join(invocation, " "), err, strings.TrimSpace(string(output)))
+		}
 	}
 }
 
