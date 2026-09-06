@@ -235,7 +235,7 @@ func TestImportDryRunApplyReplayAndReconcilePostgreSQL(t *testing.T) {
 	applyPlatformSQL(t, ctx, pool)
 	applyRiverSchema(t, ctx, pool)
 	var actorID, customerID, otherCustomerID int64
-	if err = pool.QueryRow(ctx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active,created_at,updated_at) VALUES('migration-admin','$argon2id$fixture','Migration Admin','staff-provider-1',true,clock_timestamp(),clock_timestamp()) RETURNING id`).Scan(&actorID); err != nil {
+	if err = pool.QueryRow(ctx, `INSERT INTO admin_users(id,username,password_hash,display_name,wecom_userid,is_active,created_at,updated_at) OVERRIDING SYSTEM VALUE VALUES(42,'migration-admin','$argon2id$fixture','Migration Admin','staff-provider-1',true,clock_timestamp(),clock_timestamp()) RETURNING id`).Scan(&actorID); err != nil {
 		t.Fatal(err)
 	}
 	if err = pool.QueryRow(ctx, `INSERT INTO customers(status,created_at,updated_at) VALUES('active',clock_timestamp(),clock_timestamp()) RETURNING id`).Scan(&customerID); err != nil {
@@ -271,7 +271,9 @@ func TestImportDryRunApplyReplayAndReconcilePostgreSQL(t *testing.T) {
 	if err = pool.QueryRow(ctx, `SELECT count(*) FROM automation_operations_migration_batches`).Scan(&batches); err != nil || batches != 0 {
 		t.Fatalf("dry-run batches=%d err=%v", batches, err)
 	}
+	assertImportedSegmentActors(t, ctx, pool, actorID, 0)
 	report = executeImportCommand(t, "apply", append(commandArgs, "--confirm-import")...)
+	assertImportedSegmentActors(t, ctx, pool, actorID, 1)
 	if report.ProviderEffectsCreated != 0 || report.RiverJobsCreated != 0 {
 		t.Fatalf("side effects=%+v", report)
 	}
@@ -279,6 +281,7 @@ func TestImportDryRunApplyReplayAndReconcilePostgreSQL(t *testing.T) {
 	// It must only load the prior source receipts: no history row may be
 	// rewritten and it must not create River work or a Provider effect.
 	replay := executeImportCommand(t, "replay-check", commandArgs...)
+	assertImportedSegmentActors(t, ctx, pool, actorID, 1)
 	if replay.Tables["audience_members"].Mapped != 1 || replay.Tables["audience_members"].Unresolved != 1 {
 		t.Fatalf("replay=%+v", replay)
 	}
@@ -293,7 +296,6 @@ func TestImportDryRunApplyReplayAndReconcilePostgreSQL(t *testing.T) {
 	if lifecycle != "paused" || member != customerID {
 		t.Fatalf("lifecycle=%s member=%d want=%d", lifecycle, member, customerID)
 	}
-	assertImportedAudienceActor(t, ctx, pool, actorID)
 	var historyRows, readOnlyRows, replayableRows, effectDigests, effects, riverJobs int
 	if err = pool.QueryRow(ctx, `SELECT count(*),count(*) FILTER (WHERE read_only),count(*) FILTER (WHERE replayable),count(*) FILTER (WHERE source_effect_digest IS NOT NULL) FROM automation_operations_legacy_history`).Scan(&historyRows, &readOnlyRows, &replayableRows, &effectDigests); err != nil {
 		t.Fatal(err)
@@ -551,6 +553,36 @@ func TestImportDryRunApplyReplayAndReconcilePostgreSQL(t *testing.T) {
 	}
 }
 
+// Verify the existing import command retains the real target admin attribution
+// across all five actor-bearing tables, rolls it back on dry-run, and preserves
+// it on replay. An admin is deliberately not represented as a machine caller.
+func assertImportedSegmentActors(t *testing.T, ctx context.Context, pool *pgxpool.Pool, actorID int64, wantRows int) {
+	t.Helper()
+	for _, table := range []struct {
+		name    string
+		mutable bool
+	}{
+		{"segment_audience_groups", true},
+		{"segment_audience_packages", true},
+		{"segment_audience_configuration_versions", false},
+		{"segment_audience_automation_binding_versions", false},
+		{"segment_audience_sender_sets", false},
+	} {
+		predicate := "created_by=$1 AND created_actor_kind='admin' AND created_actor_ref=$2"
+		if table.mutable {
+			predicate += " AND updated_by=$1 AND updated_actor_kind='admin' AND updated_actor_ref=$2"
+		}
+		var total, attributed int
+		query := "SELECT count(*),count(*) FILTER (WHERE " + predicate + ") FROM " + table.name
+		if err := pool.QueryRow(ctx, query, actorID, fmt.Sprintf("admin:%d", actorID)).Scan(&total, &attributed); err != nil {
+			t.Fatalf("%s actor readback: %v", table.name, err)
+		}
+		if total != wantRows || attributed != wantRows {
+			t.Fatalf("%s rows=%d admin-attributed=%d want=%d", table.name, total, attributed, wantRows)
+		}
+	}
+}
+
 func applyPlatformSQL(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
 	t.Helper()
 	_, file, _, _ := runtime.Caller(0)
@@ -599,33 +631,6 @@ func executeImportCommand(t *testing.T, command string, args ...string) Report {
 		t.Fatalf("decode %s report: %v", command, err)
 	}
 	return report
-}
-
-func assertImportedAudienceActor(t *testing.T, ctx context.Context, pool *pgxpool.Pool, actorID int64) {
-	t.Helper()
-	wantRef := fmt.Sprintf("admin:%d", actorID)
-	projections := []struct {
-		name  string
-		query string
-	}{
-		{"group created", `SELECT created_by,created_actor_kind,created_actor_ref FROM segment_audience_groups WHERE name='Migrated'`},
-		{"group updated", `SELECT updated_by,updated_actor_kind,updated_actor_ref FROM segment_audience_groups WHERE name='Migrated'`},
-		{"package created", `SELECT created_by,created_actor_kind,created_actor_ref FROM segment_audience_packages WHERE code='v2-audience-10'`},
-		{"package updated", `SELECT updated_by,updated_actor_kind,updated_actor_ref FROM segment_audience_packages WHERE code='v2-audience-10'`},
-		{"configuration", `SELECT c.created_by,c.created_actor_kind,c.created_actor_ref FROM segment_audience_configuration_versions c JOIN segment_audience_packages p ON p.id=c.package_id WHERE p.code='v2-audience-10'`},
-		{"binding", `SELECT b.created_by,b.created_actor_kind,b.created_actor_ref FROM segment_audience_automation_binding_versions b JOIN segment_audience_packages p ON p.id=b.package_id WHERE p.code='v2-audience-10'`},
-		{"sender set", `SELECT s.created_by,s.created_actor_kind,s.created_actor_ref FROM segment_audience_sender_sets s JOIN segment_audience_packages p ON p.id=s.package_id WHERE p.code='v2-audience-10'`},
-	}
-	for _, projection := range projections {
-		var gotID int64
-		var gotKind, gotRef string
-		if err := pool.QueryRow(ctx, projection.query).Scan(&gotID, &gotKind, &gotRef); err != nil {
-			t.Fatalf("%s actor projection: %v", projection.name, err)
-		}
-		if gotID != actorID || gotKind != "admin" || gotRef != wantRef {
-			t.Fatalf("%s actor=(%d,%q,%q), want=(%d,%q,%q)", projection.name, gotID, gotKind, gotRef, actorID, "admin", wantRef)
-		}
-	}
 }
 
 func assertReconcileRejected(t *testing.T, ctx context.Context, pool *pgxpool.Pool, batchKey string, snapshot segmentmigration.Snapshot) {
