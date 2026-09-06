@@ -26,6 +26,7 @@ let selected = {
   expires_at: expiresAt, enabled: true, reissue_required: false, auth_version: 3, created_at: '2026-09-06T09:00:00Z',
 };
 let created = null;
+let activationAttempts = 0;
 
 function json(body, status = 200) {
   return { ok: status >= 200 && status < 300, status, json: async () => body };
@@ -57,7 +58,13 @@ const dom = new JSDOM(`<!doctype html><html><body data-page="apidocs"><main id="
         created = { ...selected, ...body, client_id: body.client_id, display_name: body.display_name, enabled: false, reissue_required: false, auth_version: 1, created_at: '2026-09-06T10:00:00Z' };
         return json({ client: created, secret: 'one-time-secret-fixture' }, 201);
       }
+      if (method === 'POST' && created && url.pathname === `/api/admin/open-platform/clients/${created.client_id}/rotate`) {
+        created = { ...created, enabled: false, auth_version: created.auth_version + 1 };
+        return json({ client: created, secret: 'rotated-secret-fixture' });
+      }
       if (method === 'POST' && created && url.pathname === `/api/admin/open-platform/clients/${created.client_id}/activate`) {
+        activationAttempts += 1;
+        if (activationAttempts === 2) return json({ error: 'response_unavailable' }, 503);
         created = { ...created, enabled: true, auth_version: created.auth_version + 1 };
         return json({ client: created });
       }
@@ -111,6 +118,19 @@ try {
   const activations = activationCalls();
   if (activations.length !== 1 || activations[0].body?.client_secret !== 'one-time-secret-fixture' || activations[0].body?.copied_confirmed !== true) throw new Error('explicit manual confirmation did not use the one-time activation contract');
   if (!requests.some((item, index) => index > requests.indexOf(activations[0]) && item.method === 'GET' && item.path === '/api/admin/open-platform/clients')) throw new Error('closing the secret dialog did not refresh the created client list');
+
+  action('轮换密钥')?.click();
+  await sleep(50);
+  const rotatedDialog = document.querySelector('dialog[data-open-platform-secret="new-agent"]');
+  if (!rotatedDialog?.open || !rotatedDialog.textContent.includes('rotated-secret-fixture')) throw new Error('rotate did not show a new one-time secret');
+  action('我已手动复制并确认启用')?.click();
+  await sleep(60);
+  if (!rotatedDialog.textContent.includes('未确认启用结果，请刷新核对状态。')) throw new Error('an uncertain activation was incorrectly described as disabled');
+  const uncertainAttempts = activationAttempts;
+  action('我已手动复制并确认启用')?.click();
+  await sleep(25);
+  if (activationAttempts !== uncertainAttempts) throw new Error('unknown activation outcome retried with the one-time secret');
+  if (!requests.some((item, index) => index > requests.indexOf(activations.at(-1)) && item.method === 'GET' && item.path === '/api/admin/open-platform/clients')) throw new Error('unknown activation outcome did not refresh the authoritative client state');
   if (browserErrors.length) throw new Error(`Host emitted DOM errors: ${JSON.stringify(browserErrors)}`);
   console.log('open platform V1 Host DOM/HTTP journey: PASS');
 } finally {

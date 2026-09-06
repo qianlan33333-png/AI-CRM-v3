@@ -205,7 +205,7 @@ function setStatus(node: HTMLElement, message = '', error = false): void {
   node.dataset.error = String(error);
 }
 
-function secretDialog(issued: IssuedSecret, onActivate: () => Promise<void>, onClose: () => void | Promise<void>): HTMLDialogElement {
+function secretDialog(issued: IssuedSecret, onActivate: () => Promise<void>, onRefresh: () => void | Promise<void>, onClose: () => void | Promise<void>): HTMLDialogElement {
   const dialog = document.createElement('dialog');
   dialog.className = 'open-platform-dialog';
   dialog.dataset.openPlatformSecret = issued.clientID;
@@ -221,12 +221,19 @@ function secretDialog(issued: IssuedSecret, onActivate: () => Promise<void>, onC
   body.append(message);
   const actions = element('div');
   actions.className = 'open-platform-actions';
+  let activationUnconfirmed = false;
   const activate = async (): Promise<void> => {
+    if (activationUnconfirmed) return;
     try {
       await onActivate();
       dialog.close();
     } catch {
-      setStatus(message, '确认未完成；调用方仍保持停用。', true);
+      // A transport failure can arrive after the server committed activation.
+      // Refresh the owner projection, keep this one-time secret unavailable for
+      // retries, and never describe an unknown result as disabled.
+      activationUnconfirmed = true;
+      setStatus(message, '未确认启用结果，请刷新核对状态。', true);
+      void Promise.resolve(onRefresh());
     }
   };
   actions.append(button('复制并确认启用', async () => {
@@ -327,7 +334,7 @@ async function boot(): Promise<void> {
       });
       issued = null;
       await refresh();
-    }, async () => { issued = null; await refresh(); });
+    }, refresh, async () => { issued = null; await refresh(); });
   };
 
   const renderCreate = (): HTMLElement => {
