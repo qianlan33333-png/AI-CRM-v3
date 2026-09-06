@@ -4,11 +4,7 @@
  * 这里仅消费当前 Go OpenAPI 的 sidebar V2 契约。没有上下文或真实读取失败时，
  * 页面保持失败/待授权状态，不回退到示例数据或静态成功文案。
  */
-import {
-  newSidebarIdempotencyKey,
-  sidebarApi,
-  type SidebarSendIntentAcceptance,
-} from "../api/sidebar";
+import { newSidebarIdempotencyKey, sidebarApi } from "../api/sidebar";
 import type {
   SidebarAgentConfigSignature,
   SidebarBootstrapResponse,
@@ -26,8 +22,10 @@ import type {
   SidebarShareableProductResponse,
   SidebarServicePeriodMember,
   SidebarSafety,
+  SidebarTemporaryMediaResponse,
   SidebarTimelineResponse,
   SidebarWorkbenchResponse,
+  UpdateSidebarProfileBodyPatch,
 } from "../api/generated/health.schemas";
 import { initFeedback } from "../shared/ui/feedback";
 
@@ -37,18 +35,21 @@ const SDK_CACHE_SAFETY_MS = 30 * 1000;
 const SDK_CACHE_KEY = "aicrm.sidebar.jssdk.agent-config.v1";
 const PROFILE_SAVE_DEBOUNCE_MS = 520;
 
-/**
- * 可编辑画像字段：对齐后端 PUT /api/sidebar/v2/profile 契约
- * （display_name/gender/corp_name + expected_version 乐观锁）。
- * 后端客户目录无 industry/description/needs/pain_points 存储，
- * 这些字段不再提供编辑入口；来源/手机号/状态只读展示。
- */
-export const PROFILE_FIELDS = ["name", "corp_name"] as const;
+export const PROFILE_FIELDS = [
+  "source",
+  "industry",
+  "description",
+  "needs",
+  "pain_points",
+] as const;
 export type ProfileField = (typeof PROFILE_FIELDS)[number];
 
 const PROFILE_LABELS: Record<ProfileField, string> = {
-  name: "姓名",
-  corp_name: "公司",
+  source: "用户来源",
+  industry: "行业信息",
+  description: "行业具体描述",
+  needs: "需求",
+  pain_points: "卡点与跟进状态",
 };
 
 type BoundSidebarApi = Pick<
@@ -70,9 +71,8 @@ type BoundSidebarApi = Pick<
   | "updateRemark"
   | "materials"
   | "shareableProducts"
+  | "prepareTemporaryImage"
   | "thumbnailPreview"
-  | "createSendIntent"
-  | "completeSendIntent"
 >;
 
 interface SidebarWx {
@@ -102,6 +102,11 @@ declare global {
 type ReceiptStep = {
   key: "accepted" | "queued" | "outcome_unknown";
   label: string;
+};
+
+type TemporaryMediaOperation = {
+  idempotencyKey: string;
+  requiresManualConfirmation: boolean;
 };
 
 type SidebarTab =
@@ -424,6 +429,10 @@ export class SidebarController {
     { message: string; failed: boolean }
   >();
   private readonly imageSendPreparing = new Set<number>();
+  private readonly imagePrepareOperations = new Map<
+    string,
+    TemporaryMediaOperation
+  >();
   private jssdkReady = false;
   private degradedReady = false;
   private initializationVersion = 0;
@@ -601,6 +610,10 @@ export class SidebarController {
         const imageID = Number(button.dataset.materialId);
         if (Number.isSafeInteger(imageID) && imageID > 0)
           void this.sendMaterialImage(imageID);
+      } else if (action === "confirm-image-prepare-review") {
+        const imageID = Number(button.dataset.materialId);
+        if (Number.isSafeInteger(imageID) && imageID > 0)
+          this.confirmImagePrepareReview(imageID);
       } else if (action === "retry-materials") {
         button.disabled = true;
         void this.loadMaterials();
@@ -1096,13 +1109,16 @@ export class SidebarController {
     if (!profile || !profile.updated_at || !workbench.safety)
       throw new Error("工作台响应不完整，已停止渲染。");
     validateSidebarSafety(workbench.safety, "工作台");
-    if (!profile.name || !Number.isInteger(profile.customer_id))
-      throw new Error("工作台客户档案响应不完整，已停止渲染。");
     if (
-      profile.owner_staff_id !== undefined &&
+      !profile.name ||
+      !Number.isInteger(profile.customer_id) ||
       !Number.isInteger(profile.owner_staff_id)
     )
       throw new Error("工作台客户档案响应不完整，已停止渲染。");
+    for (const field of PROFILE_FIELDS) {
+      if (typeof profile[field] !== "string")
+        throw new Error("工作台画像字段响应不完整，已停止渲染。");
+    }
     for (const count of [
       workbench.questionnaire_count,
       workbench.order_count,
@@ -1332,32 +1348,22 @@ export class SidebarController {
       const input = createElement(this.doc, "textarea");
       input.dataset.profileField = field;
       input.name = field;
-      input.rows = 1;
-      input.maxLength = 200;
+      input.rows =
+        field === "description" || field === "needs" || field === "pain_points"
+          ? 3
+          : 2;
+      input.maxLength = field === "source" || field === "industry" ? 200 : 2000;
       input.value = workbench.profile[field] || "";
       input.setAttribute("aria-label", PROFILE_LABELS[field]);
       label.append(input);
       editor.append(label);
     }
     panel.append(editor);
-    const readonlyRows: Array<[string, string]> = [
-      ["用户来源", workbench.profile.source || "—"],
-      ["手机号", workbench.profile.phone_masked || "—"],
-      ["客户状态", workbench.profile.status || "—"],
-    ];
-    const readonlyBox = createElement(this.doc, "div", "profile-editor");
-    for (const [label, value] of readonlyRows) {
-      const row = createElement(this.doc, "div", "profile-field");
-      row.append(createElement(this.doc, "span", undefined, label));
-      row.append(createElement(this.doc, "span", "panel-meta", value));
-      readonlyBox.append(row);
-    }
-    panel.append(readonlyBox);
     const status = createElement(
       this.doc,
       "div",
       "profile-save-status",
-      "姓名与公司修改后停留 520ms 自动保存；仅写入本地 CRM，其余资料为只读。",
+      "修改后停留 520ms 自动保存；仅写入本地 CRM，不显示外部同步成功。",
     );
     status.id = "profile-save-status";
     status.dataset.receipt = "idle";
@@ -1413,18 +1419,17 @@ export class SidebarController {
       return;
     }
     this.phoneInput?.classList.remove("input-error");
-    // 后端契约（internal/customer BindSidebarPhone）要求 11 位大陆手机号，
-    // 不做 E.164 转换。
-    const phone = digits;
-    // 幂等键按 context+phone 固化：结果未知（网络/5xx）时重试复用同一键；输入变化或拿到明确结果后才换键。
-    if (!this.phoneBindKey || this.phoneBindKey.mobile !== phone) {
-      this.phoneBindKey = { mobile: phone, key: newSidebarIdempotencyKey("sidebar-phone") };
+    // 服务端契约要求 E.164；11 位国内号在提交时补 +86 前缀。
+    const mobile = `+86${digits}`;
+    // 幂等键按 context+mobile 固化：结果未知（网络/5xx）时重试复用同一键；输入变化或拿到明确结果后才换键。
+    if (!this.phoneBindKey || this.phoneBindKey.mobile !== mobile) {
+      this.phoneBindKey = { mobile, key: newSidebarIdempotencyKey("sidebar-phone") };
     }
     this.phoneBindingLoading = true;
     this.setPhoneModalBusy();
     this.setPhoneModalStatus("正在写入本地 Identity…");
     try {
-      const response = await this.api.bindPhone(this.contextToken, { phone }, this.phoneBindKey.key);
+      const response = await this.api.bindPhone(this.contextToken, { mobile }, this.phoneBindKey.key);
       this.validatePhoneBinding(response);
       if (response.status === "rejected") {
         this.phoneBindKey = null;
@@ -1552,9 +1557,8 @@ export class SidebarController {
       if (
         !Number.isInteger(item.submission_id) ||
         item.submission_id < 1 ||
-        (item.questionnaire_id !== undefined &&
-          (!Number.isInteger(item.questionnaire_id) ||
-            item.questionnaire_id < 1)) ||
+        !Number.isInteger(item.questionnaire_id) ||
+        item.questionnaire_id < 1 ||
         typeof item.submitted_at !== "string" ||
         !Number.isFinite(item.score) ||
         !Array.isArray(item.choice_answers)
@@ -1633,17 +1637,11 @@ export class SidebarController {
   ): HTMLElement {
     const card = createElement(this.doc, "article", "list-item");
     card.dataset.questionnaireSubmissionId = String(item.submission_id);
-    // 本地投影含问卷标题与题目文本；选择题选项 ID 在本地契约下缺省。
-    const textAnswers = item.text_answers ?? [];
-    const answered = item.choice_answers.length + textAnswers.length;
+    // 契约不含问卷名与题目文本，只呈现可核验的提交时间、作答计数与原始分。
+    const answered = item.choice_answers.length;
     const main = createElement(this.doc, "div", "item-main");
     main.append(
-      createElement(
-        this.doc,
-        "div",
-        "item-title",
-        item.title || "问卷提交记录",
-      ),
+      createElement(this.doc, "div", "item-title", "问卷提交记录"),
       createElement(
         this.doc,
         "div",
@@ -1661,7 +1659,7 @@ export class SidebarController {
     );
     details.append(summary);
     if (!answered) {
-      details.append(createElement(this.doc, "div", "empty", "暂无答案记录"));
+      details.append(createElement(this.doc, "div", "empty", "暂无选择题答案"));
     } else {
       const answers = createElement(this.doc, "div", "answer-list");
       for (const answer of item.choice_answers) {
@@ -1673,17 +1671,6 @@ export class SidebarController {
             "div",
             "answer-item",
             `第 ${answer.sort_order + 1} 题 · ${type} · ${chosen ? `已选 ${chosen} 个选项` : "未选择选项"}`,
-          ),
-        );
-      }
-      for (const answer of textAnswers) {
-        const text = answer.answers.filter(Boolean).join("、") || "未作答";
-        answers.append(
-          createElement(
-            this.doc,
-            "div",
-            "answer-item",
-            `${answer.question || "未命名题目"}：${text}`,
           ),
         );
       }
@@ -2612,9 +2599,8 @@ export class SidebarController {
         !Number.isSafeInteger(product.price_minor) ||
         product.price_minor < 0 ||
         !/^[A-Z]{3}$/.test(product.currency) ||
-        (product.stock_quantity !== undefined &&
-          (!Number.isSafeInteger(product.stock_quantity) ||
-            product.stock_quantity < 0)) ||
+        !Number.isSafeInteger(product.stock_quantity) ||
+        product.stock_quantity < 0 ||
         !new RegExp(`^/p/${product.kind}/[1-9][0-9]{0,18}$`).test(
           product.public_path,
         )
@@ -2718,66 +2704,162 @@ export class SidebarController {
     if (this.activeTab === "products") this.renderActiveContent();
   }
 
-  /**
-   * 素材图片发送：后端 send-intents 已在服务端封装临时媒体与 payload
-   * （mediaid 由 Media 域出具），前端只执行 JSSDK 调用并用一次性 grant
-   * 回执结果。grant 过期、冲突或素材未就绪由后端 409/503 表达。
-   */
-  private async sendMaterialImage(imageID: number): Promise<void> {
-    if (!this.contextToken || this.imageSendPreparing.has(imageID)) return;
-    this.imageSendPreparing.add(imageID);
+  private validateTemporaryMedia(
+    response: SidebarTemporaryMediaResponse,
+    imageID: number,
+  ): void {
+    if (
+      !response ||
+      response.image_id !== imageID ||
+      (response.upload_state !== "ready" &&
+        response.upload_state !== "outcome_unknown" &&
+        response.upload_state !== "final_failed") ||
+      response.client_callback !== "not_called" ||
+      response.delivery_state !== "not_sent_yet" ||
+      typeof response.provider_call_dispatched !== "boolean" ||
+      typeof response.real_external_call_executed !== "boolean"
+    )
+      throw new Error("临时媒体响应不完整，未调用 JSSDK。");
+    if (
+      response.upload_state === "ready" &&
+      (!response.media_id ||
+        !response.media_expires_at ||
+        !response.provider_call_dispatched ||
+        !response.real_external_call_executed)
+    )
+      throw new Error("临时媒体未就绪，未调用 JSSDK。");
+  }
+
+  // Keep an unchanged operation key for in-page retries without persisting the
+  // customer identifier, context token, or operation state in browser storage.
+  private temporaryMediaOperationScope(imageID: number): string | null {
+    const ownerStaffID = this.workbench?.profile.owner_staff_id;
+    if (
+      !this.externalUserId ||
+      !Number.isSafeInteger(ownerStaffID) ||
+      !ownerStaffID ||
+      !Number.isSafeInteger(imageID) ||
+      imageID < 1
+    )
+      return null;
+    return JSON.stringify([this.externalUserId, ownerStaffID, imageID]);
+  }
+
+  private storedTemporaryMediaOperation(
+    scope: string,
+  ): TemporaryMediaOperation | undefined {
+    return this.imagePrepareOperations.get(scope);
+  }
+
+  private saveTemporaryMediaOperation(
+    scope: string,
+    operation: TemporaryMediaOperation,
+  ): void {
+    this.imagePrepareOperations.set(scope, operation);
+  }
+
+  private clearTemporaryMediaOperation(scope: string): void {
+    this.imagePrepareOperations.delete(scope);
+  }
+
+  private imagePrepareNeedsManualConfirmation(imageID: number): boolean {
+    const scope = this.temporaryMediaOperationScope(imageID);
+    return Boolean(
+      scope &&
+      this.storedTemporaryMediaOperation(scope)?.requiresManualConfirmation,
+    );
+  }
+
+  private confirmImagePrepareReview(imageID: number): void {
+    const scope = this.temporaryMediaOperationScope(imageID);
+    const operation = scope
+      ? this.storedTemporaryMediaOperation(scope)
+      : undefined;
+    if (!scope || !operation?.requiresManualConfirmation) return;
+    this.clearTemporaryMediaOperation(scope);
     this.imageSendStatuses.set(imageID, {
-      message: "正在创建本地发送意图（服务端封装临时媒体）…",
+      message:
+        "已记录人工确认未上传；可重新准备临时媒体。此前图片消息未调用 JSSDK，送达状态仍未知。",
       failed: false,
     });
     if (this.activeTab === "materials") this.renderActiveContent();
-    let acceptance: SidebarSendIntentAcceptance | undefined;
+  }
+
+  private async sendMaterialImage(imageID: number): Promise<void> {
+    const scope = this.temporaryMediaOperationScope(imageID);
+    if (
+      !this.contextToken ||
+      !scope ||
+      this.imageSendPreparing.has(imageID) ||
+      this.imagePrepareNeedsManualConfirmation(imageID)
+    )
+      return;
+    const operation = this.storedTemporaryMediaOperation(scope) || {
+      idempotencyKey: newSidebarIdempotencyKey("sidebar-image-temporary-media"),
+      requiresManualConfirmation: false,
+    };
+    this.saveTemporaryMediaOperation(scope, operation);
+    this.imageSendPreparing.add(imageID);
+    this.imageSendStatuses.set(imageID, {
+      message: "正在准备企微临时图片媒体…",
+      failed: false,
+    });
+    if (this.activeTab === "materials") this.renderActiveContent();
+    let prepared: SidebarTemporaryMediaResponse;
+    try {
+      prepared = await this.api.prepareTemporaryImage(
+        this.contextToken,
+        imageID,
+        operation.idempotencyKey,
+      );
+      this.validateTemporaryMedia(prepared, imageID);
+    } catch (error) {
+      operation.requiresManualConfirmation = true;
+      this.saveTemporaryMediaOperation(scope, operation);
+      this.imageSendStatuses.set(imageID, {
+        message: `outcome_unknown · 临时媒体准备未得到可验证结果，已锁定本次操作键；请在企微后台人工确认。client_callback · JSSDK 未确认；delivery_unknown · 未取得外部送达状态。${errorMessage(error, "")}`,
+        failed: true,
+      });
+      this.imageSendPreparing.delete(imageID);
+      if (this.activeTab === "materials") this.renderActiveContent();
+      return;
+    }
+    if (prepared.upload_state !== "ready" || !prepared.media_id) {
+      if (prepared.upload_state === "outcome_unknown") {
+        operation.requiresManualConfirmation = true;
+        this.saveTemporaryMediaOperation(scope, operation);
+      } else {
+        this.clearTemporaryMediaOperation(scope);
+      }
+      this.imageSendStatuses.set(imageID, {
+        message:
+          prepared.upload_state === "outcome_unknown"
+            ? "outcome_unknown · 临时媒体上传结果未知，未调用 JSSDK。请先在企微后台人工确认；确认未上传后才能重新准备，未取得送达回执。"
+            : "final_failed · 临时媒体未上传，未调用 JSSDK；可重新准备，未取得送达回执。",
+        failed: true,
+      });
+      this.imageSendPreparing.delete(imageID);
+      if (this.activeTab === "materials") this.renderActiveContent();
+      return;
+    }
+    // A verified prepared medium concludes this idempotent Provider operation.
+    // A later user-initiated send may prepare a fresh medium; JSSDK delivery is
+    // deliberately a separate, still-unproven client callback.
+    this.clearTemporaryMediaOperation(scope);
     try {
       const wx = await this.ensureJssdkForSend();
-      acceptance = await this.api.createSendIntent(
-        this.contextToken,
-        { resource_kind: "material", resource_id: String(imageID) },
-        newSidebarIdempotencyKey(`sidebar-send-material-${imageID}`),
-      );
-      if (
-        !acceptance ||
-        !Number.isInteger(acceptance.intent_id) ||
-        !acceptance.grant ||
-        !acceptance.payload
-      )
-        throw new Error("发送意图响应不完整，未调用 JSSDK。");
-      const payload =
-        typeof acceptance.payload === "string"
-          ? (JSON.parse(acceptance.payload) as Record<string, unknown>)
-          : (acceptance.payload as Record<string, unknown>);
-      const result = await this.invokeWx(wx, "sendChatMessage", payload);
-      await this.api.completeSendIntent(this.contextToken, acceptance.intent_id, {
-        grant: acceptance.grant,
-        outcome: "client_executed",
-        evidence: JSON.stringify(result ?? {}).slice(0, 512) || "jssdk_callback",
+      await this.invokeWx(wx, "sendChatMessage", {
+        msgtype: "image",
+        image: { mediaid: prepared.media_id },
       });
       this.imageSendStatuses.set(imageID, {
         message:
-          "client_executed · JSSDK 已回调并登记本地回执；delivery_unknown · 未取得企微外部送达回执。",
+          "client_callback · JSSDK 已回调；delivery_unknown · 未取得企微外部送达回执。",
         failed: false,
       });
     } catch (error) {
-      if (
-        acceptance?.grant &&
-        Number.isInteger(acceptance.intent_id)
-      ) {
-        try {
-          await this.api.completeSendIntent(this.contextToken, acceptance.intent_id, {
-            grant: acceptance.grant,
-            outcome: "outcome_unknown",
-            evidence: errorMessage(error, "jssdk 未确认").slice(0, 512),
-          });
-        } catch {
-          // 回执登记失败不改变本地状态展示；grant 一次性，冲突由后端裁决。
-        }
-      }
       this.imageSendStatuses.set(imageID, {
-        message: `发送未完成：${errorMessage(error, "请稍后重试。")} delivery_unknown · 未取得外部送达状态。`,
+        message: `client_callback · JSSDK 未确认；delivery_unknown · 未取得外部送达状态。${errorMessage(error, "")}`,
         failed: true,
       });
     } finally {
@@ -2785,7 +2867,6 @@ export class SidebarController {
       if (this.activeTab === "materials") this.renderActiveContent();
     }
   }
-
 
   private renderProductsPanel(): HTMLElement {
     const response = this.products;
@@ -2832,7 +2913,7 @@ export class SidebarController {
             this.doc,
             "div",
             "item-meta",
-            `${kind} · ${product.product_code} · ${product.currency} ${(product.price_minor / 100).toFixed(2)} · ${product.stock_quantity === undefined ? "库存未同步" : `库存 ${product.stock_quantity}`}`,
+            `${kind} · ${product.product_code} · ${product.currency} ${(product.price_minor / 100).toFixed(2)} · 库存 ${product.stock_quantity}`,
           ),
           createElement(
             this.doc,
@@ -3100,25 +3181,44 @@ export class SidebarController {
           "发送图片",
         );
         send.type = "button";
+        const needsManualConfirmation =
+          this.imagePrepareNeedsManualConfirmation(item.id);
         send.disabled =
-          !this.jssdkReady || this.imageSendPreparing.has(item.id);
+          !this.jssdkReady ||
+          this.imageSendPreparing.has(item.id) ||
+          needsManualConfirmation;
         if (!this.jssdkReady) send.title = "企微 JSSDK 未就绪，发送已禁用";
         send.dataset.sidebarAction = "send-material-image";
         send.dataset.materialId = String(item.id);
         markBound(send);
         actions.append(send);
+        if (needsManualConfirmation) {
+          const confirm = createElement(
+            this.doc,
+            "button",
+            "btn ghost",
+            "已人工确认未上传，重新准备",
+          );
+          confirm.type = "button";
+          confirm.dataset.sidebarAction = "confirm-image-prepare-review";
+          confirm.dataset.materialId = String(item.id);
+          markBound(confirm);
+          actions.append(confirm);
+        }
         card.append(actions);
         const receipt = this.imageSendStatuses.get(item.id);
-        if (receipt) {
+        if (receipt || needsManualConfirmation) {
           const sendStatus = createElement(
             this.doc,
             "div",
-            `sidebar-status${receipt.failed ? " error" : ""}`,
-            receipt.message,
+            `sidebar-status${receipt?.failed || needsManualConfirmation ? " error" : ""}`,
+            receipt?.message ||
+              "outcome_unknown · 临时媒体上传结果未知；请先在企微后台人工确认，系统不会自动重试。",
           );
-          sendStatus.dataset.sendReceipt = receipt.failed
-            ? "client_callback,delivery_unknown,error"
-            : "client_callback,delivery_unknown";
+          sendStatus.dataset.sendReceipt =
+            receipt?.failed || needsManualConfirmation
+              ? "client_callback,delivery_unknown,error"
+              : "client_callback,delivery_unknown";
           card.append(sendStatus);
         }
         list.append(card);
@@ -3166,32 +3266,33 @@ export class SidebarController {
     const fields = new Set(this.pendingProfileFields);
     this.pendingProfileFields.clear();
     const profile = this.workbench.profile;
+    const expectedUpdatedAt = profile.updated_at;
     const snapshot: Partial<Record<ProfileField, string>> = {};
-    for (const field of fields) snapshot[field] = profile[field] ?? "";
+    const patch = {} as UpdateSidebarProfileBodyPatch;
+    for (const field of fields) {
+      snapshot[field] = profile[field];
+      patch[field] = profile[field];
+    }
     this.savingProfile = true;
     this.setProfileSaveStatus("正在保存本地画像…");
     try {
       const response = await this.api.profile(this.contextToken, {
-        display_name: profile.name,
-        gender: profile.gender ?? 0,
-        corp_name: profile.corp_name ?? "",
-        expected_version: profile.version ?? 0,
+        expected_updated_at: expectedUpdatedAt,
+        patch,
       });
       this.validateProfileUpdate(response);
       for (const field of fields) {
-        if ((profile[field] ?? "") === snapshot[field])
-          profile[field] = response.profile[field] ?? "";
+        if (profile[field] === snapshot[field])
+          profile[field] = response.profile[field];
       }
       profile.updated_at = response.profile.updated_at;
-      if (response.profile.version !== undefined)
-        profile.version = response.profile.version;
       const updated = this.doc.getElementById("profile-updated-at");
       if (updated)
         updated.textContent = `最后本地更新：${formatDateTime(profile.updated_at)}`;
       this.renderProfileReceipt(response);
     } catch (error) {
       for (const field of fields) {
-        if ((profile[field] ?? "") === snapshot[field])
+        if (profile[field] === snapshot[field])
           this.pendingProfileFields.add(field);
       }
       const status = errorStatus(error);
@@ -3212,6 +3313,10 @@ export class SidebarController {
   private validateProfileUpdate(response: SidebarProfileUpdateResponse): void {
     if (!response?.profile?.updated_at || !response.safety)
       throw new Error("画像保存响应不完整，未显示成功。");
+    for (const field of PROFILE_FIELDS) {
+      if (typeof response.profile[field] !== "string")
+        throw new Error("画像保存响应不完整，未显示成功。");
+    }
   }
 
   private renderProfileReceipt(response: SidebarProfileUpdateResponse): void {

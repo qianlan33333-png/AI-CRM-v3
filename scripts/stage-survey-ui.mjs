@@ -53,18 +53,29 @@ const qrChunks = Object.entries(sourceManifest.files || {})
   .map(([relative]) => relative);
 if (qrChunks.length !== 1) fail(`expected exactly one Survey QR chunk, found ${qrChunks.length}`);
 includeStatic(qrChunks[0]);
-for (const relative of [...selected].sort()) copy(relative);
-
 const adminPages = ['questionnaires.html', 'questionnaireDetail.html', 'questionnaireOps.html'];
+const h5Pages = ['active.html', 'all.html', 'auth.html', 'done.html', 'error.html', 'expired.html', 'index.html', 'loading.html', 'one.html', 'pay.html', 'qr.html', 'result.html', 'signup.html'];
+const documents = [...adminPages.map((page) => path.join('admin', page)), ...h5Pages.map((page) => path.join('h5', page))];
+const releaseMetadata = (relative) => {
+  const metadata = sourceManifest.release_files?.[relative];
+  if (!metadata) fail(`release manifest lacks metadata for ${relative}`);
+  return metadata;
+};
+for (const relative of [...selected, ...documents]) releaseMetadata(relative);
+for (const relative of [...selected].sort()) copy(relative);
 for (const page of adminPages) copy(path.join('admin', page));
 
-const h5Pages = ['active.html', 'all.html', 'auth.html', 'done.html', 'error.html', 'expired.html', 'index.html', 'loading.html', 'one.html', 'pay.html', 'qr.html', 'result.html', 'signup.html'];
 const builtH5Pages = fs.readdirSync(path.join(source, 'h5')).filter((name) => name.endsWith('.html')).sort();
 if (JSON.stringify(builtH5Pages) !== JSON.stringify(h5Pages)) fail('built H5 page allowlist drifted');
 for (const page of h5Pages) copy(path.join('h5', page));
 
+stagedManifest.release_files ||= {};
 for (const key of entryKeys) stagedManifest.entries[key] = sourceManifest.entries[key];
-for (const relative of selected) stagedManifest.files[relative] = sourceManifest.files[relative];
+for (const relative of selected) {
+  stagedManifest.files[relative] = sourceManifest.files[relative];
+  stagedManifest.release_files[relative] = sourceManifest.release_files[relative];
+}
+for (const relative of documents) stagedManifest.release_files[relative] = sourceManifest.release_files[relative];
 fs.writeFileSync(stagedManifestPath, `${JSON.stringify(stagedManifest, null, 2)}\n`);
 
 console.log(`staged Survey UI: ${adminPages.length} private admin templates, ${h5Pages.length} public H5 pages, ${selected.size} asset files`);

@@ -73,7 +73,7 @@ export const CAPABILITIES: readonly Capability[] = [
   { surface: 'h5', screen: 'auth/loading/error/done', action: '实名授权与独立状态页面', state: 'backend_blocked', reason: 'H5 OAuth 运行组合仍禁用 Provider；独立状态页面未接真实会话，不能展示假授权或假成功' },
   { surface: 'h5', screen: 'signup/active/expired/pay/qr', action: '报名或支付跳转', state: 'backend_blocked', reason: '当前公开契约没有该 H5 支付或报名会话' },
   { surface: 'sidebar', screen: 'index', action: 'context-token、workbench、安全时间线、聊天活动、profile、订单、问卷、周期订单、素材、缩略图、备注', state: 'real', operation: 'mintSidebarContext/getSidebarWorkbench/listSidebarTimeline/listSidebarChatActivity/updateSidebarProfile/listSidebarOrders' },
-  { surface: 'sidebar', screen: 'index', action: '商品卡片与图片的企微 JSSDK 发送入口', state: 'real', operation: 'getSidebarJssdkConfig/send-intents', reason: '客户端 sendChatMessage 会产生真实外部效果；仅代码入口已接通，须企微环境及每次测试单独确认，部署或服务端 Outbound 关闭不代表已验收或不会外发' },
+  { surface: 'sidebar', screen: 'index', action: '商品卡片与图片的企微 JSSDK 发送入口', state: 'real', operation: 'getSidebarAgentConfig/prepareSidebarImageTemporaryMedia', reason: '客户端 sendChatMessage 会产生真实外部效果；仅代码入口已接通，须企微环境及每次测试单独确认，部署或服务端 Outbound 关闭不代表已验收或不会外发' },
 ] as const;
 
 export function capabilityFor(surface: Capability['surface'], screen: string): readonly Capability[] {

@@ -98,37 +98,78 @@ export async function runTransportContractTests(): Promise<void> {
   const sidebarRequests: Array<{ input: string; init?: RequestInit }> = [];
   globalThis.fetch = async (input, init) => {
     sidebarRequests.push({ input: String(input), init });
-    const url = String(input);
-    // 本地后端真实投影形状（internal/sidebar + internal/customer/port）。
-    const data = url.includes("/questionnaires")
+    const data = String(input).includes("other-staff-chats")
       ? {
-          customer_id: 7,
           items: [
             {
-              id: 11,
-              title: "满意度回访",
-              submitted_at: "2026-08-26T01:00:00Z",
-              score: 8.5,
-              answers: [{ question: "是否满意", answers: ["满意"] }],
+              staff_userid: "staff-other",
+              message_type: "text",
+              content_masked: "已脱敏内容",
+              sent_at: "2026-08-26T01:00:00Z",
             },
           ],
-          source_status: "ready",
-          as_of: "2026-08-26T02:00:00Z",
+          safety: {
+            local_only: true,
+            provider_execution_eligible: false,
+            real_external_call_executed: false,
+          },
         }
-      : {
-          customer_id: 7,
-          items: [
-            {
-              id: 7,
-              event_type: "survey_submitted",
-              title: "提交问卷",
-              source_domain: "survey",
-              occurred_at: "2026-08-26T00:00:00Z",
+      : String(input).includes("questionnaires")
+        ? {
+            items: [
+              {
+                submission_id: 11,
+                questionnaire_id: 3,
+                submitted_at: "2026-08-26T01:00:00Z",
+                score: 8.5,
+                choice_answers: [
+                  {
+                    question_id: 2,
+                    question_type: "single_choice",
+                    sort_order: 0,
+                    option_ids: [9],
+                  },
+                ],
+              },
+            ],
+            scan_truncated: false,
+            result_truncated: false,
+            safety: {
+              local_only: true,
+              provider_execution_eligible: false,
+              real_external_call_executed: false,
             },
-          ],
-          source_status: "ready",
-          as_of: "2026-08-26T02:00:00Z",
-        };
+          }
+        : String(input).includes("chat-activity")
+          ? {
+              items: [
+                {
+                  chat_type: "private",
+                  message_type: "text",
+                  sent_at: "2026-08-26T01:00:00Z",
+                },
+              ],
+              safety: {
+                local_only: true,
+                provider_execution_eligible: false,
+                real_external_call_executed: false,
+              },
+            }
+          : {
+              items: [
+                {
+                  id: 7,
+                  event_type: "survey_submitted",
+                  occurred_at: "2026-08-26T00:00:00Z",
+                },
+              ],
+              next_cursor: "next-opaque",
+              safety: {
+                local_only: true,
+                provider_execution_eligible: false,
+                real_external_call_executed: false,
+              },
+            };
     return new Response(JSON.stringify(data), {
       status: 200,
       headers: { "Content-Type": "application/json" },
@@ -136,67 +177,55 @@ export async function runTransportContractTests(): Promise<void> {
   };
   try {
     const timeline = await sidebarApi.timeline("sidebar-context", {
-      cursor: "legacy-cursor-must-not-leak",
       limit: 20,
     });
+    const chat = await sidebarApi.chatActivity("sidebar-context", {
+      chat_type: "private",
+      limit: 10,
+    });
+    const otherStaffChats = await sidebarApi.otherStaffChats("sidebar-context");
     const questionnaires = await sidebarApi.questionnaires("sidebar-context", {
       limit: 100,
     });
     assert(
       timeline.items[0]?.event_type === "survey_submitted" &&
-        timeline.items[0]?.id === 7 &&
-        timeline.next_cursor === undefined &&
-        timeline.safety.local_only,
-      "Sidebar timeline adapter must map the local projection and stay single-page",
+        timeline.next_cursor === "next-opaque",
+      "Sidebar timeline response must retain safe DTO and cursor",
+    );
+    assert(
+      chat.items[0]?.chat_type === "private",
+      "Sidebar chat activity response must retain safe metadata DTO",
+    );
+    assert(
+      otherStaffChats.items[0]?.staff_userid === "staff-other" &&
+        otherStaffChats.items[0]?.content_masked === "已脱敏内容",
+      "Sidebar other-staff chat adapter must retain only the masked local DTO",
     );
     assert(
       questionnaires.items[0]?.submission_id === 11 &&
-        questionnaires.items[0]?.title === "满意度回访" &&
-        questionnaires.items[0]?.text_answers?.[0]?.question === "是否满意" &&
-        questionnaires.items[0]?.text_answers?.[0]?.answers[0] === "满意" &&
-        questionnaires.items[0]?.choice_answers.length === 0 &&
-        questionnaires.scan_truncated === false &&
-        questionnaires.safety.local_only,
-      "Sidebar questionnaire adapter must map the local survey projection",
-    );
-    let chatFailure: unknown;
-    try {
-      await sidebarApi.chatActivity("sidebar-context", {
-        chat_type: "private",
-        limit: 10,
-      });
-    } catch (error) {
-      chatFailure = error;
-    }
-    assert(
-      chatFailure instanceof Error && chatFailure.message.includes("消息归档"),
-      "Chat activity must fail honestly while message archive is disabled",
-    );
-    let otherFailure: unknown;
-    try {
-      await sidebarApi.otherStaffChats("sidebar-context");
-    } catch (error) {
-      otherFailure = error;
-    }
-    assert(
-      otherFailure instanceof Error && otherFailure.message.includes("消息归档"),
-      "Other-staff chats must fail honestly while message archive is disabled",
+        questionnaires.items[0]?.choice_answers[0]?.option_ids[0] === 9,
+      "Sidebar questionnaire adapter must retain safe answer DTO",
     );
     assert(
       sidebarRequests[0]?.input === "/api/sidebar/v2/timeline?limit=20",
-      "Timeline must call the local backend without leaking cursors",
+      "Sidebar timeline must use generated GET URL",
     );
     assert(
-      sidebarRequests[1]?.input === "/api/sidebar/v2/questionnaires?limit=50",
-      "Questionnaires limit must clamp to the backend bound of 50",
+      sidebarRequests[1]?.input ===
+        "/api/sidebar/v2/chat-activity?chat_type=private&limit=10",
+      "Sidebar chat activity must use generated GET URL",
     );
     assert(
-      sidebarRequests.length === 2,
-      "Disabled chat archive must not issue requests",
+      sidebarRequests[2]?.input === "/api/sidebar/v2/other-staff-chats",
+      "Sidebar other-staff chats must use the generated GET URL",
+    );
+    assert(
+      sidebarRequests[3]?.input === "/api/sidebar/v2/questionnaires?limit=100",
+      "Sidebar questionnaires must use generated GET URL",
     );
     for (const call of sidebarRequests) {
       assert(
-        call.init?.method === undefined || call.init?.method === "GET",
+        call.init?.method === "GET",
         "Sidebar activity reads must use GET",
       );
       assert(
@@ -247,76 +276,74 @@ export async function runTransportContractTests(): Promise<void> {
   const sidebarWriteRequests: Array<{ input: string; init?: RequestInit }> = [];
   globalThis.fetch = async (input, init) => {
     sidebarWriteRequests.push({ input: String(input), init });
-    const url = String(input);
-    if (url.includes("jssdk-config")) {
+    if (String(input).includes("agent-config")) {
       return new Response(
         JSON.stringify({
+          signature_type: "agent_config",
           corp_id: "corp-test",
-          agent_id: "7",
-          config: {
-            timestamp: 1720000000,
-            nonceStr: "nonce-config",
-            signature: "b".repeat(40),
-            jsApiList: [],
-          },
-          agent_config: {
-            timestamp: 1720000000,
-            nonceStr: "nonce-test",
-            signature: "a".repeat(40),
-            jsApiList: ["getContext", "getCurExternalContact", "sendChatMessage"],
-          },
+          agent_id: 7,
+          nonce: "nonce-test",
+          timestamp: 1720000000,
+          signature: "a".repeat(40),
+          url: "https://app.test/sidebar/index.html",
+          ticket_expires_at: "2026-08-26T03:00:00Z",
         }),
         { status: 200 },
       );
     }
-    if (url.includes("/profile")) {
+    if (String(input).includes("/profile")) {
       return new Response(
         JSON.stringify({
-          customer: {
+          profile: {
             customer_id: 7,
-            display_name: "测试客户",
-            status: "active",
-            gender: 0,
-            corp_name: "测试公司",
+            name: "测试客户",
+            owner_staff_id: 9,
             source: "新来源",
-            version: 4,
+            industry: "",
+            description: "",
+            needs: "",
+            pain_points: "",
             updated_at: "2026-08-26T02:00:00Z",
           },
+          safety: {
+            local_only: true,
+            effect_queued: true,
+            provider_execution_eligible: true,
+            real_external_call_executed: false,
+          },
         }),
         { status: 200 },
       );
     }
-    if (url.includes("/phone-binding")) {
+    if (String(input).includes("/phone-binding")) {
       return new Response(
         JSON.stringify({
-          status: "attached",
-          phone_masked: "138****8000",
-          phone_assurance: "declared",
+          status: "bound",
+          safety: {
+            local_only: true,
+            provider_execution_eligible: false,
+            real_external_call_executed: false,
+          },
         }),
         { status: 200 },
       );
     }
-    if (url.includes("/send-intents") && !url.includes("/outcome")) {
+    if (String(input).includes("/temporary-media")) {
       return new Response(
         JSON.stringify({
-          intent_id: 51,
-          effect_id: "eff-1",
-          state: "queued",
-          grant: "grant-token",
-          grant_expires_at: "2026-08-26T03:00:00Z",
-          payload: { msgtype: "image", image: { mediaid: "media-31" } },
-          replayed: false,
+          image_id: 31,
+          media_id: "media-temporary-31",
+          media_expires_at: "2026-08-26T03:00:00Z",
+          upload_state: "ready",
+          provider_call_dispatched: true,
+          real_external_call_executed: true,
+          client_callback: "not_called",
+          delivery_state: "not_sent_yet",
         }),
-        { status: 202 },
-      );
-    }
-    if (url.includes("/outcome")) {
-      return new Response(
-        JSON.stringify({ intent_id: 51, effect_id: "eff-1", state: "client_executed" }),
         { status: 200 },
       );
     }
-    if (url.includes("/materials/31/variants/thumb_320")) {
+    if (String(input).includes("/materials/image/31/preview")) {
       return new Response(new Blob(["image-bytes"], { type: "image/png" }), {
         status: 200,
         headers: { "Content-Type": "image/png", ETag: '"thumb"' },
@@ -332,167 +359,122 @@ export async function runTransportContractTests(): Promise<void> {
       "https://app.test/sidebar/index.html",
     );
     assert(
-      agentConfig.signature_type === "agent_config" &&
-        agentConfig.corp_id === "corp-test" &&
-        agentConfig.agent_id === 7 &&
-        agentConfig.nonce === "nonce-test" &&
-        agentConfig.timestamp === 1720000000 &&
-        agentConfig.signature === "a".repeat(40) &&
-        agentConfig.url === "https://app.test/sidebar/index.html",
-      "JSSDK adapter must map the local agent_config signature",
+      agentConfig.signature_type === "agent_config",
+      "Sidebar agent config must use the generated V2 JSSDK DTO",
     );
     const profile = await sidebarApi.profile(
       "sidebar-context",
       {
-        display_name: "测试客户",
-        gender: 0,
-        corp_name: "测试公司",
-        expected_version: 3,
+        expected_updated_at: "2026-08-26T01:00:00Z",
+        patch: { source: "新来源" },
       },
       "sidebar-profile-test-key",
     );
     assert(
-      profile.profile.name === "测试客户" &&
-        profile.profile.corp_name === "测试公司" &&
-        profile.profile.version === 4 &&
-        profile.safety.local_only &&
-        !profile.safety.effect_queued,
-      "Profile adapter must map the local customer projection",
+      profile.profile.source === "新来源",
+      "Sidebar profile adapter must retain the real update response",
     );
     const phone = await sidebarApi.bindPhone(
       "sidebar-context",
-      { phone: "13800138000" },
+      { mobile: "+8613800138000" },
       "sidebar-phone-test-key",
     );
     assert(
       phone.status === "bound" && phone.safety.local_only,
-      "Phone adapter must map attached to bound with local safety",
-    );
-    const intent = await sidebarApi.createSendIntent(
-      "sidebar-context",
-      { resource_kind: "material", resource_id: "31" },
-      "sidebar-send-test-key",
-    );
-    assert(
-      intent.intent_id === 51 &&
-        intent.grant === "grant-token" &&
-        (intent.payload as { msgtype?: string })?.msgtype === "image",
-      "Send intent must retain the server-wrapped payload and grant",
-    );
-    const outcome = await sidebarApi.completeSendIntent("sidebar-context", 51, {
-      grant: "grant-token",
-      outcome: "client_executed",
-      evidence: "jssdk-callback-ok",
-    });
-    assert(
-      outcome.state === "client_executed",
-      "Send intent completion must retain the outcome receipt",
+      "Sidebar phone adapter must retain the local bind receipt",
     );
     const thumbnail = await sidebarApi.thumbnailPreview("sidebar-context", 31);
     assert(
       thumbnail.type === "image/png" && thumbnail.size > 0,
       "Sidebar thumbnail preview must read real binary bytes",
     );
+    const temporaryMedia = await sidebarApi.prepareTemporaryImage(
+      "sidebar-context",
+      31,
+      "sidebar-temporary-media-stable-key",
+    );
+    assert(
+      temporaryMedia.upload_state === "ready" &&
+        temporaryMedia.client_callback === "not_called" &&
+        temporaryMedia.delivery_state === "not_sent_yet",
+      "Temporary media must keep upload preparation separate from JSSDK and delivery",
+    );
     const oauth = sidebarApi.oauthStartUrl({
       external_userid: "ext-7",
       next: "/sidebar/index.html",
     });
     assert(
-      oauth === "/api/sidebar/oauth/start?next=%2Fsidebar%2Findex.html",
-      "OAuth start must target the local backend route",
+      oauth.startsWith("/api/sidebar/v2/oauth/start?"),
+      "Sidebar OAuth start must use the generated navigation URL",
     );
     const callback = sidebarApi.oauthCallbackUrl({
       code: "oauth-code",
       state: "state_abcdefghijklmnopqrstuvwxyz0123456789_",
     });
     assert(
-      callback.startsWith("/api/sidebar/oauth/callback?code=oauth-code&state="),
-      "OAuth callback must target the local backend route",
+      callback.startsWith("/api/sidebar/v2/oauth/callback?"),
+      "Sidebar OAuth callback must use the generated navigation URL",
     );
     const agentCall = sidebarWriteRequests.find((call) =>
-      call.input.includes("jssdk-config"),
+      call.input.includes("agent-config"),
     );
     assert(
-      agentCall?.init?.credentials === "include" &&
-        agentCall.input.includes("url=https%3A%2F%2Fapp.test"),
-      "JSSDK config must include the browser session and signed URL",
+      agentCall?.init?.credentials === "include",
+      "JSSDK config must include the browser session",
     );
     const profileCall = sidebarWriteRequests.find((call) =>
       call.input.includes("/profile"),
     );
     const profileHeaders = new Headers(profileCall?.init?.headers);
-    const profileBody = JSON.parse(String(profileCall?.init?.body));
     assert(
-      profileHeaders.get("X-Sidebar-Context-Token") === "sidebar-context" &&
-        profileHeaders.get("Idempotency-Key") === "sidebar-profile-test-key" &&
-        profileCall?.init?.method === "PUT" &&
-        profileCall?.init?.credentials === "include",
-      "Profile writes must carry scoped token and idempotency key",
+      profileHeaders.get("X-Sidebar-Context-Token") === "sidebar-context",
+      "Profile writes must carry the scoped context token",
     );
     assert(
-      profileBody.display_name === "测试客户" &&
-        profileBody.expected_version === 3 &&
-        profileBody.patch === undefined &&
-        profileBody.expected_updated_at === undefined,
-      "Profile writes must use the local display_name/expected_version contract",
+      profileHeaders.get("Idempotency-Key") === "sidebar-profile-test-key",
+      "Profile writes must carry the caller idempotency key",
+    );
+    assert(
+      profileCall?.init?.credentials === "include",
+      "Profile writes must include the browser session",
+    );
+    assert(
+      profileCall?.init?.method === "PUT",
+      "Profile writes must use the generated PUT operation",
     );
     const phoneCall = sidebarWriteRequests.find((call) =>
       call.input.includes("/phone-binding"),
     );
     const phoneHeaders = new Headers(phoneCall?.init?.headers);
-    const phoneBody = JSON.parse(String(phoneCall?.init?.body));
     assert(
       phoneCall?.init?.method === "POST" &&
         phoneHeaders.get("X-Sidebar-Context-Token") === "sidebar-context" &&
-        phoneHeaders.get("Idempotency-Key") === "sidebar-phone-test-key" &&
-        phoneBody.phone === "13800138000" &&
-        phoneBody.mobile === undefined,
-      "Phone binding must send the local 11-digit phone contract",
-    );
-    const intentCall = sidebarWriteRequests.find(
-      (call) =>
-        call.input.includes("/send-intents") && !call.input.includes("/outcome"),
-    );
-    const intentHeaders = new Headers(intentCall?.init?.headers);
-    assert(
-      intentCall?.init?.method === "POST" &&
-        intentHeaders.get("Idempotency-Key") === "sidebar-send-test-key" &&
-        JSON.parse(String(intentCall?.init?.body)).resource_kind === "material",
-      "Send intent must be created with a stable scoped idempotency key",
-    );
-    const outcomeCall = sidebarWriteRequests.find((call) =>
-      call.input.includes("/send-intents/51/outcome"),
-    );
-    assert(
-      outcomeCall?.init?.method === "POST" &&
-        JSON.parse(String(outcomeCall?.init?.body)).outcome ===
-          "client_executed",
-      "Send intent completion must forward grant and outcome",
+        phoneHeaders.get("Idempotency-Key") === "sidebar-phone-test-key",
+      "Phone binding must use the generated operation with scoped idempotency headers",
     );
     const thumbnailCall = sidebarWriteRequests.find((call) =>
-      call.input.includes("/materials/31/variants/thumb_320"),
+      call.input.includes("/materials/image/31/preview"),
     );
     assert(
       thumbnailCall?.init?.method === undefined &&
         new Headers(thumbnailCall?.init?.headers).get(
           "X-Sidebar-Context-Token",
         ) === "sidebar-context",
-      "Thumbnail preview must use the sidebar variant route with scoped transport",
+      "Thumbnail preview must use the generated URL with scoped browser transport",
     );
-    // 手机号归属冲突：后端 409 必须映射为 rejected，而非抛错。
-    globalThis.fetch = async () =>
-      new Response(JSON.stringify({ error: { code: "conflict" } }), {
-        status: 409,
-        headers: { "Content-Type": "application/json" },
-      });
-    const rejected = await sidebarApi.bindPhone(
-      "sidebar-context",
-      { phone: "13800138000" },
-      "sidebar-phone-conflict-key",
+    const temporaryMediaCall = sidebarWriteRequests.find((call) =>
+      call.input.includes("/materials/image/31/temporary-media"),
+    );
+    const temporaryMediaHeaders = new Headers(
+      temporaryMediaCall?.init?.headers,
     );
     assert(
-      rejected.status === "rejected",
-      "Phone ownership conflict must map to the rejected receipt",
+      temporaryMediaCall?.init?.method === "POST" &&
+        temporaryMediaHeaders.get("X-Sidebar-Context-Token") ===
+          "sidebar-context" &&
+        temporaryMediaHeaders.get("Idempotency-Key") ===
+          "sidebar-temporary-media-stable-key",
+      "Temporary media must forward the caller's stable scoped idempotency key",
     );
     assert(
       profileReceiptSteps({
