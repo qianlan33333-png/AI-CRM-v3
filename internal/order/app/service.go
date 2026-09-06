@@ -552,6 +552,7 @@ func (s *Service) CustomerOrderSummary(ctx context.Context, customerID int64, re
 }
 
 var _ orderport.CustomerOrderSummaryReader = (*Service)(nil)
+var _ orderport.CustomerScopedQuery = (*Service)(nil)
 
 // CommercePushDeliveryReference resolves the existing compatibility order
 // reference without exposing Order persistence. Historical snapshots only
@@ -584,6 +585,31 @@ func (s *Service) GetByReference(ctx context.Context, reference string) (domain.
 		var findErr error
 		matches, findErr = s.store.FindByReference(tx, reference)
 		return findErr
+	})
+	if err != nil {
+		return domain.Snapshot{}, classify(err)
+	}
+	if len(matches) == 0 {
+		return domain.Snapshot{}, orderport.ErrNotFound
+	}
+	if len(matches) != 1 {
+		return domain.Snapshot{}, orderport.ErrConflict
+	}
+	return matches[0].Snapshot(), nil
+}
+
+func (s *Service) GetByReferenceForCustomer(ctx context.Context, reference string, customerID int64) (domain.Snapshot, error) {
+	if !ready(s) || !validScope(reference) || customerID < 1 {
+		return domain.Snapshot{}, orderport.ErrNotFound
+	}
+	var matches []domain.Order
+	err := s.uow.Within(ctx, func(tx context.Context) error {
+		var listErr error
+		// Store.List compiles CustomerID and OrderRef into the same SQL WHERE
+		// clause. The service must never perform an unrestricted detail read
+		// and apply a machine-client scope after the fact.
+		matches, listErr = s.store.List(tx, nil, 2, ListFilter{CustomerID: customerID, OrderRef: reference})
+		return listErr
 	})
 	if err != nil {
 		return domain.Snapshot{}, classify(err)

@@ -40,23 +40,28 @@ type openPlatformIdentityScopes struct {
 }
 
 type openPlatformExecutor struct {
-	identity identityport.Resolver
-	orders   orderport.Query
-	profiles customerport.SidebarProfileService
-	archive  archiveport.CustomerMessageReader
-	timeline customerport.CustomerTimelineReader
-	owners   wecomport.AudiencePrimaryOwnerReader
-	scopes   openPlatformIdentityScopes
+	identity     identityport.Resolver
+	orders       orderport.Query
+	scopedOrders orderport.CustomerScopedQuery
+	profiles     customerport.SidebarProfileService
+	archive      archiveport.CustomerMessageReader
+	timeline     customerport.CustomerTimelineReader
+	owners       wecomport.AudiencePrimaryOwnerReader
+	scopes       openPlatformIdentityScopes
 }
 
 func newOpenPlatformExecutor(identity identityport.Resolver, orders orderport.Query, profiles customerport.SidebarProfileService, archive archiveport.CustomerMessageReader, timeline customerport.CustomerTimelineReader, owners wecomport.AudiencePrimaryOwnerReader, scopes openPlatformIdentityScopes) (*openPlatformExecutor, error) {
 	if identity == nil || orders == nil || profiles == nil || archive == nil || timeline == nil || owners == nil {
 		return nil, errors.New("open platform core Port dependencies are required")
 	}
+	scopedOrders, ok := orders.(orderport.CustomerScopedQuery)
+	if !ok || scopedOrders == nil {
+		return nil, errors.New("open platform customer-scoped order Port is required")
+	}
 	scopes.WeComScope = strings.TrimSpace(scopes.WeComScope)
 	scopes.UnionScopes = distinctScopes(scopes.UnionScopes, "wechat-open-platform:")
 	scopes.OpenIDScopes = distinctScopes(scopes.OpenIDScopes, "wechat-app:")
-	return &openPlatformExecutor{identity: identity, orders: orders, profiles: profiles, archive: archive, timeline: timeline, owners: owners, scopes: scopes}, nil
+	return &openPlatformExecutor{identity: identity, orders: orders, scopedOrders: scopedOrders, profiles: profiles, archive: archive, timeline: timeline, owners: owners, scopes: scopes}, nil
 }
 
 func configuredOpenPlatformScopes(corpID string, unionScopes, appIDs []string) openPlatformIdentityScopes {
@@ -196,9 +201,17 @@ func (executor *openPlatformExecutor) getOrder(ctx context.Context, reference st
 	if strings.TrimSpace(reference) == "" {
 		return responseError(400, "invalid_request"), nil
 	}
-	// Order.Query does not offer a customer/owner constrained single-record
-	// lookup. Never fetch a broad order and filter after the fact.
+	if customerID, scoped := scopedOrderCustomerID(principal); scoped {
+		order, err := executor.scopedOrders.GetByReferenceForCustomer(ctx, reference, customerID)
+		if err != nil {
+			return responseForOrderError(err), nil
+		}
+		return responseOK(map[string]any{"ok": true, "order": publicOrder(order)}), nil
+	}
 	if !executor.allowsUnboundScope(principal) {
+		// Owner scopes and multi-customer constraints do not have an Order
+		// resource predicate for detail lookup. Refuse them rather than read
+		// broadly and inspect the returned order in this adapter.
 		return responseError(404, "not_found"), nil
 	}
 	order, err := executor.orders.GetByReference(ctx, reference)
@@ -206,6 +219,25 @@ func (executor *openPlatformExecutor) getOrder(ctx context.Context, reference st
 		return responseForOrderError(err), nil
 	}
 	return responseOK(map[string]any{"ok": true, "order": publicOrder(order)}), nil
+}
+
+// scopedOrderCustomerID accepts only the owner-scope shape that the Order
+// Port can enforce atomically: one concrete customer plus an optional matching
+// corporation. Other constraints must not fall back to an unrestricted detail
+// query.
+func scopedOrderCustomerID(principal accessdomain.MachinePrincipal) (int64, bool) {
+	values, exists := principal.OwnerScope["customer_id"]
+	if !exists || len(values) != 1 {
+		return 0, false
+	}
+	customerID, err := strconv.ParseInt(values[0], 10, 64)
+	if err != nil || customerID < 1 {
+		return 0, false
+	}
+	if !principal.OwnerScope.Allows(map[string]string{"customer_id": strconv.FormatInt(customerID, 10), "corp_id": principal.CorpID}) {
+		return 0, false
+	}
+	return customerID, true
 }
 
 func (executor *openPlatformExecutor) callMCP(ctx context.Context, body []byte, principal accessdomain.MachinePrincipal) (openplatformport.Response, error) {

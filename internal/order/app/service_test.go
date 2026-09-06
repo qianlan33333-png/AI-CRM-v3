@@ -18,15 +18,16 @@ type directUOW struct{}
 func (directUOW) Within(ctx context.Context, fn func(context.Context) error) error { return fn(ctx) }
 
 type memoryStore struct {
-	nextID   int64
-	orders   map[int64]domain.Snapshot
-	receipts map[string]Receipt
-	imports  map[string]ImportReceipt
-	failSave bool
-	exports  map[string]ExportReceipt
-	contacts map[int64][]byte
-	checkout map[int64]orderport.CheckoutSnapshot
-	paid     map[int64]orderport.PaidEvent
+	nextID               int64
+	orders               map[int64]domain.Snapshot
+	receipts             map[string]Receipt
+	imports              map[string]ImportReceipt
+	failSave             bool
+	exports              map[string]ExportReceipt
+	contacts             map[int64][]byte
+	checkout             map[int64]orderport.CheckoutSnapshot
+	paid                 map[int64]orderport.PaidEvent
+	findByReferenceCalls int
 }
 
 func newMemoryStore() *memoryStore {
@@ -138,11 +139,17 @@ func (s *memoryStore) Get(_ context.Context, id int64, _ bool) (domain.Order, er
 	return domain.Restore(snapshot)
 }
 
-func (s *memoryStore) List(_ context.Context, before *Cursor, limit int32, _ ListFilter) ([]domain.Order, error) {
+func (s *memoryStore) List(_ context.Context, before *Cursor, limit int32, filter ListFilter) ([]domain.Order, error) {
 	rows := make([]domain.Order, 0)
 	for id := s.nextID - 1; id >= 1 && len(rows) < int(limit); id-- {
 		snapshot := s.orders[id]
 		if before != nil && (snapshot.CreatedAt.After(before.CreatedAt) || snapshot.CreatedAt.Equal(before.CreatedAt) && snapshot.ID >= before.ID) {
+			continue
+		}
+		if filter.OrderRef != "" && snapshot.MerchantOrderNo != filter.OrderRef && snapshot.ProviderTransactionNo != filter.OrderRef && snapshot.SourceKey != filter.OrderRef {
+			continue
+		}
+		if filter.CustomerID > 0 && (snapshot.PayerCustomerID == nil || *snapshot.PayerCustomerID != filter.CustomerID) && (snapshot.BeneficiaryCustomerID == nil || *snapshot.BeneficiaryCustomerID != filter.CustomerID) {
 			continue
 		}
 		order, _ := domain.Restore(snapshot)
@@ -156,6 +163,7 @@ func (s *memoryStore) Count(context.Context, ListFilter) (int64, error) {
 }
 
 func (s *memoryStore) FindByReference(_ context.Context, reference string) ([]domain.Order, error) {
+	s.findByReferenceCalls++
 	rows := []domain.Order{}
 	for _, snapshot := range s.orders {
 		if snapshot.MerchantOrderNo == reference || snapshot.ProviderTransactionNo == reference || snapshot.SourceKey == reference {
@@ -388,6 +396,38 @@ func TestPaymentCheckoutFinalFailureReleasesCouponAndServicePeriodRefundsOnce(t 
 	}
 	if len(fulfillment.refunds) != 1 || fulfillment.refunds[0].SourceOrderID != paid.ID || fulfillment.refunds[0].RefundAmountMinor != 10000 {
 		t.Fatalf("refunds=%+v", fulfillment.refunds)
+	}
+}
+
+func TestGetByReferenceForCustomerUsesCustomerBoundStoreQuery(t *testing.T) {
+	store := newMemoryStore()
+	service := NewService(directUOW{}, store)
+	firstInput := orderInput("scoped-a")
+	firstCustomer := int64(42)
+	firstInput.PayerCustomerID = &firstCustomer
+	first, err := service.Create(context.Background(), orderport.CreateCommand{Input: firstInput, Actor: 7, IdempotencyKey: "order-customer-scope-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondInput := orderInput("scoped-b")
+	secondCustomer := int64(43)
+	secondInput.PayerCustomerID = &secondCustomer
+	secondInput.MerchantOrderNo = first.MerchantOrderNo
+	second, err := service.Create(context.Background(), orderport.CreateCommand{Input: secondInput, Actor: 7, IdempotencyKey: "order-customer-scope-b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resolved, err := service.GetByReferenceForCustomer(context.Background(), first.MerchantOrderNo, firstCustomer)
+	if err != nil || resolved.ID != first.ID || store.findByReferenceCalls != 0 {
+		t.Fatalf("resolved=%+v err=%v broad_calls=%d", resolved, err, store.findByReferenceCalls)
+	}
+	other, err := service.GetByReferenceForCustomer(context.Background(), first.MerchantOrderNo, secondCustomer)
+	if err != nil || other.ID != second.ID || store.findByReferenceCalls != 0 {
+		t.Fatalf("other=%+v err=%v broad_calls=%d", other, err, store.findByReferenceCalls)
+	}
+	if _, err = service.GetByReferenceForCustomer(context.Background(), first.MerchantOrderNo, 44); !errors.Is(err, orderport.ErrNotFound) || store.findByReferenceCalls != 0 {
+		t.Fatalf("out-of-scope err=%v broad_calls=%d", err, store.findByReferenceCalls)
 	}
 }
 

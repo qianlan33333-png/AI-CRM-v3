@@ -38,9 +38,14 @@ func (stub *openPlatformIdentityStub) Resolve(_ context.Context, reference ident
 }
 
 type openPlatformOrderStub struct {
-	page  orderport.Page
-	last  orderport.ListQuery
-	calls int
+	page            orderport.Page
+	last            orderport.ListQuery
+	calls           int
+	scopedCalls     int
+	scopedReference string
+	scopedCustomer  int64
+	scopedResult    orderdomain.Snapshot
+	scopedErr       error
 }
 
 func (stub *openPlatformOrderStub) Get(context.Context, int64) (orderdomain.Snapshot, error) {
@@ -55,6 +60,11 @@ func (stub *openPlatformOrderStub) List(_ context.Context, query orderport.ListQ
 	stub.calls++
 	stub.last = query
 	return stub.page, nil
+}
+func (stub *openPlatformOrderStub) GetByReferenceForCustomer(_ context.Context, reference string, customerID int64) (orderdomain.Snapshot, error) {
+	stub.scopedCalls++
+	stub.scopedReference, stub.scopedCustomer = reference, customerID
+	return stub.scopedResult, stub.scopedErr
 }
 
 type openPlatformProfileStub struct{ calls int }
@@ -162,6 +172,19 @@ func TestOpenPlatformOrdersMapScopedIdentityBeforeCallingOrderPort(t *testing.T)
 	response, err := executor.Execute(context.Background(), openplatformport.Request{Method: "GET", Path: "/api/external/orders", Query: url.Values{"external_userid": {"external-1"}, "limit": {"20"}}})
 	if err != nil || response.Status != 200 || orders.last.CustomerID != 42 || orders.last.Limit != 20 {
 		t.Fatalf("response=%+v query=%+v err=%v", response, orders.last, err)
+	}
+}
+
+func TestOpenPlatformOrderDetailUsesCustomerBoundPortForCustomerScope(t *testing.T) {
+	identity := &openPlatformIdentityStub{result: identityport.ResolveResult{Status: identityport.ResolveFound, CustomerID: 42}}
+	orders := &openPlatformOrderStub{scopedResult: orderdomain.Snapshot{ID: 9, MerchantOrderNo: "order-42", Provider: orderdomain.ProviderWeChatPay, Amount: orderdomain.Money{AmountMinor: 100, Currency: "CNY"}, Status: orderdomain.StatusPaid, CreatedAt: time.Date(2026, 9, 6, 0, 0, 0, 0, time.UTC)}}
+	executor, err := newOpenPlatformExecutor(identity, orders, &openPlatformProfileStub{}, &openPlatformArchiveStub{}, &openPlatformTimelineStub{}, &openPlatformOwnerStub{}, configuredOpenPlatformScopes("corp-main", nil, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := executor.Execute(context.Background(), openplatformport.Request{Method: "GET", Path: "/api/external/orders/{order_no}", PathParts: map[string]string{"order_no": "order-42"}, Principal: accessdomain.MachinePrincipal{CorpID: "corp-main", OwnerScope: accessdomain.OwnerScope{"customer_id": {"42"}, "corp_id": {"corp-main"}}}})
+	if err != nil || response.Status != 200 || orders.scopedCalls != 1 || orders.scopedReference != "order-42" || orders.scopedCustomer != 42 || orders.calls != 0 {
+		t.Fatalf("response=%+v err=%v scoped=%d reference=%q customer=%d broad=%d", response, err, orders.scopedCalls, orders.scopedReference, orders.scopedCustomer, orders.calls)
 	}
 }
 

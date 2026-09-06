@@ -66,6 +66,13 @@ type Query interface {
 	List(context.Context, ListQuery) (Page, error)
 }
 
+// CustomerScopedQuery reads one order reference through Order's own customer
+// predicate. Callers that hold a customer-bounded credential must use this
+// seam instead of fetching an unbounded order and filtering it afterwards.
+type CustomerScopedQuery interface {
+	GetByReferenceForCustomer(context.Context, string, int64) (domain.Snapshot, error)
+}
+
 type ProductSalesKey struct {
 	ProductID   int64
 	ProductCode string

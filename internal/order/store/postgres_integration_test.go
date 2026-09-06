@@ -42,6 +42,41 @@ func nativeCommand(key string) orderport.CreateCommand {
 	}}
 }
 
+func TestPostgreSQLCustomerScopedReferenceReadDoesNotLeak(t *testing.T) {
+	native, cleanup := orderIntegrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	wrapper, err := platformpostgres.Wrap(native, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uow, err := platformpostgres.NewUnitOfWork(wrapper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := NewPostgreSQL(native, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := orderapp.NewService(uow, repository)
+
+	allowedInput := nativeCommand("scoped-allowed")
+	allowedCustomer := int64(42)
+	allowedInput.Input.PayerCustomerID = &allowedCustomer
+	allowedInput.Input.MerchantOrderNo = "M-customer-scoped-reference"
+	allowed, err := service.Create(ctx, allowedInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := service.GetByReferenceForCustomer(ctx, allowed.MerchantOrderNo, allowedCustomer)
+	if err != nil || resolved.ID != allowed.ID {
+		t.Fatalf("allowed scoped detail=%+v err=%v", resolved, err)
+	}
+	if _, err = service.GetByReferenceForCustomer(ctx, allowed.MerchantOrderNo, 43); !errors.Is(err, orderport.ErrNotFound) {
+		t.Fatalf("unrelated customer read err=%v", err)
+	}
+}
+
 func TestPostgreSQLOrderAtomicReplayCursorAndConstraints(t *testing.T) {
 	native, cleanup := orderIntegrationPool(t)
 	defer cleanup()
