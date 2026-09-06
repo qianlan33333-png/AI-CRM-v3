@@ -257,8 +257,14 @@ func TestOpenPlatformMachineManagementPostgreSQLJourney(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for attempt := 0; attempt < 2; attempt++ {
-		request := httptest.NewRequest(http.MethodPost, "https://crm.example.test/oauth/token", strings.NewReader("grant_type=client_credentials&client_id="+url.QueryEscape(external.Client.ClientID)+"&client_secret=wrong-secret&audience=external_integration"))
+	var credentialBucketsBefore int
+	if err = native.QueryRow(ctx, `SELECT COUNT(*) FROM admin_login_rate_limits`).Scan(&credentialBucketsBefore); err != nil {
+		t.Fatal(err)
+	}
+	// Both unknown IDs are syntactically valid. The second must hit the same
+	// source-only pre-auth bucket instead of allocating a row per guessed ID.
+	for attempt, clientID := range []string{"unknown-client-one", "unknown-client-two"} {
+		request := httptest.NewRequest(http.MethodPost, "https://crm.example.test/oauth/token", strings.NewReader("grant_type=client_credentials&client_id="+url.QueryEscape(clientID)+"&client_secret=wrong-secret&audience=external_integration"))
 		request.TLS = &tls.ConnectionState{}
 		request.RemoteAddr = "203.0.113.88:443"
 		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -269,8 +275,15 @@ func TestOpenPlatformMachineManagementPostgreSQLJourney(t *testing.T) {
 			want = http.StatusTooManyRequests
 		}
 		if response.Code != want || (attempt == 1 && !strings.Contains(response.Body.String(), `"error":"rate_limited"`)) {
-			t.Fatalf("credential rate attempt=%d status=%d body=%s", attempt, response.Code, response.Body.String())
+			t.Fatalf("credential rate client=%q attempt=%d status=%d body=%s", clientID, attempt, response.Code, response.Body.String())
 		}
+	}
+	var credentialBucketsAfter int
+	if err = native.QueryRow(ctx, `SELECT COUNT(*) FROM admin_login_rate_limits`).Scan(&credentialBucketsAfter); err != nil {
+		t.Fatal(err)
+	}
+	if credentialBucketsAfter != credentialBucketsBefore+1 {
+		t.Fatalf("unknown OAuth IDs created %d rate rows, want one source bucket", credentialBucketsAfter-credentialBucketsBefore)
 	}
 	for attempt := 0; attempt < 2; attempt++ {
 		request := httptest.NewRequest(http.MethodGet, "https://crm.example.test/mcp", nil)

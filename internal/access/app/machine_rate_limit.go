@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net/netip"
-	"strings"
 	"time"
 
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/access/credential"
@@ -55,19 +54,16 @@ func NewMachineRequestRateLimiter(repository accessport.Repository, uow platform
 	return &MachineRequestRateLimiter{repository: repository, uow: uow, config: config}, nil
 }
 
-// AllowClientCredentials limits an attempt before the secret is verified. The
-// key is salted by the endpoint name and source address, and only its digest is
-// persisted. Invalid/missing IDs share a bounded anonymous bucket rather than
-// allowing arbitrary input to create unlimited durable rows.
-func (limiter *MachineRequestRateLimiter) AllowClientCredentials(ctx context.Context, clientID string, source netip.Addr) error {
+// AllowClientCredentials limits an attempt before Access knows whether the
+// supplied client exists. It therefore uses one source-only bucket: an attacker
+// cannot rotate syntactically valid, nonexistent IDs to reset the quota or
+// create one durable row per guessed identifier. Only the bucket digest is
+// persisted; client IDs are neither stored nor used in this pre-auth key.
+func (limiter *MachineRequestRateLimiter) AllowClientCredentials(ctx context.Context, _ string, source netip.Addr) error {
 	if limiter == nil || !source.IsValid() {
 		return domain.ErrMachineCredential
 	}
-	clientID = strings.TrimSpace(clientID)
-	if _, err := domain.NormalizeMachineClientID(clientID); err != nil {
-		clientID = "invalid-client-id"
-	}
-	return limiter.allow(ctx, "open-platform:oauth-token", clientID+"\x00"+source.String(), limiter.config.MaxClientCredentialChecks)
+	return limiter.allow(ctx, "open-platform:oauth-token-source", source.String(), limiter.config.MaxClientCredentialChecks)
 }
 
 // AllowMachineRequest is called only after Access has authenticated and
