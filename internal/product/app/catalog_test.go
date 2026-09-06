@@ -341,3 +341,9 @@ func TestCanonicalLegacyAdminProjectionRejectsUnknownAndWrongTypes(t *testing.T)
 		t.Fatal("JSON semantic comparison lost integer precision above 2^53")
 	}
 }
+
+func TestClassifyPreservesSuccessfulResult(t *testing.T) {
+	if err := classify(nil); err != nil {
+		t.Fatalf("classify(nil) = %v, want nil", err)
+	}
+}

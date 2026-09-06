@@ -645,6 +645,9 @@ func decodeCursor(v string) (int64, error) {
 	return id, nil
 }
 func classify(e error) error {
+	if e == nil {
+		return nil
+	}
 	if errors.Is(e, ErrNotFound) || errors.Is(e, ErrConflict) || errors.Is(e, ErrInvalidProduct) {
 		return e
 	}

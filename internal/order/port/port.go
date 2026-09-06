@@ -129,11 +129,12 @@ type PaymentReservationReader interface {
 }
 
 type PaymentSettlementCommand struct {
-	OrderID       int64
-	RefundedDelta int64
-	Failed        bool
-	OccurredAt    time.Time
-	ReceiptKey    string
+	OrderID               int64
+	RefundedDelta         int64
+	Failed                bool
+	ProviderTransactionNo string // verified Payment callback/query fact; only needed for first paid settlement
+	OccurredAt            time.Time
+	ReceiptKey            string
 }
 
 type PaymentOrderCommand struct {

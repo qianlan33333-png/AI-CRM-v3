@@ -29,31 +29,32 @@ type Receipt = port.Receipt
 type ResultArtifact = port.ResultArtifact
 
 const (
-	OwnerOutbound          = port.OwnerOutbound
-	OwnerPayment           = port.OwnerPayment
-	KindOutboundMessage    = port.KindOutboundMessage
-	KindAutomationMessage  = port.KindAutomationMessage
-	KindOutboundMedia      = port.KindOutboundMedia
-	KindWeComTagCatalog    = port.KindWeComTagCatalog
-	KindGroupMessage       = port.KindGroupMessage
-	KindChannelAsset       = port.KindChannelAsset
-	KindChannelWelcome     = port.KindChannelWelcome
-	KindChannelEntryTag    = port.KindChannelEntryTag
-	KindCustomerTagCommand = port.KindCustomerTagCommand
-	KindChannelLink        = port.KindChannelLink
-	KindSurveyCompletion   = port.KindSurveyCompletion
-	KindWeChatPayPrepay    = port.KindWeChatPayPrepay
-	KindWeChatPayRefund    = port.KindWeChatPayRefund
-	KindWeChatShopRefund   = port.KindWeChatShopRefund
-	StateAccepted          = port.StateAccepted
-	StateQueued            = port.StateQueued
-	StateAttempted         = port.StateAttempted
-	StateExecuted          = port.StateExecuted
-	StateUnknown           = port.StateUnknown
-	StateReconciled        = port.StateReconciled
-	StateRetryable         = port.StateRetryable
-	StateFinalFailed       = port.StateFinalFailed
-	StateCancelled         = port.StateCancelled
+	OwnerOutbound           = port.OwnerOutbound
+	OwnerPayment            = port.OwnerPayment
+	KindOutboundMessage     = port.KindOutboundMessage
+	KindAutomationMessage   = port.KindAutomationMessage
+	KindOutboundMedia       = port.KindOutboundMedia
+	KindWeComTagCatalog     = port.KindWeComTagCatalog
+	KindGroupMessage        = port.KindGroupMessage
+	KindChannelAsset        = port.KindChannelAsset
+	KindChannelWelcome      = port.KindChannelWelcome
+	KindChannelEntryTag     = port.KindChannelEntryTag
+	KindCustomerTagCommand  = port.KindCustomerTagCommand
+	KindCommerceProductPush = port.KindCommerceProductPush
+	KindChannelLink         = port.KindChannelLink
+	KindSurveyCompletion    = port.KindSurveyCompletion
+	KindWeChatPayPrepay     = port.KindWeChatPayPrepay
+	KindWeChatPayRefund     = port.KindWeChatPayRefund
+	KindWeChatShopRefund    = port.KindWeChatShopRefund
+	StateAccepted           = port.StateAccepted
+	StateQueued             = port.StateQueued
+	StateAttempted          = port.StateAttempted
+	StateExecuted           = port.StateExecuted
+	StateUnknown            = port.StateUnknown
+	StateReconciled         = port.StateReconciled
+	StateRetryable          = port.StateRetryable
+	StateFinalFailed        = port.StateFinalFailed
+	StateCancelled          = port.StateCancelled
 )
 
 func Hash(parts ...string) Digest   { return port.Hash(parts...) }

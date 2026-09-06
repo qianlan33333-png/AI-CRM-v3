@@ -207,6 +207,27 @@ func (o Order) RefundableMinor() int64 {
 	return o.Amount.AmountMinor - o.RefundedMinor
 }
 
+// WithVerifiedProviderTransaction records the Payment-verified provider
+// transaction reference as part of the first paid Order settlement. It never
+// replaces a prior reference and does not create another status transition.
+func (o Order) WithVerifiedProviderTransaction(reference string) (Order, error) {
+	if o.Status != StatusPaid || reference == "" || len(reference) > 200 || reference != strings.TrimSpace(reference) {
+		return Order{}, ErrInvalidSettlement
+	}
+	if o.ProviderTransactionNo != "" {
+		if o.ProviderTransactionNo == reference {
+			return o, nil
+		}
+		return Order{}, ErrInvalidSettlement
+	}
+	updated := o
+	updated.ProviderTransactionNo = reference
+	if err := validate(updated); err != nil {
+		return Order{}, err
+	}
+	return updated, nil
+}
+
 func (o Order) ApplySettlement(expectedVersion int64, next Status, refundedMinor int64, at time.Time) (Order, StatusEvent, error) {
 	if expectedVersion != o.Version {
 		return Order{}, StatusEvent{}, ErrVersionConflict
