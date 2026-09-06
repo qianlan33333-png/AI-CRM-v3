@@ -116,6 +116,24 @@ try {
   await new Promise((resolve, reject) => { socket.addEventListener("open", resolve, { once: true }); socket.addEventListener("error", () => reject(new Error("Chromium page connection failed")), { once: true }); });
   cdp = new CDP(socket);
   await cdp.call("Page.enable"); await cdp.call("Runtime.enable"); await cdp.call("Network.enable");
+  const oauthAuthChallenges = { cancelled: 0, other: 0, continuationErrors: 0 };
+  cdp.on("Fetch.requestPaused", (params) => {
+    void cdp.call("Fetch.continueRequest", { requestId: params.requestId }).catch(() => { oauthAuthChallenges.continuationErrors += 1; });
+  });
+  cdp.on("Fetch.authRequired", (params) => {
+    let isOwnOAuthToken = false;
+    try {
+      const target = new URL(String(params.request?.url || ""));
+      isOwnOAuthToken = target.origin === new URL(baseURL).origin && target.pathname === "/oauth/token";
+    } catch (_) {}
+    if (isOwnOAuthToken) oauthAuthChallenges.cancelled += 1;
+    else oauthAuthChallenges.other += 1;
+    void cdp.call("Fetch.continueWithAuth", {
+      requestId: params.requestId,
+      authChallengeResponse: { response: isOwnOAuthToken ? "CancelAuth" : "Default" },
+    }).catch(() => { oauthAuthChallenges.continuationErrors += 1; });
+  });
+  await cdp.call("Fetch.enable", { handleAuthRequests: true });
   progress("browser_ready");
   const resources = new Map(); const requests = new Map(); const exceptions = [];
   cdp.on("Network.requestWillBeSent", (params) => {
@@ -219,7 +237,9 @@ try {
   if (!secondSecret || secondSecret === firstSecret) throw new Error("rotation did not issue a distinct one-time credential");
   progress("rotated");
   progress("rotation_old_secret_check");
-  if ((await oauth(firstSecret))?.status === 200) throw new Error("rotation left the old credential usable");
+  const rotatedOldOAuth = await oauth(firstSecret);
+  if (rotatedOldOAuth?.status !== 401 || rotatedOldOAuth?.body?.error !== "invalid_client") throw new Error("rotation did not return the original invalid-client OAuth rejection");
+  if (oauthAuthChallenges.cancelled !== 1 || oauthAuthChallenges.other !== 0 || oauthAuthChallenges.continuationErrors !== 0) throw new Error("unexpected OAuth authentication challenge handling");
   progress("rotated_secret_revoked");
   progress("rotation_detail_request");
   const rotated = await clientDetail();
