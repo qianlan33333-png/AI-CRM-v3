@@ -448,9 +448,10 @@ func TestCustomerTagCommandCompositionBatchOver100QueuesIndependentRiverEffects(
 	request.AddCookie(&http.Cookie{Name: accesshttp.CSRFCookieName, Value: csrf})
 	acceptedResponse := httptest.NewRecorder()
 	first.handler.ServeHTTP(acceptedResponse, request)
+	acceptedBody := acceptedResponse.Body.String()
 	var accepted customerport.TagCommandResult
-	if err = json.NewDecoder(acceptedResponse.Body).Decode(&accepted); err != nil || acceptedResponse.Code != http.StatusAccepted || accepted.ID < 1 || len(accepted.Lines) != 101 || accepted.State != "queued" {
-		t.Fatalf("accept status=%d result=%+v err=%v body=%s", acceptedResponse.Code, accepted, err, acceptedResponse.Body.String())
+	if err = json.Unmarshal([]byte(acceptedBody), &accepted); err != nil || acceptedResponse.Code != http.StatusAccepted || accepted.ID < 1 || len(accepted.Lines) != 101 || accepted.State != "queued" {
+		t.Fatalf("accept status=%d result=%+v err=%v body=%s", acceptedResponse.Code, accepted, err, acceptedBody)
 	}
 	for table, want := range map[string]int{"customer_tag_commands": 1, "customer_tag_command_lines": 101, "external_effects": 101, "river_job": 101} {
 		var got int
@@ -829,9 +830,10 @@ func TestCustomerTagProviderCompositionKeepsChannelAndGenericFlagsIndependent(t 
 			request.AddCookie(&http.Cookie{Name: accesshttp.CSRFCookieName, Value: csrf})
 			acceptedResponse := httptest.NewRecorder()
 			application.handler.ServeHTTP(acceptedResponse, request)
+			genericBody := acceptedResponse.Body.String()
 			var generic customerport.TagCommandResult
-			if err = json.NewDecoder(acceptedResponse.Body).Decode(&generic); err != nil || acceptedResponse.Code != http.StatusAccepted || generic.ID < 1 || len(generic.Lines) != 1 || generic.State != "queued" {
-				t.Fatalf("generic status=%d command=%+v err=%v body=%s", acceptedResponse.Code, generic, err, acceptedResponse.Body.String())
+			if err = json.Unmarshal([]byte(genericBody), &generic); err != nil || acceptedResponse.Code != http.StatusAccepted || generic.ID < 1 || len(generic.Lines) != 1 || generic.State != "queued" {
+				t.Fatalf("generic status=%d command=%+v err=%v body=%s", acceptedResponse.Code, generic, err, genericBody)
 			}
 			runtimeDone, stopRuntime := startCustomerTagRestartRuntime(application, ctx)
 			defer stopCustomerTagRestartRuntime(t, stopRuntime, runtimeDone)

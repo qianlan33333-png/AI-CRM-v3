@@ -794,14 +794,24 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return fail(err)
 	}
 	customerProfileStore := wecom.NewPostgreSQLCustomerSyncStore()
+	relationships := wecom.NewPostgreSQLFollowRelationshipStore()
+	customerTagCommands, err := customerapp.NewTagCommandService(uow, customerstore.TagCommandPostgreSQL{}, effectRepository, customerTagCommandGate{uow: uow, corpID: cfg.WeCom.CorpID, owners: customerProfileStore, staff: accessRepository, relationships: relationships, tags: tagRepository, identities: queries}, auditService, platformoutbox.NewPostgreSQL())
+	if err != nil {
+		return fail(err)
+	}
+	if err = channelEntrantActions.SetTagCommandSubmitter(customerTagCommands); err != nil {
+		return fail(err)
+	}
 	legacyAudienceSource.PrimaryOwners = customerProfileStore
 	customerHandler, err := customerhttp.NewHandler(customerhttp.Config{UnitOfWork: uow, Auth: requestSecurity, CSRF: requestSecurity,
 		Directory: customerapp.Directory{Store: customerStore, SigningKey: cursorSigningKey}, Store: customerStore, Identities: queries, Audit: auditService,
-		Canonical: canonicalCustomerAdapter{reader: queries},
-		Owners:    customerOwnerAdapter{uow: uow, observations: customerProfileStore, users: accessRepository},
-		Tags:      customerTagAdapter{uow: uow, observations: customerProfileStore, names: tagRepository},
-		Surveys:   customerSurveyAdapter{reader: surveySubmissions},
-		Timeline:  customerTimelineAdapter{uow: uow, reader: customerStore}, Chat: disabledCustomerChatActivity{}, Orders: orderService, ProfileSigningKey: cursorSigningKey})
+		Canonical:   canonicalCustomerAdapter{reader: queries},
+		Owners:      customerOwnerAdapter{uow: uow, observations: customerProfileStore, users: accessRepository},
+		Tags:        customerTagAdapter{uow: uow, observations: customerProfileStore, names: tagRepository},
+		TagCommands: customerTagCommands,
+		TagHistory:  customerstore.TagCommandPostgreSQL{},
+		Surveys:     customerSurveyAdapter{reader: surveySubmissions},
+		Timeline:    customerTimelineAdapter{uow: uow, reader: customerStore}, Chat: disabledCustomerChatActivity{}, Orders: orderService, ProfileSigningKey: cursorSigningKey})
 	if err != nil {
 		return fail(err)
 	}
@@ -1027,7 +1037,6 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		}
 		welcomeGrantStore = wecom.NewPostgreSQLWelcomeGrantStore(welcomeGrantCipher)
 	}
-	relationships := wecom.NewPostgreSQLFollowRelationshipStore()
 	legacyAudienceSource.RegistrationFacts = customerStore
 	legacyAudienceSource.Contacts = relationships
 	var channelAssetProvider effectport.ProviderAdapter
