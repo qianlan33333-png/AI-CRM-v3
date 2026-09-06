@@ -953,6 +953,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	providerClient, err := wecomadapter.New(wecomadapter.Config{
 		Enabled: cfg.WeCom.Enabled, CorpID: cfg.WeCom.CorpID, AgentID: cfg.WeCom.AgentID, Secret: cfg.WeCom.Secret, ContactSecret: cfg.WeCom.ContactSecret,
 		AdminCallbackURI: cfg.PublicOrigin + "/auth/wecom/callback", SidebarCallbackURI: cfg.PublicOrigin + "/api/sidebar/oauth/callback",
+		APIBase: cfg.WeCom.APIBase, HTTPClient: cfg.WeCom.HTTPClient,
 	})
 	if err != nil {
 		return fail(err)

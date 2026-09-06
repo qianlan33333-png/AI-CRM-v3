@@ -138,6 +138,17 @@ jobs:
         # Run packages serially so concurrent schema DDL cannot exhaust the
         # service's lock table or race its catalog tuples.
         run: GOFLAGS=-p=1 make check
+      - name: Run customer tag Chromium journey
+        # This is an actual Chrome/CDP journey through Access login, the Host,
+        # PostgreSQL/River and the controlled Provider fixture. It is separate
+        # from make check so developer machines without usable Chrome do not
+        # silently substitute JSDOM for the browser contract.
+        env:
+          AICRM_REQUIRE_CHROMIUM_JOURNEY: "1"
+        run: |
+          set -euo pipefail
+          command -v google-chrome
+          go test -p 1 -count=1 -run '^TestPostgreSQLCustomerTagCommandChromiumJourney$' ./cmd/aicrm
       - name: Race-check security and identity boundaries
         run: go test -p 1 -race ./cmd/aicrm ./cmd/bootstrap-automation-operations ./cmd/migrate-commerce-history ./cmd/migrate-message-archive ./cmd/migrate-order-attribution ./cmd/migrate-automation-operations ./cmd/migrate-v2-config-definitions ./cmd/migrate-v2-runtime-config-releases ./cmd/migrate-media-legacy-materials ./cmd/migrate-channel-history ./cmd/migrate-v2-customer-tag-history ./cmd/migrate-channel-history ./cmd/migrate-radar-v2 ./cmd/migrate-sidebar-history ./internal/radar/... ./internal/access/... ./internal/identity/... ./internal/wecom/... ./internal/externaleffects/... ./internal/platform/jobqueue/... ./internal/media/... ./internal/tag/... ./internal/product/... ./internal/coupon/... ./internal/groupops/... ./internal/automation/... ./internal/segment/... ./internal/operationcycle/... ./internal/outbound ./internal/order/... ./internal/payment/... ./internal/config/... ./internal/adminops/... ./internal/release/... ./internal/configmigration/...
 

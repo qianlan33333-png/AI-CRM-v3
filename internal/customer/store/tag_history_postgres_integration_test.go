@@ -89,8 +89,11 @@ func TestTagHistoryPostgreSQLConcurrentOverlappingSnapshotsReplayOnce(t *testing
 	at := time.Date(2026, 9, 6, 13, 0, 0, 0, time.UTC)
 	record := customerport.HistoricalTagRecord{SourceJobID: 91, SourceDigest: string(effectport.Hash("same-v2-job")), EffectType: "wecom.contact.tag.mark", Operation: "tag_mark", SourceState: "provider_result_received", Resolution: "pending", Reason: "identity_unresolved", OccurredAt: at}
 	batches := []customerport.HistoricalTagBatch{{SourceSystem: "v2_external_effect_job", SnapshotDigest: string(effectport.Hash("snapshot-one")), SnapshotAt: at}, {SourceSystem: "v2_external_effect_job", SnapshotDigest: string(effectport.Hash("snapshot-two")), SnapshotAt: at.Add(time.Second)}}
-	results := make(chan customerport.HistoricalTagImportResult, 2)
-	failures := make(chan error, 2)
+	type outcome struct {
+		result customerport.HistoricalTagImportResult
+		err    error
+	}
+	outcomes := make(chan outcome, len(batches))
 	var start sync.WaitGroup
 	start.Add(1)
 	for _, batch := range batches {
@@ -98,19 +101,21 @@ func TestTagHistoryPostgreSQLConcurrentOverlappingSnapshotsReplayOnce(t *testing
 		go func() {
 			start.Wait()
 			got, applyErr := service.ApplyHistoricalTagRecords(ctx, batch, []customerport.HistoricalTagRecord{record})
-			if applyErr != nil {
-				failures <- applyErr
-				return
-			}
-			results <- got
+			outcomes <- outcome{result: got, err: applyErr}
 		}()
 	}
 	start.Done()
-	first, second := <-results, <-results
-	select {
-	case applyErr := <-failures:
-		t.Fatal(applyErr)
-	default:
+	var first, second customerport.HistoricalTagImportResult
+	for index := 0; index < len(batches); index++ {
+		got := <-outcomes
+		if got.err != nil {
+			t.Fatal(got.err)
+		}
+		if index == 0 {
+			first = got.result
+		} else {
+			second = got.result
+		}
 	}
 	if first.Pending+second.Pending != 1 || first.Replayed+second.Replayed != 1 {
 		t.Fatalf("concurrent results first=%+v second=%+v", first, second)

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"strconv"
@@ -78,6 +79,11 @@ type WeCom struct {
 	MessageArchivePrivateKeyPaths   map[uint32]string
 	MessageArchivePageLimit         uint32
 	MessageArchivePageBudget        int
+	// APIBase and HTTPClient are composition-test injection only. Load never
+	// populates them, so a deployed runtime continues to use the fixed provider
+	// origin and default HTTP client.
+	APIBase    string
+	HTTPClient *http.Client
 }
 
 // GroupOps contains only the inbound protocol secret for the local Group Ops
