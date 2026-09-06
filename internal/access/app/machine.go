@@ -66,55 +66,16 @@ type MachineService struct {
 	config     MachineConfig
 }
 
-type CreateMachineClientInput struct {
-	ClientID        string
-	DisplayName     string
-	Purpose         string
-	Audiences       []string
-	Scopes          []string
-	Capabilities    []string
-	AllowedCIDRs    []string
-	TokenTTLSeconds int
-	ExpiresAt       *time.Time
-}
+// App aliases preserve its public callers while the machine protocol is
+// consumed through the stable Access Port.
+type CreateMachineClientInput = accessport.CreateMachineClientInput
+type IssuedMachineClient = accessport.IssuedMachineClient
+type MachineClientSummary = accessport.MachineClientSummary
+type ClientCredentialsInput = accessport.ClientCredentialsInput
+type IssuedAccessToken = accessport.IssuedAccessToken
 
-type IssuedMachineClient struct {
-	Client MachineClientSummary `json:"client"`
-	Secret string               `json:"secret"`
-}
-
-type MachineClientSummary struct {
-	ClientID        string     `json:"client_id"`
-	DisplayName     string     `json:"display_name"`
-	Purpose         string     `json:"purpose"`
-	CredentialHint  string     `json:"credential_hint"`
-	Audiences       []string   `json:"audiences"`
-	Scopes          []string   `json:"scopes"`
-	Capabilities    []string   `json:"capabilities"`
-	AllowedCIDRs    []string   `json:"allowed_cidrs"`
-	TokenTTLSeconds int        `json:"token_ttl_seconds"`
-	ExpiresAt       *time.Time `json:"expires_at,omitempty"`
-	Enabled         bool       `json:"enabled"`
-	ReissueRequired bool       `json:"reissue_required"`
-	AuthVersion     int64      `json:"auth_version"`
-	LastUsedAt      *time.Time `json:"last_used_at,omitempty"`
-	CreatedAt       time.Time  `json:"created_at"`
-}
-
-type ClientCredentialsInput struct {
-	ClientID        string
-	ClientSecret    string
-	Audience        string
-	RequestedScopes []string
-	SourceIP        netip.Addr
-}
-
-type IssuedAccessToken struct {
-	AccessToken string `json:"access_token"`
-	TokenType   string `json:"token_type"`
-	ExpiresIn   int    `json:"expires_in"`
-	Scope       string `json:"scope"`
-}
+var _ accessport.MachineTokenIssuer = (*MachineService)(nil)
+var _ accessport.MachineManagement = (*MachineService)(nil)
 
 func NewMachineService(repository accessport.MachineRepository, uow platformport.UnitOfWork, passwords Passwords, config MachineConfig) (*MachineService, error) {
 	if repository == nil || uow == nil || passwords == nil {

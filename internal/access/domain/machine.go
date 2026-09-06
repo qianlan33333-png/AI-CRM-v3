@@ -61,6 +61,19 @@ func (principal MachinePrincipal) HasCapability(capability string) bool {
 	return false
 }
 
+// HasScope reports whether the bearer token itself carries the requested
+// protocol scope. Capabilities describe the client's current grant; scopes
+// describe the deliberately narrower token minted for one request session.
+// Both checks are required before an operation may run.
+func (principal MachinePrincipal) HasScope(scope string) bool {
+	for _, candidate := range principal.Scopes {
+		if candidate == scope {
+			return true
+		}
+	}
+	return false
+}
+
 // MachineAudit contains only identifiers and bounded safe facts. Credentials,
 // JWTs, external identifiers, and source address values never enter it.
 type MachineAudit struct {

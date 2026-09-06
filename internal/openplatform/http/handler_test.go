@@ -9,15 +9,15 @@ import (
 	"strings"
 	"testing"
 
-	accessapp "github.com/qianlan33333-png/AI-CRM-v3/internal/access/app"
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
+	accessport "github.com/qianlan33333-png/AI-CRM-v3/internal/access/port"
 	openplatformport "github.com/qianlan33333-png/AI-CRM-v3/internal/openplatform/port"
 )
 
 type handlerMachineStub struct{ principal accessdomain.MachinePrincipal }
 
-func (stub handlerMachineStub) IssueClientCredentialsToken(context.Context, accessapp.ClientCredentialsInput) (accessapp.IssuedAccessToken, error) {
-	return accessapp.IssuedAccessToken{AccessToken: "token", TokenType: "Bearer", ExpiresIn: 1800}, nil
+func (stub handlerMachineStub) IssueClientCredentialsToken(context.Context, accessport.ClientCredentialsInput) (accessport.IssuedAccessToken, error) {
+	return accessport.IssuedAccessToken{AccessToken: "token", TokenType: "Bearer", ExpiresIn: 1800}, nil
 }
 func (stub handlerMachineStub) AuthenticateBearer(context.Context, string, string, netip.Addr) (accessdomain.MachinePrincipal, error) {
 	return stub.principal, nil
@@ -34,17 +34,17 @@ func (handlerAdminStub) AuthorizeCSRF(context.Context, string, string, string) (
 
 type handlerManagementStub struct{}
 
-func (handlerManagementStub) Create(context.Context, accessdomain.Principal, accessapp.CreateMachineClientInput) (accessapp.IssuedMachineClient, error) {
-	return accessapp.IssuedMachineClient{}, nil
+func (handlerManagementStub) Create(context.Context, accessdomain.Principal, accessport.CreateMachineClientInput) (accessport.IssuedMachineClient, error) {
+	return accessport.IssuedMachineClient{}, nil
 }
-func (handlerManagementStub) List(context.Context, accessdomain.Principal) ([]accessapp.MachineClientSummary, error) {
-	return []accessapp.MachineClientSummary{}, nil
+func (handlerManagementStub) List(context.Context, accessdomain.Principal) ([]accessport.MachineClientSummary, error) {
+	return []accessport.MachineClientSummary{}, nil
 }
-func (handlerManagementStub) Rotate(context.Context, accessdomain.Principal, string) (accessapp.IssuedMachineClient, error) {
-	return accessapp.IssuedMachineClient{}, nil
+func (handlerManagementStub) Rotate(context.Context, accessdomain.Principal, string) (accessport.IssuedMachineClient, error) {
+	return accessport.IssuedMachineClient{}, nil
 }
-func (handlerManagementStub) SetEnabled(context.Context, accessdomain.Principal, string, bool) (accessapp.MachineClientSummary, error) {
-	return accessapp.MachineClientSummary{}, nil
+func (handlerManagementStub) SetEnabled(context.Context, accessdomain.Principal, string, bool) (accessport.MachineClientSummary, error) {
+	return accessport.MachineClientSummary{}, nil
 }
 
 type handlerExecutorStub struct{ request openplatformport.Request }
@@ -67,7 +67,7 @@ func TestInventoryRegistersEveryFrozenMachineRoute(t *testing.T) {
 		seen[key] = true
 	}
 	executor := &handlerExecutorStub{}
-	handler, err := NewHandler(Config{MachineAuthentication: handlerMachineStub{principal: accessdomain.MachinePrincipal{ClientID: "test", Capabilities: []string{"external_read"}}}, AdminAuthentication: handlerAdminStub{}, Management: handlerManagementStub{}, Executor: executor, SessionCookieName: "session", CSRFCookieName: "csrf"})
+	handler, err := NewHandler(Config{MachineAuthentication: handlerMachineStub{principal: accessdomain.MachinePrincipal{ClientID: "test", Scopes: []string{"read"}, Capabilities: []string{"external_read"}}}, AdminAuthentication: handlerAdminStub{}, Management: handlerManagementStub{}, Executor: executor, SessionCookieName: "session", CSRFCookieName: "csrf"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +83,7 @@ func TestInventoryRegistersEveryFrozenMachineRoute(t *testing.T) {
 
 func TestMCPRejectsUnknownMethodAsJSONRPC(t *testing.T) {
 	executor := &handlerExecutorStub{}
-	handler, err := NewHandler(Config{MachineAuthentication: handlerMachineStub{principal: accessdomain.MachinePrincipal{ClientID: "mcp", Capabilities: []string{"mcp_read", "mcp_execute"}}}, AdminAuthentication: handlerAdminStub{}, Management: handlerManagementStub{}, Executor: executor, SessionCookieName: "session", CSRFCookieName: "csrf"})
+	handler, err := NewHandler(Config{MachineAuthentication: handlerMachineStub{principal: accessdomain.MachinePrincipal{ClientID: "mcp", Scopes: []string{"mcp"}, Capabilities: []string{"mcp_read", "mcp_execute"}}}, AdminAuthentication: handlerAdminStub{}, Management: handlerManagementStub{}, Executor: executor, SessionCookieName: "session", CSRFCookieName: "csrf"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,5 +94,61 @@ func TestMCPRejectsUnknownMethodAsJSONRPC(t *testing.T) {
 	handler.Routes().ServeHTTP(response, request)
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"code":-32601`) {
 		t.Fatalf("MCP response %d: %s", response.Code, response.Body.String())
+	}
+}
+
+func TestExternalWriteRequiresWriteScopeEvenWhenClientCapabilityIncludesWrite(t *testing.T) {
+	executor := &handlerExecutorStub{}
+	handler, err := NewHandler(Config{MachineAuthentication: handlerMachineStub{principal: accessdomain.MachinePrincipal{
+		ClientID: "mixed", Scopes: []string{"read"}, Capabilities: []string{"external_read", "external_write"},
+	}}, AdminAuthentication: handlerAdminStub{}, Management: handlerManagementStub{}, Executor: executor, SessionCookieName: "session", CSRFCookieName: "csrf"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "https://crm.example.com/api/ai/audience/packages", strings.NewReader(`{}`))
+	request.TLS = &tls.ConnectionState{}
+	request.Header.Set("Authorization", "Bearer test")
+	response := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden || executor.request.Path != "" {
+		t.Fatalf("write with read token response=%d execution=%+v", response.Code, executor.request)
+	}
+}
+
+func TestMCPRequiresMCPScopeEvenWhenClientCapabilitiesExist(t *testing.T) {
+	executor := &handlerExecutorStub{}
+	handler, err := NewHandler(Config{MachineAuthentication: handlerMachineStub{principal: accessdomain.MachinePrincipal{
+		ClientID: "mcp", Scopes: []string{"read"}, Capabilities: []string{"mcp_read", "mcp_execute"},
+	}}, AdminAuthentication: handlerAdminStub{}, Management: handlerManagementStub{}, Executor: executor, SessionCookieName: "session", CSRFCookieName: "csrf"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "https://crm.example.com/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{}}`))
+	request.TLS = &tls.ConnectionState{}
+	request.Header.Set("Authorization", "Bearer test")
+	response := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"code":-32001`) || executor.request.Path != "" {
+		t.Fatalf("MCP with non-MCP token response=%d execution=%+v body=%s", response.Code, executor.request, response.Body.String())
+	}
+}
+
+func TestTrustedProxyTakesRightmostUntrustedForwardedSource(t *testing.T) {
+	handler, err := NewHandler(Config{MachineAuthentication: handlerMachineStub{}, AdminAuthentication: handlerAdminStub{}, Management: handlerManagementStub{}, Executor: &handlerExecutorStub{}, SessionCookieName: "session", CSRFCookieName: "csrf", TrustedProxyCIDRs: []string{"192.0.2.0/24"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "http://crm.example.com/api/external/orders", nil)
+	request.RemoteAddr = "192.0.2.10:443"
+	request.Header.Set("X-Forwarded-Proto", "https")
+	request.Header.Set("X-Forwarded-For", "198.51.100.7, 203.0.113.9")
+	source, err := handler.source(request)
+	if err != nil || source != netip.MustParseAddr("203.0.113.9") {
+		t.Fatalf("forwarded source = %v, %v", source, err)
+	}
+	request.Header.Set("X-Forwarded-For", "198.51.100.7, 192.0.2.20")
+	source, err = handler.source(request)
+	if err != nil || source != netip.MustParseAddr("198.51.100.7") {
+		t.Fatalf("trusted intermediary source = %v, %v", source, err)
 	}
 }

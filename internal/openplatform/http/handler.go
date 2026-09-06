@@ -12,34 +12,22 @@ import (
 	"net/netip"
 	"strings"
 
-	accessapp "github.com/qianlan33333-png/AI-CRM-v3/internal/access/app"
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
+	accessport "github.com/qianlan33333-png/AI-CRM-v3/internal/access/port"
 	openplatformport "github.com/qianlan33333-png/AI-CRM-v3/internal/openplatform/port"
 )
 
 const maxBodyBytes int64 = 64 << 10
-
-type MachineAuthentication interface {
-	IssueClientCredentialsToken(context.Context, accessapp.ClientCredentialsInput) (accessapp.IssuedAccessToken, error)
-	AuthenticateBearer(context.Context, string, string, netip.Addr) (accessdomain.MachinePrincipal, error)
-}
 
 type AdminAuthentication interface {
 	Authenticate(context.Context, string) (accessdomain.Principal, error)
 	AuthorizeCSRF(context.Context, string, string, string) (accessdomain.Principal, error)
 }
 
-type MachineManagement interface {
-	Create(context.Context, accessdomain.Principal, accessapp.CreateMachineClientInput) (accessapp.IssuedMachineClient, error)
-	List(context.Context, accessdomain.Principal) ([]accessapp.MachineClientSummary, error)
-	Rotate(context.Context, accessdomain.Principal, string) (accessapp.IssuedMachineClient, error)
-	SetEnabled(context.Context, accessdomain.Principal, string, bool) (accessapp.MachineClientSummary, error)
-}
-
 type Config struct {
-	MachineAuthentication MachineAuthentication
+	MachineAuthentication accessport.MachineTokenIssuer
 	AdminAuthentication   AdminAuthentication
-	Management            MachineManagement
+	Management            accessport.MachineManagement
 	Executor              openplatformport.Executor
 	SessionCookieName     string
 	CSRFCookieName        string
@@ -47,9 +35,9 @@ type Config struct {
 }
 
 type Handler struct {
-	machine        MachineAuthentication
+	machine        accessport.MachineTokenIssuer
 	admin          AdminAuthentication
-	management     MachineManagement
+	management     accessport.MachineManagement
 	executor       openplatformport.Executor
 	sessionCookie  string
 	csrfCookie     string
@@ -115,7 +103,7 @@ func (handler *Handler) token(response http.ResponseWriter, request *http.Reques
 		clientID, clientSecret = formID, formSecret
 	}
 	requestedScopes := strings.Fields(request.Form.Get("scope"))
-	issued, err := handler.machine.IssueClientCredentialsToken(request.Context(), accessapp.ClientCredentialsInput{
+	issued, err := handler.machine.IssueClientCredentialsToken(request.Context(), accessport.ClientCredentialsInput{
 		ClientID: clientID, ClientSecret: clientSecret, Audience: request.Form.Get("audience"), RequestedScopes: requestedScopes, SourceIP: source,
 	})
 	if err != nil {
@@ -127,7 +115,7 @@ func (handler *Handler) token(response http.ResponseWriter, request *http.Reques
 }
 
 func (handler *Handler) mcpMetadata(response http.ResponseWriter, request *http.Request) {
-	principal, ok := handler.machinePrincipal(response, request, "mcp", "mcp_read")
+	principal, ok := handler.machinePrincipal(response, request, "mcp", "mcp", "mcp_read")
 	if !ok {
 		return
 	}
@@ -162,7 +150,7 @@ func (handler *Handler) mcp(response http.ResponseWriter, request *http.Request)
 	}
 	bearer := strings.TrimSpace(strings.TrimPrefix(request.Header.Get("Authorization"), "Bearer "))
 	principal, authErr := handler.machine.AuthenticateBearer(request.Context(), bearer, "mcp", source)
-	if authErr != nil || !principal.HasCapability(capability) {
+	if authErr != nil || !principal.HasScope("mcp") || !principal.HasCapability(capability) {
 		writeJSONRPCError(response, id, -32001, "authentication failed")
 		return
 	}
@@ -170,13 +158,13 @@ func (handler *Handler) mcp(response http.ResponseWriter, request *http.Request)
 	case "initialize":
 		writeJSONRPCResult(response, id, map[string]any{"protocolVersion": "2024-11-05", "serverInfo": map[string]string{"name": "aicrm-v3", "version": "1"}, "capabilities": map[string]any{"tools": map[string]any{}}})
 	case "tools/list":
-		if !principal.HasCapability("mcp_read") {
+		if !principal.HasScope("mcp") || !principal.HasCapability("mcp_read") {
 			writeJSONRPCError(response, id, -32001, "permission denied")
 			return
 		}
 		writeJSONRPCResult(response, id, map[string]any{"tools": mcpTools(principal)})
 	case "tools/call":
-		if !principal.HasCapability("mcp_execute") {
+		if !principal.HasScope("mcp") || !principal.HasCapability("mcp_execute") {
 			writeJSONRPCError(response, id, -32001, "permission denied")
 			return
 		}
@@ -193,7 +181,7 @@ func (handler *Handler) mcp(response http.ResponseWriter, request *http.Request)
 
 func (handler *Handler) external(route Route) http.HandlerFunc {
 	return func(response http.ResponseWriter, request *http.Request) {
-		principal, ok := handler.machinePrincipal(response, request, audienceFor(route), route.Capability)
+		principal, ok := handler.machinePrincipal(response, request, audienceFor(route), scopeFor(route), route.Capability)
 		if !ok {
 			return
 		}
@@ -240,7 +228,7 @@ func (handler *Handler) createClient(response http.ResponseWriter, request *http
 	if !ok {
 		return
 	}
-	var input accessapp.CreateMachineClientInput
+	var input accessport.CreateMachineClientInput
 	if err := decodeJSON(request, &input); err != nil {
 		writeJSON(response, http.StatusBadRequest, map[string]string{"error": "invalid_request"})
 		return
@@ -292,7 +280,7 @@ func (handler *Handler) routes(response http.ResponseWriter, request *http.Reque
 	writeJSON(response, http.StatusOK, map[string]any{"items": Inventory, "count": len(Inventory)})
 }
 
-func (handler *Handler) machinePrincipal(response http.ResponseWriter, request *http.Request, audience, capability string) (accessdomain.MachinePrincipal, bool) {
+func (handler *Handler) machinePrincipal(response http.ResponseWriter, request *http.Request, audience, scope, capability string) (accessdomain.MachinePrincipal, bool) {
 	source, ok := handler.secureSource(response, request)
 	if !ok {
 		return accessdomain.MachinePrincipal{}, false
@@ -307,7 +295,7 @@ func (handler *Handler) machinePrincipal(response http.ResponseWriter, request *
 		writeJSON(response, statusForMachineError(err), map[string]string{"error": "invalid_token"})
 		return accessdomain.MachinePrincipal{}, false
 	}
-	if !principal.HasCapability(capability) {
+	if !principal.HasScope(scope) || !principal.HasCapability(capability) {
 		writeJSON(response, http.StatusForbidden, map[string]string{"error": "permission_denied"})
 		return accessdomain.MachinePrincipal{}, false
 	}
@@ -362,12 +350,29 @@ func (handler *Handler) source(request *http.Request) (netip.Addr, error) {
 	if !handler.isTrustedProxy(remote) || request.Header.Get("X-Forwarded-Proto") != "https" {
 		return netip.Addr{}, errHTTPSRequired
 	}
-	forwarded := strings.TrimSpace(strings.Split(request.Header.Get("X-Forwarded-For"), ",")[0])
-	client, err := netip.ParseAddr(forwarded)
-	if err != nil {
-		return netip.Addr{}, err
+	return handler.forwardedSource(request.Header.Get("X-Forwarded-For"))
+}
+
+// forwardedSource walks right to left. Each configured proxy hop is removed
+// before selecting the first untrusted address, because a client can prepend
+// arbitrary X-Forwarded-For values before the trusted proxy appends its peer.
+func (handler *Handler) forwardedSource(value string) (netip.Addr, error) {
+	hops := strings.Split(value, ",")
+	if len(hops) == 0 || strings.TrimSpace(value) == "" {
+		return netip.Addr{}, errors.New("missing forwarded source")
 	}
-	return client, nil
+	for index := len(hops) - 1; index >= 0; index-- {
+		hop := strings.TrimSpace(hops[index])
+		candidate, err := netip.ParseAddr(hop)
+		if err != nil {
+			return netip.Addr{}, err
+		}
+		if handler.isTrustedProxy(candidate) {
+			continue
+		}
+		return candidate, nil
+	}
+	return netip.Addr{}, errors.New("forwarded source is only trusted proxies")
 }
 
 func (handler *Handler) isTrustedProxy(address netip.Addr) bool {

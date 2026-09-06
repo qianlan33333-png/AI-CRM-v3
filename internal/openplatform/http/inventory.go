@@ -9,6 +9,19 @@ type Route struct {
 	Capability string `json:"capability"`
 }
 
+// scopeFor keeps the frozen protocol vocabulary separate from the client
+// capability grant. A read-scoped token cannot use a write grant that its
+// parent client also happens to have.
+func scopeFor(route Route) string {
+	if route.Path == "/mcp" {
+		return "mcp"
+	}
+	if route.Method == "GET" {
+		return "read"
+	}
+	return "write"
+}
+
 var Inventory = []Route{
 	{"GET", "/mcp", "mcp_read"},
 	{"POST", "/mcp", "mcp_execute"},
