@@ -115,6 +115,22 @@ openPlatformHTML = openPlatformHTML.replace(frozenAdminReference, `<script type=
 fs.writeFileSync(openPlatformDocument, openPlatformHTML);
 manifest.release_files['admin/apidocs.html'] = metadataFor(Buffer.from(openPlatformHTML));
 
+// The frozen shell keeps its navigation markup byte-for-byte in the donor
+// source. Adapt its generated release documents instead: Operation Cycles is
+// V3-hosted at the canonical route, while /admin/cycles.html intentionally
+// remains an unavailable retired document in the Composition Root.
+const operationCyclesHref = '/admin/operation-cycles';
+const adminOutput = path.join(dist, 'admin');
+for (const documentName of fs.readdirSync(adminOutput).filter((name) => name.endsWith('.html'))) {
+  const documentPath = path.join(adminOutput, documentName);
+  let documentHTML = fs.readFileSync(documentPath, 'utf8');
+  if (!documentHTML.includes('href="cycles.html"')) continue;
+  documentHTML = documentHTML.replaceAll('href="cycles.html"', `href="${operationCyclesHref}"`);
+  if (documentHTML.includes('href="cycles.html"') || !documentHTML.includes(`href="${operationCyclesHref}"`)) throw new Error(`${documentName} did not receive the canonical Operation Cycles navigation link`);
+  fs.writeFileSync(documentPath, documentHTML);
+  manifest.release_files[`admin/${documentName}`] = metadataFor(Buffer.from(documentHTML));
+}
+
 const sidebarHost = manifest.entries.sidebarHost;
 const frozenSidebar = manifest.entries.sidebar;
 if (typeof sidebarHost !== 'string' || typeof frozenSidebar !== 'string') throw new Error('sidebar Host or frozen entry is absent from manifest');

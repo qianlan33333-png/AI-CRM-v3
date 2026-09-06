@@ -42,6 +42,9 @@ for (const page of adminPages) {
   const relative = `admin/${page}`;
   assert.deepEqual(stagedManifest.release_files?.[relative], sourceManifest.release_files?.[relative], `staged release metadata drifted for ${relative}`);
   assert.ok(fs.readFileSync(path.join(stage, relative)).equals(fs.readFileSync(path.join(source, relative))), `staged admin document drifted for ${relative}`);
+  const html = fs.readFileSync(path.join(stage, relative), 'utf8');
+  assert.ok(!html.includes('href="cycles.html"'), `staged ${relative} still routes its Operation Cycles menu to the retired document`);
+  if (html.includes('运营闭环')) assert.ok(html.includes('href="/admin/operation-cycles"'), `staged ${relative} omitted the canonical Operation Cycles menu route`);
 }
 
 const openPlatformEntry = sourceManifest.entries?.openPlatformHost;

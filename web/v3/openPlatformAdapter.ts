@@ -274,6 +274,10 @@ async function boot(): Promise<void> {
   const query = new URLSearchParams(window.location.search);
   let selectedID = query.get('client') || '';
   let selectedClient: ClientSummary | undefined;
+  // A selected caller has a second, authoritative detail request. Keep the
+  // create controls out of the DOM until it settles so a refresh cannot erase
+  // values an administrator has already entered.
+  let selectedClientLoading = false;
   let clients: ClientSummary[] = [];
   let catalog: OperationDescriptor[] = [];
   let issued: IssuedSecret | null = null;
@@ -288,18 +292,23 @@ async function boot(): Promise<void> {
   const loadSelected = async (): Promise<void> => {
     const clientID = selectedID;
     selectedClient = undefined;
+    if (!clientID) {
+      selectedClientLoading = false;
+      render();
+      return;
+    }
+    selectedClientLoading = true;
     render();
-    if (!clientID) return;
     try {
       const detail = await request<{ client: ClientSummary }>(`/api/admin/open-platform/clients/${encodeURIComponent(clientID)}`);
       if (selectedID !== clientID) return;
       selectedClient = detail.client;
-      render();
     } catch {
       if (selectedID !== clientID) return;
       selectedClient = undefined;
-      render();
     }
+    selectedClientLoading = false;
+    render();
   };
 
   const refresh = async (): Promise<void> => {
@@ -507,7 +516,14 @@ async function boot(): Promise<void> {
       row.addEventListener('click', () => choose(client.client_id)); clientList.append(row);
     }
     if (!clients.length) clientList.append(element('p', '尚无 V1 调用方。'));
-    list.append(clientList, renderCreate());
+    list.append(clientList);
+    if (selectedClientLoading) {
+      const loading = element('p', '正在加载调用方详情…');
+      loading.className = 'open-platform-empty';
+      list.append(loading);
+    } else {
+      list.append(renderCreate());
+    }
     const detailColumn = element('div'); detailColumn.className = 'open-platform-list';
     detailColumn.append(renderDetail(selectedClient), renderCatalog());
     layout.append(list, detailColumn); root.append(layout);

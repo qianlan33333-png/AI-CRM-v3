@@ -1500,7 +1500,7 @@ func composeWithWeComClientFactory(ctx context.Context, cfg platformconfig.Runti
 		return renderer.RenderOperationCycles(writer, webshell.AdminPageForRequest(request, "运营闭环", "运营周期、执行事实与复盘记录。", "api.admin_operation_cycles_page"), page, donorTemplate, webshell.OperationCycleAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, HostJS: assets.HostJS})
 	})
 	ownerHandoffUI := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/admin/owner-migration" {
+		if !isOwnerHandoffUIRequest(request) {
 			http.NotFound(writer, request)
 			return
 		}
@@ -1790,12 +1790,25 @@ func routeApplicationWithMedia(health, access, identity, effects, pushCenter, ef
 
 func mountOwnerHandoffUI(next, ui http.Handler) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path == "/admin/owner-migration" {
+		if isOwnerHandoffUIRequest(request) {
 			ui.ServeHTTP(writer, request)
 			return
 		}
 		next.ServeHTTP(writer, request)
 	})
+}
+
+// isOwnerHandoffUIPath identifies the canonical owner-handoff Host route and
+// the frozen new-shell navigation's ownerMig.html alias.
+func isOwnerHandoffUIPath(path string) bool {
+	return path == "/admin/owner-migration" || path == "/admin/ownerMig.html"
+}
+
+// isOwnerHandoffUIRequest reserves the menu alias for the V3 Host while
+// retaining the existing V1 contact-history read-only entry on ownerMig.html.
+// That history entry never mounts the mutation-capable Host.
+func isOwnerHandoffUIRequest(request *http.Request) bool {
+	return isOwnerHandoffUIPath(request.URL.Path) && request.URL.Query().Get("contact_history") != "1"
 }
 
 func mountMemberGridUI(next, ui http.Handler) http.Handler {
@@ -2098,7 +2111,7 @@ func securityHeaders(next http.Handler) http.Handler {
 		// Built new-shell documents embed presentational inline style attributes
 		// (icon layout) and therefore share the donor pages' style relaxation.
 		_, distAdminPage := webshell.DistAdminPageFile("web/dist", request.URL.Path)
-		ownerHandoffPage := request.URL.Path == "/admin/owner-migration"
+		ownerHandoffPage := isOwnerHandoffUIPath(request.URL.Path)
 		if (request.URL.Path == "/admin/campaigns.html" && externaleffects.ValidUIQuery(request.URL.Query())) || hxcPage || mediaPage || tagsPage || productPage || orderPage || couponPage || groupOpsPage || automationPage || surveyPage || operationCyclesPage || configPage || aiAssistantPage || ownerHandoffPage || distAdminPage {
 			styleSource = "'self' 'unsafe-inline'"
 		}

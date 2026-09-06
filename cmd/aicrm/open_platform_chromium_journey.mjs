@@ -137,15 +137,22 @@ try {
   progress("browser_ready");
   const resources = new Map(); const requests = new Map(); const exceptions = [];
   cdp.on("Network.requestWillBeSent", (params) => {
-    try { requests.set(String(params.requestId || ""), { method: String(params.request?.method || ""), pathname: new URL(String(params.request?.url || "")).pathname }); } catch (_) {}
+    try {
+      const requestID=String(params.requestId || "");
+      const method=String(params.request?.method || "");
+      const pathname=new URL(String(params.request?.url || "")).pathname;
+      requests.set(requestID, { method, pathname });
+      if (method === "GET" && pathname === "/api/admin/open-platform/clients/browser-open-empty-cidr-probe") resources.set(`GET:${pathname}`, { requestID, status: 0 });
+    } catch (_) {}
   });
   cdp.on("Runtime.exceptionThrown", (params) => { const detail = params.exceptionDetails || {}; const kind = String(detail.exception?.className || detail.text || "runtime_exception").replace(/[^a-zA-Z0-9_.-]/g, "_").slice(0, 96); if (exceptions.length < 8) exceptions.push(kind); });
   cdp.on("Network.responseReceived", (params) => { try {
     const pathname = new URL(String(params.response?.url || "")).pathname;
     const status = Number(params.response?.status) || 0;
     if (pathname.startsWith("/assets/")) resources.set("/assets/", status);
-    if (pathname === "/api/admin/open-platform/clients" || pathname === "/api/admin/open-platform/routes") resources.set(pathname, status);
     const request = requests.get(String(params.requestId || ""));
+    if (pathname === "/api/admin/open-platform/clients" || pathname === "/api/admin/open-platform/routes") resources.set(pathname, status);
+    if (pathname === "/api/admin/open-platform/clients" && request?.method === "POST") resources.set(`POST:${pathname}`, { status, requestID: String(params.requestId || "") });
     if (pathname === "/api/admin/open-platform/clients/browser-open-agent/activate") resources.set(pathname, { status, requestID: String(params.requestId || "") });
     if (pathname === "/api/admin/open-platform/clients/browser-open-agent" && request?.method === "PATCH") resources.set(`PATCH:${pathname}`, { status, requestID: String(params.requestId || "") });
   } catch (_) {} });
@@ -156,10 +163,27 @@ try {
   await evaluate(cdp, `(() => { document.querySelector('input[name="username"]').value=${JSON.stringify(username)}; document.querySelector('input[name="password"]').value=${JSON.stringify(password)}; document.querySelector('form[action="/login"]').requestSubmit(); return true; })()`);
   const frame = await login;
   if (new URL(frame.frame.url).pathname !== "/admin/apidocs.html") throw new Error("login did not redirect to the V1 caller page");
-  try { await waitFor(cdp, "Boolean(document.querySelector('[data-open-platform-host=\"v1\"] [data-open-platform-create=\"client_id\"]'))", "authenticated V1 caller Host did not render"); }
+  // The fixture deliberately delays this selected detail GET. A writable
+  // create form during that gap would let a real administrator type into a DOM
+  // node that the eventual detail render replaces.
+  const delayedDetailPath = "GET:/api/admin/open-platform/clients/browser-open-empty-cidr-probe";
+  await waitForResource(resources, delayedDetailPath, "selected caller detail request did not begin");
+  const createDuringDetail = await evaluate(cdp, "Boolean(document.querySelector('[data-open-platform-create=\"client_id\"]'))");
+  if (createDuringDetail) throw new Error("Open Platform create form was writable before selected detail completed");
+  // Wait for the settled detail and catalog controls together; a later render
+  // must never replace a form between filling it and its create action.
+  const authenticatedHostReady = `(() => {
+    const root=document.querySelector('[data-open-platform-host="v1"]');
+    const client=root?.querySelector('[data-open-platform-client="browser-open-empty-cidr-probe"]');
+    const form=root?.querySelector('[data-open-platform-create="client_id"]');
+    const capabilities=root ? [...root.querySelectorAll('input[name="create-capability"]')].map(input=>input.value).sort() : [];
+    const csrf=String(document.cookie||'').split(';').some(part=>part.trim().startsWith('aicrm_admin_csrf=')) || String(document.cookie||'').split(';').some(part=>part.trim().startsWith('aicrm_csrf='));
+    return Boolean(root && client && form && csrf && capabilities.length===6 && capabilities.includes('platform.capabilities.read'));
+  })()`;
+  try { await waitFor(cdp, authenticatedHostReady, "authenticated V1 caller Host did not finish loading"); }
   catch (_) {
-    const state = await evaluate(cdp, "(() => ({path:location.pathname,stage:Boolean(document.querySelector('#stage')),host:Boolean(document.querySelector('[data-open-platform-host=\\\"v1\\\"]'))}))()");
-    throw new Error(`authenticated V1 caller Host did not render: path=${state?.path || "unavailable"} stage=${Boolean(state?.stage)} host=${Boolean(state?.host)} assets=${resources.get("/assets/") || 0} clients=${resources.get("/api/admin/open-platform/clients") || 0} catalog=${resources.get("/api/admin/open-platform/routes") || 0} exceptions=${exceptions.length ? exceptions.join(",") : "none"}`);
+    const state = await evaluate(cdp, "(() => ({path:location.pathname,stage:Boolean(document.querySelector('#stage')),host:Boolean(document.querySelector('[data-open-platform-host=\"v1\"]')),detail:Boolean(document.querySelector('[data-open-platform-client=\"browser-open-empty-cidr-probe\"]')),create:Boolean(document.querySelector('[data-open-platform-create=\"client_id\"]')),capabilities:document.querySelectorAll('input[name=\"create-capability\"]').length,csrf:Boolean(String(document.cookie||'').split(';').some(part=>part.trim().startsWith('aicrm_admin_csrf=')||part.trim().startsWith('aicrm_csrf=')))}))()");
+    throw new Error(`authenticated V1 caller Host did not finish loading: path=${state?.path || "unavailable"} stage=${Boolean(state?.stage)} host=${Boolean(state?.host)} detail=${Boolean(state?.detail)} create=${Boolean(state?.create)} capabilities=${Number(state?.capabilities) || 0} csrf=${Boolean(state?.csrf)} assets=${resources.get("/assets/") || 0} clients=${resources.get("/api/admin/open-platform/clients") || 0} catalog=${resources.get("/api/admin/open-platform/routes") || 0} exceptions=${exceptions.length ? exceptions.join(",") : "none"}`);
   }
   progress("authenticated_host");
 
@@ -172,8 +196,12 @@ try {
     document.querySelector('input[name="create-capability"][value="platform.capabilities.read"]').checked=true;
     return true;
   })()`);
+  const createPath = "POST:/api/admin/open-platform/clients";
+  resources.delete(createPath);
   if (!await click("创建并显示一次密钥")) throw new Error("create action was unavailable");
-  await waitFor(cdp, "Boolean(document.querySelector('[data-open-platform-secret=\"browser-open-agent\"] .open-platform-secret'))", "create did not display a one-time credential");
+  const createResponse = await waitForResource(resources, createPath, "create did not issue its POST request");
+  if (createResponse.status !== 201) throw new Error(`create status=${createResponse.status} category=${await activationFailureCategory(cdp, createResponse)}`);
+  await waitFor(cdp, "Boolean(document.querySelector('[data-open-platform-secret=\"browser-open-agent\"] .open-platform-secret'))", "create succeeded but did not display a one-time credential");
   const firstSecret = await evaluate(cdp, "document.querySelector('[data-open-platform-secret=\"browser-open-agent\"] .open-platform-secret')?.textContent || ''");
   if (!firstSecret) throw new Error("one-time credential was empty");
   progress("issued");

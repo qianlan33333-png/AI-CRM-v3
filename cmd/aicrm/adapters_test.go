@@ -395,10 +395,42 @@ func TestSecurityHeadersAllowFrozenOperationCycleInlineStylesOnBothPagesOnly(t *
 	}
 }
 
+func TestOwnerHandoffUIMountRetainsContactHistoryReadOnlyEntry(t *testing.T) {
+	var hostCalls, historyCalls int
+	host := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		hostCalls++
+		writer.Header().Set("X-Owner-Handoff", "host")
+	})
+	history := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Query().Get("contact_history") != "1" {
+			t.Fatalf("history fallback query=%q", request.URL.RawQuery)
+		}
+		historyCalls++
+		writer.Header().Set("X-Owner-Handoff", "history-read-only")
+	})
+	handler := mountOwnerHandoffUI(history, host)
+
+	for path, want := range map[string]string{
+		"/admin/ownerMig.html":                   "host",
+		"/admin/owner-migration":                 "host",
+		"/admin/ownerMig.html?contact_history=1": "history-read-only",
+	} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		if got := response.Header().Get("X-Owner-Handoff"); got != want {
+			t.Fatalf("path=%s owner=%q want=%q", path, got, want)
+		}
+	}
+	if hostCalls != 2 || historyCalls != 1 {
+		t.Fatalf("host=%d history=%d", hostCalls, historyCalls)
+	}
+}
+
 func TestSecurityHeadersAllowFrozenOwnerHandoffInlineStylesOnlyOnOwnerPage(t *testing.T) {
 	handler := securityHeaders(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	for path, allowed := range map[string]bool{
 		"/admin/owner-migration":                      true,
+		"/admin/ownerMig.html":                        true,
 		"/admin/owner-migration/unsafe":               false,
 		"/api/admin/customers/owner-handoffs":         false,
 		"/static/admin_console/owner_handoff_host.js": false,

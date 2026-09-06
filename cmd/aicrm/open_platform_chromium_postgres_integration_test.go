@@ -177,7 +177,16 @@ func newOpenPlatformChromiumFixture(t *testing.T) *openPlatformChromiumFixture {
 		t.Fatalf("outer composed Open Platform Host status=%d api_docs=%t host_asset=%t", outer.Code, bytes.Contains(outer.Body.Bytes(), []byte(`data-page="apidocs"`)), bytes.Contains(outer.Body.Bytes(), []byte("openPlatformHost-")))
 	}
 	t.Log("open platform Chromium: outer route and management detail preflight passed")
-	server.Config.Handler = application.handler
+	// The Host must not expose a writable create form while this selected detail
+	// request is outstanding. Delay only the browser server's probe detail read;
+	// the direct preflight above remains the ordinary Composition contract.
+	const selectedDetailPath = "/api/admin/open-platform/clients/browser-open-empty-cidr-probe"
+	server.Config.Handler = http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method == http.MethodGet && request.URL.Path == selectedDetailPath {
+			time.Sleep(250 * time.Millisecond)
+		}
+		application.handler.ServeHTTP(writer, request)
+	})
 	server.StartTLS()
 	return &openPlatformChromiumFixture{
 		ctx:         ctx,
