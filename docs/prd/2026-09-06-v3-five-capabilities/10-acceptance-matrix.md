@@ -4,11 +4,11 @@
 
 | 板块 | PRD | 当前实现证据 | 完整板块 PR / 最新已知 HEAD | 根审核与剩余项 |
 |---|---|---|---|---|
-| 负责人迁移 | 01 已批准 | 两模式、真实 River/Provider fixture、并发互斥已有测试 | #171 `f711900f5383845c29689f60595abb97731bf5a4` | 未通过整板块：20k本地恢复与101人仅2次Provider/重启、partial/missing已独立PG验证；组合测试边界已修；当前Chrome local_only预览未保存，旧页面复用/执行结果旅程及最终CI待收口 |
+| 负责人迁移 | 01 已批准 | 两模式、真实 River/Provider fixture、并发互斥已有测试 | #171 `f711900f5383845c29689f60595abb97731bf5a4` | 未通过整板块：20k本地恢复与101人仅2次Provider/重启、partial/missing已独立PG验证；组合测试边界已修；早期Chrome失败已定点修复；当前本地正在对齐main8ec5072，运行装配/两模式与Excel完整Chrome及最终CI待收口 |
 | 通用客户标签 | 02 已批准 | 根独立 PG/race、历史/101恢复/来源门禁、真实 Chromium 与全量 CI 通过 | #169 `6f4b63c53c000cbc1c523ece78a9fec37147b735` 已合并 | 整板块代码验收通过；main 8ec5072d169c25abd25f80e29cb9f6222834b320；部署及真实业务验收另记 |
 | 配置中心运行生效 | 05 已批准 | 根独立PG/race、实际消费者/历史/制品及真实Chrome完整CI通过 | #170 `07b0af371db7a97620924a34ee5975a74c775d39` 已合并 | 整板块代码验收通过；main 5494537fb4d95a916c2754a3c1387335905d2861，部署及生产发布另记 |
-| 商品／订单外推 | 04 已批准 | Terra xhigh 开发中，实际paid/测试投递首checkpoint已提交 | #172 `424b805277765744ba9b121ac5c3fa30d54f16bf` | 分支已吸收main5494537（本PR未合并）；paid协议/业务参数/CAS/未配置订单路径根PG/race通过；浏览器JSON无损编辑、历史/Chromium/制品继续 |
-| 通用开放平台 | 03及03a 已批准 | 冻结56条method/path；Terra xhigh已派发 | #173 `ecf86c2d2445091cb7567a9eed48e84553790f7d`（开发checkpoint） | 跨域import/scope收窄/代理来源已修；旧MCP模板与生命周期、业务装配/UI/历史仍在同PR继续 |
+| 商品／订单外推 | 04 已批准 | Terra xhigh 开发中，实际paid/测试投递首checkpoint已提交 | #172 `c90a7c2b60adb5a624e06d362cb88810b4327e1e` | 已对齐main8ec5072；新参数改造后完整付款旅程出现投递0次，准确原因为业务参数进入目标policy摘要但运行配置未包含；修复后须重新验证完整付款到投递。历史/订单结果读取/Chromium继续 |
+| 通用开放平台 | 03及03a 已批准 | 冻结56条method/path；Terra xhigh已派发 | #173 `ba0155a16d366889573697a12dbd05e50e12d776`（开发checkpoint） | 鉴权管理根PG/race增量通过；缺身份scope阻断普通后台启动已修，最新CI进行中。56路由装配、原协议兼容、历史跨快照幂等及旧客户授权scope映射、浏览器仍未闭环 |
 
 共用验收：完整路由/Composition、冻结供体复用、PG原子性/并发/重启、身份权限、未知结果、历史零新效果。各PR需链接实际日志/测试/浏览器证据，跳过与Mock明确标识。
 
@@ -93,3 +93,12 @@
 - 开放平台本地 checkpoint `5f2b3b6628ac8f77a5277ba9f8bc5453da58c0fa`：根独立 clone/随机真实PG数据库运行 TestOpenPlatformMachineManagementPostgreSQLJourney -race -count=1 通过，无skip。覆盖两个调用方完整 grants、管理列表、并发轮换/停用和 audit 失败回滚；修复未关闭外层 rows 又查询 grants 的 pgx conn busy。日志 aicrm-five-open-auth-5f2-root-review.log。该证据仅覆盖授权管理增量，不等于完整56路由、历史和浏览器验收；本地checkpoint不冒充GitHub已推HEAD。
 - 商品外推 PR #172 准确 `424b805277765744ba9b121ac5c3fa30d54f16bf`：根独立PG/race通过 BusinessParametersRoundTrip、FirstBusinessSaveCAS、UnconfiguredPaidOrderPlansDisabledCommercePushOnce。首次无配置revision0，两管理员保存只有一个成功；无配置paid事件保持planned_disabled/replay幂等且无EER。日志 aicrm-five-push-424-root-review.log，根临时数据库已清理。HTTP/Store/receipt使用无损数字后，浏览器textarea仍须修复JSON.parse导致的数值损失；历史、真实Chromium和制品闭环继续，未准予整板块。
 - 标签 main8ec5072 流水线34028859329的check已通过，自动deploy进行中，尚未核对新版本线上ready。此前配置main5494537上线核实仍有效，不以当前部署开始作为标签已上线证据。
+
+## 当前审核修正（2026-09-06 11:54 UTC）
+
+旧供体 remote 再次核实为用户提供的 https://github.com/qianlan33333-png/AI-CRM.git，冻结提交仍为 dd8d60dd8ddb983aca2ec88cc9e65a9f7563f79f，不临时改成浮动分支。
+
+- #171 本地已完成对齐main8ec5072，处理实际Composition编译遗漏后才重跑全量CI。旧员工选择器、Excel模板/CSV与.xls别名、全量范围均按旧供体修复；新的全量范围PG专项已由执行者通过，根审核及真实Chrome仍待准确最终HEAD。
+- #172 c90a7c2 CI34030684616准确失败为 TestPostgreSQLCommerceFundsHTTPJourney: signed commerce provider deliveries=0。根定位到商品业务参数与受控目标policy摘要边界不一致，已派修复；不得删目标撤销检查或重读当前商品配置替换旧任务冻结载荷。之前687/424的局部通过不能覆盖此新回归。
+- #173 ba0155a 修复缺WeComScope导致普通后台装配失败，以及原operation-cycle固定token（包括含点token）/AI签名与通用机器鉴权的路由归属；需最新LinuxCI与真实旧handler协议回归。历史导入尚有两项阻断：来源Git SHA不能代替独立业务快照ID，跨批次源行须全局幂等；旧owner_scope中的客户数字ID不能直接解释为V3 OneID，须经既有可信映射，未映射不可因轮换密钥而激活。
+- 标签main34028859329 check成功，自动部署仍处于Install versioned release；未记录为已上线。配置5494537的此前线上ready证据有效。无人工生产配置、历史导入或真实Provider操作。
