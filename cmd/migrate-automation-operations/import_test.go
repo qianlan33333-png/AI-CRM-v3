@@ -293,6 +293,7 @@ func TestImportDryRunApplyReplayAndReconcilePostgreSQL(t *testing.T) {
 	if lifecycle != "paused" || member != customerID {
 		t.Fatalf("lifecycle=%s member=%d want=%d", lifecycle, member, customerID)
 	}
+	assertImportedAudienceActor(t, ctx, pool, actorID)
 	var historyRows, readOnlyRows, replayableRows, effectDigests, effects, riverJobs int
 	if err = pool.QueryRow(ctx, `SELECT count(*),count(*) FILTER (WHERE read_only),count(*) FILTER (WHERE replayable),count(*) FILTER (WHERE source_effect_digest IS NOT NULL) FROM automation_operations_legacy_history`).Scan(&historyRows, &readOnlyRows, &replayableRows, &effectDigests); err != nil {
 		t.Fatal(err)
@@ -598,6 +599,33 @@ func executeImportCommand(t *testing.T, command string, args ...string) Report {
 		t.Fatalf("decode %s report: %v", command, err)
 	}
 	return report
+}
+
+func assertImportedAudienceActor(t *testing.T, ctx context.Context, pool *pgxpool.Pool, actorID int64) {
+	t.Helper()
+	wantRef := fmt.Sprintf("admin:%d", actorID)
+	projections := []struct {
+		name  string
+		query string
+	}{
+		{"group created", `SELECT created_by,created_actor_kind,created_actor_ref FROM segment_audience_groups WHERE name='Migrated'`},
+		{"group updated", `SELECT updated_by,updated_actor_kind,updated_actor_ref FROM segment_audience_groups WHERE name='Migrated'`},
+		{"package created", `SELECT created_by,created_actor_kind,created_actor_ref FROM segment_audience_packages WHERE code='v2-audience-10'`},
+		{"package updated", `SELECT updated_by,updated_actor_kind,updated_actor_ref FROM segment_audience_packages WHERE code='v2-audience-10'`},
+		{"configuration", `SELECT c.created_by,c.created_actor_kind,c.created_actor_ref FROM segment_audience_configuration_versions c JOIN segment_audience_packages p ON p.id=c.package_id WHERE p.code='v2-audience-10'`},
+		{"binding", `SELECT b.created_by,b.created_actor_kind,b.created_actor_ref FROM segment_audience_automation_binding_versions b JOIN segment_audience_packages p ON p.id=b.package_id WHERE p.code='v2-audience-10'`},
+		{"sender set", `SELECT s.created_by,s.created_actor_kind,s.created_actor_ref FROM segment_audience_sender_sets s JOIN segment_audience_packages p ON p.id=s.package_id WHERE p.code='v2-audience-10'`},
+	}
+	for _, projection := range projections {
+		var gotID int64
+		var gotKind, gotRef string
+		if err := pool.QueryRow(ctx, projection.query).Scan(&gotID, &gotKind, &gotRef); err != nil {
+			t.Fatalf("%s actor projection: %v", projection.name, err)
+		}
+		if gotID != actorID || gotKind != "admin" || gotRef != wantRef {
+			t.Fatalf("%s actor=(%d,%q,%q), want=(%d,%q,%q)", projection.name, gotID, gotKind, gotRef, actorID, "admin", wantRef)
+		}
+	}
 }
 
 func assertReconcileRejected(t *testing.T, ctx context.Context, pool *pgxpool.Pool, batchKey string, snapshot segmentmigration.Snapshot) {
