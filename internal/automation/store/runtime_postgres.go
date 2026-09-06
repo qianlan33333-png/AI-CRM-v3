@@ -165,12 +165,40 @@ func (r *Repository) ActivePoliciesForPackage(ctx context.Context, packageID int
 	}
 	return out, rows.Err()
 }
+
+// EnrollmentForSource returns the immutable enrollment frozen for one exact
+// policy-version/member-event/customer tuple. It is intentionally a stable
+// Automation store read; Config values never participate in this lookup.
+func (r *Repository) EnrollmentForSource(ctx context.Context, policyVersionID int64, sourceEventDigest [32]byte, customerID int64) (automationdomain.Enrollment, bool, error) {
+	t, err := tx(ctx)
+	if err != nil {
+		return automationdomain.Enrollment{}, false, err
+	}
+	var out automationdomain.Enrollment
+	var digest, action, source []byte
+	var kind string
+	err = t.QueryRow(ctx, `SELECT id,policy_id,policy_version_id,source_event_digest,customer_id,action_kind,action_snapshot,action_digest,state,created_at FROM automation_enrollments WHERE policy_version_id=$1 AND source_event_digest=$2 AND customer_id=$3`, policyVersionID, sourceEventDigest[:], customerID).Scan(&out.ID, &out.PolicyID, &out.PolicyVersionID, &source, &out.CustomerID, &kind, &action, &digest, &out.State, &out.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return automationdomain.Enrollment{}, false, nil
+	}
+	if err != nil || len(source) != 32 || len(digest) != 32 {
+		if err != nil {
+			return automationdomain.Enrollment{}, false, err
+		}
+		return automationdomain.Enrollment{}, false, automationapp.ErrRuntimeConflict
+	}
+	copy(out.SourceEventDigest[:], source)
+	copy(out.ActionDigest[:], digest)
+	out.ActionKind = automationport.ActionKind(kind)
+	out.ActionSnapshot = append([]byte(nil), action...)
+	return out, true, nil
+}
+
 func (r *Repository) CreateEnrollment(ctx context.Context, e automationdomain.Enrollment) (automationdomain.Enrollment, bool, error) {
 	t, err := tx(ctx)
 	if err != nil {
 		return e, false, err
 	}
-	actionDigest := e.ActionDigest
 	var digest, action []byte
 	var kind string
 	err = t.QueryRow(ctx, `INSERT INTO automation_enrollments(policy_id,policy_version_id,source_event_digest,customer_id,action_kind,action_snapshot,action_digest,state,created_at) VALUES($1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9) ON CONFLICT(policy_version_id,source_event_digest,customer_id) DO NOTHING RETURNING id,action_kind,action_snapshot,action_digest`, e.PolicyID, e.PolicyVersionID, e.SourceEventDigest[:], e.CustomerID, e.ActionKind, e.ActionSnapshot, e.ActionDigest[:], e.State, e.CreatedAt).Scan(&e.ID, &kind, &action, &digest)
@@ -192,9 +220,9 @@ func (r *Repository) CreateEnrollment(ctx context.Context, e automationdomain.En
 	copy(e.ActionDigest[:], digest)
 	e.ActionKind = automationport.ActionKind(kind)
 	e.ActionSnapshot = action
-	if e.ActionDigest != actionDigest {
-		return e, false, automationapp.ErrRuntimeConflict
-	}
+	// The application validates immutable Segment fields after this concurrent
+	// re-read. It must not compare the new action digest because that digest
+	// intentionally includes the Config revision frozen only on first delivery.
 	return e, false, nil
 }
 func (r *Repository) RuntimeReceipt(ctx context.Context, operation, actorScope string, keyDigest, payloadDigest [32]byte) (automationapp.RuntimeReceipt, bool, error) {
@@ -280,7 +308,7 @@ func (r *Repository) CreatePreview(ctx context.Context, p automationdomain.RunPr
 	if e != nil {
 		return p, e
 	}
-	e = t.QueryRow(ctx, `INSERT INTO automation_run_previews(package_id,package_version,snapshot_id,configuration_version_id,agent_id,agent_published_version,binding_version,sender_set_version,target_count,skipped_count,preview_digest,created_by,created_at,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING id`, p.PackageID, p.PackageVersion, p.SnapshotID, p.ConfigurationVersionID, p.AgentID, p.AgentPublishedVersion, p.BindingVersion, p.SenderSetVersion, p.TargetCount, p.SkippedCount, p.PreviewDigest[:], p.CreatedBy, p.CreatedAt, p.ExpiresAt).Scan(&p.ID)
+	e = t.QueryRow(ctx, `INSERT INTO automation_run_previews(package_id,package_version,snapshot_id,configuration_version_id,agent_id,agent_published_version,binding_version,sender_set_version,target_count,skipped_count,runtime_config_observed,runtime_config_revision,max_recipients_per_run,preview_digest,created_by,created_at,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING id`, p.PackageID, p.PackageVersion, p.SnapshotID, p.ConfigurationVersionID, p.AgentID, p.AgentPublishedVersion, p.BindingVersion, p.SenderSetVersion, p.TargetCount, p.SkippedCount, p.RuntimeConfigObserved, nullableRuntimeRevision(p.RuntimeConfigObserved, p.RuntimeConfigRevision), nullableRuntimeLimit(p.RuntimeConfigObserved, p.MaxRecipientsPerRun), p.PreviewDigest[:], p.CreatedBy, p.CreatedAt, p.ExpiresAt).Scan(&p.ID)
 	if unique(e) {
 		return p, automationapp.ErrRuntimeConflict
 	}
@@ -293,7 +321,7 @@ func (r *Repository) PreviewByDigest(ctx context.Context, digest [32]byte) (auto
 	}
 	var p automationdomain.RunPreview
 	var d []byte
-	e = t.QueryRow(ctx, `SELECT id,package_id,package_version,snapshot_id,configuration_version_id,agent_id,agent_published_version,binding_version,sender_set_version,target_count,skipped_count,preview_digest,created_by,created_at,expires_at FROM automation_run_previews WHERE preview_digest=$1`, digest[:]).Scan(&p.ID, &p.PackageID, &p.PackageVersion, &p.SnapshotID, &p.ConfigurationVersionID, &p.AgentID, &p.AgentPublishedVersion, &p.BindingVersion, &p.SenderSetVersion, &p.TargetCount, &p.SkippedCount, &d, &p.CreatedBy, &p.CreatedAt, &p.ExpiresAt)
+	e = t.QueryRow(ctx, `SELECT id,package_id,package_version,snapshot_id,configuration_version_id,agent_id,agent_published_version,binding_version,sender_set_version,target_count,skipped_count,runtime_config_observed,COALESCE(runtime_config_revision,0),COALESCE(max_recipients_per_run,0),preview_digest,created_by,created_at,expires_at FROM automation_run_previews WHERE preview_digest=$1`, digest[:]).Scan(&p.ID, &p.PackageID, &p.PackageVersion, &p.SnapshotID, &p.ConfigurationVersionID, &p.AgentID, &p.AgentPublishedVersion, &p.BindingVersion, &p.SenderSetVersion, &p.TargetCount, &p.SkippedCount, &p.RuntimeConfigObserved, &p.RuntimeConfigRevision, &p.MaxRecipientsPerRun, &d, &p.CreatedBy, &p.CreatedAt, &p.ExpiresAt)
 	if errors.Is(e, pgx.ErrNoRows) {
 		return p, automationapp.ErrRuntimeNotFound
 	}
@@ -305,7 +333,7 @@ func (r *Repository) CreateRun(ctx context.Context, run automationdomain.Runtime
 	if e != nil {
 		return run, nil, e
 	}
-	e = t.QueryRow(ctx, `INSERT INTO automation_runs(policy_id,policy_version,package_id,package_version,snapshot_id,agent_id,agent_published_version,ai_plan_id,binding_version,sender_set_version,preview_digest,state,target_count,skipped_count,created_by,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$16) RETURNING id`, nullablePositive(run.PolicyID), nullablePositive(run.PolicyVersion), run.PackageID, run.PackageVersion, run.SnapshotID, run.AgentID, run.AgentPublishedVersion, nullablePositive(run.AIPlanID), run.BindingVersion, run.SenderSetVersion, run.PreviewDigest[:], run.State, run.TargetCount, run.SkippedCount, run.CreatedBy, run.CreatedAt).Scan(&run.ID)
+	e = t.QueryRow(ctx, `INSERT INTO automation_runs(policy_id,policy_version,package_id,package_version,snapshot_id,agent_id,agent_published_version,ai_plan_id,binding_version,sender_set_version,runtime_config_observed,runtime_config_revision,max_recipients_per_run,preview_digest,state,target_count,skipped_count,created_by,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$19) RETURNING id`, nullablePositive(run.PolicyID), nullablePositive(run.PolicyVersion), run.PackageID, run.PackageVersion, run.SnapshotID, run.AgentID, run.AgentPublishedVersion, nullablePositive(run.AIPlanID), run.BindingVersion, run.SenderSetVersion, run.RuntimeConfigObserved, nullableRuntimeRevision(run.RuntimeConfigObserved, run.RuntimeConfigRevision), nullableRuntimeLimit(run.RuntimeConfigObserved, run.MaxRecipientsPerRun), run.PreviewDigest[:], run.State, run.TargetCount, run.SkippedCount, run.CreatedBy, run.CreatedAt).Scan(&run.ID)
 	if e != nil {
 		return run, nil, e
 	}
@@ -323,6 +351,18 @@ func (r *Repository) CreateRun(ctx context.Context, run automationdomain.Runtime
 
 func nullablePositive(value int64) any {
 	if value > 0 {
+		return value
+	}
+	return nil
+}
+func nullableRuntimeRevision(observed bool, value int64) any {
+	if observed && value >= 0 {
+		return value
+	}
+	return nil
+}
+func nullableRuntimeLimit(observed bool, value int) any {
+	if observed && value >= 1 {
 		return value
 	}
 	return nil
@@ -375,14 +415,14 @@ func (r *Repository) ProjectMessageCompletion(ctx context.Context, completion ou
 	return e
 }
 
-const runColumns = `id,COALESCE(policy_id,0),COALESCE(policy_version,0),package_id,package_version,snapshot_id,agent_id,agent_published_version,COALESCE(ai_plan_id,0),binding_version,sender_set_version,preview_digest,state,target_count,skipped_count,(SELECT count(*) FROM automation_run_recipients unknown_recipient WHERE unknown_recipient.run_id=automation_runs.id AND unknown_recipient.state='outcome_unknown'),created_by,created_at,updated_at,completed_at`
+const runColumns = `id,COALESCE(policy_id,0),COALESCE(policy_version,0),package_id,package_version,snapshot_id,agent_id,agent_published_version,COALESCE(ai_plan_id,0),binding_version,sender_set_version,runtime_config_observed,COALESCE(runtime_config_revision,0),COALESCE(max_recipients_per_run,0),preview_digest,state,target_count,skipped_count,(SELECT count(*) FROM automation_run_recipients unknown_recipient WHERE unknown_recipient.run_id=automation_runs.id AND unknown_recipient.state='outcome_unknown'),created_by,created_at,updated_at,completed_at`
 
 func scanRun(row pgx.Row) (automationdomain.RuntimeRun, error) {
 	var out automationdomain.RuntimeRun
 	var digest []byte
 	var state string
 	var completed *time.Time
-	e := row.Scan(&out.ID, &out.PolicyID, &out.PolicyVersion, &out.PackageID, &out.PackageVersion, &out.SnapshotID, &out.AgentID, &out.AgentPublishedVersion, &out.AIPlanID, &out.BindingVersion, &out.SenderSetVersion, &digest, &state, &out.TargetCount, &out.SkippedCount, &out.OutcomeUnknownCount, &out.CreatedBy, &out.CreatedAt, &out.UpdatedAt, &completed)
+	e := row.Scan(&out.ID, &out.PolicyID, &out.PolicyVersion, &out.PackageID, &out.PackageVersion, &out.SnapshotID, &out.AgentID, &out.AgentPublishedVersion, &out.AIPlanID, &out.BindingVersion, &out.SenderSetVersion, &out.RuntimeConfigObserved, &out.RuntimeConfigRevision, &out.MaxRecipientsPerRun, &digest, &state, &out.TargetCount, &out.SkippedCount, &out.OutcomeUnknownCount, &out.CreatedBy, &out.CreatedAt, &out.UpdatedAt, &completed)
 	if errors.Is(e, pgx.ErrNoRows) {
 		return out, automationapp.ErrRuntimeNotFound
 	}

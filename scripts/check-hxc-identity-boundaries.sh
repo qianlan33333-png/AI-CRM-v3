@@ -73,3 +73,5 @@ if grep -Ein '(unionid|phone)[[:space:]]+(TEXT|VARCHAR)' migrations/0064_hxc_das
 fi
 
 echo 'HXC dual-key OneID, persistence, and PII boundaries verified'
+
+bash scripts/test-rollout-hxc-identity-v2-contract.sh

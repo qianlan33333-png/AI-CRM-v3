@@ -419,3 +419,147 @@ func (failingProjections) ListReleaseProjections(context.Context) ([]configport.
 func (failingProjections) ListDiagnosticSnapshots(context.Context) ([]configport.DiagnosticProjection, error) {
 	return nil, errors.New("projection store unavailable")
 }
+
+type testRuntimeReleases struct {
+	page      configport.RuntimeReleasePage
+	releases  map[int64]configport.RuntimeRelease
+	usage     []configport.RuntimeUsage
+	created   []configport.RuntimeReleaseDraftCommand
+	validated []configport.RuntimeReleaseMutationCommand
+	published []configport.RuntimeReleasePublishCommand
+	rolled    []configport.RuntimeReleaseRollbackCommand
+}
+
+func (s *testRuntimeReleases) ListRuntimeReleases(context.Context, int) (configport.RuntimeReleasePage, error) {
+	return s.page, nil
+}
+func (s *testRuntimeReleases) RuntimeRelease(_ context.Context, id int64) (configport.RuntimeRelease, error) {
+	out, ok := s.releases[id]
+	if !ok {
+		return configport.RuntimeRelease{}, configport.ErrRuntimeReleaseNotFound
+	}
+	return out, nil
+}
+func (s *testRuntimeReleases) CreateRuntimeReleaseDraft(_ context.Context, command configport.RuntimeReleaseDraftCommand) (configport.RuntimeRelease, error) {
+	s.created = append(s.created, command)
+	out := configport.RuntimeRelease{ID: 1, State: configport.RuntimeReleaseDraft, BaseRevision: command.ExpectedBaseRevision, Settings: command.Settings, Checksum: strings.Repeat("a", 64), CreatedBy: command.Actor}
+	if s.releases == nil {
+		s.releases = map[int64]configport.RuntimeRelease{}
+	}
+	s.releases[out.ID] = out
+	return out, nil
+}
+func (s *testRuntimeReleases) ValidateRuntimeRelease(_ context.Context, command configport.RuntimeReleaseMutationCommand) (configport.RuntimeRelease, error) {
+	s.validated = append(s.validated, command)
+	out, ok := s.releases[command.ReleaseID]
+	if !ok {
+		return out, configport.ErrRuntimeReleaseNotFound
+	}
+	out.State = configport.RuntimeReleaseValidated
+	s.releases[out.ID] = out
+	return out, nil
+}
+func (s *testRuntimeReleases) PublishRuntimeRelease(_ context.Context, command configport.RuntimeReleasePublishCommand) (configport.RuntimeRelease, error) {
+	s.published = append(s.published, command)
+	out, ok := s.releases[command.ReleaseID]
+	if !ok {
+		return out, configport.ErrRuntimeReleaseNotFound
+	}
+	out.State = configport.RuntimeReleasePublished
+	s.releases[out.ID] = out
+	s.page.ActiveRevision = out.ID
+	return out, nil
+}
+func (s *testRuntimeReleases) RollbackRuntimeRelease(_ context.Context, command configport.RuntimeReleaseRollbackCommand) (configport.RuntimeRelease, error) {
+	s.rolled = append(s.rolled, command)
+	out, ok := s.releases[command.ReleaseID]
+	if !ok {
+		return out, configport.ErrRuntimeReleaseNotFound
+	}
+	return out, nil
+}
+func (s *testRuntimeReleases) ListRuntimeUsage(context.Context, int64, int) ([]configport.RuntimeUsage, error) {
+	return s.usage, nil
+}
+
+func TestRuntimeReleaseHTTPJourneyKeepsDraftPublishAndUsageSeparate(t *testing.T) {
+	principal := accessdomain.Principal{InternalID: 7, Kind: accessdomain.KindAdmin, Roles: []accessdomain.Role{accessdomain.RoleAdmin}}
+	runtime := &testRuntimeReleases{page: configport.RuntimeReleasePage{Effective: configport.EffectiveSnapshot{Source: configport.RuntimeSourceEnvironmentDefault, AutomationMaxRecipients: 1}}}
+	h, err := NewHandler(&testSettings{}, &testWizard{}, newTestConfig(), testProjections{}, testSecurity{principal: principal}, runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	list := httptest.NewRecorder()
+	h.ServeHTTP(list, adminSessionRequest(http.MethodGet, "/api/admin/config/runtime-releases", nil))
+	if list.Code != http.StatusOK {
+		t.Fatalf("list=%d %s", list.Code, list.Body.String())
+	}
+	var listBody struct {
+		Action string `json:"admin_action_token"`
+	}
+	if err = json.Unmarshal(list.Body.Bytes(), &listBody); err != nil || len(listBody.Action) != 43 {
+		t.Fatalf("list token=%q err=%v", listBody.Action, err)
+	}
+
+	createBody := `{"expected_base_revision":0,"settings":[{"key":"automation.operations.max_recipients_per_run","value":2}],"admin_action_token":"` + listBody.Action + `"}`
+	created := httptest.NewRecorder()
+	request := adminSessionRequest(http.MethodPost, "/api/admin/config/runtime-releases", strings.NewReader(createBody))
+	request.Header.Set("Idempotency-Key", "runtime-create-0001")
+	h.ServeHTTP(created, request)
+	if created.Code != http.StatusCreated || len(runtime.created) != 1 || runtime.created[0].Actor != "7" || runtime.created[0].ExpectedBaseRevision != 0 || string(runtime.created[0].Settings[0].Value) != "2" || strings.Contains(created.Body.String(), `"published":true`) {
+		t.Fatalf("create=%d body=%s commands=%#v", created.Code, created.Body.String(), runtime.created)
+	}
+
+	detail := httptest.NewRecorder()
+	h.ServeHTTP(detail, adminSessionRequest(http.MethodGet, "/api/admin/config/runtime-releases/1", nil))
+	if detail.Code != http.StatusOK {
+		t.Fatalf("detail=%d %s", detail.Code, detail.Body.String())
+	}
+	var detailBody struct {
+		Actions map[string]string `json:"actions"`
+	}
+	if err = json.Unmarshal(detail.Body.Bytes(), &detailBody); err != nil {
+		t.Fatal(err)
+	}
+	validate := httptest.NewRecorder()
+	request = adminSessionRequest(http.MethodPost, "/api/admin/config/runtime-releases/1/validate", strings.NewReader(`{"admin_action_token":"`+detailBody.Actions["validate"]+`"}`))
+	request.Header.Set("Idempotency-Key", "runtime-validate-0001")
+	h.ServeHTTP(validate, request)
+	if validate.Code != http.StatusOK || len(runtime.validated) != 1 {
+		t.Fatalf("validate=%d %s", validate.Code, validate.Body.String())
+	}
+
+	detail = httptest.NewRecorder()
+	h.ServeHTTP(detail, adminSessionRequest(http.MethodGet, "/api/admin/config/runtime-releases/1", nil))
+	_ = json.Unmarshal(detail.Body.Bytes(), &detailBody)
+	publish := httptest.NewRecorder()
+	request = adminSessionRequest(http.MethodPost, "/api/admin/config/runtime-releases/1/publish", strings.NewReader(`{"expected_base_revision":0,"expected_checksum":"`+strings.Repeat("a", 64)+`","admin_action_token":"`+detailBody.Actions["publish"]+`"}`))
+	request.Header.Set("Idempotency-Key", "runtime-publish-0001")
+	h.ServeHTTP(publish, request)
+	if publish.Code != http.StatusOK || len(runtime.published) != 1 || runtime.published[0].ExpectedChecksum != strings.Repeat("a", 64) || !strings.Contains(publish.Body.String(), `"published":true`) {
+		t.Fatalf("publish=%d %s commands=%#v", publish.Code, publish.Body.String(), runtime.published)
+	}
+
+	usage := httptest.NewRecorder()
+	h.ServeHTTP(usage, adminSessionRequest(http.MethodGet, "/api/admin/config/runtime-releases/1/usage", nil))
+	if usage.Code != http.StatusOK || !strings.Contains(usage.Body.String(), `"usage"`) {
+		t.Fatalf("usage=%d %s", usage.Code, usage.Body.String())
+	}
+}
+
+func TestRuntimeReleaseMutationRequiresAdminAndNeverElevatesViewer(t *testing.T) {
+	viewer := accessdomain.Principal{InternalID: 8, Kind: accessdomain.KindAdmin, Roles: []accessdomain.Role{accessdomain.RoleViewer}}
+	runtime := &testRuntimeReleases{}
+	h, err := NewHandler(&testSettings{}, &testWizard{}, newTestConfig(), testProjections{}, testSecurity{principal: viewer}, runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	request := adminSessionRequest(http.MethodPost, "/api/admin/config/runtime-releases", strings.NewReader(`{"expected_base_revision":0,"settings":[{"key":"automation.operations.max_recipients_per_run","value":2}],"admin_action_token":"ignored"}`))
+	request.Header.Set("Idempotency-Key", "runtime-viewer-0001")
+	h.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden || len(runtime.created) != 0 {
+		t.Fatalf("viewer mutation=%d created=%#v", response.Code, runtime.created)
+	}
+}

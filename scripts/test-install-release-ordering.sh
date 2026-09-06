@@ -44,6 +44,8 @@ sha_missing_0073=1010101010101010101010101010101010101010
 sha_missing_0074=2020202020202020202020202020202020202020
 sha_missing_0075=3030303030303030303030303030303030303030
 sha_missing_0080=4040404040404040404040404040404040404040
+sha_missing_0094=5050505050505050505050505050505050505050
+sha_missing_runtime_config_history=6060606060606060606060606060606060606060
 
 mkdir -p "$test_root/bin" "$test_root/aicrm" "$test_root/etc-aicrm" "$test_root/systemd"
 printf 'AICRM_SURVEY_DATA_KEY=%043d\n' 0 > "$test_root/etc-aicrm/aicrm.env"
@@ -133,7 +135,7 @@ make_release() {
   local release="$test_root/package-${sha}"
   local archive="/tmp/aicrm-${sha}.tar.gz"
   mkdir -p "$release/bin" "$release/migrations" "$release/web/dist/admin" "$release/web/dist/aiassistant" "$release/deploy"
-  for binary in aicrm wecom-archive-sdk-runner migrate-platform migrate-river migrate-phone-identities migrate-identity-phone-vault migrate-survey-v2 migrate-commerce-history migrate-message-archive migrate-order-attribution migrate-automation-operations migrate-v2-config-definitions migrate-media-legacy-materials migrate-channel-history migrate-radar-v2 migrate-sidebar-history bootstrap-automation-operations; do
+  for binary in aicrm wecom-archive-sdk-runner migrate-platform migrate-river migrate-phone-identities migrate-identity-phone-vault migrate-survey-v2 migrate-commerce-history migrate-message-archive migrate-order-attribution migrate-automation-operations migrate-v2-config-definitions migrate-v2-runtime-config-releases migrate-media-legacy-materials migrate-channel-history migrate-v2-customer-tag-history migrate-radar-v2 migrate-sidebar-history bootstrap-automation-operations; do
     printf '#!/usr/bin/env bash\nexit 0\n' > "$release/bin/$binary"
     chmod 0755 "$release/bin/$binary"
   done
@@ -183,7 +185,9 @@ make_release() {
     0084_hxc_shared_facts.sql \
     0088_order_service_entitlement_alliance.sql \
     0090_survey_oauth_state_redirect.sql \
-    0091_survey_assessment_business_keys.sql; do
+    0091_survey_assessment_business_keys.sql \
+    0093_customer_tag_commands.sql \
+    0094_runtime_config_releases.sql; do
     : > "$release/migrations/$migration"
   done
   : > "$release/web/dist/asset-manifest.json"
@@ -244,7 +248,9 @@ for missing_release in \
   "$sha_missing_0073:migrations/0073_survey_completion_test_push_snapshots.sql" \
   "$sha_missing_0074:migrations/0074_survey_external_operation_execution_facts.sql" \
   "$sha_missing_0075:migrations/0075_external_effects_survey_completion_kind.sql" \
-  "$sha_missing_0080:migrations/0080_media_legacy_material_mappings.sql"; do
+  "$sha_missing_0080:migrations/0080_media_legacy_material_mappings.sql" \
+  "$sha_missing_0094:migrations/0094_runtime_config_releases.sql" \
+  "$sha_missing_runtime_config_history:bin/migrate-v2-runtime-config-releases"; do
   sha="${missing_release%%:*}"
   missing_path="${missing_release#*:}"
   label="missing-${missing_path##*/}"

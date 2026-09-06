@@ -125,6 +125,7 @@ type composedApplication struct {
 	weComProcessor        wecom.InboxProcessor
 	weComArchiveProcessor wecom.ArchiveInboxProcessor
 	effectsRuntime        *platformjobqueue.Runtime
+	channelEntrantActions *channelstore.EntrantActionStore
 	customerSync          wecom.CustomerSyncService
 	adminOps              *adminopsapp.ProjectionService
 	release               *releaseapp.ObservationService
@@ -516,6 +517,10 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return fail(err)
 	}
 	groupOpsCompletionSink.WithContinuation(groupOpsContinuationEnqueuer)
+	customerTagCompletionSink, err := outbound.NewCustomerTagCompletionSink(customerstore.TagCommandPostgreSQL{}, customerTagCommandReaderAdapter{uow: uow, source: customerstore.TagCommandPostgreSQL{}}, channelEntrantActions)
+	if err != nil {
+		return fail(err)
+	}
 	privateCompletionSink, err := outbound.NewPrivateMessageCompletionSink(privateWriter, aiRepository)
 	if err != nil {
 		return fail(err)
@@ -524,6 +529,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
+	outboundCompletionSink.WithCustomerTag(customerTagCompletionSink)
 	outboundCompletionSink.WithPrivateMessage(privateCompletionSink)
 	outboundCompletionSink.WithAutomationMessage(outboundMessages)
 	sidebarExpiry := outbound.SidebarJSSDKExpiry{}
@@ -666,6 +672,13 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return fail(err)
 	}
 	configManager := configapp.NewManager(uow, configRepository, configRepository)
+	runtimeReleaseService, err := configapp.NewRuntimeReleaseService(uow, configRepository, configRepository, automationRecipientLimit)
+	if err != nil {
+		return fail(err)
+	}
+	if err = automationRuntime.SetRuntimeConfig(runtimeReleaseService, runtimeReleaseService); err != nil {
+		return fail(err)
+	}
 	settingsService := configapp.NewSettingsCompatibilityService(uow, configRepository, configManager, configapp.SecretConfiguredSnapshot{
 		DatabaseURL: cfg.DatabaseURL != "", WeComSecret: cfg.WeCom.Secret != "",
 		WeComCallbackToken: cfg.WeCom.CallbackToken != "", WeComCallbackAESKey: cfg.WeCom.CallbackAESKey != "",
@@ -692,7 +705,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
-	configBindings, err := configModule.Bind(settingsService, setupWizard, configManager, adminOpsProjection, requestSecurity)
+	configBindings, err := configModule.Bind(settingsService, setupWizard, configManager, adminOpsProjection, requestSecurity, runtimeReleaseService)
 	if err != nil {
 		return fail(err)
 	}
@@ -786,14 +799,24 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return fail(err)
 	}
 	customerProfileStore := wecom.NewPostgreSQLCustomerSyncStore()
+	relationships := wecom.NewPostgreSQLFollowRelationshipStore()
+	customerTagCommands, err := customerapp.NewTagCommandService(uow, customerstore.TagCommandPostgreSQL{}, effectRepository, customerTagCommandGate{uow: uow, corpID: cfg.WeCom.CorpID, owners: customerProfileStore, staff: accessRepository, relationships: relationships, tags: tagRepository, identities: queries}, auditService, platformoutbox.NewPostgreSQL())
+	if err != nil {
+		return fail(err)
+	}
+	if err = channelEntrantActions.SetTagCommandSubmitter(customerTagCommands); err != nil {
+		return fail(err)
+	}
 	legacyAudienceSource.PrimaryOwners = customerProfileStore
 	customerHandler, err := customerhttp.NewHandler(customerhttp.Config{UnitOfWork: uow, Auth: requestSecurity, CSRF: requestSecurity,
 		Directory: customerapp.Directory{Store: customerStore, SigningKey: cursorSigningKey}, Store: customerStore, Identities: queries, Audit: auditService,
-		Canonical: canonicalCustomerAdapter{reader: queries},
-		Owners:    customerOwnerAdapter{uow: uow, observations: customerProfileStore, users: accessRepository},
-		Tags:      customerTagAdapter{uow: uow, observations: customerProfileStore, names: tagRepository},
-		Surveys:   customerSurveyAdapter{reader: surveySubmissions},
-		Timeline:  customerTimelineAdapter{uow: uow, reader: customerStore}, Chat: disabledCustomerChatActivity{}, Orders: orderService, ProfileSigningKey: cursorSigningKey})
+		Canonical:   canonicalCustomerAdapter{reader: queries},
+		Owners:      customerOwnerAdapter{uow: uow, observations: customerProfileStore, users: accessRepository},
+		Tags:        customerTagAdapter{uow: uow, observations: customerProfileStore, names: tagRepository},
+		TagCommands: customerTagCommands,
+		TagHistory:  customerstore.TagCommandPostgreSQL{},
+		Surveys:     customerSurveyAdapter{reader: surveySubmissions},
+		Timeline:    customerTimelineAdapter{uow: uow, reader: customerStore}, Chat: disabledCustomerChatActivity{}, Orders: orderService, ProfileSigningKey: cursorSigningKey})
 	if err != nil {
 		return fail(err)
 	}
@@ -946,6 +969,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	providerClient, err := wecomadapter.New(wecomadapter.Config{
 		Enabled: cfg.WeCom.Enabled, CorpID: cfg.WeCom.CorpID, AgentID: cfg.WeCom.AgentID, Secret: cfg.WeCom.Secret, ContactSecret: cfg.WeCom.ContactSecret,
 		AdminCallbackURI: cfg.PublicOrigin + "/auth/wecom/callback", SidebarCallbackURI: cfg.PublicOrigin + "/api/sidebar/oauth/callback",
+		APIBase: cfg.WeCom.APIBase, HTTPClient: cfg.WeCom.HTTPClient,
 	})
 	if err != nil {
 		return fail(err)
@@ -1018,7 +1042,6 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		}
 		welcomeGrantStore = wecom.NewPostgreSQLWelcomeGrantStore(welcomeGrantCipher)
 	}
-	relationships := wecom.NewPostgreSQLFollowRelationshipStore()
 	legacyAudienceSource.RegistrationFacts = customerStore
 	legacyAudienceSource.Contacts = relationships
 	var channelAssetProvider effectport.ProviderAdapter
@@ -1037,6 +1060,17 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	}
 	if cfg.WeCom.ChannelQRProviderEnabled {
 		channelLinkProvider = outbound.NewChannelLinkProvider(channelLinkMutationReaderAdapter{uow: uow, source: channelLinkStore}, providerClient)
+	}
+	genericCustomerTagEnabled := cfg.Effects.ProviderEnabled && cfg.WeCom.Enabled && cfg.WeCom.CustomerTagProviderEnabled
+	channelEntryTagEnabled := cfg.Effects.ProviderEnabled && cfg.WeCom.Enabled && cfg.WeCom.CallbackEnabled && cfg.WeCom.ChannelTagProviderEnabled
+	// Channel entry tags now share Customer's command ownership, but keep the
+	// legacy Channel Tag/callback capability boundary by persisted source.
+	// Readback is enabled only after one of those write paths was authorized;
+	// CustomerTagProvider calls it only after a confirmed mark_tag success.
+	customerTagObservationRefresh := wecom.CustomerTagObservationService{Enabled: genericCustomerTagEnabled || channelEntryTagEnabled, CorpID: cfg.WeCom.CorpID, Provider: providerClient, Store: customerProfileStore, UOW: uow}
+	customerTagProvider, err := outbound.NewCustomerTagProvider(outbound.CustomerTagProviderConfig{GenericEnabled: genericCustomerTagEnabled, ChannelEntryTagEnabled: channelEntryTagEnabled}, customerTagCommandReaderAdapter{uow: uow, source: customerstore.TagCommandPostgreSQL{}}, channelCurrentContactAdapter{uow: uow, corpID: cfg.WeCom.CorpID, staff: accessRepository, relationships: relationships, identities: queries}, channelProviderTagAdapter{uow: uow, tags: tagRepository}, providerClient, customerTagObservationRefresh)
+	if err != nil {
+		return fail(err)
 	}
 	privateProvider, err := outbound.NewPrivateMessageProvider(cfg.AIAssistant.DispatchEnabled, privateWriter, aiPrivateTargetResolver{uow: uow, identities: queries, access: accessRepository, relationships: relationships, corpID: cfg.WeCom.CorpID}, aiPrivatePayloadReader{content: aiRepository, images: mediaService, materials: mediaRepository, attachments: mediaService, uow: uow, capturer: mediaRepository}, providerClient)
 	if err != nil {
@@ -1058,7 +1092,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if providerErr != nil {
 		return fail(providerErr)
 	}
-	providerRouter := outbound.NewProviderRouterWithGroupMessageAndChannels(tagCatalogProvider, groupOpsProvider, channelAssetProvider, channelEntrantProvider, channelLinkProvider).WithPrivateMessage(privateProvider).WithAutomationMessage(messageProvider).WithSidebarJSSDK(sidebarExpiry).WithSurveyCompletion(surveyCompletionProvider)
+	providerRouter := outbound.NewProviderRouterWithGroupMessageAndChannels(tagCatalogProvider, groupOpsProvider, channelAssetProvider, channelEntrantProvider, channelLinkProvider).WithCustomerTag(customerTagProvider).WithPrivateMessage(privateProvider).WithAutomationMessage(messageProvider).WithSidebarJSSDK(sidebarExpiry).WithSurveyCompletion(surveyCompletionProvider)
 	if err = effectsModule.SetProviderAdapter(composedProviderRouter{outbound: providerRouter, payment: paymentAdapter}); err != nil {
 		return fail(err)
 	}
@@ -1153,6 +1187,8 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	adminAPIs.Handle("/api/admin/channel-acquisition-entrant-receipts/", entrantAdminHandler.Routes())
 	adminAPIs.Handle("/api/admin/customers", customerHandler.Routes())
 	adminAPIs.Handle("/api/admin/customers/", customerHandler.Routes())
+	adminAPIs.Handle("/api/v1/customer-tag-commands", customerHandler.TagCommandRoutes())
+	adminAPIs.Handle("/api/v1/customer-tag-commands/", customerHandler.TagCommandRoutes())
 	adminAPIs.Handle("/api/admin/customer-sync-runs", syncHandler.Routes())
 	adminAPIs.Handle("/api/admin/customer-sync-runs/", syncHandler.Routes())
 	adminAPIs.Handle("/api/admin/hxc-dashboard/", hxcHandler.Routes())
@@ -1197,7 +1233,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	adminAPIs.Handle("/api/admin/ai-assistant/", aiHandler.Routes())
 	adminAPIs.Handle("/api/admin/ai-assist/review-plans", aiHandler.Routes())
 	adminAPIs.Handle("/api/sidebar/v2/", sidebarHandler.Routes())
-	mountSurveyAPIs(adminAPIs, surveyBindings.Survey)
+	mountSurveyAPIs(adminAPIs, surveyBindings.Survey, customerHandler.TagCommandRoutes())
 	adminAPIs.Handle("/api/admin/operation-cycles/", operationBindings.API)
 	adminAPIs.Handle("/api/operation-cycles/", operationBindings.API)
 	readiness := platformruntime.ReadinessFunc(func(readinessContext context.Context) error {
@@ -1206,7 +1242,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		}
 		var complete bool
 		checkErr := pool.Native().QueryRow(readinessContext, `SELECT
-			NOT EXISTS (SELECT 1 FROM unnest(ARRAY['0001','0002','0003','0004','0005','0006','0007','0008','0009','0010','0011','0012','0013','0014','0015','0016','0017','0018','0019','0020','0021','0022','0023','0024','0025','0026','0027','0028','0029','0030','0031','0032','0033','0034','0035','0036','0037','0038','0039','0040','0041','0042','0043','0044','0045','0046','0047','0048','0049','0050','0051','0052','0053','0054','0055','0056','0057','0058','0059','0060','0061','0062','0063','0064','0068','0069','0070','0076','0077','0079','0083','0084','0085','0086','0087','0088','0089']) AS required(version) WHERE NOT EXISTS (SELECT 1 FROM platform_schema_migrations applied WHERE applied.version=required.version))
+			NOT EXISTS (SELECT 1 FROM unnest(ARRAY['0001','0002','0003','0004','0005','0006','0007','0008','0009','0010','0011','0012','0013','0014','0015','0016','0017','0018','0019','0020','0021','0022','0023','0024','0025','0026','0027','0028','0029','0030','0031','0032','0033','0034','0035','0036','0037','0038','0039','0040','0041','0042','0043','0044','0045','0046','0047','0048','0049','0050','0051','0052','0053','0054','0055','0056','0057','0058','0059','0060','0061','0062','0063','0064','0068','0069','0070','0076','0077','0079','0083','0084','0085','0086','0087','0088','0089','0093','0094']) AS required(version) WHERE NOT EXISTS (SELECT 1 FROM platform_schema_migrations applied WHERE applied.version=required.version))
 			AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='order_service_entitlements' AND column_name='alliance')`).Scan(&complete)
 		if checkErr != nil || !complete {
 			return errors.New("database schema is not ready")
@@ -1236,9 +1272,6 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 			return checkErr
 		}
 		if checkErr = couponModule.Readiness(readinessContext, pool.Native()); checkErr != nil {
-			return checkErr
-		}
-		if checkErr = configModule.Readiness(readinessContext, pool.Native()); checkErr != nil {
 			return checkErr
 		}
 		if checkErr = configModule.Readiness(readinessContext, pool.Native()); checkErr != nil {
@@ -1326,6 +1359,12 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 		return renderer.RenderOperationCycles(writer, webshell.AdminPageForRequest(request, "运营闭环", "运营周期、执行事实与复盘记录。", "api.admin_operation_cycles_page"), page, donorTemplate, webshell.OperationCycleAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, HostJS: assets.HostJS})
 	})
 	configUI := configModule.UIBinding("web/dist", func(writer http.ResponseWriter, request *http.Request, page, donorTemplate string, assets configmodule.UIAssets) error {
+		if page == "runtimeReleaseList" || page == "runtimeReleaseNew" || page == "runtimeReleaseDetail" {
+			// Runtime releases are a V3-owned Host rather than a frozen AdminOps
+			// document. The Config module sends its small host template through
+			// this renderer callback, so preserve that page class here.
+			return renderer.RenderRuntimeConfig(writer, webshell.AdminPageForRequest(request, "配置发布", "发布受控运行时配置。", "api.admin_runtime_config_releases"), page, donorTemplate)
+		}
 		title := map[string]string{"config": "配置", "configDetail": "配置", "apidocs": "API 文档"}[page]
 		endpoint := map[string]string{"config": "api.admin_config", "configDetail": "api.admin_config", "apidocs": "api.admin_api_docs"}[page]
 		return renderer.RenderConfig(writer, webshell.AdminPageForRequest(request, title, "", endpoint), page, donorTemplate, webshell.ConfigAssets{TokensCSS: assets.TokensCSS, LabsCSS: assets.LabsCSS, AdminJS: assets.AdminJS})
@@ -1391,7 +1430,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 			return fail(err)
 		}
 	}
-	return &composedApplication{pool: pool, handler: handler, management: management, weComProcessor: weComProcessor, weComArchiveProcessor: weComArchiveProcessor, effectsRuntime: effectsRuntime, customerSync: customerSync, hxcDashboard: hxcDashboard, hxcSource: hxcSource, adminOps: adminOpsProjection, release: releaseObservation, diagnostics: diagnostics}, nil
+	return &composedApplication{pool: pool, handler: handler, management: management, weComProcessor: weComProcessor, weComArchiveProcessor: weComArchiveProcessor, effectsRuntime: effectsRuntime, channelEntrantActions: channelEntrantActions, customerSync: customerSync, hxcDashboard: hxcDashboard, hxcSource: hxcSource, adminOps: adminOpsProjection, release: releaseObservation, diagnostics: diagnostics}, nil
 }
 
 func mountMessageArchive(next, archive http.Handler) (http.Handler, error) {
@@ -1404,7 +1443,11 @@ func mountMessageArchive(next, archive http.Handler) (http.Handler, error) {
 	return mux, nil
 }
 
-func mountSurveyAPIs(mux *http.ServeMux, survey http.Handler) {
+func mountSurveyAPIs(mux *http.ServeMux, survey http.Handler, tagHandlers ...http.Handler) {
+	var customerTags http.Handler
+	if len(tagHandlers) > 0 {
+		customerTags = tagHandlers[0]
+	}
 	mux.Handle("/api/admin/questionnaires", survey)
 	mux.Handle("/api/admin/questionnaires/", survey)
 	mux.Handle("/api/admin/survey-history/", survey)
@@ -1413,7 +1456,17 @@ func mountSurveyAPIs(mux *http.ServeMux, survey http.Handler) {
 	mux.Handle("/api/h5/surveys/oauth/", survey)
 	mux.Handle("/api/h5/surveys/session", survey)
 	mux.Handle("/q/", survey)
-	mux.Handle("/api/v1/customers/", survey)
+	mux.Handle("/api/v1/customers/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if customerTags != nil && ((r.Method == http.MethodPut || r.Method == http.MethodDelete) && strings.Contains(r.URL.Path, "/tags/") || r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/tag-commands")) {
+			customerTags.ServeHTTP(w, r)
+			return
+		}
+		if customerTags != nil && r.Method == http.MethodPost && (r.URL.Path == "/api/v1/customer-tag-commands" || r.URL.Path == "/api/v1/customer-tag-commands/preview") {
+			customerTags.ServeHTTP(w, r)
+			return
+		}
+		survey.ServeHTTP(w, r)
+	}))
 	// The frozen operations workspace reads its history projection from this
 	// legacy page-shaped path. Keep it inside the authenticated admin mux so the
 	// response is JSON from Survey instead of the outer mux's plain-text 404.
@@ -1639,6 +1692,11 @@ func routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, acce
 	// context-token and JSSDK protocol routes.
 	mux.Handle("/api/sidebar/v2/", identity)
 	mux.Handle("/api/v1/customers/", identity)
+	// Customer owns the batch tag command routes. Keep the exact batch prefix
+	// alongside the historical per-customer subtree so the rendered Host and
+	// its durable refresh readback reach the same Customer handler.
+	mux.Handle("/api/v1/customer-tag-commands", identity)
+	mux.Handle("/api/v1/customer-tag-commands/", identity)
 	mux.Handle("/admin/questionnaires/", identity)
 	mux.Handle("/api/admin/orders", identity)
 	mux.Handle("/api/admin/orders/", identity)
@@ -1705,14 +1763,17 @@ func routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, acce
 	mux.Handle("/groupops-assets/", requireAdminSession(authentication, groupOpsUI))
 	mux.Handle("/automation-assets/", requireAdminSession(authentication, automationUI))
 	mux.Handle("/config-assets/", requireAdminSession(authentication, configUI))
-	mux.Handle("/admin/wecom-tags", requireAdminSession(authentication, shell))
+	mux.Handle("/admin/wecom-tags", requireAdminSession(authentication, tagUI))
+	mux.Handle("/admin/operation-cycles", requireAdminSession(authentication, operationUI))
+	mux.Handle("/admin/config/releases/", requireAdminSession(authentication, configUI))
+	mux.Handle("/admin/operation-cycles/", requireAdminSession(authentication, operationUI))
+	// The new login page is a V3-owned webshell document. Keep each mounted
+	// module Host above: the new shell must not replace approved product, tag,
+	// operation-cycle or configuration workflows with a generic document.
 	mux.Handle(webshell.LoginAccessPath, requireAdminSession(authentication, shell))
-	// Operation-cycle, product, group-ops and tag pages are served by the shell
-	// from the built new-shell documents; the frontend build no longer emits
-	// their frozen donor host bundles.  The module APIs above remain the data
-	// owners.
-	// The tags donor staging name stays private; the canonical page and the
-	// built wecom-tags.html document are served by the shell from dist.
+	// The staged Tags donor document is a private template carrier. Only the
+	// canonical PR10-mounted route above is public; neither its private staging
+	// name nor the donor document name may fall through to a generic 200 shell.
 	mux.Handle("/admin/tags.html", http.NotFoundHandler())
 	mux.Handle("/admin/external-effects", requireAdminSession(authentication, effectsUI))
 	mux.Handle("/admin/campaigns.html", requireAdminSession(authentication, effectsUI))
@@ -1728,7 +1789,7 @@ func routeApplicationWithProductsCouponsGroupOpsAutomationAndCycles(health, acce
 	for _, path := range []string{"/admin/automation-agents", "/admin/automation-agents/", "/admin/agents.html", "/admin/agentEdit.html"} {
 		mux.Handle(path, requireAdminSession(authentication, automationUI))
 	}
-	for _, path := range []string{"/admin/config", "/admin/config/", "/admin/config.html", "/admin/configDetail.html", "/admin/api-docs", "/admin/apidocs.html"} {
+	for _, path := range []string{"/admin/config", "/admin/config/", "/admin/config.html", "/admin/configDetail.html", "/admin/api-docs", "/admin/apidocs.html", "/admin/config/releases", "/admin/config/releases/new"} {
 		mux.Handle(path, requireAdminSession(authentication, configUI))
 	}
 	mux.Handle("/wecom/external-contact/callback", weCom)

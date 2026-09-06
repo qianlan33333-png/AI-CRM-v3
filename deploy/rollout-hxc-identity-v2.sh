@@ -5,6 +5,9 @@ release_sha="${1:-}"
 runtime_env=/etc/aicrm/aicrm.env
 current_link=/opt/aicrm/current
 rollout_lock=/opt/aicrm/hxc-identity-v2-rollout.lock
+# The durable job keys remain hxc-dashboard-v2 for compatibility. The
+# projection published by the installed HXC owner is currently v3.
+hxc_projection_rule_version=hxc-current-v3
 
 if [[ ${EUID} -ne 0 || ! "$release_sha" =~ ^[0-9a-f]{40}$ ]]; then
   echo "invalid HXC rollout invocation" >&2
@@ -120,7 +123,7 @@ set_write_mode false
 restart_runtime
 trigger_run inspect
 [[ "$run_source_count" == "$run_processed_count" && "$run_replay_count" == 0 && "$run_projection_id" =~ ^[1-9][0-9]*$ ]]
-inspect_counts="$(run_sql "SELECT total_count||'|'||matched_count||'|'||unmatched_count||'|'||conflict_count||'|'||matched_by_unionid_count||'|'||matched_by_phone_count||'|'||matched_by_both_count||'|'||pending_observation_count||'|'||invalid_identity_count FROM hxc_dashboard_versions WHERE id=${run_projection_id} AND rule_version='hxc-current-v2' AND status='published'")"
+inspect_counts="$(run_sql "SELECT total_count||'|'||matched_count||'|'||unmatched_count||'|'||conflict_count||'|'||matched_by_unionid_count||'|'||matched_by_phone_count||'|'||matched_by_both_count||'|'||pending_observation_count||'|'||invalid_identity_count FROM hxc_dashboard_versions WHERE id=${run_projection_id} AND rule_version='${hxc_projection_rule_version}' AND status='published'")"
 IFS='|' read -r total_count matched_count unmatched_count conflict_count matched_union matched_phone matched_both pending_count invalid_count <<< "$inspect_counts"
 ((total_count == matched_count + unmatched_count + conflict_count))
 ((matched_count == matched_union + matched_phone + matched_both))
@@ -139,7 +142,7 @@ trigger_run apply
 [[ "$run_source_count" == "$run_processed_count" && "$run_replay_count" == "$run_source_count" && "$run_projection_id" =~ ^[1-9][0-9]*$ ]]
 apply_replay_count="$run_replay_count"
 [[ "$(run_sql 'SELECT count(*) FROM customers')" == "$customer_count_before" ]]
-apply_counts="$(run_sql "SELECT total_count||'|'||matched_count||'|'||unmatched_count||'|'||conflict_count||'|'||matched_by_unionid_count||'|'||matched_by_phone_count||'|'||matched_by_both_count||'|'||pending_observation_count||'|'||invalid_identity_count FROM hxc_dashboard_versions WHERE id=${run_projection_id} AND rule_version='hxc-current-v2' AND status='published'")"
+apply_counts="$(run_sql "SELECT total_count||'|'||matched_count||'|'||unmatched_count||'|'||conflict_count||'|'||matched_by_unionid_count||'|'||matched_by_phone_count||'|'||matched_by_both_count||'|'||pending_observation_count||'|'||invalid_identity_count FROM hxc_dashboard_versions WHERE id=${run_projection_id} AND rule_version='${hxc_projection_rule_version}' AND status='published'")"
 IFS='|' read -r total_count matched_count unmatched_count conflict_count matched_union matched_phone matched_both pending_count invalid_count <<< "$apply_counts"
 ((total_count == matched_count + unmatched_count + conflict_count))
 ((matched_count == matched_union + matched_phone + matched_both))
@@ -159,7 +162,7 @@ systemctl start aicrm-hxc-dashboard-refresh.service
 wait_for_run apply "$scheduled_key"
 [[ "$run_source_count" == "$run_processed_count" && "$run_replay_count" == "$run_source_count" && "$run_projection_id" =~ ^[1-9][0-9]*$ ]]
 [[ "$(run_sql 'SELECT count(*) FROM customers')" == "$customer_count_before" ]]
-scheduled_counts="$(run_sql "SELECT total_count||'|'||matched_count||'|'||unmatched_count||'|'||conflict_count||'|'||matched_by_unionid_count||'|'||matched_by_phone_count||'|'||matched_by_both_count||'|'||pending_observation_count||'|'||invalid_identity_count FROM hxc_dashboard_versions WHERE id=${run_projection_id} AND rule_version='hxc-current-v2' AND status='published'")"
+scheduled_counts="$(run_sql "SELECT total_count||'|'||matched_count||'|'||unmatched_count||'|'||conflict_count||'|'||matched_by_unionid_count||'|'||matched_by_phone_count||'|'||matched_by_both_count||'|'||pending_observation_count||'|'||invalid_identity_count FROM hxc_dashboard_versions WHERE id=${run_projection_id} AND rule_version='${hxc_projection_rule_version}' AND status='published'")"
 IFS='|' read -r total_count matched_count unmatched_count conflict_count matched_union matched_phone matched_both pending_count invalid_count <<< "$scheduled_counts"
 ((total_count == matched_count + unmatched_count + conflict_count))
 ((matched_count == matched_union + matched_phone + matched_both))

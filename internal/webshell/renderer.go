@@ -92,6 +92,8 @@ type AdminShellView struct {
 	Config               bool
 	ConfigPage           string
 	ConfigAssets         ConfigAssets
+	RuntimeConfig        bool
+	RuntimeConfigPage    string
 	Channel              bool
 	ChannelPage          string
 	ChannelResourceID    string
@@ -483,6 +485,24 @@ func (renderer *Renderer) RenderOperationCycles(writer http.ResponseWriter, data
 	data.ShowPageHeader = false
 	content := `<base href="/admin/operation-cycles/"><main id="stage" class="stage rich"></main><template id="tpl">` + donorTemplate + `</template>`
 	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: template.HTML(content), OperationCycles: true, OperationPage: page, OperationAssets: assets})
+	if err != nil {
+		return err
+	}
+	return writeHTML(writer, http.StatusOK, body)
+}
+
+// RenderRuntimeConfig mounts the Config-owned host for the proven draft →
+// validate → publish → rollback interaction. It deliberately does not run the
+// frozen AdminOps JavaScript: that DTO neither owns nor understands the closed
+// runtime-release catalog.
+func (renderer *Renderer) RenderRuntimeConfig(writer http.ResponseWriter, data AdminPageData, page, hostTemplate string) error {
+	if renderer == nil || renderer.templates == nil || hostTemplate == "" || (page != "runtimeReleaseList" && page != "runtimeReleaseNew" && page != "runtimeReleaseDetail") {
+		return errors.New("runtime config shell is required")
+	}
+	normalizeAdminPage(&data)
+	data.ShowPageHeader = false
+	content := `<main id="runtime-release-host" class="admin-page" data-runtime-release-host>` + hostTemplate + `</main>`
+	body, err := executeTemplate(renderer.templates, "admin_base", AdminShellView{AdminPageData: data, Content: template.HTML(content), RuntimeConfig: true, RuntimeConfigPage: page})
 	if err != nil {
 		return err
 	}

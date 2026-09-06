@@ -183,7 +183,12 @@ def code_files() -> list[Path]:
     command_root = root / "cmd"
     if command_root.exists():
         for path in command_root.glob("migrate-*"):
-            if path.is_dir() and ("config" in path.name.lower() or "definition" in path.name.lower()):
+            # The config-definition migration is a frozen, narrow source-table
+            # import. Runtime release history is a separately approved tool with
+            # its own ledger-only boundary below; it must not be widened into this
+            # definition-import scope merely because its command name contains
+            # "config".
+            if path.is_dir() and ("config" in path.name.lower() or "definition" in path.name.lower()) and path.name != "migrate-v2-runtime-config-releases":
                 for child in path.rglob("*"):
                     if child.is_file() and child.suffix.lower() in {".go", ".sql", ".py", ".sh"}:
                         found.add(child)
@@ -260,6 +265,70 @@ for path in migration_files:
     if forbidden_imports.search(clean):
         fail(f"migration code imports an excluded domain in {relative}")
 
+# Runtime Config release history is deliberately outside the configuration-
+# definition importer above. It has a separate, explicit boundary: source reads
+# may touch only the frozen V2 config_releases table and target writes may touch
+# only Config's immutable history ledger. This permits its retained release
+# history without opening definition imports to history, effects, or PII.
+runtime_history_main = root / "cmd/migrate-v2-runtime-config-releases/main.go"
+runtime_history_source_tables = {"config_releases"}
+runtime_history_ledger_tables = {
+    "config_runtime_release_history_batches",
+    "config_runtime_release_history_rows",
+}
+if runtime_history_main.is_file():
+    try:
+        runtime_history = strip_comments(runtime_history_main.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError) as exc:
+        fail(f"cannot read runtime history tool: {exc}")
+    else:
+        table_references = set(re.findall(r"\b(config_[a-z0-9_]+)\b", runtime_history, re.IGNORECASE))
+        allowed_tables = runtime_history_source_tables | runtime_history_ledger_tables
+        for table in sorted(table_references - allowed_tables):
+            fail(f"runtime history table is outside its approved scope: {table}")
+        if "config_releases" not in table_references:
+            fail("runtime history source allowlist is missing config_releases")
+        if not runtime_history_ledger_tables.issubset(table_references):
+            fail("runtime history target allowlist is missing a Config history ledger table")
+
+        reads = set(
+            table.lower()
+            for table in re.findall(
+                r"\b(?:FROM|JOIN)\s+([a-z_][a-z0-9_]*)",
+                runtime_history,
+                re.IGNORECASE,
+            )
+        )
+        for table in sorted(reads - allowed_tables):
+            fail(f"runtime history read is outside its source/ledger allowlist: {table}")
+        if "config_releases" not in reads:
+            fail("runtime history source allowlist is missing a config_releases read")
+
+        writes = set(
+            table.lower()
+            for table in re.findall(
+                r"\b(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+([a-z_][a-z0-9_]*)",
+                runtime_history,
+                re.IGNORECASE,
+            )
+        )
+        for table in sorted(writes - runtime_history_ledger_tables):
+            fail(f"runtime history write is outside Config's history ledger: {table}")
+        if not writes:
+            fail("runtime history tool must have explicit Config ledger writes")
+
+        runtime_forbidden = [
+            r"\bconfig_runtime_releases\b",
+            r"\bconfig_runtime_active_release\b",
+            r"\bconfig_outbox\b",
+            r"\b(?:external_effect|effect_id|provider_receipt|outbox|river|jobqueue)\b",
+            r"internal/(?:externaleffects|outbound|automation)(?:/|[\"])",
+            r"\bnet/http\b",
+        ]
+        for pattern in runtime_forbidden:
+            if re.search(pattern, runtime_history, re.IGNORECASE):
+                fail(f"runtime history tool contains forbidden publish/effect path: {pattern}")
+
 required_source_tables = [
     "wechat_pay_products",
     "service_period_products",
@@ -309,4 +378,5 @@ print("PASS config-definition import boundary")
 print("counts: products=31 (ordinary=29, service_period=2), coupons=15, bindings=15, group_plans=12, group_references=14, group_text_nodes=3, agent_runtime_configs=10")
 print("architecture: OneID=not_involved, External Effects=not_involved, transaction=local_postgresql_migration_transaction")
 print("frontend: web/donors byte-frozen; claims/redemptions and forbidden source fields excluded")
+print("runtime history: source=config_releases only; target=Config read-only history ledger only")
 PY

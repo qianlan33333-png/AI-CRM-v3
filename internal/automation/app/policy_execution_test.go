@@ -35,6 +35,19 @@ func TestNextAllowedExecutionCrossMidnight(t *testing.T) {
 	}
 }
 
+func TestNextAllowedExecutionUTCOvernightWindow(t *testing.T) {
+	raw := json.RawMessage(`{"timezone":"UTC","start":"22:00","end":"08:00"}`)
+	inside := time.Date(2026, 9, 6, 3, 0, 0, 0, time.UTC)
+	want := time.Date(2026, 9, 6, 8, 0, 0, 0, time.UTC)
+	if got := nextAllowedExecution(inside, raw); !got.Equal(want) {
+		t.Fatalf("03:00 UTC scheduled at %s, want %s", got, want)
+	}
+	outside := time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC)
+	if got := nextAllowedExecution(outside, raw); !got.IsZero() {
+		t.Fatalf("12:00 UTC should execute immediately, got %s", got)
+	}
+}
+
 func TestNextAllowedExecutionSameDay(t *testing.T) {
 	raw := json.RawMessage(`{"timezone":"Asia/Shanghai","start":"09:00","end":"10:00"}`)
 	inside := time.Date(2026, 9, 4, 1, 30, 0, 0, time.UTC)

@@ -37,6 +37,9 @@ import (
 	automationhttp "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/http"
 	automationport "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/port"
 	automationstore "github.com/qianlan33333-png/AI-CRM-v3/internal/automation/store"
+	configapp "github.com/qianlan33333-png/AI-CRM-v3/internal/config/app"
+	configport "github.com/qianlan33333-png/AI-CRM-v3/internal/config/port"
+	configstore "github.com/qianlan33333-png/AI-CRM-v3/internal/config/store"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
 	externaleffects "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects"
 	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
@@ -86,6 +89,10 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 		t.Fatal(err)
 	}
 	automationRepo, err := automationstore.NewPostgreSQL(native, uow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configRepo, err := configstore.NewPostgreSQL(native, uow)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -291,8 +298,31 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 	if err = effects.SetCompletionSink(router); err != nil {
 		t.Fatal(err)
 	}
+	runtimeConfig, err := configapp.NewRuntimeReleaseService(uow, configRepo, configRepo, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	limitValue, err := json.Marshal(2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	draft, err := runtimeConfig.CreateRuntimeReleaseDraft(ctx, configport.RuntimeReleaseDraftCommand{ExpectedBaseRevision: 0, Settings: []configport.RuntimeSetting{{Key: configport.AutomationOperationsMaxRecipientsPerRun, Value: limitValue}}, Actor: "runtime-fixture", IdempotencyKey: "runtime-config-create-0001"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	validated, err := runtimeConfig.ValidateRuntimeRelease(ctx, configport.RuntimeReleaseMutationCommand{ReleaseID: draft.ID, Actor: "runtime-fixture", IdempotencyKey: "runtime-config-validate-0001"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	publishedRuntimeConfig, err := runtimeConfig.PublishRuntimeRelease(ctx, configport.RuntimeReleasePublishCommand{ReleaseID: validated.ID, ExpectedBaseRevision: 0, ExpectedChecksum: validated.Checksum, Actor: "runtime-fixture", IdempotencyKey: "runtime-config-publish-0001"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	runtimeService, err := automationapp.NewRuntimeService(uow, automationRepo, execution, snapshots, 100)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err = runtimeService.SetRuntimeConfig(runtimeConfig, runtimeConfig); err != nil {
 		t.Fatal(err)
 	}
 	if err = runtimeService.SetMessageAccepter(messages); err != nil {
@@ -334,7 +364,7 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	policy, err := runtimeService.CreatePolicy(ctx, automationapp.PolicyCommand{Code: "audience-entry", Name: "Audience entry", PackageID: segmentport.PackageID(packageID), TriggerKind: automationport.TriggerAudienceMemberEnteredV1, ActionKind: automationport.ActionOutboundMessage, ActionConfig: actionConfig, QuietHours: json.RawMessage(`{"timezone":"UTC","start":"22:00","end":"08:00"}`), SingleRunLimit: 100, ApprovalStaffID: &approval, Actor: staffID, IdempotencyKey: "audience-runtime-policy-0001"})
+	policy, err := runtimeService.CreatePolicy(ctx, automationapp.PolicyCommand{Code: "audience-entry", Name: "Audience entry", PackageID: segmentport.PackageID(packageID), TriggerKind: automationport.TriggerAudienceMemberEnteredV1, ActionKind: automationport.ActionOutboundMessage, ActionConfig: actionConfig, QuietHours: automationAudienceNonBlockingQuietHours(time.Now()), SingleRunLimit: 100, ApprovalStaffID: &approval, Actor: staffID, IdempotencyKey: "audience-runtime-policy-0001"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -379,6 +409,96 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 		}
 		return complete == 1 && wecomServer.Uploads() == 3
 	}, func() string { return automationAudienceRuntimeDiagnostics(ctx, native, provider, frozenPayloads) })
+
+	// A later Config release must not turn the exact, already-delivered member
+	// event into a new action digest. The stored Automation enrollment is the
+	// frozen receipt; no second run, external intent, or Config usage is valid.
+	var replayEvent segmentport.MemberEnteredV1
+	if err = native.QueryRow(ctx, `SELECT event_id,package_id,snapshot_id,configuration_version_id,customer_id,occurred_at FROM segment_audience_member_events WHERE snapshot_id=$1 AND customer_id=$2`, published.ID, customerIDs[0]).Scan(&replayEvent.EventID, &replayEvent.PackageID, &replayEvent.SnapshotID, &replayEvent.ConfigurationVersionID, &replayEvent.CustomerID, &replayEvent.OccurredAt); err != nil {
+		t.Fatal(err)
+	}
+	var originalEnrollment, originalRun, originalIntents, originalV1Uses int
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM automation_enrollments`).Scan(&originalEnrollment); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM automation_runs`).Scan(&originalRun); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM outbound_message_intents WHERE source_kind='automation_enrollment'`).Scan(&originalIntents); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM config_runtime_usage WHERE revision=$1 AND role='worker' AND operation='execution'`, publishedRuntimeConfig.ID).Scan(&originalV1Uses); err != nil {
+		t.Fatal(err)
+	}
+	if originalEnrollment != 1 || originalRun != 1 || originalIntents != 1 || originalV1Uses != 1 {
+		t.Fatalf("initial automatic facts enrollment/run/intents/v1uses=%d/%d/%d/%d", originalEnrollment, originalRun, originalIntents, originalV1Uses)
+	}
+	v2Limit, marshalErr := json.Marshal(3)
+	if marshalErr != nil {
+		t.Fatal(marshalErr)
+	}
+	v2Draft, e := runtimeConfig.CreateRuntimeReleaseDraft(ctx, configport.RuntimeReleaseDraftCommand{ExpectedBaseRevision: publishedRuntimeConfig.ID, Settings: []configport.RuntimeSetting{{Key: configport.AutomationOperationsMaxRecipientsPerRun, Value: v2Limit}}, Actor: "runtime-fixture-v2", IdempotencyKey: "runtime-config-create-0002"})
+	if e != nil {
+		t.Fatal(e)
+	}
+	v2Validated, e := runtimeConfig.ValidateRuntimeRelease(ctx, configport.RuntimeReleaseMutationCommand{ReleaseID: v2Draft.ID, Actor: "runtime-fixture-v2", IdempotencyKey: "runtime-config-validate-0002"})
+	if e != nil {
+		t.Fatal(e)
+	}
+	publishedRuntimeConfigV2, e := runtimeConfig.PublishRuntimeRelease(ctx, configport.RuntimeReleasePublishCommand{ReleaseID: v2Validated.ID, ExpectedBaseRevision: publishedRuntimeConfig.ID, ExpectedChecksum: v2Validated.Checksum, Actor: "runtime-fixture-v2", IdempotencyKey: "runtime-config-publish-0002"})
+	if e != nil {
+		t.Fatal(e)
+	}
+	replayedEnrollment, e := runtimeService.EnrollAudienceMember(ctx, replayEvent)
+	if e != nil || len(replayedEnrollment) != 1 {
+		t.Fatalf("cross-config member replay enrollments=%+v err=%v", replayedEnrollment, e)
+	}
+	var afterEnrollment, afterRun, afterIntents, afterV1Uses, v2ReplayUses int
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM automation_enrollments`).Scan(&afterEnrollment); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM automation_runs`).Scan(&afterRun); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM outbound_message_intents WHERE source_kind='automation_enrollment'`).Scan(&afterIntents); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM config_runtime_usage WHERE revision=$1 AND role='worker' AND operation='execution'`, publishedRuntimeConfig.ID).Scan(&afterV1Uses); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM config_runtime_usage WHERE revision=$1`, publishedRuntimeConfigV2.ID).Scan(&v2ReplayUses); err != nil {
+		t.Fatal(err)
+	}
+	if afterEnrollment != originalEnrollment || afterRun != originalRun || afterIntents != originalIntents || afterV1Uses != originalV1Uses || v2ReplayUses != 0 {
+		t.Fatalf("replay changed automatic facts enrollment/run/intents/v1uses/v2uses=%d/%d/%d/%d/%d", afterEnrollment, afterRun, afterIntents, afterV1Uses, v2ReplayUses)
+	}
+	// The Config release may advance, but the same event ID cannot be reused
+	// with a different Segment snapshot. It is a source-fact conflict, not a
+	// replay, and it leaves all frozen effects and usage untouched.
+	changedSnapshot := replayEvent
+	changedSnapshot.SnapshotID++
+	if _, e = runtimeService.EnrollAudienceMember(ctx, changedSnapshot); !errors.Is(e, automationapp.ErrRuntimeConflict) {
+		t.Fatalf("changed member source snapshot err=%v want runtime conflict", e)
+	}
+	var afterChangedEnrollment, afterChangedRun, afterChangedIntents, afterChangedV1Uses, afterChangedV2Uses int
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM automation_enrollments`).Scan(&afterChangedEnrollment); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM automation_runs`).Scan(&afterChangedRun); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM outbound_message_intents WHERE source_kind='automation_enrollment'`).Scan(&afterChangedIntents); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM config_runtime_usage WHERE revision=$1 AND role='worker' AND operation='execution'`, publishedRuntimeConfig.ID).Scan(&afterChangedV1Uses); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM config_runtime_usage WHERE revision=$1`, publishedRuntimeConfigV2.ID).Scan(&afterChangedV2Uses); err != nil {
+		t.Fatal(err)
+	}
+	if afterChangedEnrollment != originalEnrollment || afterChangedRun != originalRun || afterChangedIntents != originalIntents || afterChangedV1Uses != originalV1Uses || afterChangedV2Uses != 0 {
+		t.Fatalf("changed source mutated enrollment/run/intents/v1uses/v2uses=%d/%d/%d/%d/%d", afterChangedEnrollment, afterChangedRun, afterChangedIntents, afterChangedV1Uses, afterChangedV2Uses)
+	}
 	// Incremental evaluation contains only the new result. Segment merges it
 	// with the prior snapshot, so the original member remains present.
 	source.Set(customerIDs[1:])
@@ -415,6 +535,22 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 	if enrollments != 2 || automaticEffects != 2 {
 		t.Fatalf("entered events created enrollments=%d intents=%d", enrollments, automaticEffects)
 	}
+	var v1WorkerUses, v2WorkerUses, v1FrozenWorkerRuns, v2FrozenWorkerRuns int
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM config_runtime_usage WHERE revision=$1 AND role='worker' AND operation='execution'`, publishedRuntimeConfig.ID).Scan(&v1WorkerUses); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM config_runtime_usage WHERE revision=$1 AND role='worker' AND operation='execution'`, publishedRuntimeConfigV2.ID).Scan(&v2WorkerUses); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM automation_runs WHERE runtime_config_observed AND runtime_config_revision=$1 AND max_recipients_per_run=2`, publishedRuntimeConfig.ID).Scan(&v1FrozenWorkerRuns); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.QueryRow(ctx, `SELECT count(*) FROM automation_runs WHERE runtime_config_observed AND runtime_config_revision=$1 AND max_recipients_per_run=3`, publishedRuntimeConfigV2.ID).Scan(&v2FrozenWorkerRuns); err != nil {
+		t.Fatal(err)
+	}
+	if v1WorkerUses != 1 || v2WorkerUses != 1 || v1FrozenWorkerRuns != 1 || v2FrozenWorkerRuns != 1 {
+		t.Fatalf("worker Config v1 uses/runs v2 uses/runs=%d/%d %d/%d want 1/1 1/1", v1WorkerUses, v1FrozenWorkerRuns, v2WorkerUses, v2FrozenWorkerRuns)
+	}
 
 	runtimeHandler, err := automationhttp.NewRuntimeHandler(runtimeService, automationAudienceSecurity{})
 	if err != nil {
@@ -448,8 +584,15 @@ func TestAudienceRefreshToAutomationProviderAndReadOnlyHistoryPostgreSQL(t *test
 			break
 		}
 	}
-	if manual.ID < 1 || manual.TargetCount != 2 || manual.State != automationport.RunPendingReview || manual.AIPlanID < 1 {
+	if manual.ID < 1 || manual.TargetCount != 2 || manual.State != automationport.RunPendingReview || manual.AIPlanID < 1 || !manual.RuntimeConfigObserved || manual.RuntimeConfigRevision != publishedRuntimeConfigV2.ID || manual.MaxRecipientsPerRun != 3 {
 		t.Fatalf("original detail manual run=%+v ui=%s", manual, detailOutput)
+	}
+	var previewUses, confirmUses int
+	if err = native.QueryRow(ctx, `SELECT count(*) FILTER (WHERE operation='preview'),count(*) FILTER (WHERE operation='confirm') FROM config_runtime_usage WHERE revision=$1 AND role='api'`, publishedRuntimeConfigV2.ID).Scan(&previewUses, &confirmUses); err != nil {
+		t.Fatal(err)
+	}
+	if previewUses != 1 || confirmUses != 1 {
+		t.Fatalf("API config usage preview/confirm=%d/%d", previewUses, confirmUses)
 	}
 	plan, err := aiService.GetPlan(ctx, aiassistantport.PlanID(manual.AIPlanID))
 	if err != nil || plan.State != aiassistantport.PlanPendingReview || plan.TargetCount != 2 {
@@ -1006,6 +1149,12 @@ func automationAudienceRuntimeDiagnostics(ctx context.Context, pool *pgxpool.Poo
   'enrollments', (SELECT COALESCE(json_agg(to_jsonb(e) ORDER BY id), '[]'::json) FROM automation_enrollments e),
   'runs', (SELECT COALESCE(json_agg(to_jsonb(r) ORDER BY id), '[]'::json) FROM automation_runs r),
   'intents', (SELECT COALESCE(json_agg(to_jsonb(i) ORDER BY id), '[]'::json) FROM outbound_message_intents i),
+  -- Keep AI completion diagnosis structural: fixture IDs, states, and attempt
+  -- metadata only. It deliberately excludes source payload/content fields.
+  'ai_plans', (SELECT COALESCE(json_agg(json_build_object('id',p.id,'state',p.state,'version',p.version,'target_count',p.target_count,'needs_attention_count',p.needs_attention_count) ORDER BY p.id), '[]'::json) FROM ai_assistant_plans p),
+  'ai_recipients', (SELECT COALESCE(json_agg(json_build_object('id',r.id,'plan_id',r.plan_id,'review_state',r.review_state,'execution_state',r.execution_state,'version',r.version) ORDER BY r.id), '[]'::json) FROM ai_assistant_plan_recipients r),
+  'ai_bindings', (SELECT COALESCE(json_agg(json_build_object('recipient_id',b.recipient_id,'effect_id',b.external_effect_id,'state',b.state,'generation',b.generation,'fence',b.fence,'attempt_count',b.attempt_count,'provider_accepted',b.provider_accepted,'delivery_proven',b.delivery_proven) ORDER BY b.recipient_id), '[]'::json) FROM ai_assistant_effect_bindings b),
+  'effects', (SELECT COALESCE(json_agg(json_build_object('id',e.id,'owner',e.owner,'kind',e.kind,'state',e.state,'generation',e.generation,'attempt_count',e.attempt_count,'lease_fence',e.lease_fence) ORDER BY e.id), '[]'::json) FROM external_effects e),
   'river_jobs', (SELECT COALESCE(json_agg(to_jsonb(j) ORDER BY id), '[]'::json) FROM river_job j)
 )`).Scan(&raw)
 	if err != nil {
@@ -1015,6 +1164,18 @@ func automationAudienceRuntimeDiagnostics(ctx context.Context, pool *pgxpool.Poo
 		return string(raw)
 	}
 	return string(raw) + "; provider_error=" + provider.Error() + "; frozen_payload_error=" + payloads.Error()
+}
+
+// automationAudienceNonBlockingQuietHours keeps the real River journey away
+// from its own quiet period. Runtime enrollment intentionally uses the wall
+// clock, so a fixed 22:00-08:00 UTC policy made this fixture wait until 08:00
+// whenever CI happened to run overnight. Scheduling semantics, including the
+// cross-midnight case, are asserted with fixed clocks in automation/app.
+func automationAudienceNonBlockingQuietHours(now time.Time) json.RawMessage {
+	start := now.UTC().Add(12 * time.Hour).Truncate(time.Minute)
+	end := start.Add(time.Minute)
+	return json.RawMessage(fmt.Sprintf(`{"timezone":"UTC","start":"%02d:%02d","end":"%02d:%02d"}`,
+		start.Hour(), start.Minute(), end.Hour(), end.Minute()))
 }
 
 func automationAudienceRuntimePool(t *testing.T) (*pgxpool.Pool, func()) {
@@ -1063,7 +1224,7 @@ func automationAudienceRuntimePool(t *testing.T) (*pgxpool.Pool, func()) {
 	if !ok {
 		t.Fatal("locate automation audience journey")
 	}
-	for _, name := range []string{"0001_platform.sql", "0002_identity.sql", "0003_access.sql", "0005_external_effects.sql", "0007_media.sql", "0013_automation_agents.sql", "0036_ai_assistant_review.sql", "0037_outbound_private_messages.sql", "0039_segment_audience_configuration.sql", "0040_segment_audience_snapshots.sql", "0041_segment_audience_webhooks.sql", "0042_segment_audience_execution_bindings.sql", "0043_automation_runtime.sql", "0044_outbound_automation_messages.sql", "0045_segment_audience_member_events.sql", "0046_automation_run_reconciliations.sql", "0048_segment_audience_schedule_state.sql", "0053_segment_audience_member_event_fact_kinds.sql", "0083_segment_audience_refresh_modes.sql", "0085_segment_audience_refresh_kind.sql", "0087_automation_manual_ai_review.sql", "0089_outbound_message_content_snapshots.sql"} {
+	for _, name := range []string{"0001_platform.sql", "0002_identity.sql", "0003_access.sql", "0005_external_effects.sql", "0007_media.sql", "0013_automation_agents.sql", "0015_config_adminops.sql", "0036_ai_assistant_review.sql", "0037_outbound_private_messages.sql", "0039_segment_audience_configuration.sql", "0040_segment_audience_snapshots.sql", "0041_segment_audience_webhooks.sql", "0042_segment_audience_execution_bindings.sql", "0043_automation_runtime.sql", "0044_outbound_automation_messages.sql", "0045_segment_audience_member_events.sql", "0046_automation_run_reconciliations.sql", "0048_segment_audience_schedule_state.sql", "0053_segment_audience_member_event_fact_kinds.sql", "0083_segment_audience_refresh_modes.sql", "0085_segment_audience_refresh_kind.sql", "0087_automation_manual_ai_review.sql", "0089_outbound_message_content_snapshots.sql", "0094_runtime_config_releases.sql"} {
 		sql, readErr := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "migrations", name))
 		if readErr != nil {
 			native.Close()

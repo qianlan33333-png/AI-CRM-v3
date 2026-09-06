@@ -396,6 +396,17 @@ func TestDatabaseURLRequiresConfiguration(t *testing.T) {
 	}
 }
 
+func TestChromiumJourneyRequiredUsesConfigurationBoundary(t *testing.T) {
+	t.Setenv("AICRM_REQUIRE_CHROMIUM_JOURNEY", "")
+	if ChromiumJourneyRequired() {
+		t.Fatal("missing Chromium journey flag is required")
+	}
+	t.Setenv("AICRM_REQUIRE_CHROMIUM_JOURNEY", "1")
+	if !ChromiumJourneyRequired() {
+		t.Fatal("explicit Chromium journey flag is not required")
+	}
+}
+
 func TestNamedDatabaseURLUsesClosedMigrationAllowlist(t *testing.T) {
 	t.Setenv("AICRM_V2_AUTOMATION_DATABASE_URL", "postgres://readonly@source/aicrm")
 	value, err := NamedDatabaseURL("AICRM_V2_AUTOMATION_DATABASE_URL")

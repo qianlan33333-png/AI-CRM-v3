@@ -63,6 +63,14 @@ type ProviderTagBindingReader interface {
 	ProviderTagID(context.Context, int64) (string, bool, error)
 }
 
+// ProviderTagLocalIDReader is the inverse trusted catalog lookup used only by
+// offline history adapters. It maps a Provider tag identifier already sealed in
+// a source snapshot to the current local catalog ID; it cannot mutate a tag or
+// a customer relationship.
+type ProviderTagLocalIDReader interface {
+	LocalTagID(context.Context, string) (int64, bool, error)
+}
+
 // ReferenceGuard is an optional cross-domain read port used to keep archive
 // operations safe. It exposes counts only; it cannot mutate customer-tag
 // relationships and must never be implemented by a Tag store querying a

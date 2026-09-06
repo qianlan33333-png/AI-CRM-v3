@@ -101,3 +101,44 @@ func decodeOne(value json.RawMessage, target any) bool {
 	var trailing any
 	return decoder.Decode(&trailing) == io.EOF
 }
+
+// ValidateRuntimeSetting keeps publishable business keys separate from local
+// app-settings and deployment environment inputs. The automation limit is also
+// bounded by the downstream AI plan hard cap.
+func ValidateRuntimeSetting(key configport.RuntimeSettingKey, value json.RawMessage) (json.RawMessage, error) {
+	switch key {
+	case configport.AutomationOperationsMaxRecipientsPerRun:
+		canonical, valid := validateIntegerRange(1, 5000)(value)
+		if !valid {
+			return nil, fmt.Errorf("%w: %s", configport.ErrInvalidSetting, key)
+		}
+		return canonical, nil
+	default:
+		return nil, fmt.Errorf("%w: %s", configport.ErrUnknownSetting, key)
+	}
+}
+
+func ValidateRuntimeSettings(settings []configport.RuntimeSetting) ([]configport.RuntimeSetting, []configport.RuntimeValidationIssue) {
+	seen := map[configport.RuntimeSettingKey]struct{}{}
+	out := make([]configport.RuntimeSetting, 0, len(settings))
+	issues := make([]configport.RuntimeValidationIssue, 0)
+	for _, setting := range settings {
+		if _, exists := seen[setting.Key]; exists {
+			issues = append(issues, configport.RuntimeValidationIssue{Key: setting.Key, Error: "duplicate runtime setting"})
+			continue
+		}
+		seen[setting.Key] = struct{}{}
+		canonical, err := ValidateRuntimeSetting(setting.Key, setting.Value)
+		if err != nil {
+			issues = append(issues, configport.RuntimeValidationIssue{Key: setting.Key, Error: "invalid or unmanaged runtime setting"})
+			continue
+		}
+		out = append(out, configport.RuntimeSetting{Key: setting.Key, Value: canonical})
+	}
+	if len(out) != 1 || len(issues) != 0 || out[0].Key != configport.AutomationOperationsMaxRecipientsPerRun {
+		if len(issues) == 0 {
+			issues = append(issues, configport.RuntimeValidationIssue{Key: configport.AutomationOperationsMaxRecipientsPerRun, Error: "exactly one managed runtime setting is required"})
+		}
+	}
+	return out, issues
+}
