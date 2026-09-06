@@ -820,7 +820,12 @@ func (client *Client) TransferCustomer(ctx context.Context, sourceUserID, target
 		}
 		return wecomport.CustomerTransferResult{}, wecomport.WrapProviderWriteOutcome(err, true, true)
 	}
-	if len(payload.ErrCode) == 0 {
+	// transfer_customer is a write: unlike older read endpoints, only the JSON
+	// number 0 proves top-level acceptance. null, strings and fractions can be
+	// produced by a proxy/body mismatch after a write and must retain the EER
+	// idempotency key as outcome_unknown.
+	topLevelCode, topLevelOK := strictJSONInt(payload.ErrCode)
+	if !topLevelOK || topLevelCode != 0 {
 		return wecomport.CustomerTransferResult{}, wecomport.WrapProviderWriteOutcome(ErrResponse, true, true)
 	}
 	if len(payload.Customer) != len(externalUserIDs) {

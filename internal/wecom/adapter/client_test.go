@@ -861,6 +861,9 @@ func TestTransferCustomerTreatsAmbiguousTopLevelResponsesAsOutcomeUnknown(t *tes
 		{name: "server empty object", status: http.StatusServiceUnavailable, body: `{}`},
 		{name: "success malformed json", status: http.StatusOK, body: `{`},
 		{name: "success missing errcode", status: http.StatusOK, body: `{"customer":[{"external_userid":"external-1","errcode":0}]}`},
+		{name: "success null errcode", status: http.StatusOK, body: `{"errcode":null,"customer":[{"external_userid":"external-1","errcode":0}]}`},
+		{name: "success string zero errcode", status: http.StatusOK, body: `{"errcode":"0","customer":[{"external_userid":"external-1","errcode":0}]}`},
+		{name: "success fractional zero errcode", status: http.StatusOK, body: `{"errcode":0.0,"customer":[{"external_userid":"external-1","errcode":0}]}`},
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
