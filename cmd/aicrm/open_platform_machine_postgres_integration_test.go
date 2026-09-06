@@ -192,6 +192,14 @@ func TestOpenPlatformMachineManagementPostgreSQLJourney(t *testing.T) {
 	if auditResponse.Code != http.StatusOK || !strings.Contains(auditResponse.Body.String(), `"machine_client_grants_updated"`) || !strings.Contains(auditResponse.Body.String(), `"revoked_prior_bearers"`) {
 		t.Fatalf("V1 management audit status=%d body=%s", auditResponse.Code, auditResponse.Body.String())
 	}
+	rotateRequest := httptest.NewRequest(http.MethodPost, "https://crm.example.test/api/admin/open-platform/clients/"+v1Client.Client.ClientID+"/rotate", strings.NewReader(`{}`))
+	rotateRequest.Header.Set("Content-Type", "application/json")
+	rotateResponse := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(rotateResponse, rotateRequest)
+	if rotateResponse.Code != http.StatusOK {
+		t.Fatalf("V1 management rotate status=%d body=%s", rotateResponse.Code, rotateResponse.Body.String())
+	}
+	assertAllowedCIDRsJSON(t, rotateResponse.Body.Bytes(), "rotate")
 
 	if _, err = service.Activate(ctx, admin, external.Client.ClientID, external.Secret, true); err != nil {
 		t.Fatal(err)
