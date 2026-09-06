@@ -370,6 +370,9 @@ func TestPostgreSQLOwnerHandoffJourneyFinalCountsQueryUsesAliases(t *testing.T) 
 // identity. The separate test Provider is injected at composition and the
 // River runtime is started by this journey; no production endpoint is used.
 func TestPostgreSQLOwnerHandoffChromiumJourney(t *testing.T) {
+	if !platformconfig.ChromiumJourneyRequired() {
+		t.Skip("set AICRM_REQUIRE_CHROMIUM_JOURNEY=1 to run the required Chromium journey")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	databaseURL, cleanup := adminAccessCompositionDatabase(t, ctx)

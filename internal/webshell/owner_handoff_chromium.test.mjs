@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
+import { chromiumStartupDiagnostic, chromiumStartupTimeoutMS } from "./chromium_launch.mjs";
 import { strFromU8, unzipSync } from "fflate";
 
 const baseURL = process.env.AICRM_OWNER_HANDOFF_TEST_URL;
@@ -112,17 +113,31 @@ const openCDP = async webSocketDebuggerUrl => {
   await new Promise((resolve,reject)=>{socket.addEventListener("open",resolve,{once:true});socket.addEventListener("error",()=>reject(new Error("CDP connection failed")),{once:true});});
   return new CDP(socket);
 };
-const waitForPort = async profile => { for (let attempt=0; attempt<160; attempt++) { try { const [port]=String(await fs.readFile(path.join(profile,"DevToolsActivePort"),"utf8")).split("\n"); if (/^\d+$/.test(port)) return `http://127.0.0.1:${port}`; } catch (_) {} await sleep(50); } throw new Error("Chromium remote debugging did not become ready"); };
+const waitForPort = async (profile, processState) => {
+  const deadline=Date.now()+chromiumStartupTimeoutMS;
+  while (Date.now()<deadline) {
+    try {
+      const [port]=String(await fs.readFile(path.join(profile,"DevToolsActivePort"),"utf8")).split("\n");
+      if (/^\d+$/.test(port)) return `http://127.0.0.1:${port}`;
+    } catch (_) {}
+    const state=processState();
+    if (state.launchError || state.exitCode !== null || state.signalCode) throw new Error(chromiumStartupDiagnostic({...state,profile}));
+    await sleep(50);
+  }
+  throw new Error(chromiumStartupDiagnostic({...processState(),profile}));
+};
 const waitForExit = async (child, ms) => !child || child.exitCode !== null || child.signalCode !== null || new Promise(resolve => { const timer=setTimeout(()=>resolve(false),ms); child.once("exit",()=>{clearTimeout(timer);resolve(true);}); });
 const removeProfile = async profile => { for (let attempt=0;attempt<40;attempt++) { try { await fs.rm(profile,{recursive:true,force:true,maxRetries:0}); return true; } catch (error) { if (!["ENOTEMPTY","EBUSY","EPERM"].includes(error?.code)) return false; await sleep(100); } } return false; };
 const xmlText = value => String(value).replace(/[&<>'"]/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&apos;", '"': "&quot;" }[char]));
 
 const profile = await fs.mkdtemp(path.join(os.tmpdir(), "aicrm-owner-handoff-chromium-"));
 const downloads = await fs.mkdtemp(path.join(os.tmpdir(), "aicrm-owner-handoff-downloads-"));
-let child; let cdp; let browserCDP; let failed=false;
+let child; let cdp; let browserCDP; let failed=false; let chromeLaunchError; let chromeStderr="";
 try {
-  child=spawn(chrome(),["--headless=new","--no-sandbox","--remote-debugging-port=0",`--user-data-dir=${profile}`,"--no-first-run","--no-default-browser-check","--disable-background-networking","--disable-component-update","--disable-sync","--ignore-certificate-errors","--allow-insecure-localhost","about:blank"],{stdio:"ignore"});
-  const address=await waitForPort(profile);
+  child=spawn(chrome(),["--headless=new","--no-sandbox","--remote-debugging-port=0",`--user-data-dir=${profile}`,"--no-first-run","--no-default-browser-check","--disable-background-networking","--disable-component-update","--disable-sync","--ignore-certificate-errors","--allow-insecure-localhost","about:blank"],{stdio:["ignore","ignore","pipe"]});
+  child.once("error", error => { chromeLaunchError=error; });
+  child.stderr?.on("data", chunk => { chromeStderr=(chromeStderr+String(chunk)).slice(-1024); });
+  const address=await waitForPort(profile, () => ({ exitCode:child?.exitCode ?? null, signalCode:child?.signalCode ?? null, launchError:chromeLaunchError, stderr:chromeStderr }));
   const browserInfo=await (await fetch(`${address}/json/version`)).json();
   if (!browserInfo.webSocketDebuggerUrl) throw new Error("Chromium browser debugging endpoint is unavailable");
   browserCDP=await openCDP(browserInfo.webSocketDebuggerUrl);
