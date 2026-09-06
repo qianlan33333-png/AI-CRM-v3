@@ -113,3 +113,22 @@ ALTER TABLE customer_owner_handoff_lines
     ADD COLUMN payload_digest BYTEA NULL CHECK (payload_digest IS NULL OR octet_length(payload_digest)=32),
     ADD COLUMN policy_digest BYTEA NULL CHECK (policy_digest IS NULL OR octet_length(policy_digest)=32),
     ADD COLUMN transfer_success_message TEXT NOT NULL DEFAULT '';
+
+-- Extend the existing EER kind registry only. Customer never writes the EER
+-- tables directly; its transaction accepts this opaque Outbound-owned effect.
+ALTER TABLE external_effects DROP CONSTRAINT IF EXISTS external_effects_owner_kind_shape;
+ALTER TABLE external_effects DROP CONSTRAINT IF EXISTS external_effects_kind_check;
+ALTER TABLE external_effects ADD CONSTRAINT external_effects_kind_check CHECK (kind IN (
+  'outbound_message','automation_message','outbound_media','wecom_tag_catalog','group_message',
+  'channel_acquisition_asset','channel_welcome_message','channel_entry_tag',
+  'channel_acquisition_link_mutation','sidebar_jssdk_send','survey_completion','customer_owner_handoff',
+  'wechat_pay_prepay_v1','wechat_pay_refund_v1','wechat_shop_refund_v1'
+));
+ALTER TABLE external_effects ADD CONSTRAINT external_effects_owner_kind_shape CHECK (
+  (owner='outbound' AND kind IN (
+    'outbound_message','automation_message','outbound_media','wecom_tag_catalog','group_message',
+    'channel_acquisition_asset','channel_welcome_message','channel_entry_tag',
+    'channel_acquisition_link_mutation','sidebar_jssdk_send','survey_completion','customer_owner_handoff'
+  )) OR
+  (owner='payment' AND kind IN ('wechat_pay_prepay_v1','wechat_pay_refund_v1','wechat_shop_refund_v1'))
+);
