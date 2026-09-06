@@ -38,6 +38,7 @@ func TestPostgreSQLOpenPlatformV1ChromiumJourney(t *testing.T) {
 	repository := filepath.Clean(filepath.Join(filepath.Dir(source), "..", ".."))
 	t.Chdir(repository)
 	prepareProductExternalPushChromiumArtifacts(t, repository)
+	t.Log("open platform Chromium: release artifact prepared")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
@@ -79,6 +80,7 @@ func TestPostgreSQLOpenPlatformV1ChromiumJourney(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	t.Log("open platform Chromium: PostgreSQL composition ready")
 	// Exercise the authenticated outer Composition route before Chromium opens
 	// it. This proves the release artifact rendered from web/dist contains the
 	// V3 Host asset, rather than allowing a package-relative missing artifact or
@@ -124,6 +126,7 @@ func TestPostgreSQLOpenPlatformV1ChromiumJourney(t *testing.T) {
 	if outer.Code != http.StatusOK || !bytes.Contains(outer.Body.Bytes(), []byte(`data-page="apidocs"`)) || !bytes.Contains(outer.Body.Bytes(), []byte("openPlatformHost-")) {
 		t.Fatalf("outer composed Open Platform Host status=%d api_docs=%t host_asset=%t", outer.Code, bytes.Contains(outer.Body.Bytes(), []byte(`data-page="apidocs"`)), bytes.Contains(outer.Body.Bytes(), []byte("openPlatformHost-")))
 	}
+	t.Log("open platform Chromium: outer route and management detail preflight passed")
 	server.Config.Handler = application.handler
 	server.StartTLS()
 	// macOS desktop Chrome cannot reliably expose a remote-debugging endpoint
@@ -134,6 +137,7 @@ func TestPostgreSQLOpenPlatformV1ChromiumJourney(t *testing.T) {
 		t.Skip("Chromium CDP journey requires Linux CI; local outer-route PostgreSQL preflight passed")
 	}
 
+	t.Log("open platform Chromium: Linux CDP script launched")
 	command := exec.CommandContext(ctx, "node", filepath.Join(filepath.Dir(source), "open_platform_chromium_journey.mjs"))
 	command.Env = append(os.Environ(),
 		"AICRM_OPEN_PLATFORM_TEST_URL="+server.URL,

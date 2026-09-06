@@ -93,6 +93,8 @@ async function removeProfile(profile) {
   return false;
 }
 
+const progress = (phase) => console.log(`open_platform_chromium: phase=${phase}`);
+progress("node_started");
 const profile = await fs.mkdtemp(path.join(os.tmpdir(), "aicrm-open-platform-chromium-"));
 let browser; let cdp; let failed = false;
 try {
@@ -102,6 +104,7 @@ try {
   await new Promise((resolve, reject) => { socket.addEventListener("open", resolve, { once: true }); socket.addEventListener("error", () => reject(new Error("Chromium page connection failed")), { once: true }); });
   cdp = new CDP(socket);
   await cdp.call("Page.enable"); await cdp.call("Runtime.enable"); await cdp.call("Network.enable");
+  progress("browser_ready");
   const resources = new Map(); const requests = new Map(); const exceptions = [];
   cdp.on("Network.requestWillBeSent", (params) => {
     try { requests.set(String(params.requestId || ""), { method: String(params.request?.method || ""), pathname: new URL(String(params.request?.url || "")).pathname }); } catch (_) {}
@@ -128,6 +131,7 @@ try {
     const state = await evaluate(cdp, "(() => ({path:location.pathname,stage:Boolean(document.querySelector('#stage')),host:Boolean(document.querySelector('[data-open-platform-host=\\\"v1\\\"]'))}))()");
     throw new Error(`authenticated V1 caller Host did not render: path=${state?.path || "unavailable"} stage=${Boolean(state?.stage)} host=${Boolean(state?.host)} assets=${resources.get("/assets/") || 0} clients=${resources.get("/api/admin/open-platform/clients") || 0} catalog=${resources.get("/api/admin/open-platform/routes") || 0} exceptions=${exceptions.length ? exceptions.join(",") : "none"}`);
   }
+  progress("authenticated_host");
 
   const click = async (label) => evaluate(cdp, `(() => { const button=[...document.querySelectorAll('[data-open-platform-action]')].find((node)=>node.dataset.openPlatformAction===${JSON.stringify(label)}); if (!button) return false; button.click(); return true; })()`);
   await evaluate(cdp, `(() => {
@@ -142,6 +146,7 @@ try {
   await waitFor(cdp, "Boolean(document.querySelector('[data-open-platform-secret=\"browser-open-agent\"] .open-platform-secret'))", "create did not display a one-time credential");
   const firstSecret = await evaluate(cdp, "document.querySelector('[data-open-platform-secret=\"browser-open-agent\"] .open-platform-secret')?.textContent || ''");
   if (!firstSecret) throw new Error("one-time credential was empty");
+  progress("issued");
   const oauth = (secret, scope = "read") => evaluate(cdp, `fetch('/oauth/token',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/x-www-form-urlencoded','Authorization':'Basic '+btoa('browser-open-agent:'+${JSON.stringify(secret)})},body:new URLSearchParams({grant_type:'client_credentials',audience:'external_integration',scope:${JSON.stringify(scope)}})}).then(async(response)=>({status:response.status,body:await response.json().catch(()=>null)}))`);
   const restCatalog = (token) => evaluate(cdp, `fetch('/open/v1/capabilities',{headers:{Authorization:'Bearer '+${JSON.stringify(token)}}}).then(async(response)=>({status:response.status,body:await response.json().catch(()=>null)}))`);
   const mcpCatalog = (token) => evaluate(cdp, `fetch('/mcp',{method:'POST',headers:{Authorization:'Bearer '+${JSON.stringify(token)},'Content-Type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:'browser-catalog',method:'tools/list',params:{}})}).then(async(response)=>({status:response.status,body:await response.json().catch(()=>null)}))`);
@@ -153,6 +158,7 @@ try {
   const firstActivation = await waitForResource(resources, firstActivationPath, "manual confirmation did not issue an activation request");
   if (firstActivation.status !== 200) throw new Error(`manual confirmation activation status=${firstActivation.status} category=${await activationFailureCategory(cdp, firstActivation)}`);
   await waitFor(cdp, "document.querySelector('[data-open-platform-client=\"browser-open-agent\"]')?.textContent.includes('已启用')", "activation succeeded but the caller Host did not refresh as enabled");
+  progress("activated");
   const catalogCapabilityValues = await evaluate(cdp, "[...document.querySelectorAll('input[name=\"create-capability\"]')].map((input)=>input.value).sort()");
   const expectedCatalogCapabilities = ["ai.review_plan.create", "customer.activity.read", "customer.read", "customer.resolve", "operation.read", "platform.capabilities.read"];
   if (!Array.isArray(catalogCapabilityValues) || catalogCapabilityValues.length !== expectedCatalogCapabilities.length || catalogCapabilityValues.some((value, index) => value !== expectedCatalogCapabilities[index])) throw new Error("administrator catalog did not expose the six current V1 capabilities");
@@ -165,6 +171,7 @@ try {
   if (firstCatalog?.status !== 200 || !sameStrings(operationIDs(firstCatalog), ["platform.capabilities.list"])) throw new Error("REST V1 catalog did not restrict the initial caller to its single granted operation");
   const firstMCP = await mcpCatalog(firstToken);
   if (firstMCP?.status !== 200 || !sameStrings(toolNames(firstMCP), ["list_capabilities"])) throw new Error("MCP catalog did not restrict the initial caller to its single granted tool");
+  progress("initial_catalog");
 
   const beforeGrant = await clientDetail();
   const beforeGrantVersion = beforeGrant?.body?.client?.auth_version;
@@ -179,6 +186,7 @@ try {
   const grantVersion = afterGrant?.body?.client?.auth_version;
   if (afterGrant?.status !== 200 || !Number.isInteger(grantVersion) || grantVersion <= beforeGrantVersion || !Array.isArray(afterGrant?.body?.client?.capabilities) || !afterGrant.body.client.capabilities.includes("customer.resolve")) throw new Error("grant save did not durably advance caller authorization");
   await waitFor(cdp, `(() => { const card=document.querySelector('[data-open-platform-client=\"browser-open-agent\"]'); const checkbox=card?.querySelector('input[name=\"edit-capability\"][value=\"customer.resolve\"]'); return Boolean(checkbox?.checked && card?.textContent.includes('OAuth 版本 ${grantVersion}')); })()`, "grant save completed but the caller Host did not reload its authorization revision");
+  progress("grant_committed");
   if ((await restCatalog(firstToken))?.status !== 401) throw new Error("grant update did not revoke the prior OAuth token");
   const grantedOAuth = await oauth(firstSecret); const grantedToken = grantedOAuth?.body?.access_token;
   if (grantedOAuth?.status !== 200 || typeof grantedToken !== "string") throw new Error("credential did not issue a replacement token after grant update");
@@ -186,11 +194,13 @@ try {
   if (grantedCatalog?.status !== 200 || !sameStrings(operationIDs(grantedCatalog), ["customer.resolve", "platform.capabilities.list"])) throw new Error("changed grant did not appear in the restricted REST catalog");
   const grantedMCP = await mcpCatalog(grantedToken);
   if (grantedMCP?.status !== 200 || !sameStrings(toolNames(grantedMCP), ["list_capabilities", "resolve_customer"])) throw new Error("changed grant did not appear in the restricted MCP catalog");
+  progress("grant_catalog");
 
   if (!await click("轮换密钥")) throw new Error("rotation action was unavailable");
   await waitFor(cdp, "Boolean(document.querySelector('[data-open-platform-secret=\"browser-open-agent\"] .open-platform-secret'))", "rotation did not display its one-time credential");
   const secondSecret = await evaluate(cdp, "document.querySelector('[data-open-platform-secret=\"browser-open-agent\"] .open-platform-secret')?.textContent || ''");
   if (!secondSecret || secondSecret === firstSecret) throw new Error("rotation did not issue a distinct one-time credential");
+  progress("rotated");
   if ((await oauth(firstSecret))?.status === 200) throw new Error("rotation left the old credential usable");
   const rotated = await evaluate(cdp, "fetch('/api/admin/open-platform/clients/browser-open-agent',{credentials:'same-origin'}).then(async(response)=>({status:response.status,body:await response.json().catch(()=>null)}))");
   if (rotated?.status !== 200 || rotated?.body?.client?.enabled !== false) throw new Error("rotation did not return the caller to disabled handoff state");
@@ -206,12 +216,14 @@ try {
   if (rotatedCatalog?.status !== 200 || !sameStrings(operationIDs(rotatedCatalog), ["customer.resolve", "platform.capabilities.list"])) throw new Error("rotation did not preserve the approved restricted REST grant");
   const rotatedMCP = await mcpCatalog(secondToken);
   if (rotatedMCP?.status !== 200 || !sameStrings(toolNames(rotatedMCP), ["list_capabilities", "resolve_customer"])) throw new Error("rotation did not preserve the approved restricted MCP grant");
+  progress("rotation_catalog");
 
   if (!await click("停用调用方")) throw new Error("disable action was unavailable");
   await waitFor(cdp, "document.querySelector('[data-open-platform-client=\"browser-open-agent\"]')?.textContent.includes('待启用或已停用')", "disable did not update the caller detail");
   if ((await restCatalog(secondToken))?.status !== 401) throw new Error("disable did not revoke the current OAuth token");
   const audit = await evaluate(cdp, "fetch('/api/admin/open-platform/clients/browser-open-agent/audit?limit=20',{credentials:'same-origin'}).then(async(response)=>({status:response.status,body:await response.json().catch(()=>null)}))");
   if (audit?.status !== 200 || !Array.isArray(audit?.body?.items) || !audit.body.items.some((item) => item?.action === "machine_client_disabled")) throw new Error("caller audit did not record final disable");
+  progress("disabled");
   console.log("open_platform_chromium: PASS");
 } catch (error) { failed = true; throw error; }
 finally {
