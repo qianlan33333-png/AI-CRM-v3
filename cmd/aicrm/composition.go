@@ -817,7 +817,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	}
 	customerProfileStore := wecom.NewPostgreSQLCustomerSyncStore()
 	legacyAudienceSource.PrimaryOwners = customerProfileStore
-	openPlatformExecutor, err := newOpenPlatformExecutor(oneID, orderService, sidebarProfiles, archiveService, openPlatformOwnerAdapter{uow: uow, reader: customerProfileStore}, cfg.WeCom.CorpID)
+	openPlatformExecutor, err := newOpenPlatformExecutor(oneID, orderService, sidebarProfiles, archiveService, openPlatformOwnerAdapter{uow: uow, reader: customerProfileStore}, configuredOpenPlatformScopes(cfg.WeCom.CorpID, []string{cfg.HXCDashboard.UnionIDScope, "wechat-open-platform:" + cfg.Survey.OAuthOpenPlatformID}, []string{cfg.Survey.OAuthAppID, cfg.WeChatPay.AppID, cfg.WeChatPay.H5AppID, cfg.WeChatShop.AppID}))
 	if err != nil {
 		return fail(err)
 	}

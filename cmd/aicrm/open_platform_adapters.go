@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -24,28 +25,68 @@ import (
 )
 
 var (
-	errOpenPlatformRouteUnavailable   = errors.New("open platform route is not composed")
-	errOpenPlatformResourceOutOfScope = errors.New("machine client cannot access this resource")
+	errOpenPlatformRouteUnavailable    = errors.New("open platform route is not composed")
+	errOpenPlatformResourceOutOfScope  = errors.New("machine client cannot access this resource")
+	errOpenPlatformIdentityConflict    = errors.New("identity references resolve to different customers")
+	errOpenPlatformIdentityNotFound    = errors.New("identity reference not found")
+	errOpenPlatformIdentityPending     = errors.New("identity reference is pending")
+	errOpenPlatformIdentityScopeDenied = errors.New("identity scope is not configured for this platform")
 )
 
-type openPlatformExecutor struct {
-	identity   identityport.Resolver
-	orders     orderport.Query
-	profiles   customerport.SidebarProfileService
-	archive    archiveport.CustomerMessageReader
-	owners     wecomport.AudiencePrimaryOwnerReader
-	weComScope string
+type openPlatformIdentityScopes struct {
+	WeComScope   string
+	UnionScopes  []string
+	OpenIDScopes []string
 }
 
-func newOpenPlatformExecutor(identity identityport.Resolver, orders orderport.Query, profiles customerport.SidebarProfileService, archive archiveport.CustomerMessageReader, owners wecomport.AudiencePrimaryOwnerReader, weComCorpID string) (*openPlatformExecutor, error) {
-	if identity == nil || orders == nil || profiles == nil || archive == nil || owners == nil {
+type openPlatformExecutor struct {
+	identity identityport.Resolver
+	orders   orderport.Query
+	profiles customerport.SidebarProfileService
+	archive  archiveport.CustomerMessageReader
+	owners   wecomport.AudiencePrimaryOwnerReader
+	scopes   openPlatformIdentityScopes
+}
+
+func newOpenPlatformExecutor(identity identityport.Resolver, orders orderport.Query, profiles customerport.SidebarProfileService, archive archiveport.CustomerMessageReader, owners wecomport.AudiencePrimaryOwnerReader, scopes openPlatformIdentityScopes) (*openPlatformExecutor, error) {
+	if identity == nil || orders == nil || profiles == nil || archive == nil || owners == nil || strings.TrimSpace(scopes.WeComScope) == "" {
 		return nil, errors.New("open platform core Port dependencies are required")
 	}
-	scope := ""
-	if corpID := strings.TrimSpace(weComCorpID); corpID != "" {
-		scope = "wecom-corp:" + corpID
+	scopes.WeComScope = strings.TrimSpace(scopes.WeComScope)
+	scopes.UnionScopes = distinctScopes(scopes.UnionScopes, "wechat-open-platform:")
+	scopes.OpenIDScopes = distinctScopes(scopes.OpenIDScopes, "wechat-app:")
+	return &openPlatformExecutor{identity: identity, orders: orders, profiles: profiles, archive: archive, owners: owners, scopes: scopes}, nil
+}
+
+func configuredOpenPlatformScopes(corpID string, unionScopes, appIDs []string) openPlatformIdentityScopes {
+	weComScope := ""
+	if corpID = strings.TrimSpace(corpID); corpID != "" {
+		weComScope = "wecom-corp:" + corpID
 	}
-	return &openPlatformExecutor{identity: identity, orders: orders, profiles: profiles, archive: archive, owners: owners, weComScope: scope}, nil
+	openIDScopes := make([]string, 0, len(appIDs))
+	for _, appID := range appIDs {
+		if appID = strings.TrimSpace(appID); appID != "" {
+			openIDScopes = append(openIDScopes, "wechat-app:"+appID)
+		}
+	}
+	return openPlatformIdentityScopes{WeComScope: weComScope, UnionScopes: unionScopes, OpenIDScopes: openIDScopes}
+}
+
+func distinctScopes(values []string, prefix string) []string {
+	result := make([]string, 0, len(values))
+	seen := map[string]struct{}{}
+	for _, raw := range values {
+		value := strings.TrimSpace(raw)
+		if !strings.HasPrefix(value, prefix) || len(value) == len(prefix) {
+			continue
+		}
+		if _, exists := seen[value]; !exists {
+			seen[value] = struct{}{}
+			result = append(result, value)
+		}
+	}
+	sort.Strings(result)
+	return result
 }
 
 func (executor *openPlatformExecutor) Execute(ctx context.Context, request openplatformport.Request) (openplatformport.Response, error) {
@@ -64,24 +105,15 @@ func (executor *openPlatformExecutor) Execute(ctx context.Context, request openp
 }
 
 func (executor *openPlatformExecutor) resolveIdentity(ctx context.Context, query url.Values, principal accessdomain.MachinePrincipal) (openplatformport.Response, error) {
-	reference, err := executor.referenceFromValues(query)
+	references, err := executor.referencesFromValues(query)
 	if err != nil {
-		return responseError(400, "invalid_request"), nil
+		return responseForIdentityError(err), nil
 	}
-	result, err := executor.identity.Resolve(ctx, reference)
+	result, err := executor.resolveReferences(ctx, references)
 	if err != nil {
-		return responseError(503, "identity_unavailable"), nil
+		return responseForIdentityError(err), nil
 	}
-	if result.Status == identityport.ResolveNotFound {
-		return responseError(404, "not_found"), nil
-	}
-	if result.Status == identityport.ResolveConflict {
-		return responseError(409, "identity_conflict"), nil
-	}
-	if result.Status != identityport.ResolveFound || result.CustomerID < 1 {
-		return responseError(409, "identity_pending"), nil
-	}
-	if err := executor.ensureCustomerScope(ctx, principal, result.CustomerID, &reference); err != nil {
+	if err := executor.ensureCustomerScope(ctx, principal, result.CustomerID, references); err != nil {
 		return responseError(404, "not_found"), nil
 	}
 	profile, profileErr := executor.profiles.ReadSidebarProfile(ctx, result.CustomerID)
@@ -95,7 +127,7 @@ func (executor *openPlatformExecutor) resolveIdentity(ctx context.Context, query
 // canonical/WeCom read ports. Request query values are never used as scope
 // evidence. This check happens before a customer profile, archive, or order
 // Port can read the resource.
-func (executor *openPlatformExecutor) ensureCustomerScope(ctx context.Context, principal accessdomain.MachinePrincipal, customerID customerdomain.CustomerID, reference *identitydomain.Reference) error {
+func (executor *openPlatformExecutor) ensureCustomerScope(ctx context.Context, principal accessdomain.MachinePrincipal, customerID customerdomain.CustomerID, references []identitydomain.Reference) error {
 	if len(principal.OwnerScope) == 0 {
 		return nil
 	}
@@ -103,7 +135,7 @@ func (executor *openPlatformExecutor) ensureCustomerScope(ctx context.Context, p
 	if principal.CorpID != "" {
 		resources["corp_id"] = principal.CorpID
 	}
-	if reference != nil {
+	for _, reference := range references {
 		resources[string(reference.Kind)] = reference.Value
 		if reference.Kind == identitydomain.KindWeComExternalUserID {
 			resources["external_userid"] = reference.Value
@@ -111,7 +143,7 @@ func (executor *openPlatformExecutor) ensureCustomerScope(ctx context.Context, p
 	}
 	if _, requiresOwner := principal.OwnerScope["owner_userid"]; requiresOwner {
 		owners, err := executor.owners.AudiencePrimaryOwners(ctx, []customerdomain.CustomerID{customerID})
-		if err != nil || len(owners) != 1 || owners[0].CustomerID != customerID || owners[0].Status != "known" || owners[0].OwnerUserID == "" || owners[0].CorpScope != executor.weComScope {
+		if err != nil || len(owners) != 1 || owners[0].CustomerID != customerID || owners[0].Status != "known" || owners[0].OwnerUserID == "" || owners[0].CorpScope != executor.scopes.WeComScope {
 			return errOpenPlatformResourceOutOfScope
 		}
 		resources["owner_userid"] = owners[0].OwnerUserID
@@ -134,12 +166,12 @@ func (executor *openPlatformExecutor) allowsUnboundScope(principal accessdomain.
 }
 
 func (executor *openPlatformExecutor) listOrders(ctx context.Context, values url.Values, principal accessdomain.MachinePrincipal) (openplatformport.Response, error) {
-	query, reference, err := executor.orderQuery(ctx, values)
+	query, references, err := executor.orderQuery(ctx, values)
 	if err != nil {
 		return responseError(400, "invalid_request"), nil
 	}
 	if query.CustomerID > 0 {
-		if err := executor.ensureCustomerScope(ctx, principal, customerdomain.CustomerID(query.CustomerID), reference); err != nil {
+		if err := executor.ensureCustomerScope(ctx, principal, customerdomain.CustomerID(query.CustomerID), references); err != nil {
 			return responseError(404, "not_found"), nil
 		}
 	} else if !executor.allowsUnboundScope(principal) {
@@ -188,11 +220,11 @@ func (executor *openPlatformExecutor) callMCP(ctx context.Context, body []byte, 
 	if call.Params.Arguments == nil {
 		call.Params.Arguments = map[string]any{}
 	}
-	customerID, reference, err := executor.mcpCustomerID(ctx, call.Params.Arguments)
+	customerID, references, err := executor.mcpCustomerID(ctx, call.Params.Arguments)
 	if err != nil {
 		return openplatformport.Response{}, err
 	}
-	if err := executor.ensureCustomerScope(ctx, principal, customerID, reference); err != nil {
+	if err := executor.ensureCustomerScope(ctx, principal, customerID, references); err != nil {
 		return openplatformport.Response{}, errOpenPlatformResourceOutOfScope
 	}
 	profile, err := executor.profiles.ReadSidebarProfile(ctx, customerID)
@@ -256,78 +288,225 @@ func (executor *openPlatformExecutor) recentMessages(ctx context.Context, custom
 	return page.Items, nil
 }
 
-func (executor *openPlatformExecutor) mcpCustomerID(ctx context.Context, arguments map[string]any) (customerdomain.CustomerID, *identitydomain.Reference, error) {
-	if raw, ok := arguments["customer_ref"]; ok {
+func (executor *openPlatformExecutor) mcpCustomerID(ctx context.Context, arguments map[string]any) (customerdomain.CustomerID, []identitydomain.Reference, error) {
+	var directCustomer customerdomain.CustomerID
+	references := make([]identitydomain.Reference, 0, 2)
+	if raw, exists := arguments["customer_ref"]; exists {
 		value, ok := raw.(string)
 		if !ok || strings.TrimSpace(value) == "" {
 			return 0, nil, errors.New("invalid customer_ref")
 		}
+		value = strings.TrimSpace(value)
 		if strings.HasPrefix(value, "customer:") {
 			id, err := strconv.ParseInt(strings.TrimPrefix(value, "customer:"), 10, 64)
 			if err != nil || id < 1 {
 				return 0, nil, errors.New("invalid customer_ref")
 			}
-			return customerdomain.CustomerID(id), nil, nil
+			directCustomer = customerdomain.CustomerID(id)
+		} else if isCN11(value) {
+			references = append(references, identitydomain.Reference{Kind: identitydomain.KindPhone, Scope: "phone:cn11", Value: value, Assurance: identitydomain.AssuranceDeclared, Source: "open_platform.mcp"})
+		} else {
+			references = append(references, identitydomain.Reference{Kind: identitydomain.KindWeComExternalUserID, Scope: executor.scopes.WeComScope, Value: value, Assurance: identitydomain.AssuranceDeclared, Source: "open_platform.mcp"})
 		}
-		if isCN11(value) {
-			reference := identitydomain.Reference{Kind: identitydomain.KindPhone, Scope: "phone:cn11", Value: value, Assurance: identitydomain.AssuranceDeclared, Source: "open_platform.mcp"}
-			customerID, err := executor.resolveReference(ctx, reference)
-			return customerID, &reference, err
-		}
-		reference := identitydomain.Reference{Kind: identitydomain.KindWeComExternalUserID, Scope: executor.weComScope, Value: value, Assurance: identitydomain.AssuranceDeclared, Source: "open_platform.mcp"}
-		customerID, err := executor.resolveReference(ctx, reference)
-		return customerID, &reference, err
 	}
-	value, ok := arguments["external_userid"].(string)
-	if !ok || strings.TrimSpace(value) == "" {
+	if raw, exists := arguments["external_userid"]; exists {
+		value, ok := raw.(string)
+		if !ok || strings.TrimSpace(value) == "" {
+			return 0, nil, errors.New("invalid external_userid")
+		}
+		references = append(references, identitydomain.Reference{Kind: identitydomain.KindWeComExternalUserID, Scope: executor.scopes.WeComScope, Value: strings.TrimSpace(value), Assurance: identitydomain.AssuranceDeclared, Source: "open_platform.mcp"})
+	}
+	if directCustomer == 0 && len(references) == 0 {
 		return 0, nil, errors.New("customer_ref or external_userid is required")
 	}
-	reference := identitydomain.Reference{Kind: identitydomain.KindWeComExternalUserID, Scope: executor.weComScope, Value: value, Assurance: identitydomain.AssuranceDeclared, Source: "open_platform.mcp"}
-	customerID, err := executor.resolveReference(ctx, reference)
-	return customerID, &reference, err
-}
-
-func (executor *openPlatformExecutor) resolveReference(ctx context.Context, reference identitydomain.Reference) (customerdomain.CustomerID, error) {
-	resolved, err := executor.identity.Resolve(ctx, reference)
+	if len(references) == 0 {
+		return directCustomer, nil, nil
+	}
+	resolved, err := executor.resolveReferences(ctx, references)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
-	if resolved.Status != identityport.ResolveFound || resolved.CustomerID < 1 {
-		return 0, errors.New("customer not found")
+	if directCustomer != 0 && resolved.CustomerID != directCustomer {
+		return 0, nil, errOpenPlatformIdentityConflict
 	}
-	return resolved.CustomerID, nil
+	return resolved.CustomerID, references, nil
 }
 
-func (executor *openPlatformExecutor) referenceFromValues(values url.Values) (identitydomain.Reference, error) {
-	if kind := strings.TrimSpace(values.Get("kind")); kind != "" {
-		reference := identitydomain.Reference{Kind: identitydomain.Kind(kind), Scope: values.Get("scope"), Value: values.Get("value"), Assurance: identitydomain.AssuranceDeclared, Source: "open_platform.api"}
-		if _, err := identitydomain.Normalize(reference); err != nil {
-			return identitydomain.Reference{}, err
+func (executor *openPlatformExecutor) referencesFromValues(values url.Values) ([]identitydomain.Reference, error) {
+	getOne := func(key string) (string, error) {
+		items, found := values[key]
+		if !found {
+			return "", nil
 		}
-		return reference, nil
+		if len(items) != 1 {
+			return "", errors.New("duplicate identity parameter")
+		}
+		return strings.TrimSpace(items[0]), nil
 	}
-	if value := strings.TrimSpace(values.Get("external_userid")); value != "" {
-		return identitydomain.Reference{Kind: identitydomain.KindWeComExternalUserID, Scope: firstNonEmpty(values.Get("external_userid_scope"), executor.weComScope), Value: value, Assurance: identitydomain.AssuranceDeclared, Source: "open_platform.api"}, nil
+	kind, err := getOne("kind")
+	if err != nil {
+		return nil, err
 	}
-	if value := strings.TrimSpace(values.Get("mobile")); value != "" {
-		return identitydomain.Reference{Kind: identitydomain.KindPhone, Scope: "phone:cn11", Value: value, Assurance: identitydomain.AssuranceDeclared, Source: "open_platform.api"}, nil
+	if kind != "" {
+		for _, key := range []string{"external_userid", "mobile", "unionid", "openid"} {
+			value, valueErr := getOne(key)
+			if valueErr != nil || value != "" {
+				return nil, errors.New("generic identity cannot mix aliases")
+			}
+		}
+		scope, scopeErr := getOne("scope")
+		value, valueErr := getOne("value")
+		if scopeErr != nil || valueErr != nil {
+			return nil, errors.New("invalid generic identity")
+		}
+		reference, err := executor.trustedReference(identitydomain.Kind(kind), scope, value, "open_platform.api")
+		if err != nil {
+			return nil, err
+		}
+		return []identitydomain.Reference{reference}, nil
 	}
-	if value := strings.TrimSpace(values.Get("unionid")); value != "" {
-		return identitydomain.Reference{Kind: identitydomain.KindUnionID, Scope: values.Get("scope"), Value: value, Assurance: identitydomain.AssuranceDeclared, Source: "open_platform.api"}, nil
+	references := make([]identitydomain.Reference, 0, 4)
+	if value, valueErr := getOne("external_userid"); valueErr != nil {
+		return nil, valueErr
+	} else if value != "" {
+		scope, scopeErr := getOne("external_userid_scope")
+		if scopeErr != nil {
+			return nil, scopeErr
+		}
+		reference, err := executor.trustedReference(identitydomain.KindWeComExternalUserID, scope, value, "open_platform.api")
+		if err != nil {
+			return nil, err
+		}
+		references = append(references, reference)
 	}
-	if value := strings.TrimSpace(values.Get("openid")); value != "" {
-		return identitydomain.Reference{Kind: identitydomain.KindOAOpenID, Scope: values.Get("scope"), Value: value, Assurance: identitydomain.AssuranceDeclared, Source: "open_platform.api"}, nil
+	if value, valueErr := getOne("mobile"); valueErr != nil {
+		return nil, valueErr
+	} else if value != "" {
+		reference, err := executor.trustedReference(identitydomain.KindPhone, "", value, "open_platform.api")
+		if err != nil {
+			return nil, err
+		}
+		references = append(references, reference)
 	}
-	return identitydomain.Reference{}, errors.New("identity query missing")
+	sharedScope, scopeErr := getOne("scope")
+	if scopeErr != nil {
+		return nil, scopeErr
+	}
+	if value, valueErr := getOne("unionid"); valueErr != nil {
+		return nil, valueErr
+	} else if value != "" {
+		reference, err := executor.trustedReference(identitydomain.KindUnionID, sharedScope, value, "open_platform.api")
+		if err != nil {
+			return nil, err
+		}
+		references = append(references, reference)
+	}
+	if value, valueErr := getOne("openid"); valueErr != nil {
+		return nil, valueErr
+	} else if value != "" {
+		reference, err := executor.trustedReference(identitydomain.KindOAOpenID, sharedScope, value, "open_platform.api")
+		if err != nil {
+			return nil, err
+		}
+		references = append(references, reference)
+	}
+	if len(references) == 0 {
+		return nil, errors.New("identity query missing")
+	}
+	return references, nil
 }
 
-func (executor *openPlatformExecutor) orderQuery(ctx context.Context, values url.Values) (orderport.ListQuery, *identitydomain.Reference, error) {
+func (executor *openPlatformExecutor) trustedReference(kind identitydomain.Kind, requestedScope, value, source string) (identitydomain.Reference, error) {
+	requestedScope = strings.TrimSpace(requestedScope)
+	scope := requestedScope
+	switch kind {
+	case identitydomain.KindWeComExternalUserID:
+		if scope == "" {
+			scope = executor.scopes.WeComScope
+		}
+		if scope != executor.scopes.WeComScope {
+			return identitydomain.Reference{}, errOpenPlatformIdentityScopeDenied
+		}
+	case identitydomain.KindPhone:
+		if scope != "" && scope != "phone:cn11" {
+			return identitydomain.Reference{}, errOpenPlatformIdentityScopeDenied
+		}
+		scope = "phone:cn11"
+	case identitydomain.KindUnionID:
+		scope, value := selectTrustedScope(executor.scopes.UnionScopes, scope, value)
+		if value == "" {
+			return identitydomain.Reference{}, errOpenPlatformIdentityScopeDenied
+		}
+		return identitydomain.Reference{Kind: kind, Scope: scope, Value: value, Assurance: identitydomain.AssuranceDeclared, Source: source}, nil
+	case identitydomain.KindOAOpenID:
+		scope, value := selectTrustedScope(executor.scopes.OpenIDScopes, scope, value)
+		if value == "" {
+			return identitydomain.Reference{}, errOpenPlatformIdentityScopeDenied
+		}
+		return identitydomain.Reference{Kind: kind, Scope: scope, Value: value, Assurance: identitydomain.AssuranceDeclared, Source: source}, nil
+	}
+	reference := identitydomain.Reference{Kind: kind, Scope: scope, Value: value, Assurance: identitydomain.AssuranceDeclared, Source: source}
+	if _, err := identitydomain.Normalize(reference); err != nil {
+		return identitydomain.Reference{}, err
+	}
+	return reference, nil
+}
+
+// selectTrustedScope preserves old callers that omitted an internal scope only
+// when Composition has one unambiguous configured candidate. A supplied scope
+// still has to be one of those configured values.
+func selectTrustedScope(available []string, requested, value string) (string, string) {
+	if requested != "" {
+		for _, candidate := range available {
+			if candidate == requested {
+				return candidate, value
+			}
+		}
+		return "", ""
+	}
+	if len(available) == 1 {
+		return available[0], value
+	}
+	return "", ""
+}
+
+func (executor *openPlatformExecutor) resolveReferences(ctx context.Context, references []identitydomain.Reference) (identityport.ResolveResult, error) {
+	var found identityport.ResolveResult
+	for index, reference := range references {
+		result, err := executor.identity.Resolve(ctx, reference)
+		if err != nil {
+			return identityport.ResolveResult{}, err
+		}
+		switch result.Status {
+		case identityport.ResolveFound:
+			if result.CustomerID < 1 {
+				return identityport.ResolveResult{}, errOpenPlatformIdentityPending
+			}
+		case identityport.ResolveNotFound:
+			return identityport.ResolveResult{}, errOpenPlatformIdentityNotFound
+		case identityport.ResolveConflict:
+			return identityport.ResolveResult{}, errOpenPlatformIdentityConflict
+		default:
+			return identityport.ResolveResult{}, errOpenPlatformIdentityPending
+		}
+		if index == 0 {
+			found = result
+			continue
+		}
+		if result.CustomerID != found.CustomerID {
+			return identityport.ResolveResult{}, errOpenPlatformIdentityConflict
+		}
+	}
+	return found, nil
+}
+
+func (executor *openPlatformExecutor) orderQuery(ctx context.Context, values url.Values) (orderport.ListQuery, []identitydomain.Reference, error) {
 	for key, value := range values {
 		if len(value) != 1 {
 			return orderport.ListQuery{}, nil, errors.New("duplicate query value")
 		}
 		switch key {
-		case "provider", "limit", "cursor", "order_no", "transaction_id", "product_code", "payment_status", "created_from", "created_to", "external_userid", "mobile", "unionid", "scope":
+		case "provider", "limit", "cursor", "order_no", "transaction_id", "product_code", "payment_status", "created_from", "created_to", "external_userid", "external_userid_scope", "mobile", "unionid", "openid", "kind", "value", "scope":
 		default:
 			return orderport.ListQuery{}, nil, errors.New("unsupported query parameter")
 		}
@@ -369,16 +548,16 @@ func (executor *openPlatformExecutor) orderQuery(ctx context.Context, values url
 		return query, nil, err
 	}
 	if anyIdentityValue(values) {
-		reference, referenceErr := executor.referenceFromValues(values)
+		references, referenceErr := executor.referencesFromValues(values)
 		if referenceErr != nil {
 			return query, nil, referenceErr
 		}
-		customer, resolveErr := executor.resolveReference(ctx, reference)
+		resolved, resolveErr := executor.resolveReferences(ctx, references)
 		if resolveErr != nil {
 			return query, nil, resolveErr
 		}
-		query.CustomerID = int64(customer)
-		return query, &reference, nil
+		query.CustomerID = int64(resolved.CustomerID)
+		return query, references, nil
 	}
 	return query, nil, nil
 }
@@ -400,6 +579,18 @@ func responseOK(body any) openplatformport.Response {
 }
 func responseError(status int, code string) openplatformport.Response {
 	return openplatformport.Response{Status: status, Body: map[string]any{"ok": false, "error_code": code}}
+}
+func responseForIdentityError(err error) openplatformport.Response {
+	switch {
+	case errors.Is(err, errOpenPlatformIdentityNotFound):
+		return responseError(404, "not_found")
+	case errors.Is(err, errOpenPlatformIdentityConflict):
+		return responseError(409, "identity_conflict")
+	case errors.Is(err, errOpenPlatformIdentityPending), errors.Is(err, errOpenPlatformIdentityScopeDenied):
+		return responseError(409, "identity_pending")
+	default:
+		return responseError(400, "invalid_request")
+	}
 }
 func responseForOrderError(err error) openplatformport.Response {
 	if errors.Is(err, orderport.ErrNotFound) {
@@ -434,7 +625,7 @@ func limitArgument(values map[string]any, key string, fallback int) int {
 	return int(result)
 }
 func anyIdentityValue(values url.Values) bool {
-	return values.Get("external_userid") != "" || values.Get("mobile") != "" || values.Get("unionid") != ""
+	return values.Get("kind") != "" || values.Get("external_userid") != "" || values.Get("mobile") != "" || values.Get("unionid") != "" || values.Get("openid") != ""
 }
 func isCN11(value string) bool {
 	if len(value) != 11 || value[0] != '1' {
