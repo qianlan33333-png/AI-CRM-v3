@@ -143,9 +143,6 @@ func extractedArchiveSourceRow(id, seq int64, msgID, unionID, rowGroupName, rawP
 	if groupName == "" {
 		groupName = archiveWrapperText(wrapper["group_name"])
 	}
-	if groupName == "" {
-		groupName = archiveWrapperText(payloadObject["group_name"])
-	}
 	if len(groupName) > 512 {
 		return archivemigration.SourceRow{}, errors.New("legacy archived_messages group name is invalid")
 	}

@@ -135,8 +135,8 @@ func TestMessageArchiveExtractLegacyRowsPreservesHistoricalProjectionAndReplaysP
 		)`); err != nil {
 		t.Fatal(err)
 	}
-	rawFallback := `{"seq":1,"encrypted_record":{"msgid":"legacy-raw-group","encrypt_chat_msg":"protected-text"},"decrypted_message":{"msgid":"legacy-raw-group","from":"staff-one","tolist":["wm_known"],"roomid":"room-raw","msgtype":"text","msgtime":1788336000,"text":{"content":"raw group"},"group_name":"Raw payload group"}}`
-	rowPreferred := `{"seq":2,"encrypted_record":{"msgid":"legacy-row-group","encrypt_chat_msg":"protected-image"},"decrypted_message":{"msgid":"legacy-row-group","from":"staff-one","tolist":["wm_known"],"roomid":"room-row","msgtype":"image","msgtime":1788336060,"image":{"sdkfileid":"sdk-image","md5sum":"abc","filesize":42},"group_name":"Raw group must not win"}}`
+	rawFallback := `{"seq":1,"encrypted_record":{"msgid":"legacy-raw-group","encrypt_chat_msg":"protected-text"},"decrypted_message":{"msgid":"legacy-raw-group","from":"staff-one","tolist":["wm_known"],"roomid":"room-raw","msgtype":"text","msgtime":1788336000,"text":{"content":"raw group"},"group_name":"Ignored decrypted name"},"group_name":"Raw payload group"}`
+	rowPreferred := `{"seq":2,"encrypted_record":{"msgid":"legacy-row-group","encrypt_chat_msg":"protected-image"},"decrypted_message":{"msgid":"legacy-row-group","from":"staff-one","tolist":["wm_known"],"roomid":"room-row","msgtype":"image","msgtime":1788336060,"image":{"sdkfileid":"sdk-image","md5sum":"abc","filesize":42},"group_name":"Ignored decrypted name"},"group_name":"Raw group must not win"}`
 	unknownAttachment := `{"seq":3,"encrypted_record":{"msgid":"legacy-file","encrypt_chat_msg":"protected-file"},"decrypted_message":{"msgid":"legacy-file","from":"staff-one","tolist":["wm_known"],"msgtype":"file","msgtime":1788336120,"file":{"sdkfileid":"sdk-file","filename":"history.pdf"}}}`
 	if _, err := source.Exec(ctx, `INSERT INTO archived_messages(id,seq,msgid,unionid,group_name,raw_payload) VALUES
 		(11,1,'legacy-raw-group','union-raw','',$1),
