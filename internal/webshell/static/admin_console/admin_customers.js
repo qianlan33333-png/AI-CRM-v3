@@ -4,7 +4,7 @@
   const root = document.querySelector("[data-customer-directory-root]");
   if (!root) return;
 
-  const api = { customers: root.dataset.customersUrl, sync: root.dataset.syncUrl };
+  const api = { customers: root.dataset.customersUrl, sync: root.dataset.syncUrl, tagPreview: root.dataset.tagPreviewUrl, tagCommand: root.dataset.tagCommandUrl, tags: root.dataset.tagsUrl };
   const byID = (id) => document.getElementById(id);
   const el = {
     alert: byID("customer-page-alert"),
@@ -20,6 +20,12 @@
     body: byID("customer-list-body"),
     previous: byID("customer-prev-page"),
     next: byID("customer-next-page"),
+    batchTags: byID("customer-tag-batch"),
+    batchTagResult: byID("customer-tag-batch-result"),
+    batchTagRefresh: byID("customer-tag-batch-refresh"),
+    singleTags: byID("customer-tag-single"),
+    singleTagResult: byID("customer-tag-single-result"),
+    singleTagRefresh: byID("customer-tag-single-refresh"),
     profileName: byID("customer-profile-name"),
     detailState: byID("customer-detail-state"),
     detailContent: byID("customer-detail-content"),
@@ -37,6 +43,8 @@
   let pageCursors = [""];
   let detailID = "";
   let clearPhoneTimer = 0;
+  const selectedCustomers = new Set();
+  const acceptedTagCommands = new Map();
 
   function csrf() {
     const name = "aicrm_admin_csrf=";
@@ -167,8 +175,144 @@
     el.wrap.hidden = true;
   }
 
+  function tagIDs(values) {
+    const parsed = (Array.isArray(values) ? values : [values]).flatMap((value) => String(value || "").split(",")).map((item) => Number(item.trim())).filter((id) => Number.isSafeInteger(id) && id > 0);
+    const unique = [...new Set(parsed)].sort((a, b) => a - b);
+    return unique.length === parsed.length && unique.length <= 100 ? unique : null;
+  }
+
+  async function loadTagSelectors() {
+    const selects = [...root.querySelectorAll('select[name="add_tag_ids"],select[name="remove_tag_ids"]')];
+    if (!selects.length) return;
+    try {
+      const catalog = await request(api.tags);
+      const tags = Array.isArray(catalog.items) ? catalog.items : [];
+      for (const select of selects) {
+        select.replaceChildren();
+        select.disabled = false;
+        for (const tag of tags) {
+          const id = Number(tag.id || tag.tag_id);
+          if (!Number.isSafeInteger(id) || id < 1) continue;
+          const option = document.createElement("option");
+          option.value = String(id);
+          option.textContent = (tag.group_name ? tag.group_name + " / " : "") + (tag.tag_name || tag.name || ("标签 " + id));
+          select.append(option);
+        }
+      }
+    } catch (_error) {
+      for (const select of selects) select.disabled = true;
+    }
+  }
+
+  function commandKey() {
+    return "customer-tag-ui-" + (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + "-" + Math.random().toString(16).slice(2));
+  }
+
+  function commandSummary(preview) {
+    const lines = preview.lines || [];
+    const eligible = lines.filter((line) => line.state === "eligible").length;
+    const rejected = lines.filter((line) => line.state === "rejected").length;
+    return "可执行 " + eligible + " 位客户，拒绝 " + rejected + " 位。确认后会再次核验当前跟进人与标签映射。";
+  }
+
+  function observedTagSummary(items) {
+    const names = (Array.isArray(items) ? items : []).map((item) => {
+      const name = String(item.name || "标签名称待同步");
+      const group = item.group_name ? String(item.group_name) + " / " : "";
+      return group + name + "（" + String(item.status || "unknown") + "）";
+    });
+    return names.length ? names.join("、") : "暂无已观察标签";
+  }
+
+  function commandLineSummary(lines, prefix) {
+    const safeLines = Array.isArray(lines) ? lines : [];
+    const detail = safeLines.map((entry) => {
+      const line = entry && entry.line ? entry.line : entry || {};
+      const reason = line.result_reason || line.reject_reason;
+      const observed = entry && entry.observed ? "；观察标签：" + observedTagSummary(entry.observed) : "";
+      return "客户 #" + String(line.customer_id || "—") + "：" + String(line.state || "unknown") + (reason ? "（" + String(reason) + "）" : "") + observed;
+    });
+    return prefix + (detail.length ? detail.join("；") : "暂无可回读的客户结果。");
+  }
+
+  async function refreshTagCommand(command, resultNode) {
+    const sourceLines = Array.isArray(command && command.lines) ? command.lines : [];
+    const customerIDs = [...new Set(sourceLines.map((line) => Number(line.customer_id)).filter((id) => Number.isSafeInteger(id) && id > 0))];
+    if (!customerIDs.length) return;
+    const observations = await Promise.all(customerIDs.map(async (customerID) => {
+      const [history, observed] = await Promise.all([
+        request("/api/v1/customers/" + encodeURIComponent(customerID) + "/tag-commands?limit=5"),
+        // This is the existing WeCom observation read Port. It never treats a
+        // requested mutation as an observed Provider tag.
+        request("/api/admin/customers/" + encodeURIComponent(customerID) + "/tags"),
+      ]);
+      const matched = (history.items || []).find((item) => Number(item.id) === Number(command.id));
+      const line = matched && (matched.lines || []).find((item) => Number(item.customer_id) === customerID);
+      return { line: line || { customer_id: customerID, state: "unavailable" }, observed: observed.items || [] };
+    }));
+    if (resultNode) resultNode.textContent = commandLineSummary(observations, "已刷新执行结果：");
+  }
+
+  async function refreshAcceptedTagCommand(resultNode, refreshButton) {
+    const command = refreshButton && acceptedTagCommands.get(refreshButton.id);
+    if (!command) {
+      if (resultNode) resultNode.textContent = "没有可刷新的已受理标签命令。";
+      return;
+    }
+    refreshButton.disabled = true;
+    if (resultNode) resultNode.textContent = "正在刷新执行结果…";
+    try {
+      await refreshTagCommand(command, resultNode);
+    } catch (_error) {
+      if (resultNode) resultNode.textContent = "执行结果暂时不可读取；已受理命令不会重复提交。";
+    } finally {
+      refreshButton.disabled = false;
+    }
+  }
+
+  async function previewAndConfirm(customerIDs, form, resultNode, refreshButton) {
+    const data = new FormData(form);
+    const add = tagIDs(data.getAll("add_tag_ids"));
+    const remove = tagIDs(data.getAll("remove_tag_ids"));
+    if (!customerIDs.length || add === null || remove === null || add.length + remove.length > 100 || (!add.length && !remove.length) || add.some((id) => remove.includes(id))) {
+      if (resultNode) resultNode.textContent = "请选择客户，并从目录选择不重复的标签。";
+      return;
+    }
+    const key = commandKey();
+    const payload = { customer_ids: customerIDs, add_tag_ids: add, remove_tag_ids: remove, idempotency_key: key };
+    try {
+      const headers = { "X-CSRF-Token": csrf(), "Idempotency-Key": key };
+      const preview = await request(api.tagPreview, { method: "POST", headers, body: JSON.stringify(payload) });
+      const summary = commandSummary(preview);
+      if (resultNode) resultNode.textContent = summary;
+      if (!window.confirm(summary)) return;
+      const accepted = await request(api.tagCommand, { method: "POST", headers, body: JSON.stringify(payload) });
+      if (resultNode) resultNode.textContent = commandLineSummary(accepted.lines, "已受理；当前结果：");
+      if (refreshButton) {
+        acceptedTagCommands.set(refreshButton.id, accepted);
+        refreshButton.hidden = false;
+      }
+      try {
+        await refreshTagCommand(accepted, resultNode);
+      } catch (_error) {
+        // The durable acceptance result remains visible; a later refresh can
+        // observe any Provider completion without exposing Provider details.
+      }
+    } catch (error) {
+      if (resultNode) resultNode.textContent = error && error.message ? "标签命令未受理：" + error.message : "标签命令未受理。";
+    }
+  }
+
   function listRow(item) {
     const row = document.createElement("tr");
+    const select = document.createElement("td");
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = selectedCustomers.has(String(item.customer_id));
+    checkbox.setAttribute("aria-label", "选择客户 " + item.customer_id);
+    checkbox.addEventListener("change", () => { if (checkbox.checked) selectedCustomers.add(String(item.customer_id)); else selectedCustomers.delete(String(item.customer_id)); });
+    select.append(checkbox);
+    row.append(select);
     const customer = document.createElement("td");
     const cell = document.createElement("div");
     cell.className = "admin-customer-cell";
@@ -379,12 +523,17 @@
     }
   }
 
+  if (el.batchTags) el.batchTags.addEventListener("submit", function (event) { event.preventDefault(); void previewAndConfirm([...selectedCustomers].map(Number), el.batchTags, el.batchTagResult, el.batchTagRefresh); });
+  if (el.singleTags) el.singleTags.addEventListener("submit", function (event) { event.preventDefault(); if (detailID) void previewAndConfirm([Number(detailID)], el.singleTags, el.singleTagResult, el.singleTagRefresh); });
+  if (el.batchTagRefresh) el.batchTagRefresh.addEventListener("click", function () { void refreshAcceptedTagCommand(el.batchTagResult, el.batchTagRefresh); });
+  if (el.singleTagRefresh) el.singleTagRefresh.addEventListener("click", function () { void refreshAcceptedTagCommand(el.singleTagResult, el.singleTagRefresh); });
   if (el.filters) el.filters.addEventListener("submit", function (event) { event.preventDefault(); loadList("", "reset"); });
   if (el.clear) el.clear.addEventListener("click", function () { el.filters.reset(); loadList("", "reset"); });
   if (el.refresh) el.refresh.addEventListener("click", function () { loadList(pageCursors[pageIndex], "refresh"); });
   if (el.previous) el.previous.addEventListener("click", function () { if (pageIndex > 0) loadList(pageCursors[pageIndex - 1], "previous"); });
   if (el.next) el.next.addEventListener("click", function () { if (nextCursor) loadList(nextCursor, "next"); });
   if (el.syncStart) el.syncStart.addEventListener("click", startSync);
+  void loadTagSelectors();
   const match = location.pathname.match(/^\/admin\/customers\/([1-9][0-9]*)$/);
   if (match) loadDetail(match[1]);
   else {

@@ -13,6 +13,7 @@ import (
 	channeldomain "github.com/qianlan33333-png/AI-CRM-v3/internal/channel/domain"
 	channelport "github.com/qianlan33333-png/AI-CRM-v3/internal/channel/port"
 	customerdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/domain"
+	customerport "github.com/qianlan33333-png/AI-CRM-v3/internal/customer/port"
 	effectport "github.com/qianlan33333-png/AI-CRM-v3/internal/externaleffects/port"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 )
@@ -20,12 +21,22 @@ import (
 var ErrEntrantActionUnavailable = errors.New("channel entrant action unavailable")
 
 type EntrantActionStore struct {
-	effects   effectport.TransactionalAccepter
-	materials channelport.WelcomeMaterialSnapshotResolver
+	effects     effectport.TransactionalAccepter
+	materials   channelport.WelcomeMaterialSnapshotResolver
+	tagCommands customerport.TagCommandSubmitter
 }
 
 func NewEntrantActionStore(effects effectport.TransactionalAccepter, materials channelport.WelcomeMaterialSnapshotResolver) *EntrantActionStore {
 	return &EntrantActionStore{effects: effects, materials: materials}
+}
+
+// SetTagCommandSubmitter is installed by composition after Customer is built. Existing accepted channel_entry_tag effects remain on the legacy KindChannelEntryTag provider path; only new callbacks use this Customer-owned command.
+func (store *EntrantActionStore) SetTagCommandSubmitter(submitter customerport.TagCommandSubmitter) error {
+	if store == nil || submitter == nil {
+		return ErrEntrantActionUnavailable
+	}
+	store.tagCommands = submitter
+	return nil
 }
 
 // AcceptCallbackWelcome freezes and accepts the welcome path while the
@@ -186,7 +197,36 @@ func (store *EntrantActionStore) AcceptEntrantActions(ctx context.Context, comma
 		return err
 	}
 	if config.EntryTagID > 0 {
-		if err = store.acceptAction(ctx, tx, assignmentID, command, config, staffID, "entry_tag", "", config.EntryTagID, nil, ""); err != nil {
+		if store.tagCommands == nil {
+			return store.acceptAction(ctx, tx, assignmentID, command, config, staffID, "entry_tag", "", config.EntryTagID, nil, "")
+		}
+		var exists bool
+		if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM channel_entrant_actions WHERE callback_id=$1 AND action_kind='entry_tag')`, command.CallbackID).Scan(&exists); err != nil {
+			return err
+		}
+		if exists {
+			return nil
+		}
+		accepted, acceptErr := store.tagCommands.SubmitTagCommandWithin(ctx, customerport.TagCommand{Source: "channel_entry_tag", SourceRef: command.CallbackID, IdempotencyKey: "entry_tag", OccurredAt: command.OccurredAt, Targets: []customerport.TagCommandTarget{{CustomerID: command.CustomerID, StaffID: staffID, AddTagIDs: []int64{config.EntryTagID}}}})
+		if acceptErr != nil {
+			// A pending generic tag command must not roll back the independently
+			// valid entrant assignment. Record the blocked entry-tag action with
+			// no effect so a callback replay cannot silently mint one later.
+			if errors.Is(acceptErr, customerport.ErrTagCommandConflict) {
+				return store.recordRejectedEntryTag(ctx, tx, assignmentID, command, config, staffID, "customer_tag_busy")
+			}
+			return acceptErr
+		}
+		if len(accepted.Lines) != 1 {
+			return ErrEntrantActionUnavailable
+		}
+		// Customer persists a rejected line for an invalid current relationship or binding. It must not roll back the already-valid entrant assignment/welcome path or manufacture a channel EER.
+		if accepted.Lines[0].EffectRef == "" {
+			return nil
+		}
+		source := effectport.Hash("channel.entrant.action.source.v1", command.CallbackID, "entry_tag")
+		_, err = tx.Exec(ctx, `INSERT INTO channel_entrant_actions(callback_id,assignment_id,channel_id,config_version,customer_id,staff_id,action_kind,local_tag_id,welcome_material_snapshot,source_ref_digest,effect_ref,accept_receipt_ref,queue_receipt_ref,state) VALUES($1,$2,$3,$4,$5,$6,'entry_tag',$7,$8::jsonb,$9,$10,$11,$12,$13) ON CONFLICT(callback_id,action_kind) DO NOTHING`, command.CallbackID, assignmentID, config.ChannelID, config.ConfigVersion, command.CustomerID, staffID, config.EntryTagID, json.RawMessage(`{"schema_version":2,"node_kind":"message","attachments":[]}`), source, accepted.Lines[0].EffectRef, accepted.Lines[0].AcceptReceiptRef, accepted.Lines[0].QueueReceiptRef, accepted.Lines[0].State)
+		if err != nil {
 			return err
 		}
 	}
@@ -202,6 +242,19 @@ type welcomeConfig struct {
 // readWelcomeConfig intentionally does not inspect assignees. A configured
 // welcome is eligible as soon as its verified State resolves; staff assignment
 // remains part of the later normal entrant lifecycle.
+
+func (*EntrantActionStore) recordRejectedEntryTag(ctx context.Context, tx pgx.Tx, assignmentID int64, command channelport.EntrantActionCommand, config entrantActionConfig, staffID int64, reason string) error {
+	if reason == "" {
+		return ErrEntrantActionUnavailable
+	}
+	source := effectport.Hash("channel.entrant.action.source.v1", command.CallbackID, "entry_tag")
+	_, err := tx.Exec(ctx, `INSERT INTO channel_entrant_actions(callback_id,assignment_id,channel_id,config_version,customer_id,staff_id,action_kind,local_tag_id,welcome_material_snapshot,source_ref_digest,state,result_reason)
+		VALUES($1,$2,$3,$4,$5,$6,'entry_tag',$7,$8::jsonb,$9,'rejected',$10) ON CONFLICT(callback_id,action_kind) DO NOTHING`,
+		command.CallbackID, assignmentID, config.ChannelID, config.ConfigVersion, command.CustomerID, staffID, config.EntryTagID,
+		json.RawMessage(`{"schema_version":2,"node_kind":"message","attachments":[]}`), source, reason)
+	return err
+}
+
 func readWelcomeConfig(ctx context.Context, tx pgx.Tx, resolution channeldomain.StateResolution) (welcomeConfig, error) {
 	providerKind := string(AcquisitionAssetQRCode)
 	if resolution.Asset.Kind == "link" {
@@ -365,10 +418,18 @@ func (*EntrantActionStore) CompleteEntrantAction(ctx context.Context, completion
 		return nil
 	}
 	result, err = tx.Exec(ctx, `UPDATE channel_entrant_actions SET state=$2,result_digest=$3,updated_at=$4 WHERE effect_ref=$1 AND state IN ('queued','attempted','outcome_unknown','retryable_failed')`, completion.EffectRef, completion.State, completion.ResultDigest, completion.CompletedAt.UTC())
-	if err != nil || result.RowsAffected() != 1 {
-		return ErrEntrantActionUnavailable
+	if err != nil {
+		return err
 	}
-	return nil
+	if result.RowsAffected() == 1 {
+		return nil
+	}
+	var state, digest string
+	err = tx.QueryRow(ctx, `SELECT state,result_digest FROM channel_entrant_actions WHERE effect_ref=$1`, completion.EffectRef).Scan(&state, &digest)
+	if err == nil && state == completion.State && digest == completion.ResultDigest {
+		return nil
+	}
+	return ErrEntrantActionUnavailable
 }
 
 func nullableString(value string) any {

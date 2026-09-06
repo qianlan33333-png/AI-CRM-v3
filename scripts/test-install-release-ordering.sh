@@ -135,7 +135,7 @@ make_release() {
   local release="$test_root/package-${sha}"
   local archive="/tmp/aicrm-${sha}.tar.gz"
   mkdir -p "$release/bin" "$release/migrations" "$release/web/dist/admin" "$release/web/dist/aiassistant" "$release/deploy"
-  for binary in aicrm wecom-archive-sdk-runner migrate-platform migrate-river migrate-phone-identities migrate-identity-phone-vault migrate-survey-v2 migrate-commerce-history migrate-message-archive migrate-order-attribution migrate-automation-operations migrate-v2-config-definitions migrate-v2-runtime-config-releases migrate-media-legacy-materials migrate-channel-history migrate-radar-v2 migrate-sidebar-history bootstrap-automation-operations; do
+  for binary in aicrm wecom-archive-sdk-runner migrate-platform migrate-river migrate-phone-identities migrate-identity-phone-vault migrate-survey-v2 migrate-commerce-history migrate-message-archive migrate-order-attribution migrate-automation-operations migrate-v2-config-definitions migrate-v2-runtime-config-releases migrate-media-legacy-materials migrate-channel-history migrate-v2-customer-tag-history migrate-radar-v2 migrate-sidebar-history bootstrap-automation-operations; do
     printf '#!/usr/bin/env bash\nexit 0\n' > "$release/bin/$binary"
     chmod 0755 "$release/bin/$binary"
   done
@@ -186,6 +186,7 @@ make_release() {
     0088_order_service_entitlement_alliance.sql \
     0090_survey_oauth_state_redirect.sql \
     0091_survey_assessment_business_keys.sql \
+    0093_customer_tag_commands.sql \
     0094_runtime_config_releases.sql; do
     : > "$release/migrations/$migration"
   done

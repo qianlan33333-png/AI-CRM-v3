@@ -258,16 +258,17 @@ func (s *GroupMessageCompletionSink) CompleteEffect(ctx context.Context, effectR
 // CompletionRouter keeps EER's single completion-sink slot while routing
 // owner-specific projections by opaque envelope kind.
 type CompletionRouter struct {
-	tag        *TagCatalogCompletionSink
-	group      *GroupMessageCompletionSink
-	channel    *ChannelAssetCompletionSink
-	entrant    *ChannelEntrantCompletionSink
-	link       *ChannelLinkCompletionSink
-	private    *PrivateMessageCompletionSink
-	automation effectport.CompletionSink
-	sidebar    effectport.CompletionSink
-	survey     effectport.CompletionSink
-	commerce   effectport.CompletionSink
+	tag         *TagCatalogCompletionSink
+	group       *GroupMessageCompletionSink
+	channel     *ChannelAssetCompletionSink
+	entrant     *ChannelEntrantCompletionSink
+	link        *ChannelLinkCompletionSink
+	private     *PrivateMessageCompletionSink
+	automation  effectport.CompletionSink
+	sidebar     effectport.CompletionSink
+	survey      effectport.CompletionSink
+	customerTag effectport.CompletionSink
+	commerce    effectport.CompletionSink
 }
 
 func NewCompletionRouterWithChannels(tag *TagCatalogCompletionSink, group *GroupMessageCompletionSink, channel *ChannelAssetCompletionSink) (*CompletionRouter, error) {
@@ -386,6 +387,12 @@ func NewCompletionRouterWithMessage(tag *TagCatalogCompletionSink, group *GroupM
 	return &CompletionRouter{tag: tag, group: group, automation: message}, nil
 }
 
+func (r *CompletionRouter) WithCustomerTag(sink effectport.CompletionSink) {
+	if r != nil {
+		r.customerTag = sink
+	}
+}
+
 func (r *CompletionRouter) CompleteEffect(ctx context.Context, effectRef string, envelope effectport.Envelope, attempt effectport.Attempt, result effectport.AdapterResult) error {
 	if r == nil {
 		return errors.New("completion router is unavailable")
@@ -431,16 +438,21 @@ func (r *CompletionRouter) CompleteEffect(ctx context.Context, effectRef string,
 			return errors.New("sidebar JSSDK completion sink is unavailable")
 		}
 		return r.sidebar.CompleteEffect(ctx, effectRef, envelope, attempt, result)
-	case effectport.KindSurveyCompletion:
-		if r.survey == nil {
-			return errors.New("survey completion sink is unavailable")
+	case effectport.KindCustomerTagCommand:
+		if r.customerTag == nil {
+			return errors.New("customer tag completion sink is unavailable")
 		}
-		return r.survey.CompleteEffect(ctx, effectRef, envelope, attempt, result)
+		return r.customerTag.CompleteEffect(ctx, effectRef, envelope, attempt, result)
 	case effectport.KindCommerceProductPush:
 		if r.commerce == nil {
 			return errors.New("commerce push completion sink is unavailable")
 		}
 		return r.commerce.CompleteEffect(ctx, effectRef, envelope, attempt, result)
+	case effectport.KindSurveyCompletion:
+		if r.survey == nil {
+			return errors.New("survey completion sink is unavailable")
+		}
+		return r.survey.CompleteEffect(ctx, effectRef, envelope, attempt, result)
 	default:
 		return errors.New("unsupported completion kind")
 	}

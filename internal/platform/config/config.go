@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"strconv"
@@ -70,6 +71,7 @@ type WeCom struct {
 	ChannelMediaPrepProviderEnabled bool
 	ChannelWelcomeProviderEnabled   bool
 	ChannelTagProviderEnabled       bool
+	CustomerTagProviderEnabled      bool
 	StaffDirectoryRefreshInterval   time.Duration
 	MessageArchiveEnabled           bool
 	MessageArchiveSecret            string
@@ -78,6 +80,11 @@ type WeCom struct {
 	MessageArchivePrivateKeyPaths   map[uint32]string
 	MessageArchivePageLimit         uint32
 	MessageArchivePageBudget        int
+	// APIBase and HTTPClient are composition-test injection only. Load never
+	// populates them, so a deployed runtime continues to use the fixed provider
+	// origin and default HTTP client.
+	APIBase    string
+	HTTPClient *http.Client
 }
 
 // GroupOps contains only the inbound protocol secret for the local Group Ops
@@ -381,6 +388,9 @@ func Load() (Runtime, error) {
 	if cfg.WeCom.ChannelTagProviderEnabled, err = strictBool("AICRM_CHANNEL_TAG_PROVIDER_ENABLED", false); err != nil {
 		return Runtime{}, err
 	}
+	if cfg.WeCom.CustomerTagProviderEnabled, err = strictBool("AICRM_CUSTOMER_TAG_PROVIDER_ENABLED", false); err != nil {
+		return Runtime{}, err
+	}
 	if raw := os.Getenv("AICRM_CHANNEL_STAFF_REFRESH_INTERVAL"); raw != "" {
 		cfg.WeCom.StaffDirectoryRefreshInterval, err = time.ParseDuration(raw)
 		if err != nil || cfg.WeCom.StaffDirectoryRefreshInterval < 5*time.Minute || cfg.WeCom.StaffDirectoryRefreshInterval > 24*time.Hour {
@@ -496,7 +506,7 @@ func Load() (Runtime, error) {
 			}
 		}
 	}
-	channelProviderEnabled := cfg.WeCom.ChannelProviderReadEnabled || cfg.WeCom.ChannelQRProviderEnabled || cfg.WeCom.ChannelMediaPrepProviderEnabled || cfg.WeCom.ChannelWelcomeProviderEnabled || cfg.WeCom.ChannelTagProviderEnabled
+	channelProviderEnabled := cfg.WeCom.ChannelProviderReadEnabled || cfg.WeCom.ChannelQRProviderEnabled || cfg.WeCom.ChannelMediaPrepProviderEnabled || cfg.WeCom.ChannelWelcomeProviderEnabled || cfg.WeCom.ChannelTagProviderEnabled || cfg.WeCom.CustomerTagProviderEnabled
 	if channelProviderEnabled && (!cfg.Effects.ProviderEnabled || !cfg.WeCom.Enabled || strings.TrimSpace(cfg.WeCom.ContactSecret) != cfg.WeCom.ContactSecret || cfg.WeCom.ContactSecret == "") {
 		return Runtime{}, errors.New("enabled channel provider capability requires External Effects, WeCom, and contact credentials")
 	}
@@ -673,6 +683,13 @@ func DatabaseURL() (string, error) {
 		}
 	}
 	return "", errors.New("database URL is not configured")
+}
+
+// ChromiumJourneyRequired is the configuration boundary for opt-in local
+// Chromium journeys. CI sets it explicitly for required browser acceptance.
+func ChromiumJourneyRequired() bool {
+	value, ok := os.LookupEnv("AICRM_REQUIRE_CHROMIUM_JOURNEY")
+	return ok && value == "1"
 }
 
 // NamedDatabaseURL is restricted to the two database roles used by the
