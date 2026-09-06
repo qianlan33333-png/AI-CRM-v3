@@ -21,7 +21,8 @@ func Readiness(ctx context.Context, pool *pgxpool.Pool) error {
 		AND EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid='outbound_message_intents'::regclass AND conname='outbound_message_intents_content_snapshot_shape')
 		AND to_regclass(current_schema() || '.outbound_commerce_push_intents') IS NOT NULL
 		AND to_regclass(current_schema() || '.outbound_commerce_push_history_batches') IS NOT NULL
-		AND to_regclass(current_schema() || '.outbound_commerce_push_history_rows') IS NOT NULL`).Scan(&ready)
+		AND to_regclass(current_schema() || '.outbound_commerce_push_history_rows') IS NOT NULL
+		AND to_regclass(current_schema() || '.outbound_commerce_push_history_batch_rows') IS NOT NULL`).Scan(&ready)
 	if err != nil {
 		return err
 	}

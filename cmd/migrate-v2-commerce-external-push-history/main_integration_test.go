@@ -102,6 +102,21 @@ func TestCommerceExternalPushHistoryCLIExtractApplyReplayVerifyAndDriftPostgreSQ
 		t.Fatalf("verify after restore: %v", err)
 	}
 
+	// The batch membership is protected evidence too. A row cannot be moved
+	// under a batch while retaining the row's source facts and still reconcile.
+	if _, err = target.Exec(ctx, `UPDATE outbound_commerce_push_history_batch_rows SET source_digest=decode(repeat('00',32),'hex')`); err != nil {
+		t.Fatal(err)
+	}
+	if err = run(ctx, []string{"--mode=verify", "--snapshot=" + snapshotPath, "--snapshot-key-file=" + keyPath, "--manifest-sha256=" + want}); err == nil {
+		t.Fatal("verify accepted membership source-digest drift")
+	}
+	if _, err = target.Exec(ctx, `UPDATE outbound_commerce_push_history_batch_rows membership SET source_digest=row.source_digest FROM outbound_commerce_push_history_rows row WHERE row.id=membership.source_row_id`); err != nil {
+		t.Fatal(err)
+	}
+	if err = run(ctx, []string{"--mode=verify", "--snapshot=" + snapshotPath, "--snapshot-key-file=" + keyPath, "--manifest-sha256=" + want}); err != nil {
+		t.Fatalf("verify after membership restore: %v", err)
+	}
+
 	// The batch is bound to the protected source revision and every row digest.
 	drift := s
 	drift.Deliveries = append([]deliveryRow(nil), s.Deliveries...)
@@ -114,8 +129,39 @@ func TestCommerceExternalPushHistoryCLIExtractApplyReplayVerifyAndDriftPostgreSQ
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = run(ctx, []string{"--mode=apply", "--snapshot=" + driftPath, "--snapshot-key-file=" + keyPath, "--manifest-sha256=" + hex.EncodeToString(driftDigest[:]), "--confirm-apply"}); err == nil || !strings.Contains(err.Error(), "source revision digest drift") {
+	if err = run(ctx, []string{"--mode=apply", "--snapshot=" + driftPath, "--snapshot-key-file=" + keyPath, "--manifest-sha256=" + hex.EncodeToString(driftDigest[:]), "--confirm-apply"}); err == nil || !strings.Contains(err.Error(), "historical source row digest drift") {
 		t.Fatalf("source digest drift=%v", err)
+	}
+
+	// A later protected capture from the same frozen donor revision is a new
+	// batch, not a false revision collision. Overlapping V2 source rows retain
+	// their single global ledger identity; only the three added source rows are
+	// new. Replaying the second manifest does not duplicate either set.
+	seedCommercePushHistorySourceExtension(t, ctx, source)
+	if _, err = target.Exec(ctx, `INSERT INTO config_definition_import_source_maps(source_system,domain,source_kind,source_key,target_table,target_id) VALUES($1,'product','wechat_pay_products','102','products',1002)`, sourceSystem); err != nil {
+		t.Fatal(err)
+	}
+	snapshotPath2 := filepath.Join(temp, "commerce-push-second.sealed")
+	if err = run(ctx, []string{"--mode=extract", "--snapshot=" + snapshotPath2, "--snapshot-key-file=" + keyPath, "--source-revision=" + revision}); err != nil {
+		t.Fatalf("second extract: %v", err)
+	}
+	_, digest2, err := loadFile(snapshotPath2, keyPath)
+	if err != nil || digest2 == digest {
+		t.Fatalf("second protected manifest digest=%x first=%x err=%v", digest2, digest, err)
+	}
+	apply2 := []string{"--mode=apply", "--snapshot=" + snapshotPath2, "--snapshot-key-file=" + keyPath, "--manifest-sha256=" + hex.EncodeToString(digest2[:]), "--confirm-apply"}
+	if err = run(ctx, apply2); err != nil {
+		t.Fatalf("second snapshot apply: %v", err)
+	}
+	var allBatches, sourceRows, members int
+	if err = target.QueryRow(ctx, `SELECT (SELECT count(*) FROM outbound_commerce_push_history_batches),(SELECT count(*) FROM outbound_commerce_push_history_rows),(SELECT count(*) FROM outbound_commerce_push_history_batch_rows)`).Scan(&allBatches, &sourceRows, &members); err != nil || allBatches != 2 || sourceRows != 6 || members != 9 {
+		t.Fatalf("overlap batches/source_rows/members=%d/%d/%d err=%v", allBatches, sourceRows, members, err)
+	}
+	if err = run(ctx, apply2); err != nil {
+		t.Fatalf("second snapshot replay: %v", err)
+	}
+	if err = target.QueryRow(ctx, `SELECT count(*) FROM outbound_commerce_push_history_rows`).Scan(&sourceRows); err != nil || sourceRows != 6 {
+		t.Fatalf("second replay duplicated source rows=%d err=%v", sourceRows, err)
 	}
 	assertCommercePushHistoryNoEffects(t, ctx, target)
 }
@@ -228,6 +274,15 @@ func seedCommercePushHistorySource(t *testing.T, ctx context.Context, source *pg
 		t.Fatal(err)
 	}
 }
+func seedCommercePushHistorySourceExtension(t *testing.T, ctx context.Context, source *pgxpool.Pool) {
+	t.Helper()
+	at := time.Date(2026, 9, 6, 12, 5, 0, 0, time.UTC)
+	_, err := source.Exec(ctx, `INSERT INTO external_push_config VALUES(11,'product','102','transaction.paid',TRUE,'https://legacy.example/push?source=v2','member_renew',NULL,45,2,'next remark','{"state":"new"}'::jsonb,'legacy-secret-next','old-admin','new-admin',$1,$2); INSERT INTO external_push_delivery VALUES(12,11,'transaction.paid','delivery-old-12','product','102',45,102,'failed',3,'https://legacy.example/push?source=v2','{}'::jsonb,'{}'::jsonb,502,'gateway rejected','upstream timeout',NULL,$1,$2); INSERT INTO domain_event_outbox VALUES(13,'transaction.paid','wechat_pay_order','45','{}'::jsonb,'failed',2,NULL,$1,$2); INSERT INTO external_effect_job VALUES(14,'external_push_delivery','delivery-old-12','webhook.order_paid.push','failed')`, at, at.Add(2*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func assertCommercePushHistoryLedger(t *testing.T, ctx context.Context, pool *pgxpool.Pool, want string) {
 	t.Helper()
 	var input, imported, pending, excluded int
@@ -240,15 +295,17 @@ func assertCommercePushHistoryLedger(t *testing.T, ctx context.Context, pool *pg
 	}
 	var configTarget, deliveryTarget *int64
 	var deliveryEffect *int64
-	var deliveryState string
+	var deliveryState, deliveryError string
+	var deliveryStatus *int
+	var bodyProtected bool
 	if err := pool.QueryRow(ctx, `SELECT target_product_id FROM outbound_commerce_push_history_rows WHERE source_kind='config'`).Scan(&configTarget); err != nil {
 		t.Fatal(err)
 	}
-	if err := pool.QueryRow(ctx, `SELECT target_product_id,source_effect_job_id,source_state FROM outbound_commerce_push_history_rows WHERE source_kind='delivery'`).Scan(&deliveryTarget, &deliveryEffect, &deliveryState); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT target_product_id,source_effect_job_id,source_state,source_response_status,source_error_message,source_response_body_protected FROM outbound_commerce_push_history_rows WHERE source_kind='delivery'`).Scan(&deliveryTarget, &deliveryEffect, &deliveryState, &deliveryStatus, &deliveryError, &bodyProtected); err != nil {
 		t.Fatal(err)
 	}
-	if configTarget == nil || deliveryTarget == nil || *configTarget != 1001 || *deliveryTarget != 1001 || deliveryEffect == nil || *deliveryEffect != 4 || deliveryState != "success" {
-		t.Fatalf("target facts config=%v delivery=%v effect=%v state=%q", configTarget, deliveryTarget, deliveryEffect, deliveryState)
+	if configTarget == nil || deliveryTarget == nil || *configTarget != 1001 || *deliveryTarget != 1001 || deliveryEffect == nil || *deliveryEffect != 4 || deliveryState != "success" || deliveryStatus == nil || *deliveryStatus != 200 || deliveryError != "" || !bodyProtected {
+		t.Fatalf("target facts config=%v delivery=%v effect=%v state=%q response=%v error=%q protected=%t", configTarget, deliveryTarget, deliveryEffect, deliveryState, deliveryStatus, deliveryError, bodyProtected)
 	}
 }
 func assertCommercePushHistoryNoEffects(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {

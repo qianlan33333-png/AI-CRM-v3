@@ -169,12 +169,19 @@ CREATE TABLE outbound_commerce_push_history_batches (
     excluded_count INTEGER NOT NULL CHECK (excluded_count >= 0),
     applied_at TIMESTAMPTZ NOT NULL,
     reconciled_at TIMESTAMPTZ NULL,
-    UNIQUE(source_system, source_revision),
+    -- A source revision is a Git/code revision, not a snapshot identity. A
+    -- later protected snapshot of the same donor revision is allowed; its
+    -- manifest is the replay receipt.
+    UNIQUE(source_system, manifest_digest),
     CONSTRAINT outbound_commerce_push_history_batch_conservation CHECK (input_count=imported_count+pending_count+excluded_count)
 );
+
+-- Each V2 row has one global immutable history record. Snapshot batches only
+-- reference it, so overlapping extracts cannot silently duplicate a source
+-- row; a changed digest for that same source row fails closed.
 CREATE TABLE outbound_commerce_push_history_rows (
     id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    batch_id BIGINT NOT NULL REFERENCES outbound_commerce_push_history_batches(id) ON DELETE RESTRICT,
+    source_system TEXT NOT NULL CHECK (source_system = btrim(source_system) AND char_length(source_system) BETWEEN 1 AND 160),
     source_kind TEXT NOT NULL CHECK (source_kind IN ('config','delivery','domain_event_outbox')),
     source_id BIGINT NOT NULL CHECK (source_id > 0),
     source_digest BYTEA NOT NULL CHECK (octet_length(source_digest)=32),
@@ -183,19 +190,42 @@ CREATE TABLE outbound_commerce_push_history_rows (
     source_event_type TEXT NOT NULL DEFAULT '' CHECK (char_length(source_event_type) <= 160),
     source_target_type TEXT NOT NULL DEFAULT '' CHECK (char_length(source_target_type) <= 120),
     source_target_id TEXT NOT NULL DEFAULT '' CHECK (char_length(source_target_id) <= 240),
+    -- These are V2 source coordinates, never a V3 orders.id. An Order-owned
+    -- read Port must match its own source_system/source_key before a history
+    -- delivery becomes visible on a V3 order page.
+    source_order_kind TEXT NOT NULL DEFAULT '' CHECK (char_length(source_order_kind) <= 80),
+    source_order_scope TEXT NOT NULL DEFAULT '' CHECK (char_length(source_order_scope) <= 160),
+    source_order_key TEXT NOT NULL DEFAULT '' CHECK (char_length(source_order_key) <= 240),
     source_order_id BIGINT NULL CHECK (source_order_id IS NULL OR source_order_id >= 0),
     source_product_id BIGINT NULL CHECK (source_product_id IS NULL OR source_product_id >= 0),
     source_state TEXT NOT NULL CHECK (char_length(source_state) <= 80),
     source_attempt_count INTEGER NOT NULL CHECK (source_attempt_count >= 0),
     source_effect_job_id BIGINT NULL CHECK (source_effect_job_id IS NULL OR source_effect_job_id > 0),
     source_effect_state TEXT NULL CHECK (source_effect_state IS NULL OR char_length(source_effect_state) <= 80),
+    source_response_status INTEGER NULL CHECK (source_response_status BETWEEN 100 AND 599),
+    -- This is the legacy admin-facing diagnostic field, bounded but not logged.
+    -- Raw request/response bodies stay only in the sealed source snapshot.
+    source_error_message TEXT NOT NULL DEFAULT '' CHECK (char_length(source_error_message) <= 2000),
+    source_response_body_protected BOOLEAN NOT NULL DEFAULT FALSE,
     source_created_at TIMESTAMPTZ NOT NULL,
     source_updated_at TIMESTAMPTZ NOT NULL,
     target_product_id BIGINT NULL CHECK (target_product_id IS NULL OR target_product_id > 0),
     outcome TEXT NOT NULL CHECK (outcome IN ('imported','pending','excluded')),
     reason_code TEXT NOT NULL CHECK (reason_code ~ '^[a-z0-9_]{1,80}$'),
     read_only BOOLEAN NOT NULL DEFAULT TRUE CHECK (read_only=TRUE),
-    UNIQUE(batch_id, source_kind, source_id)
+    UNIQUE(source_system, source_kind, source_id)
 );
 CREATE INDEX outbound_commerce_push_history_rows_product_idx
     ON outbound_commerce_push_history_rows(target_product_id, source_created_at DESC, id DESC);
+CREATE INDEX outbound_commerce_push_history_rows_order_source_idx
+    ON outbound_commerce_push_history_rows(source_order_kind, source_order_scope, source_order_key, source_created_at DESC, id DESC)
+    WHERE source_kind='delivery';
+
+CREATE TABLE outbound_commerce_push_history_batch_rows (
+    batch_id BIGINT NOT NULL REFERENCES outbound_commerce_push_history_batches(id) ON DELETE RESTRICT,
+    source_row_id BIGINT NOT NULL REFERENCES outbound_commerce_push_history_rows(id) ON DELETE RESTRICT,
+    source_digest BYTEA NOT NULL CHECK (octet_length(source_digest)=32),
+    PRIMARY KEY(batch_id, source_row_id)
+);
+CREATE INDEX outbound_commerce_push_history_batch_rows_source_idx
+    ON outbound_commerce_push_history_batch_rows(source_row_id, batch_id);

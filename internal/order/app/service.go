@@ -92,6 +92,7 @@ type Store interface {
 	Import(context.Context, string, [32]byte, domain.Order) (domain.Order, bool, error)
 	InsertCheckoutSnapshot(context.Context, orderport.CheckoutSnapshot) error
 	ReadCheckoutSnapshot(context.Context, int64) (orderport.CheckoutSnapshot, error)
+	CommercePushDeliveryReference(context.Context, domain.Provider, string) (orderport.CommercePushDeliveryReference, error)
 }
 
 type Service struct {
@@ -551,6 +552,28 @@ func (s *Service) CustomerOrderSummary(ctx context.Context, customerID int64, re
 }
 
 var _ orderport.CustomerOrderSummaryReader = (*Service)(nil)
+
+// CommercePushDeliveryReference resolves the existing compatibility order
+// reference without exposing Order persistence. Historical snapshots only
+// carry their owned source coordinates; callers cannot use a coincidental V3
+// numeric primary key to discover a V2 delivery row.
+func (s *Service) CommercePushDeliveryReference(ctx context.Context, provider domain.Provider, reference string) (orderport.CommercePushDeliveryReference, error) {
+	if !ready(s) || !validScope(reference) {
+		return orderport.CommercePushDeliveryReference{}, orderport.ErrNotFound
+	}
+	var out orderport.CommercePushDeliveryReference
+	err := s.uow.Within(ctx, func(tx context.Context) error {
+		var readErr error
+		out, readErr = s.store.CommercePushDeliveryReference(tx, provider, reference)
+		return readErr
+	})
+	if err != nil {
+		return orderport.CommercePushDeliveryReference{}, classify(err)
+	}
+	return out, nil
+}
+
+var _ orderport.CommercePushDeliveryReferenceReader = (*Service)(nil)
 
 func (s *Service) GetByReference(ctx context.Context, reference string) (domain.Snapshot, error) {
 	if !ready(s) || !validScope(reference) {

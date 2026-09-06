@@ -11,6 +11,9 @@ import (
 
 	accessdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/access/domain"
 	identitydomain "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/domain"
+	orderdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/order/domain"
+	orderport "github.com/qianlan33333-png/AI-CRM-v3/internal/order/port"
+	outboundport "github.com/qianlan33333-png/AI-CRM-v3/internal/outbound/port"
 	"github.com/qianlan33333-png/AI-CRM-v3/internal/payment/domain"
 	paymentport "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/port"
 	paymentprovider "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/provider"
@@ -240,5 +243,64 @@ func TestCheckoutHandoffPollingKeepsIdentityOpaqueAndSessionUntilTerminalStatus(
 	}
 	if cookies := response.Result().Cookies(); len(cookies) != 0 {
 		t.Fatalf("unexpected terminal cookie clear=%+v", cookies)
+	}
+}
+
+type commerceOrderReaderStub struct {
+	value orderport.CommercePushDeliveryReference
+	err   error
+}
+
+func (s commerceOrderReaderStub) CommercePushDeliveryReference(_ context.Context, provider orderdomain.Provider, reference string) (orderport.CommercePushDeliveryReference, error) {
+	if provider != orderdomain.ProviderWeChatPay || reference != "legacy-order-1" {
+		return orderport.CommercePushDeliveryReference{}, orderport.ErrNotFound
+	}
+	return s.value, s.err
+}
+
+type commerceDeliveryReaderStub struct {
+	query outboundport.CommercePushDeliveryQuery
+	rows  []outboundport.CommercePushDelivery
+	err   error
+}
+
+func (s *commerceDeliveryReaderStub) ListCommercePushDeliveries(_ context.Context, query outboundport.CommercePushDeliveryQuery) ([]outboundport.CommercePushDelivery, error) {
+	s.query = query
+	return s.rows, s.err
+}
+
+func TestOrderExternalPushDeliveriesUsesOrderAndOutboundPorts(t *testing.T) {
+	application := &appStub{}
+	handler, err := NewHandler(application, nil, securityStub{}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := &commerceDeliveryReaderStub{rows: []outboundport.CommercePushDelivery{{ID: "current:19", Source: "current", EffectID: "eer_19", State: "outcome_unknown", AttemptCount: 2, ProviderCallAttempted: true, RealExternalCallExecuted: true, UpdatedAt: time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC)}}}
+	if err = handler.SetCommercePushDeliveryReaders(commerceOrderReaderStub{value: orderport.CommercePushDeliveryReference{OrderID: 7, PaidEventID: 11, HistoricalMappingState: "current"}}, reader); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/api/admin/wechat-pay/orders/legacy-order-1/external-push-deliveries", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || reader.query.PaidEventID != 11 || reader.query.HistoricalSourceKey != "" || !strings.Contains(response.Body.String(), `"outcome_unknown"`) || !strings.Contains(response.Body.String(), `"real_external_call_executed":true`) || strings.Contains(response.Body.String(), "payment") {
+		t.Fatalf("code=%d query=%+v body=%s", response.Code, reader.query, response.Body.String())
+	}
+}
+
+func TestOrderExternalPushDeliveriesLeavesUnmappedHistoryPending(t *testing.T) {
+	application := &appStub{}
+	handler, err := NewHandler(application, nil, securityStub{}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := &commerceDeliveryReaderStub{rows: []outboundport.CommercePushDelivery{{ID: "must-not-read"}}}
+	if err = handler.SetCommercePushDeliveryReaders(commerceOrderReaderStub{value: orderport.CommercePushDeliveryReference{OrderID: 99, HistoricalMappingState: "pending"}}, reader); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/api/admin/wechat-pay/orders/legacy-order-1/external-push-deliveries", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || reader.query.PaidEventID != 0 || reader.query.HistoricalSourceKey != "" || !strings.Contains(response.Body.String(), `"history_mapping_state":"pending"`) || strings.Contains(response.Body.String(), "must-not-read") {
+		t.Fatalf("code=%d query=%+v body=%s", response.Code, reader.query, response.Body.String())
 	}
 }

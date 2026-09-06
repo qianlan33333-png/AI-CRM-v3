@@ -927,6 +927,9 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
+	if err = paymentHandler.SetCommercePushDeliveryReaders(orderService, commercePushService); err != nil {
+		return fail(err)
+	}
 	if cfg.WeChatPay.Enabled {
 		miniProgramVerifier, verifyErr := identityprovider.NewWeChatMiniProgram(identityprovider.WeChatMiniProgramConfig{AppID: cfg.WeChatPay.AppID, AppSecret: cfg.WeChatPay.AppSecret, APIBaseURL: "https://api.weixin.qq.com"}, &http.Client{Timeout: 10 * time.Second})
 		if verifyErr != nil {

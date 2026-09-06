@@ -120,11 +120,15 @@ type historyFact struct {
 	id                                          int64
 	configID                                    *int64
 	deliveryID, eventType, targetType, targetID string
+	orderKind, orderScope, orderKey             string
 	orderID, productID                          *int64
 	state                                       string
 	attempts                                    int
 	effectID                                    *int64
 	effectState                                 *string
+	responseStatus                              *int
+	errorMessage                                string
+	responseBodyProtected                       bool
 	created, updated                            time.Time
 	canonical                                   any
 }
@@ -395,7 +399,7 @@ func validate(s snapshot) error {
 		seen["configs"][x.ID] = true
 	}
 	for _, x := range s.Deliveries {
-		if x.ID < 1 || seen["deliveries"][x.ID] || x.ConfigID < 1 || !validText(x.EventType, 160) || !validText(x.DeliveryID, 200) || !validText(x.TargetType, 120) || !validText(x.TargetID, 240) || !validText(x.Status, 80) || x.AttemptCount < 0 || !validText(x.RequestURL, 4000) || !validText(x.ResponseBody, 16000) || !validText(x.ErrorMessage, 2000) || x.CreatedAt.IsZero() || x.UpdatedAt.IsZero() || !jsonObject(x.RequestHeaders) || !jsonObject(x.RequestBody) || x.EffectState != nil && !validText(*x.EffectState, 80) {
+		if x.ID < 1 || seen["deliveries"][x.ID] || x.ConfigID < 1 || !validText(x.EventType, 160) || !validText(x.DeliveryID, 200) || !validText(x.TargetType, 120) || !validText(x.TargetID, 240) || !validText(x.Status, 80) || x.AttemptCount < 0 || !validText(x.RequestURL, 4000) || !validText(x.ResponseBody, 16000) || !validText(x.ErrorMessage, 2000) || (x.ResponseStatus != nil && (*x.ResponseStatus < 100 || *x.ResponseStatus > 599)) || x.CreatedAt.IsZero() || x.UpdatedAt.IsZero() || !jsonObject(x.RequestHeaders) || !jsonObject(x.RequestBody) || x.EffectState != nil && !validText(*x.EffectState, 80) {
 			return errors.New("invalid source snapshot")
 		}
 		seen["deliveries"][x.ID] = true
@@ -429,7 +433,15 @@ func facts(s snapshot) []historyFact {
 		if product > 0 {
 			productPtr = &product
 		}
-		out = append(out, historyFact{kind: "delivery", id: x.ID, configID: &configID, deliveryID: x.DeliveryID, eventType: x.EventType, targetType: x.TargetType, targetID: x.TargetID, orderID: nullableNonnegative(x.OrderID), productID: productPtr, state: x.Status, attempts: x.AttemptCount, effectID: x.EffectJobID, effectState: x.EffectState, created: x.CreatedAt, updated: x.UpdatedAt, canonical: x})
+		orderID := nullableNonnegative(x.OrderID)
+		orderKind, orderScope, orderKey := "", "", ""
+		if orderID != nil {
+			// This is the old V2 order coordinate, not a V3 primary key. It
+			// can be shown only when Order later exposes the identical historical
+			// source_system/source_key pair through its stable read Port.
+			orderKind, orderScope, orderKey = "wechat_pay_order", "commerce-history", strconv.FormatInt(*orderID, 10)
+		}
+		out = append(out, historyFact{kind: "delivery", id: x.ID, configID: &configID, deliveryID: x.DeliveryID, eventType: x.EventType, targetType: x.TargetType, targetID: x.TargetID, orderKind: orderKind, orderScope: orderScope, orderKey: orderKey, orderID: orderID, productID: productPtr, state: x.Status, attempts: x.AttemptCount, effectID: x.EffectJobID, effectState: x.EffectState, responseStatus: x.ResponseStatus, errorMessage: x.ErrorMessage, responseBodyProtected: x.ResponseBody != "", created: x.CreatedAt, updated: x.UpdatedAt, canonical: x})
 	}
 	for _, x := range s.Outbox {
 		out = append(out, historyFact{kind: "domain_event_outbox", id: x.ID, eventType: x.EventType, targetType: x.AggregateType, targetID: x.AggregateID, state: x.Status, attempts: x.RetryCount, created: x.CreatedAt, updated: x.UpdatedAt, canonical: x})
@@ -513,16 +525,15 @@ func apply(ctx context.Context, pool *pgxpool.Pool, s snapshot, manifestDigest [
 		return result{}, errors.New("begin target history import")
 	}
 	defer tx.Rollback(ctx)
+
 	var batchID int64
-	var existing []byte
-	err = tx.QueryRow(ctx, `SELECT id,manifest_digest FROM outbound_commerce_push_history_batches WHERE source_system=$1 AND source_revision=$2 FOR UPDATE`, s.Manifest.SourceSystem, s.Manifest.SourceRevision).Scan(&batchID, &existing)
+	var out result
+	err = tx.QueryRow(ctx, `SELECT id,input_count,imported_count,pending_count,excluded_count
+FROM outbound_commerce_push_history_batches
+WHERE source_system=$1 AND manifest_digest=$2 FOR UPDATE`, s.Manifest.SourceSystem, manifestDigest[:]).Scan(&batchID, &out.Input, &out.Imported, &out.Pending, &out.Excluded)
 	if err == nil {
-		if !bytes.Equal(existing, manifestDigest[:]) {
-			return result{}, errors.New("source revision digest drift")
-		}
-		var out result
-		if err = tx.QueryRow(ctx, `SELECT input_count,imported_count,pending_count,excluded_count FROM outbound_commerce_push_history_batches WHERE id=$1`, batchID).Scan(&out.Input, &out.Imported, &out.Pending, &out.Excluded); err != nil {
-			return result{}, errors.New("read historical import")
+		if out.Input != len(facts(s)) || out.Input != out.Imported+out.Pending+out.Excluded {
+			return result{}, errors.New("historical import drift")
 		}
 		out.Replayed = out.Input
 		if err = tx.Commit(ctx); err != nil {
@@ -533,15 +544,17 @@ func apply(ctx context.Context, pool *pgxpool.Pool, s snapshot, manifestDigest [
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return result{}, errors.New("read historical import")
 	}
+
 	all := facts(s)
-	out := result{Input: len(all)}
-	dispositions := make([]disposition, len(all))
-	for i, f := range all {
-		dispositions[i], err = dispositionFor(ctx, tx, s, f)
-		if err != nil {
-			return result{}, err
+	out.Input = len(all)
+	rows := make([]historySourceRow, len(all))
+	for index, fact := range all {
+		row, readErr := ensureHistorySourceRow(ctx, tx, s, fact)
+		if readErr != nil {
+			return result{}, readErr
 		}
-		switch dispositions[i].outcome {
+		rows[index] = row
+		switch row.outcome {
 		case "imported":
 			out.Imported++
 		case "pending":
@@ -552,14 +565,13 @@ func apply(ctx context.Context, pool *pgxpool.Pool, s snapshot, manifestDigest [
 			return result{}, errors.New("invalid history disposition")
 		}
 	}
-	err = tx.QueryRow(ctx, `INSERT INTO outbound_commerce_push_history_batches(source_system,source_revision,manifest_digest,snapshot_at,status,input_count,imported_count,pending_count,excluded_count,applied_at) VALUES($1,$2,$3,$4,'applied',$5,$6,$7,$8,clock_timestamp()) RETURNING id`, s.Manifest.SourceSystem, s.Manifest.SourceRevision, manifestDigest[:], s.Manifest.SnapshotAt, out.Input, out.Imported, out.Pending, out.Excluded).Scan(&batchID)
+	err = tx.QueryRow(ctx, `INSERT INTO outbound_commerce_push_history_batches(source_system,source_revision,manifest_digest,snapshot_at,status,input_count,imported_count,pending_count,excluded_count,applied_at)
+VALUES($1,$2,$3,$4,'applied',$5,$6,$7,$8,clock_timestamp()) RETURNING id`, s.Manifest.SourceSystem, s.Manifest.SourceRevision, manifestDigest[:], s.Manifest.SnapshotAt, out.Input, out.Imported, out.Pending, out.Excluded).Scan(&batchID)
 	if err != nil {
 		return result{}, errors.New("write historical import")
 	}
-	for i, f := range all {
-		d := dispositions[i]
-		_, err = tx.Exec(ctx, `INSERT INTO outbound_commerce_push_history_rows(batch_id,source_kind,source_id,source_digest,source_config_id,source_delivery_id,source_event_type,source_target_type,source_target_id,source_order_id,source_product_id,source_state,source_attempt_count,source_effect_job_id,source_effect_state,source_created_at,source_updated_at,target_product_id,outcome,reason_code,read_only) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,TRUE)`, batchID, f.kind, f.id, d.digest, f.configID, f.deliveryID, f.eventType, f.targetType, f.targetID, f.orderID, f.productID, f.state, f.attempts, f.effectID, f.effectState, f.created.UTC(), f.updated.UTC(), d.targetProductID, d.outcome, d.reason)
-		if err != nil {
+	for _, row := range rows {
+		if _, err = tx.Exec(ctx, `INSERT INTO outbound_commerce_push_history_batch_rows(batch_id,source_row_id,source_digest) VALUES($1,$2,$3)`, batchID, row.id, row.digest); err != nil {
 			return result{}, errors.New("write historical import")
 		}
 	}
@@ -568,6 +580,53 @@ func apply(ctx context.Context, pool *pgxpool.Pool, s snapshot, manifestDigest [
 	}
 	return out, nil
 }
+
+type historySourceRow struct {
+	id      int64
+	digest  []byte
+	outcome string
+}
+
+// ensureHistorySourceRow establishes source-row idempotency independently from
+// the protected snapshot manifest. A second snapshot can contain the same V2
+// row, but it cannot reinterpret that row or overwrite its initial read-only
+// import disposition; a changed source digest is a hard reconciliation error.
+func ensureHistorySourceRow(ctx context.Context, tx pgx.Tx, s snapshot, fact historyFact) (historySourceRow, error) {
+	digest, err := sourceDigest(fact)
+	if err != nil {
+		return historySourceRow{}, errors.New("canonicalize source row")
+	}
+	var row historySourceRow
+	err = tx.QueryRow(ctx, `SELECT id,source_digest,outcome FROM outbound_commerce_push_history_rows
+WHERE source_system=$1 AND source_kind=$2 AND source_id=$3 FOR UPDATE`, s.Manifest.SourceSystem, fact.kind, fact.id).Scan(&row.id, &row.digest, &row.outcome)
+	if err == nil {
+		if !bytes.Equal(row.digest, digest) {
+			return historySourceRow{}, errors.New("historical source row digest drift")
+		}
+		return row, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return historySourceRow{}, errors.New("read historical source row")
+	}
+	disposition, err := dispositionFor(ctx, tx, s, fact)
+	if err != nil {
+		return historySourceRow{}, err
+	}
+	row.digest, row.outcome = disposition.digest, disposition.outcome
+	err = tx.QueryRow(ctx, `INSERT INTO outbound_commerce_push_history_rows(
+source_system,source_kind,source_id,source_digest,source_config_id,source_delivery_id,source_event_type,source_target_type,source_target_id,
+source_order_kind,source_order_scope,source_order_key,source_order_id,source_product_id,source_state,source_attempt_count,source_effect_job_id,source_effect_state,
+source_response_status,source_error_message,source_response_body_protected,source_created_at,source_updated_at,target_product_id,outcome,reason_code,read_only)
+VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,TRUE) RETURNING id`,
+		s.Manifest.SourceSystem, fact.kind, fact.id, disposition.digest, fact.configID, fact.deliveryID, fact.eventType, fact.targetType, fact.targetID,
+		fact.orderKind, fact.orderScope, fact.orderKey, fact.orderID, fact.productID, fact.state, fact.attempts, fact.effectID, fact.effectState,
+		fact.responseStatus, fact.errorMessage, fact.responseBodyProtected, fact.created.UTC(), fact.updated.UTC(), disposition.targetProductID, disposition.outcome, disposition.reason).Scan(&row.id)
+	if err != nil {
+		return historySourceRow{}, errors.New("write historical source row")
+	}
+	return row, nil
+}
+
 func verify(ctx context.Context, pool *pgxpool.Pool, s snapshot, manifestDigest [32]byte) (result, error) {
 	if pool == nil {
 		return result{}, errors.New("target database is unavailable")
@@ -581,33 +640,24 @@ func verify(ctx context.Context, pool *pgxpool.Pool, s snapshot, manifestDigest 
 	}
 	defer tx.Rollback(ctx)
 	var batchID int64
-	var stored []byte
 	var out result
-	err = tx.QueryRow(ctx, `SELECT id,manifest_digest,input_count,imported_count,pending_count,excluded_count FROM outbound_commerce_push_history_batches WHERE source_system=$1 AND source_revision=$2 FOR UPDATE`, s.Manifest.SourceSystem, s.Manifest.SourceRevision).Scan(&batchID, &stored, &out.Input, &out.Imported, &out.Pending, &out.Excluded)
+	err = tx.QueryRow(ctx, `SELECT id,input_count,imported_count,pending_count,excluded_count
+FROM outbound_commerce_push_history_batches
+WHERE source_system=$1 AND manifest_digest=$2 FOR UPDATE`, s.Manifest.SourceSystem, manifestDigest[:]).Scan(&batchID, &out.Input, &out.Imported, &out.Pending, &out.Excluded)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return result{}, errors.New("historical import missing")
 	}
-	if err != nil || !bytes.Equal(stored, manifestDigest[:]) || out.Input != len(facts(s)) || out.Input != out.Imported+out.Pending+out.Excluded {
+	all := facts(s)
+	if err != nil || out.Input != len(all) || out.Input != out.Imported+out.Pending+out.Excluded {
 		return result{}, errors.New("historical import drift")
 	}
-	for _, f := range facts(s) {
-		d, e := dispositionFor(ctx, tx, s, f)
-		if e != nil {
-			return result{}, e
-		}
-		var gotDigest []byte
-		var configID, orderID, productID, effectID, targetProductID *int64
-		var deliveryID, eventType, targetType, targetID, state, effectState, outcome, reason string
-		var attempts int
-		var created, updated time.Time
-		var readonly bool
-		e = tx.QueryRow(ctx, `SELECT source_digest,source_config_id,source_delivery_id,source_event_type,source_target_type,source_target_id,source_order_id,source_product_id,source_state,source_attempt_count,source_effect_job_id,COALESCE(source_effect_state,''),source_created_at,source_updated_at,target_product_id,outcome,reason_code,read_only FROM outbound_commerce_push_history_rows WHERE batch_id=$1 AND source_kind=$2 AND source_id=$3`, batchID, f.kind, f.id).Scan(&gotDigest, &configID, &deliveryID, &eventType, &targetType, &targetID, &orderID, &productID, &state, &attempts, &effectID, &effectState, &created, &updated, &targetProductID, &outcome, &reason, &readonly)
-		if e != nil || !bytes.Equal(gotDigest, d.digest) || !sameOptionalInt(configID, f.configID) || deliveryID != f.deliveryID || eventType != f.eventType || targetType != f.targetType || targetID != f.targetID || !sameOptionalInt(orderID, f.orderID) || !sameOptionalInt(productID, f.productID) || state != f.state || attempts != f.attempts || !sameOptionalInt(effectID, f.effectID) || !sameOptionalText(optionalText(effectState), f.effectState) || !created.Equal(f.created.UTC()) || !updated.Equal(f.updated.UTC()) || !sameOptionalInt(targetProductID, d.targetProductID) || outcome != d.outcome || reason != d.reason || !readonly {
-			return result{}, errors.New("historical target drift")
+	for _, fact := range all {
+		if err = verifyHistorySourceRow(ctx, tx, batchID, s.Manifest.SourceSystem, fact); err != nil {
+			return result{}, err
 		}
 	}
 	var rows int
-	if err = tx.QueryRow(ctx, `SELECT count(*) FROM outbound_commerce_push_history_rows WHERE batch_id=$1`, batchID).Scan(&rows); err != nil || rows != out.Input {
+	if err = tx.QueryRow(ctx, `SELECT count(*) FROM outbound_commerce_push_history_batch_rows WHERE batch_id=$1`, batchID).Scan(&rows); err != nil || rows != out.Input {
 		return result{}, errors.New("historical import drift")
 	}
 	if _, err = tx.Exec(ctx, `UPDATE outbound_commerce_push_history_batches SET status='reconciled',reconciled_at=clock_timestamp() WHERE id=$1`, batchID); err != nil {
@@ -618,6 +668,46 @@ func verify(ctx context.Context, pool *pgxpool.Pool, s snapshot, manifestDigest 
 	}
 	return out, nil
 }
+
+func verifyHistorySourceRow(ctx context.Context, tx pgx.Tx, batchID int64, source string, fact historyFact) error {
+	wantDigest, err := sourceDigest(fact)
+	if err != nil {
+		return errors.New("canonicalize source row")
+	}
+	var gotDigest, membershipDigest []byte
+	var configID, orderID, productID, effectID, targetProductID *int64
+	var deliveryID, eventType, targetType, targetID, orderKind, orderScope, orderKey, state, effectState, outcome, reason, errorMessage string
+	var attempts int
+	var responseStatus *int
+	var responseBodyProtected, readonly bool
+	var created, updated time.Time
+	err = tx.QueryRow(ctx, `SELECT r.source_digest,membership.source_digest,r.source_config_id,r.source_delivery_id,r.source_event_type,r.source_target_type,r.source_target_id,
+r.source_order_kind,r.source_order_scope,r.source_order_key,r.source_order_id,r.source_product_id,r.source_state,r.source_attempt_count,r.source_effect_job_id,
+COALESCE(r.source_effect_state,''),r.source_response_status,r.source_error_message,r.source_response_body_protected,r.source_created_at,r.source_updated_at,
+r.target_product_id,r.outcome,r.reason_code,r.read_only
+FROM outbound_commerce_push_history_batch_rows membership
+JOIN outbound_commerce_push_history_rows r ON r.id=membership.source_row_id
+WHERE membership.batch_id=$1 AND r.source_system=$2 AND r.source_kind=$3 AND r.source_id=$4`, batchID, source, fact.kind, fact.id).Scan(
+		&gotDigest, &membershipDigest, &configID, &deliveryID, &eventType, &targetType, &targetID, &orderKind, &orderScope, &orderKey, &orderID, &productID, &state, &attempts, &effectID,
+		&effectState, &responseStatus, &errorMessage, &responseBodyProtected, &created, &updated, &targetProductID, &outcome, &reason, &readonly)
+	if err != nil || !bytes.Equal(gotDigest, wantDigest) || !bytes.Equal(membershipDigest, wantDigest) || !sameOptionalInt(configID, fact.configID) || deliveryID != fact.deliveryID || eventType != fact.eventType || targetType != fact.targetType || targetID != fact.targetID || orderKind != fact.orderKind || orderScope != fact.orderScope || orderKey != fact.orderKey || !sameOptionalInt(orderID, fact.orderID) || !sameOptionalInt(productID, fact.productID) || state != fact.state || attempts != fact.attempts || !sameOptionalInt(effectID, fact.effectID) || !sameOptionalText(optionalText(effectState), fact.effectState) || !sameOptionalIntValue(responseStatus, fact.responseStatus) || errorMessage != fact.errorMessage || responseBodyProtected != fact.responseBodyProtected || !created.Equal(fact.created.UTC()) || !updated.Equal(fact.updated.UTC()) || !readonly {
+		return errors.New("historical target drift")
+	}
+	// target_product_id/outcome/reason are frozen first-import conclusions. The
+	// current Product source map cannot silently re-route an old V2 delivery.
+	if outcome == "" || reason == "" || (outcome == "imported" && targetProductID == nil) || (outcome != "imported" && targetProductID != nil) {
+		return errors.New("historical target drift")
+	}
+	return nil
+}
+
+func sameOptionalIntValue(a, b *int) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return *a == *b
+}
+
 func sameOptionalInt(a, b *int64) bool {
 	if a == nil || b == nil {
 		return a == nil && b == nil

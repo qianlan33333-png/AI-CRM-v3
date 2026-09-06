@@ -31,6 +31,7 @@ import (
 	identityport "github.com/qianlan33333-png/AI-CRM-v3/internal/identity/port"
 	orderdomain "github.com/qianlan33333-png/AI-CRM-v3/internal/order/domain"
 	orderport "github.com/qianlan33333-png/AI-CRM-v3/internal/order/port"
+	outboundport "github.com/qianlan33333-png/AI-CRM-v3/internal/outbound/port"
 	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 	productport "github.com/qianlan33333-png/AI-CRM-v3/internal/product/port"
@@ -71,15 +72,18 @@ type CommercePushTarget struct {
 	AllowLoopbackHTTP                                                bool // fixture-only
 }
 
+// policyDigest freezes only the protected dispatch policy: the target selected
+// by the stable slot, its current protocol version and the scoped identity
+// selectors. Product-owned type/day/frequency/remark/custom_params belong to
+// the immutable encrypted payload and product revision; they must not make a
+// paid delivery look revoked after an administrator edits the Product row.
+// Signing material deliberately stays outside this digest so a protected key
+// rotation signs the existing delivery without rewriting its identity or body.
 func (t CommercePushTarget) policyDigest() [32]byte {
-	params := cloneCommercePushParams(t.CustomParams)
 	value := struct {
 		Reference, Slot, Endpoint, Version, TenantID                     string
 		BuyerID, BuyerOpenID, BuyerUnionID, BuyerPhone, BeneficiaryPhone CommercePushIdentity
-		PushType, Remark                                                 string
-		Day, Frequency                                                   *int64
-		CustomParams                                                     map[string]any
-	}{t.Reference, t.Slot, t.Endpoint, t.Version, t.TenantID, t.BuyerID, t.BuyerOpenID, t.BuyerUnionID, t.BuyerPhone, t.BeneficiaryPhone, t.PushType, t.Remark, t.Day, t.Frequency, params}
+	}{t.Reference, t.Slot, t.Endpoint, t.Version, t.TenantID, t.BuyerID, t.BuyerOpenID, t.BuyerUnionID, t.BuyerPhone, t.BeneficiaryPhone}
 	raw, _ := json.Marshal(value)
 	return sha256.Sum256(raw)
 }
@@ -962,3 +966,65 @@ var _ productport.ExternalPushTestAccepter = (*CommercePushService)(nil)
 var _ productport.ExternalPushTestStatusReader = (*CommercePushService)(nil)
 var _ effectport.ProviderAdapter = (*CommercePushProvider)(nil)
 var _ effectport.CompletionSink = (*CommercePushCompletionSink)(nil)
+
+// ListCommercePushDeliveries is the read-only Outbound Port behind the legacy
+// payment-order page. Current rows join only this Outbound-owned intent to its
+// Order paid-event ID. Historical rows require an exact Order-owned source
+// coordinate, never a numeric V2/V3 primary-key comparison.
+func (s *CommercePushService) ListCommercePushDeliveries(ctx context.Context, query outboundport.CommercePushDeliveryQuery) ([]outboundport.CommercePushDelivery, error) {
+	if s == nil || s.uow == nil || (query.PaidEventID < 1 && (query.HistoricalSourceKind == "" || query.HistoricalSourceSystem == "" || query.HistoricalSourceKey == "")) || (query.PaidEventID > 0 && (query.HistoricalSourceKind != "" || query.HistoricalSourceSystem != "" || query.HistoricalSourceKey != "")) || len(query.HistoricalSourceKind) > 80 || len(query.HistoricalSourceSystem) > 160 || len(query.HistoricalSourceKey) > 240 || strings.TrimSpace(query.HistoricalSourceKind) != query.HistoricalSourceKind || strings.TrimSpace(query.HistoricalSourceSystem) != query.HistoricalSourceSystem || strings.TrimSpace(query.HistoricalSourceKey) != query.HistoricalSourceKey {
+		return nil, ErrCommercePushInvalid
+	}
+	out := []outboundport.CommercePushDelivery{}
+	err := s.uow.Within(ctx, func(txctx context.Context) error {
+		tx, err := platformpostgres.RequireTransaction(txctx)
+		if err != nil {
+			return err
+		}
+		if query.PaidEventID > 0 {
+			rows, readErr := tx.Query(txctx, `SELECT id,COALESCE(effect_id,''),state,attempt_count,provider_call_attempted,provider_real_call_executed,provider_result_received,created_at,updated_at
+FROM outbound_commerce_push_intents WHERE order_paid_event_id=$1 ORDER BY created_at,id`, query.PaidEventID)
+			if readErr != nil {
+				return readErr
+			}
+			defer rows.Close()
+			for rows.Next() {
+				var row outboundport.CommercePushDelivery
+				var id int64
+				if err = rows.Scan(&id, &row.EffectID, &row.State, &row.AttemptCount, &row.ProviderCallAttempted, &row.RealExternalCallExecuted, &row.ProviderResultReceived, &row.CreatedAt, &row.UpdatedAt); err != nil {
+					return err
+				}
+				row.ID, row.Source = "current:"+strconv.FormatInt(id, 10), "current"
+				out = append(out, row)
+			}
+			return rows.Err()
+		}
+		rows, readErr := tx.Query(txctx, `SELECT r.id,r.source_delivery_id,r.source_state,r.source_attempt_count,r.source_response_status,r.source_error_message,r.source_response_body_protected,r.source_created_at,r.source_updated_at
+FROM outbound_commerce_push_history_rows r
+WHERE r.source_kind='delivery' AND r.source_order_kind=$1 AND r.source_order_scope=$2 AND r.source_order_key=$3
+  AND EXISTS (SELECT 1 FROM outbound_commerce_push_history_batch_rows membership
+              JOIN outbound_commerce_push_history_batches batch ON batch.id=membership.batch_id
+              WHERE membership.source_row_id=r.id AND batch.status IN ('applied','reconciled'))
+ORDER BY r.source_created_at,r.id`, query.HistoricalSourceKind, query.HistoricalSourceSystem, query.HistoricalSourceKey)
+		if readErr != nil {
+			return readErr
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var row outboundport.CommercePushDelivery
+			var id int64
+			if err = rows.Scan(&id, &row.EffectID, &row.State, &row.AttemptCount, &row.ResponseStatus, &row.ErrorMessage, &row.ResponseBodyProtected, &row.CreatedAt, &row.UpdatedAt); err != nil {
+				return err
+			}
+			row.ID, row.Source = "history:"+strconv.FormatInt(id, 10), "history"
+			out = append(out, row)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+var _ outboundport.CommercePushDeliveryReader = (*CommercePushService)(nil)

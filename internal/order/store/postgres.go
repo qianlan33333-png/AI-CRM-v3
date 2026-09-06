@@ -799,3 +799,68 @@ func mapError(err error) error {
 	}
 	return err
 }
+
+// CommercePushDeliveryReference resolves the compatibility route using only
+// Order-owned rows. The returned historical coordinates are never derived
+// from orders.id; a V2 numeric order id can be visible only when it is the
+// exact imported Order source kind/scope/key under the commerce-history
+// scope.
+func (r *Repository) CommercePushDeliveryReference(ctx context.Context, provider domain.Provider, reference string) (orderport.CommercePushDeliveryReference, error) {
+	tx, err := transaction(ctx)
+	if err != nil {
+		return orderport.CommercePushDeliveryReference{}, err
+	}
+	if provider == "" || reference == "" || len(reference) > 200 || strings.TrimSpace(reference) != reference {
+		return orderport.CommercePushDeliveryReference{}, orderport.ErrNotFound
+	}
+	rows, err := tx.Query(ctx, `SELECT o.id,o.record_origin,o.effect_eligible,o.source_system,o.source_key,COALESCE(p.id,0)
+FROM orders o
+LEFT JOIN order_paid_events p ON p.order_id=o.id
+WHERE o.provider=$1 AND (o.merchant_order_no=$2 OR o.provider_transaction_no=$2 OR o.source_key=$2)
+ORDER BY o.id LIMIT 2`, provider, reference)
+	if err != nil {
+		return orderport.CommercePushDeliveryReference{}, mapError(err)
+	}
+	defer rows.Close()
+	type candidate struct {
+		id, paidEventID         int64
+		recordOrigin            domain.RecordOrigin
+		effectEligible          bool
+		sourceSystem, sourceKey string
+	}
+	var matches []candidate
+	for rows.Next() {
+		var candidate candidate
+		if err = rows.Scan(&candidate.id, &candidate.recordOrigin, &candidate.effectEligible, &candidate.sourceSystem, &candidate.sourceKey, &candidate.paidEventID); err != nil {
+			return orderport.CommercePushDeliveryReference{}, mapError(err)
+		}
+		matches = append(matches, candidate)
+	}
+	if err = rows.Err(); err != nil {
+		return orderport.CommercePushDeliveryReference{}, mapError(err)
+	}
+	if len(matches) == 0 {
+		return orderport.CommercePushDeliveryReference{}, orderport.ErrNotFound
+	}
+	if len(matches) != 1 {
+		return orderport.CommercePushDeliveryReference{}, orderport.ErrConflict
+	}
+	match := matches[0]
+	out := orderport.CommercePushDeliveryReference{OrderID: match.id}
+	switch match.recordOrigin {
+	case domain.RecordOriginNative:
+		if !match.effectEligible {
+			return orderport.CommercePushDeliveryReference{}, orderport.ErrConflict
+		}
+		out.PaidEventID, out.HistoricalMappingState = match.paidEventID, "current"
+	case domain.RecordOriginHistory:
+		if match.sourceSystem == "commerce-history" && match.sourceKey != "" {
+			out.HistoricalSourceKind, out.HistoricalSourceSystem, out.HistoricalSourceKey, out.HistoricalMappingState = "wechat_pay_order", match.sourceSystem, match.sourceKey, "mapped"
+		} else {
+			out.HistoricalMappingState = "pending"
+		}
+	default:
+		return orderport.CommercePushDeliveryReference{}, orderport.ErrConflict
+	}
+	return out, nil
+}

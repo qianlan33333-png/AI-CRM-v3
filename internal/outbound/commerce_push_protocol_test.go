@@ -138,3 +138,39 @@ func TestCommerceEndpointPreservesFrozenQueryRequestTarget(t *testing.T) {
 		}
 	}
 }
+
+func TestCommercePushPolicyDigestSeparatesFrozenProductBusinessFromProtectedTargetPolicy(t *testing.T) {
+	day, frequency := int64(30), int64(1)
+	base := CommercePushTarget{
+		Reference: "commerce-target", Slot: "product:7", Endpoint: "https://push.example.test/legacy?source=commerce", Version: "legacy-v1", TenantID: "tenant-a",
+		BuyerID:          CommercePushIdentity{Kind: identitydomain.KindWeComExternalUserID, Scope: "wecom-corp:main"},
+		BuyerOpenID:      CommercePushIdentity{Kind: identitydomain.KindMPOpenID, Scope: "wechat-app:mpmain"},
+		BuyerUnionID:     CommercePushIdentity{Kind: identitydomain.KindUnionID, Scope: "wechat-open-platform:main"},
+		BuyerPhone:       CommercePushIdentity{Kind: identitydomain.KindPhone, Scope: "phone:cn11"},
+		BeneficiaryPhone: CommercePushIdentity{Kind: identitydomain.KindPhone, Scope: "phone:cn11"},
+	}
+	frozen := base.policyDigest()
+
+	businessChanged := base
+	businessChanged.PushType, businessChanged.Day, businessChanged.Frequency, businessChanged.Remark = "member_renew", &day, &frequency, "changed after acceptance"
+	businessChanged.CustomParams = map[string]any{"large": json.Number("9007199254740993"), "nested": []any{"preserved"}}
+	if got := businessChanged.policyDigest(); got != frozen {
+		t.Fatal("product-owned business fields changed protected target policy")
+	}
+
+	versionChanged := base
+	versionChanged.Version = "legacy-v2"
+	if versionChanged.policyDigest() == frozen {
+		t.Fatal("target protocol version was not protected")
+	}
+	endpointChanged := base
+	endpointChanged.Endpoint = "https://push.example.test/other"
+	if endpointChanged.policyDigest() == frozen {
+		t.Fatal("target endpoint was not protected")
+	}
+	identityChanged := base
+	identityChanged.BeneficiaryPhone.Scope = "phone:cn11:replacement"
+	if identityChanged.policyDigest() == frozen {
+		t.Fatal("identity selection policy was not protected")
+	}
+}

@@ -14,7 +14,7 @@ OneID 不涉及：快照不解析、创建或关联客户。持久化是一个�
   `extensions/commerce/commerce/external_push_admin.py` 的
   `transaction.paid`/`domain_event_outbox_id` 关联。
 
-一次 `REPEATABLE READ, READ ONLY` 提取保留配置、投递、`transaction.paid` outbox 和关联 effect-job 的完整源行。Webhook URL、密钥、请求/响应体仅留在 AES-256-GCM 的 0600 受保护快照中，用于源摘要验证；目标账本只保存源 ID、状态、时间、尝试次数、关联 job、商品映射、分类和摘要，不保存这些敏感内容。
+一次 `REPEATABLE READ, READ ONLY` 提取保留配置、投递、`transaction.paid` outbox 和关联 effect-job 的完整源行。Webhook URL、密钥、请求/响应体仅留在 AES-256-GCM 的 0600 受保护快照中，用于源摘要验证；目标账本只保存源 ID、订单来源 kind/scope/key、状态、时间、尝试次数、关联 job、商品映射、分类，以及旧管理页可见的响应状态和错误诊断；不保存这些敏感内容。
 
 ## 操作流程
 
@@ -51,4 +51,4 @@ go run ./cmd/migrate-v2-commerce-external-push-history \
   --manifest-sha256=EXACT_DIGEST
 ```
 
-`apply` requires the exact sealed-snapshot digest and writes a single receipt for one immutable source revision. A re-run with the same snapshot returns the prior receipt; a changed digest for the same revision fails. `verify` recomputes each protected row digest and checks target state, timestamps, terminal effect relation, mapping, outcome and read-only fact before marking the batch reconciled.
+`apply` requires the exact sealed-snapshot digest and writes one receipt for that immutable snapshot. A re-run with the same snapshot returns the prior receipt. A later snapshot from the same V2 code revision may add source rows; an overlapping source row retains one global history identity and any changed source-row digest fails closed. `verify` recomputes each protected row digest and checks target state, timestamps, terminal effect relation, mapping, outcome and read-only fact before marking the batch reconciled.

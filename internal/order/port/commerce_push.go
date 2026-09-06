@@ -50,3 +50,21 @@ func NewPaidEventSourceDigest(orderID, orderVersion int64) [32]byte {
 type PaidEventConsumer interface {
 	ConsumePaidEventWithin(context.Context, PaidEvent) error
 }
+
+// CommercePushDeliveryReference is the only Order-owned bridge from the
+// legacy order-details route to Outbound delivery history. Historical source
+// coordinates deliberately remain a source kind/scope/key triple: a legacy
+// numeric order ID is never treated as a V3 orders.id.
+type CommercePushDeliveryReference struct {
+	OrderID                                                           int64
+	PaidEventID                                                       int64
+	HistoricalSourceKind, HistoricalSourceSystem, HistoricalSourceKey string
+	HistoricalMappingState                                            string // current, mapped, pending
+}
+
+// CommercePushDeliveryReferenceReader is a read-only Order Port. It resolves
+// the order reference using Order's own provider/source ownership and exposes
+// no Order table or customer data to the caller.
+type CommercePushDeliveryReferenceReader interface {
+	CommercePushDeliveryReference(context.Context, domain.Provider, string) (CommercePushDeliveryReference, error)
+}

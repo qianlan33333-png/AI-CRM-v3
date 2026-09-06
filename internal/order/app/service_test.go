@@ -456,3 +456,34 @@ func TestExportCSVIsReceiptBackedReplayAndEscapesFormulas(t *testing.T) {
 		t.Fatalf("replay=%+v err=%v receipts=%d", replay, err, len(store.exports))
 	}
 }
+
+func (s *memoryStore) CommercePushDeliveryReference(_ context.Context, provider domain.Provider, reference string) (orderport.CommercePushDeliveryReference, error) {
+	matches := []domain.Snapshot{}
+	for _, snapshot := range s.orders {
+		if snapshot.Provider == provider && (snapshot.MerchantOrderNo == reference || snapshot.ProviderTransactionNo == reference || snapshot.SourceKey == reference) {
+			matches = append(matches, snapshot)
+		}
+	}
+	if len(matches) == 0 {
+		return orderport.CommercePushDeliveryReference{}, orderport.ErrNotFound
+	}
+	if len(matches) != 1 {
+		return orderport.CommercePushDeliveryReference{}, orderport.ErrConflict
+	}
+	match := matches[0]
+	out := orderport.CommercePushDeliveryReference{OrderID: match.ID}
+	if match.RecordOrigin == domain.RecordOriginNative && match.EffectEligible {
+		out.HistoricalMappingState = "current"
+		out.PaidEventID = s.paid[match.ID].ID
+		return out, nil
+	}
+	if match.RecordOrigin == domain.RecordOriginHistory {
+		if match.SourceSystem == "commerce-history" && match.SourceKey != "" {
+			out.HistoricalSourceKind, out.HistoricalSourceSystem, out.HistoricalSourceKey, out.HistoricalMappingState = "wechat_pay_order", match.SourceSystem, match.SourceKey, "mapped"
+		} else {
+			out.HistoricalMappingState = "pending"
+		}
+		return out, nil
+	}
+	return orderport.CommercePushDeliveryReference{}, orderport.ErrConflict
+}

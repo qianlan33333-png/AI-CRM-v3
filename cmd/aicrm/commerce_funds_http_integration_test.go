@@ -19,6 +19,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -47,6 +48,7 @@ import (
 	paymentsession "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/session"
 	paymentstore "github.com/qianlan33333-png/AI-CRM-v3/internal/payment/store"
 	platformjobqueue "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/jobqueue"
+	platformport "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/port"
 	platformpostgres "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/postgres"
 	productapp "github.com/qianlan33333-png/AI-CRM-v3/internal/product/app"
 	productport "github.com/qianlan33333-png/AI-CRM-v3/internal/product/port"
@@ -101,8 +103,8 @@ func (r commerceFundsProductConfigurationReader) ReadExternalPushConfigurationFo
 
 var _ productport.ExternalPushConfigurationReader = commerceFundsProductConfigurationReader{}
 
-func (c commerceFundsPushConfiguration) ReadExternalPushConfigurationForOrder(_ context.Context, id productport.ID) (productport.ExternalPushConfiguration, error) {
-	if id != c.value.ProductID {
+func (c *commerceFundsPushConfiguration) ReadExternalPushConfigurationForOrder(_ context.Context, id productport.ID) (productport.ExternalPushConfiguration, error) {
+	if c == nil || id != c.value.ProductID {
 		return productport.ExternalPushConfiguration{}, errors.New("product configuration not found")
 	}
 	return c.value, nil
@@ -132,15 +134,15 @@ var _ identityport.ExternalIdentityValueReader = commerceFundsPushIdentityReader
 
 type commerceFundsPushTargets struct{ target outbound.CommercePushTarget }
 
-func (r commerceFundsPushTargets) CommercePushProviderEnabled() bool { return true }
-func (r commerceFundsPushTargets) CommercePushTarget(_ context.Context, reference string) (outbound.CommercePushTarget, bool, error) {
-	if reference != r.target.Reference {
+func (r *commerceFundsPushTargets) CommercePushProviderEnabled() bool { return r != nil }
+func (r *commerceFundsPushTargets) CommercePushTarget(_ context.Context, reference string) (outbound.CommercePushTarget, bool, error) {
+	if r == nil || reference != r.target.Reference {
 		return outbound.CommercePushTarget{}, false, nil
 	}
 	return r.target, true, nil
 }
 
-var _ outbound.CommercePushTargetResolver = commerceFundsPushTargets{}
+var _ outbound.CommercePushTargetResolver = (*commerceFundsPushTargets)(nil)
 
 type commerceFundsPushDelivery struct {
 	event, deliveryID, timestamp, signature string
@@ -396,7 +398,7 @@ func TestPostgreSQLUnconfiguredPaidOrderPlansDisabledCommercePushOnce(t *testing
 	if err = pool.QueryRow(ctx, `INSERT INTO order_paid_events(order_id,order_version,source_digest,occurred_at) VALUES($1,2,$2,$3) RETURNING id`, orderID, sourceDigest[:], now).Scan(&paidEventID); err != nil {
 		t.Fatal(err)
 	}
-	service, err := outbound.NewCommercePushService(pool, uow, commerceFundsDisabledCommerceEffects{}, commerceFundsProductConfigurationReader{repository: products}, commerceFundsPushIdentityReader{customerID: customerID}, commerceFundsPushTargets{}, nil)
+	service, err := outbound.NewCommercePushService(pool, uow, commerceFundsDisabledCommerceEffects{}, commerceFundsProductConfigurationReader{repository: products}, commerceFundsPushIdentityReader{customerID: customerID}, &commerceFundsPushTargets{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -569,7 +571,9 @@ func TestPostgreSQLCommerceFundsHTTPJourney(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	commercePush, err := outbound.NewCommercePushService(pool, uow, effectStore, commerceFundsPushConfiguration{value: productport.ExternalPushConfiguration{ProductID: product.ID, ProductKind: productport.ExternalPushServicePeriod, Enabled: true, ConfigurationReference: commerceTarget.Reference, PushType: "service_period", Day: commerceFundsInt64(30), Frequency: commerceFundsInt64(1), Remark: "commerce-funds-fixture", CustomParams: map[string]any{"nested": map[string]any{"not": "paid payload"}}, Revision: 1, ProductName: product.Name, UpdatedAt: now}}, commerceFundsPushIdentityReader{customerID: customerID}, commerceFundsPushTargets{target: commerceTarget}, commerceCipher)
+	commerceConfiguration := &commerceFundsPushConfiguration{value: productport.ExternalPushConfiguration{ProductID: product.ID, ProductKind: productport.ExternalPushServicePeriod, Enabled: true, ConfigurationReference: commerceTarget.Reference, PushType: "service_period", Day: commerceFundsInt64(30), Frequency: commerceFundsInt64(1), Remark: "commerce-funds-fixture", CustomParams: map[string]any{"nested": map[string]any{"not": "paid payload"}}, Revision: 1, ProductName: product.Name, UpdatedAt: now}}
+	commerceTargets := &commerceFundsPushTargets{target: commerceTarget}
+	commercePush, err := outbound.NewCommercePushService(pool, uow, effectStore, commerceConfiguration, commerceFundsPushIdentityReader{customerID: customerID}, commerceTargets, commerceCipher)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -580,8 +584,11 @@ func TestPostgreSQLCommerceFundsHTTPJourney(t *testing.T) {
 	if err = effectStore.SetCompletionSink(commerceCompletion); err != nil {
 		t.Fatal(err)
 	}
-	commerceProvider, err := outbound.NewCommercePushProvider(true, commercePush, commerceFundsPushTargets{target: commerceTarget}, commerceCipher)
+	commerceProvider, err := outbound.NewCommercePushProvider(true, commercePush, commerceTargets, commerceCipher)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err = handler.SetCommercePushDeliveryReaders(orderService, commercePush); err != nil {
 		t.Fatal(err)
 	}
 	if err = orderService.SetPaidEventConsumer(commercePush); err != nil {
@@ -695,10 +702,32 @@ func TestPostgreSQLCommerceFundsHTTPJourney(t *testing.T) {
 	if queuedDeliveries != 0 {
 		t.Fatalf("Provider was called before EER worker attempted the effect: deliveries=%d", queuedDeliveries)
 	}
+	// A later Product save must not rewrite or revoke this already accepted
+	// paid delivery. The frozen revision/body remain the only source of its
+	// business fields; target identity/version policy is checked separately.
+	commerceConfiguration.value.PushType = "changed_after_acceptance"
+	commerceConfiguration.value.Day = commerceFundsInt64(365)
+	commerceConfiguration.value.Frequency = commerceFundsInt64(9)
+	commerceConfiguration.value.Remark = "new-product-value"
+	commerceConfiguration.value.Revision = 2
 	if err = effectStore.RunAttempt(ctx, effectID, generation, riverJobID, commerceProvider); err != nil {
 		t.Fatal(err)
 	}
 	commerceFundsAssertPushDelivered(t, ctx, pool, effectID, commerceTarget.SigningKey, &deliveryLock, deliveries)
+	commerceFundsAssertOrderDeliveryHistoryRoute(t, ctx, pool, handler, merchant, now)
+
+	// The provider must still reject a frozen delivery if the protected target
+	// protocol or trusted identity-selection policy is revoked after acceptance.
+	// These synthetic effects share the actual EER/River Provider path but must
+	// never make a receiver call after that current-policy rejection.
+	commerceFundsAssertTargetPolicyRejected(t, ctx, pool, uow, effectStore, commercePush, commerceProvider, commerceTargets, product, 2, "commerce-funds-target-version", func(target *outbound.CommercePushTarget) { target.Version = "legacy-v2" })
+	commerceFundsAssertTargetPolicyRejected(t, ctx, pool, uow, effectStore, commercePush, commerceProvider, commerceTargets, product, 2, "commerce-funds-target-identity", func(target *outbound.CommercePushTarget) { target.BeneficiaryPhone.Scope = "phone:e164" })
+	deliveryLock.Lock()
+	policyRejectedDeliveries := len(deliveries)
+	deliveryLock.Unlock()
+	if policyRejectedDeliveries != 1 {
+		t.Fatalf("revoked commerce target made a receiver call: deliveries=%d", policyRejectedDeliveries)
+	}
 
 	firstRefund := commerceFundsRequestRefund(t, handler, paymentID, 300, "commerce-funds-first-refund", "commerce-funds-first-refund-key")
 	firstRefundBody, firstRefundHeaders := commerceFundsSignedCallback(t, platformKey, apiKey, "commerce-funds-refund-1", "REFUND.SUCCESS", map[string]any{"appid": "app", "mchid": "mch", "out_refund_no": firstRefund, "refund_id": "provider-refund-1", "refund_status": "SUCCESS", "success_time": now.Add(2 * time.Second).Format(time.RFC3339Nano), "amount": map[string]any{"refund": 300, "total": 1000, "currency": "CNY"}})
@@ -850,6 +879,123 @@ func commerceFundsAssertPushRollback(t *testing.T, ctx context.Context, pool *pg
   (SELECT count(*) FROM external_effect_jobs job JOIN external_effects effect ON effect.id=job.effect_id WHERE effect.kind=$1)`, effectport.KindCommerceProductPush).Scan(&events, &intents, &effects, &jobs)
 	if err != nil || events != 0 || intents != 0 || effects != 0 || jobs != 0 {
 		t.Fatalf("paid external push did not roll back events/intents/effects/jobs=%d/%d/%d/%d err=%v", events, intents, effects, jobs, err)
+	}
+}
+
+// commerceFundsAssertOrderDeliveryHistoryRoute exercises the actual
+// compatibility URL through Payment HTTP plus the stable Order/Outbound read
+// Ports. The historical fixture deliberately reuses a V2 numeric order ID as
+// an unrelated V3 native orders.id; only the distinct historical
+// source_system/source_key can read the preserved row.
+func commerceFundsAssertOrderDeliveryHistoryRoute(t *testing.T, ctx context.Context, pool *pgxpool.Pool, handler http.Handler, merchant string, now time.Time) {
+	t.Helper()
+	current := httptest.NewRecorder()
+	handler.ServeHTTP(current, httptest.NewRequest(http.MethodGet, "/api/admin/wechat-pay/orders/"+merchant+"/external-push-deliveries", nil))
+	if current.Code != http.StatusOK || !strings.Contains(current.Body.String(), `"source":"current"`) || !strings.Contains(current.Body.String(), `"provider_accepted"`) || strings.Contains(current.Body.String(), `"history_mapping_state":"pending"`) {
+		t.Fatalf("current delivery route status=%d body=%s", current.Code, current.Body.String())
+	}
+
+	const sourceOrderID int64 = 909001
+	const historySourceSystem = "aicrm-commerce-history-fixture"
+	var ownerID int64
+	if err := pool.QueryRow(ctx, `SELECT id FROM customers ORDER BY id LIMIT 1`).Scan(&ownerID); err != nil {
+		t.Fatal(err)
+	}
+	historicalOrderDigest := sha256.Sum256([]byte("historical-order-909001"))
+	if _, err := pool.Exec(ctx, `INSERT INTO orders(id,provider,source_system,source_key,merchant_order_no,provider_transaction_no,payer_customer_id,beneficiary_customer_id,amount_minor,refunded_minor,currency,status,record_origin,effect_eligible,source_row_digest,version,created_at,updated_at)
+OVERRIDING SYSTEM VALUE VALUES
+($1,'wechat_pay','v3-checkout','native-collision-909001','native-collision-909001','',$4,$4,100,0,'CNY','paid','native',TRUE,NULL,2,$2,$2),
+($3,'wechat_pay','commerce-history','909001','history-collision-909001','',NULL,NULL,100,0,'CNY','paid','history',FALSE,$5,1,$2,$2)`, sourceOrderID, now.UTC(), sourceOrderID+1, ownerID, historicalOrderDigest[:]); err != nil {
+		t.Fatal(err)
+	}
+	wrongScopeDigest := sha256.Sum256([]byte("historical-order-wrong-scope-909001"))
+	if _, err := pool.Exec(ctx, `INSERT INTO orders(provider,source_system,source_key,merchant_order_no,provider_transaction_no,payer_customer_id,beneficiary_customer_id,amount_minor,refunded_minor,currency,status,record_origin,effect_eligible,source_row_digest,version,created_at,updated_at)
+VALUES('wechat_pay','another-history-scope','909001','history-scope-miss-909001','',NULL,NULL,100,0,'CNY','paid','history',FALSE,$1,1,$2,$2)`, wrongScopeDigest[:], now.UTC()); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256([]byte("collision-paid-event"))
+	if _, err := pool.Exec(ctx, `INSERT INTO order_paid_events(order_id,order_version,source_digest,occurred_at) VALUES($1,2,$2,$3)`, sourceOrderID, digest[:], now.UTC()); err != nil {
+		t.Fatal(err)
+	}
+	rowDigest := sha256.Sum256([]byte("legacy-delivery-909001"))
+	var historyRowID, batchID int64
+	if err := pool.QueryRow(ctx, `INSERT INTO outbound_commerce_push_history_rows(source_system,source_kind,source_id,source_digest,source_delivery_id,source_event_type,source_target_type,source_target_id,source_order_kind,source_order_scope,source_order_key,source_order_id,source_state,source_attempt_count,source_response_status,source_error_message,source_response_body_protected,source_created_at,source_updated_at,outcome,reason_code,read_only)
+VALUES($1,'delivery',909001,$2,'legacy-delivery-909001','transaction.paid','product','101','wechat_pay_order','commerce-history','909001',909001,'failed',3,502,'legacy upstream timeout',TRUE,$3,$3,'pending','product_mapping_unavailable',TRUE) RETURNING id`, historySourceSystem, rowDigest[:], now.UTC()).Scan(&historyRowID); err != nil {
+		t.Fatal(err)
+	}
+	manifestDigest := sha256.Sum256([]byte("legacy-delivery-batch-909001"))
+	if err := pool.QueryRow(ctx, `INSERT INTO outbound_commerce_push_history_batches(source_system,source_revision,manifest_digest,snapshot_at,status,input_count,imported_count,pending_count,excluded_count,applied_at) VALUES($1,$2,$3,$4,'applied',1,0,1,0,$4) RETURNING id`, historySourceSystem, strings.Repeat("d", 40), manifestDigest[:], now.UTC()).Scan(&batchID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO outbound_commerce_push_history_batch_rows(batch_id,source_row_id,source_digest) VALUES($1,$2,$3)`, batchID, historyRowID, rowDigest[:]); err != nil {
+		t.Fatal(err)
+	}
+	wrongKindDigest := sha256.Sum256([]byte("legacy-delivery-wrong-kind-909001"))
+	var wrongKindRowID, wrongKindBatchID int64
+	if err := pool.QueryRow(ctx, `INSERT INTO outbound_commerce_push_history_rows(source_system,source_kind,source_id,source_digest,source_delivery_id,source_event_type,source_target_type,source_target_id,source_order_kind,source_order_scope,source_order_key,source_order_id,source_state,source_attempt_count,source_created_at,source_updated_at,outcome,reason_code,read_only)
+VALUES($1,'delivery',909002,$2,'legacy-delivery-wrong-kind','transaction.paid','product','101','wechat_shop_order','commerce-history','909001',909001,'failed',1,$3,$3,'pending','product_mapping_unavailable',TRUE) RETURNING id`, historySourceSystem, wrongKindDigest[:], now.UTC()).Scan(&wrongKindRowID); err != nil {
+		t.Fatal(err)
+	}
+	wrongKindManifest := sha256.Sum256([]byte("legacy-delivery-wrong-kind-batch"))
+	if err := pool.QueryRow(ctx, `INSERT INTO outbound_commerce_push_history_batches(source_system,source_revision,manifest_digest,snapshot_at,status,input_count,imported_count,pending_count,excluded_count,applied_at) VALUES($1,$2,$3,$4,'applied',1,0,1,0,$4) RETURNING id`, historySourceSystem, strings.Repeat("e", 40), wrongKindManifest[:], now.UTC()).Scan(&wrongKindBatchID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO outbound_commerce_push_history_batch_rows(batch_id,source_row_id,source_digest) VALUES($1,$2,$3)`, wrongKindBatchID, wrongKindRowID, wrongKindDigest[:]); err != nil {
+		t.Fatal(err)
+	}
+
+	collision := httptest.NewRecorder()
+	handler.ServeHTTP(collision, httptest.NewRequest(http.MethodGet, "/api/admin/wechat-pay/orders/native-collision-909001/external-push-deliveries", nil))
+	if collision.Code != http.StatusOK || strings.Contains(collision.Body.String(), "legacy-delivery-909001") || !strings.Contains(collision.Body.String(), `"total":0`) {
+		t.Fatalf("numeric source/V3 id collision attached legacy delivery status=%d body=%s", collision.Code, collision.Body.String())
+	}
+	history := httptest.NewRecorder()
+	handler.ServeHTTP(history, httptest.NewRequest(http.MethodGet, "/api/admin/wechat-pay/orders/history-collision-909001/external-push-deliveries", nil))
+	if history.Code != http.StatusOK || !strings.Contains(history.Body.String(), `"source":"history"`) || !strings.Contains(history.Body.String(), `"response_status":502`) || !strings.Contains(history.Body.String(), "legacy upstream timeout") || !strings.Contains(history.Body.String(), `"response_body_protected":true`) || !strings.Contains(history.Body.String(), `"total":1`) || strings.Contains(history.Body.String(), "legacy-delivery-wrong-kind") {
+		t.Fatalf("mapped history delivery route status=%d body=%s", history.Code, history.Body.String())
+	}
+	wrongScope := httptest.NewRecorder()
+	handler.ServeHTTP(wrongScope, httptest.NewRequest(http.MethodGet, "/api/admin/wechat-pay/orders/history-scope-miss-909001/external-push-deliveries", nil))
+	if wrongScope.Code != http.StatusOK || !strings.Contains(wrongScope.Body.String(), `"history_mapping_state":"pending"`) || !strings.Contains(wrongScope.Body.String(), `"total":0`) || strings.Contains(wrongScope.Body.String(), "legacy-delivery-909001") {
+		t.Fatalf("unmapped historical source scope status=%d body=%s", wrongScope.Code, wrongScope.Body.String())
+	}
+}
+
+// commerceFundsAssertTargetPolicyRejected creates a new explicit synthetic
+// operation, changes only current protected target policy, and proves EER
+// completes it without a network call. Product business values are deliberately
+// not touched here: their acceptance-time payload is immutable instead.
+func commerceFundsAssertTargetPolicyRejected(t *testing.T, ctx context.Context, pool *pgxpool.Pool, uow platformport.UnitOfWork, effectsStore *effects.Repository, service *outbound.CommercePushService, provider *outbound.CommercePushProvider, targets *commerceFundsPushTargets, product productport.CheckoutProduct, revision int64, key string, mutate func(*outbound.CommercePushTarget)) {
+	t.Helper()
+	if uow == nil || effectsStore == nil || service == nil || provider == nil || targets == nil || mutate == nil {
+		t.Fatal("target-policy fixture is incomplete")
+	}
+	digest := sha256.Sum256([]byte(key))
+	var accepted productport.ExternalPushTest
+	if err := uow.Within(ctx, func(tx context.Context) error {
+		var acceptErr error
+		accepted, acceptErr = service.AcceptExternalPushTestWithin(tx, productport.ExternalPushTestIntent{ProductID: product.ID, ProductKind: productport.ExternalPushServicePeriod, ConfigurationReference: "commerce-funds-target", ConfigurationRevision: revision, ReceiptKeyDigest: digest})
+		return acceptErr
+	}); err != nil || accepted.EffectID == "" || (accepted.State != "accepted" && accepted.State != "queued") {
+		t.Fatalf("accept policy-rejection fixture accepted=%+v err=%v", accepted, err)
+	}
+	var effectID, generation, riverJobID int64
+	if err := pool.QueryRow(ctx, `SELECT effect.id,effect.generation,job.river_job_id
+FROM external_effects effect
+JOIN external_effect_jobs job ON job.effect_id=effect.id AND job.generation=effect.generation
+WHERE effect.id=substring($1 FROM 5)::bigint`, accepted.EffectID).Scan(&effectID, &generation, &riverJobID); err != nil {
+		t.Fatalf("read policy-rejection effect: %v", err)
+	}
+	original := targets.target
+	mutate(&targets.target)
+	err := effectsStore.RunAttempt(ctx, effectID, generation, riverJobID, provider)
+	targets.target = original
+	if err != nil {
+		t.Fatalf("run policy-rejection effect: %v", err)
+	}
+	var state string
+	if err := pool.QueryRow(ctx, `SELECT state FROM outbound_commerce_push_intents WHERE effect_id=$1`, accepted.EffectID).Scan(&state); err != nil || state != "final_failed" {
+		t.Fatalf("protected target mutation state=%q err=%v", state, err)
 	}
 }
 
