@@ -12,7 +12,7 @@ const html = `<!doctype html>
   <span id="customer-list-summary"></span><div id="customer-list-state"></div>
   <div id="customer-list-table-wrap"><table><tbody id="customer-list-body"></tbody></table></div>
   <button id="customer-prev-page"></button><button id="customer-next-page"></button>
-  <form id="customer-tag-batch"><select name="add_tag_ids" multiple disabled></select><select name="remove_tag_ids" multiple disabled></select><button type="submit">confirm</button></form><span id="customer-tag-batch-result"></span>
+  <form id="customer-tag-batch"><select name="add_tag_ids" multiple disabled></select><select name="remove_tag_ids" multiple disabled></select><button type="submit">confirm</button><button id="customer-tag-batch-refresh" type="button" hidden>refresh</button></form><span id="customer-tag-batch-result"></span>
 </div>`;
 const dom = new JSDOM(html, { url: "https://test.invalid/admin/customers", runScripts: "outside-only" });
 dom.window.Headers = Headers;
@@ -46,5 +46,10 @@ if (tagCalls.length !== 2 || tagCalls[0].path !== "/api/v1/customer-tag-commands
 const commandBody = JSON.parse(tagCalls[1].options.body);
 if (commandBody.customer_ids[0] !== 42 || commandBody.add_tag_ids.join(",") !== "9,10" || commandBody.remove_tag_ids.length !== 0) throw new Error("tag command body was not canonical");
 if (!dom.window.document.querySelector("#customer-tag-batch-result").textContent.includes("客户 #42：executed")) throw new Error("tag history refresh did not render the persisted per-customer result");
+const refresh = dom.window.document.querySelector("#customer-tag-batch-refresh");
+if (refresh.hidden) throw new Error("accepted tag command did not expose an explicit result refresh action");
+refresh.click();
+await new Promise((resolve) => setTimeout(resolve, 20));
+if (!dom.window.document.querySelector("#customer-tag-batch-result").textContent.includes("观察标签：分组 / 标签九（active）")) throw new Error("explicit tag result refresh did not retain the observed-provider readback");
 dom.window.close();
 console.log("admin-customers-browser: PASS");

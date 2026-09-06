@@ -22,8 +22,10 @@
     next: byID("customer-next-page"),
     batchTags: byID("customer-tag-batch"),
     batchTagResult: byID("customer-tag-batch-result"),
+    batchTagRefresh: byID("customer-tag-batch-refresh"),
     singleTags: byID("customer-tag-single"),
     singleTagResult: byID("customer-tag-single-result"),
+    singleTagRefresh: byID("customer-tag-single-refresh"),
     profileName: byID("customer-profile-name"),
     detailState: byID("customer-detail-state"),
     detailContent: byID("customer-detail-content"),
@@ -42,6 +44,7 @@
   let detailID = "";
   let clearPhoneTimer = 0;
   const selectedCustomers = new Set();
+  const acceptedTagCommands = new Map();
 
   function csrf() {
     const name = "aicrm_admin_csrf=";
@@ -250,7 +253,24 @@
     if (resultNode) resultNode.textContent = commandLineSummary(observations, "已刷新执行结果：");
   }
 
-  async function previewAndConfirm(customerIDs, form, resultNode) {
+  async function refreshAcceptedTagCommand(resultNode, refreshButton) {
+    const command = refreshButton && acceptedTagCommands.get(refreshButton.id);
+    if (!command) {
+      if (resultNode) resultNode.textContent = "没有可刷新的已受理标签命令。";
+      return;
+    }
+    refreshButton.disabled = true;
+    if (resultNode) resultNode.textContent = "正在刷新执行结果…";
+    try {
+      await refreshTagCommand(command, resultNode);
+    } catch (_error) {
+      if (resultNode) resultNode.textContent = "执行结果暂时不可读取；已受理命令不会重复提交。";
+    } finally {
+      refreshButton.disabled = false;
+    }
+  }
+
+  async function previewAndConfirm(customerIDs, form, resultNode, refreshButton) {
     const data = new FormData(form);
     const add = tagIDs(data.getAll("add_tag_ids"));
     const remove = tagIDs(data.getAll("remove_tag_ids"));
@@ -268,6 +288,10 @@
       if (!window.confirm(summary)) return;
       const accepted = await request(api.tagCommand, { method: "POST", headers, body: JSON.stringify(payload) });
       if (resultNode) resultNode.textContent = commandLineSummary(accepted.lines, "已受理；当前结果：");
+      if (refreshButton) {
+        acceptedTagCommands.set(refreshButton.id, accepted);
+        refreshButton.hidden = false;
+      }
       try {
         await refreshTagCommand(accepted, resultNode);
       } catch (_error) {
@@ -499,8 +523,10 @@
     }
   }
 
-  if (el.batchTags) el.batchTags.addEventListener("submit", function (event) { event.preventDefault(); void previewAndConfirm([...selectedCustomers].map(Number), el.batchTags, el.batchTagResult); });
-  if (el.singleTags) el.singleTags.addEventListener("submit", function (event) { event.preventDefault(); if (detailID) void previewAndConfirm([Number(detailID)], el.singleTags, el.singleTagResult); });
+  if (el.batchTags) el.batchTags.addEventListener("submit", function (event) { event.preventDefault(); void previewAndConfirm([...selectedCustomers].map(Number), el.batchTags, el.batchTagResult, el.batchTagRefresh); });
+  if (el.singleTags) el.singleTags.addEventListener("submit", function (event) { event.preventDefault(); if (detailID) void previewAndConfirm([Number(detailID)], el.singleTags, el.singleTagResult, el.singleTagRefresh); });
+  if (el.batchTagRefresh) el.batchTagRefresh.addEventListener("click", function () { void refreshAcceptedTagCommand(el.batchTagResult, el.batchTagRefresh); });
+  if (el.singleTagRefresh) el.singleTagRefresh.addEventListener("click", function () { void refreshAcceptedTagCommand(el.singleTagResult, el.singleTagRefresh); });
   if (el.filters) el.filters.addEventListener("submit", function (event) { event.preventDefault(); loadList("", "reset"); });
   if (el.clear) el.clear.addEventListener("click", function () { el.filters.reset(); loadList("", "reset"); });
   if (el.refresh) el.refresh.addEventListener("click", function () { loadList(pageCursors[pageIndex], "refresh"); });

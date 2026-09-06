@@ -50,11 +50,13 @@ try {
   try { await waitFor(cdp, "document.querySelectorAll('#customer-list-body input[type=checkbox]').length >= 2 && document.querySelectorAll('#customer-tag-batch option').length >= 2", "customer list or tag catalog did not load"); } catch (_) { throw new Error(`customer Host did not load: ${await diagnostic()}`); }
   await evaluate(cdp, `(() => { const checks=[...document.querySelectorAll('#customer-list-body input[type=checkbox]')].slice(0,2); checks.forEach((box) => { box.checked=true; box.dispatchEvent(new Event('change', {bubbles:true})); }); const form=document.querySelector('#customer-tag-batch'); const add=form.querySelector('[name="add_tag_ids"]'); const remove=form.querySelector('[name="remove_tag_ids"]'); add.options[0].selected=true; remove.options[1].selected=true; window.confirm=()=>true; form.requestSubmit(); return true; })()`);
   try { await waitFor(cdp, "document.querySelector('#customer-tag-batch-result')?.textContent.includes('已刷新执行结果')", "browser did not render the accepted command result"); } catch (_) { throw new Error(`customer command interaction did not render: ${await diagnostic()}`); }
-  await waitFor(cdp, `Promise.all([1,2].map((id) => fetch('/api/v1/customers/'+id+'/tag-commands?limit=5',{credentials:'same-origin'}).then((r)=>r.json()))).then((rows) => {
-    const states=rows.map((row)=>row?.items?.[0]?.lines?.find((line)=>Number(line.customer_id)>0)?.state);
-    return states.includes('executed') && states.includes('outcome_unknown');
-  })`, "Provider completion did not distinguish executed from outcome_unknown");
-  const observed = await evaluate(cdp, "fetch('/api/admin/customers/1/tags',{credentials:'same-origin'}).then((r)=>r.ok?r.json():null)");
-  if (!Array.isArray(observed?.items) || observed.items.length < 1) throw new Error("Provider observation readback was not persisted");
+  await waitFor(cdp, "Boolean(document.querySelector('#customer-tag-batch-refresh:not([hidden])'))", "accepted tag command did not expose the explicit result refresh action");
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    await evaluate(cdp, "document.querySelector('#customer-tag-batch-refresh')?.click(); true");
+    await delay(250);
+    const rendered = await evaluate(cdp, "document.querySelector('#customer-tag-batch-result')?.textContent || ''");
+    if (rendered.includes('客户 #1：executed') && rendered.includes('客户 #2：outcome_unknown') && rendered.includes('观察标签：fixture observed（active）')) break;
+    if (attempt === 19) throw new Error(`explicit result refresh did not render durable outcomes: ${rendered}`);
+  }
   console.log("customer_tag_command_chromium: PASS");
 } catch (error) { failed = true; throw error; } finally { if (cdp) cdp.close(); if (browser && browser.exitCode === null && browser.signalCode === null) { browser.kill("SIGTERM"); await browserExit(browser); } const removed = await removeProfile(profile); if (!removed && !failed) throw new Error("Chromium test profile cleanup did not complete"); }

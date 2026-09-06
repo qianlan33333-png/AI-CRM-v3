@@ -43,6 +43,7 @@
     <label>批量加标签 <select name="add_tag_ids" multiple aria-label="批量加标签" disabled></select></label>
     <label>批量移除标签 <select name="remove_tag_ids" multiple aria-label="批量移除标签" disabled></select></label>
     <button class="admin-button admin-button--secondary" type="submit">预览并确认标签变更</button>
+    <button class="admin-button admin-button--ghost" id="customer-tag-batch-refresh" type="button" hidden>刷新执行结果</button>
     <span id="customer-tag-batch-result" role="status" aria-live="polite"></span>
   </form>
   <div class="admin-toolbar admin-toolbar--pager customer-list-pager">
@@ -66,6 +67,7 @@
       <label>加标签 <select name="add_tag_ids" multiple aria-label="加标签" disabled></select></label>
       <label>移除标签 <select name="remove_tag_ids" multiple aria-label="移除标签" disabled></select></label>
       <button class="admin-button admin-button--secondary" type="submit">预览并确认标签变更</button>
+      <button class="admin-button admin-button--ghost" id="customer-tag-single-refresh" type="button" hidden>刷新执行结果</button>
       <span id="customer-tag-single-result" role="status" aria-live="polite"></span>
     </form>
   </div>

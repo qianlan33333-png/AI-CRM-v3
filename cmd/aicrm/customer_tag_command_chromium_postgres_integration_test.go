@@ -24,8 +24,9 @@ import (
 // session/CSRF path, the rendered customer Host, PostgreSQL/River and the
 // Composition-owned WeCom Provider adapter. OneID resolves two seeded trusted
 // external identities; the fixture only observes opaque test targets. The
-// second write deliberately disconnects after the request so the durable
-// result remains outcome_unknown rather than pretending it was rejected.
+// second write deliberately returns plain-text HTTP 500 without a trusted
+// Provider errcode, so the durable result remains outcome_unknown rather than
+// pretending it was rejected.
 //
 // OneID decision: involved through the scoped wecom_external_userid read Port;
 // the journey seeds identities but never provisions or merges a customer.
@@ -126,10 +127,17 @@ func newCustomerTagChromiumProvider() *customerTagChromiumProvider {
 			_, _ = w.Write([]byte(`{"errcode":0,"access_token":"fixture-token","expires_in":7200}`))
 		case "/cgi-bin/externalcontact/mark_tag":
 			var request struct {
-				ExternalUserID string `json:"external_userid"`
+				ExternalUserID string   `json:"external_userid"`
+				UserID         string   `json:"userid"`
+				AddTag         []string `json:"add_tag"`
+				RemoveTag      []string `json:"remove_tag"`
 			}
 			if json.NewDecoder(r.Body).Decode(&request) != nil {
 				http.Error(w, "invalid", http.StatusBadRequest)
+				return
+			}
+			if request.UserID != "fixture-staff" || len(request.AddTag) != 1 || request.AddTag[0] != "fixture-provider-add" || len(request.RemoveTag) != 1 || request.RemoveTag[0] != "fixture-provider-remove" {
+				http.Error(w, "unexpected tag mutation", http.StatusBadRequest)
 				return
 			}
 			fixture.mu.Lock()
