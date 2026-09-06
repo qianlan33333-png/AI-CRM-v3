@@ -12322,6 +12322,11 @@
   var key = () => `owner-handoff-${crypto.getRandomValues(new Uint32Array(2)).join("-")}`;
   var text = (value) => String(value ?? "").trim();
   var esc = (value) => text(value).replace(/[&<>'"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[char] || char);
+  var requestFailure = (message, status) => {
+    const error = new Error(message);
+    error.httpStatus = status;
+    return error;
+  };
   var pickerLoad;
   async function api(path, init) {
     const headers = new Headers(init?.headers);
@@ -12334,7 +12339,7 @@
     }
     const response = await fetch(path, { credentials: "same-origin", ...init, headers });
     const body = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(text(body.error) || `\u8BF7\u6C42\u5931\u8D25\uFF08${response.status}\uFF09`);
+    if (!response.ok) throw requestFailure(text(body.error) || `\u8BF7\u6C42\u5931\u8D25\uFF08${response.status}\uFF09`, response.status);
     return body;
   }
   function scrubFrozenServerPlaceholders(page) {
@@ -12342,7 +12347,8 @@
     const replacement = /\{\{[\s\S]*?\}\}|\{%[\s\S]*?%\}/g;
     [page, ...page.querySelectorAll("*")].forEach((element) => {
       [...element.attributes].forEach((attribute) => {
-        if (marker.test(attribute.value)) element.setAttribute(attribute.name, attribute.value.replace(replacement, ""));
+        if (marker.test(attribute.name)) element.removeAttribute(attribute.name);
+        else if (marker.test(attribute.value)) element.setAttribute(attribute.name, attribute.value.replace(replacement, ""));
       });
     });
     const walker = document.createTreeWalker(page, NodeFilter.SHOW_TEXT);
@@ -12350,7 +12356,7 @@
   }
   async function mountFrozenDonor(stage) {
     const response = await fetch(donorURL, { credentials: "same-origin" });
-    if (!response.ok) throw new Error(`\u51BB\u7ED3\u9875\u9762\u8D44\u6E90\u4E0D\u53EF\u7528\uFF08${response.status}\uFF09`);
+    if (!response.ok) throw requestFailure(`\u51BB\u7ED3\u9875\u9762\u8D44\u6E90\u4E0D\u53EF\u7528\uFF08${response.status}\uFF09`, response.status);
     const source = new DOMParser().parseFromString(await response.text(), "text/html");
     const page = source.querySelector("[data-owner-migration-page]");
     const style = source.querySelector("style");
@@ -12526,9 +12532,12 @@
   async function boot() {
     const stage = document.querySelector("[data-owner-handoff-host]");
     if (!stage) return;
+    stage.dataset.ownerHandoffInit = "mounting";
     try {
       const root = await mountFrozenDonor(stage);
+      stage.dataset.ownerHandoffInit = "donor_loaded";
       const context = await api("/api/admin/customers/owner-handoffs/context");
+      stage.dataset.ownerHandoffInit = "context_loaded";
       await installPicker(root, context.staff || []);
       query(root, '[data-owner-label="source"]').value = "";
       query(root, '[data-owner-label="target"]').value = "";
@@ -12717,8 +12726,14 @@
       updateWeComPresentation();
       reset();
       setNotice("\u51BB\u7ED3\u65E7\u9875\u5DF2\u7531 V3 Host \u6302\u8F7D\uFF1B\u539F\u8D1F\u8D23\u4EBA\u53EF\u542B\u505C\u7528\u5458\u5DE5\uFF0C\u76EE\u6807\u8D1F\u8D23\u4EBA\u53EA\u5217\u5728\u804C\u5458\u5DE5\u3002");
+      stage.dataset.ownerHandoffInit = "ready";
     } catch (error) {
-      stage.textContent = `\u8D1F\u8D23\u4EBA\u8FC1\u79FB\u9875\u9762\u4E0D\u53EF\u7528\uFF1A${error instanceof Error ? error.message : "\u672A\u77E5\u9519\u8BEF"}`;
+      const phase = stage.dataset.ownerHandoffInit || "mounting";
+      const failure = error;
+      stage.dataset.ownerHandoffInit = phase === "mounting" ? "donor_error" : phase === "donor_loaded" ? "context_error" : "host_error";
+      if (failure.httpStatus) stage.dataset.ownerHandoffInitStatus = String(failure.httpStatus);
+      else delete stage.dataset.ownerHandoffInitStatus;
+      stage.textContent = "\u8D1F\u8D23\u4EBA\u8FC1\u79FB\u9875\u9762\u4E0D\u53EF\u7528\u3002";
     }
   }
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", () => {

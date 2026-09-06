@@ -638,7 +638,7 @@ func TestRenderOwnerHandoffUsesV3StaticHostOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := response.Body.String()
-	if response.Code != http.StatusOK || strings.Count(body, `class="admin-sidebar"`) != 1 || !strings.Contains(body, `data-owner-handoff-host`) || !strings.Contains(body, `data-page="owner-handoff"`) || !strings.Contains(body, `/static/admin_console/owner_handoff_host.js`) || strings.Contains(body, `web/src/admin/`) {
+	if response.Code != http.StatusOK || strings.Count(body, `class="admin-sidebar"`) != 1 || !strings.Contains(body, `data-owner-handoff-host`) || !strings.Contains(body, `data-page="owner-handoff"`) || !strings.Contains(body, `/static/admin_console/owner_handoff_host.js`) || strings.Contains(body, `web/src/admin/`) || strings.Contains(body, `<<<<<<<`) || strings.Contains(body, `=======`) || strings.Contains(body, `>>>>>>>`) {
 		t.Fatalf("owner handoff shell mismatch status=%d body=%q", response.Code, body)
 	}
 }

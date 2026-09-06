@@ -18,6 +18,13 @@ const pickerURL = "/static/admin_console/operation_member_picker_dd8d60d.js";
 const key = () => `owner-handoff-${crypto.getRandomValues(new Uint32Array(2)).join("-")}`;
 const text = (value: unknown) => String(value ?? "").trim();
 const esc = (value: unknown) => text(value).replace(/[&<>'"]/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[char] || char));
+
+type RequestFailure = Error & { httpStatus?: number };
+const requestFailure = (message: string, status: number): RequestFailure => {
+  const error = new Error(message) as RequestFailure;
+  error.httpStatus = status;
+  return error;
+};
 let pickerLoad: Promise<SharedPicker> | undefined;
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
@@ -31,7 +38,7 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   }
   const response = await fetch(path, { credentials: "same-origin", ...init, headers });
   const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(text(body.error) || `请求失败（${response.status}）`);
+  if (!response.ok) throw requestFailure(text(body.error) || `请求失败（${response.status}）`, response.status);
   return body as T;
 }
 
@@ -40,7 +47,8 @@ function scrubFrozenServerPlaceholders(page: HTMLElement): void {
   const replacement = /\{\{[\s\S]*?\}\}|\{%[\s\S]*?%\}/g;
   [page, ...page.querySelectorAll<HTMLElement>("*")].forEach(element => {
     [...element.attributes].forEach(attribute => {
-      if (marker.test(attribute.value)) element.setAttribute(attribute.name, attribute.value.replace(replacement, ""));
+      if (marker.test(attribute.name)) element.removeAttribute(attribute.name);
+      else if (marker.test(attribute.value)) element.setAttribute(attribute.name, attribute.value.replace(replacement, ""));
     });
   });
   const walker = document.createTreeWalker(page, NodeFilter.SHOW_TEXT);
@@ -49,7 +57,7 @@ function scrubFrozenServerPlaceholders(page: HTMLElement): void {
 
 async function mountFrozenDonor(stage: HTMLElement): Promise<HTMLElement> {
   const response = await fetch(donorURL, { credentials: "same-origin" });
-  if (!response.ok) throw new Error(`冻结页面资源不可用（${response.status}）`);
+  if (!response.ok) throw requestFailure(`冻结页面资源不可用（${response.status}）`, response.status);
   const source = new DOMParser().parseFromString(await response.text(), "text/html");
   const page = source.querySelector<HTMLElement>("[data-owner-migration-page]");
   const style = source.querySelector("style");
@@ -216,9 +224,12 @@ function renderBatch(root: HTMLElement, batch: Batch): void {
 async function boot(): Promise<void> {
   const stage = document.querySelector<HTMLElement>("[data-owner-handoff-host]");
   if (!stage) return;
+  stage.dataset.ownerHandoffInit = "mounting";
   try {
     const root = await mountFrozenDonor(stage);
+    stage.dataset.ownerHandoffInit = "donor_loaded";
     const context = await api<Context>("/api/admin/customers/owner-handoffs/context");
+    stage.dataset.ownerHandoffInit = "context_loaded";
     await installPicker(root, context.staff || []);
     query<HTMLInputElement>(root, '[data-owner-label="source"]').value = "";
     query<HTMLInputElement>(root, '[data-owner-label="target"]').value = "";
@@ -366,8 +377,14 @@ async function boot(): Promise<void> {
     query<HTMLElement>(root, "[data-mode-pill]").textContent = "模式：全量迁移";
     updateWeComPresentation(); reset();
     setNotice("冻结旧页已由 V3 Host 挂载；原负责人可含停用员工，目标负责人只列在职员工。");
+    stage.dataset.ownerHandoffInit = "ready";
   } catch (error) {
-    stage.textContent = `负责人迁移页面不可用：${error instanceof Error ? error.message : "未知错误"}`;
+    const phase = stage.dataset.ownerHandoffInit || "mounting";
+    const failure = error as RequestFailure;
+    stage.dataset.ownerHandoffInit = phase === "mounting" ? "donor_error" : phase === "donor_loaded" ? "context_error" : "host_error";
+    if (failure.httpStatus) stage.dataset.ownerHandoffInitStatus = String(failure.httpStatus);
+    else delete stage.dataset.ownerHandoffInitStatus;
+    stage.textContent = "负责人迁移页面不可用。";
   }
 }
 

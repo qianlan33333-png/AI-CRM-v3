@@ -52,8 +52,22 @@ try {
   const loginNav=cdp.next("Page.frameNavigated",params=>Boolean(params.frame&&!params.frame.parentId),"login form did not navigate");
   await evaluate(`(() => { document.querySelector('input[name="username"]').value=${JSON.stringify(username)}; document.querySelector('input[name="password"]').value=${JSON.stringify(password)}; document.querySelector('form[action="/login"]').requestSubmit(); return true; })()`);
   const loginFrame=await loginNav; if(new URL(loginFrame.frame.url).pathname!=="/admin/owner-migration") throw new Error("login did not reach owner migration");
-  await waitFor("Boolean(document.querySelector('[data-owner-handoff-host] [data-owner-migration-page]'))","frozen owner-migration page did not mount after login");
-  await waitFor("(() => { const root=document.querySelector('[data-owner-handoff-host] [data-owner-migration-page]'); return root && !root.innerHTML.includes('{{') && !root.innerHTML.includes('{%') && root.querySelector('#operator').value.startsWith('管理员 #') && root.querySelector('[data-transfer-welcome-msg]').value === '您好，后续将由新的服务同事继续为您服务。' && root.querySelector('[data-include-wecom-transfer]').checked; })()","Host left server-template markers or did not initialize V3 context");
+  await waitFor("(() => { const stage=document.querySelector('[data-owner-handoff-host]'); return ['ready','donor_error','context_error','host_error'].includes(stage?.dataset.ownerHandoffInit || ''); })()", "owner handoff Host did not complete initialization");
+  const hostDiagnostic = await evaluate(`(() => {
+    const stage=document.querySelector('[data-owner-handoff-host]');
+    const root=stage?.querySelector('[data-owner-migration-page]');
+    return {
+      init: stage?.dataset.ownerHandoffInit || 'missing',
+      http_status: stage?.dataset.ownerHandoffInitStatus || '',
+      page: Boolean(root),
+      has_curly_marker: Boolean(root?.innerHTML.includes('{{')),
+      has_block_marker: Boolean(root?.innerHTML.includes('{%')),
+      operator_ready: Boolean(root?.querySelector('#operator')?.value.startsWith('管理员 #')),
+      welcome_ready: root?.querySelector('[data-transfer-welcome-msg]')?.value === '您好，后续将由新的服务同事继续为您服务。',
+      wecom_checked: Boolean(root?.querySelector('[data-include-wecom-transfer]')?.checked),
+    };
+  })()`);
+  if (hostDiagnostic.init !== 'ready' || !hostDiagnostic.page || hostDiagnostic.has_curly_marker || hostDiagnostic.has_block_marker || !hostDiagnostic.operator_ready || !hostDiagnostic.welcome_ready || !hostDiagnostic.wecom_checked) throw new Error(`owner handoff Host initialization mismatch ${JSON.stringify(hostDiagnostic)}`);
   const run=async (mode, scope=requestedScope)=>{
     await evaluate(`(() => { const root=document.querySelector('[data-owner-handoff-host] [data-owner-migration-page]'); root.querySelector('[data-owner-picker="source"]').click(); return true; })()`);
     await waitFor(`Boolean(document.querySelector('[data-operation-member-row][data-user-id="${sourceUserID}"]'))`,"source picker did not include inactive source");
