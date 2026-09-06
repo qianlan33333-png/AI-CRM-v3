@@ -75,9 +75,9 @@ func TestChannelWelcomePostgreSQLAcceptanceJourney(t *testing.T) {
 	}
 	adminID := insertChannelWelcomeAdmin(t, ctx, native)
 	states := channel.NewPostgreSQLStore()
-	ready := seedChannelWelcomeFixture(t, ctx, unit, states, digester, adminID, "ready", "welcome-ready", false, 1)
-	materialUnavailable := seedChannelWelcomeFixture(t, ctx, unit, states, digester, adminID, "material", "welcome-material", true, 1)
-	missingAsset := seedChannelWelcomeFixture(t, ctx, unit, states, digester, adminID, "missing", "welcome-missing", false, 99)
+	ready := seedChannelWelcomeFixture(t, ctx, unit, states, digester, adminID, "ready", "welcome-ready", false, 1, 0)
+	materialUnavailable := seedChannelWelcomeFixture(t, ctx, unit, states, digester, adminID, "material", "welcome-material", true, 1, 0)
+	missingAsset := seedChannelWelcomeFixture(t, ctx, unit, states, digester, adminID, "missing", "welcome-missing", false, 99, 0)
 
 	inbox, err := webhook.NewService(webhook.NewPostgreSQLStore())
 	if err != nil {
@@ -231,7 +231,7 @@ type channelWelcomeFixture struct {
 	resolution     channeldomain.StateResolution
 }
 
-func seedChannelWelcomeFixture(t *testing.T, ctx context.Context, unit *platformpostgres.UnitOfWork, states *channel.PostgreSQLStore, digester wecom.StateDigester, adminID int64, name, rawState string, material bool, assetVersion int64) channelWelcomeFixture {
+func seedChannelWelcomeFixture(t *testing.T, ctx context.Context, unit *platformpostgres.UnitOfWork, states *channel.PostgreSQLStore, digester wecom.StateDigester, adminID int64, name, rawState string, material bool, assetVersion, entryTagID int64) channelWelcomeFixture {
 	t.Helper()
 	var channelID int64
 	if err := unit.Within(ctx, func(tx context.Context) error {
@@ -247,7 +247,7 @@ func seedChannelWelcomeFixture(t *testing.T, ctx context.Context, unit *platform
 		if material {
 			images = []int64{1}
 		}
-		if _, transactionErr = transaction.Exec(tx, `INSERT INTO channel_config_versions(channel_id,config_version,channel_type,carrier_type,name,welcome_message,welcome_image_ids,assignment_mode,assignment_strategy,config_digest,created_by,created_at) VALUES($1,1,'qrcode','qrcode',$2,'welcome',$3,'single_owner','ratio',$4,$5,clock_timestamp())`, channelID, "Welcome "+name, images, digest[:], adminID); transactionErr != nil {
+		if _, transactionErr = transaction.Exec(tx, `INSERT INTO channel_config_versions(channel_id,config_version,channel_type,carrier_type,name,welcome_message,welcome_image_ids,entry_tag_id,assignment_mode,assignment_strategy,config_digest,created_by,created_at) VALUES($1,1,'qrcode','qrcode',$2,'welcome',$3,NULLIF($4,0),'single_owner','ratio',$5,$6,clock_timestamp())`, channelID, "Welcome "+name, images, entryTagID, digest[:], adminID); transactionErr != nil {
 			return transactionErr
 		}
 		if _, transactionErr = transaction.Exec(tx, `INSERT INTO channel_assignees(channel_id,config_version,staff_id,priority,ratio_percent,created_at) VALUES($1,1,$2,1,100,clock_timestamp())`, channelID, adminID); transactionErr != nil {
@@ -438,10 +438,7 @@ func TestChannelEntrantBusyTagCommandKeepsAssignmentAndRecordsRejectedActionPost
 	}
 	adminID := insertChannelWelcomeAdmin(t, ctx, native)
 	states := channel.NewPostgreSQLStore()
-	ready := seedChannelWelcomeFixture(t, ctx, unit, states, digester, adminID, "tag-busy", "tag-busy-state", false, 1)
-	if _, err = native.Exec(ctx, `UPDATE channel_config_versions SET entry_tag_id=7 WHERE channel_id=$1 AND config_version=1`, ready.resolution.Asset.ChannelID); err != nil {
-		t.Fatal(err)
-	}
+	ready := seedChannelWelcomeFixture(t, ctx, unit, states, digester, adminID, "tag-busy", "tag-busy-state", false, 1, 7)
 	var customerID int64
 	if err = native.QueryRow(ctx, `INSERT INTO customers(status) VALUES('active') RETURNING id`).Scan(&customerID); err != nil {
 		t.Fatal(err)

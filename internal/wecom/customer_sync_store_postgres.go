@@ -93,7 +93,7 @@ func (PostgreSQLCustomerSyncStore) List(ctx context.Context, limit int) ([]Custo
 	rows, err := tx.Query(ctx, `SELECT id,run_key,trigger_type,status,COALESCE(resume_status,''),corp_scope,staff_ids,staff_index,provider_cursor,
 		discovered_count,activated_count,already_linked_count,conflict_count,terminal_failed_count,projected_count,stale_count,
 		version,COALESCE(last_error_code,''),COALESCE(requested_by,0),started_at,completed_at,created_at,updated_at
-		FROM wecom_customer_sync_runs ORDER BY created_at DESC,id DESC LIMIT $1`, limit)
+		FROM wecom_customer_sync_runs WHERE trigger_type IN ('initial','daily','manual') ORDER BY created_at DESC,id DESC LIMIT $1`, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -209,6 +209,19 @@ func (PostgreSQLCustomerSyncStore) UpsertProfileObservations(ctx context.Context
 			customerID, corpScope, employeeID, runID, observedAt.UTC()); err != nil {
 			return err
 		}
+		// A single-contact refresh with a later Provider read is a newer
+		// complete observation for this customer/employee. Compare the actual
+		// page read time, not this run's start time: a full run can legitimately
+		// obtain a later page after the refresh.
+		var refreshedAfterPage bool
+		if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM wecom_customer_tag_refresh_watermarks watermark
+			WHERE watermark.customer_id=$1 AND watermark.corp_scope=$2 AND watermark.employee_id=$3
+			AND watermark.observed_at > $4)`, customerID, corpScope, employeeID, observedAt.UTC()).Scan(&refreshedAfterPage); err != nil {
+			return err
+		}
+		if refreshedAfterPage {
+			continue
+		}
 		seenTags := map[string]struct{}{}
 		for _, tag := range follow.Tags {
 			if tag.ProviderTagID == "" || tag.Type < 1 || tag.Type > 2 {
@@ -284,9 +297,14 @@ func (PostgreSQLCustomerSyncStore) ReconcileProfileObservations(ctx context.Cont
 		AND last_seen_run_id<>$1 AND relationship_status='active'`, runID, at.UTC()); err != nil {
 		return err
 	}
-	_, err = tx.Exec(ctx, `UPDATE wecom_customer_tag_observations SET observation_status='stale',stale_at=$2,updated_at=$2
-		WHERE corp_scope=(SELECT corp_scope FROM wecom_customer_sync_runs WHERE id=$1)
-		AND last_seen_run_id<>$1 AND observation_status='active'`, runID, at.UTC())
+	_, err = tx.Exec(ctx, `UPDATE wecom_customer_tag_observations observation SET observation_status='stale',stale_at=$2,updated_at=$2
+		WHERE observation.corp_scope=(SELECT corp_scope FROM wecom_customer_sync_runs WHERE id=$1)
+		AND observation.last_seen_run_id<>$1 AND observation.observation_status='active'
+		AND NOT EXISTS (SELECT 1 FROM wecom_customer_tag_refresh_watermarks watermark
+			JOIN wecom_customer_sync_runs run ON run.id=$1
+			WHERE watermark.customer_id=observation.customer_id AND watermark.corp_scope=observation.corp_scope
+			AND watermark.employee_id=observation.employee_id
+			AND watermark.observed_at > COALESCE(run.started_at,run.created_at))`, runID, at.UTC())
 	return err
 }
 
@@ -547,6 +565,16 @@ func (PostgreSQLCustomerSyncStore) RecordCustomerTagRefresh(ctx context.Context,
 		VALUES($1,'tag_refresh','succeeded',$2,jsonb_build_array($3),$4) RETURNING id`, runKey, corpScope, employeeID, observedAt.UTC()).Scan(&runID)
 	if err != nil {
 		return err
+	}
+	watermark, err := tx.Exec(ctx, `INSERT INTO wecom_customer_tag_refresh_watermarks(customer_id,corp_scope,employee_id,last_seen_run_id,observed_at)
+		VALUES($1,$2,$3,$4,$5) ON CONFLICT(customer_id,corp_scope,employee_id) DO UPDATE SET
+		last_seen_run_id=EXCLUDED.last_seen_run_id,observed_at=EXCLUDED.observed_at,updated_at=clock_timestamp()
+		WHERE wecom_customer_tag_refresh_watermarks.observed_at <= EXCLUDED.observed_at`, customerID, corpScope, employeeID, runID, observedAt.UTC())
+	if err != nil {
+		return err
+	}
+	if watermark.RowsAffected() != 1 {
+		return nil
 	}
 	if _, err = tx.Exec(ctx, `UPDATE wecom_customer_tag_observations SET observation_status='stale',stale_at=$4,updated_at=$4
 		WHERE customer_id=$1 AND corp_scope=$2 AND employee_id=$3 AND observation_status='active'`, customerID, corpScope, employeeID, observedAt.UTC()); err != nil {

@@ -173,7 +173,7 @@ func newChannelWelcomeRuntimeFixture(t *testing.T) *channelWelcomeRuntimeFixture
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	adminID := insertChannelWelcomeAdmin(t, ctx, native)
 	states := channel.NewPostgreSQLStore()
-	ready := seedChannelWelcomeFixture(t, ctx, unit, states, digester, adminID, "runtime", "welcome-runtime", false, 1)
+	ready := seedChannelWelcomeFixture(t, ctx, unit, states, digester, adminID, "runtime", "welcome-runtime", false, 1, 0)
 	inbox, err := webhook.NewService(webhook.NewPostgreSQLStore())
 	if err != nil {
 		cancel()

@@ -141,6 +141,24 @@ func (r *Repository) ProviderTagID(ctx context.Context, localTagID int64) (strin
 	}
 	return providerID, true, nil
 }
+func (r *Repository) LocalTagID(ctx context.Context, providerTagID string) (int64, bool, error) {
+	if providerTagID == "" {
+		return 0, false, ErrInvalid
+	}
+	t, err := platformpostgres.RequireTransaction(ctx)
+	if err != nil {
+		return 0, false, err
+	}
+	var localID int64
+	err = t.QueryRow(ctx, `SELECT binding.tag_id FROM tag_provider_tag_bindings binding
+		JOIN tag_catalog_tags tag ON tag.id=binding.tag_id AND tag.archived_at IS NULL
+		WHERE binding.provider_tag_id=$1`, providerTagID).Scan(&localID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, false, nil
+	}
+	return localID, err == nil, err
+}
+
 func (r *Repository) GetGroup(ctx context.Context, id int64) (domain.Group, error) {
 	tx, err := transaction(ctx)
 	if err != nil {

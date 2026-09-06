@@ -42,6 +42,20 @@ CREATE TABLE customer_tag_command_lines (
 CREATE INDEX customer_tag_command_lines_customer_idx ON customer_tag_command_lines(customer_id, created_at DESC, id DESC);
 CREATE INDEX customer_tag_command_lines_effect_idx ON customer_tag_command_lines(effect_ref);
 
+-- Owner: internal/wecom. A completed single-contact tag read is a complete
+-- observation for that customer/employee, including the valid empty set. The
+-- watermark prevents an older full-directory run from replacing or staling it.
+CREATE TABLE wecom_customer_tag_refresh_watermarks (
+    customer_id BIGINT NOT NULL REFERENCES customers(id) ON DELETE RESTRICT,
+    corp_scope TEXT NOT NULL CHECK (left(corp_scope, 11) = 'wecom-corp:'),
+    employee_id TEXT NOT NULL CHECK (employee_id = btrim(employee_id) AND char_length(employee_id) BETWEEN 1 AND 1024 AND employee_id !~ '[[:cntrl:]]'),
+    last_seen_run_id BIGINT NOT NULL REFERENCES wecom_customer_sync_runs(id) ON DELETE RESTRICT,
+    observed_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY(customer_id, corp_scope, employee_id)
+);
+CREATE INDEX wecom_customer_tag_refresh_watermarks_run_idx ON wecom_customer_tag_refresh_watermarks(last_seen_run_id, observed_at);
+
 
 -- A single-contact observation read is not a full directory reconciliation.
 -- It keeps the existing run provenance foreign key while a later completed
@@ -86,3 +100,44 @@ ALTER TABLE IF EXISTS channel_entrant_actions ADD CONSTRAINT channel_entrant_act
   (state='rejected' AND effect_ref IS NULL AND accept_receipt_ref IS NULL AND queue_receipt_ref IS NULL)
   OR (state<>'rejected' AND effect_ref IS NOT NULL AND accept_receipt_ref IS NOT NULL AND queue_receipt_ref IS NOT NULL)
 );
+
+-- Owner: internal/customer. Imported legacy effect records are immutable
+-- history receipts only. They deliberately do not point at current commands,
+-- external effects, River jobs, or raw Provider identifiers.
+CREATE TABLE customer_tag_history_import_batches (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    source_system TEXT NOT NULL CHECK (source_system = 'v2_external_effect_job'),
+    snapshot_digest TEXT NOT NULL CHECK (snapshot_digest ~ '^sha256:[0-9a-f]{64}$'),
+    snapshot_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    CONSTRAINT customer_tag_history_import_batches_source_snapshot UNIQUE(source_system, snapshot_digest)
+);
+CREATE TABLE customer_tag_history_receipts (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    batch_id BIGINT NOT NULL REFERENCES customer_tag_history_import_batches(id) ON DELETE RESTRICT,
+    source_system TEXT NOT NULL CHECK (source_system = 'v2_external_effect_job'),
+    source_job_id BIGINT NOT NULL CHECK (source_job_id > 0),
+    source_digest TEXT NOT NULL CHECK (source_digest ~ '^sha256:[0-9a-f]{64}$'),
+    effect_type TEXT NOT NULL CHECK (effect_type IN ('wecom.contact.tag.mark','wecom.contact.tag.unmark')),
+    operation TEXT NOT NULL CHECK (operation IN ('tag_mark','tag_unmark')),
+    source_state TEXT NOT NULL CHECK (source_state ~ '^[a-z][a-z0-9_]{0,63}$'),
+    resolution TEXT NOT NULL CHECK (resolution IN ('imported','pending','conflict','excluded','failed')),
+    reason TEXT NULL CHECK (reason IS NULL OR reason ~ '^[a-z][a-z0-9_]{0,63}$'),
+    customer_id BIGINT NULL REFERENCES customers(id) ON DELETE RESTRICT,
+    staff_id BIGINT NULL REFERENCES admin_users(id) ON DELETE RESTRICT,
+    add_tag_ids BIGINT[] NOT NULL DEFAULT '{}' CHECK (cardinality(add_tag_ids) <= 100),
+    remove_tag_ids BIGINT[] NOT NULL DEFAULT '{}' CHECK (cardinality(remove_tag_ids) <= 100),
+    occurred_at TIMESTAMPTZ NOT NULL,
+    completed_at TIMESTAMPTZ NULL,
+    imported_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    CONSTRAINT customer_tag_history_receipts_source_unique UNIQUE(source_system, source_job_id),
+    CONSTRAINT customer_tag_history_receipts_mutation_shape CHECK (
+       (effect_type='wecom.contact.tag.mark' AND operation='tag_mark' AND cardinality(remove_tag_ids)=0)
+       OR (effect_type='wecom.contact.tag.unmark' AND operation='tag_unmark' AND cardinality(add_tag_ids)=0)
+    ),
+    CONSTRAINT customer_tag_history_receipts_resolution_shape CHECK (
+       (resolution='imported' AND customer_id IS NOT NULL AND cardinality(add_tag_ids)+cardinality(remove_tag_ids)>0)
+       OR (resolution<>'imported')
+    )
+);
+CREATE INDEX customer_tag_history_receipts_customer_idx ON customer_tag_history_receipts(customer_id, occurred_at DESC, id DESC) WHERE customer_id IS NOT NULL;

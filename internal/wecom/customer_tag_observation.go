@@ -36,6 +36,14 @@ func (service CustomerTagObservationService) RefreshCustomerTagObservation(ctx c
 	if !service.Enabled || service.CorpID == "" || service.Provider == nil || service.Store == nil || service.UOW == nil || effectRef == "" || customerID < 1 || employeeID == "" || externalUserID == "" {
 		return ErrCustomerTagObservationUnavailable
 	}
+	// Capture the observation time before the network read. Two independent
+	// readbacks can return out of order; using the completion time would let an
+	// older Provider response that was delayed in transit overwrite a newer
+	// observed contact state.
+	observedAt := time.Now().UTC()
+	if service.Now != nil {
+		observedAt = service.Now().UTC()
+	}
 	contact, err := service.Provider.ReadExternalContact(ctx, externalUserID)
 	if err != nil {
 		return err
@@ -55,16 +63,12 @@ func (service CustomerTagObservationService) RefreshCustomerTagObservation(ctx c
 	if !found {
 		return ErrCustomerTagObservationUnavailable
 	}
-	now := time.Now().UTC()
-	if service.Now != nil {
-		now = service.Now().UTC()
-	}
 	// The immutable effect reference supplies the run identity; the persisted key
 	// never retains the Provider contact or employee identifier.
 	sum := sha256.Sum256([]byte("wecom.tag.refresh.v1\x00" + effectRef))
 	key := "tag-refresh:" + hex.EncodeToString(sum[:])
 	return service.UOW.Within(ctx, func(tx context.Context) error {
-		return service.Store.RecordCustomerTagRefresh(tx, "wecom-corp:"+service.CorpID, customerID, employeeID, tags, now, key)
+		return service.Store.RecordCustomerTagRefresh(tx, "wecom-corp:"+service.CorpID, customerID, employeeID, tags, observedAt, key)
 	})
 }
 
