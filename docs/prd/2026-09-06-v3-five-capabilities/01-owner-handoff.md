@@ -48,3 +48,5 @@ local_only 分段 UoW 同时 CAS关系/结果/收据/审计/Outbox。Provider �
 交付源码、浏览器/协议/真实PG证据和PR准确HEAD，真实企微验收独立部署待办；不可只交骨架或本地模式。
 
 补充旧行为：application.py:419-434只要求目标员工active，源员工须存在但可停用；本地交接不因源停用被拦。Provider模式按原转接协议的适用条件处理，禁止自动换成离职继承API。
+
+受理与本地交接的精确语义：旧application.py:985-1056以transfer_customer逐客户明确errcode=0作为更新本地CRM的条件，不等待24小时最终接替。V3以经过精确客户/冻结摘要核验的Provider受理证据触发一次本地CAS，显示“本地已交接、企微已受理、最终接替待回查”。transfer_result和后续关系观察单独回读，不能把本地更新拖延到最终接替，也不能把最终观察伪称即时成功。

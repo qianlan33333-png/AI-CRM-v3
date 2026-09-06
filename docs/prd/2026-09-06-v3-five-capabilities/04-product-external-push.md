@@ -52,3 +52,5 @@ HTTPS仅受控登记目标：禁止credentials/fragment/非HTTPS/非法端口、
 - P04 目标限制/重定向/DNS/密钥日志检查；未知结果不盲重试，进程重启保留原ID。
 - P05 payer/beneficiary分开，unresolved不猜；历史导入/已支付回放零新效果且逐行可对账。
 - P06 页面真实accepted/attempted/响应/unknown显示，disabled不伪成功；真实Provider验收单列生产待办。
+
+付款人/受益人字段映射细化：复用Order现有PayerCustomerID和BeneficiaryCustomerID。旧支付开通会员业务的顶层phone_number从受益人可信电话快照产生（与Order服务权益开通对象一致）；buyer对象从付款人可信scoped身份产生，不将两人拼成一个身份。旧自购场景二者相同，字段兼容；代付fixture明确断言顶层服务对象不因付款人不同而错开权益。缺可信所需字段按已定pending/拒绝规则，不从metadata猜测。
