@@ -53,21 +53,25 @@ class CDP {
       this.socket.send(JSON.stringify({ id, method, params }));
     });
   }
+  on(method, listener) {
+    const listeners = this.events.get(method) || [];
+    listeners.push(listener);
+    this.events.set(method, listeners);
+    return () => this.events.set(method, (this.events.get(method) || []).filter((candidate) => candidate !== listener));
+  }
   nextEvent(method, predicate, timeoutMilliseconds, timeoutMessage) {
     return new Promise((resolve, reject) => {
-      const listeners = this.events.get(method) || [];
-      const listener = (params) => {
-        if (!predicate(params)) return;
-        clearTimeout(timer);
-        this.events.set(method, listeners.filter((candidate) => candidate !== listener));
-        resolve(params);
-      };
+      let unsubscribe = () => {};
       const timer = setTimeout(() => {
-        this.events.set(method, listeners.filter((candidate) => candidate !== listener));
+        unsubscribe();
         reject(new Error(timeoutMessage));
       }, timeoutMilliseconds);
-      listeners.push(listener);
-      this.events.set(method, listeners);
+      unsubscribe = this.on(method, (params) => {
+        if (!predicate(params)) return;
+        clearTimeout(timer);
+        unsubscribe();
+        resolve(params);
+      });
     });
   }
   close() {
@@ -113,6 +117,19 @@ const waitForTopLevelNavigation = (cdp, message) => cdp.nextEvent(
   message,
 );
 
+const releaseHostDiagnostics = async (cdp, runtimeExceptions, responseStatuses) => {
+  const markers = await evaluate(cdp, `(() => ({
+    path: location.pathname,
+    host: Boolean(document.querySelector('[data-runtime-release-host]')),
+    draft: Boolean(document.querySelector('[data-runtime-release-create]')),
+    error: document.querySelector('[data-runtime-release-status]')?.className || ''
+  }))()`);
+  const resources = ["/static/admin_console/runtime_config_releases_host.js", "/api/admin/config/runtime-releases"]
+    .map((pathname) => `${pathname}:${responseStatuses.get(pathname) || "unseen"}`).join(",");
+  const exceptions = runtimeExceptions.length ? runtimeExceptions.join(",") : "none";
+  return `path=${markers?.path || "unavailable"} host=${Boolean(markers?.host)} draft=${Boolean(markers?.draft)} page_error_class=${markers?.error || "none"} resources=${resources} runtime_exceptions=${exceptions}`;
+};
+
 const waitForBrowserExit = async (child, timeoutMilliseconds) => {
   if (!child || child.exitCode !== null || child.signalCode !== null) return true;
   return new Promise((resolve) => {
@@ -156,6 +173,22 @@ try {
   cdp = new CDP(socket);
   await cdp.call("Page.enable");
   await cdp.call("Runtime.enable");
+  await cdp.call("Network.enable");
+  const runtimeExceptions = [];
+  const responseStatuses = new Map();
+  cdp.on("Runtime.exceptionThrown", (params) => {
+    const details = params.exceptionDetails || {};
+    const kind = String(details.exception?.className || details.text || "runtime_exception").replace(/[^a-zA-Z0-9_.-]/g, "_").slice(0, 96);
+    if (kind && runtimeExceptions.length < 8) runtimeExceptions.push(kind);
+  });
+  cdp.on("Network.responseReceived", (params) => {
+    try {
+      const pathname = new URL(String(params.response?.url || "")).pathname;
+      if (pathname === "/static/admin_console/runtime_config_releases_host.js" || pathname === "/api/admin/config/runtime-releases") {
+        responseStatuses.set(pathname, Number(params.response?.status) || 0);
+      }
+    } catch (_) {}
+  });
 
   await cdp.call("Page.navigate", { url: `${baseURL}/login?next=%2Fadmin%2Fconfig%2Freleases%2Fnew` });
   await waitFor(cdp, "Boolean(document.querySelector('form[action=\"/login\"] input[name=\"login_csrf_token\"]'))", "login shell did not render");
@@ -172,7 +205,11 @@ try {
   const snapshot = () => evaluate(cdp, "fetch('/api/admin/config/runtime-releases', {credentials:'same-origin'}).then((response) => response.ok ? response.json() : null).then((body) => ({revision: body?.runtime_releases?.active_revision, limit: body?.runtime_releases?.effective?.automation_max_recipients_per_run}))");
   const releasePath = (id) => `/admin/config/releases/${id}`;
   const publish = async (limit, ordinal) => {
-    await waitFor(cdp, "location.pathname === '/admin/config/releases/new' && Boolean(document.querySelector('[data-runtime-release-create] button[type=submit]:not([disabled])'))", `authenticated Config shell and Host did not render release ${ordinal}`);
+    try {
+      await waitFor(cdp, "location.pathname === '/admin/config/releases/new' && Boolean(document.querySelector('[data-runtime-release-create] button[type=submit]:not([disabled])'))", `authenticated Config shell and Host did not render release ${ordinal}`);
+    } catch (_) {
+      throw new Error(`authenticated Config shell and Host did not render release ${ordinal}: ${await releaseHostDiagnostics(cdp, runtimeExceptions, responseStatuses)}`);
+    }
     await evaluate(cdp, `(() => {
       const form = document.querySelector('[data-runtime-release-create]');
       form.querySelector('[name="max_recipients"]').value = ${JSON.stringify(String(limit))};
@@ -195,10 +232,8 @@ try {
     await waitFor(cdp, `location.pathname === ${JSON.stringify(releasePath(id))} && document.querySelector('[data-runtime-release-rollback]')?.dataset.runtimeReleaseRollback === ${JSON.stringify(String(id))}`, `release ${id} detail did not render after navigation`);
   };
 
-  // Native login has issued the real Secure session and CSRF cookies. Navigate
-  // once more only after its redirect completes so a deferred Host resource
-  // cannot be sampled from the pre-redirect document.
-  await cdp.call("Page.navigate", { url: `${baseURL}/admin/config/releases/new` });
+  // The first authenticated redirect must itself load the Host. A second
+  // navigation would hide a broken login-to-Config route from this journey.
   const firstReleaseID = await publish(2, 1);
   await cdp.call("Page.navigate", { url: `${baseURL}/admin/config/releases/new` });
   const secondReleaseID = await publish(3, 2);
