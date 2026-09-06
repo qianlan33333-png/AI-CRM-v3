@@ -24,11 +24,13 @@ type ProductAppend struct {
 	Products             []Product `json:"products"`
 }
 
-// NewProductAppend selects exactly three active, non-service-period product
-// rows from a valid 31-product baseline. The target never receives product
-// fields from flags or ordinary HTTP input.
+// NewProductAppend selects exactly three explicitly approved active,
+// non-service-period product rows from a structurally valid full snapshot.
+// It deliberately does not impose the one-time all-definition 31-product
+// baseline: that baseline belongs only to the original full import. The target
+// never receives product fields from flags or ordinary HTTP input.
 func NewProductAppend(snapshot Snapshot, sourceProductIDs []int64) (ProductAppend, [sha256.Size]byte, error) {
-	if snapshot.Validate() != nil || ValidateExpectedBaseline(snapshot) != nil || len(sourceProductIDs) != 3 {
+	if snapshot.Validate() != nil || len(sourceProductIDs) != 3 {
 		return ProductAppend{}, [sha256.Size]byte{}, ErrInvalidSnapshot
 	}
 	_, sourceDigest, err := snapshot.Canonical()
