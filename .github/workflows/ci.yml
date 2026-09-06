@@ -120,6 +120,7 @@ jobs:
           node scripts/build-v3-host-adapters.mjs
           node scripts/operation-cycles-shell-e2e.mjs
           node scripts/ai-assistant-shell-e2e.mjs
+          TZ=Asia/Shanghai node scripts/open-platform-host-e2e.mjs
           mkdir -p release
           node scripts/stage-pr01-effects-ui.mjs web/dist release/web/dist
           node scripts/test-stage-pr01-effects-ui.mjs
@@ -261,6 +262,7 @@ jobs:
           node scripts/build-v3-host-adapters.mjs
           node scripts/operation-cycles-shell-e2e.mjs
           node scripts/ai-assistant-shell-e2e.mjs
+          TZ=Asia/Shanghai node scripts/open-platform-host-e2e.mjs
           cp -R migrations deploy release/
           node scripts/stage-pr01-effects-ui.mjs web/dist release/web/dist
           node scripts/test-stage-pr01-effects-ui.mjs

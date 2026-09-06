@@ -13,6 +13,7 @@ import (
 
 	accessapp "github.com/qianlan33333-png/AI-CRM-v3/internal/access/app"
 	platformconfig "github.com/qianlan33333-png/AI-CRM-v3/internal/platform/config"
+	"github.com/qianlan33333-png/AI-CRM-v3/internal/wecom"
 )
 
 // TestPostgreSQLSidebarBootstrapUsesBoundedSurveyReadAndActualTotal proves the
@@ -60,6 +61,23 @@ func TestPostgreSQLSidebarBootstrapUsesBoundedSurveyReadAndActualTotal(t *testin
 	}
 	if err = seedSidebarBootstrapSurveySubmissions(ctx, application); err != nil {
 		t.Fatal(err)
+	}
+	// Exercise every projection independently with the same signed context
+	// bootstrap will mint. If the aggregate bootstrap fails, this keeps the
+	// integration failure attached to its owning Port rather than reducing it
+	// to the intentionally non-sensitive section_unavailable response.
+	contextToken, err := (wecom.ContextTokenService{CorpID: "fixture-corp", SigningKey: []byte("sidebar-bootstrap-context-key-32")}).Issue(ctx, wecom.SidebarPrincipal{CorpID: "fixture-corp", EmployeeID: "fixture-staff"}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"/api/sidebar/v2/workbench", "/api/sidebar/v2/questionnaires", "/api/sidebar/v2/orders", "/api/sidebar/v2/periodic-orders", "/api/sidebar/v2/materials"} {
+		sectionRequest := httptest.NewRequest(http.MethodGet, path, nil)
+		sectionRequest.Header.Set("X-Sidebar-Context-Token", contextToken)
+		sectionResponse := httptest.NewRecorder()
+		application.handler.ServeHTTP(sectionResponse, sectionRequest)
+		if sectionResponse.Code != http.StatusOK {
+			t.Fatalf("sidebar section %s status=%d body=%s", path, sectionResponse.Code, sectionResponse.Body.String())
+		}
 	}
 
 	issued, err := application.authentication.LoginWithWeComUserID(ctx, accessapp.WeComLoginCommand{WeComUserID: "fixture-staff", Remote: "sidebar-bootstrap-survey-total"})

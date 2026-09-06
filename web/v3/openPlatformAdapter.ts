@@ -76,8 +76,8 @@ function button(label: string, onClick: () => void | Promise<void>, kind = 'seco
   return node;
 }
 
-function field(label: string, input: HTMLElement, note?: string): HTMLLabelElement {
-  const wrapper = element('label');
+function field(label: string, input: HTMLElement, note?: string): HTMLDivElement {
+  const wrapper = element('div');
   wrapper.className = 'open-platform-field';
   const heading = element('span', label);
   heading.className = 'open-platform-field-label';
@@ -131,6 +131,11 @@ function cidrs(value: string): string[] {
   return value.split(/[\n,]/).map((item) => item.trim()).filter(Boolean);
 }
 
+function validTTL(value: string): number | undefined {
+  const ttl = Number(value.trim());
+  return Number.isInteger(ttl) && ttl >= 60 && ttl <= 3600 ? ttl : undefined;
+}
+
 function safeOwnerScope(value: string): Record<string, string[]> | null {
   const source = value.trim();
   if (!source) return null;
@@ -155,6 +160,21 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     throw new Error(code);
   }
   return body as T;
+}
+
+function dateTimeLocalValue(value?: string): string {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.valueOf())) return '';
+  const pad = (part: number): string => String(part).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
+function unchangedDateTimeLocal(value: string, initial: string): boolean {
+  if (!value || !initial) return false;
+  const current = new Date(value).valueOf();
+  const original = new Date(initial).valueOf();
+  return !Number.isNaN(current) && current === original;
 }
 
 function formatTime(value?: string): string {
@@ -185,7 +205,7 @@ function setStatus(node: HTMLElement, message = '', error = false): void {
   node.dataset.error = String(error);
 }
 
-function secretDialog(issued: IssuedSecret, onActivate: () => Promise<void>, onClose: () => void): HTMLDialogElement {
+function secretDialog(issued: IssuedSecret, onActivate: () => Promise<void>, onClose: () => void | Promise<void>): HTMLDialogElement {
   const dialog = document.createElement('dialog');
   dialog.className = 'open-platform-dialog';
   dialog.dataset.openPlatformSecret = issued.clientID;
@@ -201,21 +221,34 @@ function secretDialog(issued: IssuedSecret, onActivate: () => Promise<void>, onC
   body.append(message);
   const actions = element('div');
   actions.className = 'open-platform-actions';
-  actions.append(button('复制并确认启用', async () => {
+  const activate = async (): Promise<void> => {
     try {
-      if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(issued.secret);
       await onActivate();
       dialog.close();
     } catch {
-      setStatus(message, '未能完成确认；密钥尚未启用。', true);
+      setStatus(message, '确认未完成；调用方仍保持停用。', true);
     }
+  };
+  actions.append(button('复制并确认启用', async () => {
+    if (!navigator.clipboard || typeof navigator.clipboard.writeText !== 'function') {
+      setStatus(message, '当前浏览器无法安全复制；请手动复制后再确认启用。', true);
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(issued.secret);
+    } catch {
+      setStatus(message, '复制失败；调用方仍保持停用。', true);
+      return;
+    }
+    await activate();
   }, 'primary'));
+  actions.append(button('我已手动复制并确认启用', activate));
   actions.append(button('关闭并清除密钥', () => dialog.close()));
   body.append(actions);
   dialog.append(body);
   dialog.addEventListener('close', () => {
     secret.textContent = '';
-    onClose();
+    void Promise.resolve(onClose());
     dialog.remove();
   }, { once: true });
   document.body.append(dialog);
@@ -229,6 +262,7 @@ async function boot(): Promise<void> {
   if (!stage) return;
   const query = new URLSearchParams(window.location.search);
   let selectedID = query.get('client') || '';
+  let selectedClient: ClientSummary | undefined;
   let clients: ClientSummary[] = [];
   let catalog: OperationDescriptor[] = [];
   let issued: IssuedSecret | null = null;
@@ -239,6 +273,23 @@ async function boot(): Promise<void> {
   root.className = 'open-platform-root';
   root.dataset.openPlatformHost = 'v1';
   stage.append(root);
+
+  const loadSelected = async (): Promise<void> => {
+    const clientID = selectedID;
+    selectedClient = undefined;
+    render();
+    if (!clientID) return;
+    try {
+      const detail = await request<{ client: ClientSummary }>(`/api/admin/open-platform/clients/${encodeURIComponent(clientID)}`);
+      if (selectedID !== clientID) return;
+      selectedClient = detail.client;
+      render();
+    } catch {
+      if (selectedID !== clientID) return;
+      selectedClient = undefined;
+      render();
+    }
+  };
 
   const refresh = async (): Promise<void> => {
     root.replaceChildren();
@@ -253,7 +304,7 @@ async function boot(): Promise<void> {
       clients = clientResult.items || [];
       catalog = catalogResult.items || [];
       if (!selectedID && clients.length) selectedID = clients[0].client_id;
-      render();
+      await loadSelected();
     } catch {
       root.replaceChildren(element('p', '开放平台管理暂不可用。'));
     }
@@ -264,7 +315,7 @@ async function boot(): Promise<void> {
     const next = new URL(window.location.href);
     next.searchParams.set('client', id);
     window.history.replaceState({}, '', next);
-    render();
+    void loadSelected();
   };
 
   const showIssuedSecret = (result: { client: ClientSummary; secret: string }): void => {
@@ -276,7 +327,7 @@ async function boot(): Promise<void> {
       });
       issued = null;
       await refresh();
-    }, () => { issued = null; });
+    }, async () => { issued = null; await refresh(); });
   };
 
   const renderCreate = (): HTMLElement => {
@@ -287,7 +338,7 @@ async function boot(): Promise<void> {
     form.className = 'open-platform-form';
     const clientID = textInput(); clientID.autocomplete = 'off'; clientID.dataset.openPlatformCreate = 'client_id';
     const displayName = textInput(); displayName.dataset.openPlatformCreate = 'display_name';
-    const ttl = textInput('1800', 'number'); ttl.min = '60'; ttl.max = '86400'; ttl.dataset.openPlatformCreate = 'token_ttl_seconds';
+    const ttl = textInput('1800', 'number'); ttl.min = '60'; ttl.max = '3600'; ttl.dataset.openPlatformCreate = 'token_ttl_seconds';
     const ips = textArea(); ips.dataset.openPlatformCreate = 'allowed_cidrs';
     const capabilities = exactV1Capabilities(catalog);
     form.append(
@@ -302,8 +353,8 @@ async function boot(): Promise<void> {
     form.append(message, button('创建并显示一次密钥', async () => {
       const scopes = checkedValues(form, 'create-scope');
       const granted = checkedValues(form, 'create-capability');
-      const ttlSeconds = Number.parseInt(ttl.value, 10);
-      if (!clientID.value.trim() || !displayName.value.trim() || !Number.isSafeInteger(ttlSeconds) || scopes.length === 0 || granted.length === 0) {
+      const ttlSeconds = validTTL(ttl.value);
+      if (!clientID.value.trim() || !displayName.value.trim() || ttlSeconds === undefined || scopes.length === 0 || granted.length === 0) {
         setStatus(message, '请填写调用方、TTL，并至少选择一项 scope 与能力。', true);
         return;
       }
@@ -339,10 +390,12 @@ async function boot(): Promise<void> {
     card.append(summary);
     const form = element('form'); form.className = 'open-platform-form';
     const displayName = textInput(client.display_name); displayName.dataset.openPlatformEdit = 'display_name';
-    const ttl = textInput(String(client.token_ttl_seconds), 'number'); ttl.min = '60'; ttl.max = '86400'; ttl.dataset.openPlatformEdit = 'token_ttl_seconds';
+    const ttl = textInput(String(client.token_ttl_seconds), 'number'); ttl.min = '60'; ttl.max = '3600'; ttl.dataset.openPlatformEdit = 'token_ttl_seconds';
     const ips = textArea(client.allowed_cidrs.join('\n')); ips.dataset.openPlatformEdit = 'allowed_cidrs';
     const capabilityValues = exactV1Capabilities(catalog);
-    const expires = textInput(client.expires_at ? client.expires_at.slice(0, 16) : '', 'datetime-local'); expires.dataset.openPlatformEdit = 'expires_at';
+    const initialExpiresAt = client.expires_at;
+    const initialExpiresLocal = dateTimeLocalValue(initialExpiresAt);
+    const expires = textInput(initialExpiresLocal, 'datetime-local'); expires.step = '1'; expires.dataset.openPlatformEdit = 'expires_at';
     const ownerScope = textArea(client.owner_scope && Object.keys(client.owner_scope).length ? JSON.stringify(client.owner_scope, null, 2) : ''); ownerScope.dataset.openPlatformEdit = 'owner_scope';
     form.append(
       field('显示名称', displayName), field('Token TTL（秒）', ttl), field('来源 CIDR（可留空）', ips),
@@ -356,8 +409,8 @@ async function boot(): Promise<void> {
     actions.append(button('保存授权', async () => {
       const scopes = checkedValues(form, 'edit-scope');
       const granted = checkedValues(form, 'edit-capability');
-      const ttlSeconds = Number.parseInt(ttl.value, 10);
-      if (!displayName.value.trim() || !Number.isSafeInteger(ttlSeconds) || scopes.length === 0 || granted.length === 0) {
+      const ttlSeconds = validTTL(ttl.value);
+      if (!displayName.value.trim() || ttlSeconds === undefined || scopes.length === 0 || granted.length === 0) {
         setStatus(message, '请保留显示名称、TTL、scope 与能力。', true);
         return;
       }
@@ -365,7 +418,7 @@ async function boot(): Promise<void> {
         const scope = safeOwnerScope(ownerScope.value);
         await request<{ client: ClientSummary }>(`/api/admin/open-platform/clients/${encodeURIComponent(client.client_id)}`, {
           method: 'PATCH',
-          body: JSON.stringify({ display_name: displayName.value.trim(), audiences: [V1_AUDIENCE], scopes, capabilities: granted, allowed_cidrs: cidrs(ips.value), token_ttl_seconds: ttlSeconds, owner_scope: scope, expires_at: expires.value ? new Date(expires.value).toISOString() : null }),
+          body: JSON.stringify({ display_name: displayName.value.trim(), audiences: [V1_AUDIENCE], scopes, capabilities: granted, allowed_cidrs: cidrs(ips.value), token_ttl_seconds: ttlSeconds, owner_scope: scope, expires_at: unchangedDateTimeLocal(expires.value, initialExpiresLocal) ? initialExpiresAt ?? null : (expires.value ? new Date(expires.value).toISOString() : null) }),
         });
         await refresh();
       } catch {
@@ -445,7 +498,7 @@ async function boot(): Promise<void> {
     if (!clients.length) clientList.append(element('p', '尚无 V1 调用方。'));
     list.append(clientList, renderCreate());
     const detailColumn = element('div'); detailColumn.className = 'open-platform-list';
-    detailColumn.append(renderDetail(clients.find((client) => client.client_id === selectedID)), renderCatalog());
+    detailColumn.append(renderDetail(selectedClient), renderCatalog());
     layout.append(list, detailColumn); root.append(layout);
   };
 

@@ -315,7 +315,7 @@ func compose(ctx context.Context, cfg platformconfig.Runtime) (*composedApplicat
 	if err != nil {
 		return fail(err)
 	}
-	mediaLibrary := mediaapp.NewReadService(uow, mediaRepository)
+	mediaLibrary := sidebarMediaLibrary{library: mediaService, sender: mediaapp.NewReadService(uow, mediaRepository)}
 	radarModule := radarmodule.NewModuleRegistration()
 	radarRepository := radarstore.NewPostgres()
 	radarManager, err := radarapp.NewService(uow, radarRepository, radarRepository)
