@@ -5,8 +5,10 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -210,7 +212,7 @@ func ownerHistoryDatabase(t *testing.T, ctx context.Context) (string, *pgxpool.P
 func TestPostgreSQLOwnerHandoffHistorySourceResultsFixture(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	_, pool, cleanup := ownerHistoryDatabase(t, ctx)
+	databaseURL, pool, cleanup := ownerHistoryDatabase(t, ctx)
 	defer cleanup()
 	if _, err := pool.Exec(ctx, `
 CREATE TABLE owner_migration_results (
@@ -224,7 +226,7 @@ CREATE TABLE owner_migration_results (
 	rows := `[{
 "external_userid":"legacy-external","status":"provider_accepted","wecom_status":"accepted","crm_status":"updated"
 },{"external_userid":"","status":"invalid"}]`
-	if _, err := pool.Exec(ctx, `INSERT INTO owner_migration_results(result_id,source_owner_userid,target_owner_userid,include_wecom_transfer,rows_json,created_at,executed_at) VALUES('legacy-result-pg','old-owner','new-owner',true,$1::jsonb,$2,$2)`, rows, at); err != nil {
+	if _, err := pool.Exec(ctx, `INSERT INTO owner_migration_results(result_id,source_owner_userid,target_owner_userid,include_wecom_transfer,rows_json,created_at,executed_at) VALUES('legacy-result-pg','old-owner','new-owner',true,$1::jsonb,$2,$2),('legacy-empty-pg','old-owner','new-owner',false,'[]'::jsonb,$2,$2)`, rows, at); err != nil {
 		t.Fatal(err)
 	}
 	stream, err := ownerHistoryResultStream(ctx, pool, "wecom-corp:legacy", at)
@@ -239,7 +241,32 @@ CREATE TABLE owner_migration_results (
 	if err != nil {
 		t.Fatalf("extract old result table: %v", err)
 	}
-	if len(m.Rows) != 2 || m.Rows[0].SourceBatchID != "legacy-result-pg" || m.Rows[0].SourceLineID != "1" || m.Rows[0].Mode != "wecom_then_crm" || m.Rows[0].SourceOwnerUserID != "old-owner" || m.Rows[0].TargetOwnerUserID != "new-owner" || m.Rows[0].WeComStatus != "accepted" || m.Rows[1].SourceState != "invalid_source" {
+	// The shared source query must persist an empty old result batch as an
+	// explicit invalid ledger fact, without accepting effects or owner writes.
+	t.Setenv("AICRM_DATABASE_URL", databaseURL)
+	t.Setenv("AICRM_SURVEY_DATA_KEY", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+	snapshot := filepath.Join(t.TempDir(), "legacy-result-pg.snapshot")
+	if err = run(ctx, []string{"--mode=inspect-stream", "--source-stream=" + path, "--snapshot=" + snapshot}); err != nil {
+		t.Fatal(err)
+	}
+	_, digest, err := load(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = run(ctx, []string{"--mode=apply", "--snapshot=" + snapshot, "--manifest-sha256=" + hex.EncodeToString(digest[:]), "--confirm-apply"}); err != nil {
+		t.Fatal(err)
+	}
+	var imported, invalid int
+	if err = pool.QueryRow(ctx, `SELECT count(*),count(*) FILTER (WHERE imported_state='invalid') FROM customer_owner_handoff_history_imports`).Scan(&imported, &invalid); err != nil || imported != 3 || invalid != 2 {
+		t.Fatalf("empty source batch import rows=%d invalid=%d err=%v", imported, invalid, err)
+	}
+	var sawAccepted, sawInvalid, sawEmpty bool
+	for _, row := range m.Rows {
+		sawAccepted = sawAccepted || (row.SourceBatchID == "legacy-result-pg" && row.SourceLineID == "1" && row.Mode == "wecom_then_crm" && row.SourceOwnerUserID == "old-owner" && row.TargetOwnerUserID == "new-owner" && row.WeComStatus == "accepted")
+		sawInvalid = sawInvalid || (row.SourceBatchID == "legacy-result-pg" && row.SourceLineID == "2" && row.SourceState == "invalid_source")
+		sawEmpty = sawEmpty || (row.SourceBatchID == "legacy-empty-pg" && row.SourceLineID == "0" && row.SourceState == "empty_batch")
+	}
+	if len(m.Rows) != 3 || !sawAccepted || !sawInvalid || !sawEmpty {
 		t.Fatalf("old result mapping=%+v", m.Rows)
 	}
 }
@@ -249,16 +276,18 @@ CREATE TABLE owner_migration_results (
 // It proves the frozen source mapping against a real PostgreSQL table while
 // keeping the production capture read-only and credential-free in this test.
 func ownerHistoryResultStream(ctx context.Context, pool *pgxpool.Pool, corpScope string, captured time.Time) (string, error) {
-	rows, err := pool.Query(ctx, `
-SELECT r.result_id, item.ordinality::text,
- CASE WHEN r.include_wecom_transfer THEN 'wecom_then_crm' ELSE 'local_only' END,
- CASE WHEN COALESCE(NULLIF(item.row->>'external_userid',''),'')='' OR COALESCE(NULLIF(r.source_owner_userid,''),'')='' OR COALESCE(NULLIF(r.target_owner_userid,''),'')='' THEN 'invalid_source'
-      ELSE COALESCE(NULLIF(item.row->>'status',''),NULLIF(item.row->>'crm_status',''),NULLIF(item.row->>'wecom_status',''),'legacy_recorded') END,
- COALESCE(r.executed_at,r.created_at), $1, COALESCE(item.row->>'external_userid',''), r.source_owner_userid, r.target_owner_userid,
- COALESCE(item.row->>'wecom_status',''), COALESCE(item.row->>'crm_status','')
-FROM owner_migration_results r
-CROSS JOIN LATERAL jsonb_array_elements(COALESCE(r.rows_json,'[]'::jsonb)) WITH ORDINALITY AS item(row, ordinality)
-ORDER BY r.executed_at,r.result_id,item.ordinality`, corpScope)
+	query, err := os.ReadFile(filepath.Join("..", "..", "scripts", "owner-handoff-history-source-query.sql"))
+	if err != nil {
+		return "", err
+	}
+	if !regexp.MustCompile(`^wecom-corp:[A-Za-z0-9._-]+$`).MatchString(corpScope) {
+		return "", errors.New("invalid test corp scope")
+	}
+	// The donor exporter intentionally qualifies public. This isolated PG fixture
+	// uses a disposable schema, so only that schema qualifier is adapted.
+	statement := strings.ReplaceAll(string(query), "__CORP_SCOPE__", corpScope)
+	statement = strings.ReplaceAll(statement, "public.owner_migration_results", "owner_migration_results")
+	rows, err := pool.Query(ctx, statement)
 	if err != nil {
 		return "", err
 	}
@@ -266,15 +295,11 @@ ORDER BY r.executed_at,r.result_id,item.ordinality`, corpScope)
 	var out strings.Builder
 	out.WriteString(historyMarker + captured.UTC().Format(time.RFC3339Nano) + "\n")
 	for rows.Next() {
-		var row sourceRow
-		if err := rows.Scan(&row.SourceBatchID, &row.SourceLineID, &row.Mode, &row.SourceState, &row.OccurredAt, &row.CorpScope, &row.ExternalUserID, &row.SourceOwnerUserID, &row.TargetOwnerUserID, &row.WeComStatus, &row.CRMStatus); err != nil {
+		var marker string
+		if err := rows.Scan(&marker); err != nil {
 			return "", err
 		}
-		raw, err := json.Marshal(row)
-		if err != nil {
-			return "", err
-		}
-		out.WriteString(historyRowMarker + hex.EncodeToString(raw) + "\n")
+		out.WriteString(marker + "\n")
 	}
 	if err := rows.Err(); err != nil {
 		return "", err

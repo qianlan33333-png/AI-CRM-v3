@@ -72,7 +72,7 @@ type sealedSnapshot struct {
 	Ciphertext string `json:"ciphertext"`
 }
 
-type result struct{ Input, Observed, Pending, Conflict, Invalid, Replayed int64 }
+type result struct{ Input, Observed, Pending, Conflict, Invalid, Replayed, SourceBatches, EmptyBatches int64 }
 
 func main() {
 	if err := run(context.Background(), os.Args[1:]); err != nil {
@@ -146,9 +146,19 @@ func run(ctx context.Context, args []string) error {
 }
 
 func printSummary(mode string, m manifest, digest [32]byte, out result) error {
+	if out.SourceBatches == 0 {
+		seen := map[string]bool{}
+		for _, row := range m.Rows {
+			seen[row.SourceBatchID] = true
+			if row.SourceState == "empty_batch" {
+				out.EmptyBatches++
+			}
+		}
+		out.SourceBatches = int64(len(seen))
+	}
 	return json.NewEncoder(os.Stdout).Encode(map[string]any{
 		"mode": mode, "run_key": m.RunKey, "manifest_sha256": hex.EncodeToString(digest[:]),
-		"input": out.Input, "observed": out.Observed, "pending_mapping": out.Pending,
+		"input": out.Input, "source_batches": out.SourceBatches, "empty_batches": out.EmptyBatches, "observed": out.Observed, "pending_mapping": out.Pending,
 		"conflict": out.Conflict, "invalid": out.Invalid, "replayed": out.Replayed,
 		"provider_calls": 0, "external_effects": 0, "local_owner_updates": 0, "oneid_links_created": 0,
 	})
@@ -302,7 +312,7 @@ func validate(m manifest) error {
 	for _, row := range m.Rows {
 		key := row.SourceBatchID + "\x00" + row.SourceLineID
 		missingSubject := strings.TrimSpace(row.ExternalUserID) == "" || strings.TrimSpace(row.SourceOwnerUserID) == "" || strings.TrimSpace(row.TargetOwnerUserID) == ""
-		if seen[key] || !sourceKeyPattern.MatchString(row.SourceBatchID) || !sourceKeyPattern.MatchString(row.SourceLineID) || (row.Mode != "local_only" && row.Mode != "wecom_then_crm") || strings.TrimSpace(row.SourceState) == "" || len(row.SourceState) > 128 || row.OccurredAt.IsZero() || !strings.HasPrefix(row.CorpScope, "wecom-corp:") || (missingSubject && row.SourceState != "invalid_source") || len(row.ExternalUserID) > 128 || len(row.SourceOwnerUserID) > 128 || len(row.TargetOwnerUserID) > 128 || len(row.WeComStatus) > 128 || len(row.CRMStatus) > 128 {
+		if seen[key] || !sourceKeyPattern.MatchString(row.SourceBatchID) || !sourceKeyPattern.MatchString(row.SourceLineID) || (row.Mode != "local_only" && row.Mode != "wecom_then_crm") || strings.TrimSpace(row.SourceState) == "" || len(row.SourceState) > 128 || row.OccurredAt.IsZero() || !strings.HasPrefix(row.CorpScope, "wecom-corp:") || (missingSubject && row.SourceState != "invalid_source" && row.SourceState != "empty_batch") || len(row.ExternalUserID) > 128 || len(row.SourceOwnerUserID) > 128 || len(row.TargetOwnerUserID) > 128 || len(row.WeComStatus) > 128 || len(row.CRMStatus) > 128 {
 			return errors.New("invalid owner handoff history row")
 		}
 		seen[key] = true
@@ -326,7 +336,7 @@ type resolution struct {
 func resolveRow(ctx context.Context, oneID identityport.Resolver, users interface {
 	UserByWeComUserID(context.Context, string, bool) (accessdomain.User, error)
 }, row sourceRow) (resolution, error) {
-	if row.SourceState == "invalid_source" {
+	if row.SourceState == "invalid_source" || row.SourceState == "empty_batch" {
 		return resolution{state: "invalid", digest: resolutionDigest("invalid", 0, 0, 0)}, nil
 	}
 	resolved, err := oneID.Resolve(ctx, identitydomain.Reference{Kind: identitydomain.KindWeComExternalUserID, Scope: row.CorpScope, Value: row.ExternalUserID, Assurance: identitydomain.AssuranceVerified, Source: "owner_handoff_history"})

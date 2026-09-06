@@ -1,5 +1,5 @@
-// V3 webshell Host bundle. Input Host and CSV/XLSX parser are compiled from
-// the byte-frozen donor modules without modifying or serving donor source.
+// Generated from internal/webshell/static_src/admin_console/owner_handoff_host.ts.
+// The only bundled parser input is the byte-frozen CSV/XLSX guard.
 var OwnerHandoffHost = (() => {
   var __create = Object.create;
   var __defProp = Object.defineProperty;
@@ -12048,9 +12048,9 @@ var OwnerHandoffHost = (() => {
     }
   });
 
-  // ../aicrm-owner-handoff-static-src/admin/ownerHandoff.ts
-  var ownerHandoff_exports = {};
-  __export(ownerHandoff_exports, {
+  // internal/webshell/static_src/admin_console/owner_handoff_host.ts
+  var owner_handoff_host_exports = {};
+  __export(owner_handoff_host_exports, {
     mountOwnerHandoff: () => mountOwnerHandoff
   });
   var base = "/api/admin/customers/owner-handoffs";
@@ -12203,7 +12203,7 @@ var OwnerHandoffHost = (() => {
       render(stage, void 0, void 0, caught instanceof Error ? caught.message : "\u9875\u9762\u52A0\u8F7D\u5931\u8D25");
     }
   }
-  return __toCommonJS(ownerHandoff_exports);
+  return __toCommonJS(owner_handoff_host_exports);
 })();
 ;
 (() => {

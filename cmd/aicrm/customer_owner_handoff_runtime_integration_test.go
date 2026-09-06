@@ -294,14 +294,14 @@ func TestCustomerOwnerHandoffRiverExecutesFrozenTransferThenLocalCAS(t *testing.
 var _ wecomport.CustomerTransferWriter = (*ownerHandoffRuntimeWriter)(nil)
 var _ pgx.Tx
 
-// TestCustomerOwnerHandoffRiverSegmentsLocalOnly101 verifies the documented
-// 100-row bound with the actual River runtime. local_only still has no
+// TestCustomerOwnerHandoffRiverSegmentsLocalOnly20000 verifies the approved 20k
+// maximum with the actual River runtime. local_only still has no
 // provider/EER write, but each segment commits its local CAS/audit/outbox facts
 // before it atomically creates the following River job.
-func TestCustomerOwnerHandoffRiverSegmentsLocalOnly101(t *testing.T) {
+func TestCustomerOwnerHandoffRiverSegmentsLocalOnly20000(t *testing.T) {
 	native, cleanup := channelWelcomeIntegrationPool(t)
 	defer cleanup()
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer cancel()
 	_, source, _, ok := runtime.Caller(0)
 	if !ok {
@@ -338,8 +338,9 @@ func TestCustomerOwnerHandoffRiverSegmentsLocalOnly101(t *testing.T) {
 	store := customer.NewPostgreSQLOwnerHandoffStore()
 	staff := accessstore.NewPostgreSQL()
 	var sourceID, targetID int64
-	ids := make([]customerdomain.CustomerID, 0, 101)
-	candidates := make([]customerport.OwnerHandoffCandidate, 0, 101)
+	const handoffRows = 20000
+	ids := make([]customerdomain.CustomerID, 0, handoffRows)
+	candidates := make([]customerport.OwnerHandoffCandidate, 0, handoffRows)
 	if err = uow.Within(ctx, func(txctx context.Context) error {
 		tx, txErr := platformpostgres.RequireTransaction(txctx)
 		if txErr != nil {
@@ -351,7 +352,7 @@ func TestCustomerOwnerHandoffRiverSegmentsLocalOnly101(t *testing.T) {
 		if txErr = tx.QueryRow(txctx, `INSERT INTO admin_users(username,password_hash,display_name,wecom_userid,is_active) VALUES('handoff-segment-target','$argon2id$fixture','Next','segment-next',true) RETURNING id`).Scan(&targetID); txErr != nil {
 			return txErr
 		}
-		for index := 0; index < 101; index++ {
+		for index := 0; index < handoffRows; index++ {
 			var customerID customerdomain.CustomerID
 			if txErr = tx.QueryRow(txctx, `INSERT INTO customers(status) VALUES('active') RETURNING id`).Scan(&customerID); txErr != nil {
 				return txErr
@@ -374,12 +375,12 @@ func TestCustomerOwnerHandoffRiverSegmentsLocalOnly101(t *testing.T) {
 	if err = service.SetBatchEnqueuer(enqueuer); err != nil {
 		t.Fatal(err)
 	}
-	preview, err := service.PreviewOwnerHandoff(ctx, customerport.OwnerHandoffPreviewCommand{ActorAdminUserID: sourceID, Mode: customerport.OwnerHandoffLocalOnly, SourceStaffID: sourceID, TargetStaffID: targetID, CorpScope: "wecom-corp:runtime", CustomerIDs: ids, ConfirmationPhrase: "CONFIRM", IdempotencyKey: "segment-preview-101"})
+	preview, err := service.PreviewOwnerHandoff(ctx, customerport.OwnerHandoffPreviewCommand{ActorAdminUserID: sourceID, Mode: customerport.OwnerHandoffLocalOnly, SourceStaffID: sourceID, TargetStaffID: targetID, CorpScope: "wecom-corp:runtime", CustomerIDs: ids, ConfirmationPhrase: "CONFIRM", IdempotencyKey: "segment-preview-20000"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	batch, err := service.ConfirmOwnerHandoff(ctx, customerport.OwnerHandoffConfirmCommand{ActorAdminUserID: sourceID, PreviewID: preview.ID, PreviewHash: preview.Hash, ConfirmationPhrase: "CONFIRM", IdempotencyKey: "segment-confirm-101"})
-	if err != nil || len(batch.Lines) != 101 || batch.State != "accepted" {
+	batch, err := service.ConfirmOwnerHandoff(ctx, customerport.OwnerHandoffConfirmCommand{ActorAdminUserID: sourceID, PreviewID: preview.ID, PreviewHash: preview.Hash, ConfirmationPhrase: "CONFIRM", IdempotencyKey: "segment-confirm-20000"})
+	if err != nil || len(batch.Lines) != handoffRows || batch.State != "accepted" {
 		t.Fatalf("accept batch=%+v err=%v", batch, err)
 	}
 	runCtx, stopRun := context.WithCancel(ctx)
@@ -408,7 +409,7 @@ func TestCustomerOwnerHandoffRiverSegmentsLocalOnly101(t *testing.T) {
 		t.Fatal("first owner-handoff segment did not stop")
 	}
 	var firstUpdated, firstQueued int
-	if err = native.QueryRow(ctx, `SELECT count(*) FILTER (WHERE state='local_updated'),count(*) FILTER (WHERE state='queued') FROM customer_owner_handoff_lines WHERE batch_id=$1`, batch.ID).Scan(&firstUpdated, &firstQueued); err != nil || firstUpdated != 100 || firstQueued != 1 {
+	if err = native.QueryRow(ctx, `SELECT count(*) FILTER (WHERE state='local_updated'),count(*) FILTER (WHERE state='queued') FROM customer_owner_handoff_lines WHERE batch_id=$1`, batch.ID).Scan(&firstUpdated, &firstQueued); err != nil || firstUpdated != 100 || firstQueued != handoffRows-100 {
 		t.Fatalf("first segment updated=%d queued=%d err=%v", firstUpdated, firstQueued, err)
 	}
 	restartWorker := customer.NewOwnerHandoffBatchWorker()
@@ -437,7 +438,7 @@ func TestCustomerOwnerHandoffRiverSegmentsLocalOnly101(t *testing.T) {
 			t.Error("owner-handoff restart runtime did not stop")
 		}
 	}()
-	deadline := time.Now().Add(8 * time.Second)
+	deadline := time.Now().Add(150 * time.Second)
 	for time.Now().Before(deadline) {
 		var updated, owners, jobs, effects int
 		err = native.QueryRow(ctx, `SELECT
@@ -445,7 +446,7 @@ func TestCustomerOwnerHandoffRiverSegmentsLocalOnly101(t *testing.T) {
 			(SELECT count(*) FROM customer_local_owners WHERE source='owner_handoff_local_only'),
 			(SELECT count(*) FROM river_job WHERE kind='customer.owner-handoff.v1'),
 			(SELECT count(*) FROM external_effects WHERE kind='customer_owner_handoff')`, batch.ID).Scan(&updated, &owners, &jobs, &effects)
-		if err == nil && updated == 101 && owners == 101 && jobs == 2 && effects == 0 {
+		if err == nil && updated == handoffRows && owners == handoffRows && jobs == handoffRows/100 && effects == 0 {
 			return
 		}
 		time.Sleep(25 * time.Millisecond)
