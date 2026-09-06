@@ -16,22 +16,21 @@ import (
 // opaque Product target reference. Neither Product's database records nor its
 // HTTP response can disclose endpoint or signing material.
 type commercePushTargetConfig struct {
-	Slot             string                              `json:"slot"`
-	Endpoint         string                              `json:"endpoint"`
-	SigningKey       string                              `json:"signing_key"`
-	Version          string                              `json:"version"`
-	TenantID         string                              `json:"tenant_id"`
-	PayloadProfile   outbound.CommercePushPayloadProfile `json:"payload_profile"`
-	BuyerID          outbound.CommercePushIdentity       `json:"buyer_id"`
-	BuyerOpenID      outbound.CommercePushIdentity       `json:"buyer_openid"`
-	BuyerUnionID     outbound.CommercePushIdentity       `json:"buyer_unionid"`
-	BuyerPhone       outbound.CommercePushIdentity       `json:"buyer_phone"`
-	BeneficiaryPhone outbound.CommercePushIdentity       `json:"beneficiary_phone"`
-	PushType         string                              `json:"type"`
-	Remark           string                              `json:"remark"`
-	Day              *int64                              `json:"day"`
-	Frequency        *int64                              `json:"frequency"`
-	CustomParams     map[string]string                   `json:"custom_params"`
+	Slot             string                        `json:"slot"`
+	Endpoint         string                        `json:"endpoint"`
+	SigningKey       string                        `json:"signing_key"`
+	Version          string                        `json:"version"`
+	TenantID         string                        `json:"tenant_id"`
+	BuyerID          outbound.CommercePushIdentity `json:"buyer_id"`
+	BuyerOpenID      outbound.CommercePushIdentity `json:"buyer_openid"`
+	BuyerUnionID     outbound.CommercePushIdentity `json:"buyer_unionid"`
+	BuyerPhone       outbound.CommercePushIdentity `json:"buyer_phone"`
+	BeneficiaryPhone outbound.CommercePushIdentity `json:"beneficiary_phone"`
+	PushType         string                        `json:"type"`
+	Remark           string                        `json:"remark"`
+	Day              *int64                        `json:"day"`
+	Frequency        *int64                        `json:"frequency"`
+	CustomParams     map[string]string             `json:"custom_params"`
 }
 
 // commercePushTargets is the composition-owned whitelist. It returns copies
@@ -87,7 +86,7 @@ func commercePushTargetsFromRuntime(value platformconfig.CommercePush) (commerce
 		}
 		target := outbound.CommercePushTarget{
 			Reference: reference, Slot: source.Slot, Endpoint: source.Endpoint, SigningKey: signingKey,
-			Version: source.Version, TenantID: source.TenantID, PayloadProfile: source.PayloadProfile, BuyerID: source.BuyerID,
+			Version: source.Version, TenantID: source.TenantID, BuyerID: source.BuyerID,
 			BuyerOpenID: source.BuyerOpenID, BuyerUnionID: source.BuyerUnionID, BuyerPhone: source.BuyerPhone,
 			BeneficiaryPhone: source.BeneficiaryPhone, PushType: source.PushType, Remark: source.Remark,
 			Day: source.Day, Frequency: source.Frequency, CustomParams: cloneCommercePushTargetParams(source.CustomParams),

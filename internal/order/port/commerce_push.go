@@ -13,15 +13,26 @@ import (
 // only canonical IDs and the already-frozen Order snapshot; an Outbound
 // consumer must not infer a customer, mutate Order, or inspect Order tables.
 type PaidEvent struct {
-	ID           int64
-	OrderID      int64
-	OrderVersion int64
-	OccurredAt   time.Time
-	SourceDigest [32]byte
-	Order        domain.Snapshot
+	ID                       int64
+	OrderID                  int64
+	OrderVersion             int64
+	DomainEventOutboxID      int64
+	CheckoutProductID        int64
+	CheckoutGrossAmountMinor int64
+	OccurredAt               time.Time
+	SourceDigest             [32]byte
+	Order                    domain.Snapshot
 }
 
 func (event PaidEvent) Valid() bool {
+	return event.ValidOrderFact() && event.DomainEventOutboxID > 0 &&
+		((event.CheckoutProductID == 0 && event.CheckoutGrossAmountMinor == 0) || (event.CheckoutProductID > 0 && event.CheckoutGrossAmountMinor > 0))
+}
+
+// ValidOrderFact allows Order persistence to construct the outbox fact before
+// publishing the completed event to consumers. Consumers must always receive
+// Valid events with the immutable Order-owned outbox ID present.
+func (event PaidEvent) ValidOrderFact() bool {
 	return event.ID > 0 && event.OrderID > 0 && event.OrderVersion > 0 && !event.OccurredAt.IsZero() &&
 		event.SourceDigest != ([32]byte{}) && event.Order.ID == event.OrderID && event.Order.Version == event.OrderVersion &&
 		event.Order.RecordOrigin == domain.RecordOriginNative && event.Order.EffectEligible && event.Order.Status == domain.StatusPaid

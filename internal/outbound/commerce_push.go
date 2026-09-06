@@ -53,31 +53,16 @@ func (v CommercePushIdentity) valid() bool {
 	return identitydomain.ValidateNamespace(v.Kind, v.Scope) == nil
 }
 
-// CommercePushPayloadProfile freezes the two existing commerce receiver
-// shapes. A standard product preserves its independent custom parameters; a
-// service-period product uses the legacy member-opening fields.
-type CommercePushPayloadProfile string
-
-const (
-	CommercePushStandardProduct CommercePushPayloadProfile = "standard_product"
-	CommercePushServiceMember   CommercePushPayloadProfile = "service_period_member"
-)
-
-func (v CommercePushPayloadProfile) valid() bool {
-	return v == CommercePushStandardProduct || v == CommercePushServiceMember
-}
-
 // CommercePushTarget is deployment configuration resolved from the opaque
 // Product reference. Its target Slot survives endpoint/secret rotation, so it
 // rather than a mutable policy digest participates in paid-event idempotency.
 type CommercePushTarget struct {
-	Reference      string
-	Slot           string
-	Endpoint       string
-	SigningKey     []byte
-	Version        string
-	TenantID       string
-	PayloadProfile CommercePushPayloadProfile
+	Reference  string
+	Slot       string
+	Endpoint   string
+	SigningKey []byte
+	Version    string
+	TenantID   string
 
 	BuyerID, BuyerOpenID, BuyerUnionID, BuyerPhone, BeneficiaryPhone CommercePushIdentity
 	PushType, Remark                                                 string
@@ -90,12 +75,11 @@ func (t CommercePushTarget) policyDigest() [32]byte {
 	params := cloneCommercePushParams(t.CustomParams)
 	value := struct {
 		Reference, Slot, Endpoint, Version, TenantID                     string
-		PayloadProfile                                                   CommercePushPayloadProfile
 		BuyerID, BuyerOpenID, BuyerUnionID, BuyerPhone, BeneficiaryPhone CommercePushIdentity
 		PushType, Remark                                                 string
 		Day, Frequency                                                   *int64
 		CustomParams                                                     map[string]string
-	}{t.Reference, t.Slot, t.Endpoint, t.Version, t.TenantID, t.PayloadProfile, t.BuyerID, t.BuyerOpenID, t.BuyerUnionID, t.BuyerPhone, t.BeneficiaryPhone, t.PushType, t.Remark, t.Day, t.Frequency, params}
+	}{t.Reference, t.Slot, t.Endpoint, t.Version, t.TenantID, t.BuyerID, t.BuyerOpenID, t.BuyerUnionID, t.BuyerPhone, t.BeneficiaryPhone, t.PushType, t.Remark, t.Day, t.Frequency, params}
 	raw, _ := json.Marshal(value)
 	return sha256.Sum256(raw)
 }
@@ -110,24 +94,12 @@ func ValidateCommercePushTarget(value CommercePushTarget) error {
 }
 
 func (t CommercePushTarget) valid() bool {
-	if !validCommerceText(t.Reference, 128) || !validCommerceText(t.Slot, 128) || !validCommerceText(t.Version, 128) || !t.PayloadProfile.valid() ||
-		!t.BuyerID.valid() || !t.BuyerOpenID.valid() || !t.BuyerUnionID.valid() || !t.BuyerPhone.valid() ||
+	// The frozen commerce sender has one transaction.paid shape for every
+	// product. Custom parameters belong only to synthetic test deliveries.
+	if !validCommerceText(t.Reference, 128) || !validCommerceText(t.Slot, 128) || !validCommerceText(t.Version, 128) ||
+		!t.BuyerID.valid() || !t.BuyerOpenID.valid() || !t.BuyerUnionID.valid() || !t.BuyerPhone.valid() || !t.BeneficiaryPhone.valid() ||
 		len(t.SigningKey) > 4096 || strings.TrimSpace(t.PushType) != t.PushType || strings.TrimSpace(t.Remark) != t.Remark || len(t.PushType) > 200 || len(t.Remark) > 2000 ||
 		(t.Day != nil && *t.Day < 0) || (t.Frequency != nil && *t.Frequency < 0) || !validCommerceParams(t.CustomParams) {
-		return false
-	}
-	switch t.PayloadProfile {
-	case CommercePushStandardProduct:
-		// Standard product receivers own their custom parameters and do not
-		// receive member-opening fields or a beneficiary identity.
-		if t.BeneficiaryPhone.Kind != "" || t.BeneficiaryPhone.Scope != "" || t.Day != nil || t.Frequency != nil || t.PushType != "" || t.Remark != "" {
-			return false
-		}
-	case CommercePushServiceMember:
-		if !t.BeneficiaryPhone.valid() {
-			return false
-		}
-	default:
 		return false
 	}
 	return validCommerceEndpoint(t.Endpoint, t.AllowLoopbackHTTP)
@@ -563,6 +535,13 @@ func (s *CommercePushService) paidPayload(ctx context.Context, event orderport.P
 	if err != nil {
 		return nil, false, err
 	}
+	// The frozen sender emits the configured beneficiary selector when it has a
+	// trusted value and otherwise preserves the old empty-string behavior. It
+	// never derives a phone from order metadata or an unverified identity.
+	beneficiaryPhone, err := s.optionalIdentity(ctx, event.Order.BeneficiaryCustomerID, target.BeneficiaryPhone)
+	if err != nil {
+		return nil, false, err
+	}
 	order := struct {
 		ID         string `json:"id"`
 		OrderNo    string `json:"order_no"`
@@ -576,74 +555,56 @@ func (s *CommercePushService) paidPayload(ctx context.Context, event orderport.P
 		Status:     "paid", // Order.Amount is the checkout's frozen payable (after coupon) amount, verified on settlement.
 		PaidAmount: event.Order.Amount.AmountMinor, PaidAt: commerceUTC(event.OccurredAt), PayChannel: "wechat",
 	}
+	productPrice := item.UnitAmountMinor
+	// Old payloads used the catalog price while paid_amount used payer_total.
+	// Order's immutable checkout snapshot is the equivalent frozen catalog fact;
+	// direct native orders without it retain their immutable item fallback.
+	if event.CheckoutProductID == *item.ProductID && event.CheckoutGrossAmountMinor > 0 {
+		productPrice = event.CheckoutGrossAmountMinor
+	}
 	product := struct {
 		ID    string `json:"id"`
 		Code  string `json:"code"`
 		Name  string `json:"name"`
 		Price int64  `json:"price"`
-	}{ID: strconv.FormatInt(*item.ProductID, 10), Code: item.ProductCode, Name: item.ProductName, Price: item.UnitAmountMinor}
+	}{ID: strconv.FormatInt(*item.ProductID, 10), Code: item.ProductCode, Name: item.ProductName, Price: productPrice}
 	buyer := struct {
 		ID      string `json:"id"`
 		OpenID  string `json:"openid"`
 		UnionID string `json:"unionid"`
 		Phone   string `json:"phone"`
 	}{ID: buyerID, OpenID: maskCommerceOpenID(openID), UnionID: unionID, Phone: buyerPhone}
-
-	switch target.PayloadProfile {
-	case CommercePushStandardProduct:
-		params := cloneCommercePushParams(target.CustomParams)
-		if params == nil {
-			params = map[string]string{}
-		}
-		body := struct {
-			DeliveryID   string            `json:"delivery_id"`
-			Event        string            `json:"event"`
-			Order        any               `json:"order"`
-			Product      any               `json:"product"`
-			Buyer        any               `json:"buyer"`
-			CustomParams map[string]string `json:"custom_params"`
-		}{DeliveryID: deliveryID, Event: "transaction.paid", Order: order, Product: product, Buyer: buyer, CustomParams: params}
-		raw, marshalErr := json.Marshal(body)
-		return raw, false, marshalErr
-	case CommercePushServiceMember:
-		beneficiaryPhone, found, readErr := s.requiredIdentity(ctx, event.Order.BeneficiaryCustomerID, target.BeneficiaryPhone)
-		if readErr != nil {
-			return nil, false, readErr
-		}
-		if !found {
-			return nil, true, nil
-		}
-		body := struct {
-			PhoneNumber        string `json:"phone_number"`
-			PushType           string `json:"type"`
-			Day                *int64 `json:"day"`
-			Frequency          *int64 `json:"frequency"`
-			Remark             string `json:"remark"`
-			SubmittedAt        string `json:"submitted_at"`
-			QuestionnaireTitle string `json:"questionnaire_title"`
-			DeliveryID         string `json:"delivery_id"`
-			Event              string `json:"event"`
-			Order              any    `json:"order"`
-			Product            any    `json:"product"`
-			Buyer              any    `json:"buyer"`
-		}{PhoneNumber: beneficiaryPhone, PushType: target.PushType, Day: target.Day, Frequency: target.Frequency, Remark: target.Remark, SubmittedAt: commerceShanghai(event.OccurredAt), QuestionnaireTitle: "微信支付开通黄小璨会员", DeliveryID: deliveryID, Event: "transaction.paid", Order: order, Product: product, Buyer: buyer}
-		raw, marshalErr := json.Marshal(body)
-		return raw, false, marshalErr
-	default:
-		return nil, false, ErrCommercePushInvalid
+	body := struct {
+		PhoneNumber        string `json:"phone_number"`
+		PushType           string `json:"type"`
+		Day                *int64 `json:"day"`
+		Frequency          *int64 `json:"frequency"`
+		Remark             string `json:"remark"`
+		SubmittedAt        string `json:"submitted_at"`
+		QuestionnaireTitle string `json:"questionnaire_title"`
+		DeliveryID         string `json:"delivery_id"`
+		Event              string `json:"event"`
+		Order              any    `json:"order"`
+		Product            any    `json:"product"`
+		Buyer              any    `json:"buyer"`
+		Transaction        struct {
+			TransactionID string `json:"transaction_id"`
+			TradeState    string `json:"trade_state"`
+			SuccessTime   string `json:"success_time"`
+		} `json:"transaction"`
+		DomainEventOutboxID int64 `json:"domain_event_outbox_id"`
+	}{
+		PhoneNumber: beneficiaryPhone, PushType: target.PushType, Day: target.Day, Frequency: target.Frequency, Remark: target.Remark,
+		SubmittedAt: commerceShanghai(event.OccurredAt), QuestionnaireTitle: "微信支付开通黄小璨会员", DeliveryID: deliveryID,
+		Event: "transaction.paid", Order: order, Product: product, Buyer: buyer, DomainEventOutboxID: event.DomainEventOutboxID,
 	}
+	body.Transaction.TransactionID = event.Order.ProviderTransactionNo
+	body.Transaction.TradeState = "SUCCESS"
+	body.Transaction.SuccessTime = commerceUTC(event.OccurredAt)
+	raw, marshalErr := json.Marshal(body)
+	return raw, false, marshalErr
 }
 
-func (s *CommercePushService) requiredIdentity(ctx context.Context, customerID *int64, selector CommercePushIdentity) (string, bool, error) {
-	if customerID == nil || *customerID < 1 {
-		return "", false, nil
-	}
-	value, found, err := s.identities.VerifiedExternalIdentityValue(ctx, customerdomain.CustomerID(*customerID), selector.Kind, selector.Scope)
-	if err != nil {
-		return "", false, err
-	}
-	return value, found && value != "", nil
-}
 func (s *CommercePushService) optionalIdentity(ctx context.Context, customerID *int64, selector CommercePushIdentity) (string, error) {
 	if customerID == nil || *customerID < 1 {
 		return "", nil
@@ -699,7 +660,7 @@ func commerceSyntheticPayload(productID productport.ID, productName string, targ
 
 func reservedCommercePayloadField(key string) bool {
 	switch key {
-	case "phone_number", "type", "day", "frequency", "remark", "submitted_at", "questionnaire_title", "delivery_id", "event", "order", "product", "buyer", "tenant", "occurred_at":
+	case "phone_number", "type", "day", "frequency", "remark", "submitted_at", "questionnaire_title", "delivery_id", "event", "order", "product", "buyer", "transaction", "domain_event_outbox_id", "tenant", "occurred_at":
 		return true
 	}
 	return false

@@ -10,7 +10,7 @@ import (
 
 func TestCommercePushTargetsAreProtectedTypedWhitelist(t *testing.T) {
 	key := base64.RawStdEncoding.EncodeToString([]byte("fixture-signing-key"))
-	raw := `{"product-paid":{"slot":"paid","endpoint":"https://push.example.test","signing_key":"` + key + `","version":"legacy-v1","tenant_id":"aicrm","payload_profile":"service_period_member","buyer_id":{"kind":"wecom_external_userid","scope":"wecom-corp:main"},"buyer_openid":{"kind":"mp_openid","scope":"wechat-app:mp"},"buyer_unionid":{"kind":"unionid","scope":"wechat-open-platform:main"},"buyer_phone":{"kind":"phone","scope":"phone:cn11"},"beneficiary_phone":{"kind":"phone","scope":"phone:cn11"},"type":"member_open","remark":"fixture","custom_params":{"campaign":"control"}}}`
+	raw := `{"product-paid":{"slot":"paid","endpoint":"https://push.example.test","signing_key":"` + key + `","version":"legacy-v1","tenant_id":"aicrm","buyer_id":{"kind":"wecom_external_userid","scope":"wecom-corp:main"},"buyer_openid":{"kind":"mp_openid","scope":"wechat-app:mp"},"buyer_unionid":{"kind":"unionid","scope":"wechat-open-platform:main"},"buyer_phone":{"kind":"phone","scope":"phone:cn11"},"beneficiary_phone":{"kind":"phone","scope":"phone:cn11"},"type":"member_open","remark":"fixture","custom_params":{"campaign":"control"}}}`
 	resolver, err := commercePushTargetsFromRuntime(platformconfig.CommercePush{ProviderEnabled: true, TargetsJSON: raw})
 	if err != nil || !resolver.CommercePushProviderEnabled() {
 		t.Fatalf("resolver err=%v enabled=%t", err, resolver.CommercePushProviderEnabled())

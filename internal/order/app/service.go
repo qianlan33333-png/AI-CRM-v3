@@ -294,6 +294,12 @@ func (s *Service) SettlePaymentWithin(ctx context.Context, command orderport.Pay
 	if err != nil {
 		return domain.Snapshot{}, orderport.ErrConflict
 	}
+	if !command.Failed && command.RefundedDelta == 0 {
+		updated, err = updated.WithVerifiedProviderTransaction(command.ProviderTransactionNo)
+		if err != nil {
+			return domain.Snapshot{}, orderport.ErrConflict
+		}
+	}
 	updated, err = s.store.UpdateSettlement(ctx, updated, event, "payment:"+command.ReceiptKey)
 	if err != nil {
 		return domain.Snapshot{}, classify(err)

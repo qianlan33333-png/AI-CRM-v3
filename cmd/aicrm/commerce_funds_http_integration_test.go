@@ -248,7 +248,7 @@ func TestPostgreSQLCommerceFundsHTTPJourney(t *testing.T) {
 	}))
 	defer receiver.Close()
 	commerceTarget := outbound.CommercePushTarget{
-		Reference: "commerce-funds-target", Slot: "commerce-funds-slot", Endpoint: receiver.URL, SigningKey: []byte("commerce-funds-signing-key"), Version: "legacy-v1", TenantID: "aicrm", PayloadProfile: outbound.CommercePushServiceMember, AllowLoopbackHTTP: true,
+		Reference: "commerce-funds-target", Slot: "commerce-funds-slot", Endpoint: receiver.URL, SigningKey: []byte("commerce-funds-signing-key"), Version: "legacy-v1", TenantID: "aicrm", AllowLoopbackHTTP: true,
 		BuyerID:          outbound.CommercePushIdentity{Kind: identitydomain.KindWeComExternalUserID, Scope: "wecom-corp:commerce-fixture"},
 		BuyerOpenID:      outbound.CommercePushIdentity{Kind: identitydomain.KindMPOpenID, Scope: "wechat-app:commerce-fixture"},
 		BuyerUnionID:     outbound.CommercePushIdentity{Kind: identitydomain.KindUnionID, Scope: "wechat-open-platform:commerce-fixture"},
@@ -589,17 +589,41 @@ func commerceFundsAssertPushDelivered(t *testing.T, ctx context.Context, pool *p
 		Event       string `json:"event"`
 		DeliveryID  string `json:"delivery_id"`
 		Order       struct {
-			Status string `json:"status"`
+			Status     string `json:"status"`
+			PaidAmount int64  `json:"paid_amount"`
 		} `json:"order"`
-		Buyer struct{ ID, OpenID, UnionID, Phone string } `json:"buyer"`
+		Product struct {
+			Price int64 `json:"price"`
+		} `json:"product"`
+		Buyer       struct{ ID, OpenID, UnionID, Phone string } `json:"buyer"`
+		Transaction struct {
+			TransactionID string `json:"transaction_id"`
+			TradeState    string `json:"trade_state"`
+			SuccessTime   string `json:"success_time"`
+		} `json:"transaction"`
+		DomainEventOutboxID int64 `json:"domain_event_outbox_id"`
 	}
-	if json.Unmarshal(delivery.body, &body) != nil || body.PhoneNumber != "13800138000" || body.Event != "transaction.paid" || body.DeliveryID != delivery.deliveryID || body.Order.Status != "paid" || body.Buyer.ID != "fixture-buyer" || body.Buyer.OpenID != "fixt***enid" || body.Buyer.UnionID != "fixture-unionid" || body.Buyer.Phone != "13800138000" {
-		t.Fatalf("legacy paid payload did not preserve beneficiary/payer mapping")
+	var raw map[string]json.RawMessage
+	if json.Unmarshal(delivery.body, &body) != nil || json.Unmarshal(delivery.body, &raw) != nil || body.PhoneNumber != "13800138000" || body.Event != "transaction.paid" || body.DeliveryID != delivery.deliveryID || body.Order.Status != "paid" || body.Order.PaidAmount != 1000 || body.Product.Price != 1200 || body.Buyer.ID != "fixture-buyer" || body.Buyer.OpenID != "fixt***enid" || body.Buyer.UnionID != "fixture-unionid" || body.Buyer.Phone != "13800138000" || body.Transaction.TransactionID != "tx-commerce-funds" || body.Transaction.TradeState != "SUCCESS" || body.Transaction.SuccessTime == "" || body.DomainEventOutboxID < 1 {
+		t.Fatalf("legacy paid payload did not preserve frozen member, transaction, and payer facts")
+	}
+	if _, found := raw["custom_params"]; found {
+		t.Fatalf("synthetic-only custom params leaked into a paid delivery")
+	}
+	var expectedOutboxID int64
+	var expectedOccurredAt time.Time
+	err := pool.QueryRow(ctx, `SELECT outbox.id,event.occurred_at
+FROM outbound_commerce_push_intents intent
+JOIN order_paid_events event ON event.id=intent.order_paid_event_id
+JOIN order_outbox outbox ON outbox.idempotency_key=('order.paid.v1:' || event.id::text)
+WHERE intent.effect_id=$1`, "eer_"+strconv.FormatInt(effectID, 10)).Scan(&expectedOutboxID, &expectedOccurredAt)
+	if err != nil || body.DomainEventOutboxID != expectedOutboxID || body.Transaction.SuccessTime != expectedOccurredAt.UTC().Format(time.RFC3339) {
+		t.Fatalf("paid delivery did not carry its immutable order outbox fact id=%d want=%d occurred=%q want=%q err=%v", body.DomainEventOutboxID, expectedOutboxID, body.Transaction.SuccessTime, expectedOccurredAt.UTC().Format(time.RFC3339), err)
 	}
 	var intentState, effectState string
 	var calls int
 	var attempted, executed bool
-	err := pool.QueryRow(ctx, `SELECT intent.state,effect.state,effect.attempt_count,attempt.call_attempted,attempt.real_external_call_executed
+	err = pool.QueryRow(ctx, `SELECT intent.state,effect.state,effect.attempt_count,attempt.call_attempted,attempt.real_external_call_executed
 FROM outbound_commerce_push_intents intent
 JOIN external_effects effect ON effect.id=substring(intent.effect_id FROM 5)::bigint
 JOIN external_effect_attempts attempt ON attempt.effect_id=effect.id AND attempt.number=1

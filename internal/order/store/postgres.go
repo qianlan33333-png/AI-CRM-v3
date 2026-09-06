@@ -647,21 +647,36 @@ RETURNING id,order_id,order_version,source_digest,occurred_at`, snapshot.ID, sna
 		return orderport.PaidEvent{}, false, mapError(err)
 	}
 	event.SourceDigest, event.Order = source, snapshot
+	if !event.ValidOrderFact() {
+		return orderport.PaidEvent{}, false, ErrInvalid
+	}
+	checkout, checkoutErr := r.ReadCheckoutSnapshot(ctx, event.OrderID)
+	if checkoutErr == nil {
+		event.CheckoutProductID, event.CheckoutGrossAmountMinor = checkout.ProductID, checkout.GrossAmountMinor
+	} else if !errors.Is(checkoutErr, orderport.ErrNotFound) {
+		return orderport.PaidEvent{}, false, checkoutErr
+	}
+	key := "order.paid.v1:" + strconv.FormatInt(event.ID, 10)
+	if created {
+		payload, marshalErr := json.Marshal(map[string]any{"order_id": event.OrderID, "order_version": event.OrderVersion, "paid_event_id": event.ID})
+		if marshalErr != nil {
+			return orderport.PaidEvent{}, false, ErrInvalid
+		}
+		if err = tx.QueryRow(ctx, `INSERT INTO order_outbox(event_type,idempotency_key,aggregate_id,payload,occurred_at)
+VALUES('order.paid.v1',$1,$2,$3::jsonb,$4) RETURNING id`, key, event.OrderID, payload, event.OccurredAt.UTC()).Scan(&event.DomainEventOutboxID); err != nil {
+			return orderport.PaidEvent{}, false, mapError(err)
+		}
+	} else if err = tx.QueryRow(ctx, `SELECT id FROM order_outbox
+WHERE event_type='order.paid.v1' AND idempotency_key=$1 AND aggregate_id=$2 FOR KEY SHARE`, key, event.OrderID).Scan(&event.DomainEventOutboxID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return orderport.PaidEvent{}, false, orderport.ErrConflict
+		}
+		return orderport.PaidEvent{}, false, mapError(err)
+	}
 	if !event.Valid() {
 		return orderport.PaidEvent{}, false, ErrInvalid
 	}
-	if !created {
-		return event, false, nil
-	}
-	payload, marshalErr := json.Marshal(map[string]any{"order_id": event.OrderID, "order_version": event.OrderVersion, "paid_event_id": event.ID})
-	if marshalErr != nil {
-		return orderport.PaidEvent{}, false, ErrInvalid
-	}
-	key := "order.paid.v1:" + strconv.FormatInt(event.ID, 10)
-	if _, err = tx.Exec(ctx, `INSERT INTO order_outbox(event_type,idempotency_key,aggregate_id,payload,occurred_at) VALUES('order.paid.v1',$1,$2,$3::jsonb,$4)`, key, event.OrderID, payload, event.OccurredAt.UTC()); err != nil {
-		return orderport.PaidEvent{}, false, mapError(err)
-	}
-	return event, true, nil
+	return event, created, nil
 }
 
 func (r *Repository) UpdateSettlement(ctx context.Context, order domain.Order, event domain.StatusEvent, actorScope string) (domain.Order, error) {
@@ -673,7 +688,7 @@ func (r *Repository) UpdateSettlement(ctx context.Context, order domain.Order, e
 	if snapshot.ID < 1 || snapshot.Version < 2 || actorScope == "" || event.Version != snapshot.Version {
 		return domain.Order{}, ErrInvalid
 	}
-	command, err := tx.Exec(ctx, `UPDATE orders SET status=$2,refunded_minor=$3,version=$4,updated_at=$5 WHERE id=$1 AND version=$6`, snapshot.ID, snapshot.Status, snapshot.RefundedMinor, snapshot.Version, snapshot.UpdatedAt, snapshot.Version-1)
+	command, err := tx.Exec(ctx, `UPDATE orders SET status=$2,refunded_minor=$3,provider_transaction_no=$4,version=$5,updated_at=$6 WHERE id=$1 AND version=$7`, snapshot.ID, snapshot.Status, snapshot.RefundedMinor, snapshot.ProviderTransactionNo, snapshot.Version, snapshot.UpdatedAt, snapshot.Version-1)
 	if err != nil {
 		return domain.Order{}, mapError(err)
 	}

@@ -193,7 +193,10 @@ func (s *memoryStore) AppendPaidEvent(_ context.Context, snapshot domain.Snapsho
 		event.Order = snapshot
 		return event, false, nil
 	}
-	event := orderport.PaidEvent{ID: int64(len(s.paid) + 1), OrderID: snapshot.ID, OrderVersion: snapshot.Version, OccurredAt: snapshot.UpdatedAt.UTC(), SourceDigest: orderport.NewPaidEventSourceDigest(snapshot.ID, snapshot.Version), Order: snapshot}
+	event := orderport.PaidEvent{ID: int64(len(s.paid) + 1), OrderID: snapshot.ID, OrderVersion: snapshot.Version, DomainEventOutboxID: int64(len(s.paid) + 1), OccurredAt: snapshot.UpdatedAt.UTC(), SourceDigest: orderport.NewPaidEventSourceDigest(snapshot.ID, snapshot.Version), Order: snapshot}
+	if checkout, found := s.checkout[snapshot.ID]; found {
+		event.CheckoutProductID, event.CheckoutGrossAmountMinor = checkout.ProductID, checkout.GrossAmountMinor
+	}
 	if !event.Valid() {
 		return orderport.PaidEvent{}, false, errors.New("invalid paid event")
 	}
@@ -322,8 +325,17 @@ func TestPaymentCheckoutFreezesCouponPriceAndSettlesWithinOrderTransaction(t *te
 	// the callback time from the created snapshot so this test stays valid as
 	// the test clock advances without weakening the payment assertion.
 	paidAt := created.CreatedAt.Add(time.Minute)
-	if _, err = service.SettlePaymentWithin(context.Background(), orderport.PaymentSettlementCommand{OrderID: created.ID, OccurredAt: paidAt, ReceiptKey: "payment-callback-1"}); err != nil {
+	if _, err = service.SettlePaymentWithin(context.Background(), orderport.PaymentSettlementCommand{OrderID: created.ID, OccurredAt: paidAt, ReceiptKey: "payment-missing-transaction"}); !errors.Is(err, orderport.ErrConflict) {
+		t.Fatalf("missing verified provider transaction err=%v", err)
+	}
+	if got := store.orders[created.ID].Status; got != domain.StatusPendingPayment {
+		t.Fatalf("missing transaction changed order status=%q", got)
+	}
+	if _, err = service.SettlePaymentWithin(context.Background(), orderport.PaymentSettlementCommand{OrderID: created.ID, ProviderTransactionNo: "tx-payment-callback-1", OccurredAt: paidAt, ReceiptKey: "payment-callback-1"}); err != nil {
 		t.Fatal(err)
+	}
+	if got := store.orders[created.ID].ProviderTransactionNo; got != "tx-payment-callback-1" {
+		t.Fatalf("verified payment transaction was not frozen in Order: %q", got)
 	}
 	if len(coupons.consume) != 1 || coupons.consume[0].SettledAmountMinor != 7000 || coupons.consume[0].SettledCurrency != "CNY" || coupons.consume[0].ReservationRef != "redemption-1" || len(coupons.release) != 0 {
 		t.Fatalf("consume=%+v release=%+v", coupons.consume, coupons.release)
@@ -365,7 +377,7 @@ func TestPaymentCheckoutFinalFailureReleasesCouponAndServicePeriodRefundsOnce(t 
 		t.Fatal(err)
 	}
 	paidAt := paid.CreatedAt.Add(time.Minute)
-	if _, err = service.SettlePaymentWithin(context.Background(), orderport.PaymentSettlementCommand{OrderID: paid.ID, OccurredAt: paidAt, ReceiptKey: "payment-paid-key-0001"}); err != nil {
+	if _, err = service.SettlePaymentWithin(context.Background(), orderport.PaymentSettlementCommand{OrderID: paid.ID, ProviderTransactionNo: "tx-payment-paid-1", OccurredAt: paidAt, ReceiptKey: "payment-paid-key-0001"}); err != nil {
 		t.Fatal(err)
 	}
 	if len(fulfillment.grants) != 1 || fulfillment.grants[0].DurationDays != 31 || fulfillment.grants[0].BeneficiaryCustomerID != 22 {

@@ -19,7 +19,7 @@ func (s commercePushIdentityStub) VerifiedExternalIdentityValue(_ context.Contex
 	return value, found, nil
 }
 
-func TestCommercePaidPayloadUsesFrozenLegacyFieldNamesAndBeneficiary(t *testing.T) {
+func TestCommercePaidPayloadUsesFrozenLegacyFieldNamesForEveryProduct(t *testing.T) {
 	payer, beneficiary, productID := int64(31), int64(77), int64(9)
 	at := time.Date(2026, 9, 6, 1, 2, 3, 0, time.UTC)
 	service := &CommercePushService{identities: commercePushIdentityStub{
@@ -28,35 +28,30 @@ func TestCommercePaidPayloadUsesFrozenLegacyFieldNamesAndBeneficiary(t *testing.
 		identitydomain.KindMPOpenID:            "payer-openid-abcdefgh",
 		identitydomain.KindUnionID:             "payer-union",
 	}}
-	event := orderport.PaidEvent{ID: 41, OrderID: 82, OccurredAt: at, Order: orderdomain.Snapshot{
-		ID: 82, MerchantOrderNo: "trade-82", PayerCustomerID: &payer, BeneficiaryCustomerID: &beneficiary,
+	event := orderport.PaidEvent{ID: 41, OrderID: 82, OrderVersion: 3, DomainEventOutboxID: 53, OccurredAt: at, Order: orderdomain.Snapshot{
+		ID: 82, Version: 3, MerchantOrderNo: "trade-82", ProviderTransactionNo: "wx-transaction-82", PayerCustomerID: &payer, BeneficiaryCustomerID: &beneficiary,
 		Amount: orderdomain.Money{AmountMinor: 9900, Currency: "CNY"},
 	}}
 	item := orderdomain.ItemSnapshot{LineNo: 1, ProductID: &productID, ProductCode: "member-9", ProductName: "会员九", UnitAmountMinor: 9900}
 	day, frequency := int64(30), int64(1)
 	target := CommercePushTarget{
-		PayloadProfile:   CommercePushServiceMember,
-		BuyerID:          CommercePushIdentity{Kind: identitydomain.KindWeComExternalUserID, Scope: "wecom-corp:main"},
-		BuyerOpenID:      CommercePushIdentity{Kind: identitydomain.KindMPOpenID, Scope: "wechat-app:mpmain"},
-		BuyerUnionID:     CommercePushIdentity{Kind: identitydomain.KindUnionID, Scope: "wechat-open-platform:main"},
-		BuyerPhone:       CommercePushIdentity{Kind: identitydomain.KindPhone, Scope: "phone:cn11"},
-		BeneficiaryPhone: CommercePushIdentity{Kind: identitydomain.KindPhone, Scope: "phone:cn11"},
-		PushType:         "member_open", Day: &day, Frequency: &frequency, Remark: "new member",
+		BuyerID: CommercePushIdentity{Kind: identitydomain.KindWeComExternalUserID, Scope: "wecom-corp:main"}, BuyerOpenID: CommercePushIdentity{Kind: identitydomain.KindMPOpenID, Scope: "wechat-app:mpmain"}, BuyerUnionID: CommercePushIdentity{Kind: identitydomain.KindUnionID, Scope: "wechat-open-platform:main"}, BuyerPhone: CommercePushIdentity{Kind: identitydomain.KindPhone, Scope: "phone:cn11"}, BeneficiaryPhone: CommercePushIdentity{Kind: identitydomain.KindPhone, Scope: "phone:cn11"},
+		PushType: "member_open", Day: &day, Frequency: &frequency, Remark: "new member",
 	}
 	body, missing, err := service.paidPayload(context.Background(), event, item, target, "commerce_fixture")
 	if err != nil || missing {
 		t.Fatalf("paid payload missing=%t err=%v", missing, err)
 	}
-	const expected = `{"phone_number":"13900000000","type":"member_open","day":30,"frequency":1,"remark":"new member","submitted_at":"2026-09-06T09:02:03+08:00","questionnaire_title":"微信支付开通黄小璨会员","delivery_id":"commerce_fixture","event":"transaction.paid","order":{"id":"82","order_no":"trade-82","out_trade_no":"trade-82","status":"paid","paid_amount":9900,"paid_at":"2026-09-06T01:02:03Z","pay_channel":"wechat"},"product":{"id":"9","code":"member-9","name":"会员九","price":9900},"buyer":{"id":"payer-external","openid":"paye***efgh","unionid":"payer-union","phone":"13900000000"}}`
+	const expected = `{"phone_number":"13900000000","type":"member_open","day":30,"frequency":1,"remark":"new member","submitted_at":"2026-09-06T09:02:03+08:00","questionnaire_title":"微信支付开通黄小璨会员","delivery_id":"commerce_fixture","event":"transaction.paid","order":{"id":"82","order_no":"trade-82","out_trade_no":"trade-82","status":"paid","paid_amount":9900,"paid_at":"2026-09-06T01:02:03Z","pay_channel":"wechat"},"product":{"id":"9","code":"member-9","name":"会员九","price":9900},"buyer":{"id":"payer-external","openid":"paye***efgh","unionid":"payer-union","phone":"13900000000"},"transaction":{"transaction_id":"wx-transaction-82","trade_state":"SUCCESS","success_time":"2026-09-06T01:02:03Z"},"domain_event_outbox_id":53}`
 	if got := string(body); got != expected {
 		t.Fatalf("legacy paid payload mismatch\n got: %s\nwant: %s", got, expected)
 	}
-	if strings.Contains(string(body), `"OrderNo"`) || strings.Contains(string(body), `"OpenID"`) {
-		t.Fatalf("Go field names leaked into frozen payload: %s", body)
+	if strings.Contains(string(body), `"OrderNo"`) || strings.Contains(string(body), `"OpenID"`) || strings.Contains(string(body), `"custom_params"`) {
+		t.Fatalf("Go or synthetic-only fields leaked into frozen paid payload: %s", body)
 	}
 }
 
-func TestCommerceStandardPaidPayloadPreservesCustomParametersWithoutMemberShape(t *testing.T) {
+func TestCommercePaidPayloadDoesNotSplitProtocolByProductKind(t *testing.T) {
 	payer, beneficiary, productID := int64(31), int64(77), int64(9)
 	at := time.Date(2026, 9, 6, 1, 2, 3, 0, time.UTC)
 	service := &CommercePushService{identities: commercePushIdentityStub{
@@ -65,26 +60,25 @@ func TestCommerceStandardPaidPayloadPreservesCustomParametersWithoutMemberShape(
 		identitydomain.KindMPOpenID:            "payer-openid-abcdefgh",
 		identitydomain.KindUnionID:             "payer-union",
 	}}
-	event := orderport.PaidEvent{ID: 41, OrderID: 82, OccurredAt: at, Order: orderdomain.Snapshot{
-		ID: 82, MerchantOrderNo: "trade-82", PayerCustomerID: &payer, BeneficiaryCustomerID: &beneficiary,
+	event := orderport.PaidEvent{ID: 41, OrderID: 82, OrderVersion: 3, DomainEventOutboxID: 53, OccurredAt: at, Order: orderdomain.Snapshot{
+		ID: 82, Version: 3, MerchantOrderNo: "trade-82", ProviderTransactionNo: "wx-transaction-82", PayerCustomerID: &payer, BeneficiaryCustomerID: &beneficiary,
 		Amount: orderdomain.Money{AmountMinor: 8900, Currency: "CNY"},
 	}}
 	item := orderdomain.ItemSnapshot{LineNo: 1, ProductID: &productID, ProductCode: "course-9", ProductName: "课程九", UnitAmountMinor: 8900}
 	target := CommercePushTarget{
-		PayloadProfile: CommercePushStandardProduct,
-		BuyerID:        CommercePushIdentity{Kind: identitydomain.KindWeComExternalUserID, Scope: "wecom-corp:main"}, BuyerOpenID: CommercePushIdentity{Kind: identitydomain.KindMPOpenID, Scope: "wechat-app:mpmain"}, BuyerUnionID: CommercePushIdentity{Kind: identitydomain.KindUnionID, Scope: "wechat-open-platform:main"}, BuyerPhone: CommercePushIdentity{Kind: identitydomain.KindPhone, Scope: "phone:cn11"},
+		BuyerID: CommercePushIdentity{Kind: identitydomain.KindWeComExternalUserID, Scope: "wecom-corp:main"}, BuyerOpenID: CommercePushIdentity{Kind: identitydomain.KindMPOpenID, Scope: "wechat-app:mpmain"}, BuyerUnionID: CommercePushIdentity{Kind: identitydomain.KindUnionID, Scope: "wechat-open-platform:main"}, BuyerPhone: CommercePushIdentity{Kind: identitydomain.KindPhone, Scope: "phone:cn11"}, BeneficiaryPhone: CommercePushIdentity{Kind: identitydomain.KindPhone, Scope: "phone:cn11"},
 		CustomParams: map[string]string{"campaign": "fall", "source": "product"},
 	}
 	body, missing, err := service.paidPayload(context.Background(), event, item, target, "commerce_standard")
 	if err != nil || missing {
-		t.Fatalf("standard paid payload missing=%t err=%v", missing, err)
+		t.Fatalf("paid payload missing=%t err=%v", missing, err)
 	}
-	const expected = `{"delivery_id":"commerce_standard","event":"transaction.paid","order":{"id":"82","order_no":"trade-82","out_trade_no":"trade-82","status":"paid","paid_amount":8900,"paid_at":"2026-09-06T01:02:03Z","pay_channel":"wechat"},"product":{"id":"9","code":"course-9","name":"课程九","price":8900},"buyer":{"id":"payer-external","openid":"paye***efgh","unionid":"payer-union","phone":"13900000000"},"custom_params":{"campaign":"fall","source":"product"}}`
+	const expected = `{"phone_number":"13900000000","type":"","day":null,"frequency":null,"remark":"","submitted_at":"2026-09-06T09:02:03+08:00","questionnaire_title":"微信支付开通黄小璨会员","delivery_id":"commerce_standard","event":"transaction.paid","order":{"id":"82","order_no":"trade-82","out_trade_no":"trade-82","status":"paid","paid_amount":8900,"paid_at":"2026-09-06T01:02:03Z","pay_channel":"wechat"},"product":{"id":"9","code":"course-9","name":"课程九","price":8900},"buyer":{"id":"payer-external","openid":"paye***efgh","unionid":"payer-union","phone":"13900000000"},"transaction":{"transaction_id":"wx-transaction-82","trade_state":"SUCCESS","success_time":"2026-09-06T01:02:03Z"},"domain_event_outbox_id":53}`
 	if got := string(body); got != expected {
-		t.Fatalf("standard paid payload mismatch\n got: %s\nwant: %s", got, expected)
+		t.Fatalf("paid payload mismatch\n got: %s\nwant: %s", got, expected)
 	}
-	if strings.Contains(string(body), "phone_number") || strings.Contains(string(body), "questionnaire_title") || strings.Contains(string(body), `"day"`) {
-		t.Fatalf("standard product was incorrectly encoded as member opening: %s", body)
+	if strings.Contains(string(body), "custom_params") || !strings.Contains(string(body), "phone_number") || !strings.Contains(string(body), "questionnaire_title") {
+		t.Fatalf("paid product used a non-frozen protocol: %s", body)
 	}
 }
 
@@ -101,8 +95,8 @@ func TestCommercePushSignatureUsesLegacyDotAndExactBody(t *testing.T) {
 func TestCommerceSyntheticPayloadUsesFrozenLegacyFieldNames(t *testing.T) {
 	at := time.Date(2026, 9, 5, 1, 2, 3, 0, time.UTC)
 	body, err := commerceSyntheticPayload(7, "Test", CommercePushTarget{
-		Reference: "test-target", Slot: "paid", Endpoint: "http://127.0.0.1", Version: "v1", TenantID: "aicrm", PayloadProfile: CommercePushStandardProduct, AllowLoopbackHTTP: true,
-		BuyerID: CommercePushIdentity{Kind: identitydomain.KindWeComExternalUserID, Scope: "wecom-corp:main"}, BuyerOpenID: CommercePushIdentity{Kind: identitydomain.KindMPOpenID, Scope: "wechat-app:mpmain"}, BuyerUnionID: CommercePushIdentity{Kind: identitydomain.KindUnionID, Scope: "wechat-open-platform:main"}, BuyerPhone: CommercePushIdentity{Kind: identitydomain.KindPhone, Scope: "phone:cn11"},
+		Reference: "test-target", Slot: "paid", Endpoint: "http://127.0.0.1", Version: "v1", TenantID: "aicrm", AllowLoopbackHTTP: true,
+		BuyerID: CommercePushIdentity{Kind: identitydomain.KindWeComExternalUserID, Scope: "wecom-corp:main"}, BuyerOpenID: CommercePushIdentity{Kind: identitydomain.KindMPOpenID, Scope: "wechat-app:mpmain"}, BuyerUnionID: CommercePushIdentity{Kind: identitydomain.KindUnionID, Scope: "wechat-open-platform:main"}, BuyerPhone: CommercePushIdentity{Kind: identitydomain.KindPhone, Scope: "phone:cn11"}, BeneficiaryPhone: CommercePushIdentity{Kind: identitydomain.KindPhone, Scope: "phone:cn11"},
 		CustomParams: map[string]string{"campaign": "control"},
 	}, "commerce_test_1", at)
 	if err != nil {

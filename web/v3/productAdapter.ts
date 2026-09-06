@@ -239,7 +239,7 @@ function parseExternalPushTimeline(value: unknown, page: ExternalPushPage): Exte
     const state = typeof item.state === 'string' ? item.state : '';
     const attemptCount = Number(item.attempt_count);
     if (Number(item.product_id) !== page.productID || item.product_kind !== page.productKind ||
-      !/^[A-Za-z0-9_-]{1,128}$/.test(effectID) || !Object.hasOwn(externalPushStateLabel, state) ||
+      !/^[A-Za-z0-9_-]{1,128}$/.test(effectID) || !Object.prototype.hasOwnProperty.call(externalPushStateLabel, state) ||
       !Number.isSafeInteger(attemptCount) || attemptCount < 0 ||
       typeof item.provider_accepted !== 'boolean' || typeof item.delivery_proven !== 'boolean' ||
       typeof item.real_external_call_executed !== 'boolean' || typeof item.auto_retry_allowed !== 'boolean' ||
