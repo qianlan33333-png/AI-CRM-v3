@@ -21,11 +21,11 @@ import (
 	"net/http/httptest"
 )
 
-// OneID decision: not involved. The browser mutates only Config-owned numeric
+// OneID decision: not involved. This JSDOM regression journey mutates only Config-owned numeric
 // runtime policy. Persistence decision: the actual HTTP handler reaches the
 // real Config store, whose release, pointer, audit, receipt, and outbox share
 // one PostgreSQL UoW; no Provider is constructed.
-func TestRuntimeReleaseHostBrowserJourneyUsesActualPostgreSQLHTTP(t *testing.T) {
+func TestRuntimeReleaseHostJSDOMJourneyUsesActualPostgreSQLHTTP(t *testing.T) {
 	pool, cleanup := runtimeReleaseBrowserPool(t)
 	defer cleanup()
 	ctx := context.Background()
