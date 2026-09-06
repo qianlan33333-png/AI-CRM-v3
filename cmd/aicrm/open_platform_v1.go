@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -109,10 +111,13 @@ func (executor *openPlatformExecutor) v1AuditedError(ctx context.Context, invoca
 }
 
 func (executor *openPlatformExecutor) recordV1Operation(ctx context.Context, invocation openplatformport.Invocation, outcome string) error {
-	if executor == nil || executor.operationAudit == nil {
+	if executor == nil || invocation.Principal.ClientRecord < 1 {
 		return nil
 	}
-	return executor.operationAudit.Record(ctx, invocation.Principal, invocation.Operation, outcome)
+	if executor.operationAudit == nil {
+		return errors.New("operation auditor is not composed")
+	}
+	return executor.operationAudit.Record(ctx, invocation.Principal, invocation.Operation, invocation.RequestID, outcome)
 }
 
 func (executor *openPlatformExecutor) v1Capabilities(ctx context.Context, principal accessdomain.MachinePrincipal) (openplatformport.Result, error) {
@@ -224,11 +229,15 @@ type openPlatformOperationAuditor struct {
 // Record stores only the operation name and terminal category. Request bodies,
 // cursors, bearer tokens, identity values, and user-supplied request IDs are
 // never retained in this audit fact.
-func (auditor *openPlatformOperationAuditor) Record(ctx context.Context, principal accessdomain.MachinePrincipal, operation openplatformport.OperationID, outcome string) error {
-	if auditor == nil || auditor.writer == nil || auditor.uow == nil || principal.ClientRecord < 1 {
+func (auditor *openPlatformOperationAuditor) Record(ctx context.Context, principal accessdomain.MachinePrincipal, operation openplatformport.OperationID, requestID, outcome string) error {
+	if principal.ClientRecord < 1 {
 		return nil
 	}
-	payload, _ := json.Marshal(map[string]string{"operation": string(operation)})
+	if auditor == nil || auditor.writer == nil || auditor.uow == nil {
+		return errors.New("operation auditor is not composed")
+	}
+	requestDigest := sha256.Sum256([]byte(requestID))
+	payload, _ := json.Marshal(map[string]string{"operation": string(operation), "request_id_digest": hex.EncodeToString(requestDigest[:])})
 	return auditor.uow.Within(ctx, func(tx context.Context) error {
 		return auditor.writer.AppendMachineAudit(tx, accessdomain.MachineAudit{MachineClientID: principal.ClientRecord, Action: "open_platform_operation", Outcome: outcome, Details: payload, CreatedAt: time.Now().UTC()})
 	})

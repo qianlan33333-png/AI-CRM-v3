@@ -24,7 +24,7 @@ import (
 )
 
 const (
-	v1ActivityDefaultLimit int32 = 20
+	v1ActivityDefaultLimit int32 = 50
 	v1ActivityMaximumLimit int32 = 100
 	v1ActivityCursorV            = 1
 )

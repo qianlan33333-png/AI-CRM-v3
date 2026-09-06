@@ -152,7 +152,7 @@ func TestV1CustomerActivitiesMergeOwnerPagesAndBindCursor(t *testing.T) {
 	if err = executor.BindV1CustomerActivities(survey, radar, bytes.Repeat([]byte{7}, 32)); err != nil {
 		t.Fatal(err)
 	}
-	principal := accessdomain.MachinePrincipal{ClientID: "reader-a", ClientRecord: 7, Audience: "external_integration", Scopes: []string{"read"}, Capabilities: []string{string(openplatformport.CapabilityCustomerActivityRead)}}
+	principal := accessdomain.MachinePrincipal{ClientID: "reader-a", Audience: "external_integration", Scopes: []string{"read"}, Capabilities: []string{string(openplatformport.CapabilityCustomerActivityRead)}}
 	first, err := executor.Invoke(context.Background(), openplatformport.Invocation{Operation: openplatformport.OperationCustomerActivities, Principal: principal, Input: json.RawMessage(`{"customer_id":42,"limit":2}`)})
 	if err != nil {
 		t.Fatal(err)
@@ -295,11 +295,38 @@ func TestV1OperationsAuditSuccessAndDeniedWithoutRequestPayload(t *testing.T) {
 	if _, err := executor.Invoke(context.Background(), openplatformport.Invocation{Operation: openplatformport.OperationCapabilitiesList, Principal: principal, RequestID: "request-contains-user-value"}); err != nil {
 		t.Fatal(err)
 	}
-	if audit.calls != 1 || audit.audit.MachineClientID != 19 || audit.audit.Action != "open_platform_operation" || audit.audit.Outcome != "succeeded" || string(audit.audit.Details) != `{"operation":"platform.capabilities.list"}` || strings.Contains(string(audit.audit.Details), "request-") {
+	if audit.calls != 1 || audit.audit.MachineClientID != 19 || audit.audit.Action != "open_platform_operation" || audit.audit.Outcome != "succeeded" || !strings.Contains(string(audit.audit.Details), `"operation":"platform.capabilities.list"`) || !strings.Contains(string(audit.audit.Details), `"request_id_digest"`) || strings.Contains(string(audit.audit.Details), "request-") {
 		t.Fatalf("success audit=%+v", audit.audit)
 	}
 	_, err := executor.Invoke(context.Background(), openplatformport.Invocation{Operation: openplatformport.OperationCustomerContext, Principal: principal, Input: json.RawMessage(`{"customer_id":42}`)})
 	if openplatformport.ErrorCodeOf(err) != openplatformport.ErrorPermission || audit.calls != 2 || audit.audit.Outcome != "permission" {
 		t.Fatalf("denied err=%v audit=%+v", err, audit.audit)
+	}
+}
+
+func TestV1CustomerActivitiesDefaultLimitIsFiftyForRESTAndMCPDTO(t *testing.T) {
+	at := time.Date(2026, 9, 6, 13, 0, 0, 0, time.UTC)
+	archive := &openPlatformArchiveStub{}
+	orders := &openPlatformOrderStub{}
+	survey := &openPlatformSurveyStub{}
+	radar := &openPlatformRadarLinksStub{}
+	executor, err := newOpenPlatformExecutor(&openPlatformIdentityStub{}, orders, &openPlatformProfileStub{}, archive, &openPlatformTimelineStub{}, &openPlatformOwnerStub{}, configuredOpenPlatformScopes("corp-main", nil, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	executor.activityNow = func() time.Time { return at }
+	if err = executor.BindV1CustomerActivities(survey, radar, bytes.Repeat([]byte{5}, 32)); err != nil {
+		t.Fatal(err)
+	}
+	principal := accessdomain.MachinePrincipal{Scopes: []string{"read"}, Capabilities: []string{string(openplatformport.CapabilityCustomerActivityRead)}}
+	for index, raw := range []json.RawMessage{json.RawMessage(`{"customer_id":42}`), json.RawMessage(`{"customer_id":42,"types":["order"]}`)} {
+		if _, err = executor.Invoke(context.Background(), openplatformport.Invocation{Operation: openplatformport.OperationCustomerActivities, Principal: principal, Input: raw}); err != nil {
+			t.Fatal(err)
+		}
+		if index == 0 { // the full shared DTO requests every Owner Port.
+			if archive.activityQuery.Limit != 51 || orders.activityQuery.Limit != 51 || radar.activityQuery.Limit != 51 || survey.historyQuery.Limit != 51 {
+				t.Fatalf("default query limits archive=%d order=%d radar=%d survey=%d", archive.activityQuery.Limit, orders.activityQuery.Limit, radar.activityQuery.Limit, survey.historyQuery.Limit)
+			}
+		}
 	}
 }
